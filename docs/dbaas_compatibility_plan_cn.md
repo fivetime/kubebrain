@@ -21132,6 +21132,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   写入产生的 latest revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2180 payload、
   A2168 create-desc CountOnly 与 historical FromKey create SortNone CountOnly 之外的 current
   FromKey create SortNone CountOnly 路径。
+- A2183 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  SortByKey+SortNone 分页外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
+  WithLimit(2), WithSort(SortByKey, SortNone))` 必须把开放 range 收窄到当前 namespace，从
+  logical `range/b` 开始统计全量 `Count=3`，再按 logical key 默认顺序分页返回
+  `range/b=value-b` 与 `range/c=value-c`、`More=true`，response header revision 必须等于后续
+  相邻 tenant 写入产生的 latest revision，并排除 start 前 key 和相邻 tenant 的更大 key。该回归
+  补齐 A1789 key-desc、A2171-A2182 非 key SortNone 与 historical FromKey key SortNone 之外的
+  current FromKey key SortNone payload 路径。
+- A2184 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  KeysOnly+SortByKey+SortNone 分页外观：nested `OpGet("range/b", WithFromKey(),
+  WithSerializable(), WithKeysOnly(), WithLimit(2), WithSort(SortByKey, SortNone))` 必须把开放
+  range 收窄到当前 namespace，从 logical `range/b` 开始统计全量 `Count=3`，仍按 logical key
+  默认顺序分页返回 `range/b` 与 `range/c`，但 value 均为空、`More=true`，response header
+  revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前 key 和相邻
+  tenant。该回归补齐 A2183 payload、A2169 key-desc KeysOnly 与 historical FromKey key SortNone
+  KeysOnly 之外的 current FromKey key SortNone KeysOnly 路径。
+- A2185 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  CountOnly+SortByKey+SortNone 分页外观：nested `OpGet("range/b", WithFromKey(),
+  WithSerializable(), WithCountOnly(), WithLimit(2), WithSort(SortByKey, SortNone))` 必须把开放
+  range 收窄到当前 namespace，从 logical `range/b` 开始统计全量 `Count=3`，忽略 limit、不返回
+  任何 KVs、`More=false`，response header revision 必须等于后续相邻 tenant 写入产生的 latest
+  revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2183 payload、A2170 key-desc
+  CountOnly 与 historical FromKey key SortNone CountOnly 之外的 current FromKey key SortNone
+  CountOnly 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
