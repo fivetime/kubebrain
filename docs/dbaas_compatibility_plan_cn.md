@@ -20679,6 +20679,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   latest revision，并排除后续更新的 `locks/c`、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐
   A1776 current payload helper+filter、A1909 current helper+filter+KeysOnly、A1908 create-side
   current CountOnly 与 A1900 historical helper+filter+CountOnly 之外的 current prefix mod CountOnly 路径。
+- A2143 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `WithLastRev()+WithMinModRev` 组合外观：nested `OpGet("locks/",
+  append(WithLastRev(), WithMinModRev(updateRev), WithSerializable())...)` 必须在最新 revision
+  上按 helper 展开后的 mod revision 降序 limit=1，并在 mod revision 下界内分页当前 namespace
+  logical prefix，返回过滤后的最新修改项 `locks/c=updated-locks/c`、`Count=3`、`More=true`；
+  response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的 latest revision，并排除
+  mod revision 更早的 `locks/a`、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1772 plain
+  LastRev、A1914 FirstRev+MinModRev 与 A1776 LastRev+MaxModRev 之外的 current prefix
+  last-revision lower-bound payload 路径。
+- A2144 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `WithLastRev()+WithMinModRev+KeysOnly` 组合外观：nested `OpGet("locks/",
+  append(WithLastRev(), WithMinModRev(updateRev), WithSerializable(), WithKeysOnly())...)` 必须在
+  最新 revision 上按 helper 展开后的 mod revision 降序 limit=1，并在 mod revision 下界内分页
+  当前 namespace logical prefix，返回过滤后的最新修改 logical key `locks/c`、空 value、
+  `Count=3`、`More=true`；response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的
+  latest revision，并排除 mod revision 更早的 `locks/a`、同 tenant 相邻 prefix 和相邻 tenant。
+  该回归补齐 A2143 payload、A1909 last-revision upper-bound KeysOnly 与 A1915 first-revision
+  lower-bound KeysOnly 之外的 current prefix last-revision lower-bound KeysOnly 路径。
 - A1914 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable `WithFirstRev()+WithMinModRev` 组合外观：nested `OpGet("locks/",
   append(WithFirstRev(), WithMinModRev(updateRev), WithSerializable())...)` 必须在最新 revision 上按
