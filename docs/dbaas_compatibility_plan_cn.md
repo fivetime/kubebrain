@@ -17825,6 +17825,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   range 内按 mod revision 降序分页，返回后更新的 logical `alpha/a`、`items/a` 及当前 values，
   `Count=3`、`More=true`，并排除 upper bound 外的 `z/final` 和相邻 tenant。该回归补齐
   A1579/A1564 top-helper 之外的多 KV revision-order explicit range 路径。
+- A2461 补强 A1581/A1645 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  serializable mod-revision desc sort 分页外观：`OpGet("", WithRange("z"), WithSerializable(),
+  WithLimit(2), WithSort(SortByModRevision, SortDescend))` 返回当前 namespace logical `[ "", "z" )`
+  range 的第一页时，nested txn response header 与 nested range response header 都必须等于
+  latest revision；同时 logical page、`Count=3`、`More=true` 与相邻 tenant 隔离外观保持不变。
+  该回归把 mod sort/page header 合同与 A2460 create sort/page 对齐。
 - A1582 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   version sort 分页外观：nested `OpGet("", WithRange("z"), WithLimit(2),
   WithSort(SortByVersion, SortDescend))` 必须只在当前 namespace 的 logical `[ "", "z" )`
