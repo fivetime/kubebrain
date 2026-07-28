@@ -19508,6 +19508,131 @@ func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableContradictoryCr
 	require.Equal(t, int64(2), outsideTenant.Count)
 }
 
+func TestClientNamespaceNestedTxnGetFromKeyHistoricalSelectorCountOnlyPrecedence(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, tt := range []struct {
+		name   string
+		prefix string
+		opts   []clientv3.OpOption
+	}{
+		{
+			name:   "first-key",
+			prefix: "/a2417/namespace-nested-txn-get-from-key-historical-first-key-countonly-precedence/tenant/",
+			opts:   clientv3.WithFirstKey(),
+		},
+		{
+			name:   "last-key",
+			prefix: "/a2417/namespace-nested-txn-get-from-key-historical-last-key-countonly-precedence/tenant/",
+			opts:   clientv3.WithLastKey(),
+		},
+		{
+			name:   "first-create",
+			prefix: "/a2417/namespace-nested-txn-get-from-key-historical-first-create-countonly-precedence/tenant/",
+			opts:   clientv3.WithFirstCreate(),
+		},
+		{
+			name:   "last-create",
+			prefix: "/a2417/namespace-nested-txn-get-from-key-historical-last-create-countonly-precedence/tenant/",
+			opts:   clientv3.WithLastCreate(),
+		},
+		{
+			name:   "first-revision",
+			prefix: "/a2417/namespace-nested-txn-get-from-key-historical-first-rev-countonly-precedence/tenant/",
+			opts:   clientv3.WithFirstRev(),
+		},
+		{
+			name:   "last-revision",
+			prefix: "/a2417/namespace-nested-txn-get-from-key-historical-last-rev-countonly-precedence/tenant/",
+			opts:   clientv3.WithLastRev(),
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			namespacedKV := namespace.NewKV(client.KV, tt.prefix)
+			_, err := client.Put(ctx, tt.prefix+"range0/outside", "same-tenant-outside-prefix")
+			require.NoError(t, err)
+			outsideTenantPrefix := strings.Replace(tt.prefix, "/tenant/", "/tenant0/", 1)
+			_, err = client.Put(ctx, outsideTenantPrefix+"range/z", "outside-tenant")
+			require.NoError(t, err)
+			_, err = namespacedKV.Put(ctx, "alpha/a", "before-start")
+			require.NoError(t, err)
+			_, err = namespacedKV.Put(ctx, "range/b", "old-b")
+			require.NoError(t, err)
+			_, err = namespacedKV.Put(ctx, "range/a", "old-a")
+			require.NoError(t, err)
+			historical, err := namespacedKV.Put(ctx, "range/c", "old-c")
+			require.NoError(t, err)
+			_, err = namespacedKV.Delete(ctx, "range/b")
+			require.NoError(t, err)
+			_, err = namespacedKV.Put(ctx, "range/a", "new-a")
+			require.NoError(t, err)
+			_, err = namespacedKV.Put(ctx, "range/d", "new-d")
+			require.NoError(t, err)
+
+			getOpts := append([]clientv3.OpOption{}, tt.opts...)
+			getOpts = append(getOpts,
+				clientv3.WithRev(historical.Header.Revision),
+				clientv3.WithSort(clientv3.SortByValue, clientv3.SortDescend),
+				clientv3.WithKeysOnly(),
+				clientv3.WithLimit(1),
+				clientv3.WithCountOnly())
+			txnResp, err := namespacedKV.Txn(ctx).
+				Then(clientv3.OpTxn(nil,
+					[]clientv3.Op{clientv3.OpGet("range/", getOpts...)},
+					nil)).
+				Commit()
+			require.NoError(t, err)
+			require.True(t, txnResp.Succeeded)
+			require.Len(t, txnResp.Responses, 1)
+			nestedTxn := txnResp.Responses[0].GetResponseTxn()
+			require.NotNil(t, nestedTxn)
+			require.True(t, nestedTxn.Succeeded)
+			require.Len(t, nestedTxn.Responses, 1)
+			nestedGet := nestedTxn.Responses[0].GetResponseRange()
+			require.NotNil(t, nestedGet)
+			require.Equal(t, int64(3), nestedGet.Count)
+			require.False(t, nestedGet.More)
+			require.Empty(t, nestedGet.Kvs)
+
+			current, err := namespacedKV.Get(ctx, "range/", clientv3.WithPrefix())
+			require.NoError(t, err)
+			require.Equal(t, int64(3), current.Count)
+			require.Equal(t, [][]byte{[]byte("range/a"), []byte("range/c"), []byte("range/d")},
+				[][]byte{current.Kvs[0].Key, current.Kvs[1].Key, current.Kvs[2].Key})
+			require.Equal(t, []byte("new-a"), current.Kvs[0].Value)
+			outsideSameTenantPrefix, err := client.Get(ctx, tt.prefix+"range0/", clientv3.WithPrefix())
+			require.NoError(t, err)
+			require.Equal(t, int64(1), outsideSameTenantPrefix.Count)
+			outsideTenant, err := client.Get(ctx, outsideTenantPrefix, clientv3.WithPrefix())
+			require.NoError(t, err)
+			require.Equal(t, int64(1), outsideTenant.Count)
+		})
+	}
+}
+
 func TestClientNamespaceNestedTxnGetFromKeyHistoricalSerializableSelectorCountOnlyPrecedence(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
