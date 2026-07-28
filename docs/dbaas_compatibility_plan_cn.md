@@ -18511,6 +18511,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并排除后续 delete/update/new key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1691 historical
   payload helper+filter、A1917 historical helper+filter+KeysOnly、A1908 current prefix CountOnly 与
   A1899 FromKey historical CountOnly 之外的 historical prefix CountOnly 路径。
+- A1921 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix historical
+  serializable `WithFirstCreate()+WithMinCreateRev` 组合外观：nested `OpGet("waiters/",
+  append(WithFirstCreate(), WithMinCreateRev(createRev), WithRev(historyRev), WithSerializable())...)`
+  必须在指定历史 revision 上按 helper 展开后的 create revision 升序 limit=1，并在 create revision
+  下界内分页当前 namespace logical prefix，返回历史存在但当前已删除的
+  `waiters/b=value-waiters/b`、`Count=3`、`More=true`，response header revision 必须保持当前
+  latest revision，并排除 createRev 更早的 `waiters/a` payload、后续 delete/update/new key、同
+  tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1691 LastCreate+MaxCreateRev 对侧、A1911 current
+  prefix first-created lower-bound 与 A1901 FromKey historical first-created lower-bound 路径。
 - A1692 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix historical
   serializable `WithLastRev()+WithMaxModRev` 组合外观：nested `OpGet("locks/",
   append(WithLastRev(), WithMaxModRev(updateRev), WithRev(historyRev), WithSerializable())...)`
