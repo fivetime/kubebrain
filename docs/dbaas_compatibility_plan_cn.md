@@ -17402,6 +17402,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数据时，nested `Compare(Version("range/a").WithRange("range/d"), ">", 0)` 必须失败并执行
   Else branch，返回空 `ResponseRange`、`Count=0`、`More=false`。该回归防止 nested
   `prefixCmps` 遗漏导致 leasing 嵌套事务的 range guard 被相邻物理数据误通过。
+- A2488 补强 A1513 官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range compare
+  失败空结果 header 外观：nested compare 未命中 Then branch 并执行 Else branch 的 read-only
+  `OpGet("range/a", WithRange("range/d"))` 时，outer txn response header 与 empty nested range
+  response header 都必须等于相邻 tenant 写入产生的 latest revision；同时 `Succeeded=false`、
+  `Count=0`、`More=false`、空 KVs 与相邻 range/tenant 不影响 compare 的外观保持不变。该回归把
+  nested compare 失败读路径与 A2487 成功读路径的 header 合同对齐。
 - A1514 固定官方 client/v3 namespace.NewKV nested OpTxn 的 Else branch response unprefix：
   在 nested compare 失败且 Else branch 返回实际数据时，`ResponseTxn.Succeeded=false` 下的
   `ResponseRange` 仍必须递归 unprefix，返回 logical `items/a,b` 与原始 values，并排除相邻

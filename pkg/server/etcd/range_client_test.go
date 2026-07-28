@@ -1951,7 +1951,7 @@ func TestClientNamespaceNestedTxnRangeCompareFalseBranchIgnoresAdjacentRanges(t 
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1513/namespace-nested-txn-compare-false-range/tenant/range0/outside", "same-tenant-outside-range")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1513/namespace-nested-txn-compare-false-range/tenant0/range/b", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1513/namespace-nested-txn-compare-false-range/tenant0/range/b", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -1963,6 +1963,7 @@ func TestClientNamespaceNestedTxnRangeCompareFalseBranchIgnoresAdjacentRanges(t 
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -1971,6 +1972,7 @@ func TestClientNamespaceNestedTxnRangeCompareFalseBranchIgnoresAdjacentRanges(t 
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
 	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(0), nestedGet.Count)
 	require.False(t, nestedGet.More)
 	require.Empty(t, nestedGet.Kvs)
