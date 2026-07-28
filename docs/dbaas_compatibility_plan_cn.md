@@ -17603,6 +17603,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回 logical `alpha/a`、`items/a`、`z/final` 及 values，`Count=3`、`More=false`，并且
   response header revision 等于当前 latest revision。该回归补齐 A1536 非空 prefix serializable
   之外的 empty-prefix 路径，防止 serializable Range adapter 泄漏物理 prefix 或返回错误 header。
+- A2475 补强 A1554 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key current serializable
+  prefix 基础外观：`OpGet("", WithPrefix(), WithSerializable())` 读取当前 namespace 全前缀时，
+  nested txn response header 与 nested range response header 都必须等于 latest revision；同时
+  logical key/value、`Count=3`、`More=false` 与相邻 tenant 隔离外观保持不变。该回归把
+  empty-prefix 基础 header 合同与 A2474 non-empty prefix 对侧路径对齐。
 - A1555 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix MinModRev
   外观：nested `OpGet("", WithPrefix(), WithMinModRev(rev), WithSort(SortByKey, SortAscend))`
   必须只在当前 namespace 全前缀内应用 mod revision 过滤，返回 logical `items/b`、`z/final`
