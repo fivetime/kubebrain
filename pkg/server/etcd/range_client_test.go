@@ -53064,7 +53064,7 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstCreateK
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a2022/namespace-nested-txn-historical-serializable-prefix-first-create-keysonly/tenant0/items/older", "outside-tenant")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "items/b", "old-items/b")
+	createB, err := namespacedKV.Put(ctx, "items/b", "old-items/b")
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "items/a", "old-items/a")
 	require.NoError(t, err)
@@ -53103,6 +53103,9 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstCreateK
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/b"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, createB.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, createB.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
 	require.NoError(t, err)
@@ -53352,6 +53355,9 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastCreateKe
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/c"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
 	require.NoError(t, err)
@@ -53566,7 +53572,7 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstRevKeys
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "items/b", "old-items/b")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "items/a", "old-items/a")
+	createA, err := namespacedKV.Put(ctx, "items/a", "old-items/a")
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "items/b", "updated-items/b")
 	require.NoError(t, err)
@@ -53605,6 +53611,9 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstRevKeys
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/a"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, createA.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, createA.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
 	require.NoError(t, err)
@@ -53860,6 +53869,9 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastRevKeysO
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/c"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
 	require.NoError(t, err)
@@ -55083,9 +55095,11 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstRevAndM
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1925/namespace-nested-txn-historical-serializable-prefix-first-rev-min-mod-keysonly/tenant0/locks/outside", "outside-tenant")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"locks/a", "locks/b", "locks/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateB, err := namespacedKV.Put(ctx, "locks/b", "updated-locks/b")
 	require.NoError(t, err)
@@ -55126,6 +55140,7 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstRevAndM
 	require.Equal(t, []byte("locks/b"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Equal(t, int64(2), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["locks/b"], nestedGet.Kvs[0].CreateRevision)
 	require.Equal(t, updateB.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "locks/", clientv3.WithPrefix())
@@ -55343,9 +55358,11 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastRevAndMa
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1919/namespace-nested-txn-historical-serializable-prefix-last-rev-max-mod-keysonly/tenant0/locks/outside", "outside-tenant")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"locks/a", "locks/b", "locks/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateB, err := namespacedKV.Put(ctx, "locks/b", "updated-locks/b")
 	require.NoError(t, err)
@@ -55386,6 +55403,7 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastRevAndMa
 	require.Equal(t, []byte("locks/b"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Equal(t, int64(2), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["locks/b"], nestedGet.Kvs[0].CreateRevision)
 	require.Equal(t, updateB.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "locks/", clientv3.WithPrefix())
