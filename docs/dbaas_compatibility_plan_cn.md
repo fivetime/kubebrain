@@ -23377,6 +23377,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical FromKey range 的完整 count、空 KVs、`More=false`。该回归补齐 A2418/A2419 current
   与 A1844/A1845 historical serializable FromKey contradictory filter 覆盖之外的 historical
   non-serializable 对称路径。
+- A2491 补强 A2420 官方 client/v3 namespace.NewKV nested OpTxn 的 historical non-serializable
+  FromKey contradictory revision filter `CountOnly` header 外观：`OpGet("range/b", WithFromKey(),
+  WithRev(historyRev), WithCountOnly(), ...)` 在 mod/create 两类 contradictory filter 下返回
+  historical count-only 结果时，outer txn response header 与 nested range response header 都必须
+  等于相邻 tenant 写入产生的执行时 latest revision；同时完整 count、空 KVs、`More=false` 与当前
+  namespace FromKey 收窄外观保持不变。该回归把 historical non-serializable FromKey CountOnly
+  precedence 纳入 nested Txn header 合同。
 - A2431 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable FromKey
   contradictory revision filter 显式 `CountOnly` 优先级外观：`OpGet("range/b", WithFromKey())`
   经过 namespace 收窄后，`WithMinModRev > WithMaxModRev` 与
