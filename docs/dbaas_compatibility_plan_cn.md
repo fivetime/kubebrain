@@ -22456,6 +22456,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   payload page 的影响。response header revision 必须保持 latest revision，并排除 prefix 前 key、
   历史后新增 key、后续更新值和相邻 tenant。该回归补齐 A1864 payload、A2338 KeysOnly 和
   historical serializable create filter+version sort+limit CountOnly 路径。
+- A2340 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
+  `WithMaxCreateRev()+SortByVersion(asc)+Limit(1)+KeysOnly` 组合外观：nested `OpGet("range/b",
+  WithFromKey(), WithRev(historyRev), WithSerializable(), WithMaxCreateRev(maxCreate), WithLimit(1),
+  WithSort(SortByVersion, SortAscend), WithKeysOnly())` 必须在指定 historical revision 上把 FromKey
+  开放 range 收窄到当前 namespace，从 logical `range/b` 开始统计历史完整 `Count=3`，再按
+  `MaxCreateRev` 过滤和历史 version 升序分页，只返回 version=1、create/mod revision 等于初始
+  `range/b` put revision 的 logical key `range/b` 且 value 为空、`More=true`。response header
+  revision 必须保持 latest revision，并排除 prefix 前 key、历史后新增 key、后续更新值和相邻 tenant。
+  该回归补齐 A1865 payload、A2338/A2339 对侧和 historical serializable create filter+version
+  sort+limit KeysOnly 路径。
+- A2341 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
+  `WithMaxCreateRev()+SortByVersion(asc)+Limit(1)+CountOnly` 组合外观：nested `OpGet("range/b",
+  WithFromKey(), WithRev(historyRev), WithSerializable(), WithMaxCreateRev(maxCreate), WithLimit(1),
+  WithSort(SortByVersion, SortAscend), WithCountOnly())` 必须在指定 historical revision 上把 FromKey
+  开放 range 收窄到当前 namespace，从 logical `range/b` 开始统计历史完整 `Count=3`，并因为
+  CountOnly 返回空 KVs、`More=false`，忽略 `MaxCreateRev`、历史 version 升序排序和 limit 对
+  payload page 的影响。response header revision 必须保持 latest revision，并排除 prefix 前 key、
+  历史后新增 key、后续更新值和相邻 tenant。该回归补齐 A1865 payload、A2340 KeysOnly 和
+  historical serializable create filter+version sort+limit CountOnly 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
