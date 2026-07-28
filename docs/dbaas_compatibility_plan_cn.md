@@ -22811,6 +22811,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `WithMinModRev/WithMaxModRev` 与 `WithMinCreateRev/WithMaxCreateRev` 时必须只清空返回
   KV 的 value，保留 version/create revision/mod revision。该回归补强 A2121/A2123/A2125/A2127
   的 serializable prefix filter KeysOnly metadata 断言，对齐 A2388 FromKey serializable 对侧。
+- A2390 强化官方 client/v3 namespace.NewKV nested OpTxn 的 serializable prefix current
+  filter + limit `KeysOnly` 元数据外观：`WithPrefix()+WithSerializable()` 叠加
+  `WithMinModRev/WithMaxModRev`、`WithMinCreateRev/WithMaxCreateRev` 与 `Limit(1)` 时必须
+  只清空返回页 KV 的 value，保留 version/create revision/mod revision。该回归补强
+  A2134/A2136/A2138/A2140 的 serializable prefix filter limit KeysOnly metadata 断言。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到

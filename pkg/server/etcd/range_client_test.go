@@ -44411,9 +44411,11 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMinModRevisionKeysOnlyLimi
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a2138/namespace-nested-txn-serializable-prefix-min-mod-rev-keysonly-limit/tenant0/items/c", "outside-tenant")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"items/a", "items/b", "items/c"} {
-		_, err = namespacedKV.Put(ctx, key, "old-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "old-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateB, err := namespacedKV.Put(ctx, "items/b", "new-items/b")
 	require.NoError(t, err)
@@ -44451,6 +44453,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMinModRevisionKeysOnlyLimi
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/b"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(2), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["items/b"], nestedGet.Kvs[0].CreateRevision)
 	require.Equal(t, updateB.Header.Revision, nestedGet.Kvs[0].ModRevision)
 	require.Less(t, updateB.Header.Revision, updateC.Header.Revision)
 
@@ -44829,9 +44833,11 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMaxModRevisionKeysOnlyLimi
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a2134/namespace-nested-txn-serializable-prefix-max-mod-rev-keysonly-limit/tenant0/items/c", "outside-tenant")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"items/a", "items/b", "items/c"} {
-		_, err = namespacedKV.Put(ctx, key, "old-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "old-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateC, err := namespacedKV.Put(ctx, "items/c", "new-items/c")
 	require.NoError(t, err)
@@ -44867,6 +44873,9 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMaxModRevisionKeysOnlyLimi
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/a"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["items/a"], nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, putRevs["items/a"], nestedGet.Kvs[0].ModRevision)
 	require.Less(t, nestedGet.Kvs[0].ModRevision, updateC.Header.Revision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
@@ -45286,7 +45295,9 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMinCreateRevisionKeysOnlyL
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/b"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
 	require.Equal(t, createB.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, createB.Header.Revision, nestedGet.Kvs[0].ModRevision)
 	require.Less(t, createB.Header.Revision, createC.Header.Revision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
@@ -45675,13 +45686,13 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMaxCreateRevisionKeysOnlyL
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a2136/namespace-nested-txn-serializable-prefix-max-create-rev-keysonly-limit/tenant0/items/a", "outside-tenant")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "items/a", "value-items/a")
+	createA, err := namespacedKV.Put(ctx, "items/a", "value-items/a")
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "items/b", "value-items/b")
 	require.NoError(t, err)
 	createC, err := namespacedKV.Put(ctx, "items/c", "value-items/c")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "items/a", "updated-items/a")
+	updateA, err := namespacedKV.Put(ctx, "items/a", "updated-items/a")
 	require.NoError(t, err)
 	latest, err := client.Put(ctx, "/a2136/namespace-nested-txn-serializable-prefix-max-create-rev-keysonly-limit/tenant/items0/latest", "latest-outside-prefix")
 	require.NoError(t, err)
@@ -45715,6 +45726,9 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixMaxCreateRevisionKeysOnlyL
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/a"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(2), nestedGet.Kvs[0].Version)
+	require.Equal(t, createA.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, updateA.Header.Revision, nestedGet.Kvs[0].ModRevision)
 	require.Less(t, nestedGet.Kvs[0].CreateRevision, createC.Header.Revision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
