@@ -19882,6 +19882,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prefix 外 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1848 payload WithFirstRev、
   A1889 helper+KeysOnly first-revision 与 A1887 helper+CountOnly first-key 之外的 helper+CountOnly
   first-revision 路径。
+- A1892 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
+  `WithLastRev() + CountOnly` helper 优先级外观：nested `OpGet("range/", append(WithLastRev(),
+  WithRev(historyRev), WithSerializable(), WithCountOnly())...)` 必须在指定历史 revision 上把 helper
+  展开后的 prefix range 收窄到当前 namespace logical `range/` prefix，并因为 `CountOnly` 覆盖
+  helper 的 mod revision 降序 + limit=1 payload page，只返回完整 historical logical count
+  `Count=3`、空 KVs、`More=false`。response header revision 必须保持当前 latest revision，并排除
+  prefix 外 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1849 payload WithLastRev、
+  A1890 helper+KeysOnly last-revision 与 A1891 helper+CountOnly first-revision 之外的
+  helper+CountOnly last-revision 路径。
 - A1705 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable MinModRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
   WithSerializable(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须在最新
