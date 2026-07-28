@@ -18960,6 +18960,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续更新的 `locks/c`、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1776 current payload
   helper+filter、A1898 historical helper+filter+KeysOnly 与 A1907 create-side current KeysOnly
   之外的 current serializable prefix mod helper+filter+KeysOnly 路径。
+- A1910 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `WithLastRev()+WithMaxModRev+CountOnly` 组合外观：nested `OpGet("locks/",
+  append(WithLastRev(), WithMaxModRev(updateRev), WithSerializable(), WithCountOnly())...)`
+  必须在最新 revision 上把 helper 展开后的 prefix range 收窄到当前 namespace logical prefix，
+  并因为 `CountOnly` 覆盖 helper 的 mod revision 降序 + limit=1 payload page，只返回完整
+  current logical count `Count=3`、空 KVs、`More=false`；revision filter 只裁剪 payload，不改变
+  CountOnly 的 range 总数。response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的
+  latest revision，并排除后续更新的 `locks/c`、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐
+  A1776 current payload helper+filter、A1909 current helper+filter+KeysOnly、A1908 create-side
+  current CountOnly 与 A1900 historical helper+filter+CountOnly 之外的 current prefix mod CountOnly 路径。
 - A1777 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable KeysOnly 分页外观：nested `OpGet("items/", WithPrefix(), WithSerializable(),
   WithKeysOnly(), WithLimit(2))` 必须在最新 revision 上只按当前 namespace logical prefix 默认
