@@ -53167,6 +53167,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstCreateC
 	getOpts := append(clientv3.WithFirstCreate(),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -53419,6 +53421,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastCreateCo
 	getOpts := append(clientv3.WithLastCreate(),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -53677,6 +53681,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstRevCoun
 	getOpts := append(clientv3.WithFirstRev(),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -53935,6 +53941,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastRevCount
 	getOpts := append(clientv3.WithLastRev(),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -54184,6 +54192,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstKeyCoun
 	getOpts := append(clientv3.WithFirstKey(),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -54433,6 +54443,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastKeyCount
 	getOpts := append(clientv3.WithLastKey(),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -54688,6 +54700,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastCreateAn
 		clientv3.WithMaxCreateRev(historical.Header.Revision-1),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -54943,6 +54957,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstCreateA
 		clientv3.WithMinCreateRev(createB.Header.Revision),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -55206,6 +55222,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithFirstRevAndM
 		clientv3.WithMinModRev(updateB.Header.Revision),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -55469,6 +55487,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastRevAndMa
 		clientv3.WithMaxModRev(updateB.Header.Revision),
 		clientv3.WithRev(historical.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,

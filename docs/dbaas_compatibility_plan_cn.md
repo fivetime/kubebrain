@@ -22841,6 +22841,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   value，保留该历史版本的 version/create revision/mod revision；后续 delete/update/new key
   不能污染历史返回元数据。该回归补强 A1917/A1919/A1922/A1925/A2022/A2023/A2024/A2025
   的 historical serializable prefix KeysOnly metadata 断言。
+- A2395 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable prefix
+  selector 与 selector+filter `CountOnly` 优先级外观：`WithFirstCreate/WithLastCreate`、
+  `WithFirstRev/WithLastRev`、`WithFirstKey/WithLastKey` 以及 create/mod revision filter
+  组合在叠加 `KeysOnly` 和 `Limit(1)` 时，仍必须只返回指定 historical revision 上当前 namespace
+  logical prefix 的完整 count、空 KVs、`More=false`，证明 CountOnly 覆盖 payload 修饰和 helper
+  分页。该回归补强 A1918/A1920/A1923/A1926/A2020/A2021/A2026/A2027/A2028/A2029 的
+  historical serializable prefix CountOnly precedence 断言。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
