@@ -21706,6 +21706,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2254
   payload、A2255 KeysOnly 与 A1888 historical serializable CountOnly helper 之外的 current
   LastKey CountOnly 路径。
+- A2257 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastCreate()+WithMaxCreateRev` 组合外观：nested `OpGet("waiters/",
+  append(WithLastCreate(), WithMaxCreateRev(createC-1))...)` 必须只扫描当前 namespace 的 logical
+  `waiters/` prefix，`WithMaxCreateRev` 先过滤掉后来创建的 `waiters/c`，再由 LastCreate 选出
+  剩余候选中最后创建的 `waiters/b=value-waiters/b`，`Count=3`、`More=true`，response header
+  revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant
+  相邻 prefix 和相邻 tenant。该回归补齐 A2242 LastCreate payload 与 A1852 historical
+  serializable helper+filter 之外的 current helper+filter payload 路径。
+- A2258 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastCreate()+WithMaxCreateRev+KeysOnly` 组合外观：nested `OpGet("waiters/",
+  append(WithLastCreate(), WithMaxCreateRev(createC-1), WithKeysOnly())...)` 必须只扫描当前
+  namespace 的 logical `waiters/` prefix，返回过滤后最后创建的 logical key `waiters/b` 且 value
+  为空，`Count=3`、`More=true`，response header revision 必须等于后续相邻 tenant 写入产生的
+  latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2257
+  payload 与 A1897 historical serializable helper+filter KeysOnly 之外的 current 路径。
+- A2259 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastCreate()+WithMaxCreateRev+CountOnly` 组合外观：nested `OpGet("waiters/",
+  append(WithLastCreate(), WithMaxCreateRev(createC-1), WithCountOnly())...)` 必须只扫描当前
+  namespace 的 logical `waiters/` prefix，CountOnly 下忽略 helper 带来的 `Limit(1)`，只返回完整
+  logical count `Count=3`，不返回任何 KVs、`More=false`，response header revision 必须等于
+  后续相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A2257 payload、A2258 KeysOnly 与 A1899 historical serializable
+  helper+filter CountOnly 之外的 current 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
