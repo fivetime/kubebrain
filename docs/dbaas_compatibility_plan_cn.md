@@ -20333,6 +20333,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的 latest revision，并排除
   同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1684 historical prefix contradictory
   CreateRev filter 与 A1710 explicit range current contradictory CreateRev 之外的 current prefix 路径。
+- A2131 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `KeysOnly+contradictory CreateRev` filter 外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithKeysOnly(), WithMinCreateRev(createRev+1),
+  WithMaxCreateRev(createRev), WithLimit(1))` 必须在最新 revision 上统计当前 namespace logical
+  prefix 全量 `Count=3`，但矛盾 filter 后不返回任何 KVs、`More=false`；response header revision
+  必须等于后续同 tenant 相邻 prefix 写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A1768 current prefix contradictory CreateRev payload 与 historical/explicit range
+  contradictory CreateRev KeysOnly 之外的 current prefix contradictory CreateRev KeysOnly 路径。
+- A2132 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `CountOnly+contradictory CreateRev` filter 外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithCountOnly(), WithMinCreateRev(createRev+1),
+  WithMaxCreateRev(createRev), WithLimit(1))` 必须在最新 revision 上只统计当前 namespace logical
+  prefix 全量 `Count=3`，并因为 `CountOnly` 覆盖 payload 返回空 KVs、`More=false`；response
+  header revision 必须等于后续同 tenant 相邻 prefix 写入产生的 latest revision，并排除同 tenant
+  相邻 prefix 和相邻 tenant。该回归补齐 A1768 current prefix contradictory CreateRev payload、
+  A2131 contradictory CreateRev KeysOnly 与 historical/explicit range contradictory CreateRev
+  CountOnly 之外的 current prefix contradictory CreateRev CountOnly 路径。
 - A1769 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable `WithFirstCreate()` helper 外观：nested `OpGet("items/", append(WithFirstCreate(),
   WithSerializable())...)` 必须在最新 revision 上按 helper 展开后的 create revision 升序 limit=1
