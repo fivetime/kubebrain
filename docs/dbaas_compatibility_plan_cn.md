@@ -18686,6 +18686,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   upper-bound key、同 tenant 相邻 range 和相邻 tenant。该回归补齐 A1696 explicit range historical
   payload helper、A1931 first-key KeysOnly 对侧与 A1898 FromKey historical last-key KeysOnly
   之外的 explicit range last-key KeysOnly 路径。
+- A1934 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range historical
+  serializable `WithLastKey()+CountOnly` 外观：nested `OpGet("range/a", append(WithLastKey(),
+  WithRange("range/d"), WithRev(historyRev), WithSerializable(), WithCountOnly())...)` 必须在指定
+  historical revision 上把 helper 展开后的 explicit range 收窄到当前 namespace logical
+  `[range/a, range/d)` range，并因为 `CountOnly` 覆盖 helper 的 key 降序 + limit=1 payload
+  page，只返回完整 historical logical count `Count=3`、空 KVs、`More=false`；response header
+  revision 必须保持当前 latest revision，并排除后续 upper-bound key、同 tenant 相邻 range 和相邻
+  tenant。该回归补齐 A1696 explicit range historical payload helper、A1933 explicit range last-key
+  KeysOnly、A1932 first-key CountOnly 对侧与 A1900 FromKey historical last-key CountOnly
+  之外的 explicit range last-key CountOnly 路径。
 - A1697 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range historical
   serializable `WithFirstCreate()` 外观：nested `OpGet("range/a", append(WithFirstCreate(),
   WithRange("range/d"), WithRev(historyRev), WithSerializable())...)` 必须在指定历史 revision
