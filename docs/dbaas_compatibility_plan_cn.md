@@ -17376,6 +17376,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   WithPrevKV())}, nil)).Commit()` 必须在 nested `ResponseTxn` 的 `ResponsePut.PrevKv` 中返回
   logical key/value `items/a=old-a`，并只更新当前 namespace 的 logical key。该回归防止 nested
   Txn put response adapter 漏做递归 unprefix。
+- A2486 补强 A1511 官方 client/v3 namespace.NewKV nested OpTxn 的 `OpPut(..., WithPrevKV())`
+  header 外观：nested `OpPut("items/a", "new-a", WithPrevKV())` 提交写事务时，outer txn response
+  header 必须大于执行前 latest revision，nested put response header 必须等于 outer txn header；
+  同时 `ResponsePut.PrevKv` logical key/value 与只更新当前 namespace key 的外观保持不变。该回归
+  把 nested put 写事务 response header 合同与 A2485 delete 对侧路径对齐。
 - A1512 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range compare 外观：
   对照 upstream leasing `serverTxn` 会把用户事务包成 nested `OpTxn`，且 upstream namespace
   `prefixOp` 对 nested `OpTxn` 的 cmps/ops 递归 prefix。本轮新增 official clientv3 bufconn

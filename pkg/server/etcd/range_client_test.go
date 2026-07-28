@@ -1822,7 +1822,7 @@ func TestClientNamespaceNestedTxnPutWithPrevKVReturnsLogicalKey(t *testing.T) {
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
 	_, err = namespacedKV.Put(ctx, "items/a", "old-a")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1511/namespace-nested-txn-put-prevkv/tenant0/items/a", "outside-tenant")
+	latestBeforeTxn, err := client.Put(ctx, "/a1511/namespace-nested-txn-put-prevkv/tenant0/items/a", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -1832,6 +1832,7 @@ func TestClientNamespaceNestedTxnPutWithPrevKVReturnsLogicalKey(t *testing.T) {
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Greater(t, txnResp.Header.Revision, latestBeforeTxn.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -1840,6 +1841,7 @@ func TestClientNamespaceNestedTxnPutWithPrevKVReturnsLogicalKey(t *testing.T) {
 	nestedPut := nestedTxn.Responses[0].GetResponsePut()
 	require.NotNil(t, nestedPut)
 	require.NotNil(t, nestedPut.Header)
+	require.Equal(t, txnResp.Header.Revision, nestedPut.Header.Revision)
 	require.NotNil(t, nestedPut.PrevKv)
 	require.Equal(t, []byte("items/a"), nestedPut.PrevKv.Key)
 	require.Equal(t, []byte("old-a"), nestedPut.PrevKv.Value)
