@@ -19946,6 +19946,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `More=true`，response header revision 必须等于后续同 prefix 写入产生的 latest revision，并排除
   同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1678 historical prefix key SortNone 普通分页与
   A1755 current prefix key-asc 之外的 explicit SortNone key-sort 路径。
+- A2098 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `KeysOnly+SortByKey(SortNone)` 分页外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithKeysOnly(), WithLimit(2), WithSort(SortByKey, SortNone))` 必须在最新
+  revision 上按当前 namespace logical prefix 内 key 默认升序分页，再剥离 values，返回 logical
+  keys `items/a`、`items/b`、空 values、`Count=4`、`More=true`；response header revision 必须
+  等于后续同 prefix 写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归
+  补齐 A1756 current prefix key SortNone payload、A2096 key-asc KeysOnly 与 historical prefix
+  key SortNone KeysOnly 之外的 current prefix key SortNone KeysOnly 路径。
 - A1757 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable create-revision desc sort 分页外观：nested `OpGet("items/", WithPrefix(),
   WithSerializable(), WithLimit(2), WithSort(SortByCreateRevision, SortDescend))` 必须在最新
