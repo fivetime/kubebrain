@@ -21683,6 +21683,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2251
   payload、A2252 KeysOnly 与 A1887 historical serializable CountOnly helper 之外的 current
   FirstKey CountOnly 路径。
+- A2254 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastKey()` top-helper 外观：对照 etcd client/v3 `WithLastKey()` 展开为
+  `WithPrefix()+SortByKey(Descend)+Limit(1)`，nested `OpGet("range/", WithLastKey()...)`
+  必须只扫描当前 namespace 的 logical `range/` prefix，从 3 个当前 logical key 中选出词典序
+  最大的 `range/c=value-c`，`Count=3`、`More=true`，response header revision 必须等于后续
+  相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A2251 FirstKey 对侧与 A1851 historical serializable helper 之外的 current
+  LastKey payload 路径。
+- A2255 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastKey()+KeysOnly` top-helper 外观：nested `OpGet("range/",
+  append(WithLastKey(), WithKeysOnly())...)` 必须只扫描当前 namespace 的 logical `range/` prefix，
+  返回词典序最大的 logical key `range/c` 且 value 为空，`Count=3`、`More=true`，response
+  header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同
+  tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2254 payload 与 A1886 historical serializable
+  KeysOnly helper 之外的 current LastKey KeysOnly 路径。
+- A2256 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastKey()+CountOnly` top-helper 优先级外观：nested `OpGet("range/",
+  append(WithLastKey(), WithCountOnly())...)` 必须只扫描当前 namespace 的 logical `range/`
+  prefix，CountOnly 下忽略 top-helper 带来的 `Limit(1)`，只返回完整 logical count `Count=3`，
+  不返回任何 KVs、`More=false`，response header revision 必须等于后续相邻 tenant 写入产生的
+  latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2254
+  payload、A2255 KeysOnly 与 A1888 historical serializable CountOnly helper 之外的 current
+  LastKey CountOnly 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
