@@ -20077,6 +20077,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response header revision 必须等于后续同 prefix 写入产生的 latest revision，并排除同 tenant 相邻
   prefix 和相邻 tenant。该回归补齐 A1673 historical prefix version desc 普通分页与 A1757/A1758
   current prefix create/mod revision-sort 之外的 current version-sort 路径。
+- A2114 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `KeysOnly+SortByVersion(Desc)` 分页外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithKeysOnly(), WithLimit(2),
+  WithSort(SortByVersion, SortDescend))` 必须在最新 revision 上按当前 namespace logical prefix
+  内 version 降序分页，再剥离 values，返回 logical keys `items/c`、`items/a`、空 values、
+  `Count=3`、`More=true`，且版本序列为 `3,2`；response header revision 必须等于后续同 prefix
+  写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1759
+  current prefix version-desc payload 与 historical prefix version-desc KeysOnly 之外的 current
+  prefix version-desc KeysOnly 路径。
+- A2115 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `CountOnly+SortByVersion(Desc)` 外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithCountOnly(), WithLimit(2), WithSort(SortByVersion, SortDescend))`
+  必须在最新 revision 上只统计当前 namespace logical prefix 全量 `Count=3`，并因为
+  `CountOnly` 覆盖 version 降序 sort 与 limit=2 payload page，返回空 KVs、`More=false`；
+  response header revision 必须等于后续同 prefix 写入产生的 latest revision，并排除同 tenant
+  相邻 prefix 和相邻 tenant。该回归补齐 A1759 current prefix version-desc payload、A2114
+  version-desc KeysOnly 与 historical prefix version-desc CountOnly 之外的 current prefix
+  version-desc CountOnly 路径。
 - A1760 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable create-revision SortNone 分页外观：nested `OpGet("items/", WithPrefix(),
   WithSerializable(), WithLimit(2), WithSort(SortByCreateRevision, SortNone))` 必须在最新
