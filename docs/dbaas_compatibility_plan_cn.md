@@ -21568,6 +21568,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
   key 和相邻 tenant。该回归补齐 A2232 payload max-limit 与 A2187/A2229 CountOnly 常规分页
   之外的 current CountOnly 大 limit 边界路径。
+- A2239 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithFirstCreate()` top-helper 外观：对照 etcd client/v3 `WithFirstCreate()` 展开为
+  `WithPrefix()+SortByCreateRevision(Ascend)+Limit(1)`，nested `OpGet("range/",
+  WithFirstCreate()...)` 必须只扫描当前 namespace 的 logical `range/` prefix，从 3 个当前
+  logical key 中选出最早创建的 `range/b=value-b`，`Count=3`、`More=true`，response header
+  revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant
+  相邻 prefix 和相邻 tenant。该回归补齐 A1846 historical serializable helper 与 current
+  non-serializable FromKey/filter/sort 矩阵之外的 current top-helper payload 路径。
+- A2240 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithFirstCreate()+KeysOnly` top-helper 外观：nested `OpGet("range/",
+  append(WithFirstCreate(), WithKeysOnly())...)` 必须只扫描当前 namespace 的 logical `range/`
+  prefix，返回最早创建的 logical key `range/b` 且 value 为空，`Count=3`、`More=true`，response
+  header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同
+  tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2239 payload 与 A1893 historical serializable
+  KeysOnly helper 之外的 current top-helper KeysOnly 路径。
+- A2241 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithFirstCreate()+CountOnly` top-helper 优先级外观：nested `OpGet("range/",
+  append(WithFirstCreate(), WithCountOnly())...)` 必须只扫描当前 namespace 的 logical `range/`
+  prefix，CountOnly 下忽略 top-helper 带来的 `Limit(1)`，只返回完整 logical count `Count=3`，
+  不返回任何 KVs、`More=false`，response header revision 必须等于后续相邻 tenant 写入产生的
+  latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2239
+  payload、A2240 KeysOnly 与 A1895 historical serializable CountOnly helper 之外的 current
+  top-helper CountOnly 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
