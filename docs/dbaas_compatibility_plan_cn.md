@@ -19709,6 +19709,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `z/final=m`、`More=true`。response header revision 必须保持当前 latest revision，并排除
   start 前 key、历史后新增/更新 key 和相邻 tenant。该回归补齐 A1797 value-desc 与 A1802
   SortByValue+SortNone 之外的显式 value-asc no-filter 路径。
+- A1872 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
+  显式 `SortByModRevision Asc + Limit(2)` 外观：nested `OpGet("range/b", WithFromKey(),
+  WithRev(historyRev), WithSerializable(), WithLimit(2), WithSort(SortByModRevision, SortAscend))`
+  必须在指定历史 revision 上把开放 range 收窄到当前 namespace，从 logical `range/b` 开始统计
+  historical logical count `Count=3`，再按 historical mod revision 升序分页，返回
+  `range/b=old-b` 与 `z/final=updated-z`、`More=true`。response header revision 必须保持
+  当前 latest revision，并排除 start 前 key、历史后新增/更新 key 和相邻 tenant。该回归补齐
+  A1799 mod-desc 与 A1804 SortByModRevision+SortNone 之外的显式 mod-revision-asc no-filter 路径。
 - A1705 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable MinModRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
   WithSerializable(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须在最新
