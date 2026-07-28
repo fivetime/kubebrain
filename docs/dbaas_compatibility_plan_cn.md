@@ -19274,6 +19274,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A1666 prefix KeysOnly limit、A1984 prefix payload value-asc、A1953 explicit logical range
   KeysOnly value-asc 与 A1874 FromKey KeysOnly value-asc sort 之外的 prefix KeysOnly value-asc
   路径。
+- A1989 固定官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable prefix
+  `KeysOnly + SortByVersionAsc + Limit(2)` 分页外观：nested `OpGet("items/", WithPrefix(),
+  WithRev(historyRev), WithSerializable(), WithKeysOnly(), WithLimit(2),
+  WithSort(SortByVersion, SortAscend))` 必须在指定 historical revision 上按当前 namespace logical
+  prefix `items/` 内历史 version 升序分页，再剥离 values，返回 version 1 的 `items/a` 与
+  version 2 的历史存在但当前已删除 `items/c`、空 value、`Count=3`、`More=true`，并保留
+  version 元数据 `1,2`。response header revision 必须保持当前 latest revision，并排除后续
+  update/delete/new key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1985 prefix payload
+  version-asc、A1976 explicit logical range KeysOnly version-asc 与 A1875 FromKey KeysOnly
+  version-asc sort 之外的 prefix KeysOnly version-asc 路径。
 - A1732 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range historical
   serializable key-desc sort 分页外观：nested `OpGet("range/a", WithRange("range/d"),
   WithRev(historyRev), WithSerializable(), WithLimit(2), WithSort(SortByKey, SortDescend))`
