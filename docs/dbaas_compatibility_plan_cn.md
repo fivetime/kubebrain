@@ -17428,6 +17428,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内从 logical `range/b` 到 namespace 末尾的 bounded physical range，返回 logical
   `range/b` 与 `z/final`，排除 start 前 key 和相邻 tenant。该回归防止 nested OpTxn 中
   `WithFromKey` 被错误保留为全局开放 range 或响应 key 未递归 unprefix。
+- A2490 补强 A1516 官方 client/v3 namespace.NewKV nested OpTxn 的 `WithFromKey` read-only
+  header 外观：nested `OpGet("range/b", WithFromKey())` 被收窄到当前 namespace 后，outer txn
+  response header 与 nested range response header 都必须等于相邻 tenant 写入产生的 latest revision；
+  同时 logical `range/b`、`z/final`、`Count=2`、`More=false`、start 前 key 与相邻 tenant 隔离外观
+  保持不变。该回归把 FromKey read path 纳入 nested Txn header 合同。
 - A1517 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `OpDelete(..., WithFromKey(),
   WithPrevKV())` 开放删除范围外观：nested delete 必须只删除当前 namespace 内从 logical
   `range/b` 到 namespace 末尾的 keys，`ResponseDeleteRange.PrevKvs` 返回 logical
