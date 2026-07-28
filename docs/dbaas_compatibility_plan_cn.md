@@ -21505,6 +21505,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2227 payload、A2185 serializable
   CountOnly key SortNone 与 historical FromKey CountOnly sort 之外的 linearizable nested FromKey
   CountOnly key SortNone 路径。
+- A2230 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLimit(0)` 边界外观：nested `OpGet("range/b", WithFromKey(), WithLimit(0),
+  WithSort(SortByKey, SortAscend))` 必须把开放 range 收窄到当前 namespace，从 logical
+  `range/b` 开始返回完整 logical range `range/b, range/c, z/final`，`Count=3`、`More=false`，
+  response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
+  key 和相邻 tenant。该回归补齐 A1806 serializable limit-zero 与 A1779/A2227 常规
+  linearizable FromKey 分页之外的 current limit-zero 边界路径。
+- A2231 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  负数 limit 边界外观：nested `OpGet("range/b", WithFromKey(), WithLimit(-1),
+  WithSort(SortByKey, SortAscend))` 必须按 etcd 语义视为无限制，把开放 range 收窄到当前
+  namespace 并返回完整 logical range `range/b, range/c, z/final`，`Count=3`、`More=false`，
+  response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
+  key 和相邻 tenant。该回归补齐 A1807 serializable negative-limit 与 current FromKey
+  non-serializable 常规分页之外的负数 limit 边界路径。
+- A2232 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `math.MaxInt64` limit 边界外观：nested `OpGet("range/b", WithFromKey(),
+  WithLimit(math.MaxInt64), WithSort(SortByValue, SortNone))` 必须把开放 range 收窄到当前
+  namespace 并返回完整 logical range `range/b, range/c, z/final`，`Count=3`、`More=false`，
+  response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
+  key 和相邻 tenant。该回归补齐 A1808 serializable max-limit 与 current FromKey
+  non-serializable 常规分页之外的大 limit 边界路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
