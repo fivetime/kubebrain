@@ -18476,6 +18476,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `More=false` 且不返回任何 KVs，response header revision 等于 `z/final` 写入产生的 latest
   revision，并排除相邻 tenant。该回归补齐 A1550 empty-prefix CountOnly 与 A1660 empty-prefix
   serializable KeysOnly 之外的 CountOnly+serializable 优先级路径。
+- A2478 补强 A1661 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key current serializable
+  CountOnly 优先级外观：`OpGet("", WithPrefix(), WithSerializable(), WithKeysOnly(),
+  WithCountOnly(), WithLimit(1))` 中 CountOnly 覆盖 payload 与 limit 时，nested txn response
+  header 与 nested range response header 都必须等于 latest revision；同时 `Count=3`、空 KVs、
+  `More=false` 与相邻 tenant 隔离外观保持不变。该回归把 empty-prefix CountOnly header 合同与
+  A2477 KeysOnly page 对侧路径对齐。
 - A1662 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current serializable
   value SortNone 分页外观：nested `OpGet("items/", WithPrefix(), WithSerializable(), WithLimit(2),
   WithSort(SortByValue, SortNone))` 必须在最新 revision 上只按当前 namespace logical prefix 内
