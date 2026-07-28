@@ -21995,6 +21995,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   相邻 prefix 和相邻 tenant。该回归补齐 A2260 LastRev+MaxMod 对侧、A2266 FirstRev+MinMod
   同 filter 反向 helper 和 A2143 current serializable prefix 同向场景之外的 current FromKey
   LastRev+MinMod payload 路径。
+- A2291 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastRev()+WithMinModRev+KeysOnly` 组合外观：nested `OpGet("locks/",
+  append(WithLastRev(), WithMinModRev(updateB), WithKeysOnly())...)` 必须只扫描当前 namespace
+  的 logical `locks/` prefix，从当前完整 `Count=3` 中先按 `MinModRev` 过滤掉未更新的
+  `locks/a`，再由 `LastRev` 选出剩余候选中最新修改的 logical key `locks/c` 且 value 为空、
+  `More=true`。response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，
+  并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2290 payload、
+  A2261 LastRev+MaxMod KeysOnly 对侧、A2267 FirstRev+MinMod KeysOnly 同 filter 反向 helper
+  和 A2144 current serializable prefix 同向 KeysOnly 场景之外的 current FromKey LastRev+MinMod
+  KeysOnly 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
