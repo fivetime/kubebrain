@@ -7576,7 +7576,9 @@ func TestClientNamespaceNestedTxnGetFromKeyWithLastCreateAndMinCreateRevisionKey
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("waiters/c"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
 	require.Equal(t, createC.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, createC.Header.Revision, nestedGet.Kvs[0].ModRevision)
 	require.Less(t, createB.Header.Revision, createC.Header.Revision)
 
 	current, err := namespacedKV.Get(ctx, "waiters/", clientv3.WithPrefix())
@@ -7820,7 +7822,9 @@ func TestClientNamespaceNestedTxnGetFromKeyWithFirstCreateAndMaxCreateRevisionKe
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("waiters/a"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
 	require.Equal(t, createA.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, createA.Header.Revision, nestedGet.Kvs[0].ModRevision)
 	require.Less(t, createB.Header.Revision, createC.Header.Revision)
 
 	current, err := namespacedKV.Get(ctx, "waiters/", clientv3.WithPrefix())
@@ -14271,7 +14275,9 @@ func TestClientNamespaceNestedTxnGetFromKeyMinCreateRevisionKeysOnlyReturnsLogic
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("z/final"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
 	require.Equal(t, createZ.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, createZ.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/b", clientv3.WithFromKey())
 	require.NoError(t, err)
@@ -14469,15 +14475,15 @@ func TestClientNamespaceNestedTxnGetFromKeyMaxCreateRevisionKeysOnlyReturnsLogic
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
 	_, err = namespacedKV.Put(ctx, "range/a", "before-start")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "range/b", "value-b")
+	createB, err := namespacedKV.Put(ctx, "range/b", "value-b")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "range/c", "value-c")
+	createC, err := namespacedKV.Put(ctx, "range/c", "value-c")
 	require.NoError(t, err)
 	createZ, err := namespacedKV.Put(ctx, "z/final", "value-z")
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a2199/namespace-nested-txn-get-from-key-max-create-keysonly/tenant0/z/final", "outside-tenant-z")
 	require.NoError(t, err)
-	latest, err := namespacedKV.Put(ctx, "range/b", "updated-b")
+	updateB, err := namespacedKV.Put(ctx, "range/b", "updated-b")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -14492,7 +14498,7 @@ func TestClientNamespaceNestedTxnGetFromKeyMaxCreateRevisionKeysOnlyReturnsLogic
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
-	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
+	require.Equal(t, updateB.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -14501,7 +14507,7 @@ func TestClientNamespaceNestedTxnGetFromKeyMaxCreateRevisionKeysOnlyReturnsLogic
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
 	require.NotNil(t, nestedGet.Header)
-	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
+	require.Equal(t, updateB.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(3), nestedGet.Count)
 	require.False(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 2)
@@ -14509,6 +14515,11 @@ func TestClientNamespaceNestedTxnGetFromKeyMaxCreateRevisionKeysOnlyReturnsLogic
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{2, 1}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{createB.Header.Revision, createC.Header.Revision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{updateB.Header.Revision, createC.Header.Revision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "range/b", clientv3.WithFromKey())
 	require.NoError(t, err)

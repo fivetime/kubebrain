@@ -22780,6 +22780,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/mod revision。该回归补强 A2261/A2267/A2291/A2294 的 FromKey current
   revision+mod filter KeysOnly metadata 断言，防止 DBaaS 数据面在 revision 选择器和 mod
   过滤器组合裁剪时丢失 etcd KV 元信息。
+- A2384 强化官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current create revision
+  filter 与 create selector 组合下 `KeysOnly` 元数据外观：`WithFirstCreate/WithLastCreate`
+  叠加 `WithMinCreateRev/WithMaxCreateRev`，以及 FromKey `WithMinCreateRev/WithMaxCreateRev`
+  过滤时必须只清空返回 KV 的 value，保留 version/create revision/mod revision。该回归补强
+  A2196/A2199/A2297/A2300 的 FromKey current create filter KeysOnly metadata 断言，防止
+  DBaaS 数据面在 create revision 过滤或 selector 裁剪时丢失 etcd KV 元信息。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
