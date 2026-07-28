@@ -64499,6 +64499,7 @@ func TestClientNamespaceNestedTxnGetSerializableLogicalRangeContradictoryModRevi
 				clientv3.WithSerializable(),
 				clientv3.WithMinModRev(updateB.Header.Revision+1),
 				clientv3.WithMaxModRev(updateB.Header.Revision),
+				clientv3.WithKeysOnly(),
 				clientv3.WithLimit(1))},
 			nil)).
 		Commit()
@@ -64585,6 +64586,7 @@ func TestClientNamespaceNestedTxnGetSerializableLogicalRangeContradictoryCreateR
 				clientv3.WithSerializable(),
 				clientv3.WithMinCreateRev(createB.Header.Revision+1),
 				clientv3.WithMaxCreateRev(createB.Header.Revision),
+				clientv3.WithKeysOnly(),
 				clientv3.WithLimit(1))},
 			nil)).
 		Commit()

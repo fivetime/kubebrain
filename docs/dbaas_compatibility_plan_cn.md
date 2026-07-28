@@ -22886,6 +22886,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   修饰、sort 和分页。该回归补强 A1707/A1708 的 current serializable logical range create filter
   CountOnly precedence 断言，对齐 A2400 mod filter 与 A2397 historical explicit range filter
   CountOnly 优先级覆盖。
+- A2402 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current serializable explicit
+  logical range contradictory revision filter 外观：`WithMinModRev > WithMaxModRev` 与
+  `WithMinCreateRev > WithMaxCreateRev` 叠加 `WithRange`、`WithSerializable`、`KeysOnly` 和
+  `Limit(1)` 时，仍必须只返回当前 namespace logical range 的完整 count、空 KVs、`More=false`，
+  证明 contradictory filter 的 count-only 结果覆盖 payload 修饰和分页。该回归补强 A1709/A1710
+  的 current serializable logical range contradictory filter KeysOnly precedence 断言。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
