@@ -17413,6 +17413,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ResponseRange` 仍必须递归 unprefix，返回 logical `items/a,b` 与原始 values，并排除相邻
   tenant 的同名 key。该回归补齐 A1513 空结果以外的 false branch 可见响应外观，防止 nested
   Txn adapter 只处理成功分支。
+- A2489 补强 A1514 官方 client/v3 namespace.NewKV nested OpTxn 的 Else branch response header
+  外观：nested compare 失败并执行 Else branch 的 read-only `OpGet("items/", WithPrefix())` 时，
+  outer txn response header 与 nested range response header 都必须等于相邻 tenant 写入产生的
+  latest revision；同时 `Succeeded=false`、logical key/value、`Count=2`、`More=false` 与相邻
+  tenant 隔离外观保持不变。该回归把 false branch 可见响应 header 合同与 A2488 空响应路径对齐。
 - A1515 固定官方 client/v3 namespace.NewKV 双层 nested OpTxn 的递归 response unprefix：
   `Txn(...).Then(OpTxn(nil, []Op{OpTxn(nil, []Op{OpGet("range/a", WithRange("range/d"))}, nil)}, nil))`
   必须在第二层 `ResponseTxn` 的 `ResponseRange` 中返回 logical `range/a,b,c` 与原始 values，
