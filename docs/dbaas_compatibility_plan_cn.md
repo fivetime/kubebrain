@@ -20224,6 +20224,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prefix 和相邻 tenant。该回归补齐 A1763 current prefix MinModRev payload、A2121 MinModRev
   KeysOnly 与 historical/explicit range MinModRev CountOnly 之外的 current prefix MinModRev
   CountOnly 路径。
+- A2137 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `MinModRev+Limit(1)` filter 分页外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithMinModRev(updateRev), WithLimit(1),
+  WithSort(SortByKey, SortAscend))` 必须在最新 revision 上统计当前 namespace logical prefix 全量
+  `Count=3`，但只返回满足 mod revision 下界后的 key 升序第一页
+  `items/b=new-items/b`、`More=true`；response header revision 必须等于后续同 tenant 相邻 prefix
+  写入产生的 latest revision，并排除早于下界的 `items/a`、同 tenant 相邻 prefix 和相邻 tenant。
+  该回归补齐 A1763/A2121 无 limit filter page 与 historical FromKey MinModRev+Limit 之外的
+  current prefix MinModRev+Limit payload 路径。
+- A2138 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `KeysOnly+MinModRev+Limit(1)` filter 分页外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithKeysOnly(), WithMinModRev(updateRev), WithLimit(1),
+  WithSort(SortByKey, SortAscend))` 必须在最新 revision 上统计当前 namespace logical prefix 全量
+  `Count=3`，但只返回满足 mod revision 下界后的 key 升序第一页 logical key `items/b`、空
+  value、`More=true`；response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的
+  latest revision，并排除早于下界的 `items/a`、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐
+  A2137 payload、A2121 MinModRev KeysOnly 无 limit 与 historical FromKey MinModRev+Limit
+  之外的 current prefix MinModRev+Limit KeysOnly 路径。
 - A1764 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable MaxModRev filter 外观：nested `OpGet("items/", WithPrefix(), WithSerializable(),
   WithMaxModRev(updateRev-1), WithSort(SortByKey, SortAscend))` 必须在最新 revision 上统计当前
