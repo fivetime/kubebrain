@@ -48362,6 +48362,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixWithLastCreateAndMinCreate
 	getOpts := append(clientv3.WithLastCreate(),
 		clientv3.WithMinCreateRev(createB.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -48605,6 +48607,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixWithFirstCreateAndMaxCreat
 	getOpts := append(clientv3.WithFirstCreate(),
 		clientv3.WithMaxCreateRev(createB.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -48861,6 +48865,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixWithLastRevAndMaxModRevisi
 	getOpts := append(clientv3.WithLastRev(),
 		clientv3.WithMaxModRev(updateB.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -49120,6 +49126,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixWithLastRevAndMinModRevisi
 	getOpts := append(clientv3.WithLastRev(),
 		clientv3.WithMinModRev(updateB.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -49380,6 +49388,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixWithFirstRevAndMaxModRevis
 	getOpts := append(clientv3.WithFirstRev(),
 		clientv3.WithMaxModRev(updateB.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
@@ -49634,6 +49644,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixWithFirstRevAndMinModRevis
 	getOpts := append(clientv3.WithFirstRev(),
 		clientv3.WithMinModRev(updateB.Header.Revision),
 		clientv3.WithSerializable(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
 		clientv3.WithCountOnly())
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpTxn(nil,
