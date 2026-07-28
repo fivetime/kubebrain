@@ -21547,6 +21547,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Count=3`、`More=false`，response header revision 必须等于后续相邻 tenant 写入产生的
   latest revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2232 payload max-limit
   与 A2186/A2228 KeysOnly 常规分页之外的 current KeysOnly 大 limit 边界路径。
+- A2236 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  CountOnly+`WithLimit(0)` 边界外观：nested `OpGet("range/b", WithFromKey(),
+  WithCountOnly(), WithLimit(0), WithSort(SortByKey, SortAscend))` 必须把开放 range 收窄到当前
+  namespace，从 logical `range/b` 开始只返回完整 logical count `Count=3`，不返回任何 KVs、
+  `More=false`，response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，
+  并排除 start 前 key 和相邻 tenant。该回归补齐 A2230 payload limit-zero 与 A2187/A2229
+  CountOnly 常规分页之外的 current CountOnly limit-zero 边界路径。
+- A2237 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  CountOnly+负数 limit 边界外观：nested `OpGet("range/b", WithFromKey(), WithCountOnly(),
+  WithLimit(-1), WithSort(SortByKey, SortAscend))` 必须按 etcd 语义视为无限制，把开放 range
+  收窄到当前 namespace 后只返回完整 logical count `Count=3`，不返回任何 KVs、`More=false`，
+  response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
+  key 和相邻 tenant。该回归补齐 A2231 payload negative-limit 与 A2187/A2229 CountOnly 常规
+  分页之外的 current CountOnly 负数 limit 边界路径。
+- A2238 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  CountOnly+`math.MaxInt64` limit 边界外观：nested `OpGet("range/b", WithFromKey(),
+  WithCountOnly(), WithLimit(math.MaxInt64), WithSort(SortByValue, SortNone))` 必须把开放 range
+  收窄到当前 namespace 后只返回完整 logical count `Count=3`，不返回任何 KVs、`More=false`，
+  response header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
+  key 和相邻 tenant。该回归补齐 A2232 payload max-limit 与 A2187/A2229 CountOnly 常规分页
+  之外的 current CountOnly 大 limit 边界路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
