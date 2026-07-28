@@ -20652,6 +20652,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   写入产生的 latest revision，并排除 createRev 更早的 `waiters/a`、同 tenant 相邻 prefix 和相邻
   tenant。该回归补齐 A2141 payload、A1907 last-created upper-bound KeysOnly 与 A1912
   first-created lower-bound KeysOnly 之外的 current prefix last-created lower-bound KeysOnly 路径。
+- A2147 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `WithLastCreate()+WithMinCreateRev+CountOnly` 组合外观：nested `OpGet("waiters/",
+  append(WithLastCreate(), WithMinCreateRev(createRev), WithSerializable(), WithCountOnly())...)`
+  必须在最新 revision 上把 helper 展开后的 prefix range 收窄到当前 namespace logical prefix，
+  并因为 `CountOnly` 覆盖 helper 的 create revision 降序 + limit=1 payload page，只返回完整
+  current logical count `Count=3`、空 KVs、`More=false`；revision filter 只裁剪 payload，不改变
+  CountOnly 的 range 总数。response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的
+  latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2141 payload、A2142
+  KeysOnly、A1908 last-created upper-bound CountOnly 与 A1913 first-created lower-bound CountOnly
+  之外的 current prefix last-created lower-bound CountOnly 路径。
 - A2145 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable `WithFirstCreate()+WithMaxCreateRev` 组合外观：nested `OpGet("waiters/",
   append(WithFirstCreate(), WithMaxCreateRev(createRev), WithSerializable())...)` 必须在最新
@@ -20670,6 +20680,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   写入产生的 latest revision，并排除上界之后创建的 `waiters/c`、同 tenant 相邻 prefix 和相邻
   tenant。该回归补齐 A2145 payload、A1907 last-created upper-bound KeysOnly 与 A1912
   first-created lower-bound KeysOnly 之外的 current prefix first-created upper-bound KeysOnly 路径。
+- A2148 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `WithFirstCreate()+WithMaxCreateRev+CountOnly` 组合外观：nested `OpGet("waiters/",
+  append(WithFirstCreate(), WithMaxCreateRev(createRev), WithSerializable(), WithCountOnly())...)`
+  必须在最新 revision 上把 helper 展开后的 prefix range 收窄到当前 namespace logical prefix，
+  并因为 `CountOnly` 覆盖 helper 的 create revision 升序 + limit=1 payload page，只返回完整
+  current logical count `Count=3`、空 KVs、`More=false`；revision filter 只裁剪 payload，不改变
+  CountOnly 的 range 总数。response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的
+  latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2145 payload、A2146
+  KeysOnly、A1908 last-created upper-bound CountOnly 与 A1913 first-created lower-bound CountOnly
+  之外的 current prefix first-created upper-bound CountOnly 路径。
 - A1776 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable `WithLastRev()+WithMaxModRev` 组合外观：nested `OpGet("locks/",
   append(WithLastRev(), WithMaxModRev(updateRev), WithSerializable())...)` 必须在最新 revision
