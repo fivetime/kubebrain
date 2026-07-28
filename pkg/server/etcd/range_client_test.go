@@ -58751,6 +58751,10 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
 	require.Equal(t, []int64{3, 2}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[2].CreateRevision, historical.Kvs[0].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[2].ModRevision, historical.Kvs[0].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
 	require.NoError(t, err)
@@ -58854,6 +58858,10 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
 	require.Equal(t, []int64{1, 2}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[1].CreateRevision, historical.Kvs[0].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[1].ModRevision, historical.Kvs[0].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
 	require.NoError(t, err)
@@ -58957,6 +58965,10 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
 	require.Equal(t, []int64{1, 2}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[1].CreateRevision, historical.Kvs[0].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[1].ModRevision, historical.Kvs[0].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
 	require.NoError(t, err)
@@ -59055,6 +59067,12 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{historical.Kvs[0].Version, historical.Kvs[1].Version},
+		[]int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[0].CreateRevision, historical.Kvs[1].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[0].ModRevision, historical.Kvs[1].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 	require.Greater(t, nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
@@ -59154,6 +59172,12 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{historical.Kvs[2].Version, historical.Kvs[0].Version},
+		[]int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[2].CreateRevision, historical.Kvs[0].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[2].ModRevision, historical.Kvs[0].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 	require.Less(t, nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
@@ -59253,6 +59277,12 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{historical.Kvs[2].Version, historical.Kvs[0].Version},
+		[]int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[2].CreateRevision, historical.Kvs[0].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[2].ModRevision, historical.Kvs[0].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 	require.Less(t, nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
@@ -59348,6 +59378,12 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{historical.Kvs[2].Version, historical.Kvs[1].Version},
+		[]int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[2].CreateRevision, historical.Kvs[1].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[2].ModRevision, historical.Kvs[1].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 	require.Greater(t, nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
@@ -59443,6 +59479,12 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{historical.Kvs[1].Version, historical.Kvs[0].Version},
+		[]int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[1].CreateRevision, historical.Kvs[0].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[1].ModRevision, historical.Kvs[0].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 	require.Less(t, nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
@@ -59538,6 +59580,12 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeKeysOnlySo
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{historical.Kvs[1].Version, historical.Kvs[0].Version},
+		[]int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{historical.Kvs[1].CreateRevision, historical.Kvs[0].CreateRevision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{historical.Kvs[1].ModRevision, historical.Kvs[0].ModRevision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 	require.Less(t, nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
