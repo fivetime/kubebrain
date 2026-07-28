@@ -1758,7 +1758,7 @@ func TestClientNamespaceNestedTxnDeleteWithPrevKVLogicalRange(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1510/namespace-nested-txn-delete-range/tenant/range0/outside", "same-tenant-outside-range")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1510/namespace-nested-txn-delete-range/tenant0/range/b", "outside-tenant")
+	latestBeforeTxn, err := client.Put(ctx, "/a1510/namespace-nested-txn-delete-range/tenant0/range/b", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -1768,6 +1768,7 @@ func TestClientNamespaceNestedTxnDeleteWithPrevKVLogicalRange(t *testing.T) {
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Greater(t, txnResp.Header.Revision, latestBeforeTxn.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -1776,6 +1777,7 @@ func TestClientNamespaceNestedTxnDeleteWithPrevKVLogicalRange(t *testing.T) {
 	nestedDelete := nestedTxn.Responses[0].GetResponseDeleteRange()
 	require.NotNil(t, nestedDelete)
 	require.NotNil(t, nestedDelete.Header)
+	require.Equal(t, txnResp.Header.Revision, nestedDelete.Header.Revision)
 	require.Equal(t, int64(3), nestedDelete.Deleted)
 	require.Len(t, nestedDelete.PrevKvs, 3)
 	require.Equal(t, [][]byte{[]byte("range/a"), []byte("range/b"), []byte("range/c")},
