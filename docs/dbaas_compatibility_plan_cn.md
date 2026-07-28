@@ -21464,6 +21464,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A1714 current explicit range payload WithLastCreate、A1937 historical explicit range last-create
   KeysOnly、A2031 current prefix last-created KeysOnly 与 A2046 first-created KeysOnly 对侧之外的
   current explicit range helper+KeysOnly last-created 路径。
+- A2049 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
+  serializable `WithLastCreate()+CountOnly` helper 外观：nested `OpGet("range/a",
+  append(WithLastCreate(), WithRange("range/d"), WithSerializable(), WithCountOnly())...)` 必须在最新
+  revision 上把 helper 展开后的 explicit range 收窄到当前 namespace logical `[range/a, range/d)`
+  range，并因为 `CountOnly` 覆盖 helper 的 create revision 降序 + limit=1 payload page，只返回完整
+  current logical count `Count=3`、空 KVs、`More=false`；response header revision 必须等于后续
+  outside-range 写入产生的 latest revision，并排除 upper-bound key、同 tenant 相邻 range 和相邻
+  tenant。该回归补齐 A1714 current explicit range payload WithLastCreate、A1938 historical explicit
+  range last-create CountOnly、A2033 current prefix last-created CountOnly 与 A2047 last-created
+  KeysOnly 之外的 current explicit range helper+CountOnly last-created 路径。
 - A1715 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable `WithFirstRev()` helper 外观：nested `OpGet("range/a", append(WithFirstRev(),
   WithRange("range/d"), WithSerializable())...)` 必须在最新 revision 上按 helper 展开后的 mod
