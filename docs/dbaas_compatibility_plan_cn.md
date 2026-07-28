@@ -17753,6 +17753,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须按 helper 展开的 key 降序 + limit 1 只扫描当前 namespace 的 logical `[ "", "z" )` range，
   返回 logical `items/a`，保持 `Count=2`、`More=true`，并排除 upper bound 外的 `z/final`
   和相邻 tenant。该回归补齐 A1491 非空 prefix `WithLastKey()` 之外的 empty-start explicit range 路径。
+- A2452 补强 A1576/A1639 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  serializable `WithLastKey()` top-helper 外观：`OpGet("", append(WithLastKey(), WithRange("z"),
+  WithSerializable())...)` 只扫描当前 namespace logical `[ "", "z" )` range 并返回最后一条 logical key
+  时，nested txn response header 与 nested range response header 都必须等于 latest revision；
+  同时 `items/a`、`Count=2`、`More=true` 与相邻 tenant 隔离外观保持不变。该回归把 LastKey
+  helper header 合同与 A2451 FirstKey 对侧边界对齐。
 - A1577 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   `WithFirstCreate()` top-helper 外观：nested `OpGet("", append(WithFirstCreate(), WithRange("z"))...)`
   必须按 helper 展开的 create revision 升序 + limit 1 只扫描当前 namespace 的 logical `[ "", "z" )`
