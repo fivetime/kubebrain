@@ -17351,6 +17351,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ResponseRange` 中返回 logical `range/a,b,c`、空 values、`Count=3`、`More=false`，并排除
   upper bound、同 tenant 相邻 range 与相邻 tenant。该回归防止 nested Txn response adapter 漏
   做递归 unprefix。
+- A2484 补强 A1509 官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range get
+  header 外观：nested `OpGet("range/a", WithRange("range/d"), WithKeysOnly())` 返回 logical
+  page 时，outer txn response header 与 nested range response header 都必须等于相邻 tenant 写入
+  产生的 latest revision；同时 logical keys、空 value、metadata、`Count=3`、`More=false` 与
+  相邻 range/tenant 隔离外观保持不变。该回归把最早的 nested range get 基础路径纳入 header
+  合同扫描。
 - A1510 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range delete + PrevKV
   外观：A1509 覆盖 nested range get 后，本轮补齐 nested delete response adapter：
   `namespace.NewKV(...).Txn(...).Then(OpTxn(nil, []Op{OpDelete("range/a",
