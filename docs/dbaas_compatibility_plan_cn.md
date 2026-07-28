@@ -22630,6 +22630,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   忽略 key 默认升序排序和 limit 对 payload page 的影响。response header revision 必须保持 latest
   revision，并排除 prefix 前 key、历史后新增 key、后续更新值和相邻 tenant。该回归补齐 A1883
   payload、A1884 KeysOnly 和 historical serializable key SortNone sort+limit CountOnly 路径。
+- A2359 强化官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey helper+filter KeysOnly
+  元数据外观：`WithLastCreate()+WithMaxCreateRev()+KeysOnly`、`WithFirstCreate()+WithMinCreateRev()+KeysOnly`
+  必须只清空 value，保留 version=1 以及 create/mod revision；`WithLastRev()+WithMaxModRev()+KeysOnly`、
+  `WithFirstRev()+WithMinModRev()+KeysOnly` 必须只清空 value，保留 version=2 以及命中 update
+  mod revision。该回归覆盖 current 与 historical serializable 两套 helper+filter KeysOnly 路径，补强
+  A1897/A1898/A1902/A1905 以及 current 对侧 A2258/A2261/A2264/A2267 的元数据兼容断言。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
