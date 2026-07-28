@@ -20835,6 +20835,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `range/c=new-c`、`More=false`，response header revision 必须等于后续相邻 tenant 写入产生的
   latest revision，并排除 start 前 `range/a` 和相邻 tenant。该回归补齐 A1469 direct Txn
   FromKey MinModRev 与 A1779/A1780 nested FromKey 分页/CountOnly 之外的 nested OpTxn filter 路径。
+- A2153 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  KeysOnly+MinModRev filter 外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
+  WithKeysOnly(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须把开放
+  range 收窄到当前 namespace，从 logical `range/b` 开始统计全量 `Count=3`，只返回满足
+  mod revision 下界的 logical `range/c` 且 value 为空、`More=false`，response header revision
+  必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前 `range/a` 和相邻 tenant。
+  该回归补齐 A1781 payload、A1779 KeysOnly 分页与 historical FromKey MinModRev KeysOnly
+  之外的 current FromKey MinModRev KeysOnly filter 路径。
+- A2154 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
+  CountOnly+MinModRev filter 外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
+  WithCountOnly(), WithMinModRev(updateRev))` 必须把开放 range 收窄到当前 namespace，从
+  logical `range/b` 开始统计 filter 前全量 `Count=3`，不返回任何 KVs、`More=false`，response
+  header revision 必须等于后续相邻 tenant 写入产生的 latest revision，并排除 start 前
+  `range/a` 和相邻 tenant。该回归补齐 A1781 payload、A1780 CountOnly 与 historical FromKey
+  MinModRev CountOnly 之外的 current FromKey MinModRev CountOnly filter 路径。
 - A1782 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current serializable
   MaxModRev filter 外观：nested `OpGet("range/b", WithFromKey(), WithSerializable(),
   WithMaxModRev(updateRev-1), WithSort(SortByKey, SortAscend))` 必须把开放 range 收窄到当前
