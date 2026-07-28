@@ -273,9 +273,11 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	defer cancel()
 	tenantPrefix := "/a1464/namespace-keys-only/tenant/"
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"a", "b", "c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	_, err = client.Put(ctx, "/a1464/namespace-keys-only/tenant0/outside", "outside")
 	require.NoError(t, err)
@@ -291,6 +293,11 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{resp.Kvs[0].Key, resp.Kvs[1].Key})
 	require.Empty(t, resp.Kvs[0].Value)
 	require.Empty(t, resp.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{resp.Kvs[0].Version, resp.Kvs[1].Version})
+	require.Equal(t, []int64{putRevs["a"], putRevs["b"]},
+		[]int64{resp.Kvs[0].CreateRevision, resp.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putRevs["a"], putRevs["b"]},
+		[]int64{resp.Kvs[0].ModRevision, resp.Kvs[1].ModRevision})
 
 	doResp, err := namespacedKV.Do(ctx, clientv3.OpGet("",
 		clientv3.WithFromKey(), clientv3.WithKeysOnly(), clientv3.WithLimit(2),
@@ -305,6 +312,11 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{doGet.Kvs[0].Key, doGet.Kvs[1].Key})
 	require.Empty(t, doGet.Kvs[0].Value)
 	require.Empty(t, doGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{doGet.Kvs[0].Version, doGet.Kvs[1].Version})
+	require.Equal(t, []int64{putRevs["a"], putRevs["b"]},
+		[]int64{doGet.Kvs[0].CreateRevision, doGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putRevs["a"], putRevs["b"]},
+		[]int64{doGet.Kvs[0].ModRevision, doGet.Kvs[1].ModRevision})
 
 	txnResp, err := namespacedKV.Txn(ctx).
 		Then(clientv3.OpGet("",
@@ -323,6 +335,11 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b")}, [][]byte{txnGet.Kvs[0].Key, txnGet.Kvs[1].Key})
 	require.Empty(t, txnGet.Kvs[0].Value)
 	require.Empty(t, txnGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{txnGet.Kvs[0].Version, txnGet.Kvs[1].Version})
+	require.Equal(t, []int64{putRevs["a"], putRevs["b"]},
+		[]int64{txnGet.Kvs[0].CreateRevision, txnGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putRevs["a"], putRevs["b"]},
+		[]int64{txnGet.Kvs[0].ModRevision, txnGet.Kvs[1].ModRevision})
 }
 
 func TestClientNamespaceGetModRevisionFilterReturnsLogicalKeys(t *testing.T) {
@@ -1317,9 +1334,11 @@ func TestClientNamespaceTxnGetKeysOnlyWithLogicalRangeReturnsLogicalKeys(t *test
 	defer cancel()
 	tenantPrefix := "/a1504/namespace-txn-keys-only-range/tenant/"
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"range/a", "range/b", "range/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	_, err = namespacedKV.Put(ctx, "range/d", "outside-upper-bound")
 	require.NoError(t, err)
@@ -1349,6 +1368,12 @@ func TestClientNamespaceTxnGetKeysOnlyWithLogicalRangeReturnsLogicalKeys(t *test
 	for _, kv := range txnGet.Kvs {
 		require.Empty(t, kv.Value)
 	}
+	require.Equal(t, []int64{1, 1, 1},
+		[]int64{txnGet.Kvs[0].Version, txnGet.Kvs[1].Version, txnGet.Kvs[2].Version})
+	require.Equal(t, []int64{putRevs["range/a"], putRevs["range/b"], putRevs["range/c"]},
+		[]int64{txnGet.Kvs[0].CreateRevision, txnGet.Kvs[1].CreateRevision, txnGet.Kvs[2].CreateRevision})
+	require.Equal(t, []int64{putRevs["range/a"], putRevs["range/b"], putRevs["range/c"]},
+		[]int64{txnGet.Kvs[0].ModRevision, txnGet.Kvs[1].ModRevision, txnGet.Kvs[2].ModRevision})
 }
 
 func TestClientNamespaceTxnGetKeysOnlyAndDeleteWithLogicalRange(t *testing.T) {
@@ -1378,9 +1403,11 @@ func TestClientNamespaceTxnGetKeysOnlyAndDeleteWithLogicalRange(t *testing.T) {
 	defer cancel()
 	tenantPrefix := "/a1505/namespace-txn-get-delete-range/tenant/"
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"range/a", "range/b", "range/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	_, err = namespacedKV.Put(ctx, "range/d", "outside-upper-bound")
 	require.NoError(t, err)
@@ -1412,6 +1439,12 @@ func TestClientNamespaceTxnGetKeysOnlyAndDeleteWithLogicalRange(t *testing.T) {
 	for _, kv := range txnGet.Kvs {
 		require.Empty(t, kv.Value)
 	}
+	require.Equal(t, []int64{1, 1, 1},
+		[]int64{txnGet.Kvs[0].Version, txnGet.Kvs[1].Version, txnGet.Kvs[2].Version})
+	require.Equal(t, []int64{putRevs["range/a"], putRevs["range/b"], putRevs["range/c"]},
+		[]int64{txnGet.Kvs[0].CreateRevision, txnGet.Kvs[1].CreateRevision, txnGet.Kvs[2].CreateRevision})
+	require.Equal(t, []int64{putRevs["range/a"], putRevs["range/b"], putRevs["range/c"]},
+		[]int64{txnGet.Kvs[0].ModRevision, txnGet.Kvs[1].ModRevision, txnGet.Kvs[2].ModRevision})
 
 	txnDelete := txnResp.Responses[1].GetResponseDeleteRange()
 	require.NotNil(t, txnDelete)
@@ -1640,9 +1673,11 @@ func TestClientNamespaceNestedTxnGetWithLogicalRangeReturnsLogicalKeys(t *testin
 	defer cancel()
 	tenantPrefix := "/a1509/namespace-nested-txn-get-range/tenant/"
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"range/a", "range/b", "range/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	_, err = namespacedKV.Put(ctx, "range/d", "outside-upper-bound")
 	require.NoError(t, err)
@@ -1676,6 +1711,12 @@ func TestClientNamespaceNestedTxnGetWithLogicalRangeReturnsLogicalKeys(t *testin
 	for _, kv := range nestedGet.Kvs {
 		require.Empty(t, kv.Value)
 	}
+	require.Equal(t, []int64{1, 1, 1},
+		[]int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version, nestedGet.Kvs[2].Version})
+	require.Equal(t, []int64{putRevs["range/a"], putRevs["range/b"], putRevs["range/c"]},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision, nestedGet.Kvs[2].CreateRevision})
+	require.Equal(t, []int64{putRevs["range/a"], putRevs["range/b"], putRevs["range/c"]},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision, nestedGet.Kvs[2].ModRevision})
 }
 
 func TestClientNamespaceNestedTxnDeleteWithPrevKVLogicalRange(t *testing.T) {
