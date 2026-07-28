@@ -57264,6 +57264,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMinModRevi
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("range/c"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].CreateRevision)
 	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
@@ -57532,6 +57534,9 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMaxModRevi
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{putA.Header.Revision, putB.Header.Revision},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
 	require.Equal(t, []int64{putA.Header.Revision, putB.Header.Revision},
 		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
@@ -57796,7 +57801,9 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMinCreateR
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("range/c"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
 	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
 	require.NoError(t, err)
@@ -58064,8 +58071,11 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMaxCreateR
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
 	require.Equal(t, []int64{putA.Header.Revision, putB.Header.Revision},
 		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putA.Header.Revision, putB.Header.Revision},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "range/a", clientv3.WithRange("range/d"))
 	require.NoError(t, err)
