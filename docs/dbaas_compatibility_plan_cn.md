@@ -17685,6 +17685,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 logical `[ "", "z" )` range，返回 logical `alpha/a`、`items/a` 及 values，`Count=2`、
   `More=false`，并且 response header revision 等于 latest revision，即使 latest 来自 range
   upper bound 外的 `z/final`。该回归补齐 A1554 empty-prefix serializable 之外的 empty-start 路径。
+- A2446 补强 A1570 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  serializable 显式 range 基础外观：`OpGet("", WithRange("z"), WithSerializable())` 只读取当前
+  namespace logical `[ "", "z" )` range 时，nested txn response header 与 nested range response
+  header 都必须等于 latest revision；同时 logical keys/values、`Count=2`、`More=false` 和相邻
+  tenant 隔离外观保持不变。该回归把基础 current serializable empty-start header 合同与 A2445
+  selector CountOnly 入口对齐。
 - A1571 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   MinModRev 外观：nested `OpGet("", WithRange("z"), WithMinModRev(rev), WithSort(SortByKey,
   SortAscend))` 必须只在当前 namespace 的 logical `[ "", "z" )` range 内应用 mod revision 过滤，
