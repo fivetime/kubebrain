@@ -17879,6 +17879,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   range 的第一页时，nested txn response header 与 nested range response header 都必须等于
   latest revision；同时 logical page、value 顺序、`Count=3`、`More=true` 与相邻 tenant 隔离
   外观保持不变。该回归把 value sort/page header 合同与 A2465 desc 及 A2467 key-sort 对齐。
+- A2469 补强 A1654 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  serializable `KeysOnly` value desc sort 分页外观：`OpGet("", WithRange("z"), WithSerializable(),
+  WithKeysOnly(), WithLimit(2), WithSort(SortByValue, SortDescend))` 返回当前 namespace logical
+  `[ "", "z" )` range 的第一页时，nested txn response header 与 nested range response header
+  都必须等于 latest revision；同时 keys-only payload、`Count=3`、`More=true` 与相邻 tenant
+  隔离外观保持不变。该回归把 payload modifier + sort/page header 合同与 A2468 value-sort 对齐。
 - A1583 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   显式 `WithLimit(0)` 外观：nested `OpGet("", WithRange("z"), WithLimit(0),
   WithSort(SortByKey, SortAscend))` 必须按 etcd 语义把 limit 0 视为无限制，返回当前 namespace

@@ -41674,6 +41674,7 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeSerializableKeysOnlySortByVal
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
