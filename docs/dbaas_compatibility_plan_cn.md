@@ -18501,6 +18501,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且当前已删除的 `items/c` 及旧 value、`Count=3`、`More=true`，response header revision 必须
   保持当前 latest revision，并排除后续 delete/update/new key、同 tenant 相邻 prefix 和相邻 tenant。
   该回归补齐 A1687 WithFirstRev 与 A1625 empty-start range historical serializable WithLastRev 对侧路径。
+- A2025 固定官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable prefix
+  `WithLastRev()+KeysOnly` helper 外观：nested `OpGet("items/", append(WithLastRev(),
+  WithRev(historyRev), WithSerializable(), WithKeysOnly())...)` 必须在指定 historical revision
+  上按 helper 展开后的 prefix + mod revision 降序 + limit=1 语义分页当前 namespace logical
+  prefix `items/`，再剥离 value，返回 historical last-revision 且当前已删除的 `items/c`、空 value、
+  `Count=3`、`More=true`。response header revision 必须保持当前 latest revision，并排除后续
+  delete/update/new key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1688 prefix payload
+  WithLastRev、A1919 prefix last-revision+filter KeysOnly、A1927 explicit logical range
+  last-revision KeysOnly、A1890 FromKey last-revision KeysOnly 与 A2024 first-revision KeysOnly
+  对侧之外的 prefix helper+KeysOnly last-revision 路径。
 - A1689 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix historical
   serializable WithFirstKey helper 外观：nested `OpGet("items/", append(WithFirstKey(),
   WithRev(historyRev), WithSerializable())...)` 必须在指定历史 revision 上按 helper 展开后的
