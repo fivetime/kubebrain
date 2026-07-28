@@ -22667,6 +22667,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   以及 historical/serializable/value-sort 变体必须只清空返回页 value，保留每个命中 KV 的
   version/create revision/mod revision。该回归补强 A1567/A1595/A1614/A1616/A1654，
   覆盖 empty-start range namespace 裁剪后多 KV page 的 metadata 兼容断言。
+- A2365 强化官方 client/v3 namespace.NewKV nested OpTxn 的 empty-prefix/prefix
+  `KeysOnly+Limit` 多 KV page 元数据外观：`OpGet("", WithPrefix(), WithKeysOnly(), WithLimit(2))`
+  与 `OpGet("items/", WithPrefix(), WithSerializable(), WithKeysOnly(), WithLimit(2))`
+  及 historical serializable 对侧必须只清空返回页 value，保留每个命中 KV 的 version/create
+  revision/mod revision。该回归补强 A1551/A1660/A1777/A1666 的多 KV page metadata 断言。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
