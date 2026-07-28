@@ -20028,6 +20028,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续更新的 keys、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1771 current prefix payload
   WithFirstRev、A2024 historical prefix helper+KeysOnly first-revision 与 A1915 current prefix
   first-revision+filter KeysOnly 之外的 current prefix helper+KeysOnly first-revision 路径。
+- A2036 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `WithFirstRev()+CountOnly` helper 优先级外观：nested `OpGet("items/",
+  append(WithFirstRev(), WithSerializable(), WithCountOnly())...)` 必须在最新 revision 上把 helper
+  展开后的 prefix range 收窄到当前 namespace logical prefix，并因为 `CountOnly` 覆盖 helper
+  的 mod revision 升序 + limit=1 payload page，只返回完整 current logical count `Count=3`、
+  空 KVs、`More=false`。response header revision 必须等于后续同 tenant 相邻 prefix 写入产生的
+  latest revision，并排除后续更新的 keys、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐
+  A1771 current prefix payload WithFirstRev、A2032 current helper+KeysOnly first-revision、
+  A1916 current prefix first-revision+filter CountOnly 与 A2028 historical prefix first-revision
+  CountOnly 之外的 current prefix helper+CountOnly first-revision 路径。
 - A1772 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable `WithLastRev()` helper 外观：nested `OpGet("items/", append(WithLastRev(),
   WithSerializable())...)` 必须在最新 revision 上按 helper 展开后的 mod revision 降序 limit=1
