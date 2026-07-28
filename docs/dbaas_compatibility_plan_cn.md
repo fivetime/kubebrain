@@ -20040,6 +20040,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 必须等于后续同 prefix 写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻
   tenant。该回归补齐 A1674 historical prefix create-revision SortNone 普通分页与 A1757 current
   prefix create-revision desc 的 SortNone 对侧路径。
+- A2105 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `KeysOnly+SortByCreateRevision(SortNone)` 分页外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithKeysOnly(), WithLimit(2),
+  WithSort(SortByCreateRevision, SortNone))` 必须在最新 revision 上按当前 namespace logical
+  prefix 内 create revision 默认升序分页，再剥离 values，返回 logical keys `items/b`、`items/a`、
+  空 values、`Count=3`、`More=true`，且第一项 `CreateRevision` 小于第二项；response header
+  revision 必须等于后续同 prefix 写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A1760 current prefix create SortNone payload、A2100/A2103 create KeysOnly
+  显式方向之外的 current prefix create SortNone KeysOnly 路径。
+- A2106 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `CountOnly+SortByCreateRevision(SortNone)` 外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithCountOnly(), WithLimit(2),
+  WithSort(SortByCreateRevision, SortNone))` 必须在最新 revision 上只统计当前 namespace logical
+  prefix 全量 `Count=3`，并因为 `CountOnly` 覆盖 create revision SortNone sort 与 limit=2 payload
+  page，返回空 KVs、`More=false`；response header revision 必须等于后续同 prefix 写入产生的
+  latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1760 current prefix
+  create SortNone payload、A2105 create SortNone KeysOnly 与 A2101/A2104 create CountOnly
+  显式方向之外的 current prefix create SortNone CountOnly 路径。
 - A1761 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable mod-revision SortNone 分页外观：nested `OpGet("items/", WithPrefix(),
   WithSerializable(), WithLimit(2), WithSort(SortByModRevision, SortNone))` 必须在最新 revision
