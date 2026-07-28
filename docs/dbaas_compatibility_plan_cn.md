@@ -22091,6 +22091,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A2258 LastCreate+MaxCreate KeysOnly 同 filter 反向 helper、A2264 FirstCreate+MinCreate KeysOnly
   对角组合、A2297 LastCreate+MinCreate KeysOnly 对侧和 A2146 current serializable prefix 同向场景
   之外的 current FromKey FirstCreate+MaxCreate KeysOnly 路径。
+- A2301 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithFirstCreate()+WithMaxCreateRev+CountOnly` 组合外观：nested `OpGet("waiters/",
+  append(WithFirstCreate(), WithMaxCreateRev(createB), WithCountOnly())...)` 必须只扫描当前
+  namespace 的 logical `waiters/` prefix，CountOnly 下忽略 helper 带来的 create revision 升序 +
+  `Limit(1)`，只返回当前完整 logical count `Count=3`，不返回任何 KVs、`More=false`；revision
+  filter 只裁剪 payload，不改变 CountOnly 的 range 总数。response header revision 必须等于后续
+  相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A2299 payload、A2300 KeysOnly、A2259 LastCreate+MaxCreate CountOnly 同
+  filter 反向 helper、A2265 FirstCreate+MinCreate CountOnly 对角组合、A2298 LastCreate+MinCreate
+  CountOnly 对侧和 A2147 current serializable prefix 同向场景之外的 current FromKey FirstCreate+
+  MaxCreate CountOnly 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
