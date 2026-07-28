@@ -17909,6 +17909,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回当前 namespace logical `[ "", "z" )` range 内全部 `alpha/a`、`items/a`、`items/b`，
   `Count=3`、`More=false`，并排除 upper bound 外的 `z/final` 和相邻 tenant。该回归防止
   namespace/nested adapter 对负 limit 进行额外非法化或空页化处理。
+- A2472 补强 A1584/A1657 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  serializable 负 `WithLimit(-1)` 外观：`OpGet("", WithRange("z"), WithSerializable(),
+  WithLimit(-1), WithSort(SortByKey, SortAscend))` 按 etcd 兼容语义把负 limit 视为无限制时，
+  nested txn response header 与 nested range response header 都必须等于 latest revision；
+  同时完整 logical page、`Count=3`、`More=false` 与相邻 tenant 隔离外观保持不变。该回归把
+  negative limit header 合同与 A2471 limit zero 及 A1585 MaxInt64 边界路径对齐。
 - A1585 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   `math.MaxInt64` limit 外观：nested `OpGet("", WithRange("z"), WithLimit(math.MaxInt64),
   WithSort(SortByValue, SortNone))` 必须沿用 A952 的边界语义，不对 limit 做溢出 lookahead，
