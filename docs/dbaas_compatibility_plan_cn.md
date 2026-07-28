@@ -21444,6 +21444,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key 排序靠前的 logical `range/a` 及 value、`Count=3`、`More=true`，response header revision
   必须等于后续 outside-range 写入产生的 latest revision，并排除 upper-bound key、同 tenant 相邻
   range 和相邻 tenant。该回归补齐 A1641 empty-start range current serializable WithLastCreate 与 A1713 的对侧路径。
+- A2047 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
+  serializable `WithLastCreate()+KeysOnly` helper 外观：nested `OpGet("range/a",
+  append(WithLastCreate(), WithRange("range/d"), WithSerializable(), WithKeysOnly())...)` 必须在最新
+  revision 上按 helper 展开后的 create revision 降序 limit=1 语义分页当前 namespace logical
+  `[range/a, range/d)` range，再剥离 value，返回后创建但 key 排序靠前的 logical `range/a`、
+  空 value、`Count=3`、`More=true`；response header revision 必须等于后续 outside-range 写入
+  产生的 latest revision，并排除 upper-bound key、同 tenant 相邻 range 和相邻 tenant。该回归补齐
+  A1714 current explicit range payload WithLastCreate、A1937 historical explicit range last-create
+  KeysOnly、A2031 current prefix last-created KeysOnly 与 A2046 first-created KeysOnly 对侧之外的
+  current explicit range helper+KeysOnly last-created 路径。
 - A1715 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable `WithFirstRev()` helper 外观：nested `OpGet("range/a", append(WithFirstRev(),
   WithRange("range/d"), WithSerializable())...)` 必须在最新 revision 上按 helper 展开后的 mod
