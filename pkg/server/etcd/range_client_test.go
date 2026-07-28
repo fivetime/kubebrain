@@ -37300,6 +37300,11 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeHistoricalSelectorCountOnlyPr
 			prefix: "/a2415/namespace-nested-txn-empty-start-range-historical-first-rev-countonly-precedence/tenant/",
 			opts:   clientv3.WithFirstRev(),
 		},
+		{
+			name:   "last-revision",
+			prefix: "/a2437/namespace-nested-txn-empty-start-range-historical-last-rev-countonly-precedence/tenant/",
+			opts:   clientv3.WithLastRev(),
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			namespacedKV := namespace.NewKV(client.KV, tt.prefix)

@@ -23000,6 +23000,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该回归补强 A1606-A1610 的 empty-start historical non-serializable selector helper 基础断言，
   并对齐 A2413 historical serializable 与 A2414 current non-serializable selector CountOnly
   优先级覆盖。
+- A2437 补齐 A2415 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start historical
+  non-serializable selector helper 显式 `CountOnly` 优先级外观中的 `WithLastRev` 子路径：
+  `WithLastRev` 叠加 `OpGet("", WithRange("z"))`、`WithRev(historyRev)`、额外 value sort、
+  `KeysOnly`、`Limit(1)` 和 `WithCountOnly` 时，也必须只返回指定 historical revision 上当前
+  namespace logical `[ "", "z" )` range 的完整 count、空 KVs、`More=false`。该回归补齐 A2415
+  缺失的 last-revision helper，使 historical non-serializable empty-start selector CountOnly
+  覆盖与 A2413 historical serializable 的 6-helper 表格对齐。
 - A2416 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current serializable FromKey/top-helper
   显式 `CountOnly` 优先级外观：`WithFirstKey/WithLastKey`、`WithFirstCreate/WithLastCreate`、
   `WithFirstRev/WithLastRev` 作用于 `OpGet("range/", ...)` 并叠加 `WithSerializable`、额外
