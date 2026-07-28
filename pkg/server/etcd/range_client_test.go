@@ -6772,9 +6772,11 @@ func TestClientNamespaceNestedTxnGetFromKeyWithLastRevAndMaxModRevisionKeysOnlyR
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "alpha/a", "before-prefix")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"locks/a", "locks/b", "locks/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateB, err := namespacedKV.Put(ctx, "locks/b", "updated-locks/b")
 	require.NoError(t, err)
@@ -6809,6 +6811,7 @@ func TestClientNamespaceNestedTxnGetFromKeyWithLastRevAndMaxModRevisionKeysOnlyR
 	require.Equal(t, []byte("locks/b"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Equal(t, int64(2), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["locks/b"], nestedGet.Kvs[0].CreateRevision)
 	require.Equal(t, updateB.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "locks/", clientv3.WithPrefix())
@@ -7024,9 +7027,11 @@ func TestClientNamespaceNestedTxnGetFromKeyWithLastRevAndMinModRevisionKeysOnlyR
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "alpha/a", "before-prefix")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"locks/a", "locks/b", "locks/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateB, err := namespacedKV.Put(ctx, "locks/b", "updated-locks/b")
 	require.NoError(t, err)
@@ -7060,6 +7065,8 @@ func TestClientNamespaceNestedTxnGetFromKeyWithLastRevAndMinModRevisionKeysOnlyR
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("locks/c"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(2), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["locks/c"], nestedGet.Kvs[0].CreateRevision)
 	require.Equal(t, updateC.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "locks/", clientv3.WithPrefix())
@@ -7278,9 +7285,11 @@ func TestClientNamespaceNestedTxnGetFromKeyWithFirstRevAndMaxModRevisionKeysOnly
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "alpha/a", "before-prefix")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"locks/a", "locks/b", "locks/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateB, err := namespacedKV.Put(ctx, "locks/b", "updated-locks/b")
 	require.NoError(t, err)
@@ -7314,6 +7323,9 @@ func TestClientNamespaceNestedTxnGetFromKeyWithFirstRevAndMaxModRevisionKeysOnly
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("locks/a"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["locks/a"], nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, putRevs["locks/a"], nestedGet.Kvs[0].ModRevision)
 	require.Less(t, nestedGet.Kvs[0].ModRevision, updateB.Header.Revision)
 	require.Less(t, updateB.Header.Revision, updateC.Header.Revision)
 
@@ -8261,9 +8273,11 @@ func TestClientNamespaceNestedTxnGetFromKeyWithFirstRevAndMinModRevisionKeysOnly
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "alpha/a", "before-prefix")
 	require.NoError(t, err)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"locks/a", "locks/b", "locks/c"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	updateB, err := namespacedKV.Put(ctx, "locks/b", "updated-locks/b")
 	require.NoError(t, err)
@@ -8298,6 +8312,7 @@ func TestClientNamespaceNestedTxnGetFromKeyWithFirstRevAndMinModRevisionKeysOnly
 	require.Equal(t, []byte("locks/b"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Equal(t, int64(2), nestedGet.Kvs[0].Version)
+	require.Equal(t, putRevs["locks/b"], nestedGet.Kvs[0].CreateRevision)
 	require.Equal(t, updateB.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "locks/", clientv3.WithPrefix())
