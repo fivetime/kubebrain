@@ -17448,6 +17448,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但相邻 tenant 存在同名后继 keys 时，nested compare 必须失败并执行 Else branch。该回归
   防止 nested `prefixCmps` 对 `WithFromKey`/`\x00` range end 处理不当，把全局后继 keyspace
   纳入 leasing range guard。
+- A2494 补强 A1518 官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey compare false
+  branch write header 外观：nested compare 忽略相邻 tenant 后执行 Else `OpPut("compare/result",
+  "else")` 时，outer txn response header 必须大于执行前 latest revision，nested put response
+  header 必须等于 outer txn header；同时 `Succeeded=false`、只提交 Else 写入和相邻 tenant 不影响
+  compare 的外观保持不变。该回归把 FromKey compare 写路径纳入 nested Txn header 合同。
 - A1519 固定官方 client/v3 namespace.NewKV nested OpTxn 的 revision filter range get 外观：
   nested `OpGet("items/", WithPrefix(), WithMinModRev(rev))` 必须在当前 namespace 的 logical
   prefix 内应用 filter，只返回符合 revision 条件的 logical `items/b=new-b`，`Count` 保持该

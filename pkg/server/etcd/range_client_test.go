@@ -31893,7 +31893,7 @@ func TestClientNamespaceNestedTxnFromKeyCompareStaysWithinNamespace(t *testing.T
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
 	_, err = client.Put(ctx, "/a1518/namespace-nested-txn-compare-from-key/tenant0/range/b", "outside-tenant")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1518/namespace-nested-txn-compare-from-key/tenant0/z/final", "outside-tenant-z")
+	latestBeforeTxn, err := client.Put(ctx, "/a1518/namespace-nested-txn-compare-from-key/tenant0/z/final", "outside-tenant-z")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -31905,12 +31905,16 @@ func TestClientNamespaceNestedTxnFromKeyCompareStaysWithinNamespace(t *testing.T
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Greater(t, txnResp.Header.Revision, latestBeforeTxn.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
 	require.False(t, nestedTxn.Succeeded)
 	require.Len(t, nestedTxn.Responses, 1)
-	require.NotNil(t, nestedTxn.Responses[0].GetResponsePut())
+	nestedPut := nestedTxn.Responses[0].GetResponsePut()
+	require.NotNil(t, nestedPut)
+	require.NotNil(t, nestedPut.Header)
+	require.Equal(t, txnResp.Header.Revision, nestedPut.Header.Revision)
 
 	result, err := namespacedKV.Get(ctx, "compare/result")
 	require.NoError(t, err)
