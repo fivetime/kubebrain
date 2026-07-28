@@ -22993,6 +22993,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该回归补强 A1606-A1610 的 empty-start historical non-serializable selector helper 基础断言，
   并对齐 A2413 historical serializable 与 A2414 current non-serializable selector CountOnly
   优先级覆盖。
+- A2416 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current serializable FromKey/top-helper
+  显式 `CountOnly` 优先级外观：`WithFirstKey/WithLastKey`、`WithFirstCreate/WithLastCreate`、
+  `WithFirstRev/WithLastRev` 作用于 `OpGet("range/", ...)` 并叠加 `WithSerializable`、额外
+  value sort、`KeysOnly`、`Limit(1)` 和 `WithCountOnly` 时，仍必须只返回当前 namespace logical
+  `range/` prefix 的完整 count、空 KVs、`More=false`，并保持 response header revision 为 latest。
+  该回归补强 A2406 current non-serializable FromKey/top-helper CountOnly 优先级断言，并对齐
+  A2407 historical serializable FromKey/top-helper CountOnly 覆盖。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
