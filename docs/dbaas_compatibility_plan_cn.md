@@ -21156,6 +21156,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2183 payload、A2170 key-desc
   CountOnly 与 historical FromKey key SortNone CountOnly 之外的 current FromKey key SortNone
   CountOnly 路径。
+- A2186 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  KeysOnly+Limit 分页外观：nested `OpGet("range/b", WithFromKey(), WithKeysOnly(),
+  WithLimit(2), WithSort(SortByKey, SortAscend))` 必须把开放 range 收窄到当前 namespace，从
+  logical `range/b` 开始统计全量 `Count=3`，按 key 升序分页返回 logical `range/b` 与
+  `range/c`，但 value 均为空、`More=true`，response header revision 必须等于后续相邻 tenant
+  写入产生的 latest revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A1516
+  non-serializable FromKey 基础路径与 A1779 serializable KeysOnly page 之外的 linearizable
+  nested FromKey KeysOnly 分页路径。
+- A2187 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  CountOnly+Limit 外观：nested `OpGet("range/b", WithFromKey(), WithCountOnly(),
+  WithLimit(1))` 必须把开放 range 收窄到当前 namespace，从 logical `range/b` 开始统计全量
+  `Count=3`，忽略 limit、不返回任何 KVs、`More=false`，response header revision 必须等于后续
+  相邻 tenant 写入产生的 latest revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A1516
+  non-serializable FromKey 基础路径与 A1780 serializable CountOnly page 之外的 linearizable
+  nested FromKey CountOnly 路径。
+- A2188 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  SortByKey+SortDescend 分页外观：nested `OpGet("range/b", WithFromKey(), WithLimit(2),
+  WithSort(SortByKey, SortDescend))` 必须把开放 range 收窄到当前 namespace，从 logical
+  `range/b` 开始统计全量 `Count=3`，按 logical key 降序分页返回 `z/final=value-z` 与
+  `range/c=value-c`、`More=true`，response header revision 必须等于后续相邻 tenant 写入产生的
+  latest revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A1516 non-serializable
+  FromKey 基础路径与 A1789 serializable key-desc page 之外的 linearizable nested FromKey
+  key-desc sort 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
