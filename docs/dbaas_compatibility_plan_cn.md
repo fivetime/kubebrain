@@ -23049,6 +23049,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `More=false`，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1767/A1768 current
   serializable prefix contradictory filter 与 A2418/A2419 FromKey contradictory filter 之外的
   current non-serializable prefix 对称路径。
+- A2432 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current serializable prefix
+  contradictory revision filter 显式 `CountOnly` 优先级外观：`OpGet("items/", WithPrefix())`
+  经过 namespace 收窄后，`WithMinModRev > WithMaxModRev` 与
+  `WithMinCreateRev > WithMaxCreateRev` 叠加 `WithSerializable()`、额外 value sort、`KeysOnly`、
+  `Limit(1)` 和 `WithCountOnly` 时，仍必须只返回当前 namespace logical `items/` prefix 的完整
+  count、空 KVs、`More=false`，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补强
+  A1767/A1768/A2129-A2132 current serializable prefix contradictory filter 的旧粒度断言，并与
+  A2421 current non-serializable precedence 表格对齐。
 - A2422 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical non-serializable prefix
   contradictory revision filter 显式 `CountOnly` 优先级外观：`OpGet("items/", WithPrefix())`
   经过 namespace 收窄后，`WithMinModRev > WithMaxModRev` 与
