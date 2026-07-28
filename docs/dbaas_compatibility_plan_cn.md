@@ -17518,6 +17518,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OpGet("items/a", WithRev(compactedRev))` 不得被验证或返回 compacted error；事务必须执行 Else
   branch，返回当前 logical `items/a=new-a`，且未选中 branch 后续 `OpPut` 不得提交。该回归防止
   nested Txn validation 过早扫描未执行分支。
+- A2482 补强 A1540 官方 client/v3 namespace.NewKV nested OpTxn 的未选中 compacted revision
+  分支 header 外观：compare 失败执行 Else branch 的 current `OpGet("items/a")` 时，nested txn
+  response header 与 nested range response header 都必须等于相邻 tenant 写入产生的执行时 latest
+  revision；同时未选中 compacted range 不被校验、`items/a=new-a` 与未选中 `OpPut` 不提交外观
+  保持不变。该回归防止 validation-order 正确但 response header 停留在 compact 前 revision。
 - A1541 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 duplicate write 分支外观：
   duplicate-key 是 Txn 请求级静态校验，不同于只在执行分支触发的 Range revision validation；
   即使 nested `OpTxn` compare 会失败，未选中 Then branch 中重复
