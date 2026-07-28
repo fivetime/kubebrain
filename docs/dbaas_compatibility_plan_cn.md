@@ -22707,6 +22707,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   上只清空返回页 value，保留排序命中每个 KV 的 version/create revision/mod revision。
   该回归补强 A1954/A1955/A1956/A1957/A1958/A1959/A1960/A1976/A1977 的 historical
   serializable logical range revision/version sort KeysOnly metadata 断言。
+- A2372 强化官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
+  key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByValue` asc/desc/none 与
+  `SortByKey` desc/asc/none 变体必须在 historical revision 上只清空返回页 value，
+  保留排序命中每个 KV 的 version/create revision/mod revision。该回归补强
+  A1816/A1820/A1821/A1822/A1874/A1884 的 FromKey historical serializable key/value
+  sort KeysOnly metadata 断言。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
