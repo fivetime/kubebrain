@@ -57335,6 +57335,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMinModRevi
 				clientv3.WithSerializable(),
 				clientv3.WithMinModRev(historical.Header.Revision),
 				clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+				clientv3.WithKeysOnly(),
+				clientv3.WithLimit(1),
 				clientv3.WithCountOnly())},
 			nil)).
 		Commit()
@@ -57607,6 +57609,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMaxModRevi
 				clientv3.WithSerializable(),
 				clientv3.WithMaxModRev(historical.Header.Revision-1),
 				clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+				clientv3.WithKeysOnly(),
+				clientv3.WithLimit(1),
 				clientv3.WithCountOnly())},
 			nil)).
 		Commit()
@@ -57872,6 +57876,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMinCreateR
 				clientv3.WithSerializable(),
 				clientv3.WithMinCreateRev(historical.Header.Revision),
 				clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+				clientv3.WithKeysOnly(),
+				clientv3.WithLimit(1),
 				clientv3.WithCountOnly())},
 			nil)).
 		Commit()
@@ -58144,6 +58150,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializableLogicalRangeMaxCreateR
 				clientv3.WithSerializable(),
 				clientv3.WithMaxCreateRev(historical.Header.Revision-1),
 				clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+				clientv3.WithKeysOnly(),
+				clientv3.WithLimit(1),
 				clientv3.WithCountOnly())},
 			nil)).
 		Commit()
