@@ -20042,6 +20042,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1758 current prefix
   mod-desc payload、A2107 mod-desc KeysOnly 与 historical prefix mod-desc CountOnly 之外的
   current prefix mod-desc CountOnly 路径。
+- A2109 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable mod-revision asc sort 分页外观：nested `OpGet("items/", WithPrefix(),
+  WithSerializable(), WithLimit(2), WithSort(SortByModRevision, SortAscend))` 必须在最新
+  revision 上按当前 namespace logical prefix 内 mod revision 升序分页，返回
+  `items/c=value-items/c`、`items/b=updated-items/b`、`Count=3`、`More=true`，且第一项
+  `ModRevision` 小于第二项；response header revision 必须等于后续同 prefix 写入产生的 latest
+  revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1758 current prefix mod-desc
+  payload、A1761 current prefix mod SortNone 与 historical prefix mod-asc payload 之外的
+  current prefix mod-asc payload 路径。
+- A2110 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `KeysOnly+SortByModRevision(Asc)` 分页外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithKeysOnly(), WithLimit(2),
+  WithSort(SortByModRevision, SortAscend))` 必须在最新 revision 上按当前 namespace logical
+  prefix 内 mod revision 升序分页，再剥离 values，返回 logical keys `items/c`、`items/b`、
+  空 values、`Count=3`、`More=true`，且第一项 `ModRevision` 小于第二项；response header
+  revision 必须等于后续同 prefix 写入产生的 latest revision，并排除同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A2109 current prefix mod-asc payload、A2107 mod-desc KeysOnly 与
+  historical prefix mod-asc KeysOnly 之外的 current prefix mod-asc KeysOnly 路径。
+- A2111 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
+  serializable `CountOnly+SortByModRevision(Asc)` 外观：nested `OpGet("items/",
+  WithPrefix(), WithSerializable(), WithCountOnly(), WithLimit(2),
+  WithSort(SortByModRevision, SortAscend))` 必须在最新 revision 上只统计当前 namespace logical
+  prefix 全量 `Count=3`，并因为 `CountOnly` 覆盖 mod revision 升序 sort 与 limit=2 payload
+  page，返回空 KVs、`More=false`；response header revision 必须等于后续同 prefix 写入产生的
+  latest revision，并排除同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2109 current prefix
+  mod-asc payload、A2110 mod-asc KeysOnly 与 A2108 mod-desc CountOnly 之外的 current prefix
+  mod-asc CountOnly 路径。
 - A1759 固定官方 client/v3 namespace.NewKV nested OpTxn 的 non-empty prefix current
   serializable version desc sort 分页外观：nested `OpGet("items/", WithPrefix(),
   WithSerializable(), WithLimit(2), WithSort(SortByVersion, SortDescend))` 必须在最新 revision
