@@ -22656,6 +22656,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须只清空 value，保留 version=1 以及 create/mod revision。该回归补强 A1931/A1933
   historical logical range 与 A2042/A2043 current logical range FirstKey/LastKey KeysOnly
   的元数据兼容断言。
+- A2363 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current top-helper KeysOnly
+  元数据外观：`WithFirstCreate()/WithLastCreate()/WithFirstRev()/WithLastRev()/WithFirstKey()/WithLastKey`
+  与 `KeysOnly` 组合在 non-empty logical prefix 上必须只清空 value，保留命中 key 的
+  version/create revision/mod revision；其中 LastRev 命中更新 key 时必须保留 version=2 和更新后的
+  mod revision。该回归补强 A2240/A2243/A2246/A2249/A2252/A2255 的 current top-helper
+  KeysOnly 元数据断言，覆盖 historical/current serializable 之外的最新 revision 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
