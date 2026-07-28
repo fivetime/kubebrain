@@ -21251,6 +21251,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   前 key 和相邻 tenant。该回归补齐 A2195 payload、A2158 serializable CountOnly MinCreateRev 与
   historical FromKey CountOnly filter 之外的 linearizable nested FromKey CountOnly MinCreateRev
   路径。
+- A2198 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  MaxCreateRevision filter 外观：nested `OpGet("range/b", WithFromKey(),
+  WithMaxCreateRev(createRev-1), WithSort(SortByKey, SortAscend))` 必须把开放 range 收窄到当前
+  namespace，从 logical `range/b` 开始按 current revision 的全量 logical range 统计 `Count=3`，
+  但只返回 create revision 不大于上界的 logical `range/b=updated-b` 与 `range/c=value-c`，
+  response header revision 必须等于后续当前 namespace 更新产生的 latest revision，并排除 start
+  前 key、较晚创建的 `z/final` 和相邻 tenant。该回归补齐 A2195 MinCreateRev 与 A1784
+  serializable MaxCreateRev 之外的 linearizable nested FromKey MaxCreateRev payload 路径。
+- A2199 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  KeysOnly+MaxCreateRevision filter 外观：nested `OpGet("range/b", WithFromKey(),
+  WithKeysOnly(), WithMaxCreateRev(createRev-1), WithSort(SortByKey, SortAscend))` 必须把开放
+  range 收窄到当前 namespace，仍按 current revision 全量 logical range 统计 `Count=3`，只返回
+  logical `range/b` 与 `range/c` 且 value 为空，response header revision 必须等于后续当前
+  namespace 更新产生的 latest revision，并排除 start 前 key、较晚创建 key 和相邻 tenant。该回归
+  补齐 A2198 payload、A2159 serializable KeysOnly MaxCreateRev 与 historical FromKey KeysOnly
+  filter 之外的 linearizable nested FromKey KeysOnly MaxCreateRev 路径。
+- A2200 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  CountOnly+MaxCreateRevision filter 外观：nested `OpGet("range/b", WithFromKey(),
+  WithCountOnly(), WithMaxCreateRev(createRev-1))` 必须把开放 range 收窄到当前 namespace，按
+  current revision 全量 logical range 统计 `Count=3`，CountOnly 下不返回任何 KVs、`More=false`，
+  response header revision 必须等于后续当前 namespace 更新产生的 latest revision，并排除 start
+  前 key、较晚创建 key 和相邻 tenant。该回归补齐 A2198 payload、A2160 serializable CountOnly
+  MaxCreateRev 与 historical FromKey CountOnly filter 之外的 linearizable nested FromKey
+  CountOnly MaxCreateRev 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
