@@ -17438,6 +17438,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `range/b` 到 namespace 末尾的 keys，`ResponseDeleteRange.PrevKvs` 返回 logical
   `range/b` 与 `z/final`，保留 start 前 `range/a` 和相邻 tenant 数据。该回归防止 nested
   delete 的开放 range 泄漏到全局 keyspace，或 PrevKV response 漏做递归 unprefix。
+- A2493 补强 A1517 官方 client/v3 namespace.NewKV nested OpTxn 的 `OpDelete(..., WithFromKey(),
+  WithPrevKV())` header 外观：FromKey delete 写事务提交时，outer txn response header 必须大于
+  执行前 latest revision，nested delete response header 必须等于 outer txn header；同时 logical
+  PrevKVs、`Deleted=2`、start 前 key 保留与相邻 tenant 隔离外观保持不变。该回归把 FromKey
+  delete 写事务 header 合同与 A2490 FromKey read path 对齐。
 - A1518 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `Compare(... WithRange("\x00"))`
   开放 compare range 外观：当当前 namespace 从 logical `range/b` 到 namespace 末尾为空，
   但相邻 tenant 存在同名后继 keys 时，nested compare 必须失败并执行 Else branch。该回归
