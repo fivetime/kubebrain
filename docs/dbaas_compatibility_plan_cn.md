@@ -17493,6 +17493,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/a,b,c` 及 values，`Count=3`、`More=false`，且 response header revision 为当前 latest
   revision。该回归防止 nested serializable Range 丢失 namespace prefix/unprefix 处理或把相邻
   prefix/tenant 纳入当前读。
+- A2474 补强 A1536 官方 client/v3 namespace.NewKV nested OpTxn 的 current serializable prefix
+  基础外观：`OpGet("items/", WithPrefix(), WithSerializable())` 返回当前 namespace logical
+  prefix 全量结果时，nested txn response header 与 nested range response header 都必须等于
+  latest revision；同时 logical key/value、`Count=3`、`More=false` 与相邻 prefix/tenant 隔离外观
+  保持不变。该回归把 prefix 基础 header 合同与 empty-start explicit range header 合同对齐。
 - A1537 固定官方 client/v3 namespace.NewKV nested OpTxn 的 future revision error 外观：
   nested `OpTxn` 选中分支内 `OpGet("items/a", WithRev(math.MaxInt64))` 必须返回可由
   `errors.Is(..., rpctypes.ErrFutureRev)` 识别的 public clientv3 Txn error，且同一 nested Txn 中
