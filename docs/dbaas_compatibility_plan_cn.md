@@ -21729,6 +21729,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻
   tenant。该回归补齐 A2257 payload、A2258 KeysOnly 与 A1899 historical serializable
   helper+filter CountOnly 之外的 current 路径。
+- A2260 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastRev()+WithMaxModRev` 组合外观：nested `OpGet("locks/",
+  append(WithLastRev(), WithMaxModRev(updateB))...)` 必须只扫描当前 namespace 的 logical `locks/`
+  prefix，`WithMaxModRev` 先过滤掉后续更新的 `locks/c`，再由 LastRev 选出剩余候选中最后修改的
+  `locks/b=updated-locks/b`，`Count=3`、`More=true`，response header revision 必须等于后续
+  相邻 tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻
+  tenant。该回归补齐 A2248 LastRev payload 与 A1853 historical serializable helper+filter
+  之外的 current helper+filter payload 路径。
+- A2261 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastRev()+WithMaxModRev+KeysOnly` 组合外观：nested `OpGet("locks/",
+  append(WithLastRev(), WithMaxModRev(updateB), WithKeysOnly())...)` 必须只扫描当前 namespace
+  的 logical `locks/` prefix，返回过滤后最后修改的 logical key `locks/b` 且 value 为空，
+  `Count=3`、`More=true`，response header revision 必须等于后续相邻 tenant 写入产生的 latest
+  revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2260 payload
+  与 A1898 historical serializable helper+filter KeysOnly 之外的 current 路径。
+- A2262 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
+  `WithLastRev()+WithMaxModRev+CountOnly` 组合外观：nested `OpGet("locks/",
+  append(WithLastRev(), WithMaxModRev(updateB), WithCountOnly())...)` 必须只扫描当前 namespace
+  的 logical `locks/` prefix，CountOnly 下忽略 helper 带来的 `Limit(1)`，只返回完整 logical
+  count `Count=3`，不返回任何 KVs、`More=false`，response header revision 必须等于后续相邻
+  tenant 写入产生的 latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。
+  该回归补齐 A2260 payload、A2261 KeysOnly 与 A1900 historical serializable helper+filter
+  CountOnly 之外的 current 路径。
 - A1790 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
   limit 外观：nested `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(),
   WithLimit(1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上把开放 range 收窄到
