@@ -19974,6 +19974,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response header revision 必须保持当前 latest revision，并排除 prefix 外 key、同 tenant 相邻
   prefix 和相邻 tenant。该回归补齐 A1846 FirstCreate payload helper、A1852 LastCreate+MaxCreateRev
   对侧 helper+filter 与 A1795/A1796 Min/MaxCreateRev filter 之外的 first-created lower-bound 路径。
+- A1902 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey historical serializable
+  `WithFirstCreate()+WithMinCreateRev+KeysOnly` 组合外观：nested `OpGet("waiters/",
+  append(WithFirstCreate(), WithMinCreateRev(createRev), WithRev(historyRev),
+  WithSerializable(), WithKeysOnly())...)` 必须在指定历史 revision 上按 helper 展开后的 prefix +
+  create revision 升序 + limit=1，并在 create revision 下界内分页当前 namespace logical
+  `waiters/` prefix，返回历史存在但当前已删除的 logical key `waiters/b`、清空 value、`Count=3`、
+  `More=true`。response header revision 必须保持当前 latest revision，并排除 prefix 外 key、同
+  tenant 相邻 prefix 和相邻 tenant。该回归补齐 A1901 payload helper+filter、A1897
+  last-created helper+filter+KeysOnly 与 A1828 KeysOnly MinCreateRev 之外的 first-created lower-bound
+  KeysOnly 路径。
 - A1705 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range current
   serializable MinModRev filter 外观：nested `OpGet("range/a", WithRange("range/d"),
   WithSerializable(), WithMinModRev(updateRev), WithSort(SortByKey, SortAscend))` 必须在最新
