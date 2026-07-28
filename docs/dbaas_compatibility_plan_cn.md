@@ -18179,6 +18179,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   外观，但过滤后不返回任何 KVs、`More=false`，response header revision 等于 upper bound 外
   `z/final` 写入产生的 latest revision，并排除相邻 tenant。该回归补齐 A1592 current
   contradictory ModRev 与 A1632/A1633 current serializable ModRev filter 之外的矛盾 filter 叠加路径。
+- A2457 补强 A1636 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  serializable contradictory ModRev filter 基础外观：`OpGet("", WithRange("z"), WithSerializable(),
+  WithMinModRev(updateRev+1), WithMaxModRev(updateRev), WithLimit(1))` 过滤后不返回任何 KVs 时，
+  nested txn response header 与 nested range response header 都必须等于 latest revision；同时
+  `Count=3`、`More=false` 与相邻 tenant 隔离外观保持不变。该回归把基础 contradictory ModRev
+  header 合同与 A2442 CountOnly 叠加路径对齐。
 - A1637 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   current serializable 矛盾 CreateRev filter 外观：nested `OpGet("", WithRange("z"),
   WithSerializable(), WithMinCreateRev(createRev+1), WithMaxCreateRev(createRev), WithLimit(1))`
