@@ -18566,6 +18566,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   value update/delete/new key、upper bound 外 `z/final` 和相邻 tenant。该回归补齐 A1613
   historical MaxInt64 value-sort full page 与 A1616 historical serializable KeysOnly value-sort
   之外的 serializable value payload 分页路径。
+- A2563 补强 A1617 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical serializable value-sort 分页 header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithSerializable(), WithLimit(2), WithSort(SortByValue, SortNone))` 返回
+  historical serializable value payload page 时，outer txn response header 与 nested range
+  response header 必须保持当前 latest revision；`Count=3`、`More=true`、历史 value 排序内容与 namespace 隔离断言保持不变。
 - A1618 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical serializable key-desc 分页外观：nested `OpGet("", WithRange("z"),
   WithRev(historyRev), WithSerializable(), WithLimit(2), WithSort(SortByKey, SortDescend))`
