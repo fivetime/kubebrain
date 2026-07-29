@@ -37118,7 +37118,7 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeHistoricalMaxCreateRevisionRe
 	require.NoError(t, err)
 	_, err = namespacedKV.Put(ctx, "alpha/a", "new-alpha")
 	require.NoError(t, err)
-	_, err = namespacedKV.Put(ctx, "later/new", "new-later")
+	latest, err := namespacedKV.Put(ctx, "later/new", "new-later")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -37133,6 +37133,7 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeHistoricalMaxCreateRevisionRe
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -37140,6 +37141,8 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeHistoricalMaxCreateRevisionRe
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
+	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(3), nestedGet.Count)
 	require.False(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 2)
