@@ -116,6 +116,79 @@ func TestClientKVRangeFromKeySortByKeyMatchesEtcd(t *testing.T) {
 	}
 }
 
+func TestClientKVRangeNULFromKeyReturnsEntirePublicKeyspace(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	type revisionState struct {
+		create  int64
+		mod     int64
+		version int64
+	}
+	wantByKey := make(map[string]revisionState)
+	for _, key := range []string{"a", "b", "c", "c", "c", "foo", "foo/abc", "fop"} {
+		put, err := client.Put(ctx, key, "")
+		require.NoError(t, err)
+		state := wantByKey[key]
+		if state.create == 0 {
+			state.create = put.Header.Revision
+		}
+		state.mod = put.Header.Revision
+		state.version++
+		wantByKey[key] = state
+	}
+
+	headerProbe, err := client.Get(ctx, "a")
+	require.NoError(t, err)
+	require.NotNil(t, headerProbe.Header)
+
+	resp, err := client.Get(
+		ctx,
+		"\x00",
+		clientv3.WithFromKey(),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, headerProbe.Header.Revision, resp.Header.Revision)
+	require.Equal(t, int64(len(wantByKey)), resp.Count)
+	require.Len(t, resp.Kvs, len(wantByKey))
+	require.False(t, resp.More)
+
+	wantKeys := []string{"a", "b", "c", "foo", "foo/abc", "fop"}
+	for index, key := range wantKeys {
+		kv := resp.Kvs[index]
+		state := wantByKey[key]
+		require.Equalf(t, []byte(key), kv.Key, "key %d", index)
+		require.Emptyf(t, kv.Value, "key %d", index)
+		require.Equalf(t, state.create, kv.CreateRevision, "key %d", index)
+		require.Equalf(t, state.mod, kv.ModRevision, "key %d", index)
+		require.Equalf(t, state.version, kv.Version, "key %d", index)
+		require.Zero(t, kv.Lease)
+	}
+}
+
 func TestClientGetCanceledAfterResponseLossKeepsConnectionUsable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
