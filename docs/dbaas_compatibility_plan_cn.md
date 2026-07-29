@@ -18503,6 +18503,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/b`，`Count=3`、`More=false`，并排除之后的 delete/update/new key、upper bound 外
   `z/final` 和相邻 tenant。该回归补齐 A1584 current negative-limit 与 A1611 historical
   limit-zero 对侧路径。
+- A2558 补强 A1612 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical negative-limit header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithLimit(-1), WithSort(SortByKey, SortAscend))` 返回完整历史 logical
+  range 时，outer txn response header 与 nested range response header 必须保持当前 latest
+  revision；完整历史 KVs、`Count=3`、`More=false` 与 namespace 隔离断言保持不变。
 - A1613 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical MaxInt64 limit 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithLimit(math.MaxInt64), WithSort(SortByValue, SortNone))` 必须在指定历史 revision 上返回当前
