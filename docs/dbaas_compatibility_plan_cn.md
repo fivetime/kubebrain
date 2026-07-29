@@ -27982,6 +27982,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 KV `Do(OpDelete("\x00", WithFromKey()))` 通用 Op 路径外观：
   不能只在 `Delete` 专用入口保持兼容；`Do(OpDelete)` 必须返回 Delete response、精确推进
   一个 revision、`Deleted` 等于用户 key 数、不返回 `PrevKvs`，并清空 public keyspace。
+- A2137 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutWithLease`
+  固定官方 client/v3 KV `Do(OpPut(key, value, WithLease(...)))` 通用 Op 路径外观：
+  不能只在 `Put` 专用入口保持兼容；`Do(OpPut)` 必须返回 Put response/header，首写
+  `PrevKv=nil`，落库 key 的 value、create/mod revision、version 和 lease attachment 与
+  Put header/lease ID 对齐，TTL attached keys 必须包含该 key。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
