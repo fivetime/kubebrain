@@ -18230,6 +18230,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failure 分支必须正常读取当前 namespace logical `[ "", "z" )` range，返回 `alpha/a`、
   `items/a`，并保持相邻 tenant 隔离。该回归补齐 A1539 point-key 未选中 future revision
   之外的 empty-start explicit range validation-order 路径。
+- A2535 补强 A1588 官方 client/v3 namespace.NewKV nested OpTxn 的未选中 empty logical start
+  显式 range future revision 分支 header 外观：compare 失败执行 failure branch 的 current
+  `OpGet("", WithRange("z"))` 时，outer txn response header 与 nested range response header 都必须
+  等于相邻 tenant 写入产生的 latest revision；未选中 `WithRev(math.MaxInt64)` 分支仍不得触发
+  future revision error，logical `[ "", "z" )` 当前值与相邻 tenant 隔离保持不变。
 - A1589 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 empty logical start 显式
   range compacted revision 分支外观：nested `OpTxn` success 分支中的 `OpGet("", WithRange("z"),
   WithRev(compactedRev))` 若未被内部 compare 选中，不得提前校验或返回 compacted revision error；
