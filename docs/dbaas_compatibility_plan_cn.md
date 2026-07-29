@@ -115,6 +115,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   wrapper 递归改写/ownership cache 不得把中间 `TxnResponse.Header` 填成 outer txn
   revision；nested header 必须存在但 `Revision=0`，内部 put response header 继续等于
   outer txn revision。覆盖 `TestClientLeasingRangeOwnershipAndDelete`。
+- **official client/v3 nested txn response tree header 外观**：A2985 固定
+  `TestClientNestedTxnResponseAndFinalState` 中双层 nested txn 的 response tree：
+  outer selected branch 中间 `TxnResponse.Header`、inner nested `TxnResponse.Header`
+  都必须存在但 `Revision=0`；inner DeleteRange/Put/Range response header revision
+  必须等于 outer txn revision，并保留 PrevKV 与最终 keyspace 外观。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
