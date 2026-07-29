@@ -24140,6 +24140,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `range/` prefix 的完整 count、空 KVs、`More=false`，并保持 response header revision 为 latest。
   该回归补强 A2406 current non-serializable FromKey/top-helper CountOnly 优先级断言，并对齐
   A2407 historical serializable FromKey/top-helper CountOnly 覆盖。
+- A2660 固定 A2416 官方 client/v3 namespace.NewKV nested OpTxn current serializable
+  FromKey/top-helper 显式 CountOnly 优先级表驱动路径的中间 `TxnResponse.Header` 未填充外观：
+  6 个 nested txn response header 均必须存在但 `Revision=0`，不能被 namespace response adapter
+  误改写为 latest revision；outer/range header 与 serializable CountOnly precedence 断言沿用 A2416。
 - A2417 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical non-serializable
   FromKey/top-helper 显式 `CountOnly` 优先级外观：`WithFirstKey/WithLastKey`、
   `WithFirstCreate/WithLastCreate`、`WithFirstRev/WithLastRev` 作用于 `OpGet("range/", ...)` 并
