@@ -174,6 +174,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Failure Put branch 与 compact revision CAS 的 Put/Range response header：selected
   Put response header revision 必须等于 outer txn revision；CAS stale/current Failure
   Range header 等于当前 compact key revision；CAS 成功更新只前进一个 revision。
+- **Range limit/filter response header 外观**：A2996 固定 Range 与 Txn Range 的
+  `math.MaxInt64` limit、negative limit、non-key sort lookahead、contradictory
+  mod-revision filter 路径：read-only Range/Txn header 不前进且等于最新写 revision；
+  inner Range response header revision 必须等于 outer txn header，同时 Count/More/KVs
+  继续按 etcd limit/filter/sort 语义返回。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键

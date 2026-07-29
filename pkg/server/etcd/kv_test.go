@@ -1233,11 +1233,15 @@ func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 	ctx := context.Background()
 	prefix := "/registry/pods/max-int-limit/"
 	values := map[string]string{"a": "z", "b": "a", "c": "m"}
+	var latestRevision int64
 	for suffix, value := range values {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key: []byte(prefix + suffix), Value: []byte(value),
 		})
 		require.NoError(t, err)
+		if putResp.Header.Revision > latestRevision {
+			latestRevision = putResp.Header.Revision
+		}
 	}
 
 	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
@@ -1245,6 +1249,8 @@ func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 		Limit: math.MaxInt64,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, latestRevision, resp.Header.Revision)
 	require.Equal(t, int64(3), resp.Count)
 	require.Len(t, resp.Kvs, 3)
 	require.False(t, resp.More)
@@ -1254,6 +1260,8 @@ func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 		Limit: math.MaxInt64, SortTarget: etcdserverpb.RangeRequest_VALUE,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, valueSorted.Header)
+	require.Equal(t, latestRevision, valueSorted.Header.Revision)
 	require.Equal(t, int64(3), valueSorted.Count)
 	require.Len(t, valueSorted.Kvs, 3)
 	require.False(t, valueSorted.More)
@@ -1270,8 +1278,13 @@ func TestRangeMaxIntLimitDoesNotOverflow(t *testing.T) {
 		},
 	}}})
 	require.NoError(t, err)
+	require.NotNil(t, txn.Header)
+	require.Equal(t, latestRevision, txn.Header.Revision)
 	require.Len(t, txn.Responses, 1)
 	txnRange := txn.Responses[0].GetResponseRange()
+	require.NotNil(t, txnRange)
+	require.NotNil(t, txnRange.Header)
+	require.Equal(t, txn.Header.Revision, txnRange.Header.Revision)
 	require.Equal(t, int64(3), txnRange.Count)
 	require.Len(t, txnRange.Kvs, 3)
 	require.False(t, txnRange.More)
@@ -1287,11 +1300,13 @@ func TestRangeNegativeLimitMatchesEtcd(t *testing.T) {
 	ctx := context.Background()
 	prefix := "/registry/pods/negative-limit/"
 	end := []byte("/registry/pods/negative-limit0")
+	var latestRevision int64
 	for _, suffix := range []string{"c", "a", "b"} {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key: []byte(prefix + suffix), Value: []byte("value-" + suffix),
 		})
 		require.NoError(t, err)
+		latestRevision = putResp.Header.Revision
 	}
 
 	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{
@@ -1299,6 +1314,8 @@ func TestRangeNegativeLimitMatchesEtcd(t *testing.T) {
 		SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, latestRevision, resp.Header.Revision)
 	require.Equal(t, int64(3), resp.Count)
 	require.False(t, resp.More)
 	require.Equal(t, [][]byte{[]byte(prefix + "a"), []byte(prefix + "b"), []byte(prefix + "c")}, [][]byte{
@@ -1314,8 +1331,13 @@ func TestRangeNegativeLimitMatchesEtcd(t *testing.T) {
 		},
 	}}})
 	require.NoError(t, err)
+	require.NotNil(t, txn.Header)
+	require.Equal(t, latestRevision, txn.Header.Revision)
 	require.Len(t, txn.Responses, 1)
 	txnRange := txn.Responses[0].GetResponseRange()
+	require.NotNil(t, txnRange)
+	require.NotNil(t, txnRange.Header)
+	require.Equal(t, txn.Header.Revision, txnRange.Header.Revision)
 	require.Equal(t, int64(3), txnRange.Count)
 	require.False(t, txnRange.More)
 	require.Equal(t, [][]byte{[]byte(prefix + "c"), []byte(prefix + "b"), []byte(prefix + "a")}, [][]byte{
@@ -1329,6 +1351,7 @@ func TestTxnRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
 
 	ctx := context.Background()
 	prefix := "/registry/pods/txn-sort-value-limit/"
+	var latestRevision int64
 	for _, seed := range []struct {
 		key   string
 		value string
@@ -1338,10 +1361,11 @@ func TestTxnRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
 		{key: "c", value: "a"},
 		{key: "d", value: "0"},
 	} {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key: []byte(prefix + seed.key), Value: []byte(seed.value),
 		})
 		require.NoError(t, err)
+		latestRevision = putResp.Header.Revision
 	}
 
 	txn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
@@ -1351,9 +1375,13 @@ func TestTxnRangeNonKeyNoneSortUsesEtcdLimitLookahead(t *testing.T) {
 		}}},
 	}})
 	require.NoError(t, err)
+	require.NotNil(t, txn.Header)
+	require.Equal(t, latestRevision, txn.Header.Revision)
 	require.Len(t, txn.Responses, 1)
 	resp := txn.Responses[0].GetResponseRange()
 	require.NotNil(t, resp)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, txn.Header.Revision, resp.Header.Revision)
 	require.Equal(t, int64(4), resp.Count)
 	require.True(t, resp.More)
 	require.Equal(t, [][]byte{[]byte(prefix + "c"), []byte(prefix + "b")}, [][]byte{
@@ -1488,6 +1516,8 @@ func TestRangeContradictoryModRevisionFiltersPreserveEtcdCount(t *testing.T) {
 		})
 		return err == nil && rangeResp.Count == 3
 	}, time.Second, 10*time.Millisecond)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, updateB.Header.Revision, rangeResp.Header.Revision)
 	require.Empty(t, rangeResp.Kvs)
 	require.False(t, rangeResp.More)
 
@@ -1502,8 +1532,13 @@ func TestRangeContradictoryModRevisionFiltersPreserveEtcdCount(t *testing.T) {
 		},
 	}}})
 	require.NoError(t, err)
+	require.NotNil(t, txn.Header)
+	require.Equal(t, updateB.Header.Revision, txn.Header.Revision)
 	require.Len(t, txn.Responses, 1)
 	txnRange := txn.Responses[0].GetResponseRange()
+	require.NotNil(t, txnRange)
+	require.NotNil(t, txnRange.Header)
+	require.Equal(t, txn.Header.Revision, txnRange.Header.Revision)
 	require.Equal(t, int64(3), txnRange.Count)
 	require.Empty(t, txnRange.Kvs)
 	require.False(t, txnRange.More)
