@@ -28395,6 +28395,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用实际提交 revision，nested `TxnResponse.Header.Revision` 必须保持 0；nested
   内已选 Then/Else 分支的 Put/Range/Delete leaf response header 必须等于外层 txn
   revision，未选分支不得执行，PrevKv metadata 与最终 keyset 必须保持 etcd 外观。
+- A3017 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 nested Put response
+  外观，固定 raw gRPC nested `RequestTxn` 内 `PutRequest{PrevKv:true}`：nested
+  `TxnResponse.Header.Revision` 仍为 0，Put leaf response header 等于外层 txn
+  revision，`PrevKv` 必须携带旧 value/create revision/mod revision/version；同一
+  nested txn 后续 Range 必须看到新 value 与同一 txn revision，最终 keyset 保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
