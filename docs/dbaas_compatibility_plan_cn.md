@@ -17565,6 +17565,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 namespace logical prefix，返回 `Count=3`、无 KVs、`More=false`，且 CountOnly 优先于
   KeysOnly/Limit。该回归防止 nested OpTxn 中 CountOnly 被 limit 或 keys-only payload 影响，
   或把相邻 prefix/tenant 纳入 Count。
+- A2505 补强 A1529 官方 client/v3 namespace.NewKV nested OpTxn 的 `WithCountOnly()` 优先级
+  header 外观：nested `OpGet("items/", WithPrefix(), WithKeysOnly(), WithCountOnly(), WithLimit(1))`
+  中 CountOnly 覆盖 payload 与 limit 时，outer txn response header 与 nested range response header
+  都必须等于相邻 tenant 写入产生的 latest revision；同时 `Count=3`、空 KVs、`More=false` 与相邻
+  prefix/tenant 隔离外观保持不变。该回归把 CountOnly precedence 纳入 nested Txn header 合同。
 - A1530 固定官方 client/v3 namespace.NewKV nested OpTxn 的 value sort + limit 外观：
   nested `OpGet("items/", WithPrefix(), WithLimit(2), WithSort(SortByValue, SortNone))` 必须只在
   当前 namespace logical prefix 内按 value 排序并分页，返回 logical `items/c=a`、
