@@ -17554,6 +17554,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 的 `[range/a, range/d)` logical range，返回最新修改的 `range/b=updated-range/b`，
   并保持 `Count=3`、`More=true`。该回归防止 nested top-helper 在显式 range、upper bound 与
   相邻 tenant 存在时泄漏物理 key 或扩大 logical range。
+- A2504 补强 A1528 官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range +
+  `WithLastRev()` header 外观：nested `OpGet("range/a", append(WithLastRev(),
+  WithRange("range/d"))...)` 在 `[range/a, range/d)` logical range 内返回 top-1 result 时，outer txn
+  response header 与 nested range response header 都必须等于相邻 tenant 写入产生的 latest revision；
+  同时 result、`Count=3`、`More=true` 与 upper bound / 相邻 range / 相邻 tenant 隔离外观保持不变。
+  该回归把显式 logical range helper 路径纳入 nested Txn header 合同。
 - A1529 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithCountOnly()` 优先级外观：
   nested `OpGet("items/", WithPrefix(), WithKeysOnly(), WithCountOnly(), WithLimit(1))` 必须只统计
   当前 namespace logical prefix，返回 `Count=3`、无 KVs、`More=false`，且 CountOnly 优先于
