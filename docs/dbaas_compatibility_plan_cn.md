@@ -17933,6 +17933,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 namespace 的 logical `[ "", "z" )` range，返回 logical `alpha/a`、`items/a` 两个空 value
   KV，`Count=3`、`More=true`，并排除 upper bound 外的 `z/final` 和相邻 tenant。该回归补齐
   A1504 非空显式 range KeysOnly 与 A1566 CountOnly 之外的 empty-start payload page 路径。
+- A2531 补强 A1567 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range KeysOnly page header 外观：nested `OpGet("", WithRange("z"), WithKeysOnly(), WithLimit(2))`
+  返回 logical `[ "", "z" )` 第一页时，outer txn response header 与 nested range response header
+  都必须等于相邻 tenant 写入产生的 latest revision；logical keys、空 values、`Count=3`、
+  `More=true` 和 create/mod revision 元数据保持不变。
 - A1568 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   value-sort 分页外观：nested `OpGet("", WithRange("z"), WithLimit(2),
   WithSort(SortByValue, SortDescend))` 必须只在当前 namespace 的 logical `[ "", "z" )` range
