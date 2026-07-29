@@ -27840,6 +27840,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的授权隔离负向路径：auth enabled 后，只有 `/foo1/` 权限的用户在另一个用户的
   `/bar1/` election prefix 上 `Campaign` 必须返回 `rpctypes.ErrPermissionDenied`，
   且不能留下 candidate key，防止 concurrency election 绕过 KV 写权限或产生半提交。
+- A2102 对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseKeepAliveLoopExit`
+  固定官方 client/v3 Lease 流式 KeepAlive 在 client 关闭后的错误类型：已 grant lease 的
+  client 调用 `Close` 后再次 `KeepAlive` 必须立即返回可 `errors.As` 为
+  `clientv3.ErrKeepAliveHalted` 的错误，而不是阻塞、误提交 renew 或返回不兼容错误类型。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
