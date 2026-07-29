@@ -28324,6 +28324,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 LEASE 默认 0 `EQUAL` 成功而 `NOT_EQUAL` 失败，非空 VALUE 对默认 empty 的
   `EQUAL` 失败而 `GREATER` 成功；Success/Failure 写入、Txn header revision 与
   落库 metadata 必须保持 etcd wire-level 外观。
+- A3005 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `applyCompare` 空范围
+  分支：range 无 KVs 时 VALUE compare 必须直接失败，即使 Result 是未知枚举也不走
+  `compareKV` 的 unknown-result true fallthrough；非 VALUE compare 则以空
+  `KeyValue{}` 和缺省 `TargetUnion` 的 zero 默认值比较，固定 MOD/VERSION 默认 0
+  `EQUAL` 成功、CREATE 默认 0 `GREATER` 失败、LEASE 默认 0 `NOT_EQUAL` 失败，
+  Success/Failure 写入、Txn header revision 与落库 metadata 必须保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
