@@ -32683,7 +32683,7 @@ func TestClientNamespaceNestedTxnGetSortByValueWithLimitReturnsLogicalKeys(t *te
 	}
 	_, err = client.Put(ctx, "/a1530/namespace-nested-txn-sort-value-limit/tenant/items0/outside", "0")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1530/namespace-nested-txn-sort-value-limit/tenant0/items/e", "0")
+	latest, err := client.Put(ctx, "/a1530/namespace-nested-txn-sort-value-limit/tenant0/items/e", "0")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -32697,6 +32697,7 @@ func TestClientNamespaceNestedTxnGetSortByValueWithLimitReturnsLogicalKeys(t *te
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -32705,6 +32706,7 @@ func TestClientNamespaceNestedTxnGetSortByValueWithLimitReturnsLogicalKeys(t *te
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
 	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(4), nestedGet.Count)
 	require.True(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 2)

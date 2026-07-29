@@ -17575,6 +17575,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 namespace logical prefix 内按 value 排序并分页，返回 logical `items/c=a`、
   `items/b=m`，`Count=4`、`More=true`。该回归防止 nested response adapter 在排序/分页后
   泄漏物理 prefix，或把相邻 prefix/tenant 的较小 value 纳入结果。
+- A2506 补强 A1530 官方 client/v3 namespace.NewKV nested OpTxn 的 value sort + limit header
+  外观：nested `OpGet("items/", WithPrefix(), WithLimit(2), WithSort(SortByValue, SortNone))`
+  返回当前 namespace sorted first page 时，outer txn response header 与 nested range response
+  header 都必须等于相邻 tenant 写入产生的 latest revision；同时 sorted page、`Count=4`、`More=true`
+  与相邻 prefix/tenant 隔离外观保持不变。该回归把 payload sort/page path 纳入 nested Txn header 合同。
 - A1531 固定官方 client/v3 namespace.NewKV nested OpTxn 的 keys-only + value sort desc + limit
   外观：nested `OpGet("items/", WithPrefix(), WithLimit(2), WithKeysOnly(),
   WithSort(SortByValue, SortDescend))` 必须只在当前 namespace logical prefix 内按 value 降序
