@@ -689,6 +689,62 @@ func TestClientLeasingConcurrentOwnerPutsExposeMaxRevisionAndExactVersion(t *tes
 	require.Equal(t, int64(puts), got.Kvs[0].Version)
 }
 
+func TestClientLeasingOwnerDeleteClearsCachedKeyAndAllowsDoubleDelete(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2107/leasing-delete-owner/%d/", time.Now().UnixNano())
+	key := prefix + "key"
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	_, err = client.Put(ctx, key, "abc")
+	require.NoError(t, err)
+	cached, err := leased.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, 1)
+	require.Equal(t, []byte("abc"), cached.Kvs[0].Value)
+
+	deleted, err := leased.Delete(ctx, key)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted.Deleted)
+
+	got, err := leased.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, got.Kvs)
+	direct, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, direct.Kvs)
+
+	deletedAgain, err := leased.Delete(ctx, key)
+	require.NoError(t, err)
+	require.Zero(t, deletedAgain.Deleted)
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
