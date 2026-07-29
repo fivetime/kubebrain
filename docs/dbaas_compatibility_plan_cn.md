@@ -28076,6 +28076,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `PrevKvs` 必须在事务 response 包装下按 key 顺序保留 value、create/mod revision、
   version 与 lease ID；同一事务内后续 range 必须看到删除后的 staged 视图，lease attached
   keys 必须移除被删 key 并保留 start 之前仍存活的同 lease key。
+- A2154 对照 `/root/etcd/server/etcdserver/txn/delete.go` 中 Txn delete 半开区间
+  DeleteRange 语义，固定官方 client/v3
+  `Txn().Then(OpDelete(start, WithRange(end), WithPrevKV()), OpGet(...))` 外观：
+  range delete 必须只删除 `[start,end)` 内命中 key，`PrevKvs` 必须在事务 response
+  包装下按 key 顺序保留 value、create/mod revision、version 与 lease ID；同一事务内后续
+  range 必须看到 range end 处仍存活的 leased key，lease attached keys 必须只移除区间内
+  被删 key。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
