@@ -167,3 +167,87 @@ func TestClientSTMCreateAbortRetryAndSerializableSnapshot(t *testing.T) {
 		require.NoError(t, err)
 	}
 }
+
+func TestClientSTMSerializableReadsAtomicBatches(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	newClient := func() *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Context:     ctx,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	client := newClient()
+
+	keys := make([]string, 5)
+	for index := range keys {
+		keys[index] = fmt.Sprintf("/a2089/stm/serializable-batch/%d", index)
+	}
+	readerErrs := make(chan error, 5)
+	updateErr := make(chan error, 1)
+	updated := make(chan struct{})
+	go func() {
+		defer close(updated)
+		for generation := 0; generation < 5; generation++ {
+			ops := make([]clientv3.Op, 0, len(keys))
+			for _, key := range keys {
+				ops = append(ops, clientv3.OpPut(key, fmt.Sprint(generation)))
+			}
+			txnResp, err := client.Txn(ctx).Then(ops...).Commit()
+			if err != nil {
+				updateErr <- err
+				return
+			}
+			if !txnResp.Succeeded {
+				updateErr <- fmt.Errorf("batch %d transaction did not succeed", generation)
+				return
+			}
+			updated <- struct{}{}
+		}
+		updateErr <- nil
+	}()
+
+	readers := 0
+	for range updated {
+		readers++
+		reader := newClient()
+		go func() {
+			_, err := concurrency.NewSTM(reader, func(stm concurrency.STM) error {
+				values := make([]string, 0, len(keys))
+				for _, key := range keys {
+					values = append(values, stm.Get(key))
+				}
+				for index := range values {
+					if values[index] != values[0] {
+						return fmt.Errorf("got values[%d]=%q, want %q", index, values[index], values[0])
+					}
+				}
+				return nil
+			}, concurrency.WithIsolation(concurrency.Serializable))
+			readerErrs <- err
+		}()
+	}
+	require.NoError(t, <-updateErr)
+	for index := 0; index < readers; index++ {
+		require.NoError(t, <-readerErrs)
+	}
+}
