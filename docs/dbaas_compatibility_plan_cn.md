@@ -17737,6 +17737,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `alpha/a`、`items/a`、`z/final` 及 values，`Count=3`、`More=false`，并排除相邻 tenant keys。
   该回归补齐 A1548 empty-prefix delete 之外的 read path，防止 nested Range adapter 泄漏物理
   namespace prefix 或把空 logical prefix 当作全局 keyspace。
+- A2514 补强 A1549 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix range
+  header 外观：nested `OpGet("", WithPrefix())` 读取当前 namespace 全前缀时，outer txn response
+  header 与 nested range response header 都必须等于相邻 tenant 写入产生的 latest revision；
+  logical key/value、`Count=3`、`More=false` 与相邻 tenant 隔离保持不变。该回归覆盖 empty-prefix
+  Range adapter 的基础 response header propagation。
 - A1550 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix count-only 外观：
   nested `OpGet("", WithPrefix(), WithCountOnly(), WithLimit(1))` 必须只统计当前 namespace
   全前缀内的 3 个 logical key，`CountOnly` 仍按 etcd 语义忽略 limit、不返回 KVs，且排除相邻
