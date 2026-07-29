@@ -33261,7 +33261,7 @@ func TestClientNamespaceNestedTxnUnselectedFutureRevisionRangeIsNotValidated(t *
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
 	_, err = namespacedKV.Put(ctx, "items/a", "value-a")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1539/namespace-nested-txn-unselected-future/tenant0/items/a", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1539/namespace-nested-txn-unselected-future/tenant0/items/a", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -33276,6 +33276,7 @@ func TestClientNamespaceNestedTxnUnselectedFutureRevisionRangeIsNotValidated(t *
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -33284,6 +33285,7 @@ func TestClientNamespaceNestedTxnUnselectedFutureRevisionRangeIsNotValidated(t *
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
 	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(1), nestedGet.Count)
 	require.False(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 1)

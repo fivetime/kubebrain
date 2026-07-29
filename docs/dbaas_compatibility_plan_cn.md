@@ -17652,6 +17652,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `OpGet("items/a", WithRev(math.MaxInt64))` 不得被验证或返回 future revision error；事务必须执行
   Else branch，返回 logical `items/a=value-a`，且未选中 branch 后续 `OpPut` 不得提交。该回归
   防止 nested Txn validation 过早扫描未执行分支。
+- A2511 补强 A1539 官方 client/v3 namespace.NewKV nested OpTxn 的未选中 future revision 分支
+  header 外观：compare 失败后只执行 Else branch 的 current `OpGet("items/a")` 时，outer txn
+  response header 与 nested range response header 都必须等于相邻 tenant 写入产生的 latest
+  revision；未选中 `WithRev(math.MaxInt64)` 分支仍不得触发 future revision error，未选中
+  `OpPut` 不得提交，logical key/value 与 namespace 隔离保持不变。该回归覆盖 nested Txn
+  branch-selection 后的 header propagation。
 - A1540 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 compacted revision 分支外观：
   compact 后 nested `OpTxn` compare 失败时，未选中 Then branch 中的
   `OpGet("items/a", WithRev(compactedRev))` 不得被验证或返回 compacted error；事务必须执行 Else
