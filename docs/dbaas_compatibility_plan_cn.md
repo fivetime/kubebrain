@@ -18479,6 +18479,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical `[ "", "z" )`，返回历史 first-revision key `items/a` 及旧 value、`Count=3`、`More=true`，
   并排除之后的 update/delete/new key、upper bound 外 `z/final` 和相邻 tenant。该回归补齐
   A1579 current WithFirstRev helper 与 A1597/A1599 historical revision-order page 之外的 helper 路径。
+- A2556 补强 A1610 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical WithFirstRev helper header 外观：nested `OpGet("", append(WithFirstRev(),
+  WithRange("z"), WithRev(historyRev))...)` 返回历史 first-revision helper page 时，outer txn
+  response header 与 nested range response header 必须保持当前 latest revision；`Count=3`、
+  `More=true`、历史 first-revision key 内容与 namespace 隔离断言保持不变。
 - A1611 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical limit zero 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithLimit(0), WithSort(SortByKey, SortAscend))` 必须把 limit zero 当作无限制，在指定历史
