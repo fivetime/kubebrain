@@ -360,6 +360,69 @@ func TestClientConcurrencyElectionObserveToleratesCompactedLeaderRevision(t *tes
 	require.NoError(t, election.Resign(ctx))
 }
 
+func TestClientConcurrencyElectionObserveFreshResponsesOnProclaim(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	session, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(session.Orphan)
+
+	prefix := fmt.Sprintf("/a2096/concurrency/election-observe-fresh/%d/", time.Now().UnixNano())
+	election := concurrency.NewElection(session, prefix)
+	require.NoError(t, election.Campaign(ctx, "abc"))
+	observe := election.Observe(ctx)
+	mustObserve := func(want string) *clientv3.GetResponse {
+		select {
+		case observed, ok := <-observe:
+			require.True(t, ok)
+			require.NotNil(t, observed)
+			require.Len(t, observed.Kvs, 1)
+			require.Equal(t, want, string(observed.Kvs[0].Value))
+			return observed
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+			return nil
+		}
+	}
+
+	first := mustObserve("abc")
+	require.Equal(t, int64(1), first.Kvs[0].Version)
+	require.NoError(t, election.Proclaim(ctx, "def"))
+	second := mustObserve("def")
+	require.Equal(t, int64(2), second.Kvs[0].Version)
+	require.NoError(t, election.Proclaim(ctx, "ghi"))
+	third := mustObserve("ghi")
+	require.Equal(t, int64(3), third.Kvs[0].Version)
+
+	require.NotSame(t, first, second)
+	require.NotSame(t, first, third)
+	require.NotSame(t, second, third)
+	require.NoError(t, election.Resign(ctx))
+}
+
 func TestClientConcurrencySessionOptionsAndContext(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
