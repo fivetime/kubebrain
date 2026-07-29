@@ -18423,6 +18423,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `More=false`，并排除之后的 delete/update/new key、upper bound 外 `z/final` 和相邻 tenant。
   该回归补齐 A1593 current contradictory CreateRev 与 A1602/A1603 historical CreateRev filter
   之外的 historical contradictory create-filter 组合路径。
+- A2551 补强 A1605 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical 矛盾 CreateRev filter header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithMinCreateRev(historyRev+1), WithMaxCreateRev(historyRev), WithLimit(1))`
+  返回历史 contradictory create-filter count-only 外观结果时，outer txn response header 与
+  nested range response header 必须保持当前 latest revision；`Count=3`、`More=false`、空 KVs 与 namespace 隔离断言保持不变。
 - A1606 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical WithFirstKey helper 外观：nested `OpGet("", append(WithFirstKey(), WithRange("z"),
   WithRev(historyRev))...)` 必须在指定历史 revision 上按 key 升序分页当前 namespace logical
