@@ -17350,6 +17350,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须经 `prefixCmps` 只比较当前 namespace 的 `[range/a, range/d)` logical range；compare 成功
   后只删除该 range 中的 logical `range/a,b,c`，保留 upper bound、同 tenant 相邻物理 range 与
   相邻 tenant。该回归防止 namespace Txn compare range 与 Then ops 使用不一致物理边界。
+- A2596 补强 A1507 官方 client/v3 namespace.NewKV Txn range compare 成功分支 delete 的 header
+  外观：显式 logical range compare 选中 Then `OpDelete(..., WithPrevKV())` 时，outer txn response
+  header 必须与 delete response header 保持同一事务 commit revision；`Deleted=3`、logical
+  PrevKVs、upper bound 保留和 range/tenant 隔离断言保持不变。
 - A1508 固定官方 client/v3 namespace.NewKV Txn range compare 的空 logical range 隔离外观：
   A1507 固定 compare 成功分支后，本轮补齐失败分支；当当前 namespace 的
   `[range/a, range/d)` logical range 为空，但 upper bound、同 tenant 相邻 range 与相邻 tenant
