@@ -28044,6 +28044,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `[start, "\x00")` 开放上界中的命中 key，排除 start 之前 key；Delete response/header
   精确推进一次 revision，`Deleted` 计数、`PrevKvs` key 顺序与 create/mod revision/version
   元数据正确，删除前 revision 仍可历史读取完整 keyset。
+- A2148 对照 KubeBrain direct `DeleteRangeEmptyNonFromKeyRangeDoesNotDelete`
+  与 etcd range 半开区间语义，固定官方 client/v3 KV
+  `Do(OpDelete(start, WithRange(end), WithPrevKV()))` 通用 Op 路径 no-op 外观：
+  `end == start` 与 `end < start` 的非 from-key 空区间都不得消耗 revision，不得删除
+  任意 key，Delete response/header 必须保持当前 revision，`Deleted=0` 且 `PrevKvs` 为空。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

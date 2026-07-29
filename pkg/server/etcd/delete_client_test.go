@@ -675,13 +675,19 @@ func TestClientDoOpDeleteNoOpDoesNotConsumeRevisionMatchesEtcd(t *testing.T) {
 	key := prefix + "key"
 	create, err := client.Put(ctx, key, "value")
 	require.NoError(t, err)
+	beforeKey := prefix + "a"
+	afterKey := prefix + "z"
+	before, err := client.Put(ctx, beforeKey, "before")
+	require.NoError(t, err)
+	after, err := client.Put(ctx, afterKey, "after")
+	require.NoError(t, err)
 
 	missingOp, err := client.Do(ctx, clientv3.OpDelete(prefix+"missing", clientv3.WithPrevKV()))
 	require.NoError(t, err)
 	missing := missingOp.Del()
 	require.NotNil(t, missing)
 	require.NotNil(t, missing.Header)
-	require.Equal(t, create.Header.Revision, missing.Header.Revision)
+	require.Equal(t, after.Header.Revision, missing.Header.Revision)
 	require.Zero(t, missing.Deleted)
 	require.Empty(t, missing.PrevKvs)
 
@@ -690,20 +696,28 @@ func TestClientDoOpDeleteNoOpDoesNotConsumeRevisionMatchesEtcd(t *testing.T) {
 	emptyRange := emptyRangeOp.Del()
 	require.NotNil(t, emptyRange)
 	require.NotNil(t, emptyRange.Header)
-	require.Equal(t, create.Header.Revision, emptyRange.Header.Revision)
+	require.Equal(t, after.Header.Revision, emptyRange.Header.Revision)
 	require.Zero(t, emptyRange.Deleted)
 	require.Empty(t, emptyRange.PrevKvs)
 
-	current, err := client.Get(ctx, key)
+	reversedRangeOp, err := client.Do(ctx, clientv3.OpDelete(afterKey, clientv3.WithRange(beforeKey), clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	reversedRange := reversedRangeOp.Del()
+	require.NotNil(t, reversedRange)
+	require.NotNil(t, reversedRange.Header)
+	require.Equal(t, after.Header.Revision, reversedRange.Header.Revision)
+	require.Zero(t, reversedRange.Deleted)
+	require.Empty(t, reversedRange.PrevKvs)
+
+	current, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
 	require.NoError(t, err)
 	require.NotNil(t, current.Header)
-	require.Equal(t, create.Header.Revision, current.Header.Revision)
-	require.Len(t, current.Kvs, 1)
-	require.Equal(t, []byte(key), current.Kvs[0].Key)
-	require.Equal(t, []byte("value"), current.Kvs[0].Value)
-	require.Equal(t, create.Header.Revision, current.Kvs[0].CreateRevision)
-	require.Equal(t, create.Header.Revision, current.Kvs[0].ModRevision)
-	require.Equal(t, int64(1), current.Kvs[0].Version)
+	require.Equal(t, after.Header.Revision, current.Header.Revision)
+	require.Equal(t, []deleteClientKV{
+		{key: "a", value: "before", createRevision: before.Header.Revision, modRevision: before.Header.Revision, version: 1},
+		{key: "key", value: "value", createRevision: create.Header.Revision, modRevision: create.Header.Revision, version: 1},
+		{key: "z", value: "after", createRevision: after.Header.Revision, modRevision: after.Header.Revision, version: 1},
+	}, deleteClientKVs(current.Kvs, prefix))
 }
 
 func TestClientDoOpDeleteEmptyKeyIsTyped(t *testing.T) {
