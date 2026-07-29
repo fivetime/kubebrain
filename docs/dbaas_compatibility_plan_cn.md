@@ -28119,6 +28119,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `[start,end)` 内命中 leased key，`PrevKvs` 必须按 key 顺序保留 value、create/mod
   revision、version 与 lease ID；后续 range 必须看到 range end 处 leased key 继续存活，
   lease attached keys 必须只移除区间内被删 key。
+- A2160 对照 `/root/etcd/client/v3/op.go` 的 `OpTxn` request 包装和 `WithPrefix()`
+  展开语义，固定官方 client/v3 `Do(OpTxn(nil, []Op{OpDelete(prefix, WithPrefix(),
+  WithPrevKV()), OpGet(...)}, nil))` 外观：顶层 `OpResponse.Txn()` header、叶子
+  DeleteRange 与 Range response header 必须使用同一提交 revision；prefix delete
+  必须只删除 prefix 内 leased key，`PrevKvs` 必须按 key 顺序保留 value、create/mod
+  revision、version 与 lease ID；后续 range 必须看到 prefix 外同 root 的 leased key
+  继续存活，lease attached keys 必须只移除 prefix 内被删 key。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
