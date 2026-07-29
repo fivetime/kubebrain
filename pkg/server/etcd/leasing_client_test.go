@@ -170,6 +170,7 @@ func TestClientLeasingCachedCompareTypedDoAndNestedBranches(t *testing.T) {
 	require.NoError(t, err)
 	cached, err := leased.Get(ctx, compareKey)
 	require.NoError(t, err)
+	require.NotNil(t, cached.Header)
 	require.Len(t, cached.Kvs, 1)
 	cachedKV := cached.Kvs[0]
 	comparisons := []struct {
@@ -1120,11 +1121,17 @@ func TestClientLeasingAtomicTxnCacheStaysConsistent(t *testing.T) {
 
 	final, err := leased.Txn(ctx).Then(gets...).Commit()
 	require.NoError(t, err)
+	require.NotNil(t, final.Header)
 	require.True(t, clientLeasingTxnResponseHasSingleRevision(final, keyCount))
 	var finalValue string
 	for index, response := range final.Responses {
-		kvs := response.GetResponseRange().Kvs
+		rangeResponse := response.GetResponseRange()
+		require.NotNil(t, rangeResponse)
+		require.NotNil(t, rangeResponse.Header)
+		kvs := rangeResponse.Kvs
 		require.Len(t, kvs, 1)
+		require.Equal(t, kvs[0].ModRevision, rangeResponse.Header.Revision)
+		require.GreaterOrEqual(t, rangeResponse.Header.Revision, final.Header.Revision)
 		if index == 0 {
 			finalValue = string(kvs[0].Value)
 			continue
@@ -1453,8 +1460,13 @@ func TestClientLeasingReconnectOperationsMatchDirectKV(t *testing.T) {
 	require.Greater(t, bridge.DroppedConnections(), txnDropsBefore)
 	require.NoError(t, err)
 	require.True(t, txn.Succeeded)
+	require.NotNil(t, txn.Header)
 	require.Len(t, txn.Responses, 1)
-	require.Empty(t, txn.Responses[0].GetResponseRange().Kvs)
+	txnRange := txn.Responses[0].GetResponseRange()
+	require.NotNil(t, txnRange)
+	require.NotNil(t, txnRange.Header)
+	require.GreaterOrEqual(t, txnRange.Header.Revision, txn.Header.Revision)
+	require.Empty(t, txnRange.Kvs)
 
 	const keys = 8
 	for index := 0; index < keys; index += 2 {
@@ -1624,11 +1636,21 @@ func TestClientLeasingCachedComparisonsWorkOffline(t *testing.T) {
 		compareCancel()
 		require.NoError(t, compareErr, "comparison %d", index)
 		require.Equal(t, testCase.want, response.Succeeded, "comparison %d", index)
+		require.NotNil(t, response.Header, "comparison %d", index)
 		expectedResponses := 0
 		if testCase.want {
 			expectedResponses = 1
 		}
 		require.Len(t, response.Responses, expectedResponses, "comparison %d", index)
+		if testCase.want {
+			rangeResponse := response.Responses[0].GetResponseRange()
+			require.NotNil(t, rangeResponse, "comparison %d", index)
+			require.NotNil(t, rangeResponse.Header, "comparison %d", index)
+			require.Len(t, rangeResponse.Kvs, 1, "comparison %d", index)
+			require.Equal(t, cached.Header.Revision, rangeResponse.Header.Revision, "comparison %d", index)
+			require.Equal(t, cachedKV.ModRevision, rangeResponse.Kvs[0].ModRevision, "comparison %d", index)
+			require.GreaterOrEqual(t, rangeResponse.Header.Revision, response.Header.Revision, "comparison %d", index)
+		}
 	}
 }
 
