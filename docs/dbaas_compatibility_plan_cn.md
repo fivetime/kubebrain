@@ -24359,6 +24359,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `SortByKey` desc/asc/none 变体必须只清空返回页 value，保留排序命中每个 KV 的
   version/create revision/mod revision。该回归补强 A2089/A2092/A2094/A2096/A2098 的
   current serializable prefix sort KeysOnly metadata 断言。
+- A2808 固定 A2366 覆盖的 A2089 官方 client/v3 namespace.NewKV nested OpTxn non-empty
+  prefix current serializable
+  `OpGet("items/", WithPrefix(), WithSerializable(), KeysOnly+Limit(2), SortByValue(Asc))`
+  路径的中间 `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但
+  `Revision=0`，不能被 namespace response adapter 误改写为 latest revision；outer/range header
+  与 current serializable prefix value-asc KeysOnly page 元数据断言沿用 A2089。
 - A2367 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current serializable prefix
   revision/version sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByCreateRevision`、
   `SortByModRevision`、`SortByVersion` 的 asc/desc/none 变体必须只清空返回页 value，
