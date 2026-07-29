@@ -914,6 +914,73 @@ func TestClientLeasingTxnOwnerGetRangeReturnsFullPrefix(t *testing.T) {
 	}
 }
 
+func TestClientLeasingTxnOwnerDeleteRangeClearsPrefix(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2111/leasing-txn-owner-delete-range/%d/", time.Now().UnixNano())
+	dataPrefix := prefix + "k-"
+	outsideKey := prefix + "z-outside"
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	const keyCount = 4
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("%s%d", dataPrefix, i)
+		_, err = client.Put(ctx, key, key+key)
+		require.NoError(t, err)
+	}
+	_, err = client.Put(ctx, outsideKey, "outside")
+	require.NoError(t, err)
+
+	cached, err := leased.Get(ctx, dataPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, keyCount)
+
+	txn, err := leased.Txn(ctx).Then(clientv3.OpDelete(dataPrefix, clientv3.WithPrefix())).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 1)
+	deleted := txn.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.Equal(t, int64(keyCount), deleted.Deleted)
+
+	got, err := leased.Get(ctx, dataPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, got.Kvs)
+	direct, err := client.Get(ctx, dataPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, direct.Kvs)
+	outside, err := client.Get(ctx, outsideKey)
+	require.NoError(t, err)
+	require.Len(t, outside.Kvs, 1)
+	require.Equal(t, []byte("outside"), outside.Kvs[0].Value)
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
