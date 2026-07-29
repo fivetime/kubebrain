@@ -17726,6 +17726,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须按 logical key 返回 `alpha/a`、`items/a`、`z/final`，删除后当前 namespace 为空且相邻
   tenant keys 保留。该回归补齐 A1517 的 from-key delete 外观之外的 empty-prefix delete 分支，
   防止 nested Delete range adapter 泄漏全局 keyspace 或 PrevKV 物理前缀。
+- A2513 补强 A1548 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix delete
+  header 外观：nested `OpDelete("", WithPrefix(), WithPrevKV())` 作为写事务执行时，outer txn
+  response header revision 必须大于事务前 latest revision，nested delete response header 必须等于
+  outer txn response header；logical PrevKVs、删除数量、当前 namespace 清空与相邻 tenant 保留
+  合同保持不变。该回归覆盖 empty-prefix DeleteRange 写路径的 nested response header propagation。
 - A1549 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix range 外观：
   nested `OpGet("", WithPrefix())` 必须按 upstream namespace wrapper 映射为当前 namespace
   全前缀读取，而不是 empty-key validation；nested `ResponseRange` 必须返回 logical
