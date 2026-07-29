@@ -104,6 +104,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestTxnNestedCompareFailureResponseMatchesEtcd` 和
   `TestTxnNestedComparePathIsComputedBeforeWrites`，锁定无 compare nested、
   nested success、nested compare failure 与 staged path-before-write 路径。
+- **generic nested inner response header 外观**：A2983 继续对照 etcd txn 执行路径，
+  锁定 nested success/failure branch 内部 Range/Put response header revision 必须等于
+  outer txn revision；中间 nested `TxnResponse.Header.Revision` 仍保持 0。覆盖
+  `TestNestedTxnWithoutComparesIgnoresNonEmptyFailureBranch`、
+  `TestTxnNestedSuccessResponseMatchesEtcd` 和
+  `TestTxnNestedCompareFailureResponseMatchesEtcd`。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
