@@ -423,6 +423,73 @@ func TestClientConcurrencyElectionObserveFreshResponsesOnProclaim(t *testing.T) 
 	require.NoError(t, election.Resign(ctx))
 }
 
+func TestClientConcurrencyElectionKeepsLeadershipOnSessionRestart(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	session, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(session.Orphan)
+
+	prefix := fmt.Sprintf("/a2097/concurrency/election-session-restart/%d/", time.Now().UnixNano())
+	election := concurrency.NewElection(session, prefix)
+	require.NoError(t, election.Campaign(ctx, "abc"))
+
+	waitSession, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(waitSession.Orphan)
+	waitCtx, waitCancel := context.WithCancel(ctx)
+	waiterWon := make(chan error, 1)
+	go func() {
+		waiterWon <- concurrency.NewElection(waitSession, prefix).Campaign(waitCtx, "waiter")
+	}()
+	requireConcurrencyBlocked(t, waiterWon, "waiter before session restart")
+
+	restarted, err := concurrency.NewSession(client, concurrency.WithLease(session.Lease()))
+	require.NoError(t, err)
+	t.Cleanup(restarted.Orphan)
+	restartedElection := concurrency.NewElection(restarted, prefix)
+	require.NoError(t, restartedElection.Campaign(ctx, "def"))
+
+	observe := restartedElection.Observe(ctx)
+	select {
+	case observed, ok := <-observe:
+		require.True(t, ok)
+		require.NotNil(t, observed)
+		require.Len(t, observed.Kvs, 1)
+		require.Equal(t, "def", string(observed.Kvs[0].Value))
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	requireConcurrencyBlocked(t, waiterWon, "waiter after session restart")
+
+	waitCancel()
+	require.ErrorIs(t, waitRecipeResult(ctx, waiterWon, "waiter cancellation"), context.Canceled)
+	require.NoError(t, restartedElection.Resign(ctx))
+}
+
 func TestClientConcurrencySessionOptionsAndContext(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

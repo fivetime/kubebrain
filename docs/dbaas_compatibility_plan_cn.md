@@ -27818,6 +27818,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   连续 `Proclaim("def")`、`Proclaim("ghi")`，同一 Observe channel 必须依次返回
   value 为 `abc`/`def`/`ghi`、version 为 1/2/3 的 leader response，且每次返回的
   `*clientv3.GetResponse` 都必须是新对象，不能复用旧响应指针导致后续更新污染历史响应。
+- A2097 对照 `/root/etcd/tests/integration/v3_election_test.go:TestElectionOnSessionRestart`
+  固定官方 client/v3 concurrency Election 快速 session restart 语义：leader campaign 后，
+  另一个 session 的 campaign 必须持续等待；使用原 leader lease 创建新 session 并再次
+  `Campaign("def")` 时不能丢失 leadership，Observe 必须看到 value 为 `def` 的 leader，
+  等待者不能在原 lease 未失效、未 resign 前抢占。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
