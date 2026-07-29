@@ -208,8 +208,12 @@ func TestSerializableReadonlyTxnUsesOneDurableFollowerSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
 	require.Equal(t, branch.Header.Revision, resp.Header.Revision)
-	require.Less(t, second.Header.Revision, resp.Responses[0].GetResponseRange().Kvs[0].ModRevision)
-	require.Equal(t, []byte("visible"), resp.Responses[0].GetResponseRange().Kvs[0].Value)
+	rangeResp := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Less(t, second.Header.Revision, rangeResp.Kvs[0].ModRevision)
+	require.Equal(t, []byte("visible"), rangeResp.Kvs[0].Value)
 }
 
 func TestReadonlyTxnWithNonSerializableRangeStillRoutesToLeader(t *testing.T) {
@@ -6511,7 +6515,11 @@ func TestTxnCompareCreateRevisionZeroChecksExistence(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
 	require.Len(t, resp.Responses, 1)
-	require.Equal(t, []byte("created"), resp.Responses[0].GetResponseRange().Kvs[0].Value)
+	rangeResp := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Equal(t, []byte("created"), rangeResp.Kvs[0].Value)
 }
 
 func TestTxnCompareCreateRevisionNonZeroMatchesMetadata(t *testing.T) {
@@ -6542,7 +6550,11 @@ func TestTxnCompareCreateRevisionNonZeroMatchesMetadata(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
-	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 1)
+	rangeResp = resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Len(t, rangeResp.Kvs, 1)
 
 	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -6564,7 +6576,11 @@ func TestTxnCompareCreateRevisionNonZeroMatchesMetadata(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
-	require.Equal(t, []byte("v1"), resp.Responses[0].GetResponseRange().Kvs[0].Value)
+	rangeResp = resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Equal(t, []byte("v1"), rangeResp.Kvs[0].Value)
 }
 
 func TestTxnCompareVersionChecksExistence(t *testing.T) {
@@ -6697,7 +6713,11 @@ func TestTxnCompareLeaseRunsSelectedBranch(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
 	require.Len(t, resp.Responses, 2)
-	require.Equal(t, []byte("matched"), resp.Responses[1].GetResponseRange().Kvs[0].Value)
+	rangeResp := resp.Responses[1].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Equal(t, []byte("matched"), rangeResp.Kvs[0].Value)
 
 	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -6720,7 +6740,11 @@ func TestTxnCompareLeaseRunsSelectedBranch(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
 	require.Len(t, resp.Responses, 1)
-	require.Equal(t, []byte("matched"), resp.Responses[0].GetResponseRange().Kvs[0].Value)
+	rangeResp = resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Equal(t, []byte("matched"), rangeResp.Kvs[0].Value)
 }
 
 func TestTxnCompactRevisionCAS(t *testing.T) {
