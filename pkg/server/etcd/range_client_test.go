@@ -77940,7 +77940,7 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeWithFirstRevReturnsLogicalKey
 	}
 	_, err = namespacedKV.Put(ctx, "alpha/a", "updated-alpha/a")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1579/namespace-nested-txn-empty-start-range-first-rev/tenant0/items/older", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1579/namespace-nested-txn-empty-start-range-first-rev/tenant0/items/older", "outside-tenant")
 	require.NoError(t, err)
 
 	getOpts := append(clientv3.WithFirstRev(), clientv3.WithRange("z"))
@@ -77951,6 +77951,7 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeWithFirstRevReturnsLogicalKey
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -77958,6 +77959,8 @@ func TestClientNamespaceNestedTxnGetEmptyStartRangeWithFirstRevReturnsLogicalKey
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
+	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(2), nestedGet.Count)
 	require.True(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 1)
