@@ -27896,6 +27896,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 leasing KV split-cache Txn If/Then/Else 语义：两个 leasing client
   分别缓存不同 key 后，基于 owner cache 的 compare 必须正确选择 Then/Else，分支内 Put 的
   结果必须在 direct KV、发起方 leasing KV 和另一 leasing KV 上都收敛可见。
+- A2116 对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go:TestLeasingOwnerDeletePrefix`
+  固定官方 client/v3 leasing KV owner `Do(OpDelete(prefix, WithPrefix()))` 语义：owner 只缓存
+  range 内一个 key 时，prefix delete 仍必须删除完整 range，返回 Deleted 等于 key 数量，
+  所有删除事件共用同一 revision，后续每个 key 的 leasing Get 与直读都必须为空。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
