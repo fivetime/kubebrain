@@ -24896,6 +24896,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 first page 都只清空 value，且保留命中 KV 的 version/create revision/mod revision；
   outer/range header 与 prefix current serializable create-revision KeysOnly 语义沿用
   A2125/A2140/A2127/A2136。
+- A2894 固定 A2030/A2031/A2032/A2033/A2038/A2039 官方 client/v3 namespace.NewKV
+  nested OpTxn current serializable `OpGet("items/", WithFirstCreate()/WithLastCreate()/
+  WithFirstRev()/WithLastRev()/WithFirstKey()/WithLastKey(), WithSerializable(),
+  WithKeysOnly())` prefix selector helper 路径的中间 `TxnResponse.Header` 与 KeysOnly
+  KV 元数据外观：nested txn response header 必须存在但 `Revision=0`，helper 选中的单 KV
+  只清空 value，且保留命中 KV 的 version/create revision/mod revision；outer/range header、
+  `More=true` 与 helper 内建 limit 语义沿用 A2030/A2031/A2032/A2033/A2038/A2039。
 - A2370 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable logical
   range key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByKey` desc/asc/none
   与 `SortByValue` asc/desc 变体必须在 historical revision 上只清空返回页 value，
