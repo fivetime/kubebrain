@@ -34720,7 +34720,7 @@ func TestClientNamespaceNestedTxnGetEmptyPrefixWithFirstRevReturnsLogicalKey(t *
 		_, err = namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
 	}
-	_, err = namespacedKV.Put(ctx, "alpha/oldest", "updated-alpha/oldest")
+	latest, err := namespacedKV.Put(ctx, "alpha/oldest", "updated-alpha/oldest")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -34730,6 +34730,7 @@ func TestClientNamespaceNestedTxnGetEmptyPrefixWithFirstRevReturnsLogicalKey(t *
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -34737,6 +34738,8 @@ func TestClientNamespaceNestedTxnGetEmptyPrefixWithFirstRevReturnsLogicalKey(t *
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
+	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(3), nestedGet.Count)
 	require.True(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 1)
