@@ -499,6 +499,96 @@ func TestClientWatchUpdateReportsUpdateNotCreate(t *testing.T) {
 	require.Equal(t, create.Header.Revision, event.PrevKv.ModRevision)
 }
 
+func TestClientWatchMultiWatcherKeyAndPrefixIsolation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2130/watch-multi/%d/", time.Now().UnixNano())
+	keys := []string{prefix + "foo", prefix + "bar", prefix + "baz"}
+	exactWatches := make(map[string]clientv3.WatchChan, len(keys))
+	for _, key := range keys {
+		exactWatches[key] = client.Watch(ctx, key, clientv3.WithCreatedNotify())
+	}
+	prefixWatch := client.Watch(ctx, prefix+"b", clientv3.WithPrefix(), clientv3.WithCreatedNotify())
+
+	for _, watch := range exactWatches {
+		requireClientWatchCreated(t, ctx, watch)
+	}
+	requireClientWatchCreated(t, ctx, prefixWatch)
+
+	const updateCount = 4
+	type wantEvent struct {
+		key      string
+		value    string
+		revision int64
+	}
+	collect := func(watch clientv3.WatchChan, count int) []wantEvent {
+		t.Helper()
+		got := make([]wantEvent, 0, count)
+		for len(got) < count {
+			response := requireClientWatchResponse(t, ctx, watch)
+			require.NoError(t, response.Err())
+			require.False(t, response.Created)
+			require.False(t, response.Canceled)
+			require.False(t, response.IsProgressNotify())
+			for _, event := range response.Events {
+				require.Equal(t, clientv3.EventTypePut, event.Type)
+				got = append(got, wantEvent{
+					key:      string(event.Kv.Key),
+					value:    string(event.Kv.Value),
+					revision: event.Kv.ModRevision,
+				})
+			}
+		}
+		return got
+	}
+	exactWants := make(map[string][]wantEvent, len(keys))
+	prefixWants := make([]wantEvent, 0, updateCount*2)
+	for update := 0; update < updateCount; update++ {
+		for _, key := range keys {
+			value := fmt.Sprintf("%s-%d", key[len(prefix):], update)
+			response, err := client.Put(ctx, key, value)
+			require.NoError(t, err)
+			want := wantEvent{key: key, value: value, revision: response.Header.Revision}
+			exactWants[key] = append(exactWants[key], want)
+			if strings.HasPrefix(key, prefix+"b") {
+				prefixWants = append(prefixWants, want)
+			}
+		}
+	}
+
+	for _, key := range keys {
+		got := collect(exactWatches[key], len(exactWants[key]))
+		require.Equalf(t, exactWants[key], got, "exact watcher for %q", key)
+		requireNoClientWatchEventBeforeProgress(t, ctx, client, exactWatches[key])
+	}
+	gotPrefix := collect(prefixWatch, len(prefixWants))
+	require.Equal(t, prefixWants, gotPrefix)
+	requireNoClientWatchEventBeforeProgress(t, ctx, client, prefixWatch)
+}
+
 func TestClientWatchEventTypesCreateModifyDeleteAndExpire(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

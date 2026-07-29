@@ -27953,6 +27953,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 Watch 显式 range 的半开区间语义：`Watch(start, WithRange(end))`
   只能交付 `[start,end)` 内的 PUT 事件，事件 key/value 与 Put revision 对齐；右端点
   `end` 和范围外 key 不得在 progress barrier 前泄漏为 watch event。
+- A2130 对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchMultiWatcher`
+  固定官方 client/v3 多 watcher 基础隔离语义：多个 exact watch 与一个 prefix watch
+  同时存在时，exact watcher 只能按 revision 顺序收到自身 key 的 PUT，prefix watcher
+  只能收到匹配前缀的 key 集合；非匹配 key 不得在 progress barrier 前串流到任一 watcher。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
