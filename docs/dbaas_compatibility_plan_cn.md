@@ -17314,6 +17314,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `range/a,b,c`、空 values、`Count=3`、`More=false`，排除 upper bound、同 tenant 相邻物理
   range 与相邻 tenant。该回归防止 namespace Txn response adapter 在 leasing range delete
   预读路径上漏做 unprefix 或错误返回 value。
+- A2593 补强 A1504 官方 client/v3 namespace.NewKV Txn OpGet 的显式 logical range +
+  `WithKeysOnly()` header 外观：`Txn().Then(OpGet("range/a", WithRange("range/d"),
+  WithKeysOnly()))` 返回 logical keys-only page 时，outer txn response header 与 range response
+  header 必须等于相邻 tenant 写入后的全局 latest revision；logical keys、空 values、metadata、
+  `Count=3`、`More=false` 和 range/tenant 隔离断言保持不变。
 - A1505 固定官方 client/v3 namespace.NewKV Txn 中显式 range pre-read + delete 的组合外观：
   对照 upstream leasing `deleteRangeRPC` 的
   `Then(OpGet(key, WithRange(end), WithKeysOnly()), OpDelete(key, WithRange(end)))`，本轮新增

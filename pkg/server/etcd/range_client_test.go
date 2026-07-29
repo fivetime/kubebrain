@@ -1346,7 +1346,7 @@ func TestClientNamespaceTxnGetKeysOnlyWithLogicalRangeReturnsLogicalKeys(t *test
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1504/namespace-txn-keys-only-range/tenant/range0/outside", "same-tenant-outside-range")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1504/namespace-txn-keys-only-range/tenant0/range/b", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1504/namespace-txn-keys-only-range/tenant0/range/b", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -1356,10 +1356,12 @@ func TestClientNamespaceTxnGetKeysOnlyWithLogicalRangeReturnsLogicalKeys(t *test
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	txnGet := txnResp.Responses[0].GetResponseRange()
 	require.NotNil(t, txnGet)
 	require.NotNil(t, txnGet.Header)
+	require.Equal(t, latest.Header.Revision, txnGet.Header.Revision)
 	require.Equal(t, int64(3), txnGet.Count)
 	require.False(t, txnGet.More)
 	require.Len(t, txnGet.Kvs, 3)
