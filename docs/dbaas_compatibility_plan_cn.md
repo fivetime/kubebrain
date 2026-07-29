@@ -161,6 +161,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `[0xfe,0xff)`、`[0xff,\x00)` read-only Range/Txn header 不前进且等于最后 seed put；
   Txn DeleteRange outer/inner header 精确前进 1；standalone DeleteRange 再精确前进 1，
   并保留 PrevKV 二进制排序。
+- **Txn Put IgnoreValue/IgnoreLease header 外观**：A2993 对照 etcd
+  `/root/etcd/server/etcdserver/txn/put.go`，固定 generic txn 和 official clientv3
+  `WithIgnoreValue`/`WithIgnoreLease` 路径：outer txn header 存在；inner Put response
+  header revision 等于 outer txn revision；同事务 staged Range response header 也等于
+  outer revision；最终 Get header 等于最近一次写 revision，并保留 value/lease 组合语义。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
