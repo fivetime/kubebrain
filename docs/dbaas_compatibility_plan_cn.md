@@ -17029,6 +17029,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `unprefixTxnResponse` 保持 `CountOnly` 优先、`Kvs` 为空、`More=false`。该回归防止
   namespace Txn response adapter 在 range/count-only 路径上与专用 Get、通用 Do(Get)
   漂移。
+- A2600 补强 A1461/A1462/A1463 官方 client/v3 namespace.NewKV full-range CountOnly/KeysOnly
+  三入口 header 外观：`Get`、`Do(OpGet)` 与 `Txn().Then(OpGet)` 只统计当前 namespace logical
+  keys 时，各 response header 必须等于相邻 tenant 写入后的全局 latest revision；Txn outer
+  header 与 range response header 也必须一致；`Count=3`、空 KVs、`More=false` 和 CountOnly
+  优先级断言保持不变。
 - A1464 固定官方 client/v3 namespace.NewKV Get 的 KeysOnly/Limit full-range 外观：
   对照 upstream `namespace.kvPrefix.Get` 的 full-range prefixing，以及既有
   range keys-only/limit 兼容门禁，`namespace.NewKV(...).Get("", WithFromKey(),
