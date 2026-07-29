@@ -1573,6 +1573,91 @@ func TestRawGRPCTxnDuplicateIntervalValidation(t *testing.T) {
 	}
 }
 
+func TestRawGRPCTxnAllowsSameKeyInMutuallyExclusiveBranchesMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-mutually-exclusive-duplicate-key-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3013/txn-mutually-exclusive-duplicate-key/%d/", time.Now().UnixNano())
+	topKey := []byte(prefix + "top")
+	topResp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{
+			txnClientIntCompare([]byte(prefix+"missing"), nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0),
+		},
+		Success: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: topKey, Value: []byte("success")}),
+		},
+		Failure: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: topKey, Value: []byte("failure")}),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, topResp)
+	require.True(t, topResp.Succeeded)
+	require.NotNil(t, topResp.Header)
+	require.Len(t, topResp.Responses, 1)
+	require.NotNil(t, topResp.Responses[0].GetResponsePut())
+
+	top, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: topKey})
+	require.NoError(t, err)
+	require.Len(t, top.Kvs, 1)
+	require.Equal(t, []byte("success"), top.Kvs[0].Value)
+	require.Equal(t, topResp.Header.Revision, top.Kvs[0].CreateRevision)
+	require.Equal(t, topResp.Header.Revision, top.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), top.Kvs[0].Version)
+
+	nestedKey := []byte(prefix + "nested")
+	nestedResp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare([]byte(prefix+"nested-missing"), nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: nestedKey, Value: []byte("then")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: nestedKey, Value: []byte("else")}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, nestedResp)
+	require.True(t, nestedResp.Succeeded)
+	require.NotNil(t, nestedResp.Header)
+	require.Len(t, nestedResp.Responses, 1)
+	nestedTxn := nestedResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.False(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	require.NotNil(t, nestedTxn.Responses[0].GetResponsePut())
+
+	nested, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: nestedKey})
+	require.NoError(t, err)
+	require.Len(t, nested.Kvs, 1)
+	require.Equal(t, []byte("else"), nested.Kvs[0].Value)
+	require.Equal(t, nestedResp.Header.Revision, nested.Kvs[0].CreateRevision)
+	require.Equal(t, nestedResp.Header.Revision, nested.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), nested.Kvs[0].Version)
+}
+
 func TestClientTxnNestedDuplicateIntervalValidation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
