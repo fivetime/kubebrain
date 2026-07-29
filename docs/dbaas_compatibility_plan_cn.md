@@ -28311,6 +28311,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   public client error，未选中分支后续写不得落库；`TxnResponse.Succeeded=true`，实际选中
   Then 分支 Range response header 与 txn header 保持当前 revision，事务后 keyset 必须
   保持 seed key，current header revision 不得低于 post-compact revision。
+- A2185 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareKV` 对 raw
+  gRPC `Compare.TargetUnion` 缺省 oneof 的 zero/empty 默认值处理，固定
+  MOD/CREATE/VERSION 缺省 expected=0 时 `GREATER` 成功、无 lease key 的 LEASE
+  缺省 expected=0 时 `EQUAL` 成功、非空 VALUE 对缺省 empty value 的 `EQUAL`
+  失败而 `GREATER` 成功；请求不得被判为 invalid，Success/Failure 分支写入、
+  Txn header revision 与落库 key metadata 必须保持 etcd wire-level 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
