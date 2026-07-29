@@ -17459,6 +17459,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   产生的 latest revision；同时 logical keys、空 value、metadata、`Count=3`、`More=false` 与
   相邻 range/tenant 隔离外观保持不变。该回归把最早的 nested range get 基础路径纳入 header
   合同扫描。
+- A2617 固定 A1509 官方 client/v3 namespace.NewKV nested OpTxn 的中间 `TxnResponse.Header`
+  未填充外观：nested txn response header 必须存在但 `Revision=0`，不能被 namespace response
+  adapter 误改写为 latest revision；outer txn 与 nested range header 的 latest revision 断言沿用 A2484。
 - A1510 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range delete + PrevKV
   外观：A1509 覆盖 nested range get 后，本轮补齐 nested delete response adapter：
   `namespace.NewKV(...).Txn(...).Then(OpTxn(nil, []Op{OpDelete("range/a",
