@@ -197,6 +197,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range branch：outer txn header 使用选中快照/当前 revision；inner Range response
   header revision 必须等于 outer txn header，同时 payload 继续反映 selected branch、
   create revision metadata 与 lease compare 语义。
+- **official clientv3 Range revision header 外观**：A3001 固定官方 clientv3 的
+  txn range revision boundary 与 range revision filter/staged view：unselected compacted
+  Range 不执行，outer/selected Else Range header 等于当前读快照 revision；standalone filtered
+  Get/CountOnly header 等于 latest revision；Txn Put+filtered Range 共享一个新 revision，
+  inner Put/Range response header 都等于 outer txn header。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键

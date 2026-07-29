@@ -1275,6 +1275,7 @@ func TestClientTxnRangeRevisionBoundaries(t *testing.T) {
 	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
 	afterCompacted, err := client.Get(ctx, writeKey)
 	require.NoError(t, err)
+	require.NotNil(t, afterCompacted.Header)
 	require.Empty(t, afterCompacted.Kvs)
 
 	unselected, err := client.Txn(ctx).
@@ -1284,8 +1285,14 @@ func TestClientTxnRangeRevisionBoundaries(t *testing.T) {
 		Commit()
 	require.NoError(t, err)
 	require.False(t, unselected.Succeeded)
+	require.NotNil(t, unselected.Header)
+	require.Equal(t, afterCompacted.Header.Revision, unselected.Header.Revision)
 	require.Len(t, unselected.Responses, 1)
-	require.Len(t, unselected.Responses[0].GetResponseRange().Kvs, 1)
+	unselectedRange := unselected.Responses[0].GetResponseRange()
+	require.NotNil(t, unselectedRange)
+	require.NotNil(t, unselectedRange.Header)
+	require.Equal(t, unselected.Header.Revision, unselectedRange.Header.Revision)
+	require.Len(t, unselectedRange.Kvs, 1)
 
 	_, err = client.Txn(ctx).
 		Then(
