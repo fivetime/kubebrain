@@ -28400,6 +28400,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TxnResponse.Header.Revision` 仍为 0，Put leaf response header 等于外层 txn
   revision，`PrevKv` 必须携带旧 value/create revision/mod revision/version；同一
   nested txn 后续 Range 必须看到新 value 与同一 txn revision，最终 keyset 保持 etcd 外观。
+- A3018 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 nested Put ignore option
+  外观，固定 raw gRPC nested `RequestTxn` 内 `IgnoreValue`/`IgnoreLease` 搭配
+  `PrevKv` 的连续事务形态：同一 selected branch 仍遵守 duplicate-key admission；
+  第一笔 nested txn 用 `IgnoreValue` 更新 lease 并保留旧 value，第二笔 nested txn 用
+  `IgnoreLease` 更新 value 并保留前一笔写入的 lease。两笔 Put leaf response header
+  均等于各自外层 txn revision，nested header 仍为 0；PrevKv metadata、后续 Range 与
+  最终 KV 必须保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

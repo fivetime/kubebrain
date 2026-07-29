@@ -2045,6 +2045,141 @@ func TestRawGRPCTxnNestedPutPrevKVResponseMatchesEtcd(t *testing.T) {
 	require.Equal(t, other, final.Kvs[1].Key)
 }
 
+func TestRawGRPCTxnNestedPutIgnoreOptionsPrevKVResponseMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-put-ignore-options-prev-kv-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3018/txn-nested-put-ignore-options-prev-kv/%d/", time.Now().UnixNano())
+	key := []byte(prefix + "key")
+	leaseA, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
+	require.NoError(t, err)
+	leaseB, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: leaseA.ID})
+		_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: leaseB.ID})
+	})
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old"), Lease: leaseA.ID})
+	require.NoError(t, err)
+
+	ignoreValueResp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Lease: leaseB.ID, IgnoreValue: true, PrevKv: true}),
+					txnClientRangeOp(&etcdserverpb.RangeRequest{Key: key}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ignoreValueResp)
+	require.True(t, ignoreValueResp.Succeeded)
+	require.NotNil(t, ignoreValueResp.Header)
+	require.Greater(t, ignoreValueResp.Header.Revision, seed.Header.Revision)
+	require.Len(t, ignoreValueResp.Responses, 1)
+
+	ignoreValueNested := ignoreValueResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, ignoreValueNested)
+	require.NotNil(t, ignoreValueNested.Header)
+	require.Zero(t, ignoreValueNested.Header.Revision)
+	require.True(t, ignoreValueNested.Succeeded)
+	require.Len(t, ignoreValueNested.Responses, 2)
+
+	ignoreValuePut := ignoreValueNested.Responses[0].GetResponsePut()
+	require.NotNil(t, ignoreValuePut)
+	require.NotNil(t, ignoreValuePut.Header)
+	require.Equal(t, ignoreValueResp.Header.Revision, ignoreValuePut.Header.Revision)
+	require.NotNil(t, ignoreValuePut.PrevKv)
+	require.Equal(t, key, ignoreValuePut.PrevKv.Key)
+	require.Equal(t, []byte("old"), ignoreValuePut.PrevKv.Value)
+	require.Equal(t, seed.Header.Revision, ignoreValuePut.PrevKv.CreateRevision)
+	require.Equal(t, seed.Header.Revision, ignoreValuePut.PrevKv.ModRevision)
+	require.Equal(t, int64(1), ignoreValuePut.PrevKv.Version)
+	require.Equal(t, leaseA.ID, ignoreValuePut.PrevKv.Lease)
+
+	ignoreValueRange := ignoreValueNested.Responses[1].GetResponseRange()
+	require.NotNil(t, ignoreValueRange)
+	require.NotNil(t, ignoreValueRange.Header)
+	require.Equal(t, ignoreValueResp.Header.Revision, ignoreValueRange.Header.Revision)
+	require.Len(t, ignoreValueRange.Kvs, 1)
+	require.Equal(t, key, ignoreValueRange.Kvs[0].Key)
+	require.Equal(t, []byte("old"), ignoreValueRange.Kvs[0].Value)
+	require.Equal(t, seed.Header.Revision, ignoreValueRange.Kvs[0].CreateRevision)
+	require.Equal(t, ignoreValueResp.Header.Revision, ignoreValueRange.Kvs[0].ModRevision)
+	require.Equal(t, int64(2), ignoreValueRange.Kvs[0].Version)
+	require.Equal(t, leaseB.ID, ignoreValueRange.Kvs[0].Lease)
+
+	ignoreLeaseResp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("new"), IgnoreLease: true, PrevKv: true}),
+					txnClientRangeOp(&etcdserverpb.RangeRequest{Key: key}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ignoreLeaseResp)
+	require.True(t, ignoreLeaseResp.Succeeded)
+	require.NotNil(t, ignoreLeaseResp.Header)
+	require.Greater(t, ignoreLeaseResp.Header.Revision, ignoreValueResp.Header.Revision)
+	require.Len(t, ignoreLeaseResp.Responses, 1)
+
+	ignoreLeaseNested := ignoreLeaseResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, ignoreLeaseNested)
+	require.NotNil(t, ignoreLeaseNested.Header)
+	require.Zero(t, ignoreLeaseNested.Header.Revision)
+	require.True(t, ignoreLeaseNested.Succeeded)
+	require.Len(t, ignoreLeaseNested.Responses, 2)
+
+	ignoreLeasePut := ignoreLeaseNested.Responses[0].GetResponsePut()
+	require.NotNil(t, ignoreLeasePut)
+	require.NotNil(t, ignoreLeasePut.Header)
+	require.Equal(t, ignoreLeaseResp.Header.Revision, ignoreLeasePut.Header.Revision)
+	require.NotNil(t, ignoreLeasePut.PrevKv)
+	require.Equal(t, key, ignoreLeasePut.PrevKv.Key)
+	require.Equal(t, []byte("old"), ignoreLeasePut.PrevKv.Value)
+	require.Equal(t, seed.Header.Revision, ignoreLeasePut.PrevKv.CreateRevision)
+	require.Equal(t, ignoreValueResp.Header.Revision, ignoreLeasePut.PrevKv.ModRevision)
+	require.Equal(t, int64(2), ignoreLeasePut.PrevKv.Version)
+	require.Equal(t, leaseB.ID, ignoreLeasePut.PrevKv.Lease)
+
+	ranged := ignoreLeaseNested.Responses[1].GetResponseRange()
+	require.NotNil(t, ranged)
+	require.NotNil(t, ranged.Header)
+	require.Equal(t, ignoreLeaseResp.Header.Revision, ranged.Header.Revision)
+	require.Len(t, ranged.Kvs, 1)
+	require.Equal(t, key, ranged.Kvs[0].Key)
+	require.Equal(t, []byte("new"), ranged.Kvs[0].Value)
+	require.Equal(t, seed.Header.Revision, ranged.Kvs[0].CreateRevision)
+	require.Equal(t, ignoreLeaseResp.Header.Revision, ranged.Kvs[0].ModRevision)
+	require.Equal(t, int64(3), ranged.Kvs[0].Version)
+	require.Equal(t, leaseB.ID, ranged.Kvs[0].Lease)
+}
+
 func TestClientTxnNestedDuplicateIntervalValidation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
