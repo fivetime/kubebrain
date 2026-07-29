@@ -28017,6 +28017,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `WithRange(start)` 构造的空半开区间都不得消耗 revision，Delete response/header
   必须等于当前 revision，`Deleted=0` 且 `PrevKvs` 为空，现存 key 的 create/mod revision
   与 version 保持不变。
+- A2143 对照 etcd server `DeleteRange` 空 key validation 与 official client/v3
+  public error adapter，固定普通 KV `Do(OpDelete(""))` 通用 Op 路径外观：空 key
+  必须暴露为可由 `errors.Is(..., rpctypes.ErrEmptyKey)` 识别的 public error，
+  gRPC code 为 `Unknown`，message 为 `etcdserver: key is not provided`，与专用
+  `Delete("")` 路径保持一致。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
