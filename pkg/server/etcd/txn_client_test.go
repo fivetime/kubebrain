@@ -1563,6 +1563,91 @@ func TestClientTxnDeletePrefixWithLeasesPrevKVMatchesEtcd(t *testing.T) {
 	require.Equal(t, outsideB.Header.Revision, historical.Kvs[3].CreateRevision)
 }
 
+func TestClientTxnNoOpDeleteWithPrevKVDoesNotConsumeRevisionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := "/a2156/client-txn-noop-delete-prevkv/"
+	putA, err := client.Put(ctx, prefix+"a", "va")
+	require.NoError(t, err)
+	putB, err := client.Put(ctx, prefix+"b", "vb")
+	require.NoError(t, err)
+
+	txn, err := client.Txn(ctx).Then(
+		clientv3.OpDelete(prefix+"missing", clientv3.WithPrevKV()),
+		clientv3.OpDelete(prefix+"b", clientv3.WithRange(prefix+"b"), clientv3.WithPrevKV()),
+		clientv3.OpDelete(prefix+"c", clientv3.WithRange(prefix+"b"), clientv3.WithPrevKV()),
+		clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend)),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.NotNil(t, txn.Header)
+	require.Equal(t, putB.Header.Revision, txn.Header.Revision)
+	require.Len(t, txn.Responses, 4)
+
+	for i := 0; i < 3; i++ {
+		deleted := txn.Responses[i].GetResponseDeleteRange()
+		require.NotNil(t, deleted)
+		require.NotNil(t, deleted.Header)
+		require.Equal(t, txn.Header.Revision, deleted.Header.Revision)
+		require.Zero(t, deleted.Deleted)
+		require.Empty(t, deleted.PrevKvs)
+	}
+
+	current := txn.Responses[3].GetResponseRange()
+	require.NotNil(t, current)
+	require.NotNil(t, current.Header)
+	require.Equal(t, txn.Header.Revision, current.Header.Revision)
+	require.Len(t, current.Kvs, 2)
+	require.Equal(t, []byte(prefix+"a"), current.Kvs[0].Key)
+	require.Equal(t, []byte("va"), current.Kvs[0].Value)
+	require.Equal(t, putA.Header.Revision, current.Kvs[0].CreateRevision)
+	require.Equal(t, putA.Header.Revision, current.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), current.Kvs[0].Version)
+	require.Equal(t, []byte(prefix+"b"), current.Kvs[1].Key)
+	require.Equal(t, []byte("vb"), current.Kvs[1].Value)
+	require.Equal(t, putB.Header.Revision, current.Kvs[1].CreateRevision)
+	require.Equal(t, putB.Header.Revision, current.Kvs[1].ModRevision)
+	require.Equal(t, int64(1), current.Kvs[1].Version)
+
+	after, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.NotNil(t, after.Header)
+	require.Equal(t, putB.Header.Revision, after.Header.Revision)
+	require.Len(t, after.Kvs, 2)
+	require.Equal(t, []byte(prefix+"a"), after.Kvs[0].Key)
+	require.Equal(t, []byte("va"), after.Kvs[0].Value)
+	require.Equal(t, putA.Header.Revision, after.Kvs[0].CreateRevision)
+	require.Equal(t, putA.Header.Revision, after.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), after.Kvs[0].Version)
+	require.Equal(t, []byte(prefix+"b"), after.Kvs[1].Key)
+	require.Equal(t, []byte("vb"), after.Kvs[1].Value)
+	require.Equal(t, putB.Header.Revision, after.Kvs[1].CreateRevision)
+	require.Equal(t, putB.Header.Revision, after.Kvs[1].ModRevision)
+	require.Equal(t, int64(1), after.Kvs[1].Version)
+}
+
 func TestClientTxnHeaderRevisions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
