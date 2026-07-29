@@ -1521,6 +1521,73 @@ func TestClientLeasingOwnerDoDeleteFromKeyClearsUpperRangeAtomically(t *testing.
 	require.Equal(t, []byte("keep"), kept.Kvs[0].Value)
 }
 
+func TestClientLeasingDeleteRangeBoundsPreservesOutsideOwners(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2118/leasing-delete-range-bounds/%d/", time.Now().UnixNano())
+	ownerPrefix := prefix + "0owners/"
+	deleter, closeDeleter, err := leasing.NewKV(client, ownerPrefix)
+	require.NoError(t, err)
+	t.Cleanup(closeDeleter)
+	reader, closeReader, err := leasing.NewKV(client, ownerPrefix)
+	require.NoError(t, err)
+	t.Cleanup(closeReader)
+
+	for _, key := range []string{prefix + "j", prefix + "m"} {
+		_, err = client.Put(ctx, key, "123")
+		require.NoError(t, err)
+		cached, getErr := reader.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, cached.Kvs, 1)
+		require.Equal(t, []byte("123"), cached.Kvs[0].Value)
+	}
+	for _, key := range []string{prefix + "k0", prefix + "k1"} {
+		_, err = client.Put(ctx, key, "delete")
+		require.NoError(t, err)
+	}
+
+	deleted, err := deleter.Delete(ctx, prefix+"k", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, int64(2), deleted.Deleted)
+
+	for _, key := range []string{prefix + "j", prefix + "m"} {
+		owner, getErr := client.Get(ctx, ownerPrefix+key)
+		require.NoError(t, getErr)
+		require.Len(t, owner.Kvs, 1)
+		cached, getErr := reader.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, cached.Kvs, 1)
+		require.Equal(t, []byte("123"), cached.Kvs[0].Value)
+	}
+	deletedKeys, err := client.Get(ctx, prefix+"k", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, deletedKeys.Kvs)
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
