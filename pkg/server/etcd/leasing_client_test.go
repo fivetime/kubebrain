@@ -1175,6 +1175,8 @@ func TestClientLeasingMutationFormsRefreshOwnerCache(t *testing.T) {
 			apply: func(callCtx context.Context, kv clientv3.KV, key, _ string) {
 				response, callErr := kv.Delete(callCtx, key)
 				require.NoError(t, callErr)
+				require.NotNil(t, response.Header)
+				require.Positive(t, response.Header.Revision)
 				require.Equal(t, int64(1), response.Deleted)
 			},
 		},
@@ -1200,8 +1202,14 @@ func TestClientLeasingMutationFormsRefreshOwnerCache(t *testing.T) {
 				).Commit()
 				require.NoError(t, callErr)
 				require.True(t, response.Succeeded)
+				require.NotNil(t, response.Header)
+				require.Positive(t, response.Header.Revision)
 				require.Len(t, response.Responses, 2)
-				require.Equal(t, int64(1), response.Responses[1].GetResponseDeleteRange().Deleted)
+				deleted := response.Responses[1].GetResponseDeleteRange()
+				require.NotNil(t, deleted)
+				require.NotNil(t, deleted.Header)
+				require.Equal(t, response.Header.Revision, deleted.Header.Revision)
+				require.Equal(t, int64(1), deleted.Deleted)
 			},
 		},
 		{
@@ -1219,7 +1227,10 @@ func TestClientLeasingMutationFormsRefreshOwnerCache(t *testing.T) {
 				response, callErr := kv.Do(callCtx, clientv3.OpDelete(key))
 				require.NoError(t, callErr)
 				require.NotNil(t, response.Del())
-				require.Equal(t, int64(1), response.Del().Deleted)
+				deleted := response.Del()
+				require.NotNil(t, deleted.Header)
+				require.Positive(t, deleted.Header.Revision)
+				require.Equal(t, int64(1), deleted.Deleted)
 			},
 		},
 	}

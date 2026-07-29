@@ -151,6 +151,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DeleteRange、compare-selected DeleteRange 都必须让 outer txn/direct response header
   精确前进 1，inner DeleteRange response header 等于 outer revision；用户 key 删除与
   `leaseAttachKey` 清理保持同一原子 batch，不产生额外可见 revision。
+- **official client/v3 leasing DeleteRange header 外观**：A2991 固定
+  `client/v3/leasing.NewKV` mutation wrapper 的 Delete/Txn Delete/Do Delete response：
+  direct Delete 与 Do Delete 必须返回带正 revision 的 DeleteRange response header；
+  Txn Delete 的 outer txn header 必须存在，inner DeleteRange response header revision
+  必须等于 outer txn revision，同时 wrapper 刷新 owner cache 后的 direct/cached Get 保持一致。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
