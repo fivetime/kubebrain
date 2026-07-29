@@ -25180,6 +25180,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TxnResponse.Header` 外观：min/max mod/create revision filter 与 key asc sort 组合返回
   historical logical KVs；nested txn response header 必须存在但 `Revision=0`，outer/range
   header 沿用 historical serializable revision filter page 语义。
+- A2938 固定 A1797/A1798/A1799/A1800/A1801/A1812/A1883/A1802/A1803/A1804/A1805 官方
+  client/v3 namespace.NewKV nested OpTxn FromKey historical serializable sort page 路径的中间
+  `TxnResponse.Header` 外观：value/version/mod-revision/create-revision/key 的 desc/asc/default
+  sort page 返回 historical logical KVs；nested txn response header 必须存在但 `Revision=0`，
+  outer/range header 沿用 historical serializable sort page 语义。
 - A2370 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable logical
   range key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByKey` desc/asc/none
   与 `SortByValue` asc/desc 变体必须在 historical revision 上只清空返回页 value，
