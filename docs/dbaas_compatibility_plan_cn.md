@@ -27836,6 +27836,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用户分别授予不同 election prefix 的 READWRITE 权限后，带用户名密码创建的 client 必须能
   `NewSession`、`Campaign`、`Leader`、`Resign`，且 leader value 保持各自 candidate，
   不能因 auth token、lease 或 watch/KV 权限链路导致误拒绝。
+- A2101 延伸覆盖 `/root/etcd/tests/integration/v3_election_test.go:TestElectionWithAuthEnabled`
+  的授权隔离负向路径：auth enabled 后，只有 `/foo1/` 权限的用户在另一个用户的
+  `/bar1/` election prefix 上 `Campaign` 必须返回 `rpctypes.ErrPermissionDenied`，
+  且不能留下 candidate key，防止 concurrency election 绕过 KV 写权限或产生半提交。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
