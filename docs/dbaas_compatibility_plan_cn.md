@@ -17522,6 +17522,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response header 都必须等于相邻 tenant 写入产生的 latest revision；同时 `Succeeded=false`、
   `Count=0`、`More=false`、空 KVs 与相邻 range/tenant 不影响 compare 的外观保持不变。该回归把
   nested compare 失败读路径与 A2487 成功读路径的 header 合同对齐。
+- A2621 固定 A1513 官方 client/v3 namespace.NewKV nested OpTxn range compare 失败分支的中间
+  `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但 `Revision=0`，不能被
+  namespace response adapter 误改写为 latest revision；outer/empty range header 断言沿用 A2488。
 - A1514 固定官方 client/v3 namespace.NewKV nested OpTxn 的 Else branch response unprefix：
   在 nested compare 失败且 Else branch 返回实际数据时，`ResponseTxn.Succeeded=false` 下的
   `ResponseRange` 仍必须递归 unprefix，返回 logical `items/a,b` 与原始 values，并排除相邻
