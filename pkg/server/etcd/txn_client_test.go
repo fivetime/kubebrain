@@ -405,6 +405,56 @@ func TestClientTxnBasicErrorsMatchEtcd(t *testing.T) {
 	requireClientTxnError(t, err, codes.Unknown, "etcdserver: too many operations in txn request", rpctypes.ErrTooManyOps)
 }
 
+func TestClientTxnSinglePutSuccessResponseMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a2127/txn-single-put/%d", time.Now().UnixNano())
+	txn, err := client.Txn(ctx).Then(clientv3.OpPut(key, "bar")).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.NotNil(t, txn.Header)
+	require.Positive(t, txn.Header.Revision)
+	require.Len(t, txn.Responses, 1)
+	put := txn.Responses[0].GetResponsePut()
+	require.NotNil(t, put)
+	require.NotNil(t, put.Header)
+	require.Equal(t, txn.Header.Revision, put.Header.Revision)
+
+	got, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.NotNil(t, got.Header)
+	require.Equal(t, txn.Header.Revision, got.Header.Revision)
+	require.Len(t, got.Kvs, 1)
+	require.Equal(t, key, string(got.Kvs[0].Key))
+	require.Equal(t, []byte("bar"), got.Kvs[0].Value)
+	require.Equal(t, txn.Header.Revision, got.Kvs[0].CreateRevision)
+	require.Equal(t, txn.Header.Revision, got.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), got.Kvs[0].Version)
+	require.Zero(t, got.Kvs[0].Lease)
+}
+
 func TestClientTxnNoSpaceIsTyped(t *testing.T) {
 	server := newQuotaRPCServer(t, 6)
 

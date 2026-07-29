@@ -27941,6 +27941,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   收紧官方 client/v3 Lease 多路 keepalive not-found 隔离语义：撤销其中一个 lease 后，
   被撤销 lease 的 keepalive channel 必须关闭，其他 live lease 的 keepalive channel 必须继续
   返回自身 lease ID、正 TTL，且 TTL 不超过各自 granted TTL。
+- A2127 对照 `/root/etcd/tests/integration/clientv3/txn_test.go:TestTxnSuccess`
+  固定官方 client/v3 Txn 单 Put 成功响应外观：事务必须 `Succeeded=true`，返回一个
+  Put response，inner Put header revision 等于 outer txn header revision；随后直读目标
+  key 必须显示同一 create/mod revision、version=1、无 lease 且 value 为事务写入值。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
