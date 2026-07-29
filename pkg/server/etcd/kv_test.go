@@ -2496,6 +2496,12 @@ func TestDeleteRangeBoundaryHighPrefixMatchesEtcd(t *testing.T) {
 				Key: []byte(prefix + tc.start), RangeEnd: tc.rangeEnd(prefix), PrevKv: true,
 			})
 			require.NoError(t, err)
+			require.NotNil(t, deleted.Header)
+			wantRevision := lastPutRevision
+			if tc.wantAdvanceRev {
+				wantRevision++
+			}
+			require.Equal(t, wantRevision, deleted.Header.Revision)
 			require.Equal(t, tc.wantDeleted, deleted.Deleted)
 			require.Equal(t, tc.wantAdvanceRev, deleted.Header.Revision > lastPutRevision)
 			require.Len(t, deleted.PrevKvs, len(tc.wantPrev))
@@ -2522,7 +2528,7 @@ func TestDeleteRangeDeletesSingleKey(t *testing.T) {
 	defer closeFn()
 
 	ctx := context.Background()
-	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/services/a"),
 		Value: []byte("svc"),
 	})
@@ -2533,12 +2539,16 @@ func TestDeleteRangeDeletesSingleKey(t *testing.T) {
 		PrevKv: true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, deleteResp.Header)
+	require.Equal(t, putResp.Header.Revision+1, deleteResp.Header.Revision)
 	require.Equal(t, int64(1), deleteResp.Deleted)
 	require.Len(t, deleteResp.PrevKvs, 1)
 	require.Equal(t, []byte("svc"), deleteResp.PrevKvs[0].Value)
 
 	rangeResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/services/a")})
 	require.NoError(t, err)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, deleteResp.Header.Revision, rangeResp.Header.Revision)
 	require.Empty(t, rangeResp.Kvs)
 }
 

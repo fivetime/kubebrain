@@ -128,6 +128,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestTxnSimpleSuccessPutRangeDeleteResponsesInOrder`、
   `TestTxnOverlappingDeleteRangesUseStagedViewAndOneRevision`、
   `TestTxnNoOpDeleteRangesDoNotConsumeRevision` 和 `TestTxnCompareValueRunsFailureBranch`。
+- **standalone DeleteRange exact header revision 外观**：A2987 固定 direct
+  DeleteRange 的 revision 消耗：命中删除时 response header 必须从当前 revision 精确前进
+  1，single-key delete 后的 Range header 等于 delete revision；equal/reverse empty range
+  不消耗 revision，但 DeleteRange response header 仍等于当前 revision。覆盖
+  `TestDeleteRangeBoundaryHighPrefixMatchesEtcd` 和 `TestDeleteRangeDeletesSingleKey`。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
