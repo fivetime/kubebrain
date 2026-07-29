@@ -17923,6 +17923,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   WithLimit(1))` 必须只统计当前 namespace 的 logical `[ "", "z" )` range，返回 `Count=2`、
   无 KVs、`More=false`，且 CountOnly 优先于 KeysOnly/Limit 并排除 upper bound 外和相邻 tenant。
   该回归补齐 A1529 非空 prefix CountOnly 优先级之外的 empty-start explicit range 路径。
+- A2530 补强 A1566 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range CountOnly header 外观：nested `OpGet("", WithRange("z"), WithKeysOnly(), WithCountOnly(),
+  WithLimit(1))` 返回 count-only 结果时，outer txn response header 与 nested range response header
+  都必须等于相邻 tenant 写入产生的 latest revision；`Count=2`、`More=false`、空 KVs、CountOnly
+  优先级与 range 隔离保持不变。
 - A1567 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   KeysOnly 分页外观：nested `OpGet("", WithRange("z"), WithKeysOnly(), WithLimit(2))` 必须只分页
   当前 namespace 的 logical `[ "", "z" )` range，返回 logical `alpha/a`、`items/a` 两个空 value
