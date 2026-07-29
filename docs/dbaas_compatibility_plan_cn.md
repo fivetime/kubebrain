@@ -24283,6 +24283,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但 `Revision=0`，不能被
   namespace response adapter 误改写为 latest revision；outer/range header 与 current explicit
   range LastKey KeysOnly 元数据断言沿用 A2043。
+- A2797 固定 A2362 覆盖的 A1931 官方 client/v3 namespace.NewKV nested OpTxn explicit
+  logical range historical serializable `WithFirstKey()+WithRange(end)+KeysOnly` 路径的中间
+  `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但 `Revision=0`，不能被
+  namespace response adapter 误改写为 latest revision；outer/range header 与 historical explicit
+  range FirstKey KeysOnly 元数据断言沿用 A1931。
 - A2363 强化官方 client/v3 namespace.NewKV nested OpTxn 的 current top-helper KeysOnly
   元数据外观：`WithFirstCreate()/WithLastCreate()/WithFirstRev()/WithLastRev()/WithFirstKey()/WithLastKey`
   与 `KeysOnly` 组合在 non-empty logical prefix 上必须只清空 value，保留命中 key 的
