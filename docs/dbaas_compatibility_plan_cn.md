@@ -28028,6 +28028,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须只删除该 prefix 半开区间内 key，不得误删共享前缀但不在目录 prefix 下的相邻 key；
   Delete response/header 精确推进一次 revision，`Deleted` 计数、`PrevKvs` key 顺序以及
   create/mod revision/version 元数据必须匹配最终存储状态。
+- A2145 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVDeleteRange`
+  的 point delete 基础语义，固定官方 client/v3 KV `Do(OpDelete(key))` 通用 Op
+  路径外观：命中单 key 删除必须返回 Delete response/header、精确推进一个 revision、
+  `Deleted=1` 且无 `PrevKvs` payload；相邻 key 不受影响，删除前 revision 仍可历史读取
+  被删 key 的 value/create/mod revision/version。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

@@ -290,6 +290,66 @@ func TestClientDoOpDeleteNULFromKeySuppressesPrevKV(t *testing.T) {
 	require.Empty(t, remaining.Kvs)
 }
 
+func TestClientDoOpDeletePointKeyMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := "/a2145/do-opdelete-point/"
+	key := prefix + "key"
+	neighborKey := prefix + "neighbor"
+	put, err := client.Put(ctx, key, "value")
+	require.NoError(t, err)
+	neighbor, err := client.Put(ctx, neighborKey, "neighbor")
+	require.NoError(t, err)
+
+	opResponse, err := client.Do(ctx, clientv3.OpDelete(key))
+	require.NoError(t, err)
+	deleted := opResponse.Del()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, neighbor.Header.Revision+1, deleted.Header.Revision)
+	require.Equal(t, int64(1), deleted.Deleted)
+	require.Empty(t, deleted.PrevKvs)
+
+	current, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.NotNil(t, current.Header)
+	require.Equal(t, deleted.Header.Revision, current.Header.Revision)
+	require.Equal(t, []deleteClientKV{
+		{key: "neighbor", value: "neighbor", createRevision: neighbor.Header.Revision, modRevision: neighbor.Header.Revision, version: 1},
+	}, deleteClientKVs(current.Kvs, prefix))
+
+	historical, err := client.Get(ctx, key, clientv3.WithRev(put.Header.Revision))
+	require.NoError(t, err)
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, []byte(key), historical.Kvs[0].Key)
+	require.Equal(t, []byte("value"), historical.Kvs[0].Value)
+	require.Equal(t, put.Header.Revision, historical.Kvs[0].CreateRevision)
+	require.Equal(t, put.Header.Revision, historical.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), historical.Kvs[0].Version)
+}
+
 func TestClientDoOpDeleteRangeWithPrevKVMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
