@@ -25260,6 +25260,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   中间 `TxnResponse.Header` 外观：historical selector/filter 只作用于 namespace 内 logical
   range，Count/More 与单 KV page 外观保持 etcd 语义；nested txn response header 必须存在
   但 `Revision=0`，outer/range header 沿用 historical range 语义。
+- A2953 固定 A1611/A1612/A1613/A1615/A1617/A1618/A1619 官方 client/v3 namespace.NewKV
+  nested OpTxn empty start + logical range historical limit boundary 与 historical serializable
+  CountOnly/sort page 路径中间 `TxnResponse.Header` 外观：Limit=0、negative limit、
+  MaxInt64 limit 以及 serializable historical sort/count 只返回 namespace 内 logical
+  range；nested txn response header 必须存在但 `Revision=0`，outer/range header 沿用
+  historical range 语义。
 - A2370 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable logical
   range key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByKey` desc/asc/none
   与 `SortByValue` asc/desc 变体必须在 historical revision 上只清空返回页 value，
