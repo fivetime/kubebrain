@@ -24653,6 +24653,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须存在但 `Revision=0`，返回的 historical first page 只清空 value，且保留命中 KV 的
   version/create revision/mod revision；outer/range header 与 FromKey historical serializable
   limit page 语义沿用 A1791。
+- A2854 固定 A1813 官方 client/v3 namespace.NewKV nested OpTxn FromKey historical serializable
+  `OpGet("range/b", WithFromKey(), WithRev(historyRev), WithSerializable(), KeysOnly+Limit(0), SortByKey(Asc))`
+  limit-zero 全量页路径的中间 `TxnResponse.Header` 与 KeysOnly KV 元数据外观：nested txn
+  response header 必须存在但 `Revision=0`，返回的 historical full page 只清空 value，
+  且保留命中 KV 的 version/create revision/mod revision；outer/range header 与 FromKey
+  historical serializable limit-zero full page 语义沿用 A1813。
 - A2370 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable logical
   range key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByKey` desc/asc/none
   与 `SortByValue` asc/desc 变体必须在 historical revision 上只清空返回页 value，
