@@ -17595,6 +17595,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested `OpGet("items/", WithPrefix(), WithMinModRev(rev+1), WithMaxModRev(rev), WithLimit(1))`
   必须只统计当前 namespace logical prefix，返回空 KVs、`Count=3`、`More=false`。该回归防止
   nested filter 组合在无匹配结果时把 limit 当成 Count、或把相邻 prefix/tenant 纳入统计。
+- A2508 补强 A1532 官方 client/v3 namespace.NewKV nested OpTxn 的矛盾 mod revision filter
+  header 外观：nested empty range 由于 `WithMinModRev(rev+1)` 与 `WithMaxModRev(rev)` 无匹配时，
+  outer txn response header 与 nested range response header 仍必须等于相邻 tenant 写入产生的
+  latest revision；`Count=3`、`More=false`、空 KVs 与 namespace 统计隔离保持不变。该回归覆盖
+  filtered-empty nested range 的 header propagation，避免空结果路径遗漏 revision。
 - A1533 固定官方 client/v3 namespace.NewKV nested OpTxn 的 historical revision 外观：
   nested `OpGet("items/", WithPrefix(), WithRev(firstRev))` 必须在指定历史 revision 上只读取当前
   namespace 的 logical prefix，返回 logical `items/a=old-a`、`Count=1`、`More=false`，后续
