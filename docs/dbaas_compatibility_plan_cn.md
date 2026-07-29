@@ -28378,6 +28378,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Txn 外观：顶层 Success/Failure 同 key Put 不得触发 duplicate-key admission
   error，nested RequestTxn 的 Then/Else 同 key Put 也必须允许；执行后只能落库实际选中
   分支的 value，header revision 与 KV metadata 必须保持 etcd 外观。
+- A3014 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkTxnRequest` 分支隔离和 `checkIntervals` nested Then/Else delete interval
+  union 语义，固定 raw gRPC Txn 互斥分支 Delete/Put overlap 外观：顶层
+  Success/Delete 与 Failure/Put 同 key 不得触发 duplicate-key admission error，
+  nested RequestTxn 的 Then/Delete 与 Else/Put 同 key 也必须允许；执行后只应用实际
+  选中分支，Delete/Put response、header revision 与终态 KV metadata 必须保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
