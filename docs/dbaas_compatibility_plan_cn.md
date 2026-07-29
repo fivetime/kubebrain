@@ -18316,6 +18316,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical `[ "", "z" )` 全量 `Count=3`，返回空 KVs、`More=false`，且 CountOnly 优先于
   KeysOnly/Limit，并排除后续 update/delete/new key、upper bound 外 `z/final` 和相邻 tenant。
   该回归补齐 A1566 current CountOnly 与 A1595 historical KeysOnly page 之外的组合路径。
+- A2542 补强 A1596 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical CountOnly header 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
+  WithKeysOnly(), WithCountOnly(), WithLimit(1))` 返回 historical count-only 结果时，outer txn
+  response header 与 nested range response header 必须保持当前 latest revision；`Count=3`、
+  `More=false`、空 KVs 与 CountOnly 优先级保持不变。
 - A1597 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical mod-revision sort 分页外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithLimit(2), WithSort(SortByModRevision, SortDescend))` 必须按指定历史 revision 的
