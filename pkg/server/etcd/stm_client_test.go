@@ -304,3 +304,56 @@ func TestClientSTMSerializablePrefetchRevUsesFetchedModRevision(t *testing.T) {
 	require.Equal(t, fmt.Sprintf("%d/0", putResp.Header.Revision), string(outputResp.Kvs[0].Value))
 	require.Equal(t, commitResp.Header.Revision, outputResp.Kvs[0].ModRevision)
 }
+
+func TestClientSTMDelDeletesKeyWithDeleteResponse(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		Context:     ctx,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	key := "/a2091/stm/del/key"
+	putResp, err := client.Put(ctx, key, "value")
+	require.NoError(t, err)
+
+	commitResp, err := concurrency.NewSTM(client, func(stm concurrency.STM) error {
+		require.Equal(t, "value", stm.Get(key))
+		require.Equal(t, putResp.Header.Revision, stm.Rev(key))
+		stm.Del(key)
+		require.Empty(t, stm.Get(key))
+		return nil
+	}, concurrency.WithIsolation(concurrency.RepeatableReads))
+	require.NoError(t, err)
+	require.NotNil(t, commitResp)
+	require.NotNil(t, commitResp.Header)
+	require.Len(t, commitResp.Responses, 1)
+	deleteResp := commitResp.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleteResp)
+	require.NotNil(t, deleteResp.Header)
+	require.Equal(t, commitResp.Header.Revision, deleteResp.Header.Revision)
+	require.Equal(t, int64(1), deleteResp.Deleted)
+
+	deleted, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, deleted.Kvs)
+	require.Equal(t, commitResp.Header.Revision, deleted.Header.Revision)
+}

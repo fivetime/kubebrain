@@ -27790,6 +27790,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Rev(missing)` 必须为 0；随后 STM Put 的提交 revision 仍必须成为输出 key 的
   mod revision。该回归把 Range response header/revision 与 STM 公开接口绑定，防止
   prefetch 或 missing-key 路径退化成错误 revision。
+- A2091 对照 `/root/etcd/client/v3/concurrency/stm.go` 固定官方 client/v3 STM
+  `Del` 写集外观：STM 回调先 `Get`/`Rev` 已存在 key，再 `Del` 同 key 后，回调内
+  `Get` 必须返回空字符串；提交的 Txn response 必须包含 DeleteRange response，
+  `Deleted=1` 且 inner DeleteRange header revision 等于 outer STM commit header，
+  提交后 key 不存在且后续 Get header revision 等于删除 revision。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
