@@ -17360,6 +17360,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   存在数据时，`Compare(Version("range/a").WithRange("range/d"), ">", 0)` 必须失败并执行
   `Else(OpGet(...))` 返回空 `ResponseRange`。该回归防止 `prefixCmps` 把相邻物理 namespace 或
   相邻 logical range 纳入 compare，导致 leasing range guard 误通过。
+- A2597 补强 A1508 官方 client/v3 namespace.NewKV Txn range compare 失败分支 header 外观：
+  空 logical range compare 执行 Else `OpGet("range/a", WithRange("range/d"))` 时，outer txn
+  response header 与 range response header 必须等于相邻 tenant 写入后的全局 latest revision；
+  `Succeeded=false`、空 range、`Count=0`、`More=false` 和 range/tenant 隔离断言保持不变。
 - A1509 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range get 外观：
   对照 upstream leasing `serverTxn` 会把用户事务包成 nested `OpTxn` 后提交给底层 KV，且
   upstream namespace `unprefixTxnResponse` 对 `ResponseTxn` 递归 unprefix。本轮新增 official
