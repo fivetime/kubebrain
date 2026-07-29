@@ -120,6 +120,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   outer selected branch 中间 `TxnResponse.Header`、inner nested `TxnResponse.Header`
   都必须存在但 `Revision=0`；inner DeleteRange/Put/Range response header revision
   必须等于 outer txn revision，并保留 PrevKV 与最终 keyspace 外观。
+- **generic txn DeleteRange response header 外观**：A2986 对照 etcd
+  `/root/etcd/server/etcdserver/txn/delete.go` 的 `deleteRange`，锁定 generic txn
+  内 DeleteRange response 必须始终带 header；普通删除、overlapping staged delete、
+  failure branch delete 的 header revision 必须等于 outer txn revision；空 DeleteRange
+  不消耗 revision，但 response header 仍等于未前进的 txn header。覆盖
+  `TestTxnSimpleSuccessPutRangeDeleteResponsesInOrder`、
+  `TestTxnOverlappingDeleteRangesUseStagedViewAndOneRevision`、
+  `TestTxnNoOpDeleteRangesDoNotConsumeRevision` 和 `TestTxnCompareValueRunsFailureBranch`。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
