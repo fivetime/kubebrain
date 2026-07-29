@@ -27852,6 +27852,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 leasing KV 历史 revision 读取语义：普通 client 先后写入同一 key 后，
   `Get(key, WithRev(firstRev))` 必须绕过 leasing acquire/cache 返回旧值和旧 mod revision，
   随后的普通 `Get(key)` 必须首次 acquire 当前值并返回最新值和最新 mod revision。
+- A2105 对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go:TestLeasingGetNoLeaseTTL`
+  固定官方 client/v3 leasing KV 对业务 TTL key 的 acquire 语义：key 自身绑定业务 lease
+  时，`leasing.NewKV.Get` 必须直接返回该 key/value/lease 元数据，且不能在 owner prefix 下
+  创建 leasing owner key，避免把带 TTL 的业务 key 错误纳入本地 owner cache。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

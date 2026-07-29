@@ -561,6 +561,57 @@ func TestClientLeasingGetHistoricalRevisionDoesNotUseCurrentCache(t *testing.T) 
 	require.Equal(t, secondPut.Header.Revision, current.Kvs[0].ModRevision)
 }
 
+func TestClientLeasingGetDoesNotAcquireKeyWithKVLease(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2105/leasing-get-ttl/%d/", time.Now().UnixNano())
+	key := prefix + "leased-key"
+	ownerPrefix := prefix + "owners/"
+	leased, closeLeased, err := leasing.NewKV(client, ownerPrefix)
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	lease, err := client.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, key, "value", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+
+	got, err := leased.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, got.Kvs, 1)
+	require.Equal(t, []byte(key), got.Kvs[0].Key)
+	require.Equal(t, []byte("value"), got.Kvs[0].Value)
+	require.Equal(t, int64(lease.ID), got.Kvs[0].Lease)
+
+	owners, err := client.Get(ctx, ownerPrefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Empty(t, owners.Kvs)
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
