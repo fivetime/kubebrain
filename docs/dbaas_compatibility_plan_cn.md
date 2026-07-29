@@ -17779,6 +17779,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并排除相邻 tenant；当前 revision 的删除、更新和新增不应污染历史响应。该回归补齐 A1533
   非空 prefix 历史读取之外的 empty-prefix 路径，防止 historical Range adapter 泄漏物理
   namespace prefix 或错误读取当前版本。
+- A2518 补强 A1553 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix historical
+  revision header 外观：nested `OpGet("", WithPrefix(), WithRev(historyRev))` 返回历史全前缀结果时，
+  outer txn response header 与 nested range response header 必须保持当前 latest revision，而不是
+  请求的 historical revision；historical logical key/value、`Count=3`、`More=false` 与相邻 tenant
+  隔离保持不变。该回归把 empty-prefix historical Range header 语义与 A2509/A2510 对齐。
 - A1554 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix serializable
   外观：nested `OpGet("", WithPrefix(), WithSerializable())` 必须只读取当前 namespace 全前缀，
   返回 logical `alpha/a`、`items/a`、`z/final` 及 values，`Count=3`、`More=false`，并且
