@@ -17529,6 +17529,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   outer txn response 与最终 `ResponseRange` header 必须等于相邻 tenant 写入后的全局 latest
   revision；中间 nested txn response header 保持 upstream 当前未填充外观；双层递归 unprefix、
   logical key/value、`Count=3`、`More=false` 与 upper bound/tenant 隔离断言保持不变。
+- A2616 固定 A1515 双层 nested OpTxn 中间 `TxnResponse.Header` 的未填充外观：第一层与
+  第二层 nested txn response header 必须存在但 `Revision=0`，不能被 namespace response adapter
+  误改写为 latest revision；outer txn 与最终 range header 的 latest revision 断言沿用 A2615。
 - A1516 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithFromKey` 开放范围外观：
   nested `OpGet("range/b", WithFromKey())` 必须被 namespace adapter 映射为当前 namespace
   内从 logical `range/b` 到 namespace 末尾的 bounded physical range，返回 logical
