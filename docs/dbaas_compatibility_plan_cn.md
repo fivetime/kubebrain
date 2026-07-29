@@ -28243,6 +28243,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   可由 `errors.Is(..., rpctypes.ErrFutureRev)` 识别的 public client error，gRPC
   code/message 保持 `codes.Unknown` 与 `etcdserver: mvcc: required revision is a future
   revision`，后续写不得落库，事务后 keyset/header revision 必须保持 seed revision。
+- A2176 对照 `/root/etcd/client/v3/op.go` 的 `OpTxn` request 包装与
+  `/root/etcd/server/etcdserver/txn/txn.go` 的递归 `checkTxn` 提交前校验语义，固定官方
+  client/v3 `Do(OpTxn(nil, []Op{OpGet(key, WithRev(compactedRev-1)), OpPut(...)}, nil))`
+  外观：通用 `Do(OpTxn)` 选中分支内 compacted revision Range 必须在任意写入执行前返回
+  可由 `errors.Is(..., rpctypes.ErrCompacted)` 识别的 public client error，gRPC
+  code/message 保持 `codes.Unknown` 与 `etcdserver: mvcc: required revision has been
+  compacted`，后续写不得落库，事务后 keyset 必须保持 seed key，current header revision
+  不得低于 post-compact revision。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
