@@ -24338,6 +24338,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但 `Revision=0`，修正
   A2477 曾把中间 txn header 也视作 latest revision 的表述；outer/range header 与 serializable
   empty-prefix KeysOnly page 元数据断言沿用 A1660/A2477。
+- A2806 固定 A2365 覆盖的 A1777 官方 client/v3 namespace.NewKV nested OpTxn non-empty
+  prefix current serializable `OpGet("items/", WithPrefix(), WithSerializable(), KeysOnly+Limit(2))`
+  路径的中间 `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但
+  `Revision=0`，不能被 namespace response adapter 误改写为 latest revision；outer/range header
+  与 current serializable prefix KeysOnly page 元数据断言沿用 A1777。
 - A2365 强化官方 client/v3 namespace.NewKV nested OpTxn 的 empty-prefix/prefix
   `KeysOnly+Limit` 多 KV page 元数据外观：`OpGet("", WithPrefix(), WithKeysOnly(), WithLimit(2))`
   与 `OpGet("items/", WithPrefix(), WithSerializable(), WithKeysOnly(), WithLimit(2))`
