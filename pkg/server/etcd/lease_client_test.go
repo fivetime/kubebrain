@@ -334,6 +334,51 @@ func TestClientLeaseKeepAliveStreamDeliversRepeatedPositiveTTLs(t *testing.T) {
 	}
 }
 
+func TestClientLeaseKeepAliveOnceReturnsLiveLeaseMetadata(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, 10)
+	require.NoError(t, err)
+	key := fmt.Sprintf("/a2122/lease-keepalive-once/%d/key", time.Now().UnixNano())
+	_, err = client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+
+	renewed, err := client.KeepAliveOnce(ctx, grant.ID)
+	require.NoError(t, err)
+	requireClientLeaseHeaderWellFormed(t, renewed.ResponseHeader)
+	require.Equal(t, grant.ID, renewed.ID)
+	require.Positive(t, renewed.TTL)
+	require.LessOrEqual(t, renewed.TTL, grant.TTL)
+
+	got, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, got.Kvs, 1)
+	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
+}
+
 func TestClientLeaseNotFoundErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
