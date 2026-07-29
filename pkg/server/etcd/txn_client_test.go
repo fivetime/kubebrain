@@ -2297,6 +2297,96 @@ func TestRawGRPCTxnNestedDeleteRangePrevKVsResponseMatchesEtcd(t *testing.T) {
 	require.Equal(t, keyD, final.Kvs[1].Key)
 }
 
+func TestRawGRPCTxnNestedNoOpDeleteRangePrevKVDoesNotConsumeRevisionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-noop-delete-range-prev-kv-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3020/txn-nested-noop-delete-range-prev-kv/%d/", time.Now().UnixNano())
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("va")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("vb")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "missing"), PrevKv: true}),
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyB, RangeEnd: keyB, PrevKv: true}),
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyC, RangeEnd: keyB, PrevKv: true}),
+					txnClientRangeOp(&etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, seedB.Header.Revision, resp.Header.Revision)
+	require.Len(t, resp.Responses, 1)
+
+	nested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.True(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 4)
+
+	for i := 0; i < 3; i++ {
+		deleted := nested.Responses[i].GetResponseDeleteRange()
+		require.NotNil(t, deleted)
+		require.NotNil(t, deleted.Header)
+		require.Equal(t, resp.Header.Revision, deleted.Header.Revision)
+		require.Zero(t, deleted.Deleted)
+		require.Empty(t, deleted.PrevKvs)
+	}
+
+	ranged := nested.Responses[3].GetResponseRange()
+	require.NotNil(t, ranged)
+	require.NotNil(t, ranged.Header)
+	require.Equal(t, resp.Header.Revision, ranged.Header.Revision)
+	require.Len(t, ranged.Kvs, 2)
+	require.Equal(t, keyA, ranged.Kvs[0].Key)
+	require.Equal(t, []byte("va"), ranged.Kvs[0].Value)
+	require.Equal(t, seedA.Header.Revision, ranged.Kvs[0].CreateRevision)
+	require.Equal(t, seedA.Header.Revision, ranged.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), ranged.Kvs[0].Version)
+	require.Equal(t, keyB, ranged.Kvs[1].Key)
+	require.Equal(t, []byte("vb"), ranged.Kvs[1].Value)
+	require.Equal(t, seedB.Header.Revision, ranged.Kvs[1].CreateRevision)
+	require.Equal(t, seedB.Header.Revision, ranged.Kvs[1].ModRevision)
+	require.Equal(t, int64(1), ranged.Kvs[1].Version)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, seedB.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 2)
+	require.Equal(t, keyA, final.Kvs[0].Key)
+	require.Equal(t, keyB, final.Kvs[1].Key)
+}
+
 func TestClientTxnNestedDuplicateIntervalValidation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -28413,6 +28413,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   外层 txn revision；`Deleted` 与有序 `PrevKvs` 必须保留删除前 value、create/mod
   revision、version 与 lease ID，同一 nested txn 后续 Range 必须看到已删除 key 消失、
   未命中 key 保持旧 metadata，最终 keyset 保持 etcd 外观。
+- A3020 对照 `/root/etcd/server/etcdserver/txn/delete.go` 的 no-op DeleteRange
+  revision 语义与 `/root/etcd/server/etcdserver/txn/txn.go` 的 nested response tree，
+  固定 raw gRPC nested `RequestTxn` 内 missing point、empty `[key,key)`、reversed
+  `[start,end)` 三类 `DeleteRange{PrevKv:true}`：外层 Txn header 与所有 leaf
+  response header 必须保持当前 revision，不得因 no-op 删除推进 revision；nested
+  header 仍为 0，`Deleted=0` 且 `PrevKvs` 为空，后续 Range 和最终 KV metadata
+  必须保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
