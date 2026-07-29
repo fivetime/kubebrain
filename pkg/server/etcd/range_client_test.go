@@ -2138,7 +2138,7 @@ func TestClientNamespaceDoubleNestedTxnGetReturnsLogicalKeys(t *testing.T) {
 	}
 	_, err = namespacedKV.Put(ctx, "range/d", "outside-upper-bound")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1515/namespace-double-nested-txn-get/tenant0/range/b", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1515/namespace-double-nested-txn-get/tenant0/range/b", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -2151,6 +2151,7 @@ func TestClientNamespaceDoubleNestedTxnGetReturnsLogicalKeys(t *testing.T) {
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	firstNestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, firstNestedTxn)
@@ -2163,6 +2164,7 @@ func TestClientNamespaceDoubleNestedTxnGetReturnsLogicalKeys(t *testing.T) {
 	nestedGet := secondNestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
 	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(3), nestedGet.Count)
 	require.False(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 3)
