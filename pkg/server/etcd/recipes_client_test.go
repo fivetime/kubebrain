@@ -713,6 +713,55 @@ func TestClientConcurrencyMutexUnlockErrorsMatchEtcd(t *testing.T) {
 	require.Empty(t, remaining.Kvs)
 }
 
+func TestClientConcurrencyMutexLockReturnsSessionExpiredForClosedWaiter(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ownerSession, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(ownerSession.Orphan)
+	waiterSession, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(waiterSession.Orphan)
+
+	mutexName := fmt.Sprintf("/a2099/concurrency/mutex-session-expired/%d/", time.Now().UnixNano())
+	owner := concurrency.NewMutex(ownerSession, mutexName)
+	waiter := concurrency.NewMutex(waiterSession, mutexName)
+	require.NoError(t, owner.Lock(ctx))
+
+	waiterResult := make(chan error, 1)
+	go func() {
+		waiterResult <- waiter.Lock(ctx)
+	}()
+	requireConcurrencyBlocked(t, waiterResult, "waiter before session close")
+	require.NoError(t, waiterSession.Close())
+	require.NoError(t, owner.Unlock(ctx))
+	require.ErrorIs(t, waitRecipeResult(ctx, waiterResult, "closed waiter lock"), concurrency.ErrSessionExpired)
+}
+
 func TestClientConcurrencyOrphanedSessionExpiresAndHandsOff(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
