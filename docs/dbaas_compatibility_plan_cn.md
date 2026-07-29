@@ -18294,6 +18294,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   WithSerializable())` 必须在指定历史 revision 上只读取当前 namespace logical `[ "", "z" )`
   range，返回旧 `alpha/a`、`items/a`，并排除之后的 update/delete/new key、upper bound 外
   `z/final` 和相邻 tenant。该回归补齐 A1569 historical 与 A1570 serializable 单独路径之外的组合路径。
+- A2540 补强 A1594 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical serializable header 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
+  WithSerializable())` 返回历史 logical range 时，outer txn response header 与 nested range response
+  header 必须保持当前 latest revision；historical logical key/value、`Count=2`、`More=false` 与相邻
+  tenant 隔离保持不变。
 - A1595 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical KeysOnly 分页外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithKeysOnly(), WithLimit(2))` 必须在指定历史 revision 上统计当前 namespace logical
