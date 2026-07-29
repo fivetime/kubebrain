@@ -28184,6 +28184,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DeleteRange/Range response header 必须保持当前 revision，nested `TxnResponse.Header.Revision`
   必须保持 0，`Deleted=0` 且 `PrevKvs` 为空，nested 后续 range 和事务后 current range
   都必须保留原 keyset。
+- A2168 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareToPath`、
+  `newTxnResp` 与递归 `executeTxn` 分支选择语义，固定官方 client/v3
+  `Txn().Then(OpTxn(cmp, successOps, failureOps))` 在 nested compare 失败并执行 failure
+  分支 no-op `OpDelete(..., WithPrevKV())` 时的外观：外层 txn 仍为 success path，nested
+  `TxnResponse.Succeeded=false` 且 header revision 保持 0；failure 分支内 missing point、
+  equal empty range、reversed empty range 均不得推进 revision，叶子 DeleteRange/Range
+  response header 必须保持当前 revision，`Deleted=0`、`PrevKvs` 为空，原 keyset 在 nested
+  range 与事务后 current range 中都必须保留。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
