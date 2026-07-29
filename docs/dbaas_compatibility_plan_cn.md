@@ -25439,6 +25439,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical range，filter/helper/sort/count 只作用于 namespace logical keyspace；nested
   txn response header 必须存在但 `Revision=0`，outer/range header 沿用 current
   range 语义。
+- A2981 固定 A1517/A1518/A1546/A1548/A1565 官方 client/v3 namespace.NewKV
+  nested OpTxn delete/compare/put ignore 路径中间 `TxnResponse.Header` 外观：
+  from-key compare/delete、empty-prefix delete、empty-start logical range delete 与
+  put `WithIgnoreValue`/`WithIgnoreLease` 必须只作用于 namespace logical keyspace；
+  nested txn response header 必须存在但 `Revision=0`，inner put/delete response
+  header 沿用 outer txn revision 语义。
 - A2370 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable logical
   range key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByKey` desc/asc/none
   与 `SortByValue` asc/desc 变体必须在 historical revision 上只清空返回页 value，
