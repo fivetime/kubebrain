@@ -17375,6 +17375,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical `range/b`、`Count=3`、`More=true`。该回归防止 namespace Txn response adapter 在
   leasing guardRanges 相关显式 range + reverse mod revision top-helper 路径上漏做 unprefix
   或跨 range/tenant 计数。
+- A2613 补强 A1501/A1502/A1503 官方 client/v3 namespace.NewKV 显式 logical range +
+  `WithLastRev()` 三入口 header 外观：`Get`、`Do(OpGet)` 与 `Txn().Then(OpGet)` 返回
+  explicit range 内 current mod revision latest logical key/value 时，各 response header 必须等于
+  相邻 tenant 写入后的全局 latest revision；Txn outer header 与 range response header 也必须
+  一致；tenant `Count=3`、`More=true`、logical key/value、upper bound 与 range 隔离断言保持
+  不变。
 - A1504 固定官方 client/v3 namespace.NewKV Txn OpGet 的显式 logical range + `WithKeysOnly()`
   外观：对照 upstream leasing `deleteRangeRPC` 在同一事务中先执行
   `OpGet(key, WithRange(end), WithKeysOnly())` 再执行 range delete，本轮新增 official clientv3
