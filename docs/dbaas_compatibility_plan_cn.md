@@ -24431,6 +24431,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   路径的中间 `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但
   `Revision=0`，不能被 namespace response adapter 误改写为 latest revision；outer/range header
   与 current serializable prefix mod-sort-none KeysOnly page 元数据断言沿用 A2112。
+- A2819 固定 A2367 覆盖的 A2114 官方 client/v3 namespace.NewKV nested OpTxn non-empty
+  prefix current serializable
+  `OpGet("items/", WithPrefix(), WithSerializable(), KeysOnly+Limit(2), SortByVersion(Desc))`
+  路径的中间 `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但
+  `Revision=0`，不能被 namespace response adapter 误改写为 latest revision；outer/range header
+  与 current serializable prefix version-desc KeysOnly page 元数据断言沿用 A2114。
 - A2368 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable prefix
   value/key sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByValue` asc/desc/none 与
   `SortByKey` desc/asc/none 变体必须在 historical revision 上只清空返回页 value，
