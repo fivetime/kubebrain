@@ -27823,6 +27823,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   另一个 session 的 campaign 必须持续等待；使用原 leader lease 创建新 session 并再次
   `Campaign("def")` 时不能丢失 leadership，Observe 必须看到 value 为 `def` 的 leader，
   等待者不能在原 lease 未失效、未 resign 前抢占。
+- A2098 对照 `/root/etcd/tests/integration/v3_election_test.go:TestElectionOnPrefixOfExistingKey`
+  固定官方 client/v3 concurrency Election prefix 边界：当 election name 为 `test` 且已存在
+  相邻 key `testa` 时，`Campaign("abc")` 不能把该相邻 key 当作 election 成员而阻塞或
+  误判 leader，竞选后 `Leader` 必须返回当前 candidate value。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

@@ -490,6 +490,49 @@ func TestClientConcurrencyElectionKeepsLeadershipOnSessionRestart(t *testing.T) 
 	require.NoError(t, restartedElection.Resign(ctx))
 }
 
+func TestClientConcurrencyElectionCampaignIgnoresExistingKeyWithNamePrefix(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	electionName := fmt.Sprintf("/a2098/concurrency/election-prefix/%d/test", time.Now().UnixNano())
+	_, err = client.Put(ctx, electionName+"a", "outside-election")
+	require.NoError(t, err)
+	session, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(session.Orphan)
+	election := concurrency.NewElection(session, electionName)
+	require.NoError(t, election.Campaign(ctx, "abc"))
+
+	leader, err := election.Leader(ctx)
+	require.NoError(t, err)
+	require.Len(t, leader.Kvs, 1)
+	require.Equal(t, "abc", string(leader.Kvs[0].Value))
+	require.NoError(t, election.Resign(ctx))
+}
+
 func TestClientConcurrencySessionOptionsAndContext(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
