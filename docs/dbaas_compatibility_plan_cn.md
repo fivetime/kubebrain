@@ -17242,6 +17242,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `prefixOps` 收窄到当前 namespace 的 logical prefix，并在 nested `ResponseRange` 中返回
   logical `items/a`、`Count=3`、`More=true`。该回归防止 namespace Txn response adapter 在
   lexical top-helper 路径上漏做 unprefix 或跨 prefix/tenant 计数。
+- A2608 补强 A1486/A1487/A1488 官方 client/v3 namespace.NewKV 非空 logical prefix
+  `WithFirstKey()` 三入口 header 外观：`Get`、`Do(OpGet)` 与 `Txn().Then(OpGet)` 返回
+  lexical first logical key/value 时，各 response header 必须等于相邻 tenant 写入后的全局
+  latest revision；Txn outer header 与 range response header 也必须一致；tenant `Count=3`、
+  `More=true`、logical key/value 和 prefix 隔离断言保持不变。
 - A1489 固定官方 client/v3 namespace.NewKV Get 的 `WithLastKey()` 非空 logical prefix
   外观：对照 upstream `WithLastKey()` 展开为 `WithPrefix()+SortByKey(Descend)+Limit(1)`，且
   experimental sequential key recipe 使用 `Get(prefix, WithLastKey()...)` 找出当前最大 key。本轮
