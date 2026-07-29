@@ -17475,6 +17475,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须等于 outer txn header；同时 logical prev keys/values、`Deleted=3`、删除范围和相邻
   range/tenant 隔离外观保持不变。该回归把 nested delete 写事务 response header 合同与 A2484
   read-only range get 对侧路径区分开。
+- A2618 固定 A1510 官方 client/v3 namespace.NewKV nested OpTxn delete 写事务的中间
+  `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但 `Revision=0`，不能被
+  namespace response adapter 误改写为 outer txn revision；outer/delete header 断言沿用 A2485。
 - A1511 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `OpPut(..., WithPrevKV())` 外观：
   A1509/A1510 覆盖 nested range get/delete 后，本轮补齐 nested put response adapter：
   `namespace.NewKV(...).Txn(...).Then(OpTxn(nil, []Op{OpPut("items/a", "new",
