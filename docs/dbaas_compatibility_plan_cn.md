@@ -170,6 +170,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Failure branch 的成功 Put，以及 create-with-PrevKV 的 Put response：outer txn header
   必须存在，inner Put response header revision 必须等于 outer txn revision；create
   `PrevKv=true` 时 PrevKv 仍为 nil，后续 Range header 等于写入 revision。
+- **Txn selected branch Put/Range header 外观**：A2995 固定 range-compare 选择
+  Failure Put branch 与 compact revision CAS 的 Put/Range response header：selected
+  Put response header revision 必须等于 outer txn revision；CAS stale/current Failure
+  Range header 等于当前 compact key revision；CAS 成功更新只前进一个 revision。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
