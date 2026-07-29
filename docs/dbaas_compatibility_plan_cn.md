@@ -133,6 +133,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1，single-key delete 后的 Range header 等于 delete revision；equal/reverse empty range
   不消耗 revision，但 DeleteRange response header 仍等于当前 revision。覆盖
   `TestDeleteRangeBoundaryHighPrefixMatchesEtcd` 和 `TestDeleteRangeDeletesSingleKey`。
+- **binary key Txn/DeleteRange header revision 外观**：A2988 固定 raw gRPC 与官方
+  clientv3 二进制 keyspace `[0x00,0x01)`、`[0xfe,0xff)` 边界路径的 header：
+  read-only txn header 与 inner range header 等于最后一次 seed put revision；txn
+  DeleteRange 命中删除时 outer/inner delete header 精确前进 1；后续 standalone
+  DeleteRange 再精确前进 1，并保留 PrevKV 二进制 key 顺序。覆盖
+  `TestRawGRPCBinaryRangeTxnAndDeleteBoundaries` 和
+  `TestClientBinaryKeyTxnAndDeleteMutations`。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键

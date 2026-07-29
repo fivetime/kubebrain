@@ -61,11 +61,13 @@ func TestRawGRPCBinaryRangeTxnAndDeleteBoundaries(t *testing.T) {
 		{0xfe, 0x01},
 		{0xff},
 	}
+	var lastPutRevision int64
 	for index, key := range keys {
-		_, err = client.Put(ctx, &etcdserverpb.PutRequest{
+		put, err := client.Put(ctx, &etcdserverpb.PutRequest{
 			Key: key, Value: []byte{byte('a' + index)},
 		})
 		require.NoError(t, err)
+		lastPutRevision = put.Header.Revision
 	}
 
 	txnRange, err := client.Txn(ctx, &etcdserverpb.TxnRequest{
@@ -76,9 +78,15 @@ func TestRawGRPCBinaryRangeTxnAndDeleteBoundaries(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, txnRange.Header)
+	require.Equal(t, lastPutRevision, txnRange.Header.Revision)
 	require.Len(t, txnRange.Responses, 1)
-	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(txnRange.Responses[0].GetResponseRange().Kvs))
-	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(txnRange.Responses[0].GetResponseRange().Kvs))
+	rangedNUL := txnRange.Responses[0].GetResponseRange()
+	require.NotNil(t, rangedNUL)
+	require.NotNil(t, rangedNUL.Header)
+	require.Equal(t, txnRange.Header.Revision, rangedNUL.Header.Revision)
+	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(rangedNUL.Kvs))
+	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(rangedNUL.Kvs))
 
 	txnDelete, err := client.Txn(ctx, &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{{
@@ -90,8 +98,13 @@ func TestRawGRPCBinaryRangeTxnAndDeleteBoundaries(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, txnDelete.Header)
+	require.Equal(t, lastPutRevision+1, txnDelete.Header.Revision)
 	require.Len(t, txnDelete.Responses, 1)
 	deleted := txnDelete.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, txnDelete.Header.Revision, deleted.Header.Revision)
 	require.Equal(t, int64(3), deleted.Deleted)
 	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(deleted.PrevKvs))
 	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(deleted.PrevKvs))
@@ -109,6 +122,8 @@ func TestRawGRPCBinaryRangeTxnAndDeleteBoundaries(t *testing.T) {
 		Key: []byte{0xfe}, RangeEnd: []byte{0xff}, PrevKv: true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, standalone.Header)
+	require.Equal(t, txnDelete.Header.Revision+1, standalone.Header.Revision)
 	require.Equal(t, int64(3), standalone.Deleted)
 	require.Equal(t, []string{"fe", "fe00", "fe01"}, binaryClientKeys(standalone.PrevKvs))
 	require.Equal(t, []string{"e", "f", "g"}, binaryClientValues(standalone.PrevKvs))
@@ -266,9 +281,11 @@ func TestClientBinaryKeyTxnAndDeleteMutations(t *testing.T) {
 		{0xfe, 0x01},
 		{0xff},
 	}
+	var lastPutRevision int64
 	for index, key := range keys {
-		_, err = client.Put(ctx, string(key), string([]byte{byte('a' + index)}))
+		put, err := client.Put(ctx, string(key), string([]byte{byte('a' + index)}))
 		require.NoError(t, err)
+		lastPutRevision = put.Header.Revision
 	}
 
 	txnRange, err := client.Txn(ctx).Then(clientv3.OpGet(
@@ -277,8 +294,13 @@ func TestClientBinaryKeyTxnAndDeleteMutations(t *testing.T) {
 	)).Commit()
 	require.NoError(t, err)
 	require.True(t, txnRange.Succeeded)
+	require.NotNil(t, txnRange.Header)
+	require.Equal(t, lastPutRevision, txnRange.Header.Revision)
 	require.Len(t, txnRange.Responses, 1)
 	nulRange := txnRange.Responses[0].GetResponseRange()
+	require.NotNil(t, nulRange)
+	require.NotNil(t, nulRange.Header)
+	require.Equal(t, txnRange.Header.Revision, nulRange.Header.Revision)
 	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(nulRange.Kvs))
 	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(nulRange.Kvs))
 
@@ -289,8 +311,13 @@ func TestClientBinaryKeyTxnAndDeleteMutations(t *testing.T) {
 	)).Commit()
 	require.NoError(t, err)
 	require.True(t, txnDelete.Succeeded)
+	require.NotNil(t, txnDelete.Header)
+	require.Equal(t, lastPutRevision+1, txnDelete.Header.Revision)
 	require.Len(t, txnDelete.Responses, 1)
 	deletedNUL := txnDelete.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deletedNUL)
+	require.NotNil(t, deletedNUL.Header)
+	require.Equal(t, txnDelete.Header.Revision, deletedNUL.Header.Revision)
 	require.Equal(t, int64(3), deletedNUL.Deleted)
 	require.Equal(t, []string{"00", "0000", "0001"}, binaryClientKeys(deletedNUL.PrevKvs))
 	require.Equal(t, []string{"a", "b", "c"}, binaryClientValues(deletedNUL.PrevKvs))
@@ -311,6 +338,8 @@ func TestClientBinaryKeyTxnAndDeleteMutations(t *testing.T) {
 		clientv3.WithPrevKV(),
 	)
 	require.NoError(t, err)
+	require.NotNil(t, standaloneDelete.Header)
+	require.Equal(t, txnDelete.Header.Revision+1, standaloneDelete.Header.Revision)
 	require.Equal(t, int64(3), standaloneDelete.Deleted)
 	require.Equal(t, []string{"fe", "fe00", "fe01"}, binaryClientKeys(standaloneDelete.PrevKvs))
 	require.Equal(t, []string{"e", "f", "g"}, binaryClientValues(standaloneDelete.PrevKvs))
