@@ -17944,6 +17944,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内按 value 降序分页，返回 logical `items/b`、`items/a` 及 values，`Count=3`、`More=true`，
   并排除 upper bound 外的 `z/final` 和相邻 tenant。该回归补齐 A1552 empty-prefix value sort
   与 A1567 empty-start KeysOnly page 之外的 explicit range sort 路径。
+- A2538 补强 A1568 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range value-sort page header 外观：nested `OpGet("", WithRange("z"), WithLimit(2),
+  WithSort(SortByValue, SortDescend))` 返回 value 降序第一页时，outer txn response header 与 nested
+  range response header 都必须等于相邻 tenant 写入产生的 latest revision；sorted logical key/value、
+  `Count=3`、`More=true` 与 explicit range 隔离保持不变。
 - A1569 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical revision 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev))` 必须在指定历史
   revision 上只读取当前 namespace 的 logical `[ "", "z" )` range，返回旧 `alpha/a`、`items/a`
