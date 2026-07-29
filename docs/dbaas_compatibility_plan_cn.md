@@ -28022,6 +28022,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须暴露为可由 `errors.Is(..., rpctypes.ErrEmptyKey)` 识别的 public error，
   gRPC code 为 `Unknown`，message 为 `etcdserver: key is not provided`，与专用
   `Delete("")` 路径保持一致。
+- A2144 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVDeleteRange`
+  的 prefix interval 行为，固定官方 client/v3 KV
+  `Do(OpDelete(prefix, WithPrefix(), WithPrevKV()))` 通用 Op 路径外观：prefix delete
+  必须只删除该 prefix 半开区间内 key，不得误删共享前缀但不在目录 prefix 下的相邻 key；
+  Delete response/header 精确推进一次 revision，`Deleted` 计数、`PrevKvs` key 顺序以及
+  create/mod revision/version 元数据必须匹配最终存储状态。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
