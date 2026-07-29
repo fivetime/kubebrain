@@ -17055,6 +17055,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace，并在 nested `ResponseRange` 中返回 logical keys、空 value、正确的 `Count`
   和 `More=true`。该回归防止 namespace Txn range response adapter 在 keys-only/limit
   分页路径上漏做 unprefix 或跨 tenant 读取。
+- A2601 补强 A1464/A1465/A1466 官方 client/v3 namespace.NewKV full-range KeysOnly/Limit
+  三入口 header 外观：`Get`、`Do(OpGet)` 与 `Txn().Then(OpGet)` 返回当前 namespace logical
+  page 时，各 response header 必须等于相邻 tenant 写入后的全局 latest revision；Txn outer
+  header 与 range response header 也必须一致；logical keys、空 values、metadata、`Count=3`
+  和 `More=true` 断言保持不变。
 - A1467 固定官方 client/v3 namespace.NewKV Get 的 mod revision filter 外观：
   对照普通 clientv3 range revision filter 门禁，`WithMinModRev` 会过滤返回的 `Kvs`，但
   `Count` 保持当前 range 的总匹配数；对照 upstream `namespace.kvPrefix.Get`，empty key 加

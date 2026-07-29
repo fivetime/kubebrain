@@ -283,7 +283,7 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 		require.NoError(t, err)
 		putRevs[key] = putResp.Header.Revision
 	}
-	_, err = client.Put(ctx, "/a1464/namespace-keys-only/tenant0/outside", "outside")
+	latest, err := client.Put(ctx, "/a1464/namespace-keys-only/tenant0/outside", "outside")
 	require.NoError(t, err)
 
 	resp, err := namespacedKV.Get(ctx, "",
@@ -291,6 +291,7 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
 	require.NoError(t, err)
 	require.NotNil(t, resp.Header)
+	require.Equal(t, latest.Header.Revision, resp.Header.Revision)
 	require.Equal(t, int64(3), resp.Count)
 	require.True(t, resp.More)
 	require.Len(t, resp.Kvs, 2)
@@ -310,6 +311,7 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 	doGet := doResp.Get()
 	require.NotNil(t, doGet)
 	require.NotNil(t, doGet.Header)
+	require.Equal(t, latest.Header.Revision, doGet.Header.Revision)
 	require.Equal(t, int64(3), doGet.Count)
 	require.True(t, doGet.More)
 	require.Len(t, doGet.Kvs, 2)
@@ -329,10 +331,12 @@ func TestClientNamespaceGetKeysOnlyLimitReturnsLogicalKeys(t *testing.T) {
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	txnGet := txnResp.Responses[0].GetResponseRange()
 	require.NotNil(t, txnGet)
 	require.NotNil(t, txnGet.Header)
+	require.Equal(t, latest.Header.Revision, txnGet.Header.Revision)
 	require.Equal(t, int64(3), txnGet.Count)
 	require.True(t, txnGet.More)
 	require.Len(t, txnGet.Kvs, 2)
