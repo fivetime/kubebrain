@@ -27908,6 +27908,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 leasing KV DeleteRange 边界语义：reader 已缓存并持有 j/m owner 时，
   另一个 leasing client 删除 `k*` range 必须只删除匹配的 k keys，j/m 的 owner metadata
   与后续 cached Get 都必须保持有效，不能误撤销范围外 leasing ownership。
+- A2119 对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go:TestLeasingDeleteRangeContendTxn`
+  固定官方 client/v3 leasing KV `Do(OpTxn(...OpDelete(prefix, WithPrefix())...))`
+  并发语义：range delete 在线性化删除所有目标 keys 时必须返回 nested DeleteRange response，
+  inner/outer header revision 保持一致，且并发 writer 的 leasing cache 最终必须与服务端直读状态一致。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

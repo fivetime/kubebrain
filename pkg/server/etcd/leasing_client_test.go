@@ -1588,6 +1588,104 @@ func TestClientLeasingDeleteRangeBoundsPreservesOutsideOwners(t *testing.T) {
 	require.Empty(t, deletedKeys.Kvs)
 }
 
+func TestClientLeasingDeleteRangeContendTxnReturnsNestedDeleteAndConsistentCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2119/leasing-delete-range-contend-txn/%d/", time.Now().UnixNano())
+	ownerPrefix := prefix + "0owners/"
+	dataPrefix := prefix + "key/"
+	deleter, closeDeleter, err := leasing.NewKV(client, ownerPrefix)
+	require.NoError(t, err)
+	t.Cleanup(closeDeleter)
+	writer, closeWriter, err := leasing.NewKV(client, ownerPrefix)
+	require.NoError(t, err)
+	t.Cleanup(closeWriter)
+
+	const keys = 8
+	for index := 0; index < keys; index++ {
+		key := fmt.Sprintf("%s%d", dataPrefix, index)
+		_, err = client.Put(ctx, key, "123")
+		require.NoError(t, err)
+		_, err = writer.Get(ctx, key)
+		require.NoError(t, err)
+	}
+
+	writerCtx, stopWriter := context.WithCancel(ctx)
+	writerDone := make(chan error, 1)
+	var writerOperations atomic.Int64
+	go func() {
+		for iteration := 0; writerCtx.Err() == nil; iteration++ {
+			key := fmt.Sprintf("%s%d", dataPrefix, iteration%keys)
+			if _, putErr := writer.Put(ctx, key, "123"); putErr != nil {
+				writerDone <- putErr
+				return
+			}
+			if _, getErr := writer.Get(ctx, key); getErr != nil {
+				writerDone <- getErr
+				return
+			}
+			writerOperations.Add(1)
+		}
+		writerDone <- nil
+	}()
+	require.Eventually(t, func() bool {
+		return writerOperations.Load() > 0
+	}, 5*time.Second, time.Millisecond)
+
+	response, err := deleter.Do(ctx, clientv3.OpTxn(
+		nil,
+		[]clientv3.Op{clientv3.OpDelete(dataPrefix, clientv3.WithPrefix())},
+		nil,
+	))
+	stopWriter()
+	require.NoError(t, <-writerDone)
+	require.NoError(t, err)
+	txn := response.Txn()
+	require.NotNil(t, txn)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 1)
+	deleted := txn.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.Equal(t, int64(keys), deleted.Deleted)
+	require.NotNil(t, txn.Header)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, txn.Header.Revision, deleted.Header.Revision)
+
+	for index := 0; index < keys; index++ {
+		key := fmt.Sprintf("%s%d", dataPrefix, index)
+		cached, cachedErr := writer.Get(ctx, key)
+		direct, directErr := client.Get(ctx, key)
+		require.NoError(t, cachedErr)
+		require.NoError(t, directErr)
+		require.Equal(t, direct.Kvs, cached.Kvs, "key %q differs", key)
+		require.Equal(t, direct.Count, cached.Count, "key %q count differs", key)
+	}
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
