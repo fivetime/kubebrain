@@ -18539,6 +18539,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `More=false` 且不返回任何 KVs，证明 CountOnly 覆盖 KeysOnly 和 limit 分页，并排除后续
   update/delete/new key、upper bound 外 `z/final` 和相邻 tenant。该回归补齐 A1596 historical
   CountOnly 与 A1614 historical serializable KeysOnly page 之外的优先级叠加路径。
+- A2561 补强 A1615 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical serializable CountOnly header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithSerializable(), WithKeysOnly(), WithCountOnly(), WithLimit(1))` 返回
+  historical serializable count-only 结果时，outer txn response header 与 nested range response
+  header 必须保持当前 latest revision；`Count=3`、`More=false`、空 KVs 与 CountOnly 优先级断言保持不变。
 - A1616 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical serializable KeysOnly value-sort 分页外观：nested `OpGet("", WithRange("z"),
   WithRev(historyRev), WithSerializable(), WithKeysOnly(), WithLimit(2),
