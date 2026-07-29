@@ -27831,6 +27831,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 concurrency Mutex 等待者 session 关闭语义：当 owner 已持锁、第二个
   session 正在 `Lock` 阻塞等待时，关闭等待者 session 后再释放 owner lock，等待者不能成功
   获取锁，阻塞的 `Lock` 必须返回 `concurrency.ErrSessionExpired`。
+- A2100 对照 `/root/etcd/tests/integration/v3_election_test.go:TestElectionWithAuthEnabled`
+  固定官方 client/v3 concurrency Election 在 auth enabled 下的授权前缀成功路径：为两个
+  用户分别授予不同 election prefix 的 READWRITE 权限后，带用户名密码创建的 client 必须能
+  `NewSession`、`Campaign`、`Leader`、`Resign`，且 leader value 保持各自 candidate，
+  不能因 auth token、lease 或 watch/KV 权限链路导致误拒绝。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

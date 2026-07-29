@@ -533,6 +533,84 @@ func TestClientConcurrencyElectionCampaignIgnoresExistingKeyWithNamePrefix(t *te
 	require.NoError(t, election.Resign(ctx))
 }
 
+func TestClientConcurrencyElectionCampaignsWithAuthEnabled(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		t.Helper()
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			Username:    username,
+			Password:    password,
+			DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	for _, user := range []struct {
+		name     string
+		password string
+		role     string
+		key      string
+		end      string
+	}{
+		{name: "a2100-user1", password: "user1-secret", role: "a2100-role1", key: "/a2100/auth/foo1/", end: "/a2100/auth/foo2/"},
+		{name: "a2100-user2", password: "user2-secret", role: "a2100-role2", key: "/a2100/auth/bar1/", end: "/a2100/auth/bar2/"},
+	} {
+		require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, user.name, user.password, user.role, user.key, user.end))
+		_, err := bootstrap.RoleGrantPermission(ctx, user.role, user.key, user.end, clientv3.PermissionType(clientv3.PermReadWrite))
+		require.NoError(t, err)
+	}
+	_, err := bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	user1 := newClient("a2100-user1", "user1-secret")
+	user2 := newClient("a2100-user2", "user2-secret")
+	for _, campaign := range []struct {
+		name   string
+		client *clientv3.Client
+		prefix string
+		value  string
+	}{
+		{name: "user1 election", client: user1, prefix: "/a2100/auth/foo1/election-a", value: "candidate-user1"},
+		{name: "user2 election", client: user2, prefix: "/a2100/auth/bar1/election-b", value: "candidate-user2"},
+	} {
+		session, sessionErr := concurrency.NewSession(campaign.client, concurrency.WithTTL(10))
+		require.NoError(t, sessionErr, campaign.name)
+		t.Cleanup(session.Orphan)
+		election := concurrency.NewElection(session, campaign.prefix)
+		require.NoError(t, election.Campaign(ctx, campaign.value), campaign.name)
+		leader, leaderErr := election.Leader(ctx)
+		require.NoError(t, leaderErr, campaign.name)
+		require.Len(t, leader.Kvs, 1, campaign.name)
+		require.Equal(t, campaign.value, string(leader.Kvs[0].Value), campaign.name)
+		require.NoError(t, election.Resign(ctx), campaign.name)
+	}
+}
+
 func TestClientConcurrencySessionOptionsAndContext(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
