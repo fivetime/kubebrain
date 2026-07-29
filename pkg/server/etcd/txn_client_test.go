@@ -2064,6 +2064,131 @@ func TestClientDoOpTxnDeletePrefixWithLeasesPrevKVMatchesEtcd(t *testing.T) {
 	require.Equal(t, outsideB.Header.Revision, historical.Kvs[3].CreateRevision)
 }
 
+func TestClientDoOpTxnDeleteFromKeyWithLeasesPrevKVMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	leaseA, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	leaseB, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	prefix := "/a2161/client-do-optxn-delete-fromkey-leased/"
+	before, err := client.Put(ctx, prefix+"a", "va", clientv3.WithLease(leaseA.ID))
+	require.NoError(t, err)
+	putB, err := client.Put(ctx, prefix+"b", "vb", clientv3.WithLease(leaseA.ID))
+	require.NoError(t, err)
+	putC, err := client.Put(ctx, prefix+"c", "vc", clientv3.WithLease(leaseB.ID))
+	require.NoError(t, err)
+	putD, err := client.Put(ctx, prefix+"d", "vd", clientv3.WithLease(leaseA.ID))
+	require.NoError(t, err)
+	updateC, err := client.Put(ctx, prefix+"c", "vc2", clientv3.WithLease(leaseB.ID))
+	require.NoError(t, err)
+
+	ttlABefore, err := client.TimeToLive(ctx, leaseA.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{prefix + "a", prefix + "b", prefix + "d"}, leaseClientAttachedKeys(ttlABefore.Keys))
+	ttlBBefore, err := client.TimeToLive(ctx, leaseB.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, []string{prefix + "c"}, leaseClientAttachedKeys(ttlBBefore.Keys))
+
+	opResponse, err := client.Do(ctx, clientv3.OpTxn(
+		nil,
+		[]clientv3.Op{
+			clientv3.OpDelete(prefix+"b", clientv3.WithFromKey(), clientv3.WithPrevKV()),
+			clientv3.OpGet(prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend)),
+		},
+		nil,
+	))
+	require.NoError(t, err)
+	txn := opResponse.Txn()
+	require.NotNil(t, txn)
+	require.NotNil(t, txn.Header)
+	require.Equal(t, updateC.Header.Revision+1, txn.Header.Revision)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 2)
+
+	deleted := txn.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, txn.Header.Revision, deleted.Header.Revision)
+	require.Equal(t, int64(3), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 3)
+	require.Equal(t, []byte(prefix+"b"), deleted.PrevKvs[0].Key)
+	require.Equal(t, []byte("vb"), deleted.PrevKvs[0].Value)
+	require.Equal(t, putB.Header.Revision, deleted.PrevKvs[0].CreateRevision)
+	require.Equal(t, putB.Header.Revision, deleted.PrevKvs[0].ModRevision)
+	require.Equal(t, int64(1), deleted.PrevKvs[0].Version)
+	require.Equal(t, int64(leaseA.ID), deleted.PrevKvs[0].Lease)
+	require.Equal(t, []byte(prefix+"c"), deleted.PrevKvs[1].Key)
+	require.Equal(t, []byte("vc2"), deleted.PrevKvs[1].Value)
+	require.Equal(t, putC.Header.Revision, deleted.PrevKvs[1].CreateRevision)
+	require.Equal(t, updateC.Header.Revision, deleted.PrevKvs[1].ModRevision)
+	require.Equal(t, int64(2), deleted.PrevKvs[1].Version)
+	require.Equal(t, int64(leaseB.ID), deleted.PrevKvs[1].Lease)
+	require.Equal(t, []byte(prefix+"d"), deleted.PrevKvs[2].Key)
+	require.Equal(t, []byte("vd"), deleted.PrevKvs[2].Value)
+	require.Equal(t, putD.Header.Revision, deleted.PrevKvs[2].CreateRevision)
+	require.Equal(t, putD.Header.Revision, deleted.PrevKvs[2].ModRevision)
+	require.Equal(t, int64(1), deleted.PrevKvs[2].Version)
+	require.Equal(t, int64(leaseA.ID), deleted.PrevKvs[2].Lease)
+
+	staged := txn.Responses[1].GetResponseRange()
+	require.NotNil(t, staged)
+	require.NotNil(t, staged.Header)
+	require.Equal(t, txn.Header.Revision, staged.Header.Revision)
+	require.Equal(t, []txnClientKV{
+		{Key: "a", Value: "va", Version: 1},
+	}, txnClientKVs(staged.Kvs, prefix, txn.Header.Revision))
+	require.Equal(t, int64(leaseA.ID), staged.Kvs[0].Lease)
+
+	ttlAAfter, err := client.TimeToLive(ctx, leaseA.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, []string{prefix + "a"}, leaseClientAttachedKeys(ttlAAfter.Keys))
+	ttlBAfter, err := client.TimeToLive(ctx, leaseB.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Empty(t, ttlBAfter.Keys)
+
+	historical, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithRev(updateC.Header.Revision),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	require.Equal(t, []txnClientKV{
+		{Key: "a", Value: "va", Version: 1},
+		{Key: "b", Value: "vb", Version: 1},
+		{Key: "c", Value: "vc2", Version: 2},
+		{Key: "d", Value: "vd", Version: 1},
+	}, txnClientKVs(historical.Kvs, prefix, txn.Header.Revision))
+	require.Equal(t, int64(leaseA.ID), historical.Kvs[0].Lease)
+	require.Equal(t, int64(leaseA.ID), historical.Kvs[1].Lease)
+	require.Equal(t, int64(leaseB.ID), historical.Kvs[2].Lease)
+	require.Equal(t, int64(leaseA.ID), historical.Kvs[3].Lease)
+	require.Equal(t, before.Header.Revision, historical.Kvs[0].CreateRevision)
+}
+
 func TestClientTxnHeaderRevisions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
