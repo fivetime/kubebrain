@@ -17757,6 +17757,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全前缀，返回 logical `alpha/a`、`items/a` 两个空 value KV，`Count=3`、`More=true`，并排除
   相邻 tenant。该回归补齐 A1550 count-only 之外的 payload page，防止 KeysOnly/Limit 在
   nested empty-prefix Range 中泄漏物理 prefix 或错误计算 Count/More。
+- A2516 补强 A1551 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix keys-only
+  page header 外观：nested `OpGet("", WithPrefix(), WithKeysOnly(), WithLimit(2))` 返回第一页时，
+  outer txn response header 与 nested range response header 都必须等于相邻 tenant 写入产生的
+  latest revision；logical keys、空 values、`Count=3`、`More=true` 和 create/mod revision 元数据
+  保持不变。该回归覆盖 empty-prefix KeysOnly+Limit page path 的 response header propagation。
 - A1552 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix value-sort page
   外观：nested `OpGet("", WithPrefix(), WithLimit(2), WithSort(SortByValue, SortDescend))`
   必须只在当前 namespace 全前缀内按 value 降序分页，返回 logical `z/final`、`items/a` 及
