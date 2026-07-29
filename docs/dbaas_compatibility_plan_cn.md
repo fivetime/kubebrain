@@ -17480,6 +17480,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   WithSort(SortByKey, SortAscend))` 必须只返回当前 namespace logical prefix 中 create revision
   不小于门限的 logical `items/c=value-items/c`，并保持当前 logical prefix 的 `Count=3`。
   该回归防止 nested create revision filter 场景泄漏物理 prefix、相邻 tenant 或排序后的物理 key。
+- A2497 补强 A1521 官方 client/v3 namespace.NewKV nested OpTxn 的 `WithMinCreateRev` current
+  revision filter header 外观：nested `OpGet("items/", WithPrefix(), WithMinCreateRev(createRev),
+  WithSort(SortByKey, SortAscend))` 返回 filtered logical result 时，outer txn response header 与
+  nested range response header 都必须等于相邻 tenant 写入产生的 latest revision；同时 filtered
+  KVs、prefix `Count=3`、`More=false` 与相邻 prefix/tenant 隔离外观保持不变。该回归把 create
+  revision filter 下界路径纳入 nested Txn header 合同。
 - A1522 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithMaxCreateRev` revision
   filter 外观：nested `OpGet("items/", WithPrefix(), WithMaxCreateRev(createRev-1),
   WithSort(SortByKey, SortAscend))` 必须只返回当前 namespace logical prefix 中 create revision
