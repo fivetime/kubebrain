@@ -371,6 +371,66 @@ func TestClientDoOpDeleteRangeWithPrevKVMatchesEtcd(t *testing.T) {
 	}, deleteClientKVs(current.Kvs, prefix))
 }
 
+func TestClientDoOpDeleteNoOpDoesNotConsumeRevisionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := "/a2142/do-opdelete-noop/"
+	key := prefix + "key"
+	create, err := client.Put(ctx, key, "value")
+	require.NoError(t, err)
+
+	missingOp, err := client.Do(ctx, clientv3.OpDelete(prefix+"missing", clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	missing := missingOp.Del()
+	require.NotNil(t, missing)
+	require.NotNil(t, missing.Header)
+	require.Equal(t, create.Header.Revision, missing.Header.Revision)
+	require.Zero(t, missing.Deleted)
+	require.Empty(t, missing.PrevKvs)
+
+	emptyRangeOp, err := client.Do(ctx, clientv3.OpDelete(key, clientv3.WithRange(key), clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	emptyRange := emptyRangeOp.Del()
+	require.NotNil(t, emptyRange)
+	require.NotNil(t, emptyRange.Header)
+	require.Equal(t, create.Header.Revision, emptyRange.Header.Revision)
+	require.Zero(t, emptyRange.Deleted)
+	require.Empty(t, emptyRange.PrevKvs)
+
+	current, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.NotNil(t, current.Header)
+	require.Equal(t, create.Header.Revision, current.Header.Revision)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte(key), current.Kvs[0].Key)
+	require.Equal(t, []byte("value"), current.Kvs[0].Value)
+	require.Equal(t, create.Header.Revision, current.Kvs[0].CreateRevision)
+	require.Equal(t, create.Header.Revision, current.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), current.Kvs[0].Version)
+}
+
 func TestClientDeleteEmptyKeyIsTyped(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
