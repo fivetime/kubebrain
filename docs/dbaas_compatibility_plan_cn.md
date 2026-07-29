@@ -25216,6 +25216,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision range、missing lease 写分支和 remaining op budget 分支不触发对应校验/预算失败，
   selected range 分支返回 namespace 内 logical KV；nested txn response header 必须存在但
   `Revision=0`，outer/range header 沿用 selected branch 语义。
+- A2945 固定 A1549/A1550/A1552/A1553/A1554 官方 client/v3 namespace.NewKV nested OpTxn
+  empty prefix get 路径的中间 `TxnResponse.Header` 外观：empty prefix 必须只映射到
+  namespace 内 logical keyspace，CountOnly+Limit、SortByValue desc page、historical
+  revision 和 serializable 变体保持对应 logical KV/count/page 语义；nested txn response
+  header 必须存在但 `Revision=0`，outer/range header 沿用对应 range consistency/revision
+  语义。
 - A2370 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable logical
   range key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByKey` desc/asc/none
   与 `SortByValue` asc/desc 变体必须在 historical revision 上只清空返回页 value，
