@@ -18327,6 +18327,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod revision 排序并分页当前 namespace logical `[ "", "z" )`，返回旧 `items/b`、`items/a`，
   `Count=3`、`More=true`，并排除之后的 update/new key、upper bound 外 `z/final` 和相邻 tenant。
   该回归补齐 A1581 current mod-sort page 与 A1569 historical read 之外的组合路径，防止历史读误用当前排序状态。
+- A2543 补强 A1597 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical mod-revision sort 分页 header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithLimit(2), WithSort(SortByModRevision, SortDescend))` 返回历史
+  sort page 时，outer txn response header 与 nested range response header 必须保持当前
+  latest revision；`Count=3`、`More=true`、历史排序页内容与 namespace 隔离断言保持不变。
 - A1598 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical create-revision sort 分页外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithLimit(2), WithSort(SortByCreateRevision, SortDescend))` 必须按指定历史 revision 的
