@@ -18082,6 +18082,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最早创建的 logical key 时，nested txn response header 与 nested range response header 都必须
   等于 latest revision；同时 `items/a`、`Count=2`、`More=true` 与相邻 tenant 隔离外观保持不变。
   该回归把 FirstCreate helper header 合同与 A2452 key-order helper 对侧边界对齐。
+- A2586 补强 A1577 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  non-serializable `WithFirstCreate()` helper header 外观：`OpGet("", append(WithFirstCreate(),
+  WithRange("z"))...)` 返回最早创建的 logical key `items/a` 时，outer txn response header 与
+  nested range response header 必须等于相邻 tenant 写入后的全局 latest revision；`Count=2`、
+  `More=true`、upper bound 排除和相邻 tenant 隔离断言保持不变。
 - A1578 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   `WithLastCreate()` top-helper 外观：nested `OpGet("", append(WithLastCreate(), WithRange("z"))...)`
   必须按 helper 展开的 create revision 降序 + limit 1 只扫描当前 namespace 的 logical `[ "", "z" )`
