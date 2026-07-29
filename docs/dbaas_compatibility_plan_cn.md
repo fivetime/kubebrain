@@ -17800,6 +17800,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及 values，保留 etcd Range `Count` 对未过滤 keyspace 的计数外观，并排除阈值之后写入的相邻
   tenant key。该回归补齐 A1519 非空 prefix MinModRev 之外的 empty-prefix 路径，防止 revision
   filter 或排序分页在 namespace adapter 中使用物理 prefix/全局 keyspace。
+- A2519 补强 A1555 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix MinModRev
+  header 外观：nested `OpGet("", WithPrefix(), WithMinModRev(rev), WithSort(SortByKey,
+  SortAscend))` 返回过滤后的 logical keys 时，outer txn response header 与 nested range response
+  header 都必须等于当前 latest revision；filtered logical key/value、`Count=4`、`More=false`
+  与相邻 tenant 隔离保持不变。该回归覆盖 empty-prefix MinModRev filter path 的 response header
+  propagation。
 - A1556 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix MaxModRev
   外观：nested `OpGet("", WithPrefix(), WithMaxModRev(rev-1), WithSort(SortByKey, SortAscend))`
   必须只返回当前 namespace 全前缀内 mod revision 不超过阈值的 logical `alpha/a`、`items/a`
