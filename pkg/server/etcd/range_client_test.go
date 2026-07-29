@@ -383,7 +383,7 @@ func TestClientNamespaceGetModRevisionFilterReturnsLogicalKeys(t *testing.T) {
 	}
 	updateB, err := namespacedKV.Put(ctx, "b", "new-b")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1467/namespace-mod-filter/tenant0/outside", "outside")
+	latest, err := client.Put(ctx, "/a1467/namespace-mod-filter/tenant0/outside", "outside")
 	require.NoError(t, err)
 
 	resp, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(),
@@ -391,6 +391,7 @@ func TestClientNamespaceGetModRevisionFilterReturnsLogicalKeys(t *testing.T) {
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
 	require.NoError(t, err)
 	require.NotNil(t, resp.Header)
+	require.Equal(t, latest.Header.Revision, resp.Header.Revision)
 	require.Equal(t, int64(3), resp.Count)
 	require.False(t, resp.More)
 	require.Len(t, resp.Kvs, 1)
@@ -404,6 +405,7 @@ func TestClientNamespaceGetModRevisionFilterReturnsLogicalKeys(t *testing.T) {
 	doGet := doResp.Get()
 	require.NotNil(t, doGet)
 	require.NotNil(t, doGet.Header)
+	require.Equal(t, latest.Header.Revision, doGet.Header.Revision)
 	require.Equal(t, int64(3), doGet.Count)
 	require.False(t, doGet.More)
 	require.Len(t, doGet.Kvs, 1)
@@ -417,10 +419,12 @@ func TestClientNamespaceGetModRevisionFilterReturnsLogicalKeys(t *testing.T) {
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	txnGet := txnResp.Responses[0].GetResponseRange()
 	require.NotNil(t, txnGet)
 	require.NotNil(t, txnGet.Header)
+	require.Equal(t, latest.Header.Revision, txnGet.Header.Revision)
 	require.Equal(t, int64(3), txnGet.Count)
 	require.False(t, txnGet.More)
 	require.Len(t, txnGet.Kvs, 1)
