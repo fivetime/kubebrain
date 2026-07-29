@@ -53352,6 +53352,7 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixKeysOnlySortByValueDescWit
 	defer cancel()
 	tenantPrefix := "/a1663/namespace-nested-txn-serializable-prefix-keysonly-sort-value/tenant/"
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	putRevs := make(map[string]int64)
 	for _, seed := range []struct {
 		key   string
 		value string
@@ -53361,8 +53362,9 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixKeysOnlySortByValueDescWit
 		{key: "items/b", value: "m"},
 		{key: "items/a", value: "z"},
 	} {
-		_, err = namespacedKV.Put(ctx, seed.key, seed.value)
+		putResp, err := namespacedKV.Put(ctx, seed.key, seed.value)
 		require.NoError(t, err)
+		putRevs[seed.key] = putResp.Header.Revision
 	}
 	_, err = client.Put(ctx, "/a1663/namespace-nested-txn-serializable-prefix-keysonly-sort-value/tenant/items0/outside", "zz")
 	require.NoError(t, err)
@@ -53386,6 +53388,8 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixKeysOnlySortByValueDescWit
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
+	require.NotNil(t, nestedTxn.Header)
+	require.Zero(t, nestedTxn.Header.Revision)
 	require.True(t, nestedTxn.Succeeded)
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
@@ -53399,6 +53403,11 @@ func TestClientNamespaceNestedTxnGetSerializablePrefixKeysOnlySortByValueDescWit
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Empty(t, nestedGet.Kvs[0].Value)
 	require.Empty(t, nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{putRevs["items/a"], putRevs["items/d"]},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putRevs["items/a"], putRevs["items/d"]},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
 	require.NoError(t, err)
