@@ -17997,6 +17997,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod revision 上界过滤时，nested txn response header 与 nested range response header 都必须
   等于 latest revision；同时匹配旧 key/value、`Count=3`、`More=false` 与相邻 tenant 隔离外观
   保持不变。该回归把 MaxModRev 基础 filter header 合同与 A2447 MinModRev 对侧边界对齐。
+- A2581 补强 A1572 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-start current
+  non-serializable MaxModRev header 外观：`OpGet("", WithRange("z"), WithMaxModRev(rev-1),
+  WithSort(SortByKey, SortAscend))` 在只返回 logical `alpha/a`、`items/a` 旧 values 时，outer
+  txn response header 与 nested range response header 必须等于相邻 tenant 写入后的全局
+  latest revision；`Count=3`、`More=false`、阈值过滤、upper bound 排除和相邻 tenant 隔离断言保持不变。
 - A1573 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   MinCreateRev 外观：nested `OpGet("", WithRange("z"), WithMinCreateRev(createRev),
   WithSort(SortByKey, SortAscend))` 必须只在当前 namespace 的 logical `[ "", "z" )` range 内应用
