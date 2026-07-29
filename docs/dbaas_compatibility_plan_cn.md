@@ -17869,6 +17869,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod revision 降序 + limit 1 只扫描当前 namespace 全前缀；相邻 tenant 在中途写入不能被选中，
   必须返回当前 namespace 最新修改的 logical `later/new`，并保持 `Count=4`、`More=true`。
   该回归补齐 A1525 非空 prefix `WithLastRev()` 之外的 empty-prefix 路径。
+- A2525 补强 A1561 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix
+  `WithLastRev()` top-helper header 外观：helper 展开后的 prefix + mod revision 降序 + limit 1
+  返回当前 namespace 最新修改 logical key 时，outer txn response header 与 nested range response
+  header 都必须等于当前 latest revision；`Count=4`、`More=true`、logical key/value 与相邻 tenant
+  隔离保持不变。该回归覆盖 empty-prefix LastRev helper path 的 response header propagation。
 - A1562 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix
   `WithLastCreate()+WithMaxCreateRev` 组合外观：nested `OpGet("", append(WithLastCreate(),
   WithMaxCreateRev(createRev-1))...)` 必须只在当前 namespace 全前缀内选择 create revision
