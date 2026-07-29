@@ -17512,6 +17512,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested `OpGet("queue/", WithFirstRev()...)` 必须只扫描当前 namespace 的 logical `queue/`
   prefix，返回 `queue/a=value-queue/a`，并保持 `Count=3`、`More=true`。该回归防止 nested
   Txn top-helper 的 mod revision 排序、limit 与 response unprefix 在递归路径上失效。
+- A2500 补强 A1524 官方 client/v3 namespace.NewKV nested OpTxn 的 `WithFirstRev()` top-helper
+  header 外观：nested `OpGet("queue/", WithFirstRev()...)` 展开为 mod revision 升序 top-1 read
+  时，outer txn response header 与 nested range response header 都必须等于相邻 tenant 写入产生的
+  latest revision；同时 first-revision 结果、`Count=3`、`More=true` 与相邻 prefix/tenant 隔离外观
+  保持不变。该回归把 mod revision top-helper 下界路径纳入 nested Txn header 合同。
 - A1525 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithLastRev()` top-helper
   外观：对照 upstream `WithLastRev()` 展开为 prefix + mod revision 降序 + limit 1，
   nested `OpGet("queue/", WithLastRev()...)` 必须只扫描当前 namespace 的 logical `queue/`
