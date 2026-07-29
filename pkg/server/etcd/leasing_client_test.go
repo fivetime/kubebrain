@@ -855,6 +855,65 @@ func TestClientLeasingOwnerPutResponseRefreshesCachedRevisionAndVersion(t *testi
 	require.Equal(t, int64(2), got.Kvs[0].Version)
 }
 
+func TestClientLeasingTxnOwnerGetRangeReturnsFullPrefix(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2110/leasing-txn-owner-get-range/%d/", time.Now().UnixNano())
+	dataPrefix := prefix + "k-"
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	const keyCount = 4
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("%s%d", dataPrefix, i)
+		_, err = client.Put(ctx, key, key+key)
+		require.NoError(t, err)
+	}
+	// Match upstream TestLeasingTxnOwnerGetRange: acquire ownership for the
+	// prefix-shaped point key, then issue a Txn range Get for the actual prefix.
+	ownedPoint, err := leased.Get(ctx, dataPrefix)
+	require.NoError(t, err)
+	require.Empty(t, ownedPoint.Kvs)
+
+	txn, err := leased.Txn(ctx).Then(clientv3.OpGet(dataPrefix, clientv3.WithPrefix())).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 1)
+	response := txn.Responses[0].GetResponseRange()
+	require.NotNil(t, response)
+	require.Len(t, response.Kvs, keyCount)
+	for i, kv := range response.Kvs {
+		key := fmt.Sprintf("%s%d", dataPrefix, i)
+		require.Equal(t, []byte(key), kv.Key)
+		require.Equal(t, []byte(key+key), kv.Value)
+	}
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
