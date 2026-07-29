@@ -25326,6 +25326,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及其 `CountOnly` 变体必须只在 namespace logical prefix 内选择 key/count；nested
   txn response header 必须存在但 `Revision=0`，outer/range header 沿用 current
   serializable range 语义。
+- A2964 固定 A1775/A1908/A1911/A1913/A2141/A2147/A2145/A2148/A1776/
+  A1910/A2143/A2149/A2150/A2152/A1914/A1916 官方 client/v3 namespace.NewKV
+  nested OpTxn serializable prefix helper + create/mod revision filter 组合路径中间
+  `TxnResponse.Header` 外观：`WithFirstCreate`/`WithLastCreate` 搭配 min/max
+  create revision，以及 `WithFirstRev`/`WithLastRev` 搭配 min/max mod revision 时，
+  helper limit 与 CountOnly/filter 语义必须只作用于 namespace logical prefix；nested
+  txn response header 必须存在但 `Revision=0`，outer/range header 沿用 current
+  serializable range 语义。
 - A2370 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable logical
   range key/value sort `KeysOnly+Limit` 多 KV page 元数据外观：`SortByKey` desc/asc/none
   与 `SortByValue` asc/desc 变体必须在 historical revision 上只清空返回页 value，
