@@ -240,6 +240,56 @@ func TestClientDeleteNULFromKeyWithoutPrevKVSuppressesPayload(t *testing.T) {
 	require.Empty(t, remaining.Kvs)
 }
 
+func TestClientDoOpDeleteNULFromKeySuppressesPrevKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	keys := []string{"a", "b", "c", "c/abc", "d"}
+	var lastPutRevision int64
+	for _, key := range keys {
+		put, err := client.Put(ctx, key, "value-"+key)
+		require.NoError(t, err)
+		lastPutRevision = put.Header.Revision
+	}
+
+	opResponse, err := client.Do(ctx, clientv3.OpDelete("\x00", clientv3.WithFromKey()))
+	require.NoError(t, err)
+	deleted := opResponse.Del()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, lastPutRevision+1, deleted.Header.Revision)
+	require.Equal(t, int64(len(keys)), deleted.Deleted)
+	require.Empty(t, deleted.PrevKvs)
+
+	remaining, err := client.Get(ctx, "\x00", clientv3.WithFromKey())
+	require.NoError(t, err)
+	require.NotNil(t, remaining.Header)
+	require.Equal(t, deleted.Header.Revision, remaining.Header.Revision)
+	require.Zero(t, remaining.Count)
+	require.Empty(t, remaining.Kvs)
+}
+
 func TestClientDeleteEmptyKeyIsTyped(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
