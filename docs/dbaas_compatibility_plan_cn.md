@@ -18363,6 +18363,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/b`，`Count=3`、`More=false`，并排除之后的 delete/update/new key、upper bound 外
   `z/final` 和相邻 tenant。该回归补齐 A1571 current MinModRev 与 A1597-A1599 historical sort
   之外的 historical filter 组合路径。
+- A2546 补强 A1600 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical MinModRev filter header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithMinModRev(historyRev), WithSort(SortByKey, SortAscend))` 返回历史
+  filter 结果时，outer txn response header 与 nested range response header 必须保持当前
+  latest revision；`Count=3`、`More=false`、历史 filter 命中内容与 namespace 隔离断言保持不变。
 - A1601 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical MaxModRev filter 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithMaxModRev(historyRev-1), WithSort(SortByKey, SortAscend))` 必须在指定历史 revision 上按
