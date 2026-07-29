@@ -18527,6 +18527,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical keys 且 values 为空，并排除后续 update/delete/new key、upper bound 外 `z/final`
   和相邻 tenant。该回归补齐 A1594 historical serializable 与 A1595 historical KeysOnly page
   之外的叠加组合路径。
+- A2560 补强 A1614 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical serializable KeysOnly 分页 header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithSerializable(), WithKeysOnly(), WithLimit(2))` 返回 historical
+  serializable key-only page 时，outer txn response header 与 nested range response header
+  必须保持当前 latest revision；`Count=3`、`More=true`、空 values 与 namespace 隔离断言保持不变。
 - A1615 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical serializable CountOnly 优先级外观：nested `OpGet("", WithRange("z"),
   WithRev(historyRev), WithSerializable(), WithKeysOnly(), WithCountOnly(), WithLimit(1))`
