@@ -27937,6 +27937,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   删除外观：命中删除必须精确推进一个 revision，PrevKV 保留删除前 metadata 且其
   ModRevision 小于 delete header revision；删除后 `Get("a", WithFromKey())` 必须为空，
   header revision 保持在删除 revision。
+- A2126 对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseKeepAliveNotFound`
+  收紧官方 client/v3 Lease 多路 keepalive not-found 隔离语义：撤销其中一个 lease 后，
+  被撤销 lease 的 keepalive channel 必须关闭，其他 live lease 的 keepalive channel 必须继续
+  返回自身 lease ID、正 TTL，且 TTL 不超过各自 granted TTL。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

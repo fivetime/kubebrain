@@ -644,22 +644,24 @@ func TestClientLeaseKeepAliveNotFoundDoesNotCloseOtherLeases(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	type leaseChannel struct {
-		id clientv3.LeaseID
-		ch <-chan *clientv3.LeaseKeepAliveResponse
+		id  clientv3.LeaseID
+		ttl int64
+		ch  <-chan *clientv3.LeaseKeepAliveResponse
 	}
 	channels := make([]leaseChannel, 0, 3)
 	for i := 0; i < 3; i++ {
-		grant, grantErr := client.Grant(ctx, 3)
+		grant, grantErr := client.Grant(ctx, int64(3+i))
 		require.NoError(t, grantErr)
 		keepAlive, keepAliveErr := client.KeepAlive(ctx, grant.ID)
 		require.NoError(t, keepAliveErr)
-		channels = append(channels, leaseChannel{id: grant.ID, ch: keepAlive})
+		channels = append(channels, leaseChannel{id: grant.ID, ttl: grant.TTL, ch: keepAlive})
 	}
 	for _, lease := range channels {
 		response, ok := receiveClientKeepAlive(t, ctx, lease.ch)
 		require.True(t, ok)
 		require.Equal(t, lease.id, response.ID)
 		require.Positive(t, response.TTL)
+		require.LessOrEqual(t, response.TTL, lease.ttl)
 	}
 
 	_, err = client.Revoke(ctx, channels[1].id)
@@ -669,10 +671,12 @@ func TestClientLeaseKeepAliveNotFoundDoesNotCloseOtherLeases(t *testing.T) {
 	require.True(t, ok, "revoking a different lease closed the first keepalive channel")
 	require.Equal(t, channels[0].id, response.ID)
 	require.Positive(t, response.TTL)
+	require.LessOrEqual(t, response.TTL, channels[0].ttl)
 	response, ok = receiveClientKeepAlive(t, ctx, channels[2].ch)
 	require.True(t, ok, "revoking a different lease closed the third keepalive channel")
 	require.Equal(t, channels[2].id, response.ID)
 	require.Positive(t, response.TTL)
+	require.LessOrEqual(t, response.TTL, channels[2].ttl)
 	_, ok = receiveClientKeepAlive(t, ctx, channels[1].ch)
 	require.False(t, ok, "revoked lease keepalive channel remained open")
 }
