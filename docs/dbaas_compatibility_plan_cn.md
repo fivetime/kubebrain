@@ -22567,6 +22567,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Count=3`、`More=false`，response header revision 必须等于后续相邻 tenant 写入产生的
   latest revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2232 payload max-limit
   与 A2186/A2228 KeysOnly 常规分页之外的 current KeysOnly 大 limit 边界路径。
+- A2654 固定 A2235 官方 client/v3 namespace.NewKV nested OpTxn FromKey current non-serializable
+  KeysOnly+`math.MaxInt64` limit 边界路径的中间 `TxnResponse.Header` 未填充外观：nested txn
+  response header 必须存在但 `Revision=0`，不能被 namespace response adapter 误改写为 latest
+  revision；outer/range header 与 KeysOnly max-limit 完整 key 集合断言沿用 A2235。
 - A2236 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
   CountOnly+`WithLimit(0)` 边界外观：nested `OpGet("range/b", WithFromKey(),
   WithCountOnly(), WithLimit(0), WithSort(SortByKey, SortAscend))` 必须把开放 range 收窄到当前
