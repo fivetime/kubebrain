@@ -17132,6 +17132,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested `ResponseRange` 中保持 tenant `Count=3`、只返回新创建的 logical key/value、
   `More=false`。该回归防止 namespace Txn response adapter 在 create revision filter 路径上
   漏做 unprefix 或跨 tenant 计数。
+- A2604 补强 A1473/A1474/A1475 官方 client/v3 namespace.NewKV full-range MinCreateRev filter
+  三入口 header 外观：`Get`、`Do(OpGet)` 与 `Txn().Then(OpGet)` 返回新创建的 logical key
+  时，各 response header 必须等于相邻 tenant 写入后的全局 latest revision；Txn outer header
+  与 range response header 也必须一致；tenant `Count=3`、`More=false`、logical key/value 和
+  min create revision filter 断言保持不变。
 - A1476 固定官方 client/v3 namespace.NewKV Get 的 max create revision filter 外观：
   A1473-A1475 覆盖 `WithMinCreateRev` 后，本轮补齐 `WithMaxCreateRev` 的另一侧边界。
   对照普通 clientv3 range create revision filter 门禁，`WithMaxCreateRev(createRev-1)` 会
