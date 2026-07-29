@@ -22705,6 +22705,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   latest revision，并排除 prefix 前 key、同 tenant 相邻 prefix 和相邻 tenant。该回归补齐 A2245
   payload、A2246 KeysOnly 与 A1891 historical serializable CountOnly helper 之外的 current
   FirstRev CountOnly 路径。
+- A2668 固定 A2247 官方 client/v3 namespace.NewKV nested OpTxn FromKey current non-serializable
+  `WithFirstRev()+CountOnly` top-helper 路径的中间 `TxnResponse.Header` 未填充外观：nested txn
+  response header 必须存在但 `Revision=0`，不能被 namespace response adapter 误改写为 latest
+  revision；outer/range header 与 FirstRev CountOnly 断言沿用 A2247。
 - A2248 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
   `WithLastRev()` top-helper 外观：对照 etcd client/v3 `WithLastRev()` 展开为
   `WithPrefix()+SortByModRevision(Descend)+Limit(1)`，nested `OpGet("range/",
