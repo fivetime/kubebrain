@@ -16932,6 +16932,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同一 op 携带 invalid sort 时，由于 server 看到的 key 已非空，必须返回
   `Unknown`/`etcdserver: invalid sort option` 并匹配 `rpctypes.ErrInvalidSortOption`。
   该回归防止把 namespace.Get 的 empty-key-first wrapper 语义误套到 namespace Txn。
+- A2598 补强 A1449 官方 client/v3 namespace.NewKV Txn 内 OpGet validation 成功路径 header
+  外观：`Txn().Then(OpGet(""))` 成功返回空 KVs 时，outer txn response header 与 range response
+  header 必须保持同一正 revision；invalid sort typed error 断言保持不变。
 - A1450 固定官方 client/v3 namespace.NewKV Put 的 validation 外观：
   upstream `namespace.kvPrefix.Put` 在 prefix/发送 RPC 前直接拒绝 logical empty key；
   因此 `namespace.NewKV(...).Put("", value, WithIgnoreValue())` 与携带
