@@ -35809,7 +35809,7 @@ func TestClientNamespaceNestedTxnUnselectedEmptyStartRangeInvalidSortReturnsType
 		_, err = namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
 	}
-	_, err = client.Put(ctx, "/a1591/namespace-nested-txn-unselected-empty-start-range-invalid-sort/tenant0/items/a", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1591/namespace-nested-txn-unselected-empty-start-range-invalid-sort/tenant0/items/a", "outside-tenant")
 	require.NoError(t, err)
 
 	_, err = namespacedKV.Txn(ctx).
@@ -35834,9 +35834,12 @@ func TestClientNamespaceNestedTxnUnselectedEmptyStartRangeInvalidSortReturnsType
 		Commit()
 	require.NoError(t, err)
 	require.True(t, currentTxn.Succeeded)
+	require.Equal(t, latest.Header.Revision, currentTxn.Header.Revision)
 	require.Len(t, currentTxn.Responses, 1)
 	current := currentTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, current)
+	require.NotNil(t, current.Header)
+	require.Equal(t, latest.Header.Revision, current.Header.Revision)
 	require.Equal(t, int64(2), current.Count)
 	require.Len(t, current.Kvs, 2)
 	require.Equal(t, [][]byte{[]byte("alpha/a"), []byte("items/a")},

@@ -18363,6 +18363,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   admission 顺序提前返回 `ErrInvalidSortOption`/`etcdserver: invalid sort option`，整个 nested
   OpTxn 不得提交 success/failure 后续操作，并保持相邻 tenant 隔离。该回归补齐 A1590 selected
   与 A1544 point-key invalid-option validation-order 之外的 empty-start explicit range 路径。
+- A2599 补强 A1591 官方 client/v3 namespace.NewKV nested OpTxn 的未选中 invalid sort 错误后
+  current read header 外观：invalid sort admission error 后追加 `Txn().Then(OpGet("", WithRange("z")))`
+  验证状态时，outer txn response header 与 range response header 必须仍等于错误前相邻 tenant
+  写入后的全局 latest revision；未选中 put 不落盘、logical current values 和相邻 tenant 隔离断言保持不变。
 - A1592 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   矛盾 mod revision filter 外观：nested `OpGet("", WithRange("z"), WithMinModRev(rev+1),
   WithMaxModRev(rev), WithLimit(1))` 必须只统计当前 namespace logical `[ "", "z" )` range，
