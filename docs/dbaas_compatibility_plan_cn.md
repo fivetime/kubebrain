@@ -27961,6 +27961,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 Watch `WithRev(-1)` 参数边界：负 revision 必须返回 canceled
   watch response，错误类型保持 `rpctypes.ErrCompacted`/`codes.Unknown`，不得附带事件，
   随后 watch channel 必须关闭。
+- A2132 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVRange`
+  固定官方 client/v3 KV `Get(start, WithFromKey(), WithSort(SortByKey, SortAscend))`
+  基础 full-range 外观：结果按 key 升序返回，同一 key 多次 Put 只返回一个当前 KV，
+  create revision 保持首次写入，mod revision/version/value 反映最后一次写入，header revision
+  与同一快照直读一致。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
