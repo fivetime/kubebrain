@@ -27928,6 +27928,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 Lease `KeepAlive(WithRequireLeader(ctx))` 成功路径：存在 leader
   时 require-leader metadata 不只适用于 unary `KeepAliveOnce`，持续 KeepAlive stream
   也必须交付同一 lease ID、正 TTL 且不超过 granted TTL 的响应。
+- A2124 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutWithRequireLeader`
+  固定官方 client/v3 KV `Put(WithRequireLeader(ctx), key, value, WithLease(...))`
+  成功路径：存在 leader 时 require-leader metadata 必须允许写入 mutation，并产生可被同一
+  require-leader watch 观察到的 Put event/revision。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

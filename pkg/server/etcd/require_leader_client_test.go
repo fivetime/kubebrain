@@ -89,7 +89,7 @@ func TestClientRequireLeaderKVLeaseAndWatch(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for require-leader watch create: %v", ctx.Err())
 	}
-	put, err := client.Put(ctx, key, "value", clientv3.WithLease(lease.ID))
+	put, err := client.Put(requireLeaderCtx, key, "value", clientv3.WithLease(lease.ID))
 	require.NoError(t, err)
 	select {
 	case response := <-watch:
