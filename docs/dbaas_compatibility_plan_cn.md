@@ -28059,6 +28059,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key 的通用 Op 路径外观：range delete 必须在 `PrevKvs` 中按 key 顺序保留每个删除
   key 的 value、create/mod revision、version 与 lease ID；删除后对应 lease attached keys
   必须移除被删 key，同时保留 range 外仍存活的 leased key。
+- A2151 对照 etcd DeleteRange `PrevKv` 与 lease attachment 语义，固定官方
+  client/v3 KV `Do(OpDelete(prefix, WithPrefix(), WithPrevKV()))` 删除多个 leased
+  prefix key 的通用 Op 路径外观：prefix delete 必须在 `PrevKvs` 中按 key 顺序保留
+  每个删除 key 的 value、create/mod revision、version 与 lease ID；删除后 lease attached
+  keys 必须只移除 prefix 内被删 key，prefix 外同 lease key 继续存活并保持 attached。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
