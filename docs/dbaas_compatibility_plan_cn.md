@@ -27844,6 +27844,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 Lease 流式 KeepAlive 在 client 关闭后的错误类型：已 grant lease 的
   client 调用 `Close` 后再次 `KeepAlive` 必须立即返回可 `errors.As` 为
   `clientv3.ErrKeepAliveHalted` 的错误，而不是阻塞、误提交 renew 或返回不兼容错误类型。
+- A2103 对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseKeepAliveFullResponseQueue`
+  固定官方 client/v3 Lease keepalive 响应队列满时的节流语义：将
+  `clientv3.LeaseResponseChSize` 设为 0 且不消费响应时，客户端不能因为发送响应失败而
+  忙循环续约；在 TTL/3 之前读取 TTL 必须已经自然下降，而不是被反复刷新到 granted TTL。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
