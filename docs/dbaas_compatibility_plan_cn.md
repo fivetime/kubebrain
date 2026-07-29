@@ -23872,6 +23872,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   相邻 tenant。该回归补齐 A2421 current non-serializable、A1767/A1768 current serializable 与
   A1683/A1684 historical serializable prefix contradictory filter 覆盖之外的 historical
   non-serializable 对称路径。
+- A2578 补强 A2422 官方 client/v3 namespace.NewKV nested OpTxn 的 historical non-serializable
+  prefix contradictory revision filter 显式 `CountOnly` header 外观：`OpGet("items/",
+  WithPrefix(), WithRev(historyRev), contradictory filter, value sort, KeysOnly, Limit(1),
+  WithCountOnly)` 对 ModRev/CreateRev 两类矛盾 filter 返回 count-only 结果时，outer txn
+  response header 与 nested range response header 必须保持当前 latest revision；`Count=3`、
+  `More=false`、空 KVs、CountOnly 优先级和 prefix/tenant 隔离断言保持不变。
 - A2433 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable prefix
   contradictory revision filter 显式 `CountOnly` 优先级外观：`OpGet("items/", WithPrefix())`
   经过 namespace 收窄后，`WithMinModRev > WithMaxModRev` 与
