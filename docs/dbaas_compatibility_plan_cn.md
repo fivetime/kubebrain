@@ -27808,6 +27808,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `concurrency.Session` 已持有 election 时，用同 prefix 构造第二个 Election 并
   `Campaign("candidate-2")` 必须走 `Proclaim` 更新当前 leader value，而不是等待自身
   lock 释放；`Observe` 与 `Leader` 都必须看到新 value，最后 `Resign` 正常释放。
+- A2095 对照 `/root/etcd/tests/integration/v3_election_test.go:TestElectionObserveCompacted`
+  固定官方 client/v3 concurrency Election Observe compacted leader 外观：leader key
+  创建后推进并 compact 到更高 revision，`Observe` 仍必须容忍 leader key 的 mod revision
+  小于 compaction revision，并返回当前 leader value，而不是因 watch 起点 compacted
+  关闭 channel 或丢失 leader。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

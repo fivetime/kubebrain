@@ -309,6 +309,57 @@ func TestClientConcurrencyElectionSameSessionRecampaignProclaims(t *testing.T) {
 	require.NoError(t, second.Resign(ctx))
 }
 
+func TestClientConcurrencyElectionObserveToleratesCompactedLeaderRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	session, err := concurrency.NewSession(client, concurrency.WithTTL(10))
+	require.NoError(t, err)
+	t.Cleanup(session.Orphan)
+
+	prefix := fmt.Sprintf("/a2095/concurrency/election-observe-compact/%d/", time.Now().UnixNano())
+	election := concurrency.NewElection(session, prefix)
+	require.NoError(t, election.Campaign(ctx, "leader"))
+	advance, err := client.Put(ctx, prefix+"advance", "value")
+	require.NoError(t, err)
+	_, err = client.Compact(ctx, advance.Header.Revision)
+	require.NoError(t, err)
+
+	observe := election.Observe(ctx)
+	select {
+	case observed, ok := <-observe:
+		require.True(t, ok)
+		require.NotNil(t, observed)
+		require.Len(t, observed.Kvs, 1)
+		require.Equal(t, "leader", string(observed.Kvs[0].Value))
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.NoError(t, election.Resign(ctx))
+}
+
 func TestClientConcurrencySessionOptionsAndContext(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
