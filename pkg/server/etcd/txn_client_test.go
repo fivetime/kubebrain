@@ -1648,6 +1648,92 @@ func TestClientTxnNoOpDeleteWithPrevKVDoesNotConsumeRevisionMatchesEtcd(t *testi
 	require.Equal(t, int64(1), after.Kvs[1].Version)
 }
 
+func TestClientTxnDeleteLeasedPointKeyWithPrevKVMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	lease, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	prefix := "/a2157/client-txn-delete-point-leased/"
+	key := prefix + "key"
+	put, err := client.Put(ctx, key, "one", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+	update, err := client.Put(ctx, key, "two", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+
+	ttlBefore, err := client.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, []string{key}, leaseClientAttachedKeys(ttlBefore.Keys))
+
+	txn, err := client.Txn(ctx).Then(
+		clientv3.OpDelete(key, clientv3.WithPrevKV()),
+		clientv3.OpGet(key),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.NotNil(t, txn.Header)
+	require.Equal(t, update.Header.Revision+1, txn.Header.Revision)
+	require.Len(t, txn.Responses, 2)
+
+	deleted := txn.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, txn.Header.Revision, deleted.Header.Revision)
+	require.Equal(t, int64(1), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 1)
+	prev := deleted.PrevKvs[0]
+	require.Equal(t, []byte(key), prev.Key)
+	require.Equal(t, []byte("two"), prev.Value)
+	require.Equal(t, put.Header.Revision, prev.CreateRevision)
+	require.Equal(t, update.Header.Revision, prev.ModRevision)
+	require.Equal(t, int64(2), prev.Version)
+	require.Equal(t, int64(lease.ID), prev.Lease)
+
+	staged := txn.Responses[1].GetResponseRange()
+	require.NotNil(t, staged)
+	require.NotNil(t, staged.Header)
+	require.Equal(t, txn.Header.Revision, staged.Header.Revision)
+	require.Empty(t, staged.Kvs)
+
+	ttlAfter, err := client.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Empty(t, ttlAfter.Keys)
+
+	historical, err := client.Get(ctx, key, clientv3.WithRev(update.Header.Revision))
+	require.NoError(t, err)
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, []byte("two"), historical.Kvs[0].Value)
+	require.Equal(t, int64(lease.ID), historical.Kvs[0].Lease)
+
+	current, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.NotNil(t, current.Header)
+	require.Equal(t, txn.Header.Revision, current.Header.Revision)
+	require.Empty(t, current.Kvs)
+}
+
 func TestClientTxnHeaderRevisions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
