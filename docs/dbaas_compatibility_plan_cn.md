@@ -17469,6 +17469,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical prefix 中 mod revision 不大于上界的 `items/a=old-a`，并保持 logical key 外观与当前
   prefix `Count`。该回归补齐 revision filter 上界分支，防止 nested response adapter 在过滤后
   泄漏物理 key 或把相邻 prefix/tenant 纳入 Count。
+- A2496 补强 A1520 官方 client/v3 namespace.NewKV nested OpTxn 的 `WithMaxModRev` current
+  revision filter header 外观：nested `OpGet("items/", WithPrefix(), WithMaxModRev(rev))` 返回
+  filtered logical result 时，outer txn response header 与 nested range response header 都必须等于
+  相邻 tenant 写入产生的 latest revision；同时 filtered KVs、prefix `Count=2`、`More=false` 与
+  相邻 prefix/tenant 隔离外观保持不变。该回归把 revision filter 上界路径与 A2495 MinModRev
+  header 合同对齐。
 - A1521 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithMinCreateRev` revision
   filter 外观：nested `OpGet("items/", WithPrefix(), WithMinCreateRev(createRev),
   WithSort(SortByKey, SortAscend))` 必须只返回当前 namespace logical prefix 中 create revision
