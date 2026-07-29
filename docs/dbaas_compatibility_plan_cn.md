@@ -28407,6 +28407,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `IgnoreLease` 更新 value 并保留前一笔写入的 lease。两笔 Put leaf response header
   均等于各自外层 txn revision，nested header 仍为 0；PrevKv metadata、后续 Range 与
   最终 KV 必须保持 etcd 外观。
+- A3019 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 nested DeleteRange response
+  外观，固定 raw gRPC nested `RequestTxn` 内 range `DeleteRange{PrevKv:true}`：
+  nested `TxnResponse.Header.Revision` 仍为 0，DeleteRange leaf response header 等于
+  外层 txn revision；`Deleted` 与有序 `PrevKvs` 必须保留删除前 value、create/mod
+  revision、version 与 lease ID，同一 nested txn 后续 Range 必须看到已删除 key 消失、
+  未命中 key 保持旧 metadata，最终 keyset 保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
