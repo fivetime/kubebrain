@@ -1139,6 +1139,123 @@ func TestClientLeasingTxnOwnerIfUsesCachedComparisons(t *testing.T) {
 	}
 }
 
+func TestClientLeasingTxnNonOwnerPutInvalidatesCachedKeysAndCommitsOneRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	newClient := func() *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	ownerClient := newClient()
+	writerClient := newClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2114/leasing-txn-non-owner-put/%d/", time.Now().UnixNano())
+	ownerKV, closeOwner, err := leasing.NewKV(ownerClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeOwner)
+	writerKV, closeWriter, err := leasing.NewKV(writerClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeWriter)
+	key := prefix + "k"
+	key2 := prefix + "k2"
+	key3 := prefix + "k3"
+
+	_, err = writerClient.Put(ctx, key, "abc")
+	require.NoError(t, err)
+	_, err = writerClient.Put(ctx, key2, "123")
+	require.NoError(t, err)
+	for _, cachedKey := range []string{key, key2} {
+		cached, getErr := ownerKV.Get(ctx, cachedKey)
+		require.NoError(t, getErr)
+		require.Len(t, cached.Kvs, 1)
+	}
+
+	watchCtx, watchCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer watchCancel()
+	watch := writerClient.Watch(watchCtx, prefix, clientv3.WithPrefix())
+	txn, err := writerKV.Txn(ctx).Then(
+		clientv3.OpTxn(nil, []clientv3.Op{clientv3.OpPut(key2, "456")}, nil),
+		clientv3.OpPut(key, "def"),
+		clientv3.OpPut(key3, "999"),
+	).Commit()
+	require.NoError(t, err)
+	require.True(t, txn.Succeeded)
+	require.Len(t, txn.Responses, 3)
+
+	eventsAtRevision := 0
+	seen := map[string]struct{}{}
+	for eventsAtRevision < 3 {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok)
+			require.NoError(t, response.Err())
+			for _, event := range response.Events {
+				if event.Type != clientv3.EventTypePut || event.Kv.ModRevision != txn.Header.Revision {
+					continue
+				}
+				seen[string(event.Kv.Key)] = struct{}{}
+				eventsAtRevision++
+			}
+		case <-watchCtx.Done():
+			t.Fatalf("timed out after %d/3 events at revision %d", eventsAtRevision, txn.Header.Revision)
+		}
+	}
+	require.Contains(t, seen, key)
+	require.Contains(t, seen, key2)
+	require.Contains(t, seen, key3)
+
+	for _, item := range []struct {
+		key   string
+		value string
+	}{
+		{key: key, value: "def"},
+		{key: key2, value: "456"},
+		{key: key3, value: "999"},
+	} {
+		direct, getErr := writerClient.Get(ctx, item.key)
+		require.NoError(t, getErr)
+		require.Len(t, direct.Kvs, 1)
+		require.Equal(t, []byte(item.value), direct.Kvs[0].Value)
+		require.Equal(t, txn.Header.Revision, direct.Kvs[0].ModRevision)
+	}
+
+	for _, item := range []struct {
+		key   string
+		value string
+	}{
+		{key: key, value: "def"},
+		{key: key2, value: "456"},
+	} {
+		got, getErr := ownerKV.Get(ctx, item.key)
+		require.NoError(t, getErr)
+		require.Len(t, got.Kvs, 1)
+		require.Equal(t, []byte(item.value), got.Kvs[0].Value)
+		require.Equal(t, txn.Header.Revision, got.Kvs[0].ModRevision)
+	}
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
