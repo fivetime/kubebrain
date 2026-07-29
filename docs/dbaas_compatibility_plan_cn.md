@@ -27998,6 +27998,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须保留旧 value 但可切换 lease，IgnoreLease 必须更新 value 但保留现有 lease；
   两次 Put response/header 均推进 revision，`PrevKv` 精确返回各自更新前的
   create/mod revision、version 与 lease。
+- A2140 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutWithIgnoreValue`
+  与 `TestKVPutWithIgnoreLease` 的 public error contract，固定官方 client/v3 KV
+  `Do(OpPut(...))` 通用 Op 路径的 IgnoreValue/IgnoreLease 错误外观：缺失 lease
+  优先于缺失 key，缺失 key + IgnoreValue 返回 `ErrKeyNotFound`，value+IgnoreValue
+  返回 `ErrValueProvided`，lease+IgnoreLease 返回 `ErrLeaseProvided`，empty key
+  优先于 ignore option 冲突，且 client 侧 `errors.Is` 与 gRPC `Unknown` code/message
+  均匹配普通 Put 路径。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

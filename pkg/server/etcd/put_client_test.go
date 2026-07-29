@@ -228,6 +228,114 @@ func TestClientDoOpPutIgnoreValueAndIgnoreLeaseMatchesEtcd(t *testing.T) {
 	require.Equal(t, int64(leaseB.ID), kv.Lease)
 }
 
+func TestClientDoOpPutIgnoreValueIgnoreLeaseErrorsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2140/do-opput-ignore-errors/%d/", time.Now().UnixNano())
+	key := prefix + "key"
+	missing := prefix + "missing"
+	lease, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, key, "old", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		op          clientv3.Op
+		wantCode    codes.Code
+		wantMessage string
+		wantErrorIs error
+	}{
+		{
+			name:        "missing lease",
+			op:          clientv3.OpPut(key, "bad", clientv3.WithLease(clientv3.LeaseID(math.MaxInt64))),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: requested lease not found",
+			wantErrorIs: rpctypes.ErrLeaseNotFound,
+		},
+		{
+			name:        "missing ignore value key",
+			op:          clientv3.OpPut(missing, "", clientv3.WithIgnoreValue()),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: key not found",
+			wantErrorIs: rpctypes.ErrKeyNotFound,
+		},
+		{
+			name:        "missing key and lease",
+			op:          clientv3.OpPut(missing, "", clientv3.WithIgnoreValue(), clientv3.WithLease(clientv3.LeaseID(math.MaxInt64))),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: requested lease not found",
+			wantErrorIs: rpctypes.ErrLeaseNotFound,
+		},
+		{
+			name:        "value with ignore value",
+			op:          clientv3.OpPut(key, "bad", clientv3.WithIgnoreValue()),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: value is provided",
+			wantErrorIs: rpctypes.ErrValueProvided,
+		},
+		{
+			name:        "empty key precedes ignore value conflict",
+			op:          clientv3.OpPut("", "bad", clientv3.WithIgnoreValue()),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: key is not provided",
+			wantErrorIs: rpctypes.ErrEmptyKey,
+		},
+		{
+			name:        "lease with ignore lease",
+			op:          clientv3.OpPut(key, "bad", clientv3.WithIgnoreLease(), clientv3.WithLease(lease.ID)),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: lease is provided",
+			wantErrorIs: rpctypes.ErrLeaseProvided,
+		},
+		{
+			name:        "empty key precedes ignore lease conflict",
+			op:          clientv3.OpPut("", "bad", clientv3.WithIgnoreLease(), clientv3.WithLease(lease.ID)),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: key is not provided",
+			wantErrorIs: rpctypes.ErrEmptyKey,
+		},
+		{
+			name:        "ignore value precedes ignore lease conflict",
+			op:          clientv3.OpPut(key, "bad", clientv3.WithIgnoreValue(), clientv3.WithIgnoreLease(), clientv3.WithLease(lease.ID)),
+			wantCode:    codes.Unknown,
+			wantMessage: "etcdserver: value is provided",
+			wantErrorIs: rpctypes.ErrValueProvided,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := client.Do(ctx, tt.op)
+			require.EqualError(t, err, tt.wantMessage)
+			require.ErrorIs(t, err, tt.wantErrorIs)
+			require.Equal(t, tt.wantCode, status.Code(err))
+			require.Equal(t, tt.wantMessage, status.Convert(err).Message())
+		})
+	}
+}
+
 func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
