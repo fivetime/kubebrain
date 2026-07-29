@@ -22477,6 +22477,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `range/c=value-c`、`More=true`，response header revision 必须等于后续相邻 tenant 写入产生的
   latest revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2188 key-desc 与 A2183
   serializable key SortNone 之外的 linearizable nested FromKey key SortNone payload 路径。
+- A2645 固定 A2227 官方 client/v3 namespace.NewKV nested OpTxn FromKey current non-serializable
+  SortByKey SortNone 分页路径的中间 `TxnResponse.Header` 未填充外观：nested txn response header
+  必须存在但 `Revision=0`，不能被 namespace response adapter 误改写为 latest revision；
+  outer/range header 与 key SortNone payload 分页断言沿用 A2227。
 - A2228 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
   KeysOnly+SortByKey+SortNone 分页外观：nested `OpGet("range/b", WithFromKey(),
   WithKeysOnly(), WithLimit(2), WithSort(SortByKey, SortNone))` 必须把开放 range 收窄到当前
