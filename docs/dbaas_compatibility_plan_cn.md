@@ -23982,6 +23982,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明显式 CountOnly 覆盖 helper 自带的 `WithPrefix`/sort/top-1 分页、payload 修饰和后续 sort。
   该回归补强 A2241/A2244/A2247/A2250/A2253/A2256 的 current FromKey/top-helper CountOnly
   基础断言，并对齐 A2404/A2405 explicit logical range selector CountOnly 优先级覆盖。
+- A2659 固定 A2406 官方 client/v3 namespace.NewKV nested OpTxn current FromKey/top-helper
+  显式 CountOnly 优先级表驱动路径的中间 `TxnResponse.Header` 未填充外观：6 个 nested txn
+  response header 均必须存在但 `Revision=0`，不能被 namespace response adapter 误改写为
+  latest revision；outer/range header 与 CountOnly precedence 断言沿用 A2406。
 - A2407 强化官方 client/v3 namespace.NewKV nested OpTxn 的 historical serializable
   FromKey/top-helper 显式 `CountOnly` 优先级外观：`WithFirstKey/WithLastKey`、
   `WithFirstCreate/WithLastCreate`、`WithFirstRev/WithLastRev` 作用于 `OpGet("range/", ...)` 并
