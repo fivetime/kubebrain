@@ -27916,6 +27916,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 leasing KV `Do(OpDelete(prefix, WithPrefix()))` 并发语义：
   direct range delete 在线性化删除所有目标 keys 时必须返回 DeleteRange response、携带正
   header revision，且并发 writer 的 leasing cache 最终必须与服务端直读状态一致。
+- A2121 对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseKeepAliveSeconds`
+  固定官方 client/v3 Lease `KeepAlive` 持续流语义：Grant(3s) 后同一 keepalive channel
+  必须连续交付至少三帧有效响应，响应 ID 等于 grant ID，TTL 必须为正且不超过 granted TTL，
+  防止 KeepAlive 流过早关闭或活 lease 返回 TTL=0。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

@@ -293,6 +293,47 @@ func TestClientLeaseKeepAliveFullResponseQueueDoesNotBusyRenew(t *testing.T) {
 	require.Less(t, ttl.TTL, int64(9), "full keepalive response queue must not cause a busy renew loop before TTL/3")
 }
 
+func TestClientLeaseKeepAliveStreamDeliversRepeatedPositiveTTLs(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	grant, err := client.Grant(ctx, 3)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), grant.TTL)
+
+	keepAlive, err := client.KeepAlive(ctx, grant.ID)
+	require.NoError(t, err)
+	for index := 0; index < 3; index++ {
+		response, ok := receiveClientKeepAlive(t, ctx, keepAlive)
+		require.True(t, ok, "keepalive channel closed at response %d", index)
+		require.NotNil(t, response)
+		require.Equal(t, grant.ID, response.ID)
+		require.Positive(t, response.TTL)
+		require.LessOrEqual(t, response.TTL, grant.TTL)
+	}
+}
+
 func TestClientLeaseNotFoundErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
