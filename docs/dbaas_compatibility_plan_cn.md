@@ -23040,6 +23040,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `z/final=m-old-z`、`More=true`，response header revision 必须等于后续相邻 tenant 写入产生的
   latest revision，并排除 prefix 前 key 和相邻 tenant。该回归补齐 A2273 mod-filter 对应路径和
   A1860 historical serializable create value-sort 之外的 current filter+sort+limit payload 路径。
+- A2696 固定 A2275 官方 client/v3 namespace.NewKV nested OpTxn FromKey current non-serializable
+  `WithMinCreateRev()+SortByValue(desc)+Limit(1)` 路径的中间 `TxnResponse.Header` 未填充外观：
+  nested txn response header 必须存在但 `Revision=0`，不能被 namespace response adapter 误改写为
+  latest revision；outer/range header 与 MinCreateRev+SortByValue(desc)+Limit 断言沿用 A2275。
 - A2276 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
   `WithMaxCreateRev()+SortByValue(asc)+Limit(1)` 组合外观：nested `OpGet("range/b",
   WithFromKey(), WithMaxCreateRev(maxCreate), WithLimit(1), WithSort(SortByValue, SortAscend))`
