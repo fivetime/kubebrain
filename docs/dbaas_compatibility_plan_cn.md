@@ -28336,6 +28336,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   前 key 与后续 result keys 不得污染 compare；MOD/CREATE/VERSION 默认 0
   `GREATER` 在所有匹配 key 上成功，无 lease key 的 LEASE 默认 0 `EQUAL` 成功而
   `NOT_EQUAL` 失败，非空 VALUE 对默认 empty 的 `EQUAL` 失败而 `GREATER` 成功。
+- A3007 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `mkGteRange` 与
+  `applyCompare` 空范围分支，固定 raw gRPC
+  `Compare{Key:start, RangeEnd:{0}}` 在 `[start, ∞)` 无 KVs 时的缺省
+  `TargetUnion` 外观：VALUE compare 必须直接失败，即使 Result 是未知枚举也不走
+  `compareKV` fallthrough；非 VALUE compare 以空 `KeyValue{}` 默认值比较，
+  MOD/VERSION 默认 0 `EQUAL` 成功、CREATE 默认 0 `GREATER` 失败、LEASE 默认 0
+  `NOT_EQUAL` 失败，且 start 前 seed/result keys 不得污染 compare。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
