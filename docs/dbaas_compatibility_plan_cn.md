@@ -17954,6 +17954,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 上只读取当前 namespace 的 logical `[ "", "z" )` range，返回旧 `alpha/a`、`items/a`
   及 values；之后的更新、删除、新增、upper bound 外 `z/final` 和相邻 tenant 不得污染历史响应。
   该回归补齐 A1553 empty-prefix historical 之外的 empty-start explicit range 历史路径。
+- A2539 补强 A1569 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical revision header 外观：nested `OpGet("", WithRange("z"), WithRev(historyRev))`
+  返回历史 logical `[ "", "z" )` range 时，outer txn response header 与 nested range response header
+  必须保持当前 latest revision，而不是请求的 historical revision；historical logical key/value、
+  `Count=2`、`More=false` 与相邻 tenant 隔离保持不变。
 - A1570 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   serializable 外观：nested `OpGet("", WithRange("z"), WithSerializable())` 必须只读取当前 namespace
   的 logical `[ "", "z" )` range，返回 logical `alpha/a`、`items/a` 及 values，`Count=2`、
