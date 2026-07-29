@@ -399,6 +399,7 @@ func TestTxnFastShapesMutateLeaseAttachmentsAtomically(t *testing.T) {
 	created, err := server.Txn(ctx, create)
 	require.NoError(t, err)
 	require.True(t, created.Succeeded)
+	require.NotNil(t, created.Header)
 	stored, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, stored.Kvs, 1)
@@ -427,7 +428,12 @@ func TestTxnFastShapesMutateLeaseAttachmentsAtomically(t *testing.T) {
 	removed, err := server.Txn(ctx, remove)
 	require.NoError(t, err)
 	require.True(t, removed.Succeeded)
+	require.NotNil(t, removed.Header)
+	require.Equal(t, created.Header.Revision+1, removed.Header.Revision)
 	deleteResponse := removed.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleteResponse)
+	require.NotNil(t, deleteResponse.Header)
+	require.Equal(t, removed.Header.Revision, deleteResponse.Header.Revision)
 	require.Equal(t, int64(1), deleteResponse.Deleted)
 	require.Equal(t, []byte("value"), deleteResponse.PrevKvs[0].Value)
 	require.Equal(t, leaseID, deleteResponse.PrevKvs[0].Lease)
@@ -605,10 +611,11 @@ func TestDeleteRangeAtomicallyRemovesLeaseAttachments(t *testing.T) {
 	leaselessKey := "/registry/events/atomic-delete/b"
 	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
 	require.NoError(t, err)
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(leasedKey), Value: []byte("leased"), Lease: leaseID})
+	leasedPut, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(leasedKey), Value: []byte("leased"), Lease: leaseID})
 	require.NoError(t, err)
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(leaselessKey), Value: []byte("plain")})
+	plainPut, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(leaselessKey), Value: []byte("plain")})
 	require.NoError(t, err)
+	require.Equal(t, leasedPut.Header.Revision+1, plainPut.Header.Revision)
 
 	shim := &failDeleteShim{BackendShim: server.backend, failKey: leasedKey, fail: true}
 	server.backend = shim
@@ -626,6 +633,8 @@ func TestDeleteRangeAtomicallyRemovesLeaseAttachments(t *testing.T) {
 	shim.fail = false
 	response, err := server.DeleteRange(ctx, request)
 	require.NoError(t, err)
+	require.NotNil(t, response.Header)
+	require.Equal(t, plainPut.Header.Revision+1, response.Header.Revision)
 	require.Equal(t, int64(2), response.Deleted)
 	require.Len(t, response.PrevKvs, 2)
 	require.Equal(t, []byte("leased"), response.PrevKvs[0].Value)
@@ -648,11 +657,13 @@ func TestTxnCompareDeleteRangeRemovesLeaseAttachments(t *testing.T) {
 	require.NoError(t, err)
 	guard, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: guardKey, Value: []byte("guard")})
 	require.NoError(t, err)
+	var lastPutRevision int64
 	for _, suffix := range []string{"a", "b", "z"} {
-		_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key: []byte(prefix + suffix), Value: []byte("leased-" + suffix), Lease: leaseID,
 		})
 		require.NoError(t, err)
+		lastPutRevision = putResp.Header.Revision
 	}
 
 	resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
@@ -672,7 +683,12 @@ func TestTxnCompareDeleteRangeRemovesLeaseAttachments(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, lastPutRevision+1, resp.Header.Revision)
 	deleteResp := resp.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleteResp)
+	require.NotNil(t, deleteResp.Header)
+	require.Equal(t, resp.Header.Revision, deleteResp.Header.Revision)
 	require.Equal(t, int64(2), deleteResp.Deleted)
 	require.Len(t, deleteResp.PrevKvs, 2)
 	require.Equal(t, leaseID, deleteResp.PrevKvs[0].Lease)

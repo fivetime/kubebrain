@@ -146,6 +146,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确前进 1；empty non-from-key txn delete 不消耗 revision，但 inner delete header 与后续
   Range header 都等于 outer txn header；namespace 删除后的 remaining/adjacent Range header
   等于 delete revision，且 adjacent key 不被 prefix-end 删除误伤。
+- **lease attachment DeleteRange header revision 外观**：A2990 固定 leased key
+  删除与 attachment 清理的 visible revision：fast-shape txn delete、direct atomic
+  DeleteRange、compare-selected DeleteRange 都必须让 outer txn/direct response header
+  精确前进 1，inner DeleteRange response header 等于 outer revision；用户 key 删除与
+  `leaseAttachKey` 清理保持同一原子 batch，不产生额外可见 revision。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
