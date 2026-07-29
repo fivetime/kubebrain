@@ -27880,6 +27880,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 leasing KV owner Txn DeleteRange 语义：prefix range 读取后，
   `leasing.Txn().Then(OpDelete(prefix, WithPrefix()))` 必须删除完整 prefix，返回 Deleted 等于
   prefix key 数量，后续 leasing range Get 与直读都必须为空，且范围外 key 不受影响。
+- A2112 对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go:TestLeasingTxnOwnerDelete`
+  固定官方 client/v3 leasing KV owner Txn 单 key Delete 语义：owner cache 已持有 key 后，
+  `leasing.Txn().Then(OpDelete(key))` 必须无错误提交并删除底层 key，后续 `leasing.Get(key)`
+  与直读都必须为空，不能继续从旧 owner cache 返回已删除值。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
