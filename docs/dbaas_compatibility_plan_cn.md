@@ -17701,6 +17701,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   validation，随后执行 Else branch 并返回 logical `items/a=value-a`，且相邻 tenant key 不受污染。
   该回归与 A1543 的 over-budget 拒绝形成上下界，防止 namespace nested Txn 预算统计出现
   off-by-one 或把父层 nested op 本身漏计。
+- A2512 补强 A1545 官方 client/v3 namespace.NewKV nested OpTxn 的剩余 operation budget 成功
+  边界 header 外观：nested txn 在未选中 Then branch 恰好占满剩余预算、实际执行 Else branch
+  `OpGet("items/a")` 时，outer txn response header 与 nested range response header 都必须等于
+  相邻 tenant 写入产生的 latest revision；logical key/value、budget 成功边界和相邻 tenant 隔离
+  保持不变。该回归覆盖 nested op budget validator 通过后的 response header propagation。
 - A1546 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `OpPut` IgnoreValue/IgnoreLease
   与 logical PrevKV 外观：nested `OpPut("items/a", "", WithIgnoreValue(), WithLease(leaseB),
   WithPrevKV())` 必须保留旧 value、切换到 leaseB，并在 nested `ResponsePut.PrevKv` 中返回
