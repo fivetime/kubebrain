@@ -207,6 +207,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   offline cached comparisons 与 ordering Txn Get 都必须保留 inner Range header；leasing
   cached Range header revision 反映缓存条目的 read/update revision，ordering Txn
   inner Range header revision 继续等于 outer txn header revision。
+- **Txn DeleteRange fast-path header 外观**：A3003 固定 compare-delete range
+  fast-path 旁路：selected DeleteRange response 必须保留 header，inner DeleteRange
+  header revision 等于 outer txn header revision，同时 PrevKvs 仍保持删除前 key
+  顺序与 mod revision。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
