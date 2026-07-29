@@ -402,3 +402,63 @@ func TestClientSTMGetWithNoKeysReturnsEmptyString(t *testing.T) {
 	require.Equal(t, "committed", string(outputResp.Kvs[0].Value))
 	require.Equal(t, commitResp.Header.Revision, outputResp.Kvs[0].ModRevision)
 }
+
+func TestClientSTMReadCommittedDoesNotRetryReadConflict(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		Context:     ctx,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	readKey := "/a2093/stm/read-committed/read"
+	outputKey := "/a2093/stm/read-committed/output"
+	_, err = client.Put(ctx, readKey, "before")
+	require.NoError(t, err)
+
+	attempts := 0
+	var firstRead string
+	commitResp, err := concurrency.NewSTM(client, func(stm concurrency.STM) error {
+		attempts++
+		firstRead = stm.Get(readKey)
+		if attempts == 1 {
+			_, putErr := client.Put(ctx, readKey, "after")
+			require.NoError(t, putErr)
+		}
+		stm.Put(outputKey, firstRead+"-committed")
+		return nil
+	}, concurrency.WithIsolation(concurrency.ReadCommitted))
+	require.NoError(t, err)
+	require.NotNil(t, commitResp)
+	require.NotNil(t, commitResp.Header)
+	require.Equal(t, 1, attempts)
+	require.Equal(t, "before", firstRead)
+
+	readResp, err := client.Get(ctx, readKey)
+	require.NoError(t, err)
+	require.Len(t, readResp.Kvs, 1)
+	require.Equal(t, "after", string(readResp.Kvs[0].Value))
+	outputResp, err := client.Get(ctx, outputKey)
+	require.NoError(t, err)
+	require.Len(t, outputResp.Kvs, 1)
+	require.Equal(t, "before-committed", string(outputResp.Kvs[0].Value))
+	require.Equal(t, commitResp.Header.Revision, outputResp.Kvs[0].ModRevision)
+}

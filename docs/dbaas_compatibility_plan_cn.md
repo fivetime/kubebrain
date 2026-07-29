@@ -27799,6 +27799,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client/v3 STM 空读边界：`stm.Get()` 与 nil variadic keys 都必须返回空字符串，
   不发散成错误、不创建读集冲突，并且同一 STM 内后续 Put 仍可正常提交；输出 key
   的 mod revision 必须等于 STM commit header revision。
+- A2093 对照 `/root/etcd/client/v3/concurrency/stm.go` 固定官方 client/v3 STM
+  `ReadCommitted` 隔离外观：该模式的 `conflicts` 为空，读过的 key 被并发更新后
+  不应触发 STM 回调重试；回调只执行一次，并可提交基于旧读值派生的输出 key，
+  同时原 key 保留并发写入后的新值。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
