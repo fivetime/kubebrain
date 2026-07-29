@@ -22358,6 +22358,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision，并排除 start 前 key 和相邻 tenant。该回归补齐 A2215 payload、A2173 serializable
   CountOnly value SortNone 与 historical FromKey CountOnly sort 之外的 linearizable nested
   FromKey CountOnly value SortNone 路径。
+- A2631 固定 A2217 官方 client/v3 namespace.NewKV nested OpTxn FromKey current non-serializable
+  CountOnly+SortByValue SortNone 路径的中间 `TxnResponse.Header` 未填充外观：nested txn response
+  header 必须存在但 `Revision=0`，不能被 namespace response adapter 误改写为 latest revision；
+  outer/range header 与 CountOnly value SortNone 断言沿用 A2217。
 - A2218 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
   SortByVersion+SortNone 分页外观：nested `OpGet("range/b", WithFromKey(), WithLimit(2),
   WithSort(SortByVersion, SortNone))` 必须把开放 range 收窄到当前 namespace，从 logical `range/b`
