@@ -18339,6 +18339,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `items/b` 以及旧 `items/a`，`Count=3`、`More=true`，并排除之后的新 key、upper bound 外
   `z/final` 和相邻 tenant。该回归补齐 A1580 current create-sort page 与 A1597 historical
   mod-sort page 之外的组合路径。
+- A2544 补强 A1598 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical create-revision sort 分页 header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithLimit(2), WithSort(SortByCreateRevision, SortDescend))` 返回历史
+  sort page 时，outer txn response header 与 nested range response header 必须保持当前
+  latest revision；`Count=3`、`More=true`、历史排序页内容与删除后 key 隔离断言保持不变。
 - A1599 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical version sort 分页外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithLimit(2), WithSort(SortByVersion, SortDescend))` 必须按指定历史 revision 的 key version
