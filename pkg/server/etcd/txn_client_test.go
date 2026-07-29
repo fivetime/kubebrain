@@ -922,11 +922,23 @@ func TestClientTxnPrefixCompareRequiresAllKeysToMatch(t *testing.T) {
 		Commit()
 	require.NoError(t, err)
 	require.False(t, txn.Succeeded)
+	require.NotNil(t, txn.Header)
+	require.Positive(t, txn.Header.Revision)
+	require.Len(t, txn.Responses, 1)
+	failurePut := txn.Responses[0].GetResponsePut()
+	require.NotNil(t, failurePut)
+	require.NotNil(t, failurePut.Header)
+	require.Equal(t, txn.Header.Revision, failurePut.Header.Revision)
 
 	result, err := client.Get(ctx, prefix+"result")
 	require.NoError(t, err)
+	require.NotNil(t, result.Header)
+	require.Equal(t, txn.Header.Revision, result.Header.Revision)
 	require.Len(t, result.Kvs, 1)
 	require.Equal(t, "failure", string(result.Kvs[0].Value))
+	require.Equal(t, txn.Header.Revision, result.Kvs[0].CreateRevision)
+	require.Equal(t, txn.Header.Revision, result.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), result.Kvs[0].Version)
 }
 
 func TestClientNestedTxnResponseAndFinalState(t *testing.T) {
