@@ -290,6 +290,87 @@ func TestClientDoOpDeleteNULFromKeySuppressesPrevKV(t *testing.T) {
 	require.Empty(t, remaining.Kvs)
 }
 
+func TestClientDoOpDeleteRangeWithPrevKVMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := "/a2141/do-opdelete-range/"
+	base, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	baseRev := base.Header.Revision
+
+	putA, err := client.Put(ctx, prefix+"a", "va")
+	require.NoError(t, err)
+	putB, err := client.Put(ctx, prefix+"b", "vb")
+	require.NoError(t, err)
+	putC, err := client.Put(ctx, prefix+"c", "vc")
+	require.NoError(t, err)
+	updateB, err := client.Put(ctx, prefix+"b", "vb2")
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 2, 3, 4}, []int64{
+		putA.Header.Revision - baseRev,
+		putB.Header.Revision - baseRev,
+		putC.Header.Revision - baseRev,
+		updateB.Header.Revision - baseRev,
+	})
+
+	opResponse, err := client.Do(ctx, clientv3.OpDelete(prefix+"a", clientv3.WithRange(prefix+"c"), clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	deleted := opResponse.Del()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, int64(5), deleted.Header.Revision-baseRev)
+	require.Equal(t, int64(2), deleted.Deleted)
+	require.Equal(t, []deleteClientKV{
+		{key: "a", value: "va", createRevision: putA.Header.Revision, modRevision: putA.Header.Revision, version: 1},
+		{key: "b", value: "vb2", createRevision: putB.Header.Revision, modRevision: updateB.Header.Revision, version: 2},
+	}, deleteClientKVs(deleted.PrevKvs, prefix))
+
+	historical, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithRev(deleted.Header.Revision-1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	require.Equal(t, []deleteClientKV{
+		{key: "a", value: "va", createRevision: putA.Header.Revision, modRevision: putA.Header.Revision, version: 1},
+		{key: "b", value: "vb2", createRevision: putB.Header.Revision, modRevision: updateB.Header.Revision, version: 2},
+		{key: "c", value: "vc", createRevision: putC.Header.Revision, modRevision: putC.Header.Revision, version: 1},
+	}, deleteClientKVs(historical.Kvs, prefix))
+
+	current, err := client.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, current.Header)
+	require.Equal(t, deleted.Header.Revision, current.Header.Revision)
+	require.Equal(t, []deleteClientKV{
+		{key: "c", value: "vc", createRevision: putC.Header.Revision, modRevision: putC.Header.Revision, version: 1},
+	}, deleteClientKVs(current.Kvs, prefix))
+}
+
 func TestClientDeleteEmptyKeyIsTyped(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

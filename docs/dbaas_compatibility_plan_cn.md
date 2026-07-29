@@ -28005,6 +28005,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回 `ErrValueProvided`，lease+IgnoreLease 返回 `ErrLeaseProvided`，empty key
   优先于 ignore option 冲突，且 client 侧 `errors.Is` 与 gRPC `Unknown` code/message
   均匹配普通 Put 路径。
+- A2141 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVDeleteRange`
+  的 range delete 行为，固定官方 client/v3 KV
+  `Do(OpDelete(start, WithRange(end), WithPrevKV()))` 通用 Op 路径外观：删除区间必须是
+  半开 `[start,end)`，只删除命中的 key 并推进一次 revision；Delete response/header、
+  `Deleted` 计数、`PrevKvs` key 顺序与 create/mod revision/version 元数据必须匹配
+  专用 Delete 路径，删除前历史 revision 仍可读，删除后当前结果只保留 end 边界及之后 key。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
