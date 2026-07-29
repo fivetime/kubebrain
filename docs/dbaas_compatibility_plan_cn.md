@@ -17535,6 +17535,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   outer txn response header 与 nested range response header 都必须等于相邻 tenant 写入产生的
   latest revision；同时 `Succeeded=false`、logical key/value、`Count=2`、`More=false` 与相邻
   tenant 隔离外观保持不变。该回归把 false branch 可见响应 header 合同与 A2488 空响应路径对齐。
+- A2622 固定 A1514 官方 client/v3 namespace.NewKV nested OpTxn Else branch 实际数据路径的
+  中间 `TxnResponse.Header` 未填充外观：nested txn response header 必须存在但 `Revision=0`，
+  不能被 namespace response adapter 误改写为 latest revision；outer/range header 断言沿用 A2489。
 - A1515 固定官方 client/v3 namespace.NewKV 双层 nested OpTxn 的递归 response unprefix：
   `Txn(...).Then(OpTxn(nil, []Op{OpTxn(nil, []Op{OpGet("range/a", WithRange("range/d"))}, nil)}, nil))`
   必须在第二层 `ResponseTxn` 的 `ResponseRange` 中返回 logical `range/a,b,c` 与原始 values，
