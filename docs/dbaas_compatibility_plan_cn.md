@@ -23371,6 +23371,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A2258 LastCreate+MaxCreate KeysOnly 同 filter 反向 helper、A2264 FirstCreate+MinCreate KeysOnly
   对角组合、A2297 LastCreate+MinCreate KeysOnly 对侧和 A2146 current serializable prefix 同向场景
   之外的 current FromKey FirstCreate+MaxCreate KeysOnly 路径。
+- A2716 固定 A2300 官方 client/v3 namespace.NewKV nested OpTxn FromKey current non-serializable
+  `WithFirstCreate()+WithMaxCreateRev+KeysOnly` 路径的中间 `TxnResponse.Header` 未填充外观：nested
+  txn response header 必须存在但 `Revision=0`，不能被 namespace response adapter 误改写为
+  latest revision；outer/range header 与 FirstCreate+MaxCreate KeysOnly 断言沿用 A2300。
 - A2301 固定官方 client/v3 namespace.NewKV nested OpTxn 的 FromKey current non-serializable
   `WithFirstCreate()+WithMaxCreateRev+CountOnly` 组合外观：nested `OpGet("waiters/",
   append(WithFirstCreate(), WithMaxCreateRev(createB), WithCountOnly())...)` 必须只扫描当前
