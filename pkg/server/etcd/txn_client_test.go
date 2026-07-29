@@ -641,6 +641,95 @@ func TestRawGRPCTxnRangeCompareEnumFallthroughMatchesEtcd(t *testing.T) {
 	}
 }
 
+func TestRawGRPCTxnFromKeyCompareEnumFallthroughMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-from-key-compare-enum-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	base := fmt.Sprintf("/a3009/txn-from-key-compare-enum/%d/", time.Now().UnixNano())
+	resultPrefix := []byte(base + "00-results/")
+	start := base + "10-keys/"
+	putBefore, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(base + "05-before"), Value: []byte("before")})
+	require.NoError(t, err)
+	putA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(start + "a"), Value: []byte("alpha")})
+	require.NoError(t, err)
+	putB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(start + "b"), Value: []byte("omega")})
+	require.NoError(t, err)
+	require.Greater(t, putA.Header.Revision, putBefore.Header.Revision)
+	require.Greater(t, putB.Header.Revision, putA.Header.Revision)
+
+	tests := []struct {
+		name         string
+		target       etcdserverpb.Compare_CompareTarget
+		result       etcdserverpb.Compare_CompareResult
+		compareValue []byte
+		succeeded    bool
+	}{
+		{name: "unknown-result-mod", target: etcdserverpb.Compare_MOD, result: etcdserverpb.Compare_CompareResult(99), succeeded: true},
+		{name: "unknown-result-value", target: etcdserverpb.Compare_VALUE, result: etcdserverpb.Compare_CompareResult(99), compareValue: []byte("zzz"), succeeded: true},
+		{name: "unknown-target-equal", target: etcdserverpb.Compare_CompareTarget(99), result: etcdserverpb.Compare_EQUAL, succeeded: true},
+		{name: "unknown-target-not-equal", target: etcdserverpb.Compare_CompareTarget(99), result: etcdserverpb.Compare_NOT_EQUAL, succeeded: false},
+		{name: "unknown-target-greater", target: etcdserverpb.Compare_CompareTarget(99), result: etcdserverpb.Compare_GREATER, succeeded: false},
+		{name: "unknown-target-unknown-result", target: etcdserverpb.Compare_CompareTarget(99), result: etcdserverpb.Compare_CompareResult(99), succeeded: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resultKey := append(append([]byte(nil), resultPrefix...), []byte(tt.name)...)
+			compare := &etcdserverpb.Compare{
+				Key:         []byte(start),
+				RangeEnd:    []byte{0},
+				Target:      tt.target,
+				Result:      tt.result,
+				TargetUnion: &etcdserverpb.Compare_ModRevision{ModRevision: 0},
+			}
+			if tt.target == etcdserverpb.Compare_VALUE {
+				compare.TargetUnion = &etcdserverpb.Compare_Value{Value: tt.compareValue}
+			}
+			response, txnErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{compare},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: resultKey, Value: []byte("success")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: resultKey, Value: []byte("failure")}),
+				},
+			})
+			require.NoError(t, txnErr)
+			require.Equal(t, tt.succeeded, response.Succeeded)
+			require.NotNil(t, response.Header)
+			require.Greater(t, response.Header.Revision, putB.Header.Revision)
+
+			got, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: resultKey})
+			require.NoError(t, rangeErr)
+			require.Len(t, got.Kvs, 1)
+			if tt.succeeded {
+				require.Equal(t, []byte("success"), got.Kvs[0].Value)
+			} else {
+				require.Equal(t, []byte("failure"), got.Kvs[0].Value)
+			}
+			require.Equal(t, response.Header.Revision, got.Kvs[0].CreateRevision)
+			require.Equal(t, response.Header.Revision, got.Kvs[0].ModRevision)
+			require.Equal(t, int64(1), got.Kvs[0].Version)
+		})
+	}
+}
+
 func TestRawGRPCTxnCompareMissingTargetUnionDefaultsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
