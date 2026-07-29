@@ -179,6 +179,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod-revision filter 路径：read-only Range/Txn header 不前进且等于最新写 revision；
   inner Range response header revision 必须等于 outer txn header，同时 Count/More/KVs
   继续按 etcd limit/filter/sort 语义返回。
+- **Txn selected Range branch header 外观**：A2997 固定 create failure Range、
+  compare-delete stale failure Range、compare-value success branch Range 与 absent-value
+  failure Range：selected Range response header revision 必须等于 outer txn header；
+  同一 selected branch 中的 Put response header 也等于 outer txn revision，Range payload
+  继续反映 etcd selected branch 与 staged view 语义。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键

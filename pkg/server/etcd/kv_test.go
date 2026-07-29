@@ -3452,6 +3452,8 @@ func TestTxnCreateWithFailureRange(t *testing.T) {
 	require.Len(t, resp.Responses, 1)
 	rangeResp := resp.Responses[0].GetResponseRange()
 	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
 	require.Len(t, rangeResp.Kvs, 1)
 	require.Equal(t, []byte("exists"), rangeResp.Kvs[0].Value)
 }
@@ -4149,6 +4151,8 @@ func TestTxnCompareDeleteWithFailureRange(t *testing.T) {
 	require.Len(t, resp.Responses, 1)
 	rangeResp := resp.Responses[0].GetResponseRange()
 	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
 	require.Len(t, rangeResp.Kvs, 1)
 	require.Equal(t, []byte("v2"), rangeResp.Kvs[0].Value)
 }
@@ -4898,8 +4902,14 @@ func TestTxnCompareValueRunsSuccessBranch(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
 	require.Len(t, resp.Responses, 2)
+	putResp := resp.Responses[0].GetResponsePut()
+	require.NotNil(t, putResp)
+	require.NotNil(t, putResp.Header)
+	require.Equal(t, resp.Header.Revision, putResp.Header.Revision)
 	rangeResp := resp.Responses[1].GetResponseRange()
 	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
 	require.Len(t, rangeResp.Kvs, 1)
 	require.Equal(t, []byte("v2"), rangeResp.Kvs[0].Value)
 }
@@ -4980,7 +4990,11 @@ func TestTxnCompareValueAlwaysFailsForAbsentKey(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.False(t, resp.Succeeded)
-			require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
+			rangeResp := resp.Responses[0].GetResponseRange()
+			require.NotNil(t, rangeResp)
+			require.NotNil(t, rangeResp.Header)
+			require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+			require.Empty(t, rangeResp.Kvs)
 		})
 	}
 }
