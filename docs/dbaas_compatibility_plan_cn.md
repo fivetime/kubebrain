@@ -27868,6 +27868,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 leasing KV non-owner 删除语义：一个 leasing client 已缓存并持有 key
   ownership 时，另一个共享 owner prefix 的 leasing client 删除该 key 必须无错误、删除底层
   key，并使原 owner client 后续 `Get` 收敛为空，不能继续从旧 owner cache 返回已删除值。
+- A2109 对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go:TestLeasingOwnerPutResponse`
+  固定官方 client/v3 leasing KV owner Put response/cache 刷新语义：owner client 已缓存 key 后
+  执行 `leasing.Put` 必须返回非空 PutResponse，且后续 `leasing.Get` 必须返回新值、使用
+  Put header revision 作为 ModRevision，并把 Version 精确推进到 2。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
