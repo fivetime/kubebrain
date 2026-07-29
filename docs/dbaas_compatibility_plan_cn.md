@@ -17543,6 +17543,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须只扫描当前 namespace logical prefix，在 mod revision 上界内返回最新修改的
   `locks/b=updated-locks/b`，并保持 `Count=3`、`More=true`。该回归防止 nested top-helper
   与 mod revision filter 组合在递归 prefix/unprefix 路径上泄漏相邻 prefix/tenant。
+- A2503 补强 A1527 官方 client/v3 namespace.NewKV nested OpTxn 的 `WithLastRev()+WithMaxModRev`
+  helper+filter header 外观：nested `OpGet("locks/", append(WithLastRev(),
+  WithMaxModRev(updateBRev))...)` 返回 mod revision 上界内 top-1 result 时，outer txn response
+  header 与 nested range response header 都必须等于相邻 tenant 写入产生的 latest revision；同时
+  result、`Count=3`、`More=true` 与相邻 prefix/tenant 隔离外观保持不变。该回归把 mod revision
+  top-helper + filter 组合与 A2502 create-side 组合对齐。
 - A1528 固定官方 client/v3 namespace.NewKV nested OpTxn 的显式 logical range + `WithLastRev()`
   外观：nested `OpGet("range/a", append(WithLastRev(), WithRange("range/d"))...)` 必须只扫描当前
   namespace 的 `[range/a, range/d)` logical range，返回最新修改的 `range/b=updated-range/b`，
