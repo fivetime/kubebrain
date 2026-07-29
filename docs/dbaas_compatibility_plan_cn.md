@@ -17320,6 +17320,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 的 logical prefix，并在 nested `ResponseRange` 中返回 logical `locks/b`、
   `Count=3`、`More=true`。该回归防止 namespace Txn response adapter 在 rwmutex waitOnLastRev
   相关 top-helper + mod revision filter 组合路径上漏做 unprefix 或跨 prefix/tenant 计数。
+- A2611 补强 A1495/A1496/A1497 官方 client/v3 namespace.NewKV 非空 logical prefix
+  `WithLastRev()+WithMaxModRev` 三入口 header 外观：`Get`、`Do(OpGet)` 与
+  `Txn().Then(OpGet)` 返回 mod revision 上界内 latest logical key/value 时，各 response
+  header 必须等于相邻 tenant 写入后的全局 latest revision；Txn outer header 与 range
+  response header 也必须一致；tenant `Count=3`、`More=true`、logical key/value、mod revision
+  上界和 prefix 隔离断言保持不变。
 - A1498 固定官方 client/v3 namespace.NewKV Get 的 `WithLastRev()` 非空 logical prefix
   外观：对照 upstream `WithLastRev()` 展开为 `WithPrefix()+SortByModRevision(Descend)+Limit(1)`，
   A1495-A1497 已覆盖该 helper 叠加 `WithMaxModRev` 的 rwmutex 路径，本轮补齐基础 top-helper
