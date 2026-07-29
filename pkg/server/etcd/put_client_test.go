@@ -146,6 +146,88 @@ func TestClientDoOpPutUpdateWithPrevKVMatchesEtcd(t *testing.T) {
 	require.Zero(t, kv.Lease)
 }
 
+func TestClientDoOpPutIgnoreValueAndIgnoreLeaseMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a2139/do-opput-ignore/%d", time.Now().UnixNano())
+	leaseA, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	leaseB, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+
+	create, err := client.Put(ctx, key, "old", clientv3.WithLease(leaseA.ID))
+	require.NoError(t, err)
+
+	ignoreValue, err := client.Do(ctx, clientv3.OpPut(key, "", clientv3.WithIgnoreValue(), clientv3.WithLease(leaseB.ID), clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	ignoreValuePut := ignoreValue.Put()
+	require.NotNil(t, ignoreValuePut)
+	require.NotNil(t, ignoreValuePut.Header)
+	require.Equal(t, create.Header.Revision+1, ignoreValuePut.Header.Revision)
+	require.NotNil(t, ignoreValuePut.PrevKv)
+	require.Equal(t, []byte("old"), ignoreValuePut.PrevKv.Value)
+	require.Equal(t, create.Header.Revision, ignoreValuePut.PrevKv.CreateRevision)
+	require.Equal(t, create.Header.Revision, ignoreValuePut.PrevKv.ModRevision)
+	require.Equal(t, int64(1), ignoreValuePut.PrevKv.Version)
+	require.Equal(t, int64(leaseA.ID), ignoreValuePut.PrevKv.Lease)
+
+	afterIgnoreValue, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, afterIgnoreValue.Kvs, 1)
+	require.Equal(t, []byte("old"), afterIgnoreValue.Kvs[0].Value)
+	require.Equal(t, create.Header.Revision, afterIgnoreValue.Kvs[0].CreateRevision)
+	require.Equal(t, ignoreValuePut.Header.Revision, afterIgnoreValue.Kvs[0].ModRevision)
+	require.Equal(t, int64(2), afterIgnoreValue.Kvs[0].Version)
+	require.Equal(t, int64(leaseB.ID), afterIgnoreValue.Kvs[0].Lease)
+
+	ignoreLease, err := client.Do(ctx, clientv3.OpPut(key, "new", clientv3.WithIgnoreLease(), clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	ignoreLeasePut := ignoreLease.Put()
+	require.NotNil(t, ignoreLeasePut)
+	require.NotNil(t, ignoreLeasePut.Header)
+	require.Equal(t, ignoreValuePut.Header.Revision+1, ignoreLeasePut.Header.Revision)
+	require.NotNil(t, ignoreLeasePut.PrevKv)
+	require.Equal(t, []byte("old"), ignoreLeasePut.PrevKv.Value)
+	require.Equal(t, create.Header.Revision, ignoreLeasePut.PrevKv.CreateRevision)
+	require.Equal(t, ignoreValuePut.Header.Revision, ignoreLeasePut.PrevKv.ModRevision)
+	require.Equal(t, int64(2), ignoreLeasePut.PrevKv.Version)
+	require.Equal(t, int64(leaseB.ID), ignoreLeasePut.PrevKv.Lease)
+
+	final, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, ignoreLeasePut.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 1)
+	kv := final.Kvs[0]
+	require.Equal(t, []byte("new"), kv.Value)
+	require.Equal(t, create.Header.Revision, kv.CreateRevision)
+	require.Equal(t, ignoreLeasePut.Header.Revision, kv.ModRevision)
+	require.Equal(t, int64(3), kv.Version)
+	require.Equal(t, int64(leaseB.ID), kv.Lease)
+}
+
 func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
