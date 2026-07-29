@@ -6127,7 +6127,11 @@ func TestTxnRangeCompareLeaseRequiresAllKeysToMatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
-	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 3)
+	rangeResp := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Len(t, rangeResp.Kvs, 3)
 
 	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -6143,7 +6147,11 @@ func TestTxnRangeCompareLeaseRequiresAllKeysToMatch(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
-	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 2)
+	rangeResp = resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Len(t, rangeResp.Kvs, 2)
 }
 
 func TestTxnRangeCompareFromKeySentinelMatchesEtcd(t *testing.T) {
@@ -6173,7 +6181,11 @@ func TestTxnRangeCompareFromKeySentinelMatchesEtcd(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
-	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 3)
+	rangeResp := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Len(t, rangeResp.Kvs, 3)
 
 	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -6192,7 +6204,11 @@ func TestTxnRangeCompareFromKeySentinelMatchesEtcd(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
-	require.Len(t, resp.Responses[0].GetResponseRange().Kvs, 3)
+	rangeResp = resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Len(t, rangeResp.Kvs, 3)
 
 	resp, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
 		Compare: []*etcdserverpb.Compare{{
@@ -6233,7 +6249,11 @@ func TestTxnRangeCompareFromKeySentinelMatchesEtcd(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
-	require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
+	rangeResp = resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Empty(t, rangeResp.Kvs)
 }
 
 func TestTxnRangeCompareValueFailsForEmptyRange(t *testing.T) {
@@ -6261,7 +6281,11 @@ func TestTxnRangeCompareValueFailsForEmptyRange(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, resp.Succeeded)
-	require.Empty(t, resp.Responses[0].GetResponseRange().Kvs)
+	rangeResp := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.NotNil(t, rangeResp.Header)
+	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
+	require.Empty(t, rangeResp.Kvs)
 }
 
 func TestTxnRangeCompareReverseEmptyRangeMatchesEtcd(t *testing.T) {

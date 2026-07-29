@@ -188,6 +188,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CountOnly、KeysOnly、limit、key-desc sort 与 mod-revision filter 的 response tree：
   同事务 Put response header 与后续 Range response header 都必须等于 outer txn
   revision；CountOnly 仍覆盖 limit payload，KeysOnly 仍清空 value 且保留 More/Count。
+- **Txn range-compare selected Range header 外观**：A2999 固定 lease range compare、
+  from-key sentinel compare 与 empty-range value compare 的 selected Range branch：
+  success/failure branch 内 Range response header revision 必须等于 outer txn header；
+  range compare 的 all-keys-match、from-key sentinel 与 empty range 选择语义保持不变。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
