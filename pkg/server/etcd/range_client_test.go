@@ -709,12 +709,13 @@ func TestClientNamespaceGetFirstCreateReturnsLogicalKey(t *testing.T) {
 		_, err = namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
 	}
-	_, err = client.Put(ctx, "/a1479/namespace-first-create/tenant0/outside", "outside")
+	latest, err := client.Put(ctx, "/a1479/namespace-first-create/tenant0/outside", "outside")
 	require.NoError(t, err)
 
 	resp, err := namespacedKV.Get(ctx, "", clientv3.WithFirstCreate()...)
 	require.NoError(t, err)
 	require.NotNil(t, resp.Header)
+	require.Equal(t, latest.Header.Revision, resp.Header.Revision)
 	require.Equal(t, int64(3), resp.Count)
 	require.True(t, resp.More)
 	require.Len(t, resp.Kvs, 1)

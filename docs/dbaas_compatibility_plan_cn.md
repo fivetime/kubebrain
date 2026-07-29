@@ -17170,6 +17170,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `namespace.NewKV(...).Get("", WithFirstCreate()...)` 只返回最早创建的 logical key/value，
   `Count` 保持当前 tenant 的 3 个 key、`More=true`，并排除相邻物理 namespace。该路径支撑
   upstream concurrency mutex/election 依赖的 oldest-create 语义。
+- A2614 补强 A1479 官方 client/v3 namespace.NewKV empty-key `WithFirstCreate()` Get-only
+  header 外观：`Get("", WithFirstCreate()...)` 返回 oldest logical key/value 时，response
+  header 必须等于相邻 tenant 写入后的全局 latest revision；tenant `Count=3`、`More=true`、
+  logical key/value 和 empty-key prefix interval 隔离断言保持不变。
 - A1480 固定官方 client/v3 namespace.NewKV Get 的 `WithFirstCreate()` 非空 logical prefix
   外观：对照 upstream concurrency mutex/election 通常以 lock/election prefix 调用
   `Get(prefix, WithFirstCreate()...)` 选出 oldest waiter，本轮新增 official clientv3 bufconn
