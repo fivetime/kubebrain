@@ -2263,6 +2263,7 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 	defer closeFn()
 
 	ctx := context.Background()
+	var lastPutRevision int64
 	for i, key := range [][]byte{
 		{0x00},
 		{0x00, 0x00},
@@ -2274,14 +2275,17 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 		{0xff, 0x00},
 		{0xff, 0x01},
 	} {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte{byte(i)}})
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte{byte(i)}})
 		require.NoError(t, err)
+		lastPutRevision = putResp.Header.Revision
 	}
 
 	nul, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: []byte{0x00}, RangeEnd: []byte{0x01},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, nul.Header)
+	require.Equal(t, lastPutRevision, nul.Header.Revision)
 	require.Len(t, nul.Kvs, 3)
 	require.Equal(t, [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}}, [][]byte{
 		nul.Kvs[0].Key, nul.Kvs[1].Key, nul.Kvs[2].Key,
@@ -2291,6 +2295,8 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 		Key: []byte{0xff}, RangeEnd: []byte{0}, Limit: 2,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, fromFF.Header)
+	require.Equal(t, lastPutRevision, fromFF.Header.Revision)
 	require.Equal(t, int64(3), fromFF.Count)
 	require.True(t, fromFF.More)
 	require.Len(t, fromFF.Kvs, 2)
@@ -2302,6 +2308,8 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 		Key: []byte{0xfe}, RangeEnd: []byte{0xff},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, highPrefix.Header)
+	require.Equal(t, lastPutRevision, highPrefix.Header.Revision)
 	require.Len(t, highPrefix.Kvs, 3)
 	require.Equal(t, [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}}, [][]byte{
 		highPrefix.Kvs[0].Key, highPrefix.Kvs[1].Key, highPrefix.Kvs[2].Key,
@@ -2311,6 +2319,8 @@ func TestRangePreservesBinaryUserKeyOrdering(t *testing.T) {
 		Key: []byte{0xfe}, RangeEnd: []byte{0xff}, PrevKv: true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, lastPutRevision+1, deleted.Header.Revision)
 	require.Equal(t, int64(3), deleted.Deleted)
 	require.Len(t, deleted.PrevKvs, 3)
 	require.Equal(t, [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}}, [][]byte{
@@ -2333,11 +2343,13 @@ func TestTxnBinaryMutationScenarioMatchesEtcd(t *testing.T) {
 		{0xfe, 0x01},
 		{0xff},
 	}
+	var lastPutRevision int64
 	for i, key := range keys {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key: key, Value: []byte{byte('a' + i)},
 		})
 		require.NoError(t, err)
+		lastPutRevision = putResp.Header.Revision
 	}
 
 	txnRange, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
@@ -2350,8 +2362,13 @@ func TestTxnBinaryMutationScenarioMatchesEtcd(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, txnRange.Header)
+	require.Equal(t, lastPutRevision, txnRange.Header.Revision)
 	require.Len(t, txnRange.Responses, 1)
 	ranged := txnRange.Responses[0].GetResponseRange()
+	require.NotNil(t, ranged)
+	require.NotNil(t, ranged.Header)
+	require.Equal(t, txnRange.Header.Revision, ranged.Header.Revision)
 	require.Len(t, ranged.Kvs, 3)
 	require.Equal(t, [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}}, [][]byte{
 		ranged.Kvs[0].Key, ranged.Kvs[1].Key, ranged.Kvs[2].Key,
@@ -2370,8 +2387,13 @@ func TestTxnBinaryMutationScenarioMatchesEtcd(t *testing.T) {
 		}},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, txnDelete.Header)
+	require.Equal(t, lastPutRevision+1, txnDelete.Header.Revision)
 	require.Len(t, txnDelete.Responses, 1)
 	deleted := txnDelete.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, txnDelete.Header.Revision, deleted.Header.Revision)
 	require.Equal(t, int64(3), deleted.Deleted)
 	require.Len(t, deleted.PrevKvs, 3)
 	require.Equal(t, [][]byte{{0x00}, {0x00, 0x00}, {0x00, 0x01}}, [][]byte{
@@ -2391,6 +2413,8 @@ func TestTxnBinaryMutationScenarioMatchesEtcd(t *testing.T) {
 		Key: []byte{0xfe}, RangeEnd: []byte{0xff}, PrevKv: true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, standaloneDelete.Header)
+	require.Equal(t, txnDelete.Header.Revision+1, standaloneDelete.Header.Revision)
 	require.Equal(t, int64(3), standaloneDelete.Deleted)
 	require.Len(t, standaloneDelete.PrevKvs, 3)
 	require.Equal(t, [][]byte{{0xfe}, {0xfe, 0x00}, {0xfe, 0x01}}, [][]byte{
