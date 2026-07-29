@@ -57915,6 +57915,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastKeyKeysO
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
+	require.NotNil(t, nestedTxn.Header)
+	require.Zero(t, nestedTxn.Header.Revision)
 	require.True(t, nestedTxn.Succeeded)
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
@@ -57926,6 +57928,9 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixWithLastKeyKeysO
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/c"), nestedGet.Kvs[0].Key)
 	require.Empty(t, nestedGet.Kvs[0].Value)
+	require.Equal(t, int64(1), nestedGet.Kvs[0].Version)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].CreateRevision)
+	require.Equal(t, historical.Header.Revision, nestedGet.Kvs[0].ModRevision)
 
 	current, err := namespacedKV.Get(ctx, "items/", clientv3.WithPrefix())
 	require.NoError(t, err)
