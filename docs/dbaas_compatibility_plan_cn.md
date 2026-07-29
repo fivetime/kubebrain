@@ -17682,6 +17682,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `clientv3.Txn.Commit` 必须返回可由 `errors.Is(..., rpctypes.ErrLeaseNotFound)` 识别的 public
   error，且 bad-lease key、原 logical key 与相邻 tenant key 的最终状态保持 etcd 兼容。该回归
   防止 namespace nested Txn 在 lease lookup、branch 选择和错误映射之间发生顺序漂移。
+- A2592 补强 A1542 官方 client/v3 namespace.NewKV nested OpTxn 的 missing lease 未选中分支
+  header 外观：nested compare 失败并执行 Else `OpGet("items/a")` 时，outer txn response header
+  与 nested range response header 必须等于相邻 tenant 写入后的全局 latest revision；logical
+  key/value、`Count=1`、选中 missing lease 的 public error 和 bad-lease 不落盘断言保持不变。
 - A1543 固定官方 client/v3 namespace.NewKV nested OpTxn 的未选中 too-many-ops 分支外观：
   operation budget 是 Txn 请求级静态校验；即使 nested `OpTxn` compare 会失败，未选中 Then
   branch 中 `defaultMaxTxnOps+1` 个 `OpGet` 也必须通过 `clientv3.Txn.Commit` 暴露可由

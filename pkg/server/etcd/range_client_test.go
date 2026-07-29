@@ -33453,7 +33453,7 @@ func TestClientNamespaceNestedTxnMissingLeaseBranchSelectionMatchesEtcd(t *testi
 	missingLease := clientv3.LeaseID(math.MaxInt64)
 	_, err = namespacedKV.Put(ctx, "items/a", "value-a")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1542/namespace-nested-txn-missing-lease/tenant0/items/a", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1542/namespace-nested-txn-missing-lease/tenant0/items/a", "outside-tenant")
 	require.NoError(t, err)
 
 	unselectedBadLease, err := namespacedKV.Txn(ctx).
@@ -33465,6 +33465,7 @@ func TestClientNamespaceNestedTxnMissingLeaseBranchSelectionMatchesEtcd(t *testi
 		Commit()
 	require.NoError(t, err)
 	require.True(t, unselectedBadLease.Succeeded)
+	require.Equal(t, latest.Header.Revision, unselectedBadLease.Header.Revision)
 	require.Len(t, unselectedBadLease.Responses, 1)
 	nestedTxn := unselectedBadLease.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -33472,6 +33473,8 @@ func TestClientNamespaceNestedTxnMissingLeaseBranchSelectionMatchesEtcd(t *testi
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
+	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(1), nestedGet.Count)
 	require.Len(t, nestedGet.Kvs, 1)
 	require.Equal(t, []byte("items/a"), nestedGet.Kvs[0].Key)
