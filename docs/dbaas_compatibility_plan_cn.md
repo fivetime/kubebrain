@@ -18722,6 +18722,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical `[ "", "z" )` 全量 `Count=3`，但过滤后不返回任何 KVs、`More=false`，并排除后续
   delete/update/new key、upper bound 外 `z/final` 和相邻 tenant。该回归补齐 A1604 historical
   contradictory ModRev 与 A1626/A1627 serializable ModRev filter 之外的矛盾 filter 叠加路径。
+- A2576 补强 A1630 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range historical serializable 矛盾 ModRev filter header 外观：nested `OpGet("", WithRange("z"),
+  WithRev(historyRev), WithSerializable(), WithMinModRev(historyRev+1), WithMaxModRev(historyRev),
+  WithLimit(1))` 返回 historical serializable contradictory ModRev filter count-only 外观时，
+  outer txn response header 与 nested range response header 必须保持当前 latest revision；
+  `Count=3`、`More=false`、空 KVs 与 namespace 隔离断言保持不变。
 - A1631 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical serializable 矛盾 CreateRev filter 外观：nested `OpGet("", WithRange("z"),
   WithRev(historyRev), WithSerializable(), WithMinCreateRev(historyRev+1),
