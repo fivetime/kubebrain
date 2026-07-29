@@ -28304,6 +28304,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   public client error，未选中分支后续写不得落库；`TxnResponse.Succeeded=true`，实际选中
   Then 分支 Range response header 与 txn header 保持当前 revision，事务后 keyset/header
   revision 必须保持 seed revision。
+- A2184 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareToPath` 与
+  `checkTxn` 只校验已选路径语义，固定官方 client/v3
+  `Txn().If(trueCmp).Then(OpGet(key)).Else(OpGet(key, WithRev(compactedRev)), OpPut(...))`
+  外观：顶层 Txn compare 成功时，未选中的 Else 分支内 compacted revision Range 不得导致
+  public client error，未选中分支后续写不得落库；`TxnResponse.Succeeded=true`，实际选中
+  Then 分支 Range response header 与 txn header 保持当前 revision，事务后 keyset 必须
+  保持 seed key，current header revision 不得低于 post-compact revision。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
