@@ -252,11 +252,17 @@ func TestTxnWithoutComparesIgnoresNonEmptyFailureBranch(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, written.Succeeded)
+	require.NotNil(t, written.Header)
 	require.Len(t, written.Responses, 1)
-	require.NotNil(t, written.Responses[0].GetResponsePut())
+	putResp := written.Responses[0].GetResponsePut()
+	require.NotNil(t, putResp)
+	require.NotNil(t, putResp.Header)
+	require.Equal(t, written.Header.Revision, putResp.Header.Revision)
 
 	stored, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/txn/unconditional")})
 	require.NoError(t, err)
+	require.NotNil(t, stored.Header)
+	require.Equal(t, written.Header.Revision, stored.Header.Revision)
 	require.Len(t, stored.Kvs, 1)
 	require.Equal(t, []byte("value"), stored.Kvs[0].Value)
 }
@@ -3543,9 +3549,12 @@ func TestTxnCreateWithPrevKVReturnsNilPrevKV(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
 	require.Len(t, resp.Responses, 1)
 	put := resp.Responses[0].GetResponsePut()
 	require.NotNil(t, put)
+	require.NotNil(t, put.Header)
+	require.Equal(t, resp.Header.Revision, put.Header.Revision)
 	require.Nil(t, put.PrevKv)
 }
 
