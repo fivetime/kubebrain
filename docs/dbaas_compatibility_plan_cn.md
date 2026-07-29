@@ -18172,6 +18172,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested txn response header 与 nested range response header 都必须等于 latest revision；
   同时完整 logical page、`Count=3`、`More=false` 与相邻 tenant 隔离外观保持不变。该回归把
   limit zero header 合同与 A2470 CountOnly 及 A1584 negative limit 对侧路径对齐。
+- A2532 补强 A1583 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range `WithLimit(0)` header 外观：nested `OpGet("", WithRange("z"), WithLimit(0),
+  WithSort(SortByKey, SortAscend))` 把 limit 0 视为无限制并返回完整 logical range 时，outer txn
+  response header 与 nested range response header 都必须等于相邻 tenant 写入产生的 latest revision；
+  logical page、`Count=3`、`More=false` 与相邻 tenant 隔离保持不变。
 - A1584 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   负 `WithLimit(-1)` 外观：nested `OpGet("", WithRange("z"), WithLimit(-1),
   WithSort(SortByKey, SortAscend))` 必须沿用 A950 的 etcd 兼容语义，把负 limit 视为无限制，
