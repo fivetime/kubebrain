@@ -54724,6 +54724,8 @@ func TestClientNamespaceNestedTxnGetHistoricalSerializablePrefixKeysOnlySortByVa
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
+	require.NotNil(t, nestedTxn.Header)
+	require.Zero(t, nestedTxn.Header.Revision)
 	require.True(t, nestedTxn.Succeeded)
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
