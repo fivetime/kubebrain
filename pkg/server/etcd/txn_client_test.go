@@ -1750,6 +1750,98 @@ func TestRawGRPCTxnAllowsDeletePutOverlapInMutuallyExclusiveBranchesMatchesEtcd(
 	require.GreaterOrEqual(t, nested.Header.Revision, nestedResp.Header.Revision)
 }
 
+func TestRawGRPCTxnSelectedPutIgnoresUnselectedDeleteOverlapMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-selected-put-unselected-delete-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3015/txn-selected-put-unselected-delete/%d/", time.Now().UnixNano())
+
+	topKey := []byte(prefix + "top")
+	seedTop, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: topKey, Value: []byte("old")})
+	require.NoError(t, err)
+	topResp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{
+			txnClientIntCompare([]byte(prefix+"missing"), nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0),
+		},
+		Success: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: topKey, Value: []byte("success-put")}),
+		},
+		Failure: []*etcdserverpb.RequestOp{
+			txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: topKey}),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, topResp)
+	require.True(t, topResp.Succeeded)
+	require.NotNil(t, topResp.Header)
+	require.Greater(t, topResp.Header.Revision, seedTop.Header.Revision)
+	require.Len(t, topResp.Responses, 1)
+	require.NotNil(t, topResp.Responses[0].GetResponsePut())
+
+	top, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: topKey})
+	require.NoError(t, err)
+	require.Len(t, top.Kvs, 1)
+	require.Equal(t, []byte("success-put"), top.Kvs[0].Value)
+	require.Equal(t, seedTop.Header.Revision, top.Kvs[0].CreateRevision)
+	require.Equal(t, topResp.Header.Revision, top.Kvs[0].ModRevision)
+	require.Equal(t, int64(2), top.Kvs[0].Version)
+
+	nestedKey := []byte(prefix + "nested")
+	seedNested, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: nestedKey, Value: []byte("old")})
+	require.NoError(t, err)
+	nestedResp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare([]byte(prefix+"nested-missing"), nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: nestedKey, Value: []byte("then-put")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: nestedKey}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, nestedResp)
+	require.True(t, nestedResp.Succeeded)
+	require.NotNil(t, nestedResp.Header)
+	require.Greater(t, nestedResp.Header.Revision, seedNested.Header.Revision)
+	require.Len(t, nestedResp.Responses, 1)
+	nestedTxn := nestedResp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nestedTxn)
+	require.True(t, nestedTxn.Succeeded)
+	require.Len(t, nestedTxn.Responses, 1)
+	require.NotNil(t, nestedTxn.Responses[0].GetResponsePut())
+
+	nested, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: nestedKey})
+	require.NoError(t, err)
+	require.Len(t, nested.Kvs, 1)
+	require.Equal(t, []byte("then-put"), nested.Kvs[0].Value)
+	require.Equal(t, seedNested.Header.Revision, nested.Kvs[0].CreateRevision)
+	require.Equal(t, nestedResp.Header.Revision, nested.Kvs[0].ModRevision)
+	require.Equal(t, int64(2), nested.Kvs[0].Version)
+}
+
 func TestClientTxnNestedDuplicateIntervalValidation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
