@@ -17605,6 +17605,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   namespace 的 logical prefix，返回 logical `items/a=old-a`、`Count=1`、`More=false`，后续
   update/new key、同 tenant 相邻 prefix 与相邻 tenant 均不可见。该回归防止 nested historical
   range 在递归 prefix/unprefix 路径上使用当前 revision 或泄漏物理 prefix。
+- A2509 补强 A1533 官方 client/v3 namespace.NewKV nested OpTxn 的 historical revision header
+  外观：nested `OpGet("items/", WithPrefix(), WithRev(firstRev))` 返回历史 keyset 时，outer txn
+  response header 与 nested range response header 必须保持当前 latest revision，而不是请求的
+  historical revision；返回 logical `items/a=old-a`、`Count=1`、`More=false` 与相邻 prefix/tenant
+  不可见合同保持不变。该回归把 historical non-serializable nested range 的 header 语义与
+  A1535/A 系列 historical serializable 合同对齐。
 - A1534 固定官方 client/v3 namespace.NewKV nested OpTxn 的 historical keys-only pagination
   外观：nested `OpGet("items/", WithPrefix(), WithKeysOnly(), WithLimit(2), WithRev(historyRev))`
   必须按指定历史 revision 只分页当前 namespace logical prefix，返回 logical keys
