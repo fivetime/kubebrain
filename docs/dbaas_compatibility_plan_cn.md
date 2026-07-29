@@ -17880,6 +17880,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不超过阈值的最新创建 key，返回 logical `items/a`；阈值后创建的 `items/b`、`z/final`、
   后续更新的 `alpha/a` 和相邻 tenant key 都不能改变选择，并保持 `Count=4`、`More=true`。
   该回归补齐 A1526 非空 prefix 组合之外的 empty-prefix 路径。
+- A2526 补强 A1562 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix
+  `WithLastCreate()+WithMaxCreateRev` 组合 helper header 外观：helper 展开并叠加 create revision
+  上界后返回当前 namespace 目标 logical key 时，outer txn response header 与 nested range response
+  header 都必须等于当前 latest revision；`Count=4`、`More=true`、logical key/value 与相邻 tenant
+  隔离保持不变。该回归覆盖 empty-prefix LastCreate+MaxCreateRev helper path 的 response header
+  propagation。
 - A1563 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix
   `WithLastRev()+WithMaxModRev` 组合外观：nested `OpGet("", append(WithLastRev(),
   WithMaxModRev(updateRev))...)` 必须只在当前 namespace 全前缀内选择 mod revision 不超过阈值的
