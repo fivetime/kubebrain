@@ -110,6 +110,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestNestedTxnWithoutComparesIgnoresNonEmptyFailureBranch`、
   `TestTxnNestedSuccessResponseMatchesEtcd` 和
   `TestTxnNestedCompareFailureResponseMatchesEtcd`。
+- **official client/v3 leasing nested txn header 外观**：A2984 固定
+  `client/v3/leasing.NewKV` ownership wrapper 的 nested write-only txn response 外观：
+  wrapper 递归改写/ownership cache 不得把中间 `TxnResponse.Header` 填成 outer txn
+  revision；nested header 必须存在但 `Revision=0`，内部 put response header 继续等于
+  outer txn revision。覆盖 `TestClientLeasingRangeOwnershipAndDelete`。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键

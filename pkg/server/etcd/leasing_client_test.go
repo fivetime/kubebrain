@@ -1917,6 +1917,8 @@ func TestClientLeasingRangeOwnershipAndDelete(t *testing.T) {
 	require.Len(t, nested.Responses, 1)
 	nestedResponse := nested.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedResponse)
+	require.NotNil(t, nestedResponse.Header)
+	require.Zero(t, nestedResponse.Header.Revision)
 	require.Len(t, nestedResponse.Responses, 2)
 	for _, response := range nestedResponse.Responses {
 		require.Equal(t, nested.Header.Revision, response.GetResponsePut().Header.Revision)
