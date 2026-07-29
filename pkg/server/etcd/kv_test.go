@@ -2412,13 +2412,15 @@ func TestDeleteRangeWithFromKeyMatchesEtcd(t *testing.T) {
 	defer closeFn()
 
 	ctx := context.Background()
+	var lastPutRevision int64
 	for _, key := range []string{
 		"/registry/from-key-delete/a",
 		"/registry/from-key-delete/b",
 		"/registry/from-key-delete/c",
 	} {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte(key)})
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte(key)})
 		require.NoError(t, err)
+		lastPutRevision = putResp.Header.Revision
 	}
 
 	require.Eventually(t, func() bool {
@@ -2438,6 +2440,8 @@ func TestDeleteRangeWithFromKeyMatchesEtcd(t *testing.T) {
 		PrevKv:   true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, lastPutRevision+1, resp.Header.Revision)
 	require.GreaterOrEqual(t, resp.Deleted, int64(2))
 	require.GreaterOrEqual(t, len(resp.PrevKvs), 2)
 
@@ -2663,12 +2667,14 @@ func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 
 	ctx := context.Background()
 	prefix := []byte("/registry/namespace-empty-key/")
+	var lastPutRevision int64
 	for _, suffix := range []byte{'a', 'b'} {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key:   append(append([]byte{}, prefix...), suffix),
 			Value: []byte{'v', suffix},
 		})
 		require.NoError(t, err)
+		lastPutRevision = putResp.Header.Revision
 	}
 
 	_, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{})
@@ -2688,6 +2694,8 @@ func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 		Key: prefix, RangeEnd: []byte{0}, PrevKv: true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, lastPutRevision+1, deleted.Header.Revision)
 	require.Equal(t, int64(2), deleted.Deleted)
 	require.Len(t, deleted.PrevKvs, 2)
 
@@ -2695,6 +2703,8 @@ func TestNamespacedEmptyKeyFromKeyDeleteMatchesEtcd(t *testing.T) {
 		Key: prefix, RangeEnd: []byte{0},
 	})
 	require.NoError(t, err)
+	require.NotNil(t, remaining.Header)
+	require.Equal(t, deleted.Header.Revision, remaining.Header.Revision)
 	require.Empty(t, remaining.Kvs)
 }
 
@@ -2706,15 +2716,18 @@ func TestNamespacedFromKeyPrefixEndPreservesAdjacentKeys(t *testing.T) {
 	prefix := []byte("/registry/namespace-prefix/tenant/")
 	prefixEnd := []byte("/registry/namespace-prefix/tenant0")
 	adjacentKey := []byte("/registry/namespace-prefix/tenant0/outside")
+	var lastPutRevision int64
 	for _, suffix := range []byte{'a', 'b', 'c'} {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key:   append(append([]byte{}, prefix...), suffix),
 			Value: []byte{'v', suffix},
 		})
 		require.NoError(t, err)
+		lastPutRevision = putResp.Header.Revision
 	}
-	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: adjacentKey, Value: []byte("outside")})
+	adjacentPut, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: adjacentKey, Value: []byte("outside")})
 	require.NoError(t, err)
+	lastPutRevision = adjacentPut.Header.Revision
 
 	visible, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key:      prefix,
@@ -2735,6 +2748,8 @@ func TestNamespacedFromKeyPrefixEndPreservesAdjacentKeys(t *testing.T) {
 		PrevKv:   true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, lastPutRevision+1, deleted.Header.Revision)
 	require.Equal(t, int64(3), deleted.Deleted)
 	require.Len(t, deleted.PrevKvs, 3)
 	require.Equal(t, [][]byte{
@@ -2748,9 +2763,13 @@ func TestNamespacedFromKeyPrefixEndPreservesAdjacentKeys(t *testing.T) {
 		RangeEnd: prefixEnd,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, remainingNamespace.Header)
+	require.Equal(t, deleted.Header.Revision, remainingNamespace.Header.Revision)
 	require.Empty(t, remainingNamespace.Kvs)
 	adjacent, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: adjacentKey})
 	require.NoError(t, err)
+	require.NotNil(t, adjacent.Header)
+	require.Equal(t, deleted.Header.Revision, adjacent.Header.Revision)
 	require.Len(t, adjacent.Kvs, 1)
 	require.Equal(t, []byte("outside"), adjacent.Kvs[0].Value)
 }
@@ -3175,11 +3194,15 @@ func TestTxnDeleteRangeEmptyNonFromKeyRangeDoesNotDelete(t *testing.T) {
 	require.Len(t, txnResp.Responses, 1)
 	deleteResp := txnResp.Responses[0].GetResponseDeleteRange()
 	require.NotNil(t, deleteResp)
+	require.NotNil(t, deleteResp.Header)
+	require.Equal(t, txnResp.Header.Revision, deleteResp.Header.Revision)
 	require.Equal(t, int64(0), deleteResp.Deleted)
 	require.Empty(t, deleteResp.PrevKvs)
 
 	getResp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
+	require.NotNil(t, getResp.Header)
+	require.Equal(t, txnResp.Header.Revision, getResp.Header.Revision)
 	require.Equal(t, int64(1), getResp.Count)
 	require.Equal(t, []byte("value"), getResp.Kvs[0].Value)
 }
@@ -3222,6 +3245,8 @@ func TestTxnCompareDeleteRangeEmptyNonFromKeyRangeUsesGenericPath(t *testing.T) 
 	require.Len(t, txnResp.Responses, 1)
 	deleteResp := txnResp.Responses[0].GetResponseDeleteRange()
 	require.NotNil(t, deleteResp)
+	require.NotNil(t, deleteResp.Header)
+	require.Equal(t, txnResp.Header.Revision, deleteResp.Header.Revision)
 	require.Equal(t, int64(0), deleteResp.Deleted)
 	require.Empty(t, deleteResp.PrevKvs)
 
@@ -3661,6 +3686,8 @@ func TestTxnRangeCompareSelectsDeleteRangeBranch(t *testing.T) {
 	require.Len(t, response.Responses, 1)
 	deleteResp := response.Responses[0].GetResponseDeleteRange()
 	require.NotNil(t, deleteResp)
+	require.NotNil(t, deleteResp.Header)
+	require.Equal(t, response.Header.Revision, deleteResp.Header.Revision)
 	require.Equal(t, int64(2), deleteResp.Deleted)
 	require.Len(t, deleteResp.PrevKvs, 2)
 	require.Equal(t, []byte(prefix+"b"), deleteResp.PrevKvs[0].Key)
@@ -3668,6 +3695,8 @@ func TestTxnRangeCompareSelectsDeleteRangeBranch(t *testing.T) {
 
 	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
 	require.NoError(t, err)
+	require.NotNil(t, current.Header)
+	require.Equal(t, response.Header.Revision, current.Header.Revision)
 	require.Equal(t, int64(1), current.Count)
 	require.Equal(t, []byte(prefix+"a"), current.Kvs[0].Key)
 

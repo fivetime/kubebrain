@@ -140,6 +140,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DeleteRange 再精确前进 1，并保留 PrevKV 二进制 key 顺序。覆盖
   `TestRawGRPCBinaryRangeTxnAndDeleteBoundaries` 和
   `TestClientBinaryKeyTxnAndDeleteMutations`。
+- **from-key / namespace DeleteRange header revision 外观**：A2989 固定 direct
+  `WithFromKey`、namespace empty-key from-key、namespace prefix-end、txn empty delete
+  与 range-compare selected delete branch 的 header：命中删除时 DeleteRange response
+  精确前进 1；empty non-from-key txn delete 不消耗 revision，但 inner delete header 与后续
+  Range header 都等于 outer txn header；namespace 删除后的 remaining/adjacent Range header
+  等于 delete revision，且 adjacent key 不被 prefix-end 删除误伤。
 - **generic txn staged view**：当选中路径包含 Range、multi-key 或重叠
   DeleteRange、多个 DeleteRange、IgnoreValue/IgnoreLease 时，先在固定
   `baseRev` 上构建事务内视图，按请求顺序让后续读看到先前写，再把最终每键
