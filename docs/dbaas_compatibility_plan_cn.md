@@ -17824,6 +17824,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及 values；阈值之后更新但创建较早的 `alpha/a`、相邻 tenant key 都不能进入响应，并保持
   `Count` 的 etcd Range 外观。该回归补齐 A1521 非空 prefix MinCreateRev 之外的 empty-prefix
   路径，防止 create revision filter 在 nested namespace adapter 中使用物理/全局 keyspace。
+- A2521 补强 A1557 官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix MinCreateRev
+  header 外观：nested `OpGet("", WithPrefix(), WithMinCreateRev(createRev), WithSort(SortByKey,
+  SortAscend))` 返回 create revision 过滤后的 logical keys 时，outer txn response header 与 nested
+  range response header 都必须等于当前 latest revision；filtered logical key/value、`Count=4`、
+  `More=false` 与相邻 tenant 隔离保持不变。该回归覆盖 empty-prefix MinCreateRev filter path 的
+  response header propagation。
 - A1558 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty-key prefix MaxCreateRev
   外观：nested `OpGet("", WithPrefix(), WithMaxCreateRev(createRev-1), WithSort(SortByKey, SortAscend))`
   必须只返回当前 namespace 全前缀内 create revision 不超过阈值的 logical `alpha/a`、`items/a`，
