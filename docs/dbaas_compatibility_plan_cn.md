@@ -18274,6 +18274,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   WithMaxCreateRev(rev), WithLimit(1))` 必须只统计当前 namespace logical `[ "", "z" )` range，
   返回空 KVs、`Count=3`、`More=false`，并排除 upper bound 外的 `z/final`、后续更新的当前 key
   和相邻 tenant。该回归补齐 A1592 mod filter 对侧的 empty-start explicit range create-filter 路径。
+- A2537 补强 A1593 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range 矛盾 create revision filter header 外观：nested `OpGet("", WithRange("z"),
+  WithMinCreateRev(rev+1), WithMaxCreateRev(rev), WithLimit(1))` 返回 filtered-empty result 时，outer
+  txn response header 与 nested range response header 都必须等于相邻 tenant 写入产生的 latest
+  revision；`Count=3`、`More=false`、空 KVs 与 explicit range 隔离保持不变。
 - A1594 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   historical serializable 组合外观：nested `OpGet("", WithRange("z"), WithRev(historyRev),
   WithSerializable())` 必须在指定历史 revision 上只读取当前 namespace logical `[ "", "z" )`
