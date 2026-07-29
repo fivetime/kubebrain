@@ -1033,6 +1033,112 @@ func TestClientLeasingTxnOwnerDeleteClearsCachedKey(t *testing.T) {
 	require.Empty(t, direct.Kvs)
 }
 
+func TestClientLeasingTxnOwnerIfUsesCachedComparisons(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2113/leasing-txn-owner-if/%d/", time.Now().UnixNano())
+	key := prefix + "key"
+	leased, closeLeased, err := leasing.NewKV(client, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeLeased)
+
+	_, err = client.Put(ctx, key, "abc")
+	require.NoError(t, err)
+	cached, err := leased.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, cached.Kvs, 1)
+	cachedKV := cached.Kvs[0]
+
+	tests := []struct {
+		name          string
+		comparisons   []clientv3.Cmp
+		wantSucceeded bool
+		wantResponses int
+	}{
+		{
+			name:          "value equal",
+			comparisons:   []clientv3.Cmp{clientv3.Compare(clientv3.Value(key), "=", "abc")},
+			wantSucceeded: true,
+			wantResponses: 1,
+		},
+		{
+			name:          "create revision equal",
+			comparisons:   []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), "=", cachedKV.CreateRevision)},
+			wantSucceeded: true,
+			wantResponses: 1,
+		},
+		{
+			name:          "mod revision equal",
+			comparisons:   []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "=", cachedKV.ModRevision)},
+			wantSucceeded: true,
+			wantResponses: 1,
+		},
+		{
+			name:          "version equal",
+			comparisons:   []clientv3.Cmp{clientv3.Compare(clientv3.Version(key), "=", cachedKV.Version)},
+			wantSucceeded: true,
+			wantResponses: 1,
+		},
+		{
+			name:        "value greater false",
+			comparisons: []clientv3.Cmp{clientv3.Compare(clientv3.Value(key), ">", "abc")},
+		},
+		{
+			name:        "create revision greater false",
+			comparisons: []clientv3.Cmp{clientv3.Compare(clientv3.CreateRevision(key), ">", cachedKV.CreateRevision)},
+		},
+		{
+			name:        "mod revision less false",
+			comparisons: []clientv3.Cmp{clientv3.Compare(clientv3.ModRevision(key), "<", cachedKV.ModRevision)},
+		},
+		{
+			name:        "version greater false",
+			comparisons: []clientv3.Cmp{clientv3.Compare(clientv3.Version(key), ">", cachedKV.Version)},
+		},
+		{
+			name:        "combined false",
+			comparisons: []clientv3.Cmp{clientv3.Compare(clientv3.Version(key), "=", cachedKV.Version), clientv3.Compare(clientv3.Version(key), "<", cachedKV.Version)},
+		},
+	}
+
+	for _, tt := range tests {
+		txn, txnErr := leased.Txn(ctx).If(tt.comparisons...).Then(clientv3.OpGet(key)).Commit()
+		require.NoError(t, txnErr, tt.name)
+		require.Equal(t, tt.wantSucceeded, txn.Succeeded, tt.name)
+		require.Len(t, txn.Responses, tt.wantResponses, tt.name)
+		if tt.wantResponses == 1 {
+			response := txn.Responses[0].GetResponseRange()
+			require.NotNil(t, response, tt.name)
+			require.Len(t, response.Kvs, 1, tt.name)
+			require.Equal(t, []byte("abc"), response.Kvs[0].Value, tt.name)
+		}
+	}
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
