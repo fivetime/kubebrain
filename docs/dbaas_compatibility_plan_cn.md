@@ -17347,6 +17347,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mod revision 最新的 logical `queue/b`、`Count=3`、`More=true`。该回归防止 namespace Txn
   response adapter 在 reverse mod revision top-helper 路径上漏做 unprefix 或跨 prefix/tenant
   计数。
+- A2612 补强 A1498/A1499/A1500 官方 client/v3 namespace.NewKV 非空 logical prefix
+  `WithLastRev()` 三入口 header 外观：`Get`、`Do(OpGet)` 与 `Txn().Then(OpGet)` 返回
+  current mod revision latest logical key/value 时，各 response header 必须等于相邻 tenant
+  写入后的全局 latest revision；Txn outer header 与 range response header 也必须一致；tenant
+  `Count=3`、`More=true`、logical key/value 和 prefix 隔离断言保持不变。
 - A1501 固定官方 client/v3 namespace.NewKV Get 的显式 logical range + `WithLastRev()`
   外观：对照 upstream leasing `txnLeasing.guardRanges` 使用
   `Get(key, append(WithLastRev(), WithRange(end))...)` 读取显式 range 内最新 mod revision，
