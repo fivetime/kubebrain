@@ -17913,6 +17913,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical `[ "", "z" )` range，PrevKV 返回 logical `alpha/a`、`items/a`，保留 upper bound 外的
   `z/final` 和相邻 tenant keys。该回归补齐 A1548 empty-prefix delete 与 A1564 empty-start
   read 之外的 delete range 路径，防止 DeleteRange adapter 泄漏物理 prefix 或错误扩大 range。
+- A2529 补强 A1565 官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式
+  range delete header 外观：nested `OpDelete("", WithRange("z"), WithPrevKV())` 作为写事务执行时，
+  outer txn response header revision 必须大于事务前 latest revision，nested delete response header
+  必须等于 outer txn response header；logical PrevKVs、删除数量、upper bound 外 key 保留与相邻
+  tenant 隔离保持不变。
 - A1566 固定官方 client/v3 namespace.NewKV nested OpTxn 的 empty logical start 显式 range
   CountOnly 优先级外观：nested `OpGet("", WithRange("z"), WithKeysOnly(), WithCountOnly(),
   WithLimit(1))` 必须只统计当前 namespace 的 logical `[ "", "z" )` range，返回 `Count=2`、
