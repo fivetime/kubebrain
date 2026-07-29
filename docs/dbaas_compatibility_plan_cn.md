@@ -27949,6 +27949,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   收紧官方 client/v3 Txn prefix compare 失败外观：范围内任一 key 不满足 create revision
   compare 时事务必须 `Succeeded=false` 并执行 Else Put；返回的 Put response header revision
   必须等于 outer txn header revision，最终 failure key 的 create/mod revision 与事务 revision 一致。
+- A2129 对照 `/root/etcd/tests/integration/clientv3/watch/watch_test.go:TestWatchRange`
+  固定官方 client/v3 Watch 显式 range 的半开区间语义：`Watch(start, WithRange(end))`
+  只能交付 `[start,end)` 内的 PUT 事件，事件 key/value 与 Put revision 对齐；右端点
+  `end` 和范围外 key 不得在 progress barrier 前泄漏为 watch event。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

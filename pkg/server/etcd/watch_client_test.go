@@ -678,6 +678,94 @@ func TestClientWatchFiltersPutAndDeleteEvents(t *testing.T) {
 	requireNoClientWatchEventBeforeProgress(t, ctx, client, noDelete)
 }
 
+func TestClientWatchRangeDeliversHalfOpenIntervalOnly(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2129/watch-range/%d/", time.Now().UnixNano())
+	base, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+
+	watch := client.Watch(
+		ctx,
+		prefix+"a",
+		clientv3.WithRange(prefix+"c"),
+		clientv3.WithRev(base.Header.Revision+1),
+		clientv3.WithCreatedNotify(),
+	)
+	requireClientWatchCreated(t, ctx, watch)
+
+	type wantEvent struct {
+		key      string
+		value    string
+		revision int64
+	}
+	wants := make([]wantEvent, 0, 3)
+	for _, write := range []struct {
+		suffix string
+		value  string
+		watch  bool
+	}{
+		{suffix: "a", value: "left-bound", watch: true},
+		{suffix: "b", value: "middle", watch: true},
+		{suffix: "bar", value: "lexicographic-middle", watch: true},
+		{suffix: "c", value: "right-bound", watch: false},
+		{suffix: "z", value: "outside", watch: false},
+	} {
+		response, err := client.Put(ctx, prefix+write.suffix, write.value)
+		require.NoError(t, err)
+		if write.watch {
+			wants = append(wants, wantEvent{
+				key:      prefix + write.suffix,
+				value:    write.value,
+				revision: response.Header.Revision,
+			})
+		}
+	}
+
+	got := make([]wantEvent, 0, len(wants))
+	for len(got) < len(wants) {
+		response := requireClientWatchResponse(t, ctx, watch)
+		require.NoError(t, response.Err())
+		require.False(t, response.Created)
+		require.False(t, response.Canceled)
+		require.False(t, response.IsProgressNotify())
+		for _, event := range response.Events {
+			require.Equal(t, clientv3.EventTypePut, event.Type)
+			got = append(got, wantEvent{
+				key:      string(event.Kv.Key),
+				value:    string(event.Kv.Value),
+				revision: event.Kv.ModRevision,
+			})
+		}
+	}
+	require.Equal(t, wants, got)
+
+	requireNoClientWatchEventBeforeProgress(t, ctx, client, watch)
+}
+
 func TestClientWatchProgressNotifySuppressesTickAfterEvent(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
