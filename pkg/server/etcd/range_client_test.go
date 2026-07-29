@@ -1417,7 +1417,7 @@ func TestClientNamespaceTxnGetKeysOnlyAndDeleteWithLogicalRange(t *testing.T) {
 	require.NoError(t, err)
 	_, err = client.Put(ctx, "/a1505/namespace-txn-get-delete-range/tenant/range0/outside", "same-tenant-outside-range")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1505/namespace-txn-get-delete-range/tenant0/range/b", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1505/namespace-txn-get-delete-range/tenant0/range/b", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -1433,6 +1433,7 @@ func TestClientNamespaceTxnGetKeysOnlyAndDeleteWithLogicalRange(t *testing.T) {
 	txnGet := txnResp.Responses[0].GetResponseRange()
 	require.NotNil(t, txnGet)
 	require.NotNil(t, txnGet.Header)
+	require.Equal(t, latest.Header.Revision, txnGet.Header.Revision)
 	require.Equal(t, int64(3), txnGet.Count)
 	require.False(t, txnGet.More)
 	require.Len(t, txnGet.Kvs, 3)
@@ -1451,6 +1452,7 @@ func TestClientNamespaceTxnGetKeysOnlyAndDeleteWithLogicalRange(t *testing.T) {
 	txnDelete := txnResp.Responses[1].GetResponseDeleteRange()
 	require.NotNil(t, txnDelete)
 	require.NotNil(t, txnDelete.Header)
+	require.Equal(t, txnDelete.Header.Revision, txnResp.Header.Revision)
 	require.Equal(t, int64(3), txnDelete.Deleted)
 
 	remaining, err := namespacedKV.Get(ctx, "range/", clientv3.WithPrefix())

@@ -17326,6 +17326,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Count=3`、`More=false`，再只删除 `[range/a, range/d)` 当前 namespace logical range 中的
   3 个 key；upper bound `range/d`、同 tenant 相邻物理 range 与相邻 tenant 必须保留。该回归
   防止 Txn `prefixOps` 在 get/delete 混合操作中对显式 range 做不一致映射。
+- A2594 补强 A1505 官方 client/v3 namespace.NewKV Txn 显式 range pre-read + delete 的 header
+  外观：同一 Txn 中 `OpGet(..., WithKeysOnly())` 与 `OpDelete(..., WithRange(...))` 共存时，
+  pre-read range response header 必须保持事务前全局 latest revision，outer txn response header
+  必须与 delete response header 保持同一事务 commit revision；logical keys-only pre-read、
+  `Deleted=3`、upper bound 保留和 range/tenant 隔离断言保持不变。
 - A1506 固定官方 client/v3 namespace.NewKV Txn OpDelete 的显式 logical range + `WithPrevKV()`
   外观：在 A1505 固定 range delete 计数后，本轮补齐 PrevKV response adapter：
   `namespace.NewKV(...).Txn(...).Then(OpDelete("range/a", WithRange("range/d"), WithPrevKV()))`
