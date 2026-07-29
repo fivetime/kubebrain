@@ -357,3 +357,48 @@ func TestClientSTMDelDeletesKeyWithDeleteResponse(t *testing.T) {
 	require.Empty(t, deleted.Kvs)
 	require.Equal(t, commitResp.Header.Revision, deleted.Header.Revision)
 }
+
+func TestClientSTMGetWithNoKeysReturnsEmptyString(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		Context:     ctx,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	outputKey := "/a2092/stm/get-empty/output"
+	var nilKeys []string
+	commitResp, err := concurrency.NewSTM(client, func(stm concurrency.STM) error {
+		require.Empty(t, stm.Get())
+		require.Empty(t, stm.Get(nilKeys...))
+		stm.Put(outputKey, "committed")
+		return nil
+	}, concurrency.WithIsolation(concurrency.Serializable))
+	require.NoError(t, err)
+	require.NotNil(t, commitResp)
+	require.NotNil(t, commitResp.Header)
+
+	outputResp, err := client.Get(ctx, outputKey)
+	require.NoError(t, err)
+	require.Len(t, outputResp.Kvs, 1)
+	require.Equal(t, "committed", string(outputResp.Kvs[0].Value))
+	require.Equal(t, commitResp.Header.Revision, outputResp.Kvs[0].ModRevision)
+}

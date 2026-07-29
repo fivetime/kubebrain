@@ -27795,6 +27795,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Get` 必须返回空字符串；提交的 Txn response 必须包含 DeleteRange response，
   `Deleted=1` 且 inner DeleteRange header revision 等于 outer STM commit header，
   提交后 key 不存在且后续 Get header revision 等于删除 revision。
+- A2092 对照 `/root/etcd/client/v3/concurrency/stm_test.go:TestGet` 固定官方
+  client/v3 STM 空读边界：`stm.Get()` 与 nil variadic keys 都必须返回空字符串，
+  不发散成错误、不创建读集冲突，并且同一 STM 内后续 Put 仍可正常提交；输出 key
+  的 mod revision 必须等于 STM commit header revision。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
