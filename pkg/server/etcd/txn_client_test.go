@@ -3166,6 +3166,67 @@ func TestClientNestedTxnFutureRevisionRejectsTxnBeforeWritesMatchesEtcd(t *testi
 	require.Equal(t, int64(1), after.Kvs[0].Version)
 }
 
+func TestClientNestedTxnCompactedRevisionRejectsTxnBeforeWritesMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := "/a2170/client-nested-txn-compacted-revision/"
+	key := prefix + "key"
+	nestedWriteKey := prefix + "nested-write"
+	outerWriteKey := prefix + "outer-write"
+	seed, err := client.Put(ctx, key, "value")
+	require.NoError(t, err)
+	compactedRev := seed.Header.Revision - 1
+	require.Positive(t, compactedRev)
+	compact, err := client.Compact(ctx, seed.Header.Revision)
+	require.NoError(t, err)
+
+	_, err = client.Txn(ctx).Then(
+		clientv3.OpTxn(
+			nil,
+			[]clientv3.Op{
+				clientv3.OpGet(key, clientv3.WithRev(compactedRev)),
+				clientv3.OpPut(nestedWriteKey, "must-not-commit"),
+			},
+			nil,
+		),
+		clientv3.OpPut(outerWriteKey, "must-not-commit"),
+	).Commit()
+	requireClientTxnError(t, err, codes.Unknown, "etcdserver: mvcc: required revision has been compacted", rpctypes.ErrCompacted)
+
+	after, err := client.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
+	require.NoError(t, err)
+	require.NotNil(t, after.Header)
+	require.GreaterOrEqual(t, after.Header.Revision, compact.Header.Revision)
+	require.Len(t, after.Kvs, 1)
+	require.Equal(t, []byte(key), after.Kvs[0].Key)
+	require.Equal(t, []byte("value"), after.Kvs[0].Value)
+	require.Equal(t, seed.Header.Revision, after.Kvs[0].CreateRevision)
+	require.Equal(t, seed.Header.Revision, after.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), after.Kvs[0].Version)
+}
+
 func TestClientTxnIntraTxnVersionSemantics(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
