@@ -32225,7 +32225,7 @@ func TestClientNamespaceNestedTxnGetWithFirstCreateReturnsLogicalKey(t *testing.
 	}
 	_, err = client.Put(ctx, "/a1523/namespace-nested-txn-first-create/tenant/waiters0/outside", "same-tenant-outside-prefix")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, "/a1523/namespace-nested-txn-first-create/tenant0/waiters/outside", "outside-tenant")
+	latest, err := client.Put(ctx, "/a1523/namespace-nested-txn-first-create/tenant0/waiters/outside", "outside-tenant")
 	require.NoError(t, err)
 
 	txnResp, err := namespacedKV.Txn(ctx).
@@ -32235,6 +32235,7 @@ func TestClientNamespaceNestedTxnGetWithFirstCreateReturnsLogicalKey(t *testing.
 		Commit()
 	require.NoError(t, err)
 	require.True(t, txnResp.Succeeded)
+	require.Equal(t, latest.Header.Revision, txnResp.Header.Revision)
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
@@ -32243,6 +32244,7 @@ func TestClientNamespaceNestedTxnGetWithFirstCreateReturnsLogicalKey(t *testing.
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
 	require.NotNil(t, nestedGet)
 	require.NotNil(t, nestedGet.Header)
+	require.Equal(t, latest.Header.Revision, nestedGet.Header.Revision)
 	require.Equal(t, int64(3), nestedGet.Count)
 	require.True(t, nestedGet.More)
 	require.Len(t, nestedGet.Kvs, 1)

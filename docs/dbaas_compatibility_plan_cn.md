@@ -17502,6 +17502,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested `OpGet("waiters/", WithFirstCreate()...)` 必须只扫描当前 namespace 的 logical
   `waiters/` prefix，返回最早创建的 `waiters/b`，并保持 `Count=3`、`More=true`。该回归防止
   nested top-helper 展开选项在递归 `prefixOp`/`unprefixTxnResponse` 路径上泄漏相邻 prefix/tenant。
+- A2499 补强 A1523 官方 client/v3 namespace.NewKV nested OpTxn 的 `WithFirstCreate()` top-helper
+  header 外观：nested `OpGet("waiters/", WithFirstCreate()...)` 展开为 create revision 升序
+  top-1 read 时，outer txn response header 与 nested range response header 都必须等于相邻 tenant
+  写入产生的 latest revision；同时 first-create 结果、`Count=3`、`More=true` 与相邻 prefix/tenant
+  隔离外观保持不变。该回归把 create top-helper 下界路径纳入 nested Txn header 合同。
 - A1524 固定官方 client/v3 namespace.NewKV nested OpTxn 的 `WithFirstRev()` top-helper
   外观：对照 upstream experimental queue 使用 `WithFirstRev()` 获取最早 mod revision 的元素，
   nested `OpGet("queue/", WithFirstRev()...)` 必须只扫描当前 namespace 的 logical `queue/`
