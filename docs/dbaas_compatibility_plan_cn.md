@@ -17216,6 +17216,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 namespace 的 logical prefix，并在 nested `ResponseRange` 中返回 logical `waiters/b`、
   `Count=3`、`More=true`。该回归防止 namespace Txn response adapter 在 waitDeletes 相关
   top-helper + create revision filter 组合路径上漏做 unprefix 或跨 prefix/tenant 计数。
+- A2607 补强 A1483/A1484/A1485 官方 client/v3 namespace.NewKV 非空 logical prefix
+  `WithLastCreate()+WithMaxCreateRev` 三入口 header 外观：`Get`、`Do(OpGet)` 与
+  `Txn().Then(OpGet)` 返回 create revision 上界内 latest waiter logical key/value 时，各
+  response header 必须等于相邻 tenant 写入后的全局 latest revision；Txn outer header 与
+  range response header 也必须一致；tenant `Count=3`、`More=true`、logical key/value、
+  create revision 上界和 prefix 隔离断言保持不变。
 - A1486 固定官方 client/v3 namespace.NewKV Get 的 `WithFirstKey()` 非空 logical prefix
   外观：对照 upstream `WithFirstKey()` 展开为 `WithPrefix()+SortByKey(Ascend)+Limit(1)`，且
   experimental priority queue 使用 `Get(prefix, WithFirstKey()...)` 获取词典序第一个元素。本轮
