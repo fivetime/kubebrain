@@ -251,3 +251,56 @@ func TestClientSTMSerializableReadsAtomicBatches(t *testing.T) {
 		require.NoError(t, <-readerErrs)
 	}
 }
+
+func TestClientSTMSerializablePrefetchRevUsesFetchedModRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		Context:     ctx,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	existingKey := "/a2090/stm/prefetch/existing"
+	missingKey := "/a2090/stm/prefetch/missing"
+	outputKey := "/a2090/stm/prefetch/output"
+	putResp, err := client.Put(ctx, existingKey, "initial")
+	require.NoError(t, err)
+
+	var existingRev, missingRev int64
+	commitResp, err := concurrency.NewSTM(client, func(stm concurrency.STM) error {
+		require.Equal(t, "initial", stm.Get(existingKey))
+		existingRev = stm.Rev(existingKey)
+		missingRev = stm.Rev(missingKey)
+		stm.Put(outputKey, fmt.Sprintf("%d/%d", existingRev, missingRev))
+		return nil
+	}, concurrency.WithIsolation(concurrency.Serializable), concurrency.WithPrefetch(existingKey, missingKey))
+	require.NoError(t, err)
+	require.NotNil(t, commitResp)
+	require.NotNil(t, commitResp.Header)
+	require.Equal(t, putResp.Header.Revision, existingRev)
+	require.Zero(t, missingRev)
+
+	outputResp, err := client.Get(ctx, outputKey)
+	require.NoError(t, err)
+	require.Len(t, outputResp.Kvs, 1)
+	require.Equal(t, fmt.Sprintf("%d/0", putResp.Header.Revision), string(outputResp.Kvs[0].Value))
+	require.Equal(t, commitResp.Header.Revision, outputResp.Kvs[0].ModRevision)
+}

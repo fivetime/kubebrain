@@ -27784,6 +27784,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   5 个 key 后，每轮并发启动一个 `concurrency.NewSTM(..., WithIsolation(Serializable))`
   读取全部 key，单个 STM 内不得看到跨批次混合值。该回归补齐 A971 简化 snapshot
   检查之外的 upstream 多 key serialization 场景，防止 serializable read 走到撕裂快照。
+- A2090 对照 `/root/etcd/client/v3/concurrency/stm.go` 固定官方 client/v3 STM
+  `WithPrefetch` 与 `Rev` 外观：`Serializable` STM 预取 existing/missing key 后，
+  `Get(existing)` 必须复用预取值，`Rev(existing)` 必须等于该 key 的 mod revision，
+  `Rev(missing)` 必须为 0；随后 STM Put 的提交 revision 仍必须成为输出 key 的
+  mod revision。该回归把 Range response header/revision 与 STM 公开接口绑定，防止
+  prefetch 或 missing-key 路径退化成错误 revision。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
