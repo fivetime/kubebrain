@@ -1514,6 +1514,7 @@ func TestClientNamespaceTxnDeleteWithPrevKVLogicalRangeReturnsLogicalPrevKVs(t *
 	txnDelete := txnResp.Responses[0].GetResponseDeleteRange()
 	require.NotNil(t, txnDelete)
 	require.NotNil(t, txnDelete.Header)
+	require.Equal(t, txnDelete.Header.Revision, txnResp.Header.Revision)
 	require.Equal(t, int64(3), txnDelete.Deleted)
 	require.Len(t, txnDelete.PrevKvs, 3)
 	require.Equal(t, [][]byte{[]byte("range/a"), []byte("range/b"), []byte("range/c")},
