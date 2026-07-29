@@ -1256,6 +1256,103 @@ func TestClientLeasingTxnNonOwnerPutInvalidatesCachedKeysAndCommitsOneRevision(t
 	}
 }
 
+func TestClientLeasingTxnIfThenElseWithSplitCachesPropagatesPuts(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	newClient := func() *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints:   []string{"bufnet"},
+			DialTimeout: time.Second,
+			DialOptions: []grpc.DialOption{
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+					return listener.Dial()
+				}),
+			},
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+	firstClient := newClient()
+	secondClient := newClient()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a2115/leasing-txn-if-then-else/%d/", time.Now().UnixNano())
+	firstKV, closeFirst, err := leasing.NewKV(firstClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeFirst)
+	secondKV, closeSecond, err := leasing.NewKV(secondClient, prefix+"owners/")
+	require.NoError(t, err)
+	t.Cleanup(closeSecond)
+
+	keys := []string{prefix + "k0", prefix + "k1", prefix + "k2", prefix + "k3"}
+	for index, key := range keys {
+		_, err = firstClient.Put(ctx, key, fmt.Sprintf("%d", index))
+		require.NoError(t, err)
+	}
+	// Match upstream TestLeasingTxnRandIfThenOrElse's split-cache setup, but
+	// make it deterministic: each leasing client owns a different subset.
+	for _, key := range []string{keys[0], keys[2]} {
+		cached, getErr := firstKV.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, cached.Kvs, 1)
+	}
+	for _, key := range []string{keys[1], keys[3]} {
+		cached, getErr := secondKV.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, cached.Kvs, 1)
+	}
+
+	successTxn, err := firstKV.Txn(ctx).
+		If(
+			clientv3.Compare(clientv3.Value(keys[0]), "=", "0"),
+			clientv3.Compare(clientv3.Version(keys[2]), "=", 1),
+		).
+		Then(
+			clientv3.OpPut(keys[0], "a"),
+			clientv3.OpGet(keys[1]),
+			clientv3.OpPut(keys[2], "a"),
+		).
+		Else(clientv3.OpPut(keys[3], "must-not-write")).
+		Commit()
+	require.NoError(t, err)
+	require.True(t, successTxn.Succeeded)
+	require.Len(t, successTxn.Responses, 3)
+
+	failureTxn, err := firstKV.Txn(ctx).
+		If(clientv3.Compare(clientv3.Value(keys[0]), "=", "0")).
+		Then(clientv3.OpPut(keys[1], "must-not-write")).
+		Else(
+			clientv3.OpPut(keys[1], "a"),
+			clientv3.OpGet(keys[2]),
+			clientv3.OpPut(keys[3], "a"),
+		).
+		Commit()
+	require.NoError(t, err)
+	require.False(t, failureTxn.Succeeded)
+	require.Len(t, failureTxn.Responses, 3)
+
+	for _, kv := range []clientv3.KV{firstClient, firstKV, secondKV} {
+		for _, key := range keys {
+			resp, getErr := kv.Get(ctx, key)
+			require.NoError(t, getErr)
+			require.Len(t, resp.Kvs, 1)
+			require.Equal(t, []byte("a"), resp.Kvs[0].Value)
+		}
+	}
+}
+
 func TestClientLeasingNestedNonOwnerTxnInvalidatesOwnerCache(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

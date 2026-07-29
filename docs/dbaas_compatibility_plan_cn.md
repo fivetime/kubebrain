@@ -27892,6 +27892,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 leasing KV non-owner Txn Put 语义：一个 client 已缓存 k/k2 时，另一个
   sharing owner prefix 的 leasing client 在同一 Txn 中执行 nested Put(k2)、Put(k) 和未缓存
   新 key Put(k3)，三次写入必须同 revision 提交，owner cache 后续读取 k/k2 必须收敛到新值。
+- A2115 对照 `/root/etcd/tests/integration/clientv3/lease/leasing_test.go:TestLeasingTxnRandIfThenOrElse`
+  固定官方 client/v3 leasing KV split-cache Txn If/Then/Else 语义：两个 leasing client
+  分别缓存不同 key 后，基于 owner cache 的 compare 必须正确选择 Then/Else，分支内 Put 的
+  结果必须在 direct KV、发起方 leasing KV 和另一 leasing KV 上都收敛可见。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
