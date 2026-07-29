@@ -163,23 +163,32 @@ func TestClientDeleteFromKeyRemovesAllUserKeys(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	keys := []string{"a", "b", "c", "c/abc", "d"}
+	var lastPutRevision int64
 	for _, key := range keys {
-		_, err = client.Put(ctx, key, "value-"+key)
+		put, err := client.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		lastPutRevision = put.Header.Revision
 	}
 
 	deleted, err := client.Delete(ctx, "\x00", clientv3.WithFromKey(), clientv3.WithPrevKV())
 	require.NoError(t, err)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, lastPutRevision+1, deleted.Header.Revision)
 	require.Equal(t, int64(len(keys)), deleted.Deleted)
 	require.Len(t, deleted.PrevKvs, len(keys))
 	gotPrevKeys := make([]string, 0, len(deleted.PrevKvs))
 	for _, kv := range deleted.PrevKvs {
 		gotPrevKeys = append(gotPrevKeys, string(kv.Key))
+		require.Positive(t, kv.ModRevision)
+		require.Less(t, kv.ModRevision, deleted.Header.Revision)
 	}
 	require.Equal(t, keys, gotPrevKeys)
 
 	remaining, err := client.Get(ctx, "a", clientv3.WithFromKey())
 	require.NoError(t, err)
+	require.NotNil(t, remaining.Header)
+	require.Equal(t, deleted.Header.Revision, remaining.Header.Revision)
+	require.Zero(t, remaining.Count)
 	require.Empty(t, remaining.Kvs)
 }
 

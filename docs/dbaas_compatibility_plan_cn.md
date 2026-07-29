@@ -27932,6 +27932,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 KV `Put(WithRequireLeader(ctx), key, value, WithLease(...))`
   成功路径：存在 leader 时 require-leader metadata 必须允许写入 mutation，并产生可被同一
   require-leader watch 观察到的 Put event/revision。
+- A2125 对照 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVDeleteRange`
+  收紧官方 client/v3 KV `Delete("\x00", WithFromKey(), WithPrevKV())` full-keyspace
+  删除外观：命中删除必须精确推进一个 revision，PrevKV 保留删除前 metadata 且其
+  ModRevision 小于 delete header revision；删除后 `Get("a", WithFromKey())` 必须为空，
+  header revision 保持在删除 revision。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
