@@ -33488,9 +33488,11 @@ func TestClientNamespaceNestedTxnGetHistoricalKeysOnlyLimitReturnsLogicalKeys(t 
 	defer cancel()
 	tenantPrefix := "/a1534/namespace-nested-txn-historical-keysonly/tenant/"
 	namespacedKV := namespace.NewKV(client.KV, tenantPrefix)
+	putRevs := make(map[string]int64)
 	for _, key := range []string{"items/00", "items/01", "items/02"} {
-		_, err = namespacedKV.Put(ctx, key, "value-"+key)
+		putResp, err := namespacedKV.Put(ctx, key, "value-"+key)
 		require.NoError(t, err)
+		putRevs[key] = putResp.Header.Revision
 	}
 	historical, err := namespacedKV.Put(ctx, "items/03", "value-items/03")
 	require.NoError(t, err)
@@ -33519,6 +33521,8 @@ func TestClientNamespaceNestedTxnGetHistoricalKeysOnlyLimitReturnsLogicalKeys(t 
 	require.Len(t, txnResp.Responses, 1)
 	nestedTxn := txnResp.Responses[0].GetResponseTxn()
 	require.NotNil(t, nestedTxn)
+	require.NotNil(t, nestedTxn.Header)
+	require.Zero(t, nestedTxn.Header.Revision)
 	require.True(t, nestedTxn.Succeeded)
 	require.Len(t, nestedTxn.Responses, 1)
 	nestedGet := nestedTxn.Responses[0].GetResponseRange()
@@ -33532,6 +33536,11 @@ func TestClientNamespaceNestedTxnGetHistoricalKeysOnlyLimitReturnsLogicalKeys(t 
 		[][]byte{nestedGet.Kvs[0].Key, nestedGet.Kvs[1].Key})
 	require.Equal(t, []byte(nil), nestedGet.Kvs[0].Value)
 	require.Equal(t, []byte(nil), nestedGet.Kvs[1].Value)
+	require.Equal(t, []int64{1, 1}, []int64{nestedGet.Kvs[0].Version, nestedGet.Kvs[1].Version})
+	require.Equal(t, []int64{putRevs["items/00"], putRevs["items/01"]},
+		[]int64{nestedGet.Kvs[0].CreateRevision, nestedGet.Kvs[1].CreateRevision})
+	require.Equal(t, []int64{putRevs["items/00"], putRevs["items/01"]},
+		[]int64{nestedGet.Kvs[0].ModRevision, nestedGet.Kvs[1].ModRevision})
 }
 
 func TestClientNamespaceNestedTxnGetHistoricalSerializableReturnsLogicalKey(t *testing.T) {
