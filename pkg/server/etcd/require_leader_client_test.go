@@ -68,6 +68,18 @@ func TestClientRequireLeaderKVLeaseAndWatch(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, lease.ID, keepAlive.ID)
 	require.Positive(t, keepAlive.TTL)
+	keepAliveStream, err := client.KeepAlive(requireLeaderCtx, lease.ID)
+	require.NoError(t, err)
+	select {
+	case response, ok := <-keepAliveStream:
+		require.True(t, ok)
+		require.NotNil(t, response)
+		require.Equal(t, lease.ID, response.ID)
+		require.Positive(t, response.TTL)
+		require.LessOrEqual(t, response.TTL, lease.TTL)
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for require-leader keepalive stream response: %v", ctx.Err())
+	}
 
 	watch := client.Watch(requireLeaderCtx, key, clientv3.WithCreatedNotify())
 	select {

@@ -27924,6 +27924,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定官方 client/v3 Lease `KeepAliveOnce` 成功响应外观：续租 live lease 必须返回
   well-formed response header、同一 lease ID、正 TTL 且不超过 granted TTL；已绑定 key
   在续租后仍必须保留同一 lease attachment。
+- A2123 对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go:TestLeaseWithRequireLeader`
+  固定官方 client/v3 Lease `KeepAlive(WithRequireLeader(ctx))` 成功路径：存在 leader
+  时 require-leader metadata 不只适用于 unary `KeepAliveOnce`，持续 KeepAlive stream
+  也必须交付同一 lease ID、正 TTL 且不超过 granted TTL 的响应。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
