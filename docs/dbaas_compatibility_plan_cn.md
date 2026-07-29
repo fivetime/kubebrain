@@ -28367,6 +28367,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   时 Target=VALUE 必须直接失败，unknown Result 不得绕过该规则；非 VALUE/unknown
   Target 使用空 `KeyValue{}` 的 compare result zero，unknown Result 成功，unknown
   Target 的 `EQUAL` 成功、`NOT_EQUAL`/`GREATER` 失败，start 前 key 不得污染 compare。
+- A3012 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkTxnRequest -> checkRequestOp -> checkTxnRequest` 递归 admission 校验，固定
+  raw gRPC nested `RequestTxn` 中 empty/nil op、空 compare key、空 Put/Delete key、
+  invalid Range sort 的错误外观：嵌套层错误必须在进入执行前以 upstream 相同
+  gRPC code/message 原样返回，不能被外层 Txn 包装或替换。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户

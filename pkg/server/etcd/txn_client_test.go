@@ -233,6 +233,109 @@ func TestRawGRPCTxnOperationValidationMessages(t *testing.T) {
 	}
 }
 
+func TestRawGRPCTxnNestedOperationValidationMessagesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-operation-validation-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	key := []byte("/a3012/txn-nested-operation-validation")
+	tests := []struct {
+		name        string
+		nested      *etcdserverpb.TxnRequest
+		wantCode    codes.Code
+		wantMessage string
+	}{
+		{
+			name: "nested-success-empty-operation",
+			nested: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{{}},
+			},
+			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key not found",
+		},
+		{
+			name: "nested-success-nil-operation",
+			nested: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{nil},
+			},
+			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key not found",
+		},
+		{
+			name: "nested-compare-empty-key",
+			nested: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Result:      etcdserverpb.Compare_EQUAL,
+					Target:      etcdserverpb.Compare_VERSION,
+					TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+				}},
+			},
+			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
+		},
+		{
+			name: "nested-put-empty-key",
+			nested: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestPut{
+						RequestPut: &etcdserverpb.PutRequest{Value: []byte("value")},
+					},
+				}},
+			},
+			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
+		},
+		{
+			name: "nested-failure-invalid-range-sort",
+			nested: &etcdserverpb.TxnRequest{
+				Failure: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestRange{
+						RequestRange: &etcdserverpb.RangeRequest{Key: key, SortOrder: 99, SortTarget: 99},
+					},
+				}},
+			},
+			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: invalid sort option",
+		},
+		{
+			name: "nested-delete-empty-key",
+			nested: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+						RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{RangeEnd: []byte{0}},
+					},
+				}},
+			},
+			wantCode: codes.InvalidArgument, wantMessage: "etcdserver: key is not provided",
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, callErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{{
+					Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: tt.nested},
+				}},
+			})
+			require.Nil(t, resp)
+			require.EqualError(t, callErr, status.Error(tt.wantCode, tt.wantMessage).Error())
+			require.Equal(t, tt.wantCode, status.Code(callErr))
+			require.Equal(t, tt.wantMessage, status.Convert(callErr).Message())
+		})
+	}
+}
+
 func TestRawGRPCTxnExecutionValidationOrderAndBudget(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
