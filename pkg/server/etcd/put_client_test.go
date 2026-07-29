@@ -89,6 +89,63 @@ func TestClientDoOpPutWithLeaseMatchesEtcd(t *testing.T) {
 	require.Equal(t, []string{key}, leaseClientAttachedKeys(ttl.Keys))
 }
 
+func TestClientDoOpPutUpdateWithPrevKVMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	server.Register(grpcServer)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a2138/do-opput-prevkv/%d", time.Now().UnixNano())
+	create, err := client.Put(ctx, key, "before")
+	require.NoError(t, err)
+
+	opResponse, err := client.Do(ctx, clientv3.OpPut(key, "after", clientv3.WithPrevKV()))
+	require.NoError(t, err)
+	put := opResponse.Put()
+	require.NotNil(t, put)
+	require.NotNil(t, put.Header)
+	require.Equal(t, create.Header.Revision+1, put.Header.Revision)
+	require.NotNil(t, put.PrevKv)
+	require.Equal(t, []byte(key), put.PrevKv.Key)
+	require.Equal(t, []byte("before"), put.PrevKv.Value)
+	require.Equal(t, create.Header.Revision, put.PrevKv.CreateRevision)
+	require.Equal(t, create.Header.Revision, put.PrevKv.ModRevision)
+	require.Equal(t, int64(1), put.PrevKv.Version)
+	require.Zero(t, put.PrevKv.Lease)
+
+	resp, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Equal(t, put.Header.Revision, resp.Header.Revision)
+	require.Len(t, resp.Kvs, 1)
+	kv := resp.Kvs[0]
+	require.Equal(t, []byte(key), kv.Key)
+	require.Equal(t, []byte("after"), kv.Value)
+	require.Equal(t, create.Header.Revision, kv.CreateRevision)
+	require.Equal(t, put.Header.Revision, kv.ModRevision)
+	require.Equal(t, int64(2), kv.Version)
+	require.Zero(t, kv.Lease)
+}
+
 func TestClientPutIgnoreValueIgnoreLeaseAndErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
