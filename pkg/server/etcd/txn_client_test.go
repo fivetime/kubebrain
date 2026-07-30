@@ -27642,6 +27642,429 @@ func TestRawGRPCTxnNestedRangeCountOnlyCrossCreateMaxModMinRevisionLimitIgnoresP
 	require.Equal(t, resp.Header.Revision, final.Kvs[4].ModRevision)
 }
 
+func TestRawGRPCTxnNestedRangeCrossCreateMinModMinRevisionLimitFiltersBeforeLimitMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-range-cross-create-min-mod-min-revision-limit-staged-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3267/txn-nested-range-cross-create-min-mod-min-revision-limit-staged/%d/", time.Now().UnixNano())
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	keyD := []byte(prefix + "d")
+	keyE := []byte(prefix + "e")
+	keyF := []byte(prefix + "f")
+	keyG := []byte(prefix + "g")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("va")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("vb")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyC, Value: []byte("vc")})
+	require.NoError(t, err)
+	seedD, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyD, Value: []byte("vd")})
+	require.NoError(t, err)
+	seedE, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyE, Value: []byte("ve")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyB, Value: []byte("vb2")}),
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyC}),
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyF, Value: []byte("vf")}),
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyG, Value: []byte("vg")}),
+					txnClientRangeOp(&etcdserverpb.RangeRequest{
+						Key:               []byte(prefix),
+						RangeEnd:          []byte(clientv3.GetPrefixRangeEnd(prefix)),
+						MinCreateRevision: seedE.Header.Revision + 1,
+						MinModRevision:    seedE.Header.Revision + 1,
+						Limit:             1,
+						SortOrder:         etcdserverpb.RangeRequest_ASCEND,
+						SortTarget:        etcdserverpb.RangeRequest_KEY,
+					}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seedE.Header.Revision)
+	require.Len(t, resp.Responses, 1)
+
+	nested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.True(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 5)
+
+	updateB := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, updateB)
+	require.NotNil(t, updateB.Header)
+	require.Equal(t, resp.Header.Revision, updateB.Header.Revision)
+	deletedC := nested.Responses[1].GetResponseDeleteRange()
+	require.NotNil(t, deletedC)
+	require.NotNil(t, deletedC.Header)
+	require.Equal(t, resp.Header.Revision, deletedC.Header.Revision)
+	require.Equal(t, int64(1), deletedC.Deleted)
+	putF := nested.Responses[2].GetResponsePut()
+	require.NotNil(t, putF)
+	require.NotNil(t, putF.Header)
+	require.Equal(t, resp.Header.Revision, putF.Header.Revision)
+	putG := nested.Responses[3].GetResponsePut()
+	require.NotNil(t, putG)
+	require.NotNil(t, putG.Header)
+	require.Equal(t, resp.Header.Revision, putG.Header.Revision)
+
+	page := nested.Responses[4].GetResponseRange()
+	require.NotNil(t, page)
+	require.NotNil(t, page.Header)
+	require.Equal(t, resp.Header.Revision, page.Header.Revision)
+	require.Equal(t, int64(6), page.Count)
+	require.True(t, page.More)
+	require.Len(t, page.Kvs, 1)
+	require.Equal(t, keyF, page.Kvs[0].Key)
+	require.Equal(t, []byte("vf"), page.Kvs[0].Value)
+	require.Equal(t, resp.Header.Revision, page.Kvs[0].CreateRevision)
+	require.Equal(t, resp.Header.Revision, page.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), page.Kvs[0].Version)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:        []byte(prefix),
+		RangeEnd:   []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		SortOrder:  etcdserverpb.RangeRequest_ASCEND,
+		SortTarget: etcdserverpb.RangeRequest_KEY,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 6)
+	require.Equal(t, keyA, final.Kvs[0].Key)
+	require.Equal(t, []byte("va"), final.Kvs[0].Value)
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].ModRevision)
+	require.Equal(t, keyB, final.Kvs[1].Key)
+	require.Equal(t, []byte("vb2"), final.Kvs[1].Value)
+	require.Equal(t, seedB.Header.Revision, final.Kvs[1].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[1].ModRevision)
+	require.Equal(t, keyD, final.Kvs[2].Key)
+	require.Equal(t, []byte("vd"), final.Kvs[2].Value)
+	require.Equal(t, seedD.Header.Revision, final.Kvs[2].CreateRevision)
+	require.Equal(t, seedD.Header.Revision, final.Kvs[2].ModRevision)
+	require.Equal(t, keyE, final.Kvs[3].Key)
+	require.Equal(t, []byte("ve"), final.Kvs[3].Value)
+	require.Equal(t, seedE.Header.Revision, final.Kvs[3].CreateRevision)
+	require.Equal(t, seedE.Header.Revision, final.Kvs[3].ModRevision)
+	require.Equal(t, keyF, final.Kvs[4].Key)
+	require.Equal(t, []byte("vf"), final.Kvs[4].Value)
+	require.Equal(t, resp.Header.Revision, final.Kvs[4].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[4].ModRevision)
+	require.Equal(t, keyG, final.Kvs[5].Key)
+	require.Equal(t, []byte("vg"), final.Kvs[5].Value)
+	require.Equal(t, resp.Header.Revision, final.Kvs[5].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[5].ModRevision)
+}
+
+func TestRawGRPCTxnNestedRangeKeysOnlyCrossCreateMinModMinRevisionLimitElidesValuesAfterLimitMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-range-keysonly-cross-create-min-mod-min-revision-limit-staged-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3268/txn-nested-range-keysonly-cross-create-min-mod-min-revision-limit-staged/%d/", time.Now().UnixNano())
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	keyD := []byte(prefix + "d")
+	keyE := []byte(prefix + "e")
+	keyF := []byte(prefix + "f")
+	keyG := []byte(prefix + "g")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("va")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("vb")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyC, Value: []byte("vc")})
+	require.NoError(t, err)
+	seedD, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyD, Value: []byte("vd")})
+	require.NoError(t, err)
+	seedE, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyE, Value: []byte("ve")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyB, Value: []byte("vb2")}),
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyC}),
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyF, Value: []byte("vf")}),
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyG, Value: []byte("vg")}),
+					txnClientRangeOp(&etcdserverpb.RangeRequest{
+						Key:               []byte(prefix),
+						RangeEnd:          []byte(clientv3.GetPrefixRangeEnd(prefix)),
+						MinCreateRevision: seedE.Header.Revision + 1,
+						MinModRevision:    seedE.Header.Revision + 1,
+						Limit:             1,
+						KeysOnly:          true,
+						SortOrder:         etcdserverpb.RangeRequest_ASCEND,
+						SortTarget:        etcdserverpb.RangeRequest_KEY,
+					}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seedE.Header.Revision)
+	require.Len(t, resp.Responses, 1)
+
+	nested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.True(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 5)
+
+	updateB := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, updateB)
+	require.NotNil(t, updateB.Header)
+	require.Equal(t, resp.Header.Revision, updateB.Header.Revision)
+	deletedC := nested.Responses[1].GetResponseDeleteRange()
+	require.NotNil(t, deletedC)
+	require.NotNil(t, deletedC.Header)
+	require.Equal(t, resp.Header.Revision, deletedC.Header.Revision)
+	require.Equal(t, int64(1), deletedC.Deleted)
+	putF := nested.Responses[2].GetResponsePut()
+	require.NotNil(t, putF)
+	require.NotNil(t, putF.Header)
+	require.Equal(t, resp.Header.Revision, putF.Header.Revision)
+	putG := nested.Responses[3].GetResponsePut()
+	require.NotNil(t, putG)
+	require.NotNil(t, putG.Header)
+	require.Equal(t, resp.Header.Revision, putG.Header.Revision)
+
+	page := nested.Responses[4].GetResponseRange()
+	require.NotNil(t, page)
+	require.NotNil(t, page.Header)
+	require.Equal(t, resp.Header.Revision, page.Header.Revision)
+	require.Equal(t, int64(6), page.Count)
+	require.True(t, page.More)
+	require.Len(t, page.Kvs, 1)
+	require.Equal(t, keyF, page.Kvs[0].Key)
+	require.Empty(t, page.Kvs[0].Value)
+	require.Equal(t, resp.Header.Revision, page.Kvs[0].CreateRevision)
+	require.Equal(t, resp.Header.Revision, page.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), page.Kvs[0].Version)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:        []byte(prefix),
+		RangeEnd:   []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		SortOrder:  etcdserverpb.RangeRequest_ASCEND,
+		SortTarget: etcdserverpb.RangeRequest_KEY,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 6)
+	require.Equal(t, keyA, final.Kvs[0].Key)
+	require.Equal(t, []byte("va"), final.Kvs[0].Value)
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].ModRevision)
+	require.Equal(t, keyB, final.Kvs[1].Key)
+	require.Equal(t, []byte("vb2"), final.Kvs[1].Value)
+	require.Equal(t, seedB.Header.Revision, final.Kvs[1].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[1].ModRevision)
+	require.Equal(t, keyD, final.Kvs[2].Key)
+	require.Equal(t, []byte("vd"), final.Kvs[2].Value)
+	require.Equal(t, seedD.Header.Revision, final.Kvs[2].CreateRevision)
+	require.Equal(t, seedD.Header.Revision, final.Kvs[2].ModRevision)
+	require.Equal(t, keyE, final.Kvs[3].Key)
+	require.Equal(t, []byte("ve"), final.Kvs[3].Value)
+	require.Equal(t, seedE.Header.Revision, final.Kvs[3].CreateRevision)
+	require.Equal(t, seedE.Header.Revision, final.Kvs[3].ModRevision)
+	require.Equal(t, keyF, final.Kvs[4].Key)
+	require.Equal(t, []byte("vf"), final.Kvs[4].Value)
+	require.Equal(t, resp.Header.Revision, final.Kvs[4].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[4].ModRevision)
+	require.Equal(t, keyG, final.Kvs[5].Key)
+	require.Equal(t, []byte("vg"), final.Kvs[5].Value)
+	require.Equal(t, resp.Header.Revision, final.Kvs[5].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[5].ModRevision)
+}
+
+func TestRawGRPCTxnNestedRangeCountOnlyCrossCreateMinModMinRevisionLimitIgnoresPayloadMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-range-countonly-cross-create-min-mod-min-revision-limit-staged-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3269/txn-nested-range-countonly-cross-create-min-mod-min-revision-limit-staged/%d/", time.Now().UnixNano())
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	keyD := []byte(prefix + "d")
+	keyE := []byte(prefix + "e")
+	keyF := []byte(prefix + "f")
+	keyG := []byte(prefix + "g")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("va")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("vb")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyC, Value: []byte("vc")})
+	require.NoError(t, err)
+	seedD, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyD, Value: []byte("vd")})
+	require.NoError(t, err)
+	seedE, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyE, Value: []byte("ve")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyB, Value: []byte("vb2")}),
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyC}),
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyF, Value: []byte("vf")}),
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyG, Value: []byte("vg")}),
+					txnClientRangeOp(&etcdserverpb.RangeRequest{
+						Key:               []byte(prefix),
+						RangeEnd:          []byte(clientv3.GetPrefixRangeEnd(prefix)),
+						MinCreateRevision: seedE.Header.Revision + 1,
+						MinModRevision:    seedE.Header.Revision + 1,
+						Limit:             1,
+						CountOnly:         true,
+						SortOrder:         etcdserverpb.RangeRequest_ASCEND,
+						SortTarget:        etcdserverpb.RangeRequest_KEY,
+					}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seedE.Header.Revision)
+	require.Len(t, resp.Responses, 1)
+
+	nested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.True(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 5)
+
+	updateB := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, updateB)
+	require.NotNil(t, updateB.Header)
+	require.Equal(t, resp.Header.Revision, updateB.Header.Revision)
+	deletedC := nested.Responses[1].GetResponseDeleteRange()
+	require.NotNil(t, deletedC)
+	require.NotNil(t, deletedC.Header)
+	require.Equal(t, resp.Header.Revision, deletedC.Header.Revision)
+	require.Equal(t, int64(1), deletedC.Deleted)
+	putF := nested.Responses[2].GetResponsePut()
+	require.NotNil(t, putF)
+	require.NotNil(t, putF.Header)
+	require.Equal(t, resp.Header.Revision, putF.Header.Revision)
+	putG := nested.Responses[3].GetResponsePut()
+	require.NotNil(t, putG)
+	require.NotNil(t, putG.Header)
+	require.Equal(t, resp.Header.Revision, putG.Header.Revision)
+
+	counted := nested.Responses[4].GetResponseRange()
+	require.NotNil(t, counted)
+	require.NotNil(t, counted.Header)
+	require.Equal(t, resp.Header.Revision, counted.Header.Revision)
+	require.Equal(t, int64(6), counted.Count)
+	require.False(t, counted.More)
+	require.Empty(t, counted.Kvs)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key:        []byte(prefix),
+		RangeEnd:   []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		SortOrder:  etcdserverpb.RangeRequest_ASCEND,
+		SortTarget: etcdserverpb.RangeRequest_KEY,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 6)
+	require.Equal(t, keyA, final.Kvs[0].Key)
+	require.Equal(t, []byte("va"), final.Kvs[0].Value)
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].ModRevision)
+	require.Equal(t, keyB, final.Kvs[1].Key)
+	require.Equal(t, []byte("vb2"), final.Kvs[1].Value)
+	require.Equal(t, seedB.Header.Revision, final.Kvs[1].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[1].ModRevision)
+	require.Equal(t, keyD, final.Kvs[2].Key)
+	require.Equal(t, []byte("vd"), final.Kvs[2].Value)
+	require.Equal(t, seedD.Header.Revision, final.Kvs[2].CreateRevision)
+	require.Equal(t, seedD.Header.Revision, final.Kvs[2].ModRevision)
+	require.Equal(t, keyE, final.Kvs[3].Key)
+	require.Equal(t, []byte("ve"), final.Kvs[3].Value)
+	require.Equal(t, seedE.Header.Revision, final.Kvs[3].CreateRevision)
+	require.Equal(t, seedE.Header.Revision, final.Kvs[3].ModRevision)
+	require.Equal(t, keyF, final.Kvs[4].Key)
+	require.Equal(t, []byte("vf"), final.Kvs[4].Value)
+	require.Equal(t, resp.Header.Revision, final.Kvs[4].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[4].ModRevision)
+	require.Equal(t, keyG, final.Kvs[5].Key)
+	require.Equal(t, []byte("vg"), final.Kvs[5].Value)
+	require.Equal(t, resp.Header.Revision, final.Kvs[5].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[5].ModRevision)
+}
+
 func TestRawGRPCTxnNestedRangeContradictoryModRevisionFiltersPreserveCountMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
