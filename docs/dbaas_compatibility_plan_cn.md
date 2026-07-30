@@ -30261,6 +30261,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrGRPCInvalidSortOption)` 成立且不得匹配
   `rpctypes.ErrGRPCEmptyKey`；Success Range 与 Failure Put 均不得执行，最终 keyspace、
   create revision 和 header revision 必须保持 seed `a/b/c` 后的状态。
+- A3319 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkTxnRequest` validation 顺序，固定 raw gRPC nested `RequestTxn` 的 Success
+  request validation 优先于 Failure：当 Success 声明
+  `Range{Key:b,SortOrder:99,SortTarget:99}`，Failure 先声明
+  `Put{Key:b,Value:txn-b,PrevKv:true}`、再声明
+  `DeleteRange{Key:nil,RangeEnd:{0},PrevKv:true}` 时，整个 Txn 必须在执行前返回
+  Success 侧 invalid sort，而不是 Failure 侧 empty key：`InvalidArgument`、
+  message=`etcdserver: invalid sort option`、`errors.Is(..., rpctypes.ErrGRPCInvalidSortOption)`
+  成立且不得匹配 `rpctypes.ErrGRPCEmptyKey`；Failure Put/Delete 均不得执行，最终
+  keyspace、create revision 和 header revision 必须保持 seed `a/b/c` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
