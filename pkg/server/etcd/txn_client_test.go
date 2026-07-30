@@ -6442,6 +6442,68 @@ func TestRawGRPCTxnTopLevelTooManyOpsRejectsBeforeSuccessPutMatchesEtcd(t *testi
 	require.Equal(t, seedC.Header.Revision, final.Kvs[2].CreateRevision)
 }
 
+func TestRawGRPCTxnTopLevelFailureTooManyOpsRejectsBeforeSuccessPutMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-top-level-failure-too-many-ops-before-success-put-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+		fmt.Sprintf("/a3322/txn-top-level-failure-too-many-ops-before-success-put/%d/", time.Now().UnixNano())
+	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("seed-a")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("seed-b")})
+	require.NoError(t, err)
+	seedC, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyC, Value: []byte("seed-c")})
+	require.NoError(t, err)
+
+	failure := make([]*etcdserverpb.RequestOp, 0, defaultMaxTxnOps+1)
+	for i := 0; i < defaultMaxTxnOps+1; i++ {
+		failure = append(failure, &etcdserverpb.RequestOp{})
+	}
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: keyB, Value: []byte("txn-b"), PrevKv: true}),
+		},
+		Failure: failure,
+	})
+	require.Nil(t, resp)
+	requireRawGRPCTxnError(t, err, codes.InvalidArgument, "etcdserver: too many operations in txn request", rpctypes.ErrGRPCTooManyOps)
+	require.NotErrorIs(t, err, rpctypes.ErrGRPCKeyNotFound)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, seedC.Header.Revision, final.Header.Revision)
+	require.Equal(t, []txnClientKV{
+		{Key: "a", Value: "seed-a", Version: 1},
+		{Key: "b", Value: "seed-b", Version: 1},
+		{Key: "c", Value: "seed-c", Version: 1},
+	}, txnClientKVs(final.Kvs, prefix, 0))
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, seedB.Header.Revision, final.Kvs[1].CreateRevision)
+	require.Equal(t, seedC.Header.Revision, final.Kvs[2].CreateRevision)
+}
+
 func TestRawGRPCTxnNestedFromKeyDeleteThenRecreatePrevKVUsesStagedViewMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
