@@ -30596,6 +30596,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrGRPCEmptyKey)` 成立，且不得退化为 invalid-sort；selected
   Success put 不执行，最终 keyspace、create revision 和 header revision 必须保持 seed
   `a` 后的状态。
+- A3356 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `checkTxnRequest`
+  与 `checkRangeRequest` 静态 validation 顺序，固定 raw gRPC nested `RequestTxn`：
+  compare 明确为 true 并选中 `Success` 中的
+  `Range{Key:nil,SortOrder:99,SortTarget:99}` 时，仍必须先被 empty key 静态错误拒绝，
+  返回 raw `InvalidArgument`、message=`etcdserver: key is not provided`、
+  `errors.Is(..., rpctypes.ErrGRPCEmptyKey)` 成立，且不得退化为 invalid-sort；未选中
+  Failure put 不执行，最终 keyspace、create revision 和 header revision 必须保持 seed
+  `a` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
