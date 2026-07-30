@@ -320,7 +320,7 @@ func (e *stagedTxnExecutor) rangeResponse(r *etcdserverpb.RangeRequest) (*etcdse
 		return nil, err
 	}
 	resp := &etcdserverpb.RangeResponse{Header: txnHeader(e.visibleRevision()), Kvs: kvs, Count: int64(len(kvs))}
-	if needsNonKeyNoneLookahead(r) && r.Limit < math.MaxInt64 {
+	if !needsFullRangeMaterialization(r) && needsNonKeyNoneLookahead(r) && r.Limit < math.MaxInt64 {
 		candidateLimit := r.Limit + 1
 		if int64(len(resp.Kvs)) > candidateLimit {
 			resp.Kvs = resp.Kvs[:int(candidateLimit)]
