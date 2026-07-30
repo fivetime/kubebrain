@@ -28462,6 +28462,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同一 nested 分支内更新/新建后 mod revision 超过上界的 keys，且不得返回已删除 key；
   `Count` 仍保持过滤前 live range 总数，所有 leaf response header 与最终 KV metadata
   必须保持 etcd 外观。
+- A3027 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 revision filter 与 limit
+  整形顺序，固定 raw gRPC nested `RequestTxn` 内先更新旧 key、删除旧 key、新建 key，
+  再执行矛盾 `Range{MinModRevision: seedC+1, MaxModRevision: seedC, Limit:1}`：
+  Range 必须先以同一 nested 分支 staged 后的 live keyset 计算 `Count`，再应用矛盾
+  filter 得到空 `Kvs`，且 `More=false`；所有 leaf response header 与最终 KV metadata
+  必须保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
