@@ -6984,6 +6984,107 @@ func TestRawGRPCTxnSiblingNestedPutThenDeleteUsesStagedViewMatchesEtcd(t *testin
 	require.Equal(t, seedC.Header.Revision, final.Kvs[1].CreateRevision)
 }
 
+func TestRawGRPCTxnSiblingNestedPutThenPointDeleteUsesStagedViewMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-sibling-nested-put-then-point-delete-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+		fmt.Sprintf("/a3330/txn-sibling-nested-put-then-point-delete/%d/", time.Now().UnixNano())
+	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("seed-a")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("seed-b")})
+	require.NoError(t, err)
+	seedC, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyC, Value: []byte("seed-c")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyB, Value: []byte("nested-b"), PrevKv: true}),
+				},
+			}}},
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyB, PrevKv: true}),
+				},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seedC.Header.Revision)
+	require.Len(t, resp.Responses, 2)
+
+	putNested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, putNested)
+	require.NotNil(t, putNested.Header)
+	require.Zero(t, putNested.Header.Revision)
+	require.True(t, putNested.Succeeded)
+	require.Len(t, putNested.Responses, 1)
+	put := putNested.Responses[0].GetResponsePut()
+	require.NotNil(t, put)
+	require.NotNil(t, put.Header)
+	require.Equal(t, resp.Header.Revision, put.Header.Revision)
+	require.NotNil(t, put.PrevKv)
+	require.Equal(t, keyB, put.PrevKv.Key)
+	require.Equal(t, []byte("seed-b"), put.PrevKv.Value)
+	require.Equal(t, seedB.Header.Revision, put.PrevKv.CreateRevision)
+	require.Equal(t, seedB.Header.Revision, put.PrevKv.ModRevision)
+	require.Equal(t, int64(1), put.PrevKv.Version)
+
+	deleteNested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, deleteNested)
+	require.NotNil(t, deleteNested.Header)
+	require.Zero(t, deleteNested.Header.Revision)
+	require.True(t, deleteNested.Succeeded)
+	require.Len(t, deleteNested.Responses, 1)
+	deleted := deleteNested.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, resp.Header.Revision, deleted.Header.Revision)
+	require.Equal(t, int64(1), deleted.Deleted)
+	require.Equal(t, []txnClientKV{
+		{Key: "b", Value: "nested-b", Version: 2, ModifiedInTxn: true},
+	}, txnClientKVs(deleted.PrevKvs, prefix, resp.Header.Revision))
+	require.Len(t, deleted.PrevKvs, 1)
+	require.Equal(t, seedB.Header.Revision, deleted.PrevKvs[0].CreateRevision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Equal(t, []txnClientKV{
+		{Key: "a", Value: "seed-a", Version: 1},
+		{Key: "c", Value: "seed-c", Version: 1},
+	}, txnClientKVs(final.Kvs, prefix, resp.Header.Revision))
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, seedC.Header.Revision, final.Kvs[1].CreateRevision)
+}
+
 func TestRawGRPCTxnNestedFromKeyDeleteThenRecreatePrevKVUsesStagedViewMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

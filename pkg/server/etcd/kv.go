@@ -1326,7 +1326,16 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 			}
 			return resp, err
 		}
-		return s.executeTxnWithCursor(ctx, txn, &txnPathCursor{paths: paths})
+		// A valid shape can still be ineligible for the atomic flattening fast
+		// path, for example sibling nested Put(b) followed by point Delete(b).
+		// Falling back to the legacy sequential executor would expose nested txn
+		// headers and multiple write revisions; staged execution preserves etcd's
+		// single MVCC write transaction semantics.
+		resp, err = s.executeStagedGenericTxn(ctx, txn, paths, guards)
+		if errors.Is(err, backend.ErrTxnGuardConflict) {
+			continue
+		}
+		return resp, err
 	}
 }
 
