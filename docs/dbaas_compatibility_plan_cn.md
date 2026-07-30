@@ -28935,6 +28935,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持过滤前 live range 总数，返回满足 create revision 下界且 version 最低的新建
   key，`More=true`，所有 leaf response header 与最终 KV metadata 必须保持 etcd
   外观。
+- A3168 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 `KeysOnly` response
+  装配顺序、create revision filter、VERSION 显式升序 sort 与 limit 装配顺序，固定
+  raw gRPC nested `RequestTxn` 外先写入旧 key、写入过滤边界 key、再写入并预更新
+  两个仍满足 create revision 下界的 keys，nested 内继续把其中一个 key 更新到
+  version=3、删除边界 key、新建 version=1 key，使过滤后版本分别为 3/2/1，然后
+  执行 `Range{KeysOnly:true, MinCreateRevision: seedC+1, SortTarget:VERSION,
+  SortOrder:ASCEND, Limit:1}`：Range 必须先读取同一 nested 分支 staged 后的完整
+  live keyset 并应用 `MinCreateRevision`，再按过滤后的 version 升序排序并按 limit
+  截断，最后清空返回 value；`Count` 仍保持过滤前 live range 总数，返回满足 create
+  revision 下界且 version 最低的新建 key，`More=true`，所有 leaf response header
+  与最终 KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
