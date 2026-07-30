@@ -30171,6 +30171,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   version=2、mod revision 为本次 txn revision 且 lease 仍为原 lease ID 的 `b` 以及
   无 lease 的 seed `c/d`，Range 与最终 keyspace 只保留 start 前 key `a`，所有
   nested/leaf response header 与 KV metadata 必须保持 etcd 外观。
+- A3308 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 Put request
+  validation 递归校验，固定 raw gRPC nested `RequestTxn` 中
+  `Put{Key:b,Value:invalid,IgnoreValue:true,PrevKv:true}` 后接 from-key Delete 时必须在
+  执行前被拒绝：返回 `InvalidArgument`、message=`etcdserver: value is provided`、
+  `errors.Is(..., rpctypes.ErrGRPCValueProvided)` 成立；nested Put 与后续
+  `DeleteRange{Key:b,RangeEnd:{0},PrevKv:true}` 均不得执行，最终 keyspace 和 header
+  revision 必须保持 seed `a/b/c` 后的状态，防止 DBaaS 只在顶层校验 ignore option
+  或错误地执行 nested 后续 mutation。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
