@@ -30349,6 +30349,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   message=`etcdserver: duplicate key given in txn request`、
   `errors.Is(..., rpctypes.ErrGRPCDuplicateKey)` 成立；两个 nested op 均不得执行，最终
   keyspace、create revision 和 header revision 必须保持 seed `a/b/c` 后的状态。
+- A3329 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkIntervals` 合并顺序与 `/root/etcd/server/etcdserver/txn/delete.go` 的执行阶段
+  staged view，固定 raw gRPC Txn 在 selected Success 中声明两个 sibling nested
+  `RequestTxn`：第一个 selected Success 执行 `Put{Key:b,Value:nested-b,PrevKv:true}`，
+  第二个 selected Success 执行 `DeleteRange{Key:b,RangeEnd:c,PrevKv:true}` 时，该反向
+  Put→Delete 顺序必须合法，不得被 duplicate-key admission 拒绝；第二个 nested
+  Delete 的 PrevKv 必须看到第一个 nested Put 的 staged update（value=`nested-b`、
+  version=2、create revision 保持 seed b、mod revision 为本次 txn revision），最终
+  keyspace 只保留 `a/c`，所有 nested/leaf response header 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
