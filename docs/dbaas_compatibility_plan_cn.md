@@ -30024,6 +30024,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Success/Failure 分支都删除同一 `[b,d)` range 且请求 PrevKv 时必须合法；实际选中
   Failure Delete 只返回并删除 seed `b/c`，未选 Success Delete 不执行，nested response
   header、leaf Delete header、PrevKvs 顺序与最终 keyspace 必须保持 etcd 外观。
+- A3290 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 允许 repeated overlapping
+  deletes 的校验语义与 `/root/etcd/server/etcdserver/txn/delete.go` 的执行阶段
+  `PrevKv` 读视图，固定 raw gRPC nested `RequestTxn` 中连续执行
+  `DeleteRange{Key:b,RangeEnd:d,PrevKv:true}` 与 `DeleteRange{Key:c,PrevKv:true}`：
+  第一笔必须删除并返回 seed `b/c` PrevKvs，第二笔在同一 txnWrite staged view 下为
+  no-op、`Deleted=0`、空 `PrevKvs`，两笔 leaf header、后续 Range 与最终 keyspace
+  必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
