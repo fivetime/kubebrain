@@ -30562,6 +30562,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成立，且不得退化为 lease-provided、lease-not-found 或 key-not-found；selected Success
   put 不执行，最终 keyspace、create revision 和 header revision 必须保持 seed `a`
   后的状态。
+- A3352 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `checkTxnRequest`
+  API 层静态 validation 顺序，固定 raw gRPC nested `RequestTxn`：同一 child then/else
+  同 key put 的 interval admission 互斥例外仍成立；当 compare 明确为 false 并选中
+  `Failure` 中的
+  `Put{Key:b,Value:invalid,Lease:MaxInt64,IgnoreValue:true,IgnoreLease:true,PrevKv:true}`
+  时，也必须先被 `IgnoreValue` 携带 value 的静态错误拒绝，返回 raw `InvalidArgument`、
+  message=`etcdserver: value is provided`、`errors.Is(..., rpctypes.ErrGRPCValueProvided)`
+  成立，且不得退化为 lease-provided、lease-not-found 或 key-not-found；未选中 Success
+  put 不执行，最终 keyspace、create revision 和 header revision 必须保持 seed `a`
+  后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

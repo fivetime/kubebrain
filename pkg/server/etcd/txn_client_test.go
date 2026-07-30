@@ -8468,6 +8468,68 @@ func TestRawGRPCTxnNestedUnselectedValueBadLeaseIgnoreValueLeaseRejectsValueFirs
 	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
 }
 
+func TestRawGRPCTxnNestedSelectedValueBadLeaseIgnoreValueLeaseRejectsValueFirstMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-selected-value-bad-lease-ignore-value-lease-rejects-value-first-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+		fmt.Sprintf("/a3352/txn-nested-selected-value-bad-lease-ignore-value-lease-rejects-value-first/%d/", time.Now().UnixNano())
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("seed-a")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(keyA, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyB, Value: []byte("unselected-b"), PrevKv: true}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{
+						Key: keyB, Value: []byte("invalid"), Lease: math.MaxInt64,
+						IgnoreValue: true, IgnoreLease: true, PrevKv: true,
+					}),
+				},
+			}},
+		}},
+	})
+	require.Nil(t, resp)
+	requireRawGRPCTxnError(t, err, codes.InvalidArgument, "etcdserver: value is provided", rpctypes.ErrGRPCValueProvided)
+	require.NotErrorIs(t, err, rpctypes.ErrGRPCLeaseProvided)
+	require.NotErrorIs(t, err, rpctypes.ErrGRPCLeaseNotFound)
+	require.NotErrorIs(t, err, rpctypes.ErrGRPCKeyNotFound)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, seedA.Header.Revision, final.Header.Revision)
+	require.Equal(t, []txnClientKV{
+		{Key: "a", Value: "seed-a", Version: 1},
+	}, txnClientKVs(final.Kvs, prefix, 0))
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
+}
+
 func TestRawGRPCTxnNestedFromKeyDeleteThenRecreatePrevKVUsesStagedViewMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
