@@ -30159,6 +30159,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   txn revision 且 lease 仍为原 lease ID 的 `b` 以及无 lease 的 seed `c/d`，Range 与
   最终 keyspace 只保留 start 前 key `a`，所有 nested/leaf response header 与 KV
   metadata 必须保持 etcd 外观。
+- A3307 对照 `/root/etcd/server/etcdserver/txn/put.go` 的 `IgnoreValue`+
+  `IgnoreLease`/`PrevKv` 执行阶段读视图、`/root/etcd/server/storage/mvcc/kvstore_txn.go`
+  的 put create/version 继承规则与 `/root/etcd/server/etcdserver/txn/delete.go` 的
+  from-key staged view，固定 raw gRPC nested `RequestTxn` 中 seed `b` 带 lease，
+  执行 `Put{Key:b,IgnoreValue:true,IgnoreLease:true,PrevKv:true}` 后接
+  `DeleteRange{Key:b,RangeEnd:{0},PrevKv:true}`：Put response 的 PrevKv 必须返回旧
+  leased `b`，且该合法请求不能提供 Value/Lease 字段；Put 写入必须同时沿用旧 value
+  `seed-b` 与旧 lease 并递增 version；
+  后续 Delete PrevKvs 必须基于同一 txnWrite staged view 返回 value=`seed-b`、
+  version=2、mod revision 为本次 txn revision 且 lease 仍为原 lease ID 的 `b` 以及
+  无 lease 的 seed `c/d`，Range 与最终 keyspace 只保留 start 前 key `a`，所有
+  nested/leaf response header 与 KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

@@ -5440,6 +5440,113 @@ func TestRawGRPCTxnNestedIgnoreLeasePutThenFromKeyDeletePrevKVUsesStagedViewMatc
 	require.Equal(t, txnClientKVs(ranged.Kvs, prefix, resp.Header.Revision), txnClientKVs(final.Kvs, prefix, resp.Header.Revision))
 }
 
+func TestRawGRPCTxnNestedIgnoreValueLeasePutThenFromKeyDeletePrevKVUsesStagedViewMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-ignore-value-lease-put-then-from-key-delete-prev-kv-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	grant, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: grant.ID})
+	})
+
+	prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+		fmt.Sprintf("/a3307/txn-nested-ignore-value-lease-put-then-from-key-delete-prev-kv/%d/", time.Now().UnixNano())
+	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	keyD := []byte(prefix + "d")
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("seed-a")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("seed-b"), Lease: grant.ID})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyC, Value: []byte("seed-c")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyD, Value: []byte("seed-d")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: keyB, IgnoreValue: true, IgnoreLease: true, PrevKv: true}),
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyB, RangeEnd: []byte{0}, PrevKv: true}),
+					txnClientRangeOp(&etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end}),
+				},
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Len(t, resp.Responses, 1)
+
+	nested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.True(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 3)
+
+	put := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, put)
+	require.NotNil(t, put.Header)
+	require.Equal(t, resp.Header.Revision, put.Header.Revision)
+	require.NotNil(t, put.PrevKv)
+	require.Equal(t, []txnClientKV{{Key: "b", Value: "seed-b", Version: 1}}, txnClientKVs([]*mvccpb.KeyValue{put.PrevKv}, prefix, resp.Header.Revision))
+	require.Equal(t, grant.ID, put.PrevKv.Lease)
+
+	deleted := nested.Responses[1].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, resp.Header.Revision, deleted.Header.Revision)
+	require.Equal(t, int64(3), deleted.Deleted)
+	require.Len(t, deleted.PrevKvs, 3)
+	require.Equal(t, []txnClientKV{
+		{Key: "b", Value: "seed-b", Version: 2, ModifiedInTxn: true},
+		{Key: "c", Value: "seed-c", Version: 1},
+		{Key: "d", Value: "seed-d", Version: 1},
+	}, txnClientKVs(deleted.PrevKvs, prefix, resp.Header.Revision))
+	require.Equal(t, grant.ID, deleted.PrevKvs[0].Lease)
+	require.Zero(t, deleted.PrevKvs[1].Lease)
+	require.Zero(t, deleted.PrevKvs[2].Lease)
+
+	ranged := nested.Responses[2].GetResponseRange()
+	require.NotNil(t, ranged)
+	require.NotNil(t, ranged.Header)
+	require.Equal(t, resp.Header.Revision, ranged.Header.Revision)
+	require.Equal(t, []txnClientKV{{Key: "a", Value: "seed-a", Version: 1}}, txnClientKVs(ranged.Kvs, prefix, resp.Header.Revision))
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Equal(t, txnClientKVs(ranged.Kvs, prefix, resp.Header.Revision), txnClientKVs(final.Kvs, prefix, resp.Header.Revision))
+}
+
 func TestRawGRPCTxnNestedFromKeyDeleteThenRecreatePrevKVUsesStagedViewMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
