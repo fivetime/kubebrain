@@ -1956,6 +1956,262 @@ func TestRawGRPCTxnNestedResponseHeadersMatchEtcd(t *testing.T) {
 	require.GreaterOrEqual(t, final.Header.Revision, elseResp.Header.Revision)
 }
 
+func TestRawGRPCTxnNestedCompareDoesNotSeePriorSiblingStagedPutMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-compare-does-not-see-prior-sibling-staged-put-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3273/txn-nested-compare-does-not-see-prior-sibling-staged-put/%d/", time.Now().UnixNano())
+	key := []byte(prefix + "key")
+	failKey := []byte(prefix + "failure")
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("staged")}),
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(key, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientRangeOp(&etcdserverpb.RangeRequest{Key: key}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: failKey, Value: []byte("missed-staged-put")}),
+				},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Len(t, resp.Responses, 2)
+
+	put := resp.Responses[0].GetResponsePut()
+	require.NotNil(t, put)
+	require.NotNil(t, put.Header)
+	require.Equal(t, resp.Header.Revision, put.Header.Revision)
+
+	nested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.False(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 1)
+	failPut := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, failPut)
+	require.NotNil(t, failPut.Header)
+	require.Equal(t, resp.Header.Revision, failPut.Header.Revision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 2)
+	finalByKey := make(map[string]*mvccpb.KeyValue, len(final.Kvs))
+	for _, kv := range final.Kvs {
+		finalByKey[string(kv.Key)] = kv
+	}
+	staged := finalByKey[string(key)]
+	require.NotNil(t, staged)
+	require.Equal(t, []byte("staged"), staged.Value)
+	require.Equal(t, resp.Header.Revision, staged.CreateRevision)
+	require.Equal(t, resp.Header.Revision, staged.ModRevision)
+	require.Equal(t, int64(1), staged.Version)
+	failed := finalByKey[string(failKey)]
+	require.NotNil(t, failed)
+	require.Equal(t, []byte("missed-staged-put"), failed.Value)
+	require.Equal(t, resp.Header.Revision, failed.CreateRevision)
+	require.Equal(t, resp.Header.Revision, failed.ModRevision)
+	require.Equal(t, int64(1), failed.Version)
+}
+
+func TestRawGRPCTxnNestedCompareDoesNotSeePriorSiblingStagedUpdateMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-compare-does-not-see-prior-sibling-staged-update-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3274/txn-nested-compare-does-not-see-prior-sibling-staged-update/%d/", time.Now().UnixNano())
+	key := []byte(prefix + "key")
+	failKey := []byte(prefix + "failure")
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("updated")}),
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientValueCompare(key, nil, etcdserverpb.Compare_EQUAL, "updated"),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientRangeOp(&etcdserverpb.RangeRequest{Key: key}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: failKey, Value: []byte("missed-staged-update")}),
+				},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seed.Header.Revision)
+	require.Len(t, resp.Responses, 2)
+
+	put := resp.Responses[0].GetResponsePut()
+	require.NotNil(t, put)
+	require.NotNil(t, put.Header)
+	require.Equal(t, resp.Header.Revision, put.Header.Revision)
+
+	nested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.False(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 1)
+	failPut := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, failPut)
+	require.NotNil(t, failPut.Header)
+	require.Equal(t, resp.Header.Revision, failPut.Header.Revision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 2)
+	finalByKey := make(map[string]*mvccpb.KeyValue, len(final.Kvs))
+	for _, kv := range final.Kvs {
+		finalByKey[string(kv.Key)] = kv
+	}
+	updated := finalByKey[string(key)]
+	require.NotNil(t, updated)
+	require.Equal(t, []byte("updated"), updated.Value)
+	require.Equal(t, seed.Header.Revision, updated.CreateRevision)
+	require.Equal(t, resp.Header.Revision, updated.ModRevision)
+	require.Equal(t, int64(2), updated.Version)
+	failed := finalByKey[string(failKey)]
+	require.NotNil(t, failed)
+	require.Equal(t, []byte("missed-staged-update"), failed.Value)
+	require.Equal(t, resp.Header.Revision, failed.CreateRevision)
+	require.Equal(t, resp.Header.Revision, failed.ModRevision)
+	require.Equal(t, int64(1), failed.Version)
+}
+
+func TestRawGRPCTxnNestedCompareDoesNotSeePriorSiblingStagedDeleteMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-compare-does-not-see-prior-sibling-staged-delete-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3275/txn-nested-compare-does-not-see-prior-sibling-staged-delete/%d/", time.Now().UnixNano())
+	key := []byte(prefix + "key")
+	marker := []byte(prefix + "deleted")
+	failKey := []byte(prefix + "failure")
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: key}),
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(key, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: marker, Value: []byte("saw-delete")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: failKey, Value: []byte("missed-staged-delete")}),
+				},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seed.Header.Revision)
+	require.Len(t, resp.Responses, 2)
+
+	deleted := resp.Responses[0].GetResponseDeleteRange()
+	require.NotNil(t, deleted)
+	require.NotNil(t, deleted.Header)
+	require.Equal(t, resp.Header.Revision, deleted.Header.Revision)
+	require.Equal(t, int64(1), deleted.Deleted)
+
+	nested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.False(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 1)
+	failPut := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, failPut)
+	require.NotNil(t, failPut.Header)
+	require.Equal(t, resp.Header.Revision, failPut.Header.Revision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 1)
+	require.Equal(t, failKey, final.Kvs[0].Key)
+	require.Equal(t, []byte("missed-staged-delete"), final.Kvs[0].Value)
+	require.Equal(t, resp.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, resp.Header.Revision, final.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), final.Kvs[0].Version)
+	require.NotEqual(t, marker, final.Kvs[0].Key)
+}
+
 func TestRawGRPCTxnNestedPutPrevKVResponseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

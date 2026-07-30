@@ -29926,6 +29926,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key 升序与 limit 截断，只返回同一 nested 分支 staged 后 live range 的完整 `Count`、
   空 `Kvs`、`More=false`；所有 leaf response header 与最终 KV metadata 必须保持 etcd
   外观。
+- A3273 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 compare path 预计算语义，固定
+  raw gRPC top-level `Txn` 的 success 分支先 Put 一个缺失 key，再执行后续 nested
+  `RequestTxn{Compare: Version(key)==1}`：nested compare 不读取同一 parent Txn 中前序
+  sibling staged Put，必须基于执行前 ReadView 进入 failure 分支；前序 Put 与 nested
+  failure Put 仍在同一事务 revision 生效，所有 leaf response header、create/mod
+  revision 和最终 KV metadata 必须保持 etcd 外观。
+- A3274 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 compare path 预计算语义，固定
+  raw gRPC top-level `Txn` 的 success 分支先更新一个已存在 key，再执行后续 nested
+  `RequestTxn{Compare: Value(key)=="updated"}`：nested compare 不读取同一 parent Txn 中
+  前序 sibling staged update，必须基于执行前 ReadView 进入 failure 分支；前序 update
+  与 nested failure Put 仍在同一事务 revision 生效，旧 create revision、当前事务 mod
+  revision、递增 version、所有 leaf response header 与最终 KV metadata 必须保持 etcd
+  外观。
+- A3275 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 compare path 预计算语义，固定
+  raw gRPC top-level `Txn` 的 success 分支先删除一个已存在 key，再执行后续 nested
+  `RequestTxn{Compare: Version(key)==0}`：nested compare 不读取同一 parent Txn 中前序
+  sibling staged delete，必须基于执行前 ReadView 看到旧版本并进入 failure 分支；被删除
+  key 与 success marker 不得出现在最终 live range，仅 failure marker 在当前事务
+  revision 生效，所有 leaf response header 与最终 KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
