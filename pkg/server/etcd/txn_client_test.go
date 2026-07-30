@@ -5734,6 +5734,68 @@ func TestRawGRPCTxnNestedIgnoreValueLeaseWithValueLeaseRejectsValueFirstMatchesE
 	require.Equal(t, seedC.Header.Revision, final.Kvs[2].CreateRevision)
 }
 
+func TestRawGRPCTxnNestedPutEmptyKeyRejectsBeforeIgnoreValueMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-put-empty-key-rejects-before-ignore-value-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+		fmt.Sprintf("/a3311/txn-nested-put-empty-key-rejects-before-ignore-value/%d/", time.Now().UnixNano())
+	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	keyC := []byte(prefix + "c")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("seed-a")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("seed-b")})
+	require.NoError(t, err)
+	seedC, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyC, Value: []byte("seed-c")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Value: []byte("invalid"), IgnoreValue: true, PrevKv: true}),
+					txnClientDeleteOp(&etcdserverpb.DeleteRangeRequest{Key: keyB, RangeEnd: []byte{0}, PrevKv: true}),
+				},
+			}},
+		}},
+	})
+	require.Nil(t, resp)
+	requireRawGRPCTxnError(t, err, codes.InvalidArgument, "etcdserver: key is not provided", rpctypes.ErrGRPCEmptyKey)
+	require.NotErrorIs(t, err, rpctypes.ErrGRPCValueProvided)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, seedC.Header.Revision, final.Header.Revision)
+	require.Equal(t, []txnClientKV{
+		{Key: "a", Value: "seed-a", Version: 1},
+		{Key: "b", Value: "seed-b", Version: 1},
+		{Key: "c", Value: "seed-c", Version: 1},
+	}, txnClientKVs(final.Kvs, prefix, 0))
+	require.Equal(t, seedA.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, seedB.Header.Revision, final.Kvs[1].CreateRevision)
+	require.Equal(t, seedC.Header.Revision, final.Kvs[2].CreateRevision)
+}
+
 func TestRawGRPCTxnNestedFromKeyDeleteThenRecreatePrevKVUsesStagedViewMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
