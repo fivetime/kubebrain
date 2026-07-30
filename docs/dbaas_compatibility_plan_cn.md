@@ -29730,6 +29730,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Limit:1}`：`CountOnly` 必须覆盖 filter 后 payload、KEY/NONE 默认排序与 limit 截断，
   只返回同一 nested 分支 staged 后 live range 的完整 `Count`、空 `Kvs`、`More=false`；
   所有 leaf response header 与最终 KV metadata 必须保持 etcd 外观。
+- A3252 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 `IsDefaultOrdering`、
+  `rangeLimit`、create revision filter 与 limit 装配顺序，固定 raw gRPC nested
+  `RequestTxn` 外先写入旧 key，nested 内再更新一个旧 key、删除一个旧 key、连续新建三个
+  key，然后执行
+  `Range{MaxCreateRevision: seedC, SortTarget:KEY, SortOrder:NONE, Limit:1}`：
+  `SortOrder:NONE` 对 KEY sort 必须保持 etcd 默认 key 升序外观；但存在
+  `MaxCreateRevision` 时 `rangeLimit` 仍必须读取同一 nested 分支 staged 后的完整 live
+  keyset，再应用 create revision filter 排除本事务中新建的 keys 并按 limit 截断；
+  `Count` 仍保持过滤前 live range 总数，返回满足上界且 key 最小的旧创建 key，
+  `More=true`，所有 leaf response header 与最终 KV metadata 必须保持 etcd 外观。
+- A3253 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 `KeysOnly` response
+  装配顺序、KEY `SortOrder:NONE` 默认排序、create revision filter 与 limit 装配顺序，
+  固定 raw gRPC nested `RequestTxn` 外先写入旧 key，nested 内再更新一个旧 key、删除一个
+  旧 key、连续新建三个 key，然后执行
+  `Range{KeysOnly:true, MaxCreateRevision: seedC, SortTarget:KEY, SortOrder:NONE,
+  Limit:1}`：Range 必须保持 KEY/NONE 的默认 key 升序外观，先读取 staged 后完整 live
+  keyset 并应用 `MaxCreateRevision`，再按 limit 截断，最后清空返回 value；`Count` 仍
+  保持过滤前 live range 总数，返回满足上界且 key 最小的旧创建 key，`More=true`，
+  所有 leaf response header 与最终 KV metadata 必须保持 etcd 外观。
+- A3254 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 `CountOnly` response
+  优先级、KEY `SortOrder:NONE` 默认排序、create revision filter 与 limit 装配顺序，
+  固定 raw gRPC nested `RequestTxn` 外先写入旧 key，nested 内再更新一个旧 key、删除一个
+  旧 key、连续新建三个 key，然后执行
+  `Range{CountOnly:true, MaxCreateRevision: seedC, SortTarget:KEY, SortOrder:NONE,
+  Limit:1}`：`CountOnly` 必须覆盖 filter 后 payload、KEY/NONE 默认排序与 limit 截断，
+  只返回同一 nested 分支 staged 后 live range 的完整 `Count`、空 `Kvs`、`More=false`；
+  所有 leaf response header 与最终 KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
