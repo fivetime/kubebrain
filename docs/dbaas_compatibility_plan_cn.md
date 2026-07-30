@@ -30281,6 +30281,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrGRPCTooManyOps)` 成立且不得匹配 `rpctypes.ErrGRPCEmptyKey`；
   Success Put 不得执行，最终 keyspace、create revision 和 header revision 必须保持
   seed `a/b/c` 后的状态。
+- A3321 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkTxnRequest` 顶层 admission 顺序，固定 raw gRPC Txn 在检查 Success 内每个
+  RequestOp 或执行 Put 前，必须先用 `max(len(Compare),len(Success),len(Failure))`
+  执行 too-many-ops 校验：当顶层 Success 第一项是
+  `Put{Key:b,Value:txn-b,PrevKv:true}`，后续再追加 `defaultMaxTxnOps` 个 empty
+  `RequestOp{}` 时，必须在执行前返回 `InvalidArgument`、
+  message=`etcdserver: too many operations in txn request`、
+  `errors.Is(..., rpctypes.ErrGRPCTooManyOps)` 成立且不得匹配 `rpctypes.ErrGRPCKeyNotFound`；
+  Success Put 不得执行，最终 keyspace、create revision 和 header revision 必须保持
+  seed `a/b/c` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
