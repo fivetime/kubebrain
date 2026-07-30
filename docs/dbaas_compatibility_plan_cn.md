@@ -30130,6 +30130,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但最终 `c` 仍必须复用旧 create revision、version 递增到 2、mod revision 为本次
   txn revision，Range 与最终 keyspace 必须为 `a/c`，所有 nested/leaf response header
   与 KV metadata 必须保持 etcd 外观。
+- A3304 对照 `/root/etcd/server/etcdserver/txn/put.go` 的 Put `PrevKv` 执行阶段读视图、
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go` 的 put create/version 继承规则与
+  `/root/etcd/server/etcdserver/txn/delete.go` 的 from-key staged view，固定 raw gRPC
+  nested `RequestTxn` 中先执行 `Put{Key:b,PrevKv:true}` 更新 seed `b`，再执行
+  `DeleteRange{Key:b,RangeEnd:{0},PrevKv:true}`：Put response 的 PrevKv 必须返回旧
+  `b`；后续 Delete PrevKvs 必须基于同一 txnWrite staged view 返回更新后的 `b`
+  （value=`txn-b`、version=2、mod revision 为本次 txn revision）以及 seed `c/d`，
+  Range 与最终 keyspace 只保留 start 前 key `a`，所有 nested/leaf response header
+  与 KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
