@@ -3290,6 +3290,200 @@ func TestRawGRPCTxnNestedEmptyRangeCompareEnumFallthroughMatchesEtcd(t *testing.
 	require.Nil(t, finalByKey[string(unknownTargetFailureKey)])
 }
 
+func TestRawGRPCTxnNestedCompareMissingTargetUnionDefaultsMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-compare-missing-target-union-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	base := fmt.Sprintf("/a3285/txn-nested-compare-missing-target-union/%d/", time.Now().UnixNano())
+	livePrefix := base + "live/"
+	liveRangeEnd := []byte(clientv3.GetPrefixRangeEnd(livePrefix))
+	emptyPrefix := base + "empty/"
+	emptyRangeEnd := []byte(clientv3.GetPrefixRangeEnd(emptyPrefix))
+	finalRangeEnd := []byte(clientv3.GetPrefixRangeEnd(base))
+	keyA := []byte(livePrefix + "a")
+	keyB := []byte(livePrefix + "b")
+	liveVersionSuccessKey := []byte(base + "result/live-version-success")
+	liveValueFailureKey := []byte(base + "result/live-value-failure")
+	emptyVersionSuccessKey := []byte(base + "result/empty-version-success")
+	emptyValueFailureKey := []byte(base + "result/empty-value-failure")
+	liveVersionFailureKey := []byte(base + "result/live-version-failure")
+	liveValueSuccessKey := []byte(base + "result/live-value-success")
+	emptyVersionFailureKey := []byte(base + "result/empty-version-failure")
+	emptyValueSuccessKey := []byte(base + "result/empty-value-success")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("alpha")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("omega")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key:      []byte(livePrefix),
+					RangeEnd: liveRangeEnd,
+					Result:   etcdserverpb.Compare_GREATER,
+					Target:   etcdserverpb.Compare_VERSION,
+				}},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: liveVersionSuccessKey, Value: []byte("live-version-success")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: liveVersionFailureKey, Value: []byte("wrong-live-version-path")}),
+				},
+			}}},
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key:      []byte(livePrefix),
+					RangeEnd: liveRangeEnd,
+					Result:   etcdserverpb.Compare_EQUAL,
+					Target:   etcdserverpb.Compare_VALUE,
+				}},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: liveValueSuccessKey, Value: []byte("wrong-live-value-path")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: liveValueFailureKey, Value: []byte("live-value-failure")}),
+				},
+			}}},
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key:      []byte(emptyPrefix),
+					RangeEnd: emptyRangeEnd,
+					Result:   etcdserverpb.Compare_EQUAL,
+					Target:   etcdserverpb.Compare_VERSION,
+				}},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: emptyVersionSuccessKey, Value: []byte("empty-version-success")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: emptyVersionFailureKey, Value: []byte("wrong-empty-version-path")}),
+				},
+			}}},
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{{
+					Key:      []byte(emptyPrefix),
+					RangeEnd: emptyRangeEnd,
+					Result:   etcdserverpb.Compare_EQUAL,
+					Target:   etcdserverpb.Compare_VALUE,
+				}},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: emptyValueSuccessKey, Value: []byte("wrong-empty-value-path")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: emptyValueFailureKey, Value: []byte("empty-value-failure")}),
+				},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seedB.Header.Revision)
+	require.Len(t, resp.Responses, 4)
+
+	liveVersionNested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, liveVersionNested)
+	require.NotNil(t, liveVersionNested.Header)
+	require.Zero(t, liveVersionNested.Header.Revision)
+	require.True(t, liveVersionNested.Succeeded)
+	require.Len(t, liveVersionNested.Responses, 1)
+	liveVersionPut := liveVersionNested.Responses[0].GetResponsePut()
+	require.NotNil(t, liveVersionPut)
+	require.NotNil(t, liveVersionPut.Header)
+	require.Equal(t, resp.Header.Revision, liveVersionPut.Header.Revision)
+
+	liveValueNested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, liveValueNested)
+	require.NotNil(t, liveValueNested.Header)
+	require.Zero(t, liveValueNested.Header.Revision)
+	require.False(t, liveValueNested.Succeeded)
+	require.Len(t, liveValueNested.Responses, 1)
+	liveValuePut := liveValueNested.Responses[0].GetResponsePut()
+	require.NotNil(t, liveValuePut)
+	require.NotNil(t, liveValuePut.Header)
+	require.Equal(t, resp.Header.Revision, liveValuePut.Header.Revision)
+
+	emptyVersionNested := resp.Responses[2].GetResponseTxn()
+	require.NotNil(t, emptyVersionNested)
+	require.NotNil(t, emptyVersionNested.Header)
+	require.Zero(t, emptyVersionNested.Header.Revision)
+	require.True(t, emptyVersionNested.Succeeded)
+	require.Len(t, emptyVersionNested.Responses, 1)
+	emptyVersionPut := emptyVersionNested.Responses[0].GetResponsePut()
+	require.NotNil(t, emptyVersionPut)
+	require.NotNil(t, emptyVersionPut.Header)
+	require.Equal(t, resp.Header.Revision, emptyVersionPut.Header.Revision)
+
+	emptyValueNested := resp.Responses[3].GetResponseTxn()
+	require.NotNil(t, emptyValueNested)
+	require.NotNil(t, emptyValueNested.Header)
+	require.Zero(t, emptyValueNested.Header.Revision)
+	require.False(t, emptyValueNested.Succeeded)
+	require.Len(t, emptyValueNested.Responses, 1)
+	emptyValuePut := emptyValueNested.Responses[0].GetResponsePut()
+	require.NotNil(t, emptyValuePut)
+	require.NotNil(t, emptyValuePut.Header)
+	require.Equal(t, resp.Header.Revision, emptyValuePut.Header.Revision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(base), RangeEnd: finalRangeEnd})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 6)
+	finalByKey := make(map[string]*mvccpb.KeyValue, len(final.Kvs))
+	for _, kv := range final.Kvs {
+		finalByKey[string(kv.Key)] = kv
+	}
+	a := finalByKey[string(keyA)]
+	require.NotNil(t, a)
+	require.Equal(t, []byte("alpha"), a.Value)
+	require.Equal(t, seedA.Header.Revision, a.CreateRevision)
+	require.Equal(t, seedA.Header.Revision, a.ModRevision)
+	b := finalByKey[string(keyB)]
+	require.NotNil(t, b)
+	require.Equal(t, []byte("omega"), b.Value)
+	require.Equal(t, seedB.Header.Revision, b.CreateRevision)
+	require.Equal(t, seedB.Header.Revision, b.ModRevision)
+	for _, want := range []struct {
+		key   []byte
+		value []byte
+	}{
+		{liveVersionSuccessKey, []byte("live-version-success")},
+		{liveValueFailureKey, []byte("live-value-failure")},
+		{emptyVersionSuccessKey, []byte("empty-version-success")},
+		{emptyValueFailureKey, []byte("empty-value-failure")},
+	} {
+		kv := finalByKey[string(want.key)]
+		require.NotNil(t, kv)
+		require.Equal(t, want.value, kv.Value)
+		require.Equal(t, resp.Header.Revision, kv.CreateRevision)
+		require.Equal(t, resp.Header.Revision, kv.ModRevision)
+		require.Equal(t, int64(1), kv.Version)
+	}
+	require.Nil(t, finalByKey[string(liveVersionFailureKey)])
+	require.Nil(t, finalByKey[string(liveValueSuccessKey)])
+	require.Nil(t, finalByKey[string(emptyVersionFailureKey)])
+	require.Nil(t, finalByKey[string(emptyValueSuccessKey)])
+}
+
 func TestRawGRPCTxnNestedPutPrevKVResponseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
