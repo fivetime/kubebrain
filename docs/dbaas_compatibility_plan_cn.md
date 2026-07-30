@@ -30012,6 +30012,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   执行任何写入前返回 `InvalidArgument/duplicate key given in txn request`：`PrevKv`
   不能绕过 parent/nested selected 分支的重复写 key 校验，seed key 与 marker keyspace
   必须保持原状。
+- A3288 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `checkIntervals`
+  mutually-exclusive branch 例外与 `/root/etcd/server/etcdserver/txn/put.go` 的
+  `PrevKv` response，固定 raw gRPC nested `RequestTxn` 中 Success/Failure 分支都对
+  同一 key 执行 `Put{PrevKv:true}` 时必须合法；实际选中的 Failure Put 返回 seed
+  PrevKv，未选 Success Put 不落库，nested response header、leaf Put header 与最终
+  KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
