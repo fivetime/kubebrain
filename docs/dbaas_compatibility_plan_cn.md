@@ -30309,6 +30309,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrGRPCTooManyOps)` 成立且不得匹配 `rpctypes.ErrGRPCEmptyKey`；
   Success Put 不得执行，最终 keyspace、create revision 和 header revision 必须保持
   seed `a/b/c` 后的状态。
+- A3324 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkIntervals` delete interval 校验，固定 raw gRPC Txn 在 selected Success 中先声明
+  `DeleteRange{Key:b,RangeEnd:c,PrevKv:true}`，再在 nested `RequestTxn` selected
+  Success 中声明 `Put{Key:b,Value:txn-b,PrevKv:true}` 时，nested Put 与 parent delete
+  interval 重叠，必须在执行前返回 `InvalidArgument`、
+  message=`etcdserver: duplicate key given in txn request`、
+  `errors.Is(..., rpctypes.ErrGRPCDuplicateKey)` 成立；parent Delete 与 nested Put 均不得
+  执行，最终 keyspace、create revision 和 header revision 必须保持 seed `a/b/c` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
