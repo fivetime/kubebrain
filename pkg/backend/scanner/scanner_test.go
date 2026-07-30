@@ -22,10 +22,11 @@ import (
 	"testing"
 
 	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	mock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
-	"github.com/stretchr/testify/require"
 
 	"github.com/stretchr/testify/assert"
 

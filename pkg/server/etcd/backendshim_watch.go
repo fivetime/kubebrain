@@ -18,9 +18,10 @@ import (
 	"context"
 	"fmt"
 
-	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"k8s.io/klog/v2"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )

@@ -5,10 +5,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	clientv3 "go.etcd.io/etcd/client/v3"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func main() {

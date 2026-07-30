@@ -1,0 +1,6 @@
+* @fivetime
+
+/.github/ @fivetime
+/build/ @fivetime
+/go.mod @fivetime
+/go.sum @fivetime

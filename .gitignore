@@ -1,10 +1,12 @@
 .DS_Store
-.vscode
-.idea
-output
-.dev
-bin
+.vscode/
+.idea/
+output/
+.dev/
+bin/
 /kube*
 coverage.out
+/dist/
+*.prof
 /tikv-persistence-smoke
 /loadgen

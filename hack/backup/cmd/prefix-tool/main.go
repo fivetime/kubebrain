@@ -7,8 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
+
+	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 )
 
 func main() {

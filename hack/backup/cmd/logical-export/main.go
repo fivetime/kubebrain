@@ -9,9 +9,10 @@ import (
 	"os"
 	"strconv"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"github.com/kubewharf/kubebrain/hack/backup/internal/etcdutil"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func nextKey(key []byte) []byte {

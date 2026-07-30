@@ -12,9 +12,10 @@ import (
 	"strings"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
+
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
-	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 func fatalf(format string, args ...interface{}) {

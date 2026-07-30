@@ -26,8 +26,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 )
 
 // TestWatchResultFromResponseMapsProgressNotify pins that an idle progress

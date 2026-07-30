@@ -18,6 +18,7 @@ import (
 	"context"
 	"net/http"
 	"time"
+
 	// Deliberately NOT importing net/http/pprof: its init() registers handlers on
 	// http.DefaultServeMux, which would re-expose unauthenticated pprof the moment
 	// anything serves DefaultServeMux. pprof is wired explicitly and gated behind

@@ -19,8 +19,9 @@ import (
 	"fmt"
 	"time"
 
-	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"k8s.io/klog/v2"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/scanner"
 )

@@ -835,12 +835,12 @@ func TestRangeCompactedRevisionMatchesEtcd(t *testing.T) {
 	defer closeFn()
 
 	ctx := context.Background()
-	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/pods/compacted"),
 		Value: []byte("v1"),
 	})
 	require.NoError(t, err)
-	putResp, err = server.Put(ctx, &etcdserverpb.PutRequest{
+	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/pods/compacted"),
 		Value: []byte("v2"),
 	})
@@ -1990,9 +1990,9 @@ func TestTxnRangeCompactedRevisionIsCheckedBeforeWrites(t *testing.T) {
 
 	ctx := context.Background()
 	key := []byte("/registry/generic-txn/range-compacted-before-write")
-	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("base")})
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("base")})
 	require.NoError(t, err)
-	putResp, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("base2")})
+	putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("base2")})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		return server.backend.GetCurrentRevision() >= uint64(putResp.Header.Revision)

@@ -13,16 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+set -euo pipefail
+
 BIN_NAME="kube-brain"
 BIN_DIR="./bin"
-WORK_DIR="$(cd "$(dirname "${BASH_SOURCE}")/.." && pwd -P)"
+WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
-echo ${WORK_DIR}
-cd ${WORK_DIR} || exit
-mkdir -p $BIN_DIR
+cd "$WORK_DIR"
+mkdir -p "$BIN_DIR"
 
 storage=TiKV
-source $WORK_DIR/build/build-base.sh $storage
+source "$WORK_DIR/build/build-base.sh" "$storage"
 
-cd ./cmd || exit
-go build --tags tikv -o ../$BIN_DIR/$BIN_NAME -ldflags "$ldflags"
+CGO_ENABLED=0 go build -trimpath --tags tikv -o "$WORK_DIR/$BIN_DIR/$BIN_NAME" -ldflags "$ldflags" ./cmd

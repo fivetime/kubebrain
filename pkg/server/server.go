@@ -234,13 +234,13 @@ func (s *server) electionHandler(w http.ResponseWriter, req *http.Request) {
 	info, err := s.leaderElection.GetElectionInfo()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 	respBytes, _ := json.Marshal(info)
-	w.Write(respBytes)
+	_, _ = w.Write(respBytes)
 	return
 }
 
@@ -248,7 +248,7 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 	if !s.leaderElection.IsLeader() {
 		s.metricCli.EmitCounter("leader.invalid", 1)
 		w.WriteHeader(400)
-		w.Write([]byte("i'm not leader, so can't tell you revision"))
+		_, _ = w.Write([]byte("i'm not leader, so can't tell you revision"))
 		return
 	}
 	rev := s.backend.GetCurrentRevision()
@@ -257,7 +257,7 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 		Revision: rev,
 	})
 	s.metricCli.EmitGauge("leader.revision", rev)
-	w.Write(responseBody)
+	_, _ = w.Write(responseBody)
 }
 
 const (

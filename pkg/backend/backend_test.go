@@ -1904,25 +1904,6 @@ func noPendingRealEvent(output <-chan []*proto.Event) bool {
 	}
 }
 
-func waitUntilEventChanFilledOrTimeout(eventChan <-chan []*proto.Event) {
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		if len(eventChan) != 0 {
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
 func waitUntilRevisionEqualOrTimeout(b Backend, expectedRev uint64) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
