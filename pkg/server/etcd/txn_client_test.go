@@ -3766,6 +3766,59 @@ func TestRawGRPCTxnNestedPutPrevKVResponseMatchesEtcd(t *testing.T) {
 	require.Equal(t, other, final.Kvs[1].Key)
 }
 
+func TestRawGRPCTxnNestedPutPrevKVWithPriorSiblingPutDuplicateRejectedMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-put-prev-kv-prior-sibling-put-duplicate-rejected-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3287/txn-nested-put-prev-kv-prior-sibling-put-duplicate-rejected/%d/", time.Now().UnixNano())
+	key := []byte(prefix + "key")
+	marker := []byte(prefix + "marker")
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("staged")}),
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: key, Value: []byte("final"), PrevKv: true}),
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: marker, Value: []byte("must-not-commit")}),
+				},
+			}}},
+		},
+	})
+	require.Nil(t, resp)
+	requireRawGRPCTxnError(t, err, codes.InvalidArgument, "etcdserver: duplicate key given in txn request", rpctypes.ErrGRPCDuplicateKey)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, seed.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 1)
+	require.Equal(t, key, final.Kvs[0].Key)
+	require.Equal(t, []byte("old"), final.Kvs[0].Value)
+	require.Equal(t, seed.Header.Revision, final.Kvs[0].CreateRevision)
+	require.Equal(t, seed.Header.Revision, final.Kvs[0].ModRevision)
+	require.Equal(t, int64(1), final.Kvs[0].Version)
+}
+
 func TestRawGRPCTxnNestedPutIgnoreOptionsPrevKVResponseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
