@@ -2212,6 +2212,116 @@ func TestRawGRPCTxnNestedCompareDoesNotSeePriorSiblingStagedDeleteMatchesEtcd(t 
 	require.NotEqual(t, marker, final.Kvs[0].Key)
 }
 
+func TestRawGRPCTxnNestedComparePathSkipsUnselectedParentBranchMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-compare-path-skips-unselected-parent-branch-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3276/txn-nested-compare-path-skips-unselected-parent-branch/%d/", time.Now().UnixNano())
+	topCompareKey := []byte(prefix + "top-compare")
+	unselectedNestedSuccessKey := []byte(prefix + "unselected-nested-success")
+	unselectedNestedFailureKey := []byte(prefix + "unselected-nested-failure")
+	selectedKey := []byte(prefix + "selected")
+	selectedNestedCompareKey := []byte(prefix + "selected-nested-compare")
+	selectedNestedSuccessKey := []byte(prefix + "selected-nested-success")
+	selectedNestedFailureKey := []byte(prefix + "selected-nested-failure")
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{
+			txnClientIntCompare(topCompareKey, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1),
+		},
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(topCompareKey, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: unselectedNestedSuccessKey, Value: []byte("must-not-commit-success")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: unselectedNestedFailureKey, Value: []byte("must-not-commit-failure")}),
+				},
+			}}},
+		},
+		Failure: []*etcdserverpb.RequestOp{
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: selectedKey, Value: []byte("selected")}),
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(selectedNestedCompareKey, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: selectedNestedSuccessKey, Value: []byte("wrong-path")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: selectedNestedFailureKey, Value: []byte("selected-nested-failure")}),
+				},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.False(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Len(t, resp.Responses, 2)
+
+	selectedPut := resp.Responses[0].GetResponsePut()
+	require.NotNil(t, selectedPut)
+	require.NotNil(t, selectedPut.Header)
+	require.Equal(t, resp.Header.Revision, selectedPut.Header.Revision)
+
+	nested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, nested)
+	require.NotNil(t, nested.Header)
+	require.Zero(t, nested.Header.Revision)
+	require.False(t, nested.Succeeded)
+	require.Len(t, nested.Responses, 1)
+	nestedFailurePut := nested.Responses[0].GetResponsePut()
+	require.NotNil(t, nestedFailurePut)
+	require.NotNil(t, nestedFailurePut.Header)
+	require.Equal(t, resp.Header.Revision, nestedFailurePut.Header.Revision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 2)
+	finalByKey := make(map[string]*mvccpb.KeyValue, len(final.Kvs))
+	for _, kv := range final.Kvs {
+		finalByKey[string(kv.Key)] = kv
+	}
+	outerSelected := finalByKey[string(selectedKey)]
+	require.NotNil(t, outerSelected)
+	require.Equal(t, []byte("selected"), outerSelected.Value)
+	require.Equal(t, resp.Header.Revision, outerSelected.CreateRevision)
+	require.Equal(t, resp.Header.Revision, outerSelected.ModRevision)
+	require.Equal(t, int64(1), outerSelected.Version)
+	nestedFailure := finalByKey[string(selectedNestedFailureKey)]
+	require.NotNil(t, nestedFailure)
+	require.Equal(t, []byte("selected-nested-failure"), nestedFailure.Value)
+	require.Equal(t, resp.Header.Revision, nestedFailure.CreateRevision)
+	require.Equal(t, resp.Header.Revision, nestedFailure.ModRevision)
+	require.Equal(t, int64(1), nestedFailure.Version)
+	require.Nil(t, finalByKey[string(unselectedNestedSuccessKey)])
+	require.Nil(t, finalByKey[string(unselectedNestedFailureKey)])
+	require.Nil(t, finalByKey[string(selectedNestedSuccessKey)])
+}
+
 func TestRawGRPCTxnNestedPutPrevKVResponseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
