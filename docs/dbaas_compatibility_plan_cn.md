@@ -28441,6 +28441,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同一 nested 分支内 staged 后的 mod revision，只返回本事务内更新/新建且仍存活的
   keys；`Count` 仍保持过滤前 live range 总数，所有 leaf response header 与最终 KV
   metadata 必须保持 etcd 外观。
+- A3075 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 `rangeLimit`
+  对 revision filter 禁用底层 limit 的规则，固定 raw gRPC nested `RequestTxn`
+  内先更新旧 key、删除旧 key、新建 key，再执行
+  `Range{MinModRevision: seed+1, Limit:1, SortTarget:KEY, SortOrder:ASCEND}`：
+  Range 必须先读取同一 nested 分支 staged 后的完整 live keyset 并应用
+  `MinModRevision`，再按 limit 截断过滤后的 payload；`Count` 仍保持过滤前 live
+  range 总数，返回第一条匹配 key 且 `More=true`，所有 leaf response header 与最终
+  KV metadata 必须保持 etcd 外观。
 - A3024 对照 `/root/etcd/server/etcdserver/txn/txn.go` staged Range 执行顺序与
   `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter 整形外观，
   固定 raw gRPC nested `RequestTxn` 内先更新旧 key、删除旧 key、新建 key，再执行
