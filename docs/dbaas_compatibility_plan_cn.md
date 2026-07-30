@@ -30430,6 +30430,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Put{Key:b,...,PrevKv:true}` 必须与该未选中 range delete interval 冲突并在执行前
   返回 duplicate-key `InvalidArgument`；两个 nested op 均不得执行，最终 keyspace、
   create revision 和 header revision 必须保持 seed `a/b/c` 后的状态。
+- A3338 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkIntervals` 同一 child then/else 同 key put 互斥例外，以及
+  `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareToPath`/`checkTxn` selected-path
+  执行校验，固定 raw gRPC nested `RequestTxn`：compare 明确为 true，selected
+  `Success` 执行 `Put{Key:b,Value:selected-b,PrevKv:true}`，未选中 `Failure` 中虽然包含
+  `Put{Key:b,Value:bad-lease-b,Lease:MaxInt64,PrevKv:true}`，也不得触发
+  `LeaseNotFound` 或 duplicate-key admission；nested header 仍为 0，leaf Put header
+  等于顶层 txn revision，最终 `b` 保留原 create revision、version 递增为 2。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
