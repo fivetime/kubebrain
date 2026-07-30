@@ -29969,6 +29969,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   range 内所有 live KVs 逐个比较：`Value == "same"` 只要一个 key 不同就进入 failure
   分支，而同一 range 的 `Version > 0` 必须进入 success 分支；两个 nested response
   tree、leaf Put header、seed key revision 与最终 keyspace 必须保持 etcd 外观。
+- A3280 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `applyCompare` 空 range
+  missing-value 特例，固定 raw gRPC nested `RequestTxn` 中空 range `Version == 0`
+  必须基于空 KV 元数据进入 success 分支，但同一空 range 的 `Value != "anything"` 仍
+  必须失败；第二个 nested compare path 也必须在第一个 nested success Put 写入前预计算，
+  两个 leaf Put 同 revision 生效且未选分支不得污染最终 keyspace。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
