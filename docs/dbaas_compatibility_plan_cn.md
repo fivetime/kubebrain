@@ -30403,6 +30403,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未选中 delete interval 冲突并在执行前返回 duplicate-key `InvalidArgument`；两个
   nested op 均不得执行，最终 keyspace、create revision 和 header revision 必须保持
   seed `a/b/c` 后的状态。
+- A3335 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkIntervals` 会 union 未选中 nested `Success` delete interval 的对称规则，固定
+  raw gRPC Txn 在 selected Success 中声明两个 sibling nested `RequestTxn`：第一个
+  child compare 明确为 false、因而其 `Success` 分支未选中，但该未选中 `Success`
+  中的 `DeleteRange{Key:b,PrevKv:true}` 仍必须被 union 到 sibling delete interval；
+  第二个 child selected Success 中的 `Put{Key:b,Value:second-nested-b,PrevKv:true}`
+  必须与该未选中 delete interval 冲突并在执行前返回 duplicate-key
+  `InvalidArgument`；两个 nested op 均不得执行，最终 keyspace、create revision 和
+  header revision 必须保持 seed `a/b/c` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
