@@ -29979,6 +29979,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `[key, ∞)`：from-key `Value == "same"` 只要后续 live key value 不同就进入 failure
   分支；另一个空 from-key `Version == 0` 必须在 sibling write 前预计算并进入 success
   分支，两个 selected leaf Put 同 revision 生效且未选分支不得污染最终 keyspace。
+- A3282 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的普通 `RangeEnd` 空区间规则，
+  固定 raw gRPC nested `RequestTxn` 中 `Compare.RangeEnd == Key` 与 `RangeEnd < Key`
+  不能被误判为 from-key：等值空区间 `Version == 0` 必须基于空 KV 元数据进入 success
+  分支，反向空区间 `Value != "anything"` 仍必须失败；selected leaf Put 同 revision
+  生效且未选分支不得污染最终 keyspace。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

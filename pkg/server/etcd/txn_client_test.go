@@ -2925,6 +2925,128 @@ func TestRawGRPCTxnNestedFromKeyCompareUsesEtcdRangeRulesMatchesEtcd(t *testing.
 	require.Nil(t, finalByKey[string(emptyFailureKey)])
 }
 
+func TestRawGRPCTxnNestedEmptyIntervalCompareUsesEtcdRulesMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-empty-interval-compare-rules-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3282/txn-nested-empty-interval-compare-rules/%d/", time.Now().UnixNano())
+	prefixEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	keyA := []byte(prefix + "a")
+	keyB := []byte(prefix + "b")
+	equalSuccessKey := []byte(prefix + "equal-success")
+	equalFailureKey := []byte(prefix + "equal-failure")
+	reverseSuccessKey := []byte(prefix + "reverse-success")
+	reverseFailureKey := []byte(prefix + "reverse-failure")
+	seedA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("a")})
+	require.NoError(t, err)
+	seedB, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("b")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(keyA, keyA, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: equalSuccessKey, Value: []byte("equal-success")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: equalFailureKey, Value: []byte("wrong-equal-path")}),
+				},
+			}}},
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientValueCompare(keyB, keyA, etcdserverpb.Compare_NOT_EQUAL, "anything"),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: reverseSuccessKey, Value: []byte("wrong-reverse-path")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: reverseFailureKey, Value: []byte("reverse-failure")}),
+				},
+			}}},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seedB.Header.Revision)
+	require.Len(t, resp.Responses, 2)
+
+	equalNested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, equalNested)
+	require.NotNil(t, equalNested.Header)
+	require.Zero(t, equalNested.Header.Revision)
+	require.True(t, equalNested.Succeeded)
+	require.Len(t, equalNested.Responses, 1)
+	equalSuccessPut := equalNested.Responses[0].GetResponsePut()
+	require.NotNil(t, equalSuccessPut)
+	require.NotNil(t, equalSuccessPut.Header)
+	require.Equal(t, resp.Header.Revision, equalSuccessPut.Header.Revision)
+
+	reverseNested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, reverseNested)
+	require.NotNil(t, reverseNested.Header)
+	require.Zero(t, reverseNested.Header.Revision)
+	require.False(t, reverseNested.Succeeded)
+	require.Len(t, reverseNested.Responses, 1)
+	reverseFailurePut := reverseNested.Responses[0].GetResponsePut()
+	require.NotNil(t, reverseFailurePut)
+	require.NotNil(t, reverseFailurePut.Header)
+	require.Equal(t, resp.Header.Revision, reverseFailurePut.Header.Revision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: prefixEnd})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 4)
+	finalByKey := make(map[string]*mvccpb.KeyValue, len(final.Kvs))
+	for _, kv := range final.Kvs {
+		finalByKey[string(kv.Key)] = kv
+	}
+	a := finalByKey[string(keyA)]
+	require.NotNil(t, a)
+	require.Equal(t, []byte("a"), a.Value)
+	require.Equal(t, seedA.Header.Revision, a.CreateRevision)
+	require.Equal(t, seedA.Header.Revision, a.ModRevision)
+	b := finalByKey[string(keyB)]
+	require.NotNil(t, b)
+	require.Equal(t, []byte("b"), b.Value)
+	require.Equal(t, seedB.Header.Revision, b.CreateRevision)
+	require.Equal(t, seedB.Header.Revision, b.ModRevision)
+	equalSuccess := finalByKey[string(equalSuccessKey)]
+	require.NotNil(t, equalSuccess)
+	require.Equal(t, []byte("equal-success"), equalSuccess.Value)
+	require.Equal(t, resp.Header.Revision, equalSuccess.CreateRevision)
+	require.Equal(t, resp.Header.Revision, equalSuccess.ModRevision)
+	reverseFailure := finalByKey[string(reverseFailureKey)]
+	require.NotNil(t, reverseFailure)
+	require.Equal(t, []byte("reverse-failure"), reverseFailure.Value)
+	require.Equal(t, resp.Header.Revision, reverseFailure.CreateRevision)
+	require.Equal(t, resp.Header.Revision, reverseFailure.ModRevision)
+	require.Nil(t, finalByKey[string(equalFailureKey)])
+	require.Nil(t, finalByKey[string(reverseSuccessKey)])
+}
+
 func TestRawGRPCTxnNestedPutPrevKVResponseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
