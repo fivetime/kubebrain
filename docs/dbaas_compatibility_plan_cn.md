@@ -30221,6 +30221,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成立且不得匹配 `rpctypes.ErrGRPCValueProvided` 或 `rpctypes.ErrGRPCLeaseProvided`；
   nested Put 与后续 `DeleteRange{Key:b,RangeEnd:{0},PrevKv:true}` 均不得执行，最终
   keyspace 和 header revision 必须保持 seed `a/b/c` 后的状态。
+- A3314 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkDeleteRequest` 递归校验，固定 raw gRPC nested `RequestTxn` 中先声明
+  `Put{Key:b,Value:txn-b,PrevKv:true}`、再声明 `DeleteRange{Key:nil,RangeEnd:{0},PrevKv:true}`
+  时，整个 Txn 必须在执行前因 empty key 被拒绝：返回 `InvalidArgument`、
+  message=`etcdserver: key is not provided`、`errors.Is(..., rpctypes.ErrGRPCEmptyKey)`
+  成立；前置 Put 与非法 Delete 均不得执行，最终 keyspace、create revision 和 header
+  revision 必须保持 seed `a/b/c` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
