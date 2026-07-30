@@ -30089,6 +30089,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `b/c/d` PrevKvs，第二笔 point Delete 必须基于同一 txnWrite staged view 变为 no-op、
   `Deleted=0` 且空 PrevKvs；后续 Range 与最终 keyspace 只保留 start 前 key `a`，
   所有 nested/leaf response header 必须保持 etcd 外观。
+- A3299 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkIntervals` mutually-exclusive branch 例外与 `/root/etcd/server/etcdserver/txn/delete.go`
+  的 from-key `PrevKv` staged view，固定 raw gRPC nested `RequestTxn` 中 Success/Failure
+  分支都包含同一个 `DeleteRange{Key:b,RangeEnd:{0},PrevKv:true}` 时必须合法；nested
+  compare false 选择 Failure 后，只执行 Failure from-key Delete，返回并删除 seed
+  `b/c/d` PrevKvs，未选 Success 分支的 Put/Delete 不得提交，后续 Range 与最终
+  keyspace 只保留 start 前 key `a`，所有 nested/leaf response header 必须保持 etcd
+  外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
