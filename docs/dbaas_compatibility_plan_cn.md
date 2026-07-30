@@ -29958,6 +29958,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   seed compare key 不得被事务改写，selected outer Put 与 selected nested success Put
   必须同 revision 生效，所有 leaf response header 与最终 KV metadata 必须保持 etcd
   外观。
+- A3278 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareToPath` pre-order
+  append 与 `executeTxn` path 消费顺序，固定 raw gRPC 同一 selected 分支内连续两个
+  sibling nested `RequestTxn`：第一个 nested compare 失败、第二个 nested compare 成功时，
+  两个 nested `Succeeded`、各自 selected leaf response、后续 trailing Put 与最终 keyspace
+  不能串位；seed compare key 保持旧 revision，其余 selected writes 必须同 revision
+  生效，所有 leaf response header 与最终 KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

@@ -2441,6 +2441,133 @@ func TestRawGRPCTxnNestedComparePathSkipsUnselectedFailureBranchMatchesEtcd(t *t
 	require.Nil(t, finalByKey[string(unselectedNestedFailureKey)])
 }
 
+func TestRawGRPCTxnNestedComparePathKeepsSiblingNestedOrderMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///txn-nested-compare-path-keeps-sibling-nested-order-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	prefix := fmt.Sprintf("/a3278/txn-nested-compare-path-keeps-sibling-nested-order/%d/", time.Now().UnixNano())
+	firstCompareKey := []byte(prefix + "first-compare")
+	secondCompareKey := []byte(prefix + "second-compare")
+	firstSuccessKey := []byte(prefix + "first-success")
+	firstFailureKey := []byte(prefix + "first-failure")
+	secondSuccessKey := []byte(prefix + "second-success")
+	secondFailureKey := []byte(prefix + "second-failure")
+	trailingKey := []byte(prefix + "trailing")
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: secondCompareKey, Value: []byte("seed")})
+	require.NoError(t, err)
+
+	resp, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(firstCompareKey, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: firstSuccessKey, Value: []byte("wrong-first-path")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: firstFailureKey, Value: []byte("first-failure")}),
+				},
+			}}},
+			{Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+				Compare: []*etcdserverpb.Compare{
+					txnClientIntCompare(secondCompareKey, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1),
+				},
+				Success: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: secondSuccessKey, Value: []byte("second-success")}),
+				},
+				Failure: []*etcdserverpb.RequestOp{
+					txnClientPutOp(&etcdserverpb.PutRequest{Key: secondFailureKey, Value: []byte("wrong-second-path")}),
+				},
+			}}},
+			txnClientPutOp(&etcdserverpb.PutRequest{Key: trailingKey, Value: []byte("trailing")}),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.True(t, resp.Succeeded)
+	require.NotNil(t, resp.Header)
+	require.Greater(t, resp.Header.Revision, seed.Header.Revision)
+	require.Len(t, resp.Responses, 3)
+
+	firstNested := resp.Responses[0].GetResponseTxn()
+	require.NotNil(t, firstNested)
+	require.NotNil(t, firstNested.Header)
+	require.Zero(t, firstNested.Header.Revision)
+	require.False(t, firstNested.Succeeded)
+	require.Len(t, firstNested.Responses, 1)
+	firstFailurePut := firstNested.Responses[0].GetResponsePut()
+	require.NotNil(t, firstFailurePut)
+	require.NotNil(t, firstFailurePut.Header)
+	require.Equal(t, resp.Header.Revision, firstFailurePut.Header.Revision)
+
+	secondNested := resp.Responses[1].GetResponseTxn()
+	require.NotNil(t, secondNested)
+	require.NotNil(t, secondNested.Header)
+	require.Zero(t, secondNested.Header.Revision)
+	require.True(t, secondNested.Succeeded)
+	require.Len(t, secondNested.Responses, 1)
+	secondSuccessPut := secondNested.Responses[0].GetResponsePut()
+	require.NotNil(t, secondSuccessPut)
+	require.NotNil(t, secondSuccessPut.Header)
+	require.Equal(t, resp.Header.Revision, secondSuccessPut.Header.Revision)
+
+	trailingPut := resp.Responses[2].GetResponsePut()
+	require.NotNil(t, trailingPut)
+	require.NotNil(t, trailingPut.Header)
+	require.Equal(t, resp.Header.Revision, trailingPut.Header.Revision)
+
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix))})
+	require.NoError(t, err)
+	require.NotNil(t, final.Header)
+	require.Equal(t, resp.Header.Revision, final.Header.Revision)
+	require.Len(t, final.Kvs, 4)
+	finalByKey := make(map[string]*mvccpb.KeyValue, len(final.Kvs))
+	for _, kv := range final.Kvs {
+		finalByKey[string(kv.Key)] = kv
+	}
+	seedKV := finalByKey[string(secondCompareKey)]
+	require.NotNil(t, seedKV)
+	require.Equal(t, []byte("seed"), seedKV.Value)
+	require.Equal(t, seed.Header.Revision, seedKV.CreateRevision)
+	require.Equal(t, seed.Header.Revision, seedKV.ModRevision)
+	require.Equal(t, int64(1), seedKV.Version)
+	firstFailure := finalByKey[string(firstFailureKey)]
+	require.NotNil(t, firstFailure)
+	require.Equal(t, []byte("first-failure"), firstFailure.Value)
+	require.Equal(t, resp.Header.Revision, firstFailure.CreateRevision)
+	require.Equal(t, resp.Header.Revision, firstFailure.ModRevision)
+	secondSuccess := finalByKey[string(secondSuccessKey)]
+	require.NotNil(t, secondSuccess)
+	require.Equal(t, []byte("second-success"), secondSuccess.Value)
+	require.Equal(t, resp.Header.Revision, secondSuccess.CreateRevision)
+	require.Equal(t, resp.Header.Revision, secondSuccess.ModRevision)
+	trailing := finalByKey[string(trailingKey)]
+	require.NotNil(t, trailing)
+	require.Equal(t, []byte("trailing"), trailing.Value)
+	require.Equal(t, resp.Header.Revision, trailing.CreateRevision)
+	require.Equal(t, resp.Header.Revision, trailing.ModRevision)
+	require.Nil(t, finalByKey[string(firstSuccessKey)])
+	require.Nil(t, finalByKey[string(secondFailureKey)])
+}
+
 func TestRawGRPCTxnNestedPutPrevKVResponseMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
