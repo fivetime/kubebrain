@@ -28536,6 +28536,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   staged 后的 KV metadata 排序并先于 limit 截断；旧 keys 应进入第一页，新建 key
   应被截断；`Count` 保持完整 live range 总数、`More=true`，所有 leaf response
   header 与最终 KV metadata 必须保持 etcd 外观。
+- A3038 对照 `/root/etcd/server/etcdserver/txn/range.go` 的非 KEY `SortOrder:NONE`
+  归一化规则，固定 raw gRPC nested `RequestTxn` 内 staged 更新旧 key、同时新建
+  key，然后执行 `Range{SortTarget:MOD, SortOrder:NONE, Limit:2}`：Range 必须把
+  mod revision sort 的 `NONE` 按 etcd 语义视为升序，使用同一 nested 分支 staged
+  后的 mod revision 排序并先于 limit 截断；未变更旧 key 应排在同一事务内 staged
+  改动 key 之前，staged key 间同 mod revision 并列顺序不额外约束；`Count` 保持
+  完整 live range 总数、`More=true`，所有 leaf response header 与最终 KV metadata
+  必须保持 etcd 外观。
 - A1416 固定用户密码请求的鉴权失败改写顺序：
   对照 upstream `EtcdServer.UserAdd`/`UserChangePassword` 先把明文 password 改写为
   `HashedPassword` 再进入后续 raft/auth apply 的顺序，KubeBrain 在 auth 已启用且普通用户
