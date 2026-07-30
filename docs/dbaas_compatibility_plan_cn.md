@@ -30438,6 +30438,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Put{Key:b,Value:bad-lease-b,Lease:MaxInt64,PrevKv:true}`，也不得触发
   `LeaseNotFound` 或 duplicate-key admission；nested header 仍为 0，leaf Put header
   等于顶层 txn revision，最终 `b` 保留原 create revision、version 递增为 2。
+- A3339 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 selected-path
+  `checkTxn` 与 `/root/etcd/server/etcdserver/txn/put.go` 的 `checkLease`，固定 raw gRPC
+  nested `RequestTxn`：同一 child then/else 仍允许同 key put 通过 interval admission；
+  当 compare 明确为 false 并选中 `Failure` 中的
+  `Put{Key:b,Value:bad-lease-b,Lease:MaxInt64,PrevKv:true}` 时，必须在执行前返回
+  raw `NotFound`、message=`etcdserver: requested lease not found`、
+  `errors.Is(..., rpctypes.ErrGRPCLeaseNotFound)` 成立；未选中 Success put 不执行，最终
+  keyspace、create revision 和 header revision 必须保持 seed `a/b` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
