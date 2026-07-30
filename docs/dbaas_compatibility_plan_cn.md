@@ -30058,6 +30058,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   from-key Delete 必须删除 seed `b/c` 与同分支 staged Put `d`，`PrevKvs` 中 `d`
   的 create/mod revision 必须标记为本次 txn revision，后续 Range 与最终 keyspace
   只保留 start 前 key `a`，所有 nested/leaf response header 必须保持 etcd 外观。
+- A3295 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 对 `RangeEnd:{0}` 的
+  raw interval 校验与 `/root/etcd/server/etcdserver/txn/delete.go` 的执行阶段
+  staged view，固定 raw gRPC nested `RequestTxn` 中先执行
+  `DeleteRange{Key:b,RangeEnd:{0},PrevKv:true}`，再 Put 同 from-key 开放区间内 key
+  `d`：Delete 必须只删除并返回 seed `b/c` PrevKvs，不能预先删除后续 Put；后续
+  Put 必须同 revision 存活，Range 与最终 keyspace 必须为 start 前 key `a` 和新建
+  `d`，所有 nested/leaf response header 与 KV metadata 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
