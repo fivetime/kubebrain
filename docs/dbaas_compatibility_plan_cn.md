@@ -29951,6 +29951,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不得污染 selected failure 分支的 nested `Succeeded`、response tree 或最终 keyspace；
   selected outer Put 与 selected nested failure Put 必须同 revision 生效，所有 leaf
   response header 与最终 KV metadata 必须保持 etcd 外观。
+- A3277 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareToPath` 递归分支选择，
+  固定 raw gRPC top-level compare 成功后只递归/执行 success 分支中的 nested
+  `RequestTxn`：unselected failure 分支中的 nested compare path 与 success/failure 写入都
+  不得污染 selected success 分支的 nested `Succeeded`、response tree 或最终 keyspace；
+  seed compare key 不得被事务改写，selected outer Put 与 selected nested success Put
+  必须同 revision 生效，所有 leaf response header 与最终 KV metadata 必须保持 etcd
+  外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
