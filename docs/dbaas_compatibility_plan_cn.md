@@ -29984,6 +29984,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不能被误判为 from-key：等值空区间 `Version == 0` 必须基于空 KV 元数据进入 success
   分支，反向空区间 `Value != "anything"` 仍必须失败；selected leaf Put 同 revision
   生效且未选分支不得污染最终 keyspace。
+- A3283 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareKV` enum fallthrough，
+  固定 raw gRPC nested `RequestTxn` 中 unknown Result 必须直接返回 compare success，
+  即使 VALUE 与 range 内 live KVs 不同；unknown Target 不进入 target switch、compare
+  result 保持 0，`NOT_EQUAL` 必须失败。两个 nested response tree、leaf Put header、
+  seed key revision 与最终 keyspace 必须保持 etcd 外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
