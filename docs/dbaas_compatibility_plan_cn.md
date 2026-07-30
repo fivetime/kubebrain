@@ -30333,6 +30333,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   message=`etcdserver: duplicate key given in txn request`、
   `errors.Is(..., rpctypes.ErrGRPCDuplicateKey)` 成立；nested Put 与 parent Put 均不得
   执行，最终 keyspace、create revision 和 header revision 必须保持 seed `a/b/c` 后的状态。
+- A3327 对照 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的
+  `checkIntervals` sibling child puts 合并校验，固定 raw gRPC Txn 在 selected Success
+  中声明两个 sibling nested `RequestTxn`，两者 selected Success 都执行
+  `Put{Key:b,...,PrevKv:true}` 时，第二个 child puts 合并必须检测到同 key duplicate，
+  并在执行前返回 `InvalidArgument`、message=`etcdserver: duplicate key given in txn request`、
+  `errors.Is(..., rpctypes.ErrGRPCDuplicateKey)` 成立；两个 nested Put 均不得执行，最终
+  keyspace、create revision 和 header revision 必须保持 seed `a/b/c` 后的状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
