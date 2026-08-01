@@ -30756,6 +30756,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Created header 保持 gap=0，更新 Put 为 `+1`，Event header 与 KV ModRevision 同为 `+1`，
   随后的显式 Progress response 继续保持 `+1`、使用 stream-wide `WatchId=-1` 且无事件。
   raw gRPC 本地门禁同步固定该恢复游标语义。
+- A3384 将 empty/nil Watch control frame 双端差分从首条响应抽样扩展为完整 drain：空 union
+  静默，nil create 创建 automatic ID 0，nil cancel 取消 ID 0，nil progress 静默，随后有效
+  create 返回 ID 404；必须恰好按 create-0、cancel-0、create-404 返回三条响应，且 header
+  全部等于 seed revision，随后 150ms 内不得出现额外响应。该门禁固定 protobuf nil-wrapper
+  配对语义；bidi Watch 的 CloseSend 不承诺服务端立即关闭接收方向，因此不错误要求 EOF。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

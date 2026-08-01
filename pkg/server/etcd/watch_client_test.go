@@ -1292,7 +1292,7 @@ func TestRawGRPCWatchIDRangeBoundariesKeepStreamAlive(t *testing.T) {
 func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+	seed, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
 		Key: []byte("/a1022/watch-invalid-control/seed"), Value: []byte("seed"),
 	})
 	require.NoError(t, err)
@@ -1330,6 +1330,7 @@ func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
 	require.False(t, response.Canceled)
 	require.Equal(t, int64(0), response.WatchId)
 	require.Empty(t, response.CancelReason)
+	require.Equal(t, seed.Header.Revision, response.Header.Revision)
 
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{},
@@ -1341,6 +1342,7 @@ func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
 	require.True(t, response.Canceled)
 	require.Equal(t, int64(0), response.WatchId)
 	require.Empty(t, response.CancelReason)
+	require.Equal(t, seed.Header.Revision, response.Header.Revision)
 
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{},
@@ -1359,6 +1361,7 @@ func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
 	require.False(t, response.Canceled)
 	require.Equal(t, int64(404), response.WatchId)
 	require.Empty(t, response.CancelReason)
+	require.Equal(t, seed.Header.Revision, response.Header.Revision)
 }
 
 func TestRawGRPCWatchProgressRequestUsesStreamWideID(t *testing.T) {
