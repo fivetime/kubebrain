@@ -30991,6 +30991,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 PD/3 TiKV 集群的 KubeBrain 3/3 滚动更新后，未知类型 health 与既有 NOSPACE health
   官方双端差分各 20 轮、共 4.319 秒通过；最终 KubeBrain 3/3 Ready/0 restart、PD/TiKV
   3+3 Ready、alarm list 为空，endpoint health 15.585ms。
+- A3424 继续对照 `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 中
+  `installLivezEndpoints`、`installReadyzEndpoints` 与 `activeAlarmCheck` 的职责边界，防止
+  A3423 把通用 alarm 接入 legacy `/health` 时过度扩张到命名探针：类型 127 激活期间，
+  `/livez`、`/livez?verbose`、`/livez/serializable_read?verbose`、`/readyz`、
+  `/readyz?verbose` 和 `/readyz/data_corruption?verbose` 必须全部保持 200；`readyz` 的
+  `data_corruption` 只匹配 CORRUPT。官方 `CheckRegistry.checks` 是 map，verbose 分项行序
+  非协议且官方同进程自对照会随机变化，因此差分仅对分项行做排序规范化，仍严格固定路径、
+  状态码、完整分项集合和最终 `ok`。显式官方 oracle 自对照 20 轮 0.280 秒、A3423 生产镜像
+  对真实独立 3 PD/3 TiKV 双端 20 轮 1.474 秒、race 5 轮 1.563 秒通过；本轮未发现实现
+  差异，新增回归门禁用于防止通用 alarm 将 livez/readyz 误报为不可用。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
