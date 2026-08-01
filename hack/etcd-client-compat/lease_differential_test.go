@@ -35,17 +35,6 @@ type leaseDifferentialResult struct {
 	ReusedGrantedTTL  int64
 }
 
-type leaseRevisionOracle struct {
-	Grant     int64
-	Put       int64
-	TTL       int64
-	KeepAlive int64
-	List      int64
-	Revoke    int64
-	Unknown   int64
-	Delete    int64
-}
-
 func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -55,25 +44,30 @@ func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if kubebrain == "" {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for differential tests")
 	}
-	wantRevision := leaseRevisionOracle{
-		Grant: 0, Put: 1, TTL: 1, KeepAlive: 1, List: 1, Revoke: 2, Unknown: 2, Delete: 5,
-	}
 	referenceOutcome := runLeaseDifferentialScenario(t, reference, "etcd")
-	require.Equal(t, wantRevision, leaseRevisionOutcome(referenceOutcome))
-	require.Equal(t, referenceOutcome, runLeaseDifferentialScenario(t, kubebrain, "kubebrain"))
-}
-
-func leaseRevisionOutcome(outcome leaseDifferentialResult) leaseRevisionOracle {
-	return leaseRevisionOracle{
-		Grant:     outcome.GrantRevision,
-		Put:       outcome.PutRevision,
-		TTL:       outcome.TTLRevision,
-		KeepAlive: outcome.KeepAliveRevision,
-		List:      outcome.ListRevision,
-		Revoke:    outcome.RevokeRevision,
-		Unknown:   outcome.UnknownRevision,
-		Delete:    outcome.DeleteRevision,
+	want := leaseDifferentialResult{
+		PutRevision:       1,
+		TTLRevision:       1,
+		GrantedTTL:        300,
+		TTLKeys:           1,
+		KeepAliveRevision: 1,
+		KeepAliveTTL:      300,
+		ListRevision:      1,
+		ListContainsLease: true,
+		RevokeRevision:    2,
+		UnknownRevision:   2,
+		UnknownTTL:        -1,
+		MinimumGrantedTTL: 2,
+		DeleteRevision:    5,
+		DeleteCount:       2,
+		DeletePrev: []normalizedKV{
+			{Key: "leased", Value: "leased-value", CreateRev: 3, ModRev: 3, Version: 1, HasLease: true},
+			{Key: "plain", Value: "plain-value", CreateRev: 4, ModRev: 4, Version: 1},
+		},
+		ReusedGrantedTTL: 301,
 	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runLeaseDifferentialScenario(t, kubebrain, "kubebrain"))
 }
 
 func TestLeaseListExpiryOrderAgainstReferenceEtcd(t *testing.T) {
