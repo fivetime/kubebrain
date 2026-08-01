@@ -25,7 +25,7 @@ type watchRevisionBoundaryOutcome struct {
 	ProgressAfterStart       bool
 	Canceled                 bool
 	CancelReason             string
-	CancelHeaderAtOrAfterPut bool
+	CancelHeaderAtPut        bool
 }
 
 func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -59,12 +59,12 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			ProgressAfterStart:       true,
 		},
 		{
-			Name:                     "maximum",
-			Created:                  true,
-			CreatedHeaderAtBase:      true,
-			EventValues:              []string{},
-			Canceled:                 true,
-			CancelHeaderAtOrAfterPut: true,
+			Name:                "maximum",
+			Created:             true,
+			CreatedHeaderAtBase: true,
+			EventValues:         []string{},
+			Canceled:            true,
+			CancelHeaderAtPut:   true,
 		},
 	}
 	referenceOutcomes := runWatchRevisionBoundaryScenario(t, reference, "etcd")
@@ -209,13 +209,13 @@ func runWatchRevisionBoundaryScenario(
 		}))
 		canceled := recvWatchResponse(t, stream)
 		outcomes = append(outcomes, watchRevisionBoundaryOutcome{
-			Name:                     "maximum",
-			Created:                  created.Created,
-			CreatedHeaderAtBase:      created.Header.Revision >= base.Header.Revision,
-			EventValues:              []string{},
-			Canceled:                 canceled.Canceled,
-			CancelReason:             canceled.CancelReason,
-			CancelHeaderAtOrAfterPut: canceled.Header.Revision >= put.Header.Revision,
+			Name:                "maximum",
+			Created:             created.Created,
+			CreatedHeaderAtBase: created.Header.Revision == base.Header.Revision,
+			EventValues:         []string{},
+			Canceled:            canceled.Canceled,
+			CancelReason:        canceled.CancelReason,
+			CancelHeaderAtPut:   canceled.Header.Revision == put.Header.Revision,
 		})
 		require.NoError(t, stream.CloseSend())
 	})
@@ -262,7 +262,7 @@ func normalizeWatchRevisionOutcome(
 	return watchRevisionBoundaryOutcome{
 		Name:                 name,
 		Created:              created.Created,
-		CreatedHeaderAtBase:  created.Header.Revision >= baseRevision,
+		CreatedHeaderAtBase:  created.Header.Revision == baseRevision,
 		EventValues:          values,
 		EventAtWriteRevision: eventAtWriteRevision,
 	}

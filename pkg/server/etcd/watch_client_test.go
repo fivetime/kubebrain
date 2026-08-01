@@ -1562,6 +1562,7 @@ func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
 	require.True(t, created.Created)
 	require.False(t, created.Canceled)
 	require.Equal(t, int64(303), created.WatchId)
+	require.Equal(t, base.Header.Revision, created.Header.Revision)
 
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{
@@ -1666,7 +1667,7 @@ func TestRawGRPCWatchMaximumStartRevisionCancelsWithoutEvents(t *testing.T) {
 	require.True(t, created.Created)
 	require.False(t, created.Canceled)
 	require.Equal(t, int64(304), created.WatchId)
-	require.GreaterOrEqual(t, created.Header.Revision, base.Header.Revision)
+	require.Equal(t, base.Header.Revision, created.Header.Revision)
 
 	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("below-maximum")})
 	require.NoError(t, err)
@@ -1683,7 +1684,7 @@ func TestRawGRPCWatchMaximumStartRevisionCancelsWithoutEvents(t *testing.T) {
 	require.Equal(t, int64(304), canceled.WatchId)
 	require.Empty(t, canceled.Events)
 	require.Empty(t, canceled.CancelReason)
-	require.GreaterOrEqual(t, canceled.Header.Revision, put.Header.Revision)
+	require.Equal(t, put.Header.Revision, canceled.Header.Revision)
 }
 
 func TestRawGRPCWatchRevisionZeroAndHistoricalCurrent(t *testing.T) {
@@ -1733,7 +1734,7 @@ func TestRawGRPCWatchRevisionZeroAndHistoricalCurrent(t *testing.T) {
 	require.True(t, created.Created)
 	require.False(t, created.Canceled)
 	require.Equal(t, int64(301), created.WatchId)
-	require.GreaterOrEqual(t, created.Header.Revision, base.Header.Revision)
+	require.Equal(t, base.Header.Revision, created.Header.Revision)
 
 	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: fromNowKey, Value: []byte("after-create")})
 	require.NoError(t, err)
@@ -1766,7 +1767,7 @@ func TestRawGRPCWatchRevisionZeroAndHistoricalCurrent(t *testing.T) {
 	require.True(t, historicalCreated.Created)
 	require.False(t, historicalCreated.Canceled)
 	require.Equal(t, int64(302), historicalCreated.WatchId)
-	require.GreaterOrEqual(t, historicalCreated.Header.Revision, historicalPut.Header.Revision)
+	require.Equal(t, historicalPut.Header.Revision, historicalCreated.Header.Revision)
 
 	historicalEvent, err := historical.Recv()
 	require.NoError(t, err)

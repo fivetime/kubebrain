@@ -30744,6 +30744,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两次 Put 分别为 `+1/+2`；迁移后 lease A keys 为空、lease B 唯一绑定目标 key，撤销
   空 lease A 必须保持 `+2` 且不删除 B 的绑定，只有撤销 lease B 才推进到 `+3` 并删除
   key；两侧 missing TTL 与 final Range header 同为 `+3`。本地门禁同步固定该索引语义。
+- A3381 将 Watch start-revision 边界双端差分中的宽松 header 下界收紧为精确快照：
+  latest-zero、historical-current、future-next 的 Created response header 必须等于建流前
+  base revision；`StartRevision=MaxInt64` 的 watch 在一次 Put 后显式 Cancel，Cancel response
+  header 必须精确等于该 Put revision，不再允许陈旧或无依据超前的 header 混入控制流。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
