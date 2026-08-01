@@ -1955,11 +1955,11 @@ func TestCompactDifferentialScenarioMatchesEtcd(t *testing.T) {
 
 	compact, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: second.Header.Revision})
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, compact.Header.Revision, second.Header.Revision)
-	require.LessOrEqual(t, compact.Header.Revision, third.Header.Revision)
+	require.Equal(t, third.Header.Revision, compact.Header.Revision)
 
 	boundary, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: second.Header.Revision})
 	require.NoError(t, err)
+	require.Equal(t, third.Header.Revision, boundary.Header.Revision)
 	require.Len(t, boundary.Kvs, 1)
 	require.Equal(t, []byte("v2"), boundary.Kvs[0].Value)
 
@@ -1976,6 +1976,7 @@ func TestCompactDifferentialScenarioMatchesEtcd(t *testing.T) {
 
 	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
+	require.Equal(t, third.Header.Revision, current.Header.Revision)
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, []byte("v2"), current.Kvs[0].Value)
 }

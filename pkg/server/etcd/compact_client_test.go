@@ -67,11 +67,11 @@ func TestClientCompactBoundaryErrorsMatchEtcd(t *testing.T) {
 	require.NoError(t, err)
 	compact, err := client.Compact(ctx, second.Header.Revision)
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, compact.Header.Revision, second.Header.Revision)
-	require.LessOrEqual(t, compact.Header.Revision, third.Header.Revision)
+	require.Equal(t, third.Header.Revision, compact.Header.Revision)
 
 	boundary, err := client.Get(ctx, key, clientv3.WithRev(second.Header.Revision))
 	require.NoError(t, err)
+	require.Equal(t, third.Header.Revision, boundary.Header.Revision)
 	require.Len(t, boundary.Kvs, 1)
 	require.Equal(t, "v2", string(boundary.Kvs[0].Value))
 
@@ -86,6 +86,7 @@ func TestClientCompactBoundaryErrorsMatchEtcd(t *testing.T) {
 
 	current, err := client.Get(ctx, key)
 	require.NoError(t, err)
+	require.Equal(t, third.Header.Revision, current.Header.Revision)
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, "v2", string(current.Kvs[0].Value))
 }

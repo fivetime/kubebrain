@@ -30810,6 +30810,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   推进 `0`，删除缺失 key 的 no-op Txn 推进 `0`，随后真实 Put Txn 精确推进 `+1`。
   该门禁与本地 `TestTxnHeaderRevisionDeltasMatchEtcd` 共同防止双方测试端同时退化时掩盖
   read-only/no-op 错误消耗 revision，或单写事务产生 revision 跳号。
+- A3396 将 Compact 成功 header 从 `[target,current]` 宽松区间收紧为当前快照的精确值：
+  连续三次 Put 后 compact 第二个 revision，Compact response header、第二个 revision 的
+  边界历史 Range header、以及最终 latest Range header 均必须等于第三次 Put revision，
+  三个相对 current gap 全为 `0`。官方差分、本地 direct 与 official clientv3 回归同步
+  固定该链，防止 logical compact watermark 被误当作响应 revision 或返回陈旧 header。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

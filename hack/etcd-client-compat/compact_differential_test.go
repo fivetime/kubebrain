@@ -13,18 +13,21 @@ import (
 )
 
 type compactDifferentialResult struct {
-	BoundaryValue   string
-	HistoricalCode  string
-	HistoricalError string
-	RepeatedCode    string
-	RepeatedError   string
-	OlderCode       string
-	OlderError      string
-	FutureCode      string
-	FutureError     string
-	NegativeCode    string
-	NegativeError   string
-	CurrentValue    string
+	CompactHeaderGap  int64
+	BoundaryValue     string
+	BoundaryHeaderGap int64
+	HistoricalCode    string
+	HistoricalError   string
+	RepeatedCode      string
+	RepeatedError     string
+	OlderCode         string
+	OlderError        string
+	FutureCode        string
+	FutureError       string
+	NegativeCode      string
+	NegativeError     string
+	CurrentValue      string
+	CurrentHeaderGap  int64
 }
 
 func TestCompactDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -36,10 +39,11 @@ func TestCompactDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if kubebrain == "" {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for differential tests")
 	}
-	require.Equal(t,
-		runCompactDifferentialScenario(t, reference, "etcd"),
-		runCompactDifferentialScenario(t, kubebrain, "kubebrain"),
-	)
+	referenceOutcome := runCompactDifferentialScenario(t, reference, "etcd")
+	require.Zero(t, referenceOutcome.CompactHeaderGap)
+	require.Zero(t, referenceOutcome.BoundaryHeaderGap)
+	require.Zero(t, referenceOutcome.CurrentHeaderGap)
+	require.Equal(t, referenceOutcome, runCompactDifferentialScenario(t, kubebrain, "kubebrain"))
 }
 
 func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) compactDifferentialResult {
@@ -59,8 +63,6 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	require.NoError(t, err)
 	compact, err := cli.Compact(ctx, second.Header.Revision)
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, compact.Header.Revision, second.Header.Revision)
-	require.LessOrEqual(t, compact.Header.Revision, third.Header.Revision)
 
 	boundary, err := cli.Get(ctx, key, clientv3.WithRev(second.Header.Revision))
 	require.NoError(t, err)
@@ -85,17 +87,20 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	futureCode, futureMessage := normalizeError(futureErr)
 	negativeCode, negativeMessage := normalizeError(negativeErr)
 	return compactDifferentialResult{
-		BoundaryValue:   string(boundary.Kvs[0].Value),
-		HistoricalCode:  historicalCode,
-		HistoricalError: historicalMessage,
-		RepeatedCode:    repeatedCode,
-		RepeatedError:   repeatedMessage,
-		OlderCode:       olderCode,
-		OlderError:      olderMessage,
-		FutureCode:      futureCode,
-		FutureError:     futureMessage,
-		NegativeCode:    negativeCode,
-		NegativeError:   negativeMessage,
-		CurrentValue:    string(current.Kvs[0].Value),
+		CompactHeaderGap:  compact.Header.Revision - third.Header.Revision,
+		BoundaryValue:     string(boundary.Kvs[0].Value),
+		BoundaryHeaderGap: boundary.Header.Revision - third.Header.Revision,
+		HistoricalCode:    historicalCode,
+		HistoricalError:   historicalMessage,
+		RepeatedCode:      repeatedCode,
+		RepeatedError:     repeatedMessage,
+		OlderCode:         olderCode,
+		OlderError:        olderMessage,
+		FutureCode:        futureCode,
+		FutureError:       futureMessage,
+		NegativeCode:      negativeCode,
+		NegativeError:     negativeMessage,
+		CurrentValue:      string(current.Kvs[0].Value),
+		CurrentHeaderGap:  current.Header.Revision - third.Header.Revision,
 	}
 }
