@@ -31066,6 +31066,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定 3.7.0，因此差分比较版本字段存在性而不错误要求字符串相等。官方自对照 20 轮
   0.116 秒、A3427 生产镜像对真实独立 3 PD/3 TiKV 双端 20 轮 0.343 秒、race 5 轮
   1.231 秒通过；本轮未发现实现差异，只增加协议 envelope 回归门禁，无需重建镜像。
+- A3430 对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Hash/HashKV`，把此前
+  仅在 bufconn 单测检查、真实差分层未固定的 Maintenance hash response-header envelope
+  提升为官方 oracle。新差分在同一连接写入探针 key 后调用 `Hash` 和指定该写入 revision 的
+  `HashKV`，要求两个 Header 均存在且 cluster ID/member ID/raft term 为正并跨方法一致；同时
+  要求 `Hash` header 不落后写入，历史 `HashKV` 的 header revision 和 hash revision 都精确钉住
+  请求 revision，compact revision 不越过 hash revision。官方自对照 20 轮 0.197 秒、A3427
+  生产镜像对真实独立 TiKV/PD NodePort 双端 20 轮 9.017 秒、race 5 轮 3.488 秒通过；再分别
+  port-forward 三个 KubeBrain Pod 直连各跑 5 轮，耗时 2.435/2.461/2.439 秒且全部通过，证明
+  production response-header interceptor 并非只在负载均衡命中的单个副本生效。本轮未发现
+  实现差异，只增加回归门禁和多副本运行证据，无需重建镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
