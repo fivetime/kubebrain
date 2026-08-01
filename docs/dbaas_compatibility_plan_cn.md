@@ -30688,6 +30688,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   seed revision gap=0、最终仅 seed 存活；四类合法的互斥分支/重复 delete/disjoint
   interval 组合则明确要求非 nil、Succeeded response。该证据防止 duplicate interval
   检查被错误后移到部分写执行或 revision 分配之后。
+- A3370 消除 A3369 合法 case 共享 keyspace 的交叉污染：十个 duplicate interval
+  子场景各用独立前缀，nested/repeated delete 合法场景额外预置目标 key；非法组合仍固定
+  gap=0/仅 seed，合法 disjoint put、mutually-exclusive put、nested overlapping delete
+  与 repeated overlapping delete 则分别固定恰好一个 user revision，并验证最终目标值或
+  删除结果。双端 outcome 因而同时比较 acceptance、单 revision 和隔离后的精确 keyspace。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
