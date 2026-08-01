@@ -30774,6 +30774,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   等于 seed revision，8 次更新依次为 `base+n`、version `n+1`；每路 Event header、KV
   ModRevision/CreateRevision/Version 必须一致。三路 PrevKV 额外返回 `base+n-1`、version `n`
   的前态，另三路始终无 PrevKV，固定共享 TiKV 变更流上不同订阅选项的游标与数据隔离。
+- A3388 将 latest/historical/future Watch start-revision 差分补齐精确事件帧游标：三种
+  Event response header 均必须等于事件 KV ModRevision；future watch 在 unrelated Put 后由
+  目标 Put 达到 start revision，建流前 progress 继续被抑制，事件后的显式 Progress header
+  必须精确等于目标 Put revision，不再只接受任意 `>= startRevision` 的超前游标。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

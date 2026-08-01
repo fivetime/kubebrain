@@ -21,8 +21,9 @@ type watchRevisionBoundaryOutcome struct {
 	CreatedHeaderAtBase      bool
 	EventValues              []string
 	EventAtWriteRevision     bool
+	EventHeaderAtWrite       bool
 	ProgressSuppressedFuture bool
-	ProgressAfterStart       bool
+	ProgressAtWrite          bool
 	Canceled                 bool
 	CancelReason             string
 	CancelHeaderAtPut        bool
@@ -41,6 +42,7 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			CreatedHeaderAtBase:  true,
 			EventValues:          []string{"after-create"},
 			EventAtWriteRevision: true,
+			EventHeaderAtWrite:   true,
 		},
 		{
 			Name:                 "historical-current",
@@ -48,6 +50,7 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			CreatedHeaderAtBase:  true,
 			EventValues:          []string{"seed"},
 			EventAtWriteRevision: true,
+			EventHeaderAtWrite:   true,
 		},
 		{
 			Name:                     "future-next",
@@ -55,8 +58,9 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			CreatedHeaderAtBase:      true,
 			EventValues:              []string{"future"},
 			EventAtWriteRevision:     true,
+			EventHeaderAtWrite:       true,
 			ProgressSuppressedFuture: true,
-			ProgressAfterStart:       true,
+			ProgressAtWrite:          true,
 		},
 		{
 			Name:                "maximum",
@@ -183,9 +187,9 @@ func runWatchRevisionBoundaryScenario(
 			"future-next", created, event, base.Header.Revision, put.Header.Revision,
 		)
 		outcome.ProgressSuppressedFuture = progressSuppressed
-		outcome.ProgressAfterStart = !progress.Created && !progress.Canceled &&
+		outcome.ProgressAtWrite = !progress.Created && !progress.Canceled &&
 			len(progress.Events) == 0 && progress.Header != nil &&
-			progress.Header.Revision >= startRevision
+			progress.Header.Revision == put.Header.Revision
 		outcomes = append(outcomes, outcome)
 		require.NoError(t, stream.CloseSend())
 	})
@@ -265,5 +269,6 @@ func normalizeWatchRevisionOutcome(
 		CreatedHeaderAtBase:  created.Header.Revision == baseRevision,
 		EventValues:          values,
 		EventAtWriteRevision: eventAtWriteRevision,
+		EventHeaderAtWrite:   event.Header != nil && event.Header.Revision == writeRevision,
 	}
 }

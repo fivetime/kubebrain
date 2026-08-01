@@ -1633,6 +1633,7 @@ func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
 	require.False(t, event.Created)
 	require.False(t, event.Canceled)
 	require.Equal(t, int64(303), event.WatchId)
+	require.Equal(t, put.Header.Revision, event.Header.Revision)
 	require.Len(t, event.Events, 1)
 	require.Equal(t, []byte("future"), event.Events[0].Kv.Value)
 	require.Equal(t, put.Header.Revision, event.Events[0].Kv.ModRevision)
@@ -1649,7 +1650,7 @@ func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
 	require.False(t, progress.Canceled)
 	require.Equal(t, int64(-1), progress.WatchId)
 	require.Empty(t, progress.Events)
-	require.GreaterOrEqual(t, progress.Header.Revision, startRevision)
+	require.Equal(t, put.Header.Revision, progress.Header.Revision)
 }
 
 func TestRawGRPCWatchMaximumStartRevisionCancelsWithoutEvents(t *testing.T) {
@@ -1777,6 +1778,7 @@ func TestRawGRPCWatchRevisionZeroAndHistoricalCurrent(t *testing.T) {
 	require.False(t, event.Created)
 	require.False(t, event.Canceled)
 	require.Equal(t, int64(301), event.WatchId)
+	require.Equal(t, put.Header.Revision, event.Header.Revision)
 	require.Len(t, event.Events, 1)
 	require.Equal(t, []byte("after-create"), event.Events[0].Kv.Value)
 	require.Equal(t, put.Header.Revision, event.Events[0].Kv.ModRevision)
@@ -1808,6 +1810,7 @@ func TestRawGRPCWatchRevisionZeroAndHistoricalCurrent(t *testing.T) {
 	require.False(t, historicalEvent.Created)
 	require.False(t, historicalEvent.Canceled)
 	require.Equal(t, int64(302), historicalEvent.WatchId)
+	require.Equal(t, historicalPut.Header.Revision, historicalEvent.Header.Revision)
 	require.Len(t, historicalEvent.Events, 1)
 	require.Equal(t, []byte("seed"), historicalEvent.Events[0].Kv.Value)
 	require.Equal(t, historicalPut.Header.Revision, historicalEvent.Events[0].Kv.ModRevision)
