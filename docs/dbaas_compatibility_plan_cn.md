@@ -30784,6 +30784,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CompactRevision 推导 ErrCompacted，不能误套创建校验失败的 WatchId=-1 单帧外观，也不能
   填错误文本或当前 header。KubeBrain 修正 runtime/follower compact cancel 后，同一 stream
   可从 `+4` 创建 WatchId=708 并收到 Put `+4` 事件，证明取消不关闭流且恢复游标不可混淆。
+- A3390 将 Watch control 双端差分从双方互比升级为 9 帧显式状态机：explicit ID 42 创建后
+  duplicate 返回 WatchId=-1 的 Created+Canceled；unknown cancel 静默，后续 43/45 创建与
+  negative revision 错误顺序不乱；取消 42 后 automatic ID 依次为 0、取消 0、再分配 1，
+  不回收已取消 ID。全流无 KV 写，九帧 header 均保持 seed revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
