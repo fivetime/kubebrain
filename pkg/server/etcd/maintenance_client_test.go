@@ -659,6 +659,7 @@ func TestRawGRPCAlarmMemberSetRoundTrip(t *testing.T) {
 	defer closeFn()
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
 	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
 	listener := bufconn.Listen(1 << 20)
 	go func() { _ = grpcServer.Serve(listener) }()
@@ -672,9 +673,22 @@ func TestRawGRPCAlarmMemberSetRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+	kv := etcdserverpb.NewKVClient(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/a3418/alarm-member-set-header"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	requireAlarmHeader := func(response *etcdserverpb.AlarmResponse) {
+		t.Helper()
+		require.NotNil(t, response.Header)
+		require.Equal(t, seed.Header.Revision, response.Header.Revision)
+		require.NotZero(t, response.Header.ClusterId)
+		require.NotZero(t, response.Header.MemberId)
+		require.Positive(t, response.Header.RaftTerm)
+	}
 	const (
 		first  = uint64(0xa1003)
 		second = uint64(0xa1004)
@@ -694,6 +708,7 @@ func TestRawGRPCAlarmMemberSetRoundTrip(t *testing.T) {
 			Action: action, Alarm: etcdserverpb.AlarmType_NOSPACE, MemberID: memberID,
 		})
 		require.NoError(t, callErr)
+		requireAlarmHeader(resp)
 		return nospaceMembers(resp)
 	}
 	list := func() []uint64 {
@@ -702,6 +717,7 @@ func TestRawGRPCAlarmMemberSetRoundTrip(t *testing.T) {
 			Action: etcdserverpb.AlarmRequest_GET, Alarm: etcdserverpb.AlarmType_NOSPACE,
 		})
 		require.NoError(t, callErr)
+		requireAlarmHeader(resp)
 		return nospaceMembers(resp)
 	}
 

@@ -30929,6 +30929,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   差分升级为显式 oracle：同一 `(NOSPACE, memberID)` 重复 Activate 必须幂等并返回既有成员，
   Activate/Deactivate 的响应只携带本次成员而非完整集合；删除不存在成员成功且返回非 nil
   空集合，GET 则依次反映双成员、单成员和非 nil 空集合状态。
+- A3418 对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Alarm` 的统一 Header
+  装配，把 A3417 的九步 alarm oracle 锚定到一次 seed Put：所有 Activate、Deactivate 与 GET
+  响应都必须带非零 ClusterID/MemberID、正 RaftTerm，且 revision 与 seed 完全相同，证明 alarm
+  raft mutation 不占用 MVCC revision。KubeBrain bufconn 回归在同一完整状态转换中逐响应固定
+  这些 Header 不变量，避免只验证最终 payload 而漏掉 maintenance wrapper 的客户端外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
