@@ -231,9 +231,13 @@ func TestTxnConcurrentCreateDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	kubebrain := runConcurrentCreateScenario(t, compatEndpoint(), "kubebrain")
 	etcd := runConcurrentCreateScenario(t, reference, "etcd")
-	require.Equal(t, etcd, kubebrain)
+	want := concurrentCreateResult{
+		Succeeded: 1, Failed: 31, FinalKVs: 1, FinalRevision: 1,
+		FinalCreateRev: 1, FinalModRev: 1, FinalVersion: 1, FinalMatchesWinner: true,
+	}
+	require.Equal(t, want, etcd)
+	require.Equal(t, etcd, runConcurrentCreateScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 type txnLeaseResult struct {
@@ -335,9 +339,19 @@ func runTxnLeaseScenario(t *testing.T, endpoint, instance string) txnLeaseResult
 }
 
 type concurrentCreateResult struct {
-	Succeeded int
-	Failed    int
-	FinalKVs  int
+	Succeeded          int
+	Failed             int
+	FinalKVs           int
+	FinalRevision      int64
+	FinalCreateRev     int64
+	FinalModRev        int64
+	FinalVersion       int64
+	FinalMatchesWinner bool
+}
+
+type concurrentCreateAttempt struct {
+	succeeded bool
+	value     string
 }
 
 func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concurrentCreateResult {
@@ -347,9 +361,14 @@ func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concur
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 
 	key := fmt.Sprintf("/dbaas-differential/%s/concurrent-create/%d", instance, time.Now().UnixNano())
+	baseCtx, baseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	base, err := cli.Get(baseCtx, key)
+	baseCancel()
+	require.NoError(t, err)
+	baseRev := base.Header.Revision
 	const contenders = 32
 	start := make(chan struct{})
-	results := make(chan bool, contenders)
+	results := make(chan concurrentCreateAttempt, contenders)
 	errs := make(chan error, contenders)
 	var wg sync.WaitGroup
 	for i := 0; i < contenders; i++ {
@@ -359,16 +378,17 @@ func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concur
 			<-start
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
+			value := fmt.Sprintf("winner-%d", i)
 			resp, err := cli.Txn(ctx).
 				If(clientv3.Compare(clientv3.Version(key), "=", 0)).
-				Then(clientv3.OpPut(key, fmt.Sprintf("winner-%d", i))).
+				Then(clientv3.OpPut(key, value)).
 				Else(clientv3.OpGet(key)).
 				Commit()
 			if err != nil {
 				errs <- err
 				return
 			}
-			results <- resp.Succeeded
+			results <- concurrentCreateAttempt{succeeded: resp.Succeeded, value: value}
 		}(i)
 	}
 	close(start)
@@ -380,9 +400,11 @@ func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concur
 	}
 
 	result := concurrentCreateResult{}
-	for succeeded := range results {
-		if succeeded {
+	winners := make(map[string]struct{}, 1)
+	for attempt := range results {
+		if attempt.succeeded {
 			result.Succeeded++
+			winners[attempt.value] = struct{}{}
 		} else {
 			result.Failed++
 		}
@@ -392,7 +414,13 @@ func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concur
 	final, err := cli.Get(ctx, key)
 	require.NoError(t, err)
 	result.FinalKVs = len(final.Kvs)
-	require.Equal(t, concurrentCreateResult{Succeeded: 1, Failed: contenders - 1, FinalKVs: 1}, result)
+	result.FinalRevision = final.Header.Revision - baseRev
+	if len(final.Kvs) == 1 {
+		result.FinalCreateRev = final.Kvs[0].CreateRevision - baseRev
+		result.FinalModRev = final.Kvs[0].ModRevision - baseRev
+		result.FinalVersion = final.Kvs[0].Version
+		_, result.FinalMatchesWinner = winners[string(final.Kvs[0].Value)]
+	}
 	_, _ = cli.Delete(ctx, key)
 	return result
 }

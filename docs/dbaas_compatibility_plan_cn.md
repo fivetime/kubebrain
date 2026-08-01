@@ -30898,6 +30898,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 仍合并为单个 response、包含两个 DELETE event 且 Fragment=false，证明请求中的
   Fragment=true 并不强制拆分；response header 和两个 event ModRevision 都等于删除 revision，
   两个 PrevKV value 都完整保留 819200 bytes，created response 不额外推进 revision。
+- A3412 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 compare+write 原子提交，将 32 路
+  concurrent create 差分从计数断言升级为完整后置 oracle：VERSION=0 竞争严格一个 success、
+  31 个 failure，最终只有一个 KV 且其 value 必须来自唯一 success contender；失败分支的 Get
+  不推进 revision，最终 header/create/mod 均仅为 `+1`、version=1，防止失败事务污染 revision
+  或覆盖赢家。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
