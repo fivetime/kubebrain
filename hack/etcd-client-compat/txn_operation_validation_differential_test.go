@@ -132,6 +132,48 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 				}},
 			}}},
 		},
+		{
+			name: "nested-unselected-failure-empty-operation-is-statically-validated",
+			txn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Compare: []*etcdserverpb.Compare{{
+						Key:         key,
+						Result:      etcdserverpb.Compare_EQUAL,
+						Target:      etcdserverpb.Compare_VERSION,
+						TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+					}},
+					Success: []*etcdserverpb.RequestOp{{
+						Request: &etcdserverpb.RequestOp_RequestRange{
+							RequestRange: &etcdserverpb.RangeRequest{Key: key},
+						},
+					}},
+					Failure: []*etcdserverpb.RequestOp{{}},
+				}},
+			}}},
+		},
+		{
+			name: "nested-unselected-success-empty-delete-is-statically-validated",
+			txn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Compare: []*etcdserverpb.Compare{{
+						Key:         key,
+						Result:      etcdserverpb.Compare_EQUAL,
+						Target:      etcdserverpb.Compare_VERSION,
+						TargetUnion: &etcdserverpb.Compare_Version{Version: 1},
+					}},
+					Success: []*etcdserverpb.RequestOp{{
+						Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+							RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{RangeEnd: []byte{0}, PrevKv: true},
+						},
+					}},
+					Failure: []*etcdserverpb.RequestOp{{
+						Request: &etcdserverpb.RequestOp_RequestRange{
+							RequestRange: &etcdserverpb.RangeRequest{Key: key},
+						},
+					}},
+				}},
+			}}},
+		},
 	}
 
 	outcomes := make([]txnOperationValidationOutcome, 0, len(tests))
