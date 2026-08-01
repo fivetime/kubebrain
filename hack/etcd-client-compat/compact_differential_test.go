@@ -40,9 +40,21 @@ func TestCompactDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for differential tests")
 	}
 	referenceOutcome := runCompactDifferentialScenario(t, reference, "etcd")
-	require.Zero(t, referenceOutcome.CompactHeaderGap)
-	require.Zero(t, referenceOutcome.BoundaryHeaderGap)
-	require.Zero(t, referenceOutcome.CurrentHeaderGap)
+	want := compactDifferentialResult{
+		BoundaryValue:   "v2",
+		HistoricalCode:  "Unknown",
+		HistoricalError: "etcdserver: mvcc: required revision has been compacted",
+		RepeatedCode:    "Unknown",
+		RepeatedError:   "etcdserver: mvcc: required revision has been compacted",
+		OlderCode:       "Unknown",
+		OlderError:      "etcdserver: mvcc: required revision has been compacted",
+		FutureCode:      "Unknown",
+		FutureError:     "etcdserver: mvcc: required revision is a future revision",
+		NegativeCode:    "Unknown",
+		NegativeError:   "etcdserver: mvcc: required revision has been compacted",
+		CurrentValue:    "v2",
+	}
+	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runCompactDifferentialScenario(t, kubebrain, "kubebrain"))
 }
 

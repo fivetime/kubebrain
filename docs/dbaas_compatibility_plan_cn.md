@@ -30841,6 +30841,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   a/b 的 ModRevision 都为 `+1`。参考反例同时固定 public clientv3 对缺失 key IgnoreLease
   Put 暴露 `Unknown: etcdserver: key not found`（即使底层重试日志为 InvalidArgument），避免
   把服务端内部分类误写成客户端外观。
+- A3402 对照 `/root/etcd/server/storage/mvcc/kvstore.go` 的 compaction revision 边界，
+  将主 Compact 双端差分升级为完整 clientv3 oracle：压缩到第二次写 revision 后，Compact
+  response、边界历史读与当前读 header 都保持最新第三次写 revision，边界与当前值均为
+  `v2`；历史读、重复/更旧/负 revision Compact 对外均为 `Unknown: ... compacted`，未来
+  revision Compact 对外为 `Unknown: ... future revision`。这同时固定底层 gRPC
+  `OutOfRange` 经 public clientv3 映射后的可观察错误外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
