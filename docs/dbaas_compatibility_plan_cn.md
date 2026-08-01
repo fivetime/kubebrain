@@ -30748,6 +30748,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   latest-zero、historical-current、future-next 的 Created response header 必须等于建流前
   base revision；`StartRevision=MaxInt64` 的 watch 在一次 Put 后显式 Cancel，Cancel response
   header 必须精确等于该 Put revision，不再允许陈旧或无依据超前的 header 混入控制流。
+- A3382 将 signed watch ID、重复 ID、negative revision、equal/descending range、automatic
+  ID 与 cancel 的 17 个连续控制响应固定在同一 seed revision：流内无 KV 写时，所有成功
+  Created、创建失败 Canceled 与显式 Cancel response header 必须精确等于 seed；unknown
+  cancel 继续静默且不打乱后续响应。该门禁防止控制流错误推进或返回陈旧 Watch revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

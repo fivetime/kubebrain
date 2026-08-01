@@ -493,7 +493,7 @@ func TestWatchRequestedIDDuplicateAndUnknownCancelMatchEtcd(t *testing.T) {
 func TestWatchSignedIDCreateAndCancelBoundariesMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+	seed, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
 		Key: []byte("/watch/signed-id-seed"), Value: []byte("seed"),
 	})
 	require.NoError(t, err)
@@ -534,7 +534,7 @@ func TestWatchSignedIDCreateAndCancelBoundariesMatchEtcd(t *testing.T) {
 		require.False(t, stream.sent[i].Canceled)
 		require.Equal(t, id, stream.sent[i].WatchId)
 		require.NotNil(t, stream.sent[i].Header)
-		require.Positive(t, stream.sent[i].Header.Revision)
+		require.Equal(t, seed.Header.Revision, stream.sent[i].Header.Revision)
 	}
 
 	for i, id := range ids {
@@ -544,13 +544,17 @@ func TestWatchSignedIDCreateAndCancelBoundariesMatchEtcd(t *testing.T) {
 		require.Equal(t, id, response.WatchId)
 		require.Empty(t, response.CancelReason)
 		require.NotNil(t, response.Header)
-		require.Positive(t, response.Header.Revision)
+		require.Equal(t, seed.Header.Revision, response.Header.Revision)
 	}
 }
 
 func TestWatchInvalidCreateAutomaticIDAndUnknownCancelKeepStreamAlive(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	seed, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/watch/id-range/seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
 
 	stream := &scriptedWatchServer{
 		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
@@ -618,6 +622,10 @@ func TestWatchInvalidCreateAutomaticIDAndUnknownCancelKeepStreamAlive(t *testing
 	require.Equal(t, int64(103), stream.sent[5].WatchId)
 	require.True(t, stream.sent[6].Canceled)
 	require.Equal(t, int64(103), stream.sent[6].WatchId)
+	for _, response := range stream.sent {
+		require.NotNil(t, response.Header)
+		require.Equal(t, seed.Header.Revision, response.Header.Revision)
+	}
 }
 
 func TestClientWatchCancelHeaderUsesCurrentRevisionBeforeEventsPublish(t *testing.T) {

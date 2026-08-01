@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -15,12 +16,12 @@ import (
 )
 
 type watchIDRangeBoundaryOutcome struct {
-	Name           string
-	WatchID        int64
-	Created        bool
-	Canceled       bool
-	CancelReason   string
-	HeaderPositive bool
+	Name              string
+	WatchID           int64
+	Created           bool
+	Canceled          bool
+	CancelReason      string
+	HeaderMatchesSeed bool
 }
 
 func TestWatchIDRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -54,18 +55,18 @@ func TestWatchIDRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 }
 
 func watchCreatedBoundaryOutcome(name string, id int64) watchIDRangeBoundaryOutcome {
-	return watchIDRangeBoundaryOutcome{Name: name, WatchID: id, Created: true, HeaderPositive: true}
+	return watchIDRangeBoundaryOutcome{Name: name, WatchID: id, Created: true, HeaderMatchesSeed: true}
 }
 
 func watchCanceledCreateBoundaryOutcome(name, reason string) watchIDRangeBoundaryOutcome {
 	return watchIDRangeBoundaryOutcome{
 		Name: name, WatchID: -1, Created: true, Canceled: true,
-		CancelReason: reason, HeaderPositive: true,
+		CancelReason: reason, HeaderMatchesSeed: true,
 	}
 }
 
 func watchCanceledBoundaryOutcome(name string, id int64) watchIDRangeBoundaryOutcome {
-	return watchIDRangeBoundaryOutcome{Name: name, WatchID: id, Canceled: true, HeaderPositive: true}
+	return watchIDRangeBoundaryOutcome{Name: name, WatchID: id, Canceled: true, HeaderMatchesSeed: true}
 }
 
 func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRangeBoundaryOutcome {
@@ -77,6 +78,15 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+	seedKey := []byte(fmt.Sprintf("/dbaas-watch-id/seed/%d", time.Now().UnixNano()))
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: seedKey, Value: []byte("seed")})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: seedKey})
+	})
 	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stream.CloseSend() })
@@ -88,7 +98,7 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 		outcomes = append(outcomes, watchIDRangeBoundaryOutcome{
 			Name: name, WatchID: resp.WatchId, Created: resp.Created,
 			Canceled: resp.Canceled, CancelReason: resp.CancelReason,
-			HeaderPositive: resp.Header != nil && resp.Header.Revision > 0,
+			HeaderMatchesSeed: resp.Header != nil && resp.Header.Revision == seed.Header.Revision,
 		})
 	}
 	createAtRevision := func(name string, id int64, key, end []byte, revision int64) {
