@@ -30847,6 +30847,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `v2`；历史读、重复/更旧/负 revision Compact 对外均为 `Unknown: ... compacted`，未来
   revision Compact 对外为 `Unknown: ... future revision`。这同时固定底层 gRPC
   `OutOfRange` 经 public clientv3 映射后的可观察错误外观。
+- A3403 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 range compare 全键判定与
+  `/root/etcd/server/etcdserver/txn/delete.go` 的事务内 DeleteRange，固定 raw gRPC 主差分
+  oracle：a/b/c 的 VERSION 都大于零时选择 success，`[b,prefixEnd)` 删除 b/c 并按 key
+  顺序返回 PrevKV，只剩 a；a/b 的 VALUE 不全等于目标值时选择 failure Put，最终按 key
+  顺序留下 a/b/failure。该 oracle 防止参考端和 KubeBrain 同时把 range compare 错误实现
+  为“任一键匹配”，或丢失 DeleteRange 的半开区间与 PrevKV 排序语义。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

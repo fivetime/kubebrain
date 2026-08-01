@@ -33,6 +33,15 @@ func TestTxnRangeCompareDeleteDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcome := runTxnRangeCompareDeleteScenario(t, reference, "etcd")
+	want := txnRangeCompareDeleteOutcome{
+		Succeeded:     true,
+		Deleted:       2,
+		PrevKeys:      []string{"b", "c"},
+		Remaining:     []string{"a"},
+		MissSucceeded: false,
+		MissRemaining: []string{"a", "b", "failure"},
+	}
+	require.Equal(t, want, referenceOutcome)
 	kubebrainOutcome := runTxnRangeCompareDeleteScenario(t, compatEndpoint(), "kubebrain")
 	require.Equal(t, referenceOutcome, kubebrainOutcome)
 }
