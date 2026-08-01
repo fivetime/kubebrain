@@ -14,16 +14,27 @@ import (
 )
 
 type txnIgnoreLeaseOutcome struct {
+	SeedRevision          int64
 	IgnoreValueSucceeded  bool
+	IgnoreValueRevision   int64
 	IgnoreValuePrevValue  string
 	IgnoreValuePrevLeaseA bool
 	StagedValue           string
 	StagedLeaseB          bool
+	StagedCreateRevision  int64
+	StagedModRevision     int64
+	StagedVersion         int64
 	IgnoreLeaseSucceeded  bool
+	IgnoreLeaseRevision   int64
 	IgnoreLeasePrevValue  string
 	IgnoreLeasePrevLeaseB bool
 	FinalValue            string
 	FinalLeaseB           bool
+	FinalCreateRevision   int64
+	FinalModRevision      int64
+	FinalVersion          int64
+	RevokeARevision       int64
+	RevokeBRevision       int64
 	ExistsAfterRevokeA    bool
 	ExistsAfterRevokeB    bool
 	UnselectedBadLeaseOK  bool
@@ -38,10 +49,22 @@ func TestTxnIgnoreLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runTxnIgnoreLeaseScenario(t, reference, "etcd"),
-		runTxnIgnoreLeaseScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceOutcome := runTxnIgnoreLeaseScenario(t, reference, "etcd")
+	want := txnIgnoreLeaseOutcome{
+		SeedRevision: 1, IgnoreValueSucceeded: true, IgnoreValueRevision: 2,
+		IgnoreValuePrevValue: "old", IgnoreValuePrevLeaseA: true,
+		StagedValue: "old", StagedLeaseB: true, StagedCreateRevision: 1,
+		StagedModRevision: 2, StagedVersion: 2,
+		IgnoreLeaseSucceeded: true, IgnoreLeaseRevision: 3,
+		IgnoreLeasePrevValue: "old", IgnoreLeasePrevLeaseB: true,
+		FinalValue: "new", FinalLeaseB: true, FinalCreateRevision: 1,
+		FinalModRevision: 3, FinalVersion: 3,
+		RevokeARevision: 3, RevokeBRevision: 4, ExistsAfterRevokeA: true,
+		UnselectedBadLeaseOK: true,
+		SelectedBadLeaseCode: "Unknown", SelectedBadLeaseError: "etcdserver: requested lease not found",
+	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runTxnIgnoreLeaseScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runTxnIgnoreLeaseScenario(t *testing.T, endpoint, instance string) txnIgnoreLeaseOutcome {
@@ -77,7 +100,10 @@ func runTxnIgnoreLeaseScenario(t *testing.T, endpoint, instance string) txnIgnor
 		}
 	})
 
-	_, err = client.Put(ctx, key, "old", clientv3.WithLease(leaseA.ID))
+	base, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	baseRev := base.Header.Revision
+	seed, err := client.Put(ctx, key, "old", clientv3.WithLease(leaseA.ID))
 	require.NoError(t, err)
 	ignoreValue, err := client.Txn(ctx).Then(
 		clientv3.OpPut(key, "", clientv3.WithIgnoreValue(), clientv3.WithLease(leaseB.ID), clientv3.WithPrevKV()),
@@ -101,12 +127,12 @@ func runTxnIgnoreLeaseScenario(t *testing.T, endpoint, instance string) txnIgnor
 	require.NoError(t, err)
 	require.Len(t, final.Kvs, 1)
 
-	_, err = client.Revoke(ctx, leaseA.ID)
+	revokeA, err := client.Revoke(ctx, leaseA.ID)
 	require.NoError(t, err)
 	revokedA = true
 	afterA, err := client.Get(ctx, key)
 	require.NoError(t, err)
-	_, err = client.Revoke(ctx, leaseB.ID)
+	revokeB, err := client.Revoke(ctx, leaseB.ID)
 	require.NoError(t, err)
 	revokedB = true
 	afterB, err := client.Get(ctx, key)
@@ -131,16 +157,27 @@ func runTxnIgnoreLeaseScenario(t *testing.T, endpoint, instance string) txnIgnor
 	require.NoError(t, err)
 
 	return txnIgnoreLeaseOutcome{
+		SeedRevision:          seed.Header.Revision - baseRev,
 		IgnoreValueSucceeded:  ignoreValue.Succeeded,
+		IgnoreValueRevision:   ignoreValue.Header.Revision - baseRev,
 		IgnoreValuePrevValue:  string(ignoreValuePrev.Value),
 		IgnoreValuePrevLeaseA: ignoreValuePrev.Lease == int64(leaseA.ID),
 		StagedValue:           string(staged[0].Value),
 		StagedLeaseB:          staged[0].Lease == int64(leaseB.ID),
+		StagedCreateRevision:  staged[0].CreateRevision - baseRev,
+		StagedModRevision:     staged[0].ModRevision - baseRev,
+		StagedVersion:         staged[0].Version,
 		IgnoreLeaseSucceeded:  ignoreLease.Succeeded,
+		IgnoreLeaseRevision:   ignoreLease.Header.Revision - baseRev,
 		IgnoreLeasePrevValue:  string(ignoreLeasePrev.Value),
 		IgnoreLeasePrevLeaseB: ignoreLeasePrev.Lease == int64(leaseB.ID),
 		FinalValue:            string(final.Kvs[0].Value),
 		FinalLeaseB:           final.Kvs[0].Lease == int64(leaseB.ID),
+		FinalCreateRevision:   final.Kvs[0].CreateRevision - baseRev,
+		FinalModRevision:      final.Kvs[0].ModRevision - baseRev,
+		FinalVersion:          final.Kvs[0].Version,
+		RevokeARevision:       revokeA.Header.Revision - baseRev,
+		RevokeBRevision:       revokeB.Header.Revision - baseRev,
 		ExistsAfterRevokeA:    len(afterA.Kvs) == 1,
 		ExistsAfterRevokeB:    len(afterB.Kvs) == 1,
 		UnselectedBadLeaseOK:  unselectedBadLease.Succeeded,
