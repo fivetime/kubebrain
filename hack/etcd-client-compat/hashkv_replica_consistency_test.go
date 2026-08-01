@@ -84,8 +84,12 @@ func readReplicaHashKVSnapshots(
 		require.NoError(t, err, "replica %d", i)
 		require.NotNil(t, response.Header, "replica %d", i)
 		require.GreaterOrEqual(t, response.Header.Revision, revision, "replica %d", i)
-		require.Equal(t, revision, response.HashRevision, "replica %d", i)
-		require.LessOrEqual(t, response.CompactRevision, revision, "replica %d", i)
+		if revision == 0 {
+			require.Positive(t, response.HashRevision, "replica %d", i)
+		} else {
+			require.Equal(t, revision, response.HashRevision, "replica %d", i)
+		}
+		require.LessOrEqual(t, response.CompactRevision, response.HashRevision, "replica %d", i)
 		snapshots = append(snapshots, replicaHashKVSnapshot{
 			Hash:            response.Hash,
 			HashRevision:    response.HashRevision,

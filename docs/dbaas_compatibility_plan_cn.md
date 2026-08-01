@@ -31087,6 +31087,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A3427 生产镜像对独立 TiKV/PD 的三个 Pod 直连普通 10 轮 20.400 秒、race 5 轮 11.146 秒通过；
   探针 key 清理为空，三个 Pod Ready/0 restart，endpoint health 13.989ms。本轮未发现实现差异，
   只增加多副本历史快照门禁，无需重建镜像。
+- A3432 对照 `/root/etcd/server/storage/mvcc/hash.go:HashByRev` 和
+  `kvstore_test.go` 的 compact 边界，把 A3431 延伸到真实三副本 logical/physical compaction
+  收敛：分别从三个 Pod 写入三个版本，由中间副本 compact 到第二个 revision；三个副本都必须
+  允许 `HashKV(R)`、对 `HashKV(R-1)` 返回 canonical `OutOfRange/required revision has been
+  compacted`，并在异步物理 compact 收敛后返回相同的 latest hash/hash revision/compact
+  revision，重复读取保持稳定。首版 oracle 错误要求 Compact RPC 返回后边界 hash 立即跨连接
+  相等；官方 etcd 显示 compaction 进行中 `HashKV(R)` 可命中在新旧 watermark 两侧计算的缓存，
+  因而 R 只保证可读，最新摘要才承担最终收敛保证。按源码校准后官方三连接 5 轮 8.903 秒、
+  A3427 生产镜像对三个 Pod 直连普通 3 轮 10.544 秒、race 5 轮 18.889 秒通过；compat 定向
+  compile 与 `go vet` 通过，探针 key 清理为空，三个 Pod Ready/0 restart，endpoint health
+  13.459ms。本轮未发现实现差异，只增加 compact 瞬态与最终收敛门禁，无需重建镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
