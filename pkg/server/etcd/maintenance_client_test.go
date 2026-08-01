@@ -783,8 +783,16 @@ func TestRawGRPCAlarmUnknownTypeLifecycleMatchesEtcd(t *testing.T) {
 		}
 		return members
 	}
+	statusErrors := func() []string {
+		t.Helper()
+		response, callErr := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
+		require.NoError(t, callErr)
+		return response.Errors
+	}
 
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_ACTIVATE, memberID))
+	alarmError := (&etcdserverpb.AlarmMember{MemberID: memberID, Alarm: alarm}).String()
+	require.Equal(t, []string{alarmError}, statusErrors())
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_ACTIVATE, memberID))
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_GET, 0))
 	all, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
@@ -792,8 +800,10 @@ func TestRawGRPCAlarmUnknownTypeLifecycleMatchesEtcd(t *testing.T) {
 	require.Equal(t, []*etcdserverpb.AlarmMember{{MemberID: memberID, Alarm: alarm}}, all.Alarms)
 	require.Equal(t, seed.Header.Revision, all.Header.Revision)
 	require.Empty(t, call(etcdserverpb.AlarmRequest_DEACTIVATE, memberID+1))
+	require.Equal(t, []string{alarmError}, statusErrors())
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_GET, 0))
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_DEACTIVATE, memberID))
+	require.Empty(t, statusErrors())
 	require.Empty(t, call(etcdserverpb.AlarmRequest_GET, 0))
 }
 

@@ -287,6 +287,13 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 			MemberID: memberID, Alarm: etcdserverpb.AlarmType_CORRUPT,
 		}).String())
 	}
+	genericAlarms, err := s.genericAlarms(ctx, etcdserverpb.AlarmType_NONE)
+	if err != nil {
+		return nil, err
+	}
+	for _, alarm := range genericAlarms {
+		resp.Errors = append(resp.Errors, alarm.String())
+	}
 	return resp, nil
 }
 

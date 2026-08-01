@@ -30957,6 +30957,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   alarm list 为空，PD/TiKV 3+3 Ready。首次未传 build args 的 Docker 构建按预期失败且未发布；
   首次 live 命令误用未映射的 `127.0.0.1:30079` 得到 connection refused，改用 Service 公布的
   `172.18.0.2:30079` 后通过，二者都不计作协议失败。
+- A3421 对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Status` 遍历
+  `Alarms()` 全集合的行为，关闭 A3420 通用 alarm 只在 Alarm RPC 可见、却未进入
+  `Status.Errors` 的差距。类型 127 激活后 Status 必须包含对应 `AlarmMember.String()`，错误
+  member Deactivate 后保持，正确 Deactivate 后清空；三个 Status Header revision 都与 seed
+  相同。官方自对照 20 轮通过，A3420 真实 TiKV 镜像按预期复现 active/错误 member 两阶段
+  Errors 为空的红灯；KubeBrain 现于 NOSPACE、CORRUPT 之后追加全部持久通用 alarm。bufconn
+  生命周期 50 轮、相关完整 package 与 race 5 轮通过。带该修复的新镜像及真实 TiKV 绿灯仍需
+  在对应 commit 后构建验证，不能用 A3420 红灯集群替代。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
