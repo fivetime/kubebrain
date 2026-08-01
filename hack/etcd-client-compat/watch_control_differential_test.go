@@ -37,10 +37,18 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		EventValue: "1", ProgressWatchID: -1, ProgressHeaderGap: 1, ProgressEmpty: true,
 	}, referenceProgress)
 	require.Equal(t, referenceProgress, runSingleWatchProgressScenario(t, compatEndpoint(), "kubebrain"))
-	require.Equal(t,
-		runWatchFilterEnumScenario(t, reference, "reference"),
-		runWatchFilterEnumScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceFilters := runWatchFilterEnumScenario(t, reference, "reference")
+	require.Equal(t, watchFilterEnumOutcome{
+		Unknown: watchFilterRunOutcome{
+			Types: []int32{0, 1}, DeleteRevisionGap: 1, CreatedHeaderGap: 1,
+			ResponseHeaderGaps: []int64{1}, EventModRevisionGaps: []int64{0, 1},
+		},
+		Duplicate: watchFilterRunOutcome{
+			Types: []int32{1}, DeleteRevisionGap: 1, CreatedHeaderGap: 1,
+			ResponseHeaderGaps: []int64{1}, EventModRevisionGaps: []int64{1},
+		},
+	}, referenceFilters)
+	require.Equal(t, referenceFilters, runWatchFilterEnumScenario(t, compatEndpoint(), "kubebrain"))
 	referenceInvalid := runWatchInvalidControlScenario(t, reference, "reference")
 	require.Equal(t, []watchControlOutcome{
 		{WatchID: 0, Created: true, HeaderMatchesSeed: true},
@@ -58,8 +66,16 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 }
 
 type watchFilterEnumOutcome struct {
-	UnknownTypes   []int32
-	DuplicateTypes []int32
+	Unknown   watchFilterRunOutcome
+	Duplicate watchFilterRunOutcome
+}
+
+type watchFilterRunOutcome struct {
+	Types                []int32
+	DeleteRevisionGap    int64
+	CreatedHeaderGap     int64
+	ResponseHeaderGaps   []int64
+	EventModRevisionGaps []int64
 }
 
 func runWatchInvalidControlScenario(t *testing.T, endpoint, instance string) []watchControlOutcome {
@@ -149,12 +165,14 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 		})
 	})
 
-	run := func(suffix string, filters []etcdserverpb.WatchCreateRequest_FilterType, wantEvents int) []int32 {
+	run := func(suffix string, filters []etcdserverpb.WatchCreateRequest_FilterType, wantEvents int) watchFilterRunOutcome {
 		key := []byte(prefix + suffix)
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
 		require.NoError(t, putErr)
-		_, deleteErr := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		deleted, deleteErr := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
 		require.NoError(t, deleteErr)
+		require.NotNil(t, put.Header)
+		require.NotNil(t, deleted.Header)
 
 		stream, watchErr := etcdserverpb.NewWatchClient(conn).Watch(ctx)
 		require.NoError(t, watchErr)
@@ -166,24 +184,35 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 		created, recvErr := stream.Recv()
 		require.NoError(t, recvErr)
 		require.True(t, created.Created)
+		require.NotNil(t, created.Header)
 
-		types := make([]int32, 0, wantEvents)
-		for len(types) < wantEvents {
+		outcome := watchFilterRunOutcome{
+			Types:             make([]int32, 0, wantEvents),
+			DeleteRevisionGap: deleted.Header.Revision - put.Header.Revision,
+			CreatedHeaderGap:  created.Header.Revision - put.Header.Revision,
+		}
+		for len(outcome.Types) < wantEvents {
 			response, eventErr := stream.Recv()
 			require.NoError(t, eventErr)
+			require.NotNil(t, response.Header)
+			outcome.ResponseHeaderGaps = append(outcome.ResponseHeaderGaps,
+				response.Header.Revision-put.Header.Revision)
 			for _, event := range response.Events {
-				types = append(types, int32(event.Type))
+				require.NotNil(t, event.Kv)
+				outcome.Types = append(outcome.Types, int32(event.Type))
+				outcome.EventModRevisionGaps = append(outcome.EventModRevisionGaps,
+					event.Kv.ModRevision-put.Header.Revision)
 			}
 		}
-		require.Len(t, types, wantEvents)
+		require.Len(t, outcome.Types, wantEvents)
 		require.NoError(t, stream.CloseSend())
-		return types
+		return outcome
 	}
 
 	return watchFilterEnumOutcome{
-		UnknownTypes: run("unknown",
+		Unknown: run("unknown",
 			[]etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_FilterType(99)}, 2),
-		DuplicateTypes: run("duplicate",
+		Duplicate: run("duplicate",
 			[]etcdserverpb.WatchCreateRequest_FilterType{
 				etcdserverpb.WatchCreateRequest_NOPUT,
 				etcdserverpb.WatchCreateRequest_NOPUT,

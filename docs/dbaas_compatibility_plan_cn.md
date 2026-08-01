@@ -30765,6 +30765,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最后 seed Put revision，命中两个大 value 的 DeleteRange 只推进 `+1`；所有 fragment
   response header 与所有 DELETE event ModRevision 必须统一等于该删除 revision，分片 flag、
   event 数量和 PrevKV 字节仍逐项比较。分片只能改变传输外观，不能拆散 TiKV MVCC 原子性。
+- A3386 将 Watch filter enum 双端差分扩展为 historical catch-up revision 树：unknown filter
+  不过滤事件，PUT/DELETE 的 ModRevision gap 分别为 `0/1`，但可合并在一条 header gap=`1`
+  的 catch-up response 中；重复 `NOPUT` 等价单次 `NOPUT`，只返回 DELETE，response header
+  与 ModRevision gap 均为 `1`。两种 Created header 都位于删除后的 `+1`，固定过滤只改变
+  payload、批次 header 使用最新 revision，且 cursor 仍按事件 revision 前进。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

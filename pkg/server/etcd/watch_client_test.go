@@ -1476,8 +1476,9 @@ func TestRawGRPCWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {
 		key := []byte(fmt.Sprintf("/a1024/watch-filter/%s/%d", name, time.Now().UnixNano()))
 		put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
 		require.NoError(t, err)
-		_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		deleted, err := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
 		require.NoError(t, err)
+		require.Equal(t, put.Header.Revision+1, deleted.Header.Revision)
 
 		stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
 		require.NoError(t, err)
@@ -1494,17 +1495,26 @@ func TestRawGRPCWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {
 		requireRawWatchHeaderWellFormed(t, created)
 		require.True(t, created.Created)
 		require.False(t, created.Canceled)
+		require.Equal(t, deleted.Header.Revision, created.Header.Revision)
 
 		got := make([]int32, 0, len(want))
+		gotRevisions := make([]int64, 0, len(want))
 		for len(got) < len(want) {
 			response, recvErr := stream.Recv()
 			require.NoError(t, recvErr)
 			requireRawWatchHeaderWellFormed(t, response)
+			require.Equal(t, deleted.Header.Revision, response.Header.Revision)
 			for _, event := range response.Events {
 				got = append(got, int32(event.Type))
+				gotRevisions = append(gotRevisions, event.Kv.ModRevision)
 			}
 		}
 		require.Equal(t, want, got)
+		if len(want) == 2 {
+			require.Equal(t, []int64{put.Header.Revision, deleted.Header.Revision}, gotRevisions)
+		} else {
+			require.Equal(t, []int64{deleted.Header.Revision}, gotRevisions)
+		}
 	}
 
 	run("unknown",
