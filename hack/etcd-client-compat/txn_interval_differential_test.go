@@ -33,10 +33,16 @@ func TestTxnIntervalDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runTxnIntervalScenario(t, reference, "etcd"),
-		runTxnIntervalScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceOutcome := runTxnIntervalScenario(t, reference, "etcd")
+	want := []txnIntervalOutcome{
+		{Name: "from-key-delete-before-put-in-range", Code: "OK", HasResponse: true, Succeeded: true, RevisionGap: 1, FinalKVs: []string{"z=value"}},
+		{Name: "put-before-from-key-delete-in-range", Code: "OK", HasResponse: true, Succeeded: true, RevisionGap: 1},
+		{Name: "from-key-delete-with-put-before-range", Code: "OK", HasResponse: true, Succeeded: true, RevisionGap: 1, FinalKVs: []string{"a=value"}},
+		{Name: "empty-range-with-put-at-start", Code: "OK", HasResponse: true, Succeeded: true, RevisionGap: 1, FinalKVs: []string{"m=value", "seed=seed"}},
+		{Name: "reversed-range-with-put-at-start", Code: "OK", HasResponse: true, Succeeded: true, RevisionGap: 1, FinalKVs: []string{"seed=seed", "z=value"}},
+	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runTxnIntervalScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runTxnIntervalScenario(t *testing.T, endpoint, instance string) []txnIntervalOutcome {

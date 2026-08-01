@@ -30909,6 +30909,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保留 leaseB 并形成 `1/3/3`。撤销旧 leaseA 不删键且 header 仍为 `+3`，撤销 leaseB 在
   `+4` 删除键；未选中的坏 lease 不校验，选中时 public clientv3 返回 `Unknown: requested
   lease not found` 且不留 key。
+- A3414 对照 `/root/etcd/server/etcdserver/txn/delete.go` 的半开 DeleteRange 和 staged write
+  顺序，将五类高字节 prefix Txn interval 双端差分升级为完整 outcome oracle：from-key delete
+  先于范围内 put 时 z 保留，put 先于 from-key delete 时最终为空，范围前 a 保留；空 `[m,m)`
+  和反向 `[z,m)` delete 都是 no-op。五个 raw gRPC Txn 均返回 OK、非 nil response、Succeeded，
+  且整个选中分支无论包含删写多少操作都只推进一次 revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
