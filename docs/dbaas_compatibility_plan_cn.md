@@ -30806,6 +30806,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   整笔 Txn 仅推进 `+1`，Delete/Range 子响应均等于 Txn header，紧随其后的最终 Range
   推进 `0`。本地 direct 回归同步固定相同数值链，防止 staged 操作顺序或多键删除把单个
   事务拆成多个可观察 revision。
+- A3395 将基础 Txn revision 差分从双方互比升级为显式 oracle：seed 后只读 Range Txn
+  推进 `0`，删除缺失 key 的 no-op Txn 推进 `0`，随后真实 Put Txn 精确推进 `+1`。
+  该门禁与本地 `TestTxnHeaderRevisionDeltasMatchEtcd` 共同防止双方测试端同时退化时掩盖
+  read-only/no-op 错误消耗 revision，或单写事务产生 revision 跳号。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

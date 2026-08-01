@@ -34,10 +34,10 @@ func TestTxnRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runTxnRevisionScenario(t, reference, "etcd"),
-		runTxnRevisionScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	want := txnRevisionOutcome{ReadOnlyDelta: 0, EmptyDeleteDelta: 0, WriteDelta: 1}
+	referenceOutcome := runTxnRevisionScenario(t, reference, "etcd")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runTxnRevisionScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runTxnRevisionScenario(t *testing.T, endpoint, instance string) txnRevisionOutcome {
