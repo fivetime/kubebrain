@@ -1939,8 +1939,15 @@ func safeBackendRevision(ctx context.Context, backend BackendShim) (uint64, erro
 	if err != nil {
 		return 0, err
 	}
-	if compactRevision >= currentRevision {
-		currentRevision = compactRevision + 1
+	// Match backend.safeCurrentRevision: compaction itself never creates an
+	// MVCC revision. Catch a cold cache up to a proven compact watermark, while
+	// preserving compact==current exactly; only an uninitialized empty store is
+	// normalized to etcd's initial revision 1.
+	if currentRevision == 0 && compactRevision == 0 {
+		currentRevision = 1
+		backend.SetCurrentRevision(currentRevision)
+	} else if compactRevision > currentRevision {
+		currentRevision = compactRevision
 		backend.SetCurrentRevision(currentRevision)
 	}
 	return currentRevision, nil

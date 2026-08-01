@@ -127,3 +127,31 @@ func TestGetCompactRevisionFreshBypassesCache(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, peerRev, got, "fresh read must refresh the TTL cache")
 }
+
+func TestSafeCurrentRevisionDoesNotAdvancePastCompactWatermark(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	ctx := context.Background()
+
+	const compactRevision = uint64(41)
+	b.SetCurrentRevision(compactRevision - 1)
+	batch := kv.BeginBatchWrite()
+	batch.Put(getCompactKey(prefix), uint64ToBytes(compactRevision), 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	got, err := b.safeCurrentRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, compactRevision, got,
+		"a cold revision cache may catch up to the proven compact watermark")
+	require.Equal(t, compactRevision, b.GetCurrentRevision())
+
+	got, err = b.safeCurrentRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, compactRevision, got,
+		"compact == current must not manufacture compact+1")
+	require.Equal(t, compactRevision, b.GetCurrentRevision())
+}

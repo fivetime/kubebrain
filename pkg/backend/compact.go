@@ -229,8 +229,17 @@ func (b *backend) safeCurrentRevision(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if compactRevision >= currentRevision {
-		currentRevision = compactRevision + 1
+	// Compaction removes history but is not an MVCC mutation. In particular,
+	// compacting at the latest revision must leave the public revision exactly
+	// unchanged (the same is true after restart). A compact watermark ahead of a
+	// cold/lagging in-memory cache proves that revision was once committed, so
+	// catch up to the watermark itself — never manufacture compact+1. The only
+	// synthetic value retained is etcd's initialized empty-store revision 1.
+	if currentRevision == 0 && compactRevision == 0 {
+		currentRevision = 1
+		b.SetCurrentRevision(currentRevision)
+	} else if compactRevision > currentRevision {
+		currentRevision = compactRevision
 		b.SetCurrentRevision(currentRevision)
 	}
 	return currentRevision, nil

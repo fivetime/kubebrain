@@ -1039,7 +1039,7 @@ func testBackendCompact(t *testing.T, targetStorage storageType) {
 		// check
 		resp, err = suite.backend.Get(suite.ctx, newGetRequest(rev1, testKey))
 		ast.NoError(err)
-		ast.Equal(newGetResponse(rev2+1, nil), resp)
+		ast.Equal(newGetResponse(rev2, nil), resp)
 
 		// delete
 		dresp, err := suite.backend.Delete(suite.ctx, newDelRequest(0, testKey))
@@ -1055,11 +1055,11 @@ func testBackendCompact(t *testing.T, targetStorage storageType) {
 
 		resp, err = suite.backend.Get(suite.ctx, newGetRequest(0, testKey))
 		ast.NoError(err)
-		ast.Equal(newGetResponse(dresp.Header.Revision+1, nil), resp)
+		ast.Equal(newGetResponse(dresp.Header.Revision, nil), resp)
 	}
 }
 
-func testBackendReadHeadersStayAboveCompactRevision(t *testing.T, targetStorage storageType) {
+func testBackendReadHeadersStayAtOrAboveCompactRevision(t *testing.T, targetStorage storageType) {
 	suite, closer := newTestSuites(t, targetStorage)
 	defer closer()
 	ast := suite.ast
@@ -1077,10 +1077,10 @@ func testBackendReadHeadersStayAboveCompactRevision(t *testing.T, targetStorage 
 	_, err = suite.backend.Compact(suite.ctx, compactRev)
 	ast.NoError(err)
 
-	// Simulate a restarted or lagging node that has read the durable compact
-	// record but has not yet rebuilt its local current revision cache.
+	// SetCurrentRevision is monotonic, so these calls leave current exactly at
+	// compactRev. Latest reads must preserve it rather than invent compactRev+1.
 	suite.backend.SetCurrentRevision(compactRev - 1)
-	expectedHeaderRev := compactRev + 1
+	expectedHeaderRev := compactRev
 
 	getResp, err := suite.backend.Get(suite.ctx, newGetRequest(0, testKey))
 	ast.NoError(err)
@@ -1125,8 +1125,8 @@ func testBackEnd(t *testing.T, st storageType) {
 		testBackendCompact(t, st)
 	})
 
-	t.Run("read_headers_stay_above_compact_revision", func(t *testing.T) {
-		testBackendReadHeadersStayAboveCompactRevision(t, st)
+	t.Run("read_headers_stay_at_or_above_compact_revision", func(t *testing.T) {
+		testBackendReadHeadersStayAtOrAboveCompactRevision(t, st)
 	})
 
 	t.Run("resource_lock", func(t *testing.T) {

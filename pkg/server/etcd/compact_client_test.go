@@ -91,6 +91,31 @@ func TestClientCompactBoundaryErrorsMatchEtcd(t *testing.T) {
 	require.Equal(t, "v2", string(current.Kvs[0].Value))
 }
 
+func TestLatestCompactionDoesNotAdvancePublicRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	key := []byte(fmt.Sprintf("/a3435/latest-compact/%d", time.Now().UnixNano()))
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	compact, err := server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: put.GetHeader().GetRevision()})
+	require.NoError(t, err)
+	require.Equal(t, put.GetHeader().GetRevision(), compact.GetHeader().GetRevision())
+
+	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, put.GetHeader().GetRevision(), current.GetHeader().GetRevision(),
+		"latest read after compact==current must not manufacture compact+1")
+
+	safe, err := safeBackendRevision(ctx, server.backend)
+	require.NoError(t, err)
+	require.Equal(t, uint64(put.GetHeader().GetRevision()), safe,
+		"server-level revision normalization must preserve compact==current")
+}
+
 func TestClientCompactTypedErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
