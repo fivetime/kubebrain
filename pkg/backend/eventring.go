@@ -97,7 +97,7 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 		return
 	}
 	b.notifyMu.RLock()
-	cur := b.GetCurrentRevision()
+	cur := b.collectorRevision.Load()
 	switch {
 	case revision <= cur:
 		// Stale: the pipeline already advanced past this revision (e.g. after an

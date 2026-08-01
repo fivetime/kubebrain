@@ -46,7 +46,7 @@ func TestLeadershipRevisionSeparatesPublicAndAllocationWatermarks(t *testing.T) 
 	b, ctx := newTxnApplyBackend(t)
 	publicRevision := b.GetCurrentRevision()
 	b.persistDurableRevision(publicRevision)
-	allocationFloor := publicRevision + 10_000
+	allocationFloor := publicRevision + watchersChanCapacity + 10_000
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, allocationFloor))
 	require.Equal(t, publicRevision, b.GetCurrentRevision())
 	require.Equal(t, allocationFloor, b.collectorRevision.Load())

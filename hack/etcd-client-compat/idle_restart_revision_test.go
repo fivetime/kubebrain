@@ -74,11 +74,20 @@ func TestIdleReplicaReplacementDoesNotAdvanceRevision(t *testing.T) {
 	afterConn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer afterConn.Close()
-	after, err := etcdserverpb.NewKVClient(afterConn).Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	afterKV := etcdserverpb.NewKVClient(afterConn)
+	after, err := afterKV.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, after.Kvs, 1)
 	require.Equal(t, before.GetHeader().GetRevision(), after.GetHeader().GetRevision(),
 		"a serving-layer restart without user writes must preserve the public MVCC revision")
+	updated, err := afterKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-restart")})
+	require.NoError(t, err)
+	require.Greater(t, updated.GetHeader().GetRevision(), after.GetHeader().GetRevision())
+	readUpdated, err := afterKV.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, readUpdated.Kvs, 1)
+	require.Equal(t, []byte("after-restart"), readUpdated.Kvs[0].Value)
+	require.Equal(t, updated.GetHeader().GetRevision(), readUpdated.GetHeader().GetRevision())
 }
 
 func TestReferenceEtcdIdleRestartPreservesRevision(t *testing.T) {
