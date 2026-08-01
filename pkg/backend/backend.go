@@ -210,6 +210,10 @@ type Backend interface {
 	// GetCurrentRevision, but must never lead committed user state.
 	GetDurableRevision(ctx context.Context) (uint64, error)
 
+	// InitializeLeadershipRevision restores the public committed revision from
+	// TiKV and independently positions the private allocation/collector cursor.
+	InitializeLeadershipRevision(ctx context.Context, allocationFloor uint64) error
+
 	// GetPublishedRevision returns the highest revision whose events have been
 	// fully fanned out to watch subscribers. It is <= GetCurrentRevision (which
 	// advances pre-publish), and is the safe floor for seeding a from-now watch's
@@ -301,6 +305,11 @@ type backend struct {
 	// busy-spinning a full core. Buffered(1); senders use a non-blocking send so
 	// signals coalesce and the write path never blocks.
 	writeSignal chan struct{}
+	// collectorRevision is the private contiguous ring cursor. It intentionally
+	// differs from the public committed revision after leadership acquisition:
+	// PD's allocation floor may be far ahead, but must not become observable
+	// until a user mutation actually commits there.
+	collectorRevision atomic.Uint64
 	// hold watchers
 	watcherHub *WatcherHub
 
@@ -673,7 +682,7 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 		}
 		events := make([]*proto.Event, 0, eventBatchSize)
 		for len(events) < eventBatchSize {
-			nextRevision := b.GetCurrentRevision() + 1
+			nextRevision := b.collectorRevision.Load() + 1
 			idx := nextRevision % watchersChanCapacity
 			watchEvents := b.watchEventsRingBuffer[idx].take(nextRevision)
 			if len(watchEvents) == 0 {
@@ -690,6 +699,10 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 						// event, so no watcher loses one.
 						klog.Errorf("event collector skipping abandoned revision %d (dealt=%d) after stall; a writer died between deal and notify", nextRevision, b.tso.Dealt())
 						b.metricCli.EmitCounter("watch.collector.skipped_revision", 1)
+						if !b.ensureDurableRevision(ctx, nextRevision) {
+							return
+						}
+						b.collectorRevision.Store(nextRevision)
 						b.SetCurrentRevision(nextRevision)
 						b.queueDurableRevision(nextRevision)
 						b.advanceCountIndexReadyRev(nextRevision)
@@ -717,6 +730,7 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 			}
 			stall.reset()
 			b.metricCli.EmitGauge("watch.set.current.revision", nextRevision)
+			validRevision := false
 			for _, watchEvent := range watchEvents {
 				// invalid watch event, i.e. cas failed
 				if !watchEvent.Valid {
@@ -726,6 +740,7 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 					}
 					continue
 				}
+				validRevision = true
 
 				// Maintain the count index in commit order (leader only, since
 				// only the leader's collector processes local writes).
@@ -753,6 +768,10 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 				events = append(events, e)
 				b.watchCache.Add(e)
 			}
+			if !validRevision && !b.ensureDurableRevision(ctx, nextRevision) {
+				return
+			}
+			b.collectorRevision.Store(nextRevision)
 			b.SetCurrentRevision(nextRevision)
 			b.queueDurableRevision(nextRevision)
 			b.advanceCountIndexReadyRev(nextRevision)
@@ -826,6 +845,12 @@ func (b *backend) KickWatchProgress() {
 // SetCurrentRevision implements Backend interface
 func (b *backend) SetCurrentRevision(revision uint64) {
 	b.tso.Commit(revision)
+	for {
+		current := b.collectorRevision.Load()
+		if revision <= current || b.collectorRevision.CompareAndSwap(current, revision) {
+			break
+		}
+	}
 	// Wake commit waiters AFTER the revision is visible (waiters re-check after
 	// each wake, so visibility-then-wake cannot lose an update). Every committed
 	// bump funnels through here, so this is the single wake point.

@@ -127,7 +127,7 @@ func (b *backend) handleWatchEventOverflow(revision uint64) {
 	b.notifyMu.Lock()
 	defer b.notifyMu.Unlock()
 
-	currentRevision := b.GetCurrentRevision()
+	currentRevision := b.collectorRevision.Load()
 	// Recheck under the lock — a concurrent overflow may have already reset.
 	if revision <= currentRevision || revision-currentRevision < watchersChanCapacity {
 		return
@@ -148,6 +148,7 @@ func (b *backend) handleWatchEventOverflow(revision uint64) {
 		b.watchEventsRingBuffer[i].reset()
 	}
 	b.watchCache.Reset()
+	b.collectorRevision.Store(target)
 	b.SetCurrentRevision(target)
 	// Order matters: close the existing subscribers FIRST, then jump the published
 	// watermark. target = Dealt() covers revisions whose events were just wiped and

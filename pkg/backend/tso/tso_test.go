@@ -43,3 +43,14 @@ func TestDealtTracksHighestHandedOut(t *testing.T) {
 	require.Equal(t, uint64(11), r)
 	require.Equal(t, uint64(11), n.Dealt())
 }
+
+func TestAdvanceDealFloorDoesNotPublishRevision(t *testing.T) {
+	n := NewTSO()
+	n.Init(10)
+	n.AdvanceDealFloor(1000)
+	require.Equal(t, uint64(10), n.GetRevision())
+	require.Equal(t, uint64(1000), n.Dealt())
+	revision, err := n.Deal()
+	require.NoError(t, err)
+	require.Equal(t, uint64(1001), revision)
+}

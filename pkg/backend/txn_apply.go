@@ -516,6 +516,9 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_PUT, p.curRev)
 		}
 	}
+	if txnHasEffectiveUserWrite(preps) {
+		b.stageDurableRevision(batch, newRevision)
+	}
 
 	// Phase 4: atomic commit.
 	if cerr := b.commitUserBatch(ctx, batch); cerr != nil {

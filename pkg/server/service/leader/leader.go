@@ -80,7 +80,7 @@ type ElectionInfo struct {
 
 type leaderElection struct {
 	backend interface {
-		SetCurrentRevision(uint64)
+		InitializeLeadershipRevision(context.Context, uint64) error
 	}
 	// resource lock
 	resourceLock resourcelock.Interface
@@ -276,7 +276,12 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 						return
 					}
 					l.metricCli.EmitGauge("leader.election.initial.version", version, metrics.Tag("addr", leaderAddr))
-					l.backend.SetCurrentRevision(version)
+					if err := l.backend.InitializeLeadershipRevision(leadingCtx, version); err != nil {
+						l.metricCli.EmitCounter("leader.election.initialize.err", 1)
+						klog.ErrorS(err, "restore acquired leadership revision failed; retrying election")
+						cancel()
+						return
+					}
 					// Publish only after the new epoch and freshness stamp are live,
 					// so every admitted write is fenced to this exact term.
 					atomic.AddUint64(&l.epoch, 1)

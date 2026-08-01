@@ -92,7 +92,10 @@ func (l *campaignLock) Describe() string {
 
 type revisionRecorder struct{ revision atomic.Uint64 }
 
-func (r *revisionRecorder) SetCurrentRevision(revision uint64) { r.revision.Store(revision) }
+func (r *revisionRecorder) InitializeLeadershipRevision(_ context.Context, revision uint64) error {
+	r.revision.Store(revision)
+	return nil
+}
 
 func TestHasLeaderExpiresObservedElectionRecord(t *testing.T) {
 	lock := &campaignLock{

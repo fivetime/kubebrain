@@ -181,6 +181,7 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 	meta := EtcdMetadata{CreateRevision: revision, Version: 1, Lease: lease}
 	b.putTxnObject(batch, objectKey, key, value, meta, revision)
 	appendEventLog(b.ks, batch, revision, key, proto.Event_CREATE, 0)
+	b.stageDurableRevision(batch, revision)
 	return b.commitUserBatch(ctx, batch)
 }
 
@@ -327,6 +328,7 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	batch.CAS(revisionKey, newRevisionBytes, expectedRevisionBytes, 0)
 	batch.Put(objectKey, tombStoneBytes, 0)
 	appendEventLog(b.ks, batch, newRevision, key, proto.Event_DELETE, expectedRevision)
+	b.stageDurableRevision(batch, newRevision)
 	err = b.commitUserBatch(ctx, batch)
 
 	// todo: need an internal retry if there is any conflict error?
@@ -556,6 +558,7 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
 	b.putTxnObject(batch, objectKey, key, value, meta, newRevision)
 	appendEventLog(b.ks, batch, newRevision, key, proto.Event_PUT, oldRevision)
+	b.stageDurableRevision(batch, newRevision)
 	return newRevision, meta, b.commitUserBatch(ctx, batch)
 }
 

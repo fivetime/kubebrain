@@ -35,6 +35,10 @@ type TSO interface {
 	// recovery to pick a reset watermark that covers all in-flight events.
 	Dealt() (revision uint64)
 
+	// AdvanceDealFloor raises the private allocation cursor without publishing
+	// the value as a committed MVCC revision.
+	AdvanceDealFloor(revision uint64)
+
 	// Commit is used for notifying that txn with revision has been done
 	Commit(revision uint64)
 }
@@ -61,6 +65,15 @@ func (n *naiveTSO) Deal() (revision uint64, err error) {
 // Dealt implement TSO interface
 func (n *naiveTSO) Dealt() (revision uint64) {
 	return atomic.LoadUint64(&n.dealRevision)
+}
+
+func (n *naiveTSO) AdvanceDealFloor(revision uint64) {
+	for {
+		current := atomic.LoadUint64(&n.dealRevision)
+		if revision <= current || atomic.CompareAndSwapUint64(&n.dealRevision, current, revision) {
+			return
+		}
+	}
 }
 
 // Commit implement TSO interface

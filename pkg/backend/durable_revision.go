@@ -67,6 +67,29 @@ func (b *backend) GetDurableRevision(ctx context.Context) (uint64, error) {
 	return binary.BigEndian.Uint64(value), nil
 }
 
+// InitializeLeadershipRevision keeps PD's uniqueness floor private until the
+// first mutation. The client-visible revision is restored from the exact TiKV
+// watermark, while the collector waits at allocationFloor for Deal()+1.
+func (b *backend) InitializeLeadershipRevision(ctx context.Context, allocationFloor uint64) error {
+	durable, err := b.GetDurableRevision(ctx)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		durable = 1 // etcd's initialized empty-keyspace revision
+	} else if err != nil {
+		return err
+	}
+	b.tso.Commit(durable)
+	b.tso.AdvanceDealFloor(allocationFloor)
+	b.collectorRevision.Store(allocationFloor)
+	b.commitNotify.advance()
+	return nil
+}
+
+func (b *backend) stageDurableRevision(batch storage.BatchWrite, revision uint64) {
+	value := make([]byte, 8)
+	binary.BigEndian.PutUint64(value, revision)
+	batch.Put(b.ks.EncodeInternalKey(durableRevisionKey), value, 0)
+}
+
 // persistDurableRevision monotonically advances the cluster-visible watermark.
 // The background worker receives targets only after every dealt revision through
 // them has a resolved collector slot. Successful writes are already durable then;
@@ -79,6 +102,12 @@ func (b *backend) persistDurableRevision(target uint64) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
 	defer cancel()
+	if err := b.persistDurableRevisionContext(ctx, target); err != nil {
+		b.logDurableRevisionFailure(target, err)
+	}
+}
+
+func (b *backend) persistDurableRevisionContext(ctx context.Context, target uint64) error {
 	key := b.ks.EncodeInternalKey(durableRevisionKey)
 	want := make([]byte, 8)
 	binary.BigEndian.PutUint64(want, target)
@@ -91,30 +120,41 @@ func (b *backend) persistDurableRevision(target uint64) {
 			batch.PutIfNotExist(key, want, 0)
 			err = batch.Commit(ctx)
 		case err != nil:
-			b.logDurableRevisionFailure(target, err)
-			return
+			return err
 		case len(current) != 8:
-			b.logDurableRevisionFailure(target, fmt.Errorf("invalid durable revision watermark length %d", len(current)))
-			return
+			return fmt.Errorf("invalid durable revision watermark length %d", len(current))
 		case binary.BigEndian.Uint64(current) >= target:
-			return
+			return nil
 		default:
 			batch := b.kv.BeginBatchWrite()
 			batch.CAS(key, want, current, 0)
 			err = batch.Commit(ctx)
 		}
 		if err == nil {
-			return
+			return nil
 		}
 		if !errors.Is(err, storage.ErrCASFailed) {
-			b.logDurableRevisionFailure(target, err)
-			return
+			return err
 		}
 		select {
 		case <-ctx.Done():
-			b.logDurableRevisionFailure(target, ctx.Err())
-			return
+			return ctx.Err()
 		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func (b *backend) ensureDurableRevision(ctx context.Context, target uint64) bool {
+	for {
+		if err := b.persistDurableRevisionContext(ctx, target); err == nil {
+			return true
+		} else {
+			b.logDurableRevisionFailure(target, err)
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
