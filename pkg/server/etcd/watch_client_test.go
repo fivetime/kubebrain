@@ -284,11 +284,13 @@ func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
 	requireRawWatchHeaderWellFormed(t, created)
 	require.True(t, created.Created)
 	require.False(t, created.Canceled)
+	require.Equal(t, revision, created.Header.Revision)
 
-	_, err = etcdserverpb.NewKVClient(conn).DeleteRange(callCtx, &etcdserverpb.DeleteRangeRequest{
+	deleted, err := etcdserverpb.NewKVClient(conn).DeleteRange(callCtx, &etcdserverpb.DeleteRangeRequest{
 		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), PrevKv: true,
 	})
 	require.NoError(t, err)
+	require.Equal(t, revision+1, deleted.Header.Revision)
 
 	var (
 		responses      int
@@ -300,8 +302,10 @@ func TestRawGRPCWatchFragmentPreservesPrevKV(t *testing.T) {
 		require.NoError(t, recvErr)
 		requireRawWatchHeaderWellFormed(t, response)
 		require.NotEmpty(t, response.Events)
+		require.Equal(t, deleted.Header.Revision, response.Header.Revision)
 		responses++
 		for _, event := range response.Events {
+			require.Equal(t, deleted.Header.Revision, event.Kv.ModRevision)
 			require.NotNil(t, event.PrevKv)
 			prevBytes = append(prevBytes, len(event.PrevKv.Value))
 			observedEvents++

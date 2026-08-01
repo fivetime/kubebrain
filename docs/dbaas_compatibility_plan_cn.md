@@ -30761,6 +30761,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   create 返回 ID 404；必须恰好按 create-0、cancel-0、create-404 返回三条响应，且 header
   全部等于 seed revision，随后 150ms 内不得出现额外响应。该门禁固定 protobuf nil-wrapper
   配对语义；bidi Watch 的 CloseSend 不承诺服务端立即关闭接收方向，因此不错误要求 EOF。
+- A3385 将大 PrevKV Watch fragment 双端差分扩展为精确原子 revision：Created header 等于
+  最后 seed Put revision，命中两个大 value 的 DeleteRange 只推进 `+1`；所有 fragment
+  response header 与所有 DELETE event ModRevision 必须统一等于该删除 revision，分片 flag、
+  event 数量和 PrevKV 字节仍逐项比较。分片只能改变传输外观，不能拆散 TiKV MVCC 原子性。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

@@ -49,6 +49,10 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}, referenceInvalid)
 	require.Equal(t, referenceInvalid, runWatchInvalidControlScenario(t, compatEndpoint(), "kubebrain"))
 	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
+	require.Zero(t, referenceFragments.CreatedHeaderGap)
+	require.Equal(t, int64(1), referenceFragments.DeleteRevisionGap)
+	require.True(t, referenceFragments.FragmentHeadersAtDelete)
+	require.True(t, referenceFragments.EventModsAtDelete)
 	kubebrainFragments := runWatchFragmentScenario(t, compatEndpoint(), "kubebrain")
 	require.Equal(t, referenceFragments, kubebrainFragments)
 }
@@ -188,9 +192,13 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 }
 
 type watchFragmentOutcome struct {
-	EventCounts    []int
-	FragmentFlags  []bool
-	PrevValueBytes []int
+	CreatedHeaderGap        int64
+	DeleteRevisionGap       int64
+	FragmentHeadersAtDelete bool
+	EventModsAtDelete       bool
+	EventCounts             []int
+	FragmentFlags           []bool
+	PrevValueBytes          []int
 }
 
 type watchProgressOutcome struct {
@@ -242,21 +250,32 @@ func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFrag
 	created, err := stream.Recv()
 	require.NoError(t, err)
 	require.True(t, created.Created)
+	require.NotNil(t, created.Header)
 
-	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
+	deleted, err := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
 		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), PrevKv: true,
 	})
 	require.NoError(t, err)
+	require.NotNil(t, deleted.Header)
 
-	var outcome watchFragmentOutcome
+	outcome := watchFragmentOutcome{
+		CreatedHeaderGap:        created.Header.Revision - revision,
+		DeleteRevisionGap:       deleted.Header.Revision - revision,
+		FragmentHeadersAtDelete: true,
+		EventModsAtDelete:       true,
+	}
 	for {
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr)
 		require.NotEmpty(t, resp.Events)
 		outcome.EventCounts = append(outcome.EventCounts, len(resp.Events))
 		outcome.FragmentFlags = append(outcome.FragmentFlags, resp.Fragment)
+		outcome.FragmentHeadersAtDelete = outcome.FragmentHeadersAtDelete &&
+			resp.Header != nil && resp.Header.Revision == deleted.Header.Revision
 		for _, event := range resp.Events {
 			outcome.PrevValueBytes = append(outcome.PrevValueBytes, len(event.PrevKv.GetValue()))
+			outcome.EventModsAtDelete = outcome.EventModsAtDelete &&
+				event.Kv != nil && event.Kv.ModRevision == deleted.Header.Revision
 		}
 		if !resp.Fragment {
 			break
