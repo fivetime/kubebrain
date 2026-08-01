@@ -26,6 +26,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -522,6 +523,56 @@ func TestHTTPHealthAndReadyzExposeCorruptAlarm(t *testing.T) {
 	handlers["/readyz"].ServeHTTP(recorder,
 		httptest.NewRequest(http.MethodGet, "/readyz?exclude=data_corruption", nil))
 	require.Equal(t, http.StatusOK, recorder.Code)
+}
+
+func TestHTTPHealthExposesAndExcludesUnknownAlarm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "health-unknown-test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: true}},
+		backend:        b,
+		genericAlarms: func(context.Context) ([]*etcdserverpb.AlarmMember, error) {
+			return []*etcdserverpb.AlarmMember{{MemberID: 7, Alarm: etcdserverpb.AlarmType(127)}}, nil
+		},
+	}
+	for _, target := range []string{"/health", "/health?serializable=true", "/health?exclude=UNKNOWN"} {
+		recorder := httptest.NewRecorder()
+		s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+		require.Equal(t, http.StatusServiceUnavailable, recorder.Code, target)
+		require.JSONEq(t, `{"health":"false","reason":"ALARM UNKNOWN"}`, recorder.Body.String(), target)
+	}
+	recorder := httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?exclude=127", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, HealthResponse, recorder.Body.String())
+}
+
+func TestHTTPHealthPropagatesGenericAlarmReadFailure(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{Prefix: "/registry", Identity: "health-unknown-error-test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	wantErr := errors.New("generic alarm metadata unavailable")
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{IsLeader: true}},
+		backend:        b,
+		genericAlarms: func(context.Context) ([]*etcdserverpb.AlarmMember, error) {
+			return nil, wantErr
+		},
+	}
+	recorder := httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.JSONEq(t,
+		`{"health":"false","reason":"ALARM ERROR:generic alarm metadata unavailable"}`,
+		recorder.Body.String(),
+	)
 }
 
 func TestHTTPHealthExcludeCollectsExactNonEmptyAlarmSet(t *testing.T) {

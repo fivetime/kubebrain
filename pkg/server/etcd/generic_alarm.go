@@ -125,6 +125,12 @@ func (s *RPCServer) genericAlarms(
 	return alarms, nil
 }
 
+// GenericAlarms returns every persisted non-NOSPACE/non-CORRUPT alarm. The
+// top-level HTTP server uses this to mirror etcd's legacy /health alarm check.
+func (s *RPCServer) GenericAlarms(ctx context.Context) ([]*etcdserverpb.AlarmMember, error) {
+	return s.genericAlarms(ctx, etcdserverpb.AlarmType_NONE)
+}
+
 func (s *RPCServer) readGenericAlarmState(
 	ctx context.Context,
 ) ([]genericAlarmEntry, []byte, bool, error) {

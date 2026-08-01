@@ -30977,6 +30977,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未知 alarm Status 官方双端 20 轮 3.097 秒、既有 NOSPACE Status 双端 20 轮 1.413 秒均通过；
   最终 KubeBrain 3/3 Ready/0 restart、PD/TiKV 3+3 Ready、alarm list 为空，endpoint health
   12.809ms。
+- A3423 对照 `/root/etcd/server/etcdserver/api/etcdhttp/health.go:checkAlarms` 对全部 alarm
+  的遍历，把 A3420 通用类型接入 legacy `/health`：类型 127 激活后普通与 serializable health
+  都必须 503/`ALARM UNKNOWN`，`exclude=127` 精确排除后恢复 200，而 `exclude=UNKNOWN` 不匹配
+  enum 的 `String()`、仍返回 503；Deactivate 后恢复健康。官方显式 oracle 20 轮通过，A3422
+  真实 TiKV 镜像稳定复现 active 三组错误返回 200 的红灯。顶层 HTTP server 现通过 etcd RPC
+  层只读回调读取同一 TiKV generic alarm metadata，在既有 NOSPACE、CORRUPT 检查之后应用精确
+  exclude；元数据读取失败 fail closed 为 `ALARM ERROR:<error>`。HTTP 单测 50 轮、server/etcd
+  完整 package 与 race 5 轮通过；对应 commit 的新 TiKV 镜像和 live 绿灯仍待验证。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

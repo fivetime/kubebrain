@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -81,6 +82,7 @@ type server struct {
 	peers          service.PeerService
 	metricCli      metrics.Metrics
 	backend        backend.Backend
+	genericAlarms  func(context.Context) ([]*etcdserverpb.AlarmMember, error)
 
 	config Config
 
@@ -139,6 +141,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	peerService := service.NewPeerService(runCtx, election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
+	s.genericAlarms = s.etcdServer.GenericAlarms
 	s.etcdServer.SetRequestLimits(config.MaxTxnOps, config.MaxRequestBytes)
 	s.etcdServer.SetMaxRequestsInFlight(config.MaxRequestsInFlight)
 	s.etcdServer.SetRequestRateLimit(config.MaxRequestRate, config.RequestRateBurst)
@@ -435,6 +438,7 @@ const (
 	healthNoLeaderReason = "RAFT NO LEADER"
 	healthNoSpaceReason  = "ALARM NOSPACE"
 	healthCorruptReason  = "ALARM CORRUPT"
+	healthUnknownReason  = "ALARM UNKNOWN"
 )
 
 type healthResponse struct {
@@ -544,6 +548,17 @@ func (s *server) healthAlarmFailureReason(ctx context.Context, excluded map[stri
 		}
 		if len(alarms) != 0 {
 			return healthCorruptReason
+		}
+	}
+	if s.genericAlarms != nil {
+		alarms, err := s.genericAlarms(ctx)
+		if err != nil {
+			return "ALARM ERROR:" + err.Error()
+		}
+		for _, alarm := range alarms {
+			if _, ok := excluded[alarm.GetAlarm().String()]; !ok {
+				return healthUnknownReason
+			}
 		}
 	}
 	return ""
