@@ -30893,6 +30893,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   负 limit/revision 都固定完整 KV/Count/More；其中 Count 保持过滤前 live range 总数，空 KVs
   为非 nil 空 slice。反向空区间 Delete 不推进 revision，未来读由 public clientv3 暴露
   `Unknown: ... future revision`。
+- A3411 对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的 response fragmentation，
+  将 raw Watch 大 PrevKV 差分升级为完整 oracle：两个各 800KiB 的 key 在同一原子 DeleteRange
+  revision 仍合并为单个 response、包含两个 DELETE event 且 Fragment=false，证明请求中的
+  Fragment=true 并不强制拆分；response header 和两个 event ModRevision 都等于删除 revision，
+  两个 PrevKV value 都完整保留 819200 bytes，created response 不额外推进 revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

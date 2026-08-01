@@ -67,10 +67,14 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}, referenceInvalid)
 	require.Equal(t, referenceInvalid, runWatchInvalidControlScenario(t, compatEndpoint(), "kubebrain"))
 	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
-	require.Zero(t, referenceFragments.CreatedHeaderGap)
-	require.Equal(t, int64(1), referenceFragments.DeleteRevisionGap)
-	require.True(t, referenceFragments.FragmentHeadersAtDelete)
-	require.True(t, referenceFragments.EventModsAtDelete)
+	require.Equal(t, watchFragmentOutcome{
+		DeleteRevisionGap:       1,
+		FragmentHeadersAtDelete: true,
+		EventModsAtDelete:       true,
+		EventCounts:             []int{2},
+		FragmentFlags:           []bool{false},
+		PrevValueBytes:          []int{800 * 1024, 800 * 1024},
+	}, referenceFragments)
 	kubebrainFragments := runWatchFragmentScenario(t, compatEndpoint(), "kubebrain")
 	require.Equal(t, referenceFragments, kubebrainFragments)
 }
