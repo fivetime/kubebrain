@@ -31223,6 +31223,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain Pod Ready/0 restart、3 PD/3 TiKV Running，最近日志无 panic/fatal、compact failure、
   event-log malformed 或 compact watermark 读取错误。本轮未发现实现差异，只提交增强门禁，
   继续使用 `kubebrain:a3438-compact-watch-prevkv` 镜像。
+- A3440 固定 A3438 PrevKV compact 判定的另一侧 off-by-one 边界：混合事务已经提交后，只
+  physical compact 到 seed revision，使 UPDATE/DELETE 的直接前版本恰好位于 watermark，再
+  完整替换服务层。对照 upstream Watch 的 `Range(ModRevision-1)` 与 MVCC 严格
+  `requestedRevision < compactRevision` 拒绝条件，此时 seed 历史快照及两个 PrevKV 仍必须可读；
+  不能因为 `previousRevision <= compactRevision` 就清除，只有事件自身
+  `ModRevision <= compactRevision` 才应隐藏 PrevKV。官方同一 data-dir restart 普通 3 轮
+  6.768 秒、race 1 轮 3.329 秒通过。A3438 生产镜像对独立 TiKV/PD 连续三轮全 KubeBrain
+  replacement 分别 8.57/9.00/9.15 秒、合计 26.752 秒通过：当前/seed 历史快照、
+  UPDATE/DELETE/CREATE 顺序与 `seed-z/seed-m/nil` PrevKV 均保持正确。compat `go vet` 通过；
+  最终三个 KubeBrain Pod Ready/0 restart，最近日志无 panic/fatal、compact failure、event-log
+  malformed 或 compact watermark 读取错误。本轮未发现实现差异，只增加相邻边界恢复门禁，
+  继续使用 `kubebrain:a3438-compact-watch-prevkv` 镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
