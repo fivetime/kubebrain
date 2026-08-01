@@ -30948,9 +30948,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通用 alarm 只提供协议持久化外观，不触发 NOSPACE/CORRUPT 的数据面副作用。确定性回归覆盖
   正负未知 enum 各 32 个并发 member、重复/错误 member 幂等、GET NONE 汇总、损坏 JSON、保留
   类型、空成员集、乱序/重复成员和 trailing JSON 拒绝。官方自对照 20 轮、KubeBrain 生命周期
-  50 轮、并发/损坏组合 20 轮、race 5 轮及根模块 `go test ./...` 已通过。真实 TiKV/PD 滚动验证
-  需使用带完整 build metadata 的 A3420 镜像；此前未传 build args 的 Docker 构建按预期失败且
-  未发布，不能作为运行证据。
+  50 轮、并发/损坏组合 20 轮、race 5 轮及根模块 `go test ./...` 已通过。带完整 build metadata
+  的生产镜像 `kubebrain:a3420-generic-alarm`（image ID `sha256:d6996ce2...`，commit
+  `be03bfced3e0f60b238677bfbcc570b8ff3d7e17`，TiKV）滚动到既有独立 3 PD/3 TiKV 集群后，
+  三个 KubeBrain Pod 全部 Ready/0 restart；真实双端差分 20 轮 6.612 秒通过。新增可选重启门禁
+  在 alarm 激活期间依次删除并等待三个 KubeBrain Pod 重建，全部 UID 更新后仍从 TiKV 读回同一
+  type/member，随后 Deactivate 与空 GET 成功，耗时 21.83 秒；最终 endpoint health 34.612ms、
+  alarm list 为空，PD/TiKV 3+3 Ready。首次未传 build args 的 Docker 构建按预期失败且未发布；
+  首次 live 命令误用未映射的 `127.0.0.1:30079` 得到 connection refused，改用 Service 公布的
+  `172.18.0.2:30079` 后通过，二者都不计作协议失败。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
