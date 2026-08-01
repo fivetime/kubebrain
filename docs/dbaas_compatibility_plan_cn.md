@@ -30706,6 +30706,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   前的场景删除 seed 后仅保留 `a`；`[m,m)` 空区间和 `[z,m)` 反向区间也必须 Succeeded、
   单 revision，并分别保留 `m`、`z` 及未删除 seed。双端由此比较这个刻意反直觉的
   admission/execution 分层及隔离后的精确 keyspace。
+- A3373 将 compare enum 双端差分从 branch/value 扩展到完整提交外观：unknown
+  Compare result/target 与 absent VALUE 六个 case 各用独立前缀先写 seed，无论选择
+  Success 或 Failure 都必须只执行一个 Put、Txn/leaf Put/后续 Range header 共用
+  `seed+1` revision；目标 KV 的 create/mod revision 同为该 revision、version=1，最终
+  keyspace 精确为 branch value 与 seed。该门禁同时固定 enum fallback 分支和单 revision
+  metadata，防止分支结果正确但提交外观偏离 etcd。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
