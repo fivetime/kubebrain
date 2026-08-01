@@ -31161,6 +31161,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   health 为 true，最近日志无 lease expiry delete、durable revision、collector stall/backstop 或
   abandoned revision 错误。本轮未发现实现差异，只增加 TiKV 原子恢复回归，继续使用
   `kubebrain:a3435-compact-revision` 镜像。
+- A3437 把全服务层 replacement 恢复门禁扩展到同一 Txn revision 内的 etcd sub-revision
+  顺序。官方 oracle 先写入 `m`，再以单个 Txn 依次 `Put(z), Delete(m), Put(a)`，重启同一
+  data-dir 后要求当前/历史快照不撕裂，并从事务 revision catch-up 出严格的 `z,m,a` 与
+  `PUT,DELETE,PUT`；普通 5 轮 11.154 秒、race 1 轮 3.330 秒通过。A3435 生产镜像在全部
+  KubeBrain 副本 replacement 后稳定红灯为按物理 key 排序的 `a,m,z`（9.16 秒）。根因是
+  event-log key 只有 `(revision,userKey)`，完整进程替换后的 TiKV fallback scan 无法恢复 etcd
+  事务操作次序。commit `2a9350013bc8f0e060db56d1b80a5d8bdaa332d3` 引入兼容旧 9-byte
+  payload 的 17-byte V2 event-log value，持久化 `subRevision/total`，TxnApply 按有效写操作
+  顺序分配 sub-revision；replay 按 revision/sub-revision 排序，并仅在重复 total 与连续 sub
+  自验证完整时允许精确 revision 穿过新 leader 的保守 completeness watermark。首版生产镜像
+  `kubebrain:a3437-txn-watch-order`（image ID
+  `sha256:76be101034333b94e3d828aea6514a40b3acb4ade9d1ab98f57e2c614346384b`）让原门禁
+  9.15 秒通过，但新增的 physical compact 精确边界 oracle（官方 3 轮 6.826 秒）又在真实集群
+  红灯：replacement 后 event-log 只能重建两个 PUT，DELETE 超时，耗时 19.07 秒。日志证明
+  exact compact revision 的 event entry 虽已保留，但 scanner 提前删除了 DELETE 所引用的直接
+  前版本，导致 value/PrevKV 加载不完整并回退到只含当前 PUT 的对象扫描。commit
+  `37e6f2636529193c558ec5c6ae05ef50c329a9c0` 因此在 tombstone revision 等于 compact
+  watermark 时同时保留 tombstone 与直接前版本；watermark 再推进一位后沿原路径回收二者，既
+  对齐 etcd 的 `revision == compactRevision` 可观察边界，也不永久积累历史。扫描器生命周期、
+  Txn replay/PrevKV 与 incremental/full compact 回归均覆盖该规则；完整 backend 43.352 秒、
+  Watch/Txn/Compact 服务集 59.296 秒、目标 race 3 轮及双方 `go vet` 通过。最终 TiKV 镜像
+  `kubebrain:a3437-txn-watch-order-v2`（本地 image ID
+  `sha256:c1230f220e2abca74e84fc4b658a457d2495ed866af90e8ac2a7c9e416826a74`）滚动部署后，
+  compact 边界全副本 replacement 9.03 秒、普通 Txn 顺序 9.17 秒、A3435 compact revision
+  9.08 秒、A3436 lease expiry revision 11.16 秒、A3433 HashKV 恢复 13.26 秒通过。三个
+  KubeBrain Pod 使用同一 runtime image digest、Ready/0 restart，3 PD/3 TiKV 均 Running，
+  版本端点自报 etcd/storage 3.7.0，最近日志无 panic/fatal、compact failure、event-log malformed
+  或 replay fallback。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
