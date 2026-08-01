@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
@@ -252,10 +253,23 @@ func TestTxnLeaseAttachmentDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
-	require.Equal(t,
-		runTxnLeaseScenario(t, reference, "etcd"),
-		runTxnLeaseScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceOutcome := runTxnLeaseScenario(t, reference, "etcd")
+	want := txnLeaseResult{
+		CreateSucceeded: true,
+		CreateRevision:  1,
+		KeysAfterCreate: 1,
+		DeleteSucceeded: true,
+		DeleteRevision:  2,
+		DeletePrev: &normalizedKV{
+			Key: "fast", Value: "value", CreateRev: 1, ModRev: 1, Version: 1, HasLease: true,
+		},
+		DuplicateError: authErrorOutcome{
+			Code: codes.Unknown, Message: "etcdserver: duplicate key given in txn request",
+		},
+		DuplicateAbsent: true,
+	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runTxnLeaseScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runTxnLeaseScenario(t *testing.T, endpoint, instance string) txnLeaseResult {

@@ -30863,6 +30863,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   再解绑写入时 revision 分别为 `+1/+2/+3`；第一版历史读 Lease 仍为零，第二版历史读仍
   保留当时的 lease ID，而当前版 Lease 为零且值为 `plain-again`。该约束防止把当前 lease
   索引状态错误投影到历史 MVCC 版本。
+- A3406 对照 `/root/etcd/server/storage/mvcc/kvstore_txn.go` 的 lease attach/detach 与
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的重复 key 校验，将 Txn lease 主差分升级为完整
+  oracle：条件创建绑定 lease 并推进 `+1`，TTL attached keys 为一；条件删除推进到 `+2`，
+  PrevKV 保留创建版 metadata 和 lease，attached keys 清零。随后同一事务 Put/Delete 同 key
+  在写入前失败且不留 key，public clientv3 对外为 `Unknown: etcdserver: duplicate key given
+  in txn request`。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
