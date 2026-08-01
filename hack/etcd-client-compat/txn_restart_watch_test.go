@@ -15,9 +15,10 @@ import (
 )
 
 // TestTxnSnapshotAndWatchRecoverAcrossAllReplicaReplacements is destructive.
-// One TiKV transaction must durably bind its user versions, public revision,
-// and historical watch events so a completely fresh serving tier cannot expose
-// a torn snapshot or lose/reorder the transaction's catch-up events.
+// One mixed UPDATE/DELETE/CREATE TiKV transaction must durably bind its user
+// versions, public revision, ordered historical watch events, and uncompacted
+// PrevKVs so a completely fresh serving tier cannot expose a torn snapshot or
+// lose/reorder the transaction's catch-up events.
 func TestTxnSnapshotAndWatchRecoverAcrossAllReplicaReplacements(t *testing.T) {
 	endpoint := os.Getenv("KUBEBRAIN_IDLE_RESTART_ENDPOINT")
 	namespace := os.Getenv("KUBEBRAIN_IDLE_RESTART_NAMESPACE")
@@ -97,7 +98,8 @@ func TestReferenceEtcdTxnSnapshotAndWatchRecoverAfterRestart(t *testing.T) {
 
 // TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements pins the
 // compact boundary: revision == compactRevision remains watchable, so physical
-// cleanup must retain the transaction's ordered event log at that revision.
+// cleanup must retain the transaction's ordered event log at that revision,
+// while UPDATE/DELETE PrevKVs below the watermark remain client-invisible.
 func TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements(t *testing.T) {
 	endpoint := os.Getenv("KUBEBRAIN_IDLE_RESTART_ENDPOINT")
 	namespace := os.Getenv("KUBEBRAIN_IDLE_RESTART_NAMESPACE")
@@ -189,10 +191,15 @@ func newRawCompatConn(t *testing.T, endpoint string) *grpc.ClientConn {
 func seedRestartTxn(t *testing.T, ctx context.Context, conn *grpc.ClientConn, prefix string) (int64, int64) {
 	t.Helper()
 	kv := etcdserverpb.NewKVClient(conn)
-	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "m"), Value: []byte("seed")})
+	seed, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "m"), Value: []byte("seed-m")}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "z"), Value: []byte("seed-z")}}},
+	}})
 	require.NoError(t, err)
+	require.True(t, seed.Succeeded)
+	require.Len(t, seed.Responses, 2)
 	txn, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
-		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "z"), Value: []byte("z")}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "z"), Value: []byte("updated-z")}}},
 		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix + "m"), PrevKv: true}}},
 		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte(prefix + "a"), Value: []byte("a")}}},
 	}})
@@ -220,16 +227,18 @@ func assertRestartTxnSnapshotAndWatch(
 	})
 	require.NoError(t, err)
 	require.Equal(t, txnRevision, historical.GetHeader().GetRevision())
-	require.Equal(t, []string{prefix + "m"}, restartTxnKeys(historical))
+	require.Equal(t, []string{prefix + "m", prefix + "z"}, restartTxnKeys(historical))
+	require.Equal(t, []string{"seed-m", "seed-z"}, restartTxnValues(historical))
 }
 
-func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *grpc.ClientConn, prefix string, txnRevision int64, wantDeletePrevKV bool) {
+func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *grpc.ClientConn, prefix string, txnRevision int64, wantPreviousValues bool) {
 	t.Helper()
 	rangeEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
 	current, err := etcdserverpb.NewKVClient(conn).Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: rangeEnd})
 	require.NoError(t, err)
 	require.Equal(t, txnRevision, current.GetHeader().GetRevision())
 	require.Equal(t, []string{prefix + "a", prefix + "z"}, restartTxnKeys(current))
+	require.Equal(t, []string{"a", "updated-z"}, restartTxnValues(current))
 
 	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer watchCancel()
@@ -264,13 +273,16 @@ func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *gr
 	require.Equal(t, []mvccpb.Event_EventType{
 		mvccpb.PUT, mvccpb.DELETE, mvccpb.PUT,
 	}, eventTypes)
-	require.Nil(t, events[0].PrevKv, "creating PUT must not carry PrevKV")
 	require.Nil(t, events[2].PrevKv, "creating PUT must not carry PrevKV")
-	if wantDeletePrevKV {
+	if wantPreviousValues {
+		require.NotNil(t, events[0].PrevKv, "uncompacted UPDATE must carry PrevKV")
+		require.Equal(t, []byte(prefix+"z"), events[0].PrevKv.Key)
+		require.Equal(t, []byte("seed-z"), events[0].PrevKv.Value)
 		require.NotNil(t, events[1].PrevKv, "uncompacted DELETE must carry PrevKV")
 		require.Equal(t, []byte(prefix+"m"), events[1].PrevKv.Key)
-		require.Equal(t, []byte("seed"), events[1].PrevKv.Value)
+		require.Equal(t, []byte("seed-m"), events[1].PrevKv.Value)
 	} else {
+		require.Nil(t, events[0].PrevKv, "UPDATE PrevKV below the compact watermark must be unavailable")
 		require.Nil(t, events[1].PrevKv, "DELETE PrevKV below the compact watermark must be unavailable")
 	}
 }
@@ -281,4 +293,12 @@ func restartTxnKeys(response *etcdserverpb.RangeResponse) []string {
 		keys = append(keys, string(kv.Key))
 	}
 	return keys
+}
+
+func restartTxnValues(response *etcdserverpb.RangeResponse) []string {
+	values := make([]string, 0, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		values = append(values, string(kv.Value))
+	}
+	return values
 }
