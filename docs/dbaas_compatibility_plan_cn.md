@@ -30682,6 +30682,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   at-limit、递归预算边界及拒绝场景执行后统一读取唯一前缀，双端除 response/error 外还
   必须满足 revision gap=0、最终仅 seed 存活。该门禁固定 too-many-ops admission 必须在
   任一候选写执行和用户 revision 分配之前完成，同时保持合法只读边界不产生伪 revision。
+- A3369 将 `TestTxnDuplicateIntervalDifferentialAgainstReferenceEtcd` 从 code/message
+  对比提升为 admission 原子性差分：每个端点先写独立 seed，六类 duplicate put、
+  put/delete overlap、nested overlap 非法请求均必须返回 nil response，且逐次验证相对
+  seed revision gap=0、最终仅 seed 存活；四类合法的互斥分支/重复 delete/disjoint
+  interval 组合则明确要求非 nil、Succeeded response。该证据防止 duplicate interval
+  检查被错误后移到部分写执行或 revision 分配之后。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
