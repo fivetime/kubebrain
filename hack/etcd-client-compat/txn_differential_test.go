@@ -46,9 +46,29 @@ func TestTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	kubebrain := runTxnDifferentialScenario(t, compatEndpoint(), "kubebrain")
 	etcd := runTxnDifferentialScenario(t, reference, "etcd")
-	require.Equal(t, etcd, kubebrain)
+	want := txnDifferentialResult{
+		TxnSucceeded:  true,
+		TxnRevision:   1,
+		FirstRangeRev: 1,
+		FirstRange: []normalizedKV{
+			{Key: "a", Value: "old", Version: 1},
+			{Key: "b", Value: "new-b", CreateRev: 1, ModRev: 1, Version: 1},
+		},
+		PutRevision:   1,
+		PutPrev:       &normalizedKV{Key: "a", Value: "old", Version: 1},
+		CountRangeRev: 1,
+		Count:         2,
+		FinalRangeRev: 1,
+		Final: []normalizedKV{
+			{Key: "a", Value: "new-a", ModRev: 1, Version: 2},
+			{Key: "b", Value: "new-b", CreateRev: 1, ModRev: 1, Version: 1},
+		},
+		ErrorCode:    "Unknown",
+		ErrorMessage: "etcdserver: key not found",
+	}
+	require.Equal(t, want, etcd)
+	require.Equal(t, etcd, runTxnDifferentialScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 type unconditionalTxnResult struct {

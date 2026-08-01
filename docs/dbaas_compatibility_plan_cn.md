@@ -30835,6 +30835,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(create=1,mod=1,version=1)` 与更新后 b 的 `(2,4,2)`，revision `+4` 的历史快照仍含
   a/b/c，而当前只剩 c。historical/current、equal-empty、missing 和 final response header
   全保持 `+5`，两类 no-op 删除均无 PrevKV，防止范围删除拆 revision 或污染历史元数据。
+- A3401 将主 Txn 双端差分升级为完整 staged-view oracle：seed 后 Put(b)、Range、
+  Put(a,IgnoreLease+PrevKV)、CountOnly Range 四个操作共享唯一 `+1` revision；首个 Range
+  已看见 b，Put(a) 的 PrevKV 仍是 seed，CountOnly 忽略 limit 并计数两个本事务修改，最终
+  a/b 的 ModRevision 都为 `+1`。参考反例同时固定 public clientv3 对缺失 key IgnoreLease
+  Put 暴露 `Unknown: etcdserver: key not found`（即使底层重试日志为 InvalidArgument），避免
+  把服务端内部分类误写成客户端外观。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
