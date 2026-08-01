@@ -508,31 +508,43 @@ func TestLeaseSwitchOldRevokePreservesNewLeaseBinding(t *testing.T) {
 	key := []byte("/registry/lease-fence/switch")
 	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseA})
 	require.NoError(t, err)
-	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseB})
+	grantB, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseB})
 	require.NoError(t, err)
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("lease-a"), Lease: leaseA})
+	baseRevision := grantB.Header.Revision
+	putA, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("lease-a"), Lease: leaseA})
 	require.NoError(t, err)
+	require.Equal(t, baseRevision+1, putA.Header.Revision)
 
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("lease-b"), Lease: leaseB})
+	putB, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("lease-b"), Lease: leaseB})
 	require.NoError(t, err)
-	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseA})
+	require.Equal(t, putA.Header.Revision+1, putB.Header.Revision)
+	oldTTLBeforeRevoke, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseA, Keys: true})
 	require.NoError(t, err)
+	require.Empty(t, oldTTLBeforeRevoke.Keys)
+	require.Equal(t, putB.Header.Revision, oldTTLBeforeRevoke.Header.Revision)
+	oldRevoke, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseA})
+	require.NoError(t, err)
+	require.Equal(t, putB.Header.Revision, oldRevoke.Header.Revision)
 
 	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, []byte("lease-b"), current.Kvs[0].Value)
 	require.Equal(t, leaseB, current.Kvs[0].Lease)
+	require.Equal(t, oldRevoke.Header.Revision, current.Header.Revision)
 
 	oldTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseA})
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), oldTTL.TTL)
+	require.Equal(t, oldRevoke.Header.Revision, oldTTL.Header.Revision)
 
-	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseB})
+	newRevoke, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseB})
 	require.NoError(t, err)
+	require.Equal(t, oldRevoke.Header.Revision+1, newRevoke.Header.Revision)
 	after, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Empty(t, after.Kvs)
+	require.Equal(t, newRevoke.Header.Revision, after.Header.Revision)
 }
 
 func (s *demoteBeforeTxnApplyShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
