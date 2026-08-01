@@ -99,6 +99,7 @@ func TestClientDeleteRangeDifferentialScenario(t *testing.T) {
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	)
 	require.NoError(t, err)
+	require.Equal(t, deleted.Header.Revision, historical.Header.Revision)
 	require.Equal(t, []deleteClientKV{
 		{key: "a", value: "va", createRevision: putA.Header.Revision, modRevision: putA.Header.Revision, version: 1},
 		{key: "b", value: "vb2", createRevision: putB.Header.Revision, modRevision: updateB.Header.Revision, version: 2},
@@ -110,6 +111,7 @@ func TestClientDeleteRangeDifferentialScenario(t *testing.T) {
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	)
 	require.NoError(t, err)
+	require.Equal(t, deleted.Header.Revision, current.Header.Revision)
 	require.Equal(t, []deleteClientKV{
 		{key: "c", value: "vc", createRevision: putC.Header.Revision, modRevision: putC.Header.Revision, version: 1},
 	}, deleteClientKVs(current.Kvs, prefix))

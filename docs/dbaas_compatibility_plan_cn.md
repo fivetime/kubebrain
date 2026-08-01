@@ -30830,6 +30830,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `(create,mod,version)` 精确为 `(1,1,1)/(1,2,2)/(1,3,3)`，最终 KV 为
   `(create=1,mod=4,version=4)`。本地 direct 与 clientv3/Do 回归同步固定 PrevKV 链，
   防止 lease 重绑或 ignore 选项保留 value/lease 时破坏 MVCC metadata。
+- A3400 将主 DeleteRange 双端差分从双方互比升级为完整状态 oracle：四次 Put 为
+  `+1/+2/+3/+4`，一次半开区间双 key 删除仅到 `+5`；PrevKV 精确保留 a 的
+  `(create=1,mod=1,version=1)` 与更新后 b 的 `(2,4,2)`，revision `+4` 的历史快照仍含
+  a/b/c，而当前只剩 c。historical/current、equal-empty、missing 和 final response header
+  全保持 `+5`，两类 no-op 删除均无 PrevKV，防止范围删除拆 revision 或污染历史元数据。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

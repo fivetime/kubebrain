@@ -2698,12 +2698,20 @@ func TestDeleteRangeDifferentialScenarioMatchesEtcd(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("va"), []byte("vb2")}, [][]byte{
 		deleted.PrevKvs[0].Value, deleted.PrevKvs[1].Value,
 	})
+	require.Equal(t, []int64{putA.Header.Revision, putB.Header.Revision}, []int64{
+		deleted.PrevKvs[0].CreateRevision, deleted.PrevKvs[1].CreateRevision,
+	})
+	require.Equal(t, []int64{putA.Header.Revision, updateB.Header.Revision}, []int64{
+		deleted.PrevKvs[0].ModRevision, deleted.PrevKvs[1].ModRevision,
+	})
+	require.Equal(t, []int64{1, 2}, []int64{deleted.PrevKvs[0].Version, deleted.PrevKvs[1].Version})
 
 	historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: []byte(prefix), RangeEnd: rangeEnd, Revision: deleted.Header.Revision - 1,
 		SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
 	})
 	require.NoError(t, err)
+	require.Equal(t, deleted.Header.Revision, historical.Header.Revision)
 	require.Len(t, historical.Kvs, 3)
 	require.Equal(t, [][]byte{[]byte(prefix + "a"), []byte(prefix + "b"), []byte(prefix + "c")}, [][]byte{
 		historical.Kvs[0].Key, historical.Kvs[1].Key, historical.Kvs[2].Key,
@@ -2717,6 +2725,7 @@ func TestDeleteRangeDifferentialScenarioMatchesEtcd(t *testing.T) {
 		SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
 	})
 	require.NoError(t, err)
+	require.Equal(t, deleted.Header.Revision, current.Header.Revision)
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, []byte(prefix+"c"), current.Kvs[0].Key)
 

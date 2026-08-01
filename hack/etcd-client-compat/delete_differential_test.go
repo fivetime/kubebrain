@@ -33,9 +33,35 @@ func TestDeleteRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	kubebrain := runDeleteDifferentialScenario(t, compatEndpoint(), "kubebrain")
 	etcd := runDeleteDifferentialScenario(t, reference, "etcd")
-	require.Equal(t, etcd, kubebrain)
+	want := deleteDifferentialResult{
+		PutRevisions:   []int64{1, 2, 3, 4},
+		DeleteRevision: 5,
+		Deleted:        2,
+		PrevKVs: []normalizedKV{
+			{Key: "a", Value: "va", CreateRev: 1, ModRev: 1, Version: 1},
+			{Key: "b", Value: "vb2", CreateRev: 2, ModRev: 4, Version: 2},
+		},
+		HistoricalBefore: normalizedRange{
+			HeaderRev: 5,
+			KVs: []normalizedKV{
+				{Key: "a", Value: "va", CreateRev: 1, ModRev: 1, Version: 1},
+				{Key: "b", Value: "vb2", CreateRev: 2, ModRev: 4, Version: 2},
+				{Key: "c", Value: "vc", CreateRev: 3, ModRev: 3, Version: 1},
+			},
+			Count: 3,
+		},
+		CurrentAfter: normalizedRange{
+			HeaderRev: 5,
+			KVs:       []normalizedKV{{Key: "c", Value: "vc", CreateRev: 3, ModRev: 3, Version: 1}},
+			Count:     1,
+		},
+		EmptyRangeRevision: 5,
+		MissingRevision:    5,
+		FinalRevision:      5,
+	}
+	require.Equal(t, want, etcd)
+	require.Equal(t, etcd, runDeleteDifferentialScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runDeleteDifferentialScenario(t *testing.T, endpoint, instance string) deleteDifferentialResult {
