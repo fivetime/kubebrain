@@ -88,10 +88,16 @@ func TestTxnUnconditionalFailureBranchDifferentialAgainstReferenceEtcd(t *testin
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runUnconditionalTxnScenario(t, reference, "etcd"),
-		runUnconditionalTxnScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceOutcome := runUnconditionalTxnScenario(t, reference, "etcd")
+	want := unconditionalTxnResult{
+		EmptySucceeded: true,
+		WriteSucceeded: true,
+		WriteResponses: 1,
+		WriteRevision:  1,
+		WrittenValue:   "value",
+	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runUnconditionalTxnScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runUnconditionalTxnScenario(t *testing.T, endpoint, instance string) unconditionalTxnResult {

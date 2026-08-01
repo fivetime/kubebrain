@@ -30853,6 +30853,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   顺序返回 PrevKV，只剩 a；a/b 的 VALUE 不全等于目标值时选择 failure Put，最终按 key
   顺序留下 a/b/failure。该 oracle 防止参考端和 KubeBrain 同时把 range compare 错误实现
   为“任一键匹配”，或丢失 DeleteRange 的半开区间与 PrevKV 排序语义。
+- A3404 对照 `/root/etcd/server/etcdserver/txn/txn.go` 的 `applyCompares` 空集合规则，
+  将无 compare 的 Txn 主差分升级为显式 oracle：即使只配置 Else(Get)，空 compare 仍恒为
+  succeeded、选择空 Then、返回零个子响应且不推进 revision；配置 Then(Put) 时仍恒为
+  succeeded、返回一个子响应并只推进一次 revision，Else(Put) 不得落盘。该约束防止把
+  “未提供 If”错误解释为选择 failure 分支。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
