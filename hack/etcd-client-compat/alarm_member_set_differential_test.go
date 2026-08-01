@@ -26,6 +26,18 @@ func TestAlarmMemberSetDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcomes := runAlarmMemberSetScenario(t, reference)
+	want := []alarmMemberSetOutcome{
+		{Name: "activate-first", Members: []uint64{0xa37001}},
+		{Name: "activate-first-idempotent", Members: []uint64{0xa37001}},
+		{Name: "activate-second", Members: []uint64{0xa37002}},
+		{Name: "list-two", Members: []uint64{0xa37001, 0xa37002}},
+		{Name: "deactivate-first", Members: []uint64{0xa37001}},
+		{Name: "list-second", Members: []uint64{0xa37002}},
+		{Name: "deactivate-first-idempotent", Members: []uint64{}},
+		{Name: "deactivate-second", Members: []uint64{0xa37002}},
+		{Name: "list-empty", Members: []uint64{}},
+	}
+	require.Equal(t, want, referenceOutcomes)
 	require.Equal(t, referenceOutcomes, runAlarmMemberSetScenario(t, compatEndpoint()))
 }
 

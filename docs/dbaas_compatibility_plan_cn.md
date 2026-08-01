@@ -30924,6 +30924,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   将专项双端差分升级为最小显式 oracle：当前 a/b 中 MinModRevision 只让 b 进入 KVs，但普通
   Range 和 CountOnly 的 Count 都仍为过滤前总数 2，CountOnly KVs 为空；同一事务 staged 新建
   c 后以事务 revision 过滤只返回 c，但 Count 为 staged live range 总数 3、More=false。
+- A3417 对照 `/root/etcd/server/etcdserver/api/v3alarm/alarms.go` 与
+  `/root/etcd/server/etcdserver/apply/backend.go` 的 alarm 集合及响应装配，将成员集合专项双端
+  差分升级为显式 oracle：同一 `(NOSPACE, memberID)` 重复 Activate 必须幂等并返回既有成员，
+  Activate/Deactivate 的响应只携带本次成员而非完整集合；删除不存在成员成功且返回非 nil
+  空集合，GET 则依次反映双成员、单成员和非 nil 空集合状态。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
