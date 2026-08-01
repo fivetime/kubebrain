@@ -31131,6 +31131,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restart、PD/TiKV 3+3 Ready，endpoint health 为 true，最近日志无 `event collector stalled`、
   `commit wait backstop` 或 `skipping abandoned revision`；定向 backend/leader 普通与 race 测试及
   双方 `go vet` 通过。完整 `pkg/server/etcd` 套件本轮未形成有效完成证据，故不据此作通过声明。
+- A3435 继续审计 A3434 的 durable committed revision 与 compact watermark 交界：官方 etcd
+  oracle 写入一个 key、compact 到该最新 revision、以同一 data-dir 重启后再 Range，5 轮
+  10.834 秒及 race 1 轮 3.295 秒均精确保持写入 revision。A3434 v2 生产镜像在相同的真实
+  三副本同时 replacement 门禁稳定红灯：首次 Range header 从 `468079506509266953` 变为
+  `468079506509266954`。根因是 backend 与 etcd RPC 层的两个 `safeCurrentRevision` helper 都把
+  `compactRevision >= currentRevision` 无条件归一成 `compact+1`；该旧逻辑混淆了“压缩删除历史”
+  与“用户 MVCC mutation”，并把最新读所需的边界处理泄漏成公开 revision。现改为：仅在空库
+  current/compact 都为 0 时初始化为 etcd revision 1；compact 水位确实领先冷缓存时最多追到
+  compact 本身；compact 等于 current 时完全不推进。backend 单测同时固定冷缓存追平和相等不
+  增长，RPC 单测固定 Compact response、最新 Range 及 server helper 均保持写入 revision；backend
+  主测试 21.547 秒、RPC 定向 10 轮 0.458 秒、双方 race 5 轮 1.394/1.509 秒及双方 `go vet`
+  通过。commit `298cbff092aca9234f5e363074aded2f2a709247` 的生产 TiKV 镜像
+  `kubebrain:a3435-compact-revision`（image ID
+  `sha256:159fac78521842ad6dc32727ca0fc7ae4457dba1fee53da1f5411a05773edb6c`）滚动部署到独立
+  3 PD/3 TiKV 集群后，新门禁 8.44 秒通过；A3434 普通空闲 replacement 回归 8.78 秒、A3433
+  HashKV compact/精确快照/全副本 replacement 回归 12.81 秒通过。最终 KubeBrain 3/3
+  Ready/0 restart、PD/TiKV 3+3 Ready、endpoint health 为 true，最近日志无 collector stall、
+  commit backstop、abandoned revision 或 durable revision persistence error。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
