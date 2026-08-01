@@ -31056,6 +31056,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   集群一次 26.766 秒通过。最终三个 replacement Pod 均 Ready/0 restart、alarm list 为空、
   无 alarm refresh error，endpoint health 15.679ms。本轮只增加恢复门禁和运行证据，未修改
   服务二进制，因此继续使用 A3427 镜像。
+- A3429 对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Status` 补齐此前
+  `maintenance_semantics_test` 只比较 quota/term/Defragment header、未整体固定 3.7 Status
+  envelope 的覆盖缺口。raw Maintenance/Status 差分现同时要求 Header 存在且 cluster/member/
+  revision/term 为正，Header term 等于 Status term；Version/StorageVersion 非空，leader、
+  raft index/applied/term 为正且 applied 不领先 index；DbSize/DbSizeInUse/DbSizeQuota 为正且
+  in-use 不大于 size；普通成员 `IsLearner=false`，DowngradeInfo 存在但 disabled/空 target，
+  Errors 为空。当前 `/root/etcd` 工作树二进制自报 3.8 alpha，而 KubeBrain 支持窗口和既有单测
+  固定 3.7.0，因此差分比较版本字段存在性而不错误要求字符串相等。官方自对照 20 轮
+  0.116 秒、A3427 生产镜像对真实独立 3 PD/3 TiKV 双端 20 轮 0.343 秒、race 5 轮
+  1.231 秒通过；本轮未发现实现差异，只增加协议 envelope 回归门禁，无需重建镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
