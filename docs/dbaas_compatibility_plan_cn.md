@@ -30722,6 +30722,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ID 拒绝后均立即 Range seed；所有 outcome 除 lease code/message/ID/TTL 外必须保持
   revision gap=0、seed value 完整。场景在返回前撤销已创建 lease，证明 Grant/Revoke
   internal metadata 生命周期不污染用户 MVCC 水位，并让重复真实参考运行保持隔离。
+- A3376 将 KeepAlive/Revoke signed-ID 边界双端差分升级为精确水位证据：先写 seed 后
+  Grant `-1`、MinInt64、MaxInt64 lease，zero/unknown/live KeepAlive 以及成功、重复、
+  zero/unknown Revoke 全部逐项 Range seed；用户 revision gap 必须始终为 0、seed 完整，
+  且所有成功 KeepAlive/Revoke response header revision 必须精确等于 seed revision，
+  不再只断言正数。该门禁固定无绑定键 lease 生命周期完全处于 internal metadata 域。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
