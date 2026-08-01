@@ -19,6 +19,11 @@ type mixedPrevKVStreamsOutcome struct {
 	WithoutPrevEvents   int
 	CurrentValuesMatch  bool
 	PreviousValuesMatch bool
+	CreatedHeadersMatch bool
+	PutSequenceMatches  bool
+	EventHeadersMatch   bool
+	EventMetadataMatch  bool
+	PrevMetadataMatch   bool
 }
 
 func TestWatchMixedPrevKVStreamsDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -27,10 +32,15 @@ func TestWatchMixedPrevKVStreamsDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run mixed PrevKV stream differential tests")
 	}
 
-	require.Equal(t,
-		runWatchMixedPrevKVStreamsScenario(t, reference, "etcd"),
-		runWatchMixedPrevKVStreamsScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	want := mixedPrevKVStreamsOutcome{
+		Watchers: 6, Updates: 8, WithPrevEvents: 24, WithoutPrevEvents: 24,
+		CurrentValuesMatch: true, PreviousValuesMatch: true, CreatedHeadersMatch: true,
+		PutSequenceMatches: true, EventHeadersMatch: true, EventMetadataMatch: true,
+		PrevMetadataMatch: true,
+	}
+	referenceOutcome := runWatchMixedPrevKVStreamsScenario(t, reference, "etcd")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runWatchMixedPrevKVStreamsScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runWatchMixedPrevKVStreamsScenario(t *testing.T, endpoint, instance string) mixedPrevKVStreamsOutcome {
@@ -50,7 +60,7 @@ func runWatchMixedPrevKVStreamsScenario(t *testing.T, endpoint, instance string)
 		defer cleanupCancel()
 		_, _ = client.Delete(cleanupCtx, key)
 	})
-	_, err = client.Put(ctx, key, "v0")
+	seed, err := client.Put(ctx, key, "v0")
 	require.NoError(t, err)
 
 	const (
@@ -86,10 +96,12 @@ func runWatchMixedPrevKVStreamsScenario(t *testing.T, endpoint, instance string)
 			watch.cancel()
 		}
 	})
+	createdHeadersMatch := true
 	for index, watch := range watches {
 		created := receiveMixedPrevKVWatchResponse(t, ctx, watch.channel, index, 0)
 		require.True(t, created.Created)
 		require.NoError(t, created.Err())
+		createdHeadersMatch = createdHeadersMatch && created.Header.Revision == seed.Header.Revision
 	}
 
 	outcome := mixedPrevKVStreamsOutcome{
@@ -97,18 +109,30 @@ func runWatchMixedPrevKVStreamsScenario(t *testing.T, endpoint, instance string)
 		Updates:             updateCount,
 		CurrentValuesMatch:  true,
 		PreviousValuesMatch: true,
+		CreatedHeadersMatch: createdHeadersMatch,
+		PutSequenceMatches:  true,
+		EventHeadersMatch:   true,
+		EventMetadataMatch:  true,
+		PrevMetadataMatch:   true,
 	}
 	previous := "v0"
 	for update := 1; update <= updateCount; update++ {
 		current := fmt.Sprintf("v%d", update)
-		_, err = client.Put(ctx, key, current)
-		require.NoError(t, err)
+		put, putErr := client.Put(ctx, key, current)
+		require.NoError(t, putErr)
+		expectedRevision := seed.Header.Revision + int64(update)
+		outcome.PutSequenceMatches = outcome.PutSequenceMatches && put.Header.Revision == expectedRevision
 
 		for index, watch := range watches {
 			response := receiveMixedPrevKVWatchResponse(t, ctx, watch.channel, index, update)
 			require.NoError(t, response.Err())
 			require.Len(t, response.Events, 1)
 			event := response.Events[0]
+			require.NotNil(t, event.Kv)
+			outcome.EventHeadersMatch = outcome.EventHeadersMatch && response.Header.Revision == expectedRevision
+			outcome.EventMetadataMatch = outcome.EventMetadataMatch &&
+				event.Kv.CreateRevision == seed.Header.Revision &&
+				event.Kv.ModRevision == expectedRevision && event.Kv.Version == int64(update+1)
 			if string(event.Kv.Key) != key || string(event.Kv.Value) != current {
 				outcome.CurrentValuesMatch = false
 			}
@@ -118,6 +142,9 @@ func runWatchMixedPrevKVStreamsScenario(t *testing.T, endpoint, instance string)
 					string(event.PrevKv.Value) != previous {
 					outcome.PreviousValuesMatch = false
 				}
+				outcome.PrevMetadataMatch = outcome.PrevMetadataMatch && event.PrevKv != nil &&
+					event.PrevKv.CreateRevision == seed.Header.Revision &&
+					event.PrevKv.ModRevision == expectedRevision-1 && event.PrevKv.Version == int64(update)
 			} else {
 				outcome.WithoutPrevEvents++
 				if event.PrevKv != nil {

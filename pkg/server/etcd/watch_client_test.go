@@ -349,7 +349,7 @@ func TestClientWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	key := fmt.Sprintf("/a1029/watch-mixed-prevkv/%d", time.Now().UnixNano())
-	_, err = client.Put(ctx, key, "v0")
+	seed, err := client.Put(ctx, key, "v0")
 	require.NoError(t, err)
 
 	const (
@@ -386,23 +386,36 @@ func TestClientWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 		}
 	})
 	for _, watch := range watches {
-		requireClientWatchCreated(t, ctx, watch.channel)
+		created := requireClientWatchCreatedResponse(t, ctx, watch.channel)
+		require.Equal(t, seed.Header.Revision, created.Header.Revision)
 	}
 
 	previous := "v0"
 	for update := 1; update <= updateCount; update++ {
 		current := fmt.Sprintf("v%d", update)
-		_, err = client.Put(ctx, key, current)
+		put, err := client.Put(ctx, key, current)
 		require.NoError(t, err)
+		require.Equal(t, seed.Header.Revision+int64(update), put.Header.Revision)
 
 		for index, watch := range watches {
-			event := requireSingleClientWatchEvent(t, ctx, watch.channel)
+			response := requireClientWatchResponse(t, ctx, watch.channel)
+			require.False(t, response.Created)
+			require.False(t, response.Canceled)
+			require.Len(t, response.Events, 1)
+			require.Equal(t, put.Header.Revision, response.Header.Revision)
+			event := response.Events[0]
 			require.Equalf(t, key, string(event.Kv.Key), "watcher %d update %d", index, update)
 			require.Equalf(t, current, string(event.Kv.Value), "watcher %d update %d", index, update)
+			require.Equal(t, seed.Header.Revision, event.Kv.CreateRevision)
+			require.Equal(t, put.Header.Revision, event.Kv.ModRevision)
+			require.Equal(t, int64(update+1), event.Kv.Version)
 			if watch.withPrev {
 				require.NotNilf(t, event.PrevKv, "watcher %d update %d", index, update)
 				require.Equal(t, key, string(event.PrevKv.Key))
 				require.Equalf(t, previous, string(event.PrevKv.Value), "watcher %d update %d", index, update)
+				require.Equal(t, seed.Header.Revision, event.PrevKv.CreateRevision)
+				require.Equal(t, put.Header.Revision-1, event.PrevKv.ModRevision)
+				require.Equal(t, int64(update), event.PrevKv.Version)
 			} else {
 				require.Nilf(t, event.PrevKv, "watcher %d update %d", index, update)
 			}

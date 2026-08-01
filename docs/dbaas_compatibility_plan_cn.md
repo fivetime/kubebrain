@@ -30770,6 +30770,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 catch-up response 中；重复 `NOPUT` 等价单次 `NOPUT`，只返回 DELETE，response header
   与 ModRevision gap 均为 `1`。两种 Created header 都位于删除后的 `+1`，固定过滤只改变
   payload、批次 header 使用最新 revision，且 cursor 仍按事件 revision 前进。
+- A3387 将六路 mixed PrevKV Watch 双端差分扩展为完整 metadata 序列：所有 Created header
+  等于 seed revision，8 次更新依次为 `base+n`、version `n+1`；每路 Event header、KV
+  ModRevision/CreateRevision/Version 必须一致。三路 PrevKV 额外返回 `base+n-1`、version `n`
+  的前态，另三路始终无 PrevKV，固定共享 TiKV 变更流上不同订阅选项的游标与数据隔离。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
