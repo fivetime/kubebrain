@@ -65,6 +65,9 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	prefix := fmt.Sprintf("/a3378/lease-client-read/%d/", time.Now().UnixNano())
+	seed, err := client.Put(ctx, prefix+"seed", "seed")
+	require.NoError(t, err)
 	zeroWithoutKeys, err := client.TimeToLive(ctx, 0)
 	require.NoError(t, err)
 	zeroWithKeys, err := client.TimeToLive(ctx, 0, clientv3.WithAttachedKeys())
@@ -79,17 +82,21 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	require.Equal(t, zeroWithoutKeys.GrantedTTL, zeroWithKeys.GrantedTTL)
 	requireClientLeaseHeaderWellFormed(t, zeroWithoutKeys.ResponseHeader)
 	requireClientLeaseHeaderWellFormed(t, zeroWithKeys.ResponseHeader)
+	require.Equal(t, seed.Header.Revision, zeroWithoutKeys.ResponseHeader.Revision)
+	require.Equal(t, seed.Header.Revision, zeroWithKeys.ResponseHeader.Revision)
 
 	grant, err := client.Grant(ctx, 300)
 	require.NoError(t, err)
+	require.Equal(t, seed.Header.Revision, grant.ResponseHeader.Revision)
 	leaseID := grant.ID
 	require.NotZero(t, leaseID)
-	prefix := fmt.Sprintf("/a994/lease-client-read/%d/", time.Now().UnixNano())
 	keys := []string{prefix + "z", prefix + "a"}
-	for _, key := range keys {
-		_, err = client.Put(ctx, key, "value", clientv3.WithLease(leaseID))
-		require.NoError(t, err)
+	for index, key := range keys {
+		put, putErr := client.Put(ctx, key, "value", clientv3.WithLease(leaseID))
+		require.NoError(t, putErr)
+		require.Equal(t, seed.Header.Revision+int64(index)+1, put.Header.Revision)
 	}
+	wantReadRevision := seed.Header.Revision + int64(len(keys))
 
 	liveWithoutKeys, err := client.TimeToLive(ctx, leaseID)
 	require.NoError(t, err)
@@ -99,6 +106,7 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	require.Equal(t, int64(300), liveWithoutKeys.GrantedTTL)
 	require.Empty(t, liveWithoutKeys.Keys)
 	requireClientLeaseHeaderWellFormed(t, liveWithoutKeys.ResponseHeader)
+	require.Equal(t, wantReadRevision, liveWithoutKeys.ResponseHeader.Revision)
 
 	liveWithKeys, err := client.TimeToLive(ctx, leaseID, clientv3.WithAttachedKeys())
 	require.NoError(t, err)
@@ -114,10 +122,12 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	slices.Sort(gotKeys)
 	require.Equal(t, keys, gotKeys)
 	requireClientLeaseHeaderWellFormed(t, liveWithKeys.ResponseHeader)
+	require.Equal(t, wantReadRevision, liveWithKeys.ResponseHeader.Revision)
 
 	list, err := client.Leases(ctx)
 	require.NoError(t, err)
 	requireClientLeaseHeaderWellFormed(t, list.ResponseHeader)
+	require.Equal(t, wantReadRevision, list.ResponseHeader.Revision)
 	containsLive := false
 	for _, status := range list.Leases {
 		require.NotZero(t, status.ID)

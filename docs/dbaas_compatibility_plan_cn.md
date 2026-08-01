@@ -30732,6 +30732,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KeepAlive header 固定在 Put revision；Revoke 原子删除绑定 key 并推进到 `+2`，随后
   Range、missing TimeToLive header 均保持 `+2`，seed 继续存在。该门禁同时固定 clientv3
   缓冲允许范围、stream 关闭、lease missing 与 attachment 删除的单 revision 原子语义。
+- A3378 将 zero-ID/live TimeToLive 与 LeaseList 双端差分从“header 合法”收紧为精确
+  revision 隔离：seed 后 zero-ID TTL（含/不含 keys）与 Grant 均保持 gap=0，两个 leased
+  Put 分别推进到 `+1/+2`；随后 live TTL 两种形态及 LeaseList header 必须统一保持 `+2`，
+  且 attachment keys 仍按无序集合比较。clientv3 本地门禁同步固定该线性化读取语义。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
