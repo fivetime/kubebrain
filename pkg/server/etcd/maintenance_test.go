@@ -315,6 +315,24 @@ func TestAlarmGetFiltersUnknownAlarmAndMaxMemberLikeEtcd(t *testing.T) {
 	}
 }
 
+func TestAlarmStatusErrorMatchesReferenceProtoText(t *testing.T) {
+	tests := []struct {
+		name  string
+		alarm *etcdserverpb.AlarmMember
+		want  string
+	}{
+		{name: "zero member", alarm: &etcdserverpb.AlarmMember{Alarm: etcdserverpb.AlarmType_NOSPACE}, want: "alarm:NOSPACE"},
+		{name: "zero alarm", alarm: &etcdserverpb.AlarmMember{MemberID: 7}, want: "memberID:7"},
+		{name: "known", alarm: &etcdserverpb.AlarmMember{MemberID: 7, Alarm: etcdserverpb.AlarmType_CORRUPT}, want: "memberID:7  alarm:CORRUPT"},
+		{name: "unknown", alarm: &etcdserverpb.AlarmMember{MemberID: 7, Alarm: etcdserverpb.AlarmType(127)}, want: "memberID:7  alarm:127"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, alarmStatusError(test.alarm))
+		})
+	}
+}
+
 func TestAlarmGetIsolatesFiltersFromUnrelatedQuotaFailure(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -644,8 +662,8 @@ func TestCorruptAlarmBlocksEtcdApplierSurfaceOverGRPC(t *testing.T) {
 	require.Empty(t, nospace.Alarms)
 	statusResp, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
-	require.Contains(t, statusResp.Errors, activated.Alarms[0].String())
-	require.Contains(t, statusResp.Errors, get.Alarms[0].String())
+	require.Contains(t, statusResp.Errors, alarmStatusError(activated.Alarms[0]))
+	require.Contains(t, statusResp.Errors, alarmStatusError(get.Alarms[0]))
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{})
 	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
 	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{})
@@ -778,7 +796,9 @@ func TestCombinedAlarmsPreferCorruptThenRecoverToNoSpace(t *testing.T) {
 	}, summarize(list.Alarms))
 	statusResp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{noSpace.Alarms[0].String(), corrupt.Alarms[0].String()}, statusResp.Errors)
+	require.ElementsMatch(t, []string{
+		alarmStatusError(noSpace.Alarms[0]), alarmStatusError(corrupt.Alarms[0]),
+	}, statusResp.Errors)
 
 	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -845,7 +865,7 @@ func TestStatusManualNoSpaceAlarmDifferentialScenarioMatchesEtcd(t *testing.T) {
 
 	active, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
-	require.Equal(t, []string{activated.Alarms[0].String()}, active.Errors)
+	require.Equal(t, []string{alarmStatusError(activated.Alarms[0])}, active.Errors)
 
 	deactivated, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action:   etcdserverpb.AlarmRequest_DEACTIVATE,

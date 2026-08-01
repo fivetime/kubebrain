@@ -30965,6 +30965,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Errors 为空的红灯；KubeBrain 现于 NOSPACE、CORRUPT 之后追加全部持久通用 alarm。bufconn
   生命周期 50 轮、相关完整 package 与 race 5 轮通过。带该修复的新镜像及真实 TiKV 绿灯仍需
   在对应 commit 后构建验证，不能用 A3420 红灯集群替代。
+- A3422 在 A3421 首个真实镜像验证中继续固定 `Status.Errors` 的 protobuf 文本外观：A3421
+  已正确返回 type/member，但当前生成代码的 `AlarmMember.String()` 用单空格连接字段，参考 etcd
+  二进制返回双空格，20 轮 live 测试因此稳定红灯。Status 现不再依赖随 protobuf 版本变化的
+  `String()`，而显式按旧版 upstream text 格式省略零值、用两个空格连接 `memberID` 与 `alarm`；
+  NOSPACE、CORRUPT 和通用 enum 统一走该 formatter。单测显式固定零 member、零 alarm、已知与
+  未知 enum，相关状态生命周期 50 轮通过；新 commit 镜像和真实 TiKV 绿灯仍待构建验证。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

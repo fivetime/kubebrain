@@ -68,7 +68,7 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, alarmResp.Alarms[0].Alarm)
 	statusResp, err = server.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
-	require.Equal(t, []string{alarmResp.Alarms[0].String()}, statusResp.Errors)
+	require.Equal(t, []string{alarmStatusError(alarmResp.Alarms[0])}, statusResp.Errors)
 
 	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
 	requireQuotaNoSpaceError(t, err)

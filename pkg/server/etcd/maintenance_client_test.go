@@ -642,7 +642,7 @@ func TestClientStatusAlarmErrorsRoundTrip(t *testing.T) {
 
 	active, err := client.Status(ctx, "bufnet")
 	require.NoError(t, err)
-	require.Equal(t, []string{activated.Alarms[0].String()}, active.Errors)
+	require.Equal(t, []string{alarmStatusError(activated.Alarms[0])}, active.Errors)
 
 	disarmed, err := client.AlarmDisarm(ctx, &clientv3.AlarmMember{
 		MemberID: memberID,
@@ -791,7 +791,7 @@ func TestRawGRPCAlarmUnknownTypeLifecycleMatchesEtcd(t *testing.T) {
 	}
 
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_ACTIVATE, memberID))
-	alarmError := (&etcdserverpb.AlarmMember{MemberID: memberID, Alarm: alarm}).String()
+	alarmError := alarmStatusError(&etcdserverpb.AlarmMember{MemberID: memberID, Alarm: alarm})
 	require.Equal(t, []string{alarmError}, statusErrors())
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_ACTIVATE, memberID))
 	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_GET, 0))
@@ -879,7 +879,9 @@ func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	}, summarizeAlarms(all.Alarms))
 	statusResp, err := maintenance.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{noSpace.Alarms[0].String(), corrupt.Alarms[0].String()}, statusResp.Errors)
+	require.ElementsMatch(t, []string{
+		alarmStatusError(noSpace.Alarms[0]), alarmStatusError(corrupt.Alarms[0]),
+	}, statusResp.Errors)
 
 	_, err = kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)

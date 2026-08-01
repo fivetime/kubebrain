@@ -17,7 +17,9 @@ package etcd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"hash/crc32"
+	"strings"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -276,25 +278,36 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		resp.Errors = append(resp.Errors, rpctypes.ErrNoLeader.Error())
 	}
 	for _, alarm := range noSpaceAlarms {
-		resp.Errors = append(resp.Errors, alarm.String())
+		resp.Errors = append(resp.Errors, alarmStatusError(alarm))
 	}
 	corruptAlarms, err := s.backend.CorruptAlarms(ctx)
 	if err != nil {
 		return nil, err
 	}
 	for _, memberID := range corruptAlarms {
-		resp.Errors = append(resp.Errors, (&etcdserverpb.AlarmMember{
+		resp.Errors = append(resp.Errors, alarmStatusError(&etcdserverpb.AlarmMember{
 			MemberID: memberID, Alarm: etcdserverpb.AlarmType_CORRUPT,
-		}).String())
+		}))
 	}
 	genericAlarms, err := s.genericAlarms(ctx, etcdserverpb.AlarmType_NONE)
 	if err != nil {
 		return nil, err
 	}
 	for _, alarm := range genericAlarms {
-		resp.Errors = append(resp.Errors, alarm.String())
+		resp.Errors = append(resp.Errors, alarmStatusError(alarm))
 	}
 	return resp, nil
+}
+
+func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
+	fields := make([]string, 0, 2)
+	if alarm.GetMemberID() != 0 {
+		fields = append(fields, fmt.Sprintf("memberID:%d", alarm.GetMemberID()))
+	}
+	if alarm.GetAlarm() != etcdserverpb.AlarmType_NONE {
+		fields = append(fields, fmt.Sprintf("alarm:%s", alarm.GetAlarm().String()))
+	}
+	return strings.Join(fields, "  ")
 }
 
 func (s *RPCServer) Defragment(ctx context.Context, _ *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
