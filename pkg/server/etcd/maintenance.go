@@ -99,9 +99,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 				return nil, mapFenceErr(err)
 			}
 			if removed {
-				response.Alarms = []*etcdserverpb.AlarmMember{{
+				alarm := &etcdserverpb.AlarmMember{
 					MemberID: req.GetMemberID(), Alarm: etcdserverpb.AlarmType_CORRUPT,
-				}}
+				}
+				response.Alarms = []*etcdserverpb.AlarmMember{alarm}
+				recordAlarmDeactivated(alarm)
 			}
 			return response, nil
 		}
@@ -111,9 +113,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 				return nil, mapFenceErr(err)
 			}
 			if removed {
-				response.Alarms = []*etcdserverpb.AlarmMember{{
+				alarm := &etcdserverpb.AlarmMember{
 					MemberID: req.GetMemberID(), Alarm: req.GetAlarm(),
-				}}
+				}
+				response.Alarms = []*etcdserverpb.AlarmMember{alarm}
+				recordAlarmDeactivated(alarm)
 			}
 			return response, nil
 		}
@@ -122,10 +126,12 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 			return nil, mapFenceErr(err)
 		}
 		if removed {
-			response.Alarms = []*etcdserverpb.AlarmMember{{
+			alarm := &etcdserverpb.AlarmMember{
 				MemberID: req.GetMemberID(),
 				Alarm:    etcdserverpb.AlarmType_NOSPACE,
-			}}
+			}
+			response.Alarms = []*etcdserverpb.AlarmMember{alarm}
+			recordAlarmDeactivated(alarm)
 		}
 		return response, nil
 	case etcdserverpb.AlarmRequest_ACTIVATE:
@@ -140,28 +146,34 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 			if err := s.backend.ArmCorrupt(ctx, req.GetMemberID()); err != nil {
 				return nil, mapFenceErr(err)
 			}
-			response.Alarms = []*etcdserverpb.AlarmMember{{
+			alarm := &etcdserverpb.AlarmMember{
 				MemberID: req.GetMemberID(), Alarm: etcdserverpb.AlarmType_CORRUPT,
-			}}
+			}
+			response.Alarms = []*etcdserverpb.AlarmMember{alarm}
+			recordAlarmActivated(alarm)
 			return response, nil
 		}
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
 			if _, err := s.mutateGenericAlarm(ctx, req.GetAlarm(), req.GetMemberID(), true); err != nil {
 				return nil, mapFenceErr(err)
 			}
-			response.Alarms = []*etcdserverpb.AlarmMember{{
+			alarm := &etcdserverpb.AlarmMember{
 				MemberID: req.GetMemberID(), Alarm: req.GetAlarm(),
-			}}
+			}
+			response.Alarms = []*etcdserverpb.AlarmMember{alarm}
+			recordAlarmActivated(alarm)
 			return response, nil
 		}
 		memberID, err := s.backend.ArmNoSpace(ctx, req.GetMemberID())
 		if err != nil {
 			return nil, mapFenceErr(err)
 		}
-		response.Alarms = []*etcdserverpb.AlarmMember{{
+		alarm := &etcdserverpb.AlarmMember{
 			MemberID: memberID,
 			Alarm:    etcdserverpb.AlarmType_NOSPACE,
-		}}
+		}
+		response.Alarms = []*etcdserverpb.AlarmMember{alarm}
+		recordAlarmActivated(alarm)
 		return response, nil
 	default:
 		if err := s.requireAuthenticated(ctx, true); err != nil {

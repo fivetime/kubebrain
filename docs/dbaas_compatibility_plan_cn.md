@@ -31010,6 +31010,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   定向 50 轮 19.484 秒；补强匿名/未知 action 后定向 20 轮 7.792 秒、race 5 轮 35.905 秒，
   `pkg/server/etcd` 完整套件 168.773 秒通过。本轮未发现实现差异且未修改运行时代码，因此无需
   重建 A3423 生产镜像或重复 TiKV 滚动验证。
+- A3426 对照 `/root/etcd/server/etcdserver/apply/metrics.go` 与
+  `apply/backend.go:Alarm` 的告警可观测性，新增 raw gRPC mutation 与 Prometheus scrape
+  组合差分：类型 127 从干净基线 Activate 后 `etcd_debugging_server_alarms{server_id="a342601",
+  alarm_type="127"}` 必须增加 1，GET 不改变值，Deactivate 后回到基线。官方显式 oracle
+  自对照通过；A3423 真实 TiKV 镜像三阶段始终为 0，确认此前只暴露平台
+  `maintenance_alarm` 调用计数、缺少 upstream 当前告警 GaugeVec 的红灯。KubeBrain 现注册
+  upstream 同名、同 help、同 `server_id` 十六进制与 `alarm_type` 字符串标签的 GaugeVec，
+  对 NOSPACE、CORRUPT 和通用 alarm 的成功 Activate 响应执行 Inc，仅在实际删除 alarm 的
+  Deactivate 响应执行 Dec；重复 Activate 的累加行为也按 upstream debugging metric 原样保留。
+  指标 helper/通用 alarm 定向 20 轮、server/etcd 完整套件、相关 race 5 轮、根模块
+  `go test ./...` 和双方 vet 已通过；对应生产 TiKV 镜像与真实双端绿灯仍待验证。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
