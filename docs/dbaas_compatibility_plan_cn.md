@@ -30939,6 +30939,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmType 与 `MemberID=math.MaxUint64` 过滤都返回 OK 和空集合，ClusterID/MemberID 非零、
   RaftTerm 为正，且无并发 KV 写时 revision 必须等于 seed。KubeBrain raw gRPC 回归逐请求固定
   相同不变量，防止 read barrier 或 header interceptor 重构伪造更晚 revision。
+- A3420 对照 `/root/etcd/server/etcdserver/api/v3alarm/alarms.go` 的通用
+  `(AlarmType, MemberID)` 集合，关闭未知 AlarmType mutation 仍返回平台 `Unimplemented` 的差距：
+  类型 127 的 Activate、重复 Activate、精确 GET、GET NONE、错误 member Deactivate、正确
+  Deactivate 与最终空 GET 均固定为官方 OK/payload oracle，所有操作不推进 MVCC revision。
+  KubeBrain 现把 NOSPACE/CORRUPT 之外的 enum 保存为 tenant-scoped TiKV internal metadata，按
+  有符号 enum 和 member ID 排序，并以 exact-value CAS 循环保证多副本并发增删不丢更新；这些
+  通用 alarm 只提供协议持久化外观，不触发 NOSPACE/CORRUPT 的数据面副作用。确定性回归覆盖
+  正负未知 enum 各 32 个并发 member、重复/错误 member 幂等、GET NONE 汇总、损坏 JSON、保留
+  类型、空成员集、乱序/重复成员和 trailing JSON 拒绝。官方自对照 20 轮、KubeBrain 生命周期
+  50 轮、并发/损坏组合 20 轮、race 5 轮及根模块 `go test ./...` 已通过。真实 TiKV/PD 滚动验证
+  需使用带完整 build metadata 的 A3420 镜像；此前未传 build args 的 Docker 构建按预期失败且
+  未发布，不能作为运行证据。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

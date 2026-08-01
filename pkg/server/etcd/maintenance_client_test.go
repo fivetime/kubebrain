@@ -737,6 +737,66 @@ func TestRawGRPCAlarmMemberSetRoundTrip(t *testing.T) {
 	require.Empty(t, list())
 }
 
+func TestRawGRPCAlarmUnknownTypeLifecycleMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///alarm-unknown-type-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	maintenance := etcdserverpb.NewMaintenanceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/a3420/alarm-unknown-type"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	const (
+		memberID = uint64(0xa342001)
+		alarm    = etcdserverpb.AlarmType(127)
+	)
+	call := func(action etcdserverpb.AlarmRequest_AlarmAction, requestedMember uint64) []uint64 {
+		t.Helper()
+		response, callErr := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
+			Action: action, MemberID: requestedMember, Alarm: alarm,
+		})
+		require.NoError(t, callErr)
+		require.NotNil(t, response.Header)
+		require.Equal(t, seed.Header.Revision, response.Header.Revision)
+		members := make([]uint64, 0, len(response.Alarms))
+		for _, active := range response.Alarms {
+			require.Equal(t, alarm, active.Alarm)
+			members = append(members, active.MemberID)
+		}
+		return members
+	}
+
+	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_ACTIVATE, memberID))
+	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_ACTIVATE, memberID))
+	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_GET, 0))
+	all, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{MemberID: memberID, Alarm: alarm}}, all.Alarms)
+	require.Equal(t, seed.Header.Revision, all.Header.Revision)
+	require.Empty(t, call(etcdserverpb.AlarmRequest_DEACTIVATE, memberID+1))
+	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_GET, 0))
+	require.Equal(t, []uint64{memberID}, call(etcdserverpb.AlarmRequest_DEACTIVATE, memberID))
+	require.Empty(t, call(etcdserverpb.AlarmRequest_GET, 0))
+}
+
 func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

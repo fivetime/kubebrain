@@ -104,7 +104,16 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 			return response, nil
 		}
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
-			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
+			removed, err := s.mutateGenericAlarm(ctx, req.GetAlarm(), req.GetMemberID(), false)
+			if err != nil {
+				return nil, mapFenceErr(err)
+			}
+			if removed {
+				response.Alarms = []*etcdserverpb.AlarmMember{{
+					MemberID: req.GetMemberID(), Alarm: req.GetAlarm(),
+				}}
+			}
+			return response, nil
 		}
 		removed, err := s.backend.DisarmNoSpace(ctx, req.GetMemberID())
 		if err != nil {
@@ -135,7 +144,13 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 			return response, nil
 		}
 		if req.GetAlarm() != etcdserverpb.AlarmType_NOSPACE {
-			return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
+			if _, err := s.mutateGenericAlarm(ctx, req.GetAlarm(), req.GetMemberID(), true); err != nil {
+				return nil, mapFenceErr(err)
+			}
+			response.Alarms = []*etcdserverpb.AlarmMember{{
+				MemberID: req.GetMemberID(), Alarm: req.GetAlarm(),
+			}}
+			return response, nil
 		}
 		memberID, err := s.backend.ArmNoSpace(ctx, req.GetMemberID())
 		if err != nil {
@@ -157,6 +172,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 	if filter != etcdserverpb.AlarmType_NONE &&
 		filter != etcdserverpb.AlarmType_NOSPACE &&
 		filter != etcdserverpb.AlarmType_CORRUPT {
+		alarms, err := s.genericAlarms(ctx, filter)
+		if err != nil {
+			return nil, err
+		}
+		response.Alarms = append(response.Alarms, alarms...)
 		return response, nil
 	}
 	if filter == etcdserverpb.AlarmType_NONE || filter == etcdserverpb.AlarmType_NOSPACE {
@@ -187,6 +207,13 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 				MemberID: memberID, Alarm: etcdserverpb.AlarmType_CORRUPT,
 			})
 		}
+	}
+	if filter == etcdserverpb.AlarmType_NONE {
+		alarms, alarmErr := s.genericAlarms(ctx, filter)
+		if alarmErr != nil {
+			return nil, alarmErr
+		}
+		response.Alarms = append(response.Alarms, alarms...)
 	}
 	return response, nil
 }
