@@ -16,20 +16,27 @@ import (
 )
 
 type leaseSignedIDOutcome struct {
-	Name                    string
-	GrantIDMatches          bool
-	GrantHeaderUnchanged    bool
-	TTLIDMatches            bool
-	TTLWithinGrant          bool
-	GrantedTTLMatches       bool
-	KeysOmitted             bool
-	AttachedKeysMatch       bool
-	ListContainsLease       bool
-	UnknownIDMatches        bool
-	UnknownTTL              int64
-	UnknownGrantedTTL       int64
-	UnknownKeysEmpty        bool
-	HeaderAtCurrentRevision bool
+	Name                  string
+	GrantIDMatches        bool
+	GrantHeaderUnchanged  bool
+	PutRevisionGap        int64
+	TTLIDMatches          bool
+	TTLWithinGrant        bool
+	GrantedTTLMatches     bool
+	KeysOmitted           bool
+	AttachedKeysMatch     bool
+	TTLWithoutKeysGap     int64
+	TTLWithKeysGap        int64
+	ListContainsLease     bool
+	ListRevisionGap       int64
+	RevokeRevisionGap     int64
+	UnknownIDMatches      bool
+	UnknownTTL            int64
+	UnknownGrantedTTL     int64
+	UnknownKeysEmpty      bool
+	UnknownRevisionGap    int64
+	KeyDeleted            bool
+	FinalRangeRevisionGap int64
 }
 
 func TestLeaseSignedIDDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -50,19 +57,26 @@ func TestLeaseSignedIDDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 func signedLeaseExpectedOutcome(name string) leaseSignedIDOutcome {
 	return leaseSignedIDOutcome{
-		Name:                    name,
-		GrantIDMatches:          true,
-		GrantHeaderUnchanged:    true,
-		TTLIDMatches:            true,
-		TTLWithinGrant:          true,
-		GrantedTTLMatches:       true,
-		KeysOmitted:             true,
-		AttachedKeysMatch:       true,
-		ListContainsLease:       true,
-		UnknownIDMatches:        true,
-		UnknownTTL:              -1,
-		UnknownKeysEmpty:        true,
-		HeaderAtCurrentRevision: true,
+		Name:                  name,
+		GrantIDMatches:        true,
+		GrantHeaderUnchanged:  true,
+		TTLIDMatches:          true,
+		TTLWithinGrant:        true,
+		GrantedTTLMatches:     true,
+		KeysOmitted:           true,
+		AttachedKeysMatch:     true,
+		PutRevisionGap:        1,
+		TTLWithoutKeysGap:     1,
+		TTLWithKeysGap:        1,
+		ListContainsLease:     true,
+		ListRevisionGap:       1,
+		RevokeRevisionGap:     2,
+		UnknownIDMatches:      true,
+		UnknownTTL:            -1,
+		UnknownKeysEmpty:      true,
+		UnknownRevisionGap:    2,
+		KeyDeleted:            true,
+		FinalRangeRevisionGap: 2,
 	}
 }
 
@@ -107,28 +121,47 @@ func runLeaseSignedIDScenario(t *testing.T, endpoint, instance string) []leaseSi
 		for _, item := range list.Leases {
 			contains = contains || item.ID == test.id
 		}
-		_, revokeErr := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: test.id})
+		revoke, revokeErr := lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: test.id})
 		require.NoError(t, revokeErr)
 		unknown, unknownErr := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
 			ID: test.id, Keys: true,
 		})
 		require.NoError(t, unknownErr)
+		after, afterErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+		require.NoError(t, afterErr)
+		require.NotNil(t, before.Header)
+		require.NotNil(t, grant.Header)
+		require.NotNil(t, put.Header)
+		require.NotNil(t, withoutKeys.Header)
+		require.NotNil(t, withKeys.Header)
+		require.NotNil(t, list.Header)
+		require.NotNil(t, revoke.Header)
+		require.NotNil(t, unknown.Header)
+		require.NotNil(t, after.Header)
+		baseRevision := before.Header.Revision
 
 		outcomes = append(outcomes, leaseSignedIDOutcome{
-			Name:                    test.name,
-			GrantIDMatches:          grant.ID == test.id,
-			GrantHeaderUnchanged:    grant.Header.Revision == before.Header.Revision,
-			TTLIDMatches:            withoutKeys.ID == test.id && withKeys.ID == test.id,
-			TTLWithinGrant:          withoutKeys.TTL > 0 && withoutKeys.TTL <= 300 && withKeys.TTL > 0 && withKeys.TTL <= 300,
-			GrantedTTLMatches:       withoutKeys.GrantedTTL == 300 && withKeys.GrantedTTL == 300,
-			KeysOmitted:             len(withoutKeys.Keys) == 0,
-			AttachedKeysMatch:       len(withKeys.Keys) == 1 && string(withKeys.Keys[0]) == key,
-			ListContainsLease:       contains,
-			UnknownIDMatches:        unknown.ID == test.id,
-			UnknownTTL:              unknown.TTL,
-			UnknownGrantedTTL:       unknown.GrantedTTL,
-			UnknownKeysEmpty:        len(unknown.Keys) == 0,
-			HeaderAtCurrentRevision: unknown.Header.Revision >= put.Header.Revision,
+			Name:                  test.name,
+			GrantIDMatches:        grant.ID == test.id,
+			GrantHeaderUnchanged:  grant.Header.Revision == baseRevision,
+			PutRevisionGap:        put.Header.Revision - baseRevision,
+			TTLIDMatches:          withoutKeys.ID == test.id && withKeys.ID == test.id,
+			TTLWithinGrant:        withoutKeys.TTL > 0 && withoutKeys.TTL <= 300 && withKeys.TTL > 0 && withKeys.TTL <= 300,
+			GrantedTTLMatches:     withoutKeys.GrantedTTL == 300 && withKeys.GrantedTTL == 300,
+			KeysOmitted:           len(withoutKeys.Keys) == 0,
+			AttachedKeysMatch:     len(withKeys.Keys) == 1 && string(withKeys.Keys[0]) == key,
+			TTLWithoutKeysGap:     withoutKeys.Header.Revision - baseRevision,
+			TTLWithKeysGap:        withKeys.Header.Revision - baseRevision,
+			ListContainsLease:     contains,
+			ListRevisionGap:       list.Header.Revision - baseRevision,
+			RevokeRevisionGap:     revoke.Header.Revision - baseRevision,
+			UnknownIDMatches:      unknown.ID == test.id,
+			UnknownTTL:            unknown.TTL,
+			UnknownGrantedTTL:     unknown.GrantedTTL,
+			UnknownKeysEmpty:      len(unknown.Keys) == 0,
+			UnknownRevisionGap:    unknown.Header.Revision - baseRevision,
+			KeyDeleted:            len(after.Kvs) == 0,
+			FinalRangeRevisionGap: after.Header.Revision - baseRevision,
 		})
 		cancel()
 	}

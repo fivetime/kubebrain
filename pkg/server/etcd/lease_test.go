@@ -557,12 +557,14 @@ func TestLeaseSignedIDReadBoundariesMatchEtcd(t *testing.T) {
 			key := []byte("/registry/leases/signed-read/" + leaseTestName(id))
 			before, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 			require.NoError(t, err)
+			baseRevision := before.Header.Revision
 			grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 300})
 			require.NoError(t, err)
 			require.Equal(t, id, grant.ID)
-			require.Equal(t, before.Header.Revision, grant.Header.Revision)
-			_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: id})
+			require.Equal(t, baseRevision, grant.Header.Revision)
+			put, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: id})
 			require.NoError(t, err)
+			require.Equal(t, baseRevision+1, put.Header.Revision)
 
 			withoutKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id})
 			require.NoError(t, err)
@@ -571,6 +573,7 @@ func TestLeaseSignedIDReadBoundariesMatchEtcd(t *testing.T) {
 			require.LessOrEqual(t, withoutKeys.TTL, int64(300))
 			require.Equal(t, int64(300), withoutKeys.GrantedTTL)
 			require.Empty(t, withoutKeys.Keys)
+			require.Equal(t, put.Header.Revision, withoutKeys.Header.Revision)
 
 			withKeys, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id, Keys: true})
 			require.NoError(t, err)
@@ -579,19 +582,27 @@ func TestLeaseSignedIDReadBoundariesMatchEtcd(t *testing.T) {
 			require.LessOrEqual(t, withKeys.TTL, int64(300))
 			require.Equal(t, int64(300), withKeys.GrantedTTL)
 			require.ElementsMatch(t, [][]byte{key}, withKeys.Keys)
+			require.Equal(t, put.Header.Revision, withKeys.Header.Revision)
 
 			list, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
 			require.NoError(t, err)
 			require.Contains(t, leaseIDsFromList(list), id)
+			require.Equal(t, put.Header.Revision, list.Header.Revision)
 
-			_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+			revoke, err := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
 			require.NoError(t, err)
+			require.Equal(t, put.Header.Revision+1, revoke.Header.Revision)
 			unknown, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id, Keys: true})
 			require.NoError(t, err)
 			require.Equal(t, id, unknown.ID)
 			require.Equal(t, int64(-1), unknown.TTL)
 			require.Zero(t, unknown.GrantedTTL)
 			require.Empty(t, unknown.Keys)
+			require.Equal(t, revoke.Header.Revision, unknown.Header.Revision)
+			after, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Empty(t, after.Kvs)
+			require.Equal(t, revoke.Header.Revision, after.Header.Revision)
 		})
 	}
 }
