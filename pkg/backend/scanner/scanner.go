@@ -408,32 +408,43 @@ func (r *scanner) CompactKeys(ctx context.Context, userKeys [][]byte, revision u
 // adjustPartitionsBorders adjust the borders of partitions to avoid object keys generated from an internal key
 // are scanned by multiple workers, which may cause error.
 func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage.Partition) {
+	if len(ps) == 0 {
+		return nil
+	}
 	sort.Slice(ps, func(i, j int) bool {
 		return bytes.Compare(ps[i].Start, ps[j].Start) < 0
 	})
 
-	for i := 0; i < len(ps); i++ {
-		// ! if there is an error, it means border is not an interval key, just not modify it.
-		// ! but if there is no error, it means border is an interval key and should be adjusted.
-		// ! specially: ignore the start of first partition and the end of last partition.
-		if i != 0 {
-			// start border may be moved forward except the first partition
-			ps[i].Start = ps[i-1].End
+	for i := 0; i+1 < len(ps); i++ {
+		boundary := ps[i].End
+		// Snap the boundary down to a conservative rev=0 user-key boundary so
+		// one key's versions never straddle workers. This also handles partial
+		// TiKV split points such as {objectKey}\x00.
+		if b, ok := r.coder.RevisionBoundaryForBorder(boundary); ok {
+			boundary = b
 		}
-
-		if i != len(ps)-1 {
-			// Snap the boundary down to the start (rev=0) of whatever user key it
-			// falls within, so one key's versions never straddle two partitions.
-			// This must handle borders that are NOT decodable full object keys
-			// (e.g. a TiKV region split point {objectKey}\x00): the old
-			// Decode-only path left those unadjusted, so a deleted key whose
-			// tombstone landed in the next partition resurfaced as live in List.
-			if b, ok := r.coder.RevisionBoundaryForBorder(ps[i].End); ok {
-				ps[i].End = b
-			}
+		// The legacy raw-key+'$'+revision encoding cannot distinguish a '$'
+		// inside an arbitrary etcd key. Its conservative first-'$' candidate can
+		// therefore predate this narrow scan. Clamp to the original scan pieces:
+		// partition adjustment must never broaden or invert the caller's range.
+		if bytes.Compare(boundary, ps[i].Start) < 0 {
+			boundary = ps[i].Start
+		}
+		if bytes.Compare(boundary, ps[i+1].End) > 0 {
+			boundary = ps[i+1].End
+		}
+		ps[i].End = boundary
+		ps[i+1].Start = boundary
+	}
+	// Clamping can collapse regions whose split points fall inside one binary
+	// key. Some stores reject start==end iterators, so omit empty partitions.
+	ret = make([]storage.Partition, 0, len(ps))
+	for _, partition := range ps {
+		if bytes.Compare(partition.Start, partition.End) < 0 {
+			ret = append(ret, partition)
 		}
 	}
-	return ps
+	return ret
 }
 
 func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, keysOnly bool, receiver resultReceiver) (int, error) {

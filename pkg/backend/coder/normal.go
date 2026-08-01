@@ -65,10 +65,11 @@ func (n *normalEncoderDecoder) EncodeRevisionKey(key []byte) []byte {
 // which would otherwise let a partition holding an older live version emit a key
 // whose latest version (a tombstone in the adjacent partition) marks it deleted.
 //
-// It relies on the coder invariant that splitByte is smaller than every byte a
-// user key can contain, so the FIRST splitByte after the magic prefix is always
-// the userKey/revision delimiter. Returns (nil,false) when border is not in the
-// object keyspace or has no split byte yet (already at/before a user-key start).
+// The persisted legacy format does not escape splitByte, while etcd user keys
+// are arbitrary bytes. The FIRST splitByte is therefore a conservative boundary
+// at or before the real userKey/revision delimiter; scanner partition adjustment
+// clamps it to the requested range before use. Returns (nil,false) when border
+// is not in the object keyspace or has no split byte yet.
 func (n *normalEncoderDecoder) RevisionBoundaryForBorder(border []byte) ([]byte, bool) {
 	if len(border) < len(n.magic) || !bytes.Equal(border[:len(n.magic)], n.magic) {
 		return nil, false

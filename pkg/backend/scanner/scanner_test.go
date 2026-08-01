@@ -229,6 +229,42 @@ func TestScannerCrossPartitionTombstone(t *testing.T) {
 	}
 }
 
+// A '$' inside an arbitrary etcd key is indistinguishable from the legacy
+// object-key delimiter to RevisionBoundaryForBorder's conservative first-byte
+// search. For a narrow scan, that conservative boundary can sort before the
+// requested start; partition adjustment must never broaden the scan and leak a
+// neighboring lower key.
+func TestScannerDollarKeyNarrowRangeDoesNotScanBeforeStartAcrossPartition(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	tomb := []byte("tombstone")
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	lower := []byte("/registry/items/a")
+	target := []byte("/registry/items/a$target")
+	const liveRevision uint64 = 100
+	const deleteRevision uint64 = 200
+	b := kv.BeginBatchWrite()
+	b.Put(c.EncodeObjectKey(lower, liveRevision), []byte("must-not-leak"), 0)
+	b.Put(c.EncodeObjectKey(target, 0), append(beU64(deleteRevision), 0), 0)
+	b.Put(c.EncodeObjectKey(target, liveRevision), []byte("deleted"), 0)
+	b.Put(c.EncodeObjectKey(target, deleteRevision), tomb, 0)
+	require.NoError(t, b.Commit(context.Background()))
+
+	// Force a region boundary at the target's tombstone. The old first-'$'
+	// normalization turns it into EncodeObjectKey(lower, 0), before scanStart.
+	st := &splitStore{KvStorage: kv, splits: [][]byte{c.EncodeObjectKey(target, deleteRevision)}}
+	sc := NewScanner(st, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
+	scanStart := c.EncodeObjectKey(target, 0)
+	scanEnd := c.EncodeObjectKey(append(append([]byte(nil), target...), 0xff), 0)
+	kvs, err := sc.Range(context.Background(), scanStart, scanEnd, 1000, 0)
+	require.NoError(t, err)
+	require.Empty(t, kvs, "narrow target range must neither resurrect the tombstone nor leak the lower key")
+}
+
 // A DELETE at exactly the compact watermark is still watchable in etcd. Keep
 // its tombstone and immediate predecessor for event/PrevKV reconstruction, but
 // reclaim both as soon as a later compaction advances past that revision.
