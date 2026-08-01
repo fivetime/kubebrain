@@ -31235,6 +31235,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终三个 KubeBrain Pod Ready/0 restart，最近日志无 panic/fatal、compact failure、event-log
   malformed 或 compact watermark 读取错误。本轮未发现实现差异，只增加相邻边界恢复门禁，
   继续使用 `kubebrain:a3438-compact-watch-prevkv` 镜像。
+- A3441 审计 A3438 fresh compact watermark 读取失败路径时发现 fail-open 差异：upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 只有在 lazy
+  `Range(ModRevision-1)` 成功且返回 KV 时才填充 PrevKV，Range 失败会保持 nil；KubeBrain
+  则先从内部 event 携带完整旧值，fresh watermark 读取失败时只记录日志并继续发送，因此无法
+  判断旧值是否已逻辑压缩，可能泄漏本应不可观察的历史。commit
+  `2cd881f7a0385d59789d369c4aaa3b265c5f5933` 把该分支改为 fail closed：保留 metric/error
+  日志，但对本响应的 PUT/DELETE PrevKV 全部清除；共享内部 event 不原地修改，后续健康
+  watcher 仍可正常解析。确定性 compact-metadata 错误注入固定两个事件都返回 nil 且源事件完整；
+  正常未压缩、事件精确 compact、前值精确位于 watermark 三条路径继续分别固定
+  PrevKV 可见/隐藏/可见。相关定向测试 10 轮 1.749 秒、Watch/Compact/Txn 服务集 54.706 秒、
+  目标 race 10 轮 14.979 秒及 `go vet` 通过。生产 TiKV 镜像
+  `kubebrain:a3441-watch-prevkv-failclosed`（本地 image ID
+  `sha256:e5e846838a7407c9d93899506811ffa3b750b5bc46b58cb766a7fdaa696b4f53`）滚动部署后，
+  上述三条正常路径的全副本 replacement 分别 8.48/10.17/9.10 秒、合计 27.770 秒通过。
+  故障分支由确定性注入证明，未在共享真实集群人为破坏 TiKV metadata read；真实集群证据仅证明
+  正常路径无回归。最终三个 KubeBrain Pod 使用同一 runtime digest、Ready/0 restart，3 PD/3
+  TiKV Running，最近日志无 panic/fatal、compact failure、event-log malformed 或 fail-closed
+  watermark 告警。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
