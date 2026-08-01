@@ -30717,6 +30717,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   missing leader Proclaim/Resign 与 leader-not-found 六种失败后都经 `/v3/kv/range` 回读；
   除 HTTP status/code/message 与参考 etcd 一致外，还必须保持 header revision gap=0、
   seed value 完整。该门禁防止 gateway/concurrency 错误路径意外写 KV 或泄漏用户 revision。
+- A3375 将 LeaseGrant TTL/ID 边界双端差分接入用户 revision 隔离证据：每端先写唯一
+  seed，MinInt64/负数/0/1/min/max TTL 成功 Grant、超大 TTL 拒绝、自动 ID 与 duplicate
+  ID 拒绝后均立即 Range seed；所有 outcome 除 lease code/message/ID/TTL 外必须保持
+  revision gap=0、seed value 完整。场景在返回前撤销已创建 lease，证明 Grant/Revoke
+  internal metadata 生命周期不污染用户 MVCC 水位，并让重复真实参考运行保持隔离。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

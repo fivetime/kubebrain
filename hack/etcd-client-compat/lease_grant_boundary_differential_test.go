@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -18,12 +19,14 @@ import (
 const referenceMaxLeaseTTL = int64(9_000_000_000)
 
 type leaseGrantBoundaryOutcome struct {
-	Name      string
-	Code      string
-	Message   string
-	IDMatches bool
-	IDNonZero bool
-	TTL       int64
+	Name        string
+	Code        string
+	Message     string
+	IDMatches   bool
+	IDNonZero   bool
+	TTL         int64
+	RevisionGap int64
+	SeedValue   string
 }
 
 func TestLeaseGrantBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -41,7 +44,7 @@ func TestLeaseGrantBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		successfulFixedLeaseGrant("maximum", referenceMaxLeaseTTL),
 		leaseGrantError("above-maximum", "OutOfRange", "etcdserver: too large lease TTL"),
 		leaseGrantError("maximum-int64", "OutOfRange", "etcdserver: too large lease TTL"),
-		{Name: "automatic-id", Code: "OK", IDNonZero: true, TTL: 10},
+		{Name: "automatic-id", Code: "OK", IDNonZero: true, TTL: 10, SeedValue: "seed"},
 		leaseGrantError("duplicate-id", "FailedPrecondition", "etcdserver: lease already exists"),
 	}
 	referenceOutcomes := runLeaseGrantBoundaryScenario(t, reference)
@@ -50,11 +53,11 @@ func TestLeaseGrantBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 }
 
 func successfulFixedLeaseGrant(name string, ttl int64) leaseGrantBoundaryOutcome {
-	return leaseGrantBoundaryOutcome{Name: name, Code: "OK", IDMatches: true, IDNonZero: true, TTL: ttl}
+	return leaseGrantBoundaryOutcome{Name: name, Code: "OK", IDMatches: true, IDNonZero: true, TTL: ttl, SeedValue: "seed"}
 }
 
 func leaseGrantError(name, code, message string) leaseGrantBoundaryOutcome {
-	return leaseGrantBoundaryOutcome{Name: name, Code: code, Message: message}
+	return leaseGrantBoundaryOutcome{Name: name, Code: code, Message: message, SeedValue: "seed"}
 }
 
 func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBoundaryOutcome {
@@ -64,9 +67,22 @@ func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBo
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	lease := etcdserverpb.NewLeaseClient(conn)
+	kv := etcdserverpb.NewKVClient(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	seedKey := []byte(fmt.Sprintf("/dbaas-lease-grant-boundary/%d/seed", time.Now().UnixNano()))
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: seedKey, Value: []byte("seed")})
+	require.NoError(t, err)
+	require.NotNil(t, seed.Header)
+	seedState := func(name string) (int64, string) {
+		t.Helper()
+		resp, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: seedKey})
+		require.NoError(t, rangeErr, name)
+		require.NotNil(t, resp.Header, name)
+		require.Len(t, resp.Kvs, 1, name)
+		return resp.Header.Revision - seed.Header.Revision, string(resp.Kvs[0].Value)
+	}
 	grants := []struct {
 		name string
 		id   int64
@@ -84,13 +100,17 @@ func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBo
 	}
 	outcomes := make([]leaseGrantBoundaryOutcome, 0, len(grants)+1)
 	grantedIDs := make([]int64, 0, len(grants))
-	t.Cleanup(func() {
+	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
 		for _, id := range grantedIDs {
-			_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+			_, revokeErr := lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+			require.NoError(t, revokeErr)
 		}
-	})
+		cleanupGap, cleanupSeed := seedState("cleanup-revoke")
+		require.Zero(t, cleanupGap, "cleanup-revoke")
+		require.Equal(t, "seed", cleanupSeed, "cleanup-revoke")
+	}()
 	for _, test := range grants {
 		resp, callErr := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: test.id, TTL: test.ttl})
 		outcome := leaseGrantBoundaryOutcome{
@@ -102,6 +122,9 @@ func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBo
 			outcome.TTL = resp.TTL
 			grantedIDs = append(grantedIDs, resp.ID)
 		}
+		outcome.RevisionGap, outcome.SeedValue = seedState(test.name)
+		require.Zero(t, outcome.RevisionGap, test.name)
+		require.Equal(t, "seed", outcome.SeedValue, test.name)
 		outcomes = append(outcomes, outcome)
 	}
 
@@ -110,9 +133,12 @@ func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBo
 	require.NoError(t, err)
 	grantedIDs = append(grantedIDs, first.ID)
 	_, duplicateErr := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: duplicateID, TTL: 20})
+	duplicateGap, duplicateSeed := seedState("duplicate-id")
+	require.Zero(t, duplicateGap, "duplicate-id")
+	require.Equal(t, "seed", duplicateSeed, "duplicate-id")
 	outcomes = append(outcomes, leaseGrantBoundaryOutcome{
 		Name: "duplicate-id", Code: status.Code(duplicateErr).String(),
-		Message: status.Convert(duplicateErr).Message(),
+		Message: status.Convert(duplicateErr).Message(), RevisionGap: duplicateGap, SeedValue: duplicateSeed,
 	})
 	return outcomes
 }
