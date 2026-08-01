@@ -31149,6 +31149,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   HashKV compact/精确快照/全副本 replacement 回归 12.81 秒通过。最终 KubeBrain 3/3
   Ready/0 restart、PD/TiKV 3+3 Ready、endpoint health 为 true，最近日志无 collector stall、
   commit backstop、abandoned revision 或 durable revision persistence error。
+- A3436 把 A3434/A3435 的 committed revision 恢复门禁扩展到后台 lease 自然过期路径。对照
+  `/root/etcd/server/lease/lessor.go` 的到期 revoke，官方 oracle 以 TTL=2 lease 写入 key，等待
+  key 在新 MVCC revision 原子删除，再用同一 data-dir 重启；删除状态与 Range header revision
+  必须精确保持，普通 3 轮 12.827 秒、race 1 轮 5.342 秒通过。源码审计确认 KubeBrain 的
+  `expireLeaseWithContext -> deleteLeasedKeysAtomic -> TxnApply` 把用户 tombstone、lease attachment
+  metadata、event-log entry 与 `revision/committed` marker 放入同一 TiKV batch；新增破坏性门禁在
+  过期完成后一次删除 `kubebrain-0/1/2`，等待三个新 UID Ready，再要求 key 仍为空、header 精确
+  等于替换前过期 revision，并以首次 Put 验证后续 allocation 继续单调。A3435 生产镜像上的真实
+  门禁一次 10.57 秒通过；compat `go vet` 通过，三个 replacement Pod Ready/0 restart、endpoint
+  health 为 true，最近日志无 lease expiry delete、durable revision、collector stall/backstop 或
+  abandoned revision 错误。本轮未发现实现差异，只增加 TiKV 原子恢复回归，继续使用
+  `kubebrain:a3435-compact-revision` 镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
