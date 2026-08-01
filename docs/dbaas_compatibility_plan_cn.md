@@ -30752,6 +30752,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ID 与 cancel 的 17 个连续控制响应固定在同一 seed revision：流内无 KV 写时，所有成功
   Created、创建失败 Canceled 与显式 Cancel response header 必须精确等于 seed；unknown
   cancel 继续静默且不打乱后续响应。该门禁防止控制流错误推进或返回陈旧 Watch revision。
+- A3383 将单 Watch progress 双端差分从“header 非零”升级为完整 revision 链：seed 后
+  Created header 保持 gap=0，更新 Put 为 `+1`，Event header 与 KV ModRevision 同为 `+1`，
+  随后的显式 Progress response 继续保持 `+1`、使用 stream-wide `WatchId=-1` 且无事件。
+  raw gRPC 本地门禁同步固定该恢复游标语义。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

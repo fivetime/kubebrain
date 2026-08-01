@@ -1364,7 +1364,7 @@ func TestRawGRPCWatchEmptyControlFramesMatchEtcd(t *testing.T) {
 func TestRawGRPCWatchProgressRequestUsesStreamWideID(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+	seed, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
 		Key: []byte("/a1023/watch-progress/seed"), Value: []byte("seed"),
 	})
 	require.NoError(t, err)
@@ -1403,17 +1403,20 @@ func TestRawGRPCWatchProgressRequestUsesStreamWideID(t *testing.T) {
 	require.True(t, created.Created)
 	require.False(t, created.Canceled)
 	require.Equal(t, int64(51), created.WatchId)
+	require.Equal(t, seed.Header.Revision, created.Header.Revision)
 
 	put, err := etcdserverpb.NewKVClient(conn).Put(ctx, &etcdserverpb.PutRequest{
 		Key: key, Value: []byte("value"),
 	})
 	require.NoError(t, err)
+	require.Equal(t, seed.Header.Revision+1, put.Header.Revision)
 	events, err := stream.Recv()
 	require.NoError(t, err)
 	requireRawWatchHeaderWellFormed(t, events)
 	require.False(t, events.Created)
 	require.False(t, events.Canceled)
 	require.Equal(t, int64(51), events.WatchId)
+	require.Equal(t, put.Header.Revision, events.Header.Revision)
 	require.Len(t, events.Events, 1)
 	require.Equal(t, put.Header.Revision, events.Events[0].Kv.ModRevision)
 
@@ -1430,7 +1433,7 @@ func TestRawGRPCWatchProgressRequestUsesStreamWideID(t *testing.T) {
 	require.Equal(t, int64(-1), progress.WatchId)
 	require.Empty(t, progress.Events)
 	require.Empty(t, progress.CancelReason)
-	require.GreaterOrEqual(t, progress.Header.Revision, put.Header.Revision)
+	require.Equal(t, put.Header.Revision, progress.Header.Revision)
 }
 
 func TestRawGRPCWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {

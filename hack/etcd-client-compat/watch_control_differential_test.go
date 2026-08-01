@@ -31,10 +31,12 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runWatchControlScenario(t, reference),
 		runWatchControlScenario(t, compatEndpoint()),
 	)
-	require.Equal(t,
-		runSingleWatchProgressScenario(t, reference),
-		runSingleWatchProgressScenario(t, compatEndpoint()),
-	)
+	referenceProgress := runSingleWatchProgressScenario(t, reference, "reference")
+	require.Equal(t, watchProgressOutcome{
+		Created: true, PutRevisionGap: 1, EventHeaderGap: 1, EventModRevisionGap: 1,
+		EventValue: "1", ProgressWatchID: -1, ProgressHeaderGap: 1, ProgressEmpty: true,
+	}, referenceProgress)
+	require.Equal(t, referenceProgress, runSingleWatchProgressScenario(t, compatEndpoint(), "kubebrain"))
 	require.Equal(t,
 		runWatchFilterEnumScenario(t, reference, "reference"),
 		runWatchFilterEnumScenario(t, compatEndpoint(), "kubebrain"),
@@ -156,6 +158,18 @@ type watchFragmentOutcome struct {
 	PrevValueBytes []int
 }
 
+type watchProgressOutcome struct {
+	Created             bool
+	CreatedHeaderGap    int64
+	PutRevisionGap      int64
+	EventHeaderGap      int64
+	EventModRevisionGap int64
+	EventValue          string
+	ProgressWatchID     int64
+	ProgressHeaderGap   int64
+	ProgressEmpty       bool
+}
+
 func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFragmentOutcome {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -217,16 +231,24 @@ func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFrag
 	return outcome
 }
 
-func runSingleWatchProgressScenario(t *testing.T, endpoint string) watchControlOutcome {
+func runSingleWatchProgressScenario(t *testing.T, endpoint, instance string) watchProgressOutcome {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	watchKey := []byte(fmt.Sprintf("/dbaas-watch-control/progress/%s/%d", instance, time.Now().UnixNano()))
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: watchKey, Value: []byte("seed")})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: watchKey})
+	})
 	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
 	require.NoError(t, err)
-	watchKey := []byte("/dbaas-watch-control/progress")
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
 			Key: watchKey, WatchId: 51,
@@ -235,26 +257,34 @@ func runSingleWatchProgressScenario(t *testing.T, endpoint string) watchControlO
 	created, err := stream.Recv()
 	require.NoError(t, err)
 	require.True(t, created.Created)
-	_, err = etcdserverpb.NewKVClient(conn).Put(ctx, &etcdserverpb.PutRequest{Key: watchKey, Value: []byte("1")})
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: watchKey, Value: []byte("1")})
 	require.NoError(t, err)
 	events, err := stream.Recv()
 	require.NoError(t, err)
 	require.Len(t, events.Events, 1)
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		_, _ = etcdserverpb.NewKVClient(conn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: watchKey})
-	})
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
 	}))
 	progress, err := stream.Recv()
 	require.NoError(t, err)
 	require.NoError(t, stream.CloseSend())
-	return watchControlOutcome{
-		WatchID: progress.WatchId, Created: progress.Created,
-		Canceled: progress.Canceled, CancelReason: progress.CancelReason,
-		HeaderZero: progress.Header == nil || progress.Header.Revision == 0,
+	for name, header := range map[string]*etcdserverpb.ResponseHeader{
+		"seed": seed.Header, "created": created.Header, "put": put.Header,
+		"event": events.Header, "progress": progress.Header,
+	} {
+		require.NotNil(t, header, name)
+	}
+	baseRevision := seed.Header.Revision
+	return watchProgressOutcome{
+		Created:             created.Created && created.WatchId == 51 && !created.Canceled,
+		CreatedHeaderGap:    created.Header.Revision - baseRevision,
+		PutRevisionGap:      put.Header.Revision - baseRevision,
+		EventHeaderGap:      events.Header.Revision - baseRevision,
+		EventModRevisionGap: events.Events[0].Kv.ModRevision - baseRevision,
+		EventValue:          string(events.Events[0].Kv.Value),
+		ProgressWatchID:     progress.WatchId,
+		ProgressHeaderGap:   progress.Header.Revision - baseRevision,
+		ProgressEmpty:       !progress.Created && !progress.Canceled && len(progress.Events) == 0 && progress.CancelReason == "",
 	}
 }
 
