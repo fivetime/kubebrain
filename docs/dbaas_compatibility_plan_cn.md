@@ -31038,8 +31038,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   所以不会把重复 Activate 的 debugging 计数周期性重置。同步器随 server context 启停，读取
   失败只增加 `alarm.refresh.err` 并保留上次指标快照。确定性单测模拟其他副本直接修改共享
   metadata，固定 refresh 前保持旧值、refresh 后 0→1→0 收敛；指标单测 50 轮、server/etcd
-  完整套件、相关 race 5 轮、根模块 `go test ./...` 和双方 vet 已通过。对应生产 TiKV 镜像与
-  真实三副本绿灯仍待验证。
+  完整套件、相关 race 5 轮、根模块 `go test ./...` 和双方 vet 已通过。commit
+  `f0230a3c5c9f95b49c3a06e249dfe13f54dfa9d1` 的生产 TiKV 镜像
+  `kubebrain:a3427-replica-alarm-metrics`（image ID
+  `sha256:1f95350339aa0799075f0eb957daab139482609d95793a2121a3edac95a95bd7`）完成既有独立
+  3 PD/3 TiKV 集群的 KubeBrain 3/3 滚动更新；三个 Pod 各自双端口直连的跨副本门禁
+  20 轮 39.786 秒、race 5 轮 10.742 秒通过，A3426 单副本官方 delta 回归 20 轮 3.504 秒
+  通过。最终三个副本对应 series 均为 0、alarm list 为空，日志无 alarm refresh error，
+  KubeBrain 3/3 Ready/0 restart、PD/TiKV 3+3 Ready，endpoint health 17.421ms。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
