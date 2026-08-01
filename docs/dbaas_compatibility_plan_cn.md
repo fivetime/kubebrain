@@ -31001,6 +31001,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   状态码、完整分项集合和最终 `ok`。显式官方 oracle 自对照 20 轮 0.280 秒、A3423 生产镜像
   对真实独立 3 PD/3 TiKV 双端 20 轮 1.474 秒、race 5 轮 1.563 秒通过；本轮未发现实现
   差异，新增回归门禁用于防止通用 alarm 将 livez/readyz 误报为不可用。
+- A3425 对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:authMaintenanceServer.Alarm`
+  的 action-first 授权边界，把 A3420 通用 alarm 纳入鉴权回归：启用 auth 后，匿名 GET
+  类型 127 必须返回 `user name is empty`；普通已认证用户可以 GET 并观察 root 激活的通用
+  alarm，但 ACTIVATE、DEACTIVATE 以及未知 action 都必须在读取或修改 TiKV generic alarm
+  metadata 前返回 `permission denied`。回归显式证明被拒绝的 Activate 不创建 alarm、被拒绝的
+  Deactivate 不删除既有 alarm，只有 root 可以完成激活和解除。该路径复用已有官方错误 oracle，
+  定向 50 轮 19.484 秒；补强匿名/未知 action 后定向 20 轮 7.792 秒、race 5 轮 35.905 秒，
+  `pkg/server/etcd` 完整套件 168.773 秒通过。本轮未发现实现差异且未修改运行时代码，因此无需
+  重建 A3423 生产镜像或重复 TiKV 滚动验证。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
