@@ -708,11 +708,15 @@ func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {
 	for index := 0; index < 25; index++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		key := fmt.Sprintf("/a1090/watch-filter-progress/%d/%d", time.Now().UnixNano(), index)
+		base, err := client.Put(ctx, key, "seed")
+		require.NoError(t, err)
 		watch := client.Watch(ctx, key, clientv3.WithCreatedNotify(), clientv3.WithFilterPut())
-		requireClientWatchCreated(t, ctx, watch)
+		created := requireClientWatchCreatedResponse(t, ctx, watch)
+		require.Equal(t, base.Header.Revision, created.Header.Revision)
 
 		put, err := client.Put(ctx, key, "filtered")
 		require.NoError(t, err)
+		require.Equal(t, base.Header.Revision+1, put.Header.Revision)
 		require.NoError(t, client.RequestProgress(ctx))
 
 		covered := false
@@ -725,6 +729,7 @@ func TestClientFilteredWatchProgressCoversSuppressedPut(t *testing.T) {
 				require.Empty(t, response.Events, "NOPUT watch must suppress the PUT")
 				require.NotNil(t, response.Header)
 				if response.Header.Revision >= put.Header.Revision {
+					require.Equal(t, put.Header.Revision, response.Header.Revision)
 					covered = true
 				}
 			case <-ctx.Done():

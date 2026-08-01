@@ -30788,6 +30788,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   duplicate 返回 WatchId=-1 的 Created+Canceled；unknown cancel 静默，后续 43/45 创建与
   negative revision 错误顺序不乱；取消 42 后 automatic ID 依次为 0、取消 0、再分配 1，
   不回收已取消 ID。全流无 KV 写，九帧 header 均保持 seed revision。
+- A3391 新增全过滤 live PUT 的 progress 双端差分：NOPUT WatchId=901 的 Created header
+  保持 seed revision，PUT 推进 `+1` 后 150ms 内不得泄漏事件或空响应；显式 ProgressRequest
+  才返回 stream-wide WatchId=-1、空事件且 header 精确为 `+1`。该门禁固定过滤 watermark
+  已推进但 payload 被抑制时的可恢复游标语义。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
