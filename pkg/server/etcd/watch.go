@@ -658,10 +658,9 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 		}
 	}
 	cancelReason := "watch closed"
-	if clientRequest {
+	if clientRequest || compact {
 		cancelReason = ""
-	}
-	if err != nil {
+	} else if err != nil {
 		cancelReason = err.Error()
 	}
 	header := &etcdserverpb.ResponseHeader{}

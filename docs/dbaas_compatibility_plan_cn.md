@@ -30778,6 +30778,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Event response header 均必须等于事件 KV ModRevision；future watch 在 unrelated Put 后由
   目标 Put 达到 start revision，建流前 progress 继续被抑制，事件后的显式 Progress header
   必须精确等于目标 Put revision，不再只接受任意 `>= startRevision` 的超前游标。
+- A3389 新增真实 Compact 后 Watch 恢复游标双端差分：compact 到 `base+2` 后继续 Put 到
+  `base+3`，从 `base+1` 建立 WatchId=707 时先返回普通 Created(header=`+3`)，再单独返回
+  Canceled(CompactRevision=`+2`、header revision=0、CancelReason 为空)；clientv3 依据
+  CompactRevision 推导 ErrCompacted，不能误套创建校验失败的 WatchId=-1 单帧外观，也不能
+  填错误文本或当前 header。KubeBrain 修正 runtime/follower compact cancel 后，同一 stream
+  可从 `+4` 创建 WatchId=708 并收到 Put `+4` 事件，证明取消不关闭流且恢复游标不可混淆。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

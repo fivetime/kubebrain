@@ -883,7 +883,7 @@ func TestPeriodicProgressSuppressesOneTickAfterEvent(t *testing.T) {
 	require.True(t, state.tick())
 }
 
-func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndErrorReason(t *testing.T) {
+func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndEmptyReason(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -927,9 +927,9 @@ func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndErrorReason(t 
 	if resp.CompactRevision != putResp.Header.Revision {
 		t.Fatalf("compact revision = %d, want %d", resp.CompactRevision, putResp.Header.Revision)
 	}
-	if resp.CancelReason != compactedRevisionError().Error() {
-		t.Fatalf("cancel reason = %q, want %q", resp.CancelReason, compactedRevisionError().Error())
-	}
+	require.Empty(t, resp.CancelReason)
+	require.NotNil(t, resp.Header)
+	require.Zero(t, resp.Header.Revision)
 }
 
 func TestFollowerProxyWatchCloseIsNonCompactedCancel(t *testing.T) {
@@ -1415,7 +1415,9 @@ func TestFollowerProxyWatchCompactedErrorIsForwarded(t *testing.T) {
 	require.True(t, resp.Canceled)
 	require.Equal(t, int64(7), resp.WatchId)
 	require.Equal(t, putResp.Header.Revision, resp.CompactRevision)
-	require.Equal(t, compactedRevisionError().Error(), resp.CancelReason)
+	require.Empty(t, resp.CancelReason)
+	require.NotNil(t, resp.Header)
+	require.Zero(t, resp.Header.Revision)
 }
 
 func TestIsWatchCompactedError(t *testing.T) {
