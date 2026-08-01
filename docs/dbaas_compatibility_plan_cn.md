@@ -30920,6 +30920,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   时先按 key 读取 `limit+1` lookahead 子集、再在子集按 target 升序，MaxInt64 才覆盖全范围且不
   溢出。KeysOnly 先按原 value 排序再清值；事务 staged put/update/delete 立即参与同分支过滤/
   排序，且后续 case 精确继承前序已提交 metadata、version 和 live key 集。
+- A3416 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 revision filter 与 Count 装配，
+  将专项双端差分升级为最小显式 oracle：当前 a/b 中 MinModRevision 只让 b 进入 KVs，但普通
+  Range 和 CountOnly 的 Count 都仍为过滤前总数 2，CountOnly KVs 为空；同一事务 staged 新建
+  c 后以事务 revision 过滤只返回 c，但 Count 为 staged live range 总数 3、More=false。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

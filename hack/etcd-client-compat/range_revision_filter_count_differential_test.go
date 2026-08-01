@@ -32,10 +32,14 @@ func TestRangeRevisionFilterCountDifferentialAgainstReferenceEtcd(t *testing.T) 
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runRevisionFilterCountScenario(t, reference, "etcd"),
-		runRevisionFilterCountScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceOutcome := runRevisionFilterCountScenario(t, reference, "etcd")
+	want := revisionFilterCountOutcome{
+		RangeCount: 2, RangeKeys: []string{"b"},
+		CountOnlyCount: 2,
+		TxnCount:       3, TxnKeys: []string{"c"},
+	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runRevisionFilterCountScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runRevisionFilterCountScenario(t *testing.T, endpoint, instance string) revisionFilterCountOutcome {
