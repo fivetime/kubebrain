@@ -31076,6 +31076,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   port-forward 三个 KubeBrain Pod 直连各跑 5 轮，耗时 2.435/2.461/2.439 秒且全部通过，证明
   production response-header interceptor 并非只在负载均衡命中的单个副本生效。本轮未发现
   实现差异，只增加回归门禁和多副本运行证据，无需重建镜像。
+- A3431 继续对照 `maintenance.go:HashKV` 与 backend `HashByRev` 的快照语义，新增真实三副本
+  精确 revision 一致性门禁：从副本 0 写入首值后，三个直连副本必须返回相同 hash/hash revision/
+  compact revision；再从副本 2 更新同一 key，新 revision 的三副本结果仍须一致且 hash 改变；
+  最后重读首 revision，历史逻辑快照必须在后续写入后保持不可变。首版测试曾错误要求历史
+  `HashKV` 的 `Header.Revision` 等于请求 revision，官方 etcd oracle 明确复现请求 2、后续写入后
+  header 3：官方 Header 表示调用时 backend current revision，`HashRevision` 才表示被哈希快照。
+  因此门禁按源码校准为 Header 不落后请求 revision，而不可变比较只包含 hash/hash revision/
+  compact revision，避免为了错误 oracle 修改正确实现。校准后官方三连接自对照 20 轮 0.233 秒，
+  A3427 生产镜像对独立 TiKV/PD 的三个 Pod 直连普通 10 轮 20.400 秒、race 5 轮 11.146 秒通过；
+  探针 key 清理为空，三个 Pod Ready/0 restart，endpoint health 13.989ms。本轮未发现实现差异，
+  只增加多副本历史快照门禁，无需重建镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
