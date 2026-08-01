@@ -30869,6 +30869,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PrevKV 保留创建版 metadata 和 lease，attached keys 清零。随后同一事务 Put/Delete 同 key
   在写入前失败且不留 key，public clientv3 对外为 `Unknown: etcdserver: duplicate key given
   in txn request`。
+- A3407 对照 `/root/etcd/server/lease/lessor.go` 的到期 revoke 与有序 attached
+  keys，将自然过期差分升级为完整 oracle：逆序写入 b/a 后仍在同一个 `+3` revision 原子删除，
+  watch 按 key 返回 a/b，DELETE KV 仅携带 key/mod revision，PrevKV 分别保留各自 `+2/+1`
+  创建修改 revision、值与 lease；过期后 Range 为空且 header 为 `+3`，TTL 返回 `-1`、同一
+  header，LeaseList 不再包含该 lease。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

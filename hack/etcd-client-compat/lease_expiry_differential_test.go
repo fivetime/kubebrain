@@ -48,6 +48,26 @@ func TestLeaseNaturalExpiryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for differential tests")
 	}
 	referenceResult := runLeaseExpiryScenario(t, reference, "etcd")
+	want := leaseExpiryDifferentialResult{
+		GrantTTL:              2,
+		FirstPutAfterBase:     1,
+		SecondPutAfterBase:    2,
+		WatchHeaderAfterBase:  3,
+		RangeRevisionAfterPut: 1,
+		UnknownTTL:            -1,
+		UnknownTTLRevision:    3,
+		Events: []normalizedLeaseExpiryEvent{
+			{
+				Key: "a", ModAfterLastPut: 1, PrevValue: "value-a", PrevModAfterBase: 2,
+				PrevCreateAfterBase: 2, PrevVersion: 1, PrevLeaseWasAttached: true,
+			},
+			{
+				Key: "b", ModAfterLastPut: 1, PrevValue: "value-b", PrevModAfterBase: 1,
+				PrevCreateAfterBase: 1, PrevVersion: 1, PrevLeaseWasAttached: true,
+			},
+		},
+	}
+	require.Equal(t, want, referenceResult)
 	kubebrainResult := runLeaseExpiryScenario(t, kubebrain, "kubebrain")
 	require.Equal(t, referenceResult, kubebrainResult)
 }
