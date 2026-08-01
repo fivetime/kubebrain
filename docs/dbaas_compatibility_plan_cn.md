@@ -31189,6 +31189,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain Pod 使用同一 runtime image digest、Ready/0 restart，3 PD/3 TiKV 均 Running，
   版本端点自报 etcd/storage 3.7.0，最近日志无 panic/fatal、compact failure、event-log malformed
   或 replay fallback。
+- A3438 继续审计 A3437 为 compact 边界 DELETE 保留旧值后的客户端可见性。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go`，官方 Watch 只有在 `PrevKv=true` 且事件
+  不是 CREATE 时才以 `ModRevision-1` 做 lazy Range；因此事件 revision 本身等于 compact
+  watermark 时仍可发送事件，但该 Range 已低于 watermark，DELETE 的 PrevKV 必须为 nil。
+  A3437 测试原已开启 PrevKV 却只固定顺序，本轮同时要求未压缩重启的 DELETE 返回完整
+  `seed`，physical compact 精确边界重启则返回 nil；官方普通/compact 两个 oracle 各跑 3 轮
+  合计 13.618 秒通过。A3437 v2 真实集群在新断言下 8.76 秒稳定红灯，错误暴露完整 `seed`
+  PrevKV：KubeBrain 内部 DELETE event 为恢复事件而携带旧值，响应装配绕过了 upstream 的
+  compact 检查。commit `d4ecf35a288e694b26cdda91e2352071bae15d6a` 在仅有请求确实
+  要求 PrevKV、且事件实际携带旧值时批量读取 fresh compact watermark，对
+  `ModRevision <= compactRevision` 的响应 envelope 清除 PrevKV；内部 event/value 保持不变，
+  从而不回退 A3437 的持久化恢复。不同 PrevKV watcher 共享的事件不会被原地修改，只为受影响
+  响应浅拷贝 Type/Kv；纯 CREATE 批次不新增 TiKV metadata read。客户端 compact 边界测试和
+  共享事件隔离测试 5 轮通过，Watch/Compact/Txn 服务集 56.281 秒、目标 race 5 轮 8.243 秒及
+  双方 `go vet` 通过。生产 TiKV 镜像 `kubebrain:a3438-compact-watch-prevkv`（本地 image ID
+  `sha256:4ba66716bbacf225e09426002db8108743096864b62207dbccd9381ff897be0c`）滚动部署后，
+  未压缩/compact 边界全副本 replacement 分别 8.90/8.97 秒通过，A3435 compact revision 与
+  A3436 lease expiry revision 回归分别 8.94/10.40 秒通过。三个 KubeBrain Pod 使用同一 runtime
+  digest、Ready/0 restart，3 PD/3 TiKV 均 Running，最近日志无 panic/fatal、compact failure、
+  event-log malformed 或 fresh compact watermark 读取错误。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
