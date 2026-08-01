@@ -47,15 +47,57 @@ type rangeDifferentialResult struct {
 	FutureErrorMessage string
 }
 
+type rangeRevisionOracle struct {
+	Puts        []int64
+	Delete      int64
+	ReadHeaders []int64
+	NoOpDelete  int64
+	AfterNoOp   int64
+}
+
 func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	kubebrain := runRangeDifferentialScenario(t, compatEndpoint(), "kubebrain")
 	etcd := runRangeDifferentialScenario(t, reference, "etcd")
-	require.Equal(t, etcd, kubebrain)
+	wantRevision := rangeRevisionOracle{
+		Puts: []int64{1, 2, 3, 4}, Delete: 5,
+		ReadHeaders: []int64{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5},
+		NoOpDelete:  5, AfterNoOp: 5,
+	}
+	require.Equal(t, wantRevision, rangeRevisionOutcome(etcd))
+	require.Equal(t, etcd, runRangeDifferentialScenario(t, compatEndpoint(), "kubebrain"))
+}
+
+func rangeRevisionOutcome(outcome rangeDifferentialResult) rangeRevisionOracle {
+	return rangeRevisionOracle{
+		Puts:   outcome.PutRevisions,
+		Delete: outcome.DeleteRevision,
+		ReadHeaders: []int64{
+			outcome.Historical.HeaderRev,
+			outcome.Filtered.HeaderRev,
+			outcome.FilteredCountOnly.HeaderRev,
+			outcome.FilteredLimited.HeaderRev,
+			outcome.MaxModFiltered.HeaderRev,
+			outcome.MaxCreateFiltered.HeaderRev,
+			outcome.Limited.HeaderRev,
+			outcome.KeysOnly.HeaderRev,
+			outcome.ValueSortedKeys.HeaderRev,
+			outcome.CreateSorted.HeaderRev,
+			outcome.ModSorted.HeaderRev,
+			outcome.VersionSorted.HeaderRev,
+			outcome.PointCountOnly.HeaderRev,
+			outcome.PointKeysOnly.HeaderRev,
+			outcome.MissingPoint.HeaderRev,
+			outcome.EmptyInterval.HeaderRev,
+			outcome.NegativeLimit.HeaderRev,
+			outcome.NegativeRevision.HeaderRev,
+		},
+		NoOpDelete: outcome.NoOpDeleteRevision,
+		AfterNoOp:  outcome.RevisionAfterNoOp,
+	}
 }
 
 func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) rangeDifferentialResult {
