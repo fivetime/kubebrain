@@ -30792,6 +30792,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持 seed revision，PUT 推进 `+1` 后 150ms 内不得泄漏事件或空响应；显式 ProgressRequest
   才返回 stream-wide WatchId=-1、空事件且 header 精确为 `+1`。该门禁固定过滤 watermark
   已推进但 payload 被抑制时的可恢复游标语义。
+- A3392 新增零 watcher ProgressRequest 的完整生命周期双端差分：seed 后建立空 Watch stream，
+  首次显式 progress 在 150ms 内必须完全静默；随后同一 stream 仍可创建 WatchId=902，Created
+  header 精确保持 seed revision，再次 progress 才返回 stream-wide WatchId=-1、相同 revision
+  的空响应。该门禁补齐既有 clientv3 零 watcher 用例只验证调用不报错、未观察 wire 帧与流
+  可复用性的覆盖缺口。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

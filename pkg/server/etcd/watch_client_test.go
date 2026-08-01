@@ -1017,9 +1017,56 @@ func TestClientWatchRequestProgressWithoutWatchers(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = client.Put(ctx, "/a1166/watch-progress-no-watchers", "advance")
+	key := fmt.Sprintf("/a1166/watch-progress-no-watchers/%d", time.Now().UnixNano())
+	seed, err := client.Put(ctx, key, "advance")
 	require.NoError(t, err)
 	require.NoError(t, client.RequestProgress(ctx))
+
+	stream, err := etcdserverpb.NewWatchClient(client.ActiveConnection()).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+	type receiveResult struct {
+		response *etcdserverpb.WatchResponse
+		err      error
+	}
+	pending := make(chan receiveResult, 1)
+	go func() {
+		response, receiveErr := stream.Recv()
+		pending <- receiveResult{response: response, err: receiveErr}
+	}()
+	select {
+	case result := <-pending:
+		t.Fatalf("empty Watch stream emitted progress: response=%+v error=%v", result.response, result.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: []byte(key), WatchId: 902,
+		}},
+	}))
+	createdResult := <-pending
+	require.NoError(t, createdResult.err)
+	require.True(t, createdResult.response.Created)
+	require.False(t, createdResult.response.Canceled)
+	require.Equal(t, int64(902), createdResult.response.WatchId)
+	require.NotNil(t, createdResult.response.Header)
+	require.Equal(t, seed.Header.Revision, createdResult.response.Header.Revision)
+
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+	progress, err := stream.Recv()
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), progress.WatchId)
+	require.NotNil(t, progress.Header)
+	require.Equal(t, seed.Header.Revision, progress.Header.Revision)
+	require.False(t, progress.Created)
+	require.False(t, progress.Canceled)
+	require.Empty(t, progress.Events)
 }
 
 func TestClientWatchRevisionBoundariesMatchEtcd(t *testing.T) {
