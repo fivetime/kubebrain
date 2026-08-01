@@ -31046,6 +31046,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   20 轮 39.786 秒、race 5 轮 10.742 秒通过，A3426 单副本官方 delta 回归 20 轮 3.504 秒
   通过。最终三个副本对应 series 均为 0、alarm list 为空，日志无 alarm refresh error，
   KubeBrain 3/3 Ready/0 restart、PD/TiKV 3+3 Ready，endpoint health 17.421ms。
+- A3428 为 A3427 增加全进程替换恢复门禁，排除三副本绿灯仅依赖旧进程内存的弱证据：
+  在类型 127 激活且三个 Pod 指标均收敛到 1 后，按 StatefulSet 名称依次删除
+  `kubebrain-0/1/2`，每一步必须观察 UID 改变、replacement Ready，并重新检查全部三个
+  Pod 的本地 info metrics 仍为 1；三个旧进程全部消失后再经共享 client Service
+  Deactivate，全部副本必须收敛归零。可选破坏性测试
+  `TestUnknownAlarmMetricRecoversAcrossAllReplicaReplacements` 直接用 `kubectl exec` 抓每个
+  Pod 的 8080，避免 Service 负载均衡掩盖单副本缺失；A3427 生产镜像在独立 3 PD/3 TiKV
+  集群一次 26.766 秒通过。最终三个 replacement Pod 均 Ready/0 restart、alarm list 为空、
+  无 alarm refresh error，endpoint health 15.679ms。本轮只增加恢复门禁和运行证据，未修改
+  服务二进制，因此继续使用 A3427 镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
