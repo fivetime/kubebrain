@@ -47,14 +47,6 @@ type rangeDifferentialResult struct {
 	FutureErrorMessage string
 }
 
-type rangeRevisionOracle struct {
-	Puts        []int64
-	Delete      int64
-	ReadHeaders []int64
-	NoOpDelete  int64
-	AfterNoOp   int64
-}
-
 func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -62,42 +54,46 @@ func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	etcd := runRangeDifferentialScenario(t, reference, "etcd")
-	wantRevision := rangeRevisionOracle{
-		Puts: []int64{1, 2, 3, 4}, Delete: 5,
-		ReadHeaders: []int64{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5},
-		NoOpDelete:  5, AfterNoOp: 5,
+	kv := func(key, value string, create, mod, version int64) normalizedKV {
+		return normalizedKV{Key: key, Value: value, CreateRev: create, ModRev: mod, Version: version}
 	}
-	require.Equal(t, wantRevision, rangeRevisionOutcome(etcd))
+	rng := func(kvs []normalizedKV, count int64, more bool) normalizedRange {
+		return normalizedRange{HeaderRev: 5, KVs: kvs, Count: count, More: more}
+	}
+	a := kv("a", "va", 1, 1, 1)
+	b := kv("b", "vb2", 2, 4, 2)
+	want := rangeDifferentialResult{
+		PutRevisions:   []int64{1, 2, 3, 4},
+		DeleteRevision: 5,
+		Historical: rng([]normalizedKV{
+			a, kv("b", "vb", 2, 2, 1), kv("c", "vc", 3, 3, 1),
+		}, 3, false),
+		Filtered:          rng([]normalizedKV{b}, 2, false),
+		FilteredCountOnly: rng([]normalizedKV{}, 2, false),
+		FilteredLimited:   rng([]normalizedKV{a}, 2, true),
+		MaxModFiltered:    rng([]normalizedKV{a}, 2, false),
+		MaxCreateFiltered: rng([]normalizedKV{a}, 2, false),
+		Limited: rng([]normalizedKV{
+			kv("c", "vc", 3, 3, 1), kv("b", "vb", 2, 2, 1),
+		}, 3, true),
+		KeysOnly:           rng([]normalizedKV{kv("a", "", 1, 1, 1), kv("b", "", 2, 4, 2)}, 2, false),
+		ValueSortedKeys:    rng([]normalizedKV{kv("b", "", 2, 4, 2)}, 2, true),
+		CreateSorted:       rng([]normalizedKV{b, a}, 2, false),
+		ModSorted:          rng([]normalizedKV{b, a}, 2, false),
+		VersionSorted:      rng([]normalizedKV{b, a}, 2, false),
+		PointCountOnly:     rng([]normalizedKV{}, 1, false),
+		PointKeysOnly:      rng([]normalizedKV{kv("b", "", 2, 4, 2)}, 1, false),
+		MissingPoint:       rng([]normalizedKV{}, 0, false),
+		EmptyInterval:      rng([]normalizedKV{}, 0, false),
+		NegativeLimit:      rng([]normalizedKV{a, b}, 2, false),
+		NegativeRevision:   rng([]normalizedKV{a, b}, 2, false),
+		NoOpDeleteRevision: 5,
+		RevisionAfterNoOp:  5,
+		FutureErrorCode:    "Unknown",
+		FutureErrorMessage: "etcdserver: mvcc: required revision is a future revision",
+	}
+	require.Equal(t, want, etcd)
 	require.Equal(t, etcd, runRangeDifferentialScenario(t, compatEndpoint(), "kubebrain"))
-}
-
-func rangeRevisionOutcome(outcome rangeDifferentialResult) rangeRevisionOracle {
-	return rangeRevisionOracle{
-		Puts:   outcome.PutRevisions,
-		Delete: outcome.DeleteRevision,
-		ReadHeaders: []int64{
-			outcome.Historical.HeaderRev,
-			outcome.Filtered.HeaderRev,
-			outcome.FilteredCountOnly.HeaderRev,
-			outcome.FilteredLimited.HeaderRev,
-			outcome.MaxModFiltered.HeaderRev,
-			outcome.MaxCreateFiltered.HeaderRev,
-			outcome.Limited.HeaderRev,
-			outcome.KeysOnly.HeaderRev,
-			outcome.ValueSortedKeys.HeaderRev,
-			outcome.CreateSorted.HeaderRev,
-			outcome.ModSorted.HeaderRev,
-			outcome.VersionSorted.HeaderRev,
-			outcome.PointCountOnly.HeaderRev,
-			outcome.PointKeysOnly.HeaderRev,
-			outcome.MissingPoint.HeaderRev,
-			outcome.EmptyInterval.HeaderRev,
-			outcome.NegativeLimit.HeaderRev,
-			outcome.NegativeRevision.HeaderRev,
-		},
-		NoOpDelete: outcome.NoOpDeleteRevision,
-		AfterNoOp:  outcome.RevisionAfterNoOp,
-	}
 }
 
 func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) rangeDifferentialResult {

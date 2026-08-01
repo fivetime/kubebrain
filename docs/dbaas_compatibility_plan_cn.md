@@ -30886,6 +30886,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease。客户端缺失 lease/key 错误暴露 `Unknown`；raw gRPC 同时缺 key/lease 时先返回
   `NotFound: requested lease not found`，空 key、IgnoreValue 带 value、IgnoreLease 带 lease
   分别返回 `InvalidArgument` 的精确消息。
+- A3410 对照 `/root/etcd/server/etcdserver/txn/range.go` 的过滤、排序、limit 和 response
+  装配，将主 Range 差分从 header revision 子集升级为 18 类响应的完整 oracle：历史 rev3
+  返回 a/b/c 的历史 metadata，而 header 仍为当前 rev5；min/max create/mod 过滤、VALUE/
+  CREATE/MOD/VERSION 排序、limit 的 Count/More、KeysOnly/CountOnly、point/missing/空区间、
+  负 limit/revision 都固定完整 KV/Count/More；其中 Count 保持过滤前 live range 总数，空 KVs
+  为非 nil 空 slice。反向空区间 Delete 不推进 revision，未来读由 public clientv3 暴露
+  `Unknown: ... future revision`。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
