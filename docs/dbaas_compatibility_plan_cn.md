@@ -31109,6 +31109,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   12.799 秒通过，三个新 Pod Ready/0 restart，3 PD/3 TiKV 保持 Running，探针 key 清理为空，
   endpoint health 15.045ms；定向 compile、`go vet` 和 diff check 通过。本轮只增加 TiKV 恢复
   门禁和运行证据，未修改服务二进制，继续使用 A3427 镜像。
+- A3434 修正 A3433 曾作为“合法单调跳跃”保留、但与官方 etcd 不兼容的空闲重启 revision
+  行为。新增官方 oracle 在同一 data-dir 停启单节点 etcd，写入后记录 Range header，再在没有
+  任何用户 mutation 的重启后重读；5 轮 10.848 秒及 race 1 轮 3.263 秒均证明公开 MVCC
+  revision 必须精确保持。相同三副本同时 replacement 门禁在修复前稳定红灯：revision 从
+  `468078803373522953` 跳到 `468078892817055755`。根因是 leader acquisition 把仅用于避免
+  TiKV revision 分配冲突的 PD/TSO 水位直接发布成了用户可观察的 committed revision。
+  KubeBrain 现把水位拆成三部分：TiKV 中的 `revision/committed` 标记与用户 mutation 在同一
+  batch 原子提交，恢复公开 committed revision；PD/TSO 只推进私有 allocation floor；event
+  collector 使用独立 cursor 消费分配槽。无效或放弃的槽位必须先持久化 committed marker 才能
+  推进公开 revision，正常 create/update/delete/txn 则由原子 batch 完成同一保证。首版镜像
+  `kubebrain:a3434-idle-revision` 已让空闲 replacement 和重启后首次 Put 分别在 17.486/18.127
+  秒通过，但 A3433 随即发现 `notifyBatch` 仍以公开 revision 计算 ring gap，错误进入 overflow
+  分支并丢失事件，最终把合法 compact revision 报为 future。commit
+  `599c51c3390450732654af2a7482f9eb6445292e` 将 notify 与 overflow 统一改为 collector cursor，
+  并用大于 ring capacity 的 allocation/public 差值单测固定该路径；相关定向普通与 race 测试
+  均通过。生产 TiKV 镜像 `kubebrain:a3434-idle-revision-v2`（image ID
+  `sha256:25964ef8bb47c90ac13922c21b3478da2db3b11cbec47df88bbeae00950691de`）滚动部署到独立
+  3 PD/3 TiKV 集群后，空闲三副本同时 replacement（含首次写入）8.60 秒通过，A3433 HashKV
+  compact/精确快照/再次全副本 replacement 回归 12.77 秒通过。最终 KubeBrain 3/3 Ready/0
+  restart、PD/TiKV 3+3 Ready，endpoint health 为 true，最近日志无 `event collector stalled`、
+  `commit wait backstop` 或 `skipping abandoned revision`；定向 backend/leader 普通与 race 测试及
+  双方 `go vet` 通过。完整 `pkg/server/etcd` 套件本轮未形成有效完成证据，故不据此作通过声明。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
