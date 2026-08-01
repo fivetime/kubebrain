@@ -30661,6 +30661,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errors.Is(..., rpctypes.ErrGRPCEmptyKey)` 成立，且不得退化为
   `ErrGRPCKeyNotFound`；Success nil op 与 Failure put 均不得执行，最终 keyspace、
   create revision 和 header revision 必须保持 seed `a` 后的状态。
+- A3365 将 A3361/A3362 固定的 nested static validation 顺序提升到真实双端差分：
+  `TestTxnOperationValidationDifferentialAgainstReferenceEtcd` 现在向参考 etcd 与
+  KubeBrain 发送完全相同的 raw protobuf 请求，并结构化比较 gRPC code/message；新增
+  Compare empty key 与 Success empty operation 并存、以及 Success empty operation 与
+  Failure empty-key DeleteRange 并存两种组合，持续防止本地测试 helper 或错误映射恰好
+  自洽却偏离官方 server 的风险。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

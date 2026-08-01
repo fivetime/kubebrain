@@ -50,6 +50,7 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 	tests := []struct {
 		name string
 		op   *etcdserverpb.RequestOp
+		txn  *etcdserverpb.TxnRequest
 	}{
 		{
 			name: "put-empty-key-precedes-ignore-value",
@@ -105,14 +106,42 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 			name: "empty-operation",
 			op:   &etcdserverpb.RequestOp{},
 		},
+		{
+			name: "nested-compare-empty-key-precedes-success-empty-operation",
+			txn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Compare: []*etcdserverpb.Compare{{
+						Result:      etcdserverpb.Compare_EQUAL,
+						Target:      etcdserverpb.Compare_VERSION,
+						TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
+					}},
+					Success: []*etcdserverpb.RequestOp{{}},
+				}},
+			}}},
+		},
+		{
+			name: "nested-success-empty-operation-precedes-failure-empty-delete",
+			txn: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestTxn{RequestTxn: &etcdserverpb.TxnRequest{
+					Success: []*etcdserverpb.RequestOp{{}},
+					Failure: []*etcdserverpb.RequestOp{{
+						Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+							RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{RangeEnd: []byte{0}, PrevKv: true},
+						},
+					}},
+				}},
+			}}},
+		},
 	}
 
 	outcomes := make([]txnOperationValidationOutcome, 0, len(tests))
 	for _, test := range tests {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, callErr := client.Txn(ctx, &etcdserverpb.TxnRequest{
-			Success: []*etcdserverpb.RequestOp{test.op},
-		})
+		request := test.txn
+		if request == nil {
+			request = &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{test.op}}
+		}
+		_, callErr := client.Txn(ctx, request)
 		cancel()
 		require.Error(t, callErr, test.name)
 		outcomes = append(outcomes, txnOperationValidationOutcome{
