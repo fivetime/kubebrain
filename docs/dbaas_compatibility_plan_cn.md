@@ -31020,7 +31020,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对 NOSPACE、CORRUPT 和通用 alarm 的成功 Activate 响应执行 Inc，仅在实际删除 alarm 的
   Deactivate 响应执行 Dec；重复 Activate 的累加行为也按 upstream debugging metric 原样保留。
   指标 helper/通用 alarm 定向 20 轮、server/etcd 完整套件、相关 race 5 轮、根模块
-  `go test ./...` 和双方 vet 已通过；对应生产 TiKV 镜像与真实双端绿灯仍待验证。
+  `go test ./...` 和双方 vet 已通过。commit
+  `d433d4640664e6c851e1491f0412459d94a11e2b` 的生产 TiKV 镜像
+  `kubebrain:a3426-alarm-metrics`（image ID
+  `sha256:9811378224c684ea5783f6613882d840673b566b07faba426ee06dfdc6960e38`）完成既有独立
+  3 PD/3 TiKV 集群的 KubeBrain 3/3 滚动更新；为避免 client Service 与 info Service
+  分别负载到不同进程，验证把 `kubebrain-0` 的 3379/8080 同时转发到宿主，官方双端差分
+  20 轮 3.807 秒、race 5 轮 2.666 秒通过。最终该类型 series 为 0、alarm list 为空，
+  KubeBrain 3/3 Ready/0 restart、PD/TiKV 3+3 Ready，endpoint health 11.287ms。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

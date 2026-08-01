@@ -112,6 +112,8 @@ func readAlarmMetric(
 
 	wantLabels := fmt.Sprintf(`server_id="%x",alarm_type="%s"`, memberID, alarm.String())
 	reversedLabels := fmt.Sprintf(`alarm_type="%s",server_id="%x"`, alarm.String(), memberID)
+	value := float64(0)
+	found := false
 	scanner := bufio.NewScanner(response.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -121,10 +123,12 @@ func readAlarmMetric(
 		}
 		fields := strings.Fields(line)
 		require.Len(t, fields, 2, line)
-		value, parseErr := strconv.ParseFloat(fields[1], 64)
+		require.False(t, found, "duplicate alarm metric series: %s", line)
+		parsed, parseErr := strconv.ParseFloat(fields[1], 64)
 		require.NoError(t, parseErr, line)
-		return value
+		value = parsed
+		found = true
 	}
 	require.NoError(t, scanner.Err())
-	return 0
+	return value
 }
