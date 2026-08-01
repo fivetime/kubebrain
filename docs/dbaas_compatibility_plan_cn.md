@@ -30677,6 +30677,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put；每次非法 Txn 后读取完整前缀，除 code/message 外继续比较相对 seed revision 与
   归一化最终键值。期望始终为 revision gap=0、仅 seed 存活，证明全树静态 admission
   不仅返回同样错误，也不会执行已选分支或为拒绝请求分配用户 revision。
+- A3368 将同一状态级证据扩展到 operation-budget 双端差分：top-level over-limit、
+  nested remaining-budget 超限和未选中 Failure nested over-budget 均加入合法候选 Put；
+  at-limit、递归预算边界及拒绝场景执行后统一读取唯一前缀，双端除 response/error 外还
+  必须满足 revision gap=0、最终仅 seed 存活。该门禁固定 too-many-ops admission 必须在
+  任一候选写执行和用户 revision 分配之前完成，同时保持合法只读边界不产生伪 revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

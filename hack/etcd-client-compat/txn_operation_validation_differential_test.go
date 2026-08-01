@@ -38,8 +38,8 @@ func TestTxnOperationValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runTxnOperationValidationScenario(t, compatEndpoint(), prefix),
 	)
 	require.Equal(t,
-		runTxnOperationBudgetScenario(t, reference),
-		runTxnOperationBudgetScenario(t, compatEndpoint()),
+		runTxnOperationBudgetScenario(t, reference, prefix+"budget/"),
+		runTxnOperationBudgetScenario(t, compatEndpoint(), prefix+"budget/"),
 	)
 }
 
@@ -223,7 +223,7 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint, prefix string) []
 	return outcomes
 }
 
-func runTxnOperationBudgetScenario(t *testing.T, endpoint string) []txnOperationValidationOutcome {
+func runTxnOperationBudgetScenario(t *testing.T, endpoint, prefix string) []txnOperationValidationOutcome {
 	t.Helper()
 	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -231,17 +231,28 @@ func runTxnOperationBudgetScenario(t *testing.T, endpoint string) []txnOperation
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := etcdserverpb.NewKVClient(conn)
 
-	rangeOp := func(suffix byte) *etcdserverpb.RequestOp {
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	seed, err := client.Put(seedCtx, &etcdserverpb.PutRequest{
+		Key: []byte(prefix + "seed"), Value: []byte("seed"),
+	})
+	seedCancel()
+	require.NoError(t, err)
+	require.NotNil(t, seed.Header)
+	mutationKey := []byte(prefix + "mutation")
+	putOp := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{Key: mutationKey, Value: []byte("unexpected")},
+	}}
+	rangeOp := func(suffix int) *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{
 			RequestRange: &etcdserverpb.RangeRequest{
-				Key: []byte{'/', 'd', 'b', 'a', 'a', 's', '/', 'b', 'u', 'd', 'g', 'e', 't', '/', suffix},
+				Key: []byte(fmt.Sprintf("%srange/%03d", prefix, suffix)),
 			},
 		}}
 	}
 	rangeOps := func(n int) []*etcdserverpb.RequestOp {
 		ops := make([]*etcdserverpb.RequestOp, n)
 		for i := range ops {
-			ops[i] = rangeOp(byte(i))
+			ops[i] = rangeOp(i)
 		}
 		return ops
 	}
@@ -253,7 +264,7 @@ func runTxnOperationBudgetScenario(t *testing.T, endpoint string) []txnOperation
 	compares := make([]*etcdserverpb.Compare, 128)
 	for i := range compares {
 		compares[i] = &etcdserverpb.Compare{
-			Key:         []byte{'/', 'd', 'b', 'a', 'a', 's', '/', 'c', 'm', 'p', '/', byte(i)},
+			Key:         []byte(fmt.Sprintf("%scompare/%03d", prefix, i)),
 			Result:      etcdserverpb.Compare_EQUAL,
 			Target:      etcdserverpb.Compare_VERSION,
 			TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
@@ -265,19 +276,21 @@ func runTxnOperationBudgetScenario(t *testing.T, endpoint string) []txnOperation
 		txn  *etcdserverpb.TxnRequest
 	}{
 		{name: "top-level-at-limit", txn: &etcdserverpb.TxnRequest{Success: rangeOps(128)}},
-		{name: "top-level-over-limit", txn: &etcdserverpb.TxnRequest{Success: rangeOps(129)}},
+		{name: "top-level-over-limit", txn: &etcdserverpb.TxnRequest{
+			Success: append([]*etcdserverpb.RequestOp{putOp}, rangeOps(128)...),
+		}},
 		{name: "nested-exact-remaining-budget", txn: &etcdserverpb.TxnRequest{
 			Success: append(rangeOps(126), nested(rangeOps(1))),
 		}},
 		{name: "nested-over-remaining-budget", txn: &etcdserverpb.TxnRequest{
-			Success: append(rangeOps(127), nested(rangeOps(1))),
+			Success: append([]*etcdserverpb.RequestOp{putOp}, append(rangeOps(126), nested(rangeOps(1)))...),
 		}},
 		{name: "compare-max-does-not-charge-range-child", txn: &etcdserverpb.TxnRequest{
 			Compare: compares,
 			Success: []*etcdserverpb.RequestOp{rangeOp(0)},
 		}},
 		{name: "unselected-failure-nested-over-budget", txn: &etcdserverpb.TxnRequest{
-			Success: rangeOps(1),
+			Success: []*etcdserverpb.RequestOp{putOp},
 			Failure: append(rangeOps(127), nested(rangeOps(1))),
 		}},
 	}
@@ -296,6 +309,20 @@ func runTxnOperationBudgetScenario(t *testing.T, endpoint string) []txnOperation
 			outcome.HasResponse = true
 			outcome.Succeeded = resp.Succeeded
 		}
+		rangeCtx, rangeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		final, rangeErr := client.Range(rangeCtx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+		rangeCancel()
+		require.NoError(t, rangeErr, test.name)
+		require.NotNil(t, final.Header, test.name)
+		for _, kv := range final.Kvs {
+			outcome.FinalKVs = append(outcome.FinalKVs,
+				fmt.Sprintf("%s=%s", strings.TrimPrefix(string(kv.Key), prefix), kv.Value))
+		}
+		outcome.RevisionGap = final.Header.Revision - seed.Header.Revision
+		require.Zero(t, outcome.RevisionGap, test.name)
+		require.Equal(t, []string{"seed=seed"}, outcome.FinalKVs, test.name)
 		outcomes = append(outcomes, outcome)
 	}
 	return outcomes
