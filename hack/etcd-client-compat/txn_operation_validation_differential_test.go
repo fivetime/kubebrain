@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
@@ -20,6 +22,8 @@ type txnOperationValidationOutcome struct {
 	Message     string
 	HasResponse bool
 	Succeeded   bool
+	RevisionGap int64
+	FinalKVs    []string
 }
 
 func TestTxnOperationValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -28,9 +32,10 @@ func TestTxnOperationValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
+	prefix := fmt.Sprintf("/dbaas-txn-operation-validation/%d/", time.Now().UnixNano())
 	require.Equal(t,
-		runTxnOperationValidationScenario(t, reference),
-		runTxnOperationValidationScenario(t, compatEndpoint()),
+		runTxnOperationValidationScenario(t, reference, prefix),
+		runTxnOperationValidationScenario(t, compatEndpoint(), prefix),
 	)
 	require.Equal(t,
 		runTxnOperationBudgetScenario(t, reference),
@@ -38,7 +43,7 @@ func TestTxnOperationValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 	)
 }
 
-func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOperationValidationOutcome {
+func runTxnOperationValidationScenario(t *testing.T, endpoint, prefix string) []txnOperationValidationOutcome {
 	t.Helper()
 	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -46,7 +51,15 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := etcdserverpb.NewKVClient(conn)
 
-	key := []byte("/dbaas-txn-operation-validation")
+	key := []byte(prefix + "compare")
+	mutationKey := []byte(prefix + "mutation")
+	seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	seed, err := client.Put(seedCtx, &etcdserverpb.PutRequest{
+		Key: []byte(prefix + "seed"), Value: []byte("seed"),
+	})
+	seedCancel()
+	require.NoError(t, err)
+	require.NotNil(t, seed.Header)
 	tests := []struct {
 		name string
 		op   *etcdserverpb.RequestOp
@@ -143,8 +156,8 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 						TargetUnion: &etcdserverpb.Compare_Version{Version: 0},
 					}},
 					Success: []*etcdserverpb.RequestOp{{
-						Request: &etcdserverpb.RequestOp_RequestRange{
-							RequestRange: &etcdserverpb.RangeRequest{Key: key},
+						Request: &etcdserverpb.RequestOp_RequestPut{
+							RequestPut: &etcdserverpb.PutRequest{Key: mutationKey, Value: []byte("unexpected-success")},
 						},
 					}},
 					Failure: []*etcdserverpb.RequestOp{{}},
@@ -167,8 +180,8 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 						},
 					}},
 					Failure: []*etcdserverpb.RequestOp{{
-						Request: &etcdserverpb.RequestOp_RequestRange{
-							RequestRange: &etcdserverpb.RangeRequest{Key: key},
+						Request: &etcdserverpb.RequestOp_RequestPut{
+							RequestPut: &etcdserverpb.PutRequest{Key: mutationKey, Value: []byte("unexpected-failure")},
 						},
 					}},
 				}},
@@ -186,10 +199,25 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint string) []txnOpera
 		_, callErr := client.Txn(ctx, request)
 		cancel()
 		require.Error(t, callErr, test.name)
+		rangeCtx, rangeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		final, rangeErr := client.Range(rangeCtx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+		rangeCancel()
+		require.NoError(t, rangeErr, test.name)
+		require.NotNil(t, final.Header, test.name)
+		finalKVs := make([]string, 0, len(final.Kvs))
+		for _, kv := range final.Kvs {
+			finalKVs = append(finalKVs, fmt.Sprintf("%s=%s", strings.TrimPrefix(string(kv.Key), prefix), kv.Value))
+		}
+		require.Zero(t, final.Header.Revision-seed.Header.Revision, test.name)
+		require.Equal(t, []string{"seed=seed"}, finalKVs, test.name)
 		outcomes = append(outcomes, txnOperationValidationOutcome{
-			Name:    test.name,
-			Code:    status.Code(callErr).String(),
-			Message: status.Convert(callErr).Message(),
+			Name:        test.name,
+			Code:        status.Code(callErr).String(),
+			Message:     status.Convert(callErr).Message(),
+			RevisionGap: final.Header.Revision - seed.Header.Revision,
+			FinalKVs:    finalKVs,
 		})
 	}
 	return outcomes
