@@ -878,6 +878,19 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			events = filterWatchEvents(events, r.Filters)
 			if !r.PrevKv {
 				events = withoutWatchPrevKvs(events)
+			} else if watchEventsHavePrevKVs(events) {
+				compactRevision, compactErr := w.backend.GetCompactRevisionFresh(ctx)
+				if compactErr != nil {
+					w.metricCli.EmitCounter("watch.prev_kv.compact_revision.err", 1)
+					klog.ErrorS(compactErr, "failed to resolve compact revision for watch PrevKV", "watcher", w.id, "watch", id)
+				} else {
+					// Upstream resolves requested PrevKV with a Range at
+					// ModRevision-1 while assembling each response. Once compaction
+					// reaches the event revision that historical read is below the
+					// watermark, so PrevKV must be nil even though KubeBrain retains
+					// the internal value needed to reconstruct the DELETE event itself.
+					events = withoutCompactedWatchPrevKvs(events, compactRevision)
+				}
 			}
 			batchRevision := result.Revision
 			if batchRevision == 0 {
@@ -1121,6 +1134,45 @@ func withoutWatchPrevKvs(events []*mvccpb.Event) []*mvccpb.Event {
 		withoutPrev = append(withoutPrev, &mvccpb.Event{Type: event.Type, Kv: event.Kv})
 	}
 	return withoutPrev
+}
+
+func watchEventsHavePrevKVs(events []*mvccpb.Event) bool {
+	for _, event := range events {
+		if event != nil && event.PrevKv != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutCompactedWatchPrevKvs mirrors upstream's lazy Range at
+// event.ModRevision-1: revision == compactRevision remains watchable, but its
+// previous revision does not. Clone only affected Event envelopes because the
+// source batch is shared by watches with different PrevKv settings.
+func withoutCompactedWatchPrevKvs(events []*mvccpb.Event, compactRevision uint64) []*mvccpb.Event {
+	if compactRevision == 0 {
+		return events
+	}
+	var out []*mvccpb.Event
+	for i, event := range events {
+		if event == nil || event.PrevKv == nil {
+			continue
+		}
+		modRevision := event.GetKv().GetModRevision()
+		if modRevision <= 0 || uint64(modRevision) > compactRevision {
+			continue
+		}
+		if out == nil {
+			out = append([]*mvccpb.Event(nil), events...)
+		}
+		// Do not value-copy protobuf MessageState; only Type/Kv are needed and
+		// match withoutWatchPrevKvs's allocation-safe field copy above.
+		out[i] = &mvccpb.Event{Type: event.Type, Kv: event.Kv}
+	}
+	if out == nil {
+		return events
+	}
+	return out
 }
 
 func isExpectedWatchCloseError(err error) bool {

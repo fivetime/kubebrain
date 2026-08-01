@@ -516,6 +516,51 @@ func TestClientWatchUpdateReportsUpdateNotCreate(t *testing.T) {
 	require.Equal(t, create.Header.Revision, event.PrevKv.ModRevision)
 }
 
+func TestClientWatchDeleteAtCompactBoundaryOmitsPrevKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	key := fmt.Sprintf("/a3438/watch-compact-prevkv/%d", time.Now().UnixNano())
+	_, err = client.Put(ctx, key, "before")
+	require.NoError(t, err)
+	deleted, err := client.Delete(ctx, key)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted.Deleted)
+	_, err = client.Compact(ctx, deleted.Header.Revision, clientv3.WithCompactPhysical())
+	require.NoError(t, err)
+
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+	watch := client.Watch(watchCtx, key, clientv3.WithRev(deleted.Header.Revision), clientv3.WithPrevKV())
+	event := requireSingleClientWatchEvent(t, ctx, watch)
+	require.Equal(t, clientv3.EventTypeDelete, event.Type)
+	require.Equal(t, key, string(event.Kv.Key))
+	require.Equal(t, deleted.Header.Revision, event.Kv.ModRevision)
+	require.Nil(t, event.PrevKv, "upstream Range(ModRevision-1) is below the compact watermark")
+}
+
 func TestClientWatchMultiWatcherKeyAndPrefixIsolation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

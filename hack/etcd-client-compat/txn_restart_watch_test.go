@@ -132,7 +132,7 @@ func TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements(t *testing.T
 	replaceAllCompatPods(t, ctx, os.Getenv("KUBEBRAIN_IDLE_RESTART_CONTEXT"), namespace, pods)
 	afterConn := newRawCompatConn(t, endpoint)
 	defer afterConn.Close()
-	assertRestartTxnCurrentAndWatch(t, ctx, afterConn, prefix, txnRevision)
+	assertRestartTxnCurrentAndWatch(t, ctx, afterConn, prefix, txnRevision, false)
 }
 
 func TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart(t *testing.T) {
@@ -176,7 +176,7 @@ func TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart(t *testing.T) {
 	stop()
 	_, restartedConn := start()
 	defer restartedConn.Close()
-	assertRestartTxnCurrentAndWatch(t, ctx, restartedConn, prefix, txnRevision)
+	assertRestartTxnCurrentAndWatch(t, ctx, restartedConn, prefix, txnRevision, false)
 }
 
 func newRawCompatConn(t *testing.T, endpoint string) *grpc.ClientConn {
@@ -214,7 +214,7 @@ func assertRestartTxnSnapshotAndWatch(
 	t.Helper()
 	kv := etcdserverpb.NewKVClient(conn)
 	rangeEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
-	assertRestartTxnCurrentAndWatch(t, ctx, conn, prefix, txnRevision)
+	assertRestartTxnCurrentAndWatch(t, ctx, conn, prefix, txnRevision, true)
 	historical, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: []byte(prefix), RangeEnd: rangeEnd, Revision: seedRevision,
 	})
@@ -223,7 +223,7 @@ func assertRestartTxnSnapshotAndWatch(
 	require.Equal(t, []string{prefix + "m"}, restartTxnKeys(historical))
 }
 
-func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *grpc.ClientConn, prefix string, txnRevision int64) {
+func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *grpc.ClientConn, prefix string, txnRevision int64, wantDeletePrevKV bool) {
 	t.Helper()
 	rangeEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
 	current, err := etcdserverpb.NewKVClient(conn).Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: rangeEnd})
@@ -248,12 +248,14 @@ func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *gr
 
 	var eventKeys []string
 	var eventTypes []mvccpb.Event_EventType
+	var events []*mvccpb.Event
 	for len(eventKeys) < 3 {
 		response, recvErr := stream.Recv()
 		require.NoError(t, recvErr)
 		require.Equal(t, txnRevision, response.GetHeader().GetRevision())
 		for _, event := range response.Events {
 			require.Equal(t, txnRevision, event.Kv.ModRevision)
+			events = append(events, event)
 			eventKeys = append(eventKeys, string(event.Kv.Key))
 			eventTypes = append(eventTypes, event.Type)
 		}
@@ -262,6 +264,15 @@ func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *gr
 	require.Equal(t, []mvccpb.Event_EventType{
 		mvccpb.PUT, mvccpb.DELETE, mvccpb.PUT,
 	}, eventTypes)
+	require.Nil(t, events[0].PrevKv, "creating PUT must not carry PrevKV")
+	require.Nil(t, events[2].PrevKv, "creating PUT must not carry PrevKV")
+	if wantDeletePrevKV {
+		require.NotNil(t, events[1].PrevKv, "uncompacted DELETE must carry PrevKV")
+		require.Equal(t, []byte(prefix+"m"), events[1].PrevKv.Key)
+		require.Equal(t, []byte("seed"), events[1].PrevKv.Value)
+	} else {
+		require.Nil(t, events[1].PrevKv, "DELETE PrevKV below the compact watermark must be unavailable")
+	}
 }
 
 func restartTxnKeys(response *etcdserverpb.RangeResponse) []string {

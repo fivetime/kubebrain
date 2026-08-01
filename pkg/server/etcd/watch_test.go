@@ -313,6 +313,30 @@ func TestWithoutWatchPrevKvsDoesNotMutateSharedEvents(t *testing.T) {
 	require.NotNil(t, events[2].PrevKv, "source event is shared with PrevKv watchers")
 }
 
+func TestWithoutCompactedWatchPrevKvsDoesNotMutateSharedEvents(t *testing.T) {
+	below := &mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: 9}, PrevKv: &mvccpb.KeyValue{Value: []byte("below")}}
+	boundary := &mvccpb.Event{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{ModRevision: 10}, PrevKv: &mvccpb.KeyValue{Value: []byte("boundary")}}
+	above := &mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: 11}, PrevKv: &mvccpb.KeyValue{Value: []byte("above")}}
+	events := []*mvccpb.Event{below, nil, boundary, above}
+
+	filtered := withoutCompactedWatchPrevKvs(events, 10)
+	require.Len(t, filtered, len(events))
+	require.Nil(t, filtered[0].PrevKv)
+	require.Nil(t, filtered[1])
+	require.Nil(t, filtered[2].PrevKv)
+	require.Same(t, above, filtered[3], "events above the watermark stay allocation-free")
+	require.NotSame(t, below, filtered[0])
+	require.NotSame(t, boundary, filtered[2])
+	require.NotNil(t, events[0].PrevKv, "shared source must retain PrevKV")
+	require.NotNil(t, events[2].PrevKv, "shared source must retain PrevKV")
+	require.NotNil(t, events[3].PrevKv)
+
+	unchanged := withoutCompactedWatchPrevKvs(events, 0)
+	require.Same(t, events[0], unchanged[0])
+	unchanged = withoutCompactedWatchPrevKvs(events, 8)
+	require.Same(t, events[0], unchanged[0])
+}
+
 func TestWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
