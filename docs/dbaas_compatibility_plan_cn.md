@@ -30825,6 +30825,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   区间、negative limit 与 negative revision 共 18 种 Range response header 全部保持当前
   `+5`，no-op Delete 及其后 Range 也保持 `+5`。该门禁区分“按旧 revision 选取 KV 内容”
   与“response header 报告当前 revision”，并防止双方测试端同时返回陈旧历史 header。
+- A3399 将主 Put 双端差分补上显式 revision/metadata oracle：create、rebind、IgnoreValue、
+  IgnoreLease 四次写依次为 `+1/+2/+3/+4`；后三次 PrevKV 的
+  `(create,mod,version)` 精确为 `(1,1,1)/(1,2,2)/(1,3,3)`，最终 KV 为
+  `(create=1,mod=4,version=4)`。本地 direct 与 clientv3/Do 回归同步固定 PrevKV 链，
+  防止 lease 重绑或 ignore 选项保留 value/lease 时破坏 MVCC metadata。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

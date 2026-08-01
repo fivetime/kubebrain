@@ -637,6 +637,9 @@ func TestPutDifferentialScenarioMatchesEtcd(t *testing.T) {
 	require.NotNil(t, rebind.PrevKv)
 	require.Equal(t, []byte("one"), rebind.PrevKv.Value)
 	require.Equal(t, leaseA.ID, rebind.PrevKv.Lease)
+	require.Equal(t, create.Header.Revision, rebind.PrevKv.CreateRevision)
+	require.Equal(t, create.Header.Revision, rebind.PrevKv.ModRevision)
+	require.Equal(t, int64(1), rebind.PrevKv.Version)
 
 	ignoreValue, err := server.Put(ctx, &etcdserverpb.PutRequest{
 		Key: key, Lease: leaseA.ID, IgnoreValue: true, PrevKv: true,
@@ -646,6 +649,9 @@ func TestPutDifferentialScenarioMatchesEtcd(t *testing.T) {
 	require.NotNil(t, ignoreValue.PrevKv)
 	require.Equal(t, []byte("two"), ignoreValue.PrevKv.Value)
 	require.Equal(t, leaseB.ID, ignoreValue.PrevKv.Lease)
+	require.Equal(t, create.Header.Revision, ignoreValue.PrevKv.CreateRevision)
+	require.Equal(t, rebind.Header.Revision, ignoreValue.PrevKv.ModRevision)
+	require.Equal(t, int64(2), ignoreValue.PrevKv.Version)
 
 	ignoreLease, err := server.Put(ctx, &etcdserverpb.PutRequest{
 		Key: key, Value: []byte("three"), IgnoreLease: true, PrevKv: true,
@@ -655,6 +661,9 @@ func TestPutDifferentialScenarioMatchesEtcd(t *testing.T) {
 	require.NotNil(t, ignoreLease.PrevKv)
 	require.Equal(t, []byte("two"), ignoreLease.PrevKv.Value)
 	require.Equal(t, leaseA.ID, ignoreLease.PrevKv.Lease)
+	require.Equal(t, create.Header.Revision, ignoreLease.PrevKv.CreateRevision)
+	require.Equal(t, ignoreValue.Header.Revision, ignoreLease.PrevKv.ModRevision)
+	require.Equal(t, int64(3), ignoreLease.PrevKv.Version)
 
 	current, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)

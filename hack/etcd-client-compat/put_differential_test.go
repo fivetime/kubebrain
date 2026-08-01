@@ -31,15 +31,46 @@ type putDifferentialResult struct {
 	LeaseWithIgnore     authErrorOutcome
 }
 
+type putRevisionOracle struct {
+	Revisions []int64
+	Prev      []*normalizedKV
+	Current   normalizedKV
+}
+
 func TestPutDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	kubebrain := runPutDifferentialScenario(t, compatEndpoint(), "kubebrain")
 	etcd := runPutDifferentialScenario(t, reference, "etcd")
-	require.Equal(t, etcd, kubebrain)
+	wantRevision := putRevisionOracle{
+		Revisions: []int64{1, 2, 3, 4},
+		Prev: []*normalizedKV{
+			nil,
+			{Key: "key", Value: "one", CreateRev: 1, ModRev: 1, Version: 1, HasLease: true},
+			{Key: "key", Value: "two", CreateRev: 1, ModRev: 2, Version: 2, HasLease: true},
+			{Key: "key", Value: "two", CreateRev: 1, ModRev: 3, Version: 3, HasLease: true},
+		},
+		Current: normalizedKV{
+			Key: "key", Value: "three", CreateRev: 1, ModRev: 4, Version: 4, HasLease: true,
+		},
+	}
+	require.Equal(t, wantRevision, putRevisionOutcome(etcd))
+	require.Equal(t, etcd, runPutDifferentialScenario(t, compatEndpoint(), "kubebrain"))
+}
+
+func putRevisionOutcome(outcome putDifferentialResult) putRevisionOracle {
+	return putRevisionOracle{
+		Revisions: []int64{
+			outcome.CreateRevision, outcome.RebindRevision,
+			outcome.IgnoreValueRevision, outcome.IgnoreLeaseRevision,
+		},
+		Prev: []*normalizedKV{
+			outcome.CreatePrev, outcome.RebindPrev, outcome.IgnoreValuePrev, outcome.IgnoreLeasePrev,
+		},
+		Current: outcome.Current,
+	}
 }
 
 func runPutDifferentialScenario(t *testing.T, endpoint, instance string) putDifferentialResult {
