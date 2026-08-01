@@ -110,11 +110,11 @@ func TestIncrementalCompactScopesToTouchedKeys(t *testing.T) {
 	require.Equal(t, target, atomic.LoadUint64(&b.physicalBaseRev))
 
 	require.Equal(t, 1, countVersions(k1), "touched key: superseded version must be GC'd")
-	require.Equal(t, 0, countVersions(k2), "touched key: tombstone must be fully GC'd")
+	require.Equal(t, 2, countVersions(k2), "boundary DELETE must retain tombstone and previous value")
 	require.Equal(t, 2, countVersions(k0), "untouched key's pre-baseline garbage must survive an incremental pass")
 
 	// Invalidate the baseline to force the full-scan path: it reclaims the
-	// pre-baseline garbage the incremental pass correctly skipped.
+	// untouched key's pre-baseline garbage the incremental pass correctly skipped.
 	atomic.StoreUint64(&b.physicalBaseRev, 0)
 	require.NoError(t, b.physicalCompact(ctx, target))
 	require.Equal(t, 1, countVersions(k0), "full scan must reclaim pre-baseline garbage")

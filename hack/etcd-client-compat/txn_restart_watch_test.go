@@ -95,6 +95,90 @@ func TestReferenceEtcdTxnSnapshotAndWatchRecoverAfterRestart(t *testing.T) {
 	assertRestartTxnSnapshotAndWatch(t, ctx, restartedConn, prefix, seedRevision, txnRevision)
 }
 
+// TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements pins the
+// compact boundary: revision == compactRevision remains watchable, so physical
+// cleanup must retain the transaction's ordered event log at that revision.
+func TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements(t *testing.T) {
+	endpoint := os.Getenv("KUBEBRAIN_IDLE_RESTART_ENDPOINT")
+	namespace := os.Getenv("KUBEBRAIN_IDLE_RESTART_NAMESPACE")
+	pods := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_IDLE_RESTART_PODS"))
+	if endpoint == "" || namespace == "" || len(pods) == 0 {
+		t.Skip("set KUBEBRAIN_IDLE_RESTART_ENDPOINT, KUBEBRAIN_IDLE_RESTART_NAMESPACE, and KUBEBRAIN_IDLE_RESTART_PODS")
+	}
+	require.Len(t, pods, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	prefix := testPrefix(t) + "/"
+	conn := newRawCompatConn(t, endpoint)
+	_, txnRevision := seedRestartTxn(t, ctx, conn, prefix)
+	_, err := etcdserverpb.NewKVClient(conn).Compact(ctx, &etcdserverpb.CompactionRequest{
+		Revision: txnRevision, Physical: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		cleanupConn, cleanupErr := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if cleanupErr != nil {
+			return
+		}
+		defer cleanupConn.Close()
+		_, _ = etcdserverpb.NewKVClient(cleanupConn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	replaceAllCompatPods(t, ctx, os.Getenv("KUBEBRAIN_IDLE_RESTART_CONTEXT"), namespace, pods)
+	afterConn := newRawCompatConn(t, endpoint)
+	defer afterConn.Close()
+	assertRestartTxnCurrentAndWatch(t, ctx, afterConn, prefix, txnRevision)
+}
+
+func TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart(t *testing.T) {
+	binary := os.Getenv("REFERENCE_ETCD_BINARY")
+	if binary == "" {
+		t.Skip("set REFERENCE_ETCD_BINARY to run the restart oracle")
+	}
+	const endpoint = "127.0.0.1:42379"
+	args := []string{
+		"--name", "compacted-txn-watch-restart-oracle",
+		"--data-dir", t.TempDir(),
+		"--listen-client-urls", "http://" + endpoint,
+		"--advertise-client-urls", "http://" + endpoint,
+		"--listen-peer-urls", "http://127.0.0.1:42380",
+		"--initial-advertise-peer-urls", "http://127.0.0.1:42380",
+		"--initial-cluster", "compacted-txn-watch-restart-oracle=http://127.0.0.1:42380",
+	}
+	start := func() (func(), *grpc.ClientConn) {
+		t.Helper()
+		stop := startCompatCommand(t, binary, args...)
+		conn := newRawCompatConn(t, endpoint)
+		require.Eventually(t, func() bool {
+			callCtx, callCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer callCancel()
+			_, err := etcdserverpb.NewKVClient(conn).Range(callCtx, &etcdserverpb.RangeRequest{Key: []byte("/a3437/compact-health")})
+			return err == nil
+		}, 10*time.Second, 50*time.Millisecond)
+		return stop, conn
+	}
+
+	stop, conn := start()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	prefix := "/a3437/compacted-txn-watch-restart/"
+	_, txnRevision := seedRestartTxn(t, ctx, conn, prefix)
+	_, err := etcdserverpb.NewKVClient(conn).Compact(ctx, &etcdserverpb.CompactionRequest{
+		Revision: txnRevision, Physical: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	stop()
+	_, restartedConn := start()
+	defer restartedConn.Close()
+	assertRestartTxnCurrentAndWatch(t, ctx, restartedConn, prefix, txnRevision)
+}
+
 func newRawCompatConn(t *testing.T, endpoint string) *grpc.ClientConn {
 	t.Helper()
 	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -130,17 +214,22 @@ func assertRestartTxnSnapshotAndWatch(
 	t.Helper()
 	kv := etcdserverpb.NewKVClient(conn)
 	rangeEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
-	current, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: rangeEnd})
-	require.NoError(t, err)
-	require.Equal(t, txnRevision, current.GetHeader().GetRevision())
-	require.Equal(t, []string{prefix + "a", prefix + "z"}, restartTxnKeys(current))
-
+	assertRestartTxnCurrentAndWatch(t, ctx, conn, prefix, txnRevision)
 	historical, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: []byte(prefix), RangeEnd: rangeEnd, Revision: seedRevision,
 	})
 	require.NoError(t, err)
 	require.Equal(t, txnRevision, historical.GetHeader().GetRevision())
 	require.Equal(t, []string{prefix + "m"}, restartTxnKeys(historical))
+}
+
+func assertRestartTxnCurrentAndWatch(t *testing.T, ctx context.Context, conn *grpc.ClientConn, prefix string, txnRevision int64) {
+	t.Helper()
+	rangeEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	current, err := etcdserverpb.NewKVClient(conn).Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: rangeEnd})
+	require.NoError(t, err)
+	require.Equal(t, txnRevision, current.GetHeader().GetRevision())
+	require.Equal(t, []string{prefix + "a", prefix + "z"}, restartTxnKeys(current))
 
 	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer watchCancel()

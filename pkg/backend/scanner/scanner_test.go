@@ -229,6 +229,51 @@ func TestScannerCrossPartitionTombstone(t *testing.T) {
 	}
 }
 
+// A DELETE at exactly the compact watermark is still watchable in etcd. Keep
+// its tombstone and immediate predecessor for event/PrevKV reconstruction, but
+// reclaim both as soon as a later compaction advances past that revision.
+func TestScannerCompactRetainsBoundaryDeleteHistoryUntilNextRevision(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	tomb := []byte("tombstone")
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	key := []byte("/registry/configmaps/default/deleted")
+	const liveRevision uint64 = 100
+	const deleteRevision uint64 = 200
+	liveKey := c.EncodeObjectKey(key, liveRevision)
+	deleteKey := c.EncodeObjectKey(key, deleteRevision)
+	b := kv.BeginBatchWrite()
+	b.Put(c.EncodeObjectKey(key, 0), append(beU64(deleteRevision), 0), 0)
+	b.Put(liveKey, []byte("previous-value"), 0)
+	b.Put(deleteKey, tomb, 0)
+	require.NoError(t, b.Commit(context.Background()))
+
+	sc := NewScanner(kv, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
+	borders := [][]byte{coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd()}
+	require.NoError(t, sc.Compact(context.Background(), borders, deleteRevision))
+
+	got, err := kv.Get(context.Background(), liveKey)
+	require.NoError(t, err)
+	require.Equal(t, []byte("previous-value"), got)
+	got, err = kv.Get(context.Background(), deleteKey)
+	require.NoError(t, err)
+	require.Equal(t, tomb, got)
+
+	// Once the watermark moves beyond the DELETE, revision deleteRevision is no
+	// longer observable and both retained object versions become collectible.
+	require.NoError(t, sc.Compact(context.Background(), borders, deleteRevision+1))
+	got, err = kv.Get(context.Background(), liveKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	require.Empty(t, got)
+	got, err = kv.Get(context.Background(), deleteKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	require.Empty(t, got)
+}
+
 // TestScannerCompactBatchesLargeTombstoneBacklog covers the #66 batched GC path:
 // a backlog whose delete count spans several compactDeleteBatchSize flushes (plus
 // a final partial one) must reclaim EVERY superseded version, tombstone object,

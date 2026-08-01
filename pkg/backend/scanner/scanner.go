@@ -815,19 +815,28 @@ func (w *worker) updateSkippedRawKey(rawKey []byte, rev uint64, err error) {
 // the read path is a pure key-group iterator with no compaction branching
 // (the in-code TODO). Behaviour is identical to the inline branches it replaces:
 //   - a same-key older version is superseded by this newer one -> GC it;
-//   - a delete tombstone object -> GC it;
+//   - a delete tombstone object below the compact boundary -> GC it (at the
+//     exact boundary retain it and its predecessor for watch reconstruction);
 //   - a revision-key tombstone (curRevision==0) at/below the compact revision
 //     -> GC it; above it (a retried uncertain DELETE) -> leave it AND signal the
 //     caller to skip prev-tracking (the original `continue`).
 func (w *worker) compactRow(it storage.Iter, objectKey, value, curUserKey []byte, curRevision uint64, prevUserKey []byte, prevRevision uint64) (skipPrev bool) {
+	// etcd keeps revision == compactRevision readable/watchable. A DELETE at
+	// that exact boundary therefore still needs both its tombstone and the
+	// immediately preceding live version: the event log resolves PrevKV from
+	// the latter, while the former prevents the old value resurfacing in an
+	// exact-revision snapshot. Defer both pieces until a later compact advances
+	// past the DELETE revision, at which point the ordinary rules below reclaim
+	// them together.
+	boundaryDelete := curRevision == w.revision && bytes.Equal(value, w.tombstone)
 	// Same user key: this newer version supersedes the previous one; GC the old.
-	if bytes.Equal(curUserKey, prevUserKey) && prevRevision > 0 {
+	if bytes.Equal(curUserKey, prevUserKey) && prevRevision > 0 && !boundaryDelete {
 		prevKey := w.EncodeObjectKey(prevUserKey, prevRevision)
 		klog.V(4).InfoS("compact expired object key", "key", prevUserKey, "rev", prevRevision)
 		w.compactKey(prevKey, prevUserKey, prevRevision)
 	}
 	// A delete tombstone object.
-	if bytes.Equal(value, w.tombstone) {
+	if bytes.Equal(value, w.tombstone) && !boundaryDelete {
 		klog.V(4).InfoS("compact object key with tombstone", "key", curUserKey, "rev", curRevision)
 		w.compactKey(objectKey, curUserKey, curRevision)
 	}

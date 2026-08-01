@@ -257,9 +257,16 @@ func TestEventLogReplayCoversTxnApply(t *testing.T) {
 		require.Equal(t, proto.Event_CREATE, e.Type)
 	}
 
+	// Physically compact exactly at the mixed transaction. etcd still permits a
+	// watch starting at the compact watermark, so the DELETE's preceding value
+	// must remain available to reconstruct that boundary event after restart.
+	_, err = b.Compact(ctx, mixedRev)
+	require.NoError(t, err)
+
 	// Simulate leadership reacquisition moving the conservative watermark over
 	// the latest transaction. The public history path must use the self-contained
-	// exact-revision log and retain B,A operation order rather than key-sort A,B.
+	// exact-revision log, retain B,A operation order rather than key-sort A,B,
+	// and recover the DELETE value after physical compaction.
 	require.NoError(t, b.EnsureEventLogStart(ctx))
 	recovered, err := b.historyWatchEvents(ctx, pfx, mixedRev, mixedRev, mixedRev)
 	require.NoError(t, err)
@@ -267,6 +274,10 @@ func TestEventLogReplayCoversTxnApply(t *testing.T) {
 	require.Equal(t, []string{keyB, keyA}, []string{
 		string(recovered[0].Kv.Key), string(recovered[1].Kv.Key),
 	})
+	require.Equal(t, proto.Event_DELETE, recovered[1].Type)
+	_, deletedValue, inlined := DecodeInlineValue(recovered[1].Kv.Value)
+	require.True(t, inlined)
+	require.Equal(t, []byte("a1"), deletedValue)
 }
 
 // TestEventLogWatermarkGates pins the completeness watermark: replays at or
