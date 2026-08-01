@@ -30698,6 +30698,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的两种运行期顺序场景，均在错误操作之后放置合法候选 Put；每端先写 seed，错误后必须
   返回 nil response、relative revision gap=0 且完整前缀仅含 seed。双端继续比较精确
   code/message，防止错误顺序虽正确但 validation 被后移、产生部分写或伪 revision。
+- A3372 重构 `TestTxnIntervalDifferentialAgainstReferenceEtcd`：五个 from-key/edge-range
+  case 各用独立高字节前缀并先写 seed。真实参考 etcd 验证 `checkIntervals` 直接使用 affine
+  interval，不会在 admission 中把 `RangeEnd={0}` 归一化为开放尾区间；因此高字节 key
+  下 delete→put 与 put→delete 均合法且恰好推进一个 user revision，但执行期仍按 FromKey
+  语义：前者删除 seed 后仅留下新写 `z`，后者连 seed 与先写的 `z` 一并删除。Put 位于范围
+  前的场景删除 seed 后仅保留 `a`；`[m,m)` 空区间和 `[z,m)` 反向区间也必须 Succeeded、
+  单 revision，并分别保留 `m`、`z` 及未删除 seed。双端由此比较这个刻意反直觉的
+  admission/execution 分层及隔离后的精确 keyspace。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

@@ -18,10 +18,13 @@ import (
 )
 
 type txnIntervalOutcome struct {
-	Name      string
-	Code      string
-	Message   string
-	Succeeded bool
+	Name        string
+	Code        string
+	Message     string
+	HasResponse bool
+	Succeeded   bool
+	RevisionGap int64
+	FinalKVs    []string
 }
 
 func TestTxnIntervalDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -44,70 +47,97 @@ func runTxnIntervalScenario(t *testing.T, endpoint, instance string) []txnInterv
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
 	client := etcdserverpb.NewKVClient(conn)
-	prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
-		fmt.Sprintf("/dbaas-txn-interval/%s/%d/", instance, time.Now().UnixNano())
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cleanupCancel()
-		_, _ = client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
-			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
-		})
-	})
-
 	tests := []struct {
 		name    string
-		success []*etcdserverpb.RequestOp
+		wantGap int64
+		wantKVs []string
+		build   func(string) []*etcdserverpb.RequestOp
 	}{
 		{
-			name: "from-key-delete-before-put-in-range",
-			success: []*etcdserverpb.RequestOp{
-				deleteRequestOp([]byte(prefix+"m"), []byte{0}),
-				putRequestOp([]byte(prefix+"z"), "value"),
+			name: "from-key-delete-before-put-in-range", wantGap: 1, wantKVs: []string{"z=value"},
+			build: func(prefix string) []*etcdserverpb.RequestOp {
+				return []*etcdserverpb.RequestOp{
+					deleteRequestOp([]byte(prefix+"m"), []byte{0}),
+					putRequestOp([]byte(prefix+"z"), "value"),
+				}
 			},
 		},
 		{
-			name: "put-before-from-key-delete-in-range",
-			success: []*etcdserverpb.RequestOp{
-				putRequestOp([]byte(prefix+"z"), "value"),
-				deleteRequestOp([]byte(prefix+"m"), []byte{0}),
+			name: "put-before-from-key-delete-in-range", wantGap: 1,
+			build: func(prefix string) []*etcdserverpb.RequestOp {
+				return []*etcdserverpb.RequestOp{
+					putRequestOp([]byte(prefix+"z"), "value"),
+					deleteRequestOp([]byte(prefix+"m"), []byte{0}),
+				}
 			},
 		},
 		{
-			name: "from-key-delete-with-put-before-range",
-			success: []*etcdserverpb.RequestOp{
-				deleteRequestOp([]byte(prefix+"m"), []byte{0}),
-				putRequestOp([]byte(prefix+"a"), "value"),
+			name: "from-key-delete-with-put-before-range", wantGap: 1, wantKVs: []string{"a=value"},
+			build: func(prefix string) []*etcdserverpb.RequestOp {
+				return []*etcdserverpb.RequestOp{
+					deleteRequestOp([]byte(prefix+"m"), []byte{0}),
+					putRequestOp([]byte(prefix+"a"), "value"),
+				}
 			},
 		},
 		{
-			name: "empty-range-with-put-at-start",
-			success: []*etcdserverpb.RequestOp{
-				deleteRequestOp([]byte(prefix+"m"), []byte(prefix+"m")),
-				putRequestOp([]byte(prefix+"m"), "value"),
+			name: "empty-range-with-put-at-start", wantGap: 1, wantKVs: []string{"m=value", "seed=seed"},
+			build: func(prefix string) []*etcdserverpb.RequestOp {
+				return []*etcdserverpb.RequestOp{
+					deleteRequestOp([]byte(prefix+"m"), []byte(prefix+"m")),
+					putRequestOp([]byte(prefix+"m"), "value"),
+				}
 			},
 		},
 		{
-			name: "reversed-range-with-put-at-start",
-			success: []*etcdserverpb.RequestOp{
-				deleteRequestOp([]byte(prefix+"z"), []byte(prefix+"m")),
-				putRequestOp([]byte(prefix+"z"), "value"),
+			name: "reversed-range-with-put-at-start", wantGap: 1, wantKVs: []string{"seed=seed", "z=value"},
+			build: func(prefix string) []*etcdserverpb.RequestOp {
+				return []*etcdserverpb.RequestOp{
+					deleteRequestOp([]byte(prefix+"z"), []byte(prefix+"m")),
+					putRequestOp([]byte(prefix+"z"), "value"),
+				}
 			},
 		},
 	}
 
 	outcomes := make([]txnIntervalOutcome, 0, len(tests))
-	for _, test := range tests {
-		resp, callErr := client.Txn(ctx, &etcdserverpb.TxnRequest{Success: test.success})
+	for i, test := range tests {
+		prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
+			fmt.Sprintf("/dbaas-txn-interval/%s/%d/%02d/", instance, time.Now().UnixNano(), i)
+		seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		seed, seedErr := client.Put(seedCtx, &etcdserverpb.PutRequest{
+			Key: []byte(prefix + "seed"), Value: []byte("seed"),
+		})
+		seedCancel()
+		require.NoError(t, seedErr, test.name)
+		require.NotNil(t, seed.Header, test.name)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		resp, callErr := client.Txn(ctx, &etcdserverpb.TxnRequest{Success: test.build(prefix)})
+		cancel()
 		outcome := txnIntervalOutcome{
 			Name:    test.name,
 			Code:    status.Code(callErr).String(),
 			Message: status.Convert(callErr).Message(),
 		}
-		if resp != nil {
-			outcome.Succeeded = resp.Succeeded
+		require.NoError(t, callErr, test.name)
+		require.NotNil(t, resp, test.name)
+		require.True(t, resp.Succeeded, test.name)
+		outcome.HasResponse = true
+		outcome.Succeeded = resp.Succeeded
+		rangeCtx, rangeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		final, rangeErr := client.Range(rangeCtx, &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+		rangeCancel()
+		require.NoError(t, rangeErr, test.name)
+		require.NotNil(t, final.Header, test.name)
+		outcome.RevisionGap = final.Header.Revision - seed.Header.Revision
+		for _, kv := range final.Kvs {
+			outcome.FinalKVs = append(outcome.FinalKVs,
+				fmt.Sprintf("%s=%s", strings.TrimPrefix(string(kv.Key), prefix), kv.Value))
 		}
+		require.Equal(t, test.wantGap, outcome.RevisionGap, test.name)
+		require.Equal(t, test.wantKVs, outcome.FinalKVs, test.name)
 		outcomes = append(outcomes, outcome)
 	}
 	return outcomes
