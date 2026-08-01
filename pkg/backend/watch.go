@@ -167,6 +167,19 @@ func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRev
 	if compactRevision > 0 && fromRevision < compactRevision {
 		return nil, fmt.Errorf("cache event oldest revision is compacted at %d newer than requested revision %d", compactRevision, fromRevision)
 	}
+	// A restart commonly asks for exactly the last committed revision while the
+	// leadership hook has conservatively moved elogStart to that same value. V2
+	// event entries repeat the transaction's total event count, so this one
+	// revision can prove itself complete and preserve sub-revision order without
+	// falling through to the key-sorted object scan. If it is legacy/incomplete,
+	// retain the normal conservative fallback below.
+	if elogStart, hasEventLogStart := b.getEventLogStart(ctx); fromRevision == currentRevision && hasEventLogStart && fromRevision <= elogStart {
+		if exact, served, exactErr := b.eventLogWatchEvents(ctx, prefix, fromRevision, currentRevision); exactErr != nil {
+			return nil, exactErr
+		} else if served {
+			return exact, nil
+		}
+	}
 
 	// Collapse a reconnect herd into one shared storage scan (#30): watchers
 	// reconnecting to the same prefix at nearby revisions — HA-apiserver replicas

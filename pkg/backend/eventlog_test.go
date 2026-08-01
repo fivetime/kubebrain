@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -227,16 +228,17 @@ func TestEventLogReplayCoversTxnApply(t *testing.T) {
 	keyA := path.Join(pfx, "a")
 	keyB := path.Join(pfx, "b")
 
-	// txn create (two keys, one revision)
+	// Deliberately use reverse lexical order: replay must preserve etcd's
+	// transaction sub-revision order, not the physical event-log key order.
 	_, createRev, err := b.TxnApply(ctx, []TxnWriteOp{
-		{Key: []byte(keyA), Value: []byte("a1")},
 		{Key: []byte(keyB), Value: []byte("b1")},
+		{Key: []byte(keyA), Value: []byte("a1")},
 	}, nil)
 	require.NoError(t, err)
-	// txn update of A + delete of B, again at one revision
+	// txn update of B + delete of A, again in reverse lexical order.
 	_, mixedRev, err := b.TxnApply(ctx, []TxnWriteOp{
-		{Key: []byte(keyA), Value: []byte("a2")},
-		{Delete: true, Key: []byte(keyB)},
+		{Key: []byte(keyB), Value: []byte("b2")},
+		{Delete: true, Key: []byte(keyA)},
 	}, nil)
 	require.NoError(t, err)
 
@@ -247,20 +249,24 @@ func TestEventLogReplayCoversTxnApply(t *testing.T) {
 	require.True(t, served)
 	require.Len(t, events, 4, "every TxnApply write must replay from the log")
 
-	// The replay must agree with the full-prefix scan event-for-event.
-	scanEvents, err := b.scanHistoryEvents(ctx, pfx, startRev+1, mixedRev)
-	require.NoError(t, err)
-	require.Len(t, scanEvents, 4)
-	for i := range scanEvents {
-		require.Equal(t, scanEvents[i].Type, events[i].Type, "event %d type", i)
-		require.Equal(t, scanEvents[i].Revision, events[i].Revision, "event %d revision", i)
-		require.Equal(t, scanEvents[i].Kv.Revision, events[i].Kv.Revision, "event %d value revision", i)
-		require.Equal(t, scanEvents[i].Kv.Value, events[i].Kv.Value, "event %d value", i)
-	}
+	require.Equal(t, []string{keyB, keyA, keyB, keyA}, []string{
+		string(events[0].Kv.Key), string(events[1].Kv.Key), string(events[2].Kv.Key), string(events[3].Kv.Key),
+	})
 	for _, e := range events[:2] {
 		require.Equal(t, createRev, e.Revision, "txn writes share one revision")
 		require.Equal(t, proto.Event_CREATE, e.Type)
 	}
+
+	// Simulate leadership reacquisition moving the conservative watermark over
+	// the latest transaction. The public history path must use the self-contained
+	// exact-revision log and retain B,A operation order rather than key-sort A,B.
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	recovered, err := b.historyWatchEvents(ctx, pfx, mixedRev, mixedRev, mixedRev)
+	require.NoError(t, err)
+	require.Len(t, recovered, 2)
+	require.Equal(t, []string{keyB, keyA}, []string{
+		string(recovered[0].Kv.Key), string(recovered[1].Kv.Key),
+	})
 }
 
 // TestEventLogWatermarkGates pins the completeness watermark: replays at or
@@ -293,20 +299,31 @@ func TestEventLogWatermarkGates(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, served, "window touching the watermark must fall back")
 
-	// Cleanup advances the watermark and removes entries; the old window is
-	// refused afterwards.
+	// Cleanup through a compact revision retains the exactly-equal boundary,
+	// which Range/Watch still permit, and its ordered entry is self-contained.
 	b.cleanupEventLog(ctx, rev)
 	_, served, err = b.eventLogWatchEvents(ctx, pfx, rev, rev)
 	require.NoError(t, err)
-	require.False(t, served, "cleaned window must fall back")
+	require.True(t, served, "compact boundary events must remain replayable")
 
-	// A fresh leadership acquisition advances the watermark unconditionally:
-	// pre-acquisition windows are no longer vouched for.
+	// A fresh leadership acquisition advances the conservative watermark, but a
+	// new-format exact revision whose repeated count proves every event is present
+	// can still replay safely (needed for restart catch-up at current revision).
 	c2, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key + "2"), Value: []byte("v")})
 	require.NoError(t, err)
 	waitUntilRevisionEqualOrTimeout(b, c2.Header.Revision)
 	require.NoError(t, b.EnsureEventLogStart(ctx))
 	_, served, err = b.eventLogWatchEvents(ctx, pfx, c2.Header.Revision, c2.Header.Revision)
 	require.NoError(t, err)
-	require.False(t, served, "windows before a leadership change must fall back")
+	require.True(t, served, "a self-contained exact revision must survive the leadership watermark")
+
+	// A claimed total larger than the physical entry set cannot bypass the
+	// watermark; otherwise one lost txn event would be silently accepted.
+	corrupt := kv.BeginBatchWrite()
+	corrupt.Put(b.ks.EncodeEventLogKey(c2.Header.Revision, []byte(key+"2")),
+		coder.EncodeOrderedEventLogValue(byte(proto.Event_CREATE), 0, 0, 2), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+	_, served, err = b.eventLogWatchEvents(ctx, pfx, c2.Header.Revision, c2.Header.Revision)
+	require.NoError(t, err)
+	require.False(t, served, "an incomplete ordered revision must fall back")
 }

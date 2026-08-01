@@ -300,7 +300,7 @@ func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRe
 	if bytes.Equal(val, a.config.Tombstone) {
 		verb = byte(proto.Event_DELETE)
 	}
-	batch.Put(a.ks.EncodeEventLogKey(rev, key), coder.EncodeEventLogValue(verb, eventPrevRev), 0)
+	batch.Put(a.ks.EncodeEventLogKey(rev, key), coder.EncodeOrderedEventLogValue(verb, eventPrevRev, 0, 1), 0)
 	err = batch.Commit(ctx)
 
 	return rev, err

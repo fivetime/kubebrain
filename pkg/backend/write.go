@@ -180,7 +180,7 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 	// growing (approach A); putTxnObject is the single writer of that convention.
 	meta := EtcdMetadata{CreateRevision: revision, Version: 1, Lease: lease}
 	b.putTxnObject(batch, objectKey, key, value, meta, revision)
-	appendEventLog(b.ks, batch, revision, key, proto.Event_CREATE, 0)
+	appendEventLog(b.ks, batch, revision, key, proto.Event_CREATE, 0, 0, 1)
 	b.stageDurableRevision(batch, revision)
 	return b.commitUserBatch(ctx, batch)
 }
@@ -327,7 +327,7 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, expectedRevisionBytes, 0)
 	batch.Put(objectKey, tombStoneBytes, 0)
-	appendEventLog(b.ks, batch, newRevision, key, proto.Event_DELETE, expectedRevision)
+	appendEventLog(b.ks, batch, newRevision, key, proto.Event_DELETE, expectedRevision, 0, 1)
 	b.stageDurableRevision(batch, newRevision)
 	err = b.commitUserBatch(ctx, batch)
 
@@ -557,7 +557,7 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
 	b.putTxnObject(batch, objectKey, key, value, meta, newRevision)
-	appendEventLog(b.ks, batch, newRevision, key, proto.Event_PUT, oldRevision)
+	appendEventLog(b.ks, batch, newRevision, key, proto.Event_PUT, oldRevision, 0, 1)
 	b.stageDurableRevision(batch, newRevision)
 	return newRevision, meta, b.commitUserBatch(ctx, batch)
 }

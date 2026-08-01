@@ -343,10 +343,9 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) error {
 	if b.countIndex != nil {
 		b.countIndex.Compact(revision)
 	}
-	// The event log only needs to cover what compaction has not reclaimed:
-	// watches below the compact watermark are cancelled as compacted anyway, so
-	// entries at/below it are dead weight — drop them and advance the log's
-	// completeness watermark (#45).
+	// Watches below the compact watermark are cancelled, but exactly the compact
+	// revision remains recoverable. Drop only older event-log entries and retain
+	// the boundary transaction's durable sub-revision order (#45/A3437).
 	b.cleanupEventLog(ctx, revision)
 	return compactErr
 }

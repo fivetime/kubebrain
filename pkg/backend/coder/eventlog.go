@@ -52,12 +52,43 @@ func EncodeEventLogValue(verb byte, prevRev uint64) []byte {
 	return v
 }
 
+// EncodeOrderedEventLogValue adds the etcd transaction sub-revision and the
+// total number of events committed at the revision. Repeating total on every
+// entry makes one exact-revision log window self-validating after leadership
+// changes: replay can prove it has every event even when the conservative
+// completeness watermark moved over that revision.
+func EncodeOrderedEventLogValue(verb byte, prevRev uint64, subRevision, total uint32) []byte {
+	v := make([]byte, 17)
+	v[0] = verb
+	binary.BigEndian.PutUint64(v[1:9], prevRev)
+	binary.BigEndian.PutUint32(v[9:13], subRevision)
+	binary.BigEndian.PutUint32(v[13:17], total)
+	return v
+}
+
 // DecodeEventLogValue unpacks an entry's payload.
 func DecodeEventLogValue(v []byte) (verb byte, prevRev uint64, ok bool) {
 	if len(v) != 9 {
 		return 0, 0, false
 	}
 	return v[0], binary.BigEndian.Uint64(v[1:]), true
+}
+
+// DecodeOrderedEventLogValue accepts both the legacy 9-byte payload and the
+// ordered 17-byte payload. ordered=false means replay must retain storage order
+// and cannot use the entry to bypass a completeness watermark.
+func DecodeOrderedEventLogValue(v []byte) (verb byte, prevRev uint64, subRevision, total uint32, ordered, ok bool) {
+	if len(v) == 9 {
+		return v[0], binary.BigEndian.Uint64(v[1:9]), 0, 0, false, true
+	}
+	if len(v) != 17 {
+		return 0, 0, 0, 0, false, false
+	}
+	total = binary.BigEndian.Uint32(v[13:17])
+	if total == 0 {
+		return 0, 0, 0, 0, false, false
+	}
+	return v[0], binary.BigEndian.Uint64(v[1:9]), binary.BigEndian.Uint32(v[9:13]), total, true, true
 }
 
 // keyPrefixEnd returns the smallest key strictly greater than every key that has

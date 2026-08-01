@@ -51,3 +51,28 @@ func TestEventLogRangeEndExclusiveBoundary(t *testing.T) {
 		require.LessOrEqualf(t, bytes.Compare(end, next), 0, "rev %d: end must not exceed rev+1's start", rev)
 	}
 }
+
+func TestOrderedEventLogValueRoundTripAndLegacyCompatibility(t *testing.T) {
+	ordered := EncodeOrderedEventLogValue(2, 41, 3, 7)
+	verb, prev, sub, total, hasOrder, ok := DecodeOrderedEventLogValue(ordered)
+	require.True(t, ok)
+	require.True(t, hasOrder)
+	require.Equal(t, byte(2), verb)
+	require.Equal(t, uint64(41), prev)
+	require.Equal(t, uint32(3), sub)
+	require.Equal(t, uint32(7), total)
+
+	legacy := EncodeEventLogValue(1, 19)
+	verb, prev, sub, total, hasOrder, ok = DecodeOrderedEventLogValue(legacy)
+	require.True(t, ok)
+	require.False(t, hasOrder)
+	require.Equal(t, byte(1), verb)
+	require.Equal(t, uint64(19), prev)
+	require.Zero(t, sub)
+	require.Zero(t, total)
+
+	_, _, _, _, _, ok = DecodeOrderedEventLogValue([]byte{1, 2, 3})
+	require.False(t, ok)
+	_, _, _, _, _, ok = DecodeOrderedEventLogValue(EncodeOrderedEventLogValue(1, 2, 0, 0))
+	require.False(t, ok, "zero total cannot prove an exact revision complete")
+}

@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"sort"
 	"sync"
 	"time"
 
@@ -29,11 +30,13 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
-// Event-log write side (#45). Each committed write appends one 9-byte entry
+// Event-log write side (#45). Each committed write appends one compact entry
 // per key IN THE SAME storage transaction: [1B verb][8B prevRevision], keyed
 // by coder.EncodeEventLogKey(revision, userKey). Values are reconstructed at
 // replay time from the object keys the entry points to, so the log stays tiny
-// (~70B/entry) instead of doubling the write volume.
+// instead of doubling the write volume. New entries additionally carry two
+// uint32 fields (sub-revision,total) to preserve and self-validate txn order;
+// legacy 9-byte values remain readable.
 
 const (
 	// eventLogReplayConcurrency bounds the parallel object-key point reads that
@@ -43,9 +46,19 @@ const (
 	eventLogCleanupBatch = 512
 )
 
+type eventLogPending struct {
+	verb    proto.Event_EventType
+	rev     uint64
+	prevRev uint64
+	userKey []byte
+	sub     uint32
+	total   uint32
+	ordered bool
+}
+
 // appendEventLog stages this write's event-log entry onto its own batch.
-func appendEventLog(ks *coder.Keyspace, batch storage.BatchWrite, revision uint64, userKey []byte, verb proto.Event_EventType, prevRev uint64) {
-	batch.Put(ks.EncodeEventLogKey(revision, userKey), coder.EncodeEventLogValue(byte(verb), prevRev), 0)
+func appendEventLog(ks *coder.Keyspace, batch storage.BatchWrite, revision uint64, userKey []byte, verb proto.Event_EventType, prevRev uint64, subRevision, total uint32) {
+	batch.Put(ks.EncodeEventLogKey(revision, userKey), coder.EncodeOrderedEventLogValue(byte(verb), prevRev, subRevision, total), 0)
 }
 
 // eventLogStart caches the log's completeness watermark: entries are complete
@@ -171,7 +184,11 @@ func (b *backend) advanceEventLogStartCache(rev uint64) {
 // full-prefix object scan.
 func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRevision, toRevision uint64) (events []*proto.Event, served bool, err error) {
 	start, ok := b.getEventLogStart(ctx)
-	if !ok || fromRevision <= start {
+	touchesUntrustedWindow := !ok || fromRevision <= start
+	// A multi-revision window crossing the conservative watermark remains
+	// untrusted. One exact revision can prove itself complete using the ordered
+	// payload's repeated event count, so defer that decision until after reading.
+	if touchesUntrustedWindow && fromRevision != toRevision {
 		return nil, false, nil
 	}
 	ts := time.Now()
@@ -181,14 +198,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	}
 	defer func() { _ = iter.Close() }()
 
-	type pending struct {
-		verb    proto.Event_EventType
-		rev     uint64
-		prevRev uint64
-		userKey []byte
-	}
-	var entries []pending
-	prefixBytes := []byte(prefix)
+	var entries []eventLogPending
 	for {
 		if err := iter.Next(ctx); err != nil {
 			if err == io.EOF {
@@ -206,24 +216,46 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 			klog.ErrorS(derr, "event log entry key not decodable; falling back to scan", "from", fromRevision, "to", toRevision)
 			return nil, false, nil
 		}
-		if !hasPrefixBytes(userKey, prefixBytes) {
-			continue
-		}
-		verbByte, prevRev, vok := coder.DecodeEventLogValue(iter.Val())
+		verbByte, prevRev, subRevision, total, ordered, vok := coder.DecodeOrderedEventLogValue(iter.Val())
 		if !vok {
 			b.metricCli.EmitCounter("watch.event_log.malformed", 1)
 			klog.ErrorS(nil, "event log entry value not decodable; falling back to scan", "rev", rev, "from", fromRevision, "to", toRevision)
 			return nil, false, nil
 		}
-		entries = append(entries, pending{verb: proto.Event_EventType(verbByte), rev: rev, prevRev: prevRev,
-			userKey: append([]byte(nil), userKey...)})
+		entries = append(entries, eventLogPending{verb: proto.Event_EventType(verbByte), rev: rev, prevRev: prevRev,
+			userKey: append([]byte(nil), userKey...), sub: subRevision, total: total, ordered: ordered})
 	}
+
+	// V2 entries recover etcd's transaction operation order rather than the
+	// physical (revision,userKey) key order. Stable fallback preserves the legacy
+	// behavior for old 9-byte records while new revisions sort by sub-revision.
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].rev != entries[j].rev {
+			return entries[i].rev < entries[j].rev
+		}
+		if entries[i].ordered && entries[j].ordered {
+			return entries[i].sub < entries[j].sub
+		}
+		return false
+	})
+	selfContained := exactRevisionEntriesComplete(entries, fromRevision, toRevision)
+	if touchesUntrustedWindow && !selfContained {
+		return nil, false, nil
+	}
+	prefixBytes := []byte(prefix)
+	filtered := entries[:0]
+	for i := range entries {
+		if hasPrefixBytes(entries[i].userKey, prefixBytes) {
+			filtered = append(filtered, entries[i])
+		}
+	}
+	entries = filtered
 
 	// The value revision an event carries: PUT/CREATE carry their own version;
 	// DELETE carries the deleted (previous) version, which compaction retains as
 	// the key's newest version at/below the watermark, so it is always readable
 	// for a post-watermark window.
-	valueRevOf := func(e pending) uint64 {
+	valueRevOf := func(e eventLogPending) uint64 {
 		if e.verb == proto.Event_DELETE {
 			return e.prevRev
 		}
@@ -267,7 +299,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	// deletes) — if the watermark has meanwhile crossed the window, this iter may
 	// have read a half-deleted log. Re-check against STORAGE, not the cache: the
 	// deleting compactor may be another process (a deposed leader's last sweep).
-	if start, ok := b.refreshEventLogStart(ctx); !ok || fromRevision <= start {
+	if start, ok := b.refreshEventLogStart(ctx); (!ok || fromRevision <= start) && !selfContained {
 		b.metricCli.EmitCounter("watch.event_log.incomplete", 1)
 		return nil, false, nil
 	}
@@ -276,6 +308,22 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	klog.V(2).InfoS("watch history served from event log", "prefix", prefix,
 		"from", fromRevision, "to", toRevision, "events", len(events), "latency", time.Since(ts))
 	return events, true, nil
+}
+
+func exactRevisionEntriesComplete(entries []eventLogPending, fromRevision, toRevision uint64) bool {
+	if fromRevision != toRevision || len(entries) == 0 {
+		return false
+	}
+	total := entries[0].total
+	if !entries[0].ordered || total == 0 || uint64(total) != uint64(len(entries)) {
+		return false
+	}
+	for i := range entries {
+		if !entries[i].ordered || entries[i].rev != fromRevision || entries[i].total != total || entries[i].sub != uint32(i) {
+			return false
+		}
+	}
+	return true
 }
 
 // loadEventValues fetches the object value for each (already-deduplicated) key.
@@ -379,18 +427,25 @@ func (b *backend) eventLogTouchedKeys(ctx context.Context, fromRev, toRev uint64
 	return keys, true
 }
 
-// cleanupEventLog removes log entries at or below revision and advances the
+// cleanupEventLog removes log entries strictly below revision and advances the
 // completeness watermark, keeping the log bounded by the compaction horizon.
 // Runs on the compactor goroutine after the physical scan.
 func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
+	if revision == 0 {
+		return
+	}
+	// Range/Watch/HashKV treat exactly compactRevision as recoverable and reject
+	// only older revisions. Keep that boundary's events (including transaction
+	// sub-order); entries <= revision-1 are the actual dead history.
+	cleanupThrough := revision - 1
 	start, ok := b.getEventLogStart(ctx)
-	if ok && start >= revision {
+	if ok && start >= cleanupThrough {
 		return
 	}
 	// Advance the watermark FIRST: a replay racing this cleanup must already
 	// consider the window incomplete rather than read a half-deleted log.
 	// CAS-max so a deposed leader's late sweep can never move it backwards.
-	if err := b.advanceEventLogStartStorage(ctx, revision); err != nil {
+	if err := b.advanceEventLogStartStorage(ctx, cleanupThrough); err != nil {
 		klog.ErrorS(err, "event log watermark advance failed", "revision", revision)
 		return
 	}
@@ -402,7 +457,7 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 		// storage's BatchWrite may hold engine resources (memkv holds its global
 		// lock) from Begin to Commit, so it must never be opened while an iter
 		// is still in progress nor abandoned without a Commit.
-		iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(0), b.ks.EventLogRangeEnd(revision), 0, uint64(eventLogCleanupBatch))
+		iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(0), b.ks.EventLogRangeEnd(cleanupThrough), 0, uint64(eventLogCleanupBatch))
 		if err != nil {
 			klog.ErrorS(err, "event log cleanup iter failed", "revision", revision)
 			return

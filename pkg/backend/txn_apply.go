@@ -461,6 +461,8 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	}
 	newRevLive := uint64ToBytes(newRevision)
 	newRevDeleted := append(uint64ToBytes(newRevision), 0)
+	eventTotal := uint32(txnEffectiveUserWriteCount(preps))
+	var eventSubRevision uint32
 	for i := range preps {
 		p := &preps[i]
 		if !p.effective {
@@ -489,7 +491,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		case p.op.Delete:
 			batch.CAS(revisionKey, newRevDeleted, p.rvBytes, 0)
 			batch.Put(objectKey, tombStoneBytes, 0)
-			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_DELETE, p.curRev)
+			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_DELETE, p.curRev, eventSubRevision, eventTotal)
 		case p.create:
 			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
 			if p.rvBytes == nil {
@@ -499,7 +501,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
 			}
 			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
-			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_CREATE, 0)
+			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_CREATE, 0, eventSubRevision, eventTotal)
 		default: // update
 			if p.meta.CreateRevision == 0 {
 				p.meta.CreateRevision = p.curRev
@@ -513,8 +515,9 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			p.meta.Lease = p.op.Lease
 			batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
 			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
-			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_PUT, p.curRev)
+			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_PUT, p.curRev, eventSubRevision, eventTotal)
 		}
+		eventSubRevision++
 	}
 	if txnHasEffectiveUserWrite(preps) {
 		b.stageDurableRevision(batch, newRevision)
@@ -612,12 +615,17 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 }
 
 func txnHasEffectiveUserWrite(preps []txnPrep) bool {
+	return txnEffectiveUserWriteCount(preps) != 0
+}
+
+func txnEffectiveUserWriteCount(preps []txnPrep) int {
+	count := 0
 	for i := range preps {
 		if preps[i].effective && !preps[i].op.Internal {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep, revision uint64) {
