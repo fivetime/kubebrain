@@ -410,7 +410,10 @@ func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 		resp, callErr := maintenance.Alarm(ctx, request)
 		require.NoError(t, callErr)
 		require.NotNil(t, resp.Header)
-		require.GreaterOrEqual(t, resp.Header.Revision, put.Header.Revision)
+		require.Equal(t, put.Header.Revision, resp.Header.Revision)
+		require.NotZero(t, resp.Header.ClusterId)
+		require.NotZero(t, resp.Header.MemberId)
+		require.Positive(t, resp.Header.RaftTerm)
 		require.Empty(t, resp.Alarms)
 	}
 

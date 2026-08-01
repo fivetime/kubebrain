@@ -16,11 +16,13 @@ import (
 )
 
 type alarmGetOutcome struct {
-	Name                    string
-	Code                    string
-	Message                 string
-	AlarmCount              int
-	HeaderAtCurrentRevision bool
+	Name                   string
+	Code                   string
+	Message                string
+	AlarmCount             int
+	HeaderRevisionDelta    int64
+	HeaderIdentitySet      bool
+	HeaderRaftTermPositive bool
 }
 
 func TestAlarmGetDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -31,11 +33,11 @@ func TestAlarmGetDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	referenceOutcomes := runAlarmGetScenario(t, reference)
 	require.Equal(t, []alarmGetOutcome{
-		{Name: "all", Code: "OK", HeaderAtCurrentRevision: true},
-		{Name: "nospace", Code: "OK", HeaderAtCurrentRevision: true},
-		{Name: "corrupt", Code: "OK", HeaderAtCurrentRevision: true},
-		{Name: "unknown-alarm", Code: "OK", HeaderAtCurrentRevision: true},
-		{Name: "max-member", Code: "OK", HeaderAtCurrentRevision: true},
+		{Name: "all", Code: "OK", HeaderIdentitySet: true, HeaderRaftTermPositive: true},
+		{Name: "nospace", Code: "OK", HeaderIdentitySet: true, HeaderRaftTermPositive: true},
+		{Name: "corrupt", Code: "OK", HeaderIdentitySet: true, HeaderRaftTermPositive: true},
+		{Name: "unknown-alarm", Code: "OK", HeaderIdentitySet: true, HeaderRaftTermPositive: true},
+		{Name: "max-member", Code: "OK", HeaderIdentitySet: true, HeaderRaftTermPositive: true},
 	}, referenceOutcomes)
 	require.Equal(t, referenceOutcomes, runAlarmGetScenario(t, compatEndpoint()))
 }
@@ -88,8 +90,11 @@ func runAlarmGetScenario(t *testing.T, endpoint string) []alarmGetOutcome {
 			Message: status.Convert(callErr).Message(),
 		}
 		if resp != nil {
+			require.NotNil(t, resp.Header)
 			outcome.AlarmCount = len(resp.Alarms)
-			outcome.HeaderAtCurrentRevision = resp.Header.Revision >= putRevision
+			outcome.HeaderRevisionDelta = resp.Header.Revision - putRevision
+			outcome.HeaderIdentitySet = resp.Header.ClusterId != 0 && resp.Header.MemberId != 0
+			outcome.HeaderRaftTermPositive = resp.Header.RaftTerm > 0
 		}
 		outcomes = append(outcomes, outcome)
 	}

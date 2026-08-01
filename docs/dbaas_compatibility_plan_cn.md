@@ -30934,6 +30934,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   响应都必须带非零 ClusterID/MemberID、正 RaftTerm，且 revision 与 seed 完全相同，证明 alarm
   raft mutation 不占用 MVCC revision。KubeBrain bufconn 回归在同一完整状态转换中逐响应固定
   这些 Header 不变量，避免只验证最终 payload 而漏掉 maintenance wrapper 的客户端外观。
+- A3419 延续同一 upstream maintenance wrapper，把独立 `Alarm(GET)` 差分从
+  `header.revision >= seed` 收紧为五组精确 Header oracle：NONE、NOSPACE、CORRUPT、未知
+  AlarmType 与 `MemberID=math.MaxUint64` 过滤都返回 OK 和空集合，ClusterID/MemberID 非零、
+  RaftTerm 为正，且无并发 KV 写时 revision 必须等于 seed。KubeBrain raw gRPC 回归逐请求固定
+  相同不变量，防止 read barrier 或 header interceptor 重构伪造更晚 revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
