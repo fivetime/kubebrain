@@ -882,15 +882,16 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				compactRevision, compactErr := w.backend.GetCompactRevisionFresh(ctx)
 				if compactErr != nil {
 					w.metricCli.EmitCounter("watch.prev_kv.compact_revision.err", 1)
-					klog.ErrorS(compactErr, "failed to resolve compact revision for watch PrevKV", "watcher", w.id, "watch", id)
-				} else {
-					// Upstream resolves requested PrevKV with a Range at
-					// ModRevision-1 while assembling each response. Once compaction
-					// reaches the event revision that historical read is below the
-					// watermark, so PrevKV must be nil even though KubeBrain retains
-					// the internal value needed to reconstruct the DELETE event itself.
-					events = withoutCompactedWatchPrevKvs(events, compactRevision)
+					klog.ErrorS(compactErr, "failed to resolve compact revision for watch PrevKV; omitting previous values", "watcher", w.id, "watch", id)
 				}
+				// Upstream resolves requested PrevKV with a Range at
+				// ModRevision-1 while assembling each response. Once compaction
+				// reaches the event revision that historical read is below the
+				// watermark, so PrevKV must be nil even though KubeBrain retains
+				// the internal value needed to reconstruct the DELETE event itself.
+				// A failed Range likewise leaves PrevKV unset; fail closed here
+				// because the unknown watermark may already cover these values.
+				events = watchPrevKVVisibility(events, compactRevision, compactErr)
 			}
 			batchRevision := result.Revision
 			if batchRevision == 0 {
@@ -1143,6 +1144,13 @@ func watchEventsHavePrevKVs(events []*mvccpb.Event) bool {
 		}
 	}
 	return false
+}
+
+func watchPrevKVVisibility(events []*mvccpb.Event, compactRevision uint64, compactErr error) []*mvccpb.Event {
+	if compactErr != nil {
+		return withoutWatchPrevKvs(events)
+	}
+	return withoutCompactedWatchPrevKvs(events, compactRevision)
 }
 
 // withoutCompactedWatchPrevKvs mirrors upstream's lazy Range at

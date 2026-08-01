@@ -337,6 +337,20 @@ func TestWithoutCompactedWatchPrevKvsDoesNotMutateSharedEvents(t *testing.T) {
 	require.Same(t, events[0], unchanged[0])
 }
 
+func TestWatchPrevKVVisibilityFailsClosedWhenCompactRevisionUnavailable(t *testing.T) {
+	events := []*mvccpb.Event{
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: 11}, PrevKv: &mvccpb.KeyValue{Value: []byte("put-prev")}},
+		{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{ModRevision: 12}, PrevKv: &mvccpb.KeyValue{Value: []byte("delete-prev")}},
+	}
+
+	filtered := watchPrevKVVisibility(events, 0, errors.New("compact metadata unavailable"))
+	require.Len(t, filtered, 2)
+	require.Nil(t, filtered[0].PrevKv)
+	require.Nil(t, filtered[1].PrevKv)
+	require.NotNil(t, events[0].PrevKv, "shared source event must remain intact")
+	require.NotNil(t, events[1].PrevKv, "shared source event must remain intact")
+}
+
 func TestWatchMixedPrevKVStreamsKeepEventsIsolated(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
