@@ -81,6 +81,9 @@ type RPCServer struct {
 	metricCli metrics.Metrics
 	peers     service.PeerService
 
+	alarmMetricMu     sync.Mutex
+	knownAlarmMetrics map[alarmMetricKey]struct{}
+
 	// Advertised client endpoint shape for MemberList (see SetAdvertiseClientInfo):
 	// the election identity is host:PEER-port and says nothing about the client
 	// port or TLS, so ClientURLs built from it alone are wrong on both counts.
@@ -170,11 +173,12 @@ type leaseState struct {
 // New returns the etcd rpc server
 func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService) *RPCServer {
 	server := &RPCServer{
-		backend:         NewBackendShim(backend, metricCli),
-		metricCli:       metricCli,
-		peers:           peers,
-		maxTxnOps:       defaultMaxTxnOps,
-		maxRequestBytes: defaultMaxRequestBytes,
+		backend:           NewBackendShim(backend, metricCli),
+		metricCli:         metricCli,
+		peers:             peers,
+		knownAlarmMetrics: make(map[alarmMetricKey]struct{}),
+		maxTxnOps:         defaultMaxTxnOps,
+		maxRequestBytes:   defaultMaxRequestBytes,
 	}
 	server.auth = newAuthManager(server.backend)
 	server.tokens = newAuthTokenManager(server.backend)

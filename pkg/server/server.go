@@ -89,6 +89,7 @@ type server struct {
 	cancel           context.CancelFunc
 	campaignDone     chan struct{}
 	quotaMetricsDone chan struct{}
+	alarmMetricsDone chan struct{}
 	closeOnce        sync.Once
 	closeErr         error
 }
@@ -103,6 +104,9 @@ func (s *server) Close() error {
 		}
 		if s.quotaMetricsDone != nil {
 			<-s.quotaMetricsDone
+		}
+		if s.alarmMetricsDone != nil {
+			<-s.alarmMetricsDone
 		}
 		if s.etcdServer != nil {
 			s.etcdServer.Close()
@@ -126,6 +130,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		cancel:           cancel,
 		campaignDone:     make(chan struct{}),
 		quotaMetricsDone: make(chan struct{}),
+		alarmMetricsDone: make(chan struct{}),
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
@@ -165,11 +170,44 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		defer close(s.quotaMetricsDone)
 		s.runQuotaMetricsRefresh(runCtx, quotaMetricsRefreshInterval, quotaMetricsRefreshTimeout)
 	}()
+	go func() {
+		defer close(s.alarmMetricsDone)
+		s.runAlarmMetricsRefresh(runCtx, alarmMetricsRefreshInterval, alarmMetricsRefreshTimeout)
+	}()
 	return s
 }
 
 const quotaMetricsRefreshInterval = 15 * time.Second
 const quotaMetricsRefreshTimeout = 5 * time.Second
+
+const alarmMetricsRefreshInterval = time.Second
+const alarmMetricsRefreshTimeout = 5 * time.Second
+
+func (s *server) refreshAlarmMetrics(ctx context.Context) {
+	if err := s.etcdServer.RefreshAlarmMetrics(ctx); err != nil {
+		s.metricCli.EmitCounter("alarm.refresh.err", 1)
+		klog.ErrorS(err, "refresh alarm metrics from shared storage failed")
+	}
+}
+
+func (s *server) runAlarmMetricsRefresh(ctx context.Context, interval, timeout time.Duration) {
+	refresh := func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		s.refreshAlarmMetrics(refreshCtx)
+	}
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
+}
 
 func (s *server) refreshQuotaMetrics(ctx context.Context) {
 	_, _, _, err := s.backend.QuotaStatus(ctx)

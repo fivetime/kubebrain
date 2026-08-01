@@ -44,6 +44,80 @@ func TestUnknownAlarmMetricDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runUnknownAlarmMetricScenario(t, compatEndpoint(), candidateMetrics))
 }
 
+func TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas(t *testing.T) {
+	grpcEndpoints := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_ALARM_METRIC_ENDPOINTS"))
+	metricsEndpoints := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_ALARM_METRICS_ENDPOINTS"))
+	if len(grpcEndpoints) == 0 || len(metricsEndpoints) == 0 {
+		t.Skip("set KUBEBRAIN_ALARM_METRIC_ENDPOINTS and KUBEBRAIN_ALARM_METRICS_ENDPOINTS")
+	}
+	require.Equal(t, len(grpcEndpoints), len(metricsEndpoints))
+	require.GreaterOrEqual(t, len(grpcEndpoints), 2)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	clients := make([]etcdserverpb.MaintenanceClient, 0, len(grpcEndpoints))
+	for _, endpoint := range grpcEndpoints {
+		conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, conn.Close()) })
+		clients = append(clients, etcdserverpb.NewMaintenanceClient(conn))
+	}
+
+	const (
+		memberID = uint64(0xa342701)
+		alarm    = etcdserverpb.AlarmType(127)
+	)
+	disarm := func(client etcdserverpb.MaintenanceClient, callCtx context.Context) {
+		_, _ = client.Alarm(callCtx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: memberID, Alarm: alarm,
+		})
+	}
+	disarm(clients[0], ctx)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		disarm(clients[0], cleanupCtx)
+	})
+	baselines := make([]float64, len(metricsEndpoints))
+	for i, endpoint := range metricsEndpoints {
+		baselines[i] = readAlarmMetric(t, ctx, endpoint, memberID, alarm)
+	}
+
+	_, err := clients[0].Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: memberID, Alarm: alarm,
+	})
+	require.NoError(t, err)
+	for i, endpoint := range metricsEndpoints {
+		require.Eventually(t, func() bool {
+			return readAlarmMetric(t, ctx, endpoint, memberID, alarm)-baselines[i] == 1
+		}, 5*time.Second, 100*time.Millisecond, "replica %d did not observe activation", i)
+	}
+
+	_, err = clients[len(clients)-1].Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: memberID, Alarm: alarm,
+	})
+	require.NoError(t, err)
+	for i, endpoint := range metricsEndpoints {
+		require.Eventually(t, func() bool {
+			return readAlarmMetric(t, ctx, endpoint, memberID, alarm)-baselines[i] == 0
+		}, 5*time.Second, 100*time.Millisecond, "replica %d did not observe disarm", i)
+	}
+}
+
+func splitNonEmptyCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
 func runUnknownAlarmMetricScenario(t *testing.T, endpoint, metricsEndpoint string) []alarmMetricOutcome {
 	t.Helper()
 	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))

@@ -31028,6 +31028,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分别负载到不同进程，验证把 `kubebrain-0` 的 3379/8080 同时转发到宿主，官方双端差分
   20 轮 3.807 秒、race 5 轮 2.666 秒通过。最终该类型 series 为 0、alarm list 为空，
   KubeBrain 3/3 Ready/0 restart、PD/TiKV 3+3 Ready，endpoint health 11.287ms。
+- A3427 审计 A3426 的多副本可见性：upstream Alarm mutation 经 Raft 在每个成员 apply，
+  因而所有成员本地 `etcd_debugging_server_alarms` 同步变化；KubeBrain 虽共享 TiKV alarm
+  metadata，但 A3426 只更新处理 RPC 的进程内 Gauge。新增三组直连 client/info endpoint 门禁，
+  固定由副本 0 Activate、等待全部副本指标为 1，再由最后一个副本 Deactivate、等待全部归零。
+  A3426 生产镜像稳定红灯：副本 1 在 5 秒内未观察到激活。每个 KubeBrain 进程现每秒以 5 秒
+  超时读取 TiKV 中 NOSPACE、CORRUPT 和通用 alarm 集合，只对本进程未知的新增标签 Set(1)、
+  已知但已删除的标签 Set(0)；本机 mutation 的 upstream Inc/Dec 仍在同一互斥状态下执行，
+  所以不会把重复 Activate 的 debugging 计数周期性重置。同步器随 server context 启停，读取
+  失败只增加 `alarm.refresh.err` 并保留上次指标快照。确定性单测模拟其他副本直接修改共享
+  metadata，固定 refresh 前保持旧值、refresh 后 0→1→0 收敛；指标单测 50 轮、server/etcd
+  完整套件、相关 race 5 轮、根模块 `go test ./...` 和双方 vet 已通过。对应生产 TiKV 镜像与
+  真实三副本绿灯仍待验证。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
