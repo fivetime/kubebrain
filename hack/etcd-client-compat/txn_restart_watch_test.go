@@ -181,6 +181,91 @@ func TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart(t *testing.T) {
 	assertRestartTxnCurrentAndWatch(t, ctx, restartedConn, prefix, txnRevision, false)
 }
 
+// TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements covers the
+// other compact boundary: the previous versions sit exactly AT the watermark,
+// so a later transaction's Range(ModRevision-1) must still recover them.
+func TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements(t *testing.T) {
+	endpoint := os.Getenv("KUBEBRAIN_IDLE_RESTART_ENDPOINT")
+	namespace := os.Getenv("KUBEBRAIN_IDLE_RESTART_NAMESPACE")
+	pods := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_IDLE_RESTART_PODS"))
+	if endpoint == "" || namespace == "" || len(pods) == 0 {
+		t.Skip("set KUBEBRAIN_IDLE_RESTART_ENDPOINT, KUBEBRAIN_IDLE_RESTART_NAMESPACE, and KUBEBRAIN_IDLE_RESTART_PODS")
+	}
+	require.Len(t, pods, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	prefix := testPrefix(t) + "/"
+	conn := newRawCompatConn(t, endpoint)
+	seedRevision, txnRevision := seedRestartTxn(t, ctx, conn, prefix)
+	_, err := etcdserverpb.NewKVClient(conn).Compact(ctx, &etcdserverpb.CompactionRequest{
+		Revision: seedRevision, Physical: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		cleanupConn, cleanupErr := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if cleanupErr != nil {
+			return
+		}
+		defer cleanupConn.Close()
+		_, _ = etcdserverpb.NewKVClient(cleanupConn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	replaceAllCompatPods(t, ctx, os.Getenv("KUBEBRAIN_IDLE_RESTART_CONTEXT"), namespace, pods)
+	afterConn := newRawCompatConn(t, endpoint)
+	defer afterConn.Close()
+	assertRestartTxnSnapshotAndWatch(t, ctx, afterConn, prefix, seedRevision, txnRevision)
+}
+
+func TestReferenceEtcdPriorCompactedTxnPrevKVRecoversAfterRestart(t *testing.T) {
+	binary := os.Getenv("REFERENCE_ETCD_BINARY")
+	if binary == "" {
+		t.Skip("set REFERENCE_ETCD_BINARY to run the restart oracle")
+	}
+	const endpoint = "127.0.0.1:42379"
+	args := []string{
+		"--name", "prior-compacted-txn-prevkv-restart-oracle",
+		"--data-dir", t.TempDir(),
+		"--listen-client-urls", "http://" + endpoint,
+		"--advertise-client-urls", "http://" + endpoint,
+		"--listen-peer-urls", "http://127.0.0.1:42380",
+		"--initial-advertise-peer-urls", "http://127.0.0.1:42380",
+		"--initial-cluster", "prior-compacted-txn-prevkv-restart-oracle=http://127.0.0.1:42380",
+	}
+	start := func() (func(), *grpc.ClientConn) {
+		t.Helper()
+		stop := startCompatCommand(t, binary, args...)
+		conn := newRawCompatConn(t, endpoint)
+		kv := etcdserverpb.NewKVClient(conn)
+		require.Eventually(t, func() bool {
+			callCtx, callCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer callCancel()
+			_, err := kv.Range(callCtx, &etcdserverpb.RangeRequest{Key: []byte("/a3440/health")})
+			return err == nil
+		}, 10*time.Second, 50*time.Millisecond)
+		return stop, conn
+	}
+
+	stop, conn := start()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	prefix := "/a3440/prior-compacted-txn-prevkv-restart/"
+	seedRevision, txnRevision := seedRestartTxn(t, ctx, conn, prefix)
+	_, err := etcdserverpb.NewKVClient(conn).Compact(ctx, &etcdserverpb.CompactionRequest{
+		Revision: seedRevision, Physical: true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+	stop()
+	_, restartedConn := start()
+	defer restartedConn.Close()
+	assertRestartTxnSnapshotAndWatch(t, ctx, restartedConn, prefix, seedRevision, txnRevision)
+}
+
 func newRawCompatConn(t *testing.T, endpoint string) *grpc.ClientConn {
 	t.Helper()
 	conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
