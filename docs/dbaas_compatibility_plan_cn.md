@@ -30984,7 +30984,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   真实 TiKV 镜像稳定复现 active 三组错误返回 200 的红灯。顶层 HTTP server 现通过 etcd RPC
   层只读回调读取同一 TiKV generic alarm metadata，在既有 NOSPACE、CORRUPT 检查之后应用精确
   exclude；元数据读取失败 fail closed 为 `ALARM ERROR:<error>`。HTTP 单测 50 轮、server/etcd
-  完整 package 与 race 5 轮通过；对应 commit 的新 TiKV 镜像和 live 绿灯仍待验证。
+  完整 package 与 race 5 轮、根模块 `go test ./...` 及双方 compat `go vet` 均通过。commit
+  `a8d817d1de0643bb08fc814b67bfe050d5fb29b9` 的生产 TiKV 镜像
+  `kubebrain:a3423-generic-alarm-health`（image ID
+  `sha256:90afa50cd56e274fe6a88f8b074139af55374b536413b455d4430c1cfa76668a`）完成既有独立
+  3 PD/3 TiKV 集群的 KubeBrain 3/3 滚动更新后，未知类型 health 与既有 NOSPACE health
+  官方双端差分各 20 轮、共 4.319 秒通过；最终 KubeBrain 3/3 Ready/0 restart、PD/TiKV
+  3+3 Ready、alarm list 为空，endpoint health 15.585ms。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
