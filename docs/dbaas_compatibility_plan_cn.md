@@ -30880,6 +30880,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `+2`，随后 TTL 为 `-1` 且 List 不再包含 lease；TTL=0 被提升到默认最小值 2。后续 leased/
   plain 两键删除在 `+5` 返回有序完整 PrevKV 并清空附着，显式 lease ID revoke 后可用 TTL=301
   重新授予。
+- A3409 对照 `/root/etcd/server/etcdserver/txn/put.go` 与 public clientv3 错误映射，将主 Put
+  差分从 revision/PrevKV 子集升级为完整 oracle：create、lease rebind、IgnoreValue 换 lease、
+  IgnoreLease 换 value 依次推进 `+1..+4`，每次 PrevKV 和最终 KV 都保留正确 create/mod/version/
+  lease。客户端缺失 lease/key 错误暴露 `Unknown`；raw gRPC 同时缺 key/lease 时先返回
+  `NotFound: requested lease not found`，空 key、IgnoreValue 带 value、IgnoreLease 带 lease
+  分别返回 `InvalidArgument` 的精确消息。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

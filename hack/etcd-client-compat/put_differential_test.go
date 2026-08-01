@@ -11,6 +11,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
 )
 
 type putDifferentialResult struct {
@@ -31,12 +32,6 @@ type putDifferentialResult struct {
 	LeaseWithIgnore     authErrorOutcome
 }
 
-type putRevisionOracle struct {
-	Revisions []int64
-	Prev      []*normalizedKV
-	Current   normalizedKV
-}
-
 func TestPutDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -44,33 +39,32 @@ func TestPutDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	etcd := runPutDifferentialScenario(t, reference, "etcd")
-	wantRevision := putRevisionOracle{
-		Revisions: []int64{1, 2, 3, 4},
-		Prev: []*normalizedKV{
-			nil,
-			{Key: "key", Value: "one", CreateRev: 1, ModRev: 1, Version: 1, HasLease: true},
-			{Key: "key", Value: "two", CreateRev: 1, ModRev: 2, Version: 2, HasLease: true},
-			{Key: "key", Value: "two", CreateRev: 1, ModRev: 3, Version: 3, HasLease: true},
+	want := putDifferentialResult{
+		CreateRevision: 1,
+		RebindRevision: 2,
+		RebindPrev: &normalizedKV{
+			Key: "key", Value: "one", CreateRev: 1, ModRev: 1, Version: 1, HasLease: true,
+		},
+		IgnoreValueRevision: 3,
+		IgnoreValuePrev: &normalizedKV{
+			Key: "key", Value: "two", CreateRev: 1, ModRev: 2, Version: 2, HasLease: true,
+		},
+		IgnoreLeaseRevision: 4,
+		IgnoreLeasePrev: &normalizedKV{
+			Key: "key", Value: "two", CreateRev: 1, ModRev: 3, Version: 3, HasLease: true,
 		},
 		Current: normalizedKV{
 			Key: "key", Value: "three", CreateRev: 1, ModRev: 4, Version: 4, HasLease: true,
 		},
+		MissingLease:       authErrorOutcome{Code: codes.Unknown, Message: "etcdserver: requested lease not found"},
+		MissingIgnoreValue: authErrorOutcome{Code: codes.Unknown, Message: "etcdserver: key not found"},
+		MissingKeyAndLease: authErrorOutcome{Code: codes.NotFound, Message: "etcdserver: requested lease not found"},
+		EmptyKey:           authErrorOutcome{Code: codes.InvalidArgument, Message: "etcdserver: key is not provided"},
+		ValueWithIgnore:    authErrorOutcome{Code: codes.InvalidArgument, Message: "etcdserver: value is provided"},
+		LeaseWithIgnore:    authErrorOutcome{Code: codes.InvalidArgument, Message: "etcdserver: lease is provided"},
 	}
-	require.Equal(t, wantRevision, putRevisionOutcome(etcd))
+	require.Equal(t, want, etcd)
 	require.Equal(t, etcd, runPutDifferentialScenario(t, compatEndpoint(), "kubebrain"))
-}
-
-func putRevisionOutcome(outcome putDifferentialResult) putRevisionOracle {
-	return putRevisionOracle{
-		Revisions: []int64{
-			outcome.CreateRevision, outcome.RebindRevision,
-			outcome.IgnoreValueRevision, outcome.IgnoreLeaseRevision,
-		},
-		Prev: []*normalizedKV{
-			outcome.CreatePrev, outcome.RebindPrev, outcome.IgnoreValuePrev, outcome.IgnoreLeasePrev,
-		},
-		Current: outcome.Current,
-	}
 }
 
 func runPutDifferentialScenario(t *testing.T, endpoint, instance string) putDifferentialResult {
