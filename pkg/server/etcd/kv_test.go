@@ -2556,14 +2556,19 @@ func TestDeleteRangeBoundaryHighPrefixMatchesEtcd(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			prefix := string(bytes.Repeat([]byte{0xff}, 64)) + "/registry/delete-boundary/" + tc.name + "/"
 			end := prefixEnd([]byte(prefix))
-			var lastPutRevision int64
+			var putRevisions []int64
 			for _, suffix := range []string{"a", "b", "c"} {
 				put, err := server.Put(ctx, &etcdserverpb.PutRequest{
 					Key: []byte(prefix + suffix), Value: []byte("value-" + suffix),
 				})
 				require.NoError(t, err)
-				lastPutRevision = put.Header.Revision
+				putRevisions = append(putRevisions, put.Header.Revision)
 			}
+			require.Equal(t, []int64{1, 1}, []int64{
+				putRevisions[1] - putRevisions[0],
+				putRevisions[2] - putRevisions[1],
+			})
+			lastPutRevision := putRevisions[2]
 
 			deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
 				Key: []byte(prefix + tc.start), RangeEnd: tc.rangeEnd(prefix), PrevKv: true,

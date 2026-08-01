@@ -30797,6 +30797,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   header 精确保持 seed revision，再次 progress 才返回 stream-wide WatchId=-1、相同 revision
   的空响应。该门禁补齐既有 clientv3 零 watcher 用例只验证调用不报错、未观察 wire 帧与流
   可复用性的覆盖缺口。
+- A3393 将高位二进制前缀 DeleteRange 边界差分从 revision 是否前进收紧为精确链：三次
+  顺序 seed Put 必须各推进 `+1`；from-key 一次原子删除 b/c 仅推进 `+1`，equal/reverse
+  空区间删除均推进 `0`，随后 Range header 与 DeleteRange header 完全一致。本地 direct
+  回归同步固定相同 seed 链，防止多键删除错误按 key 消耗 revision，或 no-op 删除制造空洞。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

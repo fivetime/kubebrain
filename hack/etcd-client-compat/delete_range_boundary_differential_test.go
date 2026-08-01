@@ -20,7 +20,8 @@ import (
 type deleteRangeBoundaryOutcome struct {
 	Name                    string
 	Deleted                 int64
-	AdvancedRevision        bool
+	PutRevisionGaps         []int64
+	DeleteRevisionGap       int64
 	HeaderAtCurrentRevision bool
 	PrevKVs                 []deleteRangeBoundaryKV
 	Remaining               []deleteRangeBoundaryKV
@@ -42,7 +43,8 @@ func TestDeleteRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{
 			Name:                    "from-key",
 			Deleted:                 2,
-			AdvancedRevision:        true,
+			PutRevisionGaps:         []int64{1, 1},
+			DeleteRevisionGap:       1,
 			HeaderAtCurrentRevision: true,
 			PrevKVs: []deleteRangeBoundaryKV{
 				{Key: "b", Value: "value-b", DeletedAtHeader: true},
@@ -52,6 +54,7 @@ func TestDeleteRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		},
 		{
 			Name:                    "equal-empty",
+			PutRevisionGaps:         []int64{1, 1},
 			HeaderAtCurrentRevision: true,
 			PrevKVs:                 []deleteRangeBoundaryKV{},
 			Remaining: []deleteRangeBoundaryKV{
@@ -62,6 +65,7 @@ func TestDeleteRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		},
 		{
 			Name:                    "reverse-empty",
+			PutRevisionGaps:         []int64{1, 1},
 			HeaderAtCurrentRevision: true,
 			PrevKVs:                 []deleteRangeBoundaryKV{},
 			Remaining: []deleteRangeBoundaryKV{
@@ -99,13 +103,17 @@ func runDeleteRangeBoundaryScenario(t *testing.T, endpoint, instance string) []d
 		prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
 			fmt.Sprintf("/dbaas-delete-boundary/%s/%d/%s/", instance, time.Now().UnixNano(), test.name)
 		rangeEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
-		var lastPutRevision int64
+		var putRevisions []int64
 		for _, suffix := range []string{"a", "b", "c"} {
 			put, putErr := client.Put(ctx, &etcdserverpb.PutRequest{
 				Key: []byte(prefix + suffix), Value: []byte("value-" + suffix),
 			})
 			require.NoError(t, putErr)
-			lastPutRevision = put.Header.Revision
+			putRevisions = append(putRevisions, put.Header.Revision)
+		}
+		putRevisionGaps := []int64{
+			putRevisions[1] - putRevisions[0],
+			putRevisions[2] - putRevisions[1],
 		}
 
 		deleted, deleteErr := client.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{
@@ -119,7 +127,8 @@ func runDeleteRangeBoundaryScenario(t *testing.T, endpoint, instance string) []d
 		outcomes = append(outcomes, deleteRangeBoundaryOutcome{
 			Name:                    test.name,
 			Deleted:                 deleted.Deleted,
-			AdvancedRevision:        deleted.Header.Revision > lastPutRevision,
+			PutRevisionGaps:         putRevisionGaps,
+			DeleteRevisionGap:       deleted.Header.Revision - putRevisions[2],
 			HeaderAtCurrentRevision: remaining.Header.Revision == deleted.Header.Revision,
 			PrevKVs:                 normalizeDeleteRangeBoundaryKVs(deleted.PrevKvs, prefix, deleted.Header.Revision),
 			Remaining:               normalizeDeleteRangeBoundaryKVs(remaining.Kvs, prefix, 0),
