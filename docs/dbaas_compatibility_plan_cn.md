@@ -30815,6 +30815,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   边界历史 Range header、以及最终 latest Range header 均必须等于第三次 Put revision，
   三个相对 current gap 全为 `0`。官方差分、本地 direct 与 official clientv3 回归同步
   固定该链，防止 logical compact watermark 被误当作响应 revision 或返回陈旧 header。
+- A3397 将主 Lease 双端差分补上显式用户 revision oracle：Grant=`0`、leased Put=`+1`、
+  TTL/KeepAlive/List 均保持 `+1`、带一个 attached key 的 Revoke=`+2`、revoked TTL 保持
+  `+2`，后续两次 Put 与一次双 key Delete 依次到 `+3/+4/+5`。本地 official clientv3
+  回归同步要求 KeepAlive 不推进 Put revision，多 attached key Revoke 只推进 `+1`，且
+  后续 Range/TTL header 等于 Revoke header，防止 lease meta 操作污染用户 MVCC revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

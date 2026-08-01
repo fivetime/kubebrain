@@ -373,18 +373,20 @@ func TestClientLeaseKeepAliveOnceReturnsLiveLeaseMetadata(t *testing.T) {
 	grant, err := client.Grant(ctx, 10)
 	require.NoError(t, err)
 	key := fmt.Sprintf("/a2122/lease-keepalive-once/%d/key", time.Now().UnixNano())
-	_, err = client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	put, err := client.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
 	require.NoError(t, err)
 
 	renewed, err := client.KeepAliveOnce(ctx, grant.ID)
 	require.NoError(t, err)
 	requireClientLeaseHeaderWellFormed(t, renewed.ResponseHeader)
+	require.Equal(t, put.Header.Revision, renewed.ResponseHeader.Revision)
 	require.Equal(t, grant.ID, renewed.ID)
 	require.Positive(t, renewed.TTL)
 	require.LessOrEqual(t, renewed.TTL, grant.TTL)
 
 	got, err := client.Get(ctx, key)
 	require.NoError(t, err)
+	require.Equal(t, put.Header.Revision, got.Header.Revision)
 	require.Len(t, got.Kvs, 1)
 	require.Equal(t, int64(grant.ID), got.Kvs[0].Lease)
 }
@@ -1772,7 +1774,7 @@ func TestClientLeaseRevokeDeletesAttachedKeysAtOneRevision(t *testing.T) {
 	)
 	revoke, err := client.Revoke(ctx, grant.ID)
 	require.NoError(t, err)
-	require.Greater(t, revoke.Header.Revision, lastPut.Header.Revision)
+	require.Equal(t, lastPut.Header.Revision+1, revoke.Header.Revision)
 
 	events := make([]*clientv3.Event, 0, 2)
 	for len(events) < 2 {
@@ -1799,9 +1801,11 @@ func TestClientLeaseRevokeDeletesAttachedKeysAtOneRevision(t *testing.T) {
 
 	got, err := client.Get(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
+	require.Equal(t, revoke.Header.Revision, got.Header.Revision)
 	require.Empty(t, got.Kvs)
 	ttl, err := client.TimeToLive(ctx, grant.ID, clientv3.WithAttachedKeys())
 	require.NoError(t, err)
+	require.Equal(t, revoke.Header.Revision, ttl.ResponseHeader.Revision)
 	require.Equal(t, int64(-1), ttl.TTL)
 	require.Empty(t, ttl.Keys)
 }
