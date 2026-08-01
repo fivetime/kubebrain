@@ -30712,6 +30712,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `seed+1` revision；目标 KV 的 create/mod revision 同为该 revision、version=1，最终
   keyspace 精确为 branch value 与 seed。该门禁同时固定 enum fallback 分支和单 revision
   metadata，防止分支结果正确但提交外观偏离 etcd。
+- A3374 将 generated HTTP gateway 的 Lock/Election error 差分扩展为数据面零副作用证据：
+  每端先经 `/v3/kv/put` 写唯一 seed，missing lease Lock/Campaign、empty-key Unlock、
+  missing leader Proclaim/Resign 与 leader-not-found 六种失败后都经 `/v3/kv/range` 回读；
+  除 HTTP status/code/message 与参考 etcd 一致外，还必须保持 header revision gap=0、
+  seed value 完整。该门禁防止 gateway/concurrency 错误路径意外写 KV 或泄漏用户 revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
