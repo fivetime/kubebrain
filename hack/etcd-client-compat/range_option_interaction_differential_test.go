@@ -32,10 +32,29 @@ func TestRangeOptionInteractionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runRangeOptionInteractionScenario(t, reference, "etcd"),
-		runRangeOptionInteractionScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceOutcome := runRangeOptionInteractionScenario(t, reference, "etcd")
+	out := func(name string, count int64, more bool, keys, values []string, versions []int64, atTxn []bool) rangeOptionOutcome {
+		return rangeOptionOutcome{Name: name, Count: count, More: more, Keys: keys, Values: values, Versions: versions, AtTxnRevision: atTxn}
+	}
+	want := []rangeOptionOutcome{
+		out("filter-before-limit", 4, false, []string{"b"}, []string{"y"}, []int64{2}, []bool{false}),
+		out("filtered-count-only-ignores-limit", 4, false, nil, nil, nil, nil),
+		out("contradictory-filters", 4, false, nil, nil, nil, nil),
+		out("value-default-ascending", 4, true, []string{"c", "b"}, []string{"a", "y"}, []int64{1, 2}, []bool{false, false}),
+		out("create-none-limit-lookahead", 4, true, []string{"c", "b"}, []string{"a", "y"}, []int64{1, 2}, []bool{false, false}),
+		out("mod-none-limit-lookahead", 4, true, []string{"c", "a"}, []string{"a", "z"}, []int64{1, 1}, []bool{false, false}),
+		out("keys-only-sorts-by-original-value", 4, true, []string{"a", "b"}, []string{"", ""}, []int64{1, 2}, []bool{false, false}),
+		out("version-descending", 4, false, []string{"b", "a", "c", "d"}, []string{"y", "z", "a", "n"}, []int64{2, 1, 1, 1}, []bool{false, false, false, false}),
+		out("key-max-int-limit", 4, false, []string{"a", "b", "c", "d"}, []string{"z", "y", "a", "n"}, []int64{1, 2, 1, 1}, []bool{false, false, false, false}),
+		out("value-none-max-int-limit", 4, false, []string{"c", "d", "b", "a"}, []string{"a", "n", "y", "z"}, []int64{1, 1, 2, 1}, []bool{false, false, false, false}),
+		out("txn-staged-put-filter-before-limit", 5, false, []string{"e"}, []string{"0"}, []int64{1}, []bool{true}),
+		out("txn-staged-update-count-only", 5, false, nil, nil, nil, nil),
+		out("txn-staged-delete-sort-limit", 4, true, []string{"b", "d"}, []string{"updated", "n"}, []int64{3, 1}, []bool{false, false}),
+		out("txn-value-none-limit-lookahead", 4, true, []string{"c", "d"}, []string{"a", "n"}, []int64{1, 1}, []bool{false, false}),
+		out("txn-value-none-max-int-limit", 4, false, []string{"e", "c", "d", "b"}, []string{"0", "a", "n", "updated"}, []int64{1, 1, 1, 3}, []bool{false, false, false, false}),
+	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runRangeOptionInteractionScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runRangeOptionInteractionScenario(t *testing.T, endpoint, instance string) []rangeOptionOutcome {

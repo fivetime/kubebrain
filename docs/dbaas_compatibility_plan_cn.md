@@ -30914,6 +30914,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   先于范围内 put 时 z 保留，put 先于 from-key delete 时最终为空，范围前 a 保留；空 `[m,m)`
   和反向 `[z,m)` delete 都是 no-op。五个 raw gRPC Txn 均返回 OK、非 nil response、Succeeded，
   且整个选中分支无论包含删写多少操作都只推进一次 revision。
+- A3415 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 option 装配顺序，将 10 个 unary
+  加 5 个连续 Txn Range 组合从双端互比升级为完整 oracle：Count 始终保留过滤前 range 总数，
+  filter 后再 limit/More，CountOnly 忽略 limit；VALUE/CREATE/MOD 的 SortOrder=NONE 在有限 limit
+  时先按 key 读取 `limit+1` lookahead 子集、再在子集按 target 升序，MaxInt64 才覆盖全范围且不
+  溢出。KeysOnly 先按原 value 排序再清值；事务 staged put/update/delete 立即参与同分支过滤/
+  排序，且后续 case 精确继承前序已提交 metadata、version 和 live key 集。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
