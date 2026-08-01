@@ -31098,6 +31098,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A3427 生产镜像对三个 Pod 直连普通 3 轮 10.544 秒、race 5 轮 18.889 秒通过；compat 定向
   compile 与 `go vet` 通过，探针 key 清理为空，三个 Pod Ready/0 restart，endpoint health
   13.459ms。本轮未发现实现差异，只增加 compact 瞬态与最终收敛门禁，无需重建镜像。
+- A3433 将 A3432 的在线收敛扩展到所有无状态数据面进程同时 replacement 的恢复边界。破坏性
+  门禁写入三个版本、compact 到第二个 revision 并记录收敛后的精确 HashKV 快照，随后一次删除
+  `kubebrain-0/1/2`，等待三个 Pod 全部获得新 UID 且 Ready，再通过每个新 Pod 自身的
+  `127.0.0.1:3379/v3/maintenance/hashkv` gateway 重读替换前 HashRevision；hash、HashRevision
+  和 CompactRevision 必须逐字段等于基线，证明数据和 compact watermark 来自独立 TiKV，
+  不依赖任何旧进程内存或本地卷。首版测试错误要求 replacement 后 latest HashRevision 不变；
+  KubeBrain 新进程会从 PD/TSO 获取更高 revision 水位，因此恢复验证改为官方 HashByRev 所支持的
+  精确历史快照，而不是把合法的单调 revision 跳跃误判为数据丢失。真实全量 replacement 一次
+  12.799 秒通过，三个新 Pod Ready/0 restart，3 PD/3 TiKV 保持 Running，探针 key 清理为空，
+  endpoint health 15.045ms；定向 compile、`go vet` 和 diff check 通过。本轮只增加 TiKV 恢复
+  门禁和运行证据，未修改服务二进制，继续使用 A3427 镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
