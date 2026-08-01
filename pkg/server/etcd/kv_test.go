@@ -5741,12 +5741,17 @@ func TestTxnFromKeyExecutionHighPrefixMatchesEtcd(t *testing.T) {
 			t.Cleanup(func() {
 				_, _ = server.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{Key: prefix, RangeEnd: end})
 			})
+			var seedRevisions []int64
 			for _, suffix := range []string{"a", "b", "c"} {
-				_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+				seed, err := server.Put(ctx, &etcdserverpb.PutRequest{
 					Key: append(append([]byte{}, prefix...), suffix...), Value: []byte("seed-" + suffix),
 				})
 				require.NoError(t, err)
+				seedRevisions = append(seedRevisions, seed.Header.Revision)
 			}
+			require.Equal(t, []int64{1, 1}, []int64{
+				seedRevisions[1] - seedRevisions[0], seedRevisions[2] - seedRevisions[1],
+			})
 
 			put := putOp(append(append([]byte{}, prefix...), 'd'), "txn-d")
 			del := deleteOp(append(append([]byte{}, prefix...), 'b'))
@@ -5759,6 +5764,7 @@ func TestTxnFromKeyExecutionHighPrefixMatchesEtcd(t *testing.T) {
 			resp, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: ops})
 			require.NoError(t, err)
 			require.True(t, resp.Succeeded)
+			require.Equal(t, seedRevisions[2]+1, resp.Header.Revision)
 			require.Len(t, resp.Responses, 3)
 			deleted := resp.Responses[tc.deleteOpIndex].GetResponseDeleteRange()
 			require.NotNil(t, deleted)
@@ -5773,7 +5779,7 @@ func TestTxnFromKeyExecutionHighPrefixMatchesEtcd(t *testing.T) {
 
 			final, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: prefix, RangeEnd: end})
 			require.NoError(t, err)
-			require.GreaterOrEqual(t, final.Header.Revision, resp.Header.Revision)
+			require.Equal(t, resp.Header.Revision, final.Header.Revision)
 			requireTxnFromKeySuffixes(t, prefix, final.Kvs, tc.wantFinal, resp.Header.Revision, tc.wantTxnKeyIn)
 		})
 	}

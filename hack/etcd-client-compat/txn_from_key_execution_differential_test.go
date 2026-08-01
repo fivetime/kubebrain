@@ -19,12 +19,14 @@ import (
 
 type txnFromKeyExecutionOutcome struct {
 	Name                string
+	SeedRevisionGaps    []int64
+	TxnRevisionGap      int64
 	Deleted             int64
 	DeleteAtTxnRevision bool
 	DeletePrev          []txnFromKeyKV
 	RangeAtTxnRevision  bool
 	TxnRange            []txnFromKeyKV
-	FinalAtOrAfterTxn   bool
+	FinalHeaderGap      int64
 	Final               []txnFromKeyKV
 }
 
@@ -45,6 +47,8 @@ func TestTxnFromKeyExecutionDifferentialAgainstReferenceEtcd(t *testing.T) {
 	want := []txnFromKeyExecutionOutcome{
 		{
 			Name:                "put-then-delete",
+			SeedRevisionGaps:    []int64{1, 1},
+			TxnRevisionGap:      1,
 			Deleted:             3,
 			DeleteAtTxnRevision: true,
 			DeletePrev: []txnFromKeyKV{
@@ -54,11 +58,12 @@ func TestTxnFromKeyExecutionDifferentialAgainstReferenceEtcd(t *testing.T) {
 			},
 			RangeAtTxnRevision: true,
 			TxnRange:           []txnFromKeyKV{{Key: "a", Value: "seed-a", Version: 1}},
-			FinalAtOrAfterTxn:  true,
 			Final:              []txnFromKeyKV{{Key: "a", Value: "seed-a", Version: 1}},
 		},
 		{
 			Name:                "delete-then-put",
+			SeedRevisionGaps:    []int64{1, 1},
+			TxnRevisionGap:      1,
 			Deleted:             2,
 			DeleteAtTxnRevision: true,
 			DeletePrev: []txnFromKeyKV{
@@ -70,7 +75,6 @@ func TestTxnFromKeyExecutionDifferentialAgainstReferenceEtcd(t *testing.T) {
 				{Key: "a", Value: "seed-a", Version: 1},
 				{Key: "d", Value: "txn-d", Version: 1, CreatedInTxn: true, ModifiedInTxn: true},
 			},
-			FinalAtOrAfterTxn: true,
 			Final: []txnFromKeyKV{
 				{Key: "a", Value: "seed-a", Version: 1},
 				{Key: "d", Value: "txn-d", Version: 1, CreatedInTxn: true, ModifiedInTxn: true},
@@ -104,11 +108,13 @@ func runTxnFromKeyExecutionScenario(t *testing.T, endpoint, instance string) []t
 		prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
 			fmt.Sprintf("/dbaas-txn-from-key/%s/%d/%s/", instance, time.Now().UnixNano(), test.name)
 		rangeEnd := []byte(clientv3.GetPrefixRangeEnd(prefix))
+		var seedRevisions []int64
 		for _, suffix := range []string{"a", "b", "c"} {
-			_, putErr := client.Put(ctx, &etcdserverpb.PutRequest{
+			seed, putErr := client.Put(ctx, &etcdserverpb.PutRequest{
 				Key: []byte(prefix + suffix), Value: []byte("seed-" + suffix),
 			})
 			require.NoError(t, putErr)
+			seedRevisions = append(seedRevisions, seed.Header.Revision)
 		}
 
 		put := putRequestOp([]byte(prefix+"d"), "txn-d")
@@ -136,12 +142,14 @@ func runTxnFromKeyExecutionScenario(t *testing.T, endpoint, instance string) []t
 
 		outcomes = append(outcomes, txnFromKeyExecutionOutcome{
 			Name:                test.name,
+			SeedRevisionGaps:    []int64{seedRevisions[1] - seedRevisions[0], seedRevisions[2] - seedRevisions[1]},
+			TxnRevisionGap:      txn.Header.Revision - seedRevisions[2],
 			Deleted:             deleted.Deleted,
 			DeleteAtTxnRevision: deleted.Header.Revision == txn.Header.Revision,
 			DeletePrev:          normalizeTxnFromKeyKVs(deleted.PrevKvs, prefix, txn.Header.Revision),
 			RangeAtTxnRevision:  txnRange.Header.Revision == txn.Header.Revision,
 			TxnRange:            normalizeTxnFromKeyKVs(txnRange.Kvs, prefix, txn.Header.Revision),
-			FinalAtOrAfterTxn:   final.Header.Revision >= txn.Header.Revision,
+			FinalHeaderGap:      final.Header.Revision - txn.Header.Revision,
 			Final:               normalizeTxnFromKeyKVs(final.Kvs, prefix, txn.Header.Revision),
 		})
 		_, cleanupErr := client.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{

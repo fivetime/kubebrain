@@ -30801,6 +30801,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   顺序 seed Put 必须各推进 `+1`；from-key 一次原子删除 b/c 仅推进 `+1`，equal/reverse
   空区间删除均推进 `0`，随后 Range header 与 DeleteRange header 完全一致。本地 direct
   回归同步固定相同 seed 链，防止多键删除错误按 key 消耗 revision，或 no-op 删除制造空洞。
+- A3394 将高位二进制前缀 from-key Txn 执行差分升级为精确 revision 树：三次 seed Put
+  各推进 `+1`；无论 Put→Delete 还是 Delete→Put，含 from-key 多键删除、Put 与 Range 的
+  整笔 Txn 仅推进 `+1`，Delete/Range 子响应均等于 Txn header，紧随其后的最终 Range
+  推进 `0`。本地 direct 回归同步固定相同数值链，防止 staged 操作顺序或多键删除把单个
+  事务拆成多个可观察 revision。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
