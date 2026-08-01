@@ -164,10 +164,16 @@ func TestHistoricalLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runHistoricalLeaseScenario(t, reference, "etcd"),
-		runHistoricalLeaseScenario(t, compatEndpoint(), "kubebrain"),
-	)
+	referenceOutcome := runHistoricalLeaseScenario(t, reference, "etcd")
+	want := historicalLeaseResult{
+		UnleasedRevision: 1,
+		LeasedRevision:   2,
+		PlainAgainRev:    3,
+		OldLeased:        true,
+		CurrentValue:     "plain-again",
+	}
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runHistoricalLeaseScenario(t, compatEndpoint(), "kubebrain"))
 }
 
 func runHistoricalLeaseScenario(t *testing.T, endpoint, instance string) historicalLeaseResult {
