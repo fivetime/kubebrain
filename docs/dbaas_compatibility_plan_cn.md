@@ -31209,6 +31209,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A3436 lease expiry revision 回归分别 8.94/10.40 秒通过。三个 KubeBrain Pod 使用同一 runtime
   digest、Ready/0 restart，3 PD/3 TiKV 均 Running，最近日志无 panic/fatal、compact failure、
   event-log malformed 或 fresh compact watermark 读取错误。
+- A3439 将 A3437/A3438 的事务恢复门禁从 CREATE/DELETE/CREATE 扩展为同一 revision 内的
+  UPDATE/DELETE/CREATE：先用一个 seed Txn 原子创建 `m=seed-m,z=seed-z`，再按反字典序执行
+  `Put(z=updated-z), Delete(m), Put(a)`。完整服务层 replacement 后，当前快照必须精确为
+  `a=a,z=updated-z`，seed 历史快照必须仍为 `m=seed-m,z=seed-z`，
+  catch-up Watch 必须保持 `z,m,a` 和 `PUT,DELETE,PUT` 的 sub-revision 顺序。未压缩场景要求
+  UPDATE/DELETE 分别携带 `seed-z/seed-m` PrevKV、CREATE 无 PrevKV；physical compact 到事务
+  revision 后三者 PrevKV 都必须为 nil。增强后的官方普通/compact oracle 各 3 轮、共六次同
+  data-dir restart 13.647 秒通过，race 各 1 轮合计 5.549 秒通过。当前 A3438 生产镜像对独立
+  TiKV/PD 连续 3 轮普通与 compact 门禁、共六次三副本全 replacement 55.301 秒通过，证明更新
+  事件的 current value replay、旧值恢复和 compact 隐藏均与 DELETE 使用一致的边界，并且
+  A3438 没有为了清除 compacted PrevKV 误伤未压缩恢复。compat `go vet` 通过；最终三个
+  KubeBrain Pod Ready/0 restart、3 PD/3 TiKV Running，最近日志无 panic/fatal、compact failure、
+  event-log malformed 或 compact watermark 读取错误。本轮未发现实现差异，只提交增强门禁，
+  继续使用 `kubebrain:a3438-compact-watch-prevkv` 镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
