@@ -31643,6 +31643,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主
   3 PD/3 TiKV 均 Running；endpoint health 可提交 proposal、版本端点保持 3.7.0、`/readyz=ok`，
   最近日志无 durable revision、read barrier、count-index 或 panic/fatal 异常。
+- A3465 沿 A3464 审计公开 maintenance header 时发现 Status 的同响应内部不一致：旧实现先从
+  cold local cache 捕获 `revision=0`，随后 `QuotaStatus` 才通过 durable-aware backend path 恢复
+  user watermark；因此 `Header.Revision` 已是 2，而此前捕获的 synthetic `RaftIndex` 与
+  `RaftAppliedIndex` 仍为 0，第二次 Status 才正常。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Status`，官方返回持久恢复后的 committed/
+  applied indexes；现有 official-client envelope 也要求二者为正、applied 不超 committed。确定性
+  shim 固定 local=0、durable=2，并让 QuotaStatus 在旧采样之后模拟恢复；修复前稳定 RED，实际得到
+  header=2/raft=0。commit `bf3cbc92b65ab4fc59360eeb43a8bcb3cca808cd` 让 Status 在保持
+  member-local、无需 leader barrier 的前提下先调用 durable-aware `safeBackendRevision`，再构造
+  quota、header 与 synthetic Raft envelope；冷路径失败 fail-closed，热路径不增加 TiKV 读取。
+  目标语义连续 20 轮 GREEN，目标 race 10 轮、完整 etcd server 152.385 秒、compat 编译与两边
+  vet 均通过。生产镜像 `kubebrain:a3465-cold-status-revision`（本地 image ID
+  `sha256:6ae15cb4d3b7404720836c48d00b8b1358d14f084574d16a066d557f1c92bc21`，kind runtime
+  digest `sha256:e55bc30d697e0c7b7fb408d9a108f36d14ab436ee1dbeb5618fe1acd719069c0`，build time
+  `2026-08-03T15:56:10Z`）部署后再次为三个 Pod 建立临时 direct NodePort，并在替换
+  `kubebrain-2` 期间提交 8 个双键 Txn；replacement Ready 后的第一条 etcd RPC 即 Status，未靠
+  Range 预热便返回 header/raft indexes 均不低于最新成功写，随后 latest serializable Get、只读
+  Txn 与三端 ordering monotonicity 全部通过，耗时 8.12 秒，临时 Service 全部删除。Maintenance
+  Status envelope 官方双端差分连续 20 轮 0.326 秒通过。最终 StatefulSet desired/current/ready/
+  updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；
+  endpoint health 可提交 proposal、版本端点保持 3.7.0、`/readyz=ok`，最近日志无 durable
+  revision、Status、read barrier、count-index 或 panic/fatal 异常。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
