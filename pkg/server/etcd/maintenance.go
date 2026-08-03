@@ -422,6 +422,9 @@ func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLe
 	if member == nil || member.GetIsLearner() {
 		return nil, rpctypes.ErrGRPCBadLeaderTransferee
 	}
+	if leaderID := s.memberIDForPeerIdentity(s.peers.GetLeaderInfo()); leaderID != 0 && request.GetTargetID() == leaderID {
+		return &etcdserverpb.MoveLeaderResponse{}, nil
+	}
 	return nil, status.Error(codes.Unimplemented, moveLeaderUnsupportedMessage)
 }
 

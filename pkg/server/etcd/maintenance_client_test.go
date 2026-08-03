@@ -240,6 +240,25 @@ func TestDowngradeValidateUsesReadBarrierBeforeTargetValidation(t *testing.T) {
 	require.Equal(t, 2, barrierCalls)
 }
 
+func TestMoveLeaderToCurrentLeaderIsIdempotent(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{leaderInfo: "leader.test:3380"}
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 7, Name: "leader", PeerURLs: []string{"http://leader.test:3380"}},
+		{ID: 8, Name: "other", PeerURLs: []string{"http://other.test:3380"}},
+	})
+
+	response, err := server.MoveLeader(context.Background(), &etcdserverpb.MoveLeaderRequest{TargetID: 7})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Nil(t, response.GetHeader())
+
+	response, err = server.MoveLeader(context.Background(), &etcdserverpb.MoveLeaderRequest{TargetID: 8})
+	require.Nil(t, response)
+	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
+}
+
 func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
