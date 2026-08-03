@@ -414,6 +414,21 @@ func TestAuthPermissionOpenEndedAndGap(t *testing.T) {
 	require.False(t, caller.permits([]byte("n"), []byte{0}, authpb.WRITE))
 }
 
+func TestAuthUnknownPermissionTypeGrantsNoAccess(t *testing.T) {
+	caller := &authCaller{username: "alice", revision: 1, snapshot: &authSnapshot{
+		Config: authConfig{Enabled: true, Revision: 1},
+		Users:  map[string]*authpb.User{"alice": {Name: []byte("alice"), Roles: []string{"unknown"}}},
+		Roles: map[string]*authpb.Role{"unknown": {Name: []byte("unknown"), KeyPermission: []*authpb.Permission{
+			{PermType: authpb.Permission_Type(99), Key: []byte("/unknown/"), RangeEnd: []byte("/unknown0")},
+		}}},
+	}}
+
+	require.False(t, caller.permits([]byte("/unknown/key"), nil, authpb.READ))
+	require.False(t, caller.permits([]byte("/unknown/key"), nil, authpb.WRITE))
+	requireAuthAuthorizerError(t, caller.require([]byte("/unknown/key"), nil, authpb.READ), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	requireAuthAuthorizerError(t, caller.require([]byte("/unknown/key"), nil, authpb.WRITE), rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+}
+
 func requireAuthAuthorizerError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
 	require.ErrorIs(t, err, want)
