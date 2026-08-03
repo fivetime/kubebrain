@@ -285,30 +285,52 @@ func (s *RPCServer) MemberAdd(ctx context.Context, request *etcdserverpb.MemberA
 }
 
 // MemberRemove removes an existing member from the cluster.
-func (s *RPCServer) MemberRemove(ctx context.Context, _ *etcdserverpb.MemberRemoveRequest) (*etcdserverpb.MemberRemoveResponse, error) {
+func (s *RPCServer) MemberRemove(ctx context.Context, request *etcdserverpb.MemberRemoveRequest) (*etcdserverpb.MemberRemoveResponse, error) {
 	s.metricCli.EmitCounter("member.remove", 1)
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
+	}
+	if s.memberByID(request.GetID()) == nil {
+		return nil, rpctypes.ErrGRPCMemberNotFound
 	}
 	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
 // MemberUpdate updates the peer addresses of the member.
-func (s *RPCServer) MemberUpdate(ctx context.Context, _ *etcdserverpb.MemberUpdateRequest) (*etcdserverpb.MemberUpdateResponse, error) {
+func (s *RPCServer) MemberUpdate(ctx context.Context, request *etcdserverpb.MemberUpdateRequest) (*etcdserverpb.MemberUpdateResponse, error) {
 	s.metricCli.EmitCounter("member.update", 1)
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
+	}
+	if s.memberByID(request.GetID()) == nil {
+		return nil, rpctypes.ErrGRPCMemberNotFound
 	}
 	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
 // MemberPromote promotes a member from raft learner (non-voting) to raft voting member.
-func (s *RPCServer) MemberPromote(ctx context.Context, _ *etcdserverpb.MemberPromoteRequest) (*etcdserverpb.MemberPromoteResponse, error) {
+func (s *RPCServer) MemberPromote(ctx context.Context, request *etcdserverpb.MemberPromoteRequest) (*etcdserverpb.MemberPromoteResponse, error) {
 	s.metricCli.EmitCounter("member.promote", 1)
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
+	member := s.memberByID(request.GetID())
+	if member == nil {
+		return nil, rpctypes.ErrGRPCMemberNotFound
+	}
+	if !member.GetIsLearner() {
+		return nil, rpctypes.ErrGRPCMemberNotLearner
+	}
 	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
+}
+
+func (s *RPCServer) memberByID(id uint64) *etcdserverpb.Member {
+	for _, member := range s.membersSnapshot() {
+		if member.GetID() == id {
+			return member
+		}
+	}
+	return nil
 }
 
 func memberURLFromAddress(address string) string {

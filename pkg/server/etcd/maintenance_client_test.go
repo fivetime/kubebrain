@@ -104,6 +104,9 @@ func TestRawGRPCSnapshotReturnsPlatformUnsupported(t *testing.T) {
 func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{{
+		ID: 1, Name: "learner", PeerURLs: []string{"http://127.0.0.1:2380"}, IsLearner: true,
+	}})
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterClusterServer(grpcServer, server)
@@ -182,6 +185,9 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{{
+		ID: 1, Name: "learner", PeerURLs: []string{"http://127.0.0.1:2380"}, IsLearner: true,
+	}})
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterClusterServer(grpcServer, server)

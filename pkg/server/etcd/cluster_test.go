@@ -517,15 +517,18 @@ func TestParseInitialClusterRejectsUnsafePeerURLCharacters(t *testing.T) {
 func TestMemberMutationIsUnsupported(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{{
+		ID: 1, Name: "learner", PeerURLs: []string{"http://127.0.0.1:2380"}, IsLearner: true,
+	}})
 
 	ctx := context.Background()
 	_, err := server.MemberAdd(ctx, validMemberAddRequest())
 	requireClusterPlatformReplacementError(t, err)
-	_, err = server.MemberRemove(ctx, &etcdserverpb.MemberRemoveRequest{})
+	_, err = server.MemberRemove(ctx, &etcdserverpb.MemberRemoveRequest{ID: 1})
 	requireClusterPlatformReplacementError(t, err)
-	_, err = server.MemberUpdate(ctx, &etcdserverpb.MemberUpdateRequest{})
+	_, err = server.MemberUpdate(ctx, &etcdserverpb.MemberUpdateRequest{ID: 1})
 	requireClusterPlatformReplacementError(t, err)
-	_, err = server.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{})
+	_, err = server.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{ID: 1})
 	requireClusterPlatformReplacementError(t, err)
 }
 
@@ -543,6 +546,39 @@ func TestMemberAddRejectsMalformedPeerURLsBeforePlatformBoundary(t *testing.T) {
 		require.Equal(t, status.Code(rpctypes.ErrGRPCMemberBadURLs), status.Code(err))
 		require.Equal(t, status.Convert(rpctypes.ErrGRPCMemberBadURLs).Message(), status.Convert(err).Message())
 	}
+}
+
+func TestMemberMutationsClassifyKnownMemberStateBeforePlatformBoundary(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 11, Name: "voter", PeerURLs: []string{"http://127.0.0.1:2380"}},
+		{ID: 12, Name: "learner", PeerURLs: []string{"http://127.0.0.2:2380"}, IsLearner: true},
+	})
+
+	for _, call := range []func() error{
+		func() error {
+			_, err := server.MemberRemove(context.Background(), &etcdserverpb.MemberRemoveRequest{ID: 99})
+			return err
+		},
+		func() error {
+			_, err := server.MemberUpdate(context.Background(), &etcdserverpb.MemberUpdateRequest{ID: 99})
+			return err
+		},
+		func() error {
+			_, err := server.MemberPromote(context.Background(), &etcdserverpb.MemberPromoteRequest{ID: 99})
+			return err
+		},
+	} {
+		err := call()
+		require.ErrorIs(t, err, rpctypes.ErrGRPCMemberNotFound)
+		require.Equal(t, codes.NotFound, status.Code(err))
+	}
+
+	response, err := server.MemberPromote(context.Background(), &etcdserverpb.MemberPromoteRequest{ID: 11})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrGRPCMemberNotLearner)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 }
 
 func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
