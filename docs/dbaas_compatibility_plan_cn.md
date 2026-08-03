@@ -31876,6 +31876,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主
   3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，最近日志无
   MoveLeader/transferee 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3476 继续拆分 MoveLeader 的安全幂等特例。对照
+  `/root/etcd/server/etcdserver/server.go:MoveLeader`，有效 transferee 进入 transfer 后以
+  `for Lead()!=transferee` 等待；当 transferee 已是当前 leader 时循环从一开始即不成立，因此官方
+  单节点调用直接成功，`MoveLeaderResponse.Header=nil`，不产生 Raft 或 KV 状态变化。KubeBrain 的
+  Status.Leader 已统一由 `memberIDForPeerIdentity(peers.GetLeaderInfo())` 生成，可用同一映射稳定识别
+  该情形。永久 RED 先读取各端 Status.Leader 再原值调用 MoveLeader，官方返回 OK/空 header，旧生产
+  返回平台 Unimplemented。commit `7fbdadf18967276e9e00f29f19a41b0d50b658b8` 在 A3475 的 voter
+  分类后，仅当目标等于当前共享 election leader 时返回空成功响应；其他有效 voter 仍由 DBaaS
+  rollout/failover orchestration 管理。单元门禁同时固定 identity→静态 member ID 映射、当前 leader
+  no-op 与另一 voter 平台边界。目标语义连续 20 轮 1.160 秒 GREEN，目标 race 连续 10 轮 1.723 秒，
+  完整 etcd server 170.145 秒及 server/compat 两个 module 的 vet 均通过。commit `c47a7d62`
+  固化 Status 驱动的官方双端差分。
+  生产镜像 `kubebrain:a3476-move-leader-current-noop`（本地 image ID
+  `sha256:784a8824fd076a2d7bacc9f8ba5c981b25fdbdd20ecadc91fe0bd7061c64d1a7`，kind runtime
+  digest `sha256:d65f13bc323762f0b1f0df039b1789502f439bd175818f705141d80c47ad491f`，build time
+  `2026-08-03T19:18:46Z`）部署后，current-leader no-op 官方双端差分连续 20 轮 0.438 秒、missing
+  target 回归连续 20 轮 0.233 秒、有效非当前 voter 的 clientv3 平台边界连续 20 轮 0.649 秒通过。
+  最终 StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
+  restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
+  最近日志无 MoveLeader/transferee 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
