@@ -31294,6 +31294,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   因而线上差分只证明客户端可见路径无回归。最终三个 KubeBrain Pod 使用 A3444、Ready/0
   restart，主 3 PD/3 TiKV 均 Running，版本端点返回 etcdserver/storage 3.7.0，最近 15 分钟
   日志无 panic/fatal、malformed、compact failure 或 event-log failure。
+- A3445 审计历史 Watch fallback 的 DELETE PrevKV 恢复时发现同一旧编码的第三处相邻风险：
+  `scanHistoryEvents` 用单个 `curKey/prevVal` 状态，假定同一用户键的所有物理版本连续；但扩展
+  key 的首段字节若排序在短 key 的两个 revision 之间，就会把短 key 的 live 行与 tombstone
+  分开。扫描状态先切到扩展 key、再回到短 key 后，DELETE 会丢失前值，把 `Kv.Revision` 错报
+  为 delete revision。确定性 RED 用 `0x18…` live revision、`0x28…` foreign boundary、
+  `0x38…` delete revision 直接构造三行交错顺序，在内存与 TiKV mock 上均复现。commit
+  `1aa1533baa979df54fc8bab2eab104d6d9b135fb` 保留单次 iterator，把前值状态改为按解码后
+  user key 索引，并在 tombstone 后删除该 key 状态；因此既不恢复每个 DELETE 额外 point read
+  的 1+D 扫描放大，也不再依赖有歧义的物理分组。新回归与既有单扫描/二进制前缀门禁 10 轮
+  0.610 秒、History/EventLog 集 5 轮 20.337 秒、目标 race 10 轮 2.628 秒、完整 backend
+  43.376 秒及 backend vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3445-history-prevkv-dollar`（本地 image ID
+  `sha256:f64e728eb655b2704bda00f70805ce831e77c496bd1b6eed37e77c03a73f2782`）滚动部署后，
+  history fallback、混合 PrevKV 官方差分、dollar narrow range、binary key 与 binary mutation
+  连续 3 轮、15 次执行 12.010 秒通过，参考端为 `/root/etcd/bin/etcd` 3.8.0-alpha.0。
+  特殊高字节 revision 交错由可注入旧物理行的后端测试证明；生产黑盒门禁证明正常 revision
+  空间的历史 Watch/PrevKV 及相邻二进制键行为无回归。最终三个 KubeBrain Pod 使用 A3445
+  且同一 runtime digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点返回
+  etcdserver/storage 3.7.0，最近日志无 panic/fatal、malformed、compact failure 或
+  event-log failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
