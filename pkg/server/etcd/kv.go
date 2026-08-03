@@ -1337,7 +1337,12 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 		if err != nil {
 			return nil, err
 		}
-		compactRevision, err := s.backend.GetCompactRevision(ctx)
+		// A write Txn may run on a newly elected leader whose compact watermark
+		// cache predates a Compact completed by the previous leader. Validate the
+		// selected branch against shared durable state before any staged/atomic
+		// mutation, otherwise a historical Range can be accepted and its sibling
+		// writes committed after that history became inaccessible.
+		compactRevision, err := s.backend.GetCompactRevisionFresh(ctx)
 		if err != nil {
 			return nil, err
 		}

@@ -1961,6 +1961,7 @@ type staleCompactRevisionCacheShim struct {
 	cachedRevision  uint64
 	durableRevision uint64
 	freshRead       bool
+	currentRevision uint64
 }
 
 func (s *staleCompactRevisionCacheShim) GetCompactRevision(context.Context) (uint64, error) {
@@ -1970,6 +1971,13 @@ func (s *staleCompactRevisionCacheShim) GetCompactRevision(context.Context) (uin
 func (s *staleCompactRevisionCacheShim) GetCompactRevisionFresh(context.Context) (uint64, error) {
 	s.freshRead = true
 	return s.durableRevision, nil
+}
+
+func (s *staleCompactRevisionCacheShim) GetCurrentRevision() uint64 {
+	if s.currentRevision != 0 {
+		return s.currentRevision
+	}
+	return s.BackendShim.GetCurrentRevision()
 }
 
 func TestHistoricalRangeBypassesStaleCompactRevisionCache(t *testing.T) {
@@ -1986,6 +1994,35 @@ func TestHistoricalRangeBypassesStaleCompactRevisionCache(t *testing.T) {
 	err := server.checkRequestedRevision(context.Background(), 9)
 	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
 	require.True(t, shim.freshRead)
+}
+
+func TestWriteTxnHistoricalRangeBypassesStaleCompactRevisionCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &staleCompactRevisionCacheShim{
+		BackendShim:     server.backend,
+		cachedRevision:  1,
+		durableRevision: 10,
+		currentRevision: 20,
+	}
+	server.backend = shim
+	key := []byte("/registry/generic-txn/stale-compact-cache")
+
+	resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: key, Value: []byte("must-not-commit"),
+		}}},
+		{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: key, Revision: 9,
+		}}},
+	}})
+	require.Nil(t, resp)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
+	require.True(t, shim.freshRead)
+	getResp, getErr := shim.BackendShim.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, getErr)
+	require.Empty(t, getResp.Kvs)
 }
 
 func TestCompactFutureAndRepeatedRevisionMatchEtcd(t *testing.T) {
