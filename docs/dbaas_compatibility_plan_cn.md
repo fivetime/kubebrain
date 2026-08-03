@@ -31940,6 +31940,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主
   3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，最近日志无
   MemberAdd/PeerURL 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3479 补齐 A3478 后续发现的 MemberAdd URL 规范化边界。对照
+  `/root/etcd/client/pkg/types/urls.go:NewURLs`，官方在解析前对每个 URL 执行
+  `strings.TrimSpace`，随后 `membership.NewMember` 和配置变更冲突检查都使用
+  `types.URLs.StringSlice()`；A3478 虽已调用同一解析器，却丢弃解析结果并继续比较原始 protobuf
+  字符串。永久 RED 给现有 PeerURL 添加空格、tab 和换行，同时保留一个新 URL：官方规范化后
+  返回 `FailedPrecondition / etcdserver: Peer URLs already exists`，旧生产漏判并返回平台
+  `Unimplemented`。尾随 `/` 另经官方实测属于 `URL must not contain a path` 的语法错误，未被
+  错误纳入规范化冲突。commit `88cb0dd3be3d454aaf1ede4981f16b8171936461` 保留
+  `types.NewURLs` 的解析结果，并将排序、去空白后的 `StringSlice()` 传入静态冲突检查；语法校验
+  仍早于认证，冲突仍晚于认证，带空白但不冲突的合法请求仍落到 DBaaS 平台边界。成员/认证目标
+  回归连续 20 轮 10.376 秒 GREEN，race 连续 10 轮 70.868 秒，完整 etcd server 171.372 秒及
+  server/compat 两个 module 的 vet 均通过。commit
+  `3526a2a395e18dcb4559527b84f2fbaeb385f7ca` 固化带控制字符空白的官方双端差分。
+  生产镜像 `kubebrain:a3479-member-add-url-normalization`（本地 image ID
+  `sha256:a1476956c209cbbd1fe3c938a6f4575995796b52cd41a558f5cbc5a69ef7fd83`，kind runtime
+  digest `sha256:10578200102c1e9e6cff3d825a27d2978ded7d6207e45f8ac911f3fbcb6c8428`，build time
+  `2026-08-03T20:17:09Z`）部署后，规范化冲突、精确冲突、非法 URL 和非冲突平台边界各连续
+  20 轮分别以 0.276、0.241、0.222、0.813 秒通过。最终 StatefulSet
+  desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主
+  3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，最近日志无
+  MemberAdd/PeerURL 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
