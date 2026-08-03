@@ -31794,6 +31794,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint
   health=true、版本端点保持 3.7.0、`/readyz=ok`，最近日志无 Downgrade validation 或 panic/fatal
   异常；参考进程与临时目录均已清理。
+- A3472 继续审计格式合法的 Downgrade target，发现 KubeBrain 在 A3471 之后仍把同版、跨多个 minor
+  和未来版本全部送入 DBaaS 平台边界；对照
+  `/root/etcd/server/etcdserver/version/downgrade.go:allowedDowngradeVersion` 与
+  `version.go:DowngradeValidate`，官方当前只允许同 major、恰好前一 minor，patch 在 cluster version
+  归一化时忽略，其余目标均返回
+  `InvalidArgument: etcdserver: invalid downgrade target version`。由于 `/root/etcd` 主线参考实例实际为
+  3.8.0-alpha、KubeBrain 宣称 3.7.0，永久差分先通过 Maintenance Status 读取每端版本，再分别构造
+  current、低两个 minor、未来一个 minor 三类等价非法目标；RED 中参考端三者均为 InvalidArgument，
+  旧生产端均为平台 Unimplemented。commit `d39c3e46aa063949d1ab59a44e939be7f51bdfbb` 在两阶段
+  semver 格式解析后增加同 major/前一 minor 校验，并把真正合法的 3.6 请求保留给 DBaaS versioned
+  rollout/rollback 平台边界；既有 auth/client 夹具同步改用 3.6。目标与鉴权语义连续 20 轮 8.293 秒
+  GREEN，目标 race 连续 10 轮 2.047 秒，完整 etcd server 155.599 秒及 server/compat 两个 module
+  的 vet 均通过。commit `42cd5686` 固化动态版本官方双端差分。
+  生产镜像 `kubebrain:a3472-downgrade-target-validation`（本地 image ID
+  `sha256:8ef5b878a95f58036041fb5ebd21735e2c6990d0966574e1c7fcc187db06af17`，kind runtime
+  digest `sha256:f6b60154607faa7af0a50b3a7849cc6156fc0f09866874e4d00e6f4fe3fb7571`，build time
+  `2026-08-03T18:14:05Z`）部署后，三类 target validation 官方双端差分连续 20 轮 0.552 秒、A3471
+  格式/action 差分连续 20 轮 0.283 秒、clientv3 全部平台边界连续 20 轮 0.585 秒通过。最终
+  StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
+  restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
+  最近日志无 Downgrade target 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
