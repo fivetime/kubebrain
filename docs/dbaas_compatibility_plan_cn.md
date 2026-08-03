@@ -31563,6 +31563,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分支、区间 Txn、compact boundary 与目标场景组合连续 10 轮、50 次测试 13.960 秒通过。
   三个 KubeBrain Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点为
   3.7.0、`/readyz=ok`；最近日志仅有滚动期间预期 peer 断连，无 panic/fatal。
+- A3461 继续审计剩余 compact watermark cache 调用点，确认 Watch 有两个独立的 stale-low
+  窗口：新 leader 在创建 Watch 时可能用旧缓存接受 `start_revision < durable compact`；即使
+  RPC 前置检查正确，Compact 也可能在检查后、后端 history fallback 扫描前推进。旧实现的后端
+  确定性场景在 cached=0、durable=10、from=9 时错误返回空事件且 nil error，使 Watch 看似追平
+  却静默丢失已不可访问历史。commit `d6aef3281c3a5acbf71c023e6c773284dbabd45a` 在 Watch
+  create 权威边界与实际 history scan 两处 fresh 读取共享 TiKV watermark；持续事件投递热路径
+  不增加读取。两层测试修复前分别稳定 RED，修复后各连续 20 轮 GREEN；目标 race 各 10 轮、
+  完整 backend 43.312 秒、完整 etcd server 150.131 秒、相关 service 包、server/backend vet、
+  compat vet 均通过。官方源码与现有差分同时确认边界仍为 `start_revision < compact_revision`，
+  没有误改 revision==compact 的可观察语义。
+  生产镜像 `kubebrain:a3461-watch-compact-fence`（本地 image ID
+  `sha256:1b635a422c7db0ec316a71938aa475bdcd452da6fdac5701778ca3c7eed17417`，kind runtime
+  digest `sha256:4c1a0768df93ed09b366ed3a35dffc5360e2ef1033c33f6f110d4a3976230106`，build time
+  `2026-08-03T14:29:55Z`）部署后三副本目标官方差分连续 50 轮 21.455 秒通过；physical compact
+  后依次替换全部三个 KubeBrain Pod，当前快照与有序 Watch 历史 8.93 秒恢复；修正选择器的
+  broad 官方差分全套 307.585 秒通过。最终三个 Pod 同 digest、Ready/0 restart，主 3 PD/3
+  TiKV 均 Running，endpoint health 可提交 proposal、`/readyz=ok`，日志无 panic/fatal、compact
+  visibility、read-barrier 或 watch-history fallback failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
