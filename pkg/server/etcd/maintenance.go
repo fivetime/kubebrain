@@ -437,6 +437,10 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 		}
 	case etcdserverpb.DowngradeRequest_CANCEL:
 		// The version field is ignored for CANCEL by etcd.
+		current := semver.Must(semver.NewVersion(Version))
+		return &etcdserverpb.DowngradeResponse{
+			Version: fmt.Sprintf("%d.%d", current.Major, current.Minor),
+		}, nil
 	default:
 		return nil, status.Error(codes.Unknown, "etcdserver: unknown method")
 	}

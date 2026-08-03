@@ -173,11 +173,16 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 	}
 	for _, request := range []*etcdserverpb.DowngradeRequest{
 		{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.6.0"},
-		{Action: etcdserverpb.DowngradeRequest_CANCEL, Version: "not-semver"},
 	} {
 		_, err = maintenance.Downgrade(ctx, request)
 		requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 	}
+	cancelResponse, err := maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_CANCEL, Version: "not-semver",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "3.7", cancelResponse.GetVersion())
+	require.Nil(t, cancelResponse.GetHeader())
 	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action: etcdserverpb.DowngradeRequest_ENABLE, Version: "not-semver",
 	})
