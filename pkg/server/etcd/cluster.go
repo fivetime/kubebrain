@@ -305,6 +305,9 @@ func (s *RPCServer) MemberUpdate(ctx context.Context, request *etcdserverpb.Memb
 	if s.memberByID(request.GetID()) == nil {
 		return nil, rpctypes.ErrGRPCMemberNotFound
 	}
+	if s.memberPeerURLConflicts(request.GetID(), request.GetPeerURLs()) {
+		return nil, rpctypes.ErrGRPCPeerURLExist
+	}
 	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
@@ -331,6 +334,24 @@ func (s *RPCServer) memberByID(id uint64) *etcdserverpb.Member {
 		}
 	}
 	return nil
+}
+
+func (s *RPCServer) memberPeerURLConflicts(id uint64, peerURLs []string) bool {
+	existing := make(map[string]struct{})
+	for _, member := range s.membersSnapshot() {
+		if member.GetID() == id {
+			continue
+		}
+		for _, peerURL := range member.GetPeerURLs() {
+			existing[peerURL] = struct{}{}
+		}
+	}
+	for _, peerURL := range peerURLs {
+		if _, ok := existing[peerURL]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func memberURLFromAddress(address string) string {
