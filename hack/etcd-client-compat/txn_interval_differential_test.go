@@ -110,6 +110,13 @@ func runTxnIntervalScenario(t *testing.T, endpoint, instance string) []txnInterv
 	for i, test := range tests {
 		prefix := string(bytes.Repeat([]byte{0xff}, 64)) +
 			fmt.Sprintf("/dbaas-txn-interval/%s/%d/%02d/", instance, time.Now().UnixNano(), i)
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cleanupCancel()
+			_, _ = client.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+				Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+			})
+		})
 		seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		seed, seedErr := client.Put(seedCtx, &etcdserverpb.PutRequest{
 			Key: []byte(prefix + "seed"), Value: []byte("seed"),
