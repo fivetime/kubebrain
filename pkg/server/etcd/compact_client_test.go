@@ -116,6 +116,50 @@ func TestLatestCompactionDoesNotAdvancePublicRevision(t *testing.T) {
 		"server-level revision normalization must preserve compact==current")
 }
 
+type staleCompactRetryShim struct {
+	BackendShim
+	freshRead     bool
+	compactCalled bool
+}
+
+func (s *staleCompactRetryShim) GetCurrentRevision() uint64 {
+	return 20
+}
+
+func (s *staleCompactRetryShim) GetCompactRevision(context.Context) (uint64, error) {
+	if s.compactCalled {
+		return 10, nil
+	}
+	return 1, nil
+}
+
+func (s *staleCompactRetryShim) GetCompactRevisionFresh(context.Context) (uint64, error) {
+	s.freshRead = true
+	return 10, nil
+}
+
+func (s *staleCompactRetryShim) HasCompactRevision(context.Context) (bool, error) {
+	return true, nil
+}
+
+func (s *staleCompactRetryShim) CompactAsync(context.Context, uint64) (*etcdserverpb.TxnResponse, error) {
+	s.compactCalled = true
+	return compactTxnResponse(9), nil
+}
+
+func TestCompactRetryBypassesStaleCompactRevisionCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &staleCompactRetryShim{BackendShim: server.backend}
+	server.backend = shim
+	resp, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 9})
+	require.Nil(t, resp)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
+	require.True(t, shim.freshRead)
+	require.False(t, shim.compactCalled, "an already-compacted retry must not reach the backend compactor")
+}
+
 func TestClientCompactTypedErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

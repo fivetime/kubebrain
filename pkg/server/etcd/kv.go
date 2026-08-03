@@ -967,7 +967,11 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if r.Revision > int64(s.backend.GetCurrentRevision()) {
 		return nil, futureRevisionError()
 	}
-	compactRevision, err := s.backend.GetCompactRevision(ctx)
+	// Compact retries must be classified against the shared durable watermark.
+	// After leadership changes this replica's TTL cache may be stale-low; letting
+	// an already-compacted request reach the idempotent backend would turn etcd's
+	// ErrCompacted into a successful response.
+	compactRevision, err := s.backend.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return nil, err
 	}
