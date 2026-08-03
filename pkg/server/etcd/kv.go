@@ -72,7 +72,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
-	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
+	if !r.Serializable || (r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical) {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return &etcdserverpb.RangeResponse{}, readBarrierStatusErr(err)
 		}
@@ -181,7 +181,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		return nil
 	}
 	durableHistorical := r.Serializable && r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
-	if (!r.Serializable || r.Revision > 0) && !durableHistorical {
+	if !r.Serializable || (r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical) {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return readBarrierStatusErr(err)
 		}

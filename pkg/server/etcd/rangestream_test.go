@@ -26,6 +26,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -187,6 +188,35 @@ func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {
 	require.Empty(t, last.RangeResponse.Kvs)
 	require.Greater(t, last.RangeResponse.Header.Revision, int64(0),
 		"apiserver reads Header.Revision as the sync's initial revision")
+}
+
+func TestHistoricalSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	prefix := []byte("/historical-serializable-stream/")
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: append(append([]byte(nil), prefix...), 'a'), Value: []byte("v1")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: append(append([]byte(nil), prefix...), 'a'), Value: []byte("v2")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: append(append([]byte(nil), prefix...), 'b'), Value: []byte("vb")})
+	require.NoError(t, err)
+
+	syncErr := errors.New("leader revision unavailable")
+	server.peers = testPeerService{isLeader: true, syncReadFn: func(context.Context) error { return syncErr }}
+	rs := &fakeRangeStreamServer{ctx: ctx}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: prefix, RangeEnd: []byte(clientv3.GetPrefixRangeEnd(string(prefix))),
+		Revision: first.Header.Revision, Serializable: true,
+	}, rs)
+	require.NoError(t, err, "a leader's historical serializable RangeStream must bypass coordination like etcd")
+	var values []string
+	for _, chunk := range rs.sent {
+		for _, kv := range chunk.RangeResponse.Kvs {
+			values = append(values, string(kv.Value))
+		}
+	}
+	require.Equal(t, []string{"v1"}, values)
 }
 
 func TestRangeStreamPointAndEmptyIntervalsMatchUnaryRange(t *testing.T) {

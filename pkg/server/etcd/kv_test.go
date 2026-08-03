@@ -470,15 +470,24 @@ func TestSerializableRangeBypassesLeaderRevisionSync(t *testing.T) {
 	defer closeFn()
 	ctx := context.Background()
 	key := []byte("/serializable/range")
-	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	first, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value-v1")})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value-v2")})
 	require.NoError(t, err)
 
 	syncErr := errors.New("leader revision unavailable")
-	server.peers = testPeerService{syncReadFn: func(context.Context) error { return syncErr }}
+	server.peers = testPeerService{isLeader: true, syncReadFn: func(context.Context) error { return syncErr }}
 	resp, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Serializable: true})
 	require.NoError(t, err)
 	require.Len(t, resp.Kvs, 1)
-	require.Equal(t, "value", string(resp.Kvs[0].Value))
+	require.Equal(t, "value-v2", string(resp.Kvs[0].Value))
+
+	historical, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: key, Revision: first.Header.Revision, Serializable: true,
+	})
+	require.NoError(t, err, "a leader's historical serializable Range must bypass coordination like etcd")
+	require.Len(t, historical.Kvs, 1)
+	require.Equal(t, "value-v1", string(historical.Kvs[0].Value))
 
 	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.Equal(t, codes.Unavailable, status.Code(err),
