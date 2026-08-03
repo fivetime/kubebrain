@@ -265,6 +265,50 @@ func TestScannerDollarKeyNarrowRangeDoesNotScanBeforeStartAcrossPartition(t *tes
 	require.Empty(t, kvs, "narrow target range must neither resurrect the tombstone nor leak the lower key")
 }
 
+// An extension key can split two physical versions of a shorter key. Full
+// compaction must compare versions by decoded user key, not only adjacent rows,
+// or the shorter key's superseded version is stranded forever.
+func TestScannerCompactDollarExtensionDoesNotStrandShorterVersion(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	tomb := []byte("tombstone")
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	shortKey := []byte("/registry/items/a")
+	const firstRevision = uint64(0x1800000000000100)
+	const foreignBoundary = uint64(0x2800000000000000)
+	const latestRevision = uint64(0x3800000000000100)
+	foreignSuffix := make([]byte, 8)
+	binary.BigEndian.PutUint64(foreignSuffix, foreignBoundary)
+	foreignKey := append(append(append([]byte(nil), shortKey...), '$'), foreignSuffix...)
+	foreignKey = append(foreignKey, 'x')
+
+	oldObject := c.EncodeObjectKey(shortKey, firstRevision)
+	foreignObject := c.EncodeObjectKey(foreignKey, foreignBoundary)
+	latestObject := c.EncodeObjectKey(shortKey, latestRevision)
+	batch := kv.BeginBatchWrite()
+	batch.Put(oldObject, []byte("short-v1"), 0)
+	batch.Put(foreignObject, []byte("foreign-v1"), 0)
+	batch.Put(latestObject, []byte("short-v2"), 0)
+	require.NoError(t, batch.Commit(context.Background()))
+
+	sc := NewScanner(kv, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
+	borders := [][]byte{coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd()}
+	require.NoError(t, sc.Compact(context.Background(), borders, latestRevision))
+
+	_, err := kv.Get(context.Background(), oldObject)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	got, err := kv.Get(context.Background(), latestObject)
+	require.NoError(t, err)
+	require.Equal(t, []byte("short-v2"), got)
+	got, err = kv.Get(context.Background(), foreignObject)
+	require.NoError(t, err)
+	require.Equal(t, []byte("foreign-v1"), got)
+}
+
 // A DELETE at exactly the compact watermark is still watchable in etcd. Keep
 // its tombstone and immediate predecessor for event/PrevKV reconstruction, but
 // reclaim both as soon as a later compaction advances past that revision.

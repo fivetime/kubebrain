@@ -15,9 +15,12 @@
 package backend
 
 import (
+	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 )
 
 // A legacy object key is {magic}{raw user key}${revision}. Therefore versions
@@ -60,4 +63,97 @@ func TestGetDollarExtensionDoesNotHideShorterKey(t *testing.T) {
 	require.Equal(t, lower, historical.Kv.Key)
 	require.Equal(t, []byte("lower"), historical.Kv.Value)
 	require.Equal(t, lowerRevision, historical.Kv.Revision)
+}
+
+// A dollar-extension key can physically split two versions of a shorter key.
+// A logical Range must still emit the shorter key exactly once at its newest
+// visible revision.
+func TestRangeDollarExtensionDoesNotDuplicateShorterKey(t *testing.T) {
+	for name, storageType := range map[string]storageType{
+		"memory": memKvStorage,
+		"tikv":   tiKvStorage,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, closeSuite := newTestSuites(t, storageType)
+			defer closeSuite()
+			b := s.backend.(*backend)
+
+			shortKey := []byte("/registry/items/a")
+			const firstRevision = uint64(0x1800000000000100)
+			const foreignBoundary = uint64(0x2800000000000000)
+			const latestRevision = uint64(0x3800000000000100)
+			foreignSuffix := make([]byte, 8)
+			binary.BigEndian.PutUint64(foreignSuffix, foreignBoundary)
+			foreignKey := append(append(append([]byte(nil), shortKey...), '$'), foreignSuffix...)
+			foreignKey = append(foreignKey, 'x')
+
+			batch := s.kv.BeginBatchWrite()
+			batch.Put(b.coder.EncodeObjectKey(shortKey, firstRevision), []byte("short-v1"), 0)
+			batch.Put(b.coder.EncodeObjectKey(foreignKey, foreignBoundary), []byte("foreign-v1"), 0)
+			batch.Put(b.coder.EncodeObjectKey(shortKey, latestRevision), []byte("short-v2"), 0)
+			require.NoError(t, batch.Commit(s.ctx))
+			b.SetCurrentRevision(latestRevision)
+
+			response, err := b.List(s.ctx, &proto.RangeRequest{
+				Key: shortKey,
+				End: PrefixEnd(shortKey),
+			})
+			require.NoError(t, err)
+			require.Len(t, response.Kvs, 2)
+			require.Equal(t, shortKey, response.Kvs[0].Key)
+			require.Equal(t, latestRevision, response.Kvs[0].Revision)
+			require.Equal(t, []byte("short-v2"), response.Kvs[0].Value)
+			require.Equal(t, foreignKey, response.Kvs[1].Key)
+		})
+	}
+}
+
+func TestRangeDollarExtensionDoesNotResurrectDeletedShorterKey(t *testing.T) {
+	for name, storageType := range map[string]storageType{
+		"memory": memKvStorage,
+		"tikv":   tiKvStorage,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, closeSuite := newTestSuites(t, storageType)
+			defer closeSuite()
+			b := s.backend.(*backend)
+			b.config.EnableEtcdCompatibility = true
+
+			shortKey := []byte("/registry/items/deleted")
+			const liveRevision = uint64(0x1800000000000100)
+			const foreignBoundary = uint64(0x2800000000000000)
+			const deleteRevision = uint64(0x3800000000000100)
+			foreignSuffix := make([]byte, 8)
+			binary.BigEndian.PutUint64(foreignSuffix, foreignBoundary)
+			foreignKey := append(append(append([]byte(nil), shortKey...), '$'), foreignSuffix...)
+			foreignKey = append(foreignKey, 'x')
+
+			batch := s.kv.BeginBatchWrite()
+			batch.Put(b.coder.EncodeObjectKey(shortKey, liveRevision), []byte("must-stay-deleted"), 0)
+			batch.Put(b.coder.EncodeObjectKey(foreignKey, foreignBoundary), []byte("foreign-live"), 0)
+			batch.Put(b.coder.EncodeObjectKey(shortKey, deleteRevision), tombStoneBytes, 0)
+			require.NoError(t, batch.Commit(s.ctx))
+			b.SetCurrentRevision(deleteRevision)
+
+			end := PrefixEnd(shortKey)
+			response, err := b.List(s.ctx, &proto.RangeRequest{Key: shortKey, End: end})
+			require.NoError(t, err)
+			require.Len(t, response.Kvs, 1)
+			require.Equal(t, foreignKey, response.Kvs[0].Key)
+
+			count, err := b.Count(s.ctx, &proto.CountRequest{Key: shortKey, End: end})
+			require.NoError(t, err)
+			require.Equal(t, uint64(1), count.Count)
+
+			stream, err := b.RangeStream(s.ctx, shortKey, end, 0)
+			require.NoError(t, err)
+			var streamed []*proto.KeyValue
+			for chunk := range stream {
+				require.Empty(t, chunk.Err)
+				streamed = append(streamed, chunk.RangeResponse.Kvs...)
+			}
+			require.Len(t, streamed, 1)
+			require.Equal(t, foreignKey, streamed[0].Key)
+		})
+	}
 }

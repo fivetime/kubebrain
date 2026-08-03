@@ -678,16 +678,27 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 	defer it.Close()
 	receiver.reset()
 	w.pendingDeletes = w.pendingDeletes[:0]
+	if !w.compact {
+		return w.runRead(ctx, scanCtx, it, receiver, startTime)
+	}
 	count := 0
 	valSize := int64(0)
-	// iter cur
-	var (
-		curUserKey   []byte
-		curRevision  uint64
-		prevUserKey  []byte
-		prevRevision uint64
-		prevValue    []byte
-	)
+	type compactRowState struct {
+		userKey  []byte
+		value    []byte
+		revision uint64
+	}
+	var familyBoundary []byte
+	family := make(map[string]compactRowState)
+	flushFamily := func() {
+		for _, row := range family {
+			if row.revision > 0 && !bytes.Equal(row.value, w.tombstone) {
+				receiver.append(row.userKey, w.emitValue(row.value), row.revision)
+				count++
+			}
+		}
+		clear(family)
+	}
 
 	for receiver.needMore() {
 		select {
@@ -712,7 +723,7 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 
 		// get key and value from iter
 		key := it.Key()
-		curUserKey, curRevision, err = w.Decode(key)
+		curUserKey, curRevision, err := w.Decode(key)
 		if err != nil {
 			if w.isInternalStorageKey != nil && w.isInternalStorageKey(key) {
 				klog.V(4).InfoS("skip internal storage key during object scan", "key", key)
@@ -732,26 +743,25 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 			continue
 		}
 
-		// On a new user key, emit the previous key's newest live version to the
-		// receiver (in compaction scans the receiver is a no-op, but count still
-		// tracks). Compaction GC of superseded versions, tombstones, and
-		// revision-key tombstones is delegated to compactRow, so the read hot
-		// path carries no w.compact branching (the in-code TODO). compactRow
-		// returns true when this row must NOT be tracked as the previous key
-		// (a revision-key tombstone above the compact revision, left in place).
-		if !bytes.Equal(curUserKey, prevUserKey) {
-			if prevRevision > 0 && !bytes.Equal(prevValue, w.tombstone) {
-				receiver.append(prevUserKey, w.emitValue(prevValue), prevRevision)
-				count++
-			}
+		boundary, ok := w.RevisionBoundaryForBorder(key)
+		if !ok {
+			return 0, fmt.Errorf("object key has no revision family boundary: %x", key)
 		}
-		if w.compact && w.compactRow(it, key, value, curUserKey, curRevision, prevUserKey, prevRevision) {
+		if familyBoundary != nil && !bytes.Equal(boundary, familyBoundary) {
+			flushFamily()
+		}
+		familyBoundary = append(familyBoundary[:0], boundary...)
+
+		keyID := string(curUserKey)
+		previous := family[keyID]
+		if w.compactRow(it, key, value, curUserKey, curRevision, previous.userKey, previous.revision) {
 			continue
 		}
-
-		prevRevision = curRevision
-		prevUserKey = curUserKey
-		prevValue = it.Val()
+		family[keyID] = compactRowState{
+			userKey:  append([]byte(nil), curUserKey...),
+			value:    append([]byte(nil), value...),
+			revision: curRevision,
+		}
 
 		if w.compact && len(w.pendingDeletes) >= compactDeleteBatchSize {
 			w.flushDeletes(ctx)
@@ -771,11 +781,7 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		klog.ErrorS(err, "worker error", "worker", w.info(), "count", count, "latency", endTime.Sub(startTime))
 		return 0, err
 	}
-	// add last result
-	if prevRevision > 0 && !bytes.Equal(prevValue, w.tombstone) && receiver.needMore() {
-		receiver.append(prevUserKey, w.emitValue(prevValue), prevRevision)
-		count++
-	}
+	flushFamily()
 
 	receiver.flush()
 	scanLatency := endTime.Sub(startTime)
@@ -783,6 +789,108 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		// w.info() is a fmt.Sprintf; guard so per-page LISTs pay nothing.
 		klog.V(4).InfoS("worker done", "worker", w.info(), "latency", scanLatency, "count", count, "valSize", valSize)
 	}
+	w.metricCli.EmitHistogram("storage.scan_worker.latency", scanLatency.Seconds())
+	w.metricCli.EmitHistogram("storage.scan_worker.size", valSize)
+	w.metricCli.EmitHistogram("storage.scan_worker.count", count)
+	return count, nil
+}
+
+// runRead groups rows by the conservative physical family beginning at the
+// first legacy '$' delimiter, then selects the newest visible row per decoded
+// user key. The persisted format does not escape '$': an extension key can
+// therefore sort between two versions of a shorter key. Grouping only adjacent
+// decoded keys would emit the shorter key twice (or resurrect its old value
+// when the later row is a tombstone). A family is contiguous in physical order
+// and normally contains one user key, so this preserves streaming and bounds
+// buffering to the collision family rather than the whole partition.
+func (w *worker) runRead(
+	ctx context.Context,
+	scanCtx context.Context,
+	it storage.Iter,
+	receiver resultReceiver,
+	startTime time.Time,
+) (int, error) {
+	type visibleRow struct {
+		key      []byte
+		value    []byte
+		revision uint64
+	}
+	var familyBoundary []byte
+	family := make(map[string]visibleRow)
+	count := 0
+	valSize := int64(0)
+
+	flushFamily := func() {
+		rows := make([]visibleRow, 0, len(family))
+		for _, row := range family {
+			if row.revision > 0 && !bytes.Equal(row.value, w.tombstone) {
+				rows = append(rows, row)
+			}
+		}
+		sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i].key, rows[j].key) < 0 })
+		for _, row := range rows {
+			if !receiver.needMore() {
+				break
+			}
+			receiver.append(row.key, w.emitValue(row.value), row.revision)
+			count++
+		}
+		clear(family)
+	}
+
+	var scanErr error
+	for receiver.needMore() {
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("worker run context canceled")
+		default:
+		}
+		if scanErr = it.Next(scanCtx); scanErr != nil {
+			break
+		}
+		rawKey := it.Key()
+		userKey, revision, decodeErr := w.Decode(rawKey)
+		if decodeErr != nil {
+			if w.isInternalStorageKey != nil && w.isInternalStorageKey(rawKey) {
+				continue
+			}
+			klog.Errorf("unmarshal object key %s failed %v", rawKey, decodeErr)
+			continue
+		}
+		value := it.Val()
+		valSize += int64(len(value))
+		if revision > w.revision {
+			continue
+		}
+		boundary, ok := w.RevisionBoundaryForBorder(rawKey)
+		if !ok {
+			return 0, fmt.Errorf("object key has no revision family boundary: %x", rawKey)
+		}
+		if familyBoundary != nil && !bytes.Equal(boundary, familyBoundary) {
+			flushFamily()
+			if !receiver.needMore() {
+				break
+			}
+		}
+		familyBoundary = append(familyBoundary[:0], boundary...)
+		if revision == 0 {
+			continue // per-key revision index, not an MVCC value
+		}
+		family[string(userKey)] = visibleRow{
+			key:      append([]byte(nil), userKey...),
+			value:    append([]byte(nil), value...),
+			revision: revision,
+		}
+	}
+	if scanErr != nil && scanErr != io.EOF {
+		klog.ErrorS(scanErr, "worker error", "worker", w.info(), "count", count, "latency", time.Since(startTime))
+		return 0, scanErr
+	}
+	if receiver.needMore() {
+		flushFamily()
+	}
+	receiver.flush()
+	scanLatency := time.Since(startTime)
 	w.metricCli.EmitHistogram("storage.scan_worker.latency", scanLatency.Seconds())
 	w.metricCli.EmitHistogram("storage.scan_worker.size", valSize)
 	w.metricCli.EmitHistogram("storage.scan_worker.count", count)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"sort"
 )
 
 var hashKVTable = crc32.MakeTable(crc32.Castagnoli)
@@ -55,13 +56,27 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 
 	h := crc32.New(hashKVTable)
 	_, _ = h.Write([]byte("key"))
-	var pendingKey, pendingValue, pendingUserKey []byte
-	flushPending := func() {
-		if len(pendingKey) != 0 && !bytes.Equal(pendingValue, tombStoneBytes) {
-			_, _ = h.Write(pendingKey)
-			_, _ = h.Write(pendingValue)
+	type hashRow struct {
+		key   []byte
+		value []byte
+	}
+	var familyBoundary []byte
+	compactedLatest := make(map[string]hashRow)
+	retained := make([]hashRow, 0)
+	flushFamily := func() {
+		rows := retained
+		for _, row := range compactedLatest {
+			if !bytes.Equal(row.value, tombStoneBytes) {
+				rows = append(rows, row)
+			}
 		}
-		pendingKey, pendingValue = nil, nil
+		sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i].key, rows[j].key) < 0 })
+		for _, row := range rows {
+			_, _ = h.Write(row.key)
+			_, _ = h.Write(row.value)
+		}
+		clear(compactedLatest)
+		retained = retained[:0]
 	}
 	for {
 		if err := it.Next(ctx); err != nil {
@@ -76,24 +91,29 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 			if decodeErr != nil {
 				return HashKVResult{}, decodeErr
 			}
-			if len(pendingUserKey) != 0 && !bytes.Equal(userKey, pendingUserKey) {
-				flushPending()
+			boundary, ok := b.coder.RevisionBoundaryForBorder(key)
+			if !ok {
+				return HashKVResult{}, errors.New("object key has no revision family boundary")
 			}
-			pendingUserKey = append(pendingUserKey[:0], userKey...)
+			if familyBoundary != nil && !bytes.Equal(boundary, familyBoundary) {
+				flushFamily()
+			}
+			familyBoundary = append(familyBoundary[:0], boundary...)
 			// Revision-zero entries are per-key indexes, not MVCC values.
 			if revision >= 0 && objectRevision > 0 && objectRevision <= uint64(revision) {
+				row := hashRow{
+					key:   append([]byte(nil), key...),
+					value: append([]byte(nil), it.Val()...),
+				}
 				if hasCompactRevision && objectRevision <= compactRevision {
-					pendingKey = append(pendingKey[:0], key...)
-					pendingValue = append(pendingValue[:0], it.Val()...)
+					compactedLatest[string(userKey)] = row
 					continue
 				}
-				flushPending()
-				_, _ = h.Write(key)
-				_, _ = h.Write(it.Val())
+				retained = append(retained, row)
 			}
 		}
 	}
-	flushPending()
+	flushFamily()
 	return HashKVResult{
 		Hash:            h.Sum32(),
 		HashRevision:    revision,
