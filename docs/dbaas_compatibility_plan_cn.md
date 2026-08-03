@@ -31350,6 +31350,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/root/etcd/bin/etcd` 3.8.0-alpha.0 连续 10 轮 2.741 秒通过；目标 race 3 轮 1.894 秒，
   与既有 dollar narrow range、binary key/mutation 的组合差分 3 轮 12.185 秒通过。该增强仅
   新增兼容门禁，不改变服务镜像；生产继续运行 `kubebrain:a3446-dollar-collision-family`。
+- A3448 继续审计旧 `$` 物理编码的非单射边界，发现 `--skip-key-prefix` 的 full-scan GC
+  曾把 decoded user-prefix 直接编码成物理 carve-out。对于 short key 与包含 `$`/二进制字节的
+  skipped prefix，可令 short key 的 big-endian revision 行排序进该洞；该 short key 不属于
+  skipped prefix，却会永久漏掉 superseded-version GC。确定性 RED 构造
+  `short@0x182f30…`、`short@0x182f31…` 与
+  `skippedPrefix=short+'$'+0x18`，证明物理洞无法表达准确的用户 key 责任边界。commit
+  `91bb329bb476db922d405ff58aea3ee78e18c8d3` 将 full scan 恢复为整个 tenant object
+  keyspace，并由 backend 向 scanner 注入 decoded-user-key predicate；worker 仅在 physical
+  compact 路径、Decode 成功后过滤真正属于 skipped prefix 的行。Range/Count/RangeStream
+  不经过该 predicate，incremental compact 仍保留提交前的 user-key filter。回归同时证明碰撞
+  洞内的 short 旧版本被回收、short 最新版本保留，而 skipped key 的两个历史版本均不删除；
+  普通 ASCII carve-out 与配置边界继续通过。scanner/backend 完整包分别 0.309/43.463 秒，
+  目标 race 1.061/1.298 秒，CLI skip 配置测试及 vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3448-skip-prefix-decoded-gc`（本地 image ID
+  `sha256:dc4207b1536c1a411eff69fcc5fecdf72e72eb040f65efdbd17f8407935766c1`，kind runtime
+  digest `sha256:ab7b7fcb98072e15b2c8b153af6914ed83c1b5d0c480e269beedd520982bb3d2`）
+  滚动部署后，真实 TiKV `TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction` 3.413 秒
+  通过；三个 KubeBrain Pod 使用同一 digest、Ready/0 restart，主 3 PD/3 TiKV Running，
+  `/readyz` 返回 `ok`，最近日志无 compact/event-log failure、panic 或 fatal。代价是周期性
+  full scan 会读取 skipped 区域再按 decoded key 丢弃，但 incremental rounds 仍不读取这些 key；
+  该成本换取任意 etcd 二进制 key 下准确且不泄漏的 GC 责任边界。另核对重复 revision 的
+  `logical compact` 后再请求 `physical compact` 候选：上游 `updateCompactRev` 在
+  `rev <= compactMainRev` 返回 `ErrCompacted`，官方 3.8.0-alpha.0 与生产 KubeBrain 黑盒均返回
+  `OutOfRange: required revision has been compacted`，因此 backend 对重复内部任务的 no-op 不构成
+  客户端兼容差异。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
