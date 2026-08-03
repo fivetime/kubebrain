@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"testing"
@@ -93,4 +94,42 @@ func TestCompactRetiresLegacyEtcdMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, createRev, ma.CreateRevision)
 	require.Equal(t, uint64(5), ma.Version)
+}
+
+// Legacy metadata used a second object-key namespace with the same unescaped
+// '$' delimiter as user objects. A metadata key whose suffix begins with bytes
+// between two timestamp revisions sorts inside the reverse interval for "a";
+// the fallback must not return that foreign row as "a"'s metadata.
+func TestLegacyEtcdMetadataDollarExtensionDoesNotShadowShorterKey(t *testing.T) {
+	for name, storageType := range map[string]storageType{
+		"memory": memKvStorage,
+		"tikv":   tiKvStorage,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, closeSuite := newTestSuites(t, storageType)
+			defer closeSuite()
+			b := s.backend.(*backend)
+
+			lower := []byte("/registry/items/a")
+			const lowerRevision = uint64(0x1800000000000100)
+			const foreignBoundary = uint64(0x1800000000000200)
+			const requestedRevision = uint64(0x1800000000000300)
+			foreignSuffix := make([]byte, 8)
+			binary.BigEndian.PutUint64(foreignSuffix, foreignBoundary)
+			target := append(append(append([]byte(nil), lower...), '$'), foreignSuffix...)
+			target = append(target, 'x')
+			const targetRevision = uint64(0x1800000000000400)
+			lowerMetadata := EtcdMetadata{CreateRevision: lowerRevision - 10, Version: 3}
+			targetMetadata := EtcdMetadata{CreateRevision: targetRevision - 20, Version: 7}
+
+			batch := s.kv.BeginBatchWrite()
+			b.putEtcdMetadata(batch, lower, lowerRevision, lowerMetadata)
+			b.putEtcdMetadata(batch, target, targetRevision, targetMetadata)
+			require.NoError(t, batch.Commit(s.ctx))
+
+			got, err := b.getEtcdMetadata(s.ctx, lower, requestedRevision)
+			require.NoError(t, err)
+			require.Equal(t, lowerMetadata, got)
+		})
+	}
 }

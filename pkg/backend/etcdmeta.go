@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
@@ -60,18 +61,31 @@ func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision u
 
 func (b *backend) getEtcdMetadata(ctx context.Context, key []byte, revision uint64) (EtcdMetadata, error) {
 	metaKey := b.etcdMetadataUserKey(key)
-	iter, err := b.kv.Iter(ctx, b.coder.EncodeObjectKey(metaKey, revision), b.coder.EncodeObjectKey(metaKey, 0), 0, 1)
+	// The legacy metadata namespace reused the unescaped object-key '$'
+	// delimiter. A metadata key for an arbitrary-byte extension of key can sort
+	// inside this reverse interval, so decode each row and skip foreign keys
+	// instead of trusting the first physical result.
+	iter, err := b.kv.Iter(ctx, b.coder.EncodeObjectKey(metaKey, revision), b.coder.EncodeObjectKey(metaKey, 0), 0, 0)
 	if err != nil {
 		return EtcdMetadata{}, err
 	}
 	defer iter.Close()
-	if err := iter.Next(ctx); err != nil {
-		if err == io.EOF {
-			return EtcdMetadata{}, storage.ErrKeyNotFound
+	for {
+		if err := iter.Next(ctx); err != nil {
+			if err == io.EOF {
+				return EtcdMetadata{}, storage.ErrKeyNotFound
+			}
+			return EtcdMetadata{}, err
 		}
-		return EtcdMetadata{}, err
+		userKey, candidateRevision, decodeErr := b.coder.Decode(iter.Key())
+		if decodeErr != nil {
+			return EtcdMetadata{}, decodeErr
+		}
+		if candidateRevision == 0 || !bytes.Equal(userKey, metaKey) {
+			continue
+		}
+		return decodeEtcdMetadata(iter.Val())
 	}
-	return decodeEtcdMetadata(iter.Val())
 }
 
 func (b *backend) putEtcdMetadata(batch storage.BatchWrite, key []byte, revision uint64, meta EtcdMetadata) {
