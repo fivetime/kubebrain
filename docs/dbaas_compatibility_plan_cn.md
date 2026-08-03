@@ -31314,6 +31314,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且同一 runtime digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点返回
   etcdserver/storage 3.7.0，最近日志无 panic/fatal、malformed、compact failure 或
   event-log failure。
+- A3446 对旧 `$` 编码的剩余“物理相邻即同一逻辑键”假设做系统收尾，确认三类客户端/运维
+  差异。第一，Range scanner 遇到 `short@0x18…`、`short+$+0x28…@0x28…`、
+  `short@0x38…` 的物理交错时，会把 short 的旧值和新值各输出一次；若最后一行是 tombstone，
+  则会复活 short 旧值。第二，physical compact 只比较相邻 decoded key，foreign 行会切断
+  short 的版本链，使 superseded version 永久泄漏。第三，HashKV 的 compacted pending row
+  也只按相邻 key 聚合，导致逻辑压缩后的 hash 在物理 GC 完成后从 `0x3229c484` 漂移为
+  `0x55c025ce`，破坏副本一致性检查的不变量。三组确定性 RED 均使用旧物理行直接注入，Range
+  与 HashKV 在内存/TiKV mock 同时复现，scanner GC 独立复现。commit
+  `ae4cc96e2d976418826a1fb3870c0f817d22ae3d` 以第一处 legacy delimiter 得到保守物理族：
+  读路径只缓冲一个连续物理族，按 decoded user key 选择目标 revision 的最新行并按逻辑 key
+  排序输出；压缩路径在同一族内按 decoded key 保存各自 previous row；HashKV 同族合并每键
+  compact watermark 内最后一行与 watermark 后保留行，再按真实物理 key 排序写入 CRC。普通键
+  的族只含自身版本，缓冲不会扩大到整个分区；Range/Count/RangeStream、full/incremental GC
+  与 HashKV 共用同一 collision-family 边界。更新/删除/Count fallback/RangeStream 门禁 10 轮、
+  scanner 全包 10 轮 2.877 秒、目标 backend/scanner race 10 轮 3.310/1.063 秒、完整 backend
+  43.323 秒及 vet 均通过。生产 TiKV 镜像 `kubebrain:a3446-dollar-collision-family`（本地
+  image ID `sha256:6a2348c26d8a45298a3e36221be4176d8cd07deeababcfee54e9d1ac4b40d929`）
+  滚动部署后，RangeStream common shapes、HashKV 基本/Revision boundary、dollar narrow range、
+  binary key/mutation 六项官方差分连续 3 轮、18 次执行 14.578 秒通过；真实 TiKV HashKV
+  逻辑/物理压缩稳定性门禁另以 3.207 秒通过。高字节 collision-family 由可注入旧物理行的
+  后端测试证明，生产黑盒只证明正常 revision 空间无回归。最终三个 KubeBrain Pod 使用 A3446、
+  同一 runtime digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点返回
+  etcdserver/storage 3.7.0，最近 15 分钟日志无 panic/fatal、malformed、compact failure 或
+  event-log failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
