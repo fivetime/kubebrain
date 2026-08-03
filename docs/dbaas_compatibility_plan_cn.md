@@ -32710,7 +32710,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Snapshot 替代路径才发布 `operation_type=Backup`，并显式标记 artifact format 与
   `etcd_snapshot_restore_usable=false`。尚无真实 executor 的拓扑与版本操作不发布虚构的
   operation type。单元测试及 raw gRPC 测试同时固定 wire 上的 details、状态码和文本，普通
-  etcd client 行为不变，DBaaS-aware 自动化无需解析错误字符串。
+  etcd client 行为不变，DBaaS-aware 自动化无需解析错误字符串。独立 live compat 测试
+  `TestPlatformManagedErrorDetails` 从生产 endpoint 连续读取 Snapshot stream trailer，确认
+  `ErrorInfo` details 经真实 gRPC、Service 和负载入口后仍完整保留。
 
 ### P2：运维兼容和长期验证
 
