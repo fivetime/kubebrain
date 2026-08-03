@@ -32,7 +32,7 @@ func TestRangeLimitAcrossTombstonesDifferentialAgainstReferenceEtcd(t *testing.T
 	}
 	referenceOutcome := runRangeLimitAcrossTombstonesScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runRangeLimitAcrossTombstonesScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runRangeLimitAcrossTombstonesScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runRangeLimitAcrossTombstonesScenario(t *testing.T, endpoint, name string) []tombstoneLimitRangeOutcome {

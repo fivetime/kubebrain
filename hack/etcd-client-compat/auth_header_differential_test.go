@@ -31,7 +31,7 @@ func TestAuthHeaderDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runAuthHeaderScenario(t, reference, "reference"),
-		runAuthHeaderScenario(t, compatEndpoint(), "kubebrain"),
+		runAuthHeaderScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

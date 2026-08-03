@@ -42,7 +42,7 @@ func TestTxnIntervalDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "reversed-range-with-put-at-start", Code: "OK", HasResponse: true, Succeeded: true, RevisionGap: 1, FinalKVs: []string{"seed=seed", "z=value"}},
 	}
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runTxnIntervalScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runTxnIntervalScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runTxnIntervalScenario(t *testing.T, endpoint, instance string) []txnIntervalOutcome {

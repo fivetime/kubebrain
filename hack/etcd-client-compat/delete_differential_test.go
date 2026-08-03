@@ -61,7 +61,7 @@ func TestDeleteRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 		FinalRevision:      5,
 	}
 	require.Equal(t, want, etcd)
-	require.Equal(t, etcd, runDeleteDifferentialScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, etcd, runDeleteDifferentialScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runDeleteDifferentialScenario(t *testing.T, endpoint, instance string) deleteDifferentialResult {

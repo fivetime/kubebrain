@@ -37,7 +37,7 @@ func TestWatchEmptyProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runWatchEmptyProgressScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runWatchEmptyProgressScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runWatchEmptyProgressScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runWatchEmptyProgressScenario(t *testing.T, endpoint, instance string) watchEmptyProgressOutcome {

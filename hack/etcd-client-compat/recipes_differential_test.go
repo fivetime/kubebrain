@@ -31,7 +31,7 @@ func TestRecipesDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcome := runRecipesScenario(t, reference, "etcd")
-	kubeBrainOutcome := runRecipesScenario(t, compatEndpoint(), "kubebrain")
+	kubeBrainOutcome := runRecipesScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceOutcome, kubeBrainOutcome)
 	require.Equal(t, recipesOutcome{
 		BarrierDoubleHoldRejected:   true,

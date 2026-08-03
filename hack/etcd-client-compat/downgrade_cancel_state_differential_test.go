@@ -34,7 +34,7 @@ func TestDowngradeCancelStateDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{InputVersion: "not-semver", Code: "OK", VersionMatchesCluster: true},
 		{InputVersion: "999.999.999", Code: "OK", VersionMatchesCluster: true},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, downgradeCancelStateOutcomes(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, downgradeCancelStateOutcomes(t, compatEndpoint(t)))
 }
 
 func downgradeCancelStateOutcomes(t *testing.T, endpoint string) []downgradeCancelStateOutcome {

@@ -54,7 +54,7 @@ func TestLeaseSwitchRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runLeaseSwitchRevisionScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runLeaseSwitchRevisionScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runLeaseSwitchRevisionScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runLeaseSwitchRevisionScenario(t *testing.T, endpoint, instance string) leaseSwitchRevisionOutcome {

@@ -326,3 +326,51 @@ func TestCompatSuiteRunnerRejectsReferenceDifferentialOptIns(t *testing.T) {
 		})
 	}
 }
+
+func TestCompatSuiteRunnerRequiresExplicitEndpoint(t *testing.T) {
+	output, err := runCompatSuiteScript(t, []string{
+		"KUBEBRAIN_ETCD_ENDPOINT=",
+		"ENDPOINT=",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "run.sh requires KUBEBRAIN_ETCD_ENDPOINT")
+	require.Contains(t, string(output), "refusing implicit 127.0.0.1:3379")
+}
+
+func TestCompatSuiteRunnerForwardsExplicitEndpoint(t *testing.T) {
+	fakeBin := t.TempDir()
+	fakeGo := fakeBin + "/go"
+	require.NoError(t, os.WriteFile(fakeGo, []byte(
+		"#!/bin/sh\nprintf 'endpoint=%s args=%s\\n' \"$KUBEBRAIN_ETCD_ENDPOINT\" \"$*\"\n",
+	), 0o755))
+
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{
+			name: "preferred",
+			env: []string{
+				"KUBEBRAIN_ETCD_ENDPOINT=http://preferred:2379",
+				"ENDPOINT=http://legacy:2379",
+			},
+			want: "endpoint=http://preferred:2379 args=test -count=1 -v ./...",
+		},
+		{
+			name: "legacy",
+			env: []string{
+				"KUBEBRAIN_ETCD_ENDPOINT=",
+				"ENDPOINT=http://legacy:2379",
+			},
+			want: "endpoint=http://legacy:2379 args=test -count=1 -v ./...",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := append([]string{"PATH=" + fakeBin + ":" + os.Getenv("PATH")}, tc.env...)
+			output, err := runCompatSuiteScript(t, env)
+			require.NoError(t, err, "output=%s", output)
+			require.Contains(t, string(output), tc.want)
+		})
+	}
+}

@@ -13,20 +13,29 @@ import (
 	"go.etcd.io/etcd/client/v3/kubernetes"
 )
 
-func compatEndpoint() string {
+func configuredCompatEndpoint() (string, bool) {
 	if endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT"); endpoint != "" {
-		return endpoint
+		return endpoint, true
 	}
 	if endpoint := os.Getenv("ENDPOINT"); endpoint != "" {
-		return endpoint
+		return endpoint, true
 	}
-	return "127.0.0.1:3379"
+	return "", false
+}
+
+func compatEndpoint(t testing.TB) string {
+	t.Helper()
+	endpoint, ok := configuredCompatEndpoint()
+	if !ok {
+		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT (or legacy ENDPOINT) to run live compatibility tests")
+	}
+	return endpoint
 }
 
 func newKubernetesClient(t *testing.T) *kubernetes.Client {
 	t.Helper()
 	cli, err := kubernetes.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)

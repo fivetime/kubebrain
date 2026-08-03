@@ -30,7 +30,7 @@ func TestLeasingPutGetDeleteConcurrencyDifferentialAgainstReferenceEtcd(t *testi
 
 	require.Equal(t,
 		runLeasingPutGetDeleteConcurrencyScenario(t, reference, "etcd"),
-		runLeasingPutGetDeleteConcurrencyScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingPutGetDeleteConcurrencyScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

@@ -65,7 +65,7 @@ func TestMaintenanceStatusEnvelopeDifferentialAgainstReferenceEtcd(t *testing.T)
 	}
 	referenceOutcome := readStatusEnvelope(t, reference)
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, readStatusEnvelope(t, compatEndpoint()))
+	require.Equal(t, referenceOutcome, readStatusEnvelope(t, compatEndpoint(t)))
 }
 
 func readStatusEnvelope(t *testing.T, endpoint string) statusEnvelopeOutcome {

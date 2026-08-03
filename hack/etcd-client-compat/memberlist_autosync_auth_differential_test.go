@@ -25,7 +25,7 @@ func TestAuthenticatedAutoSyncDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcome := runAuthenticatedAutoSyncScenario(t, reference)
-	kubeBrainOutcome := runAuthenticatedAutoSyncScenario(t, compatEndpoint())
+	kubeBrainOutcome := runAuthenticatedAutoSyncScenario(t, compatEndpoint(t))
 	require.Equal(t, referenceOutcome, kubeBrainOutcome)
 	require.True(t, kubeBrainOutcome.EndpointsReplaced)
 	require.True(t, kubeBrainOutcome.EndpointsMatch)

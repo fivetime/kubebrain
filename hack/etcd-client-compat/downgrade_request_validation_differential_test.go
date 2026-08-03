@@ -31,7 +31,7 @@ func TestDowngradeRequestValidationDifferentialAgainstReferenceEtcd(t *testing.T
 		{Name: "enable-malformed-version", Code: "InvalidArgument", Message: "etcdserver: wrong downgrade target version format"},
 		{Name: "unknown-action", Code: "Unknown", Message: "etcdserver: unknown method"},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, downgradeRequestValidationOutcomes(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, downgradeRequestValidationOutcomes(t, compatEndpoint(t)))
 }
 
 func downgradeRequestValidationOutcomes(t *testing.T, endpoint string) []downgradeRequestValidationOutcome {

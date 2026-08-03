@@ -15,7 +15,7 @@ import (
 // committed immediately after Created must be delivered on the same stream.
 func TestFromNowWatchDoesNotLoseImmediatePostCreateWrite(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)

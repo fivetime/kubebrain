@@ -29,7 +29,7 @@ func TestLeaseRenewStressDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeaseRenewStressScenario(t, reference),
-		runLeaseRenewStressScenario(t, compatEndpoint()),
+		runLeaseRenewStressScenario(t, compatEndpoint(t)),
 	)
 }
 

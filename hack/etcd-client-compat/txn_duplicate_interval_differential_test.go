@@ -34,7 +34,7 @@ func TestTxnDuplicateIntervalDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runTxnDuplicateIntervalScenario(t, reference, "etcd"),
-		runTxnDuplicateIntervalScenario(t, compatEndpoint(), "kubebrain"),
+		runTxnDuplicateIntervalScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

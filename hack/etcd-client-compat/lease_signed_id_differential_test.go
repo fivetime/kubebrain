@@ -52,7 +52,7 @@ func TestLeaseSignedIDDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runLeaseSignedIDScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runLeaseSignedIDScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcomes, runLeaseSignedIDScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func signedLeaseExpectedOutcome(name string) leaseSignedIDOutcome {

@@ -39,7 +39,7 @@ func TestAlarmUnknownTypeDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "get-empty", Code: "OK", Members: []uint64{}},
 	}
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runUnknownAlarmScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runUnknownAlarmScenario(t, compatEndpoint(t)))
 }
 
 func runUnknownAlarmScenario(t *testing.T, endpoint string) []unknownAlarmOutcome {

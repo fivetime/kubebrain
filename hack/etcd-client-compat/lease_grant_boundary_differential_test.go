@@ -49,7 +49,7 @@ func TestLeaseGrantBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runLeaseGrantBoundaryScenario(t, reference)
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runLeaseGrantBoundaryScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runLeaseGrantBoundaryScenario(t, compatEndpoint(t)))
 }
 
 func successfulFixedLeaseGrant(name string, ttl int64) leaseGrantBoundaryOutcome {

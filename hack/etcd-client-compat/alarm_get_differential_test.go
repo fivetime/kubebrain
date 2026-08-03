@@ -39,7 +39,7 @@ func TestAlarmGetDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "unknown-alarm", Code: "OK", HeaderIdentitySet: true, HeaderRaftTermPositive: true},
 		{Name: "max-member", Code: "OK", HeaderIdentitySet: true, HeaderRaftTermPositive: true},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runAlarmGetScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runAlarmGetScenario(t, compatEndpoint(t)))
 }
 
 func runAlarmGetScenario(t *testing.T, endpoint string) []alarmGetOutcome {

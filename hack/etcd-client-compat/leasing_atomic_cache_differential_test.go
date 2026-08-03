@@ -31,7 +31,7 @@ func TestLeasingAtomicCacheDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeasingAtomicCacheScenario(t, reference, "etcd"),
-		runLeasingAtomicCacheScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingAtomicCacheScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

@@ -30,7 +30,7 @@ func TestPutFailureGetRetryDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runPutFailureGetRetryScenario(t, reference, "etcd"),
-		runPutFailureGetRetryScenario(t, compatEndpoint(), "kubebrain"),
+		runPutFailureGetRetryScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

@@ -40,7 +40,7 @@ func TestRangeRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runRangeRevisionBoundaryScenario(t, reference)
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runRangeRevisionBoundaryScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runRangeRevisionBoundaryScenario(t, compatEndpoint(t)))
 }
 
 func compactedRangeBoundaryOutcome(name string) rangeRevisionBoundaryOutcome {

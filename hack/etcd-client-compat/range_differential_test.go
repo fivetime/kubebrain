@@ -93,7 +93,7 @@ func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 		FutureErrorMessage: "etcdserver: mvcc: required revision is a future revision",
 	}
 	require.Equal(t, want, etcd)
-	require.Equal(t, etcd, runRangeDifferentialScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, etcd, runRangeDifferentialScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) rangeDifferentialResult {

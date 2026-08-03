@@ -82,7 +82,7 @@ func TestTxnFromKeyExecutionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		},
 	}
 	referenceOutcome := runTxnFromKeyExecutionScenario(t, reference, "etcd")
-	kubebrainOutcome := runTxnFromKeyExecutionScenario(t, compatEndpoint(), "kubebrain")
+	kubebrainOutcome := runTxnFromKeyExecutionScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, kubebrainOutcome)
 }

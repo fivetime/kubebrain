@@ -43,7 +43,7 @@ func TestDowngradeValidateSuccessDifferentialAgainstReferenceEtcd(t *testing.T) 
 		require.True(t, outcome.HeaderIDsNonZero)
 		require.True(t, outcome.HeaderRaftTermPositive)
 	}
-	require.Equal(t, referenceOutcomes, downgradeValidateSuccessOutcomes(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, downgradeValidateSuccessOutcomes(t, compatEndpoint(t)))
 }
 
 func downgradeValidateSuccessOutcomes(t *testing.T, endpoint string) []downgradeValidateSuccessOutcome {

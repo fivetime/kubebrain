@@ -41,7 +41,7 @@ func TestHTTPProbesIgnoreUnknownAlarmDifferentialAgainstReferenceEtcd(t *testing
 	}
 	referenceOutcomes := runUnknownAlarmProbeScenario(t, reference)
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runUnknownAlarmProbeScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runUnknownAlarmProbeScenario(t, compatEndpoint(t)))
 }
 
 func runUnknownAlarmProbeScenario(t *testing.T, endpoint string) []unknownAlarmProbeOutcome {

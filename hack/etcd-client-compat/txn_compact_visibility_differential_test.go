@@ -32,7 +32,7 @@ func TestWriteTxnCompactedRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runWriteTxnCompactedRangeScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runWriteTxnCompactedRangeScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runWriteTxnCompactedRangeScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runWriteTxnCompactedRangeScenario(t *testing.T, endpoint, instance string) writeTxnCompactedRangeOutcome {

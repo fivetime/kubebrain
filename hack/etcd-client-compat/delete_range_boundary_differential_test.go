@@ -77,7 +77,7 @@ func TestDeleteRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runDeleteRangeBoundaryScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runDeleteRangeBoundaryScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcomes, runDeleteRangeBoundaryScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runDeleteRangeBoundaryScenario(t *testing.T, endpoint, instance string) []deleteRangeBoundaryOutcome {

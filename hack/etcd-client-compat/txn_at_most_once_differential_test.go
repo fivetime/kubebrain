@@ -32,7 +32,7 @@ func TestTxnAtMostOnceDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runTxnAtMostOnceScenario(t, reference, "etcd"),
-		runTxnAtMostOnceScenario(t, compatEndpoint(), "kubebrain"),
+		runTxnAtMostOnceScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

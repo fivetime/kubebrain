@@ -37,7 +37,7 @@ func TestClientAPIVersionDifferentialAgainstReferenceEtcd(t *testing.T) {
 			Message: `header key "client-api-version" contains value with non-printable ASCII characters`,
 		},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runClientAPIVersionScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runClientAPIVersionScenario(t, compatEndpoint(t)))
 }
 
 func runClientAPIVersionScenario(t *testing.T, endpoint string) []clientAPIVersionOutcome {

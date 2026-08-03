@@ -38,7 +38,7 @@ func TestCompactRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runCompactRevisionBoundaryScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runCompactRevisionBoundaryScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcomes, runCompactRevisionBoundaryScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runCompactRevisionBoundaryScenario(

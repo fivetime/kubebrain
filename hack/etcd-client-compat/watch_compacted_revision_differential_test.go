@@ -53,7 +53,7 @@ func TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runWatchCompactedRevisionScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runWatchCompactedRevisionScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runWatchCompactedRevisionScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runWatchCompactedRevisionScenario(t *testing.T, endpoint, instance string) watchCompactedRevisionOutcome {

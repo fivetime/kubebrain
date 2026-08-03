@@ -41,7 +41,7 @@ func TestUnknownAlarmMetricDifferentialAgainstReferenceEtcd(t *testing.T) {
 	referenceOutcomes := runUnknownAlarmMetricScenario(t, reference, referenceMetrics)
 	require.Equal(t, want, referenceOutcomes)
 	require.Equal(t, referenceOutcomes,
-		runUnknownAlarmMetricScenario(t, compatEndpoint(), candidateMetrics))
+		runUnknownAlarmMetricScenario(t, compatEndpoint(t), candidateMetrics))
 }
 
 func TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas(t *testing.T) {

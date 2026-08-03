@@ -28,7 +28,7 @@ func TestMemberAddPeerURLConflictDifferentialAgainstReferenceEtcd(t *testing.T) 
 	require.Equal(t, memberAddPeerURLConflictOutcome{
 		Code: "FailedPrecondition", Message: "etcdserver: Peer URLs already exists",
 	}, referenceOutcome)
-	require.Equal(t, referenceOutcome, memberAddPeerURLConflictOutcomeForEndpoint(t, compatEndpoint()))
+	require.Equal(t, referenceOutcome, memberAddPeerURLConflictOutcomeForEndpoint(t, compatEndpoint(t)))
 }
 
 func TestMemberAddWhitespaceNormalizedPeerURLConflictDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -42,7 +42,7 @@ func TestMemberAddWhitespaceNormalizedPeerURLConflictDifferentialAgainstReferenc
 	require.Equal(t, memberAddPeerURLConflictOutcome{
 		Code: "FailedPrecondition", Message: "etcdserver: Peer URLs already exists",
 	}, referenceOutcome)
-	require.Equal(t, referenceOutcome, memberAddPeerURLConflictOutcomeForEndpointWithTransform(t, compatEndpoint(), func(peerURL string) string {
+	require.Equal(t, referenceOutcome, memberAddPeerURLConflictOutcomeForEndpointWithTransform(t, compatEndpoint(t), func(peerURL string) string {
 		return " \t" + peerURL + "\n "
 	}))
 }

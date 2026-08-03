@@ -30,7 +30,7 @@ func TestLeasingBranchingDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeasingBranchingScenario(t, reference, "etcd"),
-		runLeasingBranchingScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingBranchingScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

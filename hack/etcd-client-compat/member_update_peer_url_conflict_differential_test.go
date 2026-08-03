@@ -29,7 +29,7 @@ func TestMemberUpdatePeerURLConflictDifferentialAgainstReferenceEtcd(t *testing.
 	require.Equal(t, memberUpdatePeerURLConflictOutcome{
 		Code: "FailedPrecondition", Message: "etcdserver: Peer URLs already exists",
 	}, referenceOutcome)
-	require.Equal(t, referenceOutcome, memberUpdatePeerURLConflictOutcomeForEndpoint(t, compatEndpoint(), false))
+	require.Equal(t, referenceOutcome, memberUpdatePeerURLConflictOutcomeForEndpoint(t, compatEndpoint(t), false))
 }
 
 func memberUpdatePeerURLConflictOutcomeForEndpoint(t *testing.T, endpoint string, allowFixtureMember bool) memberUpdatePeerURLConflictOutcome {

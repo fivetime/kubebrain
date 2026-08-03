@@ -36,7 +36,7 @@ func TestTxnCompareEnumDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	require.Equal(t,
 		runCompareEnumScenario(t, reference, "etcd"),
-		runCompareEnumScenario(t, compatEndpoint(), "kubebrain"),
+		runCompareEnumScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

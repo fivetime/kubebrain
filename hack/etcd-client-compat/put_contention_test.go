@@ -25,7 +25,7 @@ func TestConcurrentPutSameKeyNeverFails(t *testing.T) {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
-			cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 5 * time.Second})
+			cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 5 * time.Second})
 			if err != nil {
 				errCh <- err
 				return
@@ -46,7 +46,7 @@ func TestConcurrentPutSameKeyNeverFails(t *testing.T) {
 	close(errCh)
 
 	t.Cleanup(func() {
-		cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 5 * time.Second})
+		cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 5 * time.Second})
 		if err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			_, _ = cli.Delete(ctx, key)

@@ -39,7 +39,7 @@ func TestGeneratedNestedTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceCases := runGeneratedNestedTxnCases(t, reference, "reference")
-	kubeBrainCases := runGeneratedNestedTxnCases(t, compatEndpoint(), "kubebrain")
+	kubeBrainCases := runGeneratedNestedTxnCases(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceCases, kubeBrainCases)
 }
 

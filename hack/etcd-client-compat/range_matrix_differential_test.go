@@ -31,7 +31,7 @@ func TestRangeOptionMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	want := runRangeOptionMatrixScenario(t, reference, "etcd")
-	got := runRangeOptionMatrixScenario(t, compatEndpoint(), "kubebrain")
+	got := runRangeOptionMatrixScenario(t, compatEndpoint(t), "kubebrain")
 	require.Len(t, got, len(want))
 	for i := range want {
 		require.Equal(t, want[i], got[i], want[i].Name)

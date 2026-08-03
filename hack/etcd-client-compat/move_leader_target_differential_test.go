@@ -31,7 +31,7 @@ func TestMoveLeaderMissingTargetDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Target: 0, Code: "FailedPrecondition", Message: "etcdserver: bad leader transferee"},
 		{Target: math.MaxUint64, Code: "FailedPrecondition", Message: "etcdserver: bad leader transferee"},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, moveLeaderMissingTargetOutcomes(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, moveLeaderMissingTargetOutcomes(t, compatEndpoint(t)))
 }
 
 func moveLeaderMissingTargetOutcomes(t *testing.T, endpoint string) []moveLeaderTargetOutcome {

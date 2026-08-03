@@ -56,7 +56,7 @@ func TestLeaseReadBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runLeaseReadBoundaryScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runLeaseReadBoundaryScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runLeaseReadBoundaryScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runLeaseReadBoundaryScenario(t *testing.T, endpoint, instance string) leaseReadBoundaryOutcome {

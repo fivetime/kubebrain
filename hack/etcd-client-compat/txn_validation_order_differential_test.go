@@ -33,7 +33,7 @@ func TestTxnValidationOrderDifferentialAgainstReferenceEtcd(t *testing.T) {
 	prefix := fmt.Sprintf("/dbaas-txn-static-validation-order/%d/", time.Now().UnixNano())
 	require.Equal(t,
 		runTxnValidationOrderScenario(t, reference, prefix),
-		runTxnValidationOrderScenario(t, compatEndpoint(), prefix),
+		runTxnValidationOrderScenario(t, compatEndpoint(t), prefix),
 	)
 }
 
@@ -46,7 +46,7 @@ func TestTxnExecutionValidationOrderDifferentialAgainstReferenceEtcd(t *testing.
 	prefix := fmt.Sprintf("/dbaas-txn-execution-validation-order/%d/", time.Now().UnixNano())
 	require.Equal(t,
 		runTxnExecutionValidationOrderScenario(t, reference, prefix),
-		runTxnExecutionValidationOrderScenario(t, compatEndpoint(), prefix),
+		runTxnExecutionValidationOrderScenario(t, compatEndpoint(t), prefix),
 	)
 }
 

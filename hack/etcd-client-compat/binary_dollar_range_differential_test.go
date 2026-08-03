@@ -46,7 +46,7 @@ func TestDollarRevisionCollisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run dollar revision-collision differential tests")
 	}
 	referenceOutcome := runDollarRevisionCollisionScenario(t, reference, "reference")
-	require.Equal(t, referenceOutcome, runDollarRevisionCollisionScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runDollarRevisionCollisionScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runDollarRevisionCollisionScenario(t *testing.T, endpoint, instance string) dollarRevisionCollisionOutcome {
@@ -130,7 +130,7 @@ func TestDollarKeyNarrowRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run dollar-key range differential tests")
 	}
 	referenceOutcome := runDollarKeyNarrowRangeScenario(t, reference, "reference")
-	require.Equal(t, referenceOutcome, runDollarKeyNarrowRangeScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runDollarKeyNarrowRangeScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) dollarKeyRangeOutcome {

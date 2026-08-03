@@ -24,7 +24,7 @@ func TestAlarmZeroMemberDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
-	require.Equal(t, runZeroMemberAlarmScenario(t, reference), runZeroMemberAlarmScenario(t, compatEndpoint()))
+	require.Equal(t, runZeroMemberAlarmScenario(t, reference), runZeroMemberAlarmScenario(t, compatEndpoint(t)))
 }
 
 func runZeroMemberAlarmScenario(t *testing.T, endpoint string) zeroMemberAlarmOutcome {

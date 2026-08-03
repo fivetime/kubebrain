@@ -18,7 +18,7 @@ func TestTxnCompactedRangeNeverAppliesFollowingWrite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)

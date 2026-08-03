@@ -47,7 +47,7 @@ func TestSTMDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	require.Equal(t,
 		runSTMDeterministicScenario(t, reference, "etcd"),
-		runSTMDeterministicScenario(t, compatEndpoint(), "kubebrain"),
+		runSTMDeterministicScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 
@@ -58,7 +58,7 @@ func TestTxnCrossKeyFastShapeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	require.Equal(t,
 		runCrossKeyTxnScenario(t, reference, "etcd"),
-		runCrossKeyTxnScenario(t, compatEndpoint(), "kubebrain"),
+		runCrossKeyTxnScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

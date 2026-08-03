@@ -40,7 +40,7 @@ func TestWatchMixedPrevKVStreamsDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runWatchMixedPrevKVStreamsScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runWatchMixedPrevKVStreamsScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runWatchMixedPrevKVStreamsScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runWatchMixedPrevKVStreamsScenario(t *testing.T, endpoint, instance string) mixedPrevKVStreamsOutcome {

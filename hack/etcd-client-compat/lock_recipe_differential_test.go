@@ -32,7 +32,7 @@ func TestLockRecipeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcome := runLockRecipeScenario(t, reference, "etcd")
-	kubeBrainOutcome := runLockRecipeScenario(t, compatEndpoint(), "kubebrain")
+	kubeBrainOutcome := runLockRecipeScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceOutcome, kubeBrainOutcome)
 	require.Equal(t, lockRecipeOutcome{
 		ReadersOverlap:                    true,

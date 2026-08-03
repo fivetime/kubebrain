@@ -36,7 +36,7 @@ func TestHTTPHealthUnknownAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runUnknownAlarmHTTPHealthScenario(t, reference)
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runUnknownAlarmHTTPHealthScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runUnknownAlarmHTTPHealthScenario(t, compatEndpoint(t)))
 }
 
 func runUnknownAlarmHTTPHealthScenario(t *testing.T, endpoint string) []unknownAlarmHTTPHealthOutcome {

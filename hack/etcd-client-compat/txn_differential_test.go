@@ -69,7 +69,7 @@ func TestTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 		ErrorMessage: "etcdserver: key not found",
 	}
 	require.Equal(t, want, etcd)
-	require.Equal(t, etcd, runTxnDifferentialScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, etcd, runTxnDifferentialScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 type unconditionalTxnResult struct {
@@ -98,7 +98,7 @@ func TestTxnUnconditionalFailureBranchDifferentialAgainstReferenceEtcd(t *testin
 		WrittenValue:   "value",
 	}
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runUnconditionalTxnScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runUnconditionalTxnScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runUnconditionalTxnScenario(t *testing.T, endpoint, instance string) unconditionalTxnResult {
@@ -174,7 +174,7 @@ func TestHistoricalLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 		CurrentValue:     "plain-again",
 	}
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runHistoricalLeaseScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runHistoricalLeaseScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runHistoricalLeaseScenario(t *testing.T, endpoint, instance string) historicalLeaseResult {
@@ -237,7 +237,7 @@ func TestTxnConcurrentCreateDifferentialAgainstReferenceEtcd(t *testing.T) {
 		FinalCreateRev: 1, FinalModRev: 1, FinalVersion: 1, FinalMatchesWinner: true,
 	}
 	require.Equal(t, want, etcd)
-	require.Equal(t, etcd, runConcurrentCreateScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, etcd, runConcurrentCreateScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 type txnLeaseResult struct {
@@ -273,7 +273,7 @@ func TestTxnLeaseAttachmentDifferentialAgainstReferenceEtcd(t *testing.T) {
 		DuplicateAbsent: true,
 	}
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runTxnLeaseScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runTxnLeaseScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runTxnLeaseScenario(t *testing.T, endpoint, instance string) txnLeaseResult {

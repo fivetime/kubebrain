@@ -36,7 +36,7 @@ func TestWatchFilterProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runWatchFilterProgressScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runWatchFilterProgressScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runWatchFilterProgressScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runWatchFilterProgressScenario(t *testing.T, endpoint, instance string) watchFilterProgressOutcome {

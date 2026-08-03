@@ -68,7 +68,7 @@ func TestHashKVRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			Message: "etcdserver: mvcc: required revision is a future revision",
 		},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runHashKVRevisionBoundaryScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcomes, runHashKVRevisionBoundaryScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runHashKVRevisionBoundaryScenario(t *testing.T, endpoint, instance string) []hashKVRevisionOutcome {

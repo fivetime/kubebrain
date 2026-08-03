@@ -37,7 +37,7 @@ func TestLeasingAmbiguousMutationsDifferentialAgainstReferenceEtcd(t *testing.T)
 
 	require.Equal(t,
 		runLeasingAmbiguousMutationsScenario(t, reference, "etcd"),
-		runLeasingAmbiguousMutationsScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingAmbiguousMutationsScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

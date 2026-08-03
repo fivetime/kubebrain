@@ -15,7 +15,7 @@ import (
 // appear as an event, but an immediate progress request must cover its revision.
 func TestFilteredWatchProgressCoversSuppressedWrites(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)

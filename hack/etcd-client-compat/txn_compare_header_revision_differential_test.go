@@ -19,7 +19,7 @@ func TestTxnCompareHeaderRevisionDifferentialAgainstReferenceEtcd(t *testing.T) 
 	}
 
 	require.Zero(t, runTxnCompareHeaderRevisionScenario(t, reference, "etcd"))
-	require.Zero(t, runTxnCompareHeaderRevisionScenario(t, compatEndpoint(), "kubebrain"))
+	require.Zero(t, runTxnCompareHeaderRevisionScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 type txnRevisionOutcome struct {
@@ -37,7 +37,7 @@ func TestTxnRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 	want := txnRevisionOutcome{ReadOnlyDelta: 0, EmptyDeleteDelta: 0, WriteDelta: 1}
 	referenceOutcome := runTxnRevisionScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runTxnRevisionScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runTxnRevisionScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runTxnRevisionScenario(t *testing.T, endpoint, instance string) txnRevisionOutcome {

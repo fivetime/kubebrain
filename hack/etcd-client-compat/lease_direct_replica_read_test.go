@@ -22,7 +22,7 @@ func TestLeaseReadAndRevokeAcrossDirectReplicas(t *testing.T) {
 	requireDistinctDirectReplicaTopology(t, endpoints)
 
 	service, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 5 * time.Second,
 	})
 	require.NoError(t, err)

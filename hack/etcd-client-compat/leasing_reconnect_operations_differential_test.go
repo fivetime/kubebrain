@@ -29,7 +29,7 @@ func TestLeasingReconnectOperationsDifferentialAgainstReferenceEtcd(t *testing.T
 
 	require.Equal(t,
 		runLeasingReconnectOperationsScenario(t, reference, "etcd"),
-		runLeasingReconnectOperationsScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingReconnectOperationsScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

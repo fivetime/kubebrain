@@ -33,7 +33,7 @@ func TestLeasingClientDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeasingClientScenario(t, reference, "etcd"),
-		runLeasingClientScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingClientScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

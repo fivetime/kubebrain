@@ -37,7 +37,7 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcome := runNamingScenario(t, reference, "etcd")
-	kubeBrainOutcome := runNamingScenario(t, compatEndpoint(), "kubebrain")
+	kubeBrainOutcome := runNamingScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceOutcome, kubeBrainOutcome)
 	require.Equal(t, namingOutcome{
 		InitialAtomicUpdates: []string{"add:e1:127.0.0.1:2001:metadata-1", "add:e2:127.0.0.1:2002:metadata-2"},

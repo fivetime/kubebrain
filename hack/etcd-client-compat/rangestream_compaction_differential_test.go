@@ -30,7 +30,7 @@ func TestRangeStreamPartialCompactionDifferential(t *testing.T) {
 	if reference == "" || kubebrain == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT and KUBEBRAIN_COMPACTION_ENDPOINT to disposable instances")
 	}
-	require.NotEqual(t, compatEndpoint(), kubebrain,
+	require.NotEqual(t, compatEndpoint(t), kubebrain,
 		"KUBEBRAIN_COMPACTION_ENDPOINT must not be the shared main endpoint")
 
 	want := runRangeStreamPartialCompaction(t, reference, "reference")

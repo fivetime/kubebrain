@@ -35,7 +35,7 @@ func TestMemberListFlagsDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcomes, referenceCount := memberListFlagOutcomes(t, reference)
-	kubebrainOutcomes, kubebrainCount := memberListFlagOutcomes(t, compatEndpoint())
+	kubebrainOutcomes, kubebrainCount := memberListFlagOutcomes(t, compatEndpoint(t))
 	expectedKubeBrainCount, err := expectedKubeBrainMemberCount()
 	require.NoError(t, err)
 	require.Equal(t, referenceOutcomes, kubebrainOutcomes)
@@ -136,7 +136,7 @@ func TestMemberListHeaderDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 	referenceRevision := memberListHeaderRevision(t, reference)
-	kubebrainRevision := memberListHeaderRevision(t, compatEndpoint())
+	kubebrainRevision := memberListHeaderRevision(t, compatEndpoint(t))
 	require.Equal(t, referenceRevision, kubebrainRevision)
 	require.Zero(t, kubebrainRevision)
 }
@@ -164,7 +164,7 @@ func memberListHeaderRevision(t *testing.T, endpoint string) int64 {
 
 func TestMemberListSupportsOfficialClientSync(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)
@@ -194,7 +194,7 @@ func TestMemberListSupportsOfficialClientSync(t *testing.T) {
 	// by the in-cluster probe, which must prove the synchronized endpoints are
 	// independently dialable.
 	if os.Getenv("KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE") != "1" {
-		cli.SetEndpoints(compatEndpoint())
+		cli.SetEndpoints(compatEndpoint(t))
 	}
 
 	// The synchronized set may include a configured member that is currently

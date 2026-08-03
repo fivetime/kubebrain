@@ -28,7 +28,7 @@ func TestGetCancelConnectionDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runGetCancelConnectionScenario(t, reference, "etcd"),
-		runGetCancelConnectionScenario(t, compatEndpoint(), "kubebrain"),
+		runGetCancelConnectionScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

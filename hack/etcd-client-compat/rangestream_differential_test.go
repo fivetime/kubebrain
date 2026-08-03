@@ -82,7 +82,7 @@ func TestRangeStreamDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run RangeStream differential tests")
 	}
-	kubebrain := runRangeStreamScenario(t, compatEndpoint(), "kubebrain")
+	kubebrain := runRangeStreamScenario(t, compatEndpoint(t), "kubebrain")
 	etcd := runRangeStreamScenario(t, reference, "etcd")
 	require.Equal(t, etcd, kubebrain)
 }

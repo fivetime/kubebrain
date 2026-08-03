@@ -28,7 +28,7 @@ func TestTxnCompareMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runCompareMatrixScenario(t, reference, "etcd"),
-		runCompareMatrixScenario(t, compatEndpoint(), "kubebrain"),
+		runCompareMatrixScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

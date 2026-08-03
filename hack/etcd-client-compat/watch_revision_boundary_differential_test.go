@@ -73,7 +73,7 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runWatchRevisionBoundaryScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runWatchRevisionBoundaryScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcomes, runWatchRevisionBoundaryScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runWatchRevisionBoundaryScenario(

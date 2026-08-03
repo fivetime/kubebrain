@@ -29,7 +29,7 @@ func TestEmptyKeyNamespaceDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	want := runEmptyKeyNamespaceScenario(t, reference, "etcd")
-	got := runEmptyKeyNamespaceScenario(t, compatEndpoint(), "kubebrain")
+	got := runEmptyKeyNamespaceScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, want, got)
 }
 

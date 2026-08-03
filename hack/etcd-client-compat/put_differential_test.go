@@ -64,7 +64,7 @@ func TestPutDifferentialAgainstReferenceEtcd(t *testing.T) {
 		LeaseWithIgnore:    authErrorOutcome{Code: codes.InvalidArgument, Message: "etcdserver: lease is provided"},
 	}
 	require.Equal(t, want, etcd)
-	require.Equal(t, etcd, runPutDifferentialScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, etcd, runPutDifferentialScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runPutDifferentialScenario(t *testing.T, endpoint, instance string) putDifferentialResult {

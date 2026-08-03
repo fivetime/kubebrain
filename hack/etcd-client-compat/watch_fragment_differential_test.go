@@ -20,7 +20,7 @@ func TestWatchFragmentDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runWatchFragmentClientScenario(t, reference, "etcd"),
-		runWatchFragmentClientScenario(t, compatEndpoint(), "kubebrain"),
+		runWatchFragmentClientScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

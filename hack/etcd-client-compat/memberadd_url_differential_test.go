@@ -32,7 +32,7 @@ func TestMemberAddURLValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "unsupported-scheme", Code: "InvalidArgument", Message: "etcdserver: given member URLs are invalid"},
 		{Name: "missing-host", Code: "InvalidArgument", Message: "etcdserver: given member URLs are invalid"},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, memberAddURLOutcomes(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, memberAddURLOutcomes(t, compatEndpoint(t)))
 }
 
 func memberAddURLOutcomes(t *testing.T, endpoint string) []memberAddURLOutcome {

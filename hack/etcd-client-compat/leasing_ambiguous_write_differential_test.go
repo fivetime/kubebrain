@@ -32,7 +32,7 @@ func TestLeasingAmbiguousWriteDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeasingAmbiguousWriteScenario(t, reference, "etcd"),
-		runLeasingAmbiguousWriteScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingAmbiguousWriteScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

@@ -13,7 +13,7 @@ import (
 // must land at ONE revision (etcd semantics). Before the fix each op allocated
 // its own revision, so a and b below would differ.
 func TestTxnMultiWriteSingleRevision(t *testing.T) {
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
 	defer cli.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -56,7 +56,7 @@ func TestTxnMultiWriteSingleRevision(t *testing.T) {
 // TestTxnCompareMultiWriteSingleRevision covers the compare + multi-write shape:
 // the compare picks the Then branch and both writes land at one revision.
 func TestTxnCompareMultiWriteSingleRevision(t *testing.T) {
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
 	defer cli.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -91,7 +91,7 @@ func TestTxnCompareMultiWriteSingleRevision(t *testing.T) {
 // TestTxnRangeUsesOrderedStagedView verifies etcd's storeTxnWrite behavior:
 // reads observe earlier writes in the same transaction, but not later writes.
 func TestTxnRangeUsesOrderedStagedView(t *testing.T) {
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
 	defer cli.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -123,7 +123,7 @@ func TestTxnRangeUsesOrderedStagedView(t *testing.T) {
 // TestTxnOverlappingDeleteRangesShareOneRevision verifies that each delete sees
 // prior transaction deletes while the final storage update remains atomic.
 func TestTxnOverlappingDeleteRangesShareOneRevision(t *testing.T) {
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
 	defer cli.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

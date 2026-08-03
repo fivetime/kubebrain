@@ -29,7 +29,7 @@ func TestLeasingSessionExpiryDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeasingSessionExpiryScenario(t, reference, "etcd"),
-		runLeasingSessionExpiryScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingSessionExpiryScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

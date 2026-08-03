@@ -47,7 +47,7 @@ func TestLeaseKeepAliveRevokeBufferDifferentialAgainstReferenceEtcd(t *testing.T
 		LeaseMissing:          true,
 	}
 	require.Equal(t, want, runLeaseKeepAliveRevokeBufferScenario(t, reference, "reference"))
-	require.Equal(t, want, runLeaseKeepAliveRevokeBufferScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, want, runLeaseKeepAliveRevokeBufferScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runLeaseKeepAliveRevokeBufferScenario(

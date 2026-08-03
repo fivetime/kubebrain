@@ -34,7 +34,7 @@ func TestRangeStreamValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "revision-filter", Code: "Unimplemented", Message: "RangeStream does not support revision filters"},
 		{Name: "custom-sort-and-filter", Code: "Unimplemented", Message: "RangeStream does not support custom sort orders"},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runRangeStreamValidationScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runRangeStreamValidationScenario(t, compatEndpoint(t)))
 }
 
 func runRangeStreamValidationScenario(t *testing.T, endpoint string) []rangeStreamValidationOutcome {

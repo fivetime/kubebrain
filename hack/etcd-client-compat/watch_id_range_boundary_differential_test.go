@@ -51,7 +51,7 @@ func TestWatchIDRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runWatchIDRangeBoundaryScenario(t, reference)
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runWatchIDRangeBoundaryScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runWatchIDRangeBoundaryScenario(t, compatEndpoint(t)))
 }
 
 func watchCreatedBoundaryOutcome(name string, id int64) watchIDRangeBoundaryOutcome {

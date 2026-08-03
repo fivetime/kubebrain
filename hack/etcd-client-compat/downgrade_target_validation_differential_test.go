@@ -33,7 +33,7 @@ func TestDowngradeTargetValidationDifferentialAgainstReferenceEtcd(t *testing.T)
 		{Name: "validate-too-old", Code: "InvalidArgument", Message: "etcdserver: invalid downgrade target version"},
 		{Name: "enable-future", Code: "InvalidArgument", Message: "etcdserver: invalid downgrade target version"},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, downgradeTargetValidationOutcomes(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, downgradeTargetValidationOutcomes(t, compatEndpoint(t)))
 }
 
 func downgradeTargetValidationOutcomes(t *testing.T, endpoint string) []downgradeTargetValidationOutcome {

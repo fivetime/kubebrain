@@ -31,7 +31,7 @@ func TestRangeStreamCommonShapesDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run RangeStream common-shape differential tests")
 	}
 	want := runRangeStreamCommonShapes(t, reference, "reference")
-	got := runRangeStreamCommonShapes(t, compatEndpoint(), "kubebrain")
+	got := runRangeStreamCommonShapes(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, want, got)
 }
 

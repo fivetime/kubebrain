@@ -34,10 +34,10 @@ func TestMakeMirrorBidirectionalDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceToKubeBrain := runMakeMirrorDirection(
-		t, etcdctl, reference, compatEndpoint(), "reference-to-kubebrain",
+		t, etcdctl, reference, compatEndpoint(t), "reference-to-kubebrain",
 	)
 	kubeBrainToReference := runMakeMirrorDirection(
-		t, etcdctl, compatEndpoint(), reference, "kubebrain-to-reference",
+		t, etcdctl, compatEndpoint(t), reference, "kubebrain-to-reference",
 	)
 	want := makeMirrorOutcome{
 		BaseCopied:              true,
@@ -62,7 +62,7 @@ func TestMakeMirrorPaginatedBaseDifferentialFromKubeBrain(t *testing.T) {
 	}
 
 	source, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second,
+		Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, source.Close()) })
@@ -102,7 +102,7 @@ func TestMakeMirrorPaginatedBaseDifferentialFromKubeBrain(t *testing.T) {
 		require.True(t, response.Succeeded)
 	}
 
-	stopMirror := startMakeMirror(t, etcdctl, compatEndpoint(), reference, sourcePrefix, destinationPrefix)
+	stopMirror := startMakeMirror(t, etcdctl, compatEndpoint(t), reference, sourcePrefix, destinationPrefix)
 	require.Eventually(t, func() bool {
 		response, getErr := destination.Get(ctx, destinationPrefix, clientv3.WithPrefix())
 		if getErr != nil || len(response.Kvs) != keyCount {

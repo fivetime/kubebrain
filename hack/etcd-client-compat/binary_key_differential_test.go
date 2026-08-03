@@ -32,7 +32,7 @@ func TestBinaryKeyDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runBinaryKeyScenario(t, reference),
-		runBinaryKeyScenario(t, compatEndpoint()),
+		runBinaryKeyScenario(t, compatEndpoint(t)),
 	)
 }
 

@@ -48,7 +48,7 @@ func TestMaintenanceHashHeaderEnvelopeDifferentialAgainstReferenceEtcd(t *testin
 	}
 	referenceOutcome := readHashHeaderEnvelope(t, reference)
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, readHashHeaderEnvelope(t, compatEndpoint()))
+	require.Equal(t, referenceOutcome, readHashHeaderEnvelope(t, compatEndpoint(t)))
 }
 
 func readHashHeaderEnvelope(t *testing.T, endpoint string) hashHeaderEnvelopeOutcome {

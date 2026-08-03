@@ -33,7 +33,7 @@ func TestLeaseSwitchConcurrentRevokeDifferentialAgainstReferenceEtcd(t *testing.
 	const rounds = 24
 	require.Equal(t,
 		runLeaseSwitchScenario(t, reference, "etcd", rounds, nil),
-		runLeaseSwitchScenario(t, compatEndpoint(), "kubebrain", rounds, nil),
+		runLeaseSwitchScenario(t, compatEndpoint(t), "kubebrain", rounds, nil),
 	)
 }
 

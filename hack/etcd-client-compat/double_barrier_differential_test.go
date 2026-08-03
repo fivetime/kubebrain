@@ -32,7 +32,7 @@ func TestDoubleBarrierDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	referenceOutcome := runDoubleBarrierScenario(t, reference, "etcd")
-	kubeBrainOutcome := runDoubleBarrierScenario(t, compatEndpoint(), "kubebrain")
+	kubeBrainOutcome := runDoubleBarrierScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceOutcome, kubeBrainOutcome)
 	require.Equal(t, doubleBarrierOutcome{
 		FirstTwoEnterBlocked:   true,

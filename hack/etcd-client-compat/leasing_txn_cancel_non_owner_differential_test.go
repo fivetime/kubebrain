@@ -33,7 +33,7 @@ func TestLeasingTxnCancelNonOwnerDifferentialAgainstReferenceEtcd(t *testing.T) 
 
 	require.Equal(t,
 		runLeasingTxnCancelNonOwnerScenario(t, reference, "etcd"),
-		runLeasingTxnCancelNonOwnerScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingTxnCancelNonOwnerScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

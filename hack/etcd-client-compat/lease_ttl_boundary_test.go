@@ -14,7 +14,7 @@ import (
 // after the lessor removes the lease.
 func TestLeaseTimeToLiveReportsZeroBeforeExpiry(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)

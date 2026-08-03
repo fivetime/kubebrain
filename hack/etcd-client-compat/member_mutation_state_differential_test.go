@@ -33,7 +33,7 @@ func TestMemberMutationStateDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "promote-missing", Code: "NotFound", Message: "etcdserver: member not found"},
 		{Name: "promote-voter", Code: "FailedPrecondition", Message: "etcdserver: can only promote a learner member"},
 	}, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, memberMutationStateOutcomes(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, memberMutationStateOutcomes(t, compatEndpoint(t)))
 }
 
 func memberMutationStateOutcomes(t *testing.T, endpoint string) []memberMutationStateOutcome {

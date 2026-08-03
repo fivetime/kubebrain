@@ -53,7 +53,7 @@ func TestLeaseKeepAliveRevokeBoundaryDifferentialAgainstReferenceEtcd(t *testing
 	}
 	referenceOutcomes := runLeaseKeepAliveRevokeBoundaryScenario(t, reference)
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runLeaseKeepAliveRevokeBoundaryScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runLeaseKeepAliveRevokeBoundaryScenario(t, compatEndpoint(t)))
 }
 
 func keepAliveMissingOutcome(name string) leaseKeepAliveBoundaryOutcome {

@@ -28,7 +28,7 @@ func TestLeasingReconnectCompactionDifferentialAgainstReferenceEtcd(t *testing.T
 
 	require.Equal(t,
 		runLeasingReconnectCompactionScenario(t, reference, "etcd"),
-		runLeasingReconnectCompactionScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingReconnectCompactionScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

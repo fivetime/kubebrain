@@ -29,7 +29,7 @@ func TestBinaryMutationDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runBinaryMutationScenario(t, reference),
-		runBinaryMutationScenario(t, compatEndpoint()),
+		runBinaryMutationScenario(t, compatEndpoint(t)),
 	)
 }
 

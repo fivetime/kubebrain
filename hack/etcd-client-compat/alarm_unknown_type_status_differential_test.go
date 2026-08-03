@@ -41,7 +41,7 @@ func TestAlarmUnknownTypeStatusDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := runUnknownAlarmStatusScenario(t, reference, memberID, alarm)
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runUnknownAlarmStatusScenario(t, compatEndpoint(), memberID, alarm))
+	require.Equal(t, referenceOutcomes, runUnknownAlarmStatusScenario(t, compatEndpoint(t), memberID, alarm))
 }
 
 func runUnknownAlarmStatusScenario(

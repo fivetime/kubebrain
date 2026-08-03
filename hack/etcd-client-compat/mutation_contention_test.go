@@ -17,7 +17,7 @@ import (
 // possible pre-Delete point, so etcd must report Deleted=1.
 func TestConcurrentPutDeleteNeverReportsSpuriousMiss(t *testing.T) {
 	cli, err := clientv3.New(clientv3.Config{
-		Endpoints:   []string{compatEndpoint()},
+		Endpoints:   []string{compatEndpoint(t)},
 		DialTimeout: 5 * time.Second,
 	})
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestConcurrentUnconditionalTxnSameKeyNeverFails(t *testing.T) {
 		go func(writer int) {
 			defer wg.Done()
 			cli, err := clientv3.New(clientv3.Config{
-				Endpoints: []string{compatEndpoint()}, DialTimeout: 5 * time.Second,
+				Endpoints: []string{compatEndpoint(t)}, DialTimeout: 5 * time.Second,
 			})
 			if err != nil {
 				errCh <- err
@@ -105,7 +105,7 @@ func TestConcurrentUnconditionalTxnSameKeyNeverFails(t *testing.T) {
 	}
 
 	t.Cleanup(func() {
-		cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 5 * time.Second})
+		cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 5 * time.Second})
 		if err != nil {
 			return
 		}

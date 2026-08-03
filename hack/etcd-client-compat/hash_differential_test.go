@@ -39,7 +39,7 @@ func TestHashDifferentialAgainstReferenceEtcd(t *testing.T) {
 		RevisionAdvanced:        true,
 		HashChangedAfterWrite:   true,
 	}, referenceOutcome)
-	require.Equal(t, referenceOutcome, runHashDifferentialScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcome, runHashDifferentialScenario(t, compatEndpoint(t)))
 }
 
 func runHashDifferentialScenario(t *testing.T, endpoint string) hashDifferentialOutcome {

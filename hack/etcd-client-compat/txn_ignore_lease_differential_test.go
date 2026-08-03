@@ -64,7 +64,7 @@ func TestTxnIgnoreLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 		SelectedBadLeaseCode: "Unknown", SelectedBadLeaseError: "etcdserver: requested lease not found",
 	}
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runTxnIgnoreLeaseScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runTxnIgnoreLeaseScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runTxnIgnoreLeaseScenario(t *testing.T, endpoint, instance string) txnIgnoreLeaseOutcome {

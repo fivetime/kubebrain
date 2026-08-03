@@ -49,7 +49,7 @@ func TestNamespaceDifferentialAgainstReferenceEtcd(t *testing.T) {
 		OutsideValue:         "outside",
 	}
 	referenceOutcome := runNamespaceScenario(t, reference, "etcd")
-	kubebrainOutcome := runNamespaceScenario(t, compatEndpoint(), "kubebrain")
+	kubebrainOutcome := runNamespaceScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, kubebrainOutcome)
 }

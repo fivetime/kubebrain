@@ -31,7 +31,7 @@ func TestPutAtMostOnceDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runPutAtMostOnceScenario(t, reference, "etcd"),
-		runPutAtMostOnceScenario(t, compatEndpoint(), "kubebrain"),
+		runPutAtMostOnceScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

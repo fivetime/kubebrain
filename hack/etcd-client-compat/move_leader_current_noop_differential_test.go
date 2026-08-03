@@ -29,7 +29,7 @@ func TestMoveLeaderCurrentLeaderNoopDifferentialAgainstReferenceEtcd(t *testing.
 	require.Equal(t, "OK", referenceOutcome.Code)
 	require.Empty(t, referenceOutcome.Message)
 	require.True(t, referenceOutcome.HeaderIsNil)
-	require.Equal(t, referenceOutcome, moveLeaderCurrentOutcomeForEndpoint(t, compatEndpoint()))
+	require.Equal(t, referenceOutcome, moveLeaderCurrentOutcomeForEndpoint(t, compatEndpoint(t)))
 }
 
 func moveLeaderCurrentOutcomeForEndpoint(t *testing.T, endpoint string) moveLeaderCurrentOutcome {

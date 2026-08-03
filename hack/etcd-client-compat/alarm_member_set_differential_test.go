@@ -45,7 +45,7 @@ func TestAlarmMemberSetDifferentialAgainstReferenceEtcd(t *testing.T) {
 		want[i].HeaderRaftTermPositive = true
 	}
 	require.Equal(t, want, referenceOutcomes)
-	require.Equal(t, referenceOutcomes, runAlarmMemberSetScenario(t, compatEndpoint()))
+	require.Equal(t, referenceOutcomes, runAlarmMemberSetScenario(t, compatEndpoint(t)))
 }
 
 func runAlarmMemberSetScenario(t *testing.T, endpoint string) []alarmMemberSetOutcome {

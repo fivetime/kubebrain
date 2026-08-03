@@ -78,7 +78,7 @@ func TestReadAmpBaseline(t *testing.T) {
 	const pageSize = 500
 	value := strings.Repeat("x", 1024) // ~1KB, pod-ish
 
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 5 * time.Second})
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestReadAmpBaseline(t *testing.T) {
 			wg.Add(1)
 			go func(w int) {
 				defer wg.Done()
-				pc, perr := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 5 * time.Second})
+				pc, perr := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 5 * time.Second})
 				if perr != nil {
 					errCh <- perr
 					return

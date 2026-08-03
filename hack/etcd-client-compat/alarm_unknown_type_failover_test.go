@@ -18,7 +18,7 @@ func TestAlarmUnknownTypePersistsAcrossKubeBrainRestart(t *testing.T) {
 	if restartCommand == "" {
 		t.Skip("set KUBEBRAIN_GENERIC_ALARM_RESTART_COMMAND to restart the KubeBrain data plane")
 	}
-	conn, err := grpc.NewClient(grpcTarget(compatEndpoint()), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(grpcTarget(compatEndpoint(t)), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	maintenance := etcdserverpb.NewMaintenanceClient(conn)

@@ -35,11 +35,11 @@ func TestTxnOperationValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 	prefix := fmt.Sprintf("/dbaas-txn-operation-validation/%d/", time.Now().UnixNano())
 	require.Equal(t,
 		runTxnOperationValidationScenario(t, reference, prefix),
-		runTxnOperationValidationScenario(t, compatEndpoint(), prefix),
+		runTxnOperationValidationScenario(t, compatEndpoint(t), prefix),
 	)
 	require.Equal(t,
 		runTxnOperationBudgetScenario(t, reference, prefix+"budget/"),
-		runTxnOperationBudgetScenario(t, compatEndpoint(), prefix+"budget/"),
+		runTxnOperationBudgetScenario(t, compatEndpoint(t), prefix+"budget/"),
 	)
 }
 

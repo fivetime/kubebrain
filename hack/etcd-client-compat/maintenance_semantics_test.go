@@ -20,7 +20,7 @@ import (
 const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
 
 func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
-	endpoint := compatEndpoint()
+	endpoint := compatEndpoint(t)
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{endpoint},
 		DialTimeout: 3 * time.Second,
@@ -162,7 +162,7 @@ func maintenanceStatus(t *testing.T, endpoint string) *clientv3.StatusResponse {
 // contract is stability and data sensitivity rather than numeric equality with
 // etcd's bbolt hash.
 func TestMaintenanceHashKVSemantics(t *testing.T) {
-	endpoint := compatEndpoint()
+	endpoint := compatEndpoint(t)
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{endpoint},
 		DialTimeout: 3 * time.Second,
@@ -210,7 +210,7 @@ func TestMaintenanceHashKVSemantics(t *testing.T) {
 }
 
 func TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites(t *testing.T) {
-	endpoint := compatEndpoint()
+	endpoint := compatEndpoint(t)
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{endpoint},
 		DialTimeout: 3 * time.Second,
@@ -255,7 +255,7 @@ func TestMaintenanceHashKVHeaderStaysAtHashedSnapshotUnderWrites(t *testing.T) {
 }
 
 func TestMaintenanceHashKVStaysStableAcrossPhysicalCompaction(t *testing.T) {
-	endpoint := compatEndpoint()
+	endpoint := compatEndpoint(t)
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{endpoint},
 		DialTimeout: 3 * time.Second,
@@ -305,7 +305,7 @@ func TestMaintenanceHashKVMatchesAcrossMembers(t *testing.T) {
 		t.Skip("set KUBEBRAIN_MEMBERLIST_ENDPOINTS_DIALABLE=1 where advertised member endpoints are dialable")
 	}
 
-	endpoint := compatEndpoint()
+	endpoint := compatEndpoint(t)
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })

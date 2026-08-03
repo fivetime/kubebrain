@@ -34,7 +34,7 @@ func TestKeysOnlyLimitedRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runKeysOnlyLimitedRangeScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runKeysOnlyLimitedRangeScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runKeysOnlyLimitedRangeScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runKeysOnlyLimitedRangeScenario(t *testing.T, endpoint, name string) []keysLimitRangeOutcome {

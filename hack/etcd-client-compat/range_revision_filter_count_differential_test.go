@@ -39,7 +39,7 @@ func TestRangeRevisionFilterCountDifferentialAgainstReferenceEtcd(t *testing.T) 
 		TxnCount:       3, TxnKeys: []string{"c"},
 	}
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runRevisionFilterCountScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runRevisionFilterCountScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runRevisionFilterCountScenario(t *testing.T, endpoint, instance string) revisionFilterCountOutcome {

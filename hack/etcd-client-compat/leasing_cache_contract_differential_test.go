@@ -38,7 +38,7 @@ func TestLeasingCacheContractDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeasingCacheContractScenario(t, reference, "etcd"),
-		runLeasingCacheContractScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingCacheContractScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 

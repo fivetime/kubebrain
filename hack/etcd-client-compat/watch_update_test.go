@@ -13,7 +13,7 @@ import (
 // an update must report IsCreate()==false, carry the correct create_revision
 // (the key's creation revision, below its mod_revision), and include PrevKv.
 func TestWatchUpdateReportsUpdateNotCreate(t *testing.T) {
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint()}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
 	defer cli.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

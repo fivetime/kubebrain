@@ -54,7 +54,7 @@ func TestRangeOptionInteractionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		out("txn-value-none-max-int-limit", 4, false, []string{"e", "c", "d", "b"}, []string{"0", "a", "n", "updated"}, []int64{1, 1, 1, 3}, []bool{false, false, false, false}),
 	}
 	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runRangeOptionInteractionScenario(t, compatEndpoint(), "kubebrain"))
+	require.Equal(t, referenceOutcome, runRangeOptionInteractionScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runRangeOptionInteractionScenario(t *testing.T, endpoint, instance string) []rangeOptionOutcome {

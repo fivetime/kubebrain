@@ -32,7 +32,7 @@ func TestLeasingFromKeyDeleteDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	require.Equal(t,
 		runLeasingFromKeyDeleteScenario(t, reference, "etcd"),
-		runLeasingFromKeyDeleteScenario(t, compatEndpoint(), "kubebrain"),
+		runLeasingFromKeyDeleteScenario(t, compatEndpoint(t), "kubebrain"),
 	)
 }
 
