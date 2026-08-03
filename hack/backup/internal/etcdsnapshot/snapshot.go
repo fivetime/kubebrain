@@ -63,7 +63,7 @@ func Convert(input, output string, options Options) (backupfile.Status, error) {
 	}
 
 	if _, err := os.Stat(output); err == nil {
-		return backupfile.Status{}, fmt.Errorf("output already exists: %s", output)
+		return backupfile.Status{}, fmt.Errorf("output already exists: %s: %w", output, os.ErrExist)
 	} else if !os.IsNotExist(err) {
 		return backupfile.Status{}, err
 	}

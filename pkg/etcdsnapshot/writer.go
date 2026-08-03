@@ -8,16 +8,26 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/coreos/go-semver/semver"
+	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/server/v3/lease/leasepb"
-	"go.etcd.io/etcd/server/v3/storage/backend"
-	"go.etcd.io/etcd/server/v3/storage/mvcc"
-	"go.etcd.io/etcd/server/v3/storage/schema"
-	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
+)
+
+var (
+	keyBucket         = []byte("key")
+	metaBucket        = []byte("meta")
+	leaseBucket       = []byte("lease")
+	alarmBucket       = []byte("alarm")
+	clusterBucket     = []byte("cluster")
+	membersBucket     = []byte("members")
+	membersGoneBucket = []byte("members_removed")
+	authBucket        = []byte("auth")
+	authUsersBucket   = []byte("authUsers")
+	authRolesBucket   = []byte("authRoles")
+	allBuckets        = [][]byte{keyBucket, metaBucket, leaseBucket, alarmBucket, clusterBucket, membersBucket, membersGoneBucket, authBucket, authUsersBucket, authRolesBucket}
 )
 
 // Record is one live key in a compacted-current-state etcd snapshot.
@@ -69,30 +79,45 @@ func WriteBackend(path string, state State) error {
 		return string(records[i].Key) < string(records[j].Key)
 	})
 
-	be := backend.NewDefaultBackend(zap.NewNop(), path, backend.WithMmapSize(64*1024*1024))
-	closed := false
-	defer func() {
-		if !closed {
-			_ = be.Close()
-		}
-	}()
-	tx := be.BatchTx()
-	tx.LockOutsideApply()
-	locked := true
-	defer func() {
-		if locked {
-			tx.Unlock()
-		}
-	}()
-	for _, bucket := range schema.AllBuckets {
-		tx.UnsafeCreateBucket(bucket)
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		return err
 	}
-	schema.UnsafeSetStorageVersion(tx, semver.Must(semver.NewVersion("3.7.0")))
-	schema.UnsafeUpdateConsistentIndexForce(tx, 1, 1)
-	mvcc.UnsafeSetScheduledCompact(tx, state.Revision)
-	mvcc.UnsafeSetFinishedCompact(tx, state.Revision)
+	if err = db.Update(func(tx *bolt.Tx) error {
+		return writeState(tx, state, records)
+	}); err != nil {
+		_ = db.Close()
+		return err
+	}
+	return db.Close()
+}
+
+func writeState(tx *bolt.Tx, state State, records []Record) error {
+	for _, name := range allBuckets {
+		if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+			return err
+		}
+	}
+	meta := tx.Bucket(metaBucket)
+	if err := meta.Put([]byte("storageVersion"), []byte("3.7.0")); err != nil {
+		return err
+	}
+	one := make([]byte, 8)
+	binary.BigEndian.PutUint64(one, 1)
+	for _, name := range [][]byte{[]byte("consistent_index"), []byte("term")} {
+		if err := meta.Put(name, one); err != nil {
+			return err
+		}
+	}
+	compact := revisionBytes(state.Revision, 0)
+	for _, name := range [][]byte{[]byte("scheduledCompactRev"), []byte("finishedCompactRev")} {
+		if err := meta.Put(name, compact); err != nil {
+			return err
+		}
+	}
 
 	subs := make(map[int64]int64)
+	keys := tx.Bucket(keyBucket)
 	for _, rec := range records {
 		encoded, err := proto.Marshal(&mvccpb.KeyValue{
 			Key: rec.Key, Value: rec.Value, CreateRevision: rec.CreateRevision,
@@ -101,32 +126,46 @@ func WriteBackend(path string, state State) error {
 		if err != nil {
 			return err
 		}
-		revKey := mvcc.RevToBytes(mvcc.Revision{Main: rec.ModRevision, Sub: subs[rec.ModRevision]}, mvcc.NewRevBytes())
+		if err = keys.Put(revisionBytes(rec.ModRevision, subs[rec.ModRevision]), encoded); err != nil {
+			return err
+		}
 		subs[rec.ModRevision]++
-		tx.UnsafeSeqPut(schema.Key, revKey, encoded)
 	}
 	marker, err := proto.Marshal(&mvccpb.KeyValue{Key: []byte("\x00kubebrain-snapshot-revision")})
 	if err != nil {
 		return err
 	}
-	markerKey := mvcc.RevToBytes(mvcc.Revision{Main: state.Revision, Sub: subs[state.Revision]}, mvcc.NewRevBytes())
-	markerKey = append(markerKey, 't')
-	tx.UnsafeSeqPut(schema.Key, markerKey, marker)
+	markerKey := append(revisionBytes(state.Revision, subs[state.Revision]), 't')
+	if err = keys.Put(markerKey, marker); err != nil {
+		return err
+	}
 
 	for _, lease := range state.Leases {
 		if lease.ID == 0 || lease.GrantedTTL <= 0 || lease.RemainingTTL < 0 {
 			return fmt.Errorf("invalid lease id=%d granted_ttl=%d remaining_ttl=%d", lease.ID, lease.GrantedTTL, lease.RemainingTTL)
 		}
-		schema.MustUnsafePutLease(tx, &leasepb.Lease{ID: lease.ID, TTL: lease.GrantedTTL, RemainingTTL: lease.RemainingTTL})
+		value, marshalErr := proto.Marshal(&leasepb.Lease{ID: lease.ID, TTL: lease.GrantedTTL, RemainingTTL: lease.RemainingTTL})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		leaseKey := make([]byte, 8)
+		binary.BigEndian.PutUint64(leaseKey, uint64(lease.ID))
+		if err = tx.Bucket(leaseBucket).Put(leaseKey, value); err != nil {
+			return err
+		}
 	}
 	authEnabled := byte(0)
 	if state.Auth.Enabled {
 		authEnabled = 1
 	}
-	tx.UnsafePut(schema.Auth, schema.AuthEnabledKeyName, []byte{authEnabled})
+	if err = tx.Bucket(authBucket).Put([]byte("authEnabled"), []byte{authEnabled}); err != nil {
+		return err
+	}
 	authRevision := make([]byte, 8)
 	binary.BigEndian.PutUint64(authRevision, state.Auth.Revision)
-	tx.UnsafePut(schema.Auth, schema.AuthRevisionKeyName, authRevision)
+	if err = tx.Bucket(authBucket).Put([]byte("authRevision"), authRevision); err != nil {
+		return err
+	}
 	for _, user := range state.Auth.Users {
 		if user == nil || len(user.Name) == 0 {
 			return fmt.Errorf("snapshot contains invalid auth user")
@@ -135,7 +174,9 @@ func WriteBackend(path string, state State) error {
 		if marshalErr != nil {
 			return marshalErr
 		}
-		tx.UnsafePut(schema.AuthUsers, user.Name, value)
+		if err = tx.Bucket(authUsersBucket).Put(user.Name, value); err != nil {
+			return err
+		}
 	}
 	for _, role := range state.Auth.Roles {
 		if role == nil || len(role.Name) == 0 {
@@ -145,7 +186,9 @@ func WriteBackend(path string, state State) error {
 		if marshalErr != nil {
 			return marshalErr
 		}
-		tx.UnsafePut(schema.AuthRoles, role.Name, value)
+		if err = tx.Bucket(authRolesBucket).Put(role.Name, value); err != nil {
+			return err
+		}
 	}
 	for _, alarm := range state.Alarms {
 		if alarm == nil {
@@ -155,16 +198,19 @@ func WriteBackend(path string, state State) error {
 		if marshalErr != nil {
 			return marshalErr
 		}
-		tx.UnsafePut(schema.Alarm, key, nil)
+		if err = tx.Bucket(alarmBucket).Put(key, nil); err != nil {
+			return err
+		}
 	}
-	tx.Unlock()
-	locked = false
-	be.ForceCommit()
-	if err := be.Close(); err != nil {
-		return err
-	}
-	closed = true
 	return nil
+}
+
+func revisionBytes(main, sub int64) []byte {
+	value := make([]byte, 17, 18)
+	binary.BigEndian.PutUint64(value[:8], uint64(main))
+	value[8] = '_'
+	binary.BigEndian.PutUint64(value[9:], uint64(sub))
+	return value
 }
 
 func validateRecord(rec Record, snapshotRevision int64) error {
