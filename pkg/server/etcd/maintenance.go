@@ -89,7 +89,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
 		}
-		response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
+		header, err := s.maintenanceHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response := &etcdserverpb.AlarmResponse{Header: header}
 		if req.GetAlarm() == etcdserverpb.AlarmType_NONE {
 			return response, nil
 		}
@@ -138,7 +142,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
 		}
-		response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
+		header, err := s.maintenanceHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response := &etcdserverpb.AlarmResponse{Header: header}
 		if req.GetAlarm() == etcdserverpb.AlarmType_NONE {
 			return response, nil
 		}
@@ -181,7 +189,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		}
 		return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
 	}
-	response := &etcdserverpb.AlarmResponse{Header: s.maintenanceHeader()}
+	header, err := s.maintenanceHeader(ctx)
+	if err != nil {
+		return nil, err
+	}
+	response := &etcdserverpb.AlarmResponse{Header: header}
 	filter := req.GetAlarm()
 	if filter != etcdserverpb.AlarmType_NONE &&
 		filter != etcdserverpb.AlarmType_NOSPACE &&
@@ -276,7 +288,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		return nil, err
 	}
 	resp := &etcdserverpb.StatusResponse{
-		Header:           s.maintenanceHeader(),
+		Header:           txnHeader(int64(revision)),
 		Version:          Version,
 		StorageVersion:   Version,
 		Leader:           leader,
@@ -438,15 +450,17 @@ func (s *RPCServer) rejectCorrupt(ctx context.Context) error {
 	return nil
 }
 
-func (s *RPCServer) maintenanceHeader() *etcdserverpb.ResponseHeader {
+func (s *RPCServer) maintenanceHeader(ctx context.Context) (*etcdserverpb.ResponseHeader, error) {
 	// ClusterId/MemberId are stamped on EVERY response header by the
 	// ClientServerOptions interceptor (#79), so they need not be set here;
 	// Revision is method-specific. (MemberId there uses the same local-identity
 	// derivation as StatusResponse.Leader, so "am I the leader" comparisons —
 	// Leader == MemberId — behave like etcd's.)
-	return &etcdserverpb.ResponseHeader{
-		Revision: int64(s.backend.GetCurrentRevision()),
+	revision, err := safeBackendRevision(ctx, s.backend)
+	if err != nil {
+		return nil, err
 	}
+	return txnHeader(int64(revision)), nil
 }
 
 func (s *RPCServer) memberIDFromAddress(address string) uint64 {

@@ -80,8 +80,9 @@ type requireSyncBeforeHashBackendShim struct {
 
 type coldStatusRevisionBackendShim struct {
 	BackendShim
-	current uint64
-	durable uint64
+	current    uint64
+	durable    uint64
+	durableErr error
 }
 
 func (b *coldStatusRevisionBackendShim) GetCurrentRevision() uint64 { return b.current }
@@ -91,7 +92,7 @@ func (b *coldStatusRevisionBackendShim) SetCurrentRevision(revision uint64) {
 	}
 }
 func (b *coldStatusRevisionBackendShim) GetDurableRevision(context.Context) (uint64, error) {
-	return b.durable, nil
+	return b.durable, b.durableErr
 }
 func (b *coldStatusRevisionBackendShim) GetCompactRevision(context.Context) (uint64, error) {
 	return 0, nil
@@ -272,6 +273,63 @@ func TestStatusRestoresColdRaftEnvelopeFromDurableRevision(t *testing.T) {
 	require.Equal(t, uint64(put.GetHeader().GetRevision()), response.GetRaftIndex(),
 		"the first cold Status must not capture raft index before durable recovery")
 	require.Equal(t, response.GetRaftIndex(), response.GetRaftAppliedIndex())
+}
+
+func TestAlarmMutationRestoresColdHeaderFromDurableRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/a3466/alarm-cold-revision"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	server.backend = &coldStatusRevisionBackendShim{
+		BackendShim: server.backend,
+		durable:     uint64(put.GetHeader().GetRevision()),
+	}
+
+	const alarmType = etcdserverpb.AlarmType(127)
+	activated, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  alarmType,
+	})
+	require.NoError(t, err)
+	require.Len(t, activated.Alarms, 1)
+	require.Equal(t, put.GetHeader().GetRevision(), activated.GetHeader().GetRevision(),
+		"a successful cold-replica alarm mutation must expose the durable user revision")
+
+	deactivated, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
+		Alarm:  alarmType,
+	})
+	require.NoError(t, err)
+	require.Len(t, deactivated.Alarms, 1)
+}
+
+func TestAlarmMutationFailsBeforeWriteWhenColdRevisionUnavailable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	wantErr := errors.New("durable revision unavailable")
+	underlying := server.backend
+	server.backend = &coldStatusRevisionBackendShim{
+		BackendShim: underlying,
+		durableErr:  wantErr,
+	}
+
+	const alarmType = etcdserverpb.AlarmType(126)
+	response, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  alarmType,
+	})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, wantErr)
+
+	server.backend = underlying
+	alarms, err := server.genericAlarms(ctx, alarmType)
+	require.NoError(t, err)
+	require.Empty(t, alarms, "header recovery failure must happen before persistent alarm mutation")
 }
 
 func TestMaintenanceHashKVFutureRevisionMatchesEtcd(t *testing.T) {
