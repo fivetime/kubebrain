@@ -42,21 +42,22 @@ func TestDurableRevisionNeverMovesBackward(t *testing.T) {
 	require.Equal(t, uint64(200), revision)
 }
 
-func TestLeadershipRevisionSeparatesPublicAndAllocationWatermarks(t *testing.T) {
+func TestLeadershipRevisionKeepsUserRevisionsContiguous(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	publicRevision := b.GetCurrentRevision()
 	b.persistDurableRevision(publicRevision)
 	allocationFloor := publicRevision + watchersChanCapacity + 10_000
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, allocationFloor))
 	require.Equal(t, publicRevision, b.GetCurrentRevision())
-	require.Equal(t, allocationFloor, b.collectorRevision.Load())
-	require.Equal(t, allocationFloor, b.tso.Dealt())
+	require.Equal(t, publicRevision, b.collectorRevision.Load())
+	require.Equal(t, publicRevision, b.tso.Dealt(),
+		"the PD election timestamp must not leak into the client-visible MVCC sequence")
 
 	response, err := b.Create(ctx, &proto.CreateRequest{
 		Key: []byte(prefix + "/leadership-watermarks/key"), Value: []byte("value"),
 	})
 	require.NoError(t, err)
-	require.Equal(t, allocationFloor+1, response.Header.Revision)
+	require.Equal(t, publicRevision+1, response.Header.Revision)
 	require.Eventually(t, func() bool {
 		return b.GetCurrentRevision() == response.Header.Revision
 	}, time.Second, time.Millisecond)

@@ -67,19 +67,26 @@ func (b *backend) GetDurableRevision(ctx context.Context) (uint64, error) {
 	return binary.BigEndian.Uint64(value), nil
 }
 
-// InitializeLeadershipRevision keeps PD's uniqueness floor private until the
-// first mutation. The client-visible revision is restored from the exact TiKV
-// watermark, while the collector waits at allocationFloor for Deal()+1.
-func (b *backend) InitializeLeadershipRevision(ctx context.Context, allocationFloor uint64) error {
+// InitializeLeadershipRevision restores the client-visible MVCC sequence from
+// TiKV. The PD timestamp belongs to leader-election fencing; using it as the
+// user allocator floor makes the first write after every leader change jump by
+// an arbitrary amount, unlike etcd's contiguous revisions.
+func (b *backend) InitializeLeadershipRevision(ctx context.Context, _ uint64) error {
 	durable, err := b.GetDurableRevision(ctx)
 	if errors.Is(err, storage.ErrKeyNotFound) {
 		durable = 1 // etcd's initialized empty-keyspace revision
 	} else if err != nil {
 		return err
 	}
-	b.tso.Commit(durable)
-	b.tso.AdvanceDealFloor(allocationFloor)
-	b.collectorRevision.Store(allocationFloor)
+	// A same-process re-election can retain a committed watermark newer than a
+	// lagging background marker. Never move that process backwards; a cold
+	// process has current=0 and therefore starts from the durable TiKV value.
+	base := durable
+	if current := b.tso.GetRevision(); current > base {
+		base = current
+	}
+	b.tso.Init(base)
+	b.collectorRevision.Store(base)
 	b.commitNotify.advance()
 	return nil
 }

@@ -210,8 +210,9 @@ type Backend interface {
 	// GetCurrentRevision, but must never lead committed user state.
 	GetDurableRevision(ctx context.Context) (uint64, error)
 
-	// InitializeLeadershipRevision restores the public committed revision from
-	// TiKV and independently positions the private allocation/collector cursor.
+	// InitializeLeadershipRevision restores the public committed revision and
+	// its allocation/collector cursor from TiKV. The election timestamp is
+	// accepted for the leader-service contract but must not enter MVCC revisions.
 	InitializeLeadershipRevision(ctx context.Context, allocationFloor uint64) error
 
 	// GetPublishedRevision returns the highest revision whose events have been
