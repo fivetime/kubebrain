@@ -31731,6 +31731,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint health 可提交 proposal（42.836651ms）、
   版本端点保持 3.7.0、`/readyz=ok`，最近日志无 MemberList、read barrier 或 panic/fatal 异常；参考
   进程与临时目录均已清理。
+- A3469 继续审计 Cluster mutation 的协议边界，发现 KubeBrain MemberAdd 对任意请求都先认证、再
+  返回 DBaaS 平台托管的 `Unimplemented`；对照
+  `/root/etcd/server/etcdserver/api/v3rpc/member.go:MemberAdd`，官方在认证和成员变更前先以
+  `types.NewURLs` 校验 PeerURLs，空列表或非法 URL 必须返回
+  `InvalidArgument: etcdserver: given member URLs are invalid`。确定性 RED 发送
+  `PeerURLs=["not-a-peer-url"]`，旧实现实际返回平台 `Unimplemented`。commit
+  `5c1d352807a57b988b4abbd30849c8ff21f56630` 在 RPC 协议边界复用官方 URL parser，并更新既有
+  auth/platform-boundary 测试使用合法 peer URL：非法输入保持官方 validation precedence，合法成员
+  变更仍明确由 DBaaS control plane 管理。目标、授权与平台边界门禁连续 20 轮 GREEN，目标 race
+  10 轮、完整 etcd server 151.606 秒、其余 service packages 及 server/compat 两个 module 的 vet
+  均通过。commit `5c8410a3` 新增永久官方差分，覆盖空列表、缺少 scheme、不支持的 scheme 与缺少
+  host 四类输入。
+  生产镜像 `kubebrain:a3469-memberadd-url-validation`（本地 image ID
+  `sha256:4043b7cacac5abbbc7df9f2f8a30ecd186f276bde5651079fdefdac037d5355c`，kind runtime
+  digest `sha256:c92c5e95356561487f953033f76bc310196c1d434fb2ca3da0a8c0778631c17b`，build time
+  `2026-08-03T17:18:43Z`）部署后，四类 MemberAdd URL validation 官方双端差分连续 20 轮、160 次
+  RPC 0.221 秒通过，且所有请求均在 validation 阶段失败、未改变成员拓扑。最终 StatefulSet
+  desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3
+  PD/3 TiKV 均 Running；endpoint health 可提交 proposal（47.147221ms）、版本端点保持 3.7.0、
+  `/readyz=ok`，最近日志无 Member URL/Add 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
