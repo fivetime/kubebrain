@@ -32779,6 +32779,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终连续 20 轮 9.727 秒、race 10 轮 17.286 秒及 vet 通过；生产 endpoint 上 Kubernetes
   lifecycle、平台替代错误和 unknown-alarm safety 连续 20 轮通过，旧 `ENDPOINT` 别名另跑
   5 轮通过。该改动只收紧测试目标选择，不改变数据面运行镜像或 RPC 语义。
+- A3484 固定 Auth permission 未知 protobuf enum 的兼容契约：对照 upstream
+  `/root/etcd/server/auth/store.go:RoleGrantPermission` 与
+  `/root/etcd/server/auth/range_perm_cache.go`，官方 etcd 不校验 `Permission.Type` 是否属于
+  READ/WRITE/READWRITE，而是把未知数值原样持久化、在 `RoleGet` 中原样返回，并在权限缓存
+  构建时忽略它。新增 raw gRPC 双端差分测试，以值 `99` 覆盖首次 grant、同 key/range 的
+  READ→99 replacement、RoleGet、revoke 与清理；隔离官方 3.7 实例和生产 KubeBrain 的结果
+  完全一致。服务端回归进一步固定未知类型对目标 key 既不授予 READ 也不授予 WRITE，避免
+  宽松 wire/storage 兼容被误解为授权放行。该审计没有发现生产实现差异，因此不修改运行
+  代码、不重建镜像；聚焦服务端测试 20 轮、race 10 轮及 compat race 10 轮通过，生产
+  endpoint 与官方隔离实例的完整差分场景通过。
 
 ### P2：运维兼容和长期验证
 
