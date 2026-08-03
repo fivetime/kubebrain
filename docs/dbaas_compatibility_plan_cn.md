@@ -31834,6 +31834,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
   restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
   最近日志无 Downgrade/CANCEL 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3474 把合法 Downgrade VALIDATE 从平台 mutation 边界中拆出。对照
+  `/root/etcd/server/etcdserver/v3_server.go:downgradeValidate` 与
+  `/root/etcd/server/etcdserver/version/version.go:DowngradeValidate`，该 action 是只读能力检查：格式解析
+  后执行 linearizable read barrier，再验证前一 minor 与无 in-flight job，成功返回当前 cluster
+  major.minor；它不会启动 downgrade。官方成功响应还由 gRPC response-header 路径补齐与 Status 一致的
+  cluster/member/revision/raft-term。永久 RED 动态读取参考端 3.8 与 KubeBrain 3.7 的 Status，分别发送
+  合法前一 minor 及带 `.999` patch 的等价目标；官方两者均 OK、Version/完整 header envelope 一致，
+  旧生产端均返回平台 Unimplemented。commit `39d5de91457bd9c167de8fe4de0d6a8263c65599` 在现有 root
+  权限与格式解析后执行 `SyncReadRevision`，使 barrier error 优先于 target 校验；合法 VALIDATE 再用
+  durable-safe maintenance header 返回成功，ENABLE 仍明确由 DBaaS versioned rollout/rollback 承担。
+  单元门禁同时证明 malformed version 在 barrier 前失败。目标/鉴权/平台语义连续 20 轮 25.225 秒
+  GREEN，目标 race 连续 10 轮 2.443 秒，完整 etcd server 154.070 秒及 server/compat 两个 module
+  的 vet 均通过。commit `b4368538` 固化动态版本、patch 归一化与完整响应 envelope 官方差分。
+  生产镜像 `kubebrain:a3474-downgrade-validate-success`（本地 image ID
+  `sha256:591b85b08023f2f892749d2329cdd153ac99e82ecb49d85a25e43a57d8f128a5`，kind runtime
+  digest `sha256:4762e5ec3be830d1c85ca28abe981a10952498d71745b2ffe0756e9e5ffd8e3e`，build time
+  `2026-08-03T18:46:28Z`）部署后，VALIDATE success/envelope 差分连续 20 轮 0.534 秒，CANCEL 与
+  两层非法校验合并差分连续 20 轮 1.275 秒，ENABLE 等平台边界连续 20 轮 0.664 秒通过。最终
+  StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
+  restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
+  最近日志无 Downgrade/barrier 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
