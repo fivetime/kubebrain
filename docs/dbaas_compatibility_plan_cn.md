@@ -31443,6 +31443,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 轮、12 次执行 3.711 秒通过。三个 KubeBrain Pod 使用同一 digest、Ready/0 restart，
   主 3 PD/3 TiKV 均 Running，版本端点保持 3.7.0，`/readyz=ok`，最近日志无 panic/fatal、
   auth failure 或 leadership failure。
+- A3452 继续对照 `/root/etcd/server/etcdserver/v3_server.go` 的只读 Txn 分支：上游对
+  non-serializable read-only Txn 完成 `LinearizableReadNotify` 后，直接在接收请求的成员上
+  执行 `txn.Txn`，不会再进入 `raftRequest` 或要求该成员具有写 leadership。KubeBrain 原路径
+  虽已在 A3449 补齐 barrier，却随后仍调用 `EpochAndLeadingFresh`，follower 即使 barrier 成功、
+  共享 TiKV 快照已可见，仍会代理到 leader 或返回 `Unavailable`。确定性 RED 在 follower
+  注入成功 barrier，同时令 leadership admission 与 Txn proxy 一旦被调用就失败；旧路径实际
+  命中 `EpochAndLeadingFresh`。commit `e0d2062482df112bd174e19671319eb7573c760d`
+  让所有顶层 read-only Txn 共用固定 revision 执行器：fully serializable leader 使用当前
+  backend revision、serializable follower 使用 durable watermark；non-serializable 请求则在
+  barrier 后读取共享 TiKV 当前 revision。compare、selected branch、所有 leaf response 和 outer
+  header 都在该 revision 上完成，随后继续执行 auth revision 复核；nested Txn 仍按上游非递归
+  readonly helper 归类为写路径，不扩大 fast path。定向测试 10 轮 3.291 秒、完整 server 包
+  148.992 秒、目标 race 3 轮 14.331 秒及 vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3452-fenced-read-txn-local`（本地 image ID
+  `sha256:a7a977356b5e7b80e587966e71018078e27824800f07e38626fb5cb91768ab6d`，kind runtime
+  digest `sha256:f3241cf0a888eb3d700d7f88c365cbf4144d015334ef232847e918ec37f8451f`）
+  滚动部署后，SerializableRead、Txn compare/header、Txn revision 与基础 Txn 四项官方
+  3.8.0-alpha.0 差分连续 5 轮、20 次执行 119.524 秒通过。三个 KubeBrain Pod 使用同一
+  digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点保持 3.7.0，`/readyz=ok`，
+  最近日志无 panic/fatal、read-barrier failure 或异常 Txn failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
