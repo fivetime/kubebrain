@@ -31513,6 +31513,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 轮、6 次执行 13.038 秒通过；race 5.465 秒及 vet 通过。生产 A3455 TiKV/PD 拓扑上两类
   `kubebrain-0/1/2` 全量 Pod replacement 分别 8.80/8.94 秒通过；显式连接生产 endpoint 的
   compat 全套 106.211 秒通过。该轮仅增加测试证据，不改变 runtime，继续使用 A3455 镜像。
+- A3457 重新执行 broad differential 时先修复了两处门禁基础设施问题：生产 StatefulSet
+  `--advertise-client-urls` 从已失效的 `172.18.0.2:30079` 更正为当前可达的
+  `172.18.0.3:30079`；`run-differential.sh` 的 `-run Differential` 也收窄为
+  `Differential(Against|$)`，避免把 runner 自身单测误当成远端场景并污染环境。随后 alarm
+  Status 文本差分一度被误判：测试用当前 protobuf `AlarmMember.String()` 的单空格输出充当
+  服务端规范，而 `/root/etcd/bin/etcd` 的实际 `StatusResponse.Errors` 仍是
+  `memberID:<id>  alarm:<type>` 双空格。commit
+  `82899c157bd738f52b4bd2b3ef5dc5fb158365fe` 的单空格运行时改动因此不是正确兼容修复，未
+  作为最终结论保留。
+- A3458 commit `e8fa54e558b82a4d3b14d8c0e4671397e17caf83` 恢复 alarm Status 的双空格服务端
+  格式，并把差分期望改为显式服务端文本，永久断开它与 protobuf debug string 的偶然格式
+  耦合。生产镜像 `kubebrain:a3458-alarm-status-format`（本地 image ID
+  `sha256:18b490e92be2cbb2279fd674f48f7d31f8368326777dd5e7632ac82657ade46b`，kind runtime
+  digest `sha256:21cac5774891792483c6b25d7bc6fcba48a98f2f43596edbe01ce687525918a2`）部署后，
+  unknown alarm Status 官方差分连续 20 轮、40 端执行 3.039 秒通过。该轮同时证明 HTTP 与
+  gRPC 并无格式分叉；此前矛盾完全来自测试在比较官方实例前就用了错误期望。
+- A3459 在修正后的 broad differential 中继续捕获到真实三副本竞态：`Compact` 已成功返回，
+  紧接着的 linearizable historical Range 仍偶发返回已 compact 的旧值。根因是
+  `checkRequestedRevision` 使用副本本地 1 秒 TTL compact watermark cache；read barrier 只
+  同步用户 revision，不能把 stale-low compact cache 变成权威结果。commit
+  `582820b324e73b6154bd03c3b207a58676c0c694` 让显式历史 Range 与 read-only Txn 从共享 TiKV
+  fresh 读取 durable compact watermark 并刷新本地 cache，revision=0 最新读热路径不增加
+  存储读取；确定性回归用 cached=1/durable=10 固定 revision 9 必须返回 `ErrCompacted`。
+  目标单测 20 轮、目标 race 5 轮、完整 etcd server 149.309 秒、其余 server service 包与 vet
+  均通过。生产镜像 `kubebrain:a3459-compact-read-fence`（本地 image ID
+  `sha256:7d1c2b3f37d6b460a6821b43e49fb9f1a790d097a0b0138b7a06257f00cd91ed`，kind runtime
+  digest `sha256:518b71ac0fefee77237ddf259c58418bbdf1199ef686e39e907319c7d12e1c72`，build time
+  `2026-08-03T13:29:21Z`）三副本部署后 Compact 差分 50 轮、100 端执行 8.500 秒通过，alarm
+  Status 20 轮 2.924 秒通过。审计中另发现 `TxnInterval` 二进制场景未清理真实的
+  `64*0xff` 前缀键；commit `7849670184128392f99f78016dd5f629f54e33fc` 为每个实际 prefix
+  注册逐场景 cleanup，`TxnInterval` 20 轮后立即执行 BinaryKey 仍通过。清除历史测试残留后，
+  修正选择器的 broad differential 单线程全套 287.643 秒通过。最终三个 KubeBrain Pod 使用
+  同一 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，`/readyz=ok`，最近日志无
+  panic/fatal、compact visibility 或 read-barrier failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
