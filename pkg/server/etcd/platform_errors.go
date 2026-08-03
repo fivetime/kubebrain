@@ -57,7 +57,10 @@ func platformManagedError(message, capability, operationType string, metadata ma
 func snapshotPlatformManagedError() error {
 	return platformManagedError(snapshotUnsupportedMessage, "maintenance.snapshot", "Backup", map[string]string{
 		"artifact_format":              "kubebrain.logical.v2",
+		"conversion_requires_prefix":   "/",
+		"conversion_tool":              "kubebrain-logical-etcd-snapshot",
 		"etcd_snapshot_restore_usable": "false",
+		"converted_snapshot_auth":      "disabled",
 	})
 }
 

@@ -67,6 +67,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-logical-export ./hack/backup/cmd/logical-export \
     && go build -trimpath -o /src/bin/kubebrain-logical-status ./hack/backup/cmd/logical-status \
     && go build -trimpath -o /src/bin/kubebrain-logical-verify ./hack/backup/cmd/logical-verify \
+    && go build -trimpath -o /src/bin/kubebrain-logical-etcd-snapshot ./hack/backup/cmd/logical-etcd-snapshot \
     && go build -trimpath -o /src/bin/kubebrain-etcd-audit-probe ./hack/production/cmd/etcd-audit-probe \
     && go build -trimpath -o /src/bin/kubebrain-uid-delete ./hack/production/cmd/uid-delete \
     && cd /src/hack/backup/objectstore \
@@ -110,6 +111,7 @@ COPY --from=build /src/bin/kubebrain-logical-object /usr/local/bin/kubebrain-log
 COPY --from=build /src/bin/kubebrain-logical-export /usr/local/bin/kubebrain-logical-export
 COPY --from=build /src/bin/kubebrain-logical-status /usr/local/bin/kubebrain-logical-status
 COPY --from=build /src/bin/kubebrain-logical-verify /usr/local/bin/kubebrain-logical-verify
+COPY --from=build /src/bin/kubebrain-logical-etcd-snapshot /usr/local/bin/kubebrain-logical-etcd-snapshot
 COPY --from=build /src/bin/kubebrain-etcd-audit-probe /usr/local/bin/kubebrain-etcd-audit-probe
 COPY --from=build /src/bin/kubebrain-uid-delete /usr/local/bin/kubebrain-uid-delete
 COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl

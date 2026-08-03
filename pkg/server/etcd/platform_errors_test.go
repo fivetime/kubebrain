@@ -34,6 +34,9 @@ func TestSnapshotPlatformManagedErrorPublishesBackupContract(t *testing.T) {
 	require.Equal(t, "Backup", info.Metadata["operation_type"])
 	require.Equal(t, "kubebrain.logical.v2", info.Metadata["artifact_format"])
 	require.Equal(t, "false", info.Metadata["etcd_snapshot_restore_usable"])
+	require.Equal(t, "kubebrain-logical-etcd-snapshot", info.Metadata["conversion_tool"])
+	require.Equal(t, "/", info.Metadata["conversion_requires_prefix"])
+	require.Equal(t, "disabled", info.Metadata["converted_snapshot_auth"])
 }
 
 func TestPlatformManagedErrorsIdentifyTheirCapability(t *testing.T) {
