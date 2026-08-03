@@ -31815,6 +31815,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
   restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
   最近日志无 Downgrade target 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3473 继续审计 Downgrade CANCEL 的无任务状态。`version.Manager.DowngradeCancel` 在没有 in-flight
+  job 时虽返回 `ErrNoInflightDowngrade`，但对照
+  `/root/etcd/server/etcdserver/v3_server.go:downgradeCancel` 可见 RPC 层只记录该内部错误并始终返回
+  成功响应，`Version` 为当前 cluster major.minor、`Header=nil`，且 request version 完全忽略；旧
+  KubeBrain 则统一返回平台 `Unimplemented`。永久 RED 分别发送空字符串、非法 semver 和任意未来
+  版本，官方三者均成功且响应版本匹配各自 Status，旧生产端三者均失败。commit
+  `3153829150801b833bd1d02a4db8816cbfa4cae8` 把 CANCEL 对齐为不改变任何 TiKV/PD/DBaaS 状态的
+  幂等成功，返回 `3.7` 且不伪造 header；VALIDATE/ENABLE 的格式、目标分类与平台边界保持不变，
+  非 root 仍先被现有 DBaaS 管理权限拒绝。目标与鉴权语义连续 20 轮 8.257 秒 GREEN，目标 race
+  连续 10 轮 2.368 秒，完整 etcd server 153.285 秒及 server/compat 两个 module 的 vet 均通过。
+  commit `f213f04e` 固化三种 ignored-version 的官方双端差分。
+  生产镜像 `kubebrain:a3473-downgrade-cancel-state`（本地 image ID
+  `sha256:ad75cd46925127e38434eea9751dcf8017e665de2cfea4e5c8b27df67c90d5ac`，kind runtime
+  digest `sha256:479c5f63255b86508df0742011ded5382ced2ed7da2127bd7e17fd865f7d2e16`，build time
+  `2026-08-03T18:28:39Z`）部署后，CANCEL 状态/版本差分连续 20 轮 0.529 秒、A3471/A3472 两层
+  validation 合并差分连续 20 轮 0.714 秒、clientv3 平台边界连续 20 轮 0.502 秒通过。最终
+  StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
+  restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
+  最近日志无 Downgrade/CANCEL 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
