@@ -16,7 +16,11 @@ func (s *RPCServer) authRPCHeader(ctx context.Context) (*etcdserverpb.ResponseHe
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, readBarrierStatusErr(err)
 	}
-	return &etcdserverpb.ResponseHeader{Revision: int64(s.backend.GetCurrentRevision())}, nil
+	revision, err := safeBackendRevision(ctx, s.backend)
+	if err != nil {
+		return nil, err
+	}
+	return &etcdserverpb.ResponseHeader{Revision: int64(revision)}, nil
 }
 
 func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error) {
@@ -29,11 +33,11 @@ func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRe
 			return nil, err
 		}
 	}
-	if err = s.auth.enable(ctx); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err = s.auth.enable(ctx); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthEnableResponse{Header: header}, nil
@@ -43,11 +47,11 @@ func (s *RPCServer) AuthDisable(ctx context.Context, _ *etcdserverpb.AuthDisable
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.disable(ctx); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.disable(ctx); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthDisableResponse{Header: header}, nil
@@ -160,11 +164,11 @@ func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserA
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.userAddHashed(ctx, request); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.userAddHashed(ctx, request); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserAddResponse{Header: header}, nil
@@ -230,11 +234,11 @@ func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUs
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.userDelete(ctx, request.Name); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.userDelete(ctx, request.Name); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserDeleteResponse{Header: header}, nil
@@ -252,11 +256,11 @@ func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverp
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.userChangePassword(ctx, request.Name, request.Password, request.HashedPassword); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.userChangePassword(ctx, request.Name, request.Password, request.HashedPassword); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserChangePasswordResponse{Header: header}, nil
@@ -266,11 +270,11 @@ func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.Aut
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.userGrantRole(ctx, request.User, request.Role); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.userGrantRole(ctx, request.User, request.Role); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserGrantRoleResponse{Header: header}, nil
@@ -280,11 +284,11 @@ func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.Au
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.userRevokeRole(ctx, request.Name, request.Role); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.userRevokeRole(ctx, request.Name, request.Role); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserRevokeRoleResponse{Header: header}, nil
@@ -294,11 +298,11 @@ func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleA
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.roleAdd(ctx, request.Name); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.roleAdd(ctx, request.Name); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthRoleAddResponse{Header: header}, nil
@@ -369,11 +373,11 @@ func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRo
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.roleDelete(ctx, request.Role); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.roleDelete(ctx, request.Role); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthRoleDeleteResponse{Header: header}, nil
@@ -383,11 +387,11 @@ func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserver
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.roleGrantPermission(ctx, request.Name, request.Perm); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.roleGrantPermission(ctx, request.Name, request.Perm); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthRoleGrantPermissionResponse{Header: header}, nil
@@ -397,11 +401,11 @@ func (s *RPCServer) RoleRevokePermission(ctx context.Context, request *etcdserve
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.auth.roleRevokePermission(ctx, request.Role, request.Key, request.RangeEnd); err != nil {
-		return nil, err
-	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.auth.roleRevokePermission(ctx, request.Role, request.Key, request.RangeEnd); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthRoleRevokePermissionResponse{Header: header}, nil

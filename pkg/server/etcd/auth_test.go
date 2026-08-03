@@ -43,6 +43,20 @@ type authRevisionBarrierShim struct {
 	current uint64
 }
 
+type failingColdAuthRevisionShim struct {
+	BackendShim
+	current uint64
+	err     error
+}
+
+func (s *failingColdAuthRevisionShim) GetCurrentRevision() uint64 { return s.current }
+func (s *failingColdAuthRevisionShim) SetCurrentRevision(revision uint64) {
+	s.current = revision
+}
+func (s *failingColdAuthRevisionShim) GetDurableRevision(context.Context) (uint64, error) {
+	return 0, s.err
+}
+
 func (s *authRevisionBarrierShim) GetCurrentRevision() uint64 {
 	return s.current
 }
@@ -173,6 +187,34 @@ func TestAuthRPCHeaderWaitsForLeaderRevision(t *testing.T) {
 	response, err := server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
 	require.NoError(t, err)
 	require.Equal(t, int64(200), response.Header.Revision)
+}
+
+func TestAuthStatusRestoresColdLeaderHeaderFromDurableRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := &coldDurableRevisionShim{BackendShim: server.backend, durable: 234}
+	server.backend = shim
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.AuthStatus(context.Background(), &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, int64(234), response.GetHeader().GetRevision())
+	require.Equal(t, uint64(234), shim.GetCurrentRevision())
+}
+
+func TestAuthMutationFailsBeforeWriteWhenColdRevisionUnavailable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	revisionErr := errors.New("durable auth revision unavailable")
+	server.backend = &failingColdAuthRevisionShim{BackendShim: server.backend, err: revisionErr}
+	server.peers = testPeerService{isLeader: true}
+
+	response, err := server.RoleAdd(context.Background(), &etcdserverpb.AuthRoleAddRequest{Name: "must-not-exist"})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, revisionErr)
+	snapshot, snapshotErr := server.tokens.snapshots.current(context.Background())
+	require.NoError(t, snapshotErr)
+	require.NotContains(t, snapshot.Roles, "must-not-exist")
 }
 
 func TestAuthRPCHeaderFailsClosedWhenRevisionBarrierFails(t *testing.T) {
