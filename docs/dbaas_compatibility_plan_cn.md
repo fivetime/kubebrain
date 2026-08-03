@@ -31712,6 +31712,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint health 可提交 proposal（50.582099ms）、
   版本端点保持 3.7.0、`/readyz=ok`，最近日志无 durable/Auth revision、read barrier 或 panic/fatal
   异常；参考进程、临时目录与 direct Service 均已清理。
+- A3468 审计 Cluster/Member API 的 linearizable/auth 顺序，发现现有测试把“先认证、后 read
+  barrier”固化为 KubeBrain 行为；对照 `/root/etcd/server/etcdserver/server.go:MemberList`，官方对
+  `Linearizable=true` 明确先执行 `LinearizableReadNotify`，成功后才 `requireAuthInfo`。因此 barrier
+  故障与未认证同时发生时，旧实现错误返回 `etcdserver: user name is empty`，官方应优先返回 barrier
+  `Unavailable`；serializable MemberList 则不得执行 barrier。确定性 RED 在启用 auth 后同时注入
+  barrier error 与空凭证，修复前实际得到 auth error。commit
+  `6ef01930e343429c6dc70f2f896a2c6dc91f85db` 调整 MemberList 顺序，使 linearizable barrier/error
+  precedence、认证和成员快照与官方一致，同时保持 serializable 快路径不触发 barrier。目标语义、
+  既有 barrier status/header/raw gRPC/authorization 门禁连续 20 轮 GREEN，目标 race 10 轮、完整
+  `pkg/server/...` 155.206 秒（etcd server 149.849 秒）及 server/compat 两个 module 的 vet 均通过。
+  生产镜像 `kubebrain:a3468-memberlist-barrier-auth`（本地 image ID
+  `sha256:fb076180d82b0a2e253598949dc5ec73a12e67e4815329279b44047a7a296339`，kind runtime
+  digest `sha256:14d537e6bf6b2fdf68db9f0b0a41d2016b7db926fa53e7d05b7af516de1028ad`，build time
+  `2026-08-03T16:52:55Z`）部署后，MemberList linearizable/serializable flags 与 revision=0/header
+  envelope 两套官方双端差分连续 20 轮、40 次执行 2.148 秒通过；官方 client Sync 连续 20 轮
+  2.196 秒通过。最终 StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同
+  digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint health 可提交 proposal（42.836651ms）、
+  版本端点保持 3.7.0、`/readyz=ok`，最近日志无 MemberList、read barrier 或 panic/fatal 异常；参考
+  进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
