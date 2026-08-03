@@ -92,7 +92,11 @@ func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 	// yielding an incomplete "live keys" snapshot. safeCurrentRevision used to
 	// enforce this; Reset gets a currentRev func that reproduces the floor without
 	// its committed-revision write side-effect (which we must not do under the lock).
-	compactRev, cerr := b.GetCompactRevision(ctx)
+	// Rebuild runs on leadership acquisition and its snapshot boundary is
+	// authoritative. This replica may have cached a watermark from before the
+	// previous leader compacted; using it makes every retry choose the same
+	// already-compacted base revision and leaves the index disabled.
+	compactRev, cerr := b.GetCompactRevisionFresh(ctx)
 	if cerr != nil {
 		klog.ErrorS(cerr, "rebuild count index: read compact revision failed")
 		return cerr

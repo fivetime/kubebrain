@@ -20,7 +20,7 @@
 # and never exercise the leader's index. Requires --enable-count-index=true.
 #
 # Env knobs (all optional):
-#   NAMESPACE DEPLOYMENT LABEL METRICS_PORT ENDPOINT CLIENT_PORT
+#   KUBE_CONTEXT NAMESPACE DEPLOYMENT LABEL METRICS_PORT ENDPOINT CLIENT_PORT
 #   KILLS WRITE_SECONDS QUIESCE_SECONDS WORKERS
 set -euo pipefail
 
@@ -35,6 +35,11 @@ WRITE_SECONDS="${WRITE_SECONDS:-90}"
 QUIESCE_SECONDS="${QUIESCE_SECONDS:-30}"
 WORKERS="${WORKERS:-48}"
 
+KUBECTL=(kubectl)
+if [ -n "${KUBE_CONTEXT:-}" ]; then
+  KUBECTL+=(--context "$KUBE_CONTEXT")
+fi
+
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "missing required command: $1" >&2
@@ -45,13 +50,13 @@ need kubectl
 need go
 
 pods() {
-  kubectl -n "$NAMESPACE" get pods -l "$LABEL" \
+  "${KUBECTL[@]}" -n "$NAMESPACE" get pods -l "$LABEL" \
     -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
 }
 
 gauge() { # $1=pod -> count_index_keys (0 if absent)
   local v
-  v="$(kubectl -n "$NAMESPACE" exec "$1" -- wget -qO- "localhost:${METRICS_PORT}/metrics" 2>/dev/null \
+  v="$("${KUBECTL[@]}" -n "$NAMESPACE" exec "$1" -- wget -qO- "localhost:${METRICS_PORT}/metrics" 2>/dev/null \
         | awk -F'[ ]' '/^count_index_keys\{/{print $2}')"
   printf '%s' "${v%.*}"
 }
@@ -66,15 +71,15 @@ leader() { # -> "pod keys" (highest count_index_keys; empty if none > 0)
 }
 
 restart_total() {
-  kubectl -n "$NAMESPACE" get pods -l "$LABEL" \
+  "${KUBECTL[@]}" -n "$NAMESPACE" get pods -l "$LABEL" \
     -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{"\n"}{end}' \
     | awk '{s+=$1} END{print s+0}'
 }
 
 # ---- resolve a load-balancing endpoint (NodePort) unless ENDPOINT is given ----
 if [ -z "${ENDPOINT:-}" ]; then
-  node_ip="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
-  node_port="$(kubectl -n "$NAMESPACE" get svc "$SVC" \
+  node_ip="$("${KUBECTL[@]}" get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
+  node_port="$("${KUBECTL[@]}" -n "$NAMESPACE" get svc "$SVC" \
     -o jsonpath="{.spec.ports[?(@.port==${CLIENT_PORT})].nodePort}")"
   if [ -z "$node_ip" ] || [ -z "$node_port" ]; then
     echo "could not resolve a NodePort endpoint (node_ip=${node_ip} node_port=${node_port});" >&2
@@ -90,7 +95,7 @@ echo "endpoint=${ENDPOINT} kills=${KILLS} write=${WRITE_SECONDS}s quiesce=${QUIE
 # and, under pipefail, report failure even on a match.
 have_gauge=0
 for p in $(pods); do
-  metrics="$(kubectl -n "$NAMESPACE" exec "$p" -- wget -qO- "localhost:${METRICS_PORT}/metrics" 2>/dev/null || true)"
+  metrics="$("${KUBECTL[@]}" -n "$NAMESPACE" exec "$p" -- wget -qO- "localhost:${METRICS_PORT}/metrics" 2>/dev/null || true)"
   if [[ "$metrics" == *count_index_keys\{* ]]; then have_gauge=1; break; fi
 done
 if [ "$have_gauge" -ne 1 ]; then
@@ -334,7 +339,7 @@ while [ "$kn" -lt "$KILLS" ]; do
   kn=$((kn + 1))
   if [ -n "$pod" ]; then
     echo "[kill #${kn}/${KILLS} $(date +%T)] leader=${pod} count_index_keys=${keys} -> force delete"
-    kubectl -n "$NAMESPACE" delete pod "$pod" --force --grace-period=0 >/dev/null 2>&1 || true
+    "${KUBECTL[@]}" -n "$NAMESPACE" delete pod "$pod" --force --grace-period=0 >/dev/null 2>&1 || true
   else
     echo "[kill #${kn}/${KILLS}] no leader gauge found; skipping"
   fi
@@ -351,7 +356,7 @@ grep -v '"logger":"etcd-client"' "$log" || true
 # ---- post: pod health + verdict ----
 restarts_after="$(restart_total)"
 echo "pod restarts: before=${restarts_before} after=${restarts_after}"
-kubectl -n "$NAMESPACE" get pods -l "$LABEL"
+"${KUBECTL[@]}" -n "$NAMESPACE" get pods -l "$LABEL"
 
 if [ "$harness_rc" -ne 0 ]; then
   echo "countindex-failover-smoke: FAIL (harness rc=${harness_rc})" >&2

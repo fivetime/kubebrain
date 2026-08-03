@@ -138,3 +138,36 @@ func TestCountIndexRebuildIgnoresSystemNamespace(t *testing.T) {
 	require.True(t, served, "index should serve after rebuild")
 	require.Equal(t, 7, int(c), "rebuild bounded by the system namespace would miss all user keys")
 }
+
+func TestCountIndexRebuildBypassesStaleCompactRevisionCache(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{
+		Prefix:                  prefix,
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		EnableCountIndex:        true,
+	}, m).(*backend)
+	ctx := context.Background()
+	b.SetCurrentRevision(5)
+
+	// Model a follower that cached the old zero watermark before the leader
+	// persisted Compact(10), then became leader while its local committed
+	// revision was still behind that durable boundary.
+	got, err := b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Zero(t, got)
+	batch := kv.BeginBatchWrite()
+	batch.Put(getCompactKey(prefix), uint64ToBytes(10), 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	require.NoError(t, b.RebuildCountIndex(ctx))
+	require.Equal(t, uint64(11), b.countIndex.BaseRev(),
+		"a rebuilt index must not claim completeness at or below durable compaction")
+	got, err = b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(10), got, "the authoritative rebuild fence must refresh the cache")
+}
