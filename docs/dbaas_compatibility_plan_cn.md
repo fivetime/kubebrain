@@ -31463,6 +31463,47 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3.8.0-alpha.0 差分连续 5 轮、20 次执行 119.524 秒通过。三个 KubeBrain Pod 使用同一
   digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点保持 3.7.0，`/readyz=ok`，
   最近日志无 panic/fatal、read-barrier failure 或异常 Txn failure。
+- A3453 继续对照 `/root/etcd/server/etcdserver/v3_server.go` 的 Range 顺序：上游所有
+  non-serializable Range（包括指定历史 revision）都先执行 `LinearizableReadNotify`，再鉴权并
+  读取本地 MVCC；共享 TiKV 已允许 barrier 后在接收请求的 follower 本地读取历史快照。旧代码却
+  让所有 follower historical Range 先进入本地 auth/proxy 分支，绕过了 linearizable barrier。
+  确定性 RED 注入成功 barrier 与必失败 proxy，固定历史 v1/v2 后必须返回 v1、最新 header 且不
+  代理；auth 顺序测试也加入历史 revision，原实现实际命中 proxy。commit
+  `063b08cabd70fed1a49071a5ca464233ef3d53b8` 将 historical proxy 限定为缺少 durable
+  watermark 的 **serializable** follower 请求，linearizable history 则 barrier 后本地执行；原有
+  serializable proxy 覆盖同步改名保留。目标测试 10 轮 3.392 秒、完整 etcd server 包
+  149.692 秒、目标 race 3 轮 15.227 秒及 vet 均通过。生产镜像
+  `kubebrain:a3453-historical-range-barrier`（本地 image ID
+  `sha256:f0a333353cf03aa115d99ff9fb126f8aefea65832cd620af68521781b9a1c125`）部署后的首轮
+  Range 差分暴露了下述 cold revision 问题，因此该镜像未被当作最终生产验收结果。
+- A3454 针对上述生产反例建立 cold leader RED：滚动完成后的第一次 Range 基准读返回 revision
+  0，后续预热轮次才通过。根因是 leader `/status` revision handler 只读进程内
+  `GetCurrentRevision()`，全新 Pod 尚未被用户写预热时不会恢复 TiKV durable watermark。
+  commit `a2c5d6b71c5b4e172f9430e9414f155d6c5431c6` 让 handler 在 leader 上读取 durable
+  revision、取 memory/durable 最大值并回填内存；读取失败 fail-closed 返回 503，空集群最小值仍为
+  etcd revision 1。确定性测试用 cold cache wrapper 与已持久化用户写证明旧实现返回 0，并补齐
+  metric recorder 并发保护；目标测试 100 轮、目标 race 10 轮、完整 backend/server 回归及 vet
+  均通过。镜像 `kubebrain:a3454-cold-leader-revision`（本地 image ID
+  `sha256:24cecfc57c20b5115c2bbda5e26c447b2c028e8aca539d37efa6353b0d3240b4`，kind runtime
+  digest `sha256:04919d979946894a15b6ee2c65689cfded56bd6dbe5f7fa3d96692b7e528ebf5`）部署后首次
+  Range 差分仍显示第一笔 Put 相对 durable 基准发生巨大 revision 跳变、其后 9 轮通过，证明
+  handler 已恢复基准，但 PD election TSO 仍泄露进用户 revision allocator，继续形成 A3455 RED。
+- A3455 将领导权切换后的用户 MVCC revision 连续性纳入 TDD：原
+  `TestLeadershipRevisionSeparatesPublicAndAllocationWatermarks` 明确期待首写为
+  `allocationFloor+1`，改写为 etcd 契约后 RED 实际显示 allocator/collector 被推进到远高于
+  durable revision 的 PD TSO。commit `f990defaeaca13e62fbe93c0d52e9b032935c5c5` 将 election
+  timestamp 仅保留为领导权 fencing 信息；用户 allocator 与 event collector 从原子写入 TiKV 的
+  durable user watermark 恢复，同进程重新当选则取 memory/durable 最大值防止倒退，第一笔成功
+  用户写严格为 `publicRevision+1`。目标测试 10 轮 0.412 秒、目标 race 10 轮 2.231 秒、完整
+  backend 43.295 秒、完整 server（etcd 包 149.557 秒）与 vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3455-contiguous-revision`（本地 image ID
+  `sha256:bbf78575e3d5b8305ecb26051c16e03bcf9b27b399dce9edb78278996d7c6549`，kind runtime
+  digest `sha256:e75de1753eccae538df7ead353eb515b9131ab184167913ed34bee4cbdfbb21d`，build time
+  `2026-08-03T12:17:58Z`）首次滚动后的 Range、RangeRevisionBoundary、SerializableRead
+  三项官方 etcd 差分连续 10 轮、30 次执行 6.906 秒通过；同镜像再次全量滚动后第一轮 3 次执行
+  0.800 秒再次通过，证明结果不依赖预热。三个 KubeBrain Pod 同 digest、Ready/0 restart，主
+  3 PD/3 TiKV 均 Running，版本端点保持 3.7.0，`/readyz=ok`；仅见滚动期间预期 peer 断连与
+  count-index rebuild fallback，无 panic/fatal。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
