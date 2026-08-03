@@ -31375,6 +31375,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `rev <= compactMainRev` 返回 `ErrCompacted`，官方 3.8.0-alpha.0 与生产 KubeBrain 黑盒均返回
   `OutOfRange: required revision has been compacted`，因此 backend 对重复内部任务的 no-op 不构成
   客户端兼容差异。
+- A3449 对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `EtcdServer.Txn`，发现顶层
+  read-only 且至少一个 Range 为 non-serializable 的 Txn 缺少 Txn 级 linearizable read
+  barrier。上游在 auth `doSerialize` 之前调用 `LinearizableReadNotify`；KubeBrain 原路径则先
+  auth，再进入 leader generic execution。因此 leader revision transport 失败时，匿名请求错误
+  从上游的 `Unavailable` 漂移成 `user name is empty`，更重要的是正常请求没有在当前 leadership
+  上固定共享 TiKV 读快照。确定性 RED 注入 `SyncReadRevision` failure，实际复现该错误顺序差异。
+  commit `c42713cdc3d679ac7c729476cfd8bb1f55005c9e` 在完整静态 Txn validation 之后、auth
+  之前，对 `txnIsReadonly && !txnIsSerializable` 单次执行 read barrier；fully serializable
+  read-only Txn 保持零 barrier，写 Txn 与上游同样不进入该分支。回归同时固定 invalid inner
+  Range 先返回 `InvalidArgument` 且不触发 barrier、匿名 linearizable Txn 先返回 barrier
+  `Unavailable`、serializable 匿名 Txn 直接返回 auth 错误，以及授权成功的 linearizable Txn
+  恰好调用一次 barrier 并返回完整 response tree。上游的 readonly/serializable helper 本身只把
+  顶层 Range 视为 read-only，nested Txn 仍按写路径分类；KubeBrain 保持这一非递归契约，没有
+  擅自扩大 fast path。定向测试 10 轮 6.407 秒、相关 revision/header 集 3 轮 1.949 秒、完整
+  server 包 149.155 秒、目标 race 3 轮 28.779 秒及 vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3449-readonly-txn-barrier`（本地 image ID
+  `sha256:2fa057e45a263b38ef21d6126fcf7bb80f1a32af640c55731bf280a490cf872a`，kind runtime
+  digest `sha256:1a1719abc31de6fd98a9f90b91cd8b8d06756ecfdaae4fef22e01d576303ff67`）
+  滚动部署后，SerializableRead、Txn compare/header/revision、基础 Txn 与 generated nested
+  五项官方 3.8.0-alpha.0 差分连续 5 轮、25 次执行 154.634 秒通过。三个 KubeBrain Pod
+  使用同一 digest、Ready/0 restart，主 3 PD/3 TiKV Running，版本端点保持 3.7.0，
+  `/readyz=ok`；日志中的 `forward txn cas failed result=false` 仅为生成式 compare-false 分支，
+  无 panic、fatal、malformed 或 read-barrier failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
