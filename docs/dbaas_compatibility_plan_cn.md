@@ -32767,6 +32767,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三副本滚动后均 ready、0 restart，3 PD/3 TiKV 主集群健康；live unknown-action safety
   与既有 platform-detail 测试各连续 20 轮通过，前者每轮非法请求后都成功执行 Status，
   ready/version/endpoint status 继续正常且 revision 未因非法请求前进。
+- A3483 消除普通 live compat 的隐式 localhost 目标：`compatEndpoint()` 过去在
+  `KUBEBRAIN_ETCD_ENDPOINT` 与旧 `ENDPOINT` 都为空时回退到 `127.0.0.1:3379`，使无服务的
+  开发机执行嵌套模块全量测试时，多个 clientv3 调用依次等待 deadline，最终在 10 分钟模块
+  timeout 后失败；更危险的是本机恰有其他 etcd 时会静默修改错误实例。现在共享 helper 接收
+  `testing.TB`，127 个文件中的 163 个调用统一在缺少显式目标时立即 skip；纯 endpoint 选择
+  函数固定 `KUBEBRAIN_ETCD_ENDPOINT` 优先、`ENDPOINT` 兼容回退且绝不生成默认地址。
+  `run.sh` 同样拒绝两个变量都为空并退出 2，仍先拒绝遗留 reference/differential opt-in，避免
+  改变原 destructive safety 优先级；fake-go runner 测试证明首选/旧变量都被准确转发给
+  `go test -count=1 -v ./...`。清空 endpoint 后全模块由原 600 秒 timeout 改为 0.488 秒通过，
+  最终连续 20 轮 9.727 秒、race 10 轮 17.286 秒及 vet 通过；生产 endpoint 上 Kubernetes
+  lifecycle、平台替代错误和 unknown-alarm safety 连续 20 轮通过，旧 `ENDPOINT` 别名另跑
+  5 轮通过。该改动只收紧测试目标选择，不改变数据面运行镜像或 RPC 语义。
 
 ### P2：运维兼容和长期验证
 

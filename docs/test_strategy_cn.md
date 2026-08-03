@@ -27,7 +27,7 @@ KubeBrain 的目标不是"内部函数看起来对"，而是**"对 Kubernetes �
 
 - **测试目标**：证明 Txn / Range / Watch / Lease / Compact、错误码、revision 语义与 etcd 一致。
 - **覆盖场景**：对象生命周期、分页与历史读、watch + lease、key 元数据与 compare、progress notify、compact 单调性、错误码（如 `ErrCompacted`）。
-- **测试方法**：`hack/etcd-client-compat/`（普通 live compat 用 `ENDPOINT=<node>:<nodeport> hack/etcd-client-compat/run.sh`）。新增兼容性回归请加到这里。reference etcd 双端差分请用 `hack/etcd-client-compat/run-differential.sh` 或 `RUN_ETCD_CLIENT_DIFFERENTIAL=true hack/dev/verify.sh`，并只对一次性实例设置 destructive approval；普通 runner 会拒绝 reference/differential opt-in 环境变量，避免误跑 Compact 差分。
+- **测试方法**：`hack/etcd-client-compat/`（普通 live compat 用 `ENDPOINT=<node>:<nodeport> hack/etcd-client-compat/run.sh`）。runner 不再隐式连接 `127.0.0.1:3379`：必须显式设置 `KUBEBRAIN_ETCD_ENDPOINT`，或使用兼容别名 `ENDPOINT`。直接执行无 endpoint 的 `go test` 时 live 用例立即 skip，静态/runner 单测仍会运行。新增兼容性回归请加到这里。reference etcd 双端差分请用 `hack/etcd-client-compat/run-differential.sh` 或 `RUN_ETCD_CLIENT_DIFFERENTIAL=true hack/dev/verify.sh`，并只对一次性实例设置 destructive approval；普通 runner 会拒绝 reference/differential opt-in 环境变量，避免误跑 Compact 差分。
 - **约定**：每个修复应优先在这里加一个**打真实 endpoint** 的黑盒用例（例如：超大 mod_revision 不冻结集群、空闲 watch 的 progress 不超前、慢 watcher 收到无缺口前缀、compact 后低版本读被拒为 compacted）。
 
 ### 3. 内部单测（仅用于锁 bug，不替代 1/2）
