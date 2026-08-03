@@ -31855,6 +31855,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
   restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
   最近日志无 Downgrade/barrier 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3475 审计 Maintenance MoveLeader 的目标校验边界。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:MoveLeader` 与
+  `/root/etcd/server/etcdserver/server.go:MoveLeader`，leader 在真正 transfer 前先从成员表查 transferee，
+  未知 ID 或 learner 均返回
+  `FailedPrecondition: etcdserver: bad leader transferee`；只有有效 voting member 才进入领导权迁移。
+  KubeBrain 旧实现对所有目标直接返回 DBaaS 平台 `Unimplemented`。永久 RED 以 0 和 MaxUint64 调用
+  一次性单成员官方 leader 与生产 KubeBrain，官方两者均为 FailedPrecondition，旧生产端均为
+  Unimplemented。commit `ac9fafbeaf181e7b061fdcb68e89aa055dd986e2` 在 root 鉴权后复用静态
+  DBaaS serving-member 视图，对 missing/learner 先返回官方错误；有效 voter 仍明确由 DBaaS rollout/
+  failover orchestration 管理，不把 etcd Raft transfer 机械移植到无状态数据面。单元门禁额外覆盖
+  learner 与有效 voter。目标、鉴权和平台边界连续 20 轮 24.963 秒 GREEN，目标 race 连续 10 轮
+  2.023 秒，完整 etcd server 161.190 秒及 server/compat 两个 module 的 vet 均通过。commit
+  `1b526cdb` 固化两个缺失目标的官方双端差分。
+  生产镜像 `kubebrain:a3475-move-leader-target`（本地 image ID
+  `sha256:cb7fdceed80c745392bbf9dbe265cfc86303fd2983b9a902b991931ea48f550d`，kind runtime
+  digest `sha256:438abde561a05b2a1f762355a7519ee322dd97e0e23e09633004790e647384c8`，build time
+  `2026-08-03T19:02:58Z`）部署后，missing-target 官方双端差分连续 20 轮 0.261 秒、clientv3 平台
+  边界连续 20 轮 0.647 秒、全部 Downgrade 回归差分连续 20 轮 1.611 秒通过。最终 StatefulSet
+  desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主
+  3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，最近日志无
+  MoveLeader/transferee 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
