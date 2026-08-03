@@ -31598,6 +31598,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   50 轮、100 次测试 14.538 秒通过。最终三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV
   均 Running，endpoint health 可提交 proposal、`/readyz=ok`，日志无 panic/fatal 或 compact
   visibility/read-barrier failure。
+- A3463 收尾 compact cache 调用点时发现 count-index leadership rebuild 的注释与实现矛盾：
+  它要求 snapshot `baseRev >= durable compact+1`，却读取副本本地 TTL cache。确定性场景固定
+  cached=0、durable=10、local current=5；旧实现三次 retry 都重复选择 baseRev=5，scanner 正确
+  报 `revision 5 less than compact revision 10`，最终让索引保持 disabled、CountOnly 长期退化为
+  全表扫描。commit `6cd19d61cfb27174c99871ed8e434b5c1120bc75` 让每次 rebuild attempt
+  fresh 读取共享 TiKV watermark，成功以 baseRev=11 安装索引并刷新 cache。测试修复前稳定 RED，
+  修复后连续 20 轮 GREEN；目标 race 10 轮 2.445 秒、完整 backend 43.732 秒和相关 vet 通过。
+  同一提交还让 count-index failover smoke 的所有 kubectl 调用支持显式 `KUBE_CONTEXT`，避免依赖
+  或修改全局 context。
+  生产镜像 `kubebrain:a3463-countindex-compact-fence`（本地 image ID
+  `sha256:5681def714cf475096e38032ab4caff26f53d3c360fccac506d479c90a9b879b`，kind runtime
+  digest `sha256:2f72ad2be94304d0d3bb709478173dfa0a1849e4251714d52d7b683277affb03`，build time
+  `2026-08-03T15:05:33Z`）部署后，35 秒 8-worker 持续唯一键 Put 中连续强杀两次实际 index
+  leader；重建后的 gauge 从 5968/7131 再恢复到 6692/6777，证明没有永久 fallback。首次 smoke
+  又暴露门禁缺陷：它未核对 acknowledged Put 数，5000-key cleanup 超过生产 1024-key 上限却
+  静默成功。commit `60037fce` 将最终 count 与成功唯一 Put 数设为强等式、改用 500-key cleanup
+  并要求 left=0；commit `5f7bcc0d` 在无 scan sample 时不再宣称 index==scan。修正后重跑两次
+  leader 强杀，1295 个成功 Put 与 18/18 最终 index CountOnly 精确相等，无低估，cleanup
+  deleted=1295/left=0，Pod restart 保持 0。相关 revision-filter Count 官方差分连续 20 轮
+  4.702 秒通过。最终三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，endpoint
+  health 可提交 proposal、`/readyz=ok`，日志无 rebuild failure、index disabled 或 panic/fatal。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
