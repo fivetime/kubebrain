@@ -142,8 +142,9 @@ func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MoveLeader(ctx, 1)
 	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
-	_, err = client.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
-	requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
+	downgradeResponse, err := client.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
+	require.NoError(t, err)
+	require.Equal(t, ClusterVersion, downgradeResponse.Version)
 }
 
 func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) {
@@ -171,12 +172,16 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 		_, err = maintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: targetID})
 		requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	}
-	for _, request := range []*etcdserverpb.DowngradeRequest{
-		{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.6.0"},
-	} {
-		_, err = maintenance.Downgrade(ctx, request)
-		requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
-	}
+	validateResponse, err := maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.6.0",
+	})
+	require.NoError(t, err)
+	require.Equal(t, ClusterVersion, validateResponse.GetVersion())
+	require.NotNil(t, validateResponse.GetHeader())
+	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_ENABLE, Version: "3.6.0",
+	})
+	requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 	cancelResponse, err := maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action: etcdserverpb.DowngradeRequest_CANCEL, Version: "not-semver",
 	})
@@ -198,6 +203,34 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 	})
 	require.Equal(t, codes.Unknown, status.Code(err))
 	require.Equal(t, "etcdserver: unknown method", status.Convert(err).Message())
+}
+
+func TestDowngradeValidateUsesReadBarrierBeforeTargetValidation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	barrierErr := errors.New("downgrade barrier failed")
+	barrierCalls := 0
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		barrierCalls++
+		return barrierErr
+	}}
+
+	for _, version := range []string{"3.6", "3.7"} {
+		response, err := server.Downgrade(context.Background(), &etcdserverpb.DowngradeRequest{
+			Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: version,
+		})
+		require.Nil(t, response)
+		require.Equal(t, codes.Unavailable, status.Code(err))
+		require.Equal(t, barrierErr.Error(), status.Convert(err).Message())
+	}
+	require.Equal(t, 2, barrierCalls)
+
+	response, err := server.Downgrade(context.Background(), &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "not-semver",
+	})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrGRPCWrongDowngradeVersionFormat)
+	require.Equal(t, 2, barrierCalls)
 }
 
 func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {

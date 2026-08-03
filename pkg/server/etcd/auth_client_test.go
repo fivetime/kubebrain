@@ -1744,18 +1744,21 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 
 	_, userDowngradeErr := alice.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
 	requireAuthClientError(t, userDowngradeErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
-	_, rootDowngradeErr := root.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
-	requireAuthClientError(t, rootDowngradeErr, codes.Unimplemented, downgradeUnsupportedMessage)
+	rootDowngradeResponse, rootDowngradeErr := root.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")
+	require.NoError(t, rootDowngradeErr)
+	require.Equal(t, ClusterVersion, rootDowngradeResponse.Version)
 	_, rawUserDowngradeErr := rawAliceMaintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
 		Version: "3.6",
 	})
 	requireAuthClientError(t, rawUserDowngradeErr, codes.PermissionDenied, "etcdserver: permission denied")
-	_, rawRootDowngradeErr := rawRootMaintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+	rawRootDowngradeResponse, rawRootDowngradeErr := rawRootMaintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
 		Version: "3.6",
 	})
-	requireAuthClientError(t, rawRootDowngradeErr, codes.Unimplemented, downgradeUnsupportedMessage)
+	require.NoError(t, rawRootDowngradeErr)
+	require.Equal(t, ClusterVersion, rawRootDowngradeResponse.GetVersion())
+	require.NotNil(t, rawRootDowngradeResponse.GetHeader())
 }
 
 func TestClientAuthRangeStreamAuthorization(t *testing.T) {

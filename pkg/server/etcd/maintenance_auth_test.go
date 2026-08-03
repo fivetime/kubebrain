@@ -125,8 +125,10 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	}
 	_, err = server.Downgrade(aliceCtx, validDowngrade)
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
-	_, err = server.Downgrade(rootCtx, validDowngrade)
-	requireMaintenancePlatformReplacementError(t, err, downgradeUnsupportedMessage)
+	downgradeResponse, err := server.Downgrade(rootCtx, validDowngrade)
+	require.NoError(t, err)
+	require.Equal(t, ClusterVersion, downgradeResponse.GetVersion())
+	require.NotNil(t, downgradeResponse.GetHeader())
 }
 
 func TestMaintenanceRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {

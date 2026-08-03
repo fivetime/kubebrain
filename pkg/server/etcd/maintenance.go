@@ -432,8 +432,18 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 		if err != nil {
 			return nil, rpctypes.ErrGRPCWrongDowngradeVersionFormat
 		}
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return nil, readBarrierStatusErr(err)
+		}
 		if !validDowngradeTargetVersion(targetVersion) {
 			return nil, rpctypes.ErrGRPCInvalidDowngradeTargetVersion
+		}
+		if request.GetAction() == etcdserverpb.DowngradeRequest_VALIDATE {
+			header, err := s.maintenanceHeader(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return &etcdserverpb.DowngradeResponse{Header: header, Version: ClusterVersion}, nil
 		}
 	case etcdserverpb.DowngradeRequest_CANCEL:
 		// The version field is ignored for CANCEL by etcd.
