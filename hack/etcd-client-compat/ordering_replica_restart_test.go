@@ -17,6 +17,8 @@ import (
 
 type orderingReplicaRestartOutcome struct {
 	ReplicaUIDChanged      bool
+	StatusRevisionOK       bool
+	StatusRaftEnvelopeOK   bool
 	LatestValueVisible     bool
 	SerializableRevisionOK bool
 	TxnRevisionOK          bool
@@ -99,6 +101,23 @@ func TestOrderingWrapperSurvivesReplicaRestart(t *testing.T) {
 	}, 90*time.Second, 500*time.Millisecond)
 
 	client.SetEndpoints(endpoints[2])
+	// Make Status the first etcd RPC sent directly to the replacement. A cold
+	// replica must recover both Header.Revision and its synthetic Raft envelope
+	// from the durable user watermark; a later Range must not be required to warm
+	// the process first.
+	var replacementStatus *clientv3.StatusResponse
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, 3*time.Second)
+		defer callCancel()
+		response, statusErr := client.Status(callCtx, endpoints[2])
+		if statusErr != nil {
+			return false
+		}
+		replacementStatus = response
+		return response.Header.Revision >= latestRevision &&
+			response.RaftIndex >= uint64(latestRevision) &&
+			response.RaftAppliedIndex == response.RaftIndex
+	}, 30*time.Second, 200*time.Millisecond)
 	var restartedRead *clientv3.GetResponse
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, 3*time.Second)
@@ -140,6 +159,8 @@ func TestOrderingWrapperSurvivesReplicaRestart(t *testing.T) {
 
 	outcome := orderingReplicaRestartOutcome{
 		ReplicaUIDChanged:      newUID != oldUID,
+		StatusRevisionOK:       replacementStatus.Header.Revision >= latestRevision,
+		StatusRaftEnvelopeOK:   replacementStatus.RaftIndex >= uint64(latestRevision) && replacementStatus.RaftAppliedIndex == replacementStatus.RaftIndex,
 		LatestValueVisible:     string(restartedRead.Kvs[0].Value) == "after-restart-7",
 		SerializableRevisionOK: restartedRead.Header.Revision >= latestRevision,
 		TxnRevisionOK:          txn.Header.Revision >= latestRevision,
@@ -148,6 +169,8 @@ func TestOrderingWrapperSurvivesReplicaRestart(t *testing.T) {
 	}
 	require.Equal(t, orderingReplicaRestartOutcome{
 		ReplicaUIDChanged:      true,
+		StatusRevisionOK:       true,
+		StatusRaftEnvelopeOK:   true,
 		LatestValueVisible:     true,
 		SerializableRevisionOK: true,
 		TxnRevisionOK:          true,

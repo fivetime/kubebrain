@@ -78,6 +78,31 @@ type requireSyncBeforeHashBackendShim struct {
 	synced func() bool
 }
 
+type coldStatusRevisionBackendShim struct {
+	BackendShim
+	current uint64
+	durable uint64
+}
+
+func (b *coldStatusRevisionBackendShim) GetCurrentRevision() uint64 { return b.current }
+func (b *coldStatusRevisionBackendShim) SetCurrentRevision(revision uint64) {
+	if revision > b.current {
+		b.current = revision
+	}
+}
+func (b *coldStatusRevisionBackendShim) GetDurableRevision(context.Context) (uint64, error) {
+	return b.durable, nil
+}
+func (b *coldStatusRevisionBackendShim) GetCompactRevision(context.Context) (uint64, error) {
+	return 0, nil
+}
+func (b *coldStatusRevisionBackendShim) QuotaStatus(ctx context.Context) (int64, int64, bool, error) {
+	// Model backend.QuotaStatus's safeCurrentRevision call recovering the cold
+	// process after Status has already sampled GetCurrentRevision.
+	b.SetCurrentRevision(b.durable)
+	return b.BackendShim.QuotaStatus(ctx)
+}
+
 func (b *alarmReadErrorBackendShim) NoSpaceAlarms(context.Context) ([]uint64, error) {
 	return nil, b.err
 }
@@ -224,6 +249,29 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	defragResp, err := server.Defragment(ctx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
 	require.Nil(t, defragResp.Header)
+}
+
+func TestStatusRestoresColdRaftEnvelopeFromDurableRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/a3465/status-cold-revision"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	server.backend = &coldStatusRevisionBackendShim{
+		BackendShim: server.backend,
+		durable:     uint64(put.GetHeader().GetRevision()),
+	}
+
+	response, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, put.GetHeader().GetRevision(), response.GetHeader().GetRevision(),
+		"Status header must recover the shared durable revision")
+	require.Equal(t, uint64(put.GetHeader().GetRevision()), response.GetRaftIndex(),
+		"the first cold Status must not capture raft index before durable recovery")
+	require.Equal(t, response.GetRaftIndex(), response.GetRaftAppliedIndex())
 }
 
 func TestMaintenanceHashKVFutureRevisionMatchesEtcd(t *testing.T) {

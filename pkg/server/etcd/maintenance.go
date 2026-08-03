@@ -237,7 +237,15 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	if err := s.requireAuthenticated(ctx, false); err != nil {
 		return nil, err
 	}
-	revision := s.backend.GetCurrentRevision()
+	// Status is intentionally member-local and does not require a leader read
+	// barrier, but a newly started replica must restore its persisted user
+	// revision before exposing the synthetic Raft indexes. Sampling the raw local
+	// cache here used to capture zero; QuotaStatus recovered the cache later, so
+	// the same response had a durable Header.Revision but zero Raft{,Applied}Index.
+	revision, err := safeBackendRevision(ctx, s.backend)
+	if err != nil {
+		return nil, err
+	}
 	usage, quota, noSpace, quotaErr := s.backend.QuotaStatus(ctx)
 	if quotaErr != nil {
 		return nil, quotaErr
