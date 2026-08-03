@@ -31504,6 +31504,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   0.800 秒再次通过，证明结果不依赖预热。三个 KubeBrain Pod 同 digest、Ready/0 restart，主
   3 PD/3 TiKV 均 Running，版本端点保持 3.7.0，`/readyz=ok`；仅见滚动期间预期 peer 断连与
   count-index rebuild fallback，无 panic/fatal。
+- A3456 审计 RangeStream 显式 `Unimplemented` 后确认 custom sort 与 revision filter 正是
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkRangeStreamRequest` 的 3.7 上游契约，未制造
+  非兼容实现；随后补强 A3455 的永久生产门禁。原 idle replacement 测试只要求重启后首写
+  revision 大于冷读 header，无法拦截任意大的 PD TSO 跳变；现对普通 idle restart 与
+  compact-at-current restart 都要求三副本全替换不改变 public revision，且重启后第一笔 Put
+  必须严格等于 `coldHeader+1`。同一断言也加入官方 `/root/etcd/bin/etcd` restart oracle，连续
+  3 轮、6 次执行 13.038 秒通过；race 5.465 秒及 vet 通过。生产 A3455 TiKV/PD 拓扑上两类
+  `kubebrain-0/1/2` 全量 Pod replacement 分别 8.80/8.94 秒通过；显式连接生产 endpoint 的
+  compat 全套 106.211 秒通过。该轮仅增加测试证据，不改变 runtime，继续使用 A3455 镜像。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision

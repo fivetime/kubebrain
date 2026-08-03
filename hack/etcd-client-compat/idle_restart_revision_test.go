@@ -67,7 +67,8 @@ func TestIdleReplicaReplacementDoesNotAdvanceRevision(t *testing.T) {
 		"a serving-layer restart without user writes must preserve the public MVCC revision")
 	updated, err := afterKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-restart")})
 	require.NoError(t, err)
-	require.Greater(t, updated.GetHeader().GetRevision(), after.GetHeader().GetRevision())
+	require.Equal(t, after.GetHeader().GetRevision()+1, updated.GetHeader().GetRevision(),
+		"the election timestamp must not create a gap in the public MVCC sequence")
 	readUpdated, err := afterKV.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, readUpdated.Kvs, 1)
@@ -121,6 +122,9 @@ func TestLatestCompactionReplicaReplacementDoesNotAdvanceRevision(t *testing.T) 
 	require.Len(t, after.Kvs, 1)
 	require.Equal(t, put.GetHeader().GetRevision(), after.GetHeader().GetRevision(),
 		"compaction at the latest revision plus an idle serving-layer restart must preserve the public MVCC revision")
+	updated, err := etcdserverpb.NewKVClient(afterConn).Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-restart")})
+	require.NoError(t, err)
+	require.Equal(t, after.GetHeader().GetRevision()+1, updated.GetHeader().GetRevision())
 }
 
 func replaceAllCompatPods(t *testing.T, ctx context.Context, kubeContext, namespace string, pods []string) {
@@ -189,6 +193,9 @@ func TestReferenceEtcdIdleRestartPreservesRevision(t *testing.T) {
 	after, err := restartedKV.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Equal(t, before.GetHeader().GetRevision(), after.GetHeader().GetRevision())
+	updated, err := restartedKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-restart")})
+	require.NoError(t, err)
+	require.Equal(t, after.GetHeader().GetRevision()+1, updated.GetHeader().GetRevision())
 }
 
 func TestReferenceEtcdLatestCompactionIdleRestartPreservesRevision(t *testing.T) {
@@ -237,4 +244,7 @@ func TestReferenceEtcdLatestCompactionIdleRestartPreservesRevision(t *testing.T)
 	after, err := restartedKV.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Equal(t, put.GetHeader().GetRevision(), after.GetHeader().GetRevision())
+	updated, err := restartedKV.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-restart")})
+	require.NoError(t, err)
+	require.Equal(t, after.GetHeader().GetRevision()+1, updated.GetHeader().GetRevision())
 }
