@@ -31253,6 +31253,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   正常路径无回归。最终三个 KubeBrain Pod 使用同一 runtime digest、Ready/0 restart，3 PD/3
   TiKV Running，最近日志无 panic/fatal、compact failure、event-log malformed 或 fail-closed
   watermark 告警。
+- A3442/A3443 对照 `/root/etcd/server/storage/mvcc/kvstore_txn.go` 的 point Range 与
+  DeleteRange 用户键隔离语义，新增任意 byte key 的 `$` 分隔符碰撞门禁：同时写入
+  `a=lower` 与 `a$target`，更新并精确删除后者后，前者的当前 point Range 必须仍可见；
+  后者的当前/前缀/RangeStream 必须为空，而更新 revision 的历史 point Range 必须可见。
+  KubeBrain 旧 `{magic}{rawUserKey}${revision}` 格式不转义 `$`，因此 target 的物理版本会
+  落入 lower 的 reverse interval。首轮 RED 在强制 TiKV region 边界的 scanner 单测中让
+  窄范围错误返回 lower 两次；commit `f55bc55938d99806f31c447cb27cec32672dd952`
+  排序并夹紧 partition border、丢弃空 partition，本地 scanner/backend/race 均通过。但生产
+  `kubebrain:a3442-binary-scan-clamp` 仍连续 10 轮红灯：精确删除 target 后，lower point
+  Range 每轮都返回空，证明只修分区归一化不足。进一步 backend RED 证明 exact Get 只读取
+  overlap interval 的第一条物理记录，先撞到 target 的版本/墓碑后因 decoded user key 不匹配
+  把 lower 误判为不存在。commit `81b6ed816f9f8ec721589f269be8f86d048ad866`
+  保留旧格式并修复读取：有 revision index 的当前/不早于当前 revision point Get 使用 index
+  定位精确 object key；历史读取及旧 orphan-index 恢复扫描会解码并跳过 foreign user keys，
+  不再把第一条碰撞记录当作 miss。新增 backend RED/green 同时覆盖 current 与 historical Get，
+  并保留 `TestOrphanIndexSelfHeal` 契约；目标测试 10 轮、race 10 轮、完整 backend 43.413 秒、
+  完整 server/etcd 148.574 秒、backend/server vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3443-dollar-exact-read`（image ID
+  `sha256:db3529cc4070ab462eb71910d00144d7c25803d5034f61eb8c78305d49f42589`）
+  滚动部署后，原失败门禁与既有 binary key/mutation 差分测试共同连续 10 轮、30 次测试
+  29.424 秒通过；参考端为 `/root/etcd/bin/etcd` 3.8.0-alpha.0，KubeBrain 连接独立
+  3 PD/3 TiKV。最终三个 KubeBrain Pod 使用 A3443、Ready/0 restart，主 3 PD/3 TiKV
+  均 Running；A3442 的生产失败保留为第二层 RED 证据，未被本地 scanner 绿灯掩盖。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
