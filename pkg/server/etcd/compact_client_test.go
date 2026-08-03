@@ -122,6 +122,32 @@ type staleCompactRetryShim struct {
 	compactCalled bool
 }
 
+type coldDurableRevisionShim struct {
+	BackendShim
+	current uint64
+	durable uint64
+}
+
+func (s *coldDurableRevisionShim) GetCurrentRevision() uint64 { return s.current }
+func (s *coldDurableRevisionShim) SetCurrentRevision(revision uint64) {
+	s.current = revision
+}
+func (s *coldDurableRevisionShim) GetCompactRevision(context.Context) (uint64, error) {
+	return 0, nil
+}
+func (s *coldDurableRevisionShim) GetDurableRevision(context.Context) (uint64, error) {
+	return s.durable, nil
+}
+
+func TestSafeBackendRevisionRestoresDurableUserWatermarkFromColdCache(t *testing.T) {
+	shim := &coldDurableRevisionShim{durable: 73}
+
+	got, err := safeBackendRevision(context.Background(), shim)
+	require.NoError(t, err)
+	require.Equal(t, uint64(73), got)
+	require.Equal(t, uint64(73), shim.current)
+}
+
 func (s *staleCompactRetryShim) GetCurrentRevision() uint64 {
 	return 20
 }

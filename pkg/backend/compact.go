@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"math/rand"
 	"strings"
 	"sync"
@@ -224,6 +225,21 @@ func (b *backend) updateCompactRevCache(revision uint64) {
 
 func (b *backend) safeCurrentRevision(ctx context.Context) (uint64, error) {
 	currentRevision := b.tso.GetRevision()
+	// A brand-new serving process has no local user-revision watermark. Restore
+	// it from the revision committed atomically with user mutations before using
+	// the compact watermark as a lower bound. Compaction may be far behind the
+	// current snapshot (or absent), so treating compact=0 as an empty cluster can
+	// regress latest-read headers to revision 1 on a cold replica.
+	if currentRevision == 0 {
+		durableRevision, err := b.GetDurableRevision(ctx)
+		if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
+			return 0, err
+		}
+		if err == nil && durableRevision > currentRevision {
+			currentRevision = durableRevision
+			b.SetCurrentRevision(currentRevision)
+		}
+	}
 	compactRevision, err := b.GetCompactRevision(ctx)
 	if err != nil {
 		return 0, err

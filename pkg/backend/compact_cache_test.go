@@ -183,3 +183,31 @@ func TestSafeCurrentRevisionDoesNotAdvancePastCompactWatermark(t *testing.T) {
 		"compact == current must not manufacture compact+1")
 	require.Equal(t, compactRevision, b.GetCurrentRevision())
 }
+
+func TestSafeCurrentRevisionRestoresDurableUserWatermarkFromColdCache(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	ctx := context.Background()
+
+	// Model a newly started serving replica. Its local user-revision cache is
+	// empty and its compact cache was populated before another replica committed
+	// the durable user watermark. A latest serializable read may arrive without a
+	// leader read barrier, but its response header must still describe the shared
+	// TiKV snapshot rather than regress to etcd's empty-store revision 1.
+	got, err := b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Zero(t, got)
+	const durableRevision = uint64(73)
+	batch := kv.BeginBatchWrite()
+	batch.Put(b.ks.EncodeInternalKey(durableRevisionKey), uint64ToBytes(durableRevision), 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	got, err = b.safeCurrentRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, durableRevision, got)
+	require.Equal(t, durableRevision, b.GetCurrentRevision())
+}

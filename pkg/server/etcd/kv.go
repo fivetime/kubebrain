@@ -33,6 +33,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 const (
@@ -1982,6 +1983,20 @@ func (s *RPCServer) observeForwardedRevision(header *etcdserverpb.ResponseHeader
 
 func safeBackendRevision(ctx context.Context, backend BackendShim) (uint64, error) {
 	currentRevision := backend.GetCurrentRevision()
+	// Latest serializable reads may execute directly on a cold follower without
+	// a leader barrier. Recover the shared user watermark before consulting the
+	// compact lower bound; compaction can legitimately lag far behind the latest
+	// snapshot and therefore cannot identify the response header on its own.
+	if currentRevision == 0 {
+		durableRevision, err := backend.GetDurableRevision(ctx)
+		if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
+			return 0, err
+		}
+		if err == nil && durableRevision > currentRevision {
+			currentRevision = durableRevision
+			backend.SetCurrentRevision(currentRevision)
+		}
+	}
 	compactRevision, err := backend.GetCompactRevision(ctx)
 	if err != nil {
 		return 0, err
