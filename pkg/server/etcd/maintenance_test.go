@@ -1241,6 +1241,25 @@ func TestLocalMaintenanceDiagnosticsDoNotRequireLeaderBarrier(t *testing.T) {
 	require.Equal(t, 3, barrierCalls, "Alarm GET must retain its required read barrier")
 }
 
+func TestAlarmRejectsUnknownActionWithoutBackendMutation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	response, err := server.Alarm(context.Background(), &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_AlarmAction(99),
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.Nil(t, response)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "etcdserver: invalid alarm action", status.Convert(err).Message())
+
+	alarms, listErr := server.Alarm(context.Background(), &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_GET,
+	})
+	require.NoError(t, listErr)
+	require.Empty(t, alarms.Alarms)
+}
+
 func TestStatusUsesCachedLeadershipTerm(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

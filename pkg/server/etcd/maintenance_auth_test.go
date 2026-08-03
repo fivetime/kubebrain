@@ -47,6 +47,11 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 		Action: etcdserverpb.AlarmRequest_AlarmAction(127), Alarm: etcdserverpb.AlarmType(127),
 	})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	_, err = server.Alarm(rootCtx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_AlarmAction(127), Alarm: etcdserverpb.AlarmType(127),
+	})
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "etcdserver: invalid alarm action", status.Convert(err).Message())
 	alarm, err := server.Alarm(rootCtx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_ACTIVATE})
 	require.NoError(t, err)
 	require.Empty(t, alarm.Alarms)

@@ -21,7 +21,6 @@ import (
 )
 
 const (
-	alarmMutationUnsupportedMessage  = "etcd alarm mutation does not represent TiKV capacity; use PD/TiKV alerts and DBaaS remediation"
 	snapshotUnsupportedMessage       = "etcd snapshot is unavailable on TiKV; use the DBaaS logical backup and restore workflow"
 	moveLeaderUnsupportedMessage     = "KubeBrain leadership is managed automatically; use DBaaS rollout or failover orchestration"
 	downgradeUnsupportedMessage      = "in-place etcd protocol downgrade is unavailable; use a DBaaS versioned rollout or rollback"

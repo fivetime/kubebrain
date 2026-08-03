@@ -188,7 +188,11 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
 		}
-		return nil, status.Error(codes.Unimplemented, alarmMutationUnsupportedMessage)
+		// Upstream's applier currently returns a nil response for an unknown enum,
+		// which the maintenance wrapper dereferences and crashes. Unknown protobuf
+		// enum values are valid on the wire, so reject them explicitly instead of
+		// classifying malformed input as a TiKV platform boundary.
+		return nil, status.Error(codes.InvalidArgument, "etcdserver: invalid alarm action")
 	}
 	header, err := s.maintenanceHeader(ctx)
 	if err != nil {

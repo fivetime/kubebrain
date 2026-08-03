@@ -563,6 +563,35 @@ func TestRawGRPCAlarmGetAndZeroMemberRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRawGRPCAlarmRejectsUnknownAction(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///alarm-unknown-action",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	response, err := etcdserverpb.NewMaintenanceClient(conn).Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_AlarmAction(99),
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.Nil(t, response)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "etcdserver: invalid alarm action", status.Convert(err).Message())
+}
+
 func TestClientAlarmListDisarmZeroMemberRoundTrip(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

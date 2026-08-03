@@ -75,7 +75,6 @@ func TestEtcdAPISurfaceIsExplicit(t *testing.T) {
 // rejections and operations deliberately owned by the DBaaS control plane.
 func TestEtcdAPISurfaceUnimplementedClassification(t *testing.T) {
 	require.Equal(t, []string{
-		"Alarm",
 		"Downgrade",
 		"MemberAdd",
 		"MemberPromote",
