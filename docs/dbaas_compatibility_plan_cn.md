@@ -31918,6 +31918,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
   restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
   最近日志无 MemberUpdate/PeerURL 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3478 沿同一成员配置校验链补齐 MemberAdd 的现有 PeerURL 冲突分类。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/member.go:MemberAdd`、
+  `/root/etcd/server/etcdserver/server.go:AddMember` 和
+  `/root/etcd/server/etcdserver/api/membership/cluster.go` 的新增成员分支，官方先做 URL 语法校验，
+  再做管理员认证，最后在配置变更校验中拒绝任一与现有成员重叠的 PeerURL。永久 RED 使用“一个
+  现有 URL + 一个新 URL”的请求，使新成员 ID 不会与现有成员相同，并确认官方返回
+  `FailedPrecondition / etcdserver: Peer URLs already exists`、成员列表不变；旧生产返回平台
+  `Unimplemented`。commit `fd08b82ee41611b18823f4c8368b15c65f166f2e` 在既有 URL 语法和
+  认证门禁之后复用静态成员 URL 集合检查，冲突请求本地失败，完全不冲突的合法扩容仍保持 DBaaS
+  控制面边界；同时把既有通用合法 MemberAdd 测试夹具从默认成员的 2380 改为独立 12380，避免
+  新语义将夹具正确识别为冲突。目标语义连续 20 轮 3.086 秒 GREEN，race 连续 10 轮 11.697 秒；
+  扩展成员/认证/平台回归连续 20 轮 10.550 秒、race 连续 10 轮 66.626 秒，完整 etcd server
+  159.4 秒及 server/compat 两个 module 的 vet 均通过。commit
+  `05a924d4a469481c3aa205e71aa088aa931e6e7a` 固化无副作用的官方双端差分。
+  生产镜像 `kubebrain:a3478-member-add-peer-url-conflict`（本地 image ID
+  `sha256:b26953017fb9e0985878f869e33a5f98599eaf9938adac8b64d6b2ab4f30540f`，kind runtime
+  digest `sha256:651fbce8804c0bfb739ab342a3f08054b4496d2f8c29ea26ac1b077a5f1eede5`，build time
+  `2026-08-03T19:59:08Z`）部署后，新冲突语义、MemberAdd URL 校验、A3477 MemberUpdate 冲突和
+  非冲突平台边界各连续 20 轮分别以 0.276、0.222、0.310、0.893 秒通过。最终 StatefulSet
+  desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主
+  3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，最近日志无
+  MemberAdd/PeerURL 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
