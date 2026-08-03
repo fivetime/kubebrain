@@ -6,6 +6,7 @@ toolchain go1.26.4
 
 require (
 	github.com/anishathalye/porcupine v1.1.0
+	github.com/coreos/go-semver v0.3.1
 	github.com/stretchr/testify v1.11.1
 	go.etcd.io/etcd/api/v3 v3.7.0-beta.0
 	go.etcd.io/etcd/client/v3 v3.7.0-beta.0
@@ -13,7 +14,6 @@ require (
 )
 
 require (
-	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
