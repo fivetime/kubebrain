@@ -32745,6 +32745,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三副本滚动后均 ready、0 restart，3 PD/3 TiKV 主集群健康，ready/version/endpoint
   status 正常；live `TestPlatformManagedErrorDetails` 连续 20 轮确认负载入口完整发布
   conversion tool、全 keyspace 前提与 auth-disabled 边界，容器内转换命令可执行。
+- A3482 固定未知 AlarmAction 的 fail-closed wire 契约：对照 upstream
+  `/root/etcd/server/etcdserver/apply/backend.go:Alarm` 与
+  `api/v3rpc/maintenance.go:Alarm`，隔离官方 etcd 实例确认 protobuf enum 值 `99` 会让
+  applier 返回 nil response，随后 maintenance wrapper 空指针崩溃，客户端只收到
+  `Unavailable/EOF`。KubeBrain 不复制该可用性漏洞；此前虽然不会崩溃，却把非法输入误报为
+  TiKV 平台边界的 `Unimplemented`。现在保持 upstream auth wrapper 的鉴权优先级，鉴权通过后
+  在任何 backend mutation 前返回 `InvalidArgument: etcdserver: invalid alarm action`，并把
+  Alarm 从允许返回 `Unimplemented` 的公开 RPC 清单移除。direct server、raw gRPC 与 live
+  endpoint 门禁同时固定错误码、文本、空 response、无 alarm 副作用，以及错误后 Status 仍可用。
+  本轮也纠正 etcdctl 矩阵中过时的“CORRUPT 无对应语义”：现有持久 CORRUPT member 集合、写
+  门禁、租约延迟处理和 health/readyz 行为早已由官方差分及全副本重启门禁覆盖。
 
 ### P2：运维兼容和长期验证
 
