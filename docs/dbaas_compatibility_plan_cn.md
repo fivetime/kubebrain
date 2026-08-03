@@ -31896,6 +31896,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终 StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
   restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
   最近日志无 MoveLeader/transferee 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3477 继续补齐 MemberUpdate 的静态成员状态分类。对照
+  `/root/etcd/server/etcdserver/api/membership/cluster.go` 的 `ConfChangeUpdateNode`，官方会先排除
+  待更新成员，再检查请求 PeerURL 是否与任一其他成员冲突；冲突通过
+  `rpctypes.ErrGRPCPeerURLExist` 返回 `FailedPrecondition` 和
+  `etcdserver: Peer URLs already exists`。永久 RED 在单节点参考 etcd 中临时加入一个 learner，
+  将原成员更新到 learner 的 PeerURL；旧生产返回平台 `Unimplemented`。commit
+  `c009a8e091f09fd5cfe3b446c856a39becd43862` 在成员存在性检查后加入完全相同的跨成员 URL
+  集合检查；目标成员自身 URL 和同一请求内部重复 URL 不会被误判，非冲突更新仍保持 DBaaS
+  平台边界。目标单元语义连续 20 轮 0.930 秒 GREEN，race 连续 10 轮 1.736 秒，完整 etcd
+  server 174.067 秒及 server/compat 两个 module 的 vet 均通过。commit
+  `d0e068bb59bfbc6ed157069c6f14937efc2c8c16` 固化官方双端差分，并为每轮 learner 使用唯一
+  PeerURL，避免 etcd removed-member ID tombstone 被重复夹具触发。重复部署验证中同时发现既有
+  平台边界测试任选首个成员会偶然命中 A3476 的 current-leader no-op；commit
+  `56ae099e962e065285f845301f5ef9fc414bb74e` 改为由 Status.Leader 明确选择非 leader voter。
+  生产镜像 `kubebrain:a3477-member-update-peer-url-conflict`（本地 image ID
+  `sha256:1945c381fdc8dd58bccbe06131060c4b53562b8481d5a4cfc4ba22f94084a255`，kind runtime
+  digest `sha256:bdd1db5d23dcc77f7133fd5faacf1980d930f982b248a8d0e8dfc373e7a3a9ed`，build time
+  `2026-08-03T19:35:08Z`）部署后，PeerURL 冲突官方双端差分连续 20 轮 0.340 秒、成员突变状态
+  回归连续 20 轮 0.457 秒、有效非当前 voter 的平台边界连续 20 轮 0.855 秒通过。最终
+  StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0
+  restart，主 3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`，
+  最近日志无 MemberUpdate/PeerURL 或 panic/fatal 异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
