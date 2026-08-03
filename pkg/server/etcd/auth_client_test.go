@@ -1645,7 +1645,7 @@ func TestClientAuthCompactRequiresRoot(t *testing.T) {
 	require.GreaterOrEqual(t, compact.Header.Revision, second.Header.Revision)
 }
 
-func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *testing.T) {
+func TestClientAuthPrivilegedMaintenanceAuthorization(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	server.SetStaticMembers([]*etcdserverpb.Member{{ID: 1, Name: "voter"}})
@@ -1718,10 +1718,12 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 	}
 	requireAuthClientError(t, userSnapshotErr, codes.PermissionDenied, "etcdserver: permission denied")
 	rootSnapshot, rootSnapshotErr := root.SnapshotWithVersion(ctx)
-	if rootSnapshot != nil && rootSnapshot.Snapshot != nil {
-		require.NoError(t, rootSnapshot.Snapshot.Close())
-	}
-	requireAuthClientError(t, rootSnapshotErr, codes.Unimplemented, snapshotUnsupportedMessage)
+	require.NoError(t, rootSnapshotErr)
+	require.Equal(t, Version, rootSnapshot.Version)
+	rootSnapshotBytes, err := io.ReadAll(rootSnapshot.Snapshot)
+	require.NoError(t, err)
+	requireSnapshotIntegrityHash(t, rootSnapshotBytes)
+	require.NoError(t, rootSnapshot.Snapshot.Close())
 	rawSnapshotErr := func(client etcdserverpb.MaintenanceClient) error {
 		t.Helper()
 		stream, streamErr := client.Snapshot(ctx, &etcdserverpb.SnapshotRequest{})
@@ -1732,7 +1734,7 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 		return recvErr
 	}
 	requireAuthClientError(t, rawSnapshotErr(rawAliceMaintenance), codes.PermissionDenied, "etcdserver: permission denied")
-	requireAuthClientError(t, rawSnapshotErr(rawRootMaintenance), codes.Unimplemented, snapshotUnsupportedMessage)
+	require.NoError(t, rawSnapshotErr(rawRootMaintenance))
 
 	_, userMoveLeaderErr := alice.MoveLeader(ctx, 1)
 	requireAuthClientError(t, userMoveLeaderErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)

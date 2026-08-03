@@ -2,8 +2,10 @@ package compat
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"sync"
@@ -32,7 +34,6 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	defer cancel()
 	const (
 		memberMessage     = "KubeBrain replicas are stateless; scale or reconfigure them through the DBaaS control plane"
-		snapshotMessage   = "etcd snapshot is unavailable on TiKV; use the DBaaS logical backup and restore workflow"
 		moveLeaderMessage = "KubeBrain leadership is managed automatically; use DBaaS rollout or failover orchestration"
 		downgradeMessage  = "in-place etcd protocol downgrade is unavailable; use a DBaaS versioned rollout or rollback"
 	)
@@ -55,8 +56,15 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	_, err = cli.MemberPromote(ctx, memberID)
 	require.True(t, errors.Is(err, rpctypes.ErrMemberNotLearner), "unexpected promote error: %v", err)
 
-	_, err = cli.SnapshotWithVersion(ctx)
-	requirePlatformError(t, err, snapshotMessage)
+	snapshot, err := cli.SnapshotWithVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "3.7.0", snapshot.Version)
+	snapshotBytes, err := io.ReadAll(snapshot.Snapshot)
+	require.NoError(t, err)
+	require.NoError(t, snapshot.Snapshot.Close())
+	require.Greater(t, len(snapshotBytes), sha256.Size)
+	digest := sha256.Sum256(snapshotBytes[:len(snapshotBytes)-sha256.Size])
+	require.Equal(t, digest[:], snapshotBytes[len(snapshotBytes)-sha256.Size:])
 	statusResponse, err := cli.Status(ctx, endpoint)
 	require.NoError(t, err)
 	var nonLeaderID uint64

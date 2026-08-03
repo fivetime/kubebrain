@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io"
 	"math"
@@ -35,9 +36,11 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-func TestClientSnapshotAPIsReturnPlatformUnsupported(t *testing.T) {
+func TestClientSnapshotAPIsReturnHashProtectedEtcdBackend(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("snapshot-key"), Value: []byte("snapshot-value")})
+	require.NoError(t, err)
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
@@ -61,22 +64,27 @@ func TestClientSnapshotAPIsReturnPlatformUnsupported(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	versioned, err := client.SnapshotWithVersion(ctx)
-	if versioned != nil && versioned.Snapshot != nil {
-		require.NoError(t, versioned.Snapshot.Close())
-	}
-	requirePlatformReplacementError(t, err, snapshotUnsupportedMessage)
+	require.NoError(t, err)
+	require.Equal(t, Version, versioned.Version)
+	versionedBytes, err := io.ReadAll(versioned.Snapshot)
+	require.NoError(t, err)
+	require.NoError(t, versioned.Snapshot.Close())
+	requireSnapshotIntegrityHash(t, versionedBytes)
 
 	legacy, err := client.Snapshot(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, legacy)
-	_, err = io.ReadAll(legacy)
-	requirePlatformReplacementError(t, err, snapshotUnsupportedMessage)
+	legacyBytes, err := io.ReadAll(legacy)
+	require.NoError(t, err)
+	requireSnapshotIntegrityHash(t, legacyBytes)
 	require.NoError(t, legacy.Close())
 }
 
-func TestRawGRPCSnapshotReturnsPlatformUnsupported(t *testing.T) {
+func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("raw-snapshot-key"), Value: []byte("raw-snapshot-value")})
+	require.NoError(t, err)
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
@@ -97,13 +105,39 @@ func TestRawGRPCSnapshotReturnsPlatformUnsupported(t *testing.T) {
 	defer cancel()
 	stream, err := maintenance.Snapshot(ctx, &etcdserverpb.SnapshotRequest{})
 	require.NoError(t, err)
-	_, err = stream.Recv()
-	requirePlatformReplacementError(t, err, snapshotUnsupportedMessage)
-	info := requirePlatformManagedErrorInfo(t, err)
-	require.Equal(t, "Backup", info.Metadata["operation_type"])
-	require.Equal(t, "kubebrain.logical.v2", info.Metadata["artifact_format"])
-	require.Equal(t, "false", info.Metadata["etcd_snapshot_restore_usable"])
-	require.Equal(t, "kubebrain-logical-etcd-snapshot", info.Metadata["conversion_tool"])
+	var responses []*etcdserverpb.SnapshotResponse
+	for {
+		response, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		require.NoError(t, recvErr)
+		responses = append(responses, response)
+	}
+	require.GreaterOrEqual(t, len(responses), 2)
+	var backendBytes []byte
+	for i, response := range responses[:len(responses)-1] {
+		require.Equal(t, Version, response.Version)
+		require.LessOrEqual(t, len(response.Blob), snapshotSendBufferSize)
+		backendBytes = append(backendBytes, response.Blob...)
+		if i+1 < len(responses)-1 {
+			require.Positive(t, response.RemainingBytes)
+		} else {
+			require.Zero(t, response.RemainingBytes)
+		}
+	}
+	digest := sha256.Sum256(backendBytes)
+	final := responses[len(responses)-1]
+	require.Zero(t, final.RemainingBytes)
+	require.Equal(t, digest[:], final.Blob)
+	require.Equal(t, Version, final.Version)
+}
+
+func requireSnapshotIntegrityHash(t *testing.T, contents []byte) {
+	t.Helper()
+	require.Greater(t, len(contents), sha256.Size)
+	digest := sha256.Sum256(contents[:len(contents)-sha256.Size])
+	require.Equal(t, digest[:], contents[len(contents)-sha256.Size:])
 }
 
 func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {

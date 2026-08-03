@@ -14,10 +14,15 @@ import (
 
 type maintenanceSnapshotServer struct {
 	etcdserverpb.Maintenance_SnapshotServer
-	ctx context.Context
+	ctx       context.Context
+	responses []*etcdserverpb.SnapshotResponse
 }
 
 func (s *maintenanceSnapshotServer) Context() context.Context { return s.ctx }
+func (s *maintenanceSnapshotServer) Send(response *etcdserverpb.SnapshotResponse) error {
+	s.responses = append(s.responses, response)
+	return nil
+}
 
 func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
@@ -118,8 +123,10 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: aliceCtx})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
-	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx})
-	requireMaintenancePlatformReplacementError(t, err, snapshotUnsupportedMessage)
+	rootSnapshot := &maintenanceSnapshotServer{ctx: rootCtx}
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, rootSnapshot)
+	require.NoError(t, err)
+	require.NotEmpty(t, rootSnapshot.responses)
 
 	_, err = server.MoveLeader(aliceCtx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")

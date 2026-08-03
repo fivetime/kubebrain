@@ -8,19 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
-
-	"github.com/coreos/go-semver/semver"
-	"go.etcd.io/etcd/api/v3/mvccpb"
-	"go.etcd.io/etcd/server/v3/lease/leasepb"
-	"go.etcd.io/etcd/server/v3/storage/backend"
-	"go.etcd.io/etcd/server/v3/storage/mvcc"
-	"go.etcd.io/etcd/server/v3/storage/schema"
-	"go.uber.org/zap"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
+	production "github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 )
 
 // Convert writes a hash-protected etcd backend snapshot containing the
@@ -148,61 +139,22 @@ func decodeRecord(rec record.Record, snapshotRevision int64) (decodedRecord, err
 }
 
 func writeBackend(path string, revision int64, records []decodedRecord, leases []record.Lease) error {
-	be := backend.NewDefaultBackend(zap.NewNop(), path, backend.WithMmapSize(64*1024*1024))
-	tx := be.BatchTx()
-	tx.LockOutsideApply()
-	for _, bucket := range schema.AllBuckets {
-		tx.UnsafeCreateBucket(bucket)
-	}
-	schema.UnsafeSetStorageVersion(tx, semver.Must(semver.NewVersion("3.7.0")))
-	schema.UnsafeUpdateConsistentIndexForce(tx, 1, 1)
-	mvcc.UnsafeSetScheduledCompact(tx, revision)
-	mvcc.UnsafeSetFinishedCompact(tx, revision)
-
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].ModRevision != records[j].ModRevision {
-			return records[i].ModRevision < records[j].ModRevision
-		}
-		return string(records[i].key) < string(records[j].key)
-	})
-	subs := make(map[int64]int64)
+	state := production.State{Revision: revision}
 	for _, rec := range records {
-		kv := &mvccpb.KeyValue{
+		state.Records = append(state.Records, production.Record{
 			Key: rec.key, Value: rec.value, CreateRevision: rec.CreateRevision,
 			ModRevision: rec.ModRevision, Version: rec.Version, Lease: rec.Lease,
-		}
-		encoded, err := proto.Marshal(kv)
-		if err != nil {
-			tx.Unlock()
-			be.Close()
-			return err
-		}
-		revKey := mvcc.RevToBytes(mvcc.Revision{Main: rec.ModRevision, Sub: subs[rec.ModRevision]}, mvcc.NewRevBytes())
-		subs[rec.ModRevision]++
-		tx.UnsafeSeqPut(schema.Key, revKey, encoded)
+		})
 	}
-	// A compacted tombstone marker retains an exact snapshot revision even when
-	// no live key was modified at that revision, without adding a visible key.
-	marker := &mvccpb.KeyValue{Key: []byte("\x00kubebrain-snapshot-revision")}
-	encodedMarker, err := proto.Marshal(marker)
-	if err != nil {
-		tx.Unlock()
-		be.Close()
-		return err
-	}
-	markerKey := mvcc.RevToBytes(mvcc.Revision{Main: revision, Sub: subs[revision]}, mvcc.NewRevBytes())
-	markerKey = append(markerKey, 't')
-	tx.UnsafeSeqPut(schema.Key, markerKey, encodedMarker)
 	for _, lease := range leases {
-		schema.MustUnsafePutLease(tx, &leasepb.Lease{ID: lease.ID, TTL: lease.GrantedTTL, RemainingTTL: lease.TTL})
+		state.Leases = append(state.Leases, production.Lease{
+			ID: lease.ID, GrantedTTL: lease.GrantedTTL, RemainingTTL: lease.TTL,
+		})
 	}
 	// Logical artifacts deliberately exclude KubeBrain's internal auth records.
 	// Make the limitation explicit in the generated backend instead of emitting
 	// an auth-enabled snapshot with missing credentials.
-	tx.UnsafePut(schema.Auth, schema.AuthEnabledKeyName, []byte{0})
-	tx.Unlock()
-	be.ForceCommit()
-	return be.Close()
+	return production.WriteBackend(path, state)
 }
 
 func appendIntegrityHash(path string) error {

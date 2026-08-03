@@ -19,25 +19,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
-
-func TestSnapshotPlatformManagedErrorPublishesBackupContract(t *testing.T) {
-	err := snapshotPlatformManagedError()
-	st := status.Convert(err)
-	require.Equal(t, codes.Unimplemented, st.Code())
-	require.Equal(t, snapshotUnsupportedMessage, st.Message())
-
-	info := requirePlatformManagedErrorInfo(t, err)
-	require.Equal(t, "maintenance.snapshot", info.Metadata["capability"])
-	require.Equal(t, "Backup", info.Metadata["operation_type"])
-	require.Equal(t, "kubebrain.logical.v2", info.Metadata["artifact_format"])
-	require.Equal(t, "false", info.Metadata["etcd_snapshot_restore_usable"])
-	require.Equal(t, "kubebrain-logical-etcd-snapshot", info.Metadata["conversion_tool"])
-	require.Equal(t, "/", info.Metadata["conversion_requires_prefix"])
-	require.Equal(t, "disabled", info.Metadata["converted_snapshot_auth"])
-}
 
 func TestPlatformManagedErrorsIdentifyTheirCapability(t *testing.T) {
 	tests := []struct {

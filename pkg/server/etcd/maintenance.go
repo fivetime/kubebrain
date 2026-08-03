@@ -414,7 +414,7 @@ func (s *RPCServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverp
 	if err := s.requireAuthenticated(stream.Context(), true); err != nil {
 		return err
 	}
-	return snapshotPlatformManagedError()
+	return s.sendSnapshot(stream)
 }
 
 func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {

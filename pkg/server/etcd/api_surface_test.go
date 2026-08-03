@@ -82,7 +82,6 @@ func TestEtcdAPISurfaceUnimplementedClassification(t *testing.T) {
 		"MemberUpdate",
 		"MoveLeader",
 		"RangeStream",
-		"Snapshot",
 	}, publicRPCMethodsReturningUnimplemented(t))
 }
 
@@ -139,8 +138,7 @@ func publicRPCMethodsReturningUnimplemented(t *testing.T) []string {
 // RPC through the generic constructor must require an API-surface audit.
 func platformManagedErrorHelper(name string) bool {
 	switch name {
-	case "snapshotPlatformManagedError", "memberMutationPlatformManagedError",
-		"moveLeaderPlatformManagedError", "downgradePlatformManagedError":
+	case "memberMutationPlatformManagedError", "moveLeaderPlatformManagedError", "downgradePlatformManagedError":
 		return true
 	default:
 		return false

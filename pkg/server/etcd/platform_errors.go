@@ -21,7 +21,6 @@ import (
 )
 
 const (
-	snapshotUnsupportedMessage       = "etcd snapshot is unavailable on TiKV; use the DBaaS logical backup and restore workflow"
 	moveLeaderUnsupportedMessage     = "KubeBrain leadership is managed automatically; use DBaaS rollout or failover orchestration"
 	downgradeUnsupportedMessage      = "in-place etcd protocol downgrade is unavailable; use a DBaaS versioned rollout or rollback"
 	memberMutationUnsupportedMessage = "KubeBrain replicas are stateless; scale or reconfigure them through the DBaaS control plane"
@@ -51,16 +50,6 @@ func platformManagedError(message, capability, operationType string, metadata ma
 		return status.Error(codes.Unimplemented, message)
 	}
 	return withDetails.Err()
-}
-
-func snapshotPlatformManagedError() error {
-	return platformManagedError(snapshotUnsupportedMessage, "maintenance.snapshot", "Backup", map[string]string{
-		"artifact_format":              "kubebrain.logical.v2",
-		"conversion_requires_prefix":   "/",
-		"conversion_tool":              "kubebrain-logical-etcd-snapshot",
-		"etcd_snapshot_restore_usable": "false",
-		"converted_snapshot_auth":      "disabled",
-	})
 }
 
 func memberMutationPlatformManagedError() error {
