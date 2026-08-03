@@ -31,7 +31,27 @@ func TestMemberAddPeerURLConflictDifferentialAgainstReferenceEtcd(t *testing.T) 
 	require.Equal(t, referenceOutcome, memberAddPeerURLConflictOutcomeForEndpoint(t, compatEndpoint()))
 }
 
+func TestMemberAddWhitespaceNormalizedPeerURLConflictDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+	referenceOutcome := memberAddPeerURLConflictOutcomeForEndpointWithTransform(t, reference, func(peerURL string) string {
+		return " \t" + peerURL + "\n "
+	})
+	require.Equal(t, memberAddPeerURLConflictOutcome{
+		Code: "FailedPrecondition", Message: "etcdserver: Peer URLs already exists",
+	}, referenceOutcome)
+	require.Equal(t, referenceOutcome, memberAddPeerURLConflictOutcomeForEndpointWithTransform(t, compatEndpoint(), func(peerURL string) string {
+		return " \t" + peerURL + "\n "
+	}))
+}
+
 func memberAddPeerURLConflictOutcomeForEndpoint(t *testing.T, endpoint string) memberAddPeerURLConflictOutcome {
+	return memberAddPeerURLConflictOutcomeForEndpointWithTransform(t, endpoint, func(peerURL string) string { return peerURL })
+}
+
+func memberAddPeerURLConflictOutcomeForEndpointWithTransform(t *testing.T, endpoint string, transform func(string) string) memberAddPeerURLConflictOutcome {
 	t.Helper()
 	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
 	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -46,7 +66,7 @@ func memberAddPeerURLConflictOutcomeForEndpoint(t *testing.T, endpoint string) m
 	require.NotEmpty(t, listResponse.Members)
 	require.NotEmpty(t, listResponse.Members[0].GetPeerURLs())
 	_, callErr := client.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{PeerURLs: []string{
-		listResponse.Members[0].GetPeerURLs()[0],
+		transform(listResponse.Members[0].GetPeerURLs()[0]),
 		"http://a3478-new.invalid:2380",
 	}})
 	require.Error(t, callErr)
