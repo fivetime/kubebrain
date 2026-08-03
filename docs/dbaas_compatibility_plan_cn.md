@@ -31333,11 +31333,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   image ID `sha256:6a2348c26d8a45298a3e36221be4176d8cd07deeababcfee54e9d1ac4b40d929`）
   滚动部署后，RangeStream common shapes、HashKV 基本/Revision boundary、dollar narrow range、
   binary key/mutation 六项官方差分连续 3 轮、18 次执行 14.578 秒通过；真实 TiKV HashKV
-  逻辑/物理压缩稳定性门禁另以 3.207 秒通过。高字节 collision-family 由可注入旧物理行的
-  后端测试证明，生产黑盒只证明正常 revision 空间无回归。最终三个 KubeBrain Pod 使用 A3446、
+  逻辑/物理压缩稳定性门禁另以 3.207 秒通过。本轮部署时高字节 collision-family 先由可注入
+  旧物理行的后端测试证明；随后 A3447 已补成公开 RPC 可构造的生产黑盒证据。最终三个
+  KubeBrain Pod 使用 A3446、
   同一 runtime digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点返回
   etcdserver/storage 3.7.0，最近 15 分钟日志无 panic/fatal、malformed、compact failure 或
   event-log failure。
+- A3447 修正 A3446 对证据边界的保守判断：生产 TSO revision 本身就是可编码为 8 字节
+  big-endian 的 UnixNano，不需要内部注入即可形成真实 collision family。新增官方 client/v3
+  差分先创建 short key，再写 probe 取得严格位于 short create 与后续 update/delete 之间的
+  revision；把 probe revision 的 big-endian 字节嵌入 `short + '$' + revisionBytes + 'x'`
+  作为 foreign user key，随后更新 short。对 KubeBrain 而言 foreign 物理行确定落在 short
+  两个版本之间；官方 etcd 作为逻辑语义 oracle。门禁同时固定更新后 Range 只返回 short-v2
+  与 foreign 各一次、RangeStream 总数为 2、删除 short 后当前 Range 只剩 foreign，以及
+  update revision 的历史 Range 仍返回两个正确值。生产 A3446 对官方
+  `/root/etcd/bin/etcd` 3.8.0-alpha.0 连续 10 轮 2.741 秒通过；目标 race 3 轮 1.894 秒，
+  与既有 dollar narrow range、binary key/mutation 的组合差分 3 轮 12.185 秒通过。该增强仅
+  新增兼容门禁，不改变服务镜像；生产继续运行 `kubebrain:a3446-dollar-collision-family`。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
