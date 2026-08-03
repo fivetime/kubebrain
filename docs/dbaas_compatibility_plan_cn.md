@@ -31547,6 +31547,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   修正选择器的 broad differential 单线程全套 287.643 秒通过。最终三个 KubeBrain Pod 使用
   同一 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，`/readyz=ok`，最近日志无
   panic/fatal、compact visibility 或 read-barrier failure。
+- A3460 沿 A3459 审计写事务路径时发现同类换主窗口仍可穿透：新 leader 的本地 compact
+  watermark cache 可能停在旧值，而已选中的写 Txn 分支同时包含 Put 与显式历史 Range；若
+  Range revision 已被前任 leader compact，旧实现仍可能接受该 Range 并提交同分支写入。
+  commit `a117ab34f260bdd6f2bd25840f456ac75c049729` 让 generic write Txn 在每次 compare/分支
+  选择后、任何 staged/atomic mutation 前从共享 TiKV fresh 读取 durable compact watermark。
+  确定性 TDD 回归固定 cached=1、durable=10、current=20，要求 revision 9 返回
+  `OutOfRange/ErrCompacted`、nil Txn response，且 sibling Put 不得落盘；修复前稳定 RED，修复后
+  连续 20 轮 GREEN。新增 raw gRPC 官方差分还逐字段验证错误码、消息、nil response 与 marker
+  不存在。目标 race 10 轮、完整 etcd server 150.794 秒、相关 service 包和 vet 均通过。
+  生产镜像 `kubebrain:a3460-write-txn-compact-fence`（本地 image ID
+  `sha256:20e1debbd09495b4ccf8a4ae0d42ebcf858fa5d36734af470afce5c53f29ab01`，kind runtime
+  digest `sha256:92c7a6e104f8952fcaa67caa9944e98e4e690591358b283cf1f41863af04d3d4`，build time
+  `2026-08-03T14:05:22Z`）三副本部署后目标官方差分连续 50 轮 8.396 秒通过；写 Txn、失败
+  分支、区间 Txn、compact boundary 与目标场景组合连续 10 轮、50 次测试 13.960 秒通过。
+  三个 KubeBrain Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点为
+  3.7.0、`/readyz=ok`；最近日志仅有滚动期间预期 peer 断连，无 panic/fatal。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
