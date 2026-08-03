@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -30,7 +31,9 @@ func TestAlarmUnknownTypeStatusDifferentialAgainstReferenceEtcd(t *testing.T) {
 		memberID = uint64(0xa342002)
 		alarm    = etcdserverpb.AlarmType(127)
 	)
-	alarmError := (&etcdserverpb.AlarmMember{MemberID: memberID, Alarm: alarm}).String()
+	// StatusResponse.Errors uses etcd server formatting, which is deliberately
+	// distinct from the protobuf AlarmMember.String representation.
+	alarmError := fmt.Sprintf("memberID:%d  alarm:%s", memberID, alarm.String())
 	want := []unknownAlarmStatusOutcome{
 		{Name: "active", Code: "OK", Errors: []string{alarmError}},
 		{Name: "after-wrong-member", Code: "OK", Errors: []string{alarmError}},
