@@ -432,6 +432,16 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
 		return nil, err
 	}
+	// Match EtcdServer.Txn: a read-only transaction containing any
+	// non-serializable Range establishes its linearizable read barrier before
+	// authorization and execution. Besides preserving etcd's error ordering,
+	// this pins the shared-TiKV snapshot after the current leadership has been
+	// confirmed. Fully serializable read-only txns intentionally bypass it.
+	if txnIsReadonly(txn) && !txnIsSerializable(txn) {
+		if err := s.peers.SyncReadRevision(ctx); err != nil {
+			return nil, readBarrierStatusErr(err)
+		}
+	}
 	caller, authErr := s.authCallerFromContext(ctx)
 	if authErr != nil {
 		return nil, authErr

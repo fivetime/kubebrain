@@ -86,6 +86,51 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	require.Equal(t, 2, barrierCalls)
 }
 
+func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	authenticated := setupAuthKVUser(t, server)
+	plain := context.Background()
+	barrierErr := errors.New("leader txn read barrier failed")
+	var barrierCalls int
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		barrierCalls++
+		return barrierErr
+	}}
+
+	readTxn := func(serializable bool) *etcdserverpb.TxnRequest {
+		return &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+			Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+				Key: []byte("/allowed/a"), Serializable: serializable,
+			}},
+		}}}
+	}
+	invalid := readTxn(false)
+	invalid.Success[0].GetRequestRange().Key = nil
+	_, err := server.Txn(plain, invalid)
+	require.Equal(t, codes.InvalidArgument, status.Code(err))
+	require.Equal(t, "etcdserver: key is not provided", status.Convert(err).Message())
+	require.Zero(t, barrierCalls, "static request validation must precede the read barrier")
+
+	_, err = server.Txn(plain, readTxn(false))
+	requireReadBarrierUnavailable(t, err, barrierErr.Error())
+	require.Equal(t, 1, barrierCalls)
+
+	_, err = server.Txn(plain, readTxn(true))
+	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+	require.Equal(t, 1, barrierCalls)
+
+	server.peers = testPeerService{isLeader: true, syncReadFn: func(context.Context) error {
+		barrierCalls++
+		return nil
+	}}
+	resp, err := server.Txn(authenticated, readTxn(false))
+	require.NoError(t, err)
+	require.NotNil(t, resp.Header)
+	require.Len(t, resp.Responses, 1)
+	require.Equal(t, 2, barrierCalls, "a linearizable read-only txn must establish exactly one barrier")
+}
+
 func TestAuthKVFutureJWTRevisionAllowsWritesButNotSerializedReads(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	for _, tc := range []struct {
