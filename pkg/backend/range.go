@@ -28,6 +28,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -94,35 +95,66 @@ func (b *backend) get(ctx context.Context, key []byte, revision uint64) (val []b
 }
 
 func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint64) (val []byte, modRevision uint64, err error) {
-	if revision == 0 {
-		revision = math.MaxUint64
+	requestedRevision := revision
+	revisionValue, err := b.kv.Get(ctx, b.coder.EncodeRevisionKey(key))
+	if err != nil {
+		if !errors.Is(err, storage.ErrKeyNotFound) {
+			return nil, 0, err
+		}
+		// Pre-#31 compaction/retry races could leave an object whose revision
+		// index is missing. Preserve the read-visible orphan recovery contract by
+		// falling through to the decoded legacy scan below.
+	} else {
+		currentRevision, _, parseErr := coder.ParseRevision(revisionValue)
+		if parseErr != nil {
+			return nil, 0, parseErr
+		}
+
+		// The revision index gives exact point reads a collision-free fast path.
+		// This matters for the legacy object encoding {raw user key}${revision}:
+		// versions of "a$extension" sort inside the reverse-scan interval for "a".
+		// Reading the indexed object key directly cannot confuse those two keys.
+		if requestedRevision == 0 || requestedRevision >= currentRevision {
+			val, getErr := b.kv.Get(ctx, b.coder.EncodeObjectKey(key, currentRevision))
+			if getErr != nil {
+				return nil, 0, getErr
+			}
+			return val, currentRevision, nil
+		}
 	}
 
-	startKey := b.coder.EncodeObjectKey(key, revision)
+	if requestedRevision == 0 {
+		requestedRevision = math.MaxUint64
+	}
+	startKey := b.coder.EncodeObjectKey(key, requestedRevision)
 	endKey := b.coder.EncodeObjectKey(key, 0)
-	iter, err := b.kv.Iter(ctx, startKey, endKey, 0, 1)
+	// Historical reads and legacy orphan recovery need the reverse interval. It
+	// is not a unique prefix when the raw key contains the delimiter, so do not
+	// cap the iterator at the first physical row: decode and skip foreign keys.
+	iter, err := b.kv.Iter(ctx, startKey, endKey, 0, 0)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer iter.Close()
-	err = iter.Next(ctx)
-	if err != nil {
-		if err == io.EOF {
-			// it's compacted after deleted or it doesn't exist
-			return nil, 0, storage.ErrKeyNotFound
+	for {
+		err = iter.Next(ctx)
+		if err != nil {
+			if err == io.EOF {
+				// It's compacted after deletion, predates creation, or does not exist.
+				return nil, 0, storage.ErrKeyNotFound
+			}
+			return nil, 0, err
 		}
-		return nil, 0, err
-	}
 
-	userKey, modRev, err := b.coder.Decode(iter.Key())
-	if modRev == 0 || !bytes.Equal(userKey, key) {
-		// check if
-		// 1. the internal key is a revision key
-		// 2. the user key is mismatched
-		// these cases are impossible if there is neither issue in the backend storage nor other illegal writing
-		return nil, 0, storage.ErrKeyNotFound
+		userKey, candidateRevision, decodeErr := b.coder.Decode(iter.Key())
+		if decodeErr != nil {
+			return nil, 0, decodeErr
+		}
+		if candidateRevision == 0 || !bytes.Equal(userKey, key) {
+			continue
+		}
+		return iter.Val(), candidateRevision, nil
 	}
-	return iter.Val(), modRev, nil
 }
 
 // List implements Backend interface
