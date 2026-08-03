@@ -31773,6 +31773,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`。滚动启动期间
   follower 仅记录预期的短暂 peer connection refused/DNS miss，稳定后无 panic/fatal 或成员状态异常；
   参考进程与临时目录均已清理。
+- A3471 审计 Maintenance Downgrade 的请求分派边界，发现 KubeBrain 在 root 鉴权后忽略 action/version，
+  对所有输入统一返回平台 `Unimplemented`；对照
+  `/root/etcd/server/etcdserver/v3_server.go:Downgrade`、`downgradeValidate`、`downgradeEnable` 与
+  `/root/etcd/server/etcdserver/cluster_util.go:convertToClusterVersion`，官方对 VALIDATE/ENABLE 先按完整
+  semver 解析，失败后再兼容 `Major.Minor` 补 `.0`，仍失败则返回
+  `InvalidArgument: etcdserver: wrong downgrade target version format`；未知 action 返回
+  `Unknown: etcdserver: unknown method`，CANCEL 则忽略 version。永久差分 RED 覆盖两个 malformed
+  version 和 action=127，旧生产实例三者实际均为平台 `Unimplemented`。commit
+  `111956e95914c4d4635c5bec6452b4a8ef73af1b` 在既有 root 鉴权后复用 upstream 同款两阶段 semver
+  解析和 action 分派，仅让合法、受支持形状的请求进入 DBaaS versioned rollout/rollback 平台边界；
+  同时把旧 auth 门禁的零值（VALIDATE+空 version）夹具改为合法请求。目标与鉴权语义连续 20 轮
+  8.141 秒 GREEN，目标 race 连续 10 轮 2.046 秒，完整 `pkg/server/...` 中 etcd server 152.968 秒，
+  server/compat 两个 module 的 vet 均通过。commit `d04fd66f` 固化 raw gRPC 官方双端差分。
+  生产镜像 `kubebrain:a3471-downgrade-validation`（本地 image ID
+  `sha256:1f6685f8f7e5da36e97ea881c3e41d4b04abcfc3b4963e1acb38b4f0192d816d`，kind runtime
+  digest `sha256:f7ddeaf6ee567b3f0da9790925a3edb929c65e0803bdb96eea9c2021927af09e`，build time
+  `2026-08-03T17:55:44Z`）部署后，三类 request validation 官方双端差分连续 20 轮 0.306 秒通过，
+  clientv3 全部平台边界连续 20 轮 0.500 秒通过。最终 StatefulSet desired/current/ready/updated
+  均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint
+  health=true、版本端点保持 3.7.0、`/readyz=ok`，最近日志无 Downgrade validation 或 panic/fatal
+  异常；参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
