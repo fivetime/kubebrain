@@ -42,6 +42,14 @@
 产品契约，不应在自动化中忽略。Auth 开启时，这些 RPC 与 etcd 一样先鉴权：未认证或
 非 root 调用返回认证/权限错误；只有 root 才能看到平台替代提示。
 
+平台替代错误除保留 `codes.Unimplemented` 和稳定文本外，还携带
+`google.rpc.ErrorInfo`：`reason=KUBEBRAIN_PLATFORM_MANAGED`、
+`domain=dbaas.kubebrain.io`，并以 `metadata.capability` 标识原 RPC。Snapshot 额外声明
+`operation_type=Backup`、`artifact_format=kubebrain.logical.v2` 和
+`etcd_snapshot_restore_usable=false`。DBaaS-aware 自动化应读取该结构化详情，不要解析
+错误文本；`operation_type` 只在已经存在真实端到端执行器时发布，尚未实现拓扑操作的
+member mutation、move-leader 和 downgrade 不会虚构操作类型。
+
 ## 生产替代入口
 
 - 备份、恢复：`hack/backup/logical-export.sh`、

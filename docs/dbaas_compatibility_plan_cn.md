@@ -32700,6 +32700,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrPermissionDenied`。本轮新增服务端回归覆盖非 root `UserAdd` 与
   `UserChangePassword` 的 permission denied 分支，防止未来重构把 admin authorization
   前移后与 upstream 请求对象生命周期产生可见差异。
+- A3480 固定平台替代 RPC 的机器可读契约：对照 upstream
+  `server/etcdserver/api/v3rpc/maintenance.go:Snapshot` 确认官方流输出是可恢复的 bbolt
+  backend 字节和末尾 SHA-256，而现有 `Backup` executor 输出的是
+  `kubebrain.logical.v2` 异步制品，二者不能直接接线。Snapshot、member mutation、
+  MoveLeader 和 Downgrade 继续返回标准 `Unimplemented` 与原稳定文本，但新增
+  `google.rpc.ErrorInfo(reason=KUBEBRAIN_PLATFORM_MANAGED, domain=dbaas.kubebrain.io)`；
+  metadata 固定原 capability。只有已经存在 API、队列、不可变对象上传和恢复验证全链路的
+  Snapshot 替代路径才发布 `operation_type=Backup`，并显式标记 artifact format 与
+  `etcd_snapshot_restore_usable=false`。尚无真实 executor 的拓扑与版本操作不发布虚构的
+  operation type。单元测试及 raw gRPC 测试同时固定 wire 上的 details、状态码和文本，普通
+  etcd client 行为不变，DBaaS-aware 自动化无需解析错误字符串。
 
 ### P2：运维兼容和长期验证
 
