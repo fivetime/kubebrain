@@ -32789,6 +32789,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   宽松 wire/storage 兼容被误解为授权放行。该审计没有发现生产实现差异，因此不修改运行
   代码、不重建镜像；聚焦服务端测试 20 轮、race 10 轮及 compat race 10 轮通过，生产
   endpoint 与官方隔离实例的完整差分场景通过。
+- A3485 补齐 Downgrade CANCEL 成功响应的 maintenance header：既有 A3473 差分只比较
+  CANCEL 忽略任意 version 且返回当前 cluster major.minor，遗漏了 response envelope。扩展
+  raw gRPC 差分后，隔离官方 etcd 三种输入都返回非空 Header，revision 不早于调用前 Status，
+  cluster/member ID 非零且 raft term 为正；生产 KubeBrain 则稳定返回 `Header=nil`，形成 RED。
+  根因是 CANCEL 分支直接构造 response，绕过了成功 maintenance RPC 的 header 路径。现在
+  对照 `/root/etcd/server/etcdserver/v3_server.go:downgradeCancel` 与
+  `api/v3rpc/maintenance.go:Downgrade`，先 best-effort 刷新 linearizable revision（保持 upstream
+  忽略内部 cancel/read 错误并仍返回成功），再用 durable maintenance header 返回 revision；
+  gRPC interceptor 继续统一填充 cluster/member/term。三种 CANCEL version 的官方/生产差分
+  20 轮与 race 10 轮通过，raw gRPC 聚焦测试 20 轮、race 10 轮、完整服务端回归
+  153.684 秒、compat 全量 20 轮和两模块 vet 通过。
+
+  生产镜像 `kubebrain:a3485-downgrade-cancel-header` 的本地 ID 为
+  `sha256:010f0c360a59103066b39659357ce92fb60ae95ebf174eafa3080e068f585d8b`，构建
+  SHA 为 `315d8415fd5c61dad428eb3488b3d73ca6e5194b`、时间为
+  `2026-08-03T22:20:54Z`；kind runtime digest 为
+  `sha256:c4aec1d9f7b787995b3b19313b6cf9898ccf2ad5288a8252c03b6bad6862f7a1`。
+  三副本滚动后均 ready、0 restart，主 3 PD/3 TiKV 健康，readyz 与 endpoint status 正常，
+  revision/raft index 保持 `468126003565721399`，未因只读 CANCEL 验证前进。
 
 ### P2：运维兼容和长期验证
 
