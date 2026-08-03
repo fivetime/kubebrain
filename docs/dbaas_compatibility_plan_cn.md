@@ -32713,6 +32713,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   etcd client 行为不变，DBaaS-aware 自动化无需解析错误字符串。独立 live compat 测试
   `TestPlatformManagedErrorDetails` 从生产 endpoint 连续读取 Snapshot stream trailer，确认
   `ErrorInfo` details 经真实 gRPC、Service 和负载入口后仍完整保留。
+- A3481 增加 auth-disabled 官方 etcd snapshot 离线导出：对照 upstream
+  `storage/mvcc/revision.go`、`storage/schema`、Maintenance Snapshot 的 backend bytes +
+  SHA-256，以及 `etcdutl/snapshot/v3_snapshot.go` 的 status/restore 路径，实现
+  `kubebrain-logical-etcd-snapshot`。转换器只接受 prefix `/` 的 `kubebrain.logical.v2`，
+  严格验证 MVCC metadata 与 lease granted TTL，直接写官方 3.7 bbolt schema，从而支持
+  KubeBrain 的巨大 TiKV TSO revision，而不做不可行的逐 revision 回放。输出以 snapshot
+  revision 的 compacted tombstone marker 固定 revision，保存当前 KV 的 create/mod/version/
+  lease、lease ID/GrantedTTL/RemainingTTL，附加官方 snapshot SHA，并以 hard-link no-clobber
+  原子发布。由于逻辑制品没有密码哈希/auth revision，调用方必须显式确认输出 auth disabled；
+  任何局部 prefix 都拒绝转换。
+
+  单元测试直接核验全部官方 bucket、storage version、KV protobuf、lease protobuf、SHA、
+  大 revision、异常 metadata 与并发 no-clobber，并通过官方 etcdutl v3.7 library 自动执行
+  status 和 restore。真实 3 PD/3 TiKV 生产 keyspace 导出 5,890 条记录后，官方 status 返回
+  revision `468126003565721322`、5,890 keys、3.7.0 并成功 restore；恢复后的官方 etcd 保持
+  采样 KV 的 create/mod/version/value，下一写 revision 为 snapshot+1，snapshot-1 返回
+  compacted。第二轮临时 lease 样本导出 5,891 records/1 lease，恢复后保持原 lease ID、
+  GrantedTTL=600、正剩余 TTL、attached key 和 KV lease 字段。该能力关闭 auth-disabled
+  KubeBrain→官方 etcd 当前状态迁移缺口，但不宣称在线 Snapshot RPC、auth 保留、历史版本、
+  PITR 或物理灾备已完成。
 
 ### P2：运维兼容和长期验证
 
