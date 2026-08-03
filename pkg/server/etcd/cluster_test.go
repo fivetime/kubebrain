@@ -519,7 +519,7 @@ func TestMemberMutationIsUnsupported(t *testing.T) {
 	defer closeFn()
 
 	ctx := context.Background()
-	_, err := server.MemberAdd(ctx, &etcdserverpb.MemberAddRequest{})
+	_, err := server.MemberAdd(ctx, validMemberAddRequest())
 	requireClusterPlatformReplacementError(t, err)
 	_, err = server.MemberRemove(ctx, &etcdserverpb.MemberRemoveRequest{})
 	requireClusterPlatformReplacementError(t, err)
@@ -527,6 +527,22 @@ func TestMemberMutationIsUnsupported(t *testing.T) {
 	requireClusterPlatformReplacementError(t, err)
 	_, err = server.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{})
 	requireClusterPlatformReplacementError(t, err)
+}
+
+func TestMemberAddRejectsMalformedPeerURLsBeforePlatformBoundary(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	for _, request := range []*etcdserverpb.MemberAddRequest{
+		{},
+		{PeerURLs: []string{"not-a-peer-url"}},
+	} {
+		response, err := server.MemberAdd(context.Background(), request)
+		require.Nil(t, response)
+		require.ErrorIs(t, err, rpctypes.ErrGRPCMemberBadURLs)
+		require.Equal(t, status.Code(rpctypes.ErrGRPCMemberBadURLs), status.Code(err))
+		require.Equal(t, status.Convert(rpctypes.ErrGRPCMemberBadURLs).Message(), status.Convert(err).Message())
+	}
 }
 
 func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
@@ -628,13 +644,13 @@ func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
 	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{})
 	require.NoError(t, err)
-	_, err = server.MemberAdd(aliceCtx, &etcdserverpb.MemberAddRequest{})
+	_, err = server.MemberAdd(aliceCtx, validMemberAddRequest())
 	requireClusterAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 
 	rootToken, err := server.tokens.authenticate(plain, "root", "root-secret")
 	require.NoError(t, err)
 	rootCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken))
-	_, err = server.MemberAdd(rootCtx, &etcdserverpb.MemberAddRequest{})
+	_, err = server.MemberAdd(rootCtx, validMemberAddRequest())
 	requireClusterPlatformReplacementError(t, err)
 }
 
@@ -645,14 +661,18 @@ func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 	server.SetClientCertAuth(true)
 	ctx := context.Background()
 
-	_, err := server.MemberAdd(verifiedTLSContext(ctx, ""), &etcdserverpb.MemberAddRequest{})
+	_, err := server.MemberAdd(verifiedTLSContext(ctx, ""), validMemberAddRequest())
 	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
-	_, err = server.MemberAdd(verifiedTLSContext(ctx, "external-cn"), &etcdserverpb.MemberAddRequest{})
+	_, err = server.MemberAdd(verifiedTLSContext(ctx, "external-cn"), validMemberAddRequest())
 	requireClusterAuthError(t, err, rpctypes.ErrUserNotFound, codes.Unknown, "etcdserver: user name not found")
-	_, err = server.MemberAdd(verifiedTLSContext(ctx, "alice"), &etcdserverpb.MemberAddRequest{})
+	_, err = server.MemberAdd(verifiedTLSContext(ctx, "alice"), validMemberAddRequest())
 	requireClusterAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
-	_, err = server.MemberAdd(verifiedTLSContext(ctx, "root"), &etcdserverpb.MemberAddRequest{})
+	_, err = server.MemberAdd(verifiedTLSContext(ctx, "root"), validMemberAddRequest())
 	requireClusterPlatformReplacementError(t, err)
+}
+
+func validMemberAddRequest() *etcdserverpb.MemberAddRequest {
+	return &etcdserverpb.MemberAddRequest{PeerURLs: []string{"http://127.0.0.1:2380"}}
 }
 
 func requireClusterPlatformReplacementError(t *testing.T, err error) {

@@ -25,6 +25,8 @@ import (
 	"strings"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"go.etcd.io/etcd/client/pkg/v3/types"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -267,8 +269,15 @@ func (s *RPCServer) memberIDForPeerIdentity(address string) uint64 {
 }
 
 // MemberAdd adds a member into the cluster.
-func (s *RPCServer) MemberAdd(ctx context.Context, _ *etcdserverpb.MemberAddRequest) (*etcdserverpb.MemberAddResponse, error) {
+func (s *RPCServer) MemberAdd(ctx context.Context, request *etcdserverpb.MemberAddRequest) (*etcdserverpb.MemberAddResponse, error) {
 	s.metricCli.EmitCounter("member.add", 1)
+	// Match v3rpc.ClusterServer.MemberAdd: malformed peer URLs are rejected at
+	// the protocol boundary before auth or membership mutation. Valid changes
+	// remain owned by the DBaaS control plane because serving replicas are
+	// stateless and cannot safely mutate that topology through this RPC.
+	if _, err := types.NewURLs(request.GetPeerURLs()); err != nil {
+		return nil, rpctypes.ErrGRPCMemberBadURLs
+	}
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
