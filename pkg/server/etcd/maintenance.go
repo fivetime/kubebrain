@@ -458,8 +458,19 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 		}
 	case etcdserverpb.DowngradeRequest_CANCEL:
 		// The version field is ignored for CANCEL by etcd.
+		// Upstream DowngradeCancel performs a linearizable read before checking
+		// downgrade state, but EtcdServer.downgradeCancel deliberately ignores
+		// that internal error and still returns a successful response. Refresh the
+		// revision on the same best-effort basis, then attach the normal
+		// maintenance response header filled by the public wrapper.
+		_ = s.peers.SyncReadRevision(ctx)
+		header, err := s.maintenanceHeader(ctx)
+		if err != nil {
+			return nil, err
+		}
 		current := semver.Must(semver.NewVersion(Version))
 		return &etcdserverpb.DowngradeResponse{
+			Header:  header,
 			Version: fmt.Sprintf("%d.%d", current.Major, current.Minor),
 		}, nil
 	default:

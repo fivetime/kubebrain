@@ -17,10 +17,15 @@ import (
 )
 
 type downgradeCancelStateOutcome struct {
-	InputVersion          string
-	Code                  string
-	Message               string
-	VersionMatchesCluster bool
+	InputVersion                string
+	Code                        string
+	Message                     string
+	VersionMatchesCluster       bool
+	HeaderPresent               bool
+	HeaderRevisionAtLeastStatus bool
+	ClusterIDNonZero            bool
+	MemberIDNonZero             bool
+	RaftTermPositive            bool
 }
 
 func TestDowngradeCancelStateDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -30,9 +35,9 @@ func TestDowngradeCancelStateDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcomes := downgradeCancelStateOutcomes(t, reference)
 	require.Equal(t, []downgradeCancelStateOutcome{
-		{InputVersion: "", Code: "OK", VersionMatchesCluster: true},
-		{InputVersion: "not-semver", Code: "OK", VersionMatchesCluster: true},
-		{InputVersion: "999.999.999", Code: "OK", VersionMatchesCluster: true},
+		{InputVersion: "", Code: "OK", VersionMatchesCluster: true, HeaderPresent: true, HeaderRevisionAtLeastStatus: true, ClusterIDNonZero: true, MemberIDNonZero: true, RaftTermPositive: true},
+		{InputVersion: "not-semver", Code: "OK", VersionMatchesCluster: true, HeaderPresent: true, HeaderRevisionAtLeastStatus: true, ClusterIDNonZero: true, MemberIDNonZero: true, RaftTermPositive: true},
+		{InputVersion: "999.999.999", Code: "OK", VersionMatchesCluster: true, HeaderPresent: true, HeaderRevisionAtLeastStatus: true, ClusterIDNonZero: true, MemberIDNonZero: true, RaftTermPositive: true},
 	}, referenceOutcomes)
 	require.Equal(t, referenceOutcomes, downgradeCancelStateOutcomes(t, compatEndpoint(t)))
 }
@@ -59,11 +64,19 @@ func downgradeCancelStateOutcomes(t *testing.T, endpoint string) []downgradeCanc
 			Action:  etcdserverpb.DowngradeRequest_CANCEL,
 			Version: version,
 		})
-		outcomes = append(outcomes, downgradeCancelStateOutcome{
+		outcome := downgradeCancelStateOutcome{
 			InputVersion: version,
 			Code:         status.Code(callErr).String(), Message: status.Convert(callErr).Message(),
 			VersionMatchesCluster: response != nil && response.GetVersion() == clusterVersion,
-		})
+			HeaderPresent:         response != nil && response.GetHeader() != nil,
+		}
+		if outcome.HeaderPresent {
+			outcome.HeaderRevisionAtLeastStatus = response.Header.Revision >= statusResponse.Header.Revision
+			outcome.ClusterIDNonZero = response.Header.ClusterId != 0
+			outcome.MemberIDNonZero = response.Header.MemberId != 0
+			outcome.RaftTermPositive = response.Header.RaftTerm > 0
+		}
+		outcomes = append(outcomes, outcome)
 	}
 	return outcomes
 }

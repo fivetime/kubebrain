@@ -199,7 +199,8 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.Equal(t, "3.7", cancelResponse.GetVersion())
-	require.Nil(t, cancelResponse.GetHeader())
+	require.NotNil(t, cancelResponse.GetHeader())
+	require.Positive(t, cancelResponse.GetHeader().GetRevision())
 	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action: etcdserverpb.DowngradeRequest_ENABLE, Version: "not-semver",
 	})
