@@ -32757,6 +32757,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮也纠正 etcdctl 矩阵中过时的“CORRUPT 无对应语义”：现有持久 CORRUPT member 集合、写
   门禁、租约延迟处理和 health/readyz 行为早已由官方差分及全副本重启门禁覆盖。
 
+  聚焦 direct/raw/auth/API-surface 测试连续 20 轮、race 连续 10 轮通过，完整
+  `pkg/server/etcd` 回归（168.434s）和 vet 通过。生产镜像
+  `kubebrain:a3482-alarm-action-safety` 的本地 ID 为
+  `sha256:ba0ba1083ba6d48f0cb54aa5accad13dc019232592db7d6d09e1ebc503c241d3`，构建
+  SHA 为 `990ac6c9d23c8e5a0b71710d6860b430325f47b8`、时间为
+  `2026-08-03T21:46:02Z`；kind runtime digest 为
+  `sha256:5d3c19e8c0a5daefece1dde58aa10b4813aa528e872720b920cd703c5350f801`。
+  三副本滚动后均 ready、0 restart，3 PD/3 TiKV 主集群健康；live unknown-action safety
+  与既有 platform-detail 测试各连续 20 轮通过，前者每轮非法请求后都成功执行 Status，
+  ready/version/endpoint status 继续正常且 revision 未因非法请求前进。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
