@@ -31619,6 +31619,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   deleted=1295/left=0，Pod restart 保持 0。相关 revision-filter Count 官方差分连续 20 轮
   4.702 秒通过。最终三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，endpoint
   health 可提交 proposal、`/readyz=ok`，日志无 rebuild failure、index disabled 或 panic/fatal。
+- A3464 继续审计 cold revision 恢复时发现 `safeCurrentRevision`/`safeBackendRevision` 只用
+  进程内 user watermark 与 compact watermark 推导最新 header。该规则只能证明 revision 不低于
+  compaction；当新建 follower 的 local current=0、compact cache=0，而共享 TiKV durable user
+  watermark=73 时，latest serializable Range 可以不做 leader barrier，旧实现会把集群误判为空并
+  返回 header revision 1。对照 `/root/etcd/server/storage/mvcc/kvstore.go:restore`：官方 etcd
+  启动时从持久 MVCC revisions 恢复 `currentRev`，compact/scheduled compact 只作为恢复下界；
+  `/root/etcd/server/etcdserver/v3_server.go:Range` 的 serializable 路径随后直接使用该已恢复状态。
+  两层确定性 TDD 固定 cold current=0、stale compact=0、durable=73，修复前 backend 与 server
+  helper 都稳定 RED、实际返回 1。commit `a93cc5bb658888240d36d45ead51c1b9a5921129` 让两层
+  safe revision helper 仅在 local current=0 的冷路径读取 durable user watermark、取其与 compact
+  下界的最大值并回填本地；热读不增加 TiKV 读取，旧数据没有 durable marker 时仍保留 etcd 空集群
+  revision 1 与 compact fallback。目标测试各连续 20 轮 GREEN；backend 全包 43.336 秒、etcd
+  server 全包 150.833 秒、两组目标 race 各 10 轮、service 包及相关 vet 全部通过。
+  生产镜像 `kubebrain:a3464-cold-read-durable-revision`（本地 image ID
+  `sha256:44f41523588709e2b75bc35315ec8ebbe8c1ed009205ab4d37eacdb594279f6f`，kind runtime
+  digest `sha256:716da1de15db184ce0548227aab9a2fe9d2e15728d72492eccefea1ae2fe4e19`，build time
+  `2026-08-03T15:36:51Z`）部署后，通过三个临时、按 Pod 名选择的 direct NodePort 把 official
+  clientv3 直连三个副本；替换 `kubebrain-2` 的同时提交 8 个双键 Txn，replacement 的 latest
+  serializable Get、只读 Txn、三端 ordering monotonicity 均在 9.46 秒内通过，临时 Service 随后
+  全部删除。SerializableRead 官方双端差分连续 20 轮 2.565 秒通过；官方 etcd 普通 restart 与
+  compact-at-current restart oracle 各 3 轮、6 次执行 13.206 秒通过。最终 StatefulSet
+  desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主
+  3 PD/3 TiKV 均 Running；endpoint health 可提交 proposal、版本端点保持 3.7.0、`/readyz=ok`，
+  最近日志无 durable revision、read barrier、count-index 或 panic/fatal 异常。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
