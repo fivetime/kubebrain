@@ -31688,6 +31688,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint
   health 可提交 proposal、版本端点保持 3.7.0、`/readyz=ok`，最近日志无 durable revision、Alarm、
   read barrier、count-index 或 panic/fatal 异常。
+- A3467 继续审计 Auth response header，发现 `authRPCHeader` 虽先执行 read barrier，却随后直接
+  读取 replica-local current revision；`SyncReadRevision` 在 leader 上按设计为 no-op，因此新当选的
+  冷 leader 即使 TiKV 已有 durable user watermark，AuthStatus 仍可能返回 revision 0。对照
+  `/root/etcd/server/etcdserver/v3_server.go` 的 Auth raft request 路径与
+  `/root/etcd/server/etcdserver/apply/backend.go:newHeader`，官方 Auth apply response 使用
+  `KV.Rev()`。确定性 RED 固定 cold local=0、durable=234，修复前 AuthStatus header 实际为 0；
+  另一门禁注入 durable revision read error，要求 RoleAdd 返回 nil response/原始 error，且角色不能
+  被持久创建。commit `16512a89d51ed1a36243fe76bdd1d37f0ab515bf` 让共用 Auth header helper
+  在 barrier 后通过 durable-aware `safeBackendRevision` 恢复冷缓存，并把 AuthEnable/Disable、User
+  与 Role 的所有 mutation header 预检移到写入之前，避免 mutation 已成功却因事后 header 恢复失败
+  向客户端报错。两条目标语义及既有 barrier/header 用例各连续 20 轮 GREEN，目标 race 10 轮、完整
+  `pkg/server/...` 154.840 秒（etcd server 149.587 秒）及 server/compat 两个 module 的 vet 均通过。
+  commit `7670f1f3bdb37aa368b5aa376713c69351706230` 新增永久 cold-replica 门禁：稳定入口先提交
+  durable seed，替换指定 Pod 后直接把 AuthStatus 作为新进程的第一条 etcd RPC，并校验 revision
+  不低于 seed、cluster/member ID 非零且 Raft term 为正。
+  生产镜像 `kubebrain:a3467-cold-auth-revision`（本地 image ID
+  `sha256:44826039404362ee898db4fd21dfb99a4ec37a1a691b99aa599cd668ae8fcc67`，kind runtime
+  digest `sha256:24383fe7e01d9100167720a631a7df9b6dc3f86fdae6d0a5b1f50dcd00a0cc4d`，build time
+  `2026-08-03T16:34:13Z`）部署后，直连 replacement 的首次 AuthStatus 门禁 7.67 秒通过并清理
+  seed/临时 Service；AuthStatus、RoleAdd、RoleGet header envelope 官方双端差分连续 20 轮
+  3.649 秒通过。最终 StatefulSet desired/current/ready/updated 均为 3、revision 一致，三 Pod 同
+  digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint health 可提交 proposal（50.582099ms）、
+  版本端点保持 3.7.0、`/readyz=ok`，最近日志无 durable/Auth revision、read barrier 或 panic/fatal
+  异常；参考进程、临时目录与 direct Service 均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
