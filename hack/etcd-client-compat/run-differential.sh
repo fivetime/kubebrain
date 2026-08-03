@@ -166,6 +166,6 @@ fi
     KUBEBRAIN_ETCD_ENDPOINT="$KUBEBRAIN_ENDPOINT" \
     KUBEBRAIN_EXPECTED_MEMBER_COUNT="$KUBEBRAIN_EXPECTED_MEMBER_COUNT" \
     ETCDCTL_BIN="$ETCDCTL_BIN" \
-    go test . -run Differential -count=1 -parallel=1 -timeout="$TEST_TIMEOUT" -v
+    go test . -run 'Differential(Against|$)' -count=1 -parallel=1 -timeout="$TEST_TIMEOUT" -v
 )
 test_succeeded=true

@@ -319,7 +319,7 @@ func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
 	if alarm.GetAlarm() != etcdserverpb.AlarmType_NONE {
 		fields = append(fields, fmt.Sprintf("alarm:%s", alarm.GetAlarm().String()))
 	}
-	return strings.Join(fields, "  ")
+	return strings.Join(fields, " ")
 }
 
 func (s *RPCServer) Defragment(ctx context.Context, _ *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {

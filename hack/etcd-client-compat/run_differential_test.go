@@ -152,3 +152,11 @@ func TestDifferentialRunnerTestsUseBoundedScriptHelper(t *testing.T) {
 	require.NotContains(t, string(text), forbiddenCommand)
 	require.NotContains(t, string(text), forbiddenCombinedOutput)
 }
+
+func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	require.Contains(t, string(script), "-run 'Differential(Against|$)'",
+		"the live runner must not inherit its own opt-in environment into runner unit tests")
+	require.NotContains(t, string(script), "-run Differential -count=1")
+}
