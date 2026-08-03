@@ -593,25 +593,29 @@ func TestMemberListLinearizablePreservesBarrierStatus(t *testing.T) {
 	}
 }
 
-func TestMemberListLinearizableAuthenticatesBeforeReadBarrier(t *testing.T) {
+func TestMemberListLinearizableReadBarrierPrecedesAuthentication(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	aliceCtx := setupAuthKVUser(t, server)
 
 	var calls atomic.Int32
-	barrierErr := errors.New("read barrier must not run for unauthenticated requests")
+	barrierErr := errors.New("member list read barrier failed")
 	server.peers = testPeerService{syncReadFn: func(context.Context) error {
 		calls.Add(1)
 		return barrierErr
 	}}
 
 	_, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
+	requireClusterReadBarrierError(t, err, barrierErr.Error())
+	require.EqualValues(t, 1, calls.Load())
+
+	_, err = server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
 	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
-	require.Zero(t, calls.Load())
+	require.EqualValues(t, 1, calls.Load(), "serializable member list must not run a read barrier")
 
 	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{Linearizable: true})
 	requireClusterReadBarrierError(t, err, barrierErr.Error())
-	require.EqualValues(t, 1, calls.Load())
+	require.EqualValues(t, 2, calls.Load())
 }
 
 func TestMemberAuthorizationMatchesEtcd(t *testing.T) {

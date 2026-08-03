@@ -35,13 +35,17 @@ import (
 // MemberList lists the current cluster membership.
 func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
 	s.metricCli.EmitCounter("member.list", 1)
-	if err := s.requireAuthenticated(ctx, false); err != nil {
-		return nil, err
-	}
 	if req.GetLinearizable() {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return nil, readBarrierStatusErr(err)
 		}
+	}
+	// Match EtcdServer.MemberList: a requested linearizable read barrier is
+	// established before auth is checked. Besides preserving upstream error
+	// precedence, this keeps membership and credentials ordered against the same
+	// point in the cluster timeline when auth state changes concurrently.
+	if err := s.requireAuthenticated(ctx, false); err != nil {
+		return nil, err
 	}
 	return s.memberListResponse(s.membersSnapshot()), nil
 }
