@@ -413,10 +413,14 @@ func (s *RPCServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverp
 	return status.Error(codes.Unimplemented, snapshotUnsupportedMessage)
 }
 
-func (s *RPCServer) MoveLeader(ctx context.Context, _ *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
+func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
 	s.metricCli.EmitCounter("maintenance.moveleader", 1)
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
+	}
+	member := s.memberByID(request.GetTargetID())
+	if member == nil || member.GetIsLearner() {
+		return nil, rpctypes.ErrGRPCBadLeaderTransferee
 	}
 	return nil, status.Error(codes.Unimplemented, moveLeaderUnsupportedMessage)
 }

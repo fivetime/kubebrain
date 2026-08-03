@@ -22,6 +22,7 @@ func (s *maintenanceSnapshotServer) Context() context.Context { return s.ctx }
 func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{{ID: 1, Name: "voter"}})
 	aliceCtx := setupAuthKVUser(t, server)
 	plain := context.Background()
 
@@ -115,9 +116,9 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx})
 	requireMaintenancePlatformReplacementError(t, err, snapshotUnsupportedMessage)
 
-	_, err = server.MoveLeader(aliceCtx, &etcdserverpb.MoveLeaderRequest{})
+	_, err = server.MoveLeader(aliceCtx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
-	_, err = server.MoveLeader(rootCtx, &etcdserverpb.MoveLeaderRequest{})
+	_, err = server.MoveLeader(rootCtx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
 	requireMaintenancePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	validDowngrade := &etcdserverpb.DowngradeRequest{
 		Action:  etcdserverpb.DowngradeRequest_VALIDATE,

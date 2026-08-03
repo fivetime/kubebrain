@@ -1648,6 +1648,7 @@ func TestClientAuthCompactRequiresRoot(t *testing.T) {
 func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{{ID: 1, Name: "voter"}})
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterKVServer(grpcServer, server)
@@ -1733,13 +1734,13 @@ func TestClientAuthPrivilegedMaintenanceAuthorizationPrecedesUnsupported(t *test
 	requireAuthClientError(t, rawSnapshotErr(rawAliceMaintenance), codes.PermissionDenied, "etcdserver: permission denied")
 	requireAuthClientError(t, rawSnapshotErr(rawRootMaintenance), codes.Unimplemented, snapshotUnsupportedMessage)
 
-	_, userMoveLeaderErr := alice.MoveLeader(ctx, 0)
+	_, userMoveLeaderErr := alice.MoveLeader(ctx, 1)
 	requireAuthClientError(t, userMoveLeaderErr, codes.Unknown, "etcdserver: permission denied", rpctypes.ErrPermissionDenied)
-	_, rootMoveLeaderErr := root.MoveLeader(ctx, 0)
+	_, rootMoveLeaderErr := root.MoveLeader(ctx, 1)
 	requireAuthClientError(t, rootMoveLeaderErr, codes.Unimplemented, moveLeaderUnsupportedMessage)
-	_, rawUserMoveLeaderErr := rawAliceMaintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{})
+	_, rawUserMoveLeaderErr := rawAliceMaintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
 	requireAuthClientError(t, rawUserMoveLeaderErr, codes.PermissionDenied, "etcdserver: permission denied")
-	_, rawRootMoveLeaderErr := rawRootMaintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{})
+	_, rawRootMoveLeaderErr := rawRootMaintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
 	requireAuthClientError(t, rawRootMoveLeaderErr, codes.Unimplemented, moveLeaderUnsupportedMessage)
 
 	_, userDowngradeErr := alice.Downgrade(ctx, clientv3.DowngradeValidate, "3.6")

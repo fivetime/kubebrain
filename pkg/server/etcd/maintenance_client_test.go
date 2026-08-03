@@ -104,9 +104,10 @@ func TestRawGRPCSnapshotReturnsPlatformUnsupported(t *testing.T) {
 func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	server.SetStaticMembers([]*etcdserverpb.Member{{
-		ID: 1, Name: "learner", PeerURLs: []string{"http://127.0.0.1:2380"}, IsLearner: true,
-	}})
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 1, Name: "learner", PeerURLs: []string{"http://127.0.0.1:2380"}, IsLearner: true},
+		{ID: 2, Name: "voter", PeerURLs: []string{"http://127.0.0.2:2380"}},
+	})
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterClusterServer(grpcServer, server)
@@ -140,7 +141,7 @@ func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MemberPromote(ctx, 1)
 	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
-	_, err = client.MoveLeader(ctx, 1)
+	_, err = client.MoveLeader(ctx, 2)
 	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	downgradeResponse, err := client.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
 	require.NoError(t, err)
@@ -150,6 +151,10 @@ func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 1, Name: "voter"},
+		{ID: 2, Name: "learner", IsLearner: true},
+	})
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
@@ -168,10 +173,12 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	for _, targetID := range []uint64{0, 1, math.MaxUint64} {
+	for _, targetID := range []uint64{0, 2, math.MaxUint64} {
 		_, err = maintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: targetID})
-		requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
+		require.ErrorIs(t, err, rpctypes.ErrGRPCBadLeaderTransferee)
 	}
+	_, err = maintenance.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: 1})
+	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	validateResponse, err := maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.6.0",
 	})
