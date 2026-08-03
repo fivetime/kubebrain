@@ -31420,6 +31420,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三个 KubeBrain Pod 使用同一 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点
   保持 3.7.0，`/readyz=ok`；日志中的 future/compacted revision、count-index rebuilding 与
   滚动期间 peer connection failure 均由差分边界用例或有序重启触发，当前无 panic/fatal。
+- A3451 对照 `/root/etcd/server/etcdserver/v3_server.go` 的 Put/DeleteRange/写 Txn
+  `raftRequest`、Compact `processInternalRaftRequestOnce` 与
+  `/root/etcd/server/etcdserver/apply/auth.go`，确认写请求的 auth applier 只会在 leader
+  建立 raft/quorum 提交后运行。官方三成员 3.8.0-alpha.0 临时集群启用 auth 后保留 leader、
+  停止另外两个 voter：匿名 Put 与 root Put 都先等待 raft 并在 2 秒 caller deadline 返回
+  `DeadlineExceeded`，不会因匿名身份先返回 `user name is empty`。KubeBrain 原路径则在
+  `EpochAndLeadingFresh` 之前解析 token/执行权限检查；确定性 RED 对无 leader 的匿名 Put、
+  DeleteRange、写 Txn、Compact 均实际得到 auth `Unknown`，证明协调故障错误优先级漂移。
+  commit `90c7f197abb4a9ce4550f29c60f31d403109145e` 在完整静态 validation 后先捕获
+  leadership epoch：无可代理 leader 时四类写统一返回 `Unavailable`；follower 可代理时不在
+  本地提前验证 bearer/simple/JWT，而是原样透传 credential 交给 leader 权威鉴权；mTLS 身份
+  仍转换成短期内部 token。leader 本地继续执行原有全量鉴权、auth config durable guard，
+  leased Put/Txn 在 `leaseWriteMu` 内的二次授权也保持不变，leadership epoch 继续在提交前
+  fence 任期变化。新增门禁同时固定 invalid bearer 确实到达 leader、证书身份不丢失，以及
+  auth mutation/lease attachment 两条 TOCTOU 并发防护不回退。完整 server 包 149.880 秒、
+  目标 race 3 轮 75.339 秒及 vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3451-write-leadership-auth-order`（本地 image ID
+  `sha256:a2a90af8cae81306b8b45eaf041411257920e6c44ecf22d8907301763ede51dd`，kind runtime
+  digest `sha256:54c222df5da57082ad17004e8cbd41af8aa32d44667841344afa7b46c939689f`）
+  滚动部署后，Put、DeleteRange、基础 Txn 与 Compact revision boundary 四项官方差分连续
+  3 轮、12 次执行 3.711 秒通过。三个 KubeBrain Pod 使用同一 digest、Ready/0 restart，
+  主 3 PD/3 TiKV 均 Running，版本端点保持 3.7.0，`/readyz=ok`，最近日志无 panic/fatal、
+  auth failure 或 leadership failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
