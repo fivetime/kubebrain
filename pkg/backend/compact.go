@@ -19,7 +19,6 @@ import (
 	"context"
 	"encoding/binary"
 	"math/rand"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -674,35 +673,8 @@ func (b *backend) getCompactBorders() [][]byte {
 	// scanner never touches versions above the compact revision (scanner.go: "if
 	// curRevision > w.revision { continue }"), so co-tenants at higher revisions
 	// on a shared TiKV are untouched.
-	compactBorders := [][]byte{
+	return [][]byte{
 		b.ks.ObjectKeyspaceStart(),
 		b.ks.ObjectKeyspaceEnd(),
 	}
-	// SkippedPrefixes (--skip-key-prefix) carve holes OUT of the scanned keyspace:
-	// their start/end points sort into the border list and, once scanner.Compact
-	// pairs consecutive borders as [start,end) include-ranges, the skipped ranges
-	// fall between pairs and are never scanned. Used when several KubeBrain
-	// clusters share one TiKV cluster and each must not GC the others' object
-	// types.
-	skippedPrefixes := append([]string(nil), b.config.SkippedPrefixes...)
-	sort.Strings(skippedPrefixes)
-	var previous string
-	for _, prefix := range skippedPrefixes {
-		key := prefix
-		if !strings.HasSuffix(key, "/") {
-			key = key + "/"
-		}
-		if previous != "" && strings.HasPrefix(key, previous) {
-			continue
-		}
-		previous = key
-		compactBorders = append(compactBorders,
-			b.coder.EncodeObjectKey([]byte(key), 0),
-			b.coder.EncodeObjectKey(PrefixEnd([]byte(key)), 0))
-	}
-	// sort to make sure compact in right range
-	sort.Slice(compactBorders, func(i, j int) bool {
-		return bytes.Compare(compactBorders[i], compactBorders[j]) < 0
-	})
-	return compactBorders
 }

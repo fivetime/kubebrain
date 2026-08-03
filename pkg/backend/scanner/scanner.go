@@ -97,6 +97,11 @@ type Config struct {
 	// IsInternalStorageKey identifies raw key families that intentionally share
 	// the tenant keyspace but are not object-MVCC rows.
 	IsInternalStorageKey func([]byte) bool
+
+	// SkipCompactUserKey identifies decoded user keys excluded from physical
+	// version GC. Filtering after Decode is required because the legacy raw
+	// key+'$'+revision encoding cannot represent collision-free physical holes.
+	SkipCompactUserKey func([]byte) bool
 }
 
 // Range implements Scanner interface
@@ -382,6 +387,7 @@ func (r *scanner) CompactKeys(ctx context.Context, userKeys [][]byte, revision u
 				compact:              true,
 				tombstone:            r.config.Tombstone,
 				isInternalStorageKey: r.config.IsInternalStorageKey,
+				skipCompactUserKey:   r.config.SkipCompactUserKey,
 			}, store, r.coder, r.metricCli)
 			for i := s; i < len(userKeys); i += shards {
 				key := userKeys[i]
@@ -514,6 +520,7 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 				keysOnly:             keysOnly,
 				tombstone:            r.config.Tombstone,
 				isInternalStorageKey: r.config.IsInternalStorageKey,
+				skipCompactUserKey:   r.config.SkipCompactUserKey,
 			}, store, r.coder, r.metricCli)
 
 			// run worker
@@ -603,6 +610,7 @@ type workerConfig struct {
 	keysOnly bool
 
 	isInternalStorageKey func([]byte) bool
+	skipCompactUserKey   func([]byte) bool
 }
 
 func newWorker(conf workerConfig, store storage.KvStorage, coder coder.Coder, metricCli metrics.Metrics) *worker {
@@ -732,6 +740,9 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 			} else {
 				klog.Errorf("unmarshal object key %s failed %v", key, err)
 			}
+			continue
+		}
+		if w.compact && w.skipCompactUserKey != nil && w.skipCompactUserKey(curUserKey) {
 			continue
 		}
 

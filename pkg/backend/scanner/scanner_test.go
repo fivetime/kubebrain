@@ -309,6 +309,52 @@ func TestScannerCompactDollarExtensionDoesNotStrandShorterVersion(t *testing.T) 
 	require.Equal(t, []byte("foreign-v1"), got)
 }
 
+func TestScannerCompactFiltersSkippedPrefixAfterDecodingDollarCollision(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	c := coder.DefaultKeyspace().NewCoder()
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+
+	shortKey := []byte("/registry/items/short")
+	// These short-key revision bytes begin with the bytes following shortKey in
+	// skippedPrefix+"/", so both rows sort inside the old physical carve-out.
+	skippedPrefix := append(append(append([]byte(nil), shortKey...), '$'), 0x18)
+	skippedKey := append(append([]byte(nil), skippedPrefix...), []byte("/child")...)
+	const oldRevision = uint64(0x182f300000000100)
+	const latestRevision = uint64(0x182f310000000100)
+
+	oldShort := c.EncodeObjectKey(shortKey, oldRevision)
+	latestShort := c.EncodeObjectKey(shortKey, latestRevision)
+	oldSkipped := c.EncodeObjectKey(skippedKey, 100)
+	latestSkipped := c.EncodeObjectKey(skippedKey, 200)
+	b := kv.BeginBatchWrite()
+	b.Put(oldShort, []byte("short-v1"), 0)
+	b.Put(latestShort, []byte("short-v2"), 0)
+	b.Put(oldSkipped, []byte("skipped-v1"), 0)
+	b.Put(latestSkipped, []byte("skipped-v2"), 0)
+	require.NoError(t, b.Commit(context.Background()))
+
+	sc := NewScanner(kv, c, Config{
+		CompactKey: []byte("/compact"),
+		Tombstone:  []byte("tombstone"),
+		SkipCompactUserKey: func(key []byte) bool {
+			return bytes.HasPrefix(key, append(append([]byte(nil), skippedPrefix...), '/'))
+		},
+	}, m)
+	borders := [][]byte{coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd()}
+	require.NoError(t, sc.Compact(context.Background(), borders, latestRevision))
+
+	_, err := kv.Get(context.Background(), oldShort)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound,
+		"an unrelated short-key version inside the old physical hole must still be collected")
+	for _, objectKey := range [][]byte{latestShort, oldSkipped, latestSkipped} {
+		_, err = kv.Get(context.Background(), objectKey)
+		require.NoError(t, err)
+	}
+}
+
 // A DELETE at exactly the compact watermark is still watchable in etcd. Keep
 // its tombstone and immediate predecessor for event/PrevKV reconstruction, but
 // reclaim both as soon as a later compaction advances past that revision.

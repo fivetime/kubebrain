@@ -40,11 +40,10 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 		expected [][]byte // expected result
 	}{
 		{
-			// Compaction covers the WHOLE object keyspace (Prefix no longer bounds
-			// it — #62). SkippedPrefixes carve interior holes: after sort+pairing,
-			// [start, events/] [events0, pods/] [pods0, end] are scanned; the two
-			// skipped ranges fall between pairs. The internal \x00kubebrain/
-			// namespace is inside [ObjectKeyspaceStart, events/) so it is still GC'd.
+			// Compaction covers the WHOLE object keyspace. SkippedPrefixes are
+			// filtered after decoding user keys, rather than encoded as physical
+			// holes: the legacy raw-key+'$'+revision format is not injective, so an
+			// unrelated short key's revision row can sort inside such a hole.
 			Config{
 				Prefix: "/registry/test",
 				SkippedPrefixes: []string{
@@ -54,10 +53,6 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 			},
 			[][]byte{
 				coder.DefaultKeyspace().ObjectKeyspaceStart(),
-				encodeRevisionKey([]byte("/registry/test/events/")),
-				encodeRevisionKey([]byte("/registry/test/events0")),
-				encodeRevisionKey([]byte("/registry/test/pods/")),
-				encodeRevisionKey([]byte("/registry/test/pods0")),
 				coder.DefaultKeyspace().ObjectKeyspaceEnd(),
 			},
 		},
@@ -73,10 +68,9 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 			},
 		},
 		{
-			// Direct backend Config construction can bypass CLI validation.
-			// Duplicate and nested carve-outs must collapse to the parent;
-			// otherwise sorted duplicate borders pair up and scan the range that
-			// was supposed to be excluded.
+			// Direct backend Config construction can bypass CLI validation. The
+			// physical scan remains whole-keyspace even for duplicate/nested skips;
+			// decoded filtering owns the exclusion semantics.
 			Config{
 				SkippedPrefixes: []string{
 					"/registry/pods/node",
@@ -86,8 +80,6 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 			},
 			[][]byte{
 				coder.DefaultKeyspace().ObjectKeyspaceStart(),
-				encodeRevisionKey([]byte("/registry/pods/")),
-				encodeRevisionKey([]byte("/registry/pods0")),
 				coder.DefaultKeyspace().ObjectKeyspaceEnd(),
 			},
 		},
@@ -104,8 +96,8 @@ func TestConstructCompactBordersWithSkippedPrefixOption(t *testing.T) {
 	for _, suit := range tests {
 		b := &backend{config: suit.in, coder: coder.DefaultKeyspace().NewCoder(), ks: coder.DefaultKeyspace()}
 		actual := b.getCompactBorders()
-		if len(actual) != len(suit.expected) {
-			t.Errorf("byte kv get compact borders return length %d is not equal to %d", len(actual), len(suit.expected))
+		if !assert.Len(t, actual, len(suit.expected)) {
+			continue
 		}
 		for i := range actual {
 			if !bytes.Equal(actual[i], suit.expected[i]) {

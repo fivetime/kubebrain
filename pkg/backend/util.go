@@ -15,8 +15,10 @@
 package backend
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
@@ -42,10 +44,25 @@ const (
 )
 
 func (c *Config) getScannerConfig(isInternalStorageKey func([]byte) bool) scanner.Config {
+	skippedPrefixes := make([][]byte, 0, len(c.SkippedPrefixes))
+	for _, prefix := range c.SkippedPrefixes {
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		skippedPrefixes = append(skippedPrefixes, []byte(prefix))
+	}
 	return scanner.Config{
 		CompactKey:           getCompactKey(c.Prefix),
 		Tombstone:            tombStoneBytes,
 		IsInternalStorageKey: isInternalStorageKey,
+		SkipCompactUserKey: func(key []byte) bool {
+			for _, prefix := range skippedPrefixes {
+				if bytes.HasPrefix(key, prefix) {
+					return true
+				}
+			}
+			return false
+		},
 	}
 }
 
