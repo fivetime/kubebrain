@@ -32734,6 +32734,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain→官方 etcd 当前状态迁移缺口，但不宣称在线 Snapshot RPC、auth 保留、历史版本、
   PITR 或物理灾备已完成。
 
+  发布门禁中转换器单元测试连续 20 轮、race 连续 10 轮通过，平台错误契约同样连续
+  20 轮及 race 10 轮通过；`hack/backup/...`、Dockerfile、生产工具/清单、vet 与完整
+  `pkg/server/etcd`（168.766s）回归均通过。生产镜像
+  `kubebrain:a3481-logical-etcd-snapshot` 的本地 ID 为
+  `sha256:fac9706784d586ae588614fd7d818d6eb71d9a45bf8accd33aa979600ca37ae6`，构建
+  SHA 为 `dc31c853ed7e0ec67ab7dfe4df71248306779afd`、时间为
+  `2026-08-03T21:13:33Z`；kind runtime digest 为
+  `sha256:809ca95b8a66ab1ecfb9e2e07346210905950ab25a7b5e51b871c2d9aa75af46`。
+  三副本滚动后均 ready、0 restart，3 PD/3 TiKV 主集群健康，ready/version/endpoint
+  status 正常；live `TestPlatformManagedErrorDetails` 连续 20 轮确认负载入口完整发布
+  conversion tool、全 keyspace 前提与 auth-disabled 边界，容器内转换命令可执行。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
