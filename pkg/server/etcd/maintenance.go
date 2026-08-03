@@ -422,11 +422,21 @@ func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLe
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
+	localID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
+	leaderID := s.memberIDForPeerIdentity(s.peers.GetLeaderInfo())
+	// Match maintenanceServer.MoveLeader: the serving member must reject the
+	// request before validating the transferee when it is not the current
+	// leader. This is member-local state, so a load balancer must not turn a
+	// request that landed on a follower into an idempotent success merely because
+	// TargetID names the actual leader.
+	if localID == 0 || localID != leaderID {
+		return nil, rpctypes.ErrGRPCNotLeader
+	}
 	member := s.memberByID(request.GetTargetID())
 	if member == nil || member.GetIsLearner() {
 		return nil, rpctypes.ErrGRPCBadLeaderTransferee
 	}
-	if leaderID := s.memberIDForPeerIdentity(s.peers.GetLeaderInfo()); leaderID != 0 && request.GetTargetID() == leaderID {
+	if request.GetTargetID() == leaderID {
 		return &etcdserverpb.MoveLeaderResponse{}, nil
 	}
 	return nil, moveLeaderPlatformManagedError()

@@ -249,13 +249,15 @@ func TestDowngradeValidateUsesReadBarrierBeforeTargetValidation(t *testing.T) {
 func TestMoveLeaderToCurrentLeaderIsIdempotent(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	server.peers = testPeerService{leaderInfo: "leader.test:3380"}
+	localIdentity := server.backend.GetResourceLock().Identity()
+	leaderID := server.memberIDFromAddress(localIdentity)
+	server.peers = testPeerService{leaderInfo: localIdentity}
 	server.SetStaticMembers([]*etcdserverpb.Member{
-		{ID: 7, Name: "leader", PeerURLs: []string{"http://leader.test:3380"}},
+		{ID: leaderID, Name: "leader"},
 		{ID: 8, Name: "other", PeerURLs: []string{"http://other.test:3380"}},
 	})
 
-	response, err := server.MoveLeader(context.Background(), &etcdserverpb.MoveLeaderRequest{TargetID: 7})
+	response, err := server.MoveLeader(context.Background(), &etcdserverpb.MoveLeaderRequest{TargetID: leaderID})
 	require.NoError(t, err)
 	require.NotNil(t, response)
 	require.Nil(t, response.GetHeader())
@@ -263,6 +265,26 @@ func TestMoveLeaderToCurrentLeaderIsIdempotent(t *testing.T) {
 	response, err = server.MoveLeader(context.Background(), &etcdserverpb.MoveLeaderRequest{TargetID: 8})
 	require.Nil(t, response)
 	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
+}
+
+func TestMoveLeaderFollowerPrecedesTargetValidation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	localIdentity := server.backend.GetResourceLock().Identity()
+	server.peers = testPeerService{leaderInfo: "leader.test:3380"}
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 7, Name: "local", PeerURLs: []string{"http://" + localIdentity}},
+		{ID: 8, Name: "leader", PeerURLs: []string{"http://leader.test:3380"}},
+		{ID: 9, Name: "learner", PeerURLs: []string{"http://learner.test:3380"}, IsLearner: true},
+	})
+
+	for _, targetID := range []uint64{8, 0, 9} {
+		response, err := server.MoveLeader(context.Background(), &etcdserverpb.MoveLeaderRequest{TargetID: targetID})
+		require.Nil(t, response)
+		require.ErrorIs(t, err, rpctypes.ErrGRPCNotLeader)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		require.Equal(t, "etcdserver: not leader", status.Convert(err).Message())
+	}
 }
 
 func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {
