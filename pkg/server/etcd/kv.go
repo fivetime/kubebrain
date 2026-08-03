@@ -476,10 +476,21 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
-	if readOnly && txnIsSerializable(txn) {
-		revision, err := s.serializableTxnRevision(ctx)
+	if readOnly {
+		var (
+			revision uint64
+			err      error
+		)
+		if txnIsSerializable(txn) {
+			revision, err = s.serializableTxnRevision(ctx)
+		} else {
+			// SyncReadRevision above already established the linearizable
+			// barrier. The shared TiKV revision observed now is therefore safe
+			// to pin for the whole read-only transaction on any replica.
+			revision, err = safeBackendRevision(ctx, s.backend)
+		}
 		if err != nil {
-			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+			if txnIsSerializable(txn) && !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
 				proxyCtx, proxyErr := s.forwardAuthToken(ctx, caller)
 				if proxyErr != nil {
 					return nil, proxyErr
@@ -490,16 +501,14 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 			}
 			return nil, err
 		}
-		response, err := s.executeSerializableReadonlyTxn(ctx, txn, int64(revision))
+		response, err := s.executeReadonlyTxnAtRevision(ctx, txn, int64(revision))
 		if err == nil {
 			err = s.ensureAuthRevision(ctx, caller)
 		}
 		return response, err
 	}
-	if !readOnly {
-		if err := s.rejectCorrupt(ctx); err != nil {
-			return nil, err
-		}
+	if err := s.rejectCorrupt(ctx); err != nil {
+		return nil, err
 	}
 
 	// only leader can accept and handle write request
@@ -507,23 +516,6 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	// Capture the leadership epoch at admission and thread it through the context;
 	// the backend re-checks it just before commit so a leadership change mid-write
 	// fences the commit instead of losing it silently (FINDING #39).
-	if readOnly {
-		var leadingFresh bool
-		epoch, leadingFresh = s.peers.EpochAndLeadingFresh()
-		if !leadingFresh {
-			s.metricCli.EmitCounter("write.follower", 1)
-			if s.peers.EtcdProxyEnabled() {
-				proxyCtx, err := s.forwardAuthToken(ctx, caller)
-				if err != nil {
-					return nil, err
-				}
-				response, err := s.peers.Txn(proxyCtx, txn)
-				s.observeForwardedRevision(response.GetHeader(), err)
-				return response, err
-			}
-			return nil, s.notLeaderErr("txn")
-		}
-	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	s.leaseWriteMu.RLock()
 	defer s.leaseWriteMu.RUnlock()
@@ -677,7 +669,7 @@ func (s *RPCServer) serializableTxnRevision(ctx context.Context) (uint64, error)
 	return s.backend.GetDurableRevision(ctx)
 }
 
-func (s *RPCServer) executeSerializableReadonlyTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, revision int64) (*etcdserverpb.TxnResponse, error) {
+func (s *RPCServer) executeReadonlyTxnAtRevision(ctx context.Context, txn *etcdserverpb.TxnRequest, revision int64) (*etcdserverpb.TxnResponse, error) {
 	compactRevision, err := s.backend.GetCompactRevision(ctx)
 	if err != nil {
 		return nil, err

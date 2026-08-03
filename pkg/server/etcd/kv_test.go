@@ -216,22 +216,40 @@ func TestSerializableReadonlyTxnUsesOneDurableFollowerSnapshot(t *testing.T) {
 	require.Equal(t, []byte("visible"), rangeResp.Kvs[0].Value)
 }
 
-func TestReadonlyTxnWithNonSerializableRangeStillRoutesToLeader(t *testing.T) {
+func TestReadonlyTxnWithNonSerializableRangeExecutesLocallyAfterBarrier(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	proxied := false
-	server.peers = testPeerService{isLeader: false, proxyEnabled: true, txnFn: func(_ context.Context, _ *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-		proxied = true
-		return &etcdserverpb.TxnResponse{Header: txnHeader(42), Succeeded: true}, nil
-	}}
+	key := []byte("linearizable-readonly-txn/local")
+	put, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	barriers := 0
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			barriers++
+			return nil
+		},
+		epochFn: func() (uint64, bool) {
+			t.Fatal("read-only txn must not require local write leadership after its barrier")
+			return 0, false
+		},
+		txnFn: func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+			t.Fatal("read-only txn must not proxy after a successful barrier")
+			return nil, nil
+		},
+	}
 	resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
-			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("key")},
+			RequestRange: &etcdserverpb.RangeRequest{Key: key},
 		}}},
 	})
 	require.NoError(t, err)
-	require.True(t, proxied)
-	require.Equal(t, int64(42), resp.Header.Revision)
+	require.Equal(t, 1, barriers)
+	require.True(t, resp.Succeeded)
+	require.Equal(t, put.Header.Revision, resp.Header.Revision)
+	rangeResp := resp.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResp)
+	require.Equal(t, []byte("value"), rangeResp.Kvs[0].Value)
 }
 
 func TestTxnWithoutComparesIgnoresNonEmptyFailureBranch(t *testing.T) {
