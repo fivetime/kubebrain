@@ -277,7 +277,7 @@ func main() {
 	}
 
 	fmt.Println("================ RESULT ================")
-	fmt.Printf("confirmed(client-acked, lower bound)=%d runningMax=%d\n",
+	fmt.Printf("confirmed(client-acked, exact unique-key count)=%d runningMax=%d\n",
 		atomic.LoadInt64(&confirmed), atomic.LoadInt64(&runningMax))
 	fmt.Printf("final reads: index=%d scan=%d err=%d distinctCounts=%d gross-undercounts=%d\n",
 		servedByIndex, scanReads, errs, len(counts), atomic.LoadInt64(&grossUnder))
@@ -291,6 +291,10 @@ func main() {
 		fmt.Printf("FAIL: index and scan disagree at quiesce, counts=%v\n", counts)
 		fail = true
 	}
+	if expected := atomic.LoadInt64(&confirmed); anyCount != expected {
+		fmt.Printf("FAIL: settled count=%d differs from %d acknowledged unique-key puts\n", anyCount, expected)
+		fail = true
+	}
 	if servedByIndex == 0 {
 		fmt.Println("FAIL: the index never served a read (endpoint did not reach the leader?)")
 		fail = true
@@ -298,20 +302,32 @@ func main() {
 	if scanReads == 0 {
 		fmt.Println("WARN: no scan read to cross-check against (all reads hit the index)")
 	}
-	// cleanup our keys (chunked; a single DeleteRange of the whole prefix can time out)
+	// Cleanup our keys below the production DeleteRange cap. Cleanup failures are
+	// test failures: leaking this prefix corrupts later count-index baselines.
 	hi := atomic.LoadInt64(&nextKey)
 	del := int64(0)
-	for lo := int64(0); lo < hi+1; lo += 5000 {
+	cleanupErrs := 0
+	for lo := int64(0); lo < hi+1; lo += 500 {
 		ctx, cc := context.WithTimeout(context.Background(), 60*time.Second)
 		r, e := wcli.Delete(ctx,
 			fmt.Sprintf("%sk%08d", prefix, lo),
-			clientv3.WithRange(fmt.Sprintf("%sk%08d", prefix, lo+5000)))
+			clientv3.WithRange(fmt.Sprintf("%sk%08d", prefix, lo+500)))
 		cc()
-		if e == nil {
-			del += r.Deleted
+		if e != nil {
+			cleanupErrs++
+			fmt.Printf("cleanup range [%d,%d) failed: %v\n", lo, lo+500, e)
+			continue
 		}
+		del += r.Deleted
 	}
-	fmt.Printf("cleanup: deleted=%d keys under %s\n", del, prefix)
+	left, _, cleanupCountErr := countOnce(20 * time.Second)
+	if cleanupCountErr != nil || cleanupErrs != 0 || left != 0 {
+		fmt.Printf("FAIL: cleanup deleted=%d rangeErrors=%d left=%d countErr=%v under %s\n",
+			del, cleanupErrs, left, cleanupCountErr, prefix)
+		fail = true
+	} else {
+		fmt.Printf("cleanup: deleted=%d left=0 keys under %s\n", del, prefix)
+	}
 
 	if fail {
 		fmt.Printf("RESULT: FAIL (settled count=%d)\n", anyCount)
