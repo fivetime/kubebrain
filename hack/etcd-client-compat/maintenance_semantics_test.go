@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -51,8 +53,7 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	_, err = cli.MemberUpdate(ctx, memberID, []string{"http://127.0.0.1:12380"})
 	requirePlatformError(t, err, memberMessage)
 	_, err = cli.MemberPromote(ctx, memberID)
-	require.Equal(t, codes.FailedPrecondition, status.Code(err))
-	require.Equal(t, "etcdserver: can only promote a learner member", status.Convert(err).Message())
+	require.True(t, errors.Is(err, rpctypes.ErrMemberNotLearner), "unexpected promote error: %v", err)
 
 	_, err = cli.SnapshotWithVersion(ctx)
 	requirePlatformError(t, err, snapshotMessage)
