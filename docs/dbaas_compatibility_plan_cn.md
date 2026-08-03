@@ -31665,6 +31665,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；
   endpoint health 可提交 proposal、版本端点保持 3.7.0、`/readyz=ok`，最近日志无 durable
   revision、Status、read barrier、count-index 或 panic/fatal 异常。
+- A3466 继续审计 `maintenanceHeader` 的其余调用点，发现 Alarm ACTIVATE/DEACTIVATE 在共享
+  TiKV 上执行前直接读取 replica-local current revision。冷副本 local=0、durable user revision=2
+  时，unknown alarm 已成功持久化，旧响应 header 却为 revision 0。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Alarm` 与 `header.go:fill`，官方会在 Alarm
+  apply 后用已恢复的 `KV.Rev()` 填充零 revision header。确定性 RED 固定 cold local=0、durable=2，
+  修复前实际得到成功 alarm/header=0；另一门禁注入 durable read error，要求 nil response、原始
+  error，且 persistent alarm 集合保持空。commit `efe8cf494a36cefd0e61fb89c521fb03916f76a8`
+  把 maintenance header 改为 context-aware、可失败的 durable-safe helper，并在任何 Alarm mutation
+  前恢复 revision；Status 复用其已取得的同一 revision，避免重复采样。成功与 fail-closed 两组测试
+  各连续 20 轮 GREEN，目标 race 10 轮 2.142 秒、完整 etcd server 149.973 秒、service 回归及
+  server/compat vet 均通过。commit `ec2e6ed6` 新增永久 cold-replica 门禁：稳定入口先提交 seed，
+  替换指定 Pod，随后把 direct replacement 的第一条 etcd RPC 固定为 unknown Alarm ACTIVATE，
+  并从稳定入口复核共享持久状态与清理。
+  生产镜像 `kubebrain:a3466-cold-alarm-revision`（本地 image ID
+  `sha256:11b87d016cbb6b6d63f0a3d116ce2e43275d23c9286b2a6a57621379cc7374f8`，kind runtime
+  digest `sha256:52f386b56d576ed61fee6c8d6fe7dfc80a75907f3b972d410e391f2f1314eb4f`，build time
+  `2026-08-03T16:12:55Z`）部署后，直连 replacement 的首次 ACTIVATE 返回 header revision 不低于
+  替换前 durable seed，稳定入口 GET 到相同 `(member,type=125)` 集合，门禁 7.40 秒通过并完整
+  disarm/delete cleanup；临时 direct Service 随后删除。unknown-type 与 member-set 两套官方双端
+  差分连续 20 轮、40 次执行 7.893 秒通过。最终 StatefulSet desired/current/ready/updated 均为
+  3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running；endpoint
+  health 可提交 proposal、版本端点保持 3.7.0、`/readyz=ok`，最近日志无 durable revision、Alarm、
+  read barrier、count-index 或 panic/fatal 异常。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
