@@ -410,7 +410,7 @@ func (s *RPCServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverp
 	if err := s.requireAuthenticated(stream.Context(), true); err != nil {
 		return err
 	}
-	return status.Error(codes.Unimplemented, snapshotUnsupportedMessage)
+	return snapshotPlatformManagedError()
 }
 
 func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
@@ -425,7 +425,7 @@ func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLe
 	if leaderID := s.memberIDForPeerIdentity(s.peers.GetLeaderInfo()); leaderID != 0 && request.GetTargetID() == leaderID {
 		return &etcdserverpb.MoveLeaderResponse{}, nil
 	}
-	return nil, status.Error(codes.Unimplemented, moveLeaderUnsupportedMessage)
+	return nil, moveLeaderPlatformManagedError()
 }
 
 func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
@@ -461,7 +461,7 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 	default:
 		return nil, status.Error(codes.Unknown, "etcdserver: unknown method")
 	}
-	return nil, status.Error(codes.Unimplemented, downgradeUnsupportedMessage)
+	return nil, downgradePlatformManagedError()
 }
 
 func parseDowngradeVersion(value string) (*semver.Version, error) {

@@ -27,8 +27,6 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/client/pkg/v3/types"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
@@ -285,7 +283,7 @@ func (s *RPCServer) MemberAdd(ctx context.Context, request *etcdserverpb.MemberA
 	if s.memberPeerURLConflicts(0, peerURLs.StringSlice()) {
 		return nil, rpctypes.ErrGRPCPeerURLExist
 	}
-	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
+	return nil, memberMutationPlatformManagedError()
 }
 
 // MemberRemove removes an existing member from the cluster.
@@ -297,7 +295,7 @@ func (s *RPCServer) MemberRemove(ctx context.Context, request *etcdserverpb.Memb
 	if s.memberByID(request.GetID()) == nil {
 		return nil, rpctypes.ErrGRPCMemberNotFound
 	}
-	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
+	return nil, memberMutationPlatformManagedError()
 }
 
 // MemberUpdate updates the peer addresses of the member.
@@ -312,7 +310,7 @@ func (s *RPCServer) MemberUpdate(ctx context.Context, request *etcdserverpb.Memb
 	if s.memberPeerURLConflicts(request.GetID(), request.GetPeerURLs()) {
 		return nil, rpctypes.ErrGRPCPeerURLExist
 	}
-	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
+	return nil, memberMutationPlatformManagedError()
 }
 
 // MemberPromote promotes a member from raft learner (non-voting) to raft voting member.
@@ -328,7 +326,7 @@ func (s *RPCServer) MemberPromote(ctx context.Context, request *etcdserverpb.Mem
 	if !member.GetIsLearner() {
 		return nil, rpctypes.ErrGRPCMemberNotLearner
 	}
-	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
+	return nil, memberMutationPlatformManagedError()
 }
 
 func (s *RPCServer) memberByID(id uint64) *etcdserverpb.Member {

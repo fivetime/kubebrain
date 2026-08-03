@@ -109,6 +109,13 @@ func publicRPCMethodsReturningUnimplemented(t *testing.T) []string {
 				continue
 			}
 			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, callOK := node.(*ast.CallExpr)
+				if callOK {
+					identifier, identifierOK := call.Fun.(*ast.Ident)
+					if identifierOK && platformManagedErrorHelper(identifier.Name) {
+						methods[function.Name.Name] = struct{}{}
+					}
+				}
 				selector, ok := node.(*ast.SelectorExpr)
 				if !ok {
 					return true
@@ -127,6 +134,18 @@ func publicRPCMethodsReturningUnimplemented(t *testing.T) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// Keep this allowlist concrete: adding another helper or routing a supported
+// RPC through the generic constructor must require an API-surface audit.
+func platformManagedErrorHelper(name string) bool {
+	switch name {
+	case "snapshotPlatformManagedError", "memberMutationPlatformManagedError",
+		"moveLeaderPlatformManagedError", "downgradePlatformManagedError":
+		return true
+	default:
+		return false
+	}
 }
 
 func apiSurfaceReceiverOwner(owner string) bool {

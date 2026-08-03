@@ -99,6 +99,10 @@ func TestRawGRPCSnapshotReturnsPlatformUnsupported(t *testing.T) {
 	require.NoError(t, err)
 	_, err = stream.Recv()
 	requirePlatformReplacementError(t, err, snapshotUnsupportedMessage)
+	info := requirePlatformManagedErrorInfo(t, err)
+	require.Equal(t, "Backup", info.Metadata["operation_type"])
+	require.Equal(t, "kubebrain.logical.v2", info.Metadata["artifact_format"])
+	require.Equal(t, "false", info.Metadata["etcd_snapshot_restore_usable"])
 }
 
 func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
