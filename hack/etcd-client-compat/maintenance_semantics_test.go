@@ -59,7 +59,10 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	requirePlatformError(t, err, snapshotMessage)
 	_, err = cli.MoveLeader(ctx, 1)
 	requirePlatformError(t, err, moveLeaderMessage)
-	_, err = cli.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
+	downgradeResponse, err := cli.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
+	require.NoError(t, err)
+	require.Equal(t, "3.7", downgradeResponse.Version)
+	_, err = cli.Downgrade(ctx, clientv3.DowngradeEnable, "3.6.0")
 	requirePlatformError(t, err, downgradeMessage)
 }
 
