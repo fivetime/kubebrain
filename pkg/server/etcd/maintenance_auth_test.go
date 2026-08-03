@@ -119,9 +119,13 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 	_, err = server.MoveLeader(rootCtx, &etcdserverpb.MoveLeaderRequest{})
 	requireMaintenancePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
-	_, err = server.Downgrade(aliceCtx, &etcdserverpb.DowngradeRequest{})
+	validDowngrade := &etcdserverpb.DowngradeRequest{
+		Action:  etcdserverpb.DowngradeRequest_VALIDATE,
+		Version: "3.7.0",
+	}
+	_, err = server.Downgrade(aliceCtx, validDowngrade)
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
-	_, err = server.Downgrade(rootCtx, &etcdserverpb.DowngradeRequest{})
+	_, err = server.Downgrade(rootCtx, validDowngrade)
 	requireMaintenancePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 }
 

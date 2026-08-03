@@ -21,6 +21,7 @@ import (
 	"hash/crc32"
 	"strings"
 
+	"github.com/coreos/go-semver/semver"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
@@ -420,12 +421,30 @@ func (s *RPCServer) MoveLeader(ctx context.Context, _ *etcdserverpb.MoveLeaderRe
 	return nil, status.Error(codes.Unimplemented, moveLeaderUnsupportedMessage)
 }
 
-func (s *RPCServer) Downgrade(ctx context.Context, _ *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 	s.metricCli.EmitCounter("maintenance.downgrade", 1)
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
+	switch request.GetAction() {
+	case etcdserverpb.DowngradeRequest_VALIDATE, etcdserverpb.DowngradeRequest_ENABLE:
+		if !validDowngradeVersion(request.GetVersion()) {
+			return nil, rpctypes.ErrGRPCWrongDowngradeVersionFormat
+		}
+	case etcdserverpb.DowngradeRequest_CANCEL:
+		// The version field is ignored for CANCEL by etcd.
+	default:
+		return nil, status.Error(codes.Unknown, "etcdserver: unknown method")
+	}
 	return nil, status.Error(codes.Unimplemented, downgradeUnsupportedMessage)
+}
+
+func validDowngradeVersion(value string) bool {
+	if _, err := semver.NewVersion(value); err == nil {
+		return true
+	}
+	_, err := semver.NewVersion(value + ".0")
+	return err == nil
 }
 
 func (s *RPCServer) requireAuthenticated(ctx context.Context, root bool) error {

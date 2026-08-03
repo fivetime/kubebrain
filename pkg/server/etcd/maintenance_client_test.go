@@ -173,13 +173,20 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 	}
 	for _, request := range []*etcdserverpb.DowngradeRequest{
 		{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.7.0"},
-		{Action: etcdserverpb.DowngradeRequest_ENABLE, Version: ""},
 		{Action: etcdserverpb.DowngradeRequest_CANCEL, Version: "not-semver"},
-		{Action: etcdserverpb.DowngradeRequest_DowngradeAction(127), Version: "3.7.0"},
 	} {
 		_, err = maintenance.Downgrade(ctx, request)
 		requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 	}
+	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_ENABLE, Version: "not-semver",
+	})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCWrongDowngradeVersionFormat)
+	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_DowngradeAction(127), Version: "3.7.0",
+	})
+	require.Equal(t, codes.Unknown, status.Code(err))
+	require.Equal(t, "etcdserver: unknown method", status.Convert(err).Message())
 }
 
 func TestRawGRPCPlatformManagedMemberMutationsReturnActionableErrors(t *testing.T) {
