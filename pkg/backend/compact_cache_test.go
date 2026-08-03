@@ -128,6 +128,34 @@ func TestGetCompactRevisionFreshBypassesCache(t *testing.T) {
 	require.Equal(t, peerRev, got, "fresh read must refresh the TTL cache")
 }
 
+func TestWatchHistoryBypassesStaleCompactRevisionCache(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	ctx := context.Background()
+
+	// Model a newly promoted replica: its one-second cache predates a Compact
+	// persisted by the previous leader.
+	got, err := b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Zero(t, got)
+	const durableRevision = uint64(10)
+	b.SetCurrentRevision(20)
+	bw := kv.BeginBatchWrite()
+	bw.Put(getCompactKey(prefix), uint64ToBytes(durableRevision), 0)
+	require.NoError(t, bw.Commit(ctx))
+
+	events, err := b.historyWatchEvents(ctx, prefix+"/stale-watch/", 9, 20, 20)
+	require.Nil(t, events)
+	require.ErrorContains(t, err, "compacted at 10 newer than requested revision 9")
+	got, err = b.GetCompactRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, durableRevision, got, "the authoritative history fence must refresh the cache")
+}
+
 func TestSafeCurrentRevisionDoesNotAdvancePastCompactWatermark(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

@@ -1043,7 +1043,11 @@ func (w *watcher) isCompactedWatchRevision(ctx context.Context, revision int64) 
 	if revision <= 0 {
 		return false, nil
 	}
-	compactRevision, err := w.backend.GetCompactRevision(ctx)
+	// Watch creation is an authoritative history boundary. A newly elected
+	// replica may still have the previous leader's compact watermark cached for
+	// up to the TTL; accepting the watch on that stale-low value can silently
+	// skip the compacted prefix before the backend fallback notices anything.
+	compactRevision, err := w.backend.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return false, err
 	}

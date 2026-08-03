@@ -1368,6 +1368,23 @@ func TestClientWatchCancelUsesControlRevision(t *testing.T) {
 	require.Equal(t, int64(50), stream.sent[0].Header.Revision)
 }
 
+func TestWatchCreateBypassesStaleCompactRevisionCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &staleCompactRevisionCacheShim{
+		BackendShim:     server.backend,
+		cachedRevision:  1,
+		durableRevision: 10,
+	}
+	w := &watcher{backend: shim}
+
+	compacted, err := w.isCompactedWatchRevision(context.Background(), 9)
+	require.NoError(t, err)
+	require.True(t, compacted)
+	require.True(t, shim.freshRead)
+}
+
 func TestFollowerProxyWatchCreateUnavailableIsNonCompactedCancel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

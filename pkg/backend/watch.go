@@ -160,7 +160,12 @@ func (b *backend) catchUpEvents(out chan<- []*proto.Event, events []*proto.Event
 }
 
 func (b *backend) historyWatchEvents(ctx context.Context, prefix string, fromRevision, currentRevision, neededRevision uint64) ([]*proto.Event, error) {
-	compactRevision, err := b.GetCompactRevision(ctx)
+	// Re-read the shared durable watermark at the history scan itself. Compact
+	// can advance after the RPC layer's create-time check, and a newly promoted
+	// leader's TTL cache may predate a compaction committed by its predecessor.
+	// Returning an empty replay in either window would make the watch appear
+	// caught up while silently omitting inaccessible history.
+	compactRevision, err := b.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return nil, err
 	}
