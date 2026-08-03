@@ -462,6 +462,22 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	rev := s.backend.GetCurrentRevision()
+	durable, err := s.backend.GetDurableRevision(req.Context())
+	if err != nil {
+		s.metricCli.EmitCounter("leader.revision_err", 1)
+		http.Error(w, "failed to load durable revision: "+err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if durable > rev {
+		rev = durable
+	}
+	// etcd starts at revision 1 even before the first user write. More
+	// importantly, never publish a cold in-memory zero when TiKV already has a
+	// durable user watermark: followers use this endpoint as their read barrier.
+	if rev == 0 {
+		rev = 1
+	}
+	s.backend.SetCurrentRevision(rev)
 	w.WriteHeader(200)
 	responseBody, _ := json.Marshal(&revision.LeaderRevision{
 		Revision: rev,

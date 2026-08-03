@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -35,9 +36,23 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
+	"github.com/kubewharf/kubebrain/pkg/server/service/revision"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type alwaysLeaderElection struct{}
+
+func (alwaysLeaderElection) Campaign(context.Context)                       {}
+func (alwaysLeaderElection) GetLeaderInfo() string                          { return "self" }
+func (alwaysLeaderElection) RefreshLeaderInfo(context.Context) error        { return nil }
+func (alwaysLeaderElection) LeadershipTerm(context.Context) (uint64, error) { return 1, nil }
+func (alwaysLeaderElection) CurrentLeadershipTerm() uint64                  { return 1 }
+func (alwaysLeaderElection) IsLeader() bool                                 { return true }
+func (alwaysLeaderElection) EpochAndLeadingFresh() (uint64, bool)           { return 1, true }
+func (alwaysLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
+	return leader.ElectionInfo{LeaderAddress: "self", IsLeader: true}, nil
+}
 
 type healthStorage struct {
 	storage.KvStorage
@@ -58,6 +73,14 @@ type quotaRefreshBackend struct {
 	block     atomic.Bool
 	err       error
 }
+
+type coldRevisionBackend struct {
+	backend.Backend
+	current atomic.Uint64
+}
+
+func (b *coldRevisionBackend) GetCurrentRevision() uint64    { return b.current.Load() }
+func (b *coldRevisionBackend) SetCurrentRevision(rev uint64) { b.current.Store(rev) }
 
 func (b *quotaRefreshBackend) QuotaStatus(ctx context.Context) (int64, int64, bool, error) {
 	b.calls.Add(1)
@@ -85,6 +108,7 @@ type healthMetricEvent struct {
 }
 
 type healthMetricRecorder struct {
+	mu     sync.Mutex
 	events []healthMetricEvent
 }
 
@@ -94,10 +118,14 @@ func (r *healthMetricRecorder) EmitHistogram(string, interface{}, ...metrics.T) 
 	return nil
 }
 func (r *healthMetricRecorder) EmitCounter(name string, value interface{}, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, healthMetricEvent{kind: "counter", name: name, value: value, tags: tags})
 	return nil
 }
 func (r *healthMetricRecorder) EmitGauge(name string, value interface{}, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.events = append(r.events, healthMetricEvent{kind: "gauge", name: name, value: value, tags: tags})
 	return nil
 }
@@ -121,6 +149,30 @@ func healthStatus(t *testing.T, s *server) healthpb.HealthCheckResponse_ServingS
 	resp, err := s.healthServer.Check(context.Background(), &healthpb.HealthCheckRequest{})
 	require.NoError(t, err)
 	return resp.Status
+}
+
+func TestRevisionHandlerRestoresColdLeaderFromDurableRevision(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "cold-revision", EnableEtcdCompatibility: true,
+	}, metrics)
+	_, writtenRevision, err := b.TxnApply(context.Background(), []backend.TxnWriteOp{{
+		Key: []byte("cold/revision"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+	require.Positive(t, writtenRevision)
+	cold := &coldRevisionBackend{Backend: b}
+
+	s := &server{backend: cold, metricCli: metrics, leaderElection: alwaysLeaderElection{}}
+	recorder := httptest.NewRecorder()
+	s.revisionHandler(recorder, httptest.NewRequest(http.MethodGet, "/revision", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var got revision.LeaderRevision
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
+	require.Equal(t, writtenRevision, got.Revision)
+	require.Equal(t, writtenRevision, cold.GetCurrentRevision())
 }
 
 func TestCloseWaitsForLeadershipCallbackBeforeReturning(t *testing.T) {
