@@ -31398,6 +31398,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用同一 digest、Ready/0 restart，主 3 PD/3 TiKV Running，版本端点保持 3.7.0，
   `/readyz=ok`；日志中的 `forward txn cas failed result=false` 仅为生成式 compare-false 分支，
   无 panic、fatal、malformed 或 read-barrier failure。
+- A3450 对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `EtcdServer.Range` 与
+  `EtcdServer.RangeStream`，确认上游只在 `Serializable=false` 时执行
+  `LinearizableReadNotify`，历史 revision 不会改变 leader 上 serializable read 的本地性。
+  KubeBrain 原条件 `(!Serializable || Revision>0) && !durableHistorical` 在 leader 上因
+  durable follower watermark 不适用而把 `Serializable=true, Revision>0` 错送入
+  `SyncReadRevision`；因此一次无关的 leader revision transport 故障会令本可从共享 TiKV
+  历史快照完成的 Range/RangeStream 返回 `Unavailable`。两个确定性 RED 分别为 unary Range
+  与 RangeStream 注入 leader sync failure，先复现历史 serializable 请求失败，同时固定 latest
+  serializable 仍成功、linearizable 请求仍失败。commit
+  `80c4a0566185f40c16d002572c3f8c98ddadf07e` 将两条路径统一为：所有
+  non-serializable read 执行 barrier；leader 上所有 serializable read 直接读取 TiKV；follower
+  历史读仅在 durable watermark 未覆盖请求 revision 时同步/代理，已覆盖时继续本地读。既有
+  follower durable-watermark 与 linearizable historical 路由测试锁定后两条架构分支。定向测试
+  10 轮 2.035 秒、完整 server 包 151.012 秒、目标 race 3 轮 2.057 秒及 vet 均通过。生产
+  TiKV 镜像 `kubebrain:a3450-serializable-history-local`（本地 image ID
+  `sha256:2038ac2d404d5a73772a4c74d5bf52adc5423d78afa7b47aca9af23621f1baae`，kind runtime
+  digest `sha256:f9ab7e01177f027f16363b7c7354c33d98bf822db6ac01174cf48eed7577c1ab`）
+  滚动部署后，SerializableRead、RangeStream、RangeStream common shapes 与 revision boundary
+  四项官方 `/root/etcd/bin/etcd` 3.8.0-alpha.0 差分连续 5 轮、20 次执行 6.719 秒通过。
+  三个 KubeBrain Pod 使用同一 digest、Ready/0 restart，主 3 PD/3 TiKV 均 Running，版本端点
+  保持 3.7.0，`/readyz=ok`；日志中的 future/compacted revision、count-index rebuilding 与
+  滚动期间 peer connection failure 均由差分边界用例或有序重启触发，当前无 panic/fatal。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
