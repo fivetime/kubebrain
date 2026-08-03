@@ -88,16 +88,16 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	require.NoError(t, err)
 	require.Len(t, current.Kvs, 1)
 
-	normalizeError := func(err error) (string, string) {
-		require.Error(t, err)
+	normalizeError := func(name string, err error) (string, string) {
+		require.Errorf(t, err, "%s must fail after compaction", name)
 		st := status.Convert(err)
 		return st.Code().String(), st.Message()
 	}
-	historicalCode, historicalMessage := normalizeError(historicalErr)
-	repeatedCode, repeatedMessage := normalizeError(repeatedErr)
-	olderCode, olderMessage := normalizeError(olderErr)
-	futureCode, futureMessage := normalizeError(futureErr)
-	negativeCode, negativeMessage := normalizeError(negativeErr)
+	historicalCode, historicalMessage := normalizeError("historical range", historicalErr)
+	repeatedCode, repeatedMessage := normalizeError("repeated compact", repeatedErr)
+	olderCode, olderMessage := normalizeError("older compact", olderErr)
+	futureCode, futureMessage := normalizeError("future compact", futureErr)
+	negativeCode, negativeMessage := normalizeError("negative compact", negativeErr)
 	return compactDifferentialResult{
 		CompactHeaderGap:  compact.Header.Revision - third.Header.Revision,
 		BoundaryValue:     string(boundary.Kvs[0].Value),

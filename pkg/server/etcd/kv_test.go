@@ -1956,6 +1956,38 @@ func TestRangeCompactedRevisionMatchesEtcd(t *testing.T) {
 	require.Len(t, resp.Kvs, 1)
 }
 
+type staleCompactRevisionCacheShim struct {
+	BackendShim
+	cachedRevision  uint64
+	durableRevision uint64
+	freshRead       bool
+}
+
+func (s *staleCompactRevisionCacheShim) GetCompactRevision(context.Context) (uint64, error) {
+	return s.cachedRevision, nil
+}
+
+func (s *staleCompactRevisionCacheShim) GetCompactRevisionFresh(context.Context) (uint64, error) {
+	s.freshRead = true
+	return s.durableRevision, nil
+}
+
+func TestHistoricalRangeBypassesStaleCompactRevisionCache(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &staleCompactRevisionCacheShim{
+		BackendShim:     server.backend,
+		cachedRevision:  1,
+		durableRevision: 10,
+	}
+	server.backend = shim
+
+	err := server.checkRequestedRevision(context.Background(), 9)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCCompacted, codes.OutOfRange, "etcdserver: mvcc: required revision has been compacted")
+	require.True(t, shim.freshRead)
+}
+
 func TestCompactFutureAndRepeatedRevisionMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

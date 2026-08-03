@@ -675,7 +675,13 @@ func (s *RPCServer) serializableTxnRevision(ctx context.Context) (uint64, error)
 }
 
 func (s *RPCServer) executeReadonlyTxnAtRevision(ctx context.Context, txn *etcdserverpb.TxnRequest, revision int64) (*etcdserverpb.TxnResponse, error) {
-	compactRevision, err := s.backend.GetCompactRevision(ctx)
+	// An explicit historical read must observe a Compact that completed on any
+	// replica. The ordinary compact-revision accessor has a short TTL cache and
+	// can therefore be stale-low immediately after a proxied compaction; using it
+	// here would let a linearizable read-only Txn return history that etcd already
+	// made inaccessible. Historical reads are the cold path, so read the shared TiKV
+	// watermark authoritatively and refresh this replica's cache.
+	compactRevision, err := s.backend.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -888,7 +894,10 @@ func (s *RPCServer) checkRequestedRevision(ctx context.Context, revision int64) 
 	if revision <= 0 {
 		return nil
 	}
-	compactRevision, err := s.backend.GetCompactRevision(ctx)
+	// A completed Compact is a cluster-wide visibility boundary. Bypass the
+	// replica-local TTL cache for explicit historical reads so a Range arriving
+	// on another replica cannot briefly return already-compacted history.
+	compactRevision, err := s.backend.GetCompactRevisionFresh(ctx)
 	if err != nil {
 		return err
 	}
