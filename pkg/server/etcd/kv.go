@@ -432,14 +432,33 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
 		return nil, err
 	}
+	readOnly := txnIsReadonly(txn)
 	// Match EtcdServer.Txn: a read-only transaction containing any
 	// non-serializable Range establishes its linearizable read barrier before
 	// authorization and execution. Besides preserving etcd's error ordering,
 	// this pins the shared-TiKV snapshot after the current leadership has been
 	// confirmed. Fully serializable read-only txns intentionally bypass it.
-	if txnIsReadonly(txn) && !txnIsSerializable(txn) {
+	if readOnly && !txnIsSerializable(txn) {
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return nil, readBarrierStatusErr(err)
+		}
+	}
+	var epoch uint64
+	if !readOnly {
+		var leadingFresh bool
+		epoch, leadingFresh = s.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
+			s.metricCli.EmitCounter("write.follower", 1)
+			if s.peers.EtcdProxyEnabled() {
+				proxyCtx, err := s.forwardWriteAuthContext(ctx)
+				if err != nil {
+					return nil, err
+				}
+				response, err := s.peers.Txn(proxyCtx, txn)
+				s.observeForwardedRevision(response.GetHeader(), err)
+				return response, err
+			}
+			return nil, s.notLeaderErr("txn")
 		}
 	}
 	caller, authErr := s.authCallerFromContext(ctx)
@@ -457,7 +476,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
-	if txnIsReadonly(txn) && txnIsSerializable(txn) {
+	if readOnly && txnIsSerializable(txn) {
 		revision, err := s.serializableTxnRevision(ctx)
 		if err != nil {
 			if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
@@ -477,7 +496,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		}
 		return response, err
 	}
-	if !txnIsReadonly(txn) {
+	if !readOnly {
 		if err := s.rejectCorrupt(ctx); err != nil {
 			return nil, err
 		}
@@ -488,19 +507,22 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	// Capture the leadership epoch at admission and thread it through the context;
 	// the backend re-checks it just before commit so a leadership change mid-write
 	// fences the commit instead of losing it silently (FINDING #39).
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if !leadingFresh {
-		s.metricCli.EmitCounter("write.follower", 1)
-		if s.peers.EtcdProxyEnabled() {
-			proxyCtx, err := s.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
+	if readOnly {
+		var leadingFresh bool
+		epoch, leadingFresh = s.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
+			s.metricCli.EmitCounter("write.follower", 1)
+			if s.peers.EtcdProxyEnabled() {
+				proxyCtx, err := s.forwardAuthToken(ctx, caller)
+				if err != nil {
+					return nil, err
+				}
+				response, err := s.peers.Txn(proxyCtx, txn)
+				s.observeForwardedRevision(response.GetHeader(), err)
+				return response, err
 			}
-			response, err := s.peers.Txn(proxyCtx, txn)
-			s.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
+			return nil, s.notLeaderErr("txn")
 		}
-		return nil, s.notLeaderErr("txn")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	s.leaseWriteMu.RLock()
@@ -903,6 +925,20 @@ func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
 }
 
 func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		s.metricCli.EmitCounter("write.follower", 1)
+		if s.peers.EtcdProxyEnabled() {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			response, err := s.peers.Compact(proxyCtx, r)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
+		}
+		return nil, s.notLeaderErr("compact")
+	}
 	// Compact is a cluster-wide destructive history operation, not a key-range
 	// write. Upstream etcd protects it with AuthAdmin.isPermitted (root only).
 	caller, err := s.authCallerFromContext(ctx)
@@ -914,20 +950,6 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	}
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err
-	}
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if !leadingFresh {
-		s.metricCli.EmitCounter("write.follower", 1)
-		if s.peers.EtcdProxyEnabled() {
-			proxyCtx, err := s.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
-			}
-			response, err := s.peers.Compact(proxyCtx, r)
-			s.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
-		}
-		return nil, s.notLeaderErr("compact")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
@@ -1006,6 +1028,20 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	if err := validatePutRequest(r); err != nil {
 		return nil, err
 	}
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		s.metricCli.EmitCounter("write.follower", 1)
+		if s.peers.EtcdProxyEnabled() {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			response, err := s.peers.Put(proxyCtx, r)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
+		}
+		return nil, s.notLeaderErr("put")
+	}
 	caller, authErr := s.authCallerFromContext(ctx)
 	if authErr != nil {
 		return nil, authErr
@@ -1016,20 +1052,6 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	ctx = withAuthWriteGuard(ctx, caller)
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err
-	}
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if !leadingFresh {
-		s.metricCli.EmitCounter("write.follower", 1)
-		if s.peers.EtcdProxyEnabled() {
-			proxyCtx, err := s.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
-			}
-			response, err := s.peers.Put(proxyCtx, r)
-			s.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
-		}
-		return nil, s.notLeaderErr("put")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	s.leaseWriteMu.RLock()
@@ -1080,6 +1102,20 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if err := validateDeleteRangeRequest(r); err != nil {
 		return nil, err
 	}
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		s.metricCli.EmitCounter("write.follower", 1)
+		if s.peers.EtcdProxyEnabled() {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			response, err := s.peers.DeleteRange(proxyCtx, r)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
+		}
+		return nil, s.notLeaderErr("delete range")
+	}
 	caller, authErr := s.authCallerFromContext(ctx)
 	if authErr != nil {
 		return nil, authErr
@@ -1095,20 +1131,6 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	ctx = withAuthWriteGuard(ctx, caller)
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err
-	}
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if !leadingFresh {
-		s.metricCli.EmitCounter("write.follower", 1)
-		if s.peers.EtcdProxyEnabled() {
-			proxyCtx, err := s.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
-			}
-			response, err := s.peers.DeleteRange(proxyCtx, r)
-			s.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
-		}
-		return nil, s.notLeaderErr("delete range")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	if len(r.RangeEnd) != 0 {

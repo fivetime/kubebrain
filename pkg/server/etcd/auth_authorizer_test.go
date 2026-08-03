@@ -344,6 +344,34 @@ func TestClientCertificateIdentitySurvivesFollowerProxy(t *testing.T) {
 	require.Equal(t, "alice", forwardedUsername)
 }
 
+func TestFollowerWriteProxyDefersBearerAuthenticationToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+
+	const credential = "not-a-valid-token"
+	forwarded := false
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		putFn: func(ctx context.Context, _ *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+			forwarded = true
+			md, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			require.Equal(t, []string{credential}, md.Get(rpctypes.TokenFieldNameGRPC))
+			return nil, rpctypes.ErrInvalidAuthToken
+		},
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, credential,
+	))
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/proxied"), Value: []byte("value"),
+	})
+	require.True(t, forwarded)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+}
+
 func TestForwardedCertificateIdentityUsesCurrentPermissions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

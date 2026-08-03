@@ -131,6 +131,63 @@ func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	require.Equal(t, 2, barrierCalls, "a linearizable read-only txn must establish exactly one barrier")
 }
 
+func TestAuthWriteLeadershipFailurePrecedesAuthLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.peers = testPeerService{isLeader: false, noLeader: true}
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{
+			name: "put",
+			call: func() error {
+				_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+					Key: []byte("/allowed/write-order"), Value: []byte("value"),
+				})
+				return err
+			},
+		},
+		{
+			name: "delete range",
+			call: func() error {
+				_, err := server.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{
+					Key: []byte("/allowed/write-order"),
+				})
+				return err
+			},
+		},
+		{
+			name: "write txn",
+			call: func() error {
+				_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+					Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{
+						RequestPut: &etcdserverpb.PutRequest{
+							Key: []byte("/allowed/write-order"), Value: []byte("value"),
+						},
+					}}},
+				})
+				return err
+			},
+		},
+		{
+			name: "compact",
+			call: func() error {
+				_, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 1})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			require.Equal(t, codes.Unavailable, status.Code(err))
+			require.NotContains(t, status.Convert(err).Message(), "user name is empty")
+		})
+	}
+}
+
 func TestAuthKVFutureJWTRevisionAllowsWritesButNotSerializedReads(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
 	for _, tc := range []struct {

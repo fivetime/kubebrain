@@ -170,6 +170,29 @@ func (s *RPCServer) forwardAuthToken(ctx context.Context, caller *authCaller) (c
 	return ctx, nil
 }
 
+// forwardWriteAuthContext preserves etcd's raft-write admission order: a
+// follower forwards the request before the auth applier runs on the leader.
+// Bearer/simple/JWT credentials are therefore passed through verbatim and are
+// verified authoritatively by the leader. A verified client certificate cannot
+// cross the internal gRPC hop, so mint the same short-lived forwarding token
+// used by the existing authenticated proxy path when one is available.
+func (s *RPCServer) forwardWriteAuthContext(ctx context.Context) (context.Context, error) {
+	if credential, ok := authCredentialFromContext(ctx); ok {
+		return metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, credential), nil
+	}
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil || !snapshot.Config.Enabled || !s.clientCertAuth {
+		return ctx, err
+	}
+	caller, err := s.authCallerFromTLS(ctx, snapshot)
+	if err != nil {
+		// Forward an unauthenticated request and let the leader's auth applier
+		// return the canonical error after leadership has been established.
+		return ctx, nil
+	}
+	return s.forwardAuthToken(ctx, caller)
+}
+
 func (c *authCaller) isRoot() bool {
 	if c == nil {
 		return true
