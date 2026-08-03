@@ -349,27 +349,36 @@ func TestHistoricalRangeUsesDurableFollowerWatermark(t *testing.T) {
 	require.Equal(t, []byte("v1"), resp.Kvs[0].Value)
 }
 
-func TestLinearizableHistoricalRangeRoutesToLeader(t *testing.T) {
+func TestLinearizableHistoricalRangeExecutesLocallyAfterBarrier(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	proxied := false
+	key := []byte("/historical-linearizable")
+	first, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	latest, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+	barriers := 0
 	server.peers = testPeerService{
 		isLeader:     false,
 		proxyEnabled: true,
-		rangeFn: func(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-			proxied = true
-			require.False(t, request.Serializable)
-			require.Equal(t, int64(7), request.Revision)
-			return &etcdserverpb.RangeResponse{Header: txnHeader(42)}, nil
+		syncReadFn: func(context.Context) error {
+			barriers++
+			return nil
+		},
+		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+			t.Fatal("linearizable historical range must not proxy after a successful barrier")
+			return nil, nil
 		},
 	}
 
 	response, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{
-		Key: []byte("/historical-linearizable"), Revision: 7,
+		Key: key, Revision: first.Header.Revision,
 	})
 	require.NoError(t, err)
-	require.True(t, proxied)
-	require.Equal(t, int64(42), response.Header.Revision)
+	require.Equal(t, 1, barriers)
+	require.Equal(t, latest.Header.Revision, response.Header.Revision)
+	require.Len(t, response.Kvs, 1)
+	require.Equal(t, []byte("v1"), response.Kvs[0].Value)
 }
 
 func (s testPeerService) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -1865,7 +1874,7 @@ func TestRangeFutureRevisionMatchesEtcd(t *testing.T) {
 	}
 }
 
-func TestFollowerHistoricalRangeProxiesToLeader(t *testing.T) {
+func TestFollowerSerializableHistoricalRangeWithoutDurableRevisionProxiesToLeader(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	metrics := mock.NewMinimalMetrics(ctrl)
@@ -1900,8 +1909,9 @@ func TestFollowerHistoricalRangeProxiesToLeader(t *testing.T) {
 	defer server.stopLeases()
 
 	resp, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{
-		Key:      []byte("/registry/pods/historical"),
-		Revision: 10,
+		Key:          []byte("/registry/pods/historical"),
+		Revision:     10,
+		Serializable: true,
 	})
 	require.NoError(t, err)
 	require.True(t, called)

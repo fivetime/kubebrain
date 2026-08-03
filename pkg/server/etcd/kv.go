@@ -55,7 +55,12 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	// the leader's current revision in its response header, even though its KVs
 	// come from the requested older revision.
 	durableHistorical := r.Serializable && r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
-	if r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical && s.peers.EtcdProxyEnabled() {
+	// A serializable historical read whose revision is not yet covered by this
+	// follower's durable watermark must run on the leader. A linearizable read
+	// instead establishes SyncReadRevision below and can then read the shared
+	// TiKV snapshot locally; proxying it here would incorrectly put auth before
+	// etcd's read barrier.
+	if r.Serializable && r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical && s.peers.EtcdProxyEnabled() {
 		caller, authErr := s.authCallerFromContext(ctx)
 		if authErr != nil {
 			return nil, authErr

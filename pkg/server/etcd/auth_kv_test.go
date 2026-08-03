@@ -62,28 +62,41 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	plain := context.Background()
 	barrierErr := errors.New("leader read barrier failed")
 	var barrierCalls int
-	server.peers = testPeerService{syncReadFn: func(context.Context) error {
-		barrierCalls++
-		return barrierErr
-	}}
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			barrierCalls++
+			return barrierErr
+		},
+		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+			t.Fatal("linearizable Range must establish its barrier before any historical proxy")
+			return nil, nil
+		},
+	}
 
 	_, err := server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
 	requireReadBarrierUnavailable(t, err, barrierErr.Error())
 	require.Equal(t, 1, barrierCalls)
 
+	_, err = server.Range(plain, &etcdserverpb.RangeRequest{
+		Key: []byte("/allowed/a"), Revision: 1,
+	})
+	requireReadBarrierUnavailable(t, err, barrierErr.Error())
+	require.Equal(t, 2, barrierCalls, "historical linearizable Range must also fence before auth")
+
 	_, err = server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a"), Serializable: true})
 	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
-	require.Equal(t, 1, barrierCalls)
+	require.Equal(t, 2, barrierCalls)
 
 	stream := &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0")}, stream)
 	requireReadBarrierUnavailable(t, err, barrierErr.Error())
-	require.Equal(t, 2, barrierCalls)
+	require.Equal(t, 3, barrierCalls)
 
 	stream = &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true}, stream)
 	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
-	require.Equal(t, 2, barrierCalls)
+	require.Equal(t, 3, barrierCalls)
 }
 
 func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
