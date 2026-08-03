@@ -31276,6 +31276,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   29.424 秒通过；参考端为 `/root/etcd/bin/etcd` 3.8.0-alpha.0，KubeBrain 连接独立
   3 PD/3 TiKV。最终三个 KubeBrain Pod 使用 A3443、Ready/0 restart，主 3 PD/3 TiKV
   均 Running；A3442 的生产失败保留为第二层 RED 证据，未被本地 scanner 绿灯掩盖。
+- A3444 沿同一旧 `{magic}{rawUserKey}${revision}` 编码继续审计 legacy metadata fallback：
+  `getEtcdMetadata` 此前在 `metaKey$requestedRevision` 以下反向只取第一行，既不解码也不校验
+  metadata user key。于是较低 revision 的目标 metadata 与 requested revision 之间若存在
+  `metaKey + '$' + bigEndian(foreignRevision) + suffix` 的 foreign metadata key，排序更近的
+  foreign 行会遮蔽目标行并被当成目标 metadata 返回。确定性 RED 直接构造旧格式数据，固定
+  requested/lower/foreign/target 四个 revision 的字节序关系；内存与 TiKV mock 均能复现。
+  commit `d2e1e88e6a7c5151d013f0904064dcd7f5f5837d` 将 fallback 改为完整反向迭代，逐行解码并
+  仅接受 user key 精确等于 `metaKey` 的行，foreign key 全部跳过，直到找到目标或返回
+  `ErrKeyNotFound`。目标测试在内存与 TiKV mock 各 10 轮通过，相关 legacy compact 测试
+  10 轮 0.344 秒、组合门禁 0.418 秒、完整 backend 43.266 秒、目标 race 10 轮 2.495 秒及
+  backend vet 均通过。生产 TiKV 镜像 `kubebrain:a3444-legacy-meta-dollar`（image ID
+  `sha256:04d78ffafe39b07d5ca77dc4269fe1b7a40a08ccb134548f6d014e96ff99a806`，revision label
+  指向上述 commit）滚动部署后，与 `/root/etcd/bin/etcd` 3.8.0-alpha.0 的 dollar narrow
+  range、binary key、binary mutation 三项差分连续 3 轮、9 次执行 10.200 秒通过。旧 metadata
+  冲突由可注入 legacy 行的后端测试证明；当前写路径内联 metadata，生产黑盒不能构造该旧状态，
+  因而线上差分只证明客户端可见路径无回归。最终三个 KubeBrain Pod 使用 A3444、Ready/0
+  restart，主 3 PD/3 TiKV 均 Running，版本端点返回 etcdserver/storage 3.7.0，最近 15 分钟
+  日志无 panic/fatal、malformed、compact failure 或 event-log failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
