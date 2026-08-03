@@ -340,20 +340,20 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 	defer iter.Close()
 
 	events := make([]*proto.Event, 0)
-	// The scan returns every version of every key under the prefix in ascending
-	// (key, revision) order, so a DELETE's prev-kv — the newest live version
-	// before the tombstone — has already been read earlier in this same scan.
-	// Track it here instead of issuing a separate point read per DELETE (which
-	// was itself a limit-1 Iter): that turned each history fallback into 1+D
-	// scans and, with N watchers reconnecting after a cache reset, a storage
-	// thundering herd (#30). prevVal/prevRev are updated for every non-tombstone
-	// version — including versions below fromRevision — so an in-window DELETE
-	// whose prior version predates the window still recovers its prev-kv.
-	var (
-		curKey  []byte // user key of the version group currently being scanned
-		prevVal []byte // newest non-tombstone value seen for curKey (enveloped)
-		prevRev uint64 // its revision
-	)
+	// A DELETE's prev-kv — the newest live version before the tombstone — has
+	// already been read earlier in this same scan. Track it per decoded user key
+	// instead of issuing a separate point read per DELETE (which would restore
+	// the 1+D scan thundering herd fixed by #30). The legacy physical encoding
+	// appends an unescaped '$' before the revision, so an extension key can sort
+	// between two versions of a shorter key; one "current key" accumulator is
+	// therefore not safe even though ordinary keys appear in contiguous groups.
+	// Rows below fromRevision are included so an in-window DELETE whose prior
+	// version predates the window still recovers its prev-kv.
+	type previousValue struct {
+		val []byte
+		rev uint64
+	}
+	previous := make(map[string]previousValue)
 	for {
 		if err := iter.Next(ctx); err != nil {
 			if err == io.EOF {
@@ -375,21 +375,17 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 			// revision key or internal metadata: not an event
 			continue
 		}
-		if !bytes.Equal(key, curKey) {
-			// entering a new key's version group; reset the tracked previous value
-			curKey = append(curKey[:0], key...)
-			prevVal = nil
-			prevRev = 0
-		}
 		val := append([]byte(nil), iter.Val()...)
 		isTomb := bytes.Equal(val, tombStoneBytes)
+		keyID := string(key)
 
 		if rev < fromRevision || rev > currentRevision {
 			// out of the requested window: don't emit, but keep tracking the
 			// previous live version so an in-window tombstone can still find it.
-			if !isTomb {
-				prevVal = val
-				prevRev = rev
+			if isTomb {
+				delete(previous, keyID)
+			} else {
+				previous[keyID] = previousValue{val: val, rev: rev}
 			}
 			continue
 		}
@@ -405,13 +401,14 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 		}
 		if isTomb {
 			event.Type = proto.Event_DELETE
-			if prevVal != nil {
-				event.Kv.Value = prevVal
-				event.Kv.Revision = prevRev
+			if prev, ok := previous[keyID]; ok {
+				event.Kv.Value = prev.val
+				event.Kv.Revision = prev.rev
 			} else {
 				event.Kv.Value = nil
 				event.Kv.Revision = rev
 			}
+			delete(previous, keyID)
 		} else {
 			// Prefer the metadata inlined in the value we already read (approach
 			// A); fall back to a lookup for legacy un-enveloped values.
@@ -426,8 +423,7 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 			if meta.CreateRevision == rev && meta.Version == 1 {
 				event.Type = proto.Event_CREATE
 			}
-			prevVal = val
-			prevRev = rev
+			previous[keyID] = previousValue{val: val, rev: rev}
 		}
 		events = append(events, event)
 	}

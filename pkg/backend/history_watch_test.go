@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -171,5 +172,58 @@ func TestHistoryScanPreservesBinaryPrefixOrdering(t *testing.T) {
 	require.Len(t, all, len(keys))
 	for i := range keys {
 		require.Equal(t, keys[i], all[i].Kv.Key)
+	}
+}
+
+// Legacy object keys append an unescaped '$' and the revision. An extension
+// key whose first bytes sort between two revisions of a shorter key can split
+// that shorter key's physical version run. History replay must still attach the
+// shorter key's previous live value to its DELETE event.
+func TestHistoryScanDollarExtensionDoesNotSplitDeletePrevKV(t *testing.T) {
+	for name, storageType := range map[string]storageType{
+		"memory": memKvStorage,
+		"tikv":   tiKvStorage,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, closeSuite := newTestSuites(t, storageType)
+			defer closeSuite()
+			b := s.backend.(*backend)
+
+			shortKey := []byte("/registry/items/a")
+			const liveRevision = uint64(0x1800000000000100)
+			const foreignBoundary = uint64(0x2800000000000000)
+			const deleteRevision = uint64(0x3800000000000100)
+			foreignSuffix := make([]byte, 8)
+			binary.BigEndian.PutUint64(foreignSuffix, foreignBoundary)
+			foreignKey := append(append(append([]byte(nil), shortKey...), '$'), foreignSuffix...)
+			foreignKey = append(foreignKey, 'x')
+
+			shortValue := encodeValueWithMeta([]byte("short-v1"), EtcdMetadata{
+				CreateRevision: liveRevision,
+				Version:        1,
+			})
+			foreignValue := encodeValueWithMeta([]byte("foreign-v1"), EtcdMetadata{
+				CreateRevision: foreignBoundary,
+				Version:        1,
+			})
+			batch := s.kv.BeginBatchWrite()
+			batch.Put(b.coder.EncodeObjectKey(shortKey, liveRevision), shortValue, 0)
+			batch.Put(b.coder.EncodeObjectKey(foreignKey, foreignBoundary), foreignValue, 0)
+			batch.Put(b.coder.EncodeObjectKey(shortKey, deleteRevision), tombStoneBytes, 0)
+			require.NoError(t, batch.Commit(s.ctx))
+
+			events, err := b.scanHistoryEvents(s.ctx, string(shortKey), liveRevision, deleteRevision)
+			require.NoError(t, err)
+			var deleted *proto.Event
+			for _, event := range events {
+				if event.Type == proto.Event_DELETE && string(event.Kv.Key) == string(shortKey) {
+					deleted = event
+					break
+				}
+			}
+			require.NotNil(t, deleted)
+			require.Equal(t, liveRevision, deleted.Kv.Revision)
+			require.Equal(t, []byte("short-v1"), StripInlineValue(deleted.Kv.Value))
+		})
 	}
 }
