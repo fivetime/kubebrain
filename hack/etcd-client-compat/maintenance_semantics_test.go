@@ -57,7 +57,17 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 
 	_, err = cli.SnapshotWithVersion(ctx)
 	requirePlatformError(t, err, snapshotMessage)
-	_, err = cli.MoveLeader(ctx, memberID)
+	statusResponse, err := cli.Status(ctx, endpoint)
+	require.NoError(t, err)
+	var nonLeaderID uint64
+	for _, member := range members.Members {
+		if member.ID != statusResponse.Leader && !member.IsLearner {
+			nonLeaderID = member.ID
+			break
+		}
+	}
+	require.NotZero(t, nonLeaderID, "platform-boundary test requires a non-leader voter")
+	_, err = cli.MoveLeader(ctx, nonLeaderID)
 	requirePlatformError(t, err, moveLeaderMessage)
 	downgradeResponse, err := cli.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
 	require.NoError(t, err)
