@@ -333,7 +333,13 @@ func main() {
 		fmt.Printf("RESULT: FAIL (settled count=%d)\n", anyCount)
 		os.Exit(1)
 	}
-	fmt.Printf("RESULT: PASS — index==scan==%d across %d kills; no wrong counts served\n", anyCount, envi("KILLS", 0))
+	if scanReads == 0 {
+		fmt.Printf("RESULT: PASS — index==acknowledged unique puts==%d across %d kills; no scan sample\n",
+			anyCount, envi("KILLS", 0))
+	} else {
+		fmt.Printf("RESULT: PASS — index==scan==acknowledged unique puts==%d across %d kills\n",
+			anyCount, envi("KILLS", 0))
+	}
 }
 GOEOF
 
