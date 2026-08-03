@@ -31581,6 +31581,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   broad 官方差分全套 307.585 秒通过。最终三个 Pod 同 digest、Ready/0 restart，主 3 PD/3
   TiKV 均 Running，endpoint health 可提交 proposal、`/readyz=ok`，日志无 panic/fatal、compact
   visibility、read-barrier 或 watch-history fallback failure。
+- A3462 审计 Compact retry 路径发现另一处换主后 stale-low：新 leader 若 cached compact=1、
+  durable compact=10，重试 `Compact(9)` 会通过旧缓存前置检查；后端的单调 CAS 为保护 watermark
+  只把该请求视为内部幂等 no-op，旧 RPC 因而错误返回成功 `CompactionResponse`，而官方 etcd
+  必须返回 nil response 与 `OutOfRange/ErrCompacted`。commit
+  `b18043ec7036cb128d046aa3fd346fd40eddd1b4` 让低频 destructive Compact RPC 在进入后端前
+  fresh 读取共享 TiKV watermark，同时保留 revision-zero marker 与后端单调 CAS。确定性 shim
+  修复前稳定 RED（明确观察到成功 response 和 compactor 调用），修复后连续 20 轮 GREEN；目标
+  race 10 轮 3.179 秒、完整 etcd server 150.762 秒、相关 service 包、server 与 compat vet 均
+  通过。Compact 与 boundary 两套官方差分部署前连续 20 轮、40 次测试 6.185 秒通过。
+  生产镜像 `kubebrain:a3462-compact-retry-fence`（本地 image ID
+  `sha256:ba8d689e2727afdc2f6c24f15441ecf5cacfa3fd89a7ed00215267568a32de52`，kind runtime
+  digest `sha256:0b573e1f6c217689491e241b1c09ac8359fe48c2b6ec2e669d3aefc41a27a1b2`，build time
+  `2026-08-03T14:51:30Z`）部署后先 compact revision `468126003565714410`，再删除并重建全部
+  三个 serving Pod；重试同一 revision 返回 rc=1 与精确 compacted 错误。两套官方差分随后连续
+  50 轮、100 次测试 14.538 秒通过。最终三 Pod 同 digest、Ready/0 restart，主 3 PD/3 TiKV
+  均 Running，endpoint health 可提交 proposal、`/readyz=ok`，日志无 panic/fatal 或 compact
+  visibility/read-barrier failure。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
