@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-semver/semver"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
@@ -34,13 +35,15 @@ func TestSnapshotStreamProtocolMatchesReferenceEtcd(t *testing.T) {
 	kubebrainOutcome := captureSnapshotStream(t, kubebrain)
 	for name, outcome := range map[string]snapshotStreamOutcome{"reference": referenceOutcome, "kubebrain": kubebrainOutcome} {
 		t.Run(name, func(t *testing.T) {
-			require.Equal(t, "3.7.0", outcome.Version)
+			_, err := semver.NewVersion(outcome.Version)
+			require.NoError(t, err)
 			require.Positive(t, outcome.BackendBytes)
 			require.Positive(t, outcome.DataResponses)
 			require.Equal(t, sha256.Size, outcome.FinalBytes)
 			require.True(t, outcome.DigestMatches)
 		})
 	}
+	require.Equal(t, "3.7.0", kubebrainOutcome.Version)
 }
 
 func captureSnapshotStream(t *testing.T, endpoint string) snapshotStreamOutcome {

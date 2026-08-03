@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 平台替代 | 使用 TiKV BR/PITR；控制面提供备份、恢复和导出任务，不伪造 etcd snapshot |
+| Maintenance | Snapshot | 兼容（当前状态） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留当前 KV metadata、lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore；输出为 compacted current-state，不保留旧 MVCC history，当前实现仍会在内存中物化全 keyspace |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -32830,6 +32830,47 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:588a0f9159a531ddebaf1248001b7f3669a50bb3f209f2916380f5aba485894d`。
   三副本滚动后均 ready、0 restart，主 3 PD/3 TiKV 健康，readyz/endpoint status 正常，
   revision/raft index 仍为 `468126003565721399`，只读状态分类没有推进用户 revision。
+- A3487 将 `Maintenance.Snapshot` 从 DBaaS 平台替代推进为可恢复的在线 etcd RPC：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Snapshot`，新增 raw gRPC 双端差分，
+  固定 32 KiB data response、逐响应 `RemainingBytes`、storage version 和最终独立 SHA-256
+  response。服务端在 root 鉴权后建立线性化 barrier，以固定 revision 扫描全 keyspace，
+  同时导出 create/mod/version/lease、durable lease GrantedTTL/RemainingTTL、auth enabled/revision/
+  bcrypt user/role/permission 和 NOSPACE/CORRUPT/未知 alarm；本地用全局 logical-write barrier
+  防止 user/internal metadata 撕裂，跨副本则在采集前后复核 durable revision，lease KV 缺少
+  对应 lease record 或 revision 前进时整轮重试，不发布结构损坏的 artifact。生成器输出官方
+  3.7 bucket/schema、consistent index、compact markers 与 exact snapshot revision；在线 RPC
+  流式计算 SHA，官方 clientv3/etcdctl 可直接保存。A3481 离线 auth-disabled 转换器复用同一
+  writer，避免两个 schema 实现漂移；原 Snapshot `Unimplemented/ErrorInfo` 契约及 API-surface
+  allowlist 已移除。
+
+  首次真实滚动暴露了只在完整进程中可见的 Prometheus 冲突：生产 writer 直接链接 upstream
+  `storage/backend/schema`，其 membership init 注册的 `etcd_cluster_version` 与 KubeBrain
+  动态指标 descriptor 不同，Pod 启动 panic。集群立即回滚到 A3486；修复提交改为用 bbolt
+  和对照源码固定的 bucket/revision encoding 写入，不再把 upstream 全局 registry 带入主
+  进程，`go list -deps` 明确不含 membership/backend/schema，离线 status/restore 测试保持
+  通过。该失败证明镜像启动门禁不可由 package 单测替代。
+
+  writer、离线转换器、clientv3、raw stream、auth/lease/alarm 状态采集测试通过；聚焦 race
+  连续 5 轮（155.518s）、compat 无 endpoint 全量 20 轮（15.554s）、vet 与最终完整服务端
+  回归（165.943s）通过。首次完整回归仅因旧
+  API 清单仍包含 Snapshot 失败，清单修正后最终全量已转绿。官方 `/root/etcd/bin/etcd`
+  （当前源码版本 3.8）与
+  生产 KubeBrain 的 stream protocol 差分连续 20 轮通过。官方 etcdctl 从生产入口保存
+  2.1 MB snapshot，etcdutl status 返回 revision `468126003565721399`、5,974 keys、3.7.0，
+  官方 restore/启动后同 revision、全部 Count 及前三条 KV 的 value/create/mod/version 精确一致。
+  第二轮在生产临时创建 TTL=300 lease 与 attached key，snapshot revision
+  `468126003565721400`、5,975 keys；源端随后 revoke 清理，恢复后的官方 etcd 保持原 lease ID
+  `18c86f96a0b86a6e`、GrantedTTL=300、正 TTL、attached key/value 和 KV lease 字段。
+
+  最终生产镜像 `kubebrain:a3487-maintenance-snapshot` 的本地 ID 为
+  `sha256:069d14d6ee2e33d2ff0162d623e9006f5e6bec2e784e7554d0a5f97b83e0dc95`，构建
+  SHA 为 `bae095074f8a2da1d7f1b857f502778143d44224`、时间为
+  `2026-08-03T23:25:00Z`；kind runtime digest 为
+  `sha256:21d9275a2e4372ea1ae9ffa14797a859fd6ba77ebbbf73d2d2a0d1fd577150b6`。
+  最终三副本均 ready、0 restart，主 3 PD/3 TiKV 健康，readyz 与 endpoint status 正常；
+  验证产生的临时 lease/key、官方 etcd 进程、snapshot 与 restore 目录均已清理。当前实现明确
+  只提供 compacted current-state snapshot；历史 revision 保留、全 keyspace bounded-memory
+  导出及 TiKV 物理 PITR 仍是后续缺口，不能由本项宣称关闭。
 
 ### P2：运维兼容和长期验证
 
