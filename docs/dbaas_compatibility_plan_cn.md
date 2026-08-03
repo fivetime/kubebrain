@@ -32808,6 +32808,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:c4aec1d9f7b787995b3b19313b6cf9898ccf2ad5288a8252c03b6bad6862f7a1`。
   三副本滚动后均 ready、0 restart，主 3 PD/3 TiKV 健康，readyz 与 endpoint status 正常，
   revision/raft index 保持 `468126003565721399`，未因只读 CANCEL 验证前进。
+- A3486 修正 follower 上 MoveLeader 的 serving-member 状态优先级：A3475/A3476 已固定
+  transferee 不存在、learner、当前 leader 幂等和其他 voter 的平台替代，但都经负载入口调用，
+  没有固定请求实际落到 follower 的行为。对照 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:MoveLeader`，官方先比较本地 member ID
+  与 raft leader，再进入 transferee 校验。新增两套三副本直连差分：每套先以 Status 验证三个
+  不重复 member、同 cluster/leader 且 leader 属于该集合，再从两个 follower 请求把 leadership
+  移交给当前 leader。修复前官方两个 follower 均返回
+  `FailedPrecondition: etcdserver: not leader`，生产 KubeBrain 两个 follower 均错误返回 OK。
+  现在 root 鉴权后先比较本地与当前 leader identity；本地 identity 缺失、leader 未知或本地非
+  leader 都返回 canonical NotLeader，只有 serving leader 才继续区分 bad transferee、当前 leader
+  幂等成功和其他 voter 的 DBaaS 平台替代。内部回归同时固定 follower 上 leader/不存在/learner
+  三类 target 都由 NotLeader 优先。
+
+  聚焦测试 20 轮、race 10 轮、完整服务端回归 180.626 秒、compat 全量 20 轮和两模块 vet
+  通过；生产与隔离官方三副本直连差分 20 轮、race 10 轮通过。生产镜像
+  `kubebrain:a3486-moveleader-follower` 的本地 ID 为
+  `sha256:92d8b3bb095dd48807999b74a40d62efe0c3f7957dcac8cfe1bb42692d81c9eb`，构建
+  SHA 为 `0836fd8b9d59e303dd4e526b6c6ddfc39483fbc1`、时间为
+  `2026-08-03T22:38:35Z`；kind runtime digest 为
+  `sha256:588a0f9159a531ddebaf1248001b7f3669a50bb3f209f2916380f5aba485894d`。
+  三副本滚动后均 ready、0 restart，主 3 PD/3 TiKV 健康，readyz/endpoint status 正常，
+  revision/raft index 仍为 `468126003565721399`，只读状态分类没有推进用户 revision。
 
 ### P2：运维兼容和长期验证
 
