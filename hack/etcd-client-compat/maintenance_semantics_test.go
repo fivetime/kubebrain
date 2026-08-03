@@ -42,12 +42,17 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 
 	_, err = cli.MemberAdd(ctx, []string{"http://127.0.0.1:12380"})
 	requirePlatformError(t, err, memberMessage)
-	_, err = cli.MemberRemove(ctx, 1)
+	members, err := cli.MemberList(ctx)
+	require.NoError(t, err)
+	require.NotEmpty(t, members.Members)
+	memberID := members.Members[0].ID
+	_, err = cli.MemberRemove(ctx, memberID)
 	requirePlatformError(t, err, memberMessage)
-	_, err = cli.MemberUpdate(ctx, 1, []string{"http://127.0.0.1:12380"})
+	_, err = cli.MemberUpdate(ctx, memberID, []string{"http://127.0.0.1:12380"})
 	requirePlatformError(t, err, memberMessage)
-	_, err = cli.MemberPromote(ctx, 1)
-	requirePlatformError(t, err, memberMessage)
+	_, err = cli.MemberPromote(ctx, memberID)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Equal(t, "etcdserver: can only promote a learner member", status.Convert(err).Message())
 
 	_, err = cli.SnapshotWithVersion(ctx)
 	requirePlatformError(t, err, snapshotMessage)
