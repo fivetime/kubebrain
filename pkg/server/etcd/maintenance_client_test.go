@@ -142,7 +142,7 @@ func TestClientPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	requirePlatformReplacementError(t, err, memberMutationUnsupportedMessage)
 	_, err = client.MoveLeader(ctx, 1)
 	requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
-	_, err = client.Downgrade(ctx, clientv3.DowngradeValidate, "3.7.0")
+	_, err = client.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
 	requirePlatformReplacementError(t, err, downgradeUnsupportedMessage)
 }
 
@@ -172,7 +172,7 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 		requirePlatformReplacementError(t, err, moveLeaderUnsupportedMessage)
 	}
 	for _, request := range []*etcdserverpb.DowngradeRequest{
-		{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.7.0"},
+		{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "3.6.0"},
 		{Action: etcdserverpb.DowngradeRequest_CANCEL, Version: "not-semver"},
 	} {
 		_, err = maintenance.Downgrade(ctx, request)
@@ -182,6 +182,12 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 		Action: etcdserverpb.DowngradeRequest_ENABLE, Version: "not-semver",
 	})
 	require.ErrorIs(t, err, rpctypes.ErrGRPCWrongDowngradeVersionFormat)
+	for _, version := range []string{"3.7.0", "3.5", "4.0"} {
+		_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+			Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: version,
+		})
+		require.ErrorIs(t, err, rpctypes.ErrGRPCInvalidDowngradeTargetVersion)
+	}
 	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action: etcdserverpb.DowngradeRequest_DowngradeAction(127), Version: "3.7.0",
 	})

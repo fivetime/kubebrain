@@ -428,8 +428,12 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 	}
 	switch request.GetAction() {
 	case etcdserverpb.DowngradeRequest_VALIDATE, etcdserverpb.DowngradeRequest_ENABLE:
-		if !validDowngradeVersion(request.GetVersion()) {
+		targetVersion, err := parseDowngradeVersion(request.GetVersion())
+		if err != nil {
 			return nil, rpctypes.ErrGRPCWrongDowngradeVersionFormat
+		}
+		if !validDowngradeTargetVersion(targetVersion) {
+			return nil, rpctypes.ErrGRPCInvalidDowngradeTargetVersion
 		}
 	case etcdserverpb.DowngradeRequest_CANCEL:
 		// The version field is ignored for CANCEL by etcd.
@@ -439,12 +443,16 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 	return nil, status.Error(codes.Unimplemented, downgradeUnsupportedMessage)
 }
 
-func validDowngradeVersion(value string) bool {
-	if _, err := semver.NewVersion(value); err == nil {
-		return true
+func parseDowngradeVersion(value string) (*semver.Version, error) {
+	if version, err := semver.NewVersion(value); err == nil {
+		return version, nil
 	}
-	_, err := semver.NewVersion(value + ".0")
-	return err == nil
+	return semver.NewVersion(value + ".0")
+}
+
+func validDowngradeTargetVersion(target *semver.Version) bool {
+	current := semver.Must(semver.NewVersion(Version))
+	return target.Major == current.Major && target.Minor == current.Minor-1
 }
 
 func (s *RPCServer) requireAuthenticated(ctx context.Context, root bool) error {
