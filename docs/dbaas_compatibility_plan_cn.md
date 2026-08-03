@@ -31751,6 +31751,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   desired/current/ready/updated 均为 3、revision 一致，三 Pod 同 digest、Ready/0 restart，主 3
   PD/3 TiKV 均 Running；endpoint health 可提交 proposal（47.147221ms）、版本端点保持 3.7.0、
   `/readyz=ok`，最近日志无 Member URL/Add 或 panic/fatal 异常；参考进程与临时目录均已清理。
+- A3470 继续把 Cluster mutation 的请求状态分类前移到 DBaaS 平台边界之前。对照
+  `/root/etcd/server/etcdserver/server.go` 的 `RemoveMember`、`UpdateMember`、`promoteMember`，以及
+  `/root/etcd/server/etcdserver/api/membership/cluster.go:ValidateConfigurationChange`，官方在认证后会
+  先区分成员状态：Remove/Update/Promote 的未知 ID 均返回
+  `NotFound: etcdserver: member not found`，已是 voting member 的 Promote 返回
+  `FailedPrecondition: etcdserver: can only promote a learner member`；只有存在成员的 Remove/Update 和
+  真正 learner 的 Promote 才进入成员重配置。确定性 RED 以 `MaxUint64` 调用三类 mutation，旧实现
+  实际统一返回平台 `Unimplemented`。commit `e874cf20b7e86e30468dce2cb3e32242cb9f53db` 新增
+  `memberByID`，在鉴权之后、平台边界之前完成存在性与 learner 状态分类，同时保留实际拓扑变更由
+  DBaaS control plane 承担。服务端目标语义连续 20 轮 GREEN、race 连续 10 轮，完整
+  `pkg/server/...` 158.046 秒（etcd server 152.834 秒）及 server/compat 两个 module 的 vet 均通过。
+  commit `06412fb2` 新增永久 raw gRPC 官方双端差分，覆盖三个未知 ID 和 voting-member Promote；
+  commit `a514f900` 另按 official clientv3 的错误翻译契约，以
+  `errors.Is(err, rpctypes.ErrMemberNotLearner)` 固定高层客户端外观。生产镜像
+  `kubebrain:a3470-member-mutation-state`（本地 image ID
+  `sha256:3018d542dd7239f8b5d87a023946318652b2427148a012c9dba1dd2da2eb2e8c`，kind runtime
+  digest `sha256:c581428054b2ce0ec9de47dfb47253340152b5ccc88fd1925152067787020520`，build time
+  `2026-08-03T17:35:21Z`）部署后，四类状态差分连续 20 轮通过（每轮双端共 8 次 RPC，0.421 秒），
+  clientv3 平台边界连续 20 轮通过。最终 StatefulSet 3/3 Ready，三 Pod 同 digest、0 restart，主
+  3 PD/3 TiKV 均 Running；endpoint health=true、版本端点保持 3.7.0、`/readyz=ok`。滚动启动期间
+  follower 仅记录预期的短暂 peer connection refused/DNS miss，稳定后无 panic/fatal 或成员状态异常；
+  参考进程与临时目录均已清理。
 - A3130 对照 `/root/etcd/server/etcdserver/txn/range.go` 的 create revision filter、
   非 KEY `SortOrder:NONE` 归一化规则、limit 与 `KeysOnly` 装配顺序，固定 raw gRPC
   nested `RequestTxn` 外先额外写入一个仍满足 create revision 下界且 mod revision
