@@ -275,13 +275,14 @@ func (s *RPCServer) MemberAdd(ctx context.Context, request *etcdserverpb.MemberA
 	// the protocol boundary before auth or membership mutation. Valid changes
 	// remain owned by the DBaaS control plane because serving replicas are
 	// stateless and cannot safely mutate that topology through this RPC.
-	if _, err := types.NewURLs(request.GetPeerURLs()); err != nil {
+	peerURLs, err := types.NewURLs(request.GetPeerURLs())
+	if err != nil {
 		return nil, rpctypes.ErrGRPCMemberBadURLs
 	}
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
-	if s.memberPeerURLConflicts(0, request.GetPeerURLs()) {
+	if s.memberPeerURLConflicts(0, peerURLs.StringSlice()) {
 		return nil, rpctypes.ErrGRPCPeerURLExist
 	}
 	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)

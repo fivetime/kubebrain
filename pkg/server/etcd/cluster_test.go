@@ -564,7 +564,14 @@ func TestMemberAddRejectsPeerURLConflictBeforePlatformBoundary(t *testing.T) {
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 
 	response, err = server.MemberAdd(context.Background(), &etcdserverpb.MemberAddRequest{
-		PeerURLs: []string{"http://127.0.0.3:2380"},
+		PeerURLs: []string{" \thttp://127.0.0.1:2380\n ", "http://127.0.0.3:2380"},
+	})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrGRPCPeerURLExist)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	response, err = server.MemberAdd(context.Background(), &etcdserverpb.MemberAddRequest{
+		PeerURLs: []string{" \thttp://127.0.0.3:2380\n "},
 	})
 	require.Nil(t, response)
 	requireClusterPlatformReplacementError(t, err)
