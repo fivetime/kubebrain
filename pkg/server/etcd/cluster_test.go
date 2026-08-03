@@ -548,6 +548,28 @@ func TestMemberAddRejectsMalformedPeerURLsBeforePlatformBoundary(t *testing.T) {
 	}
 }
 
+func TestMemberAddRejectsPeerURLConflictBeforePlatformBoundary(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 11, Name: "first", PeerURLs: []string{"http://127.0.0.1:2380"}},
+		{ID: 12, Name: "second", PeerURLs: []string{"http://127.0.0.2:2380"}},
+	})
+
+	response, err := server.MemberAdd(context.Background(), &etcdserverpb.MemberAddRequest{
+		PeerURLs: []string{"http://127.0.0.1:2380", "http://127.0.0.3:2380"},
+	})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrGRPCPeerURLExist)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	response, err = server.MemberAdd(context.Background(), &etcdserverpb.MemberAddRequest{
+		PeerURLs: []string{"http://127.0.0.3:2380"},
+	})
+	require.Nil(t, response)
+	requireClusterPlatformReplacementError(t, err)
+}
+
 func TestMemberMutationsClassifyKnownMemberStateBeforePlatformBoundary(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -730,7 +752,7 @@ func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 }
 
 func validMemberAddRequest() *etcdserverpb.MemberAddRequest {
-	return &etcdserverpb.MemberAddRequest{PeerURLs: []string{"http://127.0.0.1:2380"}}
+	return &etcdserverpb.MemberAddRequest{PeerURLs: []string{"http://127.0.0.1:12380"}}
 }
 
 func requireClusterPlatformReplacementError(t *testing.T, err error) {

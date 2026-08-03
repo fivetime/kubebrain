@@ -281,6 +281,9 @@ func (s *RPCServer) MemberAdd(ctx context.Context, request *etcdserverpb.MemberA
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
+	if s.memberPeerURLConflicts(0, request.GetPeerURLs()) {
+		return nil, rpctypes.ErrGRPCPeerURLExist
+	}
 	return nil, status.Error(codes.Unimplemented, memberMutationUnsupportedMessage)
 }
 
