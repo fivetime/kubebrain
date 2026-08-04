@@ -34471,6 +34471,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   没有服务端 RED，故不构建或滚动镜像；临时 Pod/Service 与 reference listener 已清理，共享生产
   endpoint 未切换 auth 状态。
 
+- A3566 固定匿名多 chunk RangeStream 跨 AuthEnable 的单请求授权时点。对照
+  `/root/etcd/server/etcdserver/v3_server.go::RangeStream/doSerialize` 与 KubeBrain
+  `RPCServer.RangeStream`，两端都在 stream 开始时完成 range permission 检查，并在结束时复核 auth
+  revision；匿名请求的 revision 为 0，因此中途 AuthEnable 不应把已准入的 stream 改写为
+  `AuthOldRevision`。这与 auth 后发起的新匿名 RangeStream 必须 UserEmpty 拒绝并不冲突。
+
+  双端状态机先写入 50×256KiB fixture，启动匿名 raw RangeStream 并要求 auth 前第一 chunk 非空且尚无
+  terminal header；随后执行 AuthEnable，再消费剩余响应。官方绝对基线要求 auth 后仍至少一个 chunk、
+  合并恰好 50 KV、最终 Header/Count/More 完整且正常 EOF。首轮严格 outcome 发现官方剩余 4 chunks、
+  KubeBrain 17 chunks；chunk 数不属于协议承诺，修正 oracle 为“至少一个”并继续严格比较数据与终态，
+  避免把合法自适应分块误判为兼容性差异。
+
+  两个独立 TiKV keyspace、NodePort 30463/30464 上最终普通双端 13.547 秒、race 16.089 秒 GREEN；
+  完整 compat 1.324 秒、vet、staticcheck、bash syntax 和 diff check 通过。没有服务端 RED，故不构建或
+  滚动镜像；临时 Pod/Service 与 reference listener 已清理，共享生产 endpoint 未执行 AuthEnable。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
