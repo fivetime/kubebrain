@@ -255,6 +255,13 @@
 
 ---
 
+## 第四轮故障驱动发现（2026-08-04）
+
+- [x] **#R15** [high] PD/TiKV 联合故障跨 KubeBrain 换主时，已建立 Watch 会被取消或永久静默停滞
+  `pkg/server/etcd/watch.go`、`pkg/server/service/etcdproxy/etcd_proxy.go`、`pkg/server/server.go` — `6813010b`。真实 RED：保持一个从显式 revision 开始的 clientv3 Watch，同时持续 Put，并发删除当前 PD leader 与 leader-heavy TiKV；写恢复且最终线性 Range 可见已提交键，但 Watch 30s 内追不上，也不一定返回错误。日志证明有两个相邻缺口：(1) Watch 若建在旧 KubeBrain leader，本地 collector 随领导权结束而停止，但旧 subscriber 原先不关闭，形成 open-but-silent stream；(2) Watch 若建在 follower，代理跨换主的 `readyClient` 在 2s 暂时无可用 leader 后直接 `return`，关闭代理输出，入口 RPC 随即发 terminal Cancel。修复：(1) `onStoppedLeading` 调 `Backend.CloseWatchers` 退休旧 term 的本地订阅；RPC 从 `syncedRev+1`（只在 Send 成功后推进）在当前本地 leader/代理无缝续接，保证无 gap、无 duplicate，并为 leader 创建的认证 Watch 预先保留可转发凭证；(2) proxy Watch 将 no-leader/未就绪视为长流正常 failover，保留显式 resume revision，以 100ms 退避持续重试到继任者可用或调用方 ctx 结束，不再把短暂 Unavailable 转成 Cancel；发送代理结果也改为 ctx-aware，避免取消后阻塞。确定性测试 `TestLeaderWatchResumesThroughProxyAfterLocalGenerationCloses` 钉死 local rev10→proxy rev11 且无 Cancel，`TestLeadershipHealthTransitions` 同时断言丢主关闭订阅；相关用例 `-race -count=10` 绿。黑盒测试 `TestWatchDeliversCommittedWritesAcrossBackendFailover` 以最终线性 Range 为提交态 oracle，要求每个提交键 value/mod-revision 一致、恰好交付一次、事件 revision 严格递增；修复中间版 3 轮 soak 仍 2 轮 RED（定位 proxy 窗口），最终版连续 **5/5 GREEN**：每轮 42–44 个提交事件、5–8 次预期瞬态写失败、20–30s 故障恢复窗口，无 Watch Cancel/缺失/重复，总耗时 117.315s。运行镜像 `kubebrain:a3510b-proxy-watch-retry`，digest `sha256:58d43f3a4220fc155e5adb05b0168c344f187b6eb04eb7a46db3ca872cd831a1`；KubeBrain/PD/TiKV 均 3/3 Ready、0 restart。
+
+---
+
 ## 流程约定
 - 每修一条：改代码 → 黑盒消费端测试（etcd client / 真实 apiserver）→（必要时）内部单测证明修前失败 → `go test ./... -race` → 构建镜像 + kind load + rollout → 对 live endpoint 验证 → commit（`Co-Authored-By`）→ 回本文件把 `[ ]` 改 `[x]` 并标 commit。
 - 大重构（P1 读放大）先搭 load/soak 压测再改，另起 PR。
