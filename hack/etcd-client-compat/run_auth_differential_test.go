@@ -28,6 +28,16 @@ func TestAuthDifferentialRunnerRejectsInvalidApprovalBeforeDependencies(t *testi
 	require.NotContains(t, string(output), "missing required command")
 }
 
+func TestAuthDifferentialRunnerRejectsInvalidRaceModeBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-auth-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"GO_TEST_RACE=maybe",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "GO_TEST_RACE must be true or false")
+	require.NotContains(t, string(output), "missing required command")
+}
+
 func TestAuthDifferentialRunnerRequiresDisposableEndpoint(t *testing.T) {
 	output, err := runCompatScriptCommand(t, "run-auth-differential.sh", []string{
 		"PATH=" + t.TempDir() + ":/usr/bin:/bin",

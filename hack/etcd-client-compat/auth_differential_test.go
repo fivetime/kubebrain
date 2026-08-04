@@ -84,6 +84,10 @@ type authDifferentialOutcome struct {
 	KeepAliveStreamFirstOK    bool
 	KeepAliveAfterRoleRevoke  authErrorOutcome
 	KeepAliveAfterRestoreOK   bool
+	AnonymousWatchBeforeAuth  bool
+	ExistingWatchAfterEnable  bool
+	NewWatchAfterEnableCancel bool
+	NewWatchAfterEnable       string
 	WatchStreamFirstCreated   bool
 	WatchCreateAfterRevoke    string
 	ExistingWatchAfterRevoke  bool
@@ -166,6 +170,24 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	_, err = bootstrap.Put(ctx, "/auth-protected/leased", "secret", clientv3.WithLease(protectedLease.ID))
 	require.NoError(t, err)
+	preAuthWatch, err := etcdserverpb.NewWatchClient(bootstrap.ActiveConnection()).Watch(ctx)
+	require.NoError(t, err)
+	const (
+		preAuthWatchID  = int64(91)
+		postAuthWatchID = int64(92)
+	)
+	watchCreateRequest := func(id int64) *etcdserverpb.WatchRequest {
+		return &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/auth-transition/watch"), WatchId: id,
+			},
+		}}
+	}
+	require.NoError(t, preAuthWatch.Send(watchCreateRequest(preAuthWatchID)))
+	preAuthCreated, err := preAuthWatch.Recv()
+	require.NoError(t, err)
+	anonymousWatchBeforeAuth := preAuthCreated.Created && !preAuthCreated.Canceled &&
+		preAuthCreated.WatchId == preAuthWatchID
 
 	_, err = bootstrap.UserAdd(ctx, "root", "root-secret")
 	require.NoError(t, err)
@@ -212,6 +234,20 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	root := authClient(t, endpoint, "root", "root-secret")
 	alice := authClient(t, endpoint, "alice", "alice-secret")
 	writer := authClient(t, endpoint, "writer", "writer-secret")
+	_, err = root.Put(ctx, "/auth-transition/watch", "after-enable")
+	require.NoError(t, err)
+	preAuthEvent, err := preAuthWatch.Recv()
+	require.NoError(t, err)
+	existingWatchAfterEnable := preAuthEvent.WatchId == preAuthWatchID &&
+		len(preAuthEvent.Events) == 1 &&
+		string(preAuthEvent.Events[0].Kv.Value) == "after-enable"
+	require.NoError(t, preAuthWatch.Send(watchCreateRequest(postAuthWatchID)))
+	postAuthCreated, err := preAuthWatch.Recv()
+	require.NoError(t, err)
+	newWatchAfterEnableCancel := postAuthCreated.Created && postAuthCreated.Canceled &&
+		postAuthCreated.WatchId == clientv3.InvalidWatchID
+	newWatchAfterEnable := postAuthCreated.CancelReason
+	require.NoError(t, preAuthWatch.CloseSend())
 	var dynamicLeaseID clientv3.LeaseID
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -589,6 +625,10 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		KeepAliveStreamFirstOK:    keepAliveStreamFirstOK,
 		KeepAliveAfterRoleRevoke:  authError(keepAliveAfterRoleRevokeErr),
 		KeepAliveAfterRestoreOK:   keepAliveAfterRestoreOK,
+		AnonymousWatchBeforeAuth:  anonymousWatchBeforeAuth,
+		ExistingWatchAfterEnable:  existingWatchAfterEnable,
+		NewWatchAfterEnableCancel: newWatchAfterEnableCancel,
+		NewWatchAfterEnable:       newWatchAfterEnable,
 		WatchStreamFirstCreated:   watchStreamFirstCreated,
 		WatchCreateAfterRevoke:    watchCreateAfterRevoke.CancelReason,
 		ExistingWatchAfterRevoke:  existingWatchAfterRevokeOK,
@@ -656,6 +696,10 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 		reference.KeepAliveAfterRoleRevoke,
 	)
 	require.True(t, reference.KeepAliveAfterRestoreOK)
+	require.True(t, reference.AnonymousWatchBeforeAuth)
+	require.True(t, reference.ExistingWatchAfterEnable)
+	require.True(t, reference.NewWatchAfterEnableCancel)
+	require.Equal(t, rpctypes.ErrGRPCUserEmpty.Error(), reference.NewWatchAfterEnable)
 	require.True(t, reference.WatchStreamFirstCreated)
 	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), reference.WatchCreateAfterRevoke)
 	require.True(t, reference.ExistingWatchAfterRevoke)
