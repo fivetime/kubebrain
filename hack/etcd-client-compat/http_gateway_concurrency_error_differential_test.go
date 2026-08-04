@@ -37,7 +37,9 @@ func TestHTTPGatewayConcurrencyErrorsDifferentialAgainstReferenceEtcd(t *testing
 		{Name: "unlock-empty-key", HTTPStatus: 500, Code: 2, Message: "etcdserver: key is not provided", SeedValue: "seed"},
 		{Name: "campaign-missing-lease", HTTPStatus: 500, Code: 2, Message: "etcdserver: requested lease not found", SeedValue: "seed"},
 		{Name: "proclaim-missing-leader", HTTPStatus: 500, Code: 2, Message: `"leader" field must be provided`, SeedValue: "seed"},
+		{Name: "proclaim-empty-leader-key", HTTPStatus: 500, Code: 2, Message: "etcdserver: key is not provided", SeedValue: "seed"},
 		{Name: "resign-missing-leader", HTTPStatus: 500, Code: 2, Message: `"leader" field must be provided`, SeedValue: "seed"},
+		{Name: "resign-empty-leader-key", HTTPStatus: 500, Code: 2, Message: "etcdserver: key is not provided", SeedValue: "seed"},
 		{Name: "leader-not-found", HTTPStatus: 500, Code: 2, Message: "election: no leader", SeedValue: "seed"},
 	}, referenceOutcomes)
 	require.Equal(t, referenceOutcomes, runHTTPConcurrencyErrorMatrix(t, kubebrain))
@@ -76,6 +78,20 @@ func runHTTPConcurrencyErrorMatrix(t *testing.T, endpoint string) []httpConcurre
 		return value
 	}
 	seedKey := []byte(prefix + "seed")
+	t.Cleanup(func() {
+		statusCode, response := post("/v3/kv/deleterange", map[string]any{
+			"key": encode([]byte(prefix)), "range_end": encode([]byte(clientPrefixRangeEnd(prefix))),
+		})
+		require.Equal(t, http.StatusOK, statusCode, response)
+		require.Equal(t, "1", response["deleted"], response)
+		statusCode, response = post("/v3/kv/range", map[string]any{
+			"key": encode([]byte(prefix)), "range_end": encode([]byte(clientPrefixRangeEnd(prefix))),
+			"limit": "1",
+		})
+		require.Equal(t, http.StatusOK, statusCode, response)
+		require.NotContains(t, response, "kvs", response)
+		require.NotContains(t, response, "count", "protojson must omit the zero count: %#v", response)
+	})
 	seedStatus, seed := post("/v3/kv/put", map[string]any{"key": encode(seedKey), "value": encode([]byte("seed"))})
 	require.Equal(t, http.StatusOK, seedStatus, seed)
 	seedRevision := revision(seed)
@@ -94,6 +110,21 @@ func runHTTPConcurrencyErrorMatrix(t *testing.T, endpoint string) []httpConcurre
 		require.NoError(t, err, name)
 		return revision(ranged) - seedRevision, string(value)
 	}
+	leaseID := time.Now().UnixNano() & ((1 << 62) - 1)
+	grantStatus, grant := post("/v3/lease/grant", map[string]any{
+		"ID": strconv.FormatInt(leaseID, 10), "TTL": "60",
+	})
+	require.Equal(t, http.StatusOK, grantStatus, grant)
+	t.Cleanup(func() {
+		statusCode, response := post("/v3/lease/revoke", map[string]any{
+			"ID": strconv.FormatInt(leaseID, 10),
+		})
+		require.Equal(t, http.StatusOK, statusCode, response)
+	})
+	emptyLeader := fmt.Sprintf(
+		`{"leader":{"name":%q,"key":"","rev":"1","lease":%q}}`,
+		encode([]byte(prefix+"election")), strconv.FormatInt(leaseID, 10),
+	)
 	cases := []struct {
 		name string
 		path string
@@ -103,7 +134,9 @@ func runHTTPConcurrencyErrorMatrix(t *testing.T, endpoint string) []httpConcurre
 		{name: "unlock-empty-key", path: "/v3/lock/unlock", body: `{"key":""}`},
 		{name: "campaign-missing-lease", path: "/v3/election/campaign", body: fmt.Sprintf(`{"name":%q,"lease":"999999","value":"dg=="}`, encode([]byte(prefix+"election")))},
 		{name: "proclaim-missing-leader", path: "/v3/election/proclaim", body: `{}`},
+		{name: "proclaim-empty-leader-key", path: "/v3/election/proclaim", body: emptyLeader},
 		{name: "resign-missing-leader", path: "/v3/election/resign", body: `{}`},
+		{name: "resign-empty-leader-key", path: "/v3/election/resign", body: emptyLeader},
 		{name: "leader-not-found", path: "/v3/election/leader", body: fmt.Sprintf(`{"name":%q}`, encode([]byte(prefix+"no-leader")))},
 	}
 	outcomes := make([]httpConcurrencyErrorOutcome, 0, len(cases))
