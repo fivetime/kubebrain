@@ -34193,6 +34193,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   GREEN；完整 compat、vet 与 diff check 通过。测试只执行 Range/RangeStream，不写用户数据或
   推进 revision；当前 KubeBrain 的 validation → capability → execution 顺序已正确，无需修改服务端。
 
+- A3551 固定 `KV.RangeStream.limit` 的完整有符号边界。TiKV scanner 内部存在 uint64 revision/
+  分页接口，而 wire limit 是 int64；在既有 12-key unary-vs-stream 双端场景新增 -1、MinInt64、
+  MaxInt64，要求合并后的 KVs、Count、More、header revision 与同请求 unary Range 完全相同。
+  另以官方结果作绝对断言：-1 和 MinInt64 都等价于 unlimited，不能 wrap 成正 limit；MaxInt64
+  在该数据集上也不得因 `remaining := limit-sent` 溢出而截断。
+
+  官方/KubeBrain 首轮 1.899 秒、连续 10 轮 15.763 秒、race 2.652 秒 GREEN；完整 compat、vet
+  与 diff check 通过。每轮双端 12-key 前缀均由既有 cleanup 删除；当前 RangeStream 的 signed
+  limit、Count/More 与 unary fallback 语义已对齐，无需修改服务端。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
