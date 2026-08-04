@@ -33480,6 +33480,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，测试前缀 Count=0，endpoint revision/raft
   index/applied index 均为 `468126003565724066`、term 291。
 
+- A3512 修复认证 Watch 在权限版本变化与 KubeBrain 换主组合下失去 etcd 创建时授权语义，
+  并补齐 follower→leader 的 proxy→local generation 转换。对照官方 etcd，Watch 只在创建时
+  做 range READ 授权；之后撤销该权限不会取消已建立 Watch，但同一用户新建 Watch 必须按新
+  auth revision 拒绝。旧 KubeBrain 在 follower 代理重连时会把同一逻辑 Watch 当作 leader 上的
+  新请求重新鉴权，旧 token/已撤权限因此收到 terminal Cancel。commit `879c4213` 在公开入口
+  完成一次认证授权后，为内部 generation 携带 continuation marker；接收端只有同时来自
+  `PeerServerOptions` 注入的进程内 peer-listener provenance 才接受该 marker。公开 client 端口
+  即使伪造相同 metadata 仍按当前权限拒绝，因而没有扩大认证绕过面。
+
+  第一版真实测试还发现相邻 RED：承载外部连接的 follower 自己赢得下一 term 后，proxy Watch
+  因 leader 不建立 forwarding client 而永久等待 readiness，写已恢复但 Watch 120 秒无事件。
+  修复让 proxy generation 在本节点当选时主动关闭，外层从最后成功交付 revision+1 重开本地
+  backend；反向 local→proxy 与新 proxy→local 两个确定性测试共同钉死双向换主且无 gap/Cancel，
+  代理异常关闭但角色未变化仍保持既有 terminal 语义。7 个相关用例普通模式连续 20 轮、race
+  连续 10 轮通过；`etcdproxy`、`server`、`backend`、`server/etcd` 完整回归分别通过，最终
+  `server/etcd` 耗时 170.055 秒。
+
+  新 opt-in 官方 clientv3 黑盒门禁固定直连 follower：Alice Watch Created 后由 root 撤销其
+  prefix 权限，旧 Watch 必须收到撤权后的写；新 Watch 必须 permission denied；随后同步删除
+  当前 KubeBrain leader，恢复后旧 Watch 还必须收到同一逻辑流的第二个写。旧 runtime 首次
+  精确 RED 为写已恢复但 Watch 120 秒超时；最终连续 **5/5 GREEN**（8.48–11.63 秒），并覆盖
+  两个 follower，其中一轮明确发生 follower→leader。生产镜像
+  `kubebrain:a3512-auth-watch-failover` 本地 ID 为
+  `sha256:fb09d1841fdc1236c7f1b07d9f8663b9cadf80acb304ee801c4ba6a7a797f47d`，revision label
+  为构建时完整 commit `82c6640f890baf03b7e0c837e29a81fd4804dd7a`，构建时间
+  `2026-08-04T09:12:47Z`。最终 auth disabled、测试前缀 Count=0；3 KubeBrain、3 PD、3 TiKV
+  均 Ready/0 restart，revision/raft index/applied index 均为 `468126003565724088`、term 297。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
