@@ -33397,6 +33397,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   生产二进制；lease list、soak 前缀和 backend quorum 前缀均为 0，最终 revision/raft
   index/applied index 均为 `468126003565723019`、term 280。
 
+- A3508 将批量 Lease KeepAlive 故障矩阵从 PD 扩展到 leader-heavy TiKV store。固定删除某个
+  TiKV Pod 不能保证命中承载 region leader 的 store，重复轮次还可能一直测试同一实例。新增
+  `hack/dev/delete-tikv-leader-heavy-store.sh`：每轮从 PD `store` 快照中只选 `state_name=Up`、
+  `leader_count>0` 且 leader 数最大的 store，从其 address 提取并严格校验
+  `kb-tikv-[0-9]*` Pod；同步删除旧对象，等待 replacement Ready，并要求 UID 必须变化。
+  kubectl context/namespace、PD probe/URL 与 timeout 均显式可配置；缺少 kubectl/jq、空 UID、
+  非正 leader count 或异常地址全部 fail closed。commit `2af0d105` 固化该 100755 opt-in helper。
+
+  helper 通过 `bash -n`、ShellCheck（环境提供时）和 `git diff --check`；共享 lease soak 与
+  context helper 普通模式连续 20 轮、race 连续 10 轮通过，compat 全套与 `go vet` 均通过。
+  真实独立 3 PD/3 TiKV 上建立 64 条 lease（8 client × 8、TTL 30 秒），连续三轮删除当时
+  leader_count 最大的 TiKV。每轮所有 lease 必须各收到新的正 TTL KeepAlive，且全量 key→lease
+  ID 绑定不变；三轮后逐 lease Revoke、TTL=-1、List 与前缀 cleanup 全部通过，总耗时 66.95 秒。
+  三次动态选择最终使 `kb-tikv-2/0/1` 全部获得新 UID，证明没有固定命中同一 Pod；PD 回读三个
+  store 均 Up、各 8 regions。
+
+  本轮不修改生产二进制，三个 KubeBrain 继续运行 A3505 runtime digest
+  `sha256:bbdb99772164a3b4c9be9ced1b23d54ff22ab149005dc694afea4966a62482bf`。最终 3 KubeBrain、
+  3 PD、3 TiKV 均 Ready/0 restart，lease list 与 soak 前缀均为 0；endpoint health 提交探针
+  16.21 ms 成功，revision/raft index/applied index 均为 `468126003565723147`、term 280。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
