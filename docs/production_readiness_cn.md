@@ -637,8 +637,10 @@ KubeBrain、PD、TiKV 三个 StatefulSet 的 observed generation、replica/ready
 并验证三个 StatefulSet；这两道维护栅栏之间出现任一副本降级、rollout 未完成或 generation
 未被 controller 观察，均必须在缩容和创建 VolumeSnapshot 前 fail closed。第二次读取还要求
 KubeBrain、PD、TiKV StatefulSet UID 与第一道栅栏完全相同；同名 controller replacement 不能
-携带新的对象身份越过栅栏，否则后续按旧 UID 恢复副本会失去所有权保证。该检查不替代控制面
-阻断新写入，也不把应用层 Ready 当作多卷 crash consistency 证明。
+携带新的对象身份越过栅栏，否则后续按旧 UID 恢复副本会失去所有权保证。TidbCluster 本身也
+必须在 pause wait 后重新读取，保持 preflight 锁定的 UID 且 `spec.paused=true`；一次成功 patch
+或按名称 wait 不能证明维护所有权持续存在。该检查不替代控制面阻断新写入，也不把应用层 Ready
+当作多卷 crash consistency 证明。
 
 成功恢复服务并原子 fsync 发布 `kubebrain.cold-physical-snapshot.v2` receipt 后，仍只证明冷
 快照集合已生成。尚未从 receipt 在隔离集群恢复全部 PD/TiKV volume、核验 cluster identity、

@@ -33968,6 +33968,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   43.201 秒、完整 `hack/production` 包 405.231 秒 GREEN；vet、脚本语法和 diff check 同步
   通过。该门禁仍不替代真实 CSI 隔离恢复证明。
 
+- A3534 把第二道 identity fence 扩展到拥有 maintenance pause 的 TidbCluster CR。A3533 已固定
+  三个 StatefulSet UID，但旧执行器在 pause patch 后仅按资源名称执行 `kubectl wait`，没有重新
+  读取 TidbCluster；若 CR 在 wait 窗口内同名重建，或 `spec.paused` 被另一控制器清除，脚本仍可
+  继续停止 KubeBrain/TiKV/PD，而退出恢复路径持有的仍是旧 TidbCluster UID。
+
+  新 RED 分别模拟 pause 后 UID 切换为 replacement identity，以及 UID 不变但 pause 丢失；旧代码
+  两条路径都会进入 StatefulSet 缩容。执行器现在在 sleep/fence settle 后重新读取 TidbCluster，
+  要求 UID 与 preflight inventory 精确相同且 `spec.paused=true`，随后才复核三组 StatefulSet 并
+  开始缩容。失败路径不创建 snapshot/receipt，且只执行 best-effort pause cleanup。该门禁证明
+  维护所有权延续，不把名称相同或一次 wait 成功误作对象身份与状态仍然稳定的证据。两条 fence
+  loss 与既有成功/回滚组合普通模式连续 10 轮 290.210 秒 GREEN，聚焦 race 32.318 秒、全部
+  cold snapshot 测试 50.198 秒、完整 `hack/production` 包 416.759 秒 GREEN；vet、脚本语法和
+  diff check 同步通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
