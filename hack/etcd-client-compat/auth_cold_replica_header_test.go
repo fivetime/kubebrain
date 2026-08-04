@@ -53,6 +53,7 @@ func TestAuthStatusColdReplicaHeader(t *testing.T) {
 		ready := kubectlPodFieldNoFail(kubeContext, namespace, victimPod, "{.status.containerStatuses[0].ready}")
 		return newUID != "" && newUID != oldUID && ready == "true"
 	}, 90*time.Second, 500*time.Millisecond)
+	requireEndpointReachable(t, grpcTarget(directEndpoint))
 
 	directConn, err := grpc.NewClient(grpcTarget(directEndpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
