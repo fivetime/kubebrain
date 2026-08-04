@@ -33624,6 +33624,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied
   index 均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距。
 
+- A3519 将需要独立实例的两组 `etcdctl make-mirror` 条件性 Skip 合并为专用门禁。新增
+  `run-make-mirror-differential.sh`，必须显式提供候选 endpoint 与破坏性确认；启动官方
+  reference 前要求候选 healthy、Auth disabled、`authRevision==1` 且无 key/user/role/lease，
+  然后只运行认证双向镜像与历史 revision/compaction 两组差分。runner 自建一次性官方 etcd，
+  退出时停止进程并删除 data-dir，测试成功后还再次强制候选 Auth disabled 且无任何
+  key/user/role/lease，防止清理缺口被绿色断言掩盖。
+
+  首个全新 `a3519-mirror-diff` keyspace 直接官方差分 4.414 秒 GREEN：认证 source/destination
+  双向 base copy 与三操作 Txn 更新保持原子，指定历史 revision 的镜像结果一致，已 compact
+  revision 两端均非零退出、返回 canonical compacted 错误且 destination 为空。审计确认正常
+  路径最终无残留，但原认证 setup 直到 AuthEnable 与匿名拒绝断言之后才注册 cleanup；现把
+  cleanup 前移到 setup 开始，能处理部分初始化，统一 disable Auth、撤销角色、删除所有
+  user/role/测试 prefix，并最终强制回读无 key/user/role/lease。已使用但逻辑空的 endpoint 因
+  `authRevision=11` 被 runner 在启动 reference 前拒绝，证明 pristine 检查生效。
+
+  第二个全新 keyspace 经专用 runner 4.409 秒 GREEN且通过 postflight；第三个全新 keyspace
+  完整 race 6.118 秒 GREEN，两端结束时均 Auth disabled、无 key/user/role/lease。runner
+  fail-closed 专项连续 10 轮、compat 普通全套、脚本语法检查与 `go vet` 均通过。三个一次性
+  Pod、端口转发、reference 进程/data-dir 均已删除；主 keyspace compat Count=0、AlarmList
+  为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index
+  均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距，不重建 A3512 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
