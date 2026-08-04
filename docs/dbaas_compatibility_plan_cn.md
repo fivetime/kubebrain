@@ -34323,6 +34323,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无残留、lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、0 restart。一次性 reference、
   42379/42380 listener 与数据目录均已清理。
 
+- A3558 把 A246 的 oversized single-KV chunker 白盒保证提升为真实 TiKV/PD 网络门禁。对照
+  `/root/etcd/tests/integration/v3_grpc_test.go::TestV3RangeStreamLargeValues`：单个已存 KV 可以大于
+  当前 `--max-request-bytes`/RangeStream chunk target；读取不能因该 KV 无法再拆分而空转、丢键或
+  卡住后续 page。普通线上测试只能在默认 1.5 MiB admission 下写入 320 KiB value，无法构造该
+  状态；尝试利用 protobuf request/response envelope 的窄尺寸差也被官方内部 raft header 的额外
+  admission 开销证明不可行，没有用“接近 target”替代真正 oversized 契约。
+
+  新增 fail-closed 两阶段 runner：官方 etcd 复用同一 data-dir，临时 KubeBrain Pod 复用独立
+  `a3558-rangestream-oversize` TiKV keyspace；两端先以 8 MiB admission 写入 12 个 4 MiB value，
+  再重启到默认 1572864 bytes 后用 raw RangeStream 和显式 64 MiB client receive ceiling 读取。
+  绝对 oracle 要求多次 response、12 个严格升序 key、逐值 SHA-256 完整、Count=12、More=false
+  及 terminal header；随后比较双端归一结果。runner 每次生成唯一 fixture prefix，避免刚删除的
+  48 MiB 版本在下一轮 TiKV 冲突窗口内被立即覆盖；Pod Ready 后还等待 NodePort `/health`，防止
+  EndpointSlice/kube-proxy 传播窗口造成假失败。`GO_TEST_RACE=true` 显式启用相同拓扑的 race 门禁。
+
+  两次完整普通 runner 的 seed/read 分别包括 5.13/3.46 秒和 13.67/3.67 秒，race seed/read 为
+  19.78/7.80 秒，全部 GREEN；完整 compat 1.829 秒、vet、bash syntax 与 diff check 通过。没有
+  chunker RED，故不改服务端或滚动生产。临时 Pod/Service、NodePort 30458、reference 42379/42380
+  和数据目录均已清理；独立 keyspace 的 user fixture 已删除。共享生产 revision/index/applied
+  保持 468126003565737814，测试 prefix=0、lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、
+  0 restart。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
