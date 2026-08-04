@@ -30,8 +30,10 @@ func TestRangeStreamPartialCompactionDifferential(t *testing.T) {
 	if reference == "" || kubebrain == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT and KUBEBRAIN_COMPACTION_ENDPOINT to disposable instances")
 	}
-	require.NotEqual(t, compatEndpoint(t), kubebrain,
-		"KUBEBRAIN_COMPACTION_ENDPOINT must not be the shared main endpoint")
+	if mainEndpoint, ok := configuredCompatEndpoint(); ok {
+		require.NotEqual(t, mirrorEndpointIdentity(mainEndpoint), mirrorEndpointIdentity(kubebrain),
+			"KUBEBRAIN_COMPACTION_ENDPOINT must not be the shared main endpoint")
+	}
 
 	want := runRangeStreamPartialCompaction(t, reference, "reference")
 	got := runRangeStreamPartialCompaction(t, kubebrain, "kubebrain")
@@ -61,6 +63,15 @@ func runRangeStreamPartialCompaction(
 	t.Cleanup(cancel)
 
 	prefix := fmt.Sprintf("/zz-dbaas-rangestream-compact/%s/%d/", instance, time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_, deleteErr := client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+		require.NoError(t, deleteErr)
+		remaining, getErr := client.Get(cleanupCtx, prefix, clientv3.WithPrefix())
+		require.NoError(t, getErr)
+		require.Zero(t, remaining.Count)
+	})
 	value := strings.Repeat("x", 32*1024)
 	for i := 0; i < 200; i++ {
 		_, err = client.Put(ctx, fmt.Sprintf("%s%03d", prefix, i), value)
