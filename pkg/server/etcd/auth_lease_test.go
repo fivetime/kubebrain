@@ -223,6 +223,89 @@ func TestAuthLeaseReadsUseOneAuthorizedKeySnapshot(t *testing.T) {
 	}
 }
 
+func TestAuthLeaseReadFenceSurvivesCanceledRequestLikeEtcd(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(context.Context, *RPCServer, int64) error
+	}{
+		{
+			name: "time-to-live",
+			read: func(ctx context.Context, server *RPCServer, leaseID int64) error {
+				_, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
+					ID: leaseID, Keys: true,
+				})
+				return err
+			},
+		},
+		{
+			name: "list",
+			read: func(ctx context.Context, server *RPCServer, _ int64) error {
+				_, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+				return err
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, mutateAuth := range []bool{false, true} {
+			name := "stable-auth"
+			if mutateAuth {
+				name = "changed-auth"
+			}
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				server, closeFn := newTestRPCServer(t)
+				defer closeFn()
+				aliceCtx := setupAuthKVUser(t, server)
+				lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+				require.NoError(t, err)
+				_, err = server.Put(aliceCtx, &etcdserverpb.PutRequest{
+					Key: []byte("/allowed/leased"), Value: []byte("allowed"), Lease: lease.ID,
+				})
+				require.NoError(t, err)
+
+				shim := &blockingAuthConfigReadShim{
+					BackendShim: server.backend,
+					// authCallerFromContext consumes the first three config reads;
+					// the fourth is authorizeLeaseKeys' final revision fence.
+					blockAt: 4, entered: make(chan struct{}), release: make(chan struct{}),
+					putCommitted: make(chan struct{}),
+				}
+				server.backend = shim
+				server.tokens.snapshots.repo.backend = shim
+				requestCtx, cancel := context.WithCancel(aliceCtx)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- tt.read(requestCtx, server, lease.ID) }()
+				select {
+				case <-shim.entered:
+				case <-time.After(time.Second):
+					t.Fatalf("lease read did not reach auth revision fence; config reads=%d", shim.reads.Load())
+				}
+
+				var mutationErr error
+				if mutateAuth {
+					mutationErr = server.auth.roleAdd(context.Background(), "lease-canceled-context-bump")
+				}
+				cancel()
+				select {
+				case err = <-done:
+					// The old implementation reaches this arm because its TiKV
+					// auth-config read still carries the canceled request context.
+				case <-time.After(50 * time.Millisecond):
+					close(shim.release)
+					err = <-done
+				}
+				require.NoError(t, mutationErr)
+				if mutateAuth {
+					requireAuthLeaseError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown,
+						"etcdserver: revision of auth store is old")
+				} else {
+					require.NoError(t, err, "etcd completes a local lease read after its in-memory auth fence")
+				}
+			})
+		}
+	}
+}
+
 func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

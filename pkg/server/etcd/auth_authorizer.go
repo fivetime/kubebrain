@@ -184,6 +184,20 @@ func (s *RPCServer) ensureAuthStoreRevisionUnchanged(ctx context.Context, caller
 	return nil
 }
 
+// ensureAuthStoreRevisionUnchangedAfterLeaseAuthorization mirrors etcd's
+// in-memory AuthStore.Revision comparison at the end of checkLeaseRenew,
+// checkLeaseTimeToLive, and checkLeaseLeases. The request may be canceled after
+// its key permissions have been checked; cancellation must not prevent the
+// revision fence from either accepting that snapshot or reporting AuthOld.
+func (s *RPCServer) ensureAuthStoreRevisionUnchangedAfterLeaseAuthorization(
+	ctx context.Context,
+	caller *authCaller,
+) error {
+	fenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
+	defer cancel()
+	return s.ensureAuthStoreRevisionUnchanged(fenceCtx, caller)
+}
+
 func withAuthWriteGuard(ctx context.Context, caller *authCaller) context.Context {
 	if caller == nil {
 		return ctx
