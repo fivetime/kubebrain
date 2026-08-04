@@ -23,11 +23,12 @@ func TestPhysicalCompactionUnderTraffic(t *testing.T) {
 	}
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
-	defer func() { require.NoError(t, cli.Close()) }()
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
 	prefix := fmt.Sprintf("/dbaas-physical-traffic/%d/", time.Now().UnixNano())
+	registerPrefixCleanup(t, cli, prefix)
 	seed := prefix + "seed"
 	var target int64
 	for i := 0; i < 20; i++ {

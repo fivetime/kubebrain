@@ -66,6 +66,7 @@ func runCompactDifferentialScenario(t *testing.T, endpoint, instance string) com
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 	key := fmt.Sprintf("/dbaas-compact-differential/%s/%d", instance, time.Now().UnixNano())
+	registerPrefixCleanup(t, cli, key)
 
 	first, err := cli.Put(ctx, key, "v1")
 	require.NoError(t, err)

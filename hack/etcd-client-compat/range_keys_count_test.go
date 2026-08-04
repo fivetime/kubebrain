@@ -19,11 +19,12 @@ func TestRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)
-	defer cli.Close()
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	prefix := fmt.Sprintf("/dbaas-range-keys-count/%d/", time.Now().UnixNano())
+	registerPrefixCleanup(t, cli, prefix)
 	for _, key := range []string{"a", "b", "c"} {
 		_, err = cli.Put(ctx, prefix+key, "")
 		require.NoError(t, err)

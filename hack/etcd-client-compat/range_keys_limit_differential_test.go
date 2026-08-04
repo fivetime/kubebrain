@@ -49,6 +49,7 @@ func runKeysOnlyLimitedRangeScenario(t *testing.T, endpoint, name string) []keys
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	prefix := fmt.Sprintf("/dbaas-keys-limit/%s-%d/", name, time.Now().UnixNano())
+	registerPrefixCleanup(t, client, prefix)
 	for i := 0; i < 8; i++ {
 		_, err = client.Put(ctx, fmt.Sprintf("%s%02d", prefix, i), strings.Repeat("value", 100))
 		require.NoError(t, err)
