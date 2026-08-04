@@ -27,6 +27,14 @@ type authErrorOutcome struct {
 	UserEmpty        bool
 }
 
+type delegatedRangeStreamAuthOutcome struct {
+	Error  authErrorOutcome
+	KVs    int
+	Count  int64
+	Header bool
+	More   bool
+}
+
 const authTransitionRangeCount = 50
 
 type authDifferentialOutcome struct {
@@ -60,6 +68,12 @@ type authDifferentialOutcome struct {
 	AnonymousRangeStream      authErrorOutcome
 	UserRangeStream           authErrorOutcome
 	RootRangeStreamCount      int
+	AnonymousPointStream      delegatedRangeStreamAuthOutcome
+	DeniedPointStream         delegatedRangeStreamAuthOutcome
+	AllowedPointStream        delegatedRangeStreamAuthOutcome
+	AllowedCountOnlyStream    delegatedRangeStreamAuthOutcome
+	AllowedEmptyStream        delegatedRangeStreamAuthOutcome
+	AllowedReversedStream     delegatedRangeStreamAuthOutcome
 	AnonymousStatus           authErrorOutcome
 	UserStatusOK              bool
 	AnonymousMemberList       authErrorOutcome
@@ -187,6 +201,40 @@ func authRangeStream(t *testing.T, ctx context.Context, cli *clientv3.Client) (*
 	}
 	response, err := clientv3.GetStreamToGetResponse(stream)
 	return (*clientv3.GetResponse)(response), err
+}
+
+func delegatedAuthRangeStream(
+	t *testing.T,
+	ctx context.Context,
+	cli *clientv3.Client,
+	request *etcdserverpb.RangeRequest,
+) delegatedRangeStreamAuthOutcome {
+	t.Helper()
+	stream, err := etcdserverpb.NewKVClient(cli.ActiveConnection()).RangeStream(ctx, request)
+	if err != nil {
+		return delegatedRangeStreamAuthOutcome{Error: authError(err)}
+	}
+	outcome := delegatedRangeStreamAuthOutcome{}
+	for {
+		response, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			return outcome
+		}
+		if recvErr != nil {
+			outcome.Error = authError(recvErr)
+			return outcome
+		}
+		rangeResponse := response.GetRangeResponse()
+		if rangeResponse == nil {
+			continue
+		}
+		outcome.KVs += len(rangeResponse.Kvs)
+		if rangeResponse.Header != nil {
+			outcome.Header = true
+			outcome.Count = rangeResponse.Count
+			outcome.More = rangeResponse.More
+		}
+	}
 }
 
 func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferentialOutcome {
@@ -440,6 +488,27 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, userRangeStreamErr := authRangeStream(t, ctx, alice)
 	rootRangeStream, rootRangeStreamErr := authRangeStream(t, ctx, root)
 	require.NoError(t, rootRangeStreamErr)
+	_, err = root.Put(ctx, "/auth-allowed/delegated", "value")
+	require.NoError(t, err)
+	allowedPrefixEnd := clientv3.GetPrefixRangeEnd("/auth-allowed/")
+	anonymousPointStream := delegatedAuthRangeStream(t, ctx, bootstrap, &etcdserverpb.RangeRequest{
+		Key: []byte("/auth-allowed/delegated"),
+	})
+	deniedPointStream := delegatedAuthRangeStream(t, ctx, alice, &etcdserverpb.RangeRequest{
+		Key: []byte("/auth-protected/leased"),
+	})
+	allowedPointStream := delegatedAuthRangeStream(t, ctx, alice, &etcdserverpb.RangeRequest{
+		Key: []byte("/auth-allowed/delegated"),
+	})
+	allowedCountOnlyStream := delegatedAuthRangeStream(t, ctx, alice, &etcdserverpb.RangeRequest{
+		Key: []byte("/auth-allowed/"), RangeEnd: []byte(allowedPrefixEnd), CountOnly: true,
+	})
+	allowedEmptyStream := delegatedAuthRangeStream(t, ctx, alice, &etcdserverpb.RangeRequest{
+		Key: []byte("/auth-allowed/delegated"), RangeEnd: []byte("/auth-allowed/delegated"),
+	})
+	allowedReversedStream := delegatedAuthRangeStream(t, ctx, alice, &etcdserverpb.RangeRequest{
+		Key: []byte("/auth-allowed/z"), RangeEnd: []byte("/auth-allowed/a"),
+	})
 	_, anonymousStatusErr := bootstrap.Status(ctx, bootstrap.Endpoints()[0])
 	_, userStatusErr := alice.Status(ctx, alice.Endpoints()[0])
 	_, anonymousMemberListErr := bootstrap.MemberList(ctx)
@@ -847,6 +916,12 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		AnonymousRangeStream:      authError(anonymousRangeStreamErr),
 		UserRangeStream:           authError(userRangeStreamErr),
 		RootRangeStreamCount:      len(rootRangeStream.Kvs),
+		AnonymousPointStream:      anonymousPointStream,
+		DeniedPointStream:         deniedPointStream,
+		AllowedPointStream:        allowedPointStream,
+		AllowedCountOnlyStream:    allowedCountOnlyStream,
+		AllowedEmptyStream:        allowedEmptyStream,
+		AllowedReversedStream:     allowedReversedStream,
 		AnonymousStatus:           authError(anonymousStatusErr),
 		UserStatusOK:              userStatusErr == nil,
 		AnonymousMemberList:       authError(anonymousMemberListErr),
@@ -1023,6 +1098,18 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.SnapshotStreamTerminal)
 	require.True(t, reference.SnapshotStreamDigest)
 	require.True(t, reference.SnapshotStreamEOF)
+	require.True(t, reference.AnonymousPointStream.Error.UserEmpty)
+	require.Equal(t, codes.InvalidArgument, reference.AnonymousPointStream.Error.Code)
+	require.True(t, reference.DeniedPointStream.Error.PermissionDenied)
+	require.Equal(t, codes.PermissionDenied, reference.DeniedPointStream.Error.Code)
+	require.Equal(t, delegatedRangeStreamAuthOutcome{
+		KVs: 1, Count: 1, Header: true,
+	}, reference.AllowedPointStream)
+	require.Equal(t, delegatedRangeStreamAuthOutcome{
+		Count: 1, Header: true,
+	}, reference.AllowedCountOnlyStream)
+	require.Equal(t, delegatedRangeStreamAuthOutcome{Header: true}, reference.AllowedEmptyStream)
+	require.Equal(t, delegatedRangeStreamAuthOutcome{Header: true}, reference.AllowedReversedStream)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
 	require.Equal(t, reference, actual)
 }
