@@ -34086,6 +34086,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   seed，一次性官方 etcd 进程/data-dir 已清理；当前 deadline refresh/list sort 已对齐，无需
   服务端修改。
 
+- A3543 复核 LeaseRevoke 的 zero/unknown、重复撤销与全 signed-int64 边界后，确认既有 raw
+  差分已固定官方 `NotFound`/`etcdserver: requested lease not found`、成功响应头和 MVCC revision
+  隔离。本轮扩展该 oracle：每次首次成功 revoke、第二次失败 revoke，以及 zero/unknown ID
+  失败后，都立即用 `LeaseTimeToLive(Keys=true)` 要求原 ID、TTL=-1、GrantedTTL=0、Keys 为空，
+  从而同时防止失败路径残留半删除 lease 或重复请求复活状态。
+
+  官方与真实 KubeBrain 首轮 0.810 秒 GREEN，连续 10 轮 7.570 秒、race 1.943 秒 GREEN；完整
+  compat 包、vet 与 diff check 通过。审计还发现旧门禁只清理租约、未删除无租约 seed，本轮为
+  cleanup 增加 DeleteRange 与删除后空 Range 断言，并清除线上历史遗留的 12 个 seed；postflight
+  该 prefix Count=0、LeaseList=0，一次性官方 etcd 进程/data-dir 已清理。服务端 revoke 状态机
+  已与官方一致，无需生产代码修改。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
