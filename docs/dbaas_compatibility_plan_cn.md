@@ -33374,6 +33374,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   删除，前缀 Count=0、lease list 为 0；最终 revision/raft index/applied index 均为
   `468126003565722499`、term 280。删除的 `kb-tikv-0`/`kb-tikv-1` 均由 StatefulSet 自动重建。
 
+- A3507 补齐独立 PD leader 故障下的 KV/Txn 与批量 Lease KeepAlive 门禁。A3506 的 backend
+  quorum 测试可接受任意外部故障命令，但固定 Pod 名会在第二轮后不再命中 leader，且
+  `delete --wait=false` 后立即按同名 Pod 等 Ready 可能在旧 UID 尚未消失时提前成功。新增可复用
+  `hack/dev/delete-pd-leader.sh`：每轮通过 `pd-ctl member leader show` 动态解析当前 leader，
+  名称必须匹配受限 `kb-pd-[0-9]*` 后才允许删除；同步等待旧 Pod 消失，并要求 replacement Ready
+  且 UID 与旧 UID 不同。所有 kubectl 调用显式携带 context/namespace，缺少 kubectl/jq、空 UID
+  或异常 leader 名均 fail closed。
+
+  共享 `waitForKubeBrainRollout` 同步支持 `KUBEBRAIN_FAILOVER_CONTEXT`，参数构造单测固定
+  `--context` 必须位于 namespace 与 rollout 参数之前；未设置时保持既有调用兼容。目标普通模式
+  连续 20 轮、race 连续 10 轮、compat 全套与 `go vet` 均通过，脚本通过 `bash -n`、ShellCheck
+  （环境提供时）和 `git diff --check`。commit `9f894e3e` 固化 helper 与显式 context 门禁。
+
+  真实三副本首先同步删除当前 `kb-pd-0` leader，在故障命令窗口内 8 个官方 clientv3 worker
+  完成 91 次 Put/Txn/Get，恢复探针 4.881 秒通过。随后 64 条 lease（8 client × 每 client 8 条、
+  TTL 30 秒）跨 3 轮动态 PD leader 删除：每轮所有 lease 必须各收到新的正 TTL KeepAlive，且
+  全前缀 key→lease ID 绑定精确保持；三轮后逐 lease Revoke、TTL=-1、List 与前缀清理全部通过，
+  总耗时 52.17 秒。最终 `kb-pd-0/1/2` 均为本轮不同 replacement UID、Ready/0 restart，当前 PD
+  leader 为 `kb-pd-1`；3 TiKV 与三个 KubeBrain 均 Ready，KubeBrain 仍为 A3505 runtime digest
+  `sha256:bbdb99772164a3b4c9be9ced1b23d54ff22ab149005dc694afea4966a62482bf`、0 restart。本轮不改
+  生产二进制；lease list、soak 前缀和 backend quorum 前缀均为 0，最终 revision/raft
+  index/applied index 均为 `468126003565723019`、term 280。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
