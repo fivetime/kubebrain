@@ -42,6 +42,18 @@ var (
 	_ BackendShim = (*backendShim)(nil)
 )
 
+// normalizeRangeRevision translates etcd's signed wire convention to the
+// backend convention. Every non-positive Range revision means "latest" in
+// etcd, while the backend represents latest as zero. A direct uint64 cast of a
+// negative revision turns it into a huge historical bound and can admit a
+// version newer than the response's already-pinned header revision.
+func normalizeRangeRevision(revision int64) uint64 {
+	if revision <= 0 {
+		return 0
+	}
+	return uint64(revision)
+}
+
 // BackendShim wrapper Backend interface to adapt with Etcd grpc protobuf
 type BackendShim interface {
 	// Create inserts new key into storage
@@ -866,7 +878,7 @@ func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	// transform request from etcd protobuf to kube-brain protobuf
 	request := &proto.GetRequest{
 		Key:      r.Key,
-		Revision: uint64(r.Revision),
+		Revision: normalizeRangeRevision(r.Revision),
 	}
 	// pass through get method
 	response, err := b.backend.Get(ctx, request)
@@ -896,7 +908,7 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*
 		Key:      r.Key,
 		End:      r.RangeEnd,
 		Limit:    limit,
-		Revision: uint64(r.Revision),
+		Revision: normalizeRangeRevision(r.Revision),
 	}
 	// pass through list method
 	response, err := b.backend.List(ctx, request)

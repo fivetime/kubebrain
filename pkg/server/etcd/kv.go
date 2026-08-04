@@ -214,10 +214,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	// uint64 would produce MaxUint64. Although that often returns the same rows
 	// on a quiet store, it no longer pins the stream to its start revision and
 	// can admit writes committed while a partitioned scan is in progress.
-	backendRevision := uint64(0)
-	if r.Revision > 0 {
-		backendRevision = uint64(r.Revision)
-	}
+	backendRevision := normalizeRangeRevision(r.Revision)
 	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
 	if err != nil {
 		s.metricCli.EmitCounter("read.range_stream.err", 1)

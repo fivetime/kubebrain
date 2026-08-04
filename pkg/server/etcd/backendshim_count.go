@@ -131,7 +131,7 @@ func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.Ra
 // drifting (review #51). proxiedCount only reads Key/RangeEnd/Revision, so the
 // minimal request here is equivalent to forwarding the caller's.
 func (cr *countResolver) resolveCountFromIndex(ctx context.Context, key, end []byte, rev int64) (int64, bool) {
-	if c, served := cr.shim.backend.CountAtRevision(ctx, key, end, uint64(rev)); served {
+	if c, served := cr.shim.backend.CountAtRevision(ctx, key, end, normalizeRangeRevision(rev)); served {
 		return c, true
 	}
 	return cr.proxiedCount(ctx, &etcdserverpb.RangeRequest{Key: key, RangeEnd: end, Revision: rev, CountOnly: true})
@@ -158,7 +158,7 @@ func (cr *countResolver) exactRangeCountUncached(ctx context.Context, r *etcdser
 	resp, err := cr.shim.backend.List(ctx, &proto.RangeRequest{
 		Key:      r.Key,
 		End:      r.RangeEnd,
-		Revision: uint64(r.Revision),
+		Revision: normalizeRangeRevision(r.Revision),
 	})
 	if err != nil {
 		return 0, err

@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -40,6 +41,9 @@ type rangeDifferentialResult struct {
 	EmptyInterval      normalizedRange
 	NegativeLimit      normalizedRange
 	NegativeRevision   normalizedRange
+	MinRevision        normalizedRange
+	MinRevisionPoint   normalizedRange
+	MinRevisionCount   normalizedRange
 	NoOpDeleteRevision int64
 	NoOpDeleteCount    int64
 	RevisionAfterNoOp  int64
@@ -87,6 +91,9 @@ func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 		EmptyInterval:      rng([]normalizedKV{}, 0, false),
 		NegativeLimit:      rng([]normalizedKV{a, b}, 2, false),
 		NegativeRevision:   rng([]normalizedKV{a, b}, 2, false),
+		MinRevision:        rng([]normalizedKV{a, b}, 2, false),
+		MinRevisionPoint:   rng([]normalizedKV{b}, 1, false),
+		MinRevisionCount:   rng([]normalizedKV{}, 2, false),
 		NoOpDeleteRevision: 5,
 		RevisionAfterNoOp:  5,
 		FutureErrorCode:    "Unknown",
@@ -223,6 +230,18 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	)
 	require.NoError(t, err)
+	minRevision, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithRev(math.MinInt64),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	minRevisionPoint, err := cli.Get(ctx, prefix+"b", clientv3.WithRev(math.MinInt64))
+	require.NoError(t, err)
+	minRevisionCount, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(), clientv3.WithRev(math.MinInt64), clientv3.WithCountOnly(),
+	)
+	require.NoError(t, err)
 	_, futureErr := cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(afterNoOp.Header.Revision+100))
 	require.Error(t, futureErr)
 	futureStatus := status.Convert(futureErr)
@@ -253,6 +272,9 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		EmptyInterval:      normalizeRange(emptyInterval, prefix, baseRev),
 		NegativeLimit:      normalizeRange(negativeLimit, prefix, baseRev),
 		NegativeRevision:   normalizeRange(negativeRevision, prefix, baseRev),
+		MinRevision:        normalizeRange(minRevision, prefix, baseRev),
+		MinRevisionPoint:   normalizeRange(minRevisionPoint, prefix, baseRev),
+		MinRevisionCount:   normalizeRange(minRevisionCount, prefix, baseRev),
 		NoOpDeleteRevision: noOpDelete.Header.Revision - baseRev,
 		NoOpDeleteCount:    noOpDelete.Deleted,
 		RevisionAfterNoOp:  afterNoOp.Header.Revision - baseRev,
