@@ -34689,6 +34689,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision、raft index 与
   applied index 均为 468126003565738023、term 316；生产长期 fixture 仍为 Count=100。
 
+- A3576 把 A3575 的确定性服务端 seam 推进到官方 raw client/v3 黑盒 Auth 差分。既有 Auth oracle 只
+  覆盖 recursive prefix RangeStream，不能证明走 delegated unary path 的 point、CountOnly、empty、
+  reversed shape 在真实 gRPC interceptor 后仍保留相同错误码和终态字段。扩展 outcome 同时记录
+  code/message、PermissionDenied/UserEmpty sentinel、KVs、Count、Header 与 More，并在官方 etcd 上固定
+  六个绝对契约：匿名 point 是 InvalidArgument/UserEmpty，越权 point 是 PermissionDenied；允许 point
+  返回 KVs=1/Count=1，CountOnly 返回 KVs=0/Count=1，empty/reversed 均为空且仍携带 Header。
+
+  三个全新独立 TiKV keyspace 分别用于首轮、严格普通与 race，避免 auth revision 不可回退造成状态复用。
+  首轮完整双端 23.403 秒 GREEN；加入官方绝对断言后普通 15.642 秒、race 28.698 秒 GREEN。完整 compat
+  1.363 秒、vet、compat staticcheck v0.7.0 和 diff check 通过。结果没有服务端 RED，因此不为制造改动
+  重建或滚动镜像；commit `a6c6c874` 仅增加差分门禁。三个临时 Pod/Service 与 reference data-dir/listener
+  均已清理。共享生产仍运行 `kubebrain:a3575-delegated-stream-auth-fence`，KubeBrain/PD/TiKV 均 3/3
+  Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/index/
+  applied 均为 468126003565738023、term 316，长期 fixture Count=100；生产 auth 状态未被测试修改。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
