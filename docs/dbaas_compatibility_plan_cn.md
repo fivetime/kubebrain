@@ -33602,6 +33602,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready/0 restart，revision/raft index/applied index 均为 `468126003565735711`、term 297。
   本轮没有 runtime 语义差距，不重建 A3512 镜像。
 
+- A3518 将剩余 JWT Auth 条件性 Skip 固化为独立 HS256 门禁。新增明确标注为测试用途的
+  `testdata/jwt-hs256-secret`，KubeBrain 一次性 Pod 通过 Kubernetes Secret 只读挂载，官方
+  etcd 直接读取同一 fixture；两端均以 etcd 兼容参数
+  `jwt,sign-method=HS256,priv-key=<file>` 启动。新增 `run-jwt-differential.sh`，要求显式候选
+  endpoint 和破坏性确认，检查 reference 端口未占用、测试 key 文件非空、候选 healthy、
+  Auth disabled、`authRevision==1` 且无 key/user/role/lease，然后自建一次性官方 reference，
+  只执行 JWT 差分并在退出时清理 reference 进程/data-dir。
+
+  首个独立 `a3518-jwt-diff` keyspace 官方差分 1.67 秒 GREEN：token 恰有 3 段，初始写成功，
+  Auth revision 变化后旧 token 两端均返回 `etcdserver: revision of auth store is old`，重新认证
+  写成功；已使用 endpoint 再交给 runner 时按非 pristine auth revision 在启动 reference 前
+  拒绝。第二个全新 keyspace 经专用 runner 1.79 秒 GREEN。收尾审计同时发现原 JWT 测试只
+  AuthDisable，却遗留 root、动态 invalidator role 与测试键；修复把 cleanup 注册移到
+  AuthEnable 前，并在独立 context 中撤销角色、删除 user/role/key，最终强制三者回读为空。
+  第三个全新 keyspace 的完整 JWT race 3.399 秒 GREEN，清理后 Auth disabled、无
+  user/role/lease/key。
+
+  JWT runner fail-closed 专项连续 10 轮、compat 普通全套与 `go vet` 均通过。三个一次性 Pod、
+  端口转发、reference 进程和 Kubernetes 测试 Secret 均已删除；主 keyspace compat Count=0、
+  AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied
+  index 均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
