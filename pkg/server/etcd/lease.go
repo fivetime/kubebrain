@@ -48,6 +48,8 @@ import (
 var leaseStoragePrefix = []byte("\x00kubebrain/leases/")
 var leaseAttachPrefix = []byte("\x00kubebrain/leasekeys/")
 
+var errLeaseDemotedDuringRenew = errors.New("lease manager demoted during renew")
+
 func (m *leaseManager) keysForLease(id int64) []string {
 	if id == 0 {
 		return nil
@@ -301,6 +303,18 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		if authErr != nil {
 			return authErr
 		}
+		forward := func() error {
+			proxyCtx, forwardErr := m.srv.forwardAuthToken(stream.Context(), caller)
+			if forwardErr != nil {
+				return forwardErr
+			}
+			resp, forwardErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
+			if forwardErr != nil {
+				return forwardErr
+			}
+			m.srv.observeForwardedRevision(resp.GetHeader(), nil)
+			return stream.Send(resp)
+		}
 		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
 			if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
@@ -310,16 +324,7 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			if !m.srv.peers.EtcdProxyEnabled() {
 				return err
 			}
-			proxyCtx, err := m.srv.forwardAuthToken(stream.Context(), caller)
-			if err != nil {
-				return err
-			}
-			resp, err := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
-			if err != nil {
-				return err
-			}
-			m.srv.observeForwardedRevision(resp.GetHeader(), nil)
-			if err := stream.Send(resp); err != nil {
+			if err := forward(); err != nil {
 				return err
 			}
 			continue
@@ -330,6 +335,16 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 
 		renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
 		ttl, err := m.refreshLeaseAuthorized(renewCtx, caller, req.ID)
+		if errors.Is(err, errLeaseDemotedDuringRenew) {
+			leaderErr := m.requireLeaseLeader("lease keepalive")
+			if !m.srv.peers.EtcdProxyEnabled() {
+				return leaderErr
+			}
+			if err := forward(); err != nil {
+				return err
+			}
+			continue
+		}
 		if status.Code(err) == codes.NotFound {
 			ttl = 0
 		} else if err != nil {
@@ -893,6 +908,15 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 	afterRelock func() error,
 	unlock func(),
 ) (int64, error) {
+	// The initial routing decision precedes the renewal locks. If leadership is
+	// lost while waiting for a slow checkpoint/revoke, the old leader must not
+	// extend only its private in-memory deadline and report a successful renew.
+	// Match etcd lessor.Renew returning ErrNotPrimary after demotion; the caller
+	// then forwards to the current leader when proxying is enabled.
+	if !m.srv.peers.IsLeader() {
+		unlock()
+		return 0, errLeaseDemotedDuringRenew
+	}
 	m.leaseMu.Lock()
 	st, ok := m.leases[id]
 	if !ok {
@@ -943,6 +967,14 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 				unlock()
 				return 0, authErr
 			}
+		}
+		// The checkpoint CAS and its authorization fence can both block on TiKV.
+		// Revalidate after reacquiring the renewal lock as well; otherwise a
+		// demoted manager could still publish a private deadline after this method's
+		// entry fence passed.
+		if !m.srv.peers.IsLeader() {
+			unlock()
+			return 0, errLeaseDemotedDuringRenew
 		}
 		if err != nil {
 			unlock()

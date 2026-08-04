@@ -22,6 +22,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1648,6 +1649,83 @@ func TestLeaseFollowerKeepAlivePreservesClientCancellation(t *testing.T) {
 	require.Empty(t, stream.sent)
 }
 
+func TestLeaseKeepAliveRejectsDemotionWhileWaitingForRenewal(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	const leaseID = int64(7003)
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: leaseID, TTL: 30})
+	require.NoError(t, err)
+
+	var leading atomic.Bool
+	leading.Store(true)
+	routed := make(chan struct{})
+	var routedOnce sync.Once
+	server.peers = testPeerService{isLeaderFn: func() bool {
+		isLeader := leading.Load()
+		if isLeader {
+			routedOnce.Do(func() { close(routed) })
+		}
+		return isLeader
+	}}
+	server.leaseManager.leaseCheckpointMu.Lock()
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	<-routed
+	leading.Store(false)
+	server.leaseManager.leaseCheckpointMu.Unlock()
+
+	requireLeaseFollowerUnavailable(t, <-done, "lease keepalive error addr is test-peer leader test-peer")
+	require.Empty(t, stream.sent)
+}
+
+func TestLeaseKeepAliveProxiesDemotionWhileWaitingForRenewal(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	const leaseID = int64(7004)
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: leaseID, TTL: 30})
+	require.NoError(t, err)
+
+	var leading atomic.Bool
+	leading.Store(true)
+	routed := make(chan struct{})
+	var routedOnce sync.Once
+	proxied := make(chan struct{}, 1)
+	server.peers = testPeerService{
+		isLeaderFn: func() bool {
+			isLeader := leading.Load()
+			if isLeader {
+				routedOnce.Do(func() { close(routed) })
+			}
+			return isLeader
+		},
+		proxyEnabled: true,
+		leaseKeepAliveFn: func(_ context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+			proxied <- struct{}{}
+			return &etcdserverpb.LeaseKeepAliveResponse{ID: req.ID, TTL: 29}, nil
+		},
+	}
+	server.leaseManager.leaseCheckpointMu.Lock()
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	<-routed
+	leading.Store(false)
+	server.leaseManager.leaseCheckpointMu.Unlock()
+
+	require.NoError(t, <-done)
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, leaseID, stream.sent[0].ID)
+	require.Equal(t, int64(29), stream.sent[0].TTL)
+	select {
+	case <-proxied:
+	default:
+		t.Fatal("keepalive was not forwarded after demotion")
+	}
+}
+
 func requireLeaseCanceled(t *testing.T, err error) {
 	t.Helper()
 	require.Equal(t, codes.Canceled, status.Code(err))
@@ -2023,6 +2101,48 @@ func TestLeaseRenewDoesNotSucceedWhenRevokeWinsAfterCheckpointCAS(t *testing.T) 
 		"etcdserver: requested lease not found")
 	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
 	require.ErrorIs(t, err, storage.ErrKeyNotFound, "completed Revoke must win over the committed checkpoint clear")
+}
+
+func TestLeaseKeepAliveRejectsDemotionDuringCheckpointClear(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 9203
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	require.NoError(t, server.persistLeaseCheckpoint(ctx, leaseID, 30, 10))
+	server.leaseMu.Lock()
+	server.leases[leaseID].remainingTTL = 10
+	server.leaseMu.Unlock()
+
+	shim := &blockingLeaseCheckpointBackend{
+		BackendShim: server.backend,
+		leaseID:     leaseID,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	defer func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	}()
+	var leading atomic.Bool
+	leading.Store(true)
+	server.peers = testPeerService{isLeaderFn: leading.Load}
+
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	<-shim.entered
+	leading.Store(false)
+	close(shim.release)
+
+	requireLeaseFollowerUnavailable(t, <-done, "lease keepalive error addr is test-peer leader test-peer")
+	require.Empty(t, stream.sent)
 }
 
 func TestLeaseRenewClearsCommittedCheckpointAfterLostWriteResponse(t *testing.T) {
