@@ -92,6 +92,26 @@ func TestBuilderUsesExactTxnSubrevisionInsteadOfPhysicalInputOrder(t *testing.T)
 	require.Equal(t, []string{"z", "a", "m"}, keys)
 }
 
+func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{
+		Revision: 12, PreserveHistory: true,
+		Records: []Record{{Key: []byte("real"), Value: []byte("value"), CreateRevision: 12, ModRevision: 12, Version: 1}},
+	}))
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		rows := 0
+		require.NoError(t, tx.Bucket(schema.Key.Name()).ForEach(func(_, _ []byte) error {
+			rows++
+			return nil
+		}))
+		require.Equal(t, 1, rows)
+		return nil
+	}))
+}
+
 func TestBuilderPreservesHistoryTombstonesAndRealCompactWatermark(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	builder, err := NewBuilder(path, State{

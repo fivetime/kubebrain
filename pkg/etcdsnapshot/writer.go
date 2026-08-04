@@ -86,10 +86,11 @@ func WriteBackend(path string, state State) error {
 // Builder incrementally commits record batches into a private snapshot file.
 // Committed bbolt pages, rather than the complete keyspace, hold prior batches.
 type Builder struct {
-	db       *bolt.DB
-	revision int64
-	nextSub  int64
-	finished bool
+	db               *bolt.DB
+	revision         int64
+	restoredRevision int64
+	nextSub          int64
+	finished         bool
 }
 
 const fallbackSubRevisionBase int64 = 1 << 32
@@ -102,7 +103,13 @@ func NewBuilder(path string, state State) (*Builder, error) {
 	if err != nil {
 		return nil, err
 	}
-	builder := &Builder{db: db, revision: state.Revision}
+	restoredRevision := int64(1) // upstream MVCC restore starts at revision 1
+	if !state.PreserveHistory {
+		restoredRevision = state.Revision
+	} else if state.HasCompactRevision && state.CompactRevision > restoredRevision {
+		restoredRevision = state.CompactRevision
+	}
+	builder := &Builder{db: db, revision: state.Revision, restoredRevision: restoredRevision}
 	if err = db.Update(func(tx *bolt.Tx) error { return writeMetadata(tx, state) }); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -222,6 +229,7 @@ func (b *Builder) Append(records []Record) error {
 		}
 	}
 	nextSub := b.nextSub
+	restoredRevision := b.restoredRevision
 	err := b.db.Update(func(tx *bolt.Tx) error {
 		keys := tx.Bucket(keyBucket)
 		for _, rec := range records {
@@ -247,12 +255,16 @@ func (b *Builder) Append(records []Record) error {
 			if err = keys.Put(revisionKey, encoded); err != nil {
 				return err
 			}
+			if rec.ModRevision > restoredRevision {
+				restoredRevision = rec.ModRevision
+			}
 			nextSub++
 		}
 		return nil
 	})
 	if err == nil {
 		b.nextSub = nextSub
+		b.restoredRevision = restoredRevision
 	}
 	return err
 }
@@ -263,6 +275,10 @@ func (b *Builder) Finish() error {
 	}
 	if b.finished {
 		return fmt.Errorf("snapshot builder is already finished")
+	}
+	if b.restoredRevision >= b.revision {
+		b.finished = true
+		return nil
 	}
 	// Official MVCC restore derives currentRev from the greatest revision key,
 	// so a marker is required when KubeBrain's published revision has no retained
