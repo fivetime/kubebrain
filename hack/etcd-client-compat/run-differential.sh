@@ -17,6 +17,7 @@ ETCDCTL_EXEC_NAMESPACE="${ETCDCTL_EXEC_NAMESPACE:-kubebrain-dev}"
 ETCDCTL_EXEC_CONTAINER="${ETCDCTL_EXEC_CONTAINER:-}"
 ETCDCTL_EXEC_BIN="${ETCDCTL_EXEC_BIN:-etcdctl}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
+KUBEBRAIN_METRICS_ENDPOINT="${KUBEBRAIN_METRICS_ENDPOINT:-}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -73,6 +74,12 @@ if [ ! -x "$REFERENCE_ETCD_BIN" ]; then
 fi
 if [ ! -x "$ETCDCTL_BIN" ]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
+  exit 1
+fi
+if [[ -n "$KUBEBRAIN_METRICS_ENDPOINT" ]] &&
+  ! curl --fail --silent --max-time 5 \
+    "$(http_endpoint_url "$KUBEBRAIN_METRICS_ENDPOINT")/metrics" >/dev/null; then
+  echo "KubeBrain metrics endpoint preflight failed: $KUBEBRAIN_METRICS_ENDPOINT" >&2
   exit 1
 fi
 
@@ -175,6 +182,9 @@ fi
     KUBEBRAIN_ETCD_ENDPOINT="$KUBEBRAIN_ENDPOINT" \
     REFERENCE_ETCD_GATEWAY_ENDPOINT="${REFERENCE_CLIENT_URL%/}" \
     KUBEBRAIN_GATEWAY_ENDPOINT="$KUBEBRAIN_GATEWAY_URL" \
+    KUBEBRAIN_NO_QUOTA_ENDPOINT="$KUBEBRAIN_ENDPOINT" \
+    REFERENCE_ETCD_METRICS_ENDPOINT="${REFERENCE_CLIENT_URL%/}" \
+    KUBEBRAIN_METRICS_ENDPOINT="$KUBEBRAIN_METRICS_ENDPOINT" \
     KUBEBRAIN_EXPECTED_MEMBER_COUNT="$KUBEBRAIN_EXPECTED_MEMBER_COUNT" \
     ETCDCTL_BIN="$ETCDCTL_BIN" \
     go test . -run 'Differential(Against|$)' -count=1 -parallel=1 -timeout="$TEST_TIMEOUT" -v

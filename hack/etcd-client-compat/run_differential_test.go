@@ -168,3 +168,17 @@ func TestDifferentialRunnerEnablesHTTPGatewayScenarios(t *testing.T) {
 	require.Contains(t, string(script), `KUBEBRAIN_GATEWAY_ENDPOINT="$KUBEBRAIN_GATEWAY_URL"`)
 	require.Contains(t, string(script), `KUBEBRAIN_GATEWAY_URL="$(http_endpoint_url "$KUBEBRAIN_ENDPOINT")"`)
 }
+
+func TestDifferentialRunnerEnablesManualAlarmWithoutQuotaScenario(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	require.Contains(t, string(script), `KUBEBRAIN_NO_QUOTA_ENDPOINT="$KUBEBRAIN_ENDPOINT"`)
+}
+
+func TestDifferentialRunnerPassesOptionalMetricsEndpoints(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	require.Contains(t, string(script), `REFERENCE_ETCD_METRICS_ENDPOINT="${REFERENCE_CLIENT_URL%/}"`)
+	require.Contains(t, string(script), `KUBEBRAIN_METRICS_ENDPOINT="$KUBEBRAIN_METRICS_ENDPOINT"`)
+	require.Contains(t, string(script), `"$(http_endpoint_url "$KUBEBRAIN_METRICS_ENDPOINT")/metrics"`)
+}

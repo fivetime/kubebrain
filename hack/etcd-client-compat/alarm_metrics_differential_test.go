@@ -145,26 +145,31 @@ func runUnknownAlarmMetricScenario(t *testing.T, endpoint, metricsEndpoint strin
 
 	baseline := readAlarmMetric(t, ctx, metricsEndpoint, memberID, alarm)
 	outcomes := make([]alarmMetricOutcome, 0, 3)
-	record := func(name string) {
+	record := func(name string, wantDelta float64) {
+		var delta float64
+		require.Eventually(t, func() bool {
+			delta = readAlarmMetric(t, ctx, metricsEndpoint, memberID, alarm) - baseline
+			return delta == wantDelta
+		}, 5*time.Second, 100*time.Millisecond, "%s metric did not converge", name)
 		outcomes = append(outcomes, alarmMetricOutcome{
-			Name: name, Delta: readAlarmMetric(t, ctx, metricsEndpoint, memberID, alarm) - baseline,
+			Name: name, Delta: delta,
 		})
 	}
 	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_ACTIVATE, MemberID: memberID, Alarm: alarm,
 	})
 	require.NoError(t, err)
-	record("activate")
+	record("activate", 1)
 	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_GET, Alarm: alarm,
 	})
 	require.NoError(t, err)
-	record("get")
+	record("get", 1)
 	_, err = maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_DEACTIVATE, MemberID: memberID, Alarm: alarm,
 	})
 	require.NoError(t, err)
-	record("deactivate")
+	record("deactivate", 0)
 	return outcomes
 }
 
@@ -177,7 +182,7 @@ func readAlarmMetric(
 ) float64 {
 	t.Helper()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		strings.TrimRight(metricsEndpoint, "/")+"/metrics", nil)
+		httpEndpointURL(metricsEndpoint)+"/metrics", nil)
 	require.NoError(t, err)
 	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
 	require.NoError(t, err)
