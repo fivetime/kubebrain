@@ -34126,6 +34126,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。剩余静态候选均由显式 LeaseRevoke 或 TTL=2 的自然过期回收，不构成持久 key 泄漏；
   一次性官方 etcd 进程/data-dir 已清理。
 
+- A3546 对照 `/root/etcd/tests/integration/clientv3/maintenance_test.go` 补齐 Snapshot context
+  边界。`Snapshot` 与 `SnapshotWithVersion` 在调用前 context 已 cancel/deadline 时都必须不返回
+  reader/version/可读字节，并由 clientv3 `ContextError` 还原为可被 `errors.Is` 分类的原生
+  `context.Canceled`/`context.DeadlineExceeded`；因此最终错误的 `status.Code` 是 Unknown，而不是
+  底层 gRPC 日志中的 Canceled/DeadlineExceeded。该官方 oracle 防止 wrapper 重构破坏 Go context
+  错误分类。
+
+  raw Maintenance.Snapshot 还真实读取首个非空 blob 后取消 context，要求流只能以 EOF 或 gRPC
+  Canceled 收尾。小 snapshot 在官方端可能已全部进入 HTTP/2 缓冲而返回 EOF，KubeBrain 可及时
+  返回 Canceled；上游 inflight 测试同样允许完成或 context error，故门禁规范化这两种合法时序，
+  不把传输缓冲差异伪装成兼容缺口。首轮 4.484 秒、连续 10 轮 44.290 秒、race 5.714 秒 GREEN；
+  完整 compat 包、vet 与 diff check 通过。测试不写用户数据，一次性官方进程/data-dir 已清理，
+  当前服务端 snapshot cancel 路径无需修改。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
