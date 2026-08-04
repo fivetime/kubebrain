@@ -46,6 +46,17 @@ const (
 )
 
 func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (response *etcdserverpb.RangeResponse, retErr error) {
+	return s.rangeWithAfterRead(ctx, r, nil)
+}
+
+// The afterRead callback runs after a successful Range data read but before the
+// final doSerialize auth-revision fence. RangeStream uses it for delegated
+// shapes so their Send remains inside the same serialized boundary as etcd.
+func (s *RPCServer) rangeWithAfterRead(
+	ctx context.Context,
+	r *etcdserverpb.RangeRequest,
+	afterRead func(*etcdserverpb.RangeResponse) error,
+) (response *etcdserverpb.RangeResponse, retErr error) {
 	startTime := time.Now()
 	klog.V(4).InfoS("RANGE", "key", r.Key, "rangeEnd", r.RangeEnd, "countOnly", r.CountOnly)
 	if err := validateRangeRequest(r); err != nil {
@@ -76,6 +87,9 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 		}
 		response, err := s.peers.Range(proxyCtx, r)
 		s.observeForwardedRevision(response.GetHeader(), err)
+		if err == nil && afterRead != nil {
+			err = afterRead(response)
+		}
 		// The leader re-authenticates a forwarded simple token at its current
 		// revision, so it cannot preserve the follower's request-start revision.
 		// Recheck locally after the proxy completes to retain doSerialize semantics.
@@ -119,13 +133,19 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 		if err != nil {
 			return nil, err
 		}
+		response = &etcdserverpb.RangeResponse{
+			Header: txnHeader(int64(revision)),
+		}
+		if afterRead != nil {
+			if err = afterRead(response); err != nil {
+				return response, err
+			}
+		}
 		authChecked = true
 		if err = s.ensureAuthRevisionAfterSerializedRead(ctx, caller); err != nil {
 			return nil, err
 		}
-		return &etcdserverpb.RangeResponse{
-			Header: txnHeader(int64(revision)),
-		}, nil
+		return response, nil
 	}
 	var (
 		err                   error
@@ -152,6 +172,9 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 	s.metricCli.EmitHistogram("read.latency", time.Since(startTime).Seconds(), methodTag, successTag)
 	if response != nil {
 		s.metricCli.EmitHistogram("read.responsesize", proto.Size(response), methodTag, successTag)
+	}
+	if err == nil && afterRead != nil {
+		err = afterRead(response)
 	}
 	authChecked = true
 	if authErr = s.ensureAuthRevisionAfterSerializedRead(ctx, caller); authErr != nil {
@@ -195,14 +218,23 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	// non-empty range. Use the unary path for these shapes, matching etcd's
 	// Range result exactly while keeping recursive ranges on the bounded stream.
 	if r.CountOnly || len(r.RangeEnd) == 0 || isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
-		resp, err := s.Range(ctx, proto.Clone(r).(*etcdserverpb.RangeRequest))
+		var sendErr error
+		_, err := s.rangeWithAfterRead(ctx, proto.Clone(r).(*etcdserverpb.RangeRequest), func(resp *etcdserverpb.RangeResponse) error {
+			for _, response := range splitRangeStreamResponse(resp, int(s.maxRequestBytes), true) {
+				if sendErr = rs.Send(response); sendErr != nil {
+					return sendErr
+				}
+			}
+			return nil
+		})
 		if err != nil {
-			return rangeStreamStatusErr(err)
-		}
-		for _, response := range splitRangeStreamResponse(resp, int(s.maxRequestBytes), true) {
-			if err := rs.Send(response); err != nil {
+			if sendErr != nil && errors.Is(err, sendErr) {
+				return sendErr
+			}
+			if isAuthContractError(err) {
 				return err
 			}
+			return rangeStreamStatusErr(err)
 		}
 		s.metricCli.EmitCounter("read.range_stream", 1)
 		s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())

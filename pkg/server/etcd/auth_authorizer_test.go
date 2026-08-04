@@ -50,6 +50,18 @@ type authMutationWriteShim struct {
 	hook func()
 }
 
+type authMutationRangeStreamServer struct {
+	fakeRangeStreamServer
+	onSend sync.Once
+	hook   func()
+}
+
+func (s *authMutationRangeStreamServer) Send(response *etcdserverpb.RangeStreamResponse) error {
+	err := s.fakeRangeStreamServer.Send(response)
+	s.onSend.Do(s.hook)
+	return err
+}
+
 func (b *authMutationWriteShim) Put(ctx context.Context, request *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	b.once.Do(b.hook)
 	return b.BackendShim.Put(ctx, request)
@@ -334,6 +346,58 @@ func TestAuthorizedRangeStreamRejectsAuthMutationDuringRead(t *testing.T) {
 	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 	require.NoError(t, mutationErr)
 	require.NotEmpty(t, stream.sent, "the mutation must occur after streaming has begun")
+}
+
+func TestAuthorizedDelegatedRangeStreamRechecksAuthAfterSendLikeEtcd(t *testing.T) {
+	tests := []struct {
+		name    string
+		request *etcdserverpb.RangeRequest
+	}{
+		{name: "count-only", request: &etcdserverpb.RangeRequest{
+			Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), CountOnly: true,
+		}},
+		{name: "point", request: &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")}},
+		{name: "empty", request: &etcdserverpb.RangeRequest{
+			Key: []byte("/allowed/a"), RangeEnd: []byte("/allowed/a"),
+		}},
+		{name: "reversed", request: &etcdserverpb.RangeRequest{
+			Key: []byte("/allowed/z"), RangeEnd: []byte("/allowed/a"),
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			aliceCtx := setupAuthKVUser(t, server)
+			_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{
+				Key: []byte("/allowed/a"), Value: []byte("value"),
+			})
+			require.NoError(t, err)
+
+			var mutationErr error
+			stream := &authMutationRangeStreamServer{
+				fakeRangeStreamServer: fakeRangeStreamServer{ctx: aliceCtx},
+				hook: func() {
+					mutationErr = server.auth.roleAdd(context.Background(), "delegated-range-stream-send-bump")
+				},
+			}
+			err = server.RangeStream(tt.request, stream)
+			requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+			require.NoError(t, mutationErr)
+			require.NotEmpty(t, stream.sent, "auth mutation must happen while sending the delegated response")
+		})
+	}
+}
+
+func TestAuthorizedDelegatedRangeStreamPreservesPermissionErrorLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	stream := &fakeRangeStreamServer{ctx: aliceCtx}
+
+	err := server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/protected/a")}, stream)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	require.Empty(t, stream.sent)
 }
 
 func TestAuthorizedRangeStreamAuthMutationOverridesReadErrorLikeEtcd(t *testing.T) {

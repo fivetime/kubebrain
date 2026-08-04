@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"sort"
 	"strings"
 
@@ -141,6 +142,32 @@ func (s *RPCServer) ensureAuthRevisionAfterSerializedRead(ctx context.Context, c
 	fenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
 	defer cancel()
 	return s.ensureAuthRevision(fenceCtx, caller)
+}
+
+func isAuthContractError(err error) bool {
+	for _, target := range []error{
+		rpctypes.ErrRootUserNotExist,
+		rpctypes.ErrRootRoleNotExist,
+		rpctypes.ErrUserAlreadyExist,
+		rpctypes.ErrUserEmpty,
+		rpctypes.ErrUserNotFound,
+		rpctypes.ErrRoleAlreadyExist,
+		rpctypes.ErrRoleNotFound,
+		rpctypes.ErrRoleEmpty,
+		rpctypes.ErrAuthFailed,
+		rpctypes.ErrPermissionDenied,
+		rpctypes.ErrRoleNotGranted,
+		rpctypes.ErrPermissionNotGranted,
+		rpctypes.ErrAuthNotEnabled,
+		rpctypes.ErrInvalidAuthToken,
+		rpctypes.ErrAuthOldRevision,
+		rpctypes.ErrInvalidAuthMgmt,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *RPCServer) ensureAuthStoreRevisionUnchanged(ctx context.Context, caller *authCaller) error {
