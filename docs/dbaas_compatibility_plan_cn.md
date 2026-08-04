@@ -34365,6 +34365,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod/Service、30459、reference 42379/42380 和目录均已清理；共享生产 revision/index/applied
   保持 468126003565737814，lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、0 restart。
 
+- A3560 把 RangeStream future revision 的 official clientv3 三件套从 bufconn 提升为真实网络差分。
+  A3559 已闭合 destructive compacted 路径；相邻 A1161/A1216 虽固定
+  `GetStreamToGetResponse` 的 `ErrFutureRev`，仍只经过进程内 transport，而既有
+  `rangestream_validation_differential` 只验证 raw gRPC `OutOfRange`。新增无写入双端场景以
+  MaxInt64 revision 分别调用 direct `Get` 与 `GetStream`，要求 direct 和 stream 消费错误同时满足
+  `errors.Is(err, rpctypes.ErrFutureRev)`、client-visible `codes.Unknown` 和精确 future-revision
+  message；`GetStream` 创建本身必须成功，错误只能在消费 channel 时暴露。
+
+  测试先固定官方绝对 baseline，再比较生产 KubeBrain，且使用固定不存在 key，不依赖两端当前
+  revision 或数据内容。首轮 0.070 秒、连续 10 轮 0.228 秒、race 1.153 秒 GREEN；完整 compat
+  1.322 秒、vet 与 diff check 通过。没有 RED，故不改服务端或滚动镜像。全部请求只读且必然在
+  revision validation 阶段失败，生产 revision/index/applied 保持 468126003565737814，测试 prefix=0、
+  lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、0 restart；一次性 reference、42379/42380
+  listener 与数据目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
