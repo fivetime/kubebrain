@@ -34009,6 +34009,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一次性官方 etcd data-dir 已删除。结果证明当前 v2 inline metadata 数据的每版本 lease 已对齐，
   但没有虚构旧 v1/非内联历史 lease：旧格式从未持久化该信息，矩阵中的不可逆迁移边界保持不变。
 
+- A3537 把 A3536 的 bbolt 行级比较推进为官方恢复后的服务级验收。行级 proto 正确仍不足以证明
+  etcd 的 MVCC restore 和 lessor recover 能共同接受生成 backend；lease bucket key/value 编码、
+  retained KV lease 引用或 restore membership 任一错误，都可能只在 `etcdutl restore` 后启动时
+  暴露。新增 opt-in oracle 在真实 KubeBrain 写入 lease-v1、unleased-v2、lease-v3，下载在线
+  Maintenance.Snapshot，用 `/root/etcd/bin/etcdutl --skip-hash-check` 恢复到一次性 data-dir，再
+  启动 `/root/etcd/bin/etcd` 服务该 artifact。
+
+  官方恢复实例必须按三个原始 revision 返回对应 value 与 lease ID；当前 revision 的
+  `LeaseTimeToLive(Keys=true)` 还必须恢复正 remaining TTL、原 granted TTL=300 和精确 attached
+  key。首轮端到端 4.190 秒 GREEN，连续 10 轮 37.202 秒、race 6.645 秒 GREEN。每轮使用独立
+  restore 目录和官方进程，源端测试 key/lease 由有界 cleanup 删除；该门禁证明当前 inline-era
+  snapshot 可被官方工具和运行时实际消费，但仍不声称能推导旧非内联历史中从未保存的 lease。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
