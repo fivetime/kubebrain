@@ -280,6 +280,41 @@ func TestJWTAuthRPCInvalidatesOldTokenAfterAuthMutation(t *testing.T) {
 	require.Equal(t, []byte("reauthenticated"), ranged.Kvs[0].Value)
 }
 
+func TestJWTDelegatedRangeStreamRechecksRevisionAfterSendLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	secret := writeJWTKey(t, "secret", []byte("shared-secret"))
+	require.NoError(t, server.tokens.configureProvider("jwt,sign-method=HS256,priv-key="+secret))
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "root", Password: "root-secret",
+	}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+	authenticated, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{
+		Name: "root", Password: "root-secret",
+	})
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, authenticated.Token,
+	))
+	_, err = server.Put(rootCtx, &etcdserverpb.PutRequest{Key: []byte("/jwt/delegated"), Value: []byte("value")})
+	require.NoError(t, err)
+
+	var mutationErr error
+	stream := &authMutationRangeStreamServer{
+		fakeRangeStreamServer: fakeRangeStreamServer{ctx: rootCtx},
+		hook: func() {
+			mutationErr = server.auth.roleAdd(context.Background(), "jwt-delegated-send-bump")
+		},
+	}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/jwt/delegated")}, stream)
+	requireJWTError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+	require.NoError(t, mutationErr)
+	require.Len(t, stream.sent, 1)
+}
+
 func TestJWTEmptyAndZeroClaimsMatchEtcdAuthorization(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

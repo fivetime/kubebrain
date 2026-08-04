@@ -400,6 +400,50 @@ func TestAuthorizedDelegatedRangeStreamPreservesPermissionErrorLikeEtcd(t *testi
 	require.Empty(t, stream.sent)
 }
 
+func TestAuthorizedDelegatedRangeStreamAuthDisableAfterSendReturnsAuthOldLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/a"), Value: []byte("value")})
+	require.NoError(t, err)
+
+	var disableErr error
+	stream := &authMutationRangeStreamServer{
+		fakeRangeStreamServer: fakeRangeStreamServer{ctx: aliceCtx},
+		hook: func() {
+			disableErr = server.auth.disable(context.Background())
+		},
+	}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/a")}, stream)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+	require.NoError(t, disableErr)
+	require.Len(t, stream.sent, 1)
+}
+
+func TestAnonymousDelegatedRangeStreamAuthEnableAfterSendCompletesLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "root-secret"}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/anonymous/a"), Value: []byte("value")})
+	require.NoError(t, err)
+
+	var enableErr error
+	stream := &authMutationRangeStreamServer{
+		fakeRangeStreamServer: fakeRangeStreamServer{ctx: ctx},
+		hook: func() {
+			enableErr = server.auth.enable(context.Background())
+		},
+	}
+	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/anonymous/a")}, stream)
+	require.NoError(t, err)
+	require.NoError(t, enableErr)
+	require.Len(t, stream.sent, 1)
+	require.Len(t, stream.sent[0].GetRangeResponse().Kvs, 1)
+}
+
 func TestAuthorizedRangeStreamAuthMutationOverridesReadErrorLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
