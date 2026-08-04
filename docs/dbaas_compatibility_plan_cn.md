@@ -34113,6 +34113,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   exclusive end 的 50-key 分页删除，最终 6,023 项全部清除，`/dbaas-` Count=0、LeaseList=0；
   两个一次性官方实例及 data-dir 均已清理。
 
+- A3545 在 A3544 清零线上 keyspace 后继续做源码级写入生命周期审计，筛选所有包含
+  `/dbaas-`、执行 Put/Txn、却没有 prefix Delete 或 lease revoke 的测试。确认另外五类当前代码
+  仍可能持久泄漏：HashKV、Txn operation validation、duplicate interval、validation ordering 和
+  compare enum；它们也正好对应 A3544 历史聚合中的 24/20/129/20/120 项残留。统一 cleanup
+  扩展出 raw KVClient 版本，按 `clientPrefixRangeEnd` 删除精确前缀并用 Limit=1 Range 验空；
+  clientv3/raw 两种路径共九个写入场景全部接入。
+
+  六组官方/KubeBrain 差分首轮 16.283 秒 GREEN，连续 10 轮 162.659 秒、race 18.824 秒 GREEN；
+  每轮结束线上 `/dbaas-` 都保持 Count=0。新增源码策略门禁固定九个文件的 11 个 cleanup 注册点，
+  防止未来重构把已验证的回收静默删除；该门禁连续 10 轮、完整 compat 包、vet 与 diff check
+  通过。剩余静态候选均由显式 LeaseRevoke 或 TTL=2 的自然过期回收，不构成持久 key 泄漏；
+  一次性官方 etcd 进程/data-dir 已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
