@@ -33879,6 +33879,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/raft index/applied index 均为 `468126003565735746`、term 297。本轮没有新的 runtime
   语义差距，不重建 A3524 镜像。
 
+- A3529 把既有 `TestReplicatedRestartPreservesState` 从“调用方传入任意 shell command”的
+  条件测试收敛为结构化、fail-closed 的全数据面重启门禁。测试现在必须显式提供 Kubernetes
+  context、serving/backend namespace，以及 KubeBrain、PD、TiKV 三组各三个 Pod 名；Go 代码
+  逐 Pod 验证 StatefulSet owner、记录旧 UID、删除并等待新 UID Ready，不再执行 `bash -c`。
+  `restart-persistence-smoke.sh` 额外要求破坏性确认和精确 3/3/3 topology；所有 kubectl 调用固定
+  `--context`，前后检查 endpoint health、Alarm、compat prefix 与 Lease 集合，最终等待
+  TidbCluster Ready，失败退出 best-effort disarm 测试 CORRUPT。
+
+  测试继续覆盖当前值、tombstone 与历史读、长 TTL lease attachment、普通和二进制前缀 Watch
+  replay、CORRUPT 持久写门禁/HTTP 外观、重启窗口成功响应 revision 不回退，以及恢复后新写
+  revision 单调。独立 A3524 keyspace 上首轮 9 Pod replacement 82.170 秒 GREEN，完整 race
+  68.620 秒 GREEN，普通模式连续 3/3 GREEN（62.790/59.950/64.430 秒），累计 45 次显式 Pod
+  replacement。runner fail-closed 专项连续 10 轮、compat 全套与 vet、脚本语法均通过。
+
+  独立 keyspace 最终 revision/raft index/applied index 均为 381、term 120，Alarm/compat prefix/
+  Lease/Status errors 为空，三 serving Pod、3 PD、3 TiKV 均 Ready/0 restart；一次性 StatefulSet
+  与三个 Service 已删除。共享后端五轮滚动令主 keyspace election term 从 297 正常推进至 302，
+  但公开 revision/raft index/applied index 始终未前进，仍为 `468126003565735746`；主 Alarm/
+  compat prefix/Lease/Status errors 为空，3 KubeBrain Ready/0 restart。本轮没有服务端语义改动。
+
+- A3530 在 A3529 后的根模块完整回归中捕获 compacted-current-state etcd snapshot revision RED。
+  `pkg/etcdsnapshot.NewBuilder` 错把 `PreserveHistory=false` 的目标 snapshot revision 预先记为
+  `restoredRevision`，因此当最大 live row 只在 revision 41、artifact header 在
+  `468126003565721322` 时，`Finish()` 跳过不可见 empty-key tombstone marker；官方
+  `etcdutl snapshot status` 实际报告 41，而不是 artifact 的 committed revision。
+
+  修复让 `restoredRevision` 只从上游 MVCC 初始 revision 1 和实际写入的 revision row 推导；
+  compact metadata 不再冒充 MVCC row。新增 compacted snapshot `revision=12/max-live=7` 回归，
+  要求 backend 同时包含 7 与隐藏的 12 marker；真实逻辑转换测试继续由官方 `etcdutl` 要求
+  revision=`468126003565721322`、TotalKey=2，并执行 Restore。两个包普通模式连续 10 轮和 race
+  均通过；修后根模块完整测试（含 `hack/production` 354.087 秒）与 vet、compat 完整测试与 vet
+  全绿。发布 metadata 完整的 `kubebrain:a3530-snapshot-revision` 镜像 ID 为
+  `sha256:bb240a468cac4d0515eb6670228817d4e63d6a54ce765e5a2ef60c8b381fa2e3`。该缺口影响镜像内
+  logical-to-etcd snapshot 转换工具；在线 RPC 的 PreserveHistory 路径原本已生成 marker，故不为
+  相同 serving 行为滚动主数据面，主 StatefulSet 继续运行已验证的 A3512 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
