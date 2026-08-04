@@ -34140,6 +34140,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整 compat 包、vet 与 diff check 通过。测试不写用户数据，一次性官方进程/data-dir 已清理，
   当前服务端 snapshot cancel 路径无需修改。
 
+- A3547 审计 clientv3 3.7 新增的 `SnapshotResponse.Header` 后，没有按字段存在这一表象擅自
+  合成 header。`/root/etcd/client/v3/maintenance.go` 确实会把首帧 header 透传到高层响应，
+  但 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 当前发送的所有数据帧和最终 SHA-256
+  帧都不创建 header；官方流拦截器同样不会合成。因此官方 3.7 的实际契约是普通 Range header
+  非空，而 raw Snapshot 所有帧和高层 `SnapshotWithVersion.Header` 均为 nil。
+
+  新增双端黑盒 oracle，同时完整下载高层 snapshot、验证尾部 SHA-256 和 version，再独立读取 raw
+  流的每一帧，防止只检查首帧或因客户端失效而假绿。一次性官方 etcd 与线上 KubeBrain 首轮
+  10.575 秒、连续 10 轮 87.883 秒、race 13.022 秒 GREEN；完整 compat 包、vet 与 diff check
+  通过。测试只读取不存在的隔离 key 和 snapshot，不推进用户 revision；当前 KubeBrain 通过
+  `stampHeader` 的“不为 nil 才补 cluster/member/term”规则已与官方一致，无需修改服务端。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
