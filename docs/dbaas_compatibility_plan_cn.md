@@ -33915,6 +33915,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   logical-to-etcd snapshot 转换工具；在线 RPC 的 PreserveHistory 路径原本已生成 marker，故不为
   相同 serving 行为滚动主数据面，主 StatefulSet 继续运行已验证的 A3512 镜像。
 
+- A3531 继续审计未关闭的 transactional TiKV 物理快照/PITR 边界。当前 kind 真实 3 PD/3 TiKV
+  集群有六个 Bound PVC，但没有 `snapshot.storage.k8s.io` CRD、VolumeSnapshotClass 或 CSI
+  snapshot driver；使用在线 StatefulSet/TidbCluster UID 与 cluster ID 执行只读 preflight，仍在
+  任何 mutation 前精确返回 `CSI VolumeSnapshot API is unavailable`。因此本轮不伪装隔离恢复或
+  日志型 PITR 已完成，也不以 A143 已证明遗漏 KubeBrain transactional keys 的 TiDB BR full/PITR
+  或 per-CF BR raw 替代。
+
+  静态 executor 审计同时发现 source preflight 只验证 VolumeSnapshotClass driver 非空与 Retain，
+  却没有验证六个 PVC 引用的 StorageClass 是否由相同 CSI driver provision。旧门禁对
+  `VolumeSnapshotClass.driver=csi.example.test`、`StorageClass.provisioner=other.csi.test` 确定性
+  错误返回成功 inventory；随后 executor 会先 pause operator、停止 KubeBrain/TiKV/PD，才在创建
+  snapshot 时失败。commit `09ac24da` 现在对 PD/TiKV inventory 中全部唯一 StorageClass 做只读
+  lookup，要求 provisioner 与 snapshot driver 精确相等；class 缺失或 driver 不同均在停机前
+  fail closed。执行器的完整 fake-cluster fixture也加入相同 StorageClass API，证明 fresh preflight
+  复核不会被测试替身绕过。
+
+  新 mismatch RED 修复后专项普通连续 10 轮 11.299 秒 GREEN；snapshot preflight/execute/witness
+  组合 17.848 秒 GREEN，聚焦 race 16.049 秒 GREEN，`hack/production` 完整包 385.308 秒与相关
+  vet、脚本语法均通过。该项只增强 cold CSI 候选能力的停机前安全门禁；真实 CSI 多卷快照、
+  隔离恢复与日志型 PITR 仍保持显式未完成。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
