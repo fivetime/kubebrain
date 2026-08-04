@@ -34268,6 +34268,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无 alarm。KubeBrain/PD/TiKV 各 3/3 Ready、0 restart，一次性官方 etcd、42379/42380 listener 与
   数据目录均已清理。
 
+- A3555 收尾其余客户端可控 signed revision。源码对照确认 Compact 与 Range 的语义不同：
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go` 会把所有负 Compact revision 归类为 compacted；
+  Watch recv loop 也在 range/duplicate-ID/auth/leader 路径前先把负 StartRevision 转成一个
+  `Created=true,Canceled=true,WatchId=-1` 的 compacted 控制响应，并保持 multiplexed stream 可用。
+  KubeBrain 已在任何 uint64 conversion 前执行同样的 `<0` 分支，因此无需运行时修改。
+
+  新增无写入 raw gRPC 双端门禁，以 MinInt64 分别调用 logical/physical Compact，要求两者均为
+  OutOfRange + 精确 compacted message；再用 MinInt64 StartRevision、MaxInt64 WatchId 和反向 range
+  组合固定负 revision 的最高校验优先级，随后必须还能创建并取消 WatchId=77。首次 oracle 还纠正
+  了测试假设：官方全新空集群的 canceled response header 存在但 revision=0，故契约断言 header
+  presence，而不把数据状态相关的“正数”当协议要求。
+
+  修正后的首轮 0.05 秒、连续 10 轮 0.270 秒、race 1.144 秒 GREEN；完整 compat 1.210 秒、vet 与
+  diff check 通过。commit `27614154` 仅增加永久门禁，生产继续使用已验证的
+  `kubebrain:a3554-unary-negative-revision`，无需无意义滚动。门禁不执行成功写或 compaction，
+  revision/index/applied 保持 468126003565737634；测试前缀 Count=0、lease=0、无 alarm，三个
+  KubeBrain Pod 3/3 Ready、0 restart。一次性官方 etcd、42379/42380 listener 与数据目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
