@@ -34203,6 +34203,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 diff check 通过。每轮双端 12-key 前缀均由既有 cleanup 删除；当前 RangeStream 的 signed
   limit、Count/More 与 unary fallback 语义已对齐，无需修改服务端。
 
+- A3552 修复 `KV.RangeStream.revision` 在有符号 wire 边界的负值 wrap。etcd 的 Range 契约把
+  所有 `revision <= 0` 解释为 latest；KubeBrain 原先在 RPC 层直接执行
+  `uint64(r.Revision)`，使 -1 变成 MaxUint64。静态 12-key 双端差分最初 1.73 秒 GREEN，揭示
+  MaxUint64 在安静存储上会偶然返回相同 key 集，不能作为快照正确性的充分证据；参数捕获的
+  direct RPC 回归随后确定性 RED，实际观察到 backend revision=18446744073709551615。
+
+  RPC 层现仅对正 revision 作无符号转换，-1/MinInt64 都规范化为 backend 的 latest sentinel 0，
+  由 backend 在流启动时读取并钉住当前 revision；正历史 revision 原样保留。这不仅消除类型 wrap，
+  也避免 MaxUint64 过滤器在多 partition scan 期间把流启动后的并发版本纳入结果。direct 边界测试
+  与既有客户端负 revision、future revision、并发写快照钉住测试联合通过；server 全包 162.887 秒、
+  targeted race 1.629 秒、完整 compat 1.533 秒与 vet/diff check 均 GREEN。
+
+  `kubebrain:a3552-rangestream-negative-revision`（代码 SHA
+  `bf62644fb6bfcb207d0d0e81911f5ffcf5357ba2`）已按序滚动三副本。部署后官方/KubeBrain 差分
+  首轮 0.950 秒、连续 10 轮 9.074 秒、race 2.006 秒 GREEN，并同时覆盖 -1 与 MinInt64。
+  KubeBrain/PD/TiKV 各 3/3 Ready、0 restart；测试前缀与 `/dbaas-` Count=0、LeaseList=0、无
+  alarm，revision/index/applied 均为 468126003565737508。全部写入来自每轮 12-key fixture 加一次
+  prefix cleanup，故 revision 从 468126003565737326 精确推进 182；一次性官方 etcd、42379/42380
+  listener 与数据目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
