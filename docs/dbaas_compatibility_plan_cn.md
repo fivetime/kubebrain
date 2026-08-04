@@ -33442,6 +33442,44 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease list、soak 与 backend quorum 前缀均为 0，endpoint health 提交探针 16.24 ms 成功，
   revision/raft index/applied index 均为 `468126003565723517`。
 
+- A3510 修复 PD/TiKV 联合故障诱发 KubeBrain 换主时长 Watch 被 Cancel 或永久静默的问题。
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的长流生命周期和
+  `/root/etcd/client/v3/watch.go` 的显式 revision resume 契约，旧实现有两个相邻缺口：旧 leader
+  退位后 collector 停止但本地 subscriber 不关闭，形成 open-but-silent 流；follower proxy 的
+  `readyClient` 在 2 秒暂无 successor 后直接结束，入口 RPC 随即发送 terminal Cancel。commit
+  `6813010b` 在 `onStoppedLeading` 主动退休本地 watcher，RPC 只在已成功发送的 revision 之后从
+  `syncedRev+1` 经当前 local/proxy source 续接；proxy 将暂无 leader 视作长流正常故障窗口，以
+  显式 revision 和有界退避持续重连到调用方 context 结束。认证 Watch 在 leader 本地创建时也
+  预留可转发凭据，避免换主后无法代理。
+
+  确定性测试固定 local rev10→proxy rev11 无缺失、重复或 Cancel，相关 race 连续 10 轮与完整
+  backend/etcdproxy/etcd/server 回归均通过。官方 clientv3 黑盒门禁以最终线性 Range 为提交态
+  oracle，在同时替换当前 PD leader 与 leader-heavy TiKV 的 5 轮故障中，每轮 42–44 个提交事件
+  均按相同 value/mod revision 恰好交付一次，revision 严格递增，并观察到 5–8 次预期瞬态写
+  失败；总耗时 117.315 秒。生产镜像 `kubebrain:a3510b-proxy-watch-retry` digest 为
+  `sha256:58d43f3a4220fc155e5adb05b0168c344f187b6eb04eb7a46db3ca872cd831a1`，最终三层均
+  3/3 Ready、0 restart，测试前缀 Count=0。
+
+- A3511 继续封闭“外部 Created 已发送、但 follower 尚未取得可用 successor”这一更窄的 Watch
+  创建窗口。旧 `etcdProxy.Watch` 在返回输出流前同步执行 `readyClient`；确定性 RED 让 leader
+  地址持续不可达，旧实现精确等待 2 秒后返回 `Unavailable`，入口会把暂时选主间隙转为不可恢复
+  的 Watch Cancel。commit `d8581a1a` 移除创建路径的同步 readiness 门禁：立即返回由调用方 context 管理的
+  活跃输出流，由已有后台循环以显式 start revision 等待 successor；取消时仍及时关闭，不引入
+  无界 goroutine 或热循环。新测试同时要求创建耗时小于 100ms、无 leader 300ms 内流不关闭、
+  caller cancel 后 1 秒内收尾。定向连续 20 轮、race 连续 10 轮以及 etcdproxy（2.815 秒）、
+  server（0.326 秒）、backend（44.953 秒）、server/etcd（162.777 秒）完整回归均通过。
+
+  新 opt-in 官方 clientv3 门禁直连明确 follower：启动 PD leader + leader-heavy TiKV 同窗替换，
+  先用 Put 的 DeadlineExceeded/Unavailable 证明已经进入真实数据面不可用窗口，再创建显式
+  revision Watch；恢复后写入唯一探针，要求同一 Watch 未 Cancel 且交付完全相同的 value 和
+  mod revision。连续 **5/5 GREEN**，Watch 在确认 outage 后保持 3.13–25.70 秒并分别交付恢复
+  revision，故障窗口均至少有一次瞬态写失败。部署镜像
+  `kubebrain:a3511-watch-create-failover` 本地 ID 为
+  `sha256:29eb60955d37e5ef25937770006032310d5ef39cb490c600e97e9e6b2ec8e8d7`，revision label
+  为 `cf019185db154e4570a28539aad1074b99c2f1bf`，构建时间 `2026-08-04T08:15:15Z`；最终
+  3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，测试前缀 Count=0，endpoint revision/raft
+  index/applied index 均为 `468126003565724066`、term 291。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
