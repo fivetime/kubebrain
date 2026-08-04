@@ -31,6 +31,7 @@ func verifiedTLSContext(ctx context.Context, commonName string) context.Context 
 type authMutationReadShim struct {
 	BackendShim
 	onGet    sync.Once
+	onList   sync.Once
 	onStream sync.Once
 	hook     func()
 }
@@ -50,6 +51,14 @@ func (b *authMutationReadShim) Get(ctx context.Context, request *etcdserverpb.Ra
 	response, err := b.BackendShim.Get(ctx, request)
 	if err == nil {
 		b.onGet.Do(b.hook)
+	}
+	return response, err
+}
+
+func (b *authMutationReadShim) List(ctx context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	response, err := b.BackendShim.List(ctx, request)
+	if err == nil {
+		b.onList.Do(b.hook)
 	}
 	return response, err
 }
@@ -211,6 +220,35 @@ func TestAuthorizedRangeStreamRejectsAuthMutationDuringRead(t *testing.T) {
 	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 	require.NoError(t, mutationErr)
 	require.NotEmpty(t, stream.sent, "the mutation must occur after streaming has begun")
+}
+
+// etcd's doSerialize checks the caller's non-zero auth revision after txn.Txn
+// returns. Keep the mutation between the selected branch read and that final
+// fence so a refactor cannot return data authorized by a stale policy snapshot.
+func TestAuthorizedReadonlyTxnRejectsAuthMutationDuringRead(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/a"), Value: []byte("value")})
+	require.NoError(t, err)
+
+	shim := &authMutationReadShim{BackendShim: server.backend}
+	var mutationErr error
+	shim.hook = func() {
+		mutationErr = server.auth.roleRevokePermission(context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"))
+	}
+	server.backend = shim
+	txn := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true,
+		}},
+	}}}
+
+	_, err = server.Txn(aliceCtx, txn)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+	require.NoError(t, mutationErr)
+	_, err = server.Txn(aliceCtx, txn)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 }
 
 func TestAuthorizedPutAtomicallyRejectsAuthMutationBeforeCommit(t *testing.T) {
