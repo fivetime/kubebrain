@@ -34022,6 +34022,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restore 目录和官方进程，源端测试 key/lease 由有界 cleanup 删除；该门禁证明当前 inline-era
   snapshot 可被官方工具和运行时实际消费，但仍不声称能推导旧非内联历史中从未保存的 lease。
 
+- A3538 在同一官方恢复链上补齐历史 Watch/PrevKV lease 验收。A3537 的 revision Range 与当前
+  lessor 恢复可以同时正确，但仍可能因为 MVCC event restore、watch start revision 或 predecessor
+  关联错误，让官方 watcher 漏事件、乱序，或把 PrevKV 的历史 lease 压成当前绑定。恢复后的
+  官方 etcd 现在从 lease-v1 的 revision 创建 `PrevKv=true` watch，必须依次重放 lease-v1、
+  unleased-v2、lease-v3 三个 PUT；每个 event 的 value/lease 以及后两项 PrevKV 的 value/lease
+  均逐项固定，首项 PrevKV 必须为 nil。
+
+  新 Watch oracle 首轮 3.390 秒 GREEN，连续 10 轮 34.533 秒、race 6.860 秒 GREEN。它与同一
+  测试中的官方 `etcdutl restore`、historical Range、LeaseTimeToLive(Keys=true) 共同证明当前
+  inline-era artifact 的 MVCC/lessor/watch 消费链，而不是只证明 bbolt 能被打开；旧非内联历史
+  lease 的信息论边界继续保持明确未关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
