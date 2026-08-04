@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -16,12 +17,15 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	etcdAuth "go.etcd.io/etcd/server/v3/auth"
+	v3alarm "go.etcd.io/etcd/server/v3/etcdserver/api/v3alarm"
 	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/lease/leasepb"
 	etcdbackend "go.etcd.io/etcd/server/v3/storage/backend"
 	mvcc "go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"go.uber.org/zap/zaptest"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -275,4 +279,61 @@ func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {
 		require.True(t, proto.Equal(alarm, &gotAlarm))
 		return nil
 	}))
+}
+
+func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	password, err := bcrypt.GenerateFromPassword([]byte("alice-secret"), bcrypt.MinCost)
+	require.NoError(t, err)
+	rootPassword, err := bcrypt.GenerateFromPassword([]byte("root-secret"), bcrypt.MinCost)
+	require.NoError(t, err)
+	reader := &authpb.Role{Name: []byte("reader"), KeyPermission: []*authpb.Permission{{
+		Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), PermType: authpb.READ,
+	}}}
+	require.NoError(t, WriteBackend(path, State{
+		Revision: 41,
+		Auth: Auth{Enabled: true, Revision: 7,
+			Users: []*authpb.User{
+				{Name: []byte("root"), Password: rootPassword, Roles: []string{"root"}},
+				{Name: []byte("alice"), Password: password, Roles: []string{"reader"}},
+			},
+			Roles: []*authpb.Role{
+				{Name: []byte("root"), KeyPermission: []*authpb.Permission{{Key: []byte{0}, RangeEnd: []byte{0}, PermType: authpb.READWRITE}}},
+				reader,
+			},
+		},
+		Alarms: []*etcdserverpb.AlarmMember{
+			{MemberID: 23, Alarm: etcdserverpb.AlarmType_NOSPACE},
+			{MemberID: 29, Alarm: etcdserverpb.AlarmType(127)},
+		},
+	}))
+
+	lg := zaptest.NewLogger(t)
+	be := etcdbackend.NewDefaultBackend(lg, path)
+	defer func() { require.NoError(t, be.Close()) }()
+	ready := func(uint64) <-chan struct{} {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	tokens, err := etcdAuth.NewTokenProvider(lg, "simple", ready, time.Minute)
+	require.NoError(t, err)
+	authStore := etcdAuth.NewAuthStore(lg, schema.NewAuthBackend(lg, be), tokens, bcrypt.MinCost)
+	defer func() { require.NoError(t, authStore.Close()) }()
+	require.True(t, authStore.IsAuthEnabled())
+	require.EqualValues(t, 7, authStore.Revision())
+	revision, err := authStore.CheckPassword("alice", "alice-secret")
+	require.NoError(t, err)
+	require.EqualValues(t, 7, revision)
+	alice := &etcdAuth.AuthInfo{Username: "alice", Revision: 7}
+	require.NoError(t, authStore.IsRangePermitted(alice, []byte("/allowed/key"), nil))
+	require.Error(t, authStore.IsRangePermitted(alice, []byte("/denied/key"), nil))
+
+	alarmStore, err := v3alarm.NewAlarmStore(lg, schema.NewAlarmBackend(lg, be))
+	require.NoError(t, err)
+	gotAlarms := make([]string, 0, 2)
+	for _, alarm := range alarmStore.Get(etcdserverpb.AlarmType_NONE) {
+		gotAlarms = append(gotAlarms, fmt.Sprintf("%d/%d", alarm.MemberID, alarm.Alarm))
+	}
+	require.ElementsMatch(t, []string{"23/1", "29/127"}, gotAlarms)
 }
