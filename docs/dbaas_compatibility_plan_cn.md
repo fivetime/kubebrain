@@ -34073,6 +34073,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   遗留的 23 个 seed，线上该 prefix Count=0、LeaseList=0，一次性官方 etcd 进程/data-dir 已
   清理。本轮属于新增兼容性门禁，无需服务端修复。
 
+- A3542 把 LeaseLeases 的既有“初始按 expiry 排序”检查推进到续租后的动态重排。官方
+  `lessor.Leases()` 每次按当前 remaining/expiry 排序；只验证三个不同 TTL 的首次列表，无法发现
+  KeepAlive 更新 deadline 后列表仍沿用创建顺序、旧 heap 位置或 map 顺序的实现偏差。新官方
+  差分创建三个同 TTL 自动 ID 租约，固定目标相对顺序必须从 `a,b,c` 经续租 a 变为
+  `b,c,a`，撤销 b 后变为 `c,a`，全部撤销后目标集合为空。
+
+  门禁同时以独立 seed revision 验证无 attached key 的 Grant、KeepAlive、LeaseLeases 和 Revoke
+  均不推进用户 MVCC revision；目标租约按 ID 从可能存在的外部租约中过滤，因此可安全运行于
+  真实共享 KubeBrain 数据面。官方与 KubeBrain 首轮 0.324 秒 GREEN，连续 10 轮 2.252 秒、
+  race 1.398 秒 GREEN，完整 compat 包、vet 与 diff check 通过。每轮显式撤销三项租约并删除
+  seed，一次性官方 etcd 进程/data-dir 已清理；当前 deadline refresh/list sort 已对齐，无需
+  服务端修改。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
