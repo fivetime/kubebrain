@@ -34223,6 +34223,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   prefix cleanup，故 revision 从 468126003565737326 精确推进 182；一次性官方 etcd、42379/42380
   listener 与数据目录均已清理。
 
+- A3553 把 RangeStream 的 leader/follower 路由从内存 shim 提升为真实三成员网络门禁。复用
+  direct MoveLeader runner：它为官方 `/root/etcd/bin/etcd` 启动三个独立 client/peer listener，
+  并要求 KubeBrain 三个 direct endpoint 暴露同一 cluster、三个不同 member、唯一且在集合内的
+  leader；负载均衡 NodePort 不能替代这项证明。fixture 只经 leader 顺序提交 `a=v1`、`b=vb`、
+  `a=v2`，等待两个 follower 的 serializable watermark 覆盖末次写后，逐 follower 比较 raw
+  RangeStream 与 unary Range。
+
+  门禁覆盖 serializable latest、MinInt64 negative revision、serializable historical 与
+  linearizable latest。除双端结构相等外还有官方绝对断言：latest/negative 必须返回
+  `a=v2,b=vb`，historical 必须返回 `a=v1`，Count 分别为 2/1，所有 header revision 都是 fixture
+  基线 +3，More=false；由此避免官方与 KubeBrain 同错而假绿。runner 新增 fail-closed 的正整数
+  `TEST_COUNT`，非法值在依赖检查和任何集群启动前拒绝。
+
+  三个按 Pod name 精确选择的临时 NodePort（30432/30511/30442）上，首次 follower 差分 5.17 秒、
+  连续 10 轮 49.039 秒、race 4.17 秒 GREEN；完整 compat 1.252 秒、vet、bash syntax 与 diff check
+  通过。commit `9ab8ad10` 仅增加永久门禁，现有 A3450/A3552 服务端语义已与官方一致，无需新镜像。
+  每轮 KubeBrain 的 3 Put + prefix cleanup 使 revision/index/applied 从
+  468126003565737508 精确推进 48 到 468126003565737556；测试前缀和 `/dbaas-` Count=0、lease=0、
+  无 alarm。临时 Service、官方三成员进程/数据和六个 listener 已全部清理；KubeBrain/PD/TiKV
+  各 3/3 Ready、0 restart。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
