@@ -126,9 +126,6 @@ func runHTTPConcurrencyAuthorizationScenario(t *testing.T, endpoint string) http
 	electionLease, err := cli.Grant(ctx, 120)
 	require.NoError(t, err)
 	lockLeaseID, electionLeaseID := lockLease.ID, electionLease.ID
-	_, err = cli.AuthEnable(ctx)
-	require.NoError(t, err)
-
 	rootClient, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
 		Username: "root", Password: rootPassword,
@@ -146,6 +143,8 @@ func runHTTPConcurrencyAuthorizationScenario(t *testing.T, endpoint string) http
 		_, _ = cli.RoleDelete(cleanupCtx, aliceRole)
 		_, _ = cli.RoleDelete(cleanupCtx, "root")
 	})
+	_, err = cli.AuthEnable(ctx)
+	require.NoError(t, err)
 
 	authenticated, err := cli.Authenticate(ctx, "alice", alicePassword)
 	require.NoError(t, err)

@@ -37,12 +37,21 @@ validate_bool_flag() {
   esac
 }
 
+http_endpoint_url() {
+  local endpoint="${1%/}"
+  case "$endpoint" in
+    http://*|https://*) printf '%s\n' "$endpoint" ;;
+    *) printf 'http://%s\n' "$endpoint" ;;
+  esac
+}
+
 validate_bool_flag ALLOW_DESTRUCTIVE_DIFFERENTIAL
 
 if [ -z "$KUBEBRAIN_ENDPOINT" ]; then
   echo "set KUBEBRAIN_ETCD_ENDPOINT to the KubeBrain endpoint under test" >&2
   exit 1
 fi
+KUBEBRAIN_GATEWAY_URL="$(http_endpoint_url "$KUBEBRAIN_ENDPOINT")"
 if [ "$ALLOW_DESTRUCTIVE_DIFFERENTIAL" != true ]; then
   echo "refusing destructive differential suite: Compact advances the target instance's global compact revision" >&2
   echo "use a disposable KubeBrain instance and set ALLOW_DESTRUCTIVE_DIFFERENTIAL=true" >&2
@@ -164,6 +173,8 @@ fi
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
     KUBEBRAIN_ETCD_ENDPOINT="$KUBEBRAIN_ENDPOINT" \
+    REFERENCE_ETCD_GATEWAY_ENDPOINT="${REFERENCE_CLIENT_URL%/}" \
+    KUBEBRAIN_GATEWAY_ENDPOINT="$KUBEBRAIN_GATEWAY_URL" \
     KUBEBRAIN_EXPECTED_MEMBER_COUNT="$KUBEBRAIN_EXPECTED_MEMBER_COUNT" \
     ETCDCTL_BIN="$ETCDCTL_BIN" \
     go test . -run 'Differential(Against|$)' -count=1 -parallel=1 -timeout="$TEST_TIMEOUT" -v

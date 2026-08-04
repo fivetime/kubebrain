@@ -108,9 +108,6 @@ func runHTTPElectionObserveAuthorizationScenario(t *testing.T, endpoint string) 
 	require.NoError(t, err)
 	lease, err := cli.Grant(ctx, 120)
 	require.NoError(t, err)
-	_, err = cli.AuthEnable(ctx)
-	require.NoError(t, err)
-
 	rootClient, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
 		Username: "root", Password: rootPassword,
@@ -127,6 +124,8 @@ func runHTTPElectionObserveAuthorizationScenario(t *testing.T, endpoint string) 
 		_, _ = cli.RoleDelete(cleanupCtx, aliceRole)
 		_, _ = cli.RoleDelete(cleanupCtx, "root")
 	})
+	_, err = cli.AuthEnable(ctx)
+	require.NoError(t, err)
 
 	aliceAuth, err := cli.Authenticate(ctx, "alice", alicePassword)
 	require.NoError(t, err)

@@ -160,3 +160,11 @@ func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
 		"the live runner must not inherit its own opt-in environment into runner unit tests")
 	require.NotContains(t, string(script), "-run Differential -count=1")
 }
+
+func TestDifferentialRunnerEnablesHTTPGatewayScenarios(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	require.Contains(t, string(script), `REFERENCE_ETCD_GATEWAY_ENDPOINT="${REFERENCE_CLIENT_URL%/}"`)
+	require.Contains(t, string(script), `KUBEBRAIN_GATEWAY_ENDPOINT="$KUBEBRAIN_GATEWAY_URL"`)
+	require.Contains(t, string(script), `KUBEBRAIN_GATEWAY_URL="$(http_endpoint_url "$KUBEBRAIN_ENDPOINT")"`)
+}

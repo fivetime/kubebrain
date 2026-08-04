@@ -2,6 +2,7 @@ package compat
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type httpGatewayOutcome struct {
@@ -327,6 +329,20 @@ func runHTTPGatewayAuthScenario(t *testing.T, endpoint string) httpGatewayAuthOu
 	require.Equal(t, http.StatusOK, status)
 	status, _ = post("/v3/auth/user/grant", `{"user":"root","role":"root"}`, "")
 	require.Equal(t, http.StatusOK, status)
+	rootClient, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
+		Username: "root", Password: "a355-password",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, rootClient.Close()) })
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = rootClient.AuthDisable(cleanupCtx)
+		_, _ = rootClient.Revoke(cleanupCtx, clientv3.LeaseID(8563563))
+		_, _ = rootClient.UserDelete(cleanupCtx, "root")
+		_, _ = rootClient.RoleDelete(cleanupCtx, "root")
+	})
 	status, _ = post("/v3/auth/enable", `{}`, "")
 	require.Equal(t, http.StatusOK, status)
 
