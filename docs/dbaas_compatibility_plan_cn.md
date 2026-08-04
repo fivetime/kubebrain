@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；旧非内联数据无法重建每个历史版本的 lease，继续列为差距 |
+| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；旧非内联数据无法重建每个历史版本的 lease，继续列为差距 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -33090,6 +33090,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   term 为 267。验证键已删除，最终生产 revision 为 `468126003565721586`；reference/restore/
   snapshot/RED 与 GREEN 临时目录和进程均已清理。Snapshot 矩阵仍保持“部分兼容”，仅保留旧
   pre-envelope 历史版本 lease 无法事后重建这一已知边界。
+- A3494 消除恢复后历史 Watch 中的 synthetic revision marker：官方 MVCC restore 只从 `key`
+  bucket 最大 main revision、finished compact 与 scheduled compact 恢复 current revision；因此
+  Builder 必须为“published revision 高于最后 retained user row”的合法空洞保留一行。A3493
+  无条件使用命名 tombstone `\x00kubebrain-snapshot-revision`，这虽然不出现在普通 `/registry/`
+  范围，却落入官方全键 Watch 的 `[\x00,+∞)`。直接用官方 `mvcc.New` 打开生成 backend 的 RED
+  在 revision 2 同时回放真实 `visible` PUT 和该命名键 DELETE，证明私有实现细节已成为客户端
+  可观察事件。
+
+  marker 现改为 empty-key tombstone，同时继续放在 snapshot revision 的 fallback subrevision。
+  etcd Watch server 会把空 watch key 规范化为最小合法键 `\x00`，Range/Put/Delete/Txn 又统一拒绝
+  empty key，因此没有任何合法客户端 key 或 interval 能命中它；MVCC restore 仍会处理其 revision
+  key 并把 current revision 精确恢复。永久官方 MVCC 回归故意构造 snapshot revision 9、最后真实
+  row revision 2 的空洞，从 revision 2 做合法全键 Watch，只收到 `visible`，而 response revision
+  仍精确为 9。该测试普通连续 50 轮（0.335s）、race 连续 20 轮（1.328s）通过；Builder/官方
+  MVCC 聚焦连续 20 轮、server Snapshot 回归、server Snapshot race、完整 server 和根模块 vet
+  均通过。
+
+  真实 TiKV/PD 上创建唯一验证键，revision 为 `468126003565721587`；官方 etcdctl 下载
+  4,194,336-byte snapshot，etcdutl status 返回 hash `1466498104`、同 revision、5,975 bucket
+  rows、total size 3,280,896、version 3.7.0。经官方 etcdutl restore 并启动官方 etcd 后，使用
+  `watch '' --prefix --rev=468126003565721587` 覆盖全部合法键，只返回该验证键的一条 PUT，未再
+  出现 synthetic DELETE；恢复端 header revision 仍与源一致。
+
+  生产镜像 `kubebrain:a3494-snapshot-hidden-marker` 的本地 ID 为
+  `sha256:9cd22c3489443c20564aaf26288001079c05d363751d7fbcbcc8fb7ef9c5f298`，构建 SHA 为
+  `62a2da50a46c407e2acc8ddbd76c04e919a27930`、时间为 `2026-08-04T02:59:03Z`；kind runtime
+  digest 为 `sha256:c04c8df1ff40ac73603c4ca1738e309875b495451272258302f663bb185e942f`。
+  三副本均 ready、0 restart，3 PD/3 TiKV 均 ready，health/version/endpoint status 正常，raft
+  term 为 268。验证键删除后生产 revision 为 `468126003565721588`；snapshot/restore 目录、官方
+  etcd 进程与监听端口均已清理。
 
 ### P2：运维兼容和长期验证
 
