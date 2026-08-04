@@ -33580,6 +33580,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList 为空；3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied
   index 均为 `468126003565735711`、term 297。本轮没有 runtime 变更。
 
+- A3517 把此前只能手工提供两个空 endpoint 的完整 Auth 差分固化为独立 fail-closed 门禁。
+  新增 `run-auth-differential.sh`，必须显式提供 `KUBEBRAIN_AUTH_DIFF_ENDPOINT` 和
+  `ALLOW_DESTRUCTIVE_AUTH_DIFFERENTIAL=true`；在启动官方 reference 前要求候选 endpoint
+  healthy、Auth disabled、全键范围为空、无 user/role/lease，并只运行
+  `TestAuthDifferentialAgainstEtcd`。runner 自建一次性官方 etcd 与 data-dir，失败时保留尾部
+  日志，退出时停止进程并清理目录，避免完整 Auth 场景误入共享主 keyspace。
+
+  首个独立 `a3517-auth-diff` TiKV keyspace 与官方 etcd 完整矩阵 10.34 秒通过，随后同一
+  逻辑空 endpoint 连续 5 轮 54.982 秒通过；但专用 runner 用全新 reference 重跑时精确 RED：
+  candidate 虽无键/用户/角色且鉴权关闭，历史 `authRevision=420` 仍与 reference 的 1 不同，
+  绝对 Enabled/Duplicate revision 因而不一致。这证明“空”不足以表示 pristine。runner 现额外
+  强制 `authRevision==1`，旧 keyspace 在启动 reference 前正确拒绝；全新
+  `a3517-auth-diff2` 经专用 runner 7.86 秒 GREEN，`a3517-auth-diff3` 完整 race 12.546 秒
+  GREEN。完整矩阵覆盖维护 RPC、Lease/KeepAlive/List/TTL、Watch、RangeStream、嵌套 Txn、
+  PrevKV、密码与动态 RBAC revision。
+
+  runner fail-closed 专项连续 10 轮、compat 普通全套和 `go vet` 均通过。三个隔离 keyspace
+  用后均为 Auth disabled、无 user/role/lease/key；一次性 Pod、端口转发和 reference 进程均已
+  删除。主 keyspace compat Count=0、AlarmList 为空；3 KubeBrain、3 PD、3 TiKV 均
+  Ready/0 restart，revision/raft index/applied index 均为 `468126003565735711`、term 297。
+  本轮没有 runtime 语义差距，不重建 A3512 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
