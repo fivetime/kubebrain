@@ -59,6 +59,24 @@ type blockingLeaseMetaBackend struct {
 	once    sync.Once
 }
 
+type blockingLeaseCheckpointBackend struct {
+	BackendShim
+	leaseID int64
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	blocked bool
+}
+
+type committedBlockingLeaseCheckpointBackend struct {
+	BackendShim
+	leaseID int64
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
 type blockingLeaseMetaDeleteBackend struct {
 	BackendShim
 	key     []byte
@@ -175,6 +193,59 @@ func (b *blockingLeaseMetaBackend) InternalPut(ctx context.Context, key, value [
 		}
 	}
 	return b.BackendShim.InternalPut(ctx, key, value)
+}
+
+func (b *blockingLeaseCheckpointBackend) block(ctx context.Context, key []byte) error {
+	if string(key) != string(leaseStorageKey(b.leaseID)) {
+		return nil
+	}
+	b.mu.Lock()
+	if b.blocked {
+		b.mu.Unlock()
+		return nil
+	}
+	b.blocked = true
+	b.mu.Unlock()
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *blockingLeaseCheckpointBackend) InternalPut(ctx context.Context, key, value []byte) error {
+	if err := b.block(ctx, key); err != nil {
+		return err
+	}
+	return b.BackendShim.InternalPut(ctx, key, value)
+}
+
+func (b *blockingLeaseCheckpointBackend) InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error {
+	for _, op := range ops {
+		if err := b.block(ctx, op.Key); err != nil {
+			return err
+		}
+	}
+	return b.BackendShim.InternalCAS(ctx, ops)
+}
+
+func (b *committedBlockingLeaseCheckpointBackend) InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error {
+	err := b.BackendShim.InternalCAS(ctx, ops)
+	for _, op := range ops {
+		if string(op.Key) != string(leaseStorageKey(b.leaseID)) {
+			continue
+		}
+		b.once.Do(func() { close(b.entered) })
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		break
+	}
+	return err
 }
 
 func (b observingRevisionBackend) GetCurrentRevision() uint64 {
@@ -1846,6 +1917,112 @@ func TestLeaseCheckpointBoundsReloadAndRenewClearsIt(t *testing.T) {
 	require.Zero(t, checkpoint.RemainingTTL)
 	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision(),
 		"checkpoint clear must remain outside user MVCC")
+}
+
+// TestLeaseRevokeCompletesWhileRenewCheckpointIsBlocked mirrors upstream
+// f8f1074b4/TestLeaseRevokeDuringRenew. A slow remaining-TTL checkpoint must
+// not make the higher-priority Revoke wait, and a renewal that resumes after
+// Revoke completed must report lease-not-found rather than stale success.
+func TestLeaseRevokeCompletesWhileRenewCheckpointIsBlocked(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 9201
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	require.NoError(t, server.persistLeaseCheckpoint(ctx, leaseID, 30, 10))
+	server.leaseMu.Lock()
+	server.leases[leaseID].remainingTTL = 10
+	server.leaseMu.Unlock()
+
+	shim := &blockingLeaseCheckpointBackend{
+		BackendShim: server.backend,
+		leaseID:     leaseID,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	defer func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	}()
+
+	renewDone := make(chan error, 1)
+	go func() {
+		_, renewErr := server.refreshLease(ctx, leaseID)
+		renewDone <- renewErr
+	}()
+	<-shim.entered
+
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, revokeErr := server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+		revokeDone <- revokeErr
+	}()
+	select {
+	case revokeErr := <-revokeDone:
+		require.NoError(t, revokeErr)
+	case <-time.After(time.Second):
+		t.Fatal("LeaseRevoke remained blocked behind a slow renewal checkpoint")
+	}
+	regenerated, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 60, ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(60), regenerated.TTL)
+
+	close(shim.release)
+	requireDirectLeaseError(t, <-renewDone, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound,
+		"etcdserver: requested lease not found")
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(60), ttl.GrantedTTL, "old renewal must not modify the regranted lease generation")
+	require.Positive(t, ttl.TTL)
+}
+
+func TestLeaseRenewDoesNotSucceedWhenRevokeWinsAfterCheckpointCAS(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 9202
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	require.NoError(t, server.persistLeaseCheckpoint(ctx, leaseID, 30, 10))
+	server.leaseMu.Lock()
+	server.leases[leaseID].remainingTTL = 10
+	server.leaseMu.Unlock()
+
+	shim := &committedBlockingLeaseCheckpointBackend{
+		BackendShim: server.backend,
+		leaseID:     leaseID,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	defer func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	}()
+
+	renewDone := make(chan error, 1)
+	go func() {
+		_, renewErr := server.refreshLease(ctx, leaseID)
+		renewDone <- renewErr
+	}()
+	<-shim.entered
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.NoError(t, err)
+	close(shim.release)
+	requireDirectLeaseError(t, <-renewDone, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound,
+		"etcdserver: requested lease not found")
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "completed Revoke must win over the committed checkpoint clear")
 }
 
 func TestLeaseRenewClearsCommittedCheckpointAfterLostWriteResponse(t *testing.T) {

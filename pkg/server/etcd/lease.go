@@ -822,7 +822,7 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 	// already won the exclusive lock must finish before this renewal, while a
 	// successful renewal prevents expiry from observing the old deadline.
 	m.leaseWriteMu.RLock()
-	return m.refreshLeaseHoldingLocks(ctx, id, func() {
+	return m.refreshLeaseHoldingLocks(ctx, id, m.leaseWriteMu.RUnlock, m.leaseWriteMu.RLock, nil, func() {
 		m.leaseWriteMu.RUnlock()
 		m.leaseCheckpointMu.Unlock()
 	})
@@ -844,15 +844,26 @@ func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authC
 		m.leaseCheckpointMu.Unlock()
 		return 0, err
 	}
-	return m.refreshLeaseHoldingLocks(ctx, id, func() {
+	return m.refreshLeaseHoldingLocks(ctx, id, m.leaseWriteMu.Unlock, m.leaseWriteMu.Lock, func() error {
+		return m.authorizeLeaseKeys(ctx, caller, m.keysForLease(id), authpb.WRITE)
+	}, func() {
 		m.leaseWriteMu.Unlock()
 		m.leaseCheckpointMu.Unlock()
 	})
 }
 
 // refreshLeaseHoldingLocks renews a lease while the caller holds
-// leaseCheckpointMu and either side of leaseWriteMu. unlock must release both.
-func (m *leaseManager) refreshLeaseHoldingLocks(ctx context.Context, id int64, unlock func()) (int64, error) {
+// leaseCheckpointMu and either side of leaseWriteMu. A checkpoint clear drops
+// only leaseWriteMu while its guarded CAS is in flight so Revoke is never
+// blocked on a slow metadata write; lockWrite reacquires the same lock mode and
+// unlock releases both locks.
+func (m *leaseManager) refreshLeaseHoldingLocks(
+	ctx context.Context,
+	id int64,
+	unlockWrite, lockWrite func(),
+	afterRelock func() error,
+	unlock func(),
+) (int64, error) {
 	m.leaseMu.Lock()
 	st, ok := m.leases[id]
 	if !ok {
@@ -877,13 +888,34 @@ func (m *leaseManager) refreshLeaseHoldingLocks(ctx context.Context, id int64, u
 		}
 	}
 	checkpointed := st.remainingTTL > 0
+	previousRemainingTTL := st.remainingTTL
 	ttl := st.ttl
 	m.leaseMu.Unlock()
 	if checkpointed {
 		// Match etcd lessor.Renew: clear a persisted remaining-TTL checkpoint
 		// before publishing the renewed full-TTL deadline. At most one such write
-		// occurs per checkpoint interval, not per keepalive.
-		if err := m.persistLeaseCheckpoint(ctx, id, ttl, 0); err != nil {
+		// occurs per checkpoint interval, not per keepalive. Do not hold
+		// leaseWriteMu across the TiKV write: Revoke must be able to delete the
+		// lease concurrently. The exact-value CAS cannot recreate metadata after
+		// that delete, and the original state pointer below fences revoke/regrant
+		// of the same lease ID.
+		unlockWrite()
+		err := m.persistLeaseCheckpointCAS(ctx, id, ttl, previousRemainingTTL, 0)
+		lockWrite()
+		m.leaseMu.Lock()
+		current := m.leases[id]
+		m.leaseMu.Unlock()
+		if current != st {
+			unlock()
+			return 0, leaseNotFound(id)
+		}
+		if afterRelock != nil {
+			if authErr := afterRelock(); authErr != nil {
+				unlock()
+				return 0, authErr
+			}
+		}
+		if err != nil {
 			unlock()
 			return 0, err
 		}
@@ -1867,6 +1899,46 @@ func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, rema
 		return nil
 	}
 	return errors.Join(err, errors.New("lease metadata differs after failed write"))
+}
+
+// persistLeaseCheckpointCAS changes only the expected version of one lease
+// metadata record. It is used by Renew after dropping leaseWriteMu: a concurrent
+// Revoke may delete the record, in which case the CAS must not recreate it.
+func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, fromRemainingTTL, toRemainingTTL int64) error {
+	expected, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: fromRemainingTTL})
+	if err != nil {
+		return err
+	}
+	updated, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: toRemainingTTL})
+	if err != nil {
+		return err
+	}
+	key := leaseStorageKey(id)
+	err = m.srv.backend.InternalCAS(ctx, []backend.InternalCASOp{{
+		Key:            key,
+		Expected:       expected,
+		ExpectedExists: true,
+		Value:          updated,
+	}})
+	if err == nil || errors.Is(err, storage.ErrCASFailed) {
+		return err
+	}
+
+	// As with InternalPut above, a lost commit response is ambiguous. Exact
+	// readback proves success; a concurrent Revoke leaves the key absent and is
+	// resolved by the in-memory generation check after leaseWriteMu is reacquired.
+	reconcileCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx), leaseMetadataReconciliationTimeout,
+	)
+	defer cancel()
+	current, getErr := m.srv.backend.InternalGet(reconcileCtx, key)
+	if getErr == nil && bytes.Equal(current, updated) {
+		return nil
+	}
+	if getErr != nil {
+		return errors.Join(err, fmt.Errorf("inspect lease metadata after failed CAS: %w", getErr))
+	}
+	return errors.Join(err, errors.New("lease metadata differs after failed CAS"))
 }
 
 // attachKeyToStorage records that userKey is attached to lease id as a single

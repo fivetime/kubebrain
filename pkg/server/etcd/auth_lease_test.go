@@ -336,6 +336,59 @@ func TestAuthLeaseKeepAliveExcludesConcurrentProtectedAttachment(t *testing.T) {
 	require.NoError(t, <-putDone)
 }
 
+func TestAuthLeaseKeepAliveReauthorizesAfterCheckpointUnlock(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(
+		context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken),
+	)
+	lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+	_, err = server.Put(aliceCtx, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/leased"), Value: []byte("allowed"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+	require.NoError(t, server.persistLeaseCheckpoint(context.Background(), lease.ID, 60, 10))
+	server.leaseMu.Lock()
+	server.leases[lease.ID].remainingTTL = 10
+	server.leaseMu.Unlock()
+
+	shim := &blockingLeaseCheckpointBackend{
+		BackendShim: server.backend,
+		leaseID:     lease.ID,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	defer func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	}()
+
+	stream := &fakeLeaseKeepAliveServer{
+		ctx: aliceCtx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: lease.ID}},
+	}
+	keepAliveDone := make(chan error, 1)
+	go func() { keepAliveDone <- server.LeaseKeepAlive(stream) }()
+	<-shim.entered
+	_, err = server.Put(rootCtx, &etcdserverpb.PutRequest{
+		Key: []byte("/denied/checkpoint-unlock"), Value: []byte("secret"), Lease: lease.ID,
+	})
+	require.NoError(t, err, "checkpoint clear must release the lease write lock")
+
+	close(shim.release)
+	requireAuthLeaseError(t, <-keepAliveDone, rpctypes.ErrPermissionDenied, codes.Unknown,
+		"etcdserver: permission denied")
+	require.Empty(t, stream.sent, "a renewal must not publish after a newly attached key fails reauthorization")
+}
+
 func TestAuthLeaseKeyCheckRejectsConcurrentAuthRevisionChange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
