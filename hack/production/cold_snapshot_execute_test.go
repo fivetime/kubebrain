@@ -286,10 +286,13 @@ func TestColdSnapshotExecuteRejectsBackendStatefulSetReplacementAfterPause(t *te
 
 func TestColdSnapshotExecuteRejectsTidbClusterFenceLossAfterPause(t *testing.T) {
 	for _, tc := range []struct {
-		name, uidDrift, pauseLost, want string
+		name, uidDrift, pauseLost, specDrift, clusterIDDrift, readyLost, want string
 	}{
 		{name: "controller replaced", uidDrift: "true", want: "TidbCluster UID changed at the maintenance fence"},
 		{name: "pause lost", pauseLost: "true", want: "TidbCluster pause was lost at the maintenance fence"},
+		{name: "spec drift", specDrift: "true", want: "TidbCluster spec changed at the maintenance fence"},
+		{name: "cluster ID drift", clusterIDDrift: "true", want: "TiKV cluster ID changed at the maintenance fence"},
+		{name: "ready lost", readyLost: "true", want: "TidbCluster is not Ready at the maintenance fence"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -316,6 +319,9 @@ func TestColdSnapshotExecuteRejectsTidbClusterFenceLossAfterPause(t *testing.T) 
 				"FAKE_TIDB_READY=true",
 				"FAKE_TIDB_UID_DRIFT_AFTER_PAUSE=" + tc.uidDrift,
 				"FAKE_TIDB_PAUSE_LOST_AFTER_PAUSE=" + tc.pauseLost,
+				"FAKE_TIDB_SPEC_DRIFT_AFTER_PAUSE=" + tc.specDrift,
+				"FAKE_TIDB_CLUSTER_ID_DRIFT_AFTER_PAUSE=" + tc.clusterIDDrift,
+				"FAKE_TIDB_READY_LOST_AFTER_PAUSE=" + tc.readyLost,
 			})
 			require.Error(t, err, string(output))
 			require.Contains(t, string(output), tc.want)
@@ -497,9 +503,14 @@ elif [[ "$args" == *"get tidbcluster"* ]]; then
   ready=True
   [[ "${FAKE_TIDB_READY:-true}" == true ]] || ready=False
   uid=uid-tidb
+  version=v8.5.3
+  cluster_id=7662961163671170154
   paused_field=
   if grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
     paused_field='"paused":true,'
+    [[ "${FAKE_TIDB_SPEC_DRIFT_AFTER_PAUSE:-false}" != true ]] || version=v8.5.4
+    [[ "${FAKE_TIDB_CLUSTER_ID_DRIFT_AFTER_PAUSE:-false}" != true ]] || cluster_id=7662961163671170999
+    [[ "${FAKE_TIDB_READY_LOST_AFTER_PAUSE:-false}" != true ]] || ready=False
   fi
   if [[ "${FAKE_TIDB_PAUSE_LOST_AFTER_PAUSE:-false}" == true ]] && [[ -n "$paused_field" ]]; then
     paused_field=
@@ -507,7 +518,7 @@ elif [[ "$args" == *"get tidbcluster"* ]]; then
   if [[ "${FAKE_TIDB_UID_DRIFT_AFTER_PAUSE:-false}" == true ]] && grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
     uid=replacement-uid-tidb
   fi
-  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"%s","resourceVersion":"10"},"spec":{%s"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"7662961163671170154","conditions":[{"type":"Ready","status":"%s"}]}}' "$uid" "$paused_field" "$ready"
+  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"%s","resourceVersion":"10"},"spec":{%s"version":"%s","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"%s","conditions":[{"type":"Ready","status":"%s"}]}}' "$uid" "$paused_field" "$version" "$cluster_id" "$ready"
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"jsonpath"* ]]; then
   printf 'uid-kubebrain'
 elif [[ "$args" == *"get statefulset"* ]]; then

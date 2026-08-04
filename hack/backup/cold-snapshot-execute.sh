@@ -204,6 +204,13 @@ tikv_json="$(kctl -n "$TIDB_NAMESPACE" get statefulset "$tikv_name" -o json)"
   fail_input "TidbCluster UID changed at the maintenance fence"
 [[ "$(jq -r '.spec.paused // false' <<<"$tc_json")" == true ]] ||
   fail_input "TidbCluster pause was lost at the maintenance fence"
+[[ "$(jq -cS '.spec | del(.paused)' <<<"$tc_json")" == \
+  "$(jq -cS '.recovery_blueprint.tidbcluster.spec | del(.paused)' <<<"$inventory")" ]] ||
+  fail_input "TidbCluster spec changed at the maintenance fence"
+[[ "$(jq -r '.status.clusterID' <<<"$tc_json")" == "$EXPECTED_TIKV_CLUSTER_ID" ]] ||
+  fail_input "TiKV cluster ID changed at the maintenance fence"
+jq -e '[.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 1' \
+  <<<"$tc_json" >/dev/null || fail_input "TidbCluster is not Ready at the maintenance fence"
 [[ "$(jq -r '.metadata.uid' <<<"$kb_json")" == "$kb_uid" ]] ||
   fail_input "KubeBrain StatefulSet UID changed at the maintenance fence"
 [[ "$(jq -r '.metadata.uid' <<<"$pd_json")" == "$pd_uid" ]] ||
