@@ -18,6 +18,7 @@ type normalizedRangeStreamScenario struct {
 	Unlimited        normalizedRange
 	Limited          normalizedRange
 	CountOnly        normalizedRange
+	CountKeysLimit   normalizedRange
 	KeysOnly         normalizedRange
 	Explicit         normalizedRange
 	Negative         normalizedRange
@@ -95,6 +96,8 @@ func TestRangeStreamDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, etcd.Unlimited, etcd.MaxLimit, "MaxInt64 exceeds this result set without truncating it")
 	require.Equal(t, etcd.Unlimited, etcd.NegativeRevision, "a negative revision selects the latest snapshot")
 	require.Equal(t, etcd.Unlimited, etcd.MinRevision, "MinInt64 revision selects the latest snapshot without unsigned wrap")
+	require.Equal(t, normalizedRange{HeaderRev: 12, KVs: []normalizedKV{}, Count: 12}, etcd.CountKeysLimit,
+		"CountOnly must suppress KeysOnly payload and ignore Limit without setting More")
 	require.Equal(t, etcd, kubebrain)
 }
 
@@ -133,9 +136,13 @@ func runRangeStreamScenario(t *testing.T, endpoint, instance string) normalizedR
 	}
 
 	return normalizedRangeStreamScenario{
-		Unlimited:        run(),
-		Limited:          run(clientv3.WithLimit(5)),
-		CountOnly:        run(clientv3.WithCountOnly(), clientv3.WithLimit(1)),
+		Unlimited: run(),
+		Limited:   run(clientv3.WithLimit(5)),
+		CountOnly: run(clientv3.WithCountOnly(), clientv3.WithLimit(1)),
+		CountKeysLimit: run(
+			clientv3.WithCountOnly(), clientv3.WithKeysOnly(), clientv3.WithLimit(1),
+			clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+		),
 		KeysOnly:         run(clientv3.WithKeysOnly()),
 		Explicit:         run(clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend), clientv3.WithLimit(5)),
 		Negative:         run(clientv3.WithLimit(-1)),

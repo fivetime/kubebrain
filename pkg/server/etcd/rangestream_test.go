@@ -504,6 +504,10 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 		req  *etcdserverpb.RangeRequest
 	}{
 		{name: "count only ignores limit", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), CountOnly: true, Limit: 1}},
+		{name: "count only overrides keys limit and sort", req: &etcdserverpb.RangeRequest{
+			Key: []byte("/options/"), RangeEnd: []byte("/options0"), CountOnly: true, KeysOnly: true, Limit: 1,
+			SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY,
+		}},
 		{name: "limit", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3}},
 		{name: "explicit ascending key", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
 		{name: "keys only", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), KeysOnly: true}},
