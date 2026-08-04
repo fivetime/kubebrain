@@ -128,6 +128,10 @@ type BackendShim interface {
 	// (etcd 3.7).
 	RangeStreamChan(ctx context.Context, startKey, endKey []byte, revision uint64) (<-chan rangeStreamChunk, error)
 
+	// SnapshotStreamChan streams the complete current user keyspace without the
+	// decoded-range fallback used to preserve KV.RangeStream's user-key order.
+	SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error)
+
 	// Watch subscribe the changes from revision on kvs with given prefix. Event
 	// batches arrive as WatchResult{Events}; in-band progress markers arrive as
 	// WatchResult{ProgressRevision} so a quiet watch's progress can advance. This
@@ -1050,6 +1054,25 @@ func (b *backendShim) RangeStreamChan(ctx context.Context, startKey, endKey []by
 		cancel()
 		return nil, err
 	}
+	return b.translateRangeStream(ctx, cancel, ch, fmt.Sprintf("[%s,%s)", startKey, endKey)), nil
+}
+
+func (b *backendShim) SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error) {
+	scanCtx, cancel := context.WithCancel(ctx)
+	ch, err := b.backend.SnapshotStream(scanCtx, revision)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return b.translateRangeStream(ctx, cancel, ch, "complete keyspace"), nil
+}
+
+func (b *backendShim) translateRangeStream(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	ch <-chan *proto.StreamRangeResponse,
+	description string,
+) <-chan rangeStreamChunk {
 	out := make(chan rangeStreamChunk)
 	go func() {
 		defer close(out)
@@ -1077,7 +1100,7 @@ func (b *backendShim) RangeStreamChan(ctx context.Context, startKey, endKey []by
 					return
 				}
 				if in == nil || in.RangeResponse == nil || in.RangeResponse.Header == nil {
-					send(rangeStreamChunk{err: fmt.Errorf("invalid range-stream response for [%s,%s)", startKey, endKey)})
+					send(rangeStreamChunk{err: fmt.Errorf("invalid range-stream response for %s", description)})
 					return
 				}
 				rr := in.RangeResponse
@@ -1106,7 +1129,7 @@ func (b *backendShim) RangeStreamChan(ctx context.Context, startKey, endKey []by
 			}
 		}
 	}()
-	return out, nil
+	return out
 }
 
 func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<-chan etcdproxy.WatchResult, error) {

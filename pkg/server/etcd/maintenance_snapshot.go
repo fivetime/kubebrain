@@ -20,53 +20,116 @@ import (
 
 const snapshotSendBufferSize = 32 * 1024
 
-func (s *RPCServer) snapshotState(ctx context.Context) (production.State, error) {
+var errSnapshotChanged = errors.New("snapshot state changed while it was captured")
+
+// buildSnapshot retries the complete capture if the cluster-visible revision or
+// lease bindings move while a follower is scanning. Each failed attempt owns a
+// fresh bbolt file; no partially captured backend can be sent to the client.
+func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 	for attempt := 0; ; attempt++ {
-		state, err := s.snapshotStateOnce(ctx)
+		_ = os.Remove(path)
+		err := s.buildSnapshotOnce(ctx, path)
 		if !errors.Is(err, errSnapshotChanged) {
-			return state, err
+			return err
 		}
 		if attempt >= 7 {
-			return production.State{}, fmt.Errorf("capture stable etcd snapshot: %w", err)
+			return fmt.Errorf("capture stable etcd snapshot: %w", err)
 		}
 		select {
 		case <-ctx.Done():
-			return production.State{}, ctx.Err()
+			return ctx.Err()
 		case <-time.After(time.Duration(attempt+1) * time.Millisecond):
 		}
 	}
 }
 
-var errSnapshotChanged = errors.New("snapshot state changed while it was captured")
-
-func (s *RPCServer) snapshotStateOnce(ctx context.Context) (production.State, error) {
+func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr error) {
 	rangeCtx, unlock := s.backend.BeginRangeTxn(ctx)
 	defer unlock()
 	ctx = rangeCtx
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return production.State{}, readBarrierStatusErr(err)
+		return readBarrierStatusErr(err)
 	}
 	revision, err := safeBackendRevision(ctx, s.backend)
 	if err != nil {
-		return production.State{}, err
+		return err
 	}
-	response, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
-		Key: []byte{0}, RangeEnd: []byte{0}, Revision: int64(revision),
-	})
+	state, leaseIDs, err := s.snapshotMetadata(ctx, int64(revision))
 	if err != nil {
-		return production.State{}, err
+		return err
 	}
-	state := production.State{Revision: int64(revision), Records: make([]production.Record, 0, len(response.Kvs))}
-	for _, kv := range response.Kvs {
-		state.Records = append(state.Records, production.Record{
-			Key: kv.Key, Value: kv.Value, CreateRevision: kv.CreateRevision,
-			ModRevision: kv.ModRevision, Version: kv.Version, Lease: kv.Lease,
-		})
+	builder, err := production.NewBuilder(path, state)
+	if err != nil {
+		return fmt.Errorf("create etcd snapshot backend: %w", err)
 	}
+	defer func() {
+		if err := builder.Close(); retErr == nil && err != nil {
+			retErr = err
+		}
+	}()
 
+	chunks, err := s.backend.SnapshotStreamChan(ctx, revision)
+	if err != nil {
+		return err
+	}
+	sawTerminal := false
+	for chunk := range chunks {
+		if chunk.err != nil {
+			return chunk.err
+		}
+		if chunk.resp == nil || chunk.resp.Header == nil || chunk.resp.Header.Revision != int64(revision) {
+			return errSnapshotChanged
+		}
+		if len(chunk.resp.Kvs) == 0 {
+			sawTerminal = true
+			continue
+		}
+		if sawTerminal {
+			return fmt.Errorf("range stream returned records after its terminal chunk")
+		}
+		records := make([]production.Record, 0, len(chunk.resp.Kvs))
+		for _, kv := range chunk.resp.Kvs {
+			if kv.Lease != 0 {
+				if _, ok := leaseIDs[kv.Lease]; !ok {
+					return errSnapshotChanged
+				}
+			}
+			records = append(records, production.Record{
+				Key: kv.Key, Value: kv.Value, CreateRevision: kv.CreateRevision,
+				ModRevision: kv.ModRevision, Version: kv.Version, Lease: kv.Lease,
+			})
+		}
+		if err = builder.Append(records); err != nil {
+			return fmt.Errorf("append etcd snapshot records: %w", err)
+		}
+	}
+	if !sawTerminal {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("range stream ended without a terminal revision")
+	}
+	if err := s.peers.SyncReadRevision(ctx); err != nil {
+		return readBarrierStatusErr(err)
+	}
+	latestRevision, err := safeBackendRevision(ctx, s.backend)
+	if err != nil {
+		return err
+	}
+	if latestRevision != revision {
+		return errSnapshotChanged
+	}
+	if err = builder.Finish(); err != nil {
+		return fmt.Errorf("finish etcd snapshot backend: %w", err)
+	}
+	return nil
+}
+
+func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (production.State, map[int64]struct{}, error) {
+	state := production.State{Revision: revision}
 	auth, err := s.auth.repo.load(ctx)
 	if err != nil {
-		return production.State{}, err
+		return production.State{}, nil, err
 	}
 	state.Auth.Enabled = auth.Config.Enabled
 	state.Auth.Revision = auth.Config.Revision
@@ -79,7 +142,7 @@ func (s *RPCServer) snapshotStateOnce(ctx context.Context) (production.State, er
 
 	leaseRecords, _, err := s.loadLeaseRecords(ctx)
 	if err != nil {
-		return production.State{}, err
+		return production.State{}, nil, err
 	}
 	now := time.Now()
 	sort.Slice(leaseRecords, func(i, j int) bool { return leaseRecords[i].ID < leaseRecords[j].ID })
@@ -87,7 +150,6 @@ func (s *RPCServer) snapshotStateOnce(ctx context.Context) (production.State, er
 	for _, record := range leaseRecords {
 		remaining := record.RemainingTTL
 		if record.DeadlineUnixNano > 0 {
-			// Use the same captured clock for every lease in the snapshot.
 			until := time.Unix(0, record.DeadlineUnixNano).Sub(now)
 			remaining = int64((until + time.Second - 1) / time.Second)
 			if remaining <= 0 {
@@ -101,52 +163,30 @@ func (s *RPCServer) snapshotStateOnce(ctx context.Context) (production.State, er
 			ID: record.ID, GrantedTTL: record.TTL, RemainingTTL: remaining,
 		})
 	}
-	for _, record := range state.Records {
-		if record.Lease == 0 {
-			continue
-		}
-		if _, ok := leaseIDs[record.Lease]; !ok {
-			return production.State{}, errSnapshotChanged
-		}
-	}
 
 	noSpace, err := s.backend.NoSpaceAlarms(ctx)
 	if err != nil {
-		return production.State{}, err
+		return production.State{}, nil, err
 	}
 	for _, memberID := range noSpace {
 		state.Alarms = append(state.Alarms, &etcdserverpb.AlarmMember{MemberID: memberID, Alarm: etcdserverpb.AlarmType_NOSPACE})
 	}
 	corrupt, err := s.backend.CorruptAlarms(ctx)
 	if err != nil {
-		return production.State{}, err
+		return production.State{}, nil, err
 	}
 	for _, memberID := range corrupt {
 		state.Alarms = append(state.Alarms, &etcdserverpb.AlarmMember{MemberID: memberID, Alarm: etcdserverpb.AlarmType_CORRUPT})
 	}
 	generic, err := s.genericAlarms(ctx, etcdserverpb.AlarmType_NONE)
 	if err != nil {
-		return production.State{}, err
+		return production.State{}, nil, err
 	}
 	state.Alarms = append(state.Alarms, generic...)
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return production.State{}, readBarrierStatusErr(err)
-	}
-	latestRevision, err := safeBackendRevision(ctx, s.backend)
-	if err != nil {
-		return production.State{}, err
-	}
-	if latestRevision != revision {
-		return production.State{}, errSnapshotChanged
-	}
-	return state, nil
+	return state, leaseIDs, nil
 }
 
 func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer) error {
-	state, err := s.snapshotState(stream.Context())
-	if err != nil {
-		return err
-	}
 	tmp, err := os.CreateTemp("", ".kubebrain-maintenance-snapshot-*.db")
 	if err != nil {
 		return err
@@ -157,8 +197,8 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 		return closeErr
 	}
 	defer os.Remove(path)
-	if err = production.WriteBackend(path, state); err != nil {
-		return fmt.Errorf("write etcd snapshot backend: %w", err)
+	if err = s.buildSnapshot(stream.Context(), path); err != nil {
+		return err
 	}
 	f, err := os.Open(path)
 	if err != nil {

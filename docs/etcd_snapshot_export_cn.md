@@ -1,9 +1,19 @@
 # 导出可由官方 etcd 恢复的快照
 
-KubeBrain 的在线存储是独立 TiKV/PD，不存在可直接流式复制的本地 etcd bbolt backend。
-`Maintenance.Snapshot` 因此仍返回 `Unimplemented`。对于需要从 KubeBrain 迁移到官方
-etcd 的场景，可以先生成全 keyspace 的 `kubebrain.logical.v2` 制品，再离线转换为带
-SHA-256 尾部、可由官方 `etcdutl snapshot restore` 消费的 etcd 3.7 backend snapshot。
+KubeBrain 的在线存储是独立 TiKV/PD，不存在可直接复制的本地 etcd bbolt backend。当前
+`Maintenance.Snapshot` 会在固定 revision 上以有界 chunk 扫描用户 keyspace，增量生成带
+SHA-256 尾部的 etcd 3.7 backend snapshot；root 可以直接使用官方 etcdctl：
+
+```bash
+ETCDCTL_API=3 etcdctl --endpoints=http://kubebrain:3379 snapshot save snapshot.db
+etcdutl snapshot status snapshot.db -w json
+etcdutl snapshot restore snapshot.db --data-dir restored.etcd
+```
+
+在线快照保留当前 KV metadata、lease、auth 用户/角色/修订和 alarm。输出是 compacted
+current-state，不包含旧 MVCC history，也不替代 TiKV 物理 PITR。
+
+对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 
 ```bash
 ENDPOINT=http://kubebrain:3379 \
@@ -44,8 +54,8 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 - 逻辑制品不包含密码哈希、auth revision 或 token signing state，因此输出 snapshot 强制
   `auth disabled`；不得把它当作保留 KubeBrain 认证配置的迁移方式。
 - member、Raft/WAL、cluster ID 由 `etcdutl snapshot restore` 为目标集群重新生成。
-- 这是一条离线迁移/导出路径，不是同步 `Maintenance.Snapshot` RPC，也不是 PITR、增量备份
-  或 TiKV 物理灾备的替代品。
+- 这条转换命令是离线迁移/导出路径，不是 PITR、增量备份或 TiKV 物理灾备的替代品；需要
+  保留 auth 配置时应优先使用在线 `Maintenance.Snapshot`。
 - `kubebrain.logical.v2` 本身仍不能直接交给 `etcdutl`；必须先通过转换器。
 
 发布门禁应至少包含：转换器单元与 race 测试、官方 snapshot status、官方 restore、恢复后

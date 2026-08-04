@@ -509,3 +509,19 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
 	return b.scanner.RangeStream(ctx, key, rangeEnd, rev, false), nil
 }
+
+// SnapshotStream scans the complete physical object keyspace. Snapshot output
+// is keyed by MVCC revision rather than user-key order, so it can use this path
+// without the decoded full-range materialization required by KV.RangeStream.
+func (b *backend) SnapshotStream(ctx context.Context, rev uint64) (<-chan *proto.StreamRangeResponse, error) {
+	curRev, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if rev == 0 {
+		rev = curRev
+	}
+	return b.scanner.RangeStream(
+		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), rev, false,
+	), nil
+}

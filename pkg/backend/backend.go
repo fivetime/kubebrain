@@ -196,6 +196,10 @@ type Backend interface {
 	// (symmetric with List), so callers pass raw user keys.
 	RangeStream(ctx context.Context, userStart, userEnd []byte, revision uint64) (<-chan *proto.StreamRangeResponse, error)
 
+	// SnapshotStream scans the complete object keyspace in bounded chunks. User
+	// key order is unspecified; consumers persist records by MVCC revision.
+	SnapshotStream(ctx context.Context, revision uint64) (<-chan *proto.StreamRangeResponse, error)
+
 	// Watch subscribe the changes from revision on kvs with given prefix
 	Watch(ctx context.Context, key string, revision uint64) (<-chan []*proto.Event, error)
 

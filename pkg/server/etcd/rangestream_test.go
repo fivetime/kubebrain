@@ -289,6 +289,26 @@ func TestRangeStreamPreservesBinaryUserKeyOrdering(t *testing.T) {
 	require.False(t, final.More)
 }
 
+func TestRangeStreamFullKeyspaceSentinelPreservesBinaryKeys(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	for i, key := range [][]byte{{0x00}, {0x00, 0x00}, {0x00, '$'}, {0x01}, []byte("ordinary")} {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte{byte(i)}})
+		require.NoError(t, err)
+	}
+	req := &etcdserverpb.RangeRequest{Key: []byte{0}, RangeEnd: []byte{0}}
+	unary, err := server.Range(ctx, proto.Clone(req).(*etcdserverpb.RangeRequest))
+	require.NoError(t, err)
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(req, stream))
+	merged := &etcdserverpb.RangeResponse{}
+	for _, chunk := range stream.sent {
+		proto.Merge(merged, chunk.RangeResponse)
+	}
+	require.True(t, proto.Equal(unary, merged), "stream=%s unary=%s", merged, unary)
+}
+
 func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()

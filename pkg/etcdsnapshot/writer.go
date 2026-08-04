@@ -6,7 +6,6 @@ package etcdsnapshot
 import (
 	"encoding/binary"
 	"fmt"
-	"sort"
 
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -66,33 +65,44 @@ func WriteBackend(path string, state State) error {
 	if state.Revision < 0 {
 		return fmt.Errorf("snapshot revision must not be negative: %d", state.Revision)
 	}
-	records := append([]Record(nil), state.Records...)
-	for i := range records {
-		if err := validateRecord(records[i], state.Revision); err != nil {
-			return fmt.Errorf("record %d: %w", i+1, err)
-		}
-	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].ModRevision != records[j].ModRevision {
-			return records[i].ModRevision < records[j].ModRevision
-		}
-		return string(records[i].Key) < string(records[j].Key)
-	})
-
-	db, err := bolt.Open(path, 0o600, nil)
+	builder, err := NewBuilder(path, state)
 	if err != nil {
 		return err
 	}
-	if err = db.Update(func(tx *bolt.Tx) error {
-		return writeState(tx, state, records)
-	}); err != nil {
-		_ = db.Close()
+	defer builder.Close()
+	if err = builder.Append(state.Records); err != nil {
 		return err
 	}
-	return db.Close()
+	return builder.Finish()
 }
 
-func writeState(tx *bolt.Tx, state State, records []Record) error {
+// Builder incrementally commits record batches into a private snapshot file.
+// Committed bbolt pages, rather than the complete keyspace, hold prior batches.
+type Builder struct {
+	db       *bolt.DB
+	revision int64
+	nextSub  int64
+	finished bool
+}
+
+func NewBuilder(path string, state State) (*Builder, error) {
+	if state.Revision < 0 {
+		return nil, fmt.Errorf("snapshot revision must not be negative: %d", state.Revision)
+	}
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		return nil, err
+	}
+	builder := &Builder{db: db, revision: state.Revision}
+	if err = db.Update(func(tx *bolt.Tx) error { return writeMetadata(tx, state) }); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return builder, nil
+}
+
+func writeMetadata(tx *bolt.Tx, state State) error {
+	var err error
 	for _, name := range allBuckets {
 		if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 			return err
@@ -114,30 +124,6 @@ func writeState(tx *bolt.Tx, state State, records []Record) error {
 		if err := meta.Put(name, compact); err != nil {
 			return err
 		}
-	}
-
-	subs := make(map[int64]int64)
-	keys := tx.Bucket(keyBucket)
-	for _, rec := range records {
-		encoded, err := proto.Marshal(&mvccpb.KeyValue{
-			Key: rec.Key, Value: rec.Value, CreateRevision: rec.CreateRevision,
-			ModRevision: rec.ModRevision, Version: rec.Version, Lease: rec.Lease,
-		})
-		if err != nil {
-			return err
-		}
-		if err = keys.Put(revisionBytes(rec.ModRevision, subs[rec.ModRevision]), encoded); err != nil {
-			return err
-		}
-		subs[rec.ModRevision]++
-	}
-	marker, err := proto.Marshal(&mvccpb.KeyValue{Key: []byte("\x00kubebrain-snapshot-revision")})
-	if err != nil {
-		return err
-	}
-	markerKey := append(revisionBytes(state.Revision, subs[state.Revision]), 't')
-	if err = keys.Put(markerKey, marker); err != nil {
-		return err
 	}
 
 	for _, lease := range state.Leases {
@@ -203,6 +189,71 @@ func writeState(tx *bolt.Tx, state State, records []Record) error {
 		}
 	}
 	return nil
+}
+
+func (b *Builder) Append(records []Record) error {
+	if b == nil || b.db == nil {
+		return fmt.Errorf("snapshot builder is closed")
+	}
+	if b.finished {
+		return fmt.Errorf("snapshot builder is already finished")
+	}
+	for i := range records {
+		if err := validateRecord(records[i], b.revision); err != nil {
+			return fmt.Errorf("record %d: %w", b.nextSub+int64(i)+1, err)
+		}
+	}
+	nextSub := b.nextSub
+	err := b.db.Update(func(tx *bolt.Tx) error {
+		keys := tx.Bucket(keyBucket)
+		for _, rec := range records {
+			encoded, err := proto.Marshal(&mvccpb.KeyValue{
+				Key: rec.Key, Value: rec.Value, CreateRevision: rec.CreateRevision,
+				ModRevision: rec.ModRevision, Version: rec.Version, Lease: rec.Lease,
+			})
+			if err != nil {
+				return err
+			}
+			if err = keys.Put(revisionBytes(rec.ModRevision, nextSub), encoded); err != nil {
+				return err
+			}
+			nextSub++
+		}
+		return nil
+	})
+	if err == nil {
+		b.nextSub = nextSub
+	}
+	return err
+}
+
+func (b *Builder) Finish() error {
+	if b == nil || b.db == nil {
+		return fmt.Errorf("snapshot builder is closed")
+	}
+	if b.finished {
+		return fmt.Errorf("snapshot builder is already finished")
+	}
+	marker, err := proto.Marshal(&mvccpb.KeyValue{Key: []byte("\x00kubebrain-snapshot-revision")})
+	if err != nil {
+		return err
+	}
+	err = b.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(keyBucket).Put(append(revisionBytes(b.revision, b.nextSub), 't'), marker)
+	})
+	if err == nil {
+		b.finished = true
+	}
+	return err
+}
+
+func (b *Builder) Close() error {
+	if b == nil || b.db == nil {
+		return nil
+	}
+	err := b.db.Close()
+	b.db = nil
+	return err
 }
 
 func revisionBytes(main, sub int64) []byte {

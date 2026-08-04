@@ -4,6 +4,7 @@
 package etcdsnapshot
 
 import (
+	"bytes"
 	"encoding/binary"
 	"path/filepath"
 	"testing"
@@ -12,10 +13,44 @@ import (
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/server/v3/lease/leasepb"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"google.golang.org/protobuf/proto"
 )
+
+func TestBuilderAppendsMultipleBatchesWithoutLosingSameRevisionRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	builder, err := NewBuilder(path, State{Revision: 12})
+	require.NoError(t, err)
+	require.NoError(t, builder.Append([]Record{
+		{Key: []byte("c"), Value: []byte("3"), CreateRevision: 7, ModRevision: 12, Version: 2},
+		{Key: []byte("a"), Value: []byte("1"), CreateRevision: 10, ModRevision: 10, Version: 1},
+	}))
+	require.NoError(t, builder.Append([]Record{
+		{Key: []byte("b"), Value: []byte("2"), CreateRevision: 12, ModRevision: 12, Version: 1},
+	}))
+	require.NoError(t, builder.Finish())
+	require.NoError(t, builder.Close())
+
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	got := make(map[string]string)
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(schema.Key.Name()).ForEach(func(_, value []byte) error {
+			var kv mvccpb.KeyValue
+			if err := proto.Unmarshal(value, &kv); err != nil {
+				return err
+			}
+			if !bytes.Equal(kv.Key, []byte("\x00kubebrain-snapshot-revision")) {
+				got[string(kv.Key)] = string(kv.Value)
+			}
+			return nil
+		})
+	}))
+	require.Equal(t, map[string]string{"a": "1", "b": "2", "c": "3"}, got)
+}
 
 func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
