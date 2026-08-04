@@ -33232,6 +33232,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key 全部一致。生产样本删除并 revoke 后 revision 为 `468126003565721592`、term 276；隔离进程、
   32379/32380 端口和临时目录均已清理。
 
+- A3500 将 Snapshot 的 auth/alarm 门禁从“bbolt bucket 可反序列化”提升到官方恢复组件的
+  可观察语义。审计 `auth.NewAuthStore`、`schema.NewAuthBackend`、`v3alarm.NewAlarmStore` 与官方
+  startup restore 路径后，commit `624ae14f` 新增永久制品测试：官方 auth store 直接打开
+  KubeBrain builder 输出，必须恢复 auth enabled、精确 revision 7、root/alice bcrypt 密码、reader
+  role，以及 `/allowed/` 成功、`/denied/` 拒绝的 range permission；官方 alarm store 必须同时恢复
+  NOSPACE 和未知类型 127 的原 member ID。聚焦连续 20 轮、race 连续 10 轮、完整 etcdsnapshot
+  与 vet 均通过，未发现需修改生产 writer 的编码差异。
+
+  同时对生产 A3499 恢复时观察到的 lease TTL 回跳做了官方差分：KubeBrain 源 TTL 282/300，
+  restore 后约 294/300；独立官方 etcd 源 TTL 43/60，经官方 snapshot/restore 后同样约 57/60。
+  `/root/etcd/server/lease/lessor.go:initAndRecover/Promote` 证明这是 lease bucket 的 granted TTL/周期
+  checkpoint 契约，不是实时倒计时快照。没有为了表面“更精确”写入非官方状态；文档明确 token
+  与逐秒 TTL 的重启边界。本轮只有测试和文档，生产继续运行 A3499；官方 32479/32480、
+  32579/32580 实例和临时目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

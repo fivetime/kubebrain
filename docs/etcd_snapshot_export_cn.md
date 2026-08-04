@@ -13,7 +13,9 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 在线快照保留 KV MVCC history、真实 compact watermark、当前 lease、auth 用户/角色/修订和
 alarm。旧的非内联数据布局没有逐历史版本 lease 字段，因此只能由固定在同一线性化点的
 durable key→lease attachment 精确恢复当前版本；这类数据的旧历史版本 lease 会退化为 0。
-输出仍不替代 TiKV 物理 PITR。
+lease 的倒计时按官方 etcd 的持久 checkpoint 语义恢复，而不是逐秒保存抓取瞬间的实时 TTL；
+auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的用户凭据重新认证。输出仍不
+替代 TiKV 物理 PITR。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 
