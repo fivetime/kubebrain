@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；当前无已知语义差异，继续扩大生成式输入与长时故障 soak |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；当前无已知语义差异，继续扩大生成式输入与长时故障 soak |
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；当前无已知语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -34033,6 +34033,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试中的官方 `etcdutl restore`、historical Range、LeaseTimeToLive(Keys=true) 共同证明当前
   inline-era artifact 的 MVCC/lessor/watch 消费链，而不是只证明 bbolt 能被打开；旧非内联历史
   lease 的信息论边界继续保持明确未关闭。
+
+- A3539 按 RangeRequest proto 字段复核官方差分覆盖，补齐四个 revision filter 的负值、极值与
+  inverted bounds。对照 `/root/etcd/server/etcdserver/txn/range.go`：filter 以“非零即启用”参与
+  KV prune，负 min 不过滤正 revision，负 max 过滤全部，MaxInt64 min/max 分别过滤全部/不过滤；
+  min>max 返回空 KV。新 raw gRPC 矩阵覆盖 Min/Max Mod/Create、point/range、KeysOnly+Limit 与
+  CountOnly，共 11 种请求，并同时比较 keys、Count、More。
+
+  显式官方期望首次暴露一个容易写错测试的契约：revision filter 只 prune `Kvs`，不会重算底层
+  RangeResult.Count；所以三键范围即使过滤为空仍 `Count=3`，point 仍 `Count=1`，CountOnly 也
+  返回过滤前总数。KubeBrain 与官方首轮差分 0.320 秒即已一致；固定正确 oracle 后连续 10 轮
+  6.575 秒、race 1.762 秒 GREEN。测试后 source prefix Count=0、LeaseList=0，一次性官方 etcd
+  进程/data-dir 已清理；本轮不为制造 diff 改动已对齐的服务端 filter 实现。
 
 ### P2：运维兼容和长期验证
 
