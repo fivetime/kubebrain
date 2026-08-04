@@ -33527,6 +33527,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a3512-auth-watch-failover`。差分结束后 auth disabled，3 KubeBrain、3 PD、3 TiKV
   均 Ready/0 restart，revision/raft index/applied index 均为 `468126003565729199`、term 297。
 
+- A3514 补上 A3513 门禁中的 HTTP/gRPC Gateway 覆盖盲区。此前 Gateway 差分仅在测试进程
+  显式提供 `REFERENCE_ETCD_GATEWAY_ENDPOINT` 与 `KUBEBRAIN_GATEWAY_ENDPOINT` 时运行，
+  `run-differential.sh` 没有传入这两个变量，因此所谓完整差分仍会静默 Skip 8 组 HTTP 场景。
+  runner 现在把同一官方 reference client URL 与经 `http://`/`https://` 归一化的 KubeBrain
+  endpoint 同时传给 Gateway 测试；单测固定该接线，避免以后再次退化为假绿。
+
+  在让共享实例执行鉴权场景前，还把 3 条 AuthEnable 路径的 AuthDisable 清理注册移到启用
+  鉴权之前，消除“启用成功、后续 client/断言失败”时遗留全局鉴权状态的窗口。修后在官方
+  `/root/etcd/bin/etcd` 与真实独立 3 PD/3 TiKV 数据面完成完整差分，**530.206 秒全绿**；
+  Gateway 鉴权、KV/Lease/Cluster/Maintenance、Lock/Election、取消与错误映射、零 lease、
+  Watch、Lease KeepAlive、Election Observe 流均实际运行，其中零 lease 自然过期场景耗时
+  121.57 秒。未发现新的 runtime 语义差异，因此继续使用 A3512 镜像且不重建相同二进制。
+
+  compat 普通全套、Gateway/runner 相关 race 连续 10 轮与 `go vet` 均通过。结束后匿名 HTTP
+  Range 返回 200，`/a355/`、`/a356/`、`/a365/`、`/a366/` 前缀 Count 均为 0；3 KubeBrain、
+  3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
+  `468126003565732141`、term 297。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
