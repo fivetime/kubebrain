@@ -208,6 +208,13 @@ type Backend interface {
 	// Watch subscribe the changes from revision on kvs with given prefix
 	Watch(ctx context.Context, key string, revision uint64) (<-chan []*proto.Event, error)
 
+	// CloseWatchers retires every local watch subscription. Leadership loss calls
+	// this before the node can become a follower: its collector only publishes
+	// writes while leading, so leaving old subscriptions open would create a
+	// silent, permanently-stalled stream. Consumers resume from their last
+	// delivered revision through the current leader.
+	CloseWatchers()
+
 	// GetResourceLock returns the resource lock for leader election
 	GetResourceLock() resourcelock.Interface
 
@@ -878,6 +885,11 @@ func deriveClusterID(kv storage.KvStorage, keyspace string) uint64 {
 // KickWatchProgress implements Backend interface.
 func (b *backend) KickWatchProgress() {
 	b.watcherHub.KickProgress()
+}
+
+// CloseWatchers implements Backend.CloseWatchers.
+func (b *backend) CloseWatchers() {
+	b.watcherHub.CloseAll()
 }
 
 // SetCurrentRevision implements Backend interface

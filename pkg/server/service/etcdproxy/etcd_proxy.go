@@ -698,7 +698,16 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 			client, leader, closed, err := e.readyClient(ctx)
 			if err != nil {
 				klog.InfoS("etcd proxy watch ready failed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "error", err)
-				return
+				// A watch is long-lived and a short no-leader window is part of a
+				// normal failover. Unary forwarding may return Unavailable after its
+				// bounded readiness wait, but terminating this output stream turns
+				// that transient into a terminal Watch cancel at the ingress replica.
+				// Keep the explicit resume revision and retry until a successor is
+				// ready or the caller closes the watch.
+				if !waitProxyWatchReconnect(ctx) {
+					return
+				}
+				continue
 			}
 
 			klog.InfoS("etcd proxy start watching", "leader", leader, "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
@@ -728,7 +737,10 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 							reconnect = true
 							break
 						}
-						outputCh <- WatchResult{Err: err}
+						select {
+						case outputCh <- WatchResult{Err: err}:
+						case <-ctx.Done():
+						}
 						return
 					}
 					// Advance the resume revision to the store revision this
@@ -742,7 +754,11 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 					// its initial value (0 for a from-now watch). A positive Created
 					// header also establishes the resume floor immediately.
 					watchRevision = nextWatchRevision(watchRevision, wresp.Header.Revision)
-					outputCh <- watchResultFromResponse(wresp)
+					select {
+					case outputCh <- watchResultFromResponse(wresp):
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 
@@ -755,6 +771,17 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 		}
 	}()
 	return outputCh, nil
+}
+
+func waitProxyWatchReconnect(ctx context.Context) bool {
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func watchOptionsForRange(rangeEnd []byte, revision uint64) []clientv3.OpOption {

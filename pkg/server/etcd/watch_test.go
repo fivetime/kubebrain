@@ -970,46 +970,79 @@ func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndEmptyReason(t 
 	require.Zero(t, resp.Header.Revision)
 }
 
-func TestFollowerProxyWatchCloseIsNonCompactedCancel(t *testing.T) {
+type roleSwitchWatchBackend struct {
+	BackendShim
+	local  <-chan etcdproxy.WatchResult
+	called chan uint64
+}
+
+func (b *roleSwitchWatchBackend) Watch(_ context.Context, _ string, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+	b.called <- revision
+	return b.local, nil
+}
+
+func TestLeaderWatchResumesThroughProxyAfterLocalGenerationCloses(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
-	proxyCh := make(chan etcdproxy.WatchResult)
-	close(proxyCh)
+	localCh := make(chan etcdproxy.WatchResult, 1)
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	localCalled := make(chan uint64, 1)
+	backend := &roleSwitchWatchBackend{BackendShim: server.backend, local: localCh, called: localCalled}
+	server.backend = backend
+	var leading atomic.Bool
+	leading.Store(true)
+	proxyCalled := make(chan uint64, 1)
 	server.peers = testPeerService{
-		isLeader:     false,
+		isLeaderFn:   leading.Load,
 		proxyEnabled: true,
 		watchFn: func(_ context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 			require.Equal(t, []byte("/registry/watch/proxy/"), key)
 			require.Equal(t, []byte("/registry/watch/proxy0"), rangeEnd)
-			require.Equal(t, uint64(10), revision)
+			proxyCalled <- revision
 			return proxyCh, nil
 		},
 	}
 
-	stream := &fakeWatchServer{ctx: context.Background()}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
 	w := &watcher{
 		backend:     server.backend,
 		watchServer: stream,
 		grpcServer:  server,
 		watches: map[int64]*watch{
-			7: {start: "/registry/watch/proxy/", end: "/registry/watch/proxy0"},
+			7: {start: "/registry/watch/proxy/", end: "/registry/watch/proxy0", syncedRev: 9},
 		},
 		metricCli: server.metricCli,
 	}
 	w.wg.Add(1)
-	w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
-		Key:           []byte("/registry/watch/proxy/"),
-		RangeEnd:      []byte("/registry/watch/proxy0"),
-		StartRevision: 10,
-	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/proxy/"), RangeEnd: []byte("/registry/watch/proxy0"), StartRevision: 10,
+		})
+	}()
+	require.Equal(t, uint64(10), <-localCalled)
+	localCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/proxy/a"), Value: []byte("local"), ModRevision: 10},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
 
-	require.Len(t, stream.sent, 1)
-	resp := stream.sent[0]
-	require.True(t, resp.Canceled)
-	require.Equal(t, int64(7), resp.WatchId)
-	require.Equal(t, int64(0), resp.CompactRevision)
-	require.Equal(t, "watch closed", resp.CancelReason)
+	leading.Store(false)
+	close(localCh)
+	require.Equal(t, uint64(11), <-proxyCalled, "resume must start after the last successfully delivered revision")
+	proxyCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/proxy/b"), Value: []byte("proxy"), ModRevision: 11},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	for _, response := range stream.snapshot() {
+		require.False(t, response.Canceled)
+	}
+
+	cancel()
+	close(proxyCh)
+	<-done
 }
 
 func TestWatchBackendCloseReportsCompactionWhenNextRevisionWasCompacted(t *testing.T) {

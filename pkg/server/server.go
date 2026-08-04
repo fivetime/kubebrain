@@ -337,6 +337,10 @@ func (s *server) onStartedLeading(ctx context.Context) {
 // as leader — previously it wrongly set SERVING (#61).
 func (s *server) onStoppedLeading() {
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	// The local event collector is leader-authoritative. Retire subscriptions
+	// immediately when this term ends so an RPC that was opened on this former
+	// leader can resume through the proxy instead of remaining open and silent.
+	s.backend.CloseWatchers()
 	// On losing leadership, stop the lease expiry timers and drop the now
 	// non-authoritative lease snapshot; the leader owns lease expiry and the new
 	// leader has advanced this state. Re-acquiring leadership reloads it (#57).

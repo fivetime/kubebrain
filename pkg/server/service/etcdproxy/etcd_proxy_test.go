@@ -512,6 +512,15 @@ func TestWatchOptionsForRangeRequestsProgressNotify(t *testing.T) {
 	require.Len(t, watchOptionsForRange([]byte("z"), 5), 4, "range watch adds WithRange")
 }
 
+func TestWaitProxyWatchReconnectStopsWithCaller(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	require.False(t, waitProxyWatchReconnect(ctx))
+	require.Less(t, time.Since(start), time.Second,
+		"a canceled watch must not remain in the failover retry loop")
+}
+
 // TestUpdateClientConcurrentNoDeadlock pins the #41/#47 serialization: updateClient
 // now takes updateMu (held across the build/swap) in addition to the field lock.
 // Run it concurrently with itself and with the readers that also take `lock`

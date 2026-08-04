@@ -285,11 +285,21 @@ func TestLeadershipHealthTransitions(t *testing.T) {
 	s.onStartedLeading(context.Background())
 	require.Equal(t, healthpb.HealthCheckResponse_SERVING, healthStatus(t, s),
 		"acquiring leadership must report SERVING")
+	watchCtx, cancelWatch := context.WithCancel(context.Background())
+	defer cancelWatch()
+	watchCh, err := b.Watch(watchCtx, "/registry/watch/term", 0)
+	require.NoError(t, err)
 
 	// Lose leadership -> NOT_SERVING (the #61 fix).
 	s.onStoppedLeading()
 	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, healthStatus(t, s),
 		"losing leadership must report NOT_SERVING so clients stop routing here as leader")
+	select {
+	case _, ok := <-watchCh:
+		require.False(t, ok, "leadership loss must retire local watch subscriptions")
+	case <-time.After(time.Second):
+		t.Fatal("local watch remained open after leadership loss")
+	}
 }
 
 func TestLeaderReadinessWaitsForDurableStartup(t *testing.T) {
