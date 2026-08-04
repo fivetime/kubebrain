@@ -33954,6 +33954,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同步通过。当前真实 kind 仍因缺少 CSI snapshot API 而在更早的只读 preflight fail closed，
   因此本项不声称已完成多卷快照、隔离恢复或日志型 PITR。
 
+- A3533 继续审计 A3532 的第二道 maintenance fence，发现 pause 后 controller identity 存在
+  TOCTOU。执行器会重新读取 KubeBrain、PD、TiKV StatefulSet，但旧代码只复核 KubeBrain UID；
+  若 PD 或 TiKV 在两道栅栏之间以相同名称被删除重建，脚本会使用新对象进入缩容，却仍在退出
+  恢复路径中持有第一道栅栏捕获的旧 UID，因而可能先停止数据面、随后无法恢复副本。
+
+  新确定性 RED 在 operator pause 后分别把 PD/TiKV 返回 UID 切换为 replacement identity；旧实现
+  两条路径都越过栅栏并进入 snapshot create。执行器现在对三组 StatefulSet 统一要求第二次 UID
+  与第一道栅栏精确相同，并在任何 StatefulSet patch 或 VolumeSnapshot create 前返回组件明确的
+  fail-closed 错误；退出 trap 只清除已经设置的 TidbCluster pause。该 identity fence 与 A3532
+  的 generation/readiness fence 共同约束维护对象。两项替换场景连同既有 health/rollback 矩阵
+  普通模式连续 10 轮 395.515 秒 GREEN，聚焦 race 42.011 秒、全部 cold snapshot 测试
+  43.201 秒、完整 `hack/production` 包 405.231 秒 GREEN；vet、脚本语法和 diff check 同步
+  通过。该门禁仍不替代真实 CSI 隔离恢复证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

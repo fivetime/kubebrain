@@ -635,7 +635,9 @@ TiKV、解除 operator pause、KubeBrain 的顺序恢复。任一错误都由退
 KubeBrain、PD、TiKV 三个 StatefulSet 的 observed generation、replica/ready/current/updated
 副本数以及 current/update revision 全部收敛。设置 operator pause 后、第一次缩容前会再次读取
 并验证三个 StatefulSet；这两道维护栅栏之间出现任一副本降级、rollout 未完成或 generation
-未被 controller 观察，均必须在缩容和创建 VolumeSnapshot 前 fail closed。该检查不替代控制面
+未被 controller 观察，均必须在缩容和创建 VolumeSnapshot 前 fail closed。第二次读取还要求
+KubeBrain、PD、TiKV StatefulSet UID 与第一道栅栏完全相同；同名 controller replacement 不能
+携带新的对象身份越过栅栏，否则后续按旧 UID 恢复副本会失去所有权保证。该检查不替代控制面
 阻断新写入，也不把应用层 Ready 当作多卷 crash consistency 证明。
 
 成功恢复服务并原子 fsync 发布 `kubebrain.cold-physical-snapshot.v2` receipt 后，仍只证明冷
