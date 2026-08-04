@@ -6,6 +6,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"testing"
 
@@ -31,12 +33,14 @@ func verifiedTLSContext(ctx context.Context, commonName string) context.Context 
 
 type authMutationReadShim struct {
 	BackendShim
-	onGet     sync.Once
-	onList    sync.Once
-	onStream  sync.Once
-	hook      func()
-	listErr   error
-	streamErr error
+	onGet       sync.Once
+	onList      sync.Once
+	onRevision  sync.Once
+	onStream    sync.Once
+	hook        func()
+	listErr     error
+	revisionErr error
+	streamErr   error
 }
 
 type authMutationWriteShim struct {
@@ -67,6 +71,22 @@ func (b *authMutationReadShim) List(ctx context.Context, request *etcdserverpb.R
 		}
 	}
 	return response, err
+}
+
+func (b *authMutationReadShim) GetCompactRevision(ctx context.Context) (uint64, error) {
+	if b.revisionErr != nil {
+		b.onRevision.Do(b.hook)
+		return 0, b.revisionErr
+	}
+	return b.BackendShim.GetCompactRevision(ctx)
+}
+
+func (b *authMutationReadShim) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {
+	if b.revisionErr != nil {
+		b.onRevision.Do(b.hook)
+		return 0, b.revisionErr
+	}
+	return b.BackendShim.GetCompactRevisionFresh(ctx)
 }
 
 func (b *authMutationReadShim) RangeStreamChan(ctx context.Context, start, end []byte, revision uint64) (<-chan rangeStreamChunk, error) {
@@ -221,6 +241,48 @@ func TestAuthorizedRangeRejectsAuthMutationDuringRead(t *testing.T) {
 	requireAuthAuthorizerError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 }
 
+func TestAuthorizedRangeAuthMutationOverridesRevisionCheckErrorLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+
+	revisionErr := errors.New("injected range revision-check failure")
+	shim := &authMutationReadShim{BackendShim: server.backend, revisionErr: revisionErr}
+	var mutationErr error
+	shim.hook = func() {
+		mutationErr = server.auth.roleAdd(context.Background(), "range-revision-error-bump")
+	}
+	server.backend = shim
+
+	_, err := server.Range(aliceCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("/allowed/a"), Revision: 1, Serializable: true,
+	})
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+	require.NoError(t, mutationErr)
+}
+
+func TestAuthorizedFollowerHistoricalRangeRechecksAuthAfterProxy(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+
+	var mutationErr error
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+			mutationErr = server.auth.roleAdd(context.Background(), "follower-range-proxy-revision-bump")
+			return &etcdserverpb.RangeResponse{Header: txnHeader(1)}, nil
+		},
+	}
+
+	_, err := server.Range(aliceCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("/allowed/a"), Revision: math.MaxInt64, Serializable: true,
+	})
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+	require.NoError(t, mutationErr)
+}
+
 func TestAuthorizedRangeStreamRejectsAuthMutationDuringRead(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -338,6 +400,33 @@ func TestAuthorizedReadonlyTxnPreservesReadErrorWithoutAuthMutation(t *testing.T
 
 	_, err := server.Txn(aliceCtx, txn)
 	require.ErrorIs(t, err, readErr)
+}
+
+func TestAuthorizedReadonlyTxnAuthMutationOverridesPinnedRevisionErrorLikeEtcd(t *testing.T) {
+	for _, serializable := range []bool{false, true} {
+		t.Run(fmt.Sprintf("serializable=%t", serializable), func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			aliceCtx := setupAuthKVUser(t, server)
+
+			revisionErr := errors.New("injected readonly txn pinned revision failure")
+			shim := &authMutationReadShim{BackendShim: server.backend, revisionErr: revisionErr}
+			var mutationErr error
+			shim.hook = func() {
+				mutationErr = server.auth.roleAdd(context.Background(), "readonly-txn-revision-error-bump")
+			}
+			server.backend = shim
+			txn := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+					Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: serializable,
+				}},
+			}}}
+
+			_, err := server.Txn(aliceCtx, txn)
+			requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+			require.NoError(t, mutationErr)
+		})
+	}
 }
 
 func TestAuthorizedPutAtomicallyRejectsAuthMutationBeforeCommit(t *testing.T) {

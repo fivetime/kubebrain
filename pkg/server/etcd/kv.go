@@ -45,7 +45,7 @@ const (
 	grpcOverheadBytes      = 512 * 1024
 )
 
-func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (response *etcdserverpb.RangeResponse, retErr error) {
 	startTime := time.Now()
 	klog.V(4).InfoS("RANGE", "key", r.Key, "rangeEnd", r.RangeEnd, "countOnly", r.CountOnly)
 	if err := validateRangeRequest(r); err != nil {
@@ -76,6 +76,13 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		}
 		response, err := s.peers.Range(proxyCtx, r)
 		s.observeForwardedRevision(response.GetHeader(), err)
+		// The leader re-authenticates a forwarded simple token at its current
+		// revision, so it cannot preserve the follower's request-start revision.
+		// Recheck locally after the proxy completes to retain doSerialize semantics.
+		if finalAuthErr := s.ensureAuthRevision(ctx, caller); finalAuthErr != nil &&
+			(err == nil || errors.Is(finalAuthErr, rpctypes.ErrAuthOldRevision)) {
+			return response, finalAuthErr
+		}
 		return response, err
 	}
 	if !r.Serializable || (r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical) {
@@ -90,6 +97,20 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	if authErr = caller.require(r.Key, r.RangeEnd, authpb.READ); authErr != nil {
 		return nil, authErr
 	}
+	// Match etcd's doSerialize boundary: every direct Range step after permission
+	// admission, including revision validation and empty-range header lookup, is
+	// followed by the stale-auth fence. Only AuthOldRevision may override an
+	// already-selected execution error.
+	authChecked := false
+	defer func() {
+		if authChecked {
+			return
+		}
+		authErr := s.ensureAuthRevision(ctx, caller)
+		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
+			retErr = authErr
+		}
+	}()
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
 		return nil, err
 	}
@@ -98,6 +119,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		if err != nil {
 			return nil, err
 		}
+		authChecked = true
 		if err = s.ensureAuthRevision(ctx, caller); err != nil {
 			return nil, err
 		}
@@ -106,7 +128,6 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 		}, nil
 	}
 	var (
-		response              *etcdserverpb.RangeResponse
 		err                   error
 		methodTag, successTag metrics.T
 	)
@@ -132,6 +153,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	if response != nil {
 		s.metricCli.EmitHistogram("read.responsesize", proto.Size(response), methodTag, successTag)
 	}
+	authChecked = true
 	if authErr = s.ensureAuthRevision(ctx, caller); authErr != nil {
 		return nil, authErr
 	}
@@ -454,7 +476,7 @@ func isFromKeyRangeEnd(rangeEnd []byte) bool {
 	return len(rangeEnd) == 1 && rangeEnd[0] == 0
 }
 
-func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (response *etcdserverpb.TxnResponse, retErr error) {
 	startTime := time.Now()
 
 	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
@@ -496,6 +518,21 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	if authErr = s.authorizeTxn(caller, txn); authErr != nil {
 		return nil, authErr
 	}
+	// Upstream wraps every read-only Txn step after authorization in
+	// doSerialize, including acquiring the pinned MVCC revision. Keep a final
+	// fence over all remaining early returns; only stale auth may override an
+	// existing execution error, while stable-auth backend/context errors retain
+	// their original contract.
+	authChecked := !readOnly
+	defer func() {
+		if authChecked {
+			return
+		}
+		authErr := s.ensureAuthRevision(ctx, caller)
+		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
+			retErr = authErr
+		}
+	}()
 	ctx = withAuthWriteGuard(ctx, caller)
 
 	deadline, ok := ctx.Deadline()
@@ -533,6 +570,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 		// Match etcd's doSerialize ordering: the stale-auth fence runs after the
 		// read callback even when that callback failed, and AuthOldRevision takes
 		// precedence if the policy changed while the request was executing.
+		authChecked = true
 		if authErr := s.ensureAuthRevision(ctx, caller); authErr != nil {
 			return response, authErr
 		}
@@ -568,7 +606,6 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	}
 	var (
 		err                   error
-		response              *etcdserverpb.TxnResponse
 		methodTag, successTag metrics.T
 		failedKey             string
 	)
