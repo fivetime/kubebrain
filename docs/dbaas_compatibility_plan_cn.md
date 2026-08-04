@@ -34611,6 +34611,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   alarm/lease、auth disabled，revision/index/applied 为 468126003565737993、term 310；生产长期 fixture
   Count=100，A3572 临时 RangeStream prefix 已清理。
 
+- A3573 补齐上游 `doSerialize` 在其余 early return 与 follower historical Range proxy 上的完整边界。
+  继续逐行对照 `/root/etcd/server/etcdserver/v3_server.go::Range/Txn/doSerialize` 后确认：read-only
+  Txn 获取 pinned MVCC revision、普通 Range 的 revision 校验与 empty/reversed range header 获取都位于
+  授权之后、最终 auth revision fence 之前；这些步骤即使失败，只要同期 auth store 已变化，也必须由
+  `AuthOldRevision` 覆盖。follower 代理 historical Range 时，leader 对 simple token 的重新认证只能看到
+  当前 revision，不能替代 follower 对 request-start caller revision 的结束复核。
+
+  三组确定性 RED 均先固定旧行为：read-only Txn 在 serializable=false/true 两个分支的 pinned revision
+  获取失败时都泄漏 `injected readonly txn pinned revision failure`；普通 serializable Range 的 revision
+  校验失败时泄漏 `injected range revision-check failure`；follower proxy 在 callback 推进 auth revision 后
+  仍错误返回成功。修复把 Range/只读 Txn 在权限准入后的剩余路径统一纳入 named-return defer fence，正常
+  路径仍显式复核；只有 `AuthOldRevision` 可以覆盖既有执行错误，稳定 auth 时的 backend/context error
+  保持原契约。historical proxy 则在 follower 本地补 request-start revision 复核，并采用相同错误优先级。
+
+  新边界普通 10 连跑 11.559 秒、race 5 连跑 96.777 秒；pinned revision 专项 race 10 连跑 93.899 秒，
+  Range/Txn direct boundary 普通 10 连跑 15.028 秒、race 5 连跑 71.397 秒，既有四类只读 Txn 普通
+  10 连跑 15.079 秒。主模块全套通过（production 439.989 秒、server/etcd 165.472 秒），完整 compat
+  1.054 秒、vet 和 diff check 通过；staticcheck v0.7.0 仍精确为既有 9 项基线，没有新增告警。
+
+  commit `96841dae` 构建为 `kubebrain:a3573-serialized-auth-fences`（镜像 ID
+  `sha256:8ed7587eaeadcdfef74bca96f75aec31e356109ff74347478beefd08c679b717`），核验 OCI version、完整
+  40 位 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。
+  部署后 RangeStream production chunk 门禁 1.038 秒通过并清理隔离 prefix；KubeBrain/PD/TiKV 均
+  3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision、
+  raft index 与 applied index 均为 468126003565738003、term 312；生产长期 fixture 仍为 Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
