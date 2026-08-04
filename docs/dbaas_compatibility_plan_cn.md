@@ -32958,6 +32958,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   upstream follower 的本地 bbolt snapshot 实现，而是用 DBaaS mutation leader 提供等价的单一
   metadata serialization point。
 
+  proxy 与 server 聚焦测试各连续 20 轮通过（0.178s、17.150s），race 各连续 10 轮通过
+  （1.397s、63.540s），两个模块 vet 和根模块完整回归通过；完整回归中的 server 为
+  153.945 秒，曾有一次无关的 endpoint gRPC 测试因测试 double 未实现 `Drain` panic，隔离
+  连续 10 轮（167.641s）及完整重跑均通过。生产 Follower `kubebrain-0` 与隔离官方 etcd 的
+  raw Snapshot stream protocol 差分连续 20 轮（24.921s）通过。
+
+  真实集群分别直接 port-forward 命中两个非 leader（`kubebrain-0`、`kubebrain-2`），官方
+  etcdctl 保存出的两个 2.1 MB 文件 SHA-256 都为
+  `1186973894b6eb072f914ec4df5d274c4523e2c05e4ffe21842e6fe00873a3fb`；官方 etcdutl
+  status 也完全相同：hash `4216183638`、revision `468126003565721405`、5,974 keys、
+  total size 1,871,872、version 3.7.0。将 follower-0 制品用官方 etcdutl restore 并启动官方
+  etcd 后，revision 与源端一致且 full-range Count 均为 5,974，证明 follower 返回的是可恢复
+  的 leader 捕获制品，而非本地伪快照。
+
+  生产镜像 `kubebrain:a3490-follower-snapshot-leader` 的本地 ID 为
+  `sha256:1510fa825926160b63c4fb8e7c41dde5eeb646cdac93385902929f4039ea2c6e`，构建
+  SHA 为 `e1653a08db5c038d9ea968dbf7e49a4baca8fa35`、时间为
+  `2026-08-04T01:03:27Z`；kind runtime digest 为
+  `sha256:5a4a0330098080fc62ad6642d0cfbaba7810c7f1fc30a02fe5e174de334a1012`。
+  三副本滚动后均 ready、0 restart，3 PD/3 TiKV 均 ready，readyz/version/endpoint status
+  正常；当前 revision 为 `468126003565721405`、raft term 为 261。验证未产生用户写，临时
+  snapshot/restore/reference 目录、port-forward 和官方 etcd 进程均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
