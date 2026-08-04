@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -849,7 +850,12 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		case result, ok := <-ch:
 			if !ok {
 				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", string(r.Key))
-				w.Cancel(id, nil, false)
+				compacted := w.nextWatchRevisionCompacted(ctx, id)
+				var closeErr error
+				if compacted {
+					closeErr = compactedRevisionError()
+				}
+				w.Cancel(id, closeErr, compacted)
 				klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
 				return
 			}
@@ -979,6 +985,27 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			}
 		}
 	}
+}
+
+func (w *watcher) nextWatchRevisionCompacted(ctx context.Context, id int64) bool {
+	w.Lock()
+	wt := w.watches[id]
+	w.Unlock()
+	if wt == nil {
+		return false
+	}
+	syncedRevision := atomic.LoadUint64(&wt.syncedRev)
+	if syncedRevision == math.MaxUint64 {
+		return false
+	}
+	compactRevision, err := w.backend.GetCompactRevisionFresh(ctx)
+	if err != nil {
+		return false
+	}
+	// etcd keeps the event at exactly the compact revision watchable. Only a
+	// strictly older next revision proves that this closed stream lost history
+	// and must force the client to re-list.
+	return syncedRevision+1 < compactRevision
 }
 
 func (s *RPCServer) watchFragmentBytes() int {

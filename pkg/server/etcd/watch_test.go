@@ -1012,6 +1012,75 @@ func TestFollowerProxyWatchCloseIsNonCompactedCancel(t *testing.T) {
 	require.Equal(t, "watch closed", resp.CancelReason)
 }
 
+func TestWatchBackendCloseReportsCompactionWhenNextRevisionWasCompacted(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	first, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/registry/watch/slow"), Value: []byte("one"),
+	})
+	require.NoError(t, err)
+	second, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/registry/watch/slow"), Value: []byte("two"),
+	})
+	require.NoError(t, err)
+	compactState := &staleCompactRevisionCacheShim{BackendShim: server.backend}
+	server.backend = compactState
+	proxyCh := make(chan etcdproxy.WatchResult)
+	watchStarted := make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		watchFn: func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error) {
+			close(watchStarted)
+			return proxyCh, nil
+		},
+	}
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: {
+			start: "/registry/watch/slow", syncedRev: uint64(first.GetHeader().GetRevision()) - 1,
+		}},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		w.Watch(context.Background(), 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/slow"), StartRevision: first.GetHeader().GetRevision(),
+		})
+	}()
+	<-watchStarted
+	compactState.durableRevision = uint64(second.GetHeader().GetRevision())
+	close(proxyCh)
+	<-watchDone
+
+	require.Len(t, stream.sent, 1)
+	response := stream.sent[0]
+	require.True(t, response.GetCanceled())
+	require.Equal(t, second.GetHeader().GetRevision(), response.GetCompactRevision())
+	require.Empty(t, response.GetCancelReason())
+}
+
+func TestNextWatchRevisionCompactedKeepsCompactBoundaryWatchable(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	const compactRevision = uint64(10)
+	compactState := &staleCompactRevisionCacheShim{
+		BackendShim: server.backend, durableRevision: compactRevision,
+	}
+	w := &watcher{backend: compactState, watches: map[int64]*watch{
+		1: {syncedRev: compactRevision - 1},
+		2: {syncedRev: compactRevision - 2},
+	}}
+	require.False(t, w.nextWatchRevisionCompacted(context.Background(), 1),
+		"the event at exactly the compact revision remains watchable")
+	require.True(t, w.nextWatchRevisionCompacted(context.Background(), 2),
+		"a next revision below the compact watermark requires a re-list")
+}
+
 func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
