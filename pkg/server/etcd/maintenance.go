@@ -308,7 +308,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		DbSizeInUse:   dbSize,
 		DbSizeQuota:   quota,
 		Errors:        nil,
-		IsLearner:     false,
+		IsLearner:     s.localMemberIsLearner(),
 		DowngradeInfo: &etcdserverpb.DowngradeInfo{Enabled: false},
 	}
 	if leader == 0 {

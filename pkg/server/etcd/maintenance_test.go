@@ -252,6 +252,31 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	require.Nil(t, defragResp.Header)
 }
 
+func TestStatusReportsLocalLearnerStateMatchesEtcd(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		localLearner bool
+		want         bool
+	}{
+		{name: "local learner", localLearner: true, want: true},
+		{name: "foreign learner does not mark local voter", localLearner: false, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			localID := server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity())
+			server.SetStaticMembers([]*etcdserverpb.Member{
+				{ID: localID, Name: "test-peer", PeerURLs: []string{"http://test-peer"}, IsLearner: tc.localLearner},
+				{ID: localID + 1, Name: "other", PeerURLs: []string{"http://other"}, IsLearner: true},
+			})
+
+			response, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+			require.NoError(t, err)
+			require.Equal(t, tc.want, response.GetIsLearner())
+		})
+	}
+}
+
 func TestStatusRestoresColdRaftEnvelopeFromDurableRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

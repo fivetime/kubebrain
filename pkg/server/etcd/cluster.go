@@ -338,6 +338,11 @@ func (s *RPCServer) memberByID(id uint64) *etcdserverpb.Member {
 	return nil
 }
 
+func (s *RPCServer) localMemberIsLearner() bool {
+	member := s.memberByID(s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity()))
+	return member != nil && member.GetIsLearner()
+}
+
 func (s *RPCServer) memberPeerURLConflicts(id uint64, peerURLs []string) bool {
 	existing := make(map[string]struct{})
 	for _, member := range s.membersSnapshot() {
