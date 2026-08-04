@@ -121,6 +121,11 @@ type authDifferentialOutcome struct {
 	DisableExistingWatch      bool
 	DisableNewWatchCreated    bool
 	DisableNewWatchEvent      bool
+	DisableRangeFirst         bool
+	DisableRangeAfter         bool
+	DisableRangeCount         int
+	DisableRangeTerminal      bool
+	DisableRangeError         authErrorOutcome
 	AuthDisabledStatus        bool
 	PreAuthRangeStreamFirst   bool
 	RangeStreamAfterChunks    bool
@@ -710,8 +715,40 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	_, oldPasswordErr := bootstrap.Authenticate(ctx, "alice", "alice-secret")
 	_, newPasswordErr := bootstrap.Authenticate(ctx, "alice", "alice-changed")
+	aliceChanged := authClient(t, endpoint, "alice", "alice-changed")
+	disableRangeStream, err := etcdserverpb.NewKVClient(aliceChanged.ActiveConnection()).RangeStream(
+		ctx,
+		&etcdserverpb.RangeRequest{
+			Key:      []byte("/auth-transition/rangestream/"),
+			RangeEnd: []byte(clientv3.GetPrefixRangeEnd("/auth-transition/rangestream/")),
+		},
+	)
+	require.NoError(t, err)
+	disableRangeFirstResponse, err := disableRangeStream.Recv()
+	require.NoError(t, err)
+	disableRangeFirst := disableRangeFirstResponse.RangeResponse != nil &&
+		len(disableRangeFirstResponse.RangeResponse.Kvs) > 0 &&
+		disableRangeFirstResponse.RangeResponse.Header == nil
 	_, err = root.AuthDisable(ctx)
 	require.NoError(t, err)
+	disableRangeAfterChunks := 0
+	disableRangeCount := len(disableRangeFirstResponse.GetRangeResponse().Kvs)
+	disableRangeTerminal := false
+	var disableRangeErr error
+	for {
+		response, receiveErr := disableRangeStream.Recv()
+		if receiveErr != nil {
+			disableRangeErr = receiveErr
+			break
+		}
+		disableRangeAfterChunks++
+		rangeResponse := response.GetRangeResponse()
+		require.NotNil(t, rangeResponse)
+		disableRangeCount += len(rangeResponse.Kvs)
+		if rangeResponse.Header != nil && rangeResponse.Count == authTransitionRangeCount && !rangeResponse.More {
+			disableRangeTerminal = true
+		}
+	}
 	disabledStatus, err := bootstrap.AuthStatus(ctx)
 	require.NoError(t, err)
 
@@ -837,6 +874,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		DisableExistingWatch:      disableExistingWatch,
 		DisableNewWatchCreated:    disableNewWatchCreated,
 		DisableNewWatchEvent:      disableNewWatchEvent,
+		DisableRangeFirst:         disableRangeFirst,
+		DisableRangeAfter:         disableRangeAfterChunks > 0,
+		DisableRangeCount:         disableRangeCount,
+		DisableRangeTerminal:      disableRangeTerminal,
+		DisableRangeError:         authError(disableRangeErr),
 		AuthDisabledStatus:        !disabledStatus.Enabled,
 		PreAuthRangeStreamFirst:   preAuthRangeStreamFirst,
 		RangeStreamAfterChunks:    rangeStreamAfterChunks > 0,
@@ -918,6 +960,12 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.DisableExistingWatch)
 	require.True(t, reference.DisableNewWatchCreated)
 	require.True(t, reference.DisableNewWatchEvent)
+	require.True(t, reference.DisableRangeFirst)
+	require.True(t, reference.DisableRangeAfter)
+	require.Equal(t, authTransitionRangeCount, reference.DisableRangeCount)
+	require.True(t, reference.DisableRangeTerminal)
+	require.Equal(t, codes.InvalidArgument, reference.DisableRangeError.Code)
+	require.Equal(t, status.Convert(rpctypes.ErrGRPCAuthOldRevision).Message(), reference.DisableRangeError.Message)
 	require.True(t, reference.AuthDisabledStatus)
 	require.True(t, reference.PreAuthRangeStreamFirst)
 	require.True(t, reference.RangeStreamAfterChunks)
