@@ -34286,6 +34286,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied 保持 468126003565737634；测试前缀 Count=0、lease=0、无 alarm，三个
   KubeBrain Pod 3/3 Ready、0 restart。一次性官方 etcd、42379/42380 listener 与数据目录均已清理。
 
+- A3556 把 signed revision 审计扩展到 v3 JSON gateway 的 64 位整数表示层。对照
+  `/root/etcd/server/embed/config.go` 使用的 generated grpc-gateway/protojson 行为，确认 protobuf
+  `int64`/`uint64` 字段虽然在响应中编码为字符串，请求端同时接受无精度损失的十进制字符串和裸
+  JSON number；越出类型范围或带小数的值必须在 RPC handler 之前拒绝，不能先经过 float64 或
+  Go 窄化后静默改变请求。
+
+  新增 16 项真实 HTTP 双端矩阵：Alarm `memberID` 覆盖 MaxUint64 的字符串/裸数字、MaxUint64+1
+  的两种表示及 -1；Range `revision` 覆盖 MinInt64/MaxInt64 的两种表示、两端各越界 1 及 1.5；
+  LeaseGrant `TTL` 覆盖 MaxInt64 的两种表示。矩阵先固定官方绝对 baseline，再比较 KubeBrain；可
+  解析的 MinInt64 revision 继续按 latest 成功，MaxInt64 revision 和 TTL 进入后端后分别返回
+  code 11 的 future-revision/TTL-too-large，解码越界则精确返回 HTTP 400/code 3，并固定字段名、
+  原始数值和行列位置。protojson 错误中的 non-breaking space 仅在比较时规范为普通空格，其他消息
+  不做模糊匹配。
+
+  线上只读/必然失败探针与独立 reference 首轮 0.285 秒、连续 10 轮 2.387 秒、race 1.377 秒
+  GREEN；完整 compat 1.873 秒、vet 与 diff check 通过。该边界由相同 generated decoder 正确处理，
+  没有 RED，故不修改服务端或滚动生产。探针没有成功 mutation，生产 revision 不因本轮推进；
+  reference 使用一次性 42379/42380 listener，验证后清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
