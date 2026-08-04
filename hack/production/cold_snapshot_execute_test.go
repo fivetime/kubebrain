@@ -284,6 +284,49 @@ func TestColdSnapshotExecuteRejectsBackendStatefulSetReplacementAfterPause(t *te
 	}
 }
 
+func TestColdSnapshotExecuteRejectsTidbClusterFenceLossAfterPause(t *testing.T) {
+	for _, tc := range []struct {
+		name, uidDrift, pauseLost, want string
+	}{
+		{name: "controller replaced", uidDrift: "true", want: "TidbCluster UID changed at the maintenance fence"},
+		{name: "pause lost", pauseLost: "true", want: "TidbCluster pause was lost at the maintenance fence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			inventoryFile := filepath.Join(dir, "inventory.json")
+			receiptFile := filepath.Join(dir, "receipt.json")
+			witnessFile := filepath.Join(dir, "witness.jsonl")
+			logFile := filepath.Join(dir, "kubectl.log")
+			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+			output, err := runColdSnapshotExecute(t, []string{
+				"KUBECTL=" + fakeKubectl,
+				"KUBE_CONTEXT=preproduction",
+				"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+				"PREFLIGHT_FILE=" + inventoryFile,
+				"RECEIPT_FILE=" + receiptFile,
+				"OPERATION_ID=op-tidb-fence-lost",
+				"SEMANTIC_WITNESS_FILE=" + witnessFile,
+				"EXPECTED_WITNESS_PREFIX=/registry",
+				"FAKE_LOG=" + logFile,
+				"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
+				"FAKE_TIDB_READY=true",
+				"FAKE_TIDB_UID_DRIFT_AFTER_PAUSE=" + tc.uidDrift,
+				"FAKE_TIDB_PAUSE_LOST_AFTER_PAUSE=" + tc.pauseLost,
+			})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, receiptFile)
+			log := string(mustRead(t, logFile))
+			require.NotContains(t, log, "patch statefulset")
+			require.NotContains(t, log, "create -f -")
+		})
+	}
+}
+
 func TestColdSnapshotExecuteRequiresExplicitContextBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	inventoryFile := filepath.Join(dir, "inventory.json")
@@ -453,7 +496,18 @@ elif [[ "$args" == *"get storageclass"* ]]; then
 elif [[ "$args" == *"get tidbcluster"* ]]; then
   ready=True
   [[ "${FAKE_TIDB_READY:-true}" == true ]] || ready=False
-  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"uid-tidb","resourceVersion":"10"},"spec":{"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"7662961163671170154","conditions":[{"type":"Ready","status":"%s"}]}}' "$ready"
+  uid=uid-tidb
+  paused_field=
+  if grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
+    paused_field='"paused":true,'
+  fi
+  if [[ "${FAKE_TIDB_PAUSE_LOST_AFTER_PAUSE:-false}" == true ]] && [[ -n "$paused_field" ]]; then
+    paused_field=
+  fi
+  if [[ "${FAKE_TIDB_UID_DRIFT_AFTER_PAUSE:-false}" == true ]] && grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
+    uid=replacement-uid-tidb
+  fi
+  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"%s","resourceVersion":"10"},"spec":{%s"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"7662961163671170154","conditions":[{"type":"Ready","status":"%s"}]}}' "$uid" "$paused_field" "$ready"
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"jsonpath"* ]]; then
   printf 'uid-kubebrain'
 elif [[ "$args" == *"get statefulset"* ]]; then

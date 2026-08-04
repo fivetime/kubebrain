@@ -196,9 +196,14 @@ kctl -n "$TIDB_NAMESPACE" wait --for=jsonpath='{.spec.paused}'=true tidbcluster 
 sleep "$FENCE_SETTLE_SECONDS"
 
 # Re-read mutable controllers after the operator has observed the pause fence.
+tc_json="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
 kb_json="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json)"
 pd_json="$(kctl -n "$TIDB_NAMESPACE" get statefulset "$pd_name" -o json)"
 tikv_json="$(kctl -n "$TIDB_NAMESPACE" get statefulset "$tikv_name" -o json)"
+[[ "$(jq -r '.metadata.uid' <<<"$tc_json")" == "$EXPECTED_TIDB_CLUSTER_UID" ]] ||
+  fail_input "TidbCluster UID changed at the maintenance fence"
+[[ "$(jq -r '.spec.paused // false' <<<"$tc_json")" == true ]] ||
+  fail_input "TidbCluster pause was lost at the maintenance fence"
 [[ "$(jq -r '.metadata.uid' <<<"$kb_json")" == "$kb_uid" ]] ||
   fail_input "KubeBrain StatefulSet UID changed at the maintenance fence"
 [[ "$(jq -r '.metadata.uid' <<<"$pd_json")" == "$pd_uid" ]] ||
