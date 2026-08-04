@@ -15,14 +15,16 @@ import (
 )
 
 type normalizedRangeStreamScenario struct {
-	Unlimited normalizedRange
-	Limited   normalizedRange
-	CountOnly normalizedRange
-	KeysOnly  normalizedRange
-	Explicit  normalizedRange
-	Negative  normalizedRange
-	MinLimit  normalizedRange
-	MaxLimit  normalizedRange
+	Unlimited        normalizedRange
+	Limited          normalizedRange
+	CountOnly        normalizedRange
+	KeysOnly         normalizedRange
+	Explicit         normalizedRange
+	Negative         normalizedRange
+	MinLimit         normalizedRange
+	MaxLimit         normalizedRange
+	NegativeRevision normalizedRange
+	MinRevision      normalizedRange
 }
 
 func TestRangeStreamProductionChunkTarget(t *testing.T) {
@@ -91,6 +93,8 @@ func TestRangeStreamDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, etcd.Unlimited, etcd.Negative, "a negative limit is unlimited")
 	require.Equal(t, etcd.Unlimited, etcd.MinLimit, "MinInt64 must not overflow into a positive limit")
 	require.Equal(t, etcd.Unlimited, etcd.MaxLimit, "MaxInt64 exceeds this result set without truncating it")
+	require.Equal(t, etcd.Unlimited, etcd.NegativeRevision, "a negative revision selects the latest snapshot")
+	require.Equal(t, etcd.Unlimited, etcd.MinRevision, "MinInt64 revision selects the latest snapshot without unsigned wrap")
 	require.Equal(t, etcd, kubebrain)
 }
 
@@ -129,13 +133,15 @@ func runRangeStreamScenario(t *testing.T, endpoint, instance string) normalizedR
 	}
 
 	return normalizedRangeStreamScenario{
-		Unlimited: run(),
-		Limited:   run(clientv3.WithLimit(5)),
-		CountOnly: run(clientv3.WithCountOnly(), clientv3.WithLimit(1)),
-		KeysOnly:  run(clientv3.WithKeysOnly()),
-		Explicit:  run(clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend), clientv3.WithLimit(5)),
-		Negative:  run(clientv3.WithLimit(-1)),
-		MinLimit:  run(clientv3.WithLimit(math.MinInt64)),
-		MaxLimit:  run(clientv3.WithLimit(math.MaxInt64)),
+		Unlimited:        run(),
+		Limited:          run(clientv3.WithLimit(5)),
+		CountOnly:        run(clientv3.WithCountOnly(), clientv3.WithLimit(1)),
+		KeysOnly:         run(clientv3.WithKeysOnly()),
+		Explicit:         run(clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend), clientv3.WithLimit(5)),
+		Negative:         run(clientv3.WithLimit(-1)),
+		MinLimit:         run(clientv3.WithLimit(math.MinInt64)),
+		MaxLimit:         run(clientv3.WithLimit(math.MaxInt64)),
+		NegativeRevision: run(clientv3.WithRev(-1)),
+		MinRevision:      run(clientv3.WithRev(math.MinInt64)),
 	}
 }

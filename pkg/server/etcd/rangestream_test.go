@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -67,6 +68,18 @@ type listCountingBackendShim struct {
 
 type prematureRangeStreamBackendShim struct {
 	BackendShim
+}
+
+type revisionRecordingRangeStreamBackendShim struct {
+	BackendShim
+	revision uint64
+}
+
+func (b *revisionRecordingRangeStreamBackendShim) RangeStreamChan(
+	ctx context.Context, start, end []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	b.revision = revision
+	return b.BackendShim.RangeStreamChan(ctx, start, end, revision)
 }
 
 func (b *prematureRangeStreamBackendShim) RangeStreamChan(
@@ -165,6 +178,38 @@ func TestRangeStreamStreamsAllKeys(t *testing.T) {
 		require.False(t, chunk.RangeResponse.More, "unlimited RangeStream must not expose scanner chunking as Range.More")
 	}
 	require.Equal(t, want, got, "concatenated chunks must equal the full key set")
+}
+
+func TestRangeStreamNormalizesNegativeRevisionBeforeBackend(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/negative-revision/key"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	recorder := &revisionRecordingRangeStreamBackendShim{BackendShim: server.backend}
+	server.backend = recorder
+
+	for _, tc := range []struct {
+		name string
+		wire int64
+		want uint64
+	}{
+		{name: "minus one", wire: -1, want: 0},
+		{name: "minimum int64", wire: math.MinInt64, want: 0},
+		{name: "positive", wire: put.Header.Revision, want: uint64(put.Header.Revision)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := &fakeRangeStreamServer{ctx: ctx}
+			require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+				Key: []byte("/negative-revision/"), RangeEnd: []byte("/negative-revision0"), Revision: tc.wire,
+			}, stream))
+			require.Equal(t, tc.want, recorder.revision,
+				"etcd revision <= 0 means latest; the backend must receive its revision 0 sentinel without unsigned wrap")
+		})
+	}
 }
 
 func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {
