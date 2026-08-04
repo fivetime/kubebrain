@@ -97,6 +97,42 @@ func TestSnapshotTxnSubrevisionOrderMatchesReferenceEtcd(t *testing.T) {
 	}
 }
 
+func TestSnapshotOmitsRedundantRevisionMarker(t *testing.T) {
+	path := os.Getenv("KUBEBRAIN_SNAPSHOT_ARTIFACT")
+	if path == "" {
+		t.Skip("set KUBEBRAIN_SNAPSHOT_ARTIFACT")
+	}
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	var maxRevision int64
+	var realAtMax, markersAtMax int
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("key")).ForEach(func(revisionKey, value []byte) error {
+			revision := int64(binary.BigEndian.Uint64(revisionKey[:8]))
+			var kv mvccpb.KeyValue
+			if err := proto.Unmarshal(value, &kv); err != nil {
+				return err
+			}
+			if revision > maxRevision {
+				maxRevision, realAtMax, markersAtMax = revision, 0, 0
+			}
+			if revision != maxRevision {
+				return nil
+			}
+			if len(kv.Key) == 0 {
+				markersAtMax++
+			} else {
+				realAtMax++
+			}
+			return nil
+		})
+	}))
+	require.NotZero(t, maxRevision)
+	require.Positive(t, realAtMax, "artifact must exercise a real event at its snapshot revision")
+	require.Zero(t, markersAtMax, "a real row already pins currentRev; an empty restore marker is redundant")
+}
+
 func downloadSnapshotBackend(t *testing.T, endpoint string) []byte {
 	t.Helper()
 	target := strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
