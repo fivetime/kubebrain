@@ -33716,6 +33716,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   index/applied index 均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距，
   不重建 A3512 镜像。
 
+- A3523 将共享 TiKV/PD 后端最关键的三组直连副本 opt-in 测试固化为统一一致性门禁。新增
+  `run-direct-replica-consistency.sh`，要求三个显式 direct endpoint 与 mutation 确认，逐端读取
+  Status 并强制三个非零唯一 member、同 cluster/leader 且 leader 位于集合内；随后只运行
+  HashKV snapshot、Lease direct read/revoke、Watch local control 三组。runner 执行前后要求
+  compat/direct-lease 测试 prefix 为空，并对 lease ID 集合做排序快照，任何 lease 泄漏均失败。
+
+  HashKV 场景从副本 0 写 first、从副本 2 写 second，三个副本在两个指定 revision 上必须返回
+  完全相同的 hash/hashRevision/compactRevision，且旧 snapshot 在更新后不可变。Lease 场景从
+  service endpoint Grant+Put，三个 direct 副本都必须看到相同 lease metadata、TTL、attached
+  keys 与 List；Revoke 后各副本线性读均为空、TTL=-1、List 不再包含。Watch 场景逐副本固定
+  negative revision、空区间、显式 ID 创建、duplicate ID 与 cancel 的 member-local 响应外观。
+
+  收尾审计把 HashKV cleanup 前移到首写前并强制 Delete/Range 空回读；Lease 在 Grant 成功后
+  立即注册 cleanup，先读 TTL，仅在租约仍存活时 Revoke，再强制 key 为空、TTL=-1，避免正常
+  路径重复 Revoke 的 LeaseNotFound 噪声，同时覆盖中途断言失败。三个 Pod 分别端口转发后，
+  首个完整 runner 6.587 秒 GREEN；修正 cleanup 后连续 5/5 GREEN（6.716–6.972 秒），完整
+  race 8.182 秒 GREEN。每轮 postflight 均保持两个 prefix Count=0、lease 集合不变。
+
+  runner fail-closed 专项连续 10 轮、compat 普通全套、根与 compat `go vet`、脚本语法检查均
+  通过。三个 direct port-forward 已删除；最终三个副本共同 revision
+  `468126003565735746`、leader `2393892952`、term 297、Status errors 为空，主 keyspace
+  compat/direct-lease Count=0、LeaseList/AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均
+  Ready/0 restart。本轮没有 runtime 语义差距，不重建 A3512 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
