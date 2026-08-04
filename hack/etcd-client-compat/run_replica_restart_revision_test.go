@@ -16,6 +16,14 @@ func TestReplicaRestartRevisionRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "assert_compat_prefix_empty postflight")
 	require.Contains(t, string(script), "TestIdleReplicaReplacementDoesNotAdvanceRevision")
 	require.Contains(t, string(script), "TestReferenceEtcdLatestCompactionIdleRestartPreservesRevision")
+	require.Contains(t, string(script), "TestLeaseExpiryReplicaReplacementPreservesRevision")
+	require.Contains(t, string(script), "TestReferenceEtcdLeaseExpiryRestartPreservesRevision")
+	require.Contains(t, string(script), "TestTxnSnapshotAndWatchRecoverAcrossAllReplicaReplacements")
+	require.Contains(t, string(script), "TestReferenceEtcdTxnSnapshotAndWatchRecoverAfterRestart")
+	require.Contains(t, string(script), "TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements")
+	require.Contains(t, string(script), "TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart")
+	require.Contains(t, string(script), "TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements")
+	require.Contains(t, string(script), "TestReferenceEtcdPriorCompactedTxnPrevKVRecoversAfterRestart")
 }
 
 func TestReplicaRestartRevisionRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {

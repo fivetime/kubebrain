@@ -11,6 +11,20 @@ REFERENCE_ETCD_BINARY="${REFERENCE_ETCD_BINARY:-/root/etcd/bin/etcd}"
 ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 KUBECTL="${KUBECTL:-kubectl}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-8m}"
+TEST_PATTERN='^('
+TEST_PATTERN+='TestIdleReplicaReplacementDoesNotAdvanceRevision|'
+TEST_PATTERN+='TestReferenceEtcdIdleRestartPreservesRevision|'
+TEST_PATTERN+='TestLatestCompactionReplicaReplacementDoesNotAdvanceRevision|'
+TEST_PATTERN+='TestReferenceEtcdLatestCompactionIdleRestartPreservesRevision|'
+TEST_PATTERN+='TestLeaseExpiryReplicaReplacementPreservesRevision|'
+TEST_PATTERN+='TestReferenceEtcdLeaseExpiryRestartPreservesRevision|'
+TEST_PATTERN+='TestTxnSnapshotAndWatchRecoverAcrossAllReplicaReplacements|'
+TEST_PATTERN+='TestReferenceEtcdTxnSnapshotAndWatchRecoverAfterRestart|'
+TEST_PATTERN+='TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements|'
+TEST_PATTERN+='TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart|'
+TEST_PATTERN+='TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements|'
+TEST_PATTERN+='TestReferenceEtcdPriorCompactedTxnPrevKVRecoversAfterRestart)'
+TEST_PATTERN+='$'
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -111,7 +125,7 @@ baseline_leases="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" leas
     KUBEBRAIN_IDLE_RESTART_PODS="$(IFS=,; echo "${kube_pods[*]}")" \
     REFERENCE_ETCD_BINARY="$REFERENCE_ETCD_BINARY" \
     go test . \
-      -run '^(TestIdleReplicaReplacementDoesNotAdvanceRevision|TestReferenceEtcdIdleRestartPreservesRevision|TestLatestCompactionReplicaReplacementDoesNotAdvanceRevision|TestReferenceEtcdLatestCompactionIdleRestartPreservesRevision)$' \
+      -run "$TEST_PATTERN" \
       -count=1 -timeout="$TEST_TIMEOUT" -v
 )
 
