@@ -110,6 +110,19 @@ validate_inventory() {
 validate_inventory PD pd "$EXPECTED_PD_PVCS" "$pd_inventory"
 validate_inventory TiKV tikv "$EXPECTED_TIKV_PVCS" "$tikv_inventory"
 
+while IFS= read -r storage_class; do
+  if ! storage_provisioner="$("$KUBECTL" "${kubectl_args[@]}" get storageclass "$storage_class" \
+    -o 'jsonpath={.provisioner}')"; then
+    echo "StorageClass ${storage_class} is unavailable" >&2
+    exit 1
+  fi
+  if [[ "$storage_provisioner" != "$snapshot_driver" ]]; then
+    echo "StorageClass ${storage_class} provisioner ${storage_provisioner:-missing} does not match VolumeSnapshotClass driver ${snapshot_driver}" >&2
+    exit 1
+  fi
+done < <(jq -r -n --argjson pd "$pd_inventory" --argjson tikv "$tikv_inventory" \
+  '[$pd[], $tikv[]] | map(.storage_class) | unique[]')
+
 jq -cn \
   --arg format kubebrain.cold-physical-snapshot-preflight.v2 \
   --arg snapshot_class "$VOLUME_SNAPSHOT_CLASS" \

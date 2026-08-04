@@ -592,6 +592,8 @@ ALLOW_COLD_PHYSICAL_SNAPSHOT=true \
 预检要求集群提供 `snapshot.storage.k8s.io` API、VolumeSnapshotClass driver 非空且
 `deletionPolicy=Retain`，并精确锁定 KubeBrain StatefulSet UID、TidbCluster UID、TiKV
 cluster ID，以及全部 3+3 Bound PD/TiKV PVC 的 name/UID/PV/storage class/volume mode。
+每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
+不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的
 access modes 和 requested storage，作为后续 operation 的不可变恢复蓝图。旧 v1 清单缺少这些
 字段，当前执行器明确拒绝，不能补默认值后继续。

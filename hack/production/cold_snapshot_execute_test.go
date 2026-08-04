@@ -360,6 +360,8 @@ if [[ "$args" == *"api-resources"* ]]; then
   printf '%s\n' volumesnapshots.snapshot.storage.k8s.io volumesnapshotclasses.snapshot.storage.k8s.io
 elif [[ "$args" == *"get volumesnapshotclass"* ]]; then
   printf 'csi.example.test\tRetain'
+elif [[ "$args" == *"get storageclass"* ]]; then
+  printf 'csi.example.test'
 elif [[ "$args" == *"get tidbcluster"* ]]; then
   printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"uid-tidb","resourceVersion":"10"},"spec":{"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"7662961163671170154"}}'
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"jsonpath"* ]]; then

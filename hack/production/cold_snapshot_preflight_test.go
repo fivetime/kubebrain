@@ -18,12 +18,14 @@ func TestColdSnapshotPreflight(t *testing.T) {
 		tidbID      string
 		kubebrainID string
 		pvcJSON     string
+		provisioner string
 		wantOK      bool
 		wantOutput  string
 	}{
 		{name: "valid inventory", wantOK: true},
 		{name: "missing snapshot API", resources: "none", wantOutput: "VolumeSnapshot API is unavailable"},
 		{name: "snapshot class deletes content", policy: "Delete", wantOutput: "deletionPolicy=Retain"},
+		{name: "storage class uses another CSI driver", provisioner: "other.csi.test", wantOutput: "StorageClass fast provisioner"},
 		{name: "wrong storage identity", tidbID: "wrong\t7662961163671170154", wantOutput: "TidbCluster identity mismatch"},
 		{name: "wrong kubebrain identity", kubebrainID: "wrong", wantOutput: "StatefulSet UID mismatch"},
 		{name: "unbound TiKV PVC", pvcJSON: coldSnapshotPVCJSON("Pending"), wantOutput: "TiKV PVC inventory must be Bound"},
@@ -45,6 +47,8 @@ elif [[ "$*" == *"get statefulset"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_ID"
 elif [[ "$*" == *"get pvc"* ]]; then
   printf '%s' "$FAKE_PVC_JSON"
+elif [[ "$*" == *"get storageclass"* ]]; then
+  printf '%s' "$FAKE_PROVISIONER"
 else
   exit 1
 fi
@@ -65,6 +69,10 @@ fi
 			if pvcJSON == "" {
 				pvcJSON = coldSnapshotPVCJSON("Bound")
 			}
+			provisioner := tc.provisioner
+			if provisioner == "" {
+				provisioner = "csi.example.test"
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"KUBE_CONTEXT=preproduction",
@@ -78,6 +86,7 @@ fi
 				"FAKE_TIDB_ID=" + tidbID,
 				"FAKE_KUBEBRAIN_ID=" + kubebrainID,
 				"FAKE_PVC_JSON=" + pvcJSON,
+				"FAKE_PROVISIONER=" + provisioner,
 			}
 			output, err := runColdSnapshotPreflight(t, env)
 			if tc.wantOK {
