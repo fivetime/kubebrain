@@ -33668,6 +33668,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied
   index 均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距，不重建 A3512 镜像。
 
+- A3521 将三副本直连 `MoveLeader` follower 优先级条件性 Skip 固化为独立门禁。新增
+  `run-direct-moveleader-differential.sh`，要求显式提供三个 KubeBrain direct endpoint，先逐端
+  读取 Status，并强制三个非零且唯一 member ID、同一非零 cluster/leader ID、leader 位于 member
+  集合内；随后在本机自建三个独立 data-dir/client/peer 端口的官方 etcd quorum，只执行
+  `TestMoveLeaderFollowerDifferentialAgainstReferenceEtcd`。测试再次在两端校验拓扑，再分别从两个
+  follower 请求把 leadership 移交给当前 leader；四次调用都必须返回
+  `FailedPrecondition: etcdserver: not leader`，不得先按 target 状态误判或真的迁移领导权。
+
+  kind Pod IP 从宿主机不可路由，本轮分别把 `kubebrain-0/1/2` 映射到三个本地端口，预检得到
+  cluster ID `7662961163671170154`、三个 member ID `4034353177/2393892952/231094427`，共同
+  leader `2393892952`。首个完整 runner 的测试包 0.157 秒 GREEN；将同一副本通过
+  `127.0.0.1` 与 `localhost` 伪装成两个字符串不同的 endpoint 时，runner 在启动 reference 前
+  按重复 member ID 正确拒绝，证明不是只做 CSV 数量检查。runner 连续 10/10 GREEN，每轮重建并
+  清理三节点 reference，测试包耗时 0.118–0.200 秒；完整 race 测试包 1.307 秒 GREEN。
+
+  runner fail-closed 专项连续 10 轮、compat 普通全套、脚本语法检查与 `go vet` 均通过。三个
+  direct port-forward、所有 reference 进程/data-dir 均已删除，六个 reference client/peer 端口
+  均未监听；主 keyspace revision 未前进，compat Count=0、AlarmList 为空，3 KubeBrain、3 PD、
+  3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
+  `468126003565735711`、term 297。本轮没有 runtime 语义差距，不重建 A3512 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
