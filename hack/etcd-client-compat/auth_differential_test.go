@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -137,6 +138,11 @@ type authDifferentialOutcome struct {
 	AuthRangeStreamCount      int
 	AuthRangeStreamTerminal   bool
 	AuthRangeStreamError      authErrorOutcome
+	SnapshotStreamFirst       bool
+	SnapshotStreamAfter       bool
+	SnapshotStreamTerminal    bool
+	SnapshotStreamDigest      bool
+	SnapshotStreamEOF         bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -185,7 +191,7 @@ func authRangeStream(t *testing.T, ctx context.Context, cli *clientv3.Client) (*
 
 func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferentialOutcome {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	bootstrap := authClient(t, endpoint, "", "")
 	transitionRangeValue := strings.Repeat("x", 256*1024)
@@ -350,6 +356,35 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 			authRangeStreamTerminal = true
 		}
 	}
+	snapshotStream, err := etcdserverpb.NewMaintenanceClient(root.ActiveConnection()).Snapshot(
+		ctx, &etcdserverpb.SnapshotRequest{},
+	)
+	require.NoError(t, err)
+	snapshotFirst, err := snapshotStream.Recv()
+	require.NoError(t, err)
+	snapshotStreamFirst := len(snapshotFirst.Blob) > 0 && snapshotFirst.RemainingBytes > 0 &&
+		snapshotFirst.Version != ""
+	_, err = root.RoleAdd(ctx, "snapshot-stream-revision-bump")
+	require.NoError(t, err)
+	snapshotHash := sha256.New()
+	snapshotPending := snapshotFirst
+	snapshotStreamAfterResponses := 0
+	snapshotStreamEOF := false
+	for {
+		response, receiveErr := snapshotStream.Recv()
+		if errors.Is(receiveErr, io.EOF) {
+			snapshotStreamEOF = true
+			break
+		}
+		require.NoError(t, receiveErr)
+		snapshotStreamAfterResponses++
+		_, _ = snapshotHash.Write(snapshotPending.Blob)
+		snapshotPending = response
+	}
+	snapshotStreamTerminal := snapshotPending.RemainingBytes == 0 &&
+		len(snapshotPending.Blob) == sha256.Size && snapshotPending.Version != ""
+	snapshotStreamDigest := snapshotStreamTerminal &&
+		string(snapshotHash.Sum(nil)) == string(snapshotPending.Blob)
 	keepAliveSendAfterEnableErr := preAuthKeepAlive.Send(
 		&etcdserverpb.LeaseKeepAliveRequest{ID: int64(protectedLease.ID)},
 	)
@@ -890,6 +925,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		AuthRangeStreamCount:      authRangeStreamCount,
 		AuthRangeStreamTerminal:   authRangeStreamTerminal,
 		AuthRangeStreamError:      authError(authRangeStreamErr),
+		SnapshotStreamFirst:       snapshotStreamFirst,
+		SnapshotStreamAfter:       snapshotStreamAfterResponses > 0,
+		SnapshotStreamTerminal:    snapshotStreamTerminal,
+		SnapshotStreamDigest:      snapshotStreamDigest,
+		SnapshotStreamEOF:         snapshotStreamEOF,
 	}
 }
 
@@ -978,6 +1018,11 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.AuthRangeStreamTerminal)
 	require.Equal(t, codes.InvalidArgument, reference.AuthRangeStreamError.Code)
 	require.Equal(t, status.Convert(rpctypes.ErrGRPCAuthOldRevision).Message(), reference.AuthRangeStreamError.Message)
+	require.True(t, reference.SnapshotStreamFirst)
+	require.True(t, reference.SnapshotStreamAfter)
+	require.True(t, reference.SnapshotStreamTerminal)
+	require.True(t, reference.SnapshotStreamDigest)
+	require.True(t, reference.SnapshotStreamEOF)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
 	require.Equal(t, reference, actual)
 }
