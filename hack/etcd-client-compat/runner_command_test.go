@@ -235,6 +235,7 @@ func TestCompatFailoverCommandsUseBoundedHelpers(t *testing.T) {
 		"lease_renewal_soak_failover_test.go",
 		"mutation_failover_test.go",
 		"restart_persistence_test.go",
+		"revision_monotonic_failover_test.go",
 	} {
 		t.Run(testFile, func(t *testing.T) {
 			data, err := os.ReadFile(testFile)
