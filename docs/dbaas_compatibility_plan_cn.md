@@ -34543,6 +34543,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   listener 与临时 manifest 均已清理。共享生产 KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint
   healthy、无 alarm/lease、auth disabled，revision/index/applied 保持 468126003565737983。
 
+- A3570 固定 root Maintenance.Snapshot 跨 auth revision mutation 的 start-time authorization 语义，
+  并明确它与 KV RangeStream 的结束复核不同。对照上游
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::authMaintenanceServer.Snapshot`，root 权限只在
+  委托 snapshot handler 前检查一次；KubeBrain `RPCServer.Snapshot` 同样在进入 `sendSnapshot` 前解析
+  caller/admin，均不在流结束时调用 `doSerialize`/`ensureAuthRevision`。因此已准入的 snapshot 不能因
+  无关 role mutation 被截断为 `AuthOldRevision`。
+
+  destructive Auth 双端状态机复用 50×256KiB fixture，以 root token 启动 raw Snapshot 并读取首个
+  32KiB data response，随后新增无关 role 推进 auth revision。接收器以单个 pending response 流式计算
+  SHA-256，不物化整个 snapshot，并要求 mutation 后仍至少一个 response、最终 response
+  `RemainingBytes=0`/32-byte digest/version 非空、摘要匹配且 clean EOF；snapshot 后续格式与总字节因
+  bbolt/TiKV 导出实现不同而不进入跨端相等 oracle。Auth 场景总 context 从 30 秒扩到 60 秒，为新增
+  snapshot 构建保留确定性预算，而 runner 继续由 8 分钟外层门禁约束。
+
+  两个全新 TiKV keyspace、NodePort 30463/30464 上普通双端 16.950 秒、race 双端 27.120 秒 GREEN；
+  完整 compat 1.724 秒、vet、compat staticcheck v0.7.0、bash syntax 和 diff check 通过。没有服务端
+  RED，故不构建或滚动镜像；临时 Pod/Service 与 reference listener 已清理。共享生产
+  KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled，
+  revision/index/applied 保持 468126003565737983。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
