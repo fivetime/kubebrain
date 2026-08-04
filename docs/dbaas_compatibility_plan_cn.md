@@ -34739,6 +34739,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/
   index/applied 均为 468126003565738023、term 316，长期 fixture Count=100。
 
+- A3579 修复 Lease 授权 revision fence 在请求取消后失效。对照上游
+  `/root/etcd/server/etcdserver/v3_server.go::checkLeaseRenew/checkLeaseTimeToLive/checkLeaseLeases`，
+  三条路径在检查附着 key 权限后直接比较内存 `AuthStore.Revision()`；请求 context 即使同期取消，
+  auth revision 未变化的本地 TTL/List 仍可完成，revision 已变化时则必须返回
+  `AuthOldRevision`。KubeBrain 的 `authorizeLeaseKeys` 需要从 TiKV 重新读取 auth config，此前沿用原
+  request context，导致两种情况都提前泄漏 `context canceled`。
+
+  新确定性 seam 把 `LeaseTimeToLive(Keys=true)` 与 `LeaseLeases` 暂停在最终 auth-config 读取处，分别
+  覆盖 stable/changed auth，再取消请求。修复前四场景全部精确 RED 为 `context canceled`；修复新增
+  `ensureAuthStoreRevisionUnchangedAfterLeaseAuthorization`，用 `context.WithoutCancel` 保留 request
+  values 并附加独立 10 秒上限，因而 stable auth 完成、changed auth 返回精确 `AuthOldRevision`。
+  `authorizeLeaseKeys` 的同一结束 fence 也继续服务 KeepAlive，权限准入和实际 lease 操作仍使用原请求
+  context，没有放宽认证或存储操作的取消边界。
+
+  专项普通 10 连跑 13.885 秒（端到端 18.174 秒）、race 5 连跑 86.105 秒（端到端 91.770 秒）GREEN；
+  完整 `pkg/server/etcd`、主模块 `go test ./...`、vet、完整 compat 1.326 秒通过。staticcheck v0.7.0
+  仍精确为既有 9 项基线告警，没有新增。两个全新独立 TiKV keyspace 上，完整破坏性 Auth 官方双端矩阵
+  普通 21.52 秒、race 19.10 秒通过；临时 Pod/Service 与 reference listener/data-dir 均已清理。
+
+  commit `90c09766` 构建为 `kubebrain:a3579-lease-auth-cancel`（Docker 镜像 ID
+  `sha256:f1e7ca0c06d88e498ec321ad6634c6237103a606a2f8dc52938c43d30dd57487`），核验 OCI version、完整
+  Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。
+  最终 StatefulSet current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint
+  healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/index/applied 均为
+  468126003565738023、term 318，全范围长期 fixture Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
