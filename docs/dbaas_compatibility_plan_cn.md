@@ -33794,6 +33794,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raft index/applied index 均为 `468126003565735746`、term 297。本轮没有新的 runtime 语义差距，
   不重建 A3524 镜像。
 
+- A3526 把 Alarm 持久化、跨副本指标重建与 CORRUPT 服务外观固化为独立恢复门禁。对照
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go`：官方 `AlarmStore.restore()` 在每次启动时
+  从 backend 读取全部 Alarm，而不是依赖旧进程内存。新增两个官方同 data-dir restart oracle：
+  未知类型 127 激活后必须原样恢复并可解除；CORRUPT 激活后重启，Alarm 集合与已有 key 必须
+  保留，Range 继续可用、Put 持续返回 `DataLoss`，解除后 Put 恢复。
+
+  新 `run-alarm-restart-recovery.sh` 要求显式 client/info endpoint、context、namespace、三个
+  不同 StatefulSet Pod 与破坏性确认；预检 endpoint health、info metrics、Pod Ready/唯一 UID、
+  Alarm/compat prefix 为空并快照 Lease ID 集合。候选侧首先激活自定义 Alarm，要求三个 Pod
+  本地 `etcd_debugging_server_alarms` 都收敛为 1；依次替换全部 Pod 后每一步仍为 1，解除后全部
+  归零。CORRUPT 场景在每次 replacement 后重新验证 Alarm GET、读可用、写 DataLoss、TTL=2
+  Lease 已到期但 leased key 暂不删除，以及 `/health` 与 `/readyz/data_corruption` 的 503 外观；
+  解除后写恢复且过期 key 最终清理。runner postflight 强制 Alarm/prefix 为空、Lease 集合不变且
+  endpoint 健康；失败退出 trap 也 best-effort 执行 `alarm disarm`，避免中途 RED 遗留 CORRUPT。
+
+  fail-closed 单测先因脚本不存在确定性 RED；commit `f92daa88` 补齐 runner、官方 oracle，并在
+  disposable Service 暴露 info NodePort 30480。真实四项矩阵首轮 66.190 秒 GREEN，完整 race
+  63.535 秒 GREEN，随后普通模式连续 3/3 GREEN（65.003/64.243/61.945 秒）。runner 专项连续
+  10 轮、compat 普通全套、`go vet`、脚本语法与清单 dry-run 均通过。
+
+  独立 keyspace 最终 revision/raft index/applied index 均为 151、term 66、Status errors 为空，
+  Alarm/compat prefix/Lease 均为空；三 Pod Ready/0 restart、所有正值 Alarm gauge 为 0，日志无
+  alarm refresh/decode、panic/fatal。一次性 StatefulSet 与两个 Service 已删除。主 keyspace
+  revision 未前进，Alarm/compat prefix/Lease 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0
+  restart，revision/raft index/applied index 均为 `468126003565735746`、term 297。本轮没有新的
+  runtime 语义差距，不重建 A3524 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
