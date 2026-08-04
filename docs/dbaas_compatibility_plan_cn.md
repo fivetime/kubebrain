@@ -34765,6 +34765,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/index/applied 均为
   468126003565738023、term 318，全范围长期 fixture Count=100。
 
+- A3580 补齐 `LeaseTimeToLive(Keys=true)` 在查询完成后的独立 auth revision fence。逐行对照
+  `/root/etcd/server/etcdserver/v3_server.go::LeaseTimeToLive/checkLeaseTimeToLive/leaseTimeToLive`：
+  上游先捕获 auth store revision、检查附着 key 的 READ 权限，再执行 leader 本地 lookup 或 follower
+  转发；只有查询成功后才比较当前 auth revision。该最终 fence 与 LeaseLeases/LeaseRenew 不同：root 也
+  参与，auth disabled 起始请求若同期 AuthEnable 也必须报 `AuthOldRevision`；`Keys=false` 不 fence，查询
+  自身错误也优先返回。KubeBrain 此前把非 root 权限 fence 放在本地 lookup 之前，follower proxy 成功后
+  则直接返回，因而代理期间的 auth mutation 可以泄漏按旧 revision 获得的 TTL/Keys 结果。
+
+  确定性 follower RED 在 peer callback 新增无关 role：`Keys=false` 正确成功，而 `Keys=true` 修复前仍
+  错误返回完整 TTL response。修复捕获 request-start store revision，并把最终比较统一放到本地 live、
+  missing lease 及两条 follower proxy 成功出口；比较使用保留 request values、脱离取消信号且有 10 秒
+  上限的 context。新增 leader `GetCurrentRevision` seam 证明 lookup 内 mutation 同样返回
+  `AuthOldRevision`，并补齐 proxy error 优先、root mutation、anonymous→AuthEnable 必须 AuthOld、
+  authenticated→AuthDisable 保留成功四类反例。既有授权快照/cancellation seam 因 TTL 新增一次起始
+  revision 读取而把目标 config read 从第 4 次调整到第 5 次，继续证明 leaseMu 内权限与 key snapshot
+  原子一致；race 首轮发现测试 hook 的 `sync.Once` 重入自锁，改为原子 CAS 后门禁稳定。
+
+  leader/follower 专项普通 10 连跑 21.268 秒、race 5 连跑 194.591 秒 GREEN；授权快照与取消组合普通
+  10 连跑 20.876 秒，完整 `pkg/server/etcd`、主模块 `go test ./...`、vet、完整 compat 通过。
+  staticcheck v0.7.0 仍精确为既有 9 项基线，没有新增。两个全新独立 TiKV keyspace 上，完整破坏性
+  Auth 官方双端矩阵普通 20.32 秒、race 28.09 秒通过；临时 Pod/Service 与 reference listener/data-dir
+  均已清理。
+
+  commit `7eedaf2a` 构建为 `kubebrain:a3580-lease-ttl-auth-fence`（Docker 镜像 ID
+  `sha256:9806a537adba45e428311fcc195f22856482490a824ca2fca53d384112a73837`），核验 OCI version、完整
+  Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。
+  最终 StatefulSet current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint
+  healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/index/applied 均为
+  468126003565738023、term 321，全范围长期 fixture Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
