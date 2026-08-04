@@ -50,6 +50,7 @@ func runTxnOperationValidationScenario(t *testing.T, endpoint, prefix string) []
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := etcdserverpb.NewKVClient(conn)
+	registerRawPrefixCleanup(t, client, prefix)
 
 	key := []byte(prefix + "compare")
 	mutationKey := []byte(prefix + "mutation")
@@ -230,6 +231,7 @@ func runTxnOperationBudgetScenario(t *testing.T, endpoint, prefix string) []txnO
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := etcdserverpb.NewKVClient(conn)
+	registerRawPrefixCleanup(t, client, prefix)
 
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	seed, err := client.Put(seedCtx, &etcdserverpb.PutRequest{

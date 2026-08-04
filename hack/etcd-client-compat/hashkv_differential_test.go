@@ -43,6 +43,7 @@ func runHashKVDifferentialScenario(t *testing.T, endpoint, instance string) hash
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	key := fmt.Sprintf("/dbaas-hashkv-differential/%s/%d", instance, time.Now().UnixNano())
+	registerPrefixCleanup(t, cli, key)
 
 	put, err := cli.Put(ctx, key, "value")
 	require.NoError(t, err)

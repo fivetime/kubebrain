@@ -57,6 +57,7 @@ func runTxnExecutionValidationOrderScenario(t *testing.T, endpoint, prefix strin
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := etcdserverpb.NewKVClient(conn)
+	registerRawPrefixCleanup(t, client, prefix)
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	seed, err := client.Put(seedCtx, &etcdserverpb.PutRequest{
 		Key: []byte(prefix + "seed"), Value: []byte("seed"),
@@ -110,6 +111,7 @@ func runTxnValidationOrderScenario(t *testing.T, endpoint, prefix string) txnVal
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
 	client := etcdserverpb.NewKVClient(conn)
+	registerRawPrefixCleanup(t, client, prefix)
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	seed, err := client.Put(seedCtx, &etcdserverpb.PutRequest{
 		Key: []byte(prefix + "seed"), Value: []byte("seed"),

@@ -89,6 +89,7 @@ func runTxnDuplicateIntervalScenario(t *testing.T, endpoint, instance string) []
 	outcomes := make([]txnDuplicateIntervalOutcome, 0, len(tests))
 	for i, test := range tests {
 		prefix := fmt.Sprintf("/dbaas-txn-duplicate-interval/%s/%d/%02d/", instance, time.Now().UnixNano(), i)
+		registerRawPrefixCleanup(t, client, prefix)
 		ops := newTxnDuplicateIntervalOps(prefix)
 		seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		seed, seedErr := client.Put(seedCtx, &etcdserverpb.PutRequest{

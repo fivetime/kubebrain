@@ -66,6 +66,7 @@ func runCompareEnumScenario(t *testing.T, endpoint, instance string) []compareEn
 	outcomes := make([]compareEnumOutcome, 0, len(tests))
 	for _, test := range tests {
 		prefix := fmt.Sprintf("/dbaas-compare-enum/%s/%s/%d/", instance, test.name, time.Now().UnixNano())
+		registerRawPrefixCleanup(t, client, prefix)
 		seedCtx, seedCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		seed, seedErr := client.Put(seedCtx, &etcdserverpb.PutRequest{
 			Key: []byte(prefix + "seed"), Value: []byte("seed"),
