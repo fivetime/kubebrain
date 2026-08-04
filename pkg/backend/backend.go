@@ -171,6 +171,11 @@ type Backend interface {
 	// write-fenced logical snapshot. A zero revision selects the current one.
 	HashKV(ctx context.Context, revision int64) (HashKVResult, error)
 
+	// Hash returns a checksum of the complete encoded tenant backend, including
+	// revision indexes, event-log rows and internal lease/auth/alarm metadata.
+	// It is the storage-wide diagnostic counterpart to user-MVCC-only HashKV.
+	Hash(ctx context.Context) (BackendHashResult, error)
+
 	// CountAtRevision returns the exact live-key count of [key,end) at rev from
 	// the in-memory count index; served is false when it must fall back to a scan.
 	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (count int64, served bool)

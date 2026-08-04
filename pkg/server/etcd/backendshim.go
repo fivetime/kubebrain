@@ -122,6 +122,8 @@ type BackendShim interface {
 	// HashKV checksums retained user MVCC state and returns hash, current and
 	// compact revisions captured by the same fenced logical snapshot.
 	HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error)
+	// Hash checksums the full encoded tenant backend, including internal state.
+	Hash(ctx context.Context) (backend.BackendHashResult, error)
 
 	// RangeStreamChan streams a user-key range read as disjoint RangeResponse
 	// chunks at a single pinned revision, for the native KV.RangeStream RPC
@@ -278,6 +280,10 @@ func (b *backendShim) GetDurableRevision(ctx context.Context) (uint64, error) {
 
 func (b *backendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
 	return b.backend.HashKV(ctx, revision)
+}
+
+func (b *backendShim) Hash(ctx context.Context) (backend.BackendHashResult, error) {
+	return b.backend.Hash(ctx)
 }
 
 func (b *backendShim) InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error) {

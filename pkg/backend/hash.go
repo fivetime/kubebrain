@@ -16,6 +16,48 @@ var (
 	ErrHashKVFuture    = errors.New("hash revision is in the future")
 )
 
+type BackendHashResult struct {
+	Hash            uint32
+	CurrentRevision int64
+}
+
+// Hash checksums the complete encoded tenant keyspace. Unlike HashKV it does
+// not interpret MVCC revisions or logical compaction: physical rows and
+// internal service metadata are deliberately part of this diagnostic value,
+// matching etcd's distinction between backend Hash and user-key HashKV.
+func (b *backend) Hash(ctx context.Context) (BackendHashResult, error) {
+	b.logicalWriteMu.Lock()
+	defer b.logicalWriteMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return BackendHashResult{}, err
+	}
+	it, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), 0, 0)
+	if err != nil {
+		return BackendHashResult{}, err
+	}
+	defer it.Close()
+	h := crc32.New(hashKVTable)
+	// Upstream backend.Hash includes each bbolt bucket name before its rows.
+	// KubeBrain has one tenant-scoped encoded storage domain, so use a stable
+	// domain separator rather than pretending its TiKV layout is a bbolt file.
+	_, _ = h.Write([]byte("kubebrain-backend"))
+	for {
+		if err = it.Next(ctx); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return BackendHashResult{}, err
+		}
+		_, _ = h.Write(it.Key())
+		_, _ = h.Write(it.Val())
+	}
+	current, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return BackendHashResult{}, err
+	}
+	return BackendHashResult{Hash: h.Sum32(), CurrentRevision: int64(current)}, nil
+}
+
 // HashKV checksums the logical object MVCC state visible at revision. Versions
 // retired by logical compaction are excluded before physical GC catches up.
 // Internal service metadata is excluded, matching etcd HashKV's user-KV scope.

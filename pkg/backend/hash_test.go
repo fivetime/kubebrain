@@ -104,6 +104,40 @@ func TestHashKVHonorsCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestBackendHashIncludesInternalStateExcludedFromHashKV(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/hash/backend")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	before, err := b.Hash(ctx)
+	require.NoError(t, err)
+	logicalBefore, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, logicalBefore.CurrentRevision, before.CurrentRevision)
+	require.NotEqual(t, logicalBefore.Hash, before.Hash,
+		"backend Hash and user-MVCC HashKV must retain distinct checksum domains")
+
+	require.NoError(t, b.InternalPut(ctx, []byte("hash/backend-only"), []byte("metadata")))
+	after, err := b.Hash(ctx)
+	require.NoError(t, err)
+	logicalAfter, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, before.CurrentRevision, after.CurrentRevision,
+		"internal metadata must not consume a user-visible revision")
+	require.NotEqual(t, before.Hash, after.Hash, "backend Hash must include internal metadata")
+	require.Equal(t, logicalBefore, logicalAfter, "HashKV must exclude internal metadata")
+}
+
+func TestBackendHashHonorsCancellation(t *testing.T) {
+	b, _ := newTxnApplyBackend(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := b.Hash(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestHashKVIsStableAcrossPhysicalCompaction(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	key := []byte(prefix + "/hash/compact")

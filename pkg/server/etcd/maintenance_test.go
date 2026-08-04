@@ -46,8 +46,8 @@ import (
 
 type writeAfterHashBackendShim struct {
 	BackendShim
-	t      *testing.T
-	result backend.HashKVResult
+	t              *testing.T
+	resultRevision int64
 }
 
 type compactAfterHashBackendShim struct {
@@ -139,10 +139,24 @@ func (b *writeAfterHashBackendShim) HashKV(ctx context.Context, revision int64) 
 	if err != nil {
 		return backend.HashKVResult{}, err
 	}
-	b.result = result
+	b.resultRevision = result.CurrentRevision
 	_, err = b.BackendShim.Put(ctx, &etcdserverpb.PutRequest{
 		Key:   []byte("/registry/maintenance/write-after-hash"),
 		Value: []byte(fmt.Sprintf("after-%d", result.HashRevision)),
+	})
+	require.NoError(b.t, err)
+	return result, nil
+}
+
+func (b *writeAfterHashBackendShim) Hash(ctx context.Context) (backend.BackendHashResult, error) {
+	result, err := b.BackendShim.Hash(ctx)
+	if err != nil {
+		return backend.BackendHashResult{}, err
+	}
+	b.resultRevision = result.CurrentRevision
+	_, err = b.BackendShim.Put(ctx, &etcdserverpb.PutRequest{
+		Key:   []byte("/registry/maintenance/write-after-hash"),
+		Value: []byte(fmt.Sprintf("after-%d", result.CurrentRevision)),
 	})
 	require.NoError(b.t, err)
 	return result, nil
@@ -1125,7 +1139,7 @@ func TestMaintenanceHashHeadersStayPinnedToHashedRevision(t *testing.T) {
 			server.backend = backend
 			header, err := tt.call(ctx, server)
 			require.NoError(t, err)
-			require.Equal(t, backend.result.CurrentRevision, header.Revision)
+			require.Equal(t, backend.resultRevision, header.Revision)
 			require.Greater(t, int64(server.backend.GetCurrentRevision()), header.Revision,
 				"the injected post-hash write must advance current revision")
 		})

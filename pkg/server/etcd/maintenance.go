@@ -364,13 +364,12 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 	// data is shared in TiKV. Refresh it when possible, but preserve etcd's
 	// member-local diagnostic behavior when the leader is unavailable.
 	_ = s.peers.SyncReadRevision(ctx)
-	hashResult, err := s.backend.HashKV(ctx, 0)
+	hashResult, err := s.backend.Hash(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.HashResponse{
-		Header: txnHeader(hashResult.CurrentRevision),
-		Hash:   hashResult.Hash,
+		Header: txnHeader(hashResult.CurrentRevision), Hash: hashResult.Hash,
 	}, nil
 }
 
