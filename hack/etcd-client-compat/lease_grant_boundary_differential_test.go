@@ -19,14 +19,15 @@ import (
 const referenceMaxLeaseTTL = int64(9_000_000_000)
 
 type leaseGrantBoundaryOutcome struct {
-	Name        string
-	Code        string
-	Message     string
-	IDMatches   bool
-	IDNonZero   bool
-	TTL         int64
-	RevisionGap int64
-	SeedValue   string
+	Name                string
+	Code                string
+	Message             string
+	IDMatches           bool
+	IDNonZero           bool
+	TTL                 int64
+	RevisionGap         int64
+	SeedValue           string
+	LeaseStatePreserved bool
 }
 
 func TestLeaseGrantBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -46,6 +47,7 @@ func TestLeaseGrantBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		leaseGrantError("maximum-int64", "OutOfRange", "etcdserver: too large lease TTL"),
 		{Name: "automatic-id", Code: "OK", IDNonZero: true, TTL: 10, SeedValue: "seed"},
 		leaseGrantError("duplicate-id", "FailedPrecondition", "etcdserver: lease already exists"),
+		leaseGrantError("duplicate-id-above-maximum", "OutOfRange", "etcdserver: too large lease TTL"),
 	}
 	referenceOutcomes := runLeaseGrantBoundaryScenario(t, reference)
 	require.Equal(t, want, referenceOutcomes)
@@ -57,7 +59,9 @@ func successfulFixedLeaseGrant(name string, ttl int64) leaseGrantBoundaryOutcome
 }
 
 func leaseGrantError(name, code, message string) leaseGrantBoundaryOutcome {
-	return leaseGrantBoundaryOutcome{Name: name, Code: code, Message: message, SeedValue: "seed"}
+	return leaseGrantBoundaryOutcome{
+		Name: name, Code: code, Message: message, SeedValue: "seed", LeaseStatePreserved: true,
+	}
 }
 
 func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBoundaryOutcome {
@@ -123,6 +127,11 @@ func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBo
 			grantedIDs = append(grantedIDs, resp.ID)
 		}
 		outcome.RevisionGap, outcome.SeedValue = seedState(test.name)
+		if callErr != nil {
+			ttl, ttlErr := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: test.id})
+			require.NoError(t, ttlErr, test.name)
+			outcome.LeaseStatePreserved = ttl.TTL == -1 && ttl.GrantedTTL == 0 && len(ttl.Keys) == 0
+		}
 		require.Zero(t, outcome.RevisionGap, test.name)
 		require.Equal(t, "seed", outcome.SeedValue, test.name)
 		outcomes = append(outcomes, outcome)
@@ -139,6 +148,26 @@ func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBo
 	outcomes = append(outcomes, leaseGrantBoundaryOutcome{
 		Name: "duplicate-id", Code: status.Code(duplicateErr).String(),
 		Message: status.Convert(duplicateErr).Message(), RevisionGap: duplicateGap, SeedValue: duplicateSeed,
+		LeaseStatePreserved: leaseGrantStateMatches(t, ctx, lease, duplicateID, 10),
+	})
+	_, duplicateTTLTooLargeErr := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{
+		ID: duplicateID, TTL: referenceMaxLeaseTTL + 1,
+	})
+	duplicateTTLTooLargeGap, duplicateTTLTooLargeSeed := seedState("duplicate-id-above-maximum")
+	require.Zero(t, duplicateTTLTooLargeGap, "duplicate-id-above-maximum")
+	require.Equal(t, "seed", duplicateTTLTooLargeSeed, "duplicate-id-above-maximum")
+	outcomes = append(outcomes, leaseGrantBoundaryOutcome{
+		Name: "duplicate-id-above-maximum", Code: status.Code(duplicateTTLTooLargeErr).String(),
+		Message: status.Convert(duplicateTTLTooLargeErr).Message(), RevisionGap: duplicateTTLTooLargeGap,
+		SeedValue:           duplicateTTLTooLargeSeed,
+		LeaseStatePreserved: leaseGrantStateMatches(t, ctx, lease, duplicateID, 10),
 	})
 	return outcomes
+}
+
+func leaseGrantStateMatches(t *testing.T, ctx context.Context, lease etcdserverpb.LeaseClient, id, grantedTTL int64) bool {
+	t.Helper()
+	ttl, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id})
+	require.NoError(t, err)
+	return ttl.ID == id && ttl.TTL > 0 && ttl.TTL <= grantedTTL && ttl.GrantedTTL == grantedTTL && len(ttl.Keys) == 0
 }
