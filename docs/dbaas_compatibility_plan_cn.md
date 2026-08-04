@@ -33508,6 +33508,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `2026-08-04T09:12:47Z`。最终 auth disabled、测试前缀 Count=0；3 KubeBrain、3 PD、3 TiKV
   均 Ready/0 restart，revision/raft index/applied index 均为 `468126003565724088`、term 297。
 
+- A3513 恢复“整套官方参考端差分”作为可信发布门禁。首次在真实独立 3 PD/3 TiKV 数据面
+  运行 `run-differential.sh` 发现 3 类 RED，但逐项证据均指向测试假设而非服务端差异：HTTP
+  Snapshot 把 runner 约定的 `host:port` 直接拼成 URL，尚未发请求就因缺 scheme 失败；两项
+  MoveLeader 测试把三副本负载均衡入口误当成必定命中 Leader，而官方语义本来就要求 follower
+  先返回 `etcdserver: not leader`；500 轮 Put 与 Version==0 Txn 竞争测试给本地 etcd 与远端
+  TiKV 同样固定 30 秒，KubeBrain 在健康完成约需 35–54 秒，因而把吞吐差异误报成正确性失败。
+
+  commit `fcc5a86a` 统一接受带/不带 scheme 的 HTTP endpoint，并新增 20 轮 URL 归一化单测；
+  MoveLeader 在同一 gRPC connection 上先取 Status header 的 serving member ID 与 Leader ID，
+  命中 leader 时对齐 current-target no-op / bad-transferee，命中 follower 时对齐 not-leader 的
+  官方优先级；Txn 测试保留全部 500 轮竞争，不缩减覆盖，只把每端 scenario budget 提升到
+  2 分钟。修后完整差分套件 **396.600 秒全绿**：HTTP Snapshot 实际验证多 chunk、单调
+  remaining bytes、稳定 version 与末尾 SHA-256；Txn 500 轮 53.56 秒通过且 0 violation；
+  MoveLeader 两项按实际落点通过。compat 普通全套、相关 race 连续 20 轮和 `go vet` 均通过。
+
+  本轮未发现新的 runtime 语义差异，因此不重建与 A3512 相同的生产二进制；运行环境继续为
+  `kubebrain:a3512-auth-watch-failover`。差分结束后 auth disabled，3 KubeBrain、3 PD、3 TiKV
+  均 Ready/0 restart，revision/raft index/applied index 均为 `468126003565729199`、term 297。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
