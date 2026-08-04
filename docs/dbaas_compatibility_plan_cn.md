@@ -33854,6 +33854,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
   `468126003565735746`、term 297。本轮没有新的 runtime 语义差距，不重建 A3524 镜像。
 
+- A3528 把压缩水位与 HashKV 在全部 serving 副本同时替换后的恢复证明并入 fail-closed 三副本
+  门禁。对照 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的 `HashKV` RPC，以及
+  `/root/etcd/server/storage/mvcc/kvstore_test.go` 的 compact/future/zero revision 用例：候选侧依次
+  写入三个版本、压缩到中间版本，固定当前 hash、hash revision 与 compact revision；替换全部
+  三个 KubeBrain Pod 后，逐 Pod 直连查询必须恢复完全相同的三元组。新增官方 oracle 用同一
+  data-dir 停启 `/root/etcd/bin/etcd`，并在指定 revision 上要求三个字段逐项不变，避免把
+  KubeBrain 自己的 hash 或水位表示误当作规范。runner 白名单由 12 项扩为 14 项，并显式传递
+  独立 HashKV restart fixture 参数。
+
+  首轮 HashKV 候选与官方 oracle 分别 14.530/2.190 秒 GREEN；其后的矩阵暴露测试基础设施
+  RED：全部 Pod 已 Ready，但 NodePort/EndpointSlice 转发尚未恢复，下一个 compaction RPC 收到
+  connection refused。共享 replacement 助手现在把外部 client endpoint TCP 可达纳入完成条件；
+  HashKV 的独立 replacement 路径也在退出前执行相同门禁，不以 etcd RPC 预热或改变待测状态。
+  修后完整 14 项矩阵 95.102 秒 GREEN，完整 race 100.829 秒 GREEN，普通模式连续 3/3 GREEN
+  （95.044/87.856/91.666 秒）。每轮实际进行七次 KubeBrain 三 Pod 同时 replacement 和七次
+  官方 etcd restart，postflight 均保持 compat prefix Count=0、Lease 集合不变。
+
+  runner fail-closed 专项连续 10 轮、compat 普通全套、`go vet`、脚本语法与清单 server-side
+  dry-run 均通过。独立 keyspace 最终 revision/raft index/applied index 均为 311、term 110，
+  Status errors、Alarm、compat prefix、Lease 均为空，三 Pod Ready/0 restart，日志无 HashKV/
+  durable revision、panic/fatal；一次性 StatefulSet 与三个 Service 已删除。主 keyspace revision
+  未前进，Alarm/compat prefix/Lease 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，
+  revision/raft index/applied index 均为 `468126003565735746`、term 297。本轮没有新的 runtime
+  语义差距，不重建 A3524 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
