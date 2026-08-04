@@ -33767,6 +33767,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
   `468126003565735746`、term 297。
 
+- A3525 把 A3436–A3440 曾经逐项执行、但默认 compat 与发布 runner 当前仍会条件性 Skip 的
+  Lease/Txn/Watch 冷恢复证明并入 A3524 的 fail-closed 三副本门禁。runner 的精确测试白名单由
+  4 项扩为 12 项；新增覆盖首先等待 TTL=2 lease 自然过期为真实 MVCC delete，再替换全部三个
+  serving Pod，要求 tombstone 与精确 committed revision 同时从 TiKV 恢复。对应官方 oracle
+  使用相同 data-dir 停启 `/root/etcd/bin/etcd`，固定相同公开行为。
+
+  三组 Txn 场景都先以 seed Txn 创建 `m/z`，再以单一混合 Txn 按反字典序执行
+  `UPDATE(z), DELETE(m), CREATE(a)`。全 serving 层替换后，当前快照必须原子呈现 `a/z`，历史
+  seed 快照必须原子呈现 `m/z`，从 txn revision catch-up 的 Watch 必须保持
+  `z,m,a` 与 `PUT,DELETE,PUT` sub-revision 顺序。未压缩场景要求 UPDATE/DELETE 带精确
+  PrevKV；physical compact 到 txn revision 时事件仍可重放但 PrevKV 必须隐藏；只 compact 到
+  seed revision 时历史快照和 PrevKV 仍必须保留。三项均有官方 etcd 同 data-dir restart oracle，
+  因此门禁不把 KubeBrain 自己的 event-log 表示当作规范。
+
+  runner 接线单测先在旧白名单上确定性 RED，再由 commit `c4e16135` 固定全部八个新增测试名。
+  当前 A3524 runtime 的首个完整 12 项矩阵 75.570 秒 GREEN，完整 race 78.589 秒 GREEN，随后
+  普通模式连续 3/3 GREEN（72.667/76.108/76.747 秒）。每轮都实际进行六次 KubeBrain 三 Pod
+  同时 replacement 和六次官方 etcd restart；postflight 始终保持 compat prefix Count=0、Lease
+  集合不变。runner fail-closed 专项连续 10 轮、compat 普通全套、`go vet` 与脚本语法均通过。
+
+  独立 keyspace 最终 revision/raft index/applied index 均为 126、term 44、Status errors 为空，
+  三个 Pod Ready/0 restart，日志无 event-log malformed、replay fallback、durable/sync revision、
+  panic/fatal；一次性 StatefulSet 与两个 Service 已删除。主 keyspace revision 未前进，compat
+  Count=0、LeaseList/AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/
+  raft index/applied index 均为 `468126003565735746`、term 297。本轮没有新的 runtime 语义差距，
+  不重建 A3524 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
