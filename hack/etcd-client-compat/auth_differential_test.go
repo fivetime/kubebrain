@@ -84,6 +84,9 @@ type authDifferentialOutcome struct {
 	KeepAliveStreamFirstOK    bool
 	KeepAliveAfterRoleRevoke  authErrorOutcome
 	KeepAliveAfterRestoreOK   bool
+	AnonymousKeepAliveBefore  bool
+	KeepAliveSendAfterEnable  bool
+	KeepAliveAfterEnable      authErrorOutcome
 	AnonymousWatchBeforeAuth  bool
 	ExistingWatchAfterEnable  bool
 	NewWatchAfterEnableCancel bool
@@ -170,6 +173,13 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	_, err = bootstrap.Put(ctx, "/auth-protected/leased", "secret", clientv3.WithLease(protectedLease.ID))
 	require.NoError(t, err)
+	preAuthKeepAlive, err := etcdserverpb.NewLeaseClient(bootstrap.ActiveConnection()).LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	require.NoError(t, preAuthKeepAlive.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(protectedLease.ID)}))
+	preAuthKeepAliveResponse, err := preAuthKeepAlive.Recv()
+	require.NoError(t, err)
+	anonymousKeepAliveBefore := preAuthKeepAliveResponse.ID == int64(protectedLease.ID) &&
+		preAuthKeepAliveResponse.TTL > 0
 	preAuthWatch, err := etcdserverpb.NewWatchClient(bootstrap.ActiveConnection()).Watch(ctx)
 	require.NoError(t, err)
 	const (
@@ -234,6 +244,14 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	root := authClient(t, endpoint, "root", "root-secret")
 	alice := authClient(t, endpoint, "alice", "alice-secret")
 	writer := authClient(t, endpoint, "writer", "writer-secret")
+	keepAliveSendAfterEnableErr := preAuthKeepAlive.Send(
+		&etcdserverpb.LeaseKeepAliveRequest{ID: int64(protectedLease.ID)},
+	)
+	var keepAliveAfterEnableErr error
+	if keepAliveSendAfterEnableErr == nil {
+		_, keepAliveAfterEnableErr = preAuthKeepAlive.Recv()
+	}
+	_ = preAuthKeepAlive.CloseSend()
 	_, err = root.Put(ctx, "/auth-transition/watch", "after-enable")
 	require.NoError(t, err)
 	preAuthEvent, err := preAuthWatch.Recv()
@@ -625,6 +643,9 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		KeepAliveStreamFirstOK:    keepAliveStreamFirstOK,
 		KeepAliveAfterRoleRevoke:  authError(keepAliveAfterRoleRevokeErr),
 		KeepAliveAfterRestoreOK:   keepAliveAfterRestoreOK,
+		AnonymousKeepAliveBefore:  anonymousKeepAliveBefore,
+		KeepAliveSendAfterEnable:  keepAliveSendAfterEnableErr == nil,
+		KeepAliveAfterEnable:      authError(keepAliveAfterEnableErr),
 		AnonymousWatchBeforeAuth:  anonymousWatchBeforeAuth,
 		ExistingWatchAfterEnable:  existingWatchAfterEnable,
 		NewWatchAfterEnableCancel: newWatchAfterEnableCancel,
@@ -696,6 +717,10 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 		reference.KeepAliveAfterRoleRevoke,
 	)
 	require.True(t, reference.KeepAliveAfterRestoreOK)
+	require.True(t, reference.AnonymousKeepAliveBefore)
+	require.True(t, reference.KeepAliveSendAfterEnable)
+	require.True(t, reference.KeepAliveAfterEnable.UserEmpty)
+	require.Equal(t, codes.InvalidArgument, reference.KeepAliveAfterEnable.Code)
 	require.True(t, reference.AnonymousWatchBeforeAuth)
 	require.True(t, reference.ExistingWatchAfterEnable)
 	require.True(t, reference.NewWatchAfterEnableCancel)
