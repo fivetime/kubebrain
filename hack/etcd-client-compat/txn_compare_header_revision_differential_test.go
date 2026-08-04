@@ -79,7 +79,10 @@ func runTxnCompareHeaderRevisionScenario(t *testing.T, endpoint, instance string
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 	prefix := fmt.Sprintf("/dbaas-txn-compare-header/%s/%d/", instance, time.Now().UnixNano())
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Preserve all 500 races on a remote transactional backend. A fixed 30s
+	// budget was below the healthy TiKV path's ~35s runtime and converted a
+	// throughput difference into a false semantic failure.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)

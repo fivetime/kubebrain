@@ -56,7 +56,7 @@ func runHTTPSnapshotScenario(t *testing.T, endpoint string) httpSnapshotOutcome 
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	url := strings.TrimSuffix(endpoint, "/") + "/v3/maintenance/snapshot"
+	url := httpEndpointURL(endpoint) + "/v3/maintenance/snapshot"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString("{}"))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
@@ -112,4 +112,23 @@ func runHTTPSnapshotScenario(t *testing.T, endpoint string) httpSnapshotOutcome 
 		outcome.DigestValid = bytes.Equal(digest.Sum(nil), blobs[len(blobs)-1])
 	}
 	return outcome
+}
+
+func httpEndpointURL(endpoint string) string {
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "http://" + endpoint
+	}
+	return endpoint
+}
+
+func TestHTTPEndpointURLAcceptsGRPCAndURLForms(t *testing.T) {
+	tests := map[string]string{
+		"127.0.0.1:2379":         "http://127.0.0.1:2379",
+		" http://host:2379/ ":    "http://host:2379",
+		"https://secure:2379///": "https://secure:2379",
+	}
+	for input, want := range tests {
+		require.Equal(t, want, httpEndpointURL(input))
+	}
 }

@@ -15,9 +15,10 @@ import (
 )
 
 type moveLeaderCurrentOutcome struct {
-	Code        string
-	Message     string
-	HeaderIsNil bool
+	ServingIsLeader bool
+	Code            string
+	Message         string
+	HeaderIsNil     bool
 }
 
 func TestMoveLeaderCurrentLeaderNoopDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -26,10 +27,21 @@ func TestMoveLeaderCurrentLeaderNoopDifferentialAgainstReferenceEtcd(t *testing.
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 	referenceOutcome := moveLeaderCurrentOutcomeForEndpoint(t, reference)
+	require.True(t, referenceOutcome.ServingIsLeader)
 	require.Equal(t, "OK", referenceOutcome.Code)
 	require.Empty(t, referenceOutcome.Message)
 	require.True(t, referenceOutcome.HeaderIsNil)
-	require.Equal(t, referenceOutcome, moveLeaderCurrentOutcomeForEndpoint(t, compatEndpoint(t)))
+	kubeBrainOutcome := moveLeaderCurrentOutcomeForEndpoint(t, compatEndpoint(t))
+	if kubeBrainOutcome.ServingIsLeader {
+		require.Equal(t, referenceOutcome, kubeBrainOutcome)
+	} else {
+		require.Equal(t, moveLeaderCurrentOutcome{
+			ServingIsLeader: false,
+			Code:            "FailedPrecondition",
+			Message:         "etcdserver: not leader",
+			HeaderIsNil:     true,
+		}, kubeBrainOutcome)
+	}
 }
 
 func moveLeaderCurrentOutcomeForEndpoint(t *testing.T, endpoint string) moveLeaderCurrentOutcome {
@@ -48,7 +60,8 @@ func moveLeaderCurrentOutcomeForEndpoint(t *testing.T, endpoint string) moveLead
 	response, callErr := client.MoveLeader(ctx, &etcdserverpb.MoveLeaderRequest{TargetID: statusResponse.GetLeader()})
 	header := response.GetHeader()
 	return moveLeaderCurrentOutcome{
-		Code: status.Code(callErr).String(), Message: status.Convert(callErr).Message(),
+		ServingIsLeader: statusResponse.GetHeader().GetMemberId() == statusResponse.GetLeader(),
+		Code:            status.Code(callErr).String(), Message: status.Convert(callErr).Message(),
 		HeaderIsNil: header == nil,
 	}
 }
