@@ -28,6 +28,7 @@ type leaseKeepAliveBoundaryOutcome struct {
 	HeaderMatchesSeed bool
 	RevisionGap       int64
 	SeedValue         string
+	LeaseMissing      bool
 }
 
 func TestLeaseKeepAliveRevokeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -42,11 +43,11 @@ func TestLeaseKeepAliveRevokeBoundaryDifferentialAgainstReferenceEtcd(t *testing
 		keepAliveLiveOutcome("keepalive-negative-one"),
 		keepAliveLiveOutcome("keepalive-minimum"),
 		keepAliveLiveOutcome("keepalive-maximum"),
-		{Name: "revoke-negative-one", Code: "OK", HeaderPositive: true, HeaderMatchesSeed: true, SeedValue: "seed"},
+		{Name: "revoke-negative-one", Code: "OK", HeaderPositive: true, HeaderMatchesSeed: true, SeedValue: "seed", LeaseMissing: true},
 		leaseRevokeMissingOutcome("revoke-negative-one-again"),
-		{Name: "revoke-minimum", Code: "OK", HeaderPositive: true, HeaderMatchesSeed: true, SeedValue: "seed"},
+		{Name: "revoke-minimum", Code: "OK", HeaderPositive: true, HeaderMatchesSeed: true, SeedValue: "seed", LeaseMissing: true},
 		leaseRevokeMissingOutcome("revoke-minimum-again"),
-		{Name: "revoke-maximum", Code: "OK", HeaderPositive: true, HeaderMatchesSeed: true, SeedValue: "seed"},
+		{Name: "revoke-maximum", Code: "OK", HeaderPositive: true, HeaderMatchesSeed: true, SeedValue: "seed", LeaseMissing: true},
 		leaseRevokeMissingOutcome("revoke-maximum-again"),
 		leaseRevokeMissingOutcome("revoke-zero"),
 		leaseRevokeMissingOutcome("revoke-unknown"),
@@ -73,6 +74,7 @@ func keepAliveLiveOutcome(name string) leaseKeepAliveBoundaryOutcome {
 func leaseRevokeMissingOutcome(name string) leaseKeepAliveBoundaryOutcome {
 	return leaseKeepAliveBoundaryOutcome{
 		Name: name, Code: "NotFound", Message: "etcdserver: requested lease not found", SeedValue: "seed",
+		LeaseMissing: true,
 	}
 }
 
@@ -91,6 +93,15 @@ func runLeaseKeepAliveRevokeBoundaryScenario(t *testing.T, endpoint string) []le
 	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: seedKey, Value: []byte("seed")})
 	require.NoError(t, err)
 	require.NotNil(t, seed.Header)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, deleteErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: seedKey})
+		require.NoError(t, deleteErr)
+		deleted, rangeErr := kv.Range(cleanupCtx, &etcdserverpb.RangeRequest{Key: seedKey})
+		require.NoError(t, rangeErr)
+		require.Empty(t, deleted.Kvs)
+	})
 	seedState := func(name string) (int64, string) {
 		t.Helper()
 		resp, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: seedKey})
@@ -176,6 +187,7 @@ func runLeaseKeepAliveRevokeBoundaryScenario(t *testing.T, endpoint string) []le
 				outcome.HeaderPositive = resp.Header != nil && resp.Header.Revision > 0
 				outcome.HeaderMatchesSeed = resp.Header != nil && resp.Header.Revision == seed.Header.Revision
 			}
+			outcome.LeaseMissing = leaseIsMissing(t, ctx, lease, test.id)
 			outcome.RevisionGap, outcome.SeedValue = seedState(outcome.Name)
 			require.Zero(t, outcome.RevisionGap, outcome.Name)
 			require.Equal(t, "seed", outcome.SeedValue, outcome.Name)
@@ -191,10 +203,18 @@ func runLeaseKeepAliveRevokeBoundaryScenario(t *testing.T, endpoint string) []le
 			Name: "revoke-" + test.name, Code: status.Code(revokeErr).String(),
 			Message: status.Convert(revokeErr).Message(),
 		}
+		outcome.LeaseMissing = leaseIsMissing(t, ctx, lease, test.id)
 		outcome.RevisionGap, outcome.SeedValue = seedState(outcome.Name)
 		require.Zero(t, outcome.RevisionGap, outcome.Name)
 		require.Equal(t, "seed", outcome.SeedValue, outcome.Name)
 		outcomes = append(outcomes, outcome)
 	}
 	return outcomes
+}
+
+func leaseIsMissing(t *testing.T, ctx context.Context, lease etcdserverpb.LeaseClient, id int64) bool {
+	t.Helper()
+	ttl, err := lease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id, Keys: true})
+	require.NoError(t, err)
+	return ttl.ID == id && ttl.TTL == -1 && ttl.GrantedTTL == 0 && len(ttl.Keys) == 0
 }
