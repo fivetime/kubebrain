@@ -33689,6 +33689,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
   `468126003565735711`、term 297。本轮没有 runtime 语义差距，不重建 A3512 镜像。
 
+- A3522 补齐此前所谓 quota 差分只手工激活 NOSPACE、没有验证 `--quota-backend-bytes` 自动
+  触发的盲区。新增 `TestAutomaticQuotaAlarmDifferentialAgainstReferenceEtcd`，按两端各自明确
+  的低阈值归一化公开状态机：Status 必须报告配置 quota；超限 Put 返回 clientv3
+  `codes.Unknown` 且 `errors.Is(ErrNoSpace)`，被拒 key 不落库；NOSPACE owner 等于当前 member；
+  alarm 下 Range/Delete 继续可用、LeaseGrant 同样 typed NOSPACE；删除释放空间后 alarm 仍 sticky；
+  physical Compact、Defragment、显式 disarm 后恢复 Put。cleanup 最终强制无测试 key/NOSPACE。
+
+  这里没有伪称字节触发点相等：官方 etcd 按 bbolt backend 物理大小计费，本轮 reference 使用
+  quota `262144`、fill `307200`；KubeBrain 按 tenant 最新逻辑 key+value 字节计费，独立 TiKV
+  keyspace 使用 quota `1024`、fill `2048`。新增 `run-automatic-quota-differential.sh` 要求显式
+  endpoint 与破坏性确认，预检 Auth disabled、`authRevision==1`、data revision=1、Status quota
+  精确匹配且无 key/user/role/lease/alarm，自建带低 quota 的官方 reference，并在成功后再次强制
+  候选全空。该门禁比较的是跨存储实现必须一致的公开超限与恢复契约，而非不可移植的物理计量值。
+
+  首次 reference 侧 13 项状态机其余均正确，但 oracle 错把 raw gRPC 日志中的
+  `ResourceExhausted` 当作 official clientv3 code；真实 client 与既有上游契约均公开 Unknown、
+  同时保留 typed ErrNoSpace。修正后首个全新 `a3522-auto-quota-diff` 完整 runner 测试包
+  0.549 秒 GREEN且通过 postflight；已使用 endpoint 再运行时按 data revision 非 1 在启动
+  reference 前拒绝。第二个全新 keyspace 的完整 race 测试包 2.095 秒 GREEN，结束时 quota
+  仍为 1024、无 key/lease/alarm、Status error 为空。
+
+  runner fail-closed 专项连续 10 轮、compat 普通全套、根与 compat `go vet`、脚本语法检查均
+  通过。两个一次性 Pod、端口转发、reference 进程/data-dir 均已删除；主 keyspace compat
+  Count=0、AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft
+  index/applied index 均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距，
+  不重建 A3512 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
