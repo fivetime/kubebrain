@@ -33324,6 +33324,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `468126003565722184`、term 进入 278，说明 lease grant/revoke cleanup 未推进用户 MVCC
   revision。本轮只有测试与文档，生产镜像继续为 A3499。
 
+- A3505 修复 lease Renew 慢 checkpoint 阻塞并发 Revoke。对照上游 commit
+  `f8f1074b4`：lease 在 Renew 执行期间被 revoke 后，Renew 不得返回陈旧成功。确定性 RED
+  把 remaining-TTL checkpoint 写阻塞在执行前，旧实现因在 TiKV 写期间一直持有
+  `leaseWriteMu`，使高优先级 Revoke 超过 1 秒仍不能完成。commit `03424d22` 让 Renew 在
+  checkpoint clear 期间只释放 `leaseWriteMu`、继续持有 `leaseCheckpointMu`；持久层改用
+  old-record 到 remaining-TTL=0 的精确 `InternalCAS`，并对不确定提交结果做精确 readback
+  对账。重新取锁后必须仍是原 `*leaseState` 指针才可发布结果，从而隔离 revoke/regrant
+  同 ID 的进程内 ABA；非 root 调用还会重新执行 attached key WRITE 授权，避免解锁窗口中新
+  attachment 绕过 RBAC。
+
+  三个永久回归分别覆盖 CAS 执行前阻塞时 Revoke 可抢占且同 ID regrant 不被旧 Renew
+  覆盖、CAS 已提交但响应阻塞时 Revoke 删除最终获胜，以及解锁窗口内新增受保护 attachment
+  后 KeepAlive 必须 permission denied。聚焦普通模式连续 20 轮通过（含 auth 组合 8.337 秒），
+  race 连续 10 轮通过（59.116 秒），完整 `pkg/server/etcd`（163.911 秒）与该包 `go vet`
+  均通过。这里的持久门禁是精确 record CAS，发布门禁是原状态指针检查；没有宣称引入了持久
+  generation nonce。
+
+  生产镜像 `kubebrain:a3505-lease-renew-revoke` 本地 ID 为
+  `sha256:075b38c534324a1bba1d0cba099c6e3b2572876a69aee797e35ba1d00f983d6d`，revision label
+  为完整 commit `03424d226fdb9aee41f4ffc33efb1a1377f2ae8d`，构建时间
+  `2026-08-04T06:18:26Z`；kind runtime digest 为
+  `sha256:bbdb99772164a3b4c9be9ced1b23d54ff22ab149005dc694afea4966a62482bf`。滚动后三副本均
+  Ready/0 restart，3 PD/3 TiKV 均 Ready，`/version` 为 server/storage 3.7.0。以独立官方
+  `/root/etcd/bin/etcd` 为参考端，lease 基础差分、KeepAlive/Revoke boundary、buffer、Renew
+  stress 和 switch concurrent revoke 五组官方 clientv3 黑盒测试全部通过，组合重跑耗时
+  14.294 秒。cleanup 后生产 0 leases，revision/raft index/applied index 均为
+  `468126003565722279`、term 280；参考端 32679/32680 端口和临时目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
