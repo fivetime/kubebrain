@@ -33646,6 +33646,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index
   均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距，不重建 A3512 镜像。
 
+- A3520 将必须推进 physical compact watermark 的 RangeStream partial-compaction 条件性
+  Skip 固化为独立门禁。新增 `run-rangestream-compaction-differential.sh`，必须显式提供候选
+  endpoint 与破坏性确认；启动官方 reference 前要求候选 healthy、Auth disabled、
+  `authRevision==1`、data revision=1 且无 key/user/role/lease，然后只运行
+  `TestRangeStreamPartialCompactionDifferential`。runner 自建并清理官方 etcd/data-dir，成功后
+  再强制候选 Auth disabled 且无 key/user/role/lease，避免 destructive 场景污染后续验证。
+
+  首个全新 `a3520-rs-diff` keyspace 的原测试 11.721 秒语义 GREEN，但收尾审计得到确定性
+  cleanup RED：官方与 KubeBrain 各残留 201 个 32 KiB fixture，revision 均为 202。场景现于
+  写入前注册独立 cleanup context，按各自唯一 prefix 删除并强制回读 Count=0；同时只在确实
+  配置共享主 endpoint 时做 identity 拒绝，不再因缺少与本场景无关的主 endpoint 而 Skip。
+  修复后在同一两端重跑 21.174 秒 GREEN，残留严格保持原有 201，证明新一轮各 201 个键均已
+  清除。删除明确的旧测试 prefix 后，两端 Count=0；runner 仍因候选 data revision 已推进而在
+  启动 reference 前拒绝，证明“逻辑空”不能绕过 pristine 校验。
+
+  第二个全新 keyspace 经专用 runner 20.948 秒 GREEN且通过 postflight；第三个全新 keyspace
+  完整 race 20.594 秒 GREEN，两端结束时均 Auth disabled、无 key/user/role/lease。
+  runner fail-closed 专项连续 10 轮、compat 普通全套、脚本语法检查与 `go vet` 均通过。
+  三个一次性 Pod、端口转发、reference 进程/data-dir 均已删除；主 keyspace compat Count=0、
+  AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied
+  index 均为 `468126003565735711`、term 297。本轮没有 runtime 语义差距，不重建 A3512 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
