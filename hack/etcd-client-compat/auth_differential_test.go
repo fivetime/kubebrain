@@ -127,6 +127,11 @@ type authDifferentialOutcome struct {
 	RangeStreamAfterCount     int
 	RangeStreamAfterTerminal  bool
 	RangeStreamAfterEOF       bool
+	AuthRangeStreamFirst      bool
+	AuthRangeStreamAfter      bool
+	AuthRangeStreamCount      int
+	AuthRangeStreamTerminal   bool
+	AuthRangeStreamError      authErrorOutcome
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -258,6 +263,14 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		clientv3.PermissionType(clientv3.PermReadWrite),
 	)
 	require.NoError(t, err)
+	_, err = bootstrap.RoleGrantPermission(
+		ctx,
+		"allowed",
+		"/auth-transition/rangestream/",
+		clientv3.GetPrefixRangeEnd("/auth-transition/rangestream/"),
+		clientv3.PermissionType(clientv3.PermRead),
+	)
+	require.NoError(t, err)
 	_, err = bootstrap.UserGrantRole(ctx, "alice", "allowed")
 	require.NoError(t, err)
 	_, err = bootstrap.RoleGrantPermission(
@@ -300,6 +313,38 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	root := authClient(t, endpoint, "root", "root-secret")
 	alice := authClient(t, endpoint, "alice", "alice-secret")
 	writer := authClient(t, endpoint, "writer", "writer-secret")
+	transitionAuthRangeStream, err := etcdserverpb.NewKVClient(alice.ActiveConnection()).RangeStream(
+		ctx,
+		&etcdserverpb.RangeRequest{
+			Key:      []byte("/auth-transition/rangestream/"),
+			RangeEnd: []byte(clientv3.GetPrefixRangeEnd("/auth-transition/rangestream/")),
+		},
+	)
+	require.NoError(t, err)
+	authRangeFirst, err := transitionAuthRangeStream.Recv()
+	require.NoError(t, err)
+	authRangeStreamFirst := authRangeFirst.RangeResponse != nil &&
+		len(authRangeFirst.RangeResponse.Kvs) > 0 && authRangeFirst.RangeResponse.Header == nil
+	_, err = root.RoleAdd(ctx, "range-stream-revision-bump")
+	require.NoError(t, err)
+	authRangeStreamAfterChunks := 0
+	authRangeStreamCount := len(authRangeFirst.GetRangeResponse().Kvs)
+	authRangeStreamTerminal := false
+	var authRangeStreamErr error
+	for {
+		response, receiveErr := transitionAuthRangeStream.Recv()
+		if receiveErr != nil {
+			authRangeStreamErr = receiveErr
+			break
+		}
+		authRangeStreamAfterChunks++
+		rangeResponse := response.GetRangeResponse()
+		require.NotNil(t, rangeResponse)
+		authRangeStreamCount += len(rangeResponse.Kvs)
+		if rangeResponse.Header != nil && rangeResponse.Count == authTransitionRangeCount && !rangeResponse.More {
+			authRangeStreamTerminal = true
+		}
+	}
 	keepAliveSendAfterEnableErr := preAuthKeepAlive.Send(
 		&etcdserverpb.LeaseKeepAliveRequest{ID: int64(protectedLease.ID)},
 	)
@@ -798,6 +843,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		RangeStreamAfterCount:     rangeStreamAfterCount,
 		RangeStreamAfterTerminal:  rangeStreamAfterTerminal,
 		RangeStreamAfterEOF:       rangeStreamAfterEOF,
+		AuthRangeStreamFirst:      authRangeStreamFirst,
+		AuthRangeStreamAfter:      authRangeStreamAfterChunks > 0,
+		AuthRangeStreamCount:      authRangeStreamCount,
+		AuthRangeStreamTerminal:   authRangeStreamTerminal,
+		AuthRangeStreamError:      authError(authRangeStreamErr),
 	}
 }
 
@@ -874,6 +924,12 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.Equal(t, authTransitionRangeCount, reference.RangeStreamAfterCount)
 	require.True(t, reference.RangeStreamAfterTerminal)
 	require.True(t, reference.RangeStreamAfterEOF)
+	require.True(t, reference.AuthRangeStreamFirst)
+	require.True(t, reference.AuthRangeStreamAfter)
+	require.Equal(t, authTransitionRangeCount, reference.AuthRangeStreamCount)
+	require.True(t, reference.AuthRangeStreamTerminal)
+	require.Equal(t, codes.InvalidArgument, reference.AuthRangeStreamError.Code)
+	require.Equal(t, status.Convert(rpctypes.ErrGRPCAuthOldRevision).Message(), reference.AuthRangeStreamError.Message)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
 	require.Equal(t, reference, actual)
 }
