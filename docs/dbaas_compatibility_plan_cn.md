@@ -33209,6 +33209,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。该轮只增加测试，不改变生产镜像；官方临时 etcd、数据目录和 32379/32380 端口均已清理，
   生产继续运行 A3497。
 
+- A3499 封闭在线 Snapshot 的 legacy current lease 线性化竞态：旧非内联 MVCC 行没有逐版本
+  lease 字段，`backendShim.SnapshotHistoryStreamChan` 原先在每个流块到达时从可变内存
+  `keyLeaseIndex` 回填。Snapshot 只在 pinned TiKV history 建立前持有 logical-write barrier，后续
+  块可能读到线性化点之后的新绑定；若新旧 lease 都存在，原有“lease ID 存在”检查会生成可由
+  官方 etcd 恢复、但 key 绑定错误的制品。确定性 RED 固定 durable attachment 为 lease 1801，
+  同时模拟迟到 current row 被污染为仍存在的 lease 1802，旧实现错误成功生成 snapshot。
+  commit `af37f8daf79f0cd0dc1544cc3a8dd33f1aaa335f` 让 metadata capture 在同一写屏障内保留
+  durable `key→leaseID` attachment map；legacy current row 从该固定映射回填，已知 lease 则必须
+  与 attachment 精确一致，否则以 `errSnapshotChanged` 重试。流层不再读取 live lease index；旧
+  历史版本缺失的 lease 仍诚实保留为 0，不伪造不可恢复信息。聚焦 Snapshot 连续 20 轮、两个
+  新不变量 race 连续 10 轮、完整 server（174.024 秒）与 backend（43.108 秒）以及 vet 均通过。
+
+  生产镜像 `kubebrain:a3499-snapshot-lease-point` 本地 ID 为
+  `sha256:01a24621a34b2b8432cd471dc26bd158665b24a5c51653cc72e4d3546442484f`，构建时间
+  `2026-08-04T04:33:48Z`；kind runtime digest 为
+  `sha256:892faf68246eddd0e4ca4e9e2b3645f423032a19659e945ab8b8d7338b37c04b`。三副本均
+  ready/0 restart，3 PD/3 TiKV 均 ready。官方 3.7 etcdctl 从生产 revision
+  `468126003565721591` 下载 4.2 MB 制品，etcdutl status 得到 hash `618317767`、5,975 keys、
+  3,284,992 bytes 和 version 3.7.0；官方 etcdutl restore 后启动 `/root/etcd/bin/etcd`，恢复键的
+  create/mod revision、version、value、lease ID `1785818512480946887`、granted TTL 300 和 attached
+  key 全部一致。生产样本删除并 revoke 后 revision 为 `468126003565721592`、term 276；隔离进程、
+  32379/32380 端口和临时目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

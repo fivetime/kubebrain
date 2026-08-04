@@ -32,29 +32,27 @@
 | `member add/remove/update/promote` | 平台替代 | KubeBrain 副本无本地数据，使用 DBaaS 扩缩或重配置 |
 | `move-leader` | 平台替代 | 使用 DBaaS rollout/failover；数据面选主自动完成 |
 | `downgrade validate/enable/cancel` | 平台替代 | 使用版本化 rollout/rollback，不启动 etcd downgrade job |
-| `snapshot save` | 平台替代 | 使用 `kubebrain.logical.v2` 备份；auth-disabled 全 keyspace 制品可通过 `kubebrain-logical-etcd-snapshot` 离线转换为官方可恢复 snapshot，在线 RPC 仍不伪装成本地 bbolt snapshot |
-| `snapshot restore/status` | 客户端离线 | 只识别 etcd backend snapshot，不识别 KubeBrain logical artifact |
+| `snapshot save` | 支持 | 在线 `Maintenance.Snapshot` 在固定 revision 流式生成带 SHA-256 的官方 backend snapshot，保留 history、compact watermark、当前 lease、auth 与 alarm |
+| `snapshot restore/status` | 客户端离线 | 可直接处理在线 RPC 生成的 backend snapshot；仍不识别未经转换的 `kubebrain.logical.v2` artifact |
 | `make-mirror` | 支持 | 发布门禁双向验证 prefix 基线、1001-key 分页、持续增删改、`--rev` 历史重放/compacted 错误及 source/destination 双端 RBAC；跨区域长期镜像仍需独立 soak |
 | `check perf`、`check datascale` | 非生产保证 | 仅为客户端负载工具；不能替代 KubeBrain 正确性、容量或 SLO 验证 |
 | `version`、`help` | 客户端离线 | 只报告本地 etcdctl 二进制信息 |
 
-`snapshot save`、member mutation、`move-leader` 和 `downgrade` 的非零退出是稳定
+member mutation、`move-leader` 和 `downgrade` 的非零退出是稳定
 产品契约，不应在自动化中忽略。Auth 开启时，这些 RPC 与 etcd 一样先鉴权：未认证或
 非 root 调用返回认证/权限错误；只有 root 才能看到平台替代提示。
 
 平台替代错误除保留 `codes.Unimplemented` 和稳定文本外，还携带
 `google.rpc.ErrorInfo`：`reason=KUBEBRAIN_PLATFORM_MANAGED`、
-`domain=dbaas.kubebrain.io`，并以 `metadata.capability` 标识原 RPC。Snapshot 额外声明
-`operation_type=Backup`、`artifact_format=kubebrain.logical.v2` 和
-`etcd_snapshot_restore_usable=false`。DBaaS-aware 自动化应读取该结构化详情，不要解析
-错误文本；Snapshot 还发布转换工具、所需 `/` 前缀和输出 auth-disabled 边界，具体见
-`docs/etcd_snapshot_export_cn.md`。`operation_type` 只在已经存在真实端到端执行器时发布，尚未实现拓扑操作的
+`domain=dbaas.kubebrain.io`，并以 `metadata.capability` 标识原 RPC。DBaaS-aware 自动化应读取
+该结构化详情，不要解析错误文本。在线 Snapshot 已是标准 RPC；
+逻辑制品的离线转换边界见 `docs/etcd_snapshot_export_cn.md`。`operation_type` 只在已经存在真实端到端执行器时发布，尚未实现拓扑操作的
 member mutation、move-leader 和 downgrade 不会虚构操作类型。
 
 ## 生产替代入口
 
-- 备份、恢复：`hack/backup/logical-export.sh`、
-  `hack/backup/logical-restore.sh` 和 DBaaS 备份编排；
+- 备份、恢复：优先使用在线 `etcdctl snapshot save` 与官方 `etcdutl snapshot restore`；
+  `hack/backup/logical-export.sh`、`logical-restore.sh` 和 DBaaS 备份编排仍提供逻辑制品路径；
 - 容量、alarm、defrag：`deploy/production/monitoring.yaml` 中的 PD/TiKV PVC、
   leader、region 和资源告警；
 - KubeBrain/PD/TiKV 扩缩、升级、回滚、故障转移：DBaaS 控制面编排；

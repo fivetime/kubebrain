@@ -10,8 +10,10 @@ etcdutl snapshot status snapshot.db -w json
 etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 ```
 
-在线快照保留当前 KV metadata、lease、auth 用户/角色/修订和 alarm。输出是 compacted
-current-state，不包含旧 MVCC history，也不替代 TiKV 物理 PITR。
+在线快照保留 KV MVCC history、真实 compact watermark、当前 lease、auth 用户/角色/修订和
+alarm。旧的非内联数据布局没有逐历史版本 lease 字段，因此只能由固定在同一线性化点的
+durable key→lease attachment 精确恢复当前版本；这类数据的旧历史版本 lease 会退化为 0。
+输出仍不替代 TiKV 物理 PITR。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

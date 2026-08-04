@@ -1777,11 +1777,12 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 
 ## 仍需补齐或确认
 
-- **`Maintenance.Snapshot` 刻意不实现，但物理 PITR 仍是明确缺口。** etcd Snapshot RPC
-  输出单成员 bbolt 文件，不能表示独立 PD/TiKV 集群。真实 A143 演练已证明 TiDB BR
+- **在线 `Maintenance.Snapshot` 已实现，但物理 PITR 仍是明确缺口。** RPC 在固定 revision
+  流式生成可由官方 etcdutl 恢复的 etcd backend，适合 etcd 语义迁移/恢复；它不是独立
+  PD/TiKV 集群的物理制品。真实 A143 演练已证明 TiDB BR
   full/PITR 不包含 KubeBrain transactional keys，BR raw 也不能提供跨 CF 一致快照，因此
-  不能再把“使用 BR”写成已完成替代方案。当前唯一通过端到端恢复验证的生产模式是
-  `kubebrain.logical.v2`；它不保留原 etcd revision/watch 历史。冷 CSI 多 PVC full
+  不能再把“使用 BR”写成已完成替代方案。在线 etcd snapshot 与
+  `kubebrain.logical.v2` 都不能代替存储引擎级 PITR。冷 CSI 多 PVC full
   snapshot 仍需完成全停机 executor 和隔离恢复演练，日志型 PITR 继续未完成。
 - `hack/backup/logical-export.sh` / `logical-restore.sh` 是当前生产备份与隔离恢复入口；上线
   前必须按本节后文完成 artifact 完整性、Object Lock、恢复 receipt 和持续审计门禁，不能
