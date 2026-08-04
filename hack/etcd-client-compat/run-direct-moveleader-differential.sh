@@ -8,6 +8,7 @@ ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 REFERENCE_CLIENT_RAW="${REFERENCE_DIRECT_CLIENT_ENDPOINTS:-127.0.0.1:12379,127.0.0.1:22379,127.0.0.1:32379}"
 REFERENCE_PEER_RAW="${REFERENCE_DIRECT_PEER_ENDPOINTS:-127.0.0.1:12380,127.0.0.1:22380,127.0.0.1:32380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-1m}"
+TEST_COUNT="${TEST_COUNT:-1}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -51,6 +52,10 @@ parse_three_endpoints() {
 if [[ -z "$KUBEBRAIN_DIRECT_RAW" ]]; then
   echo "set KUBEBRAIN_DIRECT_ENDPOINTS to three direct KubeBrain replica endpoints" >&2
   exit 1
+fi
+if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
+  echo "TEST_COUNT must be a positive integer" >&2
+  exit 2
 fi
 declare -a kubebrain_endpoints reference_client_endpoints reference_peer_endpoints
 parse_three_endpoints KUBEBRAIN_DIRECT_ENDPOINTS "$KUBEBRAIN_DIRECT_RAW" kubebrain_endpoints
@@ -188,7 +193,7 @@ done
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_DIRECT_ENDPOINTS="$(IFS=,; echo "${reference_client_endpoints[*]}")" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
-    go test . -run '^TestMoveLeaderFollowerDifferentialAgainstReferenceEtcd$' \
-      -count=1 -timeout="$TEST_TIMEOUT" -v
+    go test . -run '^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$' \
+      -count="$TEST_COUNT" -timeout="$TEST_TIMEOUT" -v
 )
 test_succeeded=true
