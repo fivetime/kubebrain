@@ -59,6 +59,56 @@ func setupMirrorAuth(t *testing.T, endpoint string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	bootstrap := authClient(t, endpoint, "", "")
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		status, statusErr := bootstrap.AuthStatus(cleanupCtx)
+		require.NoError(t, statusErr)
+		if status.Enabled {
+			root, clientErr := clientv3.New(clientv3.Config{
+				Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
+				Username: "root", Password: mirrorRootPassword,
+			})
+			require.NoError(t, clientErr)
+			_, disableErr := root.AuthDisable(cleanupCtx)
+			require.NoError(t, disableErr)
+			require.NoError(t, root.Close())
+		}
+		users, listUsersErr := bootstrap.UserList(cleanupCtx)
+		require.NoError(t, listUsersErr)
+		for _, user := range users.Users {
+			detail, getErr := bootstrap.UserGet(cleanupCtx, user)
+			require.NoError(t, getErr)
+			for _, role := range detail.Roles {
+				_, _ = bootstrap.UserRevokeRole(cleanupCtx, user, role)
+			}
+			_, deleteErr := bootstrap.UserDelete(cleanupCtx, user)
+			require.NoError(t, deleteErr)
+		}
+		roles, listRolesErr := bootstrap.RoleList(cleanupCtx)
+		require.NoError(t, listRolesErr)
+		for _, role := range roles.Roles {
+			_, deleteErr := bootstrap.RoleDelete(cleanupCtx, role)
+			require.NoError(t, deleteErr)
+		}
+		_, deleteErr := bootstrap.Delete(cleanupCtx, "/dbaas-auth-mirror/", clientv3.WithPrefix())
+		require.NoError(t, deleteErr)
+		finalStatus, finalStatusErr := bootstrap.AuthStatus(cleanupCtx)
+		require.NoError(t, finalStatusErr)
+		require.False(t, finalStatus.Enabled)
+		finalUsers, finalUsersErr := bootstrap.UserList(cleanupCtx)
+		require.NoError(t, finalUsersErr)
+		require.Empty(t, finalUsers.Users)
+		finalRoles, finalRolesErr := bootstrap.RoleList(cleanupCtx)
+		require.NoError(t, finalRolesErr)
+		require.Empty(t, finalRoles.Roles)
+		remaining, getErr := bootstrap.Get(cleanupCtx, "/dbaas-auth-mirror/", clientv3.WithPrefix())
+		require.NoError(t, getErr)
+		require.Zero(t, remaining.Count)
+		leases, leaseErr := bootstrap.Leases(cleanupCtx)
+		require.NoError(t, leaseErr)
+		require.Empty(t, leases.Leases)
+	})
 	initialStatus, err := bootstrap.AuthStatus(ctx)
 	require.NoError(t, err)
 	require.False(t, initialStatus.Enabled)
@@ -91,25 +141,6 @@ func setupMirrorAuth(t *testing.T, endpoint string) {
 	_, anonymousErr := bootstrap.Get(ctx, "/dbaas-auth-mirror/probe")
 	require.ErrorIs(t, anonymousErr, rpctypes.ErrUserEmpty)
 
-	root := authClient(t, endpoint, "root", mirrorRootPassword)
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cleanupCancel()
-		_, disableErr := root.AuthDisable(cleanupCtx)
-		require.NoError(t, disableErr)
-		_, userDeleteErr := bootstrap.UserDelete(cleanupCtx, "mirror-syncer")
-		require.NoError(t, userDeleteErr)
-		_, roleDeleteErr := bootstrap.RoleDelete(cleanupCtx, "mirror-syncer")
-		require.NoError(t, roleDeleteErr)
-		_, rootDeleteErr := bootstrap.UserDelete(cleanupCtx, "root")
-		require.NoError(t, rootDeleteErr)
-		status, statusErr := bootstrap.AuthStatus(cleanupCtx)
-		require.NoError(t, statusErr)
-		require.False(t, status.Enabled)
-		users, listErr := bootstrap.UserList(cleanupCtx)
-		require.NoError(t, listErr)
-		require.Empty(t, users.Users)
-	})
 }
 
 func mirrorEndpointIdentity(endpoint string) string {
