@@ -33,6 +33,12 @@ func TestRangeStreamValidationDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "custom-sort", Code: "Unimplemented", Message: "RangeStream does not support custom sort orders"},
 		{Name: "revision-filter", Code: "Unimplemented", Message: "RangeStream does not support revision filters"},
 		{Name: "custom-sort-and-filter", Code: "Unimplemented", Message: "RangeStream does not support custom sort orders"},
+		{Name: "empty-key-and-custom-sort", Code: "InvalidArgument", Message: "etcdserver: key is not provided"},
+		{Name: "point-custom-sort", Code: "Unimplemented", Message: "RangeStream does not support custom sort orders"},
+		{Name: "count-only-custom-sort", Code: "Unimplemented", Message: "RangeStream does not support custom sort orders"},
+		{Name: "future-revision", Code: "OutOfRange", Message: "etcdserver: mvcc: required revision is a future revision"},
+		{Name: "future-and-custom-sort", Code: "Unimplemented", Message: "RangeStream does not support custom sort orders"},
+		{Name: "future-and-revision-filter", Code: "Unimplemented", Message: "RangeStream does not support revision filters"},
 	}, referenceOutcomes)
 	require.Equal(t, referenceOutcomes, runRangeStreamValidationScenario(t, compatEndpoint(t)))
 }
@@ -44,6 +50,11 @@ func runRangeStreamValidationScenario(t *testing.T, endpoint string) []rangeStre
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	client := etcdserverpb.NewKVClient(conn)
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	probe, err := client.Range(probeCtx, &etcdserverpb.RangeRequest{Key: []byte("/a")})
+	probeCancel()
+	require.NoError(t, err)
+	futureRevision := probe.GetHeader().GetRevision() + 1
 
 	tests := []struct {
 		name string
@@ -55,6 +66,12 @@ func runRangeStreamValidationScenario(t *testing.T, endpoint string) []rangeStre
 		{name: "custom-sort", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
 		{name: "revision-filter", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 1}},
 		{name: "custom-sort-and-filter", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY, MinModRevision: 1}},
+		{name: "empty-key-and-custom-sort", req: &etcdserverpb.RangeRequest{SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
+		{name: "point-custom-sort", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
+		{name: "count-only-custom-sort", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), CountOnly: true, SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
+		{name: "future-revision", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), Revision: futureRevision}},
+		{name: "future-and-custom-sort", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), Revision: futureRevision, SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
+		{name: "future-and-revision-filter", req: &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), Revision: futureRevision, MinModRevision: 1}},
 	}
 
 	outcomes := make([]rangeStreamValidationOutcome, 0, len(tests))
