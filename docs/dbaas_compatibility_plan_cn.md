@@ -32921,6 +32921,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   auth/alarm 既有恢复门禁继续覆盖。固定 revision 也意味着正常并发写不再触发整轮废弃重试；
   stream revision 不一致或 KV 引用缺失 lease record 仍 fail closed 并用新临时文件重试。
 
+  聚焦测试连续 20 轮（8.598s）、race 连续 10 轮（60.496s）、完整 server 回归
+  163.700 秒和 vet 通过；生产与隔离官方 etcd 的 Snapshot stream protocol 差分连续 20 轮
+  （18.973s）通过。真实验证通过 port-forward 固定命中 `kubebrain-0`：官方 etcdctl 开始
+  2.1 MB snapshot 后在同一 Pod 写入临时键，Put 返回时 snapshot 进程仍在运行；snapshot
+  revision 为 `468126003565721403`，Put revision 为 `468126003565721404`。官方 etcdutl restore
+  并启动 etcd 后保持 revision `…403`、恢复端查不到该键，而源端仍在 `…404` 读到它，直接证明
+  写未被阻塞且未混入已 pin 的快照。随后删除临时键，生产 revision 为
+  `468126003565721405`。
+
+  生产镜像 `kubebrain:a3489-snapshot-write-availability` 的本地 ID 为
+  `sha256:2684e9197fd7662f7226355fc127a8bfe1839acc14ab6d84f853a9cb97faca58`，构建
+  SHA 为 `27bd7284181acfd4f8fcfe023b5bba4652cb84c7`、时间为
+  `2026-08-04T00:34:29Z`；kind runtime digest 为
+  `sha256:851fe44f857a4b5a3331efa7606c44d9662426143c9e22fd159786582e2efadf`。
+  三副本均 ready、0 restart，3 PD/3 TiKV 健康，readyz/version/endpoint status 正常；滚动
+  选主后 raft term 为 259。临时键、快照、恢复目录、port-forward、官方 etcd/reference 进程
+  均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
