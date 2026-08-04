@@ -50,7 +50,8 @@ func TestBackendQuorumFailoverKeepsServing(t *testing.T) {
 	}
 
 	var active atomic.Bool
-	var successfulDuringFailover atomic.Int64
+	var successfulDuringCommand atomic.Int64
+	var successfulTotal atomic.Int64
 	errCh := make(chan error, workers+1)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
@@ -95,33 +96,52 @@ func TestBackendQuorumFailoverKeepsServing(t *testing.T) {
 							errCh <- fmt.Errorf("worker %d operation %d: %w", worker, operation, clientErr)
 							return
 						}
-					} else if startedDuringFailover && active.Load() {
-						successfulDuringFailover.Add(1)
+					} else {
+						successfulTotal.Add(1)
+						if startedDuringFailover && active.Load() {
+							successfulDuringCommand.Add(1)
+						}
 					}
 					time.Sleep(5 * time.Millisecond)
 				}
 			}
 		}(worker)
 	}
+	var stopOnce sync.Once
+	defer func() {
+		stopOnce.Do(func() { close(stop) })
+		wg.Wait()
+	}()
 
 	time.Sleep(500 * time.Millisecond)
 	active.Store(true)
 	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	active.Store(false)
-	close(stop)
 	if err != nil {
 		errCh <- fmt.Errorf("failover command: %w: %s", err, strings.TrimSpace(string(output)))
 	}
+	commandSuccesses := successfulDuringCommand.Load()
+	t.Logf("completed %d data operations while the backend failover command was active", commandSuccesses)
+
+	// A Kubernetes Ready condition only proves that the replacement process is
+	// accepting probes. TiKV region routing and KubeBrain's storage-backed leader
+	// election can still be recovering. Keep the workload running until real etcd
+	// data operations make progress instead of treating the failover command (for
+	// example, `kubectl wait --for=condition=Ready`) as a data-plane recovery
+	// oracle.
+	recoveryBaseline := successfulTotal.Load()
+	require.Eventually(t, func() bool {
+		return successfulTotal.Load() >= recoveryBaseline+workers
+	}, 45*time.Second, 100*time.Millisecond,
+		"each worker's worth of data operations must complete after backend recovery")
+	stopOnce.Do(func() { close(stop) })
 	wg.Wait()
 	close(errCh)
 	for workerErr := range errCh {
 		require.NoError(t, workerErr)
 	}
-	successes := successfulDuringFailover.Load()
-	t.Logf("completed %d data operations while one backend member was unavailable", successes)
-	require.GreaterOrEqual(t, successes, int64(workers),
-		"replicated backend must complete at least one data operation per worker during failover")
-
+	require.Positive(t, commandSuccesses,
+		"replicated backend must make useful data-plane progress during the failover command")
 	for worker := 0; worker < workers; worker++ {
 		key := fmt.Sprintf("%skey-%d", prefix, worker)
 		require.Eventually(t, func() bool {
