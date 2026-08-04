@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/stretchr/testify/require"
@@ -160,6 +161,54 @@ func (s *blockingLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeep
 	s.received <- req.ID
 	<-stream.Context().Done()
 	return stream.Context().Err()
+}
+
+type snapshotLeaderServer struct {
+	etcdserverpb.UnimplementedMaintenanceServer
+	responses []*etcdserverpb.SnapshotResponse
+}
+
+func (s *snapshotLeaderServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
+	for _, response := range s.responses {
+		if err := stream.Send(response); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func TestSnapshotForwardsEveryLeaderResponse(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	want := []*etcdserverpb.SnapshotResponse{
+		{RemainingBytes: 2, Blob: []byte("db"), Version: "3.7.0"},
+		{RemainingBytes: 0, Blob: make([]byte, 32), Version: "3.7.0"},
+	}
+	server := grpc.NewServer()
+	registerServingHealth(server)
+	etcdserverpb.RegisterMaintenanceServer(server, &snapshotLeaderServer{responses: want})
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+	endpoint := lis.Addr().String()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: endpoint}, client: cli, curLeader: endpoint}
+	results, err := proxy.Snapshot(context.Background(), &etcdserverpb.SnapshotRequest{})
+	require.NoError(t, err)
+	var got []*etcdserverpb.SnapshotResponse
+	for result := range results {
+		require.NoError(t, result.Err)
+		got = append(got, result.Response)
+	}
+	require.Len(t, got, len(want))
+	for i := range want {
+		require.True(t, proto.Equal(want[i], got[i]), "response %d: want=%s got=%s", i, want[i], got[i])
+	}
 }
 
 func TestLeaseKeepAliveForwardingTimeoutAndCancellation(t *testing.T) {

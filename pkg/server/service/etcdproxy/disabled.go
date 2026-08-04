@@ -80,3 +80,7 @@ func (d disabledEtcdProxy) LeaseTimeToLive(ctx context.Context, req *etcdserverp
 func (d disabledEtcdProxy) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
 	return nil, errDisabled
 }
+
+func (d disabledEtcdProxy) Snapshot(context.Context, *etcdserverpb.SnapshotRequest) (<-chan SnapshotResult, error) {
+	return nil, errDisabled
+}

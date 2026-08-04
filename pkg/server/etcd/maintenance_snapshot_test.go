@@ -16,8 +16,12 @@ import (
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/server/v3/storage/schema"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
+
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
 type streamingSnapshotBackend struct {
@@ -33,6 +37,64 @@ type pausedSnapshotBackend struct {
 	paused  chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type localSnapshotTrapBackend struct {
+	BackendShim
+	called bool
+}
+
+func (b *localSnapshotTrapBackend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
+	b.called = true
+	return b.BackendShim.BeginRangeTxn(ctx)
+}
+
+func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	trap := &localSnapshotTrapBackend{BackendShim: server.backend}
+	server.backend = trap
+	want := []*etcdserverpb.SnapshotResponse{
+		{RemainingBytes: 3, Blob: []byte("abc"), Version: "3.7.0"},
+		{RemainingBytes: 0, Blob: bytes.Repeat([]byte{1}, 32), Version: "3.7.0"},
+	}
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		snapshotFn: func(_ context.Context, request *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			require.NotNil(t, request)
+			results := make(chan etcdproxy.SnapshotResult, len(want))
+			for _, response := range want {
+				results <- etcdproxy.SnapshotResult{Response: response}
+			}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
+	require.False(t, trap.called, "a follower must not capture independently from concurrent leader metadata mutations")
+	require.Equal(t, want, stream.responses)
+}
+
+func TestMaintenanceSnapshotFollowerForwardsRootCredential(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_ = setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken))
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		snapshotFn: func(ctx context.Context, _ *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			outgoing, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			require.Equal(t, []string{rootToken}, outgoing.Get(rpctypes.TokenFieldNameGRPC))
+			results := make(chan etcdproxy.SnapshotResult)
+			close(results)
+			return results, nil
+		},
+	}
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx}))
 }
 
 func (b *pausedSnapshotBackend) SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error) {

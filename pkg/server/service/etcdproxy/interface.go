@@ -61,6 +61,14 @@ type EtcdProxy interface {
 
 	// LeaseLeases forwards lease list request to leader.
 	LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error)
+
+	// Snapshot forwards a maintenance snapshot stream to the current leader.
+	Snapshot(ctx context.Context, req *etcdserverpb.SnapshotRequest) (<-chan SnapshotResult, error)
+}
+
+type SnapshotResult struct {
+	Response *etcdserverpb.SnapshotResponse
+	Err      error
 }
 
 // WatchResult is exactly one of: an event batch (Events set, Revision is the

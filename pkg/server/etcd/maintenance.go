@@ -409,10 +409,38 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 	}, nil
 }
 
-func (s *RPCServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
+func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
 	s.metricCli.EmitCounter("maintenance.snapshot", 1)
-	if err := s.requireAuthenticated(stream.Context(), true); err != nil {
+	caller, err := s.authCallerFromContext(stream.Context())
+	if err != nil {
 		return err
+	}
+	if caller != nil {
+		if err = caller.adminError(); err != nil {
+			return err
+		}
+	}
+	if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+		proxyCtx, err := s.forwardAuthToken(stream.Context(), caller)
+		if err != nil {
+			return err
+		}
+		responses, err := s.peers.Snapshot(proxyCtx, request)
+		if err != nil {
+			return err
+		}
+		for result := range responses {
+			if result.Err != nil {
+				return result.Err
+			}
+			if result.Response == nil {
+				return fmt.Errorf("leader snapshot proxy returned an empty response")
+			}
+			if err = stream.Send(result.Response); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	return s.sendSnapshot(stream)
 }

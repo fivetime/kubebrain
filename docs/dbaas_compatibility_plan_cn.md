@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 兼容（当前状态） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留当前 KV metadata、lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore；输出为 compacted current-state，不保留旧 MVCC history；用户 KV 由固定 revision 的有界 chunk 扫描并增量写 bbolt，不再全量驻留内存，建立 storage snapshot 后不阻塞后续写 |
+| Maintenance | Snapshot | 兼容（当前状态） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留当前 KV metadata、lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore；输出为 compacted current-state，不保留旧 MVCC history；用户 KV 由固定 revision 的有界 chunk 扫描并增量写 bbolt，不再全量驻留内存，建立 storage snapshot 后不阻塞后续写；follower 将完整流代理到 mutation leader 捕获 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -32938,6 +32938,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三副本均 ready、0 restart，3 PD/3 TiKV 健康，readyz/version/endpoint status 正常；滚动
   选主后 raft term 为 259。临时键、快照、恢复目录、port-forward、官方 etcd/reference 进程
   均已清理。
+- A3490 收敛多副本 Snapshot metadata 线性化点：A3489 的短写屏障是进程内
+  `logicalWriteMu`，当 Snapshot 请求落到 follower 时，它不能排斥 leader 上并发的 auth、lease、
+  alarm/internal mutation。用户 KV 有固定 revision 历史读保护，auth repository 也用 auth revision
+  前后 fence 自校验，lease KV 缺少捕获的 lease record 会重试；但这些局部机制不能证明三类
+  metadata 与用户 revision 都来自同一个 cluster mutation leader 的瞬间。
+
+  现在启用 etcd proxy 的 follower 在本地完成 upstream 相同的 root 鉴权后，把 caller token 和
+  `Maintenance.Snapshot` server-stream 转发到 freshness-aware current leader；leader 在自己的
+  A3489 短屏障内捕获 revision/auth/lease/alarm，建立 TiKV storage snapshot 后继续立即放行写。
+  follower 不再执行本地 `BeginRangeTxn` 或生成临时 bbolt，只逐响应透传 32 KiB data、remaining
+  bytes、version 与最终 digest；下游取消会取消上游 stream，连接级 Unavailable 仍进入共享 proxy
+  reset/failover 逻辑。proxy disabled 的单节点/明确本地部署保持原地捕获，serving leader 也绝不
+  自代理。
+
+  永久回归用 local-capture trap 证明 follower 完整转发两条 Snapshot response 且不进入本地
+  barrier，并在 auth enabled 时检查 root credential 出现在 outgoing metadata；独立真实 gRPC
+  leader 测试验证 proxy 从首个 data response 到最终 digest 顺序无损透传。该架构选择不伪装
+  upstream follower 的本地 bbolt snapshot 实现，而是用 DBaaS mutation leader 提供等价的单一
+  metadata serialization point。
 
 ### P2：运维兼容和长期验证
 

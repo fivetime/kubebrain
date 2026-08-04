@@ -17,6 +17,7 @@ package etcdproxy
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"math"
 	"sync"
 	"time"
@@ -568,6 +569,42 @@ func (e *etcdProxy) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeas
 	resp, err := etcdserverpb.NewLeaseClient(client.ActiveConnection()).LeaseLeases(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
+}
+
+func (e *etcdProxy) Snapshot(ctx context.Context, req *etcdserverpb.SnapshotRequest) (<-chan SnapshotResult, error) {
+	client, _, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Snapshot(ctx, req, e.callOptions...)
+	if err != nil {
+		e.markForwardError(ctx, client, err)
+		return nil, err
+	}
+	out := make(chan SnapshotResult)
+	go func() {
+		defer close(out)
+		for {
+			response, recvErr := stream.Recv()
+			if errors.Is(recvErr, io.EOF) {
+				return
+			}
+			if recvErr != nil {
+				e.markForwardError(ctx, client, recvErr)
+				select {
+				case out <- SnapshotResult{Err: recvErr}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			select {
+			case out <- SnapshotResult{Response: response}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
 }
 
 func (e *etcdProxy) Ready() error {
