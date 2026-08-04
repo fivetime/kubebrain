@@ -34439,6 +34439,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。没有服务端 RED，故不构建或滚动镜像；临时 Pod/Service 与 42379/42380 reference listener 已
   清理，共享生产 endpoint 未执行 AuthEnable。
 
+- A3564 固定 auth disabled→enabled 期间既有匿名 LeaseKeepAlive stream 的逐消息重授权。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go::leaseKeepAlive`、
+  `/root/etcd/server/etcdserver/v3_server.go::checkLeaseRenew`，Watch 保留 create-time 授权不能类推到
+  双向 keepalive：上游在每条 request 上重新读取当前 auth 状态并检查 lease attached keys；KubeBrain
+  `leaseManager.leaseKeepAlive` 也必须逐 message 调用 `authCallerFromContext`。
+
+  destructive auth 双端状态机现在于 auth 关闭时创建 lease、attached key 和匿名 raw KeepAlive stream，
+  首次 Send/Recv 必须返回相同 lease ID 与正 TTL；`AuthEnable` 后复用原 stream 再 Send，官方绝对基线
+  固定 Send 仍成功入队，而 Recv 以 `codes.InvalidArgument`、`ErrUserEmpty` 结束，不能让 auth 前连接继续
+  无限续租。KubeBrain 与官方完整 outcome 一致。两个独立 TiKV keyspace、临时 NodePort 30463/30464
+  上普通双端 11.619 秒、race 12.949 秒 GREEN；完整 compat 1.290 秒、vet、staticcheck、bash syntax
+  和 diff check 通过。没有服务端 RED，故不构建或滚动镜像；临时 Pod/Service 与 reference listener
+  已清理，共享生产 endpoint 未执行 AuthEnable。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
