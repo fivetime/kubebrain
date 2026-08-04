@@ -34169,6 +34169,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   各 3/3 Ready、0 restart，`/dbaas-` Count=0、LeaseList=0、无 alarm；已有写入型 Hash 回归按
   预期把 revision 从 468126003565737123 推进到 468126003565737128，新增 lease oracle 本身不推进。
 
+- A3549 审计 dedicated Lock/Election 的错误归一化。Hash 授权和 concurrency missing-token/
+  invalid-token/permission-denied 原本已有 disposable 双端门禁，未重复添加；进一步用官方 gateway
+  验证 `Proclaim`/`Resign` 在 leader 字段存在、lease 有效、但 leader key 为空时，仍须返回 HTTP
+  500、gRPC code 2/Unknown 和 `etcdserver: key is not provided`，与完全缺少 leader 字段的独立
+  `"leader" field must be provided` 保持验证顺序。KubeBrain wrapper 已正确保留该外观，无需改服务端。
+
+  同时修复既有 HTTP concurrency error matrix 的生命周期缺口：每端显式 Grant/Revoke 测试 lease，
+  对 seed 前缀执行精确 DeleteRange，要求 deleted=1，再用 Limit=1 Range 验证 protojson 同时省略
+  `kvs` 和零值 `count`。首轮 0.717 秒、连续 10 轮 5.285 秒、race 1.689 秒 GREEN；完整 compat、
+  vet 与 diff check 通过。门禁不再遗留 seed key 或 lease，也避免把 proto3 零值省略误判成响应缺失。
+  线上审计另发现旧实现历史遗留的 2 个无 lease seed（create revision
+  468126003565729343/468126003565732387），已按精确 `/a3374/http-concurrency-errors/` 前缀删除并
+  验证 Count=0；当前新门禁的逐轮 deleted=1/Range-empty 断言可防止再次积累。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
