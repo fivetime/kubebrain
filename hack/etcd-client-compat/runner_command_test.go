@@ -227,6 +227,7 @@ func TestCompatCommandHelper(t *testing.T) {
 
 func TestCompatFailoverCommandsUseBoundedHelpers(t *testing.T) {
 	for _, testFile := range []string{
+		"auth_watch_failover_test.go",
 		"backend_quorum_failover_test.go",
 		"http_gateway_concurrency_zero_lease_failover_test.go",
 		"lease_checkpoint_failover_test.go",

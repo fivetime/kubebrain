@@ -1045,6 +1045,69 @@ func TestLeaderWatchResumesThroughProxyAfterLocalGenerationCloses(t *testing.T) 
 	<-done
 }
 
+func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	localCh := make(chan etcdproxy.WatchResult, 1)
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	localCalled := make(chan uint64, 1)
+	backend := &roleSwitchWatchBackend{BackendShim: server.backend, local: localCh, called: localCalled}
+	server.backend = backend
+	var leading atomic.Bool
+	proxyCalled := make(chan uint64, 1)
+	server.peers = testPeerService{
+		isLeaderFn:   leading.Load,
+		proxyEnabled: true,
+		watchFn: func(_ context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			require.Equal(t, []byte("/registry/watch/local/"), key)
+			require.Equal(t, []byte("/registry/watch/local0"), rangeEnd)
+			proxyCalled <- revision
+			return proxyCh, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches: map[int64]*watch{
+			7: {start: "/registry/watch/local/", end: "/registry/watch/local0", syncedRev: 9},
+		},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/local/"), RangeEnd: []byte("/registry/watch/local0"), StartRevision: 10,
+		})
+	}()
+	require.Equal(t, uint64(10), <-proxyCalled)
+	proxyCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/local/a"), Value: []byte("proxy"), ModRevision: 10},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+
+	leading.Store(true)
+	close(proxyCh)
+	require.Equal(t, uint64(11), <-localCalled, "resume must start after the last successfully delivered revision")
+	localCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/local/b"), Value: []byte("local"), ModRevision: 11},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	for _, response := range stream.snapshot() {
+		require.False(t, response.Canceled)
+	}
+
+	cancel()
+	close(localCh)
+	<-done
+}
+
 func TestWatchBackendCloseReportsCompactionWhenNextRevisionWasCompacted(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -2273,6 +2336,7 @@ func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
 		watchFn: func(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 			md, ok := metadata.FromOutgoingContext(ctx)
 			require.True(t, ok)
+			require.Equal(t, []string{"1"}, md.Get(etcdproxy.AuthorizedWatchProxyMetadataKey))
 			tokens := md.Get(rpctypes.TokenFieldNameGRPC)
 			require.Len(t, tokens, 1)
 			claims, err := server.tokens.verify(context.Background(), tokens[0])
@@ -2302,6 +2366,81 @@ func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
 
 	cancel()
 	requireWatchCanceled(t, <-done)
+}
+
+func TestAuthorizedPeerWatchContinuationSurvivesPermissionRevisionChange(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	md, ok := metadata.FromIncomingContext(aliceCtx)
+	require.True(t, ok)
+
+	// etcd authorizes a Watch when it is created. An existing stream remains
+	// active after a permission mutation; an internal follower-to-leader resume
+	// must therefore not turn that same logical Watch into a fresh authorization
+	// decision at the new leader.
+	require.NoError(t, server.auth.roleRevokePermission(
+		context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"),
+	))
+
+	grpcServer := grpc.NewServer(server.PeerServerOptions()...)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	conn, err := grpc.NewClient("passthrough:///authorized-peer-watch-continuation",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return listener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	proxyCtx := metadata.NewOutgoingContext(ctx, md.Copy())
+	proxyCtx = metadata.AppendToOutgoingContext(proxyCtx, etcdproxy.AuthorizedWatchProxyMetadataKey, "1")
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(proxyCtx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/allowed/watch"), WatchId: 88, StartRevision: 1,
+	}},
+	}))
+	created, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, created.Created)
+	require.False(t, created.Canceled)
+	require.Equal(t, int64(88), created.WatchId)
+	require.NoError(t, stream.CloseSend())
+
+	// The same metadata on the public listener is untrusted and must not bypass
+	// the current permission snapshot.
+	publicServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterWatchServer(publicServer, server)
+	publicListener := bufconn.Listen(1 << 20)
+	go func() { _ = publicServer.Serve(publicListener) }()
+	t.Cleanup(publicServer.Stop)
+	publicConn, err := grpc.NewClient("passthrough:///spoofed-public-watch-continuation",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+			return publicListener.Dial()
+		}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, publicConn.Close()) })
+	publicStream, err := etcdserverpb.NewWatchClient(publicConn).Watch(proxyCtx)
+	require.NoError(t, err)
+	require.NoError(t, publicStream.Send(&etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/allowed/watch"), WatchId: 89,
+	}},
+	}))
+	rejected, err := publicStream.Recv()
+	require.NoError(t, err)
+	require.True(t, rejected.Created)
+	require.True(t, rejected.Canceled)
+	require.Equal(t, int64(-1), rejected.WatchId)
+	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), rejected.CancelReason)
+	require.NoError(t, publicStream.CloseSend())
 }
 
 // TestQuietWatchProgressAdvancesWhileOtherKeysWritten is the headline repro of

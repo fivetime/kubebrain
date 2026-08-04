@@ -32,6 +32,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
@@ -299,9 +300,13 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				}
 				continue
 			}
-			caller, authErr := s.authCallerFromContext(ws.Context())
-			if authErr == nil {
-				authErr = caller.require(r.Key, r.RangeEnd, authpb.READ)
+			var caller *authCaller
+			var authErr error
+			if !authorizedPeerWatchContinuation(ws.Context()) {
+				caller, authErr = s.authCallerFromContext(ws.Context())
+				if authErr == nil {
+					authErr = caller.require(r.Key, r.RangeEnd, authpb.READ)
+				}
 			}
 			if authErr != nil {
 				if err := w.SendControlAndWait(canceledWatchCreateResponse(
@@ -359,6 +364,12 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 					releaseReservedQuota()
 					return authErr
 				}
+				// This logical Watch was authorized at the public ingress. Mark every
+				// internal generation so a successor reached through the peer listener
+				// preserves that create-time decision across auth revision changes.
+				watchCtx = metadata.AppendToOutgoingContext(
+					watchCtx, etcdproxy.AuthorizedWatchProxyMetadataKey, "1",
+				)
 			}
 			// normal watch request can only be handled by leader
 			if !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
@@ -456,6 +467,14 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			klog.Info("watch receive message unsupported type")
 		}
 	}
+}
+
+func authorizedPeerWatchContinuation(ctx context.Context) bool {
+	if !isPeerRequest(ctx) {
+		return false
+	}
+	values := metadata.ValueFromIncomingContext(ctx, etcdproxy.AuthorizedWatchProxyMetadataKey)
+	return len(values) > 0 && values[0] == "1"
 }
 
 func (w *watcher) hasWatchID(id int64) bool {
@@ -844,10 +863,12 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		case result, ok := <-ch:
 			if !ok {
 				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", string(r.Key))
-				if ctx.Err() == nil && localGeneration && w.grpcServer.peers.EtcdProxyEnabled() && !w.nextWatchRevisionCompacted(ctx, id) {
-					// A backend channel is generation-scoped. It is deliberately
-					// closed on leadership loss (and on an overflow reset); resume
-					// from the first revision not actually delivered to the client.
+				roleTransition := localGeneration || w.grpcServer.peers.IsLeader()
+				if ctx.Err() == nil && roleTransition && w.grpcServer.peers.EtcdProxyEnabled() && !w.nextWatchRevisionCompacted(ctx, id) {
+					// Backend and proxy channels are generation-scoped. A local
+					// generation closes on leadership loss; a proxy generation closes
+					// when this replica becomes leader. Resume from the first revision
+					// not actually delivered to the client in either direction.
 					// This is both gap-free and duplicate-free because syncedRev is
 					// advanced only after Send succeeds.
 					watchRevision = nextUndeliveredWatchRevision(wt, watchRevision)

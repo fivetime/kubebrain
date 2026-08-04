@@ -94,6 +94,7 @@ func validateClientAPIVersion(ctx context.Context) error {
 }
 
 func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	ctx = context.WithValue(ctx, peerRequestContextKey{}, true)
 	if err := validateClientAPIVersion(ctx); err != nil {
 		return nil, err
 	}
@@ -104,6 +105,10 @@ func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.
 }
 
 func (s *RPCServer) requireLeaderStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	ss = &serverStreamWithContext{
+		ServerStream: ss,
+		ctx:          context.WithValue(ss.Context(), peerRequestContextKey{}, true),
+	}
 	if err := validateClientAPIVersion(ss.Context()); err != nil {
 		return err
 	}
@@ -114,6 +119,16 @@ func (s *RPCServer) requireLeaderStream(srv any, ss grpc.ServerStream, info *grp
 		return s.monitorRequiredLeaderStream(srv, ss, info, handler)
 	}
 	return handler(srv, ss)
+}
+
+// peerRequestContextKey is injected only by PeerServerOptions. Metadata alone
+// is client-controlled, so internal continuation markers must always be paired
+// with this listener provenance before they can affect authorization.
+type peerRequestContextKey struct{}
+
+func isPeerRequest(ctx context.Context) bool {
+	peerRequest, _ := ctx.Value(peerRequestContextKey{}).(bool)
+	return peerRequest
 }
 
 const requireLeaderPollInterval = 100 * time.Millisecond

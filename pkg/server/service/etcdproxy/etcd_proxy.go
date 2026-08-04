@@ -691,6 +691,14 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 		defer cancel()
 		watchRevision := revision
 		for {
+			// The ingress replica may itself win the next term. A proxy generation
+			// cannot make progress in that role because leaders intentionally have no
+			// forwarding client. Close this generation so the outer Watch pipeline can
+			// reopen the same logical Watch against its local backend.
+			if e.election.IsLeader() {
+				klog.InfoS("etcd proxy watch yielding to local leader", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
+				return
+			}
 			client, leader, closed, err := e.readyClient(ctx)
 			if err != nil {
 				klog.InfoS("etcd proxy watch ready failed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "error", err)

@@ -21,6 +21,13 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 )
 
+// AuthorizedWatchProxyMetadataKey marks an internal follower-to-leader Watch
+// generation. The ingress replica has already authenticated and authorized the
+// logical Watch; a successor must not reinterpret a resume after an auth-store
+// revision change as a brand-new client authorization. The receiver accepts
+// this marker only on its peer listener.
+const AuthorizedWatchProxyMetadataKey = "kubebrain-authorized-watch-proxy"
+
 // EtcdProxy forward etcd-style rpc request to leader for compatibility of k8s apiserver community edition
 type EtcdProxy interface {
 	// EtcdProxyEnabled returns if the etcd proxy is enabled

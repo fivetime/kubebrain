@@ -521,6 +521,22 @@ func TestWaitProxyWatchReconnectStopsWithCaller(t *testing.T) {
 		"a canceled watch must not remain in the failover retry loop")
 }
 
+func TestWatchGenerationClosesWhenFollowerBecomesLeader(t *testing.T) {
+	election := &testLeaderElection{isLeader: true}
+	proxy := &etcdProxy{election: election}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	watch, err := proxy.Watch(ctx, []byte("/promoted"), nil, 42)
+	require.NoError(t, err)
+	select {
+	case _, ok := <-watch:
+		require.False(t, ok, "proxy generation must yield to the local leader")
+	case <-ctx.Done():
+		t.Fatal("proxy generation remained open after local promotion")
+	}
+}
+
 // TestWatchCreationDoesNotFailWhileLeaderIsUnavailable pins the creation-side
 // failover window: a follower can send the external Created response just before
 // its proxy loses the old leader. The proxy Watch call must still return a live
