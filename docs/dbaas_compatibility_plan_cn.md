@@ -34058,6 +34058,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LeaseList=0，一次性官方 etcd 进程/data-dir 已清理；当前 staged merge/filter 实现已对齐，无需
   服务端修改。
 
+- A3541 复核 LeaseGrant 数值边界后确认既有实现已在 deadline 计算前按官方
+  `lease.MaxLeaseTTL=9,000,000,000` 拒绝超限 TTL，并把 MinInt64/负数/0/1 归一到最小
+  TTL=2；既有官方差分也已覆盖这些单值边界。本轮没有重复修改已对齐的实现，而是补上组合
+  校验顺序与失败原子性：同一显式 ID 已存在且新请求 TTL 超上限时，官方必须先返回
+  `OutOfRange`/`etcdserver: too large lease TTL`，普通重复请求仍返回
+  `FailedPrecondition`/`lease already exists`。
+
+  扩展后的 raw Lease oracle 还在每个失败 Grant 后验证 seed key/revision 不变；超限 ID 的
+  `TimeToLive` 仍是未找到状态，重复 ID 原租约则保持 ID、正 remaining TTL、GrantedTTL=10
+  和空 attached keys，防止错误路径创建幽灵 lease 或污染旧记录。官方与真实 KubeBrain 首轮
+  0.556 秒 GREEN，连续 10 轮 5.099 秒、race 1.572 秒 GREEN；两端所有成功 lease 均撤销，
+  一次性官方 etcd 进程/data-dir 已清理。本轮属于新增兼容性门禁，无需服务端修复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
