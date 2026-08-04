@@ -37,6 +37,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/server/service"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/kubewharf/kubebrain/pkg/server/service/revision"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 // Server is the application layer server providing services for clients and peers
@@ -467,7 +468,7 @@ func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	rev := s.backend.GetCurrentRevision()
 	durable, err := s.backend.GetDurableRevision(req.Context())
-	if err != nil {
+	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
 		s.metricCli.EmitCounter("leader.revision_err", 1)
 		http.Error(w, "failed to load durable revision: "+err.Error(), http.StatusServiceUnavailable)
 		return

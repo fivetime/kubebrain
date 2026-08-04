@@ -175,6 +175,24 @@ func TestRevisionHandlerRestoresColdLeaderFromDurableRevision(t *testing.T) {
 	require.Equal(t, writtenRevision, cold.GetCurrentRevision())
 }
 
+func TestRevisionHandlerServesInitializedRevisionForEmptyKeyspace(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "empty-revision", EnableEtcdCompatibility: true,
+	}, metrics)
+
+	s := &server{backend: b, metricCli: metrics, leaderElection: alwaysLeaderElection{}}
+	recorder := httptest.NewRecorder()
+	s.revisionHandler(recorder, httptest.NewRequest(http.MethodGet, "/status", nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var got revision.LeaderRevision
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
+	require.Equal(t, uint64(1), got.Revision)
+	require.Equal(t, uint64(1), b.GetCurrentRevision())
+}
+
 func TestCloseWaitsForLeadershipCallbackBeforeReturning(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)
