@@ -34399,6 +34399,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   468126003565737814 精确推进 169 到 468126003565737983；测试 prefix=0、lease=0、无 alarm，
   KubeBrain/PD/TiKV 各 3/3 Ready、0 restart；一次性 reference、42379/42380 listener 与目录已清理。
 
+- A3562 修复 etcd auth 开启后的 legacy native RPC 授权旁路。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/grpc.go` 的公开注册面，KubeBrain 的 client 与 peer listener
+  还共同注册了旧 `kubebrain-client` 的顶层 `Read`、`Write`、`Watch` 服务；这些 handler 直接访问同一
+  backend，却没有 etcd user/role/range permission 语义。因 auth 可由 `AuthEnable/AuthDisable` 在运行中
+  切换，启动时删注册或按 token provider 判断都不能闭合该边界。
+
+  `ClientServerOptions` 现在把动态 native-auth 门禁置于 admission/header interceptor 之前：auth 关闭时
+  保留旧客户端行为；auth 开启后，全部 `/Read/*`、`/Write/*`、`/Watch/*` client RPC 在进入 handler
+  前返回标准 `PermissionDenied`，不能用 native Get/Create/Watch 绕过 etcd 权限，也不消耗公开请求
+  quota。已准入的 unary 与 `AuthEnable/AuthDisable` 提交通过读写锁排序，enable 成功前先排空旧调用；
+  已建立的 server stream 则每 100ms 复核持久 auth 状态，切换后取消 context 并返回相同拒绝，不能让
+  旧 Watch/RangeStream 长期越过安全切点。peer listener 不安装该门禁，副本内部协调不受影响。
+  隔离真实 gRPC 测试在同一 server 生命周期内先成功调用 native `Read/Get` 并建立 RangeStream，再
+  启用 auth，确认新 client 调用立即被拒、旧 stream 被终止且 handler 不再可达，同时 peer 调用仍成功；
+  并发测试确认 `AuthEnable` 等待已准入 unary 完成。方法分类固定当前 10 个 native unary/stream RPC，
+  并确认 etcd Watch、Health Watch 不被前缀误伤。
+
+  聚焦普通测试、真实 gRPC client/peer 门禁和分类测试连续 10 轮 8.476 秒、race 11.670 秒通过；最终完整
+  etcd server 包 164.828 秒、上层 server 包 0.356 秒及 diff check 全绿。共享生产实例的 auth 当前为 false，不能为验证
+  安全边界而改变全租户状态，因此没有滚动或执行 `AuthEnable`；只读/健康核验显示 endpoint proposal
+  成功、KubeBrain/PD/TiKV 各 3/3 Ready，运行镜像仍为 `kubebrain:a3554-unary-negative-revision`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
