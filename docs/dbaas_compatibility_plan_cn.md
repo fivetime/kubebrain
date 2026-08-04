@@ -34380,6 +34380,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、0 restart；一次性 reference、42379/42380
   listener 与数据目录均已清理。
 
+- A3561 补齐 RangeStream 的 `CountOnly+KeysOnly+Limit+KEY/ASCEND` option 优先级网络门禁。对照
+  `/root/etcd/tests/common/kv_test.go::TestKVGetStream` 与
+  `TestKVGetKeysOnlyWithCountOnly`，unary Range 已有 raw/clientv3/namespace/Txn 多层覆盖，但
+  RangeStream 双端矩阵此前只分别验证 CountOnly、KeysOnly、Limit 和显式默认排序，未证明四项
+  组合后 CountOnly 仍拥有最高 payload 优先级。
+
+  现有 12-key public `GetStream` 场景新增组合请求，并继续先逐端要求合并后的 stream 与同请求
+  unary Range 完全一致；官方绝对 baseline 进一步固定 KVs 为空、Count=12、More=false、header
+  revision delta=12。由此同时防止 KeysOnly 错误返回一个 KV、Limit 把 Count 截为 1、More 被误设
+  或显式 KEY/ASCEND 绕开 CountOnly fast path。直接 handler option matrix 同步加入相同请求，固定
+  chunk merge 与 unary protobuf 全等。
+
+  初始 oracle 因 nil slice 与规范化空 slice 的 Go 表示差异失败，修正为同一规范形状后官方/KubeBrain
+  首轮 0.843 秒、连续 10 轮 7.694 秒、race 1.951 秒 GREEN；完整 compat 1.305 秒、server 全包
+  160.175 秒、targeted server race 1.360 秒及 vet/diff check 通过。没有服务端 RED，故不构建或滚动
+  镜像。13 轮 KubeBrain fixture 每轮 12 Put + 1 cleanup，使 revision/index/applied 从
+  468126003565737814 精确推进 169 到 468126003565737983；测试 prefix=0、lease=0、无 alarm，
+  KubeBrain/PD/TiKV 各 3/3 Ready、0 restart；一次性 reference、42379/42380 listener 与目录已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
