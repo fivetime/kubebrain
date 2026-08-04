@@ -33545,6 +33545,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
   `468126003565732141`、term 297。
 
+- A3515 继续清理默认差分门禁的条件性 Skip。审计确认 JWT、低 quota、认证 make-mirror、
+  compacted RangeStream 与三节点 MoveLeader 等场景确实需要不同启动参数或独立实例，不能在
+  共享主 endpoint 上伪装覆盖；但 `ManualAlarmWithoutQuota` 仅显式注入并清理 NOSPACE，和
+  已在主门禁运行的 CORRUPT/unknown alarm 一样可安全复用当前实例。runner 现在默认把主
+  KubeBrain endpoint 传给该场景，并接受显式 `KUBEBRAIN_METRICS_ENDPOINT`，先对独立 info
+  端口 `/metrics` 做可达性预检，再把 reference/client 两侧 metrics 地址传入差分测试。
+
+  metrics 首次启用出现两层 RED：测试先把 `host:port` 直接拼为 URL，尚未请求即因缺 scheme
+  失败；复用统一 HTTP endpoint 归一化后，完整入口又证明 client NodePort 与 info NodePort
+  可分别落到不同 KubeBrain 副本，立即读取会在共享 alarm 刷新前得到旧 gauge。最终仍严格
+  要求 activate/get/deactivate 的 delta 为 1/1/0，但按既有多副本指标契约在 5 秒内轮询收敛，
+  没有降低目标值。真实负载均衡下连续 5 轮耗时 0.19–2.05 秒；Manual NOSPACE 连续 5 轮
+  同时覆盖 KV、Txn、Lease、Lock 与 Election 的只读/写入限流错误契约。
+
+  带 `KUBEBRAIN_METRICS_ENDPOINT=http://172.18.0.3:32758` 的完整官方差分 **564.742 秒全绿**，
+  两项新增场景均实际运行；相关场景 race 连续 10 轮（18.356 秒）、compat 普通全套与
+  `go vet` 均通过。结束后 AlarmList 为空、匿名 HTTP Range 返回 200、两项新增测试前缀
+  Count=0；3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index
+  均为 `468126003565735429`、term 297。本轮仅修正测试与门禁，不重建 A3512 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
