@@ -198,6 +198,31 @@ func (s *RPCServer) ensureAuthStoreRevisionUnchangedAfterLeaseAuthorization(
 	return s.ensureAuthStoreRevisionUnchanged(fenceCtx, caller)
 }
 
+func (s *RPCServer) leaseTimeToLiveAuthRevision(ctx context.Context) (uint64, error) {
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return snapshot.Config.Revision, nil
+}
+
+// ensureLeaseTimeToLiveAuthRevision mirrors LeaseTimeToLive's separate final
+// fence in etcd. Unlike LeaseLeases and LeaseRenew, etcd applies this fence to
+// every Keys=true success, including root callers and requests that began while
+// auth was disabled but raced with AuthEnable.
+func (s *RPCServer) ensureLeaseTimeToLiveAuthRevision(ctx context.Context, revision uint64) error {
+	fenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
+	defer cancel()
+	snapshot, err := s.tokens.snapshots.current(fenceCtx)
+	if err != nil {
+		return err
+	}
+	if snapshot.Config.Enabled && snapshot.Config.Revision != revision {
+		return rpctypes.ErrAuthOldRevision
+	}
+	return nil
+}
+
 func withAuthWriteGuard(ctx context.Context, caller *authCaller) context.Context {
 	if caller == nil {
 		return ctx

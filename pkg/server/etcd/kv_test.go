@@ -62,6 +62,7 @@ type testPeerService struct {
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
 	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
+	leaseTTLFn       func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error)
 	snapshotFn       func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error)
 	txnFn            func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error)
 }
@@ -435,7 +436,10 @@ func (s testPeerService) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.L
 	return nil, nil
 }
 
-func (testPeerService) LeaseTimeToLive(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+func (s testPeerService) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+	if s.leaseTTLFn != nil {
+		return s.leaseTTLFn(ctx, req)
+	}
 	return nil, nil
 }
 

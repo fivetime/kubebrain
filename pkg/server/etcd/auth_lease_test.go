@@ -3,6 +3,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,6 +28,20 @@ type blockingAuthConfigReadShim struct {
 	release      chan struct{}
 	putOnce      sync.Once
 	putCommitted chan struct{}
+}
+
+type authMutationCurrentRevisionShim struct {
+	BackendShim
+	fired atomic.Bool
+	hook  func()
+}
+
+func (s *authMutationCurrentRevisionShim) GetCurrentRevision() uint64 {
+	revision := s.BackendShim.GetCurrentRevision()
+	if s.fired.CompareAndSwap(false, true) {
+		s.hook()
+	}
+	return revision
 }
 
 func (b *blockingAuthConfigReadShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
@@ -117,11 +132,13 @@ func TestAuthLeaseFutureJWTRevisionMatchesEtcd(t *testing.T) {
 
 func TestAuthLeaseReadsUseOneAuthorizedKeySnapshot(t *testing.T) {
 	tests := []struct {
-		name string
-		read func(context.Context, *RPCServer, int64) ([]string, error)
+		name    string
+		blockAt int32
+		read    func(context.Context, *RPCServer, int64) ([]string, error)
 	}{
 		{
-			name: "time-to-live",
+			name:    "time-to-live",
+			blockAt: 5,
 			read: func(ctx context.Context, server *RPCServer, leaseID int64) ([]string, error) {
 				resp, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
 					ID: leaseID, Keys: true,
@@ -137,7 +154,8 @@ func TestAuthLeaseReadsUseOneAuthorizedKeySnapshot(t *testing.T) {
 			},
 		},
 		{
-			name: "list",
+			name:    "list",
+			blockAt: 4,
 			read: func(ctx context.Context, server *RPCServer, _ int64) ([]string, error) {
 				_, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
 				return nil, err
@@ -160,8 +178,9 @@ func TestAuthLeaseReadsUseOneAuthorizedKeySnapshot(t *testing.T) {
 				BackendShim: server.backend,
 				// authCallerFromContext reads the config three times: before
 				// token verification, during verification, and after it. Pause
-				// the subsequent authorization-revision fence.
-				blockAt:      4,
+				// TTL additionally captures its start revision before the
+				// authorization fence; List reaches that fence directly.
+				blockAt:      tt.blockAt,
 				entered:      make(chan struct{}),
 				release:      make(chan struct{}),
 				putCommitted: make(chan struct{}),
@@ -225,11 +244,13 @@ func TestAuthLeaseReadsUseOneAuthorizedKeySnapshot(t *testing.T) {
 
 func TestAuthLeaseReadFenceSurvivesCanceledRequestLikeEtcd(t *testing.T) {
 	tests := []struct {
-		name string
-		read func(context.Context, *RPCServer, int64) error
+		name    string
+		blockAt int32
+		read    func(context.Context, *RPCServer, int64) error
 	}{
 		{
-			name: "time-to-live",
+			name:    "time-to-live",
+			blockAt: 5,
 			read: func(ctx context.Context, server *RPCServer, leaseID int64) error {
 				_, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
 					ID: leaseID, Keys: true,
@@ -238,7 +259,8 @@ func TestAuthLeaseReadFenceSurvivesCanceledRequestLikeEtcd(t *testing.T) {
 			},
 		},
 		{
-			name: "list",
+			name:    "list",
+			blockAt: 4,
 			read: func(ctx context.Context, server *RPCServer, _ int64) error {
 				_, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
 				return err
@@ -264,9 +286,10 @@ func TestAuthLeaseReadFenceSurvivesCanceledRequestLikeEtcd(t *testing.T) {
 
 				shim := &blockingAuthConfigReadShim{
 					BackendShim: server.backend,
-					// authCallerFromContext consumes the first three config reads;
-					// the fourth is authorizeLeaseKeys' final revision fence.
-					blockAt: 4, entered: make(chan struct{}), release: make(chan struct{}),
+					// authCallerFromContext consumes the first three config reads.
+					// TTL then captures its start revision; block the operation's
+					// authorization fence (read five), while List blocks read four.
+					blockAt: tt.blockAt, entered: make(chan struct{}), release: make(chan struct{}),
 					putCommitted: make(chan struct{}),
 				}
 				server.backend = shim
@@ -303,6 +326,176 @@ func TestAuthLeaseReadFenceSurvivesCanceledRequestLikeEtcd(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAuthFollowerLeaseTimeToLiveRechecksRevisionAfterProxyLikeEtcd(t *testing.T) {
+	for _, keys := range []bool{false, true} {
+		name := "without-keys"
+		if keys {
+			name = "with-keys"
+		}
+		t.Run(name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			aliceCtx := setupAuthKVUser(t, server)
+
+			var mutationErr error
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+					mutationErr = server.auth.roleAdd(context.Background(), "follower-ttl-proxy-revision-bump")
+					return &etcdserverpb.LeaseTimeToLiveResponse{
+						Header: txnHeader(1), ID: 123, TTL: 30, GrantedTTL: 30,
+					}, nil
+				},
+			}
+
+			response, err := server.LeaseTimeToLive(aliceCtx, &etcdserverpb.LeaseTimeToLiveRequest{
+				ID: 123, Keys: keys,
+			})
+			require.NoError(t, mutationErr)
+			if keys {
+				require.Nil(t, response)
+				requireAuthLeaseError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown,
+					"etcdserver: revision of auth store is old")
+				return
+			}
+			require.NoError(t, err, "etcd does not revision-fence TTL without attached keys")
+			require.NotNil(t, response)
+			require.Equal(t, int64(123), response.ID)
+		})
+	}
+
+	t.Run("proxy-error-precedes-final-fence", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		aliceCtx := setupAuthKVUser(t, server)
+		proxyErr := errors.New("injected lease TTL proxy failure")
+		var mutationErr error
+		server.peers = testPeerService{
+			isLeader: false, proxyEnabled: true,
+			leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+				mutationErr = server.auth.roleAdd(context.Background(), "follower-ttl-proxy-error-revision-bump")
+				return nil, proxyErr
+			},
+		}
+
+		response, err := server.LeaseTimeToLive(aliceCtx, &etcdserverpb.LeaseTimeToLiveRequest{
+			ID: 123, Keys: true,
+		})
+		require.NoError(t, mutationErr)
+		require.Nil(t, response)
+		require.ErrorIs(t, err, proxyErr)
+	})
+}
+
+func TestAuthFollowerLeaseTimeToLiveFinalFenceIncludesRootLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(
+		context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken),
+	)
+
+	var mutationErr error
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+			mutationErr = server.auth.roleAdd(context.Background(), "follower-root-ttl-revision-bump")
+			return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30}, nil
+		},
+	}
+
+	response, err := server.LeaseTimeToLive(rootCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: 123, Keys: true})
+	require.NoError(t, mutationErr)
+	require.Nil(t, response)
+	requireAuthLeaseError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown,
+		"etcdserver: revision of auth store is old")
+}
+
+func TestAuthFollowerLeaseTimeToLiveFinalFenceTracksAuthEnableDisableLikeEtcd(t *testing.T) {
+	t.Run("enable-after-anonymous-admission", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		server.peers = testPeerService{
+			isLeader: false, proxyEnabled: true,
+			leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+				setupAuthKVUser(t, server)
+				return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30}, nil
+			},
+		}
+
+		response, err := server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{
+			ID: 123, Keys: true,
+		})
+		require.Nil(t, response)
+		requireAuthLeaseError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown,
+			"etcdserver: revision of auth store is old")
+	})
+
+	t.Run("disable-after-authenticated-admission", func(t *testing.T) {
+		server, closeFn := newTestRPCServer(t)
+		defer closeFn()
+		aliceCtx := setupAuthKVUser(t, server)
+		server.peers = testPeerService{
+			isLeader: false, proxyEnabled: true,
+			leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+				require.NoError(t, server.auth.disable(context.Background()))
+				return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30}, nil
+			},
+		}
+
+		response, err := server.LeaseTimeToLive(aliceCtx, &etcdserverpb.LeaseTimeToLiveRequest{
+			ID: 123, Keys: true,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, response)
+		require.Equal(t, int64(123), response.ID)
+	})
+}
+
+func TestAuthLeaderLeaseTimeToLiveRechecksRevisionAfterLookupLikeEtcd(t *testing.T) {
+	for _, keys := range []bool{false, true} {
+		name := "without-keys"
+		if keys {
+			name = "with-keys"
+		}
+		t.Run(name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			aliceCtx := setupAuthKVUser(t, server)
+			lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+			require.NoError(t, err)
+			_, err = server.Put(aliceCtx, &etcdserverpb.PutRequest{
+				Key: []byte("/allowed/leader-ttl"), Value: []byte("value"), Lease: lease.ID,
+			})
+			require.NoError(t, err)
+
+			var mutationErr error
+			shim := &authMutationCurrentRevisionShim{BackendShim: server.backend}
+			shim.hook = func() {
+				mutationErr = server.auth.roleAdd(context.Background(), "leader-ttl-lookup-revision-bump")
+			}
+			server.backend = shim
+			server.tokens.snapshots.repo.backend = shim
+
+			response, err := server.LeaseTimeToLive(aliceCtx, &etcdserverpb.LeaseTimeToLiveRequest{
+				ID: lease.ID, Keys: keys,
+			})
+			require.NoError(t, mutationErr)
+			if keys {
+				require.Nil(t, response)
+				requireAuthLeaseError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown,
+					"etcdserver: revision of auth store is old")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, response)
+			require.Equal(t, lease.ID, response.ID)
+		})
 	}
 }
 

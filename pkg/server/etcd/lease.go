@@ -351,6 +351,22 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	if err != nil {
 		return nil, err
 	}
+	var authRevision uint64
+	if req.Keys {
+		authRevision, err = m.srv.leaseTimeToLiveAuthRevision(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
+	finish := func(response *etcdserverpb.LeaseTimeToLiveResponse, readErr error) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+		if readErr != nil || !req.Keys {
+			return response, readErr
+		}
+		if fenceErr := m.srv.ensureLeaseTimeToLiveAuthRevision(ctx, authRevision); fenceErr != nil {
+			return nil, fenceErr
+		}
+		return response, nil
+	}
 	// A follower's lease state is a stale snapshot: the leader advances deadlines
 	// via keepalive and grants/revokes leases the follower never observes. Answer
 	// only as the leader; otherwise proxy, or fail like the write lease RPCs so the
@@ -363,7 +379,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			}
 			response, err := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
 			m.srv.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
+			return finish(response, err)
 		}
 		return nil, err
 	}
@@ -380,7 +396,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			}
 			response, forwardErr := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
 			m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
-			return response, forwardErr
+			return finish(response, forwardErr)
 		}
 		return nil, err
 	}
@@ -408,7 +424,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			TTL:    -1,
 		}
 		m.leaseMu.Unlock()
-		return resp, nil
+		return finish(resp, nil)
 	}
 
 	resp := &etcdserverpb.LeaseTimeToLiveResponse{
@@ -421,7 +437,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 		resp.Keys = leaseKeys(st)
 	}
 	m.leaseMu.Unlock()
-	return resp, nil
+	return finish(resp, nil)
 }
 
 func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
