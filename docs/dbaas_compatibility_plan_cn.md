@@ -33120,6 +33120,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三副本均 ready、0 restart，3 PD/3 TiKV 均 ready，health/version/endpoint status 正常，raft
   term 为 268。验证键删除后生产 revision 为 `468126003565721588`；snapshot/restore 目录、官方
   etcd 进程与监听端口均已清理。
+- A3495 只在真正的 revision 空洞中写 restore marker：A3494 的 empty-key row 已经对合法客户端
+  不可见，但 Builder 仍在每个快照无条件追加它。常规快照的最大 retained user row 本就位于
+  snapshot revision，官方 restore 可直接从该 revision key 恢复 current revision；多余 row 会
+  改变 bbolt `key` bucket 行集与 etcdutl hash，并扩大私有格式面。确定性 RED 构造 revision 12
+  的单个真实 row，旧 Builder 的 bucket 实际有两行而不是一行。
+
+  Builder 现在跨所有增量 `Append` chunk 跟踪可由官方 restore 得到的最高 revision：初始下界为
+  upstream MVCC 的 revision 1；current-state 制品或 compact marker 提供更高下界；每个成功写入
+  的 live/tombstone record 再单调推进它。`Finish` 仅在该下界仍低于目标 snapshot revision 时
+  追加 A3494 的不可见 empty-key tombstone；真实 row 或 compact watermark 已足够时直接完成。
+  batch 写失败不会提前推进内存下界。常规 marker RED 修复后 bucket 精确只有一行；A3494
+  故意构造的 revision 9/last real revision 2 空洞回归仍恢复 response revision 9 且不泄漏事件。
+
+  条件 marker/官方 Watch/Builder 聚焦连续 50 轮（0.737s）、条件 marker 与空洞 Watch race
+  连续 20 轮（1.607s）通过；完整 etcdsnapshot/server、server Snapshot race、根模块 vet 和
+  compat 全套均通过。新增永久制品门禁 `TestSnapshotOmitsRedundantRevisionMarker` 读取实际
+  bbolt：当最大 revision 已有非空真实 key 时必须有 0 个 empty marker；生产制品连续 20 轮
+  （0.374s）通过。
+
+  A3494 清理 DELETE 已使生产 revision `468126003565721588` 对应一个真实 tombstone；A3495
+  官方 etcdctl 下载 4,194,336-byte snapshot，etcdutl status 返回 hash `357699524`、同 revision、
+  5,974 live keys、total size 3,284,992、version 3.7.0。制品门禁确认最大 revision 只有真实 row、
+  没有 marker；经官方 etcdutl restore 后，全键历史 Watch 从 `…588` 只回放该真实 DELETE，官方
+  endpoint status 仍为 `…588`。
+
+  生产镜像 `kubebrain:a3495-snapshot-conditional-marker` 的本地 ID 为
+  `sha256:a790b82e8aec7fa61183c909db299a5fd854daf3b988d8e85c85fd97c10e5ac6`，构建 SHA 为
+  `5d1ee9fe52cb0c2061026d7efe8087cc99304e71`、时间为 `2026-08-04T03:17:01Z`；kind runtime
+  digest 为 `sha256:c1fbb8c1064338e291059a12bbe5765a0176f4442e5580307c390897b233763b`。
+  三副本均 ready、0 restart，3 PD/3 TiKV 均 ready，health/version/endpoint status 正常，滚动
+  后 raft term 为 270；本轮未产生生产 mutation，revision 保持 `…588`。snapshot/restore 目录、
+  官方 etcd 进程和监听端口均已清理。
 
 ### P2：运维兼容和长期验证
 
