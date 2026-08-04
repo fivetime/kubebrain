@@ -33565,6 +33565,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Count=0；3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index
   均为 `468126003565735429`、term 297。本轮仅修正测试与门禁，不重建 A3512 runtime。
 
+- A3516 清理 compat 测试对共享 DBaaS 数据面的历史污染。A3515 收尾审计发现
+  `/registry/etcd-client-compat/` 尚有 52 个键：20 个来自 8 月 1 日的 dollar-key narrow range，
+  32 个来自 Txn intra-transaction version。前者虽有 cleanup，却吞掉 DeleteRange 错误；后者
+  自创建起完全没有 cleanup，且原来的 `defer cli.Close()` 会早于 `t.Cleanup` 执行，不能直接
+  追加回调。对一个明确历史 dollar-key 用同样 `[lower,target+0xff)` 范围实测删除成功，最近
+  完整差分也未产生同类新键，因此排除当前服务端 DeleteRange 兼容回归。
+
+  dollar collision 与 narrow range 现在都要求清理 DeleteRange 成功，并在独立 cleanup context
+  中回读 Count=0；Txn version 改为先注册 client close，再注册精确 Delete/Get 清理并强制 Count=0。
+  修后这三组官方 reference/KubeBrain 场景普通模式连续 10 轮（35.900 秒）执行前后残留严格
+  保持 51，race 连续 10 轮（26.478 秒）后仍为 0；compat 普通全套与 `go vet` 通过。随后删除
+  了 51 个已确认的历史测试垃圾键（不可恢复，不含业务前缀），当前 compat 前缀 Count=0、
+  AlarmList 为空；3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied
+  index 均为 `468126003565735711`、term 297。本轮没有 runtime 变更。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
