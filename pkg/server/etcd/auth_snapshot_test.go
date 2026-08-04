@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/metadata"
 )
 
 type authRangeHookBackend struct {
@@ -44,6 +46,53 @@ func TestAuthSnapshotCacheInvalidatesOnPersistedRevision(t *testing.T) {
 	reused, err := cache.current(ctx)
 	require.NoError(t, err)
 	require.Same(t, updated, reused)
+}
+
+func TestAuthComponentsReloadRevisionAndPermissionsFromDurableBackend(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	_ = setupAuthKVUser(t, server)
+
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{
+		Name: "transient", Password: "secret",
+	}))
+	require.NoError(t, server.auth.userDelete(ctx, "transient"))
+	before, err := server.auth.repo.load(ctx)
+	require.NoError(t, err)
+	require.True(t, before.Config.Enabled)
+	require.Nil(t, before.Users["transient"])
+	require.NotNil(t, before.Users["alice"])
+	require.NotNil(t, before.Roles["allowed"])
+
+	// Model a process restart at the auth component boundary: no in-memory
+	// snapshot or token state is retained, while the durable DBaaS backend is.
+	server.auth = newAuthManager(server.backend)
+	server.tokens = newAuthTokenManager(server.backend)
+	after, err := server.auth.repo.load(ctx)
+	require.NoError(t, err)
+	require.Equal(t, before.Config, after.Config)
+	require.Nil(t, after.Users["transient"])
+	require.Equal(t, before.Users["alice"].Roles, after.Users["alice"].Roles)
+	require.Equal(t, before.Roles["allowed"].KeyPermission, after.Roles["allowed"].KeyPermission)
+
+	token, err := server.tokens.authenticate(ctx, "alice", "secret")
+	require.NoError(t, err)
+	authenticated := metadata.NewIncomingContext(
+		ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token),
+	)
+	status, err := server.AuthStatus(authenticated, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+	require.True(t, status.Enabled)
+	require.Equal(t, before.Config.Revision, status.AuthRevision)
+	_, err = server.Put(authenticated, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/reloaded"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	_, err = server.Put(authenticated, &etcdserverpb.PutRequest{
+		Key: []byte("/denied/reloaded"), Value: []byte("secret"),
+	})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
 }
 
 func TestAuthRepositoryLoadReturnsSelfConsistentSnapshot(t *testing.T) {
