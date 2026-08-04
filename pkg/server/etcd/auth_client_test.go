@@ -438,6 +438,82 @@ func TestClientAuthDisabledAllowsCredentialedClient(t *testing.T) {
 	require.Equal(t, "value", string(got.Kvs[0].Value))
 }
 
+func TestClientAuthDisableKeepsCredentialedWatchUsableAfterReconnect(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_ = setupAuthKVUser(t, server)
+
+	register := func(grpcServer *grpc.Server) {
+		etcdserverpb.RegisterKVServer(grpcServer, server)
+		etcdserverpb.RegisterWatchServer(grpcServer, server)
+		etcdserverpb.RegisterAuthServer(grpcServer, server)
+	}
+	firstGRPC := grpc.NewServer(server.ClientServerOptions()...)
+	register(firstGRPC)
+	firstListener := bufconn.Listen(1 << 20)
+	go func() { _ = firstGRPC.Serve(firstListener) }()
+
+	var listenerMu sync.RWMutex
+	currentListener := firstListener
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: 10 * time.Second,
+		Username:    "root",
+		Password:    "root-secret",
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				listenerMu.RLock()
+				listener := currentListener
+				listenerMu.RUnlock()
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	key := "/a3501/auth-disable-watch/key"
+	watch := client.Watch(ctx, key, clientv3.WithRev(1), clientv3.WithCreatedNotify())
+	created := <-watch
+	require.NoError(t, created.Err())
+	require.True(t, created.Created)
+	require.Empty(t, created.Events)
+	_, err = client.AuthDisable(ctx)
+	require.NoError(t, err)
+
+	secondGRPC := grpc.NewServer(server.ClientServerOptions()...)
+	register(secondGRPC)
+	secondListener := bufconn.Listen(1 << 20)
+	listenerMu.Lock()
+	currentListener = secondListener
+	listenerMu.Unlock()
+	firstGRPC.Stop()
+	go func() { _ = secondGRPC.Serve(secondListener) }()
+	t.Cleanup(secondGRPC.Stop)
+
+	_, err = client.Put(ctx, key, "value")
+	require.NoError(t, err)
+	for {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok, "credentialed watch closed after auth disable and transport reconnect")
+			require.NoError(t, response.Err())
+			if len(response.Events) == 0 {
+				continue
+			}
+			require.Len(t, response.Events, 1)
+			require.Equal(t, []byte(key), response.Events[0].Kv.Key)
+			require.Equal(t, []byte("value"), response.Events[0].Kv.Value)
+			return
+		case <-ctx.Done():
+			t.Fatal("credentialed watch did not resume after auth disable and transport reconnect")
+		}
+	}
+}
+
 func TestClientAuthUserErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
