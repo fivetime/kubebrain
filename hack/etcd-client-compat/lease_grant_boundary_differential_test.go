@@ -114,6 +114,11 @@ func runLeaseGrantBoundaryScenario(t *testing.T, endpoint string) []leaseGrantBo
 		cleanupGap, cleanupSeed := seedState("cleanup-revoke")
 		require.Zero(t, cleanupGap, "cleanup-revoke")
 		require.Equal(t, "seed", cleanupSeed, "cleanup-revoke")
+		_, deleteErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: seedKey})
+		require.NoError(t, deleteErr)
+		deleted, rangeErr := kv.Range(cleanupCtx, &etcdserverpb.RangeRequest{Key: seedKey})
+		require.NoError(t, rangeErr)
+		require.Empty(t, deleted.Kvs)
 	}()
 	for _, test := range grants {
 		resp, callErr := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: test.id, TTL: test.ttl})
