@@ -33247,6 +33247,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与逐秒 TTL 的重启边界。本轮只有测试和文档，生产继续运行 A3499；官方 32479/32480、
   32579/32580 实例和临时目录均已清理。
 
+- A3501 补齐 AuthDisable 后带凭据 Watch 跨传输重连的永久门禁。对照
+  `/root/etcd/tests/common/auth_test.go:TestAuthGracefulDisable`：官方客户端在认证关闭、member
+  重启后会忽略重新认证返回的 `ErrAuthNotEnabled`，并继续从显式 revision 1 收到事件。commit
+  `34de2037` 使用同一 KubeBrain 数据面和两个依次 serving 的 bufconn gRPC server，先在认证开启时
+  建立 root 凭据 Watch，再关闭认证、强制断开第一条传输、切换到新连接并写入目标键；原 Watch
+  必须保持打开且收到精确 PUT。该门禁比上游用例额外覆盖了“已有 Watch 跨断线恢复”，同时验证
+  KV、Watch、Auth 三个服务共享的 auth 状态在 reconnect 后仍可观察一致。
+
+  初始探针使用 from-current Watch，并发断线与 Put 时可能按 clientv3 合法的 revision 0 恢复语义
+  错过写入，不能作为服务端 RED；改为与上游相同的显式 revision 1 后，KubeBrain 现有实现已经
+  兼容，无需修改生产代码。测试读取会跳过 clientv3 重连时允许的空控制响应，但严格拒绝错误、
+  通道提前关闭或错误事件。普通模式连续 50 轮通过（24.954 秒），race 连续 10 轮通过
+  （70.541 秒），完整 `pkg/server/etcd`（167.208 秒）和该包 `go vet` 均通过。本轮只有测试和
+  文档，生产继续运行 A3499，无生产数据写入或镜像滚动。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
