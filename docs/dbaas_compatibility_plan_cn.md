@@ -34662,6 +34662,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision、raft index 与
   applied index 均为 468126003565738013、term 314；生产长期 fixture 仍为 Count=100。
 
+- A3575 补齐 delegated RangeStream shape 的发送期 auth revision fence。对照
+  `/root/etcd/server/etcdserver/v3_server.go::RangeStream/rangeStream/doSerialize`，CountOnly、point、
+  empty 和 reversed range 虽只发送一个 response，`rs.Send` 仍位于 `get()` 内；最终 auth revision
+  比较发生在 Send 返回之后。KubeBrain 旧实现先调用 unary `Range` 完成其 fence，再在外层发送结果，
+  因而 Send 期间的 auth mutation 完全越过结束复核。
+
+  确定性 stream seam 在首个 Send 内新增无关 role。四种 delegated shape 修复前都错误 clean success，
+  而官方契约要求已发送 response 后 handler 最终返回 `ErrAuthOldRevision`。首轮修复把 Send 注入 Range
+  的授权后/fence 前 callback 后，又暴露第二个既有 RED：通用 `rangeStreamStatusErr` 把原始
+  `AuthOldRevision` 错误映射成 `codes.Unavailable`。修复抽取 `rangeWithAfterRead`，保持 linearizable
+  barrier→auth→read 的原顺序并消除重新捕获 caller 的竞态窗口；delegated stream 在该 callback 内发送，
+  然后由同一个 caller 完成最终 fence。auth contract errors 原样透传，只有 backend transient 继续映射
+  Unavailable；新增 denied point 反例固定 `PermissionDenied` 且不得发送 response。普通 unary Range 仍以
+  nil callback 进入完全相同实现。
+
+  四 shape 门禁普通 10 连跑 12.034 秒，全部 RangeStream 测试普通 10 连跑 36.152 秒，delegated auth
+  mutation/permission race 5 连跑 117.728 秒 GREEN；主模块全套通过（production 428.497 秒、
+  server/etcd 170.159 秒），完整 compat 1.334 秒、vet 和 diff check 通过；staticcheck v0.7.0 仍精确为
+  既有 9 项基线。
+
+  commit `a60c322a` 构建为 `kubebrain:a3575-delegated-stream-auth-fence`（镜像 ID
+  `sha256:4408f94f9a889767ab330f389ad3fe714433644d0724ddc04ec8a1fd6c60a740`），核验 OCI version、完整
+  Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。部署后
+  RangeStream production chunk 门禁 1.415 秒通过并清理隔离 prefix；KubeBrain/PD/TiKV 均 3/3 Ready、
+  零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision、raft index 与
+  applied index 均为 468126003565738023、term 316；生产长期 fixture 仍为 Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
