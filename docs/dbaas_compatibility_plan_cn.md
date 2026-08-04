@@ -34421,6 +34421,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   安全边界而改变全租户状态，因此没有滚动或执行 `AuthEnable`；只读/健康核验显示 endpoint proposal
   成功、KubeBrain/PD/TiKV 各 3/3 Ready，运行镜像仍为 `kubebrain:a3554-unary-negative-revision`。
 
+- A3563 固定 auth disabled→enabled 期间既有 etcd Watch 的 create-time authorization 语义。A3562
+  必须终止没有 etcd 权限模型的 legacy native stream，但不能把该平台安全策略直接套到标准 Watch；
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go`，上游只在每个 create request 到达时执行
+  `isWatchPermitted`，不会因后续 auth revision 变化撤销已经创建的逻辑 watch。
+
+  destructive auth 双端状态机现在于 auth 关闭时，在匿名 raw Watch stream 上以显式 ID 创建 watch；
+  `AuthEnable` 后由 root 写入事件，要求旧 watch 仍收到该事件；随后复用同一 gRPC stream 创建第二个匿名
+  watch，要求返回 created+canceled 控制响应，精确 reason 为 `ErrGRPCUserEmpty`。官方绝对基线和
+  KubeBrain 完全一致，由此同时固定“既有 watch 保留 create-time 决策”和“同一 transport 上的新 create
+  必须读取当前 auth 状态”，防止未来为了安全直觉破坏 etcd 客户端可观察语义，或反向让新 watch 绕过
+  auth。
+
+  `run-auth-differential.sh` 新增严格布尔 `GO_TEST_RACE`，非法值在依赖访问前 fail closed；reference
+  临时目录改为精确 `find -depth -delete`。两个独立 TiKV keyspace 与临时 NodePort 30463/30464 上，
+  最终字段级 oracle 下普通双端 11.411 秒、race 17.708 秒 GREEN；完整 compat 1.327 秒、vet、bash syntax 和 diff check
+  通过。没有服务端 RED，故不构建或滚动镜像；临时 Pod/Service 与 42379/42380 reference listener 已
+  清理，共享生产 endpoint 未执行 AuthEnable。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
