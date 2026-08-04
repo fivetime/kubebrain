@@ -33195,6 +33195,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 为 `468126003565721590`，raft index/applied 同值、term 274；三个 KubeBrain Pod 均
   ready/0 restart，3 PD/3 TiKV 均 ready。
 
+- A3498 补齐 HTTP gateway Snapshot 的完整制品门禁：官方
+  `/root/etcd/tests/e2e/v3_curl_maintenance_test.go:TestCurlV3MaintenanceSnapshot` 只检查响应中出现
+  `"result":{"blob":`，既有 KubeBrain 差分则只覆盖 gRPC stream；这两者都不能证明 HTTP
+  transcoding 没有截断或破坏末尾 digest。commit `4dd813f0` 新增永久双端差分，使用标准 HTTP
+  client 逐个解码 `/v3/maintenance/snapshot` 的 JSON stream envelope，校验响应为 200、包含数据与
+  digest 多段、`remaining_bytes` 单调并最终归零、所有段 version 一致且非空，并重组全部数据后
+  验证末段 32 字节等于前序 bbolt 字节的 SHA-256。官方 3.8 reference 与生产 A3497 连续 10 轮
+  通过（23.097 秒）；compat 模块全套通过。审计中同时排除了 physical compaction 丢失 watermark
+  的疑似问题：先前探针在把测试 server 切成 follower 后调用 Compact，实际走了空测试代理；直接
+  backend 契约证明 background GC 后 fresh watermark 仍在。现把该断言加入
+  `TestCompactAsyncAdvancesWatermarkSyncThenGCsInBackground`，聚焦 race 连续 20 轮和 backend vet
+  通过。该轮只增加测试，不改变生产镜像；官方临时 etcd、数据目录和 32379/32380 端口均已清理，
+  生产继续运行 A3497。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
