@@ -33278,6 +33278,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （69.698 秒），完整 `pkg/server/etcd` 重跑通过（161.784 秒），该包 `go vet` 通过。本轮只有
   测试和文档，生产继续运行 A3499，无生产 mutation 或镜像滚动。
 
+- A3503 固定 leader restart 期间成功读取的 revision 单调性。对照
+  `/root/etcd/tests/integration/revision_test.go:TestRevisionMonotonicWithLeaderRestarts`，commit
+  `06669f0a` 新增 opt-in 官方 clientv3 黑盒门禁：4 个 writer 持续覆盖独立 key，6 个 reader
+  各自维护最后成功 header revision；外部有界命令删除当前 mutation leader 后，短暂
+  Canceled/DeadlineExceeded/Unavailable 可以重试，但任何成功 Range 的 revision 都不得低于该
+  client 已观察值。门禁要求故障确实产生瞬时错误、随后线性化 Range 恢复，worker 收尾后再以
+  严格更高 revision 的 Put 和不低于它的 Range 证明完整读写恢复；测试前缀由 cleanup 删除。
+  新文件同时纳入 failover command 静态门禁，禁止绕过有界进程组 helper。
+
+  开发中发现 `kubectl rollout status` 对该 partitioned/OnDelete StatefulSet 会在 replacement
+  leader 真正 serving 前提前成功；曾出现 rollout 已返回而最终 Put 仍处于约两秒 election 窗口。
+  最终门禁不再把控制面 rollout 外观当数据面恢复证据，而是先要求并发 workload 观察到实际
+  outage，再轮询真实线性化 Range，并对最终 Put/Get 做有界瞬时错误重试；非瞬时错误始终失败。
+  无故障 skip/static 门禁连续 20 轮、compat 全套（0.724 秒）、race 连续 20 轮（1.217 秒）和
+  compat vet 均通过。
+
+  真实 A3499 三副本上确认 `kubebrain-2` 为 leader 并删除该 Pod；最终已提交版本记录 1,330 次
+  成功读、12 次成功写和 14 次瞬时故障，未观察 revision 回退，恢复 Put/Get revision 为
+  `468126003565722183`。cleanup 后官方 etcdctl status 的 revision/raft index/applied index 均为
+  `468126003565722184`、term 276、version/storage version 3.7.0，目标前缀 Count=0；三个
+  KubeBrain Pod Ready/0 restart，3 PD/3 TiKV 均 Ready。本轮只有测试和文档，生产镜像仍为
+  A3499；删除的是明确 leader Pod，已由 StatefulSet 自动重建。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
