@@ -93,6 +93,9 @@ func TestCompactAsyncAdvancesWatermarkSyncThenGCsInBackground(t *testing.T) {
 	require.Eventually(t, func() bool { return atomic.LoadUint64(&b.compactDoneRev) >= last }, 5*time.Second, 5*time.Millisecond,
 		"background compactor must complete the physical GC scan")
 	require.Equal(t, 1, countVersions(), "background compactor must retire superseded versions")
+	wm, err = b.GetCompactRevisionFresh(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, wm, last, "physical GC must preserve the durable compact watermark")
 
 	// Latest value stays correct after background GC.
 	got, err := b.Get(ctx, &proto.GetRequest{Key: key})
