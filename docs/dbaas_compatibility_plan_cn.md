@@ -33153,6 +33153,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后 raft term 为 270；本轮未产生生产 mutation，revision 保持 `…588`。snapshot/restore 目录、
   官方 etcd 进程和监听端口均已清理。
 
+- A3496 对齐 `Maintenance.Status.IsLearner` 的本地成员语义：对照
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go:Status`，官方直接返回 serving
+  member 的 `IsLearner()`，旧实现却无条件写 `false`，会让控制器把由 DBaaS 控制面声明的
+  learner 实例误判为 voter。确定性 RED 给本地 member 配置 `IsLearner=true`，旧实现实际返回
+  `false`；同时用“远端 learner、本地 voter”反例固定该字段必须按本地 member ID 解析，不能按
+  集群中是否存在 learner 推断。commit `d6264156e8ab7652f381926043dfc9a2a27d0f25` 新增
+  `localMemberIsLearner()`，复用 MemberList/Status/MoveLeader 已统一使用的静态成员 ID 映射；未
+  配置静态成员或本地 ID 不存在时仍安全回退为 `false`。聚焦用例连续 20 轮、相关 Status 与
+  MemberList 用例连续 20 轮、目标 race 连续 20 轮、完整 `pkg/server/etcd` 与 backend 测试以及
+  vet 均通过。
+
+  生产镜像 `kubebrain:a3496-status-learner` 的本地 ID 为
+  `sha256:d67a04e2d80182a46b30f599a6d5ef75db98dec4b7c522889741535f7dc931cc`，构建 SHA 为
+  `d6264156e8ab7652f381926043dfc9a2a27d0f25`、时间为 `2026-08-04T03:36:44Z`；kind runtime
+  digest 为 `sha256:b626cd214bf7b7d9ffc13733ecf3d178b337c2d878249f58dfc9987ded21669f`。
+  三个 KubeBrain Pod 均 ready、0 restart，3 PD/3 TiKV 均 ready；官方 3.7 `etcdctl endpoint
+  status` 确认当前 voter 拓扑 `IS LEARNER=false`、revision/raft index/applied index 均为
+  `468126003565721588`、raft term 为 272，version/storage version 均为 3.7.0。本轮无生产写入，
+  revision 保持不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
