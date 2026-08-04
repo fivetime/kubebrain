@@ -210,3 +210,115 @@ func TestWatchDeliversCommittedWritesAcrossBackendFailover(t *testing.T) {
 	default:
 	}
 }
+
+// TestWatchCreationSurvivesBackendFailover starts a Watch on a directly
+// addressed follower after a mutation has proved that the backend/leader path
+// is unavailable. The ingress RPC may acknowledge creation before its proxy
+// has a usable successor. That transient creation window must remain an open
+// Watch and deliver a post-recovery write instead of becoming a terminal
+// cancellation.
+func TestWatchCreationSurvivesBackendFailover(t *testing.T) {
+	failoverCommand := os.Getenv("KUBEBRAIN_WATCH_CREATE_FAILOVER_COMMAND")
+	if failoverCommand == "" {
+		t.Skip("set KUBEBRAIN_WATCH_CREATE_FAILOVER_COMMAND to run destructive watch-creation failover")
+	}
+	endpoint := os.Getenv("KUBEBRAIN_WATCH_CREATE_FAILOVER_ENDPOINT")
+	if endpoint == "" {
+		t.Fatal("set KUBEBRAIN_WATCH_CREATE_FAILOVER_ENDPOINT to a directly addressed follower")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{endpoint},
+		DialTimeout: 5 * time.Second,
+	})
+	require.NoError(t, err)
+	prefix := testPrefix(t) + "/"
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+		require.NoError(t, cli.Close())
+	})
+
+	seed, err := cli.Put(ctx, prefix+"seed", "seed")
+	require.NoError(t, err)
+	type commandResult struct {
+		output []byte
+		err    error
+	}
+	commandDone := make(chan commandResult, 1)
+	go func() {
+		output, commandErr := runCompatShellCommandContext(t, ctx, failoverCommand)
+		commandDone <- commandResult{output: output, err: commandErr}
+	}()
+
+	transientWrites := 0
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		_, putErr := cli.Put(callCtx, prefix+"window", fmt.Sprintf("attempt-%d", transientWrites))
+		callCancel()
+		if putErr == nil {
+			time.Sleep(10 * time.Millisecond)
+			return false
+		}
+		require.Truef(t, isMutationFailoverAmbiguous(putErr), "unexpected mutation failure: %v", putErr)
+		transientWrites++
+		return true
+	}, 30*time.Second, 10*time.Millisecond, "fault must expose a mutation-unavailable window")
+	select {
+	case result := <-commandDone:
+		require.FailNowf(t, "failover command ended before Watch creation",
+			"error=%v output=%s", result.err, strings.TrimSpace(string(result.output)))
+	default:
+	}
+
+	watchStarted := time.Now()
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	watch := cli.Watch(watchCtx, prefix, clientv3.WithPrefix(),
+		clientv3.WithRev(seed.Header.Revision+1), clientv3.WithCreatedNotify())
+	created := false
+	for !created {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok, "Watch closed before its Created response")
+			require.NoError(t, response.Err())
+			created = response.Created
+		case <-time.After(10 * time.Second):
+			t.Fatal("Watch did not report creation during the failover window")
+		}
+	}
+
+	result := <-commandDone
+	require.NoErrorf(t, result.err, "backend failover command: %s", strings.TrimSpace(string(result.output)))
+	probeKey := prefix + "post-recovery"
+	probeValue := fmt.Sprintf("probe-%d", time.Now().UnixNano())
+	var probe *clientv3.PutResponse
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer callCancel()
+		probe, err = cli.Put(callCtx, probeKey, probeValue)
+		return err == nil
+	}, 45*time.Second, 100*time.Millisecond, "writes must recover after backend failover")
+
+	for {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok, "Watch created during failover closed before the recovery probe")
+			require.NoError(t, response.Err())
+			for _, event := range response.Events {
+				if event.Type == mvccpb.PUT && event.Kv != nil && string(event.Kv.Key) == probeKey {
+					require.Equal(t, probeValue, string(event.Kv.Value))
+					require.Equal(t, probe.Header.Revision, event.Kv.ModRevision)
+					t.Logf("Watch created in confirmed outage after %s delivered recovery revision=%d transient_writes=%d",
+						time.Since(watchStarted), event.Kv.ModRevision, transientWrites)
+					return
+				}
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("Watch created during failover did not deliver the post-recovery probe")
+		}
+	}
+}

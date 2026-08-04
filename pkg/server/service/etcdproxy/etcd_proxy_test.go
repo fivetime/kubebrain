@@ -521,6 +521,38 @@ func TestWaitProxyWatchReconnectStopsWithCaller(t *testing.T) {
 		"a canceled watch must not remain in the failover retry loop")
 }
 
+// TestWatchCreationDoesNotFailWhileLeaderIsUnavailable pins the creation-side
+// failover window: a follower can send the external Created response just before
+// its proxy loses the old leader. The proxy Watch call must still return a live
+// stream immediately and wait for a successor in the background; returning a
+// readiness error makes the ingress RPC turn a transient election gap into a
+// terminal watch cancellation.
+func TestWatchCreationDoesNotFailWhileLeaderIsUnavailable(t *testing.T) {
+	proxy := &etcdProxy{
+		election:    &testLeaderElection{leaderAddress: "127.0.0.1:1"},
+		dialTimeout: 10 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	start := time.Now()
+	results, err := proxy.Watch(ctx, []byte("watch/create/failover"), nil, 42)
+	require.NoError(t, err)
+	require.Less(t, time.Since(start), 100*time.Millisecond,
+		"watch creation must not synchronously consume the proxy readiness budget")
+
+	select {
+	case _, ok := <-results:
+		require.True(t, ok, "transient no-leader state must not close the watch")
+	case <-time.After(300 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case _, ok := <-results:
+		require.False(t, ok, "caller cancellation must close the pending watch")
+	case <-time.After(time.Second):
+		t.Fatal("pending proxy watch did not stop after caller cancellation")
+	}
+}
+
 // TestUpdateClientConcurrentNoDeadlock pins the #41/#47 serialization: updateClient
 // now takes updateMu (held across the build/swap) in addition to the field lock.
 // Run it concurrently with itself and with the readers that also take `lock`

@@ -683,10 +683,6 @@ func (e *etcdProxy) waitReady(ctx context.Context) error {
 }
 
 func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
-	if _, _, _, err := e.readyClient(ctx); err != nil {
-		return nil, err
-	}
-
 	outputCh := make(chan WatchResult, 100)
 	go func() {
 		defer util.Recover()
