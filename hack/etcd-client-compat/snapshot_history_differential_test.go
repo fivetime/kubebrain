@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,6 +122,91 @@ func TestSnapshotRetainedLeaseHistoryMatchesReferenceEtcd(t *testing.T) {
 			require.Equal(t, want, snapshotVersionsForKey(t, path, key))
 		})
 	}
+}
+
+func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
+	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	etcdutl := os.Getenv("ETCDUTL_BINARY")
+	etcd := os.Getenv("REFERENCE_ETCD_BINARY")
+	if endpoint == "" || etcdutl == "" || etcd == "" {
+		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT, ETCDUTL_BINARY, and REFERENCE_ETCD_BINARY")
+	}
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
+	require.NoError(t, err)
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	key := []byte(fmt.Sprintf("/compat/snapshot-official-restore/%d", time.Now().UnixNano()))
+	leaseID := time.Now().UnixNano() & ((1 << 62) - 1)
+	if leaseID == 0 {
+		leaseID = 1
+	}
+	rawLease := etcdserverpb.NewLeaseClient(client.ActiveConnection())
+	_, err = rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: leaseID, TTL: 300})
+	require.NoError(t, err)
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = client.Delete(cleanupCtx, string(key))
+		_, _ = rawLease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	}()
+	first, err := client.Put(ctx, string(key), "leased-v1", clientv3.WithLease(clientv3.LeaseID(leaseID)))
+	require.NoError(t, err)
+	second, err := client.Put(ctx, string(key), "unleased-v2")
+	require.NoError(t, err)
+	latest, err := client.Put(ctx, string(key), "leased-v3", clientv3.WithLease(clientv3.LeaseID(leaseID)))
+	require.NoError(t, err)
+
+	snapshotPath := filepath.Join(t.TempDir(), "kubebrain-snapshot.db")
+	require.NoError(t, os.WriteFile(snapshotPath, downloadSnapshotBackend(t, endpoint), 0o600))
+	restoredDir := filepath.Join(t.TempDir(), "restored.etcd")
+	const restoredEndpoint = "127.0.0.1:42479"
+	restore := exec.CommandContext(ctx, etcdutl, "snapshot", "restore", snapshotPath,
+		"--skip-hash-check", "--data-dir", restoredDir, "--name", "a3537-restored",
+		"--initial-cluster", "a3537-restored=http://127.0.0.1:42480",
+		"--initial-advertise-peer-urls", "http://127.0.0.1:42480")
+	output, err := restore.CombinedOutput()
+	require.NoError(t, err, string(output))
+	stop := startCompatCommand(t, etcd,
+		"--name", "a3537-restored", "--data-dir", restoredDir,
+		"--listen-client-urls", "http://"+restoredEndpoint,
+		"--advertise-client-urls", "http://"+restoredEndpoint,
+		"--listen-peer-urls", "http://127.0.0.1:42480",
+		"--initial-advertise-peer-urls", "http://127.0.0.1:42480",
+		"--initial-cluster", "a3537-restored=http://127.0.0.1:42480")
+	defer stop()
+	conn := newRawCompatConn(t, restoredEndpoint)
+	defer conn.Close()
+	kv := etcdserverpb.NewKVClient(conn)
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer callCancel()
+		_, callErr := kv.Range(callCtx, &etcdserverpb.RangeRequest{Key: key})
+		return callErr == nil
+	}, 10*time.Second, 50*time.Millisecond)
+
+	for _, tc := range []struct {
+		revision, lease int64
+		value           string
+	}{
+		{revision: first.Header.Revision, value: "leased-v1", lease: leaseID},
+		{revision: second.Header.Revision, value: "unleased-v2"},
+		{revision: latest.Header.Revision, value: "leased-v3", lease: leaseID},
+	} {
+		response, rangeErr := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Revision: tc.revision})
+		require.NoError(t, rangeErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, tc.value, string(response.Kvs[0].Value))
+		require.Equal(t, tc.lease, response.Kvs[0].Lease)
+	}
+	ttl, err := etcdserverpb.NewLeaseClient(conn).LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
+		ID: leaseID, Keys: true,
+	})
+	require.NoError(t, err)
+	require.Positive(t, ttl.TTL)
+	require.LessOrEqual(t, ttl.TTL, int64(300))
+	require.Equal(t, int64(300), ttl.GrantedTTL)
+	require.Equal(t, [][]byte{key}, ttl.Keys)
 }
 
 func TestSnapshotTxnSubrevisionOrderMatchesReferenceEtcd(t *testing.T) {
