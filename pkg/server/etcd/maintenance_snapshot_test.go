@@ -417,7 +417,7 @@ func TestMaintenanceSnapshotStreamsCurrentKVAndPreservesMetadata(t *testing.T) {
 			if err := proto.Unmarshal(value, kv); err != nil {
 				return err
 			}
-			if !bytes.Equal(kv.Key, []byte("\x00kubebrain-snapshot-revision")) {
+			if len(kv.Key) != 0 {
 				records = append(records, kv)
 			}
 			return nil

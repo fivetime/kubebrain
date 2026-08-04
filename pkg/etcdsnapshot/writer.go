@@ -264,7 +264,14 @@ func (b *Builder) Finish() error {
 	if b.finished {
 		return fmt.Errorf("snapshot builder is already finished")
 	}
-	marker, err := proto.Marshal(&mvccpb.KeyValue{Key: []byte("\x00kubebrain-snapshot-revision")})
+	// Official MVCC restore derives currentRev from the greatest revision key,
+	// so a marker is required when KubeBrain's published revision has no retained
+	// user row (for example, a dealt-but-uncommitted revision). Use the empty key:
+	// etcd's Watch API normalizes an empty watch key to \x00, and Range/Txn reject
+	// empty keys, making this restore-only row unreachable to every legal client
+	// key interval. A named \x00-prefixed marker would leak as a DELETE through an
+	// all-key historical Watch after restore.
+	marker, err := proto.Marshal(&mvccpb.KeyValue{Key: []byte{}})
 	if err != nil {
 		return err
 	}

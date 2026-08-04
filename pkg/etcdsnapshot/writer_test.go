@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
@@ -48,7 +49,7 @@ func TestBuilderAppendsMultipleBatchesWithoutLosingSameRevisionRecords(t *testin
 			if err := proto.Unmarshal(value, &kv); err != nil {
 				return err
 			}
-			if !bytes.Equal(kv.Key, []byte("\x00kubebrain-snapshot-revision")) {
+			if len(kv.Key) != 0 {
 				got[string(kv.Key)] = string(kv.Value)
 			}
 			return nil
@@ -186,6 +187,34 @@ func TestOfficialMVCCStoreRestoresHistoricalRangesAndTombstone(t *testing.T) {
 		}
 		require.Len(t, result.KVs, 1)
 		require.Equal(t, tc.value, string(result.KVs[0].Value))
+	}
+}
+
+func TestOfficialWatchDoesNotExposeSyntheticSnapshotRevisionMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{
+		Revision: 9, PreserveHistory: true,
+		Records: []Record{{Key: []byte("visible"), Value: []byte("value"), CreateRevision: 2, ModRevision: 2, Version: 1}},
+	}))
+	lg := zaptest.NewLogger(t)
+	be := etcdbackend.NewDefaultBackend(lg, path)
+	store := mvcc.New(lg, be, &lease.FakeLessor{}, mvcc.StoreConfig{})
+	defer func() {
+		store.Close()
+		require.NoError(t, be.Close())
+	}()
+	watch := store.NewWatchStream()
+	defer watch.Close()
+	_, err := watch.Watch(context.Background(), 0, []byte{0}, []byte{}, 2)
+	require.NoError(t, err)
+	select {
+	case response := <-watch.Chan():
+		require.Zero(t, response.CompactRevision)
+		require.EqualValues(t, 9, response.Revision)
+		require.Len(t, response.Events, 1)
+		require.Equal(t, []byte("visible"), response.Events[0].Kv.Key)
+	case <-time.After(time.Second):
+		t.Fatal("official restored watch did not replay snapshot revision")
 	}
 }
 
