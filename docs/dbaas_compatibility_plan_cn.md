@@ -34704,6 +34704,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/index/
   applied 均为 468126003565738023、term 316，长期 fixture Count=100；生产 auth 状态未被测试修改。
 
+- A3577 复核 etcd 3.7 公共 RPC 面并补齐 delegated RangeStream 的认证状态转换矩阵。现有
+  `api_surface_test` 已从 KV/Watch/Lease/Cluster/Maintenance/Auth/Lock/Election 八个 ServiceDesc 枚举
+  49 个 unary/stream RPC，禁止任何方法仅由 `Unimplemented*Server` 隐式继承，并把平台替代或条件性
+  Unimplemented 固定为七项白名单；`LeaseCheckpointRequest` 再次确认只属于 InternalRaftRequest，不是
+  公开 Lease RPC。两项 surface 门禁 10 连跑 0.872 秒，没有发现接口漏项。
+
+  A3575 的 Send seam 仅以 simple token+role mutation 建门禁，本轮补三种上游 `doSerialize` revision
+  状态：authenticated simple token 在 Send 内 AuthDisable 后必须已发送 response 但最终返回
+  `AuthOldRevision`；auth disabled 时以 anonymous revision=0 开始的请求在 Send 内 AuthEnable 后仍完整
+  成功；HS256 JWT 在 Send 内新增无关 role 后必须返回 `AuthOldRevision`。三场景普通 10 连跑 6.109 秒、
+  race 10 连跑 84.131 秒直接 GREEN，证明 callback/fence 未因认证开关或 token provider 分叉。
+
+  完整 server/etcd 179.158 秒、compat 1.279 秒、vet、compat staticcheck 和 diff check 通过；主模块
+  staticcheck v0.7.0 仍精确为既有 9 项基线。无服务端 RED，故不重建或滚动与 A3575 相同的运行时代码；
+  commit `525e28ba` 只增加门禁。共享生产继续运行 `kubebrain:a3575-delegated-stream-auth-fence`，
+  KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/
+  AuthRevision=581，revision/index/applied 均为 468126003565738023、term 316，长期 fixture Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
