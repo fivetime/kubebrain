@@ -104,11 +104,6 @@ func NewBuilder(path string, state State) (*Builder, error) {
 		return nil, err
 	}
 	restoredRevision := int64(1) // upstream MVCC restore starts at revision 1
-	if !state.PreserveHistory {
-		restoredRevision = state.Revision
-	} else if state.HasCompactRevision && state.CompactRevision > restoredRevision {
-		restoredRevision = state.CompactRevision
-	}
 	builder := &Builder{db: db, revision: state.Revision, restoredRevision: restoredRevision}
 	if err = db.Update(func(tx *bolt.Tx) error { return writeMetadata(tx, state) }); err != nil {
 		_ = db.Close()

@@ -116,6 +116,26 @@ func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) 
 	}))
 }
 
+func TestBuilderPinsCompactedSnapshotRevisionAboveLatestLiveRow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{
+		Revision: 12,
+		Records:  []Record{{Key: []byte("real"), Value: []byte("value"), CreateRevision: 7, ModRevision: 7, Version: 1}},
+	}))
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		var revisions []int64
+		require.NoError(t, tx.Bucket(schema.Key.Name()).ForEach(func(key, _ []byte) error {
+			revisions = append(revisions, mvcc.BytesToRev(key).Main)
+			return nil
+		}))
+		require.Equal(t, []int64{7, 12}, revisions)
+		return nil
+	}))
+}
+
 func TestBuilderPreservesHistoryTombstonesAndRealCompactWatermark(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	builder, err := NewBuilder(path, State{
