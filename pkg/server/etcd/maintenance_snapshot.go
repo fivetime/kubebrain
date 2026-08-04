@@ -22,9 +22,10 @@ const snapshotSendBufferSize = 32 * 1024
 
 var errSnapshotChanged = errors.New("snapshot state changed while it was captured")
 
-// buildSnapshot retries the complete capture if the cluster-visible revision or
-// lease bindings move while a follower is scanning. Each failed attempt owns a
-// fresh bbolt file; no partially captured backend can be sent to the client.
+// buildSnapshot retries a capture if its pinned stream and captured metadata
+// cannot form a valid state (for example, a KV references no captured lease).
+// Each failed attempt owns a fresh bbolt file; no partially captured backend can
+// be sent to the client.
 func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 	for attempt := 0; ; attempt++ {
 		_ = os.Remove(path)
@@ -45,7 +46,12 @@ func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 
 func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr error) {
 	rangeCtx, unlock := s.backend.BeginRangeTxn(ctx)
-	defer unlock()
+	locked := true
+	defer func() {
+		if locked {
+			unlock()
+		}
+	}()
 	ctx = rangeCtx
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return readBarrierStatusErr(err)
@@ -58,6 +64,31 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	if err != nil {
 		return err
 	}
+	chunks, err := s.backend.SnapshotStreamChan(ctx, revision)
+	if err != nil {
+		return err
+	}
+	// Wait for the scanner's first response while still excluding local Compact
+	// and writes. Receiving it proves the fixed-revision storage snapshot has
+	// actually been established; merely creating the channel starts a goroutine
+	// whose timestamp/compaction checks may not have run yet.
+	firstChunk, ok := <-chunks
+	if !ok {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return fmt.Errorf("range stream ended before establishing its pinned revision")
+	}
+	if firstChunk.err != nil {
+		return firstChunk.err
+	}
+	// Metadata and the pinned user revision define the snapshot's linearization
+	// point. Historical scanning remains fixed at that revision, so retaining the
+	// process-wide logical-write barrier while TiKV and bbolt stream the entire
+	// keyspace would only stall later writes; it is not required for consistency.
+	unlock()
+	locked = false
+
 	builder, err := production.NewBuilder(path, state)
 	if err != nil {
 		return fmt.Errorf("create etcd snapshot backend: %w", err)
@@ -68,12 +99,8 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		}
 	}()
 
-	chunks, err := s.backend.SnapshotStreamChan(ctx, revision)
-	if err != nil {
-		return err
-	}
 	sawTerminal := false
-	for chunk := range chunks {
+	consume := func(chunk rangeStreamChunk) error {
 		if chunk.err != nil {
 			return chunk.err
 		}
@@ -82,7 +109,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		}
 		if len(chunk.resp.Kvs) == 0 {
 			sawTerminal = true
-			continue
+			return nil
 		}
 		if sawTerminal {
 			return fmt.Errorf("range stream returned records after its terminal chunk")
@@ -102,22 +129,21 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		if err = builder.Append(records); err != nil {
 			return fmt.Errorf("append etcd snapshot records: %w", err)
 		}
+		return nil
+	}
+	if err = consume(firstChunk); err != nil {
+		return err
+	}
+	for chunk := range chunks {
+		if err = consume(chunk); err != nil {
+			return err
+		}
 	}
 	if !sawTerminal {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		return fmt.Errorf("range stream ended without a terminal revision")
-	}
-	if err := s.peers.SyncReadRevision(ctx); err != nil {
-		return readBarrierStatusErr(err)
-	}
-	latestRevision, err := safeBackendRevision(ctx, s.backend)
-	if err != nil {
-		return err
-	}
-	if latestRevision != revision {
-		return errSnapshotChanged
 	}
 	if err = builder.Finish(); err != nil {
 		return fmt.Errorf("finish etcd snapshot backend: %w", err)

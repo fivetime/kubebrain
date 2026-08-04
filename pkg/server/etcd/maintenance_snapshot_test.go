@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	bolt "go.etcd.io/bbolt"
@@ -24,6 +26,110 @@ type streamingSnapshotBackend struct {
 	streams        int
 	dataChunks     int
 	maxChunkKeys   int
+}
+
+type pausedSnapshotBackend struct {
+	BackendShim
+	paused  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *pausedSnapshotBackend) SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error) {
+	source, err := b.BackendShim.SnapshotStreamChan(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan rangeStreamChunk)
+	go func() {
+		defer close(out)
+		for chunk := range source {
+			select {
+			case out <- chunk:
+			case <-ctx.Done():
+				return
+			}
+			if chunk.resp != nil && len(chunk.resp.Kvs) > 0 {
+				b.once.Do(func() {
+					close(b.paused)
+					select {
+					case <-b.release:
+					case <-ctx.Done():
+					}
+				})
+			}
+		}
+	}()
+	return out, nil
+}
+
+func TestMaintenanceSnapshotDoesNotBlockWritesAndKeepsPinnedRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	seed, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("snapshot-seed"), Value: []byte("before")})
+	require.NoError(t, err)
+	wrapped := &pausedSnapshotBackend{
+		BackendShim: server.backend,
+		paused:      make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = wrapped
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	snapshotDone := make(chan error, 1)
+	go func() { snapshotDone <- server.buildSnapshot(context.Background(), path) }()
+	select {
+	case <-wrapped.paused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not reach its first data chunk")
+	}
+	putDone := make(chan *etcdserverpb.PutResponse, 1)
+	putErr := make(chan error, 1)
+	go func() {
+		response, putError := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("after-snapshot-pin"), Value: []byte("after")})
+		putDone <- response
+		putErr <- putError
+	}()
+	var concurrentPut *etcdserverpb.PutResponse
+	writeCompleted := false
+	select {
+	case concurrentPut = <-putDone:
+		writeCompleted = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(wrapped.release)
+	if !writeCompleted {
+		concurrentPut = <-putDone
+	}
+	require.NoError(t, <-putErr)
+	require.True(t, writeCompleted, "a pinned snapshot must not hold the logical-write barrier for its full scan")
+	require.NoError(t, <-snapshotDone)
+	require.Greater(t, concurrentPut.Header.Revision, seed.Header.Revision)
+
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	var keys [][]byte
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(schema.Key.Name()).ForEach(func(_, value []byte) error {
+			kv := new(mvccpb.KeyValue)
+			if err := proto.Unmarshal(value, kv); err != nil {
+				return err
+			}
+			keys = append(keys, kv.Key)
+			return nil
+		})
+	}))
+	// The snapshot linearizes before the concurrent Put: it retains the seed
+	// but excludes the later key despite allowing that write to complete.
+	require.Contains(t, keys, []byte("snapshot-seed"))
+	require.NotContains(t, keys, []byte("after-snapshot-pin"))
+}
+
+func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	require.NoError(t, server.buildSnapshot(context.Background(), filepath.Join(t.TempDir(), "snapshot.db")))
 }
 
 func (b *streamingSnapshotBackend) List(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {

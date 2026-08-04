@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 兼容（当前状态） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留当前 KV metadata、lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore；输出为 compacted current-state，不保留旧 MVCC history；用户 KV 由固定 revision 的有界 chunk 扫描并增量写 bbolt，不再全量驻留内存 |
+| Maintenance | Snapshot | 兼容（当前状态） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留当前 KV metadata、lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore；输出为 compacted current-state，不保留旧 MVCC history；用户 KV 由固定 revision 的有界 chunk 扫描并增量写 bbolt，不再全量驻留内存，建立 storage snapshot 后不阻塞后续写 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -32905,6 +32905,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:e00e23821c86db9b5b53f923fec4a3a8695b11cb61604a906fb07becfc11e958`。
   三副本滚动后均 ready、0 restart，3 PD/3 TiKV 健康，readyz/version/endpoint status 正常；
   临时 lease/key、官方 etcd 进程、snapshot/restore/reference 目录均已清理。
+- A3489 缩短在线 Snapshot 的写屏障：对照 upstream
+  `/root/etcd/server/storage/backend/backend.go:Snapshot`，官方 bbolt 只在创建只读 transaction
+  时短暂持有 backend mutex，快照传输期间允许新写进入。A3488 虽已将用户 KV 改成 bounded
+  stream，仍从 barrier、metadata 捕获一直到 TiKV 全扫和 bbolt Finish 都持有本进程
+  `logicalWriteMu` 排他锁，大租户直接命中该副本时会把 Put/Txn/lease/auth mutation 阻塞到
+  整个制品构建结束。确定性 RED backend 在首个 data chunk 后暂停剩余 stream；旧实现中并发
+  Put 250ms 内不能完成。
+
+  修复在排他锁内执行 linearizable barrier，捕获 snapshot revision 与 auth/lease/alarm metadata，
+  创建固定 revision stream，并等待其首响应作为 storage snapshot 已建立、compaction 检查已完成
+  的握手；随后立即释放排他锁，余下 TiKV scan 与增量 bbolt transaction 不再阻塞新写。测试在
+  stream 仍暂停时要求并发 Put 完成，并打开最终 bbolt 证明它保留 barrier 前 seed、排除更高
+  revision 的并发 key，固定“允许写”与“不能混入写”两个条件。普通/二进制 key、多 chunk、
+  auth/alarm 既有恢复门禁继续覆盖。固定 revision 也意味着正常并发写不再触发整轮废弃重试；
+  stream revision 不一致或 KV 引用缺失 lease record 仍 fail closed 并用新临时文件重试。
 
 ### P2：运维兼容和长期验证
 
