@@ -30,9 +30,28 @@ func TestLeaseReadAndRevokeAcrossDirectReplicas(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	key := fmt.Sprintf("/dbaas-direct-replica-lease/%d", time.Now().UnixNano())
 	grant, err := service.Grant(ctx, 300)
 	require.NoError(t, err)
-	key := fmt.Sprintf("/dbaas-direct-replica-lease/%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		beforeRevoke, ttlErr := service.TimeToLive(cleanupCtx, grant.ID)
+		require.NoError(t, ttlErr)
+		if beforeRevoke.TTL != -1 {
+			_, revokeErr := service.Revoke(cleanupCtx, grant.ID)
+			require.NoError(t, revokeErr)
+		}
+		_, deleteErr := service.Delete(cleanupCtx, key)
+		require.NoError(t, deleteErr)
+		remaining, getErr := service.Get(cleanupCtx, key)
+		require.NoError(t, getErr)
+		require.Zero(t, remaining.Count)
+		ttl, ttlErr := service.TimeToLive(cleanupCtx, grant.ID, clientv3.WithAttachedKeys())
+		require.NoError(t, ttlErr)
+		require.Equal(t, int64(-1), ttl.TTL)
+		require.Empty(t, ttl.Keys)
+	})
 	_, err = service.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
 	require.NoError(t, err)
 
