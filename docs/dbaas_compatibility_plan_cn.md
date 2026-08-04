@@ -34098,6 +34098,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该 prefix Count=0、LeaseList=0，一次性官方 etcd 进程/data-dir 已清理。服务端 revoke 状态机
   已与官方一致，无需生产代码修改。
 
+- A3544 从逐项 API 枚举转为审计官方差分自身的共享数据面卫生。先排除了两个伪缺口：官方
+  etcd 3.7 `checkRangeStreamRequest` 与 KubeBrain 一样明确拒绝非 key-ascending sort 和 revision
+  filters；DeleteRange 的安全边界也已有 from-key、相等/反向空区间、PrevKV、missing/no-op 与
+  历史读差分，全 keyspace 删除不应在共享生产端充当 oracle。随后线上只读聚合发现 `/dbaas-`
+  测试命名空间累积 6,023 个 live key，主要来自历史中断运行，以及四个当前仍未注册 cleanup 的
+  physical-compaction、compact、keys-limit 和 CountOnly+KeysOnly 用例。
+
+  新增统一 `registerPrefixCleanup`，每轮用新 context 执行精确 prefix Delete，并以 Limit=1 Range
+  证明为空；四个用例全部接入。普通 Range 两项官方/KubeBrain 连续 10 轮 8.597 秒、race
+  2.073 秒 GREEN；physical compaction cleanup 在一次性官方实例通过，避免为了验证清理而推进
+  共享 KubeBrain 的全局 compaction watermark；完整 compat 包、vet 与 diff check 通过。线上
+  大前缀单次删除被 admission 以 ResourceExhausted 安全拒绝后，改用实时第 51 个测试 key 作为
+  exclusive end 的 50-key 分页删除，最终 6,023 项全部清除，`/dbaas-` Count=0、LeaseList=0；
+  两个一次性官方实例及 data-dir 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
