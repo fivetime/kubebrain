@@ -41,6 +41,7 @@ type authMutationReadShim struct {
 	listErr     error
 	revisionErr error
 	streamErr   error
+	strictCtx   bool
 }
 
 type authMutationWriteShim struct {
@@ -87,6 +88,15 @@ func (b *authMutationReadShim) GetCompactRevisionFresh(ctx context.Context) (uin
 		return 0, b.revisionErr
 	}
 	return b.BackendShim.GetCompactRevisionFresh(ctx)
+}
+
+func (b *authMutationReadShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	if b.strictCtx {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return b.BackendShim.InternalGet(ctx, key)
 }
 
 func (b *authMutationReadShim) RangeStreamChan(ctx context.Context, start, end []byte, revision uint64) (<-chan rangeStreamChunk, error) {
@@ -261,6 +271,29 @@ func TestAuthorizedRangeAuthMutationOverridesRevisionCheckErrorLikeEtcd(t *testi
 	require.NoError(t, mutationErr)
 }
 
+func TestAuthorizedRangeAuthMutationOverridesCanceledContextLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	requestCtx, cancel := context.WithCancel(aliceCtx)
+	defer cancel()
+
+	shim := &authMutationReadShim{BackendShim: server.backend, listErr: context.Canceled, strictCtx: true}
+	var mutationErr error
+	shim.hook = func() {
+		mutationErr = server.auth.roleAdd(context.Background(), "range-canceled-context-bump")
+		cancel()
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+
+	_, err := server.Range(requestCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true,
+	})
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+	require.NoError(t, mutationErr)
+}
+
 func TestAuthorizedFollowerHistoricalRangeRechecksAuthAfterProxy(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -427,6 +460,53 @@ func TestAuthorizedReadonlyTxnAuthMutationOverridesPinnedRevisionErrorLikeEtcd(t
 			require.NoError(t, mutationErr)
 		})
 	}
+}
+
+func TestAuthorizedReadonlyTxnAuthMutationOverridesCanceledContextLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	requestCtx, cancel := context.WithCancel(aliceCtx)
+	defer cancel()
+
+	shim := &authMutationReadShim{BackendShim: server.backend, listErr: context.Canceled, strictCtx: true}
+	var mutationErr error
+	shim.hook = func() {
+		mutationErr = server.auth.roleAdd(context.Background(), "readonly-txn-canceled-context-bump")
+		cancel()
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	txn := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true,
+		}},
+	}}}
+
+	_, err := server.Txn(requestCtx, txn)
+	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
+	require.NoError(t, mutationErr)
+}
+
+func TestAuthorizedReadonlyTxnPreservesCanceledContextWithoutAuthMutation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	requestCtx, cancel := context.WithCancel(aliceCtx)
+	defer cancel()
+
+	shim := &authMutationReadShim{BackendShim: server.backend, listErr: context.Canceled, strictCtx: true}
+	shim.hook = cancel
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	txn := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true,
+		}},
+	}}}
+
+	_, err := server.Txn(requestCtx, txn)
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func TestAuthorizedPutAtomicallyRejectsAuthMutationBeforeCommit(t *testing.T) {

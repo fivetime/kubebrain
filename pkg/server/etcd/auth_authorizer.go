@@ -131,6 +131,18 @@ func (s *RPCServer) ensureAuthRevision(ctx context.Context, caller *authCaller) 
 	return nil
 }
 
+// ensureAuthRevisionAfterSerializedRead matches etcd's in-memory auth revision
+// comparison after doSerialize's read callback. The callback may have consumed
+// the request deadline or canceled its context; that cancellation must not
+// prevent a concurrent auth-store mutation from being reported as AuthOldRevision.
+// KubeBrain persists auth metadata in TiKV, so give the final lookup its own
+// bounded context while retaining request values.
+func (s *RPCServer) ensureAuthRevisionAfterSerializedRead(ctx context.Context, caller *authCaller) error {
+	fenceCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
+	defer cancel()
+	return s.ensureAuthRevision(fenceCtx, caller)
+}
+
 func (s *RPCServer) ensureAuthStoreRevisionUnchanged(ctx context.Context, caller *authCaller) error {
 	if caller == nil {
 		return nil

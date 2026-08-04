@@ -79,7 +79,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 		// The leader re-authenticates a forwarded simple token at its current
 		// revision, so it cannot preserve the follower's request-start revision.
 		// Recheck locally after the proxy completes to retain doSerialize semantics.
-		if finalAuthErr := s.ensureAuthRevision(ctx, caller); finalAuthErr != nil &&
+		if finalAuthErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller); finalAuthErr != nil &&
 			(err == nil || errors.Is(finalAuthErr, rpctypes.ErrAuthOldRevision)) {
 			return response, finalAuthErr
 		}
@@ -106,7 +106,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 		if authChecked {
 			return
 		}
-		authErr := s.ensureAuthRevision(ctx, caller)
+		authErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller)
 		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
 			retErr = authErr
 		}
@@ -120,7 +120,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 			return nil, err
 		}
 		authChecked = true
-		if err = s.ensureAuthRevision(ctx, caller); err != nil {
+		if err = s.ensureAuthRevisionAfterSerializedRead(ctx, caller); err != nil {
 			return nil, err
 		}
 		return &etcdserverpb.RangeResponse{
@@ -154,7 +154,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (re
 		s.metricCli.EmitHistogram("read.responsesize", proto.Size(response), methodTag, successTag)
 	}
 	authChecked = true
-	if authErr = s.ensureAuthRevision(ctx, caller); authErr != nil {
+	if authErr = s.ensureAuthRevisionAfterSerializedRead(ctx, caller); authErr != nil {
 		return nil, authErr
 	}
 	return response, err
@@ -231,7 +231,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		if authChecked {
 			return
 		}
-		authErr := s.ensureAuthRevision(ctx, caller)
+		authErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller)
 		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
 			retErr = authErr
 		}
@@ -343,7 +343,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		return status.Error(codes.Unavailable, "range stream ended without terminal metadata")
 	}
 	authChecked = true
-	if err := s.ensureAuthRevision(ctx, caller); err != nil {
+	if err := s.ensureAuthRevisionAfterSerializedRead(ctx, caller); err != nil {
 		return err
 	}
 	s.metricCli.EmitCounter("read.range_stream", 1)
@@ -528,7 +528,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		if authChecked {
 			return
 		}
-		authErr := s.ensureAuthRevision(ctx, caller)
+		authErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller)
 		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
 			retErr = authErr
 		}
@@ -571,7 +571,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		// read callback even when that callback failed, and AuthOldRevision takes
 		// precedence if the policy changed while the request was executing.
 		authChecked = true
-		if authErr := s.ensureAuthRevision(ctx, caller); authErr != nil {
+		if authErr := s.ensureAuthRevisionAfterSerializedRead(ctx, caller); authErr != nil {
 			return response, authErr
 		}
 		return response, err
