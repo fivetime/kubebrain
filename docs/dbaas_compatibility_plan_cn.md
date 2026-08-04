@@ -34453,6 +34453,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 diff check 通过。没有服务端 RED，故不构建或滚动镜像；临时 Pod/Service 与 reference listener
   已清理，共享生产 endpoint 未执行 AuthEnable。
 
+- A3565 固定 auth enabled→disabled 后既有 credentialed Watch/LeaseKeepAlive transport 的原连接复用。
+  A3501 已验证 AuthDisable 后重连的 watch 可继续，但未证明已经建立的 stream 如何处理旧 auth metadata；
+  对照上游 `checkLeaseRenew` 与 Watch create authorization，auth disabled 时 token 和 AuthRevision 都应被
+  忽略，客户端不应被迫重连。
+
+  双端状态机在 auth enabled 时由 Alice 创建 attached lease、raw KeepAlive stream 和显式 ID watch，
+  首次 TTL/create 均成功；随后修改 Alice 密码使这些 stream 携带的原 token 失效，再由 root 执行
+  AuthDisable。原 KeepAlive stream 的下一次 Send/Recv 必须仍返回同 ID 与正 TTL；原 watch 必须收到
+  disable 后匿名 Put 事件；同一 gRPC stream 上新建第二个 watch 也必须 created、非 canceled，并收到
+  后续事件。AuthStatus 同步固定为 disabled。官方 etcd 与 KubeBrain 的完整 outcome 一致，证明关闭
+  auth 后无需 transport reconnect，且不会错误地继续校验 stale token。
+
+  首轮 fixture 把 Alice attached key 放在未授权 `/auth-disable/` 而正确收到 PermissionDenied；修正到
+  已授权 `/auth-allowed/` 后，两个独立 TiKV keyspace、NodePort 30463/30464 上普通双端 12.811 秒、
+  race 13.592 秒 GREEN；完整 compat 1.336 秒、vet、staticcheck、bash syntax 和 diff check 通过。
+  没有服务端 RED，故不构建或滚动镜像；临时 Pod/Service 与 reference listener 已清理，共享生产
+  endpoint 未切换 auth 状态。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
