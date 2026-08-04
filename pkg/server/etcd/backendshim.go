@@ -1080,13 +1080,6 @@ func (b *backendShim) SnapshotHistoryStreamChan(ctx context.Context, revision ui
 	go func() {
 		defer close(output)
 		for chunk := range input {
-			for i := range chunk.Records {
-				record := &chunk.Records[i]
-				if record.Current && !record.LeaseKnown && b.leaseLookup != nil {
-					record.Lease = b.leaseLookup(string(record.Key))
-					record.LeaseKnown = true
-				}
-			}
 			select {
 			case output <- chunk:
 			case <-ctx.Done():

@@ -61,7 +61,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	if err != nil {
 		return err
 	}
-	state, leaseIDs, err := s.snapshotMetadata(ctx, int64(revision))
+	state, leaseIDs, leaseAttachments, err := s.snapshotMetadata(ctx, int64(revision))
 	if err != nil {
 		return err
 	}
@@ -138,8 +138,26 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		}
 		records := make([]production.Record, 0, len(chunk.Records))
 		for _, record := range chunk.Records {
-			if record.Current && record.Lease != 0 {
-				if _, ok := leaseIDs[record.Lease]; !ok {
+			if record.Current {
+				// Legacy rows do not carry a per-version lease. Reconcile them
+				// against the durable attachment captured under the same write
+				// barrier as lease metadata and the pinned history snapshot. A
+				// live in-memory lookup here would race with later stream chunks.
+				attachedLease, attached := leaseAttachments[string(record.Key)]
+				if record.LeaseKnown {
+					if (record.Lease == 0 && attached) ||
+						(record.Lease != 0 && (!attached || attachedLease != record.Lease)) {
+						return errSnapshotChanged
+					}
+				} else if attached {
+					record.Lease = attachedLease
+				}
+				if record.Lease != 0 {
+					if _, ok := leaseIDs[record.Lease]; !ok {
+						return errSnapshotChanged
+					}
+				}
+				if attached && attachedLease == 0 {
 					return errSnapshotChanged
 				}
 			}
@@ -181,11 +199,11 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	}
 }
 
-func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (production.State, map[int64]struct{}, error) {
+func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (production.State, map[int64]struct{}, map[string]int64, error) {
 	state := production.State{Revision: revision}
 	auth, err := s.auth.repo.load(ctx)
 	if err != nil {
-		return production.State{}, nil, err
+		return production.State{}, nil, nil, err
 	}
 	state.Auth.Enabled = auth.Config.Enabled
 	state.Auth.Revision = auth.Config.Revision
@@ -196,9 +214,9 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 		state.Auth.Roles = append(state.Auth.Roles, auth.Roles[name])
 	}
 
-	leaseRecords, _, err := s.loadLeaseRecords(ctx)
+	leaseRecords, leaseAttachments, err := s.loadLeaseRecords(ctx)
 	if err != nil {
-		return production.State{}, nil, err
+		return production.State{}, nil, nil, err
 	}
 	now := time.Now()
 	sort.Slice(leaseRecords, func(i, j int) bool { return leaseRecords[i].ID < leaseRecords[j].ID })
@@ -222,24 +240,24 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 
 	noSpace, err := s.backend.NoSpaceAlarms(ctx)
 	if err != nil {
-		return production.State{}, nil, err
+		return production.State{}, nil, nil, err
 	}
 	for _, memberID := range noSpace {
 		state.Alarms = append(state.Alarms, &etcdserverpb.AlarmMember{MemberID: memberID, Alarm: etcdserverpb.AlarmType_NOSPACE})
 	}
 	corrupt, err := s.backend.CorruptAlarms(ctx)
 	if err != nil {
-		return production.State{}, nil, err
+		return production.State{}, nil, nil, err
 	}
 	for _, memberID := range corrupt {
 		state.Alarms = append(state.Alarms, &etcdserverpb.AlarmMember{MemberID: memberID, Alarm: etcdserverpb.AlarmType_CORRUPT})
 	}
 	generic, err := s.genericAlarms(ctx, etcdserverpb.AlarmType_NONE)
 	if err != nil {
-		return production.State{}, nil, err
+		return production.State{}, nil, nil, err
 	}
 	state.Alarms = append(state.Alarms, generic...)
-	return state, leaseIDs, nil
+	return state, leaseIDs, leaseAttachments, nil
 }
 
 func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer) error {

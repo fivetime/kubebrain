@@ -451,12 +451,16 @@ func (s testPeerService) Snapshot(ctx context.Context, req *etcdserverpb.Snapsho
 }
 
 func newTestRPCServer(t *testing.T) (*RPCServer, func()) {
+	return newTestRPCServerWithCompatibility(t, true)
+}
+
+func newTestRPCServerWithCompatibility(t *testing.T, enableEtcdCompatibility bool) (*RPCServer, func()) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
 	kv := memkv.NewKvStorage()
 	b := backend.NewBackend(kv, backend.Config{
 		Identity:                "test-peer",
-		EnableEtcdCompatibility: true,
+		EnableEtcdCompatibility: enableEtcdCompatibility,
 	}, metrics)
 	server := New(b, metrics, testPeerService{isLeader: true})
 	return server, func() {

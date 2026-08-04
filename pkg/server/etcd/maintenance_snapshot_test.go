@@ -53,6 +53,23 @@ type stalledSnapshotBackend struct {
 	release    chan struct{}
 }
 
+type corruptCurrentLeaseSnapshotBackend struct {
+	BackendShim
+	key, value []byte
+	lease      int64
+}
+
+func (b *corruptCurrentLeaseSnapshotBackend) SnapshotHistoryStreamChan(_ context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
+	out := make(chan backend.SnapshotHistoryChunk, 2)
+	out <- backend.SnapshotHistoryChunk{Revision: revision, Records: []backend.SnapshotHistoryRecord{{
+		Key: b.key, Value: b.value, CreateRevision: revision, ModRevision: revision,
+		Version: 1, Lease: b.lease, LeaseKnown: true, Current: true,
+	}}}
+	out <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}
+	close(out)
+	return out, nil
+}
+
 func (b *stalledSnapshotBackend) SnapshotHistoryStreamChan(ctx context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
 	out := make(chan backend.SnapshotHistoryChunk)
 	if !b.afterFirst {
@@ -438,4 +455,64 @@ func TestMaintenanceSnapshotStreamsCurrentKVAndPreservesMetadata(t *testing.T) {
 		require.ElementsMatch(t, []string{"29/1", "31/2", "37/127"}, alarms)
 		return nil
 	}))
+}
+
+func TestMaintenanceSnapshotRecoversCurrentLegacyLeaseFromAttachment(t *testing.T) {
+	// Pre-inline KubeBrain values carry create/version in the separate etcdmeta
+	// keyspace, but no per-version lease. The durable current-key attachment is
+	// therefore the only authoritative source for the lease of the live row.
+	server, closeFn := newTestRPCServerWithCompatibility(t, false)
+	defer closeFn()
+	ctx := context.Background()
+	grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: 1701, TTL: 300})
+	require.NoError(t, err)
+	key := []byte("/snapshot/legacy-leased")
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: grant.ID})
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, server.buildSnapshot(ctx, path))
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		var restored *mvccpb.KeyValue
+		require.NoError(t, tx.Bucket(schema.Key.Name()).ForEach(func(_, value []byte) error {
+			kv := new(mvccpb.KeyValue)
+			if err := proto.Unmarshal(value, kv); err != nil {
+				return err
+			}
+			if bytes.Equal(kv.Key, key) && kv.ModRevision == put.Header.Revision {
+				restored = kv
+			}
+			return nil
+		}))
+		require.NotNil(t, restored)
+		require.Equal(t, grant.ID, restored.Lease,
+			"a restorable current legacy lease must not be flattened to no-lease")
+		return nil
+	}))
+}
+
+func TestMaintenanceSnapshotRejectsCurrentLeaseDisagreeingWithPinnedAttachment(t *testing.T) {
+	server, closeFn := newTestRPCServerWithCompatibility(t, false)
+	defer closeFn()
+	ctx := context.Background()
+	attached, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: 1801, TTL: 300})
+	require.NoError(t, err)
+	other, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: 1802, TTL: 300})
+	require.NoError(t, err)
+	key := []byte("/snapshot/pinned-lease")
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: attached.ID})
+	require.NoError(t, err)
+
+	// Model a late chunk whose live in-memory lookup raced ahead of the pinned
+	// history/metadata point. Merely checking that the other lease exists would
+	// accept a restorable but semantically false artifact.
+	server.backend = &corruptCurrentLeaseSnapshotBackend{
+		BackendShim: server.backend, key: key, value: []byte("value"), lease: other.ID,
+	}
+	err = server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "snapshot.db"))
+	require.ErrorIs(t, err, errSnapshotChanged)
+	require.Positive(t, put.Header.Revision)
 }
