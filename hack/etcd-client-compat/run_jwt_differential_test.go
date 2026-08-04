@@ -14,7 +14,19 @@ func TestJWTDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "auth revision must be 1")
 	require.Contains(t, string(script), "still has keys, users, roles, or leases")
 	require.Contains(t, string(script), "JWT HS256 key file is missing or empty")
+	require.Contains(t, string(script), "GO_TEST_RACE")
+	require.Contains(t, string(script), "find \"$data_dir\" -depth -delete")
 	require.Contains(t, string(script), "-run '^TestJWTAuthDifferentialAgainstReferenceEtcd$'")
+}
+
+func TestJWTDifferentialRunnerRejectsInvalidRaceBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-jwt-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"GO_TEST_RACE=maybe",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "GO_TEST_RACE must be true or false")
+	require.NotContains(t, string(output), "missing required command")
 }
 
 func TestJWTDifferentialRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {

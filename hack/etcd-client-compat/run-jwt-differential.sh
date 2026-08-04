@@ -10,6 +10,13 @@ REFERENCE_CLIENT_URL="${REFERENCE_JWT_CLIENT_URL:-http://127.0.0.1:12379}"
 REFERENCE_PEER_URL="${REFERENCE_JWT_PEER_URL:-http://127.0.0.1:12380}"
 JWT_HS256_KEY_FILE="${JWT_HS256_KEY_FILE:-$ROOT_DIR/hack/etcd-client-compat/testdata/jwt-hs256-secret}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-2m}"
+GO_TEST_RACE="${GO_TEST_RACE:-false}"
+
+case "$GO_TEST_RACE" in
+  true) race_args=(-race) ;;
+  false) race_args=() ;;
+  *) echo "GO_TEST_RACE must be true or false, got $GO_TEST_RACE" >&2; exit 2 ;;
+esac
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -92,7 +99,7 @@ cleanup() {
     echo "reference JWT etcd log:" >&2
     tail -n 100 "$reference_log" >&2
   fi
-  rm -rf "$data_dir"
+  find "$data_dir" -depth -delete
 }
 trap cleanup EXIT
 
@@ -128,6 +135,6 @@ fi
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_JWT_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
     KUBEBRAIN_JWT_ETCD_ENDPOINT="$KUBEBRAIN_JWT_ENDPOINT" \
-    go test . -run '^TestJWTAuthDifferentialAgainstReferenceEtcd$' -count=1 -timeout="$TEST_TIMEOUT" -v
+    go test "${race_args[@]}" . -run '^TestJWTAuthDifferentialAgainstReferenceEtcd$' -count=1 -timeout="$TEST_TIMEOUT" -v
 )
 test_succeeded=true
