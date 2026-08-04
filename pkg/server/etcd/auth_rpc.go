@@ -37,6 +37,8 @@ func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRe
 	if err != nil {
 		return nil, err
 	}
+	s.nativeAuthBoundary.Lock()
+	defer s.nativeAuthBoundary.Unlock()
 	if err = s.auth.enable(ctx); err != nil {
 		return nil, err
 	}
@@ -51,6 +53,8 @@ func (s *RPCServer) AuthDisable(ctx context.Context, _ *etcdserverpb.AuthDisable
 	if err != nil {
 		return nil, err
 	}
+	s.nativeAuthBoundary.Lock()
+	defer s.nativeAuthBoundary.Unlock()
 	if err := s.auth.disable(ctx); err != nil {
 		return nil, err
 	}

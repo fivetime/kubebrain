@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -49,10 +50,84 @@ import (
 // local identity's id and ClusterId the storage cluster's id.
 func (s *RPCServer) ClientServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(s.admitUnary, s.stampUnary),
-		grpc.ChainStreamInterceptor(s.admitStream, s.stampStream),
+		grpc.ChainUnaryInterceptor(s.rejectNativeClientAuthBypassUnary, s.admitUnary, s.stampUnary),
+		grpc.ChainStreamInterceptor(s.rejectNativeClientAuthBypassStream, s.admitStream, s.stampStream),
 		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + grpcOverheadBytes)),
 	}
+}
+
+// The legacy kubebrain-client services share the public listener with etcd.
+// They predate etcd authentication and do not carry etcd users, roles, or key
+// permissions, so serving them while auth is enabled would provide an
+// unauthenticated path to the same data. Keep the backward-compatible surface
+// while auth is disabled, but fail closed as soon as AuthEnable commits. This
+// interceptor is deliberately client-only; peer RPCs use PeerServerOptions and
+// remain available for replica coordination.
+func (s *RPCServer) rejectNativeClientAuthBypassUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if !isNativeBrainMethod(info.FullMethod) {
+		return handler(ctx, req)
+	}
+	s.nativeAuthBoundary.RLock()
+	defer s.nativeAuthBoundary.RUnlock()
+	if err := s.rejectNativeClientAuthBypass(ctx); err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
+}
+
+func (s *RPCServer) rejectNativeClientAuthBypassStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	if !isNativeBrainMethod(info.FullMethod) {
+		return handler(srv, ss)
+	}
+	if err := s.rejectNativeClientAuthBypass(ss.Context()); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithCancelCause(ss.Context())
+	defer cancel(nil)
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(nativeAuthBoundaryPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.rejectNativeClientAuthBypass(ctx); err != nil {
+					cancel(err)
+					return
+				}
+			}
+		}
+	}()
+	err := handler(srv, &serverStreamWithContext{ServerStream: ss, ctx: ctx})
+	close(done)
+	if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+		return cause
+	}
+	return err
+}
+
+const nativeAuthBoundaryPollInterval = 100 * time.Millisecond
+
+func (s *RPCServer) rejectNativeClientAuthBypass(ctx context.Context) error {
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return authGRPCError(err)
+	}
+	if snapshot.Config.Enabled {
+		return rpctypes.ErrGRPCPermissionDenied
+	}
+	return nil
+}
+
+func isNativeBrainMethod(method string) bool {
+	return strings.HasPrefix(method, "/Read/") ||
+		strings.HasPrefix(method, "/Write/") ||
+		strings.HasPrefix(method, "/Watch/")
 }
 
 // PeerServerOptions keeps response identity and request-size behavior identical

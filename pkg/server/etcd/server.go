@@ -103,6 +103,10 @@ type RPCServer struct {
 	maxWatches           uint32
 	watchQuotaMu         sync.Mutex
 	activeWatches        int64
+	// Serializes the runtime etcd auth transition with legacy native unary
+	// calls on the public listener. AuthEnable drains already-admitted calls
+	// before committing, then new calls observe enabled auth and fail closed.
+	nativeAuthBoundary sync.RWMutex
 
 	concurrencyClient *clientv3.Client
 
