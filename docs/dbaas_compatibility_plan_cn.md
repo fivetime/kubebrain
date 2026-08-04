@@ -32980,6 +32980,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三副本滚动后均 ready、0 restart，3 PD/3 TiKV 均 ready，readyz/version/endpoint status
   正常；当前 revision 为 `468126003565721405`、raft term 为 261。验证未产生用户写，临时
   snapshot/restore/reference 目录、port-forward 和官方 etcd 进程均已清理。
+- A3491 对齐 Snapshot 构建中的 inflight cancellation：官方
+  `/root/etcd/tests/integration/clientv3/maintenance_test.go` 的
+  `TestMaintenanceSnapshotCancel`、`TestMaintenanceSnapshotErrorInflight` 明确要求客户端取消能
+  终止进行中的 snapshot read。KubeBrain 虽把 request context 传给 TiKV scanner，但构建器等待
+  首响应和后续响应时都使用裸 channel receive；scanner 已建立后若停滞且未及时关闭 channel，
+  RPC、短写屏障或私有 bbolt builder 只能跟着 scanner 无限滞留。
+
+  确定性 RED backend 分别在首响应前和成功发送首响应后停住，并故意不因 context 自动关闭
+  channel；旧实现取消 250ms 后两条路径都仍未返回。修复把首次握手和后续消费循环都改为
+  同时选择 chunk 与 `ctx.Done()`，取消立即返回 `context.Canceled`；defer 继续释放
+  `BeginRangeTxn` 屏障、关闭 builder，并由 `sendSnapshot` 删除私有临时文件。既有 terminal
+  revision、stream error、固定 revision 和 Finish 顺序不变。官方 clientv3 bufconn 回归进一步
+  在 backend build 阶段取消 `Snapshot` reader，确认调用方直接观察到 `context.Canceled`。
+
+  三条取消路径各连续 20 轮通过（1.002s），race 连续 10 轮（3.153s）、server vet 和根模块
+  完整回归通过；完整回归中的 server 为 160.911 秒。生产入口用官方 etcdctl 以 10ms command
+  timeout 主动取消，返回 rc=5 与 `DeadlineExceeded: context deadline exceeded`；随后立即执行的
+  完整 Snapshot 在 925ms 内保存 2.1 MB，官方 etcdutl status 保持 hash `4216183638`、revision
+  `468126003565721405`、5,974 keys、total size 1,871,872、version 3.7.0，三个容器 `/tmp` 均无
+  `.kubebrain-maintenance-snapshot-*.db` 遗留。
+
+  生产镜像 `kubebrain:a3491-snapshot-cancel` 的本地 ID 为
+  `sha256:264b8bed1f9974807eebc8d8c3bcbb51c1fc6f20abc1bcbe4c8a45395f4c3e1e`，构建
+  SHA 为 `d1b00697db8693a89300f237034bc4961bc7e169`、时间为
+  `2026-08-04T01:29:00Z`；kind runtime digest 为
+  `sha256:943e431572536842f762ec9d1b123da364bb98305b65806576be37588e4a42e8`。
+  三副本滚动后均 ready、0 restart，3 PD/3 TiKV 均 ready，readyz/version/endpoint status
+  正常；生产 revision 未变化，raft term 为 263。客户端 partial 文件、完整制品与验证目录均已
+  清理。
 
 ### P2：运维兼容和长期验证
 
