@@ -242,6 +242,48 @@ func TestColdSnapshotExecuteRejectsDegradedTopologyBeforeMutation(t *testing.T) 
 	}
 }
 
+func TestColdSnapshotExecuteRejectsBackendStatefulSetReplacementAfterPause(t *testing.T) {
+	for _, tc := range []struct {
+		name, statefulSet, want string
+	}{
+		{name: "PD replaced", statefulSet: "kb-pd", want: "PD StatefulSet UID changed at the maintenance fence"},
+		{name: "TiKV replaced", statefulSet: "kb-tikv", want: "TiKV StatefulSet UID changed at the maintenance fence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			inventoryFile := filepath.Join(dir, "inventory.json")
+			receiptFile := filepath.Join(dir, "receipt.json")
+			witnessFile := filepath.Join(dir, "witness.jsonl")
+			logFile := filepath.Join(dir, "kubectl.log")
+			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+			output, err := runColdSnapshotExecute(t, []string{
+				"KUBECTL=" + fakeKubectl,
+				"KUBE_CONTEXT=preproduction",
+				"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+				"PREFLIGHT_FILE=" + inventoryFile,
+				"RECEIPT_FILE=" + receiptFile,
+				"OPERATION_ID=op-backend-replaced",
+				"SEMANTIC_WITNESS_FILE=" + witnessFile,
+				"EXPECTED_WITNESS_PREFIX=/registry",
+				"FAKE_LOG=" + logFile,
+				"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
+				"FAKE_TIDB_READY=true",
+				"FAKE_UID_DRIFT_AFTER_PAUSE=" + tc.statefulSet,
+			})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, receiptFile)
+			log := string(mustRead(t, logFile))
+			require.NotContains(t, log, "patch statefulset")
+			require.NotContains(t, log, "create -f -")
+		})
+	}
+}
+
 func TestColdSnapshotExecuteRequiresExplicitContextBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	inventoryFile := filepath.Join(dir, "inventory.json")
@@ -418,6 +460,9 @@ elif [[ "$args" == *"get statefulset"* ]]; then
   name="$(sed -n 's/.*get statefulset \([^ ]*\).*/\1/p' <<<"$args")"
   uid="uid-${name}"
   [[ "$name" != kubebrain ]] || uid=uid-kubebrain
+  if [[ "${FAKE_UID_DRIFT_AFTER_PAUSE:-}" == "$name" ]] && grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
+    uid="replacement-${uid}"
+  fi
   ready=3
   degraded="${FAKE_DEGRADED_STATEFULSET:-}"
   if [[ -n "${FAKE_DEGRADE_AFTER_PAUSE:-}" ]] && grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then

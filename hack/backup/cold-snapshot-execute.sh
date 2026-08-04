@@ -199,7 +199,12 @@ sleep "$FENCE_SETTLE_SECONDS"
 kb_json="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json)"
 pd_json="$(kctl -n "$TIDB_NAMESPACE" get statefulset "$pd_name" -o json)"
 tikv_json="$(kctl -n "$TIDB_NAMESPACE" get statefulset "$tikv_name" -o json)"
-[[ "$(jq -r '.metadata.uid' <<<"$kb_json")" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]] || exit 1
+[[ "$(jq -r '.metadata.uid' <<<"$kb_json")" == "$kb_uid" ]] ||
+  fail_input "KubeBrain StatefulSet UID changed at the maintenance fence"
+[[ "$(jq -r '.metadata.uid' <<<"$pd_json")" == "$pd_uid" ]] ||
+  fail_input "PD StatefulSet UID changed at the maintenance fence"
+[[ "$(jq -r '.metadata.uid' <<<"$tikv_json")" == "$tikv_uid" ]] ||
+  fail_input "TiKV StatefulSet UID changed at the maintenance fence"
 [[ "$(jq -r '.spec.replicas' <<<"$kb_json")" == "$kb_replicas" ]] || exit 1
 [[ "$(jq -r '.spec.replicas' <<<"$pd_json")" == "$pd_replicas" ]] || exit 1
 [[ "$(jq -r '.spec.replicas' <<<"$tikv_json")" == "$tikv_replicas" ]] || exit 1
