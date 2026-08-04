@@ -33301,6 +33301,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain Pod Ready/0 restart，3 PD/3 TiKV 均 Ready。本轮只有测试和文档，生产镜像仍为
   A3499；删除的是明确 leader Pod，已由 StatefulSet 自动重建。
 
+- A3504 收紧 lease read leader-change 的真实故障门禁。对照上游 commit
+  `d3bb6f688`（`server/etcdserver/v3_server.go:leaseTimeToLive`）：旧 leader 在 lookup 期间
+  demote 后不得返回被重算过期时间的错误 remaining TTL，而应返回可重试的 leader-changed
+  错误。KubeBrain 的 A71 已在 `leaseMu` 最终快照锁内二次确认 leadership，并以确定性测试
+  覆盖等待锁期间 demote；本轮审计没有发现生产实现差异，但发现原 opt-in clientv3 黑盒门禁
+  会忽略所有 TTL/list RPC 错误，并用 `kubectl rollout status` 代替实际数据面恢复，因此可能
+  把 LeaseNotFound、鉴权错误或 replacement 尚未 serving 的情形误判为通过。
+
+  `lease_read_failover_test.go` 现只接受 Canceled/DeadlineExceeded/Unavailable 作为切换期瞬时
+  错误，任何其他错误立即失败；测试在删 leader 前先证明 workload 已运行，并要求故障确实与
+  workload 重叠产生瞬时错误。恢复不再依赖 rollout 外观，而以真实线性化
+  `LeaseTimeToLive` 与 `LeaseLeases` 共同轮询证明，同时精确校验 ID、正 TTL、GrantedTTL 与
+  live lease membership；TTL/list 使用各自独立的调用超时，避免前者超时机械制造后者错误。
+  所有 worker 在任一断言提前失败时也会有界停止，避免 goroutine 泄漏。静态/分类门禁、race
+  连续 10 轮、compat 全套和 compat vet 均通过。
+
+  在 A3499 三副本、独立 3 PD/3 TiKV 上确认 `kubebrain-1` 为活动 leader 后删除该 Pod；16 个
+  clientv3 worker 共记录 208 个成功 lease 读和 80 个明确瞬时错误，所有成功 TTL/list 响应
+  始终保持 live lease 权威形状，实际恢复 TTL 为 295/300。replacement Pod Ready/0 restart，
+  三个 KubeBrain Pod 与 3 PD/3 TiKV 均 Ready；endpoint revision/raft index/applied index 保持
+  `468126003565722184`、term 进入 278，说明 lease grant/revoke cleanup 未推进用户 MVCC
+  revision。本轮只有测试与文档，生产镜像继续为 A3499。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
