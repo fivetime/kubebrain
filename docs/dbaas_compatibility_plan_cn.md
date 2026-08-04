@@ -34722,6 +34722,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/
   AuthRevision=581，revision/index/applied 均为 468126003565738023、term 316，长期 fixture Count=100。
 
+- A3578 把 signed lease ID 覆盖从显式 Revoke 扩展到真实 timer 自然过期。既有差分已证明 -1、
+  MinInt64、MaxInt64 可以 Grant/Put/TTL/List/Revoke，但没有把这三个极值与 expiry scheduler、lease-key
+  原子删除、Watch PrevKV 和最终 TTL/List 状态联结；这条路径独立经过 int64 map/timer 与 TiKV attachment
+  清理，不能由 Revoke 结果替代。
+
+  新官方双端状态机同时 Grant 三个显式 ID（TTL=2）、各附着一个 key，并从对应 Put revision+1 建立
+  PrevKV watch。首轮官方绝对 oracle 纠正测试假设：自然过期 DELETE event 的 `Kv.Lease` 必须为 0，
+  原 signed ID 仅保留在 `PrevKv.Lease`；PrevKV value 也必须保持。对每个 ID，事件后还要求 TTL response
+  回显原 ID、TTL=-1、GrantedTTL=0、Keys 为空，key 已删除且 LeaseLeases 不再包含该 ID。
+
+  全新独立 TiKV keyspace 与一次性官方 etcd 上，修正 oracle 后普通双端 4.261 秒、race 双端 5.723 秒
+  GREEN；完整 compat 1.334 秒、vet、compat staticcheck v0.7.0 和 diff check 通过。没有服务端 RED，故不
+  重建或滚动镜像；commit `55217e43` 仅新增差分门禁。临时 Pod/Service、reference listener/data-dir
+  均已清理。共享生产继续运行 `kubebrain:a3575-delegated-stream-auth-fence`，KubeBrain/PD/TiKV 均
+  3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/
+  index/applied 均为 468126003565738023、term 316，长期 fixture Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
