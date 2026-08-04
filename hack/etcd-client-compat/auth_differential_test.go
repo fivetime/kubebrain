@@ -112,6 +112,12 @@ type authDifferentialOutcome struct {
 	NestedDeniedPutPreserved  bool
 	NestedDeletePreserved     bool
 	NestedPrevKVPreserved     bool
+	DisableKeepAliveBefore    bool
+	DisableKeepAliveAfter     bool
+	DisableExistingWatch      bool
+	DisableNewWatchCreated    bool
+	DisableNewWatchEvent      bool
+	AuthDisabledStatus        bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -577,11 +583,71 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	_, err = root.RoleAdd(ctx, "token-invalidator")
 	require.NoError(t, err)
 	_, oldTokenErr := oldTokenClient.RoleList(ctx)
+	disableLease, err := alice.Grant(ctx, 30)
+	require.NoError(t, err)
+	_, err = alice.Put(ctx, "/auth-allowed/disable-lease", "value", clientv3.WithLease(disableLease.ID))
+	require.NoError(t, err)
+	disableKeepAlive, err := etcdserverpb.NewLeaseClient(alice.ActiveConnection()).LeaseKeepAlive(ctx)
+	require.NoError(t, err)
+	require.NoError(t, disableKeepAlive.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(disableLease.ID)}))
+	disableKeepAliveFirst, err := disableKeepAlive.Recv()
+	require.NoError(t, err)
+	disableKeepAliveBefore := disableKeepAliveFirst.ID == int64(disableLease.ID) && disableKeepAliveFirst.TTL > 0
+
+	disableWatch, err := etcdserverpb.NewWatchClient(alice.ActiveConnection()).Watch(ctx)
+	require.NoError(t, err)
+	const (
+		disableExistingWatchID = int64(201)
+		disableNewWatchID      = int64(202)
+	)
+	disableWatchCreate := func(id int64, key string) *etcdserverpb.WatchRequest {
+		return &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte(key), WatchId: id},
+		}}
+	}
+	require.NoError(t, disableWatch.Send(disableWatchCreate(disableExistingWatchID, "/auth-allowed/disable-watch")))
+	disableWatchFirst, err := disableWatch.Recv()
+	require.NoError(t, err)
+	require.True(t, disableWatchFirst.Created && !disableWatchFirst.Canceled &&
+		disableWatchFirst.WatchId == disableExistingWatchID)
 
 	_, err = root.UserChangePassword(ctx, "alice", "alice-changed")
 	require.NoError(t, err)
 	_, oldPasswordErr := bootstrap.Authenticate(ctx, "alice", "alice-secret")
 	_, newPasswordErr := bootstrap.Authenticate(ctx, "alice", "alice-changed")
+	_, err = root.AuthDisable(ctx)
+	require.NoError(t, err)
+	disabledStatus, err := bootstrap.AuthStatus(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, disableKeepAlive.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: int64(disableLease.ID)}))
+	disableKeepAliveSecond, disableKeepAliveAfterErr := disableKeepAlive.Recv()
+	disableKeepAliveAfter := disableKeepAliveAfterErr == nil &&
+		disableKeepAliveSecond.ID == int64(disableLease.ID) && disableKeepAliveSecond.TTL > 0
+	_ = disableKeepAlive.CloseSend()
+
+	_, err = bootstrap.Put(ctx, "/auth-allowed/disable-watch", "after-disable")
+	require.NoError(t, err)
+	disableExistingEvent, err := disableWatch.Recv()
+	require.NoError(t, err)
+	disableExistingWatch := disableExistingEvent.WatchId == disableExistingWatchID &&
+		len(disableExistingEvent.Events) == 1 &&
+		string(disableExistingEvent.Events[0].Kv.Value) == "after-disable"
+	require.NoError(t, disableWatch.Send(disableWatchCreate(disableNewWatchID, "/auth-allowed/disable-new-watch")))
+	disableNewCreated, err := disableWatch.Recv()
+	require.NoError(t, err)
+	disableNewWatchCreated := disableNewCreated.Created && !disableNewCreated.Canceled &&
+		disableNewCreated.WatchId == disableNewWatchID
+	_, err = bootstrap.Put(ctx, "/auth-allowed/disable-new-watch", "new-after-disable")
+	require.NoError(t, err)
+	disableNewEvent, err := disableWatch.Recv()
+	require.NoError(t, err)
+	disableNewWatchEvent := disableNewEvent.WatchId == disableNewWatchID &&
+		len(disableNewEvent.Events) == 1 &&
+		string(disableNewEvent.Events[0].Kv.Value) == "new-after-disable"
+	_ = disableWatch.CloseSend()
+	_, err = bootstrap.Revoke(ctx, disableLease.ID)
+	require.NoError(t, err)
 
 	return authDifferentialOutcome{
 		EnabledRevision:           statusAfterEnable.AuthRevision,
@@ -671,6 +737,12 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		NestedDeniedPutPreserved:  string(nestedDeniedPutValue.Kvs[0].Value) == "before",
 		NestedDeletePreserved:     string(nestedDeleteValue.Kvs[0].Value) == "before",
 		NestedPrevKVPreserved:     string(nestedPrevKVValue.Kvs[0].Value) == "before",
+		DisableKeepAliveBefore:    disableKeepAliveBefore,
+		DisableKeepAliveAfter:     disableKeepAliveAfter,
+		DisableExistingWatch:      disableExistingWatch,
+		DisableNewWatchCreated:    disableNewWatchCreated,
+		DisableNewWatchEvent:      disableNewWatchEvent,
+		AuthDisabledStatus:        !disabledStatus.Enabled,
 	}
 }
 
@@ -736,6 +808,12 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.UserLeaseListAfterRevoke)
 	require.True(t, reference.WriterTxnPutPrevKV.PermissionDenied)
 	require.True(t, reference.WriterTxnValuePreserved)
+	require.True(t, reference.DisableKeepAliveBefore)
+	require.True(t, reference.DisableKeepAliveAfter)
+	require.True(t, reference.DisableExistingWatch)
+	require.True(t, reference.DisableNewWatchCreated)
+	require.True(t, reference.DisableNewWatchEvent)
+	require.True(t, reference.AuthDisabledStatus)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
 	require.Equal(t, reference, actual)
 }
