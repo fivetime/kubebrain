@@ -33352,6 +33352,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   14.294 秒。cleanup 后生产 0 leases，revision/raft index/applied index 均为
   `468126003565722279`、term 280；参考端 32679/32680 端口和临时目录均已清理。
 
+- A3506 收紧单 TiKV 故障后的真实数据面恢复门禁。P0 要求在独立 3 PD/3 TiKV 上验证
+  backend quorum failover，但旧 `TestBackendQuorumFailoverKeepsServing` 在外部命令返回后立即
+  停止 worker；若命令以 Kubernetes Pod Ready 为终点，就会把进程探针就绪误当成 TiKV region
+  路由与 KubeBrain 存储选主已经恢复。真实删除 `kb-tikv-0` 得到 RED：命令窗口只有 5 次成功
+  操作，旧门禁因少于固定 8 次失败；更关键的是 replacement Ready 后 cleanup 仍超时，日志显示
+  TiKV batch stream/region lookup deadline exceeded、KubeBrain leader 暂时 NOT_SERVING，约 3 秒后
+  才重新选主。这与 A3503/A3504 发现的 rollout/Ready 外观误判属于同一类测试缺陷，不能据此
+  声称数据面已经恢复。
+
+  commit `16d60cd6` 将命令窗口成功量与恢复期总成功量分开：命令窗口必须有真实数据进展；命令
+  返回后继续保持 8 个 Put/Txn/Get worker，直到至少再完成一个 worker 数量的成功操作，随后才
+  停止负载，并逐键执行 Put/Get 恢复探针。`sync.Once` 与 deferred worker drain 保证任何断言
+  提前失败也不会泄漏 goroutine。无 opt-in 普通门禁通过，race 连续 10 轮通过，compat 全套与
+  `go vet` 均通过。用 `kb-tikv-1` 重跑时命令窗口完成 11 次数据操作，replacement Ready 后仍
+  出现一轮有界超时，但新门禁继续运行并观察到恢复期进展，最终 11.840 秒通过。
+
+  本轮不修改生产二进制，继续运行 A3505 runtime digest
+  `sha256:bbdb99772164a3b4c9be9ced1b23d54ff22ab149005dc694afea4966a62482bf`；三个 KubeBrain
+  均 Ready/0 restart，3 PD/3 TiKV 均 Ready。首次失败 cleanup 遗留的 16 个限定测试键已显式
+  删除，前缀 Count=0、lease list 为 0；最终 revision/raft index/applied index 均为
+  `468126003565722499`、term 280。删除的 `kb-tikv-0`/`kb-tikv-1` 均由 StatefulSet 自动重建。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
