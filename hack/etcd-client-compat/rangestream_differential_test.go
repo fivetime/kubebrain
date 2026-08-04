@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -19,6 +20,9 @@ type normalizedRangeStreamScenario struct {
 	CountOnly normalizedRange
 	KeysOnly  normalizedRange
 	Explicit  normalizedRange
+	Negative  normalizedRange
+	MinLimit  normalizedRange
+	MaxLimit  normalizedRange
 }
 
 func TestRangeStreamProductionChunkTarget(t *testing.T) {
@@ -84,6 +88,9 @@ func TestRangeStreamDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	kubebrain := runRangeStreamScenario(t, compatEndpoint(t), "kubebrain")
 	etcd := runRangeStreamScenario(t, reference, "etcd")
+	require.Equal(t, etcd.Unlimited, etcd.Negative, "a negative limit is unlimited")
+	require.Equal(t, etcd.Unlimited, etcd.MinLimit, "MinInt64 must not overflow into a positive limit")
+	require.Equal(t, etcd.Unlimited, etcd.MaxLimit, "MaxInt64 exceeds this result set without truncating it")
 	require.Equal(t, etcd, kubebrain)
 }
 
@@ -127,5 +134,8 @@ func runRangeStreamScenario(t *testing.T, endpoint, instance string) normalizedR
 		CountOnly: run(clientv3.WithCountOnly(), clientv3.WithLimit(1)),
 		KeysOnly:  run(clientv3.WithKeysOnly()),
 		Explicit:  run(clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend), clientv3.WithLimit(5)),
+		Negative:  run(clientv3.WithLimit(-1)),
+		MinLimit:  run(clientv3.WithLimit(math.MinInt64)),
+		MaxLimit:  run(clientv3.WithLimit(math.MaxInt64)),
 	}
 }
