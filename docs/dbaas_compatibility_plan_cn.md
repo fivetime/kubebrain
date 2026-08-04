@@ -34305,6 +34305,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   没有 RED，故不修改服务端或滚动生产。探针没有成功 mutation，生产 revision 不因本轮推进；
   reference 使用一次性 42379/42380 listener，验证后清理。
 
+- A3557 将 A246 的 RangeStream chunk 间 snapshot 白盒保证提升为真实网络双端门禁。继续对照
+  `/root/etcd/tests/integration/v3_grpc_test.go::TestV3RangeStreamWriteBetweenChunks`：已有直接 handler
+  测试能用可控 `Send` 屏障证明 backend revision 被钉住，但既有线上差分只扫描静态 fixture，
+  无法证明 gRPC 首块已交付后、独立 TiKV transaction 的新版本不会混入后续 scanner page。
+
+  新场景向每端顺序写入 12 个 320 KiB value，强制公开 RangeStream 产生多个 data chunk；收到首块
+  后，覆盖尚未读取的尾 key 并在同一 range 插入新 key。最终合并结果必须仍为 12 个严格升序旧
+  key，尾 key 保留旧 value，新 key 不出现，Count=12、More=false，header revision 精确等于并发
+  写之前的末次 fixture Put。差分只忽略实现私有的 chunk 数量，同时先对官方结果作绝对断言，
+  避免两端共同漂移或仅比较最终 key 数而漏掉版本撕裂。
+
+  官方/KubeBrain 首轮 1.497 秒、连续 10 轮 29.114 秒、race 4.931 秒 GREEN；完整 compat
+  1.560 秒、vet 与 diff check 通过。当前 A246/A3552/A3554 的 data-revision pinning 已正确，无
+  RED，故不修改服务端或滚动镜像。12 轮 KubeBrain fixture 每轮 14 次 Put + 1 次 prefix cleanup，
+  revision/index/applied 从 468126003565737634 精确推进 180 到 468126003565737814；测试 prefix
+  无残留、lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、0 restart。一次性 reference、
+  42379/42380 listener 与数据目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
