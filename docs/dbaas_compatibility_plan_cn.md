@@ -34069,7 +34069,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TimeToLive` 仍是未找到状态，重复 ID 原租约则保持 ID、正 remaining TTL、GrantedTTL=10
   和空 attached keys，防止错误路径创建幽灵 lease 或污染旧记录。官方与真实 KubeBrain 首轮
   0.556 秒 GREEN，连续 10 轮 5.099 秒、race 1.572 秒 GREEN；两端所有成功 lease 均撤销，
-  一次性官方 etcd 进程/data-dir 已清理。本轮属于新增兼容性门禁，无需服务端修复。
+  seed key cleanup 也改为显式 DeleteRange 并验证删除后 Range 为空。终检清除了该旧测试此前
+  遗留的 23 个 seed，线上该 prefix Count=0、LeaseList=0，一次性官方 etcd 进程/data-dir 已
+  清理。本轮属于新增兼容性门禁，无需服务端修复。
 
 ### P2：运维兼容和长期验证
 
