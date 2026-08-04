@@ -67,7 +67,13 @@ func runDollarRevisionCollisionScenario(t *testing.T, endpoint, instance string)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: base, RangeEnd: cleanupEnd})
+		_, cleanupErr := kv.DeleteRange(cleanupCtx,
+			&etcdserverpb.DeleteRangeRequest{Key: base, RangeEnd: cleanupEnd})
+		require.NoError(t, cleanupErr)
+		remaining, rangeErr := kv.Range(cleanupCtx,
+			&etcdserverpb.RangeRequest{Key: base, RangeEnd: cleanupEnd})
+		require.NoError(t, rangeErr)
+		require.Zero(t, remaining.Count, "dollar-collision scenario leaked its test range")
 	})
 
 	created, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: shortKey, Value: []byte("short-v1")})
@@ -150,7 +156,13 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: lower, RangeEnd: rangeEnd})
+		_, cleanupErr := kv.DeleteRange(cleanupCtx,
+			&etcdserverpb.DeleteRangeRequest{Key: lower, RangeEnd: rangeEnd})
+		require.NoError(t, cleanupErr)
+		remaining, rangeErr := kv.Range(cleanupCtx,
+			&etcdserverpb.RangeRequest{Key: lower, RangeEnd: rangeEnd})
+		require.NoError(t, rangeErr)
+		require.Zero(t, remaining.Count, "dollar-key scenario leaked its test range")
 	})
 
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: lower, Value: []byte("lower")})

@@ -28,12 +28,21 @@ func TestTxnIntraTxnVersionSemantics(t *testing.T) {
 		DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)
-	defer cli.Close()
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	key := testPrefix(t) + "/compare-version"
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, cleanupErr := cli.Delete(cleanupCtx, key)
+		require.NoError(t, cleanupErr)
+		remaining, getErr := cli.Get(cleanupCtx, key)
+		require.NoError(t, getErr)
+		require.Zero(t, remaining.Count, "Txn version scenario leaked its test key")
+	})
 
 	_, err = cli.Put(ctx, key, "exists")
 	require.NoError(t, err)
