@@ -34502,6 +34502,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compat 2.008 秒、vet、staticcheck、bash syntax 和 diff check 通过。没有服务端 RED，故不构建或
   滚动镜像；临时 Pod/Service 与 reference listener 已清理，共享生产 endpoint 未变更 auth。
 
+- A3568 固定 authenticated 多 chunk RangeStream 跨 AuthDisable 的非零 auth revision 结束复核，并
+  补齐 A3565 的关键反例。Watch 和 LeaseKeepAlive 在 auth disabled 后会逐控制请求/消息忽略旧 token，
+  但 RangeStream 是一个已序列化的长请求；对照上游 `doSerialize` 和 KubeBrain `ensureAuthRevision`，只要
+  起始 caller revision 非零，handler 结束时仍必须与当前 auth store revision 比较，AuthDisable 也会使
+  该 revision 失效。
+
+  状态机先修改 Alice 密码并用新密码取得有效 token，读取 50×256KiB fixture 的第一 chunk 后立即由
+  root 执行 AuthDisable，使关闭认证成为 stream 启动后的唯一 auth mutation。官方绝对基线固定：关闭后
+  仍至少收到一个数据 chunk、合并恰好 50 KV、terminal Header/Count/More 完整，但最终 Recv 返回精确
+  `codes.InvalidArgument`、`etcdserver: revision of auth store is old`，不能因当前 auth 已关闭而退化为
+  clean EOF。随后原 KeepAlive 与 Watch 仍按 A3565 继续成功，明确区分单请求结束复核和逐消息授权。
+
+  两个独立 TiKV keyspace、NodePort 30463/30464 上普通双端 16.700 秒、race 双端 17.200 秒 GREEN；
+  完整 compat 1.903 秒、vet、compat 模块 staticcheck v0.7.0、bash syntax 和 diff check 通过。主模块
+  staticcheck v0.7.0 仍报告 9 个与本轮无关的既有基线告警，本轮未混入清理。没有服务端 RED，故不构建
+  或滚动镜像；临时 Pod/Service 与 reference listener 已清理。共享生产 KubeBrain/PD/TiKV 均 3/3
+  Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled，revision/index/applied 均为
+  468126003565737983，生产 endpoint 未执行认证状态变更。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
