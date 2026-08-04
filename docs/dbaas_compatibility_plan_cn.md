@@ -33821,6 +33821,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restart，revision/raft index/applied index 均为 `468126003565735746`、term 297。本轮没有新的
   runtime 语义差距，不重建 A3524 镜像。
 
+- A3527 把 A3466/A3467 曾依赖手工临时 direct Service 的 cold-replica Alarm/Auth header
+  回归固化为独立门禁。disposable fixture 新增 NodePort 30481，其 selector 同时要求 fixture
+  app 与 `statefulset.kubernetes.io/pod-name=a3524-idle-restart-0`；runner 不仅检查 victim Ready/
+  StatefulSet owner，还强制 owner 为三副本、Service 的按 Pod selector 精确匹配，避免所谓 direct
+  endpoint 实际经负载均衡命中热副本。
+
+  新 `run-cold-header-recovery.sh` 要求显式 baseline/direct endpoint、context、namespace、victim
+  Pod/direct Service 与破坏性确认；预检两端 health、Alarm/compat prefix 为空并快照 Lease 集合，
+  postflight 再强制无 Alarm/key/Lease 泄漏且 endpoint 健康，失败退出同样 best-effort
+  `alarm disarm`。候选测试先由 baseline Put 建立 durable revision，替换固定 Pod 0，然后把新进程
+  第一条 etcd gRPC 分别固定为 unknown Alarm ACTIVATE 与 AuthStatus：成功 header revision 不得
+  低于 seed，cluster/member/term 必须有效，Alarm 还必须从 baseline 立即观察到相同共享状态。
+
+  为避免只重放 KubeBrain 自己的历史假设，新增两个官方同 data-dir restart oracle。官方进程只用
+  HTTP `/version` 等待启动，不先发任何 etcd gRPC；重启后的第一条 gRPC 同样分别为 Alarm
+  ACTIVATE/AuthStatus，并固定 durable-safe header envelope。两项 oracle 单独 3.798 秒 GREEN。
+  fail-closed runner 单测先因脚本不存在确定性 RED；commit `d49279c0` 补齐 runner、官方 oracle、
+  direct Service 与 Kube 测试的 TCP 路由等待。
+
+  真实四项矩阵首轮 19.026 秒 GREEN。第一轮 race 捕获到测试基础设施 RED：Pod Ready 后
+  EndpointSlice/kube-proxy 尚未传播，第一条 Alarm gRPC 在拨号阶段收到 connection refused；这不
+  是服务端响应。修复只等待 direct NodePort TCP 可连接，绝不以 Range/Status 预热，所以目标调用
+  仍是 replacement 的第一条 etcd RPC。修后完整 race 21.596 秒 GREEN，普通模式连续 3/3 GREEN
+  （18.448/22.298/20.441 秒）。runner 专项连续 10 轮、compat 普通全套、`go vet`、脚本语法与
+  清单 dry-run 均通过。
+
+  独立 keyspace 最终 revision/raft index/applied index 均为 175、term 67、Status errors 为空；
+  direct endpoint 与 Pod 0 本地 Status 的 member ID 同为 `3909583244`，Alarm/compat prefix/Lease
+  为空，三 Pod Ready/0 restart，日志无 durable/Auth/Alarm revision、panic/fatal。一次性
+  StatefulSet 与三个 Service 已删除。主 keyspace revision 未前进，Alarm/compat prefix/Lease
+  为空，3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
+  `468126003565735746`、term 297。本轮没有新的 runtime 语义差距，不重建 A3524 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
