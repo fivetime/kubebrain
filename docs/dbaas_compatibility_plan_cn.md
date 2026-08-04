@@ -34152,6 +34152,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。测试只读取不存在的隔离 key 和 snapshot，不推进用户 revision；当前 KubeBrain 通过
   `stampHeader` 的“不为 nil 才补 cluster/member/term”规则已与官方一致，无需修改服务端。
 
+- A3548 补齐 deprecated Maintenance.Hash 与 HashKV 的 checksum-domain 差异。此前 KubeBrain
+  的 Hash 直接调用 `HashKV(0)`；新 oracle 用 `Hash -> HashKV(0) -> Hash` 夹出无并发写的稳定
+  revision，官方 etcd 证明两次 Hash 自身相等、header revision/envelope 与 HashKV 一致，但
+  Hash 值必须不同。旧实现在线上精确 RED 为 `HashValuesEqual=true`，不是仅缺测试。
+
+  backend 新增 TiKV 原生整库 CRC32C，扫描该租户完整编码域，覆盖 user MVCC 物理版本、revision
+  index、event log 与 lease/auth/alarm 等内部元数据；HashKV 仍按 requested/compact revision 只
+  校验用户 MVCC。内部回归证明只写内部元数据不推进用户 revision，却只改变 Hash；预取消
+  context 会停止扫描。黑盒进一步 Grant/Revoke 一个无 attachment 的显式租约：官方/KubeBrain
+  均保持 user revision 与 HashKV 不变，同时整库 Hash 改变，排除仅靠固定 domain separator 假绿。
+
+  `kubebrain:a3548-backend-hash` 已有序滚动三副本。新差分首轮 7.310 秒、连续 10 轮 72.148 秒、
+  race 8.455 秒 GREEN；既有 Hash 写敏感性和 header envelope 三组联合 10.312 秒 GREEN，backend/
+  server 定向 race、全 `pkg/...`、完整 compat、vet 与 diff check 通过。线上 KubeBrain/PD/TiKV
+  各 3/3 Ready、0 restart，`/dbaas-` Count=0、LeaseList=0、无 alarm；已有写入型 Hash 回归按
+  预期把 revision 从 468126003565737123 推进到 468126003565737128，新增 lease oracle 本身不推进。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
