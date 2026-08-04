@@ -29,11 +29,13 @@ var (
 	allBuckets        = [][]byte{keyBucket, metaBucket, leaseBucket, alarmBucket, clusterBucket, membersBucket, membersGoneBucket, authBucket, authUsersBucket, authRolesBucket}
 )
 
-// Record is one live key in a compacted-current-state etcd snapshot.
+// Record is one retained user MVCC version in an etcd snapshot. Tombstones
+// carry only Key and ModRevision.
 type Record struct {
 	Key, Value                  []byte
 	CreateRevision, ModRevision int64
 	Version, Lease              int64
+	Tombstone                   bool
 }
 
 // Lease is the durable state needed for etcd to restore a lease.
@@ -52,11 +54,14 @@ type Auth struct {
 // State describes the client-visible state encoded in a generated backend.
 // The MVCC history is intentionally compacted to the supplied live records.
 type State struct {
-	Revision int64
-	Records  []Record
-	Leases   []Lease
-	Auth     Auth
-	Alarms   []*etcdserverpb.AlarmMember
+	Revision           int64
+	Records            []Record
+	Leases             []Lease
+	Auth               Auth
+	Alarms             []*etcdserverpb.AlarmMember
+	PreserveHistory    bool
+	HasCompactRevision bool
+	CompactRevision    int64
 }
 
 // WriteBackend writes an official etcd bbolt backend without the trailing
@@ -119,10 +124,19 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 			return err
 		}
 	}
-	compact := revisionBytes(state.Revision, 0)
-	for _, name := range [][]byte{[]byte("scheduledCompactRev"), []byte("finishedCompactRev")} {
-		if err := meta.Put(name, compact); err != nil {
-			return err
+	if !state.PreserveHistory || state.HasCompactRevision {
+		compactRevision := state.Revision
+		if state.PreserveHistory {
+			compactRevision = state.CompactRevision
+		}
+		if compactRevision < 0 || compactRevision > state.Revision {
+			return fmt.Errorf("invalid compact revision %d for snapshot revision %d", compactRevision, state.Revision)
+		}
+		compact := revisionBytes(compactRevision, 0)
+		for _, name := range [][]byte{[]byte("scheduledCompactRev"), []byte("finishedCompactRev")} {
+			if err := meta.Put(name, compact); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -207,14 +221,22 @@ func (b *Builder) Append(records []Record) error {
 	err := b.db.Update(func(tx *bolt.Tx) error {
 		keys := tx.Bucket(keyBucket)
 		for _, rec := range records {
-			encoded, err := proto.Marshal(&mvccpb.KeyValue{
+			kv := &mvccpb.KeyValue{
 				Key: rec.Key, Value: rec.Value, CreateRevision: rec.CreateRevision,
 				ModRevision: rec.ModRevision, Version: rec.Version, Lease: rec.Lease,
-			})
+			}
+			if rec.Tombstone {
+				kv = &mvccpb.KeyValue{Key: rec.Key}
+			}
+			encoded, err := proto.Marshal(kv)
 			if err != nil {
 				return err
 			}
-			if err = keys.Put(revisionBytes(rec.ModRevision, nextSub), encoded); err != nil {
+			revisionKey := revisionBytes(rec.ModRevision, nextSub)
+			if rec.Tombstone {
+				revisionKey = append(revisionKey, 't')
+			}
+			if err = keys.Put(revisionKey, encoded); err != nil {
 				return err
 			}
 			nextSub++
@@ -267,6 +289,15 @@ func revisionBytes(main, sub int64) []byte {
 func validateRecord(rec Record, snapshotRevision int64) error {
 	if len(rec.Key) == 0 {
 		return fmt.Errorf("empty key")
+	}
+	if rec.Tombstone {
+		if rec.ModRevision <= 0 || rec.ModRevision > snapshotRevision {
+			return fmt.Errorf("invalid tombstone revision mod=%d snapshot=%d", rec.ModRevision, snapshotRevision)
+		}
+		if len(rec.Value) != 0 || rec.CreateRevision != 0 || rec.Version != 0 || rec.Lease != 0 {
+			return fmt.Errorf("tombstone must not carry value metadata")
+		}
+		return nil
 	}
 	if rec.CreateRevision <= 0 || rec.ModRevision < rec.CreateRevision || rec.ModRevision > snapshotRevision || rec.Version <= 0 {
 		return fmt.Errorf("invalid MVCC metadata create=%d mod=%d version=%d snapshot=%d", rec.CreateRevision, rec.ModRevision, rec.Version, snapshotRevision)

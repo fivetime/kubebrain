@@ -525,3 +525,138 @@ func (b *backend) SnapshotStream(ctx context.Context, rev uint64) (<-chan *proto
 		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), rev, false,
 	), nil
 }
+
+const (
+	snapshotHistoryChunkRecords = 300
+	snapshotHistoryChunkBytes   = 1536 * 1024
+)
+
+// SnapshotHistoryStream emits every retained physical version from one storage
+// iterator snapshot. The iterator is created before this method returns, so a
+// caller can use receipt of the first chunk as the same pin handshake used by
+// SnapshotStream and release its logical-write barrier afterwards.
+func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan SnapshotHistoryChunk, error) {
+	curRev, err := b.safeCurrentRevision(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if rev == 0 {
+		rev = curRev
+	}
+	iter, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan SnapshotHistoryChunk, 1)
+	go func() {
+		defer close(out)
+		defer iter.Close()
+		send := func(chunk SnapshotHistoryChunk) bool {
+			select {
+			case out <- chunk:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		records := make([]SnapshotHistoryRecord, 0, snapshotHistoryChunkRecords)
+		chunkBytes := 0
+		flushChunk := func() bool {
+			if len(records) == 0 {
+				return true
+			}
+			chunk := SnapshotHistoryChunk{Records: records, Revision: rev}
+			records = make([]SnapshotHistoryRecord, 0, snapshotHistoryChunkRecords)
+			chunkBytes = 0
+			return send(chunk)
+		}
+		appendRecord := func(record SnapshotHistoryRecord) bool {
+			records = append(records, record)
+			chunkBytes += len(record.Key) + len(record.Value) + 48
+			if len(records) >= snapshotHistoryChunkRecords || chunkBytes >= snapshotHistoryChunkBytes {
+				return flushChunk()
+			}
+			return true
+		}
+		var familyBoundary []byte
+		var family []SnapshotHistoryRecord
+		flushFamily := func() bool {
+			latest := make(map[string]int, len(family))
+			for i := range family {
+				latest[string(family[i].Key)] = i
+			}
+			for _, index := range latest {
+				if !family[index].Tombstone {
+					family[index].Current = true
+				}
+			}
+			for i := range family {
+				if !appendRecord(family[i]) {
+					return false
+				}
+			}
+			family = family[:0]
+			return true
+		}
+		for {
+			if err := iter.Next(ctx); err != nil {
+				if err == io.EOF {
+					if flushFamily() && flushChunk() {
+						send(SnapshotHistoryChunk{Revision: rev, Done: true})
+					}
+					return
+				}
+				send(SnapshotHistoryChunk{Revision: rev, Err: err})
+				return
+			}
+			rawKey := iter.Key()
+			if b.ks.IsInternalStorageKey(rawKey) {
+				continue
+			}
+			userKey, modRevision, decodeErr := b.coder.Decode(rawKey)
+			if decodeErr != nil {
+				continue
+			}
+			boundary, boundaryOK := b.coder.RevisionBoundaryForBorder(rawKey)
+			if !boundaryOK {
+				send(SnapshotHistoryChunk{Revision: rev, Err: fmt.Errorf("snapshot object key has no revision family boundary: %x", rawKey)})
+				return
+			}
+			if familyBoundary != nil && !bytes.Equal(boundary, familyBoundary) {
+				if !flushFamily() {
+					return
+				}
+			}
+			familyBoundary = append(familyBoundary[:0], boundary...)
+			if modRevision == 0 || modRevision > rev || bytes.HasPrefix(userKey, internalKeyspacePrefix) {
+				continue
+			}
+			stored := append([]byte(nil), iter.Val()...)
+			record := SnapshotHistoryRecord{
+				Key:         append([]byte(nil), userKey...),
+				ModRevision: modRevision,
+				Tombstone:   bytes.Equal(stored, tombStoneBytes),
+				LeaseKnown:  bytes.Equal(stored, tombStoneBytes),
+			}
+			if !record.Tombstone {
+				meta, rawValue, inlined := DecodeInlineValue(stored)
+				if !inlined {
+					meta, decodeErr = b.GetEtcdMetadata(ctx, userKey, modRevision)
+					if decodeErr != nil {
+						send(SnapshotHistoryChunk{Revision: rev, Err: decodeErr})
+						return
+					}
+					rawValue = stored
+				} else {
+					record.LeaseKnown = true
+				}
+				record.Value = append([]byte(nil), rawValue...)
+				record.CreateRevision = meta.CreateRevision
+				record.Version = meta.Version
+				record.Lease = meta.Lease
+			}
+			family = append(family, record)
+		}
+	}()
+	return out, nil
+}

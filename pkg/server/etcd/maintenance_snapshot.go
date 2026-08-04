@@ -15,6 +15,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	production "github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 )
 
@@ -64,7 +65,19 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	if err != nil {
 		return err
 	}
-	chunks, err := s.backend.SnapshotStreamChan(ctx, revision)
+	state.PreserveHistory = true
+	state.HasCompactRevision, err = s.backend.HasCompactRevision(ctx)
+	if err != nil {
+		return err
+	}
+	if state.HasCompactRevision {
+		compactRevision, compactErr := s.backend.GetCompactRevisionFresh(ctx)
+		if compactErr != nil {
+			return compactErr
+		}
+		state.CompactRevision = int64(compactRevision)
+	}
+	chunks, err := s.backend.SnapshotHistoryStreamChan(ctx, revision)
 	if err != nil {
 		return err
 	}
@@ -72,7 +85,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	// and writes. Receiving it proves the fixed-revision storage snapshot has
 	// actually been established; merely creating the channel starts a goroutine
 	// whose timestamp/compaction checks may not have run yet.
-	var firstChunk rangeStreamChunk
+	var firstChunk backend.SnapshotHistoryChunk
 	var ok bool
 	select {
 	case firstChunk, ok = <-chunks:
@@ -85,8 +98,8 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		}
 		return fmt.Errorf("range stream ended before establishing its pinned revision")
 	}
-	if firstChunk.err != nil {
-		return firstChunk.err
+	if firstChunk.Err != nil {
+		return firstChunk.Err
 	}
 	// Metadata and the pinned user revision define the snapshot's linearization
 	// point. Historical scanning remains fixed at that revision, so retaining the
@@ -106,30 +119,34 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	}()
 
 	sawTerminal := false
-	consume := func(chunk rangeStreamChunk) error {
-		if chunk.err != nil {
-			return chunk.err
+	consume := func(chunk backend.SnapshotHistoryChunk) error {
+		if chunk.Err != nil {
+			return chunk.Err
 		}
-		if chunk.resp == nil || chunk.resp.Header == nil || chunk.resp.Header.Revision != int64(revision) {
+		if chunk.Revision != revision {
 			return errSnapshotChanged
 		}
-		if len(chunk.resp.Kvs) == 0 {
+		if chunk.Done {
+			if len(chunk.Records) != 0 {
+				return fmt.Errorf("range stream terminal chunk contains records")
+			}
 			sawTerminal = true
 			return nil
 		}
 		if sawTerminal {
 			return fmt.Errorf("range stream returned records after its terminal chunk")
 		}
-		records := make([]production.Record, 0, len(chunk.resp.Kvs))
-		for _, kv := range chunk.resp.Kvs {
-			if kv.Lease != 0 {
-				if _, ok := leaseIDs[kv.Lease]; !ok {
+		records := make([]production.Record, 0, len(chunk.Records))
+		for _, record := range chunk.Records {
+			if record.Current && record.Lease != 0 {
+				if _, ok := leaseIDs[record.Lease]; !ok {
 					return errSnapshotChanged
 				}
 			}
 			records = append(records, production.Record{
-				Key: kv.Key, Value: kv.Value, CreateRevision: kv.CreateRevision,
-				ModRevision: kv.ModRevision, Version: kv.Version, Lease: kv.Lease,
+				Key: record.Key, Value: record.Value, CreateRevision: int64(record.CreateRevision),
+				ModRevision: int64(record.ModRevision), Version: int64(record.Version), Lease: record.Lease,
+				Tombstone: record.Tombstone,
 			})
 		}
 		if err = builder.Append(records); err != nil {

@@ -200,6 +200,11 @@ type Backend interface {
 	// key order is unspecified; consumers persist records by MVCC revision.
 	SnapshotStream(ctx context.Context, revision uint64) (<-chan *proto.StreamRangeResponse, error)
 
+	// SnapshotHistoryStream scans every retained user MVCC version and tombstone
+	// from one storage snapshot. Unlike SnapshotStream it does not collapse each
+	// key to its latest visible value.
+	SnapshotHistoryStream(ctx context.Context, revision uint64) (<-chan SnapshotHistoryChunk, error)
+
 	// Watch subscribe the changes from revision on kvs with given prefix
 	Watch(ctx context.Context, key string, revision uint64) (<-chan []*proto.Event, error)
 
@@ -252,6 +257,28 @@ type Backend interface {
 	// leader's in-flight write cannot be committed-yet-unwatched (FINDING #39).
 	// fn returns (current epoch, still-safely-leading). Unset = fence disabled.
 	SetLeadershipFence(fn func() (uint64, bool))
+}
+
+// SnapshotHistoryRecord is one retained physical user MVCC version. Tombstone
+// records carry only Key and ModRevision; live records include the exact etcd
+// metadata stored with that version.
+type SnapshotHistoryRecord struct {
+	Key, Value                  []byte
+	CreateRevision, ModRevision uint64
+	Version                     uint64
+	Lease                       int64
+	LeaseKnown                  bool
+	Tombstone                   bool
+	Current                     bool
+}
+
+// SnapshotHistoryChunk bounds snapshot construction memory. Done is the
+// successful terminal handshake and Err is terminal when non-nil.
+type SnapshotHistoryChunk struct {
+	Records  []SnapshotHistoryRecord
+	Revision uint64
+	Done     bool
+	Err      error
 }
 
 type HashKVResult struct {

@@ -132,6 +132,10 @@ type BackendShim interface {
 	// decoded-range fallback used to preserve KV.RangeStream's user-key order.
 	SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error)
 
+	// SnapshotHistoryStreamChan streams every retained user version and
+	// tombstone from one pinned storage snapshot.
+	SnapshotHistoryStreamChan(ctx context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error)
+
 	// Watch subscribe the changes from revision on kvs with given prefix. Event
 	// batches arrive as WatchResult{Events}; in-band progress markers arrive as
 	// WatchResult{ProgressRevision} so a quiet watch's progress can advance. This
@@ -1065,6 +1069,32 @@ func (b *backendShim) SnapshotStreamChan(ctx context.Context, revision uint64) (
 		return nil, err
 	}
 	return b.translateRangeStream(ctx, cancel, ch, "complete keyspace"), nil
+}
+
+func (b *backendShim) SnapshotHistoryStreamChan(ctx context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
+	input, err := b.backend.SnapshotHistoryStream(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	output := make(chan backend.SnapshotHistoryChunk)
+	go func() {
+		defer close(output)
+		for chunk := range input {
+			for i := range chunk.Records {
+				record := &chunk.Records[i]
+				if record.Current && !record.LeaseKnown && b.leaseLookup != nil {
+					record.Lease = b.leaseLookup(string(record.Key))
+					record.LeaseKnown = true
+				}
+			}
+			select {
+			case output <- chunk:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return output, nil
 }
 
 func (b *backendShim) translateRangeStream(

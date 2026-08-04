@@ -5,6 +5,7 @@ package etcdsnapshot
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"path/filepath"
 	"testing"
@@ -14,8 +15,12 @@ import (
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/server/v3/lease"
 	"go.etcd.io/etcd/server/v3/lease/leasepb"
+	etcdbackend "go.etcd.io/etcd/server/v3/storage/backend"
+	mvcc "go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
+	"go.uber.org/zap/zaptest"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -50,6 +55,104 @@ func TestBuilderAppendsMultipleBatchesWithoutLosingSameRevisionRecords(t *testin
 		})
 	}))
 	require.Equal(t, map[string]string{"a": "1", "b": "2", "c": "3"}, got)
+}
+
+func TestBuilderPreservesHistoryTombstonesAndRealCompactWatermark(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	builder, err := NewBuilder(path, State{
+		Revision: 9, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
+	})
+	require.NoError(t, err)
+	require.NoError(t, builder.Append([]Record{
+		{Key: []byte("k"), Value: []byte("v1"), CreateRevision: 2, ModRevision: 2, Version: 1},
+		{Key: []byte("k"), ModRevision: 4, Tombstone: true},
+		{Key: []byte("k"), Value: []byte("v2"), CreateRevision: 7, ModRevision: 7, Version: 1},
+	}))
+	require.NoError(t, builder.Finish())
+	require.NoError(t, builder.Close())
+
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(schema.Meta.Name())
+		require.Equal(t, revisionBytes(3, 0), meta.Get(schema.FinishedCompactKeyName))
+		require.Equal(t, revisionBytes(3, 0), meta.Get(schema.ScheduledCompactKeyName))
+		var revisions []int64
+		var tombstones []bool
+		require.NoError(t, tx.Bucket(schema.Key.Name()).ForEach(func(key, value []byte) error {
+			var kv mvccpb.KeyValue
+			if err := proto.Unmarshal(value, &kv); err != nil {
+				return err
+			}
+			if !bytes.Equal(kv.Key, []byte("k")) {
+				return nil
+			}
+			revisions = append(revisions, mvcc.BytesToRev(key).Main)
+			tombstones = append(tombstones, mvcc.IsTombstone(key))
+			return nil
+		}))
+		require.Equal(t, []int64{2, 4, 7}, revisions)
+		require.Equal(t, []bool{false, true, false}, tombstones)
+		return nil
+	}))
+}
+
+func TestBuilderOmitsCompactMarkersForUncompactedHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{
+		Revision: 2, PreserveHistory: true,
+		Records: []Record{{Key: []byte("k"), Value: []byte("v"), CreateRevision: 2, ModRevision: 2, Version: 1}},
+	}))
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(schema.Meta.Name())
+		require.Nil(t, meta.Get(schema.FinishedCompactKeyName))
+		require.Nil(t, meta.Get(schema.ScheduledCompactKeyName))
+		return nil
+	}))
+}
+
+func TestOfficialMVCCStoreRestoresHistoricalRangesAndTombstone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{
+		Revision: 9, PreserveHistory: true,
+		Records: []Record{
+			{Key: []byte("k"), Value: []byte("v1"), CreateRevision: 2, ModRevision: 2, Version: 1},
+			{Key: []byte("k"), Value: []byte("v2"), CreateRevision: 2, ModRevision: 3, Version: 2},
+			{Key: []byte("k"), ModRevision: 4, Tombstone: true},
+			{Key: []byte("k"), Value: []byte("v3"), CreateRevision: 7, ModRevision: 7, Version: 1},
+		},
+	}))
+	lg := zaptest.NewLogger(t)
+	be := etcdbackend.NewDefaultBackend(lg, path)
+	store := mvcc.NewStore(lg, be, &lease.FakeLessor{}, mvcc.StoreConfig{})
+	defer func() {
+		store.Close()
+		require.NoError(t, be.Close())
+	}()
+	for _, tc := range []struct {
+		revision int64
+		value    string
+		present  bool
+	}{
+		{revision: 2, value: "v1", present: true},
+		{revision: 3, value: "v2", present: true},
+		{revision: 4},
+		{revision: 6},
+		{revision: 7, value: "v3", present: true},
+	} {
+		result, err := store.Range(context.Background(), []byte("k"), nil, mvcc.RangeOptions{Rev: tc.revision})
+		require.NoError(t, err)
+		if !tc.present {
+			require.Empty(t, result.KVs, "revision %d", tc.revision)
+			continue
+		}
+		require.Len(t, result.KVs, 1)
+		require.Equal(t, tc.value, string(result.KVs[0].Value))
+	}
 }
 
 func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {

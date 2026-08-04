@@ -17,10 +17,12 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	mvcc "go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
@@ -51,8 +53,8 @@ type stalledSnapshotBackend struct {
 	release    chan struct{}
 }
 
-func (b *stalledSnapshotBackend) SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error) {
-	out := make(chan rangeStreamChunk)
+func (b *stalledSnapshotBackend) SnapshotHistoryStreamChan(ctx context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
+	out := make(chan backend.SnapshotHistoryChunk)
 	if !b.afterFirst {
 		go func() {
 			close(b.started)
@@ -61,7 +63,7 @@ func (b *stalledSnapshotBackend) SnapshotStreamChan(ctx context.Context, revisio
 		}()
 		return out, nil
 	}
-	source, err := b.BackendShim.SnapshotStreamChan(ctx, revision)
+	source, err := b.BackendShim.SnapshotHistoryStreamChan(ctx, revision)
 	if err != nil {
 		return nil, err
 	}
@@ -130,12 +132,12 @@ func TestMaintenanceSnapshotFollowerForwardsRootCredential(t *testing.T) {
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx}))
 }
 
-func (b *pausedSnapshotBackend) SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error) {
-	source, err := b.BackendShim.SnapshotStreamChan(ctx, revision)
+func (b *pausedSnapshotBackend) SnapshotHistoryStreamChan(ctx context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
+	source, err := b.BackendShim.SnapshotHistoryStreamChan(ctx, revision)
 	if err != nil {
 		return nil, err
 	}
-	out := make(chan rangeStreamChunk)
+	out := make(chan backend.SnapshotHistoryChunk)
 	go func() {
 		defer close(out)
 		for chunk := range source {
@@ -144,7 +146,7 @@ func (b *pausedSnapshotBackend) SnapshotStreamChan(ctx context.Context, revision
 			case <-ctx.Done():
 				return
 			}
-			if chunk.resp != nil && len(chunk.resp.Kvs) > 0 {
+			if len(chunk.Records) > 0 {
 				b.once.Do(func() {
 					close(b.paused)
 					select {
@@ -227,6 +229,80 @@ func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *test
 	require.NoError(t, server.buildSnapshot(context.Background(), filepath.Join(t.TempDir(), "snapshot.db")))
 }
 
+func TestMaintenanceSnapshotPreservesUncompactedHistory(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	key := []byte("snapshot-history-key")
+	create, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	update, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+	deleted, err := server.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{Key: key})
+	require.NoError(t, err)
+	recreated, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("v3")})
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, server.buildSnapshot(context.Background(), path))
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	type retainedVersion struct {
+		revision  int64
+		value     string
+		tombstone bool
+	}
+	var got []retainedVersion
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(schema.Key.Name())
+		return bucket.ForEach(func(encodedRevision, value []byte) error {
+			kv := new(mvccpb.KeyValue)
+			if err := proto.Unmarshal(value, kv); err != nil {
+				return err
+			}
+			if !bytes.Equal(kv.Key, key) {
+				return nil
+			}
+			got = append(got, retainedVersion{
+				revision:  mvcc.BytesToRev(encodedRevision).Main,
+				value:     string(kv.Value),
+				tombstone: mvcc.IsTombstone(encodedRevision),
+			})
+			return nil
+		})
+	}))
+	require.Equal(t, []retainedVersion{
+		{revision: create.Header.Revision, value: "v1"},
+		{revision: update.Header.Revision, value: "v2"},
+		{revision: deleted.Header.Revision, tombstone: true},
+		{revision: recreated.Header.Revision, value: "v3"},
+	}, got)
+}
+
+func TestMaintenanceSnapshotPreservesActualCompactWatermark(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	key := []byte("snapshot-compact-history-key")
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	updated, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+	_, err = server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: updated.Header.Revision})
+	require.NoError(t, err)
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, server.buildSnapshot(context.Background(), path))
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(schema.Meta.Name())
+		require.Equal(t, updated.Header.Revision, mvcc.BytesToRev(meta.Get(schema.FinishedCompactKeyName)).Main)
+		require.Equal(t, updated.Header.Revision, mvcc.BytesToRev(meta.Get(schema.ScheduledCompactKeyName)).Main)
+		return nil
+	}))
+}
+
 func TestMaintenanceSnapshotCancellationInterruptsStalledStream(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -281,20 +357,20 @@ func (b *streamingSnapshotBackend) List(ctx context.Context, req *etcdserverpb.R
 	return b.BackendShim.List(ctx, req)
 }
 
-func (b *streamingSnapshotBackend) SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error) {
+func (b *streamingSnapshotBackend) SnapshotHistoryStreamChan(ctx context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
 	b.streams++
-	source, err := b.BackendShim.SnapshotStreamChan(ctx, revision)
+	source, err := b.BackendShim.SnapshotHistoryStreamChan(ctx, revision)
 	if err != nil {
 		return nil, err
 	}
-	out := make(chan rangeStreamChunk)
+	out := make(chan backend.SnapshotHistoryChunk)
 	go func() {
 		defer close(out)
 		for chunk := range source {
-			if chunk.resp != nil && len(chunk.resp.Kvs) > 0 {
+			if len(chunk.Records) > 0 {
 				b.dataChunks++
-				if len(chunk.resp.Kvs) > b.maxChunkKeys {
-					b.maxChunkKeys = len(chunk.resp.Kvs)
+				if len(chunk.Records) > b.maxChunkKeys {
+					b.maxChunkKeys = len(chunk.Records)
 				}
 			}
 			out <- chunk
