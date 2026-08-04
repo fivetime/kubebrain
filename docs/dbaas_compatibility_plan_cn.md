@@ -34183,6 +34183,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   468126003565729343/468126003565732387），已按精确 `/a3374/http-concurrency-errors/` 前缀删除并
   验证 Count=0；当前新门禁的逐轮 deleted=1/Range-empty 断言可防止再次积累。
 
+- A3550 扩展 etcd 3.7 `KV.RangeStream` 条件拒绝的组合优先级。新增 oracle 先以 unary Range
+  取得当前 revision，再固定三阶段顺序：empty key/非法 enum 等结构校验最先；custom sort 与
+  revision filter 的 capability check 次之；只有支持的请求才进入 future revision 检查并返回
+  OutOfRange。由此证明 future+custom-sort/filter 仍返回 Unimplemented，empty-key+sort 仍返回
+  InvalidArgument，point 与 CountOnly 也不能通过 unary fallback 绕过 custom-sort 拒绝。
+
+  官方/KubeBrain 共新增 6 个组合场景，首轮 0.103 秒、连续 10 轮 0.513 秒、race 1.167 秒
+  GREEN；完整 compat、vet 与 diff check 通过。测试只执行 Range/RangeStream，不写用户数据或
+  推进 revision；当前 KubeBrain 的 validation → capability → execution 顺序已正确，无需修改服务端。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
