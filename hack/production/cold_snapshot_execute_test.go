@@ -196,6 +196,52 @@ func TestColdSnapshotExecuteRejectsLegacyLeaseWitnessBeforeMutation(t *testing.T
 	require.NotContains(t, string(logValue), "create -f -")
 }
 
+func TestColdSnapshotExecuteRejectsDegradedTopologyBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name, degradedStatefulSet, degradeAfterPause, tidbReady, want string
+	}{
+		{name: "KubeBrain not ready", degradedStatefulSet: "kubebrain", tidbReady: "true", want: "KubeBrain StatefulSet is not fully ready"},
+		{name: "PD not ready", degradedStatefulSet: "kb-pd", tidbReady: "true", want: "PD StatefulSet is not fully ready"},
+		{name: "TiKV not ready", degradedStatefulSet: "kb-tikv", tidbReady: "true", want: "TiKV StatefulSet is not fully ready"},
+		{name: "TidbCluster not ready", tidbReady: "false", want: "TidbCluster is not Ready"},
+		{name: "TiKV degrades after operator pause", degradeAfterPause: "kb-tikv", tidbReady: "true", want: "TiKV StatefulSet is not fully ready"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			inventoryFile := filepath.Join(dir, "inventory.json")
+			receiptFile := filepath.Join(dir, "receipt.json")
+			witnessFile := filepath.Join(dir, "witness.jsonl")
+			logFile := filepath.Join(dir, "kubectl.log")
+			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+			output, err := runColdSnapshotExecute(t, []string{
+				"KUBECTL=" + fakeKubectl,
+				"KUBE_CONTEXT=preproduction",
+				"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+				"PREFLIGHT_FILE=" + inventoryFile,
+				"RECEIPT_FILE=" + receiptFile,
+				"OPERATION_ID=op-degraded-topology",
+				"SEMANTIC_WITNESS_FILE=" + witnessFile,
+				"EXPECTED_WITNESS_PREFIX=/registry",
+				"FAKE_LOG=" + logFile,
+				"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
+				"FAKE_DEGRADED_STATEFULSET=" + tc.degradedStatefulSet,
+				"FAKE_DEGRADE_AFTER_PAUSE=" + tc.degradeAfterPause,
+				"FAKE_TIDB_READY=" + tc.tidbReady,
+			})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, receiptFile)
+			log := string(mustRead(t, logFile))
+			require.NotContains(t, log, "patch statefulset")
+			require.NotContains(t, log, "create -f -")
+		})
+	}
+}
+
 func TestColdSnapshotExecuteRequiresExplicitContextBeforeMutation(t *testing.T) {
 	dir := t.TempDir()
 	inventoryFile := filepath.Join(dir, "inventory.json")
@@ -363,14 +409,22 @@ elif [[ "$args" == *"get volumesnapshotclass"* ]]; then
 elif [[ "$args" == *"get storageclass"* ]]; then
   printf 'csi.example.test'
 elif [[ "$args" == *"get tidbcluster"* ]]; then
-  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"uid-tidb","resourceVersion":"10"},"spec":{"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"7662961163671170154"}}'
+  ready=True
+  [[ "${FAKE_TIDB_READY:-true}" == true ]] || ready=False
+  printf '{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster","metadata":{"name":"kb","namespace":"tidb-cluster","uid":"uid-tidb","resourceVersion":"10"},"spec":{"version":"v8.5.3","pd":{"replicas":3},"tikv":{"replicas":3}},"status":{"clusterID":"7662961163671170154","conditions":[{"type":"Ready","status":"%s"}]}}' "$ready"
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"jsonpath"* ]]; then
   printf 'uid-kubebrain'
 elif [[ "$args" == *"get statefulset"* ]]; then
   name="$(sed -n 's/.*get statefulset \([^ ]*\).*/\1/p' <<<"$args")"
   uid="uid-${name}"
   [[ "$name" != kubebrain ]] || uid=uid-kubebrain
-  printf '{"metadata":{"uid":"%s","resourceVersion":"20"},"spec":{"replicas":3}}' "$uid"
+  ready=3
+  degraded="${FAKE_DEGRADED_STATEFULSET:-}"
+  if [[ -n "${FAKE_DEGRADE_AFTER_PAUSE:-}" ]] && grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
+    degraded="$FAKE_DEGRADE_AFTER_PAUSE"
+  fi
+  [[ "$degraded" != "$name" ]] || ready=2
+  printf '{"metadata":{"uid":"%s","resourceVersion":"20","generation":1},"spec":{"replicas":3},"status":{"observedGeneration":1,"replicas":3,"readyReplicas":%s,"currentReplicas":3,"updatedReplicas":3,"currentRevision":"rev-a","updateRevision":"rev-a"}}' "$uid" "$ready"
 elif [[ "$args" == *"get pvc -l"* ]]; then
   printf '%s' "$FAKE_PVC_JSON"
 elif [[ "$args" == *"get pvc"* && "$args" == *"jsonpath"* ]]; then

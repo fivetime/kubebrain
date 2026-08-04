@@ -122,6 +122,29 @@ for value in "$kb_replicas" "$pd_replicas" "$tikv_replicas"; do
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || fail_input "all StatefulSets must start with positive replicas"
 done
 
+validate_statefulset_ready() {
+  local component="$1" object="$2"
+  if ! jq -e '
+    (.metadata.generation | type == "number") and
+    (.spec.replicas | type == "number" and . > 0) and
+    .status.observedGeneration == .metadata.generation and
+    .status.replicas == .spec.replicas and
+    .status.readyReplicas == .spec.replicas and
+    .status.currentReplicas == .spec.replicas and
+    .status.updatedReplicas == .spec.replicas and
+    (.status.currentRevision | type == "string" and length > 0) and
+    .status.updateRevision == .status.currentRevision
+  ' <<<"$object" >/dev/null; then
+    fail_input "${component} StatefulSet is not fully ready at the maintenance fence"
+  fi
+}
+
+validate_statefulset_ready KubeBrain "$kb_json"
+validate_statefulset_ready PD "$pd_json"
+validate_statefulset_ready TiKV "$tikv_json"
+jq -e '[.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length == 1' \
+  <<<"$tc_json" >/dev/null || fail_input "TidbCluster is not Ready at the maintenance fence"
+
 patch_object() {
   local namespace="$1" kind="$2" name="$3" object="$4" path="$5" old="$6" new="$7"
   local patch
@@ -180,6 +203,9 @@ tikv_json="$(kctl -n "$TIDB_NAMESPACE" get statefulset "$tikv_name" -o json)"
 [[ "$(jq -r '.spec.replicas' <<<"$kb_json")" == "$kb_replicas" ]] || exit 1
 [[ "$(jq -r '.spec.replicas' <<<"$pd_json")" == "$pd_replicas" ]] || exit 1
 [[ "$(jq -r '.spec.replicas' <<<"$tikv_json")" == "$tikv_replicas" ]] || exit 1
+validate_statefulset_ready KubeBrain "$kb_json"
+validate_statefulset_ready PD "$pd_json"
+validate_statefulset_ready TiKV "$tikv_json"
 
 patch_object "$KUBEBRAIN_NAMESPACE" statefulset "$KUBEBRAIN_STATEFULSET" "$kb_json" /spec/replicas "$kb_replicas" 0
 kb_stopped=true
