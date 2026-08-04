@@ -207,6 +207,45 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 	require.LessOrEqual(t, ttl.TTL, int64(300))
 	require.Equal(t, int64(300), ttl.GrantedTTL)
 	require.Equal(t, [][]byte{key}, ttl.Keys)
+
+	watch, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	defer watch.CloseSend()
+	require.NoError(t, watch.Send(&etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: key, StartRevision: first.Header.Revision, PrevKv: true,
+		},
+	}}))
+	var events []*mvccpb.Event
+	for len(events) < 3 {
+		response, recvErr := watch.Recv()
+		require.NoError(t, recvErr)
+		require.Zero(t, response.CompactRevision)
+		events = append(events, response.Events...)
+	}
+	require.Len(t, events, 3)
+	for i, want := range []struct {
+		value     string
+		lease     int64
+		prevValue string
+		prevLease int64
+	}{
+		{value: "leased-v1", lease: leaseID},
+		{value: "unleased-v2", prevValue: "leased-v1", prevLease: leaseID},
+		{value: "leased-v3", lease: leaseID, prevValue: "unleased-v2"},
+	} {
+		require.Equal(t, mvccpb.PUT, events[i].Type)
+		require.Equal(t, string(key), string(events[i].Kv.Key))
+		require.Equal(t, want.value, string(events[i].Kv.Value))
+		require.Equal(t, want.lease, events[i].Kv.Lease)
+		if i == 0 {
+			require.Nil(t, events[i].PrevKv)
+			continue
+		}
+		require.NotNil(t, events[i].PrevKv)
+		require.Equal(t, want.prevValue, string(events[i].PrevKv.Value))
+		require.Equal(t, want.prevLease, events[i].PrevKv.Lease)
+	}
 }
 
 func TestSnapshotTxnSubrevisionOrderMatchesReferenceEtcd(t *testing.T) {
