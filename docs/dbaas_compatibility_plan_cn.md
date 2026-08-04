@@ -33173,6 +33173,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `468126003565721588`、raft term 为 272，version/storage version 均为 3.7.0。本轮无生产写入，
   revision 保持不变。
 
+- A3497 对齐慢 watcher 丢失历史后的 compacted cancel：对照
+  `/root/etcd/tests/integration/clientv3/watch/v3_watch_test.go:TestV3NoEventsLostOnCompact`，官方要求
+  watcher 的下一待发 revision 已低于 compact watermark 时以 `ErrCompacted` 结束，迫使 clientv3
+  re-list，不能把它伪装成可直接 resume 的普通断流。KubeBrain 的 watcher hub 在 ring backlog
+  已被淘汰时会关闭 backend channel，旧服务层无条件返回 `CompactRevision=0`、
+  `CancelReason="watch closed"`，客户端随后可能从已丢失的 revision 重连。确定性 RED 先让 watch
+  在 compact 前完成订阅，再推进 durable compact watermark 并关闭 backend channel，旧实现稳定
+  得到普通 close。commit `7ac86ebcdc54f92853b9457a42f3432ec2cac54d` 在该异常冷路径读取一次
+  fresh compact watermark，并用 watch 已实际发送的 `syncedRev+1` 判断：只有 next revision 严格
+  小于 watermark 才发送 compacted cancel；next 恰等于 compact revision 时仍按 etcd 的边界语义
+  保持可 watch。普通 follower proxy close 继续返回非 compacted cancel。三类聚焦用例连续 20 轮、
+  race 连续 10 轮通过；完整 server 测试 169.421 秒、backend 全套和 vet 均通过。
+
+  生产镜像 `kubebrain:a3497-watch-compacted-close` 的本地 ID 为
+  `sha256:c9e1a21a7e111d0ff1ca391c2d96cdf6ce9092568f6eefd3a26c111a38d12370`，构建 SHA 为
+  `7ac86ebcdc54f92853b9457a42f3432ec2cac54d`、时间为 `2026-08-04T04:00:03Z`；kind runtime
+  digest 为 `sha256:3ab64285f908529789cc40c5481f94bed13d0c86259fff27411384ff2d14cc0e`。
+  官方 3.7 `etcdctl` 从 revision `…589` 的正常 watch 收到同 revision 的真实 PUT；从 revision 1
+  watch 得到空 reason、`CompactRevision=468126003565714660` 的 compacted cancel。清理测试键后
+  revision 为 `468126003565721590`，raft index/applied 同值、term 274；三个 KubeBrain Pod 均
+  ready/0 restart，3 PD/3 TiKV 均 ready。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
