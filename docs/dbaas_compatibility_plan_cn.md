@@ -34583,6 +34583,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   构建或滚动镜像。共享生产 KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无
   alarm/lease、auth disabled，revision/index/applied 保持 468126003565737983。
 
+- A3572 修复 serialized read 在“数据路径报错且 auth store 同期变化”时的错误优先级。继续审计上游
+  `/root/etcd/server/etcdserver/v3_server.go::doSerialize` 发现，`get()` 无论成功或失败都会执行最终
+  AuthRevision 比较；若非零 caller revision 已过期，`AuthOldRevision` 必须覆盖 range/txn 自身错误。
+  KubeBrain read-only Txn 旧代码仅在 `executeReadonlyTxnAtRevision` 返回 nil error 时调用
+  `ensureAuthRevision`；RangeStream 则在 backend chunk、compaction、Send 和缺 terminal metadata 等
+  提前退出路径直接返回，二者都与 etcd 不同。
+
+  确定性 RED 扩展 `authMutationReadShim`：Txn 场景在 backend List 已读取数据后新增无关 role 并注入
+  range failure，修复前实际泄漏 `injected readonly txn range failure`；RangeStream 场景先发送首块，
+  再推进 auth revision 并注入 terminal stream failure，修复前实际返回 `codes.Unavailable`。两者官方
+  契约均要求 `ErrAuthOldRevision`。另加稳定 auth 的反例，证明没有 mutation 时原 backend error 仍保留。
+
+  修复让 read-only Txn 无条件执行最终 fence，并让 RangeStream 在授权成功后的所有 return path 通过
+  defer 复核；仅 `AuthOldRevision` 可覆盖已有 stream error，context/cache 等非 auth fence error 不会
+  掩盖原错误。正常完成路径仍在记录 success metrics 前显式复核，避免 error stream 被误计成功。
+  专项普通三场景 10 连跑 9.265 秒、扩展四场景 10 连跑 12.326 秒、Txn race 10 连跑 86.155 秒、
+  Txn+RangeStream race 5 连跑 63.564 秒 GREEN；主模块全套通过（production 424.791 秒、server/etcd
+  163.393 秒），完整 compat 1.062 秒、vet 和 diff check 通过。主模块 staticcheck 仍为既有 9 项基线。
+
+  commit `c975a52c` 构建为 `kubebrain:a3572-auth-error-precedence`。首次无 build args 构建被制品元数据
+  门禁正确拒绝；随后注入 version、完整 40 位 Git SHA 与 UTC build time，核验 OCI revision/user、镜像
+  内 Version/Storage/Git SHA 后加载 kind，滚动 3 副本完成。部署后 RangeStream production chunk 门禁
+  通过；平台替代组合测试首次经 NodePort 时因不同 RPC 被负载到 follower 而在 MoveLeader 得到
+  `not leader`，绑定当前 leader Pod 后 4.700 秒通过，证明是测试入口时序而非语义回归。最终 StatefulSet
+  current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无
+  alarm/lease、auth disabled，revision/index/applied 为 468126003565737993、term 310；生产长期 fixture
+  Count=100，A3572 临时 RangeStream prefix 已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
