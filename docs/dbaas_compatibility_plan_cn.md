@@ -34046,6 +34046,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   6.575 秒、race 1.762 秒 GREEN。测试后 source prefix Count=0、LeaseList=0，一次性官方 etcd
   进程/data-dir 已清理；本轮不为制造 diff 改动已对齐的服务端 filter 实现。
 
+- A3540 把 A3539 的负值/倒置 revision-filter 契约推进到同一 Txn 的 staged read。正值 filter、
+  nested Txn、KeysOnly/CountOnly/Limit 已有大量组合门禁，但此前没有证明负 max 或倒置 bounds
+  在合并 staged Put 后仍保留 etcd 的“prune Kvs、不重算 Count”规则。新 raw Txn 先创建第四个
+  staged key `d`，随后在同一成功分支执行 MaxMod=-1 普通/CountOnly Range、MinCreate=-1 的
+  KeysOnly+Limit=2，以及极大 min/低 max 的 inverted Range。
+
+  官方与 KubeBrain 都要求两个过滤为空的响应 `Kvs=[]/Count=4/More=false`，CountOnly 同为 4，
+  KeysOnly 页返回 a/b、Count=4、More=true；这同时证明 Count 包含尚未提交但已 staged 的 d。
+  首轮 0.260 秒 GREEN，连续 10 轮 2.485 秒、race 1.408 秒 GREEN。source prefix Count=0、
+  LeaseList=0，一次性官方 etcd 进程/data-dir 已清理；当前 staged merge/filter 实现已对齐，无需
+  服务端修改。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
