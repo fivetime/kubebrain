@@ -631,6 +631,13 @@ VolumeSnapshotContent 为 `Retain`、class/UID 引用一致并提供非空 snaps
 TiKV、解除 operator pause、KubeBrain 的顺序恢复。任一错误都由退出 trap 尝试同样的恢复，
 失败不发布成功 receipt；Retain 策略下的部分制品必须进入人工审计，不能自动误删。
 
+进入维护窗口前，executor 还要求 TidbCluster 存在唯一 `Ready=True` condition，并要求
+KubeBrain、PD、TiKV 三个 StatefulSet 的 observed generation、replica/ready/current/updated
+副本数以及 current/update revision 全部收敛。设置 operator pause 后、第一次缩容前会再次读取
+并验证三个 StatefulSet；这两道维护栅栏之间出现任一副本降级、rollout 未完成或 generation
+未被 controller 观察，均必须在缩容和创建 VolumeSnapshot 前 fail closed。该检查不替代控制面
+阻断新写入，也不把应用层 Ready 当作多卷 crash consistency 证明。
+
 成功恢复服务并原子 fsync 发布 `kubebrain.cold-physical-snapshot.v2` receipt 后，仍只证明冷
 快照集合已生成。尚未从 receipt 在隔离集群恢复全部 PD/TiKV volume、核验 cluster identity、
 启动 KubeBrain 并完成 revision/key/lease/watch 验证，因此 `BACKUP_MODE=cold-csi` 仍不受

@@ -33936,6 +33936,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet、脚本语法均通过。该项只增强 cold CSI 候选能力的停机前安全门禁；真实 CSI 多卷快照、
   隔离恢复与日志型 PITR 仍保持显式未完成。
 
+- A3532 把 cold CSI 候选执行器的 source health 纳入显式 maintenance fence。旧执行器虽会锁定
+  StatefulSet/TidbCluster UID、resourceVersion 与副本配置，却可在 KubeBrain、PD 或 TiKV 已经
+  只有 2/3 Ready、rollout 未收敛，或 TidbCluster `Ready=False` 时继续 pause operator 并进入
+  缩容；初次检查后到缩容前发生的退化也没有第二道 health gate。
+
+  `cold-snapshot-execute.sh` 现在在任何 mutation 前要求 TidbCluster 唯一 `Ready=True`，并要求
+  三个 StatefulSet 的 observed generation、replicas/ready/current/updated replicas 和
+  current/update revision 精确收敛；operator pause 可见后、第一次 StatefulSet 缩容前重新读取
+  并执行同一门禁。确定性 fake-cluster 矩阵覆盖 KubeBrain、PD、TiKV 初始降级、TidbCluster
+  非 Ready，以及 pause 后 TiKV 从 3/3 漂移为 2/3 五条 RED；所有路径均证明没有 StatefulSet
+  patch、没有 VolumeSnapshot create、没有成功 receipt，pause 后漂移路径只允许退出 trap 清除
+  已设置的 TidbCluster pause。
+
+  修复后专项普通模式连续 10 轮 272.391 秒 GREEN，聚焦 race 27.633 秒、全部 cold snapshot
+  测试 28.797 秒、完整 `hack/production` 包 371.943 秒 GREEN；相关 vet、脚本语法与 diff check
+  同步通过。当前真实 kind 仍因缺少 CSI snapshot API 而在更早的只读 preflight fail closed，
+  因此本项不声称已完成多卷快照、隔离恢复或日志型 PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
