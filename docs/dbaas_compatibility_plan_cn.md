@@ -34637,6 +34637,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision、
   raft index 与 applied index 均为 468126003565738003、term 312；生产长期 fixture 仍为 Count=100。
 
+- A3574 修复 serialized read 在 request context 已取消时无法完成 auth revision fence 的分布式实现差异。
+  上游 `/root/etcd/server/etcdserver/v3_server.go::doSerialize` 在 `get()` 返回后直接比较内存
+  `authStore.Revision()`；即使 read callback 已耗尽 deadline 或取消 context，只要同期 auth store 变化，
+  `AuthOldRevision` 仍覆盖 read 的取消/执行错误。KubeBrain 的 `ensureAuthRevision` 必须从 TiKV 读取
+  `auth/config`；此前 Range、RangeStream 与只读 Txn 的结束复核复用原 request context，故取消会阻断
+  revision 查询，不能兑现上游错误优先级。
+
+  确定性 RED 让 backend List 先新增无关 role、再取消请求并返回 `context.Canceled`，同时让 auth snapshot
+  repository 严格响应 canceled context。修复前只读 Txn 实际返回 `context canceled`，未报告预期的
+  `ErrAuthOldRevision`。修复新增 `ensureAuthRevisionAfterSerializedRead`：仅对权限准入后的结束 fence 使用
+  `context.WithoutCancel` 保留 request values，并附加独立 10 秒上限；权限准入和写事务仍使用原请求
+  context。Range、RangeStream、只读 Txn 及 follower historical Range proxy 的最终复核统一采用该 helper。
+  Range 与 Txn mutation 场景都要求 `AuthOldRevision`，稳定 auth 反例则证明原 `context.Canceled` 不被掩盖。
+
+  三场景普通 10 连跑 8.916 秒、race 5 连跑 69.447 秒，全部授权 Range/RangeStream/只读 Txn 组合普通
+  10 连跑 35.461 秒 GREEN；主模块全套通过（production 421.387 秒、server/etcd 168.534 秒），完整
+  compat 1.016 秒、vet 和 diff check 通过；staticcheck v0.7.0 仍精确为既有 9 项基线。
+
+  commit `4ee5c0e7` 构建为 `kubebrain:a3574-auth-fence-cancel`（镜像 ID
+  `sha256:9254276540c33e3f4d2e8e123a1a6aa5aa431b2ecf07351f0ecf8104d833ed90`），核验 OCI version、完整
+  Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。部署后
+  RangeStream production chunk 门禁 1.803 秒通过并清理隔离 prefix；KubeBrain/PD/TiKV 均 3/3 Ready、
+  零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision、raft index 与
+  applied index 均为 468126003565738013、term 314；生产长期 fixture 仍为 Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
