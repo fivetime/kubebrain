@@ -33982,6 +33982,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cold snapshot 测试 50.198 秒、完整 `hack/production` 包 416.759 秒 GREEN；vet、脚本语法和
   diff check 同步通过。
 
+- A3535 继续收紧“UID 未变”仍可能掩盖的 TidbCluster 内容漂移。A3534 只要求同一个 CR 仍为
+  paused；另一控制器仍可在 pause 窗口内修改 version/topology 等 spec 字段，status cluster ID
+  也可能与 preflight 锁定的独立 TiKV 集群身份分离，或 Ready condition 退化，而旧脚本会继续
+  缩容并为不再匹配恢复蓝图的数据面取 snapshot。
+
+  新 RED 在 UID 与 pause 均稳定时分别注入 `spec.version` 漂移、TiKV cluster ID 漂移和
+  `Ready=False`；旧路径全部越过第二道 fence。执行器现在把 live spec 删除唯一允许变化的
+  `paused` 字段后，与 inventory 中 immutable recovery blueprint 做 canonical JSON 精确比对，
+  并再次要求 cluster ID 相等及唯一 `Ready=True`。五项 TidbCluster fence-loss 矩阵同时覆盖
+  replacement UID、pause 丢失、spec、storage identity 与 health drift，所有拒绝都发生在任何
+  StatefulSet patch、VolumeSnapshot create 或成功 receipt 之前。五项矩阵普通模式连续 10 轮
+  319.317 秒 GREEN；与成功/回滚路径的 race 50.943 秒、全部 cold snapshot 测试 71.079 秒、
+  完整 `hack/production` 包 427.109 秒 GREEN，vet、脚本语法与 diff check 同步通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

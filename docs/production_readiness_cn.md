@@ -639,8 +639,10 @@ KubeBrain、PD、TiKV 三个 StatefulSet 的 observed generation、replica/ready
 KubeBrain、PD、TiKV StatefulSet UID 与第一道栅栏完全相同；同名 controller replacement 不能
 携带新的对象身份越过栅栏，否则后续按旧 UID 恢复副本会失去所有权保证。TidbCluster 本身也
 必须在 pause wait 后重新读取，保持 preflight 锁定的 UID 且 `spec.paused=true`；一次成功 patch
-或按名称 wait 不能证明维护所有权持续存在。该检查不替代控制面阻断新写入，也不把应用层 Ready
-当作多卷 crash consistency 证明。
+或按名称 wait 不能证明维护所有权持续存在。去除 `paused` 字段后的完整 TidbCluster spec、TiKV
+cluster ID 和唯一 `Ready=True` condition 也必须仍与 preflight/第一道栅栏一致；对象 UID 不变
+不能掩盖升级、拓扑、存储身份或健康状态漂移。该检查不替代控制面阻断新写入，也不把应用层
+Ready 当作多卷 crash consistency 证明。
 
 成功恢复服务并原子 fsync 发布 `kubebrain.cold-physical-snapshot.v2` receipt 后，仍只证明冷
 快照集合已生成。尚未从 receipt 在隔离集群恢复全部 PD/TiKV volume、核验 cluster identity、
