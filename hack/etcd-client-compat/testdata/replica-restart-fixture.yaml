@@ -27,6 +27,10 @@ spec:
       port: 3379
       targetPort: client
       nodePort: 30479
+    - name: info
+      port: 8080
+      targetPort: info
+      nodePort: 30480
 ---
 apiVersion: apps/v1
 kind: StatefulSet
