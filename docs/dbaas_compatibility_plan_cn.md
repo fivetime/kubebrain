@@ -34822,6 +34822,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   alarm/lease、auth disabled/AuthRevision=581，revision/index/applied 均为 468126003565738045、
   term 322，全范围长期 fixture Count=100。
 
+- A3582 关闭 LeaseKeepAlive 在续租等待期间 demotion 后由旧 leader 返回虚假成功的窗口。对照
+  `/root/etcd/server/etcdserver/v3_server.go::LeaseRenew` 与 lessor `Renew`：官方在初始
+  `isLeader/ensureLeadership` 之后若 lessor 已 demote，会得到 `ErrNotPrimary` 并进入 follower 转发，
+  不会只延长旧 leader 的私有内存 deadline。KubeBrain 旧实现只在每条 keepalive 入口取得一次
+  `EpochAndLeadingFresh`；随后等待 `leaseCheckpointMu/leaseWriteMu` 或慢 TiKV checkpoint clear 时即使
+  已失去 leadership，仍会更新旧副本 deadline 并回送正 TTL，而新 leader 从未收到该续租。
+
+  确定性 RED 先持有续租锁，在入口 routing 已确认 leader 后切换 `isLeader=false` 再放锁：proxy disabled
+  修复前错误返回 nil，proxy enabled 错误回送本地 TTL=30 而非 peer 的 TTL=29。修复在真正取得续租锁后
+  增加 leadership fence；若 checkpoint clear 需要释放锁执行 TiKV CAS，则在 CAS/授权完成并重新加锁后
+  再 fence 一次。专用 sentinel 只标识该 demotion 路径，LeaseKeepAlive 据此在 proxy disabled 返回既有
+  精确 `Unavailable`，proxy enabled 携带原认证 context 转发当前 leader，避免把普通存储或权限错误误转发。
+  第三个测试把 checkpoint clear 阻塞在 TiKV backend seam，证明第二道 fence 同样拒绝旧 leader response。
+
+  三项 demotion 场景普通 10 连跑 1.242 秒、race 5 连跑 5.483 秒 GREEN；完整
+  `pkg/server/etcd` 178.846 秒、主模块 `go test ./...`、vet、完整 compat 通过。staticcheck v0.7.0
+  仍精确为既有 9 项基线。代码 commit `48aa2e1b` 构建为
+  `kubebrain:a3582-lease-renew-demotion`（Docker 镜像 ID
+  `sha256:956f328d00b75d8d38b2176a746f0594f5568bd95a6a5faab10a03d1f010539f`），核验 OCI version、
+  完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。
+
+  发布后为三个 Pod 建立独立 NodePort；修正 `kubectl create service` 自动生成且与 Pod 不匹配的默认
+  `app` selector、确认三条 EndpointSlice 分别只指向目标 Pod 后，官方 clientv3
+  `LeaseReadAndRevokeAcrossDirectReplicas` 10 连跑 6.165 秒通过，覆盖逐副本 Grant、leased Put/Get、
+  TTL(Keys)、LeaseLeases、Revoke 与 missing。临时 Service 和测试 lease/key 均已清理。最终 StatefulSet
+  3/3 Ready，KubeBrain/PD/TiKV 均零重启，endpoint healthy、无 alarm/lease、auth disabled/
+  AuthRevision=581，revision/index/applied 均为 468126003565738065、term 324，全范围长期 fixture
+  Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
