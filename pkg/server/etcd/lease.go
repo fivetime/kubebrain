@@ -367,19 +367,22 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 		}
 		return response, nil
 	}
+	forward := func() (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+		proxyCtx, forwardErr := m.srv.forwardAuthToken(ctx, caller)
+		if forwardErr != nil {
+			return nil, forwardErr
+		}
+		response, forwardErr := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
+		m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
+		return finish(response, forwardErr)
+	}
 	// A follower's lease state is a stale snapshot: the leader advances deadlines
 	// via keepalive and grants/revokes leases the follower never observes. Answer
 	// only as the leader; otherwise proxy, or fail like the write lease RPCs so the
 	// client retries against the leader instead of reading stale local state (#56).
 	if err := m.requireLeaseLeader("lease time-to-live"); err != nil {
 		if m.srv.peers.EtcdProxyEnabled() {
-			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
-			}
-			response, err := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
-			m.srv.observeForwardedRevision(response.GetHeader(), err)
-			return finish(response, err)
+			return forward()
 		}
 		return nil, err
 	}
@@ -390,15 +393,23 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	if err := m.requireLeaseLeader("lease time-to-live"); err != nil {
 		m.leaseMu.Unlock()
 		if m.srv.peers.EtcdProxyEnabled() {
-			proxyCtx, forwardErr := m.srv.forwardAuthToken(ctx, caller)
-			if forwardErr != nil {
-				return nil, forwardErr
-			}
-			response, forwardErr := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
-			m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
-			return finish(response, forwardErr)
+			return forward()
 		}
 		return nil, err
+	}
+	finishLocal := func(response *etcdserverpb.LeaseTimeToLiveResponse) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+		// Match etcd's post-lookup Lease.Demoted check. Authorization can read
+		// TiKV while leaseMu is held, so leadership may change after the earlier
+		// check; never publish that old leader's live or missing snapshot.
+		if leaderErr := m.requireLeaseLeader("lease time-to-live"); leaderErr != nil {
+			m.leaseMu.Unlock()
+			if m.srv.peers.EtcdProxyEnabled() {
+				return forward()
+			}
+			return nil, leaderErr
+		}
+		m.leaseMu.Unlock()
+		return finish(response, nil)
 	}
 	// Authorize and build the response from the same lease snapshot. Otherwise a
 	// concurrent Put can attach a protected key after the permission check but
@@ -423,8 +434,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 			ID:     req.ID,
 			TTL:    -1,
 		}
-		m.leaseMu.Unlock()
-		return finish(resp, nil)
+		return finishLocal(resp)
 	}
 
 	resp := &etcdserverpb.LeaseTimeToLiveResponse{
@@ -436,8 +446,7 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 	if req.Keys {
 		resp.Keys = leaseKeys(st)
 	}
-	m.leaseMu.Unlock()
-	return finish(resp, nil)
+	return finishLocal(resp)
 }
 
 func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
@@ -446,17 +455,20 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 	if err != nil {
 		return nil, err
 	}
+	forward := func() (*etcdserverpb.LeaseLeasesResponse, error) {
+		proxyCtx, forwardErr := m.srv.forwardAuthToken(ctx, caller)
+		if forwardErr != nil {
+			return nil, forwardErr
+		}
+		response, forwardErr := m.srv.peers.LeaseLeases(proxyCtx, req)
+		m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
+		return response, forwardErr
+	}
 	// See LeaseTimeToLive: a follower must not enumerate leases from its stale
 	// local snapshot; proxy to the leader or fail (#56).
 	if err := m.requireLeaseLeader("lease leases"); err != nil {
 		if m.srv.peers.EtcdProxyEnabled() {
-			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
-			}
-			response, err := m.srv.peers.LeaseLeases(proxyCtx, req)
-			m.srv.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
+			return forward()
 		}
 		return nil, err
 	}
@@ -464,13 +476,7 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 	if err := m.requireLeaseLeader("lease leases"); err != nil {
 		m.leaseMu.Unlock()
 		if m.srv.peers.EtcdProxyEnabled() {
-			proxyCtx, forwardErr := m.srv.forwardAuthToken(ctx, caller)
-			if forwardErr != nil {
-				return nil, forwardErr
-			}
-			response, forwardErr := m.srv.peers.LeaseLeases(proxyCtx, req)
-			m.srv.observeForwardedRevision(response.GetHeader(), forwardErr)
-			return response, forwardErr
+			return forward()
 		}
 		return nil, err
 	}
@@ -501,6 +507,13 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 	}
 	for _, lease := range leases {
 		resp.Leases = append(resp.Leases, &etcdserverpb.LeaseStatus{ID: lease.id})
+	}
+	if err := m.requireLeaseLeader("lease leases"); err != nil {
+		m.leaseMu.Unlock()
+		if m.srv.peers.EtcdProxyEnabled() {
+			return forward()
+		}
+		return nil, err
 	}
 	m.leaseMu.Unlock()
 	return resp, nil

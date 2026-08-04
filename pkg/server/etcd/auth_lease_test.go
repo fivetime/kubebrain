@@ -499,6 +499,188 @@ func TestAuthLeaderLeaseTimeToLiveRechecksRevisionAfterLookupLikeEtcd(t *testing
 	}
 }
 
+func TestAuthLeaseTimeToLiveRejectsDemotionDuringAuthorizationLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+	_, err = server.Put(aliceCtx, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/demotion-during-ttl-auth"), Value: []byte("value"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+
+	var leading atomic.Bool
+	leading.Store(true)
+	server.peers = testPeerService{isLeaderFn: leading.Load}
+	shim := &blockingAuthConfigReadShim{
+		BackendShim: server.backend,
+		// authCallerFromContext uses three reads and TTL captures its start
+		// revision in the fourth; pause the authorization fence at read five.
+		blockAt: 5, entered: make(chan struct{}), release: make(chan struct{}),
+		putCommitted: make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	done := make(chan error, 1)
+	go func() {
+		_, ttlErr := server.LeaseTimeToLive(aliceCtx, &etcdserverpb.LeaseTimeToLiveRequest{
+			ID: lease.ID, Keys: true,
+		})
+		done <- ttlErr
+	}()
+	select {
+	case <-shim.entered:
+	case <-time.After(time.Second):
+		t.Fatalf("TTL did not reach authorization fence; config reads=%d", shim.reads.Load())
+	}
+	leading.Store(false)
+	close(shim.release)
+
+	requireLeaseFollowerUnavailable(t, <-done, "lease time-to-live error addr is test-peer leader test-peer")
+}
+
+func TestAuthLeaseTimeToLiveProxiesDemotionDuringAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	lease, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+	_, err = server.Put(aliceCtx, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/proxy-demotion-during-ttl-auth"), Value: []byte("value"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+
+	var leading atomic.Bool
+	leading.Store(true)
+	var forwarded atomic.Bool
+	server.peers = testPeerService{
+		isLeaderFn: leading.Load, proxyEnabled: true,
+		leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
+			forwarded.Store(true)
+			return &etcdserverpb.LeaseTimeToLiveResponse{
+				Header: txnHeader(123), ID: lease.ID, TTL: 59, GrantedTTL: 60,
+			}, nil
+		},
+	}
+	shim := &blockingAuthConfigReadShim{
+		BackendShim: server.backend,
+		blockAt:     5, entered: make(chan struct{}), release: make(chan struct{}),
+		putCommitted: make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	type result struct {
+		response *etcdserverpb.LeaseTimeToLiveResponse
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		response, ttlErr := server.LeaseTimeToLive(aliceCtx, &etcdserverpb.LeaseTimeToLiveRequest{
+			ID: lease.ID, Keys: true,
+		})
+		done <- result{response: response, err: ttlErr}
+	}()
+	select {
+	case <-shim.entered:
+	case <-time.After(time.Second):
+		t.Fatalf("TTL did not reach authorization fence; config reads=%d", shim.reads.Load())
+	}
+	leading.Store(false)
+	close(shim.release)
+
+	got := <-done
+	require.NoError(t, got.err)
+	require.True(t, forwarded.Load())
+	require.NotNil(t, got.response)
+	require.Equal(t, lease.ID, got.response.ID)
+	require.Equal(t, int64(59), got.response.TTL)
+}
+
+func TestAuthLeaseLeasesRejectsDemotionDuringAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	_, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+
+	var leading atomic.Bool
+	leading.Store(true)
+	server.peers = testPeerService{isLeaderFn: leading.Load}
+	shim := &blockingAuthConfigReadShim{
+		BackendShim: server.backend,
+		blockAt:     4, entered: make(chan struct{}), release: make(chan struct{}),
+		putCommitted: make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	done := make(chan error, 1)
+	go func() {
+		_, listErr := server.LeaseLeases(aliceCtx, &etcdserverpb.LeaseLeasesRequest{})
+		done <- listErr
+	}()
+	select {
+	case <-shim.entered:
+	case <-time.After(time.Second):
+		t.Fatalf("LeaseLeases did not reach authorization fence; config reads=%d", shim.reads.Load())
+	}
+	leading.Store(false)
+	close(shim.release)
+
+	requireLeaseFollowerUnavailable(t, <-done, "lease leases error addr is test-peer leader test-peer")
+}
+
+func TestAuthLeaseLeasesProxiesDemotionDuringAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	_, err := server.LeaseGrant(aliceCtx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+
+	var leading atomic.Bool
+	leading.Store(true)
+	var forwarded atomic.Bool
+	server.peers = testPeerService{
+		isLeaderFn: leading.Load, proxyEnabled: true,
+		leaseLeasesFn: func(context.Context, *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
+			forwarded.Store(true)
+			return &etcdserverpb.LeaseLeasesResponse{
+				Header: txnHeader(123), Leases: []*etcdserverpb.LeaseStatus{{ID: 999}},
+			}, nil
+		},
+	}
+	shim := &blockingAuthConfigReadShim{
+		BackendShim: server.backend,
+		blockAt:     4, entered: make(chan struct{}), release: make(chan struct{}),
+		putCommitted: make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	type result struct {
+		response *etcdserverpb.LeaseLeasesResponse
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		response, listErr := server.LeaseLeases(aliceCtx, &etcdserverpb.LeaseLeasesRequest{})
+		done <- result{response: response, err: listErr}
+	}()
+	select {
+	case <-shim.entered:
+	case <-time.After(time.Second):
+		t.Fatalf("LeaseLeases did not reach authorization fence; config reads=%d", shim.reads.Load())
+	}
+	leading.Store(false)
+	close(shim.release)
+
+	got := <-done
+	require.NoError(t, got.err)
+	require.True(t, forwarded.Load())
+	require.NotNil(t, got.response)
+	require.Len(t, got.response.Leases, 1)
+	require.Equal(t, int64(999), got.response.Leases[0].ID)
+}
+
 func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
