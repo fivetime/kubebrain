@@ -33262,6 +33262,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （70.541 秒），完整 `pkg/server/etcd`（167.208 秒）和该包 `go vet` 均通过。本轮只有测试和
   文档，生产继续运行 A3499，无生产数据写入或镜像滚动。
 
+- A3502 固定 auth revision 与 permission cache 的进程重建语义。对照
+  `/root/etcd/tests/common/auth_test.go:TestAuthRevisionConsistency` 和
+  `TestAuthTestCacheReload`：member 重启后 auth revision 必须保持不变，持久权限必须由新 cache
+  重新加载。commit `aee38a69` 新增组件边界重启门禁：先建立 enabled auth、root/alice、allowed
+  role 与 range permission，再执行一次 user add/delete 推进 revision；随后丢弃全部进程内 auth
+  manager、snapshot cache 与 token manager，仅保留同一 durable DBaaS backend。新组件必须恢复
+  精确 config/revision、已删除用户状态、Alice role 与 permission，重新认证后允许
+  `/allowed/` Put，并继续拒绝 `/denied/` Put。
+
+  审计同时确认 A3500 的官方 snapshot auth-store restore 与本轮运行时 reload 是不同证据：前者
+  固定 bbolt 制品编码，后者固定 KubeBrain 从 TiKV-backed internal auth records 冷启动的可观察
+  行为。最初探针因误用 `alice-secret` 而非 fixture 的 `secret` 得到稳定假 RED，纠正输入后现有
+  实现已兼容，无需修改生产代码。最终聚焦连续 20 轮通过（9.578 秒）、race 连续 10 轮通过
+  （69.698 秒），完整 `pkg/server/etcd` 重跑通过（161.784 秒），该包 `go vet` 通过。本轮只有
+  测试和文档，生产继续运行 A3499，无生产 mutation 或镜像滚动。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
