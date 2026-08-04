@@ -34521,6 +34521,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled，revision/index/applied 均为
   468126003565737983，生产 endpoint 未执行认证状态变更。
 
+- A3569 把 authenticated 多 chunk RangeStream 的 auth revision 结束复核扩展到 JWT token provider。
+  A3567/A3568 使用 simple token；该 provider 在请求开始时从当前 auth store 解析 caller revision，不能
+  证明 JWT 分支从签名 claim 固定 revision 后的行为。对照 `/root/etcd/server/auth/jwt.go`、上游
+  `doSerialize` 与 KubeBrain `authCallerFromContext`/`ensureAuthRevision`，JWT 请求在 stream 开始时通过
+  验签和权限检查，中途任何 auth mutation 仍须在 handler 结束时使非零 claim revision 失效。
+
+  独立 HS256 状态机在 auth disabled 时写入 50×256KiB fixture，启用 auth 后用 root JWT 启动 raw
+  RangeStream 并读取第一 chunk，再由另一有效 root JWT 新增无关 role。官方绝对基线要求 mutation 后
+  仍至少一个 chunk、合并恰好 50 KV、terminal Header/Count/More 完整，最终 raw Recv 精确返回
+  `codes.InvalidArgument`、`etcdserver: revision of auth store is old`；同一旧 JWT 随后的 official
+  clientv3 Get 被 interceptor 归一成 `rpctypes.ErrAuthOldRevision` sentinel，因此 `status.Code` 是
+  `Unknown`，重新认证后的 JWT 写成功。KubeBrain 完整 outcome 与官方一致。
+
+  `run-jwt-differential.sh` 同步新增严格布尔 `GO_TEST_RACE`，非法值在依赖访问前 fail closed，并把
+  reference 临时目录清理改成精确 `find -depth -delete`。首轮部署因 `kubectl run --overrides` 替换容器
+  args 而未进入测试；改为显式 Pod 后，官方 oracle 首轮还纠正了 raw stream 与 clientv3 unary 错误码
+  不同的错误假设。最终两个全新 TiKV keyspace、NodePort 30463/30464 上普通双端 12.720 秒、race
+  双端 8.230 秒 GREEN；完整 compat 1.256 秒、runner 10 连跑、vet、compat staticcheck v0.7.0、bash
+  syntax 和 diff check 通过。没有服务端 RED，故不构建或滚动镜像；临时 Pod/Service/Secret、reference
+  listener 与临时 manifest 均已清理。共享生产 KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint
+  healthy、无 alarm/lease、auth disabled，revision/index/applied 保持 468126003565737983。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
