@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,7 @@ import (
 type normalizedSnapshotVersion struct {
 	Value     string
 	Version   int64
+	Lease     int64
 	Create    bool
 	Tombstone bool
 }
@@ -61,6 +63,60 @@ func TestSnapshotRetainedHistoryMatchesReferenceEtcd(t *testing.T) {
 
 			backendBytes := downloadSnapshotBackend(t, endpoint)
 			path := t.TempDir() + "/snapshot.db"
+			require.NoError(t, os.WriteFile(path, backendBytes, 0o600))
+			require.Equal(t, want, snapshotVersionsForKey(t, path, key))
+		})
+	}
+}
+
+func TestSnapshotRetainedLeaseHistoryMatchesReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if reference == "" || kubebrain == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT and KUBEBRAIN_ETCD_ENDPOINT")
+	}
+	key := []byte(fmt.Sprintf("/compat/snapshot-lease-history/%d", time.Now().UnixNano()))
+	leaseA := time.Now().UnixNano() & ((1 << 62) - 1)
+	if leaseA == 0 {
+		leaseA = 1
+	}
+	leaseB := leaseA + 1
+	want := []normalizedSnapshotVersion{
+		{Value: "v1", Version: 1, Lease: leaseA, Create: true},
+		{Value: "v2", Version: 2},
+		{Value: "v3", Version: 3, Lease: leaseB},
+		{Tombstone: true},
+		{Value: "v4", Version: 1, Lease: leaseA, Create: true},
+	}
+	for name, endpoint := range map[string]string{"reference": reference, "kubebrain": kubebrain} {
+		t.Run(name, func(t *testing.T) {
+			client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
+			require.NoError(t, err)
+			defer client.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			rawLease := etcdserverpb.NewLeaseClient(client.ActiveConnection())
+			for _, id := range []int64{leaseA, leaseB} {
+				_, err = rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 300})
+				require.NoError(t, err)
+				defer func(id int64) {
+					_, _ = rawLease.LeaseRevoke(context.Background(), &etcdserverpb.LeaseRevokeRequest{ID: id})
+				}(id)
+			}
+			_, err = client.Put(ctx, string(key), "v1", clientv3.WithLease(clientv3.LeaseID(leaseA)))
+			require.NoError(t, err)
+			_, err = client.Put(ctx, string(key), "v2")
+			require.NoError(t, err)
+			_, err = client.Put(ctx, string(key), "v3", clientv3.WithLease(clientv3.LeaseID(leaseB)))
+			require.NoError(t, err)
+			_, err = client.Delete(ctx, string(key))
+			require.NoError(t, err)
+			_, err = client.Put(ctx, string(key), "v4", clientv3.WithLease(clientv3.LeaseID(leaseA)))
+			require.NoError(t, err)
+			defer func() { _, _ = client.Delete(context.Background(), string(key)) }()
+
+			backendBytes := downloadSnapshotBackend(t, endpoint)
+			path := filepath.Join(t.TempDir(), "snapshot.db")
 			require.NoError(t, os.WriteFile(path, backendBytes, 0o600))
 			require.Equal(t, want, snapshotVersionsForKey(t, path, key))
 		})
@@ -180,7 +236,7 @@ func snapshotVersionsForKey(t *testing.T, path string, key []byte) []normalizedS
 			tombstone := len(revisionKey) == 18 && revisionKey[17] == 't'
 			mainRevision := int64(binary.BigEndian.Uint64(revisionKey[:8]))
 			versions = append(versions, normalizedSnapshotVersion{
-				Value: string(kv.Value), Version: kv.Version,
+				Value: string(kv.Value), Version: kv.Version, Lease: kv.Lease,
 				Create: kv.CreateRevision == mainRevision, Tombstone: tombstone,
 			})
 			return nil
