@@ -268,6 +268,8 @@ type SnapshotHistoryRecord struct {
 	Version                     uint64
 	Lease                       int64
 	LeaseKnown                  bool
+	SubRevision                 uint32
+	Ordered                     bool
 	Tombstone                   bool
 	Current                     bool
 }
@@ -313,6 +315,10 @@ type backend struct {
 	// uncertainTxnPins prevents logical/physical compaction from deleting the
 	// event-log markers used to resolve commit-undetermined multi-key txns.
 	uncertainTxnPins revisionPins
+	// snapshotPins prevents compaction from advancing past the compact watermark
+	// captured by an in-flight historical Snapshot, preserving ordered event-log
+	// rows while its pinned object iterator is consumed.
+	snapshotPins revisionPins
 
 	config Config
 

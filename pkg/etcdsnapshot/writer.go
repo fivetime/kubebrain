@@ -35,6 +35,8 @@ type Record struct {
 	Key, Value                  []byte
 	CreateRevision, ModRevision int64
 	Version, Lease              int64
+	SubRevision                 int64
+	Ordered                     bool
 	Tombstone                   bool
 }
 
@@ -89,6 +91,8 @@ type Builder struct {
 	nextSub  int64
 	finished bool
 }
+
+const fallbackSubRevisionBase int64 = 1 << 32
 
 func NewBuilder(path string, state State) (*Builder, error) {
 	if state.Revision < 0 {
@@ -232,7 +236,11 @@ func (b *Builder) Append(records []Record) error {
 			if err != nil {
 				return err
 			}
-			revisionKey := revisionBytes(rec.ModRevision, nextSub)
+			subRevision := fallbackSubRevisionBase + nextSub
+			if rec.Ordered {
+				subRevision = rec.SubRevision
+			}
+			revisionKey := revisionBytes(rec.ModRevision, subRevision)
 			if rec.Tombstone {
 				revisionKey = append(revisionKey, 't')
 			}
@@ -261,7 +269,7 @@ func (b *Builder) Finish() error {
 		return err
 	}
 	err = b.db.Update(func(tx *bolt.Tx) error {
-		return tx.Bucket(keyBucket).Put(append(revisionBytes(b.revision, b.nextSub), 't'), marker)
+		return tx.Bucket(keyBucket).Put(append(revisionBytes(b.revision, fallbackSubRevisionBase+b.nextSub), 't'), marker)
 	})
 	if err == nil {
 		b.finished = true
@@ -289,6 +297,9 @@ func revisionBytes(main, sub int64) []byte {
 func validateRecord(rec Record, snapshotRevision int64) error {
 	if len(rec.Key) == 0 {
 		return fmt.Errorf("empty key")
+	}
+	if rec.Ordered && (rec.SubRevision < 0 || rec.SubRevision >= fallbackSubRevisionBase) {
+		return fmt.Errorf("invalid ordered subrevision %d", rec.SubRevision)
 	}
 	if rec.Tombstone {
 		if rec.ModRevision <= 0 || rec.ModRevision > snapshotRevision {

@@ -543,14 +543,28 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 	if rev == 0 {
 		rev = curRev
 	}
+	compactRevision, err := b.GetCompactRevisionFresh(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if compactRevision == math.MaxUint64 {
+		return nil, fmt.Errorf("snapshot compact revision overflows pin: %d", compactRevision)
+	}
+	// Compact is clamped below the oldest pin. Pin compact+1 so the watermark
+	// cannot move beyond the state captured for this historical snapshot while
+	// its event-log ordering metadata is still being joined below.
+	snapshotPin := compactRevision + 1
+	b.snapshotPins.pin(snapshotPin)
 	iter, err := b.kv.Iter(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), 0, 0)
 	if err != nil {
+		b.snapshotPins.unpin(snapshotPin)
 		return nil, err
 	}
 	out := make(chan SnapshotHistoryChunk, 1)
 	go func() {
 		defer close(out)
 		defer iter.Close()
+		defer b.snapshotPins.unpin(snapshotPin)
 		send := func(chunk SnapshotHistoryChunk) bool {
 			select {
 			case out <- chunk:
@@ -564,6 +578,33 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 		flushChunk := func() bool {
 			if len(records) == 0 {
 				return true
+			}
+			if batchGetter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
+				eventKeys := make([][]byte, len(records))
+				for i := range records {
+					eventKeys[i] = b.ks.EncodeEventLogKey(records[i].ModRevision, records[i].Key)
+				}
+				values, getErr := batchGetter.BatchGet(ctx, eventKeys)
+				if getErr != nil {
+					send(SnapshotHistoryChunk{Revision: rev, Err: fmt.Errorf("load snapshot event order: %w", getErr)})
+					return false
+				}
+				for i, eventKey := range eventKeys {
+					value, found := values[string(eventKey)]
+					if !found {
+						continue
+					}
+					verb, _, subRevision, total, ordered, valid := coder.DecodeOrderedEventLogValue(value)
+					if !valid || !ordered || total == 0 || subRevision >= total {
+						continue
+					}
+					isDelete := verb == byte(proto.Event_DELETE)
+					if isDelete != records[i].Tombstone || (!isDelete && verb != byte(proto.Event_CREATE) && verb != byte(proto.Event_PUT)) {
+						continue
+					}
+					records[i].SubRevision = subRevision
+					records[i].Ordered = true
+				}
 			}
 			chunk := SnapshotHistoryChunk{Records: records, Revision: rev}
 			records = make([]SnapshotHistoryRecord, 0, snapshotHistoryChunkRecords)

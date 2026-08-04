@@ -129,6 +129,10 @@ func (b *backend) clampCompactRevision(revision uint64) uint64 {
 	if uncertainRev == 0 || (txnUncertainRev != 0 && txnUncertainRev < uncertainRev) {
 		uncertainRev = txnUncertainRev
 	}
+	snapshotRev := b.snapshotPins.min()
+	if uncertainRev == 0 || (snapshotRev != 0 && snapshotRev < uncertainRev) {
+		uncertainRev = snapshotRev
+	}
 	if uncertainRev != 0 {
 		// Keep the compact watermark below the oldest unresolved outcome.
 		revision = minUint64(uncertainRev-1, revision)

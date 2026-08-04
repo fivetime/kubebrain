@@ -146,7 +146,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 			records = append(records, production.Record{
 				Key: record.Key, Value: record.Value, CreateRevision: int64(record.CreateRevision),
 				ModRevision: int64(record.ModRevision), Version: int64(record.Version), Lease: record.Lease,
-				Tombstone: record.Tombstone,
+				SubRevision: int64(record.SubRevision), Ordered: record.Ordered, Tombstone: record.Tombstone,
 			})
 		}
 		if err = builder.Append(records); err != nil {

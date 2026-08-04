@@ -67,6 +67,36 @@ func TestSnapshotRetainedHistoryMatchesReferenceEtcd(t *testing.T) {
 	}
 }
 
+func TestSnapshotTxnSubrevisionOrderMatchesReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if reference == "" || kubebrain == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT and KUBEBRAIN_ETCD_ENDPOINT")
+	}
+	base := fmt.Sprintf("/compat/snapshot-subrevision/%d/", time.Now().UnixNano())
+	keys := [][]byte{[]byte(base + "z"), []byte(base + "a"), []byte(base + "m")}
+	for name, endpoint := range map[string]string{"reference": reference, "kubebrain": kubebrain} {
+		t.Run(name, func(t *testing.T) {
+			client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
+			require.NoError(t, err)
+			defer client.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			response, err := client.Txn(ctx).Then(
+				clientv3.OpPut(string(keys[0]), "z"),
+				clientv3.OpPut(string(keys[1]), "a"),
+				clientv3.OpPut(string(keys[2]), "m"),
+			).Commit()
+			require.NoError(t, err)
+			defer func() { _, _ = client.Delete(context.Background(), base, clientv3.WithPrefix()) }()
+			backendBytes := downloadSnapshotBackend(t, endpoint)
+			path := t.TempDir() + "/snapshot.db"
+			require.NoError(t, os.WriteFile(path, backendBytes, 0o600))
+			require.Equal(t, keys, snapshotKeysAtRevision(t, path, response.Header.Revision, keys))
+		})
+	}
+}
+
 func downloadSnapshotBackend(t *testing.T, endpoint string) []byte {
 	t.Helper()
 	target := strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
@@ -121,4 +151,32 @@ func snapshotVersionsForKey(t *testing.T, path string, key []byte) []normalizedS
 		})
 	}))
 	return versions
+}
+
+func snapshotKeysAtRevision(t *testing.T, path string, revision int64, wanted [][]byte) [][]byte {
+	t.Helper()
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	wantedSet := make(map[string]struct{}, len(wanted))
+	for _, key := range wanted {
+		wantedSet[string(key)] = struct{}{}
+	}
+	var keys [][]byte
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket([]byte("key")).ForEach(func(revisionKey, value []byte) error {
+			if int64(binary.BigEndian.Uint64(revisionKey[:8])) != revision {
+				return nil
+			}
+			var kv mvccpb.KeyValue
+			if err := proto.Unmarshal(value, &kv); err != nil {
+				return err
+			}
+			if _, ok := wantedSet[string(kv.Key)]; ok {
+				keys = append(keys, append([]byte(nil), kv.Key...))
+			}
+			return nil
+		})
+	}))
+	return keys
 }

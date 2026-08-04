@@ -57,6 +57,40 @@ func TestBuilderAppendsMultipleBatchesWithoutLosingSameRevisionRecords(t *testin
 	require.Equal(t, map[string]string{"a": "1", "b": "2", "c": "3"}, got)
 }
 
+func TestBuilderUsesExactTxnSubrevisionInsteadOfPhysicalInputOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	builder, err := NewBuilder(path, State{Revision: 12, PreserveHistory: true})
+	require.NoError(t, err)
+	// Object storage scans these in key order. The transaction that produced the
+	// revision wrote z, a, m, which must remain the order seen by restored Watch.
+	require.NoError(t, builder.Append([]Record{
+		{Key: []byte("a"), Value: []byte("a"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, Ordered: true},
+		{Key: []byte("m"), Value: []byte("m"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 2, Ordered: true},
+		{Key: []byte("z"), Value: []byte("z"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, Ordered: true},
+	}))
+	require.NoError(t, builder.Finish())
+	require.NoError(t, builder.Close())
+
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	var keys []string
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(schema.Key.Name()).ForEach(func(revisionKey, value []byte) error {
+			if mvcc.BytesToRev(revisionKey).Main != 12 || mvcc.IsTombstone(revisionKey) {
+				return nil
+			}
+			var kv mvccpb.KeyValue
+			if err := proto.Unmarshal(value, &kv); err != nil {
+				return err
+			}
+			keys = append(keys, string(kv.Key))
+			return nil
+		})
+	}))
+	require.Equal(t, []string{"z", "a", "m"}, keys)
+}
+
 func TestBuilderPreservesHistoryTombstonesAndRealCompactWatermark(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	builder, err := NewBuilder(path, State{
