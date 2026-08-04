@@ -151,7 +151,7 @@ func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 // stream then ends with a normal return (io.EOF). A
 // backend error aborts the stream with a gRPC status so the apiserver relists
 // rather than treating a partial stream as complete.
-func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) error {
+func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) (retErr error) {
 	ctx := rs.Context()
 	startTime := time.Now()
 	klog.V(4).InfoS("RANGE STREAM", "key", r.Key, "rangeEnd", r.RangeEnd, "rev", r.Revision)
@@ -199,6 +199,21 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if err = caller.require(r.Key, r.RangeEnd, authpb.READ); err != nil {
 		return err
 	}
+	// etcd wraps the entire streaming read in doSerialize: after authorization,
+	// every exit path is followed by the stale-auth fence. AuthOldRevision must
+	// therefore override a concurrent backend, compaction, or send failure. Keep
+	// non-auth fence failures from masking the original stream error (notably when
+	// the client context itself was canceled).
+	authChecked := false
+	defer func() {
+		if authChecked {
+			return
+		}
+		authErr := s.ensureAuthRevision(ctx, caller)
+		if authErr != nil && (retErr == nil || errors.Is(authErr, rpctypes.ErrAuthOldRevision)) {
+			retErr = authErr
+		}
+	}()
 	if err := s.checkRequestedRevision(ctx, r.Revision); err != nil {
 		return rangeStreamStatusErr(err)
 	}
@@ -305,6 +320,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
 		return status.Error(codes.Unavailable, "range stream ended without terminal metadata")
 	}
+	authChecked = true
 	if err := s.ensureAuthRevision(ctx, caller); err != nil {
 		return err
 	}
@@ -514,8 +530,11 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 			return nil, err
 		}
 		response, err := s.executeReadonlyTxnAtRevision(ctx, txn, int64(revision))
-		if err == nil {
-			err = s.ensureAuthRevision(ctx, caller)
+		// Match etcd's doSerialize ordering: the stale-auth fence runs after the
+		// read callback even when that callback failed, and AuthOldRevision takes
+		// precedence if the policy changed while the request was executing.
+		if authErr := s.ensureAuthRevision(ctx, caller); authErr != nil {
+			return response, authErr
 		}
 		return response, err
 	}
