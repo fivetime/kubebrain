@@ -72,7 +72,13 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	// and writes. Receiving it proves the fixed-revision storage snapshot has
 	// actually been established; merely creating the channel starts a goroutine
 	// whose timestamp/compaction checks may not have run yet.
-	firstChunk, ok := <-chunks
+	var firstChunk rangeStreamChunk
+	var ok bool
+	select {
+	case firstChunk, ok = <-chunks:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	if !ok {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -134,21 +140,28 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	if err = consume(firstChunk); err != nil {
 		return err
 	}
-	for chunk := range chunks {
-		if err = consume(chunk); err != nil {
-			return err
+	for {
+		select {
+		case chunk, streamOpen := <-chunks:
+			if !streamOpen {
+				if !sawTerminal {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					return fmt.Errorf("range stream ended without a terminal revision")
+				}
+				if err = builder.Finish(); err != nil {
+					return fmt.Errorf("finish etcd snapshot backend: %w", err)
+				}
+				return nil
+			}
+			if err = consume(chunk); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
-	if !sawTerminal {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		return fmt.Errorf("range stream ended without a terminal revision")
-	}
-	if err = builder.Finish(); err != nil {
-		return fmt.Errorf("finish etcd snapshot backend: %w", err)
-	}
-	return nil
 }
 
 func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (production.State, map[int64]struct{}, error) {

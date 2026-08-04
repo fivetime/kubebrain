@@ -44,6 +44,39 @@ type localSnapshotTrapBackend struct {
 	called bool
 }
 
+type stalledSnapshotBackend struct {
+	BackendShim
+	afterFirst bool
+	started    chan struct{}
+	release    chan struct{}
+}
+
+func (b *stalledSnapshotBackend) SnapshotStreamChan(ctx context.Context, revision uint64) (<-chan rangeStreamChunk, error) {
+	out := make(chan rangeStreamChunk)
+	if !b.afterFirst {
+		go func() {
+			close(b.started)
+			<-b.release
+			close(out)
+		}()
+		return out, nil
+	}
+	source, err := b.BackendShim.SnapshotStreamChan(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		first, ok := <-source
+		if ok {
+			out <- first
+		}
+		close(b.started)
+		<-b.release
+		close(out)
+	}()
+	return out, nil
+}
+
 func (b *localSnapshotTrapBackend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
 	b.called = true
 	return b.BackendShim.BeginRangeTxn(ctx)
@@ -192,6 +225,52 @@ func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *test
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	require.NoError(t, server.buildSnapshot(context.Background(), filepath.Join(t.TempDir(), "snapshot.db")))
+}
+
+func TestMaintenanceSnapshotCancellationInterruptsStalledStream(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		afterFirst bool
+	}{
+		{name: "before first response"},
+		{name: "after first response", afterFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			stalled := &stalledSnapshotBackend{
+				BackendShim: server.backend,
+				afterFirst:  tc.afterFirst,
+				started:     make(chan struct{}),
+				release:     make(chan struct{}),
+			}
+			server.backend = stalled
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() {
+				done <- server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "snapshot.db"))
+			}()
+			select {
+			case <-stalled.started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("snapshot stream did not reach the injected stall")
+			}
+			cancel()
+			returnedOnCancel := false
+			var snapshotErr error
+			select {
+			case snapshotErr = <-done:
+				returnedOnCancel = true
+			case <-time.After(250 * time.Millisecond):
+			}
+			close(stalled.release)
+			if !returnedOnCancel {
+				snapshotErr = <-done
+			}
+			require.True(t, returnedOnCancel, "client cancellation must interrupt a stalled snapshot stream")
+			require.ErrorIs(t, snapshotErr, context.Canceled)
+		})
+	}
 }
 
 func (b *streamingSnapshotBackend) List(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {

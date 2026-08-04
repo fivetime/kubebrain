@@ -80,6 +80,50 @@ func TestClientSnapshotAPIsReturnHashProtectedEtcdBackend(t *testing.T) {
 	require.NoError(t, legacy.Close())
 }
 
+func TestClientSnapshotCancellationInterruptsBackendBuild(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	stalled := &stalledSnapshotBackend{
+		BackendShim: server.backend,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = stalled
+	defer close(stalled.release)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	snapshot, err := client.Snapshot(ctx)
+	require.NoError(t, err)
+	defer snapshot.Close()
+	select {
+	case <-stalled.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not enter backend construction")
+	}
+	cancel()
+	_, err = snapshot.Read(make([]byte, 1))
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
