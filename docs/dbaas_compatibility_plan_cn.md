@@ -34795,6 +34795,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   healthy、无 alarm/lease、auth disabled/AuthRevision=581，revision/index/applied 均为
   468126003565738023、term 321，全范围长期 fixture Count=100。
 
+- A3581 关闭 Lease 读取在 TiKV auth 授权期间 demotion 后返回旧 leader snapshot 的窗口。继续对照
+  `/root/etcd/server/etcdserver/v3_server.go::leaseTimeToLive` 的 lookup 后 `Lease.Demoted()` 检查：
+  KubeBrain 已因 follower lease snapshot 不随 keepalive/grant/revoke 实时更新而要求 TTL/List 只由当前
+  leader 回答或代理；但旧实现只在进入 `leaseMu` 前后各检查一次 leadership。`Keys=true` 授权需要在
+  持锁状态读取 TiKV auth config，若恰在该读取中 demote，随后仍会构造并返回旧本地 TTL；LeaseLeases
+  具有同源窗口。
+
+  确定性 RED 把 TTL 暂停在第 5 次 auth-config read（caller 三次、起始 revision 一次、授权 fence
+  一次），随后切换 `isLeader=false`；修复前返回 nil error 和本地 TTL，违反上游 post-lookup demotion
+  契约。修复为 TTL 的 live/missing snapshot 与 LeaseLeases 枚举完成后增加第三次 leadership fence；
+  demote 时先释放 `leaseMu`，proxy disabled 返回既有精确 `Unavailable`，proxy enabled 则携带原认证
+  context 转发新 leader，并继续执行 A3580 的 TTL final auth revision fence。四项门禁分别覆盖 TTL/List
+  的 reject 与 proxy success，防止修复退化成只报错而失去 HA 可用性。
+
+  四场景普通 10 连跑 12.127 秒、race 5 连跑 95.680 秒 GREEN；完整 `pkg/server/etcd`、主模块
+  `go test ./...`、vet、完整 compat 通过，staticcheck v0.7.0 仍精确为既有 9 项基线。commit
+  `3598b9f7` 构建为 `kubebrain:a3581-lease-read-demotion`（Docker 镜像 ID
+  `sha256:fe38c1d7af7c265bdc5e32acf5df4a60242d0a56eb0c958f0085cbd128b71280`），核验 OCI version、完整
+  Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。
+
+  发布后为三个 Pod 建立临时独立 NodePort，官方 clientv3 `LeaseReadAndRevokeAcrossDirectReplicas`
+  在真实共享 TiKV 数据面逐副本验证 Grant/leased Put/Get/TTL(Keys)/LeaseLeases/Revoke/最终 missing，
+  单次 0.686 秒、10 连跑 6.019 秒通过，临时 Service 与所有测试 lease/key 已清理。最终 StatefulSet
+  current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无
+  alarm/lease、auth disabled/AuthRevision=581，revision/index/applied 均为 468126003565738045、
+  term 322，全范围长期 fixture Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
