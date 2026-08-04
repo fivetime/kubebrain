@@ -34563,6 +34563,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled，
   revision/index/applied 保持 468126003565737983。
 
+- A3571 补齐 read-only Txn 的 serialized-read auth revision fence。对照
+  `/root/etcd/server/etcdserver/v3_server.go::Txn/doSerialize`，只读事务在预检查整个请求的权限后执行
+  `txn.Txn`，随后若非零 caller revision 与当前 auth store revision 不同，必须丢弃结果并返回
+  `AuthOldRevision`。KubeBrain `RPCServer.Txn` 已在 `executeReadonlyTxnAtRevision` 后调用
+  `ensureAuthRevision`，但此前只有 read barrier 顺序测试，没有把 auth mutation 精确置于选中分支读取
+  与最终 fence 之间；Range/RangeStream 的邻接测试不能证明 Txn staged executor 保留该调用。
+
+  `authMutationReadShim` 现同时 hook `BackendShim.List`；新测试以 Alice 执行 serializable prefix Range
+  read-only Txn，在 backend List 成功返回后立即撤销该 prefix 权限。第一次调用必须返回精确
+  `ErrAuthOldRevision`，证明已读取的数据不会按旧策略泄漏；第二次相同调用在 admission 阶段返回
+  `PermissionDenied`。这里不用官方黑盒概率并发伪造中途时点，而以 `/root/etcd` 的确定性源码路径作为
+  oracle，并在 KubeBrain backend seam 上建立确定性 TDD 门禁。
+
+  新 Txn 门禁与既有 Range/RangeStream 邻接组普通 10 连跑 9.054 秒 GREEN，Txn 专项 race 10 连跑
+  46.960 秒 GREEN；`pkg/server/etcd` 全套 161.715 秒、主模块 `go test ./...` 全绿（其中 production
+  419.571 秒、server/etcd 164.233 秒），完整 compat 1.092 秒、vet 和 diff check 通过。主模块
+  staticcheck v0.7.0 仍只有 A3568 已记录的 9 个既有基线告警，本轮没有新增。该项无运行时 RED，故不
+  构建或滚动镜像。共享生产 KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无
+  alarm/lease、auth disabled，revision/index/applied 保持 468126003565737983。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
