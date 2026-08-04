@@ -23,7 +23,9 @@ TEST_PATTERN+='TestReferenceEtcdTxnSnapshotAndWatchRecoverAfterRestart|'
 TEST_PATTERN+='TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements|'
 TEST_PATTERN+='TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart|'
 TEST_PATTERN+='TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements|'
-TEST_PATTERN+='TestReferenceEtcdPriorCompactedTxnPrevKVRecoversAfterRestart)'
+TEST_PATTERN+='TestReferenceEtcdPriorCompactedTxnPrevKVRecoversAfterRestart|'
+TEST_PATTERN+='TestHashKVCompactionRecoversAcrossAllReplicaReplacements|'
+TEST_PATTERN+='TestReferenceEtcdHashKVCompactionRecoversAfterRestart)'
 TEST_PATTERN+='$'
 
 need() {
@@ -123,6 +125,10 @@ baseline_leases="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" leas
     KUBEBRAIN_IDLE_RESTART_CONTEXT="$KUBE_CONTEXT" \
     KUBEBRAIN_IDLE_RESTART_NAMESPACE="$KUBE_NAMESPACE" \
     KUBEBRAIN_IDLE_RESTART_PODS="$(IFS=,; echo "${kube_pods[*]}")" \
+    KUBEBRAIN_HASHKV_RESTART_ENDPOINT="$KUBEBRAIN_RESTART_ENDPOINT" \
+    KUBEBRAIN_HASHKV_RESTART_CONTEXT="$KUBE_CONTEXT" \
+    KUBEBRAIN_HASHKV_RESTART_NAMESPACE="$KUBE_NAMESPACE" \
+    KUBEBRAIN_HASHKV_RESTART_PODS="$(IFS=,; echo "${kube_pods[*]}")" \
     REFERENCE_ETCD_BINARY="$REFERENCE_ETCD_BINARY" \
     go test . \
       -run "$TEST_PATTERN" \

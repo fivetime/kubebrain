@@ -54,7 +54,7 @@ func TestIdleReplicaReplacementDoesNotAdvanceRevision(t *testing.T) {
 		)
 	})
 
-	replaceAllCompatPods(t, ctx, kubeContext, namespace, pods)
+	replaceAllCompatPods(t, ctx, kubeContext, namespace, endpoint, pods)
 
 	afterConn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
@@ -113,7 +113,7 @@ func TestLatestCompactionReplicaReplacementDoesNotAdvanceRevision(t *testing.T) 
 		_, _ = etcdserverpb.NewKVClient(cleanupConn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
 	})
 
-	replaceAllCompatPods(t, ctx, kubeContext, namespace, pods)
+	replaceAllCompatPods(t, ctx, kubeContext, namespace, endpoint, pods)
 	afterConn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer afterConn.Close()
@@ -127,7 +127,7 @@ func TestLatestCompactionReplicaReplacementDoesNotAdvanceRevision(t *testing.T) 
 	require.Equal(t, after.GetHeader().GetRevision()+1, updated.GetHeader().GetRevision())
 }
 
-func replaceAllCompatPods(t *testing.T, ctx context.Context, kubeContext, namespace string, pods []string) {
+func replaceAllCompatPods(t *testing.T, ctx context.Context, kubeContext, namespace, endpoint string, pods []string) {
 	t.Helper()
 	oldUIDs := make(map[string]string, len(pods))
 	for _, pod := range pods {
@@ -145,6 +145,7 @@ func replaceAllCompatPods(t *testing.T, ctx context.Context, kubeContext, namesp
 			return newUID != "" && newUID != oldUIDs[pod] && ready == "true"
 		}, 90*time.Second, 500*time.Millisecond, "%s replacement did not become Ready", pod)
 	}
+	requireEndpointReachable(t, grpcTarget(endpoint))
 }
 
 func TestReferenceEtcdIdleRestartPreservesRevision(t *testing.T) {

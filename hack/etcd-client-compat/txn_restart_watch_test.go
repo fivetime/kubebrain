@@ -48,7 +48,7 @@ func TestTxnSnapshotAndWatchRecoverAcrossAllReplicaReplacements(t *testing.T) {
 		})
 	})
 
-	replaceAllCompatPods(t, ctx, kubeContext, namespace, pods)
+	replaceAllCompatPods(t, ctx, kubeContext, namespace, endpoint, pods)
 	afterConn := newRawCompatConn(t, endpoint)
 	defer afterConn.Close()
 	assertRestartTxnSnapshotAndWatch(t, ctx, afterConn, prefix, seedRevision, txnRevision)
@@ -131,7 +131,7 @@ func TestCompactedTxnWatchOrderRecoversAcrossAllReplicaReplacements(t *testing.T
 		})
 	})
 
-	replaceAllCompatPods(t, ctx, os.Getenv("KUBEBRAIN_IDLE_RESTART_CONTEXT"), namespace, pods)
+	replaceAllCompatPods(t, ctx, os.Getenv("KUBEBRAIN_IDLE_RESTART_CONTEXT"), namespace, endpoint, pods)
 	afterConn := newRawCompatConn(t, endpoint)
 	defer afterConn.Close()
 	assertRestartTxnCurrentAndWatch(t, ctx, afterConn, prefix, txnRevision, false)
@@ -215,7 +215,7 @@ func TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements(t *testing.
 		})
 	})
 
-	replaceAllCompatPods(t, ctx, os.Getenv("KUBEBRAIN_IDLE_RESTART_CONTEXT"), namespace, pods)
+	replaceAllCompatPods(t, ctx, os.Getenv("KUBEBRAIN_IDLE_RESTART_CONTEXT"), namespace, endpoint, pods)
 	afterConn := newRawCompatConn(t, endpoint)
 	defer afterConn.Close()
 	assertRestartTxnSnapshotAndWatch(t, ctx, afterConn, prefix, seedRevision, txnRevision)

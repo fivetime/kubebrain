@@ -60,7 +60,7 @@ func TestLeaseExpiryReplicaReplacementPreservesRevision(t *testing.T) {
 		_, _ = etcdserverpb.NewKVClient(cleanupConn).DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
 	})
 
-	replaceAllCompatPods(t, ctx, kubeContext, namespace, pods)
+	replaceAllCompatPods(t, ctx, kubeContext, namespace, endpoint, pods)
 	afterConn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
 	defer afterConn.Close()

@@ -92,6 +92,7 @@ func TestHashKVCompactionRecoversAcrossAllReplicaReplacements(t *testing.T) {
 		}, 90*time.Second, 500*time.Millisecond, "%s replacement did not become Ready", pod)
 	}
 	assertHashKVSnapshotOnPods(t, ctx, kubeContext, namespace, pods, baseline)
+	requireEndpointReachable(t, grpcTarget(endpoint))
 }
 
 func assertHashKVSnapshotOnPods(
@@ -142,4 +143,66 @@ func kubectlPodHashKVSnapshot(
 	return replicaHashKVSnapshot{
 		Hash: response.Hash, HashRevision: hashRevision, CompactRevision: compactRevision,
 	}, nil
+}
+
+func TestReferenceEtcdHashKVCompactionRecoversAfterRestart(t *testing.T) {
+	binary := os.Getenv("REFERENCE_ETCD_BINARY")
+	if binary == "" {
+		t.Skip("set REFERENCE_ETCD_BINARY to run the HashKV restart oracle")
+	}
+	const endpoint = "127.0.0.1:42379"
+	args := []string{
+		"--name", "hashkv-compaction-restart-oracle",
+		"--data-dir", t.TempDir(),
+		"--listen-client-urls", "http://" + endpoint,
+		"--advertise-client-urls", "http://" + endpoint,
+		"--listen-peer-urls", "http://127.0.0.1:42380",
+		"--initial-advertise-peer-urls", "http://127.0.0.1:42380",
+		"--initial-cluster", "hashkv-compaction-restart-oracle=http://127.0.0.1:42380",
+	}
+	start := func() (func(), *grpc.ClientConn) {
+		t.Helper()
+		stop := startCompatCommand(t, binary, args...)
+		conn := newRawCompatConn(t, endpoint)
+		kv := etcdserverpb.NewKVClient(conn)
+		require.Eventually(t, func() bool {
+			callCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			defer cancel()
+			_, err := kv.Range(callCtx, &etcdserverpb.RangeRequest{Key: []byte("/a3528/health")})
+			return err == nil
+		}, 10*time.Second, 50*time.Millisecond)
+		return stop, conn
+	}
+
+	stop, conn := start()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	kv := etcdserverpb.NewKVClient(conn)
+	key := []byte("/a3528/reference-hashkv-restart")
+	_, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("first")})
+	require.NoError(t, err)
+	compactAt, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("second")})
+	require.NoError(t, err)
+	latest, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("latest")})
+	require.NoError(t, err)
+	_, err = kv.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: compactAt.GetHeader().GetRevision()})
+	require.NoError(t, err)
+	baseline, err := etcdserverpb.NewMaintenanceClient(conn).HashKV(ctx, &etcdserverpb.HashKVRequest{
+		Revision: latest.GetHeader().GetRevision(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, latest.GetHeader().GetRevision(), baseline.HashRevision)
+	require.Equal(t, compactAt.GetHeader().GetRevision(), baseline.CompactRevision)
+	require.NoError(t, conn.Close())
+	stop()
+
+	_, restartedConn := start()
+	defer restartedConn.Close()
+	recovered, err := etcdserverpb.NewMaintenanceClient(restartedConn).HashKV(ctx, &etcdserverpb.HashKVRequest{
+		Revision: baseline.HashRevision,
+	})
+	require.NoError(t, err)
+	require.Equal(t, baseline.Hash, recovered.Hash)
+	require.Equal(t, baseline.HashRevision, recovered.HashRevision)
+	require.Equal(t, baseline.CompactRevision, recovered.CompactRevision)
 }

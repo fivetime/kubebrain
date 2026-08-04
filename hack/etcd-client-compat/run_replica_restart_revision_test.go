@@ -24,6 +24,8 @@ func TestReplicaRestartRevisionRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "TestReferenceEtcdCompactedTxnWatchOrderRecoversAfterRestart")
 	require.Contains(t, string(script), "TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements")
 	require.Contains(t, string(script), "TestReferenceEtcdPriorCompactedTxnPrevKVRecoversAfterRestart")
+	require.Contains(t, string(script), "TestHashKVCompactionRecoversAcrossAllReplicaReplacements")
+	require.Contains(t, string(script), "TestReferenceEtcdHashKVCompactionRecoversAfterRestart")
 }
 
 func TestReplicaRestartRevisionRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {
