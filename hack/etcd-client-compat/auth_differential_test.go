@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +25,8 @@ type authErrorOutcome struct {
 	PermissionDenied bool
 	UserEmpty        bool
 }
+
+const authTransitionRangeCount = 50
 
 type authDifferentialOutcome struct {
 	EnabledRevision           uint64
@@ -118,6 +122,11 @@ type authDifferentialOutcome struct {
 	DisableNewWatchCreated    bool
 	DisableNewWatchEvent      bool
 	AuthDisabledStatus        bool
+	PreAuthRangeStreamFirst   bool
+	RangeStreamAfterChunks    bool
+	RangeStreamAfterCount     int
+	RangeStreamAfterTerminal  bool
+	RangeStreamAfterEOF       bool
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -169,6 +178,28 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	bootstrap := authClient(t, endpoint, "", "")
+	transitionRangeValue := strings.Repeat("x", 256*1024)
+	for i := 0; i < authTransitionRangeCount; i++ {
+		_, putErr := bootstrap.Put(
+			ctx,
+			fmt.Sprintf("/auth-transition/rangestream/%02d", i),
+			transitionRangeValue,
+		)
+		require.NoError(t, putErr)
+	}
+	preAuthRangeStream, err := etcdserverpb.NewKVClient(bootstrap.ActiveConnection()).RangeStream(
+		ctx,
+		&etcdserverpb.RangeRequest{
+			Key:      []byte("/auth-transition/rangestream/"),
+			RangeEnd: []byte(clientv3.GetPrefixRangeEnd("/auth-transition/rangestream/")),
+		},
+	)
+	require.NoError(t, err)
+	preAuthRangeFirst, err := preAuthRangeStream.Recv()
+	require.NoError(t, err)
+	preAuthRangeStreamFirst := preAuthRangeFirst.RangeResponse != nil &&
+		len(preAuthRangeFirst.RangeResponse.Kvs) > 0 &&
+		preAuthRangeFirst.RangeResponse.Header == nil
 	compactRevisions := make([]int64, 0, 3)
 	for i := 0; i < 3; i++ {
 		put, putErr := bootstrap.Put(ctx, fmt.Sprintf("/auth-compact/%d", i), "value")
@@ -244,6 +275,25 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	statusAfterEnable, err := bootstrap.AuthStatus(ctx)
 	require.NoError(t, err)
+	rangeStreamAfterChunks := 0
+	rangeStreamAfterCount := len(preAuthRangeFirst.GetRangeResponse().Kvs)
+	rangeStreamAfterTerminal := false
+	rangeStreamAfterEOF := false
+	for {
+		response, receiveErr := preAuthRangeStream.Recv()
+		if errors.Is(receiveErr, io.EOF) {
+			rangeStreamAfterEOF = true
+			break
+		}
+		require.NoError(t, receiveErr)
+		rangeStreamAfterChunks++
+		rangeResponse := response.GetRangeResponse()
+		require.NotNil(t, rangeResponse)
+		rangeStreamAfterCount += len(rangeResponse.Kvs)
+		if rangeResponse.Header != nil && rangeResponse.Count == authTransitionRangeCount && !rangeResponse.More {
+			rangeStreamAfterTerminal = true
+		}
+	}
 
 	_, wrongCredentialsErr := bootstrap.Authenticate(ctx, "missing", "wrong")
 	_, noPasswordErr := bootstrap.Authenticate(ctx, "nopass", "password")
@@ -743,6 +793,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		DisableNewWatchCreated:    disableNewWatchCreated,
 		DisableNewWatchEvent:      disableNewWatchEvent,
 		AuthDisabledStatus:        !disabledStatus.Enabled,
+		PreAuthRangeStreamFirst:   preAuthRangeStreamFirst,
+		RangeStreamAfterChunks:    rangeStreamAfterChunks > 0,
+		RangeStreamAfterCount:     rangeStreamAfterCount,
+		RangeStreamAfterTerminal:  rangeStreamAfterTerminal,
+		RangeStreamAfterEOF:       rangeStreamAfterEOF,
 	}
 }
 
@@ -814,6 +869,11 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.DisableNewWatchCreated)
 	require.True(t, reference.DisableNewWatchEvent)
 	require.True(t, reference.AuthDisabledStatus)
+	require.True(t, reference.PreAuthRangeStreamFirst)
+	require.True(t, reference.RangeStreamAfterChunks)
+	require.Equal(t, authTransitionRangeCount, reference.RangeStreamAfterCount)
+	require.True(t, reference.RangeStreamAfterTerminal)
+	require.True(t, reference.RangeStreamAfterEOF)
 	actual := collectAuthDifferentialOutcome(t, kubebrainEndpoint)
 	require.Equal(t, reference, actual)
 }
