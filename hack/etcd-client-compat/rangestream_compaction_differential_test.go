@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,6 +23,16 @@ type rangeStreamCompactionOutcome struct {
 	ReceivedKeys   int
 	Completed      bool
 	CompactedError bool
+}
+
+type rangeStreamClientCompactionOutcome struct {
+	DirectCode        string
+	DirectMessage     string
+	DirectIsCompacted bool
+	StreamCreated     bool
+	StreamCode        string
+	StreamMessage     string
+	StreamIsCompacted bool
 }
 
 func TestRangeStreamPartialCompactionDifferential(t *testing.T) {
@@ -47,6 +58,67 @@ func TestRangeStreamPartialCompactionDifferential(t *testing.T) {
 	require.Positive(t, got.ReceivedKeys)
 	require.Less(t, want.ReceivedKeys, 200)
 	require.Less(t, got.ReceivedKeys, 200)
+}
+
+func TestRangeStreamClientCompactionDifferential(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	kubebrain := os.Getenv("KUBEBRAIN_COMPACTION_ENDPOINT")
+	if reference == "" || kubebrain == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT and KUBEBRAIN_COMPACTION_ENDPOINT to disposable instances")
+	}
+	if mainEndpoint, ok := configuredCompatEndpoint(); ok {
+		require.NotEqual(t, mirrorEndpointIdentity(mainEndpoint), mirrorEndpointIdentity(kubebrain),
+			"KUBEBRAIN_COMPACTION_ENDPOINT must not be the shared main endpoint")
+	}
+
+	want := runRangeStreamClientCompaction(t, reference, "reference")
+	require.Equal(t, rangeStreamClientCompactionOutcome{
+		DirectCode: codes.Unknown.String(), DirectMessage: rpctypes.ErrCompacted.Error(), DirectIsCompacted: true,
+		StreamCreated: true, StreamCode: codes.Unknown.String(), StreamMessage: rpctypes.ErrCompacted.Error(), StreamIsCompacted: true,
+	}, want)
+	require.Equal(t, want, runRangeStreamClientCompaction(t, kubebrain, "kubebrain"))
+}
+
+func runRangeStreamClientCompaction(t *testing.T, endpoint, instance string) rangeStreamClientCompactionOutcome {
+	t.Helper()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	key := fmt.Sprintf("/zz-dbaas-rangestream-client-compact/%s/%d", instance, time.Now().UnixNano())
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, deleteErr := client.Delete(cleanupCtx, key)
+		require.NoError(t, deleteErr)
+		remaining, getErr := client.Get(cleanupCtx, key)
+		require.NoError(t, getErr)
+		require.Empty(t, remaining.Kvs)
+	})
+
+	first, err := client.Put(ctx, key, "value-0")
+	require.NoError(t, err)
+	latest := first
+	for i := 1; i < 5; i++ {
+		latest, err = client.Put(ctx, key, fmt.Sprintf("value-%d", i))
+		require.NoError(t, err)
+	}
+	_, err = client.Compact(ctx, latest.Header.Revision)
+	require.NoError(t, err)
+
+	_, directErr := client.Get(ctx, key, clientv3.WithRev(first.Header.Revision))
+	stream, streamCreateErr := client.GetStream(ctx, key, clientv3.WithRev(first.Header.Revision))
+	var streamErr error
+	if streamCreateErr == nil {
+		_, streamErr = clientv3.GetStreamToGetResponse(stream)
+	}
+	return rangeStreamClientCompactionOutcome{
+		DirectCode: status.Code(directErr).String(), DirectMessage: status.Convert(directErr).Message(),
+		DirectIsCompacted: errors.Is(directErr, rpctypes.ErrCompacted),
+		StreamCreated:     streamCreateErr == nil, StreamCode: status.Code(streamErr).String(),
+		StreamMessage: status.Convert(streamErr).Message(), StreamIsCompacted: errors.Is(streamErr, rpctypes.ErrCompacted),
+	}
 }
 
 func runRangeStreamPartialCompaction(

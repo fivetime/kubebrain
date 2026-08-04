@@ -14,7 +14,18 @@ func TestRangeStreamCompactionDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "data revision must be 1")
 	require.Contains(t, string(script), "auth revision must be 1")
 	require.Contains(t, string(script), "assert_clean_endpoint postflight")
-	require.Contains(t, string(script), "-run '^TestRangeStreamPartialCompactionDifferential$'")
+	require.Contains(t, string(script), "-run '^TestRangeStream(Partial|Client)CompactionDifferential$'")
+	require.Contains(t, string(script), "GO_TEST_RACE")
+}
+
+func TestRangeStreamCompactionDifferentialRunnerRejectsInvalidRaceBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-rangestream-compaction-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"GO_TEST_RACE=maybe",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "GO_TEST_RACE must be true or false")
+	require.NotContains(t, string(output), "missing required command")
 }
 
 func TestRangeStreamCompactionDifferentialRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {

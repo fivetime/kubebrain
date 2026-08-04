@@ -9,6 +9,13 @@ ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 REFERENCE_CLIENT_URL="${REFERENCE_RANGESTREAM_CLIENT_URL:-http://127.0.0.1:12379}"
 REFERENCE_PEER_URL="${REFERENCE_RANGESTREAM_PEER_URL:-http://127.0.0.1:12380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-3m}"
+GO_TEST_RACE="${GO_TEST_RACE:-false}"
+
+case "$GO_TEST_RACE" in
+  true) race_args=(-race) ;;
+  false) race_args=() ;;
+  *) echo "GO_TEST_RACE must be true or false, got $GO_TEST_RACE" >&2; exit 2 ;;
+esac
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -99,7 +106,7 @@ cleanup() {
     echo "reference RangeStream etcd log:" >&2
     tail -n 100 "$reference_log" >&2
   fi
-  rm -rf "$data_dir"
+  find "$data_dir" -depth -delete
 }
 trap cleanup EXIT
 
@@ -134,7 +141,7 @@ fi
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_ENDPOINT="${REFERENCE_CLIENT_URL#http://}" \
     KUBEBRAIN_COMPACTION_ENDPOINT="$KUBEBRAIN_COMPACTION_ENDPOINT" \
-    go test . -run '^TestRangeStreamPartialCompactionDifferential$' \
+    go test "${race_args[@]}" . -run '^TestRangeStream(Partial|Client)CompactionDifferential$' \
       -count=1 -timeout="$TEST_TIMEOUT" -v
 )
 assert_clean_endpoint postflight
