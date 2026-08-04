@@ -34345,6 +34345,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持 468126003565737814，测试 prefix=0、lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、
   0 restart。
 
+- A3559 把 official clientv3 RangeStream compacted typed error 从 bufconn 提升为真实网络差分。
+  对照 `/root/etcd/tests/integration/clientv3/kv_test.go::TestKVGetStreamCompactedError`，A1132/A1215
+  已固定进程内 `GetStreamToGetResponse` 的 `ErrCompacted` 三件套，但 A245 的 destructive 双端 runner
+  只读取 raw RangeStream partial-compaction status；真实 client adapter、gRPC transport 与服务端组合
+  仍未被同一官方 oracle 覆盖。
+
+  新增 client 场景在每端对同一 key 写 5 个版本、compact 到最新 revision，再分别执行 direct
+  `Get(WithRev(first))` 与 `GetStream` + `GetStreamToGetResponse`。绝对 baseline 要求 direct/stream
+  同时满足 `errors.Is(err, rpctypes.ErrCompacted)`、client-visible `codes.Unknown` 和精确 compacted
+  message，且 `GetStream` 创建本身成功、错误只从消费 channel 暴露；随后比较双端归一结果。runner
+  继续要求 KubeBrain endpoint 为 authRevision=1、revision=1 且无 key/user/role/lease 的 pristine
+  disposable keyspace，postflight 再验证用户状态清空，禁止误压缩共享生产实例。
+
+  普通 runner 中既有 partial-compaction 10.18 秒、新 client typed 场景 0.17 秒 GREEN；新
+  `GO_TEST_RACE=true` 模式在另一 pristine keyspace 分别 11.19/0.21 秒 GREEN。runner 参数非布尔值
+  必须在依赖或集群访问前 fail closed，临时目录清理由精确 `find -depth -delete` 完成；完整 compat
+  1.887 秒、vet、bash syntax 与 diff check 通过。没有服务端 RED，故不构建或滚动镜像。临时
+  Pod/Service、30459、reference 42379/42380 和目录均已清理；共享生产 revision/index/applied
+  保持 468126003565737814，lease=0、无 alarm，KubeBrain/PD/TiKV 各 3/3 Ready、0 restart。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
