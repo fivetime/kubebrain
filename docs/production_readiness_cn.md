@@ -322,13 +322,17 @@ RUN_BASIC_SMOKE=false \
 RUN_HA_SMOKE=false \
 RUN_APISERVER_SMOKE=false \
 RUN_TLS_SMOKE=false \
+KUBE_CONTEXT=kind-kubebrain-dbaas \
+ALLOW_DESTRUCTIVE_FULL_RESTART=true \
 hack/dev/verify.sh
 ```
 
 测试使用官方 `client/v3` 在重启前写入普通 key、已删除 key、长 TTL lease 附属 key
 和 watch 历史；重启期间持续读取并拒绝成功响应的 revision 回退，恢复后验证当前值、
 tombstone 与历史值、lease/附属 key、watch 历史回放，以及新写入 revision 严格增长。
-当前 3×KubeBrain、3×PD、3×TiKV 环境已完成一次 9 Pod 顺序重启，用时 68.42 秒。
+runner 必须显式指定 Kubernetes context 并确认破坏性操作；测试内部只接受结构化的两个
+namespace 与三组各三个 Pod 名，不执行调用方提供的任意 shell command。runner 在执行前后
+校验 endpoint health、Alarm、compat prefix、Lease 集合及 TidbCluster Ready。
 该结果证明 quorum-preserving 滚动恢复的客户端可观察持久性，不替代备份恢复、跨可用区
 分区或同时失去多数副本的灾难恢复演练。
 

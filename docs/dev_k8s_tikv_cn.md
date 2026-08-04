@@ -194,11 +194,14 @@ RUN_BASIC_SMOKE=false \
 RUN_HA_SMOKE=false \
 RUN_APISERVER_SMOKE=false \
 RUN_TLS_SMOKE=false \
+KUBE_CONTEXT=kind-kubebrain-dbaas \
+ALLOW_DESTRUCTIVE_FULL_RESTART=true \
 hack/dev/verify.sh
 ```
 
-脚本会拒绝非精确 3/3/3 的拓扑。当前开发集群已完成一次 9 Pod 顺序重启验证，用时
-68.42 秒，最终三组 StatefulSet 均 3/3 Ready。
+脚本会拒绝未显式指定 context、未确认破坏性操作或非精确 3/3/3 的拓扑。Pod 替换由
+Go 测试按结构化 namespace/Pod 列表执行，不接受任意 shell command；runner 在执行前后
+检查 endpoint、Alarm、compat prefix 和 Lease 集合，并在失败时 best-effort 解除测试 Alarm。
 
 恢复覆盖保护 smoke 默认不运行。它只会创建一个独立小前缀，导出后尝试恢复回同一前缀，并确认默认 restore 会拒绝覆盖已有 key：
 

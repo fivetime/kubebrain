@@ -17,13 +17,22 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestReplicatedRestartPreservesState is opt-in because the supplied command
-// restarts every KubeBrain, PD, and TiKV member in the external test cluster.
+// TestReplicatedRestartPreservesState is opt-in because it sequentially
+// replaces every KubeBrain, PD, and TiKV Pod in the external test cluster.
 func TestReplicatedRestartPreservesState(t *testing.T) {
-	restartCommand := os.Getenv("KUBEBRAIN_RESTART_PERSISTENCE_COMMAND")
-	if restartCommand == "" {
-		t.Skip("set KUBEBRAIN_RESTART_PERSISTENCE_COMMAND to run replicated restart persistence")
+	kubeContext := os.Getenv("KUBEBRAIN_RESTART_CONTEXT")
+	servingNamespace := os.Getenv("KUBEBRAIN_RESTART_NAMESPACE")
+	servingPods := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_RESTART_PODS"))
+	backendNamespace := os.Getenv("KUBEBRAIN_RESTART_BACKEND_NAMESPACE")
+	pdPods := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_RESTART_PD_PODS"))
+	tikvPods := splitNonEmptyCSV(os.Getenv("KUBEBRAIN_RESTART_TIKV_PODS"))
+	if kubeContext == "" || servingNamespace == "" || backendNamespace == "" ||
+		len(servingPods) == 0 || len(pdPods) == 0 || len(tikvPods) == 0 {
+		t.Skip("set the explicit KUBEBRAIN_RESTART_* context, namespaces, and Pod lists")
 	}
+	require.Len(t, servingPods, 3)
+	require.Len(t, pdPods, 3)
+	require.Len(t, tikvPods, 3)
 	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for replicated restart persistence")
@@ -147,7 +156,15 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 		}
 	}()
 
-	output, commandErr := runCompatShellCommandContext(t, ctx, restartCommand)
+	for _, pod := range servingPods {
+		replaceCompatPod(t, ctx, kubeContext, servingNamespace, pod)
+	}
+	for _, pod := range pdPods {
+		replaceCompatPod(t, ctx, kubeContext, backendNamespace, pod)
+	}
+	for _, pod := range tikvPods {
+		replaceCompatPod(t, ctx, kubeContext, backendNamespace, pod)
+	}
 	close(stop)
 	wg.Wait()
 	select {
@@ -155,8 +172,7 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 		require.NoError(t, pollErr)
 	default:
 	}
-	require.NoErrorf(t, commandErr, "restart command output:\n%s", strings.TrimSpace(string(output)))
-	t.Logf("restart command output:\n%s", strings.TrimSpace(string(output)))
+	requireEndpointReachable(t, grpcTarget(endpoint))
 
 	alarms, err := maintenance.Alarm(ctx, &etcdserverpb.AlarmRequest{
 		Action: etcdserverpb.AlarmRequest_GET,
@@ -248,6 +264,23 @@ func TestReplicatedRestartPreservesState(t *testing.T) {
 
 	_, err = cli.Revoke(ctx, lease.ID)
 	require.NoError(t, err)
+}
+
+func replaceCompatPod(t *testing.T, ctx context.Context, kubeContext, namespace, pod string) {
+	t.Helper()
+	oldUID := kubectlPodField(t, kubeContext, namespace, pod, "{.metadata.uid}")
+	ownerKind := kubectlPodField(t, kubeContext, namespace, pod,
+		"{.metadata.ownerReferences[?(@.controller==true)].kind}")
+	require.Equal(t, "StatefulSet", ownerKind, "%s/%s must be controlled by a StatefulSet", namespace, pod)
+	deleteArgs := kubectlContextArgs(kubeContext, "-n", namespace, "delete", "pod", pod,
+		"--wait=true", "--timeout=240s")
+	output, err := runCompatKubectlContext(t, ctx, deleteArgs...)
+	require.NoErrorf(t, err, "replace %s/%s: %s", namespace, pod, strings.TrimSpace(string(output)))
+	require.Eventually(t, func() bool {
+		newUID := kubectlPodFieldNoFail(kubeContext, namespace, pod, "{.metadata.uid}")
+		ready := kubectlPodFieldNoFail(kubeContext, namespace, pod, "{.status.containerStatuses[0].ready}")
+		return newUID != "" && newUID != oldUID && ready == "true"
+	}, 4*time.Minute, 500*time.Millisecond, "%s/%s replacement did not become Ready", namespace, pod)
 }
 
 func isRestartTransient(err error) bool {

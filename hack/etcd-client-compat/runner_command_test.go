@@ -235,7 +235,6 @@ func TestCompatFailoverCommandsUseBoundedHelpers(t *testing.T) {
 		"lease_read_failover_test.go",
 		"lease_renewal_soak_failover_test.go",
 		"mutation_failover_test.go",
-		"restart_persistence_test.go",
 		"revision_monotonic_failover_test.go",
 	} {
 		t.Run(testFile, func(t *testing.T) {
@@ -264,6 +263,7 @@ func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 		"lease_id_extremes_test.go",
 		"linearizability_test.go",
 		"ordering_replica_restart_test.go",
+		"restart_persistence_test.go",
 		"serializable_read_differential_test.go",
 		"watch_quota_test.go",
 	} {
