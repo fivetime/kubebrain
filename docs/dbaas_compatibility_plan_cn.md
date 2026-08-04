@@ -34487,6 +34487,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整 compat 1.324 秒、vet、staticcheck、bash syntax 和 diff check 通过。没有服务端 RED，故不构建或
   滚动镜像；临时 Pod/Service 与 reference listener 已清理，共享生产 endpoint 未执行 AuthEnable。
 
+- A3567 固定 authenticated 多 chunk RangeStream 跨 auth revision mutation 的结束复核。A3566 的匿名
+  caller revision=0 可以跨 AuthEnable 正常 EOF；非零 token revision 则不同。对照上游 `doSerialize`
+  和 KubeBrain `ensureAuthRevision`，若请求处理中 auth store revision 改变，服务端会先发送已读取的
+  chunks，再在 handler 返回阶段报告 `AuthOldRevision`。
+
+  状态机给 Alice 追加 50-key fixture 的只读权限，以有效 token 启动 raw RangeStream 并读取第一 chunk；
+  root 随后新增无关 role 推进 auth revision，再消费流。官方绝对基线固定：mutation 后仍至少一个
+  chunk、合并恰好 50 KV、terminal Header/Count/More 已完整交付，但下一次 Recv 不是 EOF，而是精确
+  `codes.InvalidArgument`、`etcdserver: revision of auth store is old`。KubeBrain 完整 outcome 一致。
+  该门禁提醒客户端即使看见 terminal-looking metadata，也必须等到 clean EOF 才能接受结果。
+
+  两个独立 TiKV keyspace、NodePort 30463/30464 上普通双端 12.852 秒、race 23.987 秒 GREEN；完整
+  compat 2.008 秒、vet、staticcheck、bash syntax 和 diff check 通过。没有服务端 RED，故不构建或
+  滚动镜像；临时 Pod/Service 与 reference listener 已清理，共享生产 endpoint 未变更 auth。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
