@@ -32889,6 +32889,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   限定；lease/auth/alarm 元数据集合与 bbolt mmap 仍随其各自规模或文件虚拟地址空间增长，不能
   把本项表述成整个进程严格常数 RSS。历史 MVCC 与 TiKV 物理 PITR 仍不在本项范围内。
 
+  根模块全量回归通过，其中 `pkg/server/etcd` 154.586 秒、`pkg/backend` 43.440 秒，生产工具
+  套件 361.560 秒；聚焦 race 连续 5 轮中 server 31.891 秒，两个模块 vet 通过。生产与隔离
+  官方 etcd 的 raw Snapshot stream 差分连续 20 轮（18.201 秒）通过。官方 etcdctl 从生产
+  入口保存 2.1 MB，etcdutl status 返回 revision `468126003565721401`、5,974 keys、3.7.0；
+  restore 并启动官方 etcd 后 revision、全部 Count 和前三条 KV 的 value/create/mod/version/
+  lease 精确一致。第二轮临时 lease snapshot 为 revision `468126003565721402`、5,975 keys，
+  恢复后保持 ID `18c871fdd4f86bc7`、GrantedTTL=300、TTL=300、attached key/value 与 KV lease；
+  源端 revoke 后确认临时 key 不存在，最终生产 revision 为 `468126003565721403`。
+
+  生产镜像 `kubebrain:a3488-streaming-snapshot` 的本地 ID 为
+  `sha256:555beccafa45132f4f9abe4e69826077daf89da4bd71774336c7baf430a52681`，构建
+  SHA 为 `a0807ed0ae93b6323ca7f70a8ad096093ff34599`、时间为
+  `2026-08-03T23:58:00Z`；kind runtime digest 为
+  `sha256:e00e23821c86db9b5b53f923fec4a3a8695b11cb61604a906fb07becfc11e958`。
+  三副本滚动后均 ready、0 restart，3 PD/3 TiKV 健康，readyz/version/endpoint status 正常；
+  临时 lease/key、官方 etcd 进程、snapshot/restore/reference 目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
