@@ -33418,6 +33418,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 PD、3 TiKV 均 Ready/0 restart，lease list 与 soak 前缀均为 0；endpoint health 提交探针
   16.21 ms 成功，revision/raft index/applied index 均为 `468126003565723147`、term 280。
 
+- A3509 增加 PD leader 与 leader-heavy TiKV 的跨层同窗故障门禁。A3507/A3508 分别证明
+  单 PD 或单 TiKV replacement，但不能替代 P0 要求的多点故障。新增
+  `hack/dev/delete-pd-and-tikv-leaders.sh`：在删除前从健康 PD 解析当前 PD leader 与
+  `state_name=Up`、`leader_count>0` 的最重 TiKV，分别校验受限 Pod 名、正 leader count 和非空
+  UID；随后用同一 `kubectl delete pod <pd> <tikv> --wait=true` 触发重叠故障，等待两个
+  replacement Ready，并要求两个 UID 都必须变化。解析、依赖、地址、UID 或 replacement 任一
+  异常均在删除前或返回成功前 fail closed；所有 kubectl 调用固定显式 context/namespace。
+  commit `3c6b54c6` 固化该 100755 opt-in helper，脚本通过 `bash -n`、ShellCheck（环境提供时）
+  和 `git diff --check`，compat 全套与 `go vet` 通过。
+
+  首轮组合故障由 8 个官方 clientv3 worker 持续执行 Put/Txn/Get：命令窗口记录 91 次成功操作，
+  replacement Ready 后仍出现约两轮 4 秒有界超时，A3506 的真实恢复门禁继续运行直至再次完成
+  足量数据操作并逐键 Put/Get，14.06 秒通过。随后 64 条 lease（8×8、TTL 30 秒）跨 3 轮同窗
+  PD/TiKV replacement：每轮所有 lease 必须各收到新的正 TTL KeepAlive，key→lease ID 绑定完整；
+  三轮后 Revoke、TTL=-1、List 与前缀 cleanup 全部通过，总耗时 69.94 秒。四次组合故障最终使
+  `kb-pd-0/1/2` 与 `kb-tikv-0/1/2` 六个 Pod 全部获得本轮新 UID，证明动态目标没有固定在单一
+  实例；PD 回读三个 TiKV store 均 Up、各 8 regions。
+
+  本轮不修改生产二进制，三个 KubeBrain 继续运行 A3505 runtime digest
+  `sha256:bbdb99772164a3b4c9be9ced1b23d54ff22ab149005dc694afea4966a62482bf`。组合故障使数据面
+  leadership term 从 280 进入 281，但最终 3 KubeBrain、3 PD、3 TiKV 均 Ready/0 restart；
+  lease list、soak 与 backend quorum 前缀均为 0，endpoint health 提交探针 16.24 ms 成功，
+  revision/raft index/applied index 均为 `468126003565723517`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
