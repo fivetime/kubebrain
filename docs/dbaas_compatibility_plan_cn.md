@@ -33740,6 +33740,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compat/direct-lease Count=0、LeaseList/AlarmList 为空，3 KubeBrain、3 PD、3 TiKV 均
   Ready/0 restart。本轮没有 runtime 语义差距，不重建 A3512 镜像。
 
+- A3524 将 serving 层空闲重启与 latest-compaction 后重启的 revision 不变量固化为独立三副本
+  门禁。新增可复用的 `a3524-idle-restart` StatefulSet/双 Service 清单，以及
+  `run-replica-restart-revision.sh`：必须显式提供 endpoint、context、namespace、三个不同 Pod
+  名并设置破坏性确认；预检每个 Pod Ready、由 StatefulSet 控制且 UID 唯一，执行前后强制
+  compat prefix 为空并比较排序后的 Lease ID 集合。测试同时替换全部三个 serving Pod，要求
+  无用户写期间 revision 不推进，替换后的下一次 Put 恰为 `old+1`；在 compact==current 时同样
+  不得把 compaction 或冷启动制造成 MVCC mutation。两个等价 oracle 用同一 data-dir 停启官方
+  `/root/etcd/bin/etcd`，避免只验证 KubeBrain 自己的假设。
+
+  全新、零写入 TiKV keyspace 首次启动即得到确定性 runtime RED：仅 Leader Ready，两个
+  Follower 已连接 Leader，却每 5 秒在 readiness 线性读中阻塞到 probe 取消。根因是 Leader
+  `/status` 的代码虽承诺空库公开 etcd 初始化 revision 1，却先调用 `GetDurableRevision`，把尚未
+  创建 watermark 键的正常 `ErrKeyNotFound` 当作 503；Follower 因而永远取不到 read barrier。
+  commit `6ca1c80f` 新增修前返回 503 的单测，并只把 missing watermark 解释为初始化 revision 1，
+  其他存储错误仍 fail closed。冷 Leader 从已有 durable watermark 恢复的既有测试同时保持通过。
+
+  修复镜像 `kubebrain:a3524-empty-revision` 本地 ID 为
+  `sha256:89a7ab549d40011f9a6d78eb2e0ea20ecb86b16dadbfc973dab843c5a2b39447`；三台冷 Pod 在无
+  seed write 条件下 3/3 Ready、0 restart，日志无一次 revision-sync 失败。四项真实门禁首轮
+  21.372 秒 GREEN，完整 race 23.968 秒 GREEN，随后普通模式连续 3/3 GREEN
+  （24.219/24.447/24.594 秒）；每轮 postflight 均保持 prefix Count=0、Lease 集合不变。
+  runner fail-closed 专项连续 10 轮、compat 普通全套、相关包 race、`go test ./pkg/...`、根与
+  compat `go vet`、脚本语法和清单 dry-run 均通过。一次性 StatefulSet 与两个 Service 已删除；
+  主 keyspace revision 未前进，compat Count=0、LeaseList/AlarmList 为空，3 KubeBrain、3 PD、
+  3 TiKV 均 Ready/0 restart，revision/raft index/applied index 均为
+  `468126003565735746`、term 297。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
