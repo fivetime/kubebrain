@@ -34244,6 +34244,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无 alarm。临时 Service、官方三成员进程/数据和六个 listener 已全部清理；KubeBrain/PD/TiKV
   各 3/3 Ready、0 restart。
 
+- A3554 沿 A3552 的 signed-wire 审计修复 unary Range 的同类负 revision wrap。近期 upstream
+  高风险变更中，Txn compacted-range consistency、non-admin Status、CRL resumed session、invalid
+  Watch header 与 KeysOnly total-count 均已有既存门禁；全局搜索随后发现 backend shim 的 point
+  Get、range List、CountAtRevision/index fallback 仍直接执行 `uint64(r.Revision)`。确定性 probe
+  修复前 RED：-1 实际下传 18446744073709551615，MinInt64 下传 9223372036854775808，正 revision 7
+  原样正常。
+
+  静态数据上巨大 revision 通常返回与 latest 相同的 key 集，但这不是安全等价：unary List 先固定
+  当前逻辑 header revision，随后取得 TiKV snapshot；MaxUint64 过滤可能把两者之间的新版本纳入
+  一个旧 header 响应。新增 `normalizeRangeRevision` 单一转换点，把所有 `revision <= 0` 映射到
+  backend latest sentinel 0，正 revision 原样传递；unary Get/List、Count index/full-scan fallback
+  以及 RangeStream 共同复用，避免路径再次漂移。official differential 新增 MinInt64 prefix、point、
+  CountOnly 三种绝对结果，均证明等价 latest；旧线上静态 oracle 仍 0.81 秒 GREEN，参数 RED 因而是
+  捕获快照风险所必需的白盒证据。
+
+  server 全包 165.628 秒、targeted race 1.381 秒、完整 compat 1.198 秒及 vet/diff check 通过。
+  `kubebrain:a3554-unary-negative-revision`（代码 SHA
+  `a49f03cb34cf091984f7d0ee5a14a03edced359a`，build time `2026-08-04T17:00:18Z`）已按序滚动
+  三副本；部署后差分首轮 0.47 秒、连续 10 轮 8.335 秒、race 2.007 秒 GREEN。总计 13 轮
+  KubeBrain fixture 每轮 5 次用户 mutation + 1 次 prefix cleanup，使 revision/index/applied 从
+  468126003565737556 精确推进 78 到 468126003565737634；测试前缀与 `/dbaas-` Count=0、lease=0、
+  无 alarm。KubeBrain/PD/TiKV 各 3/3 Ready、0 restart，一次性官方 etcd、42379/42380 listener 与
+  数据目录均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
