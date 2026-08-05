@@ -1671,6 +1671,7 @@ func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
 	kv := etcdserverpb.NewKVClient(conn)
 	watch := etcdserverpb.NewWatchClient(conn)
 	key := []byte(fmt.Sprintf("/a1025/watch-future/%d", time.Now().UnixNano()))
+	syncedKey := []byte(fmt.Sprintf("/a1025/watch-synced/%d", time.Now().UnixNano()))
 	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	requireRawRangeHeaderWellFormed(t, base)
@@ -1679,6 +1680,19 @@ func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
 	stream, err := watch.Watch(ctx)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+			CreateRequest: &etcdserverpb.WatchCreateRequest{Key: syncedKey, WatchId: 302},
+		},
+	}))
+	syncedCreated, err := stream.Recv()
+	require.NoError(t, err)
+	requireRawWatchHeaderWellFormed(t, syncedCreated)
+	require.True(t, syncedCreated.Created)
+	require.False(t, syncedCreated.Canceled)
+	require.Equal(t, int64(302), syncedCreated.WatchId)
+	require.Equal(t, base.Header.Revision, syncedCreated.Header.Revision)
+
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
 			CreateRequest: &etcdserverpb.WatchCreateRequest{
@@ -1711,7 +1725,7 @@ func TestRawGRPCWatchFutureRevisionSuppressesProgressUntilEvent(t *testing.T) {
 	select {
 	case received := <-pending:
 		require.NoError(t, received.err)
-		t.Fatalf("future watch emitted early response before reaching start revision: %v", received.response)
+		t.Fatalf("stream-wide progress bypassed its future watch: %v", received.response)
 	case <-time.After(150 * time.Millisecond):
 	}
 

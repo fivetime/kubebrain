@@ -36215,6 +36215,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与兼容模块 test/vet（1.248 秒）均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或
   重建数据面；一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3672 关闭 multiplexed Watch stream 的 RequestProgress 最慢 watcher 绕过缺口。对照官方
+  `/root/etcd/server/storage/mvcc/watchable_store.go` 的 `progressAll/progressIfSync`，新增 raw
+  gRPC 差分在 revision R 的同一 stream 建立已同步 prefix watch 907 和 `StartRevision=R+2`
+  的 future watch 908。首次 RequestProgress 时官方 etcd 保持静默，旧生产 KubeBrain 却在
+  约 100ms 后返回 `WatchId=907,Header=R` 的逐 watch 空帧；这是稳定的真实 RED，会把 stream-wide
+  请求错误改写成某个 watch 的通知，并绕过尚未同步的 future watcher。
+
+  根因是 A45 为大规模 kube-apiserver cacher 增加的超时后逐 watch fallback。该扩展虽使用各自
+  delivered watermark，却不符合通用 etcd wire contract。现删除 fallback：捕获 target 后只在
+  每个 active watch 都同步时返回一个规范 `WatchId=-1` 帧，否则本次请求不响应；两个写把水位推进
+  到 R+2 后，第二次 RequestProgress 才返回 header=R+2。既有 bufconn future-watch 回归也加入同
+  stream 已同步 watcher，旧实现会稳定泄漏 ID=302，因而默认测试无需 reference 即可捕获回退。
+  这项修复明确取代 A45/A253 中保留逐 watch fallback 的扩展选择，以通用 etcd 兼容为准；完整线上
+  Kubernetes/lease/txn/watch 套件通过，未观察到此前担心的 cacher readiness 回归。
+
+  修复后官方 etcd `d947b2086` 与生产 KubeBrain 首轮、连续 10 轮（5.292 秒；墙钟 6.881 秒）
+  及 race 5 轮（4.126 秒；墙钟 16.137 秒）均 GREEN；本地定向回归连续 10 轮 1.849 秒通过。
+  根模块 test/vet（server/etcd 178.351 秒）、兼容模块 test/vet（1.218 秒）及完整线上套件
+  （116.395 秒；墙钟 117.948 秒）均通过。精确提交 `6e11689f` 构建镜像
+  `kubebrain:a3672-stream-progress`，本地 image ID `sha256:0b79bfc64179...`；显式 context
+  `kind-kubebrain-dbaas` 三副本滚动完成，3/3 Ready、零重启且 node-local imageID
+  `sha256:c136586b3f73...` 一致。一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
