@@ -35106,8 +35106,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
   正常 hash-protected client snapshot、raw chunk/digest、cancel 与 ambiguous failure 四项普通 20 轮
   1.692 秒、race 10 轮 4.659 秒 GREEN；server 全包 170.764 秒、主模块 `go test ./...`、vet 与完整
-  compat 均通过。生产发布后必须在现有 retained-v1 主 keyspace 上确认官方 etcdctl 收到
-  FailedPrecondition，同时在独立 v3 keyspace 确认正常 snapshot/restore 仍成功。
+  compat 均通过。代码 commit `5cf76148362e1af69d0d8c9bcc83ba6e62fe0010` 发布为
+  `kubebrain:a3592-snapshot-precondition`，本地 Docker image ID
+  `sha256:be9249f320947b2b4e82102af75bef48e8d21ccdf519cc4e4516ec406a98d30a`，kind 三副本运行时摘要
+  `sha256:f12b4ad4c952453df292fd8c35a06fdf905908de6b66fc2025c512fde5cc088f`。
+
+  发布后官方 `/root/etcd/bin/etcdctl` 3.7 客户端对现有 retained-v1 主 keyspace 执行
+  `snapshot save`，稳定以退出码 5 返回 `FailedPrecondition`，并精确报告歧义 key
+  `/a3374/http-concurrency-errors/1785836758850076445/seed` 与历史 revision
+  `468126003565729343`，没有误生成可恢复快照。另建隔离 keyspace 写入 `/normal` 的 v1/v2 后，
+  正常 `snapshot save` 成功；官方 `etcdutl snapshot status` 识别为 version 3.7.0、revision 3、
+  totalKey 1、logical totalSize 24576，证明错误重分类没有破坏正常流。最终三副本均 Ready/0 restart，
+  PD/TiKV 3+3 Ready/0 restart，endpoint healthy、alarm/lease 为空、auth disabled/AuthRevision=587；
+  revision/index/applied 均为 `468126003565749918`、term 344，当前 keyspace Count=100。
 
 ### P2：运维兼容和长期验证
 
