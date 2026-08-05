@@ -35992,6 +35992,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   既有重型并行资源/时序候选而不伪造产品修复。reference 进程和两端隔离前缀均清理，本项不改变
   运行镜像。
 
+- A3656 从全部 49 个公开 gRPC RPC 的显式 handler 覆盖转向 peer HTTP 面审计，发现
+  `/members/promote/{id}` 的客户端可见判定顺序仍有差异。官方 etcd
+  `d947b2086` 的 `server/etcdserver/api/etcdhttp/peer.go` 会把 HTTP `Authorization`
+  重建为 incoming gRPC metadata，再由 `PromoteMember` 依次执行管理员认证、成员存在性和
+  learner 状态检查；一次性 auth-enabled oracle 实测匿名、无效 token 和非 root token 均返回
+  HTTP 500 `{"message":"Internal Server Error"}`，root 对不存在成员返回 404
+  `membership: ID not found`，对真实 voter 返回 412
+  `membership: can only promote a learner member`。旧 KubeBrain 对所有合法十进制 ID 都直接返回
+  平台边界 501。
+
+  新增六分支回归在旧实现上确定性 RED：匿名、无效 token、非 root、缺失成员和 voter 五项实际
+  都是 501；修复后 peer handler 与官方实现一样重建认证 metadata，并直接复用 gRPC
+  `MemberPromote` 的认证和成员状态判定，仅在 HTTP 边界映射官方响应体/状态码。只有经过 root
+  认证且目标确为 learner 时，才返回 KubeBrain 的 DBaaS 控制面 501 替代指引，避免把平台架构
+  边界提前到 etcd 本应可观察的认证或输入错误之前。
+
+  定向测试、完整 `pkg/server/etcd`（166.747 秒）、根模块 `go test ./...`（其中 server/etcd
+  166.393 秒）和 `go vet ./...`、兼容模块 test/vet 均通过。生产 TiKV 镜像
+  `kubebrain:a3656-peer-promote` 已滚动到 `kind-kubebrain-dbaas` 三副本；peer 端口实测缺失成员
+  404、真实 voter 412，NodePort 全套兼容测试 108.184 秒通过，`/compat/` 前缀 Count=0。
+  一次性 reference 进程已停止。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

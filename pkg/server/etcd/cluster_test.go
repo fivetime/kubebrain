@@ -302,6 +302,7 @@ func TestPeerDowngradeEnabledHandlerRejectsBadRequests(t *testing.T) {
 func TestPeerMemberPromoteHandlerReturnsPlatformBoundary(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	server.SetStaticMembers([]*etcdserverpb.Member{{ID: 123, Name: "learner", IsLearner: true}})
 
 	rec := httptest.NewRecorder()
 	server.GetPeerHttpHandlers()["/members/promote/"].ServeHTTP(rec,
@@ -310,6 +311,47 @@ func TestPeerMemberPromoteHandlerReturnsPlatformBoundary(t *testing.T) {
 	require.Equal(t, http.StatusNotImplemented, rec.Code)
 	require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
 	require.Contains(t, rec.Body.String(), memberMutationUnsupportedMessage)
+}
+
+func TestPeerMemberPromoteHandlerMatchesEtcdAuthorizationAndMemberValidationOrder(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	aliceToken := metadata.ValueFromIncomingContext(aliceCtx, rpctypes.TokenFieldNameGRPC)[0]
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 11, Name: "voter"},
+		{ID: 12, Name: "learner", IsLearner: true},
+	})
+
+	tests := []struct {
+		name       string
+		id         uint64
+		token      string
+		wantStatus int
+		wantBody   string
+	}{
+		{name: "anonymous", id: 99, wantStatus: http.StatusInternalServerError, wantBody: `{"message":"Internal Server Error"}`},
+		{name: "invalid token", id: 99, token: "invalid-token", wantStatus: http.StatusInternalServerError, wantBody: `{"message":"Internal Server Error"}`},
+		{name: "non root", id: 99, token: aliceToken, wantStatus: http.StatusInternalServerError, wantBody: `{"message":"Internal Server Error"}`},
+		{name: "missing member", id: 99, token: rootToken, wantStatus: http.StatusNotFound, wantBody: "membership: ID not found\n"},
+		{name: "voter", id: 11, token: rootToken, wantStatus: http.StatusPreconditionFailed, wantBody: "membership: can only promote a learner member\n"},
+		{name: "learner", id: 12, token: rootToken, wantStatus: http.StatusNotImplemented, wantBody: memberMutationUnsupportedMessage + "\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/members/promote/%d", tt.id), nil)
+			if tt.token != "" {
+				req.Header.Set("Authorization", tt.token)
+			}
+			rec := httptest.NewRecorder()
+			server.peerMemberPromoteHandler(rec, req)
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Equal(t, tt.wantBody, rec.Body.String())
+			require.Equal(t, strconv.FormatUint(server.backend.ClusterID(), 16), rec.Header().Get(etcdClusterIDHeader))
+		})
+	}
 }
 
 func TestPeerMemberPromoteHandlerRejectsBadRequests(t *testing.T) {

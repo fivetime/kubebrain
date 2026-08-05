@@ -24,6 +24,10 @@ import (
 	"strings"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
@@ -108,12 +112,38 @@ func (s *RPCServer) peerMemberPromoteHandler(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "bad path", http.StatusBadRequest)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, prefix)
-	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
-		http.Error(w, fmt.Sprintf("member %s not found in cluster", id), http.StatusNotFound)
+	idString := strings.TrimPrefix(r.URL.Path, prefix)
+	id, err := strconv.ParseUint(idString, 10, 64)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("member %s not found in cluster", idString), http.StatusNotFound)
 		return
 	}
-	http.Error(w, memberMutationUnsupportedMessage, http.StatusNotImplemented)
+
+	// etcd's peer handler reconstructs incoming gRPC metadata from this HTTP
+	// header before running the same admin and member-state checks as the gRPC
+	// MemberPromote endpoint.
+	ctx := r.Context()
+	if token := r.Header.Get("Authorization"); token != "" {
+		ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token))
+	}
+	_, err = s.MemberPromote(ctx, &etcdserverpb.MemberPromoteRequest{ID: id})
+	if err == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("{}\n"))
+		return
+	}
+	switch {
+	case errors.Is(err, rpctypes.ErrGRPCMemberNotFound):
+		http.Error(w, "membership: ID not found", http.StatusNotFound)
+	case errors.Is(err, rpctypes.ErrGRPCMemberNotLearner):
+		http.Error(w, "membership: can only promote a learner member", http.StatusPreconditionFailed)
+	case status.Code(err) == codes.Unimplemented:
+		http.Error(w, memberMutationUnsupportedMessage, http.StatusNotImplemented)
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
+	}
 }
 
 func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
