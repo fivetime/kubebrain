@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
@@ -65,7 +66,8 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	require.Greater(t, len(snapshotBytes), sha256.Size)
 	digest := sha256.Sum256(snapshotBytes[:len(snapshotBytes)-sha256.Size])
 	require.Equal(t, digest[:], snapshotBytes[len(snapshotBytes)-sha256.Size:])
-	statusResponse, err := cli.Status(ctx, endpoint)
+	statusResponse, err := etcdserverpb.NewMaintenanceClient(cli.ActiveConnection()).Status(ctx,
+		&etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
 	var nonLeaderID uint64
 	for _, member := range members.Members {
@@ -76,7 +78,15 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	}
 	require.NotZero(t, nonLeaderID, "platform-boundary test requires a non-leader voter")
 	_, err = cli.MoveLeader(ctx, nonLeaderID)
-	requirePlatformError(t, err, moveLeaderMessage)
+	if statusResponse.GetHeader().GetMemberId() == statusResponse.GetLeader() {
+		requirePlatformError(t, err, moveLeaderMessage)
+	} else {
+		require.ErrorIs(t, err, rpctypes.ErrNotLeader)
+		// client/v3 normalizes the canonical server error into EtcdError, whose
+		// gRPC status code is Unknown while errors.Is preserves its identity.
+		require.Equal(t, codes.Unknown, status.Code(err))
+		require.Equal(t, "etcdserver: not leader", status.Convert(err).Message())
+	}
 	downgradeResponse, err := cli.Downgrade(ctx, clientv3.DowngradeValidate, "3.6.0")
 	require.NoError(t, err)
 	require.Equal(t, "3.7", downgradeResponse.Version)

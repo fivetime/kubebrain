@@ -35556,6 +35556,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两级 module vet、线上 client/v3 全包 122.795 秒、`hack/production` 全包 462.633 秒及 diff check 均通过，
   线上 `/dbaas-watch-filter-enum/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3628 修复线上全量门禁中 `TestPlatformManagedOperationsReturnActionableErrors` 的多副本路由随机假设。
+  旧测试用 `cli.Status(endpoint)` 的临时连接判断 leader，却用 `cli.ActiveConnection()` 发送 `MoveLeader`；
+  NodePort 可让两条 TCP 连接落到不同副本，因此 follower 按 upstream 顺序返回 not-leader 时，测试仍错误
+  地要求 leader 上的 DBaaS `Unimplemented`。线上全量 RED 在 122.712 秒精确得到实际 `Unknown`，服务端
+  日志则保留 `FailedPrecondition: etcdserver: not leader`。
+
+  测试现通过实际发送连接读取 serving member：leader 分支继续要求 DBaaS actionable error；follower 分支
+  固定 client/v3 归一化后的 `errors.Is(rpctypes.ErrNotLeader)`、外层 `Unknown` 和精确消息。线上定向连续
+  20 轮 7.499 秒、race 1.528 秒、兼容模块全包 2.116 秒、两级 module vet 及上述两项全量门禁均通过。
+  该修正只消除测试路由随机性，保留真实 etcd 的 follower-first `MoveLeader` 契约，也不改变运行时或
+  生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
