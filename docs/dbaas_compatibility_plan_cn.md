@@ -35653,6 +35653,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/dbaas-watch-unfragmented-limit/` prefix 都为 0。本轮仅增强测试 oracle，未发现 runtime 差异，不重建或
   滚动生产镜像。
 
+- A3635 完成 upstream `tests/integration/clientv3/watch/watch_fragment_test.go` 的四象限映射。A3633 已覆盖
+  fragment on + 1.5 MiB client receive limit，A3634 覆盖 fragment off + limit；尚未证明默认大接收上限下
+  fragment off/on 都能交付同一个完整的 10 MiB 逻辑 response。先写入两个矩阵行，要求它们都满足 A3633 的
+  单响应 10 PUT、header revision gap/身份、key/value 顺序与完整 MVCC metadata oracle，而 runner 仍返回 nil；
+  reference RED 0.024 秒精确显示两行完整期望对 nil，确认新增矩阵先失败。
+
+  成功路径现提炼为参数化 helper，显式控制 prefix、是否发送 `WithFragment` 及 client receive limit；原有受限
+  fragment 场景与新增无限制 off/on 场景共享同一套 payload 和逐字段 observer。默认接收上限下，两种请求都只
+  向 clientv3 调用者暴露一个合并 response，且完整内容相同；联合覆盖原有成功、失败及新增矩阵的真实双端测试
+  连续 10 轮 168.966 秒、race 23.397 秒。兼容模块全包 1.222 秒、两级 module vet、线上 client/v3 全包
+  115.938 秒、`hack/production` 全包 456.701 秒及 diff check 均通过；线上 `/dbaas-watch-fragment/`、
+  `/dbaas-watch-unfragmented-limit/` 与 `/dbaas-watch-unrestricted/` prefix 都为 0。本轮仅重构并增强测试 oracle，
+  未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

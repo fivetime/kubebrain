@@ -45,6 +45,11 @@ type watchUnfragmentedLimitOutcome struct {
 	CompactRevisionSet      bool
 }
 
+type watchUnrestrictedMatrixOutcome struct {
+	FragmentRequested bool
+	Response          watchFragmentClientOutcome
+}
+
 func TestWatchFragmentDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -74,6 +79,22 @@ func TestWatchUnfragmentedReceiveLimitDifferentialAgainstReferenceEtcd(t *testin
 		runWatchUnfragmentedLimitScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
+func TestWatchUnrestrictedReceiveMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run watch fragment differential tests")
+	}
+
+	want := []watchUnrestrictedMatrixOutcome{
+		{FragmentRequested: false, Response: expectedWatchFragmentClientOutcome()},
+		{FragmentRequested: true, Response: expectedWatchFragmentClientOutcome()},
+	}
+	referenceOutcomes := runWatchUnrestrictedReceiveMatrix(t, reference, "etcd")
+	require.Equal(t, want, referenceOutcomes)
+	require.Equal(t, referenceOutcomes,
+		runWatchUnrestrictedReceiveMatrix(t, compatEndpoint(t), "kubebrain"))
+}
+
 func expectedWatchFragmentClientOutcome() watchFragmentClientOutcome {
 	outcome := watchFragmentClientOutcome{
 		ResponseEventCounts: []int{10}, HeaderRevisionGaps: []int64{10}, HeaderIdentitySet: true,
@@ -91,27 +112,38 @@ func expectedWatchFragmentClientOutcome() watchFragmentClientOutcome {
 }
 
 func runWatchFragmentClientScenario(t *testing.T, endpoint, instance string) watchFragmentClientOutcome {
+	return runWatchSuccessfulLargeScenario(
+		t, endpoint, instance, "/dbaas-watch-fragment/", true, 1536*1024,
+	)
+}
+
+func runWatchSuccessfulLargeScenario(
+	t *testing.T,
+	endpoint, instance, prefixRoot string,
+	fragment bool,
+	clientMaxRecv int,
+) watchFragmentClientOutcome {
 	t.Helper()
 	const (
-		eventCount    = 10
-		valueBytes    = 1024 * 1024
-		clientMaxRecv = 1536 * 1024
+		eventCount = 10
+		valueBytes = 1024 * 1024
 	)
 	writer, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, writer.Close()) })
-	watcher, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
-		MaxCallRecvMsgSize: clientMaxRecv,
-	})
+	watcherConfig := clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second}
+	if clientMaxRecv != 0 {
+		watcherConfig.MaxCallRecvMsgSize = clientMaxRecv
+	}
+	watcher, err := clientv3.New(watcherConfig)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, watcher.Close()) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
-	prefix := fmt.Sprintf("/dbaas-watch-fragment/%s/%d/", instance, time.Now().UnixNano())
+	prefix := fmt.Sprintf("%s%s/%d/", prefixRoot, instance, time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -128,10 +160,11 @@ func runWatchFragmentClientScenario(t *testing.T, endpoint, instance string) wat
 
 	watchCtx, watchCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer watchCancel()
-	responses := watcher.Watch(
-		watchCtx, prefix, clientv3.WithPrefix(), clientv3.WithRev(base.Header.Revision+1),
-		clientv3.WithFragment(),
-	)
+	watchOptions := []clientv3.OpOption{clientv3.WithPrefix(), clientv3.WithRev(base.Header.Revision + 1)}
+	if fragment {
+		watchOptions = append(watchOptions, clientv3.WithFragment())
+	}
+	responses := watcher.Watch(watchCtx, prefix, watchOptions...)
 	outcome := watchFragmentClientOutcome{
 		HeaderIdentitySet: true, ErrorsAbsent: true, KeysOrdered: true,
 		ValuesMatch: true, PrevKVAbsent: true, KVObserved: true,
@@ -238,4 +271,18 @@ func runWatchUnfragmentedLimitScenario(t *testing.T, endpoint, instance string) 
 		require.NoError(t, watchCtx.Err())
 		return watchUnfragmentedLimitOutcome{}
 	}
+}
+
+func runWatchUnrestrictedReceiveMatrix(t *testing.T, endpoint, instance string) []watchUnrestrictedMatrixOutcome {
+	t.Helper()
+	outcomes := make([]watchUnrestrictedMatrixOutcome, 0, 2)
+	for _, fragment := range []bool{false, true} {
+		outcomes = append(outcomes, watchUnrestrictedMatrixOutcome{
+			FragmentRequested: fragment,
+			Response: runWatchSuccessfulLargeScenario(
+				t, endpoint, instance, "/dbaas-watch-unrestricted/", fragment, 0,
+			),
+		})
+	}
+	return outcomes
 }
