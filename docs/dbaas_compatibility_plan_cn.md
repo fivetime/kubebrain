@@ -36136,6 +36136,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过。未发现运行时差距，因此本项只增强永久兼容门禁，不构建或滚动相同数据面镜像。
   一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3665 把 A3664 的 5 target × 4 result 矩阵推进到真正执行的嵌套 Txn。新增 raw gRPC 黑盒
+  差分让无条件成功的外层 Txn 执行一个内层 Txn；内层逐项比较 VALUE、VERSION、CREATE、MOD、
+  LEASE 的 EQUAL/NOT_EQUAL/LESS/GREATER，并在 success/failure 分支写不同 marker。测试同时核对
+  内层 `TxnResponse.Succeeded` 和最终持久 marker，先固定官方 etcd 的精确 true/false 与分支结果，
+  再要求 TiKV-backed KubeBrain 完整 outcome 相等，避免只证明顶层 Compare evaluator 或只观察响应。
+
+  一次性官方 etcd `d947b2086` 与生产 KubeBrain 普通差分连续 10 轮 20.135 秒、race 5 轮
+  10.832 秒通过；根模块 test/vet（server/etcd 168.086 秒）与兼容模块 test/vet（1.321 秒）
+  均通过。没有发现运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
+  已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
