@@ -19,9 +19,9 @@ import (
 type watchRevisionBoundaryOutcome struct {
 	Name                     string
 	CreatedControl           watchControlOutcome
+	EventEnvelope            watchControlOutcome
 	EventValues              []string
 	EventAtWriteRevision     bool
-	EventHeaderAtWrite       bool
 	ProgressSuppressedFuture bool
 	ProgressControl          watchControlOutcome
 	CancelControl            watchControlOutcome
@@ -37,23 +37,23 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{
 			Name:                 "latest-zero",
 			CreatedControl:       expectedRevisionCreatedControl(301),
+			EventEnvelope:        expectedRevisionEventEnvelope(301),
 			EventValues:          []string{"after-create"},
 			EventAtWriteRevision: true,
-			EventHeaderAtWrite:   true,
 		},
 		{
 			Name:                 "historical-current",
 			CreatedControl:       expectedRevisionCreatedControl(302),
+			EventEnvelope:        expectedRevisionEventEnvelope(302),
 			EventValues:          []string{"seed"},
 			EventAtWriteRevision: true,
-			EventHeaderAtWrite:   true,
 		},
 		{
 			Name:                     "future-next",
 			CreatedControl:           expectedRevisionCreatedControl(303),
+			EventEnvelope:            expectedRevisionEventEnvelope(303),
 			EventValues:              []string{"future"},
 			EventAtWriteRevision:     true,
-			EventHeaderAtWrite:       true,
 			ProgressSuppressedFuture: true,
 			ProgressControl:          expectedRevisionProgressControl(),
 		},
@@ -82,6 +82,14 @@ func expectedRevisionProgressControl() watchControlOutcome {
 		WatchID: -1, HeaderMatchesSeed: true,
 		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
 		HeaderTermPositive: true, EnvelopeObserved: true,
+	}
+}
+
+func expectedRevisionEventEnvelope(id int64) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: id, HeaderMatchesSeed: true,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, EventCount: 1, EnvelopeObserved: true,
 	}
 }
 
@@ -128,7 +136,7 @@ func runWatchRevisionBoundaryScenario(
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-create")})
 		require.NoError(t, putErr)
 		event := recvWatchResponse(t, stream)
-		outcomes = append(outcomes, normalizeWatchRevisionOutcome("latest-zero", created, event, base.Header, put.Header.Revision))
+		outcomes = append(outcomes, normalizeWatchRevisionOutcome("latest-zero", created, event, base.Header, put.Header))
 		require.NoError(t, stream.CloseSend())
 	})
 
@@ -144,7 +152,7 @@ func runWatchRevisionBoundaryScenario(
 		created := recvWatchResponse(t, stream)
 		event := recvWatchResponse(t, stream)
 		outcomes = append(outcomes, normalizeWatchRevisionOutcome(
-			"historical-current", created, event, put.Header, put.Header.Revision,
+			"historical-current", created, event, put.Header, put.Header,
 		))
 		require.NoError(t, stream.CloseSend())
 	})
@@ -201,7 +209,7 @@ func runWatchRevisionBoundaryScenario(
 		}))
 		progress := recvWatchResponse(t, stream)
 		outcome := normalizeWatchRevisionOutcome(
-			"future-next", created, event, base.Header, put.Header.Revision,
+			"future-next", created, event, base.Header, put.Header,
 		)
 		outcome.ProgressSuppressedFuture = progressSuppressed
 		outcome.ProgressControl = observeWatchControlResponse(progress, put.Header)
@@ -267,19 +275,19 @@ func normalizeWatchRevisionOutcome(
 	created *etcdserverpb.WatchResponse,
 	event *etcdserverpb.WatchResponse,
 	baseHeader *etcdserverpb.ResponseHeader,
-	writeRevision int64,
+	writeHeader *etcdserverpb.ResponseHeader,
 ) watchRevisionBoundaryOutcome {
 	values := make([]string, 0, len(event.Events))
 	eventAtWriteRevision := len(event.Events) > 0
 	for _, item := range event.Events {
 		values = append(values, string(item.Kv.Value))
-		eventAtWriteRevision = eventAtWriteRevision && item.Kv.ModRevision == writeRevision
+		eventAtWriteRevision = eventAtWriteRevision && item.Kv.ModRevision == writeHeader.GetRevision()
 	}
 	return watchRevisionBoundaryOutcome{
 		Name:                 name,
 		CreatedControl:       observeWatchControlResponse(created, baseHeader),
+		EventEnvelope:        observeWatchControlResponse(event, writeHeader),
 		EventValues:          values,
 		EventAtWriteRevision: eventAtWriteRevision,
-		EventHeaderAtWrite:   event.Header != nil && event.Header.Revision == writeRevision,
 	}
 }

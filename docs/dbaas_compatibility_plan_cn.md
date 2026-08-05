@@ -35475,6 +35475,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全包 465.394 秒及 diff check 均通过，线上 `/dbaas-watch-revision/` prefix 为 0。本轮未发现 runtime
   差异，不重建或滚动生产镜像。
 
+- A3621 把 revision boundary 的三条事件响应也纳入完整 response envelope。旧 outcome 只保存 event value、
+  KV ModRevision 与 response header revision；错误的 WatchID、created/canceled、cancel reason、header 身份、
+  compact revision、fragment 或事件数量不会进入差分。先为 latest-zero、historical-current、future-next
+  加入 WatchID 301–303、EventCount=1 的 `EventEnvelope` 而不采集，reference RED 精确显示三个 outcome
+  全为零值。
+
+  normalize 现在同时接收完整 base/write header，用共享 `observeWatchControlResponse` 采集事件响应；原
+  `EventHeaderAtWrite` 被完整 header 比较替代，KV ModRevision 仍独立断言。共享 helper 连续 20 轮
+  0.025 秒、race 1.072 秒；真实双端四场景连续 10 轮 6.792 秒、race 1.801 秒；兼容模块全包
+  1.316 秒、两级 module vet、`hack/production` 全包 476.963 秒及 diff check 均通过，线上
+  `/dbaas-watch-revision/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
