@@ -35283,6 +35283,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   40.979 秒、`hack/production` 全包 439.008 秒以及 vet、脚本语法与 diff check 均通过。本项绑定
   controller 配置，不替代真实 CSI 恢复或 PITR 证明。
 
+- A3606 将 restored TidbCluster 的 canonical source annotations 纳入 A3605 的双重 controller 绑定。
+  restore renderer 会写入 `kubebrain.io/cold-restore-operation`、`source-cluster-id` 和
+  `source-tidbcluster-uid`，但旧 executor 完全不读取；即使 live controller 已不再声明正确 source，
+  只要 spec/UID/clusterID/Ready 正常就会发布成功 receipt。确定性 RED 把 source cluster ID annotation
+  从 12345 改为 99999，旧路径仍成功。
+
+  executor 现在从冻结 manifest 提取唯一 TidbCluster annotations，并在 unpause 前后要求 live annotations
+  至少逐项包含全部 canonical key/value，允许 operator 添加无关字段但不允许来源绑定缺失或改写。
+  前置漂移保持 paused；Ready 后漂移触发同 UID emergency fence。两组专项连续 10 轮 50.263 秒、
+  race 7.751 秒、完整 cold-restore 矩阵 46.552 秒、`hack/production` 全包 445.668 秒以及 vet、
+  脚本语法与 diff check 均通过。本项加强恢复来源可追溯性，不替代真实 CSI 恢复/PITR 证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

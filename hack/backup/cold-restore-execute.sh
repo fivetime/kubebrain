@@ -66,6 +66,8 @@ expected_restored_contents="$(jq -c '[.items[] | select(.kind == "VolumeSnapshot
   {name:.metadata.name,driver:.spec.driver,snapshot_handle:.spec.source.snapshotHandle}] | sort_by(.name)' <<<"$manifest")"
 expected_restored_tidb_spec="$(jq -cS '[.items[] | select(.kind == "TidbCluster") | .spec] |
   if length == 1 then .[0] else null end' <<<"$manifest")"
+expected_restored_tidb_annotations="$(jq -cS '[.items[] | select(.kind == "TidbCluster") | .metadata.annotations] |
+  if length == 1 then .[0] else null end' <<<"$manifest")"
 
 namespace="$(jq -r '.inventory.storage.namespace' <<<"$receipt")"
 tidb_cluster="$(jq -r '.inventory.storage.tidb_cluster' <<<"$receipt")"
@@ -250,6 +252,13 @@ validate_restored_tidb_cluster() {
   expected_spec="$(jq -cS 'del(.paused)' <<<"$expected_restored_tidb_spec")"
   [[ "$current_spec" == "$expected_spec" && "$(jq -r '.spec.paused' <<<"$object")" == "$expected_paused" ]] || {
     echo "restored TidbCluster spec does not match restore manifest" >&2
+    exit 1
+  }
+  jq -e --argjson expected "$expected_restored_tidb_annotations" '
+    (.metadata.annotations // {}) as $actual |
+    ($expected | type == "object") and all($expected | to_entries[]; $actual[.key] == .value)
+  ' <<<"$object" >/dev/null || {
+    echo "restored TidbCluster source annotations do not match restore manifest" >&2
     exit 1
   }
 }

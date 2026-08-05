@@ -507,6 +507,68 @@ func TestColdRestoreExecuteRechecksTidbClusterSpecAfterReady(t *testing.T) {
 		"post-Ready drift must trigger the emergency pause fence")
 }
 
+func TestColdRestoreExecuteValidatesTidbClusterSourceAnnotationsBeforeUnpause(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_RESTORED_TIDB_SOURCE_ANNOTATION_DRIFT=true",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "restored TidbCluster source annotations do not match restore manifest")
+	require.NoFileExists(t, restoreReceiptPath)
+	log := string(mustRead(t, logPath))
+	require.NotContains(t, log, "patch tidbcluster kb --type=json",
+		"a controller with untrusted source annotations must remain paused")
+}
+
+func TestColdRestoreExecuteRechecksTidbClusterSourceAnnotationsAfterReady(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_RESTORED_TIDB_SOURCE_ANNOTATION_DRIFT_AFTER_UNPAUSE=true",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "restored TidbCluster source annotations do not match restore manifest")
+	require.NoFileExists(t, restoreReceiptPath)
+	log := string(mustRead(t, logPath))
+	require.GreaterOrEqual(t, strings.Count(log, "patch tidbcluster kb --type=json"), 2,
+		"post-Ready annotation drift must trigger the emergency pause fence")
+}
+
 func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byte, error) {
 	t.Helper()
 	return runProductionCommand(t, "go", []string{
@@ -729,9 +791,17 @@ elif [[ "$args" == *"get tidbcluster kb -o json"* ]]; then
     grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
     version=v8.5.4
   fi
+  source_cluster_id=12345
+  if [[ "${FAKE_RESTORED_TIDB_SOURCE_ANNOTATION_DRIFT:-false}" == true ]]; then
+    source_cluster_id=99999
+  fi
+  if [[ "${FAKE_RESTORED_TIDB_SOURCE_ANNOTATION_DRIFT_AFTER_UNPAUSE:-false}" == true ]] &&
+    grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
+    source_cluster_id=99999
+  fi
   paused=true
   if grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then paused=false; fi
-  printf '{"metadata":{"uid":"uid-restored-tidb","resourceVersion":"77"},"spec":{"version":"%s","pd":{"replicas":3},"tikv":{"replicas":3},"paused":%s},"status":{"clusterID":"%s","conditions":[{"type":"Ready","status":"True"}]}}' "$version" "$paused" "$FAKE_CLUSTER_ID"
+  printf '{"metadata":{"uid":"uid-restored-tidb","resourceVersion":"77","annotations":{"kubebrain.io/cold-restore-operation":"restore-test","kubebrain.io/source-cluster-id":"%s","kubebrain.io/source-tidbcluster-uid":"uid-tidb"}},"spec":{"version":"%s","pd":{"replicas":3},"tikv":{"replicas":3},"paused":%s},"status":{"clusterID":"%s","conditions":[{"type":"Ready","status":"True"}]}}' "$source_cluster_id" "$version" "$paused" "$FAKE_CLUSTER_ID"
 elif [[ "$args" == *"get statefulset kb-"* && "$args" == *"-o json"* ]]; then
   name="$(sed -n 's/.*get statefulset \([^ ]*\).*/\1/p' <<<"$args")"
   printf '{"metadata":{"uid":"uid-%s","resourceVersion":"88"},"spec":{"replicas":3}}' "$name"
