@@ -35487,6 +35487,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1.316 秒、两级 module vet、`hack/production` 全包 476.963 秒及 diff check 均通过，线上
   `/dbaas-watch-revision/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3622 从 response envelope 下钻到 revision boundary 的事件本体。旧比较只固定 value 与 ModRevision，
+  event type、key、CreateRevision、Version、Lease、PrevKv 以及 nil KV 均未进入 outcome。先为三条 PUT
+  事件加入 type=PUT、key 匹配、CreateRevision=write、Version=1、Lease=0、PrevKv 缺失和 KV 已观测期望，
+  reference RED 精确显示新增字段全未采集，而既有 value/ModRevision 保持一致。
+
+  normalize 现显式收集上述元数据，并用 protobuf nil-safe getter 处理 nil event/KV；synthetic 用例同时
+  固定正常 PUT payload 和 nil event 不 panic、`EventKVObserved=false` 的失败语义。该矩阵连续 20 轮
+  0.030 秒、race 1.070 秒；真实双端四场景连续 10 轮 6.634 秒、race 1.799 秒；兼容模块全包
+  1.357 秒、两级 module vet、`hack/production` 全包 466.638 秒及 diff check 均通过，线上
+  `/dbaas-watch-revision/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

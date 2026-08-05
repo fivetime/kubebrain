@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -20,11 +22,45 @@ type watchRevisionBoundaryOutcome struct {
 	Name                     string
 	CreatedControl           watchControlOutcome
 	EventEnvelope            watchControlOutcome
+	EventTypes               []mvccpb.Event_EventType
+	EventKeyMatches          bool
 	EventValues              []string
+	EventCreateAtWrite       bool
 	EventAtWriteRevision     bool
+	EventVersions            []int64
+	EventLeases              []int64
+	EventPrevKVAbsent        bool
+	EventKVObserved          bool
 	ProgressSuppressedFuture bool
 	ProgressControl          watchControlOutcome
 	CancelControl            watchControlOutcome
+}
+
+func TestNormalizeWatchRevisionOutcomeObservesEventMetadata(t *testing.T) {
+	header := &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: 7, RaftTerm: 3}
+	created := &etcdserverpb.WatchResponse{Header: header, WatchId: 9, Created: true}
+	event := &etcdserverpb.WatchResponse{
+		Header: header, WatchId: 9,
+		Events: []*mvccpb.Event{{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+			Key: []byte("key"), Value: []byte("value"), CreateRevision: 7,
+			ModRevision: 7, Version: 1,
+		}}},
+	}
+	outcome := normalizeWatchRevisionOutcome("metadata", created, event, []byte("key"), header, header)
+	require.Equal(t, []mvccpb.Event_EventType{mvccpb.PUT}, outcome.EventTypes)
+	require.True(t, outcome.EventKeyMatches)
+	require.True(t, outcome.EventCreateAtWrite)
+	require.Equal(t, []int64{1}, outcome.EventVersions)
+	require.Equal(t, []int64{0}, outcome.EventLeases)
+	require.True(t, outcome.EventPrevKVAbsent)
+	require.True(t, outcome.EventKVObserved)
+
+	event.Events = []*mvccpb.Event{nil}
+	nilOutcome := normalizeWatchRevisionOutcome("nil-event", created, event, []byte("key"), header, header)
+	require.False(t, nilOutcome.EventKeyMatches)
+	require.False(t, nilOutcome.EventCreateAtWrite)
+	require.False(t, nilOutcome.EventAtWriteRevision)
+	require.False(t, nilOutcome.EventKVObserved)
 }
 
 func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -38,22 +74,43 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			Name:                 "latest-zero",
 			CreatedControl:       expectedRevisionCreatedControl(301),
 			EventEnvelope:        expectedRevisionEventEnvelope(301),
+			EventTypes:           []mvccpb.Event_EventType{mvccpb.PUT},
+			EventKeyMatches:      true,
 			EventValues:          []string{"after-create"},
+			EventCreateAtWrite:   true,
 			EventAtWriteRevision: true,
+			EventVersions:        []int64{1},
+			EventLeases:          []int64{0},
+			EventPrevKVAbsent:    true,
+			EventKVObserved:      true,
 		},
 		{
 			Name:                 "historical-current",
 			CreatedControl:       expectedRevisionCreatedControl(302),
 			EventEnvelope:        expectedRevisionEventEnvelope(302),
+			EventTypes:           []mvccpb.Event_EventType{mvccpb.PUT},
+			EventKeyMatches:      true,
 			EventValues:          []string{"seed"},
+			EventCreateAtWrite:   true,
 			EventAtWriteRevision: true,
+			EventVersions:        []int64{1},
+			EventLeases:          []int64{0},
+			EventPrevKVAbsent:    true,
+			EventKVObserved:      true,
 		},
 		{
 			Name:                     "future-next",
 			CreatedControl:           expectedRevisionCreatedControl(303),
 			EventEnvelope:            expectedRevisionEventEnvelope(303),
+			EventTypes:               []mvccpb.Event_EventType{mvccpb.PUT},
+			EventKeyMatches:          true,
 			EventValues:              []string{"future"},
+			EventCreateAtWrite:       true,
 			EventAtWriteRevision:     true,
+			EventVersions:            []int64{1},
+			EventLeases:              []int64{0},
+			EventPrevKVAbsent:        true,
+			EventKVObserved:          true,
 			ProgressSuppressedFuture: true,
 			ProgressControl:          expectedRevisionProgressControl(),
 		},
@@ -136,7 +193,7 @@ func runWatchRevisionBoundaryScenario(
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-create")})
 		require.NoError(t, putErr)
 		event := recvWatchResponse(t, stream)
-		outcomes = append(outcomes, normalizeWatchRevisionOutcome("latest-zero", created, event, base.Header, put.Header))
+		outcomes = append(outcomes, normalizeWatchRevisionOutcome("latest-zero", created, event, key, base.Header, put.Header))
 		require.NoError(t, stream.CloseSend())
 	})
 
@@ -152,7 +209,7 @@ func runWatchRevisionBoundaryScenario(
 		created := recvWatchResponse(t, stream)
 		event := recvWatchResponse(t, stream)
 		outcomes = append(outcomes, normalizeWatchRevisionOutcome(
-			"historical-current", created, event, put.Header, put.Header,
+			"historical-current", created, event, key, put.Header, put.Header,
 		))
 		require.NoError(t, stream.CloseSend())
 	})
@@ -209,7 +266,7 @@ func runWatchRevisionBoundaryScenario(
 		}))
 		progress := recvWatchResponse(t, stream)
 		outcome := normalizeWatchRevisionOutcome(
-			"future-next", created, event, base.Header, put.Header,
+			"future-next", created, event, key, base.Header, put.Header,
 		)
 		outcome.ProgressSuppressedFuture = progressSuppressed
 		outcome.ProgressControl = observeWatchControlResponse(progress, put.Header)
@@ -274,20 +331,49 @@ func normalizeWatchRevisionOutcome(
 	name string,
 	created *etcdserverpb.WatchResponse,
 	event *etcdserverpb.WatchResponse,
+	expectedKey []byte,
 	baseHeader *etcdserverpb.ResponseHeader,
 	writeHeader *etcdserverpb.ResponseHeader,
 ) watchRevisionBoundaryOutcome {
 	values := make([]string, 0, len(event.Events))
+	types := make([]mvccpb.Event_EventType, 0, len(event.Events))
+	versions := make([]int64, 0, len(event.Events))
+	leases := make([]int64, 0, len(event.Events))
+	eventKeyMatches := len(event.Events) > 0
+	eventCreateAtWrite := len(event.Events) > 0
 	eventAtWriteRevision := len(event.Events) > 0
+	eventPrevKVAbsent := len(event.Events) > 0
+	eventKVObserved := len(event.Events) > 0
 	for _, item := range event.Events {
-		values = append(values, string(item.Kv.Value))
-		eventAtWriteRevision = eventAtWriteRevision && item.Kv.ModRevision == writeHeader.GetRevision()
+		types = append(types, item.GetType())
+		eventPrevKVAbsent = eventPrevKVAbsent && item.GetPrevKv() == nil
+		kv := item.GetKv()
+		if kv == nil {
+			eventKeyMatches = false
+			eventCreateAtWrite = false
+			eventAtWriteRevision = false
+			eventKVObserved = false
+			continue
+		}
+		values = append(values, string(kv.Value))
+		versions = append(versions, kv.Version)
+		leases = append(leases, kv.Lease)
+		eventKeyMatches = eventKeyMatches && bytes.Equal(kv.Key, expectedKey)
+		eventCreateAtWrite = eventCreateAtWrite && kv.CreateRevision == writeHeader.GetRevision()
+		eventAtWriteRevision = eventAtWriteRevision && kv.ModRevision == writeHeader.GetRevision()
 	}
 	return watchRevisionBoundaryOutcome{
 		Name:                 name,
 		CreatedControl:       observeWatchControlResponse(created, baseHeader),
 		EventEnvelope:        observeWatchControlResponse(event, writeHeader),
+		EventTypes:           types,
+		EventKeyMatches:      eventKeyMatches,
 		EventValues:          values,
+		EventCreateAtWrite:   eventCreateAtWrite,
 		EventAtWriteRevision: eventAtWriteRevision,
+		EventVersions:        versions,
+		EventLeases:          leases,
+		EventPrevKVAbsent:    eventPrevKVAbsent,
+		EventKVObserved:      eventKVObserved,
 	}
 }
