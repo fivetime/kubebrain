@@ -43,8 +43,8 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, referenceControl, runWatchControlScenario(t, compatEndpoint(t)))
 	referenceProgress := runSingleWatchProgressScenario(t, reference, "reference")
 	require.Equal(t, watchProgressOutcome{
-		Created: true, PutRevisionGap: 1, EventHeaderGap: 1, EventModRevisionGap: 1,
-		EventValue: "1", ProgressWatchID: -1, ProgressHeaderGap: 1, ProgressEmpty: true,
+		Created: true, CreatedCanonical: true, PutRevisionGap: 1, EventHeaderGap: 1, EventModRevisionGap: 1,
+		EventValue: "1", ProgressWatchID: -1, ProgressHeaderGap: 1, ProgressEmpty: true, ProgressCanonical: true,
 	}, referenceProgress)
 	require.Equal(t, referenceProgress, runSingleWatchProgressScenario(t, compatEndpoint(t), "kubebrain"))
 	referenceFilters := runWatchFilterEnumScenario(t, reference, "reference")
@@ -246,6 +246,7 @@ type watchFragmentOutcome struct {
 
 type watchProgressOutcome struct {
 	Created             bool
+	CreatedCanonical    bool
 	CreatedHeaderGap    int64
 	PutRevisionGap      int64
 	EventHeaderGap      int64
@@ -254,6 +255,7 @@ type watchProgressOutcome struct {
 	ProgressWatchID     int64
 	ProgressHeaderGap   int64
 	ProgressEmpty       bool
+	ProgressCanonical   bool
 }
 
 func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFragmentOutcome {
@@ -374,6 +376,7 @@ func runSingleWatchProgressScenario(t *testing.T, endpoint, instance string) wat
 	baseRevision := seed.Header.Revision
 	return watchProgressOutcome{
 		Created:             created.Created && created.WatchId == 51 && !created.Canceled,
+		CreatedCanonical:    canonicalWatchControlResponse(created, true, 51),
 		CreatedHeaderGap:    created.Header.Revision - baseRevision,
 		PutRevisionGap:      put.Header.Revision - baseRevision,
 		EventHeaderGap:      events.Header.Revision - baseRevision,
@@ -382,6 +385,7 @@ func runSingleWatchProgressScenario(t *testing.T, endpoint, instance string) wat
 		ProgressWatchID:     progress.WatchId,
 		ProgressHeaderGap:   progress.Header.Revision - baseRevision,
 		ProgressEmpty:       !progress.Created && !progress.Canceled && len(progress.Events) == 0 && progress.CancelReason == "",
+		ProgressCanonical:   canonicalWatchControlResponse(progress, false, -1),
 	}
 }
 

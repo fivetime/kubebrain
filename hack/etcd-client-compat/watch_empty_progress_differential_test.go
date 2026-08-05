@@ -17,10 +17,12 @@ import (
 type watchEmptyProgressOutcome struct {
 	EmptyProgressSilent bool
 	Created             bool
+	CreatedCanonical    bool
 	CreatedHeaderGap    int64
 	ProgressWatchID     int64
 	ProgressHeaderGap   int64
 	ProgressEmpty       bool
+	ProgressCanonical   bool
 }
 
 func TestWatchEmptyProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -32,8 +34,10 @@ func TestWatchEmptyProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
 	want := watchEmptyProgressOutcome{
 		EmptyProgressSilent: true,
 		Created:             true,
+		CreatedCanonical:    true,
 		ProgressWatchID:     -1,
 		ProgressEmpty:       true,
+		ProgressCanonical:   true,
 	}
 	referenceOutcome := runWatchEmptyProgressScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
@@ -98,10 +102,12 @@ func runWatchEmptyProgressScenario(t *testing.T, endpoint, instance string) watc
 	return watchEmptyProgressOutcome{
 		EmptyProgressSilent: silent,
 		Created:             created.Created && !created.Canceled && created.WatchId == 902,
+		CreatedCanonical:    canonicalWatchControlResponse(created, true, 902),
 		CreatedHeaderGap:    created.Header.Revision - baseRevision,
 		ProgressWatchID:     progress.WatchId,
 		ProgressHeaderGap:   progress.Header.Revision - baseRevision,
 		ProgressEmpty:       !progress.Created && !progress.Canceled && len(progress.Events) == 0,
+		ProgressCanonical:   canonicalWatchControlResponse(progress, false, -1),
 	}
 }
 

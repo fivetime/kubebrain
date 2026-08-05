@@ -35388,6 +35388,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全包 1.339 秒、两级 module vet、`hack/production` 全包 460.406 秒及 diff check 均通过，线上
   `/dbaas-watch-filter-progress/` prefix 已清空。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3614 把 A3613 的完整控制 envelope helper 扩展到两条独立 Watch 路径：empty stream 收到 progress
+  request 必须保持静默，创建 watch 902 后的 progress；以及普通 watch 51 在收到一个 Put event 后的
+  explicit progress。旧用例仍只检查 Created/Canceled/WatchID/events（普通路径额外看 cancel reason），
+  没有共同约束 CompactRevision 和 Fragment。先加入四个 canonical 期望而不采集，reference 双 RED
+  精确显示四项均为 false。
+
+  两条路径现分别要求 created 902/progress -1 与 created 51/progress -1 通过 A3613 的完整字段检查，
+  同时保留 empty-stream 静默和普通 event revision/value 断言。真实双端两路径连续 10 轮 21.637 秒、
+  race 3.674 秒；兼容模块全包 1.330 秒、两级 module vet、`hack/production` 全包 458.494 秒及
+  diff check 均通过，线上 `/dbaas-watch-empty-progress/`、`/dbaas-watch-control/` prefix 均为空。
+  本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
