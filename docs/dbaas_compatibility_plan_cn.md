@@ -35732,6 +35732,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已锁定 `WatchResponse` 的 8 个字段名及 wire number。保留集中守卫并撤销重复候选，避免把既有覆盖
   伪装成新缺口。本轮仅新增保护性测试，运行时代码与生产镜像均不变，不重建或滚动部署。
 
+- A3640 把 A3639 的 helper 级 exact-limit 契约推进到真实 raw gRPC 双端 oracle，并由此发现运行时
+  差异。新场景先分别写入两条不超过 1.5 MiB request limit 的大 value，再创建 `PrevKV=true`、
+  `Fragment=true` 的 future watch，以同一 Txn 删除两 key；runner 根据真实 created header、revision、
+  watch ID 与 DELETE/PrevKV metadata 动态填充第二个 value，使重组后的未分片 `WatchResponse` 精确为
+  2 MiB。reference etcd 返回两帧各一 event、flags=`true,false`，而旧线上 KubeBrain RED（0.422 秒）
+  返回一个含两 event、wire size 不低于 2 MiB 的 `Fragment=false` response；key/value/revision/version/
+  lease metadata 全匹配，排除了 oracle 或存储事件差异。
+
+  根因是 KubeBrain 的 watch loop 在 header 仅含 revision 时调用 `sendWatchFragments`，stream interceptor
+  到真正 `SendMsg` 才补 ClusterId、MemberId、RaftTerm；因此内部 proto size 略低于阈值而跳过分片，
+  随后 wire response 被盖章到阈值以上。现在 watch loop 在分片 sizing 前通过
+  `stampWatchResponseHeader` 使用与 interceptor 相同的 cluster/member/term 盖章；interceptor 发送时仍
+  幂等重盖，身份安全边界不变。新增单元门禁固定完整 header 在 sizing 前存在及 exact-limit 两帧；
+  聚焦连续 20 轮 1.499 秒、race 1.800 秒，双端首次 GREEN 0.515 秒、连续 10 轮 5.483 秒、race
+  1.969 秒，`pkg/server/etcd` 全包 177.257 秒、兼容模块全包 1.245 秒、两级 module vet、真实
+  NodePort clientv3 全包 114.306 秒、`hack/production` 全包 452.132 秒及 diff check 均通过。
+
+  干净提交 `85a0644c1105bcd74547bee6a7ca346dc60ec61d` 构建镜像
+  `kubebrain:a3640-watch-fragment-header`，本地 digest
+  `sha256:dfaa952b776ce3c1b95db3288c0f1e7f768362f551897580dbd18404e9544a29`，OCI revision 与三
+  容器内版本一致，运行用户 `65532:65532`。显式 context `kind-kubebrain-dbaas` 上 StatefulSet 三副本
+  滚动完成，3/3 Ready、零重启、node-local imageID 一致；主 PD/TiKV 3+3 Ready、零重启，health、
+  readyz、endpoint health 正常且 alarm 为空，`/dbaas-watch-exact-limit/` prefix Count=0。两次 reference
+  etcd 临时数据目录均由 trap 删除且不可恢复，仅含一次性 oracle 数据。最初尝试用近 2 MiB Put Txn
+  构造响应时被 upstream 1.5 MiB request limit 正确拒绝，随后改用小 Delete Txn + PrevKV；未把该 harness
+  设计错误计作产品 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
