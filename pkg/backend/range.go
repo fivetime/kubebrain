@@ -689,7 +689,7 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 					}
 					rawValue = stored
 				} else {
-					record.LeaseKnown = true
+					record.LeaseKnown = InlineValueLeaseKnown(stored)
 				}
 				record.Value = append([]byte(nil), rawValue...)
 				record.CreateRevision = meta.CreateRevision

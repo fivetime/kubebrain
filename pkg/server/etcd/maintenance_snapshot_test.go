@@ -494,6 +494,34 @@ func TestMaintenanceSnapshotRecoversCurrentLegacyLeaseFromAttachment(t *testing.
 	}))
 }
 
+func TestMaintenanceSnapshotRejectsUnknownHistoricalLegacyLease(t *testing.T) {
+	// A pre-v2 value stores create/version metadata but not its per-version
+	// lease. Once the key is rebound, the current attachment can recover only
+	// the live version; it cannot prove whether the retained old version was
+	// leased. Flattening that unknown state to lease=0 creates a valid-looking
+	// bbolt snapshot with false MVCC history.
+	server, closeFn := newTestRPCServerWithCompatibility(t, false)
+	defer closeFn()
+	ctx := context.Background()
+	grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: 1751, TTL: 300})
+	require.NoError(t, err)
+	key := []byte("/snapshot/legacy-historical-lease")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("leased-v1"), Lease: grant.ID})
+	require.NoError(t, err)
+	current, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("unleased-v2")})
+	require.NoError(t, err)
+
+	err = server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "snapshot.db"))
+	require.ErrorContains(t, err, "snapshot cannot determine lease for retained legacy version")
+
+	// The limitation is bounded by retained history, not by the lifetime of the
+	// database. Once a physical compaction removes the ambiguous old version,
+	// the recoverable current legacy row can be snapshotted normally.
+	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: current.Header.Revision, Physical: true})
+	require.NoError(t, err)
+	require.NoError(t, server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "after-compact.db")))
+}
+
 func TestMaintenanceSnapshotRejectsCurrentLeaseDisagreeingWithPinnedAttachment(t *testing.T) {
 	server, closeFn := newTestRPCServerWithCompatibility(t, false)
 	defer closeFn()

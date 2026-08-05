@@ -68,9 +68,7 @@ func encodeValueWithMeta(value []byte, meta EtcdMetadata) []byte {
 		return buf
 	}
 	buf := make([]byte, valueMetaHeaderLen+len(value))
-	// Keep writing v1 during the reader-first rollout. A following release flips
-	// this to v3 only after every replica can decode the new tag.
-	copy(buf, valueMetaMagic)
+	copy(buf, valueMetaMagicV3)
 	binary.BigEndian.PutUint64(buf[4:], meta.CreateRevision)
 	binary.BigEndian.PutUint64(buf[12:], meta.Version)
 	copy(buf[valueMetaHeaderLen:], value)

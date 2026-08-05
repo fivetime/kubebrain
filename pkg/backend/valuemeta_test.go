@@ -26,7 +26,8 @@ func TestValueMetaRoundTrip(t *testing.T) {
 	meta := EtcdMetadata{CreateRevision: 12345, Version: 7}
 	enc := encodeValueWithMeta(raw, meta)
 
-	require.True(t, hasValueMeta(enc))
+	require.True(t, hasValueMetaV3(enc))
+	require.True(t, InlineValueLeaseKnown(enc))
 	got, rawOut, ok := decodeValueWithMeta(enc)
 	require.True(t, ok)
 	require.Equal(t, meta, got)
@@ -34,9 +35,9 @@ func TestValueMetaRoundTrip(t *testing.T) {
 }
 
 // TestValueMetaV2Lease pins review #9: a leased version round-trips through the v2
-// envelope carrying its lease. During the reader-first rollout an unleased
-// version remains v1; a manually encoded same-size v3 known-zero envelope is
-// already readable before a following release starts writing it.
+// envelope carrying its lease, while an unleased version uses the same-size v3
+// known-zero envelope. A v1 envelope written before the lease field remains
+// readable, but is explicitly lease-unknown for snapshot safety.
 func TestValueMetaV2Lease(t *testing.T) {
 	raw := []byte("k8s\x00leased-object")
 
@@ -54,23 +55,24 @@ func TestValueMetaV2Lease(t *testing.T) {
 		require.True(t, bytes.Equal(raw, rawOut))
 	}
 
-	// Reader-first phase: unleased writes remain v1.
+	// Unleased -> v3, no lease field and no size regression, but known zero.
 	unleased := encodeValueWithMeta(raw, EtcdMetadata{CreateRevision: 42, Version: 3})
-	require.True(t, hasValueMeta(unleased))
+	require.True(t, hasValueMetaV3(unleased))
+	require.False(t, hasValueMeta(unleased))
 	require.False(t, hasValueMetaV2(unleased))
-	require.False(t, InlineValueLeaseKnown(unleased))
+	require.True(t, InlineValueLeaseKnown(unleased))
 	require.Equal(t, valueMetaHeaderLen+len(raw), len(unleased))
 	got, _, ok := decodeValueWithMeta(unleased)
 	require.True(t, ok)
 	require.Equal(t, int64(0), got.Lease)
 
-	v3 := append([]byte(nil), unleased...)
-	copy(v3, valueMetaMagicV3)
-	got, rawOut, ok := decodeValueWithMeta(v3)
+	legacyV1 := append([]byte(nil), unleased...)
+	copy(legacyV1, valueMetaMagic)
+	got, rawOut, ok := decodeValueWithMeta(legacyV1)
 	require.True(t, ok)
 	require.Equal(t, EtcdMetadata{CreateRevision: 42, Version: 3}, got)
 	require.Equal(t, raw, rawOut)
-	require.True(t, InlineValueLeaseKnown(v3))
+	require.False(t, InlineValueLeaseKnown(legacyV1))
 }
 
 func TestValueMetaEmptyValue(t *testing.T) {

@@ -23,6 +23,8 @@ const snapshotSendBufferSize = 32 * 1024
 
 var errSnapshotChanged = errors.New("snapshot state changed while it was captured")
 
+var errSnapshotHistoricalLeaseUnknown = errors.New("snapshot cannot determine lease for retained legacy version")
+
 // buildSnapshot retries a capture if its pinned stream and captured metadata
 // cannot form a valid state (for example, a KV references no captured lease).
 // Each failed attempt owns a fresh bbolt file; no partially captured backend can
@@ -138,6 +140,16 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		}
 		records := make([]production.Record, 0, len(chunk.Records))
 		for _, record := range chunk.Records {
+			// Legacy raw/v1 values did not persist lease IDs per MVCC version.
+			// The pinned attachment map below can recover the current version,
+			// but after a rebind it contains no evidence about an older version's
+			// lease. Never turn that information loss into a plausible lease=0:
+			// etcdutl would restore a valid-looking database with false history.
+			// Once compaction physically removes the ambiguous retained version,
+			// snapshots become available again; every v2 version is LeaseKnown.
+			if !record.Current && !record.Tombstone && !record.LeaseKnown {
+				return fmt.Errorf("%w: key %q revision %d", errSnapshotHistoricalLeaseUnknown, record.Key, record.ModRevision)
+			}
 			if record.Current {
 				// Legacy rows do not carry a per-version lease. Reconcile them
 				// against the durable attachment captured under the same write

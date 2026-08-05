@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；旧非内联数据无法重建每个历史版本的 lease，继续列为差距 |
+| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 的当前 lease 可由 pinned attachment 恢复，但含 lease 不可判定的旧历史版本时 snapshot 明确失败，避免伪造 Lease=0；物理 Compact 清除含糊版本后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -35054,6 +35054,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RED 组成双向契约：leader-exclusive 写靠 ownership token 阻止跨任期提交，共享元数据写靠业务 CAS
   阻止 stale overwrite，二者不能互相替代。三项专项普通 20 轮 3.320 秒 GREEN；本轮为审计与回归
   加固，不改变生产二进制，因此不虚构新的部署镜像或运行时故障结论。
+
+- A3590/A3591 两阶段修复 Maintenance Snapshot 对旧历史 lease 信息缺失的静默数据伪造。对照 etcd MVCC
+  `KeyValue.Lease` 随每个 revision value 一起持久化、restore 时直接重建 lease attachment 的契约，
+  重新检查 KubeBrain raw、v1/v2 envelope、legacy etcdmeta、event log 与当前 lease attachment：raw/v1
+  只保存 value/create/version，event log 只保存 verb/prev/subrevision，当前 attachment 只能证明 live
+  binding，任何来源都无法推导一个已被 rebind 的旧版本当时是否 leased。旧 snapshot builder 却把
+  `LeaseKnown=false` 的非当前记录直接写成 Lease=0，生成可被 etcdutl 接受但历史语义错误的 bbolt。
+
+  确定性 RED 在 legacy storage 中先写 leased-v1、再写 unleased-v2，旧实现 `buildSnapshot` 返回 nil。
+  修复引入与 v1 同为 20-byte header 的 v3 magic：新 unleased 版本明确表示 known lease=0，不增加常见
+  Kubernetes object 的存储开销；v2 继续携带非零 lease；旧 v1/raw 保持可读，但 scanner 标为
+  lease unknown。builder 仍用 pinned attachment 恢复 current legacy row；若遇到非当前、非 tombstone
+  且 lease unknown 的 retained version，则带 key/revision 明确失败，绝不生成虚假可恢复产物。同步
+  physical Compact 删除含糊旧版本后，同一数据库 snapshot 再次成功，证明限制只绑定 retained history，
+  不会永久封死升级实例。
+
+  格式启用严格采用 reader-first rollout，避免旧 Pod 把未知 v3 envelope 当作用户原值。commit
+  `ca0a2617` 仅加入 v3 decoder、仍写 v1，构建 `kubebrain:a3590-v3-envelope-reader`（Docker image ID
+  `sha256:4d4562b693fda3cdb4d97809717557fa2e96bfc3420151dfeef46613644cb88a`，kind runtime digest
+  `sha256:2bd3f82240395b157cefa8f49c63b4412d783e6cf3068d4500813bcf4a5e0ef2`）；三副本全部滚动到同一
+  reader image、Ready/0 restart 且 endpoint health/readyz 通过后，A3591 才切换 unleased writer 为 v3
+  并启用 v1/raw 历史 fail-closed。codec/history 最终专项普通 20 轮 0.945 秒、全部 Maintenance Snapshot
+  5 轮 4.870 秒、目标 race backend 10 轮 3.494 秒与 server 5 轮 29.317 秒 GREEN；backend/server
+  全包分别 43.567/178.877 秒，主模块 `go test ./...`、vet、完整 compat 与 staticcheck 既有 9 项基线
+  均通过。A3591 还必须构建部署，并用官方 etcdctl snapshot save/status、etcdutl restore 验证 v3
+  历史 lease。
 
 ### P2：运维兼容和长期验证
 
