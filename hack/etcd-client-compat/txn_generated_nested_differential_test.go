@@ -19,6 +19,8 @@ type generatedTxnResponse struct {
 	Revision  int64
 	Succeeded bool
 	Deleted   int64
+	Count     int64
+	More      bool
 	KVs       []normalizedKV
 	PrevKVs   []normalizedKV
 	Children  []generatedTxnResponse
@@ -93,11 +95,24 @@ func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []gener
 		require.NoError(t, seedErr)
 		baseRev := seed.Header.Revision
 
+		innerRange := clientv3.OpGet(casePrefix, clientv3.WithPrefix())
+		switch caseIndex % 6 {
+		case 0:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithLimit(2))
+		case 1:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithKeysOnly())
+		case 2:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+		case 3:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByValue, clientv3.SortDescend), clientv3.WithLimit(3))
+		case 4:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithMinModRev(baseRev), clientv3.WithMaxModRev(baseRev+1))
+		}
 		inner := clientv3.OpTxn(
 			[]clientv3.Cmp{clientv3.Compare(clientv3.Value(c), "=", "inner")},
 			[]clientv3.Op{
 				clientv3.OpPut(casePrefix+"inner-put", "inner-value", clientv3.WithPrevKV()),
-				clientv3.OpGet(casePrefix, clientv3.WithPrefix()),
+				innerRange,
 			},
 			[]clientv3.Op{clientv3.OpDelete(c, clientv3.WithPrevKV())},
 		)
@@ -147,6 +162,7 @@ func normalizeGeneratedTxnResponses(responses []*etcdserverpb.ResponseOp, prefix
 			rangeResponse := response.GetResponseRange()
 			result = append(result, generatedTxnResponse{
 				Kind: "range", Revision: normalizeGeneratedRevision(rangeResponse.Header.Revision, baseRev, txnRev),
+				Count: rangeResponse.Count, More: rangeResponse.More,
 				KVs: normalizeGeneratedKVs(rangeResponse.Kvs, prefix, baseRev, txnRev),
 			})
 		case response.GetResponsePut() != nil:

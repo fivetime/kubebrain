@@ -35950,6 +35950,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   server/etcd 167.928 秒），兼容模块 test/vet 与真实 NodePort client/v3 全包 111.379 秒均通过。
   本项强化控制面 Succeeded 边界，不改变运行中 etcd 数据面镜像。
 
+- A3653 从控制面 receipt 审计重新回到 `/root/etcd` 的客户端可观察 P0 语义。先逐项复核
+  Maintenance Snapshot 的取消/超时、流分片、摘要、版本、鉴权、历史 MVCC、lease、auth、alarm
+  与官方 restore 覆盖，又核对 RangeStream 的排序和 revision-filter 拒绝路径；后者在
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkRangeStreamRequest` 本身就是明确的
+  `Unimplemented` 契约，因此没有把已对齐行为误报为缺口。
+
+  随后扩展固定 seed 的嵌套 Txn 差分生成器：嵌套分支中的 Range 现在轮换覆盖 Limit/More/Count、
+  KeysOnly、CountOnly、VALUE DESCEND+Limit，以及 min/max mod-revision filter，并把 Count/More 纳入
+  递归响应状态；这些读取发生在同一 Txn 的 staged Put 之后，可同时验证分支选择、候选窗口、排序、
+  过滤和写后读视图。一次性官方 etcd `d947b2086` 与生产 KubeBrain NodePort 的 32-case oracle
+  4.76 秒全等，未发现新的服务端语义差异，因此本项只保留永久测试覆盖，不制造 RED 或运行镜像
+  变更；两端测试前缀均已清理，一次性 reference 进程已停止。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
