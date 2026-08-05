@@ -95,10 +95,16 @@ verify_source_receipt() {
 }
 
 kctl() { "$KUBECTL" --context "$KUBE_CONTEXT" "$@"; }
-actual_cluster_uid="$(kctl get namespace kube-system -o jsonpath='{.metadata.uid}')"
-[[ "$actual_cluster_uid" == "$EXPECTED_TARGET_KUBE_SYSTEM_UID" ]] || { echo "target kube-system UID mismatch" >&2; exit 1; }
-actual_namespace_uid="$(kctl get namespace "$namespace" -o jsonpath='{.metadata.uid}')"
-[[ "$actual_namespace_uid" == "$EXPECTED_TARGET_NAMESPACE_UID" ]] || { echo "target namespace UID mismatch" >&2; exit 1; }
+validate_target_identity() {
+  actual_cluster_uid="$(kctl get namespace kube-system -o jsonpath='{.metadata.uid}')"
+  [[ "$actual_cluster_uid" == "$EXPECTED_TARGET_KUBE_SYSTEM_UID" ]] ||
+    { echo "target kube-system UID mismatch" >&2; exit 1; }
+  actual_namespace_uid="$(kctl get namespace "$namespace" -o jsonpath='{.metadata.uid}')"
+  [[ "$actual_namespace_uid" == "$EXPECTED_TARGET_NAMESPACE_UID" ]] ||
+    { echo "target namespace UID mismatch" >&2; exit 1; }
+}
+
+validate_target_identity
 verify_source_receipt
 
 snapshot_resources="$(kctl api-resources --api-group=snapshot.storage.k8s.io -o name 2>/dev/null || true)"
@@ -136,6 +142,11 @@ while IFS=$'\t' read -r kind name; do
     PersistentVolumeClaim) ensure_absent "$namespace" pvc "$name" ;;
   esac
 done < <(jq -r '.items[] | select(.kind == "VolumeSnapshotContent" or .kind == "VolumeSnapshot" or .kind == "PersistentVolumeClaim") | [.kind,.metadata.name] | @tsv' <<<"$manifest")
+
+# Namespace names are reusable. Rebind the final create to the approved cluster
+# and namespace identities after all potentially slow discovery/collision reads
+# so a delete/recreate cannot redirect the restore to a same-named target.
+validate_target_identity
 
 unpaused=false
 completed=false

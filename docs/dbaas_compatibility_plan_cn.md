@@ -35182,6 +35182,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整 cold-snapshot 矩阵 84.363 秒、`hack/production` 全包 418.145 秒以及 vet、脚本语法与 diff
   check 均通过。该项保护候选 cold snapshot 的 retained 生命周期，不证明 CSI 多卷原子性或 PITR。
 
+- A3598 转向 cold CSI 隔离恢复候选执行器，封闭目标 namespace identity 的 create 前 TOCTOU。旧流程
+  只在 canonical manifest 校验后读取一次目标 kube-system/namespace UID，随后还要进行 API discovery、
+  class/driver 与所有目标资源 collision 查询；若 namespace 在此期间被删除并以同名重建，整套
+  VolumeSnapshotContent/VolumeSnapshot/PVC/TidbCluster 会被创建到未经批准的新目标。确定性 RED 让
+  namespace UID 只在首轮 collision lookup 后漂移，旧执行器仍成功创建并发布 restore receipt。
+
+  两项目标 UID 校验现在统一为可复用 identity fence：保留首次 target admission，在全部慢速只读
+  discovery/collision 完成后、安装 emergency trap 与 `kubectl create` 之前再次读取 kube-system 和
+  restore namespace UID。任一 replacement 精确失败且不得 create，因此不需要事后 storage fence；
+  二次读取到 create 之间更窄的 namespace 替换竞态仍需隔离环境/准入控制保证，因为 Kubernetes create
+  不提供 namespace UID precondition。专项连续 10 轮 14.311 秒、race 2.252 秒、完整 cold-restore
+  矩阵 18.175 秒、`hack/production` 全包 415.936 秒以及 vet、脚本语法与 diff check 均通过。该项
+  强化隔离目标绑定，不宣称真实 CSI 隔离恢复演练或 PITR 已完成。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

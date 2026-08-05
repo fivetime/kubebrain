@@ -220,6 +220,36 @@ func TestColdRestoreExecuteRequiresExplicitAdmissionBeforeTargetAccess(t *testin
 	}
 }
 
+func TestColdRestoreExecuteRechecksTargetIdentityBeforeCreate(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_TARGET_NAMESPACE_UID_DRIFT_BEFORE_CREATE=true",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "target namespace UID mismatch")
+	require.NoFileExists(t, restoreReceiptPath)
+	log := string(mustRead(t, logPath))
+	require.NotContains(t, log, "create -f", "a replacement namespace must never receive restore resources")
+}
+
 func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byte, error) {
 	t.Helper()
 	return runProductionCommand(t, "go", []string{
@@ -369,7 +399,12 @@ maybe_tamper_inputs
 if [[ "$args" == *"get namespace kube-system"* ]]; then
   printf 'uid-kube-system-target'
 elif [[ "$args" == *"get namespace tidb-cluster"* ]]; then
-  printf 'uid-target-namespace'
+  if [[ "${FAKE_TARGET_NAMESPACE_UID_DRIFT_BEFORE_CREATE:-false}" == true ]] &&
+    grep -q -- '--ignore-not-found' "$FAKE_LOG"; then
+    printf 'replacement-uid-target-namespace'
+  else
+    printf 'uid-target-namespace'
+  fi
 elif [[ "$args" == *"api-resources --api-group=snapshot.storage.k8s.io"* ]]; then
   printf '%s\n' volumesnapshots.snapshot.storage.k8s.io volumesnapshotcontents.snapshot.storage.k8s.io
 elif [[ "$args" == *"api-resources --api-group=pingcap.com"* ]]; then
