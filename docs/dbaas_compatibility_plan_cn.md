@@ -35352,6 +35352,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   diff check 均通过，线上 `/dbaas-namespace/` prefix 已清空。本轮未发现 runtime 差异，不重建或
   滚动生产镜像。
 
+- A3611 将同一审计扩展到官方 `client/v3/naming/endpoints`。旧 `namingUpdates` 会对
+  `NewWatchChannel` 收到的一次原子 `Manager.Update` update slice 排序；replacement 请求明明按
+  `delete e1 → add e3` 提交，却被 oracle 改写为 `add e3 → delete e1`。只移除排序并保留旧期望的
+  reference RED 精确显示上游返回请求/subrevision 顺序 `delete e1 → add e3`；初始
+  `add e1 → add e2` 只是碰巧与字典序一致。测试继续只对 `Manager.List` 的 map 结果排序，并保留
+  probe registry、alarm/member/status 等上游无序集合的 canonical set 比较。
+
+  naming 差分现在原样比较两组原子 watch updates，真实 `172.18.0.3:30079` 连续 10 轮 7.784 秒、
+  race 1.635 秒通过；兼容模块全包 1.339 秒、两级 module vet、`hack/production` 全包 464.848 秒及
+  diff check 均通过，线上 `/dbaas-naming/` prefix 已清空。本轮未发现 runtime 差异，不重建或滚动
+  生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

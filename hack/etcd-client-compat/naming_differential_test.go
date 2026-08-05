@@ -42,7 +42,7 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, namingOutcome{
 		InitialAtomicUpdates: []string{"add:e1:127.0.0.1:2001:metadata-1", "add:e2:127.0.0.1:2002:metadata-2"},
 		InitialList:          []string{"e1:127.0.0.1:2001:metadata-1", "e2:127.0.0.1:2002:metadata-2"},
-		ReplacementUpdates:   []string{"add:e3:127.0.0.1:2003:metadata-3", "delete:e1::"},
+		ReplacementUpdates:   []string{"delete:e1::", "add:e3:127.0.0.1:2003:metadata-3"},
 		ReplacementList:      []string{"e2:127.0.0.1:2002:metadata-2", "e3:127.0.0.1:2003:metadata-3"},
 		PrefixIsolated:       true,
 		LeaseDeleteObserved:  true,
@@ -203,7 +203,6 @@ func namingUpdates(t *testing.T, updates []*endpoints.Update, prefix string) []s
 		result = append(result, fmt.Sprintf("%s:%s:%s:%s",
 			op, update.Key[len(prefix)+1:], update.Endpoint.Addr, metadata))
 	}
-	sort.Strings(result)
 	return result
 }
 
