@@ -36281,6 +36281,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项只增加永久兼容门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录已删除且
   不可恢复，只含本轮 oracle 数据。
 
+- A3676 固定同一 raw LeaseKeepAlive stream 内重复 ID 请求的逐消息响应和全局到期顺序更新。
+  A3675 已证明 revoke 一个 ID 不会关闭多 ID stream，既有 LeaseLeases 差分只通过 unary
+  `KeepAliveOnce` 证明单次续租会移动排序；本轮把两条路径连接起来，在同一双向流依次发送
+  A、B、A、B。每个请求都必须收到对应 ID 的正 TTL 响应，不能合并、丢失或串号；第二次续租 A
+  后目标租约顺序必须从 A/B 移为 B/A，第二次续租 B 后再移为 A/B。所有 keepalive response
+  header 相对 grant 的 revision gap 均为 0，证明续租更新 lease deadline 但不虚增用户 KV revision。
+
+  官方 `Lease.Keys()` 直接枚举 Go map，因此 attached-key 顺序不是稳定契约，本轮没有把偶然顺序
+  写成错误门禁。一次性官方 etcd `d947b2086` 与生产 `kubebrain:a3672-stream-progress` 首轮、
+  连续 10 轮（2.573 秒）及 race 5 轮（2.515 秒）均通过，没有运行时 RED。本项只增加永久兼容
+  门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
