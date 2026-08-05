@@ -35234,6 +35234,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2.517 秒、完整 cold-restore 矩阵 27.617 秒、`hack/production` 全包 423.788 秒以及 vet、脚本语法
   与 diff check 均通过。dry-run 不能把真实 List create 变成事务，也不能替代真实 CSI 隔离恢复/PITR。
 
+- A3602 把 cold restore 成功 receipt 的可发布性纳入真实 create 前门禁。执行器启动时虽要求
+  `RESTORE_RECEIPT_FILE` 不存在，但 A3601 server dry-run 和后续最终栅栏期间，另一个执行者或错误
+  协调器仍可占用该路径；旧流程会继续创建、unpause 并验证完整 storage，直到最终 non-overwrite
+  `ln` 才失败，随后反向 emergency fence 已恢复的集群。确定性 RED 在 dry-run 内原子创建预存 receipt，
+  旧执行器实际进入 create，并最终报告 receipt already exists。
+
+  最终 class/collision/target UID 栅栏之后、安装 emergency trap 和真实 create 之前，执行器现在再次
+  要求 receipt 路径不存在；命中时保留对方文件，且不创建资源、不触发 emergency fence。最终发布
+  仍使用 hard-link non-overwrite 处理更窄竞态。专项连续 10 轮 20.815 秒、race 2.997 秒、完整
+  cold-restore 矩阵 29.490 秒、`hack/production` 全包 422.123 秒以及 vet、脚本语法与 diff check
+  均通过。本项避免已知证据路径冲突造成无谓恢复/反向停服，不关闭真实 CSI 恢复或 PITR 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

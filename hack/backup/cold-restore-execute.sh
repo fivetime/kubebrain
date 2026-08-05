@@ -166,6 +166,10 @@ kctl create --dry-run=server -f "$applied_manifest" >/dev/null
 validate_target_classes
 validate_targets_absent
 validate_target_identity
+[[ ! -e "$RESTORE_RECEIPT_FILE" ]] || {
+  echo "restore receipt target appeared before create" >&2
+  exit 1
+}
 
 unpaused=false
 completed=false
