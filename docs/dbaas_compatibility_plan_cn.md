@@ -35146,6 +35146,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cold-snapshot 矩阵 80.004 秒、`hack/production` 全包 402.813 秒以及 vet、脚本语法与 diff check
   均通过。该项继续减少候选 cold snapshot 的确定性停服风险，不替代真实 CSI 多卷一致性恢复或 PITR。
 
+- A3595 把 retained VolumeSnapshot 目标冲突纳入 cold CSI 候选执行器的停机前只读门禁。即使冻结
+  inventory、派生名称和源 PVC 身份全部有效，同一 `OPERATION_ID` 的任一目标已存在时，Kubernetes
+  `create` 必然返回 AlreadyExists；旧执行器却先 pause TidbCluster、依次把 KubeBrain/TiKV/PD
+  缩容为 0，并可能在碰到后序冲突前创建部分新 snapshot。确定性 RED 预置首个 PD 目标，旧执行器
+  实际完成整轮操作并错误返回成功。
+
+  执行器现在在任何 controller mutation 前，对六个派生目标执行带 `--ignore-not-found` 的显式只读
+  查询；任一命中即报告精确名称，且不得 patch、create 或发布 receipt。查询失败仍 fail closed，
+  真正 `create` 保留为预检后并发竞态的最终唯一性裁决。专项连续 10 轮 10.136 秒、race 1.793 秒、
+  完整 cold-snapshot 矩阵 81.562 秒、`hack/production` 全包 403.084 秒以及 vet、脚本语法与
+  diff check 均通过。本项只避免已知 retained 制品冲突造成的停服，不关闭真实 CSI/PITR 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

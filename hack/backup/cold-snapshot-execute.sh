@@ -118,6 +118,18 @@ kubectl_args=()
 [[ -z "${KUBE_CONTEXT:-}" ]] || kubectl_args+=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${kubectl_args[@]}" "$@"; }
 
+# Retained snapshots make operation IDs intentionally non-reusable. Discover a
+# known collision before pausing the operator or scaling any serving component;
+# create still remains the authoritative race-safe uniqueness check.
+while IFS= read -r pvc_name; do
+  snapshot_name="${OPERATION_ID}-${pvc_name}"
+  existing_snapshot="$(kctl -n "$TIDB_NAMESPACE" get volumesnapshot "$snapshot_name" --ignore-not-found -o name)"
+  [[ -z "$existing_snapshot" ]] || {
+    echo "target VolumeSnapshot already exists: ${snapshot_name}" >&2
+    exit 1
+  }
+done < <(jq -r '.pd_pvcs[].name, .tikv_pvcs[].name' <<<"$inventory")
+
 kb_json="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json)"
 tc_json="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
 pd_name="${TIDB_CLUSTER}-pd"

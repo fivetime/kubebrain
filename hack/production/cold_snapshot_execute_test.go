@@ -370,6 +370,34 @@ func TestColdSnapshotExecuteRejectsOversizedDerivedNameBeforeMutation(t *testing
 	}
 }
 
+func TestColdSnapshotExecuteRejectsExistingTargetBeforeMutation(t *testing.T) {
+	dir := t.TempDir()
+	inventoryFile := filepath.Join(dir, "inventory.json")
+	receiptFile := filepath.Join(dir, "receipt.json")
+	witnessFile := filepath.Join(dir, "witness.jsonl")
+	logFile := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+	require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+	output, err := runColdSnapshotExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=preproduction", "ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+		"PREFLIGHT_FILE=" + inventoryFile, "RECEIPT_FILE=" + receiptFile,
+		"OPERATION_ID=op-existing", "SEMANTIC_WITNESS_FILE=" + witnessFile,
+		"EXPECTED_WITNESS_PREFIX=/registry", "FAKE_LOG=" + logFile,
+		"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
+		"FAKE_EXISTING_SNAPSHOT=op-existing-pd-kb-pd-0", "FAKE_TIDB_READY=true",
+		"FAKE_FAIL_SNAPSHOT=false", "FAKE_CONTENT_DRIVER=csi.example.test",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "target VolumeSnapshot already exists: op-existing-pd-kb-pd-0")
+	require.NoFileExists(t, receiptFile)
+	log := string(mustRead(t, logFile))
+	require.NotContains(t, log, " patch ", "target collisions must fail before the maintenance window")
+	require.NotContains(t, log, "create -f -")
+}
+
 func TestColdSnapshotExecuteRejectsTidbClusterFenceLossAfterPause(t *testing.T) {
 	for _, tc := range []struct {
 		name, uidDrift, pauseLost, specDrift, clusterIDDrift, readyLost, want string
@@ -649,6 +677,11 @@ elif [[ "$args" == *"get volumesnapshotcontent"* ]]; then
   name="$(sed -n 's/.*get volumesnapshotcontent \([^ ]*\).*/\1/p' <<<"$args")"
   snapshot="${name#content-}"
   printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","driver":"%s","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"}},"status":{"snapshotHandle":"handle-%s"}}' "$name" "$name" "$FAKE_CONTENT_DRIVER" "$snapshot" "$name"
+elif [[ "$args" == *"get volumesnapshot"* && "$args" == *"--ignore-not-found"* ]]; then
+  name="$(sed -n 's/.*get volumesnapshot \([^ ]*\).*/\1/p' <<<"$args")"
+  if [[ "${FAKE_EXISTING_SNAPSHOT:-}" == "$name" ]]; then
+    printf 'volumesnapshot.snapshot.storage.k8s.io/%s' "$name"
+  fi
 elif [[ "$args" == *"get volumesnapshot"* ]]; then
   name="$(sed -n 's/.*get volumesnapshot \([^ ]*\).*/\1/p' <<<"$args")"
   printf '{"metadata":{"name":"%s","uid":"uid-%s"},"status":{"readyToUse":true,"boundVolumeSnapshotContentName":"content-%s","restoreSize":"1Gi"}}' "$name" "$name" "$name"
