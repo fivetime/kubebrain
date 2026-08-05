@@ -35937,6 +35937,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   test/vet 与真实 NodePort client/v3 全包 105.417 秒均通过。本项强化恢复后持续验证证据，不改变
   运行中 etcd 数据面镜像。
 
+- A3652 把 A3651 的跨制品 chronology 固化到 PostRestoreAudit Operation runner 最终提交边界。
+  runner 会在子脚本退出后冻结并重验 cutover/audit receipts，但旧 `validate_audit_receipt` 仍只比较
+  audit 自身 `completed >= started`；其默认“成功”夹具同样是 cutover completed=100、audit
+  started/completed=1/2。新增 runner 必须 Retry 且不得 Succeeded 的用例在旧实现上 RED 1.487 秒，
+  实际错误提交成功。
+
+  runner 现在从已经严格 schema 校验、两次摘要稳定的 frozen cutover receipt 读取 completion time，
+  并在每次 audit receipt 校验和最终 digest 冻结中要求 `cutover completed <= audit started <= audit
+  completed`。正常夹具改为 100/101，显式倒序模式保留 1/2；正常提交/倒序拒绝双场景 2.973 秒，
+  完整 PostRestoreAudit Operation 测试族 23.856 秒；全仓 test/vet 通过（production 472.805 秒、
+  server/etcd 167.928 秒），兼容模块 test/vet 与真实 NodePort client/v3 全包 111.379 秒均通过。
+  本项强化控制面 Succeeded 边界，不改变运行中 etcd 数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

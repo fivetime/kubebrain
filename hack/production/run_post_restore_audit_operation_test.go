@@ -42,6 +42,14 @@ func TestPostRestoreAuditOperationRejectsInvalidReceipt(t *testing.T) {
 	require.NotContains(t, log, "--action succeed")
 }
 
+func TestPostRestoreAuditOperationRejectsReceiptStartedBeforeCutoverCompletion(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "INVALID_AUDIT_CHRONOLOGY=true", "invalid receipt")
+	log := f.log(t)
+	require.Contains(t, log, "--action retry")
+	require.NotContains(t, log, "--action succeed")
+}
+
 func TestPostRestoreAuditOperationRejectsReceiptTamperedDuringDigest(t *testing.T) {
 	f := newOperationRunnerFixture(t)
 	f.run(t, false, "TAMPER_RECEIPT_DURING_SHA256=true", "invalid receipt")
@@ -426,8 +434,10 @@ artifact_sha="`+operationAuditArtifactSHA256+`"
 [[ "${INVALID_AUDIT_RECEIPT:-false}" != true ]] || artifact_sha=abc123
 cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d ' ' -f1)"
 cutover_receipt_sha="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d ' ' -f1)"
-printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","cutover_receipt_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":1,"last_probe_revision":2,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":1,"completed_at_unix":2}\n' \
-  "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$cutover_state_sha" "$cutover_receipt_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" >"$RECEIPT_OUTPUT"
+started_at=100; completed_at=101
+if [[ "${INVALID_AUDIT_CHRONOLOGY:-false}" == true ]]; then started_at=1; completed_at=2; fi
+printf '{"format":"kubebrain.post-restore-audit.receipt.v1","operation_id":"%s","instance":"%s","cutover_operation_id":"cutover-1","service_uid":"uid-service","target_instance":"%s","artifact_sha256":"%s","cutover_state_sha256":"%s","cutover_receipt_sha256":"%s","snapshot_revision":42,"replicas":%s,"duration_seconds":%s,"interval_seconds":%s,"samples":%s,"first_probe_revision":1,"last_probe_revision":2,"topology_unchanged":true,"all_probes_succeeded":true,"completed":true,"started_at_unix":%s,"completed_at_unix":%s}\n' \
+  "$OPERATION_ID" "$INSTANCE" "$TARGET_INSTANCE" "$artifact_sha" "$cutover_state_sha" "$cutover_receipt_sha" "$EXPECTED_REPLICAS" "$AUDIT_DURATION_SECONDS" "$AUDIT_INTERVAL_SECONDS" "$MIN_SAMPLES" "$started_at" "$completed_at" >"$RECEIPT_OUTPUT"
 chmod 600 "$RECEIPT_OUTPUT"
 [[ "${TAMPER_CUTOVER_STATE_AFTER_AUDIT:-false}" != true ]] || printf 'UNKNOWN\trow\n' >>"$CUTOVER_STATE_INPUT"
 [[ "${TAMPER_CUTOVER_RECEIPT_AFTER_AUDIT:-false}" != true ]] || printf ' ' >>"$CUTOVER_RECEIPT_INPUT"

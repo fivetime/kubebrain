@@ -2453,6 +2453,10 @@ A189 rollback 允许仅凭 prepare state 运行：这覆盖 Service JSON Patch �
 EndpointSlice 失败而尚未生成 cutover marker 的窗口；rollback 仍用 UID/resourceVersion
 CAS 并要求源 Pod UID 集恢复。
 
+PostRestoreAudit runner 在子脚本返回后会重新冻结并双重校验 cutover state、cutover receipt 和 audit
+receipt，独立要求 `cutover completed_at_unix <= audit started_at_unix <= audit completed_at_unix`；
+倒序票据只允许进入 Retry，不能提交 Succeeded。该检查不依赖直接审计脚本已经执行过同一门禁。
+
 `hack/production/run-certificate-rotation-operation.sh` 接入 CertificateRotation。
 参数同时绑定旧/新/overlap CA、client cert/key 路径及每个文件的 SHA-256，executor 在
 任何发布前重新计算内容摘要，防止固定路径被替换。服务端 Secret 发布不由 CR 提供命令；

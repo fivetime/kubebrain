@@ -402,7 +402,7 @@ validated_source_cutover_receipt_digest() {
 validate_audit_receipt() {
   local kind format state_instance cutover_operation state_namespace state_service source_instance
   local state_target state_service_uid artifact_sha snapshot_revision source_prefix target_prefix
-  local state_sha cutover_receipt_sha
+  local state_sha cutover_receipt_sha cutover_completed_at
   state_sha="$(validated_cutover_state_digest)" || return 1
   IFS=$'\t' read -r kind format state_instance cutover_operation state_namespace state_service \
     source_instance state_target state_service_uid artifact_sha snapshot_revision source_prefix \
@@ -416,13 +416,16 @@ validate_audit_receipt() {
   cutover_state_digest_matches "$state_sha" || return 1
   cutover_receipt_sha="$(validated_source_cutover_receipt_digest "$state_sha" "$cutover_operation" \
     "$source_instance" "$state_service_uid" "$artifact_sha" "$snapshot_revision")" || return 1
+  cutover_completed_at="$("$JQ" -er \
+    '.completed_at_unix | select(type == "number" and . > 0 and . == floor)' \
+    "$cutover_receipt")" || return 1
   "$JQ" -e --arg operation "$operation_id" --arg instance "$instance" \
     --arg cutover "$cutover_operation" --arg service_uid "$state_service_uid" \
     --arg target "$target_instance" --arg artifact_sha "$artifact_sha" \
     --arg cutover_state_sha "$state_sha" --arg cutover_receipt_sha "$cutover_receipt_sha" \
     --argjson snapshot "$snapshot_revision" --argjson replicas "$expected_replicas" \
     --argjson duration "$duration" --argjson interval "$interval" \
-    --argjson min_samples "$min_samples" '
+    --argjson min_samples "$min_samples" --argjson cutover_completed_at "$cutover_completed_at" '
     select((keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] or
     keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"]) and
     .format == "kubebrain.post-restore-audit.receipt.v1" and
@@ -442,6 +445,7 @@ validate_audit_receipt() {
     .last_probe_revision >= .first_probe_revision and
     (.started_at_unix | type == "number" and . > 0 and . == floor) and
     (.completed_at_unix | type == "number" and . > 0 and . == floor) and
+    .started_at_unix >= $cutover_completed_at and
     .completed_at_unix >= .started_at_unix)' "$receipt_input" >/dev/null
 }
 
