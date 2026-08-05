@@ -10,18 +10,21 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 type watchFilterProgressOutcome struct {
 	Created             bool
+	CreatedCanonical    bool
 	CreatedHeaderGap    int64
 	PutRevisionGap      int64
 	SuppressedBeforeAck bool
 	ProgressWatchID     int64
 	ProgressHeaderGap   int64
 	ProgressEmpty       bool
+	ProgressCanonical   bool
 }
 
 func TestWatchFilterProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -31,8 +34,8 @@ func TestWatchFilterProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	want := watchFilterProgressOutcome{
-		Created: true, PutRevisionGap: 1, SuppressedBeforeAck: true,
-		ProgressWatchID: -1, ProgressHeaderGap: 1, ProgressEmpty: true,
+		Created: true, CreatedCanonical: true, PutRevisionGap: 1, SuppressedBeforeAck: true,
+		ProgressWatchID: -1, ProgressHeaderGap: 1, ProgressEmpty: true, ProgressCanonical: true,
 	}
 	referenceOutcome := runWatchFilterProgressScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
@@ -99,11 +102,37 @@ func runWatchFilterProgressScenario(t *testing.T, endpoint, instance string) wat
 	baseRevision := seed.Header.Revision
 	return watchFilterProgressOutcome{
 		Created:             created.Created && !created.Canceled && created.WatchId == 901,
+		CreatedCanonical:    canonicalWatchControlResponse(created, true, 901),
 		CreatedHeaderGap:    created.Header.Revision - baseRevision,
 		PutRevisionGap:      put.Header.Revision - baseRevision,
 		SuppressedBeforeAck: suppressed,
 		ProgressWatchID:     progress.WatchId,
 		ProgressHeaderGap:   progress.Header.Revision - baseRevision,
 		ProgressEmpty:       !progress.Created && !progress.Canceled && len(progress.Events) == 0,
+		ProgressCanonical:   canonicalWatchControlResponse(progress, false, -1),
 	}
+}
+
+func canonicalWatchControlResponse(response *etcdserverpb.WatchResponse, created bool, watchID int64) bool {
+	return response != nil && response.Created == created && !response.Canceled &&
+		response.WatchId == watchID && response.CompactRevision == 0 && response.CancelReason == "" &&
+		!response.Fragment && len(response.Events) == 0
+}
+
+func TestCanonicalWatchControlResponseRejectsHiddenPayload(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		response *etcdserverpb.WatchResponse
+	}{
+		{name: "compact revision", response: &etcdserverpb.WatchResponse{WatchId: -1, CompactRevision: 7}},
+		{name: "cancel reason", response: &etcdserverpb.WatchResponse{WatchId: -1, CancelReason: "unexpected"}},
+		{name: "fragment", response: &etcdserverpb.WatchResponse{WatchId: -1, Fragment: true}},
+		{name: "events", response: &etcdserverpb.WatchResponse{WatchId: -1, Events: []*mvccpb.Event{{}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.False(t, canonicalWatchControlResponse(test.response, false, -1))
+		})
+	}
+	require.True(t, canonicalWatchControlResponse(&etcdserverpb.WatchResponse{WatchId: -1}, false, -1))
+	require.True(t, canonicalWatchControlResponse(&etcdserverpb.WatchResponse{WatchId: 901, Created: true}, true, 901))
 }

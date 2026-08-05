@@ -35376,6 +35376,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   及 diff check 均通过，线上 `/dbaas-make-mirror/` prefix 已清空。本轮未发现 runtime 差异，不重建或
   滚动生产镜像。
 
+- A3613 从顺序归一化转向 Watch 控制响应字段完整性。旧 filter/progress 差分只把 created 响应压成
+  `created && !canceled && watchID`，把 progress 压成 `!created && !canceled && events empty`；错误的
+  non-zero `compact_revision`、非空 `cancel_reason` 或 `fragment=true` 都不会进入 outcome。先把完整
+  envelope canonical 标志加入期望但不采集，reference RED 如期显示两个新字段均为 false。
+
+  共享 helper 现在要求 created/progress 的 Created、Canceled、WatchID、CompactRevision、CancelReason、
+  Fragment 和 Events 同时符合 etcd 控制响应，并用 synthetic hidden-payload 矩阵逐项拒绝 compact
+  revision、cancel reason、fragment 和 event 泄漏。该矩阵连续 20 轮 0.027 秒、race 1.068 秒；真实
+  filtered PUT suppression + explicit progress 双端连续 10 轮 4.450 秒、race 1.568 秒通过。兼容模块
+  全包 1.339 秒、两级 module vet、`hack/production` 全包 460.406 秒及 diff check 均通过，线上
+  `/dbaas-watch-filter-progress/` prefix 已清空。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
