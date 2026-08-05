@@ -91,12 +91,25 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 			CreatedEnvelope:    expectedWatchFilterEnvelope(0, true, 0),
 			ResponseEnvelopes:  []watchControlOutcome{expectedWatchFilterEnvelope(0, false, 2)},
 			ResponseHeaderGaps: []int64{1}, EventModRevisionGaps: []int64{0, 1},
+			EventMetadata: watchEventMetadataOutcome{
+				Types: []mvccpb.Event_EventType{mvccpb.PUT, mvccpb.DELETE}, KeyMatches: true,
+				Values: []string{"value", ""}, CreateRevisionSet: []bool{true, false},
+				CreateRevisionGaps: []int64{0, 0}, ModRevisionSet: []bool{true, true},
+				ModRevisionGaps: []int64{0, 1}, Versions: []int64{1, 0}, Leases: []int64{0, 0},
+				PrevKVAbsent: true, KVObserved: true,
+			},
 		},
 		Duplicate: watchFilterRunOutcome{
 			Types: []int32{1}, DeleteRevisionGap: 1, CreatedHeaderGap: 1,
 			CreatedEnvelope:    expectedWatchFilterEnvelope(0, true, 0),
 			ResponseEnvelopes:  []watchControlOutcome{expectedWatchFilterEnvelope(0, false, 1)},
 			ResponseHeaderGaps: []int64{1}, EventModRevisionGaps: []int64{1},
+			EventMetadata: watchEventMetadataOutcome{
+				Types: []mvccpb.Event_EventType{mvccpb.DELETE}, KeyMatches: true,
+				Values: []string{""}, CreateRevisionSet: []bool{false}, CreateRevisionGaps: []int64{0},
+				ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{1}, Versions: []int64{0},
+				Leases: []int64{0}, PrevKVAbsent: true, KVObserved: true,
+			},
 		},
 	}, referenceFilters)
 	require.Equal(t, referenceFilters, runWatchFilterEnumScenario(t, compatEndpoint(t), "kubebrain"))
@@ -140,6 +153,7 @@ type watchFilterRunOutcome struct {
 	ResponseEnvelopes    []watchControlOutcome
 	ResponseHeaderGaps   []int64
 	EventModRevisionGaps []int64
+	EventMetadata        watchEventMetadataOutcome
 }
 
 func expectedWatchFilterEnvelope(id int64, created bool, eventCount int) watchControlOutcome {
@@ -260,6 +274,7 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 			CreatedHeaderGap:  created.Header.Revision - put.Header.Revision,
 			CreatedEnvelope:   observeWatchControlResponse(created, put.Header),
 		}
+		events := make([]*mvccpb.Event, 0, wantEvents)
 		for len(outcome.Types) < wantEvents {
 			response, eventErr := stream.Recv()
 			require.NoError(t, eventErr)
@@ -270,12 +285,14 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 				response.Header.Revision-put.Header.Revision)
 			for _, event := range response.Events {
 				require.NotNil(t, event.Kv)
+				events = append(events, event)
 				outcome.Types = append(outcome.Types, int32(event.Type))
 				outcome.EventModRevisionGaps = append(outcome.EventModRevisionGaps,
 					event.Kv.ModRevision-put.Header.Revision)
 			}
 		}
 		require.Len(t, outcome.Types, wantEvents)
+		outcome.EventMetadata = observeWatchEventMetadata(events, key, put.Header.Revision)
 		require.NoError(t, stream.CloseSend())
 		return outcome
 	}

@@ -20,7 +20,9 @@ type watchEventMetadataOutcome struct {
 	Types              []mvccpb.Event_EventType
 	KeyMatches         bool
 	Values             []string
+	CreateRevisionSet  []bool
 	CreateRevisionGaps []int64
+	ModRevisionSet     []bool
 	ModRevisionGaps    []int64
 	Versions           []int64
 	Leases             []int64
@@ -63,8 +65,8 @@ func TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		EventEnvelope: expectedCompactedWatchEventEnvelope(708),
 		EventMetadata: watchEventMetadataOutcome{
 			Types: []mvccpb.Event_EventType{mvccpb.PUT}, KeyMatches: true,
-			Values: []string{"v4"}, CreateRevisionGaps: []int64{1},
-			ModRevisionGaps: []int64{4}, Versions: []int64{4}, Leases: []int64{0},
+			Values: []string{"v4"}, CreateRevisionSet: []bool{true}, CreateRevisionGaps: []int64{1},
+			ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{4}, Versions: []int64{4}, Leases: []int64{0},
 			PrevKVAbsent: true, KVObserved: true,
 		},
 	}
@@ -81,7 +83,9 @@ func observeWatchEventMetadata(
 	outcome := watchEventMetadataOutcome{
 		Types:              make([]mvccpb.Event_EventType, 0, len(events)),
 		Values:             make([]string, 0, len(events)),
+		CreateRevisionSet:  make([]bool, 0, len(events)),
 		CreateRevisionGaps: make([]int64, 0, len(events)),
+		ModRevisionSet:     make([]bool, 0, len(events)),
 		ModRevisionGaps:    make([]int64, 0, len(events)),
 		Versions:           make([]int64, 0, len(events)),
 		Leases:             make([]int64, 0, len(events)),
@@ -98,12 +102,23 @@ func observeWatchEventMetadata(
 		}
 		outcome.KeyMatches = outcome.KeyMatches && bytes.Equal(kv.Key, expectedKey)
 		outcome.Values = append(outcome.Values, string(kv.Value))
-		outcome.CreateRevisionGaps = append(outcome.CreateRevisionGaps, kv.CreateRevision-baseRevision)
-		outcome.ModRevisionGaps = append(outcome.ModRevisionGaps, kv.ModRevision-baseRevision)
+		outcome.CreateRevisionSet = append(outcome.CreateRevisionSet, kv.CreateRevision != 0)
+		outcome.CreateRevisionGaps = append(outcome.CreateRevisionGaps,
+			revisionGapPreservingZero(kv.CreateRevision, baseRevision))
+		outcome.ModRevisionSet = append(outcome.ModRevisionSet, kv.ModRevision != 0)
+		outcome.ModRevisionGaps = append(outcome.ModRevisionGaps,
+			revisionGapPreservingZero(kv.ModRevision, baseRevision))
 		outcome.Versions = append(outcome.Versions, kv.Version)
 		outcome.Leases = append(outcome.Leases, kv.Lease)
 	}
 	return outcome
+}
+
+func revisionGapPreservingZero(revision, baseRevision int64) int64 {
+	if revision == 0 {
+		return 0
+	}
+	return revision - baseRevision
 }
 
 func TestObserveWatchEventMetadataHandlesNilPayload(t *testing.T) {
@@ -113,14 +128,24 @@ func TestObserveWatchEventMetadataHandlesNilPayload(t *testing.T) {
 	}}
 	require.Equal(t, watchEventMetadataOutcome{
 		Types: []mvccpb.Event_EventType{mvccpb.PUT}, KeyMatches: true,
-		Values: []string{"v4"}, CreateRevisionGaps: []int64{1},
-		ModRevisionGaps: []int64{4}, Versions: []int64{4}, Leases: []int64{0},
+		Values: []string{"v4"}, CreateRevisionSet: []bool{true}, CreateRevisionGaps: []int64{1},
+		ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{4}, Versions: []int64{4}, Leases: []int64{0},
 		PrevKVAbsent: true, KVObserved: true,
 	}, observeWatchEventMetadata([]*mvccpb.Event{event}, []byte("key"), 10))
 
 	nilOutcome := observeWatchEventMetadata([]*mvccpb.Event{nil}, []byte("key"), 10)
 	require.False(t, nilOutcome.KeyMatches)
 	require.False(t, nilOutcome.KVObserved)
+
+	require.Equal(t, watchEventMetadataOutcome{
+		Types: []mvccpb.Event_EventType{mvccpb.DELETE}, KeyMatches: true,
+		Values: []string{""}, CreateRevisionSet: []bool{false}, CreateRevisionGaps: []int64{0},
+		ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{1}, Versions: []int64{0}, Leases: []int64{0},
+		PrevKVAbsent: true, KVObserved: true,
+	}, observeWatchEventMetadata([]*mvccpb.Event{{
+		Type: mvccpb.DELETE,
+		Kv:   &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 11},
+	}}, []byte("key"), 10))
 }
 
 func expectedCompactedWatchEventEnvelope(id int64) watchControlOutcome {

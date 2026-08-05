@@ -111,8 +111,8 @@ func expectedRevisionEventEnvelope(id int64) watchControlOutcome {
 func expectedRevisionEventMetadata(value string, revisionGap int64) watchEventMetadataOutcome {
 	return watchEventMetadataOutcome{
 		Types: []mvccpb.Event_EventType{mvccpb.PUT}, KeyMatches: true,
-		Values: []string{value}, CreateRevisionGaps: []int64{revisionGap},
-		ModRevisionGaps: []int64{revisionGap}, Versions: []int64{1}, Leases: []int64{0},
+		Values: []string{value}, CreateRevisionSet: []bool{true}, CreateRevisionGaps: []int64{revisionGap},
+		ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{revisionGap}, Versions: []int64{1}, Leases: []int64{0},
 		PrevKVAbsent: true, KVObserved: true,
 	}
 }

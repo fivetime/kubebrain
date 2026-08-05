@@ -35568,6 +35568,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该修正只消除测试路由随机性，保留真实 etcd 的 follower-first `MoveLeader` 契约，也不改变运行时或
   生产镜像。
 
+- A3629 从 A3627 的 filter response envelope 下钻到完整事件 KV 元数据。旧路径只比较 type 和 mod
+  revision gap，未固定 key/value、CreateRevision、Version、Lease、PrevKv 或 nil payload。upstream
+  `tests/integration/clientv3/watch/v3_watch_test.go:TestV3WatchWithFilter` 明确要求被 `NOPUT` 保留的 DELETE
+  只含 key 与 ModRevision，其 CreateRevision/Version 为零；`FiltersFromRequest` 则确认未知 filter 被忽略、
+  重复 filter 逐项应用。先加入 unknown PUT+DELETE 与重复 NOPUT DELETE 的完整 metadata 期望而不采集，
+  reference RED 0.452 秒精确显示两组 nested metadata 均为零值，既有 envelope/type/revision 全部仍匹配。
+
+  共享 `observeWatchEventMetadata` 新增 CreateRevision/ModRevision 的显式 set 位，并让零 sentinel 保持零而不
+  减去不同实例的 base revision；filter 场景现汇总完整响应批次后统一调用该 observer。zero-sentinel、nil
+  payload 与 revision normalize helper 连续 20 轮 0.026 秒、race 1.069 秒；真实双端 filter 场景连续
+  10 轮 14.711 秒、race 3.061 秒；兼容模块全包 1.129 秒、两级 module vet、线上 client/v3 全包
+  108.204 秒、`hack/production` 全包 465.662 秒及 diff check 均通过，线上
+  `/dbaas-watch-filter-enum/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
