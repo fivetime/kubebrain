@@ -35001,6 +35001,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   alarm/lease、auth disabled/AuthRevision=587，revision/index/applied 均为 468126003565741327、
   term 333，全范围长期 fixture Count=100。
 
+- A3588 把 leader fence 从“调用 TiKV Commit 前的内存检查”推进为 storage-atomic ownership fence，
+  关闭旧 leader 已进入 2PC 后阻塞到 successor 接管、恢复后仍落盘的最后 TOCTOU。旧 `fenceAdmit()`
+  在 `BeginBatchWrite` 前复核 epoch/freshness，但之后的 `txn.Commit(ctx)` 本身包含网络 I/O 与 TiKV 2PC；
+  注释中“仅剩 cheap client-side batch build、窗口不变”的假设不成立。与 etcd Raft proposal 只有当前
+  term/quorum 才能 commit 相比，旧实现可能让 successor 已服务后才完成旧 term mutation。
+
+  确定性 RED 用 Badger optimistic transaction 包装器把用户 Create 阻塞在底层 Commit 之前，再由独立
+  resource lock manager 原子替换共享 election record；旧实现随后返回 nil 且 user key 已存在。修复在
+  每次进程取得 leadership ownership 时生成 UUID token，并与 election Create/CAS 在同一 storage
+  transaction 中写入 256 个 guard shard。普通一秒 renew 不轮换 token；successor acquisition、同一
+  StatefulSet identity 的新进程重启/reacquire 都轮换全部 shards。backend 的 batch decorator 为携带
+  admit epoch 的 mutation 轮转选择一个 shard，并在同一用户 transaction 内执行 token no-op CAS；因此
+  successor 的全 shard 更新与任何旧 transaction 至多一个能 commit。256-way sharding 避免单一 guard
+  key 把正常写全局串行，wrapper 保留 `KvStorageUnwrapper` capability discovery。commit-time 无 key
+  write-conflict 会按需回读 token：仅 token 已变时映射 `ErrLeadershipFenced`，普通 user-key CAS 仍保持
+  `ErrCASFailed`，不确定提交结果也不被错误降级为确定失败。
+
+  阻塞提交/普通 CAS 两项专项普通 20 轮 2.231 秒、race 10 轮 4.464 秒 GREEN；token create/renew/
+  successor/same-identity-restart 专项普通 20 轮 0.110 秒、race 10 轮 1.336 秒 GREEN；backend 全树
+  43.584 秒、主模块 `go test ./...` 通过（backend 44.618 秒、etcd 169.611 秒），vet、go.mod tidy 与
+  完整 compat 通过，staticcheck v0.7.0 精确保持既有 9 项基线。代码 commit `587fcfa1` 构建为
+  `kubebrain:a3588-storage-transaction-fence`（Docker image ID
+  `sha256:71c78d42b5fb3ae4f3c10db4d116364194f998e79ccbdb8871dd48d230e541ca`），核验 OCI version、
+  完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动三副本。
+
+  性能门禁先发现 128 并发远超单节点 kind 基线容量（大量 5s deadline），明确未拿该无对照结果证明
+  回归与否；随后同机同参数 4 并发 20s A/B：A3587 为 43 ops/s、p50 99ms、p99 247ms、零错误，
+  A3588 为 40 ops/s、p50 101ms、p99 286ms、零错误，约 7% 吞吐成本且未出现全局热键/CAS 风暴，
+  A/B 前缀均已清理并恢复 A3588。真实祖先 PID namespace SIGSTOP 门禁再次确认 successor 接管与旧
+  Pod 恢复后 `/status=400`；并发 4 writer/6 linear reader 在 16.23 秒内成功读 1794 次、写 240 次，
+  38 次预期瞬态错误且 revision regression 为零，final revision 468126003565749912。最终一个
+  `/status=200`/两个 400，StatefulSet current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、
+  零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=587，revision/index/applied
+  均为 468126003565749913、term 339，全范围长期 fixture Count=100（guard shards 不进入用户范围）。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
