@@ -422,20 +422,41 @@ reuse_marker() {
   return 0
 }
 
+marker_timestamp() {
+  local path="$1" kind="$2"
+  validate_restore_cutover_marker "$path" "$kind" "${3:-}" || return 1
+  if [[ "$kind" == "VERIFIED" ]]; then
+    awk -F '\t' 'NR == 1 {print $3}' "$path"
+  else
+    awk -F '\t' 'NR == 1 {print $4}' "$path"
+  fi
+}
+
+validate_cutover_chronology() {
+  local completed_at="${1:-}" cutover_at verified_at
+  cutover_at="$(marker_timestamp "$cutover_file" CUTOVER "$TARGET_INSTANCE")" || return 1
+  verified_at="$(marker_timestamp "$verified_file" VERIFIED)" || return 1
+  (( verified_at >= cutover_at )) || return 1
+  [[ -z "$completed_at" ]] || (( completed_at >= verified_at ))
+}
+
 validate_existing_cutover_receipt() {
-  local expected_state_sha="${1:-}" state_sha service_uid artifact_sha snapshot_revision
+  local expected_state_sha="${1:-}" state_sha service_uid artifact_sha snapshot_revision verified_at
   state_sha="$(validated_cutover_state_digest)" || return 1
   [[ -z "$expected_state_sha" || "$state_sha" == "$expected_state_sha" ]] || return 1
   service_uid="$(state_value SERVICE 2)"
   artifact_sha="$(state_value HEADER 10)"
   snapshot_revision="$(state_value HEADER 11)"
+  verified_at="$(marker_timestamp "$verified_file" VERIFIED)" || return 1
+  validate_cutover_chronology || return 1
   cutover_state_digest_matches "$state_sha" || return 1
   "$JQ" -e --arg operation "$OPERATION_ID" --arg instance "$INSTANCE" \
     --arg namespace "$SERVICE_NAMESPACE" --arg service "$SERVICE_NAME" \
     --arg uid "$service_uid" --arg source "$SOURCE_INSTANCE" \
     --arg target "$TARGET_INSTANCE" \
     --arg sha "$artifact_sha" --arg state_sha "$state_sha" \
-    --argjson snapshot_revision "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" '
+    --argjson snapshot_revision "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
+    --argjson verified_at "$verified_at" '
       keys == ["artifact_sha256","completed_at_unix","cutover_state_sha256","endpoint_uids_matched","format","instance","operation_id","pod_uids_unchanged","public_data_verified","replicas","service_name","service_namespace","service_uid","snapshot_revision","source_instance","target_instance"] and
       .format == "kubebrain.restore-cutover.receipt.v1" and
       .operation_id == $operation and .instance == $instance and
@@ -447,7 +468,8 @@ validate_existing_cutover_receipt() {
       .pod_uids_unchanged == true and
       .endpoint_uids_matched == true and
       .public_data_verified == true and
-      (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_file" >/dev/null
+      (.completed_at_unix | type == "number" and . > 0 and . == floor) and
+      .completed_at_unix >= $verified_at' "$receipt_file" >/dev/null
 }
 
 case "$ACTION" in
@@ -506,10 +528,17 @@ case "$ACTION" in
     assert_pods_unchanged target "$TARGET_INSTANCE"
     wait_endpoints target "$TARGET_INSTANCE"
     verify_data
-    reuse_marker "$verified_file" VERIFIED && exit 0
+    if reuse_marker "$verified_file" VERIFIED; then
+      validate_cutover_chronology || { echo "restore cutover chronology is invalid" >&2; exit 1; }
+      exit 0
+    fi
     require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.verified.XXXXXX")"
-    printf 'VERIFIED\tkubebrain.restore-cutover.marker.v1\t%s\n' "$(date +%s)" >"$temporary"
+    verified_at="$(date +%s)"
+    cutover_at="$(marker_timestamp "$cutover_file" CUTOVER "$TARGET_INSTANCE")" ||
+      { echo "restore cutover chronology is invalid" >&2; exit 1; }
+    (( verified_at >= cutover_at )) || { echo "restore cutover chronology is invalid" >&2; exit 1; }
+    printf 'VERIFIED\tkubebrain.restore-cutover.marker.v1\t%s\n' "$verified_at" >"$temporary"
     atomic_publish "$temporary" "$verified_file"
     ;;
   rollback)
@@ -538,6 +567,7 @@ case "$ACTION" in
       { echo "restore cutover state has invalid schema" >&2; exit 1; }
     validate_existing_marker "$cutover_file" CUTOVER "$TARGET_INSTANCE"
     validate_existing_marker "$verified_file" VERIFIED
+    validate_cutover_chronology || { echo "restore cutover chronology is invalid" >&2; exit 1; }
     assert_pods_unchanged target "$TARGET_INSTANCE"
     wait_endpoints target "$TARGET_INSTANCE"
     verify_data
@@ -550,6 +580,10 @@ case "$ACTION" in
     service_uid="$(state_value SERVICE 2)"
     artifact_sha="$(state_value HEADER 10)"
     snapshot_revision="$(state_value HEADER 11)"
+    verified_at="$(marker_timestamp "$verified_file" VERIFIED)" ||
+      { echo "restore cutover chronology is invalid" >&2; exit 1; }
+    completed_at="$(date +%s)"
+    (( completed_at >= verified_at )) || { echo "restore cutover chronology is invalid" >&2; exit 1; }
     require_cutover_state_digest "$state_sha"
     temporary="$(mktemp "${STATE_DIR}/.${OPERATION_ID}.receipt.XXXXXX")"
     "$JQ" -cnS \
@@ -559,7 +593,7 @@ case "$ACTION" in
       --arg target_instance "$TARGET_INSTANCE" --arg artifact_sha256 "$artifact_sha" \
       --arg cutover_state_sha256 "$state_sha" \
       --argjson snapshot_revision "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
-      --argjson completed_at_unix "$(date +%s)" \
+      --argjson completed_at_unix "$completed_at" \
       '{format:$format,operation_id:$operation_id,instance:$instance,service_namespace:$namespace,
         service_name:$service,service_uid:$service_uid,source_instance:$source_instance,
         target_instance:$target_instance,artifact_sha256:$artifact_sha256,

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -38,6 +39,21 @@ func TestRestoreTrafficCutoverLifecycleAndRollback(t *testing.T) {
 	r.run(t, "complete", false, "", "rolled back operation cannot complete")
 }
 
+func TestRestoreTrafficCutoverRejectsVerifiedMarkerBeforeCutover(t *testing.T) {
+	f := newTrafficFixture(t)
+	f.run(t, "prepare", true, "")
+	f.run(t, "cutover", true, "")
+	f.run(t, "verify", true, "")
+	require.NoError(t, os.WriteFile(
+		filepath.Join(f.state, "restore-1.verified"),
+		[]byte("VERIFIED\tkubebrain.restore-cutover.marker.v1\t1\n"),
+		0o600,
+	))
+
+	f.run(t, "complete", false, "", "restore cutover chronology is invalid")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.receipt.json"))
+}
+
 func TestRestoreTrafficCutoverTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
 	f := newTrafficFixture(t)
 	f.run(t, "prepare", true, "")
@@ -51,7 +67,12 @@ func TestRestoreTrafficCutoverTreatsConcurrentReceiptPublishAsIdempotent(t *test
 	require.NoError(t, json.Unmarshal(data, &receipt))
 	require.Equal(t, "kubebrain.restore-cutover.receipt.v1", receipt["format"])
 	require.Equal(t, "uid-service", receipt["service_uid"])
-	require.Equal(t, float64(1), receipt["completed_at_unix"])
+	verifiedFields := strings.Split(strings.TrimSpace(string(mustRead(t,
+		filepath.Join(f.state, "restore-1.verified")))), "\t")
+	require.Len(t, verifiedFields, 3)
+	verifiedAt, err := strconv.ParseFloat(verifiedFields[2], 64)
+	require.NoError(t, err)
+	require.Equal(t, verifiedAt, receipt["completed_at_unix"])
 }
 
 func TestRestoreTrafficCutoverRejectsStateDriftDuringReceiptPublish(t *testing.T) {
@@ -458,8 +479,9 @@ if [[ "${PUBLISH_CUTOVER_RECEIPT_DURING_JQ:-false}" == true &&
   snapshot_revision="$(awk -F '\t' '$1 == "HEADER" {print $11; exit}' "$state_path")"
   service_uid="$(awk -F '\t' '$1 == "SERVICE" {print $2; exit}' "$state_path")"
   state_sha="$(sha256sum "$state_path" | cut -d ' ' -f1)"
-  printf '{"artifact_sha256":"%s","completed_at_unix":1,"cutover_state_sha256":"%s","endpoint_uids_matched":true,"format":"kubebrain.restore-cutover.receipt.v1","instance":"%s","operation_id":"%s","pod_uids_unchanged":true,"public_data_verified":true,"replicas":%s,"service_name":"%s","service_namespace":"%s","service_uid":"%s","snapshot_revision":%s,"source_instance":"%s","target_instance":"%s"}\n' \
-    "$artifact_sha" "$state_sha" "$INSTANCE" "$OPERATION_ID" "$EXPECTED_REPLICAS" "$SERVICE_NAME" "$SERVICE_NAMESPACE" "$service_uid" "$snapshot_revision" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
+  completed_at="$(awk -F '\t' '$1 == "VERIFIED" {print $3; exit}' "$STATE_DIR/$OPERATION_ID.verified")"
+  printf '{"artifact_sha256":"%s","completed_at_unix":%s,"cutover_state_sha256":"%s","endpoint_uids_matched":true,"format":"kubebrain.restore-cutover.receipt.v1","instance":"%s","operation_id":"%s","pod_uids_unchanged":true,"public_data_verified":true,"replicas":%s,"service_name":"%s","service_namespace":"%s","service_uid":"%s","snapshot_revision":%s,"source_instance":"%s","target_instance":"%s"}\n' \
+    "$artifact_sha" "$completed_at" "$state_sha" "$INSTANCE" "$OPERATION_ID" "$EXPECTED_REPLICAS" "$SERVICE_NAME" "$SERVICE_NAMESPACE" "$service_uid" "$snapshot_revision" "$SOURCE_INSTANCE" "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
   chmod 600 "$STATE_DIR/$OPERATION_ID.receipt.json"
 fi
 `)

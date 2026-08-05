@@ -35911,6 +35911,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   168.057 秒），兼容模块 test/vet 与真实 NodePort client/v3 全包 118.786 秒均通过。本项强化验证
   证据链，不改变运行中 etcd 数据面镜像，也不替代真实 TiKV 物理 PITR。
 
+- A3650 继续封闭 restore traffic cutover 内部三阶段 chronology。A189 的 CUTOVER、VERIFIED marker
+  和最终 `kubebrain.restore-cutover.receipt.v1` 都记录秒级时间，但旧状态机只逐个要求正整数，未比较
+  `cutover <= verified <= completed`。回归在完成前把合法 VERIFIED marker 替换为时间 1；旧 complete
+  仍成功并签发 receipt（RED 2.520 秒）。
+
+  新共享 marker timestamp/chronology 门禁在生成或复用 VERIFIED、进入 complete、生成完成 receipt
+  以及复用既有 receipt 时执行；验证时钟倒退、marker 事后篡改和倒序并发 receipt 都 fail closed，
+  同秒边界继续合法。聚焦回归 GREEN 1.965 秒，完整 restore traffic cutover 测试族最终 32.089 秒；
+  并发 receipt 发布夹具改为绑定真实 VERIFIED marker 时间，继续证明原子发布竞态幂等。全仓 test/vet
+  通过（production 469.538 秒、server/etcd 169.628 秒），兼容模块 test/vet 与真实 NodePort client/v3
+  全包 105.404 秒均通过。本项只强化控制面恢复证据链，不改变运行中 etcd 数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
