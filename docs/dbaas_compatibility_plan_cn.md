@@ -36306,6 +36306,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   5 轮（2.013 秒）均通过，没有运行时 RED。本项只增加永久兼容门禁，不修改或滚动数据面；
   reference 已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3678 固定并发显式 LeaseGrant 同一 ID 的单赢家原子性。新增 raw gRPC 差分以 barrier 同时释放
+  16 个 TTL=300、相同显式 ID 的 grant：必须恰好一个成功，其余 15 个全部精确返回
+  `FailedPrecondition/etcdserver: lease already exists`，不能出现双赢家、临时 NotFound 或内部错误；
+  TTL 读取必须保留赢家的 ID/GrantedTTL，LeaseLeases 中该 ID 只能出现一次。随后无附着键 revoke，
+  同一 ID 以 TTL=301 regrant 必须成功并展示新代状态，最终再次 revoke。grant/revoke/regrant 的
+  response header 相对 seed revision gap 均为 0，失败竞争也不能推进用户 KV revision。
+
+  该门禁直接检验 TiKV-backed 实现用 `pendingLeases` 在持久化窗口保留 ID 的并发语义，并把顺序
+  duplicate/regrant 测试提升为真实竞争。一次性官方 etcd `d947b2086` 与生产
+  `kubebrain:a3672-stream-progress` 首轮、连续 10 轮（2.495 秒）及 race 5 轮（2.430 秒）均通过，
+  没有运行时 RED。本项只增加永久兼容门禁，不修改或滚动数据面；reference 已停止，临时目录已
+  删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
