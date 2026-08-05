@@ -36268,6 +36268,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项只增加 oracle/runner 门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录已删除
   且不可恢复，只含本轮 oracle 数据。
 
+- A3675 将审计从 Watch 转到 raw LeaseKeepAlive 的多 ID stream 隔离。新增差分在 revision R
+  grant 两个 lease（grant 不推进 KV revision），分别绑定 key A/B 到 R+1/R+2，并在同一双向流
+  交错续租 A、B。revoke A 原子删除 key A 到 R+3 后，同一 stream 对 A 必须返回 ID=A、TTL=0、
+  header=R+3，而不是关闭 stream 或返回 NotFound；紧随其后的 B 仍返回自身 ID、正 TTL、header=R+3。
+  最终同时验证 A key/lease 已消失，B key/lease 及 attachment 完整保留。该门禁覆盖单 ID boundary、
+  clientv3 buffered revoke 用例没有直接证明的 raw stream 逐消息隔离与 revoke 后存活性。
+
+  一次性官方 etcd `d947b2086` 与生产 `kubebrain:a3672-stream-progress` 首轮、连续 10 轮
+  （3.259 秒；墙钟 4.788 秒）及 race 5 轮（2.988 秒；墙钟 15.460 秒）均通过，没有运行时
+  RED。根模块 test/vet（server/etcd 168.343 秒）与兼容模块 test/vet（1.260 秒）均通过。
+  本项只增加永久兼容门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录已删除且
+  不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
