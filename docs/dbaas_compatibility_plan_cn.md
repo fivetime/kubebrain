@@ -36181,6 +36181,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
   已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3669 固定 Watch 历史 replay 的混合可见/过滤批次 watermark。若一个 replay 批次含较早的
+  可见 DELETE 和较晚、被 NOPUT 抑制的 PUT，etcd 只返回 DELETE event，但 response header 必须
+  覆盖整个扫描批次的最高 revision，而不能退化成最后一个可见 event 的 revision。新增 raw gRPC
+  差分以同 revision seed 两键，随后 DELETE A（rev+1）、PUT B（rev+2），从 DELETE revision
+  watch 整个 prefix；精确要求唯一 DELETE 的 ModRevision=rev+1、PrevKV=`seed-a`，而 created 与
+  event response header 均为 rev+2。该契约保证断线续传 floor 不因 filter 回退。
+
+  一次性官方 etcd `d947b2086` 与生产 KubeBrain 普通差分连续 10 轮 6.000 秒、race 5 轮
+  2.264 秒通过；根模块 test/vet（server/etcd 168.129 秒）与兼容模块 test/vet（1.298 秒）
+  均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
+  已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

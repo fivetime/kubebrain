@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -47,6 +48,19 @@ type watchHistoricalAllFiltersOutcome struct {
 	ProgressWatchID   int64
 	ProgressHeaderGap int64
 	ProgressCanonical bool
+}
+
+type watchMixedFilterReplayOutcome struct {
+	CreatedHeaderGap  int64
+	CreatedCanonical  bool
+	DeleteRevisionGap int64
+	PutRevisionGap    int64
+	ResponseHeaderGap int64
+	ResponseWatchID   int64
+	ResponseCanonical bool
+	EventModGap       int64
+	DeleteObserved    bool
+	PrevValue         string
 }
 
 func TestWatchFilterProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -92,6 +106,84 @@ func TestWatchHistoricalAllFiltersDifferentialAgainstReferenceEtcd(t *testing.T)
 	referenceOutcome := runWatchHistoricalAllFiltersScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runWatchHistoricalAllFiltersScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func TestWatchMixedFilterReplayWatermarkDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	want := watchMixedFilterReplayOutcome{
+		CreatedHeaderGap: 2, CreatedCanonical: true, DeleteRevisionGap: 1, PutRevisionGap: 2,
+		ResponseHeaderGap: 2, ResponseWatchID: 904, ResponseCanonical: true,
+		EventModGap: 1, DeleteObserved: true, PrevValue: "seed-a",
+	}
+	referenceOutcome := runWatchMixedFilterReplayScenario(t, reference, "reference")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runWatchMixedFilterReplayScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func runWatchMixedFilterReplayScenario(t *testing.T, endpoint, instance string) watchMixedFilterReplayOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+	kv := etcdserverpb.NewKVClient(conn)
+	prefix := fmt.Sprintf("/dbaas-watch-mixed-filter-replay/%s/%d/", instance, time.Now().UnixNano())
+	keyA, keyB := []byte(prefix+"a"), []byte(prefix+"b")
+	seed, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		putRequestOp(keyA, "seed-a"), putRequestOp(keyB, "seed-b"),
+	}})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+	deleted, err := kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: keyA, PrevKv: true})
+	require.NoError(t, err)
+	put, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyB, Value: []byte("filtered-put")})
+	require.NoError(t, err)
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), WatchId: 904,
+			StartRevision: deleted.Header.Revision, PrevKv: true,
+			Filters: []etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_NOPUT},
+		}},
+	}))
+	created := recvWatchResponse(t, stream)
+	response := recvWatchResponse(t, stream)
+	for name, header := range map[string]*etcdserverpb.ResponseHeader{
+		"seed": seed.Header, "delete": deleted.Header, "put": put.Header,
+		"created": created.Header, "response": response.Header,
+	} {
+		require.NotNil(t, header, name)
+	}
+	require.Len(t, response.Events, 1)
+	event := response.Events[0]
+	require.NotNil(t, event.Kv)
+	baseRevision := seed.Header.Revision
+	return watchMixedFilterReplayOutcome{
+		CreatedHeaderGap:  created.Header.Revision - baseRevision,
+		CreatedCanonical:  canonicalWatchControlResponse(created, true, 904),
+		DeleteRevisionGap: deleted.Header.Revision - baseRevision, PutRevisionGap: put.Header.Revision - baseRevision,
+		ResponseHeaderGap: response.Header.Revision - baseRevision, ResponseWatchID: response.WatchId,
+		ResponseCanonical: !response.Created && !response.Canceled && response.CompactRevision == 0 &&
+			response.CancelReason == "" && !response.Fragment && len(response.Events) == 1,
+		EventModGap:    event.Kv.ModRevision - baseRevision,
+		DeleteObserved: event.Type == mvccpb.DELETE && string(event.Kv.Key) == string(keyA),
+		PrevValue:      string(event.GetPrevKv().GetValue()),
+	}
 }
 
 func runWatchHistoricalAllFiltersScenario(t *testing.T, endpoint, instance string) watchHistoricalAllFiltersOutcome {
