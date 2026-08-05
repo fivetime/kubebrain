@@ -20,15 +20,15 @@ import (
 const watchFragmentExactLimit = 2 * 1024 * 1024
 
 type watchExactLimitOutcome struct {
-	CandidateExactlyAtLimit bool
-	FrameEventCounts        []int
-	FragmentFlags           []bool
-	FrameBelowLimit         []bool
-	HeaderRevisionGaps      []int64
-	KeysOrdered             bool
-	ValuesMatch             bool
-	MetadataMatches         bool
-	TotalEvents             int
+	CandidateMatchesTarget bool
+	FrameEventCounts       []int
+	FragmentFlags          []bool
+	FrameBelowLimit        []bool
+	HeaderRevisionGaps     []int64
+	KeysOrdered            bool
+	ValuesMatch            bool
+	MetadataMatches        bool
+	TotalEvents            int
 }
 
 func TestWatchExactFragmentLimitDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -38,15 +38,15 @@ func TestWatchExactFragmentLimitDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	want := watchExactLimitOutcome{
-		CandidateExactlyAtLimit: true,
-		FrameEventCounts:        []int{1, 1},
-		FragmentFlags:           []bool{true, false},
-		FrameBelowLimit:         []bool{true, true},
-		HeaderRevisionGaps:      []int64{3, 3},
-		KeysOrdered:             true,
-		ValuesMatch:             true,
-		MetadataMatches:         true,
-		TotalEvents:             2,
+		CandidateMatchesTarget: true,
+		FrameEventCounts:       []int{1, 1},
+		FragmentFlags:          []bool{true, false},
+		FrameBelowLimit:        []bool{true, true},
+		HeaderRevisionGaps:     []int64{3, 3},
+		KeysOrdered:            true,
+		ValuesMatch:            true,
+		MetadataMatches:        true,
+		TotalEvents:            2,
 	}
 	referenceOutcome := runWatchExactLimitScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcome)
@@ -54,7 +54,52 @@ func TestWatchExactFragmentLimitDifferentialAgainstReferenceEtcd(t *testing.T) {
 		runWatchExactLimitScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
+func TestWatchFragmentLimitBoundaryMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run watch fragment differential tests")
+	}
+
+	tests := []struct {
+		name      string
+		sizeDelta int
+		want      watchExactLimitOutcome
+	}{
+		{name: "one byte below", sizeDelta: -1, want: watchExactLimitOutcome{
+			CandidateMatchesTarget: true, FrameEventCounts: []int{2},
+			FragmentFlags: []bool{false}, FrameBelowLimit: []bool{true},
+			HeaderRevisionGaps: []int64{3}, KeysOrdered: true, ValuesMatch: true,
+			MetadataMatches: true, TotalEvents: 2,
+		}},
+		{name: "exact", want: watchExactLimitOutcome{
+			CandidateMatchesTarget: true, FrameEventCounts: []int{1, 1},
+			FragmentFlags: []bool{true, false}, FrameBelowLimit: []bool{true, true},
+			HeaderRevisionGaps: []int64{3, 3}, KeysOrdered: true, ValuesMatch: true,
+			MetadataMatches: true, TotalEvents: 2,
+		}},
+		{name: "one byte above", sizeDelta: 1, want: watchExactLimitOutcome{
+			CandidateMatchesTarget: true, FrameEventCounts: []int{1, 1},
+			FragmentFlags: []bool{true, false}, FrameBelowLimit: []bool{true, true},
+			HeaderRevisionGaps: []int64{3, 3}, KeysOrdered: true, ValuesMatch: true,
+			MetadataMatches: true, TotalEvents: 2,
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target := watchFragmentExactLimit + tc.sizeDelta
+			referenceOutcome := runWatchLimitBoundaryScenario(t, reference, "etcd", target)
+			require.Equal(t, tc.want, referenceOutcome)
+			require.Equal(t, referenceOutcome,
+				runWatchLimitBoundaryScenario(t, compatEndpoint(t), "kubebrain", target))
+		})
+	}
+}
+
 func runWatchExactLimitScenario(t *testing.T, endpoint, instance string) watchExactLimitOutcome {
+	return runWatchLimitBoundaryScenario(t, endpoint, instance, watchFragmentExactLimit)
+}
+
+func runWatchLimitBoundaryScenario(t *testing.T, endpoint, instance string, targetSize int) watchExactLimitOutcome {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -62,7 +107,7 @@ func runWatchExactLimitScenario(t *testing.T, endpoint, instance string) watchEx
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
-	prefix := fmt.Sprintf("/dbaas-watch-exact-limit/%s/%d/", instance, time.Now().UnixNano())
+	prefix := fmt.Sprintf("/dbaas-watch-limit-boundary/%d/%s/%d/", targetSize, instance, time.Now().UnixNano())
 	kv := etcdserverpb.NewKVClient(conn)
 	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
@@ -91,7 +136,7 @@ func runWatchExactLimitScenario(t *testing.T, endpoint, instance string) watchEx
 		},
 	}
 	candidate.Header.Revision = revision
-	values[1] = fitWatchResponseToExactSize(t, candidate, watchFragmentExactLimit)
+	values[1] = fitWatchResponseToExactSize(t, candidate, targetSize)
 
 	for index := range keys {
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keys[index], Value: values[index]})
@@ -123,8 +168,8 @@ func runWatchExactLimitScenario(t *testing.T, endpoint, instance string) watchEx
 	require.NoError(t, err)
 
 	outcome := watchExactLimitOutcome{
-		CandidateExactlyAtLimit: proto.Size(candidate) == watchFragmentExactLimit,
-		KeysOrdered:             true, ValuesMatch: true, MetadataMatches: true,
+		CandidateMatchesTarget: proto.Size(candidate) == targetSize,
+		KeysOrdered:            true, ValuesMatch: true, MetadataMatches: true,
 	}
 	reassembled := &etcdserverpb.WatchResponse{}
 	for {
@@ -157,7 +202,7 @@ func runWatchExactLimitScenario(t *testing.T, endpoint, instance string) watchEx
 			break
 		}
 	}
-	outcome.CandidateExactlyAtLimit = outcome.CandidateExactlyAtLimit && proto.Size(reassembled) == watchFragmentExactLimit
+	outcome.CandidateMatchesTarget = outcome.CandidateMatchesTarget && proto.Size(reassembled) == targetSize
 	require.NoError(t, stream.CloseSend())
 	return outcome
 }

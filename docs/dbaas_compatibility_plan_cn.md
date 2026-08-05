@@ -35759,6 +35759,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   构造响应时被 upstream 1.5 MiB request limit 正确拒绝，随后改用小 Delete Txn + PrevKV；未把该 harness
   设计错误计作产品 RED。
 
+- A3641 将 A3640 的单点 exact-limit oracle 扩为完整的一字节边界矩阵。runner 现可把重组后的真实
+  `WatchResponse` 动态拟合到 2 MiB-1、2 MiB、2 MiB+1，并逐端验证完整 header、同 revision 的两条
+  DELETE+PrevKV event、key/value/create/mod/version/lease metadata 与重组 proto size。reference 的
+  `limit-1` 反向空预期按计划 RED（0.132 秒），实际为单帧两 event、`Fragment=false` 且 wire size
+  低于阈值；exact 与 `limit+1` 均为两帧各一 event、flags=`true,false`。线上 A3640 KubeBrain 与三个
+  reference 象限完全一致，证明 header 预盖章修复既关闭 exact/above 漏分片，也没有在低一字节处
+  过度分片。
+
+  双端首轮 GREEN 1.802 秒、连续 10 轮 18.287 秒、race 3.528 秒；兼容模块全包 1.720 秒、两级
+  module vet、`pkg/server/etcd` 全包 169.986 秒、真实 NodePort clientv3 全包 97.755 秒、
+  `hack/production` 全包 456.005 秒及 diff check 均通过，线上 `/dbaas-watch-limit-boundary/` prefix
+  Count=0。三次 reference etcd 临时数据目录均由 trap 删除且不可恢复，只含本轮 oracle 数据。本轮
+  仅扩展差分测试，运行态继续使用已验证的 `kubebrain:a3640-watch-fragment-header`，不重建或滚动。
+
+  同轮审计排除了 RangeStream 伪缺口：它的 1.5 MiB 值是 KubeBrain 在 upstream 自适应 chunk limit
+  之上增加的近似消息目标，单 KV 又明确允许不可分割地超过目标；upstream 不具备 Watch
+  `Fragment=true` 对 2 MiB 阈值的严格 `<`/`>=` wire 契约。因此没有把 RangeStream 的 interceptor
+  盖章顺序机械包装成同一兼容问题，后续仍由既有 chunk 合并、字段覆盖和 oversize 门禁约束该路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
