@@ -952,6 +952,35 @@ func TestSendWatchFragmentsSplitsAtExactLimit(t *testing.T) {
 	require.Len(t, response.Events, 3)
 }
 
+func TestWatchResponseHeaderIsStampedBeforeFragmentSizing(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	response := &etcdserverpb.WatchResponse{
+		Header:  txnHeader(12),
+		WatchId: 7,
+		Events: []*mvccpb.Event{
+			{Kv: &mvccpb.KeyValue{Key: []byte("a"), Value: make([]byte, 80)}},
+			{Kv: &mvccpb.KeyValue{Key: []byte("b"), Value: make([]byte, 80)}},
+			{Kv: &mvccpb.KeyValue{Key: []byte("c"), Value: make([]byte, 80)}},
+		},
+	}
+
+	require.NoError(t, server.stampWatchResponseHeader(context.Background(), response))
+	require.Equal(t, server.backend.ClusterID(), response.Header.ClusterId)
+	require.NotZero(t, response.Header.MemberId)
+	require.Equal(t, uint64(1), response.Header.RaftTerm)
+	require.Equal(t, int64(12), response.Header.Revision)
+
+	var fragments []*etcdserverpb.WatchResponse
+	require.NoError(t, sendWatchFragments(response, gproto.Size(response), func(fragment *etcdserverpb.WatchResponse) error {
+		fragments = append(fragments, fragment)
+		return nil
+	}))
+	require.Len(t, fragments, 2)
+	require.True(t, fragments[0].Fragment)
+	require.False(t, fragments[1].Fragment)
+}
+
 func TestWatchFragmentLimitUsesConfiguredRequestBytesWithEtcdOverhead(t *testing.T) {
 	server := &RPCServer{maxRequestBytes: 1024}
 	require.Equal(t, 1024+512*1024, server.watchFragmentBytes())

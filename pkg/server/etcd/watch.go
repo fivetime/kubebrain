@@ -952,18 +952,24 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				continue
 			}
 			watchResponse := &etcdserverpb.WatchResponse{
-				Header: &etcdserverpb.ResponseHeader{
-					Revision: int64(batchRevision),
-				},
+				Header:  txnHeader(int64(batchRevision)),
 				WatchId: id,
 				Events:  events,
 			}
-			w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
-			w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
-			if r.Fragment {
-				sendErr = sendWatchFragments(watchResponse, w.grpcServer.watchFragmentBytes(), w.Send)
+			// The stream interceptor stamps these identity fields immediately before
+			// the wire send. Stamp them here as well so fragmentation measures the
+			// final protobuf size; otherwise a response just below the limit can grow
+			// past it after sendWatchFragments has already elected not to split.
+			if headerErr := w.grpcServer.stampWatchResponseHeader(ctx, watchResponse); headerErr != nil {
+				sendErr = headerErr
 			} else {
-				sendErr = w.Send(watchResponse)
+				w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
+				w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
+				if r.Fragment {
+					sendErr = sendWatchFragments(watchResponse, w.grpcServer.watchFragmentBytes(), w.Send)
+				} else {
+					sendErr = w.Send(watchResponse)
+				}
 			}
 			if sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.push.err", 1)
@@ -1103,6 +1109,15 @@ func (w *watcher) nextWatchRevisionCompacted(ctx context.Context, id int64) bool
 
 func (s *RPCServer) watchFragmentBytes() int {
 	return int(s.maxRequestBytes + grpcOverheadBytes)
+}
+
+func (s *RPCServer) stampWatchResponseHeader(ctx context.Context, response *etcdserverpb.WatchResponse) error {
+	term, err := s.responseRaftTerm(ctx)
+	if err != nil {
+		return err
+	}
+	stampHeader(response, s.backend.ClusterID(), s.localMemberID(), term)
+	return nil
 }
 
 func sendWatchFragments(response *etcdserverpb.WatchResponse, maxBytes int, send func(*etcdserverpb.WatchResponse) error) error {
