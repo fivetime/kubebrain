@@ -35412,6 +35412,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/production` 全包 469.356 秒及 diff check 均通过，线上 `/dbaas-watch-control/` prefix 为空。
   本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3616 把相同的完整 envelope oracle 扩展到 invalid Watch control 路径。该路径依次发送空 request、
+  nil create/cancel/progress union，再验证 stream 仍能创建并取消自动 ID watch、继续创建显式 ID 404；
+  旧 outcome 仍只采集五个控制字段，无法发现无效帧导致的 CompactRevision、Fragment 或 Events 泄漏。
+  先给三个有效响应加入 `EnvelopeObserved=true` 而不采集，reference RED 精确显示三项均为 false。
+
+  主矩阵与 invalid-control 路径现在共享 `observeWatchControlResponse`，统一采集 header、cancel reason、
+  compact revision 的非零标志与相对 gap、fragment 和 event count。synthetic 用例还固定了非零 compact
+  revision 等于基线时 `CompactRevisionSet=true`、gap=0 的双通道语义；连续 20 轮 0.024 秒、race
+  1.066 秒通过。真实双端完整矩阵连续 10 轮 21.590 秒、race 3.489 秒；兼容模块全包 1.293 秒、
+  两级 module vet、`hack/production` 全包 464.334 秒及 diff check 均通过，线上
+  `/dbaas-watch-invalid-control/`、`/dbaas-watch-control/` prefix 均为 0。本轮未发现 runtime 差异，
+  不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
@@ -26,6 +27,19 @@ type watchControlOutcome struct {
 	Fragment           bool
 	EventCount         int
 	EnvelopeObserved   bool
+}
+
+func TestObserveWatchControlResponsePreservesHiddenEnvelopeFields(t *testing.T) {
+	response := &etcdserverpb.WatchResponse{
+		WatchId: 17, Created: true, Canceled: true, CancelReason: "reason",
+		CompactRevision: 23, Fragment: true,
+		Events: []*mvccpb.Event{{}},
+	}
+	require.Equal(t, watchControlOutcome{
+		WatchID: 17, Created: true, Canceled: true, CancelReason: "reason",
+		CompactRevisionSet: true, CompactRevisionGap: 0,
+		Fragment: true, EventCount: 1, EnvelopeObserved: true,
+	}, observeWatchControlResponse(response, 23))
 }
 
 func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -70,9 +84,9 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, referenceFilters, runWatchFilterEnumScenario(t, compatEndpoint(t), "kubebrain"))
 	referenceInvalid := runWatchInvalidControlScenario(t, reference, "reference")
 	require.Equal(t, []watchControlOutcome{
-		{WatchID: 0, Created: true, HeaderMatchesSeed: true},
-		{WatchID: 0, Canceled: true, HeaderMatchesSeed: true},
-		{WatchID: 404, Created: true, HeaderMatchesSeed: true},
+		{WatchID: 0, Created: true, HeaderMatchesSeed: true, EnvelopeObserved: true},
+		{WatchID: 0, Canceled: true, HeaderMatchesSeed: true, EnvelopeObserved: true},
+		{WatchID: 404, Created: true, HeaderMatchesSeed: true, EnvelopeObserved: true},
 	}, referenceInvalid)
 	require.Equal(t, referenceInvalid, runWatchInvalidControlScenario(t, compatEndpoint(t), "kubebrain"))
 	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
@@ -140,11 +154,7 @@ func runWatchInvalidControlScenario(t *testing.T, endpoint, instance string) []w
 	for len(outcomes) < 3 {
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr)
-		outcomes = append(outcomes, watchControlOutcome{
-			WatchID: resp.WatchId, Created: resp.Created,
-			Canceled: resp.Canceled, CancelReason: resp.CancelReason,
-			HeaderMatchesSeed: resp.Header != nil && resp.Header.Revision == seed.Header.Revision,
-		})
+		outcomes = append(outcomes, observeWatchControlResponse(resp, seed.Header.Revision))
 	}
 	type receiveResult struct {
 		response *etcdserverpb.WatchResponse
@@ -426,16 +436,7 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 	recv := func() watchControlOutcome {
 		resp, err := stream.Recv()
 		require.NoError(t, err)
-		return watchControlOutcome{
-			WatchID: resp.WatchId, Created: resp.Created,
-			Canceled: resp.Canceled, CancelReason: resp.CancelReason,
-			HeaderMatchesSeed:  resp.Header != nil && resp.Header.Revision == seed.Header.Revision,
-			CompactRevisionSet: resp.CompactRevision != 0,
-			CompactRevisionGap: normalizeWatchControlRevision(resp.CompactRevision, seed.Header.Revision),
-			Fragment:           resp.Fragment,
-			EventCount:         len(resp.Events),
-			EnvelopeObserved:   true,
-		}
+		return observeWatchControlResponse(resp, seed.Header.Revision)
 	}
 
 	create("/dbaas-watch-control/a", 42, 0)
@@ -467,6 +468,19 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 
 	require.NoError(t, stream.CloseSend())
 	return outcomes
+}
+
+func observeWatchControlResponse(resp *etcdserverpb.WatchResponse, baseRevision int64) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: resp.WatchId, Created: resp.Created,
+		Canceled: resp.Canceled, CancelReason: resp.CancelReason,
+		HeaderMatchesSeed:  resp.Header != nil && resp.Header.Revision == baseRevision,
+		CompactRevisionSet: resp.CompactRevision != 0,
+		CompactRevisionGap: normalizeWatchControlRevision(resp.CompactRevision, baseRevision),
+		Fragment:           resp.Fragment,
+		EventCount:         len(resp.Events),
+		EnvelopeObserved:   true,
+	}
 }
 
 func normalizeWatchControlRevision(revision, baseRevision int64) int64 {
