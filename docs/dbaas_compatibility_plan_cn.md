@@ -36110,6 +36110,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 race、根模块 test/vet（server/etcd 168.902 秒）及兼容模块 test/vet 均通过；本项没有发现运行时代码
   RED，不重建相同镜像，Snapshot 矩阵仍诚实保留 legacy 限制。
 
+- A3663 审计自定义 TiKV 等价实现程度较高的 health/livez/readyz HTTP 面。一次性官方 etcd
+  `d947b2086` 与生产 KubeBrain 首轮比较 34 个请求，覆盖 verbose 缺值/false/空值（均按参数 presence
+  开启）、重复/空/未知 exclude、root/subcheck 的 exclude 差异、排除全部 checks、GET/POST/OPTIONS
+  及 Content-Type/body。所有语义一致；`readyz?verbose` 的行序不是稳定契约，官方把 checks 从 map 枚举，
+  同一进程相邻请求也会变化，而 KubeBrain 固定顺序，因此不把这一字节差异误报为 RED。
+
+  新 `TestHTTPHealthBoundaryDifferentialAgainstReferenceEtcd` 固定 14 个代表分支，先断言官方精确 outcome，
+  再要求生产全等；仅对 readyz verbose 的四条 check line 排序后比较，仍严格保留每条内容和最终 `ok`。
+  双端差分连续 10 轮 8.445 秒通过。并行复核 LeaseGrant 调用链确认自动 ID 在 auth 前分配、TTL 上限在
+  alarm/quota 后校验均与官方一致，没有发现相邻 Lease RED。本项只增强永久协议证据，不改变运行镜像；
+  根模块 test/vet（server/etcd 169.138 秒）与兼容模块 test/vet（1.295 秒）均通过。一次性 reference
+  已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
