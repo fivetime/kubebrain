@@ -261,6 +261,12 @@ validate_restored_storage_inventory() {
     ([.[].uid] | unique | length) == length and
     ([.[].volume_handle] | unique | length) == length
   ' <<<"$pvs" >/dev/null || { echo "restored PV inventory does not match bound PVCs" >&2; exit 1; }
+  capacity_inventory="$(jq -cn --argjson claims "$pvcs" --argjson pvs "$pvs" \
+    '{claims:($claims | map({name,pv,requested_storage})),pvs:($pvs | map({name,capacity}))}')"
+  printf '%s' "$capacity_inventory" | (cd "$ROOT_DIR" && go run ./hack/backup/cmd/storage-capacity-verify) || {
+    echo "restored PV capacity is smaller than bound PVC request" >&2
+    exit 1
+  }
   snapshots="$(kctl -n "$namespace" get volumesnapshot -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] |
     {name:.metadata.name,uid:.metadata.uid,snapshot_class:.spec.volumeSnapshotClassName,
      source_content:.spec.source.volumeSnapshotContentName,

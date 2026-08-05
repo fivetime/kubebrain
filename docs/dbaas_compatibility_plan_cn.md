@@ -35799,6 +35799,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   trap 删除且不可恢复，只含一次性测试数据。本轮仅增强差分/拓扑门禁，继续使用 A3640 镜像，不重建
   或滚动生产服务。
 
+- A3643 关闭 cold physical restore 的 PV 容量 fail-open 缺口。A3608 已要求恢复 PV 的
+  `spec.capacity.storage` 非空，并在解除 pause 前及 Ready 后复检 PV/PVC binding，但没有证明容量
+  不小于 canonical PVC request；因此 CSI 若返回仍为 Bound 的不足容量 PV，旧 executor 会启动
+  TiKV 并发布成功 receipt。新增两条 executor 级测试把首个 1 Gi PVC 的 PV 改为 `1023Mi`：旧实现
+  在解除 pause 前和 Ready 后两个场景都错误返回成功（RED 5.664 秒）。
+
+  新 `storage-capacity-verify` 使用 Kubernetes `resource.ParseQuantity`，按 PVC 的实际
+  `spec.volumeName` 关联 PV，以数值语义接受 `1024Mi == 1Gi` 和更大的十进制容量，并拒绝不足、非法、
+  缺失或重复 inventory。`cold-restore-execute.sh` 在既有两次 storage inventory fence 内调用该验证器；
+  首次失败保持 TidbCluster paused 且不发布 receipt，Ready 后漂移则触发现有 emergency fence，重新
+  pause 并按 TiKV、PD 顺序缩至零。聚焦 GREEN 6.238 秒、全部 cold restore executor 回归 75.867 秒、
+  helper race 1.045 秒、全仓测试（其中 `hack/production` 469.806 秒、`pkg/server/etcd` 167.624 秒）、
+  全仓 vet、兼容模块测试/vet 及真实 NodePort client/v3 全包 97.732 秒均通过。该环境仍无
+  VolumeSnapshot CRD/CSI driver，因此本轮证明 fail-closed 状态机与 quantity 语义，不把测试夹具
+  GREEN 记作真实 CSI 物理恢复演练完成；运行中 etcd 数据面代码和生产镜像均未变化。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

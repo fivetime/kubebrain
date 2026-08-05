@@ -492,6 +492,37 @@ func TestColdRestoreExecuteValidatesPVBindingsBeforeUnpause(t *testing.T) {
 	}
 }
 
+func TestColdRestoreExecuteRejectsUndersizedPVBeforeUnpause(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_PV_JSON=" + coldRestorePVCapacityResult(t, "1023Mi"),
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "restored PV capacity is smaller than bound PVC request")
+	require.NoFileExists(t, restoreReceiptPath)
+	log := string(mustRead(t, logPath))
+	require.Contains(t, log, "create -f")
+	require.NotContains(t, log, "patch tidbcluster kb --type=json")
+}
+
 func TestColdRestoreExecuteFencesPVBindingDriftAfterUnpause(t *testing.T) {
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "snapshot.json")
@@ -516,6 +547,39 @@ func TestColdRestoreExecuteFencesPVBindingDriftAfterUnpause(t *testing.T) {
 	})
 	require.Error(t, err, string(output))
 	require.Contains(t, string(output), "restored PV inventory does not match bound PVCs")
+	require.Contains(t, string(output), "retained restore resources were preserved")
+	require.NoFileExists(t, restoreReceiptPath)
+	log := string(mustRead(t, logPath))
+	require.Contains(t, log, "patch tidbcluster kb --type=json")
+	require.Contains(t, log, "patch statefulset kb-pd --type=json")
+	require.Contains(t, log, "patch statefulset kb-tikv --type=json")
+}
+
+func TestColdRestoreExecuteFencesUndersizedPVAfterUnpause(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_PV_AFTER_UNPAUSE_JSON=" + coldRestorePVCapacityResult(t, "1023Mi"),
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "restored PV capacity is smaller than bound PVC request")
 	require.Contains(t, string(output), "retained restore resources were preserved")
 	require.NoFileExists(t, restoreReceiptPath)
 	log := string(mustRead(t, logPath))
@@ -830,6 +894,16 @@ func coldRestorePVWrongNameResult(t *testing.T) string {
 	var value map[string]any
 	require.NoError(t, json.Unmarshal([]byte(coldRestorePVResult(t, false, false)), &value))
 	value["items"].([]any)[0].(map[string]any)["metadata"].(map[string]any)["name"] = "substituted-pv"
+	encoded, err := json.Marshal(value)
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+func coldRestorePVCapacityResult(t *testing.T, capacity string) string {
+	t.Helper()
+	var value map[string]any
+	require.NoError(t, json.Unmarshal([]byte(coldRestorePVResult(t, false, false)), &value))
+	value["items"].([]any)[0].(map[string]any)["spec"].(map[string]any)["capacity"].(map[string]any)["storage"] = capacity
 	encoded, err := json.Marshal(value)
 	require.NoError(t, err)
 	return string(encoded)

@@ -707,7 +707,9 @@ TiKV、PD 顺序用 StatefulSet UID/resourceVersion 条件 Patch 缩至零，保
 成功时原子发布 `kubebrain.cold-physical-restore.v1`，绑定源 receipt SHA-256、目标 cluster/
 namespace UID、新 TidbCluster UID/cluster ID、VSC UID/driver/handle 和 PVC UID/PV。该 receipt 只
 能在实际 VSC name/driver/handle 与已审核 manifest 完全一致、PVC name/UID/PV/Bound phase 与
-manifest 完全一致且 UID/PV/handle 无重复时发布。它只证明存储层恢复与身份一致；必须继续在
+manifest 完全一致、每个绑定 PV 的 Kubernetes quantity 容量不小于对应 PVC 请求容量，且
+UID/PV/handle 无重复时发布。容量与绑定 inventory 在解除 pause 前及 Ready 后各检查一次；后一次
+失败会重新暂停 TidbCluster 并把 TiKV/PD 缩至零。它只证明存储层恢复与身份一致；必须继续在
 隔离目标部署受审 KubeBrain release，并执行固定 revision、key/value、lease TTL/attachment、
 watch continuity 和写后读验证，才能将这次恢复记为可用演练。
 
