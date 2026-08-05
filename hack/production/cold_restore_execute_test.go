@@ -138,6 +138,7 @@ func TestColdRestoreExecute(t *testing.T) {
 				require.Equal(t, float64(6), restoreManifest["persistent_volume_claims"])
 				require.Equal(t, float64(1), restoreManifest["tidbclusters"])
 				require.Len(t, receipt["pvcs"], 6)
+				require.Len(t, receipt["volume_snapshots"], 6)
 				require.Len(t, receipt["volume_snapshot_contents"], 6)
 			} else {
 				require.Error(t, err, string(output))
@@ -408,10 +409,13 @@ func TestColdRestoreExecuteRechecksSourceReceiptBeforeCreate(t *testing.T) {
 
 func TestColdRestoreExecuteValidatesStorageInventoryBeforeUnpause(t *testing.T) {
 	for _, tc := range []struct {
-		name, pvcJSON, contentJSON, want string
+		name, pvcJSON, snapshotJSON, contentJSON, want string
 	}{
-		{name: "snapshot handle drift", pvcJSON: coldRestorePVCResult(t, false), contentJSON: coldRestoreContentResult(t, true), want: "restored VolumeSnapshotContent inventory does not match restore manifest"},
-		{name: "PVC binding drift", pvcJSON: coldRestorePVCResult(t, true), contentJSON: coldRestoreContentResult(t, false), want: "restored PVC inventory does not match restore manifest"},
+		{name: "snapshot handle drift", pvcJSON: coldRestorePVCResult(t, false), snapshotJSON: coldRestoreSnapshotResult(t, false), contentJSON: coldRestoreContentResult(t, true), want: "restored VolumeSnapshotContent inventory does not match restore manifest"},
+		{name: "PVC phase drift", pvcJSON: coldRestorePVCResult(t, true), snapshotJSON: coldRestoreSnapshotResult(t, false), contentJSON: coldRestoreContentResult(t, false), want: "restored PVC inventory does not match restore manifest"},
+		{name: "snapshot content binding drift", pvcJSON: coldRestorePVCResult(t, false), snapshotJSON: coldRestoreSnapshotResult(t, true), contentJSON: coldRestoreContentResult(t, false), want: "restored VolumeSnapshot inventory does not match restore manifest"},
+		{name: "content snapshot reference drift", pvcJSON: coldRestorePVCResult(t, false), snapshotJSON: coldRestoreSnapshotResult(t, false), contentJSON: coldRestoreContentWrongRefResult(t), want: "restored VolumeSnapshotContent inventory does not match restore manifest"},
+		{name: "PVC snapshot source drift", pvcJSON: coldRestorePVCWrongSourceResult(t), snapshotJSON: coldRestoreSnapshotResult(t, false), contentJSON: coldRestoreContentResult(t, false), want: "restored PVC inventory does not match restore manifest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -432,7 +436,8 @@ func TestColdRestoreExecuteValidatesStorageInventoryBeforeUnpause(t *testing.T) 
 				"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
 				"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
 				"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
-				"FAKE_PVC_JSON=" + tc.pvcJSON, "FAKE_CONTENT_JSON=" + tc.contentJSON,
+				"FAKE_PVC_JSON=" + tc.pvcJSON, "FAKE_SNAPSHOT_JSON=" + tc.snapshotJSON,
+				"FAKE_CONTENT_JSON=" + tc.contentJSON,
 			})
 			require.Error(t, err, string(output))
 			require.Contains(t, string(output), tc.want)
@@ -583,6 +588,16 @@ func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byt
 
 func runColdRestoreExecute(t *testing.T, env []string) ([]byte, error) {
 	t.Helper()
+	hasSnapshotInventory := false
+	for _, value := range env {
+		if strings.HasPrefix(value, "FAKE_SNAPSHOT_JSON=") {
+			hasSnapshotInventory = true
+			break
+		}
+	}
+	if !hasSnapshotInventory {
+		env = append(env, "FAKE_SNAPSHOT_JSON="+coldRestoreSnapshotResult(t, false))
+	}
 	return runProductionScriptCommand(t, "../backup/cold-restore-execute.sh", env)
 }
 
@@ -641,19 +656,59 @@ func coldRestorePVCResult(t *testing.T, wrongPhase bool) string {
 	volumes := append(inventory["pd_pvcs"].([]any), inventory["tikv_pvcs"].([]any)...)
 	items := make([]map[string]any, 0, len(volumes))
 	for _, raw := range volumes {
-		name := raw.(map[string]any)["name"].(string)
+		volume := raw.(map[string]any)
+		name := volume["name"].(string)
 		phase := "Bound"
 		if wrongPhase && len(items) == 0 {
 			phase = "Pending"
 		}
 		items = append(items, map[string]any{
 			"metadata": map[string]any{"name": name, "uid": "target-uid-" + name},
-			"spec":     map[string]any{"volumeName": "target-pv-" + name}, "status": map[string]any{"phase": phase},
+			"spec": map[string]any{
+				"volumeName": "target-pv-" + name, "storageClassName": "target-storage",
+				"volumeMode": volume["volume_mode"], "accessModes": volume["access_modes"],
+				"resources":  map[string]any{"requests": map[string]any{"storage": volume["requested_storage"]}},
+				"dataSource": map[string]any{"apiGroup": "snapshot.storage.k8s.io", "kind": "VolumeSnapshot", "name": coldRestoreObjectName("restore-test", name)},
+			},
+			"status": map[string]any{"phase": phase},
 		})
 	}
 	value, err := json.Marshal(map[string]any{"items": items})
 	require.NoError(t, err)
 	return string(value)
+}
+
+func coldRestorePVCWrongSourceResult(t *testing.T) string {
+	t.Helper()
+	var value map[string]any
+	require.NoError(t, json.Unmarshal([]byte(coldRestorePVCResult(t, false)), &value))
+	value["items"].([]any)[0].(map[string]any)["spec"].(map[string]any)["dataSource"].(map[string]any)["name"] = "wrong-snapshot"
+	encoded, err := json.Marshal(value)
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+func coldRestoreSnapshotResult(t *testing.T, wrongContent bool) string {
+	t.Helper()
+	var value map[string]any
+	require.NoError(t, json.Unmarshal(coldRestoreSnapshotReceipt(t), &value))
+	operationID := value["operation_id"].(string)
+	items := make([]map[string]any, 0, 6)
+	for _, raw := range value["snapshots"].([]any) {
+		name := coldRestoreObjectName(operationID, raw.(map[string]any)["source_pvc"].(string))
+		content := name
+		if wrongContent && len(items) == 0 {
+			content = "wrong-content"
+		}
+		items = append(items, map[string]any{
+			"metadata": map[string]any{"name": name, "uid": "target-snapshot-uid-" + name},
+			"spec":     map[string]any{"volumeSnapshotClassName": "target-snapshots", "source": map[string]any{"volumeSnapshotContentName": content}},
+			"status":   map[string]any{"readyToUse": true, "boundVolumeSnapshotContentName": content},
+		})
+	}
+	encoded, err := json.Marshal(map[string]any{"items": items})
+	require.NoError(t, err)
+	return string(encoded)
 }
 
 func coldRestoreContentResult(t *testing.T, wrongHandle bool) string {
@@ -671,10 +726,24 @@ func coldRestoreContentResult(t *testing.T, wrongHandle bool) string {
 		}
 		items = append(items, map[string]any{
 			"metadata": map[string]any{"name": coldRestoreObjectName(operationID, name), "uid": "target-content-uid-" + name},
-			"spec":     map[string]any{"driver": "csi.example.test", "source": map[string]any{"snapshotHandle": handle}},
+			"spec": map[string]any{
+				"driver": "csi.example.test", "volumeSnapshotClassName": "target-snapshots", "deletionPolicy": "Retain",
+				"source":            map[string]any{"snapshotHandle": handle},
+				"volumeSnapshotRef": map[string]any{"apiVersion": "snapshot.storage.k8s.io/v1", "kind": "VolumeSnapshot", "namespace": "tidb-cluster", "name": coldRestoreObjectName(operationID, name)},
+			},
 		})
 	}
 	encoded, err := json.Marshal(map[string]any{"items": items})
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+func coldRestoreContentWrongRefResult(t *testing.T) string {
+	t.Helper()
+	var value map[string]any
+	require.NoError(t, json.Unmarshal([]byte(coldRestoreContentResult(t, false)), &value))
+	value["items"].([]any)[0].(map[string]any)["spec"].(map[string]any)["volumeSnapshotRef"].(map[string]any)["name"] = "wrong-snapshot"
+	encoded, err := json.Marshal(value)
 	require.NoError(t, err)
 	return string(encoded)
 }
@@ -812,6 +881,8 @@ elif [[ "$args" == *"get pvc -l kubebrain.io/operation-id=restore-test"* ]]; the
 elif [[ "$args" == *"get volumesnapshotcontent -l kubebrain.io/operation-id=restore-test"* ]]; then
   maybe_precreate_restore_receipt
   printf '%s' "$FAKE_CONTENT_JSON"
+elif [[ "$args" == *"get volumesnapshot -l kubebrain.io/operation-id=restore-test"* ]]; then
+  printf '%s' "$FAKE_SNAPSHOT_JSON"
 else
   echo "unsupported fake kubectl call: $args" >&2
   exit 1

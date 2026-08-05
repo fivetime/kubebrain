@@ -35295,6 +35295,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race 7.751 秒、完整 cold-restore 矩阵 46.552 秒、`hack/production` 全包 445.668 秒以及 vet、
   脚本语法与 diff check 均通过。本项加强恢复来源可追溯性，不替代真实 CSI 恢复/PITR 证明。
 
+- A3607 将 restored CSI snapshot/PVC 的来源绑定纳入 A3604 的双重 storage inventory 栅栏。旧执行器
+  只比较 PVC name/UID/PV/phase 与 VolumeSnapshotContent name/UID/driver/snapshotHandle；即使
+  VolumeSnapshot 指向错误 Content，或 Bound PVC 的 `dataSource` 指向错误 Snapshot，也会 unpause
+  PD/TiKV 并发布成功 receipt。两条确定性 RED 证明上述错误在旧路径均返回成功；反向审计还补出
+  Content `volumeSnapshotRef` 漂移缺口。
+
+  executor 现在从冻结 canonical manifest 提取并严格比较三段绑定链：VolumeSnapshotContent 的
+  class/deletionPolicy/handle/完整 snapshot ref，VolumeSnapshot 的 class/source content 与 controller
+  报告的 bound content/ready 状态，以及 PVC 的 storageClass/volumeMode/accessModes/requested storage/
+  VolumeSnapshot dataSource。比较在首次 unpause 前和 Ready 后各执行一次，要求对象 UID、PV、handle
+  与 bound content 分别唯一；成功 receipt 新增最终 `volume_snapshots` inventory。五项漂移矩阵连续
+  10 轮 122.848 秒、race 12.396 秒、完整 cold-restore 矩阵 54.986 秒、`hack/production` 全包
+  449.190 秒以及 vet、脚本语法与 diff check 均通过。本项证明 manifest 到 CSI/PVC 对象的来源链，不证明
+  底层 PV/CSI volume handle、真实数据内容或 PITR；当前 kind 仍无可用于真实恢复演练的 CSI snapshot
+  driver/CRD。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
