@@ -34929,15 +34929,46 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:8aefd5b688bf647556617aed94ce070da06dbac8dba855e3250278b484a62870`），核验 OCI version、
   完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动三副本。
 
-  稳态逐 Pod 直查内部 peer port 时严格只有一个 `/status=200`，另外两个均为 400。一次受控
-  SIGSTOP 跨过配置的 5s renew deadline/8s lease duration 后，约 35 秒内没有 successor；旧进程已
-  安全 SIGCONT 并恢复唯一 leader。由于该演练没有产生换主，明确不把它计作本修复的通过证据，
-  选主停顿行为留作后续独立审计。有效发布门禁改为删除当前 leader，同时运行 4 writer/6 个线性
+  稳态逐 Pod 直查内部 peer port 时严格只有一个 `/status=200`，另外两个均为 400。一次从 Pod 内
+  `kubectl exec` 执行的 `kill -STOP 1` 跨过配置的 5s renew deadline/8s lease duration 后没有换主，
+  当时明确未计作通过证据。A3586 复核证明该命令虽返回成功，但 `/ping` 始终可用：同一 PID
+  namespace 内的进程不能据此可靠暂停 namespace init（PID 1），所以这只是无效故障注入，不是选举
+  停顿。有效发布门禁改为删除当前 leader，同时运行 4 writer/6 个线性
   reader：8.07 秒内成功读 911 次、写 17 次、产生 18 次预期瞬态错误，revision regression 为零，
   final Put/Get 顺序断言通过，测试前缀已清理。最终 `/status` 仍为一个 200/两个 400，StatefulSet
   current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无
   alarm/lease、auth disabled/AuthRevision=587，revision/index/applied 均为 468126003565740879、
   term 329，全范围长期 fixture Count=100。
+
+- A3586 对齐 client-go 的本地 leader-lease observation clock，关闭 `require-leader` 在节点时钟偏差下
+  长期误判 leader 存活的差距。旧 `HasLeader()` 直接用共享 `LeaderElectionRecord.RenewTime` 加
+  `LeaseDuration` 生成截止时间；`RenewTime` 来自 holder 的墙上时钟，因此 holder 快一小时会让 follower
+  在 holder 死亡后仍误报 leader 一小时，holder 时钟偏慢则会把刚观察到且仍有效的 lease 立即判死。
+  上游 client-go 不比较跨节点墙上时间：它只在 raw election record 字节发生变化时记录本节点的
+  单调时间，并从该 observation time 计 `LeaseDurationSeconds`。
+
+  确定性 RED 注入 `RenewTime=localNow+1h` 和 20ms lease；旧实现等待 200ms 后仍返回
+  `HasLeader=true`。修复后 `leaderElection` 在互斥保护下保存 raw record 与带单调分量的本地 deadline，
+  Create/Update、election Get、显式 Refresh 和 LeadershipTerm 读取统一进入观察器；只有 raw bytes
+  改变才重启 lease，反复轮询同一死 holder record 不会伪续租。另一项回归在 50ms 后重放相同 raw
+  record，并证明最初 80ms lease 仍按原时点到期。远端过去时间戳也不再把首次本地观察提前判死；
+  本地 leader 仍优先由更严格的 renew-deadline freshness fence 判定。
+
+  相关 leader/term/campaign 专项普通 50 轮 70.215 秒、race 10 轮 15.539 秒 GREEN；leader 与 etcd
+  全包分别通过（etcd 181.148 秒），主模块 `go test ./...` 再次通过（etcd 176.908 秒），vet 与完整
+  compat 通过，staticcheck v0.7.0 精确保持既有 9 项基线。代码 commit `7e39574c` 构建为
+  `kubebrain:a3586-local-observation-lease`（Docker image ID
+  `sha256:a73e1735b507c50f17208832683fb4c1f78cef66b8cd4f9f56dbb5084451613d`），核验 OCI version、
+  完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动三副本。
+
+  发布故障门禁改从 kind node 的祖先 PID namespace 向真实 leader 进程发送 SIGSTOP：节点 `ps` 明确
+  观察到 `T` 状态，被暂停 Pod `/ping` 失败，继任副本在 8s lease 窗口后取得唯一 `/status=200`；随后
+  SIGCONT 恢复旧进程。并发 4 writer/6 linear reader workload 在 14.64 秒内成功读 1179 次、写 149
+  次，产生 36 次预期瞬态错误且 revision regression 为零，最终 revision 468126003565741066。
+  最终旧进程回到 `Ssl`，一个 `/status=200`/两个 400；StatefulSet current/update revision 一致，
+  KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/
+  AuthRevision=587，revision/index/applied 均为 468126003565741067、term 331，全范围长期 fixture
+  Count=100。
 
 ### P2：运维兼容和长期验证
 
