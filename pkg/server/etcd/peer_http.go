@@ -183,12 +183,14 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 	_ = s.peers.SyncReadRevision(r.Context())
 	result, err := s.backend.HashKV(r.Context(), req.GetRevision())
 	if err != nil {
-		if errors.Is(err, backend.ErrHashKVCompacted) {
-			err = compactedRevisionError()
-		} else if errors.Is(err, backend.ErrHashKVFuture) {
-			err = futureRevisionError()
+		switch {
+		case errors.Is(err, backend.ErrHashKVCompacted):
+			http.Error(w, "mvcc: required revision has been compacted", http.StatusBadRequest)
+		case errors.Is(err, backend.ErrHashKVFuture):
+			http.Error(w, "mvcc: required revision is a future revision", http.StatusBadRequest)
+		default:
+			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	resp := &etcdserverpb.HashKVResponse{

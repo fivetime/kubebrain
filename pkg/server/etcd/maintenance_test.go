@@ -735,12 +735,12 @@ func TestPeerHashKVHandlerMapsRevisionErrors(t *testing.T) {
 		{
 			name:     "compacted",
 			revision: first.Header.Revision,
-			wantBody: "mvcc: required revision has been compacted",
+			wantBody: "mvcc: required revision has been compacted\n",
 		},
 		{
 			name:     "future",
 			revision: second.Header.Revision + 100,
-			wantBody: "mvcc: required revision is a future revision",
+			wantBody: "mvcc: required revision is a future revision\n",
 		},
 	}
 	for _, tt := range tests {
@@ -753,7 +753,7 @@ func TestPeerHashKVHandlerMapsRevisionErrors(t *testing.T) {
 			server.peerHashKVHandler(rec, req)
 
 			require.Equal(t, http.StatusBadRequest, rec.Code)
-			require.Contains(t, rec.Body.String(), tt.wantBody)
+			require.Equal(t, tt.wantBody, rec.Body.String())
 		})
 	}
 }

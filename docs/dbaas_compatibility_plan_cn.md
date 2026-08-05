@@ -36014,6 +36014,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   404、真实 voter 412，NodePort 全套兼容测试 108.184 秒通过，`/compat/` 前缀 Count=0。
   一次性 reference 进程已停止。
 
+- A3657 继续审计 peer HTTP 的 `/members/hashkv` 错误契约。官方 etcd `d947b2086`
+  `server/etcdserver/corrupt.go:hashKVHandler` 直接把 MVCC `HashByRev` 错误写入 HTTP；一次性
+  reference 对 future revision 精确返回 HTTP 400
+  `mvcc: required revision is a future revision\n`，物理 compact 后的旧 revision 精确返回
+  `mvcc: required revision has been compacted\n`。旧 KubeBrain 先把 TiKV backend 错误转换成
+  gRPC status，再将 `err.Error()` 写到 peer HTTP，因而分别暴露 93/91 字节的
+  `rpc error: code = OutOfRange desc = etcdserver: ...` 包装。
+
+  原测试只做 substring 断言，收紧为官方完整响应体后两个分支均确定性 RED；修复把 compacted/
+  future 的协议映射留在 peer HTTP 边界，写出官方原始 MVCC 文本，同时保持公开 gRPC Range、Txn、
+  HashKV 的 status code/message 不变。完整 HashKV peer 矩阵转绿；根模块 `go test ./...`
+  （server/etcd 169.332 秒）和 `go vet ./...`、兼容模块 test/vet 均通过。
+
+  `kubebrain:a3657-peer-hash-errors` 已滚动到 `kind-kubebrain-dbaas` 三副本；真实 TiKV 数据面
+  对 revision 1（已 compact）和 `MaxInt64`（future）均返回 HTTP 400，响应体与官方逐字一致。
+  NodePort 全套兼容测试 118.481 秒通过，`/compat/` 前缀 Count=0；一次性 reference 进程已停止。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
