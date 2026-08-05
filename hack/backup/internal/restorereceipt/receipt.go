@@ -28,10 +28,14 @@ func WriteAtomic(path string, receipt Receipt) error {
 		return errors.New("receipt output path is empty")
 	}
 	if receipt.Format != Format || receipt.ArtifactFormat == "" || receipt.ArtifactSHA256 == "" ||
-		receipt.SnapshotRevision <= 0 || receipt.SourcePrefix == "" || receipt.TargetPrefix == "" ||
+		receipt.SnapshotRevision <= 0 || receipt.ArtifactCreatedAtUnix < 0 ||
+		receipt.SourcePrefix == "" || receipt.TargetPrefix == "" ||
 		receipt.Records < 0 || receipt.ArtifactLeases < 0 || receipt.VerifiedTargetLeases < 0 ||
 		receipt.VerifiedAtUnix <= 0 {
 		return errors.New("restore verification receipt is incomplete")
+	}
+	if receipt.ArtifactCreatedAtUnix > 0 && receipt.VerifiedAtUnix < receipt.ArtifactCreatedAtUnix {
+		return errors.New("restore verification receipt verification predates artifact creation")
 	}
 
 	dir := filepath.Dir(path)

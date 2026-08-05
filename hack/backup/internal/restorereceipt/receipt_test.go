@@ -44,6 +44,49 @@ func TestWriteAtomicRejectsIncompleteReceiptWithoutReplacingEvidence(t *testing.
 	require.Equal(t, "previous\n", string(data))
 }
 
+func TestWriteAtomicRejectsVerificationBeforeArtifactCreation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restore-receipt.json")
+	receipt := Receipt{
+		Format: Format, ArtifactFormat: "kubebrain.logical.v2",
+		ArtifactSHA256: "abc", SnapshotRevision: 42, ArtifactCreatedAtUnix: 201,
+		SourcePrefix: "/source", TargetPrefix: "/target", Records: 1,
+		VerifiedAtUnix: 200,
+	}
+
+	require.ErrorContains(t, WriteAtomic(path, receipt), "verification predates artifact creation")
+	_, err := os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWriteAtomicRejectsNegativeArtifactCreationTime(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restore-receipt.json")
+	receipt := Receipt{
+		Format: Format, ArtifactFormat: "kubebrain.logical.v2",
+		ArtifactSHA256: "abc", SnapshotRevision: 42, ArtifactCreatedAtUnix: -1,
+		SourcePrefix: "/source", TargetPrefix: "/target", Records: 1,
+		VerifiedAtUnix: 200,
+	}
+
+	require.ErrorContains(t, WriteAtomic(path, receipt), "restore verification receipt is incomplete")
+	_, err := os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestWriteAtomicAllowsVerificationAtArtifactCreationSecond(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "restore-receipt.json")
+	receipt := Receipt{
+		Format: Format, ArtifactFormat: "kubebrain.logical.v2",
+		ArtifactSHA256: "abc", SnapshotRevision: 42, ArtifactCreatedAtUnix: 200,
+		SourcePrefix: "/source", TargetPrefix: "/target", Records: 1,
+		VerifiedAtUnix: 200,
+	}
+
+	require.NoError(t, WriteAtomic(path, receipt))
+}
+
 func TestWriteAtomicDoesNotReplacePublishedReceipt(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "restore-receipt.json")

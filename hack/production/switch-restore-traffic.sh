@@ -165,7 +165,9 @@ receipt_fields() {
       (.records | type == "number" and . >= 0 and . == floor) and
       (.artifact_leases | type == "number" and . >= 0 and . == floor) and
       (.verified_target_leases | type == "number" and . >= 0 and . == floor) and
-      (.verified_at_unix | type == "number" and . > 0 and . == floor)
+      (.verified_at_unix | type == "number" and . > 0 and . == floor) and
+      ((has("artifact_created_at_unix") | not) or
+        .verified_at_unix >= .artifact_created_at_unix)
     ) | [
     .format, .artifact_format, .artifact_sha256, (.snapshot_revision|tostring),
     .source_prefix, .target_prefix, (.records|tostring),

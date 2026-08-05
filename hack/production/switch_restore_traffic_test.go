@@ -162,6 +162,35 @@ func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidDigest(t *testing.
 	}
 }
 
+func TestRestoreTrafficCutoverRejectsRestoreReceiptVerifiedBeforeArtifactCreation(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := filepath.Join(f.dir, "restore.json")
+	receipt := strings.Replace(
+		strings.TrimSpace(string(mustRead(t, path))),
+		`"verified_at_unix":100`,
+		`"artifact_created_at_unix":101,"verified_at_unix":100`,
+		1,
+	) + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
+
+	f.run(t, "prepare", false, "", "restore verification receipt is invalid")
+	require.NoFileExists(t, filepath.Join(f.state, "restore-1.state"))
+}
+
+func TestRestoreTrafficCutoverAllowsRestoreReceiptVerifiedAtArtifactCreationSecond(t *testing.T) {
+	f := newTrafficFixture(t)
+	path := filepath.Join(f.dir, "restore.json")
+	receipt := strings.Replace(
+		strings.TrimSpace(string(mustRead(t, path))),
+		`"verified_at_unix":100`,
+		`"artifact_created_at_unix":100,"verified_at_unix":100`,
+		1,
+	) + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(receipt), 0o600))
+
+	f.run(t, "prepare", true, "")
+}
+
 func TestRestoreTrafficCutoverRejectsRestoreReceiptWithInvalidPrefixes(t *testing.T) {
 	for _, tc := range []struct {
 		name string

@@ -35896,6 +35896,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   174.236 秒），兼容模块 test/vet 与真实 NodePort client/v3 全包 111.972 秒均通过。本项不替代
   真实 CSI/PITR，运行中 etcd 数据面镜像不变。
 
+- A3649 将 chronology fail-closed 约束扩展到普通逻辑恢复票据及其切流消费者。
+  `kubebrain.restore-verification.v1` 自 A184 起同时记录 `artifact_created_at_unix` 和
+  `verified_at_unix`，但 `restorereceipt.WriteAtomic` 只检查后者为正数，切流 `prepare` 也只分别
+  检查字段类型；两条早 1 秒反例在旧实现上分别 RED 0.017 秒和 0.330 秒，均实际返回成功，后者还会
+  生成 cutover state。
+
+  producer 现在仅在 artifact 携带创建时间时要求
+  `artifact_created_at_unix <= verified_at_unix`，关键 consumer 的严格 jq schema 同步执行同一约束；
+  负 creation time 同样被 producer 拒绝（旧实现 RED 0.010 秒），同秒边界合法，早期没有 creation
+  time 的 v1/v2 artifact/receipt 继续兼容。receipt helper 最终全包
+  0.022 秒、race 1.045 秒，backup 全包通过；producer/consumer 双边界测试 0.515 秒，完整 restore
+  traffic cutover 测试族最终 30.202 秒；全仓 test/vet 通过（production 457.000 秒、最终 server/etcd
+  168.057 秒），兼容模块 test/vet 与真实 NodePort client/v3 全包 118.786 秒均通过。本项强化验证
+  证据链，不改变运行中 etcd 数据面镜像，也不替代真实 TiKV 物理 PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
