@@ -35544,6 +35544,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   module vet、`hack/production` 全包 462.841 秒及 diff check 均通过，线上 `/dbaas-watch-revision/`
   prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3627 把共享完整 response oracle 扩展到 filter enum 历史 watch 的 created 与事件响应。旧路径只比较
+  unknown filter 的 PUT/DELETE type 和 revision gap，以及重复 `NOPUT` 后保留的 DELETE，错误的 WatchID、
+  created/canceled flags、header 身份、compact revision、fragment 或响应事件数不会进入差分。先加入完整
+  envelope 期望而不采集，reference RED 0.778 秒精确显示 created 与 response envelope 均为零值；reference
+  同时确认两条 created 均为自动 WatchID=0、EventCount=0，unknown 的单个历史响应含 2 个事件，重复
+  `NOPUT` 的单个响应含 1 个事件。
+
+  两个场景现统一复用 `observeWatchControlResponse`，原 type、created/response header gap 和 event mod
+  revision gap 继续独立保留。真实双端场景连续 10 轮 15.960 秒、race 3.044 秒；兼容模块全包 1.318 秒、
+  两级 module vet、线上 client/v3 全包 122.795 秒、`hack/production` 全包 462.633 秒及 diff check 均通过，
+  线上 `/dbaas-watch-filter-enum/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

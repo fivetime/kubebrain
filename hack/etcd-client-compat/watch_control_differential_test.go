@@ -88,10 +88,14 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, watchFilterEnumOutcome{
 		Unknown: watchFilterRunOutcome{
 			Types: []int32{0, 1}, DeleteRevisionGap: 1, CreatedHeaderGap: 1,
+			CreatedEnvelope:    expectedWatchFilterEnvelope(0, true, 0),
+			ResponseEnvelopes:  []watchControlOutcome{expectedWatchFilterEnvelope(0, false, 2)},
 			ResponseHeaderGaps: []int64{1}, EventModRevisionGaps: []int64{0, 1},
 		},
 		Duplicate: watchFilterRunOutcome{
 			Types: []int32{1}, DeleteRevisionGap: 1, CreatedHeaderGap: 1,
+			CreatedEnvelope:    expectedWatchFilterEnvelope(0, true, 0),
+			ResponseEnvelopes:  []watchControlOutcome{expectedWatchFilterEnvelope(0, false, 1)},
 			ResponseHeaderGaps: []int64{1}, EventModRevisionGaps: []int64{1},
 		},
 	}, referenceFilters)
@@ -132,8 +136,18 @@ type watchFilterRunOutcome struct {
 	Types                []int32
 	DeleteRevisionGap    int64
 	CreatedHeaderGap     int64
+	CreatedEnvelope      watchControlOutcome
+	ResponseEnvelopes    []watchControlOutcome
 	ResponseHeaderGaps   []int64
 	EventModRevisionGaps []int64
+}
+
+func expectedWatchFilterEnvelope(id int64, created bool, eventCount int) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: id, Created: created,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, EventCount: eventCount, EnvelopeObserved: true,
+	}
 }
 
 func runWatchInvalidControlScenario(t *testing.T, endpoint, instance string) []watchControlOutcome {
@@ -244,11 +258,14 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 			Types:             make([]int32, 0, wantEvents),
 			DeleteRevisionGap: deleted.Header.Revision - put.Header.Revision,
 			CreatedHeaderGap:  created.Header.Revision - put.Header.Revision,
+			CreatedEnvelope:   observeWatchControlResponse(created, put.Header),
 		}
 		for len(outcome.Types) < wantEvents {
 			response, eventErr := stream.Recv()
 			require.NoError(t, eventErr)
 			require.NotNil(t, response.Header)
+			outcome.ResponseEnvelopes = append(outcome.ResponseEnvelopes,
+				observeWatchControlResponse(response, put.Header))
 			outcome.ResponseHeaderGaps = append(outcome.ResponseHeaderGaps,
 				response.Header.Revision-put.Header.Revision)
 			for _, event := range response.Events {
