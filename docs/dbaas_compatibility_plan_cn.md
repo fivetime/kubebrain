@@ -36083,6 +36083,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   根模块 `go test ./...`（endpoint 16.846 秒、server/etcd 169.985 秒）与 `go vet ./...`、兼容模块
   test/vet 均通过。一次性 reference 已停止，其临时数据目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3661 从路由边界进入 v3 HTTP gateway 的跨服务 gRPC-error 映射。一次性官方 etcd
+  `d947b2086` 与生产 `kubebrain:a3658-gateway-prefix` 首轮比较 17 个 KV、Lease、Cluster、
+  Maintenance、Auth 请求的 HTTP status、JSON code/message；Range/Put/Delete 空 key、空 Txn op、
+  negative Compact、zero LeaseRevoke、zero MemberRemove、future HashKV、空 user/role 和缺失 permission
+  全部一致。首轮还验证合法 Status/Alarm/List/TTL 外观；其中 `TTL=0` LeaseGrant 按官方语义自动改为
+  TTL=2 并生成租约，不属于非法请求，两端生成的临时租约已立即撤销。
+
+  新 `TestHTTPGatewayCoreErrorsDifferentialAgainstReferenceEtcd` 固定 11 个无成功 mutation 的错误分支，
+  先断言官方精确 outcome，再断言 KubeBrain 全等，避免“两端同错”或只比较 HTTP status 的弱证据。
+  官方/KubeBrain 直连差分连续 10 轮 0.710 秒通过，没有服务端 RED，因此不制造实现或镜像变更。
+  根模块 test/vet（server/etcd 167.766 秒）与兼容模块 test/vet（1.334 秒）均通过。一次性 reference
+  已停止，其临时数据目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
