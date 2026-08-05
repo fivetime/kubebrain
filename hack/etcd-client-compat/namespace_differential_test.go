@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"testing"
 	"time"
 
@@ -40,7 +39,7 @@ func TestNamespaceDifferentialAgainstReferenceEtcd(t *testing.T) {
 		TxnSucceeded:         true,
 		NestedPrevKey:        "a",
 		DeletePrevKey:        "b",
-		TxnEvents:            []string{"DELETE:b:", "PUT:a:updated-a", "PUT:d:created-d"},
+		TxnEvents:            []string{"PUT:a:updated-a", "PUT:d:created-d", "DELETE:b:"},
 		TxnEventsOneRevision: true,
 		PostTxnKeys:          []string{"a", "c", "d"},
 		Deleted:              3,
@@ -131,15 +130,12 @@ func runNamespaceScenario(t *testing.T, endpoint, instance string) namespaceOutc
 			t.Fatalf("timed out after %d/3 namespace events", len(events))
 		}
 	}
-	sort.Strings(events)
-
 	postTxn, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend))
 	require.NoError(t, err)
 	require.Equal(t, []string{"a", "c", "d"}, namespaceKeys(postTxn.Kvs))
 	deleteAll, err := namespacedKV.Delete(ctx, "", clientv3.WithFromKey(), clientv3.WithPrevKV())
 	require.NoError(t, err)
 	deletePrevKeys := namespaceKeys(deleteAll.PrevKvs)
-	sort.Strings(deletePrevKeys)
 
 	empty, err := namespacedKV.Get(ctx, "", clientv3.WithFromKey())
 	require.NoError(t, err)

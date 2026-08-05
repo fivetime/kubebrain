@@ -35339,6 +35339,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过，线上测试 prefix 已清空。
   本轮只强化永久差分门禁，未发现新的 runtime 语义差异，因此不重建或滚动生产镜像。
 
+- A3610 继续审计差分归一化，关闭 namespace wrapper 场景对同 revision Watch subrevision 和
+  DeleteRange `PrevKvs` 顺序的假绿窗口。旧测试把三个 Txn Watch event 和最终 range-delete 的
+  previous keys 分别排序后再比较，因而不能区分上游事务操作顺序与任意 backend 顺序。
+  只移除排序、保留旧期望的确定性 RED 在 `/root/etcd` `d947b2086` 上显示真实序列为
+  `PUT a → PUT d → DELETE b`，而非旧 oracle 排出的 `DELETE b → PUT a → PUT d`；这与上游
+  txn mutation/subrevision 顺序及 `server/etcdserver/txn/delete.go` 直接复制 range KVs 一致。
+
+  namespace 差分现在保留 Watch events 与 `PrevKvs` 的原始响应顺序，并显式要求 KubeBrain 与
+  reference etcd 精确一致。真实 `172.18.0.3:30079` 首轮 7.750 秒、连续 10 轮 76.166 秒、race
+  9.053 秒通过；兼容模块全包 1.335 秒、两级 module vet、`hack/production` 全包 459.033 秒及
+  diff check 均通过，线上 `/dbaas-namespace/` prefix 已清空。本轮未发现 runtime 差异，不重建或
+  滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
