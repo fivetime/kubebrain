@@ -36294,6 +36294,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮
   oracle 数据。
 
+- A3677 将 raw LeaseKeepAlive 门禁推进到客户端流水发送后的 half-close drain。新增差分先连续发送
+  A、zero、B、unknown、A、B 六个请求，不在请求之间读取响应，随后立即 `CloseSend`；服务端必须
+  完整排空六个已接收请求，按请求顺序返回对应 ID，zero/unknown 只返回 TTL=0 而不能截断后续
+  live lease，最终再准确返回 EOF。A/B 的响应均为正 TTL，最后两次续租还必须把 LeaseLeases
+  目标顺序固定为 A/B；全部 response header 相对 grant 的 revision gap 为 0。
+
+  该场景直接固定上游 v3rpc `leaseKeepAlive` 的串行 `Recv → LeaseRenew → Send` 与 EOF 语义，覆盖
+  A3675/A3676 交替 send/recv 没有施加的 transport buffering 和 half-close 压力。一次性官方 etcd
+  `d947b2086` 与生产 `kubebrain:a3672-stream-progress` 首轮、连续 10 轮（1.700 秒）及 race
+  5 轮（2.013 秒）均通过，没有运行时 RED。本项只增加永久兼容门禁，不修改或滚动数据面；
+  reference 已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
