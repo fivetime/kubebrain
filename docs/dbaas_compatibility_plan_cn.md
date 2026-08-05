@@ -36123,6 +36123,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   根模块 test/vet（server/etcd 169.138 秒）与兼容模块 test/vet（1.295 秒）均通过。一次性 reference
   已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3664 补齐 Txn Compare 的 point target/result 矩阵。原差分已覆盖 VALUE 的四种 result，但
+  VERSION/CREATE/MOD 只有部分运算，LEASE 缺 LESS/GREATER，且只比较两端结果，未固定官方精确
+  true/false。现在 5 个 target × EQUAL/NOT_EQUAL/LESS/GREATER 全部实际执行，并保留缺失 key、
+  空 prefix、混合多 key range 与 from-key 边界；测试先断言官方 etcd 的精确结果，再要求生产
+  KubeBrain 全等，并用结构门禁防止 20 个 point 组合被静默删减。
+
+  首轮 from-key 空范围在官方空库与共享 DBaaS endpoint 上出现差异，复核发现普通字符串 `.../z`
+  后仍存在其他租户键，属于无界 `{0}` RangeEnd 的测试污染，不是产品 RED；改用最大一字节 key
+  `0xff` 后两端都得到真正空范围。一次性官方 etcd `d947b2086` 与生产 KubeBrain 连续 10 轮
+  10.814 秒通过；根模块 test/vet（server/etcd 170.546 秒）与兼容模块 test/vet（1.290 秒）
+  均通过。未发现运行时差距，因此本项只增强永久兼容门禁，不构建或滚动相同数据面镜像。
+  一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

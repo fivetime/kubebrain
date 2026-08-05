@@ -16,8 +16,9 @@ import (
 )
 
 type compareMatrixOutcome struct {
-	Name      string
-	Succeeded bool
+	Name          string
+	Succeeded     bool
+	WantSucceeded bool
 }
 
 func TestTxnCompareMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -26,10 +27,11 @@ func TestTxnCompareMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 
-	require.Equal(t,
-		runCompareMatrixScenario(t, reference, "etcd"),
-		runCompareMatrixScenario(t, compatEndpoint(t), "kubebrain"),
-	)
+	referenceOutcomes := runCompareMatrixScenario(t, reference, "etcd")
+	for _, outcome := range referenceOutcomes {
+		require.Equal(t, outcome.WantSucceeded, outcome.Succeeded, "official etcd outcome for %s", outcome.Name)
+	}
+	require.Equal(t, referenceOutcomes, runCompareMatrixScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func runCompareMatrixScenario(t *testing.T, endpoint, instance string) []compareMatrixOutcome {
@@ -78,50 +80,89 @@ func runCompareMatrixScenario(t *testing.T, endpoint, instance string) []compare
 	emptyPrefix := prefix + "empty/"
 	emptyKey := []byte(emptyPrefix)
 	emptyEnd := []byte(clientv3.GetPrefixRangeEnd(emptyPrefix))
-	emptyFromKey := []byte(prefix + "z")
+	// A from-key compare is unbounded. Start at the greatest one-byte key so the
+	// empty-range cases remain isolated even when the endpoint contains data
+	// outside this test's prefix (as a shared DBaaS endpoint normally does).
+	emptyFromKey := []byte{0xff}
 	tests := []struct {
-		name    string
-		compare *etcdserverpb.Compare
+		name          string
+		compare       *etcdserverpb.Compare
+		wantSucceeded bool
 	}{
-		{"value-equal", valueCompare(keyA, nil, etcdserverpb.Compare_EQUAL, "same")},
-		{"value-not-equal", valueCompare(keyA, nil, etcdserverpb.Compare_NOT_EQUAL, "other")},
-		{"value-less", valueCompare(keyA, nil, etcdserverpb.Compare_LESS, "z")},
-		{"value-greater", valueCompare(keyA, nil, etcdserverpb.Compare_GREATER, "a")},
-		{"version-equal", intCompare(keyA, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 2)},
-		{"version-not-equal", intCompare(keyA, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_NOT_EQUAL, 1)},
-		{"create-equal", intCompare(keyA, nil, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_EQUAL, putA.Header.Revision)},
-		{"mod-equal", intCompare(keyA, nil, etcdserverpb.Compare_MOD, etcdserverpb.Compare_EQUAL, updateA.Header.Revision)},
-		{"lease-equal", intCompare(keyLease, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grant.ID)},
-		{"lease-not-equal-zero", intCompare(keyLease, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_NOT_EQUAL, 0)},
-		{"absent-version-equal-zero", intCompare(absent, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0)},
-		{"absent-version-not-equal-zero", intCompare(absent, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_NOT_EQUAL, 0)},
-		{"absent-mod-less-one", intCompare(absent, nil, etcdserverpb.Compare_MOD, etcdserverpb.Compare_LESS, 1)},
-		{"absent-create-greater-zero", intCompare(absent, nil, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_GREATER, 0)},
-		{"absent-lease-equal-zero", intCompare(absent, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, 0)},
-		{"absent-value-equal-empty", valueCompare(absent, nil, etcdserverpb.Compare_EQUAL, "")},
-		{"absent-value-not-equal", valueCompare(absent, nil, etcdserverpb.Compare_NOT_EQUAL, "value")},
-		{"empty-range-version-equal-zero", intCompare(emptyKey, emptyEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0)},
-		{"empty-range-version-greater-zero", intCompare(emptyKey, emptyEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0)},
-		{"empty-range-value-not-equal", valueCompare(emptyKey, emptyEnd, etcdserverpb.Compare_NOT_EQUAL, "value")},
-		{"multi-version-greater-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0)},
-		{"multi-version-equal-one", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1)},
-		{"multi-create-equal-first", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_EQUAL, putA.Header.Revision)},
-		{"multi-create-less-after-update", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LESS, updateA.Header.Revision+1)},
-		{"multi-value-not-equal-missing", valueCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_NOT_EQUAL, "missing")},
-		{"multi-value-equal-same", valueCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_EQUAL, "same")},
-		{"multi-lease-equal-grant", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grant.ID)},
-		{"multi-lease-not-equal-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_NOT_EQUAL, 0)},
-		{"from-key-version-greater-zero", intCompare(keyB, []byte{0}, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0)},
-		{"from-key-value-equal-different", valueCompare(keyB, []byte{0}, etcdserverpb.Compare_EQUAL, "different")},
-		{"from-key-empty-version-equal-zero", intCompare(emptyFromKey, []byte{0}, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0)},
-		{"from-key-empty-value-not-equal", valueCompare(emptyFromKey, []byte{0}, etcdserverpb.Compare_NOT_EQUAL, "anything")},
+		{"value-equal", valueCompare(keyA, nil, etcdserverpb.Compare_EQUAL, "same"), true},
+		{"value-not-equal", valueCompare(keyA, nil, etcdserverpb.Compare_NOT_EQUAL, "same"), false},
+		{"value-less", valueCompare(keyA, nil, etcdserverpb.Compare_LESS, "z"), true},
+		{"value-greater", valueCompare(keyA, nil, etcdserverpb.Compare_GREATER, "z"), false},
+		{"version-equal", intCompare(keyA, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 2), true},
+		{"version-not-equal", intCompare(keyA, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_NOT_EQUAL, 2), false},
+		{"version-less", intCompare(keyA, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_LESS, 3), true},
+		{"version-greater", intCompare(keyA, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 3), false},
+		{"create-equal", intCompare(keyA, nil, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_EQUAL, putA.Header.Revision), true},
+		{"create-not-equal", intCompare(keyA, nil, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_NOT_EQUAL, putA.Header.Revision), false},
+		{"create-less", intCompare(keyA, nil, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LESS, putA.Header.Revision+1), true},
+		{"create-greater", intCompare(keyA, nil, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_GREATER, putA.Header.Revision+1), false},
+		{"mod-equal", intCompare(keyA, nil, etcdserverpb.Compare_MOD, etcdserverpb.Compare_EQUAL, updateA.Header.Revision), true},
+		{"mod-not-equal", intCompare(keyA, nil, etcdserverpb.Compare_MOD, etcdserverpb.Compare_NOT_EQUAL, updateA.Header.Revision), false},
+		{"mod-less", intCompare(keyA, nil, etcdserverpb.Compare_MOD, etcdserverpb.Compare_LESS, updateA.Header.Revision+1), true},
+		{"mod-greater", intCompare(keyA, nil, etcdserverpb.Compare_MOD, etcdserverpb.Compare_GREATER, updateA.Header.Revision+1), false},
+		{"lease-equal", intCompare(keyLease, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grant.ID), true},
+		{"lease-not-equal", intCompare(keyLease, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_NOT_EQUAL, grant.ID), false},
+		{"lease-less", intCompare(keyLease, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_LESS, grant.ID+1), true},
+		{"lease-greater", intCompare(keyLease, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_GREATER, grant.ID+1), false},
+		{"absent-version-equal-zero", intCompare(absent, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0), true},
+		{"absent-version-not-equal-zero", intCompare(absent, nil, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_NOT_EQUAL, 0), false},
+		{"absent-mod-less-one", intCompare(absent, nil, etcdserverpb.Compare_MOD, etcdserverpb.Compare_LESS, 1), true},
+		{"absent-create-greater-zero", intCompare(absent, nil, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_GREATER, 0), false},
+		{"absent-lease-equal-zero", intCompare(absent, nil, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, 0), true},
+		{"absent-value-equal-empty", valueCompare(absent, nil, etcdserverpb.Compare_EQUAL, ""), false},
+		{"absent-value-not-equal", valueCompare(absent, nil, etcdserverpb.Compare_NOT_EQUAL, "value"), false},
+		{"empty-range-version-equal-zero", intCompare(emptyKey, emptyEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0), true},
+		{"empty-range-version-greater-zero", intCompare(emptyKey, emptyEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0), false},
+		{"empty-range-value-not-equal", valueCompare(emptyKey, emptyEnd, etcdserverpb.Compare_NOT_EQUAL, "value"), false},
+		{"multi-version-greater-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0), true},
+		{"multi-version-equal-one", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1), false},
+		{"multi-create-equal-first", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_EQUAL, putA.Header.Revision), false},
+		{"multi-create-less-after-update", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_LESS, updateA.Header.Revision+1), true},
+		{"multi-value-not-equal-missing", valueCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_NOT_EQUAL, "missing"), true},
+		{"multi-value-equal-same", valueCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_EQUAL, "same"), false},
+		{"multi-lease-equal-grant", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grant.ID), false},
+		{"multi-lease-not-equal-zero", intCompare([]byte(prefix), rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_NOT_EQUAL, 0), false},
+		{"from-key-version-greater-zero", intCompare(keyB, []byte{0}, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0), true},
+		{"from-key-value-equal-different", valueCompare(keyB, []byte{0}, etcdserverpb.Compare_EQUAL, "different"), false},
+		{"from-key-empty-version-equal-zero", intCompare(emptyFromKey, []byte{0}, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0), true},
+		{"from-key-empty-value-not-equal", valueCompare(emptyFromKey, []byte{0}, etcdserverpb.Compare_NOT_EQUAL, "anything"), false},
+	}
+	const pointMatrixSize = 5 * 4
+	require.GreaterOrEqual(t, len(tests), pointMatrixSize)
+	pointCoverage := make(map[[2]int32]bool, pointMatrixSize)
+	for _, test := range tests[:pointMatrixSize] {
+		pointCoverage[[2]int32{int32(test.compare.Target), int32(test.compare.Result)}] = true
+	}
+	for _, target := range []etcdserverpb.Compare_CompareTarget{
+		etcdserverpb.Compare_VALUE,
+		etcdserverpb.Compare_VERSION,
+		etcdserverpb.Compare_CREATE,
+		etcdserverpb.Compare_MOD,
+		etcdserverpb.Compare_LEASE,
+	} {
+		for _, result := range []etcdserverpb.Compare_CompareResult{
+			etcdserverpb.Compare_EQUAL,
+			etcdserverpb.Compare_NOT_EQUAL,
+			etcdserverpb.Compare_LESS,
+			etcdserverpb.Compare_GREATER,
+		} {
+			require.True(t, pointCoverage[[2]int32{int32(target), int32(result)}],
+				"point compare matrix must cover target=%s result=%s", target, result)
+		}
 	}
 
 	outcomes := make([]compareMatrixOutcome, 0, len(tests))
 	for _, test := range tests {
 		resp, txnErr := kv.Txn(ctx, &etcdserverpb.TxnRequest{Compare: []*etcdserverpb.Compare{test.compare}})
 		require.NoError(t, txnErr, test.name)
-		outcomes = append(outcomes, compareMatrixOutcome{Name: test.name, Succeeded: resp.Succeeded})
+		outcomes = append(outcomes, compareMatrixOutcome{
+			Name: test.name, Succeeded: resp.Succeeded, WantSucceeded: test.wantSucceeded,
+		})
 	}
 	return outcomes
 }
