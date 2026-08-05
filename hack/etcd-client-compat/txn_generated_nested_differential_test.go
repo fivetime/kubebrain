@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"sort"
 	"testing"
 	"time"
 
@@ -41,6 +40,28 @@ func TestGeneratedNestedTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 	referenceCases := runGeneratedNestedTxnCases(t, reference, "reference")
 	kubeBrainCases := runGeneratedNestedTxnCases(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceCases, kubeBrainCases)
+}
+
+func TestNormalizeGeneratedTxnResponsesPreservesRangeOrder(t *testing.T) {
+	responses := []*etcdserverpb.ResponseOp{
+		{
+			Response: &etcdserverpb.ResponseOp_ResponseRange{
+				ResponseRange: &etcdserverpb.RangeResponse{
+					Header: &etcdserverpb.ResponseHeader{Revision: 11},
+					Kvs: []*mvccpb.KeyValue{
+						{Key: []byte("/case/b"), Value: []byte("second"), CreateRevision: 10, ModRevision: 10},
+						{Key: []byte("/case/a"), Value: []byte("first"), CreateRevision: 10, ModRevision: 10},
+					},
+				},
+			},
+		},
+	}
+
+	normalized := normalizeGeneratedTxnResponses(responses, "/case/", 10, 11)
+	require.Equal(t, []normalizedKV{
+		{Key: "b", Value: "second", CreateRev: 0, ModRev: 0},
+		{Key: "a", Value: "first", CreateRev: 0, ModRev: 0},
+	}, normalized[0].KVs)
 }
 
 func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []generatedTxnCase {
@@ -151,11 +172,6 @@ func normalizeGeneratedTxnResponses(responses []*etcdserverpb.ResponseOp, prefix
 				Children: normalizeGeneratedTxnResponses(txnResponse.Responses, prefix, baseRev, txnRev),
 			})
 		}
-	}
-	// Range responses use key order from the request; keep normalization stable
-	// even if a backend legally emits an equivalent unsorted point collection.
-	for i := range result {
-		sort.Slice(result[i].KVs, func(a, b int) bool { return result[i].KVs[a].Key < result[i].KVs[b].Key })
 	}
 	return result
 }

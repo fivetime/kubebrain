@@ -35326,6 +35326,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项证明 Kubernetes/CSI 对象身份链，不证明 PV 容量大于请求量、块内容等于源快照或 PITR；这些
   仍需真实 CSI driver/CRD 和隔离恢复环境。
 
+- A3609 回到 P0 Txn 差分 oracle，关闭生成式嵌套事务对 Range 响应顺序的假绿窗口。
+  `normalizeGeneratedTxnResponses` 原先会把每个 Range 的 KVs 按 key 再排序；即使 reference etcd
+  返回 `a,b` 而 KubeBrain 错误返回 `b,a`，两端也会被归一化成相同结果。确定性 RED 直接输入
+  `b,a` 并要求保持原序，旧 helper 实际输出 `a,b`。
+
+  归一化现在只处理独立实例间不可直接比较的绝对 revision/key prefix，不再改写服务端 payload
+  顺序。顺序保持用例连续 20 轮 0.028 秒、race 1.079 秒；临时启动 `/root/etcd` `d947b2086`
+  reference 后，32-case 生成式三层 Txn 在真实 `172.18.0.3:30079` KubeBrain 上首轮 5.195 秒、
+  连续 10 轮 50.768 秒、race 6.785 秒均与 etcd 精确一致。兼容模块全包 1.391 秒、
+  `pkg/server/etcd` 全包 176.149 秒、`hack/production` 全包 459.195 秒以及两级 module vet、diff check
+  均通过，线上测试 prefix 已清空。
+  本轮只强化永久差分门禁，未发现新的 runtime 语义差异，因此不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
