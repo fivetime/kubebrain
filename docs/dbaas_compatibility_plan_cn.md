@@ -35717,6 +35717,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   diff check 均通过，线上 `/dbaas-watch-raw-multiframe/` 与 `/dbaas-watch-raw-multiframe-prevkv/` prefix
   都为 0。本轮只增强 wire-level oracle，未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3639 补齐 upstream `server/etcdserver/api/v3rpc/watch.go:sendFragments` 的 exact-limit
+  边界：上游只在 `proto.Size(response) < limit` 时跳过分片，因此 response 大小恰好等于
+  limit 且含多个 event 时仍必须进入分片。既有单元测试只覆盖明显低于/超过阈值，A3633-A3638
+  的线上矩阵也使用固定 MiB 级上限，均不能捕获把严格 `<` 误改为 `<=` 的边界漂移。新增
+  `TestSendWatchFragmentsSplitsAtExactLimit` 以三事件 response 的精确 proto size 作为 limit，固定
+  两帧 2+1 装箱、`true,false` flags、事件顺序、独立 response 对象以及输入不被修改。反向预期一帧
+  的敏感性负控按预期 RED（0.071 秒，实际两帧）；最终连续 20 轮 0.082 秒、race 1.211 秒、
+  `pkg/server/etcd` 全包 171.968 秒、兼容模块全包与两级 module vet、真实 NodePort clientv3 全包
+  100.439 秒、`hack/production` 全包 454.210 秒及 diff check 均通过。
+
+  同轮审计没有重复引入 upstream `TestWatchResponseProtoFieldCount`：该守卫曾在 A419 加入，随后已
+  集中到 `request_proto_coverage_test.go:TestCoreResponseProtoFieldCoverage`，现有版本比单纯计数更强，
+  已锁定 `WatchResponse` 的 8 个字段名及 wire number。保留集中守卫并撤销重复候选，避免把既有覆盖
+  伪装成新缺口。本轮仅新增保护性测试，运行时代码与生产镜像均不变，不重建或滚动部署。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

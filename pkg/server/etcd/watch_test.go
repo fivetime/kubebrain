@@ -920,6 +920,38 @@ func TestSendWatchFragmentsDoesNotSplitSingleOversizedEvent(t *testing.T) {
 	require.False(t, sent[0].Fragment)
 }
 
+func TestSendWatchFragmentsSplitsAtExactLimit(t *testing.T) {
+	response := &etcdserverpb.WatchResponse{
+		Header:  &etcdserverpb.ResponseHeader{Revision: 12},
+		WatchId: 7,
+		Events: []*mvccpb.Event{
+			{Kv: &mvccpb.KeyValue{Key: []byte("a"), Value: make([]byte, 80)}},
+			{Kv: &mvccpb.KeyValue{Key: []byte("b"), Value: make([]byte, 80)}},
+			{Kv: &mvccpb.KeyValue{Key: []byte("c"), Value: make([]byte, 80)}},
+		},
+	}
+	limit := gproto.Size(response)
+
+	var fragments []*etcdserverpb.WatchResponse
+	require.NoError(t, sendWatchFragments(response, limit, func(fragment *etcdserverpb.WatchResponse) error {
+		fragments = append(fragments, fragment)
+		return nil
+	}))
+
+	require.Len(t, fragments, 2)
+	require.NotSame(t, response, fragments[0])
+	require.NotSame(t, fragments[0], fragments[1])
+	require.True(t, fragments[0].Fragment)
+	require.False(t, fragments[1].Fragment)
+	require.Len(t, fragments[0].Events, 2)
+	require.Len(t, fragments[1].Events, 1)
+	require.Equal(t, []byte("a"), fragments[0].Events[0].Kv.Key)
+	require.Equal(t, []byte("b"), fragments[0].Events[1].Kv.Key)
+	require.Equal(t, []byte("c"), fragments[1].Events[0].Kv.Key)
+	require.False(t, response.Fragment)
+	require.Len(t, response.Events, 3)
+}
+
 func TestWatchFragmentLimitUsesConfiguredRequestBytesWithEtcdOverhead(t *testing.T) {
 	server := &RPCServer{maxRequestBytes: 1024}
 	require.Equal(t, 1024+512*1024, server.watchFragmentBytes())
