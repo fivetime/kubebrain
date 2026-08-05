@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +114,14 @@ func TestMakeMirrorPaginatedBaseDifferentialFromKubeBrain(t *testing.T) {
 	stopMirror()
 }
 
+func TestMirrorValueSlicePreservesRangeOrder(t *testing.T) {
+	kvs := []*mvccpb.KeyValue{
+		{Key: []byte("/mirror/b"), Value: []byte("second")},
+		{Key: []byte("/mirror/a"), Value: []byte("first")},
+	}
+	require.Equal(t, []string{"b=second", "a=first"}, mirrorValueSlice(kvs, "/mirror/"))
+}
+
 func runMakeMirrorDirection(t *testing.T, etcdctl, sourceEndpoint, destinationEndpoint, direction string) makeMirrorOutcome {
 	t.Helper()
 	source, err := clientv3.New(clientv3.Config{
@@ -217,6 +224,5 @@ func mirrorValueSlice(kvs []*mvccpb.KeyValue, prefix string) []string {
 	for _, kv := range kvs {
 		values = append(values, strings.TrimPrefix(string(kv.Key), prefix)+"="+string(kv.Value))
 	}
-	sort.Strings(values)
 	return values
 }

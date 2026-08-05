@@ -35364,6 +35364,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   diff check 均通过，线上 `/dbaas-naming/` prefix 已清空。本轮未发现 runtime 差异，不重建或滚动
   生产镜像。
 
+- A3612 审计 `etcdctl make-mirror` 专项的最终 Range oracle。旧 `mirrorValueSlice` 在裁剪 source/
+  destination prefix 并拼接 value 后再次按字符串排序，因此可把 destination 违反 etcd 默认 key-order
+  的响应改写成正确外观。确定性 RED 输入 `b,a`，旧 helper 实际输出 `a,b`；修复后 helper 只做字段
+  归一化并保留 Range 原序。并发 recipe 的多 reader 消费仍按多重集合排序，因为 goroutine completion
+  order 不是 queue 协议顺序；FIFO/priority 单 reader 路径继续逐项严格比较。
+
+  helper 顺序用例连续 20 轮 0.019 秒、race 1.068 秒；真实双向 mirror 连续 10 轮 5.004 秒，双向加
+  1001-key 分页基线 race 13.773 秒，继续证明 base copy、三操作更新的单 revision 原子性和最终
+  destination key order。兼容模块全包 1.331 秒、两级 module vet、`hack/production` 全包 473.636 秒
+  及 diff check 均通过，线上 `/dbaas-make-mirror/` prefix 已清空。本轮未发现 runtime 差异，不重建或
+  滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
