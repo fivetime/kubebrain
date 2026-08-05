@@ -36319,6 +36319,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   没有运行时 RED。本项只增加永久兼容门禁，不修改或滚动数据面；reference 已停止，临时目录已
   删除且不可恢复，只含本轮 oracle 数据。
 
+- A3679 固定并发 LeaseRevoke 同一租约的单赢家与单 revision 删除。新增 raw gRPC 差分先在 seed
+  后以同一租约写入 a、b 两键，再用 barrier 同时释放 16 个 revoke：必须恰好一个成功，其余
+  15 个全部精确返回 `NotFound/etcdserver: requested lease not found`，不能有重复成功或内部错误。
+  成功 response header 与最终 Range 都必须位于 seed+3，两条 leased key 在这一 revision 原子删除，
+  非租约 seed 保留；TTL 必须返回规范 missing envelope，LeaseLeases 不再包含该 ID。
+
+  该门禁验证官方公开 RPC 通过 Raft apply 串行化 revoke，与 KubeBrain 通过 `leaseWriteMu` 包围 TiKV
+  原子删除、metadata 和内存索引清理所得的外部语义相同。一次性官方 etcd `d947b2086` 与生产
+  `kubebrain:a3672-stream-progress` 首轮、连续 10 轮（3.141 秒）及 race 5 轮（2.819 秒）均通过，
+  没有运行时 RED。本项只增加永久兼容门禁，不修改或滚动数据面；reference 已停止，临时目录已
+  删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
