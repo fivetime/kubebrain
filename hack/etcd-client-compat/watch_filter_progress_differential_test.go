@@ -86,6 +86,19 @@ type watchTxnPartialFilterOutcome struct {
 	PrevValue         string
 }
 
+type watchStreamSlowestProgressOutcome struct {
+	PrefixCreatedCanonical bool
+	FutureCreatedCanonical bool
+	CreatedHeaderGaps      []int64
+	InitialProgressBlocked bool
+	WriteRevisionGaps      []int64
+	PrefixEventModGaps     []int64
+	FutureEventModGaps     []int64
+	ProgressWatchID        int64
+	ProgressHeaderGap      int64
+	ProgressCanonical      bool
+}
+
 func TestWatchFilterProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -176,6 +189,125 @@ func TestWatchTxnPartialFilterDifferentialAgainstReferenceEtcd(t *testing.T) {
 	referenceOutcome := runWatchTxnPartialFilterScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runWatchTxnPartialFilterScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func TestWatchStreamProgressWaitsForSlowestWatcherDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	want := watchStreamSlowestProgressOutcome{
+		PrefixCreatedCanonical: true, FutureCreatedCanonical: true, CreatedHeaderGaps: []int64{0, 0},
+		InitialProgressBlocked: true, WriteRevisionGaps: []int64{1, 2},
+		PrefixEventModGaps: []int64{1, 2}, FutureEventModGaps: []int64{2},
+		ProgressWatchID: -1, ProgressHeaderGap: 2, ProgressCanonical: true,
+	}
+	referenceOutcome := runWatchStreamSlowestProgressScenario(t, reference, "reference")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runWatchStreamSlowestProgressScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func runWatchStreamSlowestProgressScenario(t *testing.T, endpoint, instance string) watchStreamSlowestProgressOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+	kv := etcdserverpb.NewKVClient(conn)
+	prefix := fmt.Sprintf("/dbaas-watch-stream-slowest/%s/%d/", instance, time.Now().UnixNano())
+	firstKey := []byte(prefix + "first")
+	futureKey := []byte(prefix + "future")
+	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix)})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	create := func(request *etcdserverpb.WatchCreateRequest) *etcdserverpb.WatchResponse {
+		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: request},
+		}))
+		return recvWatchResponse(t, stream)
+	}
+	prefixCreated := create(&etcdserverpb.WatchCreateRequest{
+		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), WatchId: 907,
+	})
+	futureCreated := create(&etcdserverpb.WatchCreateRequest{
+		Key: futureKey, WatchId: 908, StartRevision: base.Header.Revision + 2,
+	})
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+
+	type receiveResult struct {
+		response *etcdserverpb.WatchResponse
+		err      error
+	}
+	pending := make(chan receiveResult, 1)
+	go func() {
+		response, recvErr := stream.Recv()
+		pending <- receiveResult{response: response, err: recvErr}
+	}()
+	initialBlocked := false
+	select {
+	case early := <-pending:
+		require.Failf(t, "stream progress bypassed a future watcher", "response=%v error=%v", early.response, early.err)
+	case <-time.After(150 * time.Millisecond):
+		initialBlocked = true
+	}
+	first, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: firstKey, Value: []byte("first")})
+	require.NoError(t, err)
+	future, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: futureKey, Value: []byte("future")})
+	require.NoError(t, err)
+
+	eventGaps := map[int64][]int64{907: {}, 908: {}}
+	for len(eventGaps[907]) < 2 || len(eventGaps[908]) < 1 {
+		var response *etcdserverpb.WatchResponse
+		if pending != nil {
+			result := <-pending
+			require.NoError(t, result.err)
+			response = result.response
+			pending = nil
+		} else {
+			response = recvWatchResponse(t, stream)
+		}
+		require.Contains(t, eventGaps, response.WatchId)
+		for _, event := range response.Events {
+			require.NotNil(t, event.Kv)
+			eventGaps[response.WatchId] = append(eventGaps[response.WatchId], event.Kv.ModRevision-base.Header.Revision)
+		}
+	}
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+	progress := recvWatchResponse(t, stream)
+	for name, header := range map[string]*etcdserverpb.ResponseHeader{
+		"base": base.Header, "prefix-created": prefixCreated.Header, "future-created": futureCreated.Header,
+		"first": first.Header, "future": future.Header, "progress": progress.Header,
+	} {
+		require.NotNil(t, header, name)
+	}
+	baseRevision := base.Header.Revision
+	return watchStreamSlowestProgressOutcome{
+		PrefixCreatedCanonical: canonicalWatchControlResponse(prefixCreated, true, 907),
+		FutureCreatedCanonical: canonicalWatchControlResponse(futureCreated, true, 908),
+		CreatedHeaderGaps:      []int64{prefixCreated.Header.Revision - baseRevision, futureCreated.Header.Revision - baseRevision},
+		InitialProgressBlocked: initialBlocked,
+		WriteRevisionGaps:      []int64{first.Header.Revision - baseRevision, future.Header.Revision - baseRevision},
+		PrefixEventModGaps:     eventGaps[907], FutureEventModGaps: eventGaps[908],
+		ProgressWatchID: progress.WatchId, ProgressHeaderGap: progress.Header.Revision - baseRevision,
+		ProgressCanonical: canonicalWatchControlResponse(progress, false, -1),
+	}
 }
 
 func runWatchTxnPartialFilterScenario(t *testing.T, endpoint, instance string) watchTxnPartialFilterOutcome {

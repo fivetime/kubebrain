@@ -429,39 +429,12 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				}
 				continue
 			}
-			// Per-watch progress (#39): answer RequestProgress with one
-			// header-only response PER WATCH, each carrying that watch's own
-			// delivered watermark (syncedRev). clientv3 routes responses by
-			// WatchId, so every consumer gets its own truthful progress.
-			//
-			// A single stream-wide (WatchId=-1) response capped at the slowest
-			// watch — the previous behavior — deadlocks large keyspaces: the
-			// kube-apiserver multiplexes EVERY resource cacher's watch onto a
-			// few shared etcd streams, and 1.36's ConsistentListFromCache +
-			// WatchList gate cacher readiness on progress. One cacher doing a
-			// multi-minute initial sync (3M namespaces) then pins the stream
-			// minimum, so NO cacher ever observes progress past its start
-			// revision, storage-readiness never turns, the service-ip-repair
-			// PostStartHook hits its hard-coded 1-minute deadline, and the
-			// apiserver crash-loops forever. Per-watch progress is also what
-			// the periodic notify path already emits, and syncedRev never
-			// over-reports (it advances only via delivered events/markers).
-			snapshot, _ = w.progressSyncedRevSnapshot()
-			for id, rev := range snapshot {
-				if rev == 0 {
-					// Range-stream pseudo-watches never emit progress.
-					continue
-				}
-				if err := w.SendControl(&etcdserverpb.WatchResponse{
-					Header:  txnHeader(int64(rev)),
-					WatchId: id,
-				}); err != nil {
-					klog.ErrorS(err, "watch send progress response err", "watcher", w.id, "watch", id)
-					return err
-				}
-			}
-			// With no active watches etcd's progressAll has nothing to send.
-			// Likewise, do not synthesize a stream response here.
+			// Match etcd's progressAll/progressIfSync contract: RequestProgress
+			// is stream-wide. If any active watch has not caught up through the
+			// captured target, emit nothing; a later request may return one
+			// WatchId=-1 response after every watch is synchronized. Per-watch
+			// header-only fallbacks are not protocol-compatible because clientv3
+			// treats those frames as notifications requested by that watch.
 		} else {
 			s.metricCli.EmitCounter("watch.request.unsupported", 1)
 			klog.Info("watch receive message unsupported type")
