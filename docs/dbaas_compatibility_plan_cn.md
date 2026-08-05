@@ -34908,6 +34908,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AuthRevision=587，revision/index/applied 均为 468126003565740840、term 326，全范围长期 fixture
   Count=100。
 
+- A3585 把 A3584 的 stale-leadership read fence 延伸到 follower 使用的内部 revision oracle。
+  `/status` 是 `revisionSyncer` 建立线性读 barrier 的内部 HTTP 响应；旧 handler 仍只检查
+  `leaderElection.IsLeader()`。因此即使请求落到 follower，若其 election identity/term watch 尚未观察
+  successor，A249 的响应后复核也可能与旧缓存一致，并接受一个 election lease 已过期、但
+  `OnStoppedLeading` 尚未清 flag 的旧 leader revision。上游 Raft ReadIndex 不会在失去当前 quorum
+  leadership 后发布这种确认。
+
+  确定性 RED 为真实 server handler 注入 `IsLeader=true`、`EpochAndLeadingFresh=false`，backend
+  current revision=42；修复前 `/status` 错误返回 200 和 revision 42。现在内部 oracle 与公开
+  `SyncReadRevision` 使用同一 freshness 条件：只有 renew 仍新鲜才读取 durable watermark 并返回 200，
+  stale flag 或普通 follower 均沿既有 400 协议拒绝，调用方把它视为可重试 leader-change。入口后
+  durable revision 读取无需再次 freshness fence：请求在有效 lease 内开始时，之后 successor 写与该
+  read-index 请求重叠，线性化顺序仍可把读置于新写之前。
+
+  stale/empty/cold-durable 三项 handler 专项普通 50 轮 1.516 秒、race 20 轮 3.178 秒 GREEN；
+  `pkg/server` 全包、主模块 `go test ./...`（其中 `pkg/server/etcd` 170.318 秒）、vet 与完整 compat
+  通过，staticcheck v0.7.0 仍精确为既有 9 项基线。代码 commit `446a3c0e` 构建为
+  `kubebrain:a3585-revision-response-fence`（Docker 镜像 ID
+  `sha256:8aefd5b688bf647556617aed94ce070da06dbac8dba855e3250278b484a62870`），核验 OCI version、
+  完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动三副本。
+
+  稳态逐 Pod 直查内部 peer port 时严格只有一个 `/status=200`，另外两个均为 400。一次受控
+  SIGSTOP 跨过配置的 5s renew deadline/8s lease duration 后，约 35 秒内没有 successor；旧进程已
+  安全 SIGCONT 并恢复唯一 leader。由于该演练没有产生换主，明确不把它计作本修复的通过证据，
+  选主停顿行为留作后续独立审计。有效发布门禁改为删除当前 leader，同时运行 4 writer/6 个线性
+  reader：8.07 秒内成功读 911 次、写 17 次、产生 18 次预期瞬态错误，revision regression 为零，
+  final Put/Get 顺序断言通过，测试前缀已清理。最终 `/status` 仍为一个 200/两个 400，StatefulSet
+  current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无
+  alarm/lease、auth disabled/AuthRevision=587，revision/index/applied 均为 468126003565740879、
+  term 329，全范围长期 fixture Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
