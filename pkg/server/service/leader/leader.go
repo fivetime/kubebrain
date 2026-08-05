@@ -80,6 +80,16 @@ type ElectionInfo struct {
 	IsLeader bool
 }
 
+type passiveClock interface {
+	Now() time.Time
+	Since(time.Time) time.Duration
+}
+
+type realPassiveClock struct{}
+
+func (realPassiveClock) Now() time.Time                  { return time.Now() }
+func (realPassiveClock) Since(t time.Time) time.Duration { return time.Since(t) }
+
 type leaderElection struct {
 	backend interface {
 		InitializeLeadershipRevision(context.Context, uint64) error
@@ -109,13 +119,12 @@ type leaderElection struct {
 	// It is stamped onto every client response header, so reads must not perform
 	// a storage read and TSO request per etcd RPC.
 	leadershipTerm uint64
-	// lastRenewNanos is the UnixNano of the most recent successful lease
-	// Create/Update (leadership renew), stamped by renewStampingLock. It bounds
-	// leadership freshness: a partitioned leader whose renews are failing stops
-	// admitting/committing writes once this ages past renewDeadline, which is
-	// strictly tighter than leaseDuration, so it self-fences before a successor
-	// can acquire. Accessed atomically.
-	lastRenewNanos int64
+	// renewMu guards the most recent successful lease Create/Update time. Keep
+	// the time.Time monotonic component intact: converting it to UnixNano would
+	// let a wall-clock rollback extend stale leadership beyond RenewDeadline.
+	renewMu   sync.RWMutex
+	lastRenew time.Time
+	clock     passiveClock
 	// observationMu guards the raw election record and its local observation
 	// deadline. As in client-go, a lease is timed from when this process observes
 	// a changed raw record, never from the holder-supplied RenewTime (which is
@@ -246,6 +255,7 @@ func NewLeaderElection(
 		leaseDuration:      cfg.LeaseDuration,
 		renewDeadline:      cfg.RenewDeadline,
 		retryPeriod:        cfg.RetryPeriod,
+		clock:              realPassiveClock{},
 	}
 }
 
@@ -352,17 +362,33 @@ func (l *leaderElection) IsLeader() bool {
 // renew. Called on every successful lease Create/Update and once in
 // OnStartedLeading before leader is published.
 func (l *leaderElection) stampRenew() {
-	atomic.StoreInt64(&l.lastRenewNanos, time.Now().UnixNano())
+	clock := l.clock
+	if clock == nil {
+		clock = realPassiveClock{}
+	}
+	l.renewMu.Lock()
+	l.lastRenew = clock.Now()
+	l.renewMu.Unlock()
 }
 
 // EpochAndLeadingFresh implements LeaderElection interface.
 func (l *leaderElection) EpochAndLeadingFresh() (uint64, bool) {
 	leading := atomic.LoadInt32(&l.leader) == 1
-	last := atomic.LoadInt64(&l.lastRenewNanos)
+	l.renewMu.RLock()
+	last := l.lastRenew
+	l.renewMu.RUnlock()
+	clock := l.clock
+	if clock == nil {
+		clock = realPassiveClock{}
+	}
+	elapsed := time.Duration(-1)
+	if !last.IsZero() {
+		elapsed = clock.Since(last)
+	}
 	// Load the epoch last so, when we report fresh leadership, the epoch reflects
 	// a term at least as new as the one that published leader==1.
 	epoch := atomic.LoadUint64(&l.epoch)
-	fresh := leading && last != 0 && time.Since(time.Unix(0, last)) < l.renewDeadline
+	fresh := leading && !last.IsZero() && elapsed >= 0 && elapsed < l.renewDeadline
 	return epoch, fresh
 }
 

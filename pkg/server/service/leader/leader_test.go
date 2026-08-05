@@ -92,6 +92,15 @@ func (l *campaignLock) Describe() string {
 
 type revisionRecorder struct{ revision atomic.Uint64 }
 
+type skewablePassiveClock struct {
+	now     time.Time
+	elapsed time.Duration
+}
+
+func (c *skewablePassiveClock) Now() time.Time { return c.now }
+
+func (c *skewablePassiveClock) Since(time.Time) time.Duration { return c.elapsed }
+
 func (r *revisionRecorder) InitializeLeadershipRevision(_ context.Context, revision uint64) error {
 	r.revision.Store(revision)
 	return nil
@@ -133,7 +142,7 @@ func TestHasLeaderExpiresObservedElectionRecord(t *testing.T) {
 	require.True(t, election.HasLeader(), "an older observation must not shorten leader validity")
 
 	atomic.StoreInt32(&election.leader, 1)
-	atomic.StoreInt64(&election.lastRenewNanos, time.Now().UnixNano())
+	election.stampRenew()
 	require.True(t, election.HasLeader(), "fresh local leadership must not depend on a cached remote record")
 }
 
@@ -367,21 +376,36 @@ func TestEpochAndLeadingFreshStaleRenew(t *testing.T) {
 	atomic.StoreUint64(&l.epoch, 9)
 	atomic.StoreInt32(&l.leader, 1)
 	// last successful renew is older than the validity bound
-	stale := time.Now().Add(-defaultRenewDeadline - time.Second).UnixNano()
-	atomic.StoreInt64(&l.lastRenewNanos, stale)
+	l.lastRenew = time.Now().Add(-defaultRenewDeadline - time.Second)
 
 	epoch, fresh := l.EpochAndLeadingFresh()
 	ast.Equal(uint64(9), epoch)
 	ast.False(fresh, "leader with a renew older than the validity bound must not be fresh")
 }
 
+func TestEpochAndLeadingFreshUsesMonotonicElapsedTime(t *testing.T) {
+	clock := &skewablePassiveClock{now: time.Now()}
+	l := &leaderElection{renewDeadline: time.Second, clock: clock}
+	atomic.StoreInt32(&l.leader, 1)
+	l.stampRenew()
+	require.True(t, func() bool { _, fresh := l.EpochAndLeadingFresh(); return fresh }())
+
+	// Model NTP stepping the wall clock backward while monotonic time continues.
+	// A UnixNano timestamp would now appear to come from the future and keep an
+	// isolated old leader writable beyond the successor's acquisition window.
+	clock.now = clock.now.Add(-time.Hour)
+	clock.elapsed = l.renewDeadline + time.Nanosecond
+	_, fresh := l.EpochAndLeadingFresh()
+	require.False(t, fresh, "renew freshness must expire by monotonic elapsed time despite wall-clock rollback")
+}
+
 // TestEpochAndLeadingFreshNeverRenewed verifies that a leader flag set without any
-// recorded renew (lastRenewNanos == 0) is not reported fresh.
+// recorded renew (zero lastRenew) is not reported fresh.
 func TestEpochAndLeadingFreshNeverRenewed(t *testing.T) {
 	ast := assert.New(t)
 	l := &leaderElection{renewDeadline: defaultRenewDeadline}
 	atomic.StoreInt32(&l.leader, 1)
-	// lastRenewNanos left at zero value
+	// lastRenew left at zero value
 	_, fresh := l.EpochAndLeadingFresh()
 	ast.False(fresh)
 }
@@ -396,7 +420,7 @@ func TestStampRenewRestoresFreshness(t *testing.T) {
 
 	l := &leaderElection{renewDeadline: defaultRenewDeadline}
 	atomic.StoreInt32(&l.leader, 1)
-	atomic.StoreInt64(&l.lastRenewNanos, time.Now().Add(-defaultRenewDeadline-time.Second).UnixNano())
+	l.lastRenew = time.Now().Add(-defaultRenewDeadline - time.Second)
 	_, fresh := l.EpochAndLeadingFresh()
 	ast.False(fresh)
 
