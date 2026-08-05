@@ -15,7 +15,9 @@
 package leader
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -114,11 +116,13 @@ type leaderElection struct {
 	// strictly tighter than leaseDuration, so it self-fences before a successor
 	// can acquire. Accessed atomically.
 	lastRenewNanos int64
-	// leaderValidUntilNanos is derived from the latest shared election record
-	// observed by this node. Unlike GetLeaderInfo's cached holder string, it
-	// expires when renewals stop, so require-leader streams do not treat a stale
-	// holder address as a live cluster leader.
-	leaderValidUntilNanos int64
+	// observationMu guards the raw election record and its local observation
+	// deadline. As in client-go, a lease is timed from when this process observes
+	// a changed raw record, never from the holder-supplied RenewTime (which is
+	// unsafe across clock skew). time.Time retains its monotonic component.
+	observationMu     sync.RWMutex
+	observedRawRecord []byte
+	leaderValidUntil  time.Time
 
 	// leader-election durations (Config.withDefaults applied at construction).
 	// renewDeadline doubles as the leadership-validity bound in
@@ -180,14 +184,14 @@ func (c Config) Validate() error {
 type renewStampingLock struct {
 	resourcelock.Interface
 	onRenew    func()
-	onRecord   func(resourcelock.LeaderElectionRecord)
+	onRecord   func(resourcelock.LeaderElectionRecord, []byte)
 	onMutation func()
 }
 
 func (r *renewStampingLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
 	record, raw, err := r.Interface.Get(ctx)
 	if err == nil && record != nil && r.onRecord != nil {
-		r.onRecord(*record)
+		r.onRecord(*record, raw)
 	}
 	return record, raw, err
 }
@@ -200,7 +204,7 @@ func (r *renewStampingLock) Create(ctx context.Context, ler resourcelock.LeaderE
 			r.onMutation()
 		}
 		if r.onRecord != nil {
-			r.onRecord(ler)
+			r.onRecord(ler, nil)
 		}
 	}
 	return err
@@ -214,7 +218,7 @@ func (r *renewStampingLock) Update(ctx context.Context, ler resourcelock.LeaderE
 			r.onMutation()
 		}
 		if r.onRecord != nil {
-			r.onRecord(ler)
+			r.onRecord(ler, nil)
 		}
 	}
 	return err
@@ -255,7 +259,7 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 		var acquireOnce sync.Once
 		elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 			Lock: &renewStampingLock{
-				Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecord,
+				Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecordRaw,
 				onMutation: func() { acquireOnce.Do(func() { close(acquired) }) },
 			},
 			ReleaseOnCancel: true,
@@ -368,8 +372,10 @@ func (l *leaderElection) HasLeader() bool {
 	if _, fresh := l.EpochAndLeadingFresh(); fresh {
 		return true
 	}
-	return time.Now().UnixNano() < atomic.LoadInt64(&l.leaderValidUntilNanos) &&
-		election.IsLeaderKnown(l.GetLeaderInfo())
+	l.observationMu.RLock()
+	valid := time.Now().Before(l.leaderValidUntil)
+	l.observationMu.RUnlock()
+	return valid && election.IsLeaderKnown(l.GetLeaderInfo())
 }
 
 // GetLeaderInfo implements LeaderElection interface
@@ -379,7 +385,10 @@ func (l *leaderElection) GetLeaderInfo() string {
 }
 
 func (l *leaderElection) RefreshLeaderInfo(ctx context.Context) error {
-	_, _, err := l.resourceLock.Get(ctx)
+	record, raw, err := l.resourceLock.Get(ctx)
+	if err == nil && record != nil {
+		l.observeLeadershipRecordRaw(*record, raw)
+	}
 	return err
 }
 
@@ -388,7 +397,7 @@ func (l *leaderElection) RefreshLeaderInfo(ctx context.Context) error {
 // the holder identity changes; expose +1 so the etcd RaftTerm analogue is
 // positive from the first election.
 func (l *leaderElection) LeadershipTerm(ctx context.Context) (uint64, error) {
-	record, _, err := l.resourceLock.Get(ctx)
+	record, raw, err := l.resourceLock.Get(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("read leadership term: %w", err)
 	}
@@ -398,20 +407,29 @@ func (l *leaderElection) LeadershipTerm(ctx context.Context) (uint64, error) {
 	if record.LeaderTransitions < 0 {
 		return 0, fmt.Errorf("read leadership term: negative leader transitions %d", record.LeaderTransitions)
 	}
-	l.observeLeadershipRecord(*record)
+	l.observeLeadershipRecordRaw(*record, raw)
 	return uint64(record.LeaderTransitions) + 1, nil
 }
 
 func (l *leaderElection) observeLeadershipRecord(record resourcelock.LeaderElectionRecord) {
-	if !record.RenewTime.IsZero() {
-		validUntil := record.RenewTime.Add(l.leaseDuration).UnixNano()
-		for {
-			current := atomic.LoadInt64(&l.leaderValidUntilNanos)
-			if validUntil <= current || atomic.CompareAndSwapInt64(&l.leaderValidUntilNanos, current, validUntil) {
-				break
-			}
-		}
+	l.observeLeadershipRecordRaw(record, nil)
+}
+
+func (l *leaderElection) observeLeadershipRecordRaw(record resourcelock.LeaderElectionRecord, raw []byte) {
+	if raw == nil {
+		raw, _ = json.Marshal(record)
 	}
+	l.observationMu.Lock()
+	if !bytes.Equal(raw, l.observedRawRecord) {
+		l.observedRawRecord = append(l.observedRawRecord[:0], raw...)
+		duration := l.leaseDuration
+		if record.LeaseDurationSeconds > 0 {
+			duration = time.Duration(record.LeaseDurationSeconds) * time.Second
+		}
+		l.leaderValidUntil = time.Now().Add(duration)
+	}
+	l.observationMu.Unlock()
+
 	if record.LeaderTransitions < 0 {
 		return
 	}

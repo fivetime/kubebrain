@@ -116,14 +116,15 @@ func TestHasLeaderExpiresObservedElectionRecord(t *testing.T) {
 
 	expired := &leaderElection{
 		resourceLock:  lock,
-		leaseDuration: time.Second,
-		renewDeadline: 500 * time.Millisecond,
+		leaseDuration: 20 * time.Millisecond,
+		renewDeadline: 10 * time.Millisecond,
 	}
 	expired.observeLeadershipRecord(resourcelock.LeaderElectionRecord{
 		HolderIdentity: "peer",
 		RenewTime:      metav1.NewTime(time.Now().Add(-2 * time.Second)),
 	})
-	require.False(t, expired.HasLeader())
+	require.True(t, expired.HasLeader(), "remote wall-clock age must not pre-expire a newly observed lease")
+	require.Eventually(t, func() bool { return !expired.HasLeader() }, 200*time.Millisecond, time.Millisecond)
 
 	election.observeLeadershipRecord(resourcelock.LeaderElectionRecord{
 		HolderIdentity: "peer",
@@ -134,6 +135,52 @@ func TestHasLeaderExpiresObservedElectionRecord(t *testing.T) {
 	atomic.StoreInt32(&election.leader, 1)
 	atomic.StoreInt64(&election.lastRenewNanos, time.Now().UnixNano())
 	require.True(t, election.HasLeader(), "fresh local leadership must not depend on a cached remote record")
+}
+
+func TestHasLeaderUsesLocalObservationTimeInsteadOfWriterClock(t *testing.T) {
+	lock := &campaignLock{
+		record: resourcelock.LeaderElectionRecord{HolderIdentity: "peer"},
+		tso:    1,
+	}
+	election := &leaderElection{
+		resourceLock:  lock,
+		leaseDuration: 20 * time.Millisecond,
+		renewDeadline: 10 * time.Millisecond,
+	}
+
+	// RenewTime is supplied by the remote holder and may be arbitrarily ahead
+	// of this process's wall clock. client-go deliberately expires a lease from
+	// the local time at which a new raw record was observed, not this timestamp.
+	election.observeLeadershipRecord(resourcelock.LeaderElectionRecord{
+		HolderIdentity: "peer",
+		RenewTime:      metav1.NewTime(time.Now().Add(time.Hour)),
+	})
+	require.True(t, election.HasLeader())
+	require.Eventually(t, func() bool { return !election.HasLeader() },
+		200*time.Millisecond, time.Millisecond,
+		"a writer clock ahead of the observer must not extend require-leader availability")
+}
+
+func TestHasLeaderDoesNotRenewUnchangedRawRecord(t *testing.T) {
+	lock := &campaignLock{
+		record: resourcelock.LeaderElectionRecord{HolderIdentity: "peer"},
+		tso:    1,
+	}
+	election := &leaderElection{
+		resourceLock:  lock,
+		leaseDuration: 80 * time.Millisecond,
+		renewDeadline: 40 * time.Millisecond,
+	}
+	record := resourcelock.LeaderElectionRecord{HolderIdentity: "peer"}
+	raw, err := json.Marshal(record)
+	require.NoError(t, err)
+
+	election.observeLeadershipRecordRaw(record, raw)
+	time.Sleep(50 * time.Millisecond)
+	election.observeLeadershipRecordRaw(record, raw)
+	require.Eventually(t, func() bool { return !election.HasLeader() },
+		60*time.Millisecond, time.Millisecond,
+		"polling the same stored record must not renew its locally observed lease")
 }
 
 func (l termResourceLock) Get(context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
@@ -172,7 +219,7 @@ func TestRenewStampingLockCachesObservedTerm(t *testing.T) {
 	lock := &renewStampingLock{
 		Interface: termResourceLock{record: resourcelock.LeaderElectionRecord{LeaderTransitions: 8}},
 		onRenew:   func() {},
-		onRecord:  l.observeLeadershipRecord,
+		onRecord:  l.observeLeadershipRecordRaw,
 	}
 	record, _, err := lock.Get(context.Background())
 	require.NoError(t, err)
