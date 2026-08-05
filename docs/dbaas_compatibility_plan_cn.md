@@ -35158,6 +35158,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整 cold-snapshot 矩阵 81.562 秒、`hack/production` 全包 403.084 秒以及 vet、脚本语法与
   diff check 均通过。本项只避免已知 retained 制品冲突造成的停服，不关闭真实 CSI/PITR 缺口。
 
+- A3596 封闭 A3595 首次目标预检到真正停服之间的 retained snapshot TOCTOU。旧执行器只在逻辑 witness
+  校验之后、pause 之前查询一次目标；若同名 VolumeSnapshot 在 TidbCluster pause 生效后出现，仍会
+  继续把 KubeBrain/TiKV/PD 缩容为 0，最后才由 `create` 处理冲突。确定性 RED 让首个 PD 目标只在
+  pause patch 可见后出现，旧实现实际完成整轮并错误返回成功。
+
+  目标缺失检查现抽为同一 fail-closed 函数：第一次保持 A3595 的 mutation 前门禁；第二次位于 pause
+  后的 TidbCluster/StatefulSet identity、spec、cluster ID 和 readiness 复核完成之后、第一次
+  StatefulSet patch 之前。晚到冲突只触发可逆 pause cleanup，不停止 serving Pod、不创建 snapshot、
+  不发布 receipt；更晚的竞态仍由 Kubernetes create 裁决。专项连续 10 轮 14.476 秒、race
+  2.535 秒、完整 cold-snapshot 矩阵 87.547 秒、`hack/production` 全包 401.737 秒以及 vet、脚本
+  语法与 diff check 均通过。该栅栏缩窄维护 TOCTOU，但不声称跨多个 CSI snapshot 的原子事务或 PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

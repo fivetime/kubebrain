@@ -118,17 +118,22 @@ kubectl_args=()
 [[ -z "${KUBE_CONTEXT:-}" ]] || kubectl_args+=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${kubectl_args[@]}" "$@"; }
 
+validate_snapshot_targets_absent() {
+  local pvc_name snapshot_name existing_snapshot
+  while IFS= read -r pvc_name; do
+    snapshot_name="${OPERATION_ID}-${pvc_name}"
+    existing_snapshot="$(kctl -n "$TIDB_NAMESPACE" get volumesnapshot "$snapshot_name" --ignore-not-found -o name)"
+    [[ -z "$existing_snapshot" ]] || {
+      echo "target VolumeSnapshot already exists: ${snapshot_name}" >&2
+      exit 1
+    }
+  done < <(jq -r '.pd_pvcs[].name, .tikv_pvcs[].name' <<<"$inventory")
+}
+
 # Retained snapshots make operation IDs intentionally non-reusable. Discover a
-# known collision before pausing the operator or scaling any serving component;
-# create still remains the authoritative race-safe uniqueness check.
-while IFS= read -r pvc_name; do
-  snapshot_name="${OPERATION_ID}-${pvc_name}"
-  existing_snapshot="$(kctl -n "$TIDB_NAMESPACE" get volumesnapshot "$snapshot_name" --ignore-not-found -o name)"
-  [[ -z "$existing_snapshot" ]] || {
-    echo "target VolumeSnapshot already exists: ${snapshot_name}" >&2
-    exit 1
-  }
-done < <(jq -r '.pd_pvcs[].name, .tikv_pvcs[].name' <<<"$inventory")
+# known collision before pausing the operator; create remains the authoritative
+# race-safe uniqueness check.
+validate_snapshot_targets_absent
 
 kb_json="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o json)"
 tc_json="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
@@ -255,6 +260,12 @@ jq -e '[.status.conditions[]? | select(.type == "Ready" and .status == "True")] 
 validate_statefulset_ready KubeBrain "$kb_json"
 validate_statefulset_ready PD "$pd_json"
 validate_statefulset_ready TiKV "$tikv_json"
+
+# Close the long preflight/pause window before the first serving StatefulSet is
+# scaled down. A target created concurrently after this check is still rejected
+# by Kubernetes create, but a target already visible now must not cause a full
+# data-plane outage.
+validate_snapshot_targets_absent
 
 patch_object "$KUBEBRAIN_NAMESPACE" statefulset "$KUBEBRAIN_STATEFULSET" "$kb_json" /spec/replicas "$kb_replicas" 0
 kb_stopped=true
