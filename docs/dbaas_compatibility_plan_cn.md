@@ -36169,6 +36169,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
   已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3668 将 A3667 的组合 filter 从 live 路径扩到历史 replay。对照上游
+  `watchable_store.go` 的 `watcher.send`：历史批次经过所有 filter 后为空时必须推进 watcher
+  min revision，但不发送空 `WatchResponse`。新增 raw gRPC 场景先写 PUT、DELETE，再从 PUT
+  revision 建立 NOPUT+NODELETE、PrevKV、Fragment watch；created 后必须保持静默，显式 progress
+  才返回，并以规范 ID=-1 控制帧覆盖 delete revision。该门禁防止 replay loop 泄漏空帧，或因
+  全过滤而不推进 synced revision。
+
+  一次性官方 etcd `d947b2086` 与生产 KubeBrain 普通差分连续 10 轮 4.755 秒、race 5 轮
+  3.529 秒通过；根模块 test/vet（server/etcd 170.246 秒）与兼容模块 test/vet（1.330 秒）
+  均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
+  已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
