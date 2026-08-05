@@ -19,18 +19,12 @@ type watchCompactedRevisionOutcome struct {
 	SecondPutGap         int64
 	CompactionHeaderGap  int64
 	PostCompactPutGap    int64
-	OldCreatedWatchID    int64
-	OldCreated           bool
 	OldCreatedHeaderGap  int64
-	CanceledWatchID      int64
-	CanceledCreated      bool
-	Canceled             bool
-	CancelReason         string
-	CompactRevisionGap   int64
+	OldCreatedEnvelope   watchControlOutcome
 	CancelHeaderZero     bool
-	NextWatchID          int64
-	NextCreated          bool
+	CanceledEnvelope     watchControlOutcome
 	NextCreatedHeaderGap int64
+	NextCreatedEnvelope  watchControlOutcome
 	FinalPutGap          int64
 	EventHeaderGap       int64
 	EventModRevisionGap  int64
@@ -45,15 +39,32 @@ func TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	want := watchCompactedRevisionOutcome{
 		FirstPutGap: 1, SecondPutGap: 2, CompactionHeaderGap: 2, PostCompactPutGap: 3,
-		OldCreatedWatchID: 707, OldCreated: true, OldCreatedHeaderGap: 3,
-		CanceledWatchID: 707, CanceledCreated: false, Canceled: true,
-		CompactRevisionGap: 2, CancelHeaderZero: true,
-		NextWatchID: 708, NextCreated: true, NextCreatedHeaderGap: 3,
-		FinalPutGap: 4, EventHeaderGap: 4, EventModRevisionGap: 4, EventValue: "v4",
+		OldCreatedHeaderGap:  3,
+		OldCreatedEnvelope:   expectedCompactedWatchEnvelope(707, true, false, false, 0),
+		CancelHeaderZero:     true,
+		CanceledEnvelope:     expectedCompactedWatchEnvelope(707, false, true, true, 2),
+		NextCreatedHeaderGap: 3,
+		NextCreatedEnvelope:  expectedCompactedWatchEnvelope(708, true, false, false, 0),
+		FinalPutGap:          4, EventHeaderGap: 4, EventModRevisionGap: 4, EventValue: "v4",
 	}
 	referenceOutcome := runWatchCompactedRevisionScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runWatchCompactedRevisionScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func expectedCompactedWatchEnvelope(
+	id int64,
+	created bool,
+	canceled bool,
+	compactRevisionSet bool,
+	compactRevisionGap int64,
+) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: id, Created: created, Canceled: canceled,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, CompactRevisionSet: compactRevisionSet,
+		CompactRevisionGap: compactRevisionGap, EnvelopeObserved: true,
+	}
 }
 
 func runWatchCompactedRevisionScenario(t *testing.T, endpoint, instance string) watchCompactedRevisionOutcome {
@@ -113,18 +124,12 @@ func runWatchCompactedRevisionScenario(t *testing.T, endpoint, instance string) 
 		SecondPutGap:         put2.Header.Revision - baseRevision,
 		CompactionHeaderGap:  compacted.Header.Revision - baseRevision,
 		PostCompactPutGap:    put3.Header.Revision - baseRevision,
-		OldCreatedWatchID:    oldCreated.WatchId,
-		OldCreated:           oldCreated.Created && !oldCreated.Canceled,
 		OldCreatedHeaderGap:  oldCreated.Header.Revision - baseRevision,
-		CanceledWatchID:      canceled.WatchId,
-		CanceledCreated:      canceled.Created,
-		Canceled:             canceled.Canceled,
-		CancelReason:         canceled.CancelReason,
-		CompactRevisionGap:   canceled.CompactRevision - baseRevision,
+		OldCreatedEnvelope:   observeWatchControlResponse(oldCreated, seed.Header),
 		CancelHeaderZero:     canceled.Header.Revision == 0,
-		NextWatchID:          created.WatchId,
-		NextCreated:          created.Created && !created.Canceled,
+		CanceledEnvelope:     observeWatchControlResponse(canceled, seed.Header),
 		NextCreatedHeaderGap: created.Header.Revision - baseRevision,
+		NextCreatedEnvelope:  observeWatchControlResponse(created, seed.Header),
 		FinalPutGap:          put4.Header.Revision - baseRevision,
 		EventHeaderGap:       event.Header.Revision - baseRevision,
 		EventModRevisionGap:  event.Events[0].Kv.ModRevision - baseRevision,

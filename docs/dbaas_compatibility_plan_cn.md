@@ -35498,6 +35498,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1.357 秒、两级 module vet、`hack/production` 全包 466.638 秒及 diff check 均通过，线上
   `/dbaas-watch-revision/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3623 把共享完整 oracle 扩展到真实 compaction watch 的三个控制响应：历史 watch 707 的 created、
+  因 compaction 取消、以及后续 watch 708 的 created。旧 outcome 虽保存 compact revision 相对 gap=2，
+  仍未比较 header 身份、fragment/events，也没有独立的非零标志，可能把 watermark 零值折叠。先加入三个
+  完整 envelope 而不采集，reference RED 精确显示三项为零值；reference 同时确认 cancel response
+  Created=false、Canceled=true、CancelReason 为空、CompactRevisionSet=true、gap=2、header revision=0。
+
+  三项现统一复用 `observeWatchControlResponse`，删除被 envelope 覆盖的 ID/flag/reason/compact gap 字段，
+  并保留 created header gap=3 与 cancel header 精确为 0 的独立断言。共享 helper 连续 20 轮 0.028 秒、
+  race 1.061 秒；真实双端 compaction 场景连续 10 轮 3.160 秒、race 1.591 秒；兼容模块全包
+  1.241 秒、两级 module vet、`hack/production` 全包 479.574 秒及 diff check 均通过，线上
+  `/dbaas-watch-compacted/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
