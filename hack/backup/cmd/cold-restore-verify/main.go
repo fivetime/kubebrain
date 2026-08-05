@@ -204,13 +204,14 @@ type snapshotReceipt struct {
 	Inventory   snapshotInventory `json:"inventory"`
 	Snapshots   []sourceSnapshot  `json:"snapshots"`
 	Witness     struct {
-		Format     string `json:"format"`
-		Prefix     string `json:"prefix"`
-		Revision   int64  `json:"revision"`
-		Records    int    `json:"records"`
-		Leases     int    `json:"leases"`
-		SHA256     string `json:"sha256"`
-		FileSHA256 string `json:"file_sha256"`
+		Format        string `json:"format"`
+		Prefix        string `json:"prefix"`
+		Revision      int64  `json:"revision"`
+		CreatedAtUnix int64  `json:"created_at_unix"`
+		Records       int    `json:"records"`
+		Leases        int    `json:"leases"`
+		SHA256        string `json:"sha256"`
+		FileSHA256    string `json:"file_sha256"`
 	} `json:"semantic_witness"`
 }
 
@@ -383,7 +384,8 @@ func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snaps
 	}
 	if snapshotRecord.Format != "kubebrain.cold-physical-snapshot.v2" || snapshotRecord.OperationID == "" ||
 		snapshotRecord.Witness.Format != status.Format || snapshotRecord.Witness.Prefix != status.Prefix ||
-		snapshotRecord.Witness.Revision != status.Revision || snapshotRecord.Witness.Records != status.Records ||
+		snapshotRecord.Witness.Revision != status.Revision || snapshotRecord.Witness.CreatedAtUnix <= 0 ||
+		snapshotRecord.Witness.CreatedAtUnix != status.CreatedAtUnix || snapshotRecord.Witness.Records != status.Records ||
 		snapshotRecord.Witness.Leases != status.Leases || snapshotRecord.Witness.SHA256 != status.SHA256 ||
 		snapshotRecord.Witness.FileSHA256 != witnessFileSHA {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt semantic witness binding mismatch")

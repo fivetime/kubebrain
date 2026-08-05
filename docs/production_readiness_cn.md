@@ -741,7 +741,9 @@ CSI restore 演练，但它是物理恢复完成门禁，而不是普通 endpoin
 语义门禁读取 snapshot/restore receipt 链时同样使用严格单 JSON 值解析，拒绝未知字段和
 尾随 JSON。snapshot receipt schema 必须完整包含 preflight recovery blueprint、PD/TiKV source PVC
 和 CSI snapshot inventory，并校验 blueprint replica 数、source PVC/快照身份及
-`requested_storage >= restore_size`；其 restore receipt schema 必须完整包含 executor 发布的 VolumeSnapshotContent、
+`requested_storage >= restore_size`；其中 semantic witness 的 format/prefix/revision/creation time/
+records/leases/content SHA/file SHA 必须与实际打开的 witness status 精确一致。其 restore receipt
+schema 必须完整包含 executor 发布的 VolumeSnapshotContent、
 VolumeSnapshot、PVC 和 PV inventory。门禁逐项交叉验证 VSC→VS→PVC→PV 的对象名、UID、引用、
 CSI driver/handle、storage class、volume mode、access modes、requested storage 和 PV capacity，
 并要求 capacity 的 Kubernetes quantity 不小于 manifest 所绑定的 PVC request；restore manifest

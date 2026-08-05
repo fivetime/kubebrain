@@ -35855,6 +35855,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前环境仍无真实
   CSI snapshot API/driver，本项只恢复证据链可消费性与 fail-closed 验证，不关闭物理恢复或 PITR。
 
+- A3646 修复完整 snapshot inventory 之后暴露的 semantic witness status 字段断裂。生产
+  `cold-snapshot-execute.sh` 调用 `logical-status`，其 `backupfile.Status` 对当前 logical.v2 artifact
+  输出非零 `created_at_unix`，随后整体并入 snapshot receipt；旧 verifier 的严格 Witness 类型没有
+  该字段。producer-shaped 回归在旧实现上 RED 0.024 秒，报
+  `unknown field "created_at_unix"`，因此 A3645 后真实链路仍不能通过。
+
+  verifier 现声明并要求非零 creation time，且与重新打开 witness 得到的 `Status.CreatedAtUnix`
+  精确一致；攻击者即使同步重算 snapshot/restore receipt SHA，也不能替换 witness 时间证据。时间漂移
+  负例与完整 producer schema 均通过，helper race 1.335 秒。门禁稳定性审计同时用 `go test -json`
+  分别运行 production+server 双重型包和默认并行全仓，两轮均无 fail event，未复现 A3645 记录的并行
+  末尾失败，因此没有制造无证据的测试修复。backup 全包、cold snapshot/restore production 回归
+  159.171 秒、默认并行全仓测试（`hack/production` 465.750 秒、`pkg/server/etcd` 169.067 秒）、全仓
+  vet、兼容模块测试/vet 与真实 NodePort client/v3 全包 105.931 秒均通过。本轮仍不关闭真实
+  CSI restore/PITR，且不改变运行中 etcd 数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

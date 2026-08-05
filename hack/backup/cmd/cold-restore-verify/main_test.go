@@ -71,7 +71,7 @@ func TestOpenStableWitnessRejectsDriftDuringValidation(t *testing.T) {
 func TestValidateReceiptChain(t *testing.T) {
 	witness := []byte("immutable-witness")
 	witnessFileSHA := digest(witness)
-	status := backupfile.Status{Format: backupfile.Format, Prefix: "/registry", Revision: 100, Records: 3, Leases: 1, SHA256: "artifact-sha"}
+	status := backupfile.Status{Format: backupfile.Format, Prefix: "/registry", Revision: 100, CreatedAtUnix: 1760000000, Records: 3, Leases: 1, SHA256: "artifact-sha"}
 	snapshot := snapshotReceipt{Format: "kubebrain.cold-physical-snapshot.v2", OperationID: "operation-a"}
 	snapshot.CreatedAt = "2026-07-21T00:00:00Z"
 	snapshot.Inventory.Format = "kubebrain.cold-physical-snapshot-preflight.v2"
@@ -101,6 +101,7 @@ func TestValidateReceiptChain(t *testing.T) {
 	snapshot.Witness.Format = status.Format
 	snapshot.Witness.Prefix = status.Prefix
 	snapshot.Witness.Revision = status.Revision
+	snapshot.Witness.CreatedAtUnix = status.CreatedAtUnix
 	snapshot.Witness.Records = status.Records
 	snapshot.Witness.Leases = status.Leases
 	snapshot.Witness.SHA256 = status.SHA256
@@ -217,6 +218,17 @@ func TestValidateReceiptChain(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, brokenData)
 	require.ErrorContains(t, err, "snapshot inventory")
+
+	brokenSnapshot = cloneSnapshotReceipt(t, snapshot)
+	brokenSnapshot.Witness.CreatedAtUnix++
+	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
+	require.NoError(t, err)
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.SourceReceiptSHA = digest(brokenSnapshotData)
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, brokenData)
+	require.ErrorContains(t, err, "witness binding mismatch")
 
 	brokenRestore = restore
 	brokenRestore.SourceReceiptSHA = digest([]byte("other"))
