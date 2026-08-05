@@ -17,16 +17,49 @@ package backend
 import (
 	"context"
 	"path"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
+	backendelection "github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type blockBeforeCommitStorage struct {
+	storage.KvStorage
+	trigger atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockBeforeCommitStorage) BeginBatchWrite() storage.BatchWrite {
+	return &blockBeforeCommitBatch{BatchWrite: s.KvStorage.BeginBatchWrite(), storage: s}
+}
+
+type blockBeforeCommitBatch struct {
+	storage.BatchWrite
+	storage *blockBeforeCommitStorage
+}
+
+func (b *blockBeforeCommitBatch) Commit(ctx context.Context) error {
+	if b.storage.trigger.CompareAndSwap(true, false) {
+		close(b.storage.entered)
+		select {
+		case <-b.storage.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return b.BatchWrite.Commit(ctx)
+}
 
 // newFenceTestBackend builds a memkv-backed *backend for fence unit tests.
 func newFenceTestBackend(t *testing.T) (*backend, storage.KvStorage, func()) {
@@ -162,4 +195,89 @@ func TestFencedCreateRejectsAndCollectorAdvances(t *testing.T) {
 	case <-time.After(timeout):
 		ast.FailNow("expected watch event for the committed create")
 	}
+}
+
+func TestFencedCreateCannotCommitAfterSuccessorAcquiresStorageLease(t *testing.T) {
+	ast := assert.New(t)
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	base := newBadgerStorage(t, ast)
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	kv := &blockBeforeCommitStorage{
+		KvStorage: base,
+		entered:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: "old-leader"}, m).(*backend)
+	b.SetCurrentRevision(1000)
+	b.SetLeadershipFence(func() (uint64, bool) { return 7, true })
+
+	oldLock := b.GetResourceLock()
+	now := metav1.NewTime(time.Now())
+	record := resourcelock.LeaderElectionRecord{
+		HolderIdentity:       "old-leader",
+		LeaseDurationSeconds: 8,
+		AcquireTime:          now,
+		RenewTime:            now,
+		LeaderTransitions:    6,
+	}
+	require.NoError(t, oldLock.Create(context.Background(), record))
+
+	kv.trigger.Store(true)
+	key := path.Join(prefix, "fence/blocked-old-leader")
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := b.Create(WithLeadershipEpoch(context.Background(), 7), newCreateRequest(key, testVal))
+		errCh <- err
+	}()
+	select {
+	case <-kv.entered:
+	case <-time.After(time.Second):
+		t.Fatal("old leader write did not reach the blocked storage commit")
+	}
+
+	// A different process reads and atomically replaces the shared election
+	// record while the old leader's user transaction is still in Commit.
+	successorLock := backendelection.NewResourceLockManager(backendelection.Config{
+		Prefix: prefix, Identity: "successor", Timeout: time.Second,
+	}, base).GetResourceLock()
+	_, _, err := successorLock.Get(context.Background())
+	require.NoError(t, err)
+	record.HolderIdentity = "successor"
+	record.RenewTime = metav1.NewTime(time.Now())
+	record.LeaderTransitions++
+	require.NoError(t, successorLock.Update(context.Background(), record))
+	close(kv.release)
+
+	select {
+	case err := <-errCh:
+		require.ErrorIs(t, err, ErrLeadershipFenced)
+	case <-time.After(time.Second):
+		t.Fatal("old leader write did not return after storage commit was released")
+	}
+	_, err = base.Get(context.Background(), b.coder.EncodeRevisionKey([]byte(key)))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
+func TestStorageFencePreservesOrdinaryUserCASConflict(t *testing.T) {
+	ast := assert.New(t)
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	base := newBadgerStorage(t, ast)
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	b := NewBackend(base, Config{Prefix: prefix, Identity: "leader"}, m).(*backend)
+	b.SetLeadershipFence(func() (uint64, bool) { return 3, true })
+	record := resourcelock.LeaderElectionRecord{HolderIdentity: "leader", LeaseDurationSeconds: 8}
+	require.NoError(t, b.GetResourceLock().Create(context.Background(), record))
+
+	userKey := []byte(path.Join(prefix, "fence/user-cas"))
+	seed := b.kv.BeginBatchWrite()
+	seed.Put(userKey, []byte("current"), 0)
+	require.NoError(t, seed.Commit(WithLeadershipEpoch(context.Background(), 3)))
+
+	batch := b.kv.BeginBatchWrite()
+	batch.CAS(userKey, []byte("next"), []byte("stale"), 0)
+	err := batch.Commit(WithLeadershipEpoch(context.Background(), 3))
+	require.ErrorIs(t, err, storage.ErrCASFailed)
+	require.NotErrorIs(t, err, ErrLeadershipFenced)
 }

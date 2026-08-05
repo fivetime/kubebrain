@@ -265,8 +265,9 @@ type Backend interface {
 	SetCurrentRevision(uint64)
 
 	// SetLeadershipFence registers the leadership-epoch source that the write
-	// fence re-checks immediately before every data-batch commit, so a deposed
-	// leader's in-flight write cannot be committed-yet-unwatched (FINDING #39).
+	// fence checks before opening a batch. A storage ownership-token CAS then
+	// fences the actual atomic commit, so a deposed leader's in-flight write
+	// cannot be committed-yet-unwatched (FINDING #39).
 	// fn returns (current epoch, still-safely-leading). Unset = fence disabled.
 	SetLeadershipFence(fn func() (uint64, bool))
 }
@@ -431,8 +432,8 @@ type backend struct {
 	compactRevCache compactRevCache
 
 	// fenceFn, when set, returns this node's current leadership epoch and whether
-	// it is still safely leading. fenceAdmit consults it just before every data
-	// commit to fence a deposed leader's in-flight writes (FINDING #39); the event
+	// it is still safely leading. fenceAdmit consults it before every data batch;
+	// leadershipFencedStorage adds the storage-atomic ownership guard (FINDING #39). The event
 	// collector's stall watchdog also consults it (leadingFresh). nil-holder on
 	// single-node / direct-constructed test backends (fence disabled, fail-open).
 	// Held in an atomic.Value (a fenceHolder) because the collector reads it
@@ -573,6 +574,10 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		workerCancel:          workerCancel,
 	}
 	b.compactCtx.Store(compactContextHolder{ctx: workerCtx})
+	// User/internal batches opened through the backend carry a sharded storage
+	// ownership guard. Election itself retains the raw store so successor token
+	// rotation is not recursively fenced by the old token.
+	b.kv = &leadershipFencedStorage{KvStorage: kv, backend: b}
 
 	if config.EnableCountIndex && config.EnableEtcdCompatibility {
 		b.countIndex = countindex.New(config.CountIndexMaxKeys)

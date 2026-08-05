@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -42,6 +43,19 @@ func getElectionKey(prefix string) []byte {
 	return []byte(fmt.Sprintf("%s/election", prefix))
 }
 
+const storageFenceShardCount = 256
+
+func getStorageFenceKey(prefix string, shard uint64) []byte {
+	return []byte(fmt.Sprintf("%s/election-fence/%02x", prefix, shard%storageFenceShardCount))
+}
+
+// StorageFenceTokenProvider exposes one shard of the process ownership token
+// installed atomically with leader acquisition. User transactions CAS a shard
+// so a successor acquisition and an old-leader commit cannot both succeed.
+type StorageFenceTokenProvider interface {
+	StorageFenceToken(shard uint64) (key, expected []byte, ok bool)
+}
+
 type Config struct {
 	Prefix   string
 	Identity string
@@ -50,6 +64,10 @@ type Config struct {
 
 // NewResourceLockManager build a manager for resource lock
 func NewResourceLockManager(config Config, store storage.KvStorage) ResourceLockManager {
+	fenceKeys := make([][]byte, storageFenceShardCount)
+	for shard := range fenceKeys {
+		fenceKeys[shard] = getStorageFenceKey(config.Prefix, uint64(shard))
+	}
 	return &resourceLockManager{
 		resourceLock: &resourceLock{
 			store: store,
@@ -57,6 +75,7 @@ func NewResourceLockManager(config Config, store storage.KvStorage) ResourceLock
 				Identity: config.Identity,
 			},
 			electionKey: getElectionKey(config.Prefix),
+			fenceKeys:   fenceKeys,
 			timeout:     config.Timeout,
 		},
 	}
@@ -83,7 +102,13 @@ type resourceLock struct {
 	lastVal     []byte
 	tso         uint64
 	electionKey []byte
+	fenceKeys   [][]byte
 	timeout     time.Duration
+	// fenceToken is unique to this process's current/most-recent ownership.
+	// fenceInstalled becomes false after observing/releasing another holder so
+	// the next acquisition rotates all shards atomically with the election CAS.
+	fenceToken     []byte
+	fenceInstalled bool
 }
 
 // Get implements resourcelock.Interface. The returned []byte is the raw stored
@@ -127,6 +152,9 @@ func (r *resourceLock) getRecord(parent context.Context) (err error) {
 	r.mu.Lock()
 	r.lastVal = val
 	r.record = record
+	if record.HolderIdentity != r.lockConfig.Identity {
+		r.fenceInstalled = false
+	}
 	r.mu.Unlock()
 	return nil
 }
@@ -166,6 +194,13 @@ func (r *resourceLock) Create(parent context.Context, ler resourcelock.LeaderEle
 	}
 	batch := r.store.BeginBatchWrite()
 	batch.PutIfNotExist(r.electionKey, lerBytes, 0)
+	var fenceToken []byte
+	if ler.HolderIdentity == r.lockConfig.Identity {
+		fenceToken = []byte(uuid.NewString())
+		for _, key := range r.fenceKeys {
+			batch.Put(key, fenceToken, 0)
+		}
+	}
 	ctx, cancel := r.genContext(parent)
 	defer cancel()
 	err = batch.Commit(ctx)
@@ -183,6 +218,10 @@ func (r *resourceLock) Create(parent context.Context, ler resourcelock.LeaderEle
 	r.lastVal = lerBytes
 	r.tso = tso
 	r.record = ler
+	if len(fenceToken) > 0 {
+		r.fenceToken = fenceToken
+		r.fenceInstalled = true
+	}
 	r.mu.Unlock()
 	return nil
 }
@@ -193,6 +232,7 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 	r.mu.Lock()
 	tso := r.tso
 	lastVal := r.lastVal
+	installFence := ler.HolderIdentity == r.lockConfig.Identity && !r.fenceInstalled
 	r.mu.Unlock()
 	if tso == 0 {
 		return errors.New("endpoint not initialized, call get or create first")
@@ -205,12 +245,29 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 
 	batch := r.store.BeginBatchWrite()
 	batch.CAS(r.electionKey, recordBytes, lastVal, 0)
+	var fenceToken []byte
+	if installFence {
+		fenceToken = []byte(uuid.NewString())
+		for _, key := range r.fenceKeys {
+			batch.Put(key, fenceToken, 0)
+		}
+	}
 	ctx, cancel := r.genContext(parent)
 	defer cancel()
 	err = batch.Commit(ctx)
 	if err != nil {
 		return err
 	}
+	// The ownership token became durable with the election record even if the
+	// following diagnostic TSO read fails. Retain it for in-flight write fences.
+	r.mu.Lock()
+	if len(fenceToken) > 0 {
+		r.fenceToken = fenceToken
+		r.fenceInstalled = true
+	} else if ler.HolderIdentity != r.lockConfig.Identity {
+		r.fenceInstalled = false
+	}
+	r.mu.Unlock()
 
 	// Bound with the election-timeout ctx, not Background (audit E10).
 	newTso, err := r.store.GetTimestampOracle(ctx)
@@ -223,6 +280,17 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 	r.record = ler
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *resourceLock) StorageFenceToken(shard uint64) (key, expected []byte, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.fenceToken) == 0 || len(r.fenceKeys) == 0 {
+		return nil, nil, false
+	}
+	key = append([]byte(nil), r.fenceKeys[shard%uint64(len(r.fenceKeys))]...)
+	expected = append([]byte(nil), r.fenceToken...)
+	return key, expected, true
 }
 
 // RecordEvent implements resourcelock.Interface

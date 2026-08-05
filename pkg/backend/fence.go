@@ -15,8 +15,13 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"sync/atomic"
+
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 // ErrLeadershipFenced is returned when a write is rejected at commit time because
@@ -26,6 +31,67 @@ import (
 // request against the current leader instead of silently losing the write
 // (FINDING #39 write fencing).
 var ErrLeadershipFenced = errors.New("write rejected: leadership changed during commit")
+
+type leadershipFencedStorage struct {
+	storage.KvStorage
+	backend *backend
+	shard   atomic.Uint64
+}
+
+func (s *leadershipFencedStorage) UnwrapKvStorage() storage.KvStorage { return s.KvStorage }
+
+func (s *leadershipFencedStorage) BeginBatchWrite() storage.BatchWrite {
+	return &leadershipFencedBatch{
+		BatchWrite: s.KvStorage.BeginBatchWrite(),
+		storage:    s,
+		shard:      s.shard.Add(1) - 1,
+	}
+}
+
+type leadershipFencedBatch struct {
+	storage.BatchWrite
+	storage *leadershipFencedStorage
+	shard   uint64
+}
+
+func (b *leadershipFencedBatch) Commit(ctx context.Context) error {
+	if _, admitted := leadershipEpochFromContext(ctx); !admitted {
+		return b.BatchWrite.Commit(ctx)
+	}
+	h, _ := b.storage.backend.fenceFn.Load().(fenceHolder)
+	provider, ok := b.storage.backend.election.GetResourceLock().(election.StorageFenceTokenProvider)
+	if h.fn == nil || !ok {
+		return b.BatchWrite.Commit(ctx)
+	}
+	key, token, ok := provider.StorageFenceToken(b.shard)
+	if !ok {
+		// Direct-constructed tests may install an in-memory fence without ever
+		// campaigning. Production cannot publish fresh leadership before its lock
+		// Update installs the token, so preserve those test/single-node paths.
+		return b.BatchWrite.Commit(ctx)
+	}
+	// Writing the same token makes this shard part of the transaction's write
+	// conflict set. A successor changes every shard atomically with acquisition.
+	b.BatchWrite.CAS(key, token, token, 0)
+	err := b.BatchWrite.Commit(ctx)
+	if !errors.Is(err, storage.ErrCASFailed) {
+		return err
+	}
+	var conflict *storage.Conflict
+	if errors.As(err, &conflict) && bytes.Equal(conflict.Key, key) {
+		b.storage.backend.metricCli.EmitCounter("write.fence.reject", 1)
+		return ErrLeadershipFenced
+	}
+	// TiKV/Badger can report commit-time write conflicts without the key. Read
+	// the guard only on that error path to distinguish a leadership conflict
+	// from an ordinary user-key CAS retry.
+	current, getErr := b.storage.KvStorage.Get(ctx, key)
+	if errors.Is(getErr, storage.ErrKeyNotFound) || (getErr == nil && !bytes.Equal(current, token)) {
+		b.storage.backend.metricCli.EmitCounter("write.fence.reject", 1)
+		return ErrLeadershipFenced
+	}
+	return err
+}
 
 // leadershipEpochKey is the context key carrying the leadership epoch a write was
 // admitted under, from the RPC gate down to fenceAdmit.
@@ -95,8 +161,8 @@ func (b *backend) leadingFresh() bool {
 	return fresh
 }
 
-// fenceAdmit is the write fence's re-check, called immediately before a data
-// batch is opened and committed. If a fence is registered and the write carries
+// fenceAdmit is the write fence's in-memory re-check, called immediately before
+// a data batch is opened. If a fence is registered and the write carries
 // an admit-time epoch, it re-loads the current leadership epoch/freshness and
 // rejects the write (with ErrLeadershipFenced) when this node has left the term
 // it was admitted under. This closes the deal->commit TOCTOU window in which a
@@ -104,11 +170,10 @@ func (b *backend) leadingFresh() bool {
 // collector has already advanced past — a committed-yet-unwatched write
 // (split-brain, FINDING #39).
 //
-// It is called just before storage.BeginBatchWrite rather than wrapping Commit
-// because a storage batch cannot be abandoned safely (memkv holds a global lock
-// from BeginBatchWrite until Commit; the optimistic-txn engines hold an open
-// transaction). Only a cheap, non-blocking client-side batch build separates
-// this check from the commit's storage I/O, so the fencing window is unchanged.
+// leadershipFencedStorage complements this fast rejection with a sharded token
+// CAS inside the storage transaction itself. The successor rotates every shard
+// atomically with election acquisition, closing the remaining window where the
+// storage Commit call has begun but network/2PC completion is still blocked.
 //
 // It fails open when no fence is registered or the context carries no epoch
 // (e.g. internal/background writes), so single-node and test paths are unchanged.
