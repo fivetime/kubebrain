@@ -52,19 +52,20 @@ func TestColdRestoreExecute(t *testing.T) {
 		wantPreexistingRestoreReceipt  bool
 		wantEmergency                  bool
 		wantCreate                     bool
+		wantUnpause                    bool
 		wantError                      string
 	}{
-		{name: "restores storage and publishes receipt", wantReceipt: true, wantCreate: true},
+		{name: "restores storage and publishes receipt", wantReceipt: true, wantCreate: true, wantUnpause: true},
 		{name: "existing target fails before create", existing: true, wantError: "target resource already exists"},
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
 		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "source receipt drift during render uses captured receipt", sourceReceiptDriftDuringRender: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "restore manifest drift during capture fails before target access", restoreManifestDriftDuringHash: true, wantError: "restore manifest changed during capture"},
-		{name: "manifest path drift still applies validated manifest", restoreManifestPathDrift: true, wantReceipt: true, wantCreate: true},
-		{name: "concurrent restore receipt publish is non overwriting", precreateRestoreReceipt: true, wantPreexistingRestoreReceipt: true, wantEmergency: true, wantCreate: true, wantError: "restore receipt already exists"},
-		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true, wantCreate: true, wantError: "identity/readiness mismatch"},
-		{name: "content inventory drift fences storage", wrongContent: true, wantEmergency: true, wantCreate: true, wantError: "restored VolumeSnapshotContent inventory does not match restore manifest"},
-		{name: "PVC inventory drift fences storage", wrongPVC: true, wantEmergency: true, wantCreate: true, wantError: "restored PVC inventory does not match restore manifest"},
+		{name: "manifest path drift still applies validated manifest", restoreManifestPathDrift: true, wantReceipt: true, wantCreate: true, wantUnpause: true},
+		{name: "concurrent restore receipt publish is non overwriting", precreateRestoreReceipt: true, wantPreexistingRestoreReceipt: true, wantEmergency: true, wantCreate: true, wantUnpause: true, wantError: "restore receipt already exists"},
+		{name: "cluster identity mismatch fences storage", wrongCluster: true, wantEmergency: true, wantCreate: true, wantUnpause: true, wantError: "identity/readiness mismatch"},
+		{name: "content inventory drift remains paused", wrongContent: true, wantCreate: true, wantError: "restored VolumeSnapshotContent inventory does not match restore manifest"},
+		{name: "PVC inventory drift remains paused", wrongPVC: true, wantCreate: true, wantError: "restored PVC inventory does not match restore manifest"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -162,7 +163,11 @@ func TestColdRestoreExecute(t *testing.T) {
 			} else {
 				require.Contains(t, log, "create -f ")
 				require.NotContains(t, log, "tampered restore manifest path was used")
+			}
+			if tc.wantUnpause {
 				requireOrder(t, log, "create -f", "patch tidbcluster kb --type=json", "wait --for=condition=Ready", "rollout status statefulset/kb-pd", "rollout status statefulset/kb-tikv")
+			} else {
+				require.NotContains(t, log, "patch tidbcluster kb --type=json")
 			}
 			if tc.wantEmergency {
 				requireOrder(t, log, "wait --for=condition=Ready", "patch tidbcluster kb --type=json", "patch statefulset kb-tikv --type=json", "patch statefulset kb-pd --type=json")
@@ -399,6 +404,45 @@ func TestColdRestoreExecuteRechecksSourceReceiptBeforeCreate(t *testing.T) {
 	require.Contains(t, string(output), "cold snapshot receipt changed after validation")
 	require.NoFileExists(t, restoreReceiptPath)
 	require.NoFileExists(t, logPath+".actual-create-after-source-drift")
+}
+
+func TestColdRestoreExecuteValidatesStorageInventoryBeforeUnpause(t *testing.T) {
+	for _, tc := range []struct {
+		name, pvcJSON, contentJSON, want string
+	}{
+		{name: "snapshot handle drift", pvcJSON: coldRestorePVCResult(t, false), contentJSON: coldRestoreContentResult(t, true), want: "restored VolumeSnapshotContent inventory does not match restore manifest"},
+		{name: "PVC binding drift", pvcJSON: coldRestorePVCResult(t, true), contentJSON: coldRestoreContentResult(t, false), want: "restored PVC inventory does not match restore manifest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			receiptPath := filepath.Join(dir, "snapshot.json")
+			manifestPath := filepath.Join(dir, "restore.json")
+			restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+			logPath := filepath.Join(dir, "kubectl.log")
+			require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+			renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+			require.NoError(t, err, string(renderOutput))
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+			output, err := runColdRestoreExecute(t, []string{
+				"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+				"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+				"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+				"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+				"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+				"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+				"FAKE_PVC_JSON=" + tc.pvcJSON, "FAKE_CONTENT_JSON=" + tc.contentJSON,
+			})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, restoreReceiptPath)
+			log := string(mustRead(t, logPath))
+			require.Contains(t, log, "create -f")
+			require.NotContains(t, log, "patch tidbcluster kb --type=json",
+				"invalid restored storage must remain paused and must never start")
+		})
+	}
 }
 
 func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byte, error) {

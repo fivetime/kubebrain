@@ -35258,6 +35258,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   19.513 秒、race 3.080 秒、完整 cold-restore 矩阵 31.524 秒、`hack/production` 全包 424.339 秒
   以及 vet、脚本语法与 diff check 均通过。本项强化证据链，不替代真实 CSI 恢复/PITR。
 
+- A3604 将 restored storage inventory 校验前移到首次 unpause 之前。旧执行器虽等待 6 个
+  VolumeSnapshot ready 和 6 个 PVC Bound，却只在 TidbCluster 已 unpause、PD/TiKV Ready 后才比较
+  PVC name/UID/PV/phase 与 VolumeSnapshotContent name/UID/driver/snapshotHandle；错误 handle 或异常
+  PVC 会先启动 storage，再由末端校验触发 emergency pause/scale-to-zero。两条确定性 RED 固定旧日志
+  中的 unpause 与反向 fence。
+
+  PVC/content 查询与严格比较现抽为同一函数：所有 CSI/PVC wait 完成后、读取 paused TidbCluster 并
+  unpause 之前先执行一次，只有精确匹配 canonical manifest 才允许启动 PD/TiKV；Ready 和 cluster ID
+  验证后再次执行，继续覆盖运行期漂移并为 receipt 提供最终 inventory。错误资源保持 paused，仅保留
+  审计制品。专项连续 10 轮 46.986 秒、race 5.345 秒、完整 cold-restore 矩阵 35.081 秒、
+  `hack/production` 全包 434.115 秒以及 vet、脚本语法与 diff check 均通过。本项防止已知坏源启动，
+  不构成真实 CSI 恢复/PITR 完成证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

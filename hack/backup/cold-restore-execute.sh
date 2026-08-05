@@ -213,6 +213,30 @@ while IFS= read -r name; do
   kctl -n "$namespace" wait --for=jsonpath='{.status.phase}'=Bound "pvc/${name}" --timeout="$WAIT_TIMEOUT" >/dev/null
 done < <(jq -r '.items[] | select(.kind == "PersistentVolumeClaim") | .metadata.name' <<<"$manifest")
 
+validate_restored_storage_inventory() {
+  pvcs="$(kctl -n "$namespace" get pvc -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] | {name:.metadata.name,uid:.metadata.uid,pv:.spec.volumeName,phase:.status.phase}] | sort_by(.name)')"
+  jq -e --argjson expected "$expected_restored_pvc_names" '
+    length == ($expected | length) and
+    ([.[].name] == $expected) and
+    all(.[]; .phase == "Bound" and (.uid | length > 0) and (.pv | length > 0)) and
+    ([.[].uid] | unique | length) == length and
+    ([.[].pv] | unique | length) == length
+  ' <<<"$pvcs" >/dev/null || { echo "restored PVC inventory does not match restore manifest" >&2; exit 1; }
+  contents="$(kctl get volumesnapshotcontent -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] | {name:.metadata.name,uid:.metadata.uid,driver:.spec.driver,snapshot_handle:.spec.source.snapshotHandle}] | sort_by(.name)')"
+  jq -e --argjson expected "$expected_restored_contents" '
+    length == ($expected | length) and
+    (map({name,driver,snapshot_handle}) == $expected) and
+    all(.[]; (.uid | length > 0)) and
+    ([.[].uid] | unique | length) == length and
+    ([.[].snapshot_handle] | unique | length) == length
+  ' <<<"$contents" >/dev/null || { echo "restored VolumeSnapshotContent inventory does not match restore manifest" >&2; exit 1; }
+}
+
+# Never start PD/TiKV from a PVC or CSI snapshot handle that differs from the
+# canonical restore manifest. Recheck after Ready as well before publishing the
+# success receipt so post-start drift remains fail-closed.
+validate_restored_storage_inventory
+
 target_tidb_json="$(kctl -n "$namespace" get tidbcluster "$tidb_cluster" -o json)"
 target_tidb_uid="$(jq -r '.metadata.uid' <<<"$target_tidb_json")"
 [[ -n "$target_tidb_uid" && "$(jq -r '.spec.paused' <<<"$target_tidb_json")" == true ]] || { echo "restored TidbCluster is not identity-fenced and paused" >&2; exit 1; }
@@ -231,22 +255,7 @@ IFS=$'\t' read -r final_tidb_uid actual_cluster_id ready_status <<<"$restored_id
   exit 1
 }
 
-pvcs="$(kctl -n "$namespace" get pvc -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] | {name:.metadata.name,uid:.metadata.uid,pv:.spec.volumeName,phase:.status.phase}] | sort_by(.name)')"
-jq -e --argjson expected "$expected_restored_pvc_names" '
-  length == ($expected | length) and
-  ([.[].name] == $expected) and
-  all(.[]; .phase == "Bound" and (.uid | length > 0) and (.pv | length > 0)) and
-  ([.[].uid] | unique | length) == length and
-  ([.[].pv] | unique | length) == length
-' <<<"$pvcs" >/dev/null || { echo "restored PVC inventory does not match restore manifest" >&2; exit 1; }
-contents="$(kctl get volumesnapshotcontent -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] | {name:.metadata.name,uid:.metadata.uid,driver:.spec.driver,snapshot_handle:.spec.source.snapshotHandle}] | sort_by(.name)')"
-jq -e --argjson expected "$expected_restored_contents" '
-  length == ($expected | length) and
-  (map({name,driver,snapshot_handle}) == $expected) and
-  all(.[]; (.uid | length > 0)) and
-  ([.[].uid] | unique | length) == length and
-  ([.[].snapshot_handle] | unique | length) == length
-' <<<"$contents" >/dev/null || { echo "restored VolumeSnapshotContent inventory does not match restore manifest" >&2; exit 1; }
+validate_restored_storage_inventory
 
 verify_source_receipt
 receipt_tmp="${RESTORE_RECEIPT_FILE}.tmp.$$"
