@@ -35222,6 +35222,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/production` 全包 427.787 秒以及 vet、脚本语法与 diff check 均通过。本项减少部分恢复
   制品风险，不宣称 Kubernetes List 原子事务、真实 CSI 恢复或 PITR 已完成。
 
+- A3601 在 cold restore 的 canonical Kubernetes List 上增加 server-side dry-run。即使 A3598-A3600 的
+  identity/class/collision 门禁全部通过，`kubectl create -f List` 仍是逐 item API 请求而非事务；后序
+  VolumeSnapshot/PVC/TidbCluster 若因目标 CRD schema、RBAC、conversion 或 dry-run-safe admission
+  被拒，前序 cluster-scoped content 可能已经持久化。确定性 RED 让目标 API 拒绝清单，旧执行器直接
+  进入实际 create 并留下“actual create attempted”证据。
+
+  执行器现在先以同一冻结 `applied-manifest.json` 执行 `create --dry-run=server`，确保所有 item 能通过
+  目标 API 的无持久化校验；成功后才重新执行最终 class、collision、namespace UID 栅栏并真实 create。
+  dry-run 失败不安装 emergency trap、不创建资源或 receipt。专项连续 10 轮 14.381 秒、race
+  2.517 秒、完整 cold-restore 矩阵 27.617 秒、`hack/production` 全包 423.788 秒以及 vet、脚本语法
+  与 diff check 均通过。dry-run 不能把真实 List create 变成事务，也不能替代真实 CSI 隔离恢复/PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

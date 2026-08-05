@@ -155,6 +155,11 @@ validate_targets_absent() {
 
 validate_targets_absent
 
+# Kubernetes List creation is a sequence of API requests, not a transaction.
+# Exercise schema, RBAC, conversion and dry-run-safe admission for every item
+# before the final identity/collision fences and before any object can persist.
+kctl create --dry-run=server -f "$applied_manifest" >/dev/null
+
 # Namespace names are reusable. Rebind the final create to the approved cluster
 # and namespace identities after all potentially slow discovery/collision reads
 # so a delete/recreate cannot redirect the restore to a same-named target.

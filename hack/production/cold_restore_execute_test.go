@@ -310,6 +310,37 @@ func TestColdRestoreExecuteRechecksTargetCollisionsBeforeCreate(t *testing.T) {
 	require.NotContains(t, log, "create -f", "late target collisions must fail before list creation")
 }
 
+func TestColdRestoreExecuteServerDryRunsManifestBeforeCreate(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_REJECT_RESTORE_CREATE=true",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "restore manifest rejected by server dry-run")
+	require.NoFileExists(t, restoreReceiptPath)
+	require.NoFileExists(t, logPath+".actual-create-attempted")
+	log := string(mustRead(t, logPath))
+	require.Contains(t, log, "create --dry-run=server -f")
+}
+
 func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byte, error) {
 	t.Helper()
 	return runProductionCommand(t, "go", []string{
@@ -490,6 +521,17 @@ elif [[ "$args" == *"create -f"* ]]; then
   if [[ "${TAMPER_RESTORE_MANIFEST_DURING_KUBECTL:-false}" == true &&
     "$create_path" == "$RESTORE_MANIFEST" ]]; then
     echo "tampered restore manifest path was used" >&2
+    exit 1
+  fi
+  if [[ "${FAKE_REJECT_RESTORE_CREATE:-false}" == true ]]; then
+    touch "${FAKE_LOG}.actual-create-attempted"
+    echo "restore manifest rejected during actual create" >&2
+    exit 1
+  fi
+  :
+elif [[ "$args" == *"create --dry-run=server -f"* ]]; then
+  if [[ "${FAKE_REJECT_RESTORE_CREATE:-false}" == true ]]; then
+    echo "restore manifest rejected by server dry-run" >&2
     exit 1
   fi
   :
