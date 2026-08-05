@@ -36,6 +36,12 @@ type watchRawMultiframeEventOutcome struct {
 	Version           int64
 	Lease             int64
 	PrevKVAbsent      bool
+	PrevKeyMatches    bool
+	PrevValueMatches  bool
+	PrevCreateGap     int64
+	PrevModGap        int64
+	PrevVersion       int64
+	PrevLease         int64
 	KVObserved        bool
 }
 
@@ -50,6 +56,19 @@ func TestWatchRawMultiframeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome,
 		runWatchRawMultiframeScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func TestWatchRawMultiframePrevKVDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run watch fragment differential tests")
+	}
+
+	want := expectedWatchRawMultiframePrevKVOutcome()
+	referenceOutcome := runWatchRawMultiframePrevKVScenario(t, reference, "etcd")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome,
+		runWatchRawMultiframePrevKVScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
 func expectedWatchRawMultiframeOutcome() watchRawMultiframeOutcome {
@@ -72,7 +91,38 @@ func expectedWatchRawMultiframeOutcome() watchRawMultiframeOutcome {
 	return outcome
 }
 
+func expectedWatchRawMultiframePrevKVOutcome() watchRawMultiframeOutcome {
+	outcome := watchRawMultiframeOutcome{
+		CreatedEnvelope: expectedFragmentControlEnvelope(true, true, 0),
+		TotalEvents:     3,
+	}
+	for index := int64(1); index <= 3; index++ {
+		envelope := expectedFragmentControlEnvelope(false, true, 1)
+		envelope.Fragment = index < 3
+		outcome.ResponseEnvelopes = append(outcome.ResponseEnvelopes, envelope)
+		outcome.ResponseHeaderGaps = append(outcome.ResponseHeaderGaps, 6)
+		outcome.ResponseBelowTwoMiB = append(outcome.ResponseBelowTwoMiB, false)
+		outcome.EventMetadata = append(outcome.EventMetadata, watchRawMultiframeEventOutcome{
+			Type: mvccpb.PUT, KeyMatches: true, ValueMatches: true,
+			CreateRevisionGap: index, ModRevisionGap: index + 3,
+			Version: 2, Lease: 0, PrevKVAbsent: false,
+			PrevKeyMatches: true, PrevValueMatches: true,
+			PrevCreateGap: index, PrevModGap: index, PrevVersion: 1, PrevLease: 0,
+			KVObserved: true,
+		})
+	}
+	return outcome
+}
+
 func runWatchRawMultiframeScenario(t *testing.T, endpoint, instance string) watchRawMultiframeOutcome {
+	return runWatchRawMultiframeScenarioWithPrevKV(t, endpoint, instance, false)
+}
+
+func runWatchRawMultiframeScenarioWithPrevKV(
+	t *testing.T,
+	endpoint, instance string,
+	withPrevKV bool,
+) watchRawMultiframeOutcome {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -80,7 +130,11 @@ func runWatchRawMultiframeScenario(t *testing.T, endpoint, instance string) watc
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
-	prefix := fmt.Sprintf("/dbaas-watch-raw-multiframe/%s/%d/", instance, time.Now().UnixNano())
+	prefixRoot := "/dbaas-watch-raw-multiframe/"
+	if withPrevKV {
+		prefixRoot = "/dbaas-watch-raw-multiframe-prevkv/"
+	}
+	prefix := fmt.Sprintf("%s%s/%d/", prefixRoot, instance, time.Now().UnixNano())
 	kv := etcdserverpb.NewKVClient(conn)
 	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
 		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
@@ -97,11 +151,23 @@ func runWatchRawMultiframeScenario(t *testing.T, endpoint, instance string) watc
 
 	const eventCount = 3
 	value := []byte(strings.Repeat("x", 1024*1024))
+	oldValue := []byte(strings.Repeat("o", 1024*1024))
 	keys := make([][]byte, 0, eventCount)
-	var finalHeader *etcdserverpb.ResponseHeader
 	for index := 0; index < eventCount; index++ {
-		key := []byte(fmt.Sprintf("%s%d", prefix, index))
-		keys = append(keys, key)
+		keys = append(keys, []byte(fmt.Sprintf("%s%d", prefix, index)))
+	}
+	eventStartRevision := base.Header.Revision + 1
+	var finalHeader *etcdserverpb.ResponseHeader
+	if withPrevKV {
+		for _, key := range keys {
+			put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: oldValue})
+			require.NoError(t, putErr)
+			require.NotNil(t, put.Header)
+			finalHeader = put.Header
+		}
+		eventStartRevision = finalHeader.Revision + 1
+	}
+	for _, key := range keys {
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: value})
 		require.NoError(t, putErr)
 		require.NotNil(t, put.Header)
@@ -113,7 +179,7 @@ func runWatchRawMultiframeScenario(t *testing.T, endpoint, instance string) watc
 	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
 			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
-			StartRevision: base.Header.Revision + 1, Fragment: true,
+			StartRevision: eventStartRevision, PrevKv: withPrevKV, Fragment: true,
 		}},
 	}))
 	created, err := stream.Recv()
@@ -148,6 +214,14 @@ func runWatchRawMultiframeScenario(t *testing.T, endpoint, instance string) watc
 				metadata.Version = event.Kv.Version
 				metadata.Lease = event.Kv.Lease
 			}
+			if event.PrevKv != nil {
+				metadata.PrevKeyMatches = bytes.Equal(event.PrevKv.Key, keys[eventIndex])
+				metadata.PrevValueMatches = bytes.Equal(event.PrevKv.Value, oldValue)
+				metadata.PrevCreateGap = event.PrevKv.CreateRevision - base.Header.Revision
+				metadata.PrevModGap = event.PrevKv.ModRevision - base.Header.Revision
+				metadata.PrevVersion = event.PrevKv.Version
+				metadata.PrevLease = event.PrevKv.Lease
+			}
 			outcome.EventMetadata = append(outcome.EventMetadata, metadata)
 			eventIndex++
 		}
@@ -159,4 +233,8 @@ func runWatchRawMultiframeScenario(t *testing.T, endpoint, instance string) watc
 	require.Equal(t, eventCount, eventIndex)
 	require.NoError(t, stream.CloseSend())
 	return outcome
+}
+
+func runWatchRawMultiframePrevKVScenario(t *testing.T, endpoint, instance string) watchRawMultiframeOutcome {
+	return runWatchRawMultiframeScenarioWithPrevKV(t, endpoint, instance, true)
 }

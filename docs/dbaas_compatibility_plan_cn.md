@@ -35701,6 +35701,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/dbaas-watch-raw-multiframe/` prefix 为 0。本轮仅新增 wire-level oracle，未发现 runtime 差异，不重建或
   滚动生产镜像。
 
+- A3638 组合 A3636 的“单 event 自身超阈值”与 A3637 的真实多帧，覆盖 upstream
+  `server/etcdserver/api/v3rpc/watch_test.go:TestSendFragment` 中“每个 event 都超过 limit，仍逐 event 分帧”
+  的分支。旧证据不能证明三条各含 1 MiB current + 1 MiB PrevKV 的 update 在切分后仍保持三帧
+  `true,true,false`，也无法捕获某一帧丢 PrevKV、混用 current/previous revision 或错误合并两个超大 event。
+  先扩展 compact metadata outcome 并写入三帧完整期望，runner 返回零值；reference RED 0.023 秒显示新增
+  envelope、frame size 和两代 KV metadata 全部缺失。
+
+  A3637 runner 现参数化 `withPrevKV`：PrevKV 路径先依次写入三个 1 MiB old value，再依次更新为三个 1 MiB
+  new value，从 update 起始 revision 创建 raw catch-up watch。reference etcd 与线上 KubeBrain 都返回三个
+  proto size 大于 2 MiB 的单事件 frame，flags 精确为 `true,true,false`，共同 header gap=6；current 的
+  CreateRevision gap=1..3、ModRevision gap=4..6、Version=2，以及 PrevKV 的 Create/Mod gap=1..3、Version=1、
+  key/value/Lease 均逐项固定。新旧双端 GREEN 2.070 秒、连续 10 轮 30.041 秒、race 5.692 秒；兼容模块
+  全包 1.706 秒、两级 module vet、线上 client/v3 全包 132.347 秒、`hack/production` 全包 469.848 秒及
+  diff check 均通过，线上 `/dbaas-watch-raw-multiframe/` 与 `/dbaas-watch-raw-multiframe-prevkv/` prefix
+  都为 0。本轮只增强 wire-level oracle，未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
