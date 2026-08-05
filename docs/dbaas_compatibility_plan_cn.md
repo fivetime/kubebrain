@@ -35078,8 +35078,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并启用 v1/raw 历史 fail-closed。codec/history 最终专项普通 20 轮 0.945 秒、全部 Maintenance Snapshot
   5 轮 4.870 秒、目标 race backend 10 轮 3.494 秒与 server 5 轮 29.317 秒 GREEN；backend/server
   全包分别 43.567/178.877 秒，主模块 `go test ./...`、vet、完整 compat 与 staticcheck 既有 9 项基线
-  均通过。A3591 还必须构建部署，并用官方 etcdctl snapshot save/status、etcdutl restore 验证 v3
-  历史 lease。
+  均通过。commit `f7fe070d` 构建为 `kubebrain:a3591-v3-known-zero-lease`（Docker image ID
+  `sha256:ce231c263abec523c6dc3bfa7b476c41cce560cfb208d85642986cac48d911ce`，kind runtime digest
+  `sha256:27eb6bb224f1efa167f57ec242fb23bcf9a1e17482e5a650524fd448ed48f777`），核验完整 Git SHA、
+  UTC build time、TiKV storage 与 `USER 65532:65532` 后完成第二次三副本滚动。
+
+  真实主 keyspace 的官方 `etcdctl snapshot save` 被升级前 retained v1 正确拒绝，并返回具体 key
+  `/a3374/http-concurrency-errors/.../seed` 与 revision 468126003565729343，证明不再输出伪造 Lease=0
+  的可恢复文件；未为验证破坏性 Compact 该实例。随后在同一 3 PD/3 TiKV 上启动临时独立 keyspace
+  的 A3591 Pod，写入 lease ID 1785904376998165206 的 `leased-v1`（revision 2），再写 unleased v3
+  `unleased-v2`（revision 3）。官方 snapshot save/status 成功：version 3.7.0、revision 3、1 key、
+  24576 bytes；`etcdutl snapshot restore` 后启动 `/root/etcd/bin/etcd`，历史 Range 精确恢复 revision 2
+  的 value/Lease，revision 3 的 value/Lease=0，lease GrantedTTL=300 且当前 keys 为空。临时 Pod、
+  port-forward、官方 etcd 和 snapshot/restore 目录均已清理。
+
+  最终 A3591 三 Pod Ready/0 restart/同一 digest，内部 `/status` 为 `kubebrain-1=200`、其余 400；
+  PD/TiKV 3+3 Ready/0 restart，endpoint healthy、alarm/lease 为空、auth disabled/AuthRevision=587，
+  revision/index/applied 均为 468126003565749918、term 343、当前 keyspace Count=4。
 
 ### P2：运维兼容和长期验证
 
