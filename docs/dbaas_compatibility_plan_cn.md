@@ -36060,10 +36060,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   net/http 纯文本 404，OPTIONS 全部为空 body 200。
 
   没有新的服务端 RED，因此不制造实现改动。把生产 mux 回归扩为七分支表驱动门禁，并显式携带
-  `Content-Type: application/json`，固定 gateway error marshaler 在真实请求头下的空格/Content-Type
-  外观；同时保留未知健康/根路径、307 Location、v3beta rewrite 和 OPTIONS 边界。定向测试、根模块
+  `Content-Type: application/json`，固定 gateway error 的 JSON code/message 与 Content-Type
+  语义（不把无意义的 JSON 空白作为协议）；同时保留未知健康/根路径、307 Location、v3beta rewrite
+  和 OPTIONS 边界。定向测试、根模块
   `go test ./...`（endpoint 16.821 秒、server/etcd 174.043 秒）与 `go vet ./...`、兼容模块 test/vet
   均通过。本项仅增强 A3658 的永久证据，不改变已验证运行镜像；一次性 reference 进程已停止。
+
+- A3660 把 A3656-A3659 的 HTTP 边界审计扩到实际 peer listener，而非误用 client NodePort。
+  先从显式 context `kind-kubebrain-dbaas` 的 Service inventory 确认 client/peer 分别为
+  `30079/30080`；一次错误打到 client port 的全 404 只计作 harness 错误，不计产品 RED。随后用
+  官方 etcd `d947b2086` 的 `12380` 与生产 peer `30080` 比较 27 个代表性分支：members、downgrade、
+  HashKV 的合法/空/非法 body 和错误 method，promote 的空/非法/溢出/前导零 ID，尾斜杠、query、
+  doubled slash、encoded slash、缺少 slash 的 GET/POST redirect，以及 subtree path。两端 status、
+  Content-Type、Allow、Location、cluster-ID header presence 与原始 body 全部一致；成员列表和 hash 数值
+  仅按各自集群数据不同。
+
+  新 endpoint 表驱动测试通过真实 `buildPeerHTTPHandler` 固定九个 mux 分支，防止 exact `/members`、
+  `/members/hashkv` 被错误扩成 subtree，或 `/members/promote/` 的 subtree/307 clean-path 行为漂移。
+  同时把 A3659 gateway 404 从偶然的 JSON 空格字节比较改为 `JSONEq`；线上官方与 KubeBrain 都输出
+  带空格 JSON，而同一 gateway 的纯单元 mux 合法输出 compact JSON，二者 code/message 语义一致，
+  whitespace 不属于 etcd 契约。定向双测试连续 10 轮通过；本项未发现服务端 RED，不改变运行镜像。
+  根模块 `go test ./...`（endpoint 16.846 秒、server/etcd 169.985 秒）与 `go vet ./...`、兼容模块
+  test/vet 均通过。一次性 reference 已停止，其临时数据目录已删除且不可恢复，只含本轮 oracle 数据。
 
 ### P2：运维兼容和长期验证
 

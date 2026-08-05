@@ -872,13 +872,14 @@ func TestClientHTTPGatewayRoutingBoundaryMatchesEtcd(t *testing.T) {
 		wantType     string
 		wantLocation string
 		wantBody     string
+		wantJSON     bool
 	}{
 		{name: "unknown health subpath", method: http.MethodGet, path: "/readyz/unknown", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
 		{name: "unknown root path", method: http.MethodPost, path: "/unclassified", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
 		{name: "v3 slash redirect", method: http.MethodGet, path: "/v3", wantStatus: http.StatusTemporaryRedirect, wantType: "text/html; charset=utf-8", wantLocation: "/v3/", wantBody: "<a href=\"/v3/\">Temporary Redirect</a>.\n\n"},
-		{name: "unknown v3 route", method: http.MethodGet, path: "/v3/unclassified", wantStatus: http.StatusNotFound, wantType: "application/json", wantBody: `{"code":5, "message":"Not Found"}`},
+		{name: "unknown v3 route", method: http.MethodGet, path: "/v3/unclassified", wantStatus: http.StatusNotFound, wantType: "application/json", wantBody: `{"code":5,"message":"Not Found"}`, wantJSON: true},
 		{name: "v3beta without slash", method: http.MethodGet, path: "/v3beta", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
-		{name: "unknown v3beta route", method: http.MethodGet, path: "/v3beta/unclassified", wantStatus: http.StatusNotFound, wantType: "application/json", wantBody: `{"code":5, "message":"Not Found"}`},
+		{name: "unknown v3beta route", method: http.MethodGet, path: "/v3beta/unclassified", wantStatus: http.StatusNotFound, wantType: "application/json", wantBody: `{"code":5,"message":"Not Found"}`, wantJSON: true},
 		{name: "unknown options", method: http.MethodOptions, path: "/unclassified", wantStatus: http.StatusOK},
 	}
 	for _, tt := range tests {
@@ -887,6 +888,64 @@ func TestClientHTTPGatewayRoutingBoundaryMatchesEtcd(t *testing.T) {
 			request := httptest.NewRequest(tt.method, tt.path, nil)
 			request.Header.Set("Content-Type", "application/json")
 			handler.ServeHTTP(response, request)
+			require.Equal(t, tt.wantStatus, response.Code)
+			require.Equal(t, tt.wantType, response.Header().Get("Content-Type"))
+			require.Equal(t, tt.wantLocation, response.Header().Get("Location"))
+			if tt.wantJSON {
+				require.JSONEq(t, tt.wantBody, response.Body.String())
+			} else {
+				require.Equal(t, tt.wantBody, response.Body.String())
+			}
+		})
+	}
+}
+
+type peerHTTPRoutingServer struct {
+	rejectingInterceptorServer
+	handlers map[string]http.Handler
+}
+
+func (s peerHTTPRoutingServer) GetPeerHttpHandlers() map[string]http.Handler {
+	return s.handlers
+}
+
+func TestPeerHTTPRoutingBoundaryMatchesEtcd(t *testing.T) {
+	route := func(name string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, name)
+		})
+	}
+	endpoint := &Endpoint{server: peerHTTPRoutingServer{handlers: map[string]http.Handler{
+		"/downgrade/enabled": route("downgrade"),
+		"/members":           route("members"),
+		"/members/hashkv":    route("hashkv"),
+		"/members/promote/":  route("promote"),
+	}}}
+	handler := endpoint.buildPeerHTTPHandler()
+
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		wantStatus   int
+		wantType     string
+		wantLocation string
+		wantBody     string
+	}{
+		{name: "members exact route", method: http.MethodGet, path: "/members?x=1", wantStatus: http.StatusOK, wantType: "text/plain; charset=utf-8", wantBody: "members"},
+		{name: "members trailing slash is not captured", method: http.MethodGet, path: "/members/", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
+		{name: "hashkv exact route", method: http.MethodGet, path: "/members/hashkv", wantStatus: http.StatusOK, wantType: "text/plain; charset=utf-8", wantBody: "hashkv"},
+		{name: "promote subtree route", method: http.MethodPost, path: "/members/promote/1/extra", wantStatus: http.StatusOK, wantType: "text/plain; charset=utf-8", wantBody: "promote"},
+		{name: "promote post slash redirect", method: http.MethodPost, path: "/members/promote", wantStatus: http.StatusTemporaryRedirect, wantLocation: "/members/promote/"},
+		{name: "promote get slash redirect", method: http.MethodGet, path: "/members/promote", wantStatus: http.StatusTemporaryRedirect, wantType: "text/html; charset=utf-8", wantLocation: "/members/promote/", wantBody: "<a href=\"/members/promote/\">Temporary Redirect</a>.\n\n"},
+		{name: "clean doubled slash", method: http.MethodGet, path: "//members", wantStatus: http.StatusTemporaryRedirect, wantType: "text/html; charset=utf-8", wantLocation: "/members", wantBody: "<a href=\"/members\">Temporary Redirect</a>.\n\n"},
+		{name: "encoded slash does not match exact route", method: http.MethodGet, path: "/members%2F", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
+		{name: "unknown peer route", method: http.MethodGet, path: "/unclassified", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(tt.method, tt.path, nil))
 			require.Equal(t, tt.wantStatus, response.Code)
 			require.Equal(t, tt.wantType, response.Header().Get("Content-Type"))
 			require.Equal(t, tt.wantLocation, response.Header().Get("Location"))
