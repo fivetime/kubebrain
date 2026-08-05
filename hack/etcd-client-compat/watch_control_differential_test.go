@@ -22,6 +22,10 @@ type watchControlOutcome struct {
 	Canceled           bool
 	CancelReason       string
 	HeaderMatchesSeed  bool
+	HeaderIdentitySet  bool
+	HeaderClusterMatch bool
+	HeaderMemberMatch  bool
+	HeaderTermPositive bool
 	CompactRevisionSet bool
 	CompactRevisionGap int64
 	Fragment           bool
@@ -33,13 +37,19 @@ func TestObserveWatchControlResponsePreservesHiddenEnvelopeFields(t *testing.T) 
 	response := &etcdserverpb.WatchResponse{
 		WatchId: 17, Created: true, Canceled: true, CancelReason: "reason",
 		CompactRevision: 23, Fragment: true,
-		Events: []*mvccpb.Event{{}},
+		Events: []*mvccpb.Event{{}}, Header: &etcdserverpb.ResponseHeader{
+			ClusterId: 2, MemberId: 3, Revision: 23, RaftTerm: 4,
+		},
 	}
 	require.Equal(t, watchControlOutcome{
 		WatchID: 17, Created: true, Canceled: true, CancelReason: "reason",
+		HeaderMatchesSeed: true, HeaderIdentitySet: true, HeaderClusterMatch: true,
+		HeaderMemberMatch: true, HeaderTermPositive: true,
 		CompactRevisionSet: true, CompactRevisionGap: 0,
 		Fragment: true, EventCount: 1, EnvelopeObserved: true,
-	}, observeWatchControlResponse(response, 23))
+	}, observeWatchControlResponse(response, &etcdserverpb.ResponseHeader{
+		ClusterId: 2, MemberId: 3, Revision: 23, RaftTerm: 4,
+	}))
 }
 
 func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -61,6 +71,10 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	for i := range wantControl {
 		wantControl[i].EnvelopeObserved = true
+		wantControl[i].HeaderIdentitySet = true
+		wantControl[i].HeaderClusterMatch = true
+		wantControl[i].HeaderMemberMatch = true
+		wantControl[i].HeaderTermPositive = true
 	}
 	require.Equal(t, wantControl, referenceControl)
 	require.Equal(t, referenceControl, runWatchControlScenario(t, compatEndpoint(t)))
@@ -83,11 +97,18 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}, referenceFilters)
 	require.Equal(t, referenceFilters, runWatchFilterEnumScenario(t, compatEndpoint(t), "kubebrain"))
 	referenceInvalid := runWatchInvalidControlScenario(t, reference, "reference")
-	require.Equal(t, []watchControlOutcome{
+	wantInvalid := []watchControlOutcome{
 		{WatchID: 0, Created: true, HeaderMatchesSeed: true, EnvelopeObserved: true},
 		{WatchID: 0, Canceled: true, HeaderMatchesSeed: true, EnvelopeObserved: true},
 		{WatchID: 404, Created: true, HeaderMatchesSeed: true, EnvelopeObserved: true},
-	}, referenceInvalid)
+	}
+	for i := range wantInvalid {
+		wantInvalid[i].HeaderIdentitySet = true
+		wantInvalid[i].HeaderClusterMatch = true
+		wantInvalid[i].HeaderMemberMatch = true
+		wantInvalid[i].HeaderTermPositive = true
+	}
+	require.Equal(t, wantInvalid, referenceInvalid)
 	require.Equal(t, referenceInvalid, runWatchInvalidControlScenario(t, compatEndpoint(t), "kubebrain"))
 	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
 	require.Equal(t, watchFragmentOutcome{
@@ -154,7 +175,7 @@ func runWatchInvalidControlScenario(t *testing.T, endpoint, instance string) []w
 	for len(outcomes) < 3 {
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr)
-		outcomes = append(outcomes, observeWatchControlResponse(resp, seed.Header.Revision))
+		outcomes = append(outcomes, observeWatchControlResponse(resp, seed.Header))
 	}
 	type receiveResult struct {
 		response *etcdserverpb.WatchResponse
@@ -436,7 +457,7 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 	recv := func() watchControlOutcome {
 		resp, err := stream.Recv()
 		require.NoError(t, err)
-		return observeWatchControlResponse(resp, seed.Header.Revision)
+		return observeWatchControlResponse(resp, seed.Header)
 	}
 
 	create("/dbaas-watch-control/a", 42, 0)
@@ -470,13 +491,18 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 	return outcomes
 }
 
-func observeWatchControlResponse(resp *etcdserverpb.WatchResponse, baseRevision int64) watchControlOutcome {
+func observeWatchControlResponse(resp *etcdserverpb.WatchResponse, seed *etcdserverpb.ResponseHeader) watchControlOutcome {
+	header := resp.GetHeader()
 	return watchControlOutcome{
 		WatchID: resp.WatchId, Created: resp.Created,
 		Canceled: resp.Canceled, CancelReason: resp.CancelReason,
-		HeaderMatchesSeed:  resp.Header != nil && resp.Header.Revision == baseRevision,
+		HeaderMatchesSeed:  header != nil && header.Revision == seed.GetRevision(),
+		HeaderIdentitySet:  header.GetClusterId() != 0 && header.GetMemberId() != 0,
+		HeaderClusterMatch: header.GetClusterId() == seed.GetClusterId(),
+		HeaderMemberMatch:  header.GetMemberId() == seed.GetMemberId(),
+		HeaderTermPositive: header.GetRaftTerm() > 0,
 		CompactRevisionSet: resp.CompactRevision != 0,
-		CompactRevisionGap: normalizeWatchControlRevision(resp.CompactRevision, baseRevision),
+		CompactRevisionGap: normalizeWatchControlRevision(resp.CompactRevision, seed.GetRevision()),
 		Fragment:           resp.Fragment,
 		EventCount:         len(resp.Events),
 		EnvelopeObserved:   true,

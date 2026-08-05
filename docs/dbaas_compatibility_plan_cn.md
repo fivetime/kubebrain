@@ -35425,6 +35425,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/dbaas-watch-invalid-control/`、`/dbaas-watch-control/` prefix 均为 0。本轮未发现 runtime 差异，
   不重建或滚动生产镜像。
 
+- A3617 把 Watch control 的完整 envelope 继续下钻到 ResponseHeader。旧 `HeaderMatchesSeed` 实际只比较
+  revision，cluster ID、serving member ID 和 raft term 即使为 0 或串接到错误成员也不会进入 outcome。
+  本轮不要求 term 与 seed 精确相等，以免合法选举造成脆弱断言；要求 cluster/member 非零且与同一
+  HTTP/2 连接上的 seed 一致、raft term 为正。先加入四项期望但不采集，reference RED 精确显示九个
+  主矩阵响应的四项均为 false。
+
+  共享 observer 现在接收完整 seed header，同时保持 revision、compact revision 双通道、fragment 和
+  event count 比较；synthetic 用例覆盖完整 header 与非零 compact revision 等于基线的组合。该用例
+  连续 20 轮 0.026 秒、race 1.064 秒；真实双端完整矩阵连续 10 轮 21.819 秒、race 3.570 秒；兼容
+  模块全包 1.215 秒、两级 module vet、`hack/production` 全包 473.414 秒及 diff check 均通过，线上
+  `/dbaas-watch-invalid-control/`、`/dbaas-watch-control/` prefix 均为 0。本轮未发现 runtime 差异，
+  不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
