@@ -36253,6 +36253,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项只扩展永久兼容门禁，不重建或滚动已验证的数据面；一次性 reference 已停止，临时目录
   已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3674 固定 multiplexed stream 上周期 progress 与显式 RequestProgress 的语义分层。A3672
+  要求显式请求等待所有 watcher，但 `ProgressNotify=true` 属于单个 watcher 的订阅选项，不能因
+  同 stream 的 future sibling 被一并阻塞。新增 raw gRPC 差分在 revision R 建立已同步 watcher
+  909 和 `StartRevision=R+2` 的 future watcher 910，两者都启用 ProgressNotify；首个周期只允许
+  返回 `WatchId=909,Header=R` 的规范空帧，随后 300ms 内不得出现 future watcher 响应。该门禁
+  同时防止把周期帧错误改成 stream-wide ID=-1，或用兄弟 watcher/global watermark 绕过 future
+  起点。通用差分 runner 现显式以 `--watch-progress-notify-interval=1s` 启动一次性 reference，
+  与生产默认 cadence 一致，使定时 oracle 可重复且不依赖官方 10 分钟默认值。
+
+  一次性官方 etcd `d947b2086` 与生产 `kubebrain:a3672-stream-progress` 首轮、连续 10 轮
+  （27.401 秒；墙钟 28.985 秒）及 race 5 轮（14.908 秒；墙钟 26.982 秒）均通过，没有运行时
+  RED。根模块 test/vet（server/etcd 168.590 秒）与兼容模块 test/vet（1.229 秒）均通过。
+  本项只增加 oracle/runner 门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录已删除
+  且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

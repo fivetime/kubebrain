@@ -157,6 +157,7 @@ trap cleanup EXIT
   --listen-peer-urls "$REFERENCE_PEER_URL" \
   --initial-advertise-peer-urls "$REFERENCE_PEER_URL" \
   --initial-cluster "reference=$REFERENCE_PEER_URL" \
+  --watch-progress-notify-interval=1s \
   --log-level error \
   >"$reference_log" 2>&1 &
 reference_pid="$!"
