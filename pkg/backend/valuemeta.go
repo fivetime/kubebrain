@@ -30,8 +30,12 @@ import "encoding/binary"
 // v2 is written only when a version carries a non-zero lease (review #9: the
 // lease must be recorded per MVCC version so historical reads, prevKv, and
 // delete events report the lease that key held at that revision — not merely the
-// key's current binding). Unleased versions stay v1, so the common Kubernetes
-// object (no lease) keeps the 20-byte header with no size regression.
+// key's current binding). v3 has the same 20-byte shape as v1 and explicitly
+// means lease=0. The distinction is needed because v1 predates per-version
+// leases: an old v1 row may have been leased even though it has no lease field.
+// A reader-first rollout teaches every replica v3 before a following release
+// starts writing it, so snapshots can eventually distinguish a known zero from
+// legacy ambiguity without increasing the common Kubernetes object's size.
 //
 // The magic starts with 0x00. Kubernetes-stored values always begin with the
 // protobuf prefix "k8s\x00" (0x6b) or JSON '{' (0x7b), and KubeBrain's tombstone
@@ -43,6 +47,7 @@ import "encoding/binary"
 var (
 	valueMetaMagic   = []byte{0x00, 0x6b, 0x62, 0x01} // v1 "\x00kb\x01"
 	valueMetaMagicV2 = []byte{0x00, 0x6b, 0x62, 0x02} // v2 "\x00kb\x02" (adds lease)
+	valueMetaMagicV3 = []byte{0x00, 0x6b, 0x62, 0x03} // v3 "\x00kb\x03" (known lease=0)
 )
 
 const (
@@ -63,6 +68,8 @@ func encodeValueWithMeta(value []byte, meta EtcdMetadata) []byte {
 		return buf
 	}
 	buf := make([]byte, valueMetaHeaderLen+len(value))
+	// Keep writing v1 during the reader-first rollout. A following release flips
+	// this to v3 only after every replica can decode the new tag.
 	copy(buf, valueMetaMagic)
 	binary.BigEndian.PutUint64(buf[4:], meta.CreateRevision)
 	binary.BigEndian.PutUint64(buf[12:], meta.Version)
@@ -86,6 +93,21 @@ func hasValueMetaV2(stored []byte) bool {
 		stored[1] == valueMetaMagicV2[1] &&
 		stored[2] == valueMetaMagicV2[2] &&
 		stored[3] == valueMetaMagicV2[3]
+}
+
+func hasValueMetaV3(stored []byte) bool {
+	return len(stored) >= valueMetaHeaderLen &&
+		stored[0] == valueMetaMagicV3[0] &&
+		stored[1] == valueMetaMagicV3[1] &&
+		stored[2] == valueMetaMagicV3[2] &&
+		stored[3] == valueMetaMagicV3[3]
+}
+
+// InlineValueLeaseKnown reports whether the envelope was written after the
+// per-version lease format became explicit. v2 carries a non-zero lease and v3
+// explicitly carries no lease; legacy v1 cannot prove either state.
+func InlineValueLeaseKnown(stored []byte) bool {
+	return hasValueMetaV2(stored) || hasValueMetaV3(stored)
 }
 
 // DecodeInlineValue is the exported form of decodeValueWithMeta for other
@@ -113,6 +135,11 @@ func decodeValueWithMeta(stored []byte) (meta EtcdMetadata, rawValue []byte, ok 
 		meta.Version = binary.BigEndian.Uint64(stored[12:20])
 		meta.Lease = int64(binary.BigEndian.Uint64(stored[20:valueMetaHeaderLenV2]))
 		return meta, stored[valueMetaHeaderLenV2:], true
+	}
+	if hasValueMetaV3(stored) {
+		meta.CreateRevision = binary.BigEndian.Uint64(stored[4:12])
+		meta.Version = binary.BigEndian.Uint64(stored[12:valueMetaHeaderLen])
+		return meta, stored[valueMetaHeaderLen:], true
 	}
 	if !hasValueMeta(stored) {
 		return EtcdMetadata{}, stored, false
