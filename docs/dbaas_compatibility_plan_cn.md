@@ -35096,6 +35096,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV 3+3 Ready/0 restart，endpoint healthy、alarm/lease 为空、auth disabled/AuthRevision=587，
   revision/index/applied 均为 468126003565749918、term 343、当前 keyspace Count=4。
 
+- A3592 把 A3591 对 ambiguous retained lease history 的安全拒绝升级为稳定、可操作的 gRPC 错误
+  契约。A3591 直接返回 Go sentinel，grpc-go 因而把真实 `etcdctl snapshot save` 失败编码成
+  `codes.Unknown`；DBaaS backup controller 无法区分“服务内部瞬时异常”和“同一历史在 Compact 前
+  必然无法导出”。确定性 raw gRPC RED 创建 legacy leased-v1 后 rebind 为 unleased-v2，旧服务实际
+  返回 Unknown。修复仅在 leader 本地 Snapshot RPC 出口识别
+  `errSnapshotHistoricalLeaseUnknown`，映射为 `codes.FailedPrecondition` 并保留完整 key/revision；认证、
+  cancellation、TiKV I/O、普通 builder error 和 follower 已收到的 leader status 均不重分类。
+
+  正常 hash-protected client snapshot、raw chunk/digest、cancel 与 ambiguous failure 四项普通 20 轮
+  1.692 秒、race 10 轮 4.659 秒 GREEN；server 全包 170.764 秒、主模块 `go test ./...`、vet 与完整
+  compat 均通过。生产发布后必须在现有 retained-v1 主 keyspace 上确认官方 etcdctl 收到
+  FailedPrecondition，同时在独立 v3 keyspace 确认正常 snapshot/restore 仍成功。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

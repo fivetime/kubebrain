@@ -441,7 +441,15 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		}
 		return nil
 	}
-	return s.sendSnapshot(stream)
+	err = s.sendSnapshot(stream)
+	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) {
+		// This is durable source-data provenance, not an opaque server fault:
+		// retrying the same retained history cannot succeed until it is compacted.
+		// Preserve the key/revision diagnostic while giving DBaaS automation a
+		// stable non-transient class instead of grpc-go's fallback Unknown.
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return err
 }
 
 func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {

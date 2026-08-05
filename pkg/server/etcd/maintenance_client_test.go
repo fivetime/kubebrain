@@ -177,6 +177,39 @@ func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 	require.Equal(t, Version, final.Version)
 }
 
+func TestRawGRPCSnapshotReportsAmbiguousLegacyHistoryAsFailedPrecondition(t *testing.T) {
+	server, closeFn := newTestRPCServerWithCompatibility(t, false)
+	defer closeFn()
+	ctx := context.Background()
+	grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: 1761, TTL: 300})
+	require.NoError(t, err)
+	key := []byte("/snapshot/client-legacy-history")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("leased-v1"), Lease: grant.ID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("unleased-v2")})
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	conn, err := grpc.NewClient("passthrough:///snapshot-legacy-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	callCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := etcdserverpb.NewMaintenanceClient(conn).Snapshot(callCtx, &etcdserverpb.SnapshotRequest{})
+	require.NoError(t, err)
+	_, err = stream.Recv()
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "snapshot cannot determine lease for retained legacy version")
+	require.Contains(t, status.Convert(err).Message(), string(key))
+}
+
 func requireSnapshotIntegrityHash(t *testing.T, contents []byte) {
 	t.Helper()
 	require.Greater(t, len(contents), sha256.Size)
