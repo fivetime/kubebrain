@@ -34878,6 +34878,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   disabled/AuthRevision=587，revision/index/applied 均为 468126003565738065、term 326，全范围长期
   fixture Count=100；鉴权验证没有推进数据 revision 或改变 fixture。
 
+- A3584 关闭本地 stale leader 标志错误放行线性读的窗口。继续对照上游 commits
+  `9f83a29b3`、`e2f4f485e` 的 ReadIndex/leader-change fencing：官方线性读必须取得当前 Raft
+  leadership 的 quorum 确认；KubeBrain follower 已由 A249 固定 leader identity/term 并拒绝旧
+  `/status` 响应，但 `revisionSyncer.SyncReadRevision` 对本地 leader 仍只检查 `IsLeader()`。
+  client-go 在 renew deadline、长进程暂停或调度延迟后尚未执行 `OnStoppedLeading` 时，该原子标志
+  可以继续为真；若共享 election lease 已过期且 successor 已提交新值，旧实例会把这一 stale flag
+  当作完成的 read barrier，直接读取尚未观察到的新 revision。
+
+  确定性 RED 构造 `IsLeader=true`、`EpochAndLeadingFresh=false` 的选主快照与 backend revision=42；
+  修复前 `SyncReadRevision` 错误返回 nil。现在只有 fresh leadership 才走本地成功快路；leader flag
+  仍真但 renew freshness 已失效时，以 `leader changed while fetching revision` fail closed，并保持
+  backend revision 不变。所有 RPC read-barrier 调用点继续把该错误映射成可重试 `Unavailable`。
+  新 leader 初始化顺序已核对为“递增 epoch、stamp renew、执行 preparing callback、最后发布 leader=1”，
+  因此健康新任 leader 不会被误拒；普通 follower 仍通过 leader `/status` 双缓冲 fetch 路径同步。
+
+  专项普通 20 连跑 0.057 秒、race 20 连跑 1.151 秒 GREEN；leader/revision 组合普通 10 轮中
+  revision 66.887 秒、race 5 轮中 revision 35.369 秒，两个包均通过；主模块 `go test ./...`（其中
+  `pkg/server/etcd` 183.605 秒）、vet 和完整 compat 通过。staticcheck v0.7.0 仍精确为既有 9 项
+  基线。代码 commit `50cbd9e5` 构建为 `kubebrain:a3584-read-freshness-fence`（Docker 镜像 ID
+  `sha256:a5d152ce4f8ce2933d736cadb3e988734c60a920acaf1743d38dfdaba1295788`），核验 OCI version、
+  完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind。
+
+  发布与真实共享 TiKV 单调性 workload 同时执行：4 个 writer、6 个线性 reader 跨完整 StatefulSet
+  三副本滚动，成功读 5534 次、写 1558 次，观察到 33 次预期 EOF/DNS/connection-refused/timeout
+  瞬态错误，但 revision regression 为零；最终 Put revision 高于此前所有成功观测，恢复后的线性 Get
+  revision 不低于最终 Put。测试前缀已清理。最终 StatefulSet current/update revision 一致，
+  KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth disabled/
+  AuthRevision=587，revision/index/applied 均为 468126003565740840、term 326，全范围长期 fixture
+  Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
