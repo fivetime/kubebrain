@@ -35624,6 +35624,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两级 module vet、线上 client/v3 全包 112.733 秒、`hack/production` 全包 460.805 秒及 diff check 均通过，
   线上 `/dbaas-watch-fragment/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3633 把另一条强制多帧路径——官方 clientv3 对 raw fragment 的透明合并——从仅返回事件总数 10 升级为
+  完整结构化 oracle。旧测试即使把十个 1 MiB PUT 合并成多个用户 response、打乱 key、损坏等长 value，或
+  丢失 header/KV metadata，也可能仅凭累计事件数通过。upstream
+  `server/etcdserver/api/v3rpc/watch.go:sendFragments` 负责服务端分片，而
+  `tests/integration/clientv3/watch/watch_fragment_test.go` 固定 clientv3 在启用 `WithFragment` 后向调用者交付
+  一个合并 response。先写入单响应 10 事件、header revision gap=10、完整身份与无控制错误，以及按
+  `prefix0..prefix9` 排序的 PUT、1 MiB 内容、Create/Mod revision gap=1..10、Version=1、Lease=0、无 PrevKV
+  的期望而不采集；reference RED 0.350 秒显示整个 outcome 为零值，证明新断言确实先失败。
+
+  场景现一次复用预期 value，并逐 response/事件采集 envelope、顺序、内容和完整 metadata；它同时明确验证
+  clientv3 只暴露一个含 10 个事件的合并 response，而不是把 raw fragment 泄漏给调用者。真实双端场景连续
+  10 轮 31.853 秒、race 6.057 秒；兼容模块全包 1.509 秒、两级 module vet、线上 client/v3 全包
+  115.438 秒、`hack/production` 全包 451.738 秒及 diff check 均通过，线上
+  `/dbaas-watch-fragment/` prefix 为 0。本轮仅增强测试 oracle，未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

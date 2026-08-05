@@ -9,8 +9,28 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
+
+type watchFragmentClientOutcome struct {
+	ResponseEventCounts []int
+	HeaderRevisionGaps  []int64
+	HeaderIdentitySet   bool
+	CreatedFlags        []bool
+	CanceledFlags       []bool
+	CompactRevisionSet  []bool
+	ErrorsAbsent        bool
+	Types               []mvccpb.Event_EventType
+	KeysOrdered         bool
+	ValuesMatch         bool
+	CreateRevisionGaps  []int64
+	ModRevisionGaps     []int64
+	Versions            []int64
+	Leases              []int64
+	PrevKVAbsent        bool
+	KVObserved          bool
+}
 
 func TestWatchFragmentDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
@@ -18,13 +38,30 @@ func TestWatchFragmentDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run watch fragment differential tests")
 	}
 
-	require.Equal(t,
-		runWatchFragmentClientScenario(t, reference, "etcd"),
-		runWatchFragmentClientScenario(t, compatEndpoint(t), "kubebrain"),
-	)
+	want := expectedWatchFragmentClientOutcome()
+	referenceOutcome := runWatchFragmentClientScenario(t, reference, "etcd")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome,
+		runWatchFragmentClientScenario(t, compatEndpoint(t), "kubebrain"))
 }
 
-func runWatchFragmentClientScenario(t *testing.T, endpoint, instance string) int {
+func expectedWatchFragmentClientOutcome() watchFragmentClientOutcome {
+	outcome := watchFragmentClientOutcome{
+		ResponseEventCounts: []int{10}, HeaderRevisionGaps: []int64{10}, HeaderIdentitySet: true,
+		CreatedFlags: []bool{false}, CanceledFlags: []bool{false}, CompactRevisionSet: []bool{false},
+		ErrorsAbsent: true, KeysOrdered: true, ValuesMatch: true, PrevKVAbsent: true, KVObserved: true,
+	}
+	for revisionGap := int64(1); revisionGap <= 10; revisionGap++ {
+		outcome.Types = append(outcome.Types, mvccpb.PUT)
+		outcome.CreateRevisionGaps = append(outcome.CreateRevisionGaps, revisionGap)
+		outcome.ModRevisionGaps = append(outcome.ModRevisionGaps, revisionGap)
+		outcome.Versions = append(outcome.Versions, 1)
+		outcome.Leases = append(outcome.Leases, 0)
+	}
+	return outcome
+}
+
+func runWatchFragmentClientScenario(t *testing.T, endpoint, instance string) watchFragmentClientOutcome {
 	t.Helper()
 	const (
 		eventCount    = 10
@@ -53,8 +90,10 @@ func runWatchFragmentClientScenario(t *testing.T, endpoint, instance string) int
 	})
 	base, err := writer.Get(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
+	require.NotNil(t, base.Header)
+	expectedValue := strings.Repeat("x", valueBytes)
 	for index := 0; index < eventCount; index++ {
-		_, err = writer.Put(ctx, fmt.Sprintf("%s%d", prefix, index), strings.Repeat("x", valueBytes))
+		_, err = writer.Put(ctx, fmt.Sprintf("%s%d", prefix, index), expectedValue)
 		require.NoError(t, err)
 	}
 
@@ -64,16 +103,48 @@ func runWatchFragmentClientScenario(t *testing.T, endpoint, instance string) int
 		watchCtx, prefix, clientv3.WithPrefix(), clientv3.WithRev(base.Header.Revision+1),
 		clientv3.WithFragment(),
 	)
+	outcome := watchFragmentClientOutcome{
+		HeaderIdentitySet: true, ErrorsAbsent: true, KeysOrdered: true,
+		ValuesMatch: true, PrevKVAbsent: true, KVObserved: true,
+	}
 	events := 0
 	for events < eventCount {
 		select {
 		case response, ok := <-responses:
 			require.True(t, ok)
 			require.NoError(t, response.Err())
-			events += len(response.Events)
+			outcome.ResponseEventCounts = append(outcome.ResponseEventCounts, len(response.Events))
+			outcome.HeaderRevisionGaps = append(outcome.HeaderRevisionGaps,
+				response.Header.GetRevision()-base.Header.Revision)
+			outcome.HeaderIdentitySet = outcome.HeaderIdentitySet && response.Header != nil &&
+				response.Header.ClusterId != 0 && response.Header.MemberId != 0 && response.Header.RaftTerm > 0
+			outcome.CreatedFlags = append(outcome.CreatedFlags, response.Created)
+			outcome.CanceledFlags = append(outcome.CanceledFlags, response.Canceled)
+			outcome.CompactRevisionSet = append(outcome.CompactRevisionSet, response.CompactRevision != 0)
+			outcome.ErrorsAbsent = outcome.ErrorsAbsent && response.Err() == nil
+			for _, event := range response.Events {
+				outcome.Types = append(outcome.Types, event.Type)
+				outcome.PrevKVAbsent = outcome.PrevKVAbsent && event.PrevKv == nil
+				if event.Kv == nil {
+					outcome.KVObserved = false
+					events++
+					continue
+				}
+				expectedKey := fmt.Sprintf("%s%d", prefix, events)
+				outcome.KeysOrdered = outcome.KeysOrdered && string(event.Kv.Key) == expectedKey
+				outcome.ValuesMatch = outcome.ValuesMatch && string(event.Kv.Value) == expectedValue
+				outcome.CreateRevisionGaps = append(outcome.CreateRevisionGaps,
+					event.Kv.CreateRevision-base.Header.Revision)
+				outcome.ModRevisionGaps = append(outcome.ModRevisionGaps,
+					event.Kv.ModRevision-base.Header.Revision)
+				outcome.Versions = append(outcome.Versions, event.Kv.Version)
+				outcome.Leases = append(outcome.Leases, event.Kv.Lease)
+				events++
+			}
 		case <-watchCtx.Done():
 			require.NoError(t, watchCtx.Err())
 		}
 	}
-	return events
+	require.Equal(t, eventCount, events)
+	return outcome
 }
