@@ -36031,6 +36031,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对 revision 1（已 compact）和 `MaxInt64`（future）均返回 HTTP 400，响应体与官方逐字一致。
   NodePort 全套兼容测试 118.481 秒通过，`/compat/` 前缀 Count=0；一次性 reference 进程已停止。
 
+- A3658 从 peer HTTP 转向客户端 HTTP mux 边界。对官方 etcd `d947b2086` 与生产 KubeBrain
+  逐项请求 `/version`、`/health`、`/livez`、`/readyz` 及 verbose/serializable/unknown 子路径；
+  正常探针的状态、Content-Type 和响应体一致，但 `GET /readyz/unknown` 官方返回 net/http
+  的 HTTP 404、`text/plain; charset=utf-8`、`404 page not found\n`，旧 KubeBrain 因把 generated
+  gRPC gateway 注册在 `/`，将所有未命中探针的路径吞入 gateway，返回
+  `application/json` 的 `{"code":5, "message":"Not Found"}`。
+
+  `/root/etcd/server/embed/serve.go:createMux` 明确只把 websocket/gRPC gateway 挂在 `/v3/`，
+  `accessController` 再于路由前把 `/v3beta/` 重写成 `/v3/`。新增生产 mux 回归在旧实现上确定性
+  RED（状态同为 404，但 Content-Type/响应体不符）；修复把 KubeBrain gateway pattern 从 `/`
+  收窄为 `/v3/`，继续复用既有 access controller 的 `/v3beta/` 重写。定向门禁同时验证未知健康
+  namespace 的官方纯文本 404、合法 v3beta Range 和全部 generated route surface，避免修 404 时
+  破坏 JSON gateway。
+
+  根模块 `go test ./...`（endpoint 16.808 秒、server/etcd 175.907 秒）和 `go vet ./...`、兼容模块
+  test/vet 均通过。`kubebrain:a3658-gateway-prefix` 已滚动到 `kind-kubebrain-dbaas` 三副本；真实
+  NodePort 的 `/readyz/unknown` 与普通未知路径均为纯文本 404，`/v3/kv/range` 和
+  `/v3beta/kv/range` 合法请求均为 200。在线兼容套件 109.600 秒通过，`/compat/` Count=0；
+  一次性 reference 进程已停止。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

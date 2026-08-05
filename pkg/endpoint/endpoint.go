@@ -194,7 +194,11 @@ func (e *Endpoint) buildClientHTTPHandler(ctx context.Context) (http.Handler, *g
 			return nil, nil, err
 		}
 		gatewayConn = conn
-		handlersMaps = append(handlersMaps, map[string]http.Handler{"/": gateway})
+		// Match etcd's client HTTP mux: the generated gateway owns only the v3
+		// namespace. Health/version probe misses must retain net/http's plain 404
+		// instead of being rewritten as grpc-gateway JSON errors. The access
+		// controller rewrites /v3beta/ to /v3/ before this mux is reached.
+		handlersMaps = append(handlersMaps, map[string]http.Handler{"/v3/": gateway})
 	}
 
 	return newHTTPAccessControlledHandler(e.config.CORS, e.config.HostWhitelist, handlersMaps...), gatewayConn, nil

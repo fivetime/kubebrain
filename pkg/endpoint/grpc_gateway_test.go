@@ -855,6 +855,23 @@ func TestGRPCGatewaySurfaceIsExplicit(t *testing.T) {
 	}, services, "review and classify every generated HTTP gateway service when the public surface changes")
 }
 
+func TestClientHTTPGatewayDoesNotCaptureEtcdHTTPNamespaces(t *testing.T) {
+	endpoint := &Endpoint{
+		server: rejectingInterceptorServer{},
+		config: &Config{Port: 1, EnableGRPCGateway: true},
+	}
+	handler, conn, err := endpoint.buildClientHTTPHandler(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz/unknown", nil))
+
+	require.Equal(t, http.StatusNotFound, response.Code)
+	require.Equal(t, "text/plain; charset=utf-8", response.Header().Get("Content-Type"))
+	require.Equal(t, "404 page not found\n", response.Body.String())
+}
+
 func TestGRPCGatewayRouteSurfaceIsExplicit(t *testing.T) {
 	listener := bufconn.Listen(1024 * 1024)
 	grpcServer := grpc.NewServer()
@@ -1061,7 +1078,7 @@ func TestGRPCGatewayAcceptsV3BetaCompatibilityPrefix(t *testing.T) {
 
 	gateway, err := newGRPCGatewayMux(context.Background(), conn)
 	require.NoError(t, err)
-	handler := newHTTPAccessControlledHandler(nil, nil, map[string]http.Handler{"/": gateway})
+	handler := newHTTPAccessControlledHandler(nil, nil, map[string]http.Handler{"/v3/": gateway})
 
 	request := httptest.NewRequest(http.MethodPost, "/v3beta/kv/range",
 		strings.NewReader(`{"key":"djNiZXRh","limit":"1"}`))
