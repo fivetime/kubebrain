@@ -64,6 +64,8 @@ restore_manifest_tidb_count="$(jq '[.items[] | select(.kind == "TidbCluster")] |
 expected_restored_pvc_names="$(jq -c '[.items[] | select(.kind == "PersistentVolumeClaim") | .metadata.name] | sort' <<<"$manifest")"
 expected_restored_contents="$(jq -c '[.items[] | select(.kind == "VolumeSnapshotContent") |
   {name:.metadata.name,driver:.spec.driver,snapshot_handle:.spec.source.snapshotHandle}] | sort_by(.name)' <<<"$manifest")"
+expected_restored_tidb_spec="$(jq -cS '[.items[] | select(.kind == "TidbCluster") | .spec] |
+  if length == 1 then .[0] else null end' <<<"$manifest")"
 
 namespace="$(jq -r '.inventory.storage.namespace' <<<"$receipt")"
 tidb_cluster="$(jq -r '.inventory.storage.tidb_cluster' <<<"$receipt")"
@@ -237,9 +239,24 @@ validate_restored_storage_inventory() {
 # success receipt so post-start drift remains fail-closed.
 validate_restored_storage_inventory
 
+validate_restored_tidb_cluster() {
+  local object="$1" expected_paused="$2" expected_uid="${3:-}" actual_uid current_spec expected_spec
+  actual_uid="$(jq -r '.metadata.uid // ""' <<<"$object")"
+  [[ -n "$actual_uid" && ( -z "$expected_uid" || "$actual_uid" == "$expected_uid" ) ]] || {
+    echo "restored TidbCluster identity changed" >&2
+    exit 1
+  }
+  current_spec="$(jq -cS '.spec | del(.paused)' <<<"$object")"
+  expected_spec="$(jq -cS 'del(.paused)' <<<"$expected_restored_tidb_spec")"
+  [[ "$current_spec" == "$expected_spec" && "$(jq -r '.spec.paused' <<<"$object")" == "$expected_paused" ]] || {
+    echo "restored TidbCluster spec does not match restore manifest" >&2
+    exit 1
+  }
+}
+
 target_tidb_json="$(kctl -n "$namespace" get tidbcluster "$tidb_cluster" -o json)"
 target_tidb_uid="$(jq -r '.metadata.uid' <<<"$target_tidb_json")"
-[[ -n "$target_tidb_uid" && "$(jq -r '.spec.paused' <<<"$target_tidb_json")" == true ]] || { echo "restored TidbCluster is not identity-fenced and paused" >&2; exit 1; }
+validate_restored_tidb_cluster "$target_tidb_json" true
 unpause_patch="$(jq -cn --arg uid "$target_tidb_uid" --arg rv "$(jq -r '.metadata.resourceVersion' <<<"$target_tidb_json")" \
   '[{"op":"test","path":"/metadata/uid","value":$uid},{"op":"test","path":"/metadata/resourceVersion","value":$rv},{"op":"test","path":"/spec/paused","value":true},{"op":"replace","path":"/spec/paused","value":false}]')"
 kctl -n "$namespace" patch tidbcluster "$tidb_cluster" --type=json -p "$unpause_patch" >/dev/null
@@ -248,8 +265,11 @@ kctl -n "$namespace" wait --for=condition=Ready "tidbcluster/${tidb_cluster}" --
 kctl -n "$namespace" rollout status "statefulset/${tidb_cluster}-pd" --timeout="$WAIT_TIMEOUT" >/dev/null
 kctl -n "$namespace" rollout status "statefulset/${tidb_cluster}-tikv" --timeout="$WAIT_TIMEOUT" >/dev/null
 
-restored_identity="$(kctl -n "$namespace" get tidbcluster "$tidb_cluster" -o 'jsonpath={.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.status.conditions[?(@.type=="Ready")].status}')"
-IFS=$'\t' read -r final_tidb_uid actual_cluster_id ready_status <<<"$restored_identity"
+restored_tidb_json="$(kctl -n "$namespace" get tidbcluster "$tidb_cluster" -o json)"
+validate_restored_tidb_cluster "$restored_tidb_json" false "$target_tidb_uid"
+final_tidb_uid="$(jq -r '.metadata.uid' <<<"$restored_tidb_json")"
+actual_cluster_id="$(jq -r '.status.clusterID // ""' <<<"$restored_tidb_json")"
+ready_status="$(jq -r '[.status.conditions[]? | select(.type == "Ready") | .status] | if length == 1 then .[0] else "" end' <<<"$restored_tidb_json")"
 [[ "$final_tidb_uid" == "$target_tidb_uid" && "$actual_cluster_id" == "$expected_cluster_id" && "$ready_status" == True ]] || {
   echo "restored TidbCluster identity/readiness mismatch" >&2
   exit 1

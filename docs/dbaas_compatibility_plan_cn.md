@@ -35271,6 +35271,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/production` 全包 434.115 秒以及 vet、脚本语法与 diff check 均通过。本项防止已知坏源启动，
   不构成真实 CSI 恢复/PITR 完成证明。
 
+- A3605 将 restored TidbCluster controller spec 纳入首次 unpause 前后的 canonical 绑定。旧执行器只要求
+  live object UID 非空且 `spec.paused=true`；CSI/PVC wait 期间若 version、PD/TiKV replicas 或其他 spec
+  被改写，仍会直接 unpause，最终 identity 检查也只看 UID/clusterID/Ready。确定性 RED 将恢复后的
+  version 从 v8.5.3 改为 v8.5.4，旧路径仍成功发布 receipt。
+
+  执行器现在从冻结 manifest 提取唯一 TidbCluster spec，并用同一函数执行两次严格比较：unpause 前
+  要求 live UID 非空、除 paused 外的完整 spec 规范化相等且 paused=true；Ready 后要求 UID 未替换、
+  同一 spec 且 paused=false，再验证 cluster ID/唯一 Ready=True。前置漂移保持 paused，后置漂移按
+  同一 UID emergency fence。两组专项连续 10 轮 49.262 秒、race 7.224 秒、完整 cold-restore 矩阵
+  40.979 秒、`hack/production` 全包 439.008 秒以及 vet、脚本语法与 diff check 均通过。本项绑定
+  controller 配置，不替代真实 CSI 恢复或 PITR 证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
