@@ -35170,6 +35170,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2.535 秒、完整 cold-snapshot 矩阵 87.547 秒、`hack/production` 全包 401.737 秒以及 vet、脚本
   语法与 diff check 均通过。该栅栏缩窄维护 TOCTOU，但不声称跨多个 CSI snapshot 的原子事务或 PITR。
 
+- A3597 将 VolumeSnapshotClass 本身纳入 pause 后、停服前的第二道 maintenance fence。初始 fresh
+  preflight 已要求 class driver 非空且 `deletionPolicy=Retain`，但 policy 可在随后 witness 校验或
+  operator pause 期间漂移；旧执行器不会再读 class，会继续停掉 KubeBrain/TiKV/PD，直到 content
+  创建后才可能发现 `Delete` policy，此时已经产生停服和非预期生命周期制品。确定性 RED 让 class
+  只在 pause patch 后从 Retain 变为 Delete，旧路径仍整轮成功。
+
+  执行器现在于 controller/target 二次栅栏同一位置重新读取指定 VolumeSnapshotClass，要求 CSI driver
+  与冻结 inventory 精确一致且 policy 仍为 Retain；lookup 失败或任一漂移均 fail closed，只撤销 pause，
+  不 patch StatefulSet、不创建 snapshot、不发布 receipt。专项连续 10 轮 17.359 秒、race 2.556 秒、
+  完整 cold-snapshot 矩阵 84.363 秒、`hack/production` 全包 418.145 秒以及 vet、脚本语法与 diff
+  check 均通过。该项保护候选 cold snapshot 的 retained 生命周期，不证明 CSI 多卷原子性或 PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

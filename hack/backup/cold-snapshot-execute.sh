@@ -130,6 +130,19 @@ validate_snapshot_targets_absent() {
   done < <(jq -r '.pd_pvcs[].name, .tikv_pvcs[].name' <<<"$inventory")
 }
 
+validate_snapshot_class_unchanged() {
+  local current driver policy expected_driver expected_policy
+  expected_driver="$(jq -r '.volume_snapshot_class.driver' <<<"$inventory")"
+  expected_policy="$(jq -r '.volume_snapshot_class.deletion_policy' <<<"$inventory")"
+  current="$(kctl get volumesnapshotclass "$VOLUME_SNAPSHOT_CLASS" \
+    -o 'jsonpath={.driver}{"\t"}{.deletionPolicy}')"
+  IFS=$'\t' read -r driver policy <<<"$current"
+  [[ "$driver" == "$expected_driver" && "$policy" == "$expected_policy" && "$policy" == Retain ]] || {
+    echo "VolumeSnapshotClass ${VOLUME_SNAPSHOT_CLASS} changed at the maintenance fence: expected ${expected_driver}/Retain, got ${driver:-missing}/${policy:-missing}" >&2
+    exit 1
+  }
+}
+
 # Retained snapshots make operation IDs intentionally non-reusable. Discover a
 # known collision before pausing the operator; create remains the authoritative
 # race-safe uniqueness check.
@@ -265,6 +278,7 @@ validate_statefulset_ready TiKV "$tikv_json"
 # scaled down. A target created concurrently after this check is still rejected
 # by Kubernetes create, but a target already visible now must not cause a full
 # data-plane outage.
+validate_snapshot_class_unchanged
 validate_snapshot_targets_absent
 
 patch_object "$KUBEBRAIN_NAMESPACE" statefulset "$KUBEBRAIN_STATEFULSET" "$kb_json" /spec/replicas "$kb_replicas" 0

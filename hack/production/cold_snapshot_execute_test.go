@@ -427,6 +427,35 @@ func TestColdSnapshotExecuteRechecksTargetsAfterOperatorPause(t *testing.T) {
 	require.NotContains(t, log, "create -f -")
 }
 
+func TestColdSnapshotExecuteRechecksSnapshotClassAfterOperatorPause(t *testing.T) {
+	dir := t.TempDir()
+	inventoryFile := filepath.Join(dir, "inventory.json")
+	receiptFile := filepath.Join(dir, "receipt.json")
+	witnessFile := filepath.Join(dir, "witness.jsonl")
+	logFile := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+	require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+	output, err := runColdSnapshotExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=preproduction", "ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+		"PREFLIGHT_FILE=" + inventoryFile, "RECEIPT_FILE=" + receiptFile,
+		"OPERATION_ID=op-class-drift", "SEMANTIC_WITNESS_FILE=" + witnessFile,
+		"EXPECTED_WITNESS_PREFIX=/registry", "FAKE_LOG=" + logFile,
+		"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"), "FAKE_TIDB_READY=true",
+		"FAKE_SNAPSHOT_POLICY_AFTER_PAUSE=Delete", "FAKE_FAIL_SNAPSHOT=false",
+		"FAKE_CONTENT_DRIVER=csi.example.test", "FENCE_SETTLE_SECONDS=0",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "VolumeSnapshotClass retained changed at the maintenance fence")
+	require.NoFileExists(t, receiptFile)
+	log := string(mustRead(t, logFile))
+	require.Contains(t, log, "patch tidbcluster kb --type=json")
+	require.NotContains(t, log, "patch statefulset", "snapshot class drift must fail before service shutdown")
+	require.NotContains(t, log, "create -f -")
+}
+
 func TestColdSnapshotExecuteRejectsTidbClusterFenceLossAfterPause(t *testing.T) {
 	for _, tc := range []struct {
 		name, uidDrift, pauseLost, specDrift, clusterIDDrift, readyLost, want string
@@ -644,7 +673,11 @@ args="$*"
 if [[ "$args" == *"api-resources"* ]]; then
   printf '%s\n' volumesnapshots.snapshot.storage.k8s.io volumesnapshotclasses.snapshot.storage.k8s.io
 elif [[ "$args" == *"get volumesnapshotclass"* ]]; then
-  printf 'csi.example.test\tRetain'
+  policy=Retain
+  if [[ -n "${FAKE_SNAPSHOT_POLICY_AFTER_PAUSE:-}" ]] && grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
+    policy="$FAKE_SNAPSHOT_POLICY_AFTER_PAUSE"
+  fi
+  printf 'csi.example.test\t%s' "$policy"
 elif [[ "$args" == *"get storageclass"* ]]; then
   printf 'csi.example.test'
 elif [[ "$args" == *"get tidbcluster"* ]]; then
