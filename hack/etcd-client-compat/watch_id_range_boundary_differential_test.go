@@ -16,12 +16,8 @@ import (
 )
 
 type watchIDRangeBoundaryOutcome struct {
-	Name              string
-	WatchID           int64
-	Created           bool
-	Canceled          bool
-	CancelReason      string
-	HeaderMatchesSeed bool
+	Name    string
+	Control watchControlOutcome
 }
 
 func TestWatchIDRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -55,18 +51,31 @@ func TestWatchIDRangeBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 }
 
 func watchCreatedBoundaryOutcome(name string, id int64) watchIDRangeBoundaryOutcome {
-	return watchIDRangeBoundaryOutcome{Name: name, WatchID: id, Created: true, HeaderMatchesSeed: true}
+	return completeWatchIDBoundaryOutcome(name, watchControlOutcome{
+		WatchID: id, Created: true, HeaderMatchesSeed: true,
+	})
 }
 
 func watchCanceledCreateBoundaryOutcome(name, reason string) watchIDRangeBoundaryOutcome {
-	return watchIDRangeBoundaryOutcome{
-		Name: name, WatchID: -1, Created: true, Canceled: true,
+	return completeWatchIDBoundaryOutcome(name, watchControlOutcome{
+		WatchID: -1, Created: true, Canceled: true,
 		CancelReason: reason, HeaderMatchesSeed: true,
-	}
+	})
 }
 
 func watchCanceledBoundaryOutcome(name string, id int64) watchIDRangeBoundaryOutcome {
-	return watchIDRangeBoundaryOutcome{Name: name, WatchID: id, Canceled: true, HeaderMatchesSeed: true}
+	return completeWatchIDBoundaryOutcome(name, watchControlOutcome{
+		WatchID: id, Canceled: true, HeaderMatchesSeed: true,
+	})
+}
+
+func completeWatchIDBoundaryOutcome(name string, control watchControlOutcome) watchIDRangeBoundaryOutcome {
+	control.HeaderIdentitySet = true
+	control.HeaderClusterMatch = true
+	control.HeaderMemberMatch = true
+	control.HeaderTermPositive = true
+	control.EnvelopeObserved = true
+	return watchIDRangeBoundaryOutcome{Name: name, Control: control}
 }
 
 func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRangeBoundaryOutcome {
@@ -96,9 +105,7 @@ func runWatchIDRangeBoundaryScenario(t *testing.T, endpoint string) []watchIDRan
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr, name)
 		outcomes = append(outcomes, watchIDRangeBoundaryOutcome{
-			Name: name, WatchID: resp.WatchId, Created: resp.Created,
-			Canceled: resp.Canceled, CancelReason: resp.CancelReason,
-			HeaderMatchesSeed: resp.Header != nil && resp.Header.Revision == seed.Header.Revision,
+			Name: name, Control: observeWatchControlResponse(resp, seed.Header),
 		})
 	}
 	createAtRevision := func(name string, id int64, key, end []byte, revision int64) {

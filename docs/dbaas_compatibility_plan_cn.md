@@ -35438,6 +35438,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/dbaas-watch-invalid-control/`、`/dbaas-watch-control/` prefix 均为 0。本轮未发现 runtime 差异，
   不重建或滚动生产镜像。
 
+- A3618 把 A3617 的完整 Watch control/header oracle 扩展到 Watch ID/range 边界矩阵。该矩阵覆盖显式
+  `-1`、`MinInt64`、`MaxInt64`、自动 ID、重复 ID、负 revision、equal/descending range、未知 cancel
+  后继续创建与最终取消，共 17 个响应；旧 outcome 仍只保存 ID、created/canceled、reason 和 revision，
+  会漏掉 header 身份、compact revision、fragment 与 event 泄漏。先由三个期望构造器声明完整 envelope，
+  reference RED 精确显示 17 个响应的四项 header 与 observed 标志全部为 false。
+
+  边界 outcome 现在直接包含共享 `watchControlOutcome`，接收响应时复用 `observeWatchControlResponse`，避免
+  两套字段采集继续漂移。共享 helper 回归连续 20 轮 0.024 秒、race 1.077 秒；真实双端 17 响应矩阵
+  连续 10 轮 4.396 秒、race 1.500 秒；兼容模块全包 1.358 秒、两级 module vet、`hack/production`
+  全包 456.130 秒及 diff check 均通过，线上 `/dbaas-watch-id/` prefix 为 0。本轮未发现 runtime 差异，
+  不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
