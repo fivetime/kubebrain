@@ -27,6 +27,7 @@ type watchCompactedRevisionOutcome struct {
 	NextCreatedEnvelope  watchControlOutcome
 	FinalPutGap          int64
 	EventHeaderGap       int64
+	EventEnvelope        watchControlOutcome
 	EventModRevisionGap  int64
 	EventValue           string
 }
@@ -45,11 +46,21 @@ func TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		CanceledEnvelope:     expectedCompactedWatchEnvelope(707, false, true, true, 2),
 		NextCreatedHeaderGap: 3,
 		NextCreatedEnvelope:  expectedCompactedWatchEnvelope(708, true, false, false, 0),
-		FinalPutGap:          4, EventHeaderGap: 4, EventModRevisionGap: 4, EventValue: "v4",
+		FinalPutGap:          4, EventHeaderGap: 4,
+		EventEnvelope:       expectedCompactedWatchEventEnvelope(708),
+		EventModRevisionGap: 4, EventValue: "v4",
 	}
 	referenceOutcome := runWatchCompactedRevisionScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runWatchCompactedRevisionScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func expectedCompactedWatchEventEnvelope(id int64) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID:           id,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, EventCount: 1, EnvelopeObserved: true,
+	}
 }
 
 func expectedCompactedWatchEnvelope(
@@ -132,6 +143,7 @@ func runWatchCompactedRevisionScenario(t *testing.T, endpoint, instance string) 
 		NextCreatedEnvelope:  observeWatchControlResponse(created, seed.Header),
 		FinalPutGap:          put4.Header.Revision - baseRevision,
 		EventHeaderGap:       event.Header.Revision - baseRevision,
+		EventEnvelope:        observeWatchControlResponse(event, seed.Header),
 		EventModRevisionGap:  event.Events[0].Kv.ModRevision - baseRevision,
 		EventValue:           string(event.Events[0].Kv.Value),
 	}

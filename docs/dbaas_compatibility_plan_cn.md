@@ -35510,6 +35510,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1.241 秒、两级 module vet、`hack/production` 全包 479.574 秒及 diff check 均通过，线上
   `/dbaas-watch-compacted/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3624 把真实 compaction 场景中 watch 708 收到 `v4` 的事件响应纳入完整 envelope。旧 outcome 只比较
+  response header gap=4、KV ModRevision gap=4 和 value，错误的 WatchID、控制 flags、header 身份、
+  compact revision、fragment 或 event count 不会进入差分。先加入 WatchID=708、EventCount=1 的完整
+  期望而不采集，reference RED 精确只显示该 envelope 为零值。
+
+  事件响应现复用 `observeWatchControlResponse`，原 header gap、ModRevision gap 和 value 继续独立保留。
+  共享 helper 连续 20 轮 0.024 秒、race 1.066 秒；真实双端 compaction 场景连续 10 轮 8.573 秒、
+  race 1.869 秒；兼容模块全包 1.299 秒、两级 module vet、`hack/production` 全包 467.515 秒及
+  diff check 均通过，线上 `/dbaas-watch-compacted/` prefix 为 0。本轮未发现 runtime 差异，不重建或
+  滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
