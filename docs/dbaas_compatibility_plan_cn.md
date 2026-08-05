@@ -36331,6 +36331,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   没有运行时 RED。本项只增加永久兼容门禁，不修改或滚动数据面；reference 已停止，临时目录已
   删除且不可恢复，只含本轮 oracle 数据。
 
+- A3680 回到矩阵中唯一仍标部分兼容的 Snapshot，补强可修的流协议证据而不掩盖 legacy history
+  限制。既有 `TestSnapshotStreamProtocolMatchesReferenceEtcd` 虽会连接两端并校验 SHA-256，但名称
+  不匹配通用 `Differential(Against|$)` runner，且中间帧只断言 `RemainingBytes>0`。现将其升级为
+  `TestSnapshotStreamProtocolDifferentialAgainstReferenceEtcd`：每个 data frame 必须非空且不超过
+  32 KiB，逐帧 `RemainingBytes` 必须精确等于 backend 制品总长减累计 payload，最后一个 data
+  frame 的 remaining 为 0，随后仍须有独立的 32-byte digest frame、相同非空 version 和准确 EOF。
+
+  一次性官方 etcd `d947b2086` 与生产 `kubebrain:a3672-stream-progress` 首轮、连续 10 轮
+  （5.231 秒）及 race 5 轮（3.742 秒）均通过，没有运行时 RED。本项让流协议进入默认官方差分
+  runner，只增强永久证据，不修改或滚动数据面；Snapshot 仍诚实保留升级前 raw/v1 retained
+  history 的 lease provenance 限制。reference 已停止，临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -18,14 +18,16 @@ import (
 )
 
 type snapshotStreamOutcome struct {
-	Version       string
-	BackendBytes  int
-	DataResponses int
-	FinalBytes    int
-	DigestMatches bool
+	Version            string
+	BackendBytes       int
+	DataResponses      int
+	FinalBytes         int
+	DataFramesNonempty bool
+	RemainingExact     bool
+	DigestMatches      bool
 }
 
-func TestSnapshotStreamProtocolMatchesReferenceEtcd(t *testing.T) {
+func TestSnapshotStreamProtocolDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if reference == "" || kubebrain == "" {
@@ -40,6 +42,8 @@ func TestSnapshotStreamProtocolMatchesReferenceEtcd(t *testing.T) {
 			require.Positive(t, outcome.BackendBytes)
 			require.Positive(t, outcome.DataResponses)
 			require.Equal(t, sha256.Size, outcome.FinalBytes)
+			require.True(t, outcome.DataFramesNonempty)
+			require.True(t, outcome.RemainingExact)
 			require.True(t, outcome.DigestMatches)
 		})
 	}
@@ -69,7 +73,8 @@ func captureSnapshotStream(t *testing.T, endpoint string) snapshotStreamOutcome 
 	hash := sha256.New()
 	backendBytes := 0
 	version := ""
-	for i, response := range responses[:len(responses)-1] {
+	dataResponses := responses[:len(responses)-1]
+	for _, response := range dataResponses {
 		require.LessOrEqual(t, len(response.Blob), 32*1024)
 		if version == "" {
 			version = response.Version
@@ -77,17 +82,21 @@ func captureSnapshotStream(t *testing.T, endpoint string) snapshotStreamOutcome 
 		require.Equal(t, version, response.Version)
 		backendBytes += len(response.Blob)
 		_, _ = hash.Write(response.Blob)
-		if i+1 == len(responses)-1 {
-			require.Zero(t, response.RemainingBytes)
-		} else {
-			require.Positive(t, response.RemainingBytes)
-		}
 	}
 	final := responses[len(responses)-1]
 	require.Zero(t, final.RemainingBytes)
 	require.Equal(t, version, final.Version)
+	dataFramesNonempty := true
+	remainingExact := true
+	cumulative := 0
+	for _, response := range dataResponses {
+		dataFramesNonempty = dataFramesNonempty && len(response.Blob) > 0
+		cumulative += len(response.Blob)
+		remainingExact = remainingExact && response.RemainingBytes == uint64(backendBytes-cumulative)
+	}
 	return snapshotStreamOutcome{
-		Version: version, BackendBytes: backendBytes, DataResponses: len(responses) - 1,
-		FinalBytes: len(final.Blob), DigestMatches: string(hash.Sum(nil)) == string(final.Blob),
+		Version: version, BackendBytes: backendBytes, DataResponses: len(dataResponses),
+		FinalBytes: len(final.Blob), DataFramesNonempty: dataFramesNonempty,
+		RemainingExact: remainingExact, DigestMatches: string(hash.Sum(nil)) == string(final.Blob),
 	}
 }
