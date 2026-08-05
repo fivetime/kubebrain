@@ -63,6 +63,18 @@ type watchMixedFilterReplayOutcome struct {
 	PrevValue         string
 }
 
+type watchFutureFilteredOutcome struct {
+	CreatedCanonical          bool
+	CreatedHeaderGap          int64
+	InitialProgressSuppressed bool
+	UnrelatedRevisionGap      int64
+	FilteredRevisionGap       int64
+	FilteredEventSuppressed   bool
+	ProgressWatchID           int64
+	ProgressHeaderGap         int64
+	ProgressCanonical         bool
+}
+
 func TestWatchFilterProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -122,6 +134,109 @@ func TestWatchMixedFilterReplayWatermarkDifferentialAgainstReferenceEtcd(t *test
 	referenceOutcome := runWatchMixedFilterReplayScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runWatchMixedFilterReplayScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func TestWatchFutureFilteredRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	want := watchFutureFilteredOutcome{
+		CreatedCanonical: true, InitialProgressSuppressed: true,
+		UnrelatedRevisionGap: 1, FilteredRevisionGap: 2, FilteredEventSuppressed: true,
+		ProgressWatchID: -1, ProgressHeaderGap: 2, ProgressCanonical: true,
+	}
+	referenceOutcome := runWatchFutureFilteredRevisionScenario(t, reference, "reference")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runWatchFutureFilteredRevisionScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func runWatchFutureFilteredRevisionScenario(t *testing.T, endpoint, instance string) watchFutureFilteredOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+	kv := etcdserverpb.NewKVClient(conn)
+	prefix := fmt.Sprintf("/dbaas-watch-future-filtered/%s/%d/", instance, time.Now().UnixNano())
+	key := []byte(prefix + "watched")
+	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: key, WatchId: 905, StartRevision: base.Header.Revision + 2,
+			Filters: []etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_NOPUT},
+		}},
+	}))
+	created := recvWatchResponse(t, stream)
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+
+	type receiveResult struct {
+		response *etcdserverpb.WatchResponse
+		err      error
+	}
+	pending := make(chan receiveResult, 1)
+	go func() {
+		response, recvErr := stream.Recv()
+		pending <- receiveResult{response: response, err: recvErr}
+	}()
+	initialSuppressed := false
+	select {
+	case early := <-pending:
+		require.Failf(t, "future watch emitted progress before start revision", "response=%v error=%v", early.response, early.err)
+	case <-time.After(150 * time.Millisecond):
+		initialSuppressed = true
+	}
+	unrelated, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(prefix + "unrelated"), Value: []byte("advance")})
+	require.NoError(t, err)
+	filtered, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("filtered")})
+	require.NoError(t, err)
+	filteredSuppressed := false
+	select {
+	case early := <-pending:
+		require.Failf(t, "future filtered event emitted a response", "response=%v error=%v", early.response, early.err)
+	case <-time.After(150 * time.Millisecond):
+		filteredSuppressed = true
+	}
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+	progressResult := <-pending
+	require.NoError(t, progressResult.err)
+	progress := progressResult.response
+	for name, header := range map[string]*etcdserverpb.ResponseHeader{
+		"base": base.Header, "created": created.Header, "unrelated": unrelated.Header,
+		"filtered": filtered.Header, "progress": progress.Header,
+	} {
+		require.NotNil(t, header, name)
+	}
+	baseRevision := base.Header.Revision
+	return watchFutureFilteredOutcome{
+		CreatedCanonical:          canonicalWatchControlResponse(created, true, 905),
+		CreatedHeaderGap:          created.Header.Revision - baseRevision,
+		InitialProgressSuppressed: initialSuppressed,
+		UnrelatedRevisionGap:      unrelated.Header.Revision - baseRevision,
+		FilteredRevisionGap:       filtered.Header.Revision - baseRevision,
+		FilteredEventSuppressed:   filteredSuppressed,
+		ProgressWatchID:           progress.WatchId, ProgressHeaderGap: progress.Header.Revision - baseRevision,
+		ProgressCanonical: canonicalWatchControlResponse(progress, false, -1),
+	}
 }
 
 func runWatchMixedFilterReplayScenario(t *testing.T, endpoint, instance string) watchMixedFilterReplayOutcome {

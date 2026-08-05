@@ -36193,6 +36193,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
   已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3670 固定 future `StartRevision` 由 filtered event 达成时的 Watch 状态机。新增 raw gRPC
+  差分在当前 revision R 建立 start=R+2、NOPUT watch：首次显式 progress 必须因 watcher 尚未
+  synced 而无响应；无关写推进 R+1，受监视 PUT 在 R+2 被 filter 掉后仍不得发 event response，
+  但必须把 watcher 从 future/unsynced 推进为 synced；第二次 progress 随即返回规范 ID=-1 控制帧，
+  header=R+2。该门禁防止“过滤掉达到 start revision 的事件”导致 watch 永久卡在 future 状态。
+
+  一次性官方 etcd `d947b2086` 与生产 KubeBrain 普通差分连续 10 轮 8.513 秒、race 5 轮
+  5.853 秒通过；根模块 test/vet（server/etcd 167.368 秒）与兼容模块 test/vet（1.315 秒）
+  均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
+  已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
