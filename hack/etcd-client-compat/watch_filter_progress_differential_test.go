@@ -75,6 +75,17 @@ type watchFutureFilteredOutcome struct {
 	ProgressCanonical         bool
 }
 
+type watchTxnPartialFilterOutcome struct {
+	CreatedCanonical  bool
+	TxnRevisionGap    int64
+	ResponseWatchID   int64
+	ResponseHeaderGap int64
+	EventCount        int
+	DeleteObserved    bool
+	EventModGap       int64
+	PrevValue         string
+}
+
 func TestWatchFilterProgressDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -150,6 +161,76 @@ func TestWatchFutureFilteredRevisionDifferentialAgainstReferenceEtcd(t *testing.
 	referenceOutcome := runWatchFutureFilteredRevisionScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runWatchFutureFilteredRevisionScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func TestWatchTxnPartialFilterDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
+	}
+
+	want := watchTxnPartialFilterOutcome{
+		CreatedCanonical: true, TxnRevisionGap: 1, ResponseWatchID: 906, ResponseHeaderGap: 1,
+		EventCount: 1, DeleteObserved: true, EventModGap: 1, PrevValue: "delete-me",
+	}
+	referenceOutcome := runWatchTxnPartialFilterScenario(t, reference, "reference")
+	require.Equal(t, want, referenceOutcome)
+	require.Equal(t, referenceOutcome, runWatchTxnPartialFilterScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func runWatchTxnPartialFilterScenario(t *testing.T, endpoint, instance string) watchTxnPartialFilterOutcome {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
+	kv := etcdserverpb.NewKVClient(conn)
+	prefix := fmt.Sprintf("/dbaas-watch-txn-partial-filter/%s/%d/", instance, time.Now().UnixNano())
+	putKey := []byte(prefix + "put")
+	deleteKey := []byte(prefix + "delete")
+	seed, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: deleteKey, Value: []byte("delete-me")})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
+		})
+	})
+
+	stream, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.CloseSend() })
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), WatchId: 906,
+			Filters: []etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_NOPUT}, PrevKv: true,
+		}},
+	}))
+	created := recvWatchResponse(t, stream)
+	txn, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: putKey, Value: []byte("filtered")}}},
+		{Request: &etcdserverpb.RequestOp_RequestDeleteRange{RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: deleteKey}}},
+	}})
+	require.NoError(t, err)
+	response := recvWatchResponse(t, stream)
+	require.NotNil(t, seed.Header)
+	require.NotNil(t, txn.Header)
+	require.NotNil(t, response.Header)
+	require.Len(t, response.Events, 1)
+	event := response.Events[0]
+	require.NotNil(t, event.Kv)
+	require.NotNil(t, event.PrevKv)
+	baseRevision := seed.Header.Revision
+	return watchTxnPartialFilterOutcome{
+		CreatedCanonical: canonicalWatchControlResponse(created, true, 906),
+		TxnRevisionGap:   txn.Header.Revision - baseRevision, ResponseWatchID: response.WatchId,
+		ResponseHeaderGap: response.Header.Revision - baseRevision, EventCount: len(response.Events),
+		DeleteObserved: event.Type == mvccpb.DELETE && string(event.Kv.Key) == string(deleteKey),
+		EventModGap:    event.Kv.ModRevision - baseRevision, PrevValue: string(event.PrevKv.Value),
+	}
 }
 
 func runWatchFutureFilteredRevisionScenario(t *testing.T, endpoint, instance string) watchFutureFilteredOutcome {

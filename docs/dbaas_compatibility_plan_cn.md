@@ -36204,6 +36204,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
   已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3671 固定同一事务 revision 内 Watch filter 的逐事件语义。新增 raw gRPC 差分先写入待删除
+  key，再建立 prefix、NOPUT、PrevKV watch；单个 Txn 在同一 revision 内写入另一个 key 并删除
+  已有 key。官方行为只返回一个 DELETE event，不因同批 PUT 被过滤而丢弃整批，也不发送空响应；
+  response header、DELETE `ModRevision` 与 Txn header 保持同一 revision，PrevKV 保留删除前值。
+  该门禁覆盖此前单事件、全过滤和跨 revision replay 用例没有触及的批次内部分过滤路径。
+
+  一次性官方 etcd `d947b2086` 与生产 KubeBrain 首轮、连续 10 轮（1.489 秒；墙钟 3.080 秒）
+  及 race 5 轮（1.929 秒；墙钟 13.803 秒）均通过；根模块 test/vet（server/etcd 168.445 秒）
+  与兼容模块 test/vet（1.248 秒）均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或
+  重建数据面；一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
