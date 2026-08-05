@@ -70,7 +70,7 @@ func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, referenceOutcome, runLeaseDifferentialScenario(t, kubebrain, "kubebrain"))
 }
 
-func TestLeaseListExpiryOrderAgainstReferenceEtcd(t *testing.T) {
+func TestLeaseListExpiryOrderDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")

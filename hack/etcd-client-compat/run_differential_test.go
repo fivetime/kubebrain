@@ -3,6 +3,7 @@ package compat
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -103,6 +104,10 @@ if [[ "$*" == *"member list -w json"* ]]; then
   printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://internal.invalid:3379"]}]}'
   exit 0
 fi
+if [[ "$*" == *"endpoint status -w json"* ]]; then
+  printf '%s\n' '[{"Status":{"dbSizeQuota":1073741824}}]'
+  exit 0
+fi
 if [[ "$*" == *"endpoint health"* ]]; then
   exit 0
 fi
@@ -161,6 +166,19 @@ func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
 	require.NotContains(t, string(script), "-run Differential -count=1")
 }
 
+func TestReferenceComparisonTestNamesAreSelectedByDifferentialRunner(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	require.NoError(t, err)
+	comparisonName := regexp.MustCompile(`func (Test\w*(?:Matches|Against)ReferenceEtcd)\(`)
+	for _, file := range files {
+		data, readErr := os.ReadFile(file)
+		require.NoError(t, readErr)
+		for _, match := range comparisonName.FindAllStringSubmatch(string(data), -1) {
+			require.Contains(t, match[1], "Differential", "%s is skipped by run-differential.sh", match[1])
+		}
+	}
+}
+
 func TestDifferentialRunnerEnablesHTTPGatewayScenarios(t *testing.T) {
 	script, err := os.ReadFile("run-differential.sh")
 	require.NoError(t, err)
@@ -181,4 +199,12 @@ func TestDifferentialRunnerPassesOptionalMetricsEndpoints(t *testing.T) {
 	require.Contains(t, string(script), `REFERENCE_ETCD_METRICS_ENDPOINT="${REFERENCE_CLIENT_URL%/}"`)
 	require.Contains(t, string(script), `KUBEBRAIN_METRICS_ENDPOINT="$KUBEBRAIN_METRICS_ENDPOINT"`)
 	require.Contains(t, string(script), `"$(http_endpoint_url "$KUBEBRAIN_METRICS_ENDPOINT")/metrics"`)
+}
+
+func TestDifferentialRunnerMatchesReferenceQuotaToTarget(t *testing.T) {
+	script, err := os.ReadFile("run-differential.sh")
+	require.NoError(t, err)
+	require.Contains(t, string(script), `endpoint status -w json`)
+	require.Contains(t, string(script), `.Status.dbSizeQuota // .Status.db_size_quota // 0`)
+	require.Contains(t, string(script), `--quota-backend-bytes "$reference_quota"`)
 }

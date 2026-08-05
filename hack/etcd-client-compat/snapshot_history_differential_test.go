@@ -32,7 +32,7 @@ type normalizedSnapshotVersion struct {
 	Tombstone bool
 }
 
-func TestSnapshotRetainedHistoryMatchesReferenceEtcd(t *testing.T) {
+func TestSnapshotRetainedHistoryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if reference == "" || kubebrain == "" {
@@ -70,7 +70,7 @@ func TestSnapshotRetainedHistoryMatchesReferenceEtcd(t *testing.T) {
 	}
 }
 
-func TestSnapshotRetainedLeaseHistoryMatchesReferenceEtcd(t *testing.T) {
+func TestSnapshotRetainedLeaseHistoryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if reference == "" || kubebrain == "" {
@@ -248,7 +248,7 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 	}
 }
 
-func TestSnapshotTxnSubrevisionOrderMatchesReferenceEtcd(t *testing.T) {
+func TestSnapshotTxnSubrevisionOrderDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	kubebrain := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if reference == "" || kubebrain == "" {

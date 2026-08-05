@@ -131,6 +131,20 @@ for advertised_client_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
+if ! status_json="$(ETCDCTL_API=3 "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_ENDPOINT" endpoint status -w json)"; then
+  echo "KubeBrain endpoint status preflight failed: $KUBEBRAIN_ENDPOINT" >&2
+  exit 1
+fi
+if ! reference_quota="$(jq -er '
+  map(.Status.dbSizeQuota // .Status.db_size_quota // 0)
+  | unique
+  | select(length == 1 and .[0] > 0)
+  | .[0]
+' <<<"$status_json")"; then
+  echo "KubeBrain endpoint status returned no single positive dbSizeQuota" >&2
+  exit 1
+fi
+
 data_dir="$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-reference-etcd.XXXXXX")"
 reference_log="$data_dir/etcd.log"
 reference_pid=""
@@ -157,6 +171,7 @@ trap cleanup EXIT
   --listen-peer-urls "$REFERENCE_PEER_URL" \
   --initial-advertise-peer-urls "$REFERENCE_PEER_URL" \
   --initial-cluster "reference=$REFERENCE_PEER_URL" \
+  --quota-backend-bytes "$reference_quota" \
   --watch-progress-notify-interval=1s \
   --log-level error \
   >"$reference_log" 2>&1 &

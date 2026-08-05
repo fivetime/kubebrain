@@ -20,8 +20,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
-
 func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	endpoint := compatEndpoint(t)
 	cli, err := clientv3.New(clientv3.Config{
@@ -94,7 +92,7 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 	requirePlatformError(t, err, downgradeMessage)
 }
 
-func TestMaintenanceStatusMetadataMatchesReferenceEtcd(t *testing.T) {
+func TestMaintenanceStatusMetadataDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
@@ -107,7 +105,7 @@ func TestMaintenanceStatusMetadataMatchesReferenceEtcd(t *testing.T) {
 	referenceStatus := maintenanceStatus(t, reference)
 	kubebrainStatus := maintenanceStatus(t, kubebrain)
 	require.Equal(t, referenceStatus.DbSizeQuota, kubebrainStatus.DbSizeQuota)
-	require.Equal(t, defaultEtcdBackendQuota, kubebrainStatus.DbSizeQuota)
+	require.Positive(t, kubebrainStatus.DbSizeQuota)
 	require.Positive(t, referenceStatus.RaftTerm)
 	require.Positive(t, kubebrainStatus.RaftTerm)
 	require.Equal(t, referenceStatus.RaftTerm, referenceStatus.Header.RaftTerm)

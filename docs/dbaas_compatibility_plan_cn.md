@@ -36344,6 +36344,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   history 的 lease provenance 限制。reference 已停止，临时目录已删除且不可恢复，只含本轮
   oracle 数据。
 
+- A3681 关闭默认官方差分 runner 的场景漏收集与 quota 配置失配。runner 一直只执行名称匹配
+  `Differential(Against|$)` 的测试，但 LeaseList expiry order、Maintenance Status metadata、
+  Snapshot retained history、retained lease history 和 Txn subrevision order 五项双端 oracle 使用
+  `AgainstReferenceEtcd`/`MatchesReferenceEtcd` 命名，实际从未进入默认套件。现统一改为
+  `DifferentialAgainstReferenceEtcd`，并增加结构门禁：任何 `MatchesReferenceEtcd` 或
+  `AgainstReferenceEtcd` 测试若名称不含 `Differential`，本地 test 直接失败。
+
+  首次把五项真正纳入生产差分后出现稳定 RED：官方 reference Status 报默认 2 GiB quota，生产
+  KubeBrain 正确报告实例配置的 1 GiB；旧测试还硬编码 KubeBrain 必须为 2 GiB。这不是数据面错误，
+  而是 oracle 与目标配置不等价。runner 现于启动 reference 前读取目标 `endpoint status -w json`，
+  要求所有 endpoint 返回同一个正 `DbSizeQuota`，并以对应 `--quota-backend-bytes` 启动官方 etcd；
+  Status 差分改为要求两端相等且为正，不再否定 DBaaS 可配置 quota。缺失、不一致或非正 quota
+  会在 reference 启动前 fail closed。
+
+  配置对齐后五项首轮、连续 10 轮（23.668 秒）及 race 5 轮（13.913 秒）全部 GREEN；runner
+  单测 0.383 秒通过。其余四项首次即通过，证明 retained history/lease/subrevision 与 lease list
+  语义没有新运行时差异。本项修改差分编排与永久门禁，不修改或滚动数据面；一次性 reference 已
+  停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
