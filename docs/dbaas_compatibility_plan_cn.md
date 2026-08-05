@@ -36363,6 +36363,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   语义没有新运行时差异。本项修改差分编排与永久门禁，不修改或滚动数据面；一次性 reference 已
   停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3682 将 A3681 的命名启发式门禁升级为 AST 全量审计。测试现在解析兼容模块全部 `*_test.go`：
+  任一 `Test*` 函数只要实际调用 `os.Getenv("REFERENCE_ETCD_ENDPOINT")`，名称就必须匹配默认 runner
+  的 `Differential(Against|$)` 正则。唯一显式例外是要求 `KUBEBRAIN_DIRECT_ENDPOINTS` 的
+  `TestWatchFragmentLimitBoundaryAcrossDirectReplicas`，它属于专用直连副本拓扑，不能在普通 NodePort
+  runner 中假装可执行；例外表必须携带非空原因。
+
+  更强门禁立即发现 A3681 仍遗漏第六项：1001-key `make-mirror` 分页基线测试名为
+  `DifferentialFromKubeBrain`，读取标准 reference endpoint 却不匹配 runner。现改为
+  `TestMakeMirrorPaginatedBaseDifferentialAgainstReferenceEtcd`，首次真实双端运行 9.893 秒通过，
+  连续 3 轮（54.158 秒）及 race 2 轮（20.018 秒）继续 GREEN，证明分页镜像本身没有数据面 RED。
+  本项只修复持续验证收集与永久结构门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录
+  已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

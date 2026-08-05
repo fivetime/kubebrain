@@ -47,7 +47,7 @@ func TestMakeMirrorBidirectionalDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, referenceToKubeBrain, kubeBrainToReference)
 }
 
-func TestMakeMirrorPaginatedBaseDifferentialFromKubeBrain(t *testing.T) {
+func TestMakeMirrorPaginatedBaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run paginated make-mirror tests")

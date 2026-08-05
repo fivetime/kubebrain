@@ -1,6 +1,9 @@
 package compat
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -169,12 +172,42 @@ func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
 func TestReferenceComparisonTestNamesAreSelectedByDifferentialRunner(t *testing.T) {
 	files, err := filepath.Glob("*_test.go")
 	require.NoError(t, err)
-	comparisonName := regexp.MustCompile(`func (Test\w*(?:Matches|Against)ReferenceEtcd)\(`)
+	selected := regexp.MustCompile(`Differential(Against|$)`)
+	specialized := map[string]string{
+		"TestWatchFragmentLimitBoundaryAcrossDirectReplicas": "requires KUBEBRAIN_DIRECT_ENDPOINTS",
+	}
 	for _, file := range files {
-		data, readErr := os.ReadFile(file)
-		require.NoError(t, readErr)
-		for _, match := range comparisonName.FindAllStringSubmatch(string(data), -1) {
-			require.Contains(t, match[1], "Differential", "%s is skipped by run-differential.sh", match[1])
+		parsed, parseErr := parser.ParseFile(token.NewFileSet(), file, nil, 0)
+		require.NoError(t, parseErr)
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function.Name == nil || !regexp.MustCompile(`^Test`).MatchString(function.Name.Name) {
+				continue
+			}
+			readsReferenceEndpoint := false
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok || len(call.Args) != 1 {
+					return true
+				}
+				selector, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || selector.Sel.Name != "Getenv" {
+					return true
+				}
+				packageName, ok := selector.X.(*ast.Ident)
+				argument, literal := call.Args[0].(*ast.BasicLit)
+				if ok && packageName.Name == "os" && literal && argument.Kind == token.STRING && argument.Value == `"REFERENCE_ETCD_ENDPOINT"` {
+					readsReferenceEndpoint = true
+				}
+				return true
+			})
+			if readsReferenceEndpoint {
+				if reason, ok := specialized[function.Name.Name]; ok {
+					require.NotEmpty(t, reason)
+					continue
+				}
+				require.True(t, selected.MatchString(function.Name.Name), "%s in %s is skipped by run-differential.sh", function.Name.Name, file)
+			}
 		}
 	}
 }
