@@ -66,6 +66,26 @@ func TestNormalizeGeneratedTxnResponsesPreservesRangeOrder(t *testing.T) {
 	}, normalized[0].KVs)
 }
 
+func TestGeneratedNestedTxnSeedExecutesEveryInnerRangeMode(t *testing.T) {
+	rng := rand.New(rand.NewSource(369))
+	executed := make(map[int]bool)
+	for caseIndex := 0; caseIndex < 32; caseIndex++ {
+		outerTrue, middleTrue, innerTrue := generatedNestedBranchSelection(caseIndex, rng)
+		if outerTrue && middleTrue && innerTrue {
+			executed[caseIndex%6] = true
+		}
+	}
+	require.Len(t, executed, 6, "fixed seed must execute every generated inner Range mode")
+}
+
+func generatedNestedBranchSelection(caseIndex int, rng *rand.Rand) (outerTrue, middleTrue, innerTrue bool) {
+	outerTrue, middleTrue, innerTrue = rng.Intn(2) == 0, rng.Intn(2) == 0, rng.Intn(2) == 0
+	if caseIndex < 6 {
+		return true, true, true
+	}
+	return outerTrue, middleTrue, innerTrue
+}
+
 func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []generatedTxnCase {
 	t.Helper()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
@@ -85,7 +105,7 @@ func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []gener
 	for caseIndex := 0; caseIndex < 32; caseIndex++ {
 		casePrefix := fmt.Sprintf("%s%02d/", prefix, caseIndex)
 		ctrl, a, b, c := casePrefix+"ctrl", casePrefix+"a", casePrefix+"b", casePrefix+"c"
-		outerTrue, middleTrue, innerTrue := rng.Intn(2) == 0, rng.Intn(2) == 0, rng.Intn(2) == 0
+		outerTrue, middleTrue, innerTrue := generatedNestedBranchSelection(caseIndex, rng)
 		seed, seedErr := cli.Txn(ctx).Then(
 			clientv3.OpPut(ctrl, map[bool]string{true: "yes", false: "no"}[outerTrue]),
 			clientv3.OpPut(a, map[bool]string{true: "middle", false: "other"}[middleTrue]),

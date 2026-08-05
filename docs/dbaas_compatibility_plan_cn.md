@@ -35963,6 +35963,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   4.76 秒全等，未发现新的服务端语义差异，因此本项只保留永久测试覆盖，不制造 RED 或运行镜像
   变更；两端测试前缀均已清理，一次性 reference 进程已停止。
 
+- A3654 审计 A3653 生成式门禁自身的路径覆盖，发现固定 seed 的 32 个 case 虽构造了六种
+  inner Range 请求，但只有 `caseIndex%6 == 2` 的 CountOnly 请求同时命中 outer/middle/inner
+  三层成功分支；其余五种请求全部位于未选择分支，因而 A3653 的两端全等不能证明那些 staged
+  Range 语义。新增 seed coverage 断言在旧生成策略上确定性 RED 0.00 秒，实际只得到
+  `map[2:true]`，而不是六种模式。
+
+  生成器现在仍为每个 case 消耗相同的固定随机序列，但强制前六个 case 逐一选择三层成功分支，
+  后 26 个 case 保留原随机分支组合；独立单元门禁要求六种 mode 都被实际执行，避免以后扩展请求
+  形状却只比较 unselected branch。修后覆盖断言与归一化测试连续 20 轮 0.418 秒 GREEN；一次性
+  官方 etcd `d947b2086` 对生产 KubeBrain NodePort 的 32-case 差分 5.14 秒全等，说明完整执行
+  Limit、KeysOnly、CountOnly、VALUE DESCEND、revision filter 和默认 Range 后仍没有新的服务端
+  语义差异。两端测试前缀和 reference 进程均已清理，本项修复测试证据强度，不改变运行镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
