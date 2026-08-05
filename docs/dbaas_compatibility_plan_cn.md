@@ -35976,6 +35976,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Limit、KeysOnly、CountOnly、VALUE DESCEND、revision filter 和默认 Range 后仍没有新的服务端
   语义差异。两端测试前缀和 reference 进程均已清理，本项修复测试证据强度，不改变运行镜像。
 
+- A3655 继续按 `/root/etcd/api/etcdserverpb/rpc.proto:RangeRequest` 扩大 A3654 的已执行选项表。
+  旧门禁只包含六种模式，新增完整排序/create-filter 覆盖断言首先确定性 RED 0.00 秒：实际集合为
+  `map[0:true ... 5:true]`，缺少预期的扩展模式。生成器现以单一常量管理 11 种模式并强制前 11 个
+  case 进入三层成功分支，新增 create-revision filter、KEY/VERSION/CREATE/MOD DESCEND+Limit；默认、
+  Limit、KeysOnly、CountOnly、VALUE DESCEND 和 mod-revision filter 继续保留。
+
+  为避免 VERSION/CREATE/MOD 排序在全体 version/revision 相等时退化成无意义比较，内层 Range 前先
+  staged-update 已有键，再 staged-create 新键；归一化响应因此同时验证 PrevKV、Version、CreateRev、
+  ModRev、排序、More/Count 和最终提交视图。覆盖/归一化测试连续 20 轮 0.433 秒 GREEN；一次性官方
+  etcd `d947b2086` 与生产 KubeBrain NodePort 的 32-case oracle 5.73 秒全等，未发现新的服务端语义
+  差异。兼容模块 test/vet 与真实 NodePort 全套 107.550 秒通过；根模块首轮默认并行全包在无本项
+  依赖的 `pkg/server/etcd` 末尾失败且 26 万 token 日志截断具体用例，随即使用 `go test -json`
+  独立运行该包 166 秒无任何 fail action，全仓重跑（server/etcd 166.393 秒）及 vet 均通过，继续记为
+  既有重型并行资源/时序候选而不伪造产品修复。reference 进程和两端隔离前缀均清理，本项不改变
+  运行镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

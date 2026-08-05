@@ -33,6 +33,8 @@ type generatedTxnCase struct {
 	Final     []normalizedKV
 }
 
+const generatedInnerRangeModeCount = 11
+
 func TestGeneratedNestedTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -72,15 +74,15 @@ func TestGeneratedNestedTxnSeedExecutesEveryInnerRangeMode(t *testing.T) {
 	for caseIndex := 0; caseIndex < 32; caseIndex++ {
 		outerTrue, middleTrue, innerTrue := generatedNestedBranchSelection(caseIndex, rng)
 		if outerTrue && middleTrue && innerTrue {
-			executed[caseIndex%6] = true
+			executed[caseIndex%generatedInnerRangeModeCount] = true
 		}
 	}
-	require.Len(t, executed, 6, "fixed seed must execute every generated inner Range mode")
+	require.Len(t, executed, generatedInnerRangeModeCount, "fixed seed must execute every generated inner Range mode")
 }
 
 func generatedNestedBranchSelection(caseIndex int, rng *rand.Rand) (outerTrue, middleTrue, innerTrue bool) {
 	outerTrue, middleTrue, innerTrue = rng.Intn(2) == 0, rng.Intn(2) == 0, rng.Intn(2) == 0
-	if caseIndex < 6 {
+	if caseIndex < generatedInnerRangeModeCount {
 		return true, true, true
 	}
 	return outerTrue, middleTrue, innerTrue
@@ -116,7 +118,7 @@ func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []gener
 		baseRev := seed.Header.Revision
 
 		innerRange := clientv3.OpGet(casePrefix, clientv3.WithPrefix())
-		switch caseIndex % 6 {
+		switch caseIndex % generatedInnerRangeModeCount {
 		case 0:
 			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithLimit(2))
 		case 1:
@@ -127,10 +129,21 @@ func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []gener
 			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByValue, clientv3.SortDescend), clientv3.WithLimit(3))
 		case 4:
 			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithMinModRev(baseRev), clientv3.WithMaxModRev(baseRev+1))
+		case 5:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithMinCreateRev(baseRev), clientv3.WithMaxCreateRev(baseRev))
+		case 6:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByKey, clientv3.SortDescend), clientv3.WithLimit(3))
+		case 7:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByVersion, clientv3.SortDescend), clientv3.WithLimit(3))
+		case 8:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByCreateRevision, clientv3.SortDescend), clientv3.WithLimit(3))
+		case 9:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithSort(clientv3.SortByModRevision, clientv3.SortDescend), clientv3.WithLimit(3))
 		}
 		inner := clientv3.OpTxn(
 			[]clientv3.Cmp{clientv3.Compare(clientv3.Value(c), "=", "inner")},
 			[]clientv3.Op{
+				clientv3.OpPut(a, "middle-updated", clientv3.WithPrevKV()),
 				clientv3.OpPut(casePrefix+"inner-put", "inner-value", clientv3.WithPrevKV()),
 				innerRange,
 			},
