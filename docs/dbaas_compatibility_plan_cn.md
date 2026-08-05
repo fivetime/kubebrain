@@ -36376,6 +36376,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项只修复持续验证收集与永久结构门禁，不修改或滚动数据面；一次性 reference 已停止，临时目录
   已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3683 扩展默认官方差分 runner 的 AST 收集审计。A3682 只识别 gRPC
+  `REFERENCE_ETCD_ENDPOINT`，但同一 runner 还注入 HTTP gateway 的
+  `REFERENCE_ETCD_GATEWAY_ENDPOINT` 与 metrics 的 `REFERENCE_ETCD_METRICS_ENDPOINT`；后两类测试若
+  以后命名漂移，仍可能在常规门禁全绿时静默漏跑。现以默认 runner 实际注入的三类 reference
+  endpoint 为集合，逐个测试函数解析直接 `os.Getenv` 调用；读取任一变量的测试均必须匹配
+  `Differential(Against|$)`，专用拓扑例外仍须显式列名并给出非空原因。
+
+  全量静态盘点确认现有 12 项 HTTP gateway 场景与 1 项 alarm metrics 场景均已正确进入默认
+  runner。受控 mutation 将 HTTP health boundary 临时改为不匹配名称后，门禁按预期 RED 并准确报告
+  其读取 gateway reference endpoint 却被 runner 跳过；恢复后目标测试、兼容模块全量 test/vet 及根
+  模块全量 test/vet（`pkg/server/etcd` 167.204 秒）均 GREEN。因此本轮没有伪造数据面差异，也不
+  修改或滚动数据面；新增门禁负责阻止后续收集回归。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

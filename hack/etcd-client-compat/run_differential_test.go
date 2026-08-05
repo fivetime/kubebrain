@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -169,10 +170,15 @@ func TestDifferentialRunnerSelectsScenariosNotRunnerSelfTests(t *testing.T) {
 	require.NotContains(t, string(script), "-run Differential -count=1")
 }
 
-func TestReferenceComparisonTestNamesAreSelectedByDifferentialRunner(t *testing.T) {
+func TestDefaultReferenceEndpointTestsAreSelectedByDifferentialRunner(t *testing.T) {
 	files, err := filepath.Glob("*_test.go")
 	require.NoError(t, err)
 	selected := regexp.MustCompile(`Differential(Against|$)`)
+	defaultReferenceEndpoints := map[string]struct{}{
+		"REFERENCE_ETCD_ENDPOINT":         {},
+		"REFERENCE_ETCD_GATEWAY_ENDPOINT": {},
+		"REFERENCE_ETCD_METRICS_ENDPOINT": {},
+	}
 	specialized := map[string]string{
 		"TestWatchFragmentLimitBoundaryAcrossDirectReplicas": "requires KUBEBRAIN_DIRECT_ENDPOINTS",
 	}
@@ -184,7 +190,7 @@ func TestReferenceComparisonTestNamesAreSelectedByDifferentialRunner(t *testing.
 			if !ok || function.Body == nil || function.Name == nil || !regexp.MustCompile(`^Test`).MatchString(function.Name.Name) {
 				continue
 			}
-			readsReferenceEndpoint := false
+			readReferenceEndpoints := make(map[string]struct{})
 			ast.Inspect(function.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
 				if !ok || len(call.Args) != 1 {
@@ -196,17 +202,24 @@ func TestReferenceComparisonTestNamesAreSelectedByDifferentialRunner(t *testing.
 				}
 				packageName, ok := selector.X.(*ast.Ident)
 				argument, literal := call.Args[0].(*ast.BasicLit)
-				if ok && packageName.Name == "os" && literal && argument.Kind == token.STRING && argument.Value == `"REFERENCE_ETCD_ENDPOINT"` {
-					readsReferenceEndpoint = true
+				if !ok || packageName.Name != "os" || !literal || argument.Kind != token.STRING {
+					return true
+				}
+				environmentName, unquoteErr := strconv.Unquote(argument.Value)
+				if unquoteErr != nil {
+					return true
+				}
+				if _, ok := defaultReferenceEndpoints[environmentName]; ok {
+					readReferenceEndpoints[environmentName] = struct{}{}
 				}
 				return true
 			})
-			if readsReferenceEndpoint {
+			if len(readReferenceEndpoints) > 0 {
 				if reason, ok := specialized[function.Name.Name]; ok {
 					require.NotEmpty(t, reason)
 					continue
 				}
-				require.True(t, selected.MatchString(function.Name.Name), "%s in %s is skipped by run-differential.sh", function.Name.Name, file)
+				require.True(t, selected.MatchString(function.Name.Name), "%s in %s reads default reference endpoint(s) %v but is skipped by run-differential.sh", function.Name.Name, file, readReferenceEndpoints)
 			}
 		}
 	}
