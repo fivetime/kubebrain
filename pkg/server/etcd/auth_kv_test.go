@@ -55,6 +55,57 @@ func TestAuthKVUnaryHandlersEnforcePermissions(t *testing.T) {
 	require.Empty(t, denied.Kvs, "denied put must not reach storage")
 }
 
+func TestAuthCompactAdminCheckPrecedesFollowerRoutingLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, rootToken,
+	))
+	invalidCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, "invalid-token",
+	))
+
+	request := &etcdserverpb.CompactionRequest{Revision: 1}
+	for _, proxyEnabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "rejecting_follower", true: "proxying_follower"}[proxyEnabled], func(t *testing.T) {
+			var forwarded int
+			var forwardedTokens [][]string
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: proxyEnabled,
+				compactFn: func(ctx context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+					forwarded++
+					require.Equal(t, request, req)
+					md, _ := metadata.FromOutgoingContext(ctx)
+					forwardedTokens = append(forwardedTokens, md.Get(rpctypes.TokenFieldNameGRPC))
+					return &etcdserverpb.CompactionResponse{Header: txnHeader(1)}, nil
+				},
+			}
+
+			_, err := server.Compact(context.Background(), request)
+			requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+			_, err = server.Compact(invalidCtx, request)
+			requireAuthKVError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
+			_, err = server.Compact(aliceCtx, request)
+			requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+			require.Zero(t, forwarded, "unauthorized Compact must not reach follower routing")
+
+			_, err = server.Compact(rootCtx, request)
+			if proxyEnabled {
+				require.NoError(t, err)
+				require.Equal(t, 1, forwarded)
+				require.Equal(t, []string{rootToken}, forwardedTokens[0])
+			} else {
+				require.Error(t, err)
+				require.Equal(t, codes.Unavailable, status.Code(err))
+				require.Zero(t, forwarded)
+			}
+		})
+	}
+}
+
 func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -144,7 +195,7 @@ func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	require.Equal(t, 2, barrierCalls, "a linearizable read-only txn must establish exactly one barrier")
 }
 
-func TestAuthWriteLeadershipFailurePrecedesAuthLikeEtcd(t *testing.T) {
+func TestAuthNonAdminWriteLeadershipFailurePrecedesAuthLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	setupAuthKVUser(t, server)
@@ -182,13 +233,6 @@ func TestAuthWriteLeadershipFailurePrecedesAuthLikeEtcd(t *testing.T) {
 						},
 					}}},
 				})
-				return err
-			},
-		},
-		{
-			name: "compact",
-			call: func() error {
-				_, err := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 1})
 				return err
 			},
 		},

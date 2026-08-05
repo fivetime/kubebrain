@@ -1026,6 +1026,18 @@ func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
 }
 
 func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+	// Upstream kvServer.Compact applies AuthAdmin.isPermitted before it enters
+	// EtcdServer.Compact and therefore before any leader routing. Compact is a
+	// cluster-wide destructive history operation, so an anonymous/non-root call
+	// must be rejected by the serving member rather than forwarded (or obscured
+	// by a follower error).
+	caller, err := s.authCallerFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !caller.isRoot() {
+		return nil, rpctypes.ErrPermissionDenied
+	}
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
@@ -1039,15 +1051,6 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 			return response, err
 		}
 		return nil, s.notLeaderErr("compact")
-	}
-	// Compact is a cluster-wide destructive history operation, not a key-range
-	// write. Upstream etcd protects it with AuthAdmin.isPermitted (root only).
-	caller, err := s.authCallerFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if !caller.isRoot() {
-		return nil, rpctypes.ErrPermissionDenied
 	}
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err
