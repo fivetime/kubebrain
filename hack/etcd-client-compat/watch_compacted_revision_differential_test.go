@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,10 +10,23 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+type watchEventMetadataOutcome struct {
+	Types              []mvccpb.Event_EventType
+	KeyMatches         bool
+	Values             []string
+	CreateRevisionGaps []int64
+	ModRevisionGaps    []int64
+	Versions           []int64
+	Leases             []int64
+	PrevKVAbsent       bool
+	KVObserved         bool
+}
 
 type watchCompactedRevisionOutcome struct {
 	FirstPutGap          int64
@@ -28,8 +42,7 @@ type watchCompactedRevisionOutcome struct {
 	FinalPutGap          int64
 	EventHeaderGap       int64
 	EventEnvelope        watchControlOutcome
-	EventModRevisionGap  int64
-	EventValue           string
+	EventMetadata        watchEventMetadataOutcome
 }
 
 func TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -47,12 +60,67 @@ func TestWatchCompactedRevisionDifferentialAgainstReferenceEtcd(t *testing.T) {
 		NextCreatedHeaderGap: 3,
 		NextCreatedEnvelope:  expectedCompactedWatchEnvelope(708, true, false, false, 0),
 		FinalPutGap:          4, EventHeaderGap: 4,
-		EventEnvelope:       expectedCompactedWatchEventEnvelope(708),
-		EventModRevisionGap: 4, EventValue: "v4",
+		EventEnvelope: expectedCompactedWatchEventEnvelope(708),
+		EventMetadata: watchEventMetadataOutcome{
+			Types: []mvccpb.Event_EventType{mvccpb.PUT}, KeyMatches: true,
+			Values: []string{"v4"}, CreateRevisionGaps: []int64{1},
+			ModRevisionGaps: []int64{4}, Versions: []int64{4}, Leases: []int64{0},
+			PrevKVAbsent: true, KVObserved: true,
+		},
 	}
 	referenceOutcome := runWatchCompactedRevisionScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runWatchCompactedRevisionScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func observeWatchEventMetadata(
+	events []*mvccpb.Event,
+	expectedKey []byte,
+	baseRevision int64,
+) watchEventMetadataOutcome {
+	outcome := watchEventMetadataOutcome{
+		Types:              make([]mvccpb.Event_EventType, 0, len(events)),
+		Values:             make([]string, 0, len(events)),
+		CreateRevisionGaps: make([]int64, 0, len(events)),
+		ModRevisionGaps:    make([]int64, 0, len(events)),
+		Versions:           make([]int64, 0, len(events)),
+		Leases:             make([]int64, 0, len(events)),
+		KeyMatches:         len(events) > 0, PrevKVAbsent: len(events) > 0, KVObserved: len(events) > 0,
+	}
+	for _, event := range events {
+		outcome.Types = append(outcome.Types, event.GetType())
+		outcome.PrevKVAbsent = outcome.PrevKVAbsent && event.GetPrevKv() == nil
+		kv := event.GetKv()
+		if kv == nil {
+			outcome.KeyMatches = false
+			outcome.KVObserved = false
+			continue
+		}
+		outcome.KeyMatches = outcome.KeyMatches && bytes.Equal(kv.Key, expectedKey)
+		outcome.Values = append(outcome.Values, string(kv.Value))
+		outcome.CreateRevisionGaps = append(outcome.CreateRevisionGaps, kv.CreateRevision-baseRevision)
+		outcome.ModRevisionGaps = append(outcome.ModRevisionGaps, kv.ModRevision-baseRevision)
+		outcome.Versions = append(outcome.Versions, kv.Version)
+		outcome.Leases = append(outcome.Leases, kv.Lease)
+	}
+	return outcome
+}
+
+func TestObserveWatchEventMetadataHandlesNilPayload(t *testing.T) {
+	event := &mvccpb.Event{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{
+		Key: []byte("key"), Value: []byte("v4"), CreateRevision: 11,
+		ModRevision: 14, Version: 4,
+	}}
+	require.Equal(t, watchEventMetadataOutcome{
+		Types: []mvccpb.Event_EventType{mvccpb.PUT}, KeyMatches: true,
+		Values: []string{"v4"}, CreateRevisionGaps: []int64{1},
+		ModRevisionGaps: []int64{4}, Versions: []int64{4}, Leases: []int64{0},
+		PrevKVAbsent: true, KVObserved: true,
+	}, observeWatchEventMetadata([]*mvccpb.Event{event}, []byte("key"), 10))
+
+	nilOutcome := observeWatchEventMetadata([]*mvccpb.Event{nil}, []byte("key"), 10)
+	require.False(t, nilOutcome.KeyMatches)
+	require.False(t, nilOutcome.KVObserved)
 }
 
 func expectedCompactedWatchEventEnvelope(id int64) watchControlOutcome {
@@ -144,7 +212,6 @@ func runWatchCompactedRevisionScenario(t *testing.T, endpoint, instance string) 
 		FinalPutGap:          put4.Header.Revision - baseRevision,
 		EventHeaderGap:       event.Header.Revision - baseRevision,
 		EventEnvelope:        observeWatchControlResponse(event, seed.Header),
-		EventModRevisionGap:  event.Events[0].Kv.ModRevision - baseRevision,
-		EventValue:           string(event.Events[0].Kv.Value),
+		EventMetadata:        observeWatchEventMetadata(event.Events, key, baseRevision),
 	}
 }

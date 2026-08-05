@@ -35521,6 +35521,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   diff check 均通过，线上 `/dbaas-watch-compacted/` prefix 为 0。本轮未发现 runtime 差异，不重建或
   滚动生产镜像。
 
+- A3625 从 compaction 后事件 envelope 下钻到 `v4` 更新事件的完整 KV 元数据。旧 outcome 只保存 value
+  与 ModRevision gap，未固定 type、key、首次 CreateRevision、Version、Lease、PrevKv 或 nil payload。
+  先加入 PUT、同 key、value=v4、CreateRevision gap=1、ModRevision gap=4、Version=4、Lease=0、PrevKv
+  缺失与 KV 已观测期望而不采集，reference RED 精确显示整组元数据为零值。
+
+  新共享 `observeWatchEventMetadata` 使用 `bytes.Equal` 比较二进制 key、protobuf nil-safe getter 读取事件，
+  并以 seed revision 归一化 create/mod revision；旧 value/ModRevision 单字段已删除。synthetic 正常更新与
+  nil payload 矩阵连续 20 轮 0.027 秒、race 1.071 秒；真实双端 compaction 场景连续 10 轮 7.821 秒、
+  race 1.885 秒；兼容模块全包 1.302 秒、两级 module vet、`hack/production` 全包 461.639 秒及
+  diff check 均通过，线上 `/dbaas-watch-compacted/` prefix 为 0。本轮未发现 runtime 差异，不重建或
+  滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
