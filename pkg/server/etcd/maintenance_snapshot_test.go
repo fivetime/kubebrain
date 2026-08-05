@@ -6,6 +6,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -39,6 +40,12 @@ type pausedSnapshotBackend struct {
 	paused  chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type metadataBarrierSnapshotBackend struct {
+	*pausedSnapshotBackend
+	barrierAcquired chan struct{}
+	proceedMetadata chan struct{}
 }
 
 type localSnapshotTrapBackend struct {
@@ -177,6 +184,16 @@ func (b *pausedSnapshotBackend) SnapshotHistoryStreamChan(ctx context.Context, r
 	return out, nil
 }
 
+func (b *metadataBarrierSnapshotBackend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
+	rangeCtx, unlock := b.BackendShim.BeginRangeTxn(ctx)
+	close(b.barrierAcquired)
+	select {
+	case <-b.proceedMetadata:
+	case <-ctx.Done():
+	}
+	return rangeCtx, unlock
+}
+
 func TestMaintenanceSnapshotDoesNotBlockWritesAndKeepsPinnedRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -238,6 +255,77 @@ func TestMaintenanceSnapshotDoesNotBlockWritesAndKeepsPinnedRevision(t *testing.
 	// but excludes the later key despite allowing that write to complete.
 	require.Contains(t, keys, []byte("snapshot-seed"))
 	require.NotContains(t, keys, []byte("after-snapshot-pin"))
+}
+
+func TestMaintenanceSnapshotPinsAuthMetadataBeforeReleasingWriteBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-auth-barrier-seed"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+
+	wrapped := &metadataBarrierSnapshotBackend{
+		pausedSnapshotBackend: &pausedSnapshotBackend{
+			BackendShim: server.backend,
+			paused:      make(chan struct{}),
+			release:     make(chan struct{}),
+		},
+		barrierAcquired: make(chan struct{}),
+		proceedMetadata: make(chan struct{}),
+	}
+	server.backend = wrapped
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	snapshotDone := make(chan error, 1)
+	go func() { snapshotDone <- server.buildSnapshot(context.Background(), path) }()
+	select {
+	case <-wrapped.barrierAcquired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not acquire its metadata barrier")
+	}
+
+	roleDone := make(chan error, 1)
+	go func() {
+		_, roleErr := server.RoleAdd(context.Background(), &etcdserverpb.AuthRoleAddRequest{Name: "after-snapshot-pin"})
+		roleDone <- roleErr
+	}()
+	select {
+	case roleErr := <-roleDone:
+		require.FailNow(t, "auth mutation crossed snapshot metadata barrier", "err=%v", roleErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(wrapped.proceedMetadata)
+	select {
+	case <-wrapped.paused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not establish its pinned history stream")
+	}
+	select {
+	case roleErr := <-roleDone:
+		require.NoError(t, roleErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("auth mutation did not resume after snapshot released its barrier")
+	}
+	close(wrapped.release)
+	require.NoError(t, <-snapshotDone)
+
+	current, err := server.auth.repo.load(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, current.Roles, "after-snapshot-pin")
+	require.Equal(t, uint64(2), current.Config.Revision)
+
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		require.Nil(t, tx.Bucket(schema.AuthRoles.Name()).Get([]byte("after-snapshot-pin")),
+			"the artifact must retain the auth state captured before its pinned user revision")
+		require.Equal(t, uint64(1), binary.BigEndian.Uint64(
+			tx.Bucket(schema.Auth.Name()).Get(schema.AuthRevisionKeyName)))
+		return nil
+	}))
 }
 
 func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *testing.T) {

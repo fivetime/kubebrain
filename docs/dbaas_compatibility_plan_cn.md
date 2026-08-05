@@ -36096,6 +36096,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   根模块 test/vet（server/etcd 167.766 秒）与兼容模块 test/vet（1.334 秒）均通过。一次性 reference
   已停止，其临时数据目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3662 回到矩阵中唯一显式“部分兼容”的 Maintenance Snapshot，区分可修实现缺口与不可逆来源限制。
+  对照官方 bbolt Snapshot 的单事务 capture，审计确认 KubeBrain 新 v2 envelope 已保存每版本 lease；当前
+  保留项只涉及升级前 raw/v1 历史从未持久化的 lease provenance，rebind 后无法由现有 attachment 或 lease
+  metadata 推导。继续猜测 Lease=0 会生成表面合法但历史错误的官方 bbolt，因此保持 A3590 的
+  FailedPrecondition/physical-Compact fail-closed 契约，不把数据丢失伪装成实现修复。
+
+  同时补齐此前缺少的跨 metadata 并发证明：`TestMaintenanceSnapshotPinsAuthMetadataBeforeReleasingWriteBarrier`
+  在 Snapshot 已取得 `BeginRangeTxn` exclusive barrier、尚未读取 metadata 时并发 RoleAdd，要求内部 auth CAS
+  不能穿越 barrier；TiKV history pin 建立后 mutation 必须在完整 snapshot stream 结束前恢复。最终 live auth
+  revision 为 2 且包含新 role，而制品 auth revision 固定为 1 且不含该 role，证明用户 MVCC、auth/lease/alarm
+  internal metadata 共用同一线性化窗口，同时长时间 bbolt 写出不会阻塞后续 mutation。聚焦普通连续 20 轮
+  与 race、根模块 test/vet（server/etcd 168.902 秒）及兼容模块 test/vet 均通过；本项没有发现运行时代码
+  RED，不重建相同镜像，Snapshot 矩阵仍诚实保留 legacy 限制。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
