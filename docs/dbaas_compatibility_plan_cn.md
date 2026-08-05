@@ -35778,6 +35778,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Fragment=true` 对 2 MiB 阈值的严格 `<`/`>=` wire 契约。因此没有把 RangeStream 的 interceptor
   盖章顺序机械包装成同一兼容问题，后续仍由既有 chunk 合并、字段覆盖和 oversize 门禁约束该路径。
 
+- A3642 将 A3641 的阈值矩阵扩展到 fragment header identity 与三直连副本。旧 exact-limit outcome
+  虽以 created header 预测 proto size，却只固定 response revision gap，没有显式证明每一帧的 ClusterId、
+  MemberId、RaftTerm 仍属于同一 serving stream；在 KubeBrain 的 follower→leader Watch 代理与两层
+  interceptor 盖章路径上，这会漏掉 fragment 暴露 leader identity 或跨帧 term 漂移。新增
+  `HeadersMatchCreated` 对每帧逐项约束，reference 以旧 false 预期按计划 RED（0.124 秒），实际所有
+  exact fragments 均为 true。
+
+  新 `TestWatchFragmentLimitBoundaryAcrossDirectReplicas` 对 reference 的 -1/0/+1 三象限分别建立 oracle，
+  再通过显式 context `kind-kubebrain-dbaas` 为 `kubebrain-0/1/2` 建立三个独立 localhost port-forward，
+  强制每个副本逐一执行全部象限。三副本首次 GREEN 3.872 秒、连续 5 轮 26.853 秒、race 9.335 秒；
+  每帧 cluster/member/term 均与对应直连 stream 的 created header 相同，事件/PrevKV metadata 与帧边界也
+  继续匹配 reference。一次直接使用 `10.244.0.x:3379` 的尝试因宿主不可路由 kind Pod CIDR，九个
+  子场景都在建连前 DeadlineExceeded（180.364 秒），未执行 RPC，不计作产品 RED；改用 port-forward
+  后关闭该 harness 环境问题。
+
+  兼容模块全包 1.346 秒、两级 module vet、`pkg/server/etcd` 全包 168.814 秒、真实 NodePort clientv3
+  全包 96.208 秒、`hack/production` 全包 456.810 秒及 diff check 均通过；线上
+  `/dbaas-watch-limit-boundary/` prefix Count=0，无残留 port-forward。四个 reference etcd 临时目录均由
+  trap 删除且不可恢复，只含一次性测试数据。本轮仅增强差分/拓扑门禁，继续使用 A3640 镜像，不重建
+  或滚动生产服务。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

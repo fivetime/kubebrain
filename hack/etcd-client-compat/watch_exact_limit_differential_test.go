@@ -25,6 +25,7 @@ type watchExactLimitOutcome struct {
 	FragmentFlags          []bool
 	FrameBelowLimit        []bool
 	HeaderRevisionGaps     []int64
+	HeadersMatchCreated    bool
 	KeysOrdered            bool
 	ValuesMatch            bool
 	MetadataMatches        bool
@@ -43,6 +44,7 @@ func TestWatchExactFragmentLimitDifferentialAgainstReferenceEtcd(t *testing.T) {
 		FragmentFlags:          []bool{true, false},
 		FrameBelowLimit:        []bool{true, true},
 		HeaderRevisionGaps:     []int64{3, 3},
+		HeadersMatchCreated:    true,
 		KeysOrdered:            true,
 		ValuesMatch:            true,
 		MetadataMatches:        true,
@@ -68,19 +70,19 @@ func TestWatchFragmentLimitBoundaryMatrixDifferentialAgainstReferenceEtcd(t *tes
 		{name: "one byte below", sizeDelta: -1, want: watchExactLimitOutcome{
 			CandidateMatchesTarget: true, FrameEventCounts: []int{2},
 			FragmentFlags: []bool{false}, FrameBelowLimit: []bool{true},
-			HeaderRevisionGaps: []int64{3}, KeysOrdered: true, ValuesMatch: true,
+			HeaderRevisionGaps: []int64{3}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
 			MetadataMatches: true, TotalEvents: 2,
 		}},
 		{name: "exact", want: watchExactLimitOutcome{
 			CandidateMatchesTarget: true, FrameEventCounts: []int{1, 1},
 			FragmentFlags: []bool{true, false}, FrameBelowLimit: []bool{true, true},
-			HeaderRevisionGaps: []int64{3, 3}, KeysOrdered: true, ValuesMatch: true,
+			HeaderRevisionGaps: []int64{3, 3}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
 			MetadataMatches: true, TotalEvents: 2,
 		}},
 		{name: "one byte above", sizeDelta: 1, want: watchExactLimitOutcome{
 			CandidateMatchesTarget: true, FrameEventCounts: []int{1, 1},
 			FragmentFlags: []bool{true, false}, FrameBelowLimit: []bool{true, true},
-			HeaderRevisionGaps: []int64{3, 3}, KeysOrdered: true, ValuesMatch: true,
+			HeaderRevisionGaps: []int64{3, 3}, HeadersMatchCreated: true, KeysOrdered: true, ValuesMatch: true,
 			MetadataMatches: true, TotalEvents: 2,
 		}},
 	}
@@ -92,6 +94,27 @@ func TestWatchFragmentLimitBoundaryMatrixDifferentialAgainstReferenceEtcd(t *tes
 			require.Equal(t, referenceOutcome,
 				runWatchLimitBoundaryScenario(t, compatEndpoint(t), "kubebrain", target))
 		})
+	}
+}
+
+func TestWatchFragmentLimitBoundaryAcrossDirectReplicas(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run watch fragment differential tests")
+	}
+	endpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
+	requireDistinctDirectReplicaTopology(t, endpoints)
+
+	for _, sizeDelta := range []int{-1, 0, 1} {
+		target := watchFragmentExactLimit + sizeDelta
+		referenceOutcome := runWatchLimitBoundaryScenario(t, reference, fmt.Sprintf("etcd-%d", sizeDelta), target)
+		require.True(t, referenceOutcome.HeadersMatchCreated)
+		for index, endpoint := range endpoints {
+			t.Run(fmt.Sprintf("delta_%d/replica_%d", sizeDelta, index), func(t *testing.T) {
+				require.Equal(t, referenceOutcome,
+					runWatchLimitBoundaryScenario(t, endpoint, fmt.Sprintf("kubebrain-%d-%d", sizeDelta, index), target))
+			})
+		}
 	}
 }
 
@@ -169,7 +192,7 @@ func runWatchLimitBoundaryScenario(t *testing.T, endpoint, instance string, targ
 
 	outcome := watchExactLimitOutcome{
 		CandidateMatchesTarget: proto.Size(candidate) == targetSize,
-		KeysOrdered:            true, ValuesMatch: true, MetadataMatches: true,
+		HeadersMatchCreated:    true, KeysOrdered: true, ValuesMatch: true, MetadataMatches: true,
 	}
 	reassembled := &etcdserverpb.WatchResponse{}
 	for {
@@ -185,6 +208,9 @@ func runWatchLimitBoundaryScenario(t *testing.T, endpoint, instance string, targ
 		outcome.FragmentFlags = append(outcome.FragmentFlags, response.Fragment)
 		outcome.FrameBelowLimit = append(outcome.FrameBelowLimit, proto.Size(response) < watchFragmentExactLimit)
 		outcome.HeaderRevisionGaps = append(outcome.HeaderRevisionGaps, response.Header.GetRevision()-base.Header.Revision)
+		outcome.HeadersMatchCreated = outcome.HeadersMatchCreated && response.Header != nil &&
+			response.Header.ClusterId == created.Header.ClusterId && response.Header.MemberId == created.Header.MemberId &&
+			response.Header.RaftTerm == created.Header.RaftTerm
 		for _, event := range response.Events {
 			index := outcome.TotalEvents
 			require.Less(t, index, len(keys))
