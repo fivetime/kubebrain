@@ -135,6 +135,7 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	require.Equal(t, wantInvalid, referenceInvalid)
 	require.Equal(t, referenceInvalid, runWatchInvalidControlScenario(t, compatEndpoint(t), "kubebrain"))
 	referenceFragments := runWatchFragmentScenario(t, reference, "reference")
+	fragmentValue := string(make([]byte, 800*1024))
 	require.Equal(t, watchFragmentOutcome{
 		DeleteRevisionGap:       1,
 		FragmentHeadersAtDelete: true,
@@ -142,6 +143,10 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		EventCounts:             []int{2},
 		FragmentFlags:           []bool{false},
 		PrevValueBytes:          []int{800 * 1024, 800 * 1024},
+		EventMetadata: []watchEventMetadataOutcome{
+			expectedFragmentEventMetadata(-1, fragmentValue),
+			expectedFragmentEventMetadata(0, fragmentValue),
+		},
 	}, referenceFragments)
 	kubebrainFragments := runWatchFragmentScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceFragments, kubebrainFragments)
@@ -328,6 +333,23 @@ type watchFragmentOutcome struct {
 	EventCounts             []int
 	FragmentFlags           []bool
 	PrevValueBytes          []int
+	EventMetadata           []watchEventMetadataOutcome
+}
+
+func expectedFragmentEventMetadata(prevRevisionGap int64, value string) watchEventMetadataOutcome {
+	return watchEventMetadataOutcome{
+		Types: []mvccpb.Event_EventType{mvccpb.DELETE}, KeyMatches: true,
+		Values: []string{""}, CreateRevisionSet: []bool{false}, CreateRevisionGaps: []int64{0},
+		ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{1}, Versions: []int64{0},
+		Leases: []int64{0}, PrevKVAbsent: false,
+		PrevMetadata: watchPrevKVMetadataOutcome{
+			Present: []bool{true}, KeyMatches: true, Values: []string{value},
+			CreateRevisionSet: []bool{true}, CreateRevisionGaps: []int64{prevRevisionGap},
+			ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{prevRevisionGap},
+			Versions: []int64{1}, Leases: []int64{0}, Observed: true,
+		},
+		KVObserved: true,
+	}
 }
 
 type watchProgressOutcome struct {
@@ -395,6 +417,7 @@ func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFrag
 		FragmentHeadersAtDelete: true,
 		EventModsAtDelete:       true,
 	}
+	eventIndex := 0
 	for {
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr)
@@ -404,14 +427,19 @@ func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFrag
 		outcome.FragmentHeadersAtDelete = outcome.FragmentHeadersAtDelete &&
 			resp.Header != nil && resp.Header.Revision == deleted.Header.Revision
 		for _, event := range resp.Events {
+			require.Less(t, eventIndex, len(keys))
 			outcome.PrevValueBytes = append(outcome.PrevValueBytes, len(event.PrevKv.GetValue()))
 			outcome.EventModsAtDelete = outcome.EventModsAtDelete &&
 				event.Kv != nil && event.Kv.ModRevision == deleted.Header.Revision
+			outcome.EventMetadata = append(outcome.EventMetadata,
+				observeWatchEventMetadata([]*mvccpb.Event{event}, []byte(keys[eventIndex]), revision))
+			eventIndex++
 		}
 		if !resp.Fragment {
 			break
 		}
 	}
+	require.Equal(t, len(keys), eventIndex)
 	require.NoError(t, stream.CloseSend())
 	return outcome
 }

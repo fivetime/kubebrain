@@ -35597,6 +35597,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/production` 全包 468.258 秒及 diff check 均通过，线上 `/dbaas-watch-filter-enum/` prefix 为 0。
   本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3631 把共享 current/PrevKV metadata oracle 扩展到 `fragment=true` 的大 range DELETE。旧场景只固定两个
+  事件合并在 EventCount=2、最终 Fragment=false、header/mod revision 位于 delete revision，以及两个前值
+  各 800 KiB；错误的事件顺序、key、当前 DELETE 零值字段、前值 revision/version/lease 或内容等长但损坏
+  都不会进入差分。upstream `server/etcdserver/api/v3rpc/watch.go:sendFragments` 保证同一 response 的 header
+  复制到各 fragment 且最后一帧清除 Fragment，集成 `watch_fragment_test.go` 固定大响应完整到达。
+  先加入 `a`、`b` 两个事件的完整 nested metadata 而不采集，reference RED 1.372 秒精确显示
+  EventMetadata=nil，既有 fragment 形状、字节长度和 revision 全部仍匹配。
+
+  场景现跨 fragment 维护事件序号，分别以预期 key 调用 `observeWatchEventMetadata`，从而固定 `a -> b`
+  顺序、DELETE CreateRevision/Version 零 sentinel、共同 delete ModRevision gap=1，以及两个 800 KiB PrevKV
+  的完整内容和相对 revision gap=-1/0。真实双端场景连续 10 轮 14.547 秒、race 3.162 秒；兼容模块
+  全包 1.202 秒、两级 module vet、线上 client/v3 全包 101.290 秒、`hack/production` 全包 459.776 秒及
+  diff check 均通过，线上 `/dbaas-watch-fragment/` prefix 为 0。本轮未发现 runtime 差异，不重建或
+  滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
