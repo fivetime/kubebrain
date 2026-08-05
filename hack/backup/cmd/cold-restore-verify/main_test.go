@@ -121,16 +121,52 @@ func TestValidateReceiptChain(t *testing.T) {
 	restore.RestoreManifest.TidbClusters = 1
 	restore.VolumeSnapshotContents = []restoredVolumeSnapshotContent{{
 		Name: restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"), UID: "uid-content",
-		Driver: "csi.example.test", SnapshotHandle: "handle-pd-0",
+		Driver: "csi.example.test", SnapshotClass: "target-snapshots", DeletionPolicy: "Retain", SnapshotHandle: "handle-pd-0",
+		SnapshotRef: restoredSnapshotRef{APIVersion: "snapshot.storage.k8s.io/v1", Kind: "VolumeSnapshot",
+			Namespace: "tidb-cluster", Name: restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0")},
+	}}
+	restore.VolumeSnapshots = []restoredVolumeSnapshot{{
+		Name: restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"), UID: "uid-snapshot",
+		SnapshotClass: "target-snapshots", SourceContent: restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"),
+		BoundContent: restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"), Ready: true,
 	}}
 	restore.PVCs = []restoredPVC{{
 		Name: "pd-kb-pd-0", UID: "uid-pvc", PV: "pv-pd-kb-pd-0", Phase: "Bound",
+		StorageClass: "target-storage", VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
+		DataSource: restoredDataSource{APIGroup: "snapshot.storage.k8s.io", Kind: "VolumeSnapshot", Name: restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0")},
+	}}
+	restore.PVs = []restoredPV{{
+		Name: "pv-pd-kb-pd-0", UID: "uid-pv", Phase: "Bound", StorageClass: "target-storage", VolumeMode: "Filesystem",
+		Capacity: "1Gi", CSIDriver: "csi.example.test", VolumeHandle: "volume-pd-0",
+		ClaimRef: restoredClaimRef{APIVersion: "v1", Kind: "PersistentVolumeClaim", Namespace: "tidb-cluster", Name: "pd-kb-pd-0", UID: "uid-pvc"},
 	}}
 	restoreData, err := json.Marshal(restore)
 	require.NoError(t, err)
 
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, restoreData)
 	require.NoError(t, err)
+
+	var executorReceipt map[string]any
+	require.NoError(t, json.Unmarshal(restoreData, &executorReceipt))
+	executorReceipt["volume_snapshots"] = []any{map[string]any{
+		"name": restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"), "uid": "uid-snapshot",
+		"snapshot_class": "target-snapshots", "source_content": restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"),
+		"bound_content": restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0"), "ready": true,
+	}}
+	executorReceipt["pvs"] = []any{map[string]any{
+		"name": "pv-pd-kb-pd-0", "uid": "uid-pv", "phase": "Bound", "storage_class": "target-storage",
+		"volume_mode": "Filesystem", "capacity": "1Gi", "csi_driver": "csi.example.test", "volume_handle": "volume-pd-0",
+		"claim_ref": map[string]any{"api_version": "v1", "kind": "PersistentVolumeClaim", "namespace": "tidb-cluster", "name": "pd-kb-pd-0", "uid": "uid-pvc"},
+	}}
+	executorReceipt["pvcs"] = []any{map[string]any{
+		"name": "pd-kb-pd-0", "uid": "uid-pvc", "pv": "pv-pd-kb-pd-0", "phase": "Bound",
+		"storage_class": "target-storage", "volume_mode": "Filesystem", "access_modes": []any{"ReadWriteOnce"},
+		"requested_storage": "1Gi", "data_source": map[string]any{"api_group": "snapshot.storage.k8s.io", "kind": "VolumeSnapshot", "name": restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0")},
+	}}
+	executorData, err := json.Marshal(executorReceipt)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, executorData)
+	require.NoError(t, err, "the semantic verifier must accept the executor's complete restore receipt schema")
 
 	snapshotUnknown := append(append([]byte(nil), snapshotData[:len(snapshotData)-1]...), []byte(`,"unexpected":true}`)...)
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotUnknown, restoreData)
@@ -192,6 +228,27 @@ func TestValidateReceiptChain(t *testing.T) {
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "PVC inventory")
 
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.PVs[0].Capacity = "1023Mi"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
+	require.ErrorContains(t, err, "capacity does not satisfy")
+
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.VolumeSnapshots[0].Ready = false
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
+	require.ErrorContains(t, err, "VolumeSnapshot inventory")
+
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.PVs[0].ClaimRef.UID = "substituted-claim"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
+	require.ErrorContains(t, err, "PV inventory")
+
 	brokenRestore = restore
 	brokenRestore.Target.ClusterID = "54321"
 	brokenData, err = json.Marshal(brokenRestore)
@@ -239,6 +296,19 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 	restore.RestoreManifest.VolumeSnapshots = 1
 	restore.RestoreManifest.PersistentVolumeClaims = 1
 	restore.RestoreManifest.TidbClusters = 1
+	restore.VolumeSnapshotContents = []restoredVolumeSnapshotContent{{
+		Name: objectName, UID: "uid-content", Driver: "csi.example.test", SnapshotClass: "target-snapshots",
+		DeletionPolicy: "Retain", SnapshotHandle: "handle-pd-0",
+		SnapshotRef: restoredSnapshotRef{APIVersion: "snapshot.storage.k8s.io/v1", Kind: "VolumeSnapshot", Namespace: "tidb-cluster", Name: objectName},
+	}}
+	restore.VolumeSnapshots = []restoredVolumeSnapshot{{
+		Name: objectName, UID: "uid-snapshot", SnapshotClass: "target-snapshots", SourceContent: objectName, BoundContent: objectName, Ready: true,
+	}}
+	restore.PVCs = []restoredPVC{{
+		Name: "pd-kb-pd-0", UID: "uid-pvc", PV: "pv-pd-kb-pd-0", Phase: "Bound", StorageClass: "target-storage",
+		VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
+		DataSource: restoredDataSource{APIGroup: "snapshot.storage.k8s.io", Kind: "VolumeSnapshot", Name: objectName},
+	}}
 	manifest := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "List",
@@ -291,6 +361,7 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 					"accessModes":      []any{"ReadWriteOnce"},
 					"volumeMode":       "Filesystem",
 					"storageClassName": "target-storage",
+					"resources":        map[string]any{"requests": map[string]any{"storage": "1Gi"}},
 					"dataSource": map[string]any{
 						"apiGroup": "snapshot.storage.k8s.io", "kind": "VolumeSnapshot", "name": objectName,
 					},
@@ -317,6 +388,13 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 	pretty, err := json.MarshalIndent(manifest, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, validateRestoreManifestBinding(pretty, restore, snapshot))
+
+	tamperedReceipt := cloneRestoreReceipt(restore)
+	tamperedReceipt.PVCs[0].RequestedStorage = "512Mi"
+	require.ErrorContains(t, validateRestoreManifestBinding(pretty, tamperedReceipt, snapshot), "PVC inventory")
+	tamperedReceipt = cloneRestoreReceipt(restore)
+	tamperedReceipt.VolumeSnapshotContents[0].SnapshotClass = "substituted-class"
+	require.ErrorContains(t, validateRestoreManifestBinding(pretty, tamperedReceipt, snapshot), "VolumeSnapshotContent inventory")
 
 	for _, tc := range []struct {
 		name    string
@@ -542,7 +620,12 @@ func TestValidateProbePrefix(t *testing.T) {
 
 func cloneRestoreReceipt(value restoreReceipt) restoreReceipt {
 	value.VolumeSnapshotContents = append([]restoredVolumeSnapshotContent(nil), value.VolumeSnapshotContents...)
+	value.VolumeSnapshots = append([]restoredVolumeSnapshot(nil), value.VolumeSnapshots...)
+	value.PVs = append([]restoredPV(nil), value.PVs...)
 	value.PVCs = append([]restoredPVC(nil), value.PVCs...)
+	for i := range value.PVCs {
+		value.PVCs[i].AccessModes = append([]string(nil), value.PVCs[i].AccessModes...)
+	}
 	return value
 }
 

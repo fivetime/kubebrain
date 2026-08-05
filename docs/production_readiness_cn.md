@@ -739,7 +739,11 @@ TTL 为正。最后以 CreatedNotify watch 建立探针，执行附 lease 的 Pu
 event 和 Revoke；成功才原子发布 `kubebrain.cold-physical-semantic-verify.v1`。这仍不能替代真实
 CSI restore 演练，但它是物理恢复完成门禁，而不是普通 endpoint health 检查。
 语义门禁读取 snapshot/restore receipt 链时同样使用严格单 JSON 值解析，拒绝未知字段和
-尾随 JSON；restore manifest 则继续以 canonical digest、资源计数和逐资源 identity 绑定证明内容。
+尾随 JSON；其 restore receipt schema 必须完整包含 executor 发布的 VolumeSnapshotContent、
+VolumeSnapshot、PVC 和 PV inventory。门禁逐项交叉验证 VSC→VS→PVC→PV 的对象名、UID、引用、
+CSI driver/handle、storage class、volume mode、access modes、requested storage 和 PV capacity，
+并要求 capacity 的 Kubernetes quantity 不小于 manifest 所绑定的 PVC request；restore manifest
+则继续以 canonical digest、资源计数和逐资源 identity 绑定证明内容。
 最终 `kubebrain.cold-physical-semantic-verify.v1` receipt 还会直接记录 restore completion time、
 target kube-system/namespace UID、source/restored TidbCluster UID、restored cluster ID、四个输入
 SHA-256、watch probe revision 顺序和四类语义证明布尔值，写入前缺任一项都会 fail closed。

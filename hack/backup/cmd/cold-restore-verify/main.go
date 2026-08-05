@@ -22,6 +22,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 const maxColdRestoreJSONBytes = 4 << 20
@@ -42,17 +43,67 @@ type restoreManifestSnapshotMapping struct {
 }
 
 type restoredVolumeSnapshotContent struct {
-	Name           string `json:"name"`
-	UID            string `json:"uid"`
-	Driver         string `json:"driver"`
-	SnapshotHandle string `json:"snapshot_handle"`
+	Name           string              `json:"name"`
+	UID            string              `json:"uid"`
+	Driver         string              `json:"driver"`
+	SnapshotClass  string              `json:"snapshot_class"`
+	DeletionPolicy string              `json:"deletion_policy"`
+	SnapshotHandle string              `json:"snapshot_handle"`
+	SnapshotRef    restoredSnapshotRef `json:"snapshot_ref"`
+}
+
+type restoredSnapshotRef struct {
+	APIVersion string `json:"api_version"`
+	Kind       string `json:"kind"`
+	Namespace  string `json:"namespace"`
+	Name       string `json:"name"`
+}
+
+type restoredVolumeSnapshot struct {
+	Name          string `json:"name"`
+	UID           string `json:"uid"`
+	SnapshotClass string `json:"snapshot_class"`
+	SourceContent string `json:"source_content"`
+	BoundContent  string `json:"bound_content"`
+	Ready         bool   `json:"ready"`
+}
+
+type restoredDataSource struct {
+	APIGroup string `json:"api_group"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
 }
 
 type restoredPVC struct {
-	Name  string `json:"name"`
-	UID   string `json:"uid"`
-	PV    string `json:"pv"`
-	Phase string `json:"phase"`
+	Name             string             `json:"name"`
+	UID              string             `json:"uid"`
+	PV               string             `json:"pv"`
+	Phase            string             `json:"phase"`
+	StorageClass     string             `json:"storage_class"`
+	VolumeMode       string             `json:"volume_mode"`
+	AccessModes      []string           `json:"access_modes"`
+	RequestedStorage string             `json:"requested_storage"`
+	DataSource       restoredDataSource `json:"data_source"`
+}
+
+type restoredClaimRef struct {
+	APIVersion string `json:"api_version"`
+	Kind       string `json:"kind"`
+	Namespace  string `json:"namespace"`
+	Name       string `json:"name"`
+	UID        string `json:"uid"`
+}
+
+type restoredPV struct {
+	Name         string           `json:"name"`
+	UID          string           `json:"uid"`
+	Phase        string           `json:"phase"`
+	StorageClass string           `json:"storage_class"`
+	VolumeMode   string           `json:"volume_mode"`
+	Capacity     string           `json:"capacity"`
+	ClaimRef     restoredClaimRef `json:"claim_ref"`
+	CSIDriver    string           `json:"csi_driver"`
+	VolumeHandle string           `json:"volume_handle"`
 }
 
 type restoreReceipt struct {
@@ -77,7 +128,9 @@ type restoreReceipt struct {
 		TidbClusterUID string `json:"tidb_cluster_uid"`
 		ClusterID      string `json:"cluster_id"`
 	} `json:"target"`
+	VolumeSnapshots        []restoredVolumeSnapshot        `json:"volume_snapshots"`
 	VolumeSnapshotContents []restoredVolumeSnapshotContent `json:"volume_snapshot_contents"`
+	PVs                    []restoredPV                    `json:"pvs"`
 	PVCs                   []restoredPVC                   `json:"pvcs"`
 }
 
@@ -437,7 +490,7 @@ func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snap
 		return errors.New("cold physical restore receipt target does not match the snapshot receipt")
 	}
 	expected := make(map[string]string, len(snapshotRecord.Snapshots))
-	expectedPVCs := make(map[string]struct{}, len(snapshotRecord.Snapshots))
+	expectedPVCs := make(map[string]string, len(snapshotRecord.Snapshots))
 	for _, snapshot := range snapshotRecord.Snapshots {
 		if snapshot.SourcePVC == "" || snapshot.SnapshotHandle == "" {
 			return errors.New("snapshot receipt contains incomplete restored inventory mapping")
@@ -445,20 +498,30 @@ func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snap
 		if _, exists := expected[snapshot.SnapshotHandle]; exists {
 			return errors.New("snapshot receipt contains duplicate snapshot handle")
 		}
-		expected[snapshot.SnapshotHandle] = restoreManifestObjectName(
-			snapshotRecord.OperationID, snapshot.SourcePVC,
-		)
-		expectedPVCs[snapshot.SourcePVC] = struct{}{}
+		objectName := restoreManifestObjectName(snapshotRecord.OperationID, snapshot.SourcePVC)
+		expected[snapshot.SnapshotHandle] = objectName
+		if _, duplicate := expectedPVCs[snapshot.SourcePVC]; duplicate {
+			return errors.New("snapshot receipt contains duplicate source PVC")
+		}
+		expectedPVCs[snapshot.SourcePVC] = objectName
 	}
-	if len(restore.VolumeSnapshotContents) != len(expected) || len(restore.PVCs) != len(expectedPVCs) {
+	if len(restore.VolumeSnapshotContents) != len(expected) || len(restore.VolumeSnapshots) != len(expected) ||
+		len(restore.PVCs) != len(expectedPVCs) || len(restore.PVs) != len(expectedPVCs) {
 		return errors.New("cold physical restore receipt inventory count does not match snapshot receipt")
 	}
 	seenContentNames := map[string]struct{}{}
+	seenContentUIDs := map[string]struct{}{}
 	seenHandles := map[string]struct{}{}
+	contents := make(map[string]restoredVolumeSnapshotContent, len(restore.VolumeSnapshotContents))
 	for _, content := range restore.VolumeSnapshotContents {
 		expectedName, exists := expected[content.SnapshotHandle]
 		if !exists || content.Name != expectedName || content.UID == "" ||
-			content.Driver != snapshotRecord.Inventory.VolumeSnapshotClass.Driver {
+			content.Driver != snapshotRecord.Inventory.VolumeSnapshotClass.Driver ||
+			content.SnapshotClass == "" || content.DeletionPolicy != "Retain" ||
+			content.SnapshotRef.APIVersion != "snapshot.storage.k8s.io/v1" ||
+			content.SnapshotRef.Kind != "VolumeSnapshot" ||
+			content.SnapshotRef.Namespace != snapshotRecord.Inventory.Storage.Namespace ||
+			content.SnapshotRef.Name != content.Name {
 			return errors.New("cold physical restore receipt content inventory does not match snapshot receipt")
 		}
 		if _, duplicate := seenContentNames[content.Name]; duplicate {
@@ -467,15 +530,46 @@ func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snap
 		if _, duplicate := seenHandles[content.SnapshotHandle]; duplicate {
 			return errors.New("cold physical restore receipt contains duplicate snapshot handle")
 		}
+		if _, duplicate := seenContentUIDs[content.UID]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate VolumeSnapshotContent UID")
+		}
 		seenContentNames[content.Name] = struct{}{}
+		seenContentUIDs[content.UID] = struct{}{}
 		seenHandles[content.SnapshotHandle] = struct{}{}
+		contents[content.Name] = content
+	}
+	seenSnapshotUIDs := map[string]struct{}{}
+	seenSnapshots := map[string]struct{}{}
+	for _, snapshot := range restore.VolumeSnapshots {
+		content, exists := contents[snapshot.Name]
+		if !exists || snapshot.UID == "" || !snapshot.Ready || snapshot.SnapshotClass != content.SnapshotClass ||
+			snapshot.SourceContent != content.Name || snapshot.BoundContent != content.Name {
+			return errors.New("cold physical restore receipt VolumeSnapshot inventory does not match content inventory")
+		}
+		if _, duplicate := seenSnapshots[snapshot.Name]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate VolumeSnapshot")
+		}
+		if _, duplicate := seenSnapshotUIDs[snapshot.UID]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate VolumeSnapshot UID")
+		}
+		seenSnapshots[snapshot.Name] = struct{}{}
+		seenSnapshotUIDs[snapshot.UID] = struct{}{}
 	}
 	seenPVCNames := map[string]struct{}{}
+	seenPVCUIDs := map[string]struct{}{}
 	seenPVs := map[string]struct{}{}
+	claimsByPV := make(map[string]restoredPVC, len(restore.PVCs))
 	for _, pvc := range restore.PVCs {
-		if _, exists := expectedPVCs[pvc.Name]; !exists || pvc.UID == "" || pvc.PV == "" ||
-			pvc.Phase != "Bound" {
+		expectedSnapshot, exists := expectedPVCs[pvc.Name]
+		if !exists || pvc.UID == "" || pvc.PV == "" || pvc.Phase != "Bound" ||
+			pvc.StorageClass == "" || pvc.VolumeMode == "" || len(pvc.AccessModes) == 0 ||
+			pvc.RequestedStorage == "" || pvc.DataSource.APIGroup != "snapshot.storage.k8s.io" ||
+			pvc.DataSource.Kind != "VolumeSnapshot" || pvc.DataSource.Name != expectedSnapshot {
 			return errors.New("cold physical restore receipt PVC inventory does not match snapshot receipt")
+		}
+		requested, err := resource.ParseQuantity(pvc.RequestedStorage)
+		if err != nil || requested.Sign() < 0 {
+			return fmt.Errorf("cold physical restore receipt PVC %q has invalid storage request", pvc.Name)
 		}
 		if _, duplicate := seenPVCNames[pvc.Name]; duplicate {
 			return errors.New("cold physical restore receipt contains duplicate PVC")
@@ -483,8 +577,47 @@ func validateRestoreReceiptInventory(restore restoreReceipt, snapshotRecord snap
 		if _, duplicate := seenPVs[pvc.PV]; duplicate {
 			return errors.New("cold physical restore receipt contains duplicate PV")
 		}
+		if _, duplicate := seenPVCUIDs[pvc.UID]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate PVC UID")
+		}
 		seenPVCNames[pvc.Name] = struct{}{}
+		seenPVCUIDs[pvc.UID] = struct{}{}
 		seenPVs[pvc.PV] = struct{}{}
+		claimsByPV[pvc.PV] = pvc
+	}
+	seenPVUIDs := map[string]struct{}{}
+	seenPVNames := map[string]struct{}{}
+	seenVolumeHandles := map[string]struct{}{}
+	for _, volume := range restore.PVs {
+		claim, exists := claimsByPV[volume.Name]
+		if !exists || volume.UID == "" || volume.Phase != "Bound" ||
+			volume.StorageClass != claim.StorageClass || volume.VolumeMode != claim.VolumeMode ||
+			volume.ClaimRef.APIVersion != "v1" || volume.ClaimRef.Kind != "PersistentVolumeClaim" ||
+			volume.ClaimRef.Namespace != snapshotRecord.Inventory.Storage.Namespace ||
+			volume.ClaimRef.Name != claim.Name || volume.ClaimRef.UID != claim.UID ||
+			volume.CSIDriver != snapshotRecord.Inventory.VolumeSnapshotClass.Driver || volume.VolumeHandle == "" {
+			return errors.New("cold physical restore receipt PV inventory does not match PVC inventory")
+		}
+		capacity, capacityErr := resource.ParseQuantity(volume.Capacity)
+		requested, requestedErr := resource.ParseQuantity(claim.RequestedStorage)
+		if capacityErr != nil || requestedErr != nil || capacity.Sign() < 0 || capacity.Cmp(requested) < 0 {
+			return fmt.Errorf("cold physical restore receipt PV %q capacity does not satisfy PVC %q request", volume.Name, claim.Name)
+		}
+		if _, duplicate := seenPVUIDs[volume.UID]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate PV UID")
+		}
+		if _, duplicate := seenPVNames[volume.Name]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate PV")
+		}
+		if _, duplicate := seenVolumeHandles[volume.VolumeHandle]; duplicate {
+			return errors.New("cold physical restore receipt contains duplicate CSI volume handle")
+		}
+		seenPVUIDs[volume.UID] = struct{}{}
+		seenPVNames[volume.Name] = struct{}{}
+		seenVolumeHandles[volume.VolumeHandle] = struct{}{}
+	}
+	if len(seenPVNames) != len(claimsByPV) {
+		return errors.New("cold physical restore receipt PV inventory does not cover every PVC")
 	}
 	return nil
 }
@@ -531,7 +664,75 @@ func validateRestoreManifestBinding(data []byte, restore restoreReceipt, snapsho
 		counts["TidbCluster"] != restore.RestoreManifest.TidbClusters {
 		return errors.New("restore manifest does not match restore receipt binding")
 	}
-	return validateRestoreManifestContent(items, snapshotRecord)
+	if err := validateRestoreManifestContent(items, snapshotRecord); err != nil {
+		return err
+	}
+	return validateRestoreManifestReceiptInventory(items, restore)
+}
+
+func validateRestoreManifestReceiptInventory(items []any, restore restoreReceipt) error {
+	contents := make(map[string]restoredVolumeSnapshotContent, len(restore.VolumeSnapshotContents))
+	for _, content := range restore.VolumeSnapshotContents {
+		contents[content.Name] = content
+	}
+	snapshots := make(map[string]restoredVolumeSnapshot, len(restore.VolumeSnapshots))
+	for _, snapshot := range restore.VolumeSnapshots {
+		snapshots[snapshot.Name] = snapshot
+	}
+	claims := make(map[string]restoredPVC, len(restore.PVCs))
+	for _, claim := range restore.PVCs {
+		claims[claim.Name] = claim
+	}
+	seenContents := map[string]struct{}{}
+	seenSnapshots := map[string]struct{}{}
+	seenClaims := map[string]struct{}{}
+	for _, raw := range items {
+		item, _ := raw.(map[string]any)
+		metadata, _ := item["metadata"].(map[string]any)
+		spec, _ := item["spec"].(map[string]any)
+		name, _ := metadata["name"].(string)
+		switch item["kind"] {
+		case "VolumeSnapshotContent":
+			content, exists := contents[name]
+			if !exists || content.Driver != stringValue(spec["driver"]) ||
+				content.SnapshotClass != stringValue(spec["volumeSnapshotClassName"]) ||
+				content.DeletionPolicy != stringValue(spec["deletionPolicy"]) ||
+				content.SnapshotHandle != nestedString(spec, "source", "snapshotHandle") ||
+				content.SnapshotRef.APIVersion != nestedString(spec, "volumeSnapshotRef", "apiVersion") ||
+				content.SnapshotRef.Kind != nestedString(spec, "volumeSnapshotRef", "kind") ||
+				content.SnapshotRef.Namespace != nestedString(spec, "volumeSnapshotRef", "namespace") ||
+				content.SnapshotRef.Name != nestedString(spec, "volumeSnapshotRef", "name") {
+				return errors.New("restore receipt VolumeSnapshotContent inventory does not match restore manifest")
+			}
+			seenContents[name] = struct{}{}
+		case "VolumeSnapshot":
+			snapshot, exists := snapshots[name]
+			if !exists || snapshot.SnapshotClass != stringValue(spec["volumeSnapshotClassName"]) ||
+				snapshot.SourceContent != nestedString(spec, "source", "volumeSnapshotContentName") {
+				return errors.New("restore receipt VolumeSnapshot inventory does not match restore manifest")
+			}
+			seenSnapshots[name] = struct{}{}
+		case "PersistentVolumeClaim":
+			claim, exists := claims[name]
+			manifestModes := stringSlice(spec["accessModes"])
+			claimModes := append([]string(nil), claim.AccessModes...)
+			sort.Strings(manifestModes)
+			sort.Strings(claimModes)
+			if !exists || claim.StorageClass != stringValue(spec["storageClassName"]) ||
+				claim.VolumeMode != stringValue(spec["volumeMode"]) || !slicesEqual(claimModes, manifestModes) ||
+				claim.RequestedStorage != nestedString3(spec, "resources", "requests", "storage") ||
+				claim.DataSource.APIGroup != nestedString(spec, "dataSource", "apiGroup") ||
+				claim.DataSource.Kind != nestedString(spec, "dataSource", "kind") ||
+				claim.DataSource.Name != nestedString(spec, "dataSource", "name") {
+				return errors.New("restore receipt PVC inventory does not match restore manifest")
+			}
+			seenClaims[name] = struct{}{}
+		}
+	}
+	if len(seenContents) != len(contents) || len(seenSnapshots) != len(snapshots) || len(seenClaims) != len(claims) {
+		return errors.New("restore receipt storage inventory is not fully represented by restore manifest")
+	}
+	return nil
 }
 
 func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt) error {
@@ -665,6 +866,41 @@ func nestedString(parent map[string]any, first, second string) string {
 	child, _ := parent[first].(map[string]any)
 	value, _ := child[second].(string)
 	return value
+}
+
+func nestedString3(parent map[string]any, first, second, third string) string {
+	child, _ := parent[first].(map[string]any)
+	return nestedString(child, second, third)
+}
+
+func stringValue(value any) string {
+	result, _ := value.(string)
+	return result
+}
+
+func stringSlice(value any) []string {
+	raw, _ := value.([]any)
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		text, ok := item.(string)
+		if !ok {
+			return nil
+		}
+		result = append(result, text)
+	}
+	return result
+}
+
+func slicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func nestedArray(parent map[string]any, key string) []any {

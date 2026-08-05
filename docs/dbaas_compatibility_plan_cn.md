@@ -35815,6 +35815,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   VolumeSnapshot CRD/CSI driver，因此本轮证明 fail-closed 状态机与 quantity 语义，不把测试夹具
   GREEN 记作真实 CSI 物理恢复演练完成；运行中 etcd 数据面代码和生产镜像均未变化。
 
+- A3644 修复 cold restore executor 与 semantic verifier 的正式 receipt schema 断裂。执行器自
+  A3608 起发布完整 `volume_snapshots`、`pvs`，并在 `pvcs`/`volume_snapshot_contents` 中记录
+  storage 与引用字段；但 verifier 的 `restoreReceipt` 仍停留在 A462 的缩减结构，又使用
+  `DisallowUnknownFields`。新增 executor-shaped receipt 回归在旧实现上 RED 0.023 秒，首先报
+  `unknown field "access_modes"`；真实恢复即使执行成功，也必然无法进入 endpoint 语义验证。
+
+  verifier 现以严格类型完整解码 VSC、VS、PVC、PV，并交叉绑定 snapshot receipt、canonical restore
+  manifest 和实际 inventory：要求 retained VSC driver/class/handle/ref、ready VS source/bound content、
+  PVC dataSource/storage class/mode/access modes/request、PV claimRef/CSI driver/handle/Bound phase 全部
+  一致，UID/name/handle 无重复，并用 Kubernetes `resource.ParseQuantity` 证明 PV capacity 不小于
+  manifest 所绑定的 PVC request。负例覆盖 `1023Mi < 1Gi`、VS 非 Ready、claim UID 替换、同步降低
+  receipt request 及 snapshot class 替换，防止只让 schema 变宽却继续忽略证据。helper 全包 0.083 秒、
+  race 1.328 秒、backup 全包与 cold restore production 回归 74.355 秒均通过；完整门禁见本项最终
+  验证中全仓测试（`hack/production` 467.335 秒）与全仓 vet、兼容模块测试/vet、真实 NodePort
+  client/v3 全包 104.482 秒均通过。全仓首轮有一次 `pkg/server/etcd` 非本改动路径失败且日志被截断；
+  随后该包两次独立全包 166.625/167.410 秒及全仓重跑均 GREEN，未把它计作本项产品 RED。当前环境
+  仍无 VolumeSnapshot CRD/CSI driver，本项恢复的是制品链可消费性与端到端
+  fail-closed 证明，不宣称真实 CSI 隔离恢复或 PITR 已完成；数据面服务代码和运行镜像不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
