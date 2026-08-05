@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
@@ -150,6 +151,18 @@ func TestValidateReceiptChain(t *testing.T) {
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, restoreData)
 	require.NoError(t, err)
 
+	equalTimeSnapshot := cloneSnapshotReceipt(t, snapshot)
+	equalTimeSnapshot.CreatedAt = time.Unix(status.CreatedAtUnix, 0).UTC().Format(time.RFC3339)
+	equalTimeSnapshotData, err := json.Marshal(equalTimeSnapshot)
+	require.NoError(t, err)
+	equalTimeRestore := cloneRestoreReceipt(restore)
+	equalTimeRestore.SourceReceiptSHA = digest(equalTimeSnapshotData)
+	equalTimeRestore.CompletedAt = equalTimeSnapshot.CreatedAt
+	equalTimeRestoreData, err := json.Marshal(equalTimeRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, equalTimeSnapshotData, equalTimeRestoreData)
+	require.NoError(t, err, "second-resolution receipt timestamps may be equal")
+
 	var executorReceipt map[string]any
 	require.NoError(t, json.Unmarshal(restoreData, &executorReceipt))
 	executorReceipt["volume_snapshots"] = []any{map[string]any{
@@ -190,6 +203,17 @@ func TestValidateReceiptChain(t *testing.T) {
 	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, restoreData)
 	require.ErrorContains(t, err, "created_at")
 
+	brokenSnapshot = cloneSnapshotReceipt(t, snapshot)
+	brokenSnapshot.CreatedAt = time.Unix(status.CreatedAtUnix-1, 0).UTC().Format(time.RFC3339)
+	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
+	require.NoError(t, err)
+	brokenRestore := cloneRestoreReceipt(restore)
+	brokenRestore.SourceReceiptSHA = digest(brokenSnapshotData)
+	brokenData, err := json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, brokenData)
+	require.ErrorContains(t, err, "snapshot receipt predates semantic witness")
+
 	brokenSnapshot = snapshot
 	brokenSnapshot.Inventory.Format = "other"
 	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
@@ -201,9 +225,9 @@ func TestValidateReceiptChain(t *testing.T) {
 	brokenSnapshot.Inventory.PDPVCs[0].RequestedStorage = "512Mi"
 	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
 	require.NoError(t, err)
-	brokenRestore := cloneRestoreReceipt(restore)
+	brokenRestore = cloneRestoreReceipt(restore)
 	brokenRestore.SourceReceiptSHA = digest(brokenSnapshotData)
-	brokenData, err := json.Marshal(brokenRestore)
+	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, brokenData)
 	require.ErrorContains(t, err, "restore size")
@@ -299,6 +323,13 @@ func TestValidateReceiptChain(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "completed_at")
+
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.CompletedAt = "2026-07-20T23:59:59Z"
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
+	require.ErrorContains(t, err, "restore receipt predates snapshot receipt")
 
 	brokenRestore = restore
 	brokenRestore.Target.TidbClusterUID = snapshot.Inventory.Storage.UID

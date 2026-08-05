@@ -373,7 +373,8 @@ func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snaps
 	if err := decodeStrictJSON(snapshotData, &snapshotRecord, "snapshot receipt"); err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, err
 	}
-	if _, err := time.Parse(time.RFC3339, snapshotRecord.CreatedAt); err != nil {
+	snapshotCreatedAt, err := time.Parse(time.RFC3339, snapshotRecord.CreatedAt)
+	if err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt created_at is invalid")
 	}
 	if snapshotRecord.Inventory.Format != "kubebrain.cold-physical-snapshot-preflight.v2" {
@@ -390,16 +391,23 @@ func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snaps
 		snapshotRecord.Witness.FileSHA256 != witnessFileSHA {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt semantic witness binding mismatch")
 	}
+	if snapshotCreatedAt.Before(time.Unix(status.CreatedAtUnix, 0)) {
+		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt predates semantic witness")
+	}
 	var restore restoreReceipt
 	if err := decodeStrictJSON(restoreData, &restore, "restore receipt"); err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, err
 	}
-	if _, err := time.Parse(time.RFC3339, restore.CompletedAt); err != nil {
+	restoreCompletedAt, err := time.Parse(time.RFC3339, restore.CompletedAt)
+	if err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt completed_at is invalid")
 	}
 	if restore.Format != "kubebrain.cold-physical-restore.v1" || restore.OperationID == "" || restore.Target.ClusterID == "" ||
 		restore.OperationID != snapshotRecord.OperationID || restore.SourceReceiptSHA != digest(snapshotData) {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind the snapshot receipt")
+	}
+	if restoreCompletedAt.Before(snapshotCreatedAt) {
+		return snapshotReceipt{}, restoreReceipt{}, errors.New("restore receipt predates snapshot receipt")
 	}
 	if err := validateRestoreReceiptInventory(restore, snapshotRecord); err != nil {
 		return snapshotReceipt{}, restoreReceipt{}, err

@@ -35870,6 +35870,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet、兼容模块测试/vet 与真实 NodePort client/v3 全包 105.931 秒均通过。本轮仍不关闭真实
   CSI restore/PITR，且不改变运行中 etcd 数据面镜像。
 
+- A3647 在 A3646 的 creation time 字段绑定之上补齐三阶段 chronology。旧 verifier 只分别解析
+  snapshot `created_at` 与 restore `completed_at` 的 RFC3339 格式，不比较 witness→snapshot→restore
+  顺序；攻击者可同步重算下游 SHA 后提交时间倒退但内容一致的证据链。新增 snapshot 比 witness 早
+  1 秒的预期失败在旧实现上 RED 0.023 秒，实际返回 nil；restore 比 snapshot 早的独立负例覆盖第二段。
+
+  `validateReceiptChain` 现先完成严格 schema、witness 内容和 SHA 绑定，再要求
+  `witness.created_at_unix <= snapshot.created_at <= restore.completed_at`，保持内容错误优先级且拒绝
+  倒序制品。边界用例把三者设为同一秒并继续通过，因为两个 shell executor 都用秒级 UTC 时间，合法
+  快速阶段不能被误拒。聚焦 GREEN 0.023 秒、race 1.556 秒、backup 全包、cold snapshot/restore
+  production 回归 158.514 秒、默认并行全仓测试（`hack/production` 474.037 秒、`pkg/server/etcd`
+  169.126 秒）、全仓 vet、兼容模块测试/vet 与真实 NodePort client/v3 全包 109.699 秒均通过。
+  本项增强审计证据时序，不替代真实 CSI restore/PITR，也不改变运行中 etcd 数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
