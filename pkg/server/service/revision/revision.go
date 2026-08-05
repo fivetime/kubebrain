@@ -134,8 +134,20 @@ func (r *revisionSyncer) SyncReadRevision(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if r.leaderElection.IsLeader() {
+	_, leadingFresh := r.leaderElection.EpochAndLeadingFresh()
+	if leadingFresh {
 		return nil
+	}
+	// A local leader flag can outlive the last successful election-lease renew
+	// while client-go is still unwinding OnStoppedLeading (or after a long
+	// process pause). Upstream's linearizable read goes through Raft ReadIndex
+	// and cannot succeed without current leadership. Fail this same window
+	// closed instead of treating the stale flag as a completed read barrier: a
+	// successor may already have committed data that this replica has not yet
+	// observed.
+	if r.leaderElection.IsLeader() {
+		r.metricCli.EmitCounter("read.leader.stale", 1)
+		return fmt.Errorf("%w: local leadership lease is stale", errLeaderChanged)
 	}
 	// only sync when not leader
 	r.metricCli.EmitCounter("read.follower", 1)

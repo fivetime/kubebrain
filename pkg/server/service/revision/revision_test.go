@@ -297,6 +297,8 @@ type mutableLeaderElection struct {
 	mu            sync.RWMutex
 	leaderAddress string
 	term          uint64
+	isLeader      bool
+	leadingFresh  bool
 }
 
 func (m *mutableLeaderElection) Campaign(context.Context) {}
@@ -323,11 +325,15 @@ func (m *mutableLeaderElection) CurrentLeadershipTerm() uint64 {
 }
 
 func (m *mutableLeaderElection) IsLeader() bool {
-	return false
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.isLeader
 }
 
 func (m *mutableLeaderElection) EpochAndLeadingFresh() (uint64, bool) {
-	return 0, false
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.term, m.isLeader && m.leadingFresh
 }
 
 func (m *mutableLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
@@ -347,6 +353,27 @@ func (m *mutableLeaderElection) advanceTerm() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.term++
+}
+
+func TestRevisionSyncerRejectsStaleLocalLeadership(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockMetrics := mock.NewMinimalMetrics(ctrl)
+
+	election := &mutableLeaderElection{
+		leaderAddress: "127.0.0.1:2380",
+		term:          7,
+		isLeader:      true,
+		leadingFresh:  false,
+	}
+	backend := &backendStub{currentRev: 42}
+	syncer := NewRevisionSyncer(backend, mockMetrics, election, nil)
+	defer syncer.Close()
+
+	err := syncer.SyncReadRevision(context.Background())
+	require.ErrorIs(t, err, errLeaderChanged)
+	require.Equal(t, uint64(42), backend.currentRev,
+		"a stale local leader flag must not admit a linearizable read")
 }
 
 func TestRevisionSyncerRejectsResponseAcrossLeaderChange(t *testing.T) {
