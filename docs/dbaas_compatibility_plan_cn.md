@@ -35246,6 +35246,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cold-restore 矩阵 29.490 秒、`hack/production` 全包 422.123 秒以及 vet、脚本语法与 diff check
   均通过。本项避免已知证据路径冲突造成无谓恢复/反向停服，不关闭真实 CSI 恢复或 PITR 缺口。
 
+- A3603 把 cold snapshot source receipt 的 live-path digest 绑定延伸到真实 restore create 前。执行器
+  已冻结 receipt 副本并用其 canonical render，因此路径漂移不会污染待应用 manifest；但旧流程只在
+  早期 target identity 后校验一次 live 文件，若它在 A3601 dry-run 或最终栅栏期间变化，仍会完成
+  restore/unpause，直到发布 receipt 前的末次校验才失败并 emergency fence。确定性 RED 在 dry-run
+  内替换 source receipt，旧执行器确实进入实际 create。
+
+  最终 class/collision/target UID 栅栏之后，执行器现在重新计算 live source receipt SHA-256，并要求与
+  初始冻结 digest 一致；随后才执行 A3602 输出 receipt 路径检查并安装 emergency trap。已知漂移不再
+  创建资源或反向停服，恢复完成前的最终 digest 校验仍保留以覆盖更晚变化。专项连续 10 轮
+  19.513 秒、race 3.080 秒、完整 cold-restore 矩阵 31.524 秒、`hack/production` 全包 424.339 秒
+  以及 vet、脚本语法与 diff check 均通过。本项强化证据链，不替代真实 CSI 恢复/PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -370,6 +370,37 @@ func TestColdRestoreExecuteRechecksReceiptTargetBeforeCreate(t *testing.T) {
 	require.NoFileExists(t, logPath+".actual-create-after-dry-run-receipt")
 }
 
+func TestColdRestoreExecuteRechecksSourceReceiptBeforeCreate(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	tamperedReceiptPath := filepath.Join(dir, "tampered-snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	require.NoError(t, os.WriteFile(tamperedReceiptPath, coldRestoreTamperedSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"TAMPER_SOURCE_RECEIPT_DURING_DRY_RUN=true", "TAMPERED_RECEIPT_FILE=" + tamperedReceiptPath,
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "cold snapshot receipt changed after validation")
+	require.NoFileExists(t, restoreReceiptPath)
+	require.NoFileExists(t, logPath+".actual-create-after-source-drift")
+}
+
 func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byte, error) {
 	t.Helper()
 	return runProductionCommand(t, "go", []string{
@@ -560,12 +591,19 @@ elif [[ "$args" == *"create -f"* ]]; then
   if [[ "${PRECREATE_RESTORE_RECEIPT_DURING_DRY_RUN:-false}" == true ]]; then
     touch "${FAKE_LOG}.actual-create-after-dry-run-receipt"
   fi
+  if [[ "${TAMPER_SOURCE_RECEIPT_DURING_DRY_RUN:-false}" == true ]]; then
+    touch "${FAKE_LOG}.actual-create-after-source-drift"
+  fi
   :
 elif [[ "$args" == *"create --dry-run=server -f"* ]]; then
   if [[ "${PRECREATE_RESTORE_RECEIPT_DURING_DRY_RUN:-false}" == true &&
     ! -e "$RESTORE_RECEIPT_FILE" ]]; then
     printf '{"format":"preexisting-dry-run"}\n' >"$RESTORE_RECEIPT_FILE"
     chmod 600 "$RESTORE_RECEIPT_FILE"
+  fi
+  if [[ "${TAMPER_SOURCE_RECEIPT_DURING_DRY_RUN:-false}" == true ]]; then
+    cp "$TAMPERED_RECEIPT_FILE" "$RECEIPT_FILE"
+    chmod 600 "$RECEIPT_FILE"
   fi
   if [[ "${FAKE_REJECT_RESTORE_CREATE:-false}" == true ]]; then
     echo "restore manifest rejected by server dry-run" >&2
