@@ -34970,6 +34970,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AuthRevision=587，revision/index/applied 均为 468126003565741067、term 331，全范围长期 fixture
   Count=100。
 
+- A3587 把本地 leader freshness fence 从墙上时间改为单调 elapsed time，关闭宿主时钟回拨时旧 leader
+  跨租约继续服务的 split-brain 窗口。A3584/A3585 已让写 admission/commit、线性读 barrier 与内部
+  `/status` 统一依赖 `EpochAndLeadingFresh()`，但其中最近成功续租仍被压成 `UnixNano`；重建
+  `time.Time` 会丢失 Go 的 monotonic component。若 NTP 或管理员把宿主 wall clock 向后拨，
+  `time.Since(time.Unix(...))` 会成为负值，而旧判断仅检查其小于 RenewDeadline，因此可能在 successor
+  已取得 lease 后仍把隔离节点判为 fresh。client-go 自身保留带单调分量的 `time.Time` 并用 clock
+  `Since` 计算租约 elapsed time。
+
+  确定性 RED 为 `leaderElection` 注入可控 passive clock：成功 stamp 后同时模拟 wall clock 回拨一小时、
+  monotonic elapsed 越过 1s renew deadline；旧结构没有可注入 clock，且 UnixNano 模型无法满足该契约。
+  修复后 `renewMu` 保护完整 `lastRenew time.Time`，生产默认 real clock 的 `Now/Since` 保留单调分量；
+  freshness 只接受 `0 <= elapsed < RenewDeadline`，未 stamp 或异常负 elapsed 均 fail closed。epoch/leader
+  原子发布顺序保持不变，测试 clock 仅为包内注入。该单一 fence 继续覆盖 KV/Txn、lease lifecycle、
+  backend pre-commit、linearizable read 与 revision oracle。
+
+  freshness/HasLeader/campaign 专项普通 50 轮 71.081 秒、race 10 轮 15.420 秒 GREEN；leader、server、
+  revision 全包通过，主模块 `go test ./...` 通过（etcd 176.181 秒），vet 与完整 compat 通过，
+  staticcheck v0.7.0 精确保持既有 9 项基线。代码 commit `c823d042` 构建为
+  `kubebrain:a3587-monotonic-leader-freshness`（Docker image ID
+  `sha256:477e4e91839eadaae9245f86225738ea5c52e65153466ace740b70421f45b6a4`），核验 OCI version、
+  完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动三副本。
+
+  发布门禁再次从 kind node 祖先 PID namespace SIGSTOP 真实 leader，确认进程进入 `T`、被暂停 Pod
+  `/ping` 失败、successor 在 lease 窗口后取得领导权；SIGCONT 后立即直查旧 Pod `/status` 必须仍为
+  400，证明其不会在观察 successor 前短暂重新发布 revision oracle。并发 4 writer/6 linear reader
+  workload 15.13 秒内成功读 785 次、写 188 次，产生 38 次预期瞬态错误且 revision regression 为零，
+  final revision 468126003565741326。最终旧进程回到 `Ssl`，一个 `/status=200`/两个 400；StatefulSet
+  current/update revision 一致，KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无
+  alarm/lease、auth disabled/AuthRevision=587，revision/index/applied 均为 468126003565741327、
+  term 333，全范围长期 fixture Count=100。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
