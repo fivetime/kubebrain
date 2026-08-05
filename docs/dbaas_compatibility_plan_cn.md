@@ -35533,6 +35533,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   diff check 均通过，线上 `/dbaas-watch-compacted/` prefix 为 0。本轮未发现 runtime 差异，不重建或
   滚动生产镜像。
 
+- A3626 把 A3625 的共享事件元数据 oracle 应用回 revision boundary 的三条 PUT。旧路径仍维护 type/key、
+  value、create/mod revision 布尔、version/lease/PrevKv/KVObserved 九组平铺字段，无法直接表达相对基线的
+  revision gap，也与 compaction 路径存在两套采集实现。先加入 nested `EventMetadata` 而不采集，reference
+  RED 精确确认 latest-zero、historical-current、future-next 的 create/mod gap 分别为 1、0、2。
+
+  normalize 现直接调用 `observeWatchEventMetadata`，九组重复字段与手写循环已删除；synthetic 集成测试
+  也改为比较 nested metadata，并继续覆盖 nil payload。共享/集成 helper 连续 20 轮 0.026 秒、race
+  1.080 秒；真实双端四场景连续 10 轮 8.075 秒、race 1.848 秒；兼容模块全包 1.340 秒、两级
+  module vet、`hack/production` 全包 462.841 秒及 diff check 均通过，线上 `/dbaas-watch-revision/`
+  prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
