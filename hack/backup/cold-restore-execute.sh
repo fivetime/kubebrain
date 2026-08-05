@@ -139,21 +139,27 @@ ensure_absent() {
   [[ -z "$existing" ]] || { echo "target resource already exists: ${kind}/${name}" >&2; exit 1; }
 }
 
-ensure_absent "$namespace" tidbcluster "$tidb_cluster"
-ensure_absent "$namespace" statefulset "${tidb_cluster}-pd"
-ensure_absent "$namespace" statefulset "${tidb_cluster}-tikv"
-while IFS=$'\t' read -r kind name; do
-  case "$kind" in
-    VolumeSnapshotContent) ensure_absent "" volumesnapshotcontent "$name" ;;
-    VolumeSnapshot) ensure_absent "$namespace" volumesnapshot "$name" ;;
-    PersistentVolumeClaim) ensure_absent "$namespace" pvc "$name" ;;
-  esac
-done < <(jq -r '.items[] | select(.kind == "VolumeSnapshotContent" or .kind == "VolumeSnapshot" or .kind == "PersistentVolumeClaim") | [.kind,.metadata.name] | @tsv' <<<"$manifest")
+validate_targets_absent() {
+  local kind name
+  ensure_absent "$namespace" tidbcluster "$tidb_cluster"
+  ensure_absent "$namespace" statefulset "${tidb_cluster}-pd"
+  ensure_absent "$namespace" statefulset "${tidb_cluster}-tikv"
+  while IFS=$'\t' read -r kind name; do
+    case "$kind" in
+      VolumeSnapshotContent) ensure_absent "" volumesnapshotcontent "$name" ;;
+      VolumeSnapshot) ensure_absent "$namespace" volumesnapshot "$name" ;;
+      PersistentVolumeClaim) ensure_absent "$namespace" pvc "$name" ;;
+    esac
+  done < <(jq -r '.items[] | select(.kind == "VolumeSnapshotContent" or .kind == "VolumeSnapshot" or .kind == "PersistentVolumeClaim") | [.kind,.metadata.name] | @tsv' <<<"$manifest")
+}
+
+validate_targets_absent
 
 # Namespace names are reusable. Rebind the final create to the approved cluster
 # and namespace identities after all potentially slow discovery/collision reads
 # so a delete/recreate cannot redirect the restore to a same-named target.
 validate_target_classes
+validate_targets_absent
 validate_target_identity
 
 unpaused=false

@@ -35209,6 +35209,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/production` 全包 417.121 秒以及 vet、脚本语法与 diff check 均通过。更窄的检查到 create
   竞态仍需隔离环境或 admission 保证，本项不关闭真实 CSI 恢复/PITR 缺口。
 
+- A3600 将 cold restore 的目标资源 collision sweep 同样升级为 create 前双重门禁。canonical List
+  包含 TidbCluster、PD/TiKV StatefulSet 以及 6 组 VolumeSnapshotContent/VolumeSnapshot/PVC；
+  `kubectl create -f List` 逐项提交，若目标在首次 22 项缺失查询之后、A3599 class 复核期间出现，
+  后序 AlreadyExists 之前可能已留下前序部分资源。确定性 RED 让目标 TidbCluster 只在第二次
+  SnapshotClass 读取后出现，旧执行器仍完成创建并发布 receipt。
+
+  全部 cluster-scoped/namespaced 目标检查现封装为同一函数，保留初始 admission sweep，并在最终
+  class 复核后再次执行；随后才做 A3598 namespace UID 绑定并 create。晚到已知冲突精确报告
+  `kind/name`，不得创建任何 List item 或 receipt；更窄的最终查询到 create 竞态仍需隔离环境或
+  admission 约束。专项连续 10 轮 14.457 秒、race 2.487 秒、完整 cold-restore 矩阵 25.733 秒、
+  `hack/production` 全包 427.787 秒以及 vet、脚本语法与 diff check 均通过。本项减少部分恢复
+  制品风险，不宣称 Kubernetes List 原子事务、真实 CSI 恢复或 PITR 已完成。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
