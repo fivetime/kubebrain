@@ -234,12 +234,21 @@ patch_object "$TIDB_NAMESPACE" statefulset "$pd_name" "$pd_json" /spec/replicas 
 pd_stopped=true
 kctl -n "$TIDB_NAMESPACE" wait --for=jsonpath='{.status.replicas}'=0 statefulset "$pd_name" --timeout="$WAIT_TIMEOUT" >/dev/null
 
-snapshot_names=()
+# Validate the complete source set before creating the first retained object.
+# A single-pass validate/create loop could leave an avoidable partial snapshot
+# set when a later PVC had already been replaced while the storage plane was
+# quiesced. PVC UIDs are immutable, so this fence also binds every name in the
+# frozen inventory to the exact source object selected by preflight.
 while IFS= read -r pvc; do
   pvc_name="$(jq -r '.name' <<<"$pvc")"
   pvc_uid="$(jq -r '.uid' <<<"$pvc")"
   live_uid="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc_name" -o jsonpath='{.metadata.uid}')"
   [[ "$live_uid" == "$pvc_uid" ]] || { echo "PVC UID changed while quiesced: ${pvc_name}" >&2; exit 1; }
+done < <(jq -c '.pd_pvcs[], .tikv_pvcs[]' <<<"$inventory")
+
+snapshot_names=()
+while IFS= read -r pvc; do
+  pvc_name="$(jq -r '.name' <<<"$pvc")"
   snapshot_name="${OPERATION_ID}-${pvc_name}"
   [[ ${#snapshot_name} -le 253 ]] || { echo "snapshot name is too long: ${snapshot_name}" >&2; exit 1; }
   manifest="$(jq -cn --arg name "$snapshot_name" --arg namespace "$TIDB_NAMESPACE" --arg operation "$OPERATION_ID" \

@@ -35120,6 +35120,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV 3+3 Ready/0 restart，endpoint healthy、alarm/lease 为空、auth disabled/AuthRevision=587；
   revision/index/applied 均为 `468126003565749918`、term 344，当前 keyspace Count=100。
 
+- A3593 继续收紧尚未关闭的 transactional TiKV cold CSI 多卷快照候选执行器。A3531-A3533 已把
+  StorageClass driver、source health 和 controller identity 纳入停机前门禁，但 quiesce 后仍按
+  “校验一个 PVC UID、立即创建一个 VolumeSnapshot”单遍执行。确定性 RED 让 inventory 中第一个
+  TiKV PVC（全局第 4 个）在停机后变为同名 replacement；旧执行器先创建三个 PD retained snapshot，
+  才报告 TiKV PVC UID 漂移，留下本可避免的部分制品并扩大人工审计面。
+
+  执行器现在先完成 inventory 内全部 PD/TiKV PVC 的 UID 栅栏，只有六个源对象都仍与冻结 preflight
+  身份一致时才进入独立的 snapshot create 阶段。新回归同时要求错误仍指明漂移 PVC、恢复所有服务、
+  不发布 receipt，并且日志中不存在任何 `create -f -`。RED 修复后专项连续 10 轮 69.430 秒、race
+  8.031 秒、完整 cold-snapshot 矩阵 76.880 秒、`hack/production` 全包 400.855 秒以及 vet、脚本
+  语法和 diff check 均通过。当前 kind 仍没有 VolumeSnapshot CRD/CSI driver，因此该项只减少候选
+  cold snapshot 的失败副作用，不宣称真实多卷隔离恢复或日志型 PITR 已完成。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
