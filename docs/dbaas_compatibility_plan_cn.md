@@ -35639,6 +35639,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   115.438 秒、`hack/production` 全包 451.738 秒及 diff check 均通过，线上
   `/dbaas-watch-fragment/` prefix 为 0。本轮仅增强测试 oracle，未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3634 补齐 upstream `tests/integration/clientv3/watch/watch_fragment_test.go` 的关键失败象限：十个 1 MiB
+  事件超过 1.5 MiB client gRPC receive limit 时，未请求 `WithFragment` 的 watch 不得悄悄截断、重试成部分
+  成功或由服务端擅自分片。先加入零事件、`ResourceExhausted` 与 “received message larger than max” 分类的
+  结构化期望而不采集；reference RED 0.341 秒显示新增 outcome 全为零。首次采集又用 reference 纠正了先验
+  假设：clientv3 在传输错误上返回 `Canceled=true`，并合成非 nil、cluster/member/revision/term 全零的 header，
+  而不是 nil header；oracle 随真实 upstream 合同固定这些细节。
+
+  新场景独立创建受限 watcher，不携带 `WithFragment`，逐项归一化事件数、gRPC code、稳定错误片段、零 header、
+  created/canceled 与 compact revision，随后同时对 reference etcd 和线上 KubeBrain 断言。真实双端连续 10 轮
+  36.135 秒、race 4.673 秒；兼容模块全包 1.202 秒、两级 module vet、线上 client/v3 全包 128.313 秒、
+  `hack/production` 全包 465.277 秒及 diff check 均通过，线上 `/dbaas-watch-fragment/` 与
+  `/dbaas-watch-unfragmented-limit/` prefix 都为 0。本轮仅增强测试 oracle，未发现 runtime 差异，不重建或
+  滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
