@@ -35612,6 +35612,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   diff check 均通过，线上 `/dbaas-watch-fragment/` prefix 为 0。本轮未发现 runtime 差异，不重建或
   滚动生产镜像。
 
+- A3632 在 A3631 的完整大 payload 之上补齐 fragment watch 的 created/event response envelope。旧 outcome
+  仍只以 CreatedHeaderGap=0、每帧 EventCount/Fragment 和 header-at-delete 布尔表示控制层，错误的 WatchID、
+  created/canceled flags、cluster/member/term 身份、compact revision 或隐藏 payload 可能漏过。先加入自动
+  WatchID=0 的 created 完整期望，以及 EventCount=2、Fragment=false 的事件帧完整期望而不采集；reference
+  RED 1.527 秒精确显示 CreatedEnvelope 为零且 ResponseEnvelopes=nil，A3631 payload 与既有字段仍匹配。
+
+  场景现保留第二次 PUT 的完整 response header 作为 seed，created 与每个 fragment frame 都统一调用
+  `observeWatchControlResponse`；created header 精确匹配 seed，事件帧 header 位于下一 delete revision，且
+  两者 header 身份均完整。真实双端场景连续 10 轮 15.058 秒、race 3.067 秒；兼容模块全包 1.156 秒、
+  两级 module vet、线上 client/v3 全包 112.733 秒、`hack/production` 全包 460.805 秒及 diff check 均通过，
+  线上 `/dbaas-watch-fragment/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

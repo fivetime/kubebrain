@@ -138,6 +138,8 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 	fragmentValue := string(make([]byte, 800*1024))
 	require.Equal(t, watchFragmentOutcome{
 		DeleteRevisionGap:       1,
+		CreatedEnvelope:         expectedFragmentControlEnvelope(true, true, 0),
+		ResponseEnvelopes:       []watchControlOutcome{expectedFragmentControlEnvelope(false, false, 2)},
 		FragmentHeadersAtDelete: true,
 		EventModsAtDelete:       true,
 		EventCounts:             []int{2},
@@ -328,12 +330,22 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 type watchFragmentOutcome struct {
 	CreatedHeaderGap        int64
 	DeleteRevisionGap       int64
+	CreatedEnvelope         watchControlOutcome
+	ResponseEnvelopes       []watchControlOutcome
 	FragmentHeadersAtDelete bool
 	EventModsAtDelete       bool
 	EventCounts             []int
 	FragmentFlags           []bool
 	PrevValueBytes          []int
 	EventMetadata           []watchEventMetadataOutcome
+}
+
+func expectedFragmentControlEnvelope(created, headerMatchesSeed bool, eventCount int) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: 0, Created: created, HeaderMatchesSeed: headerMatchesSeed,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, EventCount: eventCount, EnvelopeObserved: true,
+	}
 }
 
 func expectedFragmentEventMetadata(prevRevisionGap int64, value string) watchEventMetadataOutcome {
@@ -379,10 +391,13 @@ func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFrag
 	value := make([]byte, 800*1024)
 	kv := etcdserverpb.NewKVClient(conn)
 	var revision int64
+	var baseHeader *etcdserverpb.ResponseHeader
 	for _, key := range keys {
 		resp, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: value})
 		require.NoError(t, putErr)
-		revision = resp.Header.Revision
+		require.NotNil(t, resp.Header)
+		baseHeader = resp.Header
+		revision = baseHeader.Revision
 	}
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -414,6 +429,7 @@ func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFrag
 	outcome := watchFragmentOutcome{
 		CreatedHeaderGap:        created.Header.Revision - revision,
 		DeleteRevisionGap:       deleted.Header.Revision - revision,
+		CreatedEnvelope:         observeWatchControlResponse(created, baseHeader),
 		FragmentHeadersAtDelete: true,
 		EventModsAtDelete:       true,
 	}
@@ -422,6 +438,8 @@ func runWatchFragmentScenario(t *testing.T, endpoint, instance string) watchFrag
 		resp, recvErr := stream.Recv()
 		require.NoError(t, recvErr)
 		require.NotEmpty(t, resp.Events)
+		outcome.ResponseEnvelopes = append(outcome.ResponseEnvelopes,
+			observeWatchControlResponse(resp, baseHeader))
 		outcome.EventCounts = append(outcome.EventCounts, len(resp.Events))
 		outcome.FragmentFlags = append(outcome.FragmentFlags, resp.Fragment)
 		outcome.FragmentHeadersAtDelete = outcome.FragmentHeadersAtDelete &&
