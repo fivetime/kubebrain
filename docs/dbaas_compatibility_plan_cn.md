@@ -35311,6 +35311,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   底层 PV/CSI volume handle、真实数据内容或 PITR；当前 kind 仍无可用于真实恢复演练的 CSI snapshot
   driver/CRD。
 
+- A3608 将 restored PVC 到实际 PV/CSI volume 的身份绑定纳入同一双重 storage fence。A3607 虽要求
+  PVC Bound、`spec.volumeName` 唯一且 snapshot dataSource 正确，却不读取该名字对应的 PV；错误
+  `claimRef.uid` 或两个 PV 复用同一 CSI `volumeHandle` 仍会启动 TiKV。两条确定性 RED 证明旧路径均
+  成功，另一个后置漂移用例固定 Ready 后必须反向 fence 的行为。
+
+  executor 现在批量读取六个 bound PV，并要求 name/UID/phase/capacity 存在且 UID 唯一，storageClass、
+  volumeMode 与 PVC 一致，完整 `v1/PersistentVolumeClaim` claimRef 精确绑定 namespace/name/UID，CSI
+  driver 匹配 source receipt，非空 volumeHandle 全局唯一；PV name 集合还必须与 PVC `volumeName` 集合
+  精确相等，不能依赖 jq 空 lookup 隐式失败。校验在 unpause 前和 Ready 后各执行一次：
+  前置错误保持 paused，后置 claim 漂移会重新 pause TidbCluster 并把 PD/TiKV StatefulSet 缩到 0；
+  成功 receipt 新增最终 `pvs` inventory。四项专项连续 10 轮 104.863 秒、race 10.952 秒、完整
+  cold-restore 矩阵 65.210 秒、`hack/production` 全包 469.717 秒以及 vet、脚本语法与 diff check 均通过。
+  本项证明 Kubernetes/CSI 对象身份链，不证明 PV 容量大于请求量、块内容等于源快照或 PITR；这些
+  仍需真实 CSI driver/CRD 和隔离恢复环境。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

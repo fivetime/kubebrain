@@ -138,6 +138,7 @@ func TestColdRestoreExecute(t *testing.T) {
 				require.Equal(t, float64(6), restoreManifest["persistent_volume_claims"])
 				require.Equal(t, float64(1), restoreManifest["tidbclusters"])
 				require.Len(t, receipt["pvcs"], 6)
+				require.Len(t, receipt["pvs"], 6)
 				require.Len(t, receipt["volume_snapshots"], 6)
 				require.Len(t, receipt["volume_snapshot_contents"], 6)
 			} else {
@@ -450,6 +451,79 @@ func TestColdRestoreExecuteValidatesStorageInventoryBeforeUnpause(t *testing.T) 
 	}
 }
 
+func TestColdRestoreExecuteValidatesPVBindingsBeforeUnpause(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		pvJSON string
+	}{
+		{name: "PV claim reference drift", pvJSON: coldRestorePVResult(t, true, false)},
+		{name: "CSI volume handle collision", pvJSON: coldRestorePVResult(t, false, true)},
+		{name: "PV name substitution", pvJSON: coldRestorePVWrongNameResult(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			receiptPath := filepath.Join(dir, "snapshot.json")
+			manifestPath := filepath.Join(dir, "restore.json")
+			restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+			logPath := filepath.Join(dir, "kubectl.log")
+			require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+			renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+			require.NoError(t, err, string(renderOutput))
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+			output, err := runColdRestoreExecute(t, []string{
+				"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+				"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+				"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+				"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+				"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+				"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+				"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+				"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false), "FAKE_PV_JSON=" + tc.pvJSON,
+			})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), "restored PV inventory does not match bound PVCs")
+			require.NoFileExists(t, restoreReceiptPath)
+			log := string(mustRead(t, logPath))
+			require.Contains(t, log, "create -f")
+			require.NotContains(t, log, "patch tidbcluster kb --type=json")
+		})
+	}
+}
+
+func TestColdRestoreExecuteFencesPVBindingDriftAfterUnpause(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false), "FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_PV_AFTER_UNPAUSE_JSON=" + coldRestorePVResult(t, true, false),
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "restored PV inventory does not match bound PVCs")
+	require.Contains(t, string(output), "retained restore resources were preserved")
+	require.NoFileExists(t, restoreReceiptPath)
+	log := string(mustRead(t, logPath))
+	require.Contains(t, log, "patch tidbcluster kb --type=json")
+	require.Contains(t, log, "patch statefulset kb-pd --type=json")
+	require.Contains(t, log, "patch statefulset kb-tikv --type=json")
+}
+
 func TestColdRestoreExecuteValidatesTidbClusterSpecBeforeUnpause(t *testing.T) {
 	dir := t.TempDir()
 	receiptPath := filepath.Join(dir, "snapshot.json")
@@ -589,14 +663,20 @@ func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byt
 func runColdRestoreExecute(t *testing.T, env []string) ([]byte, error) {
 	t.Helper()
 	hasSnapshotInventory := false
+	hasPVInventory := false
 	for _, value := range env {
 		if strings.HasPrefix(value, "FAKE_SNAPSHOT_JSON=") {
 			hasSnapshotInventory = true
-			break
+		}
+		if strings.HasPrefix(value, "FAKE_PV_JSON=") {
+			hasPVInventory = true
 		}
 	}
 	if !hasSnapshotInventory {
 		env = append(env, "FAKE_SNAPSHOT_JSON="+coldRestoreSnapshotResult(t, false))
+	}
+	if !hasPVInventory {
+		env = append(env, "FAKE_PV_JSON="+coldRestorePVResult(t, false, false))
 	}
 	return runProductionScriptCommand(t, "../backup/cold-restore-execute.sh", env)
 }
@@ -707,6 +787,50 @@ func coldRestoreSnapshotResult(t *testing.T, wrongContent bool) string {
 		})
 	}
 	encoded, err := json.Marshal(map[string]any{"items": items})
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+func coldRestorePVResult(t *testing.T, wrongClaimRef, duplicateHandle bool) string {
+	t.Helper()
+	var pvcInventory map[string]any
+	require.NoError(t, json.Unmarshal([]byte(coldRestorePVCResult(t, false)), &pvcInventory))
+	items := make([]map[string]any, 0, len(pvcInventory["items"].([]any)))
+	for _, raw := range pvcInventory["items"].([]any) {
+		pvc := raw.(map[string]any)
+		metadata := pvc["metadata"].(map[string]any)
+		spec := pvc["spec"].(map[string]any)
+		name := metadata["name"].(string)
+		claimUID := metadata["uid"].(string)
+		if wrongClaimRef && len(items) == 0 {
+			claimUID = "wrong-claim-uid"
+		}
+		handle := "target-volume-handle-" + name
+		if duplicateHandle && len(items) < 2 {
+			handle = "duplicate-volume-handle"
+		}
+		items = append(items, map[string]any{
+			"metadata": map[string]any{"name": spec["volumeName"], "uid": "target-pv-uid-" + name},
+			"spec": map[string]any{
+				"storageClassName": spec["storageClassName"], "volumeMode": spec["volumeMode"],
+				"capacity": map[string]any{"storage": "1Gi"},
+				"claimRef": map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "namespace": "tidb-cluster", "name": name, "uid": claimUID},
+				"csi":      map[string]any{"driver": "csi.example.test", "volumeHandle": handle},
+			},
+			"status": map[string]any{"phase": "Bound"},
+		})
+	}
+	encoded, err := json.Marshal(map[string]any{"items": items})
+	require.NoError(t, err)
+	return string(encoded)
+}
+
+func coldRestorePVWrongNameResult(t *testing.T) string {
+	t.Helper()
+	var value map[string]any
+	require.NoError(t, json.Unmarshal([]byte(coldRestorePVResult(t, false, false)), &value))
+	value["items"].([]any)[0].(map[string]any)["metadata"].(map[string]any)["name"] = "substituted-pv"
+	encoded, err := json.Marshal(value)
 	require.NoError(t, err)
 	return string(encoded)
 }
@@ -878,6 +1002,12 @@ elif [[ "$args" == *"patch tidbcluster"* || "$args" == *"patch statefulset"* ]];
   :
 elif [[ "$args" == *"get pvc -l kubebrain.io/operation-id=restore-test"* ]]; then
   printf '%s' "$FAKE_PVC_JSON"
+elif [[ "$args" == *"get pv target-pv-"* ]]; then
+  if [[ -n "${FAKE_PV_AFTER_UNPAUSE_JSON:-}" ]] && grep -q 'patch tidbcluster kb' "$FAKE_LOG"; then
+    printf '%s' "$FAKE_PV_AFTER_UNPAUSE_JSON"
+  else
+    printf '%s' "$FAKE_PV_JSON"
+  fi
 elif [[ "$args" == *"get volumesnapshotcontent -l kubebrain.io/operation-id=restore-test"* ]]; then
   maybe_precreate_restore_receipt
   printf '%s' "$FAKE_CONTENT_JSON"

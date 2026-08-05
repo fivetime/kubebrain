@@ -242,6 +242,25 @@ validate_restored_storage_inventory() {
     ([.[].uid] | unique | length) == length and
     ([.[].pv] | unique | length) == length
   ' <<<"$pvcs" >/dev/null || { echo "restored PVC inventory does not match restore manifest" >&2; exit 1; }
+  mapfile -t restored_pv_names < <(jq -r '.[].pv' <<<"$pvcs")
+  pvs="$(kctl get pv "${restored_pv_names[@]}" -o json | jq -c '[.items[] |
+    {name:.metadata.name,uid:.metadata.uid,phase:.status.phase,
+     storage_class:.spec.storageClassName,volume_mode:.spec.volumeMode,capacity:.spec.capacity.storage,
+     claim_ref:{api_version:.spec.claimRef.apiVersion,kind:.spec.claimRef.kind,
+                namespace:.spec.claimRef.namespace,name:.spec.claimRef.name,uid:.spec.claimRef.uid},
+     csi_driver:.spec.csi.driver,volume_handle:.spec.csi.volumeHandle}] | sort_by(.name)')"
+  jq -e --argjson claims "$pvcs" --arg namespace "$namespace" --arg driver "$expected_driver" '
+    length == ($claims | length) and
+    ([.[].name] == ($claims | map(.pv) | sort)) and
+    all(.[]; . as $pv | first($claims[] | select(.pv == $pv.name)) as $claim |
+      .phase == "Bound" and (.uid | length > 0) and (.capacity | length > 0) and
+      .storage_class == $claim.storage_class and .volume_mode == $claim.volume_mode and
+      .claim_ref.api_version == "v1" and .claim_ref.kind == "PersistentVolumeClaim" and
+      .claim_ref.namespace == $namespace and .claim_ref.name == $claim.name and
+      .claim_ref.uid == $claim.uid and .csi_driver == $driver and (.volume_handle | length > 0)) and
+    ([.[].uid] | unique | length) == length and
+    ([.[].volume_handle] | unique | length) == length
+  ' <<<"$pvs" >/dev/null || { echo "restored PV inventory does not match bound PVCs" >&2; exit 1; }
   snapshots="$(kctl -n "$namespace" get volumesnapshot -l "kubebrain.io/operation-id=${operation_id}" -o json | jq -c '[.items[] |
     {name:.metadata.name,uid:.metadata.uid,snapshot_class:.spec.volumeSnapshotClassName,
      source_content:.spec.source.volumeSnapshotContentName,
@@ -331,7 +350,7 @@ jq -n --arg format kubebrain.cold-physical-restore.v1 --arg operation_id "$opera
   --arg target_kube_system_uid "$actual_cluster_uid" --arg target_namespace_uid "$actual_namespace_uid" \
   --arg namespace "$namespace" --arg tidb_cluster "$tidb_cluster" --arg tidb_cluster_uid "$target_tidb_uid" \
   --arg cluster_id "$actual_cluster_id" --arg completed_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson pvcs "$pvcs" \
-  --argjson volume_snapshots "$snapshots" --argjson volume_snapshot_contents "$contents" \
+  --argjson pvs "$pvs" --argjson volume_snapshots "$snapshots" --argjson volume_snapshot_contents "$contents" \
   '{format:$format,operation_id:$operation_id,source_receipt_sha256:$source_receipt_sha256,
     restore_manifest:{format:"kubernetes-list.canonical-json.v1",sha256:$restore_manifest_sha256,
       item_count:$restore_manifest_item_count,volume_snapshot_contents:$restore_manifest_vsc_count,
@@ -340,7 +359,7 @@ jq -n --arg format kubebrain.cold-physical-restore.v1 --arg operation_id "$opera
     target:{kube_system_uid:$target_kube_system_uid,namespace_uid:$target_namespace_uid,namespace:$namespace,
       tidb_cluster:$tidb_cluster,tidb_cluster_uid:$tidb_cluster_uid,cluster_id:$cluster_id},
     volume_snapshots:$volume_snapshots,volume_snapshot_contents:$volume_snapshot_contents,
-    pvcs:$pvcs,completed_at:$completed_at}' >"$receipt_tmp"
+    pvs:$pvs,pvcs:$pvcs,completed_at:$completed_at}' >"$receipt_tmp"
 chmod 600 "$receipt_tmp"
 sync -f "$receipt_tmp"
 if ! ln "$receipt_tmp" "$RESTORE_RECEIPT_FILE" 2>/dev/null; then
