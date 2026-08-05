@@ -281,3 +281,62 @@ func TestStorageFencePreservesOrdinaryUserCASConflict(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrCASFailed)
 	require.NotErrorIs(t, err, ErrLeadershipFenced)
 }
+
+// TestSharedMetadataCASCannotOverwriteAConcurrentMutation pins the other side
+// of the leadership-fence contract. Auth, Alarm, and other cluster metadata are
+// intentionally writable through any serving member: upstream etcd accepts
+// those requests on followers and orders them through Raft, while KubeBrain
+// orders them with an exact-value CAS in the shared TiKV keyspace. Such a write
+// therefore carries no leadership epoch and must not be rejected merely because
+// this process is not the election holder. It must, however, lose if another
+// member commits a decision based on the same old metadata first.
+func TestSharedMetadataCASCannotOverwriteAConcurrentMutation(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	base := newBadgerStorage(t, assert.New(t))
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+
+	blocking := &blockBeforeCommitStorage{
+		KvStorage: base,
+		entered:   make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	old := NewBackend(blocking, Config{Prefix: prefix, Identity: "metadata-writer-a"}, m).(*backend)
+	successor := NewBackend(base, Config{Prefix: prefix, Identity: "metadata-writer-b"}, m).(*backend)
+	old.SetLeadershipFence(func() (uint64, bool) { return 7, false })
+
+	key := []byte("auth/config-fence-contract")
+	initial := []byte("revision-1")
+	replacement := []byte("revision-2-by-b")
+	stale := []byte("revision-2-by-a")
+	require.NoError(t, successor.InternalPut(context.Background(), key, initial))
+
+	blocking.trigger.Store(true)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- old.InternalCAS(context.Background(), []InternalCASOp{{
+			Key: key, Expected: initial, ExpectedExists: true, Value: stale,
+		}})
+	}()
+	<-blocking.entered
+	released := false
+	defer func() {
+		if !released {
+			close(blocking.release)
+		}
+	}()
+
+	// A second member is allowed to mutate shared metadata even though it is a
+	// different process. Its exact-value decision commits while writer A's
+	// storage transaction is paused.
+	require.NoError(t, successor.InternalCAS(context.Background(), []InternalCASOp{{
+		Key: key, Expected: initial, ExpectedExists: true, Value: replacement,
+	}}))
+	close(blocking.release)
+	released = true
+	require.ErrorIs(t, <-errCh, storage.ErrCASFailed)
+
+	got, err := successor.InternalGet(context.Background(), key)
+	require.NoError(t, err)
+	require.Equal(t, replacement, got, "the stale cross-member decision must not overwrite newer metadata")
+}

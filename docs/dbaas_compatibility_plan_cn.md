@@ -35036,6 +35036,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，endpoint healthy、无 alarm/lease、auth disabled/AuthRevision=587，revision/index/applied
   均为 468126003565749913、term 339，全范围长期 fixture Count=100（guard shards 不进入用户范围）。
 
+- A3589 审计 A3588 storage-atomic fence 的 mutation coverage，并明确区分两种提交模型，防止后续
+  为“覆盖率”误把所有内部写都改成 leader-only。对照 `/root/etcd/server/etcdserver/v3_server.go`、
+  `apply/auth.go` 与 KubeBrain RPC/backend 调用链：KV/写 Txn、Compact、LeaseGrant/Revoke/
+  KeepAlive checkpoint、自然过期、orphan sweep、legacy lease migration 和 auto-compactor 都是
+  leader-exclusive mutation，已在 RPC 准入处携带 epoch，或由内部 worker 在每次操作前捕获当前
+  fresh epoch；其最终 batch 因而加入同一 TiKV transaction 的 ownership shard CAS。Auth 与 Alarm
+  则是共享 TiKV 上的 exact-value CAS mutation：同上游允许请求到达任意 member、再由 Raft 全序提交
+  的外部行为一样，它们不要求接入 member 自己持有 election lease；强行 stamp leader epoch 会破坏
+  follower 入口可用性。event-log start、durable revision 等派生元数据使用 CAS-max/单调规则，也不
+  属于旧 leader 可以覆盖新状态的 blind mutation。
+
+  新增确定性并发回归把一个无 epoch 的共享元数据 `InternalCAS` 阻塞在 Badger optimistic transaction
+  Commit 前，让另一 backend instance 基于同一旧值先提交更新；被恢复的旧 transaction 必须返回
+  `storage.ErrCASFailed`，最终值保持第二成员的新状态。同时给旧 writer 安装明确拒绝 leadership 的
+  fence，证明该共享 mutation 不会因非 leader 身份被误拒绝。该测试与 A3588 的 blocked leader-Create
+  RED 组成双向契约：leader-exclusive 写靠 ownership token 阻止跨任期提交，共享元数据写靠业务 CAS
+  阻止 stale overwrite，二者不能互相替代。三项专项普通 20 轮 3.320 秒 GREEN；本轮为审计与回归
+  加固，不改变生产二进制，因此不虚构新的部署镜像或运行时故障结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
