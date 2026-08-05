@@ -1950,7 +1950,9 @@ file/directory `fsync` 且不覆盖发布；已有 cutover/verify/rollback marke
 切流完成后使用 `hack/production/audit-restored-instance.sh` 运行持续观察窗口。默认持续
 3600 秒、间隔 60 秒且至少 10 个样本；生产控制面应按实例 SLO 调大窗口。脚本先按严格
 JSON 顶层字段集合、类型和值核对 A189 state SHA-256 与 cutover receipt，同时要求 source instance 非空且不同于 target、source/target
-prefix 绝对且不同，并把 receipt 的 source instance 精确绑定到冻结 state；再在每个样本前后检查 Service UID/精确 selector、目标
+prefix 绝对且不同，并把 receipt 的 source instance 精确绑定到冻结 state；审计时间必须满足
+`cutover receipt completed_at_unix <= audit started_at_unix <= audit completed_at_unix`，同秒合法，
+新执行与既有/并发 receipt 复用都拒绝倒序时间；再在每个样本前后检查 Service UID/精确 selector、目标
 Pod name/UID/restart/Ready 快照和 EndpointSlice targetRef UID 集。每个样本经公开 endpoint
 执行 60 秒 lease grant、`createRevision=0` 条件 Put、线性 Get（核对 value 与 lease）、
 value 条件 Delete、删除确认和 lease revoke；探针 key 使用加密随机 nonce，失败时也由

@@ -274,6 +274,9 @@ require_cutover_state_digest "$cutover_state_sha"
   { echo "cutover state does not match the audit operation" >&2; exit 1; }
 cutover_receipt_sha="$(validated_cutover_receipt_digest)" ||
   { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
+cutover_completed_at="$("$JQ" -er '.completed_at_unix | select(type == "number" and . > 0 and . == floor)' \
+  "$CUTOVER_RECEIPT_INPUT")" ||
+  { echo "cutover receipt does not match the frozen state" >&2; exit 1; }
 require_cutover_state_digest "$cutover_state_sha"
 
 expected_pods="$(awk -F '\t' '$1 == "POD" && $2 == "target" {print $3 "\t" $4 "\t" $5}' \
@@ -342,7 +345,7 @@ validate_existing_audit_receipt() {
     --arg cutover_state_sha "$cutover_state_sha" --arg cutover_receipt_sha "$cutover_receipt_sha" \
     --argjson snapshot "$snapshot_revision" --argjson replicas "$EXPECTED_REPLICAS" \
     --argjson duration "$AUDIT_DURATION_SECONDS" --argjson interval "$AUDIT_INTERVAL_SECONDS" \
-    --argjson min_samples "$MIN_SAMPLES" '
+    --argjson min_samples "$MIN_SAMPLES" --argjson cutover_completed_at "$cutover_completed_at" '
       (keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"] or
        keys == ["all_probes_succeeded","artifact_sha256","completed","completed_at_unix","cutover_operation_id","cutover_receipt_sha256","cutover_state_sha256","duration_seconds","first_probe_revision","format","instance","interval_seconds","last_probe_revision","operation_id","replicas","samples","service_uid","snapshot_revision","started_at_unix","target_instance","topology_unchanged"]) and
       .format == "kubebrain.post-restore-audit.receipt.v1" and
@@ -363,6 +366,7 @@ validate_existing_audit_receipt() {
       (.last_probe_revision >= .first_probe_revision) and
       (.started_at_unix | type == "number" and . > 0 and . == floor) and
       (.completed_at_unix | type == "number" and . > 0 and . == floor) and
+      (.started_at_unix >= $cutover_completed_at) and
       (.completed_at_unix >= .started_at_unix)' "$receipt_file" >/dev/null
 }
 
@@ -375,6 +379,8 @@ if [[ -e "$receipt_file" ]]; then
 fi
 
 started_at="$(date +%s)"
+(( started_at >= cutover_completed_at )) ||
+  { echo "post-restore audit predates cutover completion" >&2; exit 1; }
 started_monotonic="$SECONDS"
 deadline_monotonic=$((started_monotonic + AUDIT_DURATION_SECONDS))
 samples=0
@@ -395,6 +401,8 @@ while true; do
   sleep "$AUDIT_INTERVAL_SECONDS"
 done
 completed_at="$(date +%s)"
+(( completed_at >= started_at )) ||
+  { echo "post-restore audit completion predates audit start" >&2; exit 1; }
 require_cutover_state_digest "$cutover_state_sha"
 require_cutover_receipt_digest "$cutover_receipt_sha"
 

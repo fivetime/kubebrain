@@ -35923,6 +35923,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过（production 469.538 秒、server/etcd 169.628 秒），兼容模块 test/vet 与真实 NodePort client/v3
   全包 105.404 秒均通过。本项只强化控制面恢复证据链，不改变运行中 etcd 数据面镜像。
 
+- A3651 把 chronology 延伸到 post-restore audit 观察窗口。审计入口已严格绑定 cutover state/receipt
+  digest，audit receipt 也有 `started_at_unix`/`completed_at_unix`，但旧实现只要求 audit 自身
+  `completed >= started`，没有与 cutover `completed_at_unix` 比较。既有并发发布夹具恰好构造
+  cutover completed=100、audit started/completed=1/2，旧实现仍幂等接受；新增拒绝预期在旧实现上
+  RED 2.879 秒，实际返回成功。
+
+  现在从已冻结并通过严格 schema/digest 校验的 cutover receipt 提取 completion time，要求
+  `cutover completed <= audit started <= audit completed`；新审计在首个拓扑/数据探针前检查起点，结束
+  发布前检查本窗口，既有和并发 audit receipt 复用也执行同一跨制品门禁，同秒继续合法。有效并发
+  fixture 改为 100/101，倒序 1/2 独立保留。双边界测试 5.743 秒、完整 post-restore audit 测试族
+  47.356 秒；全仓 test/vet 通过（production 471.923 秒、server/etcd 166.876 秒），兼容模块
+  test/vet 与真实 NodePort client/v3 全包 105.417 秒均通过。本项强化恢复后持续验证证据，不改变
+  运行中 etcd 数据面镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

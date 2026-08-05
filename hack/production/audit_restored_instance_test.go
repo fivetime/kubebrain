@@ -43,9 +43,15 @@ func TestPostRestoreAuditTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T
 	require.NoError(t, err)
 	var receipt map[string]any
 	require.NoError(t, json.Unmarshal(data, &receipt))
-	require.Equal(t, float64(1), receipt["started_at_unix"])
-	require.Equal(t, float64(2), receipt["completed_at_unix"])
+	require.Equal(t, float64(100), receipt["started_at_unix"])
+	require.Equal(t, float64(101), receipt["completed_at_unix"])
 	require.Equal(t, float64(2), receipt["samples"])
+}
+
+func TestPostRestoreAuditRejectsConcurrentReceiptStartedBeforeCutoverCompletion(t *testing.T) {
+	f := newAuditFixture(t)
+	f.run(t, false, "PUBLISH_INVALID_RECEIPT_DURING_PROBE=true",
+		"refusing to overwrite existing post-restore audit receipt")
 }
 
 func TestPostRestoreAuditRejectsCutoverEvidenceDriftDuringReceiptPublish(t *testing.T) {
@@ -246,11 +252,17 @@ set -euo pipefail
 printf 'x\n' >>"$FAKE_DIR/probes"
 if [[ -f "$FAKE_DIR/probe-invalid" ]]; then echo '{}'; exit 0; fi
 count=$(wc -l <"$FAKE_DIR/probes")
-if [[ "${PUBLISH_RECEIPT_DURING_PROBE:-false}" == true && ! -f "$STATE_DIR/$OPERATION_ID.receipt.json" ]]; then
+if [[ ("${PUBLISH_RECEIPT_DURING_PROBE:-false}" == true ||
+       "${PUBLISH_INVALID_RECEIPT_DURING_PROBE:-false}" == true) &&
+      ! -f "$STATE_DIR/$OPERATION_ID.receipt.json" ]]; then
   cutover_state_sha="$(sha256sum "$CUTOVER_STATE_INPUT" | cut -d ' ' -f1)"
   cutover_receipt_sha="$(sha256sum "$CUTOVER_RECEIPT_INPUT" | cut -d ' ' -f1)"
-  printf '{"all_probes_succeeded":true,"artifact_sha256":"`+auditArtifactSHA256+`","completed":true,"completed_at_unix":2,"cutover_operation_id":"cutover-1","cutover_receipt_sha256":"%s","cutover_state_sha256":"%s","duration_seconds":%s,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"%s","interval_seconds":%s,"last_probe_revision":2,"operation_id":"%s","replicas":%s,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":1,"target_instance":"%s","topology_unchanged":true}\n' \
-    "$cutover_receipt_sha" "$cutover_state_sha" "$AUDIT_DURATION_SECONDS" "$INSTANCE" "$AUDIT_INTERVAL_SECONDS" "$OPERATION_ID" "$EXPECTED_REPLICAS" "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
+  started_at=100; completed_at=101
+  if [[ "${PUBLISH_INVALID_RECEIPT_DURING_PROBE:-false}" == true ]]; then
+    started_at=1; completed_at=2
+  fi
+  printf '{"all_probes_succeeded":true,"artifact_sha256":"`+auditArtifactSHA256+`","completed":true,"completed_at_unix":%s,"cutover_operation_id":"cutover-1","cutover_receipt_sha256":"%s","cutover_state_sha256":"%s","duration_seconds":%s,"first_probe_revision":1,"format":"kubebrain.post-restore-audit.receipt.v1","instance":"%s","interval_seconds":%s,"last_probe_revision":2,"operation_id":"%s","replicas":%s,"samples":2,"service_uid":"uid-service","snapshot_revision":42,"started_at_unix":%s,"target_instance":"%s","topology_unchanged":true}\n' \
+    "$completed_at" "$cutover_receipt_sha" "$cutover_state_sha" "$AUDIT_DURATION_SECONDS" "$INSTANCE" "$AUDIT_INTERVAL_SECONDS" "$OPERATION_ID" "$EXPECTED_REPLICAS" "$started_at" "$TARGET_INSTANCE" >"$STATE_DIR/$OPERATION_ID.receipt.json"
   chmod 600 "$STATE_DIR/$OPERATION_ID.receipt.json"
 fi
 if [[ -f "$FAKE_DIR/probe-backwards" ]]; then count=$((100-count)); fi
