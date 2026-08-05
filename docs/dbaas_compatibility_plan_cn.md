@@ -36051,6 +36051,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/v3beta/kv/range` 合法请求均为 200。在线兼容套件 109.600 秒通过，`/compat/` Count=0；
   一次性 reference 进程已停止。
 
+- A3659 对 A3658 收窄后的 gateway 边缘行为做完整 characterization，而不是假设一个 404 修复就
+  证明路由兼容。一次性官方 etcd `d947b2086` 与生产 `kubebrain:a3658-gateway-prefix` 逐项比较
+  GET/POST/OPTIONS × `/v3`、`/v3/`、未知 v3 route、`/v3beta`、`/v3beta/`、未知 v3beta route、
+  未知 readyz 子路径和普通未知路径，共 24 个组合的 status、Content-Type、Location 与原始 body。
+  两端全部一致：GET `/v3` 为 307 到 `/v3/`，POST `/v3` 同为无 body 307；`/v3beta`（无尾斜杠）
+  是纯文本 404，带尾斜杠的未知 v3/v3beta route 是 gateway JSON 404，非 gateway namespace 是
+  net/http 纯文本 404，OPTIONS 全部为空 body 200。
+
+  没有新的服务端 RED，因此不制造实现改动。把生产 mux 回归扩为七分支表驱动门禁，并显式携带
+  `Content-Type: application/json`，固定 gateway error marshaler 在真实请求头下的空格/Content-Type
+  外观；同时保留未知健康/根路径、307 Location、v3beta rewrite 和 OPTIONS 边界。定向测试、根模块
+  `go test ./...`（endpoint 16.821 秒、server/etcd 174.043 秒）与 `go vet ./...`、兼容模块 test/vet
+  均通过。本项仅增强 A3658 的永久证据，不改变已验证运行镜像；一次性 reference 进程已停止。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

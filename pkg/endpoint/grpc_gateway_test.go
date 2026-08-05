@@ -855,7 +855,7 @@ func TestGRPCGatewaySurfaceIsExplicit(t *testing.T) {
 	}, services, "review and classify every generated HTTP gateway service when the public surface changes")
 }
 
-func TestClientHTTPGatewayDoesNotCaptureEtcdHTTPNamespaces(t *testing.T) {
+func TestClientHTTPGatewayRoutingBoundaryMatchesEtcd(t *testing.T) {
 	endpoint := &Endpoint{
 		server: rejectingInterceptorServer{},
 		config: &Config{Port: 1, EnableGRPCGateway: true},
@@ -864,12 +864,35 @@ func TestClientHTTPGatewayDoesNotCaptureEtcdHTTPNamespaces(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz/unknown", nil))
-
-	require.Equal(t, http.StatusNotFound, response.Code)
-	require.Equal(t, "text/plain; charset=utf-8", response.Header().Get("Content-Type"))
-	require.Equal(t, "404 page not found\n", response.Body.String())
+	tests := []struct {
+		name         string
+		method       string
+		path         string
+		wantStatus   int
+		wantType     string
+		wantLocation string
+		wantBody     string
+	}{
+		{name: "unknown health subpath", method: http.MethodGet, path: "/readyz/unknown", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
+		{name: "unknown root path", method: http.MethodPost, path: "/unclassified", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
+		{name: "v3 slash redirect", method: http.MethodGet, path: "/v3", wantStatus: http.StatusTemporaryRedirect, wantType: "text/html; charset=utf-8", wantLocation: "/v3/", wantBody: "<a href=\"/v3/\">Temporary Redirect</a>.\n\n"},
+		{name: "unknown v3 route", method: http.MethodGet, path: "/v3/unclassified", wantStatus: http.StatusNotFound, wantType: "application/json", wantBody: `{"code":5, "message":"Not Found"}`},
+		{name: "v3beta without slash", method: http.MethodGet, path: "/v3beta", wantStatus: http.StatusNotFound, wantType: "text/plain; charset=utf-8", wantBody: "404 page not found\n"},
+		{name: "unknown v3beta route", method: http.MethodGet, path: "/v3beta/unclassified", wantStatus: http.StatusNotFound, wantType: "application/json", wantBody: `{"code":5, "message":"Not Found"}`},
+		{name: "unknown options", method: http.MethodOptions, path: "/unclassified", wantStatus: http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(tt.method, tt.path, nil)
+			request.Header.Set("Content-Type", "application/json")
+			handler.ServeHTTP(response, request)
+			require.Equal(t, tt.wantStatus, response.Code)
+			require.Equal(t, tt.wantType, response.Header().Get("Content-Type"))
+			require.Equal(t, tt.wantLocation, response.Header().Get("Location"))
+			require.Equal(t, tt.wantBody, response.Body.String())
+		})
+	}
 }
 
 func TestGRPCGatewayRouteSurfaceIsExplicit(t *testing.T) {
