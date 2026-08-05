@@ -901,6 +901,25 @@ func TestSendWatchFragmentsMatchesEtcdFlags(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, keys)
 }
 
+func TestSendWatchFragmentsDoesNotSplitSingleOversizedEvent(t *testing.T) {
+	response := &etcdserverpb.WatchResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 1, MemberId: 2, Revision: 12, RaftTerm: 3},
+		WatchId: 7,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("key"), Value: make([]byte, 1024)},
+		}},
+	}
+	var sent []*etcdserverpb.WatchResponse
+	require.NoError(t, sendWatchFragments(response, 1, func(resp *etcdserverpb.WatchResponse) error {
+		sent = append(sent, resp)
+		return nil
+	}))
+	require.Equal(t, []*etcdserverpb.WatchResponse{response}, sent)
+	require.Same(t, response, sent[0])
+	require.False(t, sent[0].Fragment)
+}
+
 func TestWatchFragmentLimitUsesConfiguredRequestBytesWithEtcdOverhead(t *testing.T) {
 	server := &RPCServer{maxRequestBytes: 1024}
 	require.Equal(t, 1024+512*1024, server.watchFragmentBytes())

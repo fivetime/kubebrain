@@ -35667,6 +35667,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/dbaas-watch-unfragmented-limit/` 与 `/dbaas-watch-unrestricted/` prefix 都为 0。本轮仅重构并增强测试 oracle，
   未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3636 覆盖 upstream `server/etcdserver/api/v3rpc/watch.go:sendFragments` 与其 `watch_test.go:TestSendFragment`
+  明确的单事件例外：即使一个 response 已超过分片阈值，只要仅含一个 event，也必须原样发送一次且
+  `Fragment=false`。KubeBrain 实现已有 `len(response.Events) < 2` 分支，但旧单元测试只覆盖多事件切分，线上
+  raw Watch 也未制造“一个 event 同时携带两个 1 MiB current/PrevKV”的真实超阈值响应。先加入完整 wire-level
+  期望而 runner 返回零值；有效 reference RED 0.023 秒显示 created/event envelope、response size、当前 KV 与
+  PrevKV metadata 全部未观测（两次更早命令仅在 Go module 路径校验失败，未错误计作 RED）。
+
+  新单元测试以 1-byte 阈值固定单 event 原对象只发送一次；真实场景则 seed 1 MiB old value，创建
+  `PrevKv=true, Fragment=true` raw watch，再 PUT 1 MiB new value。双端都返回 proto size 大于 2 MiB 的单帧，
+  `Fragment=false`，header 位于 update revision，current/PrevKV 的 key/value、Create/Mod revision、Version 与
+  Lease 完整匹配。单元边界 0.067 秒、双端 GREEN 0.452 秒、连续 10 轮 5.294 秒、race 2.081 秒；兼容模块
+  全包 1.068 秒、两级 module vet、线上 client/v3 全包 122.299 秒、`hack/production` 全包 476.970 秒、
+  `pkg/server/etcd` 独立复核 status=0 及 diff check 均通过，线上 `/dbaas-watch-single-oversized/` prefix 为 0。
+  一次额外根全包与两套长生产测试并行时 `pkg/server/etcd` 受资源/时序竞争失败，不作为绿色证据；其后两次
+  独立包复核均无失败，其中显式退出码为 0。本轮只补保护性测试，未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
