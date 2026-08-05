@@ -23,10 +23,8 @@ type watchRevisionBoundaryOutcome struct {
 	EventAtWriteRevision     bool
 	EventHeaderAtWrite       bool
 	ProgressSuppressedFuture bool
-	ProgressAtWrite          bool
-	Canceled                 bool
-	CancelReason             string
-	CancelHeaderAtPut        bool
+	ProgressControl          watchControlOutcome
+	CancelControl            watchControlOutcome
 }
 
 func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -57,14 +55,13 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			EventAtWriteRevision:     true,
 			EventHeaderAtWrite:       true,
 			ProgressSuppressedFuture: true,
-			ProgressAtWrite:          true,
+			ProgressControl:          expectedRevisionProgressControl(),
 		},
 		{
-			Name:              "maximum",
-			CreatedControl:    expectedRevisionCreatedControl(304),
-			EventValues:       []string{},
-			Canceled:          true,
-			CancelHeaderAtPut: true,
+			Name:           "maximum",
+			CreatedControl: expectedRevisionCreatedControl(304),
+			EventValues:    []string{},
+			CancelControl:  expectedRevisionCancelControl(304),
 		},
 	}
 	referenceOutcomes := runWatchRevisionBoundaryScenario(t, reference, "etcd")
@@ -75,6 +72,22 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 func expectedRevisionCreatedControl(id int64) watchControlOutcome {
 	return watchControlOutcome{
 		WatchID: id, Created: true, HeaderMatchesSeed: true,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, EnvelopeObserved: true,
+	}
+}
+
+func expectedRevisionProgressControl() watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: -1, HeaderMatchesSeed: true,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, EnvelopeObserved: true,
+	}
+}
+
+func expectedRevisionCancelControl(id int64) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: id, Canceled: true, HeaderMatchesSeed: true,
 		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
 		HeaderTermPositive: true, EnvelopeObserved: true,
 	}
@@ -191,9 +204,7 @@ func runWatchRevisionBoundaryScenario(
 			"future-next", created, event, base.Header, put.Header.Revision,
 		)
 		outcome.ProgressSuppressedFuture = progressSuppressed
-		outcome.ProgressAtWrite = !progress.Created && !progress.Canceled &&
-			len(progress.Events) == 0 && progress.Header != nil &&
-			progress.Header.Revision == put.Header.Revision
+		outcome.ProgressControl = observeWatchControlResponse(progress, put.Header)
 		outcomes = append(outcomes, outcome)
 		require.NoError(t, stream.CloseSend())
 	})
@@ -217,12 +228,10 @@ func runWatchRevisionBoundaryScenario(
 		}))
 		canceled := recvWatchResponse(t, stream)
 		outcomes = append(outcomes, watchRevisionBoundaryOutcome{
-			Name:              "maximum",
-			CreatedControl:    observeWatchControlResponse(created, base.Header),
-			EventValues:       []string{},
-			Canceled:          canceled.Canceled,
-			CancelReason:      canceled.CancelReason,
-			CancelHeaderAtPut: canceled.Header.Revision == put.Header.Revision,
+			Name:           "maximum",
+			CreatedControl: observeWatchControlResponse(created, base.Header),
+			EventValues:    []string{},
+			CancelControl:  observeWatchControlResponse(canceled, put.Header),
 		})
 		require.NoError(t, stream.CloseSend())
 	})

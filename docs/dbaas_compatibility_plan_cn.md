@@ -35462,6 +35462,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   6.028 秒、race 1.771 秒，清理复验 0.711 秒；兼容模块全包 1.365 秒、两级 module vet、
   `hack/production` 全包 463.374 秒及 diff check 均通过。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3620 完成 revision boundary 矩阵剩余控制响应的完整化：future-next 在目标 revision 到达后的显式
+  progress，以及 `MaxInt64` watch 的 cancel。旧代码分别压成“空响应且 header revision 等于 write”与
+  canceled/reason/header 三个局部字段，遗漏 WatchID、完整 header、compact revision、fragment 和 events。
+  先加入 `ProgressControl`（WatchID=-1）和 `CancelControl`（WatchID=304）完整期望而不采集，reference
+  RED 精确只显示这两个 outcome 为零值。
+
+  两条路径现分别以 write/put header 为基线复用 `observeWatchControlResponse`，并删除被替代的
+  `ProgressAtWrite`、`Canceled`、`CancelReason` 和 `CancelHeaderAtPut`；未来 revision 尚未到达前 progress
+  必须静默的独立时序断言继续保留。共享 helper 连续 20 轮 0.025 秒、race 1.064 秒；真实双端四场景
+  连续 10 轮 6.867 秒、race 1.770 秒；兼容模块全包 1.317 秒、两级 module vet、`hack/production`
+  全包 465.394 秒及 diff check 均通过，线上 `/dbaas-watch-revision/` prefix 为 0。本轮未发现 runtime
+  差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
