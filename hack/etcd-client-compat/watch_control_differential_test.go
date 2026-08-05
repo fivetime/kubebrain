@@ -16,11 +16,16 @@ import (
 )
 
 type watchControlOutcome struct {
-	WatchID           int64
-	Created           bool
-	Canceled          bool
-	CancelReason      string
-	HeaderMatchesSeed bool
+	WatchID            int64
+	Created            bool
+	Canceled           bool
+	CancelReason       string
+	HeaderMatchesSeed  bool
+	CompactRevisionSet bool
+	CompactRevisionGap int64
+	Fragment           bool
+	EventCount         int
+	EnvelopeObserved   bool
 }
 
 func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -29,7 +34,7 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
 	referenceControl := runWatchControlScenario(t, reference)
-	require.Equal(t, []watchControlOutcome{
+	wantControl := []watchControlOutcome{
 		{WatchID: 42, Created: true, HeaderMatchesSeed: true},
 		{WatchID: -1, Created: true, Canceled: true, CancelReason: "mvcc: duplicate watch ID provided on the WatchStream", HeaderMatchesSeed: true},
 		{WatchID: 43, Created: true, HeaderMatchesSeed: true},
@@ -39,7 +44,11 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{WatchID: 0, Created: true, HeaderMatchesSeed: true},
 		{WatchID: 0, Canceled: true, HeaderMatchesSeed: true},
 		{WatchID: 1, Created: true, HeaderMatchesSeed: true},
-	}, referenceControl)
+	}
+	for i := range wantControl {
+		wantControl[i].EnvelopeObserved = true
+	}
+	require.Equal(t, wantControl, referenceControl)
 	require.Equal(t, referenceControl, runWatchControlScenario(t, compatEndpoint(t)))
 	referenceProgress := runSingleWatchProgressScenario(t, reference, "reference")
 	require.Equal(t, watchProgressOutcome{
@@ -420,7 +429,12 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 		return watchControlOutcome{
 			WatchID: resp.WatchId, Created: resp.Created,
 			Canceled: resp.Canceled, CancelReason: resp.CancelReason,
-			HeaderMatchesSeed: resp.Header != nil && resp.Header.Revision == seed.Header.Revision,
+			HeaderMatchesSeed:  resp.Header != nil && resp.Header.Revision == seed.Header.Revision,
+			CompactRevisionSet: resp.CompactRevision != 0,
+			CompactRevisionGap: normalizeWatchControlRevision(resp.CompactRevision, seed.Header.Revision),
+			Fragment:           resp.Fragment,
+			EventCount:         len(resp.Events),
+			EnvelopeObserved:   true,
 		}
 	}
 
@@ -453,4 +467,11 @@ func runWatchControlScenario(t *testing.T, endpoint string) []watchControlOutcom
 
 	require.NoError(t, stream.CloseSend())
 	return outcomes
+}
+
+func normalizeWatchControlRevision(revision, baseRevision int64) int64 {
+	if revision == 0 {
+		return 0
+	}
+	return revision - baseRevision
 }

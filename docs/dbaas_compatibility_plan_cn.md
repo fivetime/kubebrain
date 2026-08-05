@@ -35400,6 +35400,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   diff check 均通过，线上 `/dbaas-watch-empty-progress/`、`/dbaas-watch-control/` prefix 均为空。
   本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3615 把 Watch create/cancel 九响应矩阵从控制标志扩展为完整响应 envelope。旧 outcome 只记录
+  WatchID、Created、Canceled、CancelReason 和 header revision，CompactRevision、Fragment 与 Events
+  即使异常也会被忽略。先要求每个期望都带 `EnvelopeObserved=true` 而不采集，reference RED 如期显示
+  九项均为 false；随后逐字段采集，并把 `CompactRevisionSet` 与相对 seed revision 的 gap 分开记录，
+  避免“非零 revision 恰好等于基线”与真正的零值折叠。
+
+  reference 还确认 StartRevision=-1 的取消响应虽然带 `mvcc: required revision has been compacted`，
+  CompactRevision 仍为 0；非零 compact watermark 继续由专门的真实 compaction 用例约束。真实双端矩阵
+  连续 10 轮 20.104 秒、race 3.524 秒；兼容模块全包 1.344 秒、两级 module vet、
+  `hack/production` 全包 469.356 秒及 diff check 均通过，线上 `/dbaas-watch-control/` prefix 为空。
+  本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
