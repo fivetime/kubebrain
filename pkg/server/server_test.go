@@ -54,6 +54,10 @@ func (alwaysLeaderElection) GetElectionInfo() (leader.ElectionInfo, error) {
 	return leader.ElectionInfo{LeaderAddress: "self", IsLeader: true}, nil
 }
 
+type staleLeaderElection struct{ alwaysLeaderElection }
+
+func (staleLeaderElection) EpochAndLeadingFresh() (uint64, bool) { return 1, false }
+
 type healthStorage struct {
 	storage.KvStorage
 	fail bool
@@ -191,6 +195,24 @@ func TestRevisionHandlerServesInitializedRevisionForEmptyKeyspace(t *testing.T) 
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))
 	require.Equal(t, uint64(1), got.Revision)
 	require.Equal(t, uint64(1), b.GetCurrentRevision())
+}
+
+func TestRevisionHandlerRejectsStaleLocalLeadership(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "stale-leader", EnableEtcdCompatibility: true,
+	}, metrics)
+	b.SetCurrentRevision(42)
+
+	s := &server{backend: b, metricCli: metrics, leaderElection: staleLeaderElection{}}
+	recorder := httptest.NewRecorder()
+	s.revisionHandler(recorder, httptest.NewRequest(http.MethodGet, "/status", nil))
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "not leader")
+	require.Equal(t, uint64(42), b.GetCurrentRevision())
 }
 
 func TestCloseWaitsForLeadershipCallbackBeforeReturning(t *testing.T) {

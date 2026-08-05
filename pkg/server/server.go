@@ -460,7 +460,13 @@ func (s *server) electionHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 func (s *server) revisionHandler(w http.ResponseWriter, req *http.Request) {
-	if !s.leaderElection.IsLeader() {
+	// This endpoint is the follower read-index oracle. A stale local leader flag
+	// is insufficient: after the shared election lease expires, a successor may
+	// already commit a newer TiKV revision before client-go runs
+	// OnStoppedLeading. Match the public SyncReadRevision fence and only publish
+	// a revision while the last successful renew is still fresh.
+	_, leadingFresh := s.leaderElection.EpochAndLeadingFresh()
+	if !leadingFresh {
 		s.metricCli.EmitCounter("leader.invalid", 1)
 		w.WriteHeader(400)
 		w.Write([]byte("i'm not leader, so can't tell you revision"))
