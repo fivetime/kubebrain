@@ -250,6 +250,36 @@ func TestColdRestoreExecuteRechecksTargetIdentityBeforeCreate(t *testing.T) {
 	require.NotContains(t, log, "create -f", "a replacement namespace must never receive restore resources")
 }
 
+func TestColdRestoreExecuteRechecksClassesBeforeCreate(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	restoreReceiptPath := filepath.Join(dir, "restore-receipt.json")
+	logPath := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	renderOutput, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(renderOutput))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldRestoreFakeKubectl), 0o755))
+
+	output, err := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=isolated-target",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + restoreReceiptPath,
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=uid-kube-system-target",
+		"EXPECTED_TARGET_NAMESPACE_UID=uid-target-namespace", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+		"FAKE_LOG=" + logPath, "FAKE_EXISTING=false", "FAKE_CLUSTER_ID=12345",
+		"FAKE_PVC_JSON=" + coldRestorePVCResult(t, false),
+		"FAKE_CONTENT_JSON=" + coldRestoreContentResult(t, false),
+		"FAKE_RESTORE_SNAPSHOT_POLICY_DRIFT_BEFORE_CREATE=Delete",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "target VolumeSnapshotClass driver/policy mismatch")
+	require.NoFileExists(t, restoreReceiptPath)
+	log := string(mustRead(t, logPath))
+	require.NotContains(t, log, "create -f", "class drift must fail before restore resources are created")
+}
+
 func runColdRestoreRender(t *testing.T, receiptPath, manifestPath string) ([]byte, error) {
 	t.Helper()
 	return runProductionCommand(t, "go", []string{
@@ -410,7 +440,12 @@ elif [[ "$args" == *"api-resources --api-group=snapshot.storage.k8s.io"* ]]; the
 elif [[ "$args" == *"api-resources --api-group=pingcap.com"* ]]; then
   printf 'tidbclusters.pingcap.com\n'
 elif [[ "$args" == *"get volumesnapshotclass"* ]]; then
-  printf 'csi.example.test\tRetain'
+  policy=Retain
+  if [[ -n "${FAKE_RESTORE_SNAPSHOT_POLICY_DRIFT_BEFORE_CREATE:-}" ]] &&
+    grep -q -- '--ignore-not-found' "$FAKE_LOG"; then
+    policy="$FAKE_RESTORE_SNAPSHOT_POLICY_DRIFT_BEFORE_CREATE"
+  fi
+  printf 'csi.example.test\t%s' "$policy"
 elif [[ "$args" == *"get storageclass"* ]]; then
   printf 'csi.example.test'
 elif [[ "$args" == *"--ignore-not-found"* ]]; then

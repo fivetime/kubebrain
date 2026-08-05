@@ -35196,6 +35196,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   矩阵 18.175 秒、`hack/production` 全包 415.936 秒以及 vet、脚本语法与 diff check 均通过。该项
   强化隔离目标绑定，不宣称真实 CSI 隔离恢复演练或 PITR 已完成。
 
+- A3599 将 cold restore 的 CSI class 绑定延伸到最终 create fence。旧执行器在 API discovery 后只检查
+  一次目标 VolumeSnapshotClass driver/Retain policy 与 StorageClass provisioner，随后逐项查询 19 个
+  目标是否冲突；class 若在这段窗口被替换或 policy 漂移，旧路径仍会向错误 CSI 配置创建完整恢复
+  资源。确定性 RED 让 SnapshotClass 只在首个 `--ignore-not-found` 查询后从 Retain 变为 Delete，
+  旧执行器实际成功发布 restore receipt。
+
+  class 检查现统一为可复用 fail-closed 函数，首次保持原 admission，第二次位于全部 collision 查询后；
+  SnapshotClass 必须继续匹配 source receipt 的 driver 且为 Retain，StorageClass provisioner 必须匹配
+  同一 driver。A3598 的最终 kube-system/namespace UID 复核放在第二次 class 查询之后，使 target identity
+  尽量贴近 create。专项连续 10 轮 12.488 秒、race 2.333 秒、完整 cold-restore 矩阵 20.015 秒、
+  `hack/production` 全包 417.121 秒以及 vet、脚本语法与 diff check 均通过。更窄的检查到 create
+  竞态仍需隔离环境或 admission 保证，本项不关闭真实 CSI 恢复/PITR 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

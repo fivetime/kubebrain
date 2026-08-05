@@ -116,11 +116,18 @@ grep -qx 'volumesnapshots.snapshot.storage.k8s.io' <<<"$snapshot_resources" &&
 tidb_resources="$(kctl api-resources --api-group=pingcap.com -o name 2>/dev/null || true)"
 grep -qx 'tidbclusters.pingcap.com' <<<"$tidb_resources" || { echo "target TidbCluster API is unavailable" >&2; exit 1; }
 
-class_identity="$(kctl get volumesnapshotclass "$snapshot_class" -o 'jsonpath={.driver}{"\t"}{.deletionPolicy}')"
-IFS=$'\t' read -r class_driver class_policy <<<"$class_identity"
-[[ "$class_driver" == "$expected_driver" && "$class_policy" == Retain ]] || { echo "target VolumeSnapshotClass driver/policy mismatch" >&2; exit 1; }
-storage_driver="$(kctl get storageclass "$storage_class" -o jsonpath='{.provisioner}')"
-[[ "$storage_driver" == "$expected_driver" ]] || { echo "target StorageClass provisioner mismatch" >&2; exit 1; }
+validate_target_classes() {
+  local class_identity class_driver class_policy storage_driver
+  class_identity="$(kctl get volumesnapshotclass "$snapshot_class" -o 'jsonpath={.driver}{"\t"}{.deletionPolicy}')"
+  IFS=$'\t' read -r class_driver class_policy <<<"$class_identity"
+  [[ "$class_driver" == "$expected_driver" && "$class_policy" == Retain ]] ||
+    { echo "target VolumeSnapshotClass driver/policy mismatch" >&2; exit 1; }
+  storage_driver="$(kctl get storageclass "$storage_class" -o jsonpath='{.provisioner}')"
+  [[ "$storage_driver" == "$expected_driver" ]] ||
+    { echo "target StorageClass provisioner mismatch" >&2; exit 1; }
+}
+
+validate_target_classes
 
 ensure_absent() {
   local namespace_arg="$1" kind="$2" name="$3" existing
@@ -146,6 +153,7 @@ done < <(jq -r '.items[] | select(.kind == "VolumeSnapshotContent" or .kind == "
 # Namespace names are reusable. Rebind the final create to the approved cluster
 # and namespace identities after all potentially slow discovery/collision reads
 # so a delete/recreate cannot redirect the restore to a same-named target.
+validate_target_classes
 validate_target_identity
 
 unpaused=false
