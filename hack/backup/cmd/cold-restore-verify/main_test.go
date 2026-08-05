@@ -85,16 +85,19 @@ func TestValidateReceiptChain(t *testing.T) {
 	snapshot.Inventory.Storage.TidbCluster = "kb"
 	snapshot.Inventory.Storage.UID = "uid-source-tidb"
 	snapshot.Inventory.Storage.ClusterID = "12345"
-	snapshot.Snapshots = append(snapshot.Snapshots, struct {
-		Name           string `json:"name"`
-		UID            string `json:"uid"`
-		Content        string `json:"content"`
-		ContentUID     string `json:"content_uid"`
-		SourcePVC      string `json:"source_pvc"`
-		Component      string `json:"component"`
-		SnapshotHandle string `json:"snapshot_handle"`
-		RestoreSize    string `json:"restore_size"`
-	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi"})
+	snapshot.Inventory.RecoveryBlueprint.TidbCluster = recoveryTidbCluster{
+		APIVersion: "pingcap.com/v1alpha1", Kind: "TidbCluster", Metadata: recoveryMetadata{Name: "kb", Namespace: "tidb-cluster"},
+		Spec: json.RawMessage(`{"pd":{"replicas":1},"tikv":{"replicas":0}}`),
+	}
+	snapshot.Inventory.PDPVCs = []sourcePVC{{
+		Name: "pd-kb-pd-0", UID: "uid-source-pvc", PV: "source-pv", Phase: "Bound",
+		Labels:     map[string]string{"app.kubernetes.io/instance": "kb", "app.kubernetes.io/component": "pd"},
+		VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, StorageClass: "source-storage", RequestedStorage: "1Gi",
+	}}
+	snapshot.Snapshots = append(snapshot.Snapshots, sourceSnapshot{
+		Name: "source-snapshot", UID: "uid-source-snapshot", Content: "source-content", ContentUID: "uid-source-content",
+		SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi",
+	})
 	snapshot.Witness.Format = status.Format
 	snapshot.Witness.Prefix = status.Prefix
 	snapshot.Witness.Revision = status.Revision
@@ -193,9 +196,31 @@ func TestValidateReceiptChain(t *testing.T) {
 	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, restoreData)
 	require.ErrorContains(t, err, "inventory format")
 
-	brokenRestore := restore
-	brokenRestore.SourceReceiptSHA = digest([]byte("other"))
+	brokenSnapshot = cloneSnapshotReceipt(t, snapshot)
+	brokenSnapshot.Inventory.PDPVCs[0].RequestedStorage = "512Mi"
+	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
+	require.NoError(t, err)
+	brokenRestore := cloneRestoreReceipt(restore)
+	brokenRestore.SourceReceiptSHA = digest(brokenSnapshotData)
 	brokenData, err := json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, brokenData)
+	require.ErrorContains(t, err, "restore size")
+
+	brokenSnapshot = cloneSnapshotReceipt(t, snapshot)
+	brokenSnapshot.Snapshots[0].UID = ""
+	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
+	require.NoError(t, err)
+	brokenRestore = cloneRestoreReceipt(restore)
+	brokenRestore.SourceReceiptSHA = digest(brokenSnapshotData)
+	brokenData, err = json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, brokenSnapshotData, brokenData)
+	require.ErrorContains(t, err, "snapshot inventory")
+
+	brokenRestore = restore
+	brokenRestore.SourceReceiptSHA = digest([]byte("other"))
+	brokenData, err = json.Marshal(brokenRestore)
 	require.NoError(t, err)
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, brokenData)
 	require.ErrorContains(t, err, "does not bind")
@@ -278,16 +303,12 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 	snapshot.Inventory.Storage.TidbCluster = "kb"
 	snapshot.Inventory.Storage.UID = "uid-tidb"
 	snapshot.Inventory.Storage.ClusterID = "12345"
-	snapshot.Snapshots = append(snapshot.Snapshots, struct {
-		Name           string `json:"name"`
-		UID            string `json:"uid"`
-		Content        string `json:"content"`
-		ContentUID     string `json:"content_uid"`
-		SourcePVC      string `json:"source_pvc"`
-		Component      string `json:"component"`
-		SnapshotHandle string `json:"snapshot_handle"`
-		RestoreSize    string `json:"restore_size"`
-	}{SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi"})
+	snapshot.Inventory.PDPVCs = []sourcePVC{{
+		Name: "pd-kb-pd-0", VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
+	}}
+	snapshot.Snapshots = append(snapshot.Snapshots, sourceSnapshot{
+		SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi",
+	})
 	objectName := restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0")
 	restore := restoreReceipt{}
 	restore.RestoreManifest.Format = "kubernetes-list.canonical-json.v1"
@@ -395,6 +416,10 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 	tamperedReceipt = cloneRestoreReceipt(restore)
 	tamperedReceipt.VolumeSnapshotContents[0].SnapshotClass = "substituted-class"
 	require.ErrorContains(t, validateRestoreManifestBinding(pretty, tamperedReceipt, snapshot), "VolumeSnapshotContent inventory")
+	tamperedSnapshot := snapshot
+	tamperedSnapshot.Inventory.PDPVCs = append([]sourcePVC(nil), snapshot.Inventory.PDPVCs...)
+	tamperedSnapshot.Inventory.PDPVCs[0].RequestedStorage = "2Gi"
+	require.ErrorContains(t, validateRestoreManifestBinding(pretty, restore, tamperedSnapshot), "PVC")
 
 	for _, tc := range []struct {
 		name    string
@@ -627,6 +652,15 @@ func cloneRestoreReceipt(value restoreReceipt) restoreReceipt {
 		value.PVCs[i].AccessModes = append([]string(nil), value.PVCs[i].AccessModes...)
 	}
 	return value
+}
+
+func cloneSnapshotReceipt(t *testing.T, value snapshotReceipt) snapshotReceipt {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	var cloned snapshotReceipt
+	require.NoError(t, json.Unmarshal(data, &cloned))
+	return cloned
 }
 
 func writeVerifiedWitness(t *testing.T, path, prefix string, revision int64) {

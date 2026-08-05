@@ -35834,6 +35834,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍无 VolumeSnapshot CRD/CSI driver，本项恢复的是制品链可消费性与端到端
   fail-closed 证明，不宣称真实 CSI 隔离恢复或 PITR 已完成；数据面服务代码和运行镜像不变。
 
+- A3645 继续修复 snapshot executor→semantic verifier 的上游 schema 断裂。A3644 让 verifier 能
+  消费完整 restore receipt 后，反向审计发现其 `snapshotReceipt.Inventory` 仍只声明 format、snapshot
+  class、KubeBrain 和 storage identity；真实 `cold-snapshot-execute.sh` 会原样嵌入 preflight 的
+  `recovery_blueprint`、`pd_pvcs`、`tikv_pvcs`。旧严格解码对 executor-shaped receipt RED 0.023 秒，
+  报 `unknown field "pd_pvcs"`，因此链路仍会在读取 restore receipt 前失败。
+
+  verifier 现完整严格解码 source TidbCluster blueprint、PD/TiKV PVC 与 CSI snapshot inventory；要求
+  blueprint name/namespace/API identity 和 replica 数匹配 PVC 分组，每个 source PVC 为 Bound、含完整
+  storage/mode/access/label 身份且 name/UID/PV 唯一，每个 snapshot/content/UID/handle 唯一并与 component
+  对应，同时用 Kubernetes quantity 证明 source request 不小于 restore size。canonical manifest 的
+  PVC volume mode、access modes 和 requested storage 也反向绑定 source inventory，阻断同步篡改
+  snapshot receipt 与 restore receipt 的绕过。负例覆盖 source request 降至 `512Mi`、snapshot UID
+  缺失，以及 source request 与 manifest 漂移。helper 全包 0.080 秒、race 1.376 秒、backup 全包与
+  cold snapshot/restore production 回归 159.796 秒、全仓 vet、串行全仓测试（`hack/production`
+  462.867 秒、`pkg/server/etcd` 166.190 秒）、兼容模块测试/vet 及真实 NodePort client/v3 全包
+  103.137 秒通过。默认并行全仓门禁在重型 production 与 server 包重叠时再次出现 server 包末尾失败、
+  失败详情被日志截断；该包随后两次隔离全包（最后一次 166.839 秒）和 `-p=1` 全仓均 GREEN，现记录为
+  并行测试资源竞争候选而不计作本项产品 RED，后续需用 `go test -json` 在重叠负载下定位具体用例。
+  当前环境仍无真实
+  CSI snapshot API/driver，本项只恢复证据链可消费性与 fail-closed 验证，不关闭物理恢复或 PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

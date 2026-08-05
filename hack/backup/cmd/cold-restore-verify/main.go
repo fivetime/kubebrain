@@ -37,9 +37,12 @@ type expectedKV struct {
 }
 
 type restoreManifestSnapshotMapping struct {
-	component string
-	handle    string
-	name      string
+	component        string
+	handle           string
+	name             string
+	volumeMode       string
+	accessModes      []string
+	requestedStorage string
 }
 
 type restoredVolumeSnapshotContent struct {
@@ -106,6 +109,66 @@ type restoredPV struct {
 	VolumeHandle string           `json:"volume_handle"`
 }
 
+type sourcePVC struct {
+	Name             string            `json:"name"`
+	UID              string            `json:"uid"`
+	PV               string            `json:"pv"`
+	Labels           map[string]string `json:"labels"`
+	VolumeMode       string            `json:"volume_mode"`
+	AccessModes      []string          `json:"access_modes"`
+	StorageClass     string            `json:"storage_class"`
+	RequestedStorage string            `json:"requested_storage"`
+	Phase            string            `json:"phase"`
+}
+
+type recoveryTidbCluster struct {
+	APIVersion string           `json:"apiVersion"`
+	Kind       string           `json:"kind"`
+	Metadata   recoveryMetadata `json:"metadata"`
+	Spec       json.RawMessage  `json:"spec"`
+}
+
+type recoveryMetadata struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
+type snapshotInventory struct {
+	Format              string `json:"format"`
+	VolumeSnapshotClass struct {
+		Name           string `json:"name"`
+		Driver         string `json:"driver"`
+		DeletionPolicy string `json:"deletion_policy"`
+	} `json:"volume_snapshot_class"`
+	KubeBrain struct {
+		Namespace   string `json:"namespace"`
+		StatefulSet string `json:"statefulset"`
+		UID         string `json:"uid"`
+	} `json:"kubebrain"`
+	Storage struct {
+		Namespace   string `json:"namespace"`
+		TidbCluster string `json:"tidb_cluster"`
+		UID         string `json:"uid"`
+		ClusterID   string `json:"cluster_id"`
+	} `json:"storage"`
+	RecoveryBlueprint struct {
+		TidbCluster recoveryTidbCluster `json:"tidbcluster"`
+	} `json:"recovery_blueprint"`
+	PDPVCs   []sourcePVC `json:"pd_pvcs"`
+	TiKVPVCs []sourcePVC `json:"tikv_pvcs"`
+}
+
+type sourceSnapshot struct {
+	Name           string `json:"name"`
+	UID            string `json:"uid"`
+	Content        string `json:"content"`
+	ContentUID     string `json:"content_uid"`
+	SourcePVC      string `json:"source_pvc"`
+	Component      string `json:"component"`
+	SnapshotHandle string `json:"snapshot_handle"`
+	RestoreSize    string `json:"restore_size"`
+}
+
 type restoreReceipt struct {
 	Format           string `json:"format"`
 	OperationID      string `json:"operation_id"`
@@ -135,39 +198,12 @@ type restoreReceipt struct {
 }
 
 type snapshotReceipt struct {
-	Format      string `json:"format"`
-	OperationID string `json:"operation_id"`
-	CreatedAt   string `json:"created_at"`
-	Inventory   struct {
-		Format              string `json:"format"`
-		VolumeSnapshotClass struct {
-			Name           string `json:"name"`
-			Driver         string `json:"driver"`
-			DeletionPolicy string `json:"deletion_policy"`
-		} `json:"volume_snapshot_class"`
-		KubeBrain struct {
-			Namespace   string `json:"namespace"`
-			StatefulSet string `json:"statefulset"`
-			UID         string `json:"uid"`
-		} `json:"kubebrain"`
-		Storage struct {
-			Namespace   string `json:"namespace"`
-			TidbCluster string `json:"tidb_cluster"`
-			UID         string `json:"uid"`
-			ClusterID   string `json:"cluster_id"`
-		} `json:"storage"`
-	} `json:"inventory"`
-	Snapshots []struct {
-		Name           string `json:"name"`
-		UID            string `json:"uid"`
-		Content        string `json:"content"`
-		ContentUID     string `json:"content_uid"`
-		SourcePVC      string `json:"source_pvc"`
-		Component      string `json:"component"`
-		SnapshotHandle string `json:"snapshot_handle"`
-		RestoreSize    string `json:"restore_size"`
-	} `json:"snapshots"`
-	Witness struct {
+	Format      string            `json:"format"`
+	OperationID string            `json:"operation_id"`
+	CreatedAt   string            `json:"created_at"`
+	Inventory   snapshotInventory `json:"inventory"`
+	Snapshots   []sourceSnapshot  `json:"snapshots"`
+	Witness     struct {
 		Format     string `json:"format"`
 		Prefix     string `json:"prefix"`
 		Revision   int64  `json:"revision"`
@@ -342,6 +378,9 @@ func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snaps
 	if snapshotRecord.Inventory.Format != "kubebrain.cold-physical-snapshot-preflight.v2" {
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("snapshot receipt inventory format is invalid")
 	}
+	if err := validateSnapshotReceiptInventory(snapshotRecord); err != nil {
+		return snapshotReceipt{}, restoreReceipt{}, err
+	}
 	if snapshotRecord.Format != "kubebrain.cold-physical-snapshot.v2" || snapshotRecord.OperationID == "" ||
 		snapshotRecord.Witness.Format != status.Format || snapshotRecord.Witness.Prefix != status.Prefix ||
 		snapshotRecord.Witness.Revision != status.Revision || snapshotRecord.Witness.Records != status.Records ||
@@ -376,6 +415,105 @@ func validateReceiptChain(status backupfile.Status, witnessFileSHA string, snaps
 		return snapshotReceipt{}, restoreReceipt{}, errors.New("cold physical restore receipt does not bind a canonical restore manifest")
 	}
 	return snapshotRecord, restore, nil
+}
+
+func validateSnapshotReceiptInventory(snapshotRecord snapshotReceipt) error {
+	inventory := snapshotRecord.Inventory
+	if inventory.VolumeSnapshotClass.Name == "" || inventory.VolumeSnapshotClass.Driver == "" ||
+		inventory.VolumeSnapshotClass.DeletionPolicy != "Retain" ||
+		inventory.KubeBrain.Namespace == "" || inventory.KubeBrain.StatefulSet == "" || inventory.KubeBrain.UID == "" ||
+		inventory.Storage.Namespace == "" || inventory.Storage.TidbCluster == "" ||
+		inventory.Storage.UID == "" || inventory.Storage.ClusterID == "" {
+		return errors.New("snapshot receipt inventory identity is incomplete")
+	}
+	blueprint := inventory.RecoveryBlueprint.TidbCluster
+	if blueprint.APIVersion != "pingcap.com/v1alpha1" || blueprint.Kind != "TidbCluster" ||
+		blueprint.Metadata.Name != inventory.Storage.TidbCluster ||
+		blueprint.Metadata.Namespace != inventory.Storage.Namespace || len(blueprint.Spec) == 0 {
+		return errors.New("snapshot receipt TidbCluster blueprint identity is invalid")
+	}
+	var replicas struct {
+		PD struct {
+			Replicas int `json:"replicas"`
+		} `json:"pd"`
+		TiKV struct {
+			Replicas int `json:"replicas"`
+		} `json:"tikv"`
+	}
+	if err := json.Unmarshal(blueprint.Spec, &replicas); err != nil ||
+		replicas.PD.Replicas != len(inventory.PDPVCs) || replicas.TiKV.Replicas != len(inventory.TiKVPVCs) {
+		return errors.New("snapshot receipt PVC inventory does not match TidbCluster replicas")
+	}
+
+	allPVCs := append(append([]sourcePVC(nil), inventory.PDPVCs...), inventory.TiKVPVCs...)
+	if len(allPVCs) == 0 || len(allPVCs) != len(snapshotRecord.Snapshots) {
+		return errors.New("snapshot receipt PVC and snapshot inventory counts do not match")
+	}
+	claims := make(map[string]sourcePVC, len(allPVCs))
+	components := make(map[string]string, len(allPVCs))
+	seenUIDs := map[string]struct{}{}
+	seenPVs := map[string]struct{}{}
+	for _, group := range []struct {
+		component string
+		claims    []sourcePVC
+	}{{component: "pd", claims: inventory.PDPVCs}, {component: "tikv", claims: inventory.TiKVPVCs}} {
+		for _, claim := range group.claims {
+			if claim.Name == "" || claim.UID == "" || claim.PV == "" || claim.Phase != "Bound" ||
+				claim.StorageClass == "" || claim.VolumeMode == "" || len(claim.AccessModes) == 0 ||
+				claim.RequestedStorage == "" || claim.Labels["app.kubernetes.io/instance"] != inventory.Storage.TidbCluster ||
+				claim.Labels["app.kubernetes.io/component"] != group.component {
+				return fmt.Errorf("snapshot receipt source PVC %q inventory is incomplete", claim.Name)
+			}
+			requested, err := resource.ParseQuantity(claim.RequestedStorage)
+			if err != nil || requested.Sign() < 0 {
+				return fmt.Errorf("snapshot receipt source PVC %q has invalid storage request", claim.Name)
+			}
+			if _, duplicate := claims[claim.Name]; duplicate {
+				return errors.New("snapshot receipt contains duplicate source PVC")
+			}
+			if _, duplicate := seenUIDs[claim.UID]; duplicate {
+				return errors.New("snapshot receipt contains duplicate source PVC UID")
+			}
+			if _, duplicate := seenPVs[claim.PV]; duplicate {
+				return errors.New("snapshot receipt contains duplicate source PV")
+			}
+			claims[claim.Name] = claim
+			components[claim.Name] = group.component
+			seenUIDs[claim.UID] = struct{}{}
+			seenPVs[claim.PV] = struct{}{}
+		}
+	}
+	seenSnapshots := map[string]struct{}{}
+	seenSnapshotUIDs := map[string]struct{}{}
+	seenContents := map[string]struct{}{}
+	seenContentUIDs := map[string]struct{}{}
+	seenHandles := map[string]struct{}{}
+	for _, snapshot := range snapshotRecord.Snapshots {
+		claim, exists := claims[snapshot.SourcePVC]
+		if !exists || snapshot.Component != components[snapshot.SourcePVC] || snapshot.Name == "" ||
+			snapshot.UID == "" || snapshot.Content == "" || snapshot.ContentUID == "" ||
+			snapshot.SnapshotHandle == "" || snapshot.RestoreSize == "" {
+			return errors.New("snapshot receipt snapshot inventory does not match source PVCs")
+		}
+		requested, requestedErr := resource.ParseQuantity(claim.RequestedStorage)
+		restoreSize, restoreErr := resource.ParseQuantity(snapshot.RestoreSize)
+		if requestedErr != nil || restoreErr != nil || restoreSize.Sign() < 0 || requested.Cmp(restoreSize) < 0 {
+			return fmt.Errorf("snapshot receipt restore size for PVC %q is invalid", snapshot.SourcePVC)
+		}
+		for _, identity := range []struct {
+			value string
+			seen  map[string]struct{}
+		}{
+			{snapshot.Name, seenSnapshots}, {snapshot.UID, seenSnapshotUIDs}, {snapshot.Content, seenContents},
+			{snapshot.ContentUID, seenContentUIDs}, {snapshot.SnapshotHandle, seenHandles},
+		} {
+			if _, duplicate := identity.seen[identity.value]; duplicate {
+				return errors.New("snapshot receipt contains duplicate snapshot identity")
+			}
+			identity.seen[identity.value] = struct{}{}
+		}
+	}
+	return nil
 }
 
 func decodeStrictJSON(data []byte, target any, description string) error {
@@ -745,6 +883,10 @@ func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt)
 		return errors.New("snapshot receipt lacks restore manifest identity")
 	}
 	expected := make(map[string]restoreManifestSnapshotMapping, len(snapshotRecord.Snapshots))
+	sourceClaims := make(map[string]sourcePVC, len(snapshotRecord.Inventory.PDPVCs)+len(snapshotRecord.Inventory.TiKVPVCs))
+	for _, claim := range append(append([]sourcePVC(nil), snapshotRecord.Inventory.PDPVCs...), snapshotRecord.Inventory.TiKVPVCs...) {
+		sourceClaims[claim.Name] = claim
+	}
 	for _, snapshot := range snapshotRecord.Snapshots {
 		if snapshot.SourcePVC == "" || snapshot.Component == "" || snapshot.SnapshotHandle == "" {
 			return errors.New("snapshot receipt contains incomplete snapshot mapping")
@@ -752,10 +894,17 @@ func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt)
 		if _, exists := expected[snapshot.SourcePVC]; exists {
 			return errors.New("snapshot receipt contains duplicate source PVC")
 		}
+		claim, exists := sourceClaims[snapshot.SourcePVC]
+		if !exists {
+			return errors.New("snapshot receipt snapshot has no source PVC inventory")
+		}
 		expected[snapshot.SourcePVC] = restoreManifestSnapshotMapping{
-			component: snapshot.Component,
-			handle:    snapshot.SnapshotHandle,
-			name:      restoreManifestObjectName(snapshotRecord.OperationID, snapshot.SourcePVC),
+			component:        snapshot.Component,
+			handle:           snapshot.SnapshotHandle,
+			name:             restoreManifestObjectName(snapshotRecord.OperationID, snapshot.SourcePVC),
+			volumeMode:       claim.VolumeMode,
+			accessModes:      append([]string(nil), claim.AccessModes...),
+			requestedStorage: claim.RequestedStorage,
 		}
 	}
 	seenVSC := map[string]struct{}{}
@@ -817,13 +966,17 @@ func validateRestoreManifestContent(items []any, snapshotRecord snapshotReceipt)
 				return errors.New("restore manifest PVC does not match snapshot receipt")
 			}
 			labels, _ := metadata["labels"].(map[string]any)
+			manifestModes := stringSlice(spec["accessModes"])
+			expectedModes := append([]string(nil), mapping.accessModes...)
+			sort.Strings(manifestModes)
+			sort.Strings(expectedModes)
 			if item["apiVersion"] != "v1" ||
 				metadata["namespace"] != snapshotRecord.Inventory.Storage.Namespace ||
 				labels["app.kubernetes.io/component"] != mapping.component ||
 				labels["kubebrain.io/operation-id"] != snapshotRecord.OperationID ||
 				spec["storageClassName"] == "" ||
-				spec["volumeMode"] == "" ||
-				len(nestedArray(spec, "accessModes")) == 0 ||
+				spec["volumeMode"] != mapping.volumeMode || !slicesEqual(manifestModes, expectedModes) ||
+				nestedString3(spec, "resources", "requests", "storage") != mapping.requestedStorage ||
 				nestedString(spec, "dataSource", "apiGroup") != "snapshot.storage.k8s.io" ||
 				nestedString(spec, "dataSource", "name") != mapping.name ||
 				nestedString(spec, "dataSource", "kind") != "VolumeSnapshot" {
@@ -901,11 +1054,6 @@ func slicesEqual(left, right []string) bool {
 		}
 	}
 	return true
-}
-
-func nestedArray(parent map[string]any, key string) []any {
-	value, _ := parent[key].([]any)
-	return value
 }
 
 func restoreManifestObjectName(operation, pvcName string) string {
