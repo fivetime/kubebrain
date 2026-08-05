@@ -108,7 +108,14 @@ func TestWatchControlDifferentialAgainstReferenceEtcd(t *testing.T) {
 				Types: []mvccpb.Event_EventType{mvccpb.DELETE}, KeyMatches: true,
 				Values: []string{""}, CreateRevisionSet: []bool{false}, CreateRevisionGaps: []int64{0},
 				ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{1}, Versions: []int64{0},
-				Leases: []int64{0}, PrevKVAbsent: true, KVObserved: true,
+				Leases: []int64{0}, PrevKVAbsent: false,
+				PrevMetadata: watchPrevKVMetadataOutcome{
+					Present: []bool{true}, KeyMatches: true, Values: []string{"value"},
+					CreateRevisionSet: []bool{true}, CreateRevisionGaps: []int64{0},
+					ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{0}, Versions: []int64{1},
+					Leases: []int64{0}, Observed: true,
+				},
+				KVObserved: true,
 			},
 		},
 	}, referenceFilters)
@@ -247,7 +254,12 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 		})
 	})
 
-	run := func(suffix string, filters []etcdserverpb.WatchCreateRequest_FilterType, wantEvents int) watchFilterRunOutcome {
+	run := func(
+		suffix string,
+		filters []etcdserverpb.WatchCreateRequest_FilterType,
+		prevKV bool,
+		wantEvents int,
+	) watchFilterRunOutcome {
 		key := []byte(prefix + suffix)
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
 		require.NoError(t, putErr)
@@ -260,7 +272,7 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 		require.NoError(t, watchErr)
 		require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
 			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
-				Key: key, StartRevision: put.Header.Revision, Filters: filters,
+				Key: key, StartRevision: put.Header.Revision, Filters: filters, PrevKv: prevKV,
 			}},
 		}))
 		created, recvErr := stream.Recv()
@@ -299,12 +311,12 @@ func runWatchFilterEnumScenario(t *testing.T, endpoint, instance string) watchFi
 
 	return watchFilterEnumOutcome{
 		Unknown: run("unknown",
-			[]etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_FilterType(99)}, 2),
+			[]etcdserverpb.WatchCreateRequest_FilterType{etcdserverpb.WatchCreateRequest_FilterType(99)}, false, 2),
 		Duplicate: run("duplicate",
 			[]etcdserverpb.WatchCreateRequest_FilterType{
 				etcdserverpb.WatchCreateRequest_NOPUT,
 				etcdserverpb.WatchCreateRequest_NOPUT,
-			}, 1),
+			}, true, 1),
 	}
 }
 

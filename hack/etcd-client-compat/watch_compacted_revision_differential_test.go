@@ -27,7 +27,21 @@ type watchEventMetadataOutcome struct {
 	Versions           []int64
 	Leases             []int64
 	PrevKVAbsent       bool
+	PrevMetadata       watchPrevKVMetadataOutcome
 	KVObserved         bool
+}
+
+type watchPrevKVMetadataOutcome struct {
+	Present            []bool
+	KeyMatches         bool
+	Values             []string
+	CreateRevisionSet  []bool
+	CreateRevisionGaps []int64
+	ModRevisionSet     []bool
+	ModRevisionGaps    []int64
+	Versions           []int64
+	Leases             []int64
+	Observed           bool
 }
 
 type watchCompactedRevisionOutcome struct {
@@ -111,6 +125,49 @@ func observeWatchEventMetadata(
 		outcome.Versions = append(outcome.Versions, kv.Version)
 		outcome.Leases = append(outcome.Leases, kv.Lease)
 	}
+	outcome.PrevMetadata = observeWatchPrevKVMetadata(events, expectedKey, baseRevision)
+	return outcome
+}
+
+func observeWatchPrevKVMetadata(
+	events []*mvccpb.Event,
+	expectedKey []byte,
+	baseRevision int64,
+) watchPrevKVMetadataOutcome {
+	anyPresent := false
+	for _, event := range events {
+		if event.GetPrevKv() != nil {
+			anyPresent = true
+			break
+		}
+	}
+	if !anyPresent {
+		return watchPrevKVMetadataOutcome{}
+	}
+	outcome := watchPrevKVMetadataOutcome{
+		Present: make([]bool, len(events)), KeyMatches: true, Observed: true,
+		Values:            make([]string, 0, len(events)),
+		CreateRevisionSet: make([]bool, 0, len(events)), CreateRevisionGaps: make([]int64, 0, len(events)),
+		ModRevisionSet: make([]bool, 0, len(events)), ModRevisionGaps: make([]int64, 0, len(events)),
+		Versions: make([]int64, 0, len(events)), Leases: make([]int64, 0, len(events)),
+	}
+	for index, event := range events {
+		prevKV := event.GetPrevKv()
+		if prevKV == nil {
+			continue
+		}
+		outcome.Present[index] = true
+		outcome.KeyMatches = outcome.KeyMatches && bytes.Equal(prevKV.Key, expectedKey)
+		outcome.Values = append(outcome.Values, string(prevKV.Value))
+		outcome.CreateRevisionSet = append(outcome.CreateRevisionSet, prevKV.CreateRevision != 0)
+		outcome.CreateRevisionGaps = append(outcome.CreateRevisionGaps,
+			revisionGapPreservingZero(prevKV.CreateRevision, baseRevision))
+		outcome.ModRevisionSet = append(outcome.ModRevisionSet, prevKV.ModRevision != 0)
+		outcome.ModRevisionGaps = append(outcome.ModRevisionGaps,
+			revisionGapPreservingZero(prevKV.ModRevision, baseRevision))
+		outcome.Versions = append(outcome.Versions, prevKV.Version)
+		outcome.Leases = append(outcome.Leases, prevKV.Lease)
+	}
 	return outcome
 }
 
@@ -146,6 +203,23 @@ func TestObserveWatchEventMetadataHandlesNilPayload(t *testing.T) {
 		Type: mvccpb.DELETE,
 		Kv:   &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 11},
 	}}, []byte("key"), 10))
+
+	require.Equal(t, watchPrevKVMetadataOutcome{
+		Present: []bool{false, true}, KeyMatches: true, Values: []string{"value"},
+		CreateRevisionSet: []bool{true}, CreateRevisionGaps: []int64{0},
+		ModRevisionSet: []bool{true}, ModRevisionGaps: []int64{0}, Versions: []int64{1},
+		Leases: []int64{0}, Observed: true,
+	}, observeWatchEventMetadata([]*mvccpb.Event{
+		{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 10}},
+		{
+			Type: mvccpb.DELETE,
+			Kv:   &mvccpb.KeyValue{Key: []byte("key"), ModRevision: 11},
+			PrevKv: &mvccpb.KeyValue{
+				Key: []byte("key"), Value: []byte("value"), CreateRevision: 10,
+				ModRevision: 10, Version: 1,
+			},
+		},
+	}, []byte("key"), 10).PrevMetadata)
 }
 
 func expectedCompactedWatchEventEnvelope(id int64) watchControlOutcome {

@@ -35582,6 +35582,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   108.204 秒、`hack/production` 全包 465.662 秒及 diff check 均通过，线上
   `/dbaas-watch-filter-enum/` prefix 为 0。本轮未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3630 组合验证 filter 与 `prev_kv=true`：重复 `NOPUT` 抑制历史 PUT 后，保留下来的 DELETE 仍必须携带
+  被删除值的完整 PrevKV。旧 filter 场景只证明 PrevKV 缺失，mixed-PrevKV 场景又只覆盖未过滤的连续 PUT，
+  两者都不能捕获“过滤逻辑误删前值”或仅返回 value 而丢失 metadata。upstream
+  `server/etcdserver/api/v3rpc/watch.go` 在 filter 之后按 watch 的 `needPrevKV` 回读前值，
+  `TestV3WatchWithPrevKV` 固定其客户端合同。先给重复 NOPUT 场景启用 PrevKv，并加入 presence、key/value、
+  CreateRevision、ModRevision、Version、Lease 完整期望而不采集；reference RED 0.487 秒只显示 nested
+  PrevMetadata 为零，`PrevKVAbsent=false` 与当前 KV/envelope/revision 均已匹配。
+
+  新共享 `observeWatchPrevKVMetadata` 保留逐事件 presence，对实际存在的前值使用零 sentinel 安全的 revision
+  归一化并比较完整 metadata；完全无前值时保持零 outcome，避免给既有无 PrevKV 场景制造伪 presence。
+  synthetic/mixed-presence/nil/revision helper 连续 20 轮 0.027 秒、race 1.068 秒；真实双端 filter+PrevKV
+  连续 10 轮 14.865 秒、race 3.078 秒；兼容模块全包 1.366 秒、两级 module vet、线上 client/v3 全包 105.009 秒、
+  `hack/production` 全包 468.258 秒及 diff check 均通过，线上 `/dbaas-watch-filter-enum/` prefix 为 0。
+  本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
