@@ -35450,6 +35450,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全包 456.130 秒及 diff check 均通过，线上 `/dbaas-watch-id/` prefix 为 0。本轮未发现 runtime 差异，
   不重建或滚动生产镜像。
 
+- A3619 把共享完整 Watch control/header oracle 扩展到 revision boundary 的四个 created 响应：
+  StartRevision=0、当前历史 revision、未来下一 revision 和 `MaxInt64`，分别固定 WatchID 301–304。
+  旧 outcome 只把 created 压成布尔值并比较 header revision，忽略 ID、cancel/compact、header 身份、
+  fragment 和 events。先加入四个完整 `CreatedControl` 而不采集，reference RED 精确显示四项全为零值；
+  实现后删除冗余的 `Created`/`CreatedHeaderAtBase`，统一复用 `observeWatchControlResponse`。
+
+  清理审计同时发现该用例错误使用 `prefix+"0"` 作为 range end，字母 suffix 不在区间内，线上累积 55 个
+  测试键；现改用 `clientv3.GetPrefixRangeEnd`，精确删除这 55 个不可恢复的测试残留后，修正后的真实双端
+  用例退出后复查仍为 0。共享 helper 连续 20 轮 0.035 秒、race 1.066 秒；真实双端四场景连续 10 轮
+  6.028 秒、race 1.771 秒，清理复验 0.711 秒；兼容模块全包 1.365 秒、两级 module vet、
+  `hack/production` 全包 463.374 秒及 diff check 均通过。本轮未发现 runtime 差异，不重建或滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

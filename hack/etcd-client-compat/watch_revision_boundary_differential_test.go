@@ -11,14 +11,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 type watchRevisionBoundaryOutcome struct {
 	Name                     string
-	Created                  bool
-	CreatedHeaderAtBase      bool
+	CreatedControl           watchControlOutcome
 	EventValues              []string
 	EventAtWriteRevision     bool
 	EventHeaderAtWrite       bool
@@ -38,24 +38,21 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 	want := []watchRevisionBoundaryOutcome{
 		{
 			Name:                 "latest-zero",
-			Created:              true,
-			CreatedHeaderAtBase:  true,
+			CreatedControl:       expectedRevisionCreatedControl(301),
 			EventValues:          []string{"after-create"},
 			EventAtWriteRevision: true,
 			EventHeaderAtWrite:   true,
 		},
 		{
 			Name:                 "historical-current",
-			Created:              true,
-			CreatedHeaderAtBase:  true,
+			CreatedControl:       expectedRevisionCreatedControl(302),
 			EventValues:          []string{"seed"},
 			EventAtWriteRevision: true,
 			EventHeaderAtWrite:   true,
 		},
 		{
 			Name:                     "future-next",
-			Created:                  true,
-			CreatedHeaderAtBase:      true,
+			CreatedControl:           expectedRevisionCreatedControl(303),
 			EventValues:              []string{"future"},
 			EventAtWriteRevision:     true,
 			EventHeaderAtWrite:       true,
@@ -63,17 +60,24 @@ func TestWatchRevisionBoundaryDifferentialAgainstReferenceEtcd(t *testing.T) {
 			ProgressAtWrite:          true,
 		},
 		{
-			Name:                "maximum",
-			Created:             true,
-			CreatedHeaderAtBase: true,
-			EventValues:         []string{},
-			Canceled:            true,
-			CancelHeaderAtPut:   true,
+			Name:              "maximum",
+			CreatedControl:    expectedRevisionCreatedControl(304),
+			EventValues:       []string{},
+			Canceled:          true,
+			CancelHeaderAtPut: true,
 		},
 	}
 	referenceOutcomes := runWatchRevisionBoundaryScenario(t, reference, "etcd")
 	require.Equal(t, want, referenceOutcomes)
 	require.Equal(t, referenceOutcomes, runWatchRevisionBoundaryScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+func expectedRevisionCreatedControl(id int64) watchControlOutcome {
+	return watchControlOutcome{
+		WatchID: id, Created: true, HeaderMatchesSeed: true,
+		HeaderIdentitySet: true, HeaderClusterMatch: true, HeaderMemberMatch: true,
+		HeaderTermPositive: true, EnvelopeObserved: true,
+	}
 }
 
 func runWatchRevisionBoundaryScenario(
@@ -93,7 +97,7 @@ func runWatchRevisionBoundaryScenario(
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{
-			Key: []byte(prefix), RangeEnd: []byte(prefix + "0"),
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
 		})
 	})
 
@@ -111,7 +115,7 @@ func runWatchRevisionBoundaryScenario(
 		put, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("after-create")})
 		require.NoError(t, putErr)
 		event := recvWatchResponse(t, stream)
-		outcomes = append(outcomes, normalizeWatchRevisionOutcome("latest-zero", created, event, base.Header.Revision, put.Header.Revision))
+		outcomes = append(outcomes, normalizeWatchRevisionOutcome("latest-zero", created, event, base.Header, put.Header.Revision))
 		require.NoError(t, stream.CloseSend())
 	})
 
@@ -127,7 +131,7 @@ func runWatchRevisionBoundaryScenario(
 		created := recvWatchResponse(t, stream)
 		event := recvWatchResponse(t, stream)
 		outcomes = append(outcomes, normalizeWatchRevisionOutcome(
-			"historical-current", created, event, put.Header.Revision, put.Header.Revision,
+			"historical-current", created, event, put.Header, put.Header.Revision,
 		))
 		require.NoError(t, stream.CloseSend())
 	})
@@ -184,7 +188,7 @@ func runWatchRevisionBoundaryScenario(
 		}))
 		progress := recvWatchResponse(t, stream)
 		outcome := normalizeWatchRevisionOutcome(
-			"future-next", created, event, base.Header.Revision, put.Header.Revision,
+			"future-next", created, event, base.Header, put.Header.Revision,
 		)
 		outcome.ProgressSuppressedFuture = progressSuppressed
 		outcome.ProgressAtWrite = !progress.Created && !progress.Canceled &&
@@ -213,13 +217,12 @@ func runWatchRevisionBoundaryScenario(
 		}))
 		canceled := recvWatchResponse(t, stream)
 		outcomes = append(outcomes, watchRevisionBoundaryOutcome{
-			Name:                "maximum",
-			Created:             created.Created,
-			CreatedHeaderAtBase: created.Header.Revision == base.Header.Revision,
-			EventValues:         []string{},
-			Canceled:            canceled.Canceled,
-			CancelReason:        canceled.CancelReason,
-			CancelHeaderAtPut:   canceled.Header.Revision == put.Header.Revision,
+			Name:              "maximum",
+			CreatedControl:    observeWatchControlResponse(created, base.Header),
+			EventValues:       []string{},
+			Canceled:          canceled.Canceled,
+			CancelReason:      canceled.CancelReason,
+			CancelHeaderAtPut: canceled.Header.Revision == put.Header.Revision,
 		})
 		require.NoError(t, stream.CloseSend())
 	})
@@ -254,7 +257,7 @@ func normalizeWatchRevisionOutcome(
 	name string,
 	created *etcdserverpb.WatchResponse,
 	event *etcdserverpb.WatchResponse,
-	baseRevision int64,
+	baseHeader *etcdserverpb.ResponseHeader,
 	writeRevision int64,
 ) watchRevisionBoundaryOutcome {
 	values := make([]string, 0, len(event.Events))
@@ -265,8 +268,7 @@ func normalizeWatchRevisionOutcome(
 	}
 	return watchRevisionBoundaryOutcome{
 		Name:                 name,
-		Created:              created.Created,
-		CreatedHeaderAtBase:  created.Header.Revision == baseRevision,
+		CreatedControl:       observeWatchControlResponse(created, baseHeader),
 		EventValues:          values,
 		EventAtWriteRevision: eventAtWriteRevision,
 		EventHeaderAtWrite:   event.Header != nil && event.Header.Revision == writeRevision,
