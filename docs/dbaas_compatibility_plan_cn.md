@@ -34851,6 +34851,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AuthRevision=581，revision/index/applied 均为 468126003565738065、term 324，全范围长期 fixture
   Count=100。
 
+- A3583 修正 Compact 管理员鉴权与 follower 路由的先后顺序。对照上游
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::kvServer.Compact`：官方在进入
+  `EtcdServer.Compact`（以及其中的 leader 路由）前先执行 `AuthAdmin.isPermitted`。KubeBrain 旧实现
+  却先检查 `EpochAndLeadingFresh`，导致 auth enabled 时发给 follower 的匿名、无效 token 或普通用户
+  Compact 被 `Unavailable` 遮蔽，proxy enabled 时甚至会先把未授权请求转发给 peer。
+
+  确定性 RED 同时固定 rejecting/proxying follower：anonymous 必须返回 `ErrUserEmpty`，无效 token
+  必须返回 `ErrInvalidAuthToken`，普通用户必须返回 `ErrPermissionDenied`，三者都不得触达 peer；root
+  在 proxy enabled 时仍须携带原 token 转发，在 proxy disabled 时才返回 `Unavailable`。修复把
+  `authCallerFromContext` 与 root 检查移到 Compact 最入口。既有表驱动门禁中 Put/Delete/Txn 仍保持
+  上游“内部 leader 错误先于普通 key 权限检查”的契约，而 Compact 从该表移入独立的管理员 RPC
+  契约，避免两种官方调用层次继续互相矛盾。
+
+  专项普通 10 连跑 6.939 秒、race 5 连跑 33.984 秒 GREEN；完整 `pkg/server/etcd` 177.551 秒、
+  主模块 `go test ./...`（含 production 417.659 秒）、vet 和完整 compat 通过。staticcheck v0.7.0
+  仍精确为既有 9 项基线，没有新增。代码 commit `a9eeb4e2` 构建为
+  `kubebrain:a3583-compact-auth-routing`（Docker 镜像 ID
+  `sha256:6b0efc42473d5cb6f41107e8195d8c1b9579de62c46f06b5dfdb15f37a2e4edc`），核验 OCI version、
+  完整 Git SHA、UTC build time、TiKV storage 与 `USER 65532:65532` 后加载 kind 并滚动 3 副本完成。
+
+  发布后为三个 Pod 建立独立 NodePort，并由 endpoint status 确认两个 follower、一个 leader。短暂启用
+  auth 后直连 follower 发出匿名 Compact，真实响应为官方一致的 `InvalidArgument` / `user name is empty`，
+  且不是 follower `Unavailable`；随后关闭 auth、删除临时 root 用户/角色和三个
+  Service。最终 KubeBrain/PD/TiKV 均 3/3 Ready、零重启，endpoint healthy、无 alarm/lease、auth
+  disabled/AuthRevision=587，revision/index/applied 均为 468126003565738065、term 326，全范围长期
+  fixture Count=100；鉴权验证没有推进数据 revision 或改变 fixture。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
