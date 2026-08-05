@@ -36158,6 +36158,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
   已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3667 补齐 Watch 组合 filter 的真实流门禁。此前差分只证明单 NOPUT 的事件抑制与 progress，
+  以及 unknown/duplicate filter enum；NOPUT+NODELETE 同时启用仅有本地纯函数单测。新增 raw gRPC
+  watch 同时设置两种 filter、`PrevKv=true` 和 `Fragment=true`，建立后依次 PUT、DELETE，要求在
+  显式 progress 前完全无响应，随后收到 watch ID=-1、无隐藏 event/fragment/cancel payload 的规范
+  progress 控制帧，且 header 精确推进到 delete revision。这样证明组合过滤不会阻断 revision 进度。
+
+  一次性官方 etcd `d947b2086` 与生产 KubeBrain 普通差分连续 10 轮 4.583 秒、race 5 轮
+  3.518 秒通过；根模块 test/vet（server/etcd 168.002 秒）与兼容模块 test/vet（1.277 秒）
+  均通过。没有运行时 RED。本项只增加永久兼容门禁，不修改或重建数据面；一次性 reference
+  已停止，临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
