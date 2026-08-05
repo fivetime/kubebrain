@@ -35133,6 +35133,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   语法和 diff check 均通过。当前 kind 仍没有 VolumeSnapshot CRD/CSI driver，因此该项只减少候选
   cold snapshot 的失败副作用，不宣称真实多卷隔离恢复或日志型 PITR 已完成。
 
+- A3594 把 cold CSI 候选执行器的派生 VolumeSnapshot 名称校验前移到维护窗口之外。旧实现直到
+  KubeBrain、TiKV、PD 全部缩容为 0，并通过全部 PVC UID 栅栏后，才逐个检查
+  `${OPERATION_ID}-${PVC}` 是否超过 Kubernetes DNS subdomain 的 253 字符上限；第 4 个名称超长时，
+  还会先创建三个 PD snapshot。该错误完全由冻结 inventory 和 operation ID 决定，不应造成停服或
+  retained 部分制品。确定性 RED 固定旧日志中的 pause、三组 StatefulSet patch 与三次 create，
+  并要求修复后在任何 kubectl mutation 前失败。
+
+  执行器现在解析冻结 inventory 后立即枚举全部派生名称，统一校验总长、DNS subdomain 字符集、
+  每段非空且不超过 63 字符；因此即使总长未超限，40 字符 operation ID 与较长 PVC 首段拼接造成的
+  非法 DNS label 也会提前拒绝。两类专项回归连续 10 轮 3.472 秒、race 1.411 秒，完整
+  cold-snapshot 矩阵 80.004 秒、`hack/production` 全包 402.813 秒以及 vet、脚本语法与 diff check
+  均通过。该项继续减少候选 cold snapshot 的确定性停服风险，不替代真实 CSI 多卷一致性恢复或 PITR。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -317,6 +317,59 @@ func TestColdSnapshotExecuteValidatesEveryPVCBeforeCreatingSnapshots(t *testing.
 		"the complete PVC identity fence must pass before any partial snapshot is created")
 }
 
+func TestColdSnapshotExecuteRejectsOversizedDerivedNameBeforeMutation(t *testing.T) {
+	for _, tc := range []struct{ name, pvcName, want string }{
+		{
+			name: "total DNS subdomain length",
+			pvcName: strings.Join([]string{
+				strings.Repeat("a", 60), strings.Repeat("b", 60), strings.Repeat("c", 60), strings.Repeat("d", 35),
+			}, "."),
+			want: "snapshot name is too long",
+		},
+		{name: "first DNS label length", pvcName: strings.Repeat("a", 30) + ".pvc", want: "snapshot name has an invalid DNS label"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pvcJSON := coldSnapshotPVCJSON("Bound")
+			var pvcList map[string]any
+			require.NoError(t, json.Unmarshal([]byte(pvcJSON), &pvcList))
+			item := pvcList["items"].([]any)[3].(map[string]any)
+			metadata := item["metadata"].(map[string]any)
+			spec := item["spec"].(map[string]any)
+			metadata["name"] = tc.pvcName
+			metadata["uid"] = "uid-" + tc.pvcName
+			spec["volumeName"] = "pv-" + tc.pvcName
+			pvcBytes, err := json.Marshal(pvcList)
+			require.NoError(t, err)
+			pvcJSON = string(pvcBytes)
+
+			inventoryFile := filepath.Join(dir, "inventory.json")
+			receiptFile := filepath.Join(dir, "receipt.json")
+			witnessFile := filepath.Join(dir, "witness.jsonl")
+			logFile := filepath.Join(dir, "kubectl.log")
+			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventoryFromPVCJSON(t, pvcJSON), 0o600))
+			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+			fakeKubectl := filepath.Join(dir, "kubectl")
+			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+			output, err := runColdSnapshotExecute(t, []string{
+				"KUBECTL=" + fakeKubectl, "KUBE_CONTEXT=preproduction", "ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+				"PREFLIGHT_FILE=" + inventoryFile, "RECEIPT_FILE=" + receiptFile,
+				"OPERATION_ID=" + strings.Repeat("o", 40), "SEMANTIC_WITNESS_FILE=" + witnessFile,
+				"EXPECTED_WITNESS_PREFIX=/registry", "FAKE_LOG=" + logFile, "FAKE_PVC_JSON=" + pvcJSON,
+				"FAKE_TIDB_READY=true",
+			})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), tc.want)
+			require.NoFileExists(t, receiptFile)
+			if log, readErr := os.ReadFile(logFile); readErr == nil {
+				require.NotContains(t, string(log), " patch ",
+					"derived names must be validated before entering the maintenance window")
+			}
+		})
+	}
+}
+
 func TestColdSnapshotExecuteRejectsTidbClusterFenceLossAfterPause(t *testing.T) {
 	for _, tc := range []struct {
 		name, uidDrift, pauseLost, specDrift, clusterIDDrift, readyLost, want string
@@ -487,8 +540,13 @@ func requireOrder(t *testing.T, value string, parts ...string) {
 
 func coldSnapshotInventory(t *testing.T) []byte {
 	t.Helper()
+	return coldSnapshotInventoryFromPVCJSON(t, coldSnapshotPVCJSON("Bound"))
+}
+
+func coldSnapshotInventoryFromPVCJSON(t *testing.T, pvcJSON string) []byte {
+	t.Helper()
 	var pvc map[string]any
-	require.NoError(t, json.Unmarshal([]byte(coldSnapshotPVCJSON("Bound")), &pvc))
+	require.NoError(t, json.Unmarshal([]byte(pvcJSON), &pvc))
 	rawItems := pvc["items"].([]any)
 	items := make([]any, 0, len(rawItems))
 	for _, raw := range rawItems {

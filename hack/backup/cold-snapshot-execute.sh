@@ -68,6 +68,26 @@ EXPECTED_TIKV_CLUSTER_ID="$(jq -r '.storage.cluster_id' <<<"$inventory")"
 VOLUME_SNAPSHOT_CLASS="$(jq -r '.volume_snapshot_class.name' <<<"$inventory")"
 EXPECTED_PD_PVCS="$(jq '.pd_pvcs | length' <<<"$inventory")"
 EXPECTED_TIKV_PVCS="$(jq '.tikv_pvcs | length' <<<"$inventory")"
+
+validate_snapshot_name() {
+  local name="$1" label
+  [[ ${#name} -le 253 ]] || { echo "snapshot name is too long: ${name}" >&2; exit 1; }
+  [[ "$name" =~ ^[a-z0-9]([-.a-z0-9]*[a-z0-9])?$ ]] ||
+    { echo "snapshot name is not a DNS subdomain: ${name}" >&2; exit 1; }
+  IFS='.' read -r -a labels <<<"$name"
+  for label in "${labels[@]}"; do
+    [[ ${#label} -le 63 && "$label" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
+      { echo "snapshot name has an invalid DNS label: ${name}" >&2; exit 1; }
+  done
+}
+
+# Every derived object name is a pure function of frozen input. Reject the
+# entire operation before live preflight or maintenance mutations rather than
+# discovering a bad later PVC only after quiescing the data plane.
+while IFS= read -r pvc_name; do
+  validate_snapshot_name "${OPERATION_ID}-${pvc_name}"
+done < <(jq -r '.pd_pvcs[].name, .tikv_pvcs[].name' <<<"$inventory")
+
 export KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET EXPECTED_KUBEBRAIN_STATEFULSET_UID
 export TIDB_NAMESPACE TIDB_CLUSTER EXPECTED_TIDB_CLUSTER_UID EXPECTED_TIKV_CLUSTER_ID
 export VOLUME_SNAPSHOT_CLASS EXPECTED_PD_PVCS EXPECTED_TIKV_PVCS
@@ -250,7 +270,6 @@ snapshot_names=()
 while IFS= read -r pvc; do
   pvc_name="$(jq -r '.name' <<<"$pvc")"
   snapshot_name="${OPERATION_ID}-${pvc_name}"
-  [[ ${#snapshot_name} -le 253 ]] || { echo "snapshot name is too long: ${snapshot_name}" >&2; exit 1; }
   manifest="$(jq -cn --arg name "$snapshot_name" --arg namespace "$TIDB_NAMESPACE" --arg operation "$OPERATION_ID" \
     --arg class "$VOLUME_SNAPSHOT_CLASS" --arg pvc "$pvc_name" \
     '{apiVersion:"snapshot.storage.k8s.io/v1",kind:"VolumeSnapshot",metadata:{name:$name,namespace:$namespace,labels:{"app.kubernetes.io/managed-by":"kubebrain-cold-snapshot","kubebrain.io/operation-id":$operation}},spec:{volumeSnapshotClassName:$class,source:{persistentVolumeClaimName:$pvc}}}')"
