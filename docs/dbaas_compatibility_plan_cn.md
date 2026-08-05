@@ -35683,6 +35683,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一次额外根全包与两套长生产测试并行时 `pkg/server/etcd` 受资源/时序竞争失败，不作为绿色证据；其后两次
   独立包复核均无失败，其中显式退出码为 0。本轮只补保护性测试，未发现 runtime 差异，不重建或滚动生产镜像。
 
+- A3637 把 watch fragmentation 从 clientv3 的间接合并证据推进到真实 raw gRPC 多帧 wire oracle。旧 raw
+  `runWatchFragmentScenario` 虽开启 `Fragment=true`，两个 800 KiB DELETE+PrevKV 实际仍落在一个
+  `Fragment=false` response；A3633-A3635 又由 clientv3 合并 raw frames，因此没有测试能直接捕获服务端把首帧
+  错标 false、末帧残留 true、跨帧 header 漂移或事件重排。upstream
+  `server/etcdserver/api/v3rpc/watch.go:sendFragments` 明确逐帧复制 envelope，并只在最后一帧清除 flag。先写入
+  三帧各一事件、flags=`true,true,false`、共同 final revision/header identity 及三条完整 PUT metadata 期望，
+  runner 返回零值；reference RED 0.223 秒显示整个 frame/payload outcome 缺失。随后把 1 MiB 原文从 outcome
+  改为内容匹配布尔，保持强断言同时避免失败日志膨胀。
+
+  新场景在 watch 创建前连续写入三个 1 MiB key，再以 base+1 创建 raw `Fragment=true` catch-up watch；reference
+  etcd 与线上 KubeBrain 都返回三帧，每帧 proto size 小于 2 MiB、一个事件，flags 精确为
+  `true,true,false`。created 与全部 frame 的 watch ID/control 字段、cluster/member/term、header revision，及
+  `prefix0..2` 的 key/value、Create/Mod revision gap=1..3、Version=1、Lease=0、无 PrevKV 均逐项固定。
+  双端 GREEN 0.639 秒、连续 10 轮 9.899 秒、race 2.753 秒；兼容模块全包 1.184 秒、两级 module vet、
+  线上 client/v3 全包 124.683 秒、`hack/production` 全包 463.416 秒及 diff check 均通过，线上
+  `/dbaas-watch-raw-multiframe/` prefix 为 0。本轮仅新增 wire-level oracle，未发现 runtime 差异，不重建或
+  滚动生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
