@@ -36239,6 +36239,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:c136586b3f73...` 一致。一次性 reference 已停止，临时目录已删除且不可恢复，只含本轮
   oracle 数据。
 
+- A3673 固定 A3672 对齐后的 laggard cancellation liveness，而不只证明 progress 会被阻塞。
+  扩展同一 raw gRPC oracle：首次 stream-wide progress 因 future watch 908 静默后，取消 908
+  必须返回规范 canceled 控制帧；只剩已同步 watch 907 时再次 RequestProgress 立即返回
+  `WatchId=-1,Header=R`。随后复用 ID 908、仍以 `StartRevision=R+2` 创建 future watch，两个写
+  推进到目标 revision 后，907 收到 R+1/R+2、908 只收到 R+2，最终 progress 为 R+2。该序列
+  防止删除逐 watch fallback 后把“安全静默”退化成取消 laggard 也无法恢复的 stream 永久停滞，
+  同时固定 cancel 后 watch ID 可复用。
+
+  一次性官方 etcd `d947b2086` 与生产 `kubebrain:a3672-stream-progress` 首轮、连续 10 轮
+  （5.746 秒；墙钟 7.289 秒）及 race 5 轮（3.885 秒；墙钟 15.628 秒）均通过，没有运行时
+  RED。根模块 test/vet（server/etcd 169.727 秒）与兼容模块 test/vet（1.282 秒）均通过。
+  本项只扩展永久兼容门禁，不重建或滚动已验证的数据面；一次性 reference 已停止，临时目录
+  已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

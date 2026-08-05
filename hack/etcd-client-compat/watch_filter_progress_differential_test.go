@@ -91,6 +91,13 @@ type watchStreamSlowestProgressOutcome struct {
 	FutureCreatedCanonical bool
 	CreatedHeaderGaps      []int64
 	InitialProgressBlocked bool
+	FutureCancelCanonical  bool
+	FutureCancelHeaderGap  int64
+	PostCancelProgressID   int64
+	PostCancelProgressGap  int64
+	PostCancelCanonical    bool
+	RecreatedCanonical     bool
+	RecreatedHeaderGap     int64
 	WriteRevisionGaps      []int64
 	PrefixEventModGaps     []int64
 	FutureEventModGaps     []int64
@@ -199,7 +206,9 @@ func TestWatchStreamProgressWaitsForSlowestWatcherDifferentialAgainstReferenceEt
 
 	want := watchStreamSlowestProgressOutcome{
 		PrefixCreatedCanonical: true, FutureCreatedCanonical: true, CreatedHeaderGaps: []int64{0, 0},
-		InitialProgressBlocked: true, WriteRevisionGaps: []int64{1, 2},
+		InitialProgressBlocked: true, FutureCancelCanonical: true,
+		PostCancelProgressID: -1, PostCancelCanonical: true, RecreatedCanonical: true,
+		WriteRevisionGaps:  []int64{1, 2},
 		PrefixEventModGaps: []int64{1, 2}, FutureEventModGaps: []int64{2},
 		ProgressWatchID: -1, ProgressHeaderGap: 2, ProgressCanonical: true,
 	}
@@ -265,6 +274,24 @@ func runWatchStreamSlowestProgressScenario(t *testing.T, endpoint, instance stri
 	case <-time.After(150 * time.Millisecond):
 		initialBlocked = true
 	}
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{CancelRequest: &etcdserverpb.WatchCancelRequest{WatchId: 908}},
+	}))
+	cancelResult := <-pending
+	require.NoError(t, cancelResult.err)
+	canceled := cancelResult.response
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{
+		RequestUnion: &etcdserverpb.WatchRequest_ProgressRequest{ProgressRequest: &etcdserverpb.WatchProgressRequest{}},
+	}))
+	postCancelProgress := recvWatchResponse(t, stream)
+	recreated := create(&etcdserverpb.WatchCreateRequest{
+		Key: futureKey, WatchId: 908, StartRevision: base.Header.Revision + 2,
+	})
+	pending = make(chan receiveResult, 1)
+	go func() {
+		response, recvErr := stream.Recv()
+		pending <- receiveResult{response: response, err: recvErr}
+	}()
 	first, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: firstKey, Value: []byte("first")})
 	require.NoError(t, err)
 	future, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: futureKey, Value: []byte("future")})
@@ -293,7 +320,8 @@ func runWatchStreamSlowestProgressScenario(t *testing.T, endpoint, instance stri
 	progress := recvWatchResponse(t, stream)
 	for name, header := range map[string]*etcdserverpb.ResponseHeader{
 		"base": base.Header, "prefix-created": prefixCreated.Header, "future-created": futureCreated.Header,
-		"first": first.Header, "future": future.Header, "progress": progress.Header,
+		"future-canceled": canceled.Header, "post-cancel-progress": postCancelProgress.Header,
+		"recreated": recreated.Header, "first": first.Header, "future": future.Header, "progress": progress.Header,
 	} {
 		require.NotNil(t, header, name)
 	}
@@ -303,8 +331,15 @@ func runWatchStreamSlowestProgressScenario(t *testing.T, endpoint, instance stri
 		FutureCreatedCanonical: canonicalWatchControlResponse(futureCreated, true, 908),
 		CreatedHeaderGaps:      []int64{prefixCreated.Header.Revision - baseRevision, futureCreated.Header.Revision - baseRevision},
 		InitialProgressBlocked: initialBlocked,
-		WriteRevisionGaps:      []int64{first.Header.Revision - baseRevision, future.Header.Revision - baseRevision},
-		PrefixEventModGaps:     eventGaps[907], FutureEventModGaps: eventGaps[908],
+		FutureCancelCanonical: canceled.Canceled && !canceled.Created && canceled.WatchId == 908 &&
+			canceled.CompactRevision == 0 && canceled.CancelReason == "" && !canceled.Fragment && len(canceled.Events) == 0,
+		FutureCancelHeaderGap: canceled.Header.Revision - baseRevision,
+		PostCancelProgressID:  postCancelProgress.WatchId, PostCancelProgressGap: postCancelProgress.Header.Revision - baseRevision,
+		PostCancelCanonical: canonicalWatchControlResponse(postCancelProgress, false, -1),
+		RecreatedCanonical:  canonicalWatchControlResponse(recreated, true, 908),
+		RecreatedHeaderGap:  recreated.Header.Revision - baseRevision,
+		WriteRevisionGaps:   []int64{first.Header.Revision - baseRevision, future.Header.Revision - baseRevision},
+		PrefixEventModGaps:  eventGaps[907], FutureEventModGaps: eventGaps[908],
 		ProgressWatchID: progress.WatchId, ProgressHeaderGap: progress.Header.Revision - baseRevision,
 		ProgressCanonical: canonicalWatchControlResponse(progress, false, -1),
 	}
