@@ -1335,8 +1335,12 @@ func validateSemanticReceipt(receipt semanticReceipt) error {
 		!receipt.WatchProbeSucceeded {
 		return errors.New("cold physical semantic receipt is incomplete")
 	}
-	if _, err := time.Parse(time.RFC3339, receipt.RestoreCompletedAt); err != nil {
+	restoreCompletedAt, err := time.Parse(time.RFC3339, receipt.RestoreCompletedAt)
+	if err != nil {
 		return errors.New("cold physical semantic receipt restore_completed_at is invalid")
+	}
+	if time.Unix(receipt.VerifiedAtUnix, 0).Before(restoreCompletedAt) {
+		return errors.New("cold physical semantic receipt verification predates restore completion")
 	}
 	return nil
 }

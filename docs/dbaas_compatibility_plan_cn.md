@@ -35883,6 +35883,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   169.126 秒）、全仓 vet、兼容模块测试/vet 与真实 NodePort client/v3 全包 109.699 秒均通过。
   本项增强审计证据时序，不替代真实 CSI restore/PITR，也不改变运行中 etcd 数据面镜像。
 
+- A3648 补齐最终 semantic verification 的第四段 chronology。`validateSemanticReceipt` 旧实现只要求
+  `verified_at_unix > 0` 并解析 `restore_completed_at`，没有比较二者；测试中的既有“有效”fixture
+  甚至长期把 verified time 设在 restore completion 前约 23 小时而仍为 GREEN。新增明确的早 1 秒
+  负例在旧实现上 RED 0.016 秒，实际返回 nil。
+
+  现在 final receipt 必须满足 `verified_at_unix >= restore_completed_at`，从而完整形成
+  `witness <= snapshot <= restore <= semantic verification`；同秒边界继续合法，以适配秒级 UTC
+  记录。构造 receipt 的生产路径本就在所有历史/当前 KV、lease 和 watch probe 验证结束后调用
+  `time.Now()`，因此新门禁同时能 fail closed 捕获验证节点时钟倒退或未来 restore receipt。helper
+  全包 0.082 秒、race 1.346 秒；全仓 test/vet 通过（production 470.620 秒、server/etcd
+  174.236 秒），兼容模块 test/vet 与真实 NodePort client/v3 全包 111.972 秒均通过。本项不替代
+  真实 CSI/PITR，运行中 etcd 数据面镜像不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

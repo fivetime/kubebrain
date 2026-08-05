@@ -571,6 +571,9 @@ func TestWriteAtomicSemanticReceipt(t *testing.T) {
 
 func TestValidateSemanticReceiptRequiresCompleteIdentity(t *testing.T) {
 	require.NoError(t, validateSemanticReceipt(validSemanticReceipt()))
+	equalSecond := validSemanticReceipt()
+	equalSecond.VerifiedAtUnix = 1_784_592_300
+	require.NoError(t, validateSemanticReceipt(equalSecond), "second-resolution restore and verification times may be equal")
 
 	for _, tc := range []struct {
 		name   string
@@ -586,6 +589,7 @@ func TestValidateSemanticReceiptRequiresCompleteIdentity(t *testing.T) {
 		{name: "missing watch proof", mutate: func(r *semanticReceipt) { r.WatchProbeSucceeded = false }},
 		{name: "delete before put", mutate: func(r *semanticReceipt) { r.ProbeDeleteRevision = r.ProbePutRevision }},
 		{name: "missing verified time", mutate: func(r *semanticReceipt) { r.VerifiedAtUnix = 0 }},
+		{name: "verified before restore", mutate: func(r *semanticReceipt) { r.VerifiedAtUnix = 1_784_592_299 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			receipt := validSemanticReceipt()
@@ -619,7 +623,7 @@ func validSemanticReceipt() semanticReceipt {
 		WatchProbeSucceeded:    true,
 		ProbePutRevision:       101,
 		ProbeDeleteRevision:    102,
-		VerifiedAtUnix:         1_784_509_200,
+		VerifiedAtUnix:         1_784_592_301,
 	}
 }
 

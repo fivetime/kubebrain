@@ -747,9 +747,9 @@ schema 必须完整包含 executor 发布的 VolumeSnapshotContent、
 VolumeSnapshot、PVC 和 PV inventory。门禁逐项交叉验证 VSC→VS→PVC→PV 的对象名、UID、引用、
 CSI driver/handle、storage class、volume mode、access modes、requested storage 和 PV capacity，
 并要求 capacity 的 Kubernetes quantity 不小于 manifest 所绑定的 PVC request；restore manifest
-则继续以 canonical digest、资源计数和逐资源 identity 绑定证明内容。三个阶段的时间必须满足
-`witness.created_at_unix <= snapshot.created_at <= restore.completed_at`；因脚本只记录秒级时间，
-相邻阶段时间相等是合法边界。
+则继续以 canonical digest、资源计数和逐资源 identity 绑定证明内容。四个阶段的时间必须满足
+`witness.created_at_unix <= snapshot.created_at <= restore.completed_at <= semantic.verified_at_unix`；
+因脚本只记录秒级时间，相邻阶段时间相等是合法边界。
 最终 `kubebrain.cold-physical-semantic-verify.v1` receipt 还会直接记录 restore completion time、
 target kube-system/namespace UID、source/restored TidbCluster UID、restored cluster ID、四个输入
 SHA-256、watch probe revision 顺序和四类语义证明布尔值，写入前缺任一项都会 fail closed。
