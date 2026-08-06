@@ -41020,6 +41020,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 smoke 中覆盖 `IgnoreValue`/`IgnoreLease` public behavior；这些提交不再引入 runtime 缺口。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3859 与上述 commit ID。
 
+- A3860 固定 upstream snapshot restore lease key、STM concurrent deletion、grpcproxy KV/watch
+  teardown、linearized read timeout、private PKI、defrag/snapshot auth、maintenance root、`ignore_value`
+  PutRequest、expired auth token、empty username、auth quorum read、leader-only compactor、endpoint
+  health permission-denied、lease committed-index fence、keepalive loop error、membership auth 和
+  client close lease 审计。对照 `/root/etcd` commit `96e0f5067`、`e4b8c874d`、
+  `a94d20d1e`、`f80914fba`、`acec15ebc`、`8c0282ab2`、`fcaa509e4`、
+  `5c774ff57`、`df55438a6`、`eba41cd7b`、`783eaf9de`、`9886e9448`、
+  `0f8060bed`、`5dffa38fb`、`e03850c4a`、`d94d22122`、`a66f13320`、
+  `8752ee52a`、`e655420d3`、`7f8b5774a` 与 `8eea93942`：官方覆盖
+  `ignore_value`、snapshot restore lease key、STM deletion、linearized read timeout、TLS private
+  PKI、maintenance auth、defrag/snapshot auth 和 grpcproxy KV close。KubeBrain 已在 logical
+  snapshot/restore、lease key attachment、official clientv3 differential、Txn staged executor、
+  `IgnoreValue`/`IgnoreLease`、maintenance auth、TLS AllowedCN/AllowedHostname、read timeout/
+  cancellation 和 production probes 中固定 public behavior；不移植 upstream snapshot 文件格式或
+  grpcproxy cache。
+
+  对照 `5e3b20e70`、`d431b64d9`、`d20f23c79`、`c39a59c0b`、`e179225f2`、
+  `f9f691ef1`、`5fac6b8d1`、`2b5f9e1c6`、`9b5eb1ae5`、`b5cde6b32`、
+  `36b2d3f5e`、`00e00f16b`、`407afc69e` 与 `fef4a7952`：官方修复
+  keepalive/revoke failure stream handling、expired auth token、auth enable root role、empty user
+  permission check、watch context teardown、mutable auth quorum read、compactor leader gating、
+  lease expiry atomics、metrics flag、endpoint health permission-denied 和 lease committed-index
+  fence。KubeBrain 已覆盖 auth lifecycle、token expiry/JWT/simple token、empty user validation、
+  maintenance/cluster auth、watch cancel/resume、leader fencing、lease grant/keepalive/revoke、TTL
+  not-found、metrics/operation audit、endpoint health/readiness 和 TiKV/PD failover probes。
+
+  对照 `a375e91c6`、`46bd842db`、`87b1d9571`、`b126e3113`、`d46b75318`、
+  `86d739080`、`5183ce011`、`e0bcd4d51` 与 `246fb29d8`：官方处理 grant
+  failure 后 keepalive stream、lease grant/keepalive failures、connection-lost timeout typed error、
+  keepalive loop halt、membership mutation auth 和 client close lease。KubeBrain public contract 由
+  official client lease tests、require-leader failures、proxy-disabled follower lease reads、membership
+  mutation unsupported boundary with auth、connection-age reconnect、transport identity 和 shutdown
+  tests 固定；clientv3 内部 lease object 生命周期不 vend。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3860 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
