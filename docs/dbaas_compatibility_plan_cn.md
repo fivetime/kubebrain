@@ -37574,6 +37574,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3757-cache-historical-get`、
   `/a3757-cache-historical-advance` 与 `/compat/` 均无 KV；临时 clone 已清理。
 
+- A3758 对照 upstream `/root/etcd` commit `932dc99f1` 的 LeaseKeepAlive forwarding
+  NoLeader 错误外观。上游补充 `TestV3LeaseKeepAliveForwardingCatchError` 子用例，固定即使客户端未使用
+  `WithRequireLeader`，follower 上已建立的 `LeaseKeepAlive` stream 在转发到 leader 后遇到
+  `LeaseRenew()` 的 wait-leader NoLeader，也必须向客户端暴露官方
+  `Unavailable: etcdserver: no leader`，不能被 stream cancellation 或 proxy forwarding 包装改写。
+
+  KubeBrain 的 follower forwarding 分支已直接返回 peer `LeaseKeepAlive` 错误，不会伪造响应或把
+  NoLeader 改写成 Canceled/DeadlineExceeded；因此本轮是 GREEN-only regression，不伪造 RED。新增
+  服务层单测把节点置为 follower 且启用 proxy，注入 peer 返回 `rpctypes.ErrGRPCNoLeader`，并断言普通
+  `LeaseKeepAlive` stream（无 require-leader metadata）返回 gRPC `Unavailable`、message
+  `etcdserver: no leader`，且未发送任何 keepalive response。定向测试 0.092 秒 GREEN。
+
+  兼容模块 `go test ./...` 及 `go vet ./...` 通过（cached）；根模块 `go test ./...`
+  （`pkg/server/etcd` 169.366 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮仅增加永久错误契约门禁，
+  不重建语义相同的 runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
