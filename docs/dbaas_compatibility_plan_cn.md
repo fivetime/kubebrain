@@ -37136,6 +37136,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （测试 1.576 秒），根模块 `go test ./...`（`pkg/server/etcd` 170.982 秒）及 `go vet ./...` 通过；
   官方临时实例、data-dir 和 watch 输出均已清理。
 
+- A3732 完成 upstream `d8b419257:TestRestoreTombstone` 的 compaction 生命周期闭环。A3731 已证明
+  tombstone-only restore 后可以创建新 generation，但尚未证明下一次物理 compaction 会删除旧 DELETE
+  而保留新 generation 的 boundary PUT。现把 opt-in 状态机扩展为两阶段：第一次全 serving restart
+  后重建同键并观察 DELETE→PUT；随后 physical Compact(recreated revision)，第二次顺序 replacement
+  全部三个 KubeBrain Pod。最终从原 DELETE revision 建立 Watch 必须收到无事件的 canceled response，
+  `errors.Is(ErrCompacted)` 且 CompactRevision 等于 recreated revision；从 recreated boundary 建立 Watch
+  则必须重放唯一 PUT，Create/ModRevision、Version=1、value 和 PrevKV=nil 全部保持。
+
+  官方 etcd 同 data-dir 两次 stop/restart 的 oracle 对 rev=3 返回 exit 5、Canceled=true、
+  CompactRevision=4，对 rev=4 返回唯一 `PUT@4`、Version=1、PrevKV=nil。生产普通两阶段 replacement
+  55.02 秒、race 两阶段 replacement 50.97 秒均 GREEN，没有 runtime RED 或镜像变更。最终 Pod UID 为
+  `2942afd0-2fa7-4981-b82b-fccd7cc171ec`、`4a433862-b095-408c-8907-762ad0ceb3bf`、
+  `81bc0ff5-003d-451f-baed-2678ff2e575a`，3/3 Ready、零重启，`readyz=ok`，`/compat/` Count=0。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.547 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 168.573 秒）及 `go vet ./...` 通过；官方 data-dir 和两个 watch 输出均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
