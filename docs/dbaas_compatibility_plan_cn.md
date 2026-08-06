@@ -38959,6 +38959,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `HashKV`、流式 `Snapshot`/backup 平台能力和 auth token 语义，不承诺复刻 bbolt 离线工具或日志
   噪声。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3817 与上述 commit ID；本轮不修改 runtime。
 
+- A3818 固定 upstream watch error/progress validation、currentRev/compact restore、LeaseTimeToLive
+  leader-change、Status quota proto、WAL persisted request robustness、backend tx buffer 与 WAL
+  metrics 审计。对照 `/root/etcd` commits `fa9e9504a`、`964680c8d`、`94a47a7cb`、
+  `042e7d1a0`、`a95a30769`、`405862e80` 与 `ec9b3f375`：官方 robustness/watch tests
+  增强了 error watch response、progress notify 间事件交付、revision zero resumable、selector
+  filter validation 和 compaction 后事件不丢失。KubeBrain 的 watch 兼容面已用 server/client/gateway
+  门禁覆盖 created/canceled/progress/error response、range selector filtering、revision zero、
+  future/compacted revision、progress ordering、restart/tombstone watch、follower proxy resume floor
+  和 event-log replay；这些 upstream 变更属于 oracle 强化或已映射的 public watch 风险。
+
+  对照 `94c83a962` 与 `9ea234913`：官方修复 mvcc restore/compact 路径下 `currentRev` 更新。
+  KubeBrain 不复用 upstream mvcc store，但同类风险已由 TiKV 数据面的 durable revision restore、
+  compact watermark、scheduled/finished compact marker、snapshot restore 和生产只读 health/status
+  门禁约束；`ensureCurrentRevision`/compact 路径在当前代码中会在 durable revision 或 compact
+  revision 高于内存值时推进 current revision，不允许恢复后 revision 倒退。
+
+  对照 `d3bb6f688` 与 `fd8326a50`：官方让 `LeaseTimeToLive` 在 leader 变化时返回错误，避免
+  旧 leader 给出陈旧 TTL。KubeBrain 已在 lease follower 读修复和 A 系列门禁中固定：非 leader
+  不得服务陈旧 lease snapshot，proxy 开启时转发到当前 leader，leader 变化或 freshness 失效时
+  fail closed；批量 renewal、long-window renewal 与 failover smoke 继续覆盖 TiKV/PD 数据面。
+
+  对照 `bdcff246c`：官方给 `StatusResponse` 增加 quota 字段；KubeBrain 早已把 `DbSizeQuota`
+  纳入 proto coverage、Maintenance Status、`endpoint status` 和 quota differential。对照
+  `1e7dd97e3` 与 `2de719dea`：官方 robustness 解析 WAL 中 LeaseRevoke 和 persisted requests
+  来验证 watch；KubeBrain 没有 upstream WAL 日志，等价风险由 event-log、lease revoke/expiry、
+  watch replay 和 Porcupine 历史模型覆盖。对照 `0a54362cc` 与 `7be360684`：官方修复 bbolt
+  backend tx buffer 的重复/乱序写；KubeBrain 使用 TiKV/memkv storage abstraction，写事务原子性、
+  duplicate key、CAS/delete/current revision 和 failed write Txn 已由 backend tests 约束。对照
+  `723f45feb` 与 `97efc2ade`：官方新增 WAL write syscall metrics，属于 upstream WAL 可观测面；
+  TiKV/PD 数据面不承诺该 metric。对照 `842a0f3a3`：官方只修正文档/测试注释。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3818 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
