@@ -37879,6 +37879,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/metrics` 不包含这些 watch send-loop upstream metric 名；本轮代码补齐后需随下一次 runtime 镜像滚动
   生效。
 
+- A3774 固定 fast KeysOnly Range 近期 upstream 覆盖边界。对照 `/root/etcd` commits
+  `7624a8a2e` 与 `8ce417fa0`：前者在 `server/etcdserver/txn/range.go` 对
+  `KeysOnly && SortTarget != VALUE` 启用 `FastKeysOnly`，让 Range 可直接从 in-memory index 返回
+  key/create/mod/version metadata；后者把 `treeIndex.Revisions` 的 limit 与 total-count 行为整理成
+  与 Range 一致，避免 limited scan 和 total count 语义漂移。用户可见要求是：KeysOnly 不能丢
+  create/mod/version metadata，非 VALUE sort、limit、Count/More、revision filter、current/historical
+  revision 的组合必须继续与官方 etcd 一致。
+
+  KubeBrain 已有 `TestRangeOptionMatrixDifferentialAgainstReferenceEtcd` 双端黑盒矩阵覆盖这些组合，
+  但此前没有结构门禁证明该矩阵持续包含 fast KeysOnly 最容易退化的维度。本轮将矩阵维度抽成共享
+  helpers，并新增 `TestRangeOptionMatrixCoversFastKeysOnlyTotalCountFamilies`：直接断言差分执行使用的
+  同一套维度包含 current/historical、KEY/VERSION/CREATE/MOD sort target、`Limit(2)` 与
+  `MaxInt64` total-count、无 filter、mod/create window 以及 contradictory filter 的
+  `KeysOnly && !CountOnly` 组合；VALUE sort 明确排除，因为 upstream 不走 fast KeysOnly。新增
+  `TestRecentUpstreamAuditIsRecorded` 固定 `7624a8a2e`、`8ce417fa0` 与 A3774。该轮不修改 runtime；
+  目标是防止后续缩减差分矩阵时静默丢掉 upstream 2026 KeysOnly index 语义覆盖。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -24,6 +24,25 @@ type rangeMatrixOutcome struct {
 	Range   rangeOptionOutcome
 }
 
+type rangeMatrixFilterCase struct {
+	name string
+	minM int64
+	maxM int64
+	minC int64
+	maxC int64
+}
+
+type rangeMatrixMode struct {
+	name      string
+	keysOnly  bool
+	countOnly bool
+}
+
+type rangeMatrixRevisionCase struct {
+	name     string
+	revision int64
+}
+
 func TestRangeOptionMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -36,6 +55,94 @@ func TestRangeOptionMatrixDifferentialAgainstReferenceEtcd(t *testing.T) {
 	for i := range want {
 		require.Equal(t, want[i], got[i], want[i].Name)
 	}
+}
+
+func TestRangeOptionMatrixCoversFastKeysOnlyTotalCountFamilies(t *testing.T) {
+	covered := map[string]bool{}
+	for _, revision := range rangeMatrixRevisions(6) {
+		for _, target := range rangeMatrixTargets() {
+			for _, limit := range rangeMatrixLimits() {
+				for _, filter := range rangeMatrixFilters([]int64{1, 2, 3, 4, 5, 6}, []int64{1, 2, 3, 4, 5, 6}) {
+					for _, mode := range rangeMatrixModes() {
+						if !mode.keysOnly || mode.countOnly || target == etcdserverpb.RangeRequest_VALUE {
+							continue
+						}
+						switch filter.name {
+						case "none", "mod-window", "create-window", "contradictory":
+							covered[fmt.Sprintf("%s/%s/limit=%d/filter=%s", revision.name, target, limit, filter.name)] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	for _, revision := range []string{"current", "historical"} {
+		for _, target := range []etcdserverpb.RangeRequest_SortTarget{
+			etcdserverpb.RangeRequest_KEY,
+			etcdserverpb.RangeRequest_VERSION,
+			etcdserverpb.RangeRequest_CREATE,
+			etcdserverpb.RangeRequest_MOD,
+		} {
+			for _, filter := range []string{"none", "mod-window", "create-window", "contradictory"} {
+				require.True(t, covered[fmt.Sprintf("%s/%s/limit=2/filter=%s", revision, target, filter)],
+					"missing limited fast KeysOnly coverage for %s %s %s", revision, target, filter)
+				require.True(t, covered[fmt.Sprintf("%s/%s/limit=%d/filter=%s", revision, target, int64(math.MaxInt64), filter)],
+					"missing total-count fast KeysOnly coverage for %s %s %s", revision, target, filter)
+			}
+		}
+	}
+}
+
+func rangeMatrixFilters(createRevisions, modRevisions []int64) []rangeMatrixFilterCase {
+	return []rangeMatrixFilterCase{
+		{name: "none"},
+		{name: "mod-window", minM: modRevisions[1], maxM: modRevisions[4]},
+		{name: "create-window", minC: createRevisions[1], maxC: createRevisions[4]},
+		{name: "contradictory", minM: modRevisions[4], maxM: modRevisions[1]},
+		{name: "negative-min", minM: -1, minC: -1},
+		{name: "negative-max", maxM: -1, maxC: -1},
+		{name: "maximum-min", minM: math.MaxInt64, minC: math.MaxInt64},
+		{name: "maximum-max", maxM: math.MaxInt64, maxC: math.MaxInt64},
+	}
+}
+
+func rangeMatrixModes() []rangeMatrixMode {
+	return []rangeMatrixMode{
+		{name: "full"},
+		{name: "keys", keysOnly: true},
+		{name: "count", countOnly: true},
+		{name: "keys-and-count", keysOnly: true, countOnly: true},
+	}
+}
+
+func rangeMatrixTargets() []etcdserverpb.RangeRequest_SortTarget {
+	return []etcdserverpb.RangeRequest_SortTarget{
+		etcdserverpb.RangeRequest_KEY,
+		etcdserverpb.RangeRequest_VERSION,
+		etcdserverpb.RangeRequest_CREATE,
+		etcdserverpb.RangeRequest_MOD,
+		etcdserverpb.RangeRequest_VALUE,
+	}
+}
+
+func rangeMatrixOrders() []etcdserverpb.RangeRequest_SortOrder {
+	return []etcdserverpb.RangeRequest_SortOrder{
+		etcdserverpb.RangeRequest_NONE,
+		etcdserverpb.RangeRequest_ASCEND,
+		etcdserverpb.RangeRequest_DESCEND,
+	}
+}
+
+func rangeMatrixRevisions(historicalRevision int64) []rangeMatrixRevisionCase {
+	return []rangeMatrixRevisionCase{
+		{name: "current"},
+		{name: "historical", revision: historicalRevision},
+	}
+}
+
+func rangeMatrixLimits() []int64 {
+	return []int64{-1, 0, 2, math.MaxInt64}
 }
 
 func runRangeOptionMatrixScenario(t *testing.T, endpoint, instance string) []rangeMatrixOutcome {
@@ -97,54 +204,12 @@ func runRangeOptionMatrixScenario(t *testing.T, endpoint, instance string) []ran
 		modRevisions[5] = put.Header.Revision
 	}
 
-	type filterCase struct {
-		name string
-		minM int64
-		maxM int64
-		minC int64
-		maxC int64
-	}
-	filters := []filterCase{
-		{name: "none"},
-		{name: "mod-window", minM: modRevisions[1], maxM: modRevisions[4]},
-		{name: "create-window", minC: createRevisions[1], maxC: createRevisions[4]},
-		{name: "contradictory", minM: modRevisions[4], maxM: modRevisions[1]},
-		{name: "negative-min", minM: -1, minC: -1},
-		{name: "negative-max", maxM: -1, maxC: -1},
-		{name: "maximum-min", minM: math.MaxInt64, minC: math.MaxInt64},
-		{name: "maximum-max", maxM: math.MaxInt64, maxC: math.MaxInt64},
-	}
-	modes := []struct {
-		name      string
-		keysOnly  bool
-		countOnly bool
-	}{
-		{name: "full"},
-		{name: "keys", keysOnly: true},
-		{name: "count", countOnly: true},
-		{name: "keys-and-count", keysOnly: true, countOnly: true},
-	}
-	targets := []etcdserverpb.RangeRequest_SortTarget{
-		etcdserverpb.RangeRequest_KEY,
-		etcdserverpb.RangeRequest_VERSION,
-		etcdserverpb.RangeRequest_CREATE,
-		etcdserverpb.RangeRequest_MOD,
-		etcdserverpb.RangeRequest_VALUE,
-	}
-	orders := []etcdserverpb.RangeRequest_SortOrder{
-		etcdserverpb.RangeRequest_NONE,
-		etcdserverpb.RangeRequest_ASCEND,
-		etcdserverpb.RangeRequest_DESCEND,
-	}
-
-	revisions := []struct {
-		name     string
-		revision int64
-	}{
-		{name: "current"},
-		{name: "historical", revision: historicalRevision},
-	}
-	limits := []int64{-1, 0, 2, math.MaxInt64}
+	filters := rangeMatrixFilters(createRevisions, modRevisions)
+	modes := rangeMatrixModes()
+	targets := rangeMatrixTargets()
+	orders := rangeMatrixOrders()
+	revisions := rangeMatrixRevisions(historicalRevision)
+	limits := rangeMatrixLimits()
 	outcomes := make([]rangeMatrixOutcome, 0, len(revisions)*len(targets)*len(orders)*len(limits)*len(filters)*len(modes))
 	for _, revision := range revisions {
 		for _, target := range targets {
