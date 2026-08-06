@@ -40980,6 +40980,46 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   smoke 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3858 与上述 commit ID；本轮不修改
   runtime。
 
+- A3859 固定 upstream clientv3 compare helper、expired lease TTL、make-mirror revision batching、
+  v3 capability default、grpcproxy watch/lease/count semantics、debug trace、hash restart、auth
+  revision init、short TTL keepalive、client cluster-version/dial context、CommonName auth、
+  existing lease session、domain listener reject 和 `ignore_lease` PutRequest 审计。对照
+  `/root/etcd` commit `71937151d`、`fb81fb44f`、`ad4595884`、`5da5b834e`、
+  `28e9ba365`、`c4f1e64de`、`298d58841`、`72a531e8b`、`c3a678be7`、
+  `29a6fd65a`、`65b59f442`、`ba52bd07b`、`05b82f202`、`36f5b713b`、
+  `49a0a63fc`、`853f68071`、`c22ba766d`、`e42fa18cc`、`e3f4b4361` 与
+  `2fce80e4c`：官方继续收敛 grpc proxy/register、watch close、lease coalescing、
+  CountOnly、CompactRevision、require-leader watch 和 debug trace。KubeBrain 不把 upstream
+  grpcproxy 作为部署依赖；等价 public contract 由 gateway/gRPC differential、watch resume/
+  compacted response、CountOnly correctness、lease failover、static service discovery、readyz、
+  operation audit 和 production probes 固定。
+
+  对照 `f2e9936de`、`6431382a7`、`12d3e4e47`、`3c306cdb3`、`4fb8d30f0`、
+  `4274db46f`、`8cb5e05fc`、`bcfbb096e`、`2ca1823a9`、`c182428e5`、
+  `a213b3abf`、`a9f10bdee`、`720234d32`、`8c43bd06a`、`e0ddded07`、`9976d869c`、
+  `280b65fe4`、`beef5eea3`、`46cac6f29` 与 `c586218ec`：官方修复 Hash restart、
+  auth store revision 初始化、short TTL/keepalive scheduling、missing lease `TTL=-1`、
+  KeepAliveOnce typed error、existing lease session 和 AuthDisable/Admin permission tests。
+  KubeBrain 已有 Status/HashKV restart、auth lifecycle/header revision、JWT/Bearer/simple token、
+  CommonName、LeaseGrant/KeepAliveOnce/TimeToLive/Revoke、`TTL=-1`、session lease 复用和
+  auth differential tests；本轮不修改 runtime。
+
+  对照 `51435df17`、`4d2aa80ec`、`c9452c6ad`、`80de75431`、`fb7dd0f68`、
+  `cd9f0a172`、`019150963`、`18af48a9d`、`0c4e67c1f`、`5a67b0aba` 与
+  `63572567b`：官方处理 RejectOldCluster、client context、forced leader available、
+  Range limit docs、CommonName auth、client balancer update 和 listener domain-name reject。
+  KubeBrain endpoint contract 由 client/peer TLS、AllowedCNs/AllowedHostnames、verified
+  CommonName auth、balancer smoke、connection age reconnect、leader fencing、MemberList/Status
+  和 startup option validation 固定；不承诺 upstream cluster-version gate 或 listener flag
+  完全一致。
+
+  对照 `37fb2c454`、`84a81d8ca`、`d3191d1af`、`95edd1bc5`、`8a87769a0`、`5ac4e4255`、
+  `508c9dfe5` 与 `a9bf593bd`：官方为 Put/Txn 增加 `ignore_lease`，要求更新 value 时保留
+  现有 lease，并拒绝同时显式提供 lease 的非法组合。KubeBrain 已在 raw gRPC、official
+  clientv3、Txn staged executor、PrevKV、namespace wrapper、bad lease、empty key、nested Txn
+  和 smoke 中覆盖 `IgnoreValue`/`IgnoreLease` public behavior；这些提交不再引入 runtime 缺口。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3859 与上述 commit ID。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
