@@ -37085,6 +37085,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./... && go vet ./...` 通过（测试 1.523 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 168.240 秒）及 `go vet ./...` 通过；一次性官方实例和测试数据均已清理。
 
+- A3729 扩展 A3728 的多个范围 Compare 合取门禁。A3728 虽覆盖相交/不相交范围、失败位置和
+  nested 分支，但全部使用 VERSION target；单范围的 A3727 五 target 矩阵不能证明一次 staged
+  Txn 会在同一 pinned 判定中正确组合不同 KV 投影。新夹具在四个连续键上分配两个独立 lease，
+  首次原子 seed 后再批量更新第二、第四键，形成 version=1/2、两个 mod revision、同 create
+  revision、两组 lease 和不同 value。新增四个顶层+nested case：VALUE/VERSION/CREATE/MOD 与分段
+  LEASE 六个范围 Compare 全真，以及 VALUE 首位、VERSION 中间、跨 lease 末位失败；每个分支继续
+  通过 marker 固定实际选择。
+
+  审计同时确认 range Compare 不生成单键 OCC guard，但不会形成跨副本 phantom 缺口：写请求由唯一
+  mutation leader 执行，follower 只代理；leader 内 `BeginRangeTxn` 从 compare 到 TiKV batch commit
+  排斥全部逻辑写，领导权 fencing 阻止旧 leader 跨任期提交，A208 已有确定性 phantom 插入回归。
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3725-rangestream-final-frame` 首轮 1.48 秒、连续 10 轮
+  16.826 秒、race 5 轮 8.687 秒全部 GREEN；未发现 runtime RED，不修改或滚动生产数据面。完整
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.525 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 168.749 秒）及 `go vet ./...` 通过；一次性 oracle 与两端隔离前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
