@@ -37952,6 +37952,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `isConnectedToQuorumAfterAddingNewMemberSince`，只把这些 commit 加入
   `TestRecentUpstreamAuditIsRecorded`，防止后续把 Raft quorum 内部修复误当成 KubeBrain 数据面缺口。
 
+- A3778 固定近期 upstream auth/overload 安全活性审计集合。对照 `/root/etcd`
+  commits `a2987fdee` 与 `9dffaa350`，官方允许 authenticated non-admin 用户执行
+  `MemberList` 和 `Alarm(GET)`，但匿名仍返回 `user name is empty`；KubeBrain 已由 A251
+  的 auth 差分覆盖普通用户 `Status`、`MemberList`、`AlarmList` 成功，匿名路径仍拒绝。
+  对照 `a07ecd124`，官方把 `Compact`、`Alarm` mutation、`MemberList`、Lease
+  grant/revoke/ttl/list/renew 等此前可能绕过鉴权的入口统一前置 auth；KubeBrain 已由
+  A3713/A1192–A1194/A1222 等 raw/client/direct 门禁覆盖匿名 `Compact` user-empty、普通用户
+  root-only 管理面拒绝、Lease 权限和 MemberList auth-before-barrier 顺序。对照
+  `204097b19`，官方递归检查 nested Txn 的 success/failure 分支权限；KubeBrain 的
+  `authorizeTxn` 已递归下钻 nested Txn 并由 A257、A3709–A3713、auth 差分中的 nested
+  denied Put/Delete/PrevKV/leased Put 覆盖。对照 `59ce0ce31`，官方在 PriorityRequest
+  feature gate 下允许 `LeaseRevoke` 在 apply backlog 过载时使用更宽限额；KubeBrain 没有
+  Raft apply backlog，但 A300 已建立 public overload admission 的等价活性边界：client
+  request slots 耗尽时 `LeaseRevoke` 仍使用 bounded priority reserve 成功，以免 lease/key 清理
+  被入口限流永久阻塞。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3778 及上述 commit ID。该条不改变 runtime；
+  它把安全修复、只读诊断例外和 overload 释放路径明确映射到已有 oracle，防止未来重构只保留
+  “happy path auth”或普通 request-limit 测试而漏掉这些 upstream 风险点。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
