@@ -36867,6 +36867,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   条件投影修复覆盖五种 target、两类范围和两类 revision，不重建或再次滚动数据面；一次性 reference
   已停止，精确临时目录及测试日志已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3718 补齐 A3716 修复的 staged/nested Txn 官方黑盒证据。现有 `pkg/server/etcd/txn_client_test.go`
+  已有大量 staged/nested KeysOnly sort/filter/limit 组合，但 fixture 全部无 lease，无法证明
+  `projectRangeKeysOnly` 的条件 lease 投影。新增差分在四个隔离子范围中分别执行 top-level/nested ×
+  KEY/VALUE Txn：每个 Txn 先以同一 lease 写入 `a=z`、`b=a`，再在同一事务内执行 KeysOnly Range。
+  KEY+ASC 必须按 key 返回 `a,b` 且 Lease 全为零；VALUE+ASC 必须按原 value 返回 `b,a`、value 已清空，
+  但 Lease 均仍存在。这样同时证明 staged write 可见性、排序发生在投影前、nested response 解包及
+  FastKeysOnly/VALUE 两条 lease 路径，不再以无租约 KV 的值清空测试间接代表。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3716-keys-only-lease` 首轮 0.78 秒、连续 10 轮
+  （测试 7.784 秒）及 race 5 轮（测试 5.569 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.523 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 167.030 秒）。生产 3/3 Pod Ready、零重启。没有新 runtime RED，本项确认
+  A3716 staged/nested Txn 修复闭环，不重建或滚动数据面；一次性 reference 已停止，精确临时目录已删除
+  且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
