@@ -157,6 +157,28 @@ type authDifferentialOutcome struct {
 	SnapshotStreamTerminal    bool
 	SnapshotStreamDigest      bool
 	SnapshotStreamEOF         bool
+	EndpointClusterHealthAuth bool
+}
+
+func etcdctlEndpointClusterHealthWithAuth(t *testing.T, endpoint string) bool {
+	t.Helper()
+	etcdctl := os.Getenv("ETCDCTL_BIN")
+	if etcdctl == "" {
+		etcdctl = "/root/etcd/bin/etcdctl"
+	}
+	commandCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := runCompatCommandContext(t, commandCtx, etcdctl, []string{
+		"--endpoints=" + endpoint,
+		"endpoint", "health",
+		"--user=root:root-secret",
+		"--cluster",
+	}, nil)
+	if err != nil {
+		t.Logf("authenticated endpoint health --cluster failed for %s: %v\n%s", endpoint, err, output)
+		return false
+	}
+	return strings.Contains(string(output), "is healthy: successfully")
 }
 
 func runConcurrentClientOperations(count int, operation func(int) error) []error {
@@ -837,6 +859,9 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	disableRangeFirst := disableRangeFirstResponse.RangeResponse != nil &&
 		len(disableRangeFirstResponse.RangeResponse.Kvs) > 0 &&
 		disableRangeFirstResponse.RangeResponse.Header == nil
+	// Pin etcd e7f7b113b: endpoint discovery must preserve credentials when
+	// --cluster creates the follow-up client used for the health request.
+	endpointClusterHealthAuth := etcdctlEndpointClusterHealthWithAuth(t, endpoint)
 	_, err = root.AuthDisable(ctx)
 	require.NoError(t, err)
 	disableRangeAfterChunks := 0
@@ -1009,6 +1034,7 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		SnapshotStreamTerminal:    snapshotStreamTerminal,
 		SnapshotStreamDigest:      snapshotStreamDigest,
 		SnapshotStreamEOF:         snapshotStreamEOF,
+		EndpointClusterHealthAuth: endpointClusterHealthAuth,
 	}
 }
 
@@ -1102,6 +1128,7 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.SnapshotStreamTerminal)
 	require.True(t, reference.SnapshotStreamDigest)
 	require.True(t, reference.SnapshotStreamEOF)
+	require.True(t, reference.EndpointClusterHealthAuth)
 	require.True(t, reference.AnonymousPointStream.Error.UserEmpty)
 	require.Equal(t, codes.InvalidArgument, reference.AnonymousPointStream.Error.Code)
 	require.True(t, reference.DeniedPointStream.Error.PermissionDenied)
