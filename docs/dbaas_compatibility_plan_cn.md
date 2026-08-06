@@ -37472,6 +37472,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`a3751/`、`/a3751/`
   与 `/compat/` 均无 KV；reference data-dir 与临时 clone 均已清理。
 
+- A3752 对照 upstream `/root/etcd` commit `1570c5c85` 的 `client/v3/concurrency`
+  `Election.Observe` response wrapper 语义。上游把 Observe channel 从 `GetResponse` value 切到
+  `*GetResponse`，并要求连续 `Proclaim` 产生的多次 observe 结果各自使用 fresh wrapper，避免后续
+  更新污染调用方已经持有的 leader response。KubeBrain 进程内 recipes 已覆盖该路径，但 compat
+  子模块缺少 reference/KubeBrain 双端黑盒门禁。新增差异测试用官方 `concurrency.NewSession` 与
+  `NewElection`，依次 Campaign `abc`、Proclaim `def`、Proclaim `ghi`，要求三次 Observe 值、版本
+  `1/2/3`、递增 header revision、最终 Leader 和 wrapper pointer freshness 与 reference etcd 一致。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `1570c5c85^`，只给临时 clone 添加编译期 API 断言
+  `var _ *clientv3.GetResponse = <-election.Observe(ctx)`；旧版 `Observe` channel 元素仍是
+  `clientv3.GetResponse` value，测试包编译失败并报告 `cannot use <-observe ... as *clientv3.GetResponse`。
+  当前 `/root/etcd` client + reference/KubeBrain 双端普通连续 20 轮通过（7.705 秒），`-race`
+  连续 10 轮通过（5.188 秒）；收尾时 clientv3 偶发 `context canceled` retry 日志来自主动停止
+  Observe/session，不影响断言。该修复属于官方 client API，本轮无服务端或镜像变更。兼容模块
+  `go test ./...`（108.341 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 166.971 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3752/`、`a3752/`
+  与 `/compat/` 均无 KV；reference data-dir 与临时 clone 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
