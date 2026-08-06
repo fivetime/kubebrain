@@ -37273,6 +37273,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.484 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 166.884 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
 
+- A3740 审计 upstream 2025–2026 年近期客户端可见修复，逐项排除已在 A248/A253/A297 等轮次
+  覆盖的 Bearer token、future-watch progress、KeepAlive/Revoke buffer、RangeStream、Txn 权限与
+  CountOnly/KeysOnly 行为，以及属于 etcd Raft membership/WAL、并由 TiKV/PD 或 DBaaS 控制面承担的
+  member reconfiguration 变更。本轮为尚无永久门禁的 `/root/etcd` commit `0d20d7da7` 增加
+  client/v3 异步构造回归：初始端点监听 TCP 但不提供 gRPC 服务，`clientv3.New` 即使配置 2 秒
+  `DialTimeout` 也必须在 1 秒内返回；同一个 client 随后通过 `SetEndpoints` 接管目标 DBaaS 端点，
+  对缺失键完成只读 Range 并取得非零 revision。这样固定新版 client 不再把实例发现或暂时不可达
+  转化为构造阶段阻塞，同时证明动态端点恢复后 KubeBrain 可正常服务。
+
+  首轮测试错误要求惰性 gRPC connection 必须在一秒内实际建立 TCP，官方 client 连续 10 轮稳定
+  RED；该假设不属于 upstream 契约，移除后官方 etcd `d947b20863` 独立 reference 连续 20 轮
+  GREEN（0.067 秒），生产 `kubebrain:a3725-rangestream-final-frame` 连续 20 轮 GREEN（0.177 秒），
+  定向 race 连续 10 轮 GREEN（1.173 秒），没有 runtime RED、写入或镜像变更。生产三副本仍为
+  A3739 Pod UID，3/3 Ready、零重启，`readyz=ok`，`/compat/` 无 KV。兼容模块
+  `go test ./... && go vet ./...` 通过（测试 1.573 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 168.453 秒）及 `go vet ./...` 通过；官方进程和临时 data-dir 已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
