@@ -40373,6 +40373,62 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 gateway JSON tests 已固定 key/range_end 字段号、base64 JSON 与 revoke permission 错误外观。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3848 与上述 commit ID；本轮不修改 runtime。
 
+- A3849 固定 upstream restart election tick、rafthttp active peers、lease TTL overflow、pre-vote、
+  defrag cluster、Election gateway missing leader、HostWhitelist/JWT、stable `/v3` gateway、
+  Status `dbSizeInUse`、large read、slow request warning 和 unsynced watcher restore 审计。对照
+  `/root/etcd` commit `9680b8a15` 与 `edec229e1`：官方在 restart 时调整 election ticks 并抽出
+  `advanceTicks`。KubeBrain 不运行 upstream Raft election tick；等价 DBaaS 风险是 serving
+  replacement/failover 后不得提前放量、不得伪造 leader freshness 或 revision，已由 leader readiness、
+  revision sync、watch/lease failover、restart persistence 和 production topology probes 覆盖。对照
+  `29d954385`：官方 rafthttp 暴露 active peers；KubeBrain 不运行 rafthttp，peer 可观测性以 PD/TiKV、
+  member/status、readyz、operation audit 和生产探针为准。
+
+  对照 `83a9684c4`、`3e69dc5a7` 与 `db21941d1`：官方强制 lease TTL 上限
+  9,000,000,000 秒并返回 `ErrLeaseTTLTooLarge`。KubeBrain 已在 LeaseGrant TTL/ID 边界差分中固定
+  `OutOfRange`/`etcdserver: too large lease TTL`、重复 ID、zero TTL clamp、MaxInt64 和 HTTP gateway
+  整数边界。对照 `b48d3eb38`、`3092d3bf7`、`78918848b`、`8aae8c1c9` 与 `69357adf3`：
+  官方引入 Raft pre-vote 并在 force-new-cluster 下启用 CheckQuorum。KubeBrain 使用独立 TiKV/PD
+  和 Kubernetes-style leader election，不暴露 upstream pre-vote/force-new-cluster flag；等价风险由
+  leader fencing、failover、revision monotonicity、production probes 和故障演练覆盖。
+
+  对照 `63ab90820`、`9919e4d39` 与 `912c40218`：官方记录 JWT TTL 字段和 `etcdctl defrag
+  --cluster`。KubeBrain 已暴露 `--auth-token-ttl` 并固定 simple/JWT token TTL、old revision、
+  password rotation、Bearer metadata 和 auth snapshot/restart；`Defragment` 是 TiKV/PD 平台替代
+  no-op，cluster fanout 属于 etcdctl client-side 行为，本服务端保持 auth 保护、nil Header 与
+  HashKV 不变即可。对照 `748ab8c39`：官方 flags 在冲突环境变量上 fatal；KubeBrain option tests
+  与 production manifest validation 固定本仓启动参数，不迁移 upstream flag registry。
+
+  对照 `2f909a97b`、`85533a630` 与 `b8c944cce`：官方补 Election gRPC-gateway e2e，并在缺失
+  `leader` 字段时返回错误。KubeBrain gateway 已覆盖 `/v3/election/campaign|leader|observe|
+  proclaim|resign`、Observe stream、missing leader error、concurrency error mapping 和 auth marker；
+  Lock/Election recipe 差分继续验证 official client public behavior。对照 `9f0027dfb`、
+  `02217cb6d`、`8edaecadc`、`364864927` 与 `0179d81f2`：官方实现 HostWhitelist/client origin
+  policy。KubeBrain endpoint config 已有 CORS/HostWhitelist 校验和 HTTP access-control handler，
+  生产 manifest 保持显式参数；gateway contract 仍固定在 route/method/JSON/metadata/error 外观。
+
+  对照 `f0eb77296`、`2a54e3281`、`8fd01f56d` 与 `8eb7cfb29`：官方增加
+  `IsAuthEnabled`、JWT token expiration、JWT ttl option 和 nop token provider。KubeBrain auth
+  已覆盖 simple/JWT provider parsing、TTL、HS/RS/ES/EdDSA、verify-only、公私钥 mismatch、
+  NoPassword、old token invalidation、auth enable/disable restart 和 gateway/Bearer metadata。
+  对照 `83d1c3d5`：官方修复 revision-based compaction 默认值；KubeBrain compact/auto-compaction
+  safety net、Compact revision、HashKV compaction、Cilium/apiserver policy 和 startup option
+  validation 已覆盖 TiKV-backed compaction contract。
+
+  对照 `488ee99ae`：官方把 gRPC-gateway endpoint 替换为 stable `/v3`。KubeBrain 默认暴露
+  generated stable `/v3` gateway，KV/Watch/Lease/Cluster/Maintenance/Auth/Lock/Election routes、
+  legacy lease compatibility 和 unknown field 行为已有 endpoint 与 HTTP differential 门禁。对照
+  `571e9a9e7` 与 `6b775cd78`：官方新增/澄清 `StatusResponse.dbSizeInUse` 可不同于 dbSize。
+  KubeBrain proto coverage 和 gateway JSON 已固定 `dbSizeInUse` 字段，Status quota/db-size
+  语义由 maintenance tests、production status/readiness 和 observability 文档约束。对照
+  `3ebee2140`：官方允许轻写负载下大并发读；KubeBrain large range/count-index、watch starvation、
+  max request bytes、RangeStream 和 production read probes 覆盖读写并发。对照 `b83244bd3`：
+  官方改进 slow request warning；KubeBrain 日志不承诺 upstream 文案，slow-path 可观察性由
+  structured logs、request duration metrics、operation audit 和 production probes 覆盖。对照
+  `fcab10bb2`：官方恢复 unsynced watchers；KubeBrain watch cache/event-log replay、progress
+  notification、future/compacted watch、restart/tombstone 和 follower proxy resume floor 已覆盖
+  对应 public watch 行为。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3849 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
