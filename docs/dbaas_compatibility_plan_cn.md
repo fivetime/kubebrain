@@ -38242,6 +38242,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标是把当前段落中已覆盖或非 public-runtime 的变更归档，后续筛选继续优先处理可由官方 client、
   etcdctl、HTTP gateway、metrics 或安全策略观测到的新差异。
 
+- A3793 固定 upstream protobuf/gogo 可空性与 WAL/snappb 生成代码审计。对照 `/root/etcd`
+  commits `f7bea9386`、`8956ed7a0`、`c6e84833c`、`996f35c76`、`928253acf`、
+  `74f54e6f2`、`e582f3f20`、`c22518426`、`0df717f06`、`8c5b66e2f`、
+  `121e8a3dd`、`f0b747ff3`、`55035caba`、`75932ca1b`、`e45e36482`、
+  `b428dc254` 与 `68b150053`：官方逐步移除 gogoproto nullable/getter/enum-prefix/
+  marshaler 选项，改用字段 getter，重生成 etcdserverpb/walpb/snappb/recover pb，并为 WAL
+  serialization 增加 byte-diff fixture。该组变更主要影响 upstream Go 生成类型、内部 WAL/snapshot
+  持久化编码和测试 fixture；etcd v3 gRPC/HTTP wire schema 与 KubeBrain 公开 request/response
+  envelope 没有新增字段语义。
+
+  KubeBrain 不使用 upstream WAL/snappb 作为 TiKV-backed DBaaS 数据面的持久日志或 snapshot 格式；
+  public wire/API 兼容由本仓导入的 etcd api module、`request_proto_coverage_test.go`、raw gRPC
+  Range/Txn/Watch/Lease/Cluster/Maintenance 差分、HTTP gateway 差分和长期生成矩阵覆盖。对于
+  protobuf Go 类型层面的变动，KubeBrain 的要求是使用官方 getter/`GetHeader()`/`GetKvs()` 等
+  nil-safe accessor，并保证所有向客户端返回的核心 response envelope 在需要时非 nil；这些已由
+  A3755 WatchResponse pointer header、A3786 Range header oracle、watch control/header oracle、
+  status/hash/snapshot envelope 测试和请求 proto 覆盖门禁固定。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3793 和上述 commit ID。本轮不修改 runtime；
+  目标是把 upstream 生成代码与 WAL/snappb 内部编码迁移从 TiKV/PD 数据面兼容 backlog 中明确
+  分流，后续只在 wire descriptor、官方 client behavior 或 response envelope 出现可观察变化时
+  建立专项 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
