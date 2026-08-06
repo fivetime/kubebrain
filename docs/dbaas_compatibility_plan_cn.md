@@ -36752,6 +36752,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不重建或滚动数据面；一次性 reference 已停止，精确临时目录及测试日志已删除且不可恢复，只含
   本轮 oracle 数据。
 
+- A3711 将 A3710 的分支惰性保证递归到 nested Txn。outer 成功分支先执行 inner Txn；inner 的
+  `If(Version(nested-missing)=0)` 选择 Put，而未选 failure 含 compacted Range 与 forbidden Put，
+  随后 outer 继续 Put。官方与 KubeBrain 都必须让 inner/outer 两个 selected key 提交、nested
+  forbidden key 为零，且整次请求无 compacted 错误。该门禁直接对应上游 `executeTxn` 递归传递
+  执行策略的路径，防止顶层正确跳过未选分支、递归层却预执行历史 Range 或错误中止后续 outer Op。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 1.102 秒、连续 10 轮
+  （测试 10.825 秒）及 race 5 轮（测试 4.902 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.582 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 168.137 秒）。没有 runtime RED，本项只扩展永久 nested 分支惰性/原子性
+  差分，不重建或滚动数据面；一次性 reference 已停止，精确临时目录及测试日志已删除且不可恢复，
+  只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

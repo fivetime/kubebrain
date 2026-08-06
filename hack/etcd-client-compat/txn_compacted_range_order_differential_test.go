@@ -30,6 +30,7 @@ func TestTxnCompactedRangeOrderDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "put-before-range", Code: "Unknown", Message: "etcdserver: mvcc: required revision has been compacted"},
 		{Name: "nested-put-before-range", Code: "Unknown", Message: "etcdserver: mvcc: required revision has been compacted"},
 		{Name: "unselected-compacted-range", Code: "OK", WrittenKeys: 1},
+		{Name: "nested-unselected-compacted-range", Code: "OK", WrittenKeys: 3},
 	}
 	referenceOutcome := runTxnCompactedRangeOrderScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
@@ -121,6 +122,34 @@ func runTxnCompactedRangeOrderScenario(t *testing.T, endpoint, instance string) 
 	require.NoError(t, getErr)
 	outcomes = append(outcomes, txnCompactedRangeOrderOutcome{
 		Name: "unselected-compacted-range", Code: status.Code(txnErr).String(),
+		Message: status.Convert(txnErr).Message(), WrittenKeys: written.Count - 1,
+	})
+
+	nestedSelectedKey := prefix + "nested-selected-put"
+	outerAfterNestedKey := prefix + "outer-after-nested"
+	nestedForbiddenKey := prefix + "nested-unselected-put"
+	response, txnErr = cli.Txn(ctx).Then(
+		clientv3.OpTxn(
+			[]clientv3.Cmp{clientv3.Compare(clientv3.Version(prefix+"nested-missing"), "=", 0)},
+			[]clientv3.Op{clientv3.OpPut(nestedSelectedKey, "committed")},
+			[]clientv3.Op{compactedGet, clientv3.OpPut(nestedForbiddenKey, "must-not-commit")},
+		),
+		clientv3.OpPut(outerAfterNestedKey, "committed"),
+	).Commit()
+	require.NoError(t, txnErr)
+	require.True(t, response.Succeeded)
+	for _, key := range []string{nestedSelectedKey, outerAfterNestedKey} {
+		selected, nestedGetErr := cli.Get(ctx, key)
+		require.NoError(t, nestedGetErr)
+		require.Equal(t, int64(1), selected.Count)
+	}
+	forbidden, getErr = cli.Get(ctx, nestedForbiddenKey)
+	require.NoError(t, getErr)
+	require.Zero(t, forbidden.Count)
+	written, getErr = cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	require.NoError(t, getErr)
+	outcomes = append(outcomes, txnCompactedRangeOrderOutcome{
+		Name: "nested-unselected-compacted-range", Code: status.Code(txnErr).String(),
 		Message: status.Convert(txnErr).Message(), WrittenKeys: written.Count - 1,
 	})
 	return outcomes
