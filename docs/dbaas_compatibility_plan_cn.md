@@ -37972,6 +37972,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   它把安全修复、只读诊断例外和 overload 释放路径明确映射到已有 oracle，防止未来重构只保留
   “happy path auth”或普通 request-limit 测试而漏掉这些 upstream 风险点。
 
+- A3779 固定近期 upstream proxy/metrics/lease/tooling 审计集合。对照 `/root/etcd`
+  commit `0c68e485a`，官方把 gRPC server metrics interceptor 放到 handler/request
+  interceptor 之前，确保被前置拒绝的调用也计入 metrics；KubeBrain 已由 A307 的
+  `TestGRPCMetricsObserveCallsRejectedBeforeHandlers` 覆盖 client 与 peer listener 的拒绝计数。
+  对照 `5037a98f7` 与 `871779c21`，官方修复的是 `server/etcdmain/grpc_proxy.go`
+  启动顺序，避免 grpcproxy 自 health client 在 cmux/gRPC serve 前 dial 自身而死锁；KubeBrain
+  不运行 upstream `etcd grpc-proxy` 启动器，数据面只需要保持其使用的公开 gRPC stream
+  外观，相关 invalid Watch header、server-streaming EOF 和 Snapshot adapter 行为已由
+  A303/A3762、A303/A3703/A3775 等门禁覆盖。对照 `b54c88406`，官方把 follower
+  `LeaseKeepAlive` forwarding 期间的 client cancel 归类为 `Canceled` 而非 `Unavailable`；
+  KubeBrain 已由 A308 的 follower KeepAlive cancellation status 测试覆盖。对照
+  `55988933b`，官方修复 `etcdctl txn -i` 单引号参数裁剪；KubeBrain 已由 A3750 的
+  official CLI 黑盒差分覆盖交互事务中 `'key with spaces'` 等参数。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3779 及上述 commit ID。本轮不修改 runtime；
+  目的在于把“使用 upstream 工具/代理/metrics 行为，但不搬运其启动器或内部实现”的边界显式化，
+  避免后续把 grpcproxy 二进制启动顺序误归为 KubeBrain server 缺口，或遗漏已覆盖的 metrics、
+  LeaseKeepAlive 和 etcdctl CLI 回归。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
