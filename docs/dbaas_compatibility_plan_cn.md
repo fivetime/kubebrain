@@ -39971,6 +39971,53 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和生产 topology 检查。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3840 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3841 固定 upstream learner/member promote、gRPC proxy metrics、naming empty update、watch close、
+  WithPrefix/WithFromKey、lease checkpoint deadlock、network timeout、retry logging、freelist、TLS1.2
+  cipher suites、gRPC gateway/client-cert-auth CN 和 gateway enable flag 审计。对照 `/root/etcd`
+  commit `604bc04f7`、`fc14608cb`、`2b76200f7`、`e1acf244c`、`355d0ab2a`、`43ed94f76`、
+  `57a11eb1e`、`ba9fd620e`、`7f9479acc`、`a039f2efb`、`76a63f9f7`、`d0c1b3fa3`、
+  `c438f6db2` 与 `aa4cda2f5`：官方逐步加入 learner 成员、`MemberAddAsLearner`、
+  `MemberPromote`、learner Status 字段、learner RPC 过滤、严格重配置检查和 learner 数量限制。
+  KubeBrain 的 DBaaS 数据面不运行 upstream Raft membership；兼容契约是 `MemberList`/Status 暴露
+  control-plane 配置的 `IsLearner`，`MemberAdd`/`MemberAddAsLearner`/`MemberPromote`/
+  `MemberRemove`/`MemberUpdate` 先做 upstream 级 URL、auth 和 member existence/learner 校验，
+  再返回 actionable platform-managed error；这已由 raw gRPC、clientv3、peer HTTP promote、
+  auth authorization 和 production topology tests 钉住。
+
+  对照 `9915d0202`：官方 gRPC proxy 暴露 server `/metrics`。KubeBrain 明确把 `/metrics` 放在
+  info 端口，client data port 只服务 health/version/v3 gateway/gRPC，避免未经认证的信息泄露；
+  proxy/leader/follower 正确性由 info-port metrics、alarm/quota、request duration 和生产探针覆盖。
+  对照 `cb39c97b2`：官方 naming 忽略 empty update。KubeBrain 通过 official naming manager/resolver
+  客户端测试固定 endpoint add/update/delete/list/watch 行为；空 update 是 client helper 内部语义，
+  不需要服务端特殊迁移。对照 `b25edb62c`：官方 Watch `Close` 应成功关闭。KubeBrain Watch path
+  已把 `CloseSend`、context cancellation、gateway close 和 follower proxy close 归类为预期关闭，
+  不转成用户可见错误。
+
+  对照 `8782bbae6`：官方修正 clientv3 `WithPrefix`/`WithFromKey` range end 计算。KubeBrain server
+  接收的是最终 `RangeEnd`；覆盖重点是空 key/from-key、prefix 边界、嵌套 Txn、delete/watch range、
+  namespace isolation 和 proxy watch option 翻译，而不复制 client helper。对照 `e20b9d9e1`：
+  官方修复 checkpointor 存在时 lease renew deadlock。KubeBrain lease checkpoint/renewal 实现在
+  TiKV metadata 和服务端租约循环内，已用 long-window renewal、checkpoint write failure、failover
+  expiry、revoke/regrant generation 和 StopLeases tests 约束无死锁/无假续租。
+
+  对照 `94b782e7c` 与 `6af8ce6c6`：官方补 network partition timeout case 并澄清 retry interceptor
+  logging。KubeBrain 对外 contract 是 official client 在 leader loss、follower forwarding、
+  cancelled/deadline、transient unavailable 和 auth retry 路径获得可识别错误；内部日志文案不作为
+  API 兼容面。对照 `e6c6d8492` 与 `6757a568e`：官方新增 bbolt freelist flag 并修正文档中的
+  strict-reconfig-check。KubeBrain 不暴露 bbolt backend，也不把 Raft reconfig flag 交给租户；
+  对应风险由 TiKV storage config、quota/status、DBaaS topology 和 platform-managed member boundary
+  覆盖。
+
+  对照 `45d09f050`：官方仅在 TLS1.2 上限制 `InvalidCipherSuites`。KubeBrain TLS 配置已区分
+  TLS min/max、Go TLS1.3 cipher 选择、cipher-suite 校验、CRL、allowed hostname/CN 和生产 mTLS
+  manifest。对照 `72dd4a18c`、`11fb62ecb`、`65887ae1b`、`b1afe210e` 与 `a1f964afd`：
+  官方增加 `--enable-grpc-gateway`，并要求 gRPC gateway/client-cert-auth 组合不能用非空 CN
+  代理证书绕过用户认证。KubeBrain 默认启用 v3 JSON/HTTP gateway 以服务 Kubernetes/DBaaS 用户，
+  同时 gateway 内部调用强制注入 `grpcgateway-accept` marker，使启用 client-cert-auth 时 HTTP
+  请求不能回退到 gateway 内部 TLS client certificate CN；server auth、gateway route、JSON
+  unknown-field、lock/election/lease/watch gateway 和 production gateway failover tests 已覆盖。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3841 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
