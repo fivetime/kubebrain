@@ -38415,6 +38415,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `72a0d5503` 与 `e66a0a472`：官方只升级 Go 1.26.3 和 CodeQL。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3799 与上述 commit ID；本轮不修改 runtime。
 
+- A3800 固定 RangeStream 引入窗口、clientv3 pointer API、Txn RBAC 与 embed/etcdctl 工具审计。
+  对照 `/root/etcd` commits `84e612f39` 与 `fd2cc937c`：官方把 `RangeStream` 加入 KV
+  gRPC service 并实现 server-side stream；KubeBrain 已由 A1124/A1132/A1215/A3765 等
+  raw gRPC/clientv3/HTTP/CLI 门禁覆盖 RangeStream 的 pin revision、chunking、large value、
+  compacted error、EOF、header 与 unsupported ordering wrapper 行为。对照 `c559df983`、
+  `e24781d7d` 与 `4e4b5e59c`：官方只修正 RangeStream 测试跳过、robustness traffic 和
+  硬编码测试值；不改变新的 wire contract。对照 `c403cb692` 与 `4d417bdcf`：benchmark
+  工具新增 stream/paginate/prefix 模式并删除 v2-era bench 脚本；KubeBrain 性能工具独立管理。
+
+  对照 `1570c5c85` 与 `160684ae0`：官方 clientv3 concurrency observe response 与
+  `clientv3.Cmp` 改成 pointer/deep-copy 语义；KubeBrain 已由 A3752/A3761 的 Election
+  Observe fresh response 门禁和 A3753 的 `clientv3.Cmp` clone boundary 门禁覆盖。对照
+  `70a2b4871`、`4bc674b79`、`d97dfbc3b`、`778237265`、`c20b9a47d` 与 `c5893b5e6`：
+  官方修复 Txn 中 PrevKV read 与 Put-with-lease 的 RBAC 绕过并补 changelog；KubeBrain
+  已由 A246/A247/A3713 等 auth/Txn/PrevKV/lease Put 差分覆盖递归授权和 Bearer token
+  边界，不能把旧 auth 漏洞重新当作未分类缺口。
+
+  对照 `7ee95a61a`、`678d3a07e`、`54943841e`、`6cfa875f1`、`ac07c9bfc`、
+  `12425f80e`、`c82130fbc`、`2b63bad24`、`9b6fc4ec6` 与 `10e8d5032`：
+  官方只做版本、coverage、devcontainer dependabot、Go toolchain script、otel semconv、
+  v2 deprecation cleanup、x/image 安全依赖、参数名和 grpcproxy EOF review 调整。对照
+  `da81f1b2e`：官方只在 `etcdmain`/`embed` 文档中说明 JSON/YAML duration 字段必须用整数；
+  KubeBrain 不暴露 upstream embed YAML/JSON 配置面，运行参数由本仓 `cmd/option`、
+  Helm/manifest 和 production verifier 固定。对照 `4309e77d4`：官方删除 etcd diagnostic/
+  etcdutl bucket 工具；KubeBrain 运维面以本仓 backup/restore、operation、audit probe 和
+  metering 工具为准。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3800 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
