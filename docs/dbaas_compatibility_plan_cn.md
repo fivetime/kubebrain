@@ -38675,6 +38675,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   golangci-lint、grpc 和 yamlfmt。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3808 与上述
   commit ID；本轮不修改 runtime。
 
+- A3809 固定 upstream Go workspace/gomodguard、direct JWT changelog、cache progress-aware 与
+  apply/v2 拆分审计。对照 `/root/etcd` commits `913a1e966`、`f06855c2e`、
+  `2b1b74a45`、`db7fef26a`、`8b0241630`、`3062d2bcd`、`9a4481e2e` 与
+  `678df5f5f`：官方启用 Go workspace、迁移 BOM/verify-go-versions、引入 gomodguard 并约束
+  api/client/pkg 不能依赖 server。KubeBrain 当前为单仓模块布局，兼容目标是服务端 public etcd v3
+  API 和 TiKV/PD 数据面语义；upstream workspace/gomodguard 结构不应机械复制，但可作为后续本仓
+  dependency boundary 审计参考。对照 `b24e869c7`、`91d71e0ae`、`7e4360876`、
+  `e5d708d1a` 与 `8ff7c0fba`：官方只更新 workspace helper、contributing guide、Kubernetes
+  coverage patch、goimports tool 和 Antithesis debugger workflow。
+
+  对照 `ed1d377da` 与 `143ef9810`：官方 cache 包变为 progress-aware 并清理 demux error 断言。
+  KubeBrain 不复用 upstream cache 包作为 TiKV/PD 数据面，但 ProgressNotify 公共契约已由 A3756
+  的 cache `WithProgressNotify` 差分、A3760/A3776/A3801 的 consistent Get/progress catch-up
+  审计、follower watch proxy `WithProgressNotify` 以及 watch progress cadence/live 门禁覆盖。对照
+  `42ba3043c` 与 `268db19f8`：官方只是把 v2 apply 和各类 applier 拆分到新文件；KubeBrain
+  不承诺 v2 store/apply，v3 Txn/auth/quota public 行为由本仓 raw/clientv3/HTTP 差分和
+  A3800/A3805/A3806 的 v2 边界审计固定。
+
+  对照 `444e89c1b`：官方 changelog 记录 direct JWT setting；真实 caller-supplied static token
+  retry 已由 A3748/A3787 覆盖，JWT token segment、old-token invalidation、HTTP gateway auth
+  和 Bearer metadata 边界已由 auth/JWT/Bearer 差分覆盖。对照 `51c549606`：官方 changelog 记录
+  EOF log 变化；KubeBrain public stream EOF/Cancel 外观由 Watch、RangeStream、Snapshot 和
+  LeaseKeepAlive 门禁覆盖，日志文案不作为 etcd v3 wire contract。
+
+  对照 `9db33b47b`、`d1973866e`、`4331c0fb2`、`4e39cdf18`、`aac05add9`、
+  `a71ec36b6`、`64ceca609`、`a169c89d4`、`4ae6ca9cd`、`49c8ecd0c`、
+  `ba136877c`、`7df50df9e`、`22937b30b`、`d11bc9413`、`df78447c5`、
+  `675bc9ceb`、`69b549c61`、`47c98c701`、`ab7ba3400`、`4492810a2`、`c501d6bfc`、
+  `c82765d72` 与 `c4ac138b8`：官方只调整测试框架、Antithesis image/report、maintainer
+  权限、CI、注释、WaitGroup.Go 或 test timeout；不改变 public runtime。对照 `17b3d18bc`、
+  `31ee22874`、`a68b35c97`、`5d26c26cb`、`03b275cfd` 与 `81c1c8796`：
+  官方只更新 go.work.sum、protobuf、grpc-gateway、golangci-lint/x/net 和 tablewriter 依赖。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3809 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
