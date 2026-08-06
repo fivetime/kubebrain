@@ -40931,6 +40931,55 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DBaaS public behavior。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3857 与上述 commit
   ID；本轮不修改 runtime。
 
+- A3858 固定 upstream lease fake deleter lock、embedded Cluster/Maintenance client、
+  `etcdctl --from-key` permission、lease require-leader、defrag/range 并发、auth interval
+  permission cache、invalid auth management、deleted role revoke、namespace wrapper、client
+  balancer/watch teardown、Lock API、JWT auth、v3 Txn 和 dial timeout 审计。对照
+  `/root/etcd` commit `42d56d5ef`、`8a7a548a6`、`7f2d6b3ef`、`7adf4d7c9`、
+  `c90a4b96d`、`0bf110e27`、`5c642ae31`、`fd5984af5`、`60d337559`、
+  `763a37d3` 与 `a2cdd908d`：官方继续把
+  Cluster/Maintenance/Lock API 接入 embedded client、grpc proxy adapter 和无连接 client。
+  KubeBrain public surface 已用 Cluster/MemberList、Maintenance Status/HashKV/Defrag/Snapshot、
+  Lock/Election recipe、pprof/perf 的 DBaaS 观测替代、gateway/gRPC differential、readiness 和
+  production probes 固定；不移植 upstream embedded cluster adapter 内部。
+
+  对照 `0a7fc7cd3`、`ad2111a6f`、`8d0d942c4`、`c40b86bcd`、`068d806bd`、
+  `25e3ce1fe`、`440993213`、`1b1fabef8` 与 `f8a290e7c`：官方扩展 from-key
+  permission、interval-tree permission cache、invalid auth management 拒绝、删除 role 后 revoke、
+  并发 authenticate 和 JWT token。KubeBrain auth 已覆盖 root/bootstrap lifecycle、JWT/Bearer/
+  simple token、auth disable 后旧连接、user/role get-list-delete、range/prefix/from-key permission、
+  invalid management errors、deleted role cleanup 和 auth differential；本轮只固定审计锚点。
+
+  对照 `8ad935ef2`、`5aebe1a52`、`62d7bae49`、`8024a0d15`、`7db774473`、
+  `833769f59`、`b2a465e35`、`b9cfa4cef`、`ed68bf89f`、`26abd25cd`、`8afc468b6`、
+  `6f0723f23` 与 `270dc9427`：官方修复 server-initiated cancel、authenticated dial
+  timeout、lease WithRequireLeader、lease stream leader-loss error、compact current revision、
+  historical revision cache、defrag 时 inflight range、backend read lock、defrag timeout、
+  lease itemSet concurrency 和 dial timeout 错误返回。KubeBrain lease/read/maintenance 已覆盖 require-leader、leader loss、
+  TTL/Revoke/KeepAlive、failover expiry、inflight/large Range、defrag busy/error contract、
+  backend snapshot/restore verifier、linearizable/serializable reads 和 production TiKV/PD probes。
+
+  对照 `397a42efb`、`f35d7d960`、`66d147766`、`1f8c7b33e`、`f9b6066dd`、
+  `a23609efe`、`3e86779ad`、`a08732545`、`a39107a3b`、`85f989ab3`、
+  `276039e83`、`300323fa`、
+  `ad1a79011`、`47cd9d027`、`d51c8bb64`、`52bc997e0`、`310641630`、
+  `8baaa06cc`、`01dd60c0f`、`095407df5`、`f862b47e9` 与 `5f4412996`：
+  官方收敛 grpc proxy namespace/register/sync、clientv3 namespace wrapper、mutable ops/compares、
+  endpoint update races、watch reconnect close、mutex holder semantics、lock service、response header
+  和 closed watcher error。KubeBrain namespace/prefix/range KV/Watch、Txn compare/ops、clientv3
+  official differential、watch resume/cancel/progress、Lock/Mutex ownership、service discovery docs
+  和 operation audit 覆盖 DBaaS contract；grpc proxy register/SRV 内部不作为兼容目标。
+
+  对照 `17e2e762b`、`95870a21e`、`8a3fee15a`、`5e4b00810`、`7f0733cf4`、
+  `d1dcc828c`、`0ed3c83e4`、`58da8b17e`、`f0c184b3a`、`33acbb694`、
+  `8d438c293`、`0d48fc551`、`43eca30a0` 与 `c8a2c7f64`：官方处理 startup
+  StopNotify、quota warning、initial mmap sizing、config-change apply wait、MVCC Txn、lease-backed
+  Txn、backend readtx、DNS discovery 和 migration/member-change docs。KubeBrain 不复用 upstream
+  bbolt/WAL/Raft membership；对应外部语义由 TiKV transaction atomicity、lease-bound Txn、
+  leader fencing、quota/error mapping、startup readiness、service discovery docs 和 production
+  smoke 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3858 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
