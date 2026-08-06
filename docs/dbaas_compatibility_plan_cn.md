@@ -36567,6 +36567,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含
   本轮 oracle 数据。
 
+- A3698 把 A3697 的 unary header 隔离扩展到 Watch published cursor。raw gRPC watch 从当前
+  revision+1 建立 future watcher，随后只执行空 LeaseGrant、TimeToLive、LeaseList 与 LeaseRevoke；
+  四个 lease response header 必须保持 gap 0，显式 WatchProgress 也必须因 start revision 尚未到达
+  而保持静默。直到真实 Put 提交，watch 才收到 gap 1 的规范单事件帧，后续 progress 才返回同一
+  gap 1 header；由此防止内部 lease record/attachment revision 错误唤醒 future watcher 或跳过用户
+  事件。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.551 秒、连续 10 轮
+  （测试 5.082 秒）及 race 5 轮（测试 3.694 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.588 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 168.992 秒）。没有 runtime RED，本项只增加永久 Watch cursor/revision 隔离
+  证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含
+  本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
