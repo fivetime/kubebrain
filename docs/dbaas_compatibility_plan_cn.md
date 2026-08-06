@@ -36827,6 +36827,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   unary Range 边界组合覆盖，不重建或滚动数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，
   只含本轮 oracle 数据。
 
+- A3716 将生成式 unary Range 从合法请求组合扩展到 raw gRPC 校验面。oracle 对应
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `checkRangeRequest`（空 key 优先于 sort order、
+  sort order 优先于 sort target）及同目录 `TestCheckRangeRequest`，负 limit 则对照
+  `/root/etcd/server/etcdserver/txn/range.go` 的 `rangeLimit` 非正值 unlimited 语义。为保证覆盖单调增加，
+  完整保留 A3715 seed=3715 的 64 个合法样本，再追加八个固定 A3716 probe，总计 72 case：加入空 key、
+  未知 sort target/order 99、基础/历史/CountOnly/filter/KeysOnly+Serializable 五种负 limit 请求。结构门禁
+  要求全部 12/6/4/6 个 shape/target/order/limit family，并固定“空 key + 两个未知 sort”、两类单独未知
+  sort 和无其他 option 干扰的负 limit 路径；没有用提前失败的随机请求替换既有合法组合。
+
+  完整矩阵首次在生产 `kubebrain:a3672-stream-progress` 得到真实 RED：`limit=-1 + KeysOnly +
+  Serializable` 前缀查询中的 leased key，官方 etcd 返回 `Lease=0`，KubeBrain 却保留 lease ID。根因是
+  etcd `FastKeysOnly` 在 sort target 非 VALUE 时只从 MVCC index 物化 key/create/mod/version，不物化 value/
+  lease；VALUE sort 为排序读取完整 KV，随后只清 value，lease 仍可见。新增聚焦单元 RED，修复提交
+  `002d0eb2` 以共享 `projectRangeKeysOnly` 对齐此条件投影，并接入 unary、RangeStream、staged Txn 三条
+  路径；单元测试同时锁定默认/负 limit 清 lease、VALUE sort 保留 lease、Txn 清 lease，RangeStream 测试
+  则以真实 leased key 锁定流式投影。
+
+  生产滚动至 `kubebrain:a3716-keys-only-lease`（镜像 `sha256:de770fb2218b...`，源码
+  `002d0eb26834a6ee3f67a4212bd822161a69bcbf`）后，原始 72-case RED 转为 GREEN（测试 1.242 秒），
+  连续 10 轮（测试 11.674 秒）及 race 5 轮（测试 7.255 秒）也全部通过；生产 3/3 Pod Ready、零重启。
+  兼容模块最终 `go test ./... && go vet ./...` 通过（测试 1.492 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 172.729 秒）。
+  一次性 reference 已停止，精确临时目录及 client warning 日志已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

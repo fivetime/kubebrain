@@ -498,6 +498,12 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 		})
 		require.NoError(t, err)
 	}
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 37161})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/options/08"), Value: []byte("leased-value"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
 
 	tests := []struct {
 		name string
@@ -524,6 +530,11 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 				proto.Merge(merged, chunk.RangeResponse)
 			}
 			require.True(t, proto.Equal(unary, merged), "stream=%s unary=%s", merged, unary)
+			if tt.name == "keys only" {
+				for _, kv := range merged.Kvs {
+					require.Zero(t, kv.Lease)
+				}
+			}
 		})
 	}
 }
