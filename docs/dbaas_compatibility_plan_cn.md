@@ -37507,6 +37507,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3753` 与 `/compat/`
   均无 KV；reference data-dir 与临时 clone 均已清理。
 
+- A3754 对照 upstream `/root/etcd` commit `0d20d7da` 的 `clientv3.New` 非阻塞创建语义。上游删除了
+  创建 client 时等待 gRPC health/connection ready 的逻辑；DBaaS 客户端在 endpoint 暂不可达、滚动替换或
+  DNS/NodePort 尚未恢复时，创建 client 不应因 `DialTimeout` 阻塞或失败，真正的连接错误应推迟到后续 RPC。
+  新增 compat 单元测试使用上游旧测试同类黑洞地址 `http://254.0.0.1:12345` 和 5 秒 `DialTimeout`，
+  要求 `clientv3.New` 立即返回有效 client，耗时低于 500ms。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `0d20d7da^`，只给临时 clone 添加最小
+  `TestNewDoesNotWaitForEndpointConnectivity`；旧版会等待 health/connection ready，并在 800ms
+  `DialTimeout` 后返回 `context deadline exceeded while waiting for connections to become ready`，
+  测试 0.852 秒失败。当前 `/root/etcd` client 定向测试 0.021 秒 GREEN。该修复属于官方 client API
+  创建语义，本轮无服务端或镜像变更。兼容模块 `go test ./...`（1.461 秒）及 `go vet ./...` 通过；
+  根模块 `go test ./...`（`pkg/server/etcd` 170.833 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、
+  零重启，镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/compat/` 无 KV；
+  临时 clone 已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
