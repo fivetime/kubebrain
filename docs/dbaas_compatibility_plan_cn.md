@@ -36594,6 +36594,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   隔离证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，
   只含本轮 oracle 数据。
 
+- A3700 补齐空 lease 自然过期的异步 revision/Watch 隔离差分，避免用 A3697 的同步显式 Revoke
+  代替 timer 路径。TTL=1 按官方最小值授予 2 秒，future watch 从当前 revision+1 建立；自然过期后
+  TimeToLive 必须返回 -1、LeaseList 不再包含该 ID，但 Grant/TTL/List/Created header 仍全部停在
+  gap 0，显式 WatchProgress 继续静默。随后首个用户 Put 才推进 gap 1、产生规范单事件帧并允许
+  progress 返回 gap 1，证明无 attached key 的后台 expiry 只删除内部 lease metadata，不制造用户
+  tombstone 或跳跃 cursor。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 5.042 秒、连续 10 轮
+  （测试 50.069 秒）及 race 5 轮（测试 25.721 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.728 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 168.765 秒）。没有 runtime RED，本项只增加永久 timer expiry 隔离证据，
+  不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
