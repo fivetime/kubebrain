@@ -38570,6 +38570,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   release/security gate 独立推进。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3805 与上述
   commit ID；本轮不修改 runtime。
 
+- A3806 固定 upstream v2 store 移除、watch-loop harness、etcdutl hashkv 与脚本/CI 工具审计。
+  对照 `/root/etcd` commits `fdedec1ed`、`25a5bb287` 与 `478226954`：官方移除 v2
+  store，调整从 v3 store bootstrap 时的 confstate 初始化，并补 3.7 changelog。KubeBrain 不以
+  upstream v2 store、Raft confstate 或 bbolt backend 作为 TiKV/PD-backed DBaaS 数据面的持久化和
+  成员恢复机制；v3 member/status、snapshot restore 可读性和 no-v2-store 边界已分别由
+  A3777/A3786/A3794/A3805 记录。后续只有该方向引入新的 v3 client-visible version/capability、
+  member/status 或 snapshot 兼容差异时，才建立专项 oracle。
+
+  对照 `88a0c6818`、`1c422cfc1`、`0b9b5be2d`、`f7029fdb7` 与既有
+  `e561d3ac9`/`08d451b98`：官方主要重构 robustness watch loop、补 range 测试说明并 deflake
+  cache compaction resync。KubeBrain watch/create/cancel/progress/fragment/compaction 以及 Range
+  min/max create/mod revision、KeysOnly 和 total-count 组合已由 A303/A3762/A3780/A3786/A3774/A3790
+  覆盖；这些 harness 变更可作为测试思想吸收，但不改变公开 RPC 外观。
+
+  对照 `59d99b57d`：官方修复 `etcdutl hashkv` 在无 lessor attach lease 时 panic 的离线工具问题。
+  KubeBrain 不嵌入 upstream `etcdutl` hashkv 作为数据面路径；需要保证的是在线
+  `Maintenance.Snapshot` 输出和逻辑备份/恢复工具继续可被官方工具消费，这已由 snapshot
+  history、lease/auth/alarm marker、official restore 启动门禁和 backup/restore smoke 覆盖。若
+  未来支持 TiKV 物理快照 hash/校验，应作为 DBaaS 运维工具单独设计，而不是复制 bbolt hashkv
+  实现。
+
+  对照 `1c23ec68c`、`44c40540a`、`c7ad57fd2`、`7b09c39d5`、`b704bec5e`、
+  `6027c7157`、`64f366f2a`、`8b579374f` 与 `ff7c8a777`：官方变更集中在 BOM/mod-tidy/
+  update_dep/workspace 脚本、grpc experimental verify、test.sh 简化和 release guide；这些不改变
+  KubeBrain runtime。对照 `55a5d81ae`、`1f2c86f3c`、`e5fc59cb0`、`7e64377e3`、
+  `f117da236`、`4794ab89c` 与 `55c5fabe5`：官方只升级 setup-go、yamlfmt、golangci-lint、
+  distroless、CodeQL 或 stale workflow，并记录 snapshot flag deprecation；KubeBrain 的依赖、
+  镜像、CI 和参数面继续按本仓 release/security gate 管理。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3806 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
