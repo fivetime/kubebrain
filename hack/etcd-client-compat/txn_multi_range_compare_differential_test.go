@@ -53,6 +53,7 @@ func runMultiRangeCompareScenario(t *testing.T, endpoint, instance string) []mul
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 
 	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -66,23 +67,54 @@ func runMultiRangeCompareScenario(t *testing.T, endpoint, instance string) []mul
 		})
 	})
 
+	grantA, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
+	require.NoError(t, err)
+	grantB, err := lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: grantA.ID})
+		_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: grantB.ID})
+	})
+
 	keys := [][]byte{[]byte(dataPrefix + "a"), []byte(dataPrefix + "b"), []byte(dataPrefix + "c"), []byte(dataPrefix + "d")}
+	rangeEnd := []byte(dataPrefix + "e")
 	seedOps := make([]*etcdserverpb.RequestOp, 0, len(keys))
 	for index, key := range keys {
-		seedOps = append(seedOps, putRequestOp(key, fmt.Sprintf("value-%d", index)))
+		leaseID := grantA.ID
+		if index >= 2 {
+			leaseID = grantB.ID
+		}
+		seedOps = append(seedOps, putRequestOpWithLease(key, fmt.Sprintf("value-%d", index), leaseID))
 	}
 	seed, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: seedOps})
 	require.NoError(t, err)
 	require.True(t, seed.Succeeded)
+	updated, err := kv.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		putRequestOpWithLease(keys[1], "value-1-updated", grantA.ID),
+		putRequestOpWithLease(keys[3], "value-3-updated", grantB.ID),
+	}})
+	require.NoError(t, err)
+	require.True(t, updated.Succeeded)
 
 	rangeCompare := func(begin, end int, result etcdserverpb.Compare_CompareResult, version int64) *etcdserverpb.Compare {
 		return intCompare(keys[begin], keys[end], etcdserverpb.Compare_VERSION, result, version)
 	}
-	trueAB := rangeCompare(0, 2, etcdserverpb.Compare_EQUAL, 1)
-	trueBC := rangeCompare(1, 3, etcdserverpb.Compare_EQUAL, 1)
-	trueCD := rangeCompare(2, 3, etcdserverpb.Compare_EQUAL, 1)
-	falseAB := rangeCompare(0, 2, etcdserverpb.Compare_GREATER, 1)
+	trueAB := rangeCompare(0, 2, etcdserverpb.Compare_GREATER, 0)
+	trueBC := rangeCompare(1, 3, etcdserverpb.Compare_GREATER, 0)
+	trueCD := rangeCompare(2, 3, etcdserverpb.Compare_GREATER, 0)
+	falseAB := rangeCompare(0, 2, etcdserverpb.Compare_GREATER, 2)
 	falseBC := rangeCompare(1, 3, etcdserverpb.Compare_LESS, 1)
+	allValueTrue := valueCompare(keys[0], rangeEnd, etcdserverpb.Compare_LESS, "zz")
+	allVersionTrue := intCompare(keys[0], rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_GREATER, 0)
+	allCreateTrue := intCompare(keys[0], rangeEnd, etcdserverpb.Compare_CREATE, etcdserverpb.Compare_EQUAL, seed.Header.Revision)
+	allModTrue := intCompare(keys[0], rangeEnd, etcdserverpb.Compare_MOD, etcdserverpb.Compare_GREATER, 0)
+	leaseATrue := intCompare(keys[0], keys[2], etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grantA.ID)
+	leaseBTrue := intCompare(keys[2], rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grantB.ID)
+	allValueFalse := valueCompare(keys[0], rangeEnd, etcdserverpb.Compare_EQUAL, "value-0")
+	mixedVersionFalse := intCompare(keys[0], rangeEnd, etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 1)
+	allLeaseFalse := intCompare(keys[0], rangeEnd, etcdserverpb.Compare_LEASE, etcdserverpb.Compare_EQUAL, grantA.ID)
 	// etcd evaluates an empty range against the target's missing-key zero
 	// value; VERSION == 0 is therefore the true empty-range comparison.
 	empty := intCompare([]byte(dataPrefix+"x"), []byte(dataPrefix+"z"), etcdserverpb.Compare_VERSION, etcdserverpb.Compare_EQUAL, 0)
@@ -98,6 +130,18 @@ func runMultiRangeCompareScenario(t *testing.T, endpoint, instance string) []mul
 		{name: "false-last-overlap", compares: []*etcdserverpb.Compare{trueAB, falseBC}},
 		{name: "same-range-conflict", compares: []*etcdserverpb.Compare{trueAB, falseAB}},
 		{name: "empty-then-nonempty", compares: []*etcdserverpb.Compare{empty, trueBC}, succeeded: true},
+		{name: "all-targets-all-true", compares: []*etcdserverpb.Compare{
+			allValueTrue, allVersionTrue, allCreateTrue, allModTrue, leaseATrue, leaseBTrue,
+		}, succeeded: true},
+		{name: "mixed-target-false-first", compares: []*etcdserverpb.Compare{
+			allValueFalse, allVersionTrue, allCreateTrue, allModTrue, leaseATrue, leaseBTrue,
+		}},
+		{name: "mixed-target-false-middle", compares: []*etcdserverpb.Compare{
+			allValueTrue, allVersionTrue, mixedVersionFalse, allCreateTrue, allModTrue, leaseATrue, leaseBTrue,
+		}},
+		{name: "mixed-target-false-last", compares: []*etcdserverpb.Compare{
+			allValueTrue, allVersionTrue, allCreateTrue, allModTrue, leaseATrue, leaseBTrue, allLeaseFalse,
+		}},
 	}
 
 	outcomes := make([]multiRangeCompareOutcome, 0, len(tests))
