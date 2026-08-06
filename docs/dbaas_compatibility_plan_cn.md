@@ -36998,6 +36998,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 170.169 秒）及 `go vet ./...` 通过。生产继续保持原镜像，3/3 Pod Ready、零重启；
   本项只新增永久生成式门禁，不为已经兼容的行为制造实现改动或无意义滚动。
 
+- A3725 审计近期上游 `dd57ad39` 的 KeysOnly limit/count 优化及当前显式缺口后，确认 transactional
+  TiKV 物理快照/PITR 仍受 kind 环境缺少 CSI snapshot CRD/driver 约束，不能用逻辑备份证据伪关闭；
+  RangeStream 的自定义 sort/revision filter 则仍应保持与官方一致的 `Unimplemented`。本轮转而扩大
+  RangeStream 已支持域的未知差异发现面：新增固定 seed=3725 的 64-case raw gRPC 生成差分，覆盖
+  11 种 point/prefix/有界/缺失/equal-empty/reversed-empty 范围形状，current/historical、
+  `-1/0/1/2/MaxInt64` limit、KeysOnly、CountOnly、Serializable，以及 leased point/prefix。每个请求
+  先在同一端点比较 unary Range 与聚合后的 RangeStream，再逐项比较官方 etcd 与生产 KubeBrain 的
+  code/message、header revision、Count/More、完整 KV 投影、帧数和 EOF；独立结构门禁防止固定矩阵
+  静默丢失任一 option family。
+
+  初始 oracle harness 曾有两类非运行时 RED：官方中间帧允许 nil Header，以及空 KV 的 nil/empty slice
+  表示不同，均在保留语义断言后归一化。随后完整矩阵得到真实 runtime RED：小结果中官方
+  `/root/etcd/server/etcdserver/v3_server.go` 把 Header/Count/More 合并在最后一个数据帧，帧数为 1；
+  KubeBrain 却先发送数据帧，再发送空的 terminal metadata 帧，帧数为 2。聚焦单元测试稳定复现
+  “期望 1、实际 2”；修复提交 `523b3d66` 在 `RangeStream` 中只缓冲至多一个有界 wire response，下一
+  数据到达时发送前一帧，terminal 到达时把 envelope 合并进最后数据帧再按现有上限切分；空结果仍发送
+  单个 header-only terminal 帧。由此既对齐官方帧契约，也把额外内存严格限制为一个 wire chunk。
+
+  生产滚动至 `kubebrain:a3725-rangestream-final-frame`（本地构建镜像
+  `sha256:be8a21c52789b6dd52131f92ba1f5044559bfc694e3180c51aa9e3e11dc3e952`，kind 导入后的运行时
+  image ID `sha256:3155935a350739c64eaa5834e30b737bc7a7de45fbd9f6d1880701afb9f4e90b`，源码
+  `523b3d6683306c29108dfa2ac886e75ebe157758`）后，原始 64-case RED 转为 GREEN（测试 1.70 秒）。
+  首次并发启动 count/race 两个独立进程时又发现 harness 把集群全局 header revision 只按本场景写入
+  revision 查表，无关并发写会被错误归一为 0；现改为把 fixture 完成后的任意 header revision 统一映射
+  到最终 seed 序号，同时继续精确比较 KV 自身 revision。修正后两个进程并发运行的连续 10 轮
+  （15.490 秒）与 race 5 轮（9.233 秒）均 GREEN。兼容模块 `go test ./... && go vet ./...` 通过
+  （最终测试 1.590 秒），根模块 `go test ./...`（`pkg/server/etcd` 172.571 秒）及 `go vet ./...` 通过；
+  生产 3/3 Pod Ready、零重启，Pod UID 分别为 `44f1418e-1060-427b-a72c-2c2eab17cb2b`、
+  `b174dfb9-1bd5-46f7-94e0-0ee26c8cc333`、`a0aacc10-d079-434e-9bbc-dae0ab415ae4`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
