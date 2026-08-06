@@ -58,6 +58,16 @@ func runCompatCommandContext(t *testing.T, ctx context.Context, commandName stri
 	return runCompatCommand(ctx, commandName, args, env)
 }
 
+func runCompatCommandInputContext(t *testing.T, ctx context.Context, commandName string, args []string, env []string, input []byte) ([]byte, error) {
+	t.Helper()
+	command := exec.CommandContext(ctx, commandName, args...)
+	configureCompatProcessGroup(command)
+	command.WaitDelay = compatCommandWaitDelay
+	command.Env = append(os.Environ(), env...)
+	command.Stdin = bytes.NewReader(input)
+	return compatCombinedOutput(command, compatScriptOutputLimitBytes)
+}
+
 func runCompatCommand(ctx context.Context, commandName string, args []string, env []string) ([]byte, error) {
 	command := exec.CommandContext(ctx, commandName, args...)
 	configureCompatProcessGroup(command)
