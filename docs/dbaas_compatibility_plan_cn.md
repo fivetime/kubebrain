@@ -36899,6 +36899,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   生成式 DeleteRange/PrevKV/lease 差分，不重建或滚动数据面；一次性 reference 已停止，精确临时目录
   已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3720 新增固定 seed=3720 的 32-case raw gRPC Put 生成式官方差分。oracle 对应
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `checkPutRequest`、
+  `/root/etcd/server/etcdserver/txn/put.go` 的 IgnoreValue/IgnoreLease/PrevKV 读改写顺序，以及
+  `/root/etcd/tests/integration/v3_grpc_test.go` 的 `TestV3PutIgnoreValue`、`TestV3PutIgnoreLease`。
+  生成器完整枚举八种请求模式 × existing/missing × PrevKV true/false，再以固定 seed 打乱，结构门禁
+  逐项证明 32 个组合无重复且无遗漏。八种模式包含普通值、绑定第二个 lease、IgnoreValue 保留/更换
+  lease、IgnoreLease 保留原 lease，以及 value+IgnoreValue、lease+IgnoreLease、两类冲突同时出现的三种
+  非法请求。每个 case 使用隔离前缀，并把双端动态 lease ID 和 create/mod revision 归一化为序号；结果
+  比较 gRPC code/message、Put header 相对基线的 revision gap、PrevKV 全字段、最终 KV 全字段，以及紧随
+  其后的 Range header gap。最后一项直接证明无效请求和 missing-key ignore 请求不会写入，也不会偷偷
+  推进全局 revision，而合法请求只产生与官方相同的单次提交。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3716-keys-only-lease` 首轮 5.056 秒、连续 10 轮
+  （测试 50.253 秒）及 race 5 轮（测试 27.616 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.559 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 168.129 秒）。生产 3/3 Pod Ready、零重启，Pod UID 与 A3716 后一致。没有
+  runtime RED，本项新增永久 Put 组合、PrevKV、lease 与失败原子性差分，不重建或滚动数据面；一次性
+  reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
