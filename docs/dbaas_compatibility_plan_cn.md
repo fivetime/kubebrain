@@ -39435,6 +39435,48 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   MemberID 稳定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3829 与上述 commit ID；本轮不修改
   runtime。
 
+- A3830 固定 upstream compaction HashByRev、corruption monitor、lease revoke/checkpoint、
+  `/version` storageVersion、snapshot consistent index、make-mirror latest revision 和
+  linearizable lease renew 审计。对照 `/root/etcd` commit `887e53e61`、`01e85be15`、
+  `39c6935c6`、`0984878ae`、`76d3c527a`、`34a02ba62`、`0e739da9a`、`f5eadf545`
+  与 `9612fc119`：官方围绕 MVCC compaction hash/HashByRev 增加稳定值测试、HTTP API
+  测试、缓存、真实 revision range 和 corruption monitor 覆盖。KubeBrain 不复用 upstream
+  bbolt `HashByRev` 或 raft corruption monitor；public contract 是 `Maintenance.HashKV`
+  在指定 revision 的 `Hash`/`HashRevision`/`CompactRevision` 稳定，historical/future/compacted
+  revision 错误归一，peer `/members/hashkv` JSON/cluster-ID 防串集群，CORRUPT alarm 与
+  `/readyz/data_corruption`/写路径 fail-closed 一致。已有 raw/clientv3 HashKV boundary、
+  compaction stability、direct replica consistency、HashKV restart、peer hash handler 和
+  health alarm differential 门禁覆盖这些可观察语义。
+
+  对照 `dabf6978c` 与 `1d482bfc0`：官方修复 Revoke 与 Grant/Checkpoint 潜在死锁，并避免
+  leader stepdown 后继续调度旧 checkpoint。KubeBrain lease manager 不复用 upstream lessor，
+  但必须保持 Revoke、KeepAlive、checkpoint/expiry、orphan sweep 和 follower forwarding 的
+  客户端可见语义：Revoke 后不能返回陈旧续租成功，KeepAlive stream 对多 ID/重复 ID/half-close
+  有确定响应，权限变化和 leader demotion 后按 etcd 错误分类收敛。已有 A3505 运行时修复、
+  lease checkpoint failover、KeepAlive/Revoke boundary、buffer、multi-ID、long-window renewal、
+  batch renewal linearizability 和 production PD/TiKV failover 门禁覆盖。
+
+  对照 `e7f8bf7c4`：官方 `/version` 增加 `storageVersion`。KubeBrain HTTP `/version` 与
+  gRPC `Status.StorageVersion` 已固定为 etcd-compatible storage version，并由
+  `version_handler_test.go`、`status_envelope_differential_test.go`、production readiness 和
+  Kubernetes/kubeadm 外部 etcd 版本门禁覆盖；不得只返回旧式 `etcdserver`/`etcdcluster`。
+
+  对照 `fb2eeb902`、`d69e07dd3` 与 `484d2f01f`：官方验证 snapshot 中 `consistent_index`
+  等于 snapshot index、cindex 不下降，并在 applySnapshot 时先把 backend 设置到 cindex 再恢复
+  lessor。KubeBrain Snapshot/backup 不承诺 upstream raft consistent-index 或 bbolt bucket 格式，
+  但必须保证在线 Snapshot 的 metadata、lease/auth/alarm、retained history、watch restore barrier
+  和 cold restore 后 revision/lease 可观察性；这些由 SnapshotWithVersion、online Snapshot、
+  cold restore、snapshot verifier、lease retained metadata 和 production backup/readiness 门禁覆盖。
+
+  对照 `e324cc1cb`：官方 make-mirror 先获取 prefix 最新 revision，避免镜像启动时漏掉 source
+  的最新 prefix 状态。KubeBrain 作为 server data plane 的要求是 Range/Watch/Compact/Txn
+  revision 边界和 prefix snapshot 一致，`etcdctl make-mirror` 的 source/destination 差分已由
+  `make_mirror_revision_differential_test.go`、`make_mirror_differential_test.go` 和专用 runner
+  覆盖。对照 `fe3a57976`：官方支持 linearizable renew lease；KubeBrain 的 LeaseKeepAlive
+  已按 leader freshness/require-leader/follower forwarding、TTL/header revision、auth、revoke/expire
+  和 failover 语义建门禁，不能在失去 leader 或 stale revision 下伪造续租成功。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3830 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
