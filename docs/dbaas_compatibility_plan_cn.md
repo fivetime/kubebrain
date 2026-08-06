@@ -39090,6 +39090,47 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   明确不承诺 upstream v2 snapshot/store 物理格式。本轮新增 `TestRecentUpstreamAuditIsRecorded`
   钉住 A3821 与上述 commit ID；本轮不修改 runtime。
 
+- A3822 固定 upstream clientv3 concurrency/session、JWT EdDSA、HashKV cluster-id、
+  snapshot-restore flags、runtime reconfiguration、v2 membership export、client supported-version
+  和 endpoint/TLS 解析审计。对照 `/root/etcd` commit `c3e520197` 与 `3d3e91c6e`：官方修复
+  Barrier/DoubleBarrier 在 Release 后仍可能阻塞，以及 `Barrier.Wait` 不再使用 `WithFirstKey`。
+  KubeBrain server 侧不 vendoring 官方 recipe 实现，但已通过 `double_barrier_differential_test.go`、
+  lock/election recipe 差分、Cilium consumer smoke、lease TTL/keepalive/revoke 和大量
+  `WithFirstKey` namespace Range/Txn 测试固定这些 recipes 依赖的 KV/Lease/Watch 外观。对照
+  `03d8fff0d`、`2ec12e4b4`、`21eb8d2c3` 与 `06579d9cd`：官方新增 `Session.Ctx()`、修复 STM nil
+  get、只在可取消 context 下创建 keepalive closer，并暴露 Op prefix/from-key helpers；这些是官方
+  client library 内部/API 变更，KubeBrain 兼容目标是服务端 wire 行为，已有 STM 发布门禁、
+  client close bounded、lease keepalive、Txn/Range option 和 namespace helper 测试覆盖可观察依赖。
+
+  对照 `a8a9ebd28`：官方 JWT 增加 EdDSA。KubeBrain `pkg/server/etcd/auth_jwt_test.go`
+  已覆盖 HS256/RS256/ES256/EdDSA、verify-only、公私钥 mismatch、TTL、旧 revision token、
+  malformed option 和 auth mutation 失效，HTTP/gateway auth 差分继续覆盖 token 透传。对照
+  `eff9517a9`：官方给 peer HashKV 加 `X-Etcd-Cluster-ID` 防串集群。KubeBrain peer HTTP
+  `/members/hashkv` 已检查该 header、返回同名 cluster ID header，并测试 bad peer requests、
+  priority、future/compacted revision、revision refresh 和跨成员 HashKV；DBaaS 生产文档也要求
+  cluster identity 与 HashKV 恢复门禁。
+
+  对照 `be3e85126`、`49d6d7e25`、`7bd77c2e6` 与 `b0887354e`：官方 snapshot restore 增加
+  `--bump-revision`、`--mark-compacted`，修复 db double close，并持续从 v3 state 生成 v2 snapshot。
+  KubeBrain 不承诺 upstream bbolt/v2 snapshot 物理格式；等价恢复语义由 TiKV/PD 冷恢复 receipt、
+  logical export/restore、online Snapshot 和 restore verifier 负责，revision/header/compact
+  recovery 已有独立门禁。对照 `ad3b6ee4c`、`8e161b68f`、`e5f6673e1`、`e5b7dde17` 与
+  `e4f239408`：官方加强 runtime reconfiguration、confChange 等待、learner promote 过滤、v2
+  membership export 和 v2 deprecation membership match；KubeBrain 明确不支持 etcd Raft 成员
+  mutation，MemberAdd/Remove/Update/Promote 走 unsupported boundary，MemberList/AutoSync、
+  stable advertised URLs、learner/status 和 v2 store 边界由专门门禁固定。
+
+  对照 `c023c0690`：官方 client 按当前版本检查 supported version。KubeBrain `/version`、
+  Status version、downgrade unsupported 和 Kubernetes/cilium consumer 门禁固定对外版本外观；
+  官方 client 的本地 version gate 不需要服务端 runtime 变更。对照 `8aeed09f2` 与
+  `4f78cc081`：官方调整 endpoint TLS ServerName 解释和 UniqueURLs 去重；KubeBrain 已在
+  endpoint/TLS rotation、proxy authority、advertised URL/AutoSync 和 production readiness 中固定
+  client URL、SNI、去重和不可降级规则。对照 `11aa59c42`、`c3720fac3`、`78ca04a94` 与
+  `26cd2bc01`：官方增强 apply_auth 和 robustness/Kubernetes pagination/watch history oracle；
+  KubeBrain 已有 auth lifecycle/RBAC/JWT、pagination/Range limit/continue、watch replay/PrevKV、
+  tombstone/restart 和 Porcupine 历史模型覆盖相同 client-visible 风险。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3822 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
