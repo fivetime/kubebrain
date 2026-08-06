@@ -36962,6 +36962,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项新增永久 Txn DeleteRange 边界、PrevKV、lease、staged/nested 与 no-op revision 差分，不重建或
   滚动数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3723 将 A3714–A3717 的 92-case unary Range 生成矩阵完整提升到 top-level/nested Txn，而不是依赖
+  既有随机三层 Txn 仅保证 18 个 Range mode 至少命中一次。固定矩阵逐项覆盖 point/prefix/leased point、
+  有界子范围、missing、equal-empty、reversed-empty、current/historical revision、五种 sort target、
+  三种合法及未知 sort order、limit（含负值）、KeysOnly/CountOnly/Serializable 和 create/mod revision
+  filter；每个规格各执行 top 与 nested 两种形状，共 184 个 raw gRPC 请求，并比较 outer/inner/Range
+  header、错误 code/message、Count/More、KV 顺序及完整 value/create/mod/version/lease 投影。
+
+  首轮官方 etcd `d947b20863` 对生产 `kubebrain:a3716-keys-only-lease` 得到真实 RED：带正历史 revision
+  的 `[a,a)` 与 `[z,a)` 在官方 Txn 中返回合法空 Range，KubeBrain 却从 staged historical fast path
+  泄漏 `Unknown: invalid range end`。聚焦单元测试先稳定复现；修复提交 `d7c27add` 在
+  `stagedTxnExecutor.rangeResponse` 进入 backend List 前复用 `isEmptyNonFromKeyRange`，返回带 pinned Txn
+  revision 的空响应。这样协议层继续接受 etcd 的空区间，而底层 TiKV scanner 仍可保持严格递增边界契约。
+
+  生产滚动至 `kubebrain:a3723-txn-range-empty`（image ID
+  `sha256:f8ef8bdc3c734675a974eda37884a49722e515a8866a0382ad4935c2a16659d8`，源码
+  `d7c27add4ca4c053554bd563c565fd3e2ca91a98`）后，原始差分 GREEN（3.045 秒），连续 10 轮
+  32.449 秒、race 5 轮 20.094 秒全部通过。兼容模块 `go test ./... && go vet ./...` 通过（测试
+  1.469 秒），根模块 `go test ./...`（`pkg/server/etcd` 177.672 秒）及 `go vet ./...` 通过；生产
+  3/3 Pod Ready、零重启。本项是 staged Txn historical empty-range 的真实兼容修复，不改变 unary
+  Range 或非空历史扫描语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
