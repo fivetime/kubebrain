@@ -37065,6 +37065,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 168.388 秒）及 `go vet ./...` 通过。本项将零散 nested range compare 证据提升为
   完整 target/result/quantification 矩阵。
 
+- A3728 继续审计 Txn Compare 合取与 2026 年上游行为修复。现有多 Compare 差分已覆盖空列表、
+  五 target、false-first/middle/last、同键冲突、点/范围混合和 nested；A3727 则覆盖单个 nested
+  多键范围的完整量化矩阵，但两者都未执行同一 Txn 内的多个范围 Compare。其他候选不重复实现：
+  upstream `a07ecd124` 的匿名 Compact/Alarm/MemberList/Lease auth 前置、KeepAlive forwarding 的
+  cancel/no-leader、`c5d1b8a02` 的超 chunk-target 单 KV、RangeStream custom sort/filter 和
+  MemberUpdate learner 行为，分别已有直接门禁、属于 RangeStream 既有官方契约，或依赖由 DBaaS
+  控制面负责的真实 Raft member mutation。
+
+  本轮新增 raw gRPC 多范围 Compare 差分，以四个 version=1 的连续键构造 6 个 case：相交范围全真、
+  不相交范围全真、相交范围 first/last 失败、同范围冲突，以及空范围真值后接非空范围；每个 case
+  同时运行顶层和唯一 nested Txn，并以 success/failure marker 固定实际选中分支。首次 oracle RED
+  纠正了测试假设：官方 etcd 对空范围按 missing-key 零值判断，`VERSION == 1` 为假，改为
+  `VERSION == 0` 后才是用于合取的真比较。该 RED 属于 harness 预期错误，未伪装成运行时缺陷。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3725-rangestream-final-frame` 最终首轮 0.77 秒、连续
+  10 轮 7.544 秒、race 5 轮 6.676 秒全部 GREEN；KubeBrain 已正确保持多个范围 Compare 的逻辑与、
+  失败位置和 nested branch 语义，因此没有 runtime 改动或生产滚动。兼容模块
+  `go test ./... && go vet ./...` 通过（测试 1.523 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 168.240 秒）及 `go vet ./...` 通过；一次性官方实例和测试数据均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
