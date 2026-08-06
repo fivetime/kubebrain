@@ -37208,6 +37208,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后 `go test ./... && go vet ./...` 通过（测试 1.546 秒）。根模块 `go test ./...`
   （`pkg/server/etcd` 168.816 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
 
+- A3736 补齐 upstream `TestKVRestore` 的 key-count 恢复不变量。A3735 已逐项比较 34 个历史 revision
+  的完整 KV，但未证明 leader acquisition 后重建的 count index、或其 scan fallback，会为同一历史
+  窗口返回一致数量。现复用同一官方/生产共享模型，在全 serving replacement 后对每个历史 revision
+  追加 `CountOnly + Limit(1)`：Count 必须等于对应完整快照长度，Kvs 必须为空、More=false，证明
+  CountOnly 忽略 limit 且不会因 delete/recreate generation、leader-local index 重建或历史 fallback
+  漂移；current revision 也执行同样断言。既有 `TestCountIndexMatchesScanAcrossRevisions` 和
+  `RebuildCountIndex` 单元门禁覆盖内部算法，本轮补的是三副本真实重启后的外部契约。
+
+  官方 etcd `d947b20863` 同 data-dir restart oracle 1.43 秒 GREEN。生产
+  `kubebrain:a3725-rangestream-final-frame` 普通三副本 replacement 28.80 秒、race replacement
+  28.27 秒均 GREEN，没有 runtime RED 或镜像变更。最终 Pod UID 为
+  `7c351341-22d5-4fa7-9325-b7fc5ce70a47`、`54e5ed9f-92d9-4e52-90c9-1c071648e470`、
+  `3b5e6ce1-13f1-4059-a03a-02c8ed65cd7b`，3/3 Ready、零重启，`readyz=ok`，`/compat/` 无 KV。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.515 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 169.397 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
