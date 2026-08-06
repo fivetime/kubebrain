@@ -36724,6 +36724,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 168.674 秒）。没有 runtime RED，本项只增强生成式永久差分，不重建或滚动
   数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3709 跟进官方 etcd 2026 年 `fbba4f46e` 的 Txn compacted-Range 原子性修复。既有门禁只覆盖
+  “Range 先失败、后续 Put 不提交”；新增官方双端差分同时覆盖 Range→Put、Put→Range，以及
+  outer Put→nested(inner Put→Range)→outer Put 三种顺序。每个请求都以已 compact 的历史 revision
+  触发错误，并在请求后 CountOnly 扫描唯一 prefix：所有 case-specific key 必须零残留，证明已经
+  staged 的 inner/outer 写也随整次 Txn 原子回滚。高层 clientv3 把服务端 OutOfRange compacted
+  status 映射为 `Unknown` typed error但保留精确消息；首个 oracle 运行曾按 raw gRPC 错写为
+  OutOfRange 而失败，已依据官方结果修正，这是 harness RED，不是数据面差异。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.261 秒、连续 10 轮
+  （测试 2.177 秒）及 race 5 轮（测试 2.740 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.612 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 169.849 秒）。没有 runtime RED，本项新增永久失败顺序/嵌套原子性证据，
+  不重建或滚动数据面；一次性 reference 已停止，精确临时目录及测试日志已删除且不可恢复，只含
+  本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
