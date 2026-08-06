@@ -40278,6 +40278,46 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实际兼容面。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3846 与上述 commit ID；本轮不修改
   runtime。
 
+- A3847 固定 upstream functional snapshot/quorum/fault tester、server stats race、proposal error、
+  lease expiry metric、endpoint health write-out 和 snapshot structured logger 审计。对照
+  `/root/etcd` commit `f72449c63`、`ce19e0b4b`、`554dfaa4b`、`d275437c0`、`f574a9aae`、
+  `bd235ab8f`、`f56d2c61b`、`888b55e91`、`7213a9aab`、`606fa6fd9`、`f725bace3`、
+  `b2b37928e`、`a44a88ce7`、`251e783d3`、`3c5147d90`、`e2bb03b39`、`e859883e7`、
+  `ca137afe8`、`f9127dba9`、`67e398c86`、`473a47260`、`2942a8044`、`587dd4e73`、
+  `2b249902d`、`77824c2ed`、`4e7705e9e`、`a0c0dc2f0` 与 `81f632f2a`：官方 functional
+  tester 增加 quorum loss、fetch snapshot、restore snapshot and restart、leader snapshot restore
+  和 snapshot path/state 传递。KubeBrain 不运行 upstream functional tester，但 DBaaS 等价风险是
+  多副本 serving restart/failover 后 revision、watch、lease、tombstone、HashKV、online
+  `Maintenance.Snapshot`、cold restore verifier 和 production topology probe 是否一致；这些已由
+  restart persistence、txn snapshot/watch restart、snapshot history/auth/alarm restore、restore/delete
+  model、hashkv restart/replica consistency 和生产只读探针覆盖。对照 `099f10985`：官方 changelog
+  记录 quorum loss 失败模式；KubeBrain 的 quorum/PD/TiKV 故障语义继续由 Porcupine、operation
+  audit 和生产故障演练跟踪。
+
+  对照 `10bf0283b` 与 `ba59bb2c2`：官方修复 `etcdserver/stats` 数据竞争。KubeBrain 不复用
+  upstream leader/follower stats 结构；可观测面由 metrics registry、operation audit、readyz 和
+  race-sensitive 单测约束。对照 `3c52342b3`：官方在 internal raft request 处理 proposal error。
+  KubeBrain 不走 upstream Raft `Propose`，等价 public contract 是写入失败必须 fail closed、不伪造
+  commit revision、不破坏 watch/lease/txn；已由 uncertain txn pins、commit wait、backend failover、
+  txn/watch restart 和 production readiness 覆盖。对照 `744c73e01`：官方修复
+  `lease_expired_total` 指标；KubeBrain lease expiry 的正确性由 TTL/List/Revoke/KeepAlive、
+  checkpoint/compaction、watch-backed expiry 和 lease/auth differential 固定，metric 名称级 parity
+  继续归 observability oracle。
+
+  对照 `d019d3141`：官方 `etcdctl endpoint health` 支持 `--write-out`。KubeBrain 兼容面是
+  official etcdctl endpoint health 能识别服务健康，输出格式由 etcdctl 客户端负责；本仓 runner、
+  alarm/mirror preflight、readyz 和生产探针覆盖健康行为。对照 `18b1d1ff6` 与 `bf47197f3`：
+  官方 snapshot command/package 使用 structured logger；KubeBrain online `Maintenance.Snapshot`
+  的数据面兼容由 raw stream、SnapshotWithVersion、official snapshot status/restore、context
+  boundary、snapshot FD 和 error inflight 测试约束，日志仍以本仓 structured logs/operation audit
+  为准。对照 `5423100de`、`7cc0d689b`、`00ed41d17`、`a80a1a635`、`6d69e16a0`、
+  `d7b468ec6`、`f4cd33b83` 与 `190119569`：官方 functional tester 将 key/lease stress 与
+  consistency check 迁到 clientv3，并增加 snapshot-trigger network fault/liveness 场景。KubeBrain
+  已用 clientv3 兼容套件、watch backend failover、lease reconnect/compaction、range/txn
+  differential、Porcupine 和生产 readiness 覆盖对应 public 行为；上游测试超时配置本身不进入
+  数据面 runtime。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3847 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
