@@ -38319,6 +38319,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 自身 client/peer/info listener 拆分。新增 `TestRecentUpstreamAuditIsRecorded`
   钉住 A3795 与上述 commit ID；本轮不修改 runtime。
 
+- A3796 固定 A3795 前一段 upstream CI、脚本、依赖、coverage 与文档审计。对照 `/root/etcd`
+  commits `a3984708d`、`6cab07c04`、`759077318`、`6e05d4dfd`、`0c8a9c4c9`、
+  `cb81ea915`、`0208ed213`、`86cefa118`、`5c3c949f0`、`ee0444eff`、
+  `a7869f1cc`、`a8fd57ce6`、`1fe36c389`、`0a086c80b` 与 `d1d353c75`：
+  这些变更分别落在 cherry-pick 脚本 HTTPS 获取、Antithesis action/debugger、
+  `actions/checkout`、govulncheck pin、CHANGELOG 链接、Antithesis-only
+  `MustVerifyIfEnabled` patch、doublestar/fpdf/opentelemetry 依赖、Kubernetes coverage
+  test patch 和 robustness/antithesis README。它们不改变 etcd v3 gRPC/HTTP wire、
+  server request/response 语义、lease/watch/txn/auth/TLS 外观，也不对应 KubeBrain 的
+  TiKV/PD 持久化职责。
+
+  同一上游窗口中的 `a81b6d623` 是真实 client-facing 契约，但已由 A297 的官方双端
+  KeepAlive/Revoke buffered convergence 门禁和 A3775 的去重审计覆盖：`Revoke` 返回后
+  clientv3 KeepAlive channel 可交付已缓冲的正 TTL response，但必须随后关闭，绑定 key 与
+  lease 不能恢复。本轮没有复用该 commit 作为新缺口。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3796 与上述 commit ID；本轮不修改 runtime，
+  目标是把 upstream 工具链/测试资产变化从 DBaaS 数据面兼容 backlog 中明确分流。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
