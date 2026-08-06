@@ -38773,6 +38773,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cleanup、changelog、big-endian test skip、bbolt/protobuf/x/net/otel/genproto 等依赖或 CI。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3811 与上述 commit ID；本轮不修改 runtime。
 
+- A3812 固定 upstream direct JWT、Member JSON printer、cache unsupported watch options 与 v2store
+  membership boundary 审计。对照 `/root/etcd` commits `24b9a32c0`、`c70cb53fe` 与
+  `ab2248ae2`：官方把 direct JWT token 贯穿到 clientv3 config、etcdctl flag 和测试框架。
+  KubeBrain 服务端只消费 gRPC metadata/token，不拥有官方 client/etcdctl 的本地 token 注入逻辑；
+  本仓 JWT provider、旧 token 拒绝、Bearer token、未来 revision token 和 etcdctl/clientv3 auth
+  differential 已覆盖服务端可见行为。因此该组为 client-side/API-source 审计，不需要 runtime 变更。
+
+  对照 `3f7aed496`、`f44e2755d`、`4e8cbd70d` 与 `f672fb300`：官方补齐/修正 etcdctl
+  `MemberRemove`、`MemberUpdate`、`MemberPromote` JSON printer。KubeBrain 的兼容边界是官方
+  etcdctl 作为客户端调用本服务时收到的 protobuf/JSON response，而不是 fork 官方 etcdctl printer；
+  Member add/remove/update/promote 在 DBaaS TiKV/PD 数据面被明确划为平台控制面边界，已有
+  `MemberList`/unsupported mutation 语义测试和 A3759/A3787/A3799/A3806 审计约束。
+
+  对照 `05f35c4cc`、`6badba860`、`512c3f074` 与 `713774586`：官方 cache 包增加任意
+  `start_revision` watch、公开 watch option inspector，并把 unsupported watch option/range
+  error 分类清楚。KubeBrain 不复用 upstream cache 包；服务端 watch 已覆盖 start revision、
+  future/compacted revision、progress notify、created flag、filter、restart/tombstone 和 follower
+  proxy resume floor，A3756/A3810/A3811 继续钉住 cache/progress 风险。对照 `0e2a4212e`：
+  官方在 v2store 更新路径检查 member promotion；KubeBrain 没有 v2store/Raft membership 数据面，
+  该风险仍归入 Member mutation unsupported boundary。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3812 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
