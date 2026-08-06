@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"testing"
@@ -17,6 +18,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	gresolver "google.golang.org/grpc/resolver"
+	"google.golang.org/grpc/serviceconfig"
 )
 
 type namingOutcome struct {
@@ -49,6 +52,46 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 		ResolverInitial:      "SERVING",
 		ResolverAfterDelete:  "NOT_SERVING",
 	}, kubeBrainOutcome)
+}
+
+func TestNamingResolverDoesNotForwardEndpointMetadataToGRPC(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second, Context: ctx,
+	})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	prefix := fmt.Sprintf("/dbaas-naming-metadata/%d", time.Now().UnixNano())
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
+	}()
+
+	manager, err := endpoints.NewManager(client, prefix)
+	require.NoError(t, err)
+	require.NoError(t, manager.AddEndpoint(ctx, prefix+"/ep1", endpoints.Endpoint{
+		Addr:     "127.0.0.1:2001",
+		Metadata: "user-owned metadata must stay out of grpc resolver addresses",
+	}))
+	listed, err := manager.List(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "user-owned metadata must stay out of grpc resolver addresses", listed[prefix+"/ep1"].Metadata)
+
+	builder, err := etcdresolver.NewBuilder(client)
+	require.NoError(t, err)
+	cc := newCapturingResolverClientConn()
+	resolved, err := builder.Build(gresolver.Target{URL: url.URL{Scheme: "etcd", Path: "/" + prefix}}, cc, gresolver.BuildOptions{})
+	require.NoError(t, err)
+	defer resolved.Close()
+
+	state := cc.waitForState(t, ctx)
+	require.Len(t, state.Endpoints, 1)
+	require.Len(t, state.Endpoints[0].Addresses, 1)
+	require.Equal(t, "127.0.0.1:2001", state.Endpoints[0].Addresses[0].Addr)
+	require.Nil(t, state.Endpoints[0].Addresses[0].Metadata)
 }
 
 func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
@@ -237,4 +280,47 @@ func namingHealthStatus(t *testing.T, ctx context.Context, client healthpb.Healt
 	response, err := client.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
 	require.NoError(t, err)
 	return response.Status.String()
+}
+
+type capturingResolverClientConn struct {
+	states chan gresolver.State
+	errors chan error
+}
+
+func newCapturingResolverClientConn() *capturingResolverClientConn {
+	return &capturingResolverClientConn{
+		states: make(chan gresolver.State, 4),
+		errors: make(chan error, 4),
+	}
+}
+
+func (c *capturingResolverClientConn) UpdateState(state gresolver.State) error {
+	c.states <- state
+	return nil
+}
+
+func (c *capturingResolverClientConn) ReportError(err error) {
+	c.errors <- err
+}
+
+func (c *capturingResolverClientConn) NewAddress([]gresolver.Address) {}
+
+func (c *capturingResolverClientConn) ParseServiceConfig(string) *serviceconfig.ParseResult {
+	return nil
+}
+
+func (c *capturingResolverClientConn) waitForState(t *testing.T, ctx context.Context) gresolver.State {
+	t.Helper()
+	for {
+		select {
+		case state := <-c.states:
+			if len(state.Endpoints) > 0 {
+				return state
+			}
+		case err := <-c.errors:
+			t.Fatalf("resolver reported error: %v", err)
+		case <-ctx.Done():
+			t.Fatalf("resolver did not publish endpoint state: %v", ctx.Err())
+		}
+	}
 }

@@ -37756,6 +37756,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/etcdserverpb.KV/Range`。focused 测试 0.035 秒 GREEN。本轮是官方 client API/诊断面门禁，
   不改变 runtime 镜像或服务端语义。
 
+- A3767 对照 upstream `/root/etcd` commit `84862dbd6` 的 clientv3 naming resolver
+  Metadata 边界。上游保留 `naming/endpoints.Endpoint.Metadata` 作为用户自有字段，但不再把它传给
+  grpc-go `resolver.Address.Metadata`；这避免把 etcd discovery 中的用户 metadata 混入 gRPC
+  picker/balancer 内部状态。DBaaS 用户可继续在 EndpointManager 中存放 metadata，同时官方 resolver
+  只应把 dial address 交给 gRPC。
+
+  为建立真实 RED，直接读取旧提交 `84862dbd6^` 的
+  `client/v3/naming/resolver/resolver.go`，确认 `convertToGRPCEndpoint` 仍设置
+  `Metadata: up.Endpoint.Metadata`；当前源码已没有该赋值。新增 compat live 测试复用生产
+  KubeBrain endpoint 写入一个带 metadata 的 naming endpoint，先通过 `Manager.List` 证明 metadata
+  仍可由用户读回，再用官方 `resolver.NewBuilder` 和 fake `resolver.ClientConn` 直接捕获
+  `UpdateState`，断言发布给 gRPC 的唯一 `Address` 只有 `Addr=127.0.0.1:2001` 且
+  `Address.Metadata == nil`。focused 测试 0.019 秒 GREEN。本轮固定官方 service-discovery
+  client API 边界，不改变 KubeBrain runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
