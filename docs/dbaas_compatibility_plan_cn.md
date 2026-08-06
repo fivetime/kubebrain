@@ -38222,6 +38222,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标是把 upstream read/raft 代码搬迁与 mock 化测试分流为内部审计项，后续只在出现新的
   client-visible read-barrier 或错误外观变化时建立专项 RED。
 
+- A3792 固定 upstream etcdctl auth endpoint discovery、依赖 bump 与 robustness/test-only 审计。
+  对照 `/root/etcd` commit `e7f7b113b`，官方修复 `etcdctl endpoint ... --cluster` 在启用
+  auth 时，发现集群 endpoint 的临时 client 必须携带 `--user` 凭据；KubeBrain 已由 A3743 的
+  authenticated `endpoint health --cluster` 差分覆盖，并验证 `--cluster` 确实经 MemberList
+  发现后续 endpoint，而不是退化成 seed endpoint 直连。
+
+  对照 `87d420821`、`fa1a81a49`、`dfc7d021e`、`a547d29a6`、`405b52eda`、
+  `221e816a8`、`fb2300023`、`d4d725582` 与 `210a0f1ab`，官方只更新 tablewriter、
+  golangci-lint、revive、x/time、x/net、grpc、OpenTelemetry 和 Go toolchain。KubeBrain
+  依赖由本仓 `go.mod` 和 release gate 管理，只有本仓显式升级时才进入兼容/性能/生产验证。
+  对照 `fe4b891eb`、`c6a5c5707`、`565e41aa7`、`09803ec0e`、`c8fde1493`、
+  `caa45d5c8`、`c5b5e3bb3` 与 `562f4af7c`，官方改动集中在 integration flake、
+  robustness benchmark/profile、Antithesis build、coverage patches 或测试事件复用回滚；这些不改变
+  etcd v3 client/API response 外观。对照 `9386ac835`，官方只同步更新既有 auth 测试，
+  KubeBrain 的 auth public surface 已由 A3778/A3787/A3788 及 auth differential 覆盖。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3792 和上述 commit ID。本轮不修改 runtime；
+  目标是把当前段落中已覆盖或非 public-runtime 的变更归档，后续筛选继续优先处理可由官方 client、
+  etcdctl、HTTP gateway、metrics 或安全策略观测到的新差异。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
