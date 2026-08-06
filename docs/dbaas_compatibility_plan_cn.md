@@ -40654,6 +40654,82 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   differential 已覆盖。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3853 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3854 固定 upstream v3 discovery-srv、v2/v3 backup 与 v2v3 proxy、watch cancel/restore、
+  concurrent auth revision、serializable STM snapshot、gRPC recv/send size、corrupt alarm、
+  peer-port gRPC、client leasing、LeaseLeases、HashKV、grpcproxy PrevKV/health、lease txn
+  compare 和 unhealthy endpoint exit 审计。对照 `/root/etcd` commit `9a0f8c591`、
+  `079d57895`、`b70263247`、`9f7375c22`、`5d669290e` 与 `8091be6e9`：
+  官方围绕 etcdctl v3 discovery、v2 backup with v3 DB 和 experimental v2v3 proxy 演进。
+  KubeBrain DBaaS 明确不承诺 upstream v2 store/v2v3 proxy/physical bbolt backup 格式；对外
+  备份恢复以 logical export/restore、online `Maintenance.Snapshot`、restore verifier 和
+  etcdctl 兼容表为准，v3 client/gateway public API 仍是支持面。
+
+  对照 `4cd99d109` 与 `9d79d5fe6`：官方澄清 data model 中 update 不增加 generation，
+  并优化 MVCC revision 计算分配。KubeBrain 已用 create/update/delete、PrevKV、version、
+  create/mod revision、historical Range、namespace nested Txn 和 read amplification tests 固定
+  logical MVCC 外观；内部 TiKV revision/index 实现不复用 upstream mvcc index。对照
+  `896447ed9`、`bd53ae568` 与 `13041c15b`：官方修复 watch cancel 并确保 restore 后发送
+  events。KubeBrain watch 已由 cancel unknown/existing、client-assigned watch ID、stream cancel、
+  leader failover resume、snapshot/restore verifier、restore watch/history 和 production watch
+  probes 覆盖。
+
+  对照 `dfed636e5`：官方检查并发 auth 操作不返回 old revision error。KubeBrain auth
+  lifecycle、role/user mutation、permission revision fence、token invalidation、auth disabled
+  after credentialed connection 和 auth differential tests 固定并发可见性。对照 `1d195521c`
+  与 `b9ef49142`：官方 serializable STM 在读集 revision 过旧时重试。KubeBrain 服务端只承诺
+  Range/Txn serializable/historical MVCC 语义；client-side STM retry 属于 official client，但
+  serializable Range、Txn compare、old revision/compaction/future revision 和 Porcupine models
+  已覆盖服务端基础。对照 `d2ca78227`：官方按 `MaxRecvMsgSize`/`MaxSendMsgSize` 限制 gRPC。
+  KubeBrain 已固定 max request bytes、large Range/Txn、gateway recv limit、client response
+  limit、RangeStream 2GiB 规避路径和 k8s 1.37 RangeStream readiness。
+
+  对照 `6e02779c4`、`86aeaad92`、`1f734e029`、`31381da53`、`35dffc7bc`、
+  `153ba9283` 与 `6be5f9a84`：官方加入 corruption tests、corrupt check flag、cluster
+  corruption alarm、Corrupt typed error、peer-port gRPC 和 CORRUPT alarm enum。KubeBrain
+  不运行 upstream peer-port bbolt corruption checker；等价风险由 `HashKV`、CORRUPT alarm、
+  `codes.DataLoss` 写阻断、`/health`/`/readyz/data_corruption`、direct replica consistency、
+  snapshot/restore verifier 和 production readiness 覆盖。对照 `5c03ade97`、`cf0a07be5`、
+  `126e91c44`、`61ebb98e5`、`9be715bb6` 与 `a425e98a7`：官方 client leasing helper
+  支持缓存、TTL key 处理、closer 和 acquire retry。KubeBrain 服务端 lease contract 由
+  LeaseGrant/Revoke/KeepAlive/TimeToLive、per-key attachment、TTL delete event、failover reload、
+  session lock/election recipe、missing lease error 和 leasing differential tests 固定；client
+  helper 内部不移植。
+
+  对照 `8b872196d`、`32866572b`、`bb86c327e` 与 `646457495`：官方优化 backend
+  read tx bucket cache、restore keys gauge、HashKV Keep 和 unix URL 比较。KubeBrain TiKV-backed
+  backend 不复用 bbolt bucket/gauge；HashKV public 语义以 revision/hash envelope、compaction
+  boundary、replica consistency、endpoint hashkv 和 production status probes 约束。对照
+  `35b11bf43`、`f4183c68c`、`e24de6c9a` 与 `195744aea`：官方调整 auth context、
+  peer listener association、pprof config tag 和 shadowed env flag warning。KubeBrain 对外
+  contract 是 auth metadata/TLS identity、peer/client TLS、option validation、pprof/metrics
+  listener separation 和 startup parameter probes。
+
+  对照 `1f20d5d92`、`556c1a1fe`、`f8141db2c`、`15ef98a4e`、`d25ae50c0`、
+  `8005f00bc`、`a7413bbf2` 与 `099fbde80`：官方新增 `LeaseLeases` API 及 etcdctl
+  `lease list`。KubeBrain 已实现 `LeaseLeases`，并由 client tests、follower stale-read
+  guard、proxy path、production smoke 和 etcdctl compatibility 表固定。对照 `39432ac31`：
+  官方 etcdctl 支持离线 defrag data dir；KubeBrain 不暴露 bbolt data-dir offline defrag，
+  online Defragment 是 no-op/typed success 边界，逻辑备份恢复负责数据迁移。
+
+  对照 `5176b63fa`、`9982cd052` 与 `8c32cd96f`：官方新增 `endpoint hashkv` 和
+  clientv3 `HashKV`。KubeBrain Maintenance `HashKV`、gateway `/members/hashkv`、compact/future
+  revision error、CORRUPT alarm、endpoint hashkv compatibility 和 docs 已覆盖。对照
+  `6a4194c55` 与 `c3ae033f2`：官方 grpcproxy forward `Put.PrevKv` 并测试。KubeBrain
+  Put/Txn PrevKV、watch PrevKV、follower proxy preserving PrevKV、read amp prev-cache 和
+  production apiserver watch soak 已覆盖。对照 `fdba9e5fb`、`4669aaa9a`、`8385c6682`
+  与 `1c75c383a`：官方 clientv3 SetEndpoint/retry-at-most-once/watch metadata bucket 修复。
+  KubeBrain 服务端对应的是 idempotency/ambiguous mutation、deadline/cancel、watch auth metadata
+  和 clientv3 differential；client internals 不 vend。
+
+  对照 `6603a7756`、`b8fd5c3db` 与 `cd37ef2c1`：官方 grpc-proxy 增加 `/health`
+  并让 unhealthy endpoint command 非零退出。KubeBrain 已固定 `/health`、`/livez`、`/readyz`、
+  NOSPACE/CORRUPT health exclusions、leader/readiness、Prometheus health metrics 和 production
+  probes；grpcproxy health internals 不移植。对照 `341664f7b`、`79660db61`、`52b031cfa`、
+  `ec4ca4408` 与 `d8ca2bbff`：官方新增 lease txn comparison。KubeBrain Txn compare 已支持
+  lease target，并用 lease compare、missing/max lease error、ignore lease/value precedence、
+  nested txn lease differential 和 etcdctl compatibility 表固定。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3854 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
