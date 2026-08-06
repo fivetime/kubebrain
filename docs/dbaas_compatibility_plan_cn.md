@@ -37255,6 +37255,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.523 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 166.441 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
 
+- A3739 在同一 34-revision 模型完成首轮恢复验证后，于中点 revision 执行 physical Compact，再做
+  第二次全 serving replacement。重启后严格低于 watermark 的 17 个 historical Range 必须返回
+  `ErrCompacted`；等于 boundary 的 Range 仍须返回原快照，之后所有快照和 current state 也必须保持。
+  boundary prefix Watch 从 compact revision inclusive 重放剩余 17 个事件，顺序、generation 字段和
+  PrevKV 与官方一致。该阶段同时验证 compact watermark 恢复、boundary row/event 保留以及多键历史
+  GC 后的 live state，不再把这些性质拆成互不相干的小测试。
+
+  官方 oracle 先暴露两处 harness 假设错误：Range 只有 `revision < compactRevision` 才 compacted，等号
+  仍可读；此外 physical compaction 会保留 boundary 上每个 live key 的最后版本，因此 boundary 之后
+  DELETE key-06/key-09 时，revision 12/17 的 PrevKV 虽低于 watermark 仍可返回，只有 boundary 事件
+  自身不能回溯更早前值。按这两条官方语义修正后，etcd `d947b20863` 同 data-dir 两次 restart oracle
+  3.13 秒 GREEN，未把测试 RED 误报成数据面缺陷。生产 `kubebrain:a3725-rangestream-final-frame`
+  普通两阶段 replacement 63.83 秒、race 63.62 秒均 GREEN，没有 runtime RED 或镜像变更。最终 Pod
+  UID 为 `75209ac7-0cfb-45ba-bb9f-464dfedda802`、`e9a94e94-2334-456d-8ee4-aed2e281dbb5`、
+  `0ed390d5-9669-4946-8cdb-64d51fd69f69`，3/3 Ready、零重启，`readyz=ok`，`/compat/` 无 KV。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.484 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 166.884 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
