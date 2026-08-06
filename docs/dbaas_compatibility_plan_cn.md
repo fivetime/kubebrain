@@ -36812,6 +36812,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   生成式 Range 数据维度，不重建或滚动数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，
   只含本轮 oracle 数据。
 
+- A3715 继续扩展同一生成式 Range，而不另建重复单项测试。对照
+  `/root/etcd/tests/integration/v3_grpc_test.go` 的 `TestV3RangeRequest`（`[c,c)` 与 `[d,b)` 均为空）
+  及 `TestV3CompactCurrentRev` serializable Range，固定 seed 更新为 3715：64-case 请求形状由九种增至
+  十一种，加入 equal-empty 与 reversed-empty 有界区间；`Serializable` 同时成为正交随机维度。结构门禁
+  强制线性化/serializable 两族和全部十一种形状均被命中，因此空区间不只验证默认请求，还会与 current/
+  historical revision、sort、limit、KeysOnly/CountOnly 和 revision filter 组合。已有 serializable HA 专项
+  门禁仍负责 follower/故障时序，本项负责 unary Range 的请求组合语义。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 1.11 秒、连续 10 轮
+  （测试 10.184 秒）及 race 5 轮（测试 6.647 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（最终测试 1.557 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 166.039 秒）。生产 3/3 Pod Ready、零重启。没有 runtime RED，本项只扩展永久
+  unary Range 边界组合覆盖，不重建或滚动数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，
+  只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

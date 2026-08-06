@@ -16,15 +16,16 @@ import (
 )
 
 type generatedRangeSpec struct {
-	Shape      int
-	Historical int
-	SortTarget etcdserverpb.RangeRequest_SortTarget
-	SortOrder  etcdserverpb.RangeRequest_SortOrder
-	Limit      int64
-	KeysOnly   bool
-	CountOnly  bool
-	Filter     int
-	FilterRev  int
+	Shape        int
+	Historical   int
+	SortTarget   etcdserverpb.RangeRequest_SortTarget
+	SortOrder    etcdserverpb.RangeRequest_SortOrder
+	Limit        int64
+	KeysOnly     bool
+	CountOnly    bool
+	Serializable bool
+	Filter       int
+	FilterRev    int
 }
 
 type generatedRangeKV struct {
@@ -57,16 +58,20 @@ func TestGeneratedRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
 	shapes, historical, targets, orders := map[int]bool{}, map[bool]bool{}, map[int32]bool{}, map[int32]bool{}
 	limits, filters := map[int64]bool{}, map[int]bool{}
-	var keysOnly, countOnly, leasedCurrent, leasedHistorical bool
+	var keysOnly, countOnly, serializable, linearizable, emptySerializable, emptyLinearizable bool
+	var leasedCurrent, leasedHistorical bool
 	for _, spec := range generatedRangeSpecs() {
 		shapes[spec.Shape], historical[spec.Historical > 0] = true, true
 		targets[int32(spec.SortTarget)], orders[int32(spec.SortOrder)] = true, true
 		limits[spec.Limit], filters[spec.Filter] = true, true
 		keysOnly, countOnly = keysOnly || spec.KeysOnly, countOnly || spec.CountOnly
+		serializable, linearizable = serializable || spec.Serializable, linearizable || !spec.Serializable
+		emptySerializable = emptySerializable || spec.Shape >= 9 && spec.Serializable
+		emptyLinearizable = emptyLinearizable || spec.Shape >= 9 && !spec.Serializable
 		leasedCurrent = leasedCurrent || spec.Shape == 6 && spec.Historical == 0
 		leasedHistorical = leasedHistorical || spec.Shape == 6 && spec.Historical == 9
 	}
-	require.Len(t, shapes, 9)
+	require.Len(t, shapes, 11)
 	require.Len(t, historical, 2)
 	require.Len(t, targets, 5)
 	require.Len(t, orders, 3)
@@ -74,24 +79,29 @@ func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
 	require.Len(t, filters, 7)
 	require.True(t, keysOnly)
 	require.True(t, countOnly)
+	require.True(t, serializable)
+	require.True(t, linearizable)
+	require.True(t, emptySerializable)
+	require.True(t, emptyLinearizable)
 	require.True(t, leasedCurrent)
 	require.True(t, leasedHistorical)
 }
 
 func generatedRangeSpecs() []generatedRangeSpec {
-	rng := rand.New(rand.NewSource(3714))
+	rng := rand.New(rand.NewSource(3715))
 	limits := []int64{0, 1, 2, 4, math.MaxInt64}
 	specs := make([]generatedRangeSpec, 0, 64)
 	for i := 0; i < 64; i++ {
 		specs = append(specs, generatedRangeSpec{
-			Shape: rng.Intn(9), Historical: rng.Intn(10),
+			Shape: rng.Intn(11), Historical: rng.Intn(10),
 			SortTarget: etcdserverpb.RangeRequest_SortTarget(rng.Intn(5)),
 			SortOrder:  etcdserverpb.RangeRequest_SortOrder(rng.Intn(3)),
 			Limit:      limits[rng.Intn(len(limits))], KeysOnly: rng.Intn(4) == 0,
-			CountOnly: rng.Intn(5) == 0, Filter: rng.Intn(7), FilterRev: 1 + rng.Intn(9),
+			CountOnly: rng.Intn(5) == 0, Serializable: rng.Intn(2) == 0,
+			Filter: rng.Intn(7), FilterRev: 1 + rng.Intn(9),
 		})
 	}
-	for shape := 0; shape < 9; shape++ {
+	for shape := 0; shape < 11; shape++ {
 		specs[shape].Shape = shape
 	}
 	specs[6].Historical = 9
@@ -106,7 +116,7 @@ func runGeneratedRangeScenario(t *testing.T, endpoint, instance string, specs []
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	prefix := fmt.Sprintf("/a3714/generated-range/%s/%d/", instance, time.Now().UnixNano())
+	prefix := fmt.Sprintf("/a3715/generated-range/%s/%d/", instance, time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -173,7 +183,7 @@ func generatedRangeRequest(prefix string, spec generatedRangeSpec, revisions []i
 	request := &etcdserverpb.RangeRequest{
 		Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)),
 		SortTarget: spec.SortTarget, SortOrder: spec.SortOrder, Limit: spec.Limit,
-		KeysOnly: spec.KeysOnly, CountOnly: spec.CountOnly,
+		KeysOnly: spec.KeysOnly, CountOnly: spec.CountOnly, Serializable: spec.Serializable,
 	}
 	if spec.Shape > 0 && spec.Shape <= 6 {
 		request.Key = []byte(prefix + string(rune('a'+spec.Shape-1)))
@@ -184,6 +194,12 @@ func generatedRangeRequest(prefix string, spec generatedRangeSpec, revisions []i
 	} else if spec.Shape == 8 {
 		request.Key = []byte(prefix + "b")
 		request.RangeEnd = []byte(prefix + "g")
+	} else if spec.Shape == 9 {
+		request.Key = []byte(prefix + "a")
+		request.RangeEnd = []byte(prefix + "a")
+	} else if spec.Shape == 10 {
+		request.Key = []byte(prefix + "z")
+		request.RangeEnd = []byte(prefix + "a")
 	}
 	if spec.Historical > 0 {
 		request.Revision = revisions[spec.Historical]
