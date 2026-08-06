@@ -36641,6 +36641,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新镜像；两次受控 leader replacement 后最终 3/3 Ready、0 restart，仍运行
   `kubebrain:a3672-stream-progress`。
 
+- A3703 先复核矩阵唯一“部分兼容”的 Snapshot：流帧/摘要、取消、HTTP、auth、历史恢复、metadata
+  pin 与并发写均已有永久门禁，剩余项仅是升级前 raw/v1 历史从未持久化的 lease provenance，无法由
+  当前状态无损重建，因此继续保持 fail-closed，而不伪造 Lease=0。审计过程中两个相邻 `sed` 区间都
+  包含第 260 行，曾在拼接输出中看似重复 `CorruptAlarms` 调用；带行号源码确认实际只有一次，明确
+  排除该 harness 假象，不制造代码修复。
+
+  随后扩展固定 seed 的三层生成式嵌套 Txn：inner Range 模式从 11 增到 13，新增
+  `MinModRev(base+1)` 只保留同一 Txn 内 staged update/create，以及 `MaxModRev(base)` 只保留未修改
+  seed 的互补过滤。旧 `[base,base+1]` 模式会把两代都纳入，无法发现 overlay metadata 过滤错误；
+  结构门禁现保证首 13 个 case 全部选择 outer/middle/inner 成功分支并实际执行每种模式，完整 outcome
+  继续比较嵌套 response envelope、Count/More、顺序、PrevKV、revision 与最终状态。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 9.674 秒、连续 10 轮
+  （测试 67.527 秒）及 race 5 轮（测试 33.462 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.550 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 167.825 秒）。没有 runtime RED，本项只增强生成式永久差分，不重建或滚动
+  数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
