@@ -37701,6 +37701,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 168.677 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。
 
+- A3764 对照 upstream `/root/etcd` commit `312d7262d` 的 client/v3 watch backlog
+  诊断选项。上游新增 public `clientv3.WithWatchBufLog()`，在客户端 watch substream 缓冲区长时间被
+  慢消费者阻塞时按窗口打印 info 日志；该选项必须作为普通 Watch `OpOption` 存在，且启用后不得改变
+  watch create、event delivery、header revision 或 error 外观。
+
+  为建立真实 RED，在 `/tmp` worktree 检出 `312d7262d^`，只给旧 `client/v3` 包添加最小测试调用
+  `WithWatchBufLog()`；旧版 symbol 不存在，编译失败并报告 `undefined: WithWatchBufLog`。当前
+  `/root/etcd/client/v3` 在 `GOWORK=off GOFLAGS=-mod=mod` 下运行
+  `TestBlockLogger` / `TestServeSubstreamLogsSlowConsumer` focused 通过（0.029 秒），证明官方
+  backlog logger 与 slow-consumer 触发路径仍可编译执行。
+
+  新增 compat live 测试使用生产 KubeBrain endpoint 创建带
+  `WithCreatedNotify()` + `WithWatchBufLog()` 的 high-level client watch，先断言 created response
+  header 非 nil、无事件、未取消，再写入目标 key 并断言收到 PUT event，event header revision 等于
+  Put revision，key/value 正确。该测试 0.192 秒 GREEN。该项是 client API 与 watch 表面组合门禁；
+  KubeBrain 服务端不需要实现日志逻辑，只需保持 watch 协议行为与官方 client option 组合兼容。
+
+  兼容模块 `go test ./...`（1.644 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 167.314 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
