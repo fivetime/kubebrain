@@ -36437,6 +36437,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
   oracle 数据。
 
+- A3688 增加嵌套 Txn selected 非法 lease 的整笔回滚差分。现有测试只让 selected 分支执行单一
+  非法 Put，无法证明同一事务内已规划的合法 mutation 不会部分提交。新场景先把 `x` 从 lease A
+  转移到 B，再执行内层 selected Put（lease=`math.MaxInt64`，必定不存在），最后计划向 A 新增 `w`。
+  官方契约要求整个外层 Txn 返回 `requested lease not found` 且无 response，revision 不推进；`x`
+  仍为旧值并属于 A，A keys 仍为 `x`、B keys 仍为空，非法 `bad` 与后续 `w` 均不存在。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.218 秒、连续 10 轮
+  （测试 1.996 秒）及 race 5 轮（测试 2.205 秒）全部 GREEN；兼容模块与根模块全量 test/vet
+  通过（`pkg/server/etcd` 167.888 秒）。没有 runtime RED，本项只增加永久 TiKV 事务/lease 缓存
+  同步回滚证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录及验证日志已删除
+  且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
