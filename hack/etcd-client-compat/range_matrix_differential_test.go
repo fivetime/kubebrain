@@ -125,6 +125,39 @@ func TestRangeOptionMatrixCoversUpstreamMinMaxCreateModSortCases(t *testing.T) {
 	}
 }
 
+func TestRangeOptionMatrixCoversUpstreamValueSortAndKeysOnlyCases(t *testing.T) {
+	covered := map[string]bool{}
+	for _, revision := range rangeMatrixRevisions(6) {
+		for _, target := range rangeMatrixTargets() {
+			for _, order := range rangeMatrixOrders() {
+				for _, mode := range rangeMatrixModes() {
+					covered[fmt.Sprintf("%s/%s/%s/%s", revision.name, target, order, mode.name)] = true
+				}
+			}
+		}
+	}
+
+	for _, order := range []etcdserverpb.RangeRequest_SortOrder{
+		etcdserverpb.RangeRequest_NONE,
+		etcdserverpb.RangeRequest_ASCEND,
+		etcdserverpb.RangeRequest_DESCEND,
+	} {
+		require.True(t, covered[fmt.Sprintf("current/%s/%s/full", etcdserverpb.RangeRequest_VALUE, order)],
+			"missing upstream a81c31b4 value sort coverage for order %s", order)
+		require.True(t, covered[fmt.Sprintf("current/%s/%s/keys", etcdserverpb.RangeRequest_VALUE, order)],
+			"missing upstream a81c31b4 value sort keys-only coverage for order %s", order)
+	}
+	for _, order := range []etcdserverpb.RangeRequest_SortOrder{
+		etcdserverpb.RangeRequest_ASCEND,
+		etcdserverpb.RangeRequest_DESCEND,
+	} {
+		require.True(t, covered[fmt.Sprintf("current/%s/%s/keys", etcdserverpb.RangeRequest_KEY, order)],
+			"missing upstream ec3114e02 keys-only key sort coverage for order %s", order)
+	}
+	require.True(t, covered[fmt.Sprintf("historical/%s/%s/full", etcdserverpb.RangeRequest_KEY, etcdserverpb.RangeRequest_NONE)],
+		"missing upstream bde5bea5e historical multiversion Range coverage")
+}
+
 func rangeMatrixFilters(createRevisions, modRevisions []int64) []rangeMatrixFilterCase {
 	return []rangeMatrixFilterCase{
 		{name: "none"},

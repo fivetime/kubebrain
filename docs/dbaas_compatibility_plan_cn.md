@@ -38092,6 +38092,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   commit ID，防止后续把已闭环的 Raft ReadIndex 风险重复当作未实现缺口，或把 upstream 测试流量
   context 修复误归类为 runtime 变更。
 
+- A3785 固定 upstream Range value-sort、KeysOnly 和 multiversion oracle 审计。对照
+  `/root/etcd` commits `bde5bea5e`、`cae1e57ab`、`ec3114e02` 与 `a81c31b4`：
+  官方逐步把 `tests/common/kv_test.go` 的 Range oracle 扩展到同一 key 多版本历史读取、
+  keys-only projection、`SortByValue` 的 `NONE`/`ASCEND`/`DESCEND` 顺序，以及
+  `MaxCreateRevision + SortByValue` 的预期顺序。KubeBrain 已有 Range/Txn/RangeStream
+  双端差分覆盖 VALUE/KEY/VERSION/CREATE/MOD sort、KeysOnly、CountOnly、limit、revision
+  filter、current/historical revision 和 nested staged writes；A3774/A3780 又把 fast KeysOnly
+  与 min/max create/mod 组合纳入结构门禁。
+
+  本轮新增 `TestRangeOptionMatrixCoversUpstreamValueSortAndKeysOnlyCases`，显式证明 Range option
+  matrix 包含官方新增的 value sort 三种 order、value sort 下 KeysOnly、key sort 下 KeysOnly
+  ASC/DESC，以及 historical multiversion Range 维度。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3785 和上述 commit ID。该轮不修改 runtime；目标是把 upstream 新增的通用 KV Range
+  oracle 直接挂到现有差分矩阵，避免后续只看到官方测试名变化而重复制造低价值单例测试。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
