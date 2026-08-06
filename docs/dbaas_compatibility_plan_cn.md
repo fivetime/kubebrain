@@ -37456,6 +37456,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`a3750/`、`/a3750/`
   与 `/compat/` 均无 KV；reference data-dir 与临时 clone 均已清理。
 
+- A3751 对照 upstream `/root/etcd` commit `695442b44` 的 `etcdctl get --stream` 支持。该 flag 是
+  官方 CLI 调用 `clientv3.GetStream`/KV `RangeStream` 的用户入口；KubeBrain 已有大量 RangeStream RPC
+  差分，但缺少官方 `etcdctl` 黑盒路径，可能让 DBaaS 运维脚本在升级到 etcd 3.7 CLI 后缺少覆盖。新增
+  差异测试先用 clientv3 写入乱序 key，再调用 `/root/etcd/bin/etcdctl get <prefix> --prefix --stream`，
+  要求 simple 输出保持按 key 排序的 key/value 行，随后 direct clientv3 Get 复核唯一前缀内 3 个 KV，
+  并清理精确前缀。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `695442b44^`，只给临时 clone 添加最小
+  `TestGetCommandExposesStreamFlag`；旧版 `NewGetCommand().Flags().Lookup("stream") == nil`，测试
+  0.042 秒失败。当前官方 `etcdctl` + reference/KubeBrain 双端普通连续 20 轮通过（5.473 秒），`-race`
+  连续 10 轮通过（4.212 秒）。该修复属于官方 CLI，本轮无服务端或镜像变更。兼容模块
+  `go test ./...`（101.837 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 168.664 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`a3751/`、`/a3751/`
+  与 `/compat/` 均无 KV；reference data-dir 与临时 clone 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
