@@ -40597,6 +40597,63 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failover expiry、session recipe 和 clientv3 compat suite 已覆盖服务端 wire contract。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3852 与上述 commit ID；本轮不修改 runtime。
 
+- A3853 固定 upstream clientv3 retry/balancer、watch require-leader、endpoint keepalive、
+  WebSocket gateway、DNS SRV/TLS、peer CN auth、finer compaction retention、grpcproxy auth、
+  KeysOnly proxy、empty-key permission、lease minimum TTL、typed gRPC status、LeaseValue compare、
+  expired lease scan limit 和 dial timeout status 审计。对照 `/root/etcd` commit `54ef60d03`、
+  `141170c1d`、`c09a89d83`、`b46ab2c36`、`29aa4ce2a`、`2540859ee`、
+  `ad2470025`、`500c2499f`、`e9e17e3fe`、`8224c748c`、`fbed568b6`、
+  `1704443c6`、`bed5f388a`、`49e5e78d0`、`efd7800e0` 与 `84db8fdae`：
+  官方持续收敛 clientv3 retry/balancer、endpoint pinning、partition health 和 ready wait。
+  KubeBrain 服务端不 vend official client 内部；DBaaS public contract 是 endpoint health、
+  MemberList/AutoSync、WithRequireLeader、Unavailable/DeadlineExceeded typed errors、leader
+  fencing、follower proxy、failover/restart、linearizable Range/Txn/Lease/Watch 和 clientv3
+  differential tests。
+
+  对照 `d44f7d5f6`：官方让 etcdctl watch 使用 `require-leader`。KubeBrain 已在 unary 和
+  stream interceptor 接收 `MetadataRequireLeaderKey`，并用 KV/Lease/Watch 成功路径、无 leader
+  拒绝、leader lost stream close、metadata precedence 和 compat `WithRequireLeader` tests 固定
+  wire 行为。对照 `04940efcc`、`044aca7f5`、`6b06a69ab`、`4b3d4000a` 与
+  `157c8eccf`：官方补 etcdctl keepalive knobs、grpc-go 升级和 server keepalive options。
+  KubeBrain endpoint 已配置 HTTP/2 stream/concurrency/keepalive enforcement，并通过 long-lived
+  watch、KeepAlive stream、connection age reconnect、TLS rotation 和 production readiness probes
+  约束服务端行为；etcdctl flag surface 由命令兼容表单独跟踪。
+
+  对照 `37eabd770`：官方 gateway 支持双向 stream WebSocket。KubeBrain gateway 已启用
+  grpc-websocket-proxy，并用 gateway WebSocket stream tests 覆盖 lock/watch 等双向/streaming
+  边界。对照 `f79d5aaca`、`5d3a5912e` 与 `70018e920`：官方修复 HTTPS DNS SRV
+  discovery、docker DNS SRV TLS 和 peer CN auth。KubeBrain DBaaS 不承诺 upstream discovery
+  CLI 语义；生产拓扑由静态 service/endpoint、client/peer TLS、client-cert-auth requires CA、
+  AllowedCNs/AllowedHostnames、verified client certificate CommonName auth 和 TLS smoke 固定。
+  对照 `253259452` 与 `733de98cf`：官方支持更细粒度 auto compaction retention。KubeBrain
+  以 revision-based compaction、history window、meta keyspace compaction、snapshot restore 和
+  scale probes 固定 TiKV-backed 数据面，不复用 upstream compactor flag grammar。
+
+  对照 `65ffb52e5`：官方增加 watch keepalive integration test。KubeBrain watch contract 已由
+  progress notify、RequestProgress、fragmentation、large watch、stream cancel、compaction、
+  failover/reconnect、WebSocket gateway 和 production watch probes 覆盖。对照 `e8c18e336`、
+  `94b5071c3` 与 `e709f8325`：官方 grpcproxy 支持 authed snapshot/watch/RPC。KubeBrain
+  follower proxy 与 gateway auth 已覆盖 metadata propagation、Bearer/JWT/simple token、root/admin
+  permission、snapshot auth、watch auth 和 auth disabled after credentialed connection；不移植
+  upstream grpcproxy internals。对照 `7f4464415`：官方 grpcproxy respect `KeysOnly`；KubeBrain
+  Range/RangeStream、historical/serializable、limit、sort、CountOnly precedence、tombstone 和
+  namespace tests 已固定 `KeysOnly` 外观。
+
+  对照 `1ae6f1614`：官方 etcdctl 正确处理 empty-key permission。KubeBrain auth range
+  validation、empty-key namespace differential、role/permission validation、gateway lock empty-key
+  typed errors 和 raw/client differential 已覆盖服务端边界。对照 `28a22075c` 与
+  `7063a5e5c`：官方测试 minLeaseTTL 并限制 expired lease scan。KubeBrain lease manager 已固定
+  TTL truncation、min/max/signed/explicit ID、batch renewal、long renewal、expiry delete event、
+  failover reload、per-key attachment 和 production smoke；scan throttle/heap 实现不复用 upstream
+  lessor。对照 `6f76d52a1`、`18ba4d60e` 与 `15c3c1be`：官方迁移到
+  `status.Code`/typed gRPC status，并把 dial timeout 归一到 `context.DeadlineExceeded`。
+  KubeBrain typed status code、error message differential、deadline/cancel 和 inflight error gates
+  已固定 public errors。对照 `252cab0c1` 与 `550765d03`：官方扩展 clientv3
+  `LeaseValue` compare helper。KubeBrain 服务端只接收 compare target/value 的 wire encoding；
+  Txn lease compare、missing/max lease error、ignore lease/value precedence 和 nested txn lease
+  differential 已覆盖。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3853 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
