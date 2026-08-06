@@ -33,7 +33,7 @@ type generatedTxnCase struct {
 	Final     []normalizedKV
 }
 
-const generatedInnerRangeModeCount = 16
+const generatedInnerRangeModeCount = 17
 
 func TestGeneratedNestedTxnDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
@@ -149,6 +149,8 @@ func runGeneratedNestedTxnCases(t *testing.T, endpoint, instance string) []gener
 			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithMaxCreateRev(baseRev))
 		case 15:
 			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithMinCreateRev(baseRev+1), clientv3.WithMaxCreateRev(baseRev))
+		case 16:
+			innerRange = clientv3.OpGet(casePrefix, clientv3.WithPrefix(), clientv3.WithMinModRev(baseRev+1), clientv3.WithMaxModRev(baseRev))
 		}
 		inner := clientv3.OpTxn(
 			[]clientv3.Cmp{clientv3.Compare(clientv3.Value(c), "=", "inner")},
