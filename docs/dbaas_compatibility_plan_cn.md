@@ -36983,6 +36983,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3/3 Pod Ready、零重启。本项是 staged Txn historical empty-range 的真实兼容修复，不改变 unary
   Range 或非空历史扫描语义。
 
+- A3724 对 A3723 做 staged-write 覆盖闭环。源码审计确认官方
+  `/root/etcd/server/etcdserver/txn/txn.go` 的 `IsTxnReadonly`/`IsTxnSerializable` 与 KubeBrain 一致：
+  顶层出现 nested Txn 即不进入 readonly fast path，因此没有错误地把分类逻辑改成递归只读。新的固定
+  差分完整复用 92 个 Range 规格，并逐项执行 top-level/nested 两种写事务，共 184 case；每个事务先在
+  与数据范围不相交的 control 前缀 staged Put 唯一 marker，再执行目标 Range。合法请求必须 marker 落盘、
+  全局 revision 仅 `+1`、outer/Range header 相等，且 current/historical 的 KV、Count/More、排序、投影
+  与 lease 元数据均和官方一致；空 key/未知 sort 的静态非法请求必须 marker 不落盘且 revision gap 为 0。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3723-txn-range-empty` 首轮 21.674 秒、连续 10 轮
+  219.738 秒、race 5 轮 126.870 秒全部 GREEN；没有新 runtime RED，证明 A3723 的 historical
+  equal/reversed empty-range 修复在真实 staged Put 前置时仍保持 pinned commit header 和原子回滚。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.554 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 170.169 秒）及 `go vet ./...` 通过。生产继续保持原镜像，3/3 Pod Ready、零重启；
+  本项只新增永久生成式门禁，不为已经兼容的行为制造实现改动或无意义滚动。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
