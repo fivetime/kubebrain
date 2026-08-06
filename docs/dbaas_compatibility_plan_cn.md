@@ -39131,6 +39131,45 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   tombstone/restart 和 Porcupine 历史模型覆盖相同 client-visible 风险。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3822 与上述 commit ID；本轮不修改 runtime。
 
+- A3823 固定 upstream robustness Range/List/StaleList、LeaseTimeToLive auth、maintenance
+  error mapping、grpcproxy MemberList、auto-compaction config、compaction/hash 和 graceful
+  shutdown 审计。对照 `/root/etcd` commit `2e7cb772b`、`f7831e260`、`697931810`、
+  `7c68be4cf`、`9fc438cb6`、`1663600be`、`96987d8b5`、`911c40a34` 与
+  `9b5680c5f`：官方 robustness model 把 Range 正式建模，补齐 range end、limit、count、stale
+  get/list 和 Kubernetes list-watch 协议。KubeBrain 已把这些作为核心数据面语义长期固定：
+  unary Range、RangeStream、nested Txn、namespace wrapper、gateway 和 compat differential 覆盖
+  point/prefix/range、limit、More、CountOnly、KeysOnly、历史 revision、serializable/stale read、
+  pagination/continue 和 Kubernetes LIST/WATCH cache 行为；count-index 只作为加速，超限或不可用时
+  必须回退为等价扫描结果。
+
+  对照 `975854f07`、`c9b368119`、`1c455d499`、`dfbe2038f` 与 `1c18c86e1`：官方修复
+  `LeaseTimeToLive(Keys=true)` 不得向无权限用户泄漏 attached keys，增加 e2e/integration 覆盖，
+  并让带 lease Put 的 auth 检查提前失败。KubeBrain 已有 A3579/A3580/A3818 等租约权限门禁：
+  TTL/Leases/KeepAlive/Revoke、attached key、auth revision fence、leader 变化、root/user/anonymous
+  差分和 gateway auth 透传均要求按 etcd 返回 `PermissionDenied` 或 invalid token，不泄漏未授权 key。
+  对照 `1ba577e49`：官方 maintenance API 错误进入 `togRPCError`。KubeBrain Maintenance
+  Status/Hash/HashKV/Compact/Alarm/Defragment/Snapshot/MoveLeader/Downgrade 已有 raw gRPC、
+  clientv3、gateway error normalization、future/compacted HashKV 和 unsupported platform boundary
+  门禁。
+
+  对照 `ca221208d` 与 `26fdf4600`：官方修复 grpcproxy MemberList 在 proxy 节点 down 后不更新，
+  并关闭 session 避免 goroutine 泄漏。KubeBrain 不运行 upstream grpcproxy 二进制；等价对外风险由
+  follower proxy、MemberList/AutoSync/auth、advertised URL 可达性、endpoint health `--cluster`
+  和生产 readiness 门禁覆盖。对照 `a7344da7d`：官方 config file 中 `auto-compaction-mode` 默认
+  `periodic`。KubeBrain 显式实现 Compact/physical compaction 与 retention 策略，不复用 upstream
+  embed config；生产文档要求 compact、HashKV 和 watch compact boundary 门禁。对照 `550aa152a`、
+  `b9e30bf87` 与 `798d2b792`：官方验证 snapshot 时 consistent index 最新、恢复 scheduled
+  compaction 后 hash 正确，并给 help 增加 compact hash check；KubeBrain Hash/HashKV、Snapshot、
+  cold restore、compaction restart 和 direct replica consistency 已以 TiKV/PD 数据面门禁覆盖。对照
+  `e9fa3d30d`：官方测试 membership 从 backend 恢复；KubeBrain stable storage identity、
+  MemberList、生产身份漂移检查和 unsupported mutation 边界覆盖该类启动恢复外观。对照
+  `f31d0eafb`：官方补 graceful shutdown e2e；KubeBrain rolling restart、leader failover、
+  lease keepalive failover、watch restart/tombstone 和生产只读探测持续覆盖停机/换主期间的
+  client-visible 可用性。对照 `0d2d383f0`、`a9864d4ed`、`b365f3cda` 与 `fbc34d122`：
+  官方只修 robustness multi-txn key prefix、etcdctl `--rev` 文案、benchmark range limit 和
+  client snapshot SaveWithVersion 重构，不改变服务端 wire 语义。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3823 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
