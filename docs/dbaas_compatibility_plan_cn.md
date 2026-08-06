@@ -37119,6 +37119,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.515 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 170.485 秒）及 `go vet ./...` 通过；官方临时实例、data-dir 和 watch 输出均已清理。
 
+- A3731 补齐 upstream `d8b419257:keyIndex.restoreTombstone` 的下一条 generation 不变量。A3730 只证明
+  compact-boundary DELETE 在全 serving restart 后仍可重放；upstream 单元测试还要求仅由 tombstone
+  恢复出的 key index 随后能接受新 PUT，形成新的 live generation。现扩展同一生产状态机：收到历史
+  DELETE 后保持原 Watch 打开，重新 Put 同键并要求下一 response 只有一个 PUT；新 KV 的
+  CreateRevision=ModRevision=Put header revision、Version=1、值精确匹配且 PrevKV=nil，最终 current Get
+  也必须保留同一 create/version。这样同时固定 compact 后索引恢复、实时 Watch 连续性和 etcd
+  delete/recreate generation 重置语义。
+
+  官方 etcd 同 data-dir stop/restart 后给出 `DELETE@3 → PUT@4`、Version=1、PrevKV=nil；首次 jq 断言
+  因 protobuf 默认 PUT enum=0 在 JSON 中被省略而失败，按 `(type // 0)` 解析原始事件后 GREEN，未误判
+  服务端。生产普通三副本 replacement 24.07 秒、race replacement 24.06 秒均 GREEN，没有 runtime
+  RED 或镜像变更。最终 Pod UID 为 `964becac-fefe-402c-8e89-65a80efee742`、
+  `08cbfbd5-bf7b-4f75-9493-7ecc15c00e39`、`31839041-51a0-417c-90fe-8d3340525b99`，3/3 Ready、
+  零重启，`readyz=ok`，`/compat/` Count=0。兼容模块 `go test ./... && go vet ./...` 通过
+  （测试 1.576 秒），根模块 `go test ./...`（`pkg/server/etcd` 170.982 秒）及 `go vet ./...` 通过；
+  官方临时实例、data-dir 和 watch 输出均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
