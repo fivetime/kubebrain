@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -198,6 +199,37 @@ func runRestoreDeleteModel(t *testing.T, ctx context.Context, endpoint, prefix s
 	require.False(t, currentCount.More)
 	require.Equal(t, int64(len(currentBefore.Kvs)), currentCount.Count)
 	assertRestoreDeletePagination(t, ctx, cli, prefix, 0, currentBefore.Kvs)
+
+	compactIndex := len(revisions) / 2
+	compactRevision := revisions[compactIndex]
+	_, err = cli.Compact(ctx, compactRevision, clientv3.WithCompactPhysical())
+	require.NoError(t, err)
+	restart()
+	for index, snapshot := range snapshots {
+		response, rangeErr := cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(snapshot.revision))
+		if index < compactIndex {
+			require.ErrorIsf(t, rangeErr, rpctypes.ErrCompacted,
+				"revision %d below compact revision %d must stay compacted after restart",
+				snapshot.revision, compactRevision)
+			continue
+		}
+		require.NoErrorf(t, rangeErr, "revision %d at or above compact revision %d", snapshot.revision, compactRevision)
+		require.Equal(t, snapshot.kvs, response.Kvs,
+			"snapshot at revision %d changed after compaction and restart", snapshot.revision)
+	}
+	expectedCompactedEvents := append([]restoreDeleteEvent(nil), eventsBefore[compactIndex:]...)
+	// Physical compaction retains the last live version at the boundary so
+	// events after it can still report that value as PrevKV. Only the boundary
+	// event itself cannot reach back to an older version.
+	expectedCompactedEvents[0].prevKV = nil
+	compactedEvents := collectRestoreDeleteEvents(
+		t, ctx, cli, prefix, compactRevision, len(expectedCompactedEvents),
+	)
+	require.Equal(t, expectedCompactedEvents, compactedEvents,
+		"compact-boundary watch changed across physical compaction and serving restart")
+	currentCompacted, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Equal(t, currentBefore.Kvs, currentCompacted.Kvs)
 }
 
 func collectRestoreDeleteEvents(
