@@ -37935,6 +37935,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   各专项行为测试；它只保证兼容审计索引持续指向已存在的 oracle，避免未来把官方 client-only
   变更误归类为 KubeBrain runtime 缺口，或在已有差分外重复追加低价值测试。
 
+- A3777 固定 upstream 成员扩容 quorum 修复的 DBaaS 平台边界。对照 `/root/etcd`
+  commits `887c8486d`、`bc5056f83` 和 `b90bc8c3`：官方 etcd 在 Raft 成员重配置中把
+  “新增成员暂不可用”纳入 quorum 安全判断，使已有三成员中一个 down 时仍可添加第四个成员；
+  这修复的是 etcd 自管 Raft membership，不是 KubeBrain TiKV/PD 数据面的可移植 runtime
+  逻辑。KubeBrain 副本无本地 bbolt 数据，成员扩缩由 DBaaS 控制面滚动 StatefulSet、
+  静态 peer identity、MemberList 发布和服务发现配置完成，公开 Cluster mutation RPC 保持
+  平台替代边界。
+
+  现有门禁已覆盖该边界：A1123/A1221/A1185/A1238 固定
+  `MemberAdd/Remove/Update/Promote` 与 `MemberAddAsLearner` 的 official client/raw
+  `Unimplemented` 平台提示、root/非 root 鉴权和 client-cert 认证外观；A3469–A3479 进一步对齐
+  MemberAdd/Update/Remove/Promote 的 URL 语法、PeerURL 冲突、未知成员、learner/promote
+  状态分类和 validation/auth/platform-boundary precedence；A379/A436/A1403/A1404 固定
+  MemberList 的三成员静态发布、可达 client URL 和确定性排序。因此本轮不实现 upstream
+  `isConnectedToQuorumAfterAddingNewMemberSince`，只把这些 commit 加入
+  `TestRecentUpstreamAuditIsRecorded`，防止后续把 Raft quorum 内部修复误当成 KubeBrain 数据面缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
