@@ -36389,6 +36389,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   模块全量 test/vet（`pkg/server/etcd` 167.204 秒）均 GREEN。因此本轮没有伪造数据面差异，也不
   修改或滚动数据面；新增门禁负责阻止后续收集回归。
 
+- A3684 增加 Txn 多操作 lease attachment 官方差分。此前只证明单个 Txn put/delete 会同步 lease
+  索引，尚未覆盖同一成功分支内同时把 `x` 从 lease A 转移到 lease B、删除 lease A 的 `y`，并向
+  lease A 新增 `w` 的组合提交。新测试要求三项 response 保持请求顺序，delete 的 `PrevKv` 保留
+  `old-y` 与 lease A，三项 mutation 只共同推进一次 revision；提交后 lease A attached keys 精确为
+  `w,z`、lease B 为 `x`，KV 的 value/lease 与 TTL 索引一致且 `y` 确实不存在。
+
+  官方 etcd `d947b20863` 与生产三副本 `kubebrain:a3672-stream-progress` 首轮 0.421 秒、连续 10 轮
+  （测试 3.376 秒）及 race 5 轮（测试 2.970 秒）全部 GREEN，生产 Pod 3/3 Ready、0 restart。
+  兼容模块及根模块全量 test/vet 通过（`pkg/server/etcd` 167.385 秒）。未发现 runtime RED，因此
+  本项只增加永久原子性证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已
+  删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
