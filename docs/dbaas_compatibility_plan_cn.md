@@ -37722,6 +37722,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 167.314 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。
 
+- A3765 固定近期 upstream public-surface 覆盖审计。以 `/root/etcd` 当前 `d947b2086`
+  基线后的最新提交为准，本轮逐项筛过可移植到 KubeBrain DBaaS 数据面的 public 行为点：
+  `2308ce157`/`e84205af4` 的 CRL resumed-session 校验已由 A250 的 `VerifyConnection`
+  路径和入站/出站 resumed TLS session 单测覆盖；`4968db847`/`0e781b8f9` 的
+  `DialTimeout` 注释修正已由 A3754 的 clientv3 nonblocking dial 门禁覆盖；
+  `e40f9c68e` 的 `KeysOnly+CountOnly` 优先级已有 server、raw gRPC、official
+  client 和 RangeStream 多层回归；`695442b44` 的 `etcdctl get --stream` 已由 A3751
+  官方 CLI 黑盒差分覆盖；`fbba4f46e` 的 Txn compacted Range 原子性和未选分支跳过已由
+  A3709/A3710 及 `txn_range_consistency_test.go` 覆盖；`5d3241d01` 的
+  `GetStream` compacted error 与 ordering wrapper unsupported stream 已由 A1124/A1132/A1215
+  等 clientv3 门禁覆盖。剩余 `b02869083`（删除 etcd snapshot assertion）、
+  `b05c85872`（etcd integration `ServerClient` in-process snapshot adapter）和
+  `c51910e45`（etcd e2e tiny snapshot catchup 参数 deflake）属于 Raft/bbolt/测试框架内部路径，
+  不应机械移植到 TiKV/PD 数据面。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 作为轻量回归，要求本文持续记录这些审计结论和
+  upstream commit ID，避免后续重复筛选时把已覆盖点当成新缺口，或把 etcd 内部实现职责误归入
+  KubeBrain 兼容范围。本轮不改变 runtime 镜像或服务端语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
