@@ -36488,6 +36488,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
   oracle 数据。
 
+- A3692 增加与 A3691 相对的 live Watch 帧边界差分，防止把 catch-up 合帧规则误用于实时推送。
+  watcher 从 seed revision+1 建立并确认 Created 后，Txn 把 `x` 从 lease A 转移到 B、向 A 新增
+  `w`；测试先接收该帧再 Revoke(A)。官方契约为 Created header=seed revision，Txn 的两项 Put 同处
+  `[2]` 帧且 header=revision+1，Revoke 的 Delete `w` 单独处于 `[1]` 帧且 header=revision+2；三项
+  Event 的 ModRevision、value、lease 与 PrevKv 仍须精确匹配，最终只剩 `x=new-x/B`。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.340 秒、连续 10 轮
+  （测试 3.050 秒）及 race 5 轮（测试 2.789 秒）全部 GREEN，没有 runtime RED。清理逻辑不再重复
+  revoke 已消失的 A，避免预期 LeaseNotFound 污染门禁日志。本项只增加永久实时 Watch 分帧证据，
+  不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
+  根门禁首次运行时 `pkg/server/etcd` 在 175.606 秒后失败，但超量日志截断了具体测试名与断言，不能
+  据此伪造归因；该根模块不编译独立 compat module 的新增文件。随后独立 `pkg/server/etcd -count=1`
+  未捕获任何失败/panic/断言，第二次完整根模块 test/vet 全部 GREEN（该包 167.941 秒）。本记录保留
+  首次非确定性失败，不把一次复跑通过改写成“从未失败”。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
