@@ -29,6 +29,7 @@ func TestTxnCompactedRangeOrderDifferentialAgainstReferenceEtcd(t *testing.T) {
 		{Name: "range-before-put", Code: "Unknown", Message: "etcdserver: mvcc: required revision has been compacted"},
 		{Name: "put-before-range", Code: "Unknown", Message: "etcdserver: mvcc: required revision has been compacted"},
 		{Name: "nested-put-before-range", Code: "Unknown", Message: "etcdserver: mvcc: required revision has been compacted"},
+		{Name: "unselected-compacted-range", Code: "OK", WrittenKeys: 1},
 	}
 	referenceOutcome := runTxnCompactedRangeOrderScenario(t, reference, "reference")
 	require.Equal(t, want, referenceOutcome)
@@ -100,5 +101,27 @@ func runTxnCompactedRangeOrderScenario(t *testing.T, endpoint, instance string) 
 			WrittenKeys: written.Count - 1,
 		})
 	}
+
+	selectedKey := prefix + "selected-put"
+	forbiddenKey := prefix + "unselected-put"
+	response, txnErr := cli.Txn(ctx).
+		If(clientv3.Compare(clientv3.Version(prefix+"missing"), "=", 0)).
+		Then(clientv3.OpPut(selectedKey, "committed")).
+		Else(compactedGet, clientv3.OpPut(forbiddenKey, "must-not-commit")).
+		Commit()
+	require.NoError(t, txnErr)
+	require.True(t, response.Succeeded)
+	selected, getErr := cli.Get(ctx, selectedKey)
+	require.NoError(t, getErr)
+	require.Equal(t, int64(1), selected.Count)
+	forbidden, getErr := cli.Get(ctx, forbiddenKey)
+	require.NoError(t, getErr)
+	require.Zero(t, forbidden.Count)
+	written, getErr := cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithCountOnly())
+	require.NoError(t, getErr)
+	outcomes = append(outcomes, txnCompactedRangeOrderOutcome{
+		Name: "unselected-compacted-range", Code: status.Code(txnErr).String(),
+		Message: status.Convert(txnErr).Message(), WrittenKeys: written.Count - 1,
+	})
 	return outcomes
 }
