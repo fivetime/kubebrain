@@ -38200,6 +38200,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标是把 upstream MVCC 优化与命名整理映射到 KubeBrain 已有 public Range/Txn oracle，后续只有
   当官方新增客户端可观察行为时才建立新的专项 RED。
 
+- A3791 固定 upstream read-index/raft request entrypoint 内部重构审计。对照 `/root/etcd`
+  commits `fd3f08d02`、`305287bd1`、`d766483fe`、`01cd93375`、`cb58c7b14`、
+  `cfe94b34d`、`7dc707826`、`a060bdd19` 与 `432c7dd24`：官方把
+  linearizable read 相关方法从 `v3_server.go`/`server.go` 抽到 read 子包，移除非公开
+  `linearizableReadNotify`，重命名 committed-index wait 语义，改写测试为 mock，并统一 raft
+  request entrypoint。公共契约仍是所有需要线性读的 KV/Txn/Cluster/Maintenance 请求必须先建立
+  read barrier，barrier 失败时返回 etcd 兼容错误，且不能把中途到达的 reader 并入过旧的
+  ReadIndex/leader generation。
+
+  KubeBrain 不使用 upstream Raft ReadIndex；它通过 TiKV/PD committed revision、leader/follower
+  revision syncer、durable watermark 和 explicit read barrier 实现同一客户端可见语义。现有覆盖包括
+  A37 linearizable historical Range header、A104/A1187/A1284 MemberList barrier error、A568
+  MemberList auth/barrier 顺序、A599 Authenticate barrier、A1256 Maintenance read barrier、
+  A3433/A3435 read-only Txn barrier、A3440/A3444 follower durable-watermark 与 historical
+  linearizable Range，以及 A3784 对 Raft ReadIndex stale-read 风险的近期审计。`revisionSyncer`
+  单测还固定 mid-flight reader 必须触发 fresh fetch、leader flag stale 和 generation 变化时
+  fail-closed。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3791 和上述 commit ID。本轮不修改 runtime；
+  目标是把 upstream read/raft 代码搬迁与 mock 化测试分流为内部审计项，后续只在出现新的
+  client-visible read-barrier 或错误外观变化时建立专项 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
