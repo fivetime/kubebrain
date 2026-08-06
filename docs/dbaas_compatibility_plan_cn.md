@@ -37790,6 +37790,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `http://172.18.0.3:30079` 运行 focused 差分，1.045 秒 GREEN。本轮只增强官方
   Range client/server 语义门禁，不改变 runtime 镜像。
 
+- A3769 对照 upstream `/root/etcd` commit `fd604517e` 的 KEY ASC Range limit
+  下推语义。上游把 `rangeLimit` 从“只要 `SortOrder != NONE` 就取全量再排序截断”改成
+  `isDefaultOrdering(SortTarget, SortOrder)`：默认 `SortOrder=NONE` 和显式
+  `SortTarget=KEY,SortOrder=ASCEND` 都视为 key 字典序升序，因此可以安全取 `Limit+1`
+  判断 `More`，不用 materialize 完整 range。该变更是优化，但用户可见边界仍必须稳定：
+  默认排序的 limited Range 必须返回 key 升序第一页，`Count` 为完整匹配数，`More` 正确表示截断。
+
+  为建立 RED 依据，直接读取旧提交 `fd604517e^` 的
+  `server/etcdserver/txn/range.go`，确认 `rangeLimit` 中仍有
+  `SortOrder != pb.RangeRequest_NONE` 后 `limit = 0` 的分支；当前提交新增
+  `isDefaultOrdering` 并只在非默认排序或 revision filter 下禁用 limit 下推。KubeBrain 已有大量
+  显式 `SortByKey/Ascend` 和 sort/filter/limit 组合门禁，但 `TestRangeDifferentialAgainstReferenceEtcd`
+  没有直接固定默认 sort 的 limited 黑盒外观。本轮新增 `DefaultLimited`：
+  `Get(prefix, WithPrefix(), WithLimit(1))` 必须返回 key `a`、`Count=2`、`More=true`，
+  与默认 key 升序一致。临时启动 `/root/etcd/bin/etcd` reference
+  `http://127.0.0.1:12379`，并对生产 `http://172.18.0.3:30079` 运行 focused 差分，
+  0.969 秒 GREEN。本轮只增强官方 Range client/server 语义门禁，不改变 runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

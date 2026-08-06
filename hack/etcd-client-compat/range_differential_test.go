@@ -29,6 +29,7 @@ type rangeDifferentialResult struct {
 	FilteredLimited    normalizedRange
 	MaxModFiltered     normalizedRange
 	MaxCreateFiltered  normalizedRange
+	DefaultLimited     normalizedRange
 	Limited            normalizedRange
 	KeysOnly           normalizedRange
 	KeysOnlyLimited    normalizedRange
@@ -78,6 +79,7 @@ func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 		FilteredLimited:   rng([]normalizedKV{a}, 2, true),
 		MaxModFiltered:    rng([]normalizedKV{a}, 2, false),
 		MaxCreateFiltered: rng([]normalizedKV{a}, 2, false),
+		DefaultLimited:    rng([]normalizedKV{a}, 2, true),
 		Limited: rng([]normalizedKV{
 			kv("c", "vc", 3, 3, 1), kv("b", "vb", 2, 2, 1),
 		}, 3, true),
@@ -170,6 +172,11 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		clientv3.WithPrefix(),
 		clientv3.WithMaxCreateRev(putA.Header.Revision),
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
+	defaultLimited, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithLimit(1),
 	)
 	require.NoError(t, err)
 	limited, err := cli.Get(ctx, prefix,
@@ -269,6 +276,7 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		FilteredLimited:    normalizeRange(filteredLimited, prefix, baseRev),
 		MaxModFiltered:     normalizeRange(maxModFiltered, prefix, baseRev),
 		MaxCreateFiltered:  normalizeRange(maxCreateFiltered, prefix, baseRev),
+		DefaultLimited:     normalizeRange(defaultLimited, prefix, baseRev),
 		Limited:            normalizeRange(limited, prefix, baseRev),
 		KeysOnly:           normalizeRange(keysOnly, prefix, baseRev),
 		KeysOnlyLimited:    normalizeRange(keysOnlyLimited, prefix, baseRev),
