@@ -36413,6 +36413,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过（`pkg/server/etcd` 167.241 秒）。没有 runtime RED，本项只增加永久分支隔离证据，不重建或
   滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3686 将嵌套 Txn envelope 与 lease attachment 原子性放入同一官方差分。场景预置 `x,z` 属于
+  lease A、`y` 属于 lease B；外层成功分支执行一个内层 Txn，内层选中分支把 `x` 转移到 B 并删除
+  `y`，未选中分支企图把 `z` 改写并转移到 B，外层随后向 A 新增 `w`。最终必须只有一次 revision
+  推进，A keys 为 `w,z`、B keys 为 `x`，`z` 保持原值/原 lease，delete PrevKv 仍标记 lease B。
+
+  首次 oracle RED 纠正了测试假设而非产品实现：官方 etcd 的内层 `TxnResponse.Header.Revision` 为 0，
+  但内层 Put/Delete 与外层 Put response header 均携带外层提交 revision。按该精确 envelope 固化后，
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.374 秒、连续 10 轮
+  （测试 3.234 秒）及 race 5 轮（测试 3.013 秒）全部 GREEN；兼容模块及根模块全量 test/vet
+  通过（`pkg/server/etcd` 167.299 秒）。没有 runtime RED，本项只增加永久嵌套原子性证据，不重建
+  或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
