@@ -37896,6 +37896,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestRecentUpstreamAuditIsRecorded` 固定 `7624a8a2e`、`8ce417fa0` 与 A3774。该轮不修改 runtime；
   目标是防止后续缩减差分矩阵时静默丢掉 upstream 2026 KeysOnly index 语义覆盖。
 
+- A3775 固定本轮继续筛选的近期 upstream public-surface 审计。以 `/root/etcd`
+  当前 `d947b2086` 基线继续向后对照，确认以下候选不应被重复当作未实现缺口：
+  `f55d8a061` 的 `etcd_cluster_version` 恢复路径已由 A311 的
+  `etcd.server.version`/`etcd.cluster.version` 实现、mock 门禁和观测文档覆盖；
+  `43a4c4ecd` 的 gRPC auth metadata 精确 `"Bearer "` 前缀已由 A247 的
+  `authCredentialFromContext`/`authTokenFromCredential` 单元测试和
+  `bearer_auth_live` 生产 live 测试覆盖，裸 token 保持成功，小写 `"bearer "` 仍 fail closed；
+  `a81b6d623` 的 clientv3 KeepAlive channel 在 Revoke 后允许交付已缓冲响应并最终关闭的契约，
+  已由 A297/A1015/A3377 的本地、官方差分和 bound-key revision 门禁覆盖；
+  `f5912263c` 的 invalid Watch create response header 已由 A303/A3762 的 raw/live 门禁覆盖，
+  要求 `Header != nil`、`WatchId=-1`、`Created=true`、`Canceled=true`；
+  `967feb0d6` 与 `b05c85872` 的 server-streaming EOF / snapshot adapter 行为已由
+  Snapshot EOF、history、HTTP snapshot 与 in-process adapter 审计覆盖；
+  `114f6ad80` 的非 root `Maintenance.Status` 已由 authenticated ordinary-user status
+  测试覆盖。`da0321d1` 仅修正 benchmark 对 `Range(..., true)` 的调用，不改变公开 RPC、
+  client API、metric 或 DBaaS runtime 语义。
+
+  本轮新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3775 及上述 commit ID，作为后续筛选的
+  去重门禁。该轮不修改 runtime；若未来 upstream 在这些主题上新增可观察行为，应以新 commit
+  重新建立 RED/官方 oracle，而不是复用本条审计结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
