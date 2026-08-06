@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ type txnLeaseRevokeRaceOutcome struct {
 	AllStatesLinearizable bool
 	OldLeasesGone         bool
 	NewLeaseStateMatches  bool
+	WatchHistoryMatches   bool
 	FinalKeysDeleted      bool
 }
 
@@ -48,6 +50,7 @@ func requireTxnLeaseRevokeRaceValid(t *testing.T, outcome txnLeaseRevokeRaceOutc
 	require.True(t, outcome.AllStatesLinearizable)
 	require.True(t, outcome.OldLeasesGone)
 	require.True(t, outcome.NewLeaseStateMatches)
+	require.True(t, outcome.WatchHistoryMatches)
 	require.True(t, outcome.FinalKeysDeleted)
 }
 
@@ -66,7 +69,7 @@ func runTxnLeaseRevokeRaceScenario(t *testing.T, endpoint, instance string, roun
 	})
 	outcome := txnLeaseRevokeRaceOutcome{
 		Rounds: rounds, AllStatesLinearizable: true, OldLeasesGone: true,
-		NewLeaseStateMatches: true, FinalKeysDeleted: true,
+		NewLeaseStateMatches: true, WatchHistoryMatches: true, FinalKeysDeleted: true,
 	}
 
 	for round := 0; round < rounds; round++ {
@@ -131,12 +134,18 @@ func runTxnLeaseRevokeRaceScenario(t *testing.T, endpoint, instance string, roun
 				len(newTTL.Keys) == 1 && string(newTTL.Keys[0]) == xKey
 			outcome.AllStatesLinearizable = outcome.AllStatesLinearizable && stateMatches
 			outcome.NewLeaseStateMatches = outcome.NewLeaseStateMatches && len(newTTL.Keys) == 1 && string(newTTL.Keys[0]) == xKey
+			outcome.WatchHistoryMatches = outcome.WatchHistoryMatches && watchTxnLeaseRevokeHistoryMatches(
+				t, ctx, cli, keyPrefix, baseRevision, leaseA.ID, leaseB.ID, true,
+			)
 		case errors.Is(txnResult.err, rpctypes.ErrLeaseNotFound):
 			outcome.TxnLeaseNotFound++
 			stateMatches := txnResult.response == nil &&
 				current.Header.Revision-baseRevision == 1 && len(current.Kvs) == 0 && len(newTTL.Keys) == 0
 			outcome.AllStatesLinearizable = outcome.AllStatesLinearizable && stateMatches
 			outcome.NewLeaseStateMatches = outcome.NewLeaseStateMatches && len(newTTL.Keys) == 0
+			outcome.WatchHistoryMatches = outcome.WatchHistoryMatches && watchTxnLeaseRevokeHistoryMatches(
+				t, ctx, cli, keyPrefix, baseRevision, leaseA.ID, leaseB.ID, false,
+			)
 		default:
 			outcome.OtherTxnErrors++
 			outcome.AllStatesLinearizable = false
@@ -149,4 +158,79 @@ func runTxnLeaseRevokeRaceScenario(t *testing.T, endpoint, instance string, roun
 		outcome.FinalKeysDeleted = outcome.FinalKeysDeleted && len(final.Kvs) == 0
 	}
 	return outcome
+}
+
+type txnLeaseRevokeWatchEvent struct {
+	RevisionGap int64
+	Type        string
+	Key         string
+	Value       string
+	Lease       string
+	PrevValue   string
+	PrevLease   string
+}
+
+func watchTxnLeaseRevokeHistoryMatches(
+	t *testing.T,
+	ctx context.Context,
+	cli *clientv3.Client,
+	prefix string,
+	baseRevision int64,
+	leaseA clientv3.LeaseID,
+	leaseB clientv3.LeaseID,
+	txnSucceeded bool,
+) bool {
+	t.Helper()
+	want := []txnLeaseRevokeWatchEvent{{
+		RevisionGap: 1, Type: "DELETE", Key: "x", PrevValue: "old-x", PrevLease: "A",
+	}}
+	if txnSucceeded {
+		want = []txnLeaseRevokeWatchEvent{
+			{RevisionGap: 1, Type: "PUT", Key: "x", Value: "new-x", Lease: "B", PrevValue: "old-x", PrevLease: "A"},
+			{RevisionGap: 1, Type: "PUT", Key: "w", Value: "new-w", Lease: "A"},
+			{RevisionGap: 2, Type: "DELETE", Key: "w", PrevValue: "new-w", PrevLease: "A"},
+		}
+	}
+
+	watchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	events := make([]txnLeaseRevokeWatchEvent, 0, len(want))
+	watch := cli.Watch(watchCtx, prefix, clientv3.WithPrefix(), clientv3.WithRev(baseRevision+1), clientv3.WithPrevKV())
+	for response := range watch {
+		if response.Err() != nil {
+			return false
+		}
+		for _, event := range response.Events {
+			observed := txnLeaseRevokeWatchEvent{
+				RevisionGap: event.Kv.ModRevision - baseRevision,
+				Type:        event.Type.String(),
+				Key:         string(event.Kv.Key[len(prefix):]),
+				Value:       string(event.Kv.Value),
+				Lease:       raceLeaseLabel(event.Kv.Lease, leaseA, leaseB),
+			}
+			if event.PrevKv != nil {
+				observed.PrevValue = string(event.PrevKv.Value)
+				observed.PrevLease = raceLeaseLabel(event.PrevKv.Lease, leaseA, leaseB)
+			}
+			events = append(events, observed)
+			if len(events) == len(want) {
+				cancel()
+				return reflect.DeepEqual(want, events)
+			}
+		}
+	}
+	return false
+}
+
+func raceLeaseLabel(lease int64, leaseA, leaseB clientv3.LeaseID) string {
+	switch lease {
+	case int64(leaseA):
+		return "A"
+	case int64(leaseB):
+		return "B"
+	case 0:
+		return ""
+	default:
+		return "other"
+	}
 }

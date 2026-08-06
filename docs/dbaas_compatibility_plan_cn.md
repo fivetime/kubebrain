@@ -36462,6 +36462,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 168.068 秒）。没有 runtime RED，本项只增加永久并发原子性证据，不重建或
   滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3690 将 A3689 从最终状态证明扩展到完整 Watch 历史。每轮竞争结束后从 seed revision+1 创建
+  带 PrevKv 的历史 Watch：Txn 先胜必须依次看到同一 revision 的 `PUT x(new-x/B, prev old-x/A)`、
+  `PUT w(new-w/A)`，以及下一 revision 的 `DELETE w(prev new-w/A)`；Revoke 先胜则只能看到一次
+  `DELETE x(prev old-x/A)`。失败 Txn 不得泄漏任何 Put event，事件 revision、请求内顺序、value、
+  lease 与 PrevKv 均进入规范化状态机。
+
+  首轮 32 次竞争中官方 success/not-found=10/22、KubeBrain=20/12，两端均真实覆盖两类终态且 Watch
+  全部匹配；官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮测试 9.633 秒，
+  随后 3 轮测试 36.808 秒、race 2 轮测试 23.341 秒继续 GREEN；兼容模块与根模块全量 test/vet
+  通过（`pkg/server/etcd` 168.320 秒）。没有 runtime RED，本项只增强永久并发可观测性证据，不重建
+  或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
