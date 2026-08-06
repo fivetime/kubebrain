@@ -37771,6 +37771,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Address.Metadata == nil`。focused 测试 0.019 秒 GREEN。本轮固定官方 service-discovery
   client API 边界，不改变 KubeBrain runtime 镜像。
 
+- A3768 对照 upstream `/root/etcd` commit `dd57ad39f` 的 fast KeysOnly Range
+  `Limit + WithTotalCount` 语义。上游把 `treeIndex.Range` 从只接收 key/end/revision
+  扩展为同时接收 `limit` 和 `withTotalCount`，保证 KeysOnly 快路径可以只返回 limit 内的
+  key metadata，同时 `RangeResponse.Count` 仍表示完整匹配数，`More` 表示结果被 limit 截断。
+  对 DBaaS 这会直接影响 apiserver/list 用户和官方 clientv3 的分页外观：不能为了避免读取 value
+  把 Count 截成页大小，也不能错误清掉 More。
+
+  为建立 RED 依据，直接读取旧提交 `dd57ad39f^` 的
+  `server/storage/mvcc/index.go`，确认 `Range(key,end,atRev)` 没有 `limit/withTotalCount`
+  参数；当前提交的 `Range(key,end,atRev,limit,withTotalCount)` 已包含
+  `reachedLimit && !withTotalCount` 分支，并新增“range keys limiting to one result with total
+  count”的 upstream 单测。KubeBrain 此前已有本地 `TestKeysOnlyLimitedRangeBoundsStorageReadsAndReturnsTotalCount`
+  证明 backend shim 的限读和总数，但缺少官方黑盒差分；本轮把
+  `WithKeysOnly()+WithLimit(1)+SortByKey/Ascend` 加入 `TestRangeDifferentialAgainstReferenceEtcd`，
+  期望只返回 key `a`、空 value、metadata revision/version 保留、`Count=2`、`More=true`。
+  临时启动 `/root/etcd/bin/etcd` reference `http://127.0.0.1:12379`，并对生产
+  `http://172.18.0.3:30079` 运行 focused 差分，1.045 秒 GREEN。本轮只增强官方
+  Range client/server 语义门禁，不改变 runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

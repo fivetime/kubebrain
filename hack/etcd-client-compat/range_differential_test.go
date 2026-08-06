@@ -31,6 +31,7 @@ type rangeDifferentialResult struct {
 	MaxCreateFiltered  normalizedRange
 	Limited            normalizedRange
 	KeysOnly           normalizedRange
+	KeysOnlyLimited    normalizedRange
 	ValueSortedKeys    normalizedRange
 	CreateSorted       normalizedRange
 	ModSorted          normalizedRange
@@ -81,6 +82,7 @@ func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 			kv("c", "vc", 3, 3, 1), kv("b", "vb", 2, 2, 1),
 		}, 3, true),
 		KeysOnly:           rng([]normalizedKV{kv("a", "", 1, 1, 1), kv("b", "", 2, 4, 2)}, 2, false),
+		KeysOnlyLimited:    rng([]normalizedKV{kv("a", "", 1, 1, 1)}, 2, true),
 		ValueSortedKeys:    rng([]normalizedKV{kv("b", "", 2, 4, 2)}, 2, true),
 		CreateSorted:       rng([]normalizedKV{b, a}, 2, false),
 		ModSorted:          rng([]normalizedKV{b, a}, 2, false),
@@ -205,6 +207,13 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
 	)
 	require.NoError(t, err)
+	keysOnlyLimited, err := cli.Get(ctx, prefix,
+		clientv3.WithPrefix(),
+		clientv3.WithKeysOnly(),
+		clientv3.WithLimit(1),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	require.NoError(t, err)
 	pointCountOnly, err := cli.Get(ctx, prefix+"b", clientv3.WithCountOnly())
 	require.NoError(t, err)
 	pointKeysOnly, err := cli.Get(ctx, prefix+"b", clientv3.WithKeysOnly())
@@ -262,6 +271,7 @@ func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) range
 		MaxCreateFiltered:  normalizeRange(maxCreateFiltered, prefix, baseRev),
 		Limited:            normalizeRange(limited, prefix, baseRev),
 		KeysOnly:           normalizeRange(keysOnly, prefix, baseRev),
+		KeysOnlyLimited:    normalizeRange(keysOnlyLimited, prefix, baseRev),
 		ValueSortedKeys:    normalizeRange(valueSortedKeys, prefix, baseRev),
 		CreateSorted:       normalizeRange(createSorted, prefix, baseRev),
 		ModSorted:          normalizeRange(modSorted, prefix, baseRev),
