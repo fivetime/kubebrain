@@ -25,6 +25,7 @@ type txnLeaseRevokeRaceOutcome struct {
 	OldLeasesGone         bool
 	NewLeaseStateMatches  bool
 	WatchHistoryMatches   bool
+	WatchFramesMatch      bool
 	FinalKeysDeleted      bool
 }
 
@@ -51,6 +52,7 @@ func requireTxnLeaseRevokeRaceValid(t *testing.T, outcome txnLeaseRevokeRaceOutc
 	require.True(t, outcome.OldLeasesGone)
 	require.True(t, outcome.NewLeaseStateMatches)
 	require.True(t, outcome.WatchHistoryMatches)
+	require.True(t, outcome.WatchFramesMatch)
 	require.True(t, outcome.FinalKeysDeleted)
 }
 
@@ -69,7 +71,7 @@ func runTxnLeaseRevokeRaceScenario(t *testing.T, endpoint, instance string, roun
 	})
 	outcome := txnLeaseRevokeRaceOutcome{
 		Rounds: rounds, AllStatesLinearizable: true, OldLeasesGone: true,
-		NewLeaseStateMatches: true, WatchHistoryMatches: true, FinalKeysDeleted: true,
+		NewLeaseStateMatches: true, WatchHistoryMatches: true, WatchFramesMatch: true, FinalKeysDeleted: true,
 	}
 
 	for round := 0; round < rounds; round++ {
@@ -134,18 +136,22 @@ func runTxnLeaseRevokeRaceScenario(t *testing.T, endpoint, instance string, roun
 				len(newTTL.Keys) == 1 && string(newTTL.Keys[0]) == xKey
 			outcome.AllStatesLinearizable = outcome.AllStatesLinearizable && stateMatches
 			outcome.NewLeaseStateMatches = outcome.NewLeaseStateMatches && len(newTTL.Keys) == 1 && string(newTTL.Keys[0]) == xKey
-			outcome.WatchHistoryMatches = outcome.WatchHistoryMatches && watchTxnLeaseRevokeHistoryMatches(
+			historyMatches, framesMatch := watchTxnLeaseRevokeHistoryMatches(
 				t, ctx, cli, keyPrefix, baseRevision, leaseA.ID, leaseB.ID, true,
 			)
+			outcome.WatchHistoryMatches = outcome.WatchHistoryMatches && historyMatches
+			outcome.WatchFramesMatch = outcome.WatchFramesMatch && framesMatch
 		case errors.Is(txnResult.err, rpctypes.ErrLeaseNotFound):
 			outcome.TxnLeaseNotFound++
 			stateMatches := txnResult.response == nil &&
 				current.Header.Revision-baseRevision == 1 && len(current.Kvs) == 0 && len(newTTL.Keys) == 0
 			outcome.AllStatesLinearizable = outcome.AllStatesLinearizable && stateMatches
 			outcome.NewLeaseStateMatches = outcome.NewLeaseStateMatches && len(newTTL.Keys) == 0
-			outcome.WatchHistoryMatches = outcome.WatchHistoryMatches && watchTxnLeaseRevokeHistoryMatches(
+			historyMatches, framesMatch := watchTxnLeaseRevokeHistoryMatches(
 				t, ctx, cli, keyPrefix, baseRevision, leaseA.ID, leaseB.ID, false,
 			)
+			outcome.WatchHistoryMatches = outcome.WatchHistoryMatches && historyMatches
+			outcome.WatchFramesMatch = outcome.WatchFramesMatch && framesMatch
 		default:
 			outcome.OtherTxnErrors++
 			outcome.AllStatesLinearizable = false
@@ -179,7 +185,7 @@ func watchTxnLeaseRevokeHistoryMatches(
 	leaseA clientv3.LeaseID,
 	leaseB clientv3.LeaseID,
 	txnSucceeded bool,
-) bool {
+) (bool, bool) {
 	t.Helper()
 	want := []txnLeaseRevokeWatchEvent{{
 		RevisionGap: 1, Type: "DELETE", Key: "x", PrevValue: "old-x", PrevLease: "A",
@@ -191,14 +197,26 @@ func watchTxnLeaseRevokeHistoryMatches(
 			{RevisionGap: 2, Type: "DELETE", Key: "w", PrevValue: "new-w", PrevLease: "A"},
 		}
 	}
+	wantFrameEventCounts := []int{1}
+	wantFrameHeaderGaps := []int64{1}
+	if txnSucceeded {
+		wantFrameEventCounts = []int{3}
+		wantFrameHeaderGaps = []int64{2}
+	}
 
 	watchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	events := make([]txnLeaseRevokeWatchEvent, 0, len(want))
+	frameEventCounts := make([]int, 0, len(wantFrameEventCounts))
+	frameHeaderGaps := make([]int64, 0, len(wantFrameHeaderGaps))
 	watch := cli.Watch(watchCtx, prefix, clientv3.WithPrefix(), clientv3.WithRev(baseRevision+1), clientv3.WithPrevKV())
 	for response := range watch {
 		if response.Err() != nil {
-			return false
+			return false, false
+		}
+		if len(response.Events) > 0 {
+			frameEventCounts = append(frameEventCounts, len(response.Events))
+			frameHeaderGaps = append(frameHeaderGaps, response.Header.Revision-baseRevision)
 		}
 		for _, event := range response.Events {
 			observed := txnLeaseRevokeWatchEvent{
@@ -215,11 +233,17 @@ func watchTxnLeaseRevokeHistoryMatches(
 			events = append(events, observed)
 			if len(events) == len(want) {
 				cancel()
-				return reflect.DeepEqual(want, events)
+				historyMatches := reflect.DeepEqual(want, events)
+				framesMatch := reflect.DeepEqual(wantFrameEventCounts, frameEventCounts) &&
+					reflect.DeepEqual(wantFrameHeaderGaps, frameHeaderGaps)
+				if !framesMatch {
+					t.Logf("watch frame mismatch: success=%t counts=%v headers=%v", txnSucceeded, frameEventCounts, frameHeaderGaps)
+				}
+				return historyMatches, framesMatch
 			}
 		}
 	}
-	return false
+	return false, false
 }
 
 func raceLeaseLabel(lease int64, leaseA, leaseB clientv3.LeaseID) string {

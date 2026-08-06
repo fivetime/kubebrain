@@ -36474,6 +36474,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过（`pkg/server/etcd` 168.320 秒）。没有 runtime RED，本项只增强永久并发可观测性证据，不重建
   或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3691 补齐 A3690 的 clientv3 catch-up Watch 帧边界。展平事件无法发现 response 分批差异；新增
+  门禁同时记录每个非空 WatchResponse 的 event count 与 header revision。首次官方 oracle RED 纠正
+  了“每个 revision 独立一帧”的错误假设：从历史 revision 追赶时，官方把成功竞争产生的两个 Txn
+  Put（revision+1）与后续 Revoke Delete（revision+2）合并成单个 3-event response，header 指向
+  revision+2；Revoke 先胜仍是单个 1-event response、header revision+1。事务边界应读 Event 的
+  ModRevision，不能由 response 边界推断。
+
+  按官方规则固化后，生产 KubeBrain 同样返回 `[3]/header+2` 或 `[1]/header+1`。官方 etcd
+  `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮测试 12.168 秒，随后 3 轮测试
+  36.306 秒、race 2 轮测试 22.752 秒全部 GREEN；兼容模块与根模块全量 test/vet 通过
+  （`pkg/server/etcd` 167.912 秒）。没有 runtime RED，本项只增强永久 Watch catch-up 批处理证据，
+  不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
