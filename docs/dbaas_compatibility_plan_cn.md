@@ -38631,6 +38631,50 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ff30e0dcd` 与 `8fddf7d1f`：官方只更新 robustness README、BOM、exit code 文档或 lint/test
   清理。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3807 与上述 commit ID；本轮不修改 runtime。
 
+- A3808 固定 upstream token 日志脱敏、FastLeaseKeepAlive、force-new-cluster learner、metrics
+  collector cache 与 workspace/CI/robustness 审计。对照 `/root/etcd` commits `7cc7eaaf6` 与
+  `e556fb438`：官方把 auth token 日志从原文改为 fingerprint 并补安全 changelog。KubeBrain
+  的 auth token 在 public API 中仍按 etcd 返回给调用方；服务端日志与审计面不得记录原始 token。
+  本仓当前没有发现 etcd auth token 被服务端日志直接打印的路径，生产 operation/audit 工具已有
+  secret/token 字段过滤约束；后续若新增 auth logging 必须沿用 fingerprint/redaction，而不是记录
+  token 原文。
+
+  对照 `ec3bc3c74`：官方新增 `FastLeaseKeepAlive` feature gate，让 lease renew 可以跳过等待
+  applied index，以改善线性续租性能。KubeBrain 不使用 upstream Raft applied-index 续租路径；
+  LeaseKeepAlive 的客户端可见要求是 TTL、header revision、revoke/expire 边界、require-leader、
+  follower forwarding、权限重检和 future-watch 不被续租错误推进。上述契约已由 A297/A3758/A3780、
+  lease keepalive differential、batch/long renewal Porcupine 和生产/metrics live 门禁覆盖；本轮不
+  机械复制 upstream feature gate。
+
+  对照 `c9d06e91e`、`273758192` 与 `0fd6b57d2`：官方修复 `--force-new-cluster` 无法清理
+  learner 的 v3 backend/raft bootstrap 路径并补 changelog。KubeBrain 不暴露 upstream
+  `--force-new-cluster`、Raft learner 或 bbolt backend 作为 DBaaS 数据面恢复机制；成员恢复由
+  TiKV/PD、控制面和 KubeBrain member/status compatibility oracle 约束。对照 `04013ea8c`：
+  官方给打开 bbolt data file 的 `etcdutl` 命令启用全局 timeout；KubeBrain 需要保持的是在线
+  snapshot/backup/restore 可被官方工具消费，离线 bbolt 超时策略不属于 runtime 数据面。
+
+  对照 `230db05c2` 与 `0f1384152`：官方为 request metrics 使用 cached metrics server 以避免
+  duplicate collector registration，并补 changelog。KubeBrain endpoint metrics 接线已由
+  A3772/A3773/A3779 的 request duration、watch send-loop、interceptor ordering 和生产 metrics
+  preflight 覆盖；不需要复制 upstream global cache 实现。对照 `179f3e839` 与 `5410751ff`：
+  官方只是统一测试工具 auth token 提取和 member promote with auth 等待 leader，真实 AuthStatus/
+  MemberPromote/follower auth 边界已由 A3787 覆盖。
+
+  对照 `5ec3dbc31`、`48cb27522`、`6aa68dfd9`、`d82f5267d`、`18577f0d7`、
+  `fac6ca3eb`、`d6f85c53d`、`8bee55886` 与 `3e57a179d`：官方变更集中在 robustness
+  WAL conflict selection、Txn/Delete operation extraction、lease revoke 生成的 delete revision、
+  Antithesis debug image、perfdash filename 和 testing.Short 迁移。KubeBrain 可吸收其故障注入思想，
+  但不复用 upstream WAL/Antithesis image 或 robustness patch-history 作为 runtime 数据面。
+
+  对照 `ab81169b5`、`de840fe8b`、`570c12421`、`eef2b22c2`、`cef82740c`、
+  `a48b66c07`、`16d6ff773`、`4cdbc7011`、`6829e3474` 与 `75c565413`：官方只升级
+  CodeQL/actions、迁移 e2e/integration/unit tests 到 Go workspace、清理脚本和文档。对照
+  `7f8254b2e`、`b84a0fa92`、`43e85db82`、`e066aa1dc` 与 `013692c0f`：官方只更新
+  release date、Go 编译版本 changelog 或 toolchain。对照 `f20a950d1`、`430cd02b9`、
+  `107ff2148`、`483c98fd8` 与 `2770c4960`：官方只升级 prometheus/common、otel proto、
+  golangci-lint、grpc 和 yamlfmt。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3808 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
