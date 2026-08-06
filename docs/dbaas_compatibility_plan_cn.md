@@ -38009,6 +38009,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不修改 runtime；目标是把可移植的 Range filter/sort 行为继续纳入官方差分矩阵，同时把仅影响
   upstream 测试流量生成器的改动明确排除在 KubeBrain 数据面实现范围外。
 
+- A3781 固定 upstream robustness RecordingClient Watch race 审计。对照 `/root/etcd`
+  commits `d5806b148` 与 `7e63ee1d`：官方先新增一个能在 `-race` 下复现的测试，
+  证明 robustness `RecordingClient` 的 watch goroutine 可能在 client close/report 期间继续写
+  `watchOperations`；随后在该测试 harness 内加入 `sync.WaitGroup`，`Close()` 等待 watch 记录
+  goroutine 退出，并在发送给调用方时同时监听 `client.Ctx().Done()`。该修复约束的是 upstream
+  robustness/Antithesis 记录客户端的内存并发安全，不改变公开 Watch RPC、clientv3 `Watcher`
+  接口、server-side Watch 事件顺序、progress notify、PrevKV、fragment 或错误码语义。
+
+  KubeBrain 没有复用 upstream `tests/robustness/client.RecordingClient` 作为生产数据面组件；
+  已有 Watch runtime 门禁覆盖的是 KubeBrain 自身的服务端与 follower proxy 风险面：quiet watch
+  progress 水位推进、progress marker FIFO 顺序、overflow/reset race、leader/follower failover
+  resume、auth watch continuation、fragment/PrevKV fanout、compact boundary 与 RangeStream/Watch
+  adapter EOF 行为。因此本轮不把 `RecordingClient` 的 WaitGroup 机械移植到 KubeBrain server，
+  只新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3781 和两个 commit ID，明确该类测试 harness
+  race 的边界；若未来发现 KubeBrain 公开 Watch stream 或本仓库自有测试记录器存在同类 race，应以
+  `go test -race` 的真实 RED 建立专项修复，而不是复用本条审计结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
