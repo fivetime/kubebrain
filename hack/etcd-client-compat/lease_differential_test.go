@@ -13,26 +13,33 @@ import (
 )
 
 type leaseDifferentialResult struct {
-	GrantRevision     int64
-	PutRevision       int64
-	TTLRevision       int64
-	GrantedTTL        int64
-	TTLKeys           int
-	KeepAliveRevision int64
-	KeepAliveTTL      int64
-	ListRevision      int64
-	ListContainsLease bool
-	RevokeRevision    int64
-	KeyAfterRevoke    int
-	ListedAfterRevoke bool
-	UnknownRevision   int64
-	UnknownTTL        int64
-	MinimumGrantedTTL int64
-	DeleteRevision    int64
-	DeleteCount       int64
-	DeletePrev        []normalizedKV
-	KeysAfterDelete   int
-	ReusedGrantedTTL  int64
+	GrantRevision          int64
+	PutRevision            int64
+	TTLRevision            int64
+	GrantedTTL             int64
+	TTLKeys                int
+	KeepAliveRevision      int64
+	KeepAliveTTL           int64
+	ListRevision           int64
+	ListContainsLease      bool
+	RevokeRevision         int64
+	KeyAfterRevoke         int
+	ListedAfterRevoke      bool
+	UnknownRevision        int64
+	UnknownTTL             int64
+	MinimumGrantedTTL      int64
+	MinimumGrantRevision   int64
+	MinimumRevokeRevision  int64
+	DeleteRevision         int64
+	DeleteCount            int64
+	DeletePrev             []normalizedKV
+	KeysAfterDelete        int
+	DetachedRevokeRevision int64
+	ExplicitGrantRevision  int64
+	ExplicitRevokeRevision int64
+	ReusedGrantRevision    int64
+	ReusedRevokeRevision   int64
+	ReusedGrantedTTL       int64
 }
 
 func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -46,25 +53,32 @@ func TestLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	referenceOutcome := runLeaseDifferentialScenario(t, reference, "etcd")
 	want := leaseDifferentialResult{
-		PutRevision:       1,
-		TTLRevision:       1,
-		GrantedTTL:        300,
-		TTLKeys:           1,
-		KeepAliveRevision: 1,
-		KeepAliveTTL:      300,
-		ListRevision:      1,
-		ListContainsLease: true,
-		RevokeRevision:    2,
-		UnknownRevision:   2,
-		UnknownTTL:        -1,
-		MinimumGrantedTTL: 2,
-		DeleteRevision:    5,
-		DeleteCount:       2,
+		PutRevision:           1,
+		TTLRevision:           1,
+		GrantedTTL:            300,
+		TTLKeys:               1,
+		KeepAliveRevision:     1,
+		KeepAliveTTL:          300,
+		ListRevision:          1,
+		ListContainsLease:     true,
+		RevokeRevision:        2,
+		UnknownRevision:       2,
+		UnknownTTL:            -1,
+		MinimumGrantedTTL:     2,
+		MinimumGrantRevision:  2,
+		MinimumRevokeRevision: 2,
+		DeleteRevision:        5,
+		DeleteCount:           2,
 		DeletePrev: []normalizedKV{
 			{Key: "leased", Value: "leased-value", CreateRev: 3, ModRev: 3, Version: 1, HasLease: true},
 			{Key: "plain", Value: "plain-value", CreateRev: 4, ModRev: 4, Version: 1},
 		},
-		ReusedGrantedTTL: 301,
+		DetachedRevokeRevision: 5,
+		ExplicitGrantRevision:  5,
+		ExplicitRevokeRevision: 5,
+		ReusedGrantRevision:    5,
+		ReusedRevokeRevision:   5,
+		ReusedGrantedTTL:       301,
 	}
 	require.Equal(t, want, referenceOutcome)
 	require.Equal(t, referenceOutcome, runLeaseDifferentialScenario(t, kubebrain, "kubebrain"))
@@ -157,7 +171,7 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	}
 	minimum, err := cli.Grant(ctx, 0)
 	require.NoError(t, err)
-	_, err = cli.Revoke(ctx, minimum.ID)
+	minimumRevoke, err := cli.Revoke(ctx, minimum.ID)
 	require.NoError(t, err)
 
 	deletePrefix := key + "/delete/"
@@ -171,42 +185,49 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	require.NoError(t, err)
 	afterDeleteTTL, err := cli.TimeToLive(ctx, deleteLease.ID, clientv3.WithAttachedKeys())
 	require.NoError(t, err)
-	_, err = cli.Revoke(ctx, deleteLease.ID)
+	detachedRevoke, err := cli.Revoke(ctx, deleteLease.ID)
 	require.NoError(t, err)
 
 	explicitID := clientv3.LeaseID(time.Now().UnixNano() & ((1 << 62) - 1))
 	rawLease := etcdserverpb.NewLeaseClient(cli.ActiveConnection())
-	_, err = rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: int64(explicitID), TTL: 300})
+	explicitGrant, err := rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: int64(explicitID), TTL: 300})
 	require.NoError(t, err)
-	_, err = rawLease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: int64(explicitID)})
+	explicitRevoke, err := rawLease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: int64(explicitID)})
 	require.NoError(t, err)
-	_, err = rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: int64(explicitID), TTL: 301})
+	reusedGrant, err := rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: int64(explicitID), TTL: 301})
 	require.NoError(t, err)
 	reused, err := cli.TimeToLive(ctx, explicitID)
 	require.NoError(t, err)
-	_, err = cli.Revoke(ctx, explicitID)
+	reusedRevoke, err := cli.Revoke(ctx, explicitID)
 	require.NoError(t, err)
 
 	return leaseDifferentialResult{
-		GrantRevision:     grant.ResponseHeader.Revision - baseRev,
-		PutRevision:       put.Header.Revision - baseRev,
-		TTLRevision:       ttl.ResponseHeader.Revision - baseRev,
-		GrantedTTL:        ttl.GrantedTTL,
-		TTLKeys:           len(ttl.Keys),
-		KeepAliveRevision: keepAlive.ResponseHeader.Revision - baseRev,
-		KeepAliveTTL:      keepAlive.TTL,
-		ListRevision:      leases.ResponseHeader.Revision - baseRev,
-		ListContainsLease: contains,
-		RevokeRevision:    revoke.Header.Revision - baseRev,
-		KeyAfterRevoke:    len(after.Kvs),
-		ListedAfterRevoke: listedAfterRevoke,
-		UnknownRevision:   unknown.ResponseHeader.Revision - baseRev,
-		UnknownTTL:        unknown.TTL,
-		MinimumGrantedTTL: minimum.TTL,
-		DeleteRevision:    deleted.Header.Revision - baseRev,
-		DeleteCount:       deleted.Deleted,
-		DeletePrev:        normalizeKVs(deleted.PrevKvs, deletePrefix, baseRev),
-		KeysAfterDelete:   len(afterDeleteTTL.Keys),
-		ReusedGrantedTTL:  reused.GrantedTTL,
+		GrantRevision:          grant.ResponseHeader.Revision - baseRev,
+		PutRevision:            put.Header.Revision - baseRev,
+		TTLRevision:            ttl.ResponseHeader.Revision - baseRev,
+		GrantedTTL:             ttl.GrantedTTL,
+		TTLKeys:                len(ttl.Keys),
+		KeepAliveRevision:      keepAlive.ResponseHeader.Revision - baseRev,
+		KeepAliveTTL:           keepAlive.TTL,
+		ListRevision:           leases.ResponseHeader.Revision - baseRev,
+		ListContainsLease:      contains,
+		RevokeRevision:         revoke.Header.Revision - baseRev,
+		KeyAfterRevoke:         len(after.Kvs),
+		ListedAfterRevoke:      listedAfterRevoke,
+		UnknownRevision:        unknown.ResponseHeader.Revision - baseRev,
+		UnknownTTL:             unknown.TTL,
+		MinimumGrantedTTL:      minimum.TTL,
+		MinimumGrantRevision:   minimum.ResponseHeader.Revision - baseRev,
+		MinimumRevokeRevision:  minimumRevoke.Header.Revision - baseRev,
+		DeleteRevision:         deleted.Header.Revision - baseRev,
+		DeleteCount:            deleted.Deleted,
+		DeletePrev:             normalizeKVs(deleted.PrevKvs, deletePrefix, baseRev),
+		KeysAfterDelete:        len(afterDeleteTTL.Keys),
+		DetachedRevokeRevision: detachedRevoke.Header.Revision - baseRev,
+		ExplicitGrantRevision:  explicitGrant.Header.Revision - baseRev,
+		ExplicitRevokeRevision: explicitRevoke.Header.Revision - baseRev,
+		ReusedGrantRevision:    reusedGrant.Header.Revision - baseRev,
+		ReusedRevokeRevision:   reusedRevoke.Header.Revision - baseRev,
+		ReusedGrantedTTL:       reused.GrantedTTL,
 	}
 }
