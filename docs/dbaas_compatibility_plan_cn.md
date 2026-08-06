@@ -37632,6 +37632,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮只增加官方 cache client
   一致读黑盒门禁，不改变 runtime 镜像。
 
+- A3761 对照 upstream `/root/etcd` commit `1570c5c85` 的 client/v3 concurrency
+  `Election.Observe` response wrapper 语义。上游把 `Observe` 从返回 `GetResponse` value channel
+  改为返回 `*GetResponse` pointer channel，并在 watch 更新路径为每个 leader proposal 分配新的
+  response wrapper，避免后续 `Proclaim` 事件复用或覆盖此前已交付给调用方的 observation。
+
+  为建立真实 RED，在 `/tmp` worktree 检出 `1570c5c85^`，只给旧
+  `client/v3/concurrency` 包添加最小编译契约，要求 `(*Election).Observe` 可赋给
+  `func(*Election, context.Context) <-chan *clientv3.GetResponse`；旧版实际返回
+  `<-chan clientv3.GetResponse`，编译失败并报告不能把该 method value 赋给 pointer-channel
+  函数类型。当前 `/root/etcd/client/v3/concurrency` 在 `GOWORK=off GOFLAGS=-mod=mod` 下编译通过
+  （0.026 秒，无匹配运行时测试；官方运行时覆盖位于 upstream `tests/integration/v3_election_test.go`）。
+
+  新增 compat live 测试在生产 KubeBrain endpoint 上创建 clientv3 session 和 election，先
+  `Campaign("abc")`，再连续 `Proclaim("def")`、`Proclaim("ghi")`，从 `Observe` 读取三次
+  `*clientv3.GetResponse`。测试断言三次 response 指针互不相同、旧 response value 不被覆盖、
+  key version 从 1/2/3 递增，且 header revision 单调递增。该测试 0.494 秒 GREEN，证明
+  KubeBrain 的 KV/Txn/Lease/Watch 组合满足官方 concurrency Election observe 的 public client
+  语义。
+
+  兼容模块 `go test ./...`（1.588 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 167.726 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮只增加 client
+  concurrency 黑盒门禁，不改变 runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
