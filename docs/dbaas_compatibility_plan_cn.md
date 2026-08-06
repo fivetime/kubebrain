@@ -37189,6 +37189,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.564 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 171.373 秒）及 `go vet ./...` 通过；官方实例、data-dir 与隔离测试前缀均已清理。
 
+- A3735 对照 upstream `TestRestoreDelete`，把 serving restart 的索引恢复门禁从少量手工键扩展为
+  固定序列的多键完整历史模型。测试对 20 个键交错执行 20 次 create、7 次 update 和 7 次有效
+  delete，保存全部 34 个不同写 revision 的 prefix Range 快照；每个快照包含键序、value、
+  CreateRevision、ModRevision、Version 和 Lease。顺序 replacement 全部 serving Pod 后，逐 revision
+  重读并与重启前快照精确比较，最后再比较 current snapshot，防止 restore 在多键扫描中复活已删键、
+  丢失 live key、合并 generation 或破坏历史元数据。官方 oracle 与生产使用同一 helper，避免两套模型
+  随时间漂移。
+
+  同轮先审计 upstream `TestRestoreContinueUnfinishedCompaction`：KubeBrain 已由
+  `TestResumePhysicalCompactionFromPersistedWatermark`、失败自动重试和 leadership context 转移门禁
+  直接固定 durable watermark 恢复，因此没有重复包装。官方 etcd `d947b20863` 同 data-dir restart
+  oracle 1.83 秒 GREEN。生产 `kubebrain:a3725-rangestream-final-frame` 普通三副本 replacement
+  29.11 秒、race replacement 29.68 秒均 GREEN，没有 runtime RED 或镜像变更。最终 Pod UID 为
+  `d2819537-2bf4-4a87-b364-914e97643f3b`、`4616c51c-6ae7-440c-90f7-14d9cfab2fa5`、
+  `8012e4ec-4dc0-4588-aad0-44bafdf52538`，3/3 Ready、零重启，`readyz=ok`，`/compat/` 无 KV。
+  首轮完整兼容测试虽通过，但 vet 对 protobuf `KeyValue` 值拷贝报 mutex copy RED；夹具改为逐字段深拷贝
+  后 `go test ./... && go vet ./...` 通过（测试 1.546 秒）。根模块 `go test ./...`
+  （`pkg/server/etcd` 168.816 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
