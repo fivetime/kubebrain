@@ -38265,6 +38265,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分流，后续只在 wire descriptor、官方 client behavior 或 response envelope 出现可观察变化时
   建立专项 RED。
 
+- A3794 固定 upstream LeaseKeepAlive forwarding、snapshot flag 与 watch/robustness 内部审计。
+  对照 `/root/etcd` commits `86bd05c37`、`ef17b5d5e` 与既有 `932dc99f1`/`b54c88406`：
+  官方围绕 follower LeaseKeepAlive forwarding 增加 client-cancel、no-leader/require-leader
+  catch-error 回归，要求客户端主动取消不被误报成 `Unavailable`，而 leader 不可用仍保持可重试错误。
+  KubeBrain 的 LeaseKeepAlive 已由 A304、A3758、A3780 及 raw/client lease keepalive forwarding
+  差分固定取消、require-leader、permission、revoke、buffered-response 与 failover 外观；本轮不再
+  追加同义测试。
+
+  对照 `8787fe8e0` 与 `315f3da18`，官方调整 `--snapshot-count` 与 `--max-snapshots`
+  的 3.8 弃用/保留策略。KubeBrain 不使用 upstream Raft WAL snapshot 触发器、snapshot file
+  retention 或 v2 snapshot 作为 TiKV-backed 数据面的恢复机制；生产恢复边界由 logical export/
+  restore、online snapshot、TiKV/PD 持久化和 DBaaS rollout/PITR 计划约束。因此这两个 flag 不应
+  被机械加入 KubeBrain server 参数面；若未来需要用户可调的 TiKV snapshot/backup policy，应作为
+  DBaaS 平台参数单独设计，而不是复刻 upstream raft flag。
+
+  对照 `99fea5366`，官方只修复 e2e framework client 忽略 header 的测试工具问题；KubeBrain
+  已用 raw gRPC、clientv3 和 HTTP gateway 差分直接校验 response header。对照 `d6edb51e9`、
+  `e0d569b85`、`08d451b98`、`53a740c23`、`f2d3b8ccf`、`e6f944b65`、
+  `c57dc5232`、`f3cb64f1d`、`1b147a1e0`、`783a8771d`、`aed842f55` 与
+  `87de8541a`，官方变更集中在 robustness watch loop/test harness、OOM 降低、gofail/linter/e2e
+  防御或测试日志；不改变公开 API。对照 `5d4ef72c1`、`b485302c7`、`125173b33`、
+  `f2bab39a4` 与 `739484002`，官方只做 grpc-gateway、tablewriter、x/* 依赖或 btree 泛型重构；
+  本仓依赖升级仍按独立 release gate 管理。对照 `0988325ed`，upstream 从 btree 实现切换到
+  k8s.io/utils；KubeBrain Range/Watch 索引由 TiKV scan、count index 和 watcher hub 实现，不复用
+  该内部结构。`28bed6805` 与 `a5e37a077` 分别是测试日志文案和 v2 deprecation snapshot 测试修复。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3794 和上述 commit ID。本轮不修改 runtime；
+  目标是把这一段中的 LeaseKeepAlive 已覆盖风险、Raft snapshot flag 平台边界和 robustness/test-only
+  改动归档，保持后续筛选聚焦真实 client-visible 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
