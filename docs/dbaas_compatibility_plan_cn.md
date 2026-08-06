@@ -38795,6 +38795,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该风险仍归入 Member mutation unsupported boundary。新增 `TestRecentUpstreamAuditIsRecorded`
   钉住 A3812 与上述 commit ID；本轮不修改 runtime。
 
+- A3813 固定 upstream Status/Downgrade、Range Count、HTTP watch streaming、watch metrics、
+  compaction、flag migration、v2/v3 membership validation 与 HashKV robustness 审计。对照
+  `/root/etcd` commits `9d57554c4`、`8575de3ba` 与 `91b6ed71`：官方在
+  `StatusResponse` proto/API 和 etcdctl endpoint 命令暴露 `DowngradeInfo`。KubeBrain 当前
+  proto coverage 已固定 `StatusResponse.downgradeInfo=13` 与 `DowngradeInfo.enabled/targetVersion`，
+  `Status` handler 和 clientv3/bufconn 回归均断言 `DowngradeInfo` 非 nil、`enabled=false`、
+  `targetVersion=""`；Downgrade 自身仍按 DBaaS 平台边界拒绝并已有 differential。
+
+  对照 `97c63c9fd`：官方只澄清 `RangeResponse.Count` 是匹配 key 总数，和 `Limit` 无关。
+  KubeBrain 已把该语义作为强兼容面：分页 Range、CountOnly、KeysOnly+CountOnly、历史 revision、
+  sort/filter、Txn staged view 和 tombstone 场景均断言 `Count` 是匹配总数/剩余数而非返回
+  `Kvs` 长度；count-index 只允许优化路径，不允许改变 public Count 语义。
+
+  对照 `65691111d`：官方新增 e2e 复现 REST `/v3/watch` 请求不应导致 server crash。
+  KubeBrain 默认启用 generated v3 JSON/HTTP gateway，`TestGRPCGatewayStreamsWatchAndElectionResponses`
+  和 HTTP gateway differential 已覆盖 `/v3/watch` chunked streaming、created/event 两帧、
+  EOF 后正常结束、token metadata 透传和 WebSocket watch；生产配置也保留
+  `--enable-grpc-gateway=false` 作为可显式收缩 surface 的运维开关。
+
+  对照 `395a03843` 与 `d76671ca8`：官方修复 mvcc watcher gauge close/cancel race，并新增
+  server-side Prometheus metric。KubeBrain 不复用 upstream mvcc watcher store；其公开可观测面
+  已由 watch send-loop duration、buffer stale/drop、revision lag、leader/follower 路径和
+  observability parity 文档约束。若后续引入 upstream 名字级 watcher gauge parity，应单独增加
+  metric-name oracle，而不是把 upstream 内部 gauge 实现照搬到 TiKV/PD 数据面。
+
+  对照 `de10fd656`：官方修复 compaction sleep interval 导致的性能回退；KubeBrain compact
+  已围绕 TiKV 历史保留、tombstone、watch compacted revision 和生产只读健康建门禁，不复用
+  upstream bbolt/mvcc compactor。对照 `5fa8c1f6b`、`580223132`、`a9b8cba60` 与
+  `06edd83d2`：官方迁移/删除 embed flags（localaddr、snapshot catchup、tracing、
+  ExperimentalMaxLearners）；KubeBrain 不暴露这些 etcd embed/Raft 启动参数为 DBaaS 数据面
+  contract。对照 `aa2472e61` 与 `211f9e52c`：官方围绕 v2/v3 membership sync、promoted
+  member upgrade 增加验证；KubeBrain 没有 v2store/Raft member promotion 数据面，风险继续归入
+  Member mutation unsupported boundary。对照 `a203755b3`：官方把 HashKV 加入 robustness；
+  KubeBrain Hash/HashKV/Status/Alarm 已有 compatibility tests，HashKV 仍按 DBaaS 支持面返回
+  deterministic revision/hash envelope。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3813
+  与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
