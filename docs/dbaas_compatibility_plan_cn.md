@@ -37679,6 +37679,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮只增加 watch control
   response 黑盒门禁，不改变 runtime 镜像。
 
+- A3763 对照 upstream `/root/etcd` commit `2214d9f13` 的 watch event API alias 语义。
+  上游把 `clientv3.Event` 从单独定义的 `type Event mvccpb.Event` 改成
+  `type Event = mvccpb.Event`，并把 `IsCreate` / `IsModify` helper 移到 `api/v3/mvccpb`
+  包。该变更让 protobuf watch event 可以直接穿过 clientv3、etcdctl protobuf printer 和 grpcproxy
+  事件转发路径，不再需要指针类型转换 wrapper。
+
+  为建立真实 RED，在 `/tmp` worktree 检出 `2214d9f13^`，只给旧 `client/v3` 包添加最小编译契约：
+  `var _ *clientv3.Event = (*mvccpb.Event)(nil)` 以及反向赋值。旧版 `clientv3.Event` 是 distinct
+  defined type，双向指针赋值均编译失败，测试 0.032 秒前的 build 阶段失败并报告不能把
+  `*mvccpb.Event` 用作 `*Event`。当前 `/root/etcd/client/v3` 在
+  `GOWORK=off GOFLAGS=-mod=mod` 下编译通过（0.032 秒，无包内匹配测试）。
+
+  新增 compat 单元测试固定 `clientv3.Event` 与 `mvccpb.Event` 的双向指针赋值契约，并直接在
+  `mvccpb.Event` 上验证 `IsCreate` / `IsModify`：create event 返回 create=true/modify=false，
+  update event 返回 create=false/modify=true，delete event 两者均为 false。该测试 0.015 秒 GREEN。
+  这是官方 client API 兼容门禁；KubeBrain runtime watch event 生成已由现有 watch update、fragment、
+  PrevKV 与 revision differential 覆盖，本轮不改变服务端镜像。
+
+  兼容模块 `go test ./...`（1.618 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 168.677 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
