@@ -38832,6 +38832,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   deterministic revision/hash envelope。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3813
   与上述 commit ID；本轮不修改 runtime。
 
+- A3814 固定 upstream Kubernetes-like robustness traffic、tombstone restore、readyz learner、
+  watch progress/lease checkpoint/compaction flag migration、downgrade/member/WAL 内部变更审计。
+  对照 `/root/etcd` commits `845a330e4`、`8335e7030`、`7c7d3ce8a`、`524afd20d`、
+  `7590a7eba` 与 `8866fce73`：官方 robustness traffic 更贴近 Kubernetes，用新版
+  `Get`/`Txn`、失败路径 `GetOnFailure`、Kubernetes-like compaction 和更多版本/unknown-version
+  场景。KubeBrain 的核心兼容面已把 Kubernetes optimistic put/delete、LIST/Count、watch progress、
+  compaction/future/compacted revision、Porcupine model 与 production soak 分开覆盖；这组 upstream
+  变更属于 oracle 输入增强，不改变 etcd v3 wire/API。
+
+  对照 `d8b419257`：官方修复物理 compaction 后 first-revision tombstone index restore。
+  KubeBrain 已在 A3730–A3732 把该风险转成 TiKV/PD 数据面的实质门禁：tombstone-only restore、
+  下一代 generation 不变量、compaction 生命周期闭环以及 watch/restart 场景均已覆盖。对照
+  `989c55664`：官方在 `/readyz` 加 learner check；KubeBrain `/readyz` 已有 `non_learner`
+  subcheck、HTTP health differential、unknown alarm 边界和生产只读探测，本架构没有 Raft learner
+  promotion 数据面，非 learner 等价语义由平台 member state/serving state 守住。
+
+  对照 `b16b8dc6f`、`2cd8fcce5`、`e5b39f85a`、`80a8a82bb`、`a3a467bf3` 与
+  `7f1d3b017`：官方把 watch progress、lease checkpoint、compaction sleep、downgrade check、
+  peer SAN skip、warning apply duration 等 experimental/embed flags 迁移到正式 flag 或 feature
+  gate。KubeBrain 只公开与 DBaaS 数据面相关的自有 flag；`--watch-progress-notify-interval`
+  已有启动校验和 apiserver 3s fallback 门禁，lease checkpoint/compaction 语义由本仓 runtime
+  tests 约束，其余 embed/Raft flags 不进入兼容 contract。
+
+  对照 `4d1a20730`、`63fe0f285`、`2e41777ed`、`c57864985`、`267020e94` 与
+  `2d377000f`：官方围绕 downgrade/member validation、test-only internal raft request、member
+  promote retry、snapshot status user-key counting 和 etcdutl snapshot status 输出做测试/工具增强。
+  KubeBrain 没有 upstream WAL/snapshot/member promotion 数据面；`etcdutl` snapshot status 属于
+  官方离线工具输出，不改变本服务端 API。对照 `94758c176`：官方迁移 WALVersion 并复用
+  schema，仍是 upstream WAL/bbolt 内部。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3814
+  与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
