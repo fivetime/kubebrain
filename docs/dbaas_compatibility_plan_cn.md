@@ -39927,6 +39927,50 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已固定 `WithProgressNotify`/RequestProgress 行为。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
   A3839 与上述 commit ID；本轮不修改 runtime。
 
+- A3840 固定 upstream client closing/WithBlock、capability version、MVCC metrics、peer SAN skip、
+  log-level/v2 default、client credentials authority、empty role、NoPassword user、lease checkpoint、
+  learner metrics、expired lease revoke 和 retryAuth getToken error 审计。对照 `/root/etcd` commit
+  `9b385737f` 与 `4b0af5b4a`：官方弃用 `grpc.ErrClientConnClosing` 并补 `WithBlock` 文档。
+  KubeBrain server-facing 契约是 official client 在连接关闭、超时、取消和 transient Unavailable
+  时看到正确 gRPC code/`errors.Is` 行为；client constructor/dial option 文档不由服务端复刻。
+  对照 `7fbbb9c8b` 与 `3658571e3`：官方更新 3.4/3.5 capability。KubeBrain 不做 upstream
+  Raft feature negotiation；public version/capability 只由 `/version`、Status、DowngradeInfo、
+  supported API surface 和 DBaaS rollout 文档约束。
+
+  对照 `f82e23ab5`、`dde3c5fc4` 与 `f46ee9186`：官方新增/整理 `etcd_mvcc_range_total`、
+  `etcd_mvcc_txn_total`、put/delete totals 等 MVCC metrics。KubeBrain 不复用 upstream MVCC store；
+  对外可观测面当前固定 server request duration、watch send-loop、alarm/quota、operation audit、
+  count-index/read-amp 和 production probes。若要求这些 metric 名称级兼容，应另建 metrics oracle。
+  对照 `149e5dc29`、`03fd39661` 与 `1b048c91e`：官方引入并标记 peer skip client SAN verification
+  flag。KubeBrain 的 TLS 兼容面是 client/peer cert auth、SAN/ServerName、CRL、TLS min/max、
+  proxy authority 和生产 mTLS；危险 skip-SAN 行为必须由配置校验和安全文档显式界定。
+
+  对照 `a37f3441f`、`b9de4bddd` 与 `e911f901a`：官方新增 `--log-level` 并整理 logutil。
+  KubeBrain 运行时日志由本仓 options/endpoint 管理，兼容性不绑定 upstream embed/debug flag；
+  可观察正确性由 metrics、audit probe 和 structured logs 的产品门禁保证。对照 `38128425b` 与
+  `ecb915617`：官方将 v2 默认关闭。KubeBrain 不支持 v2 API/v2store/v2v3 migration，必须保持
+  fail-closed 和文档化平台边界，不能因 upstream 旧 flag 变化引入 v2 surface。
+
+  对照 `3dc00ab61`、`db61ee106` 与 `324c87674`：官方重构 auth token credentials，使用 dial target
+  authority 并实现 gRPC credentials bundle。KubeBrain server 侧需要稳定处理 official client 的
+  auth metadata、TLS ServerName/authority、gateway token forwarding 和 multi-endpoint AutoSync；
+  已有 invalid token、AuthOldRevision、metadata order、proxy authority 和 endpoint/TLS 门禁覆盖。
+  对照 `3754767db`：官方 retryAuth 返回 getToken error。KubeBrain 只需返回 official client 可识别的
+  Authenticate/token/auth revision 错误，client retry policy 不迁移。
+
+  对照 `1cef112a7`：官方禁止创建空 role。KubeBrain `RoleAdd("")` 已固定为
+  `ErrRoleEmpty`，同时保持 RoleDelete/UserGrantRole/UserRevokeRole 等旧 public 优先级不被误改。
+  对照 `5a67dd788`：官方支持创建 NoPassword 用户。KubeBrain 已支持 `UserAddOptions.NoPassword`，
+  并固定 NoPassword 用户认证失败文案、UserChangePassword/Authenticate/Token/JWT/snapshot 外观。
+  对照 `e67b9829b` 与 `dc8a31eaf`：官方加入 lease checkpoint flag，并在过期 revoke 前复查 lease
+  是否已撤销。KubeBrain lease checkpoint、long-window renewal、failover expiry、revoke/regrant
+  generation、StopLeases 和 delete-before-remove ordering 门禁覆盖同类持久 lease 风险。
+
+  对照 `0b8727b3`：官方增加 learner metrics。KubeBrain 不暴露 upstream learner reconfiguration
+  数据面；public 边界是 MemberList learner 字段、unsupported Promote/Member mutation、Status/health
+  和生产 topology 检查。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3840 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
