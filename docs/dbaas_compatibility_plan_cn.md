@@ -36918,6 +36918,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   runtime RED，本项新增永久 Put 组合、PrevKV、lease 与失败原子性差分，不重建或滚动数据面；一次性
   reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3721 将 A3720 的 unary Put 组合推进到 staged/nested Txn 执行路径。静态非法 Put、未选分支预校验
+  与单个 IgnoreValue/IgnoreLease 已有专项门禁，本项不重复它们；新增固定 seed=3721 的 40-case raw
+  gRPC 差分，完整枚举五种结构合法 Put × existing/missing × PrevKV true/false × top-level/nested。
+  五种模式为普通无 lease 写、绑定第二个 lease、IgnoreValue 并清 lease、IgnoreValue 并切换到第二个
+  lease、IgnoreLease 并更新 value。oracle 对应 `/root/etcd/server/etcdserver/txn/put.go` 的
+  `checkAndGetPrevKV`/`put`，以及 `/root/etcd/server/etcdserver/api/v3rpc/key.go` 递归 Txn 校验。
+
+  每个 case 在同一事务中依次写 marker、执行目标 Put、Range 读取 staged 结果；nested 形状则把后两步
+  放入 inner Txn。结果归一化比较 code/message、outer/Put/Range header revision gap、response oneof
+  envelope、PrevKV、staged/final KV 的 value/create/mod/version/lease、最终前缀计数与 marker 状态。
+  missing-key IgnoreValue/IgnoreLease 必须让已经 staged 的 outer marker 一并回滚、最终 revision 不推进；
+  成功请求的 marker 与目标写必须共享一个 revision，inner Range 必须立即看到正确的租约和值投影。
+  独立结构门禁逐项证明 40 个组合无重复且无遗漏。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3716-keys-only-lease` 首轮 5.133 秒、连续 10 轮
+  （测试 52.187 秒）及 race 5 轮（测试 29.986 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.686 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 169.491 秒）。生产 3/3 Pod Ready、零重启，Pod UID 未变化。没有 runtime RED，
+  本项新增永久 Txn Put 组合、staged/nested 可见性与失败回滚差分，不重建或滚动数据面；一次性
+  reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
