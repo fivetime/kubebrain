@@ -37421,6 +37421,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 169.794 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
   `readyz=ok`，`/a3748/` 与 `/compat/` 均无 KV。
 
+- A3749 对照 upstream `/root/etcd` commit `c504fed58` 的 snapshot download file-descriptor
+  清理修复。旧 `snapshot.SaveWithVersion` 创建 `.part` 文件后，若 stream 正常结束但长度不满足尾部
+  SHA-256 格式，会在显式 `f.Close()` 之前返回；defer 删除路径却不关闭 FD，长期备份重试会积累
+  `/tmp/...db.part (deleted)` descriptor。新增本地 Maintenance mock 每次只返回 25-byte 无 checksum
+  stream，连续 25 次调用均须取得 server version、精确 `sha256 checksum not found [bytes: 25]`，并在
+  每次返回后扫描 `/proc/self/fd`，要求测试临时目录下零打开 descriptor、`.part` 路径不存在。随后用
+  同一 `SaveWithVersion` 分别保存一次性官方 etcd 与生产 KubeBrain 的真实快照，要求 version 非空、
+  最终文件大于 digest、`.part` 已原子清理。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `c504fed58^`（`9fa35e53f`），同一失败流立即发现
+  `bad.db.part (deleted)`，旧版测试 0.043 秒失败；clone 未修改 `/root/etcd`，验证后已精确清理。当前
+  `/root/etcd` client + reference/KubeBrain 双端普通连续 10 轮通过（4.112 秒），`-race` 连续 5 轮
+  通过（3.949 秒）。compat 子模块因首次直接导入 `client/v3/snapshot`，以 `go mod tidy` 补入其公开
+  间接依赖 `github.com/dustin/go-humanize v1.0.1`。该修复属于官方 client，本轮无服务端或镜像变更。
+  兼容模块 `go test ./...`（102.291 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 170.123 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  `readyz=ok`，`/a3749/` 与 `/compat/` 均无 KV；reference data-dir 与所有临时 clone 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
