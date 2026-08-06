@@ -36540,6 +36540,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 167.556 秒）。没有 runtime RED，本项只增加永久 catch-up 批处理证据，不重建
   或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3696 增加显式 LeaseRevoke 多 key 的 mixed-PrevKV Watch fanout 官方差分，补齐既有 mixed
+  PrevKV 仅覆盖单 key Put、A3694/A3695 又都只启用 PrevKV 的交叉空白。场景在同一 revoke 前创建
+  `live-prev/live-no-prev`，revoke 后再从该 revision 创建 `catchup-prev/catchup-no-prev`；四个 watcher
+  都必须先收到各自 Created 空帧，再收到按 `a,b` 排序、同一 revision 的 `[2]` Delete 帧。仅两个
+  prev watcher 可见 value、创建/修改 revision、version 和原 lease，no-prev watcher 的 PrevKv 必须
+  严格为 nil，防止 fanout 复用事件对象时跨 watcher 泄漏或剥离 PrevKV。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.302 秒、连续 10 轮
+  （测试 2.338 秒）及 race 5 轮（测试 2.515 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.582 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 169.538 秒）。没有 runtime RED，本项只增加永久 per-watcher 选项隔离证据，
+  不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
