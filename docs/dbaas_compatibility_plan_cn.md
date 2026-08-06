@@ -37152,6 +37152,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.547 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 168.573 秒）及 `go vet ./...` 通过；官方 data-dir 和两个 watch 输出均已清理。
 
+- A3733 覆盖同一 compact boundary 上多个 subrevision tombstone 的重启恢复。单次 prefix
+  DeleteRange 会为三个键写入相同 main revision、不同 subrevision 的 DELETE；物理 compaction 后
+  顺序 replacement 全部三个 serving Pod，再从 boundary 对该 prefix 建立 Watch，必须完整重放三个
+  DELETE，并保持 `a,b,c` 的确定性键序、相同 ModRevision 以及因旧值低于 watermark 而为 nil 的
+  PrevKV，当前 prefix 仍为空。该门禁补齐 A3730 单 tombstone 无法证明的批量索引恢复和排序语义。
+
+  同轮审计排除了 upstream `cf0369e4a` 的直接移植：该修复针对进程内 MVCC store `Restore()` 时仍存活
+  的 future watcher revision，KubeBrain 当前没有在线 Snapshot restore RPC；等价的 future-watch
+  serving leader replacement 已由 `lease_expiry_spread_failover_test.go` 覆盖。官方 etcd
+  `d947b20863` 同 data-dir stop/restart oracle 在 revision 5 返回三个 DELETE，顺序 `a,b,c`、
+  PrevKV=nil。生产 `kubebrain:a3725-rangestream-final-frame` 普通 replacement 24.45 秒、race
+  replacement 24.38 秒均 GREEN，没有 runtime RED 或镜像变更。最终 Pod UID 为
+  `eb743c55-69c9-46cd-8bdb-f1f691fff3b9`、`679d1a31-6419-44ae-80cb-103aeafb7d81`、
+  `800ed512-d9f3-4172-9ea3-977f929804a2`，3/3 Ready、零重启，`readyz=ok`，`/compat/` Count=0。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.536 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 168.924 秒）及 `go vet ./...` 通过；官方临时实例、data-dir、watch 输出和两端
+  隔离测试前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
