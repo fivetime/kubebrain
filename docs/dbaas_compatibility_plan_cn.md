@@ -39254,6 +39254,56 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   由 TiKV/PD 数据面门禁约束。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3825 与上述
   commit ID；本轮不修改 runtime。
 
+- A3826 固定 upstream client naming endpoint prefix、client error 文案、SnapshotWithVersion
+  panic 防护、MemberList JSON 输出、client credentials/session logger、snapshot 内容、
+  auth/watch retry、只读 Txn nil panic、NOSPACE 只读放行、corruption quorum 和 HashKV
+  `HashRevision` 审计。对照 `/root/etcd` commit `f0153222f`：官方修正 clientv3 naming
+  endpoints resolver 的 prefix 匹配歧义。KubeBrain server data plane 不实现 upstream
+  clientv3 naming resolver；DBaaS endpoint discovery 兼容边界是 `MemberList`、`Status`、
+  advertised client URLs 与 AutoSync，已由 MemberList/autosync/endpoint health 和 production
+  readiness 门禁覆盖。
+
+  对照 `2041d5f24`、`57413851b` 与 `dc88d9076`：官方调整 client error message 并补
+  `IsUnavailableErr` 测试。KubeBrain server-facing 契约不是复用 client 内部 helper，而是在
+  transient leader/freshness 失败时返回 retryable `Unavailable`，并在 auth、maintenance、
+  gateway 与 watch 场景返回 typed gRPC error；这些已由 error normalization、gateway、
+  readiness 和 auth/watch 差分门禁覆盖。对照 `39d96b255`、`8bd191ae9`、`3c582fecb` 与
+  `3c51c4241`：官方分别保护 `SnapshotWithVersion` nil panic、补 client credentials 测试、
+  给 concurrency session 增加 logger、修正 mutex 测试 panic。KubeBrain 的可观察边界是
+  Snapshot response/auth/error、Lease/KV/Txn/concurrency recipe 行为，已由 SnapshotWithVersion
+  auth、online Snapshot、lease/concurrency 和 Txn 差分覆盖；本轮不移植 client library
+  内部实现。
+
+  对照 `8a75cfff6`：官方统一 etcdctl `MemberList` JSON printer 输出。KubeBrain 已固定 raw
+  `MemberList` response、headers、client URLs、learner/status 与 unsupported membership
+  mutation 边界；CLI printer 格式属于 etcdctl 侧行为。对照 `e58c73cc1`：官方增加 snapshot
+  内容验证。KubeBrain Snapshot/backup 不承诺 upstream bbolt 文件格式，但必须保证在线
+  `SnapshotWithVersion`、cold restore、export writer metadata、auth fence、lease metadata 与
+  watch restore barrier 的数据可恢复性，相关门禁已覆盖。
+
+  对照 `008df9490`、`8dcfca009`、`0e4877719`、`d0e753ca8` 与 `19dc0cb41`：官方迁移 auth
+  测试、补 server access control，并修正 watch invalid token/old revision rollback 与
+  `shouldRetryWatch`。KubeBrain 已通过 auth lifecycle、JWT/auth old revision、watch auth、
+  gateway differential 和 Kubernetes watch-cache 门禁约束 `ErrInvalidAuthToken`、
+  `ErrAuthOldRevision`、watch progress 与重试外观。
+
+  对照 `26bf2f81f`、`f59896c73`、`b44c2d9af` 与 `daad3a215`：官方把 Txn 纳入
+  linearizability，并修正只读 Txn nil pointer panic。KubeBrain Txn differential、nested
+  Txn、compare matrix、read-only Txn auth fence、nil/empty operation validation 和 failed
+  write Txn 已覆盖多操作原子性、只读路径和错误边界。对照 `898c6e867`：官方记录
+  NOSPACE 时 non-mutating requests 仍可通过 quotaKVServer。KubeBrain quota/alarm/readiness
+  门禁要求 Put/写 Txn 在 NOSPACE 下失败，Range/Delete-based recovery/Alarm/Status/HashKV 与
+  `/readyz` 外观保持可操作；`/readyz` 不因 NOSPACE 直接失败。
+
+  对照 `6049af072`、`e95e82f0b`、`7b19ee639`、`8b98fee9c`、`9a7f9609d`、`cd15507c6`、
+  `48b821004` 与 `3b50c60dd`：官方完善 corruption detection、CompactHashCheck summary、
+  multiple-member corruption、无法识别 corrupted member 时 member ID=0，以及 etcdctl
+  HashKV `hash_revision`/`HashRevision` 输出。KubeBrain 是 TiKV/PD backed 单逻辑数据面，
+  不复用 upstream raft quorum corruption 判定，但 public `Alarm`、`HashKV.HashRevision`、
+  corrupt/NOSPACE readiness、peer HashKV cluster-id 与 direct replica consistency 门禁已钉住
+  客户端可观察语义。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3826 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
