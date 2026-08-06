@@ -37355,6 +37355,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./...`（1.510 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
   （`pkg/server/etcd` 168.791 秒）及 `go vet ./...` 通过。
 
+- A3745 对照 upstream `/root/etcd` commit `2bcaed1e0` 的 Kubernetes client default gRPC call
+  options 修复。旧 wrapper 直接保存 `RetryKVClient` 并发 raw Range/Txn，绕过 `clientv3.Config` 中的
+  `MaxCallRecvMsgSize`、`MaxCallSendMsgSize`；上游改为统一经过 high-level `KV.Get/Txn`。新增双端
+  差分先写入 4096-byte value，再用 `MaxCallRecvMsgSize=1024` 的 Kubernetes Get，必须返回
+  `ResourceExhausted` 且 message 含 `received message larger than max`；另用
+  `MaxCallSendMsgSize=1024` 执行 4096-byte OptimisticPut，必须在发送前返回 `ResourceExhausted`、
+  message 含 `trying to send message larger than max`，并由普通 client 复核目标键未落盘。
+
+  一次性官方 etcd 与生产 KubeBrain 双端普通连续 20 轮通过（4.532 秒），`-race` 连续 10 轮通过
+  （3.696 秒）；每轮均比较绝对 oracle 与双端归一结果，并清理隔离 prefix。该 upstream 变更属于
+  官方 client 修复，KubeBrain 已提供正确 Range/Txn transport 行为，无 runtime RED、服务端或镜像
+  变更；官方 reference 进程和临时 data-dir 已清理。
+  兼容模块 `go test ./...`（1.565 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 167.067 秒）及 `go vet ./...` 通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
