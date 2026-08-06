@@ -302,6 +302,15 @@ func (e *stagedTxnExecutor) currentRangeLimited(start, end []byte, maxKeys uint3
 }
 
 func (e *stagedTxnExecutor) rangeResponse(r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	// etcd treats bounded [key, range_end) requests whose end is not greater
+	// than key as valid empty ranges. Handle them before the historical fast
+	// path, which otherwise forwards the shape to backend.List; List rejects
+	// reverse bounds because its lower-level scan contract only accepts a
+	// strictly increasing interval. The Txn response still carries the pinned
+	// transaction revision rather than the requested historical revision.
+	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
+		return &etcdserverpb.RangeResponse{Header: txnHeader(e.visibleRevision())}, nil
+	}
 	if r.Revision > 0 {
 		var resp *etcdserverpb.RangeResponse
 		var err error
