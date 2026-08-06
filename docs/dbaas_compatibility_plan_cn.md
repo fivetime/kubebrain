@@ -40802,6 +40802,75 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   contract。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3855 与上述 commit ID；本轮不修改
   runtime。
 
+- A3856 固定 upstream grpcproxy auth adapter、read-only Txn `ReadView`、watch/keepalive close、
+  lease revoke auth、JWT validation、error translation、unixs/TLS dial、nil Txn op、max request/
+  txn ops、watch auth、lock/election proxy、snapshot path、keepalive loop 和 snapshot/large
+  snapshot metrics 审计。对照 `/root/etcd` commit `798119ed6` 与 `5bb0a091f`：官方给
+  grpcproxy auth 层补测试并增加 Auth server-to-client adapter。KubeBrain follower proxy/gateway
+  auth 已由 metadata propagation、Bearer/JWT/simple token、root/admin permission、auth
+  disabled-after-credentialed-connection、watch/snapshot auth 和 auth differential tests 固定；
+  不移植 upstream grpcproxy adapter 结构。
+
+  对照 `d173b09a1`、`da48f1fea` 与 `ad22aaa35`：官方让 read-only Txn 使用同一
+  `ReadView`，并测试 Txn comparison 与 concurrent put ordering。KubeBrain 已由 multi-op
+  Txn atomicity、read-only Txn、serializable/historical Range、compare revision/value/lease、
+  namespace nested Txn、concurrent create-if-absent differential 和 Porcupine model 固定 public
+  ordering。对照 `d8210da50`、`85095760f`、`68a72c6b6`、`9e7740011`、
+  `e9f464deb` 与 `ae7ddfb48`：官方处理 nil Txn request op、grpc JSON Txn、max recv size、
+  `--max-request-bytes` 和 `--max-txn-ops`。KubeBrain 已固定 max request bytes、large
+  Range/Txn、Txn op limit、gateway recv limit、client response limit、typed invalid argument 和
+  RangeStream 2GiB 规避路径。
+
+  对照 `762b2c625`、`4dff7aaa2`、`83b2ea2f`、`8b081ce9b` 与 `13d9438cf`：
+  官方收敛 watch/keepalive close 命名、watch victim/delay path 与 `IsModify`。KubeBrain watch
+  已覆盖 create/update/delete classification、PrevKV、slow consumer/backpressure、fragmentation、
+  compaction canceled、client-assigned ID、stream cancel、leader failover resume 和 production
+  watch probes。对照 `881903b6` 与 `939912c42`：官方支持 Watch auth 并补 e2e。KubeBrain
+  watch auth、permission range、token invalidation、gateway auth metadata 和 auth differential
+  已固定 wire 行为。
+
+  对照 `45fd8279f`、`0352ce79b`、`0011b78bd`、`aa85b0cea`、`f6d0dda18`、`8f40517ad`、
+  `5bba05703` 与 `df2cc4bc8`：官方增加 lease expired metrics、revoke runLoop rate-limit、
+  client keepalive loop robustness、leader-loss keepalive drain、proxy lease client cleanup、
+  randomized initial expiry 和 grpcproxy lease grant fast-fail 调整。KubeBrain lease public
+  contract 由 TTL truncation、Grant/KeepAlive/Revoke/TimeToLive、batch/long renewal、failover
+  expiry、follower lease reads、per-key attachment、session lock/election recipe、missing lease
+  error 和 production lease smoke 固定。
+
+  对照 `7b6831828` 与 `0c655902f`：官方保护 auth 下的 LeaseRevoke。KubeBrain LeaseRevoke
+  permission、root/admin path、attached keys auth、auth revision fence 和 lease/auth differential
+  已覆盖。对照 `8d8d1d225` 与 `fe727f310`：官方增加 JWT tests 并拒绝空 signing method。
+  KubeBrain JWT/Bearer/simple token、issuer/audience/exp、unknown kid、invalid signature 和
+  token TTL tests 已固定。对照 `fb086ef13`、`8542f2e67`、`010ffc069` 与
+  `d8935903a`：官方整理 header nil check、error-to-grpc map、LeaseNotFound 重复分支和
+  role get/list e2e。KubeBrain typed status/message differential、role/user list/get、permission
+  validation 和 etcdctl auth compatibility 已覆盖。
+
+  对照 `4301f4998`、`c23281400`、`ea8561c35`、`1b48d6e5d` 与 `8effbda3a`：
+  官方调整 rafthttp stream retry、SRV priority policy、`unixs://`、TLS-without-config timeout 和
+  endpoint credential selection。KubeBrain DBaaS 不暴露 upstream peer rafthttp/SRV client
+  internals；client/peer TLS、endpoint health、static service discovery、TLS rotation、connection
+  age reconnect 和 production probes 固定服务端边界。对照 `1cbc7cc27` 与 `db7ab961b`：
+  官方补 gateway flags 文档并共享 grpc-json services 连接。KubeBrain stable `/v3` gateway、
+  `/v3beta` rewrite、auth metadata、WebSocket streaming、base64 bytes、unknown fields 和 typed
+  errors 已覆盖。
+
+  对照 `643c2a310`、`00da3ca72`、`713e006bc`、`fd01db9e6`、`31d5d610f`
+  与 `f5b96991a`：官方增强 lock exec、lock/election grpcproxy 和 STM/mutex helpers。
+  KubeBrain 服务端 Lock/Election、session TTL、ownership compare/delete、failover expiry 和
+  clientv3 concurrency recipe tests 固定 public recipe；client helper 内部不 vend。对照
+  `2f1467cb2` 与 `bd680c330`：官方扩展 role command prefix revoke-permission。KubeBrain
+  role permission range/prefix validation、empty-key permission 和 etcdctl compatibility 表已覆盖。
+
+  对照 `c1c9a2c96`、`32c252f00`、`f6cd4d4f5`、`7d21d6c89`、`230106dd3`、
+  `dcf52bbfa`、`7ff5b0500`、`ad0b3cfda` 与 `9543431ae`：官方处理 init error close、
+  snapshot close logging/path hardening、peer handler shutdown、large snapshot duration metric、
+  ServerConfig pointer cleanup、initial-cluster warning、v2 cluster-health 和 large v2 snapshots。
+  KubeBrain 不复用 upstream WAL/snap/v2 snapshot path；online Snapshot/restore verifier、
+  incomplete stream close、startup option validation、leader/readiness、operation audit 和
+  production probes 固定 DBaaS 对外运维语义。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
+  A3856 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
