@@ -40131,6 +40131,60 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   audience/exp。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3843 与上述 commit ID；本轮不修改
   runtime。
 
+- A3844 固定 upstream clientv3 retry/balancer/auth retry、connection-cancel helper、watch reconnect
+  backoff、slow request logging、quota/db/defrag/lease/network/snapshot metrics、TLS cipher suites、
+  move-leader TLS endpoint、ETCDCTL_API v3 default、future watcher restore 和 JWT lease revoke 审计。
+  对照 `/root/etcd` commit `d92206971` 与 `6e521d2f3`：官方替换 `grpc.ErrClientConnClosing`
+  识别并新增 `clientv3.IsConnCanceled`。KubeBrain server-facing 兼容面是关闭连接、deadline/cancel、
+  transient `Unavailable` 和 official client `errors.Is`/helper 识别；已有 close bounded、get/put/txn
+  after close、watch close 和 retry peer log 门禁覆盖，不迁移 client helper。
+
+  对照 `a76681073`、`08da08bb1`、`55ef9cc1d`、`a5b2fb556`、`d1579c95a` 以及相关 balancer/resolver
+  变更：官方重构 clientv3 zap config、retry interceptor、auth retry、新 balancer/resolver，并在
+  watch reconnect 的 `Unavailable` 上加 backoff。KubeBrain 不实现 upstream client library，但必须让
+  official clientv3 在多 endpoint、MemberList advertised URLs、AutoSync、auth token refresh、invalid
+  token retry、watch reconnect、follower proxy 和 TLS ServerName/authority 路径保持可用；这些已由
+  MemberList sync、naming resolver、client resolver pre-build、auth lifecycle、JWT/Bearer/gateway、
+  watch failover 和 production probes 覆盖。
+
+  对照 `b47e148d5` 与 `225b0bf80`：官方 slow request warning 增加 response byte size/range count，
+  并避免日志打印 value 内容。KubeBrain 对外不承诺 upstream slow-log 文案；产品门禁应继续依赖
+  request duration/response size metrics、operation audit、structured logs 和敏感值不进日志的审计。
+  对照 `184372cd1`、`7dd701883`、`f2db05a86`、`21130d5fb`、`bc59f7b42`、`966ee9323` 与
+  `d326b2933`：官方新增/调整 quota backend bytes、db size、MVCC hash、backend defrag duration
+  metrics。KubeBrain TiKV/PD 数据面不复用 bbolt/mvcc metric registry；兼容面是 `Status.DbSize*`、
+  quota NOSPACE sticky alarm、Hash/HashKV、Defragment no-op 平台替代、observability 文档和生产
+  alert rules。metric 名称级 parity 仍由单独 observability oracle 追踪。
+
+  对照 `aa02ceb2e`：官方把 lease sorting 移出锁。KubeBrain lease list/TTL/keepalive/revoke 已固定
+  ordering、permission filtering、checkpoint、long renewal、revoke-watch atomicity 和 permission-change
+  行为；不迁移 upstream lessor 锁结构。对照 `65192fddf`：官方 etcdctl `move-leader` 支持 TLS
+  endpoints。KubeBrain `MoveLeader` 是 DBaaS 平台替代边界，仍需维持 target validation、current leader
+  no-op/follower priority、auth 和 actionable unsupported error；TLS endpoint 可达性由 client/peer
+  mTLS、ServerName/authority 和 production manifest 覆盖。
+
+  对照 `abffe0d29`、`3125c0c3e` 与 `3fb9cc84c`：官方加入 `--cipher-suites` 并把 cipher suites
+  挂到 TLSInfo。KubeBrain 已暴露 `--cipher-suites`，并固定 TLS1.2/TLS1.3 边界、unexpected suite
+  error、client/peer/info TLS、CRL、allowed hostname/CN 和生产 mTLS。对照 `7284e5a0a`：官方修复
+  maintenance snapshot error inflight 测试；KubeBrain online `Maintenance.Snapshot` 已覆盖 context
+  boundary、incomplete snapshot FD 关闭、snapshot history、official snapshot status/restore 和 restore
+  receipt。
+
+  对照 `25bc65794`：官方 etcdctl v3.4 默认 `ETCDCTL_API=3`。KubeBrain 支持的是 v3 数据面与
+  etcdctl v3 命令兼容矩阵，v2 API 明确 fail-closed；文档中保留 `ETCDCTL_API=3` 示例只是兼容旧工具
+  调用习惯，不代表 v2 surface。对照 `0398ec7dc`：官方允许 restore 后 future revision watcher，
+  避免 panic。KubeBrain 当前没有 online upstream snapshot restore RPC；等价 public 风险是 future
+  watch、restore/delete model、cold restore verifier、tombstone/history watch 和 RequestProgress 收敛，
+  已由相关 restart/restore/watch tests 覆盖。
+
+  对照 `a52f16d4a`：官方测试 JWT token 下 lease revoke routine。KubeBrain auth+lease 交叉覆盖
+  已包括 JWT/simple token、LeaseGrant/KeepAlive/Revoke/List/TTL 权限、lease attachment visibility、
+  permission change 和 checkpoint lock release。对照 `3821f3364`、`973fe43b8` 与 `a1aade8c1`：
+  官方新增网络 active/disconnected peer、snap fsync 和 heartbeat failure metric rename。KubeBrain
+  不运行 upstream rafthttp；等价可观测性是 peer service health、leader election、readyz、snapshot
+  writer/fsync、operation audit 和 production topology probes。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3844 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
