@@ -38538,6 +38538,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   matrix、A3790 的 total-count audit 和生产 count-only smoke 覆盖。本轮新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3804 与上述 commit ID；不修改 runtime。
 
+- A3805 固定 upstream v2 请求移除、protobuf 生成拆分、cache LRU、KeysOnly 测试与
+  grpc metadata 移除周边审计。对照 `/root/etcd` commits `83bd77251`、`e52c4b30d`、
+  `dae47b75c` 与 `073d46a55`：官方移除 legacy v2 `Request` message 和 `apply_v2.go`，
+  并补 changelog。KubeBrain 的 DBaaS 数据面目标是 etcd v3 gRPC/HTTP/clientv3 兼容，不承诺
+  复刻 upstream v2 store、v2 apply 或 v2 backend bootstrap；v2 store 迁移/禁用边界已由
+  A3782/A3794 的 v2 deprecation 与 no-v2-store 审计固定。后续只有 v2 移除影响到 v3 wire
+  descriptor、snapshot restore 可读性或官方 clientv3 行为时，才建立专项 RED。
+
+  对照 `1cafd646d`、`6531bf80b`、`8f139fe04` 与 `5406755e0`：官方拆分 gRPC 生成、
+  改用标准 Go protobuf 包并重跑 genproto。KubeBrain 不复刻 upstream 生成脚本实现；public
+  protobuf/wire 兼容由官方 etcd api module、`request_proto_coverage_test.go`、
+  raw gRPC/HTTP/clientv3 差分和 A3763/A3793/A3804 的 generated-code/API 审计约束。对照
+  `9b98bfe30`，官方只是整理 Range 测试 setup 和 `firstRev` helper；KubeBrain Range 行为以
+  黑盒矩阵与生产 count-only smoke 为准。
+
+  对照 `9ea06e665`，官方把 groupcache LRU 替换为 `k8s.io/utils/lru`；KubeBrain 不复用
+  upstream cache 包作为 TiKV/PD 数据面索引或 watch 缓冲实现，cache consistent Get/progress
+  notify 风险已由 A3760/A3776/A3801 覆盖。对照 `ec3114e02`，官方给 KeysOnly Range 增加测试；
+  KubeBrain KeysOnly/limit/total-count/sort/filter 语义已由 A3774/A3790 覆盖。对照
+  `c6b617356` 与既有 `84862dbd`，官方记录并实施移除 grpc-go `Metadata` 字段；KubeBrain
+  auth/metadata 外观以 gRPC metadata header、Bearer token 与 raw/clientv3 黑盒测试为准，
+  相关 Bearer 前缀与 metadata 兼容已由 A247/A3775/A3776 覆盖。
+
+  对照 `b0528f171`、`af179b060`、`cf20cf0a3`、`5815df0ed`、`c75aa8d4e`、
+  `c1e4aaa5b`、`bff7163e8`、`43aee8409`、`e75ec16e2`、`c8af7b9f3`、
+  `b666323e1`、`6bb395069` 与 `ed430d025`：官方只升级 x/*、Porcupine、CodeQL、Go、
+  systemd、OpenTelemetry、grpc-gateway、docker-login、actions/checkout 等依赖或 CI。对照
+  `9d26d768a` 与 `11c4db12a`：官方只修复 cache lagging watcher 测试 flake 和 PR 模板 AI
+  guidance。这些不改变 etcd v3 public runtime；KubeBrain 依赖、CI 与测试思想吸收仍按本仓
+  release/security gate 独立推进。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3805 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
