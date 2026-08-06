@@ -37308,6 +37308,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./...`（`pkg/backend` 43.831 秒、`pkg/server/etcd` 169.713 秒）及 `go vet ./...`
   通过。
 
+- A3742 对照 upstream `/root/etcd` commit `f1d4935e9` 的 Watch ID 0 鉴权回归：同一已认证
+  Watch stream 上首个未指定 ID 的 create 会取得自动 ID 0；随后在权限被撤销后创建另一个 watch
+  必须返回 permission denied，但不能把失败请求错误映射为 ID 0 并关闭既有 watch。现将完整 Auth
+  differential 的首个显式 ID 101 改为自动 ID 0，并继续要求 root 写入后该 watch 收到事件、权限恢复
+  后与显式 ID 103 同时 fan-out。这样把此前分别覆盖的“自动 ID 0”和“鉴权撤销后既有 watch 存活”
+  合并为上游原始故障路径，同时保留后续显式 ID 覆盖。
+
+  官方 etcd `d947b20863` 原始 `TestV3AuthWatchErrorAndWatchId0` 连续 10 轮通过（2.535 秒）。生产
+  三副本 keyspace 不适合破坏性启用鉴权，因此在同一独立 TiKV/PD 集群创建两个一次性单副本
+  KubeBrain Pod，分别使用隔离 keyspace `a3742-auth-watch-id-zero` 与
+  `a3742-auth-watch-id-zero-race`；完整 Auth differential 普通模式 17.929 秒、race 模式
+  21.243 秒均 GREEN。现有服务端已经返回失败 create 的 invalid ID 并保留 ID 0，无 runtime RED、
+  实现或镜像变更；两个临时 Pod 和 port-forward 均已精确清理。主生产三副本仍 3/3 Ready、零重启。
+  兼容模块 `go test ./...`（1.546 秒）及 `go vet ./...` 通过；根模块完整测试重跑通过
+  （`pkg/server/etcd` 167.031 秒），`go vet ./...` 通过，`readyz=ok` 且 `/compat/` 无 KV。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
