@@ -37491,6 +37491,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3752/`、`a3752/`
   与 `/compat/` 均无 KV；reference data-dir 与临时 clone 均已清理。
 
+- A3753 对照 upstream `/root/etcd` commit `160684ae0` 的 `clientv3.Cmp` 深拷贝边界。上游把
+  `Cmp` 切换为隐藏的 protobuf 指针并在 `Txn.If`、`OpTxn` 和 txn request 构造时 clone compare；
+  该路径被 Kubernetes optimistic put/delete 使用，调用方在构造事务后修改 compare slice、key bytes
+  或 result 不得污染已保留的 compare。新增兼容测试先用无外部依赖的 client API 断言 `Compare` 与
+  `WithRange` clone 行为，再用一次性 reference etcd 与生产 KubeBrain 执行 live differential：构造
+  `Txn.If` 和 `OpTxn` 后原地改写调用方持有的 compare key bytes，要求两端仍命中原始 key 并走 then 分支。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `160684ae0^`，只给临时 clone 添加最小
+  `TestOpTxnClonesCmpBeforeCallerMutation`；旧版 `OpTxn` 直接保留调用方传入的 `[]Cmp`，构造后修改
+  `cmps[0]` 会让 request compare key 从 `"foo"` 变成 `"bar"`，测试 0.042 秒失败。当前 `/root/etcd`
+  client + reference/KubeBrain 双端 targeted differential 0.448 秒 GREEN。该修复属于官方 client API
+  clone 语义，本轮无服务端或镜像变更。兼容模块 `go test ./...`（1.582 秒）及 `go vet ./...` 通过；
+  根模块 `go test ./...`（`pkg/server/etcd` 167.488 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、
+  零重启，镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3753` 与 `/compat/`
+  均无 KV；reference data-dir 与临时 clone 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
