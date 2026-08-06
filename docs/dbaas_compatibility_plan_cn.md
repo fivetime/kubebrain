@@ -40083,6 +40083,54 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   discard、VERSION compare 的 raw/client Txn 行为；示例差异进入文档兼容矩阵即可。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3842 与上述 commit ID；本轮不修改 runtime。
 
+- A3843 固定 upstream Raft committed-entry pagination、watch cancel/error reason、grpcproxy watch
+  create error、snapshot/raft metrics、server-id/go-version metrics、snapshot 0600、lease checkpoint/
+  keepalive、maintenance direct dial、progress notify request、JWT signing algorithms 和
+  `WithRequireLeader` 文档审计。对照 `/root/etcd` commit `0a670b7c9`、`7a8ab37bf` 与
+  `a9e7c1e11`：官方修正 Raft committed entries pagination 与 flow control。KubeBrain 不运行
+  upstream Raft log；等价 DBaaS 风险是 follower/leader fence、single-revision Txn、watch replay、
+  revision monotonicity、request-size/txn-op 限制和 TiKV backpressure，已由 failover、Porcupine、
+  Txn atomicity、watch reconnect 和 production probes 覆盖。
+
+  对照 `9bad6fd44`、`839f20219`、`eb9c8d3c2`、`f0e6c10ab` 与 `11ead62b9`：官方修复 recipe
+  watch cancel、lease 测试 channel close race、server cancel reason 透传、grpcproxy watch create
+  error 和 `WithRequireLeader` 文档。KubeBrain public Watch contract 已固定 create/cancel/progress/
+  compaction/error 控制帧：compact watch 返回 `ErrCompacted`/`CompactRevision`，quota 返回
+  `etcdserver: too many requests`，unknown cancel 静默，follower proxy watch 在 leader change/
+  Unavailable/compaction 下保持官方 client 可识别的关闭或重连行为。`WithRequireLeader` 已由
+  KV/Lease/Watch、Cilium consumer smoke 和 production readiness 约束。
+
+  对照 `8d85259b5` 与 `dc01734c6`：官方给 v3rpc interceptor 增加 log-level checking 和 incoming
+  request info logging。KubeBrain 兼容面不绑定 upstream log 文案；必须保持的是 header stamping、
+  auth/admission interceptor、request duration/operation audit、structured log 和 production probe。
+  对照 `6f4c509ad`、`c392cd20c`、`eb6738053`、`643d791a1`、`ac936365b` 与 `57ec2226c`：官方增加
+  v3 snapshot send/receive/fsync metrics、`etcd_server_id`、`etcd_server_go_version`、dump-metrics
+  工具和 FD monitoring zap logger。KubeBrain 已有 info-port metrics、server identity、Status/
+  `/version`、operation audit、logical/online snapshot、HashKV 和 production alerting；metric 名称级
+  parity 应继续由 observability oracle 单独追踪。
+
+  对照 `ddde272fb`：官方把 clientv3 保存的 snapshot 文件权限限制为仅用户可读。KubeBrain 在线
+  `Maintenance.Snapshot` 生成官方 backend snapshot，writer 使用 `bolt.Open(..., 0o600, ...)`，
+  生产 restore/operation receipt 与私有临时文件也固定 0600/fsync/atomic publish，不把快照输出到
+  world-readable 路径。对照 `b3b06a862`、`67bcf28c4` 与 `a2ecd6b67`：官方修复 maintenance API
+  直连 endpoint、passthrough resolver 和 `WithBlock` TLS timeout。KubeBrain server 侧 contract 是
+  official client 的 Maintenance Status/HashKV/Alarm/Defragment/Snapshot/Downgrade 在多 endpoint、
+  AutoSync、TLS ServerName/authority 和关闭/超时路径可识别；不迁移 client dialer 内部实现。
+
+  对照 `75ac18cd2`、`bbe2d777b`、`2edb954bc`、`d1de41efe` 与 `f3385418b`：官方加入 lease checkpoint
+  protobuf/config/tests，并修复 keepalive response queue 满时的发送间隔。KubeBrain 的 lease 不是
+  upstream lessor，但已持久化 remaining TTL checkpoint，覆盖 reload 后使用剩余 TTL、renew 清理
+  checkpoint、revoke 不被慢 checkpoint 阻塞、response-lost checkpoint 可由后续 renew 收敛、
+  long failover lease 和 permission-change keepalive。对照 `4b51b6de4`：官方引入 Watch
+  `RequestProgress`。KubeBrain 已支持 clientv3 `RequestProgress`、per-watch progress kick、
+  multiplexed watchers、future watch 静默、consistent-list cache convergence 和低于/高于间隔配置校验。
+
+  对照 `a6ddb51c8`：官方支持所有 JWT signing algorithms。KubeBrain JWT provider 已覆盖 HS/RS/ES/
+  EdDSA、verify-only、公私钥 mismatch、TTL、malformed options、oversized key、旧 revision token、
+  password rotation 和 gateway/Bearer metadata 边界；生产 OIDC/JWT 文档继续要求明确 issuer/
+  audience/exp。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3843 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
