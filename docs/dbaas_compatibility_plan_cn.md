@@ -37917,6 +37917,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   去重门禁。该轮不修改 runtime；若未来 upstream 在这些主题上新增可观察行为，应以新 commit
   重新建立 RED/官方 oracle，而不是复用本条审计结论。
 
+- A3776 固定 A3754–A3767 已闭环的 upstream client/cache/API 审计集合。继续对照
+  `/root/etcd` 近期 commits，确认这些点已有永久门禁，不应在后续筛选中重复制造同义测试：
+  `0d20d7da7` 的 `clientv3.New` 非阻塞创建由 A3754 的黑洞地址 `DialTimeout`
+  单元测试覆盖；`236179af0` 的 `cache/v3` `WithProgressNotify()` 支持由 A3756 的
+  `cache_progress_notify_differential` 生产 live 测试覆盖；`4f081fb1a` 的 cache
+  historical Get revision 边界由 A3757 覆盖；`932dc99f1` 的 LeaseKeepAlive forwarding
+  由 A3758 覆盖；`7c528e856` 的 learner `MemberUpdate` 状态保持由 A3759 覆盖；
+  `a1cb0a244`、`910fdba06` 和 `fa8a5a248` 的 cache consistent Get / progress catch-up
+  由 A3760 覆盖；`1570c5c85` 的 concurrency GetResponse pointer 语义由 A3752/A3761 覆盖；
+  `2214d9f13` 的 watch event helper alias 由 A3763 覆盖；`312d7262d` 的
+  `WithWatchBufLog()` 组合行为由 A3764 覆盖；`1fd87206f` 的 clientv3 retry peer log
+  由 A3766 覆盖；`84862dbd6` 的 naming resolver metadata 边界由 A3767 覆盖；
+  `fd604517e` 的 default/KEY ASC limited Range 外观由 A3769 覆盖。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 对 A3776 及上述 commit ID 做聚合断言。该测试不替代
+  各专项行为测试；它只保证兼容审计索引持续指向已存在的 oracle，避免未来把官方 client-only
+  变更误归类为 KubeBrain runtime 缺口，或在已有差分外重复追加低价值测试。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
