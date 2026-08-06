@@ -38026,6 +38026,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   race 的边界；若未来发现 KubeBrain 公开 Watch stream 或本仓库自有测试记录器存在同类 race，应以
   `go test -race` 的真实 RED 建立专项修复，而不是复用本条审计结论。
 
+- A3782 固定 upstream Raft/v2store/robustness report 边界审计。对照 `/root/etcd`
+  commit `fae90f9b1`，官方把 `applyConfChange` 从直接解引用传入的 `*raftpb.ConfState`
+  改为更新 `etcdProgress.confState`，避免 Raft confchange apply/restart 测试中的 nil/alias
+  dereference 风险；这是 etcd 自管 Raft membership、WAL snapshot 与 confstate 持久化路径的内部
+  安全修复。KubeBrain 数据面不使用 upstream Raft apply loop 或 v2/v3 shared backend 来驱动成员
+  变更，成员发布与扩缩由 DBaaS 控制面、静态 peer identity、MemberList 外观和 TiKV/PD 拓扑承担；
+  现有 MemberAdd/Remove/Update/Promote 平台边界、MemberList 三成员外观、watch/follower proxy
+  failover 与 snapshot adapter 门禁覆盖的是客户端可观察行为。因此本轮不移植
+  `applyConfChange(..., ep *etcdProgress)`。
+
+  对照 commit `5dadeeedb`，官方新增 `--v2-deprecation=write-only-skip-check` 以允许特定
+  3.5→3.6 升级场景绕过 v2store 内容检查；KubeBrain 是 v3 etcd-compatible DBaaS 数据面，
+  不承诺 upstream v2store 文件、v2 rollback 或 `server/etcdmain` 的 v2 迁移 flag 兼容。对照
+  `34d7ed209`、`41d117f71`、`eda36fb53` 与 `c43a9e30a`，官方分别重构 MVCC
+  `TestIndexRange`、改进 robustness 报告错误处理、优化 WAL history 合并比较、在 validation 前保存
+  robustness report 数据；这些只影响 upstream 内部测试、WAL history/report 产物或故障分析流程，
+  不改变公开 KV/Watch/Lease/Txn/Cluster/Maintenance RPC 语义。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3782 和上述 commit ID。该条的作用是防止后续把
+  Raft confstate、v2store 迁移 flag 或 robustness report 内部改动误归类为 KubeBrain TiKV/PD
+  数据面缺口；若未来 upstream 在这些主题上暴露新的 client-visible 行为，应以对应公开 RPC/CLI
+  oracle 重新建立专项 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
