@@ -40018,6 +40018,71 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   unknown-field、lock/election/lease/watch gateway 和 production gateway failover tests 已覆盖。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3841 与上述 commit ID；本轮不修改 runtime。
 
+- A3842 固定 upstream prober HTTP status、restore/compact deadlock、logging config、gRPC-gateway
+  CN auth、grpcproxy cache leak、client concurrency helpers、snapshot/status 工具、backend flags、
+  cluster/version/health metrics、discovery SRV、client UUID/keepalive、Raft log bound、auth coverage、
+  gateway Txn VERSION、snapshot integrity 和 leader-change read/drop 审计。对照 `/root/etcd` commit
+  `627660e94`：官方 prober 开始校验 HTTP status code。KubeBrain 生产 readiness/health 门禁已使用
+  `/readyz` HTTP status 与 body 双重校验，并把 data corruption、quota NOSPACE、linearizable/serializable
+  read、non-learner check 拆成具名 health checker；不能只用 TCP 成功替代 readiness。
+  对照 `6e8913b00`：官方修复 store restore 与 compact 同锁死锁。KubeBrain 不在运行中 restore
+  upstream mvcc store；对应 DBaaS 风险是 TiKV-backed Compact、logical restore/cutover、snapshot export
+  和 cold-restore 校验的并发边界，现有 compact/restore 工具、HashKV、readyz 和 recovery tests 负责覆盖。
+
+  对照 `fcc29894c` 与 `ac090fe32`：官方整理 embed logging 并加入 zap logger builder。KubeBrain
+  不暴露 upstream embed logging surface；运行时日志通过本仓 klog/options/endpoint 管理，兼容结论
+  以 structured logs、operation audit、metrics 和生产探针为准。对照 `bf9d0d829`、`99704e2a9`
+  与 `a9a9466fb`：官方禁用 gRPC-gateway CommonName auth 并补 e2e/文档。KubeBrain 已在
+  gateway metadata 中强制注入 `grpcgateway-accept` marker，`authCallerFromContext` 看到该 marker
+  必须返回 `ErrUserEmpty`，所以启用 client-cert-auth 时 HTTP gateway 不能用内部 client certificate
+  CN 冒充用户；该边界有 authorizer、gateway JSON、TLS 和 production failover 测试。
+
+  对照 `d88f686a9`：官方修复 grpcproxy cache leak。KubeBrain follower→leader proxy 不复用 upstream
+  grpcproxy cache store，风险面是 watch generation、leader change close、AutoSync endpoint、proxy
+  authority 和 connection aging；已有 proxy/watch/memberlist/TLS tests 覆盖。对照 `7d7266d3c` 与
+  `64e8b2e90`：官方修正 clientv3 concurrency Election/Mutex helper。KubeBrain server 只需提供
+  KV/Txn/Lease/Watch primitives，让 official concurrency 包在 keyPrefix、lease session、compare-put
+  和 delete cleanup 上看到 etcd-compatible 语义；已有 naming/concurrency/lease/txn/gateway tests
+  覆盖，不迁移 client helper 内部代码。
+
+  对照 `5b6b03d08`、`f8a513ce6`、`87beb8336` 与 `422f867f6`：官方为 snapshot save/dump-db/status
+  增加 timeout 或 integrity check。KubeBrain 的可交付面是 logical snapshot/export/restore、
+  etcd snapshot export/status/restore 兼容、HashKV 和 restore receipt；工具 timeout 与 snapshot
+  integrity 必须由 backup/restore CLI tests 和官方 `etcdutl snapshot status` 门禁持续验证。
+  对照 `3faed211e`：官方新增 backend batch limit/interval flags；对照 `f89b06dc6`：官方限制
+  unbounded Raft log growth。KubeBrain 不运行 bbolt backend 或 upstream Raft log；相应资源上限由
+  TiKV storage config、request-size/txn-op/watch/delete-range limit、quota、compaction 和 production
+  SLO/alerts 承担。
+
+  对照 `a8293e581`：官方记录 `ETCD_CIPHER_SUITES`；KubeBrain 用 `--cipher-suites`、TLS min/max、
+  TLS1.3 Go-default、CRL、allowed hostname/CN 和 production manifest tests 固定 TLS surface。
+  对照 `af893d354`、`022648158` 与 `291768af0`：官方增加 `etcd_cluster_version` metric 并补
+  cluster version e2e。KubeBrain 的版本/capability contract 是 `/version`、Status 版本、DowngradeInfo、
+  supported API 文档和 release gate；若要 metric 名称级兼容，应作为 observability oracle 单独推进。
+  对照 `7524cc6f4` 与 `004e04a1d`：官方为 health 增加 success/failure metrics。KubeBrain 已有
+  `/health`、`/readyz`、`/livez`、audit probe 和 Prometheus metrics；是否复刻 upstream metric 名称
+  同样属于可观测性兼容矩阵。
+
+  对照 `91e583cba`、`c15fb607f`、`f3f642758` 与 `4de27039c`：官方修复 doSerialize 无限循环、
+  leader change broadcast、防阻塞和 leader changed 时丢弃 read。KubeBrain 的等价风险是
+  leader election fence、follower write proxy、linearizable/serializable read、watch reconnect、
+  lease keepalive 和 transient `Unavailable`，已由 failover、restart、deadline/cancel、revision
+  monotonicity 和 production probes 覆盖。对照 `fa35126ef`：官方支持 discovery-srv-name。
+  KubeBrain DBaaS topology 由 platform/manifest/initial-cluster/advertise-client-urls 管理，不通过
+  upstream SRV discovery 动态组集群。对照 `6a43db1ef` 与 `2338f747b`：官方用 UUID 修复并发创建
+  clientv3 client；这是 client library 内部行为，服务端只需保持多连接、多 endpoint、AutoSync 和
+  close/error code 兼容。对照 `49450aaa6` 与 `f6f375109`：官方澄清 lease KeepAlive 并暴露更多
+  keepalive ClientParams。KubeBrain 的服务端门禁已覆盖 LeaseKeepAlive、permission change、long
+  renewal、checkpoint、server keepalive min/interval/timeout flags 与 connection aging。
+
+  对照 `ffbdb458a`：官方增强 auth range permission cache 覆盖。KubeBrain auth 数据保存在 TiKV，
+  重点是 recursive Txn permission、range/prefix boundaries、lease attachment、watch stream、token
+  revision、NoPassword、client-cert CN 和 gateway marker；现有 auth lifecycle/client/manager tests
+  是对应 oracle。对照 `b3faeb5d8` 与 `e935594d3`：官方补 gateway watch curl buffering 与 Txn
+  VERSION 示例。KubeBrain gateway 已覆盖 watch/lease/lock/election/KV/Auth route、unknown-field
+  discard、VERSION compare 的 raw/client Txn 行为；示例差异进入文档兼容矩阵即可。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3842 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
