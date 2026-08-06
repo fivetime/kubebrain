@@ -17,6 +17,26 @@ type restoreDeleteSnapshot struct {
 	kvs      []*mvccpb.KeyValue
 }
 
+type restoreDeleteEvent struct {
+	typeValue      mvccpb.Event_EventType
+	key            string
+	value          string
+	createRevision int64
+	modRevision    int64
+	version        int64
+	lease          int64
+	prevKV         *restoreDeleteEventKV
+}
+
+type restoreDeleteEventKV struct {
+	key            string
+	value          string
+	createRevision int64
+	modRevision    int64
+	version        int64
+	lease          int64
+}
+
 // TestReplicatedRestartPreservesInterleavedRestoreDeleteHistory is the
 // black-box, multi-key counterpart of upstream TestRestoreDelete. It verifies
 // current state and every distinct historical snapshot after all serving
@@ -140,8 +160,16 @@ func runRestoreDeleteModel(t *testing.T, ctx context.Context, endpoint, prefix s
 	currentBefore, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.NotEmpty(t, currentBefore.Kvs)
+	eventsBefore := collectRestoreDeleteEvents(t, ctx, cli, prefix, revisions[0], len(revisions))
+	for index, event := range eventsBefore {
+		require.Equal(t, revisions[index], event.modRevision,
+			"each model mutation must occupy its recorded revision")
+	}
 
 	restart()
+	eventsAfter := collectRestoreDeleteEvents(t, ctx, cli, prefix, revisions[0], len(revisions))
+	require.Equal(t, eventsBefore, eventsAfter,
+		"historical watch events changed across serving restart")
 	for _, snapshot := range snapshots {
 		response, rangeErr := cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(snapshot.revision))
 		require.NoErrorf(t, rangeErr, "historical range at revision %d after restart", snapshot.revision)
@@ -170,6 +198,58 @@ func runRestoreDeleteModel(t *testing.T, ctx context.Context, endpoint, prefix s
 	require.False(t, currentCount.More)
 	require.Equal(t, int64(len(currentBefore.Kvs)), currentCount.Count)
 	assertRestoreDeletePagination(t, ctx, cli, prefix, 0, currentBefore.Kvs)
+}
+
+func collectRestoreDeleteEvents(
+	t *testing.T,
+	ctx context.Context,
+	cli *clientv3.Client,
+	prefix string,
+	startRevision int64,
+	want int,
+) []restoreDeleteEvent {
+	t.Helper()
+	watchCtx, watchCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer watchCancel()
+	watch := cli.Watch(
+		watchCtx, prefix,
+		clientv3.WithPrefix(), clientv3.WithRev(startRevision), clientv3.WithPrevKV(),
+	)
+	events := make([]restoreDeleteEvent, 0, want)
+	for len(events) < want {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok, "watch closed after %d/%d restore/delete events", len(events), want)
+			require.NoError(t, response.Err())
+			for _, event := range response.Events {
+				require.NotNil(t, event.Kv)
+				outcome := restoreDeleteEvent{
+					typeValue:      event.Type,
+					key:            string(event.Kv.Key),
+					value:          string(event.Kv.Value),
+					createRevision: event.Kv.CreateRevision,
+					modRevision:    event.Kv.ModRevision,
+					version:        event.Kv.Version,
+					lease:          event.Kv.Lease,
+				}
+				if event.PrevKv != nil {
+					outcome.prevKV = &restoreDeleteEventKV{
+						key:            string(event.PrevKv.Key),
+						value:          string(event.PrevKv.Value),
+						createRevision: event.PrevKv.CreateRevision,
+						modRevision:    event.PrevKv.ModRevision,
+						version:        event.PrevKv.Version,
+						lease:          event.PrevKv.Lease,
+					}
+				}
+				events = append(events, outcome)
+			}
+		case <-watchCtx.Done():
+			t.Fatalf("timed out after %d/%d restore/delete events: %v", len(events), want, watchCtx.Err())
+		}
+	}
+	require.Len(t, events, want)
+	return events
 }
 
 func assertRestoreDeletePagination(
