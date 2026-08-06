@@ -2,11 +2,13 @@ package compat
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -99,4 +101,46 @@ func TestReplicatedRestartPreservesCompactBoundaryTombstone(t *testing.T) {
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, recreated.Header.Revision, current.Kvs[0].CreateRevision)
 	require.Equal(t, int64(1), current.Kvs[0].Version)
+	watchCancel()
+
+	_, err = cli.Compact(ctx, recreated.Header.Revision, clientv3.WithCompactPhysical())
+	require.NoError(t, err)
+	for _, pod := range servingPods {
+		replaceCompatPod(t, ctx, kubeContext, servingNamespace, pod)
+	}
+	requireEndpointReachable(t, grpcTarget(endpoint))
+
+	compactedCtx, compactedCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer compactedCancel()
+	compactedWatch := cli.Watch(compactedCtx, key, clientv3.WithRev(deleted.Header.Revision))
+	select {
+	case response, ok := <-compactedWatch:
+		require.True(t, ok, "compacted watch channel closed without terminal response")
+		require.True(t, response.Canceled)
+		require.True(t, errors.Is(response.Err(), rpctypes.ErrCompacted), "unexpected compacted watch error: %v", response.Err())
+		require.Equal(t, recreated.Header.Revision, response.CompactRevision)
+		require.Empty(t, response.Events)
+	case <-compactedCtx.Done():
+		t.Fatalf("timed out rejecting the pre-generation tombstone revision: %v", compactedCtx.Err())
+	}
+
+	boundaryCtx, boundaryCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer boundaryCancel()
+	boundaryWatch := cli.Watch(boundaryCtx, key, clientv3.WithRev(recreated.Header.Revision), clientv3.WithPrevKV())
+	select {
+	case response, ok := <-boundaryWatch:
+		require.True(t, ok, "boundary watch channel closed before recreated PUT replay")
+		require.NoError(t, response.Err())
+		require.Len(t, response.Events, 1)
+		event := response.Events[0]
+		require.Equal(t, clientv3.EventTypePut, event.Type)
+		require.Equal(t, key, string(event.Kv.Key))
+		require.Equal(t, "recreated-after-restart", string(event.Kv.Value))
+		require.Equal(t, recreated.Header.Revision, event.Kv.CreateRevision)
+		require.Equal(t, recreated.Header.Revision, event.Kv.ModRevision)
+		require.Equal(t, int64(1), event.Kv.Version)
+		require.Nil(t, event.PrevKv)
+	case <-boundaryCtx.Done():
+		t.Fatalf("timed out replaying recreated PUT at the second compact boundary: %v", boundaryCtx.Err())
+	}
 }
