@@ -38295,6 +38295,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标是把这一段中的 LeaseKeepAlive 已覆盖风险、Raft snapshot flag 平台边界和 robustness/test-only
   改动归档，保持后续筛选聚焦真实 client-visible 缺口。
 
+- A3795 固定 upstream main 顶部 release/changelog、CI/dependency 与 CRL 安全链路审计。对照
+  `/root/etcd` merge/head commits `d947b2086`、`e5cb15405`、`d6ff4aa8a`、`277a611d4`、
+  `6e4705678`、`ed834bdc6`、`8d88b05e0` 与非 merge commits `12caed621`、`e3ba98fd0`、
+  `29085e111`、`e0526e7bb`、`dcebccc75`、`a2537cc63`：这些变更只更新 features/release
+  guide/CHANGELOG、3.7.0/3.6.13/3.5.32 发布日期和 Go 版本发布说明，不改变 etcd v3
+  客户端可观察协议。KubeBrain 不把 upstream release 文案当作 runtime 兼容信号；只有字段、错误、
+  stream、auth、TLS 或运维命令表出现外观变化时才建立专项差分。
+
+  对照 `b01f1ed2a`、`6cafe05dc`、`ab9414b8b`、`9b412b3bd`、`3dce76ca8`、`48aa9fdea`
+  与 `74efac75b`：官方只升级 CodeQL、docker/login-action、Antithesis SDK 或 distroless
+  基础镜像。KubeBrain 的 CI、镜像基线和依赖升级由本仓独立门禁管理；这些 upstream 变更不能
+  机械视作 TiKV/PD-backed 数据面改造项。对照 `340072462` 与 `6be233eb2`，官方 changelog
+  记录 gRPC listener CRL enforcement bypass；真正的行为修复是既有 `2308ce157` 与
+  `e84205af4`。
+
+  CRL 行为本仓已不是纯文档豁免：`cmd/option` 暴露 client/peer/info CRL 参数并声明每次 handshake
+  重载；`pkg/endpoint/tls_rotation_test.go` 的
+  `TestCertificateRevocationListReloadedForEveryHandshake`、
+  `TestCertificateRevocationListRejectsResumedClientSession` 与
+  `TestCertificateRevocationListRejectsResumedServerSession` 钉住证书吊销、热重载和 resumed TLS
+  session 不能绕过 CRL。该覆盖与 upstream `VerifyConnection` 修复的安全意图一致，同时保留
+  KubeBrain 自身 client/peer/info listener 拆分。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3795 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
