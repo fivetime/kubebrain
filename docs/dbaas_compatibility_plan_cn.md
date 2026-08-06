@@ -37556,6 +37556,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3756-cache-progress` 与 `/compat/`
   均无 KV；临时 clone 已清理。
 
+- A3757 对照 upstream `/root/etcd` commit `4f081fb1a` 的 `go.etcd.io/etcd/cache/v3`
+  historical Get snapshot 选择语义。上游修复前 `store.getSnapshot` 使用 `AscendGreaterOrEqual(rev)`，
+  当请求 revision 落在 cache 已保存的两个 snapshot 之间时会错误选择未来 snapshot，导致 historical
+  Get 返回过新的 value/revision；修复后使用不大于请求 revision 的 snapshot。新增 compat live
+  测试先启动 cache watching 专用前缀，再写同一 key 的 `val1`，随后用 cache 前缀外的无关 key 推进
+  全局 revision，最后写同 key 的 `val2`；在 cache 已观察到最新值后，用
+  `cache.Get(key, WithRev(firstRev+1), WithSerializable())` 要求仍返回 `val1` 和 first mod revision，
+  证明 KubeBrain 底层 Watch/RequestProgress 与官方 cache historical snapshot 组合不会泄漏未来值。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `4f081fb1a^`，只给旧 cache 包添加最小
+  `TestStoreGetHistoricalRevisionBetweenUpdates`；旧版在 snapshot rev10 与 rev12 之间请求 rev11 时
+  返回 `"val2"`，期望 `"val1"`，测试失败。当前 `/root/etcd` cache + 生产 KubeBrain live 定向测试
+  1.066 秒 GREEN；收尾时 cache 内部 watch 打印的 `context canceled` 来自主动关闭 cache，不影响断言。
+  兼容模块 `go test ./...`（1.611 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 167.289 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，镜像仍为
+  `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3757-cache-historical-get`、
+  `/a3757-cache-historical-advance` 与 `/compat/` 均无 KV；临时 clone 已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
