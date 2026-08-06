@@ -146,8 +146,26 @@ func runRestoreDeleteModel(t *testing.T, ctx context.Context, endpoint, prefix s
 		response, rangeErr := cli.Get(ctx, prefix, clientv3.WithPrefix(), clientv3.WithRev(snapshot.revision))
 		require.NoErrorf(t, rangeErr, "historical range at revision %d after restart", snapshot.revision)
 		require.Equal(t, snapshot.kvs, response.Kvs, "historical snapshot at revision %d changed across restart", snapshot.revision)
+		count, countErr := cli.Get(
+			ctx, prefix,
+			clientv3.WithPrefix(), clientv3.WithRev(snapshot.revision),
+			clientv3.WithCountOnly(), clientv3.WithLimit(1),
+		)
+		require.NoErrorf(t, countErr, "historical count at revision %d after restart", snapshot.revision)
+		require.Empty(t, count.Kvs)
+		require.False(t, count.More)
+		require.Equal(t, int64(len(snapshot.kvs)), count.Count,
+			"historical count at revision %d changed across restart", snapshot.revision)
 	}
 	currentAfter, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.Equal(t, currentBefore.Kvs, currentAfter.Kvs)
+	currentCount, err := cli.Get(
+		ctx, prefix,
+		clientv3.WithPrefix(), clientv3.WithCountOnly(), clientv3.WithLimit(1),
+	)
+	require.NoError(t, err)
+	require.Empty(t, currentCount.Kvs)
+	require.False(t, currentCount.More)
+	require.Equal(t, int64(len(currentBefore.Kvs)), currentCount.Count)
 }
