@@ -37370,6 +37370,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./...`（1.565 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
   （`pkg/server/etcd` 167.067 秒）及 `go vet ./...` 通过。
 
+- A3746 对照 upstream `/root/etcd` commit `cd42de79d` 的 client auth configuration error
+  contract。`Token` 与 `Username`/`Password` 同时配置时，`clientv3.New` 必须返回 nil client、精确
+  文案 `Username/Password and Token configurations are mutually exclusive`，并可由
+  `errors.Is(err, clientv3.ErrMutuallyExclusiveCfg)` 稳定分类。新双端回归还在本地监听临时 TCP
+  socket，证明该配置校验在异步 resolver/dial 之前完成、100ms 窗口内没有任何连接；随后用合法配置
+  连接同一 reference/KubeBrain endpoint，读取缺失键并要求空 KVs、非空 header 和正 revision，避免
+  把纯配置测试误当作数据面可用性证据。
+
+  官方 client 原始 `TestNewOnlyJWTExclusivity` 连续 20 轮通过（0.139 秒）；一次性官方 etcd 与生产
+  KubeBrain 双端黑盒连续 20 轮通过（6.178 秒），`-race` 连续 10 轮通过（4.409 秒）。该行为由新版
+  官方 client 提供，KubeBrain 数据面接受后续合法 client 请求，无 runtime RED、服务端或镜像变更；
+  reference 进程、临时 data-dir 与监听 socket 均已清理。
+  兼容模块 `go test ./...`（1.536 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 170.528 秒）及 `go vet ./...` 通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
