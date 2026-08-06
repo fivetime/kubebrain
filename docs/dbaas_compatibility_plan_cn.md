@@ -39673,6 +39673,57 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status/restore` 使用，平台离线备份/恢复由本仓 backup/restore/operation 工具负责。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3834 与上述 commit ID；本轮不修改 runtime。
 
+- A3835 固定 upstream Range cancellation、apply duration metrics、watch cancel metrics、
+  invalid-auth-token retry、backend buffer range、JWT dependency、client resolver/balancer、socket/
+  Raft transport options、pre-vote default、ReadIndex retry、memory leak 和 debug logging 审计。对照
+  `/root/etcd` commit `0558e379c`：官方 Range 在 request context 取消时必须停止后端读路径。
+  KubeBrain 的 direct Range、RangeStream、Txn read-only、namespace Range 和 backend scanner 已有
+  cancel/deadline 门禁，要求取消不泄漏 goroutine、不污染后续 stream，并把用户取消与 transient
+  follower/leader 不可用区分开。对照 `9571325fe`：官方修正客户端取消 watch 时产生的错误 metrics。
+  KubeBrain watch send-loop metrics、create/cancel/progress 控制帧、unknown cancel 静默、显式/自动
+  watch ID 复用和 proxy failover cancel 门禁覆盖同类 public watch 行为；metrics 名称已由
+  `TestObservabilityDocIncludesUpstreamMetricParity` 固定。
+
+  对照 `af4ef4ec0`：官方 client 遇到 `ErrInvalidAuthToken` 时清理 auth token。KubeBrain 服务端
+  契约是稳定返回 official client 可识别且 `errors.Is` 生效的 `ErrInvalidAuthToken`，并在过期
+  token、坏 JWT、用户删除、密码轮换、metadata 多值、gateway forwarding、Watch/Lease/Lock/Election
+  路径中保持相同错误外观；client retry 策略不由服务端复刻。对照 `5b9040208`：官方从
+  `dgrijalva/jwt-go` 切到 `form3tech-oss/jwt-go`。KubeBrain JWT 兼容面是签名、issuer/claim、
+  expiry、bad token 与 key rotation 的 auth result，不绑定 upstream 旧库实现。
+
+  对照 `8feb55f65`、`0b75fede6` 与 `a836a8045`：官方实现 endpoint Watch/new resolver，用标准
+  gRPC resolver + round_robin 替代旧 balancer，并移除 legacy naming API。KubeBrain server data
+  plane 不实现 upstream client library 内部 balancer，但必须让 official clientv3 的
+  EndpointManager、naming resolver、endpoint delete/watch、MemberList advertised URLs 和 multi-endpoint
+  retry 行为保持可用；已有 naming resolver 双端差分、client resolver pre-build、MemberList sync
+  和 retry peer log 门禁覆盖。对照 `9312d1b07`：官方恢复 `ETCD_CLIENT_DEBUG` 解释。KubeBrain
+  不承诺 client library logging 环境变量，生产可观测性由 server metrics、audit probe 和 structured
+  logs 约束。
+
+  对照 `0bea7df7c`、`c1c681adc` 与 `948e32ae1`：官方新增 apply method duration metric、warning
+  apply duration 配置，并删除计划移除的 debug metrics。KubeBrain 不复用 upstream Raft apply loop；
+  对外可观测面是 `etcd_server_request_duration_seconds`、watch send-loop histograms、alarm metrics、
+  operation audit 和 DBaaS SLO 文档。若未来要求 upstream metric-name parity，应以指标名/label
+  oracle 单独补齐，而不是迁移 Raft apply 计时实现。对照 `3eea37cf3`：官方
+  `etcd-dump-metrics` 校验 exec 参数；KubeBrain 不交付该工具，相关监控入口由本仓 Prometheus
+  exposition 与 production audit 管理。
+
+  对照 `ebf461a7d`：官方修复 bbolt backend tx buffer range bug。KubeBrain 不使用 upstream
+  backend buffer，但等价风险由 Range revision filter、CountOnly/KeysOnly、Limit/Sort、historical
+  tombstone、namespace nested Txn 和 large response 矩阵覆盖。对照 `7e38cfcc8`、`49078c683` 与
+  `54189f2f6`：官方新增 Raft peer 读写超时、socket options，并把 pre-vote 默认设为 true。
+  KubeBrain 不暴露 upstream peer transport/Raft tuning flags；DBaaS 生产 manifest、listener/TLS、
+  readiness、leader election、revision sync 和 failover smoke 约束可观察网络与领导权语义。
+
+  对照 `e9779231e`：官方线性读 ReadIndex 增加 500ms retry。KubeBrain 不使用 Raft ReadIndex，
+  等价一致性边界由 TiKV/PD committed revision、leader `/status` sync、stale read fencing、
+  mid-flight fresh fetch、leader change term cache 和 production failover read gates 覆盖。对照
+  `18382aa23`、`6657d5907`、`725a8c5e0` 与相关 integration/logger 变更：官方修复 embed HTTP、
+  snapshot leaser 泄漏并统一测试 logger/before-test。KubeBrain 的 runtime 泄漏风险由 Watch/
+  Snapshot/LeaseKeepAlive cancel 门禁和全量 `go test` 覆盖；upstream integration harness/logger
+  配置不是 DBaaS 数据面 public API。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3835 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
