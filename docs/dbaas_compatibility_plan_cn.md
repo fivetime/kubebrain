@@ -37028,6 +37028,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   生产 3/3 Pod Ready、零重启，Pod UID 分别为 `44f1418e-1060-427b-a72c-2c2eab17cb2b`、
   `b174dfb9-1bd5-46f7-94e0-0ee26c8cc333`、`a0aacc10-d079-434e-9bbc-dae0ab415ae4`。
 
+- A3726 对 A3725 的单帧真实修复做大结果、多 wire frame 黑盒闭环。既有
+  `TestRangeStreamProductionChunkTarget` 只检查 KubeBrain 自身的帧大小和聚合结果，并允许空 terminal
+  frame，无法证明修复后的终止 envelope 在多数据帧时仍与官方一致。新差分在双端分别写入 17 个
+  192 KiB value，再更新首键形成独立 current/historical snapshot；四种请求完整覆盖 current/historical
+  × unlimited/limit=12。每个请求先执行 unary Range，再逐帧消费 raw gRPC RangeStream：必须实际产生
+  多于一帧；所有非最终帧必须没有 Header/Count/More；唯一 envelope 必须位于最后一帧且该帧仍含 KV，
+  stream 聚合后的 key、value SHA-256、create/mod revision ordinal、version、Count/More 和 header revision
+  必须与同端 unary 一致，最终双端语义再完全相等。
+
+  精确 chunk 数和每帧 KV 数受官方 `initialStreamChunkLimit`/自适应 limit 与 KubeBrain 有界 scanner/
+  wire-size splitter 影响，不属于客户端契约，因此测试明确不比较这些实现细节。官方 etcd
+  `d947b20863` 与生产 `kubebrain:a3725-rangestream-final-frame` 首轮 2.27 秒、连续 10 轮
+  34.745 秒、race 5 轮 26.149 秒全部 GREEN；没有 runtime RED，不重建或滚动生产数据面。兼容模块
+  `go test ./... && go vet ./...` 通过（测试 1.544 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 167.513 秒）及 `go vet ./...` 通过。本项新增永久多帧终止 envelope、历史快照和
+  limit 聚合证据，防止 A3725 以后只在小结果路径保持兼容。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
