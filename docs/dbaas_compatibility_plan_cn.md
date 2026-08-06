@@ -38519,6 +38519,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   descriptors，enum alias/API 命名风险已由 A3763/A3793 的 generated-code/API 审计覆盖。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3803 与上述 commit ID；本轮不修改 runtime。
 
+- A3804 固定 upstream protobuf 生成工具链、Go/tooling bump 与 Range by-value 测试审计。对照
+  `/root/etcd` commits `fd5baa419`、`ee631aa8a` 与 `2d3e56e44`：官方只升级
+  logrus、golangci-lint 和 Go 1.26.0；KubeBrain 依赖与 toolchain 升级继续按本仓
+  security/release gate、全量 `go test`/`go vet`、镜像和生产只读验证推进，不把 upstream
+  module graph 变化直接等价成 TiKV/PD 数据面协议缺口。对照 `c442292e9`，官方只是随
+  linter/toolchain 变化修正静态检查问题，不改变 etcd v3 wire/API。
+
+  对照 `78de5d806`、`f74d7e0ee`、`ce64b849d`、`355d74268` 与 `f0c7f380a`：
+  官方更新 genproto 输出、固定 protoc-gen-go/protoc-gen-go-grpc 版本，并确保本地/Go bin
+  优先用于生成脚本。这些影响 upstream 生成流程的可复现性；KubeBrain public wire 兼容由本仓
+  导入的官方 etcd api module、`request_proto_coverage_test.go`、raw gRPC/HTTP/clientv3
+  差分和 A3763/A3793 的 generated-code/API 审计固定。只有 wire descriptor、response envelope
+  或官方 client behavior 出现可观察变化时，才建立新的专项 RED。
+
+  对照 `a81c31b4c`，官方给 Range 增加按 value 排序/过滤类测试用例；KubeBrain 的 Range
+  keys-only/count-only/limit/total-count/sort/order/serializable 语义已由 A3774 的 range option
+  matrix、A3790 的 total-count audit 和生产 count-only smoke 覆盖。本轮新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3804 与上述 commit ID；不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
