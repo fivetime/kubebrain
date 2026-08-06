@@ -37741,6 +37741,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   upstream commit ID，避免后续重复筛选时把已覆盖点当成新缺口，或把 etcd 内部实现职责误归入
   KubeBrain 兼容范围。本轮不改变 runtime 镜像或服务端语义。
 
+- A3766 对照 upstream `/root/etcd` commit `1fd87206f` 的 clientv3 unary retry
+  诊断日志。该提交在 retry interceptor 失败日志中加入 `peer.Peer.String()`，使多 endpoint
+  DBaaS 客户端在遇到 retryable unary 错误时不仅能看到 resolver target，还能看到真实连接到的
+  replica 地址和 transport auth 信息。该行为不改变 KubeBrain 服务端协议，但直接影响官方
+  clientv3 用户排查 AutoSync、负载均衡和单副本异常时的可观察性。
+
+  为建立真实 RED，直接读取 `/root/etcd` 旧提交 `1fd87206f^` 的
+  `client/v3/retry_interceptor.go`，确认其中没有 `zap.String("peer", ...)`；当前提交源码包含
+  `zap.String("peer", p.String())`。新增 compat 单测启动一个本地 gRPC KV server，使
+  `Range` 返回 retryable `Unavailable`，再用官方 clientv3 配置 `MaxUnaryRetries=1` 和
+  zap observer 执行 `Get`。测试要求 `"retrying of unary invoker failed"` 日志包含完整
+  peer 字段，字段中含实际 `127.0.0.1:<port>` 和 `AuthInfo: 'insecure'`，并保持 method 为
+  `/etcdserverpb.KV/Range`。focused 测试 0.035 秒 GREEN。本轮是官方 client API/诊断面门禁，
+  不改变 runtime 镜像或服务端语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
