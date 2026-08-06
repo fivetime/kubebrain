@@ -37324,6 +37324,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./...`（1.546 秒）及 `go vet ./...` 通过；根模块完整测试重跑通过
   （`pkg/server/etcd` 167.031 秒），`go vet ./...` 通过，`readyz=ok` 且 `/compat/` 无 KV。
 
+- A3743 对照 upstream `/root/etcd` commit `e7f7b113b` 的 authenticated cluster endpoint
+  discovery。新版 `etcdctl endpoint health --cluster` 先用 seed endpoint 调用 MemberList，再为发现到的
+  advertised client URLs 创建第二个 client；该修复要求第二个 client 继续携带 `--user` 凭据，否则
+  auth enabled 集群会在健康探测阶段返回 user empty。现把官方 `etcdctl` 黑盒加入完整 Auth
+  differential：root 登录后执行 `endpoint health --user=root:root-secret --cluster`，必须经发现后的
+  endpoint 输出 `is healthy: successfully`，并把结果纳入官方/KubeBrain outcome 精确比较。
+
+  官方 etcd `d947b20863` 原始 `TestCtlV3AuthEndpointHealth` 连续 3 轮通过（14.687 秒）。为确保
+  `--cluster` 不是退化成 seed endpoint 直连，在同一独立 TiKV/PD 上创建两个一次性 KubeBrain Pod，
+  分别使用隔离 keyspace `a3743-auth-endpoint-cluster` 与 `a3743-auth-endpoint-cluster-race`，并把
+  advertised client URL 显式设为可从测试宿主访问的 port-forward URL。完整 Auth differential 普通
+  模式 18.204 秒、race 模式 22.196 秒均 GREEN；现有 MemberList、advertisement 与认证实现无需修改，
+  没有 runtime RED 或镜像变更。两个临时 Pod 和 port-forward 均已精确清理。
+  兼容模块 `go test ./...`（1.515 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 166.895 秒）及 `go vet ./...` 通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
