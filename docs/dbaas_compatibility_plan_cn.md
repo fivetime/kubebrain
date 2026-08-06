@@ -37841,6 +37841,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `0004f8e75`/A3771 加入 `TestRecentUpstreamAuditIsRecorded`。本轮只修正兼容测试 harness 的
   故障窗口分类，不改变 runtime 镜像。
 
+- A3772 对照 upstream `/root/etcd` commit `9cdb1cf8` 的
+  `etcd_server_request_duration_seconds`。上游在 `server/etcdserver/metrics.go` 新增
+  histogram，labels 为 `type` 和 `success`，并在 `Range`、readonly `Txn` 以及 raft write
+  request 路径中按 `Range`/`ReadonlyTxn`/`Put`/`DeleteRange`/`Txn`/`Compaction` 等 request
+  type 记录端到端耗时。该指标是 public `/metrics` 观测面，DBaaS 不能只依赖
+  `read_latency`/`write_latency`，否则上游 dashboard 或 runbook 无法按 etcd 标准 metric 名迁移。
+
+  真实 RED 来自生产 `http://172.18.0.3:32758/metrics`：现有镜像只有 `read_latency`、
+  `write_latency` 和其他 `etcd_server_*` health/version 指标，没有
+  `etcd_server_request_duration_seconds`。本轮在 KV Range、Txn、Put、DeleteRange 的现有读写耗时
+  埋点旁边增加 upstream 兼容别名 `etcd.server.request.duration.seconds`，Prometheus wrapper
+  暴露为 `etcd_server_request_duration_seconds`，并使用 upstream label 边界
+  `type=<Range|Txn|Put|DeleteRange>`、`success=<true|false>`。新增
+  `TestEmitEtcdRequestDurationUsesUpstreamMetricNameAndLabels` 固定 metric 名、秒级 value 与标签；
+  `TestRecentUpstreamAuditIsRecorded` 固定 `9cdb1cf8`/A3772 审计记录。本轮未把
+  `71a9ffe87` 的 watch send-loop debugging histograms 误标为已实现：KubeBrain watch pipeline
+  已有 DBaaS-native watch buffer/stale/drop 指标，但 send-loop internal histogram 仍是后续
+  observability parity gap。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

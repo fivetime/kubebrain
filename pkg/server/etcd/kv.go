@@ -168,8 +168,10 @@ func (s *RPCServer) rangeWithAfterRead(
 		response, err = s.backend.List(ctx, r)
 	}
 	successTag = getSuccessMetricTagByErr(err)
+	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("read", 1, methodTag, successTag, errClassTag(err))
-	s.metricCli.EmitHistogram("read.latency", time.Since(startTime).Seconds(), methodTag, successTag)
+	s.metricCli.EmitHistogram("read.latency", duration.Seconds(), methodTag, successTag)
+	emitEtcdRequestDuration(s.metricCli, "Range", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("read.responsesize", proto.Size(response), methodTag, successTag)
 	}
@@ -751,8 +753,10 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 	}
 	// emit metric
 	successTag = getSuccessMetricTagByErr(err)
+	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("write", 1, methodTag, successTag, errClassTag(err))
-	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), methodTag, successTag)
+	s.metricCli.EmitHistogram("write.latency", duration.Seconds(), methodTag, successTag)
+	emitEtcdRequestDuration(s.metricCli, "Txn", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), methodTag, successTag)
 		if !response.Succeeded {
@@ -1242,8 +1246,10 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 		response, err = s.backend.Put(ctx, put)
 	}
 	successTag := getSuccessMetricTagByErr(err)
+	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag, errClassTag(err))
-	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "put"), successTag)
+	s.metricCli.EmitHistogram("write.latency", duration.Seconds(), metrics.Tag("method", "put"), successTag)
+	emitEtcdRequestDuration(s.metricCli, "Put", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), metrics.Tag("method", "put"), successTag)
 	}
@@ -1304,8 +1310,10 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	}
 	response, err := s.deleteRangeWithAttachments(ctx, r, deletedKeys)
 	successTag := getSuccessMetricTagByErr(err)
+	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag, errClassTag(err))
-	s.metricCli.EmitHistogram("write.latency", time.Since(startTime).Seconds(), metrics.Tag("method", "delete-range"), successTag)
+	s.metricCli.EmitHistogram("write.latency", duration.Seconds(), metrics.Tag("method", "delete-range"), successTag)
+	emitEtcdRequestDuration(s.metricCli, "DeleteRange", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), metrics.Tag("method", "delete-range"), successTag)
 	}
@@ -2068,6 +2076,15 @@ func getSuccessMetricTagByErr(err error) metrics.T {
 	}
 
 	return metrics.Tag("success", "true")
+}
+
+func emitEtcdRequestDuration(metricCli metrics.Metrics, requestType string, duration time.Duration, err error) {
+	metricCli.EmitHistogram(
+		"etcd.server.request.duration.seconds",
+		duration.Seconds(),
+		metrics.Tag("type", requestType),
+		getSuccessMetricTagByErr(err),
+	)
 }
 
 // errClassTag buckets a read/write error into a bounded, low-cardinality label so
