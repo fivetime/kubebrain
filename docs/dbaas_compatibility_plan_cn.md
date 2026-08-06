@@ -38162,6 +38162,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   钉住 A3788 和 `43a4c4ecd`。该轮不修改 runtime；目标是把已经存在的 Bearer token 兼容行为
   提升为显式回归，防止后续 refactor 把大小写敏感契约放宽或收紧。
 
+- A3789 固定最新 upstream toolchain、dependency 与 WAL/test 内部变更审计。对照 `/root/etcd`
+  顶部 commits：`326273461` 只把 upstream Go toolchain 提升到 1.26.5；`8768e7389`
+  更新 Antithesis SDK；`5e6526411`、`8ff0333cc` 与 `ec4abcf44` 分别 bump bbolt、
+  Prometheus common 和 raft 依赖；这些不会直接改变 KubeBrain 暴露的 etcd v3 gRPC/HTTP
+  协议面。KubeBrain 仍以本仓 `go.mod`、TiKV/PD 存储与现有指标兼容层为准，依赖升级只有在
+  本仓显式引入时才进入构建、测试和生产 rollout 门禁。
+
+  对照 `8f8587672`、`247920d00`、`26a20355b`、`2e67da08e` 与 `40739142c`，官方集中优化
+  WAL record encoding、encoder write path 和 Kubernetes-like 10KB WAL benchmark。KubeBrain
+  的 DBaaS 数据面不使用 upstream bbolt/WAL 作为持久 KV apply log；事务持久化、一致性与恢复边界
+  由 TiKV/PD、revision fence、online snapshot 和既有 failure/restart oracle 覆盖。因此这些 commit
+  不应被机械移植为 WAL runtime 需求。对照 `ed157e881`，官方只修正文案级 log message；不改变
+  client-visible status code、response envelope、metric 名称或 auth/KV/Lease/Watch/Txn 语义。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3789 和上述 commit ID。本轮不修改 runtime；
+  目标是把最新非 public-runtime 变更从兼容 backlog 中明确排除，后续筛选继续优先处理会影响
+  官方 client、etcdctl、HTTP gateway、metrics 或安全策略的可观察差异。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

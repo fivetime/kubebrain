@@ -125,6 +125,18 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"22758cfb7",
 		"A3788",
 		"43a4c4ecd",
+		"A3789",
+		"326273461",
+		"8768e7389",
+		"5e6526411",
+		"8ff0333cc",
+		"ec4abcf44",
+		"8f8587672",
+		"247920d00",
+		"26a20355b",
+		"2e67da08e",
+		"40739142c",
+		"ed157e881",
 	} {
 		require.Contains(t, plan, needle)
 	}
