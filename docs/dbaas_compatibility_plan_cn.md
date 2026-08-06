@@ -38739,6 +38739,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `667111150`：官方只升级 Go、x/*、actions/github-script/setup-go/stale、distroless 和 CodeQL。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3810 与上述 commit ID；本轮不修改 runtime。
 
+- A3811 固定 upstream cache storage/demux、OTEL tracing、etcdctl help 组织、server internal 与
+  依赖/CI 审计。对照 `/root/etcd` commits `857b36c84`、`94bbd06c8`、`20232acaa`、
+  `6c443c23f`、`70da4347b`、`09a384a72`、`352fd4e84`、`662e2fc5f`、
+  `934ddceec`、`c74b4edd9` 与 `a3016de09`：官方 cache 包持续演进为 B-tree backed store、
+  watcher `respCh`、demux batching、empty-history resumable guarantee、preserve cached snapshot
+  after watch errors、ready-channel/state-change 和早期 compaction check 调整。KubeBrain 不把
+  upstream cache 包作为 TiKV/PD 数据面实现；其 client-visible 风险已由本仓 watch progress/
+  future watch、follower proxy resume floor、historical cache.Get、restart/tombstone watch、
+  direct replica watch control 和 A3756/A3760/A3776/A3801/A3810 的 cache/progress 审计覆盖。
+
+  对照 `57870e43b`、`7f015aa3c`、`2baa8b79a`、`986b75cc8`、`c875a1e24`、
+  `5f7ace87b`、`54fe6cb5` 与 `3611840bb`：官方为 Lease、Txn、Watch、Range/Txn、Compact
+  增加/整理 OpenTelemetry spans 和 trace analysis。KubeBrain 目前公开兼容门禁集中在 Prometheus
+  metrics、gRPC/HTTP wire、clientv3/etcdctl 输出和生产只读健康；OTEL trace schema 尚未作为 etcd
+  compatibility public contract 纳入 DBaaS 支持面。若后续暴露 upstream-compatible tracing，应以
+  span name/attributes 建专项 oracle，而不是复制 upstream 内部 trace tests。
+
+  对照 `55aea7be2`、`641ae6d25`、`53f0d0b24` 与 `046b06472`：官方整理/隐藏 etcdctl
+  global flags、组织子命令并迁移 `etcd-dump-db` 到 `etcdutl`；这些影响官方 CLI 自身 help/工具
+  布局，不改变 KubeBrain server response。KubeBrain 的 CLI 兼容边界仍是官方 etcdctl 作为客户端
+  调用 KubeBrain 时 endpoint/status/KV/Watch/Lease/Auth/Snapshot 等输出保持可用。
+
+  对照 `d91cf2bf5`、`c02e65d12`、`a8463fbfe` 与 `c6002afd6`：官方只重构 server atomic
+  types、schema migration confState 检查、ringbuffer iterator 和 `newHeader` read-tx mode；
+  KubeBrain 不复用 upstream Raft/WAL/bbolt schema 作为数据面。对照 `6fb9aa8fc`、
+  `ef569875c`、`6e3259896`、`1b38bb436`、`ede3afac1`、`1195849cb`、
+  `3ef69e11f`、`a2e525957`、`8eeaea7c2`、`788c39134`、`281239251`、`c32c9f1a5`、
+  `5dff75d68`、`664da2d44`、`4f56500de`、`14875cf5c`、`65c1a5719`、
+  `d2a712956`、`20d6e5d7`、`a59c3747f`、`9bf10a8f6`、`1f7163f55`、
+  `ad4f9fea5`、`4dbe85ff4`、`8613b5fcb`、`56281d2be`、`1484c3e9a` 与
+  `1dd51667`：官方只更新 CodeQL、trace-analysis helpers、docs/OWNERS、addlicense、byte-order
+  cleanup、changelog、big-endian test skip、bbolt/protobuf/x/net/otel/genproto 等依赖或 CI。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3811 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
