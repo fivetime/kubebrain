@@ -37808,6 +37808,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `http://127.0.0.1:12379`，并对生产 `http://172.18.0.3:30079` 运行 focused 差分，
   0.969 秒 GREEN。本轮只增强官方 Range client/server 语义门禁，不改变 runtime 镜像。
 
+- A3770 固定 RangeStream 近期 upstream 覆盖审计，避免重复制造已闭环缺口。对照
+  `/root/etcd` commits `bd2427cd2` 与 `c5d1b8a02`：前者新增
+  `TestV3RangeStreamWriteBetweenChunks`，要求 RangeStream 在发送首个 chunk 后仍固定 stream
+  开始时的 revision，后续 Put 不能混入该流，terminal header revision 和 Count 都对应 pinned
+  revision；后者新增 `TestV3RangeStreamLargeValues`，要求单个已存 value 大于 chunk target 时
+  stream 仍能前进、多 chunk 返回所有 key/value，而不能空转、丢键或卡死。
+
+  KubeBrain 已分别由 A3557 和 A3558 建立更强的 DBaaS 形态门禁：A3557 在官方 reference 与生产
+  KubeBrain 双端写入多块 320 KiB fixture，首块已交付后覆盖尾 key 并插入新 key，最终要求旧 12
+  key、旧 value、`Count=12`、`More=false` 和 header revision 全部固定在并发写之前；A3558 通过
+  两阶段 runner 先以 8 MiB admission 写入 12 个 4 MiB value，再降回默认 1.5 MiB target 后 raw
+  RangeStream 读取，逐 key 比较 SHA-256、Count/More 和 terminal header。新增
+  `TestRecentUpstreamAuditIsRecorded` 断言文档持续包含 `bd2427cd2`、`c5d1b8a02` 和本条 A3770。
+  本轮是审计固化，不修改 runtime；focused 审计测试负责防止后续筛选遗漏这些已覆盖 upstream 点。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
