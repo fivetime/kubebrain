@@ -38150,6 +38150,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目的在于把 public AuthStatus、static token retry、member promote 管理面边界和 endpoint
   status quota 的已覆盖证据并入近期 upstream 审计，后续只对新的客户端可见差异建立专项 RED。
 
+- A3788 固定 upstream bearer-prefixed auth token 审计。对照 `/root/etcd` commit `43a4c4ecd`，
+  官方在 `AuthInfoFromCtx` 中接受 metadata token 的精确 `Bearer ` 前缀，并保留大小写敏感的
+  `strings.TrimPrefix` 语义；这会影响直接设置 `token`/`authorization` metadata 的 gRPC 客户端。
+  KubeBrain 的 `authTokenFromCredential` 已使用同样的精确 `Bearer ` 裁剪，并在 follower/internal
+  forwarding 中保留原始 credential，避免把带前缀 token 在内部 hop 中误剥离或重写。
+
+  本轮新增 `TestBearerPrefixedAuthTokenMatchesEtcd`：启用 auth 后用 root token 构造
+  `Bearer <token>` metadata 调用 `UserList` 必须成功，而 `bearer <token>` 小写前缀必须继续按
+  upstream exact-match 规则返回 `ErrInvalidAuthToken`。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3788 和 `43a4c4ecd`。该轮不修改 runtime；目标是把已经存在的 Bearer token 兼容行为
+  提升为显式回归，防止后续 refactor 把大小写敏感契约放宽或收紧。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

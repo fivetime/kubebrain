@@ -370,6 +370,26 @@ func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {
 	require.True(t, response.Enabled)
 }
 
+func TestBearerPrefixedAuthTokenMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	setupAuthKVUser(t, server)
+
+	auth, err := server.Authenticate(ctx, &etcdserverpb.AuthenticateRequest{Name: "root", Password: "root-secret"})
+	require.NoError(t, err)
+
+	bearerCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "Bearer "+auth.Token))
+	response, err := server.UserList(bearerCtx, &etcdserverpb.AuthUserListRequest{})
+	require.NoError(t, err)
+	require.Contains(t, response.Users, "root")
+
+	lowercaseBearerCtx := metadata.NewIncomingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, "bearer "+auth.Token))
+	response, err = server.UserList(lowercaseBearerCtx, &etcdserverpb.AuthUserListRequest{})
+	require.Nil(t, response)
+	requireAuthRPCError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
+}
+
 func TestAuthReadRPCsReloadSnapshotAfterBarrier(t *testing.T) {
 	t.Run("auth status", func(t *testing.T) {
 		server, closeFn := newTestRPCServer(t)
