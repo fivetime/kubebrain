@@ -650,7 +650,11 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	watchStream, err := etcdserverpb.NewWatchClient(alice.ActiveConnection()).Watch(ctx)
 	require.NoError(t, err)
 	const (
-		firstWatchID    = int64(101)
+		// Watch ID 0 asks the server to allocate the first stream-local ID. Keep
+		// this watch alive across the denied create below to pin etcd f1d4935e9:
+		// an auth failure must not mistake the existing automatic ID 0 for the
+		// failed create and cancel it.
+		firstWatchID    = int64(0)
 		restoredWatchID = int64(103)
 	)
 	watchCreate := func(id int64) *etcdserverpb.WatchRequest {
