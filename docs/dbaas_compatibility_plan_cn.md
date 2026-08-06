@@ -37170,6 +37170,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 168.924 秒）及 `go vet ./...` 通过；官方临时实例、data-dir、watch 输出和两端
   隔离测试前缀均已清理。
 
+- A3734 把 compact-boundary 重启门禁从纯 tombstone batch 扩展到同一 Txn revision 的混合
+  subrevision。新状态机先原子 seed `dead/a,b,c`，再在一个 Txn 中 prefix DeleteRange 三键并 Put
+  不相交的 `live/d`；physical Compact 该 revision、顺序 replacement 三个 serving Pod 后，从父 prefix
+  的 boundary Watch 必须依次重放三个 DELETE 和一个 PUT。全部事件共享 ModRevision；DELETE PrevKV
+  因旧值低于 watermark 为 nil，PUT 的 CreateRevision=ModRevision、Version=1、value 精确保持，最终
+  current Range 只能包含该 live key。这证明 restore 不会只保留 tombstone 或 live row 的一侧，也不会
+  在同 main revision 内折叠、重排不同类型的 subrevision。
+
+  最初候选曾尝试在同一 Txn 中 DeleteRange 后重新 Put 被删除范围内的同键；官方 etcd 直接返回
+  `duplicate key given in txn request`，确认该操作不是合法协议场景，因而未把 harness 假设制造成
+  KubeBrain RED。改用不相交 Put 后，官方 etcd `d947b20863` 同 data-dir stop/restart oracle 在 revision
+  11 返回 `DELETE x,y,z → PUT live/d`，三个 PrevKV=nil，PUT CreateRevision=11、Version=1。生产
+  `kubebrain:a3725-rangestream-final-frame` 普通 replacement 24.68 秒、race replacement 24.21 秒均
+  GREEN，没有 runtime RED 或镜像变更。最终 Pod UID 为
+  `2e311ffd-f3ec-4e28-b2ce-008e878ef93d`、`c9b78b04-35b8-43ce-80fe-07a621f5a1a0`、
+  `32bb6ef2-ea43-4b01-805f-db85c71b9602`，3/3 Ready、零重启，`readyz=ok`，`/compat/` 无 KV。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.564 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 171.373 秒）及 `go vet ./...` 通过；官方实例、data-dir 与隔离测试前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
