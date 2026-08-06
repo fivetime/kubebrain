@@ -75,6 +75,13 @@ func TestGeneratedRangeStreamSeedCoversSupportedOptionFamilies(t *testing.T) {
 	require.True(t, leasedPrefix)
 }
 
+func TestObserveGeneratedRangeHeaderRevisionNormalizesConcurrentWrites(t *testing.T) {
+	ordinals := map[int64]int{101: 1, 109: 9}
+	require.Equal(t, 1, observeGeneratedRangeHeaderRevision(101, ordinals, 109))
+	require.Equal(t, 9, observeGeneratedRangeHeaderRevision(109, ordinals, 109))
+	require.Equal(t, 9, observeGeneratedRangeHeaderRevision(117, ordinals, 109))
+}
+
 func generatedRangeStreamSpecs() []generatedRangeStreamSpec {
 	rng := rand.New(rand.NewSource(3725))
 	limits := []int64{-1, 0, 1, 2, math.MaxInt64}
@@ -146,7 +153,7 @@ func runGeneratedRangeStreamScenario(
 		request := generatedRangeStreamRequest(prefix, spec, revisions)
 		unary, unaryErr := kv.Range(ctx, request)
 		outcome := generatedRangeStreamOutcome{}
-		outcome.Unary = observeGeneratedRangeCall(unary, unaryErr, prefix, revisionOrdinal)
+		outcome.Unary = observeGeneratedRangeCall(unary, unaryErr, prefix, revisionOrdinal, revisions[9])
 
 		stream, streamErr := kv.RangeStream(ctx, request)
 		outcome.Stream.Code = status.Code(streamErr).String()
@@ -172,7 +179,9 @@ func runGeneratedRangeStreamScenario(
 				// RangeStream chunks and supplies the aggregate envelope only on
 				// the final frame.
 				if response.Header != nil {
-					outcome.Stream.HeaderRevision = revisionOrdinal[response.Header.Revision]
+					outcome.Stream.HeaderRevision = observeGeneratedRangeHeaderRevision(
+						response.Header.Revision, revisionOrdinal, revisions[9],
+					)
 					outcome.Stream.Count, outcome.Stream.More = response.Count, response.More
 				}
 			}
@@ -205,15 +214,33 @@ func observeGeneratedRangeCall(
 	callErr error,
 	prefix string,
 	revisionOrdinal map[int64]int,
+	seedFinalRevision int64,
 ) generatedRangeOutcome {
 	outcome := generatedRangeOutcome{Code: status.Code(callErr).String(), Message: status.Convert(callErr).Message()}
 	if callErr != nil {
 		return outcome
 	}
-	outcome.HeaderRevision = revisionOrdinal[response.Header.Revision]
+	outcome.HeaderRevision = observeGeneratedRangeHeaderRevision(
+		response.Header.Revision, revisionOrdinal, seedFinalRevision,
+	)
 	outcome.Count, outcome.More = response.Count, response.More
 	outcome.KVs = observeGeneratedRangeKVs(response, prefix, revisionOrdinal)
 	return outcome
+}
+
+func observeGeneratedRangeHeaderRevision(
+	revision int64,
+	revisionOrdinal map[int64]int,
+	seedFinalRevision int64,
+) int {
+	if revision >= seedFinalRevision {
+		// Range responses carry the cluster's current revision even for a
+		// historical read. Ignore unrelated concurrent writes after this
+		// scenario's fixture is complete while retaining a stable assertion
+		// that the final setup revision is visible.
+		return revisionOrdinal[seedFinalRevision]
+	}
+	return revisionOrdinal[revision]
 }
 
 func observeGeneratedRangeKVs(
