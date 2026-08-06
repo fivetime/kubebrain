@@ -39832,6 +39832,53 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   permission denied 分类；后续若 upstream 版本要求关闭整条 stream，应以官方 client 差分单独变更。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3837 与上述 commit ID；本轮不修改 runtime。
 
+- A3838 固定 upstream follower LeaseGrant leak、linearizable MemberList、RoleGrantPermission
+  old-version compatibility、Downgrade proto/RPC、client context metadata、health/client request metrics、
+  AuthStatus/AuthRevision、Alarm header、WAL metric、auth lock scope 和 FlushN 审计。对照
+  `/root/etcd` commit `b1da82984`：官方修复 follower 收到 `LeaseGrant` 时的内存泄漏。KubeBrain
+  follower lease 写请求必须转发 leader 或 fail closed，不能在非 authoritative 副本残留 lease
+  timer/keyLeaseIndex；StopLeases、LeaseGrant/TTL/Revoke、failover expiry 和 production lease smoke
+  已覆盖。对照 `0344b7090`：官方让 `MemberList` 支持 linearizable barrier。KubeBrain
+  `MemberList` 已区分 `Linearizable=true/false`，linearizable 路径执行 read barrier，serializable
+  路径返回本地稳定 DBaaS membership；MemberList/AutoSync/endpoint health 和生产身份漂移检查覆盖。
+
+  对照 `d70600fec`：官方移除 RoleGrantPermission 对旧版本不兼容的检查。KubeBrain 不做 upstream
+  cluster-version gated auth schema migration，但 `RoleGrantPermission` 的 nil permission、空 range、
+  invalid range、root role special-case、permission output 和 older client wire 外观已由 auth matrix
+  固定。对照 `071e70cdc`、`15eeb2c4a`、`f14d2a087`、`06ad53321` 与 `fda8d38bd`：官方新增
+  AuthStatus API/command、AuthRevision 字段和 metric，并修复 auth revision corruption，把
+  AuthStatus 标记为 no-side-effect。KubeBrain 已实现 AuthStatus：auth disabled/enabled 均可匿名
+  查询，坏 token 仍 fail closed，响应带 header revision 与 AuthRevision；auth mutation、JWT/simple
+  token、RangeStream/Txn/LeaseTimeToLive final auth revision fence 和 snapshot auth metadata 门禁覆盖。
+
+  对照 `d8b9b5434` 与 `073bc22d3`：官方新增 Downgrade proto API 和 Maintenance RPC。KubeBrain
+  已固定 proto/gateway route、clientv3/bufconn 调用、`VALIDATE` 参数校验、`ENABLE/CANCEL` 的
+  platform-managed unsupported、Status.DowngradeInfo 和 auth-before-unsupported；不运行 upstream
+  raft downgrade job。对照 `bc4adb8b5`：官方 Alarm response 填充 header。KubeBrain Alarm(NONE/
+  GET/ACTIVATE/DEACTIVATE)、AlarmList、Status alarm formatting 和 NOSPACE/CORRUPT/generic alarm
+  tests 要求 header revision/member/term 非零且 alarm 元数据持久可见。
+
+  对照 `eeb371b7c`、`58ba322bb` 与 `5cb1e0b34`：官方修复 client context key race、嵌入 client
+  API version，并避免 `WithRequireLeader` 覆盖 metadata。KubeBrain server-facing 兼容面是接收
+  official client metadata：invalid client API version 返回 typed `InvalidArgument`，`require-leader`
+  只按首个精确值生效，不覆盖 auth token、gateway metadata 或 TLS identity；Admission/header
+  interceptor、WithRequireLeader KV/Lease/Watch 和 Cilium smoke 已覆盖。对照 `92f180c57`、
+  `a33e1b5fa` 与 `7444d3ad5`：官方重构/记录 `/health` 检查并修复 grpcproxy metrics handler
+  错误返回。KubeBrain 不复用 upstream grpcproxy，但 `/health`、`/livez`、`/readyz`、exclude
+  alarm、reason body、Prometheus exposition 和 production audit probe 已固定公开行为。
+
+  对照 `33907477d`：官方新增 `etcd_server_client_requests_total`。KubeBrain 当前 public metrics
+  parity 以 request duration、watch send-loop、alarm/quota 和 operation audit 为门禁；若要求
+  client request counter 名称级兼容，应另建 metric-name oracle。对照 `5a1736792`：官方 apply
+  request 失败打印 warn。KubeBrain 不复用 Raft apply loop，等价故障可见性由 write/txn/lease
+  error、operation audit 和 production probes 覆盖。对照 `af261f1a1` 与 `4051e3e36`：官方新增
+  WAL write bytes metric 和 `FlushN`。KubeBrain 数据面不使用 upstream WAL/pagewriter 作为持久化
+  日志；持久化、恢复与可观测边界由 TiKV/PD raft、snapshot/restore verifier、backup operation
+  和 production storage probes 覆盖。对照 `9cf3162d1`：官方优化 CheckPassword lock scope。
+  KubeBrain auth repository 通过 CAS revision、bcrypt cost、token invalidation 和并发 auth mutation
+  tests 约束 public correctness，不迁移 upstream 互斥实现。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3838 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
