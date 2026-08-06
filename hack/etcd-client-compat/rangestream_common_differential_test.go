@@ -18,6 +18,7 @@ type rangeStreamCommonOutcome struct {
 	Name            string
 	Keys            []string
 	Values          []string
+	Leased          []bool
 	Count           int64
 	More            bool
 	HeaderIsCurrent bool
@@ -60,9 +61,14 @@ func runRangeStreamCommonShapes(
 	require.NoError(t, err)
 	_, err = client.Put(ctx, prefix+"a", "v3")
 	require.NoError(t, err)
+	lease, err := client.Grant(ctx, 300)
+	require.NoError(t, err)
+	_, err = client.Put(ctx, prefix+"c", "leased", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
+		_, _ = client.Revoke(cleanupCtx, lease.ID)
 		_, _ = client.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
 	})
 
@@ -87,6 +93,9 @@ func runRangeStreamCommonShapes(
 		}},
 		{name: "from-key", req: &etcdserverpb.RangeRequest{
 			Key: []byte(prefix), RangeEnd: []byte{0},
+		}},
+		{name: "keys-only-prefix", req: &etcdserverpb.RangeRequest{
+			Key: []byte(prefix), RangeEnd: []byte(clientv3.GetPrefixRangeEnd(prefix)), KeysOnly: true,
 		}},
 	}
 
@@ -116,6 +125,7 @@ func runRangeStreamCommonShapes(
 			for _, kv := range response.GetKvs() {
 				outcome.Keys = append(outcome.Keys, string(kv.Key[len(prefix):]))
 				outcome.Values = append(outcome.Values, string(kv.Value))
+				outcome.Leased = append(outcome.Leased, kv.Lease != 0)
 			}
 			if response.Header != nil {
 				outcome.HeaderIsCurrent = response.Header.Revision >= unary.Header.Revision

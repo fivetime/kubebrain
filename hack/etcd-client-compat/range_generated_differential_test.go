@@ -50,7 +50,7 @@ func TestGeneratedRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 
 	specs := generatedRangeSpecs()
-	require.Len(t, specs, 72)
+	require.Len(t, specs, 92)
 	referenceOutcome := runGeneratedRangeScenario(t, reference, "reference", specs)
 	require.Equal(t, referenceOutcome, runGeneratedRangeScenario(t, compatEndpoint(t), "kubebrain", specs))
 }
@@ -61,6 +61,7 @@ func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
 	var keysOnly, countOnly, serializable, linearizable, emptySerializable, emptyLinearizable bool
 	var leasedCurrent, leasedHistorical bool
 	var emptyInvalidSort, invalidOrder, invalidTarget, negativeLimitValid bool
+	leasedPointTargets, leasedPrefixTargets := map[int32]map[bool]bool{}, map[int32]map[bool]bool{}
 	for _, spec := range generatedRangeSpecs() {
 		shapes[spec.Shape], historical[spec.Historical > 0] = true, true
 		targets[int32(spec.SortTarget)], orders[int32(spec.SortOrder)] = true, true
@@ -75,6 +76,22 @@ func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
 		invalidOrder = invalidOrder || spec.Shape != 11 && int32(spec.SortOrder) == 99 && spec.SortTarget == etcdserverpb.RangeRequest_KEY
 		invalidTarget = invalidTarget || spec.Shape != 11 && spec.SortOrder == etcdserverpb.RangeRequest_NONE && int32(spec.SortTarget) == 99
 		negativeLimitValid = negativeLimitValid || spec.Shape == 0 && spec.Limit == -1 && spec.SortOrder == 0 && spec.SortTarget == 0 && spec.Filter == 0
+		if spec.KeysOnly && !spec.CountOnly && spec.Limit == 0 && spec.Filter == 0 && spec.SortOrder == 0 &&
+			(spec.Historical == 0 || spec.Historical == 9) {
+			historical := spec.Historical == 9
+			if spec.Shape == 6 {
+				if leasedPointTargets[int32(spec.SortTarget)] == nil {
+					leasedPointTargets[int32(spec.SortTarget)] = map[bool]bool{}
+				}
+				leasedPointTargets[int32(spec.SortTarget)][historical] = true
+			}
+			if spec.Shape == 0 {
+				if leasedPrefixTargets[int32(spec.SortTarget)] == nil {
+					leasedPrefixTargets[int32(spec.SortTarget)] = map[bool]bool{}
+				}
+				leasedPrefixTargets[int32(spec.SortTarget)][historical] = true
+			}
+		}
 	}
 	require.Len(t, shapes, 12)
 	require.Len(t, historical, 2)
@@ -94,12 +111,16 @@ func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
 	require.True(t, invalidOrder)
 	require.True(t, invalidTarget)
 	require.True(t, negativeLimitValid)
+	for target := int32(0); target < 5; target++ {
+		require.Len(t, leasedPointTargets[target], 2, "leased point target %d", target)
+		require.Len(t, leasedPrefixTargets[target], 2, "leased prefix target %d", target)
+	}
 }
 
 func generatedRangeSpecs() []generatedRangeSpec {
 	rng := rand.New(rand.NewSource(3715))
 	limits := []int64{0, 1, 2, 4, math.MaxInt64}
-	specs := make([]generatedRangeSpec, 0, 72)
+	specs := make([]generatedRangeSpec, 0, 92)
 	for i := 0; i < 64; i++ {
 		specs = append(specs, generatedRangeSpec{
 			Shape: rng.Intn(11), Historical: rng.Intn(10),
@@ -125,6 +146,14 @@ func generatedRangeSpecs() []generatedRangeSpec {
 		generatedRangeSpec{Shape: 0, Limit: -1, Filter: 1, FilterRev: 5},
 		generatedRangeSpec{Shape: 0, Limit: -1, KeysOnly: true, Serializable: true, FilterRev: 1},
 	)
+	for target := etcdserverpb.RangeRequest_KEY; target <= etcdserverpb.RangeRequest_VALUE; target++ {
+		specs = append(specs,
+			generatedRangeSpec{Shape: 6, SortTarget: target, KeysOnly: true, FilterRev: 1},
+			generatedRangeSpec{Shape: 6, Historical: 9, SortTarget: target, KeysOnly: true, Serializable: true, FilterRev: 1},
+			generatedRangeSpec{Shape: 0, SortTarget: target, KeysOnly: true, Serializable: true, FilterRev: 1},
+			generatedRangeSpec{Shape: 0, Historical: 9, SortTarget: target, KeysOnly: true, FilterRev: 1},
+		)
+	}
 	return specs
 }
 
@@ -135,7 +164,7 @@ func runGeneratedRangeScenario(t *testing.T, endpoint, instance string, specs []
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	prefix := fmt.Sprintf("/a3716/generated-range/%s/%d/", instance, time.Now().UnixNano())
+	prefix := fmt.Sprintf("/a3717/generated-range/%s/%d/", instance, time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()

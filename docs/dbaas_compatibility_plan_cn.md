@@ -36851,6 +36851,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 172.729 秒）。
   一次性 reference 已停止，精确临时目录及 client warning 日志已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3717 对 A3716 的真实修复做覆盖闭环，防止把 `KeysOnly` 误实现成无条件清空 lease。对照
+  `/root/etcd/server/etcdserver/txn/range.go` 的 `FastKeysOnly: r.KeysOnly && r.SortTarget != VALUE` 与
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go` 的 fast index 投影：非 VALUE target 返回
+  key/create/mod/version 而不物化 value/lease；VALUE target 为排序读取完整 KV，最终只清 value，lease
+  仍可见。生成矩阵完整保留 A3716 的 72 case，再追加 leased point/prefix × KEY/VERSION/CREATE/MOD/VALUE
+  × current/historical 共 20 个固定 probe，总计 92 case；结构门禁逐 target 强制命中四种
+  point/prefix-current/historical 组合。RangeStream common-shape 差分同时新增真实 leased key、KeysOnly
+  prefix 请求和逐 KV lease-presence 比较，直接覆盖流式 fast projection。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3716-keys-only-lease` 两项差分首轮 2.212 秒、连续 10 轮
+  （测试 23.580 秒）及 race 5 轮（测试 13.358 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.526 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 168.073 秒）。生产 3/3 Pod Ready、零重启。没有新 runtime RED，本项证明 A3716
+  条件投影修复覆盖五种 target、两类范围和两类 revision，不重建或再次滚动数据面；一次性 reference
+  已停止，精确临时目录及测试日志已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
