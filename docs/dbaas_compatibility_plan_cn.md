@@ -37537,6 +37537,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/compat/` 无 KV；临时 clone
   已清理。
 
+- A3756 对照 upstream `/root/etcd` commit `236179af0` 的 `go.etcd.io/etcd/cache/v3`
+  `Watch(..., WithProgressNotify())` 支持。上游 cache 包此前把 ProgressNotify 作为 unsupported
+  watch option 拒绝；修复后本地 cache-backed watcher 可以在收到事件后按 `ProgressNotifyInterval`
+  周期性收到 progress response。该路径服务于用户侧 cache/watch 封装，依赖底层 etcd/KubeBrain
+  Watch、RequestProgress 与 revision header 共同工作。新增 compat live 测试把 cache/v3 模块纳入
+  子模块 replace，使用生产 KubeBrain endpoint 建立 `/a3756-cache-progress/` 前缀 cache，注册
+  `WithProgressNotify` watcher，写入一个事件建立 demux revision，再要求后续 progress header revision
+  不低于事件 revision。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `236179af0^`，只给旧 cache 包添加最小
+  `TestCacheWatchAcceptsProgressNotify`；旧版 `validateWatch` 返回
+  `cache: unsupported request parameters: ProgressNotify not supported`，测试 0.035 秒失败。当前
+  `/root/etcd` cache + 生产 KubeBrain live 定向测试 0.518 秒 GREEN；收尾时 cache 内部 watch
+  打印的 `context canceled` 来自主动关闭 cache，不影响断言。兼容模块 `go test ./...`（1.580 秒）
+  及 `go vet ./...` 通过；根模块 `go test ./...`（`pkg/server/etcd` 169.429 秒）及
+  `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，镜像仍为
+  `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/a3756-cache-progress` 与 `/compat/`
+  均无 KV；临时 clone 已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
