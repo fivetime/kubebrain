@@ -38107,6 +38107,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   钉住 A3785 和上述 commit ID。该轮不修改 runtime；目标是把 upstream 新增的通用 KV Range
   oracle 直接挂到现有差分矩阵，避免后续只看到官方测试名变化而重复制造低价值单例测试。
 
+- A3786 固定 upstream Range header、robustness Watch timeout、Lease metric 与 v3/v2 bootstrap
+  边界审计。对照 `/root/etcd` commit `11dcfb26b`，官方把 `tests/common/kv_test.go`
+  从只比较 key 列表升级为比较完整 `GetResponse`，包括 `Header`、`Count`、`More` 和 KV 的
+  create/mod/version metadata。KubeBrain 已由 A2996–A3002、A3716、A3774、A3780、A3785
+  的 Range/Txn/RangeStream 差分覆盖 header revision、nil/non-nil header、Count/More、limit、
+  filter、历史 revision、KeysOnly 和 value sort；`range_generated_differential` 还对每个 raw
+  Range case 强制 `response.Header != nil` 并归一化 header revision。
+
+  对照 `612913e91`，官方只给 robustness traffic watch request 加 `WatchTimeout`，避免测试
+  生成器的 detached watch 长期悬挂；KubeBrain 的公开 Watch 超时、cancel、failover、progress
+  与 fragmented stream 行为已由 clientv3/raw/live 门禁覆盖。对照 `28d636e67`，官方扩展
+  `TestLeaseWithRequireLeader`，额外检查 no-leader server error metric；KubeBrain 已有
+  `WithRequireLeader` 的 KV/Lease/Watch 行为门禁和 metrics/observability 文档，不需要移植官方
+  test harness 断言。对照 `f79c917a4` 与 `e74bb6a0e`，官方修复 v3 backend membership 和
+  “bootstrap 时不加载 v2 snapshot” 的内部启动路径；KubeBrain 不使用 upstream v2store/v3 backend
+  bootstrap 来承载 DBaaS 数据面，成员与恢复边界仍由 TiKV/PD、控制面和 online snapshot oracle
+  约束。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3786 和上述 commit ID。本轮不修改 runtime；
+  目的在于把已覆盖的 Range header 公共契约与仅影响 upstream robustness/bootstrap/metrics 断言的
+  内部改动明确分流，后续若出现新的 client-visible 行为再建立专项 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
