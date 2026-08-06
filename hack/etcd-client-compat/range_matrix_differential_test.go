@@ -94,9 +94,44 @@ func TestRangeOptionMatrixCoversFastKeysOnlyTotalCountFamilies(t *testing.T) {
 	}
 }
 
+func TestRangeOptionMatrixCoversUpstreamMinMaxCreateModSortCases(t *testing.T) {
+	covered := map[string]bool{}
+	for _, target := range rangeMatrixTargets() {
+		for _, order := range rangeMatrixOrders() {
+			for _, filter := range rangeMatrixFilters([]int64{1, 2, 3, 4, 5, 6}, []int64{1, 2, 3, 4, 5, 6}) {
+				for _, mode := range rangeMatrixModes() {
+					if mode.keysOnly || mode.countOnly {
+						continue
+					}
+					covered[fmt.Sprintf("%s/%s/%s/%s", filter.name, target, order, mode.name)] = true
+				}
+			}
+		}
+	}
+
+	for _, tc := range []struct {
+		filter string
+		target etcdserverpb.RangeRequest_SortTarget
+		order  etcdserverpb.RangeRequest_SortOrder
+	}{
+		{filter: "min-mod", target: etcdserverpb.RangeRequest_MOD, order: etcdserverpb.RangeRequest_NONE},
+		{filter: "max-mod", target: etcdserverpb.RangeRequest_KEY, order: etcdserverpb.RangeRequest_DESCEND},
+		{filter: "min-create", target: etcdserverpb.RangeRequest_VERSION, order: etcdserverpb.RangeRequest_DESCEND},
+		{filter: "max-create", target: etcdserverpb.RangeRequest_VALUE, order: etcdserverpb.RangeRequest_DESCEND},
+	} {
+		require.True(t, covered[fmt.Sprintf("%s/%s/%s/full", tc.filter, tc.target, tc.order)],
+			"missing upstream 43a6f8fa7 Range min/max create/mod sort coverage for %s %s %s",
+			tc.filter, tc.target, tc.order)
+	}
+}
+
 func rangeMatrixFilters(createRevisions, modRevisions []int64) []rangeMatrixFilterCase {
 	return []rangeMatrixFilterCase{
 		{name: "none"},
+		{name: "min-mod", minM: modRevisions[1]},
+		{name: "max-mod", maxM: modRevisions[3]},
+		{name: "min-create", minC: createRevisions[1]},
+		{name: "max-create", maxC: createRevisions[4]},
 		{name: "mod-window", minM: modRevisions[1], maxM: modRevisions[4]},
 		{name: "create-window", minC: createRevisions[1], maxC: createRevisions[4]},
 		{name: "contradictory", minM: modRevisions[4], maxM: modRevisions[1]},

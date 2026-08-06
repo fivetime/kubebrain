@@ -37991,6 +37991,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   避免后续把 grpcproxy 二进制启动顺序误归为 KubeBrain server 缺口，或遗漏已覆盖的 metrics、
   LeaseKeepAlive 和 etcdctl CLI 回归。
 
+- A3780 固定 upstream Range revision filter/sort 与 watch traffic harness 审计。对照
+  `/root/etcd` commit `43a6f8fa7`，官方在 `tests/common/kv_test.go` 新增四个公开
+  Range oracle：`MinModRevision` 后按 mod revision 排序、`MaxModRevision` 后按 key
+  降序、`MinCreateRevision` 后按 version 降序、`MaxCreateRevision` 后按 value 降序。
+  KubeBrain 已有 `range_differential`、`range_generated_differential`、nested Txn
+  Range 矩阵和 server 端 namespace 测试覆盖 revision filter 与 sort/limit/count/keys-only
+  组合；本轮进一步把 `rangeMatrixFilters` 补齐为单边 `min-mod`、`max-mod`、
+  `min-create`、`max-create`，并新增
+  `TestRangeOptionMatrixCoversUpstreamMinMaxCreateModSortCases`，显式保证官方新增四类
+  filter/sort 组合进入双端差分矩阵。对照 `e561d3ac9`，官方只把 robustness traffic
+  generator 的 watch loop 改成同步执行；该变更不改变公开 Watch RPC、错误码、事件顺序或
+  DBaaS runtime 语义，KubeBrain 仍以现有 Watch create/progress/cancel/EOF/snapshot
+  adapter 门禁作为客户端可观察行为 oracle。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3780、`43a6f8fa7` 与 `e561d3ac9`。该轮
+  不修改 runtime；目标是把可移植的 Range filter/sort 行为继续纳入官方差分矩阵，同时把仅影响
+  upstream 测试流量生成器的改动明确排除在 KubeBrain 数据面实现范围外。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
