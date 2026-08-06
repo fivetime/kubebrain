@@ -38924,6 +38924,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 `4286d6fdf`：官方只调整 clientv3 Watch metadata debug 打印，属于官方 client logging。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3816 与上述 commit ID；本轮不修改 runtime。
 
+- A3817 固定 upstream etcdctl Range filters、snapshot/compact sync、client Sync、request metrics、
+  Status quota、TLS identity/config、robustness compaction/serializable validation、snapshot/hashkv
+  tools 与 WAL metrics 审计。对照 `/root/etcd` commit `07b35dd7e`：官方 etcdctl `get`
+  增加 `{min,max} x {create,mod} x {revision}` filter flags。KubeBrain server-side Range 已支持
+  `MinModRevision`、`MaxModRevision`、`MinCreateRevision`、`MaxCreateRevision` 与 CountOnly/KeysOnly/
+  Limit/Sort/Txn/历史 revision 组合；`range_differential`、`range_generated`、`range_matrix`、
+  `range_revision_filter_*` 和大量 namespace nested clientv3 回归覆盖该 public surface。
+
+  对照 `d820cd2b5`：官方把 snapshot+compact 改为同步操作，降低异步窗口。KubeBrain 不复用
+  upstream Raft snapshot/compact pipeline；TiKV 数据面的 compact watermark、tombstone 保留、watch
+  compacted revision、restart restore 和 snapshot/backup 已由 A3437、A3730–A3732、snapshot
+  differential 与生产只读门禁覆盖。对照 `281f17734`：官方要求 `client.Sync` 后 endpoint 集合
+  不为空；本仓 `client_logger_sync_race_differential` 已用 official clientv3 并发 `Sync` 和 logger
+  切换固定 MemberList/endpoint discovery 行为。
+
+  对照 `0232686ca` 与 `4a555fead`：官方新增 server Range duration metric 并修复 WAL write
+  duration metric 注册。KubeBrain 的 upstream-compatible request latency 已暴露为
+  `etcd_server_request_duration_seconds` 并在 `observability_cn.md` 与
+  `TestObservabilityDocIncludesUpstreamMetricParity` 中固定；upstream WAL metric 属于 bbolt/WAL
+  内部，不进入 TiKV/PD 数据面。对照 `aff808ff0`：官方 changelog 记录 Status response 的 quota；
+  KubeBrain `Status.DbSizeQuota` 已由 `maintenance_semantics`、quota tests 和 observability 文档固定。
+
+  对照 `b31f23e11`、`acc9d7c9f`、`a657f069a` 与 `692e44a80`：官方扩展 AllowedCN/
+  AllowedHostname、HTTPS metrics TLS 和错误文案。KubeBrain 已有 client/peer cert allowed CN/
+  hostname flag parsing、TLS/admission、authn/authz、HTTP/gRPC status 和 production readiness 门禁；
+  upstream embed 日志文案不是 public API。对照 `29abd6233` 与 `4c7772691`：官方新增 embed
+  gRPC additional server options 和 experimental set-member-localaddr；KubeBrain 不暴露 upstream
+  embed/Raft peer listener 配置为 DBaaS 数据面契约。对照 `5959110f`、`2e04ee77b`、
+  `b883f839f` 与 `be9758e2b`：官方 robustness 增强 compaction、LazyFS、serializable validation
+  和 #14370 reproducer，属于 oracle/scenario 输入增强；本仓 Porcupine、compaction、serializable
+  read/Txn 和生产 soak 单独覆盖可观察行为。对照 `b107d2437`、`ea46253b` 与 `ec289a812`：
+  官方更新 etcdutl snapshot hashkv/status 和 auth token deletion logging；KubeBrain 兼容面是在线
+  `HashKV`、流式 `Snapshot`/backup 平台能力和 auth token 语义，不承诺复刻 bbolt 离线工具或日志
+  噪声。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3817 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
