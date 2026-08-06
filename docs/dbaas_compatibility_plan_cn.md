@@ -39170,6 +39170,46 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client snapshot SaveWithVersion 重构，不改变服务端 wire 语义。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3823 与上述 commit ID；本轮不修改 runtime。
 
+- A3824 固定 upstream watch progress ordering、HTTP/gateway listener 分流、JWT/auth panic、
+  Txn auth、watch restore/minRev、watch starvation、lease contention 和 snapshot-count 审计。
+  对照 `/root/etcd` commit `74feb229c` 与 `af25936fb`：官方保证手动/requested progress
+  notification 顺序，避免 progress 越过已经生成但尚未投递的事件。KubeBrain 已把 progress
+  marker 做成 watcher FIFO 内的 in-band 事件，`watch_progress_cadence`、quiet watch、future
+  watcher、follower proxy progress 和 k3s watch-cache 门禁均要求 progress revision 不得冻结、
+  不得越过事件，事件后下一 tick 只 rearm。对照 `42a2643df` 与 `ad688b2a8`：官方 robustness
+  继续强化 watch history/traffic 捕获；KubeBrain event-log replay、PrevKV、tombstone/restart、
+  created notify、progress notify 和 Porcupine 历史模型已覆盖同类公开风险。
+
+  对照 `bf12179a5`、`65add8cec`、`419a56e51`、`d1f674d62` 与 `85c48c4a6`：官方新增
+  `--listen-client-http-urls`，并重构 client listener grouping、gRPC gateway 连接地址和独立
+  HTTP port multiplex。KubeBrain 的 client/info/peer listener 已明确拆分；client 端口上的
+  gRPC 与 generated JSON gateway 由 HTTP server 按 HTTP/2 `Content-Type: application/grpc*`
+  分派，HTTP/1、TLS HTTP/2 JSON 和 h2c JSON 不得被 cmux `HTTP2()` 抢到 gRPC listener。相关
+  `pkg/endpoint/grpc_gateway_test.go`、HTTP access-control、TLS/rotation、production readiness
+  和 `/v3/*` gateway 差分已固定该外观；不承诺 upstream embed flag 名称本身。
+
+  对照 `386aedef5`、`a1fa3bfe5`、`ad72900da` 与 `801bb4c6d`：官方修复相同 JWT token
+  generation/auth、malformed JWT、改密码 panic 和 CVE-2021-28235 相关 auth 安全测试。KubeBrain
+  JWT/auth 已覆盖 malformed option、错误算法、verify-only、公私钥 mismatch、EdDSA/RSA/ECDSA/HMAC、
+  old revision token、AuthEnable/Disable、ChangePassword、gateway token 透传和 NVD 级 password
+  不回显风险；auth mutation 后旧 token 必须失效且不得 panic。对照 `4c6361176`：官方补
+  `txn.CheckTxnAuth` 单测；KubeBrain `authorizeTxn` 递归检查 compare/success/failure、nested
+  Txn、leased Put、PrevKV、RangeStream 和 auth revision fence，已有 raw/clientv3/HTTP 差分。
+
+  对照 `7052d8998`、`a690707c5` 与 `830d9e9ea`：官方围绕 MVCC restore、watch minRev 和未完成
+  compaction 恢复补测试/修复。KubeBrain 不复用 upstream bbolt WAL/MVCC restore，但 restart
+  tombstone watch、restore/delete model、cold restore verifier、watch compact boundary、future
+  watch 和 snapshot metadata barrier 覆盖恢复后 watch 不漏事件/不过度 compact 的外观。对照
+  `f3533f259` 与 `585dfe018`：官方切回 random scheduler 以缓解同连接高读响应下 watch
+  starvation，并补 e2e。KubeBrain HTTP/2 max stream、watch send loop、scanner backpressure、
+  watch delay/large read、k3s watch-cache 和 production soak 门禁覆盖共享连接下 watch 不被读流量
+  长期饿死。对照 `3419230ee` 与 `63964ec78`：官方 deflake lease delete-range contention；
+  KubeBrain 已有 leasing delete-range bounds、Txn/direct contention、attached lease cache 和
+  lease concurrent revoke/duplicate grant 差分。对照 `275e10bcf`：官方把默认 snapshot count
+  返回 10000；KubeBrain 不使用 upstream raft snapshot count 作为 TiKV/PD 数据面参数，Snapshot/backup
+  由独立门禁覆盖。对照 `14fbc98b2`：官方只调整镜像版本检查脚本。本轮新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3824 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
