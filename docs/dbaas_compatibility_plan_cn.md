@@ -38495,6 +38495,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   freshness 专项门禁覆盖。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3802 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3803 固定 metrics/grpcproxy/etcdctl Argify 周边的依赖、changelog、robustness 与 enum
+  命名迁移审计。对照 `/root/etcd` commits `1b360ec5c`、`bb12978c4`、`499b8e7a8`、
+  `c3c00c391` 与 `9481a30c8`：官方只修正 robustness 模型/validate 注释、日志和测试名。
+  对照 `520399119`、`cf190227f`、`29b96f2ea`、`3a6ec5533`、`927fcfc71`、
+  `e08e5ee9c`、`1c88d834b`、`d621f6edf`、`dd2ea2533`、`e6fdf7718` 与
+  `9ac71b892`：官方只升级 CodeQL、actions/stale、grpc-gateway、honnef、otel、grpc、
+  jwt、distroless 等依赖/镜像。KubeBrain 仍按本仓 release/security gate 管理这些升级。
+
+  对照 `68affb67b`、`9ff51d9a1`、`705084838`、`f9cd3ae56`、`896377f1b` 与
+  `d134d4723`：官方只补 3.4/3.5/3.6 changelog/release note。`705084838` 对应的
+  metrics interceptor reorder 真正行为 commit 是既有 `0c68e485a`，KubeBrain 已在
+  `pkg/endpoint/endpoint.go` 按 serverMetrics-before-handler 顺序接线，并由 A3779/A3756
+  的 metrics/auth/error 标签门禁覆盖。对照既有 `5037a98f7` 与 `871779c21`：grpcproxy
+  启动死锁属于 upstream etcdmain grpc-proxy 进程路径；KubeBrain 不暴露该独立 grpc-proxy
+  启动模式，follower proxy 由本仓服务内实现和 failover/forwarding 门禁覆盖。
+
+  对照 `b638eb2a5` 与 `635b23bf5`：官方只修复 embed 启停测试 flake 并重跑 genproto。
+  对照 `d1d507e7f`、`7a16339f2` 与既有 `55988933b`：官方给 etcdctl `Argify` 增加
+  license/header 单测并修复单引号裁剪；KubeBrain 已由 A3750 的 etcdctl single-quote Txn
+  差分覆盖。对照 `6eecd6dd8` 与 `bb5fc8e1b`：官方把 `mvccpb.PUT/DELETE` 与
+  `authpb.READ/WRITE` 迁到新的 generated enum names；KubeBrain wire 兼容依赖官方 protobuf
+  descriptors，enum alias/API 命名风险已由 A3763/A3793 的 generated-code/API 审计覆盖。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3803 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
