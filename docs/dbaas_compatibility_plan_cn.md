@@ -38991,6 +38991,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV/PD 数据面不承诺该 metric。对照 `842a0f3a3`：官方只修正文档/测试注释。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3818 与上述 commit ID；本轮不修改 runtime。
 
+- A3819 固定 upstream quiet watch progress、election auth、lease leadership、watch/auth error
+  handling、robustness watch oracle、snapshot/backend knobs、client backoff 与 learner/metrics
+  审计。对照 `/root/etcd` commit `6103504d4`：官方修复没有事件的 watch 仍要收到 progress
+  notification。KubeBrain 已有 `cache_progress_notify`、`watch_progress_cadence`、server watch
+  quiet progress 单测和 follower proxy progress 门禁，明确 quiet watch 的 progress revision 必须随
+  集群 published revision 前进，不能冻结在 start revision。
+
+  对照 `a8c743faf`：官方补 election auth integration test。KubeBrain v3 election/lock wrapper 已在
+  auth enabled 场景下覆盖 Campaign/Leader/Proclaim/Resign、权限撤销/恢复、gateway token 透传和
+  recipes/concurrency client path；该 commit 不引入新的 wire/API。对照 `67f17166b`、
+  `f7e488dc9` 与 `610f5272f`：官方对 lease operations 增加 leadership double-check，并记录忽略
+  old leader lease revoke。KubeBrain 已有 lease follower stale-read 禁止、proxy-to-leader、
+  leader-change fail-closed、old leader write/revoke fence、renewal Porcupine 和 failover smoke
+  证据；TiKV/PD 数据面不复用 upstream lessor/Raft 领导权判断。
+
+  对照 `617f1df44`：官方移除 watch/auth 对字符串错误的依赖；KubeBrain 已用 gRPC code、
+  rpctypes、typed auth/watch differential 和 HTTP/gateway error normalization 固定外观。对照
+  `0b2757036` 与 `0857def30`：官方在 Kubernetes traffic 使用 `WithRequireLeader` 并给 client config
+  加 backoff/retry knobs；本仓已有 `WithRequireLeader` 的 KV/Lease/Watch 成功与失败路径、
+  Cilium consumer 和 Kubernetes wrapper 门禁，client-side backoff 由官方 client 实现处理。
+
+  对照 `3a351c2fe`、`5d7f58d14`、`cdd018ad2`、`9aad6700d` 与 `c37991cf8`：官方 robustness
+  调整 compaction-before-PrevKV、create events、watch PrevKV 和缺失 event history 时的 watch
+  validation。KubeBrain public 风险已由 watch PrevKV、create/update/delete 分类、compaction
+  boundary、event-log replay、restart/tombstone watch 和 Porcupine 历史模型覆盖。对照
+  `3565a822d`、`be2883321`、`d69adf45f`、`538162ad2` 与 `3471ef133`：官方增强 bbolt
+  VerifyTxConsistency、snapshot restore memory/backend config、旧 db file 启动和 snapshot backend
+  failpoint；KubeBrain 的在线 Snapshot/backup/cold-restore verifier 使用 TiKV/PD 数据面实现，不承诺
+  upstream bbolt backend knob/旧 DB 文件行为。对照 `79716fa11`：官方给 grpc-proxy 增加 keepalive
+  flags；KubeBrain 不运行 upstream grpc-proxy 二进制。对照 `21bbc8271`、`f7ab7adf2` 与
+  `46d59a2e6`：官方只增强 mvcc compaction 日志/learner metric/removed peer skip；KubeBrain 的
+  observability 与 member/learner 边界已有等价门禁。对照 `e9434c945`：官方补 client transport
+  TLS CRL tests，属于官方 client/pkg transport。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
+  A3819 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
