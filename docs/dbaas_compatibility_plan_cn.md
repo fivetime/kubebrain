@@ -39391,6 +39391,50 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   下与 Status/readyz/写路径一致。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3828 与上述
   commit ID；本轮不修改 runtime。
 
+- A3829 固定 upstream strict reconfiguration、single-member raft durability、wait-cluster-ready、
+  readonly serializable Txn、compaction hash check、gRPC max streams、range permission cache、
+  `WithPrefix` 和 ID printer 审计。对照 `/root/etcd` commit `3beb25489`：官方测试框架默认启用
+  `--strict-reconfig-check`。KubeBrain 不暴露 upstream MemberAdd/Remove/Update/Promote 作为数据面
+  reconfiguration API，成员拓扑由 DBaaS 控制面管理；public 边界是 MemberList/Status identity、
+  unsupported member mutation、auth-before-platform 和 learner/status 外观，已有 cluster/maintenance
+  auth、member mutation differential 和 production readiness 覆盖。
+
+  对照 `2a10049e4`：官方修复单成员 raft 集群潜在数据丢失。KubeBrain 不复用 upstream raft/WAL
+  commit path；等价持久性风险在 TiKV/PD 层和 DBaaS 启动/恢复流程中验证。KubeBrain 侧的要求是
+  已确认写入在进程替换、leader failover、TiKV/PD restart、cold restore、tombstone/history watch
+  和 snapshot/backup verifier 后仍可观察，不能因为单副本 control-plane 语义或 WAL 优化假设而放松
+  TiKV durable commit 证据。
+
+  对照 `e15bdd9df`：官方 `startEtcd` 尊重 `ExperimentalWaitClusterReadyTimeout`。KubeBrain
+  的启动就绪边界由 DBaaS readiness、leader/follower freshness、serializable/linearizable probes、
+  startup fail-closed 和 production pod/readiness gate 约束；不迁移 upstream embed 启动 flag，但
+  必须保证未完成 leader/revision/freshness 初始化时不会提前对外 serving。
+
+  对照 `43bb9d5c2`：官方修复 readonly serializable Txn panic。KubeBrain 已通过 Txn differential、
+  nested Txn、readonly Txn auth fence、nil/empty operation validation、failed write Txn、serializable
+  Range/Txn follower boundary 和 root package regression 约束只读 Txn 不 panic、错误可归类、revision
+  与 response header 保持 etcd 兼容。对照 `de09174a3`：官方给 `rangePermCache` 加 RW lock；KubeBrain
+  auth snapshot/cache 与 `ensureAuthRevision` 已有 race/old revision/future JWT/permission union/gap
+  门禁，重点是并发 auth mutation 不泄漏已撤权数据、不误报 nil/panic。
+
+  对照 `6697fca97`、`d44bbff27`、`f0f750f4c` 与 `c58ec9fe1`：官方实现并重构 periodic
+  compaction hash checking，且允许配置开关/周期。KubeBrain 使用 TiKV/PD backed 单逻辑数据面，不复用
+  upstream bbolt/raft hash checker；公开契约落在 `HashKV` 指定 revision 的稳定摘要、peer
+  `/members/hashkv` cluster-ID 防串、CORRUPT alarm、`/readyz/data_corruption`、NOSPACE/CORRUPT
+  写入 fail-closed、direct replica consistency 和 corrupt alarm restart。已有 HashKV compaction/restart、
+  replica consistency、peer hash handler、health alarm differential 和 production readiness 覆盖。
+
+  对照 `622017468`、`053ba95ed` 与 `f40b67670`：官方支持自定义 gRPC/HTTP2
+  `MaxConcurrentStreams` 并补 e2e。KubeBrain 已有 HTTP/2 max streams、watch starvation、large read
+  与 production soak 门禁，目标是限制单连接 stream 放大且不饿死 watch/lease/readiness，而不是复刻
+  upstream embed flag 名称。对照 `8637c54bc`：官方修复 clientv3 `WithPrefix` op 检查；KubeBrain
+  server 侧必须正确处理 prefix range 的 Range/Delete/Txn/Watch/Lease attach 组合，现有 prefix、
+  namespace、binary key、RangeStream、DeleteRange 和 Txn matrix 已覆盖。对照 `5cae1a1c4`：官方
+  etcdctl 以十六进制打印 cluster/member/lease ID；KubeBrain raw wire ID 仍是 uint64，CLI printer
+  属于客户端展示层，服务端需保持 Header ClusterId/MemberId、MemberList ID、Lease ID 和 alarm
+  MemberID 稳定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3829 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
