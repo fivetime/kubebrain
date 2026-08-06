@@ -39057,6 +39057,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client-go/etcd client 依赖负责。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3820 与上述
   commit ID；本轮不修改 runtime。
 
+- A3821 固定 upstream REST/gateway e2e 扩面、read-after-write、一致 membership bootstrap、
+  txn check、backend tx buffer、duplicate gateway URL 和 snapshot/v2 边界审计。对照
+  `/root/etcd` commit `18f70c255`、`0b27aff79`、`ce64fbe3f`、`dc8011570`、
+  `b4803fb39`、`02c01f04d` 与 `a7330692b`：官方用 curl e2e 覆盖 Election、Lock、Cluster、
+  Auth、KV 和 Maintenance REST API。KubeBrain 已在 client 端口启用 generated v3 JSON gateway，
+  `pkg/endpoint/grpc_gateway_test.go` 固定公开 service/route 集合、unary/stream wrapper、
+  `Authorization` metadata、gateway marker、unknown-field 丢弃、整数边界、WebSocket/HTTP2
+  和 unsupported route；`hack/etcd-client-compat/http_gateway_*_differential_test.go` 进一步用
+  reference etcd 对 KV、Watch、Lease、Cluster、Maintenance、Auth、Lock、Election、stream、
+  error、cancel、zero-lease 与 failover 行为做外观差分。对照 `f3121fb76`：官方修复 proto
+  annotation 里的 duplicate gateway URL；本仓公开 route set 已由 generated gateway route count
+  和 exact route names 固定，避免 `/v3/*` surface 漏路由或重复路由。
+
+  对照 `b385121be`：官方新增写后立即一致读测试。KubeBrain 的写路径经 TiKV/PD TSO 提交，
+  Range/RangeStream、Watch control、Status/Hash、MemberList 和需要 freshness 的 follower
+  路径均有 read barrier；现有 KV differential、consistent read/follower freshness、k3s smoke、
+  Porcupine 和生产 prefix-tool count 门禁共同覆盖 write-then-read 不得返回旧值。对照
+  `76cbfd364` 与 `e1617f98b`：官方扩充 Txn check/Put/Range 测试并调整 lease attach path；
+  KubeBrain 已覆盖 Compare target/result、success/failure 分支、多操作原子性、failed write Txn、
+  empty key/range、lease attach、RBAC Txn 和 gateway Txn 外观。
+
+  对照 `9c9804399` 与 `628b45c09`：官方避免 WAL replay 时 v3store 已超前导致
+  RaftCluster.members/removed 被旧 entry 覆盖，并补 bootstrap consistent MemberList。KubeBrain
+  不复用 upstream WAL replay/RaftCluster mutation；MemberList 由 DBaaS 控制面配置和 stable
+  identity 生成，已有 advertised URL、AutoSync、auth、restart/failover、member mutation
+  unsupported 和 production readiness 门禁。对照 `b05d75ab0`：官方优化 backend tx buffer
+  copy 内存；KubeBrain 使用 TiKV/memkv storage abstraction，backend duplicate/CAS/delete/current
+  revision 和 failed write Txn 测试覆盖 client-visible 原子性，内存优化不改变 wire 语义。对照
+  `8729417ce` 与 `59332dc19`：官方调整 snapshot 步骤顺序并从 v3 state 生成 v2 snapshot；
+  KubeBrain 在线 Snapshot、backup/cold-restore verifier 和逻辑导入导出使用 TiKV/PD 数据面实现，
+  明确不承诺 upstream v2 snapshot/store 物理格式。本轮新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3821 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
