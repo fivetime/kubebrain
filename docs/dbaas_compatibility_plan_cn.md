@@ -36608,6 +36608,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
   oracle 数据。
 
+- A3701 将 A3700 的空 lease 自然过期证据推进到真实 KubeBrain leader replacement。新增故障门禁
+  以显式 ID 创建 TTL=1 的空 lease，等待 timer 路径持久删除后再删除当前 mutation leader；新 leader
+  必须继续返回 TTL=-1、LeaseList 不含该 ID，空 key Range 与全部 lease header 仍停在故障前用户
+  revision，并允许以 TTL=300 原子重建同一 ID，随后空 Revoke 也不得推进 revision。该门禁直接防止
+  follower 从 TiKV reload 已过期 lease、丢失 deletion metadata，或把 election/reload 写入用户时间线。
+
+  普通轮先从三 Pod Status 精确定位 leader `kubebrain-2` 并删除，14.810 秒 GREEN；term 从 353 升到
+  354、leader 转为 `kubebrain-0`。race 轮再删除新的真实 leader `kubebrain-0`，测试 14.45 秒/包
+  15.520 秒 GREEN；该 Pod UID 从 `27ba3e4a-8c07-41f7-8577-94ec0f9436ef` 变为
+  `088d76e9-1daa-4bf9-b23c-28a520eaad28`，term 升到 355、leader 回到 `kubebrain-2`。两轮前后
+  三副本 Status 的用户 revision 始终精确为 `468126003565824137`，最终 3/3 Ready、0 restart。
+  兼容模块全量 `go test ./... && go vet ./...` 通过（测试 1.583 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 167.340 秒）。没有 runtime RED 或新镜像；本项执行了两次受控 leader Pod
+  replacement，均已由原镜像 `kubebrain:a3672-stream-progress` 自动恢复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

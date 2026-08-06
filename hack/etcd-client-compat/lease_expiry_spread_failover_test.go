@@ -175,3 +175,84 @@ func TestEmptyLeaseRevokeRemainsDeletedAfterFailover(t *testing.T) {
 		return true
 	}, 30*time.Second, 250*time.Millisecond)
 }
+
+func TestEmptyLeaseNaturalExpiryRemainsDeletedAfterFailover(t *testing.T) {
+	failoverCommand := os.Getenv("KUBEBRAIN_LEASE_EXPIRY_SPREAD_FAILOVER_COMMAND")
+	if failoverCommand == "" {
+		t.Skip("set KUBEBRAIN_LEASE_EXPIRY_SPREAD_FAILOVER_COMMAND to delete the current live leader")
+	}
+	namespace := os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
+	if namespace == "" {
+		namespace = "kubebrain-dev"
+	}
+
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{compatEndpoint(t)},
+		DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	rawLease := etcdserverpb.NewLeaseClient(cli.ActiveConnection())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(cancel)
+	key := fmt.Sprintf("/dbaas-empty-lease-expiry-failover/%d", time.Now().UnixNano())
+	base, err := cli.Get(ctx, key)
+	require.NoError(t, err)
+	id := time.Now().UnixNano() & ((1 << 62) - 1)
+	grant, err := rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 1})
+	require.NoError(t, err)
+	require.NotNil(t, base.Header)
+	require.NotNil(t, grant.Header)
+	reused := false
+	t.Cleanup(func() {
+		if !reused {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = rawLease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+	})
+	require.Equal(t, base.Header.Revision, grant.Header.Revision)
+
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := rawLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id})
+		return ttlErr == nil && ttl.Header != nil && ttl.TTL == -1 && ttl.Header.Revision == base.Header.Revision
+	}, 10*time.Second, 100*time.Millisecond)
+
+	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
+	require.NoErrorf(t, err, "failover command: %s", strings.TrimSpace(string(output)))
+	output, err = waitForKubeBrainRollout(t, ctx, namespace)
+	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))
+
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := rawLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id})
+		if ttlErr != nil || ttl.Header == nil || ttl.TTL != -1 || ttl.Header.Revision != base.Header.Revision {
+			return false
+		}
+		leases, listErr := rawLease.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+		if listErr != nil || leases.Header == nil || leases.Header.Revision != base.Header.Revision {
+			return false
+		}
+		for _, listed := range leases.Leases {
+			if listed.ID == id {
+				return false
+			}
+		}
+		current, rangeErr := cli.Get(ctx, key)
+		return rangeErr == nil && current.Header != nil && current.Header.Revision == base.Header.Revision && len(current.Kvs) == 0
+	}, 30*time.Second, 250*time.Millisecond)
+
+	regrant, err := rawLease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 300})
+	require.NoError(t, err)
+	require.NotNil(t, regrant.Header)
+	reused = true
+	require.Equal(t, base.Header.Revision, regrant.Header.Revision)
+	ttl, err := rawLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id})
+	require.NoError(t, err)
+	require.Positive(t, ttl.TTL)
+	revoke, err := rawLease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: id})
+	require.NoError(t, err)
+	require.NotNil(t, revoke.Header)
+	reused = false
+	require.Equal(t, base.Header.Revision, revoke.Header.Revision)
+}
