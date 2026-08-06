@@ -39304,6 +39304,48 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   客户端可观察语义。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3826 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3827 固定 upstream TLS CommonName auth token refresh、maintenance API auth protection、
+  etcdctl maintenance endpoint selection、HashKV `HashRevision` proto/response、linearizability
+  revision/failpoint、DoubleBarrier 和 concurrency Mutex Unlock 审计。对照 `/root/etcd`
+  commit `f32ac6e06`、`0c1901466` 与 `9648a291f`：官方 clientv3 在 TLS CommonName
+  based authentication 下不再刷新 token，并补 e2e/changelog。KubeBrain server-facing 契约是
+  client-cert auth 只信任 verified peer certificate CommonName，leader-local 不 mint proxy token，
+  follower/internal hop 只使用短期转发 token，HTTP/gateway 不能借用本机证书 CN；这些已由
+  `auth_authorizer_test.go`、maintenance client-cert auth、gateway auth 透传和 production TLS/CN
+  文档门禁覆盖。官方 client 的 retry/getToken 策略不属于 KubeBrain runtime。
+
+  对照 `c967715d9`、`f78289124`、`7f46da223`、`74085136b` 与 `cda14cd3f`：官方把
+  auth-enabled 下所有 Maintenance API 统一套上鉴权，并让 etcdctl maintenance 操作连接目标
+  endpoint 而非误连其它 endpoint。KubeBrain 已将 `Status`/`Alarm(GET)` 与 root-only
+  `Hash`/`HashKV`/`Compact`/`Defragment`/`Snapshot`/`MoveLeader`/`Downgrade` 的 auth
+  顺序、错误 code/message、client-cert auth 和 unsupported platform boundary 固定在
+  maintenance auth 差分、本地 service 回归、HTTP gateway route 和 production readiness 中；
+  endpoint selection 是 etcdctl/client 侧行为，KubeBrain 只保证每个 advertised endpoint 的
+  raw RPC 语义一致。
+
+  对照 `cd746de14`、`228f493c7` 与 `f77b8a735`：官方为 `HashKVResponse` 增加并填充
+  `hash_revision`/`HashRevision`。KubeBrain 已在 vendored API proto field guard、
+  backend `HashKVResult`、raw/clientv3 `HashKV` revision boundary、并发写 latest header、
+  compaction stability、peer `/members/hashkv` JSON 和三副本 consistency/restart 门禁中固定
+  `HashRevision`、`CompactRevision`、Header revision 与 cluster ID；该项是 public wire/API，
+  不能回退为空或仅用当前 revision 代替 hashed snapshot revision。
+
+  对照 `ff6c93f63`、`2532ca84d` 与 `837819860`：官方 linearizability model 加入 revision，
+  并把 backend/commit failpoints 纳入测试。KubeBrain 不复用 upstream gofail hooks 或 raft/WAL
+  commit path；等价正确性风险由 Porcupine KV/Txn/Lease histories、mutation failover、leader
+  token fencing、TiKV/PD restart persistence、watch event-log replay 与 production failover
+  smoke 覆盖。需要保持的是客户端可见 revision 单调性、Txn 原子性、ambiguous write 处理和
+  lease generation 隔离，而不是移植 upstream 测试框架内部 failpoint。
+
+  对照 `62167d1f1` 与 `5b8c6b548`：官方修复 clientv3 experimental DoubleBarrier 设计，
+  并让 `concurrency.Mutex.Unlock` 检查 mutex state。KubeBrain server data plane 的可观察边界
+  是 underlying KV/Txn/Lease/Watch 能否支撑官方 recipes：DoubleBarrier enter/leave、release
+  后不阻塞、Barrier.Wait 不依赖错误 prefix、Mutex/RWMutex waiter 清理、Unlock 不撤销 session
+  lease、missing/empty key 错误和 auth/gateway 透传。现有 `double_barrier_differential_test.go`、
+  `lock_recipe_differential_test.go`、concurrency service/gateway auth/error 和 lease orphan
+  failover 门禁已覆盖这些组合语义；client library state check 不进入 KubeBrain runtime。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3827 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
