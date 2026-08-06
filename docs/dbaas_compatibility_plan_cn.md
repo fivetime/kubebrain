@@ -37610,6 +37610,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和全仓重跑均通过，未复现且与本轮 focused membership 测试无关。生产三副本 3/3 Ready、零重启，
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。
 
+- A3760 对照 upstream `/root/etcd` commits `a1cb0a244`、`910fdba06`、`fa8a5a248`
+  的 `go.etcd.io/etcd/cache/v3` default Get 一致读追赶语义。上游在 cache 包中加入 consistent
+  read、被动 progress notification 与按需 progress notification；修复后未带
+  `WithSerializable()` 的 `cache.Get` 必须等待 cache 通过 `RequestProgress` 追上当前 server
+  revision，不能在被 watch 前缀长时间安静时返回旧 snapshot。
+
+  为建立真实 RED，在 `/tmp` worktree 检出 `a1cb0a244^`，只给旧 cache 包添加最小
+  `TestCacheLinearizableGetCatchesUpOnQuietPrefix`，期望 default `Get` 成功；旧版直接返回
+  `cache: unsupported request parameters: non-serializable request`，测试 0.042 秒失败。新增
+  compat live 测试使用生产 KubeBrain endpoint 建立 `/a3760-cache-consistent-get/` 前缀 cache，
+  先写 watched key，再写前缀外 key 推进全局 revision，随后调用不带 `WithSerializable()` 的
+  `cache.Get`，断言 response header revision 不低于前缀外写入 revision，且仍返回 watched key
+  的原始 value/mod revision。当前 `/root/etcd` cache + 生产 KubeBrain live 定向测试 0.019 秒
+  GREEN。
+
+  兼容模块 `go test ./...`（1.667 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 167.377 秒）及 `go vet ./...` 通过。首轮根模块全量测试曾在
+  `pkg/server/etcd` 末尾返回失败但未给出标准失败用例；随后单包 `go test -json` 通过
+  （167.499 秒）且全仓重跑通过。生产三副本 3/3 Ready、零重启，镜像仍为
+  `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮只增加官方 cache client
+  一致读黑盒门禁，不改变 runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
