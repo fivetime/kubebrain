@@ -38471,6 +38471,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   apply；KubeBrain 已有 A249/A3775/A3785 的限流、LeaseRevoke 和优先级审计覆盖。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3801 与上述 commit ID；本轮不修改 runtime。
 
+- A3802 固定 auth/cache/read-index 既有覆盖窗口外的依赖、CI、changelog 与 client construction
+  审计。对照 `/root/etcd` commits `0589289f2`、`95fb12cb1`、`5dd88f57e`、
+  `6dab82e75`、`418ad6887`、`a58db8bc2` 与 `9615596f0`：官方只升级 golangci-lint、
+  OpenTelemetry、x/net、grpc-gateway 等依赖。对照 `e1c27b463`、`91f06fdc8`、
+  `a2c563fba`、`b5fb931d0`、`768ce003b`、`b5274c169`、`97d742eab`、
+  `da3da842d`、`5359f3f87`、`12e8aa61e` 与 `4dd32f410`：官方只调整 docker-login、
+  CodeQL、Dependabot、workflow approval、cherrypick bot、setup-go 和 upload-artifact。KubeBrain
+  CI/依赖更新继续按本仓 release/security gate 管理。
+
+  对照 `8e4f30d1f`、`bae64bdb7`、`30c9f4e74`、`d1250de6f` 与既有
+  `d0d5daf4f`/`5dadbf2db`：官方只补 changelog/release note。对照 `79a557c23`、
+  `8e0c1ab90`、`5350057f7`、`6123a0320` 与既有 `7cd78f3dc`：官方改动集中在
+  robustness README、Porcupine visualization member ID、Antithesis basetime/debug 和
+  robustness issue documentation，不改变 server wire/API。KubeBrain 的 Porcupine 与故障注入计划
+  可吸收这些测试思想，但不能作为 runtime 兼容缺口。
+
+  对照 `a073e1253`：官方只修复 client/pkg revive unexported-return lint。对照 `60e856fe4`：
+  官方把 grpc Dial API 替换为 `NewClient`；KubeBrain 兼容侧已由 A3754/A3776 的 clientv3
+  nonblocking dial/`DialTimeout` 审计覆盖，不再为同一 client construction 变化追加服务端改动。
+  同一窗口中的 `a07ecd124`、`204097b19`、`a1cb0a244`、`e2f4f485e` 与
+  `9f83a29b3` 分别已由 auth guard、nested Txn auth、cache consistent get 和 ReadIndex
+  freshness 专项门禁覆盖。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3802 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
