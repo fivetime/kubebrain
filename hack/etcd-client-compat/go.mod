@@ -10,6 +10,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	go.etcd.io/bbolt v1.5.0
 	go.etcd.io/etcd/api/v3 v3.7.0-beta.0
+	go.etcd.io/etcd/cache/v3 v3.7.0-beta.0
 	go.etcd.io/etcd/client/v3 v3.7.0-beta.0
 	go.uber.org/zap v1.27.1
 	google.golang.org/grpc v1.81.1
@@ -31,10 +32,12 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	k8s.io/utils v0.0.0-20260108192941-914a6e750570 // indirect
 )
 
 replace (
 	go.etcd.io/etcd/api/v3 => /root/etcd/api
+	go.etcd.io/etcd/cache/v3 => /root/etcd/cache
 	go.etcd.io/etcd/client/pkg/v3 => /root/etcd/client/pkg
 	go.etcd.io/etcd/client/v3 => /root/etcd/client/v3
 )
