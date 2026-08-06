@@ -40489,6 +40489,63 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   metrics 为准。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3850 与上述 commit ID；本轮不修改
   runtime。
 
+- A3851 固定 upstream gRPC log-level、client-assigned watch ID、large request options、lease
+  timetolive/exec-watch、Snapshot status error、HashByRev、lease streaming docs、WithRoot lease
+  revoke、grpc shutdown、server version metric、TLS handshake、zero heartbeat/election 和 initial
+  corrupt check 审计。对照 `/root/etcd` commit `9e11ef3ad`、`9a5025551`、`ae589018c` 与
+  `6bd41f36f`：官方调整 gRPC info/stream/cancel/TLS handshake 日志级别与错误细节。KubeBrain
+  日志不承诺 upstream 文案；公共边界是 deadline/cancel/error 的 gRPC status、request duration、
+  structured logs、operation audit 和 production probes，已由 watch/lease/snapshot cancel 与
+  error-inflight 门禁覆盖。
+
+  对照 `10522f88f`、`33c732b97`、`fc3b59046`、`652841c41` 与 `9bbfa2318`：官方为
+  `WatchCreateRequest` 增加 `watch_id`，允许客户端指定 watcher ID，并修正非 `-1` watch ID
+  cancel。KubeBrain 已在 proto coverage 固定 `WatchCreateRequest.watch_id=7`，并用 raw watch
+  状态机、signed watch ID、duplicate ID、watch ID 0、unknown cancel、invalid create 后继续 create、
+  progress `WatchId=-1` 和 gateway stream 输出覆盖 public wire 行为。对照 `8d8f3195e`：官方优化
+  Raft leader 建立时日志扫描；KubeBrain 不运行 upstream Raft log，等价 failover/revision contract
+  由 leader fencing、restart/failover 和 production probes 覆盖。
+
+  对照 `1880cf8da`：官方修复 clientv3 leasing waitSession race；KubeBrain 服务端只需保持 lease
+  TTL/Revoke/KeepAlive、session lock/election recipe 和 failover expiry 外观，已由 clientv3 兼容套件、
+  Lock/Election、lease linearizability 与 production smoke 覆盖。对照 `f38593bba`、
+  `497412c58`、`f87760998`、`63d66b101` 与 `abfc09b1c`：官方扩大 clientv3 默认 gRPC
+  message limit/call option，并补大请求测试。KubeBrain 数据面已固定 max request bytes、large
+  Range/Txn、watch fragmentation/starvation、gateway recv limit 和 client-side response limit 兼容；
+  official client option 属于客户端实现。
+
+  对照 `f59808a2c`、`9978b4fd3`、`3e58dd707`、`da3e3b724` 与 `ed3672850`：官方澄清
+  `lease timetolive` 输出、LeaseKeepAlive streaming errors 和 lease e2e 覆盖。KubeBrain lease
+  契约由 TTL truncation、missing/expired lease、attached keys auth、KeepAlive streaming、Revoke、
+  Grant TTL/ID、checkpoint/failover 和 lease/auth differential 固定。对照 `904513fa5`：官方支持
+  `exec-watch`；KubeBrain 服务端只承诺 watch wire 行为，watch exec 环境变量/退出码属于 etcdctl。
+  对照 `7cd985bda` 与 `e833b7c2d`：官方 Snapshot API 翻译 gRPC status error 并补 context 文档；
+  KubeBrain online `Maintenance.Snapshot` 已固定 raw stream、SnapshotWithVersion、context boundary、
+  incomplete FD 关闭、auth/alarm/history restore 和 official status/restore。
+
+  对照 `2e95ace82`：官方 HashByRev 使用 current revision 而不是 0 取 revisions。KubeBrain
+  Hash/HashKV 已覆盖 latest/历史 revision、compaction、replica consistency、alarm/corrupt 与
+  snapshot restore。对照 `9fb7bbdb2`、`85af65eca` 与 `1f191a0e3`：官方补
+  Auth+LeaseRevoke WithRoot、lease revoke logging 和 `NewIncomingContext`。KubeBrain auth+lease
+  已覆盖 root/admin permission、Bearer/JWT/simple token、WithRoot 等价的 root context、LeaseRevoke
+  权限、auth revision fence 和 gateway metadata。对照 `9744e1ee8`、`9bd07c91d`、`552b58dcf`
+  与 `e39915fee`：官方修复 embedded gRPC server shutdown/GracefulStop panic。KubeBrain endpoint
+  lifecycle 由 serving restart、connection age reconnect、TLS rotation 和 production rollout/readiness
+  门禁覆盖。
+
+  对照 `bcd5390b3` 与 `b1c6b98f3`：官方更新 protobuf/grpc-gateway 生成工具。KubeBrain 已用
+  request proto coverage、stable `/v3` gateway、base64 bytes、integer boundary、unknown fields、
+  streaming/WebSocket 和 typed error mapping 固定生成代码外观。对照 `4cacbf19d` 与
+  `a535c0105`：官方新增 `server_version`/extensive metrics。KubeBrain 可观察面以 `/version`、
+  Status、Prometheus request/watch/alarm/quota metrics、operation audit 和 production probes 为准。
+  对照 `cffa13025` 与 `965d9806d`：官方对 zero heartbeat/election timeout 和 env flag error
+  masking fail closed。KubeBrain option validation、manifest tests 和 startup parameter probes
+  固定本仓参数。对照 `e0dfc4368`、`1f38f1fdd` 与 `3db5ad8d5`：官方增加 initial corrupt check。
+  KubeBrain 等价腐化风险由 HashKV、CORRUPT alarm、`/readyz/data_corruption`、direct replica
+  consistency、snapshot/restore verifier 和 production readiness 覆盖；不复用 upstream bbolt
+  initial corrupt check flag。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3851 与上述 commit
+  ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
