@@ -36401,6 +36401,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项只增加永久原子性证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已
   删除且不可恢复，只含本轮 oracle 数据。
 
+- A3685 补齐 Txn 未选中分支的 lease mutation 副作用隔离。既有测试证明未选中的无效 lease ID
+  不参与校验，但未证明合法 mutation 在分支规划阶段不会提前污染 lease 索引。新场景预置 `x` 属于
+  lease A、`y` 属于 lease B，以必定为假的 compare 把 `x` 转移至 B、删除 `y`、向 A 新增 `w` 三项
+  mutation 放入 Then，实际 Else 只读取 `x`。契约要求 `Succeeded=false`、仅返回一项 Range、Txn 与
+  两次 TTL header 均不推进 revision，KV 仍精确为 `x=old-x/A,y=old-y/B`，attached keys 仍为
+  A=`x`、B=`y`，且 `w` 不存在。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.352 秒、连续 10 轮
+  （测试 2.818 秒）及 race 5 轮（测试 2.511 秒）全部 GREEN；兼容模块与根模块全量 test/vet
+  通过（`pkg/server/etcd` 167.241 秒）。没有 runtime RED，本项只增加永久分支隔离证据，不重建或
+  滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
