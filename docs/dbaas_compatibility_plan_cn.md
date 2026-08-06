@@ -37290,6 +37290,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go test ./... && go vet ./...` 通过（测试 1.573 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 168.453 秒）及 `go vet ./...` 通过；官方进程和临时 data-dir 已清理。
 
+- A3741 对照 upstream `/root/etcd` commit `8a0fd66db` 的 failed write Txn 原子性：etcd
+  明确要求执行阶段发生错误时不能通过提前结束 transaction 暴露部分写。KubeBrain 的 `TxnApply`
+  已采用“两阶段预读全部 operation/guard，再用单次 storage CAS batch 提交”的结构，但此前没有
+  精确覆盖 caller context 在多操作准备中途取消。新 backend 门禁包装真实 memkv storage，在第一条
+  revision-key 读取返回后立即取消 context；第二条准备读取必须返回 `context.Canceled`，整次调用
+  返回 nil results/revision 0，两个 seed key 的值和各自 ModRevision 不变，公开 current revision
+  也不得推进。该测试直接固定普通 KV Txn 的取消边界，不再只依赖 leasing wrapper 的间接取消回归。
+
+  新测试修前即连续 50 轮 GREEN（0.678 秒），race 连续 20 轮 GREEN（2.033 秒），说明现有单次
+  CAS 实现已满足该 upstream 不变量，没有制造 runtime RED。官方原始
+  `TestWriteTxnPanicWithoutApply` 在 etcd `d947b20863` 连续 10 轮通过（1.410 秒）；reference 根
+  workspace 的 vendor 清单与模块版本漂移，因此使用 `GOWORK=off -mod=mod` 从 server module
+  只读运行，未修改 `/root/etcd`。生产 KubeBrain 的 compacted Range + following Put 全回滚黑盒
+  连续 20 轮通过（0.021 秒），无部署或镜像变更。三副本仍为 A3739 Pod UID，3/3 Ready、零重启，
+  `readyz=ok`，`/compat/` 无 KV。兼容模块 `go test ./... && go vet ./...` 通过，根模块
+  `go test ./...`（`pkg/backend` 43.831 秒、`pkg/server/etcd` 169.713 秒）及 `go vet ./...`
+  通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
