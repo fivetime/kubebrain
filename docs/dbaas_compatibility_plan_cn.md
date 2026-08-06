@@ -36882,6 +36882,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A3716 staged/nested Txn 修复闭环，不重建或滚动数据面；一次性 reference 已停止，精确临时目录已删除
   且不可恢复，只含本轮 oracle 数据。
 
+- A3719 从已经闭环的 KeysOnly 转向新的未知差异发现面，新增固定 seed=3719 的 32-case raw gRPC
+  DeleteRange 生成式官方差分。oracle 对应 `/root/etcd/tests/integration/v3_grpc_test.go` 的
+  `TestV3DeleteRange`、`/root/etcd/server/etcdserver/txn/delete.go` 的 PrevKV-before-delete 顺序，以及
+  `/root/etcd/server/storage/mvcc/kv_test.go` 的 `testKVDeleteRange`。每个 case 在独立有界前缀写入四键，
+  包含一次更新和一个 leased key；七种形状覆盖普通 point、leased point、missing point、完整 prefix、
+  `[b,d)` 子范围、equal-empty、reversed-empty，随机交叉 PrevKV true/false。结果归一化比较 gRPC 错误、
+  delete header 相对最后 seed revision 的 gap、Deleted、PrevKV 顺序及 key/value/create/mod/version/lease，
+  并立即 Range 验证响应 header 与删除后完整剩余状态。结构门禁强制命中全部七种形状和两种 PrevKV，
+  且未使用会越过测试租户边界的 FromKey。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3716-keys-only-lease` 首轮 10.16 秒、连续 10 轮
+  （测试 102.316 秒）及 race 5 轮（测试 56.661 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.559 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 167.048 秒）。生产 3/3 Pod Ready、零重启。没有 runtime RED，本项新增永久
+  生成式 DeleteRange/PrevKV/lease 差分，不重建或滚动数据面；一次性 reference 已停止，精确临时目录
+  已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
