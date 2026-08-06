@@ -38863,6 +38863,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   schema，仍是 upstream WAL/bbolt 内部。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3814
   与上述 commit ID；本轮不修改 runtime。
 
+- A3815 固定 upstream KeepAlive client panic、Watch recvLoop close、failed write Txn 原子性、
+  Defrag error handling、grpc-proxy/etcdctl flags、v2 member translation 与 robustness/watch
+  internal refactor 审计。对照 `/root/etcd` commits `817611897` 与 `438f9fa0f`：官方修复
+  clientv3 `KeepAlive` 使用不可比较 `Context` 时 panic。KubeBrain 服务端不拥有官方 client 的
+  context map 实现，但本仓已通过 bufconn official clientv3 回归固定公开路径：不可比较 context
+  可同时 KeepAlive，同一 lease 的第二个 context cancel 只关闭自己的 channel，不影响第一个
+  keepalive stream。
+
+  对照 `77607356d`、`348c0cb2b` 与 `1f4439c2e`：官方 watch stream close/recvLoop 和
+  mvcc range event 重构，目标是避免关闭后的 goroutine/事件处理异常。KubeBrain 不复用 upstream
+  mvcc watchable store；server-visible 风险已由 A412–A415 的 invalid/duplicate/cancel/control
+  response、follower-local rejection、stream 复用、proxy watch context cancel、HTTP/gRPC gateway
+  watch streaming 和 race 门禁覆盖。对照 `8a0fd66db`：官方修复失败写 Txn 可能部分应用；KubeBrain
+  已在 backend `TestTxnApplyCancellationDuringPrepareLeavesNoPartialWrites` 固定同一原子性不变量：
+  多操作 Txn 在 prepare 期间取消必须不提交任一 key 且不推进 public revision。
+
+  对照 `c438fcbaf`、`04c042cea`、`35cab80e1` 与 `a19d4087c`：官方增强 bbolt defrag panic、
+  defragdb failure、no-space 和临时文件关闭处理。KubeBrain 在 TiKV/PD 数据面下将 `Defragment`
+  定义为安全 no-op 平台替代；已有 raw/clientv3/gateway/auth/HashKV 回归固定 nil header、
+  不推进 revision、不改变 HashKV、不绕过 auth。bbolt defrag 错误处理不进入本服务端 runtime。
+
+  对照 `617f3578b` 与 `ed9f61df2`：官方给 grpc-proxy 增加 TLS min/max version，给 etcdctl/clientv3
+  增加 `--max-send-bytes`/`--max-recv-bytes` 配置。KubeBrain 不运行 upstream grpc-proxy 二进制，
+  client-side message-size flag 由官方 client/etcdctl 处理；服务端请求大小、stream limit 和 gateway
+  JSON 行为由本仓 admission/limit 门禁约束。对照 `b7812513c` 与 `f2472d4b8`：官方把 v2
+  member attr/version request 翻译为 v3 member request，并在 robustness 中处理 v3.4 非线性
+  `MemberList`；KubeBrain 没有 v2 API/store 和 Raft member mutation 数据面，MemberList/unsupported
+  mutation 已有 DBaaS 边界测试。对照 `16ccfc953` 与 `93b01af66`：官方 embed serve ready-notify
+  停机路径清理；KubeBrain 的 serving/readiness 由独立 endpoint server 和 `/readyz` checks 管理。
+  对照 `16221d58b`：官方调整 robustness compaction 调度以均匀负载，属于 oracle 流量组织增强。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3815 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
