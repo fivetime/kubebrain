@@ -16,7 +16,7 @@ import (
 )
 
 type generatedRangeSpec struct {
-	Point      int
+	Shape      int
 	Historical int
 	SortTarget etcdserverpb.RangeRequest_SortTarget
 	SortOrder  etcdserverpb.RangeRequest_SortOrder
@@ -30,7 +30,8 @@ type generatedRangeSpec struct {
 type generatedRangeKV struct {
 	Key, Value                  string
 	CreateRevision, ModRevision int
-	Version, Lease              int64
+	Version                     int64
+	Leased                      bool
 }
 
 type generatedRangeOutcome struct {
@@ -54,16 +55,18 @@ func TestGeneratedRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 }
 
 func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
-	points, historical, targets, orders := map[int]bool{}, map[bool]bool{}, map[int32]bool{}, map[int32]bool{}
+	shapes, historical, targets, orders := map[int]bool{}, map[bool]bool{}, map[int32]bool{}, map[int32]bool{}
 	limits, filters := map[int64]bool{}, map[int]bool{}
-	var keysOnly, countOnly bool
+	var keysOnly, countOnly, leasedCurrent, leasedHistorical bool
 	for _, spec := range generatedRangeSpecs() {
-		points[spec.Point], historical[spec.Historical > 0] = true, true
+		shapes[spec.Shape], historical[spec.Historical > 0] = true, true
 		targets[int32(spec.SortTarget)], orders[int32(spec.SortOrder)] = true, true
 		limits[spec.Limit], filters[spec.Filter] = true, true
 		keysOnly, countOnly = keysOnly || spec.KeysOnly, countOnly || spec.CountOnly
+		leasedCurrent = leasedCurrent || spec.Shape == 6 && spec.Historical == 0
+		leasedHistorical = leasedHistorical || spec.Shape == 6 && spec.Historical == 9
 	}
-	require.Len(t, points, 5)
+	require.Len(t, shapes, 9)
 	require.Len(t, historical, 2)
 	require.Len(t, targets, 5)
 	require.Len(t, orders, 3)
@@ -71,21 +74,28 @@ func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
 	require.Len(t, filters, 7)
 	require.True(t, keysOnly)
 	require.True(t, countOnly)
+	require.True(t, leasedCurrent)
+	require.True(t, leasedHistorical)
 }
 
 func generatedRangeSpecs() []generatedRangeSpec {
-	rng := rand.New(rand.NewSource(3713))
+	rng := rand.New(rand.NewSource(3714))
 	limits := []int64{0, 1, 2, 4, math.MaxInt64}
 	specs := make([]generatedRangeSpec, 0, 64)
 	for i := 0; i < 64; i++ {
 		specs = append(specs, generatedRangeSpec{
-			Point: rng.Intn(5), Historical: rng.Intn(9),
+			Shape: rng.Intn(9), Historical: rng.Intn(10),
 			SortTarget: etcdserverpb.RangeRequest_SortTarget(rng.Intn(5)),
 			SortOrder:  etcdserverpb.RangeRequest_SortOrder(rng.Intn(3)),
 			Limit:      limits[rng.Intn(len(limits))], KeysOnly: rng.Intn(4) == 0,
-			CountOnly: rng.Intn(5) == 0, Filter: rng.Intn(7), FilterRev: 1 + rng.Intn(8),
+			CountOnly: rng.Intn(5) == 0, Filter: rng.Intn(7), FilterRev: 1 + rng.Intn(9),
 		})
 	}
+	for shape := 0; shape < 9; shape++ {
+		specs[shape].Shape = shape
+	}
+	specs[6].Historical = 9
+	specs[15].Shape, specs[15].Historical = 6, 0
 	return specs
 }
 
@@ -96,14 +106,14 @@ func runGeneratedRangeScenario(t *testing.T, endpoint, instance string, specs []
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
-	prefix := fmt.Sprintf("/a3713/generated-range/%s/%d/", instance, time.Now().UnixNano())
+	prefix := fmt.Sprintf("/a3714/generated-range/%s/%d/", instance, time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = cli.Delete(cleanupCtx, prefix, clientv3.WithPrefix())
 	})
 
-	revisions := make([]int64, 9)
+	revisions := make([]int64, 10)
 	revisions[1] = generatedRangePut(t, ctx, cli, prefix+"a", "va1")
 	revisions[2] = generatedRangePut(t, ctx, cli, prefix+"b", "vb1")
 	revisions[3] = generatedRangePut(t, ctx, cli, prefix+"c", "vc1")
@@ -114,6 +124,16 @@ func runGeneratedRangeScenario(t *testing.T, endpoint, instance string, specs []
 	revisions[6] = deleted.Header.Revision
 	revisions[7] = generatedRangePut(t, ctx, cli, prefix+"c", "vc2")
 	revisions[8] = generatedRangePut(t, ctx, cli, prefix+"e", "ve1")
+	lease, err := cli.Grant(ctx, 300)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Revoke(cleanupCtx, lease.ID)
+	})
+	leased, err := cli.Put(ctx, prefix+"f", "vf1", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+	revisions[9] = leased.Header.Revision
 	revisionOrdinal := make(map[int64]int, len(revisions))
 	for ordinal := 1; ordinal < len(revisions); ordinal++ {
 		revisionOrdinal[revisions[ordinal]] = ordinal
@@ -133,7 +153,7 @@ func runGeneratedRangeScenario(t *testing.T, endpoint, instance string, specs []
 				outcome.KVs = append(outcome.KVs, generatedRangeKV{
 					Key: string(item.Key[len(prefix):]), Value: string(item.Value),
 					CreateRevision: revisionOrdinal[item.CreateRevision], ModRevision: revisionOrdinal[item.ModRevision],
-					Version: item.Version, Lease: item.Lease,
+					Version: item.Version, Leased: item.Lease != 0,
 				})
 			}
 		}
@@ -155,9 +175,15 @@ func generatedRangeRequest(prefix string, spec generatedRangeSpec, revisions []i
 		SortTarget: spec.SortTarget, SortOrder: spec.SortOrder, Limit: spec.Limit,
 		KeysOnly: spec.KeysOnly, CountOnly: spec.CountOnly,
 	}
-	if spec.Point > 0 {
-		request.Key = []byte(prefix + string(rune('a'+spec.Point-1)))
+	if spec.Shape > 0 && spec.Shape <= 6 {
+		request.Key = []byte(prefix + string(rune('a'+spec.Shape-1)))
 		request.RangeEnd = nil
+	} else if spec.Shape == 7 {
+		request.Key = []byte(prefix + "z")
+		request.RangeEnd = nil
+	} else if spec.Shape == 8 {
+		request.Key = []byte(prefix + "b")
+		request.RangeEnd = []byte(prefix + "g")
 	}
 	if spec.Historical > 0 {
 		request.Revision = revisions[spec.Historical]

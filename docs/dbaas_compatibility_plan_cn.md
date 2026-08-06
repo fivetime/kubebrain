@@ -36794,6 +36794,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 167.746 秒）。没有 runtime RED，本项新增永久生成式差分，不重建或滚动
   数据面；一次性 reference 已停止，精确临时目录及测试日志已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3714 扩展 A3713 生成式 Range 的数据形状，而非仅增加 option 数量。固定 seed 更新为 3714，
+  64-case 数据集从 prefix 与四个已有 point 扩展为 prefix、六个已有 point、缺失 point 和显式
+  `[b,g)` 有界子范围；新增第九个独立 revision 上写入的 leased key，并把双端随机 lease ID 归一化为
+  可比较的 `Leased` 布尔语义。oracle 对应 `/root/etcd/server/storage/mvcc/kv_test.go` 的
+  `testKVPutWithSameLease` Range lease 字段断言，以及 `/root/etcd/tests/integration/v3_grpc_test.go` 的
+  `TestV3PutIgnoreValue` gRPC Range lease 断言。current/historical revision、filter revision 的取值域
+  同步覆盖新增 revision；
+  结构门禁除原有 sort/order/limit/projection/filter family 外，还强制命中全部九种范围形状，以及 leased
+  point 的 current 与创建后 historical 查询，避免固定随机矩阵静默丢失租约元数据覆盖。未加入不受测试
+  租户前缀上界约束的 FromKey，防止生产共享端点上的其他租户数据污染 oracle。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 1.03 秒、连续 10 轮
+  （测试 10.679 秒）及 race 5 轮（测试 7.678 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.488 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 166.499 秒）。生产 3/3 Pod Ready、零重启。没有 runtime RED，本项只扩展永久
+  生成式 Range 数据维度，不重建或滚动数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，
+  只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
