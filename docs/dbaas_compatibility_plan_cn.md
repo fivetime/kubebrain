@@ -38364,6 +38364,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bump 整体移植。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3797 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3798 固定 fast KeysOnly 周边、raft/bbolt 依赖、robustness 与 workspace tooling 审计。对照
+  `/root/etcd` commits `838360590`、`2c5da5a06`、`34cb04b65`、`d6e2c9015`、
+  `5f615f9a0`、`0327edafa`、`1b322cfdc`、`872e151bc`、`60c6fb215`、
+  `1a7200592`、`046ad86f6`、`e1b4aa753`、`ea781f6a7` 与 `f7cec1aa8`：
+  这些变更落在 golangci/genproto/workspace helper、依赖矩阵、OpenTelemetry、x/tools、
+  protoc-gen-go-grpc、CodeQL/docker-login、release/update_dep 脚本以及 raft/bbolt rc
+  依赖升级。KubeBrain 的依赖升级继续由本仓安全扫描、全量 `go test`/`go vet`、镜像与生产
+  验证窗口控制；不把 upstream module graph 变化直接当作 etcd protocol 兼容要求。
+
+  对照 `10f7eb564`、`354e89cdc` 与 `4827e251a`：官方只改 robustness WAL history merge、
+  Porcupine long-running step 和 TestReport 封装。KubeBrain 已有独立 Porcupine/故障注入
+  计划，后续可吸收其测试思想，但这些 commit 本身不改变 server wire/API。对照 `180c6f2cb`、
+  `a6604940b` 与 `34d53392f`：这些只是 changelog 更新。对照 `2bba1d6bc` 与
+  `3efab08d8`：仅清理 trace/test formatting 与旧测试函数。
+
+  对照 `23ce66a98`、`ecd7efc05` 与 `a8f10efa7`：官方给 fast KeysOnly 增加 benchmark、
+  robustness traffic 和 benchmark tool 支持。真实 client-visible KeysOnly/CountOnly/limit/
+  total-count 语义已由 A3774 的 range option matrix、A3790 的 total-count audit 和生产
+  count-only smoke 覆盖；本轮不新增同义 runtime 测试。对照 `4715a5474` 与 `f17a2baf0`：
+  官方升级 raft 并迁移 rafthttp、snapshotter、WAL、membership 和 server 共识路径；KubeBrain
+  不复用 upstream Raft/WAL/bbolt/snapshot 作为 TiKV/PD 数据面的复制和恢复机制，不能机械移植。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3798 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
