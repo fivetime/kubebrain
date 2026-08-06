@@ -156,6 +156,7 @@ func runRestoreDeleteModel(t *testing.T, ctx context.Context, endpoint, prefix s
 		require.False(t, count.More)
 		require.Equal(t, int64(len(snapshot.kvs)), count.Count,
 			"historical count at revision %d changed across restart", snapshot.revision)
+		assertRestoreDeletePagination(t, ctx, cli, prefix, snapshot.revision, snapshot.kvs)
 	}
 	currentAfter, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
 	require.NoError(t, err)
@@ -168,4 +169,45 @@ func runRestoreDeleteModel(t *testing.T, ctx context.Context, endpoint, prefix s
 	require.Empty(t, currentCount.Kvs)
 	require.False(t, currentCount.More)
 	require.Equal(t, int64(len(currentBefore.Kvs)), currentCount.Count)
+	assertRestoreDeletePagination(t, ctx, cli, prefix, 0, currentBefore.Kvs)
+}
+
+func assertRestoreDeletePagination(
+	t *testing.T,
+	ctx context.Context,
+	cli *clientv3.Client,
+	prefix string,
+	revision int64,
+	expected []*mvccpb.KeyValue,
+) {
+	t.Helper()
+	const pageLimit = 3
+	start := []byte(prefix)
+	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
+	offset := 0
+	for offset < len(expected) {
+		options := []clientv3.OpOption{
+			clientv3.WithRange(string(end)),
+			clientv3.WithLimit(pageLimit),
+		}
+		if revision != 0 {
+			options = append(options, clientv3.WithRev(revision))
+		}
+		page, err := cli.Get(ctx, string(start), options...)
+		require.NoErrorf(t, err, "paginated range at revision %d offset %d after restart", revision, offset)
+		remaining := len(expected) - offset
+		pageSize := pageLimit
+		if remaining < pageSize {
+			pageSize = remaining
+		}
+		require.Equal(t, int64(remaining), page.Count,
+			"page count at revision %d offset %d must cover the remaining range", revision, offset)
+		require.Equal(t, remaining > pageLimit, page.More,
+			"page More at revision %d offset %d", revision, offset)
+		require.Equal(t, expected[offset:offset+pageSize], page.Kvs,
+			"page payload at revision %d offset %d", revision, offset)
+		offset += pageSize
+		lastKey := page.Kvs[len(page.Kvs)-1].Key
+		start = append(append([]byte(nil), lastKey...), 0)
+	}
 }
