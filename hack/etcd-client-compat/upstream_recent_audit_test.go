@@ -45,3 +45,20 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		require.Contains(t, plan, needle)
 	}
 }
+
+func TestObservabilityDocIncludesUpstreamMetricParity(t *testing.T) {
+	docPath := filepath.Join("..", "..", "docs", "observability_cn.md")
+	contents, err := os.ReadFile(docPath)
+	require.NoError(t, err)
+	doc := string(contents)
+
+	for _, needle := range []string{
+		"etcd_server_request_duration_seconds",
+		"etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds",
+		"etcd_debugging_server_watch_send_loop_watch_stream_duration_per_event_seconds",
+		"etcd_debugging_server_watch_send_loop_control_stream_duration_seconds",
+		"etcd_debugging_server_watch_send_loop_progress_duration_seconds",
+	} {
+		require.Contains(t, doc, needle)
+	}
+}
