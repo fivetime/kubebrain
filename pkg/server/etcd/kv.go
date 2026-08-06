@@ -339,7 +339,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		sentCount += int64(len(chunk.resp.Kvs))
 		if r.KeysOnly {
 			for _, kv := range chunk.resp.Kvs {
-				kv.Value = nil
+				projectRangeKeysOnly(kv, r)
 			}
 		}
 		for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), terminal) {
@@ -485,6 +485,16 @@ func rangeStreamStatusErr(err error) error {
 		return err
 	}
 	return status.Error(codes.Unavailable, err.Error())
+}
+
+// etcd's FastKeysOnly MVCC path retains revision/version metadata but does not
+// materialize values or lease IDs. Sorting by value disables that fast path,
+// so the lease remains observable even though the value is elided afterwards.
+func projectRangeKeysOnly(kv *mvccpb.KeyValue, r *etcdserverpb.RangeRequest) {
+	kv.Value = nil
+	if r.SortTarget != etcdserverpb.RangeRequest_VALUE {
+		kv.Lease = 0
+	}
 }
 
 func validateRangeRequest(r *etcdserverpb.RangeRequest) error {

@@ -338,7 +338,7 @@ func (e *stagedTxnExecutor) rangeResponse(r *etcdserverpb.RangeRequest) (*etcdse
 	}
 	if r.KeysOnly {
 		for _, kv := range resp.Kvs {
-			kv.Value = nil
+			projectRangeKeysOnly(kv, r)
 		}
 	}
 	return resp, nil

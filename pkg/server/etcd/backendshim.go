@@ -962,7 +962,7 @@ func applyRangeOptions(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeRe
 		return resp
 	}
 	for _, kv := range resp.Kvs {
-		kv.Value = nil
+		projectRangeKeysOnly(kv, r)
 	}
 	return resp
 }

@@ -914,6 +914,44 @@ func TestRangeKeysOnlyOmitsValuesForList(t *testing.T) {
 	}
 }
 
+func TestRangeKeysOnlyLeaseProjectionMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	ctx := context.Background()
+	key := []byte("/registry/pods/keys-only-lease")
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 3716})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("hidden"), Lease: lease.ID})
+	require.NoError(t, err)
+
+	assertLease := func(t *testing.T, response *etcdserverpb.RangeResponse, want int64) {
+		t.Helper()
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, key, response.Kvs[0].Key)
+		require.Empty(t, response.Kvs[0].Value)
+		require.Equal(t, want, response.Kvs[0].Lease)
+	}
+
+	fast, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, KeysOnly: true, Limit: -1})
+	require.NoError(t, err)
+	assertLease(t, fast, 0)
+
+	valueSorted, err := server.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: key, KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE,
+	})
+	require.NoError(t, err)
+	assertLease(t, valueSorted, lease.ID)
+
+	txn, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: key, KeysOnly: true, Limit: -1,
+		}},
+	}}})
+	require.NoError(t, err)
+	assertLease(t, txn.Responses[0].GetResponseRange(), 0)
+}
+
 func TestRangeKeysOnlyLimitedCurrentAndHistoricalRevisions(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
