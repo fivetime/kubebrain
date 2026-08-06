@@ -40235,6 +40235,49 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   由 watch/lease/snapshot stream tests 和全量 race-sensitive 单测覆盖。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3845 与上述 commit ID；本轮不修改 runtime。
 
+- A3846 固定 upstream sensitive auth logging、TLS VerifiedChains、structured logging/log-outputs、
+  journald/gRPC logger、auto-compaction/election/leader metric、TLS reload、MVCC compaction index
+  clone 和 snapshot single-endpoint 审计。对照 `/root/etcd` commit `a9225c164`：官方 expensive
+  request warning 不再打印 password。KubeBrain AuthUserAdd/AuthUserChangePassword 只在 admission
+  生命周期处理明文，持久化、snapshot 和审计面只保存 bcrypt hash；敏感字段不进入 operation audit
+  与日志是 auth design、password lifecycle、snapshot auth restore 和 object audit 门禁的硬约束。
+  对照 `d398d41ff`：官方 TLS CommonName auth 在找到首个 VerifiedChains 叶证书后提前退出。
+  KubeBrain `authCaller` 只信任 verified peer certificate CommonName，空 CN、未知用户、token 优先级
+  和 gateway marker 边界已由 TLS CN auth tests、transportidentity 与 auth authorizer 覆盖。
+
+  对照 `30dd8a7dd`、`da4a982b1`、`f7f6fdeb5`、`6a016cbd8`、`f269c42aa`、`6d0f71e4c`、
+  `b6578c8f4`、`55001977e`、`88c70d0ca`、`58a603448`、`af5bc439b`、`f99cb35d2`、
+  `3ea7a5d0b`、`d33a74d38`、`a34dd272b`、`69c51e2c4`、`6df3179c0`、`48d5542a7`、
+  `1fa80bf52`、`fcbb30364`、`01fc2901b` 与 `c76c696ed`：官方把 auth/discovery/compactor/
+  Raft/gRPC/journald/logger sync/log-output 逐步迁到 zap structured logger。KubeBrain 不承诺
+  upstream embed logger flag 或 journald helper 兼容；DBaaS 必须保留本仓 klog/options、structured
+  logs、request duration/response size metrics、operation audit、readyz 和 production topology probes。
+  对照 `553325721`：官方增强 etcd-dump-logs entry-type 过滤，属于 upstream WAL 工具；KubeBrain
+  不产生 upstream WAL，等价排障面是 TiKV/PD、online `Maintenance.Snapshot`、logical backup/restore
+  和 operation audit artifact。
+
+  对照 `5f8abdc22`、`21d2e2ab6`、`85b7a59c5`、`bffc532f9`、`3fe9030d3` 与 `4bec0d7d6`：
+  官方增加 auto-compaction 启动日志、tick fast-forward 日志和 InitialElectionTickAdvance 配置。
+  KubeBrain 的 public contract 是 leader acquisition 后恢复 compaction、readyz 不提前放量、apiserver/
+  Cilium compaction safety-net 参数可审计；不复用 upstream election tick flag。对照 `46bc966aa`：
+  官方新增 `etcd_server_is_leader` 指标，生产 manifest 已用 PD leader metric/alert 固定单 leader
+  健康；若未来要求 upstream metric-name parity，应在 observability oracle 中单独追踪。
+
+  对照 `f17642779`：官方 MVCC compaction 克隆 key index 并逐项加锁，避免 bbolt MVCC index
+  并发竞态。KubeBrain 不复用 upstream treeIndex；等价风险由 TiKV-backed logical/physical compaction、
+  compact cache resync、tombstone restore、HashKV compaction/restart、direct replica consistency 和
+  range/watch compaction differential 覆盖。对照 `2afd82778`、`0b0a943a5`、`ca86daeb7`、
+  `3f8d1738d`、`88c078d4b` 与 `6ab977660`：官方要求 listener 绑定 IP 并修复 IP-only 证书
+  TLS reload。KubeBrain endpoint TLS 已使用动态 `GetCertificate`，生产 operation API/parameter
+  broker 与 endpoint TLS rotation tests 固定证书轮转、新连接接管和 CommonName 验证边界。
+  对照 `f205b2243`：官方修正 snapshot panic message；KubeBrain snapshot/stream/error-inflight
+  门禁要求错误可观察且不 panic。对照 `01996012b`：官方 Kubernetes deploy restartPolicy=Always；
+  KubeBrain production manifest/readiness/rollout gate 单独管理。对照 `a2b144943`：官方 snapshot
+  client 强制单 endpoint；KubeBrain online `Maintenance.Snapshot` 已通过 leader proxy、context
+  boundary、official snapshot status/restore 和 auth/alarm/history restore 覆盖多 endpoint 下的
+  实际兼容面。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3846 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
