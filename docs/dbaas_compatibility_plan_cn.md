@@ -37385,6 +37385,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./...`（1.536 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
   （`pkg/server/etcd` 170.528 秒）及 `go vet ./...` 通过。
 
+- A3747 先审计 upstream `/root/etcd` commit `a657f069a` 的 metrics listener TLS fail-closed
+  修复。该修复只针对 etcd 的 `--listen-metrics-urls=https://...`/`unixs://...` scheme；KubeBrain
+  不接受 info URL，而以数值 `--info-port` 配合独立 `InfoSecurityConfig` 决定明文或 TLS。现有统一
+  `SecurityConfig.validate()` 已对 client、peer、info 三类 listener 执行证书/密钥加载、mTLS trusted
+  CA、CRL 与 TLS policy 校验，因此没有可移植的 scheme/configuration RED，本轮明确排除机械复制。
+
+  随后对照尚无显式门禁的 upstream commit `fa38b54dd`，固定 clientv3 manual resolver 的 pre-build
+  安全边界。`clientv3.New` 会在 gRPC `Build` 提供 `resolver.ClientConn` 之前安装初始 endpoints；旧实现
+  直接读取 manual resolver CC 会 panic。新增双端回归连续构造 25 个 client，每个 client 在连接惰性
+  建立窗口立即执行 20 次 `SetEndpoints`，然后对最终 endpoint 发起真实缺失键 Range，并要求空 KVs、
+  非空 header、正 revision 和准确 endpoint snapshot。一次性官方 etcd 与生产 KubeBrain 双端普通
+  连续 10 轮通过（24.070 秒），`-race` 连续 5 轮通过（14.946 秒）。当前官方 client 已包含 recover
+  修复，KubeBrain 数据面也能服务更新后的 client，故这是诚实的 GREEN-only 回归，没有 runtime RED、
+  服务端或镜像变更；reference 进程和临时 data-dir 已精确清理。
+  兼容模块 `go test ./...`（100.801 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 168.671 秒）及 `go vet ./...` 通过。生产三副本仍为 A3739 Pod UID，3/3 Ready、
+  零重启，`readyz=ok`，`/a3747/` 与 `/compat/` 均无 KV。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
