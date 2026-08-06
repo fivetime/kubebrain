@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -37,8 +38,7 @@ func TestTxnNestedLeaseMutationDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run differential compatibility tests")
 	}
-	referenceOutcome := runTxnNestedLeaseScenario(t, reference, "etcd")
-	want := txnNestedLeaseOutcome{
+	thenOutcome := txnNestedLeaseOutcome{
 		OuterSucceeded:          true,
 		InnerSucceeded:          true,
 		OuterResponseCount:      2,
@@ -58,11 +58,25 @@ func TestTxnNestedLeaseMutationDifferentialAgainstReferenceEtcd(t *testing.T) {
 		Leases:                  map[string]string{"w": "A", "x": "B", "z": "A"},
 		UnselectedValueIntact:   true,
 	}
-	require.Equal(t, want, referenceOutcome)
-	require.Equal(t, referenceOutcome, runTxnNestedLeaseScenario(t, compatEndpoint(t), "kubebrain"))
+	elseOutcome := thenOutcome
+	elseOutcome.InnerSucceeded = false
+	for _, test := range []struct {
+		name            string
+		selectInnerThen bool
+		want            txnNestedLeaseOutcome
+	}{
+		{name: "then", selectInnerThen: true, want: thenOutcome},
+		{name: "else-with-unselected-invalid-lease", selectInnerThen: false, want: elseOutcome},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			referenceOutcome := runTxnNestedLeaseScenario(t, reference, "etcd-"+test.name, test.selectInnerThen)
+			require.Equal(t, test.want, referenceOutcome)
+			require.Equal(t, referenceOutcome, runTxnNestedLeaseScenario(t, compatEndpoint(t), "kubebrain-"+test.name, test.selectInnerThen))
+		})
+	}
 }
 
-func runTxnNestedLeaseScenario(t *testing.T, endpoint, instance string) txnNestedLeaseOutcome {
+func runTxnNestedLeaseScenario(t *testing.T, endpoint, instance string, selectInnerThen bool) txnNestedLeaseOutcome {
 	t.Helper()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
 	require.NoError(t, err)
@@ -88,16 +102,25 @@ func runTxnNestedLeaseScenario(t *testing.T, endpoint, instance string) txnNeste
 	require.NoError(t, err)
 	baseRevision := seed.Header.Revision
 
-	inner := clientv3.OpTxn(
-		[]clientv3.Cmp{clientv3.Compare(clientv3.Version(prefix+"x"), ">", 0)},
-		[]clientv3.Op{
+	innerCompare := clientv3.Compare(clientv3.Version(prefix+"x"), ">", 0)
+	innerThen := []clientv3.Op{
+		clientv3.OpPut(prefix+"x", "new-x", clientv3.WithLease(leaseB.ID)),
+		clientv3.OpDelete(prefix+"y", clientv3.WithPrevKV()),
+	}
+	innerElse := []clientv3.Op{
+		clientv3.OpPut(prefix+"z", "must-not-write", clientv3.WithLease(leaseB.ID)),
+	}
+	if !selectInnerThen {
+		innerCompare = clientv3.Compare(clientv3.Version(prefix+"missing"), ">", 0)
+		innerThen = []clientv3.Op{
+			clientv3.OpPut(prefix+"z", "must-not-write", clientv3.WithLease(clientv3.LeaseID(math.MaxInt64))),
+		}
+		innerElse = []clientv3.Op{
 			clientv3.OpPut(prefix+"x", "new-x", clientv3.WithLease(leaseB.ID)),
 			clientv3.OpDelete(prefix+"y", clientv3.WithPrevKV()),
-		},
-		[]clientv3.Op{
-			clientv3.OpPut(prefix+"z", "must-not-write", clientv3.WithLease(leaseB.ID)),
-		},
-	)
+		}
+	}
+	inner := clientv3.OpTxn([]clientv3.Cmp{innerCompare}, innerThen, innerElse)
 	outer, err := cli.Txn(ctx).
 		If(clientv3.Compare(clientv3.Version(prefix+"x"), ">", 0)).
 		Then(inner, clientv3.OpPut(prefix+"w", "new-w", clientv3.WithLease(leaseA.ID))).

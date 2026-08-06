@@ -36425,6 +36425,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过（`pkg/server/etcd` 167.299 秒）。没有 runtime RED，本项只增加永久嵌套原子性证据，不重建
   或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3687 把 A3686 的内层 Then 单路径扩为 Then/Else 对称矩阵。新增 inner compare=false 场景：未选中
+  Then 中放入引用 `math.MaxInt64` 不存在 lease 的 Put，选中的 Else 执行 `x` 从 A 到 B 的转移和 `y`
+  删除，外层仍向 A 新增 `w`。官方契约是未选中分支既不执行也不校验该非法 lease；整个嵌套提交仍
+  只推进一次 revision，最终 KV/attachment 与 Then 路径相同，而 inner `Succeeded=false`、内层
+  Txn header revision=0、各 mutation response header 使用外层提交 revision。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 双路径首轮 0.859 秒、连续 10 轮
+  （测试 6.365 秒）及 race 5 轮（测试 4.655 秒）全部 GREEN；兼容模块与根模块全量 test/vet
+  通过（`pkg/server/etcd` 168.224 秒）。没有 runtime RED，本项只增强永久嵌套分支选择/校验证据，
+  不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
