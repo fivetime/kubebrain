@@ -39577,6 +39577,51 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 DBaaS rollout 文档必须保持一致。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3832 与上述
   commit ID；本轮不修改 runtime。
 
+- A3833 固定 upstream client retry、Range sort/count、auth recovery、health、snapshot version、
+  alarm/permission guard、Downgrade、grpc-gateway recv limit、read tx buffer、root role output 和
+  non-retryable error code 审计。对照 `/root/etcd` commit `6d300fd38`：官方 client 在 retry
+  期间收到 `ErrUserEmpty` 时刷新 token。KubeBrain server-facing 契约是稳定返回 official
+  client 可识别的 `ErrUserEmpty`、invalid token 与 `ErrAuthOldRevision`，并由 auth lifecycle、
+  JWT/simple token、gateway token forwarding、watch/lease/range auth mutation 和 password-change
+  invalidation 门禁覆盖；不复刻 upstream client retry 内部实现。
+
+  对照 `99182f540` 与 `182aef6e6`：官方服务端忽略 `sort-ascend-key` Range 请求并修正
+  `Limit` 下 `Count` 返回。KubeBrain 已覆盖 direct Range、RangeStream、Txn/nested Txn、namespace
+  wrapper 的 CountOnly、KeysOnly、Limit、Sort、revision filter、tombstone 和 staged txn 矩阵；
+  `Count` 必须表示过滤后的完整 range 命中数，`More` 与返回条数只由 limit/page 决定。对照
+  `9c82e8c72`：官方让多个 concurrent read tx 共享 read buffer，这是 MVCC 内部优化；KubeBrain
+  不复用 upstream read tx buffer，公开风险由 concurrent Range/Watch、read amplification、
+  large response 和 resource-limit 门禁覆盖。
+
+  对照 `b12f8c12c` 与 `ab8e5a4f8`：官方修复 recovered auth store 的 tokenProvider 启用和
+  client dial 时 token bundle 覆盖问题。KubeBrain 不使用 upstream auth store 实现，但必须在
+  restart/recovery 后保持 auth-enabled 状态、token manager、simple/JWT token、root/user/role
+  元数据和 gateway metadata 一致；已有 auth snapshot/restart、password change、token invalidation
+  和 recovered-state 门禁覆盖。对照 `dd62aebfb`：官方修复 Auth 开启时 `/health` 不可用。
+  KubeBrain `/health`、`/livez`、`/readyz` 与 named subchecks 是未鉴权运维探针，需在 Auth 开启、
+  NOSPACE/alarm 和 follower/readiness 场景下保持可用且返回 typed health body。
+
+  对照 `e1b1d9354` 与 `e21cf4ef0`：官方 `SnapshotWithVersion` 返回本地 etcd version 并去除
+  相关测试抖动。KubeBrain 在线 Snapshot/SnapshotWithVersion 必须返回 version/storage metadata，
+  生成可恢复的 bbolt-ish artifact；不承诺 upstream WAL/bbolt 物理格式。对照 `115c694af`：
+  官方拒绝向 role grant nil permission。KubeBrain RoleGrantPermission 的 nil permission、空
+  range、未知 enum、root role 保护和 auth-enabled apply 顺序已固定为 fail-closed typed error。
+  对照 `64b01a7a8` 与 `6ab56fc23`：官方增强 root permission 与 `RoleGet(root)` 在 permission
+  nil 时的输出。KubeBrain User/Role get/list、root user/role special-case、permission nil/empty
+  range 和 etcdctl-compatible auth 输出必须保留 upstream 兼容外观。
+
+  对照 `8552d8ec2`：官方避免缺失 `AlarmType` 时误激活 alarm。KubeBrain Alarm(NONE/missing/
+  unknown/NOSPACE/CORRUPT)、Status、HashKV 和 health/alarm metadata 门禁要求 unknown/missing
+  type fail closed，不能产生持久 alarm 副作用。对照 `d563c76e9`：官方 client 增加 Downgrade
+  支持。KubeBrain 服务端暴露 Downgrade 的鉴权、validation 和 platform-managed unsupported
+  边界，不支持 upstream in-place downgrade。对照 `576861e61`：官方取消 grpc-gateway recv msg
+  size 上限。KubeBrain generated gateway/default limit、大 Range/large payload 与 client-side
+  max recv typed error 门禁要求 HTTP gateway 不额外施加低于 gRPC 的未声明限制。对照
+  `16d51d8c2`：官方把 non-retryable precondition 从 `Unavailable` 调整为 `FailedPrecondition`。
+  KubeBrain member peer URL 冲突、重复 member 与平台 precondition 应返回 `FailedPrecondition`；
+  `Unavailable` 只用于 leader/freshness/proxy 等 transient 路径。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3833 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
