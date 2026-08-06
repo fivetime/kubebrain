@@ -37224,6 +37224,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.515 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 169.397 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
 
+- A3737 将同一 restore/delete 历史模型扩展到重启后的游标分页。既有大量 current/historical limit
+  门禁在单进程内固定 sort、filter、KeysOnly 和 CountOnly 组合，却不能证明全 serving replacement 后
+  TiKV 历史扫描的 page start 不会跨 tombstone/recreated generation 重复或漏键。现对全部 34 个历史
+  revision 以及 current snapshot 使用固定 `Limit(3)`，每页要求 Count 等于从当前 start 到 prefix end
+  的剩余逻辑键数，More 精确表示是否还有下一页，payload 与完整快照对应切片逐字段一致；下一页从
+  `lastKey + NUL` 开始，最终拼接必须无重复、无遗漏。这同时覆盖多页与不足一页的边界。
+
+  官方 etcd `d947b20863` 同 data-dir restart oracle 2.33 秒 GREEN。生产
+  `kubebrain:a3725-rangestream-final-frame` 普通三副本 replacement 47.60 秒、race replacement
+  38.55 秒均 GREEN，没有 runtime RED 或镜像变更。最终 Pod UID 为
+  `7199468d-cca0-40c6-a7d1-c530fbd597d3`、`03f3f9bb-007d-49da-804f-6b54ad6f3c50`、
+  `ea6b35d6-c7ed-4050-9484-9ac9ac9c71c2`，3/3 Ready、零重启，`readyz=ok`，`/compat/` 无 KV。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.548 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 168.851 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
