@@ -38709,6 +38709,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   官方只更新 go.work.sum、protobuf、grpc-gateway、golangci-lint/x/net 和 tablewriter 依赖。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3809 与上述 commit ID；本轮不修改 runtime。
 
+- A3810 固定 upstream watch negative revision、cache demux/snapshot、lease renew wrong-response 与
+  tracing/CI/dependency 审计。对照 `/root/etcd` commits `afeab20ac` 与 `a7ad24d01`：
+  官方拒绝 `StartRevision=-1` 的 Watch create，并把 `rangeEvents` 对负 revision 的处理改成安全
+  compacted error，随后补 changelog。KubeBrain 已由 raw Watch control/id-range、direct replica
+  control 和 clientv3 negative revision 门禁固定该 public surface：`StartRevision=-1` 返回
+  `WatchId=-1`、`Created=true`、`Canceled=true`、`CancelReason=ErrCompacted`，不能发送事件或
+  panic；Range/Txn/RangeStream/HashKV 的 negative revision 也已有独立 compacted/out-of-range
+  oracle 覆盖。
+
+  对照 `19f41708e`、`161cb3d42`、`74a760cee`、`92897f2d4` 与 `ce4b4519b`：
+  官方 cache 包重构 demux min/max revision、watch 测试目录、prefix/no-prefix cache.Get、并把
+  demux broadcast 改为接受 `clientv3.WatchResponse`。KubeBrain 不复用 upstream cache 包，但
+  其 public 风险已映射到本仓 watch progress notify、future watch、follower proxy resume floor、
+  cache `WithProgressNotify`、historical cache.Get 和 restart/tombstone watch 门禁。对照
+  `6b6a2c494`、`b8d11ee34`、`f6e22f28b` 与 `716445767`：官方扩展 Kubernetes robustness
+  trace/lease/list/get traffic，属于正确性测试输入增强，不改变 etcd v3 wire/API。
+
+  对照 `943f4d296`、`f8f1074b4` 与 `59e10f06b`：官方修复 lease Renew 在并发 revoke/过期窗口
+  返回错误成功的问题并补 changelog。KubeBrain 已在 A3505 将该风险落成确定性 RED/GREEN：
+  Renew 慢 checkpoint 阻塞期间被 Revoke 后不得返回陈旧成功；此外 lease keepalive/revoke/expire
+  边界、批量 renewal 和小时级 renewal Porcupine 模型继续覆盖 TiKV/PD-backed 数据面。
+
+  对照 `1acdc6e4c`、`71ec1daf1`、`2d451d014`、`614dd35a9`、`0a4b8492e`、
+  `6fd984fd6`、`f9b7be9e`、`c2a53f7e9` 与 `cbee95f98`：官方只清理 robustness report、
+  加速比较、周期性打开 watch traffic、重构 traffic loops、修复 robustness 执行/log/race/lint，
+  或迁移 golangci-lint；这些不改变 public runtime。对照 `f89ae9a67`、`fd5f7a409`、
+  `d2879a7ad`、`3f60c33b1`、`d8f56608f`、`2750719d8`、`a1ba354d3`、`d166adac6` 与
+  `667111150`：官方只升级 Go、x/*、actions/github-script/setup-go/stale、distroless 和 CodeQL。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3810 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
