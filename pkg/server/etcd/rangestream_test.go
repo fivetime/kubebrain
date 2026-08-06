@@ -151,7 +151,7 @@ func TestRangeStreamStreamsAllKeys(t *testing.T) {
 		RangeEnd: []byte("/registry/pods0"), // prefix end of "/registry/pods/"
 	}, rs)
 	require.NoError(t, err)
-	require.NotEmpty(t, rs.sent, "must send at least the terminal header chunk")
+	require.NotEmpty(t, rs.sent, "must send at least the final data/envelope chunk")
 
 	// Kvs concatenate to the full disjoint set; only the final chunk carries the
 	// pinned revision and merged response metadata.
@@ -170,7 +170,7 @@ func TestRangeStreamStreamsAllKeys(t *testing.T) {
 		}
 	}
 	last := rs.sent[len(rs.sent)-1]
-	require.Empty(t, last.RangeResponse.Kvs, "final chunk must be header-only")
+	require.NotEmpty(t, last.RangeResponse.Kvs, "final chunk must carry the last data batch with its envelope")
 	require.NotNil(t, last.RangeResponse.Header)
 	require.Greater(t, last.RangeResponse.Header.Revision, int64(0))
 	require.EqualValues(t, n, last.RangeResponse.Count)
@@ -332,6 +332,31 @@ func TestRangeStreamPreservesBinaryUserKeyOrdering(t *testing.T) {
 	require.NotNil(t, final)
 	require.Equal(t, int64(3), final.Count)
 	require.False(t, final.More)
+}
+
+func TestRangeStreamMergesTerminalMetadataIntoFinalDataFrame(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/stream-final/key"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/stream-final/"), RangeEnd: []byte("/stream-final0"),
+	}, stream))
+
+	require.Len(t, stream.sent, 1)
+	response := stream.sent[0].RangeResponse
+	require.NotNil(t, response)
+	require.NotNil(t, response.Header)
+	require.Equal(t, put.Header.Revision, response.Header.Revision)
+	require.Equal(t, int64(1), response.Count)
+	require.False(t, response.More)
+	require.Len(t, response.Kvs, 1)
+	require.Equal(t, []byte("/stream-final/key"), response.Kvs[0].Key)
 }
 
 func TestRangeStreamFullKeyspaceSentinelPreservesBinaryKeys(t *testing.T) {
@@ -687,8 +712,8 @@ func TestRangeStreamLargeValueExceedingMessageTargetStillProgresses(t *testing.T
 		keys += len(chunk.RangeResponse.Kvs)
 	}
 	require.Equal(t, 20, keys)
-	require.GreaterOrEqual(t, len(stream.sent), 21,
-		"every oversized KV plus terminal metadata must make forward progress")
+	require.GreaterOrEqual(t, len(stream.sent), 20,
+		"every oversized KV must make forward progress and the last must carry terminal metadata")
 	require.EqualValues(t, 20, stream.sent[len(stream.sent)-1].RangeResponse.Count)
 }
 
@@ -751,8 +776,8 @@ func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
 		Key: []byte("/premature/"), RangeEnd: []byte("/premature0"),
 	}, stream)
 	requireRangeStreamStatusError(t, err, codes.Unavailable, "range stream ended without terminal metadata")
-	require.Len(t, stream.sent, 1,
-		"the partial chunk may already be on the wire, but the terminal status must invalidate it")
+	require.Empty(t, stream.sent,
+		"the final bounded data chunk stays buffered until terminal metadata validates completion")
 }
 
 func TestRangeStreamPartialThenCompacted(t *testing.T) {

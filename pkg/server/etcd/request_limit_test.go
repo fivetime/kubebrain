@@ -128,9 +128,10 @@ func TestRangeStreamNestedResponseHeaderIsStampedOverGRPC(t *testing.T) {
 			terminal = response.RangeResponse
 		}
 	}
-	require.GreaterOrEqual(t, chunks, 2, "data and terminal metadata must be separate chunks")
-	require.Equal(t, 1, headers, "only the terminal chunk may carry response metadata")
+	require.Equal(t, 1, chunks, "the final data and terminal metadata must share one chunk")
+	require.Equal(t, 1, headers, "only the final data chunk may carry response metadata")
 	require.NotNil(t, terminal)
+	require.Len(t, terminal.Kvs, 1)
 	require.Positive(t, terminal.Header.Revision)
 	require.NotZero(t, terminal.Header.ClusterId)
 	require.NotZero(t, terminal.Header.MemberId)

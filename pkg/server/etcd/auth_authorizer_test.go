@@ -465,7 +465,8 @@ func TestAuthorizedRangeStreamAuthMutationOverridesReadErrorLikeEtcd(t *testing.
 	)
 	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 	require.NoError(t, mutationErr)
-	require.NotEmpty(t, stream.sent, "the mutation and read error must occur after streaming has begun")
+	require.Empty(t, stream.sent,
+		"the last bounded data chunk must stay buffered when the backend fails before terminal metadata")
 }
 
 // etcd's doSerialize checks the caller's non-zero auth revision after txn.Txn

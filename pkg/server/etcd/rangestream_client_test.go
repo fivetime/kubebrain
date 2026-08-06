@@ -328,7 +328,7 @@ func TestRawGRPCRangeStreamLimitCountAcrossChunks(t *testing.T) {
 	require.NotNil(t, terminal)
 	require.Equal(t, int64(totalKeys), terminal.Count)
 	require.True(t, terminal.More)
-	require.Empty(t, terminal.Kvs)
+	require.NotEmpty(t, terminal.Kvs, "the final data batch must carry terminal metadata")
 }
 
 func TestClientRangeStreamRevisionBoundaries(t *testing.T) {

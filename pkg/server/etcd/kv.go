@@ -296,7 +296,33 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		sentCount    int64
 		totalCount   int64
 		dataRevision uint64
+		pending      *etcdserverpb.RangeStreamResponse
 	)
+	sendResponse := func(response *etcdserverpb.RangeStreamResponse) error {
+		// etcd executes a revisioned Range for every chunk. If compaction
+		// advances past the pinned snapshot after a partial response, the
+		// next chunk must terminate with ErrCompacted; completing the stream
+		// would make already-compacted history appear valid. Check each wire
+		// chunk, not just each backend batch, because one batch can split
+		// into several gRPC messages.
+		if chunks > 0 {
+			compactRevision, compactErr := s.backend.GetCompactRevisionFresh(ctx)
+			if compactErr != nil {
+				s.metricCli.EmitCounter("read.range_stream.err", 1)
+				return rangeStreamStatusErr(compactErr)
+			}
+			if compactRevision > dataRevision {
+				s.metricCli.EmitCounter("read.range_stream.err", 1)
+				return compactedRevisionError()
+			}
+		}
+		if err := rs.Send(response); err != nil {
+			s.metricCli.EmitCounter("read.range_stream.send_err", 1)
+			return err
+		}
+		chunks++
+		return nil
+	}
 	for chunk := range ch {
 		if chunk.err != nil {
 			s.metricCli.EmitCounter("read.range_stream.err", 1)
@@ -342,29 +368,40 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 				projectRangeKeysOnly(kv, r)
 			}
 		}
-		for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), terminal) {
-			// etcd executes a revisioned Range for every chunk. If compaction
-			// advances past the pinned snapshot after a partial response, the
-			// next chunk must terminate with ErrCompacted; completing the stream
-			// would make already-compacted history appear valid. Check each wire
-			// chunk, not just each backend batch, because one batch can split
-			// into several gRPC messages.
-			if chunks > 0 {
-				compactRevision, compactErr := s.backend.GetCompactRevisionFresh(ctx)
-				if compactErr != nil {
-					s.metricCli.EmitCounter("read.range_stream.err", 1)
-					return rangeStreamStatusErr(compactErr)
+		if terminal {
+			if pending != nil {
+				// Upstream puts the aggregate envelope on the final data frame;
+				// retain at most one bounded wire chunk until the scanner's
+				// terminal metadata arrives instead of emitting a separate empty
+				// frame. Re-split after adding the envelope so the configured wire
+				// size target remains effective.
+				pending.RangeResponse.Header = chunk.resp.Header
+				pending.RangeResponse.Count = chunk.resp.Count
+				pending.RangeResponse.More = chunk.resp.More
+				for _, response := range splitRangeStreamResponse(
+					pending.RangeResponse, int(s.maxRequestBytes), true,
+				) {
+					if err := sendResponse(response); err != nil {
+						return err
+					}
 				}
-				if compactRevision > dataRevision {
-					s.metricCli.EmitCounter("read.range_stream.err", 1)
-					return compactedRevisionError()
+				pending = nil
+			} else {
+				for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), true) {
+					if err := sendResponse(response); err != nil {
+						return err
+					}
 				}
 			}
-			if err := rs.Send(response); err != nil {
-				s.metricCli.EmitCounter("read.range_stream.send_err", 1)
-				return err
+			continue
+		}
+		for _, response := range splitRangeStreamResponse(chunk.resp, int(s.maxRequestBytes), false) {
+			if pending != nil {
+				if err := sendResponse(pending); err != nil {
+					return err
+				}
 			}
-			chunks++
+			pending = response
 		}
 	}
 	if !terminalSeen {
