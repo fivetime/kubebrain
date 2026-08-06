@@ -37101,6 +37101,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.525 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 168.749 秒）及 `go vet ./...` 通过；一次性 oracle 与两端隔离前缀均已清理。
 
+- A3730 从 Txn 转向 upstream `d8b419257` 的 tombstone-only restore 修复：物理 compaction 可能删除
+  某键全部 PUT 历史，只保留 compact boundary 的 DELETE tombstone；服务进程重启后，从 boundary
+  建立的 Watch 仍必须重放该 DELETE，不能因重建索引时看不到 create revision 而丢失事件。现有
+  `TestClientWatchDeleteAtCompactBoundaryOmitsPrevKV` 只覆盖不重启的 bufconn 路径，replicated restart
+  测试虽验证普通历史 Watch，却没有先把目标键压缩到只剩 tombstone，因此新增独立 opt-in 三副本
+  状态机：Put → Delete → physical Compact(delete revision) → 顺序 replacement 全部 KubeBrain Pod →
+  `Watch(WithRev(delete revision), WithPrevKV)`。响应必须只有一个同键 DELETE，ModRevision 等于 boundary，
+  PrevKV 因前一版本低于 compact watermark 而为 nil。
+
+  `/root/etcd/bin/etcd` 使用同一 data-dir stop/restart 的真实 oracle 返回 DELETE revision=3、PrevKV=nil；
+  初次解析仅误用了 gateway JSON 字段名，读取原始 etcdctl 3.7 `Events`/数字枚举后通过，没有把 harness
+  错误归因于服务端。生产 `kubebrain:a3725-rangestream-final-frame` 首轮普通 replacement 46.45 秒、
+  第二轮 race replacement 25.04 秒均 GREEN，没有 runtime RED 或镜像滚动。最终 Pod UID 为
+  `635f1456-d218-41d6-9ad6-b0af24e3349c`、`e602bdd0-60f0-4b42-904b-8c9b18f65301`、
+  `9d7a466d-e52b-4111-b36e-8e8396b130ff`，3/3 Ready、零重启，`readyz=ok`，`/compat/` Count=0。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.515 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 170.485 秒）及 `go vet ./...` 通过；官方临时实例、data-dir 和 watch 输出均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
