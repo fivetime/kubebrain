@@ -38049,6 +38049,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数据面缺口；若未来 upstream 在这些主题上暴露新的 client-visible 行为，应以对应公开 RPC/CLI
   oracle 重新建立专项 RED。
 
+- A3783 固定 upstream Watch pointer/proxy 与 etcdutl 工具健壮性审计。对照 `/root/etcd`
+  commit `36d0f9ac8`，官方把 `clientv3.WatchResponse.Header` 切到 pointer，并同步调整
+  cache、concurrency、etcdctl protobuf printer 和 grpcproxy Watch 路径，避免 header 值拷贝与
+  nil/non-nil 语义在流式层被隐藏；KubeBrain 公开 Watch 行为已由 A303/A3762 的 invalid create
+  response header、A3703/A3775 的 server-streaming EOF/snapshot adapter、fragment/PrevKV
+  fanout、progress notify 和 compact boundary 门禁覆盖，要求创建、取消、progress 与事件响应的
+  header 外观持续与官方 clientv3 解码一致。对照 `c790e524d`，官方修复的是
+  `server/proxy/grpcproxy` 中 Watch/Range response 直接赋值带来的 protobuf pointer alias 风险；
+  KubeBrain 不运行 upstream grpcproxy 二进制，但 follower proxy 与 in-process adapter 的可观察
+  stream 外观已由 Watch failover、invalid header、EOF、RangeStream 与 fragment 差分覆盖。
+
+  对照 `fa8df2ea9` 与 `bb2ec515a`，官方让 `etcdutl` 在离线 data file 缺失时返回一致错误而非
+  panic，并补齐 bucket/defrag/hashkv 等命令的 backend `Close()`，避免本地 db lock 悬挂。KubeBrain
+  生产数据面不嵌入 upstream `etcdutl` 离线命令；需要兼容的是在线 Maintenance.Snapshot 输出能被
+  官方 `etcdutl snapshot status/restore` 识别，这已由 snapshot history、lease、auth/alarm、marker
+  与官方 restore 启动门禁覆盖。对照 `32a860bd4`，官方把 etcdctl printer 输入改为 pointer
+  response；KubeBrain 的 CLI 兼容面仍以官方 etcdctl 黑盒输出和 protobuf/JSON/simple/table printer
+  消费服务端响应为准，不需要复制 etcdctl 内部重构。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3783 和上述 commit ID。本轮不修改 runtime；
+  它把 Watch/grpcproxy pointer alias 风险映射到已有公开流式 oracle，并把 etcdutl/etcdctl 内部
+  工具健壮性改动限定在“消费 KubeBrain 输出的官方工具必须继续成功”的兼容边界内。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
