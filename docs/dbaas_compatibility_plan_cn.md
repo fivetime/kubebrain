@@ -38337,6 +38337,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3796 与上述 commit ID；本轮不修改 runtime，
   目标是把 upstream 工具链/测试资产变化从 DBaaS 数据面兼容 backlog 中明确分流。
 
+- A3797 固定再前一段 upstream release/image/devcontainer/robustness/toolchain 审计。对照
+  `/root/etcd` commits `2b9f7debc`、`3f961a408`、`c9a7ad79e`、`ddba08ed7` 与
+  `8477d8478`：官方调整 stable tag sync、fork build、multi-arch/self-contained Alpine
+  image pipeline 和 Bitnami script layer。这些影响 etcd 官方发布镜像的构建/入口脚本，不改变
+  etcd v3 客户端协议；KubeBrain 的镜像、entrypoint、健康探针、TiKV/PD endpoint 和 DBaaS
+  rollout 由本仓 `deploy/production`、生产只读探针与发布门禁管理，不能机械复制 upstream
+  docker rootfs。
+
+  对照 `2d1aaa763`、`17a930a45`、`4cafe4f85`、`cd9f55511`、`186875f4e`、
+  `dcb0c85c8`、`ed1bf4eea`、`883b3672d`、`7f60f94df` 与 `feb520184`：官方只调整
+  buildx、devcontainer、workflow permission、actions 版本、grpc-experimental verify
+  脚本和交互式终端日志着色。对照 `b8f36cf7b`、`69204d7f6`、`814eed15f` 与
+  `166348bde`：变更集中在 robustness/downgrade/coverage/WAL report 验证工具，不改变公开
+  server 行为。KubeBrain 已有独立 production、compat、Porcupine、backup/restore 和 TiKV
+  smoke 门禁；是否引入等价 CI 改进应作为工程效率事项处理，而非 etcd-compat runtime 缺口。
+
+  对照 `ba3c3b5d3`、`5790054ca`、`db932ca2f`、`0d67bdbdc`、`280d439e1` 与
+  `0472376f2`：这些是 CHANGELOG/release note 更新。对照 `ae1830abb` 与 `96a2615e6`：
+  官方升级 `golang.org/x/crypto` 和 Go 1.26.4；KubeBrain 依赖升级继续按本仓安全扫描、
+  reproducible build 和全量回归窗口执行。`fbce82535` 把 upstream 版本推进到 3.8，并触及
+  capability/schema/rafthttp 常量与 snapshot/migration 测试；KubeBrain 已单独暴露
+  etcd server/cluster version 兼容面，且不使用 upstream Raft HTTP、bbolt schema migration
+  或 snapshot restore 作为 TiKV-backed 数据面持久化。若未来官方 3.8 对 client-visible API
+  或 version/capability negotiation 有新要求，应基于该具体行为建专项 oracle，而不是按版本
+  bump 整体移植。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3797 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
