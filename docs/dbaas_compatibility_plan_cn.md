@@ -40429,6 +40429,66 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对应 public watch 行为。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3849 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3850 固定 upstream watch progress jitter、advertise URL/DNS 错误、lease RWMutex、
+  endpoint status alarm/health、DNS discovery multi-cluster、snapshot package、member URL validation、
+  endpoint status applied index、`/health` body/watch exec、proposal dropped/learner、grpc-gateway
+  marshal、snapshot restore wal-dir、StatusFromError、cancel logging 和 extensive metrics 审计。对照
+  `/root/etcd` commit `142bff89f`：官方给 progress notification 增加 jitter。KubeBrain watch
+  progress 的 public contract 是 created/event/progress/compacted ordering、next revision、cache
+  convergence 和 follower proxy resume floor，已由 watch progress notify、RequestProgress、k3s
+  watch-cache、follower proxy 和 production watch soak 覆盖；不迁移 upstream jitter 文案/时序。
+
+  对照 `0365a9dee`、`6912a8e59`、`ce45c83f2`、`e1de74913`、`2b10bccce` 与
+  `b664b9176`：官方强化 backend open warning、advertise URL 空 host/DNS 错误、cluster ID
+  assignment error 和 DNS discovery 多集群 region。KubeBrain 的启动/拓扑边界由 option validation、
+  advertised client URL、MemberList/AutoSync、endpoint health、production manifests 和 topology
+  probes 固定；不复用 upstream discovery/bootstrap 代码。对照 `482211669`：官方 lease lessor
+  mutex 改为 RWMutex。KubeBrain lease 并发风险由 LeaseGrant/Revoke/KeepAlive/TTL/List、checkpoint、
+  failover expiry、explicit ID generation 和 race-sensitive 单测覆盖，内部锁实现不同。
+
+  对照 `db822ed38` 与 `25cdf4ed9`：官方在 endpoint status 暴露 alarm/health 和 Raft applied
+  index。KubeBrain Status/endpoint status 已固定 non-zero raft term/index/applied、alarm formatting、
+  health/alarm metadata、quota/db-size、learner/status 和 production readiness；字段级兼容由 proto
+  coverage 与 gateway JSON 固定。对照 `48f3e800c`、`df689f428`、`c3ba41773`、
+  `8b317df97`、`6e2555fb9` 与 `285a83d70`：官方抽出 snapshot package、重写 etcdctl
+  snapshot command/status、增加 save/restore/member-add/wal-dir 测试。KubeBrain 不嵌入 etcdctl
+  snapshot restore CLI；兼容面是 online `Maintenance.Snapshot` 生成的 backend artifact 能被官方
+  `etcdutl snapshot status/restore` 消费，且保留 revision、lease、auth、alarm、history 和 marker，
+  已由 snapshot stream/history/auth/alarm/restore verifier 覆盖。
+
+  对照 `c837e01c7` 与 `a2e999fa4`：官方防止 cluster API 接受 no-scheme/wrong URLs。KubeBrain
+  不支持 DBaaS 数据面内直接 MemberAdd/Update/Remove/Promote，但仍按 upstream 做 URL、member
+  existence、learner/promote 和 auth-before-platform 校验；对应 cluster tests、MemberList/AutoSync
+  和 unsupported mutation 门禁已覆盖。对照 `d0eff4525`、`a66d7c3ba` 与 `5b2f5150d`：
+  官方调整 client disconnect、user cancellation、lease/watch warning 和 grpclog 初始化。KubeBrain
+  不承诺 upstream 日志文本；stream cancel/deadline/error 外观由 watch/lease/snapshot cancel、context
+  boundary、error-inflight、operation audit 和 request duration metrics 覆盖。
+
+  对照 `1139d28eb`、`1b4502114`、`b6be8fb68` 与 `f77e54eb1`：官方移除 `/health`
+  `errors` 字段并保持 `"health"` string 兼容。KubeBrain `/health`、`/livez`、`/readyz`、exclude
+  alarm、reason body、auth-enabled health 和 production probes 已固定 health body 与 subcheck
+  行为。对照 `b8a95d7a9`、`6ba5682e6`、`5e0118d7e`、`2c347d715`、`72a2a6671`、
+  `503781e3a` 与 `8183b8322`：官方增强 etcdctl watch exec 环境变量和错误退出。KubeBrain
+  服务端只需保持 watch event、PrevKV、range_end、progress、fragment、cancel 和 compacted error
+  wire 行为；exec 环境变量属于 etcdctl client-side consumer，server 侧由 watch differential 覆盖。
+
+  对照 `b33767497`：官方 `endpoint health --cluster` 不重复询问密码。KubeBrain 服务端兼容面是
+  authenticated endpoint health --cluster 通过 MemberList 发现后可健康检查，已由 auth cluster
+  health differential、MemberList/AutoSync 和 production probe 覆盖。对照 `30ced5b2b`：官方 Raft
+  proposal dropped 时 fail-fast；KubeBrain 不使用 upstream Raft step，等价写入 fail-closed/revision
+  fence 由 commit wait、uncertain txn pins 和 failover tests 覆盖。对照 `11fa4f027`：官方 learner
+  confchange apply 后返回 learner。KubeBrain 不暴露真实 learner reconfiguration，但 MemberList
+  learner field、unsupported Promote/Member mutation 和 non_learner readiness 已固定。对照
+  `fd16656af` 与 `d1526c992`：官方升级 grpc-gateway marshal。KubeBrain gateway 已用 generated
+  stable `/v3` routes、base64 bytes、unknown fields、streaming、WebSocket、integer boundary 和
+  typed error mapping 测试覆盖。对照 `3b7e2ce0c`：官方正确处理 `StatusFromError` 返回值；
+  KubeBrain client-facing errors 由 raw/clientv3/gateway differential、typed status code 和 retry
+  边界覆盖。对照 `0b1b82aff`：官方防 bbolt FillPercent nil panic；KubeBrain TiKV-backed
+  数据面不走 bbolt backend path。对照 `a535c0105`：官方 extensive metrics 开关迁移；KubeBrain
+  可观察性以 server request duration、watch send-loop、alarm/quota、operation audit 和 production
+  metrics 为准。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3850 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
