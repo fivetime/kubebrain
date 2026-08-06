@@ -39477,6 +39477,52 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 failover 语义建门禁，不能在失去 leader 或 stale revision 下伪造续租成功。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3830 与上述 commit ID；本轮不修改 runtime。
 
+- A3831 固定 upstream client AutoSync learner filtering、watchable store runlock、TLS secure
+  endpoint validation、`StatusResponse.StorageVersion`、lease common framework/restore、raft-term
+  printer、downgrade command、v3 discovery/SRV 和 cluster downgrade snapshot 审计。对照
+  `/root/etcd` commit `125f3c3f9`：官方 clientv3 AutoSync 过滤 learner 成员。KubeBrain
+  DBaaS 数据面不暴露 learner reconfiguration，但必须保证 advertised client URLs、MemberList
+  learner/status、Status identity、AutoSync endpoint health 和 production readiness 中没有把不可服务
+  endpoint 交给客户端；这些已由 memberlist/autosync/direct topology 和 non_learner readiness 门禁覆盖。
+
+  对照 `780e3ae93`：官方 changelog 记录 watchable store runlock 修复。KubeBrain 不复用 upstream
+  watchableStore 锁实现；server-facing 要求是 Range/Watch/Compact 并发下 watcher 不泄漏、不死锁、
+  不丢事件，并按 compacted/future revision 返回 etcd 外观。现有 watch control、future watch、
+  compact boundary、large response/starvation、restart event-log replay 和 production watch soak
+  覆盖该风险。
+
+  对照 `bd7d09255` 与 `983ee82c9`：官方修复 `ValidateSecureEndpoints` panic 并补 TLS 测试。
+  KubeBrain 的 TLS 兼容面是 server/client cert auth、SAN/ServerName、TLS1.3-only、IPv6/bracketed
+  advertised URLs、proxy peer TLS 不降级、gateway auth 透传和 production TLS rotation；client
+  `ValidateSecureEndpoints` 是官方 client 侧输入校验，不进入 runtime，但服务端必须 fail closed，
+  不能因缺证书、错 SAN 或 peer downgrade 而默默降级。
+
+  对照 `edce939f6`：官方在 `StatusResponse` 增加 `StorageVersion` 并调整 printer。KubeBrain
+  raw/clientv3 `Status`、HTTP `/version` 和 gateway JSON 已固定 storage version 字段，且
+  `request_proto_coverage_test.go`/status envelope/production readiness 防止 proto/API 字段漂移。
+  对照 `68e649397` 与 `a53358473`：官方测试框架补 LeaseList、LeaseGrant、TTL 等 common
+  client 方法；KubeBrain 已有 lease lifecycle、LeaseList expiry order、TTL boundary、signed ID、
+  auth lease、attached key、NoSpace/Corrupt、restart persistence 和 production failover 门禁。
+
+  对照 `5d3847577` 与 `6f03dc741`：官方 etcdctl JSON 中即使 `--hex` 也以十进制打印 `raft_term`。
+  KubeBrain wire response header 只承诺 numeric `RaftTerm` 正值和跨方法一致性；CLI printer 属于
+  客户端展示层，但 MemberList/Hash/HashKV/Lease/Range header 已由 header envelope、memberlist
+  sync 和 gateway JSON 测试固定。对照 `8e71ebf07`、`d0c1c3a1f` 与 `42faf9fe0`：官方新增/调整
+  downgrade command、别名和 minor-version 规则。KubeBrain 不执行 in-place downgrade，保留
+  `Downgrade(VALIDATE)` 参数校验与 version 外观，`ENABLE/CANCEL` 走 DBaaS platform-managed 错误；
+  相关 differential、HTTP gateway 和 production readiness 已覆盖。
+
+  对照 `ebc86d12c` 与 `2f36e0c62`：官方新增 v3 discovery 并把 discovery URL 语义改为 endpoints。
+  KubeBrain 的成员发现由 DBaaS 控制面和 advertised endpoint 列表负责，不提供 upstream discovery
+  bootstrap API；数据面必须保证 MemberList/Status/AutoSync/endpoint health 语义稳定。对照
+  `5fc0092c8` 与 `6781651e0`：官方 trim SRV target suffix dot。KubeBrain server 不解析 client
+  DNS SRV，但 advertised URLs/TLS ServerName/IPv6 格式和非法 URL 拒绝已有门禁。对照
+  `fd79af9ee`：官方从 backend 加载全部 lease；KubeBrain 已有 lease restart persistence、
+  snapshot retained lease metadata、LeaseList/TTL/attached keys、orphan sweep 和 failover 验证。对照
+  `a0f26ff4e`：官方在 cluster version downgrade 后触发 snapshot；KubeBrain 用 DBaaS 版本化发布/回滚
+  替代 raft downgrade snapshot，仍需保持 Snapshot/backup/restore 与 version surface 的可观察契约。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3831 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
