@@ -36685,6 +36685,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 170.073 秒）。没有 runtime RED，本项只增强生成式永久差分，不重建或滚动
   数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3706 将三层生成式嵌套 Txn 的 inner Range 模式从 15 增到 16，新增同一请求中的矛盾边界
+  `MinCreateRev(base+1)+MaxCreateRev(base)`。官方语义必须在包含 staged update/create 的 overlay
+  上返回 KVs 空、Count=0、More=false 的 Range response，但该空读不能使同一嵌套成功分支的前序
+  Put 回滚，所有 response header 与最终状态仍属于统一 txn revision。该模式补足 A3704/A3705
+  单边分类之外的组合剪枝与空结果 envelope；结构门禁现保证首 16 个 case 全部执行成功嵌套分支
+  和每种模式，完整 outcome 继续比较嵌套 response、PrevKV、revision 与最终状态。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 9.996 秒、连续 10 轮
+  （测试 106.209 秒）及 race 5 轮（测试 52.783 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.711 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 168.157 秒）。没有 runtime RED，本项只增强生成式永久差分，不重建或滚动
+  数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
