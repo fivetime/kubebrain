@@ -39523,6 +39523,60 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   替代 raft downgrade snapshot，仍需保持 Snapshot/backup/restore 与 version surface 的可观察契约。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3831 与上述 commit ID；本轮不修改 runtime。
 
+- A3832 固定 upstream invalid Range sort、invalid client API version、member promote printer、
+  revision monotonic failure injection、AuthDisable watcher、make-mirror `--rev`、lease checkpoint
+  persistence、watchable store runlock、NOSPACE read pass-through、benchmark autosync、gRPC authority
+  header、storage schema migration 和 client AuthOldRevision retry 审计。对照 `/root/etcd` commit
+  `15568f4c0`：官方为非法 `sortTarget` 增加保护，避免 Range panic。KubeBrain 已在 direct
+  Range、RangeStream、Txn/nested Txn、namespace KV 和 invalid request-op matrix 中固定
+  `InvalidArgument`/`etcdserver: invalid sort option`，并保持 empty-key 与 invalid-sort 的错误优先级
+  与 official clientv3 一致。
+
+  对照 `f8aafea50`：官方在 client API version metadata 非 UTF-8 时返回 typed invalid client API
+  version，而不是 panic。KubeBrain header interceptor 已固定 unary/stream admission 顺序：非法
+  API version 优先于 auth、quota、body validation 和 service handler，返回
+  `InvalidArgument: etcdserver: invalid client api version`。对照 `3710083dc` 与 `2a750a8db`：
+  官方 client retry interceptor 只调整日志和 AuthOldRevision 重试；KubeBrain server-facing 契约是
+  返回可被 official client 识别的 `ErrAuthOldRevision`/invalid token/status message，现有 JWT、
+  auth lifecycle、RangeStream/Watch/Lease auth mutation 和 gateway token 透传门禁覆盖。
+
+  对照 `357006172`：官方 etcdctl printer 补 `MemberPromote`。KubeBrain 不支持 learner promote
+  数据面 mutation，但必须先执行 auth，并返回 platform-managed unsupported envelope；MemberList
+  learner/status 与 promote error boundary 已覆盖。对照 `eac6d7135`：官方在 failure injection
+  下测试 revision monotonic。KubeBrain 已用 durable revision allocator、leader token fencing、
+  failover revision monotonic、Range/Txn/Watch/Lease linearizability 和 production failover smoke
+  约束客户端可见 revision 不回退。
+
+  对照 `17fd2e728`：官方 `AuthDisable` 不能影响既有 watcher。KubeBrain 已有 AuthDisable 后
+  credentialed Watch/LeaseKeepAlive 原连接复用、重连 watch、watch auth lifecycle 和 RangeStream
+  auth fence 门禁：关闭 auth 后既有合法 stream 不应被旧 token 错误取消，新请求按当前 auth state
+  判定。对照 `661e0a91e` 与 `8b3405bdb`：官方为 `etcdctl make-mirror` 增加 `--rev` 并让错误参数
+  尽早失败；KubeBrain 数据面要求是 source/destination Range+Watch revision 边界、compacted
+  revision 错误和 prefix snapshot 一致，已由 make-mirror revision differential 和 runner 覆盖。
+
+  对照 `fd77b2700`、`48a360aad` 与 `7d10899d7`：官方保存 lease checkpoint remaining TTL、leader
+  变化后调度 checkpoint，并把持久化绑定到 cluster/storage version 或实验 flag。KubeBrain lease
+  checkpoint/expiry 语义由 TiKV durable lease metadata、checkpoint failover、long-window renewal、
+  batch renewal linearizability、restart persistence 和 PD/TiKV failover 门禁覆盖；不迁移 upstream
+  lessor flag，但不得在 leader change、revoke 或 restart 后伪造过期/续租状态。
+
+  对照 `7e6c29c19`：官方修复 watchable store runlock。KubeBrain 不复用 upstream watcher lock，
+  但 watch/create/cancel、compaction、event-log replay、large response starvation 和 future-watch
+  progress 门禁覆盖 public watch contract。对照 `7b6554fd3`：官方 NOSPACE 下 non-mutating request
+  可通过 quotaKVServer。KubeBrain quota/NOSPACE 门禁要求 Put/写 Txn/LeaseGrant fail closed，Range、
+  Delete-based recovery、Alarm/Status/HashKV/readyz 仍可用且可恢复。对照 `9084accea`：官方 benchmark
+  增加 autosync flag；KubeBrain 由真实 AutoSync/endpoint health/MemberList topology 覆盖，不迁移
+  benchmark CLI。
+
+  对照 `c929a917b` 与 `90932324b`：官方 client 使用首个 endpoint 作为 HTTP/2 authority header，并
+  补 server/integration 测试。KubeBrain 服务端的可观察边界是 gateway/grpc metadata、TLS ServerName、
+  advertised URL、proxy peer identity 和 auth token 不因 authority header 被错误改写；相关 endpoint、
+  TLS、gateway 和 production readiness 已覆盖。对照 `ff3729c4d` 与 `66d05e549`：官方让 storage
+  schema version 跟随 cluster version，并立即更新 storage version。KubeBrain 不做 upstream bbolt
+  schema migration，但 `/version`、`Status.StorageVersion`、Snapshot storage metadata、backup/restore
+  和 DBaaS rollout 文档必须保持一致。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3832 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
