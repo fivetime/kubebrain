@@ -39777,6 +39777,61 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   API；v2 行为必须 fail closed 并在文档中保持明确边界。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3836 与上述 commit ID；本轮不修改 runtime。
 
+- A3837 固定 upstream password hashing、grpcproxy health/metrics/logging、expensive request logging、
+  downgrade policy/apply、simple token TTL、empty username auth error、health reason、Range
+  CountOnly/limit、client no-endpoint、lease grant/revoke replay、non-recursive watch、snapshot hash、
+  MemberList printer、concurrency mutex error、watch auth failure 和 etcdctl count-only 审计。对照
+  `/root/etcd` commit `5a3da48cd`：官方把密码 hash 前移到 API 层。KubeBrain 已要求 UserAdd/
+  UserChangePassword 的明文只在 RPC admission 生命周期内存在，存储和 snapshot 只保存 bcrypt hash，
+  并由 auth design、auth snapshot/restore、password-change invalidation 和 redaction 门禁覆盖。
+  对照 `d507ab4aa`：官方支持 simple token TTL 配置。KubeBrain 暴露 `--auth-token-ttl`，并固定默认
+  300 秒、显式 TTL、token 过期后 `ErrInvalidAuthToken` 和重新认证成功。对照 `b6d1987cc`：
+  官方空用户名 auth 请求不应误报 `ErrUserNotFound`。KubeBrain 的 UserAdd/UserDelete/
+  UserGrantRole/Authenticate 空用户名错误优先级和 `ErrUserEmpty`/`ErrAuthFailed` 外观已由 auth
+  matrix 固定。
+
+  对照 `0898c5b97`、`fff5d3cc0`、`34e3dbe3d`、`b5a07728d` 与 `db2165dfb`：官方为独立
+  grpcproxy 增加 self health、metrics、zap logger、watch cancel 防阻塞和
+  `--insecure-skip-tls-verify` warning。KubeBrain 不运行 upstream grpcproxy 二进制；等价公开面是
+  follower proxy、watch failover/cancel、MemberList/AutoSync、TLS identity、server metrics 和
+  readiness。已有 proxy watch cancel、防共享 client 被 caller cancel、endpoint health、watch
+  send-loop metrics 与 TLS warning/CRL 边界覆盖。对照 `644d09edb`：官方 unary interceptor 打印
+  expensive request info。KubeBrain 不承诺日志文案，但 request duration metric、range/read amp
+  baseline、operation audit 和 production SLO 已覆盖可观察性。
+
+  对照 `2541b0bba`、`d230e6ba8` 与 `37e598a20`：官方实现 downgrade policy、validate/enable/cancel
+  apply 和 typed downgrade/cluster-version errors。KubeBrain 不执行 in-place etcd downgrade；兼容面是
+  `Downgrade(VALIDATE)` 参数校验、Status.DowngradeInfo、auth-before-unsupported、platform-managed
+  unsupported envelope、`/version`/storage version 和 rollout 文档一致。对照 `4acaa5a2a`：官方
+  `/health` 增加 reason 字段。KubeBrain 已固定 `{"health":"true","reason":""}`、NOSPACE/CORRUPT
+  reason、`exclude` 参数和 `/readyz` 不因 NOSPACE 摘流的差异边界。
+
+  对照 `26c930f27`、`3594ab94c`、`730f3f1d7` 与 `aa7b056a7`：官方下推 Range limit 到 index、
+  增加 etcdctl count-only 用例并降低 CountOnly range 开销。KubeBrain 不使用 upstream treeIndex，
+  但已通过 count index、Range/RangeStream/Txn/nested Txn、history/tombstone、KeysOnly/CountOnly/
+  Limit/Sort/More 和生产 count-only smoke 固定 public Count 语义。对照 `dafd47467`：官方 client
+  在无 endpoint 时取消 client。KubeBrain 服务端需要保持 MemberList/advertised URL/AutoSync 可用，
+  不承诺 client constructor 内部生命周期。
+
+  对照 `e9ae8eb5a`：官方避免 restart 后 grant/revoke 重复 apply。KubeBrain lease 语义由 durable
+  lease metadata、generation isolation、explicit ID revoke/regrant、restart persistence、snapshot
+  retained lease metadata 和 failover expiry 门禁覆盖，重启后不得复活已撤销 lease 或重复删除绑定键。
+  对照 `f97613818`：官方 client watch 改为 non-recursive watch。KubeBrain server 侧必须保持
+  official client watch 在 prefix、single-key、cancel、progress 和 compacted revision 上的 wire
+  语义；client watch 实现细节不迁移。
+
+  对照 `39c43cfb`：官方 client snapshot 增加 integrity check hash。KubeBrain 在线 snapshot
+  artifact 必须可被 official `etcdutl snapshot status/restore` 检查，且 hash/revision/metadata 与
+  restore 后 Range/Watch/lease/auth/alarm 行为一致。对照 `c667c14d8`：官方修复 `MemberList` 输出
+  不一致。KubeBrain raw MemberList、JSON/gateway、etcdctl-compatible output、member ID/name/URL
+  稳定排序和 learner/platform unsupported 边界已覆盖。对照 `b41711276`：官方 concurrency mutex
+  不再吞错。KubeBrain server data plane 的边界是 Lock/Election/Concurrency recipe 对 KV/lease/
+  txn/watch 的公开调用结果，已有 session/mutex/barrier/queue 差分覆盖。对照 `73b936b50`：官方
+  watch stream 在一个请求未授权时关闭。KubeBrain 已固定 watch create auth、权限撤销 cancel
+  response、单控制请求错误不污染其他 watcher，以及 `ErrInvalidAuthToken`/`ErrAuthOldRevision`/
+  permission denied 分类；后续若 upstream 版本要求关闭整条 stream，应以官方 client 差分单独变更。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3837 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
