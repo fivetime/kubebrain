@@ -37823,6 +37823,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestRecentUpstreamAuditIsRecorded` 断言文档持续包含 `bd2427cd2`、`c5d1b8a02` 和本条 A3770。
   本轮是审计固化，不修改 runtime；focused 审计测试负责防止后续筛选遗漏这些已覆盖 upstream 点。
 
+- A3771 对照 upstream `/root/etcd` commit `0004f8e75` 的 revision monotonic
+  leader-restart 测试去抖。该提交只在 `tests/integration/revision_test.go` 的
+  `connectionErrorMessages` 中增加 `"error reading from server: connection reset by peer"`，
+  说明 leader restart 窗口内该 raw transport 文案与 Canceled、DeadlineExceeded、Unavailable
+  同属可重试瞬时连接错误；它不能被误判为 revision 单调性失败，也不能吞掉业务语义错误。
+
+  KubeBrain 已由 A3503 的 `TestRevisionRemainsMonotonicAcrossLeaderFailover` 建立真实三副本
+  DBaaS 门禁：4 writer + 6 reader 在删除当前 mutation leader 时持续运行，成功读的 header revision
+  不得回退，最终 Put/Get 必须恢复且 revision 继续前进。为把 upstream 的新增瞬时错误分类纳入
+  永久门禁，本轮先在 `TestMutationFailoverAmbiguousClassifiesClientv3EtcdTimeout` 增加
+  `errors.New("error reading from server: connection reset by peer")`，得到真实 RED：
+  该 raw 错误未被 `isMutationFailoverAmbiguous` 接受。修复后 failover 分类继续只接受 context、
+  gRPC/etcd typed Canceled/DeadlineExceeded/Unavailable，以及 leader-restart 常见的
+  `connection reset by peer`、`use of closed network connection`、`error reading from server: EOF`
+  文案；`LeaseNotFound` 等业务错误仍为 false。focused 测试 0.018 秒 GREEN，并把
+  `0004f8e75`/A3771 加入 `TestRecentUpstreamAuditIsRecorded`。本轮只修正兼容测试 harness 的
+  故障窗口分类，不改变 runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

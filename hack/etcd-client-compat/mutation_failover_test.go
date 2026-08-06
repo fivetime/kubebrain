@@ -135,13 +135,16 @@ func isMutationFailoverAmbiguous(err error) bool {
 	switch status.Code(err) {
 	case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable:
 		return true
-	default:
-		return false
 	}
+	message := err.Error()
+	return strings.Contains(message, "connection reset by peer") ||
+		strings.Contains(message, "use of closed network connection") ||
+		strings.Contains(message, "error reading from server: EOF")
 }
 
 func TestMutationFailoverAmbiguousClassifiesClientv3EtcdTimeout(t *testing.T) {
 	require.True(t, isMutationFailoverAmbiguous(rpctypes.ErrTimeout))
 	require.True(t, isMutationFailoverAmbiguous(fmt.Errorf("wrapped: %w", rpctypes.ErrTimeoutDueToLeaderFail)))
+	require.True(t, isMutationFailoverAmbiguous(errors.New("error reading from server: connection reset by peer")))
 	require.False(t, isMutationFailoverAmbiguous(rpctypes.ErrLeaseNotFound))
 }
