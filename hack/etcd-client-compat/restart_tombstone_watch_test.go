@@ -74,4 +74,29 @@ func TestReplicatedRestartPreservesCompactBoundaryTombstone(t *testing.T) {
 	case <-watchCtx.Done():
 		t.Fatalf("timed out replaying compact-boundary tombstone after serving restart: %v", watchCtx.Err())
 	}
+
+	recreated, err := cli.Put(ctx, key, "recreated-after-restart")
+	require.NoError(t, err)
+	select {
+	case response, ok := <-watch:
+		require.True(t, ok, "watch channel closed before recreated generation")
+		require.NoError(t, response.Err())
+		require.Len(t, response.Events, 1)
+		event := response.Events[0]
+		require.Equal(t, clientv3.EventTypePut, event.Type)
+		require.Equal(t, key, string(event.Kv.Key))
+		require.Equal(t, "recreated-after-restart", string(event.Kv.Value))
+		require.Equal(t, recreated.Header.Revision, event.Kv.CreateRevision)
+		require.Equal(t, recreated.Header.Revision, event.Kv.ModRevision)
+		require.Equal(t, int64(1), event.Kv.Version)
+		require.Nil(t, event.PrevKv, "a recreated generation has no live previous KV")
+	case <-watchCtx.Done():
+		t.Fatalf("timed out observing recreated generation after tombstone restore: %v", watchCtx.Err())
+	}
+
+	current, err := cli.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, recreated.Header.Revision, current.Kvs[0].CreateRevision)
+	require.Equal(t, int64(1), current.Kvs[0].Version)
 }
