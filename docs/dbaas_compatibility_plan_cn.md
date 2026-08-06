@@ -39346,6 +39346,51 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failover 门禁已覆盖这些组合语义；client library state check 不进入 KubeBrain runtime。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3827 与上述 commit ID；本轮不修改 runtime。
 
+- A3828 固定 upstream watch retry/auth、watch ID 0、RejectOldCluster、corruption check、
+  downgrade/version、move-leader endpoint 和 AlarmList consistent-index 审计。对照 `/root/etcd`
+  commit `428fb9623`：官方 clientv3 在 watch stream 返回 `Unavailable` 后增加 backoff。
+  KubeBrain server-facing 契约是 transient leader/freshness/watch proxy 失败必须返回 retryable
+  `Unavailable`，且不能在重试窗口丢失或重排已提交事件；watch failover、follower proxy、
+  progress notification、k3s watch-cache、large-read starvation 和 production watch soak 已覆盖
+  该语义。client backoff 策略属于官方 client library，不进入 KubeBrain runtime。
+
+  对照 `f1d4935e9`、`5739c82be`、`c5614520d`、`2dcfa8309`、`b13b19871` 与
+  `2751ec647`：官方修正 watch ID 0 被错误关闭、补 auth token expiration 测试、处理 watch
+  invalid token/old revision，并避免 watch response error nil 导致集成测试 panic。KubeBrain 已有
+  `watch_control_differential_test.go`、`watch_id_range_boundary_differential_test.go`、
+  `watch_invalid_create_header_live_test.go`、auth watch lifecycle/JWT differential 和 gateway
+  watch 门禁：显式 watch ID 0 必须可 create/cancel 且 stream 保持活着，重复/非法 watch ID
+  使用 etcd 的 `InvalidWatchID` 外观，auth mutation 后 old token/new create 按
+  `ErrInvalidAuthToken`/`ErrAuthOldRevision`/permission denied 分类，不因单个控制请求错误关闭
+  已存在 watch。
+
+  对照 `8a587447d`：官方修复 client 初始化 `RejectOldCluster` 的 error handling。KubeBrain
+  的 server public version surface 是 gRPC `Status.Version`、HTTP `/version`、storage version
+  和 Kubernetes/kubeadm 外部 etcd 版本门禁；client 构造期是否拒绝旧集群由官方 client 根据
+  server 报告版本判断。KubeBrain 不承诺复刻 upstream client init 逻辑，但必须保持 advertised
+  version 与 DBaaS release policy 文档一致。
+
+  对照 `d116d02e0`、`1ccdb3762` 与 `cc1e24536`：官方调整 corruption hash detection，
+  包括刚 compact 后的 corruption check 边界。KubeBrain 使用 TiKV/PD backed 单逻辑数据面，
+  不复用 upstream raft member quorum corruption 判定；公开契约是 `HashKV` 在指定 revision
+  的 hash/`HashRevision`/`CompactRevision` 稳定，peer `/members/hashkv` 按 cluster ID 防串集群，
+  CORRUPT alarm 使写路径 fail closed、`/readyz/data_corruption` 报错，并且 corrupt/NOSPACE
+  alarm 能跨副本替换恢复。本仓已有 HashKV compaction/restart/replica consistency、corrupt alarm
+  restart 和 HTTP health alarm differential 覆盖。
+
+  对照 `2b178fdd9`：官方处理 cluster version 等于 downgrade version 的边界。KubeBrain
+  不执行 in-place etcd protocol downgrade，`Downgrade(VALIDATE)` 保持 etcd 参数校验和响应
+  version 外观，`ENABLE`/`CANCEL` 走 DBaaS versioned rollout/rollback 平台替代错误；
+  `downgrade_request_validation_differential_test.go`、`downgrade_validate_success_differential_test.go`、
+  `downgrade_cancel_state_differential_test.go`、peer `/downgrade/enabled` 和 production readiness
+  已固定该边界。对照 `3fc16608f`：官方修复 etcdctl 多 endpoint `move-leader`；KubeBrain
+  不支持 raft leadership transfer，但 `MoveLeader` target validation、current-leader noop、
+  auth-before-platform 和 HTTP gateway unsupported envelope 已覆盖。对照 `cc840336f`：官方让
+  `AlarmList` 推进 consistent_index；KubeBrain 不暴露 raft apply index 作为 durable contract，
+  但 `Alarm(GET)`/`AlarmList` 必须带 response header、返回持久 alarm，并在 NOSPACE/CORRUPT
+  下与 Status/readyz/写路径一致。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3828 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
