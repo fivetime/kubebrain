@@ -36765,6 +36765,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   差分，不重建或滚动数据面；一次性 reference 已停止，精确临时目录及测试日志已删除且不可恢复，
   只含本轮 oracle 数据。
 
+- A3712 将 A3709-A3711 的顺序/惰性原子性矩阵扩展到另一条独立错误路径：future revision。
+  新差分以当前 revision 加 `1<<40` 构造稳定 future Range，覆盖 Range→Put、Put→Range、outer
+  Put→nested(inner Put→Range)→outer Put 三种选中失败顺序，全部必须返回 clientv3 `Unknown`/
+  精确 future-revision 消息且候选写零残留；同时覆盖顶层与 nested 未选 future Range，两者不得
+  被预执行，selected inner/outer 写必须提交、forbidden 写为零。这样不再用 compacted 错误或
+  missing-lease 混合优先级测试间接代表 future 校验路径。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.579 秒、连续 10 轮
+  （测试 4.831 秒）及 race 5 轮（测试 3.892 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.548 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 167.724 秒）。没有 runtime RED，本项新增永久 future Range 顺序、递归回滚
+  与分支惰性证据，不重建或滚动数据面；一次性 reference 已停止，精确临时目录及测试日志已删除
+  且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
