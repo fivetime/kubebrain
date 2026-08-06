@@ -39724,6 +39724,59 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   配置不是 DBaaS 数据面 public API。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3835 与上述
   commit ID；本轮不修改 runtime。
 
+- A3836 固定 upstream Auth interface、health v3 Range probe、watch cancel log、snapshot corruption、
+  watch notify interval、FD/compaction metrics、lease wall-clock expiry、auth-token auto fetch、
+  namespace empty `WithFromKey`、downgrade HTTP、websocket size、health alarm command、
+  self-signed cert validity、cluster version 和 v2 dialContext 审计。对照 `/root/etcd` commit
+  `7f27697df`：官方 v3client 实现 clientv3.Auth interface。KubeBrain server-facing 契约是
+  official clientv3 AuthEnable/AuthDisable/AuthStatus/User/Role/Authenticate 全路径可用，并保持
+  root/user/role special-case、token revision 和 auth error 外观；client interface 适配不要求
+  复制 upstream `v3client` 包。对照 `8c192d99d` 与 `8050881aa`：官方 client 在连接就绪后自动
+  获取 AuthToken，并减少额外连接。KubeBrain 必须稳定暴露 `Authenticate`、token TTL、old-revision/
+  invalid-token 错误和多 endpoint auth HA；token 自动刷新策略属于 official client 内部。
+
+  对照 `25220a028` 与 `8866d55b9`：官方健康检查改用带 timeout 的 v3 Range，并让 `etcdctl
+  endpoint health` 同时检查 active alarms。KubeBrain `/health`、`/readyz`、endpoint health、
+  NOSPACE/CORRUPT alarm 和 read-only recovery 已固定：active NOSPACE 下传统 health/endpoint
+  health 可报告 unhealthy，但 `/readyz` 仍通过，Range/Delete/Alarm/Status/HashKV/Defragment recovery
+  保持可操作。对照 `cc564110b`：官方降低 watch cancel 日志噪声。KubeBrain 兼容面不是日志文案，
+  而是 cancel control frame、unknown cancel 静默、watch ID 复用、stream 不中断和 cancel/deadline
+  typed error；这些由 watch client/proxy/differential 门禁覆盖。
+
+  对照 `51de68dda`：官方修复嵌入式 server snapshot corruption。KubeBrain 在线 Snapshot/
+  SnapshotWithVersion 必须生成可被 official `etcdutl snapshot status/restore` 识别的 artifact，
+  并在取消、历史 revision、lease/auth/alarm metadata、follower endpoint 和 restore 启动后 Range/
+  Watch 语义上通过门禁；不复用 upstream embed snapshot stream 内部实现。对照 `15f507f6b`：
+  官方修复 v3 websocket notification 64KB 限制。KubeBrain generated grpc-gateway/websocket
+  兼容面由 route、JSON/protobuf mapping、large response、recv limit 和 websocket gateway tests
+  约束，不能引入低于 gRPC 的隐藏消息大小限制。
+
+  对照 `9a698476b`：官方新增 watch notify interval flag。KubeBrain 已暴露
+  `--watch-progress-notify-interval` 并校验最小值，backend progress cadence 与 Watch
+  ProgressNotify oracle 保持一致。对照 `421df2ecb`、`c20cc05fc` 与 `2048c8076`：官方增加 OS
+  FD metrics、last DB compaction timestamp 和 compactor latency clock 修正。KubeBrain 的 public
+  observability 覆盖 server request duration、watch send-loop、alarm/quota、production metrics 和
+  operation audit；TiKV/PD compaction/FD 运行态不复刻 upstream bbolt/OS metric 名称，除非后续按
+  metric-name parity 建专项 oracle。
+
+  对照 `4136df793`：官方 lease expiry 改按 wall clock 修正。KubeBrain lease 语义由 durable
+  lease metadata、StopLeases on leader loss、batch/long-window renewal、expiry spread failover、
+  per-key attachment 和 wall-clock rollback/failover tests 覆盖；过期必须先删绑定键再删 lease
+  record，并在删除失败时保留 lease 以便重试。对照 `11ba1a610`：官方 namespace wrapper 修复
+  empty key + `WithFromKey` 判定。KubeBrain 已有 empty-key namespace differential、leasing
+  `WithFromKey` delete 和 nested Txn Range matrix，必须保留 open-ended range 外观。
+
+  对照 `24724af7f`：官方避免 server 未运行时 expvars crash。KubeBrain 不暴露 upstream expvar
+  Raft internals；生产健康由 readiness/livez、Prometheus metrics 和 process supervision 覆盖。
+  对照 `3e8ffc7cd` 与 `aa1024a16`：官方增加 downgrade-enabled HTTP handler、downgrade monitor 并
+  更新 cluster version。KubeBrain 的 `/version`、Status.DowngradeInfo、Downgrade RPC validation、
+  platform-managed unsupported 边界和 DBaaS rollout 文档必须保持一致，不复刻 upstream raft
+  downgrade monitor。对照 `a960d6b1c`：官方新增 self-signed cert validity flag。KubeBrain TLS
+  兼容面是证书加载、client-cert auth、CRL、ServerName、peer identity 和生产 mTLS，不承诺 upstream
+  自签证书生成 flag。对照 `ed81d2e2d`：官方 v2 client 改用 `dialContext`。KubeBrain 不支持 v2
+  API；v2 行为必须 fail closed 并在文档中保持明确边界。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3836 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
