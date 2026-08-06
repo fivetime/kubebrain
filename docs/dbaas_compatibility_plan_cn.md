@@ -37045,6 +37045,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 167.513 秒）及 `go vet ./...` 通过。本项新增永久多帧终止 envelope、历史快照和
   limit 聚合证据，防止 A3725 以后只在小结果路径保持兼容。
 
+- A3727 从 RangeStream 转向 Txn Compare 未完整覆盖的量化语义。审计确认顶层 point 的
+  VALUE/VERSION/CREATE/MOD/LEASE × EQUAL/NOT_EQUAL/LESS/GREATER、nested point、空范围、FromKey
+  和若干 nested range 已有直接门禁，不重复包装；缺口是 nested 多键 range compare 尚无五 target ×
+  四 result × 全匹配/单键破坏的完整官方矩阵。对照
+  `/root/etcd/server/etcdserver/txn/txn.go` 的 `compareToPath`、`applyCompares` 和 `applyCompare`，新增
+  40-case raw gRPC 差分。每个 case 在隔离三键范围构造同值/同 revision/同 lease 的全匹配 fixture，
+  或让第三键在 value、version、create/mod revision、lease ID 上严格高于/低于前两键，使 EQUAL、
+  NOT_EQUAL、LESS、GREATER 各自只有一个键破坏谓词；compare 放在 outer Txn 的唯一 nested Txn 中，
+  两个分支都写 marker。
+
+  结果要求 range compare 对范围内所有 KV 做全称量化，nested `Succeeded` 与 success/failure marker
+  一致；marker 的 ModRevision 必须等于 outer response revision，证明选中分支只做一次原子提交；inner
+  Txn header 继续保持官方 revision=0 零值。独立、无需外部端点的结构门禁逐项枚举 5×4×2 组合，防止
+  生成器静默退化。官方 etcd `d947b20863` 与生产
+  `kubebrain:a3725-rangestream-final-frame` 首轮 7.64 秒，最终复验 7.524 秒、连续 10 轮
+  82.865 秒、race 5 轮 48.896 秒全部 GREEN；没有 runtime RED，不修改实现或滚动生产。兼容模块
+  `go test ./... && go vet ./...` 通过（测试 1.546 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 168.388 秒）及 `go vet ./...` 通过。本项将零散 nested range compare 证据提升为
+  完整 target/result/quantification 矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
