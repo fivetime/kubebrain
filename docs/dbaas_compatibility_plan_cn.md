@@ -38895,6 +38895,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对照 `16221d58b`：官方调整 robustness compaction 调度以均匀负载，属于 oracle 流量组织增强。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3815 与上述 commit ID；本轮不修改 runtime。
 
+- A3816 固定 upstream compact-on-tombstone、Kubernetes client interface、lease renew leadership、
+  feature gates、etcdutl 工具和 TLS/Watch client 输出审计。对照 `/root/etcd` commits
+  `bbdc94181`、`ee3365277`、`182639c40` 与 `6f93af85d`：官方在 compact revision 等于
+  tombstone revision 时保留 tombstone，并补充 Watch API/HashKV e2e。KubeBrain 已在 A3437
+  系列和 A3730–A3732 将该边界落到 TiKV/PD 数据面：compact watermark 等于 tombstone revision
+  时保留 tombstone 与直接前版本，watermark 推进后再回收；restart/tombstone watch、Txn replay/
+  PrevKV、HashKV 和 compacted revision oracle 均覆盖该可观察行为。
+
+  对照 `6c98a9686` 与 `2bcaed1e0`：官方引入 clientv3 Kubernetes KV interface，并修复默认
+  gRPC call options 穿透。KubeBrain 服务端只需提供正确 Range/Txn/Watch/Lease 语义；本仓已有
+  `kubernetes_compat` differential 覆盖 OptimisticPut/Delete、`GetOnFailure` 和 watch 组合，
+  A3745 进一步用 official Kubernetes wrapper 固定 `MaxCallRecvMsgSize`/`MaxCallSendMsgSize`
+  错误外观，防止绕过 high-level KV transport。
+
+  对照 `b8b0cf83` 与 `4b8e78460`：官方优化 lease renew 的 leadership check，避免活跃心跳期间
+  性能回退。KubeBrain lease keepalive/renewal 不是 upstream Raft lessor 路径；本仓已用批量
+  lease renewal Porcupine、小时级 renewal window、repeated leader failover smoke 和生产 verify
+  固定 renew 在 TiKV/PD leader/follower 切换下的正确性与可用性。对照 `bd228cf6d`、
+  `0e77563e3` 与 `7b355141d`：官方迁移 stop-grpc-service-on-defrag 与 server feature gates；
+  KubeBrain 的 `Defragment` 为 no-op 平台替代，不暴露 upstream embed feature-gate contract。
+
+  对照 `e653d1ed3` 与 `cb2f7b7a6`：官方更新 etcdutl hashkv/scan-keys 离线工具。KubeBrain
+  兼容面是在线 `Hash`/`HashKV`、snapshot/backup 平台能力和 `etcdctl` 客户端行为，不承诺复刻
+  upstream bbolt 离线 DB 工具输出。对照 `b6c526202` 与 `2f9225a2a`：官方区分 rejected client/
+  peer connection warning message；KubeBrain 的 TLS/admission 兼容以 gRPC/HTTP status、authn/authz
+  和生产 readiness 为 contract，不把 upstream embed 日志文案作为 public API。对照 `1e620edf2`
+  与 `4286d6fdf`：官方只调整 clientv3 Watch metadata debug 打印，属于官方 client logging。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3816 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
