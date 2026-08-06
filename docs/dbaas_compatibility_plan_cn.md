@@ -39622,6 +39622,57 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Unavailable` 只用于 leader/freshness/proxy 等 transient 路径。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3833 与上述 commit ID；本轮不修改 runtime。
 
+- A3834 固定 upstream 3.5 早期 health exclude、context error code、defrag threshold、watch
+  resume guard、nil HTTP request、learner snapshot auth、transaction shared buffer、membership/backend
+  persistence、v2 deprecation、client logger 与 `etcdutl` split 审计。对照 `/root/etcd` commit
+  `140ea4fa2`：官方 `/health` 支持用 `?exclude=NOSPACE` 跳过 alarm health condition。KubeBrain
+  的 `/health`、`/livez`、`/readyz` 和 named subchecks 已固定 `exclude` 参数解析、NOSPACE/alarm
+  可恢复语义与未鉴权运维探针外观；数据面必须允许读、Alarm/Status/HashKV/defrag recovery 在
+  NOSPACE 期间继续执行。对照 `9a4b2bdcc`：官方把 `context canceled` 与
+  `context deadline exceeded` 映射为 gRPC `Canceled`/`DeadlineExceeded`。KubeBrain 已在 Watch、
+  Snapshot、LeaseKeepAlive proxy、Range/Put failover 和 operation runners 中区分真实取消/超时、
+  transient `Unavailable` 与 auth/validation error，不能把用户取消包装成 `Unknown` 或可重试写失败。
+
+  对照 `efc850573`：官方新增“freeable space 超阈值自动 defrag”嵌入配置。KubeBrain 在 TiKV/PD
+  数据面下不运行 upstream bbolt online defrag；公开契约是 `Defragment` 作为 no-op 平台替代仍受
+  auth 保护、不推进 revision、不改变 HashKV，容量恢复由 TiKV/PD 与 DBaaS backup/operation
+  门禁管理。对照 `68b1e9f72`：官方 client watch resume 防止空 resume slice panic。KubeBrain
+  不复用 upstream client watch 内部 slice，但 follower proxy、watch cancel/reconnect、progress
+  notify、compaction/future revision 和 cache-compatible watch 门禁覆盖 public stream 行为。对照
+  `c3303d94`：官方 embed `ServeHTTP` 对 nil request fail closed。KubeBrain HTTP handlers 和
+  generated gateway 不承诺接受 nil `*http.Request` 作为 public API；真实入口由 net/http 构造请求，
+  兼容面固定在 route、method、metadata、JSON marshal 与 typed gRPC error。
+
+  对照 `b32bc914f`：官方允许 learner 执行 snapshot RPC。KubeBrain 的三副本 DBaaS 数据面不暴露
+  upstream learner promote/mutation，但 follower/非 leader endpoint 的 `Snapshot`、`Status`、
+  `HashKV`、Watch proxy 和 read-only maintenance 已通过差分与生产探针覆盖；auth wrapper 仍必须
+  先于平台 unsupported 边界执行。对照 `98083ea91`：官方为 transaction write shared buffer 增加
+  实验 flag。KubeBrain 不使用 upstream MVCC/backend write buffer；等价 public 风险是多键 Txn
+  原子性、large Txn request/response、resource limit 和 revision monotonic，已由 Txn oracle、
+  RangeStream 与 request-limit 门禁覆盖。
+
+  对照 `205a1a442`、`ab586cd46` 与 `865df7571`：官方把 membership、Raft term、ConfState 与
+  consistent index 保存到 bbolt backend，并据此支撑 restore/verification。KubeBrain 不复用
+  upstream Raft/WAL/bbolt backend 作为复制与持久化机制；DBaaS 兼容要求是 MemberList/Status 的
+  stable member identity、非零 RaftTerm/header、SnapshotWithVersion metadata、official `etcdutl`
+  status/restore 可识别的在线 snapshot artifact，以及 TiKV/PD 恢复后 revision、lease、auth、alarm
+  状态一致。对照 `f53b70fac`：官方 hash verification 失败时关闭 backend。KubeBrain 的等价
+  fail-closed 边界是 HashKV/corruption alarm、readyz、snapshot/restore verifier 与 production
+  audit probe，不复刻 upstream backend close 流程。
+
+  对照 `79e3d7bd3`、`ead81df94` 与 `f3b4a3e57`：官方为 `--v2-deprecation` 增加 e2e、禁止与
+  `--enable-v2` 的非法组合，并判断 v2store 是否只有 metadata。KubeBrain 不支持 upstream v2 API、
+  v2store 或 v2/v3 migrate 数据面；必须 fail closed 地拒绝 v2 surface，同时保持 v3 membership、
+  snapshot restore 和 documented DBaaS startup options 明确不承诺 v2 迁移。对照 `1189ee3f3` 与
+  `06afe87b3`：官方 client 增加 logger 配置。KubeBrain 服务端只需保持官方 clientv3 可连接、
+  retry/auth/watch/lease 行为可观察，不承诺 client library logger API。
+
+  对照 `c09aca1ba`、`b6a8ae837`、`d99d0df5a` 与 `3f7a03865`：官方把直接操作数据文件的命令从
+  `etcdctl` 拆到 `etcdutl`，补 `etcdutl version`、测试覆盖和 README。KubeBrain 不嵌入 upstream
+  离线 `etcdutl` 命令；兼容面是在线 `Maintenance.Snapshot` 输出能被官方 `etcdutl snapshot
+  status/restore` 使用，平台离线备份/恢复由本仓 backup/restore/operation 工具负责。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3834 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
