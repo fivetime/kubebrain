@@ -38443,6 +38443,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   metering 工具为准。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3800 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3801 固定 dependency/CI、cache/progress、PriorityRequest 与 robustness model 审计。对照
+  `/root/etcd` commits `7940fc6d4`、`b03daafb7`、`e8579bd6a`、`48e708b93`、
+  `6ab1e0a8f`、`89df09a30`、`bd496dc5c`、`fcfcca156`、`8d279324a` 与
+  既有 `87d420821`/`fa1a81a49`：官方升级 edwards25519、grpc-gateway、x/tools、
+  otel、x/sys、grpc、x/image、tablewriter 和 golangci-lint 等依赖。KubeBrain 依赖升级
+  仍按本仓 security/release gate、全量 test/vet、镜像和生产只读验证推进，不把 upstream
+  module graph 变化直接等价成数据面协议缺口。对照 `088052549`、`68e2e9e0c`、
+  `a8cb54c52`、`78bbb5258`、`24c39afe9`、`d2fc57cb8`、`c1f9563e4` 与
+  `df975f287`：官方只升级 upload-artifact、CodeQL、github-script、docker-login、
+  setup-go 或 Antithesis workflow 权限。
+
+  对照 `277cad5fb`、`f38b97acf`、`4c7c6f15b`、`4f1cafdf7`、`5f32f68cf` 与既有 `9dffaa350`：
+  官方只整理 cherry-pick 文档/脚本、devcontainer Go version、release date/changelog 和
+  etcdctl endpoint auth changelog。etcdctl `--cluster` auth 回归已由 A3792 记录；non-admin
+  MemberList/AlarmList 已由 A3778 覆盖。对照 `e28cf778c`、`711d8687d`、`5b913af84`、
+  `2dbc77a21`、`71a27118a` 与 `6376ee099`：官方修正 common KV 测试、robustness
+  model/state accessor、traffic 抽取和 watch progress collection。KubeBrain 可吸收这些测试思想，
+  但它们不改变 v3 wire/API；watch progress notify 语义已有独立 watch/progress/consistent-list
+  门禁。
+
+  对照 `270316c4c` 与 `a4819c177`：官方 cache ringbuffer bound 和 revision-between-updates
+  Get 测试属于 upstream cache 包内部；KubeBrain 不复用该 cache 包作为数据面存储或 watch
+  索引。对照 `41ad7ef92` 与 `cc03bc4e4`：官方只简化 Range 过滤代码并补 key-ascending/limit
+  bench/test；KubeBrain Range sort/limit/filter/total-count 已由 A3774/A3790 和生产 count-only
+  smoke 覆盖。对照既有 `59ce0ce31`：PriorityRequest 让 LeaseRevoke 在 overload 下高优先级
+  apply；KubeBrain 已有 A249/A3775/A3785 的限流、LeaseRevoke 和优先级审计覆盖。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3801 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
