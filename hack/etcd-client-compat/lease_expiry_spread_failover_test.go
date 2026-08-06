@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -255,4 +256,104 @@ func TestEmptyLeaseNaturalExpiryRemainsDeletedAfterFailover(t *testing.T) {
 	require.NotNil(t, revoke.Header)
 	reused = false
 	require.Equal(t, base.Header.Revision, revoke.Header.Revision)
+}
+
+func TestFutureWatchSurvivesEmptyLeaseExpiryAndLeaderFailover(t *testing.T) {
+	failoverCommand := os.Getenv("KUBEBRAIN_LEASE_EXPIRY_SPREAD_FAILOVER_COMMAND")
+	if failoverCommand == "" {
+		t.Skip("set KUBEBRAIN_LEASE_EXPIRY_SPREAD_FAILOVER_COMMAND to delete the current live leader")
+	}
+	namespace := os.Getenv("KUBEBRAIN_FAILOVER_NAMESPACE")
+	if namespace == "" {
+		namespace = "kubebrain-dev"
+	}
+
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{compatEndpoint(t)},
+		DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(cancel)
+	key := fmt.Sprintf("/dbaas-empty-expiry-watch-failover/%d", time.Now().UnixNano())
+	base, err := cli.Get(ctx, key)
+	require.NoError(t, err)
+	lease, err := cli.Grant(ctx, 1)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanupCancel()
+		_, _ = cli.Delete(cleanupCtx, key)
+	})
+
+	watchCtx, stopWatch := context.WithCancel(ctx)
+	t.Cleanup(stopWatch)
+	watch := cli.Watch(watchCtx, key, clientv3.WithRev(base.Header.Revision+1), clientv3.WithCreatedNotify())
+	created := receiveTxnLeaseLiveWatchResponse(t, ctx, watch)
+	require.True(t, created.Created)
+	require.Empty(t, created.Events)
+	require.Equal(t, base.Header.Revision, created.Header.Revision)
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := cli.TimeToLive(ctx, lease.ID)
+		return ttlErr == nil && ttl.TTL == -1 && ttl.ResponseHeader.Revision == base.Header.Revision
+	}, 10*time.Second, 100*time.Millisecond)
+
+	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
+	require.NoErrorf(t, err, "failover command: %s", strings.TrimSpace(string(output)))
+	output, err = waitForKubeBrainRollout(t, ctx, namespace)
+	require.NoErrorf(t, err, "wait for KubeBrain recovery: %s", strings.TrimSpace(string(output)))
+	require.NoError(t, cli.RequestProgress(ctx))
+
+	quiet := time.NewTimer(300 * time.Millisecond)
+	defer quiet.Stop()
+	quietDone := false
+	for !quietDone {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok, "future watch closed after leader replacement")
+			require.NoError(t, response.Err())
+			require.False(t, response.Canceled)
+			require.Empty(t, response.Events, "empty lease expiry/failover must not emit a user event")
+			require.Equal(t, base.Header.Revision, response.Header.Revision)
+		case <-quiet.C:
+			quietDone = true
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+
+	put, err := cli.Put(ctx, key, "after-failover")
+	require.NoError(t, err)
+	require.Equal(t, base.Header.Revision+1, put.Header.Revision)
+	eventSeen := false
+	for !eventSeen {
+		select {
+		case response, ok := <-watch:
+			require.True(t, ok, "future watch closed before the post-failover event")
+			require.NoError(t, response.Err())
+			require.False(t, response.Canceled)
+			for _, event := range response.Events {
+				require.False(t, eventSeen, "post-failover event must not be replayed")
+				require.Equal(t, mvccpb.PUT, event.Type)
+				require.NotNil(t, event.Kv)
+				require.Equal(t, key, string(event.Kv.Key))
+				require.Equal(t, "after-failover", string(event.Kv.Value))
+				require.Equal(t, put.Header.Revision, event.Kv.CreateRevision)
+				require.Equal(t, put.Header.Revision, event.Kv.ModRevision)
+				require.Equal(t, int64(1), event.Kv.Version)
+				require.Zero(t, event.Kv.Lease)
+				eventSeen = true
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("future watch did not deliver the post-failover user write")
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+
+	ttl, err := cli.TimeToLive(ctx, lease.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
+	require.Equal(t, put.Header.Revision, ttl.ResponseHeader.Revision)
 }

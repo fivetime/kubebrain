@@ -36623,6 +36623,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 167.340 秒）。没有 runtime RED 或新镜像；本项执行了两次受控 leader Pod
   replacement，均已由原镜像 `kubebrain:a3672-stream-progress` 自动恢复。
 
+- A3702 把 A3700/A3701 的空 lease timer 与持久化保证扩展到同一 clientv3 future Watch 跨 leader
+  replacement 的恢复语义。watch 在 base+1 Created 后等待空 lease 自然过期；删除当前 mutation
+  leader 并等待 StatefulSet 恢复后，显式 progress 与 300ms 静默窗口都不得出现 expiry 事件或取消，
+  随后首个用户 Put 必须仍精确为 base+1，并只交付一次 key/value/create/mod/version/lease 均规范的
+  Put。测试继续在最终 TTL 响应中确认旧 lease=-1，防止 Watch 自动重连把内部 timer metadata 当作
+  用户 cursor、丢失 future registration 或重复重放。
+
+  普通轮删除 term 355 的 leader `kubebrain-2`，测试/包 20.29/20.317 秒 GREEN，Pod UID 从
+  `cdb6d548-5925-46a8-809f-f5054020c188` 变为 `59a30b1c-df42-4b50-ab95-a99c19fb7267`，term
+  升到 356、leader 转为 `kubebrain-1`。race 轮再删除该 leader，测试 15.28 秒/包 16.355 秒 GREEN，
+  `kubebrain-1` UID 从 `5060565f-06af-4557-9dc5-853886317119` 变为
+  `72d7077b-915a-4e24-8fe6-09158f618157`，term 升到 357、leader 转为 `kubebrain-0`。每轮全局
+  revision 只增加测试 Put 与清理 Delete 各一次，从 `468126003565824137` 依次到 `...139/...141`，
+  expiry 与 election 本身均未制造 revision。兼容模块全量 `go test ./... && go vet ./...` 通过
+  （测试 1.557 秒），根模块同名门禁也通过（`pkg/server/etcd` 167.111 秒）。没有 runtime RED 或
+  新镜像；两次受控 leader replacement 后最终 3/3 Ready、0 restart，仍运行
+  `kubebrain:a3672-stream-progress`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
