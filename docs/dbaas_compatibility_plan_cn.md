@@ -40546,6 +40546,57 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   initial corrupt check flag。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3851 与上述 commit
   ID；本轮不修改 runtime。
 
+- A3852 固定 upstream context 使用、embed serve 拆分、corrupt checker peer HashKV、gRPC
+  gateway `/v3beta` 迁移、gRPC/balancer/retry、promhttp、snapshot status、linearizable get、
+  server context error、logging setup、blackhole/server shutdown、lease keepalive once、
+  `ErrGRPCNotLeader` status 和 simpleToken disabled-state 审计。对照 `/root/etcd` commit
+  `f649132a5`：官方修正 auth/etcdserver context 使用。KubeBrain public contract 是 deadline、
+  cancellation、metadata auth、Bearer/JWT/simple token、root/admin context 和 auth enable/disable
+  后的错误边界，已由 auth lifecycle、gateway metadata、lease/auth、watch cancel 与 request
+  deadline 门禁覆盖。对照 `75ababa61`：官方拆分 peer/client/metrics serve 方法；KubeBrain
+  endpoint lifecycle 以 client gRPC/gateway、readiness、TLS rotation、connection age reconnect 和
+  production rollout probes 为准，不复用 upstream embed listener 结构。
+
+  对照 `08434d066`、`1ce3a41e6` 与 `f6f0fb12e`：官方扩展 corrupt checker 的 peer
+  `HashKV` 查询和 dial timeout。KubeBrain 等价腐化风险由 `HashKV`、CORRUPT alarm、
+  `/readyz/data_corruption`、direct replica consistency、snapshot/restore verifier 和 production
+  readiness 覆盖；没有 upstream peer bbolt hash checker。对照 `6a4a30f5d`、`fe7b094f6`、
+  `0f9f45272`、`c706c6e23`、`5fd419ff5`、`02be1ace5`、`980942fa4`、`ab526e881` 与
+  `ce6bb4f1c`：官方升级 grpc-gateway 并把 gateway 路径从 `/v3alpha` 迁移到 `/v3beta`。
+  KubeBrain 承诺 stable `/v3` gateway，并兼容 rewrite `/v3beta/` 到 `/v3/`，已由
+  generated routes、base64 bytes、integer boundary、unknown fields、typed error mapping、
+  streaming/WebSocket 和 `/v3beta/kv/range` tests 固定；3.7 DBaaS 不承诺 legacy `/v3alpha`。
+
+  对照 `79446ea67`、`627cffd6f`、`993a0cf56`、`527d03e0d` 与 `973857107`：官方把
+  gRPC/HTTP metrics 切到 promhttp 并初始化 gRPC server metrics。KubeBrain 已用 Prometheus
+  wrapper/promhttp、gRPC interceptors、request duration、watch send-loop、alarm/quota metrics、
+  operation audit 和 production metrics probes 固定可观察面；metric-name exact parity 继续由
+  observability 文档和专项测试跟踪。对照 `f0497de21`、`deb514989`、`977f33a5a`、
+  `cdc71ae38`、`6127f785a`、`1fa295e3b` 与 `4b1e09f2b`：官方升级 grpc-go 并调整
+  client/server logging setup。KubeBrain 日志不承诺 upstream 文案，兼容边界是 gRPC status、
+  structured logs、operation audit、deadline/cancel 和 rollout/readiness probes。
+
+  对照 `c669ff976`、`103efd922`、`012b01353`、`52f4bc906`、`706cf2033`、
+  `8d23e1c87`、`8d5c284b6`、`bea930f44`、`0bfc6a0d9`、`109f52e3d`、
+  `63ab5addf` 与 `725df7066`：官方修复 clientv3 balancer、retry、blackhole、server
+  shutdown 和 linearizable get 测试。KubeBrain 服务端不移植 official client balancer 内部；
+  public 行为由 MemberList/AutoSync endpoint health、TLS/readiness、WithRequireLeader、
+  leader fencing、failover/restart、linearizable Range/Txn 和 clientv3 differential 门禁覆盖。
+  对照 `0ce02abf5` 与 `7ffcca594`：官方避免 `snapshot status` 修改 DB 并关闭 snapshot
+  backend FD。KubeBrain 不嵌入 etcdctl snapshot command；online `Maintenance.Snapshot`、
+  SnapshotWithVersion、stream context boundary、incomplete FD close、official status/restore 和
+  restore verifier 已固定对外语义。
+
+  对照 `f48fe8ecd`、`5d98710b2`、`2feb8ba54` 与 `d3c964376`：官方修正 server
+  context error/status、弃用 `grpc.Errorf`、把 `ErrGRPCNotLeader` 映射为
+  `codes.FailedPrecondition`，并让 simpleToken assign 尊重 disabled state。KubeBrain 已由
+  MoveLeader/follower/member mutation precondition、typed status code、auth enable/disable、
+  token invalidation、auth disabled after credentialed connection 和 gateway metadata tests 覆盖。
+  对照 `a41f3b64a`、`aaf4a70cd` 与 `cb188d0b2`：官方暴露 integration election timeout 并补
+  lease keepalive `--once` e2e。KubeBrain 的 Lock/Election、lease TTL/KeepAlive/Revoke、
+  failover expiry、session recipe 和 clientv3 compat suite 已覆盖服务端 wire contract。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3852 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
