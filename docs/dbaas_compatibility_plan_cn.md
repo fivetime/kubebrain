@@ -37439,6 +37439,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 170.123 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
   `readyz=ok`，`/a3749/` 与 `/compat/` 均无 KV；reference data-dir 与所有临时 clone 均已清理。
 
+- A3750 对照 upstream `/root/etcd` commit `55988933b` 的 `etcdctl txn -i` 单引号参数解析修复。
+  旧 `Argify` 在裁剪单引号 token 时误用整体 `len(args)`，交互事务中的 `put 'key with spaces'
+  'value with spaces'` 会被截断为单字符 key/value；这不是 KubeBrain 服务端语义差异，但会影响
+  DBaaS 运维和用户脚本直接使用官方 `etcdctl` 访问 KubeBrain。新增黑盒差异测试通过官方
+  `etcdctl --interactive` stdin 执行 txn，分别访问一次性 reference etcd 与生产 KubeBrain，要求事务
+  输出 `SUCCESS`，随后用 clientv3 读取精确 quoted key，确认唯一 KV、完整 value 和 version=1，并清理
+  精确 key。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `55988933b^`，只给临时 clone 添加最小
+  `TestArgifySingleQuotedTxnArgs`；旧版 `Argify("put 'a3750 quoted key' 'a3750 quoted value'")`
+  返回 `[]string{"put","a","a"}`，测试 0.036 秒失败。当前官方 `etcdctl` + reference/KubeBrain 双端
+  普通连续 20 轮通过（2.933 秒），`-race` 连续 10 轮通过（2.759 秒）。该修复属于官方 CLI，本轮无
+  服务端或镜像变更。兼容模块 `go test ./...`（120.936 秒）及 `go vet ./...` 通过；根模块
+  `go test ./...`（`pkg/server/etcd` 172.340 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、
+  零重启，镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`a3750/`、`/a3750/`
+  与 `/compat/` 均无 KV；reference data-dir 与临时 clone 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
