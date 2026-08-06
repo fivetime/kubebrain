@@ -38072,6 +38072,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   它把 Watch/grpcproxy pointer alias 风险映射到已有公开流式 oracle，并把 etcdutl/etcdctl 内部
   工具健壮性改动限定在“消费 KubeBrain 输出的官方工具必须继续成功”的兼容边界内。
 
+- A3784 固定 upstream stale-read / ReadIndex 与 robustness traffic context 审计。对照
+  `/root/etcd` commits `9f83a29b3` 与 `e2f4f485e`，官方修复两类线性读 freshness 风险：
+  leader 变化期间旧 ReadIndex response 不能被新 leader term 的请求复用，且每个正在等待的读请求
+  必须使用在其到达之后发起的 ReadIndex，避免 process pause 或 leader change 后返回 stale read。
+  KubeBrain 不使用 Raft ReadIndex；等价风险面是 follower/旧 leader 通过 `/status` 向当前
+  KubeBrain leader 拉取 TiKV committed revision 时，不能把中途到达读请求并入已经在途的旧 fetch，
+  也不能在 leader flag 陈旧或 leader generation 变化后接受旧 response。该风险已由 A363/A3510
+  系列之后的 revision syncer 门禁覆盖：`TestReadIndexMidFlightReaderGetsFreshFetch` 要求中途到达
+  的 reader 触发 fresh fetch，`leader changed while fetching revision` fail-closed 路径和
+  follower historical/linearizable Range、Txn、MemberList、Maintenance read-barrier 测试共同固定
+  客户端可观察语义。
+
+  对照 `7cd78f3dc`，官方只修正 robustness `etcdTrafficClient.Request()` 中 List/StaleList
+  使用错误 context 的测试流量问题；对照 `d0d5daf4f` 与 `5dadbf2db`，官方补充 stale-read
+  changelog 和 robustness 文档。KubeBrain 的生产数据面不复用 upstream robustness traffic client，
+  但同类一致性风险已通过真实 linearizable Range/Txn/MemberList、failover、lease read 和 watch
+  backend failover 黑盒门禁覆盖。本轮新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3784 和上述
+  commit ID，防止后续把已闭环的 Raft ReadIndex 风险重复当作未实现缺口，或把 upstream 测试流量
+  context 修复误归类为 runtime 变更。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
