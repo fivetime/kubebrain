@@ -113,6 +113,24 @@ type transientCASStorage struct {
 	failUntil atomic.Int64
 }
 
+type cancelAfterFirstTxnReadStorage struct {
+	storage.KvStorage
+	enabled atomic.Bool
+	reads   atomic.Int32
+	cancel  context.CancelFunc
+}
+
+func (s *cancelAfterFirstTxnReadStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	value, err := s.KvStorage.Get(ctx, key)
+	if s.enabled.Load() && s.reads.Add(1) == 1 {
+		s.cancel()
+	}
+	return value, err
+}
+
 func (s *transientCASStorage) BeginBatchWrite() storage.BatchWrite {
 	if time.Now().UnixNano() < s.failUntil.Load() {
 		return transientCASBatch{}
@@ -203,6 +221,54 @@ func TestTxnApplyWithoutCallerDeadlineRetainsFallback(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrUnavailable)
 	require.Greater(t, time.Since(started), 900*time.Millisecond)
 	require.Less(t, time.Since(started), 3*time.Second)
+}
+
+// TestTxnApplyCancellationDuringPrepareLeavesNoPartialWrites pins the atomicity
+// invariant behind upstream etcd commit 8a0fd66db. Cancellation after the first
+// storage read of a multi-operation transaction must abort before the single
+// batch commit, leaving every key and the public revision unchanged.
+func TestTxnApplyCancellationDuringPrepareLeavesNoPartialWrites(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	raw := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	wrapped := &cancelAfterFirstTxnReadStorage{KvStorage: raw}
+	b := NewBackend(wrapped, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metrics).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	ctx := context.Background()
+	keyA := []byte(prefix + "/cancel-prepare/a")
+	keyB := []byte(prefix + "/cancel-prepare/b")
+	seedA, err := b.Create(ctx, &proto.CreateRequest{Key: keyA, Value: []byte("a0")})
+	require.NoError(t, err)
+	seedB, err := b.Create(ctx, &proto.CreateRequest{Key: keyB, Value: []byte("b0")})
+	require.NoError(t, err)
+	require.Greater(t, seedB.Header.Revision, seedA.Header.Revision)
+	baselineRevision := b.GetCurrentRevision()
+
+	applyCtx, cancel := context.WithCancel(ctx)
+	wrapped.cancel = cancel
+	wrapped.enabled.Store(true)
+	results, revision, err := b.TxnApply(applyCtx, []TxnWriteOp{
+		{Key: keyA, Value: []byte("a1")},
+		{Key: keyB, Value: []byte("b1")},
+	}, nil)
+	cancel()
+	wrapped.enabled.Store(false)
+
+	require.ErrorIs(t, err, context.Canceled)
+	require.Nil(t, results)
+	require.Zero(t, revision)
+	require.Equal(t, baselineRevision, b.GetCurrentRevision())
+	valueA, revisionA := liveValue(t, b, ctx, keyA)
+	valueB, revisionB := liveValue(t, b, ctx, keyB)
+	require.Equal(t, "a0", valueA)
+	require.Equal(t, seedA.Header.Revision, revisionA)
+	require.Equal(t, "b0", valueB)
+	require.Equal(t, seedB.Header.Revision, revisionB)
 }
 
 // TestTxnApplySingleRevisionAtomic verifies a mixed put/delete txn applies all
