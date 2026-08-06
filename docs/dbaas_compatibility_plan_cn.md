@@ -40871,6 +40871,66 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   production probes 固定 DBaaS 对外运维语义。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
   A3856 与上述 commit ID；本轮不修改 runtime。
 
+- A3857 固定 upstream ConsistentIndex/config-change、client balancer race、TLS reload/expired
+  cert、Election observe/revision、watch creation revision/resume、auth header revision、whole
+  keyspace Range、Status no-auth、MemberList response、peer cert IP SAN、v3lock/v3election
+  gateway 和 RangeEnd normalization 审计。对照 `/root/etcd` commit `e33b10a66`、
+  `5533c3058` 与 `04354f32a`：官方确保 config change/conf change entry 更新
+  ConsistentIndex 并等待 apply。KubeBrain 不运行 upstream Raft log；对外 consistency 由
+  leader fencing、revision monotonicity、MemberList stability、write/read linearizability、
+  failover/restart 和 production probes 固定。
+
+  对照 `43e5f892f`、`46971fa1d` 与 `9b8e39e7c`：官方修复 clientv3 balancer
+  endpoint race，并允许 dial 非 balancer endpoint。KubeBrain 服务端 public contract 是 endpoint
+  health、TLS/readiness、MemberList/AutoSync、WithRequireLeader 和 clientv3 differential；official
+  client balancer 内部不 vend。对照 `b0e9d24fb`、`ba299bcaa`、`c407e097e` 与
+  `ea5f6dab6`：官方修复 embed close/grpc server start/OS interrupt。KubeBrain endpoint
+  lifecycle 由 graceful shutdown、watch/lease stream cancel、connection age reconnect、
+  TLS rotation、rollout/readiness 和 production probes 约束。
+
+  对照 `cfeab9324`、`22943e7e0`、`4e21f87e3`、`f674a1b58`、`cad1215b1`、
+  `dee467dc2` 与 `4f27981c4`：官方扩展 TLS reload、expired/wrong cert 错误、每请求 reload
+  cert、peer IP SAN、TLS 1.2 和 unix socket URL 处理。KubeBrain 已固定 client/peer TLS、
+  client-cert-auth requires CA、AllowedCNs/AllowedHostnames、verified CommonName auth、CRL smoke、
+  TLS rotation 和 production cert probes；不承诺 upstream CLI/SRV/unix socket surface。
+
+  对照 `50f29bd66`、`6486be673`、`c1300c81b`、`31d5d610f`、`4b4f5be74`、
+  `80c1b9c13`、`d1ae4cd5b`、`4b5bb7f21` 与 `a6cab69c8`：官方收敛
+  Election/Observe/STM helpers 的 revision、resume 和 header 行为。KubeBrain 服务端
+  Lock/Election、session TTL、owner compare/delete、failover expiry、leader revision 和
+  concurrency recipe tests 固定 public recipe；client helper 内部不移植。对照 `93594006d`、
+  `78a5eb79b`、`78422eaa1`、`bf047ed9d` 与 `dc8115a53`：官方注册 v3lock/v3election
+  gateway/Swagger/Election service。KubeBrain 已在 gRPC 与 gateway 层覆盖 Lock/Election
+  recipe、WebSocket/streaming、auth metadata 和 typed errors。
+
+  对照 `3ce31acda`、`ca4acceb1`、`4ab818a85`、`ec470944f`、`0e7fd4a37`、
+  `aab2eda7d` 与 `135a40751`：官方修复 watch context、creation revision 初始化、断连前
+  first event resume、namespace prefix-end、waitCancelSubstreams 和空 `RangeEnd` 归一化。
+  KubeBrain watch 已覆盖 create/update/delete classification、client-assigned watch ID、progress/
+  request-progress、namespace/prefix/range watch、cancel unknown/existing、resume through failover、
+  compaction canceled 和 production watch probes。对照 `f92c11e1f` 与 `f0143916d`：官方把
+  empty-key `WithPrefix()` 翻译为 from-key 并测试全 keyspace Range。KubeBrain empty-key
+  namespace differential、Range/RangeStream from-key、count/keys-only/limit/sort 和 raw/client
+  differential 已覆盖。
+
+  对照 `01b6cdf13` 与 `d5f414f69`：官方收敛 lease Revoke→TimeToLive ordering 和 lease
+  client error 后不停止。KubeBrain lease TTL/Revoke/KeepAlive、failover expiry、follower lease
+  reads、batch/long renewal、missing lease error 和 production lease smoke 已覆盖服务端 contract。
+  对照 `e1306bff`、`81291b23b`、`253e5a90b`、`ac69e63fa`、`fdf779813`、
+  `18bccb428`、`712f6cb0e`、`c4a45c571` 与 `3edd36315`：官方处理
+  AuthNotEnabled、user error、Auth API header revision、simple token race/enabled check、
+  range permission comparable 和 authStore revision atomic。KubeBrain auth lifecycle、header
+  revision、JWT/Bearer/simple token、auth disabled after credentialed connection、range permission、
+  role/user get/list 和 auth differential tests 已覆盖。
+
+  对照 `5000d29b4`、`472a53605`、`67f2e41f`、`d9ec6b4d2`、`4f9aa276b`、
+  `2bc1dfd92` 与 `7388911e0`：官方收敛 Hash stopc、inflight range、Status no-auth、
+  v3 RPC 返回 updated member list、SerializableSnapshot rename、gRPC proxy SRV discovery 和
+  etcdctl debug flag。KubeBrain Status/HashKV、auth-free Status diagnostics、MemberList stable
+  response、large/inflight Range, static service discovery, operation audit 和 docs/compat 表固定
+  DBaaS public behavior。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3857 与上述 commit
+  ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
