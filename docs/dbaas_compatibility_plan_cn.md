@@ -39879,6 +39879,54 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   tests 约束 public correctness，不迁移 upstream 互斥实现。新增 `TestRecentUpstreamAuditIsRecorded`
   钉住 A3838 与上述 commit ID；本轮不修改 runtime。
 
+- A3839 固定 upstream grpcproxy watch locking、cluster version metric、IPv6 endpoint parsing、
+  compaction/raft tracing、TLS authority、PeerURL validation、ZapLoggerBuilder、Mutex.TryLock、
+  TLS max version、store revision metrics、nil options、client Close、compaction batch limit、
+  watch progress notify 和 snapshot/raft metrics 审计。对照 `/root/etcd` commit `e8a60d735` 与
+  `a0b2c6ad4`：官方 grpcproxy watch map/ID 路径补锁和 unlock。KubeBrain 不运行 upstream
+  grpcproxy 二进制；等价 public 风险由 follower watch proxy、watch cancel/failover、shared client
+  cancellation、progress resume floor 和 watch send-loop metrics 门禁覆盖。对照 `017b6c424`：官方
+  grpc stream transport attempt 防 panic。KubeBrain 只需保持 official client 的 Canceled/
+  DeadlineExceeded/Unavailable 分类和后续连接可恢复，不迁移 vendored grpc 内部。
+
+  对照 `1333abc60` 与 `9c4194f6e`：官方 cluster version 指标去 patch 并清理旧 version label。
+  KubeBrain 的 `/version`、Status version/storageVersion、DowngradeInfo、cluster version 文档和
+  production rollout gate 已固定；Prometheus cluster version label 若要求 upstream 名称级兼容，应
+  另建 metric oracle。对照 `57aa68af5`、`3830b3ef1`、`f4e7fc56a`、`401df4bb8` 与 `3a3eb24c6`
+  相关 tracing 变更：官方为 Range/Put/Compact/raft request 增加 trace steps。KubeBrain 不复用
+  upstream raft/MVCC trace pipeline；等价可观察性由 request duration、read-amp baseline、
+  operation audit、slow range/count-index 和 production probes 覆盖。
+
+  对照 `594354b88` 与 `97388ce45`：官方修复 IPv6 client endpoint parsing，并使用 endpoint host
+  作为 TLS authority。KubeBrain endpoint/config、advertise-host、initial-cluster、advertised client
+  URLs、TLS ServerName、proxy authority 和 production readiness 已覆盖 bracketed IPv6、非法裸 IPv6
+  拒绝、SAN/ServerName 和 AutoSync endpoint 可达性。对照 `0dd10cf6b`：官方修复 PeerURL validation。
+  KubeBrain MemberAdd/MemberUpdate 已在 auth/platform-boundary 前执行 PeerURL 语法、重复、冲突和
+  unsafe character 校验，并保持 `FailedPrecondition`/`InvalidArgument` typed error。
+
+  对照 `e8660c0ce`：官方 embed 暴露 `ZapLoggerBuilder`。KubeBrain 不暴露 upstream embed API；
+  server logging 和 runtime config 由本仓 endpoint/options 管理。对照 `04ddfa8b8`：官方
+  concurrency `Mutex.TryLock`。KubeBrain 作为服务端需保持 Lock/Election/Concurrency recipe 使用的
+  KV/lease/txn/watch 语义；TryLock、session close、orphan expiry 和 Cilium lock smoke 已覆盖。
+  对照 `a3f7202c5`：官方把 TLS MaxVersion 限到 TLS1.2。KubeBrain 显式支持 TLS min/max version
+  配置、TLS1.2/TLS1.3-only、client-cert auth、CRL 和 rotation；不复刻 upstream 旧默认限制。
+
+  对照 `0f8c46a0f`、`06b82c200` 与 `46bddacac`：官方新增 store revision、snapshot apply inflight
+  和 network snapshot inflight metrics。KubeBrain 不复用 upstream raft snapshot/network transport；
+  公开可观测面由 Status/HashKV/Snapshot、request duration、watch/alarm/quota metrics、backup
+  verifier 和 production storage probes 覆盖。对照 `ade5337b9`：官方 auth store nil options
+  防护。KubeBrain auth config validation、provider parsing、bcrypt cost/token TTL defaults 和
+  startup fail-closed 门禁覆盖用户可见配置错误。对照 `7f47de841`：官方 client Close nil check。
+  KubeBrain server 侧不承诺 client Close 内部实现。
+
+  对照 `9b51febaf` 与 `d57bc6e72`：官方新增 compaction batch limit 并优化 compaction pause。
+  KubeBrain physical compaction 是 TiKV/PD 数据面策略，public contract 是 Compact revision
+  watermark、tombstone/history retention、watch compacted error、HashKV/Snapshot/readyz 和 recovery
+  可观察性；不迁移 upstream bbolt compaction batch flag。对照 `c0de07052`：官方 etcdctl watch
+  支持 progress notify。KubeBrain Watch、follower proxy、cache wrapper 和 live progress cadence
+  已固定 `WithProgressNotify`/RequestProgress 行为。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
+  A3839 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
