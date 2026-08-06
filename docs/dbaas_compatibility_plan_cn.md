@@ -36779,6 +36779,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与分支惰性证据，不重建或滚动数据面；一次性 reference 已停止，精确临时目录及测试日志已删除
   且不可恢复，只含本轮 oracle 数据。
 
+- A3713 回到近期上游高风险变更审计：RBAC PrevKV/leased Put、Bearer token、CRL resumed session、
+  RangeStream pinned revision 与 KEY+ASC limit 优化均已有直接永久门禁，没有重复包装或伪造缺口。
+  为扩大未知差异发现面，新增固定 seed=3713 的 64-case 生成式 Range 官方双端差分。数据集包含
+  独立 revision 的五键创建、更新、删除与重建；请求组合覆盖 point/prefix、current/全部历史 revision、
+  KEY/VERSION/CREATE/MOD/VALUE 五类 sort、NONE/ASCEND/DESCEND、0/1/2/4/MaxInt64 limit、
+  KeysOnly/CountOnly，以及无 filter、四类单边 revision filter 和两类矛盾上下界。结果逐项比较错误、
+  header revision ordinal、Count/More、顺序、key/value/create/mod/version/lease。独立结构门禁要求固定
+  seed 实际命中所有 option family，避免随机矩阵静默退化。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 1.130 秒、连续 10 轮
+  （测试 9.890 秒）及 race 5 轮（测试 6.546 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 2.926 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 167.746 秒）。没有 runtime RED，本项新增永久生成式差分，不重建或滚动
+  数据面；一次性 reference 已停止，精确临时目录及测试日志已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
