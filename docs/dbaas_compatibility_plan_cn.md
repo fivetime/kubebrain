@@ -37656,6 +37656,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮只增加 client
   concurrency 黑盒门禁，不改变 runtime 镜像。
 
+- A3762 对照 upstream `/root/etcd` commit `f5912263` 的 invalid watch create response header
+  语义。上游修复的是 `server/proxy/grpcproxy` 中 range invalid 的 watch create 拒绝路径：即使响应
+  是 `Created=true`、`Canceled=true`、`WatchId=-1` 的 terminal control response，也必须携带
+  非 nil `ResponseHeader`，否则 client 侧无法统一依赖 watch response envelope。
+
+  为建立真实 RED，在 `/tmp` worktree 检出 `f5912263^`，只给旧 `server/proxy/grpcproxy` 包添加
+  最小源码契约测试，定位 `if !w.wr.valid()` 分支并要求该分支发布的 `pb.WatchResponse` literal
+  包含 `Header:` 字段；旧版分支为
+  `w.post(&pb.WatchResponse{WatchId: clientv3.InvalidWatchID, Created: true, Canceled: true})`，
+  测试 0.045 秒失败。当前 `/root/etcd/server/proxy/grpcproxy` 在
+  `GOWORK=off GOFLAGS=-mod=mod` 下编译通过（无包内测试文件）。
+
+  KubeBrain 不使用 upstream grpcproxy 的该具体实现，但 public gRPC Watch 外观必须一致。新增 compat
+  live 测试直连生产 KubeBrain Watch stream，发送 `Key == RangeEnd` 的 invalid create request，
+  断言返回 `Header != nil`、`WatchId=-1`、`Created=true`、`Canceled=true`、无 events，且
+  `CancelReason == "mvcc: watcher range is empty"`。该测试 0.036 秒 GREEN；服务层已有
+  `canceledWatchCreateResponse` helper 单测持续固定所有本地 canceled-create 响应均带 header。
+
+  兼容模块 `go test ./...`（1.580 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 167.456 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮只增加 watch control
+  response 黑盒门禁，不改变 runtime 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
