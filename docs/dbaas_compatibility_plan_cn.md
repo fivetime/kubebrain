@@ -37522,6 +37522,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/compat/` 无 KV；
   临时 clone 已清理。
 
+- A3755 对照 upstream `/root/etcd` commit `36d0f9ac` 的 `clientv3.WatchResponse.Header`
+  指针语义。上游把 public `WatchResponse.Header` 从 value 改为 `*ResponseHeader`，并让 close/progress
+  响应持有非 nil header，从而与 protobuf watch response 和后续 `IsProgressNotify` nil-safe 语义一致。
+  新增 compat 单元测试用编译期断言固定 `WatchResponse{}.Header` 可赋给 `*etcdserverpb.ResponseHeader`，
+  并验证空 response 不 panic 且 `Header.Revision>0` 的空响应被识别为 progress notify。
+
+  为建立真实 RED，在 `/tmp` shared clone 检出 `36d0f9ac^`，只给临时 clone 添加最小
+  `TestWatchResponseUsesPointerHeader`；旧版 `Header` 仍是 `etcdserverpb.ResponseHeader` value，
+  编译失败并报告不能把 struct value 赋给 `*etcdserverpb.ResponseHeader`。当前 `/root/etcd` client
+  定向测试 0.014 秒 GREEN。该修复属于官方 client API 结构语义，本轮无服务端或镜像变更。兼容模块
+  `go test ./...`（1.607 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 167.969 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`，`/compat/` 无 KV；临时 clone
+  已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
