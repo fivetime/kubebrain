@@ -37856,9 +37856,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `type=<Range|Txn|Put|DeleteRange>`、`success=<true|false>`。新增
   `TestEmitEtcdRequestDurationUsesUpstreamMetricNameAndLabels` 固定 metric 名、秒级 value 与标签；
   `TestRecentUpstreamAuditIsRecorded` 固定 `9cdb1cf8`/A3772 审计记录。本轮未把
-  `71a9ffe87` 的 watch send-loop debugging histograms 误标为已实现：KubeBrain watch pipeline
-  已有 DBaaS-native watch buffer/stale/drop 指标，但 send-loop internal histogram 仍是后续
-  observability parity gap。
+  `71a9ffe87` 的 watch send-loop debugging histograms 混入 request duration 变更；该
+  observability parity 点由 A3773 单独跟进。
+
+- A3773 对照 upstream `/root/etcd` commit `71a9ffe87` 的 watchstream send-loop
+  observability。上游在 `server/etcdserver/api/v3rpc/metrics.go` 新增四个 public `/metrics`
+  histogram 名：
+  `etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds`、
+  `etcd_debugging_server_watch_send_loop_watch_stream_duration_per_event_seconds`、
+  `etcd_debugging_server_watch_send_loop_control_stream_duration_seconds` 和
+  `etcd_debugging_server_watch_send_loop_progress_duration_seconds`，用于定位 watch cache 初始化或
+  大量 watch response 发送时的 server-side send loop 耗时。
+
+  KubeBrain 的 watch pipeline 与 upstream `serverWatchStream.sendLoop` 不同：data event、
+  create/cancel/control response 和 progress response 分别由 DBaaS watcher 与 control queue 发送。
+  本轮不改 watch 语义，只在对应发送点补 upstream metric 名：data event batch 成功尝试发送后记录
+  watch-stream 总耗时和 per-event 平均耗时；control queue 每次 wire send 记录 control-stream
+  耗时；progress response 每次 wire send 记录 progress 耗时。新增
+  `TestEmitWatchSendLoopDurationsUseUpstreamMetricNames` 固定四个 dotted metric 名、秒级 value 和
+  无 label 边界；Prometheus wrapper 继续按既有规则把 `.` 转成 `_`，因此暴露名与 upstream 一致。
+  `TestRecentUpstreamAuditIsRecorded` 固定 `71a9ffe87`/A3773 审计记录。真实 RED 同 A3772：本轮前生产
+  `/metrics` 不包含这些 watch send-loop upstream metric 名；本轮代码补齐后需随下一次 runtime 镜像滚动
+  生效。
 
 ### P2：运维兼容和长期验证
 

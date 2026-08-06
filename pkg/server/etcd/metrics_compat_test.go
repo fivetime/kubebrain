@@ -74,3 +74,25 @@ func TestEmitEtcdRequestDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
 		metrics.Tag("success", "false"),
 	}, rec.histograms[1].tags)
 }
+
+func TestEmitWatchSendLoopDurationsUseUpstreamMetricNames(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	emitWatchSendLoopWatchStreamDuration(rec, 2*time.Second, 4)
+	emitWatchSendLoopControlStreamDuration(rec, 1500*time.Millisecond)
+	emitWatchSendLoopProgressDuration(rec, 250*time.Millisecond)
+
+	require.Len(t, rec.histograms, 4)
+	require.Equal(t, "etcd_debugging.server.watch_send_loop.watch_stream.duration.seconds", rec.histograms[0].name)
+	require.Equal(t, 2.0, rec.histograms[0].value)
+	require.Empty(t, rec.histograms[0].tags)
+	require.Equal(t, "etcd_debugging.server.watch_send_loop.watch_stream.duration_per_event.seconds", rec.histograms[1].name)
+	require.Equal(t, 0.5, rec.histograms[1].value)
+	require.Empty(t, rec.histograms[1].tags)
+	require.Equal(t, "etcd_debugging.server.watch_send_loop.control_stream.duration.seconds", rec.histograms[2].name)
+	require.Equal(t, 1.5, rec.histograms[2].value)
+	require.Empty(t, rec.histograms[2].tags)
+	require.Equal(t, "etcd_debugging.server.watch_send_loop.progress.duration.seconds", rec.histograms[3].name)
+	require.Equal(t, 0.25, rec.histograms[3].value)
+	require.Empty(t, rec.histograms[3].tags)
+}

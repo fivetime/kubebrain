@@ -743,7 +743,9 @@ func (w *watcher) SendControlAndWait(resp *etcdserverpb.WatchResponse) error {
 func (w *watcher) sendControls() {
 	defer w.controlWG.Done()
 	for control := range w.controlCh {
+		start := time.Now()
 		err := w.Send(control.resp)
+		emitWatchSendLoopControlStreamDuration(w.metricCli, time.Since(start))
 		if control.done != nil {
 			control.done <- err
 		}
@@ -938,11 +940,13 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			} else {
 				w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
 				w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
+				start := time.Now()
 				if r.Fragment {
 					sendErr = sendWatchFragments(watchResponse, w.grpcServer.watchFragmentBytes(), w.Send)
 				} else {
 					sendErr = w.Send(watchResponse)
 				}
+				emitWatchSendLoopWatchStreamDuration(w.metricCli, time.Since(start), len(events))
 			}
 			if sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.push.err", 1)
@@ -989,14 +993,40 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				WatchId: id,
 			}
 			w.metricCli.EmitGauge("watch.watch_stream.progress", progressResp.Header.Revision)
+			start := time.Now()
 			if sendErr = w.Send(progressResp); sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.progress.err", 1)
 				klog.ErrorS(sendErr, "[watch stream] progress send err, cancel", "watcher", w.id, "watch", id)
 				w.Cancel(id, sendErr, false)
 				cancel()
 			}
+			emitWatchSendLoopProgressDuration(w.metricCli, time.Since(start))
 		}
 	}
+}
+
+func emitWatchSendLoopWatchStreamDuration(metricCli metrics.Metrics, duration time.Duration, eventCount int) {
+	if metricCli == nil {
+		return
+	}
+	metricCli.EmitHistogram("etcd_debugging.server.watch_send_loop.watch_stream.duration.seconds", duration.Seconds())
+	if eventCount > 0 {
+		metricCli.EmitHistogram("etcd_debugging.server.watch_send_loop.watch_stream.duration_per_event.seconds", duration.Seconds()/float64(eventCount))
+	}
+}
+
+func emitWatchSendLoopControlStreamDuration(metricCli metrics.Metrics, duration time.Duration) {
+	if metricCli == nil {
+		return
+	}
+	metricCli.EmitHistogram("etcd_debugging.server.watch_send_loop.control_stream.duration.seconds", duration.Seconds())
+}
+
+func emitWatchSendLoopProgressDuration(metricCli metrics.Metrics, duration time.Duration) {
+	if metricCli == nil {
+		return
+	}
+	metricCli.EmitHistogram("etcd_debugging.server.watch_send_loop.progress.duration.seconds", duration.Seconds())
 }
 
 // openWatchChannel binds one watch generation to the authoritative source for
