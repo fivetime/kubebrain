@@ -36581,6 +36581,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含
   本轮 oracle 数据。
 
+- A3699 将 A3698 的空 lease unary 路径扩展到已绑定 key 的双向流 LeaseKeepAlive。场景先以 lease
+  创建 seed key，再从 seed+1 建立带 PrevKV 的 future watch；同一 stream 连续两次 KeepAlive 必须
+  都返回 TTL=300 且 header 停在 seed revision，TimeToLive 仍精确列出 attached key。此后显式
+  WatchProgress 必须保持静默，直到同 lease 更新 seed key 才产生唯一 gap 1、version=2 的 Put，current
+  与 PrevKV 的 key/value/create/mod/version/lease 全部精确；最终 progress 才允许返回 gap 1。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.600 秒、连续 10 轮
+  （测试 5.709 秒）及 race 5 轮（测试 4.005 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.564 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 166.344 秒）。没有 runtime RED，本项只增加永久 KeepAlive stream/Watch cursor
+  隔离证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，
+  只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
