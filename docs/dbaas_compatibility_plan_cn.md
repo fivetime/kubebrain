@@ -38180,6 +38180,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目标是把最新非 public-runtime 变更从兼容 backlog 中明确排除，后续筛选继续优先处理会影响
   官方 client、etcdctl、HTTP gateway、metrics 或安全策略的可观察差异。
 
+- A3790 固定 upstream Range `WithTotalCount`/`CountOnly` MVCC 优化审计。对照 `/root/etcd`
+  commits `2f5dfcb17`、`d17f227ff`、`c2d1aece7`、`054a7fe12`、`05e4e4b4f`
+  与 `6b049c3ec`：官方把 `RangeOptions.Count` 重命名为 `CountOnly`，为 `Range`
+  增加 `withTotalCount` 快速 total-count 路径，并补充/整理 treeIndex `Revisions`
+  在 limit 与 total count 组合下的单元和 benchmark 覆盖。客户端可见契约不是内部 index
+  结构，而是 `RangeRequest.CountOnly`、limit、`More`、revision filter、current/historical
+  revision 和 nested Txn staged writes 组合下的 `Count/Kvs` 外观必须保持 etcd 语义。
+
+  KubeBrain 不复用 upstream MVCC treeIndex；它通过 TiKV-backed range scan、count index、
+  follower count proxy 与 Txn staged evaluator 实现同一 public contract。现有覆盖包括
+  `TestRangeCountOnlyTakesPrecedenceOverKeysOnly`、`TestCountOnlyHonorsRequestRevision`、
+  `TestRevisionedCountOnlyMatchesRangeAcrossHistory`、historical tombstone CountOnly、filtered
+  CountOnly ignores limit、Range/RangeStream CountOnly 差分，以及大量 generated nested Txn
+  `CountOnly` cases。A3774/A3780/A3785 又把 fast keys-only、min/max create/mod filter、
+  value sort、KeysOnly 与 historical multiversion 维度纳入结构门禁。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3790 和上述 commit ID。本轮不修改 runtime；
+  目标是把 upstream MVCC 优化与命名整理映射到 KubeBrain 已有 public Range/Txn oracle，后续只有
+  当官方新增客户端可观察行为时才建立新的专项 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
