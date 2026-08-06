@@ -38387,6 +38387,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不复用 upstream Raft/WAL/bbolt/snapshot 作为 TiKV/PD 数据面的复制和恢复机制，不能机械移植。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3798 与上述 commit ID；本轮不修改 runtime。
 
+- A3799 固定 RangeStream/MemberUpdate 周边、protobuf pointer 测试迁移、rafthttp 与工具链审计。
+  对照 `/root/etcd` commits `d57b7bd07`、`fd5b954e4`、`f82ebf8bd`、`5bf99790d`、
+  `df8d4b7b2`、`52ec2dab3`、`90eb18e40`、`e4f7f03d`、`5874f816d` 与
+  `271349639`：这些只调整 devcontainer/workflow permission、distroless、stale/CodeQL/
+  dependabot/Antithesis action、coverage 脚本、shellcheck 和 Kubernetes coverage patch。
+  对照 `896701f59`、`41f3f7dfa`、`8459f2c3a`、`3d2075c8c` 与 `3a5e651b0`：
+  这些只更新 changelog/release date。KubeBrain 的 CI、镜像、coverage 和发布文档仍按本仓门禁
+  独立管理，不作为 TiKV/PD 数据面 runtime 兼容缺口。
+
+  对照 `c3fd3a8e2`、`30fecc3f2`、`f254afa6f`、`7d9dd73f2`、`af18caa8f`、`faa35997b`、
+  `5efa4a8e0`、`dbf8c2afa`、`d8ecc8164`、`fe079c317`、`a5161279e` 与
+  `3e1583e97`：官方变更集中在 fileutil root 环境测试、embed 测试 URL helper、
+  threat model 文档、trace field 稳定化、dump-log snapshot spacing、common test 修正、
+  gRPC test helper、protobuf pointer 测试迁移、robustness watch event pointer 和 range KV
+  测试重构。它们不引入新的 etcd v3 wire 字段或服务语义；protobuf pointer/API 风险已由
+  A3763/A3793 的 client event/header/generated-code 审计覆盖。
+
+  对照 `2e70188db`、`5c39d30b0`、`7b03df887`、`50a472ee6` 与 `d441ad6dc`：
+  官方修改 rafthttp stream body close、InternalRaftRequest pointer、MVCC restore/watch
+  pointer slice 和 WAL snapshot state pointer；这些属于 upstream Raft/MVCC/WAL 内部实现，
+  KubeBrain 由 TiKV/PD 和自身 watch hub/count index 提供数据面，不机械移植。对照
+  `c61d35f0d`：官方增加 learner `MemberUpdate` 集成测试；KubeBrain 已在 A3759 用
+  `TestMemberUpdateLearnerPreservesStaticMembershipState` 固定平台托管错误返回前后 learner
+  状态不被篡改。对照 `fef4394b4`：官方只加 `beforeRangeStreamChunk` gofail 点，RangeStream
+  pin revision、chunk/error/header 外观已由 A1124/A1132/A1215/A3765 等门禁覆盖。对照
+  `72a0d5503` 与 `e66a0a472`：官方只升级 Go 1.26.3 和 CodeQL。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3799 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
