@@ -36516,6 +36516,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
   oracle 数据。
 
+- A3694 增加显式 LeaseRevoke 的多 key live Watch 官方差分，补齐 A3693 自然过期路径的同步 RPC
+  对照。场景同样反序写入 `b,a`，确认 watcher Created 后调用 Revoke；契约要求 Revoke header、Range、
+  TTL 与 LeaseList 均停在相对 base +3，两个 Delete 按 `a,b` 排序、共享该 ModRevision，并同处一个
+  `[2]` WatchResponse。Delete KV 的 current metadata 保持官方零值，PrevKv 则保留各自 value、创建/
+  修改 revision、version 与原 lease。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 0.256 秒、连续 10 轮
+  （测试 1.861 秒）及 race 5 轮（测试 2.266 秒）全部 GREEN，没有 runtime RED。本项只增加永久
+  显式 revoke 批处理证据；兼容模块全量 `go test ./... && go vet ./...` 与根模块同名全量门禁均通过
+  （根模块 `pkg/server/etcd` 170.393 秒）。不重建或滚动相同数据面；一次性 reference 已停止，精确
+  临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
