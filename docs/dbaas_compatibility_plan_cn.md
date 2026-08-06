@@ -39026,6 +39026,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TLS CRL tests，属于官方 client/pkg transport。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
   A3819 与上述 commit ID；本轮不修改 runtime。
 
+- A3820 固定 upstream livez/readyz、online defrag health、v2/v3 membership validation、peer
+  redirect/removed peer 和 client endpoint mutex 初始化审计。对照 `/root/etcd` commit
+  `7a57e06ec`、`c25f1dff8`、`e8ae83fac` 与 `42d9e43e5`：官方新增并增强 `/livez`、`/readyz`
+  HTTP endpoint 及 e2e matrix。KubeBrain 已实现 public health endpoint，覆盖 `verbose`、
+  `exclude`、method boundary、`serializable_read`、`linearizable_read`、`non_learner`、
+  `data_corruption` 和 HTTP status/body exact-match；`pkg/server` 单测与
+  `hack/etcd-client-compat/http_health_boundary_differential_test.go` 共同固定 etcd-facing 外观。
+  对照 `12b640523`：官方把 `linearizable_read` 纳入 readyz；KubeBrain readyz 已包含
+  linearizable read check，生产只读探测持续使用 `/readyz` 作为门禁。对照 `3897103b7`：官方给
+  health check 增加计数 metrics；KubeBrain 已暴露 `etcd.server.healthcheck` 和
+  `etcd.server.healthchecks_total`，并在 `docs/observability_cn.md`、server 单测和 metrics
+  scrape 门禁中固定。
+
+  对照 `ea035471c`、`8a6c1335e` 与 `9a5923098`：官方 online defrag 期间把 gRPC health 暂切到
+  `NOT_SERVING`，并通过 `--experimental-stop-grpc-service-on-defrag` 改变运维语义。KubeBrain
+  的 `Defragment` 是 TiKV/PD 平台替代边界下的 no-op/compat response，不运行 upstream bbolt
+  online defrag，也不承诺该实验 flag；等价可用性风险由 `/readyz`、maintenance differential 和
+  TiKV/PD 数据面健康门禁覆盖。对照 `4fe46f920` 与 `bc697bc26`：官方曾尝试在 v2/v3 同步后切到
+  v3 validation 又回滚；KubeBrain 不支持 upstream v2 store/apply，也不把 v2 membership mutation
+  暴露为可用数据面能力，MemberList、unsupported mutation 和 v2 boundary 已单独记录。
+
+  对照 `fb769c430`、`9f82390ae` 与 `46d59a2e6`：官方修复 Raft member id mismatch 消息忽略、
+  相关测试和 removed peer skip；KubeBrain 的 DBaaS 数据面由独立 TiKV/PD 承担，不复用 upstream
+  peer transport/Raft message path，client-visible 风险落在 member status、leader/learner 边界和
+  direct replica status 门禁。对照 `8578e0711` 与 `3b37afec7`：官方禁用/避免 peer URL redirect；
+  KubeBrain 不暴露 upstream peer URL transport，info listener 与 client listener 已拆分，peer
+  redirects 不属于承诺 API。对照 `52a9b9d96`：官方初始化 client context 的 endpoint mutex；
+  KubeBrain server 侧仅承诺 MemberList/Status/health 对外发现行为，client 内部互斥由官方
+  client-go/etcd client 依赖负责。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3820 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
