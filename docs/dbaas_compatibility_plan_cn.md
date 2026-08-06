@@ -40318,6 +40318,61 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数据面 runtime。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3847 与上述 commit ID；本轮不修改
   runtime。
 
+- A3848 固定 upstream functional liveness、Raft propose fail-fast、lease expiry heap、TLS/CORS/
+  HostWhitelist、Lease gateway additional bindings、CAFile deprecation、health balancer、
+  pre-vote、Defrag read blocking、gRPC metadata 常量和 AuthRoleRevokePermission 类型统一审计。
+  对照 `/root/etcd` commit `b3fea7ed5`、`3510e9b94`、`88a0f4c6b`、`a729b8846`、
+  `358a89c7e`、`d45c3f172`、`629e5a0e7`、`b55a5a977`、`c2731cde5`、`eb0c66f91` 与
+  `c9161b1f5`：官方 functional tester 继续抽象 liveness/failure/stresser、dial option 和日志字段。
+  KubeBrain 不复用 upstream functional tester；等价 DBaaS 风险由 Porcupine、lease/watch failover、
+  restart replacement、production readiness 和 topology probe 覆盖。对照 `11818b5f4`：官方澄清
+  Hash/HashKV 文档；KubeBrain Hash/HashKV 已按 latest/历史 revision、compaction、replica
+  consistency、alarm/corrupt 和 snapshot restore 门禁固定。
+
+  对照 `f0dffb416`：官方 Raft node `Propose` 等待 proposal result，drop 时 fail fast。KubeBrain
+  不运行 upstream Raft propose；public 等价是写 admission/commit wait 在 leader loss、TiKV/PD
+  错误和不确定事务下 fail closed，不伪造 committed revision，也不向 watch/lease 传播未提交事件。
+  已由 commit wait、uncertain txn pins、backend failover、txn/watch restart 和 production probes 覆盖。
+  对照 `9c62d7b2d`、`a6984c53d`、`f9b7a012b` 与 `6f271d8bf`：官方 lessor 用 expiry heap
+  优化无到期 lease 的检查。KubeBrain lease 到期、续租、显式 revoke/regrant、restart/failover
+  和 checkpoint 语义由 durable lease metadata、long-window renewal、expiry spread failover、
+  LeaseLeases/TTL/Revoke/KeepAlive 差分和 production lease smoke 覆盖；内部数据结构不迁移
+  upstream lessor heap。
+
+  对照 `021df6a82`、`faeffff5b`、`d5bcf66b6`、`a173e761b` 与 `322437f47`：官方给
+  etcdctl/TLS self-cert/transport 注入 logger 并记录 TLS 生成错误。KubeBrain 日志兼容面是本仓
+  structured logs、operation audit、TLS rotation tests 和 production TLS manifests；不承诺 upstream
+  logger 文案。对照 `9ea8be0c2`、`27ed129f4`、`c7cecca57`、`c841de1f6`、`29db85331`、
+  `35509bf69`、`7195bb7ce`、`df6cd22d5`、`35b01b982` 与 `b42621790`：官方为 v3 HTTP
+  gateway 增加 CORS/HostWhitelist/URL flag 清理。KubeBrain gateway 兼容面固定在 v3 route、
+  method、JSON marshal、unknown field 丢弃、metadata 和 typed gRPC error；CORS/host whitelist
+  属于本仓 endpoint/部署边界，不复用 upstream embed AccessController。
+
+  对照 `cd92d4a98` 与 `8dab18aca`：官方为 Lease gRPC-gateway 增加 `/v3/lease/grant`、
+  `/v3/lease/revoke`、`/v3/lease/timetolive`、`/v3/lease/leases` 和 keepalive 覆盖，同时保留
+  legacy `/v3/kv/lease/*`。KubeBrain `pkg/endpoint/grpc_gateway_test.go` 已同时覆盖新旧 lease
+  routes、streaming keepalive、WebSocket keepalive、auth marker、整数边界和 unknown field 丢弃；
+  HTTP gateway differential 继续用 official etcd 对照真实 lease 行为。对照 `4f1cf30c7`、
+  `ad8c32659`、`759fcb6e7`、`c524ebe6f`、`82ef3f83f` 与 `aece63b10`：官方弃用
+  CAFile/peer-ca-file，改用 TrustedCAFile。KubeBrain production manifest 已显式使用
+  `--trusted-ca-file`/`--peer-trusted-ca-file`，manifest tests 固定该边界。
+
+  对照 `3aa5711dc`：官方把 clientv3 health balancer 移包。KubeBrain server-facing contract 是
+  official client endpoint health、AutoSync、多 endpoint、TLS authority 和 readiness 行为，已由
+  runner、production probes、endpoint/TLS 和 health differential 覆盖。对照 `813c9aa45`、
+  `a66e657ca` 与 `4408ecede`：官方更新 pre-vote flag 并记录防 disruptive rejoin；KubeBrain
+  使用独立 TiKV/PD/leader election，不暴露 upstream Raft pre-vote flag，等价风险由 leader
+  readiness、failover、revision fence 和 production topology probe 覆盖。对照 `4cb0d167d`：
+  官方清理 Maintenance Status 调用；KubeBrain Status/Alarm/HashKV/Defragment/Snapshot/Downgrade
+  已有 raw/client/gateway 门禁。对照 `6c40b2b5d`：官方 Defrag reset tx 期间阻塞读；KubeBrain
+  `Defragment` 是 TiKV/PD 平台替代 no-op，已固定 nil Header、HashKV 不变、auth 保护和 health
+  recovery，不运行 upstream bbolt defrag。对照 `b1dd19a7a`：官方收敛 gRPC metadata 字符串常量；
+  KubeBrain metadata 外观由 Authorization/Bearer、require-leader、gateway marker、invalid API
+  version 和 proxy metadata 门禁覆盖。对照 `752963bee`：官方统一
+  `AuthRoleRevokePermissionRequest.key/range_end` 为 bytes；KubeBrain proto coverage、auth client
+  和 gateway JSON tests 已固定 key/range_end 字段号、base64 JSON 与 revoke permission 错误外观。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3848 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
