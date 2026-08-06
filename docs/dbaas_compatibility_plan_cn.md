@@ -38129,6 +38129,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   目的在于把已覆盖的 Range header 公共契约与仅影响 upstream robustness/bootstrap/metrics 断言的
   内部改动明确分流，后续若出现新的 client-visible 行为再建立专项 RED。
 
+- A3787 固定 upstream AuthStatus 公开面、静态 token retry、MemberPromote auth/e2e 与
+  endpoint status quota 审计。对照 `/root/etcd` commit `61cffd5e2`，官方从 auth admin
+  权限列表移除 `AuthStatus`，并补充 `etcdctl auth status` 在启用认证后仍无需凭据的 e2e。
+  KubeBrain 已在 A4/A600/A1229 及 raw/client auth differential 中固定同一公共契约：
+  无 token 的匿名 `AuthStatus` 在 auth disabled/enabled 都允许，携带非法 token 时仍
+  fail-closed，成功响应继续携带当前 header revision 与 auth revision。
+
+  对照 `572ac40db`，官方修复 caller-supplied static token 在 token stale 后的 retry；
+  KubeBrain 已由 A3748 和 `client_static_token_retry_differential_test.go` 固定该路径。对照
+  `88717004f` 与 e2e `7d3b238af`，官方验证 follower 上的 `MemberPromote` 在 auth enabled
+  后仍走成员权限和成员状态校验；KubeBrain 的 DBaaS 数据面不暴露真实 Raft learner promote，
+  但 `peerMemberPromoteHandler`、`MemberPromote` 单测和 `member_mutation_state_differential`
+  已固定官方授权/成员状态顺序与平台 `Unimplemented` 边界。对照 `22758cfb7`，官方让
+  `endpoint status` 同时覆盖默认和自定义 quota；KubeBrain 的 Maintenance Status 已按 A43/A328
+  返回未配置时 etcd 兼容 sentinel、自定义 quota 时返回租户逻辑 quota，`etcdctl` 兼容表也明确
+  该行为。
+
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3787 和上述 commit ID。本轮不修改 runtime；
+  目的在于把 public AuthStatus、static token retry、member promote 管理面边界和 endpoint
+  status quota 的已覆盖证据并入近期 upstream 审计，后续只对新的客户端可见差异建立专项 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
