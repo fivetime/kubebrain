@@ -39210,6 +39210,50 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   由独立门禁覆盖。对照 `14fbc98b2`：官方只调整镜像版本检查脚本。本轮新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3824 与上述 commit ID；本轮不修改 runtime。
 
+- A3825 固定 upstream rpctypes error construction、empty permission range、serializable
+  MemberList、watch progress nextRev、JWT token refresh、TLS/IPv6、membership errors、learner
+  display、lease/Txn linearizability、WAL partial sync 和 snapshot catchup 审计。对照
+  `/root/etcd` commit `8298ed820`：官方把 rpctypes 构造改为 `status.Error()`；KubeBrain
+  已在 header interceptor、auth/maintenance/gateway error normalization 和 raw/clientv3 差分中按
+  gRPC code/message 约束外观，不依赖内部构造方式。对照 `65eeb7ff1`：官方禁止创建空 permission
+  range。KubeBrain Auth role grant/revoke、非法 permission range、空 user/role、root user/role
+  保护和 auth lifecycle 差分已要求返回 etcd 同类 `ErrInvalidAuthMgmt`/permission 错误，不能写入
+  无意义的空权限。
+
+  对照 `1f0d36184` 与 `3de346259`：官方支持 serializable `MemberList`，并补充
+  `WithSerializable` 使用说明。KubeBrain `MemberList` 已区分 linearizable 与 serializable：
+  linearizable path 必须执行 read barrier，serializable path 不得依赖 barrier，且 Header cluster/member
+  identity、advertised client URLs、auth 和 AutoSync 行为已有 `memberlist_client_test.go`、compat
+  MemberList/Auth/endpoint-health 门禁。对照 `8ed20e85d` 与 `0c67e318d`：官方修正 missing member
+  ID error 与 learner 显示；KubeBrain 不支持 MemberAdd/Remove/Update/Promote，但 MemberList、
+  learner/status、unsupported mutation 和 error boundary 已固定 DBaaS 控制面外观。
+
+  对照 `36fc3cae6`、`39d98522d`、`189d90ab7`、`b55dbe88c` 与 `b4f9bb45f`：官方继续修正
+  progress notification 后的 watch `nextRev`，并把 response header revision 作为 Kubernetes
+  bookmark/进度依据。KubeBrain quiet progress、progress cadence、periodic multi watch、follower
+  proxy progress、watch cache/k3s 和 event-log replay 门禁要求 progress header revision 可推进
+  watch cache，但不得跳过已投递事件或拆散同 revision 多事件。对照 `04ba936ea`：官方 robustness
+  支持 multi-operation Txn；KubeBrain Txn 差分、nested Txn、compare matrix、failed write Txn、
+  RBAC Txn 和 gateway Txn 已覆盖多操作原子性与失败分支。
+
+  对照 `5b7b499f5` 与 `8b15146f2`：官方 client 自动刷新过期 token；这是官方 client 内部重试逻辑，
+  KubeBrain server-facing 契约是返回与 etcd 一致的 invalid/old token、AuthOldRevision 和
+  Authenticate/AuthEnable/AuthDisable 行为，已有 JWT/auth 差分覆盖。对照 `588b98d08` 与
+  `82243d091`：官方增加 TLSv1.3 支持并统一 IPv6 地址格式。KubeBrain endpoint config、
+  TLS rotation 和 production readiness 已覆盖 TLS min/max version、TLS1.3-only 成功/拒绝、ServerName、
+  advertised URL、bracketed IPv6 和非法 URL 拒绝。对照 `5b8d7698c`、`754e1ee4c` 与
+  `0ccde80d2`：这些是 semver dependency、CountOnly changelog 与 learner promote changelog；
+  public 行为分别由版本/Range CountOnly/learner boundary 门禁覆盖。
+
+  对照 `610691233` 与 `5b84526e9`：官方 linearizability 测试增加 lease API。KubeBrain 已有
+  lease lifecycle、batch renewal、long-window renewal、expiry、duplicate grant、concurrent revoke、
+  attached key、lease auth 和 failover smoke。对照 `bd9f1584d`：官方处理最后一条 WAL 只部分
+  sync 的恢复；KubeBrain 不复用 upstream WAL，等价持久化风险由 TiKV/PD raft、cold restore、
+  restart persistence、tombstone watch 和 backup verifier 覆盖。对照 `2c46b2b29`：官方把 snapshot
+  catchup entries 外置为 flag；KubeBrain 不使用 upstream raft snapshot catchup 参数，Snapshot/backup
+  由 TiKV/PD 数据面门禁约束。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3825 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
