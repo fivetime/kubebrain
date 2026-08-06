@@ -37403,6 +37403,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （`pkg/server/etcd` 168.671 秒）及 `go vet ./...` 通过。生产三副本仍为 A3739 Pod UID，3/3 Ready、
   零重启，`readyz=ok`，`/a3747/` 与 `/compat/` 均无 KV。
 
+- A3748 对照 upstream `/root/etcd` commit `572ac40db` 的 caller-supplied static token retry
+  边界。显式 `clientv3.Config.Token` 由调用方签发，client 无法刷新；server 返回 invalid auth token
+  时必须立即把错误交还调用方，不能按 `MaxUnaryRetries` 重放同一授权失败请求。既有 Auth differential
+  已验证旧 token 最终失败，但没有观测请求次数，无法发现这种无效重试与服务端负载放大。新增可计数
+  本地 gRPC oracle 配置 7 次 unary retry，固定 Range wire 请求恰好一次、metadata 中 token 精确不变，
+  公开错误精确为 `rpctypes.ErrInvalidAuthToken` 且支持 `errors.Is`；随后分别连接一次性官方 etcd 与
+  生产 KubeBrain，读取缺失键并要求空 KVs、非空 header 和正 revision。
+
+  初版 oracle 把 gRPC wire `Unauthenticated` 直接当成 client public error code；clientv3 会将其归一为
+  `ErrInvalidAuthToken`，因此首次连续运行在错误码断言处 RED，尚未执行请求次数断言。按官方公开契约
+  改为 sentinel/error 文案断言后，upstream 原始 `TestClientShouldRefreshToken` 连续 20 轮通过
+  （0.036 秒）；可计数 oracle + reference/KubeBrain 双端普通连续 20 轮通过（1.932 秒），`-race`
+  连续 10 轮通过（2.369 秒）。当前官方 client 已包含修复，KubeBrain 数据面接受正常 Range，故无
+  runtime RED、服务端或镜像变更。reference 进程和临时 data-dir 已精确清理。
+  兼容模块 `go test ./...`（100.433 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 169.794 秒）及 `go vet ./...` 通过。生产三副本 3/3 Ready、零重启，
+  `readyz=ok`，`/a3748/` 与 `/compat/` 均无 KV。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
