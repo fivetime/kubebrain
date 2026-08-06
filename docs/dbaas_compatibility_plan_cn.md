@@ -38600,6 +38600,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像、CI 和参数面继续按本仓 release/security gate 管理。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3806 与上述 commit ID；本轮不修改 runtime。
 
+- A3807 固定 upstream `etcdctl diagnosis`、robustness/WAL/test-client、client logger 与依赖/CI
+  审计。对照 `/root/etcd` commits `b1ae123a7`、`5c0a838bc` 与 `8431a542b`：官方新增
+  `etcdctl diagnosis` 子命令、README 示例和 lint/build 修正。该命令组合调用 endpoint status、
+  membership、metrics 与 read checks；这些底层 KubeBrain public surface 已分别由 endpoint
+  status/health、MemberList、Prometheus metrics parity、Range/linearizable read 和生产只读探测覆盖。
+  当前 `/root/etcd/bin/etcdctl` 仍返回 `unknown command "diagnosis"`，说明本地官方二进制尚未包含
+  该源码功能；因此本轮不增加依赖该二进制的 live test。后续等官方二进制或本仓测试 fixture
+  含 `diagnosis` 后，应新增黑盒 smoke，校验 KubeBrain endpoint 下 JSON report 至少能完成
+  status、member、metrics 和 read plugins。
+
+  对照 `417e46d7e`、`0589e4bb8`、`93583d0c0`、`3d0b39bdb`、`d3e3308cd`、
+  `f57a28fa8` 与 `386eb3023`：官方变更集中在 robustness model/report/patch history、
+  WAL 读取策略、MemberID 记录和测试执行修复。KubeBrain 可吸收这些故障注入和可复现性思想，
+  但不复用 upstream Raft/WAL/bbolt 作为 TiKV/PD 数据面；当前 correctness 由本仓 Porcupine、
+  logical backup/restore、watch/lease/txn 和生产只读门禁约束。对照 `e3b5fe2a2` 与
+  `d63076256`：官方 test client 接口补 `PutResponse` 和 Range option，属于测试框架能力；
+  KubeBrain 已用 raw gRPC、clientv3、HTTP gateway 和 etcdctl 黑盒矩阵直接断言服务端输出。
+
+  对照 `67a6ef4a3`、`24d2d3157` 与 `166463c66`：官方修复/重构 client logger 并发访问和
+  debug-level 命名；`67a6ef4a3` 的真实并发安全风险已由 A3744 记录，KubeBrain 服务端兼容面不依赖
+  upstream client 内部 logger 锁策略。对照 `f79c917a4`：v3 backend non-existent member 已由
+  A3786 的 membership/bootstrap 边界审计覆盖，本轮只把该 commit 纳入最新去重窗口。对照
+  `443122455`：官方 changelog 记录新 metrics，真实 metrics 行为已由 A3772/A3773 覆盖。
+
+  对照 `0d4834667`、`f4839eeac`、`a030f7ec5`、`36fe7f9cc`、`be7a2e4a6`、
+  `c6ead5fcc`、`8505dec78`、`4f99d2c03`、`94ca02160` 与 `8d5764c9e`：
+  官方只升级 OpenTelemetry、prometheus/common、grpc-gateway、protobuf、x/tools、golangci-lint、
+  tablewriter 或 CodeQL。对照 `c4280654a`、`0ef83fe51`、`c19d997fe`、`3553655ff`、
+  `ff30e0dcd` 与 `8fddf7d1f`：官方只更新 robustness README、BOM、exit code 文档或 lint/test
+  清理。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3807 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
