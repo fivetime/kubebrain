@@ -40730,6 +40730,78 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   nested txn lease differential 和 etcdctl compatibility 表固定。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3854 与上述 commit ID；本轮不修改 runtime。
 
+- A3855 固定 upstream `/health` JSON/error、serializable-ordering grpcproxy、HashKV、compacted
+  watch cancel、grpcproxy TLS/CRL/auto-tls、metrics/health handler、MoveLeader、revision
+  compactor、nested Txn、gRPC health、client CRL、comparison range、gateway auth token 和 lease
+  revoke rate-limit 审计。对照 `/root/etcd` commit `4267d368d`、`411ab276b`、
+  `74c8050ad`、`78432e3bd`、`91470a8a5` 与 `61a736a06`：官方持续收敛
+  `/health`/`/metrics` handler、JSON health body 和 alarm-aware health。KubeBrain 已固定
+  `/health`、`/livez`、`/readyz`、NOSPACE/CORRUPT health exclusions、leader/readiness、
+  health Prometheus metrics、traditional health success/failure 和 production probes。
+
+  对照 `f6acd0316`、`488df4db3`、`b10ea2011`、`f465e3ea8`、`f40001002`、
+  `f8dbcd86e`、`0dd4c2ac6`、`6ed51dc62` 与 `822473bc3`：官方为 grpcproxy/namespace/
+  clientv3/server 增加 serializable ordering、nested Txn 和 nested `RequestOp/ResponseOp`。
+  KubeBrain 已在 raw/client/gateway differential、namespace nested Txn、serializable/historical
+  Range、Txn compare、multi-op atomicity、Porcupine model 和 production smoke 中固定 public
+  Txn 语义；不复用 upstream grpcproxy cache internals。对照 `8f34d0c8b`、`7ff6e62c5`、
+  `aeb2dc03a`、`fcf1abd23`、`fafb05462` 与 `8d7c29c73`：官方支持 Txn compare
+  range_end。KubeBrain 已覆盖 point/range/prefix compare、namespace prefix comparison、auth
+  range permission、filter/count/sort 交互和 differential tests。
+
+  对照 `8609521ce`、`766c2540a`、`a6ae677d8`、`deca9879c`、`fbb75d24a`、
+  `3dcd2cdcb` 与 `ed052ce9a`：官方加入 `HashKV` server/proto/gateway/grpcproxy 和
+  compacting tests。KubeBrain Maintenance `HashKV`、endpoint hashkv、gateway
+  `/members/hashkv`、compact/future revision error、replica consistency、CORRUPT alarm 和
+  production status probes 已覆盖；hash 数值不承诺与 bbolt 内容 hash 一致。对照 `478ba2c4f`
+  与 `6fe2249bc`：官方收敛 v3 server error checking 并测试 unauthorized RPC。KubeBrain
+  typed status/error message differential、auth metadata、JWT/Bearer/simple token、gateway auth
+  和 permission tests 已固定 public errors。
+
+  对照 `9581f7676`、`318caeee7`、`6fb08672d`、`ebcfdd1a3`、`13d9438cf`
+  与 `34fd848a4`：官方让 compacted watch response 带 `Canceled=true`/`CompactRevision`，
+  并澄清 watch close、测试 embed close with watch。KubeBrain watch 已固定 compaction
+  canceled response、unknown/existing cancel、client-assigned watch ID、progress/request-progress、
+  fragmentation、leader failover resume、close/cancel context 和 production watch probes。对照
+  `1dcae41b2`、`334554f65` 与 `52101e6e9`：官方在 grpcproxy snapshot EOF 返回 nil、
+  关闭时等待 pending RPC，并允许无限 streams。KubeBrain
+  endpoint lifecycle 由 graceful shutdown、connection age reconnect、watch/lease stream cancel、
+  large stream 和 rollout/readiness tests 约束。
+
+  对照 `51d778605`、`c5447c2ec`、`efbee9d8c`、`1365f87d4`、`d5a0d4d69`、
+  `426ad2592`、`ab95eb079`、`41e26f741`、`87d16af2e`、`7d7d1ae6a` 与
+  `322976bed`：官方为 http/grpc/v2 proxy、client listener 和 transport 增加 auto TLS、
+  insecure-skip-verify、CRL、wildcard/IP SAN 细节。KubeBrain DBaaS 不承诺 upstream
+  proxy CLI surface；服务端 public TLS 面由 client/peer TLS、client-cert-auth requires CA、
+  AllowedCNs/AllowedHostnames、verified CommonName auth、CRL smoke、TLS rotation 和 production
+  cert probes 固定。
+
+  对照 `c06953ae0`、`522e75cb4` 与 `a3f8f4742`：官方增加 compaction/db-size metrics
+  和 revision compactor。KubeBrain compaction 由 revision-based compaction、history window、
+  compacted Range/Txn/Watch/HashKV errors、meta keyspace compaction、storage metrics、scale
+  probes 和 production readiness 约束；不复用 upstream bbolt db-size gauge。对照 `63350f5ac`
+  与 `c27634c21`：官方连接 JSON gateway listen address 并测试 gRPC JSON auth。KubeBrain
+  stable `/v3` gateway、`/v3beta` rewrite、base64 bytes、unknown fields、integer boundary、
+  typed error mapping、WebSocket streaming 和 auth metadata tests 已覆盖。
+
+  对照 `8ce2c7919` 与 `c1e3172e3`：官方增加默认 gRPC health service 及 HealthClient
+  test。KubeBrain leader/follower health、gRPC health check、readiness 和 production probes 已固定
+  服务发现/LB 可观察边界。对照 `5e059fd8d`、`e0c33ef88` 与 `0caab2631`：官方迁移
+  metadata Incoming/OutgoingContext、允许用户获取自身 roles/permissions，并支持 gateway
+  `authorization` token。KubeBrain auth user/role range、self-access、gateway metadata、Bearer/JWT/
+  simple token 和 disabled-auth-after-credentialed-connection tests 已覆盖。对照 `d4289588a`、
+  `6e9b776fc`、`581a83dfd`、`c5532dd2a`、`403ba1dfa`、`3e263d5a4`、
+  `b1a0ae3a3`、`939bbd77c` 与 `d82f2572a`：官方新增 `MoveLeader` RPC/etcdctl
+  command/proxy path 和 `ErrNotLeader`。KubeBrain MoveLeader/follower/not-leader/target
+  precondition tests 已固定 DBaaS 不暴露真实 etcd raft transfer 但返回 official typed errors。
+
+  对照 `c38c00f7c`、`df2cc4bc8`、`2a30a754e` 与 `0011b78bd`：官方处理 lessor promote
+  rate limit、grpcproxy lease grant fast-fail、client keepalive 和 revoke runLoop rate-limit。
+  KubeBrain lease TTL/KeepAlive/Revoke、failover expiry、follower lease reads、batch/long renewal、
+  per-key attachment、missing lease error、session recipe 和 production lease smoke 已覆盖服务端
+  contract。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3855 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
