@@ -36939,6 +36939,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项新增永久 Txn Put 组合、staged/nested 可见性与失败回滚差分，不重建或滚动数据面；一次性
   reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
 
+- A3722 将 A3719 的 unary DeleteRange 七种边界形状推进到 staged/nested Txn，补足随机三层 Txn 中
+  Delete 仅作为少数分支操作、无法证明完整范围矩阵的缺口。新增固定 seed=3722 的 28-case raw gRPC
+  差分，完整枚举 point、leased point、missing point、完整 prefix、`[b,d)`、equal-empty、
+  reversed-empty × PrevKV true/false × top-level/nested。oracle 对应
+  `/root/etcd/server/etcdserver/txn/delete.go` 的 PrevKV-before-delete 与 staged `DeleteRange`，以及
+  `/root/etcd/tests/integration/v3_grpc_test.go` 的 `TestV3DeleteRange`。
+
+  每个 case 在 `data/` 子前缀建立四键 fixture（含更新键和 leased key），事务先在不重叠控制区写 marker，
+  再 DeleteRange、Range 读取 staged 剩余状态；nested 形状把后两步放入 inner Txn，既避免违反 etcd
+  Put/Delete interval overlap 校验，也让 missing/equal/reversed no-op 删除仍由 marker 驱动一次真实提交。
+  结果比较 outer/delete/range header、Deleted、PrevKV 顺序与全元数据、staged/final 剩余状态、marker、
+  response envelope、inner Succeeded，以及官方 inner Txn header revision=0 的零值语义。结构门禁逐项证明
+  28 个组合无重复且无遗漏。
+
+  补强 inner header 比较时曾出现 harness RED：直接用其零 revision 减去双端不同的全局基线，生成不同
+  负数；确认官方与 KubeBrain 原值都为 0 后改为 0/outer/other 三态归一化，没有运行时差异。官方 etcd
+  `d947b20863` 与生产 `kubebrain:a3716-keys-only-lease` 最终首轮 8.707 秒、连续 10 轮
+  （测试 88.032 秒）及 race 5 轮（测试 50.101 秒）全部 GREEN；兼容模块全量
+  `go test ./... && go vet ./...` 通过（测试 1.517 秒），根模块同名门禁也通过
+  （`pkg/server/etcd` 168.167 秒）。生产 3/3 Pod Ready、零重启，Pod UID 未变化。没有 runtime RED，
+  本项新增永久 Txn DeleteRange 边界、PrevKV、lease、staged/nested 与 no-op revision 差分，不重建或
+  滚动数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
