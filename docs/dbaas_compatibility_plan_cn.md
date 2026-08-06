@@ -36449,6 +36449,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同步回滚证据，不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录及验证日志已删除
   且不可恢复，只含本轮 oracle 数据。
 
+- A3689 增加 Txn lease attachment 与并发 Revoke 的线性化状态机差分。每轮先让 `x` 属于 lease A，
+  再同时执行 Txn（把 `x` 转移到 B，并向 A 新增 `w`）和 Revoke(A)。官方允许且只允许两种终态：
+  Txn 先胜时两调用成功，revoke 删除 `w`，只剩 `x=new-x/B`，revision 共推进 2；Revoke 先胜时它
+  删除 `x`，Txn 整笔 LeaseNotFound，最终无 key，revision 只推进 1。两类均要求 A 已消失、B 的
+  attached keys 与 KV 精确一致，随后 Revoke(B) 后无残留。
+
+  门禁不错误比较调度分布；一轮可审计样本中官方为 success/not-found=14/18，KubeBrain 为 32/0，
+  但早先首轮 KubeBrain 也实际出现过 revoke 先胜，所有结果均落在官方状态集合。官方 etcd
+  `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮测试 7.551 秒，随后 5 轮测试
+  35.381 秒、race 3 轮测试 24.908 秒全部 GREEN；兼容模块与根模块全量 test/vet 通过
+  （`pkg/server/etcd` 168.068 秒）。没有 runtime RED，本项只增加永久并发原子性证据，不重建或
+  滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮 oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
