@@ -37591,6 +37591,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。本轮仅增加永久错误契约门禁，
   不重建语义相同的 runtime 镜像。
 
+- A3759 对照 upstream `/root/etcd` commit `7c528e856` 的 learner `MemberUpdate` 状态保持语义。
+  上游修复前 `UpdateRaftAttributes` 会把 learner member 的完整 raft attributes 覆盖成请求携带的
+  attributes，而 public `MemberUpdateRequest` 只表达 PeerURLs，结果把 `IsLearner` 错误降级为
+  `false`。KubeBrain 的 serving membership 由 DBaaS 控制面提供，`MemberUpdate` 不实际执行 etcd
+  Raft reconfiguration；但仍必须保证该 public RPC 在返回平台托管错误前后不会篡改 learner 状态或静态
+  membership 快照。
+
+  新增服务层 GREEN-only regression：配置一个 voter 和一个 learner 静态 member，对 learner 调用
+  `MemberUpdate`，期望返回现有 `Unimplemented` 平台托管错误；随后通过 `memberByID` 与
+  `MemberList` 双路径断言该 member 仍为 `IsLearner=true`，PeerURLs 仍为原值，未被请求中的新
+  PeerURLs 或默认 `false` 覆盖。定向测试 0.086 秒 GREEN。本轮不把 etcd Raft membership mutation
+  机械搬到 TiKV/PD 数据面，只固定 DBaaS membership 外观不被 mutation RPC 污染。
+
+  兼容模块 `go test ./...` 及 `go vet ./...` 通过（cached）；根模块定向测试 0.087 秒通过，
+  `go test ./...` 重跑通过（`pkg/server/etcd` 172.769 秒）及 `go vet ./...` 通过。首轮根模块
+  全量测试曾在 `pkg/server/etcd` 末尾返回失败但未给出标准失败用例；随后单包 `go test -json`
+  和全仓重跑均通过，未复现且与本轮 focused membership 测试无关。生产三副本 3/3 Ready、零重启，
+  镜像仍为 `kubebrain:a3725-rangestream-final-frame`，`readyz=ok`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

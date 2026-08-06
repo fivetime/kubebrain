@@ -783,6 +783,52 @@ func TestMemberAuthorizationMatchesEtcd(t *testing.T) {
 	requireClusterPlatformReplacementError(t, err)
 }
 
+func TestMemberUpdateLearnerPreservesStaticMembershipState(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const learnerID = uint64(22)
+	originalPeerURLs := []string{"http://127.0.0.1:22380"}
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{
+			ID:         11,
+			Name:       "voter",
+			PeerURLs:   []string{"http://127.0.0.1:12380"},
+			ClientURLs: []string{"http://127.0.0.1:12379"},
+		},
+		{
+			ID:         learnerID,
+			Name:       "learner",
+			PeerURLs:   append([]string(nil), originalPeerURLs...),
+			ClientURLs: []string{"http://127.0.0.1:22379"},
+			IsLearner:  true,
+		},
+	})
+
+	_, err := server.MemberUpdate(context.Background(), &etcdserverpb.MemberUpdateRequest{
+		ID:       learnerID,
+		PeerURLs: []string{"http://127.0.0.1:32380"},
+	})
+	requireClusterPlatformReplacementError(t, err)
+
+	member := server.memberByID(learnerID)
+	require.NotNil(t, member)
+	require.True(t, member.IsLearner, "a failed DBaaS-managed member update must not demote a learner")
+	require.Equal(t, originalPeerURLs, member.PeerURLs)
+
+	list, err := server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	var listedLearner *etcdserverpb.Member
+	for _, listed := range list.Members {
+		if listed.ID == learnerID {
+			listedLearner = listed
+			break
+		}
+	}
+	require.NotNil(t, listedLearner)
+	require.True(t, listedLearner.IsLearner)
+	require.Equal(t, originalPeerURLs, listedLearner.PeerURLs)
+}
+
 func TestMemberRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
