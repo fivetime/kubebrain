@@ -30,6 +30,8 @@ type leaseExpiryDifferentialResult struct {
 	FirstPutAfterBase     int64
 	SecondPutAfterBase    int64
 	WatchHeaderAfterBase  int64
+	WatchFrameEventCounts []int
+	WatchFrameHeaderGaps  []int64
 	Events                []normalizedLeaseExpiryEvent
 	RangeAfterExpiry      int
 	RangeRevisionAfterPut int64
@@ -53,6 +55,8 @@ func TestLeaseNaturalExpiryDifferentialAgainstReferenceEtcd(t *testing.T) {
 		FirstPutAfterBase:     1,
 		SecondPutAfterBase:    2,
 		WatchHeaderAfterBase:  3,
+		WatchFrameEventCounts: []int{2},
+		WatchFrameHeaderGaps:  []int64{3},
 		RangeRevisionAfterPut: 1,
 		UnknownTTL:            -1,
 		UnknownTTLRevision:    3,
@@ -96,8 +100,10 @@ func runLeaseExpiryScenario(t *testing.T, endpoint, instance string) leaseExpiry
 	defer watchCancel()
 	watch := cli.Watch(watchCtx, prefix, clientv3.WithPrefix(), clientv3.WithRev(putA.Header.Revision+1), clientv3.WithPrevKV())
 	var (
-		events    []normalizedLeaseExpiryEvent
-		watchHead int64
+		events           []normalizedLeaseExpiryEvent
+		watchHead        int64
+		frameEventCounts []int
+		frameHeaderGaps  []int64
 	)
 	for len(events) < 2 {
 		select {
@@ -105,6 +111,10 @@ func runLeaseExpiryScenario(t *testing.T, endpoint, instance string) leaseExpiry
 			require.True(t, ok, "watch closed before lease expiry on %s", endpoint)
 			require.NoError(t, response.Err())
 			watchHead = response.Header.Revision
+			if len(response.Events) > 0 {
+				frameEventCounts = append(frameEventCounts, len(response.Events))
+				frameHeaderGaps = append(frameHeaderGaps, response.Header.Revision-base.Header.Revision)
+			}
 			for _, event := range response.Events {
 				require.Equal(t, mvccpb.DELETE, event.Type)
 				events = append(events, normalizedLeaseExpiryEvent{
@@ -142,6 +152,8 @@ func runLeaseExpiryScenario(t *testing.T, endpoint, instance string) leaseExpiry
 		FirstPutAfterBase:     putB.Header.Revision - base.Header.Revision,
 		SecondPutAfterBase:    putA.Header.Revision - base.Header.Revision,
 		WatchHeaderAfterBase:  watchHead - base.Header.Revision,
+		WatchFrameEventCounts: frameEventCounts,
+		WatchFrameHeaderGaps:  frameHeaderGaps,
 		Events:                events,
 		RangeAfterExpiry:      len(after.Kvs),
 		RangeRevisionAfterPut: after.Header.Revision - putA.Header.Revision,

@@ -36505,6 +36505,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未捕获任何失败/panic/断言，第二次完整根模块 test/vet 全部 GREEN（该包 167.941 秒）。本记录保留
   首次非确定性失败，不把一次复跑通过改写成“从未失败”。
 
+- A3693 补强既有多 key 自然过期差分的 Watch 帧级证据。该场景反序插入同一 lease 的 `b,a`，原测试
+  已证明过期时按 `a,b` 排序、共享一个 revision、PrevKv 与 lease 元数据正确，但会展平 response。
+  现额外要求两个 Delete 同处一个 `[2]` live WatchResponse，frame header 与两个 Event.ModRevision
+  均为唯一的过期 revision（相对 base +3），防止后台 expiry batch 被错误拆成多个可观察帧。
+
+  官方 etcd `d947b20863` 与生产 `kubebrain:a3672-stream-progress` 首轮 4.300 秒、连续 5 轮
+  （测试 22.420 秒）及 race 3 轮（测试 14.344 秒）全部 GREEN；兼容模块与根模块全量 test/vet
+  通过（`pkg/server/etcd` 171.532 秒）。没有 runtime RED，本项只增加永久自然过期批处理证据，
+  不重建或滚动相同数据面；一次性 reference 已停止，精确临时目录已删除且不可恢复，只含本轮
+  oracle 数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
