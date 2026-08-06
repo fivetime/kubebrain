@@ -37340,6 +37340,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./...`（1.515 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
   （`pkg/server/etcd` 166.895 秒）及 `go vet ./...` 通过。
 
+- A3744 对照 upstream `/root/etcd` commit `67a6ef4a3` 的 client logger 并发安全修复。官方
+  `Client.WithLogger` 会在锁内替换 logger；`Sync`、auto-sync、lease/watch/maintenance 构造和 stream
+  retry 也必须通过 `GetLogger` 在同一锁下读取，避免应用动态调整日志器时与 DBaaS endpoint discovery
+  发生数据竞争。新增双端回归在同一 client 上并发运行 4 路 `Sync`（每路 25 次）和 2000 次 logger
+  切换；每次 Sync 都真实调用 MemberList 并安装 advertised client URLs，最终所有调用必须成功且
+  endpoint 集合非空。
+
+  一次性官方 etcd 与生产 KubeBrain 双端普通 5 轮通过（0.776 秒），`-race` 双端连续 10 轮通过
+  （3.583 秒）。首次运行错误使用旧环境变量 `KUBEBRAIN_ENDPOINT`，使 KubeBrain 子测试被明确标记
+  skip，因此未计作证据；修正为套件实际读取的 `KUBEBRAIN_ETCD_ENDPOINT` 并以 `-v` 确认 reference/
+  kubebrain 两个子测试均执行后才接受结果。现有服务发现契约已满足新版 client，无 runtime RED、
+  服务端或镜像变更；官方 reference 进程和临时 data-dir 已清理。
+  兼容模块 `go test ./...`（1.510 秒）及 `go vet ./...` 通过；根模块 `go test ./...`
+  （`pkg/server/etcd` 168.791 秒）及 `go vet ./...` 通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
