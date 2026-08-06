@@ -40185,6 +40185,56 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   writer/fsync、operation audit 和 production topology probes。新增 `TestRecentUpstreamAuditIsRecorded`
   钉住 A3844 与上述 commit ID；本轮不修改 runtime。
 
+- A3845 固定 upstream slow-apply/heartbeat/stream metrics、WithRoot/JWT panic、snapshot package
+  rename、etcdctl password flags、Raft logger/snapshot catch-up、WAL filtering、zap log-output、
+  Watch fragmentation、latest-revision tombstone、watch exec、bcrypt-cost、snapshot backend error
+  和 stream error logging race 审计。对照 `/root/etcd` commit `dd1baf6e9`、`896a5e4a2` 与
+  `a5b32ba94`：官方新增 `etcd_server_slow_apply_total`、heartbeat failures 和 network server stream
+  failure metrics。KubeBrain 不运行 upstream Raft/v3rpc metric registry；等价可观测面是 request
+  duration、watch send-loop/control/progress、leader election health、readyz、peer service health、
+  operation audit 和 production topology probes。metric 名称级 parity 继续归 observability oracle。
+
+  对照 `b30a1166e`：官方修复 auth `WithRoot` panic 并增强 JWT 覆盖。KubeBrain auth/JWT 已固定
+  root/user/role lifecycle、malformed provider、HS/RS/ES/EdDSA、verify-only、公私钥 mismatch、
+  TTL/old revision、NoPassword、password rotation、client-cert CN、gateway marker、Bearer metadata
+  和 concurrent auth mutation；认证路径必须 fail closed 而不是 panic。对照 `143fbf4ca`：
+  官方把 snapshot 包改名到 clientv3/snapshot。KubeBrain 兼容面不是 Go import path，而是在线
+  `Maintenance.Snapshot` 输出可被官方 snapshot status/restore 消费，且逻辑备份/恢复工具可验证。
+
+  对照 `8fcab98bf`：官方 etcdctl 新增 password flag。KubeBrain 支持 official client/etcdctl v3
+  的 Username/Password、Authenticate、token refresh、UserChangePassword 和 no-password 用户外观；
+  命令行 flag 解析属于 etcdctl 自身。对照 `58ae15bd2`、`afe511945`、`49d672ff9` 与相关
+  `SnapshotCount` rename，以及 `284723209`：官方调整 Raft logger、`SnapshotCount`/
+  `SnapshotCatchUpEntries` 并测试慢 follower watch restore。KubeBrain 不运行 upstream Raft snapshot
+  catch-up，但 DBaaS 数据面必须在 restart/failover/cold-restore 后保持 revision、tombstone、watch
+  history、lease 和 HashKV 一致；对应由 restart persistence、restore/delete model、snapshot history、
+  future watch 和 production probes 约束。
+
+  对照 `567b47fc3`：官方 WAL 目录只读取 `.wal` 文件。KubeBrain 不使用 upstream WAL 目录，等价
+  持久化风险由 TiKV/PD raft、logical/online snapshot、cold restore verifier 和 backup receipt 覆盖。
+  对照 `15fcd6d59`：官方 zap logger 不再支持 `--log-outputs=default`；KubeBrain 日志由本仓
+  options/klog 管理，日志兼容不绑定 upstream embed flag，但生产运行必须保留 structured logs 和
+  operation audit。对照 `47ab4e22d` 与 `4d863dac5`：官方澄清 snapshot backend error 并给 compact
+  restore 加 structured logging；KubeBrain 没有 upstream online restore，但 compact/snapshot/restore
+  错误必须通过 readyz、HashKV、snapshot context boundary 和 restore verifier 暴露。
+
+  对照 `5be21c74e`、`63dc4429f`、`d2c840821`、`294b5745d` 与 `56ec416eb`：官方新增 Watch
+  request/response `Fragment` 字段、`WithFragment` option，并按 max request bytes 分片事件。
+  KubeBrain 已用 watch fragment differential、watch control canonicalization、large response/starvation、
+  max request bytes、follower proxy PrevKV 和 gateway watch tests 固定 public stream 外观；必须保证
+  fragment flag 不破坏 created/canceled/progress/compacted response，也不能跨 fragment 丢事件。
+
+  对照 `516534498`：官方用 latest revision 写 tombstone。KubeBrain range delete、lease expiry、
+  namespace delete、restart/tombstone watch、snapshot history 和 Txn atomicity 已固定 tombstone 与
+  删除事件使用提交 revision，不能被 compaction 或 restore 丢失。对照 `44cda7910`：官方修复
+  etcdctl watch exec command。KubeBrain server 只需保持 watch event、fragment、cancel、progress
+  和 compacted error 的 wire 行为；exec command 是 etcdctl client-side consumer。对照
+  `bf432648a`：官方让 bcrypt cost 可配置。KubeBrain 已暴露 `--bcrypt-cost`，默认 bcrypt default，
+  越界回退，并保证存储/snapshot 只保存 hash、不回显明文。对照 `6cf3dae93`：官方修复 stream
+  error logging race；KubeBrain 对外契约是 stream 错误不 panic、不吞 cancel/compaction/auth error，
+  由 watch/lease/snapshot stream tests 和全量 race-sensitive 单测覆盖。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3845 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
