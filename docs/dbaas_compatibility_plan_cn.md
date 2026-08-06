@@ -37239,6 +37239,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   兼容模块 `go test ./... && go vet ./...` 通过（测试 1.548 秒），根模块 `go test ./...`
   （`pkg/server/etcd` 168.851 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
 
+- A3738 将 A3735–A3737 的多 revision 状态恢复模型延伸到完整 Watch catch-up。此前重启 Watch 门禁
+  已覆盖单事务混合事件、compact boundary 与单键 delete/recreate，但没有证明跨 34 个独立 revision、
+  多个 delete/recreate generation 的持久 event log 能保持完整序列。新门禁在 replacement 前后都从
+  首个写 revision 建立 prefix Watch 并启用 PrevKV，归一化收集恰好 34 个事件；逐项比较事件类型、键、
+  value、CreateRevision、ModRevision、Version、Lease 以及可空 PrevKV 的全部同类字段，并额外要求
+  每个事件 ModRevision 与模型记录的对应写 revision 一一相等。这样同时固定事件无丢失/重复/重排、
+  generation 元数据和 UPDATE/DELETE 前值恢复。
+
+  官方 etcd `d947b20863` 同 data-dir restart oracle 1.80 秒 GREEN。生产
+  `kubebrain:a3725-rangestream-final-frame` 普通三副本 replacement 38.08 秒、race replacement
+  39.13 秒均 GREEN，没有 runtime RED 或镜像变更。最终 Pod UID 为
+  `576f1898-bb79-456f-b697-bccaae4e2a64`、`54bf345e-e7b0-43d4-87d7-0bf26f9d79af`、
+  `5be1dfb7-7569-4b84-9446-2474bf05c6b4`，3/3 Ready、零重启，`readyz=ok`，`/compat/` 无 KV。
+  兼容模块 `go test ./... && go vet ./...` 通过（测试 1.523 秒），根模块 `go test ./...`
+  （`pkg/server/etcd` 166.441 秒）及 `go vet ./...` 通过；官方进程、临时 data-dir 与测试前缀均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
