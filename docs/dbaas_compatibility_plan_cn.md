@@ -42497,6 +42497,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 3.5.16 etcdctl 缺字段仍兼容；新增 partial presence、hash/header revision mismatch
   与 compact beyond explicit hash revision 覆盖，为后续升级 etcdctl 输出格式预留 fail-closed
   语义约束。
+- A3988 固定只读 gate 对 Status dbSize 的正数边界：上游 `etcdctl endpoint status`
+  表格会用 `dbSizeInUse*100/dbSize` 计算 “percentage not in use”，因此 `dbSize=0`
+  不是可用的诊断 envelope。生产 gate 将 `Status.dbSize` 从非负收紧为正 JSON integer；
+  `dbSizeInUse` 仍允许为 0，但必须不大于 `dbSize`。新增 zero status db size 拒绝覆盖，
+  防止空值或异常 endpoint 让碎片率/容量诊断建立在除零边界上。
 
 ### P2：运维兼容和长期验证
 

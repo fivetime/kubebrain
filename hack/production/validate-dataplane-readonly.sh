@@ -670,8 +670,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status revision must be non-negative, got ${min_status_revision}" >&2
     exit 1
   fi
-  if ! [[ "$min_status_db_size" =~ ^[0-9]+$ ]]; then
-    echo "status dbSize must be non-negative, got ${min_status_db_size}" >&2
+  if ! [[ "$min_status_db_size" =~ ^[1-9][0-9]*$ ]]; then
+    echo "status dbSize must be positive, got ${min_status_db_size}" >&2
     exit 1
   fi
   status_summary=", status_cluster_id=${status_cluster_ids}, status_member_ids=${status_member_ids}, min_status_revision=${min_status_revision}, min_status_db_size=${min_status_db_size}"
