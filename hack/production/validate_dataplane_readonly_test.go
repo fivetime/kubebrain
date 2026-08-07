@@ -131,6 +131,24 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status_errors=empty",
 		},
 		{
+			name: "reports hashkv raft term in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
+			},
+			wantOK:     true,
+			wantOutput: "hashkv_raft_terms=8",
+		},
+		{
 			name: "rejects non ready replica",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -727,6 +745,23 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456},"hash":111,"compact_revision":0}}]`,
 			},
 			wantOutput: "hashkv revision is required",
+		},
+		{
+			name: "rejects non positive hashkv raft term",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":0},"hash":111,"compact_revision":3}}]`,
+			},
+			wantOutput: "hashkv raft term envelope invalid",
 		},
 		{
 			name: "rejects negative hashkv compact revision",

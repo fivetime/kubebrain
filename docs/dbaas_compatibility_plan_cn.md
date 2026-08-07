@@ -42251,6 +42251,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `status_errors=empty`。`TestValidateDataplaneReadonlyProbe` 新增 empty status errors
   summary 与 non-empty status errors 拒绝覆盖；本轮不修改 runtime。
 
+- A3947 将 HashKV header raft term 纳入只读门禁可选 envelope 与通过摘要：
+  `validate-dataplane-readonly.sh` 现在会在 `endpoint hashkv -w json` 返回
+  `HashKV.header.raft_term`/`raftTerm` 时要求其为正 JSON integer，并输出
+  `hashkv_raft_terms=<unique>`。这让生产日志能直接对照 HashKV 与 Status 的 Raft term
+  诊断面。`TestValidateDataplaneReadonlyProbe` 新增 hashkv raft term summary 与
+  non-positive hashkv raft term 拒绝覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

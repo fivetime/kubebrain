@@ -742,6 +742,35 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv numeric fields must be JSON integers: ${hashkv_integer_type_violations}" >&2
     exit 1
   fi
+  hashkv_raft_term_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | ($item.HashKV.header.raft_term // $item.HashKV.header.raftTerm) as $term
+        | (
+            if $term == null then
+              empty
+            elif (($term | type) != "number") then
+              "not_number"
+            elif ($term != ($term | floor)) then
+              "not_integer"
+            elif ($term <= 0) then
+              "not_positive"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$hashkv_raft_term_violations" ]]; then
+    echo "hashkv raft term envelope invalid: ${hashkv_raft_term_violations}" >&2
+    exit 1
+  fi
   hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
@@ -764,7 +793,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
   hashkv_values="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
         ([.[].HashKV.header | (.cluster_id // .clusterId)] | unique | join(",")),
@@ -772,11 +801,12 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         ([.[].HashKV.header | (.member_id // .memberId)] | unique | join(",")),
         ([.[].HashKV | .hash] | unique | join(",")),
         ([.[].HashKV.header | .revision] | min),
-        ([.[].HashKV | (.compact_revision // .compactRevision)] | min)
+        ([.[].HashKV | (.compact_revision // .compactRevision)] | min),
+        ([.[].HashKV.header | (.raft_term // .raftTerm) // empty] | unique | join(",") | if . == "" then "-" else . end)
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r hashkv_cluster_ids hashkv_member_ids unique_hashkv_member_ids hashkv_hashes min_hashkv_revision min_hashkv_compact_revision <<<"$hashkv_values"
+  IFS=$'\t' read -r hashkv_cluster_ids hashkv_member_ids unique_hashkv_member_ids hashkv_hashes min_hashkv_revision min_hashkv_compact_revision hashkv_raft_terms <<<"$hashkv_values"
   if [[ "$hashkv_cluster_ids" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "hashkv cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${hashkv_cluster_ids}" >&2
     exit 1
@@ -814,6 +844,9 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     exit 1
   fi
   hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
+  if [[ "$hashkv_raft_terms" != "-" ]]; then
+    hashkv_summary+=", hashkv_raft_terms=${hashkv_raft_terms}"
+  fi
 fi
 
 echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
