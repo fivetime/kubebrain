@@ -41731,6 +41731,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   tests 和 production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
   A3882 与上述 commit ID；本轮不修改 runtime。
 
+- A3883 固定 upstream v0.3/v0.4 v1/v2 API edge、cluster config、standby/proxy/rejoin、
+  discovery、TLS、CAS/CAD/prevNode 与 snapshot docs public boundary 审计。对照 `/root/etcd`
+  commit `7cebc3999`、`204f2d38a`、`0c95e1eab`、`3ae0a1e1a`、
+  `6988676f`、`273c29364`、`03839ca80`、`ef99b9ac4`、`1af51ca0c`、
+  `4fd9e627c`、`76ac1da7`、`28f19dec6`、`e86fe8e74`、`7d4fda550`、
+  `b8f59340a`、`e9a1ac15d`、`c0a59b3a2`、`074c78d72`、`3fff1a8dc`、
+  `148ac9774`、`c8d6b26df`、`1d961b8e5`、`035bbc691`、`3a4df1612`、
+  `8bed1e1f1`、`fccecd4a0`、`e1af3dbde`、`f206db2ce`、`68383b129`、
+  `1fcbc8350`、`08818886b`、`0696e5026`、`42363001b`、`2d75ef0c7`、
+  `8687dd380`、`226c20c09`、`0fa6d3857`、`354a91290`、`3ec700442`、
+  `7ee7e910e`、`d13dd50d5` 与 `0692097a7`：官方收敛 deleting a
+  directory-as-file 403、Cluster Config API docs、rejoin with different name/address、directory
+  TTL metadata preservation、discovery outage recovery、dashboard stats API usage、TTL unset docs、
+  V2 join redirect method, HEAD/keyspace requests, peer timeout docs/env、machine join/remove v2
+  API、CAS/CAD examples and failure cause、partial cluster config updates、minimum active size and
+  promote delay、`/machines` endpoints、RootROnly error docs、auto-demotion/proxy mode、consistent
+  read docs、discovery boot order、slow watch consumer fix、version output consistency、CA bundle
+  handling、v1 handler parity、v1 put-on-new-key behavior、CAS/CAD/prevNode docs and response、
+  case-insensitive bool query params、discovery heartbeat docs、TLS tests/client cert verification、
+  snapshots enabled by default、directory set error message 和 snapshot docs。KubeBrain 不移植
+  upstream v1/v2 HTTP API、standby/proxy cluster config semantics、legacy dashboard/admin machine
+  endpoints 或 old discovery protocol；DBaaS public contract 由 v3 KV/Txn/Watch/Lease differential、
+  generated HTTP gateway contract、Watch slow-consumer/cancel/progress tests、TLS/mTLS/CA reload
+  tests、`/health`/`/version` handlers、Member/Status unsupported mutation boundary、etcdctl
+  compatibility docs、snapshot/backup docs、request timeout/error mapping tests 和 production
+  readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3883 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
