@@ -42347,6 +42347,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   top level pair 拒绝覆盖，证明只返回 header raft term 时会触发
   `status raft term envelope invalid`；本轮不修改 runtime。
 
+- A3961 固定只读 gate 对 Status raft term JSON number 类型的 fail-closed 判定：
+  `validate-dataplane-readonly.sh` 已要求 header 与 top-level raft term 都必须是正 JSON
+  integer，不能接受字符串 `"8"` 后再进入 `status_raft_terms=<unique>` 摘要。
+  `TestValidateDataplaneReadonlyProbe` 新增 string status raft term envelope 拒绝覆盖，
+  证明字符串化 raft term 会触发 `status raft term envelope invalid`；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
