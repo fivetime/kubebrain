@@ -210,7 +210,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_HASHKV_HASH=111",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"hash":111,"compact_revision":0}}]`,
 			},
-			wantOutput: "hashkv cluster ID mismatch",
+			wantOutput: "hashkv header is required",
 		},
 		{
 			name: "rejects hashkv response missing hashkv",
@@ -303,6 +303,23 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":0,"revision":7},"hash":111,"compact_revision":3}}]`,
 			},
 			wantOutput: "hashkv member ID must be positive",
+		},
+		{
+			name: "rejects missing hashkv member id",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"revision":7},"hash":111,"compact_revision":3}}]`,
+			},
+			wantOutput: "hashkv member ID is required",
 		},
 		{
 			name: "rejects hashkv endpoint set mismatch",

@@ -42072,7 +42072,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   即使带了 `Endpoint` 和 hash，也必须提供可校验的 `HashKV.header`，不能让缺失 header
   的畸形诊断元素靠默认 cluster/member/revision 值继续通过。新增
   `TestValidateDataplaneReadonlyProbe` 的 hashkv response missing header fail-closed
-  覆盖；本轮不修改 runtime。
+  覆盖，并在 readonly gate 中显式拒绝缺失 `HashKV.header` 的端点。
 
 - A3918 固定 HashKV 诊断元素的 `HashKV` 对象必填边界：`endpoint hashkv -w json`
   返回的元素即使带了 `Endpoint`，也必须提供可校验的 `HashKV` payload，不能让缺失
@@ -42115,6 +42115,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `// 0` 混同为非法成员 0。`validate-dataplane-readonly.sh` 新增缺失 status member ID
   端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing status
   member id 覆盖；本轮不修改 runtime。
+
+- A3925 固定 HashKV 诊断元素的 member ID 必填边界：`endpoint hashkv -w json` 返回的
+  `HashKV.header` 必须带 `member_id`/`memberId`，不能把缺失成员身份的畸形 hashkv
+  诊断元素通过 `// 0` 混同为非法成员 0。`validate-dataplane-readonly.sh` 新增缺失
+  hashkv member ID 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
+  missing hashkv member id 覆盖；本轮不修改 runtime。
 
 ### P2：运维兼容和长期验证
 

@@ -351,6 +351,36 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv compact revision is required for endpoints: ${hashkv_compact_revision_missing}" >&2
     exit 1
   fi
+  hashkv_header_missing="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select(.HashKV.header == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$hashkv_header_missing" ]]; then
+    echo "hashkv header is required for endpoints: ${hashkv_header_missing}" >&2
+    exit 1
+  fi
+  hashkv_member_id_missing="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select((.HashKV.header.member_id // .HashKV.header.memberId) == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$hashkv_member_id_missing" ]]; then
+    echo "hashkv member ID is required for endpoints: ${hashkv_member_id_missing}" >&2
+    exit 1
+  fi
   hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
