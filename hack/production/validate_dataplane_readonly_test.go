@@ -11,14 +11,15 @@ import (
 
 func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		podsJSON   string
-		readyz     string
-		count      string
-		statusJSON string
-		extraEnv   []string
-		wantOK     bool
-		wantOutput string
+		name        string
+		podsJSON    string
+		readyz      string
+		count       string
+		statusJSON  string
+		extraEnv    []string
+		wantTimeout []string
+		wantOK      bool
+		wantOutput  string
 	}{
 		{
 			name: "passes read only dataplane gate",
@@ -30,6 +31,11 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantTimeout: []string{
+				"10s kubectl",
+				"10s curl",
+				"10s go",
+			},
 			wantOK:     true,
 			wantOutput: "dataplane readonly gate passed",
 		},
@@ -102,6 +108,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":321,"member_id":456,"revision":7},"dbSize":99}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantTimeout: []string{
+				"10s etcdctl",
+			},
 			wantOutput: "status cluster ID mismatch",
 		},
 		{
@@ -227,6 +236,14 @@ printf '%s\n' "$FAKE_PREFIX_COUNT"
 set -euo pipefail
 printf '%s\n' "$FAKE_STATUS_JSON"
 `)
+			writeDataplaneProbeExecutable(t, filepath.Join(dir, "timeout"), `#!/usr/bin/env bash
+set -euo pipefail
+duration="$1"
+shift
+printf '%s %s\n' "$duration" "$(basename "$1")" >>"$FAKE_TIMEOUT_LOG"
+exec "$@"
+`)
+			timeoutLog := filepath.Join(dir, "timeout.log")
 
 			env := []string{
 				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -234,6 +251,7 @@ printf '%s\n' "$FAKE_STATUS_JSON"
 				"CURL=curl",
 				"GO=go",
 				"ETCDCTL=etcdctl",
+				"TIMEOUT_CMD=timeout",
 				"JQ=jq",
 				"KUBE_CONTEXT=kind-kubebrain-dbaas",
 				"KUBEBRAIN_NAMESPACE=kubebrain-dev",
@@ -246,6 +264,7 @@ printf '%s\n' "$FAKE_STATUS_JSON"
 				"FAKE_READYZ=" + tc.readyz,
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
+				"FAKE_TIMEOUT_LOG=" + timeoutLog,
 			}
 			env = append(env, tc.extraEnv...)
 
@@ -256,6 +275,13 @@ printf '%s\n' "$FAKE_STATUS_JSON"
 				require.Error(t, err, string(output))
 			}
 			require.Contains(t, string(output), tc.wantOutput)
+			if len(tc.wantTimeout) > 0 {
+				timeoutBytes, readErr := os.ReadFile(timeoutLog)
+				require.NoError(t, readErr)
+				for _, want := range tc.wantTimeout {
+					require.Contains(t, string(timeoutBytes), want)
+				}
+			}
 		})
 	}
 }

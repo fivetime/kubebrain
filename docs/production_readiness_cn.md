@@ -454,7 +454,8 @@ count 一致。配置 `EXPECTED_STATUS_CLUSTER_ID` 时还会通过 `etcdctl endp
 固定运行时 cluster ID，并要求 member ID 为正、revision/dbSize 为非负；配置
 `STATUS_ENDPOINTS` 时会对逗号分隔的每个 endpoint 做同一组 Status 校验，并要求返回的
 `Endpoint` 集合与请求集合完全一致、member ID 集合无重复；空 endpoint 或重复 endpoint
-会在调用 `etcdctl` 前 fail closed。它不写入实例，因此
+会在调用 `etcdctl` 前 fail closed。`kubectl`、`curl`、`prefix-tool` 和 `etcdctl` 调用都由
+`TIMEOUT_CMD`（默认 `timeout`）按 `PROBE_TIMEOUT` 包裹。它不写入实例，因此
 可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
 它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。

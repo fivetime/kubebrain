@@ -14,6 +14,7 @@ KUBECTL="${KUBECTL:-kubectl}"
 CURL="${CURL:-curl}"
 GO="${GO:-go}"
 ETCDCTL="${ETCDCTL:-etcdctl}"
+TIMEOUT_CMD="${TIMEOUT_CMD:-timeout}"
 JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 EXPECTED_PREFIX_COUNT="${EXPECTED_PREFIX_COUNT:-}"
@@ -68,13 +69,16 @@ for status_endpoint in "${status_endpoint_array[@]}"; do
   fi
   seen_status_endpoints[$status_endpoint]=1
 done
+run_with_probe_timeout() {
+  "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"
+}
 
 kubectl_args=()
 if [[ -n "$KUBE_CONTEXT" ]]; then
   kubectl_args+=(--context "$KUBE_CONTEXT")
 fi
 
-pods_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
 ready_pods="$(printf '%s' "$pods_json" | "$JQ" -r '
   [
@@ -89,7 +93,7 @@ if [[ "$ready_pods" != "$EXPECTED_READY_PODS" || "$total_pods" != "$EXPECTED_REA
   exit 1
 fi
 
-readyz="$("$CURL" -fsS "$READYZ_URL")"
+readyz="$(run_with_probe_timeout "$CURL" -fsS "$READYZ_URL")"
 if [[ "$readyz" != "ok" ]]; then
   echo "readyz mismatch: expected ok, got ${readyz}" >&2
   exit 1
@@ -99,7 +103,7 @@ prefix_count=""
 first_prefix_endpoint=""
 for prefix_endpoint in "${status_endpoint_array[@]}"; do
   current_prefix_count="$(ENDPOINT="$prefix_endpoint" ACTION=count PREFIX="$PREFIX" TIMEOUT="$PROBE_TIMEOUT" \
-    "$GO" run "$ROOT_DIR/hack/backup/cmd/prefix-tool")"
+    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/backup/cmd/prefix-tool")"
   current_prefix_count="$(printf '%s' "$current_prefix_count" | tr -d '[:space:]')"
   if ! [[ "$current_prefix_count" =~ ^[0-9]+$ ]]; then
     echo "prefix count probe for ${prefix_endpoint} returned non-numeric output: ${current_prefix_count}" >&2
@@ -120,7 +124,7 @@ done
 
 status_summary=""
 if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
-  status_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
+  status_json="$(ETCDCTL_API=3 run_with_probe_timeout "$ETCDCTL" --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
   expected_status_endpoints="${#status_endpoint_array[@]}"
   status_count="$(printf '%s' "$status_json" | "$JQ" -r 'if type == "array" then length else 0 end')"
   if [[ "$status_count" != "$expected_status_endpoints" ]]; then

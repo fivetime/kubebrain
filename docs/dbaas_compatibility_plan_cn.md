@@ -41938,6 +41938,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   掩盖。`TestValidateDataplaneReadonlyProbe` 新增 additional status endpoint count drift
   fail-closed 覆盖；本轮不修改 runtime。
 
+- A3895 为 A3889-A3894 的只读数据面门禁补齐进程级超时边界：脚本现在通过可覆盖的
+  `TIMEOUT_CMD`（默认 `timeout`）和 `PROBE_TIMEOUT` 包裹 `kubectl`、`curl`、每个
+  `prefix-tool ACTION=count` 以及 `etcdctl endpoint status -w json` 调用，避免 Kubernetes
+  API、readyz、KV Range 或 Status 探针因网络/控制面卡顿无限挂起。
+  `TestValidateDataplaneReadonlyProbe` 现在用 fake `timeout` 记录成功路径和 Status
+  fail-closed 路径的外部命令包裹情况；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
