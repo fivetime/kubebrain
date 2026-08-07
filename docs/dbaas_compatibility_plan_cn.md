@@ -42078,7 +42078,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回的元素即使带了 `Endpoint`，也必须提供可校验的 `HashKV` payload，不能让缺失
   payload 的畸形诊断元素靠默认 cluster/member/revision/hash/compact 值继续通过。新增
   `TestValidateDataplaneReadonlyProbe` 的 hashkv response missing hashkv fail-closed
-  覆盖；本轮不修改 runtime。
+  覆盖，并在 readonly gate 中显式拒绝缺失 `HashKV` payload 的端点。
 
 - A3919 固定 Status 诊断元素的 `Status` 对象必填边界：`endpoint status -w json`
   返回的元素即使带了 `Endpoint`，也必须提供可校验的 `Status` payload，不能让缺失
@@ -42091,6 +42091,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过 `// 0` 当成合法空库证据。`validate-dataplane-readonly.sh` 新增缺失 dbSize
   端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing status db
   size 覆盖；本轮不修改 runtime。
+
+- A3921 固定 HashKV 诊断元素的 hash 必填边界：`endpoint hashkv -w json` 返回的
+  `HashKV` payload 必须带可汇总的 hash 字段，不能把缺失 hash 的畸形诊断元素通过
+  `// 0` 当成合法空 keyspace hash 证据。`validate-dataplane-readonly.sh` 新增缺失
+  hash 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 hashkv
+  response missing hash 覆盖；本轮不修改 runtime。
 
 ### P2：运维兼容和长期验证
 

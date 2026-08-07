@@ -261,6 +261,36 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv endpoint set mismatch: expected ${expected_status_endpoint_set}, got ${actual_hashkv_endpoint_set}" >&2
     exit 1
   fi
+  hashkv_payload_missing="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select(.HashKV == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$hashkv_payload_missing" ]]; then
+    echo "hashkv payload is required for endpoints: ${hashkv_payload_missing}" >&2
+    exit 1
+  fi
+  hashkv_hash_missing="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select(.HashKV.hash == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$hashkv_hash_missing" ]]; then
+    echo "hashkv hash is required for endpoints: ${hashkv_hash_missing}" >&2
+    exit 1
+  fi
   hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
