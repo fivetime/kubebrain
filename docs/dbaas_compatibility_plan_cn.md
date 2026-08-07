@@ -42420,6 +42420,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `validate-dataplane-readonly.sh` 现在用 `has("leader")`/`has("leader_id")`/`has("leaderId")`
   显式区分字段缺失与 false 值，并同步修正 `status_leader_ids=<unique>` 摘要读取路径；
   新增 boolean status leader envelope 拒绝覆盖。
+- A3974 固定只读 gate 对 Status raft term uint64 envelope 的 jq false/null 边界：
+  etcd `ResponseHeader.raft_term` 与 `StatusResponse.raftTerm` 都是 `uint64`，显式
+  `raft_term:false`/`raftTerm:false` 不能被当作 term 缺省。`validate-dataplane-readonly.sh`
+  现在用 `has("raft_term")`/`has("raftTerm")` 显式读取 header 与 top-level term，并同步修正
+  `status_raft_terms=<unique>` 摘要路径；新增 boolean status raft term envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 

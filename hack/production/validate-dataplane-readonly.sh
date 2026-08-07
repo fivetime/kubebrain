@@ -316,8 +316,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | ($item.Status.header.raft_term // $item.Status.header.raftTerm) as $header_term
-        | ($item.Status.raftTerm // $item.Status.raft_term) as $status_term
+        | (if ($item.Status.header | has("raft_term")) then $item.Status.header.raft_term elif ($item.Status.header | has("raftTerm")) then $item.Status.header.raftTerm else null end) as $header_term
+        | (if ($item.Status | has("raftTerm")) then $item.Status.raftTerm elif ($item.Status | has("raft_term")) then $item.Status.raft_term else null end) as $status_term
         | (
             if ($header_term == null and $status_term == null) then
               empty
@@ -639,7 +639,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | if has("enabled") then .enabled else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | (if has("targetVersion") then .targetVersion elif has("target_version") then .target_version else empty end) | select(. != "")] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | if has("leader") then .leader elif has("leader_id") then .leader_id elif has("leaderId") then .leaderId else empty end] | unique | join(",") | if . == "" then "-" else . end),
-        ([.[].Status | (.raftTerm // .raft_term) // empty] | unique | join(",") | if . == "" then "-" else . end),
+        ([.[].Status | if has("raftTerm") then .raftTerm elif has("raft_term") then .raft_term else empty end] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftIndex // .raft_index) // empty] | if length == 0 then "-" else min end),
         ([.[].Status | (.raftAppliedIndex // .raft_applied_index) // empty] | if length == 0 then "-" else min end)
       ] | @tsv
