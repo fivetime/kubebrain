@@ -231,6 +231,26 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv endpoint set mismatch: expected ${expected_status_endpoint_set}, got ${actual_hashkv_endpoint_set}" >&2
     exit 1
   fi
+  hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | {
+            endpoint: (.Endpoint // "unknown"),
+            revision: (.HashKV.header.revision // 0),
+            compact_revision: (.HashKV.compact_revision // .HashKV.compactRevision // 0)
+          }
+        | select(.compact_revision > .revision)
+        | "\(.endpoint): compact=\(.compact_revision), hash=\(.revision)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$hashkv_revision_violations" ]]; then
+    echo "hashkv compact revision must not exceed hash revision: ${hashkv_revision_violations}" >&2
+    exit 1
+  fi
   hashkv_values="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"

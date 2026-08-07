@@ -41979,6 +41979,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   被记录为通过。`TestValidateDataplaneReadonlyProbe` 新增 compact revision beyond hash
   revision fail-closed 覆盖；本轮不修改 runtime。
 
+- A3901 将 A3900 的 HashKV revision 顺序校验从 min/min 汇总收紧为逐 endpoint 校验：
+  多 endpoint 场景下任一 endpoint 返回 `compact_revision > revision` 都会 fail closed，并
+  在错误中标出具体 endpoint 与 compact/hash revision。这样避免某个非法 endpoint 被另一个
+  较小 compact revision 掩盖。`TestValidateDataplaneReadonlyProbe` 新增 per-endpoint
+  compact revision violation 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
