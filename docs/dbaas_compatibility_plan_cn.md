@@ -41991,6 +41991,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   被误用。`TestValidateDataplaneReadonlyProbe` 新增 hashkv hash without expected
   cluster ID fail-closed 覆盖；本轮不修改 runtime。
 
+- A3903 为 HashKV 只读门禁补上 endpoint 集合回归：`EXPECTED_HASHKV_HASH` 打开时，
+  `etcdctl endpoint hashkv -w json` 的返回 `Endpoint` 集合必须与 `STATUS_ENDPOINTS`
+  完全一致，不能接受漏 endpoint、串 endpoint 或 LB 返回的错误成员地址。新增
+  `TestValidateDataplaneReadonlyProbe` 的 hashkv endpoint set mismatch 覆盖，防止
+  只校验 hash/member ID 而忽略响应来源；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
