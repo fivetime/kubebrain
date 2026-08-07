@@ -846,6 +846,13 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
   if [[ "$hashkv_raft_terms" != "-" ]]; then
     hashkv_summary+=", hashkv_raft_terms=${hashkv_raft_terms}"
+    if [[ "${status_raft_terms:-"-"}" != "-" ]]; then
+      if [[ "$hashkv_raft_terms" != "$status_raft_terms" ]]; then
+        echo "status/hashkv raft term mismatch: status=${status_raft_terms}, hashkv=${hashkv_raft_terms}" >&2
+        exit 1
+      fi
+      hashkv_summary+=", raft_terms_match=true"
+    fi
   fi
 fi
 
