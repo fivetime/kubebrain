@@ -42287,6 +42287,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields` 固定示例命令仍包含
   Status version/hashkv hash 期望，并防止上述审计字段从手册中漂移；本轮不修改 runtime。
 
+- A3952 固定只读 gate 对 HashKV header raft term camelCase JSON 的兼容：此前
+  `validate-dataplane-readonly.sh` 的 jq 路径已经支持 `HashKV.header.raftTerm`，但测试只覆盖
+  `raft_term`。`TestValidateDataplaneReadonlyProbe` 新增 camelcase hashkv raft term summary
+  覆盖，证明 camelCase header term 也会进入 `hashkv_raft_terms=<unique>` 与
+  `raft_terms_match=true` 摘要；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
