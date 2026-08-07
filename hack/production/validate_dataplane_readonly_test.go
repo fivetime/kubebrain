@@ -116,6 +116,25 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status member IDs must be unique",
 		},
 		{
+			name: "rejects status endpoint set mismatch",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}},
+				{"Endpoint":"http://127.0.0.3:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":8},"dbSize":100}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+			},
+			wantOutput: "status endpoint set mismatch",
+		},
+		{
 			name: "rejects empty status endpoint entry before commands",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -186,7 +205,7 @@ printf '%s\n' "$FAKE_STATUS_JSON"
 				"KUBE_CONTEXT=kind-kubebrain-dbaas",
 				"KUBEBRAIN_NAMESPACE=kubebrain-dev",
 				"EXPECTED_READY_PODS=3",
-				"ENDPOINT=http://172.18.0.3:30079",
+				"ENDPOINT=http://127.0.0.1:2379",
 				"READYZ_URL=http://172.18.0.3:32758/readyz",
 				"PREFIX=/",
 				"PROBE_TIMEOUT=10s",

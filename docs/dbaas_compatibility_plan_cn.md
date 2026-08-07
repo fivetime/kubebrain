@@ -41923,6 +41923,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   etcdctl 自身归一化后的输出误判为多 endpoint 身份覆盖。`TestValidateDataplaneReadonlyProbe`
   新增 empty endpoint 与 duplicate endpoint fail-closed 覆盖；本轮不修改 runtime。
 
+- A3893 继续收紧 A3891/A3892 的 Status 多 endpoint 只读门禁：脚本现在要求
+  `etcdctl endpoint status -w json` 返回的 `Endpoint` 集合与请求的 `STATUS_ENDPOINTS`
+  集合完全一致，而不只比较返回条数、cluster ID 和 member ID。这样可以防止代理、负载均衡
+  或错误配置让门禁查到“同数量但不同目标”的 endpoint 后误判通过。
+  `TestValidateDataplaneReadonlyProbe` 新增 status endpoint set mismatch fail-closed
+  覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -116,6 +116,18 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status endpoint count mismatch: expected ${expected_status_endpoints}, got ${status_count}" >&2
     exit 1
   fi
+  expected_status_endpoint_set="$(printf '%s\n' "${status_endpoint_array[@]}" | LC_ALL=C sort | paste -sd, -)"
+  actual_status_endpoint_set="$(printf '%s' "$status_json" | "$JQ" -r '
+    if (type != "array" or any(.[]; (.Endpoint // "") == "")) then
+      "invalid"
+    else
+      ([.[].Endpoint] | sort | join(","))
+    end
+  ')"
+  if [[ "$actual_status_endpoint_set" != "$expected_status_endpoint_set" ]]; then
+    echo "status endpoint set mismatch: expected ${expected_status_endpoint_set}, got ${actual_status_endpoint_set}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
