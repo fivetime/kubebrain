@@ -843,7 +843,12 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv compact revision must not exceed hash revision: compact=${min_hashkv_compact_revision}, hash=${min_hashkv_revision}" >&2
     exit 1
   fi
+  if [[ "${min_status_revision:-}" != "$min_hashkv_revision" ]]; then
+    echo "status/hashkv revision mismatch: status=${min_status_revision:-missing}, hashkv=${min_hashkv_revision}" >&2
+    exit 1
+  fi
   hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
+  hashkv_summary+=", revisions_match=true"
   if [[ "$hashkv_raft_terms" != "-" ]]; then
     hashkv_summary+=", hashkv_raft_terms=${hashkv_raft_terms}"
     if [[ "${status_raft_terms:-"-"}" != "-" ]]; then

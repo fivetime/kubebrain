@@ -42265,6 +42265,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   raft term mismatch 拒绝覆盖，并把 hashkv raft term summary 用例扩展为交叉一致性
   通过证据；本轮不修改 runtime。
 
+- A3949 固定 Status 与 HashKV revision 的交叉一致性：生产只读 gate 已经同时要求
+  固定 prefix count 与固定 HashKV hash，因此该场景应代表同一个静态 MVCC 边界。
+  `validate-dataplane-readonly.sh` 现在要求 `endpoint status -w json` 的最小
+  `Status.header.revision` 与 `endpoint hashkv -w json` 的最小 `HashKV.header.revision`
+  一致，否则 fail-closed；通过摘要追加 `revisions_match=true`。
+  `TestValidateDataplaneReadonlyProbe` 新增 status/hashkv revision mismatch 拒绝覆盖，并把
+  hashkv raft term summary 用例扩展为 revision 一致性通过证据；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -146,7 +146,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
 			},
 			wantOK:     true,
-			wantOutput: "hashkv_raft_terms=8, raft_terms_match=true",
+			wantOutput: "revisions_match=true, hashkv_raft_terms=8, raft_terms_match=true",
 		},
 		{
 			name: "rejects non ready replica",
@@ -779,6 +779,23 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":9},"hash":111,"compact_revision":3}}]`,
 			},
 			wantOutput: "status/hashkv raft term mismatch",
+		},
+		{
+			name: "rejects status and hashkv revision mismatch",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":8},"hash":111,"compact_revision":3}}]`,
+			},
+			wantOutput: "status/hashkv revision mismatch",
 		},
 		{
 			name: "rejects negative hashkv compact revision",
