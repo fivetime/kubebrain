@@ -41662,6 +41662,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3879 与上述
   commit ID；本轮不修改 runtime。
 
+- A3880 固定 upstream earliest v2 proxy、peers/machines endpoint、keys query parsing、request
+  timeout/cancel 与 etcdserver2 keys prototype public boundary 审计。对照 `/root/etcd`
+  commit `a155f0bda`、`5f66b3585`、`52ddd389f`、`1ee8392a8`、
+  `7415d5302`、`e5a482266`、`bafe960db`、`e2d01eff3`、`bed63cddf`、
+  `e736a11ac`、`4087fa5c7`、`0c1d1b7ae`、`c78239a62`、`b33b85870`、
+  `cbec48e8f`、`ee78890f2`、`c1e7a788c`、`a7102d491`、`f1856abe6`、
+  `215662188`、`6d7acc6b1`、`2b260a7ae`、`c84a25e43`、`05b2d76d5`、
+  `07058d3e0`、`c4defbc45`、`8c3450e20`、`735647e6a`、`7638acdf3`、
+  `8cffd75e0`、`78d7b38a1`、`5585984ed` 与 `07c997f98`：官方收敛
+  stdlib ReverseProxy rewrite、peer handler split、form-over-query precedence、daemon proxy
+  mode/director、Peers.Endpoints、etcd.Error HTTP encoding、ParseBool/ParseUint64 validation、
+  `/v2/machines` GET/HEAD endpoint、parseRequest/waitForEvent/encodeResponse coverage、
+  non-blocking sender、data-dir flag semantics、default peer、HTTP read/write timeout docs、v2
+  prefix、security docs、etcdserver2 generated request ID、QGET、bool pointer parsing、keys path
+  matching、connection-close cancellation、504 timeout response、encoded response、Set/Create/Delete
+  与 CompareAndDelete prototype。KubeBrain 不 vend upstream earliest v2 proxy、peers/machines
+  discovery endpoint、v2 keys HTTP API 或 etcdserver2 protobuf prototype；DBaaS public contract
+  由 v3 generated gateway/query/error/timeout differential、Watch cancel/progress/future tests、
+  Lease/KV/Txn coverage、endpoint routing/TLS/CORS tests、`/health`/`/version` handler tests、
+  etcdctl compatibility docs、request timeout/error mapping tests 和 production readyz/count
+  probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3880 与上述 commit ID；本轮
+  不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
