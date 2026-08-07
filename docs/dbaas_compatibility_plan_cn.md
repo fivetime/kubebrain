@@ -42203,6 +42203,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status leader envelope fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
   non-positive status leader 覆盖；本轮不修改 runtime。
 
+- A3939 固定 Status version 的期望值门禁：`validate-dataplane-readonly.sh` 新增
+  `EXPECTED_STATUS_VERSION` opt-in，设置后要求 `endpoint status -w json` 每个元素的
+  `Status.version` 都存在且唯一值等于期望 semver，避免运行时实际版本和 DBaaS 发布声明
+  漂移。`TestValidateDataplaneReadonlyProbe` 新增 version mismatch 与 malformed expected
+  version 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -19,6 +19,7 @@ JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 EXPECTED_PREFIX_COUNT="${EXPECTED_PREFIX_COUNT:-}"
 EXPECTED_STATUS_CLUSTER_ID="${EXPECTED_STATUS_CLUSTER_ID:-}"
+EXPECTED_STATUS_VERSION="${EXPECTED_STATUS_VERSION:-}"
 EXPECTED_HASHKV_HASH="${EXPECTED_HASHKV_HASH:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
@@ -32,6 +33,10 @@ if [[ -n "$EXPECTED_PREFIX_COUNT" && ! "$EXPECTED_PREFIX_COUNT" =~ ^[0-9]+$ ]]; 
 fi
 if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" && ! "$EXPECTED_STATUS_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_STATUS_CLUSTER_ID must be empty or a positive integer" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_STATUS_VERSION" && ! "$EXPECTED_STATUS_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+  echo "EXPECTED_STATUS_VERSION must be empty or a semver string" >&2
   exit 2
 fi
 if [[ -n "$EXPECTED_HASHKV_HASH" && ! "$EXPECTED_HASHKV_HASH" =~ ^[0-9]+$ ]]; then
@@ -426,6 +431,19 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if [[ -n "$status_version_violations" ]]; then
     echo "status version envelope invalid: ${status_version_violations}" >&2
     exit 1
+  fi
+  if [[ -n "$EXPECTED_STATUS_VERSION" ]]; then
+    status_version_values="$(printf '%s' "$status_json" | "$JQ" -r '
+      if type != "array" then
+        "invalid"
+      else
+        [.[].Status.version] | unique | join(",")
+      end
+    ')"
+    if [[ "$status_version_values" != "$EXPECTED_STATUS_VERSION" ]]; then
+      echo "status version mismatch: expected ${EXPECTED_STATUS_VERSION}, got ${status_version_values}" >&2
+      exit 1
+    fi
   fi
   status_leader_violations="$(printf '%s' "$status_json" | "$JQ" -r '
     if type != "array" then

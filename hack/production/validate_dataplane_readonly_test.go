@@ -245,6 +245,22 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status version envelope invalid",
 		},
 		{
+			name: "rejects status version mismatch",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.6.0","dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+			},
+			wantOutput: "status version mismatch",
+		},
+		{
 			name: "rejects non positive status leader envelope",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -887,6 +903,15 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			extraEnv:   []string{"EXPECTED_HASHKV_HASH=111"},
 			wantOutput: "EXPECTED_HASHKV_HASH requires EXPECTED_STATUS_CLUSTER_ID",
+		},
+		{
+			name:       "rejects malformed expected status version before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_VERSION=3.7"},
+			wantOutput: "EXPECTED_STATUS_VERSION must be empty or a semver string",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
