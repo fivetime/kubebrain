@@ -442,6 +442,7 @@ READYZ_URL=https://instance-a-readyz.example/readyz \
 PREFIX=/ \
 EXPECTED_PREFIX_COUNT=4 \
 EXPECTED_STATUS_CLUSTER_ID=123456789 \
+STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
 PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
 ```
@@ -449,7 +450,9 @@ PROBE_TIMEOUT=10s \
 该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 必须返回 `ok`、以及
 `prefix-tool ACTION=count` 的非负整数结果；配置 `EXPECTED_PREFIX_COUNT` 时还会固定期望
 count。配置 `EXPECTED_STATUS_CLUSTER_ID` 时还会通过 `etcdctl endpoint status -w json`
-固定运行时 cluster ID，并要求 member ID 为正、revision/dbSize 为非负。它不写入实例，因此
+固定运行时 cluster ID，并要求 member ID 为正、revision/dbSize 为非负；配置
+`STATUS_ENDPOINTS` 时会对逗号分隔的每个 endpoint 做同一组 Status 校验，并要求返回的
+member ID 集合无重复。它不写入实例，因此
 可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
 它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。

@@ -41910,6 +41910,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `status_cluster_id=7662961163671170154`、`status_member_id=2393892952`、
   `status_revision=468126003565859436`、`status_db_size=5998`。本轮不修改 runtime。
 
+- A3891 扩展 A3890 的 Status 校验到多 endpoint：新增 `STATUS_ENDPOINTS`，默认仍为
+  bootstrap `ENDPOINT`；配置逗号分隔的多个 client endpoint 时，脚本要求 `etcdctl endpoint
+  status -w json` 返回条数与输入 endpoint 数一致、所有返回的 cluster ID 都等于
+  `EXPECTED_STATUS_CLUSTER_ID`、每个 member ID 为正且集合无重复、所有 revision/dbSize
+  非负。`TestValidateDataplaneReadonlyProbe` 新增重复 member ID fail-closed 覆盖；当前
+  kind 环境只有一个 NodePort client 入口，真实运行继续使用单 endpoint status 校验，Pod
+  后端集合由 Kubernetes EndpointSlice/Ready 检查覆盖。本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

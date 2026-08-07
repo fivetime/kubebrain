@@ -18,6 +18,7 @@ JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 EXPECTED_PREFIX_COUNT="${EXPECTED_PREFIX_COUNT:-}"
 EXPECTED_STATUS_CLUSTER_ID="${EXPECTED_STATUS_CLUSTER_ID:-}"
+STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_READY_PODS must be a positive integer" >&2
@@ -43,7 +44,7 @@ contains_unsafe_probe_value() {
   local value="$1"
   [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
 }
-for variable in ENDPOINT READYZ_URL PREFIX; do
+for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS; do
   value="${!variable}"
   if contains_unsafe_probe_value "$value"; then
     echo "${variable} contains unsupported characters" >&2
@@ -91,38 +92,57 @@ fi
 
 status_summary=""
 if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
-  status_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint status -w json)"
+  status_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
+  expected_status_endpoints="$(awk -F, '{print NF}' <<<"$STATUS_ENDPOINTS")"
+  status_count="$(printf '%s' "$status_json" | "$JQ" -r 'if type == "array" then length else 0 end')"
+  if [[ "$status_count" != "$expected_status_endpoints" ]]; then
+    echo "status endpoint count mismatch: expected ${expected_status_endpoints}, got ${status_count}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
-    if (type != "array" or length != 1) then
-      "invalid\tinvalid\tinvalid\tinvalid"
+    if (type != "array" or length == 0) then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
-      .[0].Status as $s |
+      def field($s; $name1; $name2): ($s[$name1] // $s[$name2] // 0);
       [
-        ($s.header.cluster_id // $s.header.clusterId // 0),
-        ($s.header.member_id // $s.header.memberId // 0),
-        ($s.header.revision // 0),
-        ($s.dbSize // $s.db_size // $s.dbSizeInUse // $s.db_size_in_use // 0)
+        ([.[].Status.header | (.cluster_id // .clusterId // 0)] | unique | join(",")),
+        ([.[].Status.header | (.member_id // .memberId // 0)] | join(",")),
+        ([.[].Status.header | (.member_id // .memberId // 0)] | unique | join(",")),
+        ([.[].Status.header | (.revision // 0)] | min),
+        ([.[].Status | (.dbSize // .db_size // .dbSizeInUse // .db_size_in_use // 0)] | min)
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r status_cluster_id status_member_id status_revision status_db_size <<<"$status_values"
-  if [[ "$status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
-    echo "status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${status_cluster_id}" >&2
+  IFS=$'\t' read -r status_cluster_ids status_member_ids unique_status_member_ids min_status_revision min_status_db_size <<<"$status_values"
+  if [[ "$status_cluster_ids" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${status_cluster_ids}" >&2
     exit 1
   fi
-  if ! [[ "$status_member_id" =~ ^[1-9][0-9]*$ ]]; then
-    echo "status member ID must be positive, got ${status_member_id}" >&2
+  IFS=',' read -r -a status_member_id_array <<<"$status_member_ids"
+  IFS=',' read -r -a unique_status_member_id_array <<<"$unique_status_member_ids"
+  if [[ "${#status_member_id_array[@]}" != "$expected_status_endpoints" ]]; then
+    echo "status member ID count mismatch: expected ${expected_status_endpoints}, got ${#status_member_id_array[@]}" >&2
     exit 1
   fi
-  if ! [[ "$status_revision" =~ ^[0-9]+$ ]]; then
-    echo "status revision must be non-negative, got ${status_revision}" >&2
+  if [[ "${#unique_status_member_id_array[@]}" != "$expected_status_endpoints" ]]; then
+    echo "status member IDs must be unique, got ${status_member_ids}" >&2
     exit 1
   fi
-  if ! [[ "$status_db_size" =~ ^[0-9]+$ ]]; then
-    echo "status dbSize must be non-negative, got ${status_db_size}" >&2
+  for status_member_id in "${status_member_id_array[@]}"; do
+    if ! [[ "$status_member_id" =~ ^[1-9][0-9]*$ ]]; then
+      echo "status member ID must be positive, got ${status_member_id}" >&2
+      exit 1
+    fi
+  done
+  if ! [[ "$min_status_revision" =~ ^[0-9]+$ ]]; then
+    echo "status revision must be non-negative, got ${min_status_revision}" >&2
     exit 1
   fi
-  status_summary=", status_cluster_id=${status_cluster_id}, status_member_id=${status_member_id}, status_revision=${status_revision}, status_db_size=${status_db_size}"
+  if ! [[ "$min_status_db_size" =~ ^[0-9]+$ ]]; then
+    echo "status dbSize must be non-negative, got ${min_status_db_size}" >&2
+    exit 1
+  fi
+  status_summary=", status_cluster_id=${status_cluster_ids}, status_member_ids=${status_member_ids}, min_status_revision=${min_status_revision}, min_status_db_size=${min_status_db_size}"
 fi
 
 echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}"
