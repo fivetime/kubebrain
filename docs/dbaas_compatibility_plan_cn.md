@@ -42447,6 +42447,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缺省。`validate-dataplane-readonly.sh` 现在用 `has("dbSizeQuota")`/`has("db_size_quota")`
   显式读取，并同步修正 `min_status_db_size_quota=<n>` 摘要路径；新增 boolean status db
   size quota envelope 拒绝覆盖。
+- A3979 固定只读 gate 对 HashKV header raft_term uint64 envelope 的 jq false/null 边界：
+  etcd `HashKVResponse.Header.RaftTerm` 来自 `ResponseHeader.RaftTerm uint64`，显式
+  `raft_term:false` 不能被当作 HashKV term 缺省。`validate-dataplane-readonly.sh` 现在用
+  `has("raft_term")`/`has("raftTerm")` 显式读取，并同步修正 `hashkv_raft_terms=<unique>`
+  摘要路径；新增 boolean hashkv raft term envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 

@@ -891,7 +891,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | ($item.HashKV.header.raft_term // $item.HashKV.header.raftTerm) as $term
+        | (if ($item.HashKV.header | has("raft_term")) then $item.HashKV.header.raft_term elif ($item.HashKV.header | has("raftTerm")) then $item.HashKV.header.raftTerm else null end) as $term
         | (
             if $term == null then
               empty
@@ -944,7 +944,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         ([.[].HashKV | .hash] | unique | join(",")),
         ([.[].HashKV.header | .revision] | min),
         ([.[].HashKV | (.compact_revision // .compactRevision)] | min),
-        ([.[].HashKV.header | (.raft_term // .raftTerm) // empty] | unique | join(",") | if . == "" then "-" else . end)
+        ([.[].HashKV.header | if has("raft_term") then .raft_term elif has("raftTerm") then .raftTerm else empty end] | unique | join(",") | if . == "" then "-" else . end)
       ] | @tsv
     end
   ')"
