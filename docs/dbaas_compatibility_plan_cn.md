@@ -41985,6 +41985,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   较小 compact revision 掩盖。`TestValidateDataplaneReadonlyProbe` 新增 per-endpoint
   compact revision violation 覆盖；本轮不修改 runtime。
 
+- A3902 固定 A3898 HashKV 门禁的配置依赖：`EXPECTED_HASHKV_HASH` 现在必须与
+  `EXPECTED_STATUS_CLUSTER_ID` 同时配置，否则脚本会在调用任何外部命令前 fail closed。
+  这避免只钉住 hash 而不钉住 cluster ID，导致串集群或错误 endpoint 的 HashKV 响应
+  被误用。`TestValidateDataplaneReadonlyProbe` 新增 hashkv hash without expected
+  cluster ID fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

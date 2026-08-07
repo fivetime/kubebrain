@@ -458,8 +458,9 @@ PROBE_TIMEOUT=10s \
 会在调用 `etcdctl` 前 fail closed。`kubectl`、`curl`、`prefix-tool` 和 `etcdctl` 调用都由
 `TIMEOUT_CMD`（默认 `timeout`）按 `PROBE_TIMEOUT` 包裹；`PROBE_TIMEOUT` 必须是正数
 duration，单位为 `ms`、`s`、`m` 或 `h`。配置 `EXPECTED_HASHKV_HASH` 时还会运行
-`etcdctl endpoint hashkv -w json`，要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、
-cluster ID 与 `EXPECTED_STATUS_CLUSTER_ID` 一致、member ID 为正且集合无重复、所有
+`etcdctl endpoint hashkv -w json`；该变量必须与 `EXPECTED_STATUS_CLUSTER_ID` 同时
+配置。HashKV 门禁要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、cluster ID 与
+`EXPECTED_STATUS_CLUSTER_ID` 一致、member ID 为正且集合无重复、所有
 endpoint hash 都等于期望 hash，revision/compact revision 非负，且每个 endpoint 的
 compact revision 不得大于同一响应的 hash revision；该项适合冻结写入窗口、升级或恢复后
 钉住 HashKV 诊断结果。它不写入实例，因此
