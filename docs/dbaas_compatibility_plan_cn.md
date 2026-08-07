@@ -41092,6 +41092,46 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   idempotency boundary、session recipe tests 和 observability docs 覆盖 public behavior。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3861 与上述 commit ID；本轮不修改 runtime。
 
+- A3862 固定 upstream balancer FastFail、delete all keys、endpoint health `--check-key`、
+  PrevKV watch、gRPC naming resolver、MVCC revision consistency、lease-in-lessor optimization、
+  endpoint health auth flags、lease errors、quota/alarm fixes、early lessor promotion、watch initial
+  revision/cancel errors、HTTPS endpoint scheme、deterministic lease revoke、compact progress
+  notify、linearizable Txn/read index、watcher close/Sync/SetEndpoints、make-mirror prefix rewrite、
+  snapshot restore、semicolon URL support、lock/election create revision 和 Range min/max create
+  revision 审计。对照 `/root/etcd` commit `6a33f0ffd`、`75a65e1a7`、
+  `fac20b228`、`39e9b1f75`、`ce6276a2e`、`808125449`、`a00ed609c`、
+  `d585b43ab`、`c3948284`、`7d50dc06a`、`93225ebaf`、`064e02f4b`、
+  `4a07bbec` 与 `644ec0dde`：官方覆盖 FastFail、prefix delete all、endpoint
+  health check-key/env/auth flags、PrevKV watch、naming resolver、MVCC revision consistency、
+  lessor lease metadata 和 gRPC balancer。KubeBrain 已在 endpoint health/readiness、RBAC
+  endpoint probes、DeleteRange from-key/prefix、watch PrevKV, MemberList/AutoSync/SetEndpoints、
+  revision monotonicity、lease attachment 和 official clientv3 differential 中固定 public 行为；
+  client balancer/naming 内部不 vend。
+
+  对照 `a862fd9f0`、`10cafe56b`、`65ac718a1`、`5adca4a72`、`0f0c048e2`、
+  `279c10351`、`06d5cf2d5`、`e285f599e`、`8e1c989ec`、`0dc14d177`、
+  `a96a28d60`、`f45542394`、`4f9be9464`、`6ac284a57`、`b8017004b`、
+  `bf2581390`、`ea0c65797` 与 `8ef668701`：官方修复 lease error mapping、
+  lease TTL helper、quota/alarm tests、early lessor promotion、watch initial revision、canceled watch
+  close error、HTTPS endpoint scheme、deterministic revoke order、valid progress notification、
+  embed Config、compact event progress notify、linearizable Txn/read notify 和 nonexistent lease TTL
+  panic。KubeBrain lease TTL/Revoke/KeepAlive、quota/alarm contract、watch create/cancel/progress/
+  compacted semantics、HTTPS/TLS endpoint config、linearizable read-only Txn、nonexistent lease
+  `TTL=-1` 和 production probes 已覆盖。
+
+  对照 `e3e399302`、`ab20187f9`、`308038e96`、`35ff70656`、`a32518006`、
+  `deef16b37`、`cdb1e3479`、`409fc439d`、`e5ff5d92e`、`690a0b6f0`、
+  `0fb2cab22`、`f11b35eb7`、`b9d18d4ac`、`b571f4d62`、`bb337c87d`、
+  `5cfa9e238`、`9b1fe4585`、`004a5f0db`、`aa7a35798`、`5bd251a6f` 与
+  `c0981a90f`：官方补 read-index、etcdctl del from-key、client watcher stream close、
+  overlapped context cancel、Sync/SetEndpoints、make-mirror destination prefix rewrite、snapshot
+  restore、parallel expired leases、watch reconnect request、snapshot file rename、semicolon support、
+  lock/election create max revision、balancer close panic、Range min/max create revision。
+  KubeBrain read-index 等价性由 leader fencing/linearizable reads 提供；etcdctl del/make-mirror/
+  snapshot restore、watch reconnect/cancel、SetEndpoints smoke、lease expiry batching、Lock/Election
+  recipe 和 Min/MaxCreateRevision differential 已覆盖 DBaaS public contract。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3862 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
