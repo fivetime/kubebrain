@@ -42225,6 +42225,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使生产日志能直接审计 `EXPECTED_STATUS_VERSION` 的实际确认值。`TestValidateDataplaneReadonlyProbe`
   新增 pinned status version summary 覆盖；本轮不修改 runtime。
 
+- A3943 将 Status leader/raft term 纳入只读门禁通过摘要：`validate-dataplane-readonly.sh`
+  现在会在 `endpoint status -w json` 返回 leader 或 raft term 时输出
+  `status_leader_ids=<unique>` 与 `status_raft_terms=<unique>`，使生产日志能直接审计
+  leader/term 诊断面。`TestValidateDataplaneReadonlyProbe` 新增 status leader and raft term
+  summary 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
