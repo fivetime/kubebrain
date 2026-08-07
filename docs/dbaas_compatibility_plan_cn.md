@@ -42300,6 +42300,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明 header `raftTerm`、top-level `raft_term` 和 `leader_id` 组合仍会进入
   `status_leader_ids=<unique>` 与 `status_raft_terms=<unique>` 摘要；本轮不修改 runtime。
 
+- A3954 固定只读 gate 对 Status synthetic Raft index snake_case JSON 的兼容：此前
+  `validate-dataplane-readonly.sh` 的 jq 路径已经支持 `Status.raft_index` 与
+  `Status.raft_applied_index`，但通过用例只显式覆盖 `raftIndex`/`raftAppliedIndex`。
+  `TestValidateDataplaneReadonlyProbe` 新增 snakecase status raft indexes summary 覆盖，
+  证明 snake_case index/applied index 也必须等于 `Status.header.revision`，并进入
+  `min_status_raft_index=<n>`、`min_status_raft_applied_index=<n>` 与
+  `raft_indexes_match_revision=true` 摘要；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
