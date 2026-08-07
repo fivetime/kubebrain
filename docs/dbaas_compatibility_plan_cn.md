@@ -42321,6 +42321,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   empty status errors summary 覆盖，证明官方 protobuf JSON 风格的 `Errors: []` 也会进入
   `status_errors=empty` 摘要；本轮不修改 runtime。
 
+- A3957 固定只读 gate 对 Status `Errors` 大写 JSON 字段的 fail-closed 健康判定：
+  `validate-dataplane-readonly.sh` 不能只接受 `Errors: []`，还必须在官方 protobuf JSON
+  风格的 `Errors: ["etcdserver: no leader"]` 出现时拒绝通过。`TestValidateDataplaneReadonlyProbe`
+  新增 uppercase non empty status errors 拒绝覆盖，证明大写字段的非空错误同样触发
+  `status errors must be empty`；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
