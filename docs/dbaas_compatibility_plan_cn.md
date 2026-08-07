@@ -42410,6 +42410,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缺省而跳过校验。`validate-dataplane-readonly.sh` 现在用 `has("downgradeInfo")`/
   `has("downgrade_info")` 显式区分字段缺失与 false 值；新增 boolean status downgrade info
   envelope 拒绝覆盖，证明 `downgradeInfo:false` 会触发 `status downgradeInfo envelope invalid`。
+- A3972 固定只读 gate 对 Status errors 数组类型的 jq false/null 边界：
+  etcd `StatusResponse.Errors` 是 `[]string`，缺省可视为空数组，但显式 `errors:false` 不是
+  合法空错误列表。`validate-dataplane-readonly.sh` 现在用 `has("errors")`/`has("Errors")`
+  区分字段缺失与 false 值，避免 jq `// []` 把 false 吞掉；新增 boolean status errors envelope
+  拒绝覆盖，证明布尔型 errors 会触发 `status errors must be empty`。
 
 ### P2：运维兼容和长期验证
 

@@ -606,7 +606,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | (($item.Status.errors // $item.Status.Errors // []) as $errors
+        | ((if ($item.Status | has("errors")) then $item.Status.errors elif ($item.Status | has("Errors")) then $item.Status.Errors else [] end) as $errors
           | if (($errors | type) != "array") then
               "\($endpoint): non_array"
             elif (($errors | length) > 0) then
