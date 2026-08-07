@@ -42468,6 +42468,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `validate-dataplane-readonly.sh` 现在用 `has("cluster_id")`/`has("clusterId")` 与
   `has("member_id")`/`has("memberId")` 显式读取，并同步修正 status identity 必填、
   数值类型、整数和摘要路径；新增 boolean status header identity envelope 拒绝覆盖。
+- A3983 固定只读 gate 对 HashKV header identity uint64 envelope 的 jq false/null 边界：
+  `endpoint hashkv -w json` 的 `HashKV.header.cluster_id` 与 `member_id` 同样来自
+  `ResponseHeader` uint64，显式 `cluster_id:false`/`member_id:false` 不能被 camelCase
+  fallback 掩盖。`validate-dataplane-readonly.sh` 现在用 `has("cluster_id")`/
+  `has("clusterId")` 与 `has("member_id")`/`has("memberId")` 显式读取，并同步修正
+  HashKV identity 必填、数值类型、整数和摘要路径；新增 boolean hashkv header identity
+  envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 

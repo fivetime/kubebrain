@@ -798,7 +798,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     else
       [
         .[]
-        | select((.HashKV.header.member_id // .HashKV.header.memberId) == null)
+        | select((if (.HashKV.header | has("member_id")) then .HashKV.header.member_id elif (.HashKV.header | has("memberId")) then .HashKV.header.memberId else null end) == null)
         | (.Endpoint // "unknown")
       ] | join(",")
     end
@@ -813,7 +813,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     else
       [
         .[]
-        | select((.HashKV.header.cluster_id // .HashKV.header.clusterId) == null)
+        | select((if (.HashKV.header | has("cluster_id")) then .HashKV.header.cluster_id elif (.HashKV.header | has("clusterId")) then .HashKV.header.clusterId else null end) == null)
         | (.Endpoint // "unknown")
       ] | join(",")
     end
@@ -845,8 +845,8 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
         | [
-            (if ((($item.HashKV.header.cluster_id // $item.HashKV.header.clusterId) | type) != "number") then "cluster_id" else empty end),
-            (if ((($item.HashKV.header.member_id // $item.HashKV.header.memberId) | type) != "number") then "member_id" else empty end),
+            (if (((if ($item.HashKV.header | has("cluster_id")) then $item.HashKV.header.cluster_id elif ($item.HashKV.header | has("clusterId")) then $item.HashKV.header.clusterId else null end) | type) != "number") then "cluster_id" else empty end),
+            (if (((if ($item.HashKV.header | has("member_id")) then $item.HashKV.header.member_id elif ($item.HashKV.header | has("memberId")) then $item.HashKV.header.memberId else null end) | type) != "number") then "member_id" else empty end),
             (if (($item.HashKV.header.revision | type) != "number") then "revision" else empty end),
             (if (($item.HashKV.hash | type) != "number") then "hash" else empty end),
             (if (((if ($item.HashKV | has("compact_revision")) then $item.HashKV.compact_revision elif ($item.HashKV | has("compactRevision")) then $item.HashKV.compactRevision else null end) | type) != "number") then "compact_revision" else empty end)
@@ -869,8 +869,8 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
         | [
-            (if (($item.HashKV.header.cluster_id // $item.HashKV.header.clusterId) | noninteger) then "cluster_id" else empty end),
-            (if (($item.HashKV.header.member_id // $item.HashKV.header.memberId) | noninteger) then "member_id" else empty end),
+            (if ((if ($item.HashKV.header | has("cluster_id")) then $item.HashKV.header.cluster_id elif ($item.HashKV.header | has("clusterId")) then $item.HashKV.header.clusterId else null end) | noninteger) then "cluster_id" else empty end),
+            (if ((if ($item.HashKV.header | has("member_id")) then $item.HashKV.header.member_id elif ($item.HashKV.header | has("memberId")) then $item.HashKV.header.memberId else null end) | noninteger) then "member_id" else empty end),
             (if ($item.HashKV.header.revision | noninteger) then "revision" else empty end),
             (if ($item.HashKV.hash | noninteger) then "hash" else empty end),
             (if ((if ($item.HashKV | has("compact_revision")) then $item.HashKV.compact_revision elif ($item.HashKV | has("compactRevision")) then $item.HashKV.compactRevision else null end) | noninteger) then "compact_revision" else empty end)
@@ -938,9 +938,9 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
-        ([.[].HashKV.header | (.cluster_id // .clusterId)] | unique | join(",")),
-        ([.[].HashKV.header | (.member_id // .memberId)] | join(",")),
-        ([.[].HashKV.header | (.member_id // .memberId)] | unique | join(",")),
+        ([.[].HashKV.header | if has("cluster_id") then .cluster_id elif has("clusterId") then .clusterId else empty end] | unique | join(",")),
+        ([.[].HashKV.header | if has("member_id") then .member_id elif has("memberId") then .memberId else empty end] | join(",")),
+        ([.[].HashKV.header | if has("member_id") then .member_id elif has("memberId") then .memberId else empty end] | unique | join(",")),
         ([.[].HashKV | .hash] | unique | join(",")),
         ([.[].HashKV.header | .revision] | min),
         ([.[].HashKV | if has("compact_revision") then .compact_revision elif has("compactRevision") then .compactRevision else empty end] | min),
