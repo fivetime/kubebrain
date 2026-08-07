@@ -42231,6 +42231,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leader/term 诊断面。`TestValidateDataplaneReadonlyProbe` 新增 status leader and raft term
   summary 覆盖；本轮不修改 runtime。
 
+- A3944 将 Status raft index/applied index 纳入只读门禁通过摘要：
+  `validate-dataplane-readonly.sh` 现在会在 `endpoint status -w json` 返回
+  `raftIndex`/`raftAppliedIndex` 时输出 `min_status_raft_index=<n>` 与
+  `min_status_raft_applied_index=<n>`，使生产日志能直接审计 etcdctl status
+  诊断面中的 Raft 进度下界。`TestValidateDataplaneReadonlyProbe` 新增 status
+  raft indexes summary 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
