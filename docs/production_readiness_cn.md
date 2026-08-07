@@ -460,8 +460,8 @@ PROBE_TIMEOUT=10s \
 duration，单位为 `ms`、`s`、`m` 或 `h`。配置 `EXPECTED_HASHKV_HASH` 时还会运行
 `etcdctl endpoint hashkv -w json`，要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、
 cluster ID 与 `EXPECTED_STATUS_CLUSTER_ID` 一致、member ID 为正且集合无重复、所有
-endpoint hash 都等于期望 hash，且 revision/compact revision 非负；该项适合冻结写入窗口、
-升级或恢复后钉住 HashKV 诊断结果。它不写入实例，因此
+endpoint hash 都等于期望 hash，revision/compact revision 非负，且 compact revision 不得
+大于 hash revision；该项适合冻结写入窗口、升级或恢复后钉住 HashKV 诊断结果。它不写入实例，因此
 可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
 它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。

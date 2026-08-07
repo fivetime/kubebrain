@@ -41974,6 +41974,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 duplicate hashkv member IDs fail-closed
   覆盖；本轮不修改 runtime。
 
+- A3900 收紧 A3898/A3899 HashKV 结果内部一致性：只读门禁现在要求 HashKV 的
+  compact revision 不得大于 hash revision，避免不可能代表有效 MVCC 快照边界的诊断结果
+  被记录为通过。`TestValidateDataplaneReadonlyProbe` 新增 compact revision beyond hash
+  revision fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
