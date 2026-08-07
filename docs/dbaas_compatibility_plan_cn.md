@@ -42405,6 +42405,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缺省或 disabled 空对象，但一旦 `enabled=true` 必须携带非空 semver target，并在通过摘要输出
   `status_downgrade_enableds=<unique>` 与可选 `status_downgrade_target_versions=<unique>`。
   新增 downgrade info summary 与 enabled-without-target 拒绝覆盖。
+- A3971 固定只读 gate 对 Status downgradeInfo 对象类型的 jq false/null 边界：
+  `downgradeInfo` 按 proto 必须是对象，不能因为 jq `//` 会把 JSON boolean `false` 当作
+  缺省而跳过校验。`validate-dataplane-readonly.sh` 现在用 `has("downgradeInfo")`/
+  `has("downgrade_info")` 显式区分字段缺失与 false 值；新增 boolean status downgrade info
+  envelope 拒绝覆盖，证明 `downgradeInfo:false` 会触发 `status downgradeInfo envelope invalid`。
 
 ### P2：运维兼容和长期验证
 

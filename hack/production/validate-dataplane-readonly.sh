@@ -540,7 +540,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | ($item.Status.downgradeInfo // $item.Status.downgrade_info) as $downgrade_info
+        | (if ($item.Status | has("downgradeInfo")) then $item.Status.downgradeInfo elif ($item.Status | has("downgrade_info")) then $item.Status.downgrade_info else null end) as $downgrade_info
         | (
             if $downgrade_info == null then
               empty
@@ -636,8 +636,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status | (.storageVersion // .storage_version) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.dbSizeQuota // .db_size_quota) // empty] | if length == 0 then "-" else min end),
         ([.[].Status | if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
-        ([.[].Status | (.downgradeInfo // .downgrade_info) // empty | if has("enabled") then .enabled else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
-        ([.[].Status | (.downgradeInfo // .downgrade_info) // empty | (.targetVersion // .target_version) // empty | select(. != "")] | unique | join(",") | if . == "" then "-" else . end),
+        ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | if has("enabled") then .enabled else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
+        ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | (if has("targetVersion") then .targetVersion elif has("target_version") then .target_version else empty end) | select(. != "")] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.leader // .leader_id // .leaderId) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftTerm // .raft_term) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftIndex // .raft_index) // empty] | if length == 0 then "-" else min end),
