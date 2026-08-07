@@ -42098,6 +42098,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   hash 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 hashkv
   response missing hash 覆盖；本轮不修改 runtime。
 
+- A3922 固定 HashKV 诊断元素的 compact revision 必填边界：`endpoint hashkv -w json`
+  返回的 `HashKV` payload 必须带 `compact_revision`/`compactRevision`，不能把缺失 compact
+  watermark 的畸形诊断元素通过 `// 0` 当成“未压缩”证据。`validate-dataplane-readonly.sh`
+  新增缺失 compact revision 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe`
+  新增 hashkv response missing compact revision 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

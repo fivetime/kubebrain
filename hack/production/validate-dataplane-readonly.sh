@@ -291,6 +291,21 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv hash is required for endpoints: ${hashkv_hash_missing}" >&2
     exit 1
   fi
+  hashkv_compact_revision_missing="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select((.HashKV.compact_revision // .HashKV.compactRevision) == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$hashkv_compact_revision_missing" ]]; then
+    echo "hashkv compact revision is required for endpoints: ${hashkv_compact_revision_missing}" >&2
+    exit 1
+  fi
   hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
