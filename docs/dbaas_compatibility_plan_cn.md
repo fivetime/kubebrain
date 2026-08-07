@@ -42502,6 +42502,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不是可用的诊断 envelope。生产 gate 将 `Status.dbSize` 从非负收紧为正 JSON integer；
   `dbSizeInUse` 仍允许为 0，但必须不大于 `dbSize`。新增 zero status db size 拒绝覆盖，
   防止空值或异常 endpoint 让碎片率/容量诊断建立在除零边界上。
+- A3989 固定只读 gate 对 Status downgradeInfo targetVersion 的类型/格式覆盖：
+  etcd `DowngradeInfo.TargetVersion` 是字符串，且生产诊断中只接受完整 semver target。
+  `validate-dataplane-readonly.sh` 已拒绝非字符串和短版本；本轮新增
+  `targetVersion:false` 与 `targetVersion:"3.6"` 拒绝覆盖，防止 downgrade 诊断面在
+  类型或版本格式畸形时仍进入通过摘要。
 
 ### P2：运维兼容和长期验证
 
