@@ -577,7 +577,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | ($item.Status.leader // $item.Status.leader_id // $item.Status.leaderId) as $leader
+        | (if ($item.Status | has("leader")) then $item.Status.leader elif ($item.Status | has("leader_id")) then $item.Status.leader_id elif ($item.Status | has("leaderId")) then $item.Status.leaderId else null end) as $leader
         | (
             if $leader == null then
               empty
@@ -638,7 +638,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status | if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | if has("enabled") then .enabled else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | (if has("targetVersion") then .targetVersion elif has("target_version") then .target_version else empty end) | select(. != "")] | unique | join(",") | if . == "" then "-" else . end),
-        ([.[].Status | (.leader // .leader_id // .leaderId) // empty] | unique | join(",") | if . == "" then "-" else . end),
+        ([.[].Status | if has("leader") then .leader elif has("leader_id") then .leader_id elif has("leaderId") then .leaderId else empty end] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftTerm // .raft_term) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftIndex // .raft_index) // empty] | if length == 0 then "-" else min end),
         ([.[].Status | (.raftAppliedIndex // .raft_applied_index) // empty] | if length == 0 then "-" else min end)

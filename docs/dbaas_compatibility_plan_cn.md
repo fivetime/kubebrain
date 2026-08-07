@@ -42415,6 +42415,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   合法空错误列表。`validate-dataplane-readonly.sh` 现在用 `has("errors")`/`has("Errors")`
   区分字段缺失与 false 值，避免 jq `// []` 把 false 吞掉；新增 boolean status errors envelope
   拒绝覆盖，证明布尔型 errors 会触发 `status errors must be empty`。
+- A3973 固定只读 gate 对 Status leader uint64 envelope 的 jq false/null 边界：
+  etcd `StatusResponse.Leader` 是 `uint64`，显式 `leader:false` 不是合法的“leader 缺省”。
+  `validate-dataplane-readonly.sh` 现在用 `has("leader")`/`has("leader_id")`/`has("leaderId")`
+  显式区分字段缺失与 false 值，并同步修正 `status_leader_ids=<unique>` 摘要读取路径；
+  新增 boolean status leader envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 
