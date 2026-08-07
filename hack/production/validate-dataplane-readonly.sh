@@ -195,7 +195,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     else
       [
         .[]
-        | select((.Status.dbSize // .Status.db_size) == null)
+        | select((if (.Status | has("dbSize")) then .Status.dbSize elif (.Status | has("db_size")) then .Status.db_size else null end) == null)
         | (.Endpoint // "unknown")
       ] | join(",")
     end
@@ -275,7 +275,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
             (if ((($item.Status.header.cluster_id // $item.Status.header.clusterId) | type) != "number") then "cluster_id" else empty end),
             (if ((($item.Status.header.member_id // $item.Status.header.memberId) | type) != "number") then "member_id" else empty end),
             (if (($item.Status.header.revision | type) != "number") then "revision" else empty end),
-            (if ((($item.Status.dbSize // $item.Status.db_size) | type) != "number") then "dbSize" else empty end)
+            (if (((if ($item.Status | has("dbSize")) then $item.Status.dbSize elif ($item.Status | has("db_size")) then $item.Status.db_size else null end) | type) != "number") then "dbSize" else empty end)
           ] as $fields
         | select(($fields | length) > 0)
         | "\($endpoint): \($fields | join(","))"
@@ -298,7 +298,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
             (if (($item.Status.header.cluster_id // $item.Status.header.clusterId) | noninteger) then "cluster_id" else empty end),
             (if (($item.Status.header.member_id // $item.Status.header.memberId) | noninteger) then "member_id" else empty end),
             (if ($item.Status.header.revision | noninteger) then "revision" else empty end),
-            (if (($item.Status.dbSize // $item.Status.db_size) | noninteger) then "dbSize" else empty end)
+            (if ((if ($item.Status | has("dbSize")) then $item.Status.dbSize elif ($item.Status | has("db_size")) then $item.Status.db_size else null end) | noninteger) then "dbSize" else empty end)
           ] as $fields
         | select(($fields | length) > 0)
         | "\($endpoint): \($fields | join(","))"
@@ -630,7 +630,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status.header | (.member_id // .memberId)] | join(",")),
         ([.[].Status.header | (.member_id // .memberId)] | unique | join(",")),
         ([.[].Status.header | .revision] | min),
-        ([.[].Status | (.dbSize // .db_size)] | min),
+        ([.[].Status | if has("dbSize") then .dbSize elif has("db_size") then .db_size else empty end] | min),
         ([.[].Status | if has("dbSizeInUse") then .dbSizeInUse elif has("db_size_in_use") then .db_size_in_use else empty end] | if length == 0 then "-" else min end),
         ([.[].Status.version // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | if has("storageVersion") then .storageVersion elif has("storage_version") then .storage_version else empty end] | unique | join(",") | if . == "" then "-" else . end),
