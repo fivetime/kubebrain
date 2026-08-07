@@ -41203,6 +41203,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   stress、readiness/failover、permission-denied code tests、default endpoint docs 和 production probes
   固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3864 与上述 commit ID；本轮不修改 runtime。
 
+- A3865 固定 upstream 早期 v3 public API 成型阶段的 PrevKV、watch filter、compact
+  response/physical、auth token invalidation、Authenticate disabled error、unix endpoint、
+  serialized Txn auth、CountOnly/KeysOnly、grpc-gateway、UserList/RoleList、Txn/deleteRange
+  permission 和 serializable proxy cache 审计。对照 `/root/etcd` commit `c0299ca6f`、
+  `7ec822107`、`12bf1a338`、`c853704ac`、`13a405632`、`40c4a7894`、
+  `6d8c647db`、`f28a87d83`、`745e1e2cf`、`66107b865`、`4f57bb313`、
+  `dced92f8b`、`1c25aa6c4`、`f63e6875b`、`76e2bf03b` 与 `859e336d6`：
+  官方补 Put/Delete PrevKV、watch old KV、watch user-error panic guard、watch filters、
+  grpc-proxy compaction、auth disable token invalidation、client naming resolver 和 compact
+  response/physical options。KubeBrain 已通过 official client Put/Delete/Watch differential、
+  watch PrevKV/filter/progress/error contract、CompactResponse/physical compatibility docs、auth
+  lifecycle/disable/token expiry、naming/endpoint recipe 和 production watch/lease probes 固定
+  public behavior；upstream grpc-proxy 内部不移植。
+
+  对照 `8df37d53d`、`13d0ea7f5`、`54d56e253`、`fc1a226d1`、`30cfa3049`、
+  `aafb2e943`、`0e7690780`、`6496ae005`、`def21f11a`、`4106e56d9`、
+  `68bcbdc84`、`6fe4d9d30`、`b4f0a8853`、`1097d63ff`、`722f5b2a8`、
+  `ad5d55dd4`、`eec706b9a`、`09e5db5a4`、`d68664841` 与 `18253e272`：
+  官方处理 auth 未启用时 Authenticate 失败、unix/unixs schemes、serialized Txn auth race、
+  user detail、Range CountOnly、runtime role/user mutation、grpc-gateway cURL、RequireLeader
+  Watch、watch context values、Range KeysOnly、Swagger/gateway docs、auto-compaction retention 和
+  Auth UserList/RoleList。KubeBrain 对应由 auth disabled boundary、endpoint scheme validation、
+  Txn auth/permission matrix、Range CountOnly/KeysOnly generated matrix、RequireLeader watch
+  failure、gateway generated JSON contract、auto-compaction compatibility 和 UserList/RoleList
+  tests 固定。
+
+  对照 `adff45889`、`699e76b63`、`cdf1a2ee2`、`16db9e68a`、`5676c5cf2`、
+  `5a7b7f759` 与 `c75fa6fdc`：官方修复 raft request header panic、snapshot compaction
+  pause、Txn permission checking、auth checking 分层、serializable proxy cache、grpc-gateway
+  support 和 deleteRange permission checking。KubeBrain 不复用 raft snapshot/serializable
+  grpc-proxy cache；对外 contract 由 revision header guard、compaction/watch progress、
+  Txn/deleteRange RBAC differential、gateway routing/HTTP2 boundary、read-only serializable read
+  semantics 和 production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded`
+  钉住 A3865 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
