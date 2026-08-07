@@ -609,6 +609,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         | ((if ($item.Status | has("errors")) then $item.Status.errors elif ($item.Status | has("Errors")) then $item.Status.Errors else [] end) as $errors
           | if (($errors | type) != "array") then
               "\($endpoint): non_array"
+            elif (any($errors[]; type != "string")) then
+              "\($endpoint): non_string_array"
             elif (($errors | length) > 0) then
               "\($endpoint): \($errors | join("|"))"
             else

@@ -42507,6 +42507,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `validate-dataplane-readonly.sh` 已拒绝非字符串和短版本；本轮新增
   `targetVersion:false` 与 `targetVersion:"3.6"` 拒绝覆盖，防止 downgrade 诊断面在
   类型或版本格式畸形时仍进入通过摘要。
+- A3990 固定只读 gate 对 Status errors repeated string envelope 的元素类型：
+  etcd `StatusResponse.Errors` 是 `repeated string`，`etcdctl endpoint status` 会把该字段
+  作为字符串列表 join 输出。生产 gate 已要求 `errors`/`Errors` 为空数组或缺省；本轮进一步
+  要求数组元素必须都是 JSON string，并新增 `errors:[false]` 与 `Errors:[false]` 拒绝覆盖，
+  防止畸形健康错误元素被当作普通非空错误或通过摘要吞掉。
 
 ### P2：运维兼容和长期验证
 
