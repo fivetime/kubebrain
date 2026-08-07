@@ -486,7 +486,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | ($item.Status.dbSizeQuota // $item.Status.db_size_quota) as $quota
+        | (if ($item.Status | has("dbSizeQuota")) then $item.Status.dbSizeQuota elif ($item.Status | has("db_size_quota")) then $item.Status.db_size_quota else null end) as $quota
         | (
             if $quota == null then
               empty
@@ -634,7 +634,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status | if has("dbSizeInUse") then .dbSizeInUse elif has("db_size_in_use") then .db_size_in_use else empty end] | if length == 0 then "-" else min end),
         ([.[].Status.version // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | if has("storageVersion") then .storageVersion elif has("storage_version") then .storage_version else empty end] | unique | join(",") | if . == "" then "-" else . end),
-        ([.[].Status | (.dbSizeQuota // .db_size_quota) // empty] | if length == 0 then "-" else min end),
+        ([.[].Status | if has("dbSizeQuota") then .dbSizeQuota elif has("db_size_quota") then .db_size_quota else empty end] | if length == 0 then "-" else min end),
         ([.[].Status | if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | if has("enabled") then .enabled else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | (if has("targetVersion") then .targetVersion elif has("target_version") then .target_version else empty end) | select(. != "")] | unique | join(",") | if . == "" then "-" else . end),

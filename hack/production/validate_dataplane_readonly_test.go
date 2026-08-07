@@ -662,6 +662,19 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status dbSizeQuota envelope invalid",
 		},
 		{
+			name: "rejects boolean status db size quota envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99,"dbSizeQuota":false}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "status dbSizeQuota envelope invalid",
+		},
+		{
 			name: "rejects string status learner envelope",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
