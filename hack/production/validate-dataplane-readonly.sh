@@ -350,6 +350,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
+        | $item.Status.header.revision as $revision
         | ($item.Status.raftIndex // $item.Status.raft_index) as $raft_index
         | ($item.Status.raftAppliedIndex // $item.Status.raft_applied_index) as $applied_index
         | (
@@ -365,6 +366,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
               "negative"
             elif ($applied_index > $raft_index) then
               "applied_beyond_raft_index"
+            elif ($raft_index != $revision or $applied_index != $revision) then
+              "not_revision"
             else
               empty
             end
@@ -567,6 +570,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$min_status_raft_applied_index" != "-" ]]; then
     status_summary+=", min_status_raft_applied_index=${min_status_raft_applied_index}"
+    status_summary+=", raft_indexes_match_revision=true"
   fi
 fi
 

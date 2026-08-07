@@ -42273,6 +42273,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 status/hashkv revision mismatch 拒绝覆盖，并把
   hashkv raft term summary 用例扩展为 revision 一致性通过证据；本轮不修改 runtime。
 
+- A3950 固定 KubeBrain Status synthetic Raft index 与 durable revision 的一致性：
+  KubeBrain 基于 TiKV/PD 数据面合成 etcdctl status 的 `raftIndex`/`raftAppliedIndex`，
+  生产只读 gate 现在要求二者在存在时均等于 `Status.header.revision`，否则 fail-closed；
+  通过摘要追加 `raft_indexes_match_revision=true`。`TestValidateDataplaneReadonlyProbe`
+  新增 raft indexes not revision 拒绝覆盖，并把 status raft indexes summary 用例扩展为
+  revision/index/applied 三者相等的通过证据；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
