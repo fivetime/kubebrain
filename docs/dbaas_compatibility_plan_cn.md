@@ -42394,6 +42394,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `dbSizeQuota`/`db_size_quota`，必须是正 JSON integer，并在通过摘要输出
   `min_status_db_size_quota=<n>`。`TestValidateDataplaneReadonlyProbe` 新增 quota summary
   与非正 quota 拒绝覆盖，防止畸形容量上限诊断被纳入生产通过证据。
+- A3969 固定只读 gate 对 Status isLearner envelope 的可选 fail-closed 判定：
+  etcd `StatusResponse.IsLearner` 是 bool；KubeBrain 当前生产 status 可以不暴露该字段，
+  但一旦出现 `isLearner`/`is_learner`，必须是 JSON boolean，不能接受字符串 `"false"`。
+  `validate-dataplane-readonly.sh` 现在在通过摘要输出 `status_is_learners=<unique>`，
+  `TestValidateDataplaneReadonlyProbe` 新增 learner summary 与 string learner 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 

@@ -508,6 +508,31 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status dbSizeQuota envelope invalid: ${status_db_size_quota_violations}" >&2
     exit 1
   fi
+  status_is_learner_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | (if ($item.Status | has("isLearner")) then $item.Status.isLearner elif ($item.Status | has("is_learner")) then $item.Status.is_learner else null end) as $is_learner
+        | (
+            if $is_learner == null then
+              empty
+            elif (($is_learner | type) != "boolean") then
+              "not_boolean"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_is_learner_violations" ]]; then
+    echo "status isLearner envelope invalid: ${status_is_learner_violations}" >&2
+    exit 1
+  fi
   status_leader_violations="$(printf '%s' "$status_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
@@ -561,7 +586,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
         ([.[].Status.header | (.cluster_id // .clusterId)] | unique | join(",")),
@@ -573,6 +598,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status.version // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.storageVersion // .storage_version) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.dbSizeQuota // .db_size_quota) // empty] | if length == 0 then "-" else min end),
+        ([.[].Status | if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.leader // .leader_id // .leaderId) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftTerm // .raft_term) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftIndex // .raft_index) // empty] | if length == 0 then "-" else min end),
@@ -580,7 +606,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r status_cluster_ids status_member_ids unique_status_member_ids min_status_revision min_status_db_size min_status_db_size_in_use status_versions status_storage_versions min_status_db_size_quota status_leader_ids status_raft_terms min_status_raft_index min_status_raft_applied_index <<<"$status_values"
+  IFS=$'\t' read -r status_cluster_ids status_member_ids unique_status_member_ids min_status_revision min_status_db_size min_status_db_size_in_use status_versions status_storage_versions min_status_db_size_quota status_is_learners status_leader_ids status_raft_terms min_status_raft_index min_status_raft_applied_index <<<"$status_values"
   if [[ "$status_cluster_ids" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${status_cluster_ids}" >&2
     exit 1
@@ -622,6 +648,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$min_status_db_size_quota" != "-" ]]; then
     status_summary+=", min_status_db_size_quota=${min_status_db_size_quota}"
+  fi
+  if [[ "$status_is_learners" != "-" ]]; then
+    status_summary+=", status_is_learners=${status_is_learners}"
   fi
   if [[ "$status_leader_ids" != "-" ]]; then
     status_summary+=", status_leader_ids=${status_leader_ids}"
