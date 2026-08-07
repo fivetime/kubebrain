@@ -478,6 +478,28 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status leader envelope invalid: ${status_leader_violations}" >&2
     exit 1
   fi
+  status_error_values="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | (($item.Status.errors // $item.Status.Errors // []) as $errors
+          | if (($errors | type) != "array") then
+              "\($endpoint): non_array"
+            elif (($errors | length) > 0) then
+              "\($endpoint): \($errors | join("|"))"
+            else
+              empty
+            end)
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_error_values" ]]; then
+    echo "status errors must be empty: ${status_error_values}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -530,6 +552,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if [[ "$min_status_db_size_in_use" != "-" ]]; then
     status_summary+=", min_status_db_size_in_use=${min_status_db_size_in_use}"
   fi
+  status_summary+=", status_errors=empty"
   if [[ "$status_versions" != "-" ]]; then
     status_summary+=", status_version=${status_versions}"
   fi

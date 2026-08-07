@@ -42245,6 +42245,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status 诊断面中的 in-use 字节下界可被生产日志直接审计。`TestValidateDataplaneReadonlyProbe`
   新增 status db size in use summary 覆盖；本轮不修改 runtime。
 
+- A3946 固定生产只读 gate 的 Status.Errors 健康契约：`validate-dataplane-readonly.sh`
+  现在要求 `endpoint status -w json` 返回的 `Status.errors`/`Status.Errors` 为空或缺省；
+  一旦出现 NOSPACE、CORRUPT、no leader 等 status 错误会 fail-closed，并在通过摘要输出
+  `status_errors=empty`。`TestValidateDataplaneReadonlyProbe` 新增 empty status errors
+  summary 与 non-empty status errors 拒绝覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
