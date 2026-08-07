@@ -41759,6 +41759,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3883 与上述
   commit ID；本轮不修改 runtime。
 
+- A3884 固定 upstream legacy v2 hidden-key watch、stream watch、metrics/debug、TTL/dir/root、
+  prevNode、HTTP status/content-type、redirect 与 CompareAndDelete public boundary 审计。对照
+  `/root/etcd` commit `823fdfab1`、`0cacb6cba`、`7a948746a`、
+  `139f59f7d`、`97bc5b260`、`7eaad5c8e`、`3e7c2dff9`、`a2e5bae95`、
+  `471c40735`、`c2077ed0b`、`cde184fdb`、`8597904bc`、`c247d807a`、
+  `22a25a18b`、`7553a9223`、`9a8bd96ad`、`c17ad07bd`、`f46fdbf07`、
+  `c62603ba7`、`bbbf8fd57`、`d89fa131a`、`d816db07e`、`18bf88636`、
+  `dba5eb57c`、`36dda352d`、`a5bca025b`、`bb64e7b6e`、`06473ba6f`、
+  `0fb8fc0b8`、`d646d7c16`、`c305eda34`、`40d297be6`、`46f8a354d`、
+  `ded3cc24c`、`72bf216cb`、`b929e7194`、`625203737`、`78e382cb6`、
+  `1d02a7080`、`3d16633a9`、`373199fe4`、`171072c73`、`90a8f56c9`、
+  `5b739f616`、`702cf1cc3`、`a414b15f9`、`1d34c8264` 与
+  `eecd9f7e3`：官方收敛 hidden keys watcher filtering/notification、peer heartbeat and
+  Graphite metrics、TTL range、bench endpoint flag、pprof endpoints、mod/lock and mod/leader
+  error codes、stream watcher locking/backpressure/chunking、store statistics docs、request
+  headers/index docs、prevNode field and docs、sorted listing docs、v2 HTTP status code mapping、
+  directory docs/TTL、event index consistency、dir flag and recursive delete semantics、heartbeat/
+  election timeout config、redirect rawquery and ClientURL choice、root readonly behavior、watcher
+  prefix history scan、prevExist docs、recursive/CreateAndDelete/CompareAndDelete HTTP and store
+  behavior、config fixes、JSON content-type 和 no-flag unique data directory。KubeBrain 不移植
+  upstream legacy v2 HTTP store/mod/dashboard/bench APIs；DBaaS public contract 由 v3 KV/Txn/
+  Watch/Lease generated differential、Watch slow-consumer/cancel/progress/prefix tests、Lease TTL/
+  revoke/expiry tests、HTTP gateway generated contract、metrics/debug/readyz docs and probes、
+  CORS/TLS handler tests、snapshot/backup docs、request timeout/error mapping tests 和 production
+  readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3884 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
