@@ -42036,6 +42036,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的畸形诊断结果作为有效生产只读证据。新增 `TestValidateDataplaneReadonlyProbe` 的
   negative hashkv revision fail-closed 覆盖；本轮不修改 runtime。
 
+- A3911 固定 HashKV 诊断 compact revision 的非负边界：`endpoint hashkv` 响应中的
+  compact revision 必须是非负整数，不能把负 compact watermark 当作有效 MVCC 快照边界。
+  新增 `TestValidateDataplaneReadonlyProbe` 的 negative hashkv compact revision
+  fail-closed 覆盖，并与 A3900/A3901 的 compact<=hash revision 顺序门禁配套；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
