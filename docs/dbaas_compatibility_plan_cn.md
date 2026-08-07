@@ -42238,6 +42238,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   诊断面中的 Raft 进度下界。`TestValidateDataplaneReadonlyProbe` 新增 status
   raft indexes summary 覆盖；本轮不修改 runtime。
 
+- A3945 将 Status dbSizeInUse 纳入只读门禁通过摘要：生产 gate 已经校验
+  `dbSizeInUse <= dbSize` 的 envelope，但通过日志此前只暴露 `min_status_db_size`。
+  `validate-dataplane-readonly.sh` 现在会在 `endpoint status -w json` 返回
+  `dbSizeInUse`/`db_size_in_use` 时输出 `min_status_db_size_in_use=<n>`，使 etcdctl
+  status 诊断面中的 in-use 字节下界可被生产日志直接审计。`TestValidateDataplaneReadonlyProbe`
+  新增 status db size in use summary 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
