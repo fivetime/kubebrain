@@ -351,8 +351,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
         | $item.Status.header.revision as $revision
-        | ($item.Status.raftIndex // $item.Status.raft_index) as $raft_index
-        | ($item.Status.raftAppliedIndex // $item.Status.raft_applied_index) as $applied_index
+        | (if ($item.Status | has("raftIndex")) then $item.Status.raftIndex elif ($item.Status | has("raft_index")) then $item.Status.raft_index else null end) as $raft_index
+        | (if ($item.Status | has("raftAppliedIndex")) then $item.Status.raftAppliedIndex elif ($item.Status | has("raft_applied_index")) then $item.Status.raft_applied_index else null end) as $applied_index
         | (
             if ($raft_index == null and $applied_index == null) then
               empty
@@ -640,8 +640,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status | (if has("downgradeInfo") then .downgradeInfo elif has("downgrade_info") then .downgrade_info else empty end) | (if has("targetVersion") then .targetVersion elif has("target_version") then .target_version else empty end) | select(. != "")] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | if has("leader") then .leader elif has("leader_id") then .leader_id elif has("leaderId") then .leaderId else empty end] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | if has("raftTerm") then .raftTerm elif has("raft_term") then .raft_term else empty end] | unique | join(",") | if . == "" then "-" else . end),
-        ([.[].Status | (.raftIndex // .raft_index) // empty] | if length == 0 then "-" else min end),
-        ([.[].Status | (.raftAppliedIndex // .raft_applied_index) // empty] | if length == 0 then "-" else min end)
+        ([.[].Status | if has("raftIndex") then .raftIndex elif has("raft_index") then .raft_index else empty end] | if length == 0 then "-" else min end),
+        ([.[].Status | if has("raftAppliedIndex") then .raftAppliedIndex elif has("raft_applied_index") then .raft_applied_index else empty end] | if length == 0 then "-" else min end)
       ] | @tsv
     end
   ')"

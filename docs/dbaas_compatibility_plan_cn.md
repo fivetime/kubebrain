@@ -42425,6 +42425,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `raft_term:false`/`raftTerm:false` 不能被当作 term 缺省。`validate-dataplane-readonly.sh`
   现在用 `has("raft_term")`/`has("raftTerm")` 显式读取 header 与 top-level term，并同步修正
   `status_raft_terms=<unique>` 摘要路径；新增 boolean status raft term envelope 拒绝覆盖。
+- A3975 固定只读 gate 对 Status raft index/applied index uint64 envelope 的 jq false/null 边界：
+  etcd `StatusResponse.RaftIndex` 与 `RaftAppliedIndex` 都是 `uint64`，显式
+  `raftIndex:false`/`raftAppliedIndex:false` 不能被当作 index envelope 缺省。
+  `validate-dataplane-readonly.sh` 现在用 `has("raftIndex")`/`has("raft_index")` 与
+  `has("raftAppliedIndex")`/`has("raft_applied_index")` 显式读取，并同步修正
+  `min_status_raft_index=<n>` 与 `min_status_raft_applied_index=<n>` 摘要路径；
+  新增 boolean status raft index envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 
