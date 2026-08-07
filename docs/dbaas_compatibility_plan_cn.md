@@ -41456,6 +41456,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   中固定 DBaaS public contract；底层 lease WAL/storage schema 不移植。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3870 与上述 commit ID；本轮不修改 runtime。
 
+- A3871 固定 upstream 更早 client endpoint/leader API、早期 v3 Txn/Watch/Lease、HTTP CORS 与
+  debug/vars public boundary 审计。对照 `/root/etcd` commit `a46ffc60e`、`53be8405f`、
+  `5587c4aa9`、`452e5bffc`、`b868f4b1b`、`3cf90a4df`、`bf3bc0ed6`、
+  `ca25ed3ad`、`c37bd2385`、`1a3f7f7fa`、`5c1b83323`、`10de2e6db`、
+  `c160085f4`、`d6b4c7b67`、`1b0c65c29` 与 `1dab7e808`：官方引入 client
+  endpoint selection/reset、Members Leader API、early v3 KV/Watch service 和 etcdctlv3 watch、
+  Txn compare missing key no-panic、watch received/close envelope、lease revoke 删除绑定 key、
+  proxy empty-endpoint refresh、Authorization CORS header、`/debug/vars` GET-only 限制，以及
+  v2 `mk --prev-no-exist` 命令语义。KubeBrain 不 vend upstream v2 store/proxy/raft/http
+  实现；对 DBaaS public contract，endpoint/no-endpoint/unix/TLS 行为由 client compatibility
+  docs 和 endpoint tests 固定，Member mutation/Status boundary 由 maintenance/member tests
+  固定，Txn missing-key compare 由 `txn_compare.go` nil-key 语义、client txn tests 和
+  differential 覆盖，Watch create/cancel/progress/close/compacted/future/multi-stream 行为由
+  official watch differential 覆盖，Lease Revoke/TTL/KeepAlive/attach/detach/recovery 由 lease
+  client 与 differential tests 覆盖，HTTP CORS 与 debug/vars boundary 由 server HTTP tests
+  和 production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
+  A3871 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
