@@ -85,6 +85,7 @@ func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 		script   string
 	}{
 		{testFile: "validate_network_policy_test.go", script: "validate-network-policy.sh"},
+		{testFile: "validate_dataplane_readonly_test.go", script: "validate-dataplane-readonly.sh"},
 		{testFile: "validate_instance_ready_test.go", script: "validate-instance-ready.sh"},
 		{testFile: "validate_certificate_rotation_test.go", script: "validate-certificate-rotation.sh"},
 		{testFile: "wait_tidbcluster_ready_test.go", script: "wait-tidbcluster-ready.sh"},

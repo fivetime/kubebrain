@@ -430,6 +430,27 @@ member name 聚合后再比对运行时拓扑；最后通过官方
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。
 
+日常发布后和故障演练前后，还应运行轻量只读数据面门禁，避免每次靠人工复述
+`kubectl`/`curl`/`prefix-tool` 命令：
+
+```shell
+KUBE_CONTEXT=production \
+KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
+EXPECTED_READY_PODS=3 \
+ENDPOINT=https://instance-a.example:2379 \
+READYZ_URL=https://instance-a-readyz.example/readyz \
+PREFIX=/ \
+EXPECTED_PREFIX_COUNT=4 \
+PROBE_TIMEOUT=10s \
+  hack/production/validate-dataplane-readonly.sh
+```
+
+该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 必须返回 `ok`、以及
+`prefix-tool ACTION=count` 的非负整数结果；配置 `EXPECTED_PREFIX_COUNT` 时还会固定期望
+count。它不写入实例，因此可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
+它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
+或恢复正确性演练。
+
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
 不能替代备份、恢复和销毁各自的幂等状态机与回滚证据。

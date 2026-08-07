@@ -41892,6 +41892,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   强化 TiKV/PD DBaaS 运行态探针、补齐已知 P1/P2 运维和灾备验证。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3888 与 `054de85da`；本轮不修改 runtime。
 
+- A3889 将 A3888 后的“强化 TiKV/PD DBaaS 运行态探针”落成轻量只读发布门禁：
+  新增 `hack/production/validate-dataplane-readonly.sh`，结构化检查 KubeBrain Pod Ready
+  数、`/readyz` 返回 `ok`、以及 `prefix-tool ACTION=count` 的非负整数结果，并可用
+  `EXPECTED_PREFIX_COUNT` 固定期望值。该脚本只读，不写入实例，适合升级、恢复、网络策略或
+  证书轮换前后的快速数据面存活验证；它不替代 `validate-instance-ready.sh` 的完整 release
+  gate，也不替代写入、lease、watch 或恢复正确性演练。新增
+  `TestValidateDataplaneReadonlyProbe` 覆盖成功、Pod Ready 漂移、readyz 漂移、count 漂移和
+  unsafe endpoint fail-closed；`TestReleaseGateScriptTestsUseBoundedCommandHelper` 将该脚本纳入
+  bounded command helper 静态门禁。本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
