@@ -42353,6 +42353,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 string status raft term envelope 拒绝覆盖，
   证明字符串化 raft term 会触发 `status raft term envelope invalid`；本轮不修改 runtime。
 
+- A3962 固定只读 gate 对 Status raft term JSON integer 类型的 fail-closed 判定：
+  `validate-dataplane-readonly.sh` 不能只拒绝字符串化 raft term，还必须拒绝 JSON number
+  但非整数的 `8.5`，避免生产摘要把无效 Raft term 当作合法诊断值。`TestValidateDataplaneReadonlyProbe`
+  新增 fractional status raft term envelope 拒绝覆盖，证明小数 raft term 会触发
+  `status raft term envelope invalid`；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
