@@ -41608,6 +41608,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   timeout/error mapping tests 和 production readyz/count probes 固定。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3877 与上述 commit ID；本轮不修改 runtime。
 
+- A3878 固定 upstream early v2 client/member API、legacy etcdctl member/ls、admin members
+  endpoint、v2 keys quorum/version/error 与 newly-join bootstrap public boundary 审计。对照
+  `/root/etcd` commit `6dd4944e6`、`da6827f09`、`17c6f21d6`、
+  `f0760d624`、`824049897`、`b47631b38`、`22b86684f`、`5ed5d018b`、
+  `6b4485d1a`、`8f3be206e`、`f0c3385cf`、`8b8b3efda`、`7c1f4a9ba`、
+  `97597eca0`、`243886edc`、`ac810b86b`、`f6e242aa0`、`8b12e1aa3`、
+  `ab67fa4cc`、`d3bafd6aa`、`6f851ac88`、`c07b9ae32`、`d1fb732e6`、
+  `6cb45236a`、`e849d8e15`、`387639e80`、`cba19e348`、`73e48068c`、
+  `719c57a29`、`0e1d1646f`、`5456ef704`、`9a465b9cf`、`34dcbb467`、
+  `f21d93ba6`、`08593bcdf`、`543e12074`、`14852662e`、`7ef468b31`、
+  `9b679de9d`、`ed2925980`、`02551c277`、`c25c50582`、`8d6bb4a47`、
+  `63fa2a626`、`7be0f4b61` 与 `d00152765`：官方收敛 v2 client redirect
+  following、all endpoints retry、caller-provided context、MembersAPI interfaces/Sync、
+  legacy etcdctl member sync/no-sync/peers/name output/help、legacy `ls -p --sort`、members
+  API path 从 `/v2/admin/members` 迁移到 `/v2/members`、Member JSON collection/header/error
+  serialization、unsupported content-type 415、DELETE members MethodNotAllowed、admin members
+  slash equivalence、proxy cluster ClientURLs、v2 keys quorum parsing、`/version` endpoint、
+  StoreKeysPrefix error trimming、DefaultRequestTimeout、newly-join member bootstrap、lowerCamelCase
+  member fields、peer member endpoint 和 add-member generated ID。KubeBrain 不实现 upstream
+  v2 client library、legacy etcdctl member/keys flags、`/v2/admin/members`/`/v2/members`
+  mutation API、legacy proxy 或 v2 keys API；DBaaS public contract 由 generated v3 gateway
+  differential、`/version` handler tests、Member/Status unsupported mutation boundary、endpoint
+  retry/TLS/readiness tests、memberlist sync and naming/SRV tests、etcdctl compatibility docs、
+  request timeout/error mapping tests 和 production readyz/count probes 固定。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3878 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
