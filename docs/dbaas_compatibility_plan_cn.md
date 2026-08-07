@@ -41410,6 +41410,52 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DBaaS public contract。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3869 与上述 commit ID；
   本轮不修改 runtime。
 
+- A3870 固定 upstream 早期 clientv3/KV/Txn/Lease/Watch/Member/TLS/Range/WatchResponse/lease
+  persistence public contract 审计。对照 `/root/etcd` commit `c5c5063ef`、`7a91108b9`、
+  `fd0e68d16`、`580c563ed`、`b74a42b28`、`eb8ab3ace`、`a9bd30b4a`、
+  `a25423ca9`、`e49ae8b03`、`7d278ef6b`、`bef7887c0`、`843180181`、
+  `f2c24dec0`、`f6215574f`、`ca9bd575b`、`60c037f1c`、`4634874d`、
+  `563850bcc`、`781bf625a`、`f37c89615` 与 `69abdf814`：官方补 duplicate
+  Put key Txn rejection、no-endpoint error、lease keepalive/watch implementation、unix endpoints、
+  synchronous Lease.Close、mutation retry boundary、cluster API、KV delete/put-with-lease、lease
+  init race、Range current revision 和 v3 TLS。KubeBrain 已用 Txn duplicate/mutation
+  idempotency tests、endpoint validation/no-endpoint docs、official watch/lease differentials、
+  unix/unixs endpoint boundary、lease Close/KeepAlive/Revoke tests、Member mutation unsupported
+  boundary、DeleteRange/Put lease differential、Range header revision tests、TLS/mTLS/gateway
+  routing 和 production probes 固定对外行为。
+
+  对照 `85bfbfa5`、`eb03d4803`、`92653dcbf`、`64413927c`、`026c2e7a7`、
+  `205ffa5cb`、`2d2f14385`、`a3b7876a3`、`dba92346f`、`2db2f381f`、
+  `e4dab0f40`、`9a5a3ebc`、`36cc8446c`、`864fc197c`、`c8bf77c72`、
+  `128b5e738`、`b2d2c79a2`、`e925a359a`、`9572197ae`、`5a967eb2a`、
+  `2e157530a` 与 `be7d57336`：官方收敛 clientv3 thread-safety、KV/Txn/Lease/Watch 初版、
+  connection timeout/retry、etcdctlv3 dial code、Member API、Txn max-ops/invalid-range validation、
+  auth status freshness、lease restore、bad lease ID Put、lease revoke watch events、keepalive
+  forwarding 和 server-decided TTL。KubeBrain 对应由 request deadline/dial timeout docs、KV/Txn
+  generated matrix、Lease boundary/recovery/failover tests、Watch multi-stream/multi-event tests、
+  etcdctl compatibility、Member API unsupported/Status boundary、Txn validation, auth status
+  revision barrier、bad lease error mapping、lease revoke event differential 和 production
+  lease smoke 固定。
+
+  对照 `9113a27bd`、`39116e2e2`、`96f646c58`、`8c4023219`、`12362d292`、
+  `166055b44`、`05531b460`、`ccfd68a25`、`8df3f0c54`、`0f3573a57`、
+  `253550981`、`2f2b40868`、`ecba9b61c`、`d036ac85c`、`53186da0a`、
+  `6949f052c`、`4f427bca4`、`bfa21001a`、`82eeffbd5`、`59bf83c7`、
+  `f5753f2f5`、`2566699a`、`d9ca929a3`、`584217717`、`43a777b7a`、
+  `1714290f4`、`366e7a879`、`f2df87f3e`、`9156e54f1`、`25f82b25f`、
+  `556d4a693`、`4336278b4`、`6540f47df`、`eda0eefc2`、`ec1268623`、
+  `37b643b11`、`8f03c600b` 与 `8da6e7658`：官方补 consistent lease IDs、unsynced
+  watch/multiple streams/txn event watch、Range Revision/More/sort/header revision、initial
+  revision=1、watch cancel/control/headers/events slice、client SRV target、lease keepalive leader
+  path、Attach/Revoke/Persist/Recover leases、KV ResponseHeader、snapshot/recover backend、unix
+  listeners 和 put-with-lease。KubeBrain 已在 lease ID/regrant/revoke/generation isolation、
+  watch unsynced/multi-stream/txn/future/created/cancel/control differential、Range revision/More/
+  sort/matrix tests、initial revision and header guards、client SRV/naming recipe, lease attach/
+  detach persistence/restart tests、KV/Watch response headers、snapshot restore/recovery docs、
+  unix endpoint boundary、Put-with-lease official client tests 和 production readyz/count probes
+  中固定 DBaaS public contract；底层 lease WAL/storage schema 不移植。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3870 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
