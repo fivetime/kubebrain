@@ -480,18 +480,19 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
         ([.[].Status.header | (.cluster_id // .clusterId)] | unique | join(",")),
         ([.[].Status.header | (.member_id // .memberId)] | join(",")),
         ([.[].Status.header | (.member_id // .memberId)] | unique | join(",")),
         ([.[].Status.header | .revision] | min),
-        ([.[].Status | (.dbSize // .db_size // .dbSizeInUse // .db_size_in_use)] | min)
+        ([.[].Status | (.dbSize // .db_size // .dbSizeInUse // .db_size_in_use)] | min),
+        ([.[].Status.version // empty] | unique | join(","))
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r status_cluster_ids status_member_ids unique_status_member_ids min_status_revision min_status_db_size <<<"$status_values"
+  IFS=$'\t' read -r status_cluster_ids status_member_ids unique_status_member_ids min_status_revision min_status_db_size status_versions <<<"$status_values"
   if [[ "$status_cluster_ids" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${status_cluster_ids}" >&2
     exit 1
@@ -521,6 +522,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     exit 1
   fi
   status_summary=", status_cluster_id=${status_cluster_ids}, status_member_ids=${status_member_ids}, min_status_revision=${min_status_revision}, min_status_db_size=${min_status_db_size}"
+  if [[ -n "$status_versions" ]]; then
+    status_summary+=", status_version=${status_versions}"
+  fi
 fi
 
 hashkv_summary=""
