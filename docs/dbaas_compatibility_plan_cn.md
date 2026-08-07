@@ -41997,6 +41997,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 的 hashkv endpoint set mismatch 覆盖，防止
   只校验 hash/member ID 而忽略响应来源；本轮不修改 runtime。
 
+- A3904 补齐 A3903 的 HashKV 响应数量 fail-closed 门禁：多 endpoint 只读探针要求
+  `endpoint hashkv` 返回条目数等于 `STATUS_ENDPOINTS` 中的 endpoint 数量，漏返回任一
+  endpoint 都不能继续用剩余响应的 hash/member ID 判定通过。`TestValidateDataplaneReadonlyProbe`
+  新增 hashkv endpoint count mismatch 覆盖，明确区分“少响应”和“响应集合漂移”两条
+  错误路径；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

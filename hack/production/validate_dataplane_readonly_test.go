@@ -201,6 +201,29 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "hashkv endpoint set mismatch",
 		},
 		{
+			name: "rejects hashkv endpoint count mismatch",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}},
+				{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":8},"dbSize":100}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+				`FAKE_HASHKV_JSON=[
+					{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}
+				]`,
+			},
+			wantOutput: "hashkv endpoint count mismatch",
+		},
+		{
 			name: "rejects hashkv compact revision beyond hash revision",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
