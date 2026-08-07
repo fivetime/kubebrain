@@ -42452,6 +42452,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `raft_term:false` 不能被当作 HashKV term 缺省。`validate-dataplane-readonly.sh` 现在用
   `has("raft_term")`/`has("raftTerm")` 显式读取，并同步修正 `hashkv_raft_terms=<unique>`
   摘要路径；新增 boolean hashkv raft term envelope 拒绝覆盖。
+- A3980 固定只读 gate 对 HashKV compact_revision int64 envelope 的 jq false/null 边界：
+  etcd `HashKVResponse.CompactRevision` 是 `int64`，显式 `compact_revision:false` 不能被
+  camelCase `compactRevision` fallback 掩盖。`validate-dataplane-readonly.sh` 现在用
+  `has("compact_revision")`/`has("compactRevision")` 显式读取，并同步修正 compact revision
+  必填、数值类型、整数、范围和摘要路径；新增 boolean hashkv compact revision envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 

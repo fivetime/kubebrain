@@ -768,7 +768,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     else
       [
         .[]
-        | select((.HashKV.compact_revision // .HashKV.compactRevision) == null)
+        | select((if (.HashKV | has("compact_revision")) then .HashKV.compact_revision elif (.HashKV | has("compactRevision")) then .HashKV.compactRevision else null end) == null)
         | (.Endpoint // "unknown")
       ] | join(",")
     end
@@ -849,7 +849,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
             (if ((($item.HashKV.header.member_id // $item.HashKV.header.memberId) | type) != "number") then "member_id" else empty end),
             (if (($item.HashKV.header.revision | type) != "number") then "revision" else empty end),
             (if (($item.HashKV.hash | type) != "number") then "hash" else empty end),
-            (if ((($item.HashKV.compact_revision // $item.HashKV.compactRevision) | type) != "number") then "compact_revision" else empty end)
+            (if (((if ($item.HashKV | has("compact_revision")) then $item.HashKV.compact_revision elif ($item.HashKV | has("compactRevision")) then $item.HashKV.compactRevision else null end) | type) != "number") then "compact_revision" else empty end)
           ] as $fields
         | select(($fields | length) > 0)
         | "\($endpoint): \($fields | join(","))"
@@ -873,7 +873,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
             (if (($item.HashKV.header.member_id // $item.HashKV.header.memberId) | noninteger) then "member_id" else empty end),
             (if ($item.HashKV.header.revision | noninteger) then "revision" else empty end),
             (if ($item.HashKV.hash | noninteger) then "hash" else empty end),
-            (if (($item.HashKV.compact_revision // $item.HashKV.compactRevision) | noninteger) then "compact_revision" else empty end)
+            (if ((if ($item.HashKV | has("compact_revision")) then $item.HashKV.compact_revision elif ($item.HashKV | has("compactRevision")) then $item.HashKV.compactRevision else null end) | noninteger) then "compact_revision" else empty end)
           ] as $fields
         | select(($fields | length) > 0)
         | "\($endpoint): \($fields | join(","))"
@@ -922,7 +922,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         | {
             endpoint: (.Endpoint // "unknown"),
             revision: .HashKV.header.revision,
-            compact_revision: (.HashKV.compact_revision // .HashKV.compactRevision)
+            compact_revision: (if (.HashKV | has("compact_revision")) then .HashKV.compact_revision elif (.HashKV | has("compactRevision")) then .HashKV.compactRevision else null end)
           }
         | select(.compact_revision > .revision)
         | "\(.endpoint): compact=\(.compact_revision), hash=\(.revision)"
@@ -943,7 +943,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         ([.[].HashKV.header | (.member_id // .memberId)] | unique | join(",")),
         ([.[].HashKV | .hash] | unique | join(",")),
         ([.[].HashKV.header | .revision] | min),
-        ([.[].HashKV | (.compact_revision // .compactRevision)] | min),
+        ([.[].HashKV | if has("compact_revision") then .compact_revision elif has("compactRevision") then .compactRevision else empty end] | min),
         ([.[].HashKV.header | if has("raft_term") then .raft_term elif has("raftTerm") then .raftTerm else empty end] | unique | join(",") | if . == "" then "-" else . end)
       ] | @tsv
     end
