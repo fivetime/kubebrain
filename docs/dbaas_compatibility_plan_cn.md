@@ -42388,6 +42388,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   现在允许生产 status 暂不暴露该字段，但一旦出现 `storageVersion`/`storage_version`，必须是
   `X.Y` 字符串，并在通过摘要输出 `status_storage_versions=<unique>`；新增 status storage
   version summary 与 malformed status storage version 拒绝覆盖。
+- A3968 固定只读 gate 对 Status dbSizeQuota envelope 的可选 fail-closed 判定：
+  etcd `StatusResponse.DbSizeQuota` 是配置 backend quota 的 `int64`，server 在配置为 0 时会回填
+  默认正 quota，因此生产 gate 允许当前 status 暂不暴露该字段，但一旦出现
+  `dbSizeQuota`/`db_size_quota`，必须是正 JSON integer，并在通过摘要输出
+  `min_status_db_size_quota=<n>`。`TestValidateDataplaneReadonlyProbe` 新增 quota summary
+  与非正 quota 拒绝覆盖，防止畸形容量上限诊断被纳入生产通过证据。
 
 ### P2：运维兼容和长期验证
 
