@@ -41565,6 +41565,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3875 与上述 commit ID；本轮不修改
   runtime。
 
+- A3876 固定 upstream v2 HTTP health/member/leader/DNS/config/transport/discovery public boundary
+  审计。对照 `/root/etcd` commit `f8ce5996b`、`033e7d1db`、`c658e9a3e`、
+  `a77bf97c1`、`99821579b`、`a97f331a0`、`276a4abac`、`c8994cff3`、
+  `dfb66ab8c`、`1d1a4754a`、`a15f39e6a`、`7f1c630a0`、`0afbca409`、
+  `1ebad5e42`、`4dd00be36`、`152676f43`、`08e9c25ea`、`705ec4508`、
+  `6295dfba5`、`7f733ad68`、`910198d11`、`af4272848`、`f265afa8a`、
+  `773f112a5`、`717141042`、`421fe128c`、`e981dda28`、`706b6f96b`、
+  `e83e2bff9`、`2b519c90b` 与 `793cb095b`：官方收敛 peer URL 等价与
+  peerTLSInfo、legacy upgrade command/internalVersion、rafthttp stream metrics、`/health`、
+  heartbeat/election flags、CORS tests、keepalive listener/read timeout/dead client detection、
+  member/leader HTTP endpoint、serve/watch timeout、two-member leader removal、SRV discovery
+  extraction、client/peer URL hostname resolution、DNS bootstrap and partial SRV errors、etcdctl
+  cert env、discovery watch index、UTC time in v2 store、discovery retry forever、WAL/snapshot
+  empty/error classification、legacy other_apis docs 和 watcher_hub race。KubeBrain 不移植
+  upstream v2 HTTP member/leader/store/discovery/rafthttp internals；DBaaS public contract 由
+  `/health` and `/version` HTTP handler tests、CORS/HostWhitelist tests、peer `/members` and
+  HashKV HTTP tests、gateway election/member route tests、Status/Member unsupported mutation
+  boundary、endpoint keepalive/readiness/TLS tests、memberlist sync and naming/SRV tests、leader
+  election freshness tests、observability metrics docs、request timeout/error mapping tests、
+  snapshot/backup docs 和 production readyz/count probes 固定。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3876 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
