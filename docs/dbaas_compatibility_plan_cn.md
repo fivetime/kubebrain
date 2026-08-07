@@ -41786,6 +41786,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3884 与上述
   commit ID；本轮不修改 runtime。
 
+- A3885 固定 upstream early v1/v2 store index/header、TTL/watch/migration、snapshot、version
+  upgrade、CORS、redirect、registry 与 dashboard/mod public boundary 审计。对照 `/root/etcd`
+  commit `27157e5e7`、`cb4b6f1fe`、`06f1b7f2e`、`d8e5994c3`、
+  `d87e0e93d`、`eca433cee`、`6156d5c79`、`5620f8863`、`0c676ac93`、
+  `b4f4528ef`、`28ac516f6`、`64875d39b`、`c307b6abc`、`55058c64f`、
+  `779195eb4`、`8c6606ed1`、`d3bfc49b7`、`6b5d6ecd8`、`c88a55691`、
+  `ddf527e09`、`aa9ae3299`、`7b60f8bdc`、`1fb379911`、`bc0e07bca`、
+  `a659dec00`、`acbc0c884`、`668418603`、`55f904556`、`dcef04b79`、
+  `28722e212`、`baa683b48`、`811d172a5`、`d44fd6661`、`e954d3d41`、
+  `ec24e7695`、`d3b064c2e`、`594c2cab4`、`75959f994`、`b8b81d5b0`、
+  `9412c86b9`、`6f591032e`、`b8ac1d082`、`095944885`、`3ae316ac3`、
+  `35724319c`、`33e010ebd` 与 `da01fe602`：官方早期实现收敛 v2
+  `modifiedIndex`/`Etcd-Index`/`Raft-Index`/`Raft-Term` header、GET last-modified
+  index、sync command、v2 GET response shape、`sinceIndex` spelling、watcher hub ordering、
+  expire watcher pending semantics、TTL update/migration、v1/v2 handler path trimming、cluster
+  migration fixtures、snapshot functional tests、peer version upgrade endpoint、internal versioned
+  command factory、TTL in kvpair、tiered TOML config、HTTP timeout split、201 Created response、
+  redirect raw query、CORS methods、v1 `prevExistence` create semantics、POST unique create、
+  `waitIndex` spelling、registry duplicate/cache fixes、v2 route packaging、incremental suffix
+  create、event/watch history clone、expire stats 和 raft stats shape。KubeBrain 的 DBaaS public
+  contract 不承诺 upstream legacy v1/v2 HTTP store、dashboard/mod namespace、v1 data migration、
+  raft/wal/snapshot physical compatibility、peer version-upgrade endpoint 或 early registry wire
+  behavior；等价风险由 v3 KV/Txn/Watch/Lease generated differential、Watch cancel/progress/
+  prefix/slow-consumer tests、Lease TTL/revoke/expiry tests、HTTP gateway generated contract、
+  CORS/TLS/timeout/error handler tests、snapshot/backup logical docs、metrics/debug/readyz docs
+  and production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3885
+  与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
