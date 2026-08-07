@@ -42122,6 +42122,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   hashkv member ID 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
   missing hashkv member id 覆盖；本轮不修改 runtime。
 
+- A3926 固定 Status 诊断元素的 cluster ID 必填边界：`endpoint status -w json` 返回的
+  `Status.header` 必须带 `cluster_id`/`clusterId`，不能把缺失集群身份的畸形诊断元素通过
+  `// 0` 混同为 cluster drift。`validate-dataplane-readonly.sh` 新增缺失 status
+  cluster ID 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing
+  status cluster id 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
