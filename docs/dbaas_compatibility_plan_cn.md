@@ -42370,6 +42370,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `min_status_db_size_in_use=<n>` 摘要可能建立在畸形容量诊断上。`TestValidateDataplaneReadonlyProbe`
   新增 string status db size in use envelope 拒绝覆盖，证明字符串化 in-use size 会触发
   `status dbSizeInUse envelope invalid`；本轮不修改 runtime。
+- A3965 固定只读 gate 对 Status dbSizeInUse JSON integer 类型的 fail-closed 判定：
+  etcd `StatusResponse.DbSizeInUse` 是 `int64`，因此生产只读 gate 不能接受
+  `dbSizeInUse` 为小数 `88.5` 后进入 `min_status_db_size_in_use=<n>` 摘要。
+  `TestValidateDataplaneReadonlyProbe` 新增 fractional status db size in use envelope
+  拒绝覆盖，证明小数 in-use size 会触发 `status dbSizeInUse envelope invalid`；
+  本轮不修改 runtime。
 
 ### P2：运维兼容和长期验证
 
