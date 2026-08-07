@@ -42484,6 +42484,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   etcd `HashKVResponse.Hash` 是 `uint32`，显式 `hash:false` 不是合法 hash 结果。
   `validate-dataplane-readonly.sh` 既有 HashKV numeric fields 校验会拒绝非 JSON number；
   本轮新增 boolean hashkv hash envelope 拒绝覆盖，防止该诊断面类型边界从回归集漏掉。
+- A3986 固定只读 gate 对 HashKV hash_revision int64 envelope 的可选类型边界：
+  etcd 3.6+ `HashKVResponse.HashRevision` 是 `int64`，但当前生产 `etcdctl 3.5.16`
+  的 `endpoint hashkv -w json` 不展示该字段。只读 gate 因此保持缺失兼容；一旦
+  `hash_revision`/`hashRevision` 出现在 JSON envelope 中，必须是 JSON integer，新增
+  string、fractional 和 boolean hashkv hash revision 覆盖，防止升级 3.7 工具后畸形
+  `HashRevision` 被汇总路径吞掉。
 
 ### P2：运维兼容和长期验证
 
