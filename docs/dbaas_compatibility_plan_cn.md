@@ -42365,6 +42365,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 fractional status raft index envelope 拒绝覆盖，
   证明小数 index/applied index 会触发 `status raft index envelope invalid`；本轮不修改 runtime。
 
+- A3964 固定只读 gate 对 Status dbSizeInUse JSON number 类型的 fail-closed 判定：
+  `validate-dataplane-readonly.sh` 不能接受 `dbSizeInUse` 为字符串 `"88"`，否则
+  `min_status_db_size_in_use=<n>` 摘要可能建立在畸形容量诊断上。`TestValidateDataplaneReadonlyProbe`
+  新增 string status db size in use envelope 拒绝覆盖，证明字符串化 in-use size 会触发
+  `status dbSizeInUse envelope invalid`；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
