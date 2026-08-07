@@ -41238,6 +41238,48 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   semantics 和 production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded`
   钉住 A3865 与上述 commit ID；本轮不修改 runtime。
 
+- A3866 固定 upstream 更早期 v3 auth/client/watch/snapshot public surface 成型阶段审计：
+  ErrCompacted 命名、auth store/permission cleanup、token 跨节点一致性、serialized Range auth、
+  admin/root role、range permission、client auth dialopts、lease keepalive TTL timeout、grpc
+  balancer/reconnect、watch range_end、auth revoke/get/delete、TLS1.2、closed-client error、
+  watcher close/revision handling、endpoint scheme、v3 capability、empty key get、auth token
+  credential、snapshot hash、concurrency Election/Mutex API 和 RequireLeader。对照 `/root/etcd`
+  commit `c11418b56`、`5225a4e4b`、`1bbe09eb3`、`877696200`、`ead5096fa`、
+  `1e22137a9`、`b3a0b0502`、`f1c6fa48f`、`349eaf117`、`e53453252`、
+  `da2f2a518`、`253e313c0`、`6bb96074d`、`4a13c9f9b` 与 `62f8ec25c`：
+  官方补 auth token 一致性、Put/Range/admin 权限、root user/role、range grant/revoke、
+  client auth dial/reconnect/balancer 和 lease keepalive channel TTL 关闭。KubeBrain 已通过
+  auth lifecycle/token invalidation/JWT/simple-token、KV/Range/Txn RBAC matrix、root role
+  all-key semantics、RoleGrantPermission/RoleRevokePermission、official client lease keepalive、
+  endpoint/balancer smoke 和 production failover probes 固定对外行为；clientv3 内部 dialer
+  状态机不 vend。
+
+  对照 `7eaf73d27`、`624d5eb0c`、`ca630a080`、`94f22e8a0`、`60fc1e4d4`、
+  `c7a1423d4`、`0cb134310`、`957b07c40`、`f57b4eb46`、`267d1cb16`、
+  `10ee69b44`、`8b28c647e`、`5609fdb9a`、`75dc10574`、`a83051d0f`、
+  `1d8813052`、`7b5657cf1`、`283318d54`、`09e8f5782` 与 `5144318af`：
+  官方处理 watch 命令 range_end、RequestOp/ResponseOp proto 命名、auth revoke/get/delete
+  RPC、watch reconnect/closed stream、TLS minimum version、closed client error mapping、watcher
+  ctrl-channel race 和 apply 阶段错误码。KubeBrain watch range/end/resume/cancel/compacted
+  semantics、request proto coverage、UserGet/RoleGet/RoleDelete/UserRevokeRole/RoleRevokePermission
+  client tests、TLS endpoint validation、closed-client/RequireLeader typed errors、watch stream
+  shutdown 和 gRPC error mapping 已覆盖。
+
+  对照 `9a0fe2620`、`8e821cdc7`、`cfb3f96c2`、`c43831063`、`5cba7080b`、
+  `9dc0782f4`、`1c544c3ba`、`3ec627d1a`、`625931852`、`798718c49`、
+  `ac2e3e43b`、`e8101ddf0`、`ec2ac7258`、`120020fa9`、`393725fe5`、
+  `9c103dd0d`、`68eaf4083`、`9a6daefb3`、`527aa1a49` 与 `19221b33c`：
+  官方收敛 OpPut panic message、raft-log apply 权限检查、watch revision/cancel/send close、
+  member-list protobuf output、endpoint URL scheme、v3 capability gating、empty key get、auth
+  token gRPC credential、snapshot sha/hash verify、reconnect throttling、grpc KV proxy、Election
+  session key、ctx-aware Leader/Resign/Unlock、RequireLeader stream/unary cancellation、gateway
+  retry delay 和 failed Put close。KubeBrain 对外 contract 由 Put validation、auth apply barrier、
+  watch revision/cancel tests、etcdctl compatibility table、endpoint scheme smoke、capability/
+  readiness boundary、empty key client tests、metadata credential forwarding、Snapshot hash trailer
+  and restore docs、Lock/Election recipes、RequireLeader KV/Lease/Watch tests 和 production
+  readyz/count probes 固定；upstream grpcproxy/gateway retry-delay 实现不移植。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3866 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
