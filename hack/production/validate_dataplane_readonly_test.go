@@ -1180,7 +1180,7 @@ func compactJSONString(value string) string {
 	return strings.Join(strings.Fields(value), "")
 }
 
-func TestProductionReadinessDataplaneReadonlyExampleIncludesStatusVersion(t *testing.T) {
+func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "production_readiness_cn.md"))
 	require.NoError(t, err)
 	doc := string(data)
@@ -1199,6 +1199,16 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesStatusVersion(t *tes
 		require.Contains(t, example, required)
 	}
 	require.Contains(t, doc, "所有 Status version 唯一且等于期望 semver")
+	for _, required := range []string{
+		"status_errors=empty",
+		"raft_indexes_match_revision=true",
+		"revisions_match=true",
+		"hashkv_raft_terms=<unique>",
+		"raft_terms_match=true",
+		"同一个静态 MVCC/Raft 观察边界",
+	} {
+		require.Contains(t, doc, required)
+	}
 }
 
 func writeDataplaneProbeExecutable(t *testing.T, path, contents string) {

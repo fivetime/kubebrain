@@ -42280,6 +42280,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 raft indexes not revision 拒绝覆盖，并把 status raft indexes summary 用例扩展为
   revision/index/applied 三者相等的通过证据；本轮不修改 runtime。
 
+- A3951 将生产只读 gate 的交叉一致性摘要纳入发布手册：`docs/production_readiness_cn.md`
+  现在明确要求通过日志暴露 `status_errors=empty`、`raft_indexes_match_revision=true`、
+  `revisions_match=true`、`hashkv_raft_terms=<unique>` 与 `raft_terms_match=true`，
+  并说明这些字段证明 Status/HashKV 来自同一个静态 MVCC/Raft 观察边界。
+  `TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields` 固定示例命令仍包含
+  Status version/hashkv hash 期望，并防止上述审计字段从手册中漂移；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

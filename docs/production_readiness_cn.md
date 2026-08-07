@@ -471,6 +471,11 @@ compact revision 不得大于同一响应的 hash revision；该项适合冻结�
 可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
 它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。
+通过摘要会显式输出 `status_errors=empty`、`raft_indexes_match_revision=true`、
+`revisions_match=true`、`hashkv_raft_terms=<unique>` 和 `raft_terms_match=true` 等证据；
+其中 Status/HashKV revision 与 raft term 交叉一致性用于证明本次只读 Status 与 HashKV
+诊断来自同一个静态 MVCC/Raft 观察边界。若这些摘要字段缺失或不为 true，不能把该次
+输出当作完整只读 gate 通过证据。
 
 生产必须使用 image digest；脚本做精确字符串比较，允许本地验证使用不可变测试 tag，
 但不会替控制面判断 tag 是否可变。该门禁可关闭创建/扩缩/升级的“数据面已就绪”阶段，
