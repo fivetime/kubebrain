@@ -42480,6 +42480,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   摘要。`validate-dataplane-readonly.sh` 已在 envelope 校验中拒绝非字符串 version，本轮同步把
   `status_version=<unique>` 摘要路径改成 `has("version")` 显式读取，并新增 boolean status
   version envelope 拒绝覆盖。
+- A3985 固定只读 gate 对 HashKV hash uint32 envelope 的 boolean 覆盖：
+  etcd `HashKVResponse.Hash` 是 `uint32`，显式 `hash:false` 不是合法 hash 结果。
+  `validate-dataplane-readonly.sh` 既有 HashKV numeric fields 校验会拒绝非 JSON number；
+  本轮新增 boolean hashkv hash envelope 拒绝覆盖，防止该诊断面类型边界从回归集漏掉。
 
 ### P2：运维兼容和长期验证
 
