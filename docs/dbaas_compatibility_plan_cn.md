@@ -41520,6 +41520,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   boundary、TLS listener tests、etcdctl compatibility docs 和 production readyz/count probes 固定。
   新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3873 与上述 commit ID；本轮不修改 runtime。
 
+- A3874 固定 upstream v2 store/security/version/TLS/SRV 与 early v3 storage public boundary 审计。
+  对照 `/root/etcd` commit `4f2df84a3`、`26682b663`、`c371d8c65`、
+  `69d02410c`、`93ecf3685`、`9db360387`、`7bb388ed5`、`db7db689a`、
+  `988c30bfb`、`6296054ff`、`d3b1d5c00`、`e866314b9`、`3914defd8`、
+  `48e144ae2`、`ee9e336fd`、`6699107f`、`91c45c324`、`fa74e702d`、
+  `57270ec0b`、`5ad559b50`、`c4899c201`、`98f8dfbc9`、`d89a8628c`、
+  `666a97271`、`8ac565bc3`、`84cf0843b`、`16183bc22`、`4611c3b2d`、
+  `9d28f9400`、`f3e4dbf96`、`001efa063`、`8dd8b1cdc`、`ed8c3534e`、
+  `00a22891e` 与 `3c9581add`：官方收敛 v2 client curl output、etcdctl exit/format、
+  rafthttp version enforcement、early storage KV/Range/Txn、cluster version detection/update、
+  `/version` server+cluster JSON envelope、capability endpoint、client directory/TTLDuration/
+  CreateInOrder/SRV discovery、MemberRemove 410 handling、security/RBAC API/password stripping/
+  BasicAuth error body、prevExist compare-and-swap、legacy migratesnap/import、TLS client-cert
+  configuration、heartbeat/election flag validation、IPv6 address parsing 和 HTTPS downgrade
+  protection。KubeBrain 不承诺 upstream v2 HTTP store/security API、legacy etcdctl import/migrate
+  或 rafthttp wire implementation；DBaaS public contract 由 v3 `/version` server/cluster/storage
+  tests、Maintenance.Status/downgrade tests、endpoint TLS/mTLS/rotation/downgrade and IPv6 URL
+  guards、client SRV/naming recipe、Member mutation unsupported boundary、auth client/JWT/authorizer
+  tests、Range/Txn/Delete/Compact generated matrix、CreateRevision/Version/lease metadata
+  preservation tests、etcdctl compatibility docs、request timeout/error mapping tests 和 production
+  readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3874 与上述 commit
+  ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
