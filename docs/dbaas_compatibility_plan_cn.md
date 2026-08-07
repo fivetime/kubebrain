@@ -41708,6 +41708,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   tests、request timeout/error mapping tests 和 production readyz/count probes 固定。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3881 与上述 commit ID；本轮不修改 runtime。
 
+- A3882 固定 upstream v0.4/v2 KV API、old flags、quorum/version/CORS/content-type、
+  standby/join/remove/admin machines 与 upgrade/discovery docs public boundary 审计。对照
+  `/root/etcd` commit `77233b26d`、`fc35324ba`、`be0bb5652`、
+  `0e53287ea`、`8f629aae4`、`7c7a70202`、`686837227`、`05bfb369e`、
+  `d9df58beb`、`0593a5210`、`084dcb559`、`2338481bb`、`a288333e6`、
+  `20147c535`、`973bde9a0`、`494d2c67a`、`001cceb1c`、`db4c5e0ea`、
+  `0eba3c900`、`62560f995`、`e9482167a`、`35cc81e22`、`b7d9fdbd3`、
+  `c6b1a738c`、`baadf6391`、`5bd08a327`、`04f09d2fd`、`ae81f843f`、
+  `cf25650b3`、`001b1fcd4`、`ba36a16bc`、`2d5c7d7fb`、`c6be7887e`
+  与 `8b5d9cc1f`：官方收敛 old flag compatibility、v2 KV HTTP API test
+  parity、client/tool matrix updates、API JSON examples、timeout tuning docs、per-instance
+  `/version` docs、`consistent=true`/quorum get、CORS allowed headers、HTTP read/write timeout、
+  streaming wait header flush、`/v2/stats` JSON content-type、deprecated flag alias、admin JSON
+  content-type、standby mode/cluster config/sync interval persistence、admin machines docs and
+  user-facing remove API、peer heartbeat option、cluster condition checks before join、removed
+  peer exit behavior、upgrade to v0.4 and discovery docs。KubeBrain 不移植 upstream v0.4/v1/v2
+  HTTP KV/admin/standby APIs、old flags 或 legacy discovery semantics；DBaaS public contract 由
+  generated v3 KV/Watch/Lease/Txn differential、HTTP gateway generated JSON contract、CORS/
+  HostWhitelist tests、`/health`/`/version` handler tests、Member/Status unsupported mutation
+  boundary、endpoint TLS/readiness tests、etcdctl compatibility docs、request timeout/error mapping
+  tests 和 production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
+  A3882 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
