@@ -41055,6 +41055,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   tests 固定；clientv3 内部 lease object 生命周期不 vend。新增 `TestRecentUpstreamAuditIsRecorded`
   钉住 A3860 与上述 commit ID；本轮不修改 runtime。
 
+- A3861 固定 upstream lease request timeout、RequireLeader lease failover、readState timeout、
+  grpcproxy watch/cache races、lease monotonic time、simple-token timeout、gateway watch、Txn
+  `!=` compare、invalid watch range、watch reconnect/create event、Range default sort、mutable op
+  retry 和 session close timeout 审计。对照 `/root/etcd` commit `be1f36d97`、
+  `f6042890b`、`fdd89df1e`、`3fd1d951f`、`91ff6f30b`、`62398954e`、
+  `5559a026d`、`0cb680800`、`a686c994c`、`76bb33781`、`5f2b5e8b9`、
+  `394ab4358`、`60908c64a`、`f1e0525c8`、`e7f4010cc`、`d680b8b5f`、
+  `dfe853ebf` 与 `a08103c08`：官方收敛 lease timeout/failover、readState timeout、
+  proxy watch/cache races、monotonic lease time、simple token timeout、endpoint copy 和 tester
+  lease/checker。KubeBrain 已通过 require-leader lease/read tests、leader fencing、TTL/KeepAlive/
+  Revoke、failover expiry、watch resume/cancel/progress、auth token expiry、client endpoint
+  smoke 和 production TiKV/PD probes 固定 public contract；不移植 upstream grpcproxy cache。
+
+  对照 `ff96769b5`、`a39509ee5`、`ccf154e70`、`456569f45`、`9a2074319`、
+  `1358a9d46`、`98a7c642d`、`90ea3fbad`、`660430639`、`395cf7de5`、
+  `c2fd42b55`、`a4dcceb8a`、`c20d31adc`、`9dd75a946`、`396a71ee9`、
+  `425acb28c`、`1aeeb3845` 与 `67082e5bd`：官方处理 grpc-proxy TLS/metrics、
+  gateway watch、watch send-close、start revision、leader-loss duplicate create、PrevKV watcher、
+  invalid watch range、Txn `!=` compare、Txn cache invalidation、naming OpOption、RangeEnd docs、
+  wrong watcher range error 和 active streams metrics。KubeBrain gateway/gRPC differential、
+  watch create/resume/PrevKV/compaction/error contract、RangeEnd validation、Txn Compare_NOT_EQUAL、
+  namespace/naming recipe、metrics/operation audit 和 production watch probes 已覆盖服务端可观察语义。
+
+  对照 `bf08a6142`、`31a6efbc1`、`97e96feb1`、`cc304ac03`、`f85701a46`、
+  `c931f4d16`、`7ef17d3e9`、`0684d8c4c`、`de008c8a4`、`fdf433024`、
+  `d51a7dba4`、`73b4a58ac`、`0a3d45a30`、`8fd1dd786`、`f38a5d19a`、
+  `1e330a90c`、`bd1985d84`、`65eb3038f`、`8f3abda5b`、`ef9d55800`、
+  `7d3032696`、`c100e4071`、`9205a242b`、`f550af7ef`、`4de212834`、
+  `3a6d4b7f1` 与 `1cd6fefd4`：官方继续修复 Txn comparison-key cache、user-add
+  empty name、migrate no-ttl、EOF→NoLeader、lease graceful close、client Sync deadlock、
+  linearizable password check、userAdd CLI、watch create event、client metrics、session context/
+  close timeout、watch revision/filter handling、inflight Hash nil DB、watcher close、mutable op
+  retry 和 Range 空 sort order 默认 ASCEND。KubeBrain auth/user validation、TTL/NoLeader/error
+  mapping、HashKV cancellation、watch filter/min-max revision、Range sort default、mutable op
+  idempotency boundary、session recipe tests 和 observability docs 覆盖 public behavior。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3861 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
