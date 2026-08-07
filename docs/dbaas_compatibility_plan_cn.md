@@ -41474,6 +41474,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住
   A3871 与上述 commit ID；本轮不修改 runtime。
 
+- A3872 固定 upstream v2.2/v3 早期 HTTP/version/auth/compaction/txn/etcdctl public boundary
+  审计。对照 `/root/etcd` commit `9673eb625`、`98e30ca7c`、`e117f36e4`、
+  `33a0df3e3`、`8ebc93311`、`122683838`、`85f4475f6`、`6ae1f6c6e`、
+  `f8859a980`、`94f4069a2`、`94f784826`、`718338711`、`a0cfcf2dd`、
+  `121d2b9e9`、`1532f7585`、`3f18ded10`、`9175df7c7`、`2ac9af492`、
+  `c2caa4ae3`、`8f6bf029f`、`e2e002f94`、`27b996395`、`98ceb3cdb`、
+  `353f10ca2`、`47b243be5`、`fab3feab6`、`b5ec7f543`、`d487cf6b6`、
+  `87f061bab`、`5cd109949` 与 `9233fff48`：官方收敛 dial/total timeout、
+  missing member attr update、URL map/canonical path、etcdctl endpoint/txn/no-endpoint output、
+  `/version` JSON Content-Type、HTTPError/auth error envelope、auth API extension、strict
+  reconfig、v3 gRPC error mapping、Compaction、gRPC addr flag、v3api index→revision、DeleteRange
+  revision、future compaction rejection、malformed basic auth、client in-flight cancel、RangeResponse
+  field、role permission canonical path、key handler etcd error，以及 early v3 Txn server/command。
+  KubeBrain 不移植 upstream v2 store/proxy/raft membership implementation；DBaaS public contract
+  已由 `/version` handler Content-Type/method tests、endpoint dial/connection-age and advertised
+  URL tests、Member mutation unsupported boundary、auth client/JWT/authorizer differential、HTTP
+  health/version boundary、Range/Txn/Delete/Compact generated matrix、future/compacted revision
+  error mapping、DeleteRange response revision/PrevKV tests、etcdctl compatibility docs、request
+  timeout tests、canonical URL and malformed member URL guards，以及 production readyz/count probes
+  固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3872 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
