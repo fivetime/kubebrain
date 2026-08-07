@@ -42184,6 +42184,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status raft index envelope fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
   applied index beyond raft index 覆盖；本轮不修改 runtime。
 
+- A3936 固定 Status dbSizeInUse envelope 基本不变量：`endpoint status -w json` 同时
+  暴露 `Status.dbSize` 和 `Status.dbSizeInUse` 时，两者必须为非负 JSON integer，且
+  in-use size 不得大于 db size，避免 etcdctl endpoint status 表格的空间占用/碎片率
+  诊断建立在畸形 JSON 上。`validate-dataplane-readonly.sh` 新增 status dbSizeInUse
+  envelope fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 dbSizeInUse beyond
+  dbSize 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -368,6 +368,38 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status raft index envelope invalid: ${status_raft_index_violations}" >&2
     exit 1
   fi
+  status_db_size_in_use_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | ($item.Status.dbSize // $item.Status.db_size) as $db_size
+        | ($item.Status.dbSizeInUse // $item.Status.db_size_in_use) as $db_size_in_use
+        | (
+            if ($db_size == null or $db_size_in_use == null) then
+              empty
+            elif (($db_size | type) != "number" or ($db_size_in_use | type) != "number") then
+              "not_number"
+            elif ($db_size != ($db_size | floor) or $db_size_in_use != ($db_size_in_use | floor)) then
+              "not_integer"
+            elif ($db_size < 0 or $db_size_in_use < 0) then
+              "negative"
+            elif ($db_size_in_use > $db_size) then
+              "in_use_beyond_db_size"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_db_size_in_use_violations" ]]; then
+    echo "status dbSizeInUse envelope invalid: ${status_db_size_in_use_violations}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
