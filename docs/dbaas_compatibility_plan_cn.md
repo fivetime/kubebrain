@@ -41967,6 +41967,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   HashKV 诊断语义。`TestValidateDataplaneReadonlyProbe` 新增 hashkv hash drift
   fail-closed 覆盖；本轮不修改 runtime。
 
+- A3899 补齐 A3898 HashKV 门禁的成员身份校验：HashKV JSON 中的 member ID 现在必须
+  与 endpoint 数量一致、全部为正，且多 endpoint 场景下集合无重复；通过摘要也会输出
+  `hashkv_member_ids`，便于和 Status 的 member ID 视图交叉排障。该校验防止代理、LB 或
+  错误 endpoint 配置让多个 HashKV 响应实际来自同一成员时误判通过。
+  `TestValidateDataplaneReadonlyProbe` 新增 duplicate hashkv member IDs fail-closed
+  覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

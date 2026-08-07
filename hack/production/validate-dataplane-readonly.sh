@@ -233,21 +233,39 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
   hashkv_values="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
-      "invalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
         ([.[].HashKV.header | (.cluster_id // .clusterId // 0)] | unique | join(",")),
+        ([.[].HashKV.header | (.member_id // .memberId // 0)] | join(",")),
+        ([.[].HashKV.header | (.member_id // .memberId // 0)] | unique | join(",")),
         ([.[].HashKV | (.hash // 0)] | unique | join(",")),
         ([.[].HashKV.header | (.revision // 0)] | min),
         ([.[].HashKV | (.compact_revision // .compactRevision // 0)] | min)
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r hashkv_cluster_ids hashkv_hashes min_hashkv_revision min_hashkv_compact_revision <<<"$hashkv_values"
+  IFS=$'\t' read -r hashkv_cluster_ids hashkv_member_ids unique_hashkv_member_ids hashkv_hashes min_hashkv_revision min_hashkv_compact_revision <<<"$hashkv_values"
   if [[ "$hashkv_cluster_ids" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "hashkv cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${hashkv_cluster_ids}" >&2
     exit 1
   fi
+  IFS=',' read -r -a hashkv_member_id_array <<<"$hashkv_member_ids"
+  IFS=',' read -r -a unique_hashkv_member_id_array <<<"$unique_hashkv_member_ids"
+  if [[ "${#hashkv_member_id_array[@]}" != "$expected_hashkv_endpoints" ]]; then
+    echo "hashkv member ID count mismatch: expected ${expected_hashkv_endpoints}, got ${#hashkv_member_id_array[@]}" >&2
+    exit 1
+  fi
+  if [[ "${#unique_hashkv_member_id_array[@]}" != "$expected_hashkv_endpoints" ]]; then
+    echo "hashkv member IDs must be unique, got ${hashkv_member_ids}" >&2
+    exit 1
+  fi
+  for hashkv_member_id in "${hashkv_member_id_array[@]}"; do
+    if ! [[ "$hashkv_member_id" =~ ^[1-9][0-9]*$ ]]; then
+      echo "hashkv member ID must be positive, got ${hashkv_member_id}" >&2
+      exit 1
+    fi
+  done
   if [[ "$hashkv_hashes" != "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv hash mismatch: expected ${EXPECTED_HASHKV_HASH}, got ${hashkv_hashes}" >&2
     exit 1
@@ -260,7 +278,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv compact revision must be non-negative, got ${min_hashkv_compact_revision}" >&2
     exit 1
   fi
-  hashkv_summary=", hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
+  hashkv_summary=", hashkv_member_ids=${hashkv_member_ids}, hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
 fi
 
 echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
