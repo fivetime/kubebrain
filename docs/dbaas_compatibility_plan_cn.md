@@ -41543,6 +41543,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3874 与上述 commit
   ID；本轮不修改 runtime。
 
+- A3875 固定 upstream v2 client library/etcdctl/metrics/debug/TLS-keepalive 与 rafthttp public
+  boundary 审计。对照 `/root/etcd` commit `0fe986119`、`b218fc67e`、
+  `b15806e18`、`e50d43fd`、`2c94e2d77`、`83c953b15`、`84485643f`、
+  `25cf916a8`、`b41d6bc41`、`cd777b296`、`943c7ef30`、`09017af35`、
+  `11a6cb68a`、`32ff3ce26`、`b17473281`、`1c03df62a`、`479a17dcb`、
+  `942f0f6b9`、`bc32060b1`、`7ccf5eb47`、`0f31f403d`、`6e637f2f7`、
+  `8b3d05f66`、`05ecdbc61`、`ca390560f`、`8bf795dc3`、`cd50f0e05`、
+  `7bbdad906`、`9776e6d08`、`3ac0298bd`、`496032487` 与 `276c9540b`：
+  官方收敛多 peer URL/rafthttp URL pick、unstarted member 标记、legacy `ls` help、transport
+  idle/dial timeout、`/stats`→`/debug/vars`、WAL `/metrics`、v2 client cancel response close、
+  redirect limit、Sync tests、KeysAPI Create/Update/Delete/Get/Set/RGet/Watcher、failure response
+  unmarshal、non-integer `X-Etcd-Index`、Error type、WaitIndex→AfterIndex、GetOptions.Sort、
+  TTL、PrevIndex/PrevValue、cluster-health SSL/healthy check、empty raft entries、graceful shutdown、
+  data-dir layout audit、modifiedIndex clone、predefined namespace readonly、TLS keepalive 和
+  raft.status。KubeBrain 不 vend upstream v2 KeysAPI/raft transport/WAL layout；DBaaS public
+  contract 由 v3 Range sort/generated differential、Watch After/PrevKV/progress/cancel/future
+  tests、Lease TTL/KeepAlive/reconnect/failover tests、HTTP gateway integer/cancel differential、
+  endpoint keepalive/TLS/metrics/debug handler tests、Status/Member boundary、etcdctl compatibility
+  docs、snapshot/backup docs、request timeout/error mapping tests 和 production readyz/count probes
+  固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3875 与上述 commit ID；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
