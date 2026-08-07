@@ -41163,6 +41163,46 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   retry/idempotency boundary、client creation/connection-age tests 和 production readyz 固定。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3863 与上述 commit ID；本轮不修改 runtime。
 
+- A3864 固定 upstream session TTL、default advertise host、leader transfer/strict reconfig、
+  DialTimeout、active-quorum member removal、watch stream shutdown、lease recovery、TLS SRV
+  ServerName、watch created notify、client-cert CN auth、watch filters、proxy KV/watch/lease/
+  maintenance/auth、FailFast(false)、permission denied code、EtcdStopped retry、embedded config 和
+  huge apply/commit gap 审计。对照 `/root/etcd` commit `feaff1725`、`2cc245e8b`、
+  `e8594b60b`、`d23392ed8`、`a205242ca`、`64a0e3460`、`92a0f0872`、
+  `c6c6cfb50`、`aa9837e8f`、`e742ff331`、`a1ce07a32`、`1644679d0`、
+  `de864d3b5`、`eb97aba58`、`6de993b46`、`d219e9635`、`2b5a5c77c`、
+  `1c83a46c6`、`8c1c29133`、`5e651a0d0`、`c3c41234f`、`f1f31f101`、
+  `9063ce5e3`、`bd62b0a64`、`ddddecc3a`、`75c06caca`、`4d59b6f52`、
+  `29a077bdb`、`d1809830b`、`ab4ac828f`、`e218834b5`、`cd781bf30`、
+  `c8cc87c3f`、`57c68ab1d`、`33c3583b5` 与 `bf7149753`：官方覆盖 session
+  TTL、default advertise URL、leader transfer、wrong header revision/no-op、strict reconfig、
+  active quorum guard、watcher shutdown, lease recover/delete txn、TLS SRV ServerName、created notify
+  和 min TTL。KubeBrain 对应 public contract 由 session/Lock/Election recipes、Member mutation
+  unsupported boundary、leader fencing、revision header tests、lease recovery/failover、TLS endpoint
+  validation、watch created notify 和 production probes 固定；Raft membership/transport 内部不移植。
+
+  对照 `87498e020`、`06da46c4e`、`86de0797e`、`4c9a2a65c`、`943fe7017`、
+  `205f10aeb`、`009057374`、`d6b22323a`、`2b4c37f54`、`418bb5e17`、
+  `ac9696300`、`4fa9363ac`、`020a24f1c`、`c603b5e6a`、`42db8f55b`、
+  `5066981cc`、`25aeeb35c`、`68ece954f`、`be001c44e`、`9510bd603`、
+  `ff5709bb4`、`768ccb8c1`、`17e0164f5`、`54df540c2`、`299ebc613` 与
+  `ef6b74411`：官方处理 v2 guest/CN auth、serialized auth apply、user handlers、watch filters、
+  formatted key output、needless txn range skip、grpc tracing default、watch proxy init/adapters、
+  gateway test、v2 client-cert CN auth、KV proxy constructor、progress notification 和 authStore
+  revision。KubeBrain auth revision fence、client-cert CommonName、watch filters/progress、gateway/
+  gRPC differential、Txn no-op/range semantics、formatted etcdctl compatibility 和 operation audit 已覆盖。
+
+  对照 `8abae076d`、`c7c5cd324`、`27a30768e`、`e177f391f`、`e1892e264`、
+  `fd2434090`、`58aa3483c`、`3f74e9db0`、`984badeb0`、`bdfbd26e9`、
+  `3839a5591`、`34602b87e`、`d8f0ef0e8`、`07ed4da2f`、`51c5c307f`、
+  `27b03f0ed`、`f4f33ea76`、`81d5ae3ce`、`55ca788ef` 与 `3eadf964f`：
+  官方扩展 grpcproxy auth/maintenance/lease/filter/cluster proxy、fast lease renew、watch proxy、
+  FailFast(false)、gRPC error equivalence、huge apply/commit gap proposal rejection、embed exports、
+  permission denied gRPC code、default endpoint 和 at-most-once RPC retry wrappers。KubeBrain 不复用
+  upstream grpcproxy；对外行为由 official client differential、typed error mapping、lease renewal
+  stress、readiness/failover、permission-denied code tests、default endpoint docs 和 production probes
+  固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3864 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
