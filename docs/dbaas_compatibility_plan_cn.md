@@ -41945,6 +41945,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 现在用 fake `timeout` 记录成功路径和 Status
   fail-closed 路径的外部命令包裹情况；本轮不修改 runtime。
 
+- A3896 收紧 A3895 的 `PROBE_TIMEOUT` 配置边界：只读门禁现在在调用任何外部命令前
+  要求 `PROBE_TIMEOUT` 是正数 duration，且单位必须为 `ms`、`s`、`m` 或 `h`。这避免
+  `timeout` 与 Go client duration 解析对裸数字、拼写错误或零值的处理不一致，导致发布
+  探针在不同环境中表现不同。`TestValidateDataplaneReadonlyProbe` 新增 invalid probe
+  timeout fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

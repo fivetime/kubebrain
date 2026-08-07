@@ -33,6 +33,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" && ! "$EXPECTED_STATUS_CLUSTER_ID" =~ ^[1
   echo "EXPECTED_STATUS_CLUSTER_ID must be empty or a positive integer" >&2
   exit 2
 fi
+if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
+  echo "PROBE_TIMEOUT must be a positive duration ending in ms, s, m, or h" >&2
+  exit 2
+fi
 if [[ -z "$ENDPOINT" ]]; then
   echo "ENDPOINT is required" >&2
   exit 2

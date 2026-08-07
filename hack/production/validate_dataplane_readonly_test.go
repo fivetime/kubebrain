@@ -205,6 +205,15 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"ENDPOINT=http://127.0.0.1:2379\nbad"},
 			wantOutput: "ENDPOINT contains unsupported characters",
 		},
+		{
+			name:       "rejects invalid probe timeout before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"PROBE_TIMEOUT=forever"},
+			wantOutput: "PROBE_TIMEOUT must be a positive duration",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
