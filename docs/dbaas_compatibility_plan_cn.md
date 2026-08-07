@@ -42517,6 +42517,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `storage_version`，但此前通过/拒绝覆盖主要落在 camelCase。新增 snake_case storage
   version summary 与 `storage_version:false` 拒绝覆盖，证明两种 JSON 风格都会进入同一
   `X.Y` 类型/格式校验和 `status_storage_versions=<unique>` 摘要路径。
+- A3992 固定只读 gate 对 Status is_learner snake_case envelope 的对等覆盖：
+  etcd `StatusResponse.IsLearner` 是 bool，生产 gate 同时支持 `isLearner` 与 `is_learner`。
+  新增 `is_learner:false` 摘要覆盖和 `is_learner:"false"` 拒绝覆盖，证明 snake_case
+  learner 字段与 camelCase 一样进入 JSON boolean 校验和 `status_is_learners=<unique>`
+  摘要路径。
 
 ### P2：运维兼容和长期验证
 
