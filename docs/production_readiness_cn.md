@@ -442,6 +442,7 @@ READYZ_URL=https://instance-a-readyz.example/readyz \
 PREFIX=/ \
 EXPECTED_PREFIX_COUNT=4 \
 EXPECTED_STATUS_CLUSTER_ID=123456789 \
+EXPECTED_HASHKV_HASH=987654321 \
 STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
 PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
@@ -456,7 +457,11 @@ PROBE_TIMEOUT=10s \
 `Endpoint` 集合与请求集合完全一致、member ID 集合无重复；空 endpoint 或重复 endpoint
 会在调用 `etcdctl` 前 fail closed。`kubectl`、`curl`、`prefix-tool` 和 `etcdctl` 调用都由
 `TIMEOUT_CMD`（默认 `timeout`）按 `PROBE_TIMEOUT` 包裹；`PROBE_TIMEOUT` 必须是正数
-duration，单位为 `ms`、`s`、`m` 或 `h`。它不写入实例，因此
+duration，单位为 `ms`、`s`、`m` 或 `h`。配置 `EXPECTED_HASHKV_HASH` 时还会运行
+`etcdctl endpoint hashkv -w json`，要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、
+cluster ID 与 `EXPECTED_STATUS_CLUSTER_ID` 一致、所有 endpoint hash 都等于期望 hash，
+且 revision/compact revision 非负；该项适合冻结写入窗口、升级或恢复后钉住 HashKV
+诊断结果。它不写入实例，因此
 可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
 它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。

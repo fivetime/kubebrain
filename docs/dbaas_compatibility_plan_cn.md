@@ -41958,6 +41958,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 bootstrap endpoint count drift with overridden
   status endpoints fail-closed 覆盖；本轮不修改 runtime。
 
+- A3898 为轻量只读数据面门禁补上可选 HashKV 一致性钉住：配置 `EXPECTED_HASHKV_HASH`
+  时，`validate-dataplane-readonly.sh` 会在 Status 校验之后调用
+  `etcdctl endpoint hashkv -w json`，要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、
+  cluster ID 等于 `EXPECTED_STATUS_CLUSTER_ID`、所有返回 hash 的唯一集合等于
+  `EXPECTED_HASHKV_HASH`，并要求 revision/compact revision 非负。该校验默认关闭，避免
+  正常写入导致 hash 期望频繁变化；但在升级、恢复或冻结写入窗口内可用于钉住 etcd
+  HashKV 诊断语义。`TestValidateDataplaneReadonlyProbe` 新增 hashkv hash drift
+  fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

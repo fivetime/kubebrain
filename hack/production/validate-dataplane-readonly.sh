@@ -19,6 +19,7 @@ JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 EXPECTED_PREFIX_COUNT="${EXPECTED_PREFIX_COUNT:-}"
 EXPECTED_STATUS_CLUSTER_ID="${EXPECTED_STATUS_CLUSTER_ID:-}"
+EXPECTED_HASHKV_HASH="${EXPECTED_HASHKV_HASH:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -33,8 +34,16 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" && ! "$EXPECTED_STATUS_CLUSTER_ID" =~ ^[1
   echo "EXPECTED_STATUS_CLUSTER_ID must be empty or a positive integer" >&2
   exit 2
 fi
+if [[ -n "$EXPECTED_HASHKV_HASH" && ! "$EXPECTED_HASHKV_HASH" =~ ^[0-9]+$ ]]; then
+  echo "EXPECTED_HASHKV_HASH must be empty or a non-negative integer" >&2
+  exit 2
+fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
   echo "PROBE_TIMEOUT must be a positive duration ending in ms, s, m, or h" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_HASHKV_HASH" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+  echo "EXPECTED_HASHKV_HASH requires EXPECTED_STATUS_CLUSTER_ID" >&2
   exit 2
 fi
 if [[ -z "$ENDPOINT" ]]; then
@@ -202,4 +211,56 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_summary=", status_cluster_id=${status_cluster_ids}, status_member_ids=${status_member_ids}, min_status_revision=${min_status_revision}, min_status_db_size=${min_status_db_size}"
 fi
 
-echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}"
+hashkv_summary=""
+if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
+  hashkv_json="$(ETCDCTL_API=3 run_with_probe_timeout "$ETCDCTL" --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"
+  expected_hashkv_endpoints="${#status_endpoint_array[@]}"
+  hashkv_count="$(printf '%s' "$hashkv_json" | "$JQ" -r 'if type == "array" then length else 0 end')"
+  if [[ "$hashkv_count" != "$expected_hashkv_endpoints" ]]; then
+    echo "hashkv endpoint count mismatch: expected ${expected_hashkv_endpoints}, got ${hashkv_count}" >&2
+    exit 1
+  fi
+  actual_hashkv_endpoint_set="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if (type != "array" or any(.[]; (.Endpoint // "") == "")) then
+      "invalid"
+    else
+      ([.[].Endpoint] | sort | join(","))
+    end
+  ')"
+  if [[ "$actual_hashkv_endpoint_set" != "$expected_status_endpoint_set" ]]; then
+    echo "hashkv endpoint set mismatch: expected ${expected_status_endpoint_set}, got ${actual_hashkv_endpoint_set}" >&2
+    exit 1
+  fi
+  hashkv_values="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if (type != "array" or length == 0) then
+      "invalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        ([.[].HashKV.header | (.cluster_id // .clusterId // 0)] | unique | join(",")),
+        ([.[].HashKV | (.hash // 0)] | unique | join(",")),
+        ([.[].HashKV.header | (.revision // 0)] | min),
+        ([.[].HashKV | (.compact_revision // .compactRevision // 0)] | min)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r hashkv_cluster_ids hashkv_hashes min_hashkv_revision min_hashkv_compact_revision <<<"$hashkv_values"
+  if [[ "$hashkv_cluster_ids" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "hashkv cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${hashkv_cluster_ids}" >&2
+    exit 1
+  fi
+  if [[ "$hashkv_hashes" != "$EXPECTED_HASHKV_HASH" ]]; then
+    echo "hashkv hash mismatch: expected ${EXPECTED_HASHKV_HASH}, got ${hashkv_hashes}" >&2
+    exit 1
+  fi
+  if ! [[ "$min_hashkv_revision" =~ ^[0-9]+$ ]]; then
+    echo "hashkv revision must be non-negative, got ${min_hashkv_revision}" >&2
+    exit 1
+  fi
+  if ! [[ "$min_hashkv_compact_revision" =~ ^[0-9]+$ ]]; then
+    echo "hashkv compact revision must be non-negative, got ${min_hashkv_compact_revision}" >&2
+    exit 1
+  fi
+  hashkv_summary=", hashkv_hash=${hashkv_hashes}, min_hashkv_revision=${min_hashkv_revision}, min_hashkv_compact_revision=${min_hashkv_compact_revision}"
+fi
+
+echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
