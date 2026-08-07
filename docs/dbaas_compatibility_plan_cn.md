@@ -42512,6 +42512,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   作为字符串列表 join 输出。生产 gate 已要求 `errors`/`Errors` 为空数组或缺省；本轮进一步
   要求数组元素必须都是 JSON string，并新增 `errors:[false]` 与 `Errors:[false]` 拒绝覆盖，
   防止畸形健康错误元素被当作普通非空错误或通过摘要吞掉。
+- A3991 固定只读 gate 对 Status storage_version snake_case envelope 的对等覆盖：
+  etcd `StatusResponse.StorageVersion` 是字符串，生产 gate 同时支持 `storageVersion` 与
+  `storage_version`，但此前通过/拒绝覆盖主要落在 camelCase。新增 snake_case storage
+  version summary 与 `storage_version:false` 拒绝覆盖，证明两种 JSON 风格都会进入同一
+  `X.Y` 类型/格式校验和 `status_storage_versions=<unique>` 摘要路径。
 
 ### P2：运维兼容和长期验证
 
