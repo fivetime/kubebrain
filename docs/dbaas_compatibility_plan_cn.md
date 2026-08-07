@@ -42009,6 +42009,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 hashkv endpoint count mismatch 覆盖，明确区分“少响应”和“响应集合漂移”两条
   错误路径；本轮不修改 runtime。
 
+- A3906 固定 HashKV 诊断身份漂移的 fail-closed 回归：即使返回的 hash 与
+  `EXPECTED_HASHKV_HASH` 一致，`endpoint hashkv` 响应 header 中的 cluster ID 也必须等于
+  `EXPECTED_STATUS_CLUSTER_ID`，否则说明 probe 可能命中了错误集群或串 endpoint。新增
+  `TestValidateDataplaneReadonlyProbe` 的 hashkv cluster id drift 覆盖，防止生产门禁
+  只凭 hash 常量误判通过；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
