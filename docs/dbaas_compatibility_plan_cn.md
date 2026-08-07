@@ -42327,6 +42327,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 uppercase non empty status errors 拒绝覆盖，证明大写字段的非空错误同样触发
   `status errors must be empty`；本轮不修改 runtime。
 
+- A3958 固定只读 gate 对 Status `leaderId` camelCase JSON 字段的兼容：此前
+  `validate-dataplane-readonly.sh` 已经按 `leader`/`leader_id`/`leaderId` 同时解析
+  leader 诊断字段，但通过用例只显式覆盖 `leader` 与 `leader_id`。`TestValidateDataplaneReadonlyProbe`
+  新增 camelcase status leader summary 覆盖，证明 `leaderId` 也会进入
+  `status_leader_ids=<unique>` 摘要并接受正整数健康校验；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
