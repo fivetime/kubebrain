@@ -51,6 +51,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   echo "EXPECTED_HASHKV_HASH requires EXPECTED_STATUS_CLUSTER_ID" >&2
   exit 2
 fi
+if [[ -n "$EXPECTED_STATUS_VERSION" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+  echo "EXPECTED_STATUS_VERSION requires EXPECTED_STATUS_CLUSTER_ID" >&2
+  exit 2
+fi
 if [[ -z "$ENDPOINT" ]]; then
   echo "ENDPOINT is required" >&2
   exit 2

@@ -42215,6 +42215,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增文档回归测试，防止生产只读 gate 示例漏掉 Status version/cluster/hash 三个钉住项；
   本轮不修改 runtime。
 
+- A3941 固定 Status version 门禁的配置依赖：`EXPECTED_STATUS_VERSION` 现在必须与
+  `EXPECTED_STATUS_CLUSTER_ID` 同时配置，否则脚本会在调用任何外部命令前 fail closed。
+  这避免只设置版本期望但未启用 Status JSON 校验时产生假阳性。`TestValidateDataplaneReadonlyProbe`
+  新增 expected status version without expected cluster id 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

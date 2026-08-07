@@ -913,6 +913,15 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_STATUS_VERSION=3.7"},
 			wantOutput: "EXPECTED_STATUS_VERSION must be empty or a semver string",
 		},
+		{
+			name:       "rejects expected status version without expected cluster id before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_VERSION=3.7.0"},
+			wantOutput: "EXPECTED_STATUS_VERSION requires EXPECTED_STATUS_CLUSTER_ID",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
