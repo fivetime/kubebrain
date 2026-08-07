@@ -396,6 +396,21 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv member ID is required for endpoints: ${hashkv_member_id_missing}" >&2
     exit 1
   fi
+  hashkv_cluster_id_missing="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select((.HashKV.header.cluster_id // .HashKV.header.clusterId) == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$hashkv_cluster_id_missing" ]]; then
+    echo "hashkv cluster ID is required for endpoints: ${hashkv_cluster_id_missing}" >&2
+    exit 1
+  fi
   hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
