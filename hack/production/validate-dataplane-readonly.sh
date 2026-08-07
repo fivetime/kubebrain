@@ -95,17 +95,28 @@ if [[ "$readyz" != "ok" ]]; then
   exit 1
 fi
 
-prefix_count="$(ENDPOINT="$ENDPOINT" ACTION=count PREFIX="$PREFIX" TIMEOUT="$PROBE_TIMEOUT" \
-  "$GO" run "$ROOT_DIR/hack/backup/cmd/prefix-tool")"
-prefix_count="$(printf '%s' "$prefix_count" | tr -d '[:space:]')"
-if ! [[ "$prefix_count" =~ ^[0-9]+$ ]]; then
-  echo "prefix count probe returned non-numeric output: ${prefix_count}" >&2
-  exit 1
-fi
-if [[ -n "$EXPECTED_PREFIX_COUNT" && "$prefix_count" != "$EXPECTED_PREFIX_COUNT" ]]; then
-  echo "prefix count mismatch: expected ${EXPECTED_PREFIX_COUNT}, got ${prefix_count}" >&2
-  exit 1
-fi
+prefix_count=""
+first_prefix_endpoint=""
+for prefix_endpoint in "${status_endpoint_array[@]}"; do
+  current_prefix_count="$(ENDPOINT="$prefix_endpoint" ACTION=count PREFIX="$PREFIX" TIMEOUT="$PROBE_TIMEOUT" \
+    "$GO" run "$ROOT_DIR/hack/backup/cmd/prefix-tool")"
+  current_prefix_count="$(printf '%s' "$current_prefix_count" | tr -d '[:space:]')"
+  if ! [[ "$current_prefix_count" =~ ^[0-9]+$ ]]; then
+    echo "prefix count probe for ${prefix_endpoint} returned non-numeric output: ${current_prefix_count}" >&2
+    exit 1
+  fi
+  if [[ -n "$EXPECTED_PREFIX_COUNT" && "$current_prefix_count" != "$EXPECTED_PREFIX_COUNT" ]]; then
+    echo "prefix count mismatch for ${prefix_endpoint}: expected ${EXPECTED_PREFIX_COUNT}, got ${current_prefix_count}" >&2
+    exit 1
+  fi
+  if [[ -z "$prefix_count" ]]; then
+    prefix_count="$current_prefix_count"
+    first_prefix_endpoint="$prefix_endpoint"
+  elif [[ "$current_prefix_count" != "$prefix_count" ]]; then
+    echo "prefix count mismatch across endpoints: expected ${prefix_count} from ${first_prefix_endpoint}, got ${current_prefix_count} from ${prefix_endpoint}" >&2
+    exit 1
+  fi
+done
 
 status_summary=""
 if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then

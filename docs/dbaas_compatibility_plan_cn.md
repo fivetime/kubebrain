@@ -41930,6 +41930,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 status endpoint set mismatch fail-closed
   覆盖；本轮不修改 runtime。
 
+- A3894 将 A3891-A3893 的多 endpoint 只读覆盖从 Status 扩展到 KV Range 路径：
+  `validate-dataplane-readonly.sh` 现在会对 `STATUS_ENDPOINTS` 中的每个 endpoint 逐一运行
+  `prefix-tool ACTION=count`，要求每个结果都是非负整数、配置 `EXPECTED_PREFIX_COUNT` 时都
+  等于期望值，并且各 endpoint 之间 count 一致。这样可以防止某个 client endpoint 的
+  `endpoint status` 正常但实际 Range/count 路径漂移或不可用时被单 bootstrap `ENDPOINT`
+  掩盖。`TestValidateDataplaneReadonlyProbe` 新增 additional status endpoint count drift
+  fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
