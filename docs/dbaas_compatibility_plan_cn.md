@@ -42432,6 +42432,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `has("raftAppliedIndex")`/`has("raft_applied_index")` 显式读取，并同步修正
   `min_status_raft_index=<n>` 与 `min_status_raft_applied_index=<n>` 摘要路径；
   新增 boolean status raft index envelope 拒绝覆盖。
+- A3976 固定只读 gate 对 Status dbSizeInUse int64 envelope 的 jq false/null 边界：
+  etcd `StatusResponse.DbSizeInUse` 是 `int64`，显式 `dbSizeInUse:false` 不能被当作
+  in-use size 缺省。`validate-dataplane-readonly.sh` 现在用 `has("dbSizeInUse")`/
+  `has("db_size_in_use")` 显式读取，并同步修正 `min_status_db_size_in_use=<n>` 摘要路径；
+  新增 boolean status db size in use envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 

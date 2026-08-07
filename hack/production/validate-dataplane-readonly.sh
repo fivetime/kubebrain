@@ -387,8 +387,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       [
         .[] as $item
         | ($item.Endpoint // "unknown") as $endpoint
-        | ($item.Status.dbSize // $item.Status.db_size) as $db_size
-        | ($item.Status.dbSizeInUse // $item.Status.db_size_in_use) as $db_size_in_use
+        | (if ($item.Status | has("dbSize")) then $item.Status.dbSize elif ($item.Status | has("db_size")) then $item.Status.db_size else null end) as $db_size
+        | (if ($item.Status | has("dbSizeInUse")) then $item.Status.dbSizeInUse elif ($item.Status | has("db_size_in_use")) then $item.Status.db_size_in_use else null end) as $db_size_in_use
         | (
             if ($db_size == null or $db_size_in_use == null) then
               empty
@@ -631,7 +631,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status.header | (.member_id // .memberId)] | unique | join(",")),
         ([.[].Status.header | .revision] | min),
         ([.[].Status | (.dbSize // .db_size)] | min),
-        ([.[].Status | (.dbSizeInUse // .db_size_in_use) // empty] | if length == 0 then "-" else min end),
+        ([.[].Status | if has("dbSizeInUse") then .dbSizeInUse elif has("db_size_in_use") then .db_size_in_use else empty end] | if length == 0 then "-" else min end),
         ([.[].Status.version // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.storageVersion // .storage_version) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.dbSizeQuota // .db_size_quota) // empty] | if length == 0 then "-" else min end),
