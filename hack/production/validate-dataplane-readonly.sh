@@ -400,6 +400,33 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status dbSizeInUse envelope invalid: ${status_db_size_in_use_violations}" >&2
     exit 1
   fi
+  status_version_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | $item.Status.version as $version
+        | (
+            if $version == null then
+              empty
+            elif (($version | type) != "string") then
+              "not_string"
+            elif ($version | test("^[0-9]+\\.[0-9]+\\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?$") | not) then
+              "not_semver"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_version_violations" ]]; then
+    echo "status version envelope invalid: ${status_version_violations}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"

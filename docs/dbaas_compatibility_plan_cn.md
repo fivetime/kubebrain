@@ -42191,6 +42191,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   envelope fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 dbSizeInUse beyond
   dbSize 覆盖；本轮不修改 runtime。
 
+- A3937 固定 Status version envelope 形态：`endpoint status -w json` 暴露 `Status.version`
+  时必须是非空 semver 字符串，不能让 `3.7`、数字或空值这类非 etcdctl 兼容版本形态
+  进入诊断输出。`validate-dataplane-readonly.sh` 新增 status version envelope
+  fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 malformed status version 覆盖；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
