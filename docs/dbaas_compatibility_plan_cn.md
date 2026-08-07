@@ -41280,6 +41280,47 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   readyz/count probes 固定；upstream grpcproxy/gateway retry-delay 实现不移植。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3866 与上述 commit ID；本轮不修改 runtime。
 
+- A3867 固定 upstream v3 beta 前后 gateway/metrics/auth disable、watch/lease reconnect、auto
+  TLS、HashKV revision、rpctypes error、request timeout、lease header、snapshot/status、Range
+  revision 和 Txn header public-surface 审计。对照 `/root/etcd` commit `a300be92d`、
+  `0fb7cb8b0`、`ab11415d2`、`3e088b3b4`、`adc981c53`、`824ffded1`、
+  `063307ec0`、`712090fc0`、`22c3a439b`、`cdc8f9965`、`8b52fd0d2`、
+  `973ad5aa7`、`064c1ff0f`、`7a6d9ea01`、`6049c95dc`、`506cf1f03` 与
+  `2b361cf06`：官方加入 gateway、disk/proposal/gRPC metrics、table printer、auth disable、
+  physical compact timeout nil guard、watch/lease reconnect、auto client TLS、HashKV revision
+  和 rpctypes error model。KubeBrain 对外行为由 generated gRPC gateway、Prometheus etcd-compatible
+  metrics、AuthDisable lifecycle、Compact physical/logical tests、watch failover/reconnect、
+  lease keepalive/revoke, TLS endpoint validation、HashKV differential 和 typed error mapping 固定；
+  WAL/disk/proposal raft metrics 不作为 TiKV/PD 数据面承诺。
+
+  对照 `3ddcc2117`、`c26eb3f24`、`6ee5f9c67`、`06ea8aee1`、`434f2c356`、
+  `c3de53c23`、`30a9229f3`、`22797c718`、`07685bcf9`、`af1a0b60e`、
+  `cbd79c666`、`844208d7`、`53abaf86c`、`131e3806b`、`d2a58cbb0`、
+  `42245a551`、`a2afb513d` 与 `a78ece4ac`：官方处理 watch deleteRange、
+  KV/Txn retry serialization、v3 request timeout、lease grant/keepalive headers、initial proposal
+  readiness gate、mutex session lease keys、empty password merge、revoked lease keepalive
+  `TTL=0`、KeepAliveOnce context、auth Authenticate、Get JSON output、RPC field docs、snapshot e2e
+  和 snapshot status missing-file error。KubeBrain DeleteRange watch/PrevKV, KV/Txn idempotency
+  boundary、request deadline/cancellation、LeaseGrant/KeepAlive response headers、readyz/leader
+  gating、Lock/Mutex recipes、auth password validation、KeepAliveOnce differential、Authenticate
+  tests、etcdctl compatibility table 和 online Snapshot/HTTP snapshot differential 已覆盖。
+
+  对照 `06a4086bf`、`a01622064`、`d72bcdc15`、`f07350735`、`b90e30b28`、
+  `721ed6ba2`、`855a5116a`、`3f0863a1e`、`60548b85c`、`ae9b251d9`、
+  `c9ce92f63`、`ff311ba0a`、`a9a06438f`、`b5292f6fc`、`bfd49023a`、
+  `c5b8e8dc8`、`e838c26f8`、`d5766eab3`、`a6b6fcf1c`、`7ba2646d3`、
+  `02033b4c4`、`e3fd24641` 与 `de7692b2b`：官方收敛 LeaseID client API、
+  role grant bounds、Range rev=0 after current compaction、endpoint/snapshot JSON output、defrag/
+  lease exit codes、compact/get revision flags、endpoint command split、ListUser roles、Status DB/
+  raft fields、snapshot RPC/status、sorted auth permissions、Txn header revision、maintenance
+  Snapshot RPC、UserGrantRole/RoleGrantPermission、KeepAliveOnce error message 和 stale appResp
+  suppression。KubeBrain 已用 LeaseID official client tests、RoleGrantPermission lifecycle、
+  compact-current Range normalization、etcdctl status/snapshot/compact/get compatibility、UserList/
+  RoleList, Status/Hash/Snapshot maintenance semantics、Txn header revision matrix、auth permission
+  sorting via durable snapshot 和 production readyz/count probes 固定 DBaaS public contract；Raft
+  status 字段仅提供兼容 sentinel，不承诺 upstream raft internals。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3867 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
