@@ -42308,6 +42308,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `min_status_raft_index=<n>`、`min_status_raft_applied_index=<n>` 与
   `raft_indexes_match_revision=true` 摘要；本轮不修改 runtime。
 
+- A3955 固定只读 gate 对 Status db size snake_case JSON 的兼容：此前
+  `validate-dataplane-readonly.sh` 的 jq 路径已经支持 `Status.db_size` 与
+  `Status.db_size_in_use`，并要求 in-use size 不大于 db size，但通过用例只显式覆盖
+  `dbSize`/`dbSizeInUse`。`TestValidateDataplaneReadonlyProbe` 新增 snakecase status
+  db size in use summary 覆盖，证明 snake_case 字段同样进入
+  `min_status_db_size=<n>` 与 `min_status_db_size_in_use=<n>` 摘要；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
