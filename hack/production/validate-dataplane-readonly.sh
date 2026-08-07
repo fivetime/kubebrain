@@ -447,6 +447,29 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv revision is required for endpoints: ${hashkv_revision_missing}" >&2
     exit 1
   fi
+  hashkv_numeric_type_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | [
+            (if ((($item.HashKV.header.cluster_id // $item.HashKV.header.clusterId) | type) != "number") then "cluster_id" else empty end),
+            (if ((($item.HashKV.header.member_id // $item.HashKV.header.memberId) | type) != "number") then "member_id" else empty end),
+            (if (($item.HashKV.header.revision | type) != "number") then "revision" else empty end),
+            (if (($item.HashKV.hash | type) != "number") then "hash" else empty end),
+            (if ((($item.HashKV.compact_revision // $item.HashKV.compactRevision) | type) != "number") then "compact_revision" else empty end)
+          ] as $fields
+        | select(($fields | length) > 0)
+        | "\($endpoint): \($fields | join(","))"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$hashkv_numeric_type_violations" ]]; then
+    echo "hashkv numeric fields must be JSON numbers: ${hashkv_numeric_type_violations}" >&2
+    exit 1
+  fi
   hashkv_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"

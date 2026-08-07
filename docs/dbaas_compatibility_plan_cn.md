@@ -42152,6 +42152,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   numeric fields JSON number fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
   string status numeric fields 覆盖；本轮不修改 runtime。
 
+- A3931 固定 HashKV 诊断数值字段的 JSON 类型边界：`endpoint hashkv -w json` 返回的
+  cluster/member/revision/hash/compact revision 必须是 JSON number，不能让字符串 `"111"`
+  这类畸形 envelope 通过 shell 正则或 jq 比较被当成合法数值。`validate-dataplane-readonly.sh`
+  新增 hashkv numeric fields JSON number fail-closed 校验，`TestValidateDataplaneReadonlyProbe`
+  新增 string hashkv numeric fields 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
