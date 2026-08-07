@@ -442,6 +442,7 @@ READYZ_URL=https://instance-a-readyz.example/readyz \
 PREFIX=/ \
 EXPECTED_PREFIX_COUNT=4 \
 EXPECTED_STATUS_CLUSTER_ID=123456789 \
+EXPECTED_STATUS_VERSION=3.7.0 \
 EXPECTED_HASHKV_HASH=987654321 \
 STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
 PROBE_TIMEOUT=10s \
@@ -453,6 +454,8 @@ PROBE_TIMEOUT=10s \
 配置 `EXPECTED_PREFIX_COUNT` 时还会固定每个 endpoint 的期望 count，并要求各 endpoint
 之间 count 一致。配置 `EXPECTED_STATUS_CLUSTER_ID` 时还会通过 `etcdctl endpoint status -w json`
 固定运行时 cluster ID，并要求 member ID 为正、revision/dbSize 为非负；配置
+`EXPECTED_STATUS_VERSION` 时会要求所有 Status version 唯一且等于期望 semver，避免
+发布后运行时版本和 DBaaS 声明版本漂移；配置
 `STATUS_ENDPOINTS` 时会对逗号分隔的每个 endpoint 做同一组 Status 校验，并要求返回的
 `Endpoint` 集合与请求集合完全一致、member ID 集合无重复；空 endpoint 或重复 endpoint
 会在调用 `etcdctl` 前 fail closed。`kubectl`、`curl`、`prefix-tool` 和 `etcdctl` 调用都由

@@ -42209,6 +42209,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   漂移。`TestValidateDataplaneReadonlyProbe` 新增 version mismatch 与 malformed expected
   version 覆盖；本轮不修改 runtime。
 
+- A3940 将 Status version 期望值纳入生产手册：`docs/production_readiness_cn.md` 的
+  `validate-dataplane-readonly.sh` 示例现在显式配置 `EXPECTED_STATUS_VERSION=3.7.0`，
+  并说明该项用于防止运行时版本和 DBaaS 声明版本漂移。`hack/production`
+  新增文档回归测试，防止生产只读 gate 示例漏掉 Status version/cluster/hash 三个钉住项；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

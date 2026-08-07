@@ -1003,6 +1003,27 @@ func compactJSONString(value string) string {
 	return strings.Join(strings.Fields(value), "")
 }
 
+func TestProductionReadinessDataplaneReadonlyExampleIncludesStatusVersion(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "production_readiness_cn.md"))
+	require.NoError(t, err)
+	doc := string(data)
+
+	end := strings.Index(doc, "hack/production/validate-dataplane-readonly.sh")
+	require.NotEqual(t, -1, end, "dataplane readonly gate command is missing")
+	start := strings.LastIndex(doc[:end], "```shell")
+	require.NotEqual(t, -1, start, "dataplane readonly shell example is missing")
+	example := doc[start:end]
+
+	for _, required := range []string{
+		"EXPECTED_STATUS_CLUSTER_ID=",
+		"EXPECTED_STATUS_VERSION=",
+		"EXPECTED_HASHKV_HASH=",
+	} {
+		require.Contains(t, example, required)
+	}
+	require.Contains(t, doc, "所有 Status version 唯一且等于期望 semver")
+}
+
 func writeDataplaneProbeExecutable(t *testing.T, path, contents string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(contents), 0o755))
