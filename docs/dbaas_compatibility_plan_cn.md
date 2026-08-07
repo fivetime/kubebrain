@@ -42437,6 +42437,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   in-use size 缺省。`validate-dataplane-readonly.sh` 现在用 `has("dbSizeInUse")`/
   `has("db_size_in_use")` 显式读取，并同步修正 `min_status_db_size_in_use=<n>` 摘要路径；
   新增 boolean status db size in use envelope 拒绝覆盖。
+- A3977 固定只读 gate 对 Status storageVersion string envelope 的 jq false/null 边界：
+  etcd `StatusResponse.StorageVersion` 是字符串，显式 `storageVersion:false` 不能被当作
+  storage version 缺省。`validate-dataplane-readonly.sh` 现在用 `has("storageVersion")`/
+  `has("storage_version")` 显式读取，并同步修正 `status_storage_versions=<unique>` 摘要路径；
+  新增 boolean status storage version envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 
