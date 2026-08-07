@@ -42066,7 +42066,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   即使带了 `Endpoint`，也必须提供可校验的 `Status.header`，不能让缺失 header 的畸形
   诊断元素靠默认 cluster/member/revision 值继续通过。新增
   `TestValidateDataplaneReadonlyProbe` 的 status response missing header fail-closed
-  覆盖；本轮不修改 runtime。
+  覆盖，并在 readonly gate 中显式拒绝缺失 `Status.header` 的端点。
 
 - A3917 固定 HashKV 诊断元素的 header 必填边界：`endpoint hashkv -w json` 返回的元素
   即使带了 `Endpoint` 和 hash，也必须提供可校验的 `HashKV.header`，不能让缺失 header
@@ -42103,6 +42103,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   watermark 的畸形诊断元素通过 `// 0` 当成“未压缩”证据。`validate-dataplane-readonly.sh`
   新增缺失 compact revision 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe`
   新增 hashkv response missing compact revision 覆盖；本轮不修改 runtime。
+
+- A3923 固定 Status 诊断元素的 revision 必填边界：`endpoint status -w json` 返回的
+  `Status.header` 必须带 revision，不能把缺失 revision 的畸形诊断元素通过 `// 0`
+  当成 revision 0 的有效只读证据。`validate-dataplane-readonly.sh` 新增缺失 status
+  revision 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing
+  status revision 覆盖；本轮不修改 runtime。
 
 ### P2：运维兼容和长期验证
 

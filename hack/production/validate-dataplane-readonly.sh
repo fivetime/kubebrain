@@ -195,6 +195,36 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status dbSize is required for endpoints: ${status_db_size_missing}" >&2
     exit 1
   fi
+  status_header_missing="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select(.Status.header == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$status_header_missing" ]]; then
+    echo "status header is required for endpoints: ${status_header_missing}" >&2
+    exit 1
+  fi
+  status_revision_missing="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select(.Status.header.revision == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$status_revision_missing" ]]; then
+    echo "status revision is required for endpoints: ${status_revision_missing}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
