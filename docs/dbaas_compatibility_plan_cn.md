@@ -42171,6 +42171,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验，`TestValidateDataplaneReadonlyProbe` 新增 fractional hashkv numeric fields 覆盖；
   本轮不修改 runtime。
 
+- A3934 固定 Status raft term envelope 一致性：`endpoint status -w json` 同时暴露
+  `Status.header.raft_term` 和 top-level `Status.raftTerm` 时，两者必须成对存在、为正
+  JSON integer 且相等，避免 etcdctl 诊断 JSON 中 header raft term 与 status raft term
+  脱节。`validate-dataplane-readonly.sh` 新增 status raft term envelope fail-closed 校验，
+  `TestValidateDataplaneReadonlyProbe` 新增 mismatched status raft term 覆盖；本轮不修改
+  runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -300,6 +300,40 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status numeric fields must be JSON integers: ${status_integer_type_violations}" >&2
     exit 1
   fi
+  status_raft_term_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | ($item.Status.header.raft_term // $item.Status.header.raftTerm) as $header_term
+        | ($item.Status.raftTerm // $item.Status.raft_term) as $status_term
+        | (
+            if ($header_term == null and $status_term == null) then
+              empty
+            elif ($header_term == null or $status_term == null) then
+              "missing_pair"
+            elif (($header_term | type) != "number" or ($status_term | type) != "number") then
+              "not_number"
+            elif ($header_term != ($header_term | floor) or $status_term != ($status_term | floor)) then
+              "not_integer"
+            elif ($header_term != $status_term) then
+              "mismatch"
+            elif ($header_term <= 0 or $status_term <= 0) then
+              "not_positive"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_raft_term_violations" ]]; then
+    echo "status raft term envelope invalid: ${status_raft_term_violations}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
