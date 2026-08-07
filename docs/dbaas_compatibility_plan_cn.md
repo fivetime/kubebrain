@@ -42146,6 +42146,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   envelopes 成功回归，确认 `clusterId`/`memberId`/`compactRevision` 等兼容别名仍被接受；
   本轮不修改 runtime。
 
+- A3930 固定 Status 诊断数值字段的 JSON 类型边界：`endpoint status -w json` 返回的
+  cluster/member/revision/dbSize 必须是 JSON number，不能让字符串 `"123"` 这类畸形
+  envelope 通过 shell 正则被当成合法数值。`validate-dataplane-readonly.sh` 新增 status
+  numeric fields JSON number fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
+  string status numeric fields 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
