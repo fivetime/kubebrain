@@ -15,6 +15,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		podsJSON   string
 		readyz     string
 		count      string
+		statusJSON string
 		extraEnv   []string
 		wantOK     bool
 		wantOutput string
@@ -28,6 +29,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			]}`,
 			readyz:     "ok",
 			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			wantOK:     true,
 			wantOutput: "dataplane readonly gate passed",
 		},
@@ -40,6 +42,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			]}`,
 			readyz:     "ok",
 			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			wantOutput: "KubeBrain Ready pod count mismatch",
 		},
 		{
@@ -51,6 +54,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			]}`,
 			readyz:     "starting",
 			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			wantOutput: "readyz mismatch",
 		},
 		{
@@ -62,14 +66,42 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			]}`,
 			readyz:     "ok",
 			count:      "5",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			extraEnv:   []string{"EXPECTED_PREFIX_COUNT=4"},
 			wantOutput: "prefix count mismatch",
+		},
+		{
+			name: "rejects status cluster id drift",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":321,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "status cluster ID mismatch",
+		},
+		{
+			name: "rejects zero status member id",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":0,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "status member ID must be positive",
 		},
 		{
 			name:       "rejects unsafe endpoint before commands",
 			podsJSON:   `{"items":[]}`,
 			readyz:     "ok",
 			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			extraEnv:   []string{"ENDPOINT=http://127.0.0.1:2379\nbad"},
 			wantOutput: "ENDPOINT contains unsupported characters",
 		},
@@ -88,12 +120,17 @@ printf '%s' "$FAKE_READYZ"
 set -euo pipefail
 printf '%s\n' "$FAKE_PREFIX_COUNT"
 `)
+			writeDataplaneProbeExecutable(t, filepath.Join(dir, "etcdctl"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$FAKE_STATUS_JSON"
+`)
 
 			env := []string{
 				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
 				"KUBECTL=kubectl",
 				"CURL=curl",
 				"GO=go",
+				"ETCDCTL=etcdctl",
 				"JQ=jq",
 				"KUBE_CONTEXT=kind-kubebrain-dbaas",
 				"KUBEBRAIN_NAMESPACE=kubebrain-dev",
@@ -105,6 +142,7 @@ printf '%s\n' "$FAKE_PREFIX_COUNT"
 				"FAKE_PODS_JSON=" + compactJSONString(tc.podsJSON),
 				"FAKE_READYZ=" + tc.readyz,
 				"FAKE_PREFIX_COUNT=" + tc.count,
+				"FAKE_STATUS_JSON=" + tc.statusJSON,
 			}
 			env = append(env, tc.extraEnv...)
 

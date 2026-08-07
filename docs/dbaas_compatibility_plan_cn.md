@@ -41902,6 +41902,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   unsafe endpoint fail-closed；`TestReleaseGateScriptTestsUseBoundedCommandHelper` 将该脚本纳入
   bounded command helper 静态门禁。本轮不修改 runtime。
 
+- A3890 强化 A3889 只读数据面门禁的 etcd v3 Status 身份校验：设置
+  `EXPECTED_STATUS_CLUSTER_ID` 时，`validate-dataplane-readonly.sh` 会调用
+  `etcdctl endpoint status -w json`，要求运行时 cluster ID 与期望一致、member ID 为正、
+  revision/dbSize 为非负。`TestValidateDataplaneReadonlyProbe` 新增 cluster ID 漂移与零
+  member ID fail-closed 覆盖；当前 kind DBaaS 环境实跑通过，输出
+  `status_cluster_id=7662961163671170154`、`status_member_id=2393892952`、
+  `status_revision=468126003565859436`、`status_db_size=5998`。本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

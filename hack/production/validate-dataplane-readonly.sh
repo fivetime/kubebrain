@@ -13,9 +13,11 @@ PROBE_TIMEOUT="${PROBE_TIMEOUT:-10s}"
 KUBECTL="${KUBECTL:-kubectl}"
 CURL="${CURL:-curl}"
 GO="${GO:-go}"
+ETCDCTL="${ETCDCTL:-etcdctl}"
 JQ="${JQ:-jq}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 EXPECTED_PREFIX_COUNT="${EXPECTED_PREFIX_COUNT:-}"
+EXPECTED_STATUS_CLUSTER_ID="${EXPECTED_STATUS_CLUSTER_ID:-}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_READY_PODS must be a positive integer" >&2
@@ -23,6 +25,10 @@ if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ -n "$EXPECTED_PREFIX_COUNT" && ! "$EXPECTED_PREFIX_COUNT" =~ ^[0-9]+$ ]]; then
   echo "EXPECTED_PREFIX_COUNT must be empty or a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" && ! "$EXPECTED_STATUS_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "EXPECTED_STATUS_CLUSTER_ID must be empty or a positive integer" >&2
   exit 2
 fi
 if [[ -z "$ENDPOINT" ]]; then
@@ -83,4 +89,40 @@ if [[ -n "$EXPECTED_PREFIX_COUNT" && "$prefix_count" != "$EXPECTED_PREFIX_COUNT"
   exit 1
 fi
 
-echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}"
+status_summary=""
+if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+  status_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$ENDPOINT" endpoint status -w json)"
+  status_values="$(printf '%s' "$status_json" | "$JQ" -r '
+    if (type != "array" or length != 1) then
+      "invalid\tinvalid\tinvalid\tinvalid"
+    else
+      .[0].Status as $s |
+      [
+        ($s.header.cluster_id // $s.header.clusterId // 0),
+        ($s.header.member_id // $s.header.memberId // 0),
+        ($s.header.revision // 0),
+        ($s.dbSize // $s.db_size // $s.dbSizeInUse // $s.db_size_in_use // 0)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r status_cluster_id status_member_id status_revision status_db_size <<<"$status_values"
+  if [[ "$status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${status_cluster_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$status_member_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "status member ID must be positive, got ${status_member_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$status_revision" =~ ^[0-9]+$ ]]; then
+    echo "status revision must be non-negative, got ${status_revision}" >&2
+    exit 1
+  fi
+  if ! [[ "$status_db_size" =~ ^[0-9]+$ ]]; then
+    echo "status dbSize must be non-negative, got ${status_db_size}" >&2
+    exit 1
+  fi
+  status_summary=", status_cluster_id=${status_cluster_id}, status_member_id=${status_member_id}, status_revision=${status_revision}, status_db_size=${status_db_size}"
+fi
+
+echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}"
