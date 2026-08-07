@@ -42399,6 +42399,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但一旦出现 `isLearner`/`is_learner`，必须是 JSON boolean，不能接受字符串 `"false"`。
   `validate-dataplane-readonly.sh` 现在在通过摘要输出 `status_is_learners=<unique>`，
   `TestValidateDataplaneReadonlyProbe` 新增 learner summary 与 string learner 拒绝覆盖。
+- A3970 固定只读 gate 对 Status downgradeInfo 嵌套 envelope 的可选 fail-closed 判定：
+  etcd `StatusResponse.DowngradeInfo` 是可选对象，内部 `enabled` 为 bool、`targetVersion`
+  为 semver 字符串；disabled 时 JSON 可能因 `omitempty` 呈现为空对象。生产 gate 现在允许
+  缺省或 disabled 空对象，但一旦 `enabled=true` 必须携带非空 semver target，并在通过摘要输出
+  `status_downgrade_enableds=<unique>` 与可选 `status_downgrade_target_versions=<unique>`。
+  新增 downgrade info summary 与 enabled-without-target 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 
