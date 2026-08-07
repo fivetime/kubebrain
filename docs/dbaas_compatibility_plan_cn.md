@@ -41685,6 +41685,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3880 与上述 commit ID；本轮
   不修改 runtime。
 
+- A3881 固定 upstream early v2 quorum/consistent get、stats/leader/version、discovery、
+  admin machines/config、TLS/CORS、client/raft listener split 与 v1 deprecation public boundary
+  审计。对照 `/root/etcd` commit `4c116a5a0`、`c1c2aeffa`、`e9a22d0f3`、
+  `9203f6889`、`5574b6e22`、`c9edb762b`、`d0dc7427d`、`a191df10a`、
+  `cd4b35c84`、`4f10917ce`、`e587402c2`、`7bb623058`、`528300213`、
+  `3fba10c8e`、`c952e91c4`、`061fad12a`、`18001dd77`、`ee2d5d66a`、
+  `5562c3b4e`、`5af8fe9a8`、`041524432`、`edd8d7e53`、`f95f53e44`、
+  `02ced2c2d`、`c4e7432ef`、`45c6bf80e`、`4181f1b2e`、`c3f8eabac`、
+  `10b2f88b8`、`9a59f1696`、`6fb2c7c88`、`ac44e56ea` 与 `5e486dd91`：
+  官方收敛 v2 consistent/quorum get、peer URL default scheme and configurable retry、
+  `/v2/stats/self`、`/v2/stats/leader`、peer hub TLS handshake/response/dial timeout、
+  raft public addr serving for `/v2/admin`、wait=true stream header flush、version handlers、
+  discovery bootstrap、v2 client CloseConnections and response-body draining、proposal error
+  propagation、join/remove through `/v2/admin/machines/`、`/v2/admin/config`、v1 deprecation、
+  CORS、client TLS、raft TLS、separate client/raft ports、v2 store stats、peers/leader/machines
+  endpoint 和 v2 machines prefix。KubeBrain 不实现 upstream v1 API、legacy v2 admin/machines/
+  stats/leader/peers HTTP API、legacy discovery bootstrap 或 raft HTTP transport wire；DBaaS
+  public contract 由 v3 Range/Txn/Watch/Lease generated differential、Status/Member mutation
+  boundary、`/health`/`/version` HTTP handler tests、CORS/HostWhitelist tests、endpoint TLS/mTLS/
+  readiness/CA reload tests、metrics/debug/readyz docs and probes、memberlist sync/naming/SRV
+  tests、request timeout/error mapping tests 和 production readyz/count probes 固定。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3881 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
