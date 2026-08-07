@@ -890,6 +890,38 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     echo "hashkv numeric fields must be JSON integers: ${hashkv_integer_type_violations}" >&2
     exit 1
   fi
+  hashkv_hash_revision_presence="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      ([.[] | select((.HashKV | has("hash_revision")) or (.HashKV | has("hashRevision")))] | length)
+    end
+  ')"
+  if [[ "$hashkv_hash_revision_presence" != "0" && "$hashkv_hash_revision_presence" != "$hashkv_count" ]]; then
+    echo "hashkv hash revision must be present on all endpoints when present: present=${hashkv_hash_revision_presence}, total=${hashkv_count}" >&2
+    exit 1
+  fi
+  hashkv_hash_revision_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select((.HashKV | has("hash_revision")) or (.HashKV | has("hashRevision")))
+        | {
+            endpoint: (.Endpoint // "unknown"),
+            header_revision: .HashKV.header.revision,
+            hash_revision: (if (.HashKV | has("hash_revision")) then .HashKV.hash_revision else .HashKV.hashRevision end)
+          }
+        | select(.hash_revision != .header_revision)
+        | "\(.endpoint): hash_revision=\(.hash_revision), header_revision=\(.header_revision)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$hashkv_hash_revision_violations" ]]; then
+    echo "hashkv hash revision must match header revision: ${hashkv_hash_revision_violations}" >&2
+    exit 1
+  fi
   hashkv_raft_term_violations="$(printf '%s' "$hashkv_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
@@ -927,7 +959,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         .[]
         | {
             endpoint: (.Endpoint // "unknown"),
-            revision: .HashKV.header.revision,
+            revision: (if (.HashKV | has("hash_revision")) then .HashKV.hash_revision elif (.HashKV | has("hashRevision")) then .HashKV.hashRevision else .HashKV.header.revision end),
             compact_revision: (if (.HashKV | has("compact_revision")) then .HashKV.compact_revision elif (.HashKV | has("compactRevision")) then .HashKV.compactRevision else null end)
           }
         | select(.compact_revision > .revision)

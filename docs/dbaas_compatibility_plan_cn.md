@@ -42490,6 +42490,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hash_revision`/`hashRevision` 出现在 JSON envelope 中，必须是 JSON integer，新增
   string、fractional 和 boolean hashkv hash revision 覆盖，防止升级 3.7 工具后畸形
   `HashRevision` 被汇总路径吞掉。
+- A3987 固定只读 gate 对 HashKV hash_revision 的可选语义边界：etcd 3.7
+  `endpoint hashkv` 表格已将 `hash_revision` 当成一等输出列；当 JSON envelope
+  出现该字段时，生产 gate 现在要求所有 HashKV endpoint 都带该字段，且逐 endpoint
+  满足 `hash_revision == HashKV.header.revision`、`compact_revision <= hash_revision`。
+  当前 3.5.16 etcdctl 缺字段仍兼容；新增 partial presence、hash/header revision mismatch
+  与 compact beyond explicit hash revision 覆盖，为后续升级 etcdctl 输出格式预留 fail-closed
+  语义约束。
 
 ### P2：运维兼容和长期验证
 
