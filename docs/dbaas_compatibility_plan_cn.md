@@ -42021,6 +42021,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   既有 duplicate member IDs 门禁共同防止错误 endpoint 或畸形 JSON 被误判为多成员健康；
   本轮不修改 runtime。
 
+- A3908 固定 Status 诊断 revision 的非负边界：`endpoint status` 响应 header revision
+  必须是非负整数，不能把畸形 JSON、倒退诊断或错误 endpoint 返回的负 revision 作为
+  有效生产只读证据。新增 `TestValidateDataplaneReadonlyProbe` 的 negative status
+  revision fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
