@@ -42315,6 +42315,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   db size in use summary 覆盖，证明 snake_case 字段同样进入
   `min_status_db_size=<n>` 与 `min_status_db_size_in_use=<n>` 摘要；本轮不修改 runtime。
 
+- A3956 固定只读 gate 对 Status `Errors` 大写 JSON 字段的兼容：此前
+  `validate-dataplane-readonly.sh` 已经按 `Status.errors`/`Status.Errors` 同时解析健康错误，
+  但通过用例只显式覆盖小写 `errors`。`TestValidateDataplaneReadonlyProbe` 新增 uppercase
+  empty status errors summary 覆盖，证明官方 protobuf JSON 风格的 `Errors: []` 也会进入
+  `status_errors=empty` 摘要；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
