@@ -42042,6 +42042,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail-closed 覆盖，并与 A3900/A3901 的 compact<=hash revision 顺序门禁配套；
   本轮不修改 runtime。
 
+- A3912 固定 Status 诊断 JSON envelope 的数组边界：`endpoint status -w json` 必须返回
+  JSON array，不能把单个 object、代理错误 envelope 或 gateway 畸形输出交给后续字段
+  提取兜底。新增 `TestValidateDataplaneReadonlyProbe` 的 non array status response
+  fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
