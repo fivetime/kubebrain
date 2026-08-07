@@ -41321,6 +41321,49 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status 字段仅提供兼容 sentinel，不承诺 upstream raft internals。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3867 与上述 commit ID；本轮不修改 runtime。
 
+- A3868 固定 upstream 早期 v3 lease/auth/watch/status/alarm/quota/maintenance/TLS public API
+  成型阶段审计。对照 `/root/etcd` commit `dc17eaace`、`aa11dafaf`、`2b17a3919`、
+  `9de5b8db8`、`fab3c8e70`、`9afae9e2c`、`d80af0078`、`f3ca17ea0`、
+  `1d5d2494e`、`e8877ab18`、`6f707b857`、`81de5648d`、`b98f67095`、
+  `73166b41e`、`d8888ded1` 与 `7b37bd332`：官方将 Lease Create 命名收敛为
+  Grant、在 clientv3 暴露 watch EventType、补 RoleAdd/UserChangePassword/UserDelete、watch
+  prefix/delete prefix、serializable Txn、Status RPC、delete count、physical compaction ack
+  fence 和基础 watch 行为。KubeBrain 由 LeaseGrant boundary/duplicate differential、watch
+  EventType/Prefix/PrevKV/filter/future revision tests、auth role/user lifecycle、DeleteRange
+  prefix/delete-count、serializable read-only Txn、Status maintenance semantics、physical compact
+  tests 和 production probes 固定 public behavior。
+
+  对照 `2aca3252e`、`c91b2d098`、`dd5b73cfe`、`4b35cb946`、`8ee8d755b`、
+  `443c67735`、`96ee00a32`、`9b2c96317`、`8d0d10cce`、`720502b25`、
+  `987568c65`、`096abb3f3`、`2e3856740`、`3fbacf4be`、`4bdfc0a46`、
+  `5ee85bea7`、`2c83362e`、`e129223db`、`a403a94d7`、`9e7f47c49` 与
+  `9c8253c54`：官方引入 alarm command/client/RPC、all-alarm GET、wait-for-compaction
+  flag、auth/internal error mapping、uint64 alarm member ID、backend quota、context error
+  preservation、auth request prefix rename、Hash 移到 Maintenance、watch/KV reconnect races、
+  NOSPACE write cap 和 space quota。KubeBrain 已用 status/alarm/quota differential、automatic
+  quota NOSPACE differential、AlarmList/AlarmDisarm/generic alarm tests、Compact physical flag、
+  auth gRPC error mapping、context cancellation propagation、Hash/HashKV maintenance tests、
+  watch/KV retry/idempotency boundaries、quota admission 和 observability docs 固定该 public
+  contract；不承诺 upstream bbolt backend quota 内部实现。
+
+  对照 `87d9f06a4`、`8874545a1`、`4e39db415`、`a120ca16c`、`f165f8b44`、
+  `0865688c2`、`5ee372973`、`900a61b02`、`d3809abe4`、`a69c70983`、
+  `f38a611b5`、`56d7899c2`、`44753594e`、`e6c39108a`、`2a28ac7ad`、
+  `e9a0a103e`、`a24aade66`、`683274b20`、`4bbbb5289`、`4eb1cfd65`、
+  `adcba975c`、`7c377fa70`、`2f12ea893`、`78132c9b5`、`d21d2e662`、
+  `036ed87c` 与 `713f7c056`：官方合并 etcdctl/etcdctlv3、补 UserAdd、TLS/global flags、
+  timeout、secure connection without key/cert、HTTP+gRPC/TLS same-port、auto cert、Serializable
+  Op、member-list JSON、rpctypes 包、lease failover/quorum stepdown/leader TTL refresh、
+  get from-key/prefix、txn noninteractive format、auth package、lessor snapshot recovery、
+  Defrag maintenance service、client TLS config、broken connection Close、future revision watch
+  和 txn event type create-revision。KubeBrain 对外由 etcdctl compatibility table、auth UserAdd、
+  endpoint TLS/mTLS/gateway same-port routing、request timeout/dial timeout docs、serializable
+  reads、MemberList JSON/status compatibility、Lease failover/recovery, Get prefix/from-key
+  differentials、Txn parser/Compare/EventType tests、Defragment/Snapshot/Status maintenance
+  contract、future watch differential 和 production readyz/count probes 固定；Raft quorum/lessor
+  internals 只映射为 TiKV/PD leader fencing 与 lease recovery 语义。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3868 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
