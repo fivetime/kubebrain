@@ -41587,6 +41587,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   snapshot/backup docs 和 production readyz/count probes 固定。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3876 与上述 commit ID；本轮不修改 runtime。
 
+- A3877 固定 upstream early v2 HTTP member/keys error、proxy JSON error、client endpoint/TLS、
+  discovery/peer-url 校验、backup/migrate 工具 public boundary 审计。对照 `/root/etcd`
+  commit `596779400`、`6fa8f7763`、`ca1b30db1`、`3cb885c6b`、
+  `2d942e970`、`902f06c5c`、`66572561b`、`4b555dba9`、`45b7c9a4a`、
+  `5fbef59db`、`cedcc0d8d`、`866ec5948`、`9aefb9153`、`ab69c2adb`、
+  `0d541e633`、`a56fa60fb`、`192f200d9`、`78ea3335b`、`ce82a3e7a`、
+  `d2e36a953`、`57b076f71`、`8f1885a39`、`5cb13fd07`、`1197c1f96`、
+  `3f358b6d5` 与 `b6f0c789b`：官方收敛 member advertise-peer-url 更新、
+  reverse proxy JSON error、remove nonexistent member 404、add member conflict 409、etcdctl
+  TLS flags、CA-only client TLS config、member add error handling、client endpoint exposure and
+  no-endpoint error、v2 error content-type、permanently removed member 410、`HEAD /v2/keys/`、
+  v2 HTTP JSON-format errors、PrevValueRequired code、legacy `etcdctl backup`、0.4→0.5
+  migration/snapshot migration、migration binary packaging/static etcdctl、discovery proxy/fallback、
+  peer URL validation、initial advertise peer URL membership check 和 HTTPS-only TLS listener。
+  KubeBrain 不 vend upstream v2 member/keys HTTP API、legacy proxy、0.4/0.5 WAL/snapshot migration
+  或 legacy backup physical format；DBaaS public contract 由 v3 generated gateway/error mapping
+  differential、Member/Status unsupported mutation boundary、endpoint TLS/mTLS/CA reload tests、
+  memberlist sync and naming/SRV tests、snapshot/backup docs、etcdctl compatibility docs、request
+  timeout/error mapping tests 和 production readyz/count probes 固定。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3877 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
