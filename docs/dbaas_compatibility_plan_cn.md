@@ -42293,6 +42293,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖，证明 camelCase header term 也会进入 `hashkv_raft_terms=<unique>` 与
   `raft_terms_match=true` 摘要；本轮不修改 runtime。
 
+- A3953 固定只读 gate 对 Status 顶层 `raft_term` snake_case JSON 的兼容：此前
+  `validate-dataplane-readonly.sh` 的 jq 路径已经支持 `Status.raft_term` 与
+  `Status.leader_id`，但通过用例主要覆盖 top-level `raftTerm` 与 `leader`。
+  `TestValidateDataplaneReadonlyProbe` 新增 snakecase status raft term summary 覆盖，
+  证明 header `raftTerm`、top-level `raft_term` 和 `leader_id` 组合仍会进入
+  `status_leader_ids=<unique>` 与 `status_raft_terms=<unique>` 摘要；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
