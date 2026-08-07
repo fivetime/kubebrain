@@ -42026,6 +42026,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   有效生产只读证据。新增 `TestValidateDataplaneReadonlyProbe` 的 negative status
   revision fail-closed 覆盖；本轮不修改 runtime。
 
+- A3909 固定 Status 诊断 dbSize 的非负边界：`endpoint status` 响应中的 dbSize/dbSizeInUse
+  必须解析为非负整数，不能把畸形 JSON、错误 gateway 转换或异常 endpoint 返回的负容量
+  作为有效生产只读证据。新增 `TestValidateDataplaneReadonlyProbe` 的 negative status
+  db size fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
