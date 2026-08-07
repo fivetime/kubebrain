@@ -41132,6 +41132,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   recipe 和 Min/MaxCreateRevision differential 已覆盖 DBaaS public contract。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3862 与上述 commit ID；本轮不修改 runtime。
 
+- A3863 固定 upstream prefix permission printing/grant、concurrency error propagation、
+  Range Min/MaxModRevision、auth range handling、LeaseTimeToLive 初始 RPC/CLI/client/proxy 支持、
+  unhealthy error、watch buffered drain/domain listener/root role all-key、grpcproxy watch overload/
+  cancel/double-create、quoted txn/watch、Election prefix、print-value-only、retry/failfast、timeout
+  error、watch progress interval、apply wait、cache invalidation 和 client DialTimeout 审计。对照
+  `/root/etcd` commit `4211c0b7a`、`4e2b09a7c`、`56084a7cc`、`17e7f8321`、
+  `b0481ba85`、`af0264d2e`、`ef1ef0ba1`、`b7dc6cc60`、`04a4cea63`、
+  `4c08f6767`、`78cfc8db9`、`63b0cd470`、`617d2d5b9` 与 `3132e36bf`：
+  官方补齐 prefix permission、Min/MaxModRevision、auth range cache 与 LeaseTimeToLive API。
+  KubeBrain 已在 role prefix/from-key permission、auth differential、Range filters、Lease TTL/
+  attached keys/`TTL=-1`、gateway/generated route、official clientv3 和 production lease smoke 中
+  固定 public behavior。
+
+  对照 `1aec483e4`、`1defeda79`、`ad318ee89`、`2752169d6`、`bc5d7bbe0`、
+  `56cfe4018`、`b56ee178d`、`805d4cbd9`、`51b4d6b7a`、`b1740f5fe`、
+  `7b2f76964`、`9497e9678` 与 `524a5a1af`：官方处理 lease context error、
+  ErrUnhealthy、watch response drain、listener domain reject、root role all-key、grpcproxy watch
+  races/overload/cancel/double-create、quoted txn/watch、Election prefix 和 get print-value-only。
+  KubeBrain endpoint validation、root/auth bootstrap、watch create/resume/cancel/PrevKV、Lock/
+  Election recipe、etcdctl compatibility table、operation audit 和 production probes 固定
+  DBaaS public contract；grpcproxy watch group 内部不移植。
+
+  对照 `5e963608b`、`3552420df`、`64ac63186`、`df54ad220`、`254c0ea81`、
+  `be38c5056`、`83de13e4a`、`c8bbb8c53`、`3eadf964f` 与 `429d5ab20`：
+  官方收敛 client retry/failfast、read-only Txn failfast=false、unknown code mapping、timeout
+  typed errors、server request timeout、watch progress interval、apply wait、proxy cache invalidation、
+  at-most-once RPC retry wrappers 和 DialTimeout blocking。KubeBrain 对外语义由 request timeout、
+  cancellation propagation、linearizable read-only Txn、watch progress cadence、leader fencing、
+  retry/idempotency boundary、client creation/connection-age tests 和 production readyz 固定。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3863 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
