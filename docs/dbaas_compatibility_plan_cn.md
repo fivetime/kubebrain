@@ -42134,6 +42134,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   hashkv cluster ID 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
   missing hashkv cluster id 覆盖；本轮不修改 runtime。
 
+- A3928 固定 HashKV 诊断元素的 revision 必填边界：`endpoint hashkv -w json` 返回的
+  `HashKV.header` 必须带 revision，不能把缺失 hash revision 的畸形诊断元素通过 `// 0`
+  当成 revision 0 的有效 hash 证据。`validate-dataplane-readonly.sh` 新增缺失 hashkv
+  revision 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing
+  hashkv revision 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
