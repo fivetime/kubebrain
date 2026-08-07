@@ -41364,6 +41364,52 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   internals 只映射为 TiKV/PD leader fencing 与 lease recovery 语义。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3868 与上述 commit ID；本轮不修改 runtime。
 
+- A3869 固定 upstream 早期 v3 watch/progress/concurrency/etcdctl/KV option/compaction public
+  surface 审计。对照 `/root/etcd` commit `d84811aec`、`aa11dafaf`、`450b58601`、
+  `27316196d`、`1e1675802`、`b1521570b`、`16c35167d`、`6d3f172c6`、
+  `9143329c8`、`20d89bcf3`、`3327858a5`、`b9d77eaaf`、`379d04ea5`、
+  `7a78c1ef1`、`eb327c690`、`c0eac7ab7`、`8dbc6cfd4`、`4a0a83380`、
+  `d02b1c982`、`5f62c05a6`、`43689b9a3`、`993fd76b` 与 `d265fe000`：
+  官方修复 full-range watch、暴露 EventType/WatchResponse.Err/IsProgressNotify、
+  WithProgressNotify、RequestProgress、Watch range protocol、cancel watch 返回 `-1`、
+  canceled Watch() closed channel、client API 组合、KV Do、lease first stream error 和 time-based
+  auto-compaction。KubeBrain 已用 full-range/prefix/from-key watch、watch progress/empty-progress/
+  RequestProgress、watch cancel/created/compacted/error contract、clientv3 differential、lease
+  stream/keepalive/revoke tests、auto-compaction compatibility docs 和 production watch probes 固定
+  public behavior。
+
+  对照 `a78604dac`、`ed44bb00f`、`d4b2044eb`、`20b4336cd`、`a24d27689`、
+  `386c64be7`、`355896b00`、`8302f839b`、`87dcb2ade`、`54d15256e`、
+  `fc86e1ded`、`50ad18147`、`7b82576b6`、`f66162932`、`4fc89678b`、
+  `59291770d`、`155412bbf`、`af225e743`、`2cbf7cf6d`、`59e7be4a2`、
+  `f71e733b8`、`6ba937396` 与 `24a6abaf5`：官方补 true cancel/created notify、
+  Lock/Mutex/Session/Election recipe、variadic Watch/WithPrefix、protobuf/json/simple printer、
+  txn interactive format、delete count、lease keepalive cancellation、Txn compare copy、current
+  watcher reconnect、`>=` DeleteRange、overlapped watcher events、current header revision race、
+  unsynced watcher stale-event filtering、watch-created-before-events、make-mirror 和 syncer。
+  KubeBrain 对外由 Lock/Election recipe differential、watch created/progress/PrevKV/race guards、
+  etcdctl output compatibility、DeleteRange count/from-key/prefix differential、lease cancellation、
+  Txn compare/copy/idempotency tests、make-mirror revision/compaction differential 和 watch failover
+  tests 固定；不迁移 upstream watcher group 内部结构。
+
+  对照 `5b2847b33`、`2710e4eed`、`91e2086d`、`8e411b1b3`、`ee1a03167`、
+  `6851fffdf`、`5908e5b60`、`30c11c1bc`、`4854d7f69`、`bfa5e310a`、
+  `3b7bd38a2`、`5fbf64c14`、`a56287b9b`、`3c9e8540a`、`51c4894f`、
+  `674d54ad9`、`075f5f68a`、`aa9d3c8b7`、`4f41d361a`、`8dcd24bd6`、
+  `35567221a`、`bc3fc4ea3`、`a6008f41e`、`5b4b1c703`、`b6a08a97e`、
+  `2d197ac9e`、`3ed404633` 与 `52416fafb`：官方收敛 Hash response header、
+  snapshot command、watch compacted revision/CompactRevision、`>=` Range/local serializable
+  range、lease detach, watcher retry variable capture、MemberAdd/IsLeader fields、Put/Delete/Get
+  options and ctx、put stdin、compaction error reporting、Compare API、request-size limit、
+  etcdserver namespaced errors、Txn retry at-most-once、KV Compact、Hash method 和 storage
+  compaction send。KubeBrain 已在 HashKV/Hash/Status maintenance tests、snapshot HTTP/RPC
+  differential、watch compacted/future/fragment tests、Range generated/from-key/serializable
+  matrix、lease attachment/detach and restart recovery、Member mutation unsupported boundary,
+  Put/Delete/Get option differential、stdin/etcdctl docs、request-size guard、typed error mapping、
+  Txn at-most-once differential、Compact boundary tests 和 production readyz/count probes 中固定
+  DBaaS public contract。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3869 与上述 commit ID；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
