@@ -159,7 +159,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379"}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
-			wantOutput: "status cluster ID mismatch",
+			wantOutput: "status payload is required",
 		},
 		{
 			name: "rejects hashkv hash drift",
@@ -464,6 +464,19 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":-1}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOutput: "status dbSize must be non-negative",
+		},
+		{
+			name: "rejects missing status db size",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7}}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "status dbSize is required",
 		},
 		{
 			name: "rejects duplicate status member ids across endpoints",

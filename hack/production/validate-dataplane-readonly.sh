@@ -165,6 +165,36 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status endpoint set mismatch: expected ${expected_status_endpoint_set}, got ${actual_status_endpoint_set}" >&2
     exit 1
   fi
+  status_payload_missing="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select(.Status == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$status_payload_missing" ]]; then
+    echo "status payload is required for endpoints: ${status_payload_missing}" >&2
+    exit 1
+  fi
+  status_db_size_missing="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select((.Status.dbSize // .Status.db_size // .Status.dbSizeInUse // .Status.db_size_in_use) == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$status_db_size_missing" ]]; then
+    echo "status dbSize is required for endpoints: ${status_db_size_missing}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
