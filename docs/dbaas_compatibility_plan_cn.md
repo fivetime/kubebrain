@@ -42462,6 +42462,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   snake_case `db_size` fallback 掩盖。`validate-dataplane-readonly.sh` 现在用
   `has("dbSize")`/`has("db_size")` 显式读取，并同步修正 dbSize 必填、数值类型、
   整数和摘要路径；新增 boolean status db size envelope 拒绝覆盖。
+- A3982 固定只读 gate 对 Status header identity uint64 envelope 的 jq false/null 边界：
+  etcd `ResponseHeader.ClusterId` 与 `MemberId` 都是 `uint64`，显式
+  `cluster_id:false`/`member_id:false` 不能被 camelCase fallback 掩盖。
+  `validate-dataplane-readonly.sh` 现在用 `has("cluster_id")`/`has("clusterId")` 与
+  `has("member_id")`/`has("memberId")` 显式读取，并同步修正 status identity 必填、
+  数值类型、整数和摘要路径；新增 boolean status header identity envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 
