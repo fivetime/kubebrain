@@ -41496,6 +41496,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3872 与上述 commit ID；本轮不修改
   runtime。
 
+- A3873 固定 upstream v2.1/v2.2 client timeout/cancel/autosync、early v3 demo、v2 auth HTTP 与
+  storage revision/compaction public boundary 审计。对照 `/root/etcd` commit `c229e6e65`、
+  `ceb27b1c4`、`27170e67b`、`7e04a79fb`、`c3d4d1140`、`5a9193736`、
+  `e36c499d0`、`a1ef699ae`、`f4c29a5f5`、`523567bcc`、`f004b4dac`、
+  `0ab16db72`、`78af79333`、`cfeaf3d17`、`c53b3016a`、`18169e896`、
+  `6312e22b1`、`147885078`、`4e31df2c2`、`5fa865224`、`ea2347a40`、
+  `b20b87893`、`604709cad`、`d2dac0fe5`、`6317abf7e`、`ee82ee05b`、
+  `6e3769d39`、`a4d1a5a6e`、`433f2ee1b`、`ccca2b04d`、`458106406`、
+  `2e41b4f9e`、`030d1bbf2`、`c8628c8fe`、`d5a0e3ac6`、`3f82e7b11`、
+  `c39aad0e9`、`cad757efa`、`93f477944` 与 `f47ed4a36`：官方收敛 leader
+  fail/election timeout error、HTTP request/commit timeout knobs、etcdctl per-request timeout 和
+  better error output、client per-request timeout/context canceled/deadline/50x/cluster error、
+  endpoint pin/autosync、empty watch response handling、watch `--after-index` parsing、Quorum get、
+  HTTPS keepalive listener downgrade、member update、v2 auth client/etcdctl、multi-role access、
+  root role/duplicate-role/password-hash/auth response/status-code 语义，以及 early v3 demo/
+  etcdctl 和 storage create/version/modified index/future revision/initial compaction。KubeBrain
+  不 vend upstream v2 client/proxy/store 或 legacy etcdctl implementation；DBaaS 数据面对应由
+  request timeout/deadline tests、endpoint no-endpoint/dial/connection-age and memberlist sync
+  tests、watch empty/progress/cancel/compacted/future differential、auth client/JWT/authorizer
+  tests、Member mutation/update unsupported boundary、Range/Txn/Delete/Compact generated matrix、
+  create_revision/version preservation tests、future revision error mapping、HTTP health/version
+  boundary、TLS listener tests、etcdctl compatibility docs 和 production readyz/count probes 固定。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3873 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
