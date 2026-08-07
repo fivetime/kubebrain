@@ -41845,6 +41845,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   request timeout/error mapping tests 和 production readyz/count probes 固定。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3886 与上述 commit ID；本轮不修改 runtime。
 
+- A3887 固定 upstream pre-0.1/v0.x version、join redirect、machines namespace、keyword guard、
+  legacy tree-store watch/TTL/index、HTTP error/redirect、TLS split 与 raft snapshot public
+  boundary 审计。对照 `/root/etcd` commit `ab9c0448c`、`a7deba0f9`、
+  `d0e9449ba`、`d239e5e0d`、`793d5187a`、`09cfd8929`、`63ba16f51`、
+  `10b5bc987`、`06c9f1893`、`66f4e0aa1`、`9b8c5b052`、`7ea4ae869`、
+  `0ebd133a0`、`aa3f0b3a2`、`9ebc5b1a0`、`cc428c4e8`、`79966b655`、
+  `612fcf120`、`69f8b8693`、`00157ccdc`、`e8b636b64`、`0c2ffa84a`、
+  `d4e097df6`、`d2382c232`、`749a89d5a`、`8309c235d`、`268ba2592`、
+  `f470702b8`、`ac945c77d`、`76ef446ba`、`9dc51d041`、`0aa70e125`、
+  `8fe8711d8`、`4b9b5d806`、`89bacedf`、`880cd71df`、`45af72c94`、
+  `8af746ef6`、`931afb939`、`2eda27e9f`、`a3173bfd3`、`dc3844a1f`、
+  `0f22918e2`、`631d24791`、`8244113a3`、`f87839999`、`93c96b381`、
+  `b02a7d8bb`、`6edce1098`、`ab285a90b`、`f6b3d8a2a`、`e211554b9`、
+  `b9a30986b`、`047f8ab6a`、`eef6f45e0`、`cff78e2e5`、`5681e1a9d`、
+  `c2f436a58`、`f67115b93`、`e3d556c31`、`fcb78ed5c`、`122869438`、
+  `58e7b456b`、`30da72623`、`74650431e`、`9ad8c8534`、`e4eb80843`、
+  `e832f143d`、`4b4a7c497`、`71c0ffec3`、`2e679d257`、`b9d789fb8`、
+  `4ff786b4a`、`e9ac8b1b9`、`1f57788f1` 与 `20ca21a3f`：官方最早期实现收敛
+  generated/tag version、URL parsing and join redirect、watcher error names、snapshot clone/path
+  and watcher clearing、root write guard、previous-machine rejoin、RawGet response、`/version`
+  and basic stats、JSON 404 errors、CPU profile flag、`/_etcd/machines` keyword namespace、
+  max-size join rejection、keyword set/test-and-set guard、machines handler、directory write
+  rejection、JSON error map、merged get/list、scheme-string TLS config、HTTP timeout、join
+  cluster machine-list parsing and network errors、client/raft handler split、test-and-set command、
+  307/302 redirect experiments、list and sorted traverse、POST body parsing、leader-election
+  unavailable response、watch `sinceIndex`、watcher index fixes、TTL in response、store command
+  index、client/server port split、separate client/server TLS material、not-leader 503、join-only
+  redirect policy、TLS feature bootstrap、expiration recovery and bug fixes、snapshot trigger、
+  initial watch/delete notification 和 initial tree store。KubeBrain 的 DBaaS public contract 不
+  承诺 upstream pre-0.1/v0.x HTTP key API、`/_etcd/machines` internal namespace、legacy join
+  redirect semantics、tree-store physical snapshot、raft transport/TLS wire 或 old CLI/version
+  generation semantics；等价风险由 v3 Lease TTL/expiry/revoke tests、Watch since-revision/
+  cancel/progress/prefix/slow-consumer tests、KV/Txn generated differential、Range sorted
+  traversal/revision tests、HTTP gateway contract、CORS/TLS/timeout/error tests、logical backup/
+  restore docs、metrics/version/readyz docs and probes 和 production readyz/count probes 固定。
+  新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3887 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
