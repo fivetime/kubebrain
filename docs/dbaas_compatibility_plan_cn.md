@@ -41634,6 +41634,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   request timeout/error mapping tests 和 production readyz/count probes 固定。新增
   `TestRecentUpstreamAuditIsRecorded` 钉住 A3878 与上述 commit ID；本轮不修改 runtime。
 
+- A3879 固定 upstream early v2 stats/leader/store stats、TLS/proxy/listener flags、discovery、
+  v2 keys watch/TTL/dir/error/CORS 与 process configuration public boundary 审计。对照
+  `/root/etcd` commit `8609acf57`、`9b9e72e2a`、`8168fed82`、
+  `0a8721a70`、`efba919a9`、`e334148a9`、`6d0658c8c`、`765606967`、
+  `99e35554c`、`31264e7eb`、`1177b0753`、`30c7a7f2d`、`682008724`、
+  `6cbc282be`、`120b08872`、`e2d8037de`、`ec7bcbb50`、`9e3d045b2`、
+  `1c11f6a14`、`83137f9eb`、`dd88a08f8`、`11582b0f5`、`1356037fc`、
+  `15798a73d`、`2da1010cf`、`fa762e6b2`、`c82309d2b`、`2b52384e7`、
+  `a6b7f4e5e`、`13c20b1b6`、`2e2cd1240`、`a9caa24f8`、`ddc30c0a3`、
+  `172a32e5e`、`a299e92df`、`4649a2809`、`73504dca4`、`b94d0281d`、
+  `27813599a`、`f2d3d90b6`、`5441c6aa5`、`1a36b53f1`、`6e782b0e6`、
+  `f0789e734`、`40c19e525`、`936ecd097`、`67e57ffca` 与 `d9cfc35be`：
+  官方收敛 peer/server/leader/store stats endpoint、default data-dir/name behavior、TLS
+  minimum version and TLSInfo client/server config、malformed form handling、early member
+  management docs/PUT/DELETE and machines→members rename、discovery decision/hookup/warnings、
+  initial-cluster/initial-cluster-state and deprecated peers flags、watch `etcd-index`
+  exposure、URL parsing/port validation、`/v2/machines` client URL response、TTL empty/unset/zero、
+  `dir` parameter、version flag、legacy v0.4.6 flag deprecation、v2 error code docs、empty
+  `prevValue` rejection、streaming watch timeout handling、proxy TLS/readonly mode、client/peer
+  TLS flags、`X-Etcd-Index` header、CORS、bind-addr validation、env-var config、multi client
+  listeners、client/peer listener split 和 per-endpoint method checks。KubeBrain 不移植 upstream
+  v2 keys/member/proxy HTTP surface 或 legacy process flags；DBaaS public contract 由 generated
+  v3 gateway/watch/timeout differential、`/health`/`/version` handler tests、CORS/HostWhitelist
+  tests、endpoint TLS/mTLS/CA reload/readiness tests、metrics/debug/readyz docs and probes、
+  Member/Status unsupported mutation boundary、request timeout/error mapping tests 和 production
+  readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3879 与上述
+  commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
