@@ -427,6 +427,35 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status version envelope invalid: ${status_version_violations}" >&2
     exit 1
   fi
+  status_leader_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | ($item.Status.leader // $item.Status.leader_id // $item.Status.leaderId) as $leader
+        | (
+            if $leader == null then
+              empty
+            elif (($leader | type) != "number") then
+              "not_number"
+            elif ($leader != ($leader | floor)) then
+              "not_integer"
+            elif ($leader <= 0) then
+              "not_positive"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_leader_violations" ]]; then
+    echo "status leader envelope invalid: ${status_leader_violations}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"

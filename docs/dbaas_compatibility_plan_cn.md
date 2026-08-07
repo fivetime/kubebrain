@@ -42197,6 +42197,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 malformed status version 覆盖；
   本轮不修改 runtime。
 
+- A3938 固定 Status leader envelope 基本形态：`endpoint status -w json` 暴露
+  `Status.leader` 时必须是正 JSON integer，避免 etcdctl endpoint status 表格把 0、
+  字符串或小数 leader ID 当成合法集群诊断。`validate-dataplane-readonly.sh` 新增
+  status leader envelope fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
+  non-positive status leader 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
