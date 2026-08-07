@@ -259,13 +259,12 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
-      def field($s; $name1; $name2): ($s[$name1] // $s[$name2] // 0);
       [
-        ([.[].Status.header | (.cluster_id // .clusterId // 0)] | unique | join(",")),
-        ([.[].Status.header | (.member_id // .memberId // 0)] | join(",")),
-        ([.[].Status.header | (.member_id // .memberId // 0)] | unique | join(",")),
-        ([.[].Status.header | (.revision // 0)] | min),
-        ([.[].Status | (.dbSize // .db_size // .dbSizeInUse // .db_size_in_use // 0)] | min)
+        ([.[].Status.header | (.cluster_id // .clusterId)] | unique | join(",")),
+        ([.[].Status.header | (.member_id // .memberId)] | join(",")),
+        ([.[].Status.header | (.member_id // .memberId)] | unique | join(",")),
+        ([.[].Status.header | .revision] | min),
+        ([.[].Status | (.dbSize // .db_size // .dbSizeInUse // .db_size_in_use)] | min)
       ] | @tsv
     end
   ')"
@@ -434,8 +433,8 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
         .[]
         | {
             endpoint: (.Endpoint // "unknown"),
-            revision: (.HashKV.header.revision // 0),
-            compact_revision: (.HashKV.compact_revision // .HashKV.compactRevision // 0)
+            revision: .HashKV.header.revision,
+            compact_revision: (.HashKV.compact_revision // .HashKV.compactRevision)
           }
         | select(.compact_revision > .revision)
         | "\(.endpoint): compact=\(.compact_revision), hash=\(.revision)"
@@ -451,12 +450,12 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
-        ([.[].HashKV.header | (.cluster_id // .clusterId // 0)] | unique | join(",")),
-        ([.[].HashKV.header | (.member_id // .memberId // 0)] | join(",")),
-        ([.[].HashKV.header | (.member_id // .memberId // 0)] | unique | join(",")),
-        ([.[].HashKV | (.hash // 0)] | unique | join(",")),
-        ([.[].HashKV.header | (.revision // 0)] | min),
-        ([.[].HashKV | (.compact_revision // .compactRevision // 0)] | min)
+        ([.[].HashKV.header | (.cluster_id // .clusterId)] | unique | join(",")),
+        ([.[].HashKV.header | (.member_id // .memberId)] | join(",")),
+        ([.[].HashKV.header | (.member_id // .memberId)] | unique | join(",")),
+        ([.[].HashKV | .hash] | unique | join(",")),
+        ([.[].HashKV.header | .revision] | min),
+        ([.[].HashKV | (.compact_revision // .compactRevision)] | min)
       ] | @tsv
     end
   ')"

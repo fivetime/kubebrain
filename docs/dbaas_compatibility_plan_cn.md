@@ -42140,6 +42140,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing
   hashkv revision 覆盖；本轮不修改 runtime。
 
+- A3929 收紧 Status/HashKV 诊断汇总阶段的默认值解析：前置 envelope 校验已经显式要求
+  cluster/member/revision/hash/compact/dbSize 字段存在，汇总 jq 不再保留 `// 0` 默认值，
+  避免后续维护绕过必填校验时重新把缺失字段解释为 0。新增 camelcase diagnostic
+  envelopes 成功回归，确认 `clusterId`/`memberId`/`compactRevision` 等兼容别名仍被接受；
+  本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -40,6 +40,24 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "dataplane readonly gate passed",
 		},
 		{
+			name: "passes camelcase diagnostic envelopes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"clusterId":123,"memberId":456,"revision":7},"db_size":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"clusterId":123,"memberId":456,"revision":7},"hash":111,"compactRevision":3}}]`,
+			},
+			wantOK:     true,
+			wantOutput: "dataplane readonly gate passed",
+		},
+		{
 			name: "rejects non ready replica",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
