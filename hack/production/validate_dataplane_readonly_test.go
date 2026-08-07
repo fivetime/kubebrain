@@ -180,6 +180,19 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status numeric fields must be JSON numbers",
 		},
 		{
+			name: "rejects fractional status numeric fields",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123.5,"member_id":456.5,"revision":7.5},"dbSize":99.5}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "status numeric fields must be JSON integers",
+		},
+		{
 			name: "rejects status response missing header",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},

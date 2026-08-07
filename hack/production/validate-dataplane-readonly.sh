@@ -277,6 +277,29 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status numeric fields must be JSON numbers: ${status_numeric_type_violations}" >&2
     exit 1
   fi
+  status_integer_type_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      def noninteger: . != floor;
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | [
+            (if (($item.Status.header.cluster_id // $item.Status.header.clusterId) | noninteger) then "cluster_id" else empty end),
+            (if (($item.Status.header.member_id // $item.Status.header.memberId) | noninteger) then "member_id" else empty end),
+            (if ($item.Status.header.revision | noninteger) then "revision" else empty end),
+            (if (($item.Status.dbSize // $item.Status.db_size // $item.Status.dbSizeInUse // $item.Status.db_size_in_use) | noninteger) then "dbSize" else empty end)
+          ] as $fields
+        | select(($fields | length) > 0)
+        | "\($endpoint): \($fields | join(","))"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_integer_type_violations" ]]; then
+    echo "status numeric fields must be JSON integers: ${status_integer_type_violations}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"

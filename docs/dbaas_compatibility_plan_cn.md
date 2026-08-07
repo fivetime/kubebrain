@@ -42158,6 +42158,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 hashkv numeric fields JSON number fail-closed 校验，`TestValidateDataplaneReadonlyProbe`
   新增 string hashkv numeric fields 覆盖；本轮不修改 runtime。
 
+- A3932 固定 Status 诊断数值字段的整数边界：`endpoint status -w json` 返回的
+  cluster/member/revision/dbSize 必须是 JSON integer，不能让 `123.5` 这类小数型
+  JSON number 进入 status 汇总。`validate-dataplane-readonly.sh` 新增 status numeric
+  fields JSON integer fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
+  fractional status numeric fields 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
