@@ -42333,6 +42333,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 camelcase status leader summary 覆盖，证明 `leaderId` 也会进入
   `status_leader_ids=<unique>` 摘要并接受正整数健康校验；本轮不修改 runtime。
 
+- A3959 固定只读 gate 对 Status synthetic Raft index 成对出现的 fail-closed 判定：
+  `validate-dataplane-readonly.sh` 已要求 `Status.raftIndex`/`raft_index` 与
+  `Status.raftAppliedIndex`/`raft_applied_index` 要么同时缺省、要么同时存在，防止生产摘要基于
+  半个 Raft 诊断 envelope 得出错误结论。`TestValidateDataplaneReadonlyProbe` 新增 raft index
+  missing applied pair 拒绝覆盖，证明只返回 `raftIndex` 时会触发
+  `status raft index envelope invalid`；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
