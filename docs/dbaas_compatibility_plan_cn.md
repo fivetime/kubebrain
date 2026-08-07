@@ -42475,6 +42475,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `has("clusterId")` 与 `has("member_id")`/`has("memberId")` 显式读取，并同步修正
   HashKV identity 必填、数值类型、整数和摘要路径；新增 boolean hashkv header identity
   envelope 拒绝覆盖。
+- A3984 固定只读 gate 对 Status version string envelope 的 boolean 边界：
+  etcd `StatusResponse.Version` 是 server version 字符串，显式 `version:false` 不能进入通过
+  摘要。`validate-dataplane-readonly.sh` 已在 envelope 校验中拒绝非字符串 version，本轮同步把
+  `status_version=<unique>` 摘要路径改成 `has("version")` 显式读取，并新增 boolean status
+  version envelope 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 

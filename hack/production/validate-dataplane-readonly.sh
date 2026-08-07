@@ -632,7 +632,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status.header | .revision] | min),
         ([.[].Status | if has("dbSize") then .dbSize elif has("db_size") then .db_size else empty end] | min),
         ([.[].Status | if has("dbSizeInUse") then .dbSizeInUse elif has("db_size_in_use") then .db_size_in_use else empty end] | if length == 0 then "-" else min end),
-        ([.[].Status.version // empty] | unique | join(",") | if . == "" then "-" else . end),
+        ([.[].Status | if has("version") then .version else empty end] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | if has("storageVersion") then .storageVersion elif has("storage_version") then .storage_version else empty end] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | if has("dbSizeQuota") then .dbSizeQuota elif has("db_size_quota") then .db_size_quota else empty end] | if length == 0 then "-" else min end),
         ([.[].Status | if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else empty end] | unique | map(tostring) | join(",") | if . == "" then "-" else . end),
