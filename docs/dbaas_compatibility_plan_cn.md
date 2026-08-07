@@ -41930,6 +41930,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 status endpoint set mismatch fail-closed
   覆盖；本轮不修改 runtime。
 
+- A3905 补齐 A3893 的 Status 响应数量 fail-closed 回归：多 endpoint 只读探针要求
+  `endpoint status` 返回条目数等于 `STATUS_ENDPOINTS` 中的 endpoint 数量，漏返回任一
+  endpoint 都不能继续用剩余响应的 cluster ID/member ID 判定通过。新增
+  `TestValidateDataplaneReadonlyProbe` 的 status endpoint count mismatch 覆盖，明确区分
+  “少响应”和“响应集合漂移”两条错误路径；本轮不修改 runtime。
+
 - A3894 将 A3891-A3893 的多 endpoint 只读覆盖从 Status 扩展到 KV Range 路径：
   `validate-dataplane-readonly.sh` 现在会对 `STATUS_ENDPOINTS` 中的每个 endpoint 逐一运行
   `prefix-tool ACTION=count`，要求每个结果都是非负整数、配置 `EXPECTED_PREFIX_COUNT` 时都

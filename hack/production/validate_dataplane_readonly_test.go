@@ -316,6 +316,24 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status endpoint set mismatch",
 		},
 		{
+			name: "rejects status endpoint count mismatch",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz: "ok",
+			count:  "4",
+			statusJSON: `[
+				{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}
+			]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379",
+			},
+			wantOutput: "status endpoint count mismatch",
+		},
+		{
 			name: "rejects empty status endpoint entry before commands",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
