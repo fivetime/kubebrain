@@ -42359,6 +42359,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 fractional status raft term envelope 拒绝覆盖，证明小数 raft term 会触发
   `status raft term envelope invalid`；本轮不修改 runtime。
 
+- A3963 固定只读 gate 对 Status synthetic Raft index JSON integer 类型的 fail-closed 判定：
+  `validate-dataplane-readonly.sh` 不能接受 `raftIndex`/`raftAppliedIndex` 为 JSON number
+  但非整数的 `7.5`，避免生产摘要把无效 Raft index 当作可审计的 durable revision。
+  `TestValidateDataplaneReadonlyProbe` 新增 fractional status raft index envelope 拒绝覆盖，
+  证明小数 index/applied index 会触发 `status raft index envelope invalid`；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
