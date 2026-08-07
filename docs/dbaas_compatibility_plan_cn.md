@@ -41814,6 +41814,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   and production readyz/count probes 固定。新增 `TestRecentUpstreamAuditIsRecorded` 钉住 A3885
   与上述 commit ID；本轮不修改 runtime。
 
+- A3886 固定 upstream earliest filesystem store、v1/v2 HTTP contract、stats、version/TLS/
+  listen-url、raft peer/version 与 snapshot public boundary 审计。对照 `/root/etcd` commit
+  `951d46791`、`a568c6dc7`、`a8ff1b27d`、`2022c4bce`、`09414016c`、
+  `232f83f99`、`a3545a7ff`、`3ff100321`、`643a92a49`、`38489bd84`、
+  `1a7b3e8e0`、`43cb2a353`、`effc8285f`、`9065c2e4f`、`f50cf0497`、
+  `bd8ec6d67`、`948044093`、`ea4ab2a42`、`b366f1044`、`450d0eb0d`、
+  `227d79e2b`、`23775dc77`、`b8967bc7d`、`2f5015552`、`bfeed190e`、
+  `351e84aec`、`6108f8536`、`a543d644b`、`6345e02d`、`4f436ae70`、
+  `23995ffc5`、`896c944c7`、`a97590ff5`、`dd2f856d6`、`798d52e69`、
+  `64e6d5475`、`57ef6e9f5`、`2c9e90d6a`、`53b2038d`、`f490fba69`、
+  `6bdb9af7f`、`ac9801f57`、`969c8ba8c`、`928781aaa`、`5a88da1d3`、
+  `434b0045d`、`a86e3aa7d`、`be85442e5`、`466229cf4`、`3be13a38f`、
+  `eb8f1dc6e`、`8c09f9888`、`9111617f3`、`6610fc39c`、`0e5ee2742`、
+  `817466951` 与 `328b92e8e`：官方早期实现收敛 coreos/go-log 切换、filesystem
+  stats、snapshot restart peerStats nil guard、`wait_index`、root delete guard、consistent get、
+  new store system、recursive sorted listing、leader-only peer stats、新 error code system、
+  directory TTL update、Create/Update/Delete event constants、delete watch、create directory、
+  recursive watch/get、blank `prevValue` POST test-and-set、test-and-set、hidden node、CORS、
+  listen host/default advertised IPs、PUT-as-POST compatibility、raft recvQueue/serverStats、
+  whole-cluster restart guard、member remove/join、mixed raft version rejection、join command
+  version、`/version` API version、concurrent GET locking、remoteAddr logging、default name、
+  snapshot trigger、TLS fixture/verification/scheme/json/sanitizeURL、separate web mux、explicit
+  name error 和 root dir get。KubeBrain 的 DBaaS public contract 不承诺 upstream filesystem
+  store、legacy v1/v2 HTTP key API、raft peer wire/version negotiation、physical snapshot format、
+  dashboard/web mux 或 old CLI listen/config semantics；等价风险由 v3 KV/Txn/Watch/Lease
+  generated differential、Range sort/revision tests、Watch recursive-equivalent prefix/cancel/
+  progress/slow-consumer tests、Lease TTL/expiry/revoke tests、HTTP gateway generated contract、
+  metrics/debug/readyz docs and probes、CORS/TLS handler tests、logical backup/snapshot docs、
+  request timeout/error mapping tests 和 production readyz/count probes 固定。新增
+  `TestRecentUpstreamAuditIsRecorded` 钉住 A3886 与上述 commit ID；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
