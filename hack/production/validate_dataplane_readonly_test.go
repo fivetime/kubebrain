@@ -474,6 +474,19 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "status member ID must be positive",
 		},
 		{
+			name: "rejects missing status member id",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "status member ID is required",
+		},
+		{
 			name: "rejects negative status revision",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},

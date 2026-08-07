@@ -42110,6 +42110,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing
   status revision 覆盖；本轮不修改 runtime。
 
+- A3924 固定 Status 诊断元素的 member ID 必填边界：`endpoint status -w json` 返回的
+  `Status.header` 必须带 `member_id`/`memberId`，不能把缺失成员身份的畸形诊断元素通过
+  `// 0` 混同为非法成员 0。`validate-dataplane-readonly.sh` 新增缺失 status member ID
+  端点 fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增 missing status
+  member id 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

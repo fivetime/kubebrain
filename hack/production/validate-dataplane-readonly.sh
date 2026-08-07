@@ -225,6 +225,21 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status revision is required for endpoints: ${status_revision_missing}" >&2
     exit 1
   fi
+  status_member_id_missing="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[]
+        | select((.Status.header.member_id // .Status.header.memberId) == null)
+        | (.Endpoint // "unknown")
+      ] | join(",")
+    end
+  ')"
+  if [[ -n "$status_member_id_missing" ]]; then
+    echo "status member ID is required for endpoints: ${status_member_id_missing}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
