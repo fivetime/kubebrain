@@ -42031,6 +42031,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   作为有效生产只读证据。新增 `TestValidateDataplaneReadonlyProbe` 的 negative status
   db size fail-closed 覆盖；本轮不修改 runtime。
 
+- A3910 固定 HashKV 诊断 hash revision 的非负边界：`endpoint hashkv` 响应 header
+  revision 必须是非负整数，即使 hash 与 cluster/member 身份都匹配，也不能把负 revision
+  的畸形诊断结果作为有效生产只读证据。新增 `TestValidateDataplaneReadonlyProbe` 的
+  negative hashkv revision fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
