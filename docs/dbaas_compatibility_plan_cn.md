@@ -41951,6 +41951,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   探针在不同环境中表现不同。`TestValidateDataplaneReadonlyProbe` 新增 invalid probe
   timeout fail-closed 覆盖；本轮不修改 runtime。
 
+- A3897 修正 A3894 引入的覆盖边界：当生产命令把 `ENDPOINT` 配成公共/bootstrap
+  client 入口、`STATUS_ENDPOINTS` 配成各实例 endpoint 时，KV Range/count 门禁现在覆盖
+  `ENDPOINT ∪ STATUS_ENDPOINTS` 去重后的并集，而不是只覆盖 `STATUS_ENDPOINTS`。这避免
+  公共入口 Range/count 已漂移或不可用、但各实例 Status/Range 正常时误判数据面对外可用。
+  `TestValidateDataplaneReadonlyProbe` 新增 bootstrap endpoint count drift with overridden
+  status endpoints fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

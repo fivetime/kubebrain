@@ -447,10 +447,10 @@ PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
 ```
 
-该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 必须返回 `ok`、以及对每个
-`STATUS_ENDPOINTS` endpoint 执行 `prefix-tool ACTION=count` 的非负整数结果；配置
-`EXPECTED_PREFIX_COUNT` 时还会固定每个 endpoint 的期望 count，并要求各 endpoint 之间
-count 一致。配置 `EXPECTED_STATUS_CLUSTER_ID` 时还会通过 `etcdctl endpoint status -w json`
+该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 必须返回 `ok`、以及对 `ENDPOINT` 与
+`STATUS_ENDPOINTS` 并集中的每个 endpoint 执行 `prefix-tool ACTION=count` 的非负整数结果；
+配置 `EXPECTED_PREFIX_COUNT` 时还会固定每个 endpoint 的期望 count，并要求各 endpoint
+之间 count 一致。配置 `EXPECTED_STATUS_CLUSTER_ID` 时还会通过 `etcdctl endpoint status -w json`
 固定运行时 cluster ID，并要求 member ID 为正、revision/dbSize 为非负；配置
 `STATUS_ENDPOINTS` 时会对逗号分隔的每个 endpoint 做同一组 Status 校验，并要求返回的
 `Endpoint` 集合与请求集合完全一致、member ID 集合无重复；空 endpoint 或重复 endpoint

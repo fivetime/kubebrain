@@ -73,6 +73,15 @@ for status_endpoint in "${status_endpoint_array[@]}"; do
   fi
   seen_status_endpoints[$status_endpoint]=1
 done
+prefix_endpoint_array=("$ENDPOINT")
+declare -A seen_prefix_endpoints=()
+seen_prefix_endpoints[$ENDPOINT]=1
+for status_endpoint in "${status_endpoint_array[@]}"; do
+  if [[ -z "${seen_prefix_endpoints[$status_endpoint]:-}" ]]; then
+    prefix_endpoint_array+=("$status_endpoint")
+    seen_prefix_endpoints[$status_endpoint]=1
+  fi
+done
 run_with_probe_timeout() {
   "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"
 }
@@ -105,7 +114,7 @@ fi
 
 prefix_count=""
 first_prefix_endpoint=""
-for prefix_endpoint in "${status_endpoint_array[@]}"; do
+for prefix_endpoint in "${prefix_endpoint_array[@]}"; do
   current_prefix_count="$(ENDPOINT="$prefix_endpoint" ACTION=count PREFIX="$PREFIX" TIMEOUT="$PROBE_TIMEOUT" \
     "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/backup/cmd/prefix-tool")"
   current_prefix_count="$(printf '%s' "$current_prefix_count" | tr -d '[:space:]')"
