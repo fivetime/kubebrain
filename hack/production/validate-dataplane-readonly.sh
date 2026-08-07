@@ -452,6 +452,33 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       exit 1
     fi
   fi
+  status_storage_version_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | ($item.Status.storageVersion // $item.Status.storage_version) as $storage_version
+        | (
+            if $storage_version == null then
+              empty
+            elif (($storage_version | type) != "string") then
+              "not_string"
+            elif ($storage_version | test("^[0-9]+\\.[0-9]+$") | not) then
+              "not_major_minor"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_storage_version_violations" ]]; then
+    echo "status storageVersion envelope invalid: ${status_storage_version_violations}" >&2
+    exit 1
+  fi
   status_leader_violations="$(printf '%s' "$status_json" | "$JQ" -r '
     if type != "array" then
       "invalid"
@@ -505,7 +532,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       [
         ([.[].Status.header | (.cluster_id // .clusterId)] | unique | join(",")),
@@ -515,6 +542,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status | (.dbSize // .db_size)] | min),
         ([.[].Status | (.dbSizeInUse // .db_size_in_use) // empty] | if length == 0 then "-" else min end),
         ([.[].Status.version // empty] | unique | join(",") | if . == "" then "-" else . end),
+        ([.[].Status | (.storageVersion // .storage_version) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.leader // .leader_id // .leaderId) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftTerm // .raft_term) // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.raftIndex // .raft_index) // empty] | if length == 0 then "-" else min end),
@@ -522,7 +550,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r status_cluster_ids status_member_ids unique_status_member_ids min_status_revision min_status_db_size min_status_db_size_in_use status_versions status_leader_ids status_raft_terms min_status_raft_index min_status_raft_applied_index <<<"$status_values"
+  IFS=$'\t' read -r status_cluster_ids status_member_ids unique_status_member_ids min_status_revision min_status_db_size min_status_db_size_in_use status_versions status_storage_versions status_leader_ids status_raft_terms min_status_raft_index min_status_raft_applied_index <<<"$status_values"
   if [[ "$status_cluster_ids" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${status_cluster_ids}" >&2
     exit 1
@@ -558,6 +586,9 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_summary+=", status_errors=empty"
   if [[ "$status_versions" != "-" ]]; then
     status_summary+=", status_version=${status_versions}"
+  fi
+  if [[ "$status_storage_versions" != "-" ]]; then
+    status_summary+=", status_storage_versions=${status_storage_versions}"
   fi
   if [[ "$status_leader_ids" != "-" ]]; then
     status_summary+=", status_leader_ids=${status_leader_ids}"

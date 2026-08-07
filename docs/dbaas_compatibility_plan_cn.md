@@ -42382,6 +42382,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数值类型与 `min_status_db_size=<n>` 摘要也只基于 dbSize；`TestValidateDataplaneReadonlyProbe`
   新增 status db size in use without db size 拒绝覆盖，防止只有 `dbSizeInUse` 的畸形
   Status payload 继续通过。
+- A3967 固定只读 gate 对 Status storageVersion envelope 的可选 fail-closed 判定：
+  etcd `StatusResponse.StorageVersion` 是 db file schema 版本字符串，格式来自 major.minor
+  storage version（如 `3.6`），不是完整 server semver。`validate-dataplane-readonly.sh`
+  现在允许生产 status 暂不暴露该字段，但一旦出现 `storageVersion`/`storage_version`，必须是
+  `X.Y` 字符串，并在通过摘要输出 `status_storage_versions=<unique>`；新增 status storage
+  version summary 与 malformed status storage version 拒绝覆盖。
 
 ### P2：运维兼容和长期验证
 
