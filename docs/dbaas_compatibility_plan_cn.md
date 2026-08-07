@@ -42178,6 +42178,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 mismatched status raft term 覆盖；本轮不修改
   runtime。
 
+- A3935 固定 Status raft index envelope 基本不变量：`endpoint status -w json` 暴露
+  `Status.raftIndex` 和 `Status.raftAppliedIndex` 时，两者必须成对存在、为非负 JSON
+  integer，且 applied index 不得大于 raft index。`validate-dataplane-readonly.sh` 新增
+  status raft index envelope fail-closed 校验，`TestValidateDataplaneReadonlyProbe` 新增
+  applied index beyond raft index 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

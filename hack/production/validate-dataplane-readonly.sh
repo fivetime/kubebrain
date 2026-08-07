@@ -334,6 +334,40 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "status raft term envelope invalid: ${status_raft_term_violations}" >&2
     exit 1
   fi
+  status_raft_index_violations="$(printf '%s' "$status_json" | "$JQ" -r '
+    if type != "array" then
+      "invalid"
+    else
+      [
+        .[] as $item
+        | ($item.Endpoint // "unknown") as $endpoint
+        | ($item.Status.raftIndex // $item.Status.raft_index) as $raft_index
+        | ($item.Status.raftAppliedIndex // $item.Status.raft_applied_index) as $applied_index
+        | (
+            if ($raft_index == null and $applied_index == null) then
+              empty
+            elif ($raft_index == null or $applied_index == null) then
+              "missing_pair"
+            elif (($raft_index | type) != "number" or ($applied_index | type) != "number") then
+              "not_number"
+            elif ($raft_index != ($raft_index | floor) or $applied_index != ($applied_index | floor)) then
+              "not_integer"
+            elif ($raft_index < 0 or $applied_index < 0) then
+              "negative"
+            elif ($applied_index > $raft_index) then
+              "applied_beyond_raft_index"
+            else
+              empty
+            end
+          ) as $violation
+        | "\($endpoint): \($violation)"
+      ] | join(";")
+    end
+  ')"
+  if [[ -n "$status_raft_index_violations" ]]; then
+    echo "status raft index envelope invalid: ${status_raft_index_violations}" >&2
+    exit 1
+  fi
   status_values="$(printf '%s' "$status_json" | "$JQ" -r '
     if (type != "array" or length == 0) then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
