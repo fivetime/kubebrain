@@ -200,6 +200,23 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "hashkv cluster ID mismatch",
 		},
 		{
+			name: "rejects hashkv response missing hashkv",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379"}]`,
+			},
+			wantOutput: "hashkv cluster ID mismatch",
+		},
+		{
 			name: "rejects duplicate hashkv member ids across endpoints",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
