@@ -42340,6 +42340,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   missing applied pair 拒绝覆盖，证明只返回 `raftIndex` 时会触发
   `status raft index envelope invalid`；本轮不修改 runtime。
 
+- A3960 固定只读 gate 对 Status raft term 成对出现的 fail-closed 判定：
+  `validate-dataplane-readonly.sh` 已要求 `Status.header.raft_term`/`raftTerm` 与 top-level
+  `Status.raftTerm`/`raft_term` 要么同时缺省、要么同时存在且相等，防止生产摘要基于半个
+  Raft term envelope 得出错误结论。`TestValidateDataplaneReadonlyProbe` 新增 raft term missing
+  top level pair 拒绝覆盖，证明只返回 header raft term 时会触发
+  `status raft term envelope invalid`；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
