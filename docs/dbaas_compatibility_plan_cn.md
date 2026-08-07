@@ -42376,6 +42376,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestValidateDataplaneReadonlyProbe` 新增 fractional status db size in use envelope
   拒绝覆盖，证明小数 in-use size 会触发 `status dbSizeInUse envelope invalid`；
   本轮不修改 runtime。
+- A3966 固定只读 gate 对 Status dbSize 与 dbSizeInUse 独立字段语义的 fail-closed
+  判定：etcd `StatusResponse` 同时定义 `dbSize` 与 `dbSizeInUse`，后者不能作为前者的
+  兜底替代。`validate-dataplane-readonly.sh` 现在要求 `Status.dbSize`/`db_size` 必须存在，
+  数值类型与 `min_status_db_size=<n>` 摘要也只基于 dbSize；`TestValidateDataplaneReadonlyProbe`
+  新增 status db size in use without db size 拒绝覆盖，防止只有 `dbSizeInUse` 的畸形
+  Status payload 继续通过。
 
 ### P2：运维兼容和长期验证
 

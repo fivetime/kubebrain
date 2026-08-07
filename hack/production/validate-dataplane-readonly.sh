@@ -195,7 +195,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     else
       [
         .[]
-        | select((.Status.dbSize // .Status.db_size // .Status.dbSizeInUse // .Status.db_size_in_use) == null)
+        | select((.Status.dbSize // .Status.db_size) == null)
         | (.Endpoint // "unknown")
       ] | join(",")
     end
@@ -275,7 +275,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
             (if ((($item.Status.header.cluster_id // $item.Status.header.clusterId) | type) != "number") then "cluster_id" else empty end),
             (if ((($item.Status.header.member_id // $item.Status.header.memberId) | type) != "number") then "member_id" else empty end),
             (if (($item.Status.header.revision | type) != "number") then "revision" else empty end),
-            (if ((($item.Status.dbSize // $item.Status.db_size // $item.Status.dbSizeInUse // $item.Status.db_size_in_use) | type) != "number") then "dbSize" else empty end)
+            (if ((($item.Status.dbSize // $item.Status.db_size) | type) != "number") then "dbSize" else empty end)
           ] as $fields
         | select(($fields | length) > 0)
         | "\($endpoint): \($fields | join(","))"
@@ -298,7 +298,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
             (if (($item.Status.header.cluster_id // $item.Status.header.clusterId) | noninteger) then "cluster_id" else empty end),
             (if (($item.Status.header.member_id // $item.Status.header.memberId) | noninteger) then "member_id" else empty end),
             (if ($item.Status.header.revision | noninteger) then "revision" else empty end),
-            (if (($item.Status.dbSize // $item.Status.db_size // $item.Status.dbSizeInUse // $item.Status.db_size_in_use) | noninteger) then "dbSize" else empty end)
+            (if (($item.Status.dbSize // $item.Status.db_size) | noninteger) then "dbSize" else empty end)
           ] as $fields
         | select(($fields | length) > 0)
         | "\($endpoint): \($fields | join(","))"
@@ -512,7 +512,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         ([.[].Status.header | (.member_id // .memberId)] | join(",")),
         ([.[].Status.header | (.member_id // .memberId)] | unique | join(",")),
         ([.[].Status.header | .revision] | min),
-        ([.[].Status | (.dbSize // .db_size // .dbSizeInUse // .db_size_in_use)] | min),
+        ([.[].Status | (.dbSize // .db_size)] | min),
         ([.[].Status | (.dbSizeInUse // .db_size_in_use) // empty] | if length == 0 then "-" else min end),
         ([.[].Status.version // empty] | unique | join(",") | if . == "" then "-" else . end),
         ([.[].Status | (.leader // .leader_id // .leaderId) // empty] | unique | join(",") | if . == "" then "-" else . end),
