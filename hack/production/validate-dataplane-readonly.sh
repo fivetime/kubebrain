@@ -51,6 +51,23 @@ for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS; do
     exit 2
   fi
 done
+if [[ "$STATUS_ENDPOINTS" == ,* || "$STATUS_ENDPOINTS" == *, || "$STATUS_ENDPOINTS" == *,,* ]]; then
+  echo "STATUS_ENDPOINTS contains an empty endpoint" >&2
+  exit 2
+fi
+IFS=',' read -r -a status_endpoint_array <<<"$STATUS_ENDPOINTS"
+declare -A seen_status_endpoints=()
+for status_endpoint in "${status_endpoint_array[@]}"; do
+  if [[ -z "$status_endpoint" ]]; then
+    echo "STATUS_ENDPOINTS contains an empty endpoint" >&2
+    exit 2
+  fi
+  if [[ -n "${seen_status_endpoints[$status_endpoint]:-}" ]]; then
+    echo "STATUS_ENDPOINTS must not contain duplicate endpoints: ${status_endpoint}" >&2
+    exit 2
+  fi
+  seen_status_endpoints[$status_endpoint]=1
+done
 
 kubectl_args=()
 if [[ -n "$KUBE_CONTEXT" ]]; then
@@ -93,7 +110,7 @@ fi
 status_summary=""
 if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_json="$(ETCDCTL_API=3 "$ETCDCTL" --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
-  expected_status_endpoints="$(awk -F, '{print NF}' <<<"$STATUS_ENDPOINTS")"
+  expected_status_endpoints="${#status_endpoint_array[@]}"
   status_count="$(printf '%s' "$status_json" | "$JQ" -r 'if type == "array" then length else 0 end')"
   if [[ "$status_count" != "$expected_status_endpoints" ]]; then
     echo "status endpoint count mismatch: expected ${expected_status_endpoints}, got ${status_count}" >&2

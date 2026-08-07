@@ -41918,6 +41918,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   kind 环境只有一个 NodePort client 入口，真实运行继续使用单 endpoint status 校验，Pod
   后端集合由 Kubernetes EndpointSlice/Ready 检查覆盖。本轮不修改 runtime。
 
+- A3892 收紧 A3891 `STATUS_ENDPOINTS` 输入边界：脚本现在在调用 `etcdctl` 前拒绝
+  前导/尾随逗号、连续逗号造成的空 endpoint，以及重复 endpoint，避免把少查、重复查或
+  etcdctl 自身归一化后的输出误判为多 endpoint 身份覆盖。`TestValidateDataplaneReadonlyProbe`
+  新增 empty endpoint 与 duplicate endpoint fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
