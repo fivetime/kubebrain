@@ -42052,6 +42052,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/member 字段提取兜底。新增 `TestValidateDataplaneReadonlyProbe` 的 non array
   hashkv response fail-closed 覆盖；本轮不修改 runtime。
 
+- A3914 固定 Status 诊断元素的 Endpoint 必填边界：`endpoint status -w json` 返回的每个
+  array 元素都必须带非空 `Endpoint`，不能把缺失来源地址的诊断元素交给 cluster/member/
+  revision 校验。新增 `TestValidateDataplaneReadonlyProbe` 的 status response missing
+  endpoint fail-closed 覆盖；本轮不修改 runtime。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
