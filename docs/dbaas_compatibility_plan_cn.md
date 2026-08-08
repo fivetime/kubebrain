@@ -42717,6 +42717,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   version 等于 `EXPECTED_STATUS_VERSION`、cluster version 等于其 major.minor，并要求
   存在 gRPC server handled 指标；同时确认 client `/metrics` 返回 HTTP 404。摘要新增
   `info_metrics=ok` 与 `client_metrics=404`，防止可观测性丢失或 metrics 面意外暴露。
+- A4020 把 HTTP `/debug/vars` expvar 诊断面纳入 KubeBrain 的 info 口兼容面，并继续
+  隔离业务 client 口：上游 `etcdhttp.HandleDebug` 在 `/debug/vars` 暴露
+  `application/json; charset=utf-8` 的 expvar JSON，e2e cmux 测试要求该路径可 GET 且
+  能 JSON 解析。KubeBrain 现在只在 info 口注册 `/debug/vars`，输出 Go expvar 默认
+  `cmdline` 与 `memstats` 等字段，并保留 GET-only 方法边界；生产 gate 在
+  `EXPECTED_DEBUG_VARS_CHECKS=1` 时要求 info `/debug/vars` 为 object、`cmdline` 为 array、
+  `memstats` 为 object，同时确认 client `/debug/vars` 返回 HTTP 404。摘要新增
+  `info_debug_vars=ok` 与 `client_debug_vars=404`，防止运行时诊断面丢失或意外暴露。
 
 ### P2：运维兼容和长期验证
 

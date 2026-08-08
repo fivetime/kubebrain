@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -417,7 +419,8 @@ func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 		// probes at a separate port from gRPC; its preflight GETs /version there
 		// and treats a 404 as a fatal parse error. Serve it on the info port too
 		// so either port satisfies the check.
-		"/version": http.HandlerFunc(s.versionHandler),
+		"/version":    http.HandlerFunc(s.versionHandler),
+		"/debug/vars": http.HandlerFunc(s.debugVarsHandler),
 	}
 	s.addEtcdHealthCheckHandlers(handlers)
 	return withEtcdCORSHandlers(handlers)
@@ -531,6 +534,26 @@ func (s *server) versionHandler(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(respBytes)
+}
+
+func (s *server) debugVarsHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		klog.Warningf("/debug/vars error (status code %d)", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	fmt.Fprint(w, "{\n")
+	first := true
+	expvar.Do(func(kv expvar.KeyValue) {
+		if !first {
+			fmt.Fprint(w, ",\n")
+		}
+		first = false
+		fmt.Fprintf(w, "%q: %s", kv.Key, kv.Value)
+	})
+	fmt.Fprint(w, "\n}\n")
 }
 
 func (s *server) httpHealthHandler(w http.ResponseWriter, req *http.Request) {

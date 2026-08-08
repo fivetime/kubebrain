@@ -835,6 +835,7 @@ func TestEtcdHealthCheckHandlersAvailableOnInfoPort(t *testing.T) {
 	handlers := s.GetInfoHttpHandlers()
 	for _, path := range []string{
 		"/ping",
+		"/debug/vars",
 		"/livez",
 		"/livez/serializable_read",
 		"/readyz",
@@ -845,6 +846,37 @@ func TestEtcdHealthCheckHandlersAvailableOnInfoPort(t *testing.T) {
 	} {
 		require.Contains(t, handlers, path)
 	}
+}
+
+func TestDebugVarsHandlerReturnsEtcdJSONShape(t *testing.T) {
+	handler := (&server{}).GetInfoHttpHandlers()["/debug/vars"]
+	require.NotNil(t, handler)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/debug/vars", nil))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, "application/json; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "*", recorder.Header().Get("Access-Control-Allow-Origin"))
+	require.Contains(t, recorder.Body.String(), "\n")
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.Contains(t, body, "cmdline")
+	require.Contains(t, body, "memstats")
+}
+
+func TestDebugVarsHandlerRejectsNonGet(t *testing.T) {
+	handler := (&server{}).GetInfoHttpHandlers()["/debug/vars"]
+	require.NotNil(t, handler)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/debug/vars", nil))
+
+	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+	require.Equal(t, http.MethodGet, recorder.Header().Get("Allow"))
+	require.Equal(t, "Method Not Allowed\n", recorder.Body.String())
+	require.Equal(t, "text/plain; charset=utf-8", recorder.Header().Get("Content-Type"))
+	require.Equal(t, "nosniff", recorder.Header().Get("X-Content-Type-Options"))
 }
 
 func TestEtcdHealthCheckMetrics(t *testing.T) {

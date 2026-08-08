@@ -27,6 +27,7 @@ EXPECTED_HEALTH_EXCLUDE_CHECKS="${EXPECTED_HEALTH_EXCLUDE_CHECKS:-}"
 EXPECTED_HEALTH_METHOD_CHECKS="${EXPECTED_HEALTH_METHOD_CHECKS:-}"
 EXPECTED_HTTP_HEADER_CHECKS="${EXPECTED_HTTP_HEADER_CHECKS:-}"
 EXPECTED_INFO_METRICS_CHECKS="${EXPECTED_INFO_METRICS_CHECKS:-}"
+EXPECTED_DEBUG_VARS_CHECKS="${EXPECTED_DEBUG_VARS_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -71,6 +72,10 @@ if [[ -n "$EXPECTED_HTTP_HEADER_CHECKS" && "$EXPECTED_HTTP_HEADER_CHECKS" != "1"
 fi
 if [[ -n "$EXPECTED_INFO_METRICS_CHECKS" && "$EXPECTED_INFO_METRICS_CHECKS" != "1" ]]; then
   echo "EXPECTED_INFO_METRICS_CHECKS must be empty or 1" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_DEBUG_VARS_CHECKS" && "$EXPECTED_DEBUG_VARS_CHECKS" != "1" ]]; then
+  echo "EXPECTED_DEBUG_VARS_CHECKS must be empty or 1" >&2
   exit 2
 fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
@@ -209,6 +214,46 @@ expect_info_metrics_boundary() {
   fi
   if [[ "$info_metrics" != *"grpc_server_handled_total{"* ]]; then
     echo "info metrics mismatch: expected grpc_server_handled_total" >&2
+    exit 1
+  fi
+}
+
+expect_debug_vars_boundary() {
+  local client_debug_vars_url="$1"
+  local info_debug_vars_url="$2"
+  local client_response
+  local client_status_line
+  local info_debug_vars_json
+  local info_debug_vars_values
+  local cmdline_type
+  local memstats_type
+
+  client_response="$(run_with_probe_timeout "$CURL" -sS -i "$client_debug_vars_url")"
+  client_status_line="${client_response%%$'\n'*}"
+  if [[ "$client_status_line" != HTTP/*" 404 "* ]]; then
+    echo "client debug vars mismatch: expected HTTP 404, got ${client_status_line}" >&2
+    exit 1
+  fi
+  if [[ "$client_response" != *"404 page not found"* ]]; then
+    echo "client debug vars mismatch: expected 404 page not found body, got ${client_response}" >&2
+    exit 1
+  fi
+
+  info_debug_vars_json="$(run_with_probe_timeout "$CURL" -fsS "$info_debug_vars_url")"
+  info_debug_vars_values="$(printf '%s' "$info_debug_vars_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid"
+    else
+      [(.cmdline | type), (.memstats | type)] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r cmdline_type memstats_type <<<"$info_debug_vars_values"
+  if [[ "$cmdline_type" != "array" ]]; then
+    echo "info debug vars mismatch: expected cmdline array, got ${cmdline_type}" >&2
+    exit 1
+  fi
+  if [[ "$memstats_type" != "object" ]]; then
+    echo "info debug vars mismatch: expected memstats object, got ${memstats_type}" >&2
     exit 1
   fi
 }
@@ -1710,6 +1755,11 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   hashkv_summary+=", gateway_hashkv_hash_revision=${gateway_hashkv_hash_revision}"
   hashkv_summary+=", gateway_hashkv_compact_revision=${gateway_hashkv_compact_revision}"
   hashkv_summary+=", gateway_hashkv_revisions_match=true"
+fi
+
+if [[ "$EXPECTED_DEBUG_VARS_CHECKS" == "1" ]]; then
+  expect_debug_vars_boundary "${ENDPOINT%/}/debug/vars" "${READYZ_URL%/readyz}/debug/vars"
+  status_summary+=", info_debug_vars=ok, client_debug_vars=404"
 fi
 
 echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok${livez_summary}, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"

@@ -36,6 +36,8 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		infoVersionJSON   string
 		infoMetrics       string
 		clientMetrics     string
+		infoDebugVars     string
+		clientDebugVars   string
 		extraEnv          []string
 		wantTimeout       []string
 		wantOK            bool
@@ -279,6 +281,48 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			clientMetrics: "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nmetrics\n",
 			extraEnv:      []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOutput:    "client metrics mismatch: expected HTTP 404",
+		},
+		{
+			name: "reports info debug vars boundary in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_DEBUG_VARS_CHECKS=1"},
+			wantOK:     true,
+			wantOutput: "info_debug_vars=ok, client_debug_vars=404",
+		},
+		{
+			name: "rejects malformed info debug vars JSON",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:        "ok",
+			count:         "4",
+			statusJSON:    `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			infoDebugVars: `{"cmdline":"kubebrain","memstats":{}}`,
+			extraEnv:      []string{"EXPECTED_DEBUG_VARS_CHECKS=1"},
+			wantOutput:    "info debug vars mismatch: expected cmdline array",
+		},
+		{
+			name: "rejects exposed client debug vars endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:          "ok",
+			count:           "4",
+			statusJSON:      `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			clientDebugVars: "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n{\"cmdline\":[],\"memstats\":{}}\n",
+			extraEnv:        []string{"EXPECTED_DEBUG_VARS_CHECKS=1"},
+			wantOutput:      "client debug vars mismatch: expected HTTP 404",
 		},
 		{
 			name: "rejects unhealthy serializable health endpoint",
@@ -2519,6 +2563,15 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOutput: "EXPECTED_INFO_METRICS_CHECKS requires EXPECTED_STATUS_VERSION",
 		},
+		{
+			name:       "rejects malformed expected debug vars checks flag before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_DEBUG_VARS_CHECKS=true"},
+			wantOutput: "EXPECTED_DEBUG_VARS_CHECKS must be empty or 1",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2556,6 +2609,10 @@ if [[ " $* " == *" -i "* ]]; then
   target="${@: -1}"
   if [[ "$target" == "${ENDPOINT%/}/metrics" ]]; then
     printf '%s' "$FAKE_CLIENT_METRICS_RESPONSE"
+    exit 0
+  fi
+  if [[ "$target" == "${ENDPOINT%/}/debug/vars" ]]; then
+    printf '%s' "$FAKE_CLIENT_DEBUG_VARS_RESPONSE"
     exit 0
   fi
 fi
@@ -2640,6 +2697,10 @@ for arg in "$@"; do
     printf '%s' "$FAKE_INFO_METRICS"
     exit 0
   fi
+  if [[ "$arg" == "${READYZ_URL%/readyz}/debug/vars" ]]; then
+    printf '%s' "$FAKE_INFO_DEBUG_VARS"
+    exit 0
+  fi
   if [[ "$arg" == */version ]]; then
     printf '%s' "$FAKE_VERSION_JSON"
     exit 0
@@ -2719,6 +2780,8 @@ exec "$@"
 				"FAKE_INFO_VERSION_JSON=" + defaultVersionJSON(tc.infoVersionJSON),
 				"FAKE_INFO_METRICS=" + defaultInfoMetrics(tc.infoMetrics),
 				"FAKE_CLIENT_METRICS_RESPONSE=" + defaultClientMetricsResponse(tc.clientMetrics),
+				"FAKE_INFO_DEBUG_VARS=" + defaultInfoDebugVars(tc.infoDebugVars),
+				"FAKE_CLIENT_DEBUG_VARS_RESPONSE=" + defaultClientDebugVarsResponse(tc.clientDebugVars),
 				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":111,"compact_revision":"3","hash_revision":"7"}`,
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
@@ -2868,6 +2931,20 @@ func defaultClientMetricsResponse(value string) string {
 	return "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n404 page not found\n"
 }
 
+func defaultInfoDebugVars(value string) string {
+	if value != "" {
+		return value
+	}
+	return `{"cmdline":["kubebrain"],"memstats":{"Alloc":1}}`
+}
+
+func defaultClientDebugVarsResponse(value string) string {
+	if value != "" {
+		return value
+	}
+	return "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n404 page not found\n"
+}
+
 func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "production_readiness_cn.md"))
 	require.NoError(t, err)
@@ -2889,6 +2966,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"EXPECTED_HEALTH_METHOD_CHECKS=1",
 		"EXPECTED_HTTP_HEADER_CHECKS=1",
 		"EXPECTED_INFO_METRICS_CHECKS=1",
+		"EXPECTED_DEBUG_VARS_CHECKS=1",
 	} {
 		require.Contains(t, example, required)
 	}
@@ -2908,6 +2986,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"http_header_checks=ok",
 		"info_metrics=ok",
 		"client_metrics=404",
+		"info_debug_vars=ok",
+		"client_debug_vars=404",
 		"health=true",
 		"serializable_health=true",
 		"status_errors=empty",
