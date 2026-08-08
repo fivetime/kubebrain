@@ -43025,6 +43025,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `refreshServerStateMetrics` 固定发出 `etcd.server.snapshot_apply_in_progress_total=0`，生产
   gate 要求该 family 存在并新增 `snapshot_apply_metrics=ok` 摘要。TiKV/PD snapshot 卡顿应
   使用存储层原生指标排查，而不是该 etcd raft-specific gauge。
+- A4054 实现并固定 upstream raft heartbeat failure counter：上游
+  `/root/etcd/server/etcdserver/metrics.go` 注册
+  `etcd_server_heartbeat_send_failures_total`，只统计 etcd raft leader transport 的 heartbeat
+  发送失败。KubeBrain 不运行 etcd raft transport；member coordination 属于 DBaaS 控制面，
+  存储复制 heartbeat 属于独立 TiKV/PD 层。因此 server state metrics 刷新路径以 counter
+  增量 0 预初始化该 family，不能把 TiKV/PD heartbeat、应用请求或 leader-election 错误混入
+  这个 etcd server counter。生产 gate 要求该 family 存在并新增
+  `raft_heartbeat_metrics=ok` 摘要；存储层 heartbeat 故障继续使用 TiKV/PD 原生指标。
 
 ### P2：运维兼容和长期验证
 

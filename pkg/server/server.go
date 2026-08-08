@@ -244,6 +244,12 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	// process. The precise etcd-compatible value for this raft-specific gauge is
 	// therefore always zero.
 	s.metricCli.EmitGauge("etcd.server.snapshot_apply_in_progress_total", 0)
+	// Upstream counts failures from the etcd raft leader transport heartbeat
+	// path. KubeBrain has no etcd raft transport: member coordination is a
+	// DBaaS control-plane concern and TiKV/PD own storage raft heartbeats. Keep
+	// the upstream counter family present at zero instead of misclassifying
+	// storage-layer or application failures as etcd raft heartbeat failures.
+	s.metricCli.EmitCounter("etcd.server.heartbeat_send_failures_total", 0)
 
 	isLearner := false
 	if s.etcdServer != nil {
