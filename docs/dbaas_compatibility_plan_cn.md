@@ -42586,6 +42586,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `gateway_db_size_quota=<n>`；如果 gateway 返回 learner 字段，则同时输出
   `gateway_is_learner=<bool>`。新增 `dbSizeQuota:0` 与 `isLearner:"false"` 拒绝覆盖，避免 HTTP gateway 的状态 envelope 与 gRPC
   `etcdctl endpoint status` 门禁脱节。
+- A4004 补齐 HTTP gRPC-gateway `Status` 的 curl 必需字段门禁：
+  `/root/etcd/tests/e2e/v3_curl_maintenance_test.go` 要求 `/v3/maintenance/status`
+  JSON 至少包含 `version`、`dbSize`、`leader`、`raftIndex`、`raftTerm`、
+  `raftAppliedIndex`、`dbSizeInUse`、`storageVersion`。生产 gate 现在把
+  gateway `storageVersion` 收紧为必需 storage semver，并校验 `dbSizeInUse`
+  为非负整数且不超过 `dbSize`、`leader` 与 `raftTerm` 为正整数、header raft term
+  与 status raft term 一致、`raftAppliedIndex<=raftIndex`，同时沿用 KubeBrain
+  DBaaS 门禁中 raft index 与 revision 对齐的不变量。通过摘要新增
+  `gateway_db_size_in_use=<n>`、`gateway_leader_id=<id>`、`gateway_raft_term=<term>`、
+  `gateway_raft_index=<n>`、`gateway_raft_applied_index=<n>` 与
+  `gateway_raft_indexes_match_revision=true`；拒绝覆盖新增
+  `dbSizeInUse>dbSize` 和 `raftAppliedIndex>raftIndex`。
 
 ### P2：运维兼容和长期验证
 

@@ -239,13 +239,13 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:      "ok",
 			count:       "4",
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":"2147483648","isLearner":false,"downgradeInfo":{}}`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
 			extraEnv: []string{
 				"EXPECTED_STATUS_CLUSTER_ID=123",
 				"EXPECTED_STATUS_VERSION=3.7.0",
 			},
 			wantOK:     true,
-			wantOutput: "gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_downgrade_info=object",
+			wantOutput: "gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_match_revision=true, gateway_downgrade_info=object",
 		},
 		{
 			name: "rejects malformed gateway status db size quota envelope",
@@ -257,7 +257,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:      "ok",
 			count:       "4",
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":0,"isLearner":false,"downgradeInfo":{}}`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":0,"isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:      false,
 			wantOutput:  "gateway status dbSizeQuota must be positive",
@@ -272,10 +272,40 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:      "ok",
 			count:       "4",
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":"2147483648","isLearner":"false","downgradeInfo":{}}`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":"false","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:      false,
 			wantOutput:  "gateway status isLearner must be boolean",
+		},
+		{
+			name: "rejects gateway status db size in use beyond db size",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"100","dbSizeQuota":"2147483648","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:      false,
+			wantOutput:  "gateway status dbSizeInUse must not exceed dbSize",
+		},
+		{
+			name: "rejects gateway status applied index beyond raft index",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"8","downgradeInfo":{}}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:      false,
+			wantOutput:  "gateway status raftAppliedIndex must not exceed raftIndex",
 		},
 		{
 			name: "rejects malformed gateway status storage version envelope",
@@ -287,7 +317,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:      "ok",
 			count:       "4",
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":false,"dbSize":"99","downgradeInfo":{}}`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":false,"dbSize":"99","dbSizeInUse":"88","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`,
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:      false,
 			wantOutput:  "gateway status storageVersion must be a storage semver string",
@@ -302,7 +332,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:      "ok",
 			count:       "4",
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","dbSize":"99","downgradeInfo":false}`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":false}`,
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:      false,
 			wantOutput:  "gateway status downgradeInfo envelope invalid",
@@ -2097,7 +2127,7 @@ func defaultGatewayStatusJSON(value string) string {
 	if value != "" {
 		return value
 	}
-	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":"2147483648","isLearner":false,"downgradeInfo":{}}`
+	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`
 }
 
 func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {

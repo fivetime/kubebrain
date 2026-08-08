@@ -717,7 +717,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   gateway_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_status_url")"
   gateway_status_values="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
     if type != "object" then
-      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
     else
       (if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else null end) as $is_learner
       |
@@ -725,17 +725,23 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
         (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
         (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
         (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
         (.version // "missing"),
         (if has("storageVersion") then .storageVersion elif has("storage_version") then .storage_version else "missing" end),
         (if has("dbSize") then .dbSize elif has("db_size") then .db_size else "missing" end),
+        (if has("dbSizeInUse") then .dbSizeInUse elif has("db_size_in_use") then .db_size_in_use else "missing" end),
         (if has("dbSizeQuota") then .dbSizeQuota elif has("db_size_quota") then .db_size_quota else "missing" end),
         (if $is_learner == null then "missing" else ($is_learner | type) end),
         (if $is_learner == null then "missing" else ($is_learner | tostring) end),
+        (if has("leader") then .leader elif has("leader_id") then .leader_id elif has("leaderId") then .leaderId else "missing" end),
+        (if has("raftTerm") then .raftTerm elif has("raft_term") then .raft_term else "missing" end),
+        (if has("raftIndex") then .raftIndex elif has("raft_index") then .raft_index else "missing" end),
+        (if has("raftAppliedIndex") then .raftAppliedIndex elif has("raft_applied_index") then .raft_applied_index else "missing" end),
         (if has("downgradeInfo") then (.downgradeInfo | type) elif has("downgrade_info") then (.downgrade_info | type) else "missing" end)
       ] | @tsv
     end
   ')"
-  IFS=$'\t' read -r gateway_status_cluster_id gateway_status_member_id gateway_status_revision gateway_status_version gateway_status_storage_version gateway_status_db_size gateway_status_db_size_quota gateway_status_is_learner_type gateway_status_is_learner gateway_status_downgrade_info_type <<<"$gateway_status_values"
+  IFS=$'\t' read -r gateway_status_cluster_id gateway_status_member_id gateway_status_revision gateway_status_header_raft_term gateway_status_version gateway_status_storage_version gateway_status_db_size gateway_status_db_size_in_use gateway_status_db_size_quota gateway_status_is_learner_type gateway_status_is_learner gateway_status_leader gateway_status_raft_term gateway_status_raft_index gateway_status_raft_applied_index gateway_status_downgrade_info_type <<<"$gateway_status_values"
   if [[ "$gateway_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_status_cluster_id}" >&2
     exit 1
@@ -752,12 +758,20 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status version mismatch: expected ${EXPECTED_STATUS_VERSION}, got ${gateway_status_version}" >&2
     exit 1
   fi
-  if [[ "$gateway_status_storage_version" != "missing" && ! "$gateway_status_storage_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)?$ ]]; then
+  if ! [[ "$gateway_status_storage_version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)?$ ]]; then
     echo "gateway status storageVersion must be a storage semver string, got ${gateway_status_storage_version}" >&2
     exit 1
   fi
   if ! [[ "$gateway_status_db_size" =~ ^[1-9][0-9]*$ ]]; then
     echo "gateway status dbSize must be positive, got ${gateway_status_db_size}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_status_db_size_in_use" =~ ^[0-9]+$ ]]; then
+    echo "gateway status dbSizeInUse must be non-negative, got ${gateway_status_db_size_in_use}" >&2
+    exit 1
+  fi
+  if (( gateway_status_db_size_in_use > gateway_status_db_size )); then
+    echo "gateway status dbSizeInUse must not exceed dbSize: dbSizeInUse=${gateway_status_db_size_in_use}, dbSize=${gateway_status_db_size}" >&2
     exit 1
   fi
   if [[ "$gateway_status_db_size_quota" != "missing" && ! "$gateway_status_db_size_quota" =~ ^[1-9][0-9]*$ ]]; then
@@ -768,20 +782,58 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status isLearner must be boolean, got ${gateway_status_is_learner_type}" >&2
     exit 1
   fi
+  if ! [[ "$gateway_status_leader" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway status leader must be positive, got ${gateway_status_leader}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_status_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway status raftTerm must be positive, got ${gateway_status_raft_term}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_header_raft_term" != "missing" ]]; then
+    if ! [[ "$gateway_status_header_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+      echo "gateway status header raft term must be positive, got ${gateway_status_header_raft_term}" >&2
+      exit 1
+    fi
+    if [[ "$gateway_status_header_raft_term" != "$gateway_status_raft_term" ]]; then
+      echo "gateway status raft term mismatch: header=${gateway_status_header_raft_term}, status=${gateway_status_raft_term}" >&2
+      exit 1
+    fi
+  fi
+  if ! [[ "$gateway_status_raft_index" =~ ^[0-9]+$ ]]; then
+    echo "gateway status raftIndex must be non-negative, got ${gateway_status_raft_index}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_status_raft_applied_index" =~ ^[0-9]+$ ]]; then
+    echo "gateway status raftAppliedIndex must be non-negative, got ${gateway_status_raft_applied_index}" >&2
+    exit 1
+  fi
+  if (( gateway_status_raft_applied_index > gateway_status_raft_index )); then
+    echo "gateway status raftAppliedIndex must not exceed raftIndex: raftAppliedIndex=${gateway_status_raft_applied_index}, raftIndex=${gateway_status_raft_index}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_raft_index" != "$gateway_status_revision" || "$gateway_status_raft_applied_index" != "$gateway_status_revision" ]]; then
+    echo "gateway status raft indexes must match revision: revision=${gateway_status_revision}, raftIndex=${gateway_status_raft_index}, raftAppliedIndex=${gateway_status_raft_applied_index}" >&2
+    exit 1
+  fi
   if [[ "$gateway_status_downgrade_info_type" != "object" ]]; then
     echo "gateway status downgradeInfo envelope invalid: expected object, got ${gateway_status_downgrade_info_type}" >&2
     exit 1
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
-  if [[ "$gateway_status_storage_version" != "missing" ]]; then
-    status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
-  fi
+  status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
+  status_summary+=", gateway_db_size_in_use=${gateway_status_db_size_in_use}"
   if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
     status_summary+=", gateway_db_size_quota=${gateway_status_db_size_quota}"
   fi
   if [[ "$gateway_status_is_learner_type" != "missing" ]]; then
     status_summary+=", gateway_is_learner=${gateway_status_is_learner}"
   fi
+  status_summary+=", gateway_leader_id=${gateway_status_leader}"
+  status_summary+=", gateway_raft_term=${gateway_status_raft_term}"
+  status_summary+=", gateway_raft_index=${gateway_status_raft_index}"
+  status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
+  status_summary+=", gateway_raft_indexes_match_revision=true"
   status_summary+=", gateway_downgrade_info=object"
 fi
 
