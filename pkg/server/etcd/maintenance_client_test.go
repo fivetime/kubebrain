@@ -65,7 +65,7 @@ func TestClientSnapshotAPIsReturnHashProtectedEtcdBackend(t *testing.T) {
 	defer cancel()
 	versioned, err := client.SnapshotWithVersion(ctx)
 	require.NoError(t, err)
-	require.Equal(t, ClusterVersion, versioned.Version)
+	require.Equal(t, Version, versioned.Version)
 	versionedBytes, err := io.ReadAll(versioned.Snapshot)
 	require.NoError(t, err)
 	require.NoError(t, versioned.Snapshot.Close())
@@ -161,7 +161,7 @@ func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 	require.GreaterOrEqual(t, len(responses), 2)
 	var backendBytes []byte
 	for i, response := range responses[:len(responses)-1] {
-		require.Equal(t, ClusterVersion, response.Version)
+		require.Equal(t, Version, response.Version)
 		require.LessOrEqual(t, len(response.Blob), snapshotSendBufferSize)
 		backendBytes = append(backendBytes, response.Blob...)
 		if i+1 < len(responses)-1 {
@@ -174,7 +174,7 @@ func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
 	final := responses[len(responses)-1]
 	require.Zero(t, final.RemainingBytes)
 	require.Equal(t, digest[:], final.Blob)
-	require.Equal(t, ClusterVersion, final.Version)
+	require.Equal(t, Version, final.Version)
 }
 
 func TestRawGRPCSnapshotReportsAmbiguousLegacyHistoryAsFailedPrecondition(t *testing.T) {
@@ -554,7 +554,7 @@ func TestClientStatusProtocolMetadataMatchesEtcdContract(t *testing.T) {
 	require.Equal(t, response.RaftIndex, response.RaftAppliedIndex)
 	require.GreaterOrEqual(t, response.RaftAppliedIndex, uint64(put.Header.Revision))
 	require.Equal(t, Version, response.Version)
-	require.Equal(t, ClusterVersion, response.StorageVersion)
+	require.Equal(t, Version, response.StorageVersion)
 	require.Equal(t, defaultEtcdBackendQuota, response.DbSizeQuota)
 	require.False(t, response.IsLearner)
 	require.NotNil(t, response.DowngradeInfo)

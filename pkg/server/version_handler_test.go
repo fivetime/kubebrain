@@ -38,7 +38,7 @@ func TestVersionHandlerReturnsEtcdShape(t *testing.T) {
 	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	require.Equal(t, fmt.Sprintf(
 		`{"etcdserver":%q,"etcdcluster":%q,"storage":%q}`,
-		etcd.Version, etcd.ClusterVersion, etcd.ClusterVersion,
+		etcd.Version, etcd.ClusterVersion, etcd.Version,
 	), rec.Body.String())
 
 	var body struct {
@@ -49,7 +49,7 @@ func TestVersionHandlerReturnsEtcdShape(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	require.Equal(t, etcd.Version, body.EtcdServer)
 	require.Equal(t, etcd.ClusterVersion, body.EtcdCluster)
-	require.Equal(t, etcd.ClusterVersion, body.Storage)
+	require.Equal(t, etcd.Version, body.Storage)
 
 	// Must be semver-parseable and satisfy the apiserver RequestWatchProgress
 	// floor (>= 3.5.13), the same guarantee maintenance_test enforces on the gRPC
@@ -93,6 +93,6 @@ func TestPeerHTTPHandlersExposeVersion(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, fmt.Sprintf(
 		`{"etcdserver":%q,"etcdcluster":%q,"storage":%q}`,
-		etcd.Version, etcd.ClusterVersion, etcd.ClusterVersion,
+		etcd.Version, etcd.ClusterVersion, etcd.Version,
 	), rec.Body.String())
 }

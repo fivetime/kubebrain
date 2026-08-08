@@ -1795,7 +1795,7 @@ func TestClientAuthPrivilegedMaintenanceAuthorization(t *testing.T) {
 	requireAuthClientError(t, userSnapshotErr, codes.PermissionDenied, "etcdserver: permission denied")
 	rootSnapshot, rootSnapshotErr := root.SnapshotWithVersion(ctx)
 	require.NoError(t, rootSnapshotErr)
-	require.Equal(t, ClusterVersion, rootSnapshot.Version)
+	require.Equal(t, Version, rootSnapshot.Version)
 	rootSnapshotBytes, err := io.ReadAll(rootSnapshot.Snapshot)
 	require.NoError(t, err)
 	requireSnapshotIntegrityHash(t, rootSnapshotBytes)

@@ -42542,22 +42542,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   storage migration 代码，官方 storage version 常以 `major.minor` 参与比较。生产 gate 现在同时接受
   `X.Y` 与 `X.Y.Z`，新增 full status storage version summary 通过覆盖，并把 malformed 用例改为
   `3.x`，避免诊断解析器在兼容历史完整版本输出时误报。
-- A3997 将 KubeBrain gRPC `Status.StorageVersion` 对齐 major.minor storage version：
-  `/root/etcd` 把 storage version 与 server binary semver 分开处理，`storageVersionToString`
-  输出 `major.minor`。KubeBrain 之前复用 `Version=3.7.0`，会把 binary/API version 与 storage
-  schema version 混在一起；现在 `Maintenance.Status` 返回 `ClusterVersion=3.7`，gateway JSON
-  和 clientv3 status 单测同步固定该契约，保留 `Status.Version=3.7.0` 表示对外 API 能力。
-- A3998 将 HTTP `/version` 的 `storage` 字段对齐 major.minor storage version：
+- A3997 固定 KubeBrain gRPC `Status.StorageVersion` 的公开字符串形态：
+  `/root/etcd` 把 storage version 与 server binary semver 分开处理，但公开面通过
+  `semver.Version.String()` 输出，形态包含 patch（例如 `3.8.0`），并非裸 `major.minor`。
+  本轮纠正此前过度 major.minor 格式化的判断，继续固定 `Status.StorageVersion=3.7.0`，
+  同时保留 `Status.Version=3.7.0` 与 `ClusterVersion=3.7` 的语义区分。
+- A3998 固定 HTTP `/version` 的 `storage` 字段与上游 semver 字符串一致：
   上游 `/version` 从 `server.StorageVersion()` 读取 storage schema version，并与
-  `etcdserver` binary version 分开输出。KubeBrain 此前仍返回 `storage=Version`；现在
-  `/version` 返回 `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.7"}`，
-  与 gRPC `Status.StorageVersion` 共用 `ClusterVersion`，防止 kubeadm/运维预检把 storage
-  schema version 误当成完整 server semver。
-- A3999 将 online Snapshot/SnapshotWithVersion 的 response version 对齐 storage version：
-  上游 `Maintenance.Snapshot` 在每帧 `SnapshotResponse.Version` 中写入
-  `server.StorageVersion()`，不是 server binary semver。KubeBrain 此前发送 `Version=3.7.0`；
-  现在本地 snapshot 流和 clientv3 `SnapshotWithVersion` 回归固定 `ClusterVersion=3.7`，
-  与 `Status.StorageVersion`、`/version.storage` 三个公开 storage version 面保持一致。
+  `etcdserver` binary version 分开输出；该 storage version 的 JSON 字符串包含 patch。
+  KubeBrain `/version` 因此返回
+  `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.7.0"}`，避免 kubeadm/运维预检
+  看到与 gRPC Status 不一致的 storage version 形态。
+- A3999 固定 online Snapshot/SnapshotWithVersion 的 response version 与上游测试一致：
+  `/root/etcd/tests/integration/clientv3/maintenance_test.go`
+  `TestMaintenanceSnapshotWithVersionVersion` 期望 `SnapshotWithVersion.Version` 为完整
+  storage semver（如 `3.8.0`）。KubeBrain 本地 snapshot 流和 clientv3 回归继续固定
+  `Version=3.7.0`，与 `Status.StorageVersion`、`/version.storage` 三个公开 storage
+  version 面保持一致。
 
 ### P2：运维兼容和长期验证
 
