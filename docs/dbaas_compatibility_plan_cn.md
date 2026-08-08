@@ -42619,6 +42619,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过摘要新增 `gateway_auth_enabled=<bool>` 与可选 `gateway_auth_revision=<rev>`；
   新增 `enabled:"false"` 与 `authRevision:false` 拒绝覆盖，防止 AuthStatus HTTP envelope
   与 gRPC auth 状态诊断脱节。
+- A4007 把 HTTP `/version` 纳入生产只读门禁：
+  `/root/etcd/server/etcdserver/api/etcdhttp` 的公开版本面向 kubeadm 和运维预检返回
+  `etcdserver`、`etcdcluster` 与 `storage`。A3998 已修正 KubeBrain 的响应形态，本轮把
+  该形态纳入 `validate-dataplane-readonly.sh`：`etcdserver` 必须等于
+  `EXPECTED_STATUS_VERSION`，`etcdcluster` 必须等于对应 `major.minor`，`storage` 必须是
+  storage semver 且与 gateway Status `storageVersion` 一致。通过摘要新增
+  `version_etcdserver=<semver>`、`version_etcdcluster=<major.minor>` 与
+  `version_storage=<semver>`；新增 `storage:false` 与 `/version.storage` 漂移拒绝覆盖，避免
+  gRPC Status 和 HTTP `/version` 再次分叉。
 
 ### P2：运维兼容和长期验证
 

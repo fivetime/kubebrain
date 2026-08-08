@@ -820,8 +820,42 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "gateway status downgradeInfo envelope invalid: expected object, got ${gateway_status_downgrade_info_type}" >&2
     exit 1
   fi
+  version_url="${ENDPOINT%/}/version"
+  version_json="$(run_with_probe_timeout "$CURL" -fsS "$version_url")"
+  version_values="$(printf '%s' "$version_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid"
+    else
+      [
+        (.etcdserver // "missing"),
+        (.etcdcluster // "missing"),
+        (.storage // "missing")
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r version_etcdserver version_etcdcluster version_storage <<<"$version_values"
+  if [[ -n "$EXPECTED_STATUS_VERSION" && "$version_etcdserver" != "$EXPECTED_STATUS_VERSION" ]]; then
+    echo "/version etcdserver mismatch: expected ${EXPECTED_STATUS_VERSION}, got ${version_etcdserver}" >&2
+    exit 1
+  fi
+  expected_cluster_version="${EXPECTED_STATUS_VERSION%.*}"
+  if [[ -n "$EXPECTED_STATUS_VERSION" && "$version_etcdcluster" != "$expected_cluster_version" ]]; then
+    echo "/version etcdcluster mismatch: expected ${expected_cluster_version}, got ${version_etcdcluster}" >&2
+    exit 1
+  fi
+  if ! [[ "$version_storage" =~ ^[0-9]+\.[0-9]+(\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)?$ ]]; then
+    echo "/version storage must be a storage semver string, got ${version_storage}" >&2
+    exit 1
+  fi
+  if [[ "$version_storage" != "$gateway_status_storage_version" ]]; then
+    echo "/version storage mismatch: gateway_status=${gateway_status_storage_version}, version=${version_storage}" >&2
+    exit 1
+  fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
+  status_summary+=", version_etcdserver=${version_etcdserver}"
+  status_summary+=", version_etcdcluster=${version_etcdcluster}"
+  status_summary+=", version_storage=${version_storage}"
   status_summary+=", gateway_db_size_in_use=${gateway_status_db_size_in_use}"
   if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
     status_summary+=", gateway_db_size_quota=${gateway_status_db_size_quota}"

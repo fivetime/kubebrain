@@ -18,6 +18,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		statusJSON  string
 		gatewayJSON string
 		authJSON    string
+		versionJSON string
 		extraEnv    []string
 		wantTimeout []string
 		wantOK      bool
@@ -246,7 +247,35 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 			},
 			wantOK:     true,
-			wantOutput: "gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_match_revision=true, gateway_downgrade_info=object",
+			wantOutput: "version_etcdserver=3.7.0, version_etcdcluster=3.7, version_storage=3.7.0, gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_match_revision=true, gateway_downgrade_info=object",
+		},
+		{
+			name: "rejects malformed version storage envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			versionJSON: `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":false}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0"},
+			wantOutput:  "/version storage must be a storage semver string",
+		},
+		{
+			name: "rejects version storage drift",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			versionJSON: `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.6.0"}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0"},
+			wantOutput:  "/version storage mismatch",
 		},
 		{
 			name: "reports gateway auth status envelope in summary",
@@ -2152,6 +2181,10 @@ for arg in "$@"; do
     printf '%s' "$FAKE_GATEWAY_AUTH_STATUS_JSON"
     exit 0
   fi
+  if [[ "$arg" == */version ]]; then
+    printf '%s' "$FAKE_VERSION_JSON"
+    exit 0
+  fi
 done
 printf '%s' "$FAKE_READYZ"
 `)
@@ -2209,6 +2242,7 @@ exec "$@"
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
 				"FAKE_GATEWAY_AUTH_STATUS_JSON=" + defaultGatewayAuthStatusJSON(tc.authJSON),
+				"FAKE_VERSION_JSON=" + defaultVersionJSON(tc.versionJSON),
 				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":111,"compact_revision":"3","hash_revision":"7"}`,
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
@@ -2250,6 +2284,13 @@ func defaultGatewayAuthStatusJSON(value string) string {
 		return value
 	}
 	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"5"}`
+}
+
+func defaultVersionJSON(value string) string {
+	if value != "" {
+		return value
+	}
+	return `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.7.0"}`
 }
 
 func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {
