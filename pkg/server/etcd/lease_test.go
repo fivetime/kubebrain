@@ -1421,6 +1421,45 @@ func TestLeaseExpiryDeletesBoundKeys(t *testing.T) {
 	}, 3*time.Second, 100*time.Millisecond)
 }
 
+func TestLeaseExpiredCounterCountsOnlyNaturalExpiration(t *testing.T) {
+	metricRecorder := &recordingMetrics{}
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "lease-expired-metric-peer",
+		EnableEtcdCompatibility: true,
+	}, metricRecorder)
+	server := New(b, metricRecorder, testPeerService{isLeader: true})
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+	}()
+
+	countExpiredIncrements := func() int {
+		metricRecorder.mu.Lock()
+		defer metricRecorder.mu.Unlock()
+		total := 0
+		for _, counter := range metricRecorder.counters {
+			if counter.name == "etcd_debugging.server.lease_expired_total" && counter.value == 1 {
+				total++
+			}
+		}
+		return total
+	}
+
+	ctx := context.Background()
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 11001})
+	require.NoError(t, err)
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: 11001})
+	require.NoError(t, err)
+	require.Zero(t, countExpiredIncrements(), "explicit LeaseRevoke must not increment the natural-expiration counter")
+
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 1, ID: 11002})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return countExpiredIncrements() == 1
+	}, 3*time.Second, 100*time.Millisecond)
+}
+
 func TestLeaseLeasesListsGrantedLeases(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

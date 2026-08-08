@@ -255,7 +255,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOK:     true,
-			wantOutput: "info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, network_metrics=ok, mvcc_operation_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_revision_metrics=ok, mvcc_watch_metrics=ok, promhttp_metrics=ok",
+			wantOutput: "info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, network_metrics=ok, mvcc_operation_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_revision_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok",
 		},
 		{
 			name: "rejects missing info server version metric",
@@ -571,6 +571,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`etcd_debugging_mvcc_watcher_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
+				`etcd_debugging_server_lease_expired_total{cluster="default"} 0`,
 				`promhttp_metric_handler_requests_in_flight 1`,
 			}, "\n") + "\n",
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
@@ -1015,6 +1016,25 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			),
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOutput: "info metrics mismatch: expected etcd_debugging_mvcc_events_total",
+		},
+		{
+			name: "rejects missing info lease expired metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.Replace(
+				defaultInfoMetrics(""),
+				"etcd_debugging_server_lease_expired_total{cluster=\"default\"} 0\n",
+				"",
+				1,
+			),
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "info metrics mismatch: expected etcd_debugging_server_lease_expired_total",
 		},
 		{
 			name: "reports info debug vars boundary in summary",
@@ -3791,6 +3811,7 @@ func defaultInfoMetrics(value string) string {
 		`etcd_debugging_mvcc_watcher_total{cluster="default"} 0`,
 		`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
 		`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
+		`etcd_debugging_server_lease_expired_total{cluster="default"} 0`,
 		`promhttp_metric_handler_requests_in_flight 1`,
 		`promhttp_metric_handler_requests_total{code="200"} 1`,
 	}, "\n") + "\n"
@@ -3882,6 +3903,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"quota_metrics=ok",
 		"mvcc_db_size_metrics=ok",
 		"mvcc_revision_metrics=ok",
+		"lease_metrics=ok",
 		"promhttp_metrics=ok",
 		"info_debug_vars=ok",
 		"client_debug_vars=404",

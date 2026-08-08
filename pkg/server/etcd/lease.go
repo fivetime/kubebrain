@@ -1199,6 +1199,7 @@ func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int6
 	}
 	// Every bound key is gone; now drop the lease record and attachment records.
 	m.forgetLease(id)
+	emitEtcdLeaseExpiredCounter(m.srv.metricCli, 1)
 }
 
 // leaseKeysSnapshot returns a copy of the keys currently attached to lease id

@@ -17,6 +17,7 @@ package etcd
 import (
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ type recordedHistogram struct {
 }
 
 type recordingMetrics struct {
+	mu         sync.Mutex
 	histograms []recordedHistogram
 	counters   []recordedCounter
 }
@@ -48,6 +50,8 @@ func (r *recordingMetrics) GetGrpcServerOption() []grpc.ServerOption { return ni
 func (r *recordingMetrics) GetHttpHandlers() map[string]http.Handler { return nil }
 
 func (r *recordingMetrics) EmitCounter(name string, value interface{}, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.counters = append(r.counters, recordedCounter{
 		name:  name,
 		value: value,
@@ -59,6 +63,8 @@ func (r *recordingMetrics) EmitCounter(name string, value interface{}, tags ...m
 func (r *recordingMetrics) EmitGauge(string, interface{}, ...metrics.T) error { return nil }
 
 func (r *recordingMetrics) EmitHistogram(name string, value interface{}, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.histograms = append(r.histograms, recordedHistogram{
 		name:  name,
 		value: value,
@@ -120,5 +126,17 @@ func TestEtcdMVCCWatchEventCounterUsesUpstreamMetricName(t *testing.T) {
 	require.Equal(t, []recordedCounter{
 		{name: "etcd_debugging.mvcc.events_total", value: 0},
 		{name: "etcd_debugging.mvcc.events_total", value: 3},
+	}, rec.counters)
+}
+
+func TestEtcdLeaseExpiredCounterUsesUpstreamMetricName(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initEtcdLeaseExpiredCounter(rec)
+	emitEtcdLeaseExpiredCounter(rec, 1)
+
+	require.Equal(t, []recordedCounter{
+		{name: "etcd_debugging.server.lease_expired_total", value: 0},
+		{name: "etcd_debugging.server.lease_expired_total", value: 1},
 	}, rec.counters)
 }

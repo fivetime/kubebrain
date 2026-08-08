@@ -40301,8 +40301,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   commit revision、不破坏 watch/lease/txn；已由 uncertain txn pins、commit wait、backend failover、
   txn/watch restart 和 production readiness 覆盖。对照 `744c73e01`：官方修复
   `lease_expired_total` 指标；KubeBrain lease expiry 的正确性由 TTL/List/Revoke/KeepAlive、
-  checkpoint/compaction、watch-backed expiry 和 lease/auth differential 固定，metric 名称级 parity
-  继续归 observability oracle。
+  checkpoint/compaction、watch-backed expiry 和 lease/auth differential 固定；metric 名称级
+  parity 已在 A4043 补齐并由生产 gate 固定。
 
   对照 `d019d3141`：官方 `etcdctl endpoint health` 支持 `--write-out`。KubeBrain 兼容面是
   official etcdctl endpoint health 能识别服务健康，输出格式由 etcdctl 客户端负责；本仓 runner、
@@ -42897,6 +42897,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   伪造成 upstream `pending_events_total`；后者需要精确 event backlog 语义后再单独实现。
   生产 gate 继续通过 `mvcc_watch_metrics=ok` 固定 watch stream、watcher、slow watcher 与
   events counter。
+- A4043 实现并固定 upstream lease expired counter：上游
+  `/root/etcd/server/etcdserver/metrics.go` 注册
+  `etcd_debugging_server_lease_expired_total`，并在
+  `/root/etcd/server/etcdserver/server.go` 的 `revokeExpiredLeases` 成功调用
+  `LeaseRevoke` 后递增。KubeBrain 的等价边界是 `leaseManager.expireLeaseWithContext`
+  确认 lease deadline 已过、当前 member 仍是 fresh leader、成功删除所有仍绑定该 lease 的
+  key，并 `forgetLease` 移除 lease record 后递增
+  `etcd_debugging.server.lease_expired_total`；显式客户端 `LeaseRevoke` 不递增该 counter。
+  `RPCServer.New` 用 0 预初始化 family，使只读生产 gate 可以固定
+  `etcd_debugging_server_lease_expired_total` 存在；gate 摘要新增 `lease_metrics=ok`。
 
 ### P2：运维兼容和长期验证
 
