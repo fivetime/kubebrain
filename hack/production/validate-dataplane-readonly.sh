@@ -25,6 +25,7 @@ EXPECTED_READYZ_NAMED_CHECKS="${EXPECTED_READYZ_NAMED_CHECKS:-}"
 EXPECTED_LIVEZ_NAMED_CHECKS="${EXPECTED_LIVEZ_NAMED_CHECKS:-}"
 EXPECTED_HEALTH_EXCLUDE_CHECKS="${EXPECTED_HEALTH_EXCLUDE_CHECKS:-}"
 EXPECTED_HEALTH_METHOD_CHECKS="${EXPECTED_HEALTH_METHOD_CHECKS:-}"
+EXPECTED_HTTP_HEADER_CHECKS="${EXPECTED_HTTP_HEADER_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -61,6 +62,10 @@ if [[ -n "$EXPECTED_HEALTH_EXCLUDE_CHECKS" && "$EXPECTED_HEALTH_EXCLUDE_CHECKS" 
 fi
 if [[ -n "$EXPECTED_HEALTH_METHOD_CHECKS" && "$EXPECTED_HEALTH_METHOD_CHECKS" != "1" ]]; then
   echo "EXPECTED_HEALTH_METHOD_CHECKS must be empty or 1" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_HTTP_HEADER_CHECKS" && "$EXPECTED_HTTP_HEADER_CHECKS" != "1" ]]; then
+  echo "EXPECTED_HTTP_HEADER_CHECKS must be empty or 1" >&2
   exit 2
 fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
@@ -142,6 +147,24 @@ expect_post_method_not_allowed() {
   fi
   if [[ "$response" != *"Method Not Allowed"* ]]; then
     echo "${name} method mismatch: expected Method Not Allowed body, got ${response}" >&2
+    exit 1
+  fi
+}
+
+expect_response_headers() {
+  local name="$1"
+  local url="$2"
+  local expected_content_type="$3"
+  local expected_nosniff="$4"
+  local headers
+
+  headers="$(run_with_probe_timeout "$CURL" -fsS -D - -o /dev/null "$url")"
+  if [[ "$headers" != *$'\nContent-Type: '"${expected_content_type}"$'\r\n'* && "$headers" != *$'\nContent-Type: '"${expected_content_type}"$'\n'* ]]; then
+    echo "${name} header mismatch: expected Content-Type ${expected_content_type}, got ${headers}" >&2
+    exit 1
+  fi
+  if [[ "$expected_nosniff" == "1" && "$headers" != *$'\nX-Content-Type-Options: nosniff\r\n'* && "$headers" != *$'\nX-Content-Type-Options: nosniff\n'* ]]; then
+    echo "${name} header mismatch: expected X-Content-Type-Options nosniff, got ${headers}" >&2
     exit 1
   fi
 }
@@ -267,6 +290,11 @@ if [[ "$EXPECTED_HEALTH_METHOD_CHECKS" == "1" ]]; then
   expect_post_method_not_allowed "livez" "$livez_url"
   expect_post_method_not_allowed "readyz" "$READYZ_URL"
   livez_summary+=", health_method_checks=ok"
+fi
+if [[ "$EXPECTED_HTTP_HEADER_CHECKS" == "1" ]]; then
+  expect_response_headers "livez" "$livez_url" "text/plain; charset=utf-8" "1"
+  expect_response_headers "readyz" "$READYZ_URL" "text/plain; charset=utf-8" "1"
+  livez_summary+=", http_header_checks=ok"
 fi
 
 health_url="${ENDPOINT%/}/health"
@@ -1048,6 +1076,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if [[ "$info_version_storage" != "$version_storage" ]]; then
     echo "info /version storage mismatch: client=${version_storage}, info=${info_version_storage}" >&2
     exit 1
+  fi
+  if [[ "$EXPECTED_HTTP_HEADER_CHECKS" == "1" ]]; then
+    expect_response_headers "client version" "$version_url" "application/json" "0"
+    expect_response_headers "info version" "$info_version_url" "application/json" "0"
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"

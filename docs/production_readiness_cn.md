@@ -448,6 +448,7 @@ EXPECTED_READYZ_NAMED_CHECKS=1 \
 EXPECTED_LIVEZ_NAMED_CHECKS=1 \
 EXPECTED_HEALTH_EXCLUDE_CHECKS=1 \
 EXPECTED_HEALTH_METHOD_CHECKS=1 \
+EXPECTED_HTTP_HEADER_CHECKS=1 \
 STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
 PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
@@ -462,7 +463,10 @@ PROBE_TIMEOUT=10s \
 `/readyz?verbose&exclude=data_corruption` 必须过滤 `data_corruption` 但保留其他 readiness
 分项，`/readyz?verbose&exclude=unknown` 必须继续返回所有已注册 readiness 分项。配置
 `EXPECTED_HEALTH_METHOD_CHECKS=1` 时还会对 `/health`、`/livez` 与 `/readyz` 发送 POST，
-要求均返回 HTTP 405、`Allow: GET` 和 `Method Not Allowed` 响应体。client 口 `/health` 与
+要求均返回 HTTP 405、`Allow: GET` 和 `Method Not Allowed` 响应体。配置
+`EXPECTED_HTTP_HEADER_CHECKS=1` 时还会要求 `/livez` 与 `/readyz` 返回
+`Content-Type: text/plain; charset=utf-8` 和 `X-Content-Type-Options: nosniff`，
+并要求 client/info 双口 `/version` 返回 `Content-Type: application/json`。client 口 `/health` 与
 `/health?serializable=true` 必须返回 `{"health":"true","reason":""}`，以及对 `ENDPOINT` 与
 `STATUS_ENDPOINTS` 并集中的每个 endpoint 执行 `prefix-tool ACTION=count` 的非负整数结果；
 配置 `EXPECTED_PREFIX_COUNT` 时还会固定每个 endpoint 的期望 count，并要求各 endpoint
@@ -505,7 +509,7 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
-`livez_named_checks=ok`、`health_method_checks=ok`、
+`livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
 `health=true`、`serializable_health=true`、
 `status_errors=empty`、`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、

@@ -42702,6 +42702,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三个健康入口发送 POST，要求状态码、Allow 头和响应体均与上游一致；通过摘要新增
   `health_method_checks=ok`，防止健康入口只在 GET happy path 兼容但方法约束、负载均衡器
   预检或误用诊断响应发生漂移。
+- A4018 把 HTTP 诊断入口响应头纳入完整增强门禁：
+  上游 `newHealthHandler` 为 `/livez` 与 `/readyz` 设置
+  `Content-Type: text/plain; charset=utf-8` 和 `X-Content-Type-Options: nosniff`，
+  `serveVersion` 为 `/version` 设置 `Content-Type: application/json`。生产 gate 在
+  `EXPECTED_HTTP_HEADER_CHECKS=1` 时校验 livez/readyz 与 client/info 双口 `/version`
+  的响应头；通过摘要新增 `http_header_checks=ok`，防止正文兼容但探针、代理或浏览器安全
+  相关 header 漂移。
 
 ### P2：运维兼容和长期验证
 

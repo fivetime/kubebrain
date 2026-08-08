@@ -23,6 +23,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		healthJSON        string
 		healthMethodCode  string
 		healthMethodAllow string
+		httpHeaderType    string
+		httpHeaderNosniff string
+		versionHeaderType string
 		serialHealthJSON  string
 		count             string
 		statusJSON        string
@@ -77,9 +80,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
-			extraEnv:   []string{"EXPECTED_READYZ_NAMED_CHECKS=1", "EXPECTED_LIVEZ_NAMED_CHECKS=1", "EXPECTED_HEALTH_EXCLUDE_CHECKS=1", "EXPECTED_HEALTH_METHOD_CHECKS=1"},
+			extraEnv:   []string{"EXPECTED_READYZ_NAMED_CHECKS=1", "EXPECTED_LIVEZ_NAMED_CHECKS=1", "EXPECTED_HEALTH_EXCLUDE_CHECKS=1", "EXPECTED_HEALTH_METHOD_CHECKS=1", "EXPECTED_HTTP_HEADER_CHECKS=1"},
 			wantOK:     true,
-			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, readyz_named_checks=ok, health_exclude_checks=ok, livez=ok, livez_serializable_read=ok, livez_named_checks=ok, health_method_checks=ok",
+			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, readyz_named_checks=ok, health_exclude_checks=ok, livez=ok, livez_serializable_read=ok, livez_named_checks=ok, health_method_checks=ok, http_header_checks=ok",
 		},
 		{
 			name: "rejects unhealthy livez endpoint",
@@ -190,6 +193,48 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON:        `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			extraEnv:          []string{"EXPECTED_HEALTH_METHOD_CHECKS=1"},
 			wantOutput:        "livez method mismatch: expected Allow: GET",
+		},
+		{
+			name: "rejects malformed health content type header",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:         "ok",
+			httpHeaderType: "application/json",
+			count:          "4",
+			statusJSON:     `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:       []string{"EXPECTED_HTTP_HEADER_CHECKS=1"},
+			wantOutput:     "livez header mismatch: expected Content-Type text/plain; charset=utf-8",
+		},
+		{
+			name: "rejects missing health nosniff header",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:            "ok",
+			httpHeaderNosniff: "missing",
+			count:             "4",
+			statusJSON:        `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:          []string{"EXPECTED_HTTP_HEADER_CHECKS=1"},
+			wantOutput:        "livez header mismatch: expected X-Content-Type-Options nosniff",
+		},
+		{
+			name: "rejects malformed version content type header",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:            "ok",
+			versionHeaderType: "text/plain; charset=utf-8",
+			count:             "4",
+			statusJSON:        `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv:          []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_HTTP_HEADER_CHECKS=1"},
+			wantOutput:        "client version header mismatch: expected Content-Type application/json",
 		},
 		{
 			name: "rejects unhealthy serializable health endpoint",
@@ -2403,6 +2448,15 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_HEALTH_METHOD_CHECKS=true"},
 			wantOutput: "EXPECTED_HEALTH_METHOD_CHECKS must be empty or 1",
 		},
+		{
+			name:       "rejects malformed expected http header checks flag before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_HTTP_HEADER_CHECKS=true"},
+			wantOutput: "EXPECTED_HTTP_HEADER_CHECKS must be empty or 1",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2419,6 +2473,21 @@ if [[ " $* " == *" -X POST "* ]]; then
   allow="${FAKE_HEALTH_METHOD_ALLOW:-GET}"
   printf 'HTTP/1.1 %s Method Not Allowed\r\nAllow: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nMethod Not Allowed\n' "$code" "$allow"
   exit 0
+  fi
+fi
+if [[ " $* " == *" -D - "* ]]; then
+  target="${@: -1}"
+  if [[ "$target" == "${READYZ_URL}" || "$target" == "${READYZ_URL%/readyz}/livez" ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: %s\r\n' "$FAKE_HTTP_HEADER_CONTENT_TYPE"
+    if [[ "$FAKE_HTTP_HEADER_NOSNIFF" != "missing" ]]; then
+      printf 'X-Content-Type-Options: %s\r\n' "$FAKE_HTTP_HEADER_NOSNIFF"
+    fi
+    printf '\r\n'
+    exit 0
+  fi
+  if [[ "$target" == "${ENDPOINT%/}/version" || "$target" == "${READYZ_URL%/readyz}/version" ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n' "$FAKE_VERSION_HEADER_CONTENT_TYPE"
+    exit 0
   fi
 fi
 for arg in "$@"; do
@@ -2564,6 +2633,9 @@ exec "$@"
 				"FAKE_HEALTH_JSON=" + defaultHealthJSON(tc.healthJSON),
 				"FAKE_HEALTH_METHOD_CODE=" + defaultHealthMethodCode(tc.healthMethodCode),
 				"FAKE_HEALTH_METHOD_ALLOW=" + defaultHealthMethodAllow(tc.healthMethodAllow),
+				"FAKE_HTTP_HEADER_CONTENT_TYPE=" + defaultHTTPHeaderContentType(tc.httpHeaderType),
+				"FAKE_HTTP_HEADER_NOSNIFF=" + defaultHTTPHeaderNosniff(tc.httpHeaderNosniff),
+				"FAKE_VERSION_HEADER_CONTENT_TYPE=" + defaultVersionHeaderContentType(tc.versionHeaderType),
 				"FAKE_SERIALIZABLE_HEALTH_JSON=" + defaultHealthJSON(tc.serialHealthJSON),
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
@@ -2650,6 +2722,27 @@ func defaultHealthMethodAllow(value string) string {
 	return "GET"
 }
 
+func defaultHTTPHeaderContentType(value string) string {
+	if value != "" {
+		return value
+	}
+	return "text/plain; charset=utf-8"
+}
+
+func defaultHTTPHeaderNosniff(value string) string {
+	if value != "" {
+		return value
+	}
+	return "nosniff"
+}
+
+func defaultVersionHeaderContentType(value string) string {
+	if value != "" {
+		return value
+	}
+	return "application/json"
+}
+
 func defaultGatewayStatusJSON(value string) string {
 	if value != "" {
 		return value
@@ -2697,6 +2790,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"EXPECTED_LIVEZ_NAMED_CHECKS=1",
 		"EXPECTED_HEALTH_EXCLUDE_CHECKS=1",
 		"EXPECTED_HEALTH_METHOD_CHECKS=1",
+		"EXPECTED_HTTP_HEADER_CHECKS=1",
 	} {
 		require.Contains(t, example, required)
 	}
@@ -2713,6 +2807,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"livez_serializable_read=ok",
 		"livez_named_checks=ok",
 		"health_method_checks=ok",
+		"http_header_checks=ok",
 		"health=true",
 		"serializable_health=true",
 		"status_errors=empty",
