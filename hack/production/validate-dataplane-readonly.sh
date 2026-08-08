@@ -21,6 +21,7 @@ EXPECTED_PREFIX_COUNT="${EXPECTED_PREFIX_COUNT:-}"
 EXPECTED_STATUS_CLUSTER_ID="${EXPECTED_STATUS_CLUSTER_ID:-}"
 EXPECTED_STATUS_VERSION="${EXPECTED_STATUS_VERSION:-}"
 EXPECTED_HASHKV_HASH="${EXPECTED_HASHKV_HASH:-}"
+EXPECTED_READYZ_NAMED_CHECKS="${EXPECTED_READYZ_NAMED_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -41,6 +42,10 @@ if [[ -n "$EXPECTED_STATUS_VERSION" && ! "$EXPECTED_STATUS_VERSION" =~ ^[0-9]+\.
 fi
 if [[ -n "$EXPECTED_HASHKV_HASH" && ! "$EXPECTED_HASHKV_HASH" =~ ^[0-9]+$ ]]; then
   echo "EXPECTED_HASHKV_HASH must be empty or a non-negative integer" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_READYZ_NAMED_CHECKS" && "$EXPECTED_READYZ_NAMED_CHECKS" != "1" ]]; then
+  echo "EXPECTED_READYZ_NAMED_CHECKS must be empty or 1" >&2
   exit 2
 fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
@@ -131,7 +136,7 @@ if [[ "$readyz" != "ok" ]]; then
 fi
 
 readyz_summary=""
-if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
+if [[ -n "$EXPECTED_HASHKV_HASH" || "$EXPECTED_READYZ_NAMED_CHECKS" == "1" ]]; then
   readyz_verbose_url="${READYZ_URL}?verbose"
   readyz_verbose="$(run_with_probe_timeout "$CURL" -fsS "$readyz_verbose_url")"
   for readyz_check in data_corruption serializable_read linearizable_read non_learner; do
@@ -145,6 +150,17 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     exit 1
   fi
   readyz_summary=", readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok"
+  if [[ "$EXPECTED_READYZ_NAMED_CHECKS" == "1" ]]; then
+    for readyz_check in data_corruption serializable_read linearizable_read non_learner; do
+      readyz_check_url="${READYZ_URL%/}/${readyz_check}?verbose"
+      readyz_check_body="$(run_with_probe_timeout "$CURL" -fsS "$readyz_check_url")"
+      if [[ "$readyz_check_body" != *"[+]${readyz_check} ok"* || "$readyz_check_body" != *$'\nok' ]]; then
+        echo "readyz ${readyz_check} mismatch: expected ${readyz_check} ok and trailing ok, got ${readyz_check_body}" >&2
+        exit 1
+      fi
+    done
+    readyz_summary+=", readyz_named_checks=ok"
+  fi
 fi
 
 livez_url="${READYZ_URL%/readyz}/livez"

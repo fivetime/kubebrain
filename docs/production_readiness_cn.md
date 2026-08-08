@@ -444,6 +444,7 @@ EXPECTED_PREFIX_COUNT=4 \
 EXPECTED_STATUS_CLUSTER_ID=123456789 \
 EXPECTED_STATUS_VERSION=3.7.0 \
 EXPECTED_HASHKV_HASH=987654321 \
+EXPECTED_READYZ_NAMED_CHECKS=1 \
 STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
 PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
@@ -467,7 +468,9 @@ duration，单位为 `ms`、`s`、`m` 或 `h`。配置 `EXPECTED_HASHKV_HASH` �
 `etcdctl endpoint hashkv -w json`；该变量必须与 `EXPECTED_STATUS_CLUSTER_ID` 同时
 配置。完整 HashKV 增强门禁还会读取 `/readyz?verbose`，要求包含
 `data_corruption`、`serializable_read`、`linearizable_read` 和 `non_learner` 四个 `ok`
-分项并以 `ok` 结束。HashKV 门禁要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、cluster ID 与
+分项并以 `ok` 结束。配置 `EXPECTED_READYZ_NAMED_CHECKS=1` 时还会逐项读取这四个
+`/readyz/<check>?verbose` named check 子路径，要求各自只暴露对应 `[+]<check> ok`
+并以 `ok` 结束。HashKV 门禁要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、cluster ID 与
 `EXPECTED_STATUS_CLUSTER_ID` 一致、member ID 为正且集合无重复、所有
 endpoint hash 都等于期望 hash，revision/compact revision 非负，且每个 endpoint 的
 compact revision 不得大于同一响应的 hash revision；该项适合冻结写入窗口、升级或恢复后
@@ -490,7 +493,7 @@ HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV
 hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
-`livez=ok`、`livez_serializable_read=ok`、`health=true`、`serializable_health=true`、
+`readyz_named_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、`health=true`、`serializable_health=true`、
 `status_errors=empty`、`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、

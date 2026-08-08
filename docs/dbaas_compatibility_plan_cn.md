@@ -42675,6 +42675,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `readyz_data_corruption=ok`、`readyz_serializable_read=ok`、
   `readyz_linearizable_read=ok` 与 `readyz_non_learner=ok`，并补缺失分项拒绝覆盖，
   防止 root `/readyz=ok` 掩盖 readiness 子检查漂移。
+- A4014 把 named HTTP `/readyz/<check>?verbose` 子路径纳入完整增强门禁：
+  上游 `CheckRegistry.InstallHTTPEndpoints` 会为每个 registered check 安装独立子路径，
+  并在 verbose 请求中只输出该 check 的结果再追加 `ok`。生产 gate 在
+  `EXPECTED_READYZ_NAMED_CHECKS=1` 时逐项读取 `/readyz/data_corruption?verbose`、`/readyz/serializable_read?verbose`、
+  `/readyz/linearizable_read?verbose` 与 `/readyz/non_learner?verbose`，要求各自包含
+  对应 `[+]<check> ok` 且以 `ok` 结束；通过摘要新增 `readyz_named_checks=ok`，
+  防止聚合 `/readyz?verbose` 正常但 named 子路径路由或响应体漂移。
 
 ### P2：运维兼容和长期验证
 

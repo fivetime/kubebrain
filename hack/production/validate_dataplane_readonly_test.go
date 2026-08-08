@@ -72,9 +72,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
-			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_HASHKV_HASH=111"},
+			extraEnv:   []string{"EXPECTED_READYZ_NAMED_CHECKS=1"},
 			wantOK:     true,
-			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, livez=ok, livez_serializable_read=ok",
+			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, readyz_named_checks=ok, livez=ok, livez_serializable_read=ok",
 		},
 		{
 			name: "rejects unhealthy livez endpoint",
@@ -100,7 +100,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyzVerbose: "[+]data_corruption ok\n[+]serializable_read ok\nok",
 			count:         "4",
 			statusJSON:    `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
-			extraEnv:      []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_HASHKV_HASH=111"},
+			extraEnv:      []string{"EXPECTED_READYZ_NAMED_CHECKS=1"},
 			wantOutput:    "readyz verbose mismatch: expected linearizable_read ok",
 		},
 		{
@@ -2315,6 +2315,22 @@ for arg in "$@"; do
     printf '%s' "$FAKE_READYZ_VERBOSE"
     exit 0
   fi
+  if [[ "$arg" == "${READYZ_URL%/}/data_corruption?verbose" ]]; then
+    printf '[+]data_corruption ok\nok'
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL%/}/serializable_read?verbose" ]]; then
+    printf '[+]serializable_read ok\nok'
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL%/}/linearizable_read?verbose" ]]; then
+    printf '[+]linearizable_read ok\nok'
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL%/}/non_learner?verbose" ]]; then
+    printf '[+]non_learner ok\nok'
+    exit 0
+  fi
   if [[ "$arg" == "${READYZ_URL%/readyz}/livez?verbose" ]]; then
     printf '%s' "$FAKE_LIVEZ_VERBOSE"
     exit 0
@@ -2524,6 +2540,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"EXPECTED_STATUS_CLUSTER_ID=",
 		"EXPECTED_STATUS_VERSION=",
 		"EXPECTED_HASHKV_HASH=",
+		"EXPECTED_READYZ_NAMED_CHECKS=1",
 	} {
 		require.Contains(t, example, required)
 	}
@@ -2534,6 +2551,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"readyz_serializable_read=ok",
 		"readyz_linearizable_read=ok",
 		"readyz_non_learner=ok",
+		"readyz_named_checks=ok",
 		"livez=ok",
 		"livez_serializable_read=ok",
 		"health=true",
