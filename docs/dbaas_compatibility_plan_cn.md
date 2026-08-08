@@ -43017,6 +43017,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compare 失败分支、校验/鉴权/quota/no-space/leader 错误计入。`RPCServer.New` 用 0 预初始化
   gauge，生产 gate 要求 `etcd_debugging_mvcc_total_put_size_in_bytes` family 存在并新增
   `mvcc_put_size_metrics=ok` 摘要。
+- A4053 实现并固定 upstream raft snapshot apply gauge：上游
+  `/root/etcd/server/etcdserver/metrics.go` 注册
+  `etcd_server_snapshot_apply_in_progress_total`，语义是 etcd member 当前是否正在应用 incoming
+  raft snapshot。KubeBrain 不运行 etcd raft，不接收或应用 etcd member snapshot；底层复制、
+  raft log 和 snapshot 属于独立 TiKV/PD 层，不能混入 etcd server family。因此
+  `refreshServerStateMetrics` 固定发出 `etcd.server.snapshot_apply_in_progress_total=0`，生产
+  gate 要求该 family 存在并新增 `snapshot_apply_metrics=ok` 摘要。TiKV/PD snapshot 卡顿应
+  使用存储层原生指标排查，而不是该 etcd raft-specific gauge。
 
 ### P2：运维兼容和长期验证
 

@@ -238,6 +238,12 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	}
 	s.metricCli.EmitGauge("etcd.server.has_leader", boolGauge(hasLeader))
 	s.metricCli.EmitGauge("etcd.server.is_leader", boolGauge(isLeader))
+	// Upstream reports whether this etcd member is currently applying an
+	// incoming raft snapshot. KubeBrain does not run etcd raft or apply etcd
+	// member snapshots; TiKV/PD own storage replication and snapshots below this
+	// process. The precise etcd-compatible value for this raft-specific gauge is
+	// therefore always zero.
+	s.metricCli.EmitGauge("etcd.server.snapshot_apply_in_progress_total", 0)
 
 	isLearner := false
 	if s.etcdServer != nil {

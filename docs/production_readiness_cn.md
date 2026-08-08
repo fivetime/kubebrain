@@ -487,6 +487,8 @@ client request 指标 `etcd_server_client_requests_total`，
 server stream failure 指标 `etcd_network_server_stream_failures_total`，
 传统 `/health` 计数指标 `etcd_server_health_success` 与
 `etcd_server_health_failures`，
+raft snapshot apply 兼容指标 `etcd_server_snapshot_apply_in_progress_total`（KubeBrain 不运行
+etcd raft snapshot apply，固定为 0），
 auth revision 指标 `etcd_debugging_auth_revision`，
 quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
@@ -567,7 +569,7 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `grpc_metrics=ok`、`client_request_metrics=ok`、`network_metrics=ok`、
 `server_stream_metrics=ok`、`mvcc_operation_metrics=ok`、
 `runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
-`health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
+`snapshot_apply_metrics=ok`、`health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
 `mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
