@@ -42547,6 +42547,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   输出 `major.minor`。KubeBrain 之前复用 `Version=3.7.0`，会把 binary/API version 与 storage
   schema version 混在一起；现在 `Maintenance.Status` 返回 `ClusterVersion=3.7`，gateway JSON
   和 clientv3 status 单测同步固定该契约，保留 `Status.Version=3.7.0` 表示对外 API 能力。
+- A3998 将 HTTP `/version` 的 `storage` 字段对齐 major.minor storage version：
+  上游 `/version` 从 `server.StorageVersion()` 读取 storage schema version，并与
+  `etcdserver` binary version 分开输出。KubeBrain 此前仍返回 `storage=Version`；现在
+  `/version` 返回 `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.7"}`，
+  与 gRPC `Status.StorageVersion` 共用 `ClusterVersion`，防止 kubeadm/运维预检把 storage
+  schema version 误当成完整 server semver。
 
 ### P2：运维兼容和长期验证
 

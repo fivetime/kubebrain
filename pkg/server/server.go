@@ -527,7 +527,7 @@ func (s *server) versionHandler(w http.ResponseWriter, req *http.Request) {
 		EtcdServer  string `json:"etcdserver"`
 		EtcdCluster string `json:"etcdcluster"`
 		Storage     string `json:"storage"`
-	}{EtcdServer: etcd.Version, EtcdCluster: etcd.ClusterVersion, Storage: etcd.Version})
+	}{EtcdServer: etcd.Version, EtcdCluster: etcd.ClusterVersion, Storage: etcd.ClusterVersion})
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(respBytes)

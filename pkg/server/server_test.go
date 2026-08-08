@@ -532,6 +532,7 @@ func TestInfoHTTPVersionHandlerExposeEtcdCORSOptions(t *testing.T) {
 	versionHandler.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/version", nil))
 	require.Equal(t, http.StatusOK, get.Code)
 	require.Contains(t, get.Body.String(), `"etcdserver"`)
+	require.Contains(t, get.Body.String(), `"storage":"3.7"`)
 	require.Equal(t, "*", get.Header().Get("Access-Control-Allow-Origin"))
 }
 
