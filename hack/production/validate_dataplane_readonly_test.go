@@ -18,6 +18,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		statusJSON      string
 		gatewayJSON     string
 		authJSON        string
+		alarmJSON       string
 		versionJSON     string
 		infoVersionJSON string
 		extraEnv        []string
@@ -308,6 +309,49 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "gateway_auth_enabled=false, gateway_auth_revision=5",
 		},
 		{
+			name: "reports gateway alarm envelope in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"raftTerm":8}}]`,
+			alarmJSON:  `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"}}`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:     true,
+			wantOutput: "gateway_alarms=empty",
+		},
+		{
+			name: "rejects malformed gateway alarm envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			alarmJSON:  `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"alarms":false}`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "gateway alarm alarms must be an array",
+		},
+		{
+			name: "rejects non empty gateway alarm list",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			alarmJSON:  `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"alarms":[{"memberID":"456","alarm":"NOSPACE"}]}`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "gateway alarm list must be empty",
+		},
+		{
 			name: "rejects malformed gateway auth enabled envelope",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -478,6 +522,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raftIndex":9,"raftAppliedIndex":9}}]`,
 			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"9"},"authRevision":"5"}`,
+			alarmJSON:  `{"header":{"cluster_id":"123","member_id":"456","revision":"9"}}`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
 			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_match_revision=true",
@@ -493,6 +538,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raft_index":9,"raft_applied_index":9}}]`,
 			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"9"},"authRevision":"5"}`,
+			alarmJSON:  `{"header":{"cluster_id":"123","member_id":"456","revision":"9"}}`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
 			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_match_revision=true",
@@ -2196,6 +2242,10 @@ for arg in "$@"; do
     printf '%s' "$FAKE_GATEWAY_AUTH_STATUS_JSON"
     exit 0
   fi
+  if [[ "$arg" == */v3/maintenance/alarm ]]; then
+    printf '%s' "$FAKE_GATEWAY_ALARM_JSON"
+    exit 0
+  fi
   if [[ "$arg" == "${READYZ_URL%/readyz}/version" ]]; then
     printf '%s' "$FAKE_INFO_VERSION_JSON"
     exit 0
@@ -2261,6 +2311,7 @@ exec "$@"
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
 				"FAKE_GATEWAY_AUTH_STATUS_JSON=" + defaultGatewayAuthStatusJSON(tc.authJSON),
+				"FAKE_GATEWAY_ALARM_JSON=" + defaultGatewayAlarmJSON(tc.alarmJSON),
 				"FAKE_VERSION_JSON=" + defaultVersionJSON(tc.versionJSON),
 				"FAKE_INFO_VERSION_JSON=" + defaultVersionJSON(tc.infoVersionJSON),
 				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
@@ -2306,6 +2357,13 @@ func defaultGatewayAuthStatusJSON(value string) string {
 	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"5"}`
 }
 
+func defaultGatewayAlarmJSON(value string) string {
+	if value != "" {
+		return value
+	}
+	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"}}`
+}
+
 func defaultVersionJSON(value string) string {
 	if value != "" {
 		return value
@@ -2341,6 +2399,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"version_storage=<semver>",
 		"info_version_storage=<semver>",
 		"gateway_auth_enabled=<bool>",
+		"gateway_alarms=empty",
 		"gateway_hashkv_hash=<n>",
 		"gateway_hashkv_revisions_match=true",
 		"revisions_match=true",

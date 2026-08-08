@@ -955,6 +955,59 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if [[ "$gateway_auth_revision_value" != "missing" ]]; then
     status_summary+=", gateway_auth_revision=${gateway_auth_revision_value}"
   fi
+
+  gateway_alarm_url="${ENDPOINT%/}/v3/maintenance/alarm"
+  gateway_alarm_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{"action":"GET"}' "$gateway_alarm_url")"
+  gateway_alarm_values="$(printf '%s' "$gateway_alarm_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (if has("alarms") then (.alarms | type) else "missing" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r gateway_alarm_cluster_id gateway_alarm_member_id gateway_alarm_revision gateway_alarm_raft_term gateway_alarm_type <<<"$gateway_alarm_values"
+  if [[ "$gateway_alarm_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "gateway alarm cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_alarm_cluster_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_alarm_member_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway alarm member ID must be positive, got ${gateway_alarm_member_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_alarm_revision" =~ ^[0-9]+$ ]]; then
+    echo "gateway alarm revision must be non-negative, got ${gateway_alarm_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_alarm_revision" != "$min_status_revision" ]]; then
+    echo "gateway alarm revision mismatch: status=${min_status_revision}, alarm=${gateway_alarm_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_alarm_raft_term" != "missing" ]]; then
+    if ! [[ "$gateway_alarm_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+      echo "gateway alarm raft term must be positive, got ${gateway_alarm_raft_term}" >&2
+      exit 1
+    fi
+    if [[ "${status_raft_terms:-"-"}" != "-" && "$gateway_alarm_raft_term" != "$status_raft_terms" ]]; then
+      echo "status/gateway alarm raft term mismatch: status=${status_raft_terms}, alarm=${gateway_alarm_raft_term}" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$gateway_alarm_type" != "missing" && "$gateway_alarm_type" != "array" ]]; then
+    echo "gateway alarm alarms must be an array when present, got ${gateway_alarm_type}" >&2
+    exit 1
+  fi
+  gateway_alarm_count="$(printf '%s' "$gateway_alarm_json" | "$JQ" -r 'if type == "object" and has("alarms") then (.alarms | length) else 0 end')"
+  if [[ "$gateway_alarm_count" != "0" ]]; then
+    echo "gateway alarm list must be empty, got ${gateway_alarm_count}" >&2
+    exit 1
+  fi
+  status_summary+=", gateway_alarms=empty"
 fi
 
 hashkv_summary=""

@@ -42642,6 +42642,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `version_storage`、`info_version_storage`、`gateway_auth_enabled`、
   `gateway_hashkv_hash` 与 `gateway_hashkv_revisions_match=true` 等通过摘要。静态测试同步
   要求这些字段存在，防止脚本门禁继续演进而发布手册遗漏关键证据。
+- A4010 把 HTTP gRPC-gateway `Alarm` GET 纳入生产只读门禁：
+  `/root/etcd/api/etcdserverpb/rpc.proto` 定义 `AlarmResponse{header, alarms}`，`Status.errors`
+  与 Alarm list 都来自 alarm store。生产 gate 现在 POST `/v3/maintenance/alarm`
+  `{"action":"GET"}`，校验 header cluster/member/revision、可选 raft term 与 Status 对齐，
+  并把缺失的 `alarms` 视为 protojson 空 repeated 省略；若 `alarms` 返回则必须是数组，
+  当前发布只读门禁要求为空。通过摘要新增 `gateway_alarms=empty`；新增 `alarms:false`
+  和非空 alarm list 拒绝覆盖，防止 `Status.errors=empty` 但 gateway Alarm envelope 或
+  alarm store 诊断漂移。
 
 ### P2：运维兼容和长期验证
 

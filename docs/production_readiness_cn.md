@@ -472,11 +472,14 @@ compact revision 不得大于同一响应的 hash revision；该项适合冻结�
 它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。
 启用 Status 校验时，脚本还会读取 HTTP gRPC-gateway 的 `/v3/maintenance/status`、
-`/v3/auth/status`、client 口 `/version` 以及从 `READYZ_URL` 推导出的 info 口 `/version`：
+`/v3/auth/status`、`/v3/maintenance/alarm`、client 口 `/version` 以及从 `READYZ_URL`
+推导出的 info 口 `/version`：
 gateway Status 必须携带与 gRPC Status 一致的 cluster/member/revision、version、
 storageVersion、dbSize/dbSizeInUse、leader、raftTerm、raftIndex、raftAppliedIndex、
 dbSizeQuota 和 downgradeInfo envelope；AuthStatus 的缺省 `enabled` 视为 protojson
 省略的 `false`，若返回则必须是 JSON boolean，`authRevision` 若返回则必须为非负整数；
+Alarm GET 的缺省 `alarms` 视为 protojson 空 repeated 省略，若返回则必须是 JSON array，
+当前发布只读门禁要求为空；
 client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必须一致，且
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
 HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV hash、
@@ -484,8 +487,9 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 通过摘要会显式输出 `status_errors=empty`、`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、
-`gateway_auth_enabled=<bool>`、`gateway_hashkv_hash=<n>`、`gateway_hashkv_revisions_match=true`、
-`revisions_match=true`、`hashkv_raft_terms=<unique>` 和 `raft_terms_match=true` 等证据；
+`gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、
+`gateway_hashkv_revisions_match=true`、`revisions_match=true`、`hashkv_raft_terms=<unique>` 和
+`raft_terms_match=true` 等证据；
 其中 Status/HashKV/gateway HashKV revision 与 raft term 交叉一致性用于证明本次只读诊断
 来自同一个静态 MVCC/Raft 观察边界。若这些摘要字段缺失或不为 true，不能把该次
 输出当作完整只读 gate 通过证据。
