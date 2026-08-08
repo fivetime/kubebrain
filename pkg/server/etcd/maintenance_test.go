@@ -25,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -197,10 +198,30 @@ func TestVersionMetricsMatchAdvertisedProtocolVersions(t *testing.T) {
 	metricCli.EXPECT().EmitGauge(
 		"etcd.cluster.version", 1, metrics.Tag("cluster_version", ClusterVersion),
 	).Return(nil)
+	metricCli.EXPECT().EmitGauge(
+		"etcd.server.go_version", 1, metrics.Tag("server_go_version", runtime.Version()),
+	).Return(nil)
 
 	emitVersionMetrics(metricCli)
 	require.Equal(t, Version[:len(ClusterVersion)], ClusterVersion)
 	require.Equal(t, byte('.'), Version[len(ClusterVersion)])
+}
+
+func TestServerIDMetricUsesUpstreamHexLabel(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricCli := mock.NewMockMetrics(ctrl)
+	metricCli.EXPECT().EmitGauge(
+		"etcd.server.id", 1, metrics.Tag("server_id", "abc123"),
+	).Return(nil)
+
+	emitServerIDMetric(metricCli, 0xabc123)
+}
+
+func TestServerIDMetricSkipsUnknownMember(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricCli := mock.NewMockMetrics(ctrl)
+
+	emitServerIDMetric(metricCli, 0)
 }
 
 func TestMaintenanceBasicDiagnostics(t *testing.T) {

@@ -19,6 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"hash/crc32"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/coreos/go-semver/semver"
@@ -68,6 +70,18 @@ func emitVersionMetrics(metricCli metrics.Metrics) {
 	)
 	_ = metricCli.EmitGauge(
 		"etcd.cluster.version", 1, metrics.Tag("cluster_version", ClusterVersion),
+	)
+	_ = metricCli.EmitGauge(
+		"etcd.server.go_version", 1, metrics.Tag("server_go_version", runtime.Version()),
+	)
+}
+
+func emitServerIDMetric(metricCli metrics.Metrics, memberID uint64) {
+	if memberID == 0 {
+		return
+	}
+	_ = metricCli.EmitGauge(
+		"etcd.server.id", 1, metrics.Tag("server_id", strconv.FormatUint(memberID, 16)),
 	)
 }
 

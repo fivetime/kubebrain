@@ -300,6 +300,7 @@ func (s *RPCServer) SetStaticMembers(members []*etcdserverpb.Member) {
 			s.staticMembers[i].ClientURLs = append([]string(nil), s.advertiseClientURLs...)
 		}
 	}
+	emitServerIDMetric(s.metricCli, s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity()))
 }
 
 // Register register etcd grpc service

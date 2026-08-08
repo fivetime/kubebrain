@@ -42768,9 +42768,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go_gc_gogc_percent`、`go_gc_gomemlimit_bytes` 和 `go_sched_gomaxprocs_threads`。
   当前 KubeBrain 运行态 info `/metrics` 已暴露这些 family；生产 gate 在
   `EXPECTED_INFO_METRICS_CHECKS=1` 时同步要求它们存在，仍归入 `runtime_metrics=ok`
-  摘要。`os_fd_limit`、`os_fd_used`、`etcd_server_go_version` 和 `etcd_server_id`
-  目前没有运行态证据，不在本轮强制为兼容契约，避免把不存在的 upstream Raft/server
-  identity 指标误标为已支持。
+  摘要。`os_fd_limit` 和 `os_fd_used` 目前没有运行态证据，不在本轮强制为兼容契约，
+  避免把不存在的 upstream FD 指标误标为已支持。
+- A4028 实现并固定 server identity metrics：上游 `etcdserver/metrics.go` 注册
+  `etcd_server_go_version{server_go_version=...}` 与
+  `etcd_server_id{server_id=...}`，其中 server ID label 使用十六进制成员 ID。
+  KubeBrain 现在在 `emitVersionMetrics` 中发出 Go version family，并在
+  `SetStaticMembers` 后按本实例 local peer identity 派生的 member ID 发出
+  `etcd.server.id`，使 Prometheus wrapper 暴露 `etcd_server_id`。生产 gate 在
+  `EXPECTED_INFO_METRICS_CHECKS=1` 时要求这两个 family 存在，并通过
+  `server_identity_metrics=ok` 摘要固定；由于 info `/metrics` 与 client
+  `endpoint status` 可能经不同 Service 后端，本 gate 不把某次 status 的 member ID
+  强行绑定到 metrics label。
 
 ### P2：运维兼容和长期验证
 
