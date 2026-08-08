@@ -42533,6 +42533,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `target_version`。新增 snake_case downgrade summary、`downgrade_info:false` 与
   `target_version:false` 拒绝覆盖，证明 snake_case downgrade 诊断与 camelCase 一样进入
   对象、bool、semver 和通过摘要路径。
+- A3995 固定只读 gate 对 Status downgradeInfo 空闲态的兼容边界：上游
+  `DowngradeInfo.enabled=false` 表示未处于 downgrade 流程，此时 `targetVersion` 可以缺省或为空。
+  新增 disabled downgrade info without target 通过覆盖，防止生产 gate 把正常空闲态误判为
+  `enabled_without_target`，同时保留 `enabled=true` 必须携带 semver target 的 fail-closed 约束。
 
 ### P2：运维兼容和长期验证
 
