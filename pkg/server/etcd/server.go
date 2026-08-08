@@ -241,6 +241,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdMVCCOperationCounters(metricCli)
 	initEtcdMVCCPutSizeGauge(metricCli)
 	initEtcdMVCCWatchEventCounter(metricCli)
+	initEtcdMVCCWatchPendingEventGauge(metricCli)
 	initEtcdLeaseLifecycleMetrics(metricCli)
 	initEtcdLeaseExpiredCounter(metricCli)
 	initEtcdClientRequestCounters(metricCli)

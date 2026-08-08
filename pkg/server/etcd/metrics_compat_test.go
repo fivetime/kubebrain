@@ -159,6 +159,23 @@ func TestEtcdMVCCWatchEventCounterUsesUpstreamMetricName(t *testing.T) {
 	}, rec.counters)
 }
 
+func TestEtcdMVCCWatchPendingEventGaugeUsesUpstreamMetricName(t *testing.T) {
+	rec := &recordingMetrics{}
+	shim := &backendShim{metricCli: rec}
+
+	initEtcdMVCCWatchPendingEventGauge(rec)
+	shim.addEtcdMVCCPendingWatchEvents(4)
+	shim.addEtcdMVCCPendingWatchEvents(-2)
+	shim.addEtcdMVCCPendingWatchEvents(-2)
+
+	require.Equal(t, []recordedGauge{
+		{name: "etcd_debugging.mvcc.pending_events_total", value: int64(0)},
+		{name: "etcd_debugging.mvcc.pending_events_total", value: int64(4)},
+		{name: "etcd_debugging.mvcc.pending_events_total", value: int64(2)},
+		{name: "etcd_debugging.mvcc.pending_events_total", value: int64(0)},
+	}, rec.gauges)
+}
+
 func TestEtcdMVCCKeysGaugeUsesUpstreamMetricName(t *testing.T) {
 	rec := &recordingMetrics{}
 

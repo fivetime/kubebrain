@@ -20,11 +20,30 @@ func initEtcdMVCCWatchEventCounter(metricCli metrics.Metrics) {
 	emitEtcdMVCCWatchEventCounter(metricCli, 0)
 }
 
+func initEtcdMVCCWatchPendingEventGauge(metricCli metrics.Metrics) {
+	emitEtcdMVCCWatchPendingEventGauge(metricCli, 0)
+}
+
 func emitEtcdMVCCWatchEventCounter(metricCli metrics.Metrics, value int) {
 	if metricCli == nil {
 		return
 	}
 	_ = metricCli.EmitCounter("etcd_debugging.mvcc.events_total", value)
+}
+
+func (b *backendShim) addEtcdMVCCPendingWatchEvents(delta int) {
+	if b == nil || delta == 0 {
+		return
+	}
+	total := b.mvccPendingWatchEvents.Add(int64(delta))
+	emitEtcdMVCCWatchPendingEventGauge(b.metricCli, total)
+}
+
+func emitEtcdMVCCWatchPendingEventGauge(metricCli metrics.Metrics, value int64) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitGauge("etcd_debugging.mvcc.pending_events_total", value)
 }
 
 // RefreshWatchMetrics emits etcd-compatible watch stream gauges from local

@@ -42890,14 +42890,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   生产 gate 通过 `mvcc_operation_metrics=ok` 固定。
 - A4042 实现并固定 upstream MVCC watch event counter：上游
   `/root/etcd/server/storage/mvcc/metrics.go` 注册
-  `etcd_debugging_mvcc_events_total`，并通过 `ReportEventReceived` 在外部 watcher 收到
-  MVCC event 时递增。KubeBrain 的等价边界是 `backendShim.Watch` 把 backend event batch
-  转换成 etcd `mvccpb.Event` 并交给 etcd watch response 层；现在该发送成功后按转换后的
-  event 数递增 `etcd_debugging.mvcc.events_total`，并在 `RPCServer.New` 用 0 预初始化
-  family。该 counter 不统计 in-band progress marker，也不把 WatcherHub 的 batch backlog
-  伪造成 upstream `pending_events_total`；后者需要精确 event backlog 语义后再单独实现。
-  生产 gate 继续通过 `mvcc_watch_metrics=ok` 固定 watch stream、watcher、slow watcher 与
-  events counter。
+  `etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`；上游
+  watchable store 将 event batch 发入 watcher channel 时增加 pending，v3rpc watch send loop
+  取出后通过 `ReportEventReceived` 减 pending 并递增 events。KubeBrain 的等价本地边界是
+  `backendShim.Watch` 把 backend event batch 转换成 etcd `mvccpb.Event` 后写入 unbuffered
+  `WatchResult` channel：写入前按转换后的 event 数增加
+  `etcd_debugging.mvcc.pending_events_total`，watch goroutine 接收成功后减回，并递增
+  `etcd_debugging.mvcc.events_total`。该指标不统计 in-band progress marker、转换失败的
+  event、已被 WatcherHub prefix routing 跳过的 batch，也不把 follower proxy 远端 leader
+  channel backlog 计入本地 pending。`RPCServer.New` 用 0 预初始化 pending gauge 和 events
+  counter；生产 gate 要求两个 family 均存在，并新增 `mvcc_pending_event_metrics=ok` 摘要。
 - A4043 实现并固定 upstream lease expired counter：上游
   `/root/etcd/server/etcdserver/metrics.go` 注册
   `etcd_debugging_server_lease_expired_total`，并在

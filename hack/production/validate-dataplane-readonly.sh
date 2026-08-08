@@ -389,6 +389,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_debugging_mvcc_events_total" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_debugging_mvcc_pending_events_total{"* && "$info_metrics" != *"etcd_debugging_mvcc_pending_events_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_debugging_mvcc_pending_events_total" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"etcd_debugging_server_lease_expired_total{"* && "$info_metrics" != *"etcd_debugging_server_lease_expired_total "* ]]; then
     echo "info metrics mismatch: expected etcd_debugging_server_lease_expired_total" >&2
     exit 1
@@ -1446,7 +1450,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
-    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
+    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -207,6 +208,11 @@ type backendShim struct {
 	backend backend.Backend
 	// emit metrics
 	metricCli metrics.Metrics
+	// Pending local backend watch events already converted to etcd WatchResult
+	// but not yet handed to the server watch goroutine. This mirrors etcd's
+	// pending_events_total as an additive gauge while the project metrics facade
+	// only exposes gauge set operations.
+	mvccPendingWatchEvents atomic.Int64
 
 	// The prev-kv / metadata resolution caches and logic (watch-fanout read
 	// amplification). Embedded so its methods (noteEvent, cachedPreviousEtcdKv,
@@ -1225,10 +1231,13 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 					}
 					etcdEvents = append(etcdEvents, etcdEvent)
 				}
+				b.addEtcdMVCCPendingWatchEvents(len(etcdEvents))
 				select {
 				case out <- etcdproxy.WatchResult{Events: etcdEvents, Revision: batchRevision}:
+					b.addEtcdMVCCPendingWatchEvents(-len(etcdEvents))
 					emitEtcdMVCCWatchEventCounter(b.metricCli, len(etcdEvents))
 				case <-ctx.Done():
+					b.addEtcdMVCCPendingWatchEvents(-len(etcdEvents))
 					return
 				}
 			}

@@ -500,8 +500,8 @@ MVCC put size 累计指标 `etcd_debugging_mvcc_total_put_size_in_bytes`，
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
-`etcd_debugging_mvcc_watcher_total`、`etcd_debugging_mvcc_slow_watcher_total` 与
-`etcd_debugging_mvcc_events_total`，
+`etcd_debugging_mvcc_watcher_total`、`etcd_debugging_mvcc_slow_watcher_total`、
+`etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`，
 lease 指标 `etcd_debugging_server_lease_expired_total`、
 `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与
 `etcd_debugging_lease_renewed_total`，
@@ -568,7 +568,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `server_stream_metrics=ok`、`mvcc_operation_metrics=ok`、
 `runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
 `health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
-`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_put_size_metrics=ok`、`mvcc_revision_metrics=ok`、
+`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_put_size_metrics=ok`、
+`mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
 `lease_metrics=ok`、`promhttp_metrics=ok`、
 `info_debug_vars=ok`、
