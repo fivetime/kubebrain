@@ -104,6 +104,7 @@ type RPCServer struct {
 	watchQuotaMu         sync.Mutex
 	activeWatches        int64
 	activeWatchStreams   atomic.Int64
+	mvccPutSizeBytes     atomic.Int64
 	// Serializes the runtime etcd auth transition with legacy native unary
 	// calls on the public listener. AuthEnable drains already-admitted calls
 	// before committing, then new calls observe enabled auth and fail closed.
@@ -238,6 +239,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	}
 	emitVersionMetrics(metricCli)
 	initEtcdMVCCOperationCounters(metricCli)
+	initEtcdMVCCPutSizeGauge(metricCli)
 	initEtcdMVCCWatchEventCounter(metricCli)
 	initEtcdLeaseLifecycleMetrics(metricCli)
 	initEtcdLeaseExpiredCounter(metricCli)

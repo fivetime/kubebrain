@@ -707,6 +707,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		if err != nil || !response.Succeeded {
 			failedKey = string(put.Key)
 		} else {
+			s.recordEtcdMVCCPutSize(put.Key, put.Value)
 			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
 		}
 	} else if sh, ok := isCompareDelete(txn); ok && !s.writeShapeTouchesLease(sh) {
@@ -739,6 +740,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		if err != nil || !response.Succeeded {
 			failedKey = string(sh.key)
 		} else {
+			s.recordEtcdMVCCPutSize(put.Key, put.Value)
 			s.bindKeyToLease(ctx, put.Lease, string(sh.key))
 		}
 	} else if ok := isCompact(txn); ok {
@@ -1249,6 +1251,9 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	} else {
 		response, err = s.backend.Put(ctx, put)
 	}
+	if err == nil {
+		s.recordEtcdMVCCPutSize(put.Key, put.Value)
+	}
 	successTag := getSuccessMetricTagByErr(err)
 	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag, errClassTag(err))
@@ -1642,6 +1647,9 @@ func (s *RPCServer) tryAtomicGenericTxn(ctx context.Context, txn *etcdserverpb.T
 	}
 	for i := 0; i < userCount; i++ {
 		plan.responses[i].Response = responses[i].Response
+		if put := plan.requests[i].GetRequestPut(); put != nil {
+			s.recordEtcdMVCCPutSize(put.Key, put.Value)
+		}
 	}
 	stampTxnResponseHeaders(plan.root, int64(rev))
 	s.applyLeaseIndexes(writes, results, userCount)
@@ -1909,6 +1917,7 @@ func (s *RPCServer) executeTxnWithCursor(ctx context.Context, txn *etcdserverpb.
 			if err != nil {
 				return nil, err
 			}
+			s.recordEtcdMVCCPutSize(put.Key, put.Value)
 			s.bindKeyToLease(ctx, put.Lease, string(put.Key))
 			resp.Header = putResp.Header
 			if putResp.Header != nil && putResp.Header.Revision > lastWriteRev {

@@ -32,6 +32,11 @@ type stagedMutation struct {
 	op backend.TxnWriteOp
 }
 
+type stagedPutSize struct {
+	keySize   int
+	valueSize int
+}
+
 type stagedTxnExecutor struct {
 	srv        *RPCServer
 	ctx        context.Context
@@ -42,6 +47,7 @@ type stagedTxnExecutor struct {
 
 	mutations map[string]*stagedMutation
 	order     []string
+	putSizes  []stagedPutSize
 	changed   bool
 }
 
@@ -82,6 +88,9 @@ func (s *RPCServer) executeStagedGenericTxnAtRevision(ctx context.Context, txn *
 	rewriteTxnRevision(resp, e.pendingRev, int64(revision))
 	stampTxnResponseHeaders(resp, int64(revision))
 	s.applyLeaseIndexes(writes, results, userCount)
+	for _, put := range e.putSizes {
+		s.recordEtcdMVCCPutSizeBytes(put.keySize + put.valueSize)
+	}
 	return resp, nil
 }
 
@@ -207,6 +216,7 @@ func (e *stagedTxnExecutor) put(r *etcdserverpb.PutRequest) (*etcdserverpb.PutRe
 		resp.PrevKv = proto.Clone(current).(*mvccpb.KeyValue)
 	}
 	e.stage(backend.TxnWriteOp{Key: append([]byte(nil), r.Key...), Value: append([]byte(nil), value...), Lease: lease})
+	e.putSizes = append(e.putSizes, stagedPutSize{keySize: len(r.Key), valueSize: len(value)})
 	return resp, nil
 }
 

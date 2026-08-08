@@ -171,6 +171,21 @@ func TestEtcdMVCCKeysGaugeUsesUpstreamMetricName(t *testing.T) {
 	}, rec.gauges)
 }
 
+func TestEtcdMVCCPutSizeGaugeUsesUpstreamMetricName(t *testing.T) {
+	rec := &recordingMetrics{}
+	server := &RPCServer{metricCli: rec}
+
+	initEtcdMVCCPutSizeGauge(rec)
+	server.recordEtcdMVCCPutSize([]byte("key"), []byte("value"))
+	server.recordEtcdMVCCPutSize([]byte("k"), []byte("v"))
+
+	require.Equal(t, []recordedGauge{
+		{name: "etcd_debugging.mvcc.total_put_size_in_bytes", value: int64(0)},
+		{name: "etcd_debugging.mvcc.total_put_size_in_bytes", value: int64(8)},
+		{name: "etcd_debugging.mvcc.total_put_size_in_bytes", value: int64(10)},
+	}, rec.gauges)
+}
+
 type countIndexBackendShim struct {
 	BackendShim
 	count  int64

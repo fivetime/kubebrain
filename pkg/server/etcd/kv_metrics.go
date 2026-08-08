@@ -23,6 +23,10 @@ func initEtcdMVCCOperationCounters(metricCli metrics.Metrics) {
 	emitEtcdMVCCTxnCounter(metricCli, 0)
 }
 
+func initEtcdMVCCPutSizeGauge(metricCli metrics.Metrics) {
+	emitEtcdMVCCPutSizeGauge(metricCli, 0)
+}
+
 func emitEtcdMVCCRangeCounter(metricCli metrics.Metrics, value int) {
 	_ = metricCli.EmitCounter("etcd.mvcc.range_total", value)
 }
@@ -37,4 +41,26 @@ func emitEtcdMVCCDeleteCounter(metricCli metrics.Metrics, value int) {
 
 func emitEtcdMVCCTxnCounter(metricCli metrics.Metrics, value int) {
 	_ = metricCli.EmitCounter("etcd.mvcc.txn_total", value)
+}
+
+func (s *RPCServer) recordEtcdMVCCPutSize(key, value []byte) {
+	if s == nil {
+		return
+	}
+	s.recordEtcdMVCCPutSizeBytes(len(key) + len(value))
+}
+
+func (s *RPCServer) recordEtcdMVCCPutSizeBytes(size int) {
+	if s == nil || size < 0 {
+		return
+	}
+	total := s.mvccPutSizeBytes.Add(int64(size))
+	emitEtcdMVCCPutSizeGauge(s.metricCli, total)
+}
+
+func emitEtcdMVCCPutSizeGauge(metricCli metrics.Metrics, value int64) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitGauge("etcd_debugging.mvcc.total_put_size_in_bytes", value)
 }

@@ -43003,6 +43003,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `mvcc_compaction_metrics=ok`。暂不实现 `db_compaction_keys_total`，因为当前 scanner/增量
   compaction 只暴露原生 `compact` counter 和批次错误，不能精确返回 upstream “db keys
   compacted” 语义；后续若 scanner 返回精确删除 key 数，再补该 counter。
+- A4052 实现并固定 upstream MVCC total put size gauge：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 注册
+  `etcd_debugging_mvcc_total_put_size_in_bytes`，并由
+  `/root/etcd/server/storage/mvcc/metrics_txn.go` 在 MVCC write transaction 成功结束时按
+  `len(key)+len(value)` 累加所有 Put。KubeBrain 的等价边界是本 member 成功执行的 public
+  Put 与 Txn 中实际选中并成功提交的 Put op：普通 Put 在 durable write 成功后按
+  `putWithEffectiveOptions` 得到的实际 key/value 累加；Create/Update txn 快路径只在 compare
+  成功且 backend 返回 `Succeeded=true` 后累加；generic atomic/staged txn 只在
+  `TxnApply` 成功后累加实际执行分支的用户 Put，不把内部 lease attachment 写入、未选中分支、
+  compare 失败分支、校验/鉴权/quota/no-space/leader 错误计入。`RPCServer.New` 用 0 预初始化
+  gauge，生产 gate 要求 `etcd_debugging_mvcc_total_put_size_in_bytes` family 存在并新增
+  `mvcc_put_size_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 
