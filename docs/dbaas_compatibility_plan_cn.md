@@ -42572,6 +42572,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `downgradeInfo` 对象 envelope，并把 `gateway_status_version` 与
   `gateway_downgrade_info=object` 写入通过摘要。这样 gRPC `etcdctl endpoint status`
   与 HTTP gateway Status 两条可观察运维路径都进入同一只读发布门禁。
+- A4002 固定 HTTP gRPC-gateway `Status.storageVersion` envelope 的生产门禁：
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的 gRPC Status 与 gateway Status
+  都暴露 storage schema version；生产 gate 现在从 `ENDPOINT/v3/maintenance/status`
+  读取 `storageVersion`/`storage_version`，要求其为 `X.Y` 或 `X.Y.Z` storage semver
+  字符串，并在通过摘要中输出 `gateway_storage_version=<version>`。新增
+  `storageVersion:false` 拒绝覆盖，防止 HTTP gateway 路径在 gRPC Status 已正确时仍暴露
+  畸形 storage version envelope。
 
 ### P2：运维兼容和长期验证
 
