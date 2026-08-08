@@ -256,6 +256,8 @@ expect_debug_vars_boundary() {
     echo "info debug vars mismatch: expected memstats object, got ${memstats_type}" >&2
     exit 1
   fi
+  expect_response_headers "info debug vars" "$info_debug_vars_url" "application/json; charset=utf-8" "0"
+  expect_post_method_not_allowed "info debug vars" "$info_debug_vars_url"
 }
 
 kubectl_args=()
@@ -1759,7 +1761,7 @@ fi
 
 if [[ "$EXPECTED_DEBUG_VARS_CHECKS" == "1" ]]; then
   expect_debug_vars_boundary "${ENDPOINT%/}/debug/vars" "${READYZ_URL%/readyz}/debug/vars"
-  status_summary+=", info_debug_vars=ok, client_debug_vars=404"
+  status_summary+=", info_debug_vars=ok, client_debug_vars=404, debug_vars_method_headers=ok"
 fi
 
 echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok${livez_summary}, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"

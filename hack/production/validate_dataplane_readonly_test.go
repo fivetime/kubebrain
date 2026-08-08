@@ -38,6 +38,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		clientMetrics     string
 		infoDebugVars     string
 		clientDebugVars   string
+		debugVarsHeader   string
 		extraEnv          []string
 		wantTimeout       []string
 		wantOK            bool
@@ -323,6 +324,34 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			clientDebugVars: "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\n\r\n{\"cmdline\":[],\"memstats\":{}}\n",
 			extraEnv:        []string{"EXPECTED_DEBUG_VARS_CHECKS=1"},
 			wantOutput:      "client debug vars mismatch: expected HTTP 404",
+		},
+		{
+			name: "rejects malformed info debug vars content type",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:          "ok",
+			count:           "4",
+			statusJSON:      `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			debugVarsHeader: "application/json",
+			extraEnv:        []string{"EXPECTED_DEBUG_VARS_CHECKS=1"},
+			wantOutput:      "info debug vars header mismatch: expected Content-Type application/json; charset=utf-8",
+		},
+		{
+			name: "rejects malformed info debug vars method guard",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:           "ok",
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			healthMethodCode: "200",
+			extraEnv:         []string{"EXPECTED_DEBUG_VARS_CHECKS=1"},
+			wantOutput:       "info debug vars method mismatch: expected HTTP 405",
 		},
 		{
 			name: "rejects unhealthy serializable health endpoint",
@@ -2583,7 +2612,7 @@ printf '%s' "$FAKE_PODS_JSON"
 set -euo pipefail
 if [[ " $* " == *" -X POST "* ]]; then
   target="${@: -1}"
-  if [[ "$target" == "${READYZ_URL}" || "$target" == "${READYZ_URL%/readyz}/livez" || "$target" == "${ENDPOINT%/}/health" ]]; then
+  if [[ "$target" == "${READYZ_URL}" || "$target" == "${READYZ_URL%/readyz}/livez" || "$target" == "${READYZ_URL%/readyz}/debug/vars" || "$target" == "${ENDPOINT%/}/health" ]]; then
   code="${FAKE_HEALTH_METHOD_CODE:-405}"
   allow="${FAKE_HEALTH_METHOD_ALLOW:-GET}"
   printf 'HTTP/1.1 %s Method Not Allowed\r\nAllow: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nMethod Not Allowed\n' "$code" "$allow"
@@ -2602,6 +2631,10 @@ if [[ " $* " == *" -D - "* ]]; then
   fi
   if [[ "$target" == "${ENDPOINT%/}/version" || "$target" == "${READYZ_URL%/readyz}/version" ]]; then
     printf 'HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n' "$FAKE_VERSION_HEADER_CONTENT_TYPE"
+    exit 0
+  fi
+  if [[ "$target" == "${READYZ_URL%/readyz}/debug/vars" ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n' "$FAKE_DEBUG_VARS_HEADER_CONTENT_TYPE"
     exit 0
   fi
 fi
@@ -2770,6 +2803,7 @@ exec "$@"
 				"FAKE_HTTP_HEADER_CONTENT_TYPE=" + defaultHTTPHeaderContentType(tc.httpHeaderType),
 				"FAKE_HTTP_HEADER_NOSNIFF=" + defaultHTTPHeaderNosniff(tc.httpHeaderNosniff),
 				"FAKE_VERSION_HEADER_CONTENT_TYPE=" + defaultVersionHeaderContentType(tc.versionHeaderType),
+				"FAKE_DEBUG_VARS_HEADER_CONTENT_TYPE=" + defaultDebugVarsHeaderContentType(tc.debugVarsHeader),
 				"FAKE_SERIALIZABLE_HEALTH_JSON=" + defaultHealthJSON(tc.serialHealthJSON),
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
@@ -2881,6 +2915,13 @@ func defaultVersionHeaderContentType(value string) string {
 	return "application/json"
 }
 
+func defaultDebugVarsHeaderContentType(value string) string {
+	if value != "" {
+		return value
+	}
+	return "application/json; charset=utf-8"
+}
+
 func defaultGatewayStatusJSON(value string) string {
 	if value != "" {
 		return value
@@ -2988,6 +3029,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"client_metrics=404",
 		"info_debug_vars=ok",
 		"client_debug_vars=404",
+		"debug_vars_method_headers=ok",
 		"health=true",
 		"serializable_health=true",
 		"status_errors=empty",

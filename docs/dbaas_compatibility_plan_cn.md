@@ -42725,6 +42725,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EXPECTED_DEBUG_VARS_CHECKS=1` 时要求 info `/debug/vars` 为 object、`cmdline` 为 array、
   `memstats` 为 object，同时确认 client `/debug/vars` 返回 HTTP 404。摘要新增
   `info_debug_vars=ok` 与 `client_debug_vars=404`，防止运行时诊断面丢失或意外暴露。
+- A4021 收紧 `/debug/vars` 的上游 handler 细节：`serveVars` 通过 `allowMethod` 保持
+  GET-only，GET 返回 `Content-Type: application/json; charset=utf-8`。生产 gate 在
+  `EXPECTED_DEBUG_VARS_CHECKS=1` 时进一步校验 info `/debug/vars` 的 Content-Type，
+  并对 POST 要求 HTTP 405、`Allow: GET` 和 `Method Not Allowed` 响应体；摘要新增
+  `debug_vars_method_headers=ok`，防止 JSON shape 正常但方法约束或诊断响应头漂移。
 
 ### P2：运维兼容和长期验证
 
