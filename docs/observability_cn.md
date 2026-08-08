@@ -29,6 +29,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `grpc_server_admission_inflight` gauge | 当前公开 client RPC 总并发，stream 在完整生命周期内持续占槽。 |
 | `grpc_server_admission_rejected` counter(labels: `method`,`kind`) | `--max-requests-inflight` 超限拒绝数；持续增长表示实例过载或限额过低。 |
 | `grpc_server_rate_limit_rejected` counter(labels: `method`,`kind`) | `--max-request-rate` token bucket 超限数；`kind=unary` 统计 unary RPC，`kind=stream_message` 统计 Watch/KeepAlive 等每条入站消息。 |
+| `etcd_network_client_grpc_received_bytes_total` / `etcd_network_client_grpc_sent_bytes_total` counter | etcd upstream 兼容的公开 client gRPC payload 字节数；只统计 client listener，不统计 peer forwarding listener。 |
 | `delete_range_admission_rejected` counter | `DeleteRange` 命中 `--max-delete-range-keys` 上限的前置拒绝数；拒绝不会分配 revision 或部分删除。 |
 | `watch_admission_active` gauge | 当前进程已接纳的逻辑 Watch 数；同一 gRPC stream 内 multiplexed Watch 逐个计数。 |
 | `watch_admission_rejected` counter | `--max-watches` 超限拒绝的 Watch create 数；持续增长表示 Watch 负载超过实例预算或限额过低。 |

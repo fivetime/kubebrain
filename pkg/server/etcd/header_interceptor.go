@@ -50,6 +50,7 @@ import (
 // local identity's id and ClusterId the storage cluster's id.
 func (s *RPCServer) ClientServerOptions() []grpc.ServerOption {
 	return []grpc.ServerOption{
+		grpc.StatsHandler(newEtcdClientGRPCBytesStatsHandler(s.metricCli)),
 		grpc.ChainUnaryInterceptor(s.rejectNativeClientAuthBypassUnary, s.admitUnary, s.stampUnary),
 		grpc.ChainStreamInterceptor(s.rejectNativeClientAuthBypassStream, s.admitStream, s.stampStream),
 		grpc.MaxRecvMsgSize(int(s.maxRequestBytes + grpcOverheadBytes)),

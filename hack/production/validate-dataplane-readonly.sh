@@ -249,6 +249,14 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_network_known_peers" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_network_client_grpc_received_bytes_total{"* && "$info_metrics" != *"etcd_network_client_grpc_received_bytes_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_network_client_grpc_received_bytes_total" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"etcd_network_client_grpc_sent_bytes_total{"* && "$info_metrics" != *"etcd_network_client_grpc_sent_bytes_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_network_client_grpc_sent_bytes_total" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"etcd_network_server_stream_failures_total{"* && "$info_metrics" != *"etcd_network_server_stream_failures_total "* ]]; then
     echo "info metrics mismatch: expected etcd_network_server_stream_failures_total" >&2
     exit 1

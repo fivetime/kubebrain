@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/stats"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
@@ -291,6 +292,22 @@ func TestEtcdClientRequestCounterUsesUpstreamMetricNameAndLabels(t *testing.T) {
 				metrics.Tag("client_api_version", "unknown"),
 			},
 		},
+	}, rec.counters)
+}
+
+func TestEtcdClientGRPCBytesCountersUseUpstreamMetricNames(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initEtcdClientGRPCBytesCounters(rec)
+	handler := newEtcdClientGRPCBytesStatsHandler(rec)
+	handler.HandleRPC(context.Background(), &stats.InPayload{Length: 17})
+	handler.HandleRPC(context.Background(), &stats.OutPayload{Length: 29})
+
+	require.Equal(t, []recordedCounter{
+		{name: "etcd.network.client_grpc_received_bytes_total", value: 0},
+		{name: "etcd.network.client_grpc_sent_bytes_total", value: 0},
+		{name: "etcd.network.client_grpc_received_bytes_total", value: 17},
+		{name: "etcd.network.client_grpc_sent_bytes_total", value: 29},
 	}, rec.counters)
 }
 

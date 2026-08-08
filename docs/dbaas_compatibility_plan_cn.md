@@ -42977,6 +42977,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv` 均成功后重新抓取 info
   `/metrics`，要求两个 histogram `_count` family 存在，并新增 `mvcc_hash_metrics=ok`
   摘要。
+- A4050 实现并固定 upstream client gRPC byte counters：上游
+  `/root/etcd/server/etcdserver/api/v3rpc/metrics.go` 注册
+  `etcd_network_client_grpc_sent_bytes_total` 与
+  `etcd_network_client_grpc_received_bytes_total`，并在
+  `/root/etcd/server/etcdserver/api/v3rpc/codec.go` 按 protobuf payload 长度累计。
+  KubeBrain 使用 grpc-go 默认 codec，不能替换成 upstream v3rpc private codec；等价边界是
+  public client listener 上 grpc stats 的 InPayload/OutPayload uncompressed payload length。
+  现在 `ClientServerOptions()` 只在 client-facing server 注册 byte stats handler，peer
+  forwarding listener 不计入 `client_grpc_*`；`RPCServer.New` 用 0 预初始化两个 counter
+  family。生产 gate 要求 `etcd_network_client_grpc_received_bytes_total` 与
+  `etcd_network_client_grpc_sent_bytes_total` family 存在，继续归入 `network_metrics=ok`。
 
 ### P2：运维兼容和长期验证
 
