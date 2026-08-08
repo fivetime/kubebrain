@@ -42635,6 +42635,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `storage` 与 client 口 `/version` 完全一致，并在通过摘要中输出
   `info_version_storage=<semver>`。新增 info 口 storage drift 拒绝覆盖，避免 client 口预检
   正确但 info 口 kubeadm/运维预检继续暴露旧版本或旧 storage schema。
+- A4009 同步生产只读门禁 runbook 与 A4001-A4008 的新增证据：
+  `docs/production_readiness_cn.md` 现在明确 `validate-dataplane-readonly.sh` 会读取
+  gateway Status、AuthStatus、Hash/HashKV、client `/version` 与 info `/version`，并列出
+  `gateway_status_version`、`gateway_storage_version`、`version_etcdserver`、
+  `version_storage`、`info_version_storage`、`gateway_auth_enabled`、
+  `gateway_hashkv_hash` 与 `gateway_hashkv_revisions_match=true` 等通过摘要。静态测试同步
+  要求这些字段存在，防止脚本门禁继续演进而发布手册遗漏关键证据。
 
 ### P2：运维兼容和长期验证
 
