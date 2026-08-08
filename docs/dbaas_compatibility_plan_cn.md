@@ -42658,6 +42658,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `health=="true"` 且 `reason==""`，通过摘要新增 `health=true` 与
   `serializable_health=true`；新增普通 `/health` 和 serializable health 非健康响应拒绝覆盖，
   防止 `/readyz=ok` 或 gateway maintenance 通过时 legacy client/运维健康入口漂移。
+- A4012 把 HTTP `/livez` 纳入生产只读门禁：
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 的 `CheckRegistry` 为 `/livez`
+  安装 root 与分项 handler，上游 e2e 默认矩阵要求 `/livez` 返回 `ok`，`/livez?verbose`
+  暴露 `[+]serializable_read ok` 后再返回 `ok`。生产 gate 现在从 `READYZ_URL`
+  推导 `/livez` 与 `/livez?verbose`，要求根路径为精确 `ok`，verbose 同时包含
+  `serializable_read` 通过证据并以 `ok` 结束；通过摘要新增 `livez=ok` 与
+  `livez_serializable_read=ok`，并补 unhealthy livez 与 malformed verbose 拒绝覆盖，防止
+  `/readyz` 健康但 liveness/本地串行读诊断入口漂移。
 
 ### P2：运维兼容和长期验证
 

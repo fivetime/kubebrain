@@ -14,6 +14,8 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		name             string
 		podsJSON         string
 		readyz           string
+		livez            string
+		livezVerbose     string
 		healthJSON       string
 		serialHealthJSON string
 		count            string
@@ -58,6 +60,45 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			wantOK:     true,
 			wantOutput: "health=true, serializable_health=true",
+		},
+		{
+			name: "reports livez endpoints in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOK:     true,
+			wantOutput: "livez=ok, livez_serializable_read=ok",
+		},
+		{
+			name: "rejects unhealthy livez endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			livez:      "not ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "livez mismatch",
+		},
+		{
+			name: "rejects malformed livez verbose endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:       "ok",
+			livezVerbose: "[+]other_check ok\nok",
+			count:        "4",
+			statusJSON:   `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput:   "livez verbose mismatch",
 		},
 		{
 			name: "rejects unhealthy legacy health endpoint",
@@ -2267,6 +2308,14 @@ printf '%s' "$FAKE_PODS_JSON"
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
 for arg in "$@"; do
+  if [[ "$arg" == "${READYZ_URL%/readyz}/livez?verbose" ]]; then
+    printf '%s' "$FAKE_LIVEZ_VERBOSE"
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL%/readyz}/livez" ]]; then
+    printf '%s' "$FAKE_LIVEZ"
+    exit 0
+  fi
   if [[ "$arg" == */health\?serializable=true ]]; then
     printf '%s' "$FAKE_SERIALIZABLE_HEALTH_JSON"
     exit 0
@@ -2356,6 +2405,8 @@ exec "$@"
 				"PROBE_TIMEOUT=10s",
 				"FAKE_PODS_JSON=" + compactJSONString(tc.podsJSON),
 				"FAKE_READYZ=" + tc.readyz,
+				"FAKE_LIVEZ=" + defaultLivez(tc.livez),
+				"FAKE_LIVEZ_VERBOSE=" + defaultLivezVerbose(tc.livezVerbose),
 				"FAKE_HEALTH_JSON=" + defaultHealthJSON(tc.healthJSON),
 				"FAKE_SERIALIZABLE_HEALTH_JSON=" + defaultHealthJSON(tc.serialHealthJSON),
 				"FAKE_PREFIX_COUNT=" + tc.count,
@@ -2392,6 +2443,20 @@ exec "$@"
 
 func compactJSONString(value string) string {
 	return strings.Join(strings.Fields(value), "")
+}
+
+func defaultLivez(value string) string {
+	if value != "" {
+		return value
+	}
+	return "ok"
+}
+
+func defaultLivezVerbose(value string) string {
+	if value != "" {
+		return value
+	}
+	return "[+]serializable_read ok\nok"
 }
 
 func defaultHealthJSON(value string) string {
@@ -2449,6 +2514,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 	}
 	require.Contains(t, doc, "所有 Status version 唯一且等于期望 semver")
 	for _, required := range []string{
+		"livez=ok",
+		"livez_serializable_read=ok",
 		"health=true",
 		"serializable_health=true",
 		"status_errors=empty",

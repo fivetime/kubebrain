@@ -130,6 +130,20 @@ if [[ "$readyz" != "ok" ]]; then
   exit 1
 fi
 
+livez_url="${READYZ_URL%/readyz}/livez"
+livez="$(run_with_probe_timeout "$CURL" -fsS "$livez_url")"
+if [[ "$livez" != "ok" ]]; then
+  echo "livez mismatch: expected ok, got ${livez}" >&2
+  exit 1
+fi
+
+livez_verbose_url="${READYZ_URL%/readyz}/livez?verbose"
+livez_verbose="$(run_with_probe_timeout "$CURL" -fsS "$livez_verbose_url")"
+if [[ "$livez_verbose" != *"[+]serializable_read ok"* || "$livez_verbose" != *$'\nok' ]]; then
+  echo "livez verbose mismatch: expected serializable_read ok and trailing ok, got ${livez_verbose}" >&2
+  exit 1
+fi
+
 health_url="${ENDPOINT%/}/health"
 health_json="$(run_with_probe_timeout "$CURL" -fsS "$health_url")"
 health_values="$(printf '%s' "$health_json" | "$JQ" -r '
@@ -1490,4 +1504,4 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   hashkv_summary+=", gateway_hashkv_revisions_match=true"
 fi
 
-echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
+echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, livez=ok, livez_serializable_read=ok, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
