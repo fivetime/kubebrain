@@ -34,6 +34,8 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		alarmJSON         string
 		versionJSON       string
 		infoVersionJSON   string
+		infoMetrics       string
+		clientMetrics     string
 		extraEnv          []string
 		wantTimeout       []string
 		wantOK            bool
@@ -235,6 +237,48 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON:        `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
 			extraEnv:          []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_HTTP_HEADER_CHECKS=1"},
 			wantOutput:        "client version header mismatch: expected Content-Type application/json",
+		},
+		{
+			name: "reports info metrics boundary in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOK:     true,
+			wantOutput: "info_metrics=ok, client_metrics=404",
+		},
+		{
+			name: "rejects missing info server version metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: "etcd_cluster_version{cluster=\"default\",cluster_version=\"3.7\"} 1\ngrpc_server_handled_total{grpc_code=\"OK\"} 1\n",
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput:  "info metrics mismatch: expected etcd_server_version server_version=3.7.0",
+		},
+		{
+			name: "rejects exposed client metrics endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:        "ok",
+			count:         "4",
+			statusJSON:    `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			clientMetrics: "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nmetrics\n",
+			extraEnv:      []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput:    "client metrics mismatch: expected HTTP 404",
 		},
 		{
 			name: "rejects unhealthy serializable health endpoint",
@@ -2457,6 +2501,24 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_HTTP_HEADER_CHECKS=true"},
 			wantOutput: "EXPECTED_HTTP_HEADER_CHECKS must be empty or 1",
 		},
+		{
+			name:       "rejects malformed expected info metrics checks flag before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_INFO_METRICS_CHECKS=true"},
+			wantOutput: "EXPECTED_INFO_METRICS_CHECKS must be empty or 1",
+		},
+		{
+			name:       "rejects info metrics checks without expected status version before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "EXPECTED_INFO_METRICS_CHECKS requires EXPECTED_STATUS_VERSION",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2487,6 +2549,13 @@ if [[ " $* " == *" -D - "* ]]; then
   fi
   if [[ "$target" == "${ENDPOINT%/}/version" || "$target" == "${READYZ_URL%/readyz}/version" ]]; then
     printf 'HTTP/1.1 200 OK\r\nContent-Type: %s\r\n\r\n' "$FAKE_VERSION_HEADER_CONTENT_TYPE"
+    exit 0
+  fi
+fi
+if [[ " $* " == *" -i "* ]]; then
+  target="${@: -1}"
+  if [[ "$target" == "${ENDPOINT%/}/metrics" ]]; then
+    printf '%s' "$FAKE_CLIENT_METRICS_RESPONSE"
     exit 0
   fi
 fi
@@ -2567,6 +2636,10 @@ for arg in "$@"; do
     printf '%s' "$FAKE_INFO_VERSION_JSON"
     exit 0
   fi
+  if [[ "$arg" == "${READYZ_URL%/readyz}/metrics" ]]; then
+    printf '%s' "$FAKE_INFO_METRICS"
+    exit 0
+  fi
   if [[ "$arg" == */version ]]; then
     printf '%s' "$FAKE_VERSION_JSON"
     exit 0
@@ -2644,6 +2717,8 @@ exec "$@"
 				"FAKE_GATEWAY_ALARM_JSON=" + defaultGatewayAlarmJSON(tc.alarmJSON),
 				"FAKE_VERSION_JSON=" + defaultVersionJSON(tc.versionJSON),
 				"FAKE_INFO_VERSION_JSON=" + defaultVersionJSON(tc.infoVersionJSON),
+				"FAKE_INFO_METRICS=" + defaultInfoMetrics(tc.infoMetrics),
+				"FAKE_CLIENT_METRICS_RESPONSE=" + defaultClientMetricsResponse(tc.clientMetrics),
 				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":111,"compact_revision":"3","hash_revision":"7"}`,
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
@@ -2771,6 +2846,28 @@ func defaultVersionJSON(value string) string {
 	return `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.7.0"}`
 }
 
+func defaultInfoMetrics(value string) string {
+	if value != "" {
+		return value
+	}
+	return strings.Join([]string{
+		`# HELP etcd_server_version Which version is running. 1 for 'server_version' label with current version.`,
+		`# TYPE etcd_server_version gauge`,
+		`etcd_server_version{cluster="default",server_version="3.7.0"} 1`,
+		`# HELP etcd_cluster_version Which version is running. 1 for 'cluster_version' label with current cluster version.`,
+		`# TYPE etcd_cluster_version gauge`,
+		`etcd_cluster_version{cluster="default",cluster_version="3.7"} 1`,
+		`grpc_server_handled_total{grpc_code="OK",grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+	}, "\n") + "\n"
+}
+
+func defaultClientMetricsResponse(value string) string {
+	if value != "" {
+		return value
+	}
+	return "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n404 page not found\n"
+}
+
 func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "production_readiness_cn.md"))
 	require.NoError(t, err)
@@ -2791,6 +2888,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"EXPECTED_HEALTH_EXCLUDE_CHECKS=1",
 		"EXPECTED_HEALTH_METHOD_CHECKS=1",
 		"EXPECTED_HTTP_HEADER_CHECKS=1",
+		"EXPECTED_INFO_METRICS_CHECKS=1",
 	} {
 		require.Contains(t, example, required)
 	}
@@ -2808,6 +2906,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"livez_named_checks=ok",
 		"health_method_checks=ok",
 		"http_header_checks=ok",
+		"info_metrics=ok",
+		"client_metrics=404",
 		"health=true",
 		"serializable_health=true",
 		"status_errors=empty",

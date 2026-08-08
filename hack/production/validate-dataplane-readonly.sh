@@ -26,6 +26,7 @@ EXPECTED_LIVEZ_NAMED_CHECKS="${EXPECTED_LIVEZ_NAMED_CHECKS:-}"
 EXPECTED_HEALTH_EXCLUDE_CHECKS="${EXPECTED_HEALTH_EXCLUDE_CHECKS:-}"
 EXPECTED_HEALTH_METHOD_CHECKS="${EXPECTED_HEALTH_METHOD_CHECKS:-}"
 EXPECTED_HTTP_HEADER_CHECKS="${EXPECTED_HTTP_HEADER_CHECKS:-}"
+EXPECTED_INFO_METRICS_CHECKS="${EXPECTED_INFO_METRICS_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -68,6 +69,10 @@ if [[ -n "$EXPECTED_HTTP_HEADER_CHECKS" && "$EXPECTED_HTTP_HEADER_CHECKS" != "1"
   echo "EXPECTED_HTTP_HEADER_CHECKS must be empty or 1" >&2
   exit 2
 fi
+if [[ -n "$EXPECTED_INFO_METRICS_CHECKS" && "$EXPECTED_INFO_METRICS_CHECKS" != "1" ]]; then
+  echo "EXPECTED_INFO_METRICS_CHECKS must be empty or 1" >&2
+  exit 2
+fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
   echo "PROBE_TIMEOUT must be a positive duration ending in ms, s, m, or h" >&2
   exit 2
@@ -78,6 +83,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
 fi
 if [[ -n "$EXPECTED_STATUS_VERSION" && -z "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   echo "EXPECTED_STATUS_VERSION requires EXPECTED_STATUS_CLUSTER_ID" >&2
+  exit 2
+fi
+if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" && -z "$EXPECTED_STATUS_VERSION" ]]; then
+  echo "EXPECTED_INFO_METRICS_CHECKS requires EXPECTED_STATUS_VERSION" >&2
   exit 2
 fi
 if [[ -z "$ENDPOINT" ]]; then
@@ -165,6 +174,41 @@ expect_response_headers() {
   fi
   if [[ "$expected_nosniff" == "1" && "$headers" != *$'\nX-Content-Type-Options: nosniff\r\n'* && "$headers" != *$'\nX-Content-Type-Options: nosniff\n'* ]]; then
     echo "${name} header mismatch: expected X-Content-Type-Options nosniff, got ${headers}" >&2
+    exit 1
+  fi
+}
+
+expect_info_metrics_boundary() {
+  local client_metrics_url="$1"
+  local info_metrics_url="$2"
+  local expected_server_version="$3"
+  local expected_cluster_version="$4"
+  local client_response
+  local client_status_line
+  local info_metrics
+
+  client_response="$(run_with_probe_timeout "$CURL" -sS -i "$client_metrics_url")"
+  client_status_line="${client_response%%$'\n'*}"
+  if [[ "$client_status_line" != HTTP/*" 404 "* ]]; then
+    echo "client metrics mismatch: expected HTTP 404, got ${client_status_line}" >&2
+    exit 1
+  fi
+  if [[ "$client_response" != *"404 page not found"* ]]; then
+    echo "client metrics mismatch: expected 404 page not found body, got ${client_response}" >&2
+    exit 1
+  fi
+
+  info_metrics="$(run_with_probe_timeout "$CURL" -fsS "$info_metrics_url")"
+  if [[ "$info_metrics" != *"etcd_server_version{"* || "$info_metrics" != *"server_version=\"${expected_server_version}\""* ]]; then
+    echo "info metrics mismatch: expected etcd_server_version server_version=${expected_server_version}" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"etcd_cluster_version{"* || "$info_metrics" != *"cluster_version=\"${expected_cluster_version}\""* ]]; then
+    echo "info metrics mismatch: expected etcd_cluster_version cluster_version=${expected_cluster_version}" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"grpc_server_handled_total{"* ]]; then
+    echo "info metrics mismatch: expected grpc_server_handled_total" >&2
     exit 1
   fi
 }
@@ -1080,6 +1124,10 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   if [[ "$EXPECTED_HTTP_HEADER_CHECKS" == "1" ]]; then
     expect_response_headers "client version" "$version_url" "application/json" "0"
     expect_response_headers "info version" "$info_version_url" "application/json" "0"
+  fi
+  if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
+    expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
+    status_summary+=", info_metrics=ok, client_metrics=404"
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"

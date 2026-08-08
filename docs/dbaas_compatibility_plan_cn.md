@@ -42709,6 +42709,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EXPECTED_HTTP_HEADER_CHECKS=1` 时校验 livez/readyz 与 client/info 双口 `/version`
   的响应头；通过摘要新增 `http_header_checks=ok`，防止正文兼容但探针、代理或浏览器安全
   相关 header 漂移。
+- A4019 把 Prometheus metrics 观测面纳入完整增强门禁，同时保留 KubeBrain 的 DBaaS
+  client 口安全边界：上游 `etcdhttp.HandleMetrics` 在 `/metrics` 暴露
+  `etcd_server_version`、`etcd_cluster_version`、`grpc_server_handled_total` 等指标；
+  KubeBrain 不把 metrics 暴露回业务 client 入口，而是在 info 口保留 Prometheus 指标。
+  生产 gate 在 `EXPECTED_INFO_METRICS_CHECKS=1` 时读取 info `/metrics`，要求 server
+  version 等于 `EXPECTED_STATUS_VERSION`、cluster version 等于其 major.minor，并要求
+  存在 gRPC server handled 指标；同时确认 client `/metrics` 返回 HTTP 404。摘要新增
+  `info_metrics=ok` 与 `client_metrics=404`，防止可观测性丢失或 metrics 面意外暴露。
 
 ### P2：运维兼容和长期验证
 
