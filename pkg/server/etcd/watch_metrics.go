@@ -14,6 +14,19 @@
 
 package etcd
 
+import "github.com/kubewharf/kubebrain/pkg/metrics"
+
+func initEtcdMVCCWatchEventCounter(metricCli metrics.Metrics) {
+	emitEtcdMVCCWatchEventCounter(metricCli, 0)
+}
+
+func emitEtcdMVCCWatchEventCounter(metricCli metrics.Metrics, value int) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("etcd_debugging.mvcc.events_total", value)
+}
+
 // RefreshWatchMetrics emits etcd-compatible watch stream gauges from local
 // gRPC stream state. KubeBrain tracks individual backend watchers separately;
 // this gauge is only the number of active Watch RPC streams on this member.

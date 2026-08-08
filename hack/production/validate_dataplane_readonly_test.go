@@ -355,6 +355,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`etcd_debugging_mvcc_watch_stream_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_watcher_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
+				`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
 				`promhttp_metric_handler_requests_in_flight 1`,
 				`promhttp_metric_handler_requests_total{code="200"} 1`,
 			}, "\n") + "\n",
@@ -406,6 +407,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`etcd_debugging_mvcc_watch_stream_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_watcher_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
+				`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
 				`promhttp_metric_handler_requests_in_flight 1`,
 				`promhttp_metric_handler_requests_total{code="200"} 1`,
 			}, "\n") + "\n",
@@ -568,6 +570,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`etcd_debugging_mvcc_watch_stream_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_watcher_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
+				`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
 				`promhttp_metric_handler_requests_in_flight 1`,
 			}, "\n") + "\n",
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
@@ -993,6 +996,25 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			}, "\n") + "\n",
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOutput: "info metrics mismatch: expected etcd_debugging_mvcc_watch_stream_total",
+		},
+		{
+			name: "rejects missing info mvcc watch event metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.Replace(
+				defaultInfoMetrics(""),
+				"etcd_debugging_mvcc_events_total{cluster=\"default\"} 0\n",
+				"",
+				1,
+			),
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "info metrics mismatch: expected etcd_debugging_mvcc_events_total",
 		},
 		{
 			name: "reports info debug vars boundary in summary",
@@ -3768,6 +3790,7 @@ func defaultInfoMetrics(value string) string {
 		`etcd_debugging_mvcc_watch_stream_total{cluster="default"} 0`,
 		`etcd_debugging_mvcc_watcher_total{cluster="default"} 0`,
 		`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
+		`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
 		`promhttp_metric_handler_requests_in_flight 1`,
 		`promhttp_metric_handler_requests_total{code="200"} 1`,
 	}, "\n") + "\n"

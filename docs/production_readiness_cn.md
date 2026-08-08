@@ -493,7 +493,8 @@ MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
-`etcd_debugging_mvcc_watcher_total` 与 `etcd_debugging_mvcc_slow_watcher_total`，
+`etcd_debugging_mvcc_watcher_total`、`etcd_debugging_mvcc_slow_watcher_total` 与
+`etcd_debugging_mvcc_events_total`，
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；

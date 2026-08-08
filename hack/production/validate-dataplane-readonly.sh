@@ -353,6 +353,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_debugging_mvcc_slow_watcher_total" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_debugging_mvcc_events_total{"* && "$info_metrics" != *"etcd_debugging_mvcc_events_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_debugging_mvcc_events_total" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"promhttp_metric_handler_requests_in_flight "* ]]; then
     echo "info metrics mismatch: expected promhttp_metric_handler_requests_in_flight" >&2
     exit 1

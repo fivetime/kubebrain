@@ -1222,6 +1222,7 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 				}
 				select {
 				case out <- etcdproxy.WatchResult{Events: etcdEvents, Revision: batchRevision}:
+					emitEtcdMVCCWatchEventCounter(b.metricCli, len(etcdEvents))
 				case <-ctx.Done():
 					return
 				}

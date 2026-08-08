@@ -42887,6 +42887,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   预初始化四个 counter，使只读生产 gate 也能固定 family 存在；嵌套 Txn 子操作不重复
   计数，指标表示 KubeBrain member 观察到的客户端 KV RPC，不表示 TiKV 内部 MVCC 事件。
   生产 gate 通过 `mvcc_operation_metrics=ok` 固定。
+- A4042 实现并固定 upstream MVCC watch event counter：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 注册
+  `etcd_debugging_mvcc_events_total`，并通过 `ReportEventReceived` 在外部 watcher 收到
+  MVCC event 时递增。KubeBrain 的等价边界是 `backendShim.Watch` 把 backend event batch
+  转换成 etcd `mvccpb.Event` 并交给 etcd watch response 层；现在该发送成功后按转换后的
+  event 数递增 `etcd_debugging.mvcc.events_total`，并在 `RPCServer.New` 用 0 预初始化
+  family。该 counter 不统计 in-band progress marker，也不把 WatcherHub 的 batch backlog
+  伪造成 upstream `pending_events_total`；后者需要精确 event backlog 语义后再单独实现。
+  生产 gate 继续通过 `mvcc_watch_metrics=ok` 固定 watch stream、watcher、slow watcher 与
+  events counter。
 
 ### P2：运维兼容和长期验证
 

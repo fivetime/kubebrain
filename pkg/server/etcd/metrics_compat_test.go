@@ -34,13 +34,27 @@ type recordedHistogram struct {
 
 type recordingMetrics struct {
 	histograms []recordedHistogram
+	counters   []recordedCounter
+}
+
+type recordedCounter struct {
+	name  string
+	value interface{}
+	tags  []metrics.T
 }
 
 func (r *recordingMetrics) GetGrpcServerOption() []grpc.ServerOption { return nil }
 
 func (r *recordingMetrics) GetHttpHandlers() map[string]http.Handler { return nil }
 
-func (r *recordingMetrics) EmitCounter(string, interface{}, ...metrics.T) error { return nil }
+func (r *recordingMetrics) EmitCounter(name string, value interface{}, tags ...metrics.T) error {
+	r.counters = append(r.counters, recordedCounter{
+		name:  name,
+		value: value,
+		tags:  append([]metrics.T(nil), tags...),
+	})
+	return nil
+}
 
 func (r *recordingMetrics) EmitGauge(string, interface{}, ...metrics.T) error { return nil }
 
@@ -95,4 +109,16 @@ func TestEmitWatchSendLoopDurationsUseUpstreamMetricNames(t *testing.T) {
 	require.Equal(t, "etcd_debugging.server.watch_send_loop.progress.duration.seconds", rec.histograms[3].name)
 	require.Equal(t, 0.25, rec.histograms[3].value)
 	require.Empty(t, rec.histograms[3].tags)
+}
+
+func TestEtcdMVCCWatchEventCounterUsesUpstreamMetricName(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initEtcdMVCCWatchEventCounter(rec)
+	emitEtcdMVCCWatchEventCounter(rec, 3)
+
+	require.Equal(t, []recordedCounter{
+		{name: "etcd_debugging.mvcc.events_total", value: 0},
+		{name: "etcd_debugging.mvcc.events_total", value: 3},
+	}, rec.counters)
 }
