@@ -250,6 +250,16 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	// the upstream counter family present at zero instead of misclassifying
 	// storage-layer or application failures as etcd raft heartbeat failures.
 	s.metricCli.EmitCounter("etcd.server.heartbeat_send_failures_total", 0)
+	// These four upstream families report the embedded etcd raft proposal
+	// lifecycle: raft log commit/applied indexes plus proposals waiting in, or
+	// rejected by, r.Propose. KubeBrain has no etcd raft proposal pipeline;
+	// TiKV consensus is owned and observed by the external storage cluster.
+	// Keep all families present at zero and do not substitute KubeBrain MVCC
+	// revisions, public write RPCs, or TiKV transaction counts.
+	s.metricCli.EmitGauge("etcd.server.proposals_committed_total", 0)
+	s.metricCli.EmitGauge("etcd.server.proposals_applied_total", 0)
+	s.metricCli.EmitGauge("etcd.server.proposals_pending", 0)
+	s.metricCli.EmitCounter("etcd.server.proposals_failed_total", 0)
 
 	isLearner := false
 	if s.etcdServer != nil {

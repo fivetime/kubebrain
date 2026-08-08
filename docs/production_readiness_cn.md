@@ -491,6 +491,10 @@ raft snapshot apply 兼容指标 `etcd_server_snapshot_apply_in_progress_total`�
 etcd raft snapshot apply，固定为 0），
 raft heartbeat 兼容指标 `etcd_server_heartbeat_send_failures_total`（KubeBrain 不运行 etcd
 raft transport，固定为 0；TiKV/PD heartbeat 故障使用存储层原生指标），
+raft proposal 兼容指标 `etcd_server_proposals_committed_total`、
+`etcd_server_proposals_applied_total`、`etcd_server_proposals_pending` 与
+`etcd_server_proposals_failed_total`（KubeBrain 不运行 etcd raft proposal pipeline，均固定为
+0；不得替换为 MVCC revision、public write RPC 或 TiKV transaction），
 auth revision 指标 `etcd_debugging_auth_revision`，
 quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
@@ -571,7 +575,7 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `grpc_metrics=ok`、`client_request_metrics=ok`、`network_metrics=ok`、
 `server_stream_metrics=ok`、`mvcc_operation_metrics=ok`、
 `runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
-`snapshot_apply_metrics=ok`、`raft_heartbeat_metrics=ok`、`health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
+`snapshot_apply_metrics=ok`、`raft_heartbeat_metrics=ok`、`raft_proposal_metrics=ok`、`health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
 `mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、

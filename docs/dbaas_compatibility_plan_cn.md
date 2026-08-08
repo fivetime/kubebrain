@@ -43033,6 +43033,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   增量 0 预初始化该 family，不能把 TiKV/PD heartbeat、应用请求或 leader-election 错误混入
   这个 etcd server counter。生产 gate 要求该 family 存在并新增
   `raft_heartbeat_metrics=ok` 摘要；存储层 heartbeat 故障继续使用 TiKV/PD 原生指标。
+- A4055 实现并固定 upstream raft proposal metrics：上游
+  `/root/etcd/server/etcdserver/metrics.go` 注册
+  `etcd_server_proposals_committed_total`、`etcd_server_proposals_applied_total`、
+  `etcd_server_proposals_pending` 与 `etcd_server_proposals_failed_total`；其更新点分别位于
+  `/root/etcd/server/etcdserver/raft.go` 的 Raft HardState commit index、
+  `/root/etcd/server/etcdserver/server.go` 的 apply index，以及
+  `/root/etcd/server/etcdserver/v3_server.go` 的 `r.Propose` 等待/失败边界。KubeBrain 不运行
+  etcd raft proposal pipeline，独立 TiKV/PD 集群拥有底层共识，因此四个 family 的精确
+  process-level 兼容值均为 0。不得用 KubeBrain MVCC revision、public write RPC、TiKV
+  transaction 或 Status 中为协议兼容合成的 raft index 代替这些值。生产 gate 要求四个
+  family 均存在并新增 `raft_proposal_metrics=ok` 摘要；底层共识状态继续使用 TiKV/PD
+  原生指标。
 
 ### P2：运维兼容和长期验证
 
