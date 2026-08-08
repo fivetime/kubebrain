@@ -282,6 +282,9 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			}
 			w.Unlock()
 			s.metricCli.EmitCounter("watcher.receive.cancel", 1)
+			if shouldCountServerStreamFailure(ws.Context(), err) {
+				emitEtcdServerStreamFailureCounter(s.metricCli, "receive", "watch", 1)
+			}
 			if isExpectedWatchCloseError(err) {
 				klog.V(4).InfoS("watcher receive closed", "id", w.id, "err", err, "info", strings.Join(watchInfo, "\n"))
 			} else {
@@ -709,7 +712,11 @@ func (s *RPCServer) releaseWatch() {
 func (w *watcher) Send(resp *etcdserverpb.WatchResponse) error {
 	w.sendMu.Lock()
 	defer w.sendMu.Unlock()
-	return w.watchServer.Send(resp)
+	err := w.watchServer.Send(resp)
+	if shouldCountServerStreamFailure(w.watchServer.Context(), err) {
+		emitEtcdServerStreamFailureCounter(w.metricCli, "send", "watch", 1)
+	}
+	return err
 }
 
 func (w *watcher) SendControl(resp *etcdserverpb.WatchResponse) error {

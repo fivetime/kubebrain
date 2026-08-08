@@ -183,3 +183,53 @@ func TestEtcdClientRequestCounterUsesUpstreamMetricNameAndLabels(t *testing.T) {
 		},
 	}, rec.counters)
 }
+
+func TestEtcdServerStreamFailureCounterUsesUpstreamMetricNameAndLabels(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initEtcdServerStreamFailureCounters(rec)
+	emitEtcdServerStreamFailureCounter(rec, "send", "watch", 2)
+
+	require.Equal(t, []recordedCounter{
+		{
+			name:  "etcd.network.server_stream_failures_total",
+			value: 0,
+			tags: []metrics.T{
+				metrics.Tag("Type", "receive"),
+				metrics.Tag("API", "watch"),
+			},
+		},
+		{
+			name:  "etcd.network.server_stream_failures_total",
+			value: 0,
+			tags: []metrics.T{
+				metrics.Tag("Type", "send"),
+				metrics.Tag("API", "watch"),
+			},
+		},
+		{
+			name:  "etcd.network.server_stream_failures_total",
+			value: 0,
+			tags: []metrics.T{
+				metrics.Tag("Type", "receive"),
+				metrics.Tag("API", "lease-keepalive"),
+			},
+		},
+		{
+			name:  "etcd.network.server_stream_failures_total",
+			value: 0,
+			tags: []metrics.T{
+				metrics.Tag("Type", "send"),
+				metrics.Tag("API", "lease-keepalive"),
+			},
+		},
+		{
+			name:  "etcd.network.server_stream_failures_total",
+			value: 2,
+			tags: []metrics.T{
+				metrics.Tag("Type", "send"),
+				metrics.Tag("API", "watch"),
+			},
+		},
+	}, rec.counters)
+}

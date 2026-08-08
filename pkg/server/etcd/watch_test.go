@@ -39,22 +39,31 @@ import (
 	gproto "google.golang.org/protobuf/proto"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 type fakeWatchServer struct {
 	etcdserverpb.Watch_WatchServer
-	ctx  context.Context
-	sent []*etcdserverpb.WatchResponse
+	ctx     context.Context
+	sent    []*etcdserverpb.WatchResponse
+	recvErr error
+	sendErr error
 }
 
 func (s *fakeWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
+	if s.sendErr != nil {
+		return s.sendErr
+	}
 	s.sent = append(s.sent, resp)
 	return nil
 }
 
 func (s *fakeWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	if s.recvErr != nil {
+		return nil, s.recvErr
+	}
 	return nil, context.Canceled
 }
 
@@ -82,6 +91,40 @@ func (s *fakeWatchServer) SendMsg(interface{}) error {
 
 func (s *fakeWatchServer) RecvMsg(interface{}) error {
 	return context.Canceled
+}
+
+func TestWatchServerStreamFailureMetricsCountUnexpectedReceiveAndSendErrors(t *testing.T) {
+	rec := &recordingMetrics{}
+	server := &RPCServer{metricCli: rec}
+
+	recvErr := errors.New("injected watch receive failure")
+	err := server.Watch(&fakeWatchServer{recvErr: recvErr})
+	require.ErrorIs(t, err, recvErr)
+
+	w := &watcher{
+		watchServer: &fakeWatchServer{sendErr: errors.New("injected watch send failure")},
+		metricCli:   rec,
+	}
+	require.Error(t, w.Send(&etcdserverpb.WatchResponse{}))
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Contains(t, rec.counters, recordedCounter{
+		name:  "etcd.network.server_stream_failures_total",
+		value: 1,
+		tags: []metrics.T{
+			metrics.Tag("Type", "receive"),
+			metrics.Tag("API", "watch"),
+		},
+	})
+	require.Contains(t, rec.counters, recordedCounter{
+		name:  "etcd.network.server_stream_failures_total",
+		value: 1,
+		tags: []metrics.T{
+			metrics.Tag("Type", "send"),
+			metrics.Tag("API", "watch"),
+		},
+	})
 }
 
 type createCallbackWatchServer struct {

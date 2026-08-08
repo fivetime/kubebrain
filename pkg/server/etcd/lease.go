@@ -287,6 +287,9 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			return nil
 		}
 		if err != nil {
+			if shouldCountServerStreamFailure(stream.Context(), err) {
+				emitEtcdServerStreamFailureCounter(m.srv.metricCli, "receive", "lease-keepalive", 1)
+			}
 			return err
 		}
 		// Match etcd's LeaseServer: capture the header before authorization and
@@ -313,7 +316,7 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 				return forwardErr
 			}
 			m.srv.observeForwardedRevision(resp.GetHeader(), nil)
-			return stream.Send(resp)
+			return m.sendLeaseKeepAliveResponse(stream, resp)
 		}
 		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
@@ -350,7 +353,7 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		} else if err != nil {
 			return mapFenceErr(err)
 		}
-		if err := stream.Send(&etcdserverpb.LeaseKeepAliveResponse{
+		if err := m.sendLeaseKeepAliveResponse(stream, &etcdserverpb.LeaseKeepAliveResponse{
 			Header: txnHeader(int64(responseRevision)),
 			ID:     req.ID,
 			TTL:    ttl,
@@ -358,6 +361,14 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			return err
 		}
 	}
+}
+
+func (m *leaseManager) sendLeaseKeepAliveResponse(stream etcdserverpb.Lease_LeaseKeepAliveServer, resp *etcdserverpb.LeaseKeepAliveResponse) error {
+	err := stream.Send(resp)
+	if shouldCountServerStreamFailure(stream.Context(), err) {
+		emitEtcdServerStreamFailureCounter(m.srv.metricCli, "send", "lease-keepalive", 1)
+	}
+	return err
 }
 
 func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {

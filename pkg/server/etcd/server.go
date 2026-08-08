@@ -241,6 +241,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdMVCCWatchEventCounter(metricCli)
 	initEtcdLeaseExpiredCounter(metricCli)
 	initEtcdClientRequestCounters(metricCli)
+	initEtcdServerStreamFailureCounters(metricCli)
 	return server
 }
 

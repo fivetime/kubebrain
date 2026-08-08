@@ -484,6 +484,7 @@ server 状态指标 `etcd_server_has_leader`、`etcd_server_is_leader`、
 `etcd_server_leader_changes_seen_total`、
 `etcd_server_is_learner`，
 client request 指标 `etcd_server_client_requests_total`，
+server stream failure 指标 `etcd_network_server_stream_failures_total`，
 传统 `/health` 计数指标 `etcd_server_health_success` 与
 `etcd_server_health_failures`，
 auth revision 指标 `etcd_debugging_auth_revision`，
@@ -553,7 +554,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
 `livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
 `info_metrics=ok`、`client_metrics=404`、`server_identity_metrics=ok`、
-`grpc_metrics=ok`、`client_request_metrics=ok`、`network_metrics=ok`、`mvcc_operation_metrics=ok`、
+`grpc_metrics=ok`、`client_request_metrics=ok`、`network_metrics=ok`、
+`server_stream_metrics=ok`、`mvcc_operation_metrics=ok`、
 `runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
 `health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
 `mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、`lease_metrics=ok`、`promhttp_metrics=ok`、

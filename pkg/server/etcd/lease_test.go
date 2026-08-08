@@ -35,6 +35,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -44,6 +45,7 @@ type fakeLeaseKeepAliveServer struct {
 	ctx      context.Context
 	requests []*etcdserverpb.LeaseKeepAliveRequest
 	sent     []*etcdserverpb.LeaseKeepAliveResponse
+	sendErr  error
 	onSend   func()
 	recv     func() (*etcdserverpb.LeaseKeepAliveRequest, error)
 }
@@ -292,7 +294,50 @@ func TestLeaseKeepAliveCancellationInterruptsBlockedReceive(t *testing.T) {
 	close(unblockRecv)
 }
 
+func TestLeaseKeepAliveServerStreamFailureMetricsCountUnexpectedReceiveAndSendErrors(t *testing.T) {
+	rec := &recordingMetrics{}
+	manager := &leaseManager{srv: &RPCServer{metricCli: rec}}
+
+	recvErr := errors.New("injected lease keepalive receive failure")
+	err := manager.leaseKeepAlive(&fakeLeaseKeepAliveServer{
+		ctx: context.Background(),
+		recv: func() (*etcdserverpb.LeaseKeepAliveRequest, error) {
+			return nil, recvErr
+		},
+	})
+	require.ErrorIs(t, err, recvErr)
+
+	sendErr := errors.New("injected lease keepalive send failure")
+	err = manager.sendLeaseKeepAliveResponse(&fakeLeaseKeepAliveServer{
+		ctx:     context.Background(),
+		sendErr: sendErr,
+	}, &etcdserverpb.LeaseKeepAliveResponse{})
+	require.ErrorIs(t, err, sendErr)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Contains(t, rec.counters, recordedCounter{
+		name:  "etcd.network.server_stream_failures_total",
+		value: 1,
+		tags: []metrics.T{
+			metrics.Tag("Type", "receive"),
+			metrics.Tag("API", "lease-keepalive"),
+		},
+	})
+	require.Contains(t, rec.counters, recordedCounter{
+		name:  "etcd.network.server_stream_failures_total",
+		value: 1,
+		tags: []metrics.T{
+			metrics.Tag("Type", "send"),
+			metrics.Tag("API", "lease-keepalive"),
+		},
+	})
+}
+
 func (f *fakeLeaseKeepAliveServer) Send(resp *etcdserverpb.LeaseKeepAliveResponse) error {
+	if f.sendErr != nil {
+		return f.sendErr
+	}
 	f.sent = append(f.sent, resp)
 	if f.onSend != nil {
 		f.onSend()

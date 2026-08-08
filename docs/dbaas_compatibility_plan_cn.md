@@ -40190,9 +40190,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Watch fragmentation、latest-revision tombstone、watch exec、bcrypt-cost、snapshot backend error
   和 stream error logging race 审计。对照 `/root/etcd` commit `dd1baf6e9`、`896a5e4a2` 与
   `a5b32ba94`：官方新增 `etcd_server_slow_apply_total`、heartbeat failures 和 network server stream
-  failure metrics。KubeBrain 不运行 upstream Raft/v3rpc metric registry；等价可观测面是 request
-  duration、watch send-loop/control/progress、leader election health、readyz、peer service health、
-  operation audit 和 production topology probes。metric 名称级 parity 继续归 observability oracle。
+  failure metrics。KubeBrain 不运行 upstream Raft apply loop；慢 apply、leader 心跳失败语义继续由
+  request duration、leader election health、readyz、peer service health、operation audit 和
+  production topology probes 约束；network server stream failure metric 已在 A4045 按
+  Watch/LeaseKeepAlive public stream 边界补齐。
 
   对照 `b30a1166e`：官方修复 auth `WithRoot` panic 并增强 JWT 覆盖。KubeBrain auth/JWT 已固定
   root/user/role lifecycle、malformed provider、HS/RS/ES/EdDSA、verify-only、公私钥 mismatch、
@@ -42919,6 +42920,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/Read`/`/Write`/`/Watch` listener 方法不是 etcd v3 API，不计入该 counter。
   `RPCServer.New` 预初始化 `unary/unknown` 与 `stream/unknown`，生产 gate 要求
   `etcd_server_client_requests_total` family 存在并新增 `client_request_metrics=ok` 摘要。
+- A4045 实现并固定 upstream server stream failures counter：上游
+  `/root/etcd/server/etcdserver/api/v3rpc/metrics.go` 注册
+  `etcd_network_server_stream_failures_total{Type,API}`，并在
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 与 `lease.go` 的 Watch、
+  LeaseKeepAlive stream receive/send 非客户端正常关闭失败时递增。KubeBrain 的等价边界是
+  public Watch 与 LeaseKeepAlive stream：`Watch` 的 `Recv` 非 EOF/非客户端取消错误递增
+  `{Type="receive",API="watch"}`，所有 Watch response send 失败在 `watcher.Send`
+  统一递增 `{Type="send",API="watch"}`；LeaseKeepAlive 的 `Recv` 与 response `Send`
+  分别递增 `{API="lease-keepalive"}`。context canceled/deadline、gRPC Canceled/
+  DeadlineExceeded、client disconnected 和 stream CANCEL 不计数，保持 upstream
+  client-close 排除语义。`RPCServer.New` 预初始化 watch/lease-keepalive 的 receive/send
+  四个 label 组合，生产 gate 要求 `etcd_network_server_stream_failures_total` family
+  存在并新增 `server_stream_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 
