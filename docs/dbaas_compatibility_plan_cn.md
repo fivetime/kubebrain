@@ -42756,6 +42756,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EnablePprof=true` 时 info 口可访问快速返回的 `/debug/pprof/cmdline` 与
   `/debug/pprof/goroutine?debug=1`，同时确认即使显式开启，client 数据口这些 pprof
   子路径仍返回 404。生产运行态仍由 A4022 固定默认关闭边界。
+- A4026 收紧 info `/metrics` 的 Go runtime 和 promhttp 基础指标覆盖：上游
+  `tests/e2e/metrics_test.go` 的 `TestNoMetricsMissing` 将 `go_info`、`go_goroutines`、
+  `go_threads`、`promhttp_metric_handler_requests_in_flight` 和
+  `promhttp_metric_handler_requests_total` 列为 basic metrics。KubeBrain 当前 info 口
+  Prometheus handler 已通过默认 registry 暴露这些 family；生产 gate 在
+  `EXPECTED_INFO_METRICS_CHECKS=1` 时现在要求这些 runtime/promhttp metric family 均存在，
+  并通过 `runtime_metrics=ok` 与 `promhttp_metrics=ok` 摘要固定。该检查只约束 family
+  存在，不绑定 goroutine/thread 数量或 promhttp 请求计数，避免把瞬时运行态误写成兼容契约。
 
 ### P2：运维兼容和长期验证
 

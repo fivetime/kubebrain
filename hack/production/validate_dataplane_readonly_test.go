@@ -255,7 +255,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOK:     true,
-			wantOutput: "info_metrics=ok, client_metrics=404",
+			wantOutput: "info_metrics=ok, client_metrics=404, grpc_metrics=ok, runtime_metrics=ok, promhttp_metrics=ok",
 		},
 		{
 			name: "rejects missing info server version metric",
@@ -270,6 +270,31 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			infoMetrics: "etcd_cluster_version{cluster=\"default\",cluster_version=\"3.7\"} 1\ngrpc_server_handled_total{grpc_code=\"OK\"} 1\n",
 			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOutput:  "info metrics mismatch: expected etcd_server_version server_version=3.7.0",
+		},
+		{
+			name: "rejects missing info go runtime metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.Join([]string{
+				`etcd_server_version{cluster="default",server_version="3.7.0"} 1`,
+				`etcd_cluster_version{cluster="default",cluster_version="3.7"} 1`,
+				`grpc_server_handled_total{grpc_code="OK",grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`grpc_server_started_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`grpc_server_msg_received_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`grpc_server_msg_sent_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`go_goroutines 12`,
+				`go_threads 7`,
+				`promhttp_metric_handler_requests_in_flight 1`,
+				`promhttp_metric_handler_requests_total{code="200"} 1`,
+			}, "\n") + "\n",
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "info metrics mismatch: expected go_info",
 		},
 		{
 			name: "rejects exposed client metrics endpoint",
@@ -304,6 +329,31 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			}, "\n") + "\n",
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOutput: "info metrics mismatch: expected grpc_server_started_total",
+		},
+		{
+			name: "rejects missing info promhttp metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.Join([]string{
+				`etcd_server_version{cluster="default",server_version="3.7.0"} 1`,
+				`etcd_cluster_version{cluster="default",cluster_version="3.7"} 1`,
+				`grpc_server_handled_total{grpc_code="OK",grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`grpc_server_started_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`grpc_server_msg_received_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`grpc_server_msg_sent_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+				`go_info{version="go1.26.5"} 1`,
+				`go_goroutines 12`,
+				`go_threads 7`,
+				`promhttp_metric_handler_requests_in_flight 1`,
+			}, "\n") + "\n",
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "info metrics mismatch: expected promhttp_metric_handler_requests_total",
 		},
 		{
 			name: "reports info debug vars boundary in summary",
@@ -3049,6 +3099,11 @@ func defaultInfoMetrics(value string) string {
 		`grpc_server_started_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
 		`grpc_server_msg_received_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
 		`grpc_server_msg_sent_total{grpc_method="Range",grpc_service="etcdserverpb.KV",grpc_type="unary"} 1`,
+		`go_info{version="go1.26.5"} 1`,
+		`go_goroutines 12`,
+		`go_threads 7`,
+		`promhttp_metric_handler_requests_in_flight 1`,
+		`promhttp_metric_handler_requests_total{code="200"} 1`,
 	}, "\n") + "\n"
 }
 
@@ -3130,6 +3185,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"info_metrics=ok",
 		"client_metrics=404",
 		"grpc_metrics=ok",
+		"runtime_metrics=ok",
+		"promhttp_metrics=ok",
 		"info_debug_vars=ok",
 		"client_debug_vars=404",
 		"debug_vars_method_headers=ok",
