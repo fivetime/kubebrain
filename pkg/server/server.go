@@ -177,6 +177,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.brainServer = brain.New(backend, metricCli, peerService)
 	s.leaderElection = election
 	s.peers = peerService
+	s.initLegacyHealthMetrics()
 	go func() {
 		defer close(s.campaignDone)
 		peerService.Campaign(runCtx)
@@ -687,6 +688,14 @@ func (s *server) recordLegacyHealth(success bool) {
 		name = "etcd.server.health_success"
 	}
 	_ = s.metricCli.EmitCounter(name, 1)
+}
+
+func (s *server) initLegacyHealthMetrics() {
+	if s.metricCli == nil {
+		return
+	}
+	_ = s.metricCli.EmitCounter("etcd.server.health_success", 0)
+	_ = s.metricCli.EmitCounter("etcd.server.health_failures", 0)
 }
 
 func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {

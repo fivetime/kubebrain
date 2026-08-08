@@ -42800,6 +42800,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求三个 family 均存在，并通过
   `server_state_metrics=ok` 摘要固定；server 单测覆盖 leader/follower/learner 取值、
   立即刷新、周期刷新和 context 取消后停止。
+- A4032 固定传统 `/health` success/failure metric family 的启动后可见性：上游
+  `etcdhttp` 在 package init 注册 `etcd_server_health_success` 与
+  `etcd_server_health_failures`，即使健康集群尚未产生失败请求也会暴露 failure counter
+  family。KubeBrain 原先只在 `/health` 请求路径递增对应 counter，健康运行态可能只出现
+  success family。现在 server 启动时用 0 值预初始化两类 counter，保留真实请求时 `+1`
+  的计数语义；生产 gate 在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求两个 family 均存在，
+  并通过 `health_metrics=ok` 摘要固定。
 
 ### P2：运维兼容和长期验证
 
