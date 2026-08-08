@@ -42527,6 +42527,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `db_size_quota`。新增 `db_size_quota:2147483648` 摘要覆盖和 `db_size_quota:false`
   拒绝覆盖，证明 snake_case quota 字段与 camelCase 一样进入正 JSON integer 校验和
   `min_status_db_size_quota=<n>` 摘要路径。
+- A3994 固定只读 gate 对 Status downgrade_info snake_case envelope 的对等覆盖：
+  etcd `StatusResponse.DowngradeInfo` 包含 bool `enabled` 与 string `targetVersion`。
+  生产 gate 同时支持 `downgradeInfo` 与 `downgrade_info`、`targetVersion` 与
+  `target_version`。新增 snake_case downgrade summary、`downgrade_info:false` 与
+  `target_version:false` 拒绝覆盖，证明 snake_case downgrade 诊断与 camelCase 一样进入
+  对象、bool、semver 和通过摘要路径。
 
 ### P2：运维兼容和长期验证
 
