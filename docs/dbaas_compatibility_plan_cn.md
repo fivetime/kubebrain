@@ -42579,6 +42579,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   字符串，并在通过摘要中输出 `gateway_storage_version=<version>`。新增
   `storageVersion:false` 拒绝覆盖，防止 HTTP gateway 路径在 gRPC Status 已正确时仍暴露
   畸形 storage version envelope。
+- A4003 固定 HTTP gRPC-gateway `Status.dbSizeQuota` 与 `Status.isLearner` envelope：
+  上游 `StatusResponse` 在 gateway JSON 中同样暴露 quota 和 learner 诊断字段。生产 gate
+  现在从 `ENDPOINT/v3/maintenance/status` 读取 `dbSizeQuota`/`db_size_quota` 与
+  `isLearner`/`is_learner`，要求 quota 为正整数、存在的 learner 为 JSON boolean，并在通过摘要中输出
+  `gateway_db_size_quota=<n>`；如果 gateway 返回 learner 字段，则同时输出
+  `gateway_is_learner=<bool>`。新增 `dbSizeQuota:0` 与 `isLearner:"false"` 拒绝覆盖，避免 HTTP gateway 的状态 envelope 与 gRPC
+  `etcdctl endpoint status` 门禁脱节。
 
 ### P2：运维兼容和长期验证
 

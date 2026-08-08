@@ -239,13 +239,43 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:      "ok",
 			count:       "4",
 			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
-			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","downgradeInfo":{}}`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":"2147483648","isLearner":false,"downgradeInfo":{}}`,
 			extraEnv: []string{
 				"EXPECTED_STATUS_CLUSTER_ID=123",
 				"EXPECTED_STATUS_VERSION=3.7.0",
 			},
 			wantOK:     true,
-			wantOutput: "gateway_status_version=3.7.0, gateway_storage_version=3.7.0, gateway_downgrade_info=object",
+			wantOutput: "gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_downgrade_info=object",
+		},
+		{
+			name: "rejects malformed gateway status db size quota envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":0,"isLearner":false,"downgradeInfo":{}}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:      false,
+			wantOutput:  "gateway status dbSizeQuota must be positive",
+		},
+		{
+			name: "rejects malformed gateway status learner envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":"2147483648","isLearner":"false","downgradeInfo":{}}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:      false,
+			wantOutput:  "gateway status isLearner must be boolean",
 		},
 		{
 			name: "rejects malformed gateway status storage version envelope",
@@ -2067,7 +2097,7 @@ func defaultGatewayStatusJSON(value string) string {
 	if value != "" {
 		return value
 	}
-	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","downgradeInfo":{}}`
+	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeQuota":"2147483648","isLearner":false,"downgradeInfo":{}}`
 }
 
 func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {
