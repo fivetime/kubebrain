@@ -343,6 +343,12 @@ func (s *RPCServer) localMemberIsLearner() bool {
 	return member != nil && member.GetIsLearner()
 }
 
+// LocalMemberIsLearner reports the local member's learner role as exposed by
+// etcd-compatible membership metadata.
+func (s *RPCServer) LocalMemberIsLearner() bool {
+	return s.localMemberIsLearner()
+}
+
 func (s *RPCServer) memberPeerURLConflicts(id uint64, peerURLs []string) bool {
 	existing := make(map[string]struct{})
 	for _, member := range s.membersSnapshot() {

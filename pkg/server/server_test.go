@@ -35,6 +35,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	etcdcompat "github.com/kubewharf/kubebrain/pkg/server/etcd"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/kubewharf/kubebrain/pkg/server/service/revision"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -357,6 +358,73 @@ func TestFDMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 	require.Equal(t, stoppedAtUsed, metrics.countGauge("os.fd.used"))
 	require.Equal(t, stoppedAtLimit, metrics.countGauge("os.fd.limit"))
+}
+
+func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := backend.NewBackend(kv, backend.Config{
+		Prefix: "/registry", Identity: "learner.local:2380", EnableEtcdCompatibility: true,
+	}, m)
+	t.Cleanup(func() { require.NoError(t, b.(interface{ Close() error }).Close()) })
+
+	members, err := etcdcompat.ParseInitialCluster("learner=http://learner.local:2380", 2379, false)
+	require.NoError(t, err)
+	require.Len(t, members, 1)
+	members[0].IsLearner = true
+
+	recorder := &healthMetricRecorder{}
+	rpc := etcdcompat.New(b, recorder, nil)
+	rpc.SetStaticMembers(members)
+	s := &server{
+		etcdServer:     rpc,
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{LeaderAddress: "leader.local:2380", IsLeader: false}},
+		metricCli:      recorder,
+	}
+	s.refreshServerStateMetrics()
+
+	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.has_leader"))
+	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.is_leader"))
+	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.is_learner"))
+}
+
+func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	s := &server{
+		metricCli:      metrics,
+		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{LeaderAddress: "self", IsLeader: true}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runServerStateMetricsRefresh(ctx, time.Millisecond)
+	}()
+	require.Eventually(t, func() bool {
+		return metrics.countGauge("etcd.server.has_leader") >= 2 &&
+			metrics.countGauge("etcd.server.is_leader") >= 2 &&
+			metrics.countGauge("etcd.server.is_learner") >= 2
+	}, time.Second, time.Millisecond)
+
+	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.has_leader")[:2])
+	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.is_leader")[:2])
+	require.Equal(t, []interface{}{0, 0}, metrics.gaugeValues("etcd.server.is_learner")[:2])
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server state metrics refresh did not stop after context cancellation")
+	}
+	stoppedAtLeader := metrics.countGauge("etcd.server.has_leader")
+	stoppedAtIsLeader := metrics.countGauge("etcd.server.is_leader")
+	stoppedAtLearner := metrics.countGauge("etcd.server.is_learner")
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, stoppedAtLeader, metrics.countGauge("etcd.server.has_leader"))
+	require.Equal(t, stoppedAtIsLeader, metrics.countGauge("etcd.server.is_leader"))
+	require.Equal(t, stoppedAtLearner, metrics.countGauge("etcd.server.is_learner"))
 }
 
 // TestLeadershipHealthTransitions pins #61: losing leadership must flip the gRPC

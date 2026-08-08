@@ -34,6 +34,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/brain"
 	"github.com/kubewharf/kubebrain/pkg/server/etcd"
@@ -95,6 +96,7 @@ type server struct {
 	quotaMetricsDone chan struct{}
 	alarmMetricsDone chan struct{}
 	fdMetricsDone    chan struct{}
+	stateMetricsDone chan struct{}
 	closeOnce        sync.Once
 	closeErr         error
 }
@@ -115,6 +117,9 @@ func (s *server) Close() error {
 		}
 		if s.fdMetricsDone != nil {
 			<-s.fdMetricsDone
+		}
+		if s.stateMetricsDone != nil {
+			<-s.stateMetricsDone
 		}
 		if s.etcdServer != nil {
 			s.etcdServer.Close()
@@ -140,6 +145,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		quotaMetricsDone: make(chan struct{}),
 		alarmMetricsDone: make(chan struct{}),
 		fdMetricsDone:    make(chan struct{}),
+		stateMetricsDone: make(chan struct{}),
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
@@ -187,6 +193,10 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		defer close(s.fdMetricsDone)
 		s.runFDMetricsRefresh(runCtx, fdMetricsRefreshInterval)
 	}()
+	go func() {
+		defer close(s.stateMetricsDone)
+		s.runServerStateMetricsRefresh(runCtx, serverStateMetricsRefreshInterval)
+	}()
 	return s
 }
 
@@ -197,6 +207,46 @@ const alarmMetricsRefreshInterval = time.Second
 const alarmMetricsRefreshTimeout = 5 * time.Second
 
 const fdMetricsRefreshInterval = 10 * time.Minute
+
+const serverStateMetricsRefreshInterval = time.Second
+
+func boolGauge(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func (s *server) refreshServerStateMetrics() {
+	hasLeader := false
+	isLeader := false
+	if s.leaderElection != nil {
+		hasLeader = election.IsLeaderKnown(s.leaderElection.GetLeaderInfo())
+		isLeader = s.leaderElection.IsLeader()
+	}
+	s.metricCli.EmitGauge("etcd.server.has_leader", boolGauge(hasLeader))
+	s.metricCli.EmitGauge("etcd.server.is_leader", boolGauge(isLeader))
+
+	isLearner := false
+	if s.etcdServer != nil {
+		isLearner = s.etcdServer.LocalMemberIsLearner()
+	}
+	s.metricCli.EmitGauge("etcd.server.is_learner", boolGauge(isLearner))
+}
+
+func (s *server) runServerStateMetricsRefresh(ctx context.Context, interval time.Duration) {
+	s.refreshServerStateMetrics()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshServerStateMetrics()
+		}
+	}
+}
 
 func (s *server) refreshFDMetrics() {
 	used, err := runtimeutil.FDUsage()

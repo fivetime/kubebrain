@@ -477,6 +477,8 @@ PROBE_TIMEOUT=10s \
 以及 Go runtime/promhttp 基础指标 `go_info`、
 `go_goroutines`、`go_threads`、`go_gc_gogc_percent`、`go_gc_gomemlimit_bytes`、
 `go_sched_gomaxprocs_threads`、`os_fd_used`、`os_fd_limit`、
+server 状态指标 `etcd_server_has_leader`、`etcd_server_is_leader`、
+`etcd_server_is_learner`，
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
@@ -533,7 +535,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
 `livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
 `info_metrics=ok`、`client_metrics=404`、`server_identity_metrics=ok`、
-`grpc_metrics=ok`、`runtime_metrics=ok`、`fd_metrics=ok`、`promhttp_metrics=ok`、
+`grpc_metrics=ok`、`runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
+`promhttp_metrics=ok`、
 `info_debug_vars=ok`、
 `client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、
 `info_pprof=404`、`health=true`、`serializable_health=true`、

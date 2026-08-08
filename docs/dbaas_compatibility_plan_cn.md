@@ -42792,6 +42792,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   现在在 client/peer gRPC 服务注册完成后调用 `grpc_prometheus.Register` 预初始化服务
   method label series，使每个 Pod 启动后即暴露 gRPC server metric families；生产 gate
   因此不再依赖 Service 负载均衡恰好把 status/metrics 请求打到同一 Pod。
+- A4031 实现并固定 server state metrics：上游 basic metrics 集合包含
+  `etcd_server_has_leader`、`etcd_server_is_leader` 与 `etcd_server_is_learner`。KubeBrain
+  现在在 server 生命周期中启动 `runServerStateMetricsRefresh`，启动立即采样并按 1 秒周期
+  从 leader election holder、本节点 leader 状态和本地 MemberList learner 位真实派生
+  `etcd.server.has_leader`、`etcd.server.is_leader` 与 `etcd.server.is_learner`。生产 gate
+  在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求三个 family 均存在，并通过
+  `server_state_metrics=ok` 摘要固定；server 单测覆盖 leader/follower/learner 取值、
+  立即刷新、周期刷新和 context 取消后停止。
 
 ### P2：运维兼容和长期验证
 
