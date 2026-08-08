@@ -24,6 +24,7 @@ EXPECTED_HASHKV_HASH="${EXPECTED_HASHKV_HASH:-}"
 EXPECTED_READYZ_NAMED_CHECKS="${EXPECTED_READYZ_NAMED_CHECKS:-}"
 EXPECTED_LIVEZ_NAMED_CHECKS="${EXPECTED_LIVEZ_NAMED_CHECKS:-}"
 EXPECTED_HEALTH_EXCLUDE_CHECKS="${EXPECTED_HEALTH_EXCLUDE_CHECKS:-}"
+EXPECTED_HEALTH_METHOD_CHECKS="${EXPECTED_HEALTH_METHOD_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -56,6 +57,10 @@ if [[ -n "$EXPECTED_LIVEZ_NAMED_CHECKS" && "$EXPECTED_LIVEZ_NAMED_CHECKS" != "1"
 fi
 if [[ -n "$EXPECTED_HEALTH_EXCLUDE_CHECKS" && "$EXPECTED_HEALTH_EXCLUDE_CHECKS" != "1" ]]; then
   echo "EXPECTED_HEALTH_EXCLUDE_CHECKS must be empty or 1" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_HEALTH_METHOD_CHECKS" && "$EXPECTED_HEALTH_METHOD_CHECKS" != "1" ]]; then
+  echo "EXPECTED_HEALTH_METHOD_CHECKS must be empty or 1" >&2
   exit 2
 fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
@@ -117,6 +122,28 @@ for status_endpoint in "${status_endpoint_array[@]}"; do
 done
 run_with_probe_timeout() {
   "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"
+}
+
+expect_post_method_not_allowed() {
+  local name="$1"
+  local url="$2"
+  local response
+  local status_line
+
+  response="$(run_with_probe_timeout "$CURL" -sS -i -X POST "$url")"
+  status_line="${response%%$'\n'*}"
+  if [[ "$status_line" != HTTP/*" 405 "* ]]; then
+    echo "${name} method mismatch: expected HTTP 405, got ${status_line}" >&2
+    exit 1
+  fi
+  if [[ "$response" != *$'\nAllow: GET\r\n'* && "$response" != *$'\nAllow: GET\n'* ]]; then
+    echo "${name} method mismatch: expected Allow: GET, got ${response}" >&2
+    exit 1
+  fi
+  if [[ "$response" != *"Method Not Allowed"* ]]; then
+    echo "${name} method mismatch: expected Method Not Allowed body, got ${response}" >&2
+    exit 1
+  fi
 }
 
 kubectl_args=()
@@ -236,6 +263,11 @@ if [[ "$EXPECTED_HEALTH_EXCLUDE_CHECKS" == "1" ]]; then
     exit 1
   fi
 fi
+if [[ "$EXPECTED_HEALTH_METHOD_CHECKS" == "1" ]]; then
+  expect_post_method_not_allowed "livez" "$livez_url"
+  expect_post_method_not_allowed "readyz" "$READYZ_URL"
+  livez_summary+=", health_method_checks=ok"
+fi
 
 health_url="${ENDPOINT%/}/health"
 health_json="$(run_with_probe_timeout "$CURL" -fsS "$health_url")"
@@ -250,6 +282,9 @@ IFS=$'\t' read -r health_value health_reason <<<"$health_values"
 if [[ "$health_value" != "true" || "$health_reason" != "" ]]; then
   echo "health mismatch: expected health=true reason empty, got health=${health_value} reason=${health_reason}" >&2
   exit 1
+fi
+if [[ "$EXPECTED_HEALTH_METHOD_CHECKS" == "1" ]]; then
+  expect_post_method_not_allowed "health" "$health_url"
 fi
 
 serializable_health_url="${ENDPOINT%/}/health?serializable=true"

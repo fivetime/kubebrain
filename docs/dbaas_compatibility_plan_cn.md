@@ -42696,6 +42696,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   分项，且 `/readyz?verbose&exclude=unknown` 继续返回所有已注册 readiness 分项；通过摘要新增
   `health_exclude_checks=ok`，防止 root 健康检查通过但 exclude 过滤、未知项兼容或 verbose
   诊断体发生漂移。
+- A4017 把 `/health`、`/livez` 与 `/readyz` 的非 GET 方法边界纳入完整增强门禁：
+  上游 `NewHealthHandler` 与 `newHealthHandler` 对非 GET 请求设置 `Allow: GET` 并返回
+  HTTP 405 `Method Not Allowed`。生产 gate 在 `EXPECTED_HEALTH_METHOD_CHECKS=1` 时对
+  三个健康入口发送 POST，要求状态码、Allow 头和响应体均与上游一致；通过摘要新增
+  `health_method_checks=ok`，防止健康入口只在 GET happy path 兼容但方法约束、负载均衡器
+  预检或误用诊断响应发生漂移。
 
 ### P2：运维兼容和长期验证
 
