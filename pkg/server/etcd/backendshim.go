@@ -131,6 +131,11 @@ type BackendShim interface {
 	// Count counts the number of kvs in range
 	Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
+	// CountAtRevision returns the exact live-key count of [key,end) from the
+	// local in-memory count index or the leader's count proxy, without falling
+	// back to a storage scan.
+	CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (int64, bool)
+
 	// HashKV checksums retained user MVCC state and returns hash, current and
 	// compact revisions captured by the same fenced logical snapshot.
 	HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error)

@@ -209,7 +209,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	// then the rev=0 count path — and election gaps affect every request at once).
 	var proxyQuietUntil atomic.Int64
 	server.backend.SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool) {
-		if peers.IsLeader() || !peers.EtcdProxyEnabled() {
+		if peers == nil || peers.IsLeader() || !peers.EtcdProxyEnabled() {
 			return 0, false
 		}
 		if time.Now().UnixNano() < proxyQuietUntil.Load() {
@@ -242,6 +242,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdLeaseExpiredCounter(metricCli)
 	initEtcdClientRequestCounters(metricCli)
 	initEtcdServerStreamFailureCounters(metricCli)
+	initEtcdMVCCKeysGauge(metricCli)
 	return server
 }
 

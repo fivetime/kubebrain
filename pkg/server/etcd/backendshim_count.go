@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"math"
 	"strconv"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -69,6 +70,13 @@ type countResolver struct {
 
 func newCountResolver(shim *backendShim) *countResolver {
 	return &countResolver{shim: shim, rangeCountCache: newRevKeyCache(revKeyCacheCap, revKeyCacheMaxBytes)}
+}
+
+func (b *backendShim) CountAtRevision(ctx context.Context, key, end []byte, rev uint64) (int64, bool) {
+	if rev > uint64(math.MaxInt64) {
+		return 0, false
+	}
+	return b.resolveCountFromIndex(ctx, key, end, int64(rev))
 }
 
 func (cr *countResolver) exactRangeCount(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, error) {

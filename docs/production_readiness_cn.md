@@ -492,6 +492,7 @@ quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
 `etcd_mvcc_db_total_size_in_use_in_bytes`（KubeBrain 语义为 keyspace 当前存活 key/value
 逻辑字节，而非 bbolt 文件物理分配），
+MVCC live key 指标 `etcd_debugging_mvcc_keys_total`，
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
@@ -558,7 +559,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `server_stream_metrics=ok`、`mvcc_operation_metrics=ok`、
 `runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
 `health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
-`mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、`lease_metrics=ok`、`promhttp_metrics=ok`、
+`mvcc_key_metrics=ok`、`mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、
+`lease_metrics=ok`、`promhttp_metrics=ok`、
 `info_debug_vars=ok`、
 `client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、
 `info_pprof=404`、`health=true`、`serializable_health=true`、

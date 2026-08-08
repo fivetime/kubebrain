@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sync"
@@ -37,9 +38,16 @@ type recordingMetrics struct {
 	mu         sync.Mutex
 	histograms []recordedHistogram
 	counters   []recordedCounter
+	gauges     []recordedGauge
 }
 
 type recordedCounter struct {
+	name  string
+	value interface{}
+	tags  []metrics.T
+}
+
+type recordedGauge struct {
 	name  string
 	value interface{}
 	tags  []metrics.T
@@ -60,7 +68,16 @@ func (r *recordingMetrics) EmitCounter(name string, value interface{}, tags ...m
 	return nil
 }
 
-func (r *recordingMetrics) EmitGauge(string, interface{}, ...metrics.T) error { return nil }
+func (r *recordingMetrics) EmitGauge(name string, value interface{}, tags ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.gauges = append(r.gauges, recordedGauge{
+		name:  name,
+		value: value,
+		tags:  append([]metrics.T(nil), tags...),
+	})
+	return nil
+}
 
 func (r *recordingMetrics) EmitHistogram(name string, value interface{}, tags ...metrics.T) error {
 	r.mu.Lock()
@@ -126,6 +143,65 @@ func TestEtcdMVCCWatchEventCounterUsesUpstreamMetricName(t *testing.T) {
 	require.Equal(t, []recordedCounter{
 		{name: "etcd_debugging.mvcc.events_total", value: 0},
 		{name: "etcd_debugging.mvcc.events_total", value: 3},
+	}, rec.counters)
+}
+
+func TestEtcdMVCCKeysGaugeUsesUpstreamMetricName(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initEtcdMVCCKeysGauge(rec)
+	emitEtcdMVCCKeysGauge(rec, 7)
+
+	require.Equal(t, []recordedGauge{
+		{name: "etcd_debugging.mvcc.keys_total", value: int64(0)},
+		{name: "etcd_debugging.mvcc.keys_total", value: int64(7)},
+	}, rec.gauges)
+}
+
+type countIndexBackendShim struct {
+	BackendShim
+	count  int64
+	served bool
+	key    []byte
+	end    []byte
+	rev    uint64
+}
+
+func (b *countIndexBackendShim) CountAtRevision(_ context.Context, key, end []byte, rev uint64) (int64, bool) {
+	b.key = append([]byte(nil), key...)
+	b.end = append([]byte(nil), end...)
+	b.rev = rev
+	return b.count, b.served
+}
+
+func TestRefreshMVCCKeysMetricUsesCountIndexOnly(t *testing.T) {
+	rec := &recordingMetrics{}
+	backend := &countIndexBackendShim{count: 3, served: true}
+	server := &RPCServer{backend: backend, metricCli: rec}
+
+	require.True(t, server.RefreshMVCCKeysMetric(context.Background()))
+
+	require.Equal(t, []byte(nil), backend.key)
+	require.Equal(t, []byte{0}, backend.end)
+	require.Zero(t, backend.rev)
+	require.Equal(t, []recordedGauge{
+		{name: "etcd_debugging.mvcc.keys_total", value: int64(3)},
+	}, rec.gauges)
+	require.Empty(t, rec.counters)
+}
+
+func TestRefreshMVCCKeysMetricSkipsScanWhenCountIndexUnavailable(t *testing.T) {
+	rec := &recordingMetrics{}
+	server := &RPCServer{
+		backend:   &countIndexBackendShim{served: false},
+		metricCli: rec,
+	}
+
+	require.False(t, server.RefreshMVCCKeysMetric(context.Background()))
+
+	require.Empty(t, rec.gauges)
+	require.Equal(t, []recordedCounter{
+		{name: "mvcc.keys_total.refresh.miss", value: 1},
 	}, rec.counters)
 }
 

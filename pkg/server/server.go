@@ -248,6 +248,7 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	if s.etcdServer != nil {
 		s.etcdServer.RefreshAuthMetrics(ctx)
 		s.etcdServer.RefreshWatchMetrics()
+		s.etcdServer.RefreshMVCCKeysMetric(ctx)
 	}
 
 	if s.backend != nil {

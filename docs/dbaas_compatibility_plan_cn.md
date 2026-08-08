@@ -42933,6 +42933,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client-close 排除语义。`RPCServer.New` 预初始化 watch/lease-keepalive 的 receive/send
   四个 label 组合，生产 gate 要求 `etcd_network_server_stream_failures_total` family
   存在并新增 `server_stream_metrics=ok` 摘要。
+- A4046 实现并固定 upstream MVCC live key gauge：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 注册
+  `etcd_debugging_mvcc_keys_total`，并由 MVCC key index 在 live key 创建/删除时维护。
+  KubeBrain 的等价边界是 etcd user keyspace 的当前 live-key 总数；现在
+  `RPCServer.New` 用 0 预初始化 `etcd_debugging.mvcc.keys_total`，server 状态刷新只在
+  backend 本地 count-index 或 leader count proxy 能精确回答 `[, \0)` 当前 revision 时更新该
+  gauge。刷新路径不退化为全量扫描；count-index disabled/rebuild/不可服务且 leader proxy
+  也不可用时跳过该轮并递增内部 `mvcc.keys_total.refresh.miss`，避免为了指标制造周期性
+  O(keyspace) 生产负载。生产 gate 要求 `etcd_debugging_mvcc_keys_total` family 存在并新增
+  `mvcc_key_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 
