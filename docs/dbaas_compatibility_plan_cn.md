@@ -444,7 +444,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 - **Status leader/版本诊断（2026-07-16）**：修复无 leader 时把未知地址回退为
   本机 ID、导致每个副本都声称自己是 leader 的错误；现在与 etcd 一致返回
   `Leader=0` 并在 Errors 中加入 `etcdserver: no leader`。同时显式返回
-  `StorageVersion=3.7.0`（表示 KubeBrain 当前对外持久化语义版本，不表示 bbolt
+  `StorageVersion=3.7`（表示 KubeBrain 当前对外持久化语义版本，不表示 bbolt
   格式）和 `DowngradeInfo{Enabled:false}`，避免官方诊断输出留空或依赖 nil 默认。
 - **Alarm 平台边界（2026-07-16）**：`Alarm(GET)` 继续返回空集合，因为 TiKV
   没有 KubeBrain 单逻辑库的 bbolt NOSPACE/CORRUPT alarm；`ACTIVATE/DEACTIVATE`
@@ -15002,7 +15002,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   破坏依赖空响应判定的 `etcdctl defrag`/运维探测兼容性。
 - A1110 固定 clientv3 Status 协议 metadata：
   A33/A49 和 `maintenance_semantics` compat 已要求 `Maintenance.Status` 暴露可被
-  kube-apiserver 与运维工具解析的 `Version=3.7.0`、`StorageVersion=3.7.0`、
+  kube-apiserver 与运维工具解析的 `Version=3.7.0`、`StorageVersion=3.7`、
   `DbSizeQuota`、非空 header/raft term 以及 `DowngradeInfo{Enabled:false}`；本地此前
   主要在服务层断言这些字段，public clientv3 只覆盖 alarm errors。本轮新增 bufconn
   official clientv3 回归，先写入 probe key 推进 revision，再调用
@@ -42384,8 +42384,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Status payload 继续通过。
 - A3967 固定只读 gate 对 Status storageVersion envelope 的可选 fail-closed 判定：
   etcd `StatusResponse.StorageVersion` 是 db file schema 版本字符串，上游存储迁移工具常使用
-  major.minor storage version（如 `3.6`），KubeBrain 当前 Status 则返回对外兼容版本
-  `3.7.0`。`validate-dataplane-readonly.sh`
+  major.minor storage version（如 `3.6`）；KubeBrain `Maintenance.Status` 也返回
+  `ClusterVersion=3.7`。`validate-dataplane-readonly.sh`
   现在允许生产 status 暂不暴露该字段，但一旦出现 `storageVersion`/`storage_version`，必须是
   `X.Y` 或 `X.Y.Z` 字符串，并在通过摘要输出 `status_storage_versions=<unique>`；新增 status storage
   version summary 与 malformed status storage version 拒绝覆盖。
@@ -42539,10 +42539,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 disabled downgrade info without target 通过覆盖，防止生产 gate 把正常空闲态误判为
   `enabled_without_target`，同时保留 `enabled=true` 必须携带 semver target 的 fail-closed 约束。
 - A3996 放宽只读 gate 对 Status storageVersion 的版本格式兼容：对照 `/root/etcd`
-  storage migration 代码，官方 storage version 常以 `major.minor` 参与比较；但 KubeBrain
-  `Maintenance.Status` 当前返回 `StorageVersion=Version`，即完整 `3.7.0`。生产 gate 现在同时接受
+  storage migration 代码，官方 storage version 常以 `major.minor` 参与比较。生产 gate 现在同时接受
   `X.Y` 与 `X.Y.Z`，新增 full status storage version summary 通过覆盖，并把 malformed 用例改为
-  `3.x`，避免 gate 在 KubeBrain 真实完整版本进入 `endpoint status -w json` 时误报。
+  `3.x`，避免诊断解析器在兼容历史完整版本输出时误报。
+- A3997 将 KubeBrain gRPC `Status.StorageVersion` 对齐 major.minor storage version：
+  `/root/etcd` 把 storage version 与 server binary semver 分开处理，`storageVersionToString`
+  输出 `major.minor`。KubeBrain 之前复用 `Version=3.7.0`，会把 binary/API version 与 storage
+  schema version 混在一起；现在 `Maintenance.Status` 返回 `ClusterVersion=3.7`，gateway JSON
+  和 clientv3 status 单测同步固定该契约，保留 `Status.Version=3.7.0` 表示对外 API 能力。
 
 ### P2：运维兼容和长期验证
 

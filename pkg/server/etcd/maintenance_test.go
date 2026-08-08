@@ -217,7 +217,7 @@ func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	statusResp, err := server.Status(ctx, &etcdserverpb.StatusRequest{})
 	require.NoError(t, err)
 	require.Equal(t, Version, statusResp.Version)
-	require.Equal(t, Version, statusResp.StorageVersion)
+	require.Equal(t, ClusterVersion, statusResp.StorageVersion)
 	require.NotNil(t, statusResp.Header)
 	require.NotNil(t, statusResp.DowngradeInfo)
 	require.False(t, statusResp.DowngradeInfo.Enabled)

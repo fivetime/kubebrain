@@ -554,7 +554,7 @@ func TestClientStatusProtocolMetadataMatchesEtcdContract(t *testing.T) {
 	require.Equal(t, response.RaftIndex, response.RaftAppliedIndex)
 	require.GreaterOrEqual(t, response.RaftAppliedIndex, uint64(put.Header.Revision))
 	require.Equal(t, Version, response.Version)
-	require.Equal(t, Version, response.StorageVersion)
+	require.Equal(t, ClusterVersion, response.StorageVersion)
 	require.Equal(t, defaultEtcdBackendQuota, response.DbSizeQuota)
 	require.False(t, response.IsLearner)
 	require.NotNil(t, response.DowngradeInfo)

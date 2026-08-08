@@ -577,7 +577,7 @@ func (s *gatewayMaintenanceServer) Status(ctx context.Context, request *etcdserv
 		Errors:           []string{"alarm active"},
 		DbSizeInUse:      69,
 		IsLearner:        true,
-		StorageVersion:   "3.7.0",
+		StorageVersion:   "3.7",
 		DbSizeQuota:      70,
 	}, nil
 }
@@ -1397,7 +1397,7 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		"errors":["alarm active"],
 		"dbSizeInUse":"69",
 		"isLearner":true,
-		"storageVersion":"3.7.0",
+		"storageVersion":"3.7",
 		"dbSizeQuota":"70"
 	}`,
 		func() bool { return maintenanceServer.request != nil }, &maintenanceServer.md)

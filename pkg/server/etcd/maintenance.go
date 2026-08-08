@@ -295,7 +295,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	resp := &etcdserverpb.StatusResponse{
 		Header:           txnHeader(int64(revision)),
 		Version:          Version,
-		StorageVersion:   Version,
+		StorageVersion:   ClusterVersion,
 		Leader:           leader,
 		RaftIndex:        revision,
 		RaftAppliedIndex: revision,
