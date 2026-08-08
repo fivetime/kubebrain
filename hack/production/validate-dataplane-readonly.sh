@@ -465,8 +465,8 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
               empty
             elif (($storage_version | type) != "string") then
               "not_string"
-            elif ($storage_version | test("^[0-9]+\\.[0-9]+$") | not) then
-              "not_major_minor"
+            elif ($storage_version | test("^[0-9]+\\.[0-9]+(\\.[0-9]+([-+][0-9A-Za-z][0-9A-Za-z.-]*)?)?$") | not) then
+              "not_version"
             else
               empty
             end

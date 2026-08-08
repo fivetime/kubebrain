@@ -42383,10 +42383,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 status db size in use without db size 拒绝覆盖，防止只有 `dbSizeInUse` 的畸形
   Status payload 继续通过。
 - A3967 固定只读 gate 对 Status storageVersion envelope 的可选 fail-closed 判定：
-  etcd `StatusResponse.StorageVersion` 是 db file schema 版本字符串，格式来自 major.minor
-  storage version（如 `3.6`），不是完整 server semver。`validate-dataplane-readonly.sh`
+  etcd `StatusResponse.StorageVersion` 是 db file schema 版本字符串，上游存储迁移工具常使用
+  major.minor storage version（如 `3.6`），KubeBrain 当前 Status 则返回对外兼容版本
+  `3.7.0`。`validate-dataplane-readonly.sh`
   现在允许生产 status 暂不暴露该字段，但一旦出现 `storageVersion`/`storage_version`，必须是
-  `X.Y` 字符串，并在通过摘要输出 `status_storage_versions=<unique>`；新增 status storage
+  `X.Y` 或 `X.Y.Z` 字符串，并在通过摘要输出 `status_storage_versions=<unique>`；新增 status storage
   version summary 与 malformed status storage version 拒绝覆盖。
 - A3968 固定只读 gate 对 Status dbSizeQuota envelope 的可选 fail-closed 判定：
   etcd `StatusResponse.DbSizeQuota` 是配置 backend quota 的 `int64`，server 在配置为 0 时会回填
@@ -42537,6 +42538,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `DowngradeInfo.enabled=false` 表示未处于 downgrade 流程，此时 `targetVersion` 可以缺省或为空。
   新增 disabled downgrade info without target 通过覆盖，防止生产 gate 把正常空闲态误判为
   `enabled_without_target`，同时保留 `enabled=true` 必须携带 semver target 的 fail-closed 约束。
+- A3996 放宽只读 gate 对 Status storageVersion 的版本格式兼容：对照 `/root/etcd`
+  storage migration 代码，官方 storage version 常以 `major.minor` 参与比较；但 KubeBrain
+  `Maintenance.Status` 当前返回 `StorageVersion=Version`，即完整 `3.7.0`。生产 gate 现在同时接受
+  `X.Y` 与 `X.Y.Z`，新增 full status storage version summary 通过覆盖，并把 malformed 用例改为
+  `3.x`，避免 gate 在 KubeBrain 真实完整版本进入 `endpoint status -w json` 时误报。
 
 ### P2：运维兼容和长期验证
 
