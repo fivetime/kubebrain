@@ -835,6 +835,65 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_summary+=", gateway_raft_applied_index=${gateway_status_raft_applied_index}"
   status_summary+=", gateway_raft_indexes_match_revision=true"
   status_summary+=", gateway_downgrade_info=object"
+
+  gateway_auth_status_url="${ENDPOINT%/}/v3/auth/status"
+  gateway_auth_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_auth_status_url")"
+  gateway_auth_status_values="$(printf '%s' "$gateway_auth_status_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      (if has("enabled") then .enabled else null end) as $enabled
+      |
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (if $enabled == null then "missing" else ($enabled | type) end),
+        (if $enabled == null then "false" else ($enabled | tostring) end),
+        (if has("authRevision") then .authRevision elif has("auth_revision") then .auth_revision else "missing" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r gateway_auth_cluster_id gateway_auth_member_id gateway_auth_revision gateway_auth_raft_term gateway_auth_enabled_type gateway_auth_enabled gateway_auth_revision_value <<<"$gateway_auth_status_values"
+  if [[ "$gateway_auth_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "gateway auth status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_auth_cluster_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_auth_member_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway auth status member ID must be positive, got ${gateway_auth_member_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_auth_revision" =~ ^[0-9]+$ ]]; then
+    echo "gateway auth status revision must be non-negative, got ${gateway_auth_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_auth_revision" != "$min_status_revision" ]]; then
+    echo "gateway auth status revision mismatch: status=${min_status_revision}, auth=${gateway_auth_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_auth_raft_term" != "missing" ]]; then
+    if ! [[ "$gateway_auth_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+      echo "gateway auth status raft term must be positive, got ${gateway_auth_raft_term}" >&2
+      exit 1
+    fi
+    if [[ "${status_raft_terms:-"-"}" != "-" && "$gateway_auth_raft_term" != "$status_raft_terms" ]]; then
+      echo "status/gateway auth status raft term mismatch: status=${status_raft_terms}, auth=${gateway_auth_raft_term}" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$gateway_auth_enabled_type" != "missing" && "$gateway_auth_enabled_type" != "boolean" ]]; then
+    echo "gateway auth status enabled must be boolean, got ${gateway_auth_enabled_type}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_auth_revision_value" != "missing" && ! "$gateway_auth_revision_value" =~ ^[0-9]+$ ]]; then
+    echo "gateway auth status authRevision must be non-negative, got ${gateway_auth_revision_value}" >&2
+    exit 1
+  fi
+  status_summary+=", gateway_auth_enabled=${gateway_auth_enabled}"
+  if [[ "$gateway_auth_revision_value" != "missing" ]]; then
+    status_summary+=", gateway_auth_revision=${gateway_auth_revision_value}"
+  fi
 fi
 
 hashkv_summary=""

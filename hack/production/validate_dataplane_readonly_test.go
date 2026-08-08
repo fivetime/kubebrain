@@ -17,6 +17,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		count       string
 		statusJSON  string
 		gatewayJSON string
+		authJSON    string
 		extraEnv    []string
 		wantTimeout []string
 		wantOK      bool
@@ -248,6 +249,49 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "gateway_db_size_in_use=88, gateway_db_size_quota=2147483648, gateway_is_learner=false, gateway_leader_id=456, gateway_raft_term=8, gateway_raft_index=7, gateway_raft_applied_index=7, gateway_raft_indexes_match_revision=true, gateway_downgrade_info=object",
 		},
 		{
+			name: "reports gateway auth status envelope in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"raftTerm":8}}]`,
+			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"5"}`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:     true,
+			wantOutput: "gateway_auth_enabled=false, gateway_auth_revision=5",
+		},
+		{
+			name: "rejects malformed gateway auth enabled envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"enabled":"false","authRevision":"5"}`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "gateway auth status enabled must be boolean",
+		},
+		{
+			name: "rejects malformed gateway auth revision envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"authRevision":false}`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOutput: "gateway auth status authRevision must be non-negative",
+		},
+		{
 			name: "rejects malformed gateway status db size quota envelope",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -389,6 +433,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raftIndex":9,"raftAppliedIndex":9}}]`,
+			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"9"},"authRevision":"5"}`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
 			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_match_revision=true",
@@ -403,6 +448,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":9},"dbSize":99,"raft_index":9,"raft_applied_index":9}}]`,
+			authJSON:   `{"header":{"cluster_id":"123","member_id":"456","revision":"9"},"authRevision":"5"}`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
 			wantOutput: "min_status_raft_index=9, min_status_raft_applied_index=9, raft_indexes_match_revision=true",
@@ -2102,6 +2148,10 @@ for arg in "$@"; do
     printf '%s' "$FAKE_GATEWAY_HASH_JSON"
     exit 0
   fi
+  if [[ "$arg" == */v3/auth/status ]]; then
+    printf '%s' "$FAKE_GATEWAY_AUTH_STATUS_JSON"
+    exit 0
+  fi
 done
 printf '%s' "$FAKE_READYZ"
 `)
@@ -2158,6 +2208,7 @@ exec "$@"
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
+				"FAKE_GATEWAY_AUTH_STATUS_JSON=" + defaultGatewayAuthStatusJSON(tc.authJSON),
 				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
 				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":111,"compact_revision":"3","hash_revision":"7"}`,
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
@@ -2192,6 +2243,13 @@ func defaultGatewayStatusJSON(value string) string {
 		return value
 	}
 	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"version":"3.7.0","storageVersion":"3.7.0","dbSize":"99","dbSizeInUse":"88","dbSizeQuota":"2147483648","isLearner":false,"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`
+}
+
+func defaultGatewayAuthStatusJSON(value string) string {
+	if value != "" {
+		return value
+	}
+	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"authRevision":"5"}`
 }
 
 func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {

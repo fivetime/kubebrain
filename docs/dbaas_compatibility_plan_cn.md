@@ -42610,6 +42610,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `gateway_hashkv_hash_revision=<rev>`、`gateway_hashkv_compact_revision=<rev>` 与
   `gateway_hashkv_revisions_match=true`；新增 gateway HashKV hash drift 与 compact
   revision 越界拒绝覆盖，防止 gRPC HashKV 正确但 HTTP gateway envelope 或数值漂移。
+- A4006 把 HTTP gRPC-gateway `AuthStatus` 纳入生产只读门禁：
+  `/root/etcd/api/etcdserverpb/rpc.proto` 定义 `/v3/auth/status` 返回
+  `AuthStatusResponse{header, enabled, authRevision}`。由于 gateway protojson
+  `EmitUnpopulated=false` 会省略 `enabled=false`，生产 gate 现在把缺失 enabled 解释为
+  false，但如果字段存在则必须是 JSON boolean；同时校验 header cluster/member/revision、
+  可选 raft term、revision 与 `Status` 对齐，以及存在的 `authRevision` 为非负整数。
+  通过摘要新增 `gateway_auth_enabled=<bool>` 与可选 `gateway_auth_revision=<rev>`；
+  新增 `enabled:"false"` 与 `authRevision:false` 拒绝覆盖，防止 AuthStatus HTTP envelope
+  与 gRPC auth 状态诊断脱节。
 
 ### P2：运维兼容和长期验证
 
