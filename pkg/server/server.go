@@ -235,6 +235,10 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	}
 	s.metricCli.EmitGauge("etcd.server.is_learner", boolGauge(isLearner))
 
+	if s.etcdServer != nil {
+		s.etcdServer.RefreshAuthMetrics(ctx)
+	}
+
 	if s.backend != nil {
 		s.metricCli.EmitGauge("etcd_debugging.mvcc.current_revision", s.backend.GetCurrentRevision())
 		compactRevision, err := s.backend.GetCompactRevision(ctx)

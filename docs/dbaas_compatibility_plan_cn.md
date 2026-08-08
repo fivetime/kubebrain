@@ -42839,6 +42839,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd_debugging_mvcc_compact_revision`；读取失败只递增
   `mvcc.compact_revision.refresh.err`，不阻塞 server 关闭。生产 gate 继续通过
   `mvcc_revision_metrics=ok` 固定 current/compact 两个 revision family 均存在。
+- A4037 实现并固定 upstream auth revision metric：上游 `/root/etcd/server/auth/metrics.go`
+  注册 `etcd_debugging_auth_revision`，来自 auth store 当前 revision。KubeBrain 的等价
+  状态是持久化 `auth/config` 中的 `Revision`，同一值已经用于 `AuthStatus.AuthRevision`、
+  token claim revision 和 AuthOldRevision fence。现在 `RPCServer.RefreshAuthMetrics`
+  在 server state metrics 的有界刷新路径里只读 auth config revision，并发出
+  `etcd_debugging.auth.revision`；读取失败只递增 `auth.revision.refresh.err`，不伪造为
+  KV current revision。生产 gate 在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求
+  `etcd_debugging_auth_revision` family 存在，并通过 `auth_metrics=ok` 摘要固定。
 
 ### P2：运维兼容和长期验证
 

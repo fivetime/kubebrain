@@ -481,6 +481,7 @@ server 状态指标 `etcd_server_has_leader`、`etcd_server_is_leader`、
 `etcd_server_is_learner`，
 传统 `/health` 计数指标 `etcd_server_health_success` 与
 `etcd_server_health_failures`，
+auth revision 指标 `etcd_debugging_auth_revision`，
 quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
 `etcd_mvcc_db_total_size_in_use_in_bytes`（KubeBrain 语义为 keyspace 当前存活 key/value
