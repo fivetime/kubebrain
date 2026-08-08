@@ -233,6 +233,10 @@ func (s *server) refreshServerStateMetrics() {
 		isLearner = s.etcdServer.LocalMemberIsLearner()
 	}
 	s.metricCli.EmitGauge("etcd.server.is_learner", boolGauge(isLearner))
+
+	if s.backend != nil {
+		s.metricCli.EmitGauge("etcd_debugging.mvcc.current_revision", s.backend.GetCurrentRevision())
+	}
 }
 
 func (s *server) runServerStateMetricsRefresh(ctx context.Context, interval time.Duration) {

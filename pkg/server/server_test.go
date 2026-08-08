@@ -382,19 +382,25 @@ func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {
 		etcdServer:     rpc,
 		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{LeaderAddress: "leader.local:2380", IsLeader: false}},
 		metricCli:      recorder,
+		backend:        &coldRevisionBackend{Backend: b},
 	}
+	s.backend.(*coldRevisionBackend).SetCurrentRevision(123)
 	s.refreshServerStateMetrics()
 
 	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.has_leader"))
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.is_leader"))
 	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.is_learner"))
+	require.Equal(t, []interface{}{uint64(123)}, recorder.gaugeValues("etcd_debugging.mvcc.current_revision"))
 }
 
 func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
 	metrics := &healthMetricRecorder{}
+	backend := &coldRevisionBackend{}
+	backend.SetCurrentRevision(321)
 	s := &server{
 		metricCli:      metrics,
 		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{LeaderAddress: "self", IsLeader: true}},
+		backend:        backend,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -405,12 +411,14 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 	require.Eventually(t, func() bool {
 		return metrics.countGauge("etcd.server.has_leader") >= 2 &&
 			metrics.countGauge("etcd.server.is_leader") >= 2 &&
-			metrics.countGauge("etcd.server.is_learner") >= 2
+			metrics.countGauge("etcd.server.is_learner") >= 2 &&
+			metrics.countGauge("etcd_debugging.mvcc.current_revision") >= 2
 	}, time.Second, time.Millisecond)
 
 	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.has_leader")[:2])
 	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.is_leader")[:2])
 	require.Equal(t, []interface{}{0, 0}, metrics.gaugeValues("etcd.server.is_learner")[:2])
+	require.Equal(t, []interface{}{uint64(321), uint64(321)}, metrics.gaugeValues("etcd_debugging.mvcc.current_revision")[:2])
 
 	cancel()
 	select {
@@ -421,10 +429,12 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 	stoppedAtLeader := metrics.countGauge("etcd.server.has_leader")
 	stoppedAtIsLeader := metrics.countGauge("etcd.server.is_leader")
 	stoppedAtLearner := metrics.countGauge("etcd.server.is_learner")
+	stoppedAtRevision := metrics.countGauge("etcd_debugging.mvcc.current_revision")
 	time.Sleep(5 * time.Millisecond)
 	require.Equal(t, stoppedAtLeader, metrics.countGauge("etcd.server.has_leader"))
 	require.Equal(t, stoppedAtIsLeader, metrics.countGauge("etcd.server.is_leader"))
 	require.Equal(t, stoppedAtLearner, metrics.countGauge("etcd.server.is_learner"))
+	require.Equal(t, stoppedAtRevision, metrics.countGauge("etcd_debugging.mvcc.current_revision"))
 }
 
 func TestLegacyHealthMetricsInitializedBeforeHealthRequests(t *testing.T) {

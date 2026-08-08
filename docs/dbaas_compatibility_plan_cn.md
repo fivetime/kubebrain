@@ -42823,6 +42823,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd.mvcc.db.total_size_in_use_in_bytes`，用于让依赖 upstream family 名称的 dashboard
   有稳定输入；生产 gate 通过 `mvcc_db_size_metrics=ok` 固定 family 存在，文档明确其不是
   bbolt 物理文件大小。
+- A4035 实现并固定 upstream MVCC current revision metric：上游
+  `etcd_debugging_mvcc_current_revision` 由 MVCC store 当前 revision 派生。KubeBrain 的
+  等价真实状态是 backend 内存中的已提交 revision（同时用于 Status header、watch/read
+  barrier 和 follower revision sync）。现在在 `runServerStateMetricsRefresh` 的同一
+  1 秒刷新路径里发出 `etcd_debugging.mvcc.current_revision`，Prometheus wrapper 暴露为
+  `etcd_debugging_mvcc_current_revision`；生产 gate 通过 `mvcc_revision_metrics=ok`
+  固定 family 存在，且该刷新只读内存状态，不增加 TiKV 请求路径。
 
 ### P2：运维兼容和长期验证
 
