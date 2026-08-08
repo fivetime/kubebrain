@@ -176,7 +176,7 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.False(t, alarm)
 }
 
-func TestQuotaStatusEmitsEtcdCompatibleQuotaBackendMetric(t *testing.T) {
+func TestQuotaStatusEmitsEtcdCompatibleQuotaMetrics(t *testing.T) {
 	metrics := newRecordCounters()
 	kv := imemkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
@@ -194,6 +194,9 @@ func TestQuotaStatusEmitsEtcdCompatibleQuotaBackendMetric(t *testing.T) {
 	require.Zero(t, usage)
 	require.Equal(t, int64(10), quota)
 	require.False(t, alarm)
+	require.Equal(t, float64(0), metrics.gauge("quota.logical_usage_bytes"))
+	require.Equal(t, float64(0), metrics.gauge("etcd.mvcc.db.total_size_in_bytes"))
+	require.Equal(t, float64(0), metrics.gauge("etcd.mvcc.db.total_size_in_use_in_bytes"))
 	require.Equal(t, float64(10), metrics.gauge("quota.backend_bytes"))
 	require.Equal(t, float64(10), metrics.gauge("etcd.server.quota_backend_bytes"))
 }

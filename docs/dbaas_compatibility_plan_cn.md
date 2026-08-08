@@ -42814,6 +42814,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd.server.quota_backend_bytes`，Prometheus wrapper 暴露为
   `etcd_server_quota_backend_bytes`；生产 gate 在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求
   family 存在，并通过 `quota_metrics=ok` 摘要固定。
+- A4034 实现并固定 upstream MVCC db size metrics：上游
+  `etcd_mvcc_db_total_size_in_bytes` 表示 bbolt backend 物理分配大小，
+  `etcd_mvcc_db_total_size_in_use_in_bytes` 表示逻辑使用大小。KubeBrain 不使用 bbolt
+  文件，真实可承诺的 keyspace 容量语义是 TiKV 逻辑 quota usage，也已经用于
+  `Maintenance.Status.DbSize/DbSizeInUse`。现在在 `emitQuotaMetrics` 中把同一 usage
+  同步暴露为 `etcd.mvcc.db.total_size_in_bytes` 与
+  `etcd.mvcc.db.total_size_in_use_in_bytes`，用于让依赖 upstream family 名称的 dashboard
+  有稳定输入；生产 gate 通过 `mvcc_db_size_metrics=ok` 固定 family 存在，文档明确其不是
+  bbolt 物理文件大小。
 
 ### P2：运维兼容和长期验证
 

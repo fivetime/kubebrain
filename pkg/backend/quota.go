@@ -540,6 +540,8 @@ func (b *backend) reconcileNoSpaceActivation(
 
 func (b *backend) emitQuotaMetrics(usage int64, noSpace bool) {
 	b.metricCli.EmitGauge("quota.logical_usage_bytes", usage)
+	b.metricCli.EmitGauge("etcd.mvcc.db.total_size_in_bytes", usage)
+	b.metricCli.EmitGauge("etcd.mvcc.db.total_size_in_use_in_bytes", usage)
 	b.metricCli.EmitGauge("quota.backend_bytes", b.config.QuotaBackendBytes)
 	b.metricCli.EmitGauge("etcd.server.quota_backend_bytes", b.config.QuotaBackendBytes)
 	alarm := 0
