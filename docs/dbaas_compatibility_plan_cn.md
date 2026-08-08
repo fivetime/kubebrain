@@ -42666,6 +42666,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `serializable_read` 通过证据并以 `ok` 结束；通过摘要新增 `livez=ok` 与
   `livez_serializable_read=ok`，并补 unhealthy livez 与 malformed verbose 拒绝覆盖，防止
   `/readyz` 健康但 liveness/本地串行读诊断入口漂移。
+- A4013 把 HTTP `/readyz?verbose` 分项纳入生产只读门禁：
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 的 readyz root handler 来自
+  `CheckRegistry`，上游 e2e 默认矩阵要求 verbose 输出至少包含 `serializable_read`
+  与 `data_corruption` 通过。KubeBrain 等价矩阵还固定 `linearizable_read` 与
+  `non_learner`。生产 gate 现在读取 `READYZ_URL?verbose`，要求四个分项均为
+  `[+]<check> ok` 且响应以 `ok` 结束；通过摘要新增 `readyz_verbose=ok`、
+  `readyz_data_corruption=ok`、`readyz_serializable_read=ok`、
+  `readyz_linearizable_read=ok` 与 `readyz_non_learner=ok`，并补缺失分项拒绝覆盖，
+  防止 root `/readyz=ok` 掩盖 readiness 子检查漂移。
 
 ### P2：运维兼容和长期验证
 

@@ -465,7 +465,9 @@ PROBE_TIMEOUT=10s \
 `TIMEOUT_CMD`（默认 `timeout`）按 `PROBE_TIMEOUT` 包裹；`PROBE_TIMEOUT` 必须是正数
 duration，单位为 `ms`、`s`、`m` 或 `h`。配置 `EXPECTED_HASHKV_HASH` 时还会运行
 `etcdctl endpoint hashkv -w json`；该变量必须与 `EXPECTED_STATUS_CLUSTER_ID` 同时
-配置。HashKV 门禁要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、cluster ID 与
+配置。完整 HashKV 增强门禁还会读取 `/readyz?verbose`，要求包含
+`data_corruption`、`serializable_read`、`linearizable_read` 和 `non_learner` 四个 `ok`
+分项并以 `ok` 结束。HashKV 门禁要求返回 endpoint 集合与 `STATUS_ENDPOINTS` 一致、cluster ID 与
 `EXPECTED_STATUS_CLUSTER_ID` 一致、member ID 为正且集合无重复、所有
 endpoint hash 都等于期望 hash，revision/compact revision 非负，且每个 endpoint 的
 compact revision 不得大于同一响应的 hash revision；该项适合冻结写入窗口、升级或恢复后
@@ -486,8 +488,10 @@ client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必�
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
 HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV hash、
 hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
-通过摘要会显式输出 `livez=ok`、`livez_serializable_read=ok`、`health=true`、
-`serializable_health=true`、`status_errors=empty`、`raft_indexes_match_revision=true`、
+通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
+`readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
+`livez=ok`、`livez_serializable_read=ok`、`health=true`、`serializable_health=true`、
+`status_errors=empty`、`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、
 `gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、

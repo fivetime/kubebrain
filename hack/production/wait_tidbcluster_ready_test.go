@@ -66,7 +66,7 @@ fi
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"TIMEOUT_SECONDS=1",
-				"POLL_INTERVAL_SECONDS=0",
+				"POLL_INTERVAL_SECONDS=1",
 				"FAKE_READY=" + tc.ready,
 				"FAKE_PD_STATUS=" + tc.pdStatus,
 				"FAKE_TIKV_STATUS=" + tc.tikvStatus,

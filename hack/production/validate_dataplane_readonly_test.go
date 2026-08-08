@@ -14,6 +14,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		name             string
 		podsJSON         string
 		readyz           string
+		readyzVerbose    string
 		livez            string
 		livezVerbose     string
 		healthJSON       string
@@ -71,8 +72,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_HASHKV_HASH=111"},
 			wantOK:     true,
-			wantOutput: "livez=ok, livez_serializable_read=ok",
+			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, livez=ok, livez_serializable_read=ok",
 		},
 		{
 			name: "rejects unhealthy livez endpoint",
@@ -88,17 +90,18 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "livez mismatch",
 		},
 		{
-			name: "rejects malformed livez verbose endpoint",
+			name: "rejects malformed readyz verbose endpoint",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
 				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
 			]}`,
-			readyz:       "ok",
-			livezVerbose: "[+]other_check ok\nok",
-			count:        "4",
-			statusJSON:   `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
-			wantOutput:   "livez verbose mismatch",
+			readyz:        "ok",
+			readyzVerbose: "[+]data_corruption ok\n[+]serializable_read ok\nok",
+			count:         "4",
+			statusJSON:    `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:      []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_HASHKV_HASH=111"},
+			wantOutput:    "readyz verbose mismatch: expected linearizable_read ok",
 		},
 		{
 			name: "rejects unhealthy legacy health endpoint",
@@ -2308,6 +2311,10 @@ printf '%s' "$FAKE_PODS_JSON"
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
 for arg in "$@"; do
+  if [[ "$arg" == "${READYZ_URL}?verbose" ]]; then
+    printf '%s' "$FAKE_READYZ_VERBOSE"
+    exit 0
+  fi
   if [[ "$arg" == "${READYZ_URL%/readyz}/livez?verbose" ]]; then
     printf '%s' "$FAKE_LIVEZ_VERBOSE"
     exit 0
@@ -2405,6 +2412,7 @@ exec "$@"
 				"PROBE_TIMEOUT=10s",
 				"FAKE_PODS_JSON=" + compactJSONString(tc.podsJSON),
 				"FAKE_READYZ=" + tc.readyz,
+				"FAKE_READYZ_VERBOSE=" + defaultReadyzVerbose(tc.readyzVerbose),
 				"FAKE_LIVEZ=" + defaultLivez(tc.livez),
 				"FAKE_LIVEZ_VERBOSE=" + defaultLivezVerbose(tc.livezVerbose),
 				"FAKE_HEALTH_JSON=" + defaultHealthJSON(tc.healthJSON),
@@ -2443,6 +2451,13 @@ exec "$@"
 
 func compactJSONString(value string) string {
 	return strings.Join(strings.Fields(value), "")
+}
+
+func defaultReadyzVerbose(value string) string {
+	if value != "" {
+		return value
+	}
+	return "[+]data_corruption ok\n[+]serializable_read ok\n[+]linearizable_read ok\n[+]non_learner ok\nok"
 }
 
 func defaultLivez(value string) string {
@@ -2514,6 +2529,11 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 	}
 	require.Contains(t, doc, "所有 Status version 唯一且等于期望 semver")
 	for _, required := range []string{
+		"readyz_verbose=ok",
+		"readyz_data_corruption=ok",
+		"readyz_serializable_read=ok",
+		"readyz_linearizable_read=ok",
+		"readyz_non_learner=ok",
 		"livez=ok",
 		"livez_serializable_read=ok",
 		"health=true",
