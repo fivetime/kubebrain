@@ -46,6 +46,7 @@ const (
 )
 
 func (s *RPCServer) Range(ctx context.Context, r *etcdserverpb.RangeRequest) (response *etcdserverpb.RangeResponse, retErr error) {
+	emitEtcdMVCCRangeCounter(s.metricCli, 1)
 	return s.rangeWithAfterRead(ctx, r, nil)
 }
 
@@ -199,6 +200,7 @@ func (s *RPCServer) rangeWithAfterRead(
 // backend error aborts the stream with a gRPC status so the apiserver relists
 // rather than treating a partial stream as complete.
 func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) (retErr error) {
+	emitEtcdMVCCRangeCounter(s.metricCli, 1)
 	ctx := rs.Context()
 	startTime := time.Now()
 	klog.V(4).InfoS("RANGE STREAM", "key", r.Key, "rangeEnd", r.RangeEnd, "rev", r.Revision)
@@ -558,6 +560,7 @@ func isFromKeyRangeEnd(rangeEnd []byte) bool {
 }
 
 func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (response *etcdserverpb.TxnResponse, retErr error) {
+	emitEtcdMVCCTxnCounter(s.metricCli, 1)
 	startTime := time.Now()
 
 	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
@@ -1181,6 +1184,7 @@ func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int
 }
 
 func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+	emitEtcdMVCCPutCounter(s.metricCli, 1)
 	startTime := time.Now()
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
@@ -1257,6 +1261,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 }
 
 func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+	emitEtcdMVCCDeleteCounter(s.metricCli, 1)
 	startTime := time.Now()
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()

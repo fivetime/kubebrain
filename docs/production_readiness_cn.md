@@ -475,6 +475,8 @@ PROBE_TIMEOUT=10s \
 `grpc_server_started_total`、`grpc_server_msg_received_total` 和
 `grpc_server_msg_sent_total`、`etcd_server_go_version`、`etcd_server_id`，
 network membership 指标 `etcd_network_known_peers`，
+MVCC operation counter `etcd_mvcc_range_total`、`etcd_mvcc_put_total`、
+`etcd_mvcc_delete_total` 与 `etcd_mvcc_txn_total`，
 以及 Go runtime/promhttp 基础指标 `go_info`、
 `go_goroutines`、`go_threads`、`go_gc_gogc_percent`、`go_gc_gomemlimit_bytes`、
 `go_sched_gomaxprocs_threads`、`os_fd_used`、`os_fd_limit`、
@@ -548,7 +550,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
 `livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
 `info_metrics=ok`、`client_metrics=404`、`server_identity_metrics=ok`、
-`grpc_metrics=ok`、`network_metrics=ok`、`runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
+`grpc_metrics=ok`、`network_metrics=ok`、`mvcc_operation_metrics=ok`、
+`runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
 `health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
 `mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、`promhttp_metrics=ok`、
 `info_debug_vars=ok`、

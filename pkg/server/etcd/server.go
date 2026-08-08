@@ -237,6 +237,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		klog.ErrorS(err, "restore leases failed")
 	}
 	emitVersionMetrics(metricCli)
+	initEtcdMVCCOperationCounters(metricCli)
 	return server
 }
 

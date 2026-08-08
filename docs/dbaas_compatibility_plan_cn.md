@@ -42877,6 +42877,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd.server.leader_changes_seen_total` counter，同一 leader 的周期刷新不重复计数，未知
   leader 状态不伪造变化。生产 gate 要求 `etcd_server_leader_changes_seen_total` family
   存在，并继续用 `server_state_metrics=ok` 固定。
+- A4041 实现并固定 upstream MVCC operation counters：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 注册 `etcd_mvcc_range_total`、
+  `etcd_mvcc_put_total`、`etcd_mvcc_delete_total` 与 `etcd_mvcc_txn_total`，语义是本
+  member 看到的 Range/Put/Delete/Txn 操作数。KubeBrain 不复用 upstream MVCC store，但
+  public KV RPC 入口是同一可观察边界；现在顶层 `Range` 与 `RangeStream` 递增
+  `etcd.mvcc.range_total`，`Put` 递增 `etcd.mvcc.put_total`，`DeleteRange` 递增
+  `etcd.mvcc.delete_total`，`Txn` 递增 `etcd.mvcc.txn_total`。`RPCServer.New` 用 0
+  预初始化四个 counter，使只读生产 gate 也能固定 family 存在；嵌套 Txn 子操作不重复
+  计数，指标表示 KubeBrain member 观察到的客户端 KV RPC，不表示 TiKV 内部 MVCC 事件。
+  生产 gate 通过 `mvcc_operation_metrics=ok` 固定。
 
 ### P2：运维兼容和长期验证
 
