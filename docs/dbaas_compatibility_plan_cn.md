@@ -39867,9 +39867,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   错误返回。KubeBrain 不复用 upstream grpcproxy，但 `/health`、`/livez`、`/readyz`、exclude
   alarm、reason body、Prometheus exposition 和 production audit probe 已固定公开行为。
 
-  对照 `33907477d`：官方新增 `etcd_server_client_requests_total`。KubeBrain 当前 public metrics
-  parity 以 request duration、watch send-loop、alarm/quota 和 operation audit 为门禁；若要求
-  client request counter 名称级兼容，应另建 metric-name oracle。对照 `5a1736792`：官方 apply
+  对照 `33907477d`：官方新增 `etcd_server_client_requests_total`。KubeBrain 已在 A4044
+  补齐该 metric-name oracle：public etcd gRPC admission interceptor 按 `type` 和
+  `client_api_version` 计数，并由生产 gate 固定。对照 `5a1736792`：官方 apply
   request 失败打印 warn。KubeBrain 不复用 Raft apply loop，等价故障可见性由 write/txn/lease
   error、operation audit 和 production probes 覆盖。对照 `af261f1a1` 与 `4051e3e36`：官方新增
   WAL write bytes metric 和 `FlushN`。KubeBrain 数据面不使用 upstream WAL/pagewriter 作为持久化
@@ -42907,6 +42907,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd_debugging.server.lease_expired_total`；显式客户端 `LeaseRevoke` 不递增该 counter。
   `RPCServer.New` 用 0 预初始化 family，使只读生产 gate 可以固定
   `etcd_debugging_server_lease_expired_total` 存在；gate 摘要新增 `lease_metrics=ok`。
+- A4044 实现并固定 upstream client requests counter：上游
+  `/root/etcd/server/etcdserver/api/v3rpc/metrics.go` 注册
+  `etcd_server_client_requests_total{type,client_api_version}`，并在
+  `/root/etcd/server/etcdserver/api/v3rpc/interceptor.go` 的 unary/stream interceptor 中，
+  成功解析 client API version metadata 后分别以 `type="unary"` 或 `type="stream"`
+  递增。KubeBrain 的等价边界是 public etcd gRPC admission interceptor：metadata 缺失时
+  使用 `client_api_version="unknown"`，首个 metadata value 非 UTF-8 时保持 upstream
+  `InvalidArgument` 且不计数；计数发生在 require-leader、rate-limit 和 in-flight admission
+  之前，因此到达 etcd v3 public interceptor 的有效请求都会被观察到。旧 native
+  `/Read`/`/Write`/`/Watch` listener 方法不是 etcd v3 API，不计入该 counter。
+  `RPCServer.New` 预初始化 `unary/unknown` 与 `stream/unknown`，生产 gate 要求
+  `etcd_server_client_requests_total` family 存在并新增 `client_request_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

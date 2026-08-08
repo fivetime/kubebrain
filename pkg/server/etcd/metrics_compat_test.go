@@ -140,3 +140,46 @@ func TestEtcdLeaseExpiredCounterUsesUpstreamMetricName(t *testing.T) {
 		{name: "etcd_debugging.server.lease_expired_total", value: 1},
 	}, rec.counters)
 }
+
+func TestEtcdClientRequestCounterUsesUpstreamMetricNameAndLabels(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initEtcdClientRequestCounters(rec)
+	emitEtcdClientRequestCounter(rec, "unary", "3.7", 1)
+	emitEtcdClientRequestCounter(rec, "stream", "unknown", 2)
+
+	require.Equal(t, []recordedCounter{
+		{
+			name:  "etcd.server.client_requests_total",
+			value: 0,
+			tags: []metrics.T{
+				metrics.Tag("type", "unary"),
+				metrics.Tag("client_api_version", "unknown"),
+			},
+		},
+		{
+			name:  "etcd.server.client_requests_total",
+			value: 0,
+			tags: []metrics.T{
+				metrics.Tag("type", "stream"),
+				metrics.Tag("client_api_version", "unknown"),
+			},
+		},
+		{
+			name:  "etcd.server.client_requests_total",
+			value: 1,
+			tags: []metrics.T{
+				metrics.Tag("type", "unary"),
+				metrics.Tag("client_api_version", "3.7"),
+			},
+		},
+		{
+			name:  "etcd.server.client_requests_total",
+			value: 2,
+			tags: []metrics.T{
+				metrics.Tag("type", "stream"),
+				metrics.Tag("client_api_version", "unknown"),
+			},
+		},
+	}, rec.counters)
+}

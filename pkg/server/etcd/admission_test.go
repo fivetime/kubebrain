@@ -33,6 +33,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 type blockingHealthServer struct {
@@ -501,6 +503,76 @@ func TestClientAPIVersionUsesFirstMetadataValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClientRequestMetricsCountUnaryAndStreamByClientAPIVersion(t *testing.T) {
+	rec := &recordingMetrics{}
+	rpc := &RPCServer{
+		metricCli: rec,
+		peers:     testPeerService{isLeader: true},
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataClientAPIVersionKey, "3.7",
+	))
+	_, err := rpc.admitUnary(ctx, nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Range_FullMethodName},
+		func(context.Context, any) (any, error) {
+			return &healthpb.HealthCheckResponse{}, nil
+		})
+	require.NoError(t, err)
+
+	err = rpc.admitStream(nil, &serverStreamWithContext{ctx: context.Background()},
+		&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+		func(any, grpc.ServerStream) error {
+			return nil
+		})
+	require.NoError(t, err)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Contains(t, rec.counters, recordedCounter{
+		name:  "etcd.server.client_requests_total",
+		value: 1,
+		tags: []metrics.T{
+			metrics.Tag("type", "unary"),
+			metrics.Tag("client_api_version", "3.7"),
+		},
+	})
+	require.Contains(t, rec.counters, recordedCounter{
+		name:  "etcd.server.client_requests_total",
+		value: 1,
+		tags: []metrics.T{
+			metrics.Tag("type", "stream"),
+			metrics.Tag("client_api_version", "unknown"),
+		},
+	})
+}
+
+func TestClientRequestMetricsSkipInvalidVersionAndNativeBrainMethods(t *testing.T) {
+	rec := &recordingMetrics{}
+	rpc := &RPCServer{
+		metricCli: rec,
+		peers:     testPeerService{isLeader: true},
+	}
+
+	invalidCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataClientAPIVersionKey, string([]byte{0xff}),
+	))
+	_, err := rpc.admitUnary(invalidCtx, nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Range_FullMethodName},
+		func(context.Context, any) (any, error) {
+			return &healthpb.HealthCheckResponse{}, nil
+		})
+	requireAdmissionError(t, err, rpctypes.ErrGRPCInvalidClientAPIVersion, codes.InvalidArgument, "etcdserver: invalid client api version")
+
+	_, err = rpc.admitUnary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/Read/Range"},
+		func(context.Context, any) (any, error) {
+			return &healthpb.HealthCheckResponse{}, nil
+		})
+	require.NoError(t, err)
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	require.Empty(t, rec.counters)
 }
 
 func TestClientAPIVersionMetadataOverGRPCMatchesEtcd(t *testing.T) {

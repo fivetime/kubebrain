@@ -156,14 +156,33 @@ func requireLeader(ctx context.Context) bool {
 	return len(values) > 0 && values[0] == rpctypes.MetadataHasLeader
 }
 
-func validateClientAPIVersion(ctx context.Context) error {
+func clientAPIVersionFromContext(ctx context.Context) (string, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return nil
+		return "unknown", nil
 	}
 	values := md.Get(rpctypes.MetadataClientAPIVersionKey)
 	if len(values) > 0 && !utf8.ValidString(values[0]) {
-		return rpctypes.ErrGRPCInvalidClientAPIVersion
+		return "", rpctypes.ErrGRPCInvalidClientAPIVersion
+	}
+	if len(values) > 0 {
+		return values[0], nil
+	}
+	return "unknown", nil
+}
+
+func validateClientAPIVersion(ctx context.Context) error {
+	_, err := clientAPIVersionFromContext(ctx)
+	return err
+}
+
+func (s *RPCServer) observeClientRequest(ctx context.Context, requestType, fullMethod string) error {
+	clientAPIVersion, err := clientAPIVersionFromContext(ctx)
+	if err != nil {
+		return err
+	}
+	if !isNativeBrainMethod(fullMethod) {
+		emitEtcdClientRequestCounter(s.metricCli, requestType, clientAPIVersion, 1)
 	}
 	return nil
 }
@@ -316,7 +335,7 @@ func priorityAdmissionReserve(limit uint32) uint32 {
 }
 
 func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	if err := validateClientAPIVersion(ctx); err != nil {
+	if err := s.observeClientRequest(ctx, "unary", info.FullMethod); err != nil {
 		return nil, err
 	}
 	if requireLeader(ctx) && !s.hasKnownLeader() {
@@ -335,7 +354,7 @@ func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnarySer
 }
 
 func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-	if err := validateClientAPIVersion(ss.Context()); err != nil {
+	if err := s.observeClientRequest(ss.Context(), "stream", info.FullMethod); err != nil {
 		return err
 	}
 	if requireLeader(ss.Context()) && !s.hasKnownLeader() {
