@@ -42807,6 +42807,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   success family。现在 server 启动时用 0 值预初始化两类 counter，保留真实请求时 `+1`
   的计数语义；生产 gate 在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求两个 family 均存在，
   并通过 `health_metrics=ok` 摘要固定。
+- A4033 实现并固定 upstream quota backend metric：上游 `server/storage/metrics.go`
+  注册 `etcd_server_quota_backend_bytes`，表示当前 backend storage quota size。KubeBrain
+  的真实 quota 来源是 TiKV 逻辑 quota `QuotaBackendBytes`，此前已通过产品指标
+  `quota.backend_bytes` 暴露。现在在同一 `emitQuotaMetrics` 采样点同步发出
+  `etcd.server.quota_backend_bytes`，Prometheus wrapper 暴露为
+  `etcd_server_quota_backend_bytes`；生产 gate 在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求
+  family 存在，并通过 `quota_metrics=ok` 摘要固定。
 
 ### P2：运维兼容和长期验证
 

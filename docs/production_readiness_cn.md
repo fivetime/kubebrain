@@ -481,6 +481,7 @@ server 状态指标 `etcd_server_has_leader`、`etcd_server_is_leader`、
 `etcd_server_is_learner`，
 传统 `/health` 计数指标 `etcd_server_health_success` 与
 `etcd_server_health_failures`，
+quota 指标 `etcd_server_quota_backend_bytes`，
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
@@ -538,7 +539,7 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
 `info_metrics=ok`、`client_metrics=404`、`server_identity_metrics=ok`、
 `grpc_metrics=ok`、`runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
-`health_metrics=ok`、`promhttp_metrics=ok`、
+`health_metrics=ok`、`quota_metrics=ok`、`promhttp_metrics=ok`、
 `info_debug_vars=ok`、
 `client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、
 `info_pprof=404`、`health=true`、`serializable_health=true`、

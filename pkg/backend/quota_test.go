@@ -176,6 +176,28 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.False(t, alarm)
 }
 
+func TestQuotaStatusEmitsEtcdCompatibleQuotaBackendMetric(t *testing.T) {
+	metrics := newRecordCounters()
+	kv := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	b := NewBackend(kv, Config{
+		Prefix:                  "/registry",
+		Identity:                getStorageIdentity(),
+		EnableEtcdCompatibility: true,
+		QuotaBackendBytes:       10,
+	}, metrics).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
+
+	usage, quota, alarm, err := b.QuotaStatus(context.Background())
+	require.NoError(t, err)
+	require.Zero(t, usage)
+	require.Equal(t, int64(10), quota)
+	require.False(t, alarm)
+	require.Equal(t, float64(10), metrics.gauge("quota.backend_bytes"))
+	require.Equal(t, float64(10), metrics.gauge("etcd.server.quota_backend_bytes"))
+}
+
 func TestLogicalQuotaAlarmRejectsAllPutsUntilCapacityRecovery(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 6)
 	key := []byte("key")
