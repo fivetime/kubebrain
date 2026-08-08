@@ -256,6 +256,12 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 		s.metricCli.EmitGauge("etcd_debugging.mvcc.watcher_total", watcherStats.Watchers)
 		s.metricCli.EmitGauge("etcd_debugging.mvcc.slow_watcher_total", watcherStats.SlowWatchers)
 		s.metricCli.EmitGauge("etcd_debugging.mvcc.current_revision", s.backend.GetCurrentRevision())
+		// Upstream's etcd_mvcc_db_open_read_transactions reports open bbolt
+		// backend read transactions. KubeBrain's TiKV-backed data plane has no
+		// embedded bbolt read transaction to hold open, so the precise compatible
+		// value for this bbolt-specific MVCC backend metric is zero. Do not reuse
+		// it for TiKV snapshot/read RPC counts; those belong to TiKV/PD metrics.
+		s.metricCli.EmitGauge("etcd.mvcc.db.open_read_transactions", 0)
 		compactRevision, err := s.backend.GetCompactRevision(ctx)
 		if err != nil {
 			s.metricCli.EmitCounter("mvcc.compact_revision.refresh.err", 1)

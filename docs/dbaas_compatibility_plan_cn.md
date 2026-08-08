@@ -42957,6 +42957,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   family；TTL histogram 只在真实成功 Grant 时出现，不用 0 样本预热，避免污染 TTL 分布。
   生产 gate 要求三个 lifecycle counter family 和既有
   `etcd_debugging_server_lease_expired_total` 均存在，继续归入 `lease_metrics=ok`。
+- A4048 实现并固定 upstream MVCC open read transaction gauge：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 注册
+  `etcd_mvcc_db_open_read_transactions`，语义是嵌入式 bbolt backend 当前 open read
+  transaction 数。KubeBrain 的数据面由独立 TiKV/PD 承担，不持有 upstream bbolt backend
+  read transaction；因此该 bbolt-specific 兼容 family 的精确值是 0，而不是 TiKV read RPC、
+  TiKV snapshot 或 scanner worker 数。server state metrics 刷新路径现在稳定发出
+  `etcd.mvcc.db.open_read_transactions=0`，生产 gate 要求
+  `etcd_mvcc_db_open_read_transactions` family 存在，继续归入 `mvcc_db_size_metrics=ok`。
 
 ### P2：运维兼容和长期验证
 

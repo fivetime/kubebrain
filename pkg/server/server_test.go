@@ -419,6 +419,7 @@ func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {
 	require.Equal(t, []interface{}{7}, recorder.gaugeValues("etcd_debugging.mvcc.watcher_total"))
 	require.Equal(t, []interface{}{2}, recorder.gaugeValues("etcd_debugging.mvcc.slow_watcher_total"))
 	require.Equal(t, []interface{}{uint64(123)}, recorder.gaugeValues("etcd_debugging.mvcc.current_revision"))
+	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.mvcc.db.open_read_transactions"))
 	require.Equal(t, []interface{}{uint64(45)}, recorder.gaugeValues("etcd_debugging.mvcc.compact_revision"))
 }
 
@@ -475,6 +476,7 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 			metrics.countGauge("etcd_debugging.mvcc.watcher_total") >= 2 &&
 			metrics.countGauge("etcd_debugging.mvcc.slow_watcher_total") >= 2 &&
 			metrics.countGauge("etcd_debugging.mvcc.current_revision") >= 2 &&
+			metrics.countGauge("etcd.mvcc.db.open_read_transactions") >= 2 &&
 			metrics.countGauge("etcd_debugging.mvcc.compact_revision") >= 2
 	}, time.Second, time.Millisecond)
 
@@ -484,6 +486,7 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 	require.Equal(t, []interface{}{4, 4}, metrics.gaugeValues("etcd_debugging.mvcc.watcher_total")[:2])
 	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd_debugging.mvcc.slow_watcher_total")[:2])
 	require.Equal(t, []interface{}{uint64(321), uint64(321)}, metrics.gaugeValues("etcd_debugging.mvcc.current_revision")[:2])
+	require.Equal(t, []interface{}{0, 0}, metrics.gaugeValues("etcd.mvcc.db.open_read_transactions")[:2])
 	require.Equal(t, []interface{}{uint64(123), uint64(123)}, metrics.gaugeValues("etcd_debugging.mvcc.compact_revision")[:2])
 
 	cancel()

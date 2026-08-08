@@ -341,6 +341,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_mvcc_db_total_size_in_use_in_bytes" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_mvcc_db_open_read_transactions{"* && "$info_metrics" != *"etcd_mvcc_db_open_read_transactions "* ]]; then
+    echo "info metrics mismatch: expected etcd_mvcc_db_open_read_transactions" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"etcd_debugging_mvcc_current_revision{"* && "$info_metrics" != *"etcd_debugging_mvcc_current_revision "* ]]; then
     echo "info metrics mismatch: expected etcd_debugging_mvcc_current_revision" >&2
     exit 1

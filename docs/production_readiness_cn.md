@@ -492,6 +492,9 @@ quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
 `etcd_mvcc_db_total_size_in_use_in_bytes`（KubeBrain 语义为 keyspace 当前存活 key/value
 逻辑字节，而非 bbolt 文件物理分配），
+MVCC bbolt open read transaction 兼容指标 `etcd_mvcc_db_open_read_transactions`
+（KubeBrain/TiKV 无嵌入式 bbolt read transaction，固定为 0；不要把它解释为 TiKV read
+RPC 或 snapshot 数），
 MVCC live key 指标 `etcd_debugging_mvcc_keys_total`，
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
