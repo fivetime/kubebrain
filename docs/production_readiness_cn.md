@@ -471,8 +471,10 @@ PROBE_TIMEOUT=10s \
 `Content-Type: text/plain; charset=utf-8` 和 `X-Content-Type-Options: nosniff`，
 并要求 client/info 双口 `/version` 返回 `Content-Type: application/json`。配置
 `EXPECTED_INFO_METRICS_CHECKS=1` 时还会要求 info 口 `/metrics` 暴露
-`etcd_server_version`、`etcd_cluster_version` 和 `grpc_server_handled_total`，其中
-server version 必须等于 `EXPECTED_STATUS_VERSION`、cluster version 必须等于其 major.minor；
+`etcd_server_version`、`etcd_cluster_version`、`grpc_server_handled_total`、
+`grpc_server_started_total`、`grpc_server_msg_received_total` 和
+`grpc_server_msg_sent_total`，其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
+cluster version 必须等于其 major.minor；
 同时确认 client 口 `/metrics` 保持 HTTP 404，避免把 Prometheus 指标面重新暴露到业务
 client 入口。配置 `EXPECTED_DEBUG_VARS_CHECKS=1` 时还会要求 info 口 `/debug/vars`
 返回 `Content-Type: application/json; charset=utf-8` 的可解析 JSON，且包含 expvar
@@ -525,9 +527,9 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
 `livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
-`info_metrics=ok`、`client_metrics=404`、`info_debug_vars=ok`、`client_debug_vars=404`、
-`debug_vars_method_headers=ok`、`client_pprof=404`、`info_pprof=404`、`health=true`、
-`serializable_health=true`、
+`info_metrics=ok`、`client_metrics=404`、`grpc_metrics=ok`、`info_debug_vars=ok`、
+`client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、
+`info_pprof=404`、`health=true`、`serializable_health=true`、
 `status_errors=empty`、`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、

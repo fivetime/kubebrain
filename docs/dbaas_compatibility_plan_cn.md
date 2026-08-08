@@ -42742,6 +42742,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestMetricsHTTPServerGatesPprofOnInfoPort` 覆盖默认 404 与显式开启后 info 口 200，
   `TestClientHTTPHandlerNeverExposesPprof` 覆盖即使 `EnablePprof=true`，client handler
   `/debug/pprof/` 仍保持 404；生产运行态由 A4022 的默认关闭 gate 覆盖。
+- A4024 收紧 info `/metrics` 的 gRPC server metric family 覆盖：上游
+  `tests/e2e/metrics_test.go` 将 `grpc_server_handled_total`、`grpc_server_started_total`、
+  `grpc_server_msg_received_total` 和 `grpc_server_msg_sent_total` 都列为 server metrics
+  家族。KubeBrain 运行态已经通过 gRPC interceptors 暴露这些 Prometheus 指标；生产 gate
+  在 `EXPECTED_INFO_METRICS_CHECKS=1` 时现在要求四个 gRPC metric family 均存在，并通过
+  `grpc_metrics=ok` 摘要固定，防止只保留 handled 计数而丢失 started/msg received/msg sent
+  可观测性。
 
 ### P2：运维兼容和长期验证
 

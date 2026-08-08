@@ -221,6 +221,18 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected grpc_server_handled_total" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"grpc_server_started_total{"* ]]; then
+    echo "info metrics mismatch: expected grpc_server_started_total" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"grpc_server_msg_received_total{"* ]]; then
+    echo "info metrics mismatch: expected grpc_server_msg_received_total" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"grpc_server_msg_sent_total{"* ]]; then
+    echo "info metrics mismatch: expected grpc_server_msg_sent_total" >&2
+    exit 1
+  fi
 }
 
 expect_debug_vars_boundary() {
@@ -1210,7 +1222,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
-    status_summary+=", info_metrics=ok, client_metrics=404"
+    status_summary+=", info_metrics=ok, client_metrics=404, grpc_metrics=ok"
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
