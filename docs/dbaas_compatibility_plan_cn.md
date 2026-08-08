@@ -42565,6 +42565,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EmitUnpopulated=false`，因此空闲态可观察为 `downgradeInfo:{}`。KubeBrain gateway
   单测新增该字段，生产只读 gate 新增 `downgradeInfo:{}` 通过覆盖，防止把正常空对象误判为
   缺字段或 `enabled_without_target`。
+- A4001 把 HTTP gRPC-gateway `maintenance/status` 纳入生产只读 gate：
+  对照 `/root/etcd/server/embed/serve.go` 的 gateway 注册与 protojson 配置，生产 gate 在
+  配置 `EXPECTED_STATUS_CLUSTER_ID` 时额外 POST `ENDPOINT/v3/maintenance/status`，校验
+  gateway JSON 的 header cluster/member/revision、version、正 `dbSize` 以及
+  `downgradeInfo` 对象 envelope，并把 `gateway_status_version` 与
+  `gateway_downgrade_info=object` 写入通过摘要。这样 gRPC `etcdctl endpoint status`
+  与 HTTP gateway Status 两条可观察运维路径都进入同一只读发布门禁。
 
 ### P2：运维兼容和长期验证
 

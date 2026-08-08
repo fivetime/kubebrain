@@ -712,6 +712,49 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     status_summary+=", min_status_raft_applied_index=${min_status_raft_applied_index}"
     status_summary+=", raft_indexes_match_revision=true"
   fi
+
+  gateway_status_url="${ENDPOINT%/}/v3/maintenance/status"
+  gateway_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_status_url")"
+  gateway_status_values="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (.version // "missing"),
+        (if has("dbSize") then .dbSize elif has("db_size") then .db_size else "missing" end),
+        (if has("downgradeInfo") then (.downgradeInfo | type) elif has("downgrade_info") then (.downgrade_info | type) else "missing" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r gateway_status_cluster_id gateway_status_member_id gateway_status_revision gateway_status_version gateway_status_db_size gateway_status_downgrade_info_type <<<"$gateway_status_values"
+  if [[ "$gateway_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "gateway status cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_status_cluster_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_status_member_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway status member ID must be positive, got ${gateway_status_member_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_status_revision" =~ ^[0-9]+$ ]]; then
+    echo "gateway status revision must be non-negative, got ${gateway_status_revision}" >&2
+    exit 1
+  fi
+  if [[ -n "$EXPECTED_STATUS_VERSION" && "$gateway_status_version" != "$EXPECTED_STATUS_VERSION" ]]; then
+    echo "gateway status version mismatch: expected ${EXPECTED_STATUS_VERSION}, got ${gateway_status_version}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_status_db_size" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway status dbSize must be positive, got ${gateway_status_db_size}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_status_downgrade_info_type" != "object" ]]; then
+    echo "gateway status downgradeInfo envelope invalid: expected object, got ${gateway_status_downgrade_info_type}" >&2
+    exit 1
+  fi
+  status_summary+=", gateway_status_version=${gateway_status_version}, gateway_downgrade_info=object"
 fi
 
 hashkv_summary=""

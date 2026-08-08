@@ -16,6 +16,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		readyz      string
 		count       string
 		statusJSON  string
+		gatewayJSON string
 		extraEnv    []string
 		wantTimeout []string
 		wantOK      bool
@@ -227,6 +228,39 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
 			wantOK:     true,
 			wantOutput: "status_errors=empty",
+		},
+		{
+			name: "reports gateway status envelope in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","dbSize":"99","downgradeInfo":{}}`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+			},
+			wantOK:     true,
+			wantOutput: "gateway_status_version=3.7.0, gateway_downgrade_info=object",
+		},
+		{
+			name: "rejects malformed gateway status downgrade info envelope",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:      "ok",
+			count:       "4",
+			statusJSON:  `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"version":"3.7.0","dbSize":99}}]`,
+			gatewayJSON: `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","dbSize":"99","downgradeInfo":false}`,
+			extraEnv:    []string{"EXPECTED_STATUS_CLUSTER_ID=123"},
+			wantOK:      false,
+			wantOutput:  "gateway status downgradeInfo envelope invalid",
 		},
 		{
 			name: "reports status leader and raft term in summary",
@@ -1926,6 +1960,12 @@ printf '%s' "$FAKE_PODS_JSON"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
+for arg in "$@"; do
+  if [[ "$arg" == */v3/maintenance/status ]]; then
+    printf '%s' "$FAKE_GATEWAY_STATUS_JSON"
+    exit 0
+  fi
+done
 printf '%s' "$FAKE_READYZ"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "go"), `#!/usr/bin/env bash
@@ -1980,6 +2020,7 @@ exec "$@"
 				"FAKE_READYZ=" + tc.readyz,
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
+				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
 				"FAKE_TIMEOUT_LOG=" + timeoutLog,
 			}
@@ -2005,6 +2046,13 @@ exec "$@"
 
 func compactJSONString(value string) string {
 	return strings.Join(strings.Fields(value), "")
+}
+
+func defaultGatewayStatusJSON(value string) string {
+	if value != "" {
+		return value
+	}
+	return `{"header":{"cluster_id":"123","member_id":"456","revision":"7"},"version":"3.7.0","dbSize":"99","downgradeInfo":{}}`
 }
 
 func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(t *testing.T) {
