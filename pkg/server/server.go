@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	runtimeutil "go.etcd.io/etcd/pkg/v3/runtime"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
@@ -93,6 +94,7 @@ type server struct {
 	campaignDone     chan struct{}
 	quotaMetricsDone chan struct{}
 	alarmMetricsDone chan struct{}
+	fdMetricsDone    chan struct{}
 	closeOnce        sync.Once
 	closeErr         error
 }
@@ -110,6 +112,9 @@ func (s *server) Close() error {
 		}
 		if s.alarmMetricsDone != nil {
 			<-s.alarmMetricsDone
+		}
+		if s.fdMetricsDone != nil {
+			<-s.fdMetricsDone
 		}
 		if s.etcdServer != nil {
 			s.etcdServer.Close()
@@ -134,6 +139,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		campaignDone:     make(chan struct{}),
 		quotaMetricsDone: make(chan struct{}),
 		alarmMetricsDone: make(chan struct{}),
+		fdMetricsDone:    make(chan struct{}),
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
@@ -177,6 +183,10 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		defer close(s.alarmMetricsDone)
 		s.runAlarmMetricsRefresh(runCtx, alarmMetricsRefreshInterval, alarmMetricsRefreshTimeout)
 	}()
+	go func() {
+		defer close(s.fdMetricsDone)
+		s.runFDMetricsRefresh(runCtx, fdMetricsRefreshInterval)
+	}()
 	return s
 }
 
@@ -185,6 +195,40 @@ const quotaMetricsRefreshTimeout = 5 * time.Second
 
 const alarmMetricsRefreshInterval = time.Second
 const alarmMetricsRefreshTimeout = 5 * time.Second
+
+const fdMetricsRefreshInterval = 10 * time.Minute
+
+func (s *server) refreshFDMetrics() {
+	used, err := runtimeutil.FDUsage()
+	if err != nil {
+		s.metricCli.EmitCounter("fd.refresh.err", 1, metrics.Tag("type", "used"))
+		klog.ErrorS(err, "refresh file descriptor usage metric failed")
+		return
+	}
+	s.metricCli.EmitGauge("os.fd.used", used)
+
+	limit, err := runtimeutil.FDLimit()
+	if err != nil {
+		s.metricCli.EmitCounter("fd.refresh.err", 1, metrics.Tag("type", "limit"))
+		klog.ErrorS(err, "refresh file descriptor limit metric failed")
+		return
+	}
+	s.metricCli.EmitGauge("os.fd.limit", limit)
+}
+
+func (s *server) runFDMetricsRefresh(ctx context.Context, interval time.Duration) {
+	s.refreshFDMetrics()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshFDMetrics()
+		}
+	}
+}
 
 func (s *server) refreshAlarmMetrics(ctx context.Context) {
 	if err := s.etcdServer.RefreshAlarmMetrics(ctx); err != nil {

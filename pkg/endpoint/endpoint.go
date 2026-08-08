@@ -27,6 +27,7 @@ import (
 	// anything serves DefaultServeMux. pprof is wired explicitly and gated behind
 	// EnablePprof in pprof.go (#32).
 
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/tmc/grpc-websocket-proxy/wsproxy"
 	"golang.org/x/sync/errgroup"
@@ -358,6 +359,7 @@ func grpcTransportOptions(config *Config) []grpc.ServerOption {
 func (e *Endpoint) buildClientGrpcServer() *grpc.Server {
 	grpcServer := grpc.NewServer(e.clientGrpcServerOptions()...)
 	e.server.RegisterClient(grpcServer)
+	grpc_prometheus.Register(grpcServer)
 	return grpcServer
 }
 
@@ -378,6 +380,7 @@ func (e *Endpoint) clientGrpcServerOptions() []grpc.ServerOption {
 func (e *Endpoint) buildPeerGrpcServer() *grpc.Server {
 	grpcServer := grpc.NewServer(e.peerGrpcServerOptions()...)
 	e.server.RegisterPeer(grpcServer)
+	grpc_prometheus.Register(grpcServer)
 	return grpcServer
 }
 

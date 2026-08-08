@@ -134,6 +134,30 @@ func (r *healthMetricRecorder) EmitGauge(name string, value interface{}, tags ..
 	return nil
 }
 
+func (r *healthMetricRecorder) countGauge(name string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, event := range r.events {
+		if event.kind == "gauge" && event.name == name {
+			count++
+		}
+	}
+	return count
+}
+
+func (r *healthMetricRecorder) gaugeValues(name string) []interface{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var values []interface{}
+	for _, event := range r.events {
+		if event.kind == "gauge" && event.name == name {
+			values = append(values, event.value)
+		}
+	}
+	return values
+}
+
 func (s *healthStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
 	if s.fail {
 		return nil, errors.New("storage unavailable")
@@ -298,6 +322,41 @@ func TestQuotaMetricsRefreshBoundsBlockedStorageRead(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("quota metrics refresh did not stop after a bounded storage timeout")
 	}
+}
+
+func TestFDMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	s := &server{metricCli: metrics}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.runFDMetricsRefresh(ctx, time.Millisecond)
+	}()
+	require.Eventually(t, func() bool {
+		return metrics.countGauge("os.fd.used") >= 2 && metrics.countGauge("os.fd.limit") >= 2
+	}, time.Second, time.Millisecond)
+
+	for _, name := range []string{"os.fd.used", "os.fd.limit"} {
+		values := metrics.gaugeValues(name)
+		require.NotEmpty(t, values)
+		for _, value := range values {
+			require.IsType(t, uint64(0), value)
+			require.Positive(t, value)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("fd metrics refresh did not stop after context cancellation")
+	}
+	stoppedAtUsed := metrics.countGauge("os.fd.used")
+	stoppedAtLimit := metrics.countGauge("os.fd.limit")
+	time.Sleep(5 * time.Millisecond)
+	require.Equal(t, stoppedAtUsed, metrics.countGauge("os.fd.used"))
+	require.Equal(t, stoppedAtLimit, metrics.countGauge("os.fd.limit"))
 }
 
 // TestLeadershipHealthTransitions pins #61: losing leadership must flip the gRPC

@@ -42768,8 +42768,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `go_gc_gogc_percent`、`go_gc_gomemlimit_bytes` 和 `go_sched_gomaxprocs_threads`。
   当前 KubeBrain 运行态 info `/metrics` 已暴露这些 family；生产 gate 在
   `EXPECTED_INFO_METRICS_CHECKS=1` 时同步要求它们存在，仍归入 `runtime_metrics=ok`
-  摘要。`os_fd_limit` 和 `os_fd_used` 目前没有运行态证据，不在本轮强制为兼容契约，
-  避免把不存在的 upstream FD 指标误标为已支持。
+  摘要。FD 指标由 A4029 单独闭环。
 - A4028 实现并固定 server identity metrics：上游 `etcdserver/metrics.go` 注册
   `etcd_server_go_version{server_go_version=...}` 与
   `etcd_server_id{server_id=...}`，其中 server ID label 使用十六进制成员 ID。
@@ -42780,6 +42779,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `server_identity_metrics=ok` 摘要固定；由于 info `/metrics` 与 client
   `endpoint status` 可能经不同 Service 后端，本 gate 不把某次 status 的 member ID
   强行绑定到 metrics label。
+- A4029 实现并固定 OS file descriptor metrics：上游 `etcdserver/metrics.go` 注册
+  `os_fd_used` 与 `os_fd_limit`，通过 `runtime.FDUsage`/`FDLimit` 低频刷新，避免每次
+  Prometheus scrape 都扫描 `/proc/self/fd`。KubeBrain 现在在 server 生命周期中启动
+  `runFDMetricsRefresh`，启动立即采样并按 10 分钟周期刷新 `os.fd.used` 与
+  `os.fd.limit`，Prometheus wrapper 暴露为 `os_fd_used` 与 `os_fd_limit`。生产 gate
+  在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求两个 family 均存在，并通过
+  `fd_metrics=ok` 摘要固定；server 单测覆盖立即刷新、周期刷新和 context 取消后停止。
+- A4030 固定 gRPC server metric family 的启动后可见性：`go-grpc-prometheus` 的 labelled
+  gRPC counters 默认只有处理过对应 RPC 后才出现，刚滚动后的 info `/metrics` 若命中尚未
+  承载 client gRPC 请求的 Pod，会缺少 `grpc_server_handled_total` 等 family。KubeBrain
+  现在在 client/peer gRPC 服务注册完成后调用 `grpc_prometheus.Register` 预初始化服务
+  method label series，使每个 Pod 启动后即暴露 gRPC server metric families；生产 gate
+  因此不再依赖 Service 负载均衡恰好把 status/metrics 请求打到同一 Pod。
 
 ### P2：运维兼容和长期验证
 
