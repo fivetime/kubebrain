@@ -42764,6 +42764,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EXPECTED_INFO_METRICS_CHECKS=1` 时现在要求这些 runtime/promhttp metric family 均存在，
   并通过 `runtime_metrics=ok` 与 `promhttp_metrics=ok` 摘要固定。该检查只约束 family
   存在，不绑定 goroutine/thread 数量或 promhttp 请求计数，避免把瞬时运行态误写成兼容契约。
+- A4027 继续收紧 Go runtime metric family 覆盖：同一上游 basic metrics 列表还包含
+  `go_gc_gogc_percent`、`go_gc_gomemlimit_bytes` 和 `go_sched_gomaxprocs_threads`。
+  当前 KubeBrain 运行态 info `/metrics` 已暴露这些 family；生产 gate 在
+  `EXPECTED_INFO_METRICS_CHECKS=1` 时同步要求它们存在，仍归入 `runtime_metrics=ok`
+  摘要。`os_fd_limit`、`os_fd_used`、`etcd_server_go_version` 和 `etcd_server_id`
+  目前没有运行态证据，不在本轮强制为兼容契约，避免把不存在的 upstream Raft/server
+  identity 指标误标为已支持。
 
 ### P2：运维兼容和长期验证
 

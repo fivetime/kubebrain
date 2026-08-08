@@ -245,6 +245,18 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected go_threads" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"go_gc_gogc_percent "* ]]; then
+    echo "info metrics mismatch: expected go_gc_gogc_percent" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"go_gc_gomemlimit_bytes "* ]]; then
+    echo "info metrics mismatch: expected go_gc_gomemlimit_bytes" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"go_sched_gomaxprocs_threads "* ]]; then
+    echo "info metrics mismatch: expected go_sched_gomaxprocs_threads" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"promhttp_metric_handler_requests_in_flight "* ]]; then
     echo "info metrics mismatch: expected promhttp_metric_handler_requests_in_flight" >&2
     exit 1

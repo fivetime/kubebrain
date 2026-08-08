@@ -474,7 +474,8 @@ PROBE_TIMEOUT=10s \
 `etcd_server_version`、`etcd_cluster_version`、`grpc_server_handled_total`、
 `grpc_server_started_total`、`grpc_server_msg_received_total` 和
 `grpc_server_msg_sent_total`，以及 Go runtime/promhttp 基础指标 `go_info`、
-`go_goroutines`、`go_threads`、`promhttp_metric_handler_requests_in_flight` 和
+`go_goroutines`、`go_threads`、`go_gc_gogc_percent`、`go_gc_gomemlimit_bytes`、
+`go_sched_gomaxprocs_threads`、`promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
 同时确认 client 口 `/metrics` 保持 HTTP 404，避免把 Prometheus 指标面重新暴露到业务
