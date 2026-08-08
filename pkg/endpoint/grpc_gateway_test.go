@@ -579,6 +579,7 @@ func (s *gatewayMaintenanceServer) Status(ctx context.Context, request *etcdserv
 		IsLearner:        true,
 		StorageVersion:   "3.7.0",
 		DbSizeQuota:      70,
+		DowngradeInfo:    &etcdserverpb.DowngradeInfo{Enabled: false},
 	}, nil
 }
 
@@ -1398,7 +1399,8 @@ func TestGRPCGatewayUsesGeneratedEtcdJSONContract(t *testing.T) {
 		"dbSizeInUse":"69",
 		"isLearner":true,
 		"storageVersion":"3.7.0",
-		"dbSizeQuota":"70"
+		"dbSizeQuota":"70",
+		"downgradeInfo":{}
 	}`,
 		func() bool { return maintenanceServer.request != nil }, &maintenanceServer.md)
 	assertUnaryContract("/v3/maintenance/alarm",

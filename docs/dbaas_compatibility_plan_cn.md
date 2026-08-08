@@ -42559,6 +42559,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   storage semver（如 `3.8.0`）。KubeBrain 本地 snapshot 流和 clientv3 回归继续固定
   `Version=3.7.0`，与 `Status.StorageVersion`、`/version.storage` 三个公开 storage
   version 面保持一致。
+- A4000 固定 HTTP gRPC-gateway `Status.downgradeInfo` 的空闲态 JSON 形态：
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 在 Status 响应中始终放置
+  非 nil `DowngradeInfo{Enabled:false}`；etcd gateway 使用 protojson 且
+  `EmitUnpopulated=false`，因此空闲态可观察为 `downgradeInfo:{}`。KubeBrain gateway
+  单测新增该字段，生产只读 gate 新增 `downgradeInfo:{}` 通过覆盖，防止把正常空对象误判为
+  缺字段或 `enabled_without_target`。
 
 ### P2：运维兼容和长期验证
 
