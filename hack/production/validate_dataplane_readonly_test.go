@@ -1958,6 +1958,48 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "gateway_hash=222, gateway_hashkv_hash=111, gateway_hashkv_hash_revision=7, gateway_hashkv_compact_revision=3, gateway_hashkv_revisions_match=true",
 		},
 		{
+			name: "reports post hash mvcc metrics in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOK:     true,
+			wantOutput: "mvcc_hash_metrics=ok",
+		},
+		{
+			name: "rejects missing post hash mvcc metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 1\n",
+				"",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: expected etcd_mvcc_hash_rev_duration_seconds_count after gateway hashkv",
+		},
+		{
 			name: "rejects gateway hashkv hash drift",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -3595,6 +3637,10 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			dir := t.TempDir()
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "kubectl"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ " $* " == *" exec "* ]]; then
+  printf '%s' "$FAKE_INFO_METRICS"
+  exit 0
+fi
 printf '%s' "$FAKE_PODS_JSON"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "curl"), `#!/usr/bin/env bash
@@ -4006,6 +4052,8 @@ func defaultInfoMetrics(value string) string {
 		`etcd_debugging_lease_granted_total{cluster="default"} 0`,
 		`etcd_debugging_lease_revoked_total{cluster="default"} 0`,
 		`etcd_debugging_lease_renewed_total{cluster="default"} 0`,
+		`etcd_mvcc_hash_duration_seconds_count{cluster="default"} 1`,
+		`etcd_mvcc_hash_rev_duration_seconds_count{cluster="default"} 1`,
 		`promhttp_metric_handler_requests_in_flight 1`,
 		`promhttp_metric_handler_requests_total{code="200"} 1`,
 	}, "\n") + "\n"
@@ -4101,6 +4149,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"auth_metrics=ok",
 		"quota_metrics=ok",
 		"mvcc_db_size_metrics=ok",
+		"mvcc_hash_metrics=ok",
 		"mvcc_revision_metrics=ok",
 		"mvcc_watch_metrics=ok",
 		"lease_metrics=ok",

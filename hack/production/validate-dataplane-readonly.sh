@@ -399,6 +399,50 @@ expect_info_metrics_boundary() {
   fi
 }
 
+expect_hash_metrics_boundary() {
+	local client_url="$1"
+	local client_metrics
+	local pod
+	local pod_metrics
+	local pod_names
+	local combined_metrics
+
+	client_metrics="$(run_with_probe_timeout "$CURL" -sS -i "$client_url")"
+	if [[ "${client_metrics%%$'\n'*}" != HTTP/*" 404 "* ]]; then
+		echo "client metrics mismatch after hash checks: expected HTTP 404, got ${client_metrics%%$'\n'*}" >&2
+    exit 1
+  fi
+  if [[ "$client_metrics" != *"404 page not found"* ]]; then
+    echo "client metrics mismatch after hash checks: expected 404 page not found body" >&2
+		exit 1
+	fi
+
+	pod_names="$(printf '%s' "$pods_json" | "$JQ" -r '
+    .items[]
+    | select(.metadata.deletionTimestamp == null)
+    | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+    | .metadata.name
+  ')"
+	combined_metrics=""
+	while IFS= read -r pod; do
+		if [[ -z "$pod" ]]; then
+			continue
+		fi
+		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
+		combined_metrics+=$'\n'"$pod_metrics"
+	done <<<"$pod_names"
+
+	if [[ "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count{"* && "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count "* ]]; then
+		echo "info metrics mismatch: expected etcd_mvcc_hash_duration_seconds_count after gateway hash" >&2
+		exit 1
+	fi
+	if [[ "$combined_metrics" != *"etcd_mvcc_hash_rev_duration_seconds_count{"* && "$combined_metrics" != *"etcd_mvcc_hash_rev_duration_seconds_count "* ]]; then
+		echo "info metrics mismatch: expected etcd_mvcc_hash_rev_duration_seconds_count after gateway hashkv" >&2
+		exit 1
+	fi
+}
+
 expect_debug_vars_boundary() {
   local client_debug_vars_url="$1"
   local info_debug_vars_url="$2"
@@ -1969,6 +2013,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   hashkv_summary+=", gateway_hashkv_hash_revision=${gateway_hashkv_hash_revision}"
   hashkv_summary+=", gateway_hashkv_compact_revision=${gateway_hashkv_compact_revision}"
   hashkv_summary+=", gateway_hashkv_revisions_match=true"
+  if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
+    expect_hash_metrics_boundary "${ENDPOINT%/}/metrics"
+    status_summary+=", mvcc_hash_metrics=ok"
+  fi
 fi
 
 if [[ "$EXPECTED_DEBUG_VARS_CHECKS" == "1" ]]; then

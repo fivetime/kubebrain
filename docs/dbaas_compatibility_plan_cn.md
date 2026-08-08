@@ -42965,6 +42965,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV snapshot 或 scanner worker 数。server state metrics 刷新路径现在稳定发出
   `etcd.mvcc.db.open_read_transactions=0`，生产 gate 要求
   `etcd_mvcc_db_open_read_transactions` family 存在，继续归入 `mvcc_db_size_metrics=ok`。
+- A4049 实现并固定 upstream MVCC hash duration histograms：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 注册
+  `etcd_mvcc_hash_duration_seconds` 与 `etcd_mvcc_hash_rev_duration_seconds`，分别观察
+  storage Hash 与 HashKV-by-revision 操作耗时。KubeBrain 不复用 upstream bbolt MVCC
+  store，但 public Maintenance `Hash`/`HashKV` 是同一客户端可观察诊断边界；现在
+  `Hash` 成功完成 backend `Hash` 后观察 `etcd.mvcc.hash_duration_seconds`，`HashKV`
+  成功完成 backend `HashKV` 后观察 `etcd.mvcc.hash_rev_duration_seconds`。认证失败、
+  future revision、compacted revision 或 backend 错误不写入 histogram，避免把未完成 hash
+  伪造成 storage hash latency；也不使用 0 样本预热，避免污染 latency 分布。生产 gate 在
+  gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv` 均成功后重新抓取 info
+  `/metrics`，要求两个 histogram `_count` family 存在，并新增 `mvcc_hash_metrics=ok`
+  摘要。
 
 ### P2：运维兼容和长期验证
 

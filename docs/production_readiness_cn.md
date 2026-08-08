@@ -554,7 +554,10 @@ Alarm GET 的缺省 `alarms` 视为 protojson 空 repeated 省略，若返回则
 client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必须一致，且
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
 HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV hash、
-hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
+hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时启用 metrics
+检查，Hash/HashKV 后的 info listener `/metrics` 还必须出现 upstream 兼容的
+`etcd_mvcc_hash_duration_seconds_count` 与
+`etcd_mvcc_hash_rev_duration_seconds_count`。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
@@ -564,7 +567,7 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `server_stream_metrics=ok`、`mvcc_operation_metrics=ok`、
 `runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
 `health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
-`mvcc_key_metrics=ok`、`mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、
+`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、
 `lease_metrics=ok`、`promhttp_metrics=ok`、
 `info_debug_vars=ok`、
 `client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、

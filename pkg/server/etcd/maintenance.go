@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-semver/semver"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -395,10 +396,12 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 	// data is shared in TiKV. Refresh it when possible, but preserve etcd's
 	// member-local diagnostic behavior when the leader is unavailable.
 	_ = s.peers.SyncReadRevision(ctx)
+	start := time.Now()
 	hashResult, err := s.backend.Hash(ctx)
 	if err != nil {
 		return nil, err
 	}
+	emitEtcdMVCCHashDuration(s.metricCli, time.Since(start))
 	return &etcdserverpb.HashResponse{
 		Header: txnHeader(hashResult.CurrentRevision), Hash: hashResult.Hash,
 	}, nil
@@ -421,6 +424,7 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 			return nil, err
 		}
 	}
+	start := time.Now()
 	hashResult, err := s.backend.HashKV(ctx, revision)
 	if err != nil {
 		if errors.Is(err, backend.ErrHashKVCompacted) {
@@ -431,6 +435,7 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 		}
 		return nil, err
 	}
+	emitEtcdMVCCHashRevDuration(s.metricCli, time.Since(start))
 	return &etcdserverpb.HashKVResponse{
 		Header:          txnHeader(hashResult.CurrentRevision),
 		Hash:            hashResult.Hash,

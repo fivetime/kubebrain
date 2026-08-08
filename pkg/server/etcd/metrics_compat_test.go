@@ -134,6 +134,18 @@ func TestEmitWatchSendLoopDurationsUseUpstreamMetricNames(t *testing.T) {
 	require.Empty(t, rec.histograms[3].tags)
 }
 
+func TestEtcdMVCCHashDurationHistogramsUseUpstreamMetricNames(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	emitEtcdMVCCHashDuration(rec, 1500*time.Millisecond)
+	emitEtcdMVCCHashRevDuration(rec, 2*time.Second)
+
+	require.Equal(t, []recordedHistogram{
+		{name: "etcd.mvcc.hash_duration_seconds", value: 1.5},
+		{name: "etcd.mvcc.hash_rev_duration_seconds", value: 2.0},
+	}, rec.histograms)
+}
+
 func TestEtcdMVCCWatchEventCounterUsesUpstreamMetricName(t *testing.T) {
 	rec := &recordingMetrics{}
 
