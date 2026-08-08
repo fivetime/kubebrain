@@ -42988,6 +42988,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   forwarding listener 不计入 `client_grpc_*`；`RPCServer.New` 用 0 预初始化两个 counter
   family。生产 gate 要求 `etcd_network_client_grpc_received_bytes_total` 与
   `etcd_network_client_grpc_sent_bytes_total` family 存在，继续归入 `network_metrics=ok`。
+- A4051 实现并固定 upstream MVCC compaction metrics 的可映射子集：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 与
+  `/root/etcd/server/storage/mvcc/kvstore_compaction.go` 注册并更新
+  `etcd_debugging_mvcc_index_compaction_pause_duration_milliseconds`、
+  `etcd_debugging_mvcc_db_compaction_total_duration_milliseconds`、
+  `etcd_debugging_mvcc_db_compaction_last` 与
+  `etcd_debugging_mvcc_db_compaction_keys_total`。KubeBrain 不运行 bbolt backend，但有真实的
+  shared-storage physical version GC：`backend.physicalCompact` 的端到端耗时现在映射到
+  `db_compaction_total_duration_milliseconds`，完成/结束时间映射到 `db_compaction_last`；
+  leader 本地 count-index 历史裁剪耗时映射到 `index_compaction_pause_duration_milliseconds`。
+  `NewBackend` 用 0 预初始化 `db_compaction_last`，生产 gate 要求
+  `etcd_debugging_mvcc_db_compaction_last` family 存在并新增
+  `mvcc_compaction_metrics=ok`。暂不实现 `db_compaction_keys_total`，因为当前 scanner/增量
+  compaction 只暴露原生 `compact` counter 和批次错误，不能精确返回 upstream “db keys
+  compacted” 语义；后续若 scanner 返回精确删除 key 数，再补该 counter。
 
 ### P2：运维兼容和长期验证
 

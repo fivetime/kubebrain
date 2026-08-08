@@ -300,6 +300,12 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) error {
 	b.compactScanMu.Lock()
 	defer b.compactScanMu.Unlock()
 
+	totalStart := time.Now()
+	defer func() {
+		emitEtcdMVCCDBCompactionTotalDuration(b.metricCli, time.Since(totalStart))
+		emitEtcdMVCCDBCompactionLast(b.metricCli, time.Now().Unix())
+	}()
+
 	// A round over a large tombstone backlog can run for an hour+ (17M keys ≈
 	// 75min field-measured); its counters (scanner batches, elog cleanup) are
 	// spread across phases, so without an explicit in-flight signal a long
@@ -360,7 +366,9 @@ func (b *backend) physicalCompact(ctx context.Context, revision uint64) error {
 		}
 	}
 	if b.countIndex != nil {
+		indexStart := time.Now()
 		b.countIndex.Compact(revision)
+		emitEtcdMVCCIndexCompactionPause(b.metricCli, time.Since(indexStart))
 	}
 	// Watches below the compact watermark are cancelled, but exactly the compact
 	// revision remains recoverable. Drop only older event-log entries and retain

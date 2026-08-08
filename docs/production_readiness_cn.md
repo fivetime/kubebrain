@@ -567,7 +567,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐；若同时�
 `server_stream_metrics=ok`、`mvcc_operation_metrics=ok`、
 `runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
 `health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
-`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、
+`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_revision_metrics=ok`、
+`mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
 `lease_metrics=ok`、`promhttp_metrics=ok`、
 `info_debug_vars=ok`、
 `client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、
