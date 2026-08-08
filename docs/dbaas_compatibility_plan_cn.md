@@ -42628,6 +42628,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `version_etcdserver=<semver>`、`version_etcdcluster=<major.minor>` 与
   `version_storage=<semver>`；新增 `storage:false` 与 `/version.storage` 漂移拒绝覆盖，避免
   gRPC Status 和 HTTP `/version` 再次分叉。
+- A4008 固定 client/info 双口 `/version` 一致性：
+  Kubernetes 1.37 的 external etcd `httpEndpoints` 预检可访问独立 HTTP/info 端口，KubeBrain
+  也在 `pkg/server/server.go` 将 `/version` 同时注册到 client、peer 和 info handlers。生产
+  gate 现在从 `READYZ_URL` 推导 info 口 `/version`，要求其 `etcdserver`、`etcdcluster`、
+  `storage` 与 client 口 `/version` 完全一致，并在通过摘要中输出
+  `info_version_storage=<semver>`。新增 info 口 storage drift 拒绝覆盖，避免 client 口预检
+  正确但 info 口 kubeadm/运维预检继续暴露旧版本或旧 storage schema。
 
 ### P2：运维兼容和长期验证
 

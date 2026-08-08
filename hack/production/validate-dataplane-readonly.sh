@@ -851,11 +851,38 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     echo "/version storage mismatch: gateway_status=${gateway_status_storage_version}, version=${version_storage}" >&2
     exit 1
   fi
+  info_version_url="${READYZ_URL%/readyz}/version"
+  info_version_json="$(run_with_probe_timeout "$CURL" -fsS "$info_version_url")"
+  info_version_values="$(printf '%s' "$info_version_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid"
+    else
+      [
+        (.etcdserver // "missing"),
+        (.etcdcluster // "missing"),
+        (.storage // "missing")
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r info_version_etcdserver info_version_etcdcluster info_version_storage <<<"$info_version_values"
+  if [[ "$info_version_etcdserver" != "$version_etcdserver" ]]; then
+    echo "info /version etcdserver mismatch: client=${version_etcdserver}, info=${info_version_etcdserver}" >&2
+    exit 1
+  fi
+  if [[ "$info_version_etcdcluster" != "$version_etcdcluster" ]]; then
+    echo "info /version etcdcluster mismatch: client=${version_etcdcluster}, info=${info_version_etcdcluster}" >&2
+    exit 1
+  fi
+  if [[ "$info_version_storage" != "$version_storage" ]]; then
+    echo "info /version storage mismatch: client=${version_storage}, info=${info_version_storage}" >&2
+    exit 1
+  fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"
   status_summary+=", version_etcdserver=${version_etcdserver}"
   status_summary+=", version_etcdcluster=${version_etcdcluster}"
   status_summary+=", version_storage=${version_storage}"
+  status_summary+=", info_version_storage=${info_version_storage}"
   status_summary+=", gateway_db_size_in_use=${gateway_status_db_size_in_use}"
   if [[ "$gateway_status_db_size_quota" != "missing" ]]; then
     status_summary+=", gateway_db_size_quota=${gateway_status_db_size_quota}"
