@@ -16,8 +16,42 @@ package etcd
 
 import "github.com/kubewharf/kubebrain/pkg/metrics"
 
+func initEtcdLeaseLifecycleMetrics(metricCli metrics.Metrics) {
+	emitEtcdLeaseGrantedCounter(metricCli, 0)
+	emitEtcdLeaseRevokedCounter(metricCli, 0)
+	emitEtcdLeaseRenewedCounter(metricCli, 0)
+}
+
 func initEtcdLeaseExpiredCounter(metricCli metrics.Metrics) {
 	emitEtcdLeaseExpiredCounter(metricCli, 0)
+}
+
+func emitEtcdLeaseGrantedCounter(metricCli metrics.Metrics, value int) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("etcd_debugging.lease.granted_total", value)
+}
+
+func emitEtcdLeaseRevokedCounter(metricCli metrics.Metrics, value int) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("etcd_debugging.lease.revoked_total", value)
+}
+
+func emitEtcdLeaseRenewedCounter(metricCli metrics.Metrics, value int) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("etcd_debugging.lease.renewed_total", value)
+}
+
+func emitEtcdLeaseTTLHistogram(metricCli metrics.Metrics, ttl int64) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitHistogram("etcd_debugging.lease.ttl_total", ttl)
 }
 
 func emitEtcdLeaseExpiredCounter(metricCli metrics.Metrics, value int) {

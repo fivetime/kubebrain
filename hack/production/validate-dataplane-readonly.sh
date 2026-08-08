@@ -373,6 +373,18 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_debugging_server_lease_expired_total" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_debugging_lease_granted_total{"* && "$info_metrics" != *"etcd_debugging_lease_granted_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_debugging_lease_granted_total" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"etcd_debugging_lease_revoked_total{"* && "$info_metrics" != *"etcd_debugging_lease_revoked_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_debugging_lease_revoked_total" >&2
+    exit 1
+  fi
+  if [[ "$info_metrics" != *"etcd_debugging_lease_renewed_total{"* && "$info_metrics" != *"etcd_debugging_lease_renewed_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_debugging_lease_renewed_total" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"promhttp_metric_handler_requests_in_flight "* ]]; then
     echo "info metrics mismatch: expected promhttp_metric_handler_requests_in_flight" >&2
     exit 1

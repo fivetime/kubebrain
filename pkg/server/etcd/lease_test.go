@@ -1482,13 +1482,7 @@ func TestLeaseExpiredCounterCountsOnlyNaturalExpiration(t *testing.T) {
 	countExpiredIncrements := func() int {
 		metricRecorder.mu.Lock()
 		defer metricRecorder.mu.Unlock()
-		total := 0
-		for _, counter := range metricRecorder.counters {
-			if counter.name == "etcd_debugging.server.lease_expired_total" && counter.value == 1 {
-				total++
-			}
-		}
-		return total
+		return countRecordedCounterValue(metricRecorder.counters, "etcd_debugging.server.lease_expired_total", 1)
 	}
 
 	ctx := context.Background()
@@ -1503,6 +1497,80 @@ func TestLeaseExpiredCounterCountsOnlyNaturalExpiration(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return countExpiredIncrements() == 1
 	}, 3*time.Second, 100*time.Millisecond)
+}
+
+func TestLeaseLifecycleMetricsCountSuccessfulLeaderOperations(t *testing.T) {
+	metricRecorder := &recordingMetrics{}
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "lease-lifecycle-metric-peer",
+		EnableEtcdCompatibility: true,
+	}, metricRecorder)
+	server := New(b, metricRecorder, testPeerService{isLeader: true})
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+	}()
+
+	ctx := context.Background()
+	grant, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 12001})
+	require.NoError(t, err)
+	require.Equal(t, int64(30), grant.TTL)
+
+	stream := &fakeLeaseKeepAliveServer{
+		ctx:      ctx,
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: grant.ID}},
+	}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, grant.ID, stream.sent[0].ID)
+	require.Equal(t, int64(30), stream.sent[0].TTL)
+
+	_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: grant.ID})
+	require.NoError(t, err)
+
+	metricRecorder.mu.Lock()
+	defer metricRecorder.mu.Unlock()
+	require.Equal(t, 1, countRecordedCounterValue(metricRecorder.counters, "etcd_debugging.lease.granted_total", 1))
+	require.Equal(t, 1, countRecordedCounterValue(metricRecorder.counters, "etcd_debugging.lease.renewed_total", 1))
+	require.Equal(t, 1, countRecordedCounterValue(metricRecorder.counters, "etcd_debugging.lease.revoked_total", 1))
+	require.Contains(t, metricRecorder.histograms, recordedHistogram{
+		name:  "etcd_debugging.lease.ttl_total",
+		value: int64(30),
+	})
+}
+
+func TestLeaseNaturalExpirationCountsRevokedLifecycleMetric(t *testing.T) {
+	metricRecorder := &recordingMetrics{}
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity:                "lease-expired-revoked-metric-peer",
+		EnableEtcdCompatibility: true,
+	}, metricRecorder)
+	server := New(b, metricRecorder, testPeerService{isLeader: true})
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+	}()
+
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 1, ID: 12002})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		metricRecorder.mu.Lock()
+		defer metricRecorder.mu.Unlock()
+		return countRecordedCounterValue(metricRecorder.counters, "etcd_debugging.server.lease_expired_total", 1) == 1 &&
+			countRecordedCounterValue(metricRecorder.counters, "etcd_debugging.lease.revoked_total", 1) == 1
+	}, 3*time.Second, 100*time.Millisecond)
+}
+
+func countRecordedCounterValue(counters []recordedCounter, name string, value interface{}) int {
+	total := 0
+	for _, counter := range counters {
+		if counter.name == name && counter.value == value {
+			total++
+		}
+	}
+	return total
 }
 
 func TestLeaseLeasesListsGrantedLeases(t *testing.T) {

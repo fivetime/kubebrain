@@ -42943,6 +42943,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也不可用时跳过该轮并递增内部 `mvcc.keys_total.refresh.miss`，避免为了指标制造周期性
   O(keyspace) 生产负载。生产 gate 要求 `etcd_debugging_mvcc_keys_total` family 存在并新增
   `mvcc_key_metrics=ok` 摘要。
+- A4047 实现并固定 upstream lease lifecycle metrics：上游
+  `/root/etcd/server/lease/metrics.go` 注册
+  `etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total`、
+  `etcd_debugging_lease_renewed_total` 与 `etcd_debugging_lease_ttl_total` histogram。
+  KubeBrain 的等价边界是 leader 侧成功处理的 etcd Lease RPC/expiry：`LeaseGrant` 持久化
+  lease metadata、发布内存状态并成功返回前递增 granted，同时按最终 clamp 后 TTL 观察
+  `ttl_total`；显式 `LeaseRevoke` 在原子删除 lease metadata/attached keys 并 forget 后递增
+  revoked；自然过期成功删除 bound keys 并 forget 后同时递增 upstream expired counter 与
+  revoked（上游 expired lease 也通过 revoke 路径清理）；`LeaseKeepAlive` 本地成功续约 live
+  lease 后递增 renewed，not-found keepalive 不计数。follower proxy 只透传 leader response，
+  不在 follower 本地重复计数。`RPCServer.New` 预初始化 granted/revoked/renewed 三个 counter
+  family；TTL histogram 只在真实成功 Grant 时出现，不用 0 样本预热，避免污染 TTL 分布。
+  生产 gate 要求三个 lifecycle counter family 和既有
+  `etcd_debugging_server_lease_expired_total` 均存在，继续归入 `lease_metrics=ok`。
 
 ### P2：运维兼容和长期验证
 

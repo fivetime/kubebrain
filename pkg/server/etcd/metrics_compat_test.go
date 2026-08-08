@@ -217,6 +217,28 @@ func TestEtcdLeaseExpiredCounterUsesUpstreamMetricName(t *testing.T) {
 	}, rec.counters)
 }
 
+func TestEtcdLeaseLifecycleMetricsUseUpstreamMetricNames(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	initEtcdLeaseLifecycleMetrics(rec)
+	emitEtcdLeaseGrantedCounter(rec, 1)
+	emitEtcdLeaseRevokedCounter(rec, 2)
+	emitEtcdLeaseRenewedCounter(rec, 3)
+	emitEtcdLeaseTTLHistogram(rec, 30)
+
+	require.Equal(t, []recordedCounter{
+		{name: "etcd_debugging.lease.granted_total", value: 0},
+		{name: "etcd_debugging.lease.revoked_total", value: 0},
+		{name: "etcd_debugging.lease.renewed_total", value: 0},
+		{name: "etcd_debugging.lease.granted_total", value: 1},
+		{name: "etcd_debugging.lease.revoked_total", value: 2},
+		{name: "etcd_debugging.lease.renewed_total", value: 3},
+	}, rec.counters)
+	require.Equal(t, []recordedHistogram{
+		{name: "etcd_debugging.lease.ttl_total", value: int64(30)},
+	}, rec.histograms)
+}
+
 func TestEtcdClientRequestCounterUsesUpstreamMetricNameAndLabels(t *testing.T) {
 	rec := &recordingMetrics{}
 

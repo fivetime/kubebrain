@@ -213,6 +213,8 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	m.scheduleLeaseCheckpointLocked(st)
 	m.leaseMu.Unlock()
 
+	emitEtcdLeaseGrantedCounter(m.srv.metricCli, 1)
+	emitEtcdLeaseTTLHistogram(m.srv.metricCli, ttl)
 	return &etcdserverpb.LeaseGrantResponse{
 		Header: txnHeader(int64(m.srv.backend.GetCurrentRevision())),
 		ID:     id,
@@ -261,6 +263,7 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	if err != nil {
 		return nil, mapFenceErr(err)
 	}
+	emitEtcdLeaseRevokedCounter(m.srv.metricCli, 1)
 	return &etcdserverpb.LeaseRevokeResponse{
 		Header: txnHeader(int64(rev)),
 	}, nil
@@ -352,6 +355,8 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			ttl = 0
 		} else if err != nil {
 			return mapFenceErr(err)
+		} else {
+			emitEtcdLeaseRenewedCounter(m.srv.metricCli, 1)
 		}
 		if err := m.sendLeaseKeepAliveResponse(stream, &etcdserverpb.LeaseKeepAliveResponse{
 			Header: txnHeader(int64(responseRevision)),
@@ -1211,6 +1216,7 @@ func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int6
 	// Every bound key is gone; now drop the lease record and attachment records.
 	m.forgetLease(id)
 	emitEtcdLeaseExpiredCounter(m.srv.metricCli, 1)
+	emitEtcdLeaseRevokedCounter(m.srv.metricCli, 1)
 }
 
 // leaseKeysSnapshot returns a copy of the keys currently attached to lease id

@@ -498,7 +498,9 @@ MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
 `etcd_debugging_mvcc_watcher_total`、`etcd_debugging_mvcc_slow_watcher_total` 与
 `etcd_debugging_mvcc_events_total`，
-lease expiration 指标 `etcd_debugging_server_lease_expired_total`，
+lease 指标 `etcd_debugging_server_lease_expired_total`、
+`etcd_debugging_lease_granted_total`、`etcd_debugging_lease_revoked_total` 与
+`etcd_debugging_lease_renewed_total`，
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
