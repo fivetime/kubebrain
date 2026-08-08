@@ -42736,6 +42736,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   时确认 client/info 双口 `/debug/pprof/` 都返回 HTTP 404；摘要新增
   `client_pprof=404` 与 `info_pprof=404`，防止 pprof CPU/heap DoS 与信息泄露诊断面
   因回归被默认打开。
+- A4023 固定 pprof 显式开启时的 endpoint 归属：上游 `--enable-pprof` 的公共语义是
+  显式 opt-in 后才挂载 `/debug/pprof/`，KubeBrain 的 DBaaS 安全约束进一步要求该挂载
+  只发生在 info 口，不能因同一 `Endpoint` 配置把 pprof 泄漏到 client 数据口。
+  `TestMetricsHTTPServerGatesPprofOnInfoPort` 覆盖默认 404 与显式开启后 info 口 200，
+  `TestClientHTTPHandlerNeverExposesPprof` 覆盖即使 `EnablePprof=true`，client handler
+  `/debug/pprof/` 仍保持 404；生产运行态由 A4022 的默认关闭 gate 覆盖。
 
 ### P2：运维兼容和长期验证
 
