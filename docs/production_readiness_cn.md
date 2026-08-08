@@ -451,6 +451,7 @@ EXPECTED_HEALTH_METHOD_CHECKS=1 \
 EXPECTED_HTTP_HEADER_CHECKS=1 \
 EXPECTED_INFO_METRICS_CHECKS=1 \
 EXPECTED_DEBUG_VARS_CHECKS=1 \
+EXPECTED_PPROF_DISABLED_CHECKS=1 \
 STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
 PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
@@ -477,7 +478,9 @@ client 入口。配置 `EXPECTED_DEBUG_VARS_CHECKS=1` 时还会要求 info 口 `
 返回 `Content-Type: application/json; charset=utf-8` 的可解析 JSON，且包含 expvar
 默认的 `cmdline` array 与 `memstats` object；POST 必须返回 HTTP 405、`Allow: GET`
 和 `Method Not Allowed` 响应体；同时确认 client 口 `/debug/vars` 保持 HTTP 404，
-避免把 Go 运行时诊断面暴露到业务 client 入口。
+避免把 Go 运行时诊断面暴露到业务 client 入口。配置 `EXPECTED_PPROF_DISABLED_CHECKS=1`
+时还会确认 client/info 双口 `/debug/pprof/` 都保持 HTTP 404；pprof 只能在显式
+`--enable-pprof` 的临时排障场景开启，且不得出现在业务 client 入口。
 client 口 `/health` 与
 `/health?serializable=true` 必须返回 `{"health":"true","reason":""}`，以及对 `ENDPOINT` 与
 `STATUS_ENDPOINTS` 并集中的每个 endpoint 执行 `prefix-tool ACTION=count` 的非负整数结果；
@@ -523,7 +526,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
 `livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
 `info_metrics=ok`、`client_metrics=404`、`info_debug_vars=ok`、`client_debug_vars=404`、
-`debug_vars_method_headers=ok`、`health=true`、`serializable_health=true`、
+`debug_vars_method_headers=ok`、`client_pprof=404`、`info_pprof=404`、`health=true`、
+`serializable_health=true`、
 `status_errors=empty`、`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、

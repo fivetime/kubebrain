@@ -42730,6 +42730,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EXPECTED_DEBUG_VARS_CHECKS=1` 时进一步校验 info `/debug/vars` 的 Content-Type，
   并对 POST 要求 HTTP 405、`Allow: GET` 和 `Method Not Allowed` 响应体；摘要新增
   `debug_vars_method_headers=ok`，防止 JSON shape 正常但方法约束或诊断响应头漂移。
+- A4022 固定 pprof 默认关闭和 client 口永不暴露边界：上游 `--enable-pprof=false`
+  默认不注册 `/debug/pprof/`，KubeBrain 也只允许显式 `--enable-pprof` 时在 info 口临时
+  暴露，绝不暴露在业务 client 口。生产 gate 在 `EXPECTED_PPROF_DISABLED_CHECKS=1`
+  时确认 client/info 双口 `/debug/pprof/` 都返回 HTTP 404；摘要新增
+  `client_pprof=404` 与 `info_pprof=404`，防止 pprof CPU/heap DoS 与信息泄露诊断面
+  因回归被默认打开。
 
 ### P2：运维兼容和长期验证
 
