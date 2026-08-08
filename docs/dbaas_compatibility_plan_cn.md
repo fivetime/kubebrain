@@ -42522,6 +42522,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 `is_learner:false` 摘要覆盖和 `is_learner:"false"` 拒绝覆盖，证明 snake_case
   learner 字段与 camelCase 一样进入 JSON boolean 校验和 `status_is_learners=<unique>`
   摘要路径。
+- A3993 固定只读 gate 对 Status db_size_quota snake_case envelope 的对等覆盖：
+  etcd `StatusResponse.DbSizeQuota` 是 `int64`，生产 gate 同时支持 `dbSizeQuota` 与
+  `db_size_quota`。新增 `db_size_quota:2147483648` 摘要覆盖和 `db_size_quota:false`
+  拒绝覆盖，证明 snake_case quota 字段与 camelCase 一样进入正 JSON integer 校验和
+  `min_status_db_size_quota=<n>` 摘要路径。
 
 ### P2：运维兼容和长期验证
 
