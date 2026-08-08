@@ -42749,6 +42749,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在 `EXPECTED_INFO_METRICS_CHECKS=1` 时现在要求四个 gRPC metric family 均存在，并通过
   `grpc_metrics=ok` 摘要固定，防止只保留 handled 计数而丢失 started/msg received/msg sent
   可观测性。
+- A4025 固定 pprof 显式开启后的子路径覆盖和 client 口隔离：上游 pprof debug 面包含
+  `/debug/pprof/`、`/profile`、`/symbol`、`/cmdline`、`/trace`、`/heap`、
+  `/goroutine`、`/threadcreate`、`/block` 与 `/mutex`。KubeBrain 继续不默认开启
+  pprof，但 `getPProfHandlers` 单测现在要求这些子路径均被显式注册；endpoint 单测还覆盖
+  `EnablePprof=true` 时 info 口可访问快速返回的 `/debug/pprof/cmdline` 与
+  `/debug/pprof/goroutine?debug=1`，同时确认即使显式开启，client 数据口这些 pprof
+  子路径仍返回 404。生产运行态仍由 A4022 固定默认关闭边界。
 
 ### P2：运维兼容和长期验证
 

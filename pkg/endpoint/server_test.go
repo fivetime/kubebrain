@@ -119,6 +119,65 @@ func TestMetricsHTTPServerGatesPprofOnInfoPort(t *testing.T) {
 	}
 }
 
+func TestPprofHandlersIncludeEtcdDebugSubpaths(t *testing.T) {
+	handlers := getPProfHandlers()
+	for _, path := range []string{
+		"/debug/pprof/",
+		"/debug/pprof/profile",
+		"/debug/pprof/symbol",
+		"/debug/pprof/cmdline",
+		"/debug/pprof/trace",
+		"/debug/pprof/heap",
+		"/debug/pprof/goroutine",
+		"/debug/pprof/threadcreate",
+		"/debug/pprof/block",
+		"/debug/pprof/mutex",
+	} {
+		require.NotNilf(t, handlers[path], "missing pprof handler for %s", path)
+	}
+}
+
+func TestMetricsHTTPServerRoutesPprofSubpathsOnlyWhenEnabled(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		enable     bool
+		wantStatus int
+	}{
+		{
+			name:       "disabled by default",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "enabled explicitly",
+			enable:     true,
+			wantStatus: http.StatusOK,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			endpoint := &Endpoint{
+				metrics: &interceptorOrderMetrics{},
+				server:  rejectingInterceptorServer{},
+				config:  &Config{EnablePprof: tt.enable},
+			}
+			exposed := endpoint.buildMetricsHttpServer()
+			server, ok := exposed.(*httpServer)
+			require.True(t, ok)
+
+			for _, path := range []string{
+				"/debug/pprof/cmdline",
+				"/debug/pprof/goroutine?debug=1",
+			} {
+				t.Run(path, func(t *testing.T) {
+					response := httptest.NewRecorder()
+					server.svr.Handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+
+					require.Equal(t, tt.wantStatus, response.Code)
+				})
+			}
+		})
+	}
+}
+
 func TestClientHTTPHandlerNeverExposesPprof(t *testing.T) {
 	endpoint := &Endpoint{
 		server: rejectingInterceptorServer{},
@@ -128,9 +187,17 @@ func TestClientHTTPHandlerNeverExposesPprof(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, conn)
 
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
+	for _, path := range []string{
+		"/debug/pprof/",
+		"/debug/pprof/cmdline",
+		"/debug/pprof/goroutine?debug=1",
+	} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 
-	require.Equal(t, http.StatusNotFound, response.Code)
-	require.Equal(t, "404 page not found\n", response.Body.String())
+			require.Equal(t, http.StatusNotFound, response.Code)
+			require.Equal(t, "404 page not found\n", response.Body.String())
+		})
+	}
 }
