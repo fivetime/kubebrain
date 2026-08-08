@@ -157,6 +157,18 @@ func (r *healthMetricRecorder) countGauge(name string) int {
 	return count
 }
 
+func (r *healthMetricRecorder) counterValues(name string) []interface{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var values []interface{}
+	for _, event := range r.events {
+		if event.kind == "counter" && event.name == name {
+			values = append(values, event.value)
+		}
+	}
+	return values
+}
+
 func (r *healthMetricRecorder) gaugeValues(name string) []interface{} {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -408,6 +420,35 @@ func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {
 	require.Equal(t, []interface{}{2}, recorder.gaugeValues("etcd_debugging.mvcc.slow_watcher_total"))
 	require.Equal(t, []interface{}{uint64(123)}, recorder.gaugeValues("etcd_debugging.mvcc.current_revision"))
 	require.Equal(t, []interface{}{uint64(45)}, recorder.gaugeValues("etcd_debugging.mvcc.compact_revision"))
+}
+
+func TestServerStateMetricsRefreshCountsKnownLeaderTransitions(t *testing.T) {
+	metrics := &healthMetricRecorder{}
+	le := &leader.Stub{ElectionInfo: leader.ElectionInfo{LeaderAddress: "", IsLeader: false}}
+	s := &server{
+		metricCli:      metrics,
+		leaderElection: le,
+	}
+
+	s.refreshServerStateMetrics(context.Background())
+	require.Empty(t, metrics.counterValues("etcd.server.leader_changes_seen_total"))
+
+	le.ElectionInfo.LeaderAddress = "leader-a:2380"
+	s.refreshServerStateMetrics(context.Background())
+	s.refreshServerStateMetrics(context.Background())
+	require.Equal(t, []interface{}{1}, metrics.counterValues("etcd.server.leader_changes_seen_total"))
+
+	le.ElectionInfo.LeaderAddress = "leader-b:2380"
+	s.refreshServerStateMetrics(context.Background())
+	require.Equal(t, []interface{}{1, 1}, metrics.counterValues("etcd.server.leader_changes_seen_total"))
+
+	le.ElectionInfo.LeaderAddress = "empty"
+	s.refreshServerStateMetrics(context.Background())
+	require.Equal(t, []interface{}{1, 1}, metrics.counterValues("etcd.server.leader_changes_seen_total"))
+
+	le.ElectionInfo.LeaderAddress = "leader-b:2380"
+	s.refreshServerStateMetrics(context.Background())
+	require.Equal(t, []interface{}{1, 1, 1}, metrics.counterValues("etcd.server.leader_changes_seen_total"))
 }
 
 func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {

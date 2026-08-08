@@ -479,6 +479,7 @@ network membership 指标 `etcd_network_known_peers`，
 `go_goroutines`、`go_threads`、`go_gc_gogc_percent`、`go_gc_gomemlimit_bytes`、
 `go_sched_gomaxprocs_threads`、`os_fd_used`、`os_fd_limit`、
 server 状态指标 `etcd_server_has_leader`、`etcd_server_is_leader`、
+`etcd_server_leader_changes_seen_total`、
 `etcd_server_is_learner`，
 传统 `/health` 计数指标 `etcd_server_health_success` 与
 `etcd_server_health_failures`，

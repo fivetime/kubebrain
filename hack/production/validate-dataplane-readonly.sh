@@ -285,6 +285,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_server_is_leader" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_server_leader_changes_seen_total{"* && "$info_metrics" != *"etcd_server_leader_changes_seen_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_server_leader_changes_seen_total" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"etcd_server_is_learner{"* ]]; then
     echo "info metrics mismatch: expected etcd_server_is_learner" >&2
     exit 1

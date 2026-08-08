@@ -97,6 +97,7 @@ type server struct {
 	alarmMetricsDone chan struct{}
 	fdMetricsDone    chan struct{}
 	stateMetricsDone chan struct{}
+	observedLeader   string
 	closeOnce        sync.Once
 	closeErr         error
 }
@@ -223,8 +224,17 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	hasLeader := false
 	isLeader := false
 	if s.leaderElection != nil {
-		hasLeader = election.IsLeaderKnown(s.leaderElection.GetLeaderInfo())
+		leaderInfo := s.leaderElection.GetLeaderInfo()
+		hasLeader = election.IsLeaderKnown(leaderInfo)
 		isLeader = s.leaderElection.IsLeader()
+		if hasLeader {
+			if leaderInfo != s.observedLeader {
+				s.metricCli.EmitCounter("etcd.server.leader_changes_seen_total", 1)
+				s.observedLeader = leaderInfo
+			}
+		} else {
+			s.observedLeader = ""
+		}
 	}
 	s.metricCli.EmitGauge("etcd.server.has_leader", boolGauge(hasLeader))
 	s.metricCli.EmitGauge("etcd.server.is_leader", boolGauge(isLeader))

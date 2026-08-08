@@ -42867,6 +42867,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   发出 `etcd.network.known_peers`，Local/Remote label 均使用 upstream 十六进制 member ID。
   生产 gate 通过 `network_metrics=ok` 固定 family 存在；该指标只表示 KubeBrain 数据面
   service membership，不混入独立 TiKV/PD 节点成员。
+- A4040 实现并固定 upstream leader changes metric：上游
+  `/root/etcd/server/etcdserver/metrics.go` 注册
+  `etcd_server_leader_changes_seen_total`，`/root/etcd/server/etcdserver/raft.go` 在
+  `SoftState.Lead` 从无 leader 或旧 leader 变为新 leader 时递增。KubeBrain 不运行 etcd
+  Raft；等价真实状态是 TiKV-backed DBaaS leader-election record 暴露的
+  `GetLeaderInfo()`。现在 server state metrics 刷新路径记住本进程上次观测到的已知 leader
+  identity：首次看到已知 leader 或已知 leader 变化时发出
+  `etcd.server.leader_changes_seen_total` counter，同一 leader 的周期刷新不重复计数，未知
+  leader 状态不伪造变化。生产 gate 要求 `etcd_server_leader_changes_seen_total` family
+  存在，并继续用 `server_state_metrics=ok` 固定。
 
 ### P2：运维兼容和长期验证
 
