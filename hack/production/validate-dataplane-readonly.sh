@@ -130,6 +130,36 @@ if [[ "$readyz" != "ok" ]]; then
   exit 1
 fi
 
+health_url="${ENDPOINT%/}/health"
+health_json="$(run_with_probe_timeout "$CURL" -fsS "$health_url")"
+health_values="$(printf '%s' "$health_json" | "$JQ" -r '
+  if type != "object" then
+    "invalid\tinvalid"
+  else
+    [(.health // "missing"), (.reason // "missing")] | @tsv
+  end
+')"
+IFS=$'\t' read -r health_value health_reason <<<"$health_values"
+if [[ "$health_value" != "true" || "$health_reason" != "" ]]; then
+  echo "health mismatch: expected health=true reason empty, got health=${health_value} reason=${health_reason}" >&2
+  exit 1
+fi
+
+serializable_health_url="${ENDPOINT%/}/health?serializable=true"
+serializable_health_json="$(run_with_probe_timeout "$CURL" -fsS "$serializable_health_url")"
+serializable_health_values="$(printf '%s' "$serializable_health_json" | "$JQ" -r '
+  if type != "object" then
+    "invalid\tinvalid"
+  else
+    [(.health // "missing"), (.reason // "missing")] | @tsv
+  end
+')"
+IFS=$'\t' read -r serializable_health_value serializable_health_reason <<<"$serializable_health_values"
+if [[ "$serializable_health_value" != "true" || "$serializable_health_reason" != "" ]]; then
+  echo "serializable health mismatch: expected health=true reason empty, got health=${serializable_health_value} reason=${serializable_health_reason}" >&2
+  exit 1
+fi
+
 prefix_count=""
 first_prefix_endpoint=""
 for prefix_endpoint in "${prefix_endpoint_array[@]}"; do
@@ -1460,4 +1490,4 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   hashkv_summary+=", gateway_hashkv_revisions_match=true"
 fi
 
-echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
+echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"

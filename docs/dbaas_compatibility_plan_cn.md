@@ -42650,6 +42650,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前发布只读门禁要求为空。通过摘要新增 `gateway_alarms=empty`；新增 `alarms:false`
   和非空 alarm list 拒绝覆盖，防止 `Status.errors=empty` 但 gateway Alarm envelope 或
   alarm store 诊断漂移。
+- A4011 把 legacy HTTP `/health` 纳入生产只读门禁：
+  `/root/etcd/server/etcdserver/api/etcdhttp/health.go` 的 `NewHealthHandler` 固定 GET
+  `/health` 返回 JSON `Health{health, reason}`，上游 e2e/metrics 期望健康态为
+  `{"health":"true","reason":""}`，并用 `/health?serializable=true` 区分本地可读健康检查。
+  生产 gate 现在同时读取 `ENDPOINT/health` 与 `ENDPOINT/health?serializable=true`，要求
+  `health=="true"` 且 `reason==""`，通过摘要新增 `health=true` 与
+  `serializable_health=true`；新增普通 `/health` 和 serializable health 非健康响应拒绝覆盖，
+  防止 `/readyz=ok` 或 gateway maintenance 通过时 legacy client/运维健康入口漂移。
 
 ### P2：运维兼容和长期验证
 

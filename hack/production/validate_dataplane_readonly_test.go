@@ -11,20 +11,22 @@ import (
 
 func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 	for _, tc := range []struct {
-		name            string
-		podsJSON        string
-		readyz          string
-		count           string
-		statusJSON      string
-		gatewayJSON     string
-		authJSON        string
-		alarmJSON       string
-		versionJSON     string
-		infoVersionJSON string
-		extraEnv        []string
-		wantTimeout     []string
-		wantOK          bool
-		wantOutput      string
+		name             string
+		podsJSON         string
+		readyz           string
+		healthJSON       string
+		serialHealthJSON string
+		count            string
+		statusJSON       string
+		gatewayJSON      string
+		authJSON         string
+		alarmJSON        string
+		versionJSON      string
+		infoVersionJSON  string
+		extraEnv         []string
+		wantTimeout      []string
+		wantOK           bool
+		wantOutput       string
 	}{
 		{
 			name: "passes read only dataplane gate",
@@ -43,6 +45,45 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			},
 			wantOK:     true,
 			wantOutput: "dataplane readonly gate passed",
+		},
+		{
+			name: "reports legacy health endpoints in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOK:     true,
+			wantOutput: "health=true, serializable_health=true",
+		},
+		{
+			name: "rejects unhealthy legacy health endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			healthJSON: `{"health":"false","reason":"RAFT NO LEADER"}`,
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "health mismatch",
+		},
+		{
+			name: "rejects unhealthy serializable health endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:           "ok",
+			serialHealthJSON: `{"health":"false","reason":"ALARM NOSPACE"}`,
+			count:            "4",
+			statusJSON:       `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput:       "serializable health mismatch",
 		},
 		{
 			name: "passes camelcase diagnostic envelopes",
@@ -2226,6 +2267,14 @@ printf '%s' "$FAKE_PODS_JSON"
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
 for arg in "$@"; do
+  if [[ "$arg" == */health\?serializable=true ]]; then
+    printf '%s' "$FAKE_SERIALIZABLE_HEALTH_JSON"
+    exit 0
+  fi
+  if [[ "$arg" == */health ]]; then
+    printf '%s' "$FAKE_HEALTH_JSON"
+    exit 0
+  fi
   if [[ "$arg" == */v3/maintenance/status ]]; then
     printf '%s' "$FAKE_GATEWAY_STATUS_JSON"
     exit 0
@@ -2307,6 +2356,8 @@ exec "$@"
 				"PROBE_TIMEOUT=10s",
 				"FAKE_PODS_JSON=" + compactJSONString(tc.podsJSON),
 				"FAKE_READYZ=" + tc.readyz,
+				"FAKE_HEALTH_JSON=" + defaultHealthJSON(tc.healthJSON),
+				"FAKE_SERIALIZABLE_HEALTH_JSON=" + defaultHealthJSON(tc.serialHealthJSON),
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
@@ -2341,6 +2392,13 @@ exec "$@"
 
 func compactJSONString(value string) string {
 	return strings.Join(strings.Fields(value), "")
+}
+
+func defaultHealthJSON(value string) string {
+	if value != "" {
+		return value
+	}
+	return `{"health":"true","reason":""}`
 }
 
 func defaultGatewayStatusJSON(value string) string {
@@ -2391,6 +2449,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 	}
 	require.Contains(t, doc, "所有 Status version 唯一且等于期望 semver")
 	for _, required := range []string{
+		"health=true",
+		"serializable_health=true",
 		"status_errors=empty",
 		"raft_indexes_match_revision=true",
 		"gateway_status_version=<semver>",

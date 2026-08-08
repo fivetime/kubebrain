@@ -449,7 +449,8 @@ PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
 ```
 
-该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 必须返回 `ok`、以及对 `ENDPOINT` 与
+该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 必须返回 `ok`、client 口 `/health` 与
+`/health?serializable=true` 必须返回 `{"health":"true","reason":""}`，以及对 `ENDPOINT` 与
 `STATUS_ENDPOINTS` 并集中的每个 endpoint 执行 `prefix-tool ACTION=count` 的非负整数结果；
 配置 `EXPECTED_PREFIX_COUNT` 时还会固定每个 endpoint 的期望 count，并要求各 endpoint
 之间 count 一致。配置 `EXPECTED_STATUS_CLUSTER_ID` 时还会通过 `etcdctl endpoint status -w json`
@@ -484,7 +485,8 @@ client/info 双口 `/version` 的 `etcdserver`、`etcdcluster`、`storage` 必�
 `storage` 必须与 gateway Status `storageVersion` 一致。启用 HashKV 校验时，脚本还会读取
 HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV hash、
 hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
-通过摘要会显式输出 `status_errors=empty`、`raft_indexes_match_revision=true`、
+通过摘要会显式输出 `health=true`、`serializable_health=true`、`status_errors=empty`、
+`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
 `version_etcdserver=<semver>`、`version_storage=<semver>`、`info_version_storage=<semver>`、
 `gateway_auth_enabled=<bool>`、`gateway_alarms=empty`、`gateway_hashkv_hash=<n>`、
