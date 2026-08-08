@@ -213,6 +213,10 @@ type Backend interface {
 	// Watch subscribe the changes from revision on kvs with given prefix
 	Watch(ctx context.Context, key string, revision uint64) (<-chan []*proto.Event, error)
 
+	// WatcherStats reports local watch fan-out state for etcd-compatible MVCC
+	// watch gauges. It is memory-only and must not touch storage.
+	WatcherStats() WatcherStats
+
 	// CloseWatchers retires every local watch subscription. Leadership loss calls
 	// this before the node can become a follower: its collector only publishes
 	// writes while leading, so leaving old subscriptions open would create a
@@ -270,6 +274,11 @@ type Backend interface {
 	// cannot be committed-yet-unwatched (FINDING #39).
 	// fn returns (current epoch, still-safely-leading). Unset = fence disabled.
 	SetLeadershipFence(fn func() (uint64, bool))
+}
+
+type WatcherStats struct {
+	Watchers     int
+	SlowWatchers int
 }
 
 // SnapshotHistoryRecord is one retained physical user MVCC version. Tombstone
@@ -864,6 +873,11 @@ func (b *backend) GetCurrentRevision() uint64 {
 // GetPublishedRevision implements Backend interface
 func (b *backend) GetPublishedRevision() uint64 {
 	return b.watcherHub.PublishedRevision()
+}
+
+// WatcherStats implements Backend interface.
+func (b *backend) WatcherStats() WatcherStats {
+	return b.watcherHub.Stats()
 }
 
 // WatchProgressNotifyInterval implements Backend interface. config.complete()

@@ -488,6 +488,8 @@ MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
 逻辑字节，而非 bbolt 文件物理分配），
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
+MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
+`etcd_debugging_mvcc_watcher_total` 与 `etcd_debugging_mvcc_slow_watcher_total`，
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；
@@ -545,8 +547,8 @@ hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 `livez_named_checks=ok`、`health_method_checks=ok`、`http_header_checks=ok`、
 `info_metrics=ok`、`client_metrics=404`、`server_identity_metrics=ok`、
 `grpc_metrics=ok`、`runtime_metrics=ok`、`fd_metrics=ok`、`server_state_metrics=ok`、
-`health_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
-`mvcc_revision_metrics=ok`、`promhttp_metrics=ok`、
+`health_metrics=ok`、`auth_metrics=ok`、`quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
+`mvcc_revision_metrics=ok`、`mvcc_watch_metrics=ok`、`promhttp_metrics=ok`、
 `info_debug_vars=ok`、
 `client_debug_vars=404`、`debug_vars_method_headers=ok`、`client_pprof=404`、
 `info_pprof=404`、`health=true`、`serializable_health=true`、

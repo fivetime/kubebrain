@@ -83,6 +83,7 @@ type coldRevisionBackend struct {
 	backend.Backend
 	current atomic.Uint64
 	compact atomic.Uint64
+	stats   backend.WatcherStats
 	err     error
 }
 
@@ -92,6 +93,9 @@ func (b *coldRevisionBackend) GetCompactRevision(context.Context) (uint64, error
 	return b.compact.Load(), b.err
 }
 func (b *coldRevisionBackend) SetCompactRevision(rev uint64) { b.compact.Store(rev) }
+func (b *coldRevisionBackend) WatcherStats() backend.WatcherStats {
+	return b.stats
+}
 
 func (b *quotaRefreshBackend) QuotaStatus(ctx context.Context) (int64, int64, bool, error) {
 	b.calls.Add(1)
@@ -392,25 +396,30 @@ func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {
 	}
 	s.backend.(*coldRevisionBackend).SetCurrentRevision(123)
 	s.backend.(*coldRevisionBackend).SetCompactRevision(45)
+	s.backend.(*coldRevisionBackend).stats = backend.WatcherStats{Watchers: 7, SlowWatchers: 2}
 	s.refreshServerStateMetrics(context.Background())
 
 	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.has_leader"))
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.is_leader"))
 	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.is_learner"))
 	require.Equal(t, []interface{}{uint64(1)}, recorder.gaugeValues("etcd_debugging.auth.revision"))
+	require.Equal(t, []interface{}{int64(0)}, recorder.gaugeValues("etcd_debugging.mvcc.watch_stream_total"))
+	require.Equal(t, []interface{}{7}, recorder.gaugeValues("etcd_debugging.mvcc.watcher_total"))
+	require.Equal(t, []interface{}{2}, recorder.gaugeValues("etcd_debugging.mvcc.slow_watcher_total"))
 	require.Equal(t, []interface{}{uint64(123)}, recorder.gaugeValues("etcd_debugging.mvcc.current_revision"))
 	require.Equal(t, []interface{}{uint64(45)}, recorder.gaugeValues("etcd_debugging.mvcc.compact_revision"))
 }
 
 func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
 	metrics := &healthMetricRecorder{}
-	backend := &coldRevisionBackend{}
-	backend.SetCurrentRevision(321)
-	backend.SetCompactRevision(123)
+	be := &coldRevisionBackend{}
+	be.SetCurrentRevision(321)
+	be.SetCompactRevision(123)
+	be.stats = backend.WatcherStats{Watchers: 4, SlowWatchers: 1}
 	s := &server{
 		metricCli:      metrics,
 		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{LeaderAddress: "self", IsLeader: true}},
-		backend:        backend,
+		backend:        be,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -422,6 +431,8 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 		return metrics.countGauge("etcd.server.has_leader") >= 2 &&
 			metrics.countGauge("etcd.server.is_leader") >= 2 &&
 			metrics.countGauge("etcd.server.is_learner") >= 2 &&
+			metrics.countGauge("etcd_debugging.mvcc.watcher_total") >= 2 &&
+			metrics.countGauge("etcd_debugging.mvcc.slow_watcher_total") >= 2 &&
 			metrics.countGauge("etcd_debugging.mvcc.current_revision") >= 2 &&
 			metrics.countGauge("etcd_debugging.mvcc.compact_revision") >= 2
 	}, time.Second, time.Millisecond)
@@ -429,6 +440,8 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.has_leader")[:2])
 	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.is_leader")[:2])
 	require.Equal(t, []interface{}{0, 0}, metrics.gaugeValues("etcd.server.is_learner")[:2])
+	require.Equal(t, []interface{}{4, 4}, metrics.gaugeValues("etcd_debugging.mvcc.watcher_total")[:2])
+	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd_debugging.mvcc.slow_watcher_total")[:2])
 	require.Equal(t, []interface{}{uint64(321), uint64(321)}, metrics.gaugeValues("etcd_debugging.mvcc.current_revision")[:2])
 	require.Equal(t, []interface{}{uint64(123), uint64(123)}, metrics.gaugeValues("etcd_debugging.mvcc.compact_revision")[:2])
 
@@ -441,12 +454,16 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 	stoppedAtLeader := metrics.countGauge("etcd.server.has_leader")
 	stoppedAtIsLeader := metrics.countGauge("etcd.server.is_leader")
 	stoppedAtLearner := metrics.countGauge("etcd.server.is_learner")
+	stoppedAtWatchers := metrics.countGauge("etcd_debugging.mvcc.watcher_total")
+	stoppedAtSlowWatchers := metrics.countGauge("etcd_debugging.mvcc.slow_watcher_total")
 	stoppedAtRevision := metrics.countGauge("etcd_debugging.mvcc.current_revision")
 	stoppedAtCompactRevision := metrics.countGauge("etcd_debugging.mvcc.compact_revision")
 	time.Sleep(5 * time.Millisecond)
 	require.Equal(t, stoppedAtLeader, metrics.countGauge("etcd.server.has_leader"))
 	require.Equal(t, stoppedAtIsLeader, metrics.countGauge("etcd.server.is_leader"))
 	require.Equal(t, stoppedAtLearner, metrics.countGauge("etcd.server.is_learner"))
+	require.Equal(t, stoppedAtWatchers, metrics.countGauge("etcd_debugging.mvcc.watcher_total"))
+	require.Equal(t, stoppedAtSlowWatchers, metrics.countGauge("etcd_debugging.mvcc.slow_watcher_total"))
 	require.Equal(t, stoppedAtRevision, metrics.countGauge("etcd_debugging.mvcc.current_revision"))
 	require.Equal(t, stoppedAtCompactRevision, metrics.countGauge("etcd_debugging.mvcc.compact_revision"))
 }

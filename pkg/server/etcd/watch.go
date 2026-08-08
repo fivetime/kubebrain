@@ -242,6 +242,7 @@ func (w *watcher) waitStreamProgressRevision(ctx context.Context, target uint64,
 }
 
 func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
+	s.activeWatchStreams.Add(1)
 	w := &watcher{
 		watchServer: ws,
 		grpcServer:  s,
@@ -255,6 +256,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 	go w.sendControls()
 	klog.InfoS("new watcher", "id", w.id)
 	defer func() {
+		s.activeWatchStreams.Add(-1)
 		w.Close()
 		if errors.Is(err, context.Canceled) {
 			err = rpctypes.ErrGRPCWatchCanceled

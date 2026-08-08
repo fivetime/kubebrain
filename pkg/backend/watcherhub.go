@@ -133,6 +133,15 @@ func (w *WatcherHub) PublishedRevision() uint64 {
 	return atomic.LoadUint64(&w.publishedRev)
 }
 
+func (w *WatcherHub) Stats() WatcherStats {
+	w.RLock()
+	defer w.RUnlock()
+	return WatcherStats{
+		Watchers:     len(w.subs) + len(w.catchingUp),
+		SlowWatchers: len(w.catchingUp),
+	}
+}
+
 // AdvancePublishedRevision advances the published watermark to target (never
 // backwards). Called after a watch-overflow reset jumps the current revision so a
 // subsequent progress marker does not advertise a stale-low revision.

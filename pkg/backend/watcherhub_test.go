@@ -241,6 +241,31 @@ func (w *WatcherHub) catchingUpCount() int {
 	return len(w.catchingUp)
 }
 
+func TestWatcherHubStatsCountsActiveAndSlowWatchers(t *testing.T) {
+	hub := newTestWatcherHub(t, 8)
+	liveA := make(chan []*proto.Event)
+	liveB := make(chan []*proto.Event)
+	hub.subs[liveA] = []byte("/registry/a/")
+	hub.subs[liveB] = []byte("/registry/b/")
+
+	stats := hub.Stats()
+	require.Equal(t, WatcherStats{Watchers: 2}, stats)
+
+	hub.Lock()
+	delete(hub.subs, liveB)
+	hub.catchingUp = map[chan []*proto.Event]*catchUpState{
+		liveB: {prefix: []byte("/registry/b/"), done: make(chan struct{})},
+	}
+	hub.Unlock()
+
+	stats = hub.Stats()
+	require.Equal(t, WatcherStats{Watchers: 2, SlowWatchers: 1}, stats)
+
+	hub.DeleteWatcher(liveA, true)
+	hub.DeleteWatcher(liveB, true)
+	require.Equal(t, WatcherStats{}, hub.Stats())
+}
+
 // TestSlowWatcherCatchUpNoGapAndReattach pins the #34 fix: a subscriber that
 // overruns its buffer is NOT dropped — its missed tail is replayed from the
 // ring and it is re-attached to live fan-out, and the full delivered stream

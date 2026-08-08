@@ -42847,6 +42847,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd_debugging.auth.revision`；读取失败只递增 `auth.revision.refresh.err`，不伪造为
   KV current revision。生产 gate 在 `EXPECTED_INFO_METRICS_CHECKS=1` 时要求
   `etcd_debugging_auth_revision` family 存在，并通过 `auth_metrics=ok` 摘要固定。
+- A4038 实现并固定 upstream MVCC watch gauge：上游
+  `/root/etcd/server/storage/mvcc/metrics.go` 注册
+  `etcd_debugging_mvcc_watch_stream_total`、`etcd_debugging_mvcc_watcher_total` 与
+  `etcd_debugging_mvcc_slow_watcher_total`。KubeBrain 的等价真实状态分别是本 member
+  active Watch gRPC stream 数、backend WatcherHub 中的 active watcher 数，以及处于
+  ring catch-up 的慢 watcher 数。现在 Watch RPC 生命周期用 atomic 计数 active stream，
+  `WatcherHub.Stats` 在内存锁下统计 live/catch-up watcher，并由 server state metrics
+  刷新路径发出三项 `etcd_debugging.mvcc.*` gauge。生产 gate 通过
+  `mvcc_watch_metrics=ok` 固定这些 family 存在；该刷新不扫描 TiKV，也不把历史 drop
+  counter 伪造成当前慢 watcher gauge。
 
 ### P2：运维兼容和长期验证
 

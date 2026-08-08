@@ -237,9 +237,13 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 
 	if s.etcdServer != nil {
 		s.etcdServer.RefreshAuthMetrics(ctx)
+		s.etcdServer.RefreshWatchMetrics()
 	}
 
 	if s.backend != nil {
+		watcherStats := s.backend.WatcherStats()
+		s.metricCli.EmitGauge("etcd_debugging.mvcc.watcher_total", watcherStats.Watchers)
+		s.metricCli.EmitGauge("etcd_debugging.mvcc.slow_watcher_total", watcherStats.SlowWatchers)
 		s.metricCli.EmitGauge("etcd_debugging.mvcc.current_revision", s.backend.GetCurrentRevision())
 		compactRevision, err := s.backend.GetCompactRevision(ctx)
 		if err != nil {
