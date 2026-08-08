@@ -57,7 +57,7 @@ func TestPlatformManagedOperationsReturnActionableErrors(t *testing.T) {
 
 	snapshot, err := cli.SnapshotWithVersion(ctx)
 	require.NoError(t, err)
-	require.Equal(t, "3.7.0", snapshot.Version)
+	require.Equal(t, "3.7", snapshot.Version)
 	snapshotBytes, err := io.ReadAll(snapshot.Snapshot)
 	require.NoError(t, err)
 	require.NoError(t, snapshot.Snapshot.Close())

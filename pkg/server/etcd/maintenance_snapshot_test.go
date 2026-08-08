@@ -114,8 +114,8 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	trap := &localSnapshotTrapBackend{BackendShim: server.backend}
 	server.backend = trap
 	want := []*etcdserverpb.SnapshotResponse{
-		{RemainingBytes: 3, Blob: []byte("abc"), Version: "3.7.0"},
-		{RemainingBytes: 0, Blob: bytes.Repeat([]byte{1}, 32), Version: "3.7.0"},
+		{RemainingBytes: 3, Blob: []byte("abc"), Version: ClusterVersion},
+		{RemainingBytes: 0, Blob: bytes.Repeat([]byte{1}, 32), Version: ClusterVersion},
 	}
 	server.peers = testPeerService{
 		isLeader: false, proxyEnabled: true,

@@ -42553,6 +42553,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/version` 返回 `{"etcdserver":"3.7.0","etcdcluster":"3.7","storage":"3.7"}`，
   与 gRPC `Status.StorageVersion` 共用 `ClusterVersion`，防止 kubeadm/运维预检把 storage
   schema version 误当成完整 server semver。
+- A3999 将 online Snapshot/SnapshotWithVersion 的 response version 对齐 storage version：
+  上游 `Maintenance.Snapshot` 在每帧 `SnapshotResponse.Version` 中写入
+  `server.StorageVersion()`，不是 server binary semver。KubeBrain 此前发送 `Version=3.7.0`；
+  现在本地 snapshot 流和 clientv3 `SnapshotWithVersion` 回归固定 `ClusterVersion=3.7`，
+  与 `Status.StorageVersion`、`/version.storage` 三个公开 storage version 面保持一致。
 
 ### P2：运维兼容和长期验证
 

@@ -310,12 +310,12 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 		sent += int64(n)
 		_, _ = hash.Write(buf[:n])
 		if err = stream.Send(&etcdserverpb.SnapshotResponse{
-			RemainingBytes: uint64(total - sent), Blob: buf[:n], Version: Version,
+			RemainingBytes: uint64(total - sent), Blob: buf[:n], Version: ClusterVersion,
 		}); err != nil {
 			return err
 		}
 	}
 	return stream.Send(&etcdserverpb.SnapshotResponse{
-		RemainingBytes: 0, Blob: hash.Sum(nil), Version: Version,
+		RemainingBytes: 0, Blob: hash.Sum(nil), Version: ClusterVersion,
 	})
 }
