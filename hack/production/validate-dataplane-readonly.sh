@@ -241,6 +241,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected grpc_server_msg_sent_total" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_network_known_peers{"* && "$info_metrics" != *"etcd_network_known_peers "* ]]; then
+    echo "info metrics mismatch: expected etcd_network_known_peers" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"go_info{"* ]]; then
     echo "info metrics mismatch: expected go_info" >&2
     exit 1
@@ -1326,7 +1330,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
-    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_revision_metrics=ok, mvcc_watch_metrics=ok, promhttp_metrics=ok"
+    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, network_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_revision_metrics=ok, mvcc_watch_metrics=ok, promhttp_metrics=ok"
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"

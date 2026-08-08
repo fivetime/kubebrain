@@ -85,6 +85,23 @@ func emitServerIDMetric(metricCli metrics.Metrics, memberID uint64) {
 	)
 }
 
+func emitKnownPeersMetric(metricCli metrics.Metrics, localID uint64, members []*etcdserverpb.Member) {
+	if localID == 0 {
+		return
+	}
+	local := strconv.FormatUint(localID, 16)
+	for _, member := range members {
+		if member.GetID() == 0 {
+			continue
+		}
+		_ = metricCli.EmitGauge(
+			"etcd.network.known_peers", 1,
+			metrics.Tag("Local", local),
+			metrics.Tag("Remote", strconv.FormatUint(member.GetID(), 16)),
+		)
+	}
+}
+
 // etcd substitutes this value when --quota-backend-bytes is unset. KubeBrain's
 // actual capacity belongs to TiKV/PD, but Status must still return a nonzero
 // protocol-compatible value for etcdctl and other 3.6+ clients.

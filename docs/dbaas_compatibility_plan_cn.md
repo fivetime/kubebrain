@@ -42857,6 +42857,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   刷新路径发出三项 `etcd_debugging.mvcc.*` gauge。生产 gate 通过
   `mvcc_watch_metrics=ok` 固定这些 family 存在；该刷新不扫描 TiKV，也不把历史 drop
   counter 伪造成当前慢 watcher gauge。
+- A4039 实现并固定 upstream known peers metric：上游
+  `/root/etcd/server/etcdserver/api/membership/metrics.go` 注册
+  `etcd_network_known_peers{Local,Remote}`，`RaftCluster.buildMembershipMetric` 对当前
+  cluster members（包含本地 member 自身）设置 1。KubeBrain 不运行 etcd Raft，但
+  MemberList 已由 DBaaS control-plane 提供的 static KubeBrain service members 驱动；
+  这是 clientv3 endpoint sync 和 Status member ID 使用的同一成员面。现在
+  `SetStaticMembers` 解析本地 peer identity 得到 local member ID，并对每个 static member
+  发出 `etcd.network.known_peers`，Local/Remote label 均使用 upstream 十六进制 member ID。
+  生产 gate 通过 `network_metrics=ok` 固定 family 存在；该指标只表示 KubeBrain 数据面
+  service membership，不混入独立 TiKV/PD 节点成员。
 
 ### P2：运维兼容和长期验证
 

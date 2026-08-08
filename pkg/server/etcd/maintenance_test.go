@@ -224,6 +224,34 @@ func TestServerIDMetricSkipsUnknownMember(t *testing.T) {
 	emitServerIDMetric(metricCli, 0)
 }
 
+func TestKnownPeersMetricUsesUpstreamHexLabels(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricCli := mock.NewMockMetrics(ctrl)
+	metricCli.EXPECT().EmitGauge(
+		"etcd.network.known_peers", 1,
+		metrics.Tag("Local", "abc123"),
+		metrics.Tag("Remote", "abc123"),
+	).Return(nil)
+	metricCli.EXPECT().EmitGauge(
+		"etcd.network.known_peers", 1,
+		metrics.Tag("Local", "abc123"),
+		metrics.Tag("Remote", "def456"),
+	).Return(nil)
+
+	emitKnownPeersMetric(metricCli, 0xabc123, []*etcdserverpb.Member{
+		{ID: 0xabc123},
+		{ID: 0xdef456},
+		{ID: 0},
+	})
+}
+
+func TestKnownPeersMetricSkipsUnknownLocalMember(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metricCli := mock.NewMockMetrics(ctrl)
+
+	emitKnownPeersMetric(metricCli, 0, []*etcdserverpb.Member{{ID: 0xabc123}})
+}
+
 func TestMaintenanceBasicDiagnostics(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
