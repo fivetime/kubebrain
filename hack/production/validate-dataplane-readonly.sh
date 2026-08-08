@@ -23,6 +23,7 @@ EXPECTED_STATUS_VERSION="${EXPECTED_STATUS_VERSION:-}"
 EXPECTED_HASHKV_HASH="${EXPECTED_HASHKV_HASH:-}"
 EXPECTED_READYZ_NAMED_CHECKS="${EXPECTED_READYZ_NAMED_CHECKS:-}"
 EXPECTED_LIVEZ_NAMED_CHECKS="${EXPECTED_LIVEZ_NAMED_CHECKS:-}"
+EXPECTED_HEALTH_EXCLUDE_CHECKS="${EXPECTED_HEALTH_EXCLUDE_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -51,6 +52,10 @@ if [[ -n "$EXPECTED_READYZ_NAMED_CHECKS" && "$EXPECTED_READYZ_NAMED_CHECKS" != "
 fi
 if [[ -n "$EXPECTED_LIVEZ_NAMED_CHECKS" && "$EXPECTED_LIVEZ_NAMED_CHECKS" != "1" ]]; then
   echo "EXPECTED_LIVEZ_NAMED_CHECKS must be empty or 1" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_HEALTH_EXCLUDE_CHECKS" && "$EXPECTED_HEALTH_EXCLUDE_CHECKS" != "1" ]]; then
+  echo "EXPECTED_HEALTH_EXCLUDE_CHECKS must be empty or 1" >&2
   exit 2
 fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
@@ -141,7 +146,7 @@ if [[ "$readyz" != "ok" ]]; then
 fi
 
 readyz_summary=""
-if [[ -n "$EXPECTED_HASHKV_HASH" || "$EXPECTED_READYZ_NAMED_CHECKS" == "1" ]]; then
+if [[ -n "$EXPECTED_HASHKV_HASH" || "$EXPECTED_READYZ_NAMED_CHECKS" == "1" || "$EXPECTED_HEALTH_EXCLUDE_CHECKS" == "1" ]]; then
   readyz_verbose_url="${READYZ_URL}?verbose"
   readyz_verbose="$(run_with_probe_timeout "$CURL" -fsS "$readyz_verbose_url")"
   for readyz_check in data_corruption serializable_read linearizable_read non_learner; do
@@ -165,6 +170,38 @@ if [[ -n "$EXPECTED_HASHKV_HASH" || "$EXPECTED_READYZ_NAMED_CHECKS" == "1" ]]; t
       fi
     done
     readyz_summary+=", readyz_named_checks=ok"
+  fi
+  if [[ "$EXPECTED_HEALTH_EXCLUDE_CHECKS" == "1" ]]; then
+    readyz_exclude_data_url="${READYZ_URL}?verbose&exclude=data_corruption"
+    readyz_exclude_data_body="$(run_with_probe_timeout "$CURL" -fsS "$readyz_exclude_data_url")"
+    if [[ "$readyz_exclude_data_body" == *"data_corruption"* ]]; then
+      echo "readyz exclude mismatch: expected data_corruption to be excluded, got ${readyz_exclude_data_body}" >&2
+      exit 1
+    fi
+    for readyz_check in serializable_read linearizable_read non_learner; do
+      if [[ "$readyz_exclude_data_body" != *"[+]${readyz_check} ok"* ]]; then
+        echo "readyz exclude mismatch: expected ${readyz_check} ok, got ${readyz_exclude_data_body}" >&2
+        exit 1
+      fi
+    done
+    if [[ "$readyz_exclude_data_body" != *$'\nok' ]]; then
+      echo "readyz exclude mismatch: expected trailing ok, got ${readyz_exclude_data_body}" >&2
+      exit 1
+    fi
+
+    readyz_exclude_unknown_url="${READYZ_URL}?verbose&exclude=unknown"
+    readyz_exclude_unknown_body="$(run_with_probe_timeout "$CURL" -fsS "$readyz_exclude_unknown_url")"
+    for readyz_check in data_corruption serializable_read linearizable_read non_learner; do
+      if [[ "$readyz_exclude_unknown_body" != *"[+]${readyz_check} ok"* ]]; then
+        echo "readyz unknown exclude mismatch: expected ${readyz_check} ok, got ${readyz_exclude_unknown_body}" >&2
+        exit 1
+      fi
+    done
+    if [[ "$readyz_exclude_unknown_body" != *$'\nok' ]]; then
+      echo "readyz unknown exclude mismatch: expected trailing ok, got ${readyz_exclude_unknown_body}" >&2
+      exit 1
+    fi
+    readyz_summary+=", health_exclude_checks=ok"
   fi
 fi
 
@@ -190,6 +227,14 @@ if [[ "$EXPECTED_LIVEZ_NAMED_CHECKS" == "1" ]]; then
     exit 1
   fi
   livez_summary=", livez_named_checks=ok"
+fi
+if [[ "$EXPECTED_HEALTH_EXCLUDE_CHECKS" == "1" ]]; then
+  livez_exclude_url="${READYZ_URL%/readyz}/livez?verbose&exclude=serializable_read"
+  livez_exclude_body="$(run_with_probe_timeout "$CURL" -fsS "$livez_exclude_url")"
+  if [[ "$livez_exclude_body" != "ok" ]]; then
+    echo "livez exclude mismatch: expected ok after excluding serializable_read, got ${livez_exclude_body}" >&2
+    exit 1
+  fi
 fi
 
 health_url="${ENDPOINT%/}/health"

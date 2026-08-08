@@ -15,8 +15,10 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		podsJSON          string
 		readyz            string
 		readyzVerbose     string
+		readyzExcludeData string
 		livez             string
 		livezVerbose      string
+		livezExclude      string
 		livezNamedVerbose string
 		healthJSON        string
 		serialHealthJSON  string
@@ -73,9 +75,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
-			extraEnv:   []string{"EXPECTED_READYZ_NAMED_CHECKS=1", "EXPECTED_LIVEZ_NAMED_CHECKS=1"},
+			extraEnv:   []string{"EXPECTED_READYZ_NAMED_CHECKS=1", "EXPECTED_LIVEZ_NAMED_CHECKS=1", "EXPECTED_HEALTH_EXCLUDE_CHECKS=1"},
 			wantOK:     true,
-			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, readyz_named_checks=ok, livez=ok, livez_serializable_read=ok, livez_named_checks=ok",
+			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, readyz_named_checks=ok, health_exclude_checks=ok, livez=ok, livez_serializable_read=ok, livez_named_checks=ok",
 		},
 		{
 			name: "rejects unhealthy livez endpoint",
@@ -89,6 +91,20 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			wantOutput: "livez mismatch",
+		},
+		{
+			name: "rejects malformed livez exclude endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:       "ok",
+			livezExclude: "[+]serializable_read ok\nok",
+			count:        "4",
+			statusJSON:   `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:     []string{"EXPECTED_HEALTH_EXCLUDE_CHECKS=1"},
+			wantOutput:   "livez exclude mismatch",
 		},
 		{
 			name: "rejects malformed livez named endpoint",
@@ -117,6 +133,20 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON:    `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			extraEnv:      []string{"EXPECTED_READYZ_NAMED_CHECKS=1"},
 			wantOutput:    "readyz verbose mismatch: expected linearizable_read ok",
+		},
+		{
+			name: "rejects malformed readyz exclude endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:            "ok",
+			readyzExcludeData: "[+]data_corruption ok\n[+]serializable_read ok\nok",
+			count:             "4",
+			statusJSON:        `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:          []string{"EXPECTED_HEALTH_EXCLUDE_CHECKS=1"},
+			wantOutput:        "readyz exclude mismatch: expected data_corruption to be excluded",
 		},
 		{
 			name: "rejects unhealthy legacy health endpoint",
@@ -2325,6 +2355,15 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_LIVEZ_NAMED_CHECKS=true"},
 			wantOutput: "EXPECTED_LIVEZ_NAMED_CHECKS must be empty or 1",
 		},
+		{
+			name:       "rejects malformed expected health exclude checks flag before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_HEALTH_EXCLUDE_CHECKS=true"},
+			wantOutput: "EXPECTED_HEALTH_EXCLUDE_CHECKS must be empty or 1",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2336,6 +2375,14 @@ printf '%s' "$FAKE_PODS_JSON"
 set -euo pipefail
 for arg in "$@"; do
   if [[ "$arg" == "${READYZ_URL}?verbose" ]]; then
+    printf '%s' "$FAKE_READYZ_VERBOSE"
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL}?verbose&exclude=data_corruption" ]]; then
+    printf '%s' "$FAKE_READYZ_EXCLUDE_DATA"
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL}?verbose&exclude=unknown" ]]; then
     printf '%s' "$FAKE_READYZ_VERBOSE"
     exit 0
   fi
@@ -2357,6 +2404,10 @@ for arg in "$@"; do
   fi
   if [[ "$arg" == "${READYZ_URL%/readyz}/livez?verbose" ]]; then
     printf '%s' "$FAKE_LIVEZ_VERBOSE"
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL%/readyz}/livez?verbose&exclude=serializable_read" ]]; then
+    printf '%s' "$FAKE_LIVEZ_EXCLUDE"
     exit 0
   fi
   if [[ "$arg" == "${READYZ_URL%/readyz}/livez/serializable_read?verbose" ]]; then
@@ -2457,8 +2508,10 @@ exec "$@"
 				"FAKE_PODS_JSON=" + compactJSONString(tc.podsJSON),
 				"FAKE_READYZ=" + tc.readyz,
 				"FAKE_READYZ_VERBOSE=" + defaultReadyzVerbose(tc.readyzVerbose),
+				"FAKE_READYZ_EXCLUDE_DATA=" + defaultReadyzExcludeData(tc.readyzExcludeData),
 				"FAKE_LIVEZ=" + defaultLivez(tc.livez),
 				"FAKE_LIVEZ_VERBOSE=" + defaultLivezVerbose(tc.livezVerbose),
+				"FAKE_LIVEZ_EXCLUDE=" + defaultLivez(tc.livezExclude),
 				"FAKE_LIVEZ_SERIALIZABLE_READ_VERBOSE=" + defaultLivezVerbose(tc.livezNamedVerbose),
 				"FAKE_HEALTH_JSON=" + defaultHealthJSON(tc.healthJSON),
 				"FAKE_SERIALIZABLE_HEALTH_JSON=" + defaultHealthJSON(tc.serialHealthJSON),
@@ -2503,6 +2556,13 @@ func defaultReadyzVerbose(value string) string {
 		return value
 	}
 	return "[+]data_corruption ok\n[+]serializable_read ok\n[+]linearizable_read ok\n[+]non_learner ok\nok"
+}
+
+func defaultReadyzExcludeData(value string) string {
+	if value != "" {
+		return value
+	}
+	return "[+]serializable_read ok\n[+]linearizable_read ok\n[+]non_learner ok\nok"
 }
 
 func defaultLivez(value string) string {
@@ -2570,6 +2630,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"EXPECTED_STATUS_VERSION=",
 		"EXPECTED_HASHKV_HASH=",
 		"EXPECTED_READYZ_NAMED_CHECKS=1",
+		"EXPECTED_LIVEZ_NAMED_CHECKS=1",
+		"EXPECTED_HEALTH_EXCLUDE_CHECKS=1",
 	} {
 		require.Contains(t, example, required)
 	}
@@ -2581,8 +2643,10 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"readyz_linearizable_read=ok",
 		"readyz_non_learner=ok",
 		"readyz_named_checks=ok",
+		"health_exclude_checks=ok",
 		"livez=ok",
 		"livez_serializable_read=ok",
+		"livez_named_checks=ok",
 		"health=true",
 		"serializable_health=true",
 		"status_errors=empty",

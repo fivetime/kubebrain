@@ -42688,6 +42688,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `EXPECTED_LIVEZ_NAMED_CHECKS=1` 时读取 `/livez/serializable_read?verbose`，
   要求响应包含 `[+]serializable_read ok` 且以 `ok` 结束；通过摘要新增
   `livez_named_checks=ok`，防止 `/livez?verbose` 正常但 liveness named 子路径路由或响应体漂移。
+- A4016 把 `/livez` 与 `/readyz` root handler 的 `exclude` 查询参数语义纳入完整增强门禁：
+  上游 `filterCheckList` 会过滤已注册 check，并对未知 exclude 保持兼容性不失败。
+  生产 gate 在 `EXPECTED_HEALTH_EXCLUDE_CHECKS=1` 时校验
+  `/livez?verbose&exclude=serializable_read` 只返回 `ok`，
+  `/readyz?verbose&exclude=data_corruption` 过滤 `data_corruption` 但保留其他 readiness
+  分项，且 `/readyz?verbose&exclude=unknown` 继续返回所有已注册 readiness 分项；通过摘要新增
+  `health_exclude_checks=ok`，防止 root 健康检查通过但 exclude 过滤、未知项兼容或 verbose
+  诊断体发生漂移。
 
 ### P2：运维兼容和长期验证
 

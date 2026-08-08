@@ -446,6 +446,7 @@ EXPECTED_STATUS_VERSION=3.7.0 \
 EXPECTED_HASHKV_HASH=987654321 \
 EXPECTED_READYZ_NAMED_CHECKS=1 \
 EXPECTED_LIVEZ_NAMED_CHECKS=1 \
+EXPECTED_HEALTH_EXCLUDE_CHECKS=1 \
 STATUS_ENDPOINTS=https://instance-a-0.example:2379,https://instance-a-1.example:2379,https://instance-a-2.example:2379 \
 PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
@@ -454,7 +455,11 @@ PROBE_TIMEOUT=10s \
 该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 与 `/livez` 必须返回 `ok`，
 `/livez?verbose` 必须包含 `[+]serializable_read ok` 并以 `ok` 结束；配置
 `EXPECTED_LIVEZ_NAMED_CHECKS=1` 时还会读取 `/livez/serializable_read?verbose` named check
-子路径，要求包含 `[+]serializable_read ok` 并以 `ok` 结束。client 口 `/health` 与
+子路径，要求包含 `[+]serializable_read ok` 并以 `ok` 结束。配置
+`EXPECTED_HEALTH_EXCLUDE_CHECKS=1` 时还会校验上游 `exclude` 查询参数语义：
+`/livez?verbose&exclude=serializable_read` 必须只返回 `ok`，
+`/readyz?verbose&exclude=data_corruption` 必须过滤 `data_corruption` 但保留其他 readiness
+分项，`/readyz?verbose&exclude=unknown` 必须继续返回所有已注册 readiness 分项。client 口 `/health` 与
 `/health?serializable=true` 必须返回 `{"health":"true","reason":""}`，以及对 `ENDPOINT` 与
 `STATUS_ENDPOINTS` 并集中的每个 endpoint 执行 `prefix-tool ACTION=count` 的非负整数结果；
 配置 `EXPECTED_PREFIX_COUNT` 时还会固定每个 endpoint 的期望 count，并要求各 endpoint
@@ -496,7 +501,8 @@ HTTP gateway `/v3/maintenance/hash` 与 `/v3/maintenance/hashkv`，要求 HashKV
 hashRevision、compactRevision 与 `etcdctl endpoint hashkv` 对齐。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
-`readyz_named_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、`livez_named_checks=ok`、
+`readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
+`livez_named_checks=ok`、
 `health=true`、`serializable_health=true`、
 `status_errors=empty`、`raft_indexes_match_revision=true`、
 `gateway_status_version=<semver>`、`gateway_storage_version=<semver>`、
