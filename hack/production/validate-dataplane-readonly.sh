@@ -1164,6 +1164,127 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
       hashkv_summary+=", raft_terms_match=true"
     fi
   fi
+
+  gateway_hash_url="${ENDPOINT%/}/v3/maintenance/hash"
+  gateway_hash_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_hash_url")"
+  gateway_hash_values="$(printf '%s' "$gateway_hash_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (.hash // "missing")
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r gateway_hash_cluster_id gateway_hash_member_id gateway_hash_revision gateway_hash_raft_term gateway_hash_value <<<"$gateway_hash_values"
+  if [[ "$gateway_hash_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "gateway hash cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_hash_cluster_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_hash_member_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway hash member ID must be positive, got ${gateway_hash_member_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_hash_revision" =~ ^[0-9]+$ ]]; then
+    echo "gateway hash revision must be non-negative, got ${gateway_hash_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hash_revision" != "$min_status_revision" ]]; then
+    echo "gateway hash revision mismatch: status=${min_status_revision}, hash=${gateway_hash_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hash_raft_term" != "missing" ]]; then
+    if ! [[ "$gateway_hash_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+      echo "gateway hash raft term must be positive, got ${gateway_hash_raft_term}" >&2
+      exit 1
+    fi
+    if [[ "${status_raft_terms:-"-"}" != "-" && "$gateway_hash_raft_term" != "$status_raft_terms" ]]; then
+      echo "status/gateway hash raft term mismatch: status=${status_raft_terms}, gateway_hash=${gateway_hash_raft_term}" >&2
+      exit 1
+    fi
+  fi
+  if ! [[ "$gateway_hash_value" =~ ^[0-9]+$ ]]; then
+    echo "gateway hash must be a non-negative integer, got ${gateway_hash_value}" >&2
+    exit 1
+  fi
+
+  gateway_hashkv_url="${ENDPOINT%/}/v3/maintenance/hashkv"
+  gateway_hashkv_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_hashkv_url")"
+  gateway_hashkv_values="$(printf '%s' "$gateway_hashkv_json" | "$JQ" -r '
+    if type != "object" then
+      "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
+    else
+      [
+        (if .header == null then "missing" elif (.header | has("cluster_id")) then .header.cluster_id elif (.header | has("clusterId")) then .header.clusterId else "missing" end),
+        (if .header == null then "missing" elif (.header | has("member_id")) then .header.member_id elif (.header | has("memberId")) then .header.memberId else "missing" end),
+        (if .header == null then "missing" else .header.revision // "missing" end),
+        (if .header == null then "missing" elif (.header | has("raft_term")) then .header.raft_term elif (.header | has("raftTerm")) then .header.raftTerm else "missing" end),
+        (.hash // "missing"),
+        (if has("compact_revision") then .compact_revision elif has("compactRevision") then .compactRevision else "missing" end),
+        (if has("hash_revision") then .hash_revision elif has("hashRevision") then .hashRevision else "missing" end)
+      ] | @tsv
+    end
+  ')"
+  IFS=$'\t' read -r gateway_hashkv_cluster_id gateway_hashkv_member_id gateway_hashkv_revision gateway_hashkv_raft_term gateway_hashkv_hash gateway_hashkv_compact_revision gateway_hashkv_hash_revision <<<"$gateway_hashkv_values"
+  if [[ "$gateway_hashkv_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    echo "gateway hashkv cluster ID mismatch: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${gateway_hashkv_cluster_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_hashkv_member_id" =~ ^[1-9][0-9]*$ ]]; then
+    echo "gateway hashkv member ID must be positive, got ${gateway_hashkv_member_id}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_hashkv_revision" =~ ^[0-9]+$ ]]; then
+    echo "gateway hashkv revision must be non-negative, got ${gateway_hashkv_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hashkv_revision" != "$min_hashkv_revision" ]]; then
+    echo "gateway hashkv revision mismatch: etcdctl=${min_hashkv_revision}, gateway=${gateway_hashkv_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hashkv_raft_term" != "missing" ]]; then
+    if ! [[ "$gateway_hashkv_raft_term" =~ ^[1-9][0-9]*$ ]]; then
+      echo "gateway hashkv raft term must be positive, got ${gateway_hashkv_raft_term}" >&2
+      exit 1
+    fi
+    if [[ "${hashkv_raft_terms:-"-"}" != "-" && "$gateway_hashkv_raft_term" != "$hashkv_raft_terms" ]]; then
+      echo "hashkv/gateway hashkv raft term mismatch: etcdctl=${hashkv_raft_terms}, gateway=${gateway_hashkv_raft_term}" >&2
+      exit 1
+    fi
+  fi
+  if [[ "$gateway_hashkv_hash" != "$EXPECTED_HASHKV_HASH" ]]; then
+    echo "gateway hashkv hash mismatch: expected ${EXPECTED_HASHKV_HASH}, got ${gateway_hashkv_hash}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_hashkv_compact_revision" =~ ^[0-9]+$ ]]; then
+    echo "gateway hashkv compact revision must be non-negative, got ${gateway_hashkv_compact_revision}" >&2
+    exit 1
+  fi
+  if ! [[ "$gateway_hashkv_hash_revision" =~ ^[0-9]+$ ]]; then
+    echo "gateway hashkv hash revision must be non-negative, got ${gateway_hashkv_hash_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hashkv_hash_revision" != "$gateway_hashkv_revision" ]]; then
+    echo "gateway hashkv hash revision must match header revision: hash_revision=${gateway_hashkv_hash_revision}, header_revision=${gateway_hashkv_revision}" >&2
+    exit 1
+  fi
+  if (( gateway_hashkv_compact_revision > gateway_hashkv_hash_revision )); then
+    echo "gateway hashkv compact revision must not exceed hash revision: compact=${gateway_hashkv_compact_revision}, hash=${gateway_hashkv_hash_revision}" >&2
+    exit 1
+  fi
+  if [[ "$gateway_hashkv_compact_revision" != "$min_hashkv_compact_revision" ]]; then
+    echo "gateway hashkv compact revision mismatch: etcdctl=${min_hashkv_compact_revision}, gateway=${gateway_hashkv_compact_revision}" >&2
+    exit 1
+  fi
+  hashkv_summary+=", gateway_hash=${gateway_hash_value}"
+  hashkv_summary+=", gateway_hashkv_hash=${gateway_hashkv_hash}"
+  hashkv_summary+=", gateway_hashkv_hash_revision=${gateway_hashkv_hash_revision}"
+  hashkv_summary+=", gateway_hashkv_compact_revision=${gateway_hashkv_compact_revision}"
+  hashkv_summary+=", gateway_hashkv_revisions_match=true"
 fi
 
 echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"

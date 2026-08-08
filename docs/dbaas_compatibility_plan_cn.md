@@ -42598,6 +42598,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `gateway_raft_index=<n>`、`gateway_raft_applied_index=<n>` 与
   `gateway_raft_indexes_match_revision=true`；拒绝覆盖新增
   `dbSizeInUse>dbSize` 和 `raftAppliedIndex>raftIndex`。
+- A4005 把 HTTP gRPC-gateway `Hash`/`HashKV` 纳入生产只读门禁：
+  `/root/etcd/tests/e2e/v3_curl_maintenance_test.go` 同时要求 `/v3/maintenance/hash`
+  返回 `header` 与 `hash`，`/v3/maintenance/hashkv` 返回 `header`、`hash`、
+  `compact_revision` 与 `hash_revision`。生产 gate 在配置 `EXPECTED_HASHKV_HASH`
+  时现在额外 POST 两个 HTTP gateway 只读接口：`Hash` 校验 header cluster/member/revision、
+  可选 raft term 与非负 hash，且 revision 与 Status 对齐；`HashKV` 校验 header、
+  hash 等于 `EXPECTED_HASHKV_HASH`、`hash_revision` 等于 header revision、
+  `compact_revision<=hash_revision`，并与 `etcdctl endpoint hashkv` 的 revision/compact
+  revision 对齐。通过摘要新增 `gateway_hash=<n>`、`gateway_hashkv_hash=<n>`、
+  `gateway_hashkv_hash_revision=<rev>`、`gateway_hashkv_compact_revision=<rev>` 与
+  `gateway_hashkv_revisions_match=true`；新增 gateway HashKV hash drift 与 compact
+  revision 越界拒绝覆盖，防止 gRPC HashKV 正确但 HTTP gateway envelope 或数值漂移。
 
 ### P2：运维兼容和长期验证
 

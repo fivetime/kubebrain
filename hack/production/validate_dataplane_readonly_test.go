@@ -500,6 +500,60 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "hashkv_raft_terms=8, raft_terms_match=true",
 		},
 		{
+			name: "reports gateway hash and hashkv envelope in summary",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"dbSize":99,"raftTerm":8}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3}}]`,
+				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
+				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":"111","compact_revision":"3","hash_revision":"7"}`,
+			},
+			wantOK:     true,
+			wantOutput: "gateway_hash=222, gateway_hashkv_hash=111, gateway_hashkv_hash_revision=7, gateway_hashkv_compact_revision=3, gateway_hashkv_revisions_match=true",
+		},
+		{
+			name: "rejects gateway hashkv hash drift",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7"},"hash":"222","compact_revision":"3","hash_revision":"7"}`,
+			},
+			wantOutput: "gateway hashkv hash mismatch",
+		},
+		{
+			name: "rejects gateway hashkv compact revision beyond hash revision",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_HASHKV_HASH=111",
+				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7"},"hash":"111","compact_revision":"8","hash_revision":"7"}`,
+			},
+			wantOutput: "gateway hashkv compact revision must not exceed hash revision",
+		},
+		{
 			name: "rejects non ready replica",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -2040,6 +2094,14 @@ for arg in "$@"; do
     printf '%s' "$FAKE_GATEWAY_STATUS_JSON"
     exit 0
   fi
+  if [[ "$arg" == */v3/maintenance/hashkv ]]; then
+    printf '%s' "$FAKE_GATEWAY_HASHKV_JSON"
+    exit 0
+  fi
+  if [[ "$arg" == */v3/maintenance/hash ]]; then
+    printf '%s' "$FAKE_GATEWAY_HASH_JSON"
+    exit 0
+  fi
 done
 printf '%s' "$FAKE_READYZ"
 `)
@@ -2096,6 +2158,8 @@ exec "$@"
 				"FAKE_PREFIX_COUNT=" + tc.count,
 				"FAKE_STATUS_JSON=" + tc.statusJSON,
 				"FAKE_GATEWAY_STATUS_JSON=" + defaultGatewayStatusJSON(tc.gatewayJSON),
+				`FAKE_GATEWAY_HASH_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":222}`,
+				`FAKE_GATEWAY_HASHKV_JSON={"header":{"cluster_id":"123","member_id":"456","revision":"7","raft_term":"8"},"hash":111,"compact_revision":"3","hash_revision":"7"}`,
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7},"hash":111,"compact_revision":3}}]`,
 				"FAKE_TIMEOUT_LOG=" + timeoutLog,
 			}
