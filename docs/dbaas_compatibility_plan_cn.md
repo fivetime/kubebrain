@@ -42682,6 +42682,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `/readyz/linearizable_read?verbose` 与 `/readyz/non_learner?verbose`，要求各自包含
   对应 `[+]<check> ok` 且以 `ok` 结束；通过摘要新增 `readyz_named_checks=ok`，
   防止聚合 `/readyz?verbose` 正常但 named 子路径路由或响应体漂移。
+- A4015 把 named HTTP `/livez/serializable_read?verbose` 子路径纳入完整增强门禁：
+  上游 `installLivezEndpoints` 注册 `serializable_read`，并通过同一个
+  `CheckRegistry.InstallHTTPEndpoints` 安装 root 与独立分项 handler。生产 gate 在
+  `EXPECTED_LIVEZ_NAMED_CHECKS=1` 时读取 `/livez/serializable_read?verbose`，
+  要求响应包含 `[+]serializable_read ok` 且以 `ok` 结束；通过摘要新增
+  `livez_named_checks=ok`，防止 `/livez?verbose` 正常但 liveness named 子路径路由或响应体漂移。
 
 ### P2：运维兼容和长期验证
 

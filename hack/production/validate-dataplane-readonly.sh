@@ -22,6 +22,7 @@ EXPECTED_STATUS_CLUSTER_ID="${EXPECTED_STATUS_CLUSTER_ID:-}"
 EXPECTED_STATUS_VERSION="${EXPECTED_STATUS_VERSION:-}"
 EXPECTED_HASHKV_HASH="${EXPECTED_HASHKV_HASH:-}"
 EXPECTED_READYZ_NAMED_CHECKS="${EXPECTED_READYZ_NAMED_CHECKS:-}"
+EXPECTED_LIVEZ_NAMED_CHECKS="${EXPECTED_LIVEZ_NAMED_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
@@ -46,6 +47,10 @@ if [[ -n "$EXPECTED_HASHKV_HASH" && ! "$EXPECTED_HASHKV_HASH" =~ ^[0-9]+$ ]]; th
 fi
 if [[ -n "$EXPECTED_READYZ_NAMED_CHECKS" && "$EXPECTED_READYZ_NAMED_CHECKS" != "1" ]]; then
   echo "EXPECTED_READYZ_NAMED_CHECKS must be empty or 1" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_LIVEZ_NAMED_CHECKS" && "$EXPECTED_LIVEZ_NAMED_CHECKS" != "1" ]]; then
+  echo "EXPECTED_LIVEZ_NAMED_CHECKS must be empty or 1" >&2
   exit 2
 fi
 if ! [[ "$PROBE_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m|h)$ ]]; then
@@ -175,6 +180,16 @@ livez_verbose="$(run_with_probe_timeout "$CURL" -fsS "$livez_verbose_url")"
 if [[ "$livez_verbose" != *"[+]serializable_read ok"* || "$livez_verbose" != *$'\nok' ]]; then
   echo "livez verbose mismatch: expected serializable_read ok and trailing ok, got ${livez_verbose}" >&2
   exit 1
+fi
+livez_summary=""
+if [[ "$EXPECTED_LIVEZ_NAMED_CHECKS" == "1" ]]; then
+  livez_check_url="${READYZ_URL%/readyz}/livez/serializable_read?verbose"
+  livez_check_body="$(run_with_probe_timeout "$CURL" -fsS "$livez_check_url")"
+  if [[ "$livez_check_body" != *"[+]serializable_read ok"* || "$livez_check_body" != *$'\nok' ]]; then
+    echo "livez serializable_read mismatch: expected serializable_read ok and trailing ok, got ${livez_check_body}" >&2
+    exit 1
+  fi
+  livez_summary=", livez_named_checks=ok"
 fi
 
 health_url="${ENDPOINT%/}/health"
@@ -1537,4 +1552,4 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   hashkv_summary+=", gateway_hashkv_revisions_match=true"
 fi
 
-echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
+echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok${livez_summary}, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"

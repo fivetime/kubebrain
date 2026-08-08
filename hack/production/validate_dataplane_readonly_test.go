@@ -11,25 +11,26 @@ import (
 
 func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		podsJSON         string
-		readyz           string
-		readyzVerbose    string
-		livez            string
-		livezVerbose     string
-		healthJSON       string
-		serialHealthJSON string
-		count            string
-		statusJSON       string
-		gatewayJSON      string
-		authJSON         string
-		alarmJSON        string
-		versionJSON      string
-		infoVersionJSON  string
-		extraEnv         []string
-		wantTimeout      []string
-		wantOK           bool
-		wantOutput       string
+		name              string
+		podsJSON          string
+		readyz            string
+		readyzVerbose     string
+		livez             string
+		livezVerbose      string
+		livezNamedVerbose string
+		healthJSON        string
+		serialHealthJSON  string
+		count             string
+		statusJSON        string
+		gatewayJSON       string
+		authJSON          string
+		alarmJSON         string
+		versionJSON       string
+		infoVersionJSON   string
+		extraEnv          []string
+		wantTimeout       []string
+		wantOK            bool
+		wantOutput        string
 	}{
 		{
 			name: "passes read only dataplane gate",
@@ -72,9 +73,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
-			extraEnv:   []string{"EXPECTED_READYZ_NAMED_CHECKS=1"},
+			extraEnv:   []string{"EXPECTED_READYZ_NAMED_CHECKS=1", "EXPECTED_LIVEZ_NAMED_CHECKS=1"},
 			wantOK:     true,
-			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, readyz_named_checks=ok, livez=ok, livez_serializable_read=ok",
+			wantOutput: "readyz_verbose=ok, readyz_data_corruption=ok, readyz_serializable_read=ok, readyz_linearizable_read=ok, readyz_non_learner=ok, readyz_named_checks=ok, livez=ok, livez_serializable_read=ok, livez_named_checks=ok",
 		},
 		{
 			name: "rejects unhealthy livez endpoint",
@@ -88,6 +89,20 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
 			wantOutput: "livez mismatch",
+		},
+		{
+			name: "rejects malformed livez named endpoint",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:            "ok",
+			livezNamedVerbose: "ok",
+			count:             "4",
+			statusJSON:        `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:          []string{"EXPECTED_LIVEZ_NAMED_CHECKS=1"},
+			wantOutput:        "livez serializable_read mismatch",
 		},
 		{
 			name: "rejects malformed readyz verbose endpoint",
@@ -2301,6 +2316,15 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			extraEnv:   []string{"EXPECTED_STATUS_VERSION=3.7.0"},
 			wantOutput: "EXPECTED_STATUS_VERSION requires EXPECTED_STATUS_CLUSTER_ID",
 		},
+		{
+			name:       "rejects malformed expected livez named checks flag before commands",
+			podsJSON:   `{"items":[]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_LIVEZ_NAMED_CHECKS=true"},
+			wantOutput: "EXPECTED_LIVEZ_NAMED_CHECKS must be empty or 1",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2333,6 +2357,10 @@ for arg in "$@"; do
   fi
   if [[ "$arg" == "${READYZ_URL%/readyz}/livez?verbose" ]]; then
     printf '%s' "$FAKE_LIVEZ_VERBOSE"
+    exit 0
+  fi
+  if [[ "$arg" == "${READYZ_URL%/readyz}/livez/serializable_read?verbose" ]]; then
+    printf '%s' "$FAKE_LIVEZ_SERIALIZABLE_READ_VERBOSE"
     exit 0
   fi
   if [[ "$arg" == "${READYZ_URL%/readyz}/livez" ]]; then
@@ -2431,6 +2459,7 @@ exec "$@"
 				"FAKE_READYZ_VERBOSE=" + defaultReadyzVerbose(tc.readyzVerbose),
 				"FAKE_LIVEZ=" + defaultLivez(tc.livez),
 				"FAKE_LIVEZ_VERBOSE=" + defaultLivezVerbose(tc.livezVerbose),
+				"FAKE_LIVEZ_SERIALIZABLE_READ_VERBOSE=" + defaultLivezVerbose(tc.livezNamedVerbose),
 				"FAKE_HEALTH_JSON=" + defaultHealthJSON(tc.healthJSON),
 				"FAKE_SERIALIZABLE_HEALTH_JSON=" + defaultHealthJSON(tc.serialHealthJSON),
 				"FAKE_PREFIX_COUNT=" + tc.count,
