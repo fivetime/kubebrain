@@ -196,7 +196,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	}()
 	go func() {
 		defer close(s.stateMetricsDone)
-		s.runServerStateMetricsRefresh(runCtx, serverStateMetricsRefreshInterval)
+		s.runServerStateMetricsRefresh(runCtx, serverStateMetricsRefreshInterval, serverStateMetricsRefreshTimeout)
 	}()
 	return s
 }
@@ -210,6 +210,7 @@ const alarmMetricsRefreshTimeout = 5 * time.Second
 const fdMetricsRefreshInterval = 10 * time.Minute
 
 const serverStateMetricsRefreshInterval = time.Second
+const serverStateMetricsRefreshTimeout = 5 * time.Second
 
 func boolGauge(value bool) int {
 	if value {
@@ -218,7 +219,7 @@ func boolGauge(value bool) int {
 	return 0
 }
 
-func (s *server) refreshServerStateMetrics() {
+func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	hasLeader := false
 	isLeader := false
 	if s.leaderElection != nil {
@@ -236,11 +237,23 @@ func (s *server) refreshServerStateMetrics() {
 
 	if s.backend != nil {
 		s.metricCli.EmitGauge("etcd_debugging.mvcc.current_revision", s.backend.GetCurrentRevision())
+		compactRevision, err := s.backend.GetCompactRevision(ctx)
+		if err != nil {
+			s.metricCli.EmitCounter("mvcc.compact_revision.refresh.err", 1)
+			klog.ErrorS(err, "refresh compact revision metric failed")
+		} else {
+			s.metricCli.EmitGauge("etcd_debugging.mvcc.compact_revision", compactRevision)
+		}
 	}
 }
 
-func (s *server) runServerStateMetricsRefresh(ctx context.Context, interval time.Duration) {
-	s.refreshServerStateMetrics()
+func (s *server) runServerStateMetricsRefresh(ctx context.Context, interval, timeout time.Duration) {
+	refresh := func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		s.refreshServerStateMetrics(refreshCtx)
+	}
+	refresh()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -248,7 +261,7 @@ func (s *server) runServerStateMetricsRefresh(ctx context.Context, interval time
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.refreshServerStateMetrics()
+			refresh()
 		}
 	}
 }

@@ -309,6 +309,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_debugging_mvcc_current_revision" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_debugging_mvcc_compact_revision{"* && "$info_metrics" != *"etcd_debugging_mvcc_compact_revision "* ]]; then
+    echo "info metrics mismatch: expected etcd_debugging_mvcc_compact_revision" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"promhttp_metric_handler_requests_in_flight "* ]]; then
     echo "info metrics mismatch: expected promhttp_metric_handler_requests_in_flight" >&2
     exit 1

@@ -486,6 +486,7 @@ MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与
 `etcd_mvcc_db_total_size_in_use_in_bytes`（KubeBrain 语义为 keyspace 当前存活 key/value
 逻辑字节，而非 bbolt 文件物理分配），
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
+MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
 `promhttp_metric_handler_requests_in_flight` 和
 `promhttp_metric_handler_requests_total`；其中 server version 必须等于 `EXPECTED_STATUS_VERSION`、
 cluster version 必须等于其 major.minor；

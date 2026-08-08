@@ -82,10 +82,16 @@ type quotaRefreshBackend struct {
 type coldRevisionBackend struct {
 	backend.Backend
 	current atomic.Uint64
+	compact atomic.Uint64
+	err     error
 }
 
 func (b *coldRevisionBackend) GetCurrentRevision() uint64    { return b.current.Load() }
 func (b *coldRevisionBackend) SetCurrentRevision(rev uint64) { b.current.Store(rev) }
+func (b *coldRevisionBackend) GetCompactRevision(context.Context) (uint64, error) {
+	return b.compact.Load(), b.err
+}
+func (b *coldRevisionBackend) SetCompactRevision(rev uint64) { b.compact.Store(rev) }
 
 func (b *quotaRefreshBackend) QuotaStatus(ctx context.Context) (int64, int64, bool, error) {
 	b.calls.Add(1)
@@ -385,18 +391,21 @@ func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {
 		backend:        &coldRevisionBackend{Backend: b},
 	}
 	s.backend.(*coldRevisionBackend).SetCurrentRevision(123)
-	s.refreshServerStateMetrics()
+	s.backend.(*coldRevisionBackend).SetCompactRevision(45)
+	s.refreshServerStateMetrics(context.Background())
 
 	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.has_leader"))
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.is_leader"))
 	require.Equal(t, []interface{}{1}, recorder.gaugeValues("etcd.server.is_learner"))
 	require.Equal(t, []interface{}{uint64(123)}, recorder.gaugeValues("etcd_debugging.mvcc.current_revision"))
+	require.Equal(t, []interface{}{uint64(45)}, recorder.gaugeValues("etcd_debugging.mvcc.compact_revision"))
 }
 
 func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing.T) {
 	metrics := &healthMetricRecorder{}
 	backend := &coldRevisionBackend{}
 	backend.SetCurrentRevision(321)
+	backend.SetCompactRevision(123)
 	s := &server{
 		metricCli:      metrics,
 		leaderElection: &leader.Stub{ElectionInfo: leader.ElectionInfo{LeaderAddress: "self", IsLeader: true}},
@@ -406,19 +415,21 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.runServerStateMetricsRefresh(ctx, time.Millisecond)
+		s.runServerStateMetricsRefresh(ctx, time.Millisecond, time.Second)
 	}()
 	require.Eventually(t, func() bool {
 		return metrics.countGauge("etcd.server.has_leader") >= 2 &&
 			metrics.countGauge("etcd.server.is_leader") >= 2 &&
 			metrics.countGauge("etcd.server.is_learner") >= 2 &&
-			metrics.countGauge("etcd_debugging.mvcc.current_revision") >= 2
+			metrics.countGauge("etcd_debugging.mvcc.current_revision") >= 2 &&
+			metrics.countGauge("etcd_debugging.mvcc.compact_revision") >= 2
 	}, time.Second, time.Millisecond)
 
 	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.has_leader")[:2])
 	require.Equal(t, []interface{}{1, 1}, metrics.gaugeValues("etcd.server.is_leader")[:2])
 	require.Equal(t, []interface{}{0, 0}, metrics.gaugeValues("etcd.server.is_learner")[:2])
 	require.Equal(t, []interface{}{uint64(321), uint64(321)}, metrics.gaugeValues("etcd_debugging.mvcc.current_revision")[:2])
+	require.Equal(t, []interface{}{uint64(123), uint64(123)}, metrics.gaugeValues("etcd_debugging.mvcc.compact_revision")[:2])
 
 	cancel()
 	select {
@@ -430,11 +441,13 @@ func TestServerStateMetricsRefreshRunsImmediatelyPeriodicallyAndStops(t *testing
 	stoppedAtIsLeader := metrics.countGauge("etcd.server.is_leader")
 	stoppedAtLearner := metrics.countGauge("etcd.server.is_learner")
 	stoppedAtRevision := metrics.countGauge("etcd_debugging.mvcc.current_revision")
+	stoppedAtCompactRevision := metrics.countGauge("etcd_debugging.mvcc.compact_revision")
 	time.Sleep(5 * time.Millisecond)
 	require.Equal(t, stoppedAtLeader, metrics.countGauge("etcd.server.has_leader"))
 	require.Equal(t, stoppedAtIsLeader, metrics.countGauge("etcd.server.is_leader"))
 	require.Equal(t, stoppedAtLearner, metrics.countGauge("etcd.server.is_learner"))
 	require.Equal(t, stoppedAtRevision, metrics.countGauge("etcd_debugging.mvcc.current_revision"))
+	require.Equal(t, stoppedAtCompactRevision, metrics.countGauge("etcd_debugging.mvcc.compact_revision"))
 }
 
 func TestLegacyHealthMetricsInitializedBeforeHealthRequests(t *testing.T) {

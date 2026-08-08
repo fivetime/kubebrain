@@ -42830,6 +42830,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1 秒刷新路径里发出 `etcd_debugging.mvcc.current_revision`，Prometheus wrapper 暴露为
   `etcd_debugging_mvcc_current_revision`；生产 gate 通过 `mvcc_revision_metrics=ok`
   固定 family 存在，且该刷新只读内存状态，不增加 TiKV 请求路径。
+- A4036 实现并固定 upstream MVCC compact revision metric：上游
+  `etcd_debugging_mvcc_compact_revision` 暴露当前 MVCC compact watermark。KubeBrain 的
+  等价真实状态是持久化 compact revision marker，同一状态已用于 revisioned Range、
+  Compact、compacted Watch cancel 和 HashKV 的 compact revision。现在
+  `runServerStateMetricsRefresh` 在有界 timeout 下读取 `Backend.GetCompactRevision`，
+  并发出 `etcd_debugging.mvcc.compact_revision`，Prometheus wrapper 暴露为
+  `etcd_debugging_mvcc_compact_revision`；读取失败只递增
+  `mvcc.compact_revision.refresh.err`，不阻塞 server 关闭。生产 gate 继续通过
+  `mvcc_revision_metrics=ok` 固定 current/compact 两个 revision family 均存在。
 
 ### P2：运维兼容和长期验证
 
