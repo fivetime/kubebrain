@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	production "github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
@@ -49,6 +50,10 @@ func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 }
 
 func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr error) {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		return rpctypes.ErrGRPCNotLeader
+	}
 	rangeCtx, unlock := s.backend.BeginRangeTxn(ctx)
 	locked := true
 	defer func() {
@@ -106,6 +111,13 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	}
 	if firstChunk.Err != nil {
 		return firstChunk.Err
+	}
+	currentEpoch, stillLeadingFresh := s.peers.EpochAndLeadingFresh()
+	if !stillLeadingFresh {
+		return rpctypes.ErrGRPCNotLeader
+	}
+	if currentEpoch != epoch {
+		return errSnapshotChanged
 	}
 	// Metadata and the pinned user revision define the snapshot's linearization
 	// point. Historical scanning remains fixed at that revision, so retaining the

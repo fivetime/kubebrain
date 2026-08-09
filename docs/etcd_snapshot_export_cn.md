@@ -21,6 +21,9 @@ auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的
 关闭 proxy 时，follower 返回 `ErrGRPCNotLeader`，由客户端改选 leader。不能在 follower 本地生成：
 `BeginRangeTxn` 只冻结当前进程的逻辑写，无法阻止另一 Pod 的 leader 在多次 TiKV metadata 读取之间
 提交变更，否则 KV revision 与 auth/lease/alarm 可能来自从未同时存在的状态。
+leader 捕获还会记录当前 leadership epoch，并在 metadata 与固定 revision history stream 都已建立、
+释放本地 barrier 前复核同一 epoch 和 fresh lease；期间换主会丢弃私有制品并重试或返回 NotLeader。
+stream 已固定后发生的换主不影响已经冻结的 TiKV 读视图。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

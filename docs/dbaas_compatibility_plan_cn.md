@@ -43537,6 +43537,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   官方快照一致性。测试用 trap backend 固定两条分支：转发路径零本地 capture，禁用 proxy 路径精确
   NotLeader 且零 barrier 调用；既有 leader metadata barrier 测试继续证明 auth mutation 在 pin 完成前
   被阻塞、之后恢复。
+  A4100 继续封闭“入口是 leader、capture 中途换主”的 term 跨越窗口：A4099 只在 Snapshot RPC 入口
+  判断 IsLeader，旧 leader 随后持有的 `logicalWriteMu` 仍不能约束新 Pod leader；若 leadership 在
+  SyncReadRevision、auth/lease/alarm metadata 顺序读取或 history snapshot 建立期间切换，仍可能把两个
+  term 的状态拼接。`buildSnapshotOnce` 现在在取得 barrier 前记录 `EpochAndLeadingFresh`，并在收到
+  history stream 首个响应（证明固定 TiKV read view 已建立）后、释放 barrier 和创建 bbolt builder 前
+  再次检查：失去 fresh leadership 返回 upstream NotLeader，同节点重新取得新 epoch 则返回
+  `errSnapshotChanged`，由外层以全新私有文件重捕获。固定 read view 建立后的换主无需取消长扫描。
+  确定性测试在 BeginRangeTxn hook 内把 epoch 从 7 推进到 8，证明 term-spanning capture 在任何 artifact
+  创建前失败；follower proxy/禁用 proxy 与 auth metadata barrier 回归继续通过。
 
 ### P2：运维兼容和长期验证
 

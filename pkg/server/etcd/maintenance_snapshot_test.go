@@ -399,6 +399,44 @@ func TestMaintenanceSnapshotPinsAuthMetadataBeforeReleasingWriteBarrier(t *testi
 	}))
 }
 
+func TestMaintenanceSnapshotRejectsLeadershipTermChangeBeforePin(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var epoch uint64 = 7
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn: func() (uint64, bool) {
+			return epoch, true
+		},
+	}
+	wrapped := &metadataBarrierSnapshotBackend{
+		pausedSnapshotBackend: &pausedSnapshotBackend{
+			BackendShim: server.backend,
+			paused:      make(chan struct{}),
+			release:     make(chan struct{}),
+		},
+		barrierAcquired: make(chan struct{}),
+		proceedMetadata: make(chan struct{}),
+	}
+	server.backend = wrapped
+
+	done := make(chan error, 1)
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	go func() { done <- server.buildSnapshotOnce(context.Background(), path) }()
+	select {
+	case <-wrapped.barrierAcquired:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not acquire its metadata barrier")
+	}
+	epoch = 8
+	close(wrapped.proceedMetadata)
+
+	require.ErrorIs(t, <-done, errSnapshotChanged)
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist,
+		"a term-spanning capture must be rejected before creating its bbolt artifact")
+}
+
 func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
