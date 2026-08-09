@@ -357,6 +357,20 @@ for snapshot_name in "${snapshot_names[@]}"; do
       restore_size:$snapshot.status.restoreSize}]')"
 done
 
+if ! jq -en --argjson inventory "$inventory" --argjson snapshots "$snapshots" '
+  ([$inventory.pd_pvcs[].name, $inventory.tikv_pvcs[].name] | sort) as $expected_sources |
+  ($snapshots | map(.source_pvc) | sort) == $expected_sources and
+  ($snapshots | length) == ($expected_sources | length) and
+  all($snapshots[];
+    all([.name,.uid,.content,.content_uid,.source_pvc,.component,.source_volume_handle,.snapshot_handle,.restore_size][];
+      type == "string" and length > 0)) and
+  all(["name","uid","content","content_uid","source_pvc","source_volume_handle","snapshot_handle"][] as $field;
+    ($snapshots | map(.[$field]) | unique | length) == ($snapshots | length))
+' >/dev/null; then
+  echo "snapshot set is incomplete or contains duplicate identities" >&2
+  exit 1
+fi
+
 restore_replicas "$TIDB_NAMESPACE" "$pd_name" "$pd_uid" "$pd_replicas"
 pd_stopped=false
 restore_replicas "$TIDB_NAMESPACE" "$tikv_name" "$tikv_uid" "$tikv_replicas"

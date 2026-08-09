@@ -43827,6 +43827,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cleanup 和明确错误；成功测试固定 receipt 中的 observed handle，tamper test 固定恢复工具拒绝被改写的
   source handle。该门禁仍不能把逐卷 CSI snapshot 提升为存储供应商保证的原子 group snapshot，真实隔离
   恢复和日志型 PITR 缺口继续保持开放。
+  A4137 把 restore 工具已有的 snapshot identity 唯一性门禁前移到 cold snapshot 成功判定。旧 executor
+  逐个确认 content Ready 后直接恢复服务并发布 receipt；若 CSI bug 或错误控制器让多个不同源 PV 返回
+  同一个 `status.snapshotHandle`，每项 driver、Snapshot UID、source volumeHandle 都能单独通过，最终却
+  只有一份物理 snapshot，且“成功”receipt 要到后续 renderer 才被拒绝。executor 现在在所有 content
+  收集完成、恢复 PD/TiKV/KubeBrain 前，以 frozen inventory 为基准要求 snapshot 数量和 source PVC 集合
+  精确相等，并要求 VolumeSnapshot name/UID、VolumeSnapshotContent name/UID、source PVC、source
+  volumeHandle、CSI snapshotHandle 分别全局唯一，所有 identity/size/component 字段非空。失败进入原有
+  cleanup，保留已创建 retained objects 供审计，但不发布 receipt。红测让六个 individually valid content
+  返回同一个 snapshotHandle，固定明确集合错误、服务恢复和 receipt 缺失；成功路径仍固定六个唯一 handle。
+  该门禁防止 invalid artifact 被标记成功，但不声称逐卷 CSI API 具备跨卷原子性。
 
 ### P2：运维兼容和长期验证
 

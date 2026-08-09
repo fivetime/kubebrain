@@ -928,6 +928,10 @@ CSI 创建每个动态 snapshot 后，executor 还会要求绑定的 VolumeSnaps
 中的源 volumeHandle 完全一致；实际观察值作为 `source_volume_handle` 写入 snapshot receipt 条目，
 后续 renderer/verifier 会再次与源 PV inventory 交叉验证。driver、Snapshot UID 正确但源 volumeHandle
 不同的 content 必须使整个操作失败，不能仅凭生成了非空 snapshotHandle 宣告成功。
+所有 content 收集完成后还必须在恢复服务前验证集合完整性：snapshot 数量和 source PVC 集合必须与
+frozen PD+TiKV inventory 精确相等；VolumeSnapshot name/UID、VolumeSnapshotContent name/UID、
+source PVC、源 volumeHandle 和最终 CSI snapshotHandle 均须一一唯一。任何 CSI driver 为多个源卷
+返回同一个 snapshotHandle 的结果都不是成功备份，必须 fail closed 且不得发布 receipt。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的

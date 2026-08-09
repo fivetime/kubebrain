@@ -138,6 +138,7 @@ func TestProductionReadinessColdSnapshotExamplesRequireExplicitContext(t *testin
 	require.Contains(t, doc, "固定 PV UID、CSI driver 与不可变 volumeHandle")
 	require.Contains(t, doc, "创建第一个 retained VolumeSnapshot 前再次复核这些物理身份")
 	require.Contains(t, doc, "实际观察值作为 `source_volume_handle` 写入 snapshot receipt 条目")
+	require.Contains(t, doc, "最终 CSI snapshotHandle 均须一一唯一")
 }
 
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {
