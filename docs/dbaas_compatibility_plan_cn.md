@@ -43334,6 +43334,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   enabled root+reader snapshot 继续由 upstream auth/alarm store 恢复测试覆盖，`pkg/etcdsnapshot`
   race、server Snapshot 与逻辑转换器回归通过。该项只校验 snapshot auth 制品图，不改变在线 auth
   RPC 或 TiKV 持久状态。
+  A4080 对齐 Snapshot role permission 状态：upstream
+  `/root/etcd/server/auth/store.go:RoleGrantPermission` 先调用 `isValidPermissionRange`，拒绝 nil/空 key、
+  非递增闭区间；新增 permission 后按 key 排序，同一 `(key,range_end)` 再 grant 只更新 PermType。
+  旧 snapshot writer 可直接写 nil permission、非法/倒置 range、重复 range 或乱序 permission slice，
+  恢复后 RoleGet 输出与 range permission cache 均可能落入正常管理 API 不可达状态。现在 auth graph
+  validator 逐 role 固定非 nil、与 upstream 相同的 single/open-ended/range 规则、key 非降序和精确
+  range identity 唯一；六个红测证明旧实现全部错误成功，新实现 fail closed。未知 PermType 没有被
+  额外拒绝：upstream grant 本身允许 proto unknown enum，KubeBrain authorizer 也明确将其视为不授予
+  READ/WRITE，保持 wire-compatible 行为。正常 root/reader permission、upstream auth store restore、
+  `pkg/etcdsnapshot` race、server Auth/Snapshot 和逻辑转换器回归通过；本项不改变在线状态机。
 
 ### P2：运维兼容和长期验证
 

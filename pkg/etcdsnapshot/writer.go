@@ -4,6 +4,7 @@
 package etcdsnapshot
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 
@@ -231,6 +232,25 @@ func validateAuthState(auth Auth) error {
 	for _, role := range auth.Roles {
 		if role != nil && len(role.Name) != 0 {
 			roleNames[string(role.Name)] = struct{}{}
+			seenRanges := make(map[struct{ key, end string }]struct{}, len(role.KeyPermission))
+			var previousKey []byte
+			for i, permission := range role.KeyPermission {
+				if permission == nil {
+					return fmt.Errorf("auth role %q contains nil permission at index %d", role.Name, i)
+				}
+				if !validSnapshotPermissionRange(permission.Key, permission.RangeEnd) {
+					return fmt.Errorf("auth role %q contains invalid permission range at index %d", role.Name, i)
+				}
+				if i != 0 && bytes.Compare(previousKey, permission.Key) > 0 {
+					return fmt.Errorf("auth role %q permissions are not key-sorted at index %d", role.Name, i)
+				}
+				identity := struct{ key, end string }{string(permission.Key), string(permission.RangeEnd)}
+				if _, exists := seenRanges[identity]; exists {
+					return fmt.Errorf("auth role %q repeats permission range at index %d", role.Name, i)
+				}
+				seenRanges[identity] = struct{}{}
+				previousKey = permission.Key
+			}
 		}
 	}
 	var root *authpb.User
@@ -264,6 +284,13 @@ func validateAuthState(auth Auth) error {
 		}
 	}
 	return fmt.Errorf("enabled auth requires root user to have root role")
+}
+
+func validSnapshotPermissionRange(key, end []byte) bool {
+	if len(key) == 0 {
+		return false
+	}
+	return len(end) == 0 || bytes.Compare(key, end) < 0 || (len(end) == 1 && end[0] == 0)
 }
 
 func (b *Builder) Append(records []Record) error {

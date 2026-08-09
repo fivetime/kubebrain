@@ -466,6 +466,43 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 	}
 }
 
+func TestWriteBackendRejectsImpossibleRolePermissions(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		permissions []*authpb.Permission
+		want        string
+	}{
+		{name: "nil permission", permissions: []*authpb.Permission{nil}, want: `auth role "reader" contains nil permission`},
+		{name: "empty key", permissions: []*authpb.Permission{{PermType: authpb.READ}}, want: `auth role "reader" contains invalid permission range at index 0`},
+		{name: "empty interval", permissions: []*authpb.Permission{{PermType: authpb.READ, Key: []byte("b"), RangeEnd: []byte("b")}}, want: `auth role "reader" contains invalid permission range at index 0`},
+		{name: "descending interval", permissions: []*authpb.Permission{{PermType: authpb.READ, Key: []byte("b"), RangeEnd: []byte("a")}}, want: `auth role "reader" contains invalid permission range at index 0`},
+		{
+			name: "duplicate interval",
+			permissions: []*authpb.Permission{
+				{PermType: authpb.READ, Key: []byte("a"), RangeEnd: []byte("m")},
+				{PermType: authpb.WRITE, Key: []byte("a"), RangeEnd: []byte("m")},
+			},
+			want: `auth role "reader" repeats permission range at index 1`,
+		},
+		{
+			name: "unsorted keys",
+			permissions: []*authpb.Permission{
+				{PermType: authpb.READ, Key: []byte("m")},
+				{PermType: authpb.READ, Key: []byte("a")},
+			},
+			want: `auth role "reader" permissions are not key-sorted at index 1`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			err := WriteBackend(path, State{Auth: Auth{Roles: []*authpb.Role{{
+				Name: []byte("reader"), KeyPermission: test.permissions,
+			}}}})
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
 func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	password, err := bcrypt.GenerateFromPassword([]byte("alice-secret"), bcrypt.MinCost)
@@ -475,16 +512,21 @@ func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	reader := &authpb.Role{Name: []byte("reader"), KeyPermission: []*authpb.Permission{{
 		Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), PermType: authpb.READ,
 	}}}
+	unknown := &authpb.Role{Name: []byte("unknown"), KeyPermission: []*authpb.Permission{{
+		Key: []byte("/unknown/"), RangeEnd: []byte("/unknown0"), PermType: authpb.Permission_Type(99),
+	}}}
 	require.NoError(t, WriteBackend(path, State{
 		Revision: 41,
 		Auth: Auth{Enabled: true, Revision: 7,
 			Users: []*authpb.User{
 				{Name: []byte("root"), Password: rootPassword, Roles: []string{"root"}},
 				{Name: []byte("alice"), Password: password, Roles: []string{"reader"}},
+				{Name: []byte("bob"), Password: password, Roles: []string{"unknown"}},
 			},
 			Roles: []*authpb.Role{
 				{Name: []byte("root"), KeyPermission: []*authpb.Permission{{Key: []byte{0}, RangeEnd: []byte{0}, PermType: authpb.READWRITE}}},
 				reader,
+				unknown,
 			},
 		},
 		Alarms: []*etcdserverpb.AlarmMember{
@@ -513,6 +555,9 @@ func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	alice := &etcdAuth.AuthInfo{Username: "alice", Revision: 7}
 	require.NoError(t, authStore.IsRangePermitted(alice, []byte("/allowed/key"), nil))
 	require.Error(t, authStore.IsRangePermitted(alice, []byte("/denied/key"), nil))
+	bob := &etcdAuth.AuthInfo{Username: "bob", Revision: 7}
+	require.Error(t, authStore.IsRangePermitted(bob, []byte("/unknown/key"), nil))
+	require.Error(t, authStore.IsPutPermitted(bob, []byte("/unknown/key")))
 
 	alarmStore, err := v3alarm.NewAlarmStore(lg, schema.NewAlarmBackend(lg, be))
 	require.NoError(t, err)
