@@ -44449,6 +44449,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   final revision 12910），值、revision 和全局严格递增顺序一致。最终规则零残留、TidbCluster Ready，
   3 KubeBrain/3 PD/3 TiKV 均 Ready 且零重启。该门禁覆盖同进程内多次失去/恢复 TiKV quorum，仍不以
   三轮短测代替跨节点/AZ 与小时级 soak；后两项继续保持 P1/P2 开放。
+  A4201 将 backend 故障门禁补到 PD 真正失去 quorum，而不再只证明单 leader 可改选。对照 upstream
+  `/root/etcd/tests/integration/network_partition_test.go` 的无 quorum 分区恢复后
+  `clusterMustProgress`，以及
+  `/root/etcd/tests/integration/clientv3/watch/watch_test.go::TestWatchWithRequireLeader` 对失去 leader
+  的 Watch 契约，新增 `BACKEND_FAULT_MODE=pd-quorum-loss`。helper 只接受精确 3 个 Running/Ready PD，
+  动态选择当前 leader 与一个不同 peer；每个目标在注入前必须从 kind node 的 PD `/health` 返回
+  `health=true`，随后插入四条带唯一 comment 的双向 DROP，并要求两个地址都实际不可达，才可根据
+  3 副本拓扑确认 quorum loss。hold 后精确删除并反查规则，再逐成员等待 `/health=true`；Pod 集合、
+  leader/name/IP、privileged node、timeout/hold 或任一状态证据缺失均 fail-closed。真实独立 3 副本
+  KubeBrain/3 PD/3 TiKV 上隔离当前 leader `kb-pd-0` 与 `kb-pd-1`，两者从节点均不可达，恢复后
+  同一持续 Watch/Range oracle 在 25.77 秒内核对 36 个已提交键全部恰好交付（37 responses、8 次
+  可重试瞬态写失败、final revision 12947），值、revision 与严格递增顺序一致。最终规则零残留、
+  TidbCluster Ready，3 KubeBrain/3 PD/3 TiKV 全部 Ready 且零重启。本项关闭单节点环境中的 PD
+  quorum-loss 数据面证据窗口；跨节点/AZ、长时间 PD quorum-loss soak 与 require-leader watch
+  在 DBaaS backend 失联时的精确错误时延仍保持开放。
 
 ### P2：运维兼容和长期验证
 

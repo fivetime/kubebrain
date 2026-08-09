@@ -81,9 +81,132 @@ cleanup_dual_partition() {
     fi
   done
   if (( cleanup_failed != 0 )); then
-    echo "failed to remove dual TiKV partition rules" >&2
+    echo "failed to remove dual backend partition rules" >&2
     return 1
   fi
+}
+
+partition_pd_quorum() {
+  local privileged deadline leader pods_json index pod ip response all_healthy
+  local -a all_pd_pods pd_pods
+  if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
+    exit 1
+  fi
+  if [[ ! "$PARTITION_FAILOVER_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+    (( PARTITION_FAILOVER_TIMEOUT_SECONDS > 300 )); then
+    echo "PARTITION_FAILOVER_TIMEOUT_SECONDS must be an integer in [1,300]" >&2
+    exit 1
+  fi
+  if [[ ! "$PARTITION_HOLD_SECONDS" =~ ^[0-9]+$ ]] || (( PARTITION_HOLD_SECONDS > 300 )); then
+    echo "PARTITION_HOLD_SECONDS must be an integer in [0,300]" >&2
+    exit 1
+  fi
+  privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
+  if [[ "$privileged" != "true" ]]; then
+    echo "refusing PD quorum partition: node container $KIND_NODE_CONTAINER is not privileged" >&2
+    exit 1
+  fi
+  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -S FORWARD >/dev/null
+  if ! docker exec "$KIND_NODE_CONTAINER" sh -c 'command -v curl >/dev/null'; then
+    echo "refusing PD quorum partition: node container lacks curl" >&2
+    exit 1
+  fi
+
+  leader="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
+    -o jsonpath='{.status.pd.leader.name}')"
+  if [[ "$leader" != "$TIDB_CLUSTER-pd-"* ]]; then
+    echo "refusing PD quorum partition: unexpected leader ${leader:-missing}" >&2
+    exit 1
+  fi
+  pods_json="$(kubectl -n "$TIDB_NAMESPACE" get pods \
+    -l "app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=pd" -o json)"
+  mapfile -t all_pd_pods < <(jq -r '.items | sort_by(.metadata.name)[] | .metadata.name' <<<"$pods_json")
+  all_healthy="$(jq -r '(.items | length) == 3 and all(.items[];
+    .status.phase == "Running" and
+    ((.status.containerStatuses // []) | length) > 0 and
+    all(.status.containerStatuses[]; .ready == true))' <<<"$pods_json")"
+  if [[ "${#all_pd_pods[@]}" -ne 3 || "$all_healthy" != "true" ]]; then
+    echo "refusing PD quorum partition: need exactly three healthy PD Pods" >&2
+    exit 1
+  fi
+  pd_pods=("$leader")
+  for pod in "${all_pd_pods[@]}"; do
+    if [[ "$pod" != "$leader" ]]; then
+      pd_pods+=("$pod")
+      break
+    fi
+  done
+  if [[ "${#pd_pods[@]}" -ne 2 || "${pd_pods[0]}" == "${pd_pods[1]}" ]]; then
+    echo "refusing PD quorum partition: need the leader and one distinct peer" >&2
+    exit 1
+  fi
+
+  dual_partition_pod_ips=()
+  dual_partition_tags=()
+  for index in 0 1; do
+    pod="${pd_pods[$index]}"
+    ip="$(jq -er --arg pod "$pod" '.items[] | select(.metadata.name == $pod) | .status.podIP' \
+      <<<"$pods_json")"
+    if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      echo "refusing to partition PD member $pod: invalid IPv4 Pod IP $ip" >&2
+      exit 1
+    fi
+    response="$(docker exec "$KIND_NODE_CONTAINER" curl --silent --show-error --fail --max-time 2 \
+      "http://${ip}:2379/health")"
+    if [[ "$(jq -r '.health == "true"' <<<"$response" 2>/dev/null || true)" != "true" ]]; then
+      echo "refusing to partition PD member $pod: preflight health is not true" >&2
+      exit 1
+    fi
+    dual_partition_pod_ips+=("$ip")
+    dual_partition_tags+=("kubebrain-pd-quorum-${pod}-$$")
+  done
+  echo "PD quorum partition selected members: ${pd_pods[*]}"
+  trap cleanup_dual_partition EXIT
+  trap 'cleanup_dual_partition; exit 130' INT
+  trap 'cleanup_dual_partition; exit 143' TERM
+  for index in 0 1; do
+    ip="${dual_partition_pod_ips[$index]}"
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$ip" \
+      -m comment --comment "${dual_partition_tags[$index]}-out" -j DROP
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$ip" \
+      -m comment --comment "${dual_partition_tags[$index]}-in" -j DROP
+  done
+  for index in 0 1; do
+    ip="${dual_partition_pod_ips[$index]}"
+    if docker exec "$KIND_NODE_CONTAINER" curl --silent --show-error --fail --max-time 2 \
+      "http://${ip}:2379/health" >/dev/null 2>&1; then
+      echo "PD quorum partition did not isolate ${pd_pods[$index]} at $ip" >&2
+      return 1
+    fi
+  done
+  echo "PD quorum loss observed: ${pd_pods[*]} are unreachable"
+  sleep "$PARTITION_HOLD_SECONDS"
+  cleanup_dual_partition
+  dual_partition_pod_ips=()
+  dual_partition_tags=()
+  trap - EXIT INT TERM
+
+  deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    all_healthy=true
+    for index in 0 1; do
+      ip="$(kubectl --request-timeout=5s -n "$TIDB_NAMESPACE" get pod "${pd_pods[$index]}" \
+        -o jsonpath='{.status.podIP}' 2>/dev/null || true)"
+      response="$(docker exec "$KIND_NODE_CONTAINER" curl --silent --show-error --fail --max-time 2 \
+        "http://${ip}:2379/health" 2>/dev/null || true)"
+      if [[ "$(jq -r '.health == "true"' <<<"$response" 2>/dev/null || true)" != "true" ]]; then
+        all_healthy=false
+      fi
+    done
+    if [[ "$all_healthy" == "true" ]]; then
+      echo "PD quorum partition recovered members: ${pd_pods[*]}"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "PD quorum members did not recover within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
+  return 1
 }
 
 partition_tikv_quorum() {
@@ -380,6 +503,12 @@ if [[ "${1:-}" == "--partition-pd-leader" ]]; then
   partition_pd_leader
   exit 0
 fi
+if [[ "${1:-}" == "--partition-pd-quorum" ]]; then
+  need docker
+  need jq
+  partition_pd_quorum
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-tikv-member" ]]; then
   need docker
   need jq
@@ -399,7 +528,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-quorum|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -455,6 +584,11 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need docker
     run_quorum_test "PD leader network partition" "$self --partition-pd-leader"
     ;;
+  pd-quorum-loss)
+    need docker
+    need jq
+    run_watch_recovery_test "PD quorum-loss network partition" "$self --partition-pd-quorum"
+    ;;
   tikv-network-partition)
     need docker
     need jq
@@ -466,7 +600,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_watch_recovery_test "TiKV quorum-loss network partition" "$self --partition-tikv-quorum-soak"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-quorum-loss, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

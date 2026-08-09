@@ -304,6 +304,24 @@ func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-quorum-loss)`)
+	require.Contains(t, script, `partition_pd_quorum`)
+	require.Contains(t, script, `need exactly three healthy PD Pods`)
+	require.Contains(t, script, `node container lacks curl`)
+	require.Contains(t, script, `pd_pods=("$leader")`)
+	require.Contains(t, script, `http://${ip}:2379/health`)
+	require.Contains(t, script, `PD quorum loss observed`)
+	require.Contains(t, script, `dual_partition_tags+=("kubebrain-pd-quorum-${pod}-$$")`)
+	require.Contains(t, script, `trap cleanup_dual_partition EXIT`)
+	require.Contains(t, script, `PD quorum partition recovered members`)
+	require.Contains(t, script, `KUBEBRAIN_WATCH_BACKEND_FAILOVER_COMMAND="$command"`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
