@@ -44235,6 +44235,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   迁移 `845cd3885` 已由 A4127/A4128 的 blocking barrier 与官方 clientv3 黑盒覆盖。故本轮不在 server
   复制 etcdctl parser 或 client panic 文案，只把两个新增 commit ID 纳入永久审计集合；未发现新的公开 RPC
   差异。
+  A4179 修复 TiKV transaction repair 告警策略的复发饥饿。A4075 只截取 Alertmanager fingerprint
+  作为 immutable Secret/`maxAttempts=1` Operation 名；fingerprint 由 labelset 决定，同一实例同一告警
+  以后再次 firing 通常复用该值。首次 Operation 完成或失败后，后续独立故障会永远重放旧对象，无法产生
+  “新的审批 Operation”，与 A4074 失败后必须新审批的安全设计冲突。policy runner 现在用
+  `SHA-256(fingerprint + "\n" + startsAt + "\n")` 前 20 hex 作为 occurrence ID：同一次 webhook 重试
+  仍确定性幂等，不同 startsAt 即使 fingerprint 相同也进入独立 Secret/Operation/审批周期；实时
+  StatefulSet/TidbCluster UID、cluster ID、三次事务失败、冷却与 destructive opt-in 栅栏均不变。
+  回归以同一 32-hex fingerprint、相隔十分钟的两个 firing payload 精确要求两个不同 name，并确认两次
+  都只 submit 未审批 `maxAttempts=1` Operation、零 scale/delete。receiver admission 文案与生产手册同步
+  改为 alert occurrence 派生；默认 executor 副本和人工/策略 approve 边界未放宽。
 
 ### P2：运维兼容和长期验证
 

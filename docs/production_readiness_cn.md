@@ -236,7 +236,8 @@ runner 只接受恰好一个 `status=firing`、alertname 精确等于
 `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane`，且 namespace/StatefulSet 标签与
 目标实例相等的 alert；fingerprint 必须为 16–64 位小写十六进制，`startsAt` 必须可解析、不能在
 未来并默认已持续至少 120 秒。通过后重新读取实时 KubeBrain StatefulSet UID、TidbCluster UID
-和 cluster ID，以 alert fingerprint 派生确定性 Operation/immutable Secret 名，生成规范参数 JSON
+和 cluster ID，以 alert fingerprint 与本次 `startsAt` 的 SHA-256 派生确定性
+Operation/immutable Secret 名，生成规范参数 JSON
 和 SHA-256，并幂等提交 `maxAttempts: 1` 的 Pending Operation。已存在 Secret 必须 immutable 且
 内容摘要完全相同，否则 fail closed。
 
@@ -264,7 +265,7 @@ get/create 该 namespace 的 Secret 和 Operation，并只读指定 KubeBrain St
 接入，其他类型 executor 不会扫描该 inventory。receiver Deployment 默认 2 副本、PDB
 `maxUnavailable: 1`；确定性 Secret/Operation identity 保证 Alertmanager 重试幂等。
 两条 fail-closed `ValidatingAdmissionPolicy` 进一步只约束该 receiver SA 的 CREATE：Operation 必须
-使用 fingerprint 派生名称、`TiKVTransactionRepair`、固定 requester/instance、`maxAttempts=1` 和
+使用 alert occurrence 派生名称、`TiKVTransactionRepair`、固定 requester/instance、`maxAttempts=1` 和
 同名参数引用；Secret 必须使用派生名称、`immutable=true`、`Opaque` 且只能含
 `parameters.json`。因此即使 bearer endpoint 或 receiver Pod 凭证泄露，也不能借其 RBAC 在隔离
 queue 中制造其他 operation type、可变 Secret 或任意 Secret payload。

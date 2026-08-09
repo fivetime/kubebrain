@@ -25,6 +25,7 @@ for value in "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$TIDB_NAMESPACE" "
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "resource identity must be a DNS label"
 done
 command -v "$JQ" >/dev/null || die "jq is required"
+command -v sha256sum >/dev/null || die "sha256sum is required"
 [[ -x "$OPERATIONCTL" ]] || die "OPERATIONCTL must be executable"
 
 context_args=()
@@ -52,8 +53,8 @@ tidb_uid="${cluster_identity%%$'\t'*}"
 cluster_id="${cluster_identity#*$'\t'}"
 [[ -n "$kb_uid" && -n "$tidb_uid" && "$cluster_id" =~ ^[1-9][0-9]*$ ]] || die "live instance identity is incomplete"
 
-fingerprint_short="${fingerprint:0:20}"
-operation_name="tikv-repair-${fingerprint_short}"
+occurrence_id="$(printf '%s\n%s\n' "$fingerprint" "$starts_at" | sha256sum | cut -c1-20)"
+operation_name="tikv-repair-${occurrence_id}"
 secret_name="${operation_name}-parameters"
 temp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$temp_dir"' EXIT

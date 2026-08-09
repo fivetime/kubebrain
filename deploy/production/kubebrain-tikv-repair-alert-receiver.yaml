@@ -192,7 +192,7 @@ spec:
       expression: 'request.namespace == "kubebrain-repair-operations" && request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
   validations:
     - expression: 'object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}$")'
-      message: repair alert operation name must derive from an alert fingerprint
+      message: repair alert operation name must derive from an alert occurrence
     - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.operationID == object.metadata.name && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1'
       message: repair alert operations require the fixed type, identity, instance, and attempt limit
     - expression: 'has(object.spec.requestedBy) && object.spec.requestedBy == "alertmanager:transaction-path-policy"'
@@ -232,7 +232,7 @@ spec:
       expression: 'request.namespace == "kubebrain-repair-operations" && request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
   validations:
     - expression: 'object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}-parameters$")'
-      message: repair parameter Secret name must derive from an alert fingerprint
+      message: repair parameter Secret name must derive from an alert occurrence
     - expression: 'has(object.immutable) && object.immutable == true && object.type == "Opaque"'
       message: repair parameter Secrets must be immutable Opaque Secrets
     - expression: 'has(object.data) && size(object.data) == 1 && "parameters.json" in object.data && (!has(object.stringData) || size(object.stringData) == 0)'
