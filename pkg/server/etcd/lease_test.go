@@ -1003,19 +1003,36 @@ func TestLeaseGrantAutomaticIDRewritesBeforeTTLValidationLikeEtcd(t *testing.T) 
 }
 
 func TestLeaseGrantAutomaticIDRewritesBeforeNoSpaceLikeEtcd(t *testing.T) {
-	server := newQuotaRPCServer(t, 6)
-
+	server := newQuotaRPCServer(t, 0)
 	ctx := context.Background()
-	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("123")})
+	_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
 	require.NoError(t, err)
-	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("x"), Value: []byte("y")})
-	requireQuotaNoSpaceError(t, err)
 
 	request := &etcdserverpb.LeaseGrantRequest{TTL: 30}
 	response, err := server.LeaseGrant(ctx, request)
 	require.Nil(t, response)
 	requireQuotaNoSpaceError(t, err)
 	require.Positive(t, request.ID)
+}
+
+func TestLeaseGrantQuotaPreflightRejectsBeforeAutomaticIDLikeEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("123")})
+	require.NoError(t, err)
+
+	request := &etcdserverpb.LeaseGrantRequest{TTL: 30}
+	response, err := server.LeaseGrant(ctx, request)
+	require.Nil(t, response)
+	requireQuotaNoSpaceError(t, err)
+	require.Zero(t, request.ID,
+		"upstream quotaLeaseServer rejects an unavailable request before EtcdServer allocates an automatic ID")
+	alarms, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{Alarm: etcdserverpb.AlarmType_NOSPACE}}, alarms.Alarms)
 }
 
 func TestLeaseGrantAutomaticIDRewritesBeforeCorruptLikeEtcd(t *testing.T) {

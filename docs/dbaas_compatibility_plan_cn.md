@@ -44072,6 +44072,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   admission 交叉门禁：alarm 激活后 empty Put 仍返回 EmptyKey，重复 Put Txn 仍返回 DuplicateKey，而同一
   服务上的合法 Put/Txn 才返回 NoSpace。未发现 runtime 差异；A4160 防止把 TiKV alarm cap 提前到静态
   validation，或为表面代码相似度引入与实际存储计费无关的 bbolt overhead。
+  A4161 沿 `/root/etcd` `5cd9f4ee1` 的同一 quota 注册链复审 LeaseGrant。upstream
+  `quotaLeaseServer` 在 `LeaseServer`/`EtcdServer.LeaseGrant` 外层先用固定 lease overhead 判断容量；容量
+  不可用时触发 NOSPACE 并直接返回，自动 lease ID 仍为 0。若只是已有 NOSPACE alarm，而外层容量估算
+  仍可用，请求会进入 EtcdServer，先分配自动 ID、校验 auth/raft，再由 `applierV3Capped.LeaseGrant` 返回
+  NoSpace。KubeBrain 原实现只有后一路径：TiKV 逻辑 key/value usage 恰好到达配置上限、alarm 尚未由下一次
+  Put 激活时，LeaseGrant 仍会成功，形成真实容量契约差异。现在 LeaseGrant 入口在自动 ID 前读取 durable
+  逻辑水位；仅对配置 quota 且 `usage >= quota` 的情况预拒绝，并由 leader 持久化 NOSPACE，手动 alarm
+  仍留在原 apply cap。回归测试分别固定 configured-quota 的 `ID=0` 与 manual-alarm 的 `ID>0`，并验证
+  alarm 可见性；未复制 bbolt 的 64-byte lease page 估算。A4161 防止满容量窗口继续创建 lease metadata，
+  同时避免把手动运维 alarm 错误提升到 auth/raft/ID admission 之前。
 
 ### P2：运维兼容和长期验证
 

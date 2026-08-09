@@ -103,6 +103,19 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (_ *etcdserverpb.LeaseGrantResponse, retErr error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
+	// Upstream quotaLeaseServer wraps LeaseServer, so an unavailable configured
+	// quota rejects LeaseGrant before EtcdServer allocates an automatic ID or
+	// enters auth/raft admission. TiKV quota tracks logical user bytes rather
+	// than bbolt file overhead; reaching that logical ceiling is the equivalent
+	// preflight boundary. A manually armed NOSPACE alarm remains an apply-time
+	// cap below, matching applierV3Capped instead of this outer quota layer.
+	usage, quota, _, quotaErr := m.srv.backend.QuotaStatus(ctx)
+	if quotaErr == nil && quota > 0 && usage >= quota {
+		if m.srv.peers.IsLeader() {
+			_, _ = m.srv.backend.ArmNoSpace(ctx, 0)
+		}
+		return nil, rpctypes.ErrGRPCNoSpace
+	}
 	explicitID := req.ID != 0
 	if !explicitID {
 		req.ID = m.nextLeaseID()
