@@ -932,6 +932,11 @@ CSI 创建每个动态 snapshot 后，executor 还会要求绑定的 VolumeSnaps
 frozen PD+TiKV inventory 精确相等；VolumeSnapshot name/UID、VolumeSnapshotContent name/UID、
 source PVC、源 volumeHandle 和最终 CSI snapshotHandle 均须一一唯一。任何 CSI driver 为多个源卷
 返回同一个 snapshotHandle 的结果都不是成功备份，必须 fail closed 且不得发布 receipt。
+PD、TiKV 和 KubeBrain 恢复后、receipt 原子发布前，executor 会再次读取全部 retained
+VolumeSnapshot/VolumeSnapshotContent：复核对象 UID、Snapshot class/source PVC、Ready、绑定 content、
+restore size，以及 Content 的 Retain policy、driver、Snapshot UID、源 volumeHandle 和最终
+snapshotHandle。恢复窗口中发生删除、同名替换、解绑或 status handle 漂移时不得发布成功 receipt；
+早先在停机窗口采集到的 JSON 不能替代发布时的 live retained-state 证明。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的

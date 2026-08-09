@@ -43837,6 +43837,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cleanup，保留已创建 retained objects 供审计，但不发布 receipt。红测让六个 individually valid content
   返回同一个 snapshotHandle，固定明确集合错误、服务恢复和 receipt 缺失；成功路径仍固定六个唯一 handle。
   该门禁防止 invalid artifact 被标记成功，但不声称逐卷 CSI API 具备跨卷原子性。
+  A4138 关闭 snapshot 收集完成到 receipt 发布之间的 retained-state TOCTOU。旧 executor 在停机窗口
+  读取并验证 VolumeSnapshot/Content，随后恢复 PD、TiKV、operator 与 KubeBrain，再直接用旧 JSON 发布
+  receipt；若恢复期间 snapshot 被删除/同名替换、解绑、Ready 丢失或 CSI snapshotHandle 漂移，发布时
+  的“成功备份”已不存在。当前在所有服务恢复后、witness 与 receipt 最终检查前，按 A4137 frozen 集合
+  重新读取全部对象：Snapshot 必须保留 UID、class、source PVC、Ready、bound content、restoreSize；
+  Content 必须保留 UID、Retain、driver、class、Snapshot UID、动态 source volumeHandle 和最终
+  snapshotHandle。任一 get 失败或字段漂移均拒绝 receipt；服务已恢复时 cleanup 不重复缩扩容，retained
+  残留继续供人工审计。红测只在第七次（首次发布前复核）Content 读取时改变 handle，证明初始六项检查
+  全部成功但最终 publication fail closed；成功路径现在经历 6+6 次 live identity 验证。该复核缩短
+  publication 证据窗口，但不代替对象存储复制、CSI retention SLA 或真实隔离恢复演练。
 
 ### P2：运维兼容和长期验证
 

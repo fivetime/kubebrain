@@ -380,6 +380,37 @@ paused=false
 restore_replicas "$KUBEBRAIN_NAMESPACE" "$KUBEBRAIN_STATEFULSET" "$kb_uid" "$kb_replicas"
 kb_stopped=false
 
+validate_retained_snapshot_set() {
+  local record live_snapshot live_content
+  while IFS= read -r record; do
+    live_snapshot="$(kctl -n "$TIDB_NAMESPACE" get volumesnapshot "$(jq -r '.name' <<<"$record")" -o json)" || return 1
+    if ! jq -e --arg uid "$(jq -r '.uid' <<<"$record")" --arg class "$VOLUME_SNAPSHOT_CLASS" \
+      --arg pvc "$(jq -r '.source_pvc' <<<"$record")" --arg content "$(jq -r '.content' <<<"$record")" \
+      --arg restore_size "$(jq -r '.restore_size' <<<"$record")" '
+      .metadata.uid == $uid and .spec.volumeSnapshotClassName == $class and
+      .spec.source.persistentVolumeClaimName == $pvc and .status.readyToUse == true and
+      .status.boundVolumeSnapshotContentName == $content and .status.restoreSize == $restore_size
+    ' <<<"$live_snapshot" >/dev/null; then
+      echo "retained VolumeSnapshot changed before receipt publication: $(jq -r '.name' <<<"$record")" >&2
+      return 1
+    fi
+    live_content="$(kctl get volumesnapshotcontent "$(jq -r '.content' <<<"$record")" -o json)" || return 1
+    if ! jq -e --arg uid "$(jq -r '.content_uid' <<<"$record")" \
+      --arg snapshot_uid "$(jq -r '.uid' <<<"$record")" --arg driver "$(jq -r '.volume_snapshot_class.driver' <<<"$inventory")" \
+      --arg class "$VOLUME_SNAPSHOT_CLASS" --arg source_handle "$(jq -r '.source_volume_handle' <<<"$record")" \
+      --arg snapshot_handle "$(jq -r '.snapshot_handle' <<<"$record")" '
+      .metadata.uid == $uid and .spec.deletionPolicy == "Retain" and .spec.driver == $driver and
+      .spec.volumeSnapshotClassName == $class and .spec.volumeSnapshotRef.uid == $snapshot_uid and
+      .spec.source.volumeHandle == $source_handle and .spec.source.snapshotHandle == null and
+      .status.snapshotHandle == $snapshot_handle
+    ' <<<"$live_content" >/dev/null; then
+      echo "retained VolumeSnapshotContent changed before receipt publication: $(jq -r '.content' <<<"$record")" >&2
+      return 1
+    fi
+  done < <(jq -c '.[]' <<<"$snapshots")
+}
+
+validate_retained_snapshot_set
 verify_witness_file
 receipt_tmp="${RECEIPT_FILE}.tmp.$$"
 jq -n --arg format kubebrain.cold-physical-snapshot.v2 --arg operation_id "$OPERATION_ID" \

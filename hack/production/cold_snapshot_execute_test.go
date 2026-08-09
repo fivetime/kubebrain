@@ -22,6 +22,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		contentDriver           string
 		contentSourceDrift      bool
 		duplicateSnapshotHandle bool
+		postRestoreContentDrift bool
 		precreateReceipt        bool
 		witnessPathDrift        bool
 		wantReceipt             bool
@@ -34,6 +35,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
 		{name: "content source volume mismatch restores service without receipt", contentSourceDrift: true, wantError: "snapshot content source volume does not match"},
 		{name: "duplicate CSI snapshot handle restores service without receipt", duplicateSnapshotHandle: true, wantError: "snapshot set is incomplete or contains duplicate identities"},
+		{name: "post restore content drift prevents receipt", postRestoreContentDrift: true, wantError: "retained VolumeSnapshotContent changed before receipt publication"},
 		{name: "concurrent receipt publish is non overwriting", precreateReceipt: true, wantExistingReceipt: true, wantError: "cold snapshot receipt already exists"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,6 +74,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				"FAKE_CONTENT_DRIVER=" + map[bool]string{true: "csi.example.test", false: tc.contentDriver}[tc.contentDriver == ""],
 				"FAKE_CONTENT_SOURCE_DRIFT=" + map[bool]string{true: "true", false: "false"}[tc.contentSourceDrift],
 				"FAKE_DUPLICATE_SNAPSHOT_HANDLE=" + map[bool]string{true: "true", false: "false"}[tc.duplicateSnapshotHandle],
+				"FAKE_POST_RESTORE_CONTENT_DRIFT=" + map[bool]string{true: "true", false: "false"}[tc.postRestoreContentDrift],
 				"PRECREATE_COLD_SNAPSHOT_RECEIPT_DURING_CONTENT=" + map[bool]string{true: "true", false: "false"}[tc.precreateReceipt],
 			}
 			output, err := runColdSnapshotExecute(t, env)
@@ -796,6 +799,10 @@ elif [[ "$args" == *"get volumesnapshotcontent"* ]]; then
   snapshot_handle="handle-${name}"
   [[ "${FAKE_CONTENT_SOURCE_DRIFT:-false}" != true ]] || source_handle="wrong-${source_handle}"
   [[ "${FAKE_DUPLICATE_SNAPSHOT_HANDLE:-false}" != true ]] || snapshot_handle="duplicate-snapshot-handle"
+  if [[ "${FAKE_POST_RESTORE_CONTENT_DRIFT:-false}" == true ]] &&
+    [[ "$(grep -c 'get volumesnapshotcontent' "$FAKE_LOG")" -gt 6 ]]; then
+    snapshot_handle="drifted-${snapshot_handle}"
+  fi
   printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","driver":"%s","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"},"source":{"volumeHandle":"%s"}},"status":{"snapshotHandle":"%s"}}' "$name" "$name" "$FAKE_CONTENT_DRIVER" "$snapshot" "$source_handle" "$snapshot_handle"
 elif [[ "$args" == *"get volumesnapshot"* && "$args" == *"--ignore-not-found"* ]]; then
   name="$(sed -n 's/.*get volumesnapshot \([^ ]*\).*/\1/p' <<<"$args")"
@@ -805,7 +812,8 @@ elif [[ "$args" == *"get volumesnapshot"* && "$args" == *"--ignore-not-found"* ]
   fi
 elif [[ "$args" == *"get volumesnapshot"* ]]; then
   name="$(sed -n 's/.*get volumesnapshot \([^ ]*\).*/\1/p' <<<"$args")"
-  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"status":{"readyToUse":true,"boundVolumeSnapshotContentName":"content-%s","restoreSize":"1Gi"}}' "$name" "$name" "$name"
+  pvc="${name#${OPERATION_ID}-}"
+  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"volumeSnapshotClassName":"retained","source":{"persistentVolumeClaimName":"%s"}},"status":{"readyToUse":true,"boundVolumeSnapshotContentName":"content-%s","restoreSize":"1Gi"}}' "$name" "$name" "$pvc" "$name"
 elif [[ "$args" == *"patch "* || "$args" == *"wait "* || "$args" == *"scale "* || "$args" == *"rollout status"* ]]; then
   :
 else
