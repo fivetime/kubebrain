@@ -1037,7 +1037,13 @@ func (w *worker) flushDeletes(ctx context.Context) {
 		batch.Del(w.pendingDeletes[i].objKey)
 	}
 	if err := batch.Commit(ctx); err == nil {
-		w.metricCli.EmitCounter("compact", int64(len(w.pendingDeletes)))
+		deleted := int64(len(w.pendingDeletes))
+		w.metricCli.EmitCounter("compact", deleted)
+		// Upstream increments db_compaction_keys_total for every physical MVCC
+		// database key removed by compaction. pendingDeletes contains exactly the
+		// object-version / tombstone keys durably removed by this successful
+		// batch, for both full and incremental TiKV-backed GC scans.
+		w.metricCli.EmitCounter("etcd_debugging.mvcc.db_compaction_keys_total", deleted)
 		w.pendingDeletes = w.pendingDeletes[:0]
 		return
 	}
@@ -1049,6 +1055,7 @@ func (w *worker) flushDeletes(ctx context.Context) {
 			w.updateSkippedRawKey(pd.userKey, pd.rev, err)
 		} else {
 			w.metricCli.EmitCounter("compact", 1)
+			w.metricCli.EmitCounter("etcd_debugging.mvcc.db_compaction_keys_total", 1)
 		}
 	}
 	w.pendingDeletes = w.pendingDeletes[:0]

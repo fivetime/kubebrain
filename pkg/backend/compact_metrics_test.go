@@ -39,7 +39,11 @@ type compactMetricRecorder struct {
 
 func (r *compactMetricRecorder) GetGrpcServerOption() []grpc.ServerOption { return nil }
 func (r *compactMetricRecorder) GetHttpHandlers() map[string]http.Handler { return nil }
-func (r *compactMetricRecorder) EmitCounter(string, interface{}, ...metrics.T) error {
+
+func (r *compactMetricRecorder) EmitCounter(name string, value interface{}, _ ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = append(r.records, compactMetricRecord{kind: "counter", name: name, value: value})
 	return nil
 }
 func (r *compactMetricRecorder) EmitGauge(name string, value interface{}, _ ...metrics.T) error {
@@ -65,6 +69,7 @@ func TestEtcdMVCCCompactionMetricsUseUpstreamNames(t *testing.T) {
 
 	require.Equal(t, []compactMetricRecord{
 		{kind: "gauge", name: "etcd_debugging.mvcc.db_compaction_last", value: int64(0)},
+		{kind: "counter", name: "etcd_debugging.mvcc.db_compaction_keys_total", value: int64(0)},
 		{kind: "histogram", name: "etcd_debugging.mvcc.db_compaction_total_duration_milliseconds", value: 1500.0},
 		{kind: "gauge", name: "etcd_debugging.mvcc.db_compaction_last", value: int64(123)},
 		{kind: "histogram", name: "etcd_debugging.mvcc.index_compaction_pause_duration_milliseconds", value: 250.0},

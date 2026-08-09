@@ -391,6 +391,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_debugging_mvcc_db_compaction_last" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_debugging_mvcc_db_compaction_keys_total{"* && "$info_metrics" != *"etcd_debugging_mvcc_db_compaction_keys_total "* ]]; then
+    echo "info metrics mismatch: expected etcd_debugging_mvcc_db_compaction_keys_total" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"etcd_debugging_mvcc_watch_stream_total{"* && "$info_metrics" != *"etcd_debugging_mvcc_watch_stream_total "* ]]; then
     echo "info metrics mismatch: expected etcd_debugging_mvcc_watch_stream_total" >&2
     exit 1

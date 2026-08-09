@@ -26,6 +26,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	mock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/stretchr/testify/require"
@@ -407,7 +408,19 @@ func TestScannerCompactRetainsBoundaryDeleteHistoryUntilNextRevision(t *testing.
 func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	m := mock.NewMinimalMetrics(ctrl)
+	m := mock.NewMockMetrics(ctrl)
+	var compactedKeys atomic.Int64
+	m.EXPECT().EmitCounter("etcd_debugging.mvcc.db_compaction_keys_total", gomock.Any()).DoAndReturn(
+		func(_ string, value interface{}, _ ...metrics.T) error {
+			compactedKeys.Add(value.(int64))
+			return nil
+		},
+	).AnyTimes()
+	m.EXPECT().EmitGauge(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	m.EXPECT().EmitCounter(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	m.EXPECT().EmitHistogram(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	m.EXPECT().GetHttpHandlers().AnyTimes()
+	m.EXPECT().GetGrpcServerOption().AnyTimes()
 	c := coder.DefaultKeyspace().NewCoder()
 	tomb := []byte("tombstone")
 
@@ -449,6 +462,8 @@ func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 		remaining++
 	}
 	require.Zero(t, remaining, "raw store must hold no object versions after batched compaction")
+	require.Equal(t, int64(3*n), compactedKeys.Load(),
+		"upstream counter must equal successfully deleted physical MVCC keys across every batch")
 }
 
 func TestScannerSkipsInternalStorageRows(t *testing.T) {

@@ -22,6 +22,7 @@ import (
 
 func initEtcdMVCCCompactionMetrics(metricCli metrics.Metrics) {
 	emitEtcdMVCCDBCompactionLast(metricCli, 0)
+	emitEtcdMVCCDBCompactionKeys(metricCli, 0)
 }
 
 func emitEtcdMVCCDBCompactionTotalDuration(metricCli metrics.Metrics, duration time.Duration) {
@@ -49,4 +50,11 @@ func emitEtcdMVCCIndexCompactionPause(metricCli metrics.Metrics, duration time.D
 		"etcd_debugging.mvcc.index_compaction_pause_duration_milliseconds",
 		float64(duration)/float64(time.Millisecond),
 	)
+}
+
+func emitEtcdMVCCDBCompactionKeys(metricCli metrics.Metrics, count int64) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("etcd_debugging.mvcc.db_compaction_keys_total", count)
 }

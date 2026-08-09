@@ -507,6 +507,9 @@ MVCC live key 指标 `etcd_debugging_mvcc_keys_total`，
 MVCC put size 累计指标 `etcd_debugging_mvcc_total_put_size_in_bytes`，
 MVCC current revision 指标 `etcd_debugging_mvcc_current_revision`，
 MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
+MVCC physical compaction 指标 `etcd_debugging_mvcc_db_compaction_last` 与
+`etcd_debugging_mvcc_db_compaction_keys_total`（后者只累计 full/incremental GC 中实际成功
+删除的物理 object-version、object tombstone 与 revision-key tombstone），
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
 `etcd_debugging_mvcc_watcher_total`、`etcd_debugging_mvcc_slow_watcher_total`、
 `etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`，

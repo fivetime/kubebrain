@@ -43002,9 +43002,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leader 本地 count-index 历史裁剪耗时映射到 `index_compaction_pause_duration_milliseconds`。
   `NewBackend` 用 0 预初始化 `db_compaction_last`，生产 gate 要求
   `etcd_debugging_mvcc_db_compaction_last` family 存在并新增
-  `mvcc_compaction_metrics=ok`。暂不实现 `db_compaction_keys_total`，因为当前 scanner/增量
-  compaction 只暴露原生 `compact` counter 和批次错误，不能精确返回 upstream “db keys
-  compacted” 语义；后续若 scanner 返回精确删除 key 数，再补该 counter。
+  `mvcc_compaction_metrics=ok`。`db_compaction_keys_total` 最初因缺少精确删除数而暂缓，后由
+  A4056 在 scanner 的成功 batch/逐 key 持久化边界补齐。
 - A4052 实现并固定 upstream MVCC total put size gauge：上游
   `/root/etcd/server/storage/mvcc/metrics.go` 注册
   `etcd_debugging_mvcc_total_put_size_in_bytes`，并由
@@ -43045,6 +43044,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   transaction 或 Status 中为协议兼容合成的 raft index 代替这些值。生产 gate 要求四个
   family 均存在并新增 `raft_proposal_metrics=ok` 摘要；底层共识状态继续使用 TiKV/PD
   原生指标。
+- A4056 关闭 upstream MVCC db compaction keys counter 缺口：上游
+  `/root/etcd/server/storage/mvcc/kvstore_compaction.go` 只在 bbolt compaction 实际执行
+  `UnsafeDelete` 时累计 `etcd_debugging_mvcc_db_compaction_keys_total`。KubeBrain scanner 的
+  `flushDeletes` 已具备等价且精确的持久化边界：batch commit 成功时知道本批实际删除的
+  `pendingDeletes` 数，batch 失败降级逐 key 删除时只对成功项计数；full scan 与 incremental
+  scan 共用该路径。因此 backend 初始化以 0 注册 family，成功物理删除 object-version、
+  object tombstone 或 revision-key tombstone 后按 key 累加，失败项不计数。门禁现在要求
+  `etcd_debugging_mvcc_db_compaction_keys_total` family 存在；跨多个 delete batch 的回归测试
+  同时验证原始存储清空且 counter 精确等于 3×删除对象数。A4051 中“scanner 无法精确返回
+  删除数”的暂缓判断至此失效并关闭。
 
 ### P2：运维兼容和长期验证
 
