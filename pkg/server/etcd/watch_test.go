@@ -1193,6 +1193,64 @@ func TestWatchRejectsBatchRevisionBelowVisibleEvent(t *testing.T) {
 	w.wg.Wait()
 }
 
+func TestWatchRejectsMixedProgressAndEventResult(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	results := make(chan etcdproxy.WatchResult, 1)
+	called := make(chan uint64, 1)
+	server.backend = &roleSwitchWatchBackend{BackendShim: server.backend, local: results, called: called}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	w := &watcher{
+		backend:     server.backend,
+		watchServer: stream,
+		grpcServer:  server,
+		watches: map[int64]*watch{
+			7: {cancel: func() {}, start: "/registry/watch/", end: "/registry/watch0", syncedRev: 9},
+		},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/"), RangeEnd: []byte("/registry/watch0"), StartRevision: 10,
+	})
+	require.Equal(t, uint64(10), <-called)
+	results <- etcdproxy.WatchResult{
+		ProgressRevision: 10,
+		Revision:         10,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/a"), Value: []byte("must-not-disappear"), ModRevision: 10},
+		}},
+	}
+	close(results)
+
+	require.Eventually(t, func() bool {
+		for _, response := range stream.snapshot() {
+			if response.Canceled {
+				return true
+			}
+		}
+		return false
+	}, time.Second, time.Millisecond)
+	for _, response := range stream.snapshot() {
+		require.Empty(t, response.Events)
+		if response.Canceled {
+			require.Contains(t, response.CancelReason, "mixed progress and events")
+		}
+	}
+	w.wg.Wait()
+}
+
+func TestInvalidWatchResultShapeRejectsProgressWithBatchRevision(t *testing.T) {
+	err := invalidWatchResultShape(etcdproxy.WatchResult{ProgressRevision: 10, Revision: 9})
+	require.EqualError(t, err, "watch backend returned mixed progress revision 10 and batch revision 9")
+	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{ProgressRevision: 10}))
+	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{}}}))
+}
+
 func (b *roleSwitchWatchBackend) Watch(_ context.Context, _ string, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 	b.called <- revision
 	return b.local, nil

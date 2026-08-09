@@ -43644,6 +43644,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   watermark；负 event revision 或 watermark 偏低都在 fragment/send 前取消单个 watch，复用
   `watch.backend.invalid_revision` 并在 CancelReason 报告 batch/event revision。A4112 的 start 下界与
   本项 response 上界共同保证 `StartRevision <= Event.ModRevision <= Header.Revision`。
+  A4114 强制 `WatchResult` progress/data 联合类型互斥：BackendShim 接口约定 event batch 使用
+  `{Events,Revision}`，in-band progress 使用独立 `{ProgressRevision}`，proxy 也按 clientv3
+  `IsProgressNotify` 做同一分类。旧消费循环只检查 `ProgressRevision>0`，若异常 producer 同时携带 events，
+  会把整批事件静默当 progress 丢弃并推进 `syncedRev`，造成不可恢复的数据缺口。红测注入 progress 10、
+  batch 10 和 revision 10 PUT，证明旧实现零事件下发、最终仅报告普通 `watch closed`。现在任何 progress
+  与 events 或非零 batch revision 并存都会在水位推进/过滤/send 前取消 watch，记录
+  `watch.backend.invalid_result` 并明确 CancelReason；纯 progress 和普通 event batch 保持通过。没有采用
+  “batch revision 必须严格大于 syncedRev”的过强门禁，因为同一 etcd 主 revision 的多事件可合法分批。
 
 ### P2：运维兼容和长期验证
 

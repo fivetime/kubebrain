@@ -153,6 +153,16 @@ type periodicProgressState struct {
 	eligible bool
 }
 
+func invalidWatchResultShape(result etcdproxy.WatchResult) error {
+	if result.ProgressRevision > 0 && len(result.Events) > 0 {
+		return fmt.Errorf("watch backend returned mixed progress and events at progress revision %d", result.ProgressRevision)
+	}
+	if result.ProgressRevision > 0 && result.Revision > 0 {
+		return fmt.Errorf("watch backend returned mixed progress revision %d and batch revision %d", result.ProgressRevision, result.Revision)
+	}
+	return nil
+}
+
 func newPeriodicProgressState() periodicProgressState {
 	return periodicProgressState{eligible: true}
 }
@@ -879,6 +889,13 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			if result.Err != nil {
 				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", string(r.Key), "err", result.Err)
 				w.Cancel(id, result.Err, isWatchCompactedError(result.Err))
+				return
+			}
+			if resultErr := invalidWatchResultShape(result); resultErr != nil {
+				w.metricCli.EmitCounter("watch.backend.invalid_result", 1)
+				klog.ErrorS(resultErr, "[watch stream] cancel due to invalid backend result", "watcher", w.id, "watch", id)
+				w.Cancel(id, resultErr, false)
+				cancel()
 				return
 			}
 			if result.ProgressRevision > 0 {
