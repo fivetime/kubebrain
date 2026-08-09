@@ -44040,6 +44040,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均先于 leadership；同一节点上的合法匿名 Put 则必须返回 Unavailable 而非 ErrUserEmpty。未发现 runtime
   差异；A4157 防止未来为“提前鉴权”而破坏 upstream raft/apply 错误优先级，或把静态校验错误延迟到
   leader routing 之后。
+  A4158 继续复审 `/root/etcd` `5cd9f4ee1` 的 KV DeleteRange admission/apply contract。
+  upstream v3rpc 先以 EmptyKey 拒绝空 start key；合法请求进入 raft/leadership，再由 auth applier 先检查
+  整个区间的 WRITE 权限，`PrevKv=true` 时追加 READ 权限，最后 backend 才判断空/反向 interval 并执行
+  no-op 或删除。KubeBrain 保持 validation → leadership/proxy → apply auth → corrupt/read-barrier → empty-range
+  fast path → atomic lease attachment delete 的等价顺序。现有测试已覆盖 point/range/from-key delete、PrevKV、
+  missing key、revision、lease detach、auth read/write 和 follower proxy；本轮补上 auth-enabled 交叉门禁：
+  Alice 对许可范围内的反向 interval 得到 Deleted=0、空 PrevKvs 且不消耗 revision；无权范围即使同为
+  no-op 仍先得到 PermissionDenied；切换到无 leader follower 后，empty key 仍先返回 EmptyKey，而合法匿名
+  delete 返回 Unavailable 而非 ErrUserEmpty。未发现 runtime 差异；A4158 防止为了 no-op 优化而绕过 RBAC，
+  或把静态 validation/raft apply 的错误优先级重排。
 
 ### P2：运维兼容和长期验证
 

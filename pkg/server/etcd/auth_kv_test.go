@@ -262,6 +262,44 @@ func TestAuthPutValidationPrecedesLeadershipWhileValidWriteRoutesBeforeAuthLikeE
 	require.NotErrorIs(t, err, rpctypes.ErrUserEmpty)
 }
 
+func TestAuthDeleteRangeAdmissionAndReversedRangePriorityMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	plain := context.Background()
+	_, err := server.Put(plain, &etcdserverpb.PutRequest{Key: []byte("/allowed/x"), Value: []byte("allowed")})
+	require.NoError(t, err)
+	_, err = server.Put(plain, &etcdserverpb.PutRequest{Key: []byte("/denied/x"), Value: []byte("denied")})
+	require.NoError(t, err)
+	aliceCtx := setupAuthKVUser(t, server)
+	beforeRevision := server.backend.GetCurrentRevision()
+
+	allowed, err := server.DeleteRange(aliceCtx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte("/allowed/y"), RangeEnd: []byte("/allowed/x"), PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.Zero(t, allowed.Deleted)
+	require.Empty(t, allowed.PrevKvs)
+	require.Equal(t, int64(beforeRevision), allowed.Header.Revision)
+	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision())
+
+	denied, err := server.DeleteRange(aliceCtx, &etcdserverpb.DeleteRangeRequest{
+		Key: []byte("/denied/y"), RangeEnd: []byte("/denied/x"), PrevKv: true,
+	})
+	require.Nil(t, denied)
+	requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision())
+
+	server.peers = testPeerService{isLeader: false, proxyEnabled: false}
+	invalid, err := server.DeleteRange(plain, &etcdserverpb.DeleteRangeRequest{PrevKv: true})
+	require.Nil(t, invalid)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
+
+	valid, err := server.DeleteRange(plain, &etcdserverpb.DeleteRangeRequest{Key: []byte("/allowed/x")})
+	require.Nil(t, valid)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.NotErrorIs(t, err, rpctypes.ErrUserEmpty)
+}
+
 func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
