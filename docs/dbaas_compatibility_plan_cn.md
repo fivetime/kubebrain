@@ -44154,6 +44154,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   原四处 handler 埋点已删除以避免双计数，超大请求仍在进入服务端前拒绝而不计入。确定性 RED 证明
   七类代表请求此前样本数均为 0；完整回归固定全部 26 个公开 type 映射及失败标签，Prometheus 测试
   固定 14 个精确上界。A4169 修复了真实 DBaaS dashboard/runbook 盲区，不改变 RPC 响应语义。
+  A4170 继续补齐 `9cdb1cf8` request-duration 矩阵中不经过 unary interceptor 的
+  `LeaseCheckpoint`。upstream 在 `processInternalRaftRequestOnce` 对周期 checkpoint 与 renew 清除
+  checkpoint 的 internal raft request 都记录 `type=LeaseCheckpoint`；KubeBrain 的等价 TiKV metadata
+  写此前由 A4068 只记录 apply-duration，因此 A4169 的公开 RPC 映射仍看不到后台 checkpoint 延迟。
+  现在两个实际持久化区间复用 `emitEtcdLeaseCheckpointDurations`，以同一 duration/error 同时产生
+  apply 与 request 样本：周期 `InternalPut` 和 keepalive 的 exact-value CAS 成功均标记 true，持久化
+  失败在两类 histogram 中一致标记 false。确定性 RED 在 grant 后强制周期 checkpoint 再 keepalive，
+  修复前 request 样本为空；修复后精确得到两个 `LeaseCheckpoint/true`，并另行固定共享失败分类。
+  该内部操作继续不推进用户 MVCC revision，也没有虚构公开 LeaseCheckpoint RPC。
 
 ### P2：运维兼容和长期验证
 

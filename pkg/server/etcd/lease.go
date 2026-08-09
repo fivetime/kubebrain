@@ -35,6 +35,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -982,7 +983,7 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		unlockWrite()
 		applyStart := time.Now()
 		err := m.persistLeaseCheckpointCAS(ctx, id, ttl, previousRemainingTTL, 0)
-		emitEtcdApplyDuration(m.srv.metricCli, "LeaseCheckpoint", time.Since(applyStart), err)
+		emitEtcdLeaseCheckpointDurations(m.srv.metricCli, time.Since(applyStart), err)
 		lockWrite()
 		m.leaseMu.Lock()
 		current := m.leases[id]
@@ -1949,7 +1950,7 @@ func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id 
 
 	applyStart := time.Now()
 	err := m.persistLeaseCheckpoint(ctx, id, ttl, remainingTTL)
-	emitEtcdApplyDuration(m.srv.metricCli, "LeaseCheckpoint", time.Since(applyStart), err)
+	emitEtcdLeaseCheckpointDurations(m.srv.metricCli, time.Since(applyStart), err)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.checkpoint.err", 1)
 		klog.ErrorS(err, "lease checkpoint: failed to persist remaining TTL", "lease", id, "remainingTTL", remainingTTL)
@@ -1963,6 +1964,11 @@ func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id 
 		m.scheduleLeaseCheckpointLocked(st)
 	}
 	m.leaseMu.Unlock()
+}
+
+func emitEtcdLeaseCheckpointDurations(metricCli metrics.Metrics, duration time.Duration, err error) {
+	emitEtcdApplyDuration(metricCli, "LeaseCheckpoint", duration, err)
+	emitEtcdRequestDuration(metricCli, "LeaseCheckpoint", duration, err)
 }
 
 // persistLeaseMeta writes the small per-lease meta record {id, ttl}. Attachments

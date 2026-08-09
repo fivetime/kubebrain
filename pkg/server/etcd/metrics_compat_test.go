@@ -187,6 +187,50 @@ func TestUnaryRequestDurationCoversUpstreamRequestTypesAndFailures(t *testing.T)
 	}
 }
 
+func TestLeaseCheckpointRequestDurationCoversPersistAndRenewClear(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	const leaseID int64 = 416_900
+
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: leaseID})
+	require.NoError(t, err)
+	server.leaseMu.Lock()
+	state := server.leases[leaseID]
+	require.NotNil(t, state)
+	state.timer.Stop()
+	state.checkpointTimer.Stop()
+	state.deadline = time.Now().Add(240 * time.Second)
+	server.leaseMu.Unlock()
+
+	server.checkpointLease(leaseID)
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+
+	var got []string
+	for _, histogram := range rec.histograms {
+		if histogram.name == "etcd.server.request.duration.seconds" {
+			got = append(got, histogram.tags[0].Value+"/"+histogram.tags[1].Value)
+		}
+	}
+	require.Equal(t, []string{"LeaseCheckpoint/true", "LeaseCheckpoint/true"}, got)
+}
+
+func TestLeaseCheckpointDurationsShareFailureClassification(t *testing.T) {
+	rec := &recordingMetrics{}
+	emitEtcdLeaseCheckpointDurations(rec, 1500*time.Millisecond, errors.New("checkpoint failed"))
+
+	require.Equal(t, []recordedHistogram{
+		{name: "etcd.server.apply_duration_seconds", value: 1.5, tags: []metrics.T{
+			metrics.Tag("version", "v3"), metrics.Tag("op", "LeaseCheckpoint"), metrics.Tag("success", "false"),
+		}},
+		{name: "etcd.server.request.duration.seconds", value: 1.5, tags: []metrics.T{
+			metrics.Tag("type", "LeaseCheckpoint"), metrics.Tag("success", "false"),
+		}},
+	}, rec.histograms)
+}
+
 func TestEmitEtcdRangeDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
 	rec := &recordingMetrics{}
 
