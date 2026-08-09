@@ -68,6 +68,12 @@ jobs:
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
           (cd hack/backup/objectstore && \
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd hack/etcd-client-compat && \
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd hack/scale-lab/bigstream && \
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd hack/scale-lab/loadgen && \
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
 
       - name: Run static analysis
         run: |

@@ -43762,6 +43762,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `fbfbd816c` 已验证的 1.83.0，并接受其最小依赖图：otel 1.44、zap 1.28、x/net 0.57、x/sys 0.47、
   x/text 0.40 与 20260720 genproto。新增 `TestGRPCSecurityBaselineIsPinnedAcrossModules` 逐个读取三个
   go.mod 并精确要求 1.83.0，防止生产二进制安全而兼容/压力工具仍携带旧传输栈，或未来 tidy 回退。
+  A4130 补齐独立 Go module 的可达漏洞门禁。仓库共有主模块及 objectstore、etcd-client-compat、
+  bigstream、loadgen 四个嵌套 module，旧 CI 只扫描前两项；实际扫描发现 loadgen 的 x/text 0.33.0
+  可达 `GO-2026-5970`，x/net 0.49.0 可达 `GO-2026-5026` 与 `GO-2026-4918`。loadgen 现升级到
+  x/text 0.40.0、x/net 0.57.0，并同步 x/sys 0.47.0/x/term 0.45.0；静态测试固定两条修复线。
+  CI `govulncheck@v1.6.0` 现逐项扫描全部五个 module，build 测试要求四个嵌套 go.mod 均有对应命令且
+  总扫描数精确为五。使用 CI/镜像相同 Go 1.26.5 复跑 compat、bigstream、loadgen，三者均为零可达漏洞；
+  本机 Go 1.26.0 报告的标准库 TLS/x509 问题不作为豁免，发布 Dockerfile 与 CI 已钉修复版 1.26.5。
 
 ### P2：运维兼容和长期验证
 

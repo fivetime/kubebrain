@@ -3581,6 +3581,10 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"38753464b",
 		"fbfbd816c",
 		"GHSA-hrxh-6v49-42gf",
+		"A4130",
+		"GO-2026-5970",
+		"GO-2026-5026",
+		"GO-2026-4918",
 		"5cd9f4ee1",
 		"1b01776cc",
 		"f1f8893b1",
@@ -3618,6 +3622,15 @@ func TestGRPCSecurityBaselineIsPinnedAcrossModules(t *testing.T) {
 		require.NoError(t, err, modulePath)
 		require.Contains(t, string(contents), "google.golang.org/grpc v1.83.0", modulePath)
 	}
+}
+
+func TestScaleLoadgenNetworkSecurityBaselineIsPinned(t *testing.T) {
+	modulePath := filepath.Join("..", "scale-lab", "loadgen", "go.mod")
+	contents, err := os.ReadFile(modulePath)
+	require.NoError(t, err)
+	module := string(contents)
+	require.Contains(t, module, "golang.org/x/net v0.57.0")
+	require.Contains(t, module, "golang.org/x/text v0.40.0")
 }
 
 func TestObservabilityDocIncludesUpstreamMetricParity(t *testing.T) {

@@ -2,6 +2,7 @@ package build_test
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -70,6 +71,38 @@ func TestCIDockerBuildSuppliesRequiredMetadata(t *testing.T) {
 	}
 	require.Equal(t, 2, strings.Count(content, "--build-arg STORAGE="))
 	require.Equal(t, 2, strings.Count(content, "--build-arg KUBEBRAIN_GIT_SHA="))
+}
+
+func TestCIScansEveryGoModuleForReachableVulnerabilities(t *testing.T) {
+	workflow, err := os.ReadFile("../.github/workflows/ci.yml")
+	require.NoError(t, err)
+	content := string(workflow)
+
+	require.Contains(t, content, "go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...")
+	var moduleDirs []string
+	require.NoError(t, filepath.WalkDir("..", func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && (entry.Name() == ".git" || entry.Name() == "vendor") {
+			return filepath.SkipDir
+		}
+		if entry.Name() != "go.mod" || path == "../go.mod" {
+			return nil
+		}
+		moduleDir, err := filepath.Rel("..", filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		moduleDirs = append(moduleDirs, filepath.ToSlash(moduleDir))
+		return nil
+	}))
+	require.NotEmpty(t, moduleDirs)
+	for _, moduleDir := range moduleDirs {
+		require.Contains(t, content, "cd "+moduleDir+" &&", moduleDir)
+	}
+	require.Equal(t, len(moduleDirs)+1, strings.Count(content,
+		"go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."))
 }
 
 func TestReleaseWorkflowPublishesVerifiedMultiPlatformImage(t *testing.T) {
