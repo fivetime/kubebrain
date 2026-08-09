@@ -499,6 +499,9 @@ learner promotion 兼容指标 `etcd_server_learner_promote_successes`（成员�
 控制面承担，数据面成功数固定为 0；带 `Reason` 的 failures family 仅在实际失败请求后出现），
 backend commit 兼容指标 `etcd_disk_backend_commit_duration_seconds`（观察 TiKV/Badger
 原子提交 attempt，生产门禁要求 `_count` family 存在；不要解释为 bbolt 文件写入阶段），
+bbolt-only commit 阶段指标
+`etcd_debugging_disk_backend_commit_{rebalance,spill,write}_duration_seconds`（三者在
+TiKV/PD 架构下均保持 count=0；生产门禁拒绝缺失或非零值），
 backend snapshot 兼容指标 `etcd_disk_backend_snapshot_duration_seconds`（观察 leader 本地
 在线 etcd snapshot 构建与传输生命周期；生产门禁要求零样本 family 也存在），
 backend defrag 兼容指标 `etcd_disk_backend_defrag_duration_seconds` 与

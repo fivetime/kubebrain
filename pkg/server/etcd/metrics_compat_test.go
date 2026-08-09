@@ -44,6 +44,16 @@ type recordingMetrics struct {
 	gauges     []recordedGauge
 }
 
+type histogramRegistrationRecorder struct {
+	recordingMetrics
+	registered []string
+}
+
+func (r *histogramRegistrationRecorder) RegisterHistogram(name string, _ ...metrics.T) error {
+	r.registered = append(r.registered, name)
+	return nil
+}
+
 type recordedCounter struct {
 	name  string
 	value interface{}
@@ -164,6 +174,16 @@ func TestDefragmentNoOpKeepsUpstreamPhysicalMetricsAtZero(t *testing.T) {
 		require.NotEqual(t, etcdBackendDefragDurationMetric, histogram.name,
 			"a platform no-op must not be reported as physical bbolt defragmentation")
 	}
+}
+
+func TestBackendBboltCommitPhasesAreRegisteredWithoutSyntheticSamples(t *testing.T) {
+	rec := &histogramRegistrationRecorder{}
+
+	initEtcdBackendBboltCommitPhaseMetrics(rec)
+
+	require.Equal(t, etcdBackendBboltCommitPhaseMetrics, rec.registered)
+	require.Empty(t, rec.histograms,
+		"TiKV commits must not be reported as embedded bbolt commit phases")
 }
 
 func TestMemberPromoteFailuresUseUpstreamMetricNameAndReasonLabel(t *testing.T) {

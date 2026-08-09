@@ -43113,6 +43113,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   100ms–409.6s buckets 的零样本 histogram，并发出 inflight=0 gauge；回归测试明确调用
   Defragment 后 histogram 仍无样本、gauge 仍为 0。生产只读 gate 要求两个 family，结构化拒绝
   非零 inflight，并新增 `backend_defrag_metrics=ok` 摘要。
+- A4062 实现 upstream bbolt commit 内部阶段指标的平台边界：上游
+  `/root/etcd/server/storage/backend/metrics.go` 无条件注册
+  `etcd_debugging_disk_backend_commit_rebalance_duration_seconds`、
+  `etcd_debugging_disk_backend_commit_spill_duration_seconds` 与
+  `etcd_debugging_disk_backend_commit_write_duration_seconds`，并由 bbolt commit 分阶段计时；
+  三者均使用 1ms 起、2 倍递增、共 14 个 bucket。KubeBrain 不执行 embedded bbolt commit，
+  TiKV/Badger 原子 transaction 也不存在可对齐的 rebalance/spill/write 分段；真实端到端 attempt
+  已由 `etcd_disk_backend_commit_duration_seconds` 观察，不能重复或虚构分段样本。
+  `RPCServer.New` 因此零样本注册三个 upstream family，Prometheus adapter 固定精确 buckets；
+  单元测试锁定只注册、不 Observe。生产只读 gate 结构化要求三者唯一值均为 0，覆盖缺失与非零
+  负例，并新增 `backend_bbolt_commit_phase_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

@@ -242,6 +242,11 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	if name == "etcd.disk.backend_commit_duration_seconds" {
 		// Match server/storage/backend/metrics.go: 1ms through 8.192s.
 		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
+	} else if name == "etcd_debugging.disk.backend_commit_rebalance_duration_seconds" ||
+		name == "etcd_debugging.disk.backend_commit_spill_duration_seconds" ||
+		name == "etcd_debugging.disk.backend_commit_write_duration_seconds" {
+		// Match the bbolt-only commit phase histograms in backend/metrics.go.
+		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
 	} else if name == "etcd.disk.backend_snapshot_duration_seconds" {
 		// Match server/storage/backend/metrics.go: 10ms through 655.36s.
 		opts.Buckets = prometheus.ExponentialBuckets(0.01, 2, 17)
