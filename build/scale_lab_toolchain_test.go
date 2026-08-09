@@ -53,3 +53,16 @@ func TestScaleLabBuildPhasesCheckGoVersionBeforeBuilding(t *testing.T) {
 		require.Less(t, check, build, phase)
 	}
 }
+
+func TestScaleLabToolsBuildsAdvertisedIndependentModules(t *testing.T) {
+	contents, err := os.ReadFile("../hack/scale-lab/setup.sh")
+	require.NoError(t, err)
+	script := string(contents)
+	for _, command := range []string{
+		`( cd "$HERE/loadgen" && go build -o "$HERE/bin/loadgen" . )`,
+		`( cd "$HERE/bigstream" && go build -o "$HERE/bin/bigstream" . )`,
+	} {
+		require.Contains(t, script, command)
+	}
+	require.Contains(t, script, "bin/bigstream -endpoint")
+}

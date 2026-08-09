@@ -122,10 +122,11 @@ phase_controlplane() {
 
 # ---------------------------------------------------------------------------
 phase_tools() {
-  log "tools: building loadgen + probes into $HERE/bin/"
+  log "tools: building loadgen + bigstream + probes into $HERE/bin/"
   "$HERE/check-go-version.sh"
   mkdir -p "$HERE/bin"
   ( cd "$HERE/loadgen" && go build -o "$HERE/bin/loadgen" . )
+  ( cd "$HERE/bigstream" && go build -o "$HERE/bin/bigstream" . )
   for p in bulk foload elogprobe qlat; do
     ( cd "$REPO" && go build -o "$HERE/bin/$p" "./hack/scale-lab/probes/$p" )
   done
@@ -136,6 +137,7 @@ Run examples:
   bin/loadgen -kubeconfig $KUBECONFIG_OUT -mode nodes    -count 1000
   bin/loadgen -kubeconfig $KUBECONFIG_OUT -mode workload -ns 100 -deploy 10 -replicas 10 -qps 800
   bin/loadgen -kubeconfig $KUBECONFIG_OUT -mode status
+  bin/bigstream -endpoint $BRAIN_HOST:$KB_CLIENT_PORT -mode stream -prefix /registry/
   bin/qlat      -endpoint $BRAIN_HOST:$KB_CLIENT_PORT          # write-latency (single vs 3-replica, #53)
   bin/elogprobe -endpoint $BRAIN_HOST:$KB_CLIENT_PORT          # event-log replay beyond ring (#52)
   bin/foload    -endpoint $BRAIN_HOST:$KB_CLIENT_PORT          # failover-under-load gap detection (#46)

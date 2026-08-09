@@ -43783,6 +43783,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   teardown 等不构建 phase 不受影响。行为测试覆盖 1.26.4 拒绝、1.26.5/1.26.9/1.27.0 放行及 rc 拒绝，
   静态测试要求两个 phase 各调用一次且调用顺序早于 build；bash -n 与 shellcheck 同步通过。README 已把
   Go 1.26.5 写为明确前置条件，避免操作者误把宿主旧 Go 产物当作已扫描发布二进制。
+  A4133 修复 scale-lab 一键工具产物与文档不一致：README 声明 `setup.sh tools` 构建全部工具，
+  bigstream 却从未进入 phase，导致 RangeStream 大对象读取和官方形态 prefix 删除基准只能依赖操作者
+  手工构建。tools 现于 A4132 版本检查之后分别从 loadgen/bigstream 独立 module 产出 `bin/loadgen` 与
+  `bin/bigstream`，启动提示和 README 给出 stream 示例；静态测试固定两个 build 命令及 advertised
+  invocation。同步修正 bigstream CLI 的隐藏差距：帮助文本原写 `put|stream|del`，实现实际只接受
+  `delprefix`，未知模式还会以成功状态静默退出。当前 validator 只接受 put/stream/delprefix，其他值打印
+  actionable error 并 exit 2；单测覆盖三正三负，bigstream 连续 10 轮与 vet 通过。
 
 ### P2：运维兼容和长期验证
 

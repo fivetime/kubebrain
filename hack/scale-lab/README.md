@@ -55,6 +55,7 @@ bin/loadgen -kubeconfig ~/.kube-lab/config -mode workload -ns 100 -deploy 10 -re
 bin/loadgen -kubeconfig ~/.kube-lab/config -mode derive   -count 0
 
 # Storage-level probes (point at the KubeBrain leader's client port)
+bin/bigstream -endpoint <brain>:3379 -mode stream -prefix /registry/ # streamed large-range read
 bin/qlat      -endpoint <brain>:3379          # write-latency characterization
 bin/elogprobe -endpoint <brain>:3379          # event-log replay past the ring
 bin/foload    -endpoint <brain>:3379          # kill the leader mid-run; watch the gap

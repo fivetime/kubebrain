@@ -3,13 +3,14 @@
 // 官方形态 benchmark(#61,300 client 直连 insert+delete)的雏形。
 // put:    直连写 N 个 size 字节的 KV 到 prefix 下(绕开 apiserver)
 // stream: GetStream(prefix) 并按 -sleep 每块慢消费,逼出服务端缓冲
-// del:    DeleteRange 清理
+// delprefix: GetStream 枚举 prefix 后并发逐 key Delete
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -20,13 +21,17 @@ import (
 
 func main() {
 	endpoint := flag.String("endpoint", "10.224.0.14:3379", "")
-	mode := flag.String("mode", "put", "put|stream|del")
+	mode := flag.String("mode", "put", "put|stream|delprefix")
 	n := flag.Int("n", 200000, "keys to put")
 	size := flag.Int("size", 10240, "value bytes")
 	workers := flag.Int("workers", 64, "")
 	prefix := flag.String("prefix", "/registry/bigcm/", "")
 	sleep := flag.Duration("sleep", 20*time.Millisecond, "per-chunk consumer sleep")
 	flag.Parse()
+	if err := validateMode(*mode); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{*endpoint}, DialTimeout: 10 * time.Second})
 	if err != nil {
@@ -171,5 +176,14 @@ func main() {
 		close(ch)
 		wg.Wait()
 		fmt.Printf("DEL DONE deleted=%d\n", done)
+	}
+}
+
+func validateMode(mode string) error {
+	switch mode {
+	case "put", "stream", "delprefix":
+		return nil
+	default:
+		return fmt.Errorf("unsupported mode %q (want put, stream, or delprefix)", mode)
 	}
 }
