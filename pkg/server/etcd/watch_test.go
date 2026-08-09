@@ -1274,6 +1274,29 @@ func TestWatchRejectsRegressingBatchRevision(t *testing.T) {
 	}
 }
 
+func TestWatchRejectsProgressRevisionOutsideInt64(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{ProgressRevision: math.MaxUint64})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Contains(t, responses[0].CancelReason, "progress revision 18446744073709551615 exceeds MaxInt64")
+}
+
+func TestWatchRejectsBatchRevisionOutsideInt64(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
+		Revision: math.MaxUint64,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/a"), Value: []byte("invalid-header"), ModRevision: 1},
+		}},
+	})
+	for _, response := range responses {
+		require.Empty(t, response.Events)
+		if response.Canceled {
+			require.Contains(t, response.CancelReason, "batch revision 18446744073709551615 exceeds MaxInt64")
+		}
+	}
+}
+
 func runInjectedWatchResult(t *testing.T, startRevision int64, syncedRevision uint64, result etcdproxy.WatchResult) []*etcdserverpb.WatchResponse {
 	t.Helper()
 	server, closeFn := newTestRPCServer(t)

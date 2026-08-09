@@ -902,6 +902,22 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				cancel()
 				return
 			}
+			if result.ProgressRevision > uint64(math.MaxInt64) {
+				revisionErr := fmt.Errorf("watch backend returned progress revision %d exceeds MaxInt64", result.ProgressRevision)
+				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable progress revision", "watcher", w.id, "watch", id)
+				w.Cancel(id, revisionErr, false)
+				cancel()
+				return
+			}
+			if result.Revision > uint64(math.MaxInt64) {
+				revisionErr := fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", result.Revision)
+				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable batch revision", "watcher", w.id, "watch", id)
+				w.Cancel(id, revisionErr, false)
+				cancel()
+				return
+			}
 			if result.ProgressRevision > 0 {
 				if wt != nil {
 					sourceRevision := atomic.LoadUint64(&wt.sourceRev)
@@ -970,6 +986,14 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 						batchRevision = revision
 					}
 				}
+			}
+			if batchRevision > uint64(math.MaxInt64) {
+				revisionErr := fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", batchRevision)
+				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable fallback batch revision", "watcher", w.id, "watch", id)
+				w.Cancel(id, revisionErr, false)
+				cancel()
+				return
 			}
 			for _, event := range events {
 				eventRevision := event.GetKv().GetModRevision()

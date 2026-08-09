@@ -43661,6 +43661,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功发送事件推进的原子 `sourceRev`。progress 分支在推进前、event 分支在 A4113 batch 校验后，均要求
   revision 不小于 `sourceRev`；严格回退会在发送前取消、记录 `watch.backend.invalid_revision` 并报告
   source revision。相等 revision 继续允许，future-start progress 抑制和同一主 revision 多批次均保持。
+  A4116 封闭 Watch 内部 uint64 到 etcd wire int64 的溢出边界：etcd `ResponseHeader.Revision`、
+  `WatchCreateRequest.StartRevision` 与 event revision 都是 int64，但 KubeBrain local/proxy `WatchResult`
+  为 uint64。旧路径接受 `MaxUint64` progress 并污染 `syncedRev/sourceRev`，也会把 `MaxUint64` batch 转成
+  header revision -1 后连同事件发送。两条红测分别固定旧 progress 最终只报普通 close，以及旧 batch
+  实际发布 invalid-header event。现在显式 progress/batch 在 shape 校验后必须 `<=MaxInt64`；旧 producer
+  的 `Revision=0` 事件回填完成后再做同一检查，覆盖负 event 转 uint64 的异常形态。拒绝发生在 StoreMax、
+  fragment 和 Send 前，取消原因保留完整 uint64，且复用 `watch.backend.invalid_revision`。
 
 ### P2：运维兼容和长期验证
 
