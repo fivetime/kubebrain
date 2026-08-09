@@ -414,11 +414,17 @@ validate_retained_snapshot_set() {
 validate_retained_snapshot_set
 verify_witness_file
 receipt_tmp="${RECEIPT_FILE}.tmp.$$"
-jq -n --arg format kubebrain.cold-physical-snapshot.v2 --arg operation_id "$OPERATION_ID" \
-  --arg created_at "$snapshot_created_at" --arg witness_file_sha256 "$witness_file_sha256" \
-  --argjson semantic_witness "$witness_status" --argjson inventory "$inventory" --argjson snapshots "$snapshots" \
-  '{format:$format,operation_id:$operation_id,created_at:$created_at,inventory:$inventory,snapshots:$snapshots,
-    semantic_witness:($semantic_witness + {file_sha256:$witness_file_sha256})}' >"$receipt_tmp"
+inventory_receipt_input="${input_dir}/inventory.json"
+snapshots_receipt_input="${input_dir}/snapshots.json"
+witness_status_input="${input_dir}/witness-status.json"
+printf '%s\n' "$inventory" >"$inventory_receipt_input"
+printf '%s\n' "$snapshots" >"$snapshots_receipt_input"
+printf '%s\n' "$witness_status" >"$witness_status_input"
+chmod 600 "$inventory_receipt_input" "$snapshots_receipt_input" "$witness_status_input"
+(cd "$script_dir/../.." && go run ./hack/backup/cmd/cold-snapshot-receipt \
+  --inventory "$inventory_receipt_input" --snapshots "$snapshots_receipt_input" \
+  --witness-status "$witness_status_input" --operation-id "$OPERATION_ID" \
+  --created-at "$snapshot_created_at" --witness-file-sha256 "$witness_file_sha256") >"$receipt_tmp"
 chmod 600 "$receipt_tmp"
 sync -f "$receipt_tmp"
 if ! ln "$receipt_tmp" "$RECEIPT_FILE" 2>/dev/null; then

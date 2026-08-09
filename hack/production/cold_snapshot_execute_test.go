@@ -26,12 +26,14 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		precreateReceipt        bool
 		witnessPathDrift        bool
 		emptyWitness            bool
+		maxRevisionWitness      bool
 		wantReceipt             bool
 		wantExistingReceipt     bool
 		wantError               string
 	}{
 		{name: "success restores service and publishes receipt", wantReceipt: true},
 		{name: "empty keyspace witness publishes receipt", emptyWitness: true, wantReceipt: true},
+		{name: "max int64 revision remains exact", maxRevisionWitness: true, wantReceipt: true},
 		{name: "witness path drift after capture still publishes receipt", witnessPathDrift: true, wantReceipt: true},
 		{name: "snapshot failure restores service without receipt", failSnapshot: true},
 		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
@@ -51,6 +53,9 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
 			if tc.emptyWitness {
 				require.NoError(t, os.WriteFile(witnessFile, coldEmptySemanticWitness(t, "/registry"), 0o600))
+			}
+			if tc.maxRevisionWitness {
+				require.NoError(t, os.WriteFile(witnessFile, coldEmptySemanticWitnessAtRevision(t, "/registry", int64(^uint64(0)>>1)), 0o600))
 			}
 			require.NoError(t, os.WriteFile(tamperedWitnessFile, coldLeasedSemanticWitness(t, "/registry", true), 0o600))
 			fakeKubectl := filepath.Join(dir, "kubectl")
@@ -106,6 +111,15 @@ fi
 				require.Equal(t, "kubebrain.logical.v2", receipt["semantic_witness"].(map[string]any)["format"])
 				if tc.emptyWitness {
 					require.Equal(t, float64(0), receipt["semantic_witness"].(map[string]any)["records"])
+				}
+				if tc.maxRevisionWitness {
+					var exact struct {
+						SemanticWitness struct {
+							Revision int64 `json:"revision"`
+						} `json:"semantic_witness"`
+					}
+					require.NoError(t, json.Unmarshal(mustRead(t, receiptFile), &exact))
+					require.Equal(t, int64(^uint64(0)>>1), exact.SemanticWitness.Revision)
 				}
 			} else {
 				require.Error(t, err, string(output))
@@ -647,9 +661,13 @@ func coldSemanticWitness(t *testing.T, prefix string) []byte {
 }
 
 func coldEmptySemanticWitness(t *testing.T, prefix string) []byte {
+	return coldEmptySemanticWitnessAtRevision(t, prefix, 10)
+}
+
+func coldEmptySemanticWitnessAtRevision(t *testing.T, prefix string, revision int64) []byte {
 	t.Helper()
 	header, err := json.Marshal(map[string]any{
-		"type": "kubebrain.logical.v2", "prefix": prefix, "revision": 10, "created_at_unix": time.Now().Unix(),
+		"type": "kubebrain.logical.v2", "prefix": prefix, "revision": revision, "created_at_unix": time.Now().Unix(),
 	})
 	require.NoError(t, err)
 	hashed := append(append([]byte(nil), header...), '\n')

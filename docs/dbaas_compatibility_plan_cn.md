@@ -43919,6 +43919,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cold restore executor 也从零记录 receipt 创建、验证并发布恢复 receipt。空集合的 historical/current
   exact 比较仍必须精确为空，恢复后 watch Put/Delete probe 继续提供活性与 revision 语义证明，因此这不是
   跳过 semantic gate，而是把合法的 etcd 空状态纳入同一门禁。
+  A4147 消除 cold snapshot receipt 对 jq 数值实现的隐式依赖。logical-status 以 Go `int64` 精确输出
+  etcd revision，renderer/verifier 也严格解码 `int64`；旧 executor 最后却用 jq `--argjson` 合并整个
+  witness status。当前开发机 jq 1.8.1 的 decimal-number build 能保留大整数字面量，但脚本只要求 jq
+  可执行，不约束版本/构建；常见 IEEE-754 jq 在 revision 超过 `2^53` 后会舍入，使 receipt revision 与
+  原 witness 不再一致，恢复只能在最终 binding 阶段失败。新增 `cold-snapshot-receipt` Go builder，严格
+  单值解码 4 MiB 内的 inventory/snapshot/witness 输入，以 `int64` 保存 revision、拒绝小数/溢出/未知
+  witness 字段/尾随 JSON，并校验创建时间、非负 counts 与双 digest；executor 最终发布不再让 jq 重编码
+  witness 数值。单测固定 `MaxInt64` marshal 仍为 `9223372036854775807`，executor 黑盒用真实 header/footer
+  witness 证明该 revision 逐位进入成功 receipt；既有六卷集合、空 witness、漂移与 rollback 矩阵继续
+  通过。jq 仍用于 Kubernetes JSON 查询，但不再位于 etcd revision 的证据保存路径上。
 
 ### P2：运维兼容和长期验证
 

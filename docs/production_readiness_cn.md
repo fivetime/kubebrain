@@ -989,6 +989,9 @@ ALLOW_COLD_PHYSICAL_SNAPSHOT=true \
 snapshot receipt 将 witness 的 format/prefix/revision/record/lease count、内部 SHA-256 和整个文件
 SHA-256 一并绑定。若 witness 后仍有 Put/Delete/Txn，最终恢复的 current-exact 门禁会因 value 或
 create/mod/version/lease 元数据漂移而失败，不能生成语义成功 receipt。
+最终 receipt 由严格 Go builder 组装，不通过 jq 重编码 witness 的 64 位 revision；因此即使 revision
+大于 `2^53`，也必须逐位保留到 snapshot receipt。部署环境中的 jq 仅用于 Kubernetes JSON 查询，
+不能成为 etcd revision 精度的隐式依赖。
 
 执行器重新运行预检并规范化比对清单，在任何变更前拒绝漂移；用 TidbCluster UID 和
 resourceVersion 设置 `spec.paused=true`，等待 pause 可见并重新取得 StatefulSet fence，随后
