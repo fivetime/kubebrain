@@ -43134,6 +43134,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   指标在 syncer 初始化时以 0 注册，覆盖 Range、RangeStream、只读 Txn、Watch、Maintenance、
   Auth 与 linearizable MemberList 等所有复用该 barrier 的入口；测试锁定 stale leader、deadline
   与 cancellation 分类。生产只读 gate 要求两个 family 存在，并新增 `read_index_metrics=ok` 摘要。
+- A4064 实现 upstream slow apply counter 的平台边界：上游
+  `/root/etcd/server/etcdserver/txn/metrics.go` 无条件注册
+  `etcd_server_slow_apply_total`，该 family 描述 embedded-etcd Raft apply loop 中因慢磁盘产生的
+  apply 请求。KubeBrain 不运行 etcd Raft apply loop；public mutation 直接提交到独立 TiKV/PD
+  数据面，因此该进程级兼容值精确为 0。不能把 TiKV transaction 延迟、慢 public RPC、leader
+  election 或 DBaaS operation 冒充为 etcd Raft apply。server state metrics 刷新路径以 counter
+  增量 0 稳定注册 family；单元测试锁定零值。生产只读 gate 要求唯一值为 0，覆盖 family 缺失和
+  非零负例，并新增 `slow_apply_metrics=ok` 摘要；真实 RPC/TiKV 延迟继续由 request/backend commit
+  histograms 与 TiKV 原生指标观测。
 
 ### P2：运维兼容和长期验证
 

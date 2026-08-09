@@ -250,6 +250,12 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	// the upstream counter family present at zero instead of misclassifying
 	// storage-layer or application failures as etcd raft heartbeat failures.
 	s.metricCli.EmitCounter("etcd.server.heartbeat_send_failures_total", 0)
+	// Upstream's slow_apply_total belongs to the embedded etcd raft apply loop.
+	// KubeBrain does not run that loop: public mutations commit directly through
+	// the external TiKV-backed storage layer. Keep the upstream process metric
+	// present at zero instead of conflating slow client RPCs or TiKV latency with
+	// a raft apply that never occurs here.
+	s.metricCli.EmitCounter("etcd.server.slow_apply_total", 0)
 	// These four upstream families report the embedded etcd raft proposal
 	// lifecycle: raft log commit/applied indexes plus proposals waiting in, or
 	// rejected by, r.Propose. KubeBrain has no etcd raft proposal pipeline;

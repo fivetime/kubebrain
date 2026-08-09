@@ -415,6 +415,7 @@ func TestServerStateMetricsRefreshEmitsLeaderAndLearnerState(t *testing.T) {
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.is_leader"))
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.snapshot_apply_in_progress_total"))
 	require.Equal(t, []interface{}{0}, recorder.counterValues("etcd.server.heartbeat_send_failures_total"))
+	require.Equal(t, []interface{}{0}, recorder.counterValues("etcd.server.slow_apply_total"))
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.proposals_committed_total"))
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.proposals_applied_total"))
 	require.Equal(t, []interface{}{0}, recorder.gaugeValues("etcd.server.proposals_pending"))
