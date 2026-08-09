@@ -44412,6 +44412,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 KubeBrain/3 PD/3 TiKV 全部 Ready 且零重启，proposal health 恢复。至此单节点 kind 环境中
   KubeBrain leader、PD leader 和 leader-heavy TiKV member 的真实失联均有可重复门禁；跨节点/AZ、
   双 member/失去 quorum 与小时级 backend partition 仍保持 P1 开放。
+  A4198 将 TiKV 故障扩大到同时隔离两个 store 的真实 quorum loss，并用 Watch/Range 集合相等而非
+  “故障期间仍有吞吐”作为正确性 oracle。`BACKEND_FAULT_MODE=tikv-quorum-loss` 从全部 Up store 按
+  `leaderCount` 降序选择两个成员，在 kind node 中为两个 Pod IPv4 插入四条唯一双向 DROP；脚本要求
+  同一 TidbCluster 快照中两者均非 Up，恢复后两者均回到 Up，使用 wall-clock deadline、显式状态转换
+  日志和 EXIT/INT/TERM 精确清理，任何残留规则或状态缺失均 fail-closed。首次强门禁实际发现 Range
+  607 个提交键而 Watch 仅交付 606 个：collector 把 `ErrUncertainResult` 入修复队列后仍立即推进并
+  发布后续 revision，使一个实际已提交的写被永久越过。修复后 collector 停在未决 revision，retry
+  以同 revision 的已解析占位明确释放；30 秒 abandoned-writer watchdog 也不得跳过 retry 队首。
+  `TestUncertainRevisionBlocksCollectorUntilResolved` 连续 20 轮证明失去领导权时水位不越过同 revision
+  的两个未决键、全部解析后才推进。独立 3 副本 KubeBrain/3 PD/3 TiKV 最终源码镜像重建部署后，
+  真实隔离 `kb-tikv-1/kb-tikv-2` 明确经历 `Up -> Disconnected -> Up`，76.41 秒通过；故障期 15 次
+  瞬态写失败，最终线性一致 Range 的 499 个提交键全部由 Watch 恰好交付一次（500 responses，
+  final revision 11744），值、revision 和
+  全局严格递增顺序逐项一致。规则零残留、TidbCluster Ready、proposal health 恢复。TiKV 原始
+  `epoch_not_match/no available connections` 在故障窗口仍可能以 Unknown 泄漏，测试按结果不确定处理，
+  其 etcd `Unavailable` 错误契约对齐继续保持兼容性差距；跨节点/AZ 与小时级 quorum-loss soak 仍开放。
 
 ### P2：运维兼容和长期验证
 

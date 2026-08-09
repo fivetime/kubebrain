@@ -222,12 +222,21 @@ func (a *asyncFifoRetryImpl) retry(ctx context.Context) (breakLoop bool) {
 		// if there is no error just process next event
 		klog.InfoS("no need to fix", "key", string(node.event.Key))
 		state = retryUnnecessary
+		// Resolve the original collector slot even when no rewrite is needed.
+		// The collector deliberately holds uncertain revisions so later events
+		// cannot overtake an outcome that may already be durable.
+		a.dispatcher(ctx, node.event.Key, node.event.Value, node.event.Revision,
+			node.event.PrevRevision, false, node.event.ResourceVerb, nil)
 	} else {
 		// if rev is not zero, it means the latest value can be read and there is a new write batch
 		val := node.event.Value
 		verb := node.event.ResourceVerb
 		prevRev := node.event.PrevRevision
 
+		// Release the original uncertain slot before publishing the repair's new
+		// revision. It is a resolved gap; the rewrite below is the public event.
+		a.dispatcher(ctx, node.event.Key, node.event.Value, node.event.Revision,
+			node.event.PrevRevision, false, node.event.ResourceVerb, nil)
 		// if err is still uncertain, a new event will enqueue soon
 		a.dispatcher(ctx, node.event.Key, val, rev, prevRev, err == nil, verb, err)
 		if err != nil {

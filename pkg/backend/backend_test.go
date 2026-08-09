@@ -40,6 +40,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/common"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -1890,6 +1891,46 @@ func TestUncertainRewriteWaitsForFreshLeadership(t *testing.T) {
 		resp, getErr := b.Get(s.ctx, newGetRequest(0, string(key)))
 		return getErr == nil && resp.Kv != nil && resp.Kv.Revision > rev && b.asyncFifoRetry.Size() == 0
 	}, 2*time.Second, 5*time.Millisecond, "the new leader must resume the queued repair")
+}
+
+func TestUncertainRevisionBlocksCollectorUntilResolved(t *testing.T) {
+	defaultRetryInterval, defaultCheckInterval := retryInterval, checkInterval
+	retryInterval, checkInterval = 20*time.Millisecond, 20*time.Millisecond
+	defer func() { retryInterval, checkInterval = defaultRetryInterval, defaultCheckInterval }()
+
+	s, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+	b := s.backend.(*backend)
+	require.Eventually(t, func() bool {
+		return b.collectorRevision.Load() == b.tso.Dealt()
+	}, time.Second, 5*time.Millisecond)
+
+	var epoch atomic.Uint64
+	var leading atomic.Bool
+	epoch.Store(1)
+	leading.Store(false)
+	b.SetLeadershipFence(func() (uint64, bool) { return epoch.Load(), leading.Load() })
+
+	revision, err := b.tso.Deal()
+	require.NoError(t, err)
+	b.notifyBatch([]*common.WatchEvent{
+		{Key: []byte(path.Join(prefix, "uncertain-collector-gap-a")), Value: []byte(testVal),
+			Revision: revision, Valid: false, ResourceVerb: proto.Event_PUT, Err: storage.ErrUncertainResult},
+		{Key: []byte(path.Join(prefix, "uncertain-collector-gap-b")), Value: []byte(testVal),
+			Revision: revision, Valid: false, ResourceVerb: proto.Event_PUT, Err: storage.ErrUncertainResult},
+	})
+	require.Eventually(t, func() bool { return b.asyncFifoRetry.Size() == 2 },
+		time.Second, 5*time.Millisecond)
+	time.Sleep(5 * checkInterval)
+	require.Less(t, b.collectorRevision.Load(), revision,
+		"collector must not publish past an unresolved commit")
+
+	epoch.Store(2)
+	leading.Store(true)
+	require.Eventually(t, func() bool {
+		return b.asyncFifoRetry.Size() == 0 && b.collectorRevision.Load() >= revision
+	}, 2*time.Second, 5*time.Millisecond,
+		"resolved placeholder must release the held collector revision")
 }
 
 func waitUntilRetryQueueDrainOrTimeout(ctx context.Context, b *backend, expectedRev uint64) {

@@ -748,6 +748,8 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 	// (warn+metric) and, once the writer is provably dead (>> the write timeout),
 	// advance past the hole so the stream self-heals instead of freezing.
 	var stall collectorStallState
+	var heldRevision uint64
+	var heldResolutions int
 	// infinite loop
 	for {
 		if ctx.Err() != nil {
@@ -765,6 +767,13 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 					// advances the revision, so never treat a follower's empty slot
 					// as a stall.
 					warn, skip := stall.note(nextRevision, b.tso.Dealt(), b.leadingFresh(), time.Now(), collectorStallWarnAfter, collectorStallSkipAfter)
+					if skip && heldRevision == nextRevision {
+						// An uncertain commit is not an abandoned writer: its repair
+						// queue owns this revision and will explicitly resolve the
+						// slot. Advancing here would let later events overtake a write
+						// that may already be durable.
+						skip = false
+					}
 					if skip {
 						// > the bounded write RPC timeout: the revision's writer is
 						// provably dead (a live one would have notified, valid or
@@ -805,12 +814,25 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 			b.observeCollectedRevision(watchEvents)
 			b.metricCli.EmitGauge("watch.set.current.revision", nextRevision)
 			validRevision := false
+			unresolvedRevision := false
 			for _, watchEvent := range watchEvents {
 				// invalid watch event, i.e. cas failed
 				if !watchEvent.Valid {
 					if errors.Is(watchEvent.Err, storage.ErrUncertainResult) {
-						// must enqueue before update revision, otherwise it may be compact
+						// Hold the collector at this revision until the repair worker
+						// re-notifies an explicit resolved placeholder. Publishing a
+						// later revision first can permanently hide a committed write.
 						b.asyncFifoRetry.Append(watchEvent)
+						unresolvedRevision = true
+						if heldRevision == 0 {
+							heldRevision = nextRevision
+						}
+						heldResolutions++
+					} else if heldRevision == nextRevision && heldResolutions > 0 {
+						// One repair result releases one member of an uncertain
+						// multi-key revision. The revision remains held until every
+						// key in the original atomic batch has been resolved.
+						heldResolutions--
 					}
 					continue
 				}
@@ -841,6 +863,22 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 				}
 				events = append(events, e)
 				b.watchCache.Add(e)
+			}
+			if unresolvedRevision || (heldRevision == nextRevision && heldResolutions > 0) {
+				if len(events) > 0 {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-b.writeSignal:
+				case <-time.After(idleWaitTimeout):
+				}
+				continue
+			}
+			if heldRevision == nextRevision {
+				heldRevision = 0
+				heldResolutions = 0
 			}
 			if !validRevision && !b.ensureDurableRevision(ctx, nextRevision) {
 				return

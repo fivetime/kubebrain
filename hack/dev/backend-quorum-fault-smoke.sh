@@ -9,10 +9,12 @@ TIMEOUT="${TIMEOUT:-180s}"
 RECOVERY_SETTLE_SECONDS="${RECOVERY_SETTLE_SECONDS:-10}"
 BACKEND_FAULT_MODE="${BACKEND_FAULT_MODE:-pod-replacement}"
 KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
-PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-60}"
+PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-180}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 partition_pod_ip=""
 partition_tag=""
+dual_partition_pod_ips=()
+dual_partition_tags=()
 
 if ! [[ "$RECOVERY_SETTLE_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "RECOVERY_SETTLE_SECONDS must be a non-negative integer" >&2
@@ -52,6 +54,157 @@ cleanup_partition() {
     echo "failed to remove backend partition rules for $partition_pod_ip ($partition_tag)" >&2
     return 1
   fi
+}
+
+cleanup_dual_partition() {
+  local cleanup_failed=0 index ip tag
+  for index in "${!dual_partition_pod_ips[@]}"; do
+    ip="${dual_partition_pod_ips[$index]}"
+    tag="${dual_partition_tags[$index]}"
+    if docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$ip" \
+      -m comment --comment "$tag-out" -j DROP 2>/dev/null; then
+      docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -D FORWARD -s "$ip" \
+        -m comment --comment "$tag-out" -j DROP >/dev/null || cleanup_failed=1
+    fi
+    if docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$ip" \
+      -m comment --comment "$tag-in" -j DROP 2>/dev/null; then
+      docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -D FORWARD -d "$ip" \
+        -m comment --comment "$tag-in" -j DROP >/dev/null || cleanup_failed=1
+    fi
+    if docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$ip" \
+      -m comment --comment "$tag-out" -j DROP 2>/dev/null ||
+      docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$ip" \
+        -m comment --comment "$tag-in" -j DROP 2>/dev/null; then
+      cleanup_failed=1
+    fi
+  done
+  if (( cleanup_failed != 0 )); then
+    echo "failed to remove dual TiKV partition rules" >&2
+    return 1
+  fi
+}
+
+partition_tikv_quorum() {
+  local privileged deadline cluster_json index pod ip all_non_up all_up states previous_states
+  local -a tikv_pods
+  if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
+    exit 1
+  fi
+  if [[ ! "$PARTITION_FAILOVER_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+    (( PARTITION_FAILOVER_TIMEOUT_SECONDS > 300 )); then
+    echo "PARTITION_FAILOVER_TIMEOUT_SECONDS must be an integer in [1,300]" >&2
+    exit 1
+  fi
+  if [[ ! "$PARTITION_HOLD_SECONDS" =~ ^[0-9]+$ ]] || (( PARTITION_HOLD_SECONDS > 300 )); then
+    echo "PARTITION_HOLD_SECONDS must be an integer in [0,300]" >&2
+    exit 1
+  fi
+  privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
+  if [[ "$privileged" != "true" ]]; then
+    echo "refusing TiKV quorum partition: node container $KIND_NODE_CONTAINER is not privileged" >&2
+    exit 1
+  fi
+  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -S FORWARD >/dev/null
+
+  cluster_json="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"
+  mapfile -t tikv_pods < <(jq -r '.status.tikv.stores | to_entries |
+    map(select(.value.state == "Up")) |
+    sort_by(.value.leaderCount) | reverse | .[0:2][] | .value.podName' <<<"$cluster_json")
+  if [[ "${#tikv_pods[@]}" -ne 2 || "${tikv_pods[0]}" == "${tikv_pods[1]}" ]]; then
+    echo "refusing TiKV quorum partition: need two distinct Up stores" >&2
+    exit 1
+  fi
+  dual_partition_pod_ips=()
+  dual_partition_tags=()
+  for index in 0 1; do
+    pod="${tikv_pods[$index]}"
+    if [[ "$pod" != "$TIDB_CLUSTER-tikv-"* ]]; then
+      echo "refusing to partition TiKV member $pod: unexpected Pod name" >&2
+      exit 1
+    fi
+    ip="$(kubectl -n "$TIDB_NAMESPACE" get pod "$pod" -o jsonpath='{.status.podIP}')"
+    if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      echo "refusing to partition TiKV member $pod: invalid IPv4 Pod IP $ip" >&2
+      exit 1
+    fi
+    dual_partition_pod_ips+=("$ip")
+    dual_partition_tags+=("kubebrain-tikv-quorum-${pod}-$$")
+  done
+  echo "TiKV quorum partition selected stores: ${tikv_pods[*]}"
+  trap cleanup_dual_partition EXIT
+  trap 'cleanup_dual_partition; exit 130' INT
+  trap 'cleanup_dual_partition; exit 143' TERM
+  for index in 0 1; do
+    ip="${dual_partition_pod_ips[$index]}"
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$ip" \
+      -m comment --comment "${dual_partition_tags[$index]}-out" -j DROP
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$ip" \
+      -m comment --comment "${dual_partition_tags[$index]}-in" -j DROP
+  done
+
+  deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
+  all_non_up=false
+  previous_states=""
+  while (( SECONDS < deadline )); do
+    if ! cluster_json="$(kubectl --request-timeout=5s -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"; then
+      echo "waiting for TiKV partition status: failed to read TidbCluster" >&2
+      sleep 0.5
+      continue
+    fi
+    states="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
+      [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second)) |
+       "\(.podName)=\(.state)"] | sort | join(",")' <<<"$cluster_json" 2>/dev/null || true)"
+    if [[ -n "$states" && "$states" != "$previous_states" ]]; then
+      echo "TiKV quorum partition states: $states"
+      previous_states="$states"
+    fi
+    all_non_up="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
+      [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second))] as $selected |
+      (($selected | length) == 2 and all($selected[]; .state != "Up"))' <<<"$cluster_json" 2>/dev/null || true)"
+    if [[ "$all_non_up" == "true" ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "$all_non_up" != "true" ]]; then
+    echo "two TiKV members did not leave Up within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
+    return 1
+  fi
+  echo "TiKV quorum partition observed: $states"
+  sleep "$PARTITION_HOLD_SECONDS"
+  cleanup_dual_partition
+  dual_partition_pod_ips=()
+  dual_partition_tags=()
+  trap - EXIT INT TERM
+
+  deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
+  all_up=false
+  previous_states=""
+  while (( SECONDS < deadline )); do
+    if ! cluster_json="$(kubectl --request-timeout=5s -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"; then
+      echo "waiting for TiKV recovery status: failed to read TidbCluster" >&2
+      sleep 0.5
+      continue
+    fi
+    states="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
+      [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second)) |
+       "\(.podName)=\(.state)"] | sort | join(",")' <<<"$cluster_json" 2>/dev/null || true)"
+    if [[ -n "$states" && "$states" != "$previous_states" ]]; then
+      echo "TiKV quorum recovery states: $states"
+      previous_states="$states"
+    fi
+    all_up="$(jq -r --arg first "${tikv_pods[0]}" --arg second "${tikv_pods[1]}" '
+      [.status.tikv.stores[] | select((.podName == $first) or (.podName == $second))] as $selected |
+      (($selected | length) == 2 and all($selected[]; .state == "Up"))' <<<"$cluster_json" 2>/dev/null || true)"
+    if [[ "$all_up" == "true" ]]; then
+      echo "TiKV quorum partition recovered stores: ${tikv_pods[*]}"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "two TiKV members did not return Up within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
+  return 1
 }
 
 partition_tikv_member() {
@@ -210,8 +363,14 @@ if [[ "${1:-}" == "--partition-tikv-member" ]]; then
   partition_tikv_member
   exit 0
 fi
+if [[ "${1:-}" == "--partition-tikv-quorum" ]]; then
+  need docker
+  need jq
+  partition_tikv_quorum
+  exit 0
+fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-tikv-member]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-tikv-member|--partition-tikv-quorum]" >&2
   exit 2
 fi
 
@@ -229,6 +388,19 @@ run_quorum_test() {
     KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
       KUBEBRAIN_QUORUM_FAILOVER_COMMAND="$command" \
       go test . -run '^TestBackendQuorumFailoverKeepsServing$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
+run_watch_recovery_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_WATCH_BACKEND_FAILOVER_COMMAND="$command" \
+      go test . -run '^TestWatchDeliversCommittedWritesAcrossBackendFailover$' -count=1 -v
   )
   wait_backend_ready
 }
@@ -259,8 +431,13 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need jq
     run_quorum_test "TiKV member network partition" "$self --partition-tikv-member"
     ;;
+  tikv-quorum-loss)
+    need docker
+    need jq
+    run_watch_recovery_test "TiKV quorum-loss network partition" "$self --partition-tikv-quorum"
+    ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, or tikv-network-partition; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

@@ -30,7 +30,15 @@ func TestWatchDeliversCommittedWritesAcrossBackendFailover(t *testing.T) {
 		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for watch backend failover")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	testTimeout := 6 * time.Minute
+	if configured := os.Getenv("KUBEBRAIN_WATCH_BACKEND_FAILOVER_TIMEOUT"); configured != "" {
+		parsed, parseErr := time.ParseDuration(configured)
+		require.NoError(t, parseErr, "parse KUBEBRAIN_WATCH_BACKEND_FAILOVER_TIMEOUT")
+		require.GreaterOrEqual(t, parsed, 30*time.Second,
+			"KUBEBRAIN_WATCH_BACKEND_FAILOVER_TIMEOUT must allow a meaningful backend fault")
+		testTimeout = parsed
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	require.NoError(t, err)
@@ -142,6 +150,7 @@ func TestWatchDeliversCommittedWritesAcrossBackendFailover(t *testing.T) {
 
 	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	require.NoErrorf(t, err, "backend failover command: %s", strings.TrimSpace(string(output)))
+	t.Logf("backend failover command: %s", strings.TrimSpace(string(output)))
 	require.Eventually(t, func() bool { return transientWrites.Load() > 0 },
 		15*time.Second, 10*time.Millisecond, "backend fault must overlap at least one writer request")
 	recoveryBaseline := successfulWrites.Load()

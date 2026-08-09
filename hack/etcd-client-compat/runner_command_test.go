@@ -318,6 +318,33 @@ func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendTiKVQuorumLossHelperIsRecoverable(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-quorum-loss)`)
+	require.Contains(t, script, `sort_by(.value.leaderCount) | reverse | .[0:2][]`)
+	require.Contains(t, script, `dual_partition_pod_ips+=("$ip")`)
+	require.Contains(t, script, `trap cleanup_dual_partition EXIT`)
+	require.Contains(t, script, `all($selected[]; .state != "Up")`)
+	require.Contains(t, script, `all($selected[]; .state == "Up")`)
+	require.Contains(t, script, `deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))`)
+	require.Contains(t, script, `select((.podName == $first) or (.podName == $second))`)
+	require.Contains(t, script, `KUBEBRAIN_WATCH_BACKEND_FAILOVER_COMMAND="$command"`)
+	require.Contains(t, script, `TestWatchDeliversCommittedWritesAcrossBackendFailover`)
+	require.NotContains(t, script, "eval ")
+}
+
+func TestWatchBackendFailoverHasBoundedConfigurableTimeout(t *testing.T) {
+	data, err := os.ReadFile("watch_backend_failover_test.go")
+	require.NoError(t, err)
+	source := string(data)
+	require.Contains(t, source, `testTimeout := 6 * time.Minute`)
+	require.Contains(t, source, `os.Getenv("KUBEBRAIN_WATCH_BACKEND_FAILOVER_TIMEOUT")`)
+	require.Contains(t, source, `time.ParseDuration(configured)`)
+	require.Contains(t, source, `parsed, 30*time.Second`)
+}
+
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 	for _, testFile := range []string{
 		"admission_replica_restart_test.go",
