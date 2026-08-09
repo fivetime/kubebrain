@@ -37,6 +37,17 @@ func TestProductionReadinessColdRestoreExecuteExampleRequiresExplicitTarget(t *t
 	require.Contains(t, doc, "source KubeBrain namespace、StatefulSet name 和 UID")
 }
 
+func TestColdReceiptPublishersUseUnpredictableSameDirectoryTemporaryFiles(t *testing.T) {
+	for _, path := range []string{"../backup/cold-snapshot-execute.sh", "../backup/cold-restore-execute.sh"} {
+		contents, err := os.ReadFile(path)
+		require.NoError(t, err)
+		script := string(contents)
+		require.Contains(t, script, `mktemp "${receipt_dir}/.${receipt_base}.tmp.XXXXXX"`)
+		require.NotContains(t, script, `.tmp.$$`)
+		require.Contains(t, script, `[[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp"`)
+	}
+}
+
 func TestColdRestoreExecute(t *testing.T) {
 	for _, tc := range []struct {
 		name                           string

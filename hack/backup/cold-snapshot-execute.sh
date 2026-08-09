@@ -30,7 +30,11 @@ command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
 
 input_dir="$(mktemp -d)"
-cleanup_inputs() { rm -rf "$input_dir"; }
+receipt_tmp=""
+cleanup_inputs() {
+  [[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp"
+  rm -rf "$input_dir"
+}
 trap cleanup_inputs EXIT
 
 file_sha256() {
@@ -228,6 +232,7 @@ clear_pause() {
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
+  [[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp"
   rm -rf "$input_dir"
   if [[ "$pd_stopped" == true ]]; then restore_replicas "$TIDB_NAMESPACE" "$pd_name" "$pd_uid" "$pd_replicas" || status=1; fi
   if [[ "$tikv_stopped" == true ]]; then restore_replicas "$TIDB_NAMESPACE" "$tikv_name" "$tikv_uid" "$tikv_replicas" || status=1; fi
@@ -413,7 +418,9 @@ validate_retained_snapshot_set() {
 
 validate_retained_snapshot_set
 verify_witness_file
-receipt_tmp="${RECEIPT_FILE}.tmp.$$"
+receipt_dir="$(dirname -- "$RECEIPT_FILE")"
+receipt_base="$(basename -- "$RECEIPT_FILE")"
+receipt_tmp="$(mktemp "${receipt_dir}/.${receipt_base}.tmp.XXXXXX")" || fail_input "cannot create cold snapshot receipt temporary file"
 inventory_receipt_input="${input_dir}/inventory.json"
 snapshots_receipt_input="${input_dir}/snapshots.json"
 witness_status_input="${input_dir}/witness-status.json"
@@ -433,5 +440,6 @@ if ! ln "$receipt_tmp" "$RECEIPT_FILE" 2>/dev/null; then
   exit 1
 fi
 rm -f "$receipt_tmp"
+receipt_tmp=""
 sync -f "$(dirname "$RECEIPT_FILE")"
 completed=true

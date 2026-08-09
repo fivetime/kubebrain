@@ -992,6 +992,9 @@ create/mod/version/lease 元数据漂移而失败，不能生成语义成功 rec
 最终 receipt 由严格 Go builder 组装，不通过 jq 重编码 witness 的 64 位 revision；因此即使 revision
 大于 `2^53`，也必须逐位保留到 snapshot receipt。部署环境中的 jq 仅用于 Kubernetes JSON 查询，
 不能成为 etcd revision 精度的隐式依赖。
+snapshot 与 restore receipt 发布都必须在目标文件同目录使用不可预测的 `mktemp` 文件，fsync 后再以
+hard link 非覆盖发布，并由 EXIT trap 清理失败残留；禁止 `${receipt}.tmp.$$` 这类可预测路径，避免
+特权执行器跟随预置符号链接覆盖无关文件。
 
 执行器重新运行预检并规范化比对清单，在任何变更前拒绝漂移；用 TidbCluster UID 和
 resourceVersion 设置 `spec.paused=true`，等待 pause 可见并重新取得 StatefulSet fence，随后

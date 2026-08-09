@@ -25,7 +25,11 @@ command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
 
 render_dir="$(mktemp -d)"
-cleanup_rendered() { rm -rf "$render_dir"; }
+receipt_tmp=""
+cleanup_rendered() {
+  [[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp"
+  rm -rf "$render_dir"
+}
 trap cleanup_rendered EXIT
 
 file_sha256() {
@@ -193,6 +197,7 @@ target_tidb_uid=""
 emergency_stop() {
   local status=$?
   trap - EXIT INT TERM
+  [[ -z "$receipt_tmp" ]] || rm -f -- "$receipt_tmp"
   rm -rf "$render_dir"
   if [[ "$completed" != true && "$unpaused" == true && -n "$target_tidb_uid" ]]; then
     current="$(kctl -n "$namespace" get tidbcluster "$tidb_cluster" -o json 2>/dev/null || true)"
@@ -344,7 +349,9 @@ ready_status="$(jq -r '[.status.conditions[]? | select(.type == "Ready") | .stat
 validate_restored_storage_inventory
 
 verify_source_receipt
-receipt_tmp="${RESTORE_RECEIPT_FILE}.tmp.$$"
+receipt_dir="$(dirname -- "$RESTORE_RECEIPT_FILE")"
+receipt_base="$(basename -- "$RESTORE_RECEIPT_FILE")"
+receipt_tmp="$(mktemp "${receipt_dir}/.${receipt_base}.tmp.XXXXXX")" || fail_input "cannot create restore receipt temporary file"
 jq -n --arg format kubebrain.cold-physical-restore.v1 --arg operation_id "$operation_id" \
   --arg source_receipt_sha256 "$source_receipt_sha256" \
   --arg restore_manifest_sha256 "$restore_manifest_sha256" \
@@ -374,5 +381,6 @@ if ! ln "$receipt_tmp" "$RESTORE_RECEIPT_FILE" 2>/dev/null; then
   exit 1
 fi
 rm -f "$receipt_tmp"
+receipt_tmp=""
 sync -f "$(dirname "$RESTORE_RECEIPT_FILE")"
 completed=true

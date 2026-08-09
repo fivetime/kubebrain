@@ -27,6 +27,8 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		witnessPathDrift        bool
 		emptyWitness            bool
 		maxRevisionWitness      bool
+		tempSymlinkAttack       bool
+		failReceiptBuilder      bool
 		wantReceipt             bool
 		wantExistingReceipt     bool
 		wantError               string
@@ -34,6 +36,8 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		{name: "success restores service and publishes receipt", wantReceipt: true},
 		{name: "empty keyspace witness publishes receipt", emptyWitness: true, wantReceipt: true},
 		{name: "max int64 revision remains exact", maxRevisionWitness: true, wantReceipt: true},
+		{name: "receipt temporary symlink cannot overwrite another file", tempSymlinkAttack: true, wantReceipt: true},
+		{name: "receipt builder failure removes temporary file", failReceiptBuilder: true, wantError: "service restoration was attempted"},
 		{name: "witness path drift after capture still publishes receipt", witnessPathDrift: true, wantReceipt: true},
 		{name: "snapshot failure restores service without receipt", failSnapshot: true},
 		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
@@ -49,6 +53,8 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			witnessFile := filepath.Join(dir, "witness.jsonl")
 			tamperedWitnessFile := filepath.Join(dir, "tampered-witness.jsonl")
 			logFile := filepath.Join(dir, "kubectl.log")
+			victimFile := filepath.Join(dir, "victim.txt")
+			require.NoError(t, os.WriteFile(victimFile, []byte("do-not-overwrite\n"), 0o600))
 			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
 			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
 			if tc.emptyWitness {
@@ -65,6 +71,10 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			writeTrafficExecutable(t, filepath.Join(dir, "go"), coldSnapshotFakeGo)
 			writeTrafficExecutable(t, filepath.Join(dir, "date"), `#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${ATTACK_RECEIPT_TEMP_SYMLINK:-false}" == true && ! -e "$FAKE_LOG.temp-symlink-attempted" ]]; then
+  ln -s "$TEMP_SYMLINK_VICTIM" "${RECEIPT_FILE}.tmp.$PPID"
+  touch "$FAKE_LOG.temp-symlink-attempted"
+fi
 if [[ "$(grep -c 'patch statefulset kubebrain' "$FAKE_LOG")" -gt 1 ]]; then
   printf '2040-01-01T00:00:00Z\n'
 else
@@ -94,6 +104,9 @@ fi
 				"FAKE_DUPLICATE_SNAPSHOT_HANDLE=" + map[bool]string{true: "true", false: "false"}[tc.duplicateSnapshotHandle],
 				"FAKE_POST_RESTORE_CONTENT_DRIFT=" + map[bool]string{true: "true", false: "false"}[tc.postRestoreContentDrift],
 				"PRECREATE_COLD_SNAPSHOT_RECEIPT_DURING_CONTENT=" + map[bool]string{true: "true", false: "false"}[tc.precreateReceipt],
+				"ATTACK_RECEIPT_TEMP_SYMLINK=" + map[bool]string{true: "true", false: "false"}[tc.tempSymlinkAttack],
+				"TEMP_SYMLINK_VICTIM=" + victimFile,
+				"FAKE_FAIL_RECEIPT_BUILDER=" + map[bool]string{true: "true", false: "false"}[tc.failReceiptBuilder],
 			}
 			output, err := runColdSnapshotExecute(t, env)
 			if tc.wantReceipt {
@@ -132,6 +145,15 @@ fi
 				if tc.wantError != "" {
 					require.Contains(t, string(output), tc.wantError)
 				}
+			}
+			if tc.tempSymlinkAttack {
+				require.Equal(t, "do-not-overwrite\n", string(mustRead(t, victimFile)))
+				require.FileExists(t, logFile+".temp-symlink-attempted")
+			}
+			if tc.failReceiptBuilder {
+				matches, globErr := filepath.Glob(filepath.Join(dir, ".receipt.json.tmp.*"))
+				require.NoError(t, globErr)
+				require.Empty(t, matches)
 			}
 
 			logValue, readErr := os.ReadFile(logFile)
@@ -877,6 +899,9 @@ const coldSnapshotFakeGo = `#!/usr/bin/env bash
 set -euo pipefail
 status=0
 "$REAL_GO" "$@" || status=$?
+if [[ "${FAKE_FAIL_RECEIPT_BUILDER:-false}" == true && "$*" == *"hack/backup/cmd/cold-snapshot-receipt"* ]]; then
+  status=1
+fi
 if [[ "$status" -eq 0 &&
   "${TAMPER_WITNESS_AFTER_STATUS:-false}" == true &&
   "$*" == *"hack/backup/cmd/logical-status"* &&

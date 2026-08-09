@@ -146,6 +146,7 @@ func TestProductionReadinessColdSnapshotExamplesRequireExplicitContext(t *testin
 	require.Contains(t, doc, "`operation_id-source_pvc`")
 	require.Contains(t, doc, "空 etcd keyspace 也是")
 	require.Contains(t, doc, "不通过 jq 重编码 witness 的 64 位 revision")
+	require.Contains(t, doc, "特权执行器跟随预置符号链接覆盖无关文件")
 }
 
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {

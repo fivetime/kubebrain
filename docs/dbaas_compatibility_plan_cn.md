@@ -43929,6 +43929,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   witness 数值。单测固定 `MaxInt64` marshal 仍为 `9223372036854775807`，executor 黑盒用真实 header/footer
   witness 证明该 revision 逐位进入成功 receipt；既有六卷集合、空 witness、漂移与 rollback 矩阵继续
   通过。jq 仍用于 Kubernetes JSON 查询，但不再位于 etcd revision 的证据保存路径上。
+  A4148 加固 cold snapshot/restore receipt 的本地原子发布。两条 executor 原先都把临时路径写死为
+  `${RECEIPT_FILE}.tmp.$$` 并用普通 shell 重定向打开；同机低权限主体若能预知进程 ID 并预置 symlink，
+  特权 operation worker 会跟随链接截断无关文件，随后 chmod/sync，失败路径还可能遗留完整 receipt
+  临时文件。当前两条链都从最终 receipt 的同目录/basename 派生模板，通过 `mktemp` 原子创建 mode-600
+  随机文件，fsync 后继续用 hard link 保持目标 non-overwrite，EXIT trap 在 builder/jq/link 任一失败时
+  删除临时文件，成功 unlink 后清空 trap 状态并 fsync 目录。静态测试禁止 `.tmp.$$` 回归并固定同目录
+  mktemp/cleanup；snapshot executor 黑盒在旧路径位置预置指向 victim 的 symlink，证明攻击确实执行但
+  victim 内容不变、正常 receipt 仍发布。该改动不改变 Kubernetes 备份语义，却封闭 DBaaS 控制面以高
+  权限运行备份工具时的本地文件覆盖边界。
 
 ### P2：运维兼容和长期验证
 
