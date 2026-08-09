@@ -116,6 +116,29 @@ func TestAuthLeaseRevokeMissingLeaseErrorPriorityMatchesEtcd(t *testing.T) {
 		"etcdserver: requested lease not found")
 }
 
+func TestAuthLeaseTimeToLiveMissingLeaseErrorPriorityMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	missingID := int64(10_730_002)
+
+	for _, keys := range []bool{false, true} {
+		request := &etcdserverpb.LeaseTimeToLiveRequest{ID: missingID, Keys: keys}
+		response, err := server.LeaseTimeToLive(context.Background(), request)
+		require.Nil(t, response)
+		requireAuthLeaseError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+
+		response, err = server.LeaseTimeToLive(aliceCtx, request)
+		require.NoError(t, err)
+		require.Equal(t, missingID, response.ID)
+		require.Equal(t, int64(-1), response.TTL)
+		require.Zero(t, response.GrantedTTL)
+		require.Empty(t, response.Keys)
+		require.NotNil(t, response.Header)
+		require.Positive(t, response.Header.Revision)
+	}
+}
+
 func TestAuthLeaseFutureJWTRevisionMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

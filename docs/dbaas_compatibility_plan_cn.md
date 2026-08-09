@@ -43973,6 +43973,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrUserEmpty`，已认证但无相关 key 权限的普通用户必须得到 `ErrLeaseNotFound` 而非 PermissionDenied。
   未发现 runtime 差异；A4151 防止未来把 lease lookup 或 attachment auth 提前到 caller admission 前，
   或把“缺失 attachment”错误地解释为权限不足而漂移 upstream 的信息暴露与重试语义。
+  A4152 继续复审 `/root/etcd` `5cd9f4ee1` 的 LeaseTimeToLive public response contract。
+  upstream 入口对所有请求先执行 `requireAuthInfo`；仅当 `Keys=true` 时，才基于同一 lease attachment
+  snapshot 检查全部 key 的 RANGE 权限并在读取后复核 auth revision。leader lookup 返回
+  `ErrLeaseNotFound` 时，v3rpc 不向客户端暴露错误，而是构造带当前 header、原请求 ID、`TTL=-1`、
+  `GrantedTTL=0` 和空 Keys 的成功响应。KubeBrain 保持同序，并在 leader/proxy、demotion 与 auth-revision
+  fence 下维持同一语义。现有测试已覆盖 missing/revoked/zero/signed ID、sub-second TTL、Keys disclosure、
+  follower proxy 和并发 auth mutation；本轮补齐 auth-enabled missing lease 的 direct、official client/v3
+  与 raw gRPC 组合：匿名 caller 无论 Keys flag 都必须先得到 `ErrUserEmpty`；已认证普通用户即使
+  `Keys=true` 且无任何 key 权限，也必须成功得到 `TTL=-1`，不能误报 PermissionDenied。未发现 runtime
+  差异；A4152 防止未来提前 special-case missing lease 绕过 caller admission，或把空 attachment 集合
+  错误地当作未授权。
 
 ### P2：运维兼容和长期验证
 

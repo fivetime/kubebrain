@@ -2095,6 +2095,30 @@ func TestClientAuthLeaseListProtectsInaccessibleAttachments(t *testing.T) {
 	})
 	requireAuthClientError(t, rawUserMissingRevokeErr, codes.NotFound,
 		"etcdserver: requested lease not found")
+	_, anonymousMissingTTLErr := bootstrap.TimeToLive(ctx, missingLeaseID, clientv3.WithAttachedKeys())
+	requireAuthClientError(t, anonymousMissingTTLErr, codes.Unknown,
+		"etcdserver: user name is empty", rpctypes.ErrUserEmpty)
+	_, rawAnonymousMissingTTLErr := rawAnonymousLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
+		ID: int64(missingLeaseID), Keys: true,
+	})
+	requireAuthClientError(t, rawAnonymousMissingTTLErr, codes.InvalidArgument,
+		"etcdserver: user name is empty")
+	missingTTL, err := alice.TimeToLive(ctx, missingLeaseID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, missingLeaseID, missingTTL.ID)
+	require.Equal(t, int64(-1), missingTTL.TTL)
+	require.Zero(t, missingTTL.GrantedTTL)
+	require.Empty(t, missingTTL.Keys)
+	requireClientLeaseHeaderWellFormed(t, missingTTL.ResponseHeader)
+	rawMissingTTL, err := rawAliceLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{
+		ID: int64(missingLeaseID), Keys: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(missingLeaseID), rawMissingTTL.ID)
+	require.Equal(t, int64(-1), rawMissingTTL.TTL)
+	require.Zero(t, rawMissingTTL.GrantedTTL)
+	require.Empty(t, rawMissingTTL.Keys)
+	requireClientLeaseHeaderWellFormed(t, rawMissingTTL.Header)
 	_, anonymousLeasesErr := bootstrap.Leases(ctx)
 	requireAuthClientError(t, anonymousLeasesErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 	_, userLeasesErr := alice.Leases(ctx)
