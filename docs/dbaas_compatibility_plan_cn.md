@@ -43938,6 +43938,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   mktemp/cleanup；snapshot executor 黑盒在旧路径位置预置指向 victim 的 symlink，证明攻击确实执行但
   victim 内容不变、正常 receipt 仍发布。该改动不改变 Kubernetes 备份语义，却封闭 DBaaS 控制面以高
   权限运行备份工具时的本地文件覆盖边界。
+  A4149 回到 `/root/etcd` 当前 `5cd9f4ee1` 的核心 Watch public behavior 审计。逐项对照
+  `server/etcdserver/api/v3rpc/watch.go::serverWatchStream.recvLoop`：空 key 先规范为 `\x00`；负
+  start revision 在 auth 前返回 Created+Canceled、WatchId=-1 和 `ErrCompacted` reason；其余 create
+  先按原始 range_end 鉴权，再规范 from-key sentinel，随后由 watch stream 处理 empty range/duplicate
+  ID；nil create/cancel/progress 与未知 union 均忽略且不关闭 multiplexed stream；unknown cancel ID
+  不响应；filter 只识别 NOPUT/NODELETE，未知 enum 忽略。KubeBrain 的 `RPCServer.Watch`、
+  `normalizeWatchCreateRequest`、`watchAuthCancelReason`、`watcher.cancel` 与 `filterWatchEvents` 保持同一
+  客户端可见顺序，现有 raw gRPC 已覆盖 empty control、unknown cancel、ID 边界、filters、negative/
+  compact/future revision。本轮新增 auth-enabled scripted stream，把两个易回归的交叉顺序固定下来：
+  无权 key 的 revision=-1 必须得到 compacted 而非 PermissionDenied；无权且 empty-range 的非负请求
+  必须先得到 PermissionDenied；随后合法 create 仍成功，证明 control cancel 不终止流。未发现需要修改
+  runtime 的差异；A4149 作为源码位置、错误优先级和保护性测试的永久证据，避免后续 auth/watch 重构
+  把顺序漂移误当成实现自由度。
 
 ### P2：运维兼容和长期验证
 

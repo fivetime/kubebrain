@@ -72,3 +72,38 @@ func TestAuthWatchFromKeyDoesNotUseExactKeyPermission(t *testing.T) {
 	require.Equal(t, int64(-1), stream.sent[0].WatchId)
 	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), stream.sent[0].CancelReason)
 }
+
+func TestAuthWatchValidationErrorPriorityMatchesUpstream(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := setupAuthKVUser(t, server)
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/denied/negative"), StartRevision: -1,
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/denied/range"), RangeEnd: []byte("/denied/range"),
+			}}},
+			watchCreate("/allowed/key"),
+		},
+	}
+	requireWatchCanceled(t, server.Watch(stream))
+	require.Len(t, stream.sent, 3)
+
+	require.True(t, stream.sent[0].Created)
+	require.True(t, stream.sent[0].Canceled)
+	require.Equal(t, int64(-1), stream.sent[0].WatchId)
+	require.Equal(t, rpctypes.ErrCompacted.Error(), stream.sent[0].CancelReason,
+		"upstream handles a negative revision before watch authorization")
+
+	require.True(t, stream.sent[1].Created)
+	require.True(t, stream.sent[1].Canceled)
+	require.Equal(t, int64(-1), stream.sent[1].WatchId)
+	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), stream.sent[1].CancelReason,
+		"upstream authorizes a non-negative create before validating its range")
+
+	require.True(t, stream.sent[2].Created)
+	require.False(t, stream.sent[2].Canceled, "control errors must not terminate the multiplexed stream")
+}
