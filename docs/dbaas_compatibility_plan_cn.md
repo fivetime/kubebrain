@@ -44304,6 +44304,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   reference 与独立 3 副本 KubeBrain/3 PD/3 TiKV 集群普通连续 10 轮、race 连续 5 轮通过，随后既有
   pick-first delete/switch 仍通过，未发现 runtime 差异。A4184-A4186 由此覆盖静态双 READY、动态删除
   摘流和同连接重新加入完整周期，持续约束官方 client/v3 naming 对 TiKV-backed Watch/Txn 的消费行为。
+  A4187 重新审计仍明确存在的全局 revision 跳号差异，没有用 leader-local 全写独占锁或 TSO 回退制造
+  表面连续：当前并行写在 TiKV commit 前分配 revision，CAS/fence/commit 失败、进程死亡和 uncertain
+  result 都可能已提交或仍在解析，复用编号会产生比跳号更严重的重复 revision/历史覆盖风险；完全串行化
+  又会背离独立 TiKV 数据面的并发目标。为让后续决策基于生产证据，event ring 现在对“整批均为 invalid
+  且 revision 已分配”的通知每个 revision 精确累加一次 `revision.generator.aborted`，多 key Txn 不按 key
+  重复计数，空通知或含任一 committed event 的 batch 不计。确定性分类测试覆盖空、单写、多 key Txn、
+  committed 与 mixed batch，普通和 race 各连续 20 轮通过；可观测性文档要求把该 counter 与 write failure、
+  TiKV 指标联合分析。该项没有宣称关闭连续编号差异，而是首次把正常冲突/失败造成的可观察跳号与
+  `revision.generator.invalid`（allocator 倒退）及 `watch.collector.skipped_revision`（writer 死亡自愈）
+  分开量化，为未来提交时编号协议重构建立基线。
 
 ### P2：运维兼容和长期验证
 

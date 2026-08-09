@@ -96,6 +96,13 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 		b.metricCli.EmitCounter("watch.event.zero_revision.dropped", 1)
 		return
 	}
+	if abortedRevision(events) {
+		// A dealt user revision with no committed event is externally observable as
+		// a gap from etcd's contiguous committed-write sequence. Count the batch
+		// once (not once per key) so operators can quantify this known compatibility
+		// gap under real contention and storage failures.
+		b.metricCli.EmitCounter("revision.generator.aborted", 1)
+	}
 	b.notifyMu.RLock()
 	cur := b.collectorRevision.Load()
 	switch {
@@ -118,6 +125,18 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 	b.metricCli.EmitGauge("watch.revision.lag", revision-cur)
 	b.notifyMu.RUnlock()
 	b.signalWrite()
+}
+
+func abortedRevision(events []*common.WatchEvent) bool {
+	if len(events) == 0 {
+		return false
+	}
+	for _, event := range events {
+		if event.Valid {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *backend) handleWatchEventOverflow(revision uint64) {
