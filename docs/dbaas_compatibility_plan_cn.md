@@ -43628,6 +43628,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   每个成功 result 也必须包含 response；两类违反代理协议的状态均立即返回 gRPC `DataLoss`，并由 A4110
   的 defer 取消 leader 子 context。红测分别以 100ms 有界等待证明 nil channel 不再挂死，并固定 nil
   response 零下游帧与稳定错误分类；完整、截断、hash/remaining 校验回归继续覆盖正常协议状态机。
+  A4112 落实 upstream `015d7c570` 的 Watch start-revision 事件下界 invariant：官方 watcher 在发送前
+  验证每个可见 event 的 `Kv.ModRevision >= startRev`，防止历史扫描、live handoff 或恢复分组错误把
+  起点以前的事件交给客户端。KubeBrain 旧发送循环直接信任 local/proxy `WatchResult`，红测注入
+  `StartRevision=10`、batch revision 10 但 event ModRevision 9，证明旧实现实际发布该 stale event。
+  现在范围过滤、用户 NOPUT/NODELETE filter 和 PrevKV 可见性处理完成后，对最终可见 events 执行同一
+  下界检查；违反时在构造/fragment/send 任何 WatchResponse 前取消该 watch、记录
+  `watch.backend.invalid_revision`，并把精确 event/start revision 写入 CancelReason。该位置与 upstream
+  filter 后验证一致，不会因 backend 为共享 prefix 返回但最终不属于用户范围的内部 event 误报。
 
 ### P2：运维兼容和长期验证
 

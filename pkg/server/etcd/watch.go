@@ -916,6 +916,19 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// because the unknown watermark may already cover these values.
 				events = watchPrevKVVisibility(events, compactRevision, compactErr)
 			}
+			if r.StartRevision > 0 {
+				for _, event := range events {
+					eventRevision := event.GetKv().GetModRevision()
+					if eventRevision < r.StartRevision {
+						revisionErr := fmt.Errorf("watch backend returned event revision %d below watch start revision %d", eventRevision, r.StartRevision)
+						w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+						klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend event revision", "watcher", w.id, "watch", id)
+						w.Cancel(id, revisionErr, false)
+						cancel()
+						return
+					}
+				}
+			}
 			batchRevision := result.Revision
 			if batchRevision == 0 {
 				// Compatibility fallback for older/internal WatchResult producers.
