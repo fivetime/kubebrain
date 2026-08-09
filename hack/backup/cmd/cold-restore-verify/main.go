@@ -162,14 +162,15 @@ type snapshotInventory struct {
 }
 
 type sourceSnapshot struct {
-	Name           string `json:"name"`
-	UID            string `json:"uid"`
-	Content        string `json:"content"`
-	ContentUID     string `json:"content_uid"`
-	SourcePVC      string `json:"source_pvc"`
-	Component      string `json:"component"`
-	SnapshotHandle string `json:"snapshot_handle"`
-	RestoreSize    string `json:"restore_size"`
+	Name               string `json:"name"`
+	UID                string `json:"uid"`
+	Content            string `json:"content"`
+	ContentUID         string `json:"content_uid"`
+	SourcePVC          string `json:"source_pvc"`
+	Component          string `json:"component"`
+	SourceVolumeHandle string `json:"source_volume_handle"`
+	SnapshotHandle     string `json:"snapshot_handle"`
+	RestoreSize        string `json:"restore_size"`
 }
 
 type restoreReceipt struct {
@@ -516,9 +517,9 @@ func validateSnapshotReceiptInventory(snapshotRecord snapshotReceipt) error {
 	seenHandles := map[string]struct{}{}
 	for _, snapshot := range snapshotRecord.Snapshots {
 		claim, exists := claims[snapshot.SourcePVC]
-		if !exists || snapshot.Component != components[snapshot.SourcePVC] || snapshot.Name == "" ||
+		if !exists || snapshot.Component != components[snapshot.SourcePVC] || snapshot.SourceVolumeHandle != claim.VolumeHandle || snapshot.Name == "" ||
 			snapshot.UID == "" || snapshot.Content == "" || snapshot.ContentUID == "" ||
-			snapshot.SnapshotHandle == "" || snapshot.RestoreSize == "" {
+			snapshot.SourceVolumeHandle == "" || snapshot.SnapshotHandle == "" || snapshot.RestoreSize == "" {
 			return errors.New("snapshot receipt snapshot inventory does not match source PVCs")
 		}
 		requested, requestedErr := resource.ParseQuantity(claim.RequestedStorage)

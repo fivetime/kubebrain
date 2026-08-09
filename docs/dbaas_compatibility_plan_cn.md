@@ -43815,6 +43815,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试覆盖 PV driver mismatch，renderer/verifier 严格要求并校验新证据字段、driver 绑定与唯一性。
   早期缺少这些字段的 v2 inventory/receipt 现在 fail closed，必须重新预检；这使 cold full snapshot
   候选链更接近可审计的一致物理恢复，但仍不替代真实 CSI 隔离演练，也不关闭日志型 PITR 缺口。
+  A4136 闭合 A4135 后半段的 CSI snapshot 来源绑定。Kubernetes external-snapshotter v1 API 对动态
+  snapshot 的 `VolumeSnapshotContent.spec.source.volumeHandle` 定义为源 CSI volume ID，并要求它与
+  pre-provisioned `snapshotHandle` 二选一；旧 executor 只检查 content driver、class、Snapshot UID 和
+  非空 `status.snapshotHandle`，没有证明 CSI content 实际来自 frozen PVC/PV。现在每个 content Ready 后
+  必须满足 `spec.source.volumeHandle == inventory[pvc].volume_handle` 且 source snapshotHandle 缺失；
+  mismatch 在服务恢复前 fail closed。实际观察到的源 handle 同时以 `source_volume_handle` 写入每个
+  snapshot receipt 条目，cold restore renderer/verifier 会将其与 PV inventory 再次交叉验证，使离线
+  receipt 自身能够证明 source PVC→PV→CSI volume→snapshot content 的完整链。红测注入 driver、class、
+  Snapshot UID 均正常但 content 指向另一 volumeHandle 的响应，旧路径会成功，本轮固定无 receipt、执行
+  cleanup 和明确错误；成功测试固定 receipt 中的 observed handle，tamper test 固定恢复工具拒绝被改写的
+  source handle。该门禁仍不能把逐卷 CSI snapshot 提升为存储供应商保证的原子 group snapshot，真实隔离
+  恢复和日志型 PITR 缺口继续保持开放。
 
 ### P2：运维兼容和长期验证
 

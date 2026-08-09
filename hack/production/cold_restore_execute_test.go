@@ -757,7 +757,8 @@ func coldRestoreSnapshotReceipt(t *testing.T) []byte {
 		name := volume["name"].(string)
 		component := volume["labels"].(map[string]any)["app.kubernetes.io/component"].(string)
 		snapshots = append(snapshots, map[string]any{
-			"source_pvc": name, "component": component, "snapshot_handle": "handle-" + name, "restore_size": "1Gi",
+			"source_pvc": name, "component": component, "source_volume_handle": volume["volume_handle"],
+			"snapshot_handle": "handle-" + name, "restore_size": "1Gi",
 		})
 	}
 	value, err := json.Marshal(map[string]any{

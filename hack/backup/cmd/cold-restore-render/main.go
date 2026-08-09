@@ -79,14 +79,15 @@ type pvc struct {
 }
 
 type snapshot struct {
-	Name           string `json:"name"`
-	UID            string `json:"uid"`
-	Content        string `json:"content"`
-	ContentUID     string `json:"content_uid"`
-	SourcePVC      string `json:"source_pvc"`
-	Component      string `json:"component"`
-	SnapshotHandle string `json:"snapshot_handle"`
-	RestoreSize    string `json:"restore_size"`
+	Name               string `json:"name"`
+	UID                string `json:"uid"`
+	Content            string `json:"content"`
+	ContentUID         string `json:"content_uid"`
+	SourcePVC          string `json:"source_pvc"`
+	Component          string `json:"component"`
+	SourceVolumeHandle string `json:"source_volume_handle"`
+	SnapshotHandle     string `json:"snapshot_handle"`
+	RestoreSize        string `json:"restore_size"`
 }
 
 func main() {
@@ -309,8 +310,11 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 		if !exists || snap.Component != componentByPVC[snap.SourcePVC] {
 			return nil, fmt.Errorf("snapshot source PVC/component mismatch for %q", snap.SourcePVC)
 		}
-		if snap.SnapshotHandle == "" || snap.RestoreSize == "" {
+		if snap.SourceVolumeHandle == "" || snap.SnapshotHandle == "" || snap.RestoreSize == "" {
 			return nil, fmt.Errorf("snapshot for %q has no handle or restore size", snap.SourcePVC)
+		}
+		if snap.SourceVolumeHandle != volume.VolumeHandle {
+			return nil, fmt.Errorf("snapshot source volume handle does not match PVC %q", snap.SourcePVC)
 		}
 		if _, exists := snapshotByPVC[snap.SourcePVC]; exists {
 			return nil, fmt.Errorf("duplicate snapshot for PVC %q", snap.SourcePVC)

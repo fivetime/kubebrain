@@ -20,6 +20,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		name                string
 		failSnapshot        bool
 		contentDriver       string
+		contentSourceDrift  bool
 		precreateReceipt    bool
 		witnessPathDrift    bool
 		wantReceipt         bool
@@ -30,6 +31,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		{name: "witness path drift after capture still publishes receipt", witnessPathDrift: true, wantReceipt: true},
 		{name: "snapshot failure restores service without receipt", failSnapshot: true},
 		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
+		{name: "content source volume mismatch restores service without receipt", contentSourceDrift: true, wantError: "snapshot content source volume does not match"},
 		{name: "concurrent receipt publish is non overwriting", precreateReceipt: true, wantExistingReceipt: true, wantError: "cold snapshot receipt already exists"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,6 +68,7 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				"FENCE_SETTLE_SECONDS=0",
 				"FAKE_FAIL_SNAPSHOT=" + map[bool]string{true: "true", false: "false"}[tc.failSnapshot],
 				"FAKE_CONTENT_DRIVER=" + map[bool]string{true: "csi.example.test", false: tc.contentDriver}[tc.contentDriver == ""],
+				"FAKE_CONTENT_SOURCE_DRIFT=" + map[bool]string{true: "true", false: "false"}[tc.contentSourceDrift],
 				"PRECREATE_COLD_SNAPSHOT_RECEIPT_DURING_CONTENT=" + map[bool]string{true: "true", false: "false"}[tc.precreateReceipt],
 			}
 			output, err := runColdSnapshotExecute(t, env)
@@ -77,6 +80,8 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				require.NoError(t, json.Unmarshal(value, &receipt))
 				require.Equal(t, "kubebrain.cold-physical-snapshot.v2", receipt["format"])
 				require.Len(t, receipt["snapshots"], 6)
+				firstSnapshot := receipt["snapshots"].([]any)[0].(map[string]any)
+				require.Equal(t, "handle-pv-pd-kb-pd-0", firstSnapshot["source_volume_handle"])
 				require.Equal(t, "kubebrain.logical.v2", receipt["semantic_witness"].(map[string]any)["format"])
 			} else {
 				require.Error(t, err, string(output))
@@ -783,7 +788,10 @@ elif [[ "$args" == *"get volumesnapshotcontent"* ]]; then
   fi
   name="$(sed -n 's/.*get volumesnapshotcontent \([^ ]*\).*/\1/p' <<<"$args")"
   snapshot="${name#content-}"
-  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","driver":"%s","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"}},"status":{"snapshotHandle":"handle-%s"}}' "$name" "$name" "$FAKE_CONTENT_DRIVER" "$snapshot" "$name"
+  pvc="${snapshot#${OPERATION_ID}-}"
+  source_handle="handle-pv-${pvc}"
+  [[ "${FAKE_CONTENT_SOURCE_DRIFT:-false}" != true ]] || source_handle="wrong-${source_handle}"
+  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"deletionPolicy":"Retain","driver":"%s","volumeSnapshotClassName":"retained","volumeSnapshotRef":{"uid":"uid-%s"},"source":{"volumeHandle":"%s"}},"status":{"snapshotHandle":"handle-%s"}}' "$name" "$name" "$FAKE_CONTENT_DRIVER" "$snapshot" "$source_handle" "$name"
 elif [[ "$args" == *"get volumesnapshot"* && "$args" == *"--ignore-not-found"* ]]; then
   name="$(sed -n 's/.*get volumesnapshot \([^ ]*\).*/\1/p' <<<"$args")"
   if [[ "${FAKE_EXISTING_SNAPSHOT:-}" == "$name" ]] ||

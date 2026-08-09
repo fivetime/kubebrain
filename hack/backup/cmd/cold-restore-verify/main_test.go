@@ -98,7 +98,8 @@ func TestValidateReceiptChain(t *testing.T) {
 	}}
 	snapshot.Snapshots = append(snapshot.Snapshots, sourceSnapshot{
 		Name: "source-snapshot", UID: "uid-source-snapshot", Content: "source-content", ContentUID: "uid-source-content",
-		SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi",
+		SourcePVC: "pd-kb-pd-0", Component: "pd", SourceVolumeHandle: "source-volume-pd-0",
+		SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi",
 	})
 	snapshot.Witness.Format = status.Format
 	snapshot.Witness.Prefix = status.Prefix
@@ -362,7 +363,8 @@ func TestValidateRestoreManifestBinding(t *testing.T) {
 		Name: "pd-kb-pd-0", VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
 	}}
 	snapshot.Snapshots = append(snapshot.Snapshots, sourceSnapshot{
-		SourcePVC: "pd-kb-pd-0", Component: "pd", SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi",
+		SourcePVC: "pd-kb-pd-0", Component: "pd", SourceVolumeHandle: "source-volume-pd-0",
+		SnapshotHandle: "handle-pd-0", RestoreSize: "1Gi",
 	})
 	objectName := restoreManifestObjectName(snapshot.OperationID, "pd-kb-pd-0")
 	restore := restoreReceipt{}

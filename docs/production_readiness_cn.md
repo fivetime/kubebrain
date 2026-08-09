@@ -923,6 +923,11 @@ VolumeSnapshotClass 一致，且整组 PV UID/volumeHandle 不得重复。execut
 创建第一个 retained VolumeSnapshot 前再次复核这些物理身份；同名 PV 被替换或底层 handle 漂移时
 必须恢复服务并拒绝发布 receipt。早期缺少 `pv_uid`、`csi_driver`、`volume_handle` 的 v2 inventory/
 receipt 不再足以证明物理来源，必须重新运行 preflight，不能补默认值继续。
+CSI 创建每个动态 snapshot 后，executor 还会要求绑定的 VolumeSnapshotContent 使用
+`spec.source.volumeHandle`（而不是 pre-provisioned `snapshotHandle`），并与该 PVC 在 frozen inventory
+中的源 volumeHandle 完全一致；实际观察值作为 `source_volume_handle` 写入 snapshot receipt 条目，
+后续 renderer/verifier 会再次与源 PV inventory 交叉验证。driver、Snapshot UID 正确但源 volumeHandle
+不同的 content 必须使整个操作失败，不能仅凭生成了非空 snapshotHandle 宣告成功。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的
