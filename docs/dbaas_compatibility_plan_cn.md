@@ -43699,6 +43699,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   batch 水位，revision 10 后跟 revision 9 会原样发给客户端。红测证明旧实现发送两个倒序 events 后普通关闭。
   `validatedWatchBatchRevision` 现在同时保存前一项 revision，任一后项更小就携带 index/preceding revision
   整批取消；相等 revision 保持合法，保留 etcd 单事务多事件语义。完整 Watch 回归和 vet 通过。
+  A4122 禁止新 batch 通过抬高 header 水位夹带已被前一 source watermark 覆盖的旧事件：旧实现只检查
+  `batchRevision >= sourceRev`，所以 source 10 后的 `{Revision:11, Event.ModRevision:10}` 会再次发给客户端，
+  破坏 duplicate-free resume。红测证明旧实现先发送 stale event 再普通关闭。统一 batch validator 现在先保留
+  既有 batch regression 诊断，再要求每个 event revision 严格大于非零 source revision；`sourceRev` 初始仍为 0，
+  不会把历史 watch 的 `StartRevision-1` 同步种子误作已消费 source。peer client 不请求 fragmentation，外部 wire
+  fragmentation 又发生在完整 WatchResult 校验后，因此同事务同 revision events 不会被跨批误杀。完整 Watch、
+  etcdproxy 测试和 vet 通过。
 
 ### P2：运维兼容和长期验证
 

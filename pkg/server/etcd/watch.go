@@ -180,7 +180,7 @@ func invalidWatchResultShape(result etcdproxy.WatchResult) error {
 	return nil
 }
 
-func validatedWatchBatchRevision(result etcdproxy.WatchResult) (uint64, error) {
+func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision uint64) (uint64, error) {
 	batchRevision := result.Revision
 	if batchRevision == 0 {
 		for _, event := range result.Events {
@@ -192,11 +192,17 @@ func validatedWatchBatchRevision(result etcdproxy.WatchResult) (uint64, error) {
 	if batchRevision > uint64(math.MaxInt64) {
 		return 0, fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", batchRevision)
 	}
+	if batchRevision < sourceRevision {
+		return 0, fmt.Errorf("watch backend returned batch revision %d below source revision %d", batchRevision, sourceRevision)
+	}
 	var precedingRevision int64
 	for i, event := range result.Events {
 		eventRevision := event.GetKv().GetModRevision()
 		if eventRevision <= 0 {
 			return 0, fmt.Errorf("watch backend returned invalid event revision %d at index %d", eventRevision, i)
+		}
+		if sourceRevision > 0 && uint64(eventRevision) <= sourceRevision {
+			return 0, fmt.Errorf("watch backend returned event revision %d at index %d does not advance source revision %d", eventRevision, i, sourceRevision)
 		}
 		if i > 0 && eventRevision < precedingRevision {
 			return 0, fmt.Errorf("watch backend returned event revision %d at index %d below preceding revision %d", eventRevision, i, precedingRevision)
@@ -988,7 +994,11 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// drain the channel to ensure producer could exit
 				continue
 			}
-			batchRevision, revisionErr := validatedWatchBatchRevision(result)
+			var sourceRevision uint64
+			if wt != nil {
+				sourceRevision = atomic.LoadUint64(&wt.sourceRev)
+			}
+			batchRevision, revisionErr := validatedWatchBatchRevision(result, sourceRevision)
 			if revisionErr != nil {
 				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
 				klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend batch revision", "watcher", w.id, "watch", id)
@@ -1026,17 +1036,6 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 						cancel()
 						return
 					}
-				}
-			}
-			if wt != nil {
-				sourceRevision := atomic.LoadUint64(&wt.sourceRev)
-				if batchRevision < sourceRevision {
-					revisionErr := fmt.Errorf("watch backend returned batch revision %d below source revision %d", batchRevision, sourceRevision)
-					w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
-					klog.ErrorS(revisionErr, "[watch stream] cancel due to regressing batch revision", "watcher", w.id, "watch", id)
-					w.Cancel(id, revisionErr, false)
-					cancel()
-					return
 				}
 			}
 			if len(events) == 0 {

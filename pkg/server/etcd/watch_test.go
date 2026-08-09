@@ -1296,7 +1296,7 @@ func TestValidatedWatchBatchRevisionRejectsNonPositiveEventRevision(t *testing.T
 			Events: []*mvccpb.Event{{
 				Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: revision},
 			}},
-		})
+		}, 0)
 		require.EqualError(t, err, fmt.Sprintf("watch backend returned invalid event revision %d at index 0", revision))
 	}
 }
@@ -1313,6 +1313,20 @@ func TestWatchRejectsRegressingEventRevisionWithinBatch(t *testing.T) {
 	require.True(t, responses[0].Canceled)
 	require.Empty(t, responses[0].Events)
 	require.Contains(t, responses[0].CancelReason, "event revision 9 at index 1 below preceding revision 10")
+}
+
+func TestWatchRejectsEventAlreadyCoveredBySourceWatermark(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 10, etcdproxy.WatchResult{
+		Revision: 11,
+		Events: []*mvccpb.Event{{
+			Type: mvccpb.PUT,
+			Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/stale"), ModRevision: 10},
+		}},
+	})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Empty(t, responses[0].Events)
+	require.Contains(t, responses[0].CancelReason, "event revision 10 at index 0 does not advance source revision 10")
 }
 
 func TestWatchRejectsEmptyBackendResult(t *testing.T) {
