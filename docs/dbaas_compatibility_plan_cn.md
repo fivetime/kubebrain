@@ -44330,6 +44330,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也不声称连续编号已实现。manifest 测试精确固定 alert 名、PromQL、for 和 severity，普通连续 20 轮通过；
   可观测性与生产就绪手册同步给出诊断边界。由此已知兼容差距从代码 counter、零基线到三副本缺失/增长
   告警形成闭环，未来提交时编号重构可以用生产 occurrence rate 判断优先级与迁移风险。
+  A4190 修正 A4187 counter 的精确计数点。初版在 producer `notifyBatch` 入口看到全 invalid batch 就加一；
+  ring slot 会按 revision 合并通知，因此同一失败 revision 若因重试/并发路径收到重复 notify，collector
+  仍只消费一个 slot，counter 却可能多计，破坏“每 revision 一次”的生产基线。计数现迁到 collector
+  `take(nextRevision)` 成功后的权威消费点：该 revision 的全部 producer 通知已合并，整批无 valid event
+  才加一；producer、revision=0、成功或 mixed batch 均不加。回归对 revision 1 连续提交两批共三个 invalid
+  event，明确要求 producer 计数为 0、slot take 后只产生一个 counter increment，并证明 valid revision
+  不增加。普通连续 20 轮与 race 门禁通过。A4188 的启动零基线和 A4189 的 Prometheus 告警表达式不变，
+  但 occurrence rate 现在真正对应可观察 revision gap 数，而不是内部通知调用次数。
 
 ### P2：运维兼容和长期验证
 

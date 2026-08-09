@@ -42,7 +42,7 @@ func TestAbortedRevisionClassifiesWholeEventBatch(t *testing.T) {
 	}
 }
 
-func TestNotifyBatchCountsAbortedRevisionOncePerTransaction(t *testing.T) {
+func TestCollectorCountsAbortedRevisionOnceAfterDuplicateNotifications(t *testing.T) {
 	recorder := &compactMetricRecorder{}
 	b := &backend{
 		metricCli:             recorder,
@@ -54,16 +54,24 @@ func TestNotifyBatchCountsAbortedRevisionOncePerTransaction(t *testing.T) {
 		{Revision: 1, Valid: false},
 		{Revision: 1, Valid: false},
 	})
-	b.notifyBatch([]*common.WatchEvent{{Revision: 2, Valid: true}})
+	b.notifyBatch([]*common.WatchEvent{{Revision: 1, Valid: false}})
+	require.Empty(t, abortedCounterRecords(recorder.records), "producer notifications must not count revisions")
+	b.observeCollectedRevision(b.watchEventsRingBuffer[1].take(1))
+	b.observeCollectedRevision([]*common.WatchEvent{{Revision: 2, Valid: true}})
 
-	aborted := 0
-	for _, record := range recorder.records {
+	aborted := abortedCounterRecords(recorder.records)
+	require.Len(t, aborted, 1, "a failed multi-key transaction must count one aborted revision")
+	require.Equal(t, 1, aborted[0].value)
+}
+
+func abortedCounterRecords(records []compactMetricRecord) []compactMetricRecord {
+	aborted := make([]compactMetricRecord, 0, 1)
+	for _, record := range records {
 		if record.kind == "counter" && record.name == "revision.generator.aborted" {
-			aborted++
-			require.Equal(t, 1, record.value)
+			aborted = append(aborted, record)
 		}
 	}
-	require.Equal(t, 1, aborted, "a failed multi-key transaction must count one aborted revision")
+	return aborted
 }
 
 func TestInitRevisionMetricsPublishesZeroBaseline(t *testing.T) {

@@ -802,6 +802,7 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 				break
 			}
 			stall.reset()
+			b.observeCollectedRevision(watchEvents)
 			b.metricCli.EmitGauge("watch.set.current.revision", nextRevision)
 			validRevision := false
 			for _, watchEvent := range watchEvents {
