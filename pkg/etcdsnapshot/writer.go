@@ -229,9 +229,13 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 
 func validateAuthState(auth Auth) error {
 	roleNames := make(map[string]struct{}, len(auth.Roles))
+	minimumRevision := uint64(1)
+	minimumRevision += uint64(len(auth.Roles))
+	minimumRevision += uint64(len(auth.Users))
 	for _, role := range auth.Roles {
 		if role != nil && len(role.Name) != 0 {
 			roleNames[string(role.Name)] = struct{}{}
+			minimumRevision += uint64(len(role.KeyPermission))
 			seenRanges := make(map[struct{ key, end string }]struct{}, len(role.KeyPermission))
 			var previousKey []byte
 			for i, permission := range role.KeyPermission {
@@ -265,6 +269,7 @@ func validateAuthState(auth Auth) error {
 			return fmt.Errorf("no-password auth user %q carries password bytes", user.Name)
 		}
 		seenRoles := make(map[string]struct{}, len(user.Roles))
+		minimumRevision += uint64(len(user.Roles))
 		for _, role := range user.Roles {
 			if _, exists := seenRoles[role]; exists {
 				return fmt.Errorf("auth user %q repeats role %q", user.Name, role)
@@ -275,18 +280,28 @@ func validateAuthState(auth Auth) error {
 			}
 		}
 	}
-	if !auth.Enabled {
-		return nil
-	}
-	if root == nil {
-		return fmt.Errorf("enabled auth requires root user")
-	}
-	for _, role := range root.Roles {
-		if role == "root" {
-			return nil
+	if auth.Enabled {
+		if root == nil {
+			return fmt.Errorf("enabled auth requires root user")
+		}
+		hasRootRole := false
+		for _, role := range root.Roles {
+			if role == "root" {
+				hasRootRole = true
+				break
+			}
+		}
+		if !hasRootRole {
+			return fmt.Errorf("enabled auth requires root user to have root role")
 		}
 	}
-	return fmt.Errorf("enabled auth requires root user to have root role")
+	if len(auth.Users) == 0 && len(auth.Roles) == 0 && !auth.Enabled && auth.Revision == 0 {
+		return nil
+	}
+	if auth.Revision < minimumRevision {
+		return fmt.Errorf("auth revision %d is below graph minimum %d", auth.Revision, minimumRevision)
+	}
+	return nil
 }
 
 func validSnapshotPermissionRange(key, end []byte) bool {

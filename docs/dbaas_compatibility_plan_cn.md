@@ -43353,6 +43353,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   wire-compatible 状态。一个红测固定 no-password+bytes 旧实现错误成功；正例固定普通 legacy 用户
   的非 bcrypt opaque bytes 原样进入 authUsers bucket，防止未来过度校验。`pkg/etcdsnapshot` race、
   server Auth/Snapshot、upstream AuthStore restore 与逻辑转换器回归通过；在线凭据语义不变。
+  A4082 固定 Snapshot auth revision 与对象图的可达下界：对照 upstream
+  `/root/etcd/server/auth/store.go:NewAuthStore/commitRevision`，空 backend 的 revision 0 只是在
+  store 初始化前使用的 sentinel，启动后会持久化为 1；每次 UserAdd、RoleAdd、UserGrantRole 和
+  RoleGrantPermission 分别推进一次 revision，AuthEnable 本身不推进。KubeBrain
+  `auth_repository.go` 同样把缺失 config 解释为 revision 1，并让每次 mutation 从 2 开始。因此含有
+  当前 auth 图的 snapshot 至少需要 `1 + user 数 + role 数 + user-role 边数 + permission 数` 的
+  revision；更低值无法由两边公开管理 API 产生，恢复后却会把 token/permission fence 绑定到虚假
+  历史。writer 现在在完整 graph/credential 校验后计算该下界并 fail closed；四个红测覆盖 revision 1
+  携带用户、permission 或 role grant 未计 mutation，以及 enabled root 图少一次 mutation，均证明
+  旧实现错误成功并确认新实现回滚 metadata transaction。空、禁用、无对象的 revision 0 仍允许，
+  upstream AuthStore 恢复测试确认会将其初始化为 1，保留离线逻辑转换器契约；正常复杂 auth 图的
+  官方 AuthStore 恢复样本改用其真实最小 revision 13。该项只收紧 snapshot artifact，不改变在线
+  auth revision 或 TiKV 数据。
 
 ### P2：运维兼容和长期验证
 

@@ -475,10 +475,88 @@ func TestWriteBackendRejectsPasswordOnNoPasswordUser(t *testing.T) {
 	require.ErrorContains(t, err, `no-password auth user "certificate-only" carries password bytes`)
 }
 
+func TestWriteBackendRejectsAuthRevisionBelowReachableGraphMinimum(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		auth Auth
+		want string
+	}{
+		{
+			name: "user at initialization revision",
+			auth: Auth{Revision: 1, Users: []*authpb.User{{Name: []byte("alice")}}},
+			want: "auth revision 1 is below graph minimum 2",
+		},
+		{
+			name: "role permission needs a separate mutation",
+			auth: Auth{Revision: 2, Roles: []*authpb.Role{{
+				Name:          []byte("reader"),
+				KeyPermission: []*authpb.Permission{{Key: []byte("/"), PermType: authpb.READ}},
+			}}},
+			want: "auth revision 2 is below graph minimum 3",
+		},
+		{
+			name: "user role grant needs a separate mutation",
+			auth: Auth{Revision: 3,
+				Users: []*authpb.User{{Name: []byte("alice"), Roles: []string{"reader"}}},
+				Roles: []*authpb.Role{{Name: []byte("reader")}},
+			},
+			want: "auth revision 3 is below graph minimum 4",
+		},
+		{
+			name: "enabled root graph needs three mutations",
+			auth: Auth{Enabled: true, Revision: 3,
+				Users: []*authpb.User{{Name: []byte("root"), Roles: []string{"root"}}},
+				Roles: []*authpb.Role{{Name: []byte("root")}},
+			},
+			want: "auth revision 3 is below graph minimum 4",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			err := WriteBackend(path, State{Auth: test.auth})
+			require.ErrorContains(t, err, test.want)
+			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+			require.NoError(t, openErr)
+			defer db.Close()
+			require.NoError(t, db.View(func(tx *bolt.Tx) error {
+				require.Nil(t, tx.Bucket(schema.Auth.Name()), "invalid auth revision must roll back metadata")
+				return nil
+			}))
+		})
+	}
+}
+
+func TestWriteBackendAllowsEmptyUninitializedAuthRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{Auth: Auth{}}))
+
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		require.Equal(t, make([]byte, 8), tx.Bucket(schema.Auth.Name()).Get(schema.AuthRevisionKeyName))
+		return nil
+	}))
+	require.NoError(t, db.Close())
+
+	lg := zaptest.NewLogger(t)
+	be := etcdbackend.NewDefaultBackend(lg, path)
+	defer func() { require.NoError(t, be.Close()) }()
+	ready := func(uint64) <-chan struct{} {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	tokens, err := etcdAuth.NewTokenProvider(lg, "simple", ready, time.Minute)
+	require.NoError(t, err)
+	authStore := etcdAuth.NewAuthStore(lg, schema.NewAuthBackend(lg, be), tokens, bcrypt.MinCost)
+	require.EqualValues(t, 1, authStore.Revision(), "upstream initializes the empty revision-zero sentinel")
+	require.NoError(t, authStore.Close())
+}
+
 func TestWriteBackendPreservesOpaqueHashedPasswordBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	opaque := []byte("not-necessarily-bcrypt")
-	require.NoError(t, WriteBackend(path, State{Auth: Auth{Users: []*authpb.User{{
+	require.NoError(t, WriteBackend(path, State{Auth: Auth{Revision: 2, Users: []*authpb.User{{
 		Name: []byte("legacy"), Password: opaque,
 	}}}}))
 	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
@@ -531,6 +609,7 @@ func TestWriteBackendRejectsImpossibleRolePermissions(t *testing.T) {
 
 func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
+	const authRevision = uint64(13)
 	password, err := bcrypt.GenerateFromPassword([]byte("alice-secret"), bcrypt.MinCost)
 	require.NoError(t, err)
 	rootPassword, err := bcrypt.GenerateFromPassword([]byte("root-secret"), bcrypt.MinCost)
@@ -543,7 +622,7 @@ func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	}}}
 	require.NoError(t, WriteBackend(path, State{
 		Revision: 41,
-		Auth: Auth{Enabled: true, Revision: 7,
+		Auth: Auth{Enabled: true, Revision: authRevision,
 			Users: []*authpb.User{
 				{Name: []byte("root"), Password: rootPassword, Roles: []string{"root"}},
 				{Name: []byte("alice"), Password: password, Roles: []string{"reader"}},
@@ -574,14 +653,14 @@ func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	authStore := etcdAuth.NewAuthStore(lg, schema.NewAuthBackend(lg, be), tokens, bcrypt.MinCost)
 	defer func() { require.NoError(t, authStore.Close()) }()
 	require.True(t, authStore.IsAuthEnabled())
-	require.EqualValues(t, 7, authStore.Revision())
+	require.EqualValues(t, authRevision, authStore.Revision())
 	revision, err := authStore.CheckPassword("alice", "alice-secret")
 	require.NoError(t, err)
-	require.EqualValues(t, 7, revision)
-	alice := &etcdAuth.AuthInfo{Username: "alice", Revision: 7}
+	require.EqualValues(t, authRevision, revision)
+	alice := &etcdAuth.AuthInfo{Username: "alice", Revision: authRevision}
 	require.NoError(t, authStore.IsRangePermitted(alice, []byte("/allowed/key"), nil))
 	require.Error(t, authStore.IsRangePermitted(alice, []byte("/denied/key"), nil))
-	bob := &etcdAuth.AuthInfo{Username: "bob", Revision: 7}
+	bob := &etcdAuth.AuthInfo{Username: "bob", Revision: authRevision}
 	require.Error(t, authStore.IsRangePermitted(bob, []byte("/unknown/key"), nil))
 	require.Error(t, authStore.IsPutPermitted(bob, []byte("/unknown/key")))
 

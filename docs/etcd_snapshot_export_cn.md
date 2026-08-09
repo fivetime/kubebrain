@@ -83,3 +83,7 @@ permission enum 与上游一样允许持久化但不授予 READ/WRITE，不能�
 `UserAddOptions.NoPassword=true` 的用户不得携带 password bytes；普通或 legacy 用户的 password
 字段保持 opaque bytes。上游 `HashedPassword` 路径只做 base64 decode，并不验证 bcrypt，因此
 snapshot writer 也不能擅自拒绝非 bcrypt 内容。
+Auth revision 必须能够覆盖当前对象图所需的最少管理 mutation：下界为
+`1 + user 数 + role 数 + user-role 边数 + permission 数`。空、禁用且无对象时允许 revision 0，
+它表示 upstream AuthStore 尚未初始化的 sentinel，恢复启动后会被持久化为 1；任何包含对象或启用
+状态但低于图下界的制品都会被拒绝，避免恢复出 token/permission fence 与管理历史不一致的状态。
