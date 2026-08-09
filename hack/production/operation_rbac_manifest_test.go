@@ -165,7 +165,7 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 		{
 			APIGroups:     []string{""},
 			Resources:     []string{"configmaps"},
-			ResourceNames: []string{"kubebrain-backup-scheduler-inventory"},
+			ResourceNames: []string{"kubebrain-backup-scheduler-inventory", "kubebrain-tikv-repair-operation-inventory"},
 			Verbs:         []string{"get"},
 		},
 		{
@@ -229,6 +229,42 @@ func TestTiKVTransactionRepairRBACIsNamespacedAndCannotDeletePVCs(t *testing.T) 
 	require.NoError(t, err)
 	require.NotContains(t, string(data), "persistentvolumeclaims")
 	require.NotContains(t, string(data), "persistentvolumes")
+}
+
+func TestTiKVRepairAlertReceiverUsesAnIsolatedNonDestructiveQueue(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-tikv-repair-alert-receiver.yaml")
+	documents := decodeRBACManifest(t, path)
+
+	var receiverRole, parameterReader rbacManifest
+	var workerBinding, approverBinding rbacManifest
+	for _, document := range documents {
+		switch {
+		case document.Kind == "Role" && document.Metadata.Name == "kubebrain-tikv-repair-alert-receiver":
+			receiverRole = document
+		case document.Kind == "Role" && document.Metadata.Name == "kubebrain-tikv-repair-parameter-reader":
+			parameterReader = document
+		case document.Kind == "RoleBinding" && document.Metadata.Name == "kubebrain-tikv-repair-operation-worker":
+			workerBinding = document
+		case document.Kind == "RoleBinding" && document.Metadata.Name == "kubebrain-tikv-repair-operation-approver":
+			approverBinding = document
+		}
+	}
+
+	require.Equal(t, "kubebrain-repair-operations", receiverRole.Metadata.Namespace)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
+	}, receiverRole.Rules)
+	require.Equal(t, []rbacRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}}}, parameterReader.Rules)
+	require.Equal(t, rbacParty{Kind: "ClusterRole", Name: "kubebrain-operation-worker-managed-namespace"}, workerBinding.RoleRef)
+	require.Equal(t, []rbacParty{{Kind: "ServiceAccount", Name: "kubebrain-tikv-transaction-repair-executor", Namespace: "kubebrain-operations"}}, workerBinding.Subjects)
+	require.Equal(t, rbacParty{Kind: "ClusterRole", Name: "kubebrain-operation-approver-managed-namespace"}, approverBinding.RoleRef)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NotContains(t, string(data), "persistentvolumeclaims")
+	require.NotContains(t, string(data), "pods/exec")
+	require.NotContains(t, string(data), "verbs: [delete")
 }
 
 func TestOperationArchiverRBACCanOnlyReadAndReleaseOperations(t *testing.T) {

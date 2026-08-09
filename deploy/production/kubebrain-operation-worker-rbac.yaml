@@ -31,6 +31,7 @@ rules:
       - configmaps
     resourceNames:
       - kubebrain-backup-scheduler-inventory
+      - kubebrain-tikv-repair-operation-inventory
     verbs:
       - get
   - apiGroups:

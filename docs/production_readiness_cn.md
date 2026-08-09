@@ -207,7 +207,7 @@ ConfigMap 默认写入 TiKV namespace；Operation executor 显式设置
 常驻运行脚本。该类型与 RestoreCutover/Destroy 一样必须先由专用 approver 写入不可变 approval
 证据；queue 不会把未审批对象交给 worker。专属零副本 executor 模板位于
 `kubebrain-operation-executors.yaml`，运行
-`run-tikv-transaction-repair-operation.sh`：领取带 lease 的任务、从 parameter broker 获取并冻结
+`run-tikv-transaction-repair-operation.sh`：领取带 lease 的任务、从隔离 queue 的 immutable Secret 获取并冻结
 参数、校验 SHA-256、在修复期间持续 heartbeat，丢失 lease 会终止子进程。wrapper 从 operation ID
 和 attempt 派生不可复用 repair attempt ID，校验严格 JSON receipt 后才向 Operation 写入
 Succeeded 与 receipt SHA-256。参数下载/哈希竞态可安全 requeue；破坏性执行或 receipt 验证失败
@@ -242,8 +242,27 @@ runner 只接受恰好一个 `status=firing`、alertname 精确等于
 
 runner 从不调用 approve，也没有 scale、Pod delete 或 PVC 权限；因此告警只能产生未审批请求，
 不能绕过 A4074 的人工/策略审批。resolved、重复匹配、过新的、未来时间、错误实例标签或身份漂移
-均在创建 Operation 前拒绝。常驻 HTTPS webhook receiver、请求认证和 Alertmanager NetworkPolicy
-仍由平台部署层提供；本脚本定义并测试其确定性 policy 核心。
+均在创建 Operation 前拒绝。
+
+常驻 receiver 由
+`deploy/production/kubebrain-tikv-repair-alert-receiver.yaml` 提供。它只开放 HTTPS
+`POST /api/v1/alerts`，要求独立 Secret 中至少 32 字节的 Bearer token、JSON Content-Type、无 query、
+非空且不超过 1 MiB 的 body；单 Pod 同时只执行一个 policy，拥塞返回 `429 Retry-After: 1`，policy
+超时或拒绝不会提交请求。TLS certificate 可热加载；Bearer token 轮换后必须滚动重启 Deployment。
+Service 的 NetworkPolicy 默认只允许 `monitoring` namespace 中标签为
+`app.kubernetes.io/name=alertmanager` 的 Pod 访问 8443。部署前必须创建
+`kubebrain-tikv-repair-alert-receiver-tls`（`tls.crt`/`tls.key`）和
+`kubebrain-tikv-repair-alert-receiver-auth`（`token`）两个 Secret，并让 Alertmanager 使用同一 CA、
+Bearer token 与 Service DNS 名。
+
+receiver 与其参数 Secret/Operation 固定在 `kubebrain-repair-operations`，不进入含备份、恢复和销毁
+参数的通用 queue。独立 inventory 只供 TiKV repair executor claim；该 executor 直接读取隔离
+namespace 的参数 Secret，通用 parameter broker 不获得跨 namespace Secret 权限。receiver SA 仅可
+get/create 该 namespace 的 Secret 和 Operation，并只读指定 KubeBrain StatefulSet 与 TidbCluster
+身份；它不能 update Operation（因此不能 approve）、写 status、管理 Lease、缩放 StatefulSet、
+访问 Pod 或删除任何资源。中央 approver/archiver 和 repair worker 通过逐 namespace RoleBinding
+接入，其他类型 executor 不会扫描该 inventory。receiver Deployment 默认 2 副本、PDB
+`maxUnavailable: 1`；确定性 Secret/Operation identity 保证 Alertmanager 重试幂等。
 
 ## 生产镜像追踪
 

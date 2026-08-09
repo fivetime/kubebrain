@@ -472,13 +472,10 @@ spec:
           env:
             - {name: WORKER_ID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
             - {name: OPERATIONCTL, value: /usr/local/bin/kubebrain-operationctl}
-            - {name: OPERATION_NAMESPACE, value: kubebrain-operations}
-            - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
+            - {name: OPERATION_NAMESPACE, value: kubebrain-repair-operations}
+            - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-tikv-repair-operation-inventory}
             - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
             - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
-            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
-            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
-            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: REPAIR_COMMAND, value: /opt/kubebrain/hack/production/repair-tikv-transaction-path.sh}
             - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
           envFrom: [{secretRef: {name: kubebrain-tikv-transaction-repair-executor-env}}]
@@ -492,16 +489,12 @@ spec:
           volumeMounts:
             - {name: workspace, mountPath: /var/lib/kubebrain-operation}
             - {name: tmp, mountPath: /tmp}
-            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
-            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
       volumes:
         - name: workspace
           persistentVolumeClaim:
             claimName: kubebrain-tikv-transaction-repair-executor-workspace
         - name: tmp
           emptyDir: {sizeLimit: 64Mi}
-        - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
-        - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---
 apiVersion: apps/v1
 kind: Deployment

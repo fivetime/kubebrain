@@ -1,0 +1,310 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebrain-repair-operations
+  labels:
+    app.kubernetes.io/part-of: kubebrain
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubebrain-tikv-repair-operation-inventory
+  namespace: kubebrain-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+data:
+  namespaces.json: '["kubebrain-repair-operations"]'
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebrain-tikv-repair-alert-receiver
+  namespace: kubebrain-repair-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-tikv-repair-alert-receiver
+  namespace: kubebrain-repair-operations
+rules:
+  - apiGroups: [dbaas.kubebrain.io]
+    resources: [kubebrainoperations]
+    verbs: [create, get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-repair-alert-receiver
+  namespace: kubebrain-repair-operations
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-repair-alert-receiver
+    namespace: kubebrain-repair-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-tikv-repair-alert-receiver
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-tikv-repair-alert-reader
+  namespace: kubebrain-system
+rules:
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames: [kubebrain]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-repair-alert-reader
+  namespace: kubebrain-system
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-repair-alert-receiver
+    namespace: kubebrain-repair-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-tikv-repair-alert-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-tikv-repair-alert-reader
+  namespace: tidb-cluster
+rules:
+  - apiGroups: [pingcap.com]
+    resources: [tidbclusters]
+    resourceNames: [kb]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-repair-alert-reader
+  namespace: tidb-cluster
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-repair-alert-receiver
+    namespace: kubebrain-repair-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-tikv-repair-alert-reader
+---
+# Only the repair executor sees this queue and its parameter Secrets. The generic
+# parameter broker remains scoped to kubebrain-operations.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-repair-operation-worker
+  namespace: kubebrain-repair-operations
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebrain-operation-worker-managed-namespace
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-tikv-repair-parameter-reader
+  namespace: kubebrain-repair-operations
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-repair-parameter-reader
+  namespace: kubebrain-repair-operations
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-tikv-repair-parameter-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-repair-operation-approver
+  namespace: kubebrain-repair-operations
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-operation-approver
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebrain-operation-approver-managed-namespace
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-repair-operation-archiver
+  namespace: kubebrain-repair-operations
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-operation-archiver
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebrain-operation-archiver-managed-namespace
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubebrain-tikv-repair-alert-receiver
+  namespace: kubebrain-repair-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  selector:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubebrain-tikv-repair-alert-receiver
+  namespace: kubebrain-repair-operations
+  labels: &receiverLabels
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+      app.kubernetes.io/part-of: kubebrain
+  template:
+    metadata:
+      labels: *receiverLabels
+    spec:
+      serviceAccountName: kubebrain-tikv-repair-alert-receiver
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      topologySpreadConstraints:
+        - {maxSkew: 1, topologyKey: topology.kubernetes.io/zone, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: *receiverLabels}}
+        - {maxSkew: 1, topologyKey: kubernetes.io/hostname, whenUnsatisfiable: ScheduleAnyway, labelSelector: {matchLabels: *receiverLabels}}
+      containers:
+        - name: receiver
+          image: kubebrain:dev
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/kubebrain-tikv-repair-alert-receiver]
+          args:
+            - --listen-address=:8443
+            - --tls-cert-file=/var/run/secrets/receiver-tls/tls.crt
+            - --tls-key-file=/var/run/secrets/receiver-tls/tls.key
+            - --bearer-token-file=/var/run/secrets/receiver-auth/token
+            - --policy-executable=/opt/kubebrain/hack/production/request-tikv-transaction-repair.sh
+            - --temp-dir=/tmp
+            - --policy-timeout=30s
+          env:
+            - {name: KUBE_CONTEXT, value: in-cluster}
+            - {name: KUBECTL, value: /usr/local/bin/kubectl}
+            - {name: OPERATIONCTL, value: /usr/local/bin/kubebrain-operationctl}
+            - {name: KUBEBRAIN_NAMESPACE, value: kubebrain-system}
+            - {name: KUBEBRAIN_STATEFULSET, value: kubebrain}
+            - {name: TIDB_NAMESPACE, value: tidb-cluster}
+            - {name: TIDB_CLUSTER, value: kb}
+            - {name: OPERATION_NAMESPACE, value: kubebrain-repair-operations}
+            - {name: ENDPOINT, value: "https://kubebrain-client.kubebrain-system.svc:3379"}
+            - {name: MIN_FIRING_SECONDS, value: "120"}
+          ports:
+            - {name: https, containerPort: 8443}
+          readinessProbe:
+            httpGet: {scheme: HTTPS, path: /readyz, port: https}
+            periodSeconds: 5
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet: {scheme: HTTPS, path: /readyz, port: https}
+            periodSeconds: 10
+            timeoutSeconds: 2
+          resources:
+            requests: {cpu: 25m, memory: 48Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: tls, mountPath: /var/run/secrets/receiver-tls, readOnly: true}
+            - {name: auth, mountPath: /var/run/secrets/receiver-auth, readOnly: true}
+      volumes:
+        - {name: tmp, emptyDir: {sizeLimit: 16Mi}}
+        - {name: tls, secret: {secretName: kubebrain-tikv-repair-alert-receiver-tls, defaultMode: 0440}}
+        - name: auth
+          secret:
+            secretName: kubebrain-tikv-repair-alert-receiver-auth
+            defaultMode: 0440
+            items:
+              - {key: token, path: token}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kubebrain-tikv-repair-alert-receiver
+  namespace: kubebrain-repair-operations
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+      app.kubernetes.io/part-of: kubebrain
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kubebrain-tikv-repair-alert-receiver
+  namespace: kubebrain-repair-operations
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+      app.kubernetes.io/part-of: kubebrain
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: alertmanager
+      ports:
+        - {protocol: TCP, port: 8443}
