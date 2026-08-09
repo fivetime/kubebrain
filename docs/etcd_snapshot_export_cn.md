@@ -28,6 +28,9 @@ order 与 legacy metadata 仍通过独立读取拼接，其防物理 GC pin 是�
 因此完成前任何换主都会丢弃整个私有 artifact。
 即使 scanner 暂时没有返回 chunk，capture 也会每 25ms 复核 leadership；换主不需要等待下一块数据或
 客户端 deadline 才取消旧 iterator/pin。
+单次 term 变化会先在服务端透明重捕获；连续 8 次都跨 term 时，对外返回 upstream
+`ErrGRPCLeaderChanged`（gRPC `Unavailable`），客户端可按官方瞬态 leader 错误重试，而不是收到
+无分类的 `Unknown`。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

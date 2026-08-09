@@ -27,6 +27,8 @@ const snapshotLeadershipPollInterval = 25 * time.Millisecond
 
 var errSnapshotChanged = errors.New("snapshot state changed while it was captured")
 
+var errSnapshotLeaderChanged = errors.New("snapshot leadership changed while it was captured")
+
 var errSnapshotHistoricalLeaseUnknown = errors.New("snapshot cannot determine lease for retained legacy version")
 
 // buildSnapshot retries a capture if its pinned stream and captured metadata
@@ -37,10 +39,13 @@ func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 	for attempt := 0; ; attempt++ {
 		_ = os.Remove(path)
 		err := s.buildSnapshotOnce(ctx, path)
-		if !errors.Is(err, errSnapshotChanged) {
+		if !errors.Is(err, errSnapshotChanged) && !errors.Is(err, errSnapshotLeaderChanged) {
 			return err
 		}
 		if attempt >= 7 {
+			if errors.Is(err, errSnapshotLeaderChanged) {
+				return rpctypes.ErrGRPCLeaderChanged
+			}
 			return fmt.Errorf("capture stable etcd snapshot: %w", err)
 		}
 		select {
@@ -64,7 +69,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 			return rpctypes.ErrGRPCNotLeader
 		}
 		if currentEpoch != epoch {
-			return errSnapshotChanged
+			return errSnapshotLeaderChanged
 		}
 		return nil
 	}

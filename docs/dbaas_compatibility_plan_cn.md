@@ -43564,6 +43564,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   上发现 freshness 丢失立即 NotLeader，epoch 改变立即 `errSnapshotChanged`，capture 子 context 的 defer
   随即取消 scanner。确定性 stalled backend 在首块前永不返回，测试推进 epoch 后不释放 backend，要求
   250ms 内仅靠 term poll 返回；既有显式 client cancellation 的首块前/后测试继续保持即时中断。
+  A4103 对齐持续换主下 Snapshot 的公开错误分类：upstream v3rpc `togRPCError` 把
+  `errors.ErrLeaderChanged` 映射为 `rpctypes.ErrGRPCLeaderChanged`（gRPC Unavailable）。旧 KubeBrain
+  将 term 变化与 lease/history 自洽重试共用 `errSnapshotChanged`；连续 8 次失败后用 `fmt.Errorf`
+  返回，gRPC 最终成为 Unknown，官方 client 无法按 leader transient error 处理。现在 term 变化使用
+  独立 `errSnapshotLeaderChanged` sentinel，两类内部错误仍各自重捕获；仅当最后一次/耗尽原因为 term
+  change 时对外精确返回 `ErrGRPCLeaderChanged`，稳定的 pinned-lease/history 不一致仍保留原诊断，不能
+  被伪装成换主。确定性测试让每次 EpochAndLeadingFresh 调用都推进 epoch，固定 8 次 capture 全部放弃、
+  最终错误可 `errors.Is` 官方 LeaderChanged 且 code 为 Unavailable。
 
 ### P2：运维兼容和长期验证
 

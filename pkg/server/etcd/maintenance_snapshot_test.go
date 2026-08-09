@@ -23,7 +23,9 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	mvcc "go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -433,7 +435,7 @@ func TestMaintenanceSnapshotRejectsLeadershipTermChangeBeforePin(t *testing.T) {
 	epoch.Store(8)
 	close(wrapped.proceedMetadata)
 
-	require.ErrorIs(t, <-done, errSnapshotChanged)
+	require.ErrorIs(t, <-done, errSnapshotLeaderChanged)
 	_, statErr := os.Stat(path)
 	require.ErrorIs(t, statErr, os.ErrNotExist,
 		"a term-spanning capture must be rejected before creating its bbolt artifact")
@@ -472,7 +474,7 @@ func TestMaintenanceSnapshotRejectsLeadershipTermChangeDuringStream(t *testing.T
 	}
 	epoch.Store(8)
 	close(wrapped.release)
-	require.ErrorIs(t, <-done, errSnapshotChanged)
+	require.ErrorIs(t, <-done, errSnapshotLeaderChanged)
 }
 
 func TestMaintenanceSnapshotPollsLeadershipWhileScannerIsStalled(t *testing.T) {
@@ -515,7 +517,24 @@ func TestMaintenanceSnapshotPollsLeadershipWhileScannerIsStalled(t *testing.T) {
 		snapshotErr = <-done
 	}
 	require.True(t, returnedOnFence, "term polling must interrupt a stalled scanner without client cancellation")
-	require.ErrorIs(t, snapshotErr, errSnapshotChanged)
+	require.ErrorIs(t, snapshotErr, errSnapshotLeaderChanged)
+}
+
+func TestMaintenanceSnapshotClassifiesRepeatedTermChanges(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var calls atomic.Uint64
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn: func() (uint64, bool) {
+			return calls.Add(1), true
+		},
+	}
+
+	err := server.buildSnapshot(context.Background(), filepath.Join(t.TempDir(), "snapshot.db"))
+	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.GreaterOrEqual(t, calls.Load(), uint64(16), "all eight capture attempts must observe a changed term")
 }
 
 func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *testing.T) {
