@@ -215,6 +215,19 @@ func TestBackendBboltCommitPhasesAreRegisteredWithoutSyntheticSamples(t *testing
 		"TiKV commits must not be reported as embedded bbolt commit phases")
 }
 
+func TestEtcdWALMetricsAreRegisteredAtPlatformZero(t *testing.T) {
+	rec := &histogramRegistrationRecorder{}
+
+	initEtcdWALMetrics(rec)
+
+	require.Equal(t, []string{
+		"etcd.disk.wal_fsync_duration_seconds",
+		"etcd.disk.wal_write_duration_seconds",
+	}, rec.registered)
+	require.Equal(t, []recordedGauge{{name: "etcd.disk.wal_write_bytes_total", value: 0}}, rec.gauges)
+	require.Empty(t, rec.histograms)
+}
+
 func TestMemberPromoteFailuresUseUpstreamMetricNameAndReasonLabel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

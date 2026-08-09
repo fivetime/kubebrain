@@ -43153,6 +43153,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `success="true|false"` 标签，Prometheus adapter 固定精确 20 桶。测试锁定名称、标签、point/range
   wiring 和 bucket 边界；生产只读 gate 在真实 prefix Range 后要求 `_count` family 存在，并新增
   `range_duration_metrics=ok` 摘要。
+- A4066 实现 upstream WAL metrics 的 DBaaS 平台边界：上游
+  `/root/etcd/server/storage/wal/metrics.go` 无条件注册
+  `etcd_disk_wal_fsync_duration_seconds`、`etcd_disk_wal_write_duration_seconds` 与 gauge
+  `etcd_disk_wal_write_bytes_total`；两个 histogram 均使用 1ms 起、2 倍递增、共 14 个 buckets。
+  KubeBrain 进程不持有或写入 embedded-etcd WAL，复制日志、持久化与 fsync 属于独立 TiKV/PD
+  集群，因此三个 process-local 兼容值精确为 0，不能把 TiKV raft log、TiKV transaction、backend
+  commit 或 KubeBrain operation journal 混入。`RPCServer.New` 零样本注册两个 histogram，并发出
+  write-bytes gauge 0；Prometheus adapter 固定 upstream 精确 buckets。测试锁定只注册不 Observe、
+  gauge 零值和桶边界；生产只读 gate 结构化要求三个 family 唯一值均为 0，覆盖缺失和非零负例，
+  并新增 `wal_metrics=ok` 摘要。
+
+  同轮审计了 `etcd_server_apply_duration_seconds{version,op,success}`，确认 upstream 的统一 apply
+  边界同时覆盖 KV、Compaction、Lease、Alarm、Authenticate 与完整 Auth mutation 标签。只在
+  KubeBrain KV backend commit 层接线会遗漏大量 op，并会在 follower 转发时重复计时，因此本轮不做
+  部分实现；后续应在统一 leader apply abstraction 建立后一次性覆盖并保留 exact op labels。
 
 ### P2：运维兼容和长期验证
 

@@ -173,6 +173,41 @@ func TestEtcdRangeDurationHistogramUsesUpstreamBuckets(t *testing.T) {
 	t.Fatal("etcd range duration histogram family not gathered")
 }
 
+func TestEtcdWALHistogramsUseUpstreamBuckets(t *testing.T) {
+	newRegistry := prometheus.NewRegistry()
+	registerer, gather = newRegistry, newRegistry
+	defer func() {
+		registerer, gather = prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	}()
+
+	names := []string{"etcd.disk.wal_fsync_duration_seconds", "etcd.disk.wal_write_duration_seconds"}
+	p := NewMetrics()
+	registrar := p.(metrics.HistogramRegistrar)
+	for _, name := range names {
+		assert.NoError(t, registrar.RegisterHistogram(name))
+	}
+	families, err := gather.Gather()
+	assert.NoError(t, err)
+	found := make(map[string]bool, len(names))
+	for _, family := range families {
+		for _, name := range names {
+			if family.GetName() != strings.ReplaceAll(name, ".", "_") {
+				continue
+			}
+			found[name] = true
+			histogram := family.GetMetric()[0].GetHistogram()
+			assert.Zero(t, histogram.GetSampleCount())
+			assert.Len(t, histogram.GetBucket(), 14)
+			for i, bucket := range histogram.GetBucket() {
+				assert.InDelta(t, 0.001*float64(uint64(1)<<i), bucket.GetUpperBound(), 1e-12)
+			}
+		}
+	}
+	for _, name := range names {
+		assert.True(t, found[name], "WAL histogram family %q not gathered", name)
+	}
+}
+
 func TestBackendBboltCommitPhaseHistogramsUseUpstreamBuckets(t *testing.T) {
 	newRegistry := prometheus.NewRegistry()
 	registerer, gather = newRegistry, newRegistry

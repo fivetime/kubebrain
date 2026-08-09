@@ -251,6 +251,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdBackendSnapshotDuration(metricCli)
 	initEtcdBackendDefragMetrics(metricCli)
 	initEtcdBackendBboltCommitPhaseMetrics(metricCli)
+	initEtcdWALMetrics(metricCli)
 	return server
 }
 
