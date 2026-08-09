@@ -44389,6 +44389,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   再以显式删除并反查版本单独验证 `kubebrain-2/231094427 -> 2393892952`，规则零残留且 proposal health
   通过。该门禁关闭“只有进程 replacement、没有真实失联”的证据窗口；跨节点/AZ、PD/TiKV 网络分区
   及小时级 partition soak 仍保持 P1 开放。
+  A4196 将相同的可恢复节点网络隔离扩展到独立存储集群的 PD leader，并复用既有 backend quorum
+  workload，而不是只观察 operator 状态。`BACKEND_FAULT_MODE=pd-network-partition` 动态绑定
+  `TidbCluster.status.pd.leader.name` 和 Pod IPv4，在 privileged kind node 插入唯一 comment 的双向
+  DROP；只有 status 出现另一个合法 `${cluster}-pd-*` leader、hold 完成、两条规则精确删除且反查不在
+  后才返回。节点/timeout/hold/3 PD+3 TiKV 拓扑全部 fail-closed，默认仍执行原 PD/TiKV Pod replacement。
+  分区命令期间 8 worker 持续轮转 Put、unconditional Txn 和 Range，只接受官方 client 可重试的模糊
+  failover 错误，且必须实际取得成功操作；命令结束后还要求至少一轮 worker 数量的新增成功，并逐 key
+  Put/Get `recovered`。真实独立 3 副本 KubeBrain/3 PD/3 TiKV 上隔离 `kb-pd-2` 后选出 `kb-pd-0`，
+  44.51 秒通过，故障窗口完成 1933 次数据操作；期间可见 DeadlineExceeded 与 KubeBrain freshness
+  self-fence，但没有非预期错误或终态丢失。规则零残留、TidbCluster Ready、proposal health 恢复。
+  本项关闭 PD 仅有 replacement、没有真实 network partition 的证据窗口；TiKV member、跨节点/AZ 和
+  小时级 backend partition 仍保持 P1 开放。
 
 ### P2：运维兼容和长期验证
 

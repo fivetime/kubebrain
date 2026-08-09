@@ -119,6 +119,8 @@ func TestBackendQuorumFailoverKeepsServing(t *testing.T) {
 	active.Store(false)
 	if err != nil {
 		errCh <- fmt.Errorf("failover command: %w: %s", err, strings.TrimSpace(string(output)))
+	} else {
+		t.Logf("backend failover command: %s", strings.TrimSpace(string(output)))
 	}
 	commandSuccesses := successfulDuringCommand.Load()
 	t.Logf("completed %d data operations while the backend failover command was active", commandSuccesses)

@@ -284,6 +284,26 @@ func TestLeaseRenewalNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `BACKEND_FAULT_MODE="${BACKEND_FAULT_MODE:-pod-replacement}"`)
+	require.Contains(t, script, `pd-network-partition)`)
+	require.Contains(t, script, `{{.HostConfig.Privileged}}`)
+	require.Contains(t, script, `partition_tag="kubebrain-pd-partition-${old_leader}-$$"`)
+	require.Contains(t, script, `trap cleanup_partition EXIT`)
+	require.Contains(t, script, `trap 'cleanup_partition; exit 130' INT`)
+	require.Contains(t, script, `trap 'cleanup_partition; exit 143' TERM`)
+	require.Contains(t, script, `trap - EXIT INT TERM`)
+	require.Contains(t, script, `iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip"`)
+	require.Contains(t, script, `iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip"`)
+	require.Contains(t, script, `iptables -w 5 -D FORWARD -s "$partition_pod_ip"`)
+	require.Contains(t, script, `iptables -w 5 -D FORWARD -d "$partition_pod_ip"`)
+	require.Contains(t, script, `[[ "$new_leader" == "$TIDB_CLUSTER-pd-"*`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 	for _, testFile := range []string{
 		"admission_replica_restart_test.go",
