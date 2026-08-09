@@ -44050,6 +44050,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   no-op 仍先得到 PermissionDenied；切换到无 leader follower 后，empty key 仍先返回 EmptyKey，而合法匿名
   delete 返回 Unavailable 而非 ErrUserEmpty。未发现 runtime 差异；A4158 防止为了 no-op 优化而绕过 RBAC，
   或把静态 validation/raft apply 的错误优先级重排。
+  A4159 继续复审 `/root/etcd` `5cd9f4ee1` 的 KV Txn admission contract。upstream v3rpc
+  `checkTxnRequest` 先按顶层 compare/success/failure 最大长度执行 MaxTxnOps，再检查 compare empty key，
+  递归验证 success 后 failure 的每个 Range/Put/Delete/Txn；基础校验全部通过后才运行 success、failure 两棵
+  `checkIntervals`，拒绝重复 Put 或 Put/Delete overlap。只有合法请求才进入 `EtcdServer.Txn` 的 readonly
+  分类：linearizable readonly 先 raft read barrier 再 auth，write Txn 则先 raft/leadership 再 apply auth。
+  KubeBrain 的 `validateTxnRequestWithMaxOps`、`validateTxnRequestOp`、`collectTxnIntervals` 与执行分支保持同序。
+  现有海量 direct/client/raw/nested 测试已覆盖递归预算、nil/unknown op、validation priority 与 overlap 树；
+  本轮补上 auth-enabled follower 的协调交叉门禁：含 empty Range 的畸形只读 Txn 返回 EmptyKey，重复 Put 的
+  畸形写 Txn 返回 DuplicateKey，两者都不得调用 barrier 或 leadership；合法线性只读随后先得到 barrier
+  Unavailable，合法匿名写则先得到 leadership Unavailable 而非 ErrUserEmpty。未发现 runtime 差异；
+  A4159 防止把 readonly 分类、权限检查或协调动作提前到完整递归 admission 之前。
 
 ### P2：运维兼容和长期验证
 

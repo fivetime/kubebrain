@@ -300,6 +300,64 @@ func TestAuthDeleteRangeAdmissionAndReversedRangePriorityMatchEtcd(t *testing.T)
 	require.NotErrorIs(t, err, rpctypes.ErrUserEmpty)
 }
 
+func TestAuthTxnValidationPrecedesReadBarrierLeadershipAndAuthLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	barrierErr := errors.New("linearizable txn barrier failed")
+	var barrierCalls, leaderChecks int
+	server.peers = testPeerService{
+		isLeaderFn: func() bool {
+			leaderChecks++
+			return false
+		},
+		syncReadFn: func(context.Context) error {
+			barrierCalls++
+			return barrierErr
+		},
+	}
+	plain := context.Background()
+
+	invalidRead := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{}},
+	}}}
+	response, err := server.Txn(plain, invalidRead)
+	require.Nil(t, response)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
+	require.Zero(t, barrierCalls)
+	require.Zero(t, leaderChecks)
+
+	key := []byte("/allowed/a")
+	invalidWrite := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("one")}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("two")}}},
+	}}
+	response, err = server.Txn(plain, invalidWrite)
+	require.Nil(t, response)
+	requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument,
+		"etcdserver: duplicate key given in txn request")
+	require.Zero(t, barrierCalls)
+	require.Zero(t, leaderChecks)
+
+	validRead := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: key}},
+	}}}
+	response, err = server.Txn(plain, validRead)
+	require.Nil(t, response)
+	requireReadBarrierUnavailable(t, err, barrierErr.Error())
+	require.Equal(t, 1, barrierCalls)
+	require.Zero(t, leaderChecks)
+
+	validWrite := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("value")}},
+	}}}
+	response, err = server.Txn(plain, validWrite)
+	require.Nil(t, response)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.NotErrorIs(t, err, rpctypes.ErrUserEmpty)
+	require.Positive(t, leaderChecks)
+}
+
 func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
