@@ -102,7 +102,7 @@ func TestClientRangeStreamCommonShapesMatchUnaryRange(t *testing.T) {
 	prefix := fmt.Sprintf("\xff\xfe/a988/rangestream-client/%d/", time.Now().UnixNano())
 	first, err := client.Put(ctx, prefix+"a", "v1")
 	require.NoError(t, err)
-	_, err = client.Put(ctx, prefix+"b", "v2")
+	second, err := client.Put(ctx, prefix+"b", "v2")
 	require.NoError(t, err)
 	_, err = client.Put(ctx, prefix+"a", "v3")
 	require.NoError(t, err)
@@ -119,6 +119,7 @@ func TestClientRangeStreamCommonShapesMatchUnaryRange(t *testing.T) {
 		{name: "reversed-empty", key: prefix + "z", opts: []clientv3.OpOption{clientv3.WithRange(prefix + "a")}},
 		{name: "prefix-limit-one", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithLimit(1)}},
 		{name: "historical-after-first-put", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithRev(first.Header.Revision)}},
+		{name: "historical-prefix-limit-one", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithRev(second.Header.Revision), clientv3.WithLimit(1)}},
 		{name: "from-key", key: prefix, opts: []clientv3.OpOption{clientv3.WithFromKey()}},
 		{name: "keys-only", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithKeysOnly()}},
 		{name: "count-only-limit", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithCountOnly(), clientv3.WithLimit(1)}},

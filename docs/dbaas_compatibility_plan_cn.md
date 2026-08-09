@@ -44137,6 +44137,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   注入 7→8 的 term source，要求只读取一次且 header/body 均为 7，并与 client/v3 Status metadata、普通
   response header 及 cached-term 测试联合重复。A4167 修复了真实任期切换窗口，也使 DBaaS endpoint
   status 能安全采用新 etcdctl 的单字段输出而不隐藏自相矛盾的服务端状态。
+  A4168 审计 `/root/etcd` `0bc4399f5` 将 RangeStream 纳入 robustness coverage 已知方法集合的变更。
+  upstream 对该生产读取面显式追踪 `rangeEnd`、`revision` 与 `limit` 三个输入维度，表明 RangeStream
+  不能只以无界当前前缀读证明兼容。KubeBrain 已分别覆盖前缀、历史 revision、limit/chunk/Count/More，
+  但官方 client/v3 黑盒矩阵此前没有把三者组合在同一次调用。本轮新增 historical-prefix-limit-one：
+  在两个 key 均存在的固定 revision 上执行 prefix + rev + limit=1，并将 `GetStreamToGetResponse` 合并结果
+  与 unary Get 精确比较 header revision、Count、More、key/value、create/mod revision、version 和 lease。
+  未发现 runtime 差异；A4168 防止后续 RangeStream 分页优化错误使用当前 revision 计算历史页边界或总数，
+  并把 KubeBrain 的 3.7 RangeStream 明确维持在上游 robustness 所识别的生产协议面内。
 
 ### P2：运维兼容和长期验证
 
