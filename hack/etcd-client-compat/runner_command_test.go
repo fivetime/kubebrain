@@ -304,6 +304,20 @@ func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-network-partition)`)
+	require.Contains(t, script, `max_by(.value.leaderCount).value.podName`)
+	require.Contains(t, script, `partition_tag="kubebrain-tikv-partition-${tikv_pod}-$$"`)
+	require.Contains(t, script, `[[ -n "$store_state" && "$store_state" != "Up" ]]`)
+	require.Contains(t, script, `[[ "$store_state" == "Up" ]]`)
+	require.Contains(t, script, `cleanup_partition`)
+	require.Contains(t, script, `trap - EXIT INT TERM`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 	for _, testFile := range []string{
 		"admission_replica_restart_test.go",

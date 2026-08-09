@@ -44401,6 +44401,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   self-fence，但没有非预期错误或终态丢失。规则零残留、TidbCluster Ready、proposal health 恢复。
   本项关闭 PD 仅有 replacement、没有真实 network partition 的证据窗口；TiKV member、跨节点/AZ 和
   小时级 backend partition 仍保持 P1 开放。
+  A4197 将 backend network partition 补到 TiKV member，并避免“随便隔离一个无关 follower”的弱
+  oracle。`BACKEND_FAULT_MODE=tikv-network-partition` 从 `TidbCluster.status.tikv.stores` 中筛选
+  `state=Up && leaderCount>0`，选择当前 leaderCount 最大的 store/pod，再插入同样带唯一 comment、
+  显式删除和反查的双向 DROP。门禁必须先观察该 store 从 Up 变为非 Up，证明规则实际跨过 PD 的
+  store heartbeat 判定；hold 后恢复网络，还必须在超时内观察同一 pod 回到 Up 才允许 helper 成功。
+  真实独立 3 副本 KubeBrain/3 PD/3 TiKV 上自动选择 `kb-tikv-0`，operator 明确报告
+  `Up -> Disconnected -> Up`，74.93 秒通过；8-worker Put/Txn/Range workload 在故障命令活跃期间
+  完成 3317 次成功操作，最终每个 key 的 recovered Put/Get 均通过。规则零残留、TidbCluster Ready、
+  3 KubeBrain/3 PD/3 TiKV 全部 Ready 且零重启，proposal health 恢复。至此单节点 kind 环境中
+  KubeBrain leader、PD leader 和 leader-heavy TiKV member 的真实失联均有可重复门禁；跨节点/AZ、
+  双 member/失去 quorum 与小时级 backend partition 仍保持 P1 开放。
 
 ### P2：运维兼容和长期验证
 
