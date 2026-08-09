@@ -167,6 +167,16 @@ func invalidWatchResultShape(result etcdproxy.WatchResult) error {
 	if result.ProgressRevision > 0 && result.Revision > 0 {
 		return fmt.Errorf("watch backend returned mixed progress revision %d and batch revision %d", result.ProgressRevision, result.Revision)
 	}
+	for i, event := range result.Events {
+		if event == nil || event.Kv == nil {
+			return fmt.Errorf("watch backend returned invalid nil event at index %d", i)
+		}
+		switch event.Type {
+		case mvccpb.PUT, mvccpb.DELETE:
+		default:
+			return fmt.Errorf("watch backend returned unsupported event type %s at index %d", event.Type, i)
+		}
+	}
 	return nil
 }
 

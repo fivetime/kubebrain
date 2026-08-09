@@ -43681,6 +43681,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `WatchResult{Err}`（含 event index/revision）并关闭 generation；转换阶段的任何其他错误也执行同一
   fail-closed 路径，不再 continue。预检先于 PrevKV prefetch、`noteEvent` 缓存更新和 pending-event gauge，
   因而失败 batch 零事件发布、零部分转换水位；外层 Watch 按既有 error 路径取消并促使客户端重列。
+  A4119 将同一 fail-closed 边界扩展到 follower/peer-proxy `WatchResult`：此前 nil event/nil KV 会被
+  `filterWatchEventsByRange` 当作范围外事件静默丢弃，未知 `mvccpb.EventType` 也可穿过过滤并随 batch 水位
+  发布，因而代理 watch 仍可能永久漏事件。`invalidWatchResultShape` 现在在任何 range、用户 filter、PrevKV
+  或 revision 水位处理前逐项验证 event envelope，只接受非 nil KV 的 PUT/DELETE；任一损坏项都携带 index
+  取消整个 generation。注入测试以合法 PUT 开头、nil event 结尾，断言只收到 canceled response、零 events，
+  并另钉 nil KV 与未知类型，确保 leader shim 与 peer-proxy 两个入口均不再部分接受损坏批次。
 
 ### P2：运维兼容和长期验证
 

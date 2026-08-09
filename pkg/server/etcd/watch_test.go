@@ -1249,7 +1249,29 @@ func TestInvalidWatchResultShapeRejectsProgressWithBatchRevision(t *testing.T) {
 	err := invalidWatchResultShape(etcdproxy.WatchResult{ProgressRevision: 10, Revision: 9})
 	require.EqualError(t, err, "watch backend returned mixed progress revision 10 and batch revision 9")
 	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{ProgressRevision: 10}))
-	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{}}}))
+	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: 10},
+	}}}))
+	require.EqualError(t, invalidWatchResultShape(etcdproxy.WatchResult{
+		Revision: 10, Events: []*mvccpb.Event{{Type: mvccpb.PUT}},
+	}), "watch backend returned invalid nil event at index 0")
+	require.EqualError(t, invalidWatchResultShape(etcdproxy.WatchResult{
+		Revision: 10, Events: []*mvccpb.Event{{Type: mvccpb.Event_EventType(99), Kv: &mvccpb.KeyValue{ModRevision: 10}}},
+	}), "watch backend returned unsupported event type 99 at index 0")
+}
+
+func TestWatchRejectsMalformedEventBatchBeforePartialPublication(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
+		Revision: 10,
+		Events: []*mvccpb.Event{
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/valid"), ModRevision: 10}},
+			nil,
+		},
+	})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Empty(t, responses[0].Events)
+	require.Contains(t, responses[0].CancelReason, "invalid nil event at index 1")
 }
 
 func TestWatchRejectsEmptyBackendResult(t *testing.T) {
