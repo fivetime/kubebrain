@@ -108,7 +108,7 @@ func emitKnownPeersMetric(metricCli metrics.Metrics, localID uint64, members []*
 // protocol-compatible value for etcdctl and other 3.6+ clients.
 const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
 
-func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (_ *etcdserverpb.AlarmResponse, retErr error) {
 	s.metricCli.EmitCounter("maintenance.alarm", 1)
 	switch req.GetAction() {
 	case etcdserverpb.AlarmRequest_GET:
@@ -118,6 +118,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return nil, readBarrierStatusErr(err)
 		}
+		defer beginEtcdApply(s.metricCli, "Alarm", &retErr)()
 	case etcdserverpb.AlarmRequest_DEACTIVATE:
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
@@ -126,6 +127,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err != nil {
 			return nil, err
 		}
+		defer beginEtcdApply(s.metricCli, "Alarm", &retErr)()
 		response := &etcdserverpb.AlarmResponse{Header: header}
 		if req.GetAlarm() == etcdserverpb.AlarmType_NONE {
 			return response, nil
@@ -179,6 +181,7 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 		if err != nil {
 			return nil, err
 		}
+		defer beginEtcdApply(s.metricCli, "Alarm", &retErr)()
 		response := &etcdserverpb.AlarmResponse{Header: header}
 		if req.GetAlarm() == etcdserverpb.AlarmType_NONE {
 			return response, nil

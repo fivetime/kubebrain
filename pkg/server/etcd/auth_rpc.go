@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -23,7 +24,7 @@ func (s *RPCServer) authRPCHeader(ctx context.Context) (*etcdserverpb.ResponseHe
 	return &etcdserverpb.ResponseHeader{Revision: int64(revision)}, nil
 }
 
-func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error) {
+func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRequest) (_ *etcdserverpb.AuthEnableResponse, retErr error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
@@ -37,6 +38,7 @@ func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRe
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthEnable", &retErr)()
 	s.nativeAuthBoundary.Lock()
 	defer s.nativeAuthBoundary.Unlock()
 	if err = s.auth.enable(ctx); err != nil {
@@ -45,7 +47,7 @@ func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRe
 	return &etcdserverpb.AuthEnableResponse{Header: header}, nil
 }
 
-func (s *RPCServer) AuthDisable(ctx context.Context, _ *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error) {
+func (s *RPCServer) AuthDisable(ctx context.Context, _ *etcdserverpb.AuthDisableRequest) (_ *etcdserverpb.AuthDisableResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -53,6 +55,7 @@ func (s *RPCServer) AuthDisable(ctx context.Context, _ *etcdserverpb.AuthDisable
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthDisable", &retErr)()
 	s.nativeAuthBoundary.Lock()
 	defer s.nativeAuthBoundary.Unlock()
 	if err := s.auth.disable(ctx); err != nil {
@@ -102,7 +105,7 @@ func (s *RPCServer) authStatusSnapshot(ctx context.Context) (*authSnapshot, erro
 	return snapshot, nil
 }
 
-func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRequest) (_ *etcdserverpb.AuthStatusResponse, retErr error) {
 	if _, err := s.authStatusSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -110,14 +113,19 @@ func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRe
 	if err != nil {
 		return nil, err
 	}
+	// The first snapshot validates authentication metadata before the simulated
+	// raft boundary; the state read below corresponds to AuthStatus's apply.
+	defer beginEtcdApply(s.metricCli, "unknown", &retErr)()
 	snapshot, err := s.authStatusSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
+	// Upstream's dispatch does not assign an op for AuthStatus and therefore
+	// exposes the historical label value "unknown". Preserve that contract.
 	return &etcdserverpb.AuthStatusResponse{Header: header, Enabled: snapshot.Config.Enabled, AuthRevision: snapshot.Config.Revision}, nil
 }
 
-func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.AuthenticateRequest) (_ *etcdserverpb.AuthenticateResponse, retErr error) {
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, readBarrierStatusErr(err)
 	}
@@ -130,7 +138,13 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		token, err := s.tokens.authenticate(ctx, request.Name, request.Password)
+		token, err := s.tokens.authenticateWithIssue(ctx, request.Name, request.Password,
+			func(issue func() (string, error)) (string, error) {
+				start := time.Now()
+				token, issueErr := issue()
+				emitEtcdApplyDuration(s.metricCli, "Authenticate", time.Since(start), issueErr)
+				return token, issueErr
+			})
 		if err != nil {
 			return nil, err
 		}
@@ -156,7 +170,7 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 	}
 }
 
-func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (_ *etcdserverpb.AuthUserAddResponse, retErr error) {
 	if request.Options == nil || !request.Options.NoPassword {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), s.auth.bcryptCost)
 		if err != nil {
@@ -172,6 +186,7 @@ func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserA
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthUserAdd", &retErr)()
 	if err := s.auth.userAddHashed(ctx, request); err != nil {
 		return nil, err
 	}
@@ -200,14 +215,15 @@ func (s *RPCServer) userReadSnapshot(ctx context.Context, username string) (*aut
 	return snapshot, nil
 }
 
-func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
-	if _, err := s.userReadSnapshot(ctx, request.Name); err != nil {
+func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserGetRequest) (_ *etcdserverpb.AuthUserGetResponse, retErr error) {
+	if err := s.validateEtcdApplyAuthInfo(ctx); err != nil {
 		return nil, err
 	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthUserGet", &retErr)()
 	snapshot, err := s.userReadSnapshot(ctx, request.Name)
 	if err != nil {
 		return nil, err
@@ -219,7 +235,7 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 	return &etcdserverpb.AuthUserGetResponse{Header: header, Roles: append([]string(nil), user.Roles...)}, nil
 }
 
-func (s *RPCServer) UserList(ctx context.Context, _ *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+func (s *RPCServer) UserList(ctx context.Context, _ *etcdserverpb.AuthUserListRequest) (_ *etcdserverpb.AuthUserListResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -231,10 +247,11 @@ func (s *RPCServer) UserList(ctx context.Context, _ *etcdserverpb.AuthUserListRe
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthUserList", &retErr)()
 	return &etcdserverpb.AuthUserListResponse{Header: header, Users: authUserNames(snapshot)}, nil
 }
 
-func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUserDeleteRequest) (*etcdserverpb.AuthUserDeleteResponse, error) {
+func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUserDeleteRequest) (_ *etcdserverpb.AuthUserDeleteResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -242,13 +259,14 @@ func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUs
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthUserDelete", &retErr)()
 	if err := s.auth.userDelete(ctx, request.Name); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserDeleteResponse{Header: header}, nil
 }
 
-func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverpb.AuthUserChangePasswordRequest) (_ *etcdserverpb.AuthUserChangePasswordResponse, retErr error) {
 	if request.Password != "" {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), s.auth.bcryptCost)
 		if err != nil {
@@ -264,13 +282,14 @@ func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverp
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthUserChangePassword", &retErr)()
 	if err := s.auth.userChangePassword(ctx, request.Name, request.Password, request.HashedPassword); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserChangePasswordResponse{Header: header}, nil
 }
 
-func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.AuthUserGrantRoleRequest) (*etcdserverpb.AuthUserGrantRoleResponse, error) {
+func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.AuthUserGrantRoleRequest) (_ *etcdserverpb.AuthUserGrantRoleResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -278,13 +297,14 @@ func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.Aut
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthUserGrantRole", &retErr)()
 	if err := s.auth.userGrantRole(ctx, request.User, request.Role); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserGrantRoleResponse{Header: header}, nil
 }
 
-func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.AuthUserRevokeRoleRequest) (*etcdserverpb.AuthUserRevokeRoleResponse, error) {
+func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.AuthUserRevokeRoleRequest) (_ *etcdserverpb.AuthUserRevokeRoleResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -292,13 +312,14 @@ func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.Au
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthUserRevokeRole", &retErr)()
 	if err := s.auth.userRevokeRole(ctx, request.Name, request.Role); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthUserRevokeRoleResponse{Header: header}, nil
 }
 
-func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleAddRequest) (*etcdserverpb.AuthRoleAddResponse, error) {
+func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleAddRequest) (_ *etcdserverpb.AuthRoleAddResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -306,6 +327,7 @@ func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleA
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthRoleAdd", &retErr)()
 	if err := s.auth.roleAdd(ctx, request.Name); err != nil {
 		return nil, err
 	}
@@ -331,14 +353,15 @@ func (s *RPCServer) roleReadSnapshot(ctx context.Context, roleName string) (*aut
 	return snapshot, nil
 }
 
-func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
-	if _, err := s.roleReadSnapshot(ctx, request.Role); err != nil {
+func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleGetRequest) (_ *etcdserverpb.AuthRoleGetResponse, retErr error) {
+	if err := s.validateEtcdApplyAuthInfo(ctx); err != nil {
 		return nil, err
 	}
 	header, err := s.authRPCHeader(ctx)
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthRoleGet", &retErr)()
 	snapshot, err := s.roleReadSnapshot(ctx, request.Role)
 	if err != nil {
 		return nil, err
@@ -358,7 +381,7 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 	return &etcdserverpb.AuthRoleGetResponse{Header: header, Perm: permissions}, nil
 }
 
-func (s *RPCServer) RoleList(ctx context.Context, _ *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+func (s *RPCServer) RoleList(ctx context.Context, _ *etcdserverpb.AuthRoleListRequest) (_ *etcdserverpb.AuthRoleListResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -370,10 +393,11 @@ func (s *RPCServer) RoleList(ctx context.Context, _ *etcdserverpb.AuthRoleListRe
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthRoleList", &retErr)()
 	return &etcdserverpb.AuthRoleListResponse{Header: header, Roles: authRoleNames(snapshot)}, nil
 }
 
-func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRoleDeleteRequest) (*etcdserverpb.AuthRoleDeleteResponse, error) {
+func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRoleDeleteRequest) (_ *etcdserverpb.AuthRoleDeleteResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -381,13 +405,14 @@ func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRo
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthRoleDelete", &retErr)()
 	if err := s.auth.roleDelete(ctx, request.Role); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthRoleDeleteResponse{Header: header}, nil
 }
 
-func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error) {
+func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserverpb.AuthRoleGrantPermissionRequest) (_ *etcdserverpb.AuthRoleGrantPermissionResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -395,13 +420,14 @@ func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserver
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthRoleGrantPermission", &retErr)()
 	if err := s.auth.roleGrantPermission(ctx, request.Name, request.Perm); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.AuthRoleGrantPermissionResponse{Header: header}, nil
 }
 
-func (s *RPCServer) RoleRevokePermission(ctx context.Context, request *etcdserverpb.AuthRoleRevokePermissionRequest) (*etcdserverpb.AuthRoleRevokePermissionResponse, error) {
+func (s *RPCServer) RoleRevokePermission(ctx context.Context, request *etcdserverpb.AuthRoleRevokePermissionRequest) (_ *etcdserverpb.AuthRoleRevokePermissionResponse, retErr error) {
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -409,6 +435,7 @@ func (s *RPCServer) RoleRevokePermission(ctx context.Context, request *etcdserve
 	if err != nil {
 		return nil, err
 	}
+	defer beginEtcdApply(s.metricCli, "AuthRoleRevokePermission", &retErr)()
 	if err := s.auth.roleRevokePermission(ctx, request.Role, request.Key, request.RangeEnd); err != nil {
 		return nil, err
 	}

@@ -101,7 +101,7 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 	return record, nil
 }
 
-func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
+func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (_ *etcdserverpb.LeaseGrantResponse, retErr error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
 	explicitID := req.ID != 0
 	if !explicitID {
@@ -111,9 +111,6 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	defer cancel()
 	caller, err := m.srv.authCallerFromContext(ctx)
 	if err != nil {
-		return nil, err
-	}
-	if err := m.srv.rejectCorrupt(ctx); err != nil {
 		return nil, err
 	}
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
@@ -131,6 +128,10 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		return nil, err
 	}
 	if err := m.requireLeaseReady(); err != nil {
+		return nil, err
+	}
+	defer beginEtcdApply(m.srv.metricCli, "LeaseGrant", &retErr)()
+	if err := m.srv.rejectCorrupt(ctx); err != nil {
 		return nil, err
 	}
 	_, _, noSpace, err := m.srv.backend.QuotaStatus(ctx)
@@ -222,7 +223,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	}, nil
 }
 
-func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (*etcdserverpb.LeaseRevokeResponse, error) {
+func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseRevokeRequest) (_ *etcdserverpb.LeaseRevokeResponse, retErr error) {
 	m.srv.metricCli.EmitCounter("lease.revoke", 1)
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
@@ -231,9 +232,6 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		return nil, err
 	}
 	ctx = withAuthWriteGuard(ctx, caller)
-	if err := m.srv.rejectCorrupt(ctx); err != nil {
-		return nil, err
-	}
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		err := m.requireLeaseLeader("lease revoke")
@@ -249,6 +247,10 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		return nil, err
 	}
 	if err := m.requireLeaseReady(); err != nil {
+		return nil, err
+	}
+	defer beginEtcdApply(m.srv.metricCli, "LeaseRevoke", &retErr)()
+	if err := m.srv.rejectCorrupt(ctx); err != nil {
 		return nil, err
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
@@ -969,7 +971,9 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		// that delete, and the original state pointer below fences revoke/regrant
 		// of the same lease ID.
 		unlockWrite()
+		applyStart := time.Now()
 		err := m.persistLeaseCheckpointCAS(ctx, id, ttl, previousRemainingTTL, 0)
+		emitEtcdApplyDuration(m.srv.metricCli, "LeaseCheckpoint", time.Since(applyStart), err)
 		lockWrite()
 		m.leaseMu.Lock()
 		current := m.leases[id]
@@ -1926,7 +1930,10 @@ func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id 
 	}
 	m.leaseMu.Unlock()
 
-	if err := m.persistLeaseCheckpoint(ctx, id, ttl, remainingTTL); err != nil {
+	applyStart := time.Now()
+	err := m.persistLeaseCheckpoint(ctx, id, ttl, remainingTTL)
+	emitEtcdApplyDuration(m.srv.metricCli, "LeaseCheckpoint", time.Since(applyStart), err)
+	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.checkpoint.err", 1)
 		klog.ErrorS(err, "lease checkpoint: failed to persist remaining TTL", "lease", id, "remainingTTL", remainingTTL)
 		m.retryLeaseCheckpoint(id)

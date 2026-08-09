@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -135,6 +137,141 @@ func TestEmitEtcdRangeDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
 		{name: "etcd.server.range_duration_seconds", value: 1.5, tags: []metrics.T{metrics.Tag("success", "true")}},
 		{name: "etcd.server.range_duration_seconds", value: 2.0, tags: []metrics.T{metrics.Tag("success", "false")}},
 	}, rec.histograms)
+}
+
+func TestEmitEtcdApplyDurationUsesCompleteUpstreamV3LabelMatrix(t *testing.T) {
+	rec := &recordingMetrics{}
+	ops := []string{
+		"Range", "Put", "DeleteRange", "Txn", "Compaction",
+		"LeaseGrant", "LeaseRevoke", "LeaseCheckpoint", "Alarm", "Authenticate",
+		"AuthEnable", "AuthDisable", "unknown",
+		"AuthUserAdd", "AuthUserDelete", "AuthUserChangePassword", "AuthUserGrantRole",
+		"AuthUserGet", "AuthUserRevokeRole", "AuthUserList",
+		"AuthRoleAdd", "AuthRoleGrantPermission", "AuthRoleGet",
+		"AuthRoleRevokePermission", "AuthRoleDelete", "AuthRoleList",
+	}
+
+	for i, op := range ops {
+		var err error
+		if i%2 != 0 {
+			err = errors.New("apply failed")
+		}
+		emitEtcdApplyDuration(rec, op, time.Duration(i+1)*time.Millisecond, err)
+	}
+
+	require.Len(t, rec.histograms, len(ops))
+	for i, op := range ops {
+		require.Equal(t, "etcd.server.apply_duration_seconds", rec.histograms[i].name)
+		require.Equal(t, float64(i+1)/1000, rec.histograms[i].value)
+		require.Equal(t, []metrics.T{
+			metrics.Tag("version", "v3"),
+			metrics.Tag("op", op),
+			metrics.Tag("success", strconv.FormatBool(i%2 == 0)),
+		}, rec.histograms[i].tags)
+	}
+}
+
+func TestApplyDurationBracketsPostAdmissionOperationsOnly(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	ctx := context.Background()
+
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{})
+	require.Error(t, err)
+	require.Empty(t, rec.histograms, "request validation happens before upstream apply")
+
+	key := []byte("/apply-metrics/key")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	_, err = server.Range(ctx, &etcdserverpb.RangeRequest{Key: key, Serializable: true})
+	require.NoError(t, err)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{
+			Key: key, Serializable: true,
+		}},
+	}}})
+	require.NoError(t, err)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{
+			Key: key, Value: []byte("updated"),
+		}},
+	}}})
+	require.NoError(t, err)
+	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 5})
+	require.NoError(t, err)
+	require.NotZero(t, lease.ID)
+	_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	_, err = server.RoleList(ctx, &etcdserverpb.AuthRoleListRequest{})
+	require.NoError(t, err)
+	_, err = server.AuthStatus(ctx, &etcdserverpb.AuthStatusRequest{})
+	require.NoError(t, err)
+
+	var got []string
+	for _, histogram := range rec.histograms {
+		if histogram.name != etcdApplyDurationMetric {
+			continue
+		}
+		got = append(got, histogram.tags[1].Value+"/"+histogram.tags[2].Value)
+	}
+	require.Equal(t, []string{
+		"Put/true", "Txn/true", "LeaseGrant/true",
+		"Alarm/true", "AuthRoleList/true", "unknown/true",
+	}, got)
+
+	rec.histograms = nil
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{Key: key, Serializable: true}, stream))
+	for _, histogram := range rec.histograms {
+		require.NotEqual(t, etcdApplyDurationMetric, histogram.name,
+			"upstream RangeStream bypasses uberApplier and must not emit apply duration")
+	}
+
+	rec.histograms = nil
+	server.peers = testPeerService{noLeader: true}
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("follower"), Value: []byte("value")})
+	require.Error(t, err)
+	require.Empty(t, rec.histograms, "follower rejection is not a local apply")
+}
+
+func TestApplyDurationTreatsCompactedAsSuccessfulApply(t *testing.T) {
+	rec := &recordingMetrics{}
+	emitEtcdApplyDuration(rec, "Range", time.Millisecond, rpctypes.ErrGRPCCompacted)
+	require.Equal(t, "true", rec.histograms[0].tags[2].Value)
+}
+
+func TestApplyDurationIncludesApplyAuthorizationButExcludesInvalidAuthInfo(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+
+	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/denied/key"), Value: []byte("value")})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/anonymous/key"), Value: []byte("value")})
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	invalidCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, "invalid-token",
+	))
+	_, err = server.Put(invalidCtx, &etcdserverpb.PutRequest{Key: []byte("/invalid/key"), Value: []byte("value")})
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	_, err = server.UserGet(aliceCtx, &etcdserverpb.AuthUserGetRequest{Name: "root"})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	_, err = server.RoleGet(aliceCtx, &etcdserverpb.AuthRoleGetRequest{Role: "root"})
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+
+	var got []string
+	for _, histogram := range rec.histograms {
+		if histogram.name == etcdApplyDurationMetric {
+			got = append(got, histogram.tags[1].Value+"/"+histogram.tags[2].Value)
+		}
+	}
+	require.Equal(t, []string{
+		"Put/false", "Put/false", "AuthUserGet/false", "AuthRoleGet/false",
+	}, got, "invalid authentication metadata must fail before the apply observer")
 }
 
 func TestBackendShimObservesPointAndRangeMVCCReads(t *testing.T) {

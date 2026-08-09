@@ -66,6 +66,19 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	}, nil
 }
 
+// validateEtcdApplyAuthInfo mirrors EtcdServer.processInternalRaftRequestOnce's
+// AuthInfoFromCtx step. Missing credentials are represented by a nil AuthInfo
+// upstream and reach the apply-time authorization wrapper; malformed or invalid
+// credentials fail before an InternalRaftRequest is proposed and are not apply
+// observations.
+func (s *RPCServer) validateEtcdApplyAuthInfo(ctx context.Context) error {
+	_, err := s.authCallerFromContext(ctx)
+	if errors.Is(err, rpctypes.ErrUserEmpty) {
+		return nil
+	}
+	return err
+}
+
 func authCredentialFromContext(ctx context.Context) (string, bool) {
 	values := metadata.ValueFromIncomingContext(ctx, rpctypes.TokenFieldNameGRPC)
 	if len(values) == 0 {

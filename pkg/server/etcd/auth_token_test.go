@@ -77,6 +77,26 @@ func TestAuthTokenUsesPerUserInvalidation(t *testing.T) {
 	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 }
 
+func TestAuthenticateApplyObserverStartsAfterPasswordAdmission(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, tokens := bootstrapAuthForToken(t, server)
+	ctx := context.Background()
+	observed := 0
+	observer := func(issue func() (string, error)) (string, error) {
+		observed++
+		return issue()
+	}
+
+	_, err := tokens.authenticateWithIssue(ctx, "root", "wrong", observer)
+	require.ErrorIs(t, err, rpctypes.ErrAuthFailed)
+	require.Zero(t, observed, "a rejected password never reaches upstream Authenticate apply")
+
+	_, err = tokens.authenticateWithIssue(ctx, "root", "secret", observer)
+	require.NoError(t, err)
+	require.Equal(t, 1, observed)
+}
+
 func TestAuthTokenAuthenticateRetriesAfterAuthRevisionChange(t *testing.T) {
 	t.Run("password change rejects stale credentials", func(t *testing.T) {
 		server, closeFn := newTestRPCServer(t)

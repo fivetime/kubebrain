@@ -43190,6 +43190,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PVC 单独重建异常 TiKV Pod 后恢复。该结果只证明本轮指标和 KubeBrain dependency readiness，
   不证明 TiKV 自身 Pod readiness 能覆盖 KV service health；后续 DBaaS 运维门禁必须增加 20160
   request-level probe/自动修复，不能只依赖 TiKV Pod Ready 或 PD store heartbeat。
+- A4068 实现 upstream unified apply duration histogram：上游
+  `/root/etcd/server/etcdserver/txn/metrics.go` 定义
+  `etcd_server_apply_duration_seconds{version,op,success}`，并由
+  `/root/etcd/server/etcdserver/apply/uber_applier.go` 的统一 dispatch 从进入 post-admission
+  state-machine apply 到返回结果观察；bucket 为 0.1ms 起、2 倍递增、共 20 桶。该 dispatch 不只
+  包含 Put/DeleteRange/写 Txn/Compaction，还包含 Lease Grant/Revoke/Checkpoint、Alarm、
+  Authenticate，以及 Auth user/role 的完整读写矩阵；AuthStatus 因 upstream 未设置 op 而保留历史
+  `op="unknown"` 标签。KubeBrain 没有 embedded Raft applier，因此在各 DBaaS 等价 post-admission
+  边界统一调用同一 observer：请求校验、leader routing、无效 token/auth metadata 和 follower proxy
+  不计；合法或缺失身份进入 state-machine wrapper 后的 key/lease/UserGet/RoleGet 权限拒绝，以及
+  quota/CORRUPT、存储或语义错误按 `success="false"` 计；外层 admin wrapper 在 dispatch 前拒绝的
+  Auth 管理操作不计，ErrCompacted 与 upstream
+  一样视为成功 apply。public Range 与 read-only Txn 在 upstream `v3_server.go` 直接走 `txn.Range`/
+  `txn.Txn`、绕过 `raftRequest`，因此不产生 apply-duration；虽然 uber dispatch 仍保留内部 Range
+  case，KubeBrain 不把公开读路径冒充成该内部 apply。Lease 的周期 checkpoint 写入和 keepalive 清 checkpoint CAS 分别产生
+  `LeaseCheckpoint` 样本；不支持的数据面 ClusterVersionSet/ClusterMemberAttrSet/DowngradeInfoSet
+  不伪造 time series。RangeStream 同样在 upstream 绕过 uberApplier，只调用 `txn.Range`；
+  KubeBrain 的 stream 路径也不产生 apply 样本。
+  Prometheus adapter 固定精确 20 桶；结构测试锁定全部受支持 op wiring，行为测试锁定 validation/
+  follower exclusion、read/write/lease/alarm/auth 成功标签、AuthStatus unknown 与 compacted success。
+  生产只读 gate 不通过读请求伪造样本；family 出现时严格校验 v3/op/success 标签，并新增
+  `apply_duration_metrics=optional-ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

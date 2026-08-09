@@ -129,6 +129,14 @@ func (m *authTokenManager) ensureSigningKey(ctx context.Context) ([]byte, error)
 }
 
 func (m *authTokenManager) authenticate(ctx context.Context, username, password string) (string, error) {
+	return m.authenticateWithIssue(ctx, username, password, nil)
+}
+
+func (m *authTokenManager) authenticateWithIssue(
+	ctx context.Context,
+	username, password string,
+	observeIssue func(func() (string, error)) (string, error),
+) (string, error) {
 	for {
 		snapshot, err := m.snapshots.current(ctx)
 		if err != nil {
@@ -159,6 +167,9 @@ func (m *authTokenManager) authenticate(ctx context.Context, username, password 
 		}
 		if latest.Config != snapshot.Config {
 			continue
+		}
+		if observeIssue != nil {
+			return observeIssue(func() (string, error) { return m.issue(ctx, latest, username) })
 		}
 		return m.issue(ctx, latest, username)
 	}

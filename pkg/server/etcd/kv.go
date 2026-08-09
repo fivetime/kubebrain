@@ -594,6 +594,10 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 			}
 			return nil, s.notLeaderErr("txn")
 		}
+		if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
+			return nil, authErr
+		}
+		defer beginEtcdApply(s.metricCli, "Txn", &retErr)()
 	}
 	caller, authErr := s.authCallerFromContext(ctx)
 	if authErr != nil {
@@ -1081,7 +1085,7 @@ func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
 	return nil
 }
 
-func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
+func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (_ *etcdserverpb.CompactionResponse, retErr error) {
 	// Upstream kvServer.Compact applies AuthAdmin.isPermitted before it enters
 	// EtcdServer.Compact and therefore before any leader routing. Compact is a
 	// cluster-wide destructive history operation, so an anonymous/non-root call
@@ -1108,6 +1112,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 		}
 		return nil, s.notLeaderErr("compact")
 	}
+	defer beginEtcdApply(s.metricCli, "Compaction", &retErr)()
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err
 	}
@@ -1185,7 +1190,7 @@ func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int
 	}
 }
 
-func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etcdserverpb.PutResponse, retErr error) {
 	emitEtcdMVCCPutCounter(s.metricCli, 1)
 	startTime := time.Now()
 	ctx, cancel := withUnaryRequestTimeout(ctx)
@@ -1207,6 +1212,10 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 		}
 		return nil, s.notLeaderErr("put")
 	}
+	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
+		return nil, authErr
+	}
+	defer beginEtcdApply(s.metricCli, "Put", &retErr)()
 	caller, authErr := s.authCallerFromContext(ctx)
 	if authErr != nil {
 		return nil, authErr
@@ -1265,7 +1274,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcds
 	return response, mapFenceErr(err)
 }
 
-func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (_ *etcdserverpb.DeleteRangeResponse, retErr error) {
 	emitEtcdMVCCDeleteCounter(s.metricCli, 1)
 	startTime := time.Now()
 	ctx, cancel := withUnaryRequestTimeout(ctx)
@@ -1287,6 +1296,10 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 		}
 		return nil, s.notLeaderErr("delete range")
 	}
+	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
+		return nil, authErr
+	}
+	defer beginEtcdApply(s.metricCli, "DeleteRange", &retErr)()
 	caller, authErr := s.authCallerFromContext(ctx)
 	if authErr != nil {
 		return nil, authErr
