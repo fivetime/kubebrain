@@ -44172,6 +44172,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   以当前源码构建工具，真实黑盒检查 KubeBrain 制品通过；常规门禁不硬编码 sibling repo 路径。
   未发现 runtime 差异；A4171 防止 snapshot writer 未来产生虽能被 schema reader 部分读取、但存在
   freelist/page 引用损坏而无法被官方 bbolt 诊断接受的恢复制品。
+  A4172 继续对照 upstream `b107d2437`、`59d99b57d` 及当前 `5cd9f4ee1` 的
+  `etcdutl hashkv`：该命令以官方 backend/MVCC store 打开离线 db，扫描 `key` history 并返回
+  `hashRevision` 与 `compactRevision`，因此比 bbolt page consistency 更进一步验证 KubeBrain snapshot
+  的 etcd schema 和历史 revision 可消费性。`TestSnapshotPassesBboltConsistencyCheck` 的可选官方工具
+  路径改用通用 `KUBEBRAIN_ETCDUTL_BIN`（兼容旧 `KUBEBRAIN_ETCDUTL_BBOLT_BIN`），除 `bbolt check`
+  外同时对 latest 与指定历史 revision 执行 JSON `hashkv`，并精确核对 revision 元数据。已有真实
+  KubeBrain endpoint 到官方 etcd restore 的黑盒门禁也在恢复前执行同样的离线 latest/history hash，
+  防止单元构造器与实际 Snapshot RPC 漂移。本轮由 `/root/etcd/etcdutl` 当前源码构建工具，真实制品
+  的 bbolt check 和两种 hashkv 均通过。离线 hash 受 bbolt 编码定义，仍不要求它与 KubeBrain 在线
+  TiKV `Maintenance.HashKV` 数值相等；对齐的是官方工具可完整读取的 schema、revision 与 compaction
+  元数据，而非错误混合两个不同的 hash 域。
 
 ### P2：运维兼容和长期验证
 

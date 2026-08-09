@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -45,12 +46,14 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	ctx := context.Background()
+	var revisions []int64
 	for index := range 5 {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		response, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key:   []byte(fmt.Sprintf("/snapshot/bbolt-check/%d", index)),
 			Value: []byte(fmt.Sprintf("value-%d", index)),
 		})
 		require.NoError(t, err)
+		revisions = append(revisions, response.Header.Revision)
 	}
 
 	path := filepath.Join(t.TempDir(), "snapshot.db")
@@ -65,11 +68,37 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 	}))
 	require.NoError(t, db.Close())
 
-	if etcdutl := os.Getenv("KUBEBRAIN_ETCDUTL_BBOLT_BIN"); etcdutl != "" {
+	etcdutl := os.Getenv("KUBEBRAIN_ETCDUTL_BIN")
+	if etcdutl == "" {
+		// Keep the A4171 variable working while callers migrate to the
+		// command-wide name used by both bbolt and hashkv checks.
+		etcdutl = os.Getenv("KUBEBRAIN_ETCDUTL_BBOLT_BIN")
+	}
+	if etcdutl != "" {
 		command := exec.CommandContext(ctx, etcdutl, "bbolt", "check", path)
 		output, commandErr := command.CombinedOutput()
 		require.NoError(t, commandErr, string(output))
 		require.Equal(t, "OK", strings.TrimSpace(string(output)))
+
+		type hashKVResult struct {
+			Hash            uint32 `json:"hash"`
+			HashRevision    int64  `json:"hashRevision"`
+			CompactRevision int64  `json:"compactRevision"`
+		}
+		runHashKV := func(arguments ...string) hashKVResult {
+			command = exec.CommandContext(ctx, etcdutl, append([]string{"--write-out=json", "hashkv", path}, arguments...)...)
+			output, commandErr = command.CombinedOutput()
+			require.NoError(t, commandErr, string(output))
+			var result hashKVResult
+			require.NoError(t, json.Unmarshal(output, &result), string(output))
+			return result
+		}
+		latest := runHashKV()
+		require.Equal(t, revisions[len(revisions)-1], latest.HashRevision)
+		require.Zero(t, latest.CompactRevision)
+		historical := runHashKV("--rev", fmt.Sprint(revisions[1]))
+		require.Equal(t, revisions[1], historical.HashRevision)
+		require.Zero(t, historical.CompactRevision)
 	}
 }
 

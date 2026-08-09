@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -159,6 +160,29 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 
 	snapshotPath := filepath.Join(t.TempDir(), "kubebrain-snapshot.db")
 	require.NoError(t, os.WriteFile(snapshotPath, downloadSnapshotBackend(t, endpoint), 0o600))
+	type offlineHashKV struct {
+		HashRevision    int64 `json:"hashRevision"`
+		CompactRevision int64 `json:"compactRevision"`
+	}
+	checkHashKV := func(revision int64) offlineHashKV {
+		args := []string{"--write-out=json", "hashkv", snapshotPath}
+		if revision != 0 {
+			args = append(args, "--rev", fmt.Sprint(revision))
+		}
+		command := exec.CommandContext(ctx, etcdutl, args...)
+		output, commandErr := command.CombinedOutput()
+		require.NoError(t, commandErr, string(output))
+		var result offlineHashKV
+		require.NoError(t, json.Unmarshal(output, &result), string(output))
+		return result
+	}
+	latestHash := checkHashKV(0)
+	require.Equal(t, latest.Header.Revision, latestHash.HashRevision)
+	require.Zero(t, latestHash.CompactRevision)
+	historicalHash := checkHashKV(first.Header.Revision)
+	require.Equal(t, first.Header.Revision, historicalHash.HashRevision)
+	require.Zero(t, historicalHash.CompactRevision)
+
 	restoredDir := filepath.Join(t.TempDir(), "restored.etcd")
 	const restoredEndpoint = "127.0.0.1:42479"
 	restore := exec.CommandContext(ctx, etcdutl, "snapshot", "restore", snapshotPath,
