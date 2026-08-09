@@ -44219,6 +44219,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `--skip-hash-check` 的当前 upstream restore 要求非零退出和精确
   `snapshot missing hash but --skip-hash-check=false`。这与 A4174 的成功、A4175 的 payload/footer
   mismatch 共同覆盖三条完整性结果，防止 DBaaS 上传、下载或代理链路丢尾帧后仍被自动恢复接受。
+  A4177 收紧 upstream `2d377000f` 的 `snapshot status.totalKey` 语义。该工具不再统计 `key` bucket
+  的 MVCC revision 行数，而是按遍历顺序维护 unique user-key set：PUT 加入、tombstone 删除，因此输出
+  等于 snapshot revision 时仍存活的不同 key 数。A4174 仅断言 TotalKey 为正，会让 snapshot writer
+  重复/遗漏 tombstone 或工具退化为 history-row count 时继续假绿。测试数据现从五个 distinct key 扩为
+  九条 history：同键更新、删除后重建，以及另一个 key 最终删除；最终 live unique keys 精确为四个，
+  snapshot revision 由最后 tombstone 固定。当前 upstream `etcdutl snapshot status` 对真实完整 artifact
+  返回 `totalKey=4`，同时既有 latest/history hashkv、严格 restore 和三类 checksum 结果继续通过；未发现
+  runtime schema 差异。
 
 ### P2：运维兼容和长期验证
 

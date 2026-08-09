@@ -55,6 +55,22 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 		require.NoError(t, err)
 		revisions = append(revisions, response.Header.Revision)
 	}
+	updated, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/snapshot/bbolt-check/0"), Value: []byte("updated"),
+	})
+	require.NoError(t, err)
+	revisions = append(revisions, updated.Header.Revision)
+	deleted, err := server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("/snapshot/bbolt-check/1")})
+	require.NoError(t, err)
+	revisions = append(revisions, deleted.Header.Revision)
+	recreated, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/snapshot/bbolt-check/1"), Value: []byte("recreated"),
+	})
+	require.NoError(t, err)
+	revisions = append(revisions, recreated.Header.Revision)
+	deleted, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: []byte("/snapshot/bbolt-check/4")})
+	require.NoError(t, err)
+	revisions = append(revisions, deleted.Header.Revision)
 
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, server.buildSnapshot(ctx, path))
@@ -121,7 +137,8 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 		}
 		require.NoError(t, json.Unmarshal(output, &snapshotStatus), string(output))
 		require.Equal(t, revisions[len(revisions)-1], snapshotStatus.Revision)
-		require.Positive(t, snapshotStatus.TotalKey)
+		require.Equal(t, 4, snapshotStatus.TotalKey,
+			"status counts live unique user keys, not MVCC history rows")
 		require.Equal(t, Version, snapshotStatus.Version)
 
 		restoredDir := filepath.Join(t.TempDir(), "restored.etcd")
