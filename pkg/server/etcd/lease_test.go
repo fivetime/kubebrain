@@ -2188,6 +2188,34 @@ func TestLeaseCheckpointBoundsReloadAndRenewClearsIt(t *testing.T) {
 		"checkpoint clear must remain outside user MVCC")
 }
 
+func TestLeaseRecoveryClampsPersistedGrantedTTLToMinimumLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	records := []struct {
+		record       leaseRecord
+		maxRecovered int64
+	}{
+		{record: leaseRecord{ID: 82_030, TTL: math.MinInt64}, maxRecovered: minLeaseTTL},
+		{record: leaseRecord{ID: 82_031, TTL: 0, RemainingTTL: 30}, maxRecovered: 30},
+	}
+	for _, record := range records {
+		data, err := json.Marshal(record.record)
+		require.NoError(t, err)
+		require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(record.record.ID), data))
+	}
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	for _, record := range records {
+		response, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: record.record.ID})
+		require.NoError(t, err)
+		require.Equal(t, minLeaseTTL, response.GrantedTTL)
+		require.Positive(t, response.TTL)
+		require.LessOrEqual(t, response.TTL, record.maxRecovered)
+	}
+}
+
 // TestLeaseRevokeCompletesWhileRenewCheckpointIsBlocked mirrors upstream
 // f8f1074b4/TestLeaseRevokeDuringRenew. A slow remaining-TTL checkpoint must
 // not make the higher-priority Revoke wait, and a renewal that resumes after

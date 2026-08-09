@@ -1583,13 +1583,21 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 	m.leases = make(map[int64]*leaseState, len(records))
 	m.keyLeaseIndex = make(map[string]int64)
 	for _, record := range records {
-		recoveryTTL := record.TTL
+		// Match etcd lessor.initAndRecover: old or externally restored lease
+		// metadata may predate the current minimum. Keep the persisted checkpoint
+		// as the failover deadline bound, but never expose or renew a granted TTL
+		// below MinLeaseTTL.
+		grantedTTL := record.TTL
+		if grantedTTL < minLeaseTTL {
+			grantedTTL = minLeaseTTL
+		}
+		recoveryTTL := grantedTTL
 		if record.RemainingTTL > 0 {
 			recoveryTTL = record.RemainingTTL
 		}
 		st := &leaseState{
 			id:           record.ID,
-			ttl:          record.TTL,
+			ttl:          grantedTTL,
 			remainingTTL: record.RemainingTTL,
 			// Mirror etcd initAndRecover + Promote->refresh: a durable remaining
 			// TTL checkpoint bounds failover extension for long leases. Without a

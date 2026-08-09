@@ -44006,6 +44006,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response；已认证用户得到 TTL=0，raw stream 随后续租有权 live lease 仍成功。未发现 runtime 差异；
   A4154 防止未来把 missing lease 误判为 permission denied、把 TTL=0 当 fatal stream error，或只在建流时
   鉴权而绕过后续权限变更。
+  A4155 继续复审 `/root/etcd` `5cd9f4ee1` 的内部 LeaseCheckpoint 与恢复契约。该 request 只由
+  lessor checkpointer 写入 raft apply，不是公开 Lease gRPC RPC；upstream `lessor.Checkpoint` 对缺失 ID
+  静默忽略并记录 remaining TTL，而 `initAndRecover` 会先把持久化 granted TTL 小于 `MinLeaseTTL` 的记录
+  钳制到最小值，再优先用正的 remaining TTL 重建 failover deadline。KubeBrain 的独立 TiKV 实现以单
+  lease internal metadata CAS 取代 raft checkpoint batch，已有 lost-response reconciliation、renew clear、
+  revoke generation fence、demotion 与 checkpoint scheduling 门禁；本轮发现并修复真实差异：恢复路径
+  原先直接信任持久化 TTL，旧格式或异常记录可恢复出 0/负 granted TTL 并立即过期。现在
+  `applyLeaseRecords` 与 upstream 一致钳制 granted TTL，同时保留正 remaining TTL 对 deadline 的约束；
+  新测试覆盖 MinInt64/zero persisted TTL、无 checkpoint/正 checkpoint 两条恢复路径和客户端可见
+  GrantedTTL。没有新增不存在的公共 LeaseCheckpoint API。A4155 防止滚动升级、逻辑恢复或元数据修复
+  将低 TTL 记录变成瞬时 lease，保持故障切换后的最小生存期契约。
 
 ### P2：运维兼容和长期验证
 
