@@ -43375,6 +43375,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   role 名称按 Go string 字节序非降序，仍由既有重复检查拒绝相等项，失败回滚完整 metadata
   transaction。KubeBrain 在线 `authManager.userGrantRole` 本来同样排序，因此此项只阻断不自洽的
   snapshot 输入，不改变 TiKV auth 数据或 RPC 行为。
+  A4084 固定 Snapshot alarm 的逻辑身份唯一性：对照 upstream
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go`，AlarmStore 的内存集合按
+  `(AlarmType, MemberID)` 唯一；Activate 已存在身份时幂等返回且不再次写 backend。schema 却把完整
+  AlarmMember protobuf 编码作为 bbolt key，因此同一身份若携带不同 unknown fields，旧 writer 会写成
+  两个物理 key。首次 restore 在 map 中静默合并，Deactivate 只删除被 map 保留的一个编码，进程重启
+  后残余 key 会让已解除 alarm 复活。新增红测用相同 member/type、不同合法 unknown field 编码证明
+  旧实现错误成功；writer 现在在 marshal 前按逻辑 tuple 查重并回滚整个 metadata transaction。
+  正例同时固定同一 member 的 NOSPACE 与 CORRUPT、以及未知 AlarmType 都可由官方 AlarmStore 恢复，
+  避免把身份收紧误写成 member ID 唯一。本项不改变在线 alarm 或 TiKV 状态。
 
 ### P2：运维兼容和长期验证
 

@@ -368,6 +368,8 @@ func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {
 }
 
 func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
+	alarmWithUnknownFields := &etcdserverpb.AlarmMember{MemberID: 23, Alarm: etcdserverpb.AlarmType_NOSPACE}
+	alarmWithUnknownFields.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
 	for _, test := range []struct {
 		name  string
 		state State
@@ -397,6 +399,14 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 			}}},
 			want: `duplicate auth role "reader"`,
 		},
+		{
+			name: "logical alarm",
+			state: State{Alarms: []*etcdserverpb.AlarmMember{
+				{MemberID: 23, Alarm: etcdserverpb.AlarmType_NOSPACE},
+				alarmWithUnknownFields,
+			}},
+			want: "duplicate alarm member=23 type=NOSPACE",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")
@@ -410,6 +420,7 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 				require.Nil(t, tx.Bucket(schema.Lease.Name()), "metadata transaction must roll back all buckets")
 				require.Nil(t, tx.Bucket(schema.AuthUsers.Name()))
 				require.Nil(t, tx.Bucket(schema.AuthRoles.Name()))
+				require.Nil(t, tx.Bucket(schema.Alarm.Name()))
 				return nil
 			}))
 		})
@@ -644,6 +655,7 @@ func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 		},
 		Alarms: []*etcdserverpb.AlarmMember{
 			{MemberID: 23, Alarm: etcdserverpb.AlarmType_NOSPACE},
+			{MemberID: 23, Alarm: etcdserverpb.AlarmType_CORRUPT},
 			{MemberID: 29, Alarm: etcdserverpb.AlarmType(127)},
 		},
 	}))
@@ -674,9 +686,9 @@ func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 
 	alarmStore, err := v3alarm.NewAlarmStore(lg, schema.NewAlarmBackend(lg, be))
 	require.NoError(t, err)
-	gotAlarms := make([]string, 0, 2)
+	gotAlarms := make([]string, 0, 3)
 	for _, alarm := range alarmStore.Get(etcdserverpb.AlarmType_NONE) {
 		gotAlarms = append(gotAlarms, fmt.Sprintf("%d/%d", alarm.MemberID, alarm.Alarm))
 	}
-	require.ElementsMatch(t, []string{"23/1", "29/127"}, gotAlarms)
+	require.ElementsMatch(t, []string{"23/1", "23/2", "29/127"}, gotAlarms)
 }

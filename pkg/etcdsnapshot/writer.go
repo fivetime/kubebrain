@@ -212,10 +212,22 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	if err = validateAuthState(state.Auth); err != nil {
 		return err
 	}
+	seenAlarms := make(map[struct {
+		memberID uint64
+		alarm    etcdserverpb.AlarmType
+	}]struct{}, len(state.Alarms))
 	for _, alarm := range state.Alarms {
 		if alarm == nil {
 			return fmt.Errorf("snapshot contains nil alarm")
 		}
+		identity := struct {
+			memberID uint64
+			alarm    etcdserverpb.AlarmType
+		}{alarm.MemberID, alarm.Alarm}
+		if _, exists := seenAlarms[identity]; exists {
+			return fmt.Errorf("duplicate alarm member=%d type=%s", alarm.MemberID, alarm.Alarm)
+		}
+		seenAlarms[identity] = struct{}{}
 		key, marshalErr := proto.Marshal(alarm)
 		if marshalErr != nil {
 			return marshalErr

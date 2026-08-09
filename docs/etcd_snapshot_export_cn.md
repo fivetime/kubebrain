@@ -70,10 +70,12 @@ etcd 启动、当前 KV 元数据对比、`snapshot+1` 写入 revision、compact
 在线历史 snapshot 还要求每个 upstream MVCC `(main revision, subrevision)` 物理身份唯一。若
 scanner 输入在同批或跨批重复该身份，builder 必须原子拒绝，不能依赖 bbolt `Put` 静默覆盖并
 发布少事件的可恢复制品；已成功提交的早期批次保持原样，失败批次不写入。
-metadata bucket 同样要求 lease ID、auth username 和 role name 分别唯一；重复身份即使内容完全
+metadata bucket 同样要求 lease ID、auth username、role name 和 alarm `(member ID, alarm type)`
+分别唯一；重复身份即使内容完全
 相同也视为上游状态不自洽并拒绝整个 metadata transaction，不能让 TTL、用户角色或权限由 slice
-顺序决定。Alarm 以完整 `(member ID, alarm type)` protobuf 为 key，同一 member 同时携带
-NOSPACE/CORRUPT 是合法状态，不按 member ID 错误去重。
+顺序决定。Alarm 的 bbolt key 虽是完整 protobuf，逻辑身份仍按 tuple 去重，避免不同 unknown fields
+形成多个物理 key并在解除后重启复活；同一 member 同时携带 NOSPACE/CORRUPT 是合法状态，不按
+member ID 错误去重。
 Auth snapshot 还必须满足上游管理 API 可达的不变量：每个用户的 role 列表不重复且全部引用已存在
 role，并按字符串字节序排序；`authEnabled=true` 时必须存在 root 用户，且该用户持有 root role。违反任一条件都会回滚完整
 metadata transaction，避免恢复出无法通过正常 AuthEnable/RoleDelete 路径产生的权限状态。
