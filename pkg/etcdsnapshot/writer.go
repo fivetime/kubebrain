@@ -250,6 +250,9 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		if alarm == nil {
 			return fmt.Errorf("snapshot contains nil alarm")
 		}
+		if alarm.Alarm == etcdserverpb.AlarmType_NONE {
+			return fmt.Errorf("snapshot contains reserved NONE alarm for member %d", alarm.MemberID)
+		}
 		identity := struct {
 			memberID uint64
 			alarm    etcdserverpb.AlarmType

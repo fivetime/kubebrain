@@ -96,6 +96,9 @@ metadata bucket 同样要求 lease ID、auth username、role name 和 alarm `(me
 顺序决定。Alarm 的 bbolt key 虽是完整 protobuf，逻辑身份仍按 tuple 去重，避免不同 unknown fields
 形成多个物理 key并在解除后重启复活；同一 member 同时携带 NOSPACE/CORRUPT 是合法状态，不按
 member ID 错误去重。
+Alarm type `NONE` 不能作为 alarm record 持久化：它只表示“查询全部 active alarms”的公开 API
+sentinel。upstream ACTIVATE(NONE) 是不落库的 no-op；若制品直接写入 NONE，官方 AlarmStore restore
+后反而会在 GET(NONE) 的全类型枚举中把它作为真实告警返回。未知非零 enum 仍按 upstream 行为保留。
 Auth snapshot 还必须满足上游管理 API 可达的不变量：每个用户的 role 列表不重复、按字符串字节序
 排序，且除特殊 `root` role 外全部引用已存在 role record；upstream 与 KubeBrain 都允许直接把
 `root` 授给用户而不创建同名 role record。`authEnabled=true` 时必须存在 root 用户，且该用户持有

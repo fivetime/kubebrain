@@ -753,6 +753,49 @@ func TestWriteBackendRejectsNonUTF8AuthIdentities(t *testing.T) {
 	}
 }
 
+func TestWriteBackendRejectsReservedNoneAlarm(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	err := WriteBackend(path, State{Revision: 1, Alarms: []*etcdserverpb.AlarmMember{{
+		MemberID: 23, Alarm: etcdserverpb.AlarmType_NONE,
+	}}})
+	require.ErrorContains(t, err, "snapshot contains reserved NONE alarm for member 23")
+
+	db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, openErr)
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		require.Nil(t, tx.Bucket(schema.Alarm.Name()), "reserved alarm must roll back metadata")
+		return nil
+	}))
+	require.NoError(t, db.Close())
+}
+
+func TestOfficialAlarmStoreWouldExposePersistedNoneSentinel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-none.db")
+	raw, err := bolt.Open(path, 0o600, nil)
+	require.NoError(t, err)
+	none := &etcdserverpb.AlarmMember{MemberID: 23, Alarm: etcdserverpb.AlarmType_NONE}
+	key, err := proto.Marshal(none)
+	require.NoError(t, err)
+	require.NoError(t, raw.Update(func(tx *bolt.Tx) error {
+		bucket, createErr := tx.CreateBucket(schema.Alarm.Name())
+		if createErr != nil {
+			return createErr
+		}
+		return bucket.Put(key, nil)
+	}))
+	require.NoError(t, raw.Close())
+
+	lg := zaptest.NewLogger(t)
+	be := etcdbackend.NewDefaultBackend(lg, path)
+	defer func() { require.NoError(t, be.Close()) }()
+	alarmStore, err := v3alarm.NewAlarmStore(lg, schema.NewAlarmBackend(lg, be))
+	require.NoError(t, err)
+	got := alarmStore.Get(etcdserverpb.AlarmType_NONE)
+	require.Len(t, got, 1)
+	require.True(t, proto.Equal(none, got[0]),
+		"GET NONE enumerates all restored types, including an invalid persisted sentinel")
+}
+
 func TestOfficialAuthStoreRecoversImplicitRootRole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, WriteBackend(path, State{Revision: 1, Auth: Auth{

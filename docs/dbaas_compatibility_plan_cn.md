@@ -43518,6 +43518,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `validateAuthState` 现在只拒绝精确 `MaxUint64`，错误会回滚完整 metadata transaction，不缩小其余
   uint64 空间。边界回归证明 `MaxUint64-1` 可由官方 AuthStore 恢复，随后 RoleAdd 成功并精确推进到
   `MaxUint64`；本项与 A4093 的 MVCC next-revision 门禁一致，只影响私有 snapshot artifact。
+  A4098 拒绝把 Alarm `NONE` 查询 sentinel 持久化为 active record：upstream rpc.proto 明确把 NONE
+  定义为“query if any alarm is active”，`applierV3backend.Alarm` 对 ACTIVATE(NONE) 直接 no-op，不调用
+  AlarmStore.Activate。旧 writer 却接受 `{memberID:23, alarm:NONE}`；官方 AlarmStore restore 会把它
+  加入 `types[NONE]`，而 `Get(NONE)` 会遍历全部 type map，最终把该 sentinel 作为真实 AlarmMember
+  返回给客户端。writer 现在在 alarm bucket 写入前拒绝 NONE 并回滚完整 metadata transaction；未知
+  非零 enum 继续允许，与 upstream 可持久化行为和既有 generic alarm 扩展一致。回归测试一方面固定
+  writer fail closed，另一方面手工构造旧错误 bucket 并证明官方 AlarmStore 会恢复、枚举该 NONE
+  record，从而锁定真实 client-visible 反例，而非只依赖静态判断。
 
 ### P2：运维兼容和长期验证
 
