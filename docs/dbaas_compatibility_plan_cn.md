@@ -44103,6 +44103,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Delete-only Txn 返回 typed Corrupt、serializable read Txn 仍读到原值，并与既有 manual NOSPACE +
   CORRUPT 恢复测试联合重复。未发现 runtime 差异；A4163 防止统一 alarm 检查把所有请求提前归类为
   Corrupt，或让 Corrupt 绕过外层 configured-quota admission。
+  A4164 回到矩阵唯一仍标记“部分兼容”的 Maintenance Snapshot，复审最坏 alarm 状态下的灾难恢复
+  可用性。upstream `/root/etcd` `5cd9f4ee1` `maintenanceServer.Snapshot` 直接取得 backend snapshot，
+  不经过 `CorruptApplier` 或 `CappedApplier`；外层只做 admin auth。因此 NOSPACE、CORRUPT 或两者并存
+  都不能阻断 root 下载 snapshot，否则告警本身会切断恢复出口。KubeBrain 的 Snapshot 同样不调用
+  `rejectCorrupt`/quota write cap，并把 durable alarm metadata 写入 portable bbolt artifact。新测试先写入
+  用户数据，再同时激活两个不同 member 的 NOSPACE/CORRUPT，要求 Snapshot 流成功、至少包含 data+
+  checksum 两帧、SHA-256/RemainingBytes/Version 正确，且生成制品可由 bbolt 只读打开并含非空 MVCC key
+  bucket。未发现 runtime 差异；A4164 防止未来复用写路径 alarm middleware 时误封灾难导出。Snapshot
+  仍保持“部分兼容”：legacy retained version 已永久丢失 lease provenance 时继续 fail closed，物理 PITR
+  也仍属于平台缺口，本项不虚假关闭二者。
 
 ### P2：运维兼容和长期验证
 

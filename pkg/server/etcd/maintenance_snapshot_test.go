@@ -108,6 +108,46 @@ func TestSnapshotFileIsUnlinkedBeforeFirstStreamResponse(t *testing.T) {
 	require.Equal(t, wantHash[:], stream.responses[len(stream.responses)-1].Blob)
 }
 
+func TestMaintenanceSnapshotRemainsAvailableUnderNoSpaceAndCorruptAlarmsLikeEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 0)
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("snapshot-alarm-key"), Value: []byte("value")})
+	require.NoError(t, err)
+	for memberID, alarm := range map[uint64]etcdserverpb.AlarmType{
+		41640: etcdserverpb.AlarmType_NOSPACE,
+		41641: etcdserverpb.AlarmType_CORRUPT,
+	} {
+		_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+			Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: alarm, MemberID: memberID,
+		})
+		require.NoError(t, err)
+	}
+
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
+	require.GreaterOrEqual(t, len(stream.responses), 2)
+	var artifact []byte
+	for _, response := range stream.responses[:len(stream.responses)-1] {
+		artifact = append(artifact, response.Blob...)
+	}
+	checksum := stream.responses[len(stream.responses)-1]
+	want := sha256.Sum256(artifact)
+	require.Equal(t, want[:], checksum.Blob)
+	require.Zero(t, checksum.RemainingBytes)
+	require.Equal(t, Version, checksum.Version)
+	dbPath := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, os.WriteFile(dbPath, artifact, 0o600))
+	db, err := bolt.Open(dbPath, 0o600, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		keyBucket := tx.Bucket(schema.Key.Name())
+		require.NotNil(t, keyBucket)
+		require.Positive(t, keyBucket.Stats().KeyN)
+		return nil
+	}))
+	require.NoError(t, db.Close())
+}
+
 type streamingSnapshotBackend struct {
 	BackendShim
 	fullRangeLists int
