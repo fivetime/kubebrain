@@ -291,6 +291,7 @@ type SnapshotHistoryRecord struct {
 	Lease                       int64
 	LeaseKnown                  bool
 	SubRevision                 uint32
+	TotalChanges                uint32
 	Ordered                     bool
 	Tombstone                   bool
 	Current                     bool

@@ -43437,6 +43437,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不可查询的 key-index compaction anchor，event 顺序不可观察。红测证明旧 writer 错误成功并固定
   compact-boundary 正例；snapshot race、server Snapshot、转换器与 vet 回归通过。本项不修改在线
   event log 或 TiKV 数据。
+  A4090 把 ordered event payload 的事务总数证据贯穿到 Snapshot artifact：A3493 已在每条现代
+  event-log value 中原子重复保存 `(subrevision,total)`，backend 也一直解码并验证 `total>0`、
+  `sub<total`，但旧 `SnapshotHistoryRecord` 丢弃 total。于是 A4088 能发现 0、2 的内部缺口，却无法
+  发现只剩连续 0、1、而 metadata 明确声明 total=3 的尾部事件丢失。现在 backend record 新增
+  TotalChanges，stream 在 verb/tombstone 校验通过后与 SubRevision 一起赋值，Maintenance.Snapshot
+  无损传给 etcdsnapshot.Record；Ordered record 必须携带 `0 <= sub < total`，unordered record 禁止
+  伪带 total。Builder 按 main revision 跨 batch 记住首次 total，任何不一致在写 bbolt 前拒绝；Finish
+  在 A4088 连续性扫描结束后要求实际 ordered change 数精确等于声明 total。红测分别固定连续 0、1/
+  total=3 的旧错误成功、补 sub=2 后可恢复 Finish，以及跨 batch total=2/3 冲突不写入、改正后成功；
+  backend 测试确认真实三键 Txn 的每条 stream record 都携带 total=3。compact watermark 内仍不要求
+  当前保留 anchor 数等于原 total，因为 compaction 合法删除同事务其他旧 key；单条 anchor 携带的
+  sub/total envelope 仍须自洽。backend/server/snapshot race 与 vet 回归通过；本项只增强导出证明。
 
 ### P2：运维兼容和长期验证
 

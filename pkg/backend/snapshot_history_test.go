@@ -114,6 +114,7 @@ func TestSnapshotHistoryStreamJoinsExactTxnSubrevisions(t *testing.T) {
 			}
 			require.True(t, record.Ordered)
 			require.Equal(t, want, record.SubRevision)
+			require.Equal(t, uint32(3), record.TotalChanges)
 			seen[string(record.Key)] = record.SubRevision
 		}
 	}

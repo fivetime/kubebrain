@@ -603,6 +603,7 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 						continue
 					}
 					records[i].SubRevision = subRevision
+					records[i].TotalChanges = total
 					records[i].Ordered = true
 				}
 			}

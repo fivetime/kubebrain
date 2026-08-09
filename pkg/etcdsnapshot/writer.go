@@ -38,6 +38,7 @@ type Record struct {
 	CreateRevision, ModRevision int64
 	Version, Lease              int64
 	SubRevision                 int64
+	TotalChanges                int64
 	Ordered                     bool
 	Tombstone                   bool
 }
@@ -94,6 +95,7 @@ type Builder struct {
 	nextSub          int64
 	preserveHistory  bool
 	compactRevision  int64
+	orderedTotals    map[int64]int64
 	finished         bool
 }
 
@@ -110,7 +112,7 @@ func NewBuilder(path string, state State) (*Builder, error) {
 	restoredRevision := int64(1) // upstream MVCC restore starts at revision 1
 	builder := &Builder{
 		db: db, revision: state.Revision, restoredRevision: restoredRevision,
-		preserveHistory: state.PreserveHistory,
+		preserveHistory: state.PreserveHistory, orderedTotals: make(map[int64]int64),
 	}
 	if state.HasCompactRevision {
 		builder.compactRevision = state.CompactRevision
@@ -347,6 +349,19 @@ func (b *Builder) Append(records []Record) error {
 			return fmt.Errorf("record %d: %w", b.nextSub+int64(i)+1, err)
 		}
 	}
+	pendingTotals := make(map[int64]int64)
+	for _, rec := range records {
+		if !rec.Ordered {
+			continue
+		}
+		if total, exists := b.orderedTotals[rec.ModRevision]; exists && total != rec.TotalChanges {
+			return fmt.Errorf("ordered revision %d reports total changes %d, previously %d", rec.ModRevision, rec.TotalChanges, total)
+		}
+		if total, exists := pendingTotals[rec.ModRevision]; exists && total != rec.TotalChanges {
+			return fmt.Errorf("ordered revision %d reports inconsistent total changes %d and %d", rec.ModRevision, total, rec.TotalChanges)
+		}
+		pendingTotals[rec.ModRevision] = rec.TotalChanges
+	}
 	nextSub := b.nextSub
 	restoredRevision := b.restoredRevision
 	err := b.db.Update(func(tx *bolt.Tx) error {
@@ -390,6 +405,9 @@ func (b *Builder) Append(records []Record) error {
 	if err == nil {
 		b.nextSub = nextSub
 		b.restoredRevision = restoredRevision
+		for revision, total := range pendingTotals {
+			b.orderedTotals[revision] = total
+		}
 	}
 	return err
 }
@@ -403,7 +421,7 @@ func (b *Builder) Finish() error {
 	}
 	if err := b.db.View(func(tx *bolt.Tx) error {
 		if b.preserveHistory {
-			if err := validateOrderedRevisionContinuity(tx, b.compactRevision); err != nil {
+			if err := validateOrderedRevisionContinuity(tx, b.compactRevision, b.orderedTotals); err != nil {
 				return err
 			}
 		}
@@ -435,12 +453,25 @@ func (b *Builder) Finish() error {
 	return err
 }
 
-func validateOrderedRevisionContinuity(tx *bolt.Tx, compactRevision int64) error {
+func validateOrderedRevisionContinuity(tx *bolt.Tx, compactRevision int64, totals map[int64]int64) error {
 	currentMain := int64(-1)
 	expectedSub := int64(0)
 	sawOrdered := false
 	sawFallback := false
-	return tx.Bucket(keyBucket).ForEach(func(revisionKey, _ []byte) error {
+	finishMain := func() error {
+		if !sawOrdered || currentMain <= compactRevision {
+			return nil
+		}
+		total, exists := totals[currentMain]
+		if !exists {
+			return fmt.Errorf("ordered revision %d is missing total changes", currentMain)
+		}
+		if expectedSub != total {
+			return fmt.Errorf("ordered revision %d contains %d changes, want %d", currentMain, expectedSub, total)
+		}
+		return nil
+	}
+	err := tx.Bucket(keyBucket).ForEach(func(revisionKey, _ []byte) error {
 		if len(revisionKey) < 17 {
 			return fmt.Errorf("invalid MVCC revision key length %d", len(revisionKey))
 		}
@@ -450,6 +481,9 @@ func validateOrderedRevisionContinuity(tx *bolt.Tx, compactRevision int64) error
 			return nil
 		}
 		if main != currentMain {
+			if err := finishMain(); err != nil {
+				return err
+			}
 			currentMain = main
 			expectedSub = 0
 			sawOrdered = false
@@ -472,6 +506,10 @@ func validateOrderedRevisionContinuity(tx *bolt.Tx, compactRevision int64) error
 		expectedSub++
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	return finishMain()
 }
 
 func validateCurrentLeaseReferences(tx *bolt.Tx) error {
@@ -529,8 +567,11 @@ func validateRecord(rec Record, snapshotRevision int64) error {
 	if len(rec.Key) == 0 {
 		return fmt.Errorf("empty key")
 	}
-	if rec.Ordered && (rec.SubRevision < 0 || rec.SubRevision >= fallbackSubRevisionBase) {
-		return fmt.Errorf("invalid ordered subrevision %d", rec.SubRevision)
+	if rec.Ordered && (rec.TotalChanges <= 0 || rec.SubRevision < 0 || rec.SubRevision >= rec.TotalChanges || rec.SubRevision >= fallbackSubRevisionBase) {
+		return fmt.Errorf("invalid ordered revision sub=%d total=%d", rec.SubRevision, rec.TotalChanges)
+	}
+	if !rec.Ordered && rec.TotalChanges != 0 {
+		return fmt.Errorf("unordered record carries total changes %d", rec.TotalChanges)
 	}
 	if rec.Tombstone {
 		if rec.ModRevision <= 0 || rec.ModRevision > snapshotRevision {

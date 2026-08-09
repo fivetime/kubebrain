@@ -77,6 +77,10 @@ scanner 输入在同批或跨批重复该身份，builder 必须原子拒绝，�
 完整历史中的同一 main revision 也不能混合真实 ordered subrevision 与 `2^32+` legacy fallback：
 现代事务的 event metadata 与对象写入原子提交，混合意味着至少一条 ordering evidence 已丢失或损坏。
 全 legacy revision 仍可稳定 fallback；compact watermark 及之前的不可查询 anchor 不应用此限制。
+每条 ordered record 还必须携带 event payload 重复保存的 `totalChanges`，并满足
+`0 <= subrevision < totalChanges`。同一 main 的 total 必须一致；watermark 之后实际连续记录数必须
+精确等于 total，以同时发现内部缺口和缺失尾部。watermark 内只校验单条 envelope 与 repeated total
+一致性，不要求 compaction anchor 数等于原事务总数。
 metadata bucket 同样要求 lease ID、auth username、role name 和 alarm `(member ID, alarm type)`
 分别唯一；重复身份即使内容完全
 相同也视为上游状态不自洽并拒绝整个 metadata transaction，不能让 TTL、用户角色或权限由 slice

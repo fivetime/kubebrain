@@ -69,9 +69,9 @@ func TestBuilderUsesExactTxnSubrevisionInsteadOfPhysicalInputOrder(t *testing.T)
 	// Object storage scans these in key order. The transaction that produced the
 	// revision wrote z, a, m, which must remain the order seen by restored Watch.
 	require.NoError(t, builder.Append([]Record{
-		{Key: []byte("a"), Value: []byte("a"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, Ordered: true},
-		{Key: []byte("m"), Value: []byte("m"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 2, Ordered: true},
-		{Key: []byte("z"), Value: []byte("z"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, Ordered: true},
+		{Key: []byte("a"), Value: []byte("a"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, TotalChanges: 3, Ordered: true},
+		{Key: []byte("m"), Value: []byte("m"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 2, TotalChanges: 3, Ordered: true},
+		{Key: []byte("z"), Value: []byte("z"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, TotalChanges: 3, Ordered: true},
 	}))
 	require.NoError(t, builder.Finish())
 	require.NoError(t, builder.Close())
@@ -104,20 +104,20 @@ func TestBuilderRejectsDuplicateOrderedRevisionWithoutOverwritingHistory(t *test
 		{
 			name: "same batch",
 			firstBatch: []Record{
-				{Key: []byte("first"), Value: []byte("one"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, Ordered: true},
-				{Key: []byte("second"), Value: []byte("two"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, Ordered: true},
+				{Key: []byte("first"), Value: []byte("one"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, TotalChanges: 3, Ordered: true},
+				{Key: []byte("second"), Value: []byte("two"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, TotalChanges: 3, Ordered: true},
 			},
 		},
 		{
 			name: "later batch",
 			firstBatch: []Record{
-				{Key: []byte("first"), Value: []byte("one"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, Ordered: true},
+				{Key: []byte("first"), Value: []byte("one"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, TotalChanges: 3, Ordered: true},
 			},
 		},
 		{
 			name: "after tombstone",
 			firstBatch: []Record{
-				{Key: []byte("first"), ModRevision: 7, SubRevision: 2, Ordered: true, Tombstone: true},
+				{Key: []byte("first"), ModRevision: 7, SubRevision: 2, TotalChanges: 3, Ordered: true, Tombstone: true},
 			},
 		},
 	} {
@@ -133,7 +133,7 @@ func TestBuilderRejectsDuplicateOrderedRevisionWithoutOverwritingHistory(t *test
 			} else {
 				require.NoError(t, builder.Append(test.firstBatch))
 				err = builder.Append([]Record{
-					{Key: []byte("second"), ModRevision: 7, SubRevision: 2, Ordered: true, Tombstone: true},
+					{Key: []byte("second"), ModRevision: 7, SubRevision: 2, TotalChanges: 3, Ordered: true, Tombstone: true},
 				})
 			}
 			require.ErrorContains(t, err, "duplicate ordered revision 7/2")
@@ -171,15 +171,15 @@ func TestBuilderRejectsOrderedSubrevisionGapAboveCompactWatermark(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.NoError(t, builder.Append([]Record{
-		{Key: []byte("first"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, Ordered: true},
-		{Key: []byte("third"), Value: []byte("three"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 2, Ordered: true},
+		{Key: []byte("first"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, TotalChanges: 3, Ordered: true},
+		{Key: []byte("third"), Value: []byte("three"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 2, TotalChanges: 3, Ordered: true},
 	}))
 	require.ErrorContains(t, builder.Finish(), "ordered revision 12 has subrevision 2, want 1")
 
 	// Finish validates all committed batches, so a later scanner batch can fill
 	// the gap before the private artifact is finalized.
 	require.NoError(t, builder.Append([]Record{{
-		Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, Ordered: true,
+		Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, TotalChanges: 3, Ordered: true,
 	}}))
 	require.NoError(t, builder.Finish())
 	require.NoError(t, builder.Close())
@@ -190,7 +190,7 @@ func TestBuilderRejectsMixedOrderedAndFallbackRecordsAboveCompactWatermark(t *te
 	err := WriteBackend(path, State{
 		Revision: 12, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
 		Records: []Record{
-			{Key: []byte("ordered"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, Ordered: true},
+			{Key: []byte("ordered"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, TotalChanges: 2, Ordered: true},
 			{Key: []byte("fallback"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1},
 		},
 	})
@@ -200,10 +200,52 @@ func TestBuilderRejectsMixedOrderedAndFallbackRecordsAboveCompactWatermark(t *te
 	require.NoError(t, WriteBackend(anchorPath, State{
 		Revision: 3, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
 		Records: []Record{
-			{Key: []byte("ordered-anchor"), Value: []byte("one"), CreateRevision: 3, ModRevision: 3, Version: 1, SubRevision: 0, Ordered: true},
+			{Key: []byte("ordered-anchor"), Value: []byte("one"), CreateRevision: 3, ModRevision: 3, Version: 1, SubRevision: 0, TotalChanges: 2, Ordered: true},
 			{Key: []byte("fallback-anchor"), Value: []byte("two"), CreateRevision: 3, ModRevision: 3, Version: 1},
 		},
 	}), "records at the compact watermark are non-queryable index anchors")
+}
+
+func TestBuilderRequiresDeclaredOrderedTransactionTotal(t *testing.T) {
+	t.Run("missing tail", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		builder, err := NewBuilder(path, State{
+			Revision: 12, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
+		})
+		require.NoError(t, err)
+		require.NoError(t, builder.Append([]Record{
+			{Key: []byte("first"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, TotalChanges: 3, Ordered: true},
+			{Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, TotalChanges: 3, Ordered: true},
+		}))
+		require.ErrorContains(t, builder.Finish(), "ordered revision 12 contains 2 changes, want 3")
+		require.NoError(t, builder.Append([]Record{{
+			Key: []byte("third"), Value: []byte("three"), CreateRevision: 12, ModRevision: 12, Version: 1,
+			SubRevision: 2, TotalChanges: 3, Ordered: true,
+		}}))
+		require.NoError(t, builder.Finish())
+		require.NoError(t, builder.Close())
+	})
+
+	t.Run("inconsistent totals", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		builder, err := NewBuilder(path, State{Revision: 12, PreserveHistory: true})
+		require.NoError(t, err)
+		require.NoError(t, builder.Append([]Record{{
+			Key: []byte("first"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1,
+			SubRevision: 0, TotalChanges: 2, Ordered: true,
+		}}))
+		err = builder.Append([]Record{{
+			Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1,
+			SubRevision: 1, TotalChanges: 3, Ordered: true,
+		}})
+		require.ErrorContains(t, err, "ordered revision 12 reports total changes 3, previously 2")
+		require.NoError(t, builder.Append([]Record{{
+			Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1,
+			SubRevision: 1, TotalChanges: 2, Ordered: true,
+		}}))
+		require.NoError(t, builder.Finish())
+		require.NoError(t, builder.Close())
+	})
 }
 
 func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) {
