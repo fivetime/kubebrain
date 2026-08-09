@@ -264,6 +264,26 @@ func TestCompatFailoverCommandsUseBoundedHelpers(t *testing.T) {
 	require.NotContains(t, helperText, ".CombinedOutput()")
 }
 
+func TestLeaseRenewalNetworkPartitionHelperIsRecoverable(t *testing.T) {
+	data, err := os.ReadFile("../dev/lease-renewal-failover-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `FAILOVER_MODE="${FAILOVER_MODE:-pod-delete}"`)
+	require.Contains(t, script, `network-partition)`)
+	require.Contains(t, script, `{{.HostConfig.Privileged}}`)
+	require.Contains(t, script, `partition_tag="kubebrain-lease-partition-${leader_name}-$$"`)
+	require.Contains(t, script, `trap cleanup_partition EXIT`)
+	require.Contains(t, script, `trap 'cleanup_partition; exit 130' INT`)
+	require.Contains(t, script, `trap 'cleanup_partition; exit 143' TERM`)
+	require.Contains(t, script, `trap - EXIT INT TERM`)
+	require.Contains(t, script, `iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip"`)
+	require.Contains(t, script, `iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip"`)
+	require.Contains(t, script, `iptables -w 5 -D FORWARD -s "$partition_pod_ip"`)
+	require.Contains(t, script, `iptables -w 5 -D FORWARD -d "$partition_pod_ip"`)
+	require.Contains(t, script, `[[ "$new_leader" =~ ^[1-9][0-9]*$ ]]`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 	for _, testFile := range []string{
 		"admission_replica_restart_test.go",

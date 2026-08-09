@@ -44376,6 +44376,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   147.23 秒通过，覆盖多个 TTL/keepalive 周期，并完成逐 lease Revoke、TTL=-1、Leases 列表、前缀清理
   与最终 StatefulSet 3/3 rollout。该运行证明持续调度器可用并扩大现场证据，但完整小时级、高并发上限
   和网络分区仍保持 P1 开放，不能由本次两分钟运行宣称关闭。
+  A4195 为同一 renewal soak 增加真实 leader Pod 网络分区模式。`FAILOVER_MODE=network-partition` 只在
+  显式 opt-in 时启用，动态从 Status/MemberList 绑定当前 KubeBrain leader 及 Pod IPv4，在经验证为
+  privileged 的 kind node network namespace 中插入带唯一 comment 的双向 `FORWARD DROP`；空 leader
+  JSON `null` 不得被当成切换成功，必须观察另一个正整数 leader ID，并在可配置 hold 后删除两条精确
+  规则、反查均不存在才返回。节点容器名、1..300 秒 failover timeout/0..300 秒 hold、StatefulSet
+  Pod 名和 IP 都 fail-closed；默认模式仍为生产环境更通用的 Pod delete。首次现场门禁在真实切换后
+  发现 EXIT trap 引用函数局部 `pod_ip/tag` 会因 `set -u` 清理失败；测试正确失败，残留的两条唯一
+  comment 规则被精确删除，失败轮次 64 个 lease key 自然过期归零。修复为脚本级 fenced 状态后，
+  独立 3 副本 KubeBrain/3 PD/3 TiKV 上 64 条持续 `clientv3.KeepAlive` 跨连续 3 次 leader 网络隔离
+  80.99 秒通过，每轮均经历新 leader、fresh TTL response 和 key/lease 绑定复核，最终逐 lease 清理；
+  再以显式删除并反查版本单独验证 `kubebrain-2/231094427 -> 2393892952`，规则零残留且 proposal health
+  通过。该门禁关闭“只有进程 replacement、没有真实失联”的证据窗口；跨节点/AZ、PD/TiKV 网络分区
+  及小时级 partition soak 仍保持 P1 开放。
 
 ### P2：运维兼容和长期验证
 

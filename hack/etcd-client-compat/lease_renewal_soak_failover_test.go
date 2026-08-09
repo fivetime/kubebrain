@@ -179,6 +179,7 @@ func TestLeaseRenewalSoakAcrossRepeatedLeaderFailover(t *testing.T) {
 		}
 		output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 		require.NoErrorf(t, err, "failover cycle %d command: %s", cycle, strings.TrimSpace(string(output)))
+		t.Logf("failover cycle %d: %s", cycle, strings.TrimSpace(string(output)))
 		output, err = waitForKubeBrainRollout(t, ctx, namespace)
 		require.NoErrorf(t, err, "failover cycle %d recovery: %s", cycle, strings.TrimSpace(string(output)))
 
