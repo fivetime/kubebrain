@@ -44093,6 +44093,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确填满 6-byte 逻辑 quota，验证 malformed Put/Txn 均返回 typed NoSpace，同时 serializable read Txn
   仍读到原值；并与 A4160/A4161 的 manual-alarm/LeaseGrant 门禁联合重复。A4162 修复了满容量瞬时错误
   优先级和协调绕行，同时保持 TiKV 逻辑计费而不移植 bbolt 固定 overhead。
+  A4163 继续复审 `/root/etcd` `5cd9f4ee1` 的 quota server 与 alarm applier 组合层级。
+  upstream gRPC `quotaKVServer` 包在整个 `kvServer` 外；进入 raft apply 后的 wrapper 顺序则是
+  `CorruptApplier -> CappedApplier -> Auth -> Quota -> Backend`。因此 configured quota 已不可用时，Put 与
+  任一分支含 Put 的 Txn 在 validation/raft 前先得到 NoSpace，即使 CORRUPT 同时激活；不产生 quota 成本的
+  Delete-only Txn 会继续进入 apply 并由 Corrupt 返回 DataLoss；read-only Txn 不走 raft write applier，仍
+  可用于诊断。KubeBrain 的 `configuredQuotaExhausted`、`rejectCorrupt` 和 readonly 分支保持同一可观察
+  分类。新测试在精确填满逻辑 quota 后激活 CORRUPT，验证 malformed Put/Put-Txn 返回 typed NoSpace、
+  Delete-only Txn 返回 typed Corrupt、serializable read Txn 仍读到原值，并与既有 manual NOSPACE +
+  CORRUPT 恢复测试联合重复。未发现 runtime 差异；A4163 防止统一 alarm 检查把所有请求提前归类为
+  Corrupt，或让 Corrupt 绕过外层 configured-quota admission。
 
 ### P2：运维兼容和长期验证
 

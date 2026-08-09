@@ -426,6 +426,39 @@ func TestQuotaRPCConfiguredCeilingPreflightsPutAndTxnLikeEtcd(t *testing.T) {
 	require.Len(t, read.Responses[0].GetResponseRange().Kvs, 1)
 }
 
+func TestQuotaRPCConfiguredCeilingPrecedesCorruptWriteApplierLikeEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("123")})
+	require.NoError(t, err)
+	_, err = server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE, Alarm: etcdserverpb.AlarmType_CORRUPT, MemberID: 4163,
+	})
+	require.NoError(t, err)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{})
+	requireQuotaNoSpaceError(t, err)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{}},
+	}}})
+	requireQuotaNoSpaceError(t, err)
+
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestDeleteRange{
+			RequestDeleteRange: &etcdserverpb.DeleteRangeRequest{Key: []byte("key")},
+		},
+	}}})
+	requireMaintenanceDirectError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
+
+	read, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("key"), Serializable: true},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, read.Responses[0].GetResponseRange().Kvs, 1)
+}
+
 func TestTxnContainsPutAcrossBranchesAndNesting(t *testing.T) {
 	put := func() *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
