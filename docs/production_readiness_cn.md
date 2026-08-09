@@ -955,6 +955,9 @@ VolumeSnapshotContent name/UID，并要求源 Snapshot name 精确为 `operation
 renderer 还必须在任何目标 Kubernetes API 访问前完整校验 source PVC/PV inventory：每个 PVC 必须
 保持 `phase=Bound`、非空 StorageClass，PVC UID、PV name、PV UID 与 CSI volumeHandle 在 PD+TiKV
 全集中分别唯一。重复或不完整的来源身份不能留给恢复后的 verifier 首次发现。
+同一 admission 还要求 source VolumeSnapshotClass name 非空且原 retention policy 为 `Retain`，并保留
+非空的 source KubeBrain namespace、StatefulSet name 和 UID；丢失控制面来源身份或来自 Delete policy
+的 receipt 不得生成目标 manifest。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的

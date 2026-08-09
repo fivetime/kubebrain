@@ -214,6 +214,12 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	if r.Inventory.Format != "kubebrain.cold-physical-snapshot-preflight.v2" {
 		return nil, errors.New("cold snapshot receipt inventory format is invalid")
 	}
+	if r.Inventory.VolumeSnapshotClass.Name == "" || r.Inventory.VolumeSnapshotClass.DeletionPolicy != "Retain" {
+		return nil, errors.New("source snapshot class identity or retention policy is invalid")
+	}
+	if r.Inventory.KubeBrain.Namespace == "" || r.Inventory.KubeBrain.StatefulSet == "" || r.Inventory.KubeBrain.UID == "" {
+		return nil, errors.New("source KubeBrain identity is incomplete")
+	}
 	createdAt, err := time.Parse(time.RFC3339, r.CreatedAt)
 	if err != nil {
 		return nil, errors.New("cold snapshot receipt created_at is invalid")

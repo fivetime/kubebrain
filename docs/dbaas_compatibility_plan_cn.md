@@ -43899,6 +43899,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PVC/source volumeHandle/snapshotHandle 的全局唯一性。既有 executor 行为测试同时证明正常六卷集合
   能恢复服务并发布 receipt、重复 CSI handle 仍恢复服务但拒绝 receipt；脚本 `bash -n` 与真实 jq 编译
   一并通过。该修复恢复 A4137 预期的 fail-closed 集合语义，不放宽任何 identity 条件。
+  A4145 继续消除 cold restore renderer 与最终 verifier 的来源身份分叉。preflight/executor receipt 已
+  固定 source VolumeSnapshotClass name/driver/Retain policy，以及 source KubeBrain namespace、
+  StatefulSet name/UID；最终 semantic verifier 要求这些字段完整，但旧 renderer 仅消费 CSI driver，
+  所以删除 KubeBrain UID、class name 或把 retention 改成 Delete 的 receipt 仍能创建目标 VSC/VS/PVC/
+  TidbCluster，直到恢复后才失败。renderer 现于 manifest 生成前要求 source class name 非空且 policy
+  精确为 Retain，并要求三个 KubeBrain identity 字段均非空。五项单元红测证明旧实现全部接受；executor
+  黑盒先用完整 receipt 生成 canonical manifest，再删除 source KubeBrain UID，固定重新 admission 在任何
+  target kubectl access 前拒绝。该身份不参与目标命名，但属于证明停机 witness 与物理 snapshot 来自同一
+  数据面的必要链路，不能因为 snapshotHandle 足以驱动 CSI restore 而降级为可选元数据。
 
 ### P2：运维兼容和长期验证
 

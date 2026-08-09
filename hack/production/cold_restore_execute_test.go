@@ -34,6 +34,7 @@ func TestProductionReadinessColdRestoreExecuteExampleRequiresExplicitTarget(t *t
 	}
 	require.Contains(t, doc, "不能隐式使用当前 context")
 	require.Contains(t, doc, "PVC UID、PV name、PV UID 与 CSI volumeHandle")
+	require.Contains(t, doc, "source KubeBrain namespace、StatefulSet name 和 UID")
 }
 
 func TestColdRestoreExecute(t *testing.T) {
@@ -53,6 +54,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		predatesWitness                bool
 		missingSnapshotIdentity        bool
 		invalidSourceInventory         bool
+		invalidSourceIdentity          bool
 		wantReceipt                    bool
 		wantPreexistingRestoreReceipt  bool
 		wantEmergency                  bool
@@ -67,6 +69,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		{name: "snapshot receipt predating witness fails before target access", predatesWitness: true, wantError: "predates semantic witness"},
 		{name: "missing source snapshot identity fails before target access", missingSnapshotIdentity: true, wantError: "snapshot identity"},
 		{name: "invalid source volume inventory fails before target access", invalidSourceInventory: true, wantError: "PVC blueprint"},
+		{name: "invalid source control plane identity fails before target access", invalidSourceIdentity: true, wantError: "source KubeBrain identity"},
 		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "source receipt drift during render uses captured receipt", sourceReceiptDriftDuringRender: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "restore manifest drift during capture fails before target access", restoreManifestDriftDuringHash: true, wantError: "restore manifest changed during capture"},
@@ -120,6 +123,14 @@ func TestColdRestoreExecute(t *testing.T) {
 				var incomplete map[string]any
 				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &incomplete))
 				incomplete["inventory"].(map[string]any)["pd_pvcs"].([]any)[0].(map[string]any)["phase"] = "Pending"
+				data, marshalErr := json.Marshal(incomplete)
+				require.NoError(t, marshalErr)
+				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
+			}
+			if tc.invalidSourceIdentity {
+				var incomplete map[string]any
+				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &incomplete))
+				incomplete["inventory"].(map[string]any)["kubebrain"].(map[string]any)["uid"] = ""
 				data, marshalErr := json.Marshal(incomplete)
 				require.NoError(t, marshalErr)
 				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
@@ -195,7 +206,7 @@ func TestColdRestoreExecute(t *testing.T) {
 			}
 
 			logValue, readErr := os.ReadFile(logPath)
-			if (tc.tampered || tc.futureReceipt || tc.predatesWitness || tc.missingSnapshotIdentity || tc.invalidSourceInventory || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
+			if (tc.tampered || tc.futureReceipt || tc.predatesWitness || tc.missingSnapshotIdentity || tc.invalidSourceInventory || tc.invalidSourceIdentity || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
 				logValue = nil
 			} else {
 				require.NoError(t, readErr)

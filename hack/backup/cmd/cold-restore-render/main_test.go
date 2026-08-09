@@ -98,6 +98,13 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 		{name: "snapshot predates witness", mutate: func(r *receipt) { r.CreatedAt = "1970-01-01T00:00:00Z" }, message: "predates semantic witness"},
 		{name: "missing witness created_at", mutate: func(r *receipt) { r.SemanticWitness.CreatedAtUnix = 0 }, message: "predates semantic witness"},
 		{name: "invalid inventory format", mutate: func(r *receipt) { r.Inventory.Format = "other" }, message: "inventory format"},
+		{name: "missing source snapshot class", mutate: func(r *receipt) { r.Inventory.VolumeSnapshotClass.Name = "" }, message: "source snapshot class identity"},
+		{name: "source snapshot class deletes content", mutate: func(r *receipt) {
+			r.Inventory.VolumeSnapshotClass.DeletionPolicy = "Delete"
+		}, message: "source snapshot class identity"},
+		{name: "missing source KubeBrain namespace", mutate: func(r *receipt) { r.Inventory.KubeBrain.Namespace = "" }, message: "source KubeBrain identity"},
+		{name: "missing source KubeBrain StatefulSet", mutate: func(r *receipt) { r.Inventory.KubeBrain.StatefulSet = "" }, message: "source KubeBrain identity"},
+		{name: "missing source KubeBrain UID", mutate: func(r *receipt) { r.Inventory.KubeBrain.UID = "" }, message: "source KubeBrain identity"},
 		{name: "uppercase witness digest", mutate: func(r *receipt) {
 			r.SemanticWitness.SHA256 = strings.ToUpper(r.SemanticWitness.SHA256)
 		}, message: "semantic witness"},
