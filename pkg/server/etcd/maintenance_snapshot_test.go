@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -402,11 +403,12 @@ func TestMaintenanceSnapshotPinsAuthMetadataBeforeReleasingWriteBarrier(t *testi
 func TestMaintenanceSnapshotRejectsLeadershipTermChangeBeforePin(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
-	var epoch uint64 = 7
+	var epoch atomic.Uint64
+	epoch.Store(7)
 	server.peers = testPeerService{
 		isLeader: true,
 		epochFn: func() (uint64, bool) {
-			return epoch, true
+			return epoch.Load(), true
 		},
 	}
 	wrapped := &metadataBarrierSnapshotBackend{
@@ -428,13 +430,49 @@ func TestMaintenanceSnapshotRejectsLeadershipTermChangeBeforePin(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("snapshot did not acquire its metadata barrier")
 	}
-	epoch = 8
+	epoch.Store(8)
 	close(wrapped.proceedMetadata)
 
 	require.ErrorIs(t, <-done, errSnapshotChanged)
 	_, statErr := os.Stat(path)
 	require.ErrorIs(t, statErr, os.ErrNotExist,
 		"a term-spanning capture must be rejected before creating its bbolt artifact")
+}
+
+func TestMaintenanceSnapshotRejectsLeadershipTermChangeDuringStream(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-term-stream"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	var epoch atomic.Uint64
+	epoch.Store(7)
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn: func() (uint64, bool) {
+			return epoch.Load(), true
+		},
+	}
+	wrapped := &pausedSnapshotBackend{
+		BackendShim: server.backend,
+		paused:      make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = wrapped
+
+	done := make(chan error, 1)
+	go func() {
+		done <- server.buildSnapshotOnce(context.Background(), filepath.Join(t.TempDir(), "snapshot.db"))
+	}()
+	select {
+	case <-wrapped.paused:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not stream its first data chunk")
+	}
+	epoch.Store(8)
+	close(wrapped.release)
+	require.ErrorIs(t, <-done, errSnapshotChanged)
 }
 
 func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *testing.T) {

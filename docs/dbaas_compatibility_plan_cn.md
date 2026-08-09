@@ -43546,6 +43546,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `errSnapshotChanged`，由外层以全新私有文件重捕获。固定 read view 建立后的换主无需取消长扫描。
   确定性测试在 BeginRangeTxn hook 内把 epoch 从 7 推进到 8，证明 term-spanning capture 在任何 artifact
   创建前失败；follower proxy/禁用 proxy 与 auth metadata barrier 回归继续通过。
+  A4101 修正 A4100 对首块之后 term stability 的过强假设：`SnapshotHistoryStream` 的主 object row 来自
+  单一 TiKV iterator snapshot，但每批 ordered event metadata 使用独立 BatchGet，legacy 非 inline KV
+  metadata 也按版本独立读取。当前 leader 的 `snapshotPins` 可阻止本进程物理 Compact 删除这些 join
+  证据，却不是 TiKV 中的分布式 pin；换主后的另一 Pod 不会继承。若首块后允许旧 leader 继续扫描，
+  successor Compact 可让后续事务顺序退化为 fallback 或让 legacy metadata 消失。`consume` 现在在处理
+  每个 data chunk 和 terminal chunk 前复核最初 epoch/freshness；任一变化都拒绝 Finish/发送并由外层
+  删除私有 bbolt 后重捕获。测试在首个真实 data chunk 已写入 builder、scanner 暂停时推进 epoch，证明
+  后续 terminal 到达时整次 capture 返回 `errSnapshotChanged`；正常并发 Put 仍可在 pin 后完成，不重新
+  持有全程 logical-write barrier。每次 capture 另建可取消子 context，term fence 或任何校验提前返回时
+  立即终止旧 scanner、关闭 iterator 并释放本地 compaction pin，避免重试把废弃 goroutine/pin 留到客户端
+  总 context 最终结束。
 
 ### P2：运维兼容和长期验证
 

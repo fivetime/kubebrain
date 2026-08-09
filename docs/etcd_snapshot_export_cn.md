@@ -23,7 +23,9 @@ auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的
 提交变更，否则 KV revision 与 auth/lease/alarm 可能来自从未同时存在的状态。
 leader 捕获还会记录当前 leadership epoch，并在 metadata 与固定 revision history stream 都已建立、
 释放本地 barrier 前复核同一 epoch 和 fresh lease；期间换主会丢弃私有制品并重试或返回 NotLeader。
-stream 已固定后发生的换主不影响已经冻结的 TiKV 读视图。
+长扫描的每个 data/terminal chunk 也会复核同一 term：主对象 iterator 虽已冻结，但 transaction event
+order 与 legacy metadata 仍通过独立读取拼接，其防物理 GC pin 是进程本地状态，新 leader 无法继承。
+因此完成前任何换主都会丢弃整个私有 artifact。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

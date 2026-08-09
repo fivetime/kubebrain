@@ -50,9 +50,21 @@ func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 }
 
 func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		return rpctypes.ErrGRPCNotLeader
+	}
+	checkLeadership := func() error {
+		currentEpoch, stillLeadingFresh := s.peers.EpochAndLeadingFresh()
+		if !stillLeadingFresh {
+			return rpctypes.ErrGRPCNotLeader
+		}
+		if currentEpoch != epoch {
+			return errSnapshotChanged
+		}
+		return nil
 	}
 	rangeCtx, unlock := s.backend.BeginRangeTxn(ctx)
 	locked := true
@@ -112,12 +124,8 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	if firstChunk.Err != nil {
 		return firstChunk.Err
 	}
-	currentEpoch, stillLeadingFresh := s.peers.EpochAndLeadingFresh()
-	if !stillLeadingFresh {
-		return rpctypes.ErrGRPCNotLeader
-	}
-	if currentEpoch != epoch {
-		return errSnapshotChanged
+	if err = checkLeadership(); err != nil {
+		return err
 	}
 	// Metadata and the pinned user revision define the snapshot's linearization
 	// point. Historical scanning remains fixed at that revision, so retaining the
@@ -138,6 +146,13 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 
 	sawTerminal := false
 	consume := func(chunk backend.SnapshotHistoryChunk) error {
+		// The object iterator is a fixed TiKV snapshot, but ordered-event and
+		// legacy metadata joins are streamed through independent reads protected
+		// by a process-local compaction pin. A successor on another Pod cannot
+		// observe that pin, so no chunk may cross a leadership term.
+		if leadershipErr := checkLeadership(); leadershipErr != nil {
+			return leadershipErr
+		}
 		if chunk.Err != nil {
 			return chunk.Err
 		}
