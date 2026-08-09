@@ -43622,6 +43622,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cancel；正常 EOF、leader error、完整性错误和下游断连都同步终止上游。确定性红测让 leader mock 在
   context.Done 上报告、下游首帧 Send 失败，证明旧实现 100ms 内不取消、新实现 RPC 返回即取消；root
   credential 转发测试继续证明派生 context 未丢失认证 metadata。
+  A4111 补齐 Snapshot proxy 接口异常的 fail-fast 边界：旧 follower 对 `(nil channel, nil error)` 直接
+  `range`，RPC 永久阻塞；channel 中出现 `{Response:nil, Err:nil}` 时则返回普通 `fmt.Errorf`，经 gRPC
+  落成 `Unknown`，与其他损坏帧的 `DataLoss` 契约不一致。现在 result channel 在遍历前必须非 nil，
+  每个成功 result 也必须包含 response；两类违反代理协议的状态均立即返回 gRPC `DataLoss`，并由 A4110
+  的 defer 取消 leader 子 context。红测分别以 100ms 有界等待证明 nil channel 不再挂死，并固定 nil
+  response 零下游帧与稳定错误分类；完整、截断、hash/remaining 校验回归继续覆盖正常协议状态机。
 
 ### P2：运维兼容和长期验证
 

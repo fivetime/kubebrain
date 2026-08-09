@@ -274,6 +274,28 @@ func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing
 	require.Len(t, stream.responses, 1)
 }
 
+func TestMaintenanceSnapshotFollowerRejectsNilProxyResultChannel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			return nil, nil
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: context.Background()})
+	}()
+	select {
+	case err := <-done:
+		require.Equal(t, codes.DataLoss, status.Code(err))
+		require.ErrorContains(t, err, "nil result channel")
+	case <-time.After(100 * time.Millisecond):
+		require.Fail(t, "nil leader snapshot result channel blocked the follower RPC")
+	}
+}
+
 func TestMaintenanceSnapshotFollowerCancelsLeaderStreamOnDownstreamSendFailure(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -317,6 +339,12 @@ func TestMaintenanceSnapshotFollowerRejectsMalformedProxyTermination(t *testing.
 		wantError     string
 		wantForwarded int
 	}{
+		{
+			name:          "nil response",
+			responses:     []*etcdserverpb.SnapshotResponse{nil},
+			wantError:     "empty response",
+			wantForwarded: 0,
+		},
 		{
 			name: "invalid checksum",
 			responses: []*etcdserverpb.SnapshotResponse{

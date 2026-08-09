@@ -477,6 +477,9 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		if err != nil {
 			return err
 		}
+		if responses == nil {
+			return status.Error(codes.DataLoss, "leader snapshot proxy returned a nil result channel")
+		}
 		awaitingChecksum := false
 		complete := false
 		hash := sha256.New()
@@ -488,7 +491,7 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 				return result.Err
 			}
 			if result.Response == nil {
-				return fmt.Errorf("leader snapshot proxy returned an empty response")
+				return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty response")
 			}
 			if complete {
 				return status.Error(codes.DataLoss, "leader snapshot proxy returned data after checksum")
