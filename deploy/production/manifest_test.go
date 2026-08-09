@@ -143,10 +143,36 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			env, found, err := unstructured.NestedSlice(container, "env")
 			require.NoError(t, err)
 			require.True(t, found)
-			require.Len(t, env, 1)
-			podName := env[0].(map[string]any)
+			require.Len(t, env, 2)
+			envByName := make(map[string]map[string]any, len(env))
+			for _, raw := range env {
+				entry := raw.(map[string]any)
+				envByName[entry["name"].(string)] = entry
+			}
+			podName := envByName["POD_NAME"]
 			require.Equal(t, "POD_NAME", podName["name"])
 			require.Equal(t, "metadata.name", nestedString(t, &unstructured.Unstructured{Object: podName}, "valueFrom", "fieldRef", "fieldPath"))
+			require.Equal(t, "/var/lib/kubebrain-snapshot", envByName["TMPDIR"]["value"])
+
+			mounts, found, err := unstructured.NestedSlice(container, "volumeMounts")
+			require.NoError(t, err)
+			require.True(t, found)
+			mountByName := make(map[string]map[string]any, len(mounts))
+			for _, raw := range mounts {
+				mount := raw.(map[string]any)
+				mountByName[mount["name"].(string)] = mount
+			}
+			require.Equal(t, "/var/lib/kubebrain-snapshot", mountByName["snapshot-tmp"]["mountPath"])
+			volumes, found, err := unstructured.NestedSlice(workload.Object, "spec", "template", "spec", "volumes")
+			require.NoError(t, err)
+			require.True(t, found)
+			volumeByName := make(map[string]map[string]any, len(volumes))
+			for _, raw := range volumes {
+				volume := raw.(map[string]any)
+				volumeByName[volume["name"].(string)] = volume
+			}
+			require.Equal(t, "512Gi", nestedString(t,
+				&unstructured.Unstructured{Object: volumeByName["snapshot-tmp"]}, "emptyDir", "sizeLimit"))
 
 			serviceAccount := objectByKindAndName(t, objects, "ServiceAccount", "kubebrain")
 			require.False(t, nestedBool(t, serviceAccount, "automountServiceAccountToken"))

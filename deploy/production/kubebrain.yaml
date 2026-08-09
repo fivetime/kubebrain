@@ -138,6 +138,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: TMPDIR
+              value: /var/lib/kubebrain-snapshot
           ports:
             - name: client
               containerPort: 3379
@@ -168,6 +170,13 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 24
+          volumeMounts:
+            - name: snapshot-tmp
+              mountPath: /var/lib/kubebrain-snapshot
+      volumes:
+        - name: snapshot-tmp
+          emptyDir:
+            sizeLimit: 512Gi
 ---
 apiVersion: v1
 kind: Service

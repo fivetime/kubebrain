@@ -37,6 +37,10 @@ lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错�
 状态前 fail closed，禁止在残留 buckets/rows 上继续写出跨 attempt 混合 artifact。
 捕获完成后，服务端打开并取得文件大小便立即 unlink 临时 bbolt，再从仍有效的 Linux 文件描述符发送；
 因此从首个 gRPC response 开始，慢客户端、断连或进程崩溃都不会留下包含完整 KV/auth hash 的命名文件。
+生产明文/TLS StatefulSet 在只读 rootfs 外挂载 Pod 独占 `snapshot-tmp` emptyDir，并显式将 `TMPDIR`
+指向该卷；基线 sizeLimit 为 512Gi，对应当前 400Gi logical quota 加 bbolt 余量。保留历史可能明显大于
+当前 live quota，平台必须按实例 retention/历史体量调整临时卷或改用受管 ephemeral PVC，并监控 node
+ephemeral storage；512Gi 不是“任意历史都可导出”的保证。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

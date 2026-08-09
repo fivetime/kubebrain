@@ -43593,6 +43593,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数据面稳定的已打开文件描述符继续计算 SHA-256 和发送全部 bytes；unlink 失败则在发送任何响应前
   fail closed，外层 defer 再尝试清理。独立 `streamSnapshotFile` 测试用多 chunk 敏感 payload，在首次
   Send 回调中要求路径已为 NotExist，并重组全部 data、核对最终 SHA-256，证明早删不改变官方 wire 内容。
+  A4107 修复生产只读 rootfs 下 Snapshot 根本无法创建临时文件的清单缺口：明文/TLS KubeBrain
+  StatefulSet 都设置 `readOnlyRootFilesystem:true`，旧清单却没有主容器可写 `/tmp` 或 TMPDIR，在线
+  Maintenance.Snapshot 会在 `os.CreateTemp` 立即失败。两份基线现挂载 Pod 独占 disk-backed
+  `snapshot-tmp` emptyDir 到 `/var/lib/kubebrain-snapshot`，显式设置 TMPDIR，sizeLimit 512Gi，为当前
+  400Gi logical quota 保留 bbolt 页/metadata 余量。manifest 测试逐份锁定 env、mount、volume 与容量，
+  TLS secret mounts 继续只读。retained MVCC history 不受 live quota 严格约束，因此真实 DBaaS 必须按
+  实例历史/compaction 策略规划 node ephemeral storage 或替换为受管 ephemeral PVC；本项关闭默认清单
+  的零可写目录故障，不把静态 512Gi 冒充无限快照容量。
 
 ### P2：运维兼容和长期验证
 

@@ -151,6 +151,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: TMPDIR
+              value: /var/lib/kubebrain-snapshot
           ports:
             - name: client
               containerPort: 3379
@@ -185,6 +187,8 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 24
           volumeMounts:
+            - name: snapshot-tmp
+              mountPath: /var/lib/kubebrain-snapshot
             - name: client-tls
               mountPath: /etc/kubebrain/client-tls
               readOnly: true
@@ -192,6 +196,9 @@ spec:
               mountPath: /etc/kubebrain/peer-tls
               readOnly: true
       volumes:
+        - name: snapshot-tmp
+          emptyDir:
+            sizeLimit: 512Gi
         - name: client-tls
           secret:
             secretName: kubebrain-client-tls
