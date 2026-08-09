@@ -44227,6 +44227,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   snapshot revision 由最后 tombstone 固定。当前 upstream `etcdutl snapshot status` 对真实完整 artifact
   返回 `totalKey=4`，同时既有 latest/history hashkv、严格 restore 和三类 checksum 结果继续通过；未发现
   runtime schema 差异。
+  A4178 完成当前 upstream Txn CLI/client 增量复审。`3d7833c26` 只把 clientv3 Compare 构造器对非法
+  int64 类型的本地 panic 从固定 `bad value` 改为携带值与 Go 类型；请求尚未生成，不存在服务端可观察
+  error contract。`7cc858aed` 只把 `etcdctl` lease compare parser 测试适配 clientv3 `Cmp` wrapper，实际
+  base-16 lease 文本解析及 wire `Compare{Target:LEASE, Lease:int64}` 已由 A4166 对照 `b35f739fa` 分类，
+  KubeBrain 的 signed MinInt64/-1/MaxInt64 lease compare 门禁继续覆盖数据面。同期 MemberList common-test
+  迁移 `845cd3885` 已由 A4127/A4128 的 blocking barrier 与官方 clientv3 黑盒覆盖。故本轮不在 server
+  复制 etcdctl parser 或 client panic 文案，只把两个新增 commit ID 纳入永久审计集合；未发现新的公开 RPC
+  差异。
 
 ### P2：运维兼容和长期验证
 
