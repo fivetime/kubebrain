@@ -47,7 +47,8 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 输出保证：
 
 - 官方 3.7 backend schema、完整 bbolt bucket 和文件 SHA-256；
-- snapshot revision 与 KubeBrain 导出点一致，包括巨大的 TiKV TSO revision；
+- snapshot revision 必须为正并与 KubeBrain 导出点一致，包括巨大的 TiKV TSO revision；revision 0
+  不会静默规范为官方初始 revision 1，而是在创建制品前拒绝；
 - 当前 key/value、create revision、mod revision、version 和 lease ID 保持一致；
 - lease 的 granted TTL、导出时剩余 TTL 与 attached keys 可恢复；
 - 下一次官方 etcd 写入从 `snapshot revision + 1` 开始；

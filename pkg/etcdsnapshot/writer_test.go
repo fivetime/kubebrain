@@ -62,6 +62,16 @@ func TestBuilderAppendsMultipleBatchesWithoutLosingSameRevisionRecords(t *testin
 	require.Equal(t, map[string]string{"a": "1", "b": "2", "c": "3"}, got)
 }
 
+func TestWriteBackendRejectsNonPositiveSnapshotRevision(t *testing.T) {
+	for _, revision := range []int64{-1, 0} {
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("snapshot-%d.db", revision))
+		err := WriteBackend(path, State{Revision: revision})
+		require.ErrorContains(t, err, fmt.Sprintf("snapshot revision must be positive: %d", revision))
+		_, err = NewBuilder(path+"-builder", State{Revision: revision})
+		require.ErrorContains(t, err, fmt.Sprintf("snapshot revision must be positive: %d", revision))
+	}
+}
+
 func TestBuilderUsesExactTxnSubrevisionInsteadOfPhysicalInputOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	builder, err := NewBuilder(path, State{Revision: 12, PreserveHistory: true})
@@ -531,7 +541,7 @@ func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {
 
 func TestWriteBackendRejectsLeaseRemainingTTLAboveGrant(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
-	err := WriteBackend(path, State{Leases: []Lease{{ID: -7, GrantedTTL: 60, RemainingTTL: 61}}})
+	err := WriteBackend(path, State{Revision: 1, Leases: []Lease{{ID: -7, GrantedTTL: 60, RemainingTTL: 61}}})
 	require.ErrorContains(t, err, "invalid lease id=-7 granted_ttl=60 remaining_ttl=61")
 
 	db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
@@ -543,7 +553,7 @@ func TestWriteBackendRejectsLeaseRemainingTTLAboveGrant(t *testing.T) {
 	}))
 
 	equalPath := filepath.Join(t.TempDir(), "equal.db")
-	require.NoError(t, WriteBackend(equalPath, State{Leases: []Lease{{
+	require.NoError(t, WriteBackend(equalPath, State{Revision: 1, Leases: []Lease{{
 		ID: -7, GrantedTTL: 60, RemainingTTL: 60,
 	}}}), "upstream permits negative explicit IDs and a full-TTL checkpoint envelope")
 }
@@ -558,7 +568,7 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 	}{
 		{
 			name: "lease ID",
-			state: State{Leases: []Lease{
+			state: State{Revision: 1, Leases: []Lease{
 				{ID: 7, GrantedTTL: 60, RemainingTTL: 30},
 				{ID: 7, GrantedTTL: 120, RemainingTTL: 90},
 			}},
@@ -566,7 +576,7 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 		},
 		{
 			name: "auth user",
-			state: State{Auth: Auth{Users: []*authpb.User{
+			state: State{Revision: 1, Auth: Auth{Users: []*authpb.User{
 				{Name: []byte("alice"), Roles: []string{"reader"}},
 				{Name: []byte("alice"), Roles: []string{"writer"}},
 			}}},
@@ -574,7 +584,7 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 		},
 		{
 			name: "auth role",
-			state: State{Auth: Auth{Roles: []*authpb.Role{
+			state: State{Revision: 1, Auth: Auth{Roles: []*authpb.Role{
 				{Name: []byte("reader")},
 				{Name: []byte("reader"), KeyPermission: []*authpb.Permission{{Key: []byte("/"), PermType: authpb.READ}}},
 			}}},
@@ -582,7 +592,7 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 		},
 		{
 			name: "logical alarm",
-			state: State{Alarms: []*etcdserverpb.AlarmMember{
+			state: State{Revision: 1, Alarms: []*etcdserverpb.AlarmMember{
 				{MemberID: 23, Alarm: etcdserverpb.AlarmType_NOSPACE},
 				alarmWithUnknownFields,
 			}},
@@ -653,7 +663,7 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")
-			err := WriteBackend(path, State{Auth: test.auth})
+			err := WriteBackend(path, State{Revision: 1, Auth: test.auth})
 			require.ErrorContains(t, err, test.want)
 			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
 			require.NoError(t, openErr)
@@ -668,7 +678,7 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 
 func TestOfficialAuthStoreRecoversImplicitRootRole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
-	require.NoError(t, WriteBackend(path, State{Auth: Auth{
+	require.NoError(t, WriteBackend(path, State{Revision: 1, Auth: Auth{
 		Enabled:  true,
 		Revision: 3,
 		Users: []*authpb.User{{
@@ -695,7 +705,7 @@ func TestOfficialAuthStoreRecoversImplicitRootRole(t *testing.T) {
 
 func TestWriteBackendRejectsPasswordOnNoPasswordUser(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
-	err := WriteBackend(path, State{Auth: Auth{Users: []*authpb.User{{
+	err := WriteBackend(path, State{Revision: 1, Auth: Auth{Users: []*authpb.User{{
 		Name: []byte("certificate-only"), Password: []byte("unexpected"),
 		Options: &authpb.UserAddOptions{NoPassword: true},
 	}}}})
@@ -740,7 +750,7 @@ func TestWriteBackendRejectsAuthRevisionBelowReachableGraphMinimum(t *testing.T)
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")
-			err := WriteBackend(path, State{Auth: test.auth})
+			err := WriteBackend(path, State{Revision: 1, Auth: test.auth})
 			require.ErrorContains(t, err, test.want)
 			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
 			require.NoError(t, openErr)
@@ -755,7 +765,7 @@ func TestWriteBackendRejectsAuthRevisionBelowReachableGraphMinimum(t *testing.T)
 
 func TestWriteBackendAllowsEmptyUninitializedAuthRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
-	require.NoError(t, WriteBackend(path, State{Auth: Auth{}}))
+	require.NoError(t, WriteBackend(path, State{Revision: 1, Auth: Auth{}}))
 
 	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
 	require.NoError(t, err)
@@ -783,7 +793,7 @@ func TestWriteBackendAllowsEmptyUninitializedAuthRevision(t *testing.T) {
 func TestWriteBackendPreservesOpaqueHashedPasswordBytes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	opaque := []byte("not-necessarily-bcrypt")
-	require.NoError(t, WriteBackend(path, State{Auth: Auth{Revision: 2, Users: []*authpb.User{{
+	require.NoError(t, WriteBackend(path, State{Revision: 1, Auth: Auth{Revision: 2, Users: []*authpb.User{{
 		Name: []byte("legacy"), Password: opaque,
 	}}}}))
 	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
@@ -826,7 +836,7 @@ func TestWriteBackendRejectsImpossibleRolePermissions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")
-			err := WriteBackend(path, State{Auth: Auth{Roles: []*authpb.Role{{
+			err := WriteBackend(path, State{Revision: 1, Auth: Auth{Roles: []*authpb.Role{{
 				Name: []byte("reader"), KeyPermission: test.permissions,
 			}}}})
 			require.ErrorContains(t, err, test.want)

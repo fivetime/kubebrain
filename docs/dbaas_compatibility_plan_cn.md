@@ -43461,6 +43461,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   create/version，以及无前态 tombstone；正例固定 compact=10 时只保留 create=2/version=5 anchor，
   revision 12 的 version=6 合法，避免要求被 compaction 删除的早期版本仍在 artifact。snapshot race、
   server Snapshot、backend history、转换器和 vet 回归覆盖；本项不修改在线 MVCC/TiKV 状态。
+  A4092 固定 Snapshot revision 的正数下界：upstream MVCC store 初始化 current revision=1，空
+  backend restore 后也至少为 1；KubeBrain `ensureCurrentRevision` 和 backend compact 初始化路径同样
+  将没有 durable user/compact watermark 的冷状态规范为 revision 1，冷备执行器还明确要求逻辑制品
+  revision>0。旧 WriteBackend/NewBuilder 只拒绝负数，传 State.Revision=0 时因
+  `restoredRevision` 从 upstream 下界 1 起步而不写 marker，最终静默生成实际 revision 1 的 backend，
+  违反输出 revision 与调用方导出点精确相等的契约。两入口现在都在创建 bbolt 文件前要求 revision
+  严格为正；表驱动红测覆盖 -1 和 0，并确认错误稳定。既有 metadata-only writer 测试改用官方初始
+  revision 1，auth revision 0 sentinel 仍独立保留，不能把 MVCC revision 下界误套到 auth metadata。
+  Compact revision 0 也继续合法：两边均以“marker 存在且值为 0”区别首次 Compact(0) 与未 compact，
+  本项只约束 snapshot current revision。snapshot/server/converter 回归通过，不修改在线状态。
 
 ### P2：运维兼容和长期验证
 

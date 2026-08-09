@@ -72,8 +72,8 @@ type State struct {
 // WriteBackend writes an official etcd bbolt backend without the trailing
 // integrity hash. Maintenance.Snapshot streams that hash as its final message.
 func WriteBackend(path string, state State) error {
-	if state.Revision < 0 {
-		return fmt.Errorf("snapshot revision must not be negative: %d", state.Revision)
+	if state.Revision <= 0 {
+		return fmt.Errorf("snapshot revision must be positive: %d", state.Revision)
 	}
 	builder, err := NewBuilder(path, state)
 	if err != nil {
@@ -102,8 +102,8 @@ type Builder struct {
 const fallbackSubRevisionBase int64 = 1 << 32
 
 func NewBuilder(path string, state State) (*Builder, error) {
-	if state.Revision < 0 {
-		return nil, fmt.Errorf("snapshot revision must not be negative: %d", state.Revision)
+	if state.Revision <= 0 {
+		return nil, fmt.Errorf("snapshot revision must be positive: %d", state.Revision)
 	}
 	db, err := bolt.Open(path, 0o600, nil)
 	if err != nil {
