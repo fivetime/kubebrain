@@ -44,6 +44,8 @@ ephemeral storage；512Gi 不是“任意历史都可导出”的保证。
 follower 转发在线 Snapshot 时也验证 upstream 帧终止契约：最后一个数据库 data frame 把
 `RemainingBytes` 降为 0，随后必须收到独立的 32 字节 SHA-256 frame；leader stream 在 checksum 前 EOF、
 checksum 形状错误或 checksum 后继续发帧均以 gRPC `DataLoss` 失败，不能把截断制品发布成成功 RPC。
+代理同时按帧流式计算 SHA-256，校验 checksum 内容、`RemainingBytes` 精确递减和 storage version 全程
+不变；校验只保留 hash/计数器，不缓存数据库，异常帧在向下游发送前拒绝。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

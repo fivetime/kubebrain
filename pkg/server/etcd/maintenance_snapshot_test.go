@@ -227,9 +227,11 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	defer closeFn()
 	trap := &localSnapshotTrapBackend{BackendShim: server.backend}
 	server.backend = trap
+	digest := sha256.Sum256([]byte("abc"))
 	want := []*etcdserverpb.SnapshotResponse{
-		{RemainingBytes: 0, Blob: []byte("abc"), Version: Version},
-		{RemainingBytes: 0, Blob: bytes.Repeat([]byte{1}, 32), Version: Version},
+		{RemainingBytes: 2, Blob: []byte("a"), Version: Version},
+		{RemainingBytes: 0, Blob: []byte("bc"), Version: Version},
+		{RemainingBytes: 0, Blob: digest[:], Version: Version},
 	}
 	server.peers = testPeerService{
 		isLeader: false, proxyEnabled: true,
@@ -274,7 +276,8 @@ func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing
 
 func TestMaintenanceSnapshotFollowerRejectsMalformedProxyTermination(t *testing.T) {
 	data := &etcdserverpb.SnapshotResponse{RemainingBytes: 0, Blob: []byte("db"), Version: Version}
-	checksum := &etcdserverpb.SnapshotResponse{RemainingBytes: 0, Blob: make([]byte, sha256.Size), Version: Version}
+	digest := sha256.Sum256(data.Blob)
+	checksum := &etcdserverpb.SnapshotResponse{RemainingBytes: 0, Blob: digest[:], Version: Version}
 	for _, tc := range []struct {
 		name          string
 		responses     []*etcdserverpb.SnapshotResponse
@@ -287,6 +290,25 @@ func TestMaintenanceSnapshotFollowerRejectsMalformedProxyTermination(t *testing.
 				data, {RemainingBytes: 0, Blob: []byte("short"), Version: Version},
 			},
 			wantError: "invalid checksum frame", wantForwarded: 1,
+		},
+		{
+			name: "checksum mismatch",
+			responses: []*etcdserverpb.SnapshotResponse{
+				data, {RemainingBytes: 0, Blob: bytes.Repeat([]byte{1}, sha256.Size), Version: Version},
+			},
+			wantError: "checksum mismatch", wantForwarded: 1,
+		},
+		{
+			name: "remaining bytes discontinuity",
+			responses: func() []*etcdserverpb.SnapshotResponse {
+				fullDigest := sha256.Sum256([]byte("abc"))
+				return []*etcdserverpb.SnapshotResponse{
+					{RemainingBytes: 2, Blob: []byte("ab"), Version: Version},
+					{RemainingBytes: 0, Blob: []byte("c"), Version: Version},
+					{RemainingBytes: 0, Blob: fullDigest[:], Version: Version},
+				}
+			}(),
+			wantError: "remaining bytes", wantForwarded: 1,
 		},
 		{
 			name: "data after checksum",
@@ -345,12 +367,13 @@ func TestMaintenanceSnapshotFollowerForwardsRootCredential(t *testing.T) {
 			outgoing, ok := metadata.FromOutgoingContext(ctx)
 			require.True(t, ok)
 			require.Equal(t, []string{rootToken}, outgoing.Get(rpctypes.TokenFieldNameGRPC))
+			digest := sha256.Sum256([]byte("db"))
 			results := make(chan etcdproxy.SnapshotResult, 2)
 			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
 				RemainingBytes: 0, Blob: []byte("db"), Version: Version,
 			}}
 			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
-				RemainingBytes: 0, Blob: make([]byte, sha256.Size), Version: Version,
+				RemainingBytes: 0, Blob: digest[:], Version: Version,
 			}}
 			close(results)
 			return results, nil

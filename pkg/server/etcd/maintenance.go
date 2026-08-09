@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -476,6 +477,10 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		}
 		awaitingChecksum := false
 		complete := false
+		hash := sha256.New()
+		var remaining uint64
+		var snapshotVersion string
+		haveData := false
 		for result := range responses {
 			if result.Err != nil {
 				return result.Err
@@ -490,9 +495,32 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 				if result.Response.GetRemainingBytes() != 0 || len(result.Response.GetBlob()) != sha256.Size {
 					return status.Error(codes.DataLoss, "leader snapshot proxy returned an invalid checksum frame")
 				}
+				if result.Response.GetVersion() != snapshotVersion {
+					return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
+				}
+				if !bytes.Equal(result.Response.GetBlob(), hash.Sum(nil)) {
+					return status.Error(codes.DataLoss, "leader snapshot proxy checksum mismatch")
+				}
 				complete = true
-			} else if result.Response.GetRemainingBytes() == 0 {
-				awaitingChecksum = true
+			} else {
+				blob := result.Response.GetBlob()
+				if len(blob) == 0 {
+					return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty data frame")
+				}
+				if haveData {
+					if uint64(len(blob)) > remaining || result.Response.GetRemainingBytes() != remaining-uint64(len(blob)) {
+						return status.Error(codes.DataLoss, "leader snapshot proxy returned discontinuous remaining bytes")
+					}
+					if result.Response.GetVersion() != snapshotVersion {
+						return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
+					}
+				} else {
+					snapshotVersion = result.Response.GetVersion()
+					haveData = true
+				}
+				_, _ = hash.Write(blob)
+				remaining = result.Response.GetRemainingBytes()
+				awaitingChecksum = remaining == 0
 			}
 			if err = stream.Send(result.Response); err != nil {
 				return err

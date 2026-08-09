@@ -43608,6 +43608,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   现在以常量空间跟踪终止状态，仍逐帧转发，但仅在 checksum 后 EOF 才成功；checksum 前 EOF、错误
   checksum frame 或 checksum 后额外数据都返回稳定 gRPC `DataLoss`。红测注入一个已转发的末 data
   frame 后直接关闭 channel，证明旧实现为 OK、新实现保留已发送帧但最终明确失败；完整两帧流继续通过。
+  A4109 将 A4108 的“终止帧存在”提升为完整 upstream 帧算法校验：官方发送循环对每个数据库 chunk
+  设置 `RemainingBytes=total-sent`、对相同 bytes 累积 SHA-256，并让所有 data/checksum frame 携带同一
+  storage version。旧门禁接受任意 32 字节 checksum，也接受 remaining 从 2 直接跳到 0 的一字节 chunk，
+  两种损坏流都返回 OK。follower 现在以常量内存累计 hash、上一 remaining 和首帧 version；后续 data
+  必须精确消费 remaining，末 checksum 必须匹配实际转发 bytes，version 不能变化，空 data frame 也被
+  拒绝。checksum、计数或 version 异常均在该异常帧下发前返回 gRPC `DataLoss`。红测固定 hash mismatch
+  与 remaining discontinuity，合法多 data frame + checksum 流和 root credential 转发继续通过。
 
 ### P2：运维兼容和长期验证
 
