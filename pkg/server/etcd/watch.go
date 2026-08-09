@@ -180,6 +180,30 @@ func invalidWatchResultShape(result etcdproxy.WatchResult) error {
 	return nil
 }
 
+func validatedWatchBatchRevision(result etcdproxy.WatchResult) (uint64, error) {
+	batchRevision := result.Revision
+	if batchRevision == 0 {
+		for _, event := range result.Events {
+			if revision := event.GetKv().GetModRevision(); revision > 0 && uint64(revision) > batchRevision {
+				batchRevision = uint64(revision)
+			}
+		}
+	}
+	if batchRevision > uint64(math.MaxInt64) {
+		return 0, fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", batchRevision)
+	}
+	for i, event := range result.Events {
+		eventRevision := event.GetKv().GetModRevision()
+		if eventRevision <= 0 {
+			return 0, fmt.Errorf("watch backend returned invalid event revision %d at index %d", eventRevision, i)
+		}
+		if uint64(eventRevision) > batchRevision {
+			return 0, fmt.Errorf("watch backend returned batch revision %d below event revision %d at index %d", batchRevision, eventRevision, i)
+		}
+	}
+	return batchRevision, nil
+}
+
 func newPeriodicProgressState() periodicProgressState {
 	return periodicProgressState{eligible: true}
 }
@@ -959,6 +983,14 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// drain the channel to ensure producer could exit
 				continue
 			}
+			batchRevision, revisionErr := validatedWatchBatchRevision(result)
+			if revisionErr != nil {
+				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+				klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend batch revision", "watcher", w.id, "watch", id)
+				w.Cancel(id, revisionErr, false)
+				cancel()
+				return
+			}
 			events := filterWatchEventsByRange(result.Events, r.Key, r.RangeEnd)
 			events = filterWatchEvents(events, r.Filters)
 			if !r.PrevKv {
@@ -989,34 +1021,6 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 						cancel()
 						return
 					}
-				}
-			}
-			batchRevision := result.Revision
-			if batchRevision == 0 {
-				// Compatibility fallback for older/internal WatchResult producers.
-				for _, event := range result.Events {
-					if revision := uint64(event.GetKv().GetModRevision()); revision > batchRevision {
-						batchRevision = revision
-					}
-				}
-			}
-			if batchRevision > uint64(math.MaxInt64) {
-				revisionErr := fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", batchRevision)
-				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
-				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable fallback batch revision", "watcher", w.id, "watch", id)
-				w.Cancel(id, revisionErr, false)
-				cancel()
-				return
-			}
-			for _, event := range events {
-				eventRevision := event.GetKv().GetModRevision()
-				if eventRevision < 0 || uint64(eventRevision) > batchRevision {
-					revisionErr := fmt.Errorf("watch backend returned batch revision %d below event revision %d", batchRevision, eventRevision)
-					w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
-					klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend batch revision", "watcher", w.id, "watch", id)
-					w.Cancel(id, revisionErr, false)
-					cancel()
-					return
 				}
 			}
 			if wt != nil {

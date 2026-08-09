@@ -43687,6 +43687,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   或 revision 水位处理前逐项验证 event envelope，只接受非 nil KV 的 PUT/DELETE；任一损坏项都携带 index
   取消整个 generation。注入测试以合法 PUT 开头、nil event 结尾，断言只收到 canceled response、零 events，
   并另钉 nil KV 与未知类型，确保 leader shim 与 peer-proxy 两个入口均不再部分接受损坏批次。
+  A4120 把 batch/event revision 一致性校验前移到任何 range/filter 之前：upstream `mvcc.WatchResponse`
+  规定正常 response revision 等于最后 event 的 ModRevision，延迟追赶响应才允许更高；旧代理路径却先按请求
+  range 丢事件，再只验证剩余项，导致范围外 `ModRevision > Revision` 的损坏 event 可被隐藏，同批合法 event
+  仍发布并推进水位。红测注入 revision 10 的合法范围内 PUT 和 revision 11 的范围外 PUT，旧实现先发合法事件
+  再普通关闭。`validatedWatchBatchRevision` 现在先从原始 batch 解析兼容 fallback 水位，拒绝非正 ModRevision、
+  超过 batch 水位或不可表示的 revision，并携带原始 index 整批取消；完整 Watch 回归证明本地/历史/代理生产者
+  均满足该 MVCC 不变量。
 
 ### P2：运维兼容和长期验证
 

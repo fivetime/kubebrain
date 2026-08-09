@@ -17,6 +17,7 @@ package etcd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -1272,6 +1273,32 @@ func TestWatchRejectsMalformedEventBatchBeforePartialPublication(t *testing.T) {
 	require.True(t, responses[0].Canceled)
 	require.Empty(t, responses[0].Events)
 	require.Contains(t, responses[0].CancelReason, "invalid nil event at index 1")
+}
+
+func TestWatchRejectsOutOfRangeEventAboveBatchRevisionBeforePartialPublication(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
+		Revision: 10,
+		Events: []*mvccpb.Event{
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/valid"), ModRevision: 10}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/outside/proxy-prefix"), ModRevision: 11}},
+		},
+	})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Empty(t, responses[0].Events)
+	require.Contains(t, responses[0].CancelReason, "batch revision 10 below event revision 11 at index 1")
+}
+
+func TestValidatedWatchBatchRevisionRejectsNonPositiveEventRevision(t *testing.T) {
+	for _, revision := range []int64{0, -1} {
+		_, err := validatedWatchBatchRevision(etcdproxy.WatchResult{
+			Revision: 10,
+			Events: []*mvccpb.Event{{
+				Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{ModRevision: revision},
+			}},
+		})
+		require.EqualError(t, err, fmt.Sprintf("watch backend returned invalid event revision %d at index 0", revision))
+	}
 }
 
 func TestWatchRejectsEmptyBackendResult(t *testing.T) {
