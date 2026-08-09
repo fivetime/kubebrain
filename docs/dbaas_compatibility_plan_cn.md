@@ -43366,6 +43366,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   upstream AuthStore 恢复测试确认会将其初始化为 1，保留离线逻辑转换器契约；正常复杂 auth 图的
   官方 AuthStore 恢复样本改用其真实最小 revision 13。该项只收紧 snapshot artifact，不改变在线
   auth revision 或 TiKV 数据。
+  A4083 固定 Snapshot user role 的排序不变量：对照 upstream
+  `/root/etcd/server/auth/store.go:UserGrantRole`，每次授权后都会 `sort.Strings`；UserRevokeRole 和
+  RoleDelete 只过滤已有 slice，因此继续保持顺序。更关键的是后续重复授权检查与 `hasRootRole` 使用
+  `sort.SearchStrings`，UserGet 又原样返回持久顺序。旧 writer 只拒绝重复/悬空引用，会接受例如
+  `[writer, reader]`，恢复后不仅暴露公开 API 不可达的顺序，还可能让二分查找漏掉已有 role 并再次
+  追加，或误判 root 用户没有 root role。新增红测证明旧实现错误成功；validator 现在逐用户要求
+  role 名称按 Go string 字节序非降序，仍由既有重复检查拒绝相等项，失败回滚完整 metadata
+  transaction。KubeBrain 在线 `authManager.userGrantRole` 本来同样排序，因此此项只阻断不自洽的
+  snapshot 输入，不改变 TiKV auth 数据或 RPC 行为。
 
 ### P2：运维兼容和长期验证
 

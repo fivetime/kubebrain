@@ -450,6 +450,14 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 			},
 			want: `auth user "alice" repeats role "reader"`,
 		},
+		{
+			name: "user roles are not sorted",
+			auth: Auth{Revision: 6,
+				Users: []*authpb.User{{Name: []byte("alice"), Roles: []string{"writer", "reader"}}},
+				Roles: []*authpb.Role{{Name: []byte("reader")}, {Name: []byte("writer")}},
+			},
+			want: `auth user "alice" roles are not sorted at index 1`,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")

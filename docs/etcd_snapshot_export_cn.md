@@ -75,7 +75,7 @@ metadata bucket 同样要求 lease ID、auth username 和 role name 分别唯一
 顺序决定。Alarm 以完整 `(member ID, alarm type)` protobuf 为 key，同一 member 同时携带
 NOSPACE/CORRUPT 是合法状态，不按 member ID 错误去重。
 Auth snapshot 还必须满足上游管理 API 可达的不变量：每个用户的 role 列表不重复且全部引用已存在
-role；`authEnabled=true` 时必须存在 root 用户，且该用户持有 root role。违反任一条件都会回滚完整
+role，并按字符串字节序排序；`authEnabled=true` 时必须存在 root 用户，且该用户持有 root role。违反任一条件都会回滚完整
 metadata transaction，避免恢复出无法通过正常 AuthEnable/RoleDelete 路径产生的权限状态。
 每个 role 的 permission 必须非空指针、符合 etcd permission range 规则、按 key 排序，且同一
 `(key, range_end)` 只能出现一次；相同范围的再次 grant 是权限类型更新，不是第二条记录。未知

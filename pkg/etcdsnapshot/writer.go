@@ -270,7 +270,10 @@ func validateAuthState(auth Auth) error {
 		}
 		seenRoles := make(map[string]struct{}, len(user.Roles))
 		minimumRevision += uint64(len(user.Roles))
-		for _, role := range user.Roles {
+		for i, role := range user.Roles {
+			if i != 0 && user.Roles[i-1] > role {
+				return fmt.Errorf("auth user %q roles are not sorted at index %d", user.Name, i)
+			}
 			if _, exists := seenRoles[role]; exists {
 				return fmt.Errorf("auth user %q repeats role %q", user.Name, role)
 			}
