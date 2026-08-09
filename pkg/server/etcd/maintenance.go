@@ -471,6 +471,8 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		if err != nil {
 			return err
 		}
+		proxyCtx, cancelProxy := context.WithCancel(proxyCtx)
+		defer cancelProxy()
 		responses, err := s.peers.Snapshot(proxyCtx, request)
 		if err != nil {
 			return err

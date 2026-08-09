@@ -274,6 +274,39 @@ func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing
 	require.Len(t, stream.responses, 1)
 }
 
+func TestMaintenanceSnapshotFollowerCancelsLeaderStreamOnDownstreamSendFailure(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	defer cancelCaller()
+	leaderCanceled := make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		snapshotFn: func(ctx context.Context, _ *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			results := make(chan etcdproxy.SnapshotResult, 1)
+			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+				RemainingBytes: 0, Blob: []byte("db"), Version: Version,
+			}}
+			go func() {
+				<-ctx.Done()
+				close(leaderCanceled)
+			}()
+			return results, nil
+		},
+	}
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, &failingMaintenanceSnapshotServer{
+		maintenanceSnapshotServer: &maintenanceSnapshotServer{ctx: callerCtx},
+		err:                       errors.New("snapshot send failed"),
+	})
+	require.ErrorContains(t, err, "snapshot send failed")
+	select {
+	case <-leaderCanceled:
+	case <-time.After(100 * time.Millisecond):
+		cancelCaller()
+		require.Fail(t, "leader snapshot context was not canceled when downstream send failed")
+	}
+}
+
 func TestMaintenanceSnapshotFollowerRejectsMalformedProxyTermination(t *testing.T) {
 	data := &etcdserverpb.SnapshotResponse{RemainingBytes: 0, Blob: []byte("db"), Version: Version}
 	digest := sha256.Sum256(data.Blob)

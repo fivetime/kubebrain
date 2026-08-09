@@ -46,6 +46,8 @@ follower 转发在线 Snapshot 时也验证 upstream 帧终止契约：最后一
 checksum 形状错误或 checksum 后继续发帧均以 gRPC `DataLoss` 失败，不能把截断制品发布成成功 RPC。
 代理同时按帧流式计算 SHA-256，校验 checksum 内容、`RemainingBytes` 精确递减和 storage version 全程
 不变；校验只保留 hash/计数器，不缓存数据库，异常帧在向下游发送前拒绝。
+每个 follower 转发请求还建立独立可取消的 leader 子 context；下游发送失败、完整性拒绝或正常结束时
+同步取消上游 stream，避免 leader scanner 和代理 goroutine 依赖外层 gRPC 的延迟回收。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

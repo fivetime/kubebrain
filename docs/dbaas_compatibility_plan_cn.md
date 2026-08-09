@@ -43615,6 +43615,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须精确消费 remaining，末 checksum 必须匹配实际转发 bytes，version 不能变化，空 data frame 也被
   拒绝。checksum、计数或 version 异常均在该异常帧下发前返回 gRPC `DataLoss`。红测固定 hash mismatch
   与 remaining discontinuity，合法多 data frame + checksum 流和 root credential 转发继续通过。
+  A4110 收紧 follower Snapshot proxy 的上游生命周期：旧路径把入站 stream context 直接交给 leader
+  client；当下游 `Send` 失败或 A4108/A4109 门禁提前拒绝时 handler 已返回，但没有主动取消 leader
+  stream，只能等待 gRPC 框架稍后回收入站 context，代理 Recv goroutine 可能继续占用连接或阻塞 channel。
+  follower 现在在保留 caller token metadata 后派生每请求 cancel context，并在代理路径所有返回点 defer
+  cancel；正常 EOF、leader error、完整性错误和下游断连都同步终止上游。确定性红测让 leader mock 在
+  context.Done 上报告、下游首帧 Send 失败，证明旧实现 100ms 内不取消、新实现 RPC 返回即取消；root
+  credential 转发测试继续证明派生 context 未丢失认证 metadata。
 
 ### P2：运维兼容和长期验证
 
