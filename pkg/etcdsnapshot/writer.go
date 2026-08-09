@@ -438,18 +438,33 @@ func (b *Builder) Finish() error {
 func validateOrderedRevisionContinuity(tx *bolt.Tx, compactRevision int64) error {
 	currentMain := int64(-1)
 	expectedSub := int64(0)
+	sawOrdered := false
+	sawFallback := false
 	return tx.Bucket(keyBucket).ForEach(func(revisionKey, _ []byte) error {
 		if len(revisionKey) < 17 {
 			return fmt.Errorf("invalid MVCC revision key length %d", len(revisionKey))
 		}
 		main := int64(binary.BigEndian.Uint64(revisionKey[:8]))
 		sub := int64(binary.BigEndian.Uint64(revisionKey[9:17]))
-		if main <= compactRevision || sub >= fallbackSubRevisionBase {
+		if main <= compactRevision {
 			return nil
 		}
 		if main != currentMain {
 			currentMain = main
 			expectedSub = 0
+			sawOrdered = false
+			sawFallback = false
+		}
+		if sub >= fallbackSubRevisionBase {
+			sawFallback = true
+			if sawOrdered {
+				return fmt.Errorf("revision %d mixes ordered and fallback records", main)
+			}
+			return nil
+		}
+		sawOrdered = true
+		if sawFallback {
+			return fmt.Errorf("revision %d mixes ordered and fallback records", main)
 		}
 		if sub != expectedSub {
 			return fmt.Errorf("ordered revision %d has subrevision %d, want %d", main, sub, expectedSub)

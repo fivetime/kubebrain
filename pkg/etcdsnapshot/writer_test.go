@@ -185,6 +185,27 @@ func TestBuilderRejectsOrderedSubrevisionGapAboveCompactWatermark(t *testing.T) 
 	require.NoError(t, builder.Close())
 }
 
+func TestBuilderRejectsMixedOrderedAndFallbackRecordsAboveCompactWatermark(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	err := WriteBackend(path, State{
+		Revision: 12, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
+		Records: []Record{
+			{Key: []byte("ordered"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, Ordered: true},
+			{Key: []byte("fallback"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1},
+		},
+	})
+	require.ErrorContains(t, err, "revision 12 mixes ordered and fallback records")
+
+	anchorPath := filepath.Join(t.TempDir(), "anchor.db")
+	require.NoError(t, WriteBackend(anchorPath, State{
+		Revision: 3, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
+		Records: []Record{
+			{Key: []byte("ordered-anchor"), Value: []byte("one"), CreateRevision: 3, ModRevision: 3, Version: 1, SubRevision: 0, Ordered: true},
+			{Key: []byte("fallback-anchor"), Value: []byte("two"), CreateRevision: 3, ModRevision: 3, Version: 1},
+		},
+	}), "records at the compact watermark are non-queryable index anchors")
+}
+
 func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, WriteBackend(path, State{

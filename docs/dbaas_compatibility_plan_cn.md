@@ -43426,6 +43426,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   私有 builder 可恢复且没有半发布。A4077 的 partial-anchor 重复测试显式置 compactRevision=7，继续
   证明 watermark 内 sub=2 单独保留合法。snapshot race、server Snapshot、转换器和 vet 回归覆盖；
   本项不修改在线 TiKV history 或 Watch。
+  A4089 固定完整历史区域不能混合 ordered 与 legacy fallback 记录：A3493 的现代事务把每个对象变更
+  和包含 `(subrevision,total)` 的 v2 event-log row 原子写入同一 TiKV batch，因此同一 main revision
+  要么全部可关联 ordered metadata，要么是升级前全部使用 9-byte legacy event payload。若
+  SnapshotHistoryStream 对同一现代事务的一条 event row BatchGet 缺失/损坏，旧流程会只把其对应对象
+  降级到 `2^32+` fallback，而同 revision 其余对象保留 0… 的真实 subrevision；A4088 只检查 ordered
+  子集连续，仍会发布一个把无法证明顺序的事件拼到事务尾部的制品。Finish 现在对严格大于 compact
+  watermark 的每个 main 同时跟踪 ordered/fallback 族，二者混合即 fail closed；全 ordered 继续做
+  连续性校验，全 legacy fallback 继续支持旧集群迁移。watermark 及之前仍允许混合，因为这些行只作
+  不可查询的 key-index compaction anchor，event 顺序不可观察。红测证明旧 writer 错误成功并固定
+  compact-boundary 正例；snapshot race、server Snapshot、转换器与 vet 回归通过。本项不修改在线
+  event log 或 TiKV 数据。
 
 ### P2：运维兼容和长期验证
 
