@@ -1544,6 +1544,9 @@ func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
 		})
 	}
 	require.Equal(t, "10m", nestedString(t, cluster, "spec", "tikv", "evictLeaderTimeout"))
+	require.Equal(t, "tcp", nestedString(t, cluster, "spec", "tikv", "readinessProbe", "type"))
+	require.EqualValues(t, 10, nestedInt64(t, cluster, "spec", "tikv", "readinessProbe", "initialDelaySeconds"))
+	require.EqualValues(t, 5, nestedInt64(t, cluster, "spec", "tikv", "readinessProbe", "periodSeconds"))
 
 	for _, component := range []struct {
 		name       string

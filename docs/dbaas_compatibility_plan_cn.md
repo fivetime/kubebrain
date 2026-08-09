@@ -43223,6 +43223,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready 但 gRPC 失败、以及非法 timeout 在 kubectl 前 fail closed。发布身份需显式拥有目标
   TiKV Pod 的 `pods/exec`；持续运行期的自动重启/修复仍是 DBaaS 控制面 P1 缺口，不能用本轮
   release gate 冒充已完成的自愈。
+- A4070 补 TiKV 20160 Kubernetes readiness/Operator failover 链路：继续审计当前真实集群后
+  确认 `kb-tikv` StatefulSet/Pod 原先完全没有 readiness、liveness 或 readiness gate，Pod Ready
+  只表示主进程容器尚未退出。对照当前 `pingcap/tidb-operator:v1.6.5` 源码
+  `pkg/manager/member/tikv_member_manager.go`，`spec.tikv.readinessProbe` 会固定渲染 TiKV server
+  port 20160 的 TCP socket；`type: command` 对 TiKV 并不接受自定义命令。生产 TidbCluster 现固定
+  `type: tcp`、10 秒 initial delay、5 秒 period，20160 listener 消失后 Kubernetes 会摘除 Ready，
+  已启用的 Operator auto-failover 与 `maxFailoverCount: 3` 可在默认 5 分钟故障窗口后补建 store。
+  `wait-tidbcluster-ready.sh` 不只检查 CR 配置，而要求实际 StatefulSet `tikv` container 精确渲染
+  `20160/10/5` 后才执行 A4069 的逐 Pod Debug gRPC；server-side dry-run 已通过当前 CRD，清单及
+  等待器测试覆盖精确形状和缺失 probe fail closed。真实滚动验证进一步发现一个必须保留的
+  反例：20160 TCP、PD heartbeat 和逐 Pod `tikv-ctl metrics` Debug gRPC 全部成功时，事务
+  `KvPrewrite` 仍可能超时，KubeBrain 因而保持 NotReady。故 A4069/A4070 只证明 listener 与
+  Debug 服务，不再描述为 request-level KV 健康；完整实例门禁仍须依赖后续 etcd
+  Put/Get/Delete。该 TCP probe 也不会原地 restart 同一 PVC Pod；持续事务 watchdog/同 PVC
+  自动重建仍保留为 P1，不能声称本轮已完全关闭半故障自愈。
+  现场处置先把 KubeBrain 从 3 缩到 0 停止失败选举事务，随后在不删除 PVC 的前提下同时
+  重建 3 个 TiKV Pod；TiKV 恢复后单副本 KubeBrain 成功取得领导权，真实 etcd
+  Put/Get/Delete 通过，再扩回 3/3 Ready。单纯延长 KubeBrain election storage timeout 的实验
+  没有恢复事务，因此未把该猜测性改动带入源码。此次恢复依赖人工重建进程，恰好再次证明
+  自动事务 watchdog 与同 PVC repair controller 仍是未关闭缺口。
 
 ### P2：运维兼容和长期验证
 

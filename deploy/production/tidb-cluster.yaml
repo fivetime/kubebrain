@@ -63,6 +63,10 @@ spec:
     evictLeaderTimeout: 10m
     statefulSetUpdateStrategy: RollingUpdate
     terminationGracePeriodSeconds: 300
+    readinessProbe:
+      type: tcp
+      initialDelaySeconds: 10
+      periodSeconds: 5
     requests:
       cpu: "4"
       memory: "8Gi"

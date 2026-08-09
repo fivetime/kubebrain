@@ -16,6 +16,7 @@ func TestWaitTidbClusterReady(t *testing.T) {
 		ready      string
 		pdStatus   string
 		tikvStatus string
+		tikvProbe  string
 		tikvRPC    bool
 		wantOK     bool
 		wantOutput string
@@ -25,6 +26,7 @@ func TestWaitTidbClusterReady(t *testing.T) {
 			ready:      "True",
 			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
 			tikvStatus: "7\t7\t3\t3\t3\ttikv-new\ttikv-new",
+			tikvProbe:  "20160\t10\t5",
 			tikvRPC:    true,
 			wantOK:     true,
 			wantOutput: "converged",
@@ -34,7 +36,15 @@ func TestWaitTidbClusterReady(t *testing.T) {
 			ready:      "True",
 			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
 			tikvStatus: "7\t7\t3\t3\t3\ttikv-new\ttikv-new",
-			wantOutput: "TiKV-RPC=not-ready",
+			tikvProbe:  "20160\t10\t5",
+			wantOutput: "TiKV-Debug-RPC=not-ready",
+		},
+		{
+			name:       "tikv has no 20160 tcp readiness probe",
+			ready:      "True",
+			pdStatus:   "5\t5\t3\t3\t3\tpd-new\tpd-new",
+			tikvStatus: "7\t7\t3\t3\t3\ttikv-new\ttikv-new",
+			wantOutput: "TiKV-readiness-probe=missing",
 		},
 		{
 			name:       "partitioned rollout is not complete",
@@ -67,7 +77,11 @@ if [[ "$*" == *"get tidbcluster"* && "$*" == *"jsonpath="* ]]; then
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath="* ]]; then
   printf '%s' "$FAKE_PD_STATUS"
 elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath="* ]]; then
-  printf '%s' "$FAKE_TIKV_STATUS"
+  if [[ "$*" == *"readinessProbe.tcpSocket.port"* ]]; then
+    printf '%s' "$FAKE_TIKV_PROBE"
+  else
+    printf '%s' "$FAKE_TIKV_STATUS"
+  fi
 elif [[ "$*" == *"get pods"* && "$*" == *"component=tikv"* ]]; then
   printf 'kb-tikv-0\nkb-tikv-1\nkb-tikv-2\n'
 elif [[ "$*" == *"exec"* && "$*" == *"/tikv-ctl --host 127.0.0.1:20160 metrics"* ]]; then
@@ -85,6 +99,7 @@ fi
 				"FAKE_READY=" + tc.ready,
 				"FAKE_PD_STATUS=" + tc.pdStatus,
 				"FAKE_TIKV_STATUS=" + tc.tikvStatus,
+				"FAKE_TIKV_PROBE=" + tc.tikvProbe,
 				"FAKE_TIKV_RPC_READY=" + strconv.FormatBool(tc.tikvRPC),
 				"TIKV_RPC_LOG=" + filepath.Join(t.TempDir(), "tikv-rpc.log"),
 			}
@@ -99,7 +114,7 @@ fi
 				probeLog, readErr := os.ReadFile(strings.TrimPrefix(env[len(env)-1], "TIKV_RPC_LOG="))
 				require.NoError(t, readErr)
 				require.Len(t, strings.Split(strings.TrimSpace(string(probeLog)), "\n"), 3,
-					"every desired TiKV pod must receive a 20160 request-level probe")
+					"every desired TiKV pod must receive a 20160 Debug RPC probe")
 			}
 		})
 	}

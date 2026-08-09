@@ -129,7 +129,10 @@ hack/production/wait-tidbcluster-ready.sh
 2. PD/TiKV StatefulSet 的 generation 已被 controller 观察；
 3. desired、ready、updated 副本数相等且大于零；
 4. `currentRevision` 与 `updateRevision` 相等。
-5. 枚举出的 TiKV Pod 数量与 desired replicas 精确一致，并在每个 `tikv` container 内用
+5. TiKV StatefulSet 的 `tikv` container 已实际渲染 20160 TCP readiness probe，初始延迟
+   10 秒、周期 5 秒；端口 listener 消失时 Kubernetes 必须立即把该 Pod 摘出 Ready endpoints，
+   并允许启用 auto-failover 的 TiDB Operator 在默认 5 分钟窗口后补建 store。
+6. 枚举出的 TiKV Pod 数量与 desired replicas 精确一致，并在每个 `tikv` container 内用
    `/tikv-ctl --host 127.0.0.1:20160 metrics` 完成一次真实 Debug gRPC 请求；单次请求默认
    10 秒硬超时，可通过 `TIKV_RPC_PROBE_TIMEOUT_SECONDS` 调整。
 
@@ -139,6 +142,12 @@ hack/production/wait-tidbcluster-ready.sh
 `pods/exec` 权限；该权限只用于运行镜像内自带的固定绝对路径 `tikv-ctl` 命令。等待器会在
 调用 kubectl 前拒绝非 DNS label 格式的 `NAMESPACE` 与
 `TIDB_CLUSTER`，避免错误发布参数进入集群操作阶段。
+生产 `TidbCluster.spec.tikv.readinessProbe` 固定为 `type: tcp`、
+`initialDelaySeconds: 10`、`periodSeconds: 5`。TiDB Operator v1.6.5 对 TiKV 的 `command`
+类型仍只渲染同一个 20160 TCP socket handler，不能把它描述成业务 RPC；因此 TCP probe
+负责及时摘流和触发 Operator failover，而逐 Pod `tikv-ctl metrics` 只能识别
+“TCP 可连接但 Debug gRPC 不完成”的半故障。它不执行 `KvPrewrite/KvCommit`，不能证明事务
+KV 路径健康；完整实例门禁随后通过 KubeBrain 执行 etcd Put/Get/Delete。三层证据不可相互替代。
 
 ## 生产镜像追踪
 
@@ -407,7 +416,8 @@ ETCDCTL_KEY=/run/secrets/client.key \
 ```
 
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
-replicas 和 revision 全部收敛，并逐 Pod 请求 TiKV 20160 gRPC 服务，再校验期望 PD/TiKV 数量；
+replicas 和 revision 全部收敛，确认 StatefulSet 已渲染固定 20160 TCP readiness，并逐 Pod
+请求 TiKV 20160 gRPC 服务，再校验期望 PD/TiKV 数量；
 TidbCluster metadata UID 和 status
 中的非零 cluster ID 必须分别与实例创建 receipt 中的 immutable
 `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致；随后要求 KubeBrain

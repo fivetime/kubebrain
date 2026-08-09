@@ -60,7 +60,12 @@ statefulset_converged() {
     "$current_revision" == "$update_revision" ]]
 }
 
-tikv_rpc_ready() {
+tikv_readiness_probe() {
+  "$KUBECTL" "${kubectl_args[@]}" get statefulset "${TIDB_CLUSTER}-tikv" \
+    -o 'jsonpath={.spec.template.spec.containers[?(@.name=="tikv")].readinessProbe.tcpSocket.port}{"\t"}{.spec.template.spec.containers[?(@.name=="tikv")].readinessProbe.initialDelaySeconds}{"\t"}{.spec.template.spec.containers[?(@.name=="tikv")].readinessProbe.periodSeconds}'
+}
+
+tikv_debug_rpc_ready() {
   local status="$1"
   local _generation _observed desired _ready _updated _current_revision _update_revision
   IFS=$'\t' read -r _generation _observed desired _ready _updated _current_revision _update_revision <<<"$status"
@@ -78,11 +83,10 @@ tikv_rpc_ready() {
 
   local pod
   for pod in "${pods[@]}"; do
-    # TiDB Operator's HTTP readiness checks port 20180. tikv-ctl remote mode
-    # instead executes a Debug gRPC request against the actual KV service on
-    # 20160, catching a process whose status endpoint remains alive after its
-    # request service has stopped. Bound every probe so a half-open service
-    # cannot stall the release gate beyond its own deadline.
+    # This proves that TiKV's Debug service answers on the shared 20160 gRPC
+    # listener. It deliberately is not called a KV transaction probe: Debug
+    # RPC can remain healthy while transactional prewrite is wedged. The
+    # instance gate performs the end-to-end etcd Put/Get/Delete check later.
     "$COMMAND_TIMEOUT" --signal=TERM "${TIKV_RPC_PROBE_TIMEOUT_SECONDS}s" \
       "$KUBECTL" "${kubectl_args[@]}" exec "$pod" -c tikv -- \
       /tikv-ctl --host 127.0.0.1:20160 metrics >/dev/null 2>&1 || return 1
@@ -94,13 +98,15 @@ while true; do
   ready="$(cluster_ready 2>/dev/null || true)"
   pd_status="$(statefulset_status "${TIDB_CLUSTER}-pd" 2>/dev/null || true)"
   tikv_status="$(statefulset_status "${TIDB_CLUSTER}-tikv" 2>/dev/null || true)"
+  tikv_probe="$(tikv_readiness_probe 2>/dev/null || true)"
   tikv_rpc_status="not-checked"
 
   if [[ "$ready" == "True" ]] &&
     statefulset_converged "$pd_status" &&
-    statefulset_converged "$tikv_status"; then
-    if tikv_rpc_ready "$tikv_status"; then
-      echo "TidbCluster ${NAMESPACE}/${TIDB_CLUSTER} converged: PD and TiKV are ready, current, and every TiKV 20160 gRPC service responds"
+    statefulset_converged "$tikv_status" &&
+    [[ "$tikv_probe" == $'20160\t10\t5' ]]; then
+    if tikv_debug_rpc_ready "$tikv_status"; then
+      echo "TidbCluster ${NAMESPACE}/${TIDB_CLUSTER} converged: PD and TiKV are ready and current, and every TiKV 20160 Debug gRPC service responds (transaction health not asserted)"
       exit 0
     fi
     tikv_rpc_status="not-ready"
@@ -111,7 +117,8 @@ while true; do
     echo "Ready=${ready:-missing}" >&2
     echo "PD=${pd_status:-missing}" >&2
     echo "TiKV=${tikv_status:-missing}" >&2
-    echo "TiKV-RPC=${tikv_rpc_status}" >&2
+    echo "TiKV-readiness-probe=${tikv_probe:-missing}" >&2
+    echo "TiKV-Debug-RPC=${tikv_rpc_status}" >&2
     "$KUBECTL" "${kubectl_args[@]}" get tidbcluster "$TIDB_CLUSTER" >&2 || true
     "$KUBECTL" "${kubectl_args[@]}" get statefulset "${TIDB_CLUSTER}-pd" "${TIDB_CLUSTER}-tikv" >&2 || true
     exit 1

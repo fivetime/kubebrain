@@ -892,7 +892,11 @@ elif [[ "$*" == *"get tidbcluster"* && "$*" == *".status.conditions"* ]]; then
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath="* ]]; then
   printf '5\t5\t3\t3\t3\tpd-new\tpd-new'
 elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath="* ]]; then
-  printf '7\t7\t3\t3\t3\ttikv-new\ttikv-new'
+  if [[ "$*" == *"readinessProbe.tcpSocket.port"* ]]; then
+    printf '20160\t10\t5'
+  else
+    printf '7\t7\t3\t3\t3\ttikv-new\ttikv-new'
+  fi
 elif [[ "$*" == *"get tidbcluster"* && "$*" == *".spec.pd.replicas"* ]]; then
   printf '%s' "$FAKE_TOPOLOGY"
 elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *".args"* ]]; then
