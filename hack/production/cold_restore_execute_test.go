@@ -50,6 +50,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		wrongPVC                       bool
 		futureReceipt                  bool
 		predatesWitness                bool
+		missingSnapshotIdentity        bool
 		wantReceipt                    bool
 		wantPreexistingRestoreReceipt  bool
 		wantEmergency                  bool
@@ -62,6 +63,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
 		{name: "future snapshot receipt fails before target access", futureReceipt: true, wantError: "created_at is in the future"},
 		{name: "snapshot receipt predating witness fails before target access", predatesWitness: true, wantError: "predates semantic witness"},
+		{name: "missing source snapshot identity fails before target access", missingSnapshotIdentity: true, wantError: "snapshot identity"},
 		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "source receipt drift during render uses captured receipt", sourceReceiptDriftDuringRender: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "restore manifest drift during capture fails before target access", restoreManifestDriftDuringHash: true, wantError: "restore manifest changed during capture"},
@@ -100,6 +102,14 @@ func TestColdRestoreExecute(t *testing.T) {
 				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &stale))
 				stale["created_at"] = "1970-01-01T00:00:00Z"
 				data, marshalErr := json.Marshal(stale)
+				require.NoError(t, marshalErr)
+				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
+			}
+			if tc.missingSnapshotIdentity {
+				var incomplete map[string]any
+				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &incomplete))
+				delete(incomplete["snapshots"].([]any)[0].(map[string]any), "content_uid")
+				data, marshalErr := json.Marshal(incomplete)
 				require.NoError(t, marshalErr)
 				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
 			}
@@ -174,7 +184,7 @@ func TestColdRestoreExecute(t *testing.T) {
 			}
 
 			logValue, readErr := os.ReadFile(logPath)
-			if (tc.tampered || tc.futureReceipt || tc.predatesWitness || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
+			if (tc.tampered || tc.futureReceipt || tc.predatesWitness || tc.missingSnapshotIdentity || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
 				logValue = nil
 			} else {
 				require.NoError(t, readErr)
@@ -777,6 +787,8 @@ func coldRestoreSnapshotReceipt(t *testing.T) []byte {
 		name := volume["name"].(string)
 		component := volume["labels"].(map[string]any)["app.kubernetes.io/component"].(string)
 		snapshots = append(snapshots, map[string]any{
+			"name": "restore-test-" + name, "uid": "uid-snapshot-" + name,
+			"content": "content-" + name, "content_uid": "uid-content-" + name,
 			"source_pvc": name, "component": component, "source_volume_handle": volume["volume_handle"],
 			"snapshot_handle": "handle-" + name, "restore_size": "1Gi",
 		})

@@ -948,6 +948,10 @@ future timestamp 门禁一致，并保证未来时间的 snapshot receipt 不会
 renderer 的严格 receipt schema 必须接收并要求 semantic witness 的正数 `created_at_unix`，随后在
 渲染前验证 `witness.created_at_unix <= snapshot.created_at`。缺少该真实 executor 字段，或 snapshot
 时间早于 witness 的 receipt，都必须在目标访问前拒绝；测试 fixture 不得通过删掉字段绕过真实 wire shape。
+每个 snapshot receipt 条目还必须保留非空且全局唯一的 VolumeSnapshot UID、
+VolumeSnapshotContent name/UID，并要求源 Snapshot name 精确为 `operation_id-source_pvc`。renderer 在
+生成目标对象前校验这些身份；缺字段、重复 Content 身份或伪造 Snapshot 名称不能等到恢复后 verifier
+才发现。production fixture 必须与 executor 的完整条目一致，不能只保留 restore 所需的 snapshotHandle。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的

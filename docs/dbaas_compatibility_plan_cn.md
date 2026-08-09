@@ -43872,6 +43872,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   固定它不再被误拒。单元红测覆盖缺失/零 witness 时间和 snapshot predates witness；executor 黑盒先用
   合法 receipt 生成 canonical manifest，再把 snapshot 时间改为 Unix epoch，要求任何 target kubectl
   access 前失败。最终 verifier 的同一时间关系继续作为恢复后纵深校验，而不再承担首次发现职责。
+  A4142 补齐 renderer 对真实 source Snapshot/Content identity 的 mutation 前校验。executor receipt 每项
+  都记录 VolumeSnapshot name/UID 与 VolumeSnapshotContent name/UID，但 renderer 旧逻辑只消费 source
+  PVC、component、source/snapshot handle 和 restore size；production restore fixture 也省略全部四项，
+  导致被剥掉来源对象身份的 receipt 仍能创建目标资源，最终 verifier 才拒绝。renderer 现在要求四项
+  identity 非空，Snapshot name 精确等于 `operation_id-source_pvc`，Snapshot UID、Content name、Content
+  UID 与 snapshotHandle 分别全局唯一；最终 verifier 同步固定派生名称，避免 admission/verifier 分叉。
+  fixture 恢复 executor 完整 shape。单元红测覆盖缺 Content UID、伪造 Snapshot name 和重复对象 identity；
+  executor 黑盒先由完整 receipt 生成 manifest，再删除首项 content_uid，要求任何 target access 前失败。
+  这些字段不参与目标对象命名，但属于证明备份来源与 retained object 的必要审计链，不能因“恢复可运行”
+  而降级为可选。
 
 ### P2：运维兼容和长期验证
 

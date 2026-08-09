@@ -111,11 +111,14 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 			r.Snapshots[1].SourcePVC = r.Snapshots[0].SourcePVC
 			r.Snapshots[1].Component = r.Snapshots[0].Component
 			r.Snapshots[1].SourceVolumeHandle = r.Snapshots[0].SourceVolumeHandle
+			r.Snapshots[1].Name = r.Snapshots[0].Name
 		}, message: "duplicate snapshot"},
 		{name: "duplicate handle", mutate: func(r *receipt) { r.Snapshots[1].SnapshotHandle = r.Snapshots[0].SnapshotHandle }, message: "handles must be unique"},
 		{name: "missing source PV UID", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].PVUID = "" }, message: "blueprint"},
 		{name: "source PV driver mismatch", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].CSIDriver = "other.csi.test" }, message: "source PV driver"},
 		{name: "snapshot source volume mismatch", mutate: func(r *receipt) { r.Snapshots[0].SourceVolumeHandle = "other-volume" }, message: "snapshot source volume handle"},
+		{name: "missing snapshot content UID", mutate: func(r *receipt) { r.Snapshots[0].ContentUID = "" }, message: "snapshot identity"},
+		{name: "forged snapshot name", mutate: func(r *receipt) { r.Snapshots[0].Name = "other" }, message: "snapshot identity"},
 		{name: "duplicate source volume handle", mutate: func(r *receipt) {
 			r.Inventory.PDPVCs[1].VolumeHandle = r.Inventory.PDPVCs[0].VolumeHandle
 		}, message: "source PV volume handles must be unique"},
@@ -193,6 +196,8 @@ func validReceipt() receipt {
 				value.Inventory.TiKVPVCs = append(value.Inventory.TiKVPVCs, volume)
 			}
 			value.Snapshots = append(value.Snapshots, snapshot{
+				Name: "restore-test-" + name, UID: "uid-snapshot-" + name,
+				Content: "content-" + name, ContentUID: "uid-content-" + name,
 				SourcePVC: name, Component: component, SourceVolumeHandle: "source-handle-" + name,
 				SnapshotHandle: "handle-" + name, RestoreSize: "1Gi",
 			})

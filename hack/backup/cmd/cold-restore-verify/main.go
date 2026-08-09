@@ -517,7 +517,8 @@ func validateSnapshotReceiptInventory(snapshotRecord snapshotReceipt) error {
 	seenHandles := map[string]struct{}{}
 	for _, snapshot := range snapshotRecord.Snapshots {
 		claim, exists := claims[snapshot.SourcePVC]
-		if !exists || snapshot.Component != components[snapshot.SourcePVC] || snapshot.SourceVolumeHandle != claim.VolumeHandle || snapshot.Name == "" ||
+		if !exists || snapshot.Component != components[snapshot.SourcePVC] || snapshot.SourceVolumeHandle != claim.VolumeHandle ||
+			snapshot.Name != snapshotRecord.OperationID+"-"+snapshot.SourcePVC ||
 			snapshot.UID == "" || snapshot.Content == "" || snapshot.ContentUID == "" ||
 			snapshot.SourceVolumeHandle == "" || snapshot.SnapshotHandle == "" || snapshot.RestoreSize == "" {
 			return errors.New("snapshot receipt snapshot inventory does not match source PVCs")

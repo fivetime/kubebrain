@@ -313,13 +313,17 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	}
 	snapshotByPVC := make(map[string]snapshot, len(r.Snapshots))
 	handles := make(map[string]struct{}, len(r.Snapshots))
+	snapshotUIDs := make(map[string]struct{}, len(r.Snapshots))
+	contents := make(map[string]struct{}, len(r.Snapshots))
+	contentUIDs := make(map[string]struct{}, len(r.Snapshots))
 	for _, snap := range r.Snapshots {
 		volume, exists := pvcByName[snap.SourcePVC]
 		if !exists || snap.Component != componentByPVC[snap.SourcePVC] {
 			return nil, fmt.Errorf("snapshot source PVC/component mismatch for %q", snap.SourcePVC)
 		}
-		if snap.SourceVolumeHandle == "" || snap.SnapshotHandle == "" || snap.RestoreSize == "" {
-			return nil, fmt.Errorf("snapshot for %q has no handle or restore size", snap.SourcePVC)
+		if snap.Name != r.OperationID+"-"+snap.SourcePVC || snap.UID == "" || snap.Content == "" || snap.ContentUID == "" ||
+			snap.SourceVolumeHandle == "" || snap.SnapshotHandle == "" || snap.RestoreSize == "" {
+			return nil, fmt.Errorf("snapshot identity for %q is incomplete", snap.SourcePVC)
 		}
 		if snap.SourceVolumeHandle != volume.VolumeHandle {
 			return nil, fmt.Errorf("snapshot source volume handle does not match PVC %q", snap.SourcePVC)
@@ -329,6 +333,15 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 		}
 		if _, exists := handles[snap.SnapshotHandle]; exists {
 			return nil, errors.New("snapshot handles must be unique")
+		}
+		for _, identity := range []struct {
+			value string
+			seen  map[string]struct{}
+		}{{snap.UID, snapshotUIDs}, {snap.Content, contents}, {snap.ContentUID, contentUIDs}} {
+			if _, exists := identity.seen[identity.value]; exists {
+				return nil, errors.New("snapshot object identities must be unique")
+			}
+			identity.seen[identity.value] = struct{}{}
 		}
 		requested, err := resource.ParseQuantity(volume.RequestedStorage)
 		if err != nil {
