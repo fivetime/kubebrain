@@ -158,6 +158,34 @@ ID、TiKV Pod UID/PVC/Region 状态，再按 quorum 栅栏执行同 PVC 进程�
 仅凭本告警自动并发删除全部 TiKV Pod；自动 repair controller 在具备连续事务失败、身份、冷却、
 quorum 和恢复验证栅栏前仍视为未完成。
 
+仓库提供一次性修复执行原语：
+
+```bash
+KUBE_CONTEXT=production \
+KUBEBRAIN_NAMESPACE=kubebrain-system \
+TIDB_NAMESPACE=tidb-cluster \
+ENDPOINT=https://kubebrain-client.kubebrain-system.svc:3379 \
+EXPECTED_KUBEBRAIN_STATEFULSET_UID='<receipt statefulset UID>' \
+EXPECTED_TIDB_CLUSTER_UID='<receipt TidbCluster UID>' \
+EXPECTED_CLUSTER_ID='<receipt cluster ID>' \
+REPAIR_ATTEMPT_ID='incident-20260809-001' \
+ALLOW_TIKV_POD_REPAIR=true \
+hack/production/repair-tikv-transaction-path.sh
+```
+
+脚本默认要求 3 次连续 Put/Get/Delete 失败、KubeBrain 精确 0 Ready、KubeBrain/TidbCluster UID
+和 cluster ID 与 receipt 相等，并固定要求 3×KubeBrain、3×PD、3×TiKV。它先用 ConfigMap
+`kubebrain-tikv-transaction-repair-lock` 排除并发执行，再把 KubeBrain 缩到 0，按 TiKV
+`2→1→0` 逐 Pod 删除重建；每一步必须取得新 Pod UID、保留原 PVC 名并重新达到精确 3 Ready，
+因此不会删除 PVC，也不会主动同时破坏 quorum。全部 TiKV 收敛后才恢复 3 个 KubeBrain，最终
+Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。健康集群的第一次成功探测会
+在任何 scale 或 Pod delete 前拒绝修复。
+
+该脚本是 controller 可调用的执行原语，不是完整自动 controller：调用方仍须持久化告警首次
+发生时间、修复冷却时间、attempt receipt 和人工/策略审批。其 ServiceAccount 只应获得目标两个
+namespace 中读取 StatefulSet/Pod/TidbCluster、缩放指定 KubeBrain StatefulSet、创建/删除固定锁
+ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delete 权限。
+
 ## 生产镜像追踪
 
 Docker 构建不会把 `.git` 复制到镜像上下文，因此版本、完整 commit SHA 和 UTC 构建时间

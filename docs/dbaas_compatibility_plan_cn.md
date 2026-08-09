@@ -43249,6 +43249,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   文本强制要求端到端 etcd transaction probe 与 fenced same-PVC repair。该告警用于区分控制面
   绿色/事务面红色，且明确禁止在缺少连续失败、身份、冷却、quorum 与恢复验证栅栏时自动并发
   删除 TiKV Pod；检测已闭环，安全自动执行器仍是下一阶段 P1 缺口。
+  A4072 增加 `repair-tikv-transaction-path.sh` 作为 fail-closed 修复执行原语：强制显式 context、
+  destructive opt-in、KubeBrain StatefulSet UID、TidbCluster UID、cluster ID、attempt ID 与单一
+  endpoint；要求精确 3/3/3 topology、3 次连续事务失败、KubeBrain 0 Ready，以及每个 TiKV
+  Pod 的 Ready/UID/PVC 完整。固定锁 ConfigMap 防止并发执行，随后停止 KubeBrain 写入风暴，按
+  2→1→0 逐个同 PVC 重建 TiKV，每步要求新 UID、原 PVC 和 3 Ready，最终恢复 KubeBrain 并以
+  Put/Get/Delete 验证；验证失败则重新缩到 0。fake-kubectl 契约测试覆盖完整成功序列、无 PVC
+  delete 和授权前零调用，真实健康集群反向演练证明首次成功事务会在 scale/delete 前拒绝修复。
+  持久冷却、attempt receipt 与策略审批仍属于 controller 层，不能把本执行原语宣称为全自动。
 
 ### P2：运维兼容和长期验证
 
