@@ -43882,6 +43882,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   executor 黑盒先由完整 receipt 生成 manifest，再删除首项 content_uid，要求任何 target access 前失败。
   这些字段不参与目标对象命名，但属于证明备份来源与 retained object 的必要审计链，不能因“恢复可运行”
   而降级为可选。
+  A4143 消除 cold restore renderer 与最终 verifier 在 source PVC/PV inventory 上的 admission 分叉。
+  executor 已记录每个 source PVC 的 UID、Bound phase、StorageClass 及其 PV name/UID/CSI handle，最终
+  verifier 也要求这些字段完整且分别唯一；旧 renderer 却只校验 PVC name、PV UID 和 handle，导致
+  Pending PVC、空 StorageClass、重复 PVC UID 或重复 PV name 的 receipt 仍能创建目标资源，直到恢复后
+  才失败。renderer 现于 manifest 生成前要求全部 PVC 保持 Bound 和非空 StorageClass，并在 PD+TiKV
+  全集中分别约束 PVC UID、PV name、PV UID、volumeHandle 唯一。单元红测固定四类旧路径均会成功，
+  修复后全部 fail closed；executor 黑盒先用完整 receipt 生成 canonical manifest，再把首个 source PVC
+  phase 改为 Pending，证明重新 admission 在任何目标 kubectl access/create 前拒绝。最终 verifier 保留
+  同一规则作为纵深校验，但不再负责首次发现会污染目标集群的来源清单错误。
 
 ### P2：运维兼容和长期验证
 

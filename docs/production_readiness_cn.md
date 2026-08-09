@@ -952,6 +952,9 @@ renderer 的严格 receipt schema 必须接收并要求 semantic witness 的正�
 VolumeSnapshotContent name/UID，并要求源 Snapshot name 精确为 `operation_id-source_pvc`。renderer 在
 生成目标对象前校验这些身份；缺字段、重复 Content 身份或伪造 Snapshot 名称不能等到恢复后 verifier
 才发现。production fixture 必须与 executor 的完整条目一致，不能只保留 restore 所需的 snapshotHandle。
+renderer 还必须在任何目标 Kubernetes API 访问前完整校验 source PVC/PV inventory：每个 PVC 必须
+保持 `phase=Bound`、非空 StorageClass，PVC UID、PV name、PV UID 与 CSI volumeHandle 在 PD+TiKV
+全集中分别唯一。重复或不完整的来源身份不能留给恢复后的 verifier 首次发现。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的

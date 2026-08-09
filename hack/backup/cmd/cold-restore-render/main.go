@@ -276,6 +276,8 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	}
 	pvcByName := make(map[string]pvc, len(allPVCs))
 	componentByPVC := make(map[string]string, len(allPVCs))
+	seenPVCUIDs := make(map[string]struct{}, len(allPVCs))
+	seenPVs := make(map[string]struct{}, len(allPVCs))
 	seenPVUIDs := make(map[string]struct{}, len(allPVCs))
 	seenVolumeHandles := make(map[string]struct{}, len(allPVCs))
 	for _, componentPVCs := range []struct {
@@ -287,6 +289,7 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 				return nil, fmt.Errorf("invalid PVC name %q", volume.Name)
 			}
 			if volume.Name == "" || volume.UID == "" || volume.PV == "" || volume.PVUID == "" || volume.CSIDriver == "" || volume.VolumeHandle == "" ||
+				volume.Phase != "Bound" || volume.StorageClass == "" ||
 				volume.RequestedStorage == "" || len(volume.AccessModes) == 0 || volume.VolumeMode == "" {
 				return nil, fmt.Errorf("PVC blueprint for %q is incomplete", volume.Name)
 			}
@@ -299,6 +302,12 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 			if _, exists := pvcByName[volume.Name]; exists {
 				return nil, fmt.Errorf("duplicate PVC %q", volume.Name)
 			}
+			if _, exists := seenPVCUIDs[volume.UID]; exists {
+				return nil, errors.New("source PVC UIDs must be unique")
+			}
+			if _, exists := seenPVs[volume.PV]; exists {
+				return nil, errors.New("source PV names must be unique")
+			}
 			if _, exists := seenPVUIDs[volume.PVUID]; exists {
 				return nil, errors.New("source PV UIDs must be unique")
 			}
@@ -307,6 +316,8 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 			}
 			pvcByName[volume.Name] = volume
 			componentByPVC[volume.Name] = componentPVCs.component
+			seenPVCUIDs[volume.UID] = struct{}{}
+			seenPVs[volume.PV] = struct{}{}
 			seenPVUIDs[volume.PVUID] = struct{}{}
 			seenVolumeHandles[volume.VolumeHandle] = struct{}{}
 		}

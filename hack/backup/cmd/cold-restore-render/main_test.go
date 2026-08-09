@@ -115,6 +115,14 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 		}, message: "duplicate snapshot"},
 		{name: "duplicate handle", mutate: func(r *receipt) { r.Snapshots[1].SnapshotHandle = r.Snapshots[0].SnapshotHandle }, message: "handles must be unique"},
 		{name: "missing source PV UID", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].PVUID = "" }, message: "blueprint"},
+		{name: "source PVC is not bound", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].Phase = "Pending" }, message: "blueprint"},
+		{name: "missing source storage class", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].StorageClass = "" }, message: "blueprint"},
+		{name: "duplicate source PVC UID", mutate: func(r *receipt) {
+			r.Inventory.PDPVCs[1].UID = r.Inventory.PDPVCs[0].UID
+		}, message: "source PVC UIDs must be unique"},
+		{name: "duplicate source PV name", mutate: func(r *receipt) {
+			r.Inventory.PDPVCs[1].PV = r.Inventory.PDPVCs[0].PV
+		}, message: "source PV names must be unique"},
 		{name: "source PV driver mismatch", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].CSIDriver = "other.csi.test" }, message: "source PV driver"},
 		{name: "snapshot source volume mismatch", mutate: func(r *receipt) { r.Snapshots[0].SourceVolumeHandle = "other-volume" }, message: "snapshot source volume handle"},
 		{name: "missing snapshot content UID", mutate: func(r *receipt) { r.Snapshots[0].ContentUID = "" }, message: "snapshot identity"},
@@ -187,7 +195,8 @@ func validReceipt() receipt {
 			volume := pvc{
 				Name: name, UID: "uid-" + name, PV: "pv-" + name, PVUID: "uid-pv-" + name,
 				CSIDriver: "csi.example.test", VolumeHandle: "source-handle-" + name,
-				VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
+				StorageClass: "fast", Phase: "Bound", VolumeMode: "Filesystem",
+				AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
 				Labels: map[string]string{"app.kubernetes.io/instance": "kb", "app.kubernetes.io/component": component, "app.kubernetes.io/managed-by": "tidb-operator"},
 			}
 			if component == "pd" {
