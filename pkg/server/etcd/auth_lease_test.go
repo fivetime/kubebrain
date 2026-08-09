@@ -783,6 +783,43 @@ func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 	}))
 }
 
+func TestAuthLeaseKeepAliveMissingLeaseErrorPriorityAndStreamSurvivalMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	plain := context.Background()
+	live, err := server.LeaseGrant(plain, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+	require.NoError(t, err)
+	_, err = server.Put(plain, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/keepalive"), Value: []byte("value"), Lease: live.ID,
+	})
+	require.NoError(t, err)
+	aliceCtx := setupAuthKVUser(t, server)
+	missingID := int64(10_730_003)
+
+	anonymous := &fakeLeaseKeepAliveServer{
+		ctx: plain, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: missingID}},
+	}
+	requireAuthLeaseError(t, server.LeaseKeepAlive(anonymous), rpctypes.ErrUserEmpty, codes.Unknown,
+		"etcdserver: user name is empty")
+	require.Empty(t, anonymous.sent)
+
+	authenticated := &fakeLeaseKeepAliveServer{
+		ctx: aliceCtx,
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{
+			{ID: missingID},
+			{ID: live.ID},
+		},
+	}
+	require.NoError(t, server.LeaseKeepAlive(authenticated))
+	require.Len(t, authenticated.sent, 2)
+	require.Equal(t, missingID, authenticated.sent[0].ID)
+	require.Zero(t, authenticated.sent[0].TTL)
+	require.NotNil(t, authenticated.sent[0].Header)
+	require.Positive(t, authenticated.sent[0].Header.Revision)
+	require.Equal(t, live.ID, authenticated.sent[1].ID)
+	require.Positive(t, authenticated.sent[1].TTL)
+}
+
 func TestAuthLeaseKeepAliveExcludesConcurrentProtectedAttachment(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

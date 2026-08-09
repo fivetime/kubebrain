@@ -43995,6 +43995,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   组合：匿名 caller 必须得到 `ErrUserEmpty`，已认证非管理员必须成功得到空列表，不能因非 admin 身份
   固定拒绝。未发现 runtime 差异；A4153 防止未来把“列出 leases”粗化为 admin-only，或在空集合上
   跳过 caller admission。
+  A4154 继续复审 `/root/etcd` `5cd9f4ee1` 的 LeaseKeepAlive/LeaseRenew stream contract。
+  upstream v3rpc 对每个收到的 request 先捕获 response header，再调用 `LeaseRenew`；renew 每包重新执行
+  caller admission，并仅对现存 lease 的全部 attachment key 检查 PUT 权限。`ErrLeaseNotFound` 不终止
+  stream，而被转换为同 ID、`TTL=0` 的成功 response；随后请求继续处理，clientv3 `KeepAliveOnce` 再把
+  TTL=0 映射为 `ErrLeaseNotFound`。KubeBrain 保持 header-before-renew、per-message auth、leader/proxy、
+  demotion、atomic attachment authorization 和 TTL=0 映射。现有测试已覆盖 permission mutation、并发
+  attachment、signed ID、expiry/revoke race、checkpoint 与 follower forwarding；本轮补齐 auth-enabled
+  missing ID 的 direct、official client/v3 与 raw stream 组合：匿名首包必须以 `ErrUserEmpty` 终止且不发
+  response；已认证用户得到 TTL=0，raw stream 随后续租有权 live lease 仍成功。未发现 runtime 差异；
+  A4154 防止未来把 missing lease 误判为 permission denied、把 TTL=0 当 fatal stream error，或只在建流时
+  鉴权而绕过后续权限变更。
 
 ### P2：运维兼容和长期验证
 
