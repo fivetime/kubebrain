@@ -3598,6 +3598,7 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"A4141",
 		"A4142",
 		"A4143",
+		"A4144",
 		"5cd9f4ee1",
 		"1b01776cc",
 		"f1f8893b1",

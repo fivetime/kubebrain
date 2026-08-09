@@ -364,8 +364,8 @@ if ! jq -en --argjson inventory "$inventory" --argjson snapshots "$snapshots" '
   all($snapshots[];
     all([.name,.uid,.content,.content_uid,.source_pvc,.component,.source_volume_handle,.snapshot_handle,.restore_size][];
       type == "string" and length > 0)) and
-  all(["name","uid","content","content_uid","source_pvc","source_volume_handle","snapshot_handle"][] as $field;
-    ($snapshots | map(.[$field]) | unique | length) == ($snapshots | length))
+  all(["name","uid","content","content_uid","source_pvc","source_volume_handle","snapshot_handle"][];
+    . as $field | ($snapshots | map(.[$field]) | unique | length) == ($snapshots | length))
 ' >/dev/null; then
   echo "snapshot set is incomplete or contains duplicate identities" >&2
   exit 1

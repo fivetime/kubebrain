@@ -43891,6 +43891,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   修复后全部 fail closed；executor 黑盒先用完整 receipt 生成 canonical manifest，再把首个 source PVC
   phase 改为 Pending，证明重新 admission 在任何目标 kubectl access/create 前拒绝。最终 verifier 保留
   同一规则作为纵深校验，但不再负责首次发现会污染目标集群的来源清单错误。
+  A4144 修复 A4137 snapshot identity 集合门禁在实际 jq 上不可编译的生产回归。原表达式把变量绑定
+  写成 `all(generator as $field; condition)`；jq 的 `all(generator; condition)` 语法不接受在 generator
+  尾部以 `as` 绑定后直接使用分号，因此 cold snapshot 的所有成功路径都会在六个 snapshot 已创建后
+  报 syntax error、恢复服务且不发布 receipt，重复 handle 红测则被同一语法错误意外遮蔽。当前改为
+  `all(generator; . as $field | condition)`，逐字段检查 Snapshot name/UID、Content name/UID、source
+  PVC/source volumeHandle/snapshotHandle 的全局唯一性。既有 executor 行为测试同时证明正常六卷集合
+  能恢复服务并发布 receipt、重复 CSI handle 仍恢复服务但拒绝 receipt；脚本 `bash -n` 与真实 jq 编译
+  一并通过。该修复恢复 A4137 预期的 fail-closed 集合语义，不放宽任何 identity 条件。
 
 ### P2：运维兼容和长期验证
 
