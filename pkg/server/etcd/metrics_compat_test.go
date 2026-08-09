@@ -127,6 +127,66 @@ func TestEmitEtcdRequestDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
 	}, rec.histograms[1].tags)
 }
 
+func TestUnaryRequestDurationCoversUpstreamRequestTypesAndFailures(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+
+	tests := []struct {
+		name       string
+		method     string
+		request    any
+		wantType   string
+		handlerErr error
+	}{
+		{name: "range", method: etcdserverpb.KV_Range_FullMethodName, request: &etcdserverpb.RangeRequest{}, wantType: "Range"},
+		{name: "put", method: etcdserverpb.KV_Put_FullMethodName, request: &etcdserverpb.PutRequest{}, wantType: "Put"},
+		{name: "delete range", method: etcdserverpb.KV_DeleteRange_FullMethodName, request: &etcdserverpb.DeleteRangeRequest{}, wantType: "DeleteRange"},
+		{name: "readonly txn", method: etcdserverpb.KV_Txn_FullMethodName, request: &etcdserverpb.TxnRequest{}, wantType: "ReadonlyTxn"},
+		{name: "write txn", method: etcdserverpb.KV_Txn_FullMethodName, request: &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("key")}}}}}, wantType: "Txn"},
+		{name: "compact", method: etcdserverpb.KV_Compact_FullMethodName, request: &etcdserverpb.CompactionRequest{}, wantType: "Compaction"},
+		{name: "lease grant", method: etcdserverpb.Lease_LeaseGrant_FullMethodName, request: &etcdserverpb.LeaseGrantRequest{}, wantType: "LeaseGrant"},
+		{name: "lease revoke", method: etcdserverpb.Lease_LeaseRevoke_FullMethodName, request: &etcdserverpb.LeaseRevokeRequest{}, wantType: "LeaseRevoke"},
+		{name: "alarm failure", method: etcdserverpb.Maintenance_Alarm_FullMethodName, request: &etcdserverpb.AlarmRequest{}, wantType: "Alarm", handlerErr: errors.New("alarm failed")},
+		{name: "authenticate", method: etcdserverpb.Auth_Authenticate_FullMethodName, request: &etcdserverpb.AuthenticateRequest{}, wantType: "Authenticate"},
+		{name: "auth enable", method: etcdserverpb.Auth_AuthEnable_FullMethodName, request: &etcdserverpb.AuthEnableRequest{}, wantType: "AuthEnable"},
+		{name: "auth disable", method: etcdserverpb.Auth_AuthDisable_FullMethodName, request: &etcdserverpb.AuthDisableRequest{}, wantType: "AuthDisable"},
+		{name: "auth status", method: etcdserverpb.Auth_AuthStatus_FullMethodName, request: &etcdserverpb.AuthStatusRequest{}, wantType: "AuthStatus"},
+		{name: "auth user add", method: etcdserverpb.Auth_UserAdd_FullMethodName, request: &etcdserverpb.AuthUserAddRequest{}, wantType: "AuthUserAdd"},
+		{name: "auth user get", method: etcdserverpb.Auth_UserGet_FullMethodName, request: &etcdserverpb.AuthUserGetRequest{}, wantType: "AuthUserGet"},
+		{name: "auth user list", method: etcdserverpb.Auth_UserList_FullMethodName, request: &etcdserverpb.AuthUserListRequest{}, wantType: "AuthUserList"},
+		{name: "auth user delete", method: etcdserverpb.Auth_UserDelete_FullMethodName, request: &etcdserverpb.AuthUserDeleteRequest{}, wantType: "AuthUserDelete"},
+		{name: "auth user change password", method: etcdserverpb.Auth_UserChangePassword_FullMethodName, request: &etcdserverpb.AuthUserChangePasswordRequest{}, wantType: "AuthUserChangePassword"},
+		{name: "auth user grant role", method: etcdserverpb.Auth_UserGrantRole_FullMethodName, request: &etcdserverpb.AuthUserGrantRoleRequest{}, wantType: "AuthUserGrantRole"},
+		{name: "auth user revoke role", method: etcdserverpb.Auth_UserRevokeRole_FullMethodName, request: &etcdserverpb.AuthUserRevokeRoleRequest{}, wantType: "AuthUserRevokeRole"},
+		{name: "auth role add", method: etcdserverpb.Auth_RoleAdd_FullMethodName, request: &etcdserverpb.AuthRoleAddRequest{}, wantType: "AuthRoleAdd"},
+		{name: "auth role get", method: etcdserverpb.Auth_RoleGet_FullMethodName, request: &etcdserverpb.AuthRoleGetRequest{}, wantType: "AuthRoleGet"},
+		{name: "auth role list", method: etcdserverpb.Auth_RoleList_FullMethodName, request: &etcdserverpb.AuthRoleListRequest{}, wantType: "AuthRoleList"},
+		{name: "auth role delete", method: etcdserverpb.Auth_RoleDelete_FullMethodName, request: &etcdserverpb.AuthRoleDeleteRequest{}, wantType: "AuthRoleDelete"},
+		{name: "auth role grant permission", method: etcdserverpb.Auth_RoleGrantPermission_FullMethodName, request: &etcdserverpb.AuthRoleGrantPermissionRequest{}, wantType: "AuthRoleGrantPermission"},
+		{name: "auth role revoke permission", method: etcdserverpb.Auth_RoleRevokePermission_FullMethodName, request: &etcdserverpb.AuthRoleRevokePermissionRequest{}, wantType: "AuthRoleRevokePermission"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec.histograms = nil
+			_, err := server.stampUnary(context.Background(), test.request, &grpc.UnaryServerInfo{FullMethod: test.method},
+				func(context.Context, any) (any, error) {
+					return &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{}}, test.handlerErr
+				})
+			if test.handlerErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			require.Len(t, rec.histograms, 1)
+			require.Equal(t, "etcd.server.request.duration.seconds", rec.histograms[0].name)
+			require.Equal(t, test.wantType, rec.histograms[0].tags[0].Value)
+			require.Equal(t, strconv.FormatBool(test.handlerErr == nil), rec.histograms[0].tags[1].Value)
+		})
+	}
+}
+
 func TestEmitEtcdRangeDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
 	rec := &recordingMetrics{}
 

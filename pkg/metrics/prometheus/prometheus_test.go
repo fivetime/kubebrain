@@ -200,6 +200,33 @@ func TestEtcdApplyDurationHistogramUsesUpstreamBuckets(t *testing.T) {
 	t.Fatal("etcd apply duration histogram family not gathered")
 }
 
+func TestEtcdRequestDurationHistogramUsesUpstreamBuckets(t *testing.T) {
+	newRegistry := prometheus.NewRegistry()
+	registerer, gather = newRegistry, newRegistry
+	defer func() {
+		registerer, gather = prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	}()
+
+	p := NewMetrics()
+	assert.NoError(t, p.EmitHistogram("etcd.server.request.duration.seconds", 0.25,
+		metrics.Tag("type", "LeaseGrant"), metrics.Tag("success", "true")))
+	families, err := gather.Gather()
+	assert.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "etcd_server_request_duration_seconds" {
+			continue
+		}
+		histogram := family.GetMetric()[0].GetHistogram()
+		assert.EqualValues(t, 1, histogram.GetSampleCount())
+		assert.Len(t, histogram.GetBucket(), 14)
+		for i, bucket := range histogram.GetBucket() {
+			assert.InDelta(t, 0.001*float64(uint64(1)<<i), bucket.GetUpperBound(), 1e-12)
+		}
+		return
+	}
+	t.Fatal("etcd request duration histogram family not gathered")
+}
+
 func TestEtcdWALHistogramsUseUpstreamBuckets(t *testing.T) {
 	newRegistry := prometheus.NewRegistry()
 	registerer, gather = newRegistry, newRegistry

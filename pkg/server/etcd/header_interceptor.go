@@ -433,12 +433,16 @@ func (s *RPCServer) responseRaftTerm(ctx context.Context) (uint64, error) {
 	return term, nil
 }
 
-func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, retErr error) {
 	if message, ok := req.(proto.Message); ok && uint(proto.Size(message)) > s.maxRequestBytes {
 		return nil, rpctypes.ErrGRPCRequestTooLarge
 	}
-	resp, err := handler(ctx, req)
-	if err == nil {
+	if requestType, ok := unaryRequestDurationType(info.FullMethod, req); ok {
+		started := time.Now()
+		defer func() { emitEtcdRequestDuration(s.metricCli, requestType, time.Since(started), retErr) }()
+	}
+	resp, retErr = handler(ctx, req)
+	if retErr == nil {
 		var term uint64
 		if statusResponse, ok := resp.(*etcdserverpb.StatusResponse); ok {
 			// Status already snapshots the Raft term for its response body. Reuse
@@ -449,15 +453,77 @@ func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnarySer
 			var termErr error
 			term, termErr = s.responseRaftTerm(ctx)
 			if termErr != nil {
-				return nil, termErr
+				retErr = termErr
+				return nil, retErr
 			}
 		}
 		stampHeader(resp, s.backend.ClusterID(), s.localMemberID(), term)
 	}
 	if isDedicatedConcurrencyMethod(info.FullMethod) {
-		return resp, err
+		return resp, retErr
 	}
-	return resp, authGRPCError(err)
+	retErr = authGRPCError(retErr)
+	return resp, retErr
+}
+
+func unaryRequestDurationType(fullMethod string, request any) (string, bool) {
+	switch fullMethod {
+	case etcdserverpb.KV_Range_FullMethodName:
+		return "Range", true
+	case etcdserverpb.KV_Put_FullMethodName:
+		return "Put", true
+	case etcdserverpb.KV_DeleteRange_FullMethodName:
+		return "DeleteRange", true
+	case etcdserverpb.KV_Txn_FullMethodName:
+		if txn, ok := request.(*etcdserverpb.TxnRequest); ok && txnIsReadonly(txn) {
+			return "ReadonlyTxn", true
+		}
+		return "Txn", true
+	case etcdserverpb.KV_Compact_FullMethodName:
+		return "Compaction", true
+	case etcdserverpb.Lease_LeaseGrant_FullMethodName:
+		return "LeaseGrant", true
+	case etcdserverpb.Lease_LeaseRevoke_FullMethodName:
+		return "LeaseRevoke", true
+	case etcdserverpb.Maintenance_Alarm_FullMethodName:
+		return "Alarm", true
+	case etcdserverpb.Auth_Authenticate_FullMethodName:
+		return "Authenticate", true
+	case etcdserverpb.Auth_AuthEnable_FullMethodName:
+		return "AuthEnable", true
+	case etcdserverpb.Auth_AuthDisable_FullMethodName:
+		return "AuthDisable", true
+	case etcdserverpb.Auth_AuthStatus_FullMethodName:
+		return "AuthStatus", true
+	case etcdserverpb.Auth_UserAdd_FullMethodName:
+		return "AuthUserAdd", true
+	case etcdserverpb.Auth_UserGet_FullMethodName:
+		return "AuthUserGet", true
+	case etcdserverpb.Auth_UserList_FullMethodName:
+		return "AuthUserList", true
+	case etcdserverpb.Auth_UserDelete_FullMethodName:
+		return "AuthUserDelete", true
+	case etcdserverpb.Auth_UserChangePassword_FullMethodName:
+		return "AuthUserChangePassword", true
+	case etcdserverpb.Auth_UserGrantRole_FullMethodName:
+		return "AuthUserGrantRole", true
+	case etcdserverpb.Auth_UserRevokeRole_FullMethodName:
+		return "AuthUserRevokeRole", true
+	case etcdserverpb.Auth_RoleAdd_FullMethodName:
+		return "AuthRoleAdd", true
+	case etcdserverpb.Auth_RoleGet_FullMethodName:
+		return "AuthRoleGet", true
+	case etcdserverpb.Auth_RoleList_FullMethodName:
+		return "AuthRoleList", true
+	case etcdserverpb.Auth_RoleDelete_FullMethodName:
+		return "AuthRoleDelete", true
+	case etcdserverpb.Auth_RoleGrantPermission_FullMethodName:
+		return "AuthRoleGrantPermission", true
+	case etcdserverpb.Auth_RoleRevokePermission_FullMethodName:
+		return "AuthRoleRevokePermission", true
+	default:
+		return "", false
+	}
 }
 
 func (s *RPCServer) stampStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {

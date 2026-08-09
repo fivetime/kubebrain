@@ -172,7 +172,6 @@ func (s *RPCServer) rangeWithAfterRead(
 	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("read", 1, methodTag, successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("read.latency", duration.Seconds(), methodTag, successTag)
-	emitEtcdRequestDuration(s.metricCli, "Range", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("read.responsesize", proto.Size(response), methodTag, successTag)
 	}
@@ -768,7 +767,6 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("write", 1, methodTag, successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", duration.Seconds(), methodTag, successTag)
-	emitEtcdRequestDuration(s.metricCli, "Txn", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), methodTag, successTag)
 		if !response.Succeeded {
@@ -1291,7 +1289,6 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "put"), successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", duration.Seconds(), metrics.Tag("method", "put"), successTag)
-	emitEtcdRequestDuration(s.metricCli, "Put", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), metrics.Tag("method", "put"), successTag)
 	}
@@ -1360,7 +1357,6 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	duration := time.Since(startTime)
 	s.metricCli.EmitCounter("write", 1, metrics.Tag("method", "delete-range"), successTag, errClassTag(err))
 	s.metricCli.EmitHistogram("write.latency", duration.Seconds(), metrics.Tag("method", "delete-range"), successTag)
-	emitEtcdRequestDuration(s.metricCli, "DeleteRange", duration, err)
 	if response != nil {
 		s.metricCli.EmitHistogram("write.responsesize", proto.Size(response), metrics.Tag("method", "delete-range"), successTag)
 	}

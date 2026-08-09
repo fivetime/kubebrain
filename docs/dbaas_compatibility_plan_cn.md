@@ -44145,6 +44145,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 unary Get 精确比较 header revision、Count、More、key/value、create/mod revision、version 和 lease。
   未发现 runtime 差异；A4168 防止后续 RangeStream 分页优化错误使用当前 revision 计算历史页边界或总数，
   并把 KubeBrain 的 3.7 RangeStream 明确维持在上游 robustness 所识别的生产协议面内。
+  A4169 补全 A3772 对 `/root/etcd` `9cdb1cf8` 的 `etcd_server_request_duration_seconds`
+  实现。A3772 只在 Range/Txn/Put/DeleteRange handler 的正常尾部发射兼容样本，导致 validation、auth、
+  leadership 等早退失败完全不可见，且 upstream 同一 `getRequestType` 矩阵中的 Compaction、LeaseGrant、
+  LeaseRevoke、Alarm、Authenticate 与 Auth 管理请求从不增长该指标；Prometheus wrapper 还使用默认桶，
+  而非 upstream 1ms 起、倍率 2、共 14 桶。现在统一 unary response/header interceptor 在 handler 周围
+  观测受支持矩阵，readonly Txn 标记 `ReadonlyTxn`、写 Txn 标记 `Txn`，成功和失败均只产生一个样本；
+  原四处 handler 埋点已删除以避免双计数，超大请求仍在进入服务端前拒绝而不计入。确定性 RED 证明
+  七类代表请求此前样本数均为 0；完整回归固定全部 26 个公开 type 映射及失败标签，Prometheus 测试
+  固定 14 个精确上界。A4169 修复了真实 DBaaS dashboard/runbook 盲区，不改变 RPC 响应语义。
 
 ### P2：运维兼容和长期验证
 
