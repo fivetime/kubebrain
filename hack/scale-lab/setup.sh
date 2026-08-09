@@ -46,6 +46,7 @@ phase_storage() {
 # ---------------------------------------------------------------------------
 phase_kubebrain() {
   log "kubebrain: building from $REPO and deploying to $BRAIN_HOST + replicas"
+  "$HERE/check-go-version.sh"
   ( cd "$REPO" && go build -o /tmp/kube-brain ./cmd )
   local pd="$STORE_HOST:2379"
   for h in "$BRAIN_HOST" ${BRAIN_REPLICAS:-}; do
@@ -122,6 +123,7 @@ phase_controlplane() {
 # ---------------------------------------------------------------------------
 phase_tools() {
   log "tools: building loadgen + probes into $HERE/bin/"
+  "$HERE/check-go-version.sh"
   mkdir -p "$HERE/bin"
   ( cd "$HERE/loadgen" && go build -o "$HERE/bin/loadgen" . )
   for p in bulk foload elogprobe qlat; do

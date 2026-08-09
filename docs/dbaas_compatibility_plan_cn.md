@@ -43776,6 +43776,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   vet/compile。build 静态测试递归发现所有嵌套 go.mod，要求每项必须进入通用循环或 compat 专用 job，
   从而让未来新增 module 默认 fail closed。本地完整复刻循环通过，objectstore 两个包测试、两个单二进制
   工具编译/vet 均成功。
+  A4132 封闭 scale-lab 绕过安全构建工具链的运行路径。虽然生产 Dockerfile/CI 已固定 Go 1.26.5，
+  `setup.sh kubebrain|tools` 原先直接调用宿主 `go build`；在 Go 1.26.0 上会生成本轮 govulncheck 已证明
+  可达 TLS/x509/net 标准库漏洞的 KubeBrain、loadgen 与 probes。新增 `check-go-version.sh`，两个产物
+  phase 均在首个 build 前强制稳定版 Go >=1.26.5，旧 patch 或 rc 字符串 fail closed；status/storage/
+  teardown 等不构建 phase 不受影响。行为测试覆盖 1.26.4 拒绝、1.26.5/1.26.9/1.27.0 放行及 rc 拒绝，
+  静态测试要求两个 phase 各调用一次且调用顺序早于 build；bash -n 与 shellcheck 同步通过。README 已把
+  Go 1.26.5 写为明确前置条件，避免操作者误把宿主旧 Go 产物当作已扫描发布二进制。
 
 ### P2：运维兼容和长期验证
 
