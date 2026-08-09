@@ -199,6 +199,8 @@ expect_info_metrics_boundary() {
   local slow_apply_values
   local wal_metric
   local wal_metric_values
+  local raft_snapshot_metric
+  local raft_snapshot_metric_values
 
   client_response="$(run_with_probe_timeout "$CURL" -sS -i "$client_metrics_url")"
   client_status_line="${client_response%%$'\n'*}"
@@ -497,6 +499,18 @@ expect_info_metrics_boundary() {
     wal_metric_values="$(awk -v metric="$wal_metric" '$1 == metric || index($1, metric "{") == 1 {print $2}' <<<"$info_metrics" | sort -u)"
     if [[ "$wal_metric_values" != "0" ]]; then
       echo "info metrics mismatch: expected ${wal_metric} to remain 0" >&2
+      exit 1
+    fi
+  done
+  for raft_snapshot_metric in \
+    etcd_debugging_snap_save_marshalling_duration_seconds_count \
+    etcd_debugging_snap_save_total_duration_seconds_count \
+    etcd_snap_fsync_duration_seconds_count \
+    etcd_snap_db_save_total_duration_seconds_count \
+    etcd_snap_db_fsync_duration_seconds_count; do
+    raft_snapshot_metric_values="$(awk -v metric="$raft_snapshot_metric" '$1 == metric || index($1, metric "{") == 1 {print $2}' <<<"$info_metrics" | sort -u)"
+    if [[ "$raft_snapshot_metric_values" != "0" ]]; then
+      echo "info metrics mismatch: expected ${raft_snapshot_metric} to remain 0" >&2
       exit 1
     fi
   done
@@ -1533,7 +1547,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
-    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
+    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"

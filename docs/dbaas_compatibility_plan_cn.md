@@ -43168,6 +43168,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   边界同时覆盖 KV、Compaction、Lease、Alarm、Authenticate 与完整 Auth mutation 标签。只在
   KubeBrain KV backend commit 层接线会遗漏大量 op，并会在 follower 转发时重复计时，因此本轮不做
   部分实现；后续应在统一 leader apply abstraction 建立后一次性覆盖并保留 exact op labels。
+- A4067 实现 upstream Raft snapshot file metrics 的 DBaaS 平台边界：上游
+  `/root/etcd/server/etcdserver/api/snap/metrics.go` 注册
+  `etcd_debugging_snap_save_marshalling_duration_seconds`、
+  `etcd_debugging_snap_save_total_duration_seconds`、`etcd_snap_fsync_duration_seconds`、
+  `etcd_snap_db_save_total_duration_seconds` 与 `etcd_snap_db_fsync_duration_seconds`。前三项和
+  snap-db fsync 使用 1ms 起、2 倍递增、14 桶；snap-db save 使用 100ms 起、2 倍递增、10 桶。
+  这些更新点只位于 embedded-etcd Raft snapshot marshalling/file fsync 与 `.snap.db` save，不是
+  public Maintenance Snapshot。KubeBrain 不生成上述本地文件，底层 raft snapshot 由 TiKV/PD
+  管理；在线 Maintenance Snapshot 已由 `etcd_disk_backend_snapshot_duration_seconds` 独立观察，
+  不能重复计入。因此 `RPCServer.New` 对五个 family 只做零样本注册，Prometheus adapter 固定精确
+  buckets。测试锁定注册集合、无伪造 Observe 与全部桶形状；生产只读 gate 要求五个 `_count`
+  family 唯一为 0，覆盖缺失和非零负例，并新增 `raft_snapshot_file_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

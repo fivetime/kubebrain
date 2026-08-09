@@ -260,6 +260,15 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 		name == "etcd.disk.wal_write_duration_seconds" {
 		// Match server/storage/wal/metrics.go: 1ms through 8.192s.
 		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
+	} else if name == "etcd.snap_db.save_total_duration_seconds" {
+		// Match server/etcdserver/api/snap/metrics.go: 100ms through 51.2s.
+		opts.Buckets = prometheus.ExponentialBuckets(0.1, 2, 10)
+	} else if name == "etcd_debugging.snap.save_marshalling_duration_seconds" ||
+		name == "etcd_debugging.snap.save_total_duration_seconds" ||
+		name == "etcd.snap.fsync_duration_seconds" ||
+		name == "etcd.snap_db.fsync_duration_seconds" {
+		// Match raft snapshot marshalling/save/fsync: 1ms through 8.192s.
+		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
 	}
 	vec = prometheus.NewHistogramVec(opts, pw.extractLabelNames(labels))
 	registerer.MustRegister(vec)

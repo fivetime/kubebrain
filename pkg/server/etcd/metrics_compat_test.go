@@ -228,6 +228,21 @@ func TestEtcdWALMetricsAreRegisteredAtPlatformZero(t *testing.T) {
 	require.Empty(t, rec.histograms)
 }
 
+func TestEtcdRaftSnapshotMetricsAreRegisteredAtPlatformZero(t *testing.T) {
+	rec := &histogramRegistrationRecorder{}
+
+	initEtcdRaftSnapshotMetrics(rec)
+
+	require.Equal(t, []string{
+		"etcd_debugging.snap.save_marshalling_duration_seconds",
+		"etcd_debugging.snap.save_total_duration_seconds",
+		"etcd.snap.fsync_duration_seconds",
+		"etcd.snap_db.save_total_duration_seconds",
+		"etcd.snap_db.fsync_duration_seconds",
+	}, rec.registered)
+	require.Empty(t, rec.histograms)
+}
+
 func TestMemberPromoteFailuresUseUpstreamMetricNameAndReasonLabel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -208,6 +208,50 @@ func TestEtcdWALHistogramsUseUpstreamBuckets(t *testing.T) {
 	}
 }
 
+func TestEtcdRaftSnapshotHistogramsUseUpstreamBuckets(t *testing.T) {
+	newRegistry := prometheus.NewRegistry()
+	registerer, gather = newRegistry, newRegistry
+	defer func() {
+		registerer, gather = prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	}()
+
+	want := map[string]struct {
+		start float64
+		count int
+	}{
+		"etcd_debugging.snap.save_marshalling_duration_seconds": {start: 0.001, count: 14},
+		"etcd_debugging.snap.save_total_duration_seconds":       {start: 0.001, count: 14},
+		"etcd.snap.fsync_duration_seconds":                      {start: 0.001, count: 14},
+		"etcd.snap_db.save_total_duration_seconds":              {start: 0.1, count: 10},
+		"etcd.snap_db.fsync_duration_seconds":                   {start: 0.001, count: 14},
+	}
+	p := NewMetrics()
+	registrar := p.(metrics.HistogramRegistrar)
+	for name := range want {
+		assert.NoError(t, registrar.RegisterHistogram(name))
+	}
+	families, err := gather.Gather()
+	assert.NoError(t, err)
+	found := make(map[string]bool, len(want))
+	for _, family := range families {
+		for name, shape := range want {
+			if family.GetName() != strings.ReplaceAll(name, ".", "_") {
+				continue
+			}
+			found[name] = true
+			histogram := family.GetMetric()[0].GetHistogram()
+			assert.Zero(t, histogram.GetSampleCount())
+			assert.Len(t, histogram.GetBucket(), shape.count)
+			for i, bucket := range histogram.GetBucket() {
+				assert.InDelta(t, shape.start*float64(uint64(1)<<i), bucket.GetUpperBound(), 1e-12)
+			}
+		}
+	}
+	for name := range want {
+		assert.True(t, found[name], "raft snapshot histogram family %q not gathered", name)
+	}
+}
+
 func TestBackendBboltCommitPhaseHistogramsUseUpstreamBuckets(t *testing.T) {
 	newRegistry := prometheus.NewRegistry()
 	registerer, gather = newRegistry, newRegistry
