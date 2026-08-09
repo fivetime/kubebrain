@@ -29,6 +29,7 @@ type namingOutcome struct {
 	ReplacementList      []string
 	PrefixIsolated       bool
 	LeaseDeleteObserved  bool
+	RoundRobinBothReady  bool
 	ResolverInitial      string
 	ResolverAfterDelete  string
 }
@@ -49,6 +50,7 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 		ReplacementList:      []string{"e2:127.0.0.1:2002:metadata-2", "e3:127.0.0.1:2003:metadata-3"},
 		PrefixIsolated:       true,
 		LeaseDeleteObserved:  true,
+		RoundRobinBothReady:  true,
 		ResolverInitial:      "SERVING",
 		ResolverAfterDelete:  "NOT_SERVING",
 	}, kubeBrainOutcome)
@@ -170,6 +172,28 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	}))
 	builder, err := etcdresolver.NewBuilder(client)
 	require.NoError(t, err)
+	roundRobinConnection, err := grpc.NewClient("etcd:///"+resolverPrefix,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithResolvers(builder),
+		grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy":"round_robin"}`))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = roundRobinConnection.Close() })
+	roundRobinClient := healthpb.NewHealthClient(roundRobinConnection)
+	roundRobinStatuses := make(map[string]struct{}, 2)
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		response, callErr := roundRobinClient.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+		if callErr != nil {
+			return false
+		}
+		roundRobinStatuses[response.Status.String()] = struct{}{}
+		return len(roundRobinStatuses) == 2
+	}, 5*time.Second, 20*time.Millisecond,
+		"round_robin resolver did not route to both READY endpoint subchannels")
+	require.NoError(t, roundRobinConnection.Close())
+	roundRobinBothReady := len(roundRobinStatuses) == 2
+
 	connection, err := grpc.NewClient("etcd:///"+resolverPrefix,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithResolvers(builder),
@@ -212,6 +236,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		ReplacementList:      namingList(replacementList, managerPrefix),
 		PrefixIsolated:       prefixIsolated,
 		LeaseDeleteObserved:  leaseDeleteObserved,
+		RoundRobinBothReady:  roundRobinBothReady,
 		ResolverInitial:      resolverInitial,
 		ResolverAfterDelete:  resolverAfterDelete,
 	}

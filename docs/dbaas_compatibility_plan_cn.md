@@ -44277,6 +44277,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归把合法参数摘要与 occurrence 保持不变、仅将 claim type 改成 `Destroy`，旧实现会启动 repair，
   新实现于子进程前拒绝且 repair log 为空。namespace/type/requester/owner/Secret/key/instance 与审批对象由此
   形成单一身份链，不改变 receiver/worker RBAC、人工 approve、`maxAttempts=1` 或底层修复步骤。
+  A4184 对照 upstream `7bcf013d8` 的 clientv3 naming resolver round-robin readiness。上游只在
+  3500 次分布计数前固定等待 1 秒，让第二个 gRPC subchannel 有机会进入 READY；提交本身没有 server
+  runtime 或 wire 变化，但暴露了 DBaaS endpoint discovery 门禁此前只验证 `pick_first` 删除切换、没有
+  证明 `round_robin` 会实际选择全部 READY 地址。`TestNamingDifferentialAgainstReferenceEtcd` 现在为同一
+  resolver prefix 注册分别返回 SERVING/NOT_SERVING 的两个本地 health backend，以官方 naming builder
+  和 gRPC `round_robin` 建连，并在 5 秒窗口内轮询直到两个状态都被观察；使用 readiness 条件而非固定
+  sleep，避免调度速度造成假失败。当前 `/root/etcd` reference 与 3 副本 KubeBrain/3 PD/3 TiKV 真实
+  集群普通连续 5 轮、race 连续 3 轮均通过，随后原有 endpoint delete/pick-first 差分继续通过；未发现
+  数据面 runtime 差异。该门禁固定官方 client 能消费 KubeBrain 保存的 endpoint watch/list 状态并完成
+  多 subchannel 负载均衡，不把客户端 READY 时序误报为 etcd 语义差异。
 
 ### P2：运维兼容和长期验证
 
