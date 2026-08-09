@@ -31,6 +31,8 @@ order 与 legacy metadata 仍通过独立读取拼接，其防物理 GC pin 是�
 单次 term 变化会先在服务端透明重捕获；连续 8 次都跨 term 时，对外返回 upstream
 `ErrGRPCLeaderChanged`（gRPC `Unavailable`），客户端可按官方瞬态 leader 错误重试，而不是收到
 无分类的 `Unknown`。
+请求最初落到无 proxy follower 时仍返回 `ErrGRPCNotLeader`；只有已经通过 leader admission 后发生的
+lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错误不会混淆。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

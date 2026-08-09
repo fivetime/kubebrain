@@ -43572,6 +43572,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   change 时对外精确返回 `ErrGRPCLeaderChanged`，稳定的 pinned-lease/history 不一致仍保留原诊断，不能
   被伪装成换主。确定性测试让每次 EpochAndLeadingFresh 调用都推进 epoch，固定 8 次 capture 全部放弃、
   最终错误可 `errors.Is` 官方 LeaderChanged 且 code 为 Unavailable。
+  A4104 补齐真实换主首先表现为 lease freshness 丢失的分支：A4103 只把“仍 fresh 但 epoch 不同”归类
+  `errSnapshotLeaderChanged`，`leadingFresh=false` 却返回 `ErrGRPCNotLeader`。后者是 FailedPrecondition，
+  适用于请求最初落到禁用 proxy 的 follower；已经通过 Snapshot RPC leader admission、随后在 barrier、
+  scanner 或 chunk 等待中失去 lease 的请求，upstream 语义应是 LeaderChanged/Unavailable。现在
+  `buildSnapshotOnce` 的初始 fresh recheck 与全流 check 都把 freshness loss 纳入 leader-change sentinel；
+  RPC 入场 follower gate 仍精确返回 NotLeader。stalled scanner 测试以固定 epoch=7、fresh true→false
+  模拟无新 epoch 可见的失租，要求 250ms 内主动结束、匹配 leader-change sentinel 且明确不匹配
+  ErrGRPCNotLeader；既有 proxy-disabled follower 测试继续锁定初始 NotLeader。
 
 ### P2：运维兼容和长期验证
 

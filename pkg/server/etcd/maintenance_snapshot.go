@@ -61,12 +61,15 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	defer cancel()
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
-		return rpctypes.ErrGRPCNotLeader
+		// Snapshot() already rejects/forwards a request that initially lands on
+		// a follower. Reaching capture without a fresh lease means leadership
+		// changed after that admission check.
+		return errSnapshotLeaderChanged
 	}
 	checkLeadership := func() error {
 		currentEpoch, stillLeadingFresh := s.peers.EpochAndLeadingFresh()
 		if !stillLeadingFresh {
-			return rpctypes.ErrGRPCNotLeader
+			return errSnapshotLeaderChanged
 		}
 		if currentEpoch != epoch {
 			return errSnapshotLeaderChanged

@@ -537,6 +537,46 @@ func TestMaintenanceSnapshotClassifiesRepeatedTermChanges(t *testing.T) {
 	require.GreaterOrEqual(t, calls.Load(), uint64(16), "all eight capture attempts must observe a changed term")
 }
 
+func TestMaintenanceSnapshotClassifiesFreshnessLossAfterAdmission(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var fresh atomic.Bool
+	fresh.Store(true)
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn: func() (uint64, bool) {
+			return 7, fresh.Load()
+		},
+	}
+	stalled := &stalledSnapshotBackend{
+		BackendShim: server.backend,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = stalled
+
+	done := make(chan error, 1)
+	go func() {
+		done <- server.buildSnapshotOnce(context.Background(), filepath.Join(t.TempDir(), "snapshot.db"))
+	}()
+	select {
+	case <-stalled.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot scanner did not reach the injected stall")
+	}
+	fresh.Store(false)
+	var snapshotErr error
+	select {
+	case snapshotErr = <-done:
+	case <-time.After(250 * time.Millisecond):
+		close(stalled.release)
+		t.Fatal("freshness loss did not interrupt capture")
+	}
+	close(stalled.release)
+	require.ErrorIs(t, snapshotErr, errSnapshotLeaderChanged)
+	require.NotErrorIs(t, snapshotErr, rpctypes.ErrGRPCNotLeader)
+}
+
 func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
