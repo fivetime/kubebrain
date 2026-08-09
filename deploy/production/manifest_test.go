@@ -1300,6 +1300,24 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Equal(t, "1m", overflowRule["for"])
 	require.Equal(t, "warning", overflowRule["labels"].(map[string]any)["severity"])
 
+	abortedMetricRules := map[string]struct {
+		expr     string
+		forValue string
+	}{
+		"KubeBrainAbortedRevisionMetricMissing": {
+			expr: `count(revision_generator_aborted{namespace="kubebrain-system"}) != 3`, forValue: "5m",
+		},
+		"KubeBrainAbortedRevisions": {
+			expr: `sum(increase(revision_generator_aborted{namespace="kubebrain-system"}[10m])) > 0`, forValue: "0m",
+		},
+	}
+	for alert, want := range abortedMetricRules {
+		rule := prometheusRuleByAlert(t, groups, alert)
+		require.Equal(t, want.expr, rule["expr"])
+		require.Equal(t, want.forValue, rule["for"])
+		require.Equal(t, "warning", rule["labels"].(map[string]any)["severity"])
+	}
+
 	rebuildRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexRebuildFailures")
 	require.Equal(t,
 		`sum(increase(count_index_rebuild_err{namespace="kubebrain-system"}[10m])) > 0`,

@@ -69,6 +69,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 - **范围删除超限**:`rate(delete_range_admission_rejected[5m]) > 0`。确认调用方是否误用了无界前缀删除；确需调大时先按 key/value 大小在独立 TiKV 上验证事务大小和 p99。
 - **logical watch admission 饱和**:`watch_admission_active` 长期贴近 `--max-watches` 且 `rate(watch_admission_rejected[5m]) > 0`。先排查客户端重复建立/未取消 Watch，再扩容或按内存与事件延迟压测调整限额。
 - **watch-cache 冻结**:apiserver 侧 `Too large resource version` / `Unable to sync caches`(进度通知已修,应为 0);KubeBrain 侧 `watch.collector.stalled` > 0。
+- **revision 连续性差距**：`count(revision_generator_aborted) != 3` 持续 5m 表示副本版本或抓取不完整；`increase(revision_generator_aborted[10m]) > 0` 表示出现已分配但未提交用户事件的 revision。后者先关联 write failure、`write.fence.reject` 和 TiKV transaction conflict，不应误报为 Watch 丢事件，但需要计入从 KubeBrain 回迁到要求连续 revision 的实现时的兼容风险。
 - **watch send loop 拥塞**:`histogram_quantile(0.99, rate(etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds_bucket[5m]))` 或 control/progress send-loop p99 持续升高。若这些指标高而 TiKV/collector 正常，优先查 gRPC 流控、客户端消费速度和 apiserver watch cache 初始化并发。
 - **版本膨胀**:`count_index.keys` 长期单调上涨且无压缩回落 → 检查 apiserver 压缩循环是否正常(KubeBrain 自身不自动压缩)。
 - **count index 退化**:`max(count_index_overflowed) > 0` 持续 1m，或

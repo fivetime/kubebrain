@@ -44322,6 +44322,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   notifyBatch 单次计数普通连续 20 轮通过；完整 backend 和 race 门禁继续覆盖。可观测性文档明确 series
   缺失必须按部署/抓取错误处理。该改动不改变 revision 分配、TiKV commit 或 Watch 行为，只使尚未关闭的
   连续编号差距具备 fail-closed 的零基线证据。
+  A4189 将 A4187/A4188 的 revision 差距证据接入生产 PrometheusRule。新增
+  `KubeBrainAbortedRevisionMetricMissing`，要求 `kubebrain-system` 中恰有 3 条
+  `revision_generator_aborted` series，持续 5 分钟不满足即 warning，防止旧镜像、漏抓副本或混合 rollout
+  被解释为零跳号；新增 `KubeBrainAbortedRevisions`，对 10 分钟 increase 非零立即 warning，提示关联
+  write failure、leader fence 与 TiKV conflict。两条规则都不把 aborted revision 误报为 Watch 数据丢失，
+  也不声称连续编号已实现。manifest 测试精确固定 alert 名、PromQL、for 和 severity，普通连续 20 轮通过；
+  可观测性与生产就绪手册同步给出诊断边界。由此已知兼容差距从代码 counter、零基线到三副本缺失/增长
+  告警形成闭环，未来提交时编号重构可以用生产 occurrence rate 判断优先级与迁移风险。
 
 ### P2：运维兼容和长期验证
 
