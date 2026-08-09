@@ -247,6 +247,14 @@ spec:
           annotations:
             summary: KubeBrain StatefulSet has unavailable replicas
             description: "KubeBrain has {{ $value }} ready StatefulSet replicas."
+        - alert: KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane
+          expr: ((kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) == 0) and on() (count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) == 3) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain transaction path is unavailable while TiKV control-plane signals remain healthy
+            description: "All KubeBrain replicas are NotReady although all three TiKV metrics targets are scrapeable and report no missing Region leader. Treat TCP, PD heartbeat, and Debug RPC as insufficient; run an end-to-end etcd transaction probe and follow the fenced same-PVC TiKV repair procedure."
     - name: kubebrain.etcd_compat
       rules:
         - alert: KubeBrainGrpcErrors

@@ -149,6 +149,15 @@ hack/production/wait-tidbcluster-ready.sh
 “TCP 可连接但 Debug gRPC 不完成”的半故障。它不执行 `KvPrewrite/KvCommit`，不能证明事务
 KV 路径健康；完整实例门禁随后通过 KubeBrain 执行 etcd Put/Get/Delete。三层证据不可相互替代。
 
+`KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 专门识别三项同时成立且持续
+2 分钟的反常状态：KubeBrain StatefulSet 为 0 Ready、3 个 TiKV metrics target 均可抓取、TiKV
+没有报告缺失 Region leader。这正是“TCP/heartbeat/Debug 正常但事务卡死”的运行时分类，不能
+被一般 `KubeBrainReadinessUnavailable` 告警淹没。收到该告警后先执行端到端 etcd
+Put/Get/Delete；若事务仍失败，先停止 KubeBrain 失败选举写入，记录 TidbCluster UID、cluster
+ID、TiKV Pod UID/PVC/Region 状态，再按 quorum 栅栏执行同 PVC 进程修复。不得删除 PVC，也不得
+仅凭本告警自动并发删除全部 TiKV Pod；自动 repair controller 在具备连续事务失败、身份、冷却、
+quorum 和恢复验证栅栏前仍视为未完成。
+
 ## 生产镜像追踪
 
 Docker 构建不会把 `.git` 复制到镜像上下文，因此版本、完整 commit SHA 和 UTC 构建时间

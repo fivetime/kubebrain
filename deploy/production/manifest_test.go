@@ -1170,6 +1170,17 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	)
 	require.NotContains(t, readinessRule["expr"], "kube_deployment_")
 
+	transactionPathRule := prometheusRuleByAlert(t, groups,
+		"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane")
+	require.Equal(t,
+		`((kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) == 0) and on() (count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) == 3) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0)`,
+		transactionPathRule["expr"])
+	require.Equal(t, "2m", transactionPathRule["for"])
+	require.Equal(t, "critical", transactionPathRule["labels"].(map[string]any)["severity"])
+	description := transactionPathRule["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, description, "end-to-end etcd transaction probe")
+	require.Contains(t, description, "same-PVC TiKV repair")
+
 	overflowRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexOverflowed")
 	require.Equal(t, `max(count_index_overflowed{namespace="kubebrain-system"}) > 0`, overflowRule["expr"])
 	require.Equal(t, "1m", overflowRule["for"])

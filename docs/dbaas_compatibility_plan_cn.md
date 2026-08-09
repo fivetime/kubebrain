@@ -43243,6 +43243,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put/Get/Delete 通过，再扩回 3/3 Ready。单纯延长 KubeBrain election storage timeout 的实验
   没有恢复事务，因此未把该猜测性改动带入源码。此次恢复依赖人工重建进程，恰好再次证明
   自动事务 watchdog 与同 PVC repair controller 仍是未关闭缺口。
+  A4071 先把该反例变成独立生产告警：新增
+  `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane`，仅在 KubeBrain 精确 0 Ready、
+  3 个 TiKV metrics target 全可抓取且无 Region leader missing 持续 2 分钟时触发 critical，告警
+  文本强制要求端到端 etcd transaction probe 与 fenced same-PVC repair。该告警用于区分控制面
+  绿色/事务面红色，且明确禁止在缺少连续失败、身份、冷却、quorum 与恢复验证栅栏时自动并发
+  删除 TiKV Pod；检测已闭环，安全自动执行器仍是下一阶段 P1 缺口。
 
 ### P2：运维兼容和长期验证
 
