@@ -139,6 +139,23 @@ func TestAuthLeaseTimeToLiveMissingLeaseErrorPriorityMatchesEtcd(t *testing.T) {
 	}
 }
 
+func TestAuthLeaseLeasesEmptyInventoryErrorPriorityMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	request := &etcdserverpb.LeaseLeasesRequest{}
+
+	response, err := server.LeaseLeases(context.Background(), request)
+	require.Nil(t, response)
+	requireAuthLeaseError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+
+	response, err = server.LeaseLeases(aliceCtx, request)
+	require.NoError(t, err)
+	require.Empty(t, response.Leases)
+	require.NotNil(t, response.Header)
+	require.Positive(t, response.Header.Revision)
+}
+
 func TestAuthLeaseFutureJWTRevisionMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

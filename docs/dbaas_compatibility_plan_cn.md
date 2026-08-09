@@ -43984,6 +43984,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Keys=true` 且无任何 key 权限，也必须成功得到 `TTL=-1`，不能误报 PermissionDenied。未发现 runtime
   差异；A4152 防止未来提前 special-case missing lease 绕过 caller admission，或把空 attachment 集合
   错误地当作未授权。
+  A4153 继续复审 `/root/etcd` `5cd9f4ee1` 的 LeaseLeases public response contract。upstream
+  先取得 lessor inventory snapshot，再由 `checkLeaseLeases` 执行 caller admission：admin 直接放行，
+  非管理员必须拥有每个 lease 全部 attachment key 的 RANGE 权限，并在返回前复核 auth revision；空
+  inventory 仍要求有效 caller，但没有 key 需要授权，因此已认证普通用户得到带当前 header 的空成功列表。
+  KubeBrain 在同一 `leaseMu` snapshot 内收集 attachment、鉴权、排序并枚举 lease，且对 follower 代理
+  leader 或拒绝读取；这是独立 TiKV/PD 架构下替代 upstream replicated lessor、避免陈旧 inventory 的
+  必要适配。现有测试已覆盖 protected/allowed attachments、root、JWT revision、并发 attach、demotion、
+  expiry order 与 follower freshness；本轮补齐空 inventory 的 direct、official client/v3 与 raw gRPC
+  组合：匿名 caller 必须得到 `ErrUserEmpty`，已认证非管理员必须成功得到空列表，不能因非 admin 身份
+  固定拒绝。未发现 runtime 差异；A4153 防止未来把“列出 leases”粗化为 admin-only，或在空集合上
+  跳过 caller admission。
 
 ### P2：运维兼容和长期验证
 
