@@ -43302,6 +43302,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `parameters.json`；即使 receiver 凭证泄露也不能把宽泛的 create verb 用于其他 operation 或 Secret
   shape。HTTP/race、RBAC/admission manifest、policy runner 与 wrapper 聚焦回归通过，两个 admission
   policy 的 Kubernetes server-side dry-run 通过。
+  A4077 收紧在线 Snapshot 的历史 revision identity：对照
+  `/root/etcd/server/storage/mvcc/revision.go`，同一 atomic main revision 的每次 change 必须具有
+  不同且递增的 subrevision；`kvstore_txn.go` 以该 17/18-byte revision key 写入 key bucket。
+  KubeBrain builder 此前会让同批或跨批重复的 ordered `(main,sub)` 落到同一个 bbolt key，后写
+  静默覆盖先写，最终可能发布“官方 etcd 可 restore、但历史 Watch 少事件”的损坏制品。现在每次
+  ordered append 在同一 bbolt transaction 内同时检查普通 key 和 tombstone key；发现重复立即
+  fail closed，当前批整体回滚，先前已提交批保持不变。红测覆盖同批重复、跨批 put→tombstone 和
+  tombstone→tombstone，并用 upstream MVCC Store 打开生成 backend，证明拒绝批次不可见且先前
+  历史不被覆盖；`pkg/etcdsnapshot` race 与 `pkg/server/etcd` Snapshot 回归通过。该修复只改变
+  snapshot artifact 构建，不触碰 TiKV 写入、Watch 或 lease 运行态，因此无需数据面故障演练。
 
 ### P2：运维兼容和长期验证
 

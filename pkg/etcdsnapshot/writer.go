@@ -244,6 +244,12 @@ func (b *Builder) Append(records []Record) error {
 				subRevision = rec.SubRevision
 			}
 			revisionKey := revisionBytes(rec.ModRevision, subRevision)
+			if rec.Ordered {
+				tombstoneKey := append(append([]byte(nil), revisionKey...), 't')
+				if keys.Get(revisionKey) != nil || keys.Get(tombstoneKey) != nil {
+					return fmt.Errorf("duplicate ordered revision %d/%d", rec.ModRevision, rec.SubRevision)
+				}
+			}
 			if rec.Tombstone {
 				revisionKey = append(revisionKey, 't')
 			}

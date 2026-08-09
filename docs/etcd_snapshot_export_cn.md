@@ -12,7 +12,8 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 
 在线快照保留 KV MVCC history、真实 compact watermark、当前 lease、auth 用户/角色/修订和
 alarm。旧的非内联数据布局没有逐历史版本 lease 字段，因此只能由固定在同一线性化点的
-durable key→lease attachment 精确恢复当前版本；这类数据的旧历史版本 lease 会退化为 0。
+durable key→lease attachment 精确恢复当前版本；仍保留且无法判定 lease 的旧历史版本会让
+snapshot fail closed，物理 Compact 清除这些含糊版本后才恢复可用，禁止伪造 lease=0。
 lease 的倒计时按官方 etcd 的持久 checkpoint 语义恢复，而不是逐秒保存抓取瞬间的实时 TTL；
 auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的用户凭据重新认证。输出仍不
 替代 TiKV 物理 PITR。
@@ -65,3 +66,7 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 发布门禁应至少包含：转换器单元与 race 测试、官方 snapshot status、官方 restore、恢复后
 etcd 启动、当前 KV 元数据对比、`snapshot+1` 写入 revision、compacted 边界，以及带 lease
 样本的 ID/TTL/attached-key 验证。
+
+在线历史 snapshot 还要求每个 upstream MVCC `(main revision, subrevision)` 物理身份唯一。若
+scanner 输入在同批或跨批重复该身份，builder 必须原子拒绝，不能依赖 bbolt `Put` 静默覆盖并
+发布少事件的可恢复制品；已成功提交的早期批次保持原样，失败批次不写入。

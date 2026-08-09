@@ -96,6 +96,72 @@ func TestBuilderUsesExactTxnSubrevisionInsteadOfPhysicalInputOrder(t *testing.T)
 	require.Equal(t, []string{"z", "a", "m"}, keys)
 }
 
+func TestBuilderRejectsDuplicateOrderedRevisionWithoutOverwritingHistory(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		firstBatch []Record
+	}{
+		{
+			name: "same batch",
+			firstBatch: []Record{
+				{Key: []byte("first"), Value: []byte("one"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, Ordered: true},
+				{Key: []byte("second"), Value: []byte("two"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, Ordered: true},
+			},
+		},
+		{
+			name: "later batch",
+			firstBatch: []Record{
+				{Key: []byte("first"), Value: []byte("one"), CreateRevision: 7, ModRevision: 7, Version: 1, SubRevision: 2, Ordered: true},
+			},
+		},
+		{
+			name: "after tombstone",
+			firstBatch: []Record{
+				{Key: []byte("first"), ModRevision: 7, SubRevision: 2, Ordered: true, Tombstone: true},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			builder, err := NewBuilder(path, State{Revision: 7, PreserveHistory: true})
+			require.NoError(t, err)
+
+			if test.name == "same batch" {
+				err = builder.Append(test.firstBatch)
+			} else {
+				require.NoError(t, builder.Append(test.firstBatch))
+				err = builder.Append([]Record{
+					{Key: []byte("second"), ModRevision: 7, SubRevision: 2, Ordered: true, Tombstone: true},
+				})
+			}
+			require.ErrorContains(t, err, "duplicate ordered revision 7/2")
+			require.NoError(t, builder.Finish())
+			require.NoError(t, builder.Close())
+
+			lg := zaptest.NewLogger(t)
+			be := etcdbackend.NewDefaultBackend(lg, path)
+			store := mvcc.NewStore(lg, be, &lease.FakeLessor{}, mvcc.StoreConfig{})
+			defer func() {
+				store.Close()
+				require.NoError(t, be.Close())
+			}()
+			first, rangeErr := store.Range(context.Background(), []byte("first"), nil, mvcc.RangeOptions{})
+			require.NoError(t, rangeErr)
+			second, rangeErr := store.Range(context.Background(), []byte("second"), nil, mvcc.RangeOptions{})
+			require.NoError(t, rangeErr)
+			if test.name == "same batch" {
+				require.Empty(t, first.KVs, "the rejected batch must be atomic")
+			} else if test.name == "later batch" {
+				require.Len(t, first.KVs, 1)
+				require.Equal(t, "one", string(first.KVs[0].Value))
+			} else {
+				require.Empty(t, first.KVs)
+			}
+			require.Empty(t, second.KVs)
+		})
+	}
+}
+
 func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, WriteBackend(path, State{
