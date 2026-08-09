@@ -44428,6 +44428,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全局严格递增顺序逐项一致。规则零残留、TidbCluster Ready、proposal health 恢复。TiKV 原始
   `epoch_not_match/no available connections` 在故障窗口仍可能以 Unknown 泄漏，测试按结果不确定处理，
   其 etcd `Unavailable` 错误契约对齐继续保持兼容性差距；跨节点/AZ 与小时级 quorum-loss soak 仍开放。
+  A4199 关闭上述 TiKV 瞬态错误契约差距。所有普通 etcd unary/stream RPC 已统一经过
+  `authGRPCError`，因此只在该边界把 TiKV client-go 缺少可 `errors.Is` 类型的最内层原因
+  `epoch_not_match:*` 和精确 `no available connections` 映射为 gRPC `Unavailable`；已有 gRPC 非
+  Unknown 状态不改写，错误链中用户 key 仅包含同名文本也不匹配，避免把永久业务错误伪装成可重试。
+  映射与反例单测连续 50 轮、官方 client 门禁静态路径 20 轮通过。最终源码镜像滚动部署后再次真实
+  隔离 `kb-tikv-2/kb-tikv-0`，三实例日志分别实际出现 13/18/12 次 `epoch_not_match`，而客户端侧新增
+  fail-closed 断言未观察到任何携带该原因的 gRPC Unknown；67.44 秒内两个 store 均
+  `Up -> Disconnected -> Up`，21 次失败均保持可重试契约，恢复后线性一致 Range 的 70 个提交键与
+  Watch 恰好一致（71 responses，final revision 11817）。本项只收敛已实测的两类 TiKV 瞬态原因，
+  不把所有未知 backend 文本一概映射；新出现的 transport/region 原因仍须逐类取证。
 
 ### P2：运维兼容和长期验证
 

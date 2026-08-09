@@ -600,9 +600,25 @@ func authGRPCError(err error) error {
 		// contract so clients treat it as a retryable, outcome-unknown write;
 		// the backend resolves the event-log markers asynchronously.
 		return rpctypes.ErrGRPCTimeout
+	case isRetryableBackendTransportError(err):
+		// TiKV client-go exposes some retryable region/connection failures only
+		// as untyped errors. Do not leak them as gRPC Unknown: etcd clients retry
+		// Unavailable, while Unknown is commonly treated as a permanent failure.
+		return status.Error(codes.Unavailable, err.Error())
 	default:
 		return err
 	}
+}
+
+func isRetryableBackendTransportError(err error) bool {
+	if err == nil || status.Code(err) != codes.Unknown {
+		return false
+	}
+	cause := err.Error()
+	if separator := strings.LastIndex(cause, ": "); separator >= 0 {
+		cause = cause[separator+2:]
+	}
+	return cause == "no available connections" || strings.HasPrefix(cause, "epoch_not_match:")
 }
 
 type stampedServerStream struct {

@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // TestWatchDeliversCommittedWritesAcrossBackendFailover keeps one explicit-
@@ -129,6 +131,12 @@ func TestWatchDeliversCommittedWritesAcrossBackendFailover(t *testing.T) {
 				fmt.Sprintf("%sevent-%08d", prefix, operation), fmt.Sprintf("value-%08d", operation))
 			callCancel()
 			if putErr != nil {
+				message := putErr.Error()
+				if status.Code(putErr) == codes.Unknown &&
+					(strings.Contains(message, "epoch_not_match") || strings.Contains(message, "no available connections")) {
+					writerErr <- fmt.Errorf("retryable backend failure leaked as gRPC Unknown: %w", putErr)
+					return
+				}
 				if isMutationFailoverAmbiguous(putErr) {
 					transientWrites.Add(1)
 					continue

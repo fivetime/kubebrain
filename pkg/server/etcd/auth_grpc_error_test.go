@@ -28,10 +28,19 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{rpctypes.ErrRootUserNotExist, codes.FailedPrecondition},
 		{fmt.Errorf("tso: %w", storage.ErrUnavailable), codes.Unavailable},
 		{storage.NewErrUncertainResult(context.DeadlineExceeded), codes.Unavailable},
+		{fmt.Errorf("failed to get key: %w", fmt.Errorf("epoch_not_match:<>")), codes.Unavailable},
+		{fmt.Errorf("failed to get key: %w", fmt.Errorf("no available connections")), codes.Unavailable},
 	}
 	for _, test := range tests {
 		require.Equal(t, test.code, status.Code(authGRPCError(test.err)))
 	}
+}
+
+func TestRetryableBackendTransportErrorRejectsEmbeddedMarker(t *testing.T) {
+	require.False(t, isRetryableBackendTransportError(
+		fmt.Errorf("failed to get key /registry/epoch_not_match:<>: permanent corruption")))
+	require.False(t, isRetryableBackendTransportError(status.Error(codes.InvalidArgument, "epoch_not_match:<>")))
+	require.False(t, isRetryableBackendTransportError(fmt.Errorf("no available connections remain permanently")))
 }
 
 func TestAuthGRPCErrorPreservesEtcdNoPasswordBehavior(t *testing.T) {
