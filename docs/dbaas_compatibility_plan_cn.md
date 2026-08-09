@@ -43181,6 +43181,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   buckets。测试锁定注册集合、无伪造 Observe 与全部桶形状；生产只读 gate 要求五个 `_count`
   family 唯一为 0，覆盖缺失和非零负例，并新增 `raft_snapshot_file_metrics=ok` 摘要。
 
+  `f6c8a3bc60e5612fa400f68a08e504c08dc769cf` 已在 kind 的 3 KubeBrain + 3 PD + 3 TiKV
+  持久拓扑完成运行时验证：五个 histogram 的 `_count` 均为 0，finite buckets 分别为
+  14/14/14/10/14；完整只读 gate 通过并保持 cluster ID
+  `7671787914125326611`、`/registry` count 15、revision 63、compact revision 59 与 HashKV
+  `1118240870` 不变。滚动期间同时发现 TiKV Pod 的 20180 readiness 仍可为 true、但 20160 KV
+  gRPC 已停止或不完成请求的半失效状态；KubeBrain 会因 lease 写入超时正确降为 NotReady，保留
+  PVC 单独重建异常 TiKV Pod 后恢复。该结果只证明本轮指标和 KubeBrain dependency readiness，
+  不证明 TiKV 自身 Pod readiness 能覆盖 KV service health；后续 DBaaS 运维门禁必须增加 20160
+  request-level probe/自动修复，不能只依赖 TiKV Pod Ready 或 PD store heartbeat。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
