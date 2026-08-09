@@ -43769,6 +43769,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CI `govulncheck@v1.6.0` 现逐项扫描全部五个 module，build 测试要求四个嵌套 go.mod 均有对应命令且
   总扫描数精确为五。使用 CI/镜像相同 Go 1.26.5 复跑 compat、bigstream、loadgen，三者均为零可达漏洞；
   本机 Go 1.26.0 报告的标准库 TLS/x509 问题不作为豁免，发布 Dockerfile 与 CI 已钉修复版 1.26.5。
+  A4131 补齐 A4130 之外的多 module 构建质量门禁：旧 CI 的 build/test/vet 只覆盖根模块，objectstore
+  仅由 staticcheck 间接编译，bigstream/loadgen 完全没有显式编译检查；依赖安全升级可能让运维工具损坏
+  而主数据面仍绿。主 CI 现对 objectstore、bigstream、loadgen 逐项执行 `go build ./...`、`go vet ./...`、
+  `go test ./...`；etcd-client-compat 因开发态 replace 指向 `/root/etcd`，继续由专用 job 删除 replace 后
+  vet/compile。build 静态测试递归发现所有嵌套 go.mod，要求每项必须进入通用循环或 compat 专用 job，
+  从而让未来新增 module 默认 fail closed。本地完整复刻循环通过，objectstore 两个包测试、两个单二进制
+  工具编译/vet 均成功。
 
 ### P2：运维兼容和长期验证
 

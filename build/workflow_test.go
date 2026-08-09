@@ -79,6 +79,37 @@ func TestCIScansEveryGoModuleForReachableVulnerabilities(t *testing.T) {
 	content := string(workflow)
 
 	require.Contains(t, content, "go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...")
+	moduleDirs := nestedGoModuleDirs(t)
+	for _, moduleDir := range moduleDirs {
+		require.Contains(t, content, "cd "+moduleDir+" &&", moduleDir)
+	}
+	require.Equal(t, len(moduleDirs)+1, strings.Count(content,
+		"go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."))
+}
+
+func TestCICompilesAndTestsEveryNestedGoModule(t *testing.T) {
+	workflow, err := os.ReadFile("../.github/workflows/ci.yml")
+	require.NoError(t, err)
+	content := string(workflow)
+	moduleDirs := nestedGoModuleDirs(t)
+
+	for _, moduleDir := range moduleDirs {
+		if moduleDir == "hack/etcd-client-compat" {
+			require.Contains(t, content, "working-directory: hack/etcd-client-compat")
+			continue
+		}
+		require.Contains(t, content, "            "+moduleDir+"\n", moduleDir)
+	}
+	for _, command := range []string{
+		"go build -o \"$RUNNER_TEMP/nested-go-build/$module/\" ./...",
+		"go vet ./... && go test ./...",
+	} {
+		require.Contains(t, content, command)
+	}
+}
+
+func nestedGoModuleDirs(t *testing.T) []string {
+	t.Helper()
 	var moduleDirs []string
 	require.NoError(t, filepath.WalkDir("..", func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -98,11 +129,7 @@ func TestCIScansEveryGoModuleForReachableVulnerabilities(t *testing.T) {
 		return nil
 	}))
 	require.NotEmpty(t, moduleDirs)
-	for _, moduleDir := range moduleDirs {
-		require.Contains(t, content, "cd "+moduleDir+" &&", moduleDir)
-	}
-	require.Equal(t, len(moduleDirs)+1, strings.Count(content,
-		"go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."))
+	return moduleDirs
 }
 
 func TestReleaseWorkflowPublishesVerifiedMultiPlatformImage(t *testing.T) {

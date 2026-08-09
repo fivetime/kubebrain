@@ -63,6 +63,20 @@ jobs:
       - name: Test all packages
         run: go test ./...
 
+      - name: Validate nested Go tools
+        run: |
+          modules=(
+            hack/backup/objectstore
+            hack/scale-lab/bigstream
+            hack/scale-lab/loadgen
+          )
+          for module in "${modules[@]}"; do
+            mkdir -p "$RUNNER_TEMP/nested-go-build/$module"
+            (cd "$module" && \
+              go build -o "$RUNNER_TEMP/nested-go-build/$module/" ./... && \
+              go vet ./... && go test ./...)
+          done
+
       - name: Scan reachable Go vulnerabilities
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
