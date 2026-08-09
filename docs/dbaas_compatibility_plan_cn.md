@@ -43652,6 +43652,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 events 或非零 batch revision 并存都会在水位推进/过滤/send 前取消 watch，记录
   `watch.backend.invalid_result` 并明确 CancelReason；纯 progress 和普通 event batch 保持通过。没有采用
   “batch revision 必须严格大于 syncedRev”的过强门禁，因为同一 etcd 主 revision 的多事件可合法分批。
+  A4115 保证单个 Watch 的实际 source watermark 单调不回退：旧 progress 路径用 `StoreMax` 静默吞掉低于
+  已消费 source 的 marker，旧 event 路径则会把低 batch 原样发送；后者使 role-switch/reconnect 的重复批次
+  再次交付给客户端。红测从已交付 revision 10 注入 progress 9，证明旧实现最终只报普通 watch closed；
+  另一个红测注入 batch/event revision 9，证明旧实现实际发送 duplicate event。现在 progress 分支在
+  `syncedRev` 不能直接充当比较基准：future watch 会把它初始化为 `StartRevision-1`，而集群尚未到起点时
+  backend 合法 progress 更低；完整回归确实捕获了这个反例。watch 现另存只由实际 progress、过滤批次或
+  成功发送事件推进的原子 `sourceRev`。progress 分支在推进前、event 分支在 A4113 batch 校验后，均要求
+  revision 不小于 `sourceRev`；严格回退会在发送前取消、记录 `watch.backend.invalid_revision` 并报告
+  source revision。相等 revision 继续允许，future-start progress 抑制和同一主 revision 多批次均保持。
 
 ### P2：运维兼容和长期验证
 

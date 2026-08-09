@@ -147,6 +147,10 @@ type watch struct {
 	// revision whose events it has not yet received, causing it to skip them.
 	// Access atomically.
 	syncedRev uint64
+	// sourceRev is the highest watermark actually consumed from this watch's
+	// backend/proxy result stream. Unlike syncedRev, it is not initialized to
+	// StartRevision-1 for a future watch. Access atomically.
+	sourceRev uint64
 }
 
 type periodicProgressState struct {
@@ -899,6 +903,17 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				return
 			}
 			if result.ProgressRevision > 0 {
+				if wt != nil {
+					sourceRevision := atomic.LoadUint64(&wt.sourceRev)
+					if result.ProgressRevision < sourceRevision {
+						revisionErr := fmt.Errorf("watch backend returned progress revision %d below source revision %d", result.ProgressRevision, sourceRevision)
+						w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+						klog.ErrorS(revisionErr, "[watch stream] cancel due to regressing progress revision", "watcher", w.id, "watch", id)
+						w.Cancel(id, revisionErr, false)
+						cancel()
+						return
+					}
+				}
 				// In-band progress marker: it FIFO-guarantees it sits behind every
 				// matching event <= its revision (all such events were read and Sent
 				// above, on this same goroutine, before this marker), so folding it
@@ -906,6 +921,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				// sole liveness source for a quiet watch, whose prefix matches no
 				// event batch. Reporting (progressC / on-demand) is unchanged.
 				if wt != nil {
+					util.StoreMaxUint64(&wt.sourceRev, result.ProgressRevision)
 					util.StoreMaxUint64(&wt.syncedRev, result.ProgressRevision)
 				}
 				continue
@@ -966,12 +982,24 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 					return
 				}
 			}
+			if wt != nil {
+				sourceRevision := atomic.LoadUint64(&wt.sourceRev)
+				if batchRevision < sourceRevision {
+					revisionErr := fmt.Errorf("watch backend returned batch revision %d below source revision %d", batchRevision, sourceRevision)
+					w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+					klog.ErrorS(revisionErr, "[watch stream] cancel due to regressing batch revision", "watcher", w.id, "watch", id)
+					w.Cancel(id, revisionErr, false)
+					cancel()
+					return
+				}
+			}
 			if len(events) == 0 {
 				// etcd advances the watcher's min revision even when its filters
 				// suppress every event in a batch. Preserve that delivered
 				// watermark so the next progress response does not lag behind
 				// filtered writes.
 				if wt != nil {
+					util.StoreMaxUint64(&wt.sourceRev, batchRevision)
 					util.StoreMaxUint64(&wt.syncedRev, batchRevision)
 				}
 				continue
@@ -1006,6 +1034,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			} else if wt != nil {
 				// These events are now delivered; the watch is synced through the
 				// highest revision in this batch.
+				util.StoreMaxUint64(&wt.sourceRev, uint64(watchResponse.Header.Revision))
 				util.StoreMaxUint64(&wt.syncedRev, uint64(watchResponse.Header.Revision))
 				progressState.eventSent()
 			}
