@@ -114,6 +114,20 @@ func TestMaintenanceSnapshotRejectsRevisionWithoutSuccessorBeforeCapture(t *test
 	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestMaintenanceSnapshotRejectsUnremovablePriorCaptureBeforeReadingState(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	trap := &localSnapshotTrapBackend{BackendShim: server.backend}
+	server.backend = trap
+
+	path := filepath.Join(t.TempDir(), "occupied")
+	require.NoError(t, os.Mkdir(path, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(path, "stale-page"), []byte("stale"), 0o600))
+	err := server.buildSnapshot(context.Background(), path)
+	require.ErrorContains(t, err, "reset etcd snapshot capture path")
+	require.False(t, trap.called, "an unreset artifact path must fail before snapshot state capture")
+}
+
 type stalledSnapshotBackend struct {
 	BackendShim
 	afterFirst bool

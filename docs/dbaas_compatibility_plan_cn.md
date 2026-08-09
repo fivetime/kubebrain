@@ -43580,6 +43580,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RPC 入场 follower gate 仍精确返回 NotLeader。stalled scanner 测试以固定 epoch=7、fresh true→false
   模拟无新 epoch 可见的失租，要求 250ms 内主动结束、匹配 leader-change sentinel 且明确不匹配
   ErrGRPCNotLeader；既有 proxy-disabled follower 测试继续锁定初始 NotLeader。
+  A4105 封闭 Snapshot retry 私有 artifact 无法重置时的混合状态风险：旧 `buildSnapshot` 每个 attempt
+  都执行 `_ = os.Remove(path)`，删除权限、I/O 或异常路径类型错误会被丢弃；随后 NewBuilder 若仍能打开
+  残留 bbolt，就会在上一 attempt 已提交的 metadata/history buckets 上继续追加新 capture，单项校验
+  无法证明整体来自同一线性化点。现在只有 `os.ErrNotExist` 可忽略，其他 remove error 在
+  BeginRangeTxn、SyncReadRevision 和任何 TiKV 读取前带 `reset etcd snapshot capture path` 诊断失败。
+  测试用含子文件的非空目录稳定制造不可删除目标，并以 trap backend 证明零 barrier/零状态捕获；正常
+  CreateTemp 空文件和 term-change partial bbolt 仍可删除后重试。
 
 ### P2：运维兼容和长期验证
 

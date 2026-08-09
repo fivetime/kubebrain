@@ -37,7 +37,9 @@ var errSnapshotHistoricalLeaseUnknown = errors.New("snapshot cannot determine le
 // be sent to the client.
 func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 	for attempt := 0; ; attempt++ {
-		_ = os.Remove(path)
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("reset etcd snapshot capture path: %w", err)
+		}
 		err := s.buildSnapshotOnce(ctx, path)
 		if !errors.Is(err, errSnapshotChanged) && !errors.Is(err, errSnapshotLeaderChanged) {
 			return err

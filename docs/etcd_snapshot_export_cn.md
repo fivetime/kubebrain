@@ -33,6 +33,8 @@ order 与 legacy metadata 仍通过独立读取拼接，其防物理 GC pin 是�
 无分类的 `Unknown`。
 请求最初落到无 proxy follower 时仍返回 `ErrGRPCNotLeader`；只有已经通过 leader admission 后发生的
 lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错误不会混淆。
+每次透明重捕获前必须成功删除上一 attempt 的私有 bbolt；除“不存在”外的删除错误会在读取任何集群
+状态前 fail closed，禁止在残留 buckets/rows 上继续写出跨 attempt 混合 artifact。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 
