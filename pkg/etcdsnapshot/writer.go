@@ -149,7 +149,7 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	}
 
 	for _, lease := range state.Leases {
-		if lease.ID == 0 || lease.GrantedTTL <= 0 || lease.RemainingTTL < 0 {
+		if lease.ID == 0 || lease.GrantedTTL <= 0 || lease.RemainingTTL < 0 || lease.RemainingTTL > lease.GrantedTTL {
 			return fmt.Errorf("invalid lease id=%d granted_ttl=%d remaining_ttl=%d", lease.ID, lease.GrantedTTL, lease.RemainingTTL)
 		}
 		value, marshalErr := proto.Marshal(&leasepb.Lease{ID: lease.ID, TTL: lease.GrantedTTL, RemainingTTL: lease.RemainingTTL})

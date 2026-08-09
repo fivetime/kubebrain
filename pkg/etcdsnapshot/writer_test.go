@@ -393,6 +393,25 @@ func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {
 	}))
 }
 
+func TestWriteBackendRejectsLeaseRemainingTTLAboveGrant(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	err := WriteBackend(path, State{Leases: []Lease{{ID: -7, GrantedTTL: 60, RemainingTTL: 61}}})
+	require.ErrorContains(t, err, "invalid lease id=-7 granted_ttl=60 remaining_ttl=61")
+
+	db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, openErr)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		require.Nil(t, tx.Bucket(schema.Lease.Name()), "invalid lease must roll back metadata")
+		return nil
+	}))
+
+	equalPath := filepath.Join(t.TempDir(), "equal.db")
+	require.NoError(t, WriteBackend(equalPath, State{Leases: []Lease{{
+		ID: -7, GrantedTTL: 60, RemainingTTL: 60,
+	}}}), "upstream permits negative explicit IDs and a full-TTL checkpoint envelope")
+}
+
 func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 	alarmWithUnknownFields := &etcdserverpb.AlarmMember{MemberID: 23, Alarm: etcdserverpb.AlarmType_NOSPACE}
 	alarmWithUnknownFields.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})

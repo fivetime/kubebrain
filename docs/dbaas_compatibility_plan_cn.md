@@ -43395,6 +43395,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   正例确认历史版本引用已撤销 lease 后，只要后续被无 lease 版本覆盖或 tombstone 删除仍然合法，
   没有把历史审计错误收紧成“所有版本 lease 都必须仍存活”。既有带 lease 官方 lessor/MVCC restore
   样本继续覆盖有效 attached key。本项只校验 snapshot artifact，不修改在线 lease/TiKV 状态。
+  A4086 固定 Snapshot lease TTL envelope：对照 upstream
+  `/root/etcd/server/lease/lessor.go:findDueScheduledCheckpoints`，自动 checkpoint 只在计算出的
+  remaining TTL 严格小于 granted TTL 时提交；0 是 renew/清理 checkpoint 后回退到完整 TTL 的
+  sentinel。snapshot 导出点刚完成 grant/renew 时观察到 remaining==granted 也合法，但大于 granted
+  会在恢复 promotion 的 `Lease.refresh` 中把 expiry 延长到租约授予期限之外，公开 Lease API 无法产生
+  该状态。writer 现在除既有 ID≠0、granted>0、remaining≥0 外，继续要求
+  `remainingTTL <= grantedTTL`，失败回滚完整 metadata transaction。红测证明旧实现会接受 61/60；
+  边界正例固定 60/60，并特意使用负显式 lease ID，防止误加“ID 必须为正”的过度校验——upstream
+  LeaseGrant 只为自动 ID 选择正数，lessor.Grant 对客户端显式 ID 仅禁止 0。本项不改变在线 TTL。
 
 ### P2：运维兼容和长期验证
 
