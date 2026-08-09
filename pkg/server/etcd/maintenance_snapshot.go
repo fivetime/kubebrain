@@ -23,6 +23,8 @@ import (
 
 const snapshotSendBufferSize = 32 * 1024
 
+const snapshotLeadershipPollInterval = 25 * time.Millisecond
+
 var errSnapshotChanged = errors.New("snapshot state changed while it was captured")
 
 var errSnapshotHistoricalLeaseUnknown = errors.New("snapshot cannot determine lease for retained legacy version")
@@ -108,12 +110,22 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	// and writes. Receiving it proves the fixed-revision storage snapshot has
 	// actually been established; merely creating the channel starts a goroutine
 	// whose timestamp/compaction checks may not have run yet.
+	leadershipPoll := time.NewTicker(snapshotLeadershipPollInterval)
+	defer leadershipPoll.Stop()
 	var firstChunk backend.SnapshotHistoryChunk
 	var ok bool
-	select {
-	case firstChunk, ok = <-chunks:
-	case <-ctx.Done():
-		return ctx.Err()
+	waitingForFirst := true
+	for waitingForFirst {
+		select {
+		case firstChunk, ok = <-chunks:
+			waitingForFirst = false
+		case <-leadershipPoll.C:
+			if err = checkLeadership(); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	if !ok {
 		if err := ctx.Err(); err != nil {
@@ -239,6 +251,10 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 			}
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-leadershipPoll.C:
+			if err = checkLeadership(); err != nil {
+				return err
+			}
 		}
 	}
 }

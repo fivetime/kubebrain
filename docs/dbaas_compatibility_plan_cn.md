@@ -43557,6 +43557,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   持有全程 logical-write barrier。每次 capture 另建可取消子 context，term fence 或任何校验提前返回时
   立即终止旧 scanner、关闭 iterator 并释放本地 compaction pin，避免重试把废弃 goroutine/pin 留到客户端
   总 context 最终结束。
+  A4102 让全流 term fence 在 TiKV scanner 停顿时仍可主动生效：A4101 只在收到 data/terminal chunk 时
+  检查 epoch；若 Region RPC、iterator Next 或 wrapper 在首块前/块间不返回，旧 leader 会继续持有私有
+  scanner 和 local compaction pin，直到 storage/client deadline，无法及时让重试或新 term 收敛。
+  `buildSnapshotOnce` 现在用单个 25ms ticker 同时覆盖 first-chunk handshake 与后续 stream select；tick
+  上发现 freshness 丢失立即 NotLeader，epoch 改变立即 `errSnapshotChanged`，capture 子 context 的 defer
+  随即取消 scanner。确定性 stalled backend 在首块前永不返回，测试推进 epoch 后不释放 backend，要求
+  250ms 内仅靠 term poll 返回；既有显式 client cancellation 的首块前/后测试继续保持即时中断。
 
 ### P2：运维兼容和长期验证
 

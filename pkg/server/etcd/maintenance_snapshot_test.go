@@ -475,6 +475,49 @@ func TestMaintenanceSnapshotRejectsLeadershipTermChangeDuringStream(t *testing.T
 	require.ErrorIs(t, <-done, errSnapshotChanged)
 }
 
+func TestMaintenanceSnapshotPollsLeadershipWhileScannerIsStalled(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var epoch atomic.Uint64
+	epoch.Store(7)
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn: func() (uint64, bool) {
+			return epoch.Load(), true
+		},
+	}
+	stalled := &stalledSnapshotBackend{
+		BackendShim: server.backend,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = stalled
+
+	done := make(chan error, 1)
+	go func() {
+		done <- server.buildSnapshotOnce(context.Background(), filepath.Join(t.TempDir(), "snapshot.db"))
+	}()
+	select {
+	case <-stalled.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot scanner did not reach the injected pre-chunk stall")
+	}
+	epoch.Store(8)
+	var snapshotErr error
+	returnedOnFence := false
+	select {
+	case snapshotErr = <-done:
+		returnedOnFence = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	close(stalled.release)
+	if !returnedOnFence {
+		snapshotErr = <-done
+	}
+	require.True(t, returnedOnFence, "term polling must interrupt a stalled scanner without client cancellation")
+	require.ErrorIs(t, snapshotErr, errSnapshotChanged)
+}
+
 func TestMaintenanceSnapshotEmptyKeyspaceCompletesAfterTerminalHandshake(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

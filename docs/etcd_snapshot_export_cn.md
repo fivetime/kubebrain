@@ -26,6 +26,8 @@ leader 捕获还会记录当前 leadership epoch，并在 metadata 与固定 rev
 长扫描的每个 data/terminal chunk 也会复核同一 term：主对象 iterator 虽已冻结，但 transaction event
 order 与 legacy metadata 仍通过独立读取拼接，其防物理 GC pin 是进程本地状态，新 leader 无法继承。
 因此完成前任何换主都会丢弃整个私有 artifact。
+即使 scanner 暂时没有返回 chunk，capture 也会每 25ms 复核 leadership；换主不需要等待下一块数据或
+客户端 deadline 才取消旧 iterator/pin。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 
