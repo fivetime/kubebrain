@@ -44082,6 +44082,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍留在原 apply cap。回归测试分别固定 configured-quota 的 `ID=0` 与 manual-alarm 的 `ID>0`，并验证
   alarm 可见性；未复制 bbolt 的 64-byte lease page 估算。A4161 防止满容量窗口继续创建 lease metadata，
   同时避免把手动运维 alarm 错误提升到 auth/raft/ID admission 之前。
+  A4162 将 A4161 发现的 configured-quota 窗口扩展到 `/root/etcd` `5cd9f4ee1`
+  `quotaKVServer` 的 Put/Txn。upstream 外层 quota 对 Put 及 success/failure 两支中估算成本较大的含 Put Txn
+  在 v3rpc validation、auth 和 raft/leader routing 前预拒绝；零写入成本的 Range/Delete-only Txn 则继续
+  下沉。KubeBrain 原先只在 Put/Txn 完成 validation、leadership 和 auth 后读取 NOSPACE alarm，因此逻辑
+  usage 恰好等于 configured quota、alarm 尚未由下一次写激活时，空 Put 返回 EmptyKey、畸形重复 Put Txn
+  返回 DuplicateKey，而非上游外层 quota 的 NoSpace。现在抽出 `configuredQuotaExhausted`，在 Put 入口及
+  `txnContainsPut` 的 Txn 入口复用，并让 LeaseGrant 使用同一判定；达到 TiKV 逻辑容量上限时 leader 同步
+  arm NOSPACE 后预拒绝。手动 alarm 仍由 apply cap 处理，纯读和 delete-only 请求不受预判影响。新测试先
+  精确填满 6-byte 逻辑 quota，验证 malformed Put/Txn 均返回 typed NoSpace，同时 serializable read Txn
+  仍读到原值；并与 A4160/A4161 的 manual-alarm/LeaseGrant 门禁联合重复。A4162 修复了满容量瞬时错误
+  优先级和协调绕行，同时保持 TiKV 逻辑计费而不移植 bbolt 固定 overhead。
 
 ### P2：运维兼容和长期验证
 

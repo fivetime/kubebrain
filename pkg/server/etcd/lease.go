@@ -109,11 +109,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	// than bbolt file overhead; reaching that logical ceiling is the equivalent
 	// preflight boundary. A manually armed NOSPACE alarm remains an apply-time
 	// cap below, matching applierV3Capped instead of this outer quota layer.
-	usage, quota, _, quotaErr := m.srv.backend.QuotaStatus(ctx)
-	if quotaErr == nil && quota > 0 && usage >= quota {
-		if m.srv.peers.IsLeader() {
-			_, _ = m.srv.backend.ArmNoSpace(ctx, 0)
-		}
+	if m.srv.configuredQuotaExhausted(ctx) {
 		return nil, rpctypes.ErrGRPCNoSpace
 	}
 	explicitID := req.ID != 0

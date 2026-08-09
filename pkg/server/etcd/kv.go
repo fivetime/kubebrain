@@ -563,6 +563,9 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 	emitEtcdMVCCTxnCounter(s.metricCli, 1)
 	startTime := time.Now()
 
+	if txnContainsPut(txn) && s.configuredQuotaExhausted(ctx) {
+		return nil, rpctypes.ErrGRPCNoSpace
+	}
 	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
 		return nil, err
 	}
@@ -794,6 +797,24 @@ func txnContainsPut(txn *etcdserverpb.TxnRequest) bool {
 		}
 	}
 	return false
+}
+
+// configuredQuotaExhausted implements the storage-independent part of
+// upstream's outer quota server: once the configured logical capacity has
+// already been consumed, mutating requests are rejected before protocol
+// validation, auth, automatic ID allocation, or leader routing. A manually
+// armed NOSPACE alarm is intentionally excluded; it remains an apply-time cap.
+func (s *RPCServer) configuredQuotaExhausted(ctx context.Context) bool {
+	usage, quota, _, err := s.backend.QuotaStatus(ctx)
+	if err != nil || quota <= 0 || usage < quota {
+		return false
+	}
+	if s.peers.IsLeader() {
+		// Upstream quotaAlarmer also returns NoSpace even if alarm activation
+		// fails, so preserve the primary request error here.
+		_, _ = s.backend.ArmNoSpace(ctx, 0)
+	}
+	return true
 }
 
 // Match upstream txn.IsTxnReadonly/IsTxnSerializable: nested transactions and
@@ -1193,6 +1214,9 @@ func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int
 func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etcdserverpb.PutResponse, retErr error) {
 	emitEtcdMVCCPutCounter(s.metricCli, 1)
 	startTime := time.Now()
+	if s.configuredQuotaExhausted(ctx) {
+		return nil, rpctypes.ErrGRPCNoSpace
+	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
 	if err := validatePutRequest(r); err != nil {

@@ -400,6 +400,32 @@ func TestQuotaRPCNoSpaceAlarmDoesNotOverrideKVAdmissionLikeEtcd(t *testing.T) {
 	requireQuotaNoSpaceError(t, err)
 }
 
+func TestQuotaRPCConfiguredCeilingPreflightsPutAndTxnLikeEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 6)
+	ctx := context.Background()
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("123")})
+	require.NoError(t, err)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{})
+	requireQuotaNoSpaceError(t, err)
+
+	duplicate := []byte("duplicate")
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: duplicate}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: duplicate}}},
+	}})
+	requireQuotaNoSpaceError(t, err)
+
+	read, err := server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("key"), Serializable: true},
+		},
+	}}})
+	require.NoError(t, err)
+	require.Len(t, read.Responses, 1)
+	require.Len(t, read.Responses[0].GetResponseRange().Kvs, 1)
+}
+
 func TestTxnContainsPutAcrossBranchesAndNesting(t *testing.T) {
 	put := func() *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
