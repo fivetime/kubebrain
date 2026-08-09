@@ -501,6 +501,8 @@ backend commit 兼容指标 `etcd_disk_backend_commit_duration_seconds`（观察
 原子提交 attempt，生产门禁要求 `_count` family 存在；不要解释为 bbolt 文件写入阶段），
 backend snapshot 兼容指标 `etcd_disk_backend_snapshot_duration_seconds`（观察 leader 本地
 在线 etcd snapshot 构建与传输生命周期；生产门禁要求零样本 family 也存在），
+backend defrag 兼容指标 `etcd_disk_backend_defrag_duration_seconds` 与
+`etcd_disk_defrag_inflight`（TiKV/PD 架构下分别保持 count=0/value=0；门禁拒绝非零 inflight），
 auth revision 指标 `etcd_debugging_auth_revision`，
 quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与

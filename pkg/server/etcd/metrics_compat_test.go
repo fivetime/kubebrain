@@ -149,6 +149,23 @@ func TestEtcdMVCCHashDurationHistogramsUseUpstreamMetricNames(t *testing.T) {
 	}, rec.histograms)
 }
 
+func TestDefragmentNoOpKeepsUpstreamPhysicalMetricsAtZero(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initEtcdBackendDefragMetrics(rec)
+
+	response, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Equal(t, []recordedGauge{{name: etcdDefragInflightMetric, value: 0}}, rec.gauges)
+	for _, histogram := range rec.histograms {
+		require.NotEqual(t, etcdBackendDefragDurationMetric, histogram.name,
+			"a platform no-op must not be reported as physical bbolt defragmentation")
+	}
+}
+
 func TestMemberPromoteFailuresUseUpstreamMetricNameAndReasonLabel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

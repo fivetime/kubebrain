@@ -43103,6 +43103,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `HistogramRegistrar` 注册 count=0 family，不伪造延迟样本；Prometheus adapter 使用 upstream
   精确 buckets。回归测试固定成功下载与注入首帧 Send 失败各产生一个样本；生产只读 gate 要求
   `_count` family 存在并新增 `backend_snapshot_metrics=ok` 摘要。
+- A4061 实现 upstream backend defrag 指标的 DBaaS 平台边界：上游
+  `/root/etcd/server/storage/backend/metrics.go` 与 `backend.go` 注册
+  `etcd_disk_backend_defrag_duration_seconds` 和 `etcd_disk_defrag_inflight`，并在真正复制、
+  重开、替换 embedded bbolt 文件的 defrag 生命周期把 inflight 切到 1、完成后观察 duration。
+  KubeBrain 无 embedded bbolt backend，物理 GC/compaction 由独立 TiKV/PD 集群负责；因此进程级
+  精确兼容值是 duration count=0、inflight=0，不能把 TiKV compaction、Maintenance Snapshot
+  临时 artifact 或 public Defragment no-op RPC 延迟混入。`RPCServer.New` 注册 upstream 13 个
+  100ms–409.6s buckets 的零样本 histogram，并发出 inflight=0 gauge；回归测试明确调用
+  Defragment 后 histogram 仍无样本、gauge 仍为 0。生产只读 gate 要求两个 family，结构化拒绝
+  非零 inflight，并新增 `backend_defrag_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 
