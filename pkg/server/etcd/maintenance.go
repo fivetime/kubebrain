@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -473,6 +474,8 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		if err != nil {
 			return err
 		}
+		awaitingChecksum := false
+		complete := false
 		for result := range responses {
 			if result.Err != nil {
 				return result.Err
@@ -480,9 +483,23 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 			if result.Response == nil {
 				return fmt.Errorf("leader snapshot proxy returned an empty response")
 			}
+			if complete {
+				return status.Error(codes.DataLoss, "leader snapshot proxy returned data after checksum")
+			}
+			if awaitingChecksum {
+				if result.Response.GetRemainingBytes() != 0 || len(result.Response.GetBlob()) != sha256.Size {
+					return status.Error(codes.DataLoss, "leader snapshot proxy returned an invalid checksum frame")
+				}
+				complete = true
+			} else if result.Response.GetRemainingBytes() == 0 {
+				awaitingChecksum = true
+			}
 			if err = stream.Send(result.Response); err != nil {
 				return err
 			}
+		}
+		if !complete {
+			return status.Error(codes.DataLoss, "leader snapshot proxy stream ended before checksum")
 		}
 		return nil
 	}

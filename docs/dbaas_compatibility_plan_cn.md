@@ -43601,6 +43601,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TLS secret mounts 继续只读。retained MVCC history 不受 live quota 严格约束，因此真实 DBaaS 必须按
   实例历史/compaction 策略规划 node ephemeral storage 或替换为受管 ephemeral PVC；本项关闭默认清单
   的零可写目录故障，不把静态 512Gi 冒充无限快照容量。
+  A4108 封闭 follower Snapshot proxy 把 leader 提前 EOF 当成功的完整性缺口：对照 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`，成功流总是在最后一个数据库 data frame
+  `RemainingBytes=0` 后再发送独立 32 字节 SHA-256 frame。旧 follower 只遍历 proxy channel，channel
+  关闭便返回 nil；leader 连接若在 checksum 前干净 EOF，调用方会得到成功状态和截断 bbolt。代理路径
+  现在以常量空间跟踪终止状态，仍逐帧转发，但仅在 checksum 后 EOF 才成功；checksum 前 EOF、错误
+  checksum frame 或 checksum 后额外数据都返回稳定 gRPC `DataLoss`。红测注入一个已转发的末 data
+  frame 后直接关闭 channel，证明旧实现为 OK、新实现保留已发送帧但最终明确失败；完整两帧流继续通过。
 
 ### P2：运维兼容和长期验证
 

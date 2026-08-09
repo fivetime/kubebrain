@@ -228,7 +228,7 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	trap := &localSnapshotTrapBackend{BackendShim: server.backend}
 	server.backend = trap
 	want := []*etcdserverpb.SnapshotResponse{
-		{RemainingBytes: 3, Blob: []byte("abc"), Version: Version},
+		{RemainingBytes: 0, Blob: []byte("abc"), Version: Version},
 		{RemainingBytes: 0, Blob: bytes.Repeat([]byte{1}, 32), Version: Version},
 	}
 	server.peers = testPeerService{
@@ -247,6 +247,76 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
 	require.False(t, trap.called, "a follower must not capture independently from concurrent leader metadata mutations")
 	require.Equal(t, want, stream.responses)
+}
+
+func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		snapshotFn: func(_ context.Context, _ *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			results := make(chan etcdproxy.SnapshotResult, 1)
+			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+				RemainingBytes: 0,
+				Blob:           []byte("truncated-database"),
+				Version:        Version,
+			}}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.ErrorContains(t, err, "ended before checksum")
+	require.Len(t, stream.responses, 1)
+}
+
+func TestMaintenanceSnapshotFollowerRejectsMalformedProxyTermination(t *testing.T) {
+	data := &etcdserverpb.SnapshotResponse{RemainingBytes: 0, Blob: []byte("db"), Version: Version}
+	checksum := &etcdserverpb.SnapshotResponse{RemainingBytes: 0, Blob: make([]byte, sha256.Size), Version: Version}
+	for _, tc := range []struct {
+		name          string
+		responses     []*etcdserverpb.SnapshotResponse
+		wantError     string
+		wantForwarded int
+	}{
+		{
+			name: "invalid checksum",
+			responses: []*etcdserverpb.SnapshotResponse{
+				data, {RemainingBytes: 0, Blob: []byte("short"), Version: Version},
+			},
+			wantError: "invalid checksum frame", wantForwarded: 1,
+		},
+		{
+			name: "data after checksum",
+			responses: []*etcdserverpb.SnapshotResponse{
+				data, checksum, {RemainingBytes: 0, Blob: []byte("extra"), Version: Version},
+			},
+			wantError: "data after checksum", wantForwarded: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				snapshotFn: func(_ context.Context, _ *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+					results := make(chan etcdproxy.SnapshotResult, len(tc.responses))
+					for _, response := range tc.responses {
+						results <- etcdproxy.SnapshotResult{Response: response}
+					}
+					close(results)
+					return results, nil
+				},
+			}
+			stream := &maintenanceSnapshotServer{ctx: context.Background()}
+			err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, tc.wantError)
+			require.Len(t, stream.responses, tc.wantForwarded)
+		})
+	}
 }
 
 func TestMaintenanceSnapshotFollowerWithoutProxyRejectsLocalCapture(t *testing.T) {
@@ -275,7 +345,13 @@ func TestMaintenanceSnapshotFollowerForwardsRootCredential(t *testing.T) {
 			outgoing, ok := metadata.FromOutgoingContext(ctx)
 			require.True(t, ok)
 			require.Equal(t, []string{rootToken}, outgoing.Get(rpctypes.TokenFieldNameGRPC))
-			results := make(chan etcdproxy.SnapshotResult)
+			results := make(chan etcdproxy.SnapshotResult, 2)
+			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+				RemainingBytes: 0, Blob: []byte("db"), Version: Version,
+			}}
+			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+				RemainingBytes: 0, Blob: make([]byte, sha256.Size), Version: Version,
+			}}
 			close(results)
 			return results, nil
 		},

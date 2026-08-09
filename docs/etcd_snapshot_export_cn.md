@@ -41,6 +41,9 @@ lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错�
 指向该卷；基线 sizeLimit 为 512Gi，对应当前 400Gi logical quota 加 bbolt 余量。保留历史可能明显大于
 当前 live quota，平台必须按实例 retention/历史体量调整临时卷或改用受管 ephemeral PVC，并监控 node
 ephemeral storage；512Gi 不是“任意历史都可导出”的保证。
+follower 转发在线 Snapshot 时也验证 upstream 帧终止契约：最后一个数据库 data frame 把
+`RemainingBytes` 降为 0，随后必须收到独立的 32 字节 SHA-256 frame；leader stream 在 checksum 前 EOF、
+checksum 形状错误或 checksum 后继续发帧均以 gRPC `DataLoss` 失败，不能把截断制品发布成成功 RPC。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 
