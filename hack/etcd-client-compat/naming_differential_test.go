@@ -23,18 +23,19 @@ import (
 )
 
 type namingOutcome struct {
-	InitialAtomicUpdates []string
-	InitialList          []string
-	ReplacementUpdates   []string
-	ReplacementList      []string
-	PrefixIsolated       bool
-	LeaseDeleteObserved  bool
-	RoundRobinBothReady  bool
-	RoundRobinDeleteDone bool
-	RoundRobinRejoinDone bool
-	LeaseExpiryDrainDone bool
-	ResolverInitial      string
-	ResolverAfterDelete  string
+	InitialAtomicUpdates  []string
+	InitialList           []string
+	ReplacementUpdates    []string
+	ReplacementList       []string
+	PrefixIsolated        bool
+	LeaseDeleteObserved   bool
+	RoundRobinBothReady   bool
+	RoundRobinDeleteDone  bool
+	RoundRobinRejoinDone  bool
+	LeaseExpiryDrainDone  bool
+	LeaseRenewalDrainDone bool
+	ResolverInitial       string
+	ResolverAfterDelete   string
 }
 
 func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
@@ -47,18 +48,19 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 	kubeBrainOutcome := runNamingScenario(t, compatEndpoint(t), "kubebrain")
 	require.Equal(t, referenceOutcome, kubeBrainOutcome)
 	require.Equal(t, namingOutcome{
-		InitialAtomicUpdates: []string{"add:e1:127.0.0.1:2001:metadata-1", "add:e2:127.0.0.1:2002:metadata-2"},
-		InitialList:          []string{"e1:127.0.0.1:2001:metadata-1", "e2:127.0.0.1:2002:metadata-2"},
-		ReplacementUpdates:   []string{"delete:e1::", "add:e3:127.0.0.1:2003:metadata-3"},
-		ReplacementList:      []string{"e2:127.0.0.1:2002:metadata-2", "e3:127.0.0.1:2003:metadata-3"},
-		PrefixIsolated:       true,
-		LeaseDeleteObserved:  true,
-		RoundRobinBothReady:  true,
-		RoundRobinDeleteDone: true,
-		RoundRobinRejoinDone: true,
-		LeaseExpiryDrainDone: true,
-		ResolverInitial:      "SERVING",
-		ResolverAfterDelete:  "NOT_SERVING",
+		InitialAtomicUpdates:  []string{"add:e1:127.0.0.1:2001:metadata-1", "add:e2:127.0.0.1:2002:metadata-2"},
+		InitialList:           []string{"e1:127.0.0.1:2001:metadata-1", "e2:127.0.0.1:2002:metadata-2"},
+		ReplacementUpdates:    []string{"delete:e1::", "add:e3:127.0.0.1:2003:metadata-3"},
+		ReplacementList:       []string{"e2:127.0.0.1:2002:metadata-2", "e3:127.0.0.1:2003:metadata-3"},
+		PrefixIsolated:        true,
+		LeaseDeleteObserved:   true,
+		RoundRobinBothReady:   true,
+		RoundRobinDeleteDone:  true,
+		RoundRobinRejoinDone:  true,
+		LeaseExpiryDrainDone:  true,
+		LeaseRenewalDrainDone: true,
+		ResolverInitial:       "SERVING",
+		ResolverAfterDelete:   "NOT_SERVING",
 	}, kubeBrainOutcome)
 }
 
@@ -171,6 +173,8 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	defer stopNotServing()
 	unknownAddr, stopUnknown := startNamingHealthServer(t, healthpb.HealthCheckResponse_UNKNOWN)
 	defer stopUnknown()
+	serviceUnknownAddr, stopServiceUnknown := startNamingHealthServer(t, healthpb.HealthCheckResponse_SERVICE_UNKNOWN)
+	defer stopServiceUnknown()
 	resolverPrefix := base + "resolver"
 	resolverManager, err := endpoints.NewManager(client, resolverPrefix)
 	require.NoError(t, err)
@@ -229,11 +233,15 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	}, 5*time.Second, 20*time.Millisecond,
 		"round_robin resolver did not restore an endpoint re-added through its watch")
 	roundRobinRejoinDone := len(rejoinedStatuses) == 2
-	expiringLease, err := client.Grant(ctx, 2)
+	expiringLease, err := client.Grant(ctx, 3)
+	require.NoError(t, err)
+	renewedLease, err := client.Grant(ctx, 3)
 	require.NoError(t, err)
 	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/expiring",
 		endpoints.Endpoint{Addr: unknownAddr}, clientv3.WithLease(expiringLease.ID)))
-	withExpiringStatuses := make(map[string]struct{}, 3)
+	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/renewed",
+		endpoints.Endpoint{Addr: serviceUnknownAddr}, clientv3.WithLease(renewedLease.ID)))
+	withExpiringStatuses := make(map[string]struct{}, 4)
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
 		defer callCancel()
@@ -242,23 +250,46 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 			return false
 		}
 		withExpiringStatuses[response.Status.String()] = struct{}{}
-		return len(withExpiringStatuses) == 3
+		return len(withExpiringStatuses) == 4
 	}, 5*time.Second, 20*time.Millisecond,
-		"round_robin resolver did not add the leased endpoint")
+		"round_robin resolver did not add both leased endpoints")
+	time.Sleep(1500 * time.Millisecond)
+	keepAlive, err := client.KeepAliveOnce(ctx, renewedLease.ID)
+	require.NoError(t, err)
+	require.Positive(t, keepAlive.TTL)
 	consecutiveAfterExpiry := 0
+	renewedObservedAfterExpiry := false
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
 		defer callCancel()
 		response, callErr := roundRobinClient.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
 		if callErr != nil || response.Status == healthpb.HealthCheckResponse_UNKNOWN {
 			consecutiveAfterExpiry = 0
+			renewedObservedAfterExpiry = false
 			return false
 		}
+		renewedObservedAfterExpiry = renewedObservedAfterExpiry ||
+			response.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN
 		consecutiveAfterExpiry++
-		return consecutiveAfterExpiry == 20
+		return consecutiveAfterExpiry == 20 && renewedObservedAfterExpiry
 	}, 10*time.Second, 20*time.Millisecond,
-		"round_robin resolver continued routing to a naturally expired leased endpoint")
+		"round_robin resolver did not drain the expired endpoint while retaining the renewed endpoint")
 	leaseExpiryDrainDone := consecutiveAfterExpiry == 20
+	consecutiveAfterRenewalExpiry := 0
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		response, callErr := roundRobinClient.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+		if callErr != nil || response.Status == healthpb.HealthCheckResponse_UNKNOWN ||
+			response.Status == healthpb.HealthCheckResponse_SERVICE_UNKNOWN {
+			consecutiveAfterRenewalExpiry = 0
+			return false
+		}
+		consecutiveAfterRenewalExpiry++
+		return consecutiveAfterRenewalExpiry == 20
+	}, 10*time.Second, 20*time.Millisecond,
+		"round_robin resolver continued routing to the renewed endpoint after its eventual expiry")
+	leaseRenewalDrainDone := consecutiveAfterRenewalExpiry == 20
 	require.NoError(t, roundRobinConnection.Close())
 	roundRobinBothReady := len(roundRobinStatuses) == 2
 
@@ -298,18 +329,19 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		resolverInitial, resolverAfterDelete = resolverAfterDelete, resolverInitial
 	}
 	return namingOutcome{
-		InitialAtomicUpdates: initialAtomicUpdates,
-		InitialList:          namingList(initialList, managerPrefix),
-		ReplacementUpdates:   replacementUpdates,
-		ReplacementList:      namingList(replacementList, managerPrefix),
-		PrefixIsolated:       prefixIsolated,
-		LeaseDeleteObserved:  leaseDeleteObserved,
-		RoundRobinBothReady:  roundRobinBothReady,
-		RoundRobinDeleteDone: roundRobinDeleteDone,
-		RoundRobinRejoinDone: roundRobinRejoinDone,
-		LeaseExpiryDrainDone: leaseExpiryDrainDone,
-		ResolverInitial:      resolverInitial,
-		ResolverAfterDelete:  resolverAfterDelete,
+		InitialAtomicUpdates:  initialAtomicUpdates,
+		InitialList:           namingList(initialList, managerPrefix),
+		ReplacementUpdates:    replacementUpdates,
+		ReplacementList:       namingList(replacementList, managerPrefix),
+		PrefixIsolated:        prefixIsolated,
+		LeaseDeleteObserved:   leaseDeleteObserved,
+		RoundRobinBothReady:   roundRobinBothReady,
+		RoundRobinDeleteDone:  roundRobinDeleteDone,
+		RoundRobinRejoinDone:  roundRobinRejoinDone,
+		LeaseExpiryDrainDone:  leaseExpiryDrainDone,
+		LeaseRenewalDrainDone: leaseRenewalDrainDone,
+		ResolverInitial:       resolverInitial,
+		ResolverAfterDelete:   resolverAfterDelete,
 	}
 }
 

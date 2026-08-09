@@ -44348,6 +44348,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   reference 与独立 3 副本 KubeBrain/3 PD/3 TiKV 集群普通连续 3 轮、race 连续 3 轮通过，未发现 runtime
   差异。该门禁把 Lease lifecycle、Txn 原子删除、Watch prefix 和官方 resolver drain 串成真实黑盒路径；
   小时级批量 renewal/expiry 与网络分区仍保留为 P1 soak。
+  A4192 将上述单租约门禁扩展为同一 resolver 上两个并发 TTL=3 endpoint 的 renewal/expiry 分叉。
+  两端先同时进入既有 `round_robin` connection，测试等待 1.5 秒后仅对其中一个执行官方 clientv3
+  `KeepAliveOnce`；随后必须先连续 20 次不再命中未续租的 UNKNOWN backend，同时仍实际命中续租后的
+  SERVICE_UNKNOWN backend，再在该续租 lease 最终自然过期后连续 20 次只命中两个永久 endpoint。
+  因此 lease renewal 没有延长 deadline、expiry batch 误删续租 attachment、Watch 丢失任一 delete，或
+  resolver 提前/延迟排空旧 SubConn 都会失败。当前 `/root/etcd` reference 与独立 3 副本 KubeBrain/
+  3 PD/3 TiKV 普通连续 3 轮（34.559 秒）、race 连续 3 轮（36.087 秒）通过。该有限批量门禁关闭了
+  单 lease 无法证明 renewal 分叉的窗口；小时级高基数 renewal storm 与网络分区仍保留为 P1 soak。
 
 ### P2：运维兼容和长期验证
 
