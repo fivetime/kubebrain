@@ -43756,6 +43756,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response，并让错误继续满足 `errors.Is(context.DeadlineExceeded)`。该门禁同时覆盖 client option
   inspector、gRPC 编解码、retry interceptor、服务端分流与 status→context error 归一化，防止只在 direct
   protobuf 测试中正确、真实 client 却错误重试或丢失 deadline。连续 10 轮通过。
+  A4129 修复主数据面传输依赖低于 upstream 安全基线的真实缺口。对照 v3.7.1 changelog 与
+  `38753464b`，官方将 grpc-go 1.81.1 升到 1.82.1 以修复 `GHSA-hrxh-6v49-42gf`；KubeBrain 主模块
+  仍解析 1.81.0、client 兼容模块为 1.81.1、bigstream probe 为 1.81.0。三者现统一到当前 upstream
+  `fbfbd816c` 已验证的 1.83.0，并接受其最小依赖图：otel 1.44、zap 1.28、x/net 0.57、x/sys 0.47、
+  x/text 0.40 与 20260720 genproto。新增 `TestGRPCSecurityBaselineIsPinnedAcrossModules` 逐个读取三个
+  go.mod 并精确要求 1.83.0，防止生产二进制安全而兼容/压力工具仍携带旧传输栈，或未来 tidy 回退。
 
 ### P2：运维兼容和长期验证
 

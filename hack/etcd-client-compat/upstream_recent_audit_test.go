@@ -3577,6 +3577,10 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"A4126",
 		"A4127",
 		"A4128",
+		"A4129",
+		"38753464b",
+		"fbfbd816c",
+		"GHSA-hrxh-6v49-42gf",
 		"5cd9f4ee1",
 		"1b01776cc",
 		"f1f8893b1",
@@ -3601,6 +3605,18 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"845cd3885",
 	} {
 		require.Contains(t, plan, needle)
+	}
+}
+
+func TestGRPCSecurityBaselineIsPinnedAcrossModules(t *testing.T) {
+	for _, modulePath := range []string{
+		filepath.Join("..", "..", "go.mod"),
+		"go.mod",
+		filepath.Join("..", "scale-lab", "bigstream", "go.mod"),
+	} {
+		contents, err := os.ReadFile(modulePath)
+		require.NoError(t, err, modulePath)
+		require.Contains(t, string(contents), "google.golang.org/grpc v1.83.0", modulePath)
 	}
 }
 
