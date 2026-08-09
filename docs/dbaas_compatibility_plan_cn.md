@@ -43279,6 +43279,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   wrapper/fake executor 测试覆盖 claim 类型、参数到环境绑定、receipt succeed；RBAC 测试精确锁定
   verbs/resources 并禁止 PVC/PV。告警到 Operation 的自动创建策略仍需平台 controller 配置，修复
   执行、审批、lease fencing、receipt 与审计链已连通。
+  A4075 增加告警映射 policy runner `request-tikv-transaction-repair.sh`：只接受精确一个持续 firing
+  至少 120 秒的专用 alert，严格绑定 namespace/StatefulSet、校验 fingerprint/startsAt，再实时读取
+  KubeBrain/TidbCluster UID 与 cluster ID。以 fingerprint 生成确定性 immutable 参数 Secret 和
+  Pending `TiKVTransactionRepair(maxAttempts=1)`，Secret 重放必须摘要一致；runner 不调用 approve，
+  也不具有任何数据面 mutation。fake webhook 测试覆盖 firing→Secret→未审批 submit，以及 resolved
+  alert 在 Kubernetes 零调用前拒绝。常驻 HTTPS receiver 的认证/NetworkPolicy 仍是平台部署缺口，
+  但告警到待审批对象的确定性、可测试策略已落库。
 
 ### P2：运维兼容和长期验证
 

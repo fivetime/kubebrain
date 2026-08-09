@@ -223,6 +223,28 @@ Operation 终态前崩溃时，接管者会复验同一 receipt 并完成提交�
 该角色没有 PVC/PV、Secret、Deployment 或任意集群级写权限。executor 默认 `replicas: 0`，平台
 只有在已审批 repair operation 待处理时才应扩为 1，处理完再缩回 0。
 
+Alertmanager webhook payload 通过以下 policy runner 映射为待审批请求：
+
+```bash
+ALERT_INPUT=/run/alertmanager/webhook.json \
+KUBE_CONTEXT=production \
+ENDPOINT=https://kubebrain-client.kubebrain-system.svc:3379 \
+hack/production/request-tikv-transaction-repair.sh
+```
+
+runner 只接受恰好一个 `status=firing`、alertname 精确等于
+`KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane`，且 namespace/StatefulSet 标签与
+目标实例相等的 alert；fingerprint 必须为 16–64 位小写十六进制，`startsAt` 必须可解析、不能在
+未来并默认已持续至少 120 秒。通过后重新读取实时 KubeBrain StatefulSet UID、TidbCluster UID
+和 cluster ID，以 alert fingerprint 派生确定性 Operation/immutable Secret 名，生成规范参数 JSON
+和 SHA-256，并幂等提交 `maxAttempts: 1` 的 Pending Operation。已存在 Secret 必须 immutable 且
+内容摘要完全相同，否则 fail closed。
+
+runner 从不调用 approve，也没有 scale、Pod delete 或 PVC 权限；因此告警只能产生未审批请求，
+不能绕过 A4074 的人工/策略审批。resolved、重复匹配、过新的、未来时间、错误实例标签或身份漂移
+均在创建 Operation 前拒绝。常驻 HTTPS webhook receiver、请求认证和 Alertmanager NetworkPolicy
+仍由平台部署层提供；本脚本定义并测试其确定性 policy 核心。
+
 ## 生产镜像追踪
 
 Docker 构建不会把 `.git` 复制到镜像上下文，因此版本、完整 commit SHA 和 UTC 构建时间
