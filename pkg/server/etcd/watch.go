@@ -938,6 +938,17 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 					}
 				}
 			}
+			for _, event := range events {
+				eventRevision := event.GetKv().GetModRevision()
+				if eventRevision < 0 || uint64(eventRevision) > batchRevision {
+					revisionErr := fmt.Errorf("watch backend returned batch revision %d below event revision %d", batchRevision, eventRevision)
+					w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
+					klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend batch revision", "watcher", w.id, "watch", id)
+					w.Cancel(id, revisionErr, false)
+					cancel()
+					return
+				}
+			}
 			if len(events) == 0 {
 				// etcd advances the watcher's min revision even when its filters
 				// suppress every event in a batch. Preserve that delivered

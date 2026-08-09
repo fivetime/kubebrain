@@ -43636,6 +43636,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   下界检查；违反时在构造/fragment/send 任何 WatchResponse 前取消该 watch、记录
   `watch.backend.invalid_revision`，并把精确 event/start revision 写入 CancelReason。该位置与 upstream
   filter 后验证一致，不会因 backend 为共享 prefix 返回但最终不属于用户范围的内部 event 误报。
+  A4113 补齐 Watch response watermark 对事件的上界覆盖：`WatchResponse.Header.Revision` 是 clientv3
+  重连和 progress 的已交付水位，必须至少等于响应内每个可见 event 的 `Kv.ModRevision`。旧路径直接
+  信任非零 `WatchResult.Revision`；红测注入 batch revision 10 / event revision 11，证明客户端实际收到
+  header 10 的 revision 11 事件，而 `syncedRev` 也只推进到 10，断线后会从 11 重放该已交付事件。
+  现在先保留旧 producer 的 `Revision=0` 按事件最大值回填，再逐个验证最终可见 event 不超过 batch
+  watermark；负 event revision 或 watermark 偏低都在 fragment/send 前取消单个 watch，复用
+  `watch.backend.invalid_revision` 并在 CancelReason 报告 batch/event revision。A4112 的 start 下界与
+  本项 response 上界共同保证 `StartRevision <= Event.ModRevision <= Header.Revision`。
 
 ### P2：运维兼容和长期验证
 
