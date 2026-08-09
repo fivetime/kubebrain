@@ -317,6 +317,39 @@ func TestColdSnapshotExecuteValidatesEveryPVCBeforeCreatingSnapshots(t *testing.
 		"the complete PVC identity fence must pass before any partial snapshot is created")
 }
 
+func TestColdSnapshotExecuteRejectsPVReplacementBeforeCreatingSnapshots(t *testing.T) {
+	dir := t.TempDir()
+	inventoryFile := filepath.Join(dir, "inventory.json")
+	receiptFile := filepath.Join(dir, "receipt.json")
+	witnessFile := filepath.Join(dir, "witness.jsonl")
+	logFile := filepath.Join(dir, "kubectl.log")
+	require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
+	require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+	fakeKubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
+
+	output, err := runColdSnapshotExecute(t, []string{
+		"KUBECTL=" + fakeKubectl,
+		"KUBE_CONTEXT=preproduction",
+		"ALLOW_COLD_PHYSICAL_SNAPSHOT=true",
+		"PREFLIGHT_FILE=" + inventoryFile,
+		"RECEIPT_FILE=" + receiptFile,
+		"OPERATION_ID=op-pv-fence",
+		"SEMANTIC_WITNESS_FILE=" + witnessFile,
+		"EXPECTED_WITNESS_PREFIX=/registry",
+		"FAKE_LOG=" + logFile,
+		"FAKE_PVC_JSON=" + coldSnapshotPVCJSON("Bound"),
+		"FAKE_PV_HANDLE_DRIFT=pv-tikv-kb-tikv-0",
+		"FAKE_TIDB_READY=true",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "PV identity changed while quiesced: pv-tikv-kb-tikv-0")
+	require.NoFileExists(t, receiptFile)
+	log := string(mustRead(t, logFile))
+	require.NotContains(t, log, "create -f -",
+		"the complete PV identity fence must pass before any partial snapshot is created")
+}
+
 func TestColdSnapshotExecuteRejectsOversizedDerivedNameBeforeMutation(t *testing.T) {
 	for _, tc := range []struct{ name, pvcName, want string }{
 		{
@@ -642,6 +675,8 @@ func coldSnapshotInventoryFromPVCJSON(t *testing.T, pvcJSON string) []byte {
 		status := item["status"].(map[string]any)
 		items = append(items, map[string]any{
 			"name": metadata["name"], "uid": metadata["uid"], "pv": spec["volumeName"],
+			"pv_uid": "uid-" + spec["volumeName"].(string), "csi_driver": "csi.example.test",
+			"volume_handle": "handle-" + spec["volumeName"].(string),
 			"labels":        metadata["labels"],
 			"storage_class": spec["storageClassName"], "volume_mode": spec["volumeMode"],
 			"access_modes": spec["accessModes"], "requested_storage": spec["resources"].(map[string]any)["requests"].(map[string]any)["storage"],
@@ -725,6 +760,16 @@ elif [[ "$args" == *"get pvc"* && "$args" == *"jsonpath"* ]]; then
   else
     printf 'uid-%s' "$name"
   fi
+elif [[ "$args" == *"get pv "* ]]; then
+  name="$(sed -n 's/.*get pv \([^ ]*\).*/\1/p' <<<"$args")"
+  pvc="${name#pv-}"
+  uid="uid-${name}"
+  handle="handle-${name}"
+  if grep -q 'patch statefulset kb-pd' "$FAKE_LOG"; then
+    [[ "${FAKE_PV_UID_DRIFT:-}" != "$name" ]] || uid="replacement-${uid}"
+    [[ "${FAKE_PV_HANDLE_DRIFT:-}" != "$name" ]] || handle="replacement-${handle}"
+  fi
+  printf '{"metadata":{"name":"%s","uid":"%s"},"spec":{"storageClassName":"fast","volumeMode":"Filesystem","claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$name" "$uid" "$pvc" "$pvc" "$handle"
 elif [[ "$args" == *"create -f -"* ]]; then
   cat >/dev/null
 elif [[ "$args" == *"wait --for=jsonpath={.status.readyToUse}=true"* ]]; then

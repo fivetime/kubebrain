@@ -19,6 +19,7 @@ func TestColdSnapshotPreflight(t *testing.T) {
 		kubebrainID string
 		pvcJSON     string
 		provisioner string
+		pvDriver    string
 		wantOK      bool
 		wantOutput  string
 	}{
@@ -26,6 +27,7 @@ func TestColdSnapshotPreflight(t *testing.T) {
 		{name: "missing snapshot API", resources: "none", wantOutput: "VolumeSnapshot API is unavailable"},
 		{name: "snapshot class deletes content", policy: "Delete", wantOutput: "deletionPolicy=Retain"},
 		{name: "storage class uses another CSI driver", provisioner: "other.csi.test", wantOutput: "StorageClass fast provisioner"},
+		{name: "source PV uses another CSI driver", pvDriver: "other.csi.test", wantOutput: "source PV identity does not match PVC"},
 		{name: "wrong storage identity", tidbID: "wrong\t7662961163671170154", wantOutput: "TidbCluster identity mismatch"},
 		{name: "wrong kubebrain identity", kubebrainID: "wrong", wantOutput: "StatefulSet UID mismatch"},
 		{name: "unbound TiKV PVC", pvcJSON: coldSnapshotPVCJSON("Pending"), wantOutput: "TiKV PVC inventory must be Bound"},
@@ -47,6 +49,10 @@ elif [[ "$*" == *"get statefulset"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_ID"
 elif [[ "$*" == *"get pvc"* ]]; then
   printf '%s' "$FAKE_PVC_JSON"
+elif [[ "$*" == *"get pv "* ]]; then
+  name="$(sed -n 's/.*get pv \([^ ]*\).*/\1/p' <<<"$*")"
+  pvc="${name#pv-}"
+  printf '{"metadata":{"name":"%s","uid":"uid-%s"},"spec":{"storageClassName":"fast","volumeMode":"Filesystem","claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"uid-%s"},"csi":{"driver":"%s","volumeHandle":"handle-%s"}},"status":{"phase":"Bound"}}' "$name" "$name" "$pvc" "$pvc" "$FAKE_PV_DRIVER" "$name"
 elif [[ "$*" == *"get storageclass"* ]]; then
   printf '%s' "$FAKE_PROVISIONER"
 else
@@ -73,6 +79,10 @@ fi
 			if provisioner == "" {
 				provisioner = "csi.example.test"
 			}
+			pvDriver := tc.pvDriver
+			if pvDriver == "" {
+				pvDriver = "csi.example.test"
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"KUBE_CONTEXT=preproduction",
@@ -87,6 +97,7 @@ fi
 				"FAKE_KUBEBRAIN_ID=" + kubebrainID,
 				"FAKE_PVC_JSON=" + pvcJSON,
 				"FAKE_PROVISIONER=" + provisioner,
+				"FAKE_PV_DRIVER=" + pvDriver,
 			}
 			output, err := runColdSnapshotPreflight(t, env)
 			if tc.wantOK {
@@ -94,6 +105,10 @@ fi
 				var manifest map[string]any
 				require.NoError(t, json.Unmarshal(output, &manifest))
 				require.Equal(t, "kubebrain.cold-physical-snapshot-preflight.v2", manifest["format"])
+				firstPD := manifest["pd_pvcs"].([]any)[0].(map[string]any)
+				require.Equal(t, "uid-pv-pd-kb-pd-0", firstPD["pv_uid"])
+				require.Equal(t, "csi.example.test", firstPD["csi_driver"])
+				require.Equal(t, "handle-pv-pd-kb-pd-0", firstPD["volume_handle"])
 			} else {
 				require.Error(t, err, string(output))
 				require.Contains(t, string(output), tc.wantOutput)
@@ -120,6 +135,8 @@ func TestProductionReadinessColdSnapshotExamplesRequireExplicitContext(t *testin
 	}
 	require.Contains(t, doc, "当前 kubectl context 永不作为默认值接受")
 	require.Contains(t, doc, "不能只依赖 preflight 阶段的批准")
+	require.Contains(t, doc, "固定 PV UID、CSI driver 与不可变 volumeHandle")
+	require.Contains(t, doc, "创建第一个 retained VolumeSnapshot 前再次复核这些物理身份")
 }
 
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {

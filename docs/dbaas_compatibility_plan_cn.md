@@ -43803,6 +43803,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   因此 follower、无凭据或故障 backend 不会遮蔽 wire validation error。本轮没有发现需要修改
   runtime 的差异；`TestRecentUpstreamAuditIsRecorded` 固定 A4134，防止后续把该结论误当作未经
   核验，或在调整入口顺序时丢失错误优先级。
+  A4135 加固 cold CSI full snapshot 的源物理卷身份证据。此前 preflight v2 只固定 PVC UID 和
+  `.spec.volumeName`，停机后的最终 fence 也只复核 PVC UID；具备集群管理权限的并发替换若以同名 PV
+  指向另一 CSI volumeHandle，executor 仍会对错误磁盘创建 retained snapshot，并发布无法证明源盘
+  身份的成功 receipt。preflight 现逐个读取绑定 PV，要求 Bound、claimRef 精确匹配 PVC
+  namespace/name/UID、storage class/volume mode 一致、CSI driver 匹配 VolumeSnapshotClass，并把
+  `pv_uid`、`csi_driver`、`volume_handle` 固定进 frozen inventory；整个 PD+TiKV 集合的 PV UID 与
+  handle 必须唯一。executor 在 KubeBrain、TiKV、PD 均缩至零后、首个 VolumeSnapshot create 前
+  一次性重读并核对所有 PV 身份，任一同名替换或 handle 漂移都先失败、再走服务恢复 cleanup，不留下
+  partial snapshot。红测注入 quiesced 后 TiKV PV handle 漂移，固定零 create 与无 receipt；preflight
+  测试覆盖 PV driver mismatch，renderer/verifier 严格要求并校验新证据字段、driver 绑定与唯一性。
+  早期缺少这些字段的 v2 inventory/receipt 现在 fail closed，必须重新预检；这使 cold full snapshot
+  候选链更接近可审计的一致物理恢复，但仍不替代真实 CSI 隔离演练，也不关闭日志型 PITR 缺口。
 
 ### P2：运维兼容和长期验证
 

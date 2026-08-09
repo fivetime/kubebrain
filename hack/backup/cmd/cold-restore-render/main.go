@@ -67,6 +67,9 @@ type pvc struct {
 	Name             string            `json:"name"`
 	UID              string            `json:"uid"`
 	PV               string            `json:"pv"`
+	PVUID            string            `json:"pv_uid"`
+	CSIDriver        string            `json:"csi_driver"`
+	VolumeHandle     string            `json:"volume_handle"`
 	Labels           map[string]string `json:"labels"`
 	VolumeMode       string            `json:"volume_mode"`
 	AccessModes      []string          `json:"access_modes"`
@@ -264,6 +267,8 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	}
 	pvcByName := make(map[string]pvc, len(allPVCs))
 	componentByPVC := make(map[string]string, len(allPVCs))
+	seenPVUIDs := make(map[string]struct{}, len(allPVCs))
+	seenVolumeHandles := make(map[string]struct{}, len(allPVCs))
 	for _, componentPVCs := range []struct {
 		component string
 		values    []pvc
@@ -272,17 +277,29 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 			if problems := validation.IsDNS1123Subdomain(volume.Name); len(problems) > 0 {
 				return nil, fmt.Errorf("invalid PVC name %q", volume.Name)
 			}
-			if volume.Name == "" || volume.UID == "" || volume.RequestedStorage == "" || len(volume.AccessModes) == 0 || volume.VolumeMode == "" {
+			if volume.Name == "" || volume.UID == "" || volume.PV == "" || volume.PVUID == "" || volume.CSIDriver == "" || volume.VolumeHandle == "" ||
+				volume.RequestedStorage == "" || len(volume.AccessModes) == 0 || volume.VolumeMode == "" {
 				return nil, fmt.Errorf("PVC blueprint for %q is incomplete", volume.Name)
 			}
 			if volume.Labels["app.kubernetes.io/instance"] != cluster || volume.Labels["app.kubernetes.io/component"] != componentPVCs.component {
 				return nil, fmt.Errorf("PVC %q operator labels do not match the recovery blueprint", volume.Name)
 			}
+			if volume.CSIDriver != r.Inventory.VolumeSnapshotClass.Driver {
+				return nil, fmt.Errorf("PVC %q source PV driver does not match snapshot class", volume.Name)
+			}
 			if _, exists := pvcByName[volume.Name]; exists {
 				return nil, fmt.Errorf("duplicate PVC %q", volume.Name)
 			}
+			if _, exists := seenPVUIDs[volume.PVUID]; exists {
+				return nil, errors.New("source PV UIDs must be unique")
+			}
+			if _, exists := seenVolumeHandles[volume.VolumeHandle]; exists {
+				return nil, errors.New("source PV volume handles must be unique")
+			}
 			pvcByName[volume.Name] = volume
 			componentByPVC[volume.Name] = componentPVCs.component
+			seenPVUIDs[volume.PVUID] = struct{}{}
+			seenVolumeHandles[volume.VolumeHandle] = struct{}{}
 		}
 	}
 	snapshotByPVC := make(map[string]snapshot, len(r.Snapshots))

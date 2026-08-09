@@ -110,6 +110,38 @@ validate_inventory() {
 validate_inventory PD pd "$EXPECTED_PD_PVCS" "$pd_inventory"
 validate_inventory TiKV tikv "$EXPECTED_TIKV_PVCS" "$tikv_inventory"
 
+bind_source_pvs() {
+  local inventory="$1" enriched='[]' claim pv_json pv_record
+  while IFS= read -r claim; do
+    pv_json="$("$KUBECTL" "${kubectl_args[@]}" get pv "$(jq -r '.pv' <<<"$claim")" -o json)"
+    if ! jq -e --arg namespace "$TIDB_NAMESPACE" --arg name "$(jq -r '.name' <<<"$claim")" \
+      --arg uid "$(jq -r '.uid' <<<"$claim")" --arg storage_class "$(jq -r '.storage_class' <<<"$claim")" \
+      --arg volume_mode "$(jq -r '.volume_mode' <<<"$claim")" --arg driver "$snapshot_driver" '
+      .status.phase == "Bound" and (.metadata.uid | type == "string" and length > 0) and
+      .spec.claimRef.apiVersion == "v1" and .spec.claimRef.kind == "PersistentVolumeClaim" and
+      .spec.claimRef.namespace == $namespace and .spec.claimRef.name == $name and .spec.claimRef.uid == $uid and
+      .spec.storageClassName == $storage_class and (.spec.volumeMode // "Filesystem") == $volume_mode and
+      .spec.csi.driver == $driver and (.spec.csi.volumeHandle | type == "string" and length > 0)
+    ' <<<"$pv_json" >/dev/null; then
+      echo "source PV identity does not match PVC $(jq -r '.name' <<<"$claim")" >&2
+      exit 1
+    fi
+    pv_record="$(jq -c '{pv_uid:.metadata.uid,csi_driver:.spec.csi.driver,volume_handle:.spec.csi.volumeHandle}' <<<"$pv_json")"
+    enriched="$(jq -cn --argjson current "$enriched" --argjson claim "$claim" --argjson pv "$pv_record" \
+      '$current + [($claim + $pv)]')"
+  done < <(jq -c '.[]' <<<"$inventory")
+  jq -c 'if ([.[].pv_uid] | unique | length) == length and
+    ([.[].volume_handle] | unique | length) == length then . else error("duplicate source PV identity") end' <<<"$enriched"
+}
+
+pd_inventory="$(bind_source_pvs "$pd_inventory")"
+tikv_inventory="$(bind_source_pvs "$tikv_inventory")"
+jq -en --argjson pd "$pd_inventory" --argjson tikv "$tikv_inventory" '
+  [$pd[], $tikv[]] as $all |
+  ([ $all[].pv_uid ] | unique | length) == ($all | length) and
+  ([ $all[].volume_handle ] | unique | length) == ($all | length)
+' >/dev/null || { echo "source PV UID and CSI volume handle must be unique" >&2; exit 1; }
+
 while IFS= read -r storage_class; do
   if ! storage_provisioner="$("$KUBECTL" "${kubectl_args[@]}" get storageclass "$storage_class" \
     -o 'jsonpath={.provisioner}')"; then

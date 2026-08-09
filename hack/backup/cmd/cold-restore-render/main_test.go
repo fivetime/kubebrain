@@ -108,6 +108,11 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 			r.Snapshots[1].Component = r.Snapshots[0].Component
 		}, message: "duplicate snapshot"},
 		{name: "duplicate handle", mutate: func(r *receipt) { r.Snapshots[1].SnapshotHandle = r.Snapshots[0].SnapshotHandle }, message: "handles must be unique"},
+		{name: "missing source PV UID", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].PVUID = "" }, message: "blueprint"},
+		{name: "source PV driver mismatch", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].CSIDriver = "other.csi.test" }, message: "source PV driver"},
+		{name: "duplicate source volume handle", mutate: func(r *receipt) {
+			r.Inventory.PDPVCs[1].VolumeHandle = r.Inventory.PDPVCs[0].VolumeHandle
+		}, message: "source PV volume handles must be unique"},
 		{name: "undersized claim", mutate: func(r *receipt) { r.Inventory.PDPVCs[0].RequestedStorage = "512Mi" }, message: "smaller than snapshot"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -170,7 +175,9 @@ func validReceipt() receipt {
 		for ordinal := 0; ordinal < 3; ordinal++ {
 			name := component + "-kb-" + component + "-" + string(rune('0'+ordinal))
 			volume := pvc{
-				Name: name, UID: "uid-" + name, VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
+				Name: name, UID: "uid-" + name, PV: "pv-" + name, PVUID: "uid-pv-" + name,
+				CSIDriver: "csi.example.test", VolumeHandle: "source-handle-" + name,
+				VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, RequestedStorage: "1Gi",
 				Labels: map[string]string{"app.kubernetes.io/instance": "kb", "app.kubernetes.io/component": component, "app.kubernetes.io/managed-by": "tidb-operator"},
 			}
 			if component == "pd" {

@@ -113,6 +113,9 @@ type sourcePVC struct {
 	Name             string            `json:"name"`
 	UID              string            `json:"uid"`
 	PV               string            `json:"pv"`
+	PVUID            string            `json:"pv_uid"`
+	CSIDriver        string            `json:"csi_driver"`
+	VolumeHandle     string            `json:"volume_handle"`
 	Labels           map[string]string `json:"labels"`
 	VolumeMode       string            `json:"volume_mode"`
 	AccessModes      []string          `json:"access_modes"`
@@ -463,12 +466,14 @@ func validateSnapshotReceiptInventory(snapshotRecord snapshotReceipt) error {
 	components := make(map[string]string, len(allPVCs))
 	seenUIDs := map[string]struct{}{}
 	seenPVs := map[string]struct{}{}
+	seenPVUIDs := map[string]struct{}{}
+	seenVolumeHandles := map[string]struct{}{}
 	for _, group := range []struct {
 		component string
 		claims    []sourcePVC
 	}{{component: "pd", claims: inventory.PDPVCs}, {component: "tikv", claims: inventory.TiKVPVCs}} {
 		for _, claim := range group.claims {
-			if claim.Name == "" || claim.UID == "" || claim.PV == "" || claim.Phase != "Bound" ||
+			if claim.Name == "" || claim.UID == "" || claim.PV == "" || claim.PVUID == "" || claim.CSIDriver == "" || claim.VolumeHandle == "" || claim.Phase != "Bound" ||
 				claim.StorageClass == "" || claim.VolumeMode == "" || len(claim.AccessModes) == 0 ||
 				claim.RequestedStorage == "" || claim.Labels["app.kubernetes.io/instance"] != inventory.Storage.TidbCluster ||
 				claim.Labels["app.kubernetes.io/component"] != group.component {
@@ -487,10 +492,21 @@ func validateSnapshotReceiptInventory(snapshotRecord snapshotReceipt) error {
 			if _, duplicate := seenPVs[claim.PV]; duplicate {
 				return errors.New("snapshot receipt contains duplicate source PV")
 			}
+			if claim.CSIDriver != inventory.VolumeSnapshotClass.Driver {
+				return errors.New("snapshot receipt source PV driver does not match snapshot class")
+			}
+			if _, duplicate := seenPVUIDs[claim.PVUID]; duplicate {
+				return errors.New("snapshot receipt contains duplicate source PV UID")
+			}
+			if _, duplicate := seenVolumeHandles[claim.VolumeHandle]; duplicate {
+				return errors.New("snapshot receipt contains duplicate source PV volume handle")
+			}
 			claims[claim.Name] = claim
 			components[claim.Name] = group.component
 			seenUIDs[claim.UID] = struct{}{}
 			seenPVs[claim.PV] = struct{}{}
+			seenPVUIDs[claim.PVUID] = struct{}{}
+			seenVolumeHandles[claim.VolumeHandle] = struct{}{}
 		}
 	}
 	seenSnapshots := map[string]struct{}{}

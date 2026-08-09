@@ -301,6 +301,19 @@ while IFS= read -r pvc; do
   pvc_uid="$(jq -r '.uid' <<<"$pvc")"
   live_uid="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc_name" -o jsonpath='{.metadata.uid}')"
   [[ "$live_uid" == "$pvc_uid" ]] || { echo "PVC UID changed while quiesced: ${pvc_name}" >&2; exit 1; }
+  pv_name="$(jq -r '.pv' <<<"$pvc")"
+  live_pv="$(kctl get pv "$pv_name" -o json)"
+  if ! jq -e --arg uid "$(jq -r '.pv_uid' <<<"$pvc")" --arg namespace "$TIDB_NAMESPACE" \
+    --arg pvc_name "$pvc_name" --arg pvc_uid "$pvc_uid" --arg driver "$(jq -r '.csi_driver' <<<"$pvc")" \
+    --arg handle "$(jq -r '.volume_handle' <<<"$pvc")" '
+    .status.phase == "Bound" and .metadata.uid == $uid and
+    .spec.claimRef.apiVersion == "v1" and .spec.claimRef.kind == "PersistentVolumeClaim" and
+    .spec.claimRef.namespace == $namespace and .spec.claimRef.name == $pvc_name and .spec.claimRef.uid == $pvc_uid and
+    .spec.csi.driver == $driver and .spec.csi.volumeHandle == $handle
+  ' <<<"$live_pv" >/dev/null; then
+    echo "PV identity changed while quiesced: ${pv_name}" >&2
+    exit 1
+  fi
 done < <(jq -c '.pd_pvcs[], .tikv_pvcs[]' <<<"$inventory")
 
 snapshot_names=()

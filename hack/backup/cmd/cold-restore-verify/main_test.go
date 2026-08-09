@@ -91,7 +91,8 @@ func TestValidateReceiptChain(t *testing.T) {
 		Spec: json.RawMessage(`{"pd":{"replicas":1},"tikv":{"replicas":0}}`),
 	}
 	snapshot.Inventory.PDPVCs = []sourcePVC{{
-		Name: "pd-kb-pd-0", UID: "uid-source-pvc", PV: "source-pv", Phase: "Bound",
+		Name: "pd-kb-pd-0", UID: "uid-source-pvc", PV: "source-pv", PVUID: "uid-source-pv",
+		CSIDriver: "csi.example.test", VolumeHandle: "source-volume-pd-0", Phase: "Bound",
 		Labels:     map[string]string{"app.kubernetes.io/instance": "kb", "app.kubernetes.io/component": "pd"},
 		VolumeMode: "Filesystem", AccessModes: []string{"ReadWriteOnce"}, StorageClass: "source-storage", RequestedStorage: "1Gi",
 	}}
@@ -151,6 +152,17 @@ func TestValidateReceiptChain(t *testing.T) {
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, restoreData)
 	require.NoError(t, err)
 
+	missingSourcePVIdentity := cloneSnapshotReceipt(t, snapshot)
+	missingSourcePVIdentity.Inventory.PDPVCs[0].PVUID = ""
+	missingSourcePVData, err := json.Marshal(missingSourcePVIdentity)
+	require.NoError(t, err)
+	brokenRestore := cloneRestoreReceipt(restore)
+	brokenRestore.SourceReceiptSHA = digest(missingSourcePVData)
+	brokenRestoreData, err := json.Marshal(brokenRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(status, witnessFileSHA, missingSourcePVData, brokenRestoreData)
+	require.ErrorContains(t, err, "source PVC")
+
 	equalTimeSnapshot := cloneSnapshotReceipt(t, snapshot)
 	equalTimeSnapshot.CreatedAt = time.Unix(status.CreatedAtUnix, 0).UTC().Format(time.RFC3339)
 	equalTimeSnapshotData, err := json.Marshal(equalTimeSnapshot)
@@ -207,7 +219,7 @@ func TestValidateReceiptChain(t *testing.T) {
 	brokenSnapshot.CreatedAt = time.Unix(status.CreatedAtUnix-1, 0).UTC().Format(time.RFC3339)
 	brokenSnapshotData, err = json.Marshal(brokenSnapshot)
 	require.NoError(t, err)
-	brokenRestore := cloneRestoreReceipt(restore)
+	brokenRestore = cloneRestoreReceipt(restore)
 	brokenRestore.SourceReceiptSHA = digest(brokenSnapshotData)
 	brokenData, err := json.Marshal(brokenRestore)
 	require.NoError(t, err)
