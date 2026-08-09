@@ -193,6 +193,19 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	require.Equal(t, want, stream.responses)
 }
 
+func TestMaintenanceSnapshotFollowerWithoutProxyRejectsLocalCapture(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	trap := &localSnapshotTrapBackend{BackendShim: server.backend}
+	server.backend = trap
+	server.peers = testPeerService{isLeader: false, proxyEnabled: false}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: context.Background()})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCNotLeader)
+	require.False(t, trap.called,
+		"a follower's process-local barrier cannot freeze concurrent leader metadata mutations")
+}
+
 func TestMaintenanceSnapshotFollowerForwardsRootCredential(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

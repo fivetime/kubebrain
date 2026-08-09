@@ -43526,6 +43526,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非零 enum 继续允许，与 upstream 可持久化行为和既有 generic alarm 扩展一致。回归测试一方面固定
   writer fail closed，另一方面手工构造旧错误 bucket 并证明官方 AlarmStore 会恢复、枚举该 NONE
   record，从而锁定真实 client-visible 反例，而非只依赖静态判断。
+  A4099 封闭无 proxy follower 的在线 Snapshot 跨进程撕裂窗口：KubeBrain 的
+  `BeginRangeTxn`/`logicalWriteMu` 是 leader-local predicate lock，leader 上可把 published revision、
+  auth、lease attachment、alarm、compact watermark 与 TiKV history snapshot 冻结在同一线性化点；
+  follower 取得的同名锁却不能阻止另一 Pod 的 leader 在这些顺序读取之间提交 mutation。旧
+  `Maintenance.Snapshot` 只在 proxy enabled 时转发 follower 请求，proxy disabled 时错误地本地 capture，
+  三副本下可能生成各部分分别合法、整体从未同时存在的制品。现在所有 follower 都禁止本地 capture：
+  proxy enabled 继续携带 caller token 转发完整 leader stream，proxy disabled 则在 BeginRangeTxn 和临时
+  bbolt 文件创建前返回 upstream `ErrGRPCNotLeader`，让客户端改选 leader，不能用不安全的可用性冒充
+  官方快照一致性。测试用 trap backend 固定两条分支：转发路径零本地 capture，禁用 proxy 路径精确
+  NotLeader 且零 barrier 调用；既有 leader metadata barrier 测试继续证明 auth mutation 在 pin 完成前
+  被阻塞、之后恢复。
 
 ### P2：运维兼容和长期验证
 

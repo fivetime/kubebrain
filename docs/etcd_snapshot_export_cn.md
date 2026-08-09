@@ -17,6 +17,10 @@ snapshot fail closed，物理 Compact 清除这些含糊版本后才恢复可用
 lease 的倒计时按官方 etcd 的持久 checkpoint 语义恢复，而不是逐秒保存抓取瞬间的实时 TTL；
 auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的用户凭据重新认证。输出仍不
 替代 TiKV 物理 PITR。
+在线 Snapshot 必须在当前 leader 上捕获。开启 etcd proxy 时，follower 会透明转发完整 stream；
+关闭 proxy 时，follower 返回 `ErrGRPCNotLeader`，由客户端改选 leader。不能在 follower 本地生成：
+`BeginRangeTxn` 只冻结当前进程的逻辑写，无法阻止另一 Pod 的 leader 在多次 TiKV metadata 读取之间
+提交变更，否则 KV revision 与 auth/lease/alarm 可能来自从未同时存在的状态。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

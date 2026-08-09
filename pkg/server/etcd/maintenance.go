@@ -458,7 +458,13 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 			return err
 		}
 	}
-	if !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+	if !s.peers.IsLeader() {
+		if !s.peers.EtcdProxyEnabled() {
+			// BeginRangeTxn is a process-local barrier. A follower cannot use it
+			// to freeze the leader's metadata mutations while taking the several
+			// TiKV reads that form one portable snapshot.
+			return rpctypes.ErrGRPCNotLeader
+		}
 		proxyCtx, err := s.forwardAuthToken(stream.Context(), caller)
 		if err != nil {
 			return err
