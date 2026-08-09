@@ -43312,6 +43312,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   tombstone→tombstone，并用 upstream MVCC Store 打开生成 backend，证明拒绝批次不可见且先前
   历史不被覆盖；`pkg/etcdsnapshot` race 与 `pkg/server/etcd` Snapshot 回归通过。该修复只改变
   snapshot artifact 构建，不触碰 TiKV 写入、Watch 或 lease 运行态，因此无需数据面故障演练。
+  A4078 继续关闭 bbolt metadata bucket 的同类静默覆盖：对照 upstream
+  `/root/etcd/server/storage/schema/lease.go`、`auth_users.go` 和 `auth_roles.go`，lease bucket key
+  是 8-byte lease ID，authUsers/authRoles key 分别是 username/role name；同一 key 的后续
+  `UnsafePut` 表示状态更新，不代表一个 snapshot state 中可以同时存在两个互相冲突的身份。
+  KubeBrain `State` 使用 slice，旧 writer 对重复 lease ID、username 或 role name 会以后项覆盖前项
+  并成功发布，使恢复 TTL、用户 role 列表或权限依赖输入顺序。现在 metadata 单一 bbolt transaction
+  在每次 Put 前查重，任何重复都 fail closed 并回滚全部 bucket 创建/内容。红测分别给同一 lease ID
+  不同 TTL、同一 username 不同 roles、同一 role name 不同 permission，确认旧实现三项均错误成功，
+  新实现返回稳定错误且 backend 没有半写 metadata bucket；既有 upstream lease/auth/alarm store restore
+  测试保持通过。Alarm 的完整 protobuf key 允许同一 member 合法同时持有 NOSPACE/CORRUPT，不按
+  member ID 误去重。本项只收紧 snapshot 制品构造，不改变在线 TiKV 状态机。
 
 ### P2：运维兼容和长期验证
 

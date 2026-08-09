@@ -70,3 +70,7 @@ etcd 启动、当前 KV 元数据对比、`snapshot+1` 写入 revision、compact
 在线历史 snapshot 还要求每个 upstream MVCC `(main revision, subrevision)` 物理身份唯一。若
 scanner 输入在同批或跨批重复该身份，builder 必须原子拒绝，不能依赖 bbolt `Put` 静默覆盖并
 发布少事件的可恢复制品；已成功提交的早期批次保持原样，失败批次不写入。
+metadata bucket 同样要求 lease ID、auth username 和 role name 分别唯一；重复身份即使内容完全
+相同也视为上游状态不自洽并拒绝整个 metadata transaction，不能让 TTL、用户角色或权限由 slice
+顺序决定。Alarm 以完整 `(member ID, alarm type)` protobuf 为 key，同一 member 同时携带
+NOSPACE/CORRUPT 是合法状态，不按 member ID 错误去重。

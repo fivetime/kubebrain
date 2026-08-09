@@ -156,7 +156,11 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		}
 		leaseKey := make([]byte, 8)
 		binary.BigEndian.PutUint64(leaseKey, uint64(lease.ID))
-		if err = tx.Bucket(leaseBucket).Put(leaseKey, value); err != nil {
+		leases := tx.Bucket(leaseBucket)
+		if leases.Get(leaseKey) != nil {
+			return fmt.Errorf("duplicate lease id %d", lease.ID)
+		}
+		if err = leases.Put(leaseKey, value); err != nil {
 			return err
 		}
 	}
@@ -176,11 +180,15 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		if user == nil || len(user.Name) == 0 {
 			return fmt.Errorf("snapshot contains invalid auth user")
 		}
+		users := tx.Bucket(authUsersBucket)
+		if users.Get(user.Name) != nil {
+			return fmt.Errorf("duplicate auth user %q", user.Name)
+		}
 		value, marshalErr := proto.Marshal(user)
 		if marshalErr != nil {
 			return marshalErr
 		}
-		if err = tx.Bucket(authUsersBucket).Put(user.Name, value); err != nil {
+		if err = users.Put(user.Name, value); err != nil {
 			return err
 		}
 	}
@@ -188,11 +196,15 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		if role == nil || len(role.Name) == 0 {
 			return fmt.Errorf("snapshot contains invalid auth role")
 		}
+		roles := tx.Bucket(authRolesBucket)
+		if roles.Get(role.Name) != nil {
+			return fmt.Errorf("duplicate auth role %q", role.Name)
+		}
 		value, marshalErr := proto.Marshal(role)
 		if marshalErr != nil {
 			return marshalErr
 		}
-		if err = tx.Bucket(authRolesBucket).Put(role.Name, value); err != nil {
+		if err = roles.Put(role.Name, value); err != nil {
 			return err
 		}
 	}

@@ -367,6 +367,55 @@ func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {
 	}))
 }
 
+func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		state State
+		want  string
+	}{
+		{
+			name: "lease ID",
+			state: State{Leases: []Lease{
+				{ID: 7, GrantedTTL: 60, RemainingTTL: 30},
+				{ID: 7, GrantedTTL: 120, RemainingTTL: 90},
+			}},
+			want: "duplicate lease id 7",
+		},
+		{
+			name: "auth user",
+			state: State{Auth: Auth{Users: []*authpb.User{
+				{Name: []byte("alice"), Roles: []string{"reader"}},
+				{Name: []byte("alice"), Roles: []string{"writer"}},
+			}}},
+			want: `duplicate auth user "alice"`,
+		},
+		{
+			name: "auth role",
+			state: State{Auth: Auth{Roles: []*authpb.Role{
+				{Name: []byte("reader")},
+				{Name: []byte("reader"), KeyPermission: []*authpb.Permission{{Key: []byte("/"), PermType: authpb.READ}}},
+			}}},
+			want: `duplicate auth role "reader"`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			err := WriteBackend(path, test.state)
+			require.ErrorContains(t, err, test.want)
+
+			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+			require.NoError(t, openErr)
+			defer db.Close()
+			require.NoError(t, db.View(func(tx *bolt.Tx) error {
+				require.Nil(t, tx.Bucket(schema.Lease.Name()), "metadata transaction must roll back all buckets")
+				require.Nil(t, tx.Bucket(schema.AuthUsers.Name()))
+				require.Nil(t, tx.Bucket(schema.AuthRoles.Name()))
+				return nil
+			}))
+		})
+	}
+}
+
 func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	password, err := bcrypt.GenerateFromPassword([]byte("alice-secret"), bcrypt.MinCost)
