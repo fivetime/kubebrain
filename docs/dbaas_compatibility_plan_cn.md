@@ -44113,6 +44113,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bucket。未发现 runtime 差异；A4164 防止未来复用写路径 alarm middleware 时误封灾难导出。Snapshot
   仍保持“部分兼容”：legacy retained version 已永久丢失 lease provenance 时继续 fail closed，物理 PITR
   也仍属于平台缺口，本项不虚假关闭二者。
+  A4165 收紧 A4164 的端到端恢复制品断言。`/root/etcd` schema 以 protobuf 编码的完整
+  `AlarmMember` 作为 `alarm` bucket key，恢复时 `v3alarm.NewAlarmStore` 会据此重建每个 member/type；仅
+  证明 Snapshot RPC 成功或 bucket 存在，仍可能遗漏一个并存告警而在 restore 后错误解除写门禁。A4164
+  的真实流产物测试现在按官方 `schema.Alarm` 遍历并反序列化 key，精确要求 member 41640/NOSPACE 与
+  41641/CORRUPT 同时存在，且不接受额外或折叠记录。writer 和直接 buildSnapshot 测试已有更广的未知
+  alarm/重复输入门禁，本项补齐的是 alarm-active → gRPC stream → checksummed bbolt 的组合证据。未发现
+  runtime 差异；A4165 防止流式导出重构只保留数据而丢失灾难状态。
 
 ### P2：运维兼容和长期验证
 

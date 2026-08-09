@@ -143,6 +143,16 @@ func TestMaintenanceSnapshotRemainsAvailableUnderNoSpaceAndCorruptAlarmsLikeEtcd
 		keyBucket := tx.Bucket(schema.Key.Name())
 		require.NotNil(t, keyBucket)
 		require.Positive(t, keyBucket.Stats().KeyN)
+		var alarms []string
+		require.NoError(t, tx.Bucket(schema.Alarm.Name()).ForEach(func(key, _ []byte) error {
+			alarm := new(etcdserverpb.AlarmMember)
+			if err := proto.Unmarshal(key, alarm); err != nil {
+				return err
+			}
+			alarms = append(alarms, fmt.Sprintf("%d/%d", alarm.MemberID, alarm.Alarm))
+			return nil
+		}))
+		require.ElementsMatch(t, []string{"41640/1", "41641/2"}, alarms)
 		return nil
 	}))
 	require.NoError(t, db.Close())
