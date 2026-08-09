@@ -44183,6 +44183,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 bbolt check 和两种 hashkv 均通过。离线 hash 受 bbolt 编码定义，仍不要求它与 KubeBrain 在线
   TiKV `Maintenance.HashKV` 数值相等；对齐的是官方工具可完整读取的 schema、revision 与 compaction
   元数据，而非错误混合两个不同的 hash 域。
+  A4173 将 A4172 扩展到 compacted snapshot 的官方离线消费边界。对照当前 upstream
+  `server/storage/mvcc/kvstore.go` 的 `hashByRev` 与 `TestHashKVWithCompactedAndFutureRevisions`：revision=0
+  必须选 latest，revision 等于 compact watermark 仍可 hash，更早 revision 返回精确
+  `ErrCompacted`，高于 current revision 返回精确 `ErrFutureRev`。KubeBrain 既有测试只读取 snapshot
+  meta bucket 中的 scheduled/finished compact key，无法证明官方 MVCC index 加载后会采用该 watermark。
+  `TestMaintenanceSnapshotPreservesActualCompactWatermark` 现在可选执行当前 upstream `etcdutl hashkv`，
+  对 latest 与 exact-compact JSON 响应精确核对 `hashRevision=compactRevision`，并要求 compact-1/future
+  两条 CLI 失败分别包含官方错误。由 `/root/etcd/etcdutl` 当前源码构建的真实工具通过全部四个分支，
+  未发现 runtime schema 差异。同期新增 upstream `1ebfb59bc` 只是复现 exact-key READ 用户用
+  `WithFromKey` Watch 越权的 e2e；该漏洞及官方 clientv3 零泄漏黑盒已由 A4124 对照修复提交
+  `7cf71ec9e` 永久覆盖，本轮记录测试来源而不重复修改 Watch runtime。
 
 ### P2：运维兼容和长期验证
 

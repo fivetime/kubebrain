@@ -974,13 +974,49 @@ func TestMaintenanceSnapshotPreservesActualCompactWatermark(t *testing.T) {
 	require.NoError(t, server.buildSnapshot(context.Background(), path))
 	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
 	require.NoError(t, err)
-	defer db.Close()
 	require.NoError(t, db.View(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(schema.Meta.Name())
 		require.Equal(t, updated.Header.Revision, mvcc.BytesToRev(meta.Get(schema.FinishedCompactKeyName)).Main)
 		require.Equal(t, updated.Header.Revision, mvcc.BytesToRev(meta.Get(schema.ScheduledCompactKeyName)).Main)
 		return nil
 	}))
+	require.NoError(t, db.Close())
+
+	etcdutl := os.Getenv("KUBEBRAIN_ETCDUTL_BIN")
+	if etcdutl == "" {
+		etcdutl = os.Getenv("KUBEBRAIN_ETCDUTL_BBOLT_BIN")
+	}
+	if etcdutl == "" {
+		return
+	}
+	type hashKVResult struct {
+		HashRevision    int64 `json:"hashRevision"`
+		CompactRevision int64 `json:"compactRevision"`
+	}
+	runHashKV := func(revision int64) (hashKVResult, []byte, error) {
+		arguments := []string{"--write-out=json", "hashkv", path}
+		if revision != 0 {
+			arguments = append(arguments, "--rev", fmt.Sprint(revision))
+		}
+		output, commandErr := exec.CommandContext(context.Background(), etcdutl, arguments...).CombinedOutput()
+		var result hashKVResult
+		if commandErr == nil {
+			require.NoError(t, json.Unmarshal(output, &result), string(output))
+		}
+		return result, output, commandErr
+	}
+	for _, revision := range []int64{0, updated.Header.Revision} {
+		result, output, commandErr := runHashKV(revision)
+		require.NoError(t, commandErr, string(output))
+		require.Equal(t, updated.Header.Revision, result.HashRevision)
+		require.Equal(t, updated.Header.Revision, result.CompactRevision)
+	}
+	_, output, commandErr := runHashKV(updated.Header.Revision - 1)
+	require.Error(t, commandErr)
+	require.Contains(t, string(output), rpctypes.ErrCompacted.Error())
+	_, output, commandErr = runHashKV(updated.Header.Revision + 1)
+	require.Error(t, commandErr)
+	require.Contains(t, string(output), rpctypes.ErrFutureRev.Error())
 }
 
 func TestMaintenanceSnapshotCancellationInterruptsStalledStream(t *testing.T) {
