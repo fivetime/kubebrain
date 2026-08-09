@@ -370,6 +370,36 @@ func TestQuotaRPCManualActivationCapsWritesWithoutConfiguredQuota(t *testing.T) 
 	require.NoError(t, err)
 }
 
+func TestQuotaRPCNoSpaceAlarmDoesNotOverrideKVAdmissionLikeEtcd(t *testing.T) {
+	server := newQuotaRPCServer(t, 0)
+	ctx := context.Background()
+	_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_ACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_NOSPACE,
+	})
+	require.NoError(t, err)
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{})
+	requireDirectKVError(t, err, rpctypes.ErrGRPCEmptyKey, codes.InvalidArgument, "etcdserver: key is not provided")
+
+	key := []byte("duplicate")
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key}}},
+		{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key}}},
+	}})
+	requireDirectKVError(t, err, rpctypes.ErrGRPCDuplicateKey, codes.InvalidArgument,
+		"etcdserver: duplicate key given in txn request")
+
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("blocked")})
+	requireQuotaNoSpaceError(t, err)
+	_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+		Request: &etcdserverpb.RequestOp_RequestPut{
+			RequestPut: &etcdserverpb.PutRequest{Key: []byte("blocked-txn")},
+		},
+	}}})
+	requireQuotaNoSpaceError(t, err)
+}
+
 func TestTxnContainsPutAcrossBranchesAndNesting(t *testing.T) {
 	put := func() *etcdserverpb.RequestOp {
 		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{

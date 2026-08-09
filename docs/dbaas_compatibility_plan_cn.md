@@ -44061,6 +44061,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   畸形写 Txn 返回 DuplicateKey，两者都不得调用 barrier 或 leadership；合法线性只读随后先得到 barrier
   Unavailable，合法匿名写则先得到 leadership Unavailable 而非 ErrUserEmpty。未发现 runtime 差异；
   A4159 防止把 readonly 分类、权限检查或协调动作提前到完整递归 admission 之前。
+  A4160 继续复审 `/root/etcd` `5cd9f4ee1` 的 KV quota 分层契约。upstream 注册的
+  `quotaKVServer` 位于 `kvServer` 外层，以 bbolt backend file size 加固定 `kvOverhead=256` 估算 Put、
+  Txn 两个分支中较大的写入成本；估算超限时可先于基础请求校验返回 NoSpace 并触发 alarm。已经激活的
+  NOSPACE alarm 则由 raft apply 的 `applierV3Capped` 执行：请求仍先通过 v3rpc validation、leadership 与
+  auth，只有合法 Put 或含 Put 的 Txn 才被 capped，Range/Delete 继续可用于读取和释放空间。KubeBrain 的
+  独立 TiKV 数据面按最新逻辑 key/value 用量做原子配额，不复制 bbolt page/file overhead，因此不能机械
+  移植 upstream 的 256-byte admission 估算；其 durable NOSPACE alarm 与 write cap 分层保持等价。现有
+  测试已覆盖超限自动 arm、手动 alarm、恢复、typed client error、LeaseGrant 与只读/删除放行；本轮补上
+  admission 交叉门禁：alarm 激活后 empty Put 仍返回 EmptyKey，重复 Put Txn 仍返回 DuplicateKey，而同一
+  服务上的合法 Put/Txn 才返回 NoSpace。未发现 runtime 差异；A4160 防止把 TiKV alarm cap 提前到静态
+  validation，或为表面代码相似度引入与实际存储计费无关的 bbolt overhead。
 
 ### P2：运维兼容和长期验证
 
