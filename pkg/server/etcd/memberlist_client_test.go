@@ -137,6 +137,53 @@ func TestRawGRPCMemberListLinearizableBarrierErrors(t *testing.T) {
 	}
 }
 
+func TestClientMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var barriers atomic.Int32
+	server.peers = testPeerService{
+		isLeader: true,
+		syncReadFn: func(ctx context.Context) error {
+			barriers.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	serializableCtx, cancelSerializable := context.WithTimeout(context.Background(), time.Second)
+	defer cancelSerializable()
+	response, err := client.MemberList(serializableCtx, clientv3.WithSerializable())
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Members)
+	require.Zero(t, barriers.Load(), "WithSerializable must send Linearizable=false")
+
+	linearizableCtx, cancelLinearizable := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancelLinearizable()
+	response, err = client.MemberList(linearizableCtx)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Positive(t, barriers.Load(), "default MemberList must send Linearizable=true")
+}
+
 func TestClientMemberListAndSyncUseAdvertisedClientURLs(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

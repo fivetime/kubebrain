@@ -43749,6 +43749,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response。连续 10 轮及 race 3 轮通过，固定 context 取消传播，防止以后为了 membership 外观可用性而
   意外绕过 linearizable 协调。`5efa4a8e0` 修复普通 Range 被 stream skip 连带跳过的问题已由既有 generated
   Range 矩阵与 A3799 审计覆盖，不重复建立同义测试。
+  A4128 将 A4127 从 direct handler 提升到 official clientv3 wire 契约。bufconn 黑盒使用当前
+  `client.MemberList(ctx, clientv3.WithSerializable())`，要求客户端把 option 反转成
+  `MemberListRequest.Linearizable=false`、返回完整成员且 barrier 计数保持零；随后默认
+  `client.MemberList(ctx)` 在 blocking barrier 上必须发送 true、等待 75ms caller deadline、返回 nil
+  response，并让错误继续满足 `errors.Is(context.DeadlineExceeded)`。该门禁同时覆盖 client option
+  inspector、gRPC 编解码、retry interceptor、服务端分流与 status→context error 归一化，防止只在 direct
+  protobuf 测试中正确、真实 client 却错误重试或丢失 deadline。连续 10 轮通过。
 
 ### P2：运维兼容和长期验证
 
