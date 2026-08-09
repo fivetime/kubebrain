@@ -210,6 +210,58 @@ func TestAuthRangeValidationPrecedesReadBarrierAndAuthLikeEtcd(t *testing.T) {
 	require.Zero(t, barrierCalls)
 }
 
+func TestAuthPutValidationPrecedesLeadershipWhileValidWriteRoutesBeforeAuthLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.peers = testPeerService{isLeader: false, proxyEnabled: false}
+	plain := context.Background()
+
+	tests := []struct {
+		name    string
+		request *etcdserverpb.PutRequest
+		want    error
+		message string
+	}{
+		{
+			name: "empty key before both ignore conflicts",
+			request: &etcdserverpb.PutRequest{
+				Value: []byte("value"), Lease: 123, IgnoreValue: true, IgnoreLease: true,
+			},
+			want: rpctypes.ErrGRPCEmptyKey, message: "etcdserver: key is not provided",
+		},
+		{
+			name: "ignore value before ignore lease",
+			request: &etcdserverpb.PutRequest{
+				Key: []byte("/allowed/a"), Value: []byte("value"), Lease: 123,
+				IgnoreValue: true, IgnoreLease: true,
+			},
+			want: rpctypes.ErrGRPCValueProvided, message: "etcdserver: value is provided",
+		},
+		{
+			name: "ignore lease conflict",
+			request: &etcdserverpb.PutRequest{
+				Key: []byte("/allowed/a"), Lease: 123, IgnoreLease: true,
+			},
+			want: rpctypes.ErrGRPCLeaseProvided, message: "etcdserver: lease is provided",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response, err := server.Put(plain, tt.request)
+			require.Nil(t, response)
+			requireDirectKVError(t, err, tt.want, codes.InvalidArgument, tt.message)
+		})
+	}
+
+	response, err := server.Put(plain, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/a"), Value: []byte("value"),
+	})
+	require.Nil(t, response)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.NotErrorIs(t, err, rpctypes.ErrUserEmpty)
+}
+
 func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -44028,6 +44028,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   enum 但非默认 stream ordering 返回 Unimplemented；三者都不得调用 read barrier、auth 或发送 chunk。
   未发现 runtime 差异；A4156 防止将 v3rpc validation 下沉后让畸形请求触发 leader routing，或以 auth
   错误覆盖稳定的协议 admission error。
+  A4157 继续复审 `/root/etcd` `5cd9f4ee1` 的 KV Put admission/apply contract。upstream
+  v3rpc `checkPutRequest` 按 empty key、IgnoreValue+nonempty value、IgnoreLease+nonzero lease 顺序完成
+  静态校验；合法请求进入 `raftRequest`，由 `processInternalRaftRequestOnce` 解析已有 credential 并建立
+  raft/quorum 提交，随后 auth/quota/backend applier 依次执行 key/lease attachment 权限、mutation 与
+  no-space 映射。A3451 已用官方三成员故障实验确认无 quorum 时合法匿名写先得到 deadline/leadership
+  error，而不是 apply-time `ErrUserEmpty`；KubeBrain 因而保持 validation → leadership/proxy → auth apply
+  的架构等价顺序。现有 direct/client/raw/Txn 测试已覆盖 ignore option 三件套、missing key/lease、quota、
+  auth attachment 与 follower proxy；本轮补上 auth-enabled follower 的交叉门禁：empty key 同时携带两类
+  conflict 仍返回 EmptyKey，双 conflict 返回 ValueProvided，单 lease conflict 返回 LeaseProvided，三者
+  均先于 leadership；同一节点上的合法匿名 Put 则必须返回 Unavailable 而非 ErrUserEmpty。未发现 runtime
+  差异；A4157 防止未来为“提前鉴权”而破坏 upstream raft/apply 错误优先级，或把静态校验错误延迟到
+  leader routing 之后。
 
 ### P2：运维兼容和长期验证
 
