@@ -104,6 +104,7 @@ spec:
                     - RestoreCutover
                     - PostRestoreAudit
                     - CertificateRotation
+                    - TiKVTransactionRepair
                     - Destroy
                 parametersSHA256:
                   type: string

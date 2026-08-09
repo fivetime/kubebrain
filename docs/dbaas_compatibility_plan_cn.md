@@ -43265,6 +43265,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   冷却误伤。契约测试覆盖成功阶段顺序、健康 `refused-healthy` receipt、冷却期零 create/scale/delete。
   controller 尚需把告警状态映射为 attempt 创建策略并执行审批，执行器本身已可跨 controller 重启
   保留幂等/冷却证据。
+  A4074 接入既有 Operation 控制面：CRD/queue/audit/admission 新增高风险
+  `TiKVTransactionRepair`，未审批对象不可 claim，status 只能由专属 repair executor SA 更新。
+  新 wrapper 校验参数 SHA、冻结输入、维持 operation lease heartbeat，调用 A4072 时强制 in-cluster
+  context，并从不可变 operation ID 派生稳定 repair attempt ID/receipt 路径（worker takeover 不会
+  重复修复）；只有严格绑定两个 UID、cluster ID、3 个
+  Pod、PVC preserved 和 transaction verified 的 JSON receipt 才能 succeed 并提交 SHA-256。参数
+  哈希竞态可 requeue；破坏性执行/receipt 失败则终止 Failed 并要求新的审批 Operation，禁止在同一
+  不可复用 attempt 上自动重试。新增默认 0 副本 executor、parameter-broker 网络准入，以及专用 repair-state、
+  operations、KubeBrain、TiKV 分段 namespaced RBAC；动态 ConfigMap 通配写被隔离在空的
+  `kubebrain-repair-state` namespace，TiKV 权限没有 PVC/PV delete，KubeBrain 写权限只限指定
+  StatefulSet scale。
+  wrapper/fake executor 测试覆盖 claim 类型、参数到环境绑定、receipt succeed；RBAC 测试精确锁定
+  verbs/resources 并禁止 PVC/PV。告警到 Operation 的自动创建策略仍需平台 controller 配置，修复
+  执行、审批、lease fencing、receipt 与审计链已连通。
 
 ### P2：运维兼容和长期验证
 

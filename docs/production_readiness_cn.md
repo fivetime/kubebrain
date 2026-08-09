@@ -169,6 +169,7 @@ EXPECTED_KUBEBRAIN_STATEFULSET_UID='<receipt statefulset UID>' \
 EXPECTED_TIDB_CLUSTER_UID='<receipt TidbCluster UID>' \
 EXPECTED_CLUSTER_ID='<receipt cluster ID>' \
 REPAIR_ATTEMPT_ID='incident-20260809-001' \
+RECEIPT_OUTPUT='/var/lib/kubebrain-operation/incident-20260809-001.json' \
 ALLOW_TIKV_POD_REPAIR=true \
 hack/production/repair-tikv-transaction-path.sh
 ```
@@ -186,7 +187,9 @@ Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。
 namespace 中读取 StatefulSet/Pod/TidbCluster、缩放指定 KubeBrain StatefulSet、创建/删除固定锁
 ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delete 权限。
 
-每次调用还会创建不可复用的
+每次调用要求一个尚不存在的绝对 `RECEIPT_OUTPUT`，成功时原子发布严格 JSON receipt；文件绑定
+两个 UID、cluster ID、attempt ID、完成时间、精确 3 个 repaired TiKV Pod、PVC preserved 与
+transaction verified，可被 Operation wrapper 重读并计算 SHA-256。每次调用还会创建不可复用的
 `ConfigMap/kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}`，持续写入 `preflight`、
 `refused-healthy`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、
 `persisting-cooldown` 或 `completed` 阶段；异常退出会把当时阶段和完成时间留在 receipt 中，
@@ -196,6 +199,29 @@ attempt ID 和完成 Unix 时间。后续调用默认在同一 TidbCluster UID �
 来自未来或记录格式损坏时 fail closed；可通过正整数 `REPAIR_COOLDOWN_SECONDS` 调整窗口。
 旧 TidbCluster UID 的冷却记录不会阻止一个已重建的新集群，但 receipt 仍保留供审计。attempt ID
 限制为至多 30 字符的 DNS label，从而使派生 ConfigMap 名保持合法且不能覆盖既有 attempt。
+ConfigMap 默认写入 TiKV namespace；Operation executor 显式设置
+`REPAIR_STATE_NAMESPACE=kubebrain-repair-state`，使动态状态写权限既不进入数据存储 namespace，
+也不能影响 operation queue、parameter broker CA 或 scheduler inventory ConfigMap。
+
+高风险自动化通过现有 `KubeBrainOperation` 控制面提交 `type: TiKVTransactionRepair`，不能直接
+常驻运行脚本。该类型与 RestoreCutover/Destroy 一样必须先由专用 approver 写入不可变 approval
+证据；queue 不会把未审批对象交给 worker。专属零副本 executor 模板位于
+`kubebrain-operation-executors.yaml`，运行
+`run-tikv-transaction-repair-operation.sh`：领取带 lease 的任务、从 parameter broker 获取并冻结
+参数、校验 SHA-256、在修复期间持续 heartbeat，丢失 lease 会终止子进程。wrapper 从 operation ID
+和 attempt 派生不可复用 repair attempt ID，校验严格 JSON receipt 后才向 Operation 写入
+Succeeded 与 receipt SHA-256。参数下载/哈希竞态可安全 requeue；破坏性执行或 receipt 验证失败
+会把 Operation 终止为 Failed，必须提交新的审批 Operation，不能在同一不可复用 repair attempt
+上自动重试。repair attempt ID 和持久 receipt
+路径只由不可变 operation ID 派生，不随 worker claim attempt 改变，因此 worker 在修复完成、提交
+Operation 终态前崩溃时，接管者会复验同一 receipt 并完成提交，而不会再次重启 TiKV。
+
+部署该 executor 还必须应用
+`deploy/production/kubebrain-tikv-transaction-repair-rbac.yaml`。权限被拆成三个 namespace：
+专用 repair-state namespace 中只管理 repair ConfigMap 状态；KubeBrain namespace 中只读取/缩放指定 StatefulSet、
+观察 Pod 和执行固定容器探针；TiKV namespace 中只读取指定 TidbCluster、观察并删除 Pod。
+该角色没有 PVC/PV、Secret、Deployment 或任意集群级写权限。executor 默认 `replicas: 0`，平台
+只有在已审批 repair operation 待处理时才应扩为 1，处理完再缩回 0。
 
 ## 生产镜像追踪
 

@@ -211,6 +211,7 @@ spec:
                   - kubebrain-restore-cutover-executor
                   - kubebrain-post-restore-audit-executor
                   - kubebrain-certificate-rotation-executor
+                  - kubebrain-tikv-transaction-repair-executor
                   - kubebrain-destroy-executor
       ports:
         - {protocol: TCP, port: 8443}

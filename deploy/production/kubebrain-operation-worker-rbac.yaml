@@ -84,6 +84,9 @@ subjects:
     name: kubebrain-certificate-rotation-executor
     namespace: kubebrain-operations
   - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
     name: kubebrain-destroy-executor
     namespace: kubebrain-operations
 roleRef:

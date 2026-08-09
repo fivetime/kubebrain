@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebrain-repair-state
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-transaction-repair
+    app.kubernetes.io/part-of: kubebrain
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-tikv-transaction-repair-state
+  namespace: kubebrain-repair-state
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create, get, patch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-transaction-repair-state
+  namespace: kubebrain-repair-state
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-tikv-transaction-repair-state
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-tikv-transaction-repair
+  namespace: kubebrain-system
+rules:
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames: [kubebrain]
+    verbs: [get, watch]
+  - apiGroups: [apps]
+    resources: [statefulsets/scale]
+    resourceNames: [kubebrain]
+    verbs: [get, patch, update]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-transaction-repair
+  namespace: kubebrain-system
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-tikv-transaction-repair
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-tikv-transaction-repair
+  namespace: tidb-cluster
+rules:
+  - apiGroups: [pingcap.com]
+    resources: [tidbclusters]
+    resourceNames: [kb]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-tikv-transaction-repair
+  namespace: tidb-cluster
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-tikv-transaction-repair

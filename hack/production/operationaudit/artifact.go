@@ -135,6 +135,7 @@ func (a Artifact) Validate() error {
 		return errors.New("failed operation audit cannot carry a receipt SHA-256")
 	}
 	approvalRequired := a.Type == "RestoreCutover" || a.Type == "CertificateRotation" ||
+		a.Type == "TiKVTransactionRepair" ||
 		a.Type == "Destroy" || a.Type == "BackupDeletion"
 	if approvalRequired &&
 		(a.ApprovedBy != ApproverUsername || !approvalIDPattern.MatchString(a.ApprovalID)) {
@@ -148,7 +149,7 @@ func (a Artifact) Validate() error {
 
 func validOperationType(value string) bool {
 	return value == "Backup" || value == "BackupDeletion" || value == "RestoreCutover" ||
-		value == "PostRestoreAudit" || value == "CertificateRotation" || value == "Destroy"
+		value == "PostRestoreAudit" || value == "CertificateRotation" || value == "TiKVTransactionRepair" || value == "Destroy"
 }
 
 func validAuditIdentityValue(value string, maxRunes int) bool {

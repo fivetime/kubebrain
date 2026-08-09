@@ -12,9 +12,12 @@ import (
 func TestRepairTiKVTransactionPath(t *testing.T) {
 	tempDir := t.TempDir()
 	fakeKubectl := filepath.Join(tempDir, "kubectl")
+	fakeDate := filepath.Join(tempDir, "date")
 	logPath := filepath.Join(tempDir, "kubectl.log")
 	stateDir := filepath.Join(tempDir, "state")
+	receiptPath := filepath.Join(tempDir, "repair-receipt.json")
 	require.NoError(t, os.Mkdir(stateDir, 0o755))
+	require.NoError(t, os.WriteFile(fakeDate, []byte("#!/usr/bin/env bash\nprintf '1786250000\\n'\n"), 0o755))
 	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_LOG"
@@ -72,6 +75,7 @@ fi
 
 	env := []string{
 		"KUBECTL=" + fakeKubectl,
+		"DATE=" + fakeDate,
 		"KUBE_CONTEXT=test-context",
 		"ALLOW_TIKV_POD_REPAIR=true",
 		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=kb-uid",
@@ -79,6 +83,7 @@ fi
 		"EXPECTED_CLUSTER_ID=7671",
 		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
 		"REPAIR_ATTEMPT_ID=repair-test-1",
+		"RECEIPT_OUTPUT=" + receiptPath,
 		"REPAIR_COOLDOWN_SECONDS=3600",
 		"NOW_UNIX=1786254000",
 		"REQUIRED_FAILED_PROBES=3",
@@ -97,10 +102,24 @@ fi
 	require.Equal(t, 3, strings.Count(log, "delete pod kb-tikv-"), log)
 	requireOrder(t, log, "create configmap kubebrain-tikv-transaction-repair-lock", "create configmap kubebrain-tikv-repair-repair-test-1", "--replicas=0", "delete pod kb-tikv-2", "delete pod kb-tikv-1", "delete pod kb-tikv-0", "--replicas=3", "create configmap kubebrain-tikv-transaction-repair-last-success", "delete configmap kubebrain-tikv-transaction-repair-lock")
 	require.NotContains(t, log, "delete pvc")
+	receipt, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"attempt_id":"repair-test-1",
+		"cluster_id":7671,
+		"completed_at_unix":1786250000,
+		"format":"kubebrain.tikv-transaction-repair.receipt.v1",
+		"kubebrain_statefulset_uid":"kb-uid",
+		"pvc_preserved":true,
+		"repaired_tikv_pods":3,
+		"tidb_cluster_uid":"tc-uid",
+		"transaction_verified":true
+	}`, string(receipt))
 
 	for ordinal := 0; ordinal < 3; ordinal++ {
 		require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-"+string(rune('0'+ordinal)))))
 	}
+	require.NoError(t, os.Remove(receiptPath))
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	healthyOutput, healthyErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_HEALTHY_BEFORE=true"))
@@ -114,6 +133,7 @@ fi
 	require.Contains(t, healthyLog, "delete configmap kubebrain-tikv-transaction-repair-lock")
 	require.NotContains(t, healthyLog, " scale ")
 	require.NotContains(t, healthyLog, "delete pod")
+	require.NoFileExists(t, receiptPath)
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	cooldownOutput, cooldownErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",

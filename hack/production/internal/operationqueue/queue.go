@@ -531,7 +531,7 @@ func (q *Queue) lastStarted(ctx context.Context, operationType string) (int64, e
 
 func requiresApproval(operationType string) bool {
 	switch operationType {
-	case "RestoreCutover", "CertificateRotation", "Destroy", "BackupDeletion":
+	case "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "Destroy", "BackupDeletion":
 		return true
 	default:
 		return false
@@ -540,7 +540,7 @@ func requiresApproval(operationType string) bool {
 
 func isSupportedOperationType(operationType string) bool {
 	switch operationType {
-	case "Backup", "BackupDeletion", "RestoreCutover", "PostRestoreAudit", "CertificateRotation", "Destroy":
+	case "Backup", "BackupDeletion", "RestoreCutover", "PostRestoreAudit", "CertificateRotation", "TiKVTransactionRepair", "Destroy":
 		return true
 	default:
 		return false

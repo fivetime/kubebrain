@@ -634,6 +634,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"run-certificate-rotation-operation.sh", "kubebrain-certificate-rotation-executor-env",
 			"kubebrain-certificate-rotation-executor-workspace",
 		},
+		"kubebrain-tikv-transaction-repair-executor": {
+			"run-tikv-transaction-repair-operation.sh", "kubebrain-tikv-transaction-repair-executor-env",
+			"kubebrain-tikv-transaction-repair-executor-workspace",
+		},
 		"kubebrain-destroy-executor": {
 			"run-destroy-operation.sh", "kubebrain-destroy-executor-env",
 			"kubebrain-destroy-executor-workspace",
@@ -962,7 +966,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
-	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "Destroy"} {
 		require.Contains(t, approvalExpression, `"`+operationType+`"`)
 	}
 	require.NotContains(t, approvalExpression, `"Backup"`)
