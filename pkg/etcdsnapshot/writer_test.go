@@ -530,6 +530,33 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 	}
 }
 
+func TestOfficialAuthStoreRecoversImplicitRootRole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{Auth: Auth{
+		Enabled:  true,
+		Revision: 3,
+		Users: []*authpb.User{{
+			Name: []byte("root"), Roles: []string{"root"},
+		}},
+	}}))
+
+	lg := zaptest.NewLogger(t)
+	be := etcdbackend.NewDefaultBackend(lg, path)
+	defer func() { require.NoError(t, be.Close()) }()
+	ready := func(uint64) <-chan struct{} {
+		ch := make(chan struct{})
+		close(ch)
+		return ch
+	}
+	tokens, err := etcdAuth.NewTokenProvider(lg, "simple", ready, time.Minute)
+	require.NoError(t, err)
+	authStore := etcdAuth.NewAuthStore(lg, schema.NewAuthBackend(lg, be), tokens, bcrypt.MinCost)
+	defer func() { require.NoError(t, authStore.Close()) }()
+	require.True(t, authStore.IsAuthEnabled())
+	require.EqualValues(t, 3, authStore.Revision())
+	require.NoError(t, authStore.IsPutPermitted(&etcdAuth.AuthInfo{Username: "root", Revision: 3}, []byte("key")))
+}
+
 func TestWriteBackendRejectsPasswordOnNoPasswordUser(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	err := WriteBackend(path, State{Auth: Auth{Users: []*authpb.User{{

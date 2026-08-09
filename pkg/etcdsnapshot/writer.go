@@ -291,7 +291,7 @@ func validateAuthState(auth Auth) error {
 				return fmt.Errorf("auth user %q repeats role %q", user.Name, role)
 			}
 			seenRoles[role] = struct{}{}
-			if _, exists := roleNames[role]; !exists {
+			if _, exists := roleNames[role]; !exists && role != "root" {
 				return fmt.Errorf("auth user %q references missing role %q", user.Name, role)
 			}
 		}

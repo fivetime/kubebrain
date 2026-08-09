@@ -43325,8 +43325,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   member ID 误去重。本项只收紧 snapshot 制品构造，不改变在线 TiKV 状态机。
   A4079 固定 Snapshot auth graph 一致性：upstream
   `/root/etcd/server/auth/store.go:AuthEnable` 在持久化 enabled 前强制 root 用户存在且持有 root role；
-  `RoleDelete` 删除 role 后会在同一 batch 遍历所有用户并移除引用，`UserGrantRole` 也只接受已存在
-  role。因此官方管理 API 可达状态中不存在 enabled-without-root、悬空 role 引用或同一用户重复 role。
+  `RoleDelete` 删除普通 role 后会在同一 batch 遍历所有用户并移除引用，`UserGrantRole` 对普通 role
+  也只接受已存在记录。因此官方管理 API 可达状态中不存在 enabled-without-root、普通悬空 role 引用
+  或同一用户重复 role；特殊 root role 的 record 例外由 A4087 补正。
   旧 writer 仅逐条 marshal/Put，会把这四类不自洽 Auth slice 写成可被 etcd 打开的 backend，恢复后
   permission cache 与管理语义不再对应任何合法 etcd 历史。现在 metadata transaction 在对象身份
   查重后构建 role 集合，逐用户拒绝重复/缺失 role，并在 enabled 状态验证 root 用户及其 root role；
@@ -43404,6 +43405,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `remainingTTL <= grantedTTL`，失败回滚完整 metadata transaction。红测证明旧实现会接受 61/60；
   边界正例固定 60/60，并特意使用负显式 lease ID，防止误加“ID 必须为正”的过度校验——upstream
   LeaseGrant 只为自动 ID 选择正数，lessor.Grant 对客户端显式 ID 仅禁止 0。本项不改变在线 TTL。
+  A4087 修正 A4079 对特殊 root role record 的过度校验：重新逐行核对 upstream
+  `/root/etcd/server/auth/store.go:UserGrantRole`，只有 `role != "root"` 才查询 role bucket；
+  AuthEnable 的 `hasRootRole` 也只在 root 用户的有序 role slice 中查找字符串，不要求独立 RoleAdd。
+  KubeBrain `authManager.userGrantRole/enable` 已有相同例外。因此公开 API 可达最小状态可以是：空 store
+  revision 1，UserAdd(root)→2，UserGrantRole(root,"root")→3，随后不推进 revision 的 AuthEnable，且
+  authRoles bucket 没有 root 记录。旧 snapshot validator 会以 missing role 错误拒绝该合法迁移制品。
+  新增官方 AuthStore 恢复红测固定 enabled/revision=3、隐式 root role 与 root Put 管理权限；校验现在
+  只允许缺失的精确特殊名 `root`，其他悬空引用、排序、重复和 graph revision 下界继续 fail closed。
+  文档同步更正 A4079 的泛化描述。本项放宽的是两边已支持的协议状态，不改变在线 Auth/TiKV 数据。
 
 ### P2：运维兼容和长期验证
 
