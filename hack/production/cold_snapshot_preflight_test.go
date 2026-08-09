@@ -140,6 +140,7 @@ func TestProductionReadinessColdSnapshotExamplesRequireExplicitContext(t *testin
 	require.Contains(t, doc, "实际观察值作为 `source_volume_handle` 写入 snapshot receipt 条目")
 	require.Contains(t, doc, "最终 CSI snapshotHandle 均须一一唯一")
 	require.Contains(t, doc, "receipt 原子发布前，executor 会再次读取全部 retained")
+	require.Contains(t, doc, "capture completion")
 }
 
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {

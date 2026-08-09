@@ -370,6 +370,7 @@ if ! jq -en --argjson inventory "$inventory" --argjson snapshots "$snapshots" '
   echo "snapshot set is incomplete or contains duplicate identities" >&2
   exit 1
 fi
+snapshot_created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 restore_replicas "$TIDB_NAMESPACE" "$pd_name" "$pd_uid" "$pd_replicas"
 pd_stopped=false
@@ -414,7 +415,7 @@ validate_retained_snapshot_set
 verify_witness_file
 receipt_tmp="${RECEIPT_FILE}.tmp.$$"
 jq -n --arg format kubebrain.cold-physical-snapshot.v2 --arg operation_id "$OPERATION_ID" \
-  --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg witness_file_sha256 "$witness_file_sha256" \
+  --arg created_at "$snapshot_created_at" --arg witness_file_sha256 "$witness_file_sha256" \
   --argjson semantic_witness "$witness_status" --argjson inventory "$inventory" --argjson snapshots "$snapshots" \
   '{format:$format,operation_id:$operation_id,created_at:$created_at,inventory:$inventory,snapshots:$snapshots,
     semantic_witness:($semantic_witness + {file_sha256:$witness_file_sha256})}' >"$receipt_tmp"

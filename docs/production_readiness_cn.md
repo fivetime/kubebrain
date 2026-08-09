@@ -937,6 +937,10 @@ VolumeSnapshot/VolumeSnapshotContent：复核对象 UID、Snapshot class/source 
 restore size，以及 Content 的 Retain policy、driver、Snapshot UID、源 volumeHandle 和最终
 snapshotHandle。恢复窗口中发生删除、同名替换、解绑或 status handle 漂移时不得发布成功 receipt；
 早先在停机窗口采集到的 JSON 不能替代发布时的 live retained-state 证明。
+receipt 顶层 `created_at` 表示全部 snapshot content 首次完成并通过集合校验的 capture completion
+时间，在恢复 PD/TiKV/KubeBrain 之前冻结；它不是 receipt 文件的发布时间。恢复链据此验证
+`witness.created_at_unix <= snapshot.created_at <= restore.completed_at`，服务重启耗时不得被伪装成
+更晚的 snapshot capture 时间。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的

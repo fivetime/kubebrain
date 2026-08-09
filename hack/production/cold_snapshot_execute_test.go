@@ -53,6 +53,14 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			realGo, err := exec.LookPath("go")
 			require.NoError(t, err)
 			writeTrafficExecutable(t, filepath.Join(dir, "go"), coldSnapshotFakeGo)
+			writeTrafficExecutable(t, filepath.Join(dir, "date"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$(grep -c 'patch statefulset kubebrain' "$FAKE_LOG")" -gt 1 ]]; then
+  printf '2040-01-01T00:00:00Z\n'
+else
+  printf '2030-01-01T00:00:00Z\n'
+fi
+`)
 
 			env := []string{
 				"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"),
@@ -85,6 +93,8 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 				var receipt map[string]any
 				require.NoError(t, json.Unmarshal(value, &receipt))
 				require.Equal(t, "kubebrain.cold-physical-snapshot.v2", receipt["format"])
+				require.Equal(t, "2030-01-01T00:00:00Z", receipt["created_at"],
+					"created_at must describe snapshot capture completion, not later service restoration")
 				require.Len(t, receipt["snapshots"], 6)
 				firstSnapshot := receipt["snapshots"].([]any)[0].(map[string]any)
 				require.Equal(t, "handle-pv-pd-kb-pd-0", firstSnapshot["source_volume_handle"])

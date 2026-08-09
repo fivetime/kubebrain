@@ -43847,6 +43847,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   残留继续供人工审计。红测只在第七次（首次发布前复核）Content 读取时改变 handle，证明初始六项检查
   全部成功但最终 publication fail closed；成功路径现在经历 6+6 次 live identity 验证。该复核缩短
   publication 证据窗口，但不代替对象存储复制、CSI retention SLA 或真实隔离恢复演练。
+  A4139 修正 cold snapshot receipt `created_at` 的证据语义。restore verifier 明确用该字段验证
+  `semantic witness <= snapshot <= restore`，但旧 executor 在 PD/TiKV/KubeBrain 全部恢复之后才调用
+  `date`，记录的是 receipt publication 时间；长时间 rollout 会把 snapshot capture 虚假后移，削弱
+  witness 与物理快照的时间关联。现在全部 snapshot content Ready、来源绑定和集合唯一性通过后立即
+  冻结 RFC3339 `snapshot_created_at`，再恢复服务、执行 A4138 live retained-state 复核并原子发布 receipt；
+  receipt 始终使用冻结的 capture completion，而文件发布时刻不冒充 capture。红测用可控 clock 在停机
+  阶段返回 2030、恢复后返回 2040，旧实现写 2040，本轮固定成功 receipt 必须写 2030。该时间仍为
+  control-plane wall clock，生产环境必须由节点时间同步保证；本轮不把它提升为 CSI provider timestamp。
 
 ### P2：运维兼容和长期验证
 
