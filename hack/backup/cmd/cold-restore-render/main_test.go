@@ -95,6 +95,8 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 		{name: "v1 receipt", mutate: func(r *receipt) { r.Format = "kubebrain.cold-physical-snapshot.v1" }, message: "unsupported receipt"},
 		{name: "invalid created_at", mutate: func(r *receipt) { r.CreatedAt = "not-a-time" }, message: "created_at"},
 		{name: "future created_at", mutate: func(r *receipt) { r.CreatedAt = time.Now().Add(time.Hour).UTC().Format(time.RFC3339) }, message: "in the future"},
+		{name: "snapshot predates witness", mutate: func(r *receipt) { r.CreatedAt = "1970-01-01T00:00:00Z" }, message: "predates semantic witness"},
+		{name: "missing witness created_at", mutate: func(r *receipt) { r.SemanticWitness.CreatedAtUnix = 0 }, message: "predates semantic witness"},
 		{name: "invalid inventory format", mutate: func(r *receipt) { r.Inventory.Format = "other" }, message: "inventory format"},
 		{name: "uppercase witness digest", mutate: func(r *receipt) {
 			r.SemanticWitness.SHA256 = strings.ToUpper(r.SemanticWitness.SHA256)
@@ -151,6 +153,7 @@ func validReceipt() receipt {
 	value.SemanticWitness.Format = "kubebrain.logical.v2"
 	value.SemanticWitness.Prefix = "/registry"
 	value.SemanticWitness.Revision = 100
+	value.SemanticWitness.CreatedAtUnix = 1
 	value.SemanticWitness.Records = 1
 	value.SemanticWitness.SHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	value.SemanticWitness.FileSHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

@@ -43863,6 +43863,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一致。单元红测固定一小时后的 receipt 被拒绝；executor 黑盒先用正常 receipt 生成 manifest，再仅将
   receipt 时间改为 2999，要求 renderer 在任何 kubectl target access/create 前失败且不生成 restore
   receipt。该严格门禁依赖控制面时间同步，不通过任意 clock-skew 容差掩盖错误证据。
+  A4141 修复真实 cold snapshot executor→restore renderer schema 与时间下界。`logical-status` 输出及
+  `cold-snapshot-execute.sh` receipt 的 semantic witness 包含 `created_at_unix`，但 renderer 的
+  `DisallowUnknownFields` 结构体遗漏该字段；生产形态 receipt 会被当作 unknown field 拒绝，测试 fixture
+  通过删字段掩盖了集成断裂。同时 renderer 不验证 `witness <= snapshot`，删除该字段后的篡改 receipt
+  即使 snapshot 时间早于 witness 也能启动目标创建。renderer 现显式解码正数 `CreatedAtUnix`，要求
+  `snapshot.created_at >= time.Unix(witness.created_at_unix)`；fixture 恢复真实字段，strict decode 测试
+  固定它不再被误拒。单元红测覆盖缺失/零 witness 时间和 snapshot predates witness；executor 黑盒先用
+  合法 receipt 生成 canonical manifest，再把 snapshot 时间改为 Unix epoch，要求任何 target kubectl
+  access 前失败。最终 verifier 的同一时间关系继续作为恢复后纵深校验，而不再承担首次发现职责。
 
 ### P2：运维兼容和长期验证
 

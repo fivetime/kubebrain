@@ -49,6 +49,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		wrongContent                   bool
 		wrongPVC                       bool
 		futureReceipt                  bool
+		predatesWitness                bool
 		wantReceipt                    bool
 		wantPreexistingRestoreReceipt  bool
 		wantEmergency                  bool
@@ -60,6 +61,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		{name: "existing target fails before create", existing: true, wantError: "target resource already exists"},
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
 		{name: "future snapshot receipt fails before target access", futureReceipt: true, wantError: "created_at is in the future"},
+		{name: "snapshot receipt predating witness fails before target access", predatesWitness: true, wantError: "predates semantic witness"},
 		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "source receipt drift during render uses captured receipt", sourceReceiptDriftDuringRender: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "restore manifest drift during capture fails before target access", restoreManifestDriftDuringHash: true, wantError: "restore manifest changed during capture"},
@@ -90,6 +92,14 @@ func TestColdRestoreExecute(t *testing.T) {
 				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &future))
 				future["created_at"] = "2999-01-01T00:00:00Z"
 				data, marshalErr := json.Marshal(future)
+				require.NoError(t, marshalErr)
+				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
+			}
+			if tc.predatesWitness {
+				var stale map[string]any
+				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &stale))
+				stale["created_at"] = "1970-01-01T00:00:00Z"
+				data, marshalErr := json.Marshal(stale)
 				require.NoError(t, marshalErr)
 				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
 			}
@@ -164,7 +174,7 @@ func TestColdRestoreExecute(t *testing.T) {
 			}
 
 			logValue, readErr := os.ReadFile(logPath)
-			if (tc.tampered || tc.futureReceipt || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
+			if (tc.tampered || tc.futureReceipt || tc.predatesWitness || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
 				logValue = nil
 			} else {
 				require.NoError(t, readErr)
@@ -775,7 +785,7 @@ func coldRestoreSnapshotReceipt(t *testing.T) []byte {
 		"format": "kubebrain.cold-physical-snapshot.v2", "operation_id": "restore-test",
 		"created_at": "2026-07-21T00:00:00Z", "inventory": inventory, "snapshots": snapshots,
 		"semantic_witness": map[string]any{
-			"format": "kubebrain.logical.v2", "prefix": "/registry", "revision": 100, "records": 1, "leases": 0,
+			"format": "kubebrain.logical.v2", "prefix": "/registry", "revision": 100, "created_at_unix": 1, "records": 1, "leases": 0,
 			"sha256": strings.Repeat("a", 64), "file_sha256": strings.Repeat("b", 64),
 		},
 	})

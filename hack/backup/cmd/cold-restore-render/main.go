@@ -28,13 +28,14 @@ type receipt struct {
 	Inventory       inventory  `json:"inventory"`
 	Snapshots       []snapshot `json:"snapshots"`
 	SemanticWitness struct {
-		Format     string `json:"format"`
-		Prefix     string `json:"prefix"`
-		Revision   int64  `json:"revision"`
-		Records    int    `json:"records"`
-		Leases     int    `json:"leases"`
-		SHA256     string `json:"sha256"`
-		FileSHA256 string `json:"file_sha256"`
+		Format        string `json:"format"`
+		Prefix        string `json:"prefix"`
+		Revision      int64  `json:"revision"`
+		CreatedAtUnix int64  `json:"created_at_unix"`
+		Records       int    `json:"records"`
+		Leases        int    `json:"leases"`
+		SHA256        string `json:"sha256"`
+		FileSHA256    string `json:"file_sha256"`
 	} `json:"semantic_witness"`
 }
 
@@ -219,6 +220,9 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	}
 	if createdAt.After(time.Now()) {
 		return nil, errors.New("cold snapshot receipt created_at is in the future")
+	}
+	if r.SemanticWitness.CreatedAtUnix <= 0 || createdAt.Before(time.Unix(r.SemanticWitness.CreatedAtUnix, 0)) {
+		return nil, errors.New("cold snapshot receipt predates semantic witness")
 	}
 	if r.SemanticWitness.Format != "kubebrain.logical.v2" || r.SemanticWitness.Prefix == "" ||
 		r.SemanticWitness.Revision <= 0 || r.SemanticWitness.Records <= 0 ||
