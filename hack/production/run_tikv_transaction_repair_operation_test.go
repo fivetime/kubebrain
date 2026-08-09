@@ -23,7 +23,9 @@ func TestRunTiKVTransactionRepairOperation(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
-  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","instance":"kubebrain","attempt":2,"parameters_sha256":"%s"}\n' "${CLAIM_NAMESPACE:-kubebrain-operations}" "$EXPECTED_DIGEST"
+  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","requested_by":"%s","instance":"%s","type":"%s","parameters_sha256":"%s","parameters_secret":"tikv-repair-1bb5a469de669cd3422d-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' \
+    "${CLAIM_NAMESPACE:-kubebrain-operations}" "${CLAIM_REQUESTER:-alertmanager:transaction-path-policy}" \
+    "${CLAIM_INSTANCE:-kubebrain}" "${CLAIM_TYPE:-TiKVTransactionRepair}" "$EXPECTED_DIGEST" "${CLAIM_OWNER:-$WORKER_ID}"
 fi
 `), 0o755))
 	repair := filepath.Join(tempDir, "repair")
@@ -132,6 +134,20 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	extraRepairData, err := os.ReadFile(repairLog)
 	require.NoError(t, err)
 	require.Empty(t, extraRepairData, "unknown parameter fields must fail before starting the repair primitive")
+
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	claimDriftOutput, claimDriftErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-6", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog, "CLAIM_TYPE=Destroy",
+	})
+	require.Error(t, claimDriftErr)
+	require.Contains(t, string(claimDriftOutput), "repair claim identity does not match the approved alert operation")
+	claimDriftRepairData, err := os.ReadFile(repairLog)
+	require.NoError(t, err)
+	require.Empty(t, claimDriftRepairData, "claim type drift must fail before starting the repair primitive")
 }
 
 func TestRunTiKVTransactionRepairOperationRejectsInvalidClaimNamespace(t *testing.T) {
@@ -146,7 +162,7 @@ func TestRunTiKVTransactionRepairOperationRejectsInvalidClaimNamespace(t *testin
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
-  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","instance":"kubebrain","attempt":2,"parameters_sha256":"%s"}\n' "$CLAIM_NAMESPACE" "$EXPECTED_DIGEST"
+  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","requested_by":"alertmanager:transaction-path-policy","instance":"kubebrain","type":"TiKVTransactionRepair","parameters_sha256":"%s","parameters_secret":"tikv-repair-1bb5a469de669cd3422d-parameters","parameters_key":"parameters.json","owner":"worker-invalid-namespace","attempt":2}\n' "$CLAIM_NAMESPACE" "$EXPECTED_DIGEST"
 fi
 `), 0o755))
 	repair := filepath.Join(tempDir, "repair")

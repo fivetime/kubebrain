@@ -40,12 +40,14 @@ run_operationctl() {
 file_sha256() { sha256sum "$1" | cut -d ' ' -f1; }
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type TiKVTransactionRepair --lease "${LEASE_SECONDS}s")"
-claimed_namespace="$($JQ -r '.namespace // empty' <<<"$claim")"
-if [[ -n "$claimed_namespace" ]]; then
-  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
-    die "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters"
-  OPERATION_NAMESPACE="$claimed_namespace"
-fi
+claim_identity="$($JQ -er '[.namespace,.type,.requested_by,.owner,.parameters_secret,.parameters_key] |
+  select(length == 6 and all(.[]; type == "string" and length > 0)) | @tsv' <<<"$claim")" ||
+  die "repair claim identity is incomplete"
+IFS=$'\t' read -r claimed_namespace claimed_type claimed_requester claimed_owner \
+  claimed_parameters_secret claimed_parameters_key <<<"$claim_identity"
+[[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+  die "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters"
+OPERATION_NAMESPACE="$claimed_namespace"
 name="$($JQ -er '.name' <<<"$claim")"
 operation_id="$($JQ -er '.operation_id' <<<"$claim")"
 instance="$($JQ -er '.instance' <<<"$claim")"
@@ -108,6 +110,10 @@ done
 [[ "$alert_fingerprint" =~ ^[a-f0-9]{16,64}$ && "$alert_starts_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && "$alert_occurrence_id" =~ ^[a-f0-9]{20}$ ]] || die "repair alert occurrence identity is invalid"
 computed_occurrence_id="$(printf '%s\n%s\n' "$alert_fingerprint" "$alert_starts_at" | sha256sum | cut -c1-20)"
 [[ "$computed_occurrence_id" == "$alert_occurrence_id" && "$name" == "tikv-repair-${alert_occurrence_id}" && "$operation_id" == "$name" ]] || die "repair alert occurrence identity does not match the operation"
+[[ "$claimed_type" == "TiKVTransactionRepair" && "$claimed_requester" == "alertmanager:transaction-path-policy" &&
+  "$claimed_owner" == "$WORKER_ID" && "$claimed_parameters_secret" == "${name}-parameters" &&
+  "$claimed_parameters_key" == "parameters.json" && "$instance" == "$kb_statefulset" ]] ||
+  die "repair claim identity does not match the approved alert operation"
 
 attempt_hash="$(printf '%s' "$operation_id" | sha256sum | cut -c1-20)"
 repair_attempt_id="op-${attempt_hash}"

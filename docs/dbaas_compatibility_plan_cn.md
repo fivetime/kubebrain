@@ -44268,6 +44268,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   runner 现在沿用同一 fail-closed 契约。负向测试让 claim 返回 `tenant/a`，精确证明它在参数读取、
   heartbeat 和 repair primitive 之前退出；统一静态门禁也把 repair runner 纳入 namespace 与 heartbeat
   覆盖集合。正常隔离 namespace、occurrence、参数摘要、审批、冷却、UID/cluster-ID 和 receipt 栅栏不变。
+  A4183 将 A4182 从 namespace 语法校验扩展为完整 claim provenance 绑定。`operationqueue.Claim` 的公开
+  JSON 契约始终返回 namespace、type、`requested_by`、owner、`parameters_secret/key`；repair inventory
+  executor 原先仍容忍 namespace 缺失，且完全不核对其余字段，因此被错误路由或漂移的 claim 只要
+  operation name 与参数摘要自洽就可能进入 destructive primitive。runner 现在要求这些字段全部为
+  非空字符串，并精确匹配 `TiKVTransactionRepair`、`alertmanager:transaction-path-policy`、当前 worker、
+  `${operation}-parameters` 与 `parameters.json`；claim instance 还必须等于冻结参数的 StatefulSet。
+  回归把合法参数摘要与 occurrence 保持不变、仅将 claim type 改成 `Destroy`，旧实现会启动 repair，
+  新实现于子进程前拒绝且 repair log 为空。namespace/type/requester/owner/Secret/key/instance 与审批对象由此
+  形成单一身份链，不改变 receiver/worker RBAC、人工 approve、`maxAttempts=1` 或底层修复步骤。
 
 ### P2：运维兼容和长期验证
 
