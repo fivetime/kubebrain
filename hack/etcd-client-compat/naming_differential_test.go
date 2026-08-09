@@ -31,6 +31,7 @@ type namingOutcome struct {
 	LeaseDeleteObserved  bool
 	RoundRobinBothReady  bool
 	RoundRobinDeleteDone bool
+	RoundRobinRejoinDone bool
 	ResolverInitial      string
 	ResolverAfterDelete  string
 }
@@ -53,6 +54,7 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 		LeaseDeleteObserved:  true,
 		RoundRobinBothReady:  true,
 		RoundRobinDeleteDone: true,
+		RoundRobinRejoinDone: true,
 		ResolverInitial:      "SERVING",
 		ResolverAfterDelete:  "NOT_SERVING",
 	}, kubeBrainOutcome)
@@ -210,6 +212,19 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	roundRobinDeleteDone := consecutiveServing == 20
 	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/not-serving",
 		endpoints.Endpoint{Addr: notServingAddr}))
+	rejoinedStatuses := make(map[string]struct{}, 2)
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		response, callErr := roundRobinClient.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+		if callErr != nil {
+			return false
+		}
+		rejoinedStatuses[response.Status.String()] = struct{}{}
+		return len(rejoinedStatuses) == 2
+	}, 5*time.Second, 20*time.Millisecond,
+		"round_robin resolver did not restore an endpoint re-added through its watch")
+	roundRobinRejoinDone := len(rejoinedStatuses) == 2
 	require.NoError(t, roundRobinConnection.Close())
 	roundRobinBothReady := len(roundRobinStatuses) == 2
 
@@ -257,6 +272,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		LeaseDeleteObserved:  leaseDeleteObserved,
 		RoundRobinBothReady:  roundRobinBothReady,
 		RoundRobinDeleteDone: roundRobinDeleteDone,
+		RoundRobinRejoinDone: roundRobinRejoinDone,
 		ResolverInitial:      resolverInitial,
 		ResolverAfterDelete:  resolverAfterDelete,
 	}

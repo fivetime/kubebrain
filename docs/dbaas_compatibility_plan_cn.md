@@ -44296,6 +44296,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与独立 3 副本 KubeBrain/3 PD/3 TiKV 集群普通连续 10 轮、race 连续 5 轮通过，未发现 runtime 差异。
   该门禁证明 KubeBrain 的 Txn/Watch revision 流可驱动官方 naming resolver 完成负载均衡摘流，而不只
   是静态 List 可读；长期跨网络分区的连接排空仍保留为 P1 soak。
+  A4186 补齐同一 gRPC `round_robin` connection 的 endpoint 重新加入语义。A4185 在摘流后重新写回
+  NOT_SERVING endpoint 只是为后续 pick-first 场景恢复 fixture，立即关闭旧 connection，无法证明官方
+  resolver 已消费 add watch、重建 SubConn 并让 picker 再次使用该地址。现在重新注册后清空观测集合，
+  在原 connection 上继续 health RPC，5 秒内必须重新同时观察到 SERVING 与 NOT_SERVING；只更新
+  etcd List、丢失 add event、watch revision 跳过或 balancer 不恢复地址都会失败。当前 `/root/etcd`
+  reference 与独立 3 副本 KubeBrain/3 PD/3 TiKV 集群普通连续 10 轮、race 连续 5 轮通过，随后既有
+  pick-first delete/switch 仍通过，未发现 runtime 差异。A4184-A4186 由此覆盖静态双 READY、动态删除
+  摘流和同连接重新加入完整周期，持续约束官方 client/v3 naming 对 TiKV-backed Watch/Txn 的消费行为。
 
 ### P2：运维兼容和长期验证
 
