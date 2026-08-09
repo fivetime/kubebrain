@@ -43449,6 +43449,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backend 测试确认真实三键 Txn 的每条 stream record 都携带 total=3。compact watermark 内仍不要求
   当前保留 anchor 数等于原 total，因为 compaction 合法删除同事务其他旧 key；单条 anchor 携带的
   sub/total envelope 仍须自洽。backend/server/snapshot race 与 vet 回归通过；本项只增强导出证明。
+  A4091 固定 PreserveHistory 的 per-key MVCC generation/version 连续性：对照 upstream
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go`，Put 对活跃 key 保持 create revision 并将 version
+  精确 +1；删除只对存在 key 生成 tombstone，随后 Put 才以 `create=mod, version=1` 开新 generation。
+  upstream restore 对首个物理 row 直接信任其 protobuf create/version，后续同 key 只在 keyIndex 内部
+  put/tombstone；它会对无前态 tombstone 记录 warning 后继续，并不会核对后续 protobuf metadata，
+  因而损坏 backend 可启动但历史 Range 返回与索引 generation 不一致的 KeyValue。Builder Finish 现在
+  按物理 revision 顺序重建每个 key 的 live generation：watermark 及之前的最后 row 仅作为 compaction
+  anchor 初始化 create/version；严格大于 watermark 后要求更新保持 create 且 version+1、删除必须有
+  live 前态、重建必须从当前 main/1 开始。红测证明旧 writer 接受 version 1→3、未 tombstone 就重置
+  create/version，以及无前态 tombstone；正例固定 compact=10 时只保留 create=2/version=5 anchor，
+  revision 12 的 version=6 合法，避免要求被 compaction 删除的早期版本仍在 artifact。snapshot race、
+  server Snapshot、backend history、转换器和 vet 回归覆盖；本项不修改在线 MVCC/TiKV 状态。
 
 ### P2：运维兼容和长期验证
 

@@ -81,6 +81,10 @@ scanner 输入在同批或跨批重复该身份，builder 必须原子拒绝，�
 `0 <= subrevision < totalChanges`。同一 main 的 total 必须一致；watermark 之后实际连续记录数必须
 精确等于 total，以同时发现内部缺口和缺失尾部。watermark 内只校验单条 envelope 与 repeated total
 一致性，不要求 compaction anchor 数等于原事务总数。
+PreserveHistory 还会按物理 revision 重建每个 key 的 generation。compact watermark 及之前的最后
+记录可作为已压缩 anchor；之后每次 Put 必须保持 create revision 且 version 精确 +1，tombstone 必须
+终止一个 live generation，下一次重建必须满足 `createRevision=modRevision, version=1`。这样既不要求
+已压缩版本仍存在，也不会发布可启动但 protobuf KV metadata 与恢复索引不一致的历史。
 metadata bucket 同样要求 lease ID、auth username、role name 和 alarm `(member ID, alarm type)`
 分别唯一；重复身份即使内容完全
 相同也视为上游状态不自洽并拒绝整个 metadata transaction，不能让 TTL、用户角色或权限由 slice

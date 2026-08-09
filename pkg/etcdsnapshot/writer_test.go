@@ -248,6 +248,56 @@ func TestBuilderRequiresDeclaredOrderedTransactionTotal(t *testing.T) {
 	})
 }
 
+func TestBuilderRejectsImpossibleMVCCLifecycleAboveCompactWatermark(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		records []Record
+		want    string
+	}{
+		{
+			name: "missing key version",
+			records: []Record{
+				{Key: []byte("key"), Value: []byte("v1"), CreateRevision: 4, ModRevision: 4, Version: 1},
+				{Key: []byte("key"), Value: []byte("v3"), CreateRevision: 4, ModRevision: 6, Version: 3},
+			},
+			want: `key "key" revision 6 has create/version 4/3, want 4/2`,
+		},
+		{
+			name: "reset live generation",
+			records: []Record{
+				{Key: []byte("key"), Value: []byte("old"), CreateRevision: 4, ModRevision: 4, Version: 1},
+				{Key: []byte("key"), Value: []byte("new"), CreateRevision: 6, ModRevision: 6, Version: 1},
+			},
+			want: `key "key" revision 6 has create/version 6/1, want 4/2`,
+		},
+		{
+			name:    "tombstone absent generation",
+			records: []Record{{Key: []byte("key"), ModRevision: 4, Tombstone: true}},
+			want:    `key "key" revision 4 tombstones an absent generation`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			err := WriteBackend(path, State{
+				Revision: 6, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
+				Records: test.records,
+			})
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func TestBuilderUsesCompactionAnchorForMVCCLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, WriteBackend(path, State{
+		Revision: 12, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 10,
+		Records: []Record{
+			{Key: []byte("key"), Value: []byte("anchor"), CreateRevision: 2, ModRevision: 10, Version: 5},
+			{Key: []byte("key"), Value: []byte("next"), CreateRevision: 2, ModRevision: 12, Version: 6},
+		},
+	}))
+}
+
 func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, WriteBackend(path, State{

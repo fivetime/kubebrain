@@ -424,6 +424,9 @@ func (b *Builder) Finish() error {
 			if err := validateOrderedRevisionContinuity(tx, b.compactRevision, b.orderedTotals); err != nil {
 				return err
 			}
+			if err := validateMVCCLifecycle(tx, b.compactRevision); err != nil {
+				return err
+			}
 		}
 		return validateCurrentLeaseReferences(tx)
 	}); err != nil {
@@ -451,6 +454,53 @@ func (b *Builder) Finish() error {
 		b.finished = true
 	}
 	return err
+}
+
+type mvccGenerationState struct {
+	createRevision int64
+	version        int64
+}
+
+func validateMVCCLifecycle(tx *bolt.Tx, compactRevision int64) error {
+	live := make(map[string]mvccGenerationState)
+	return tx.Bucket(keyBucket).ForEach(func(revisionKey, value []byte) error {
+		if len(revisionKey) < 17 {
+			return fmt.Errorf("invalid MVCC revision key length %d", len(revisionKey))
+		}
+		main := int64(binary.BigEndian.Uint64(revisionKey[:8]))
+		tombstone := len(revisionKey) == 18 && revisionKey[17] == 't'
+		var kv mvccpb.KeyValue
+		if err := proto.Unmarshal(value, &kv); err != nil {
+			return fmt.Errorf("decode MVCC record while validating lifecycle: %w", err)
+		}
+		key := string(kv.Key)
+		if main <= compactRevision {
+			if tombstone {
+				delete(live, key)
+			} else {
+				live[key] = mvccGenerationState{kv.CreateRevision, kv.Version}
+			}
+			return nil
+		}
+		previous, exists := live[key]
+		if tombstone {
+			if !exists {
+				return fmt.Errorf("key %q revision %d tombstones an absent generation", key, main)
+			}
+			delete(live, key)
+			return nil
+		}
+		wantCreate, wantVersion := main, int64(1)
+		if exists {
+			wantCreate = previous.createRevision
+			wantVersion = previous.version + 1
+		}
+		if kv.CreateRevision != wantCreate || kv.Version != wantVersion {
+			return fmt.Errorf("key %q revision %d has create/version %d/%d, want %d/%d", key, main, kv.CreateRevision, kv.Version, wantCreate, wantVersion)
+		}
+		live[key] = mvccGenerationState{kv.CreateRevision, kv.Version}
+		return nil
+	})
 }
 
 func validateOrderedRevisionContinuity(tx *bolt.Tx, compactRevision int64, totals map[int64]int64) error {
