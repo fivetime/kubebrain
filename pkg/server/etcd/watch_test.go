@@ -1245,10 +1245,18 @@ func TestWatchRejectsMixedProgressAndEventResult(t *testing.T) {
 }
 
 func TestInvalidWatchResultShapeRejectsProgressWithBatchRevision(t *testing.T) {
+	require.EqualError(t, invalidWatchResultShape(etcdproxy.WatchResult{}), "watch backend returned an empty watch result")
 	err := invalidWatchResultShape(etcdproxy.WatchResult{ProgressRevision: 10, Revision: 9})
 	require.EqualError(t, err, "watch backend returned mixed progress revision 10 and batch revision 9")
 	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{ProgressRevision: 10}))
 	require.NoError(t, invalidWatchResultShape(etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{}}}))
+}
+
+func TestWatchRejectsEmptyBackendResult(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Contains(t, responses[0].CancelReason, "empty watch result")
 }
 
 func TestWatchRejectsRegressingProgressRevision(t *testing.T) {

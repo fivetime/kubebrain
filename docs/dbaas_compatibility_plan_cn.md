@@ -43668,6 +43668,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   实际发布 invalid-header event。现在显式 progress/batch 在 shape 校验后必须 `<=MaxInt64`；旧 producer
   的 `Revision=0` 事件回填完成后再做同一检查，覆盖负 event 转 uint64 的异常形态。拒绝发生在 StoreMax、
   fragment 和 Send 前，取消原因保留完整 uint64，且复用 `watch.backend.invalid_revision`。
+  A4117 补齐 `WatchResult` 联合类型 completeness：接口要求每项是 error、`ProgressRevision` 或
+  `{Events,Revision}` 之一，但旧循环接受全零 `{}`，把它当 revision 0 空批次静默吞掉；异常 producer
+  持续注入时既不推进也不终止，可掩盖断流并形成 CPU 活锁。红测注入单个全零 result 后关闭 channel，
+  证明旧实现只报告普通 `watch closed`。shape validator 现在把全零状态作为
+  `watch.backend.invalid_result` 在任何水位处理前取消；`Revision>0` 且零可见 events 的 batch 继续合法，
+  因为过滤批次或 leader created watermark 可以用它证明该 watch 已覆盖对应 revision。
 
 ### P2：运维兼容和长期验证
 

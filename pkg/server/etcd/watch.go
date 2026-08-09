@@ -158,6 +158,9 @@ type periodicProgressState struct {
 }
 
 func invalidWatchResultShape(result etcdproxy.WatchResult) error {
+	if result.ProgressRevision == 0 && result.Revision == 0 && len(result.Events) == 0 {
+		return errors.New("watch backend returned an empty watch result")
+	}
 	if result.ProgressRevision > 0 && len(result.Events) > 0 {
 		return fmt.Errorf("watch backend returned mixed progress and events at progress revision %d", result.ProgressRevision)
 	}
