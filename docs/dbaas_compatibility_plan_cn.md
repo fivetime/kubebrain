@@ -43722,6 +43722,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须收到 exact PermissionDenied+canceled，root 写 sibling key 后 channel 已关闭且零泄漏。Auth Watch/create
   回归和 vet 通过。同轮审计 upstream `8e4dd0679`/`0e3027bdd`：KubeBrain 已有 10 秒 TLS identity handshake
   deadline 与 5 秒 client HTTP ReadHeaderTimeout，边界不弱于 upstream 新增的 10 秒/5 分钟设置。
+  A4125 把 `/root/etcd` `5cd9f4ee1` 增量安全审计纳入永久
+  `TestRecentUpstreamAuditIsRecorded` 门禁，固定 A4123/A4124 与 `1b01776cc`、`f1f8893b1`、
+  `7cf71ec9e`、`8e4dd0679`、`0e3027bdd` 的实现/替代关系。另对照 `dfcbd552e`：它修复的是
+  upstream client/v3 `leasing.leaseCache` 在 range write lock 中无锁遍历 entries；KubeBrain production
+  lease manager 的 `leases`/`keyLeaseIndex` 枚举均持 `leaseMu`，仓库仅在客户端兼容测试使用该 experimental
+  leasing package，不机械改写 server。`10ef0667c` 将 upstream Raft snapshot message envelope 从 1 TiB
+  限到 64 MiB；KubeBrain 不承载 Raft/WAL envelope，公开逻辑 Snapshot 已有 streaming temp storage、hash/size/
+  EOF 完整性门禁，故只记录边界。红测要求新基线与全部 commit ID 出现在计划中，防止后续删除安全来源映射。
 
 ### P2：运维兼容和长期验证
 
