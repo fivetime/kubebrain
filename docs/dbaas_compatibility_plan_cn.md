@@ -43414,6 +43414,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增官方 AuthStore 恢复红测固定 enabled/revision=3、隐式 root role 与 root Put 管理权限；校验现在
   只允许缺失的精确特殊名 `root`，其他悬空引用、排序、重复和 graph revision 下界继续 fail closed。
   文档同步更正 A4079 的泛化描述。本项放宽的是两边已支持的协议状态，不改变在线 Auth/TiKV 数据。
+  A4088 补齐 A4077 未覆盖的 ordered subrevision 连续性：对照 upstream
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go`，同一写事务以 `len(changes)` 分配 0、1、2… 的
+  subrevision。仅验证 identity 唯一仍会接受 0、2 这样的缺口，官方 restore 后 Watch 可用但永久少
+  一个原子事务事件。边界上不能对全部历史机械要求连续：物理 compaction 的 keep 集合可能在
+  compact watermark 及之前只保留某个 key 的锚点，例如同一旧事务的其他 key 已有更新，因此旧 main
+  revision 合法只剩 sub=2。Builder 现在保存 PreserveHistory/compact watermark，并在 Finish 扫描
+  私有 bbolt 的物理 revision 顺序；只对严格大于 watermark 的 ordered subrevision（小于 synthetic
+  fallback 基数）逐 main 要求从 0 连续递增，无 watermark 时检查全部 ordered history。红测跨 batch
+  写入 0、2，证明旧实现错误完成发布；首次 Finish fail closed 后补入 sub=1 可再次成功 Finish，说明
+  私有 builder 可恢复且没有半发布。A4077 的 partial-anchor 重复测试显式置 compactRevision=7，继续
+  证明 watermark 内 sub=2 单独保留合法。snapshot race、server Snapshot、转换器和 vet 回归覆盖；
+  本项不修改在线 TiKV history 或 Watch。
 
 ### P2：运维兼容和长期验证
 

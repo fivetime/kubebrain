@@ -123,7 +123,9 @@ func TestBuilderRejectsDuplicateOrderedRevisionWithoutOverwritingHistory(t *test
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")
-			builder, err := NewBuilder(path, State{Revision: 7, PreserveHistory: true})
+			builder, err := NewBuilder(path, State{
+				Revision: 7, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 7,
+			})
 			require.NoError(t, err)
 
 			if test.name == "same batch" {
@@ -160,6 +162,27 @@ func TestBuilderRejectsDuplicateOrderedRevisionWithoutOverwritingHistory(t *test
 			require.Empty(t, second.KVs)
 		})
 	}
+}
+
+func TestBuilderRejectsOrderedSubrevisionGapAboveCompactWatermark(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	builder, err := NewBuilder(path, State{
+		Revision: 12, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
+	})
+	require.NoError(t, err)
+	require.NoError(t, builder.Append([]Record{
+		{Key: []byte("first"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, Ordered: true},
+		{Key: []byte("third"), Value: []byte("three"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 2, Ordered: true},
+	}))
+	require.ErrorContains(t, builder.Finish(), "ordered revision 12 has subrevision 2, want 1")
+
+	// Finish validates all committed batches, so a later scanner batch can fill
+	// the gap before the private artifact is finalized.
+	require.NoError(t, builder.Append([]Record{{
+		Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, Ordered: true,
+	}}))
+	require.NoError(t, builder.Finish())
+	require.NoError(t, builder.Close())
 }
 
 func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) {

@@ -92,6 +92,8 @@ type Builder struct {
 	revision         int64
 	restoredRevision int64
 	nextSub          int64
+	preserveHistory  bool
+	compactRevision  int64
 	finished         bool
 }
 
@@ -106,7 +108,13 @@ func NewBuilder(path string, state State) (*Builder, error) {
 		return nil, err
 	}
 	restoredRevision := int64(1) // upstream MVCC restore starts at revision 1
-	builder := &Builder{db: db, revision: state.Revision, restoredRevision: restoredRevision}
+	builder := &Builder{
+		db: db, revision: state.Revision, restoredRevision: restoredRevision,
+		preserveHistory: state.PreserveHistory,
+	}
+	if state.HasCompactRevision {
+		builder.compactRevision = state.CompactRevision
+	}
 	if err = db.Update(func(tx *bolt.Tx) error { return writeMetadata(tx, state) }); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -393,7 +401,14 @@ func (b *Builder) Finish() error {
 	if b.finished {
 		return fmt.Errorf("snapshot builder is already finished")
 	}
-	if err := b.db.View(validateCurrentLeaseReferences); err != nil {
+	if err := b.db.View(func(tx *bolt.Tx) error {
+		if b.preserveHistory {
+			if err := validateOrderedRevisionContinuity(tx, b.compactRevision); err != nil {
+				return err
+			}
+		}
+		return validateCurrentLeaseReferences(tx)
+	}); err != nil {
 		return err
 	}
 	if b.restoredRevision >= b.revision {
@@ -418,6 +433,30 @@ func (b *Builder) Finish() error {
 		b.finished = true
 	}
 	return err
+}
+
+func validateOrderedRevisionContinuity(tx *bolt.Tx, compactRevision int64) error {
+	currentMain := int64(-1)
+	expectedSub := int64(0)
+	return tx.Bucket(keyBucket).ForEach(func(revisionKey, _ []byte) error {
+		if len(revisionKey) < 17 {
+			return fmt.Errorf("invalid MVCC revision key length %d", len(revisionKey))
+		}
+		main := int64(binary.BigEndian.Uint64(revisionKey[:8]))
+		sub := int64(binary.BigEndian.Uint64(revisionKey[9:17]))
+		if main <= compactRevision || sub >= fallbackSubRevisionBase {
+			return nil
+		}
+		if main != currentMain {
+			currentMain = main
+			expectedSub = 0
+		}
+		if sub != expectedSub {
+			return fmt.Errorf("ordered revision %d has subrevision %d, want %d", main, sub, expectedSub)
+		}
+		expectedSub++
+		return nil
+	})
 }
 
 func validateCurrentLeaseReferences(tx *bolt.Tx) error {
