@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"unicode/utf8"
 
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -204,6 +205,9 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		if user == nil || len(user.Name) == 0 {
 			return fmt.Errorf("snapshot contains invalid auth user")
 		}
+		if !utf8.Valid(user.Name) {
+			return fmt.Errorf("snapshot contains invalid UTF-8 auth user name %q", user.Name)
+		}
 		users := tx.Bucket(authUsersBucket)
 		if users.Get(user.Name) != nil {
 			return fmt.Errorf("duplicate auth user %q", user.Name)
@@ -219,6 +223,9 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	for _, role := range state.Auth.Roles {
 		if role == nil || len(role.Name) == 0 {
 			return fmt.Errorf("snapshot contains invalid auth role")
+		}
+		if !utf8.Valid(role.Name) {
+			return fmt.Errorf("snapshot contains invalid UTF-8 auth role name %q", role.Name)
 		}
 		roles := tx.Bucket(authRolesBucket)
 		if roles.Get(role.Name) != nil {

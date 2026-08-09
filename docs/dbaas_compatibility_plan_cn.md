@@ -43501,6 +43501,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   main 切换时释放，额外内存受单事务 key 数而非全历史规模约束。红测固定旧错误成功；watermark 内
   anchor 继续不应用完整事务限制。snapshot race、server Txn/Snapshot、backend history、转换器与
   vet 回归通过；在线 Txn/TiKV 写路径未改变。
+  A4096 固定 Snapshot auth identity 的 protobuf string 可表示性：upstream AuthUserAdd/AuthRoleAdd
+  request 的 name 与 AuthUserList/AuthRoleList response 都是 protobuf `string`，AuthStore 只在 backend
+  内部把请求 string 转成 `authpb.User/Role.Name` bytes，再在 List 时直接转回 string。旧 writer 因持久
+  字段是 bytes 而接受 `0xff` 等非法 UTF-8 名称；官方 AuthStore 可 restore，但 List response 无法通过
+  protobuf marshal，使迁移后管理 API 出现存储可读、wire 不可响应的状态。writer 现在在写 authUsers/
+  authRoles bucket 前要求非空名称同时满足 `utf8.Valid`，失败回滚完整 metadata transaction；不做
+  Unicode normalization，也不拒绝 NUL 等 protobuf string 合法内容。两个红测分别注入非法 user/role
+  bytes，证明对应官方 List response marshal 失败且旧 writer 错误成功，新实现 fail closed。普通
+  UTF-8/root/legacy credential 与官方 AuthStore 恢复回归保持通过；本项只校验 artifact identity。
 
 ### P2：运维兼容和长期验证
 

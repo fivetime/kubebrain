@@ -717,6 +717,42 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 	}
 }
 
+func TestWriteBackendRejectsNonUTF8AuthIdentities(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		auth         Auth
+		want         string
+		wireResponse proto.Message
+	}{
+		{
+			name: "user", auth: Auth{Revision: 2, Users: []*authpb.User{{Name: []byte{0xff}}}},
+			want: "invalid UTF-8 auth user name",
+			wireResponse: &etcdserverpb.AuthUserListResponse{Users: []string{string([]byte{0xff})}},
+		},
+		{
+			name: "role", auth: Auth{Revision: 2, Roles: []*authpb.Role{{Name: []byte{0xfe}}}},
+			want: "invalid UTF-8 auth role name",
+			wireResponse: &etcdserverpb.AuthRoleListResponse{Roles: []string{string([]byte{0xfe})}},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, marshalErr := proto.Marshal(test.wireResponse)
+			require.Error(t, marshalErr, "protobuf string responses cannot carry the restored identity")
+
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			err := WriteBackend(path, State{Revision: 1, Auth: test.auth})
+			require.ErrorContains(t, err, test.want)
+			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+			require.NoError(t, openErr)
+			defer db.Close()
+			require.NoError(t, db.View(func(tx *bolt.Tx) error {
+				require.Nil(t, tx.Bucket(schema.Auth.Name()), "invalid identity must roll back metadata")
+				return nil
+			}))
+		})
+	}
+}
+
 func TestOfficialAuthStoreRecoversImplicitRootRole(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, WriteBackend(path, State{Revision: 1, Auth: Auth{

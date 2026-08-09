@@ -101,6 +101,8 @@ Auth snapshot 还必须满足上游管理 API 可达的不变量：每个用户�
 `root` 授给用户而不创建同名 role record。`authEnabled=true` 时必须存在 root 用户，且该用户持有
 root role。违反任一条件都会回滚完整
 metadata transaction，避免恢复出无法通过正常 AuthEnable/RoleDelete 路径产生的权限状态。
+User/Role name 还必须是非空合法 UTF-8：backend 虽以 bytes 持久化，公开 Auth 请求及 List 响应使用
+protobuf string，非法 UTF-8 会令恢复后的管理响应无法 marshal。不会额外执行 Unicode normalization。
 每个 role 的 permission 必须非空指针、符合 etcd permission range 规则、按 key 排序，且同一
 `(key, range_end)` 只能出现一次；相同范围的再次 grant 是权限类型更新，不是第二条记录。未知
 permission enum 与上游一样允许持久化但不授予 READ/WRITE，不能擅自把它当作非法 range 拒绝。
