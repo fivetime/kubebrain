@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -93,6 +94,7 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 	}{
 		{name: "v1 receipt", mutate: func(r *receipt) { r.Format = "kubebrain.cold-physical-snapshot.v1" }, message: "unsupported receipt"},
 		{name: "invalid created_at", mutate: func(r *receipt) { r.CreatedAt = "not-a-time" }, message: "created_at"},
+		{name: "future created_at", mutate: func(r *receipt) { r.CreatedAt = time.Now().Add(time.Hour).UTC().Format(time.RFC3339) }, message: "in the future"},
 		{name: "invalid inventory format", mutate: func(r *receipt) { r.Inventory.Format = "other" }, message: "inventory format"},
 		{name: "uppercase witness digest", mutate: func(r *receipt) {
 			r.SemanticWitness.SHA256 = strings.ToUpper(r.SemanticWitness.SHA256)

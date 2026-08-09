@@ -43855,6 +43855,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt 始终使用冻结的 capture completion，而文件发布时刻不冒充 capture。红测用可控 clock 在停机
   阶段返回 2030、恢复后返回 2040，旧实现写 2040，本轮固定成功 receipt 必须写 2030。该时间仍为
   control-plane wall clock，生产环境必须由节点时间同步保证；本轮不把它提升为 CSI provider timestamp。
+  A4140 把 A4139 的 capture timestamp 语义前移到 cold restore admission。`cold-restore-render` 旧逻辑
+  只要求 `created_at` 可按 RFC3339 解析；被篡改到未来的 snapshot receipt 仍能生成 canonical manifest，
+  `cold-restore-execute.sh` 会创建 CSI/PVC/TidbCluster，直到恢复后的 semantic verifier 才可能通过
+  `restore.completed_at < snapshot.created_at` 发现问题，已产生不可逆目标资源。renderer 现在解析后立即
+  要求 `created_at <= time.Now()`，与 logical-status 和 object backup 对未来创建时间的 fail-closed 规则
+  一致。单元红测固定一小时后的 receipt 被拒绝；executor 黑盒先用正常 receipt 生成 manifest，再仅将
+  receipt 时间改为 2999，要求 renderer 在任何 kubectl target access/create 前失败且不生成 restore
+  receipt。该严格门禁依赖控制面时间同步，不通过任意 clock-skew 容差掩盖错误证据。
 
 ### P2：运维兼容和长期验证
 

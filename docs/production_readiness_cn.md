@@ -941,6 +941,10 @@ receipt 顶层 `created_at` 表示全部 snapshot content 首次完成并通过�
 时间，在恢复 PD/TiKV/KubeBrain 之前冻结；它不是 receipt 文件的发布时间。恢复链据此验证
 `witness.created_at_unix <= snapshot.created_at <= restore.completed_at`，服务重启耗时不得被伪装成
 更晚的 snapshot capture 时间。
+cold restore renderer 在生成或核对任何目标 manifest 前还会拒绝晚于当前控制面时钟的
+`created_at`；仅 RFC3339 格式正确不足以启动恢复。该规则与 logical backup/object receipt 的
+future timestamp 门禁一致，并保证未来时间的 snapshot receipt 不会在最终 semantic verifier
+才暴露，而是在任何目标 Kubernetes API 访问前 fail closed。
 每个源 PVC 引用的 StorageClass provisioner 必须与 VolumeSnapshotClass driver 精确一致；
 不同 CSI driver 的 class 组合必须在停服务前的只读预检中失败，不能延迟到冷快照窗口。
 输出 `kubebrain.cold-physical-snapshot-preflight.v2` 还固定原 TidbCluster spec，以及每个 PVC 的

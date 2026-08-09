@@ -48,6 +48,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		wrongCluster                   bool
 		wrongContent                   bool
 		wrongPVC                       bool
+		futureReceipt                  bool
 		wantReceipt                    bool
 		wantPreexistingRestoreReceipt  bool
 		wantEmergency                  bool
@@ -58,6 +59,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		{name: "restores storage and publishes receipt", wantReceipt: true, wantCreate: true, wantUnpause: true},
 		{name: "existing target fails before create", existing: true, wantError: "target resource already exists"},
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
+		{name: "future snapshot receipt fails before target access", futureReceipt: true, wantError: "created_at is in the future"},
 		{name: "source receipt drift fails before create", sourceReceiptDrift: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "source receipt drift during render uses captured receipt", sourceReceiptDriftDuringRender: true, wantError: "cold snapshot receipt changed after validation"},
 		{name: "restore manifest drift during capture fails before target access", restoreManifestDriftDuringHash: true, wantError: "restore manifest changed during capture"},
@@ -82,6 +84,14 @@ func TestColdRestoreExecute(t *testing.T) {
 			require.NoError(t, os.WriteFile(tamperedManifestPath, coldRestoreTamperedManifest(t, manifestPath), 0o600))
 			if tc.tampered {
 				require.NoError(t, os.WriteFile(manifestPath, mustRead(t, tamperedManifestPath), 0o600))
+			}
+			if tc.futureReceipt {
+				var future map[string]any
+				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &future))
+				future["created_at"] = "2999-01-01T00:00:00Z"
+				data, marshalErr := json.Marshal(future)
+				require.NoError(t, marshalErr)
+				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
 			}
 
 			fakeKubectl := filepath.Join(dir, "kubectl")
@@ -154,7 +164,7 @@ func TestColdRestoreExecute(t *testing.T) {
 			}
 
 			logValue, readErr := os.ReadFile(logPath)
-			if (tc.tampered || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
+			if (tc.tampered || tc.futureReceipt || tc.restoreManifestDriftDuringHash) && os.IsNotExist(readErr) {
 				logValue = nil
 			} else {
 				require.NoError(t, readErr)

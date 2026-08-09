@@ -213,8 +213,12 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 	if r.Inventory.Format != "kubebrain.cold-physical-snapshot-preflight.v2" {
 		return nil, errors.New("cold snapshot receipt inventory format is invalid")
 	}
-	if _, err := time.Parse(time.RFC3339, r.CreatedAt); err != nil {
+	createdAt, err := time.Parse(time.RFC3339, r.CreatedAt)
+	if err != nil {
 		return nil, errors.New("cold snapshot receipt created_at is invalid")
+	}
+	if createdAt.After(time.Now()) {
+		return nil, errors.New("cold snapshot receipt created_at is in the future")
 	}
 	if r.SemanticWitness.Format != "kubebrain.logical.v2" || r.SemanticWitness.Prefix == "" ||
 		r.SemanticWitness.Revision <= 0 || r.SemanticWitness.Records <= 0 ||
