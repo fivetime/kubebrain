@@ -44205,6 +44205,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   对照 upstream `756c7a6b2` 当前 restore/verify 工具迁移后从 `/root/etcd/etcdutl` 构建的二进制，status
   与严格 restore 均通过，未发现 runtime wire/hash 差异；该门禁可阻止未来最后一帧遗漏、digest 覆盖范围
   或 versioned snapshot metadata 漂移被仅检查裸 bbolt 的测试掩盖。
+  A4175 补齐 A4174 的 fail-closed 负向证明。仅有严格 restore 成功无法排除测试参数未来意外恢复
+  `--skip-hash-check`，也无法证明官方工具实际比较了整个 backend 与尾部 digest。对照 upstream
+  `30811a06a` 在 restore `saveDB` 中先截除 32-byte footer、再对完整 db 计算 SHA-256 并比较 expected/got
+  的实现，测试从同一真实 Snapshot RPC artifact 分别翻转 backend 首字节与 checksum 最后一字节，使用
+  两个全新 data-dir 执行默认 restore。当前 `/root/etcd/etcdutl` 对两者均非零退出并报告
+  `expected sha256 ..., got ...`；正确制品仍在同一测试先成功 restore。该门禁同时约束 payload 覆盖范围与
+  footer 本身，防止可恢复性测试在完整性检查被关闭或弱化后继续假绿；未修改数据面 runtime。
 
 ### P2：运维兼容和长期验证
 

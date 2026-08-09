@@ -132,6 +132,30 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 		output, commandErr = command.CombinedOutput()
 		require.NoError(t, commandErr, string(output))
 		require.FileExists(t, filepath.Join(restoredDir, "member", "snap", "db"))
+
+		for _, tc := range []struct {
+			name   string
+			offset int
+		}{
+			{name: "backend", offset: 0},
+			{name: "checksum", offset: len(artifact) - 1},
+		} {
+			t.Run("rejects-tampered-"+tc.name, func(t *testing.T) {
+				tampered := append([]byte(nil), artifact...)
+				tampered[tc.offset] ^= 0xff
+				tamperedPath := filepath.Join(t.TempDir(), "tampered-snapshot.db")
+				require.NoError(t, os.WriteFile(tamperedPath, tampered, 0o600))
+				command := exec.CommandContext(ctx, etcdutl, "snapshot", "restore", tamperedPath,
+					"--data-dir", filepath.Join(t.TempDir(), "restored.etcd"),
+					"--name", "tampered-snapshot",
+					"--initial-cluster", "tampered-snapshot=http://127.0.0.1:42381",
+					"--initial-advertise-peer-urls", "http://127.0.0.1:42381")
+				output, commandErr := command.CombinedOutput()
+				require.Error(t, commandErr, string(output))
+				require.Contains(t, string(output), "expected sha256")
+				require.Contains(t, string(output), "got")
+			})
+		}
 	}
 }
 
