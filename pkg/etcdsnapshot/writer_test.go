@@ -466,6 +466,32 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 	}
 }
 
+func TestWriteBackendRejectsPasswordOnNoPasswordUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	err := WriteBackend(path, State{Auth: Auth{Users: []*authpb.User{{
+		Name: []byte("certificate-only"), Password: []byte("unexpected"),
+		Options: &authpb.UserAddOptions{NoPassword: true},
+	}}}})
+	require.ErrorContains(t, err, `no-password auth user "certificate-only" carries password bytes`)
+}
+
+func TestWriteBackendPreservesOpaqueHashedPasswordBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	opaque := []byte("not-necessarily-bcrypt")
+	require.NoError(t, WriteBackend(path, State{Auth: Auth{Users: []*authpb.User{{
+		Name: []byte("legacy"), Password: opaque,
+	}}}}))
+	db, err := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		var user authpb.User
+		require.NoError(t, proto.Unmarshal(tx.Bucket(schema.AuthUsers.Name()).Get([]byte("legacy")), &user))
+		require.Equal(t, opaque, user.Password)
+		return nil
+	}))
+}
+
 func TestWriteBackendRejectsImpossibleRolePermissions(t *testing.T) {
 	for _, test := range []struct {
 		name        string

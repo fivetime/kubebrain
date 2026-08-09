@@ -261,6 +261,9 @@ func validateAuthState(auth Auth) error {
 		if string(user.Name) == "root" {
 			root = user
 		}
+		if user.Options != nil && user.Options.NoPassword && len(user.Password) != 0 {
+			return fmt.Errorf("no-password auth user %q carries password bytes", user.Name)
+		}
 		seenRoles := make(map[string]struct{}, len(user.Roles))
 		for _, role := range user.Roles {
 			if _, exists := seenRoles[role]; exists {

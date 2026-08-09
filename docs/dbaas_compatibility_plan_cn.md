@@ -43344,6 +43344,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   额外拒绝：upstream grant 本身允许 proto unknown enum，KubeBrain authorizer 也明确将其视为不授予
   READ/WRITE，保持 wire-compatible 行为。正常 root/reader permission、upstream auth store restore、
   `pkg/etcdsnapshot` race、server Auth/Snapshot 和逻辑转换器回归通过；本项不改变在线状态机。
+  A4081 固定 Snapshot user credential envelope：对照 upstream
+  `/root/etcd/server/auth/store.go:UserAdd` 与 `UserChangePassword`，`Options.NoPassword=true` 时不调用
+  `selectPassword` 并持久化空 password；后续改密同样保持空值。旧 writer 可写出 no-password 用户
+  同时携带 password bytes 的管理 API 不可达状态。现在 auth graph validator 拒绝该组合并回滚
+  metadata transaction。审计同时确认不能扩大成 bcrypt 校验：upstream `HashedPassword` 路径仅
+  `base64.DecodeString`，任意 decoded bytes 都可由公开 API 持久化，即使随后密码认证失败也属于
+  wire-compatible 状态。一个红测固定 no-password+bytes 旧实现错误成功；正例固定普通 legacy 用户
+  的非 bcrypt opaque bytes 原样进入 authUsers bucket，防止未来过度校验。`pkg/etcdsnapshot` race、
+  server Auth/Snapshot、upstream AuthStore restore 与逻辑转换器回归通过；在线凭据语义不变。
 
 ### P2：运维兼容和长期验证
 

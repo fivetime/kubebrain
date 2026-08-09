@@ -80,3 +80,6 @@ metadata transaction，避免恢复出无法通过正常 AuthEnable/RoleDelete �
 每个 role 的 permission 必须非空指针、符合 etcd permission range 规则、按 key 排序，且同一
 `(key, range_end)` 只能出现一次；相同范围的再次 grant 是权限类型更新，不是第二条记录。未知
 permission enum 与上游一样允许持久化但不授予 READ/WRITE，不能擅自把它当作非法 range 拒绝。
+`UserAddOptions.NoPassword=true` 的用户不得携带 password bytes；普通或 legacy 用户的 password
+字段保持 opaque bytes。上游 `HashedPassword` 路径只做 base64 decode，并不验证 bcrypt，因此
+snapshot writer 也不能擅自拒绝非 bcrypt 内容。
