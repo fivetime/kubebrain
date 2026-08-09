@@ -44287,6 +44287,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   集群普通连续 5 轮、race 连续 3 轮均通过，随后原有 endpoint delete/pick-first 差分继续通过；未发现
   数据面 runtime 差异。该门禁固定官方 client 能消费 KubeBrain 保存的 endpoint watch/list 状态并完成
   多 subchannel 负载均衡，不把客户端 READY 时序误报为 etcd 语义差异。
+  A4185 将 A4184 从静态 round-robin readiness 扩展到动态 endpoint 摘流。仅证明两个 READY
+  subchannel 都被选中过，无法约束滚动替换、故障隔离或租约过期删除后 resolver 是否及时停止向旧地址
+  发请求。双端场景现在从同一 resolver prefix 删除 NOT_SERVING endpoint，保留原 gRPC connection，
+  在 5 秒内要求连续 20 次 health RPC 全部命中 SERVING backend；任何尚未消费 delete watch、仍在
+  picker 中保留旧 SubConn 或删除后重新引入旧地址的行为都会重置计数并失败。随后重新注册 endpoint，
+  原有 pick-first delete/switch 差分继续执行，避免动态门禁污染既有 oracle。当前 `/root/etcd` reference
+  与独立 3 副本 KubeBrain/3 PD/3 TiKV 集群普通连续 10 轮、race 连续 5 轮通过，未发现 runtime 差异。
+  该门禁证明 KubeBrain 的 Txn/Watch revision 流可驱动官方 naming resolver 完成负载均衡摘流，而不只
+  是静态 List 可读；长期跨网络分区的连接排空仍保留为 P1 soak。
 
 ### P2：运维兼容和长期验证
 

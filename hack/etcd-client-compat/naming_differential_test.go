@@ -30,6 +30,7 @@ type namingOutcome struct {
 	PrefixIsolated       bool
 	LeaseDeleteObserved  bool
 	RoundRobinBothReady  bool
+	RoundRobinDeleteDone bool
 	ResolverInitial      string
 	ResolverAfterDelete  string
 }
@@ -51,6 +52,7 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 		PrefixIsolated:       true,
 		LeaseDeleteObserved:  true,
 		RoundRobinBothReady:  true,
+		RoundRobinDeleteDone: true,
 		ResolverInitial:      "SERVING",
 		ResolverAfterDelete:  "NOT_SERVING",
 	}, kubeBrainOutcome)
@@ -191,6 +193,23 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		return len(roundRobinStatuses) == 2
 	}, 5*time.Second, 20*time.Millisecond,
 		"round_robin resolver did not route to both READY endpoint subchannels")
+	require.NoError(t, resolverManager.DeleteEndpoint(ctx, resolverPrefix+"/not-serving"))
+	consecutiveServing := 0
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		response, callErr := roundRobinClient.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+		if callErr != nil || response.Status != healthpb.HealthCheckResponse_SERVING {
+			consecutiveServing = 0
+			return false
+		}
+		consecutiveServing++
+		return consecutiveServing == 20
+	}, 5*time.Second, 20*time.Millisecond,
+		"round_robin resolver continued routing to an endpoint removed by its watch")
+	roundRobinDeleteDone := consecutiveServing == 20
+	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/not-serving",
+		endpoints.Endpoint{Addr: notServingAddr}))
 	require.NoError(t, roundRobinConnection.Close())
 	roundRobinBothReady := len(roundRobinStatuses) == 2
 
@@ -237,6 +256,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		PrefixIsolated:       prefixIsolated,
 		LeaseDeleteObserved:  leaseDeleteObserved,
 		RoundRobinBothReady:  roundRobinBothReady,
+		RoundRobinDeleteDone: roundRobinDeleteDone,
 		ResolverInitial:      resolverInitial,
 		ResolverAfterDelete:  resolverAfterDelete,
 	}
