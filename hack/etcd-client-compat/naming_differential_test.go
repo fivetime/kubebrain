@@ -32,6 +32,7 @@ type namingOutcome struct {
 	RoundRobinBothReady  bool
 	RoundRobinDeleteDone bool
 	RoundRobinRejoinDone bool
+	LeaseExpiryDrainDone bool
 	ResolverInitial      string
 	ResolverAfterDelete  string
 }
@@ -55,6 +56,7 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 		RoundRobinBothReady:  true,
 		RoundRobinDeleteDone: true,
 		RoundRobinRejoinDone: true,
+		LeaseExpiryDrainDone: true,
 		ResolverInitial:      "SERVING",
 		ResolverAfterDelete:  "NOT_SERVING",
 	}, kubeBrainOutcome)
@@ -167,6 +169,8 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	defer stopServing()
 	notServingAddr, stopNotServing := startNamingHealthServer(t, healthpb.HealthCheckResponse_NOT_SERVING)
 	defer stopNotServing()
+	unknownAddr, stopUnknown := startNamingHealthServer(t, healthpb.HealthCheckResponse_UNKNOWN)
+	defer stopUnknown()
 	resolverPrefix := base + "resolver"
 	resolverManager, err := endpoints.NewManager(client, resolverPrefix)
 	require.NoError(t, err)
@@ -225,6 +229,36 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	}, 5*time.Second, 20*time.Millisecond,
 		"round_robin resolver did not restore an endpoint re-added through its watch")
 	roundRobinRejoinDone := len(rejoinedStatuses) == 2
+	expiringLease, err := client.Grant(ctx, 2)
+	require.NoError(t, err)
+	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/expiring",
+		endpoints.Endpoint{Addr: unknownAddr}, clientv3.WithLease(expiringLease.ID)))
+	withExpiringStatuses := make(map[string]struct{}, 3)
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		response, callErr := roundRobinClient.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+		if callErr != nil {
+			return false
+		}
+		withExpiringStatuses[response.Status.String()] = struct{}{}
+		return len(withExpiringStatuses) == 3
+	}, 5*time.Second, 20*time.Millisecond,
+		"round_robin resolver did not add the leased endpoint")
+	consecutiveAfterExpiry := 0
+	require.Eventually(t, func() bool {
+		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
+		defer callCancel()
+		response, callErr := roundRobinClient.Check(callCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+		if callErr != nil || response.Status == healthpb.HealthCheckResponse_UNKNOWN {
+			consecutiveAfterExpiry = 0
+			return false
+		}
+		consecutiveAfterExpiry++
+		return consecutiveAfterExpiry == 20
+	}, 10*time.Second, 20*time.Millisecond,
+		"round_robin resolver continued routing to a naturally expired leased endpoint")
+	leaseExpiryDrainDone := consecutiveAfterExpiry == 20
 	require.NoError(t, roundRobinConnection.Close())
 	roundRobinBothReady := len(roundRobinStatuses) == 2
 
@@ -273,6 +307,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		RoundRobinBothReady:  roundRobinBothReady,
 		RoundRobinDeleteDone: roundRobinDeleteDone,
 		RoundRobinRejoinDone: roundRobinRejoinDone,
+		LeaseExpiryDrainDone: leaseExpiryDrainDone,
 		ResolverInitial:      resolverInitial,
 		ResolverAfterDelete:  resolverAfterDelete,
 	}

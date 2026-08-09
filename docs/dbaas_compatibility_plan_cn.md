@@ -44338,6 +44338,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   event，明确要求 producer 计数为 0、slot take 后只产生一个 counter increment，并证明 valid revision
   不增加。普通连续 20 轮与 race 门禁通过。A4188 的启动零基线和 A4189 的 Prometheus 告警表达式不变，
   但 occurrence rate 现在真正对应可观察 revision gap 数，而不是内部通知调用次数。
+  A4191 回到 Lease/Watch/官方 clientv3 的组合语义，补齐 naming resolver 对 leased endpoint 自然过期的
+  动态摘流。既有场景只证明 EndpointManager 收到某个 lease revoke 的 delete update，以及 resolver 对
+  显式 `DeleteEndpoint` 摘流；不能证明独立 TiKV lease manager 的自然过期批次会经 Watch prefix 驱动
+  已建立的 gRPC SubConn 下线。双端场景新增返回 UNKNOWN 的第三个本地 health backend，以 TTL=2 lease
+  注册到正在使用的 resolver prefix，先要求同一 `round_robin` connection 实际观察 SERVING、NOT_SERVING、
+  UNKNOWN 三种状态，再等待自然过期，10 秒内必须连续 20 次只命中其余两端；lease 未清理 attachment、
+  expiry delete event 丢失、resolver watch 卡住或 picker 保留旧 SubConn 都会失败。当前 `/root/etcd`
+  reference 与独立 3 副本 KubeBrain/3 PD/3 TiKV 集群普通连续 3 轮、race 连续 3 轮通过，未发现 runtime
+  差异。该门禁把 Lease lifecycle、Txn 原子删除、Watch prefix 和官方 resolver drain 串成真实黑盒路径；
+  小时级批量 renewal/expiry 与网络分区仍保留为 P1 soak。
 
 ### P2：运维兼容和长期验证
 
