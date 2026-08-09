@@ -43510,6 +43510,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Unicode normalization，也不拒绝 NUL 等 protobuf string 合法内容。两个红测分别注入非法 user/role
   bytes，证明对应官方 List response marshal 失败且旧 writer 错误成功，新实现 fail closed。普通
   UTF-8/root/legacy credential 与官方 AuthStore 恢复回归保持通过；本项只校验 artifact identity。
+  A4097 为恢复后的下一次 auth mutation 保留 revision 空间：对照 upstream
+  `/root/etcd/server/auth/store.go`，`commitRevision` 对持久化的 `uint64` revision 直接执行
+  `atomic.AddUint64(..., 1)`，User/Role/Permission 的每次变更都经过该路径且没有溢出检查。旧 writer
+  接受 `MaxUint64`，官方 AuthStore 虽能 restore，但下一次合法管理变更会回绕到 revision 0；0 同时是
+  AuthInfo“未提供身份”和空 AuthStore 未初始化的 sentinel，不能发布这种无法继续安全变更的制品。
+  `validateAuthState` 现在只拒绝精确 `MaxUint64`，错误会回滚完整 metadata transaction，不缩小其余
+  uint64 空间。边界回归证明 `MaxUint64-1` 可由官方 AuthStore 恢复，随后 RoleAdd 成功并精确推进到
+  `MaxUint64`；本项与 A4093 的 MVCC next-revision 门禁一致，只影响私有 snapshot artifact。
 
 ### P2：运维兼容和长期验证
 

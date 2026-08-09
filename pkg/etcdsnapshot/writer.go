@@ -270,6 +270,12 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 }
 
 func validateAuthState(auth Auth) error {
+	// Upstream commitRevision uses atomic.AddUint64 without an overflow check.
+	// Preserve one revision so the restored store can apply its next mutation
+	// instead of wrapping the auth revision to the zero sentinel.
+	if auth.Revision == math.MaxUint64 {
+		return fmt.Errorf("auth revision leaves no room for next etcd auth mutation: %d", auth.Revision)
+	}
 	roleNames := make(map[string]struct{}, len(auth.Roles))
 	minimumRevision := uint64(1)
 	minimumRevision += uint64(len(auth.Roles))

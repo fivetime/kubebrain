@@ -726,12 +726,12 @@ func TestWriteBackendRejectsNonUTF8AuthIdentities(t *testing.T) {
 	}{
 		{
 			name: "user", auth: Auth{Revision: 2, Users: []*authpb.User{{Name: []byte{0xff}}}},
-			want: "invalid UTF-8 auth user name",
+			want:         "invalid UTF-8 auth user name",
 			wireResponse: &etcdserverpb.AuthUserListResponse{Users: []string{string([]byte{0xff})}},
 		},
 		{
 			name: "role", auth: Auth{Revision: 2, Roles: []*authpb.Role{{Name: []byte{0xfe}}}},
-			want: "invalid UTF-8 auth role name",
+			want:         "invalid UTF-8 auth role name",
 			wireResponse: &etcdserverpb.AuthRoleListResponse{Roles: []string{string([]byte{0xfe})}},
 		},
 	} {
@@ -865,6 +865,50 @@ func TestWriteBackendAllowsEmptyUninitializedAuthRevision(t *testing.T) {
 	authStore := etcdAuth.NewAuthStore(lg, schema.NewAuthBackend(lg, be), tokens, bcrypt.MinCost)
 	require.EqualValues(t, 1, authStore.Revision(), "upstream initializes the empty revision-zero sentinel")
 	require.NoError(t, authStore.Close())
+}
+
+func TestWriteBackendReservesNextAuthRevision(t *testing.T) {
+	t.Run("reject max uint64", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		err := WriteBackend(path, State{Revision: 1, Auth: Auth{
+			Revision: math.MaxUint64,
+			Roles:    []*authpb.Role{{Name: []byte("reader")}},
+		}})
+		require.ErrorContains(t, err, "auth revision leaves no room for next etcd auth mutation: 18446744073709551615")
+
+		db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+		require.NoError(t, openErr)
+		defer db.Close()
+		require.NoError(t, db.View(func(tx *bolt.Tx) error {
+			require.Nil(t, tx.Bucket(schema.Auth.Name()), "overflowing auth revision must roll back metadata")
+			return nil
+		}))
+	})
+
+	t.Run("max minus one permits exactly one mutation", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		require.NoError(t, WriteBackend(path, State{Revision: 1, Auth: Auth{
+			Revision: math.MaxUint64 - 1,
+			Roles:    []*authpb.Role{{Name: []byte("reader")}},
+		}}))
+
+		lg := zaptest.NewLogger(t)
+		be := etcdbackend.NewDefaultBackend(lg, path)
+		defer func() { require.NoError(t, be.Close()) }()
+		ready := func(uint64) <-chan struct{} {
+			ch := make(chan struct{})
+			close(ch)
+			return ch
+		}
+		tokens, err := etcdAuth.NewTokenProvider(lg, "simple", ready, time.Minute)
+		require.NoError(t, err)
+		authStore := etcdAuth.NewAuthStore(lg, schema.NewAuthBackend(lg, be), tokens, bcrypt.MinCost)
+		defer func() { require.NoError(t, authStore.Close()) }()
+		require.EqualValues(t, uint64(math.MaxUint64-1), authStore.Revision())
+		_, err = authStore.RoleAdd(&etcdserverpb.AuthRoleAddRequest{Name: "writer"})
+		require.NoError(t, err)
+		require.EqualValues(t, uint64(math.MaxUint64), authStore.Revision())
+	})
 }
 
 func TestWriteBackendPreservesOpaqueHashedPasswordBytes(t *testing.T) {
