@@ -1223,17 +1223,33 @@ func (b *backendShim) Watch(ctx context.Context, key string, revision uint64) (<
 				// network Get (~10-20ms), and issuing those one-by-one caps the
 				// stream at ~60 events/s — slower than the write rate, so cachers
 				// could never catch up (#45).
+				for i, e := range events {
+					if validateErr := validateBackendWatchEvent(e); validateErr != nil {
+						resultErr := fmt.Errorf("transform watch event %d at revision %d: %w", i, watchEventRevision(e), validateErr)
+						klog.ErrorS(resultErr, "failed to validate watch event batch")
+						select {
+						case out <- etcdproxy.WatchResult{Err: resultErr}:
+						case <-ctx.Done():
+						}
+						return
+					}
+				}
 				b.prefetchPrevKvs(events)
 				etcdEvents := make([]*mvccpb.Event, 0, len(events))
 				var batchRevision uint64
-				for _, e := range events {
+				for i, e := range events {
 					if revision := watchEventRevision(e); revision > batchRevision {
 						batchRevision = revision
 					}
 					etcdEvent, err := b.watchEventToEtcdEvent(ctx, e)
 					if err != nil {
-						klog.ErrorS(err, "failed to transform watch event", "key", e.GetKv().GetKey(), "revision", watchEventRevision(e), "type", e.GetType())
-						continue
+						resultErr := fmt.Errorf("transform watch event %d at revision %d: %w", i, watchEventRevision(e), err)
+						klog.ErrorS(resultErr, "failed to transform watch event")
+						select {
+						case out <- etcdproxy.WatchResult{Err: resultErr}:
+						case <-ctx.Done():
+						}
+						return
 					}
 					etcdEvents = append(etcdEvents, etcdEvent)
 				}

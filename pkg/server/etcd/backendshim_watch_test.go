@@ -29,6 +29,45 @@ import (
 	memkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
+type scriptedBackendWatch struct {
+	backend.Backend
+	results <-chan []*proto.Event
+}
+
+func (b *scriptedBackendWatch) Watch(context.Context, string, uint64) (<-chan []*proto.Event, error) {
+	return b.results, nil
+}
+
+func TestBackendShimWatchFailsBatchWhenAnyEventCannotBeTranslated(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+	input := make(chan []*proto.Event, 1)
+	input <- []*proto.Event{
+		{
+			Type:     proto.Event_CREATE,
+			Revision: 7,
+			Kv: &proto.KeyValue{
+				Key: []byte("/watch/must-not-partially-publish"), Value: []byte("v"), Revision: 7,
+			},
+		},
+		nil,
+	}
+	close(input)
+	shim.backend = &scriptedBackendWatch{Backend: shim.backend, results: input}
+
+	results, err := shim.Watch(context.Background(), "/watch/", 1)
+	require.NoError(t, err)
+	result, ok := <-results
+	require.True(t, ok)
+	require.Error(t, result.Err)
+	require.ErrorContains(t, result.Err, "invalid nil watch event")
+	require.ErrorContains(t, result.Err, "event 1")
+	require.Empty(t, result.Events)
+	_, ok = <-results
+	require.False(t, ok)
+}
+
 // TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing pins #52: a PUT
 // (update) watch event must keep the create_revision carried inline in its value
 // even when the previous-version lookup returns nil, so the update is not

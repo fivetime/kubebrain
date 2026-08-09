@@ -42,8 +42,8 @@ func newWatchTranslator(shim *backendShim) *watchTranslator {
 }
 
 func (wt *watchTranslator) watchEventToEtcdEvent(ctx context.Context, e *proto.Event) (*mvccpb.Event, error) {
-	if e == nil || e.Kv == nil {
-		return nil, fmt.Errorf("invalid nil watch event")
+	if err := validateBackendWatchEvent(e); err != nil {
+		return nil, err
 	}
 	revision := watchEventRevision(e)
 	switch e.Type {
@@ -103,6 +103,18 @@ func (wt *watchTranslator) watchEventToEtcdEvent(ctx context.Context, e *proto.E
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported watch event type %s", e.Type)
+	}
+}
+
+func validateBackendWatchEvent(e *proto.Event) error {
+	if e == nil || e.Kv == nil {
+		return fmt.Errorf("invalid nil watch event")
+	}
+	switch e.Type {
+	case proto.Event_CREATE, proto.Event_PUT, proto.Event_DELETE:
+		return nil
+	default:
+		return fmt.Errorf("unsupported watch event type %s", e.Type)
 	}
 }
 

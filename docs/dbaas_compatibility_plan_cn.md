@@ -43674,6 +43674,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明旧实现只报告普通 `watch closed`。shape validator 现在把全零状态作为
   `watch.backend.invalid_result` 在任何水位处理前取消；`Revision>0` 且零可见 events 的 batch 继续合法，
   因为过滤批次或 leader created watermark 可以用它证明该 watch 已覆盖对应 revision。
+  A4118 禁止 BackendShim 在 event 转换失败时部分发布 batch：旧 `transformResponseFunc` 对 nil/未知类型等
+  `watchEventToEtcdEvent` 错误只记日志并 `continue`，随后仍发送同 batch 的其余 events 和最大 revision；
+  客户端由此永久跳过损坏 event，却被告知已经覆盖该水位。红测把合法 CREATE 放在前、nil event 放在后，
+  证明旧实现发布前者且 Err 为空。shim 现在先对整批做无副作用结构预检，任一项非法就发送唯一
+  `WatchResult{Err}`（含 event index/revision）并关闭 generation；转换阶段的任何其他错误也执行同一
+  fail-closed 路径，不再 continue。预检先于 PrevKV prefetch、`noteEvent` 缓存更新和 pending-event gauge，
+  因而失败 batch 零事件发布、零部分转换水位；外层 Watch 按既有 error 路径取消并促使客户端重列。
 
 ### P2：运维兼容和长期验证
 
