@@ -35,6 +35,8 @@ order 与 legacy metadata 仍通过独立读取拼接，其防物理 GC pin 是�
 lease freshness 丢失或 epoch 改变才属于 LeaderChanged，两个公开错误不会混淆。
 每次透明重捕获前必须成功删除上一 attempt 的私有 bbolt；除“不存在”外的删除错误会在读取任何集群
 状态前 fail closed，禁止在残留 buckets/rows 上继续写出跨 attempt 混合 artifact。
+捕获完成后，服务端打开并取得文件大小便立即 unlink 临时 bbolt，再从仍有效的 Linux 文件描述符发送；
+因此从首个 gRPC response 开始，慢客户端、断连或进程崩溃都不会留下包含完整 KV/auth hash 的命名文件。
 
 对于已有 `kubebrain.logical.v2` 逻辑制品，仍可使用离线转换路径：
 

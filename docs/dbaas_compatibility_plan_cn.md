@@ -43587,6 +43587,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   BeginRangeTxn、SyncReadRevision 和任何 TiKV 读取前带 `reset etcd snapshot capture path` 诊断失败。
   测试用含子文件的非空目录稳定制造不可删除目标，并以 trap backend 证明零 barrier/零状态捕获；正常
   CreateTemp 空文件和 term-change partial bbolt 仍可删除后重试。
+  A4106 缩短在线 Snapshot 敏感临时文件暴露窗口：旧 sendSnapshot 直到完整 gRPC stream 返回才在 defer
+  中删除命名 bbolt；慢读、半开连接或进程崩溃期间，完整租户 KV、auth 用户与 password hash 持续存在
+  系统临时目录。现在构建完成后先 open+Stat，再在首个 SnapshotResponse 前 unlink 路径，随后依赖 Linux
+  数据面稳定的已打开文件描述符继续计算 SHA-256 和发送全部 bytes；unlink 失败则在发送任何响应前
+  fail closed，外层 defer 再尝试清理。独立 `streamSnapshotFile` 测试用多 chunk 敏感 payload，在首次
+  Send 回调中要求路径已为 NotExist，并重组全部 data、核对最终 SHA-256，证明早删不改变官方 wire 内容。
 
 ### P2：运维兼容和长期验证
 

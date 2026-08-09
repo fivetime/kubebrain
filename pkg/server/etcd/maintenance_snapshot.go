@@ -346,6 +346,10 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 	if err = s.buildSnapshot(stream.Context(), path); err != nil {
 		return err
 	}
+	return streamSnapshotFile(path, stream)
+}
+
+func streamSnapshotFile(path string, stream etcdserverpb.Maintenance_SnapshotServer) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -354,6 +358,13 @@ func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer)
 	info, err := f.Stat()
 	if err != nil {
 		return err
+	}
+	// Snapshot artifacts contain the complete keyspace and auth password hashes.
+	// Unlink the name before the first response; the open descriptor remains a
+	// stable readable snapshot on the Linux DBaaS data-plane target, while client
+	// stalls, disconnects, and process crashes cannot leave a named artifact.
+	if err = os.Remove(path); err != nil {
+		return fmt.Errorf("unlink opened etcd snapshot artifact: %w", err)
 	}
 	total := info.Size()
 	sent := int64(0)

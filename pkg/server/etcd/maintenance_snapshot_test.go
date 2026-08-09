@@ -6,7 +6,9 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -35,6 +37,22 @@ import (
 type failingMaintenanceSnapshotServer struct {
 	*maintenanceSnapshotServer
 	err error
+}
+
+type unlinkCheckingSnapshotServer struct {
+	*maintenanceSnapshotServer
+	path    string
+	checked bool
+}
+
+func (s *unlinkCheckingSnapshotServer) Send(response *etcdserverpb.SnapshotResponse) error {
+	if !s.checked {
+		s.checked = true
+		if _, err := os.Stat(s.path); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("snapshot path still exists at first response: %v", err)
+		}
+	}
+	return s.maintenanceSnapshotServer.Send(response)
 }
 
 func (s *failingMaintenanceSnapshotServer) Send(*etcdserverpb.SnapshotResponse) error {
@@ -67,6 +85,27 @@ func TestMaintenanceSnapshotDurationObservedForSuccessAndSendFailure(t *testing.
 		require.GreaterOrEqual(t, sample.value.(float64), float64(0))
 		require.Empty(t, sample.tags)
 	}
+}
+
+func TestSnapshotFileIsUnlinkedBeforeFirstStreamResponse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sensitive-snapshot.db")
+	want := bytes.Repeat([]byte("snapshot-secret-"), 4096)
+	require.NoError(t, os.WriteFile(path, want, 0o600))
+	stream := &unlinkCheckingSnapshotServer{
+		maintenanceSnapshotServer: &maintenanceSnapshotServer{ctx: context.Background()},
+		path:                      path,
+	}
+	require.NoError(t, streamSnapshotFile(path, stream))
+	require.True(t, stream.checked)
+	require.GreaterOrEqual(t, len(stream.responses), 2)
+
+	var got []byte
+	for _, response := range stream.responses[:len(stream.responses)-1] {
+		got = append(got, response.Blob...)
+	}
+	require.Equal(t, want, got)
+	wantHash := sha256.Sum256(want)
+	require.Equal(t, wantHash[:], stream.responses[len(stream.responses)-1].Blob)
 }
 
 type streamingSnapshotBackend struct {
