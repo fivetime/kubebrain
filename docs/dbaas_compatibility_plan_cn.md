@@ -43730,6 +43730,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leasing package，不机械改写 server。`10ef0667c` 将 upstream Raft snapshot message envelope 从 1 TiB
   限到 64 MiB；KubeBrain 不承载 Raft/WAL envelope，公开逻辑 Snapshot 已有 streaming temp storage、hash/size/
   EOF 完整性门禁，故只记录边界。红测要求新基线与全部 commit ID 出现在计划中，防止后续删除安全来源映射。
+  A4126 对 `/root/etcd` 2026 年服务端目录与永久审计集合做 commit 差集并归零。唯一新增公开能力来源
+  `a792e7faf` 是 client/v3 `GetStream`/`RangeStream` 接入；KubeBrain 已实现原生 KV.RangeStream，并以
+  official clientv3 覆盖点/区间/全空间、limit/count、历史/future/compacted、认证、分块和取消后连接复用，
+  因而不重复修改 runtime。`2403dcf94` 仅增加 upstream watch failpoint，生产 watch 的 malformed batch、
+  revision 单调性、overflow 和 failover 已由 A4112-A4122 的确定性注入门禁覆盖。`9d5720273` 是 semver
+  依赖替换；`2e2963af6` 从 Raft WAL snapshot 读取最小 etcd 版本；`12875ca08`、`2039bc3bc`、
+  `8527542d9`、`f3cea0a97`、`ffe441357` 是 pointerized Raft/storage/transport API 迁移；`2df115140`、
+  `df2b18b65` 是 protobuf 生成与指针结构迁移，均不属于独立 TiKV/PD 数据面的公开语义。
+  `a87cf8857` 只为 A4123 已分类的 nested Txn quota 修复添加红测，`da0321d1f` 只修 benchmark 参数。
+  `TestRecentUpstreamAuditIsRecorded` 逐项固定这 13 个 commit ID；后续差集出现非空时必须重新判断公开
+  etcd 行为，不得因本轮“无 runtime 差距”而默认忽略。
 
 ### P2：运维兼容和长期验证
 
