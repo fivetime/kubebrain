@@ -44163,6 +44163,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   失败在两类 histogram 中一致标记 false。确定性 RED 在 grant 后强制周期 checkpoint 再 keepalive，
   修复前 request 样本为空；修复后精确得到两个 `LeaseCheckpoint/true`，并另行固定共享失败分类。
   该内部操作继续不推进用户 MVCC revision，也没有虚构公开 LeaseCheckpoint RPC。
+  A4171 审计 `/root/etcd` `ba4a3b855` 把 bbolt 原生诊断接入 `etcdutl bbolt` 的变更。upstream
+  新 e2e 只要求停服后的 `member/snap/db` 能通过 `etcdutl bbolt check <db>` 并输出 `OK`；该命令以
+  readonly + preload-freelist 打开文件并遍历 `tx.Check()`，因此可直接验证 page/freelist/bucket 结构，
+  比仅能打开 DB 或读取 `key` bucket 更强。KubeBrain 新测试写入五个用户 key、构造其可移植 etcd
+  backend snapshot，再以同样选项运行完整 consistency check；可选
+  `KUBEBRAIN_ETCDUTL_BBOLT_BIN` 还执行官方 CLI 并严格要求单行 `OK`。本轮从 `/root/etcd/etcdutl`
+  以当前源码构建工具，真实黑盒检查 KubeBrain 制品通过；常规门禁不硬编码 sibling repo 路径。
+  未发现 runtime 差异；A4171 防止 snapshot writer 未来产生虽能被 schema reader 部分读取、但存在
+  freelist/page 引用损坏而无法被官方 bbolt 诊断接受的恢复制品。
 
 ### P2：运维兼容和长期验证
 

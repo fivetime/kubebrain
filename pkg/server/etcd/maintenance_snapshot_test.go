@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +39,38 @@ import (
 type failingMaintenanceSnapshotServer struct {
 	*maintenanceSnapshotServer
 	err error
+}
+
+func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	for index := range 5 {
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key:   []byte(fmt.Sprintf("/snapshot/bbolt-check/%d", index)),
+			Value: []byte(fmt.Sprintf("value-%d", index)),
+		})
+		require.NoError(t, err)
+	}
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	require.NoError(t, server.buildSnapshot(ctx, path))
+	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, PreLoadFreelist: true})
+	require.NoError(t, err)
+	require.NoError(t, db.View(func(tx *bolt.Tx) error {
+		for checkErr := range tx.Check() {
+			return checkErr
+		}
+		return nil
+	}))
+	require.NoError(t, db.Close())
+
+	if etcdutl := os.Getenv("KUBEBRAIN_ETCDUTL_BBOLT_BIN"); etcdutl != "" {
+		command := exec.CommandContext(ctx, etcdutl, "bbolt", "check", path)
+		output, commandErr := command.CombinedOutput()
+		require.NoError(t, commandErr, string(output))
+		require.Equal(t, "OK", strings.TrimSpace(string(output)))
+	}
 }
 
 type unlinkCheckingSnapshotServer struct {
