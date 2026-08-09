@@ -150,6 +150,66 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	require.Equal(t, 3, barrierCalls)
 }
 
+func TestAuthRangeValidationPrecedesReadBarrierAndAuthLikeEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	var barrierCalls int
+	server.peers = testPeerService{
+		syncReadFn: func(context.Context) error {
+			barrierCalls++
+			return errors.New("validation must not reach read barrier")
+		},
+	}
+	plain := context.Background()
+
+	tests := []struct {
+		name    string
+		request *etcdserverpb.RangeRequest
+		want    error
+		message string
+	}{
+		{
+			name: "empty key before invalid sort",
+			request: &etcdserverpb.RangeRequest{
+				SortOrder: etcdserverpb.RangeRequest_SortOrder(99),
+			},
+			want: rpctypes.ErrGRPCEmptyKey, message: "etcdserver: key is not provided",
+		},
+		{
+			name: "invalid sort before barrier and auth",
+			request: &etcdserverpb.RangeRequest{
+				Key: []byte("/allowed/a"), SortTarget: etcdserverpb.RangeRequest_SortTarget(99),
+			},
+			want: rpctypes.ErrGRPCInvalidSortOption, message: "etcdserver: invalid sort option",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response, err := server.Range(plain, tt.request)
+			require.Nil(t, response)
+			requireDirectKVError(t, err, tt.want, codes.InvalidArgument, tt.message)
+
+			stream := &fakeRangeStreamServer{ctx: plain}
+			err = server.RangeStream(tt.request, stream)
+			requireDirectKVError(t, err, tt.want, codes.InvalidArgument, tt.message)
+			require.Empty(t, stream.sent)
+		})
+	}
+	require.Zero(t, barrierCalls)
+
+	stream := &fakeRangeStreamServer{ctx: plain}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"),
+		SortOrder:  etcdserverpb.RangeRequest_DESCEND,
+		SortTarget: etcdserverpb.RangeRequest_KEY,
+	}, stream)
+	require.Equal(t, codes.Unimplemented, status.Code(err))
+	require.Equal(t, "RangeStream does not support custom sort orders", status.Convert(err).Message())
+	require.Empty(t, stream.sent)
+	require.Zero(t, barrierCalls)
+}
+
 func TestAuthReadonlyTxnBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

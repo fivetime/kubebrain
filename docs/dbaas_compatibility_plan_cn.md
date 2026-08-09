@@ -44017,6 +44017,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新测试覆盖 MinInt64/zero persisted TTL、无 checkpoint/正 checkpoint 两条恢复路径和客户端可见
   GrantedTTL。没有新增不存在的公共 LeaseCheckpoint API。A4155 防止滚动升级、逻辑恢复或元数据修复
   将低 TTL 记录变成瞬时 lease，保持故障切换后的最小生存期契约。
+  A4156 回到 `/root/etcd` `5cd9f4ee1` 的 KV Range admission contract。upstream v3rpc
+  `checkRangeRequest` 在进入 `EtcdServer.Range` 前按 empty key、invalid SortOrder、invalid SortTarget 顺序
+  拒绝请求；只有合法 linearizable Range 才先执行 raft read barrier，随后在 `doSerialize` 内鉴权、读取并
+  复核 auth revision。`RangeStream` 先复用同一基础校验，再以 Unimplemented 拒绝 custom ordering 或
+  revision filters，同样不进入 barrier/auth。KubeBrain 的 `validateRangeRequest`、`rangeWithAfterRead` 与
+  `RangeStream` 保持该分层；现有测试已分别覆盖 invalid enums、empty-key 优先级、barrier-before-auth、
+  historical/serializable routing 和 stream unsupported shapes。本轮补上 auth-enabled、故障 barrier 下的
+  交叉门禁：empty key 即使同时 invalid sort 仍先返回 EmptyKey；invalid sort 返回 InvalidSortOption；合法
+  enum 但非默认 stream ordering 返回 Unimplemented；三者都不得调用 read barrier、auth 或发送 chunk。
+  未发现 runtime 差异；A4156 防止将 v3rpc validation 下沉后让畸形请求触发 leader routing，或以 auth
+  错误覆盖稳定的协议 admission error。
 
 ### P2：运维兼容和长期验证
 
