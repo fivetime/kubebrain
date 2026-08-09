@@ -43212,6 +43212,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   follower exclusion、read/write/lease/alarm/auth 成功标签、AuthStatus unknown 与 compacted success。
   生产只读 gate 不通过读请求伪造样本；family 出现时严格校验 v3/op/success 标签，并新增
   `apply_duration_metrics=optional-ok` 摘要。
+- A4069 固定 TiKV 20160 request-level 发布门禁：A4067 的真实三副本滚动恢复中发现 TiKV
+  20180 HTTP readiness 可继续成功，但 20160 KV gRPC 已停止或请求不返回；此时 TiDB Operator
+  仍把 Pod/StatefulSet 标为 Ready，单看 CR condition、ready replicas、PD store heartbeat 或
+  scrapeable metrics 都会误判数据面健康。`hack/production/wait-tidbcluster-ready.sh` 现在只有在
+  PD/TiKV rollout 全收敛后，才枚举精确 desired 数量的 TiKV Pod，并逐一在 `tikv` container 内
+  执行 `/tikv-ctl --host 127.0.0.1:20160 metrics`。该命令使用 TiKV 官方 remote mode 的 Debug
+  gRPC，而非 20180 HTTP；每个 probe 默认 10 秒硬超时，任一 Pod 超时/失败或 Pod 集合数量漂移
+  都保持等待并最终报告 `TiKV-RPC=not-ready`。确定性测试覆盖 3/3 全调用、HTTP/StatefulSet 看似
+  Ready 但 gRPC 失败、以及非法 timeout 在 kubectl 前 fail closed。发布身份需显式拥有目标
+  TiKV Pod 的 `pods/exec`；持续运行期的自动重启/修复仍是 DBaaS 控制面 P1 缺口，不能用本轮
+  release gate 冒充已完成的自愈。
 
 ### P2：运维兼容和长期验证
 

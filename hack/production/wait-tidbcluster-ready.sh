@@ -5,7 +5,9 @@ NAMESPACE="${NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
+TIKV_RPC_PROBE_TIMEOUT_SECONDS="${TIKV_RPC_PROBE_TIMEOUT_SECONDS:-10}"
 KUBECTL="${KUBECTL:-kubectl}"
+COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 
 if ! [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
@@ -14,6 +16,10 @@ if ! [[ "$TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if ! [[ "$POLL_INTERVAL_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "POLL_INTERVAL_SECONDS must be a non-negative integer" >&2
+  exit 2
+fi
+if ! [[ "$TIKV_RPC_PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "TIKV_RPC_PROBE_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 fi
 for variable in NAMESPACE TIDB_CLUSTER; do
@@ -54,17 +60,50 @@ statefulset_converged() {
     "$current_revision" == "$update_revision" ]]
 }
 
+tikv_rpc_ready() {
+  local status="$1"
+  local _generation _observed desired _ready _updated _current_revision _update_revision
+  IFS=$'\t' read -r _generation _observed desired _ready _updated _current_revision _update_revision <<<"$status"
+  [[ "$desired" =~ ^[1-9][0-9]*$ ]] || return 1
+
+  local selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv"
+  local pod_output
+  pod_output="$("$KUBECTL" "${kubectl_args[@]}" get pods -l "$selector" \
+    -o 'jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)" || return 1
+  local pods=()
+  while IFS= read -r pod; do
+    [[ -n "$pod" ]] && pods+=("$pod")
+  done <<<"$pod_output"
+  [[ "${#pods[@]}" -eq "$desired" ]] || return 1
+
+  local pod
+  for pod in "${pods[@]}"; do
+    # TiDB Operator's HTTP readiness checks port 20180. tikv-ctl remote mode
+    # instead executes a Debug gRPC request against the actual KV service on
+    # 20160, catching a process whose status endpoint remains alive after its
+    # request service has stopped. Bound every probe so a half-open service
+    # cannot stall the release gate beyond its own deadline.
+    "$COMMAND_TIMEOUT" --signal=TERM "${TIKV_RPC_PROBE_TIMEOUT_SECONDS}s" \
+      "$KUBECTL" "${kubectl_args[@]}" exec "$pod" -c tikv -- \
+      /tikv-ctl --host 127.0.0.1:20160 metrics >/dev/null 2>&1 || return 1
+  done
+}
+
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 while true; do
   ready="$(cluster_ready 2>/dev/null || true)"
   pd_status="$(statefulset_status "${TIDB_CLUSTER}-pd" 2>/dev/null || true)"
   tikv_status="$(statefulset_status "${TIDB_CLUSTER}-tikv" 2>/dev/null || true)"
+  tikv_rpc_status="not-checked"
 
   if [[ "$ready" == "True" ]] &&
     statefulset_converged "$pd_status" &&
     statefulset_converged "$tikv_status"; then
-    echo "TidbCluster ${NAMESPACE}/${TIDB_CLUSTER} converged: PD and TiKV are ready and current"
-    exit 0
+    if tikv_rpc_ready "$tikv_status"; then
+      echo "TidbCluster ${NAMESPACE}/${TIDB_CLUSTER} converged: PD and TiKV are ready, current, and every TiKV 20160 gRPC service responds"
+      exit 0
+    fi
+    tikv_rpc_status="not-ready"
   fi
 
   if (( SECONDS >= deadline )); then
@@ -72,6 +111,7 @@ while true; do
     echo "Ready=${ready:-missing}" >&2
     echo "PD=${pd_status:-missing}" >&2
     echo "TiKV=${tikv_status:-missing}" >&2
+    echo "TiKV-RPC=${tikv_rpc_status}" >&2
     "$KUBECTL" "${kubectl_args[@]}" get tidbcluster "$TIDB_CLUSTER" >&2 || true
     "$KUBECTL" "${kubectl_args[@]}" get statefulset "${TIDB_CLUSTER}-pd" "${TIDB_CLUSTER}-tikv" >&2 || true
     exit 1

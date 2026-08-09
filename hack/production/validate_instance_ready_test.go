@@ -876,7 +876,11 @@ func TestValidateInstanceReady(t *testing.T) {
 			fakeKubectl := filepath.Join(dir, "kubectl")
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
-if [[ "$*" == *" exec "* ]]; then
+if [[ "$*" == *"get pods"* && "$*" == *"component=tikv"* ]]; then
+  printf 'kb-tikv-0\nkb-tikv-1\nkb-tikv-2\n'
+elif [[ "$*" == *" exec "* && "$*" == *"/tikv-ctl --host 127.0.0.1:20160 metrics"* ]]; then
+  exit 0
+elif [[ "$*" == *" exec "* ]]; then
   printf '%s\n' "$*" >>"${FAKE_EXEC_LOG:?}"
   while [[ "$1" != "--" ]]; do
     shift
