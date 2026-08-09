@@ -23,7 +23,7 @@ func TestRunTiKVTransactionRepairOperation(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
-  printf '{"name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","instance":"kubebrain","attempt":2,"parameters_sha256":"%s"}\n' "$EXPECTED_DIGEST"
+  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","instance":"kubebrain","attempt":2,"parameters_sha256":"%s"}\n' "${CLAIM_NAMESPACE:-kubebrain-operations}" "$EXPECTED_DIGEST"
 fi
 `), 0o755))
 	repair := filepath.Join(tempDir, "repair")
@@ -132,4 +132,39 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	extraRepairData, err := os.ReadFile(repairLog)
 	require.NoError(t, err)
 	require.Empty(t, extraRepairData, "unknown parameter fields must fail before starting the repair primitive")
+}
+
+func TestRunTiKVTransactionRepairOperationRejectsInvalidClaimNamespace(t *testing.T) {
+	tempDir := t.TempDir()
+	parameters := filepath.Join(tempDir, "parameters.json")
+	parameterBytes := []byte(`{"alert_fingerprint":"abcdef0123456789abcdef0123456789","alert_occurrence_id":"1bb5a469de669cd3422d","alert_starts_at":"2026-08-09T05:00:00Z","endpoint":"http://kubebrain-client.kubebrain-system.svc:3379","kubebrain_namespace":"kubebrain-system","kubebrain_statefulset":"kubebrain","tidb_namespace":"tidb-cluster","tidb_cluster":"kb","expected_kubebrain_statefulset_uid":"kb-uid","expected_tidb_cluster_uid":"tc-uid","expected_cluster_id":7671,"required_failed_probes":3,"probe_interval_seconds":5,"probe_timeout_seconds":10,"pod_ready_timeout_seconds":300,"repair_cooldown_seconds":3600}`)
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+	digest := fmt.Sprintf("%x", sha256.Sum256(parameterBytes))
+	operationctl := filepath.Join(tempDir, "operationctl")
+	operationLog := filepath.Join(tempDir, "operation.log")
+	require.NoError(t, os.WriteFile(operationctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$OPERATION_LOG"
+if [[ "$*" == *"--action claim"* ]]; then
+  printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","instance":"kubebrain","attempt":2,"parameters_sha256":"%s"}\n' "$CLAIM_NAMESPACE" "$EXPECTED_DIGEST"
+fi
+`), 0o755))
+	repair := filepath.Join(tempDir, "repair")
+	repairLog := filepath.Join(tempDir, "repair.log")
+	require.NoError(t, os.WriteFile(repair, []byte("#!/usr/bin/env bash\nset -euo pipefail\nprintf started >\"$REPAIR_LOG\"\n"), 0o755))
+
+	output, err := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-invalid-namespace", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + digest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog, "CLAIM_NAMESPACE=tenant/a",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "OPERATION_NAMESPACE must be a lowercase DNS label")
+	operationData, readErr := os.ReadFile(operationLog)
+	require.NoError(t, readErr)
+	require.Contains(t, string(operationData), "--action claim")
+	require.NotContains(t, string(operationData), "--action heartbeat")
+	_, statErr := os.Stat(repairLog)
+	require.ErrorIs(t, statErr, os.ErrNotExist, "invalid claim namespace must fail before repair side effects")
 }

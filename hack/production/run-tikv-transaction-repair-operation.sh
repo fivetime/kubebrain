@@ -40,6 +40,12 @@ run_operationctl() {
 file_sha256() { sha256sum "$1" | cut -d ' ' -f1; }
 
 claim="$(run_operationctl --action claim --owner "$WORKER_ID" --type TiKVTransactionRepair --lease "${LEASE_SECONDS}s")"
+claimed_namespace="$($JQ -r '.namespace // empty' <<<"$claim")"
+if [[ -n "$claimed_namespace" ]]; then
+  [[ "$claimed_namespace" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] ||
+    die "OPERATION_NAMESPACE must be a lowercase DNS label of at most 63 characters"
+  OPERATION_NAMESPACE="$claimed_namespace"
+fi
 name="$($JQ -er '.name' <<<"$claim")"
 operation_id="$($JQ -er '.operation_id' <<<"$claim")"
 instance="$($JQ -er '.instance' <<<"$claim")"

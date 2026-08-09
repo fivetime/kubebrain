@@ -44261,6 +44261,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `unreviewed:true` 并同步重算 `parametersSha256`，旧实现会启动 repair，新实现返回
   `repair parameter schema is invalid` 且 repair log 为空；正向、takeover、失败与 A4180 occurrence 漂移
   路径保持不变。该改动只收紧审批参数解释，不扩大任何 receiver/executor 权限或自动批准范围。
+  A4182 补齐 TiKV repair executor 对 Operation claim namespace 的身份绑定。operationctl 的 claim
+  响应把实际 namespace 作为权威队列身份返回，备份、恢复、销毁等六个 destructive runner 均先验证
+  lowercase DNS label，再将参数读取、heartbeat 与结果写入切到该 namespace；repair runner 原先忽略
+  该字段，未来启用 inventory/cross-namespace claim 或异常响应时可能在错误 namespace 继续执行或回写。
+  runner 现在沿用同一 fail-closed 契约。负向测试让 claim 返回 `tenant/a`，精确证明它在参数读取、
+  heartbeat 和 repair primitive 之前退出；统一静态门禁也把 repair runner 纳入 namespace 与 heartbeat
+  覆盖集合。正常隔离 namespace、occurrence、参数摘要、审批、冷却、UID/cluster-ID 和 receipt 栅栏不变。
 
 ### P2：运维兼容和长期验证
 
