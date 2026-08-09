@@ -510,6 +510,9 @@ MVCC compact revision 指标 `etcd_debugging_mvcc_compact_revision`，
 MVCC physical compaction 指标 `etcd_debugging_mvcc_db_compaction_last` 与
 `etcd_debugging_mvcc_db_compaction_keys_total`（后者只累计 full/incremental GC 中实际成功
 删除的物理 object-version、object tombstone 与 revision-key tombstone），
+以及仅在真实物理删除事务执行后出现的
+`etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds` histogram（batch commit 与
+失败后的逐 key fallback 各自观察；只读 scan 时间不计入 pause），
 MVCC watch 指标 `etcd_debugging_mvcc_watch_stream_total`、
 `etcd_debugging_mvcc_watcher_total`、`etcd_debugging_mvcc_slow_watcher_total`、
 `etcd_debugging_mvcc_events_total` 与 `etcd_debugging_mvcc_pending_events_total`，

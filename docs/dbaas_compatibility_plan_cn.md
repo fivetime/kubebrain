@@ -43054,6 +43054,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `etcd_debugging_mvcc_db_compaction_keys_total` family 存在；跨多个 delete batch 的回归测试
   同时验证原始存储清空且 counter 精确等于 3×删除对象数。A4051 中“scanner 无法精确返回
   删除数”的暂缓判断至此失效并关闭。
+- A4057 实现 upstream MVCC db compaction pause histogram：上游
+  `/root/etcd/server/storage/mvcc/kvstore_compaction.go` 从持有 bbolt batch transaction lock
+  到 unlock/ForceCommit 观察 `etcd_debugging_mvcc_db_compaction_pause_duration_milliseconds`。
+  KubeBrain 没有嵌入式 bbolt 全局写锁，等价 pause 边界是 shared-storage physical GC 实际
+  占用写提交路径的时间：`flushDeletes` 对每次 batch commit attempt 观察一个样本；batch
+  失败后的逐 key fallback 对每次 delete attempt 分别观察样本。scanner 的只读迭代可能持续
+  数十分钟但不阻塞 TiKV 写入，因此不计入 pause；端到端时间仍由
+  `db_compaction_total_duration_milliseconds` 覆盖。histogram 不用 0 样本预热，避免污染分布，
+  只在真实物理删除发生后出现。900-key 多 batch 测试锁定 7 个 pause 样本（每个用户 key
+  一次 enqueue 3 个删除项，阈值在完整 key family 后检查，允许轻微越过 128）；注入 batch
+  commit 失败的回归测试锁定 1 次失败 batch + 3 次成功 fallback delete 共 4 个样本。
 
 ### P2：运维兼容和长期验证
 

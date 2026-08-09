@@ -410,9 +410,17 @@ func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 	defer ctrl.Finish()
 	m := mock.NewMockMetrics(ctrl)
 	var compactedKeys atomic.Int64
+	var pauseSamples atomic.Int64
 	m.EXPECT().EmitCounter("etcd_debugging.mvcc.db_compaction_keys_total", gomock.Any()).DoAndReturn(
 		func(_ string, value interface{}, _ ...metrics.T) error {
 			compactedKeys.Add(value.(int64))
+			return nil
+		},
+	).AnyTimes()
+	m.EXPECT().EmitHistogram("etcd_debugging.mvcc.db_compaction_pause_duration_milliseconds", gomock.Any()).DoAndReturn(
+		func(_ string, value interface{}, _ ...metrics.T) error {
+			require.GreaterOrEqual(t, value.(float64), 0.0)
+			pauseSamples.Add(1)
 			return nil
 		},
 	).AnyTimes()
@@ -464,6 +472,96 @@ func TestScannerCompactBatchesLargeTombstoneBacklog(t *testing.T) {
 	require.Zero(t, remaining, "raw store must hold no object versions after batched compaction")
 	require.Equal(t, int64(3*n), compactedKeys.Load(),
 		"upstream counter must equal successfully deleted physical MVCC keys across every batch")
+	require.Equal(t, int64(7), pauseSamples.Load(),
+		"the threshold is checked after each three-delete key family, so 900 deletes flush in seven batches")
+}
+
+type failSecondCommitStore struct {
+	storage.KvStorage
+	commits atomic.Int64
+	failed  atomic.Bool
+}
+
+func (s *failSecondCommitStore) BeginBatchWrite() storage.BatchWrite {
+	return &failSecondCommitBatch{
+		BatchWrite: s.KvStorage.BeginBatchWrite(),
+		commits:    &s.commits,
+		failed:     &s.failed,
+	}
+}
+
+type failSecondCommitBatch struct {
+	storage.BatchWrite
+	commits *atomic.Int64
+	failed  *atomic.Bool
+}
+
+func (b *failSecondCommitBatch) Commit(ctx context.Context) error {
+	// Scanner.Compact first commits the monotonic compact watermark. Fail the
+	// following physical-delete batch after it durably commits, simulating an
+	// uncertain-result error while still releasing the underlying batch resources;
+	// flushDeletes must then resolve through its idempotent per-key fallback.
+	if b.commits.Add(1) == 2 {
+		if err := b.BatchWrite.Commit(ctx); err != nil {
+			return err
+		}
+		b.failed.Store(true)
+		return fmt.Errorf("injected batch commit failure")
+	}
+	return b.BatchWrite.Commit(ctx)
+}
+
+func TestScannerCompactionPauseMetricsCoverBatchFallbackDeletes(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMockMetrics(ctrl)
+	var compactedKeys atomic.Int64
+	var pauseSamples atomic.Int64
+	m.EXPECT().EmitCounter("etcd_debugging.mvcc.db_compaction_keys_total", gomock.Any()).DoAndReturn(
+		func(_ string, value interface{}, _ ...metrics.T) error {
+			switch v := value.(type) {
+			case int:
+				compactedKeys.Add(int64(v))
+			case int64:
+				compactedKeys.Add(v)
+			default:
+				t.Fatalf("unexpected compaction key metric type %T", value)
+			}
+			return nil
+		},
+	).AnyTimes()
+	m.EXPECT().EmitHistogram("etcd_debugging.mvcc.db_compaction_pause_duration_milliseconds", gomock.Any()).DoAndReturn(
+		func(_ string, value interface{}, _ ...metrics.T) error {
+			require.GreaterOrEqual(t, value.(float64), 0.0)
+			pauseSamples.Add(1)
+			return nil
+		},
+	).AnyTimes()
+	m.EXPECT().EmitGauge(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	m.EXPECT().EmitCounter(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	m.EXPECT().EmitHistogram(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+	m.EXPECT().GetHttpHandlers().AnyTimes()
+	m.EXPECT().GetGrpcServerOption().AnyTimes()
+
+	c := coder.DefaultKeyspace().NewCoder()
+	tomb := []byte("tombstone")
+	kv := imemkv.NewKvStorage()
+	defer kv.Close()
+	key := []byte("/registry/pods/default/fallback")
+	b := kv.BeginBatchWrite()
+	b.Put(c.EncodeObjectKey(key, 0), append(beU64(200), 0), 0)
+	b.Put(c.EncodeObjectKey(key, 100), []byte("live"), 0)
+	b.Put(c.EncodeObjectKey(key, 200), tomb, 0)
+	require.NoError(t, b.Commit(context.Background()))
+
+	store := &failSecondCommitStore{KvStorage: kv}
+	sc := NewScanner(store, c, Config{CompactKey: []byte("/compact"), Tombstone: tomb}, m)
+	borders := [][]byte{coder.DefaultKeyspace().ObjectKeyspaceStart(), coder.DefaultKeyspace().ObjectKeyspaceEnd()}
+	require.NoError(t, sc.Compact(context.Background(), borders, 300))
+	require.True(t, store.failed.Load(), "test must exercise the batch failure fallback")
+	require.Equal(t, int64(3), compactedKeys.Load())
+	require.Equal(t, int64(4), pauseSamples.Load(),
+		"one uncertain batch attempt plus three successful fallback deletes must each be observed")
 }
 
 func TestScannerSkipsInternalStorageRows(t *testing.T) {

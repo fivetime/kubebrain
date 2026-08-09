@@ -1036,7 +1036,13 @@ func (w *worker) flushDeletes(ctx context.Context) {
 	for i := range w.pendingDeletes {
 		batch.Del(w.pendingDeletes[i].objKey)
 	}
-	if err := batch.Commit(ctx); err == nil {
+	batchStart := time.Now()
+	batchErr := batch.Commit(ctx)
+	w.metricCli.EmitHistogram(
+		"etcd_debugging.mvcc.db_compaction_pause_duration_milliseconds",
+		float64(time.Since(batchStart))/float64(time.Millisecond),
+	)
+	if batchErr == nil {
 		deleted := int64(len(w.pendingDeletes))
 		w.metricCli.EmitCounter("compact", deleted)
 		// Upstream increments db_compaction_keys_total for every physical MVCC
@@ -1050,7 +1056,13 @@ func (w *worker) flushDeletes(ctx context.Context) {
 	w.metricCli.EmitCounter("compact.batch.err", 1)
 	for i := range w.pendingDeletes {
 		pd := w.pendingDeletes[i]
-		if err := w.store.Del(ctx, pd.objKey); err != nil {
+		deleteStart := time.Now()
+		err := w.store.Del(ctx, pd.objKey)
+		w.metricCli.EmitHistogram(
+			"etcd_debugging.mvcc.db_compaction_pause_duration_milliseconds",
+			float64(time.Since(deleteStart))/float64(time.Millisecond),
+		)
+		if err != nil {
 			w.metricCli.EmitCounter("compact.err", 1)
 			w.updateSkippedRawKey(pd.userKey, pd.rev, err)
 		} else {
