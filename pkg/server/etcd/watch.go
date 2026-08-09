@@ -356,6 +356,16 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 		}
 
 		if r := msg.GetCreateRequest(); r != nil {
+			// Authorize the wire RangeEnd before normalizing its single-zero
+			// from-key sentinel to the internal empty-slice representation. The auth
+			// interval code distinguishes {0} (open-ended range) from nil/empty
+			// (exact key); normalizing first lets exact-key permission authorize a
+			// watch over [key,+inf), matching upstream's 7cf71ec9e security bug.
+			authKey := r.Key
+			if len(authKey) == 0 {
+				authKey = []byte{0}
+			}
+			authRangeEnd := r.RangeEnd
 			r = normalizeWatchCreateRequest(r)
 			if r.StartRevision < 0 {
 				// etcd treats a negative start revision as an immediately canceled
@@ -372,7 +382,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			if !authorizedPeerWatchContinuation(ws.Context()) {
 				caller, authErr = s.authCallerFromContext(ws.Context())
 				if authErr == nil {
-					authErr = caller.require(r.Key, r.RangeEnd, authpb.READ)
+					authErr = caller.require(authKey, authRangeEnd, authpb.READ)
 				}
 			}
 			if authErr != nil {

@@ -43714,6 +43714,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同轮审计 `f1f8893b1` 的 nested Txn bbolt quota cost：KubeBrain 在选定嵌套分支构造 TiKV 原子 plan 后按实际
   key/value delta 结算 logical quota，不使用 upstream 的预估 `costTxnReq`，因此不机械移植。全部 peer HashKV
   回归与 vet 通过。
+  A4124 跟进 upstream `7cf71ec9e` 的 exact-key Watch 权限逃逸修复。KubeBrain 与旧 upstream 同样在鉴权前
+  把 clientv3 `WithFromKey()` 的 wire `RangeEnd={0}` 归一化为空切片；authorizer 将空 end 当 exact key，
+  因而只有单键 READ 的用户可创建 `[key,+∞)` watch，backend prefix 也变为空并订阅全空间。raw stream 红测
+  证明旧实现返回非 canceled Created；修复后鉴权使用未改写的 wire RangeEnd，empty key 仍先映射到 `\x00`，
+  只有权限通过后才生成内部 open-ended 表示。官方 clientv3 黑盒给 alice 仅 exact-key READ，`WithFromKey`
+  必须收到 exact PermissionDenied+canceled，root 写 sibling key 后 channel 已关闭且零泄漏。Auth Watch/create
+  回归和 vet 通过。同轮审计 upstream `8e4dd0679`/`0e3027bdd`：KubeBrain 已有 10 秒 TLS identity handshake
+  deadline 与 5 秒 client HTTP ReadHeaderTimeout，边界不弱于 upstream 新增的 10 秒/5 分钟设置。
 
 ### P2：运维兼容和长期验证
 

@@ -1432,6 +1432,59 @@ func TestClientAuthWatchStreamTracksPermissionChanges(t *testing.T) {
 	require.True(t, received[restoredWatchID])
 }
 
+func TestClientAuthWatchFromKeyRequiresOpenEndedPermission(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+
+	dialOptions := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+	}
+	newClient := func(username, password string) *clientv3.Client {
+		client, err := clientv3.New(clientv3.Config{
+			Endpoints: []string{"bufnet"}, DialTimeout: time.Second,
+			Username: username, Password: password, DialOptions: dialOptions,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, client.Close()) })
+		return client
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	const key = "/a4124/exact"
+	bootstrap := newClient("", "")
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "root", "root-secret", "root", "", ""))
+	require.NoError(t, addAuthUserRoleAndPermission(ctx, bootstrap, "alice", "alice-secret", "a4124-exact", key, ""))
+	_, err := bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+
+	root := newClient("root", "root-secret")
+	alice := newClient("alice", "alice-secret")
+	watch := alice.Watch(ctx, key, clientv3.WithFromKey(), clientv3.WithCreatedNotify())
+	response, ok := <-watch
+	require.True(t, ok)
+	require.True(t, response.Canceled)
+	require.EqualError(t, response.Err(), rpctypes.ErrGRPCPermissionDenied.Error())
+
+	_, err = root.Put(ctx, key+"-sibling", "must-not-leak")
+	require.NoError(t, err)
+	select {
+	case leaked, open := <-watch:
+		require.False(t, open, "denied watch must close, got response %+v", leaked)
+	case <-ctx.Done():
+		t.Fatal("denied watch channel did not close")
+	}
+}
+
 func TestClientAuthTxnPutWithPrevKVDeniedForWriteOnlyRole(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
