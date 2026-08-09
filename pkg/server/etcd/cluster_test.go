@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -690,6 +691,45 @@ func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
 	_, err = server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{Linearizable: true})
 	requireClusterReadBarrierError(t, err, wantErr.Error())
 	require.EqualValues(t, 1, calls.Load())
+}
+
+// TestMemberListSerializableSurvivesUnavailableReadBarrier mirrors upstream
+// tests/common TestMemberListSerializable (845cd3885). KubeBrain's topology is
+// DBaaS-managed rather than Raft-mutated, but the wire option must preserve the
+// same coordination contract: a serializable list remains locally available,
+// while a linearizable list waits for the read barrier and honors the caller's
+// deadline when coordination is unavailable.
+func TestMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	barrierStarted := make(chan struct{}, 1)
+	server.peers = testPeerService{syncReadFn: func(ctx context.Context) error {
+		barrierStarted <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+
+	serializableCtx, cancelSerializable := context.WithTimeout(context.Background(), time.Second)
+	defer cancelSerializable()
+	response, err := server.MemberList(serializableCtx, &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Members)
+	select {
+	case <-barrierStarted:
+		t.Fatal("serializable MemberList must not enter the read barrier")
+	default:
+	}
+
+	linearizableCtx, cancelLinearizable := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelLinearizable()
+	response, err = server.MemberList(linearizableCtx, &etcdserverpb.MemberListRequest{Linearizable: true})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	select {
+	case <-barrierStarted:
+	default:
+		t.Fatal("linearizable MemberList did not enter the read barrier")
+	}
 }
 
 func TestMemberListLinearizableHeaderRevisionMatchesEtcd(t *testing.T) {

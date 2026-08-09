@@ -43741,6 +43741,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `a87cf8857` 只为 A4123 已分类的 nested Txn quota 修复添加红测，`da0321d1f` 只修 benchmark 参数。
   `TestRecentUpstreamAuditIsRecorded` 逐项固定这 13 个 commit ID；后续差集出现非空时必须重新判断公开
   etcd 行为，不得因本轮“无 runtime 差距”而默认忽略。
+  A4127 跟进 upstream `845cd3885` 将 MemberList serializable/quorum 行为迁入跨实现 common tests：
+  `MemberListRequest.Linearizable=false` 必须从本地 membership snapshot 立即返回，而 true 必须进入一致性
+  read barrier，并在协调不可用时阻塞至 caller deadline。KubeBrain 已在 handler 中按该 wire flag 分流，
+  本轮新增与 upstream 故障形态一致的确定性测试：blocking `SyncReadRevision` 下 serializable 返回完整成员且
+  零 barrier 调用，linearizable 明确进入 barrier、等待 50ms deadline、返回 `DeadlineExceeded` 与 nil
+  response。连续 10 轮及 race 3 轮通过，固定 context 取消传播，防止以后为了 membership 外观可用性而
+  意外绕过 linearizable 协调。`5efa4a8e0` 修复普通 Range 被 stream skip 连带跳过的问题已由既有 generated
+  Range 矩阵与 A3799 审计覆盖，不重复建立同义测试。
 
 ### P2：运维兼容和长期验证
 
