@@ -497,6 +497,8 @@ raft proposal 兼容指标 `etcd_server_proposals_committed_total`、
 0；不得替换为 MVCC revision、public write RPC 或 TiKV transaction），
 learner promotion 兼容指标 `etcd_server_learner_promote_successes`（成员变更由 DBaaS
 控制面承担，数据面成功数固定为 0；带 `Reason` 的 failures family 仅在实际失败请求后出现），
+backend commit 兼容指标 `etcd_disk_backend_commit_duration_seconds`（观察 TiKV/Badger
+原子提交 attempt，生产门禁要求 `_count` family 存在；不要解释为 bbolt 文件写入阶段），
 auth revision 指标 `etcd_debugging_auth_revision`，
 quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与

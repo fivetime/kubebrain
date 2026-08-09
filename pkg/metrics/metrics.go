@@ -50,3 +50,10 @@ type Metrics interface {
 	// EmitHistogram emits the histogram
 	EmitHistogram(name string, value interface{}, tags ...T) error // histogram
 }
+
+// HistogramRegistrar is an optional capability for metrics backends that can
+// create a histogram family without observing a synthetic sample. Callers use
+// it when an upstream compatibility family must be visible at count zero.
+type HistogramRegistrar interface {
+	RegisterHistogram(name string, tags ...T) error
+}

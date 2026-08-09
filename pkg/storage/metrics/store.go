@@ -35,9 +35,25 @@ import (
 // assertion (scanner) or the GC driver keeps seeing them through the wrapper.
 // A "wrapped store still satisfies the optional interface" test guards this.
 func NewKvStorage(store storage.KvStorage, m metrics.Metrics) storage.KvStorage {
+	return newKvStorage(store, m, true)
+}
+
+// NewEtcdCompatibilityKvStorage wraps storage with only the metrics needed for
+// the public etcd observability contract. Unlike NewKvStorage it does not emit
+// the detailed internal storage.* series, so --enable-storage-metrics can keep
+// controlling their cardinality and cost.
+func NewEtcdCompatibilityKvStorage(store storage.KvStorage, m metrics.Metrics) storage.KvStorage {
+	return newKvStorage(store, m, false)
+}
+
+func newKvStorage(store storage.KvStorage, m metrics.Metrics, emitStorageMetrics bool) storage.KvStorage {
+	if registrar, ok := m.(metrics.HistogramRegistrar); ok {
+		_ = registrar.RegisterHistogram("etcd.disk.backend_commit_duration_seconds")
+	}
 	w := &storeWrapper{
-		KvStorage:  store,
-		metricsCli: m,
+		KvStorage:          store,
+		metricsCli:         m,
+		emitStorageMetrics: emitStorageMetrics,
 	}
 	_, hasGC := store.(storage.GarbageCollector)
 	_, hasExclusive := store.(storage.ExclusiveKvStorage)
@@ -68,7 +84,8 @@ type exclusiveStoreWrapper struct {
 }
 
 func (s *exclusiveStoreWrapper) GetExclusiveKvStorage() storage.KvStorage {
-	return s.KvStorage.(storage.ExclusiveKvStorage).GetExclusiveKvStorage()
+	return newKvStorage(s.KvStorage.(storage.ExclusiveKvStorage).GetExclusiveKvStorage(),
+		s.metricsCli, s.emitStorageMetrics)
 }
 
 // gcExclusiveStoreWrapper re-exposes both optional capabilities.
@@ -81,12 +98,14 @@ func (s *gcExclusiveStoreWrapper) GC(ctx context.Context, lifetime time.Duration
 }
 
 func (s *gcExclusiveStoreWrapper) GetExclusiveKvStorage() storage.KvStorage {
-	return s.KvStorage.(storage.ExclusiveKvStorage).GetExclusiveKvStorage()
+	return newKvStorage(s.KvStorage.(storage.ExclusiveKvStorage).GetExclusiveKvStorage(),
+		s.metricsCli, s.emitStorageMetrics)
 }
 
 type storeWrapper struct {
 	storage.KvStorage
-	metricsCli metrics.Metrics
+	metricsCli         metrics.Metrics
+	emitStorageMetrics bool
 }
 
 func (s *storeWrapper) UnwrapKvStorage() storage.KvStorage {
@@ -112,6 +131,10 @@ const (
 )
 
 func (s *storeWrapper) time(f func() error, opTag metrics.T) {
+	if !s.emitStorageMetrics {
+		_ = f()
+		return
+	}
 	start := time.Now()
 	err := f()
 	stateTag := genStateTag(err)
@@ -145,6 +168,9 @@ func (s *storeWrapper) Get(ctx context.Context, key []byte) (val []byte, err err
 // Iter implements storage.KvStorage
 func (s *storeWrapper) Iter(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (storage.Iter, error) {
 	iter, err := s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+	if !s.emitStorageMetrics {
+		return iter, err
+	}
 	if err != nil {
 		_ = s.metricsCli.EmitCounter("storage.iter.start", 1, unexpectedErrTag)
 		return nil, err
@@ -156,13 +182,15 @@ func (s *storeWrapper) Iter(ctx context.Context, start []byte, end []byte, times
 // BeginBatchWrite implements storage.KvStorage
 func (s *storeWrapper) BeginBatchWrite() storage.BatchWrite {
 	b := s.KvStorage.BeginBatchWrite()
-	return newBatchWriteWrapper(b, s.metricsCli)
+	return newBatchWriteWrapper(b, s.metricsCli, s.emitStorageMetrics)
 }
 
 // Del implements storage.KvStorage
 func (s *storeWrapper) Del(ctx context.Context, key []byte) (err error) {
 	f := func() error {
+		start := time.Now()
 		err = s.KvStorage.Del(ctx, key)
+		_ = s.metricsCli.EmitHistogram("etcd.disk.backend_commit_duration_seconds", time.Since(start).Seconds())
 		return err
 	}
 	s.time(f, delTag)
@@ -172,8 +200,13 @@ func (s *storeWrapper) Del(ctx context.Context, key []byte) (err error) {
 // DelCurrent implements storage.KvStorage
 func (s *storeWrapper) DelCurrent(ctx context.Context, iter storage.Iter) (err error) {
 	f := func() error {
-		internalIter := iter.(*iterWrapper).Iter
+		internalIter := iter
+		if wrapped, ok := iter.(*iterWrapper); ok {
+			internalIter = wrapped.Iter
+		}
+		start := time.Now()
 		err = s.KvStorage.DelCurrent(ctx, internalIter)
+		_ = s.metricsCli.EmitHistogram("etcd.disk.backend_commit_duration_seconds", time.Since(start).Seconds())
 		return err
 	}
 	s.time(f, cmpAndDelTag)
@@ -234,16 +267,18 @@ func (i *iterWrapper) Close() (err error) {
 
 type batchWriteWrapper struct {
 	storage.BatchWrite
-	start   time.Time
-	m       metrics.Metrics
-	counter int64
+	start              time.Time
+	m                  metrics.Metrics
+	counter            int64
+	emitStorageMetrics bool
 }
 
-func newBatchWriteWrapper(batch storage.BatchWrite, m metrics.Metrics) *batchWriteWrapper {
+func newBatchWriteWrapper(batch storage.BatchWrite, m metrics.Metrics, emitStorageMetrics bool) *batchWriteWrapper {
 	return &batchWriteWrapper{
-		BatchWrite: batch,
-		start:      time.Now(),
-		m:          m,
+		BatchWrite:         batch,
+		start:              time.Now(),
+		m:                  m,
+		emitStorageMetrics: emitStorageMetrics,
 	}
 }
 
@@ -274,13 +309,21 @@ func (b *batchWriteWrapper) Del(key []byte) {
 // DelCurrent implements storage.BatchWrite
 func (b *batchWriteWrapper) DelCurrent(it storage.Iter) {
 	b.counter++
-	internalIter := it.(*iterWrapper).Iter
+	internalIter := it
+	if wrapped, ok := it.(*iterWrapper); ok {
+		internalIter = wrapped.Iter
+	}
 	b.BatchWrite.DelCurrent(internalIter)
 }
 
 // Commit implements storage.BatchWrite
 func (b *batchWriteWrapper) Commit(ctx context.Context) (err error) {
+	commitStart := time.Now()
 	err = b.BatchWrite.Commit(ctx)
+	_ = b.m.EmitHistogram("etcd.disk.backend_commit_duration_seconds", time.Since(commitStart).Seconds())
+	if !b.emitStorageMetrics {
+		return err
+	}
 	stateTag := genStateTag(err)
 	duSumSec := time.Since(b.start).Milliseconds()
 	_ = b.m.EmitHistogram("storage.batch.count", b.counter, batchTag, stateTag)

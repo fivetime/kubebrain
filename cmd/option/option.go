@@ -443,6 +443,8 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 
 	if o.EnableStorageMetrics {
 		kv = storagemetrics.NewKvStorage(kv, metricsCli)
+	} else if o.epsConf.EnableEtcdCompatibility {
+		kv = storagemetrics.NewEtcdCompatibilityKvStorage(kv, metricsCli)
 	}
 
 	b := backend.NewBackend(kv, config, metricsCli)

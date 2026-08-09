@@ -32,14 +32,32 @@ import (
 
 // recordMetrics records the summed value of each emitted counter.
 type recordMetrics struct {
-	mu       sync.Mutex
-	counters map[string]float64
+	mu         sync.Mutex
+	counters   map[string]float64
+	histograms map[string][]float64
 }
 
-func (r *recordMetrics) GetGrpcServerOption() []grpc.ServerOption              { return nil }
-func (r *recordMetrics) GetHttpHandlers() map[string]http.Handler              { return nil }
-func (r *recordMetrics) EmitGauge(string, interface{}, ...metrics.T) error     { return nil }
-func (r *recordMetrics) EmitHistogram(string, interface{}, ...metrics.T) error { return nil }
+func (r *recordMetrics) GetGrpcServerOption() []grpc.ServerOption          { return nil }
+func (r *recordMetrics) GetHttpHandlers() map[string]http.Handler          { return nil }
+func (r *recordMetrics) EmitGauge(string, interface{}, ...metrics.T) error { return nil }
+func (r *recordMetrics) EmitHistogram(name string, value interface{}, _ ...metrics.T) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var v float64
+	switch x := value.(type) {
+	case int:
+		v = float64(x)
+	case int64:
+		v = float64(x)
+	case float64:
+		v = x
+	}
+	if r.histograms == nil {
+		r.histograms = make(map[string][]float64)
+	}
+	r.histograms[name] = append(r.histograms[name], v)
+	return nil
+}
 
 func (r *recordMetrics) EmitCounter(name string, value interface{}, _ ...metrics.T) error {
 	r.mu.Lock()
@@ -61,6 +79,37 @@ func (r *recordMetrics) get(name string) float64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.counters[name]
+}
+
+func (r *recordMetrics) histogram(name string) []float64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]float64(nil), r.histograms[name]...)
+}
+
+func TestEtcdCompatibilityWrapperObservesEveryBackendCommitAttempt(t *testing.T) {
+	rec := &recordMetrics{counters: map[string]float64{}, histograms: map[string][]float64{}}
+	raw := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	kv := NewEtcdCompatibilityKvStorage(raw, rec)
+	ctx := context.Background()
+
+	seed := kv.BeginBatchWrite()
+	seed.Put([]byte("key"), []byte("value"), 0)
+	require.NoError(t, seed.Commit(ctx))
+
+	conflict := kv.BeginBatchWrite()
+	conflict.CAS([]byte("key"), []byte("new"), []byte("wrong"), 0)
+	require.ErrorIs(t, conflict.Commit(ctx), storage.ErrCASFailed)
+	require.NoError(t, kv.Del(ctx, []byte("key")))
+
+	samples := rec.histogram("etcd.disk.backend_commit_duration_seconds")
+	require.Len(t, samples, 3, "successful, failed, and direct-delete commits must each be observed")
+	for _, sample := range samples {
+		require.GreaterOrEqual(t, sample, float64(0))
+	}
+	require.Empty(t, rec.histogram("storage.batch.duration"),
+		"compatibility-only wrapping must not enable detailed storage metrics")
 }
 
 // TestIterWrapperCountsFetchedRows pins #67: the storage.iter.fetch.success

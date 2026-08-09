@@ -93,6 +93,13 @@ func (pw *prometheusWrapper) EmitHistogram(name string, value interface{}, label
 	return nil
 }
 
+// RegisterHistogram creates the labeled histogram child without adding a
+// sample, so Prometheus exposes its buckets/sum/count with count zero.
+func (pw *prometheusWrapper) RegisterHistogram(name string, labels ...metrics.T) error {
+	pw.mustGetHistogramVec(name, labels).With(pw.labelsToMap(labels))
+	return nil
+}
+
 func convert2float64(i interface{}) (float64, error) {
 	switch s := i.(type) {
 	case int:
@@ -231,7 +238,12 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	if vec != nil {
 		return vec
 	}
-	vec = prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: formatName(name)}, pw.extractLabelNames(labels))
+	opts := prometheus.HistogramOpts{Name: formatName(name)}
+	if name == "etcd.disk.backend_commit_duration_seconds" {
+		// Match server/storage/backend/metrics.go: 1ms through 8.192s.
+		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
+	}
+	vec = prometheus.NewHistogramVec(opts, pw.extractLabelNames(labels))
 	registerer.MustRegister(vec)
 	pw.histogramVecMap[name] = vec
 	return vec

@@ -43076,6 +43076,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   按 upstream `Reason` 标签递增 failures。不能把 TiKV learner、PD 调度或控制面扩缩容结果
   混入这两个 etcd server family。只读生产 gate 固定 successes family 存在；failures 是
   CounterVec，保持 upstream 无实际失败 label 时不产生伪造 time series。
+- A4059 实现 upstream backend commit duration histogram：上游
+  `/root/etcd/server/storage/backend/metrics.go` 与 `batch_tx.go` 在每次 bbolt
+  `tx.Commit()` attempt 后观察 `etcd_disk_backend_commit_duration_seconds`，bucket 为
+  1ms 起、2 倍递增、共 14 桶。KubeBrain 的等价持久化边界是 TiKV/Badger 原子 batch
+  `Commit`，以及 scanner fallback 使用的 direct `Del`/`DelCurrent` commit；成功、确定失败和
+  uncertain result 都必须保留耗时样本。storage metrics wrapper 现在分为始终启用的 etcd
+  compatibility 采集和可选的内部 `storage.*` 详细采集：未设置
+  `--enable-storage-metrics` 时仍观察 backend commit family，但不产生内部高基数序列；启用时
+  两者同时存在。exclusive scanner storage 继续用同一模式重新包装，避免 compaction batch
+  绕过该指标。Prometheus adapter 对该 family 使用 upstream 精确 buckets，而不是默认 buckets。
+  新增可选 `metrics.HistogramRegistrar`，在 wrapper 初始化时创建 histogram child 但不
+  Observe，使从未执行提交的 follower 仍与 upstream 一样暴露 `_count=0`，同时不向延迟分布
+  注入虚假的 0 秒 commit。
+  单元测试固定成功 batch、CAS failure 与 direct delete 各产生一个样本，并固定 compatibility-only
+  wrapper 不产生 `storage.batch.duration`；生产只读 gate 要求 `_count` family 存在并新增
+  `backend_commit_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

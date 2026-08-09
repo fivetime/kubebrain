@@ -43,6 +43,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `etcd_server_heartbeat_send_failures_total` counter | etcd upstream 兼容的 raft leader heartbeat 发送失败计数；KubeBrain 不运行 etcd raft transport，固定为 0，TiKV/PD heartbeat 应看存储层指标。 |
 | `etcd_server_proposals_committed_total` / `etcd_server_proposals_applied_total` / `etcd_server_proposals_pending` gauge，`etcd_server_proposals_failed_total` counter | etcd upstream 兼容的 raft proposal 状态；KubeBrain 不运行 etcd raft proposal pipeline，四者固定为 0。不得解释为 MVCC revision、public write RPC 或 TiKV transaction；底层共识使用 TiKV/PD 原生指标。 |
 | `etcd_server_learner_promote_successes` / `etcd_server_learner_promote_failures{Reason}` counter | etcd upstream 兼容的 learner promotion 结果；DBaaS 控制面拥有成员变更，因此数据面成功数固定为 0。实际 `MemberPromote` 终止错误按 upstream `Reason=err.Error()` 计入 failures；不要把 TiKV learner 或控制面扩缩容结果混入。 |
+| `etcd_disk_backend_commit_duration_seconds` histogram | etcd upstream 兼容的 backend 原子提交耗时。KubeBrain 观察每次 TiKV/Badger batch commit attempt，以及 direct delete commit；成功、确定失败和不确定结果均有样本。bucket 与 upstream 保持 1ms 起、2 倍递增、共 14 桶。进程启动时只注册 count=0 family，不用 `Observe(0)` 伪造提交。该 family 独立于可选的 `--enable-storage-metrics`，后者只控制内部 `storage.*` 详细序列。 |
 | `etcd_server_healthcheck` gauge(labels: `type`,`name`) | etcd 兼容的 `/livez`、`/readyz` 分项状态；1=最近一次成功，0=最近一次失败。 |
 | `etcd_server_healthchecks_total` counter(labels: `type`,`name`,`status`) | 分项检查累计结果；用 `rate(...{status="error"}[5m])` 区分后端不可读与无 leader。传统 `/health` 同时提供 `etcd_server_health_success`/`failures`。 |
 
