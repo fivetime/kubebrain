@@ -43286,6 +43286,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也不具有任何数据面 mutation。fake webhook 测试覆盖 firing→Secret→未审批 submit，以及 resolved
   alert 在 Kubernetes 零调用前拒绝。常驻 HTTPS receiver 的认证/NetworkPolicy 仍是平台部署缺口，
   但告警到待审批对象的确定性、可测试策略已落库。
+  A4076 实现常驻认证 receiver 并关闭上述部署缺口：新增只接受 HTTPS
+  `POST /api/v1/alerts` 的独立进程，Bearer token 至少 32 字节，请求必须为无 query 的 JSON、body
+  非空且至多 1 MiB；每 Pod policy 并发固定为 1，拥塞返回带 Retry-After 的 429，执行有 30 秒
+  deadline，子进程输出最多保留 8 KiB，临时 payload 权限固定 0600。TLS certificate 周期热加载，
+  token 轮换要求滚动 Pod。Deployment 以 2 副本、PDB、只读 root filesystem 和仅允许 monitoring
+  Alertmanager 的 ingress NetworkPolicy 发布。
+  Operation/parameter Secret 固定进入独立 `kubebrain-repair-operations`，不与备份、恢复、销毁参数
+  共用 namespace；repair executor 使用独立 inventory claim，并仅在该 namespace 直接 get Secret，
+  通用 parameter broker 不扩权。receiver RBAC 只有目标 StatefulSet/TidbCluster identity get、隔离
+  Secret/Operation get/create，没有 approve/status/Lease/Pod/scale/delete/PVC 权限。两条按 namespace
+  和精确 SA identity 匹配的 fail-closed ValidatingAdmissionPolicy 继续限制 Operation 只能是
+  fingerprint 派生的 `TiKVTransactionRepair`、固定 requester/instance、`maxAttempts=1`、确定性参数
+  引用，并限制 Secret 为同一 fingerprint 派生名称、immutable Opaque、唯一
+  `parameters.json`；即使 receiver 凭证泄露也不能把宽泛的 create verb 用于其他 operation 或 Secret
+  shape。HTTP/race、RBAC/admission manifest、policy runner 与 wrapper 聚焦回归通过，两个 admission
+  policy 的 Kubernetes server-side dry-run 通过。
 
 ### P2：运维兼容和长期验证
 

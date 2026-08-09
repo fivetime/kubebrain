@@ -171,6 +171,84 @@ roleRef:
   kind: ClusterRole
   name: kubebrain-operation-archiver-managed-namespace
 ---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-tikv-repair-alert-operation
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [dbaas.kubebrain.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE]
+        resources: [kubebrainoperations]
+        scope: Namespaced
+  matchConditions:
+    - name: repair-alert-receiver
+      expression: 'request.namespace == "kubebrain-repair-operations" && request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
+  validations:
+    - expression: 'object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}$")'
+      message: repair alert operation name must derive from an alert fingerprint
+    - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.operationID == object.metadata.name && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1'
+      message: repair alert operations require the fixed type, identity, instance, and attempt limit
+    - expression: 'has(object.spec.requestedBy) && object.spec.requestedBy == "alertmanager:transaction-path-policy"'
+      message: repair alert operations require the fixed policy requester
+    - expression: 'has(object.spec.parametersSecretRef) && object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json"'
+      message: repair alert operations require their deterministic parameter Secret
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-tikv-repair-alert-operation
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  policyName: kubebrain-tikv-repair-alert-operation
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-tikv-repair-alert-parameters
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [secrets]
+        scope: Namespaced
+  matchConditions:
+    - name: repair-alert-receiver
+      expression: 'request.namespace == "kubebrain-repair-operations" && request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-repair-alert-receiver"'
+  validations:
+    - expression: 'object.metadata.name.matches("^tikv-repair-[a-f0-9]{16,20}-parameters$")'
+      message: repair parameter Secret name must derive from an alert fingerprint
+    - expression: 'has(object.immutable) && object.immutable == true && object.type == "Opaque"'
+      message: repair parameter Secrets must be immutable Opaque Secrets
+    - expression: 'has(object.data) && size(object.data) == 1 && "parameters.json" in object.data && (!has(object.stringData) || size(object.stringData) == 0)'
+      message: repair parameter Secrets may only contain parameters.json data
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-tikv-repair-alert-parameters
+  labels:
+    app.kubernetes.io/name: kubebrain-tikv-repair-alert-receiver
+    app.kubernetes.io/part-of: kubebrain
+spec:
+  policyName: kubebrain-tikv-repair-alert-parameters
+  validationActions: [Deny]
+---
 apiVersion: v1
 kind: Service
 metadata:

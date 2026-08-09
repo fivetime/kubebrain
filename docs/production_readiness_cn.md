@@ -263,6 +263,11 @@ get/create 该 namespace 的 Secret 和 Operation，并只读指定 KubeBrain St
 访问 Pod 或删除任何资源。中央 approver/archiver 和 repair worker 通过逐 namespace RoleBinding
 接入，其他类型 executor 不会扫描该 inventory。receiver Deployment 默认 2 副本、PDB
 `maxUnavailable: 1`；确定性 Secret/Operation identity 保证 Alertmanager 重试幂等。
+两条 fail-closed `ValidatingAdmissionPolicy` 进一步只约束该 receiver SA 的 CREATE：Operation 必须
+使用 fingerprint 派生名称、`TiKVTransactionRepair`、固定 requester/instance、`maxAttempts=1` 和
+同名参数引用；Secret 必须使用派生名称、`immutable=true`、`Opaque` 且只能含
+`parameters.json`。因此即使 bearer endpoint 或 receiver Pod 凭证泄露，也不能借其 RBAC 在隔离
+queue 中制造其他 operation type、可变 Secret 或任意 Secret payload。
 
 ## 生产镜像追踪
 
