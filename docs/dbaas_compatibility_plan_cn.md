@@ -43694,6 +43694,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   再普通关闭。`validatedWatchBatchRevision` 现在先从原始 batch 解析兼容 fallback 水位，拒绝非正 ModRevision、
   超过 batch 水位或不可表示的 revision，并携带原始 index 整批取消；完整 Watch 回归证明本地/历史/代理生产者
   均满足该 MVCC 不变量。
+  A4121 拒绝同一代理 batch 内 event revision 倒退：upstream 历史 `rangeEvents` 按 MVCC revision 顺序读取，
+  实时 `notify` 的同一事务 events 共享 revision，因此合法序列只能单调不降；旧 watcher 仅逐项验证不超过
+  batch 水位，revision 10 后跟 revision 9 会原样发给客户端。红测证明旧实现发送两个倒序 events 后普通关闭。
+  `validatedWatchBatchRevision` 现在同时保存前一项 revision，任一后项更小就携带 index/preceding revision
+  整批取消；相等 revision 保持合法，保留 etcd 单事务多事件语义。完整 Watch 回归和 vet 通过。
 
 ### P2：运维兼容和长期验证
 

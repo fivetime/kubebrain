@@ -1301,6 +1301,20 @@ func TestValidatedWatchBatchRevisionRejectsNonPositiveEventRevision(t *testing.T
 	}
 }
 
+func TestWatchRejectsRegressingEventRevisionWithinBatch(t *testing.T) {
+	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{
+		Revision: 10,
+		Events: []*mvccpb.Event{
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/newer"), ModRevision: 10}},
+			{Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/older"), ModRevision: 9}},
+		},
+	})
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Empty(t, responses[0].Events)
+	require.Contains(t, responses[0].CancelReason, "event revision 9 at index 1 below preceding revision 10")
+}
+
 func TestWatchRejectsEmptyBackendResult(t *testing.T) {
 	responses := runInjectedWatchResult(t, 1, 0, etcdproxy.WatchResult{})
 	require.Len(t, responses, 1)

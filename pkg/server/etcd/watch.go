@@ -192,14 +192,19 @@ func validatedWatchBatchRevision(result etcdproxy.WatchResult) (uint64, error) {
 	if batchRevision > uint64(math.MaxInt64) {
 		return 0, fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", batchRevision)
 	}
+	var precedingRevision int64
 	for i, event := range result.Events {
 		eventRevision := event.GetKv().GetModRevision()
 		if eventRevision <= 0 {
 			return 0, fmt.Errorf("watch backend returned invalid event revision %d at index %d", eventRevision, i)
 		}
+		if i > 0 && eventRevision < precedingRevision {
+			return 0, fmt.Errorf("watch backend returned event revision %d at index %d below preceding revision %d", eventRevision, i, precedingRevision)
+		}
 		if uint64(eventRevision) > batchRevision {
 			return 0, fmt.Errorf("watch backend returned batch revision %d below event revision %d at index %d", batchRevision, eventRevision, i)
 		}
+		precedingRevision = eventRevision
 	}
 	return batchRevision, nil
 }
