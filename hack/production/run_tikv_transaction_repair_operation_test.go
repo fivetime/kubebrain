@@ -116,4 +116,20 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	driftRepairData, err := os.ReadFile(repairLog)
 	require.NoError(t, err)
 	require.Empty(t, driftRepairData, "occurrence drift must fail before starting the destructive repair primitive")
+
+	extraFieldBytes := []byte(strings.TrimSuffix(string(parameterBytes), "}") + `,"unreviewed":true}`)
+	require.NoError(t, os.WriteFile(parameters, extraFieldBytes, 0o600))
+	extraFieldDigest := fmt.Sprintf("%x", sha256.Sum256(extraFieldBytes))
+	require.NoError(t, os.WriteFile(repairLog, nil, 0o600))
+	extraOutput, extraErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-5", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=0.1", "EXPECTED_DIGEST=" + extraFieldDigest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+	})
+	require.Error(t, extraErr)
+	require.Contains(t, string(extraOutput), "repair parameter schema is invalid")
+	extraRepairData, err := os.ReadFile(repairLog)
+	require.NoError(t, err)
+	require.Empty(t, extraRepairData, "unknown parameter fields must fail before starting the repair primitive")
 }

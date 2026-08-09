@@ -242,6 +242,7 @@ Operation/immutable Secret 名，生成规范参数 JSON
 内容摘要完全相同，否则 fail closed。参数 JSON 同时冻结原始 fingerprint、`startsAt` 和派生
 occurrence ID；repair executor 会重新计算 occurrence hash，并要求 Operation name/operation ID 与其一致，
 因此即使参数内容和 parameters SHA 被一起替换，也不能把一次告警的审批用于另一次 occurrence。
+executor 还要求参数对象只有固定的 16 个字段；未知字段不会被静默纳入审批摘要后在执行时忽略。
 
 runner 从不调用 approve，也没有 scale、Pod delete 或 PVC 权限；因此告警只能产生未审批请求，
 不能绕过 A4074 的人工/策略审批。resolved、重复匹配、过新的、未来时间、错误实例标签或身份漂移

@@ -73,6 +73,14 @@ chmod 0600 "$frozen_parameters"
   exit 1
 }
 
+$JQ -e 'keys == [
+  "alert_fingerprint", "alert_occurrence_id", "alert_starts_at", "endpoint",
+  "expected_cluster_id", "expected_kubebrain_statefulset_uid", "expected_tidb_cluster_uid",
+  "kubebrain_namespace", "kubebrain_statefulset", "pod_ready_timeout_seconds",
+  "probe_interval_seconds", "probe_timeout_seconds", "repair_cooldown_seconds",
+  "required_failed_probes", "tidb_cluster", "tidb_namespace"
+]' "$frozen_parameters" >/dev/null || die "repair parameter schema is invalid"
+
 parameters="$($JQ -er '[
   .alert_fingerprint, .alert_starts_at, .alert_occurrence_id,
   .endpoint, .kubebrain_namespace, .kubebrain_statefulset,

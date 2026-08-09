@@ -44254,6 +44254,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   将 occurrence 改为全零并同步重算参数摘要，旧 wrapper 会启动 repair，新 wrapper 在子进程前拒绝且
   repair log 为空。该纵深栅栏不授予 receiver approve/status/scale/delete 权限，也不改变 executor 默认
   0 副本、冷却、三次失败、UID/cluster-ID/PVC/quorum 或 receipt 校验。
+  A4181 固定 TiKV repair immutable parameters 的精确 schema。A4180 的字段提取只要求 16 个已知值
+  非空，`jq` 会静默忽略额外 key；于是审批摘要可以包含 executor 完全不解释的隐藏内容，审计者无法证明
+  “已审批 JSON”与“实际执行语义”具有唯一映射。wrapper 现在在 occurrence/endpoint/数值解析前要求
+  sorted `keys` 精确等于 16 项公开参数，缺失与额外字段均 fail closed。负向测试在完整合法参数中加入
+  `unreviewed:true` 并同步重算 `parametersSha256`，旧实现会启动 repair，新实现返回
+  `repair parameter schema is invalid` 且 repair log 为空；正向、takeover、失败与 A4180 occurrence 漂移
+  路径保持不变。该改动只收紧审批参数解释，不扩大任何 receiver/executor 权限或自动批准范围。
 
 ### P2：运维兼容和长期验证
 
