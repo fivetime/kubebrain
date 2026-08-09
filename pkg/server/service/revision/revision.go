@@ -61,6 +61,11 @@ var (
 
 const maxLeaderStatusBytes = 4 << 10
 
+const (
+	etcdSlowReadIndexesMetric   = "etcd.server.slow_read_indexes_total"
+	etcdReadIndexesFailedMetric = "etcd.server.read_indexes_failed_total"
+)
+
 type revisionSyncer struct {
 	// inject
 	leaderElection leader.LeaderElection
@@ -93,6 +98,7 @@ func defaultTransportDialContext(dialer *net.Dialer) func(context.Context, strin
 }
 
 func NewRevisionSyncer(backend Backend, metricCli metrics.Metrics, l leader.LeaderElection, tlsConfig *tls.Config) RevisionSyncer {
+	initEtcdReadIndexMetrics(metricCli)
 	r := &revisionSyncer{
 		leaderElection: l,
 		metricCli:      metricCli,
@@ -134,6 +140,10 @@ func (r *revisionSyncer) SyncReadRevision(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		emitEtcdReadIndexFailure(r.metricCli, err)
+		return err
+	}
 	_, leadingFresh := r.leaderElection.EpochAndLeadingFresh()
 	if leadingFresh {
 		return nil
@@ -147,18 +157,41 @@ func (r *revisionSyncer) SyncReadRevision(ctx context.Context) error {
 	// observed.
 	if r.leaderElection.IsLeader() {
 		r.metricCli.EmitCounter("read.leader.stale", 1)
-		return fmt.Errorf("%w: local leadership lease is stale", errLeaderChanged)
+		err := fmt.Errorf("%w: local leadership lease is stale", errLeaderChanged)
+		emitEtcdReadIndexFailure(r.metricCli, err)
+		return err
 	}
 	// only sync when not leader
 	r.metricCli.EmitCounter("read.follower", 1)
 	currentRevision, err := r.getFreshRevisionFromLeader(ctx)
 	if err != nil {
+		emitEtcdReadIndexFailure(r.metricCli, err)
 		r.metricCli.EmitCounter("read.follower.revision_err", 1)
 		klog.Errorf("sync read revision failed %v", err)
 		return fmt.Errorf("get revision from leader failed: %w", err)
 	}
 	r.backend.SetCurrentRevision(currentRevision)
 	return nil
+}
+
+func initEtcdReadIndexMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter(etcdSlowReadIndexesMetric, 0)
+	_ = metricCli.EmitCounter(etcdReadIndexesFailedMetric, 0)
+}
+
+func emitEtcdReadIndexFailure(metricCli metrics.Metrics, err error) {
+	if metricCli == nil || err == nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+		_ = metricCli.EmitCounter(etcdSlowReadIndexesMetric, 1)
+		return
+	}
+	_ = metricCli.EmitCounter(etcdReadIndexesFailedMetric, 1)
 }
 
 // Close implements RevisionSyncer

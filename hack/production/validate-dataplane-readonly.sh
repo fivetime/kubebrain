@@ -347,6 +347,14 @@ expect_info_metrics_boundary() {
       exit 1
     fi
   done
+  for read_index_metric in \
+    etcd_server_slow_read_indexes_total \
+    etcd_server_read_indexes_failed_total; do
+    if [[ "$info_metrics" != *"${read_index_metric}{"* && "$info_metrics" != *"${read_index_metric} "* ]]; then
+      echo "info metrics mismatch: expected ${read_index_metric}" >&2
+      exit 1
+    fi
+  done
   if [[ "$info_metrics" != *"etcd_disk_backend_commit_duration_seconds_count{"* && "$info_metrics" != *"etcd_disk_backend_commit_duration_seconds_count "* ]]; then
     echo "info metrics mismatch: expected etcd_disk_backend_commit_duration_seconds_count" >&2
     exit 1
@@ -1503,7 +1511,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "${READYZ_URL%/readyz}/metrics" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version"
-    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, raft_proposal_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
+    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
   fi
   status_summary+=", gateway_status_version=${gateway_status_version}"
   status_summary+=", gateway_storage_version=${gateway_status_storage_version}"

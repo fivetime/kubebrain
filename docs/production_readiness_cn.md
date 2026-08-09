@@ -502,6 +502,9 @@ backend commit 兼容指标 `etcd_disk_backend_commit_duration_seconds`（观察
 bbolt-only commit 阶段指标
 `etcd_debugging_disk_backend_commit_{rebalance,spill,write}_duration_seconds`（三者在
 TiKV/PD 架构下均保持 count=0；生产门禁拒绝缺失或非零值），
+线性读 barrier 指标 `etcd_server_slow_read_indexes_total` 与
+`etcd_server_read_indexes_failed_total`（生产门禁要求两个 counter family 均存在；非零表示
+leader revision 同步超时或终止失败，应结合 `read.follower.revision_err` 和 TiKV/PD 延迟排查），
 backend snapshot 兼容指标 `etcd_disk_backend_snapshot_duration_seconds`（观察 leader 本地
 在线 etcd snapshot 构建与传输生命周期；生产门禁要求零样本 family 也存在），
 backend defrag 兼容指标 `etcd_disk_backend_defrag_duration_seconds` 与

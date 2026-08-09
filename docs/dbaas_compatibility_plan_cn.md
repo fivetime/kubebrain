@@ -43124,6 +43124,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `RPCServer.New` 因此零样本注册三个 upstream family，Prometheus adapter 固定精确 buckets；
   单元测试锁定只注册、不 Observe。生产只读 gate 结构化要求三者唯一值均为 0，覆盖缺失与非零
   负例，并新增 `backend_bbolt_commit_phase_metrics=ok` 摘要。
+- A4063 实现 upstream ReadIndex failure counters：上游
+  `/root/etcd/server/etcdserver/read/metrics.go` 与 `read/read.go` 注册
+  `etcd_server_slow_read_indexes_total`、`etcd_server_read_indexes_failed_total`；等待 ReadState
+  超时或收到过期 response 计 slow，leader change 与发送 ReadIndex 失败计 failed，server stop
+  不计。KubeBrain 没有 embedded Raft ReadIndex，等价线性化边界是 revision syncer 的中央
+  `SyncReadRevision`：context deadline 或实现 `net.Error.Timeout()` 的 transport timeout 计 slow，
+  stale local leader、leader change 及其他终止错误计 failed，调用者主动 cancel 和成功同步不计。
+  指标在 syncer 初始化时以 0 注册，覆盖 Range、RangeStream、只读 Txn、Watch、Maintenance、
+  Auth 与 linearizable MemberList 等所有复用该 barrier 的入口；测试锁定 stale leader、deadline
+  与 cancellation 分类。生产只读 gate 要求两个 family 存在，并新增 `read_index_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

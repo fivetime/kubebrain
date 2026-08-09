@@ -358,7 +358,11 @@ func (m *mutableLeaderElection) advanceTerm() {
 func TestRevisionSyncerRejectsStaleLocalLeadership(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
-	mockMetrics := mock.NewMinimalMetrics(ctrl)
+	mockMetrics := mock.NewMockMetrics(ctrl)
+	mockMetrics.EXPECT().EmitCounter(etcdSlowReadIndexesMetric, 0)
+	mockMetrics.EXPECT().EmitCounter(etcdReadIndexesFailedMetric, 0)
+	mockMetrics.EXPECT().EmitCounter("read.leader.stale", 1)
+	mockMetrics.EXPECT().EmitCounter(etcdReadIndexesFailedMetric, 1)
 
 	election := &mutableLeaderElection{
 		leaderAddress: "127.0.0.1:2380",
@@ -374,6 +378,56 @@ func TestRevisionSyncerRejectsStaleLocalLeadership(t *testing.T) {
 	require.ErrorIs(t, err, errLeaderChanged)
 	require.Equal(t, uint64(42), backend.currentRev,
 		"a stale local leader flag must not admit a linearizable read")
+}
+
+func TestRevisionSyncerClassifiesReadIndexTimeoutAndCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ctx        func() context.Context
+		wantMetric bool
+	}{
+		{
+			name: "deadline",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+				defer cancel()
+				return ctx
+			},
+			wantMetric: true,
+		},
+		{
+			name: "cancellation",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			mockMetrics := mock.NewMockMetrics(ctrl)
+			mockMetrics.EXPECT().EmitCounter(etcdSlowReadIndexesMetric, 0)
+			mockMetrics.EXPECT().EmitCounter(etcdReadIndexesFailedMetric, 0)
+			if tc.wantMetric {
+				mockMetrics.EXPECT().EmitCounter(etcdSlowReadIndexesMetric, 1)
+			}
+
+			election := &leader.Stub{ElectionInfo: leader.ElectionInfo{
+				LeaderAddress: "127.0.0.1:1",
+			}}
+			syncer := NewRevisionSyncer(&backendStub{}, mockMetrics, election, nil)
+			defer syncer.Close()
+
+			err := syncer.SyncReadRevision(tc.ctx())
+			if tc.wantMetric {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+			} else {
+				require.ErrorIs(t, err, context.Canceled)
+			}
+		})
+	}
 }
 
 func TestRevisionSyncerRejectsResponseAcrossLeaderChange(t *testing.T) {
