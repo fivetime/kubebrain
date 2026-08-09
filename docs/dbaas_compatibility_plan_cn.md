@@ -44212,6 +44212,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两个全新 data-dir 执行默认 restore。当前 `/root/etcd/etcdutl` 对两者均非零退出并报告
   `expected sha256 ..., got ...`；正确制品仍在同一测试先成功 restore。该门禁同时约束 payload 覆盖范围与
   footer 本身，防止可恢复性测试在完整性检查被关闭或弱化后继续假绿；未修改数据面 runtime。
+  A4176 固定 checksum frame 完全缺失时的默认恢复拒绝。A4175 的单字节篡改仍保留 32-byte footer，
+  只能证明 mismatch 分支；如果备份下载器遗漏最终 SnapshotResponse，实际制品长度会重新落在 bbolt
+  page 边界，必须命中 upstream `hasChecksum`/`skipHashCheck` 的 missing-hash 分支。测试从同一真实
+  artifact 精确截除最后 32 bytes，先断言裸 backend 长度 `mod 512 == 0`，再用未传
+  `--skip-hash-check` 的当前 upstream restore 要求非零退出和精确
+  `snapshot missing hash but --skip-hash-check=false`。这与 A4174 的成功、A4175 的 payload/footer
+  mismatch 共同覆盖三条完整性结果，防止 DBaaS 上传、下载或代理链路丢尾帧后仍被自动恢复接受。
 
 ### P2：运维兼容和长期验证
 

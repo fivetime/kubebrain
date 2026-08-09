@@ -156,6 +156,19 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 				require.Contains(t, string(output), "got")
 			})
 		}
+
+		missingChecksum := artifact[:len(artifact)-sha256.Size]
+		require.Zero(t, len(missingChecksum)%512)
+		missingChecksumPath := filepath.Join(t.TempDir(), "snapshot-without-checksum.db")
+		require.NoError(t, os.WriteFile(missingChecksumPath, missingChecksum, 0o600))
+		command = exec.CommandContext(ctx, etcdutl, "snapshot", "restore", missingChecksumPath,
+			"--data-dir", filepath.Join(t.TempDir(), "restored.etcd"),
+			"--name", "missing-checksum",
+			"--initial-cluster", "missing-checksum=http://127.0.0.1:42382",
+			"--initial-advertise-peer-urls", "http://127.0.0.1:42382")
+		output, commandErr = command.CombinedOutput()
+		require.Error(t, commandErr, string(output))
+		require.Contains(t, string(output), "snapshot missing hash but --skip-hash-check=false")
 	}
 }
 
