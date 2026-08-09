@@ -43962,6 +43962,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但返回 `ErrUserEmpty` 而不是 TTL OutOfRange。未发现 runtime 差异，不修改正确实现；该门禁防止未来
   “提前验证 TTL”的重构改变鉴权错误优先级，或把 ID 生成挪到 auth 后而漂移 upstream 的 request
   mutation 契约。
+  A4151 继续复审 `/root/etcd` `5cd9f4ee1` 的 LeaseRevoke public error contract。upstream
+  `EtcdServer.LeaseRevoke` 在 raft request 前先执行 `requireAuthInfo`；apply 阶段
+  `authApplierV3.LeaseRevoke` 只在 lease 存在时检查其全部绑定 key 的 WRITE 权限，缺失 lease 不产生
+  permission error，随后由 lessor 返回 `ErrLeaseNotFound`，v3rpc 映射为 canonical NotFound。
+  KubeBrain 保持同序：`authCallerFromContext` 先于 leader/proxy/readiness/corrupt fence，持有
+  `leaseWriteMu` 后仅遍历现存 attachment 做 WRITE 鉴权，再原子撤销 lease 与绑定 key。现有测试已覆盖
+  protected/live lease 的 PermissionDenied、原子删除、signed ID、重复 revoke、follower routing 与故障恢复；
+  本轮补齐 direct、official client/v3 和 raw gRPC 的 missing-lease 交叉契约：匿名 caller 必须先得到
+  `ErrUserEmpty`，已认证但无相关 key 权限的普通用户必须得到 `ErrLeaseNotFound` 而非 PermissionDenied。
+  未发现 runtime 差异；A4151 防止未来把 lease lookup 或 attachment auth 提前到 caller admission 前，
+  或把“缺失 attachment”错误地解释为权限不足而漂移 upstream 的信息暴露与重试语义。
 
 ### P2：运维兼容和长期验证
 

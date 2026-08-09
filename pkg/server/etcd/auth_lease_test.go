@@ -100,6 +100,22 @@ func TestAuthLeaseRequiresCallerAndProtectsBoundKeys(t *testing.T) {
 	requireAuthLeaseError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
 }
 
+func TestAuthLeaseRevokeMissingLeaseErrorPriorityMatchesEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	missingID := int64(10_730_001)
+
+	response, err := server.LeaseRevoke(context.Background(), &etcdserverpb.LeaseRevokeRequest{ID: missingID})
+	require.Nil(t, response)
+	requireAuthLeaseError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+
+	response, err = server.LeaseRevoke(aliceCtx, &etcdserverpb.LeaseRevokeRequest{ID: missingID})
+	require.Nil(t, response)
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound,
+		"etcdserver: requested lease not found")
+}
+
 func TestAuthLeaseFutureJWTRevisionMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

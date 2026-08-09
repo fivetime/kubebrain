@@ -2076,6 +2076,25 @@ func TestClientAuthLeaseListProtectsInaccessibleAttachments(t *testing.T) {
 
 	alice := newClient("alice", "alice-secret")
 	root := newClient("root", "root-secret")
+	missingLeaseID := clientv3.LeaseID(10_730_001)
+	_, anonymousMissingRevokeErr := bootstrap.Revoke(ctx, missingLeaseID)
+	requireAuthClientError(t, anonymousMissingRevokeErr, codes.Unknown,
+		"etcdserver: user name is empty", rpctypes.ErrUserEmpty)
+	rawAnonymousLease := etcdserverpb.NewLeaseClient(bootstrap.ActiveConnection())
+	_, rawAnonymousMissingRevokeErr := rawAnonymousLease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{
+		ID: int64(missingLeaseID),
+	})
+	requireAuthClientError(t, rawAnonymousMissingRevokeErr, codes.InvalidArgument,
+		"etcdserver: user name is empty")
+	_, userMissingRevokeErr := alice.Revoke(ctx, missingLeaseID)
+	requireAuthClientError(t, userMissingRevokeErr, codes.Unknown,
+		"etcdserver: requested lease not found", rpctypes.ErrLeaseNotFound)
+	rawAliceLease := etcdserverpb.NewLeaseClient(alice.ActiveConnection())
+	_, rawUserMissingRevokeErr := rawAliceLease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{
+		ID: int64(missingLeaseID),
+	})
+	requireAuthClientError(t, rawUserMissingRevokeErr, codes.NotFound,
+		"etcdserver: requested lease not found")
 	_, anonymousLeasesErr := bootstrap.Leases(ctx)
 	requireAuthClientError(t, anonymousLeasesErr, codes.Unknown, "etcdserver: user name is empty", rpctypes.ErrUserEmpty)
 	_, userLeasesErr := alice.Leases(ctx)
@@ -2083,10 +2102,8 @@ func TestClientAuthLeaseListProtectsInaccessibleAttachments(t *testing.T) {
 	rootLeases, err := root.Leases(ctx)
 	require.NoError(t, err)
 	require.Contains(t, leaseIDs(rootLeases.Leases), protectedLease.ID)
-	rawAnonymousLease := etcdserverpb.NewLeaseClient(bootstrap.ActiveConnection())
 	_, rawAnonymousLeasesErr := rawAnonymousLease.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
 	requireAuthClientError(t, rawAnonymousLeasesErr, codes.InvalidArgument, "etcdserver: user name is empty")
-	rawAliceLease := etcdserverpb.NewLeaseClient(alice.ActiveConnection())
 	rawTTL, err := rawAliceLease.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: int64(protectedLease.ID)})
 	require.NoError(t, err)
 	require.Equal(t, int64(protectedLease.ID), rawTTL.ID)
