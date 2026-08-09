@@ -43790,6 +43790,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   invocation。同步修正 bigstream CLI 的隐藏差距：帮助文本原写 `put|stream|del`，实现实际只接受
   `delprefix`，未知模式还会以成功状态静默退出。当前 validator 只接受 put/stream/delprefix，其他值打印
   actionable error 并 exit 2；单测覆盖三正三负，bigstream 连续 10 轮与 vet 通过。
+  A4134 完成当前 upstream `5cd9f4ee1` 的 KV v3rpc 请求校验与错误优先级复审。逐项对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go`：`checkRangeRequest` 依次拒绝空 key、非法
+  sort order、非法 sort target；`checkPutRequest` 依次拒绝空 key、IgnoreValue 携带 value、
+  IgnoreLease 携带 lease；`checkDeleteRequest` 拒绝空 key；`checkTxnRequest` 先按 Compare、
+  Success、Failure 三者最大值执行 max-txn-ops 门禁，再校验 compare key 和两个分支中的递归 op，
+  最后分别运行 `checkIntervals`。KubeBrain 的 `validateRangeRequest`、`validatePutRequest`、
+  `validateDeleteRangeRequest`、`validateTxnRequestWithMaxOps` 与 `validateTxnIntervals` 保持相同顺序、
+  gRPC code 和 rpctypes message；direct handler、official clientv3 与 raw gRPC 测试已覆盖空 key、
+  非法枚举、IgnoreValue/IgnoreLease 组合、未选中嵌套分支、nil/empty op、递归 too-many-ops 和
+  Put/Delete overlap。基础 handler 也都在 leader routing、auth 和 backend access 前执行校验，
+  因此 follower、无凭据或故障 backend 不会遮蔽 wire validation error。本轮没有发现需要修改
+  runtime 的差异；`TestRecentUpstreamAuditIsRecorded` 固定 A4134，防止后续把该结论误当作未经
+  核验，或在调整入口顺序时丢失错误优先级。
 
 ### P2：运维兼容和长期验证
 
