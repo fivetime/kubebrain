@@ -982,6 +982,13 @@ func TestLeaseGrantAutomaticIDRewritesBeforeAuthLikeEtcd(t *testing.T) {
 	require.Nil(t, response)
 	requireAuthLeaseError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	require.Positive(t, request.ID)
+
+	oversized := &etcdserverpb.LeaseGrantRequest{TTL: maxLeaseTTL + 1}
+	response, err = server.LeaseGrant(context.Background(), oversized)
+	require.Nil(t, response)
+	requireAuthLeaseError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+	require.Positive(t, oversized.ID,
+		"upstream allocates an automatic ID before auth, while TTL validation remains behind auth/raft apply")
 }
 
 func TestLeaseGrantAutomaticIDRewritesBeforeTTLValidationLikeEtcd(t *testing.T) {

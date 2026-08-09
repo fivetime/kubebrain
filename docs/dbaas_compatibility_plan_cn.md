@@ -43951,6 +43951,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须先得到 PermissionDenied；随后合法 create 仍成功，证明 control cancel 不终止流。未发现需要修改
   runtime 的差异；A4149 作为源码位置、错误优先级和保护性测试的永久证据，避免后续 auth/watch 重构
   把顺序漂移误当成实现自由度。
+  A4150 复审 `/root/etcd` `5cd9f4ee1` 的 Lease public error contract。upstream
+  `EtcdServer.LeaseGrant` 先在调用方 request 上为 ID=0 生成正 int64 ID，再执行 `requireAuthInfo`，随后
+  才通过 raft apply 进入 `lessor.Grant` 的 MaxLeaseTTL、duplicate ID 和 min-TTL clamp；v3rpc 最后把
+  lessor errors 映射为 canonical gRPC。KubeBrain `leaseManager.LeaseGrant` 保持同序：自动 ID 改写、
+  auth caller、leader/proxy/readiness/corrupt/quota fence、TTL upper bound、min clamp、duplicate reservation
+  和 TiKV metadata persist。现有 direct/raw gRPC/official client 测试已覆盖 MinInt64..MaxInt64 ID、
+  MinInt64/负/零/最小/最大/超大 TTL、automatic ID、duplicate+oversized 优先级、no-space 和 auth；本轮
+  补上唯一缺少的交叉项：auth 已启用时，匿名 `ID=0, TTL=MaxLeaseTTL+1` 必须先把 request.ID 改写为正数，
+  但返回 `ErrUserEmpty` 而不是 TTL OutOfRange。未发现 runtime 差异，不修改正确实现；该门禁防止未来
+  “提前验证 TTL”的重构改变鉴权错误优先级，或把 ID 生成挪到 auth 后而漂移 upstream 的 request
+  mutation 契约。
 
 ### P2：运维兼容和长期验证
 
