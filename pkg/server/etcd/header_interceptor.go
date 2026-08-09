@@ -237,6 +237,24 @@ func (s *serverStreamWithContext) Context() context.Context {
 	return s.ctx
 }
 
+// RecvMsg on grpc.ServerStream waits on the transport context captured before
+// interceptors wrap the stream. Canceling only Context() therefore does not
+// wake a bidirectional handler blocked waiting for its next client message.
+// Race the underlying receive with the monitored context so require-leader
+// Watch/Lease streams can return ErrNoLeader even when the client is idle.
+func (s *serverStreamWithContext) RecvMsg(message any) error {
+	received := make(chan error, 1)
+	go func() {
+		received <- s.ServerStream.RecvMsg(message)
+	}()
+	select {
+	case err := <-received:
+		return err
+	case <-s.ctx.Done():
+		return context.Cause(s.ctx)
+	}
+}
+
 func (s *RPCServer) monitorRequiredLeaderStream(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 	ctx, cancel := context.WithCancelCause(ss.Context())
 	defer cancel(nil)

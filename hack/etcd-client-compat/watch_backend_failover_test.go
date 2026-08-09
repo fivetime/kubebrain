@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -57,6 +58,26 @@ func TestWatchDeliversCommittedWritesAcrossBackendFailover(t *testing.T) {
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	watch := cli.Watch(watchCtx, prefix,
 		clientv3.WithPrefix(), clientv3.WithRev(seed.Header.Revision+1), clientv3.WithCreatedNotify())
+	requireLeaderWatch := cli.Watch(clientv3.WithRequireLeader(watchCtx), prefix,
+		clientv3.WithPrefix(), clientv3.WithRev(seed.Header.Revision+1), clientv3.WithCreatedNotify())
+	select {
+	case response, ok := <-requireLeaderWatch:
+		require.True(t, ok, "require-leader watch closed before creation")
+		require.NoError(t, response.Err())
+		require.True(t, response.Created, "first require-leader watch response must acknowledge creation")
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err(), "require-leader watch did not report creation")
+	}
+	requireLeaderErr := make(chan error, 1)
+	go func() {
+		for response := range requireLeaderWatch {
+			if response.Err() != nil {
+				requireLeaderErr <- response.Err()
+				return
+			}
+		}
+		requireLeaderErr <- fmt.Errorf("require-leader watch closed without an error")
+	}()
 
 	type deliveredEvent struct {
 		value    string
@@ -159,6 +180,13 @@ func TestWatchDeliversCommittedWritesAcrossBackendFailover(t *testing.T) {
 	output, err := runCompatShellCommandContext(t, ctx, failoverCommand)
 	require.NoErrorf(t, err, "backend failover command: %s", strings.TrimSpace(string(output)))
 	t.Logf("backend failover command: %s", strings.TrimSpace(string(output)))
+	select {
+	case requireErr := <-requireLeaderErr:
+		require.ErrorIs(t, requireErr, rpctypes.ErrNoLeader)
+		require.Equal(t, rpctypes.ErrNoLeader.Error(), requireErr.Error())
+	case <-time.After(15 * time.Second):
+		t.Fatal("require-leader watch did not close with ErrNoLeader during backend quorum loss")
+	}
 	require.Eventually(t, func() bool { return transientWrites.Load() > 0 },
 		15*time.Second, 10*time.Millisecond, "backend fault must overlap at least one writer request")
 	recoveryBaseline := successfulWrites.Load()

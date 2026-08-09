@@ -11,6 +11,7 @@ BACKEND_FAULT_MODE="${BACKEND_FAULT_MODE:-pod-replacement}"
 KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-180}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
+PD_QUORUM_PARTITION_HOLD_SECONDS="${PD_QUORUM_PARTITION_HOLD_SECONDS:-15}"
 TIKV_QUORUM_PARTITION_CYCLES="${TIKV_QUORUM_PARTITION_CYCLES:-1}"
 TIKV_QUORUM_PARTITION_INTERVAL_SECONDS="${TIKV_QUORUM_PARTITION_INTERVAL_SECONDS:-0}"
 partition_pod_ip=""
@@ -98,8 +99,9 @@ partition_pd_quorum() {
     echo "PARTITION_FAILOVER_TIMEOUT_SECONDS must be an integer in [1,300]" >&2
     exit 1
   fi
-  if [[ ! "$PARTITION_HOLD_SECONDS" =~ ^[0-9]+$ ]] || (( PARTITION_HOLD_SECONDS > 300 )); then
-    echo "PARTITION_HOLD_SECONDS must be an integer in [0,300]" >&2
+  if [[ ! "$PD_QUORUM_PARTITION_HOLD_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+    (( PD_QUORUM_PARTITION_HOLD_SECONDS > 300 )); then
+    echo "PD_QUORUM_PARTITION_HOLD_SECONDS must be an integer in [1,300]" >&2
     exit 1
   fi
   privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
@@ -181,7 +183,7 @@ partition_pd_quorum() {
     fi
   done
   echo "PD quorum loss observed: ${pd_pods[*]} are unreachable"
-  sleep "$PARTITION_HOLD_SECONDS"
+  sleep "$PD_QUORUM_PARTITION_HOLD_SECONDS"
   cleanup_dual_partition
   dual_partition_pod_ips=()
   dual_partition_tags=()

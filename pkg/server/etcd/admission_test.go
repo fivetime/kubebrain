@@ -48,6 +48,21 @@ type streamingHealthServer struct {
 	entered chan struct{}
 }
 
+type blockingRecvServerStream struct {
+	grpc.ServerStream
+	ctx     context.Context
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingRecvServerStream) Context() context.Context { return s.ctx }
+
+func (s *blockingRecvServerStream) RecvMsg(any) error {
+	close(s.entered)
+	<-s.release
+	return nil
+}
+
 func (s *streamingHealthServer) Watch(_ *healthpb.HealthCheckRequest, stream grpc.ServerStreamingServer[healthpb.HealthCheckResponse]) error {
 	close(s.entered)
 	<-stream.Context().Done()
@@ -406,6 +421,43 @@ func TestClientRequireLeaderStreamClosesWhenLeaderIsLost(t *testing.T) {
 		requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
 	case <-ctx.Done():
 		t.Fatal("require-leader stream did not close after leader loss")
+	}
+}
+
+func TestClientRequireLeaderStreamInterruptsBlockedRecvWhenLeaderIsLost(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var hasLeader atomic.Bool
+	hasLeader.Store(true)
+	rpc.peers = testPeerService{hasLeaderFn: hasLeader.Load}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.MetadataRequireLeaderKey, rpctypes.MetadataHasLeader,
+	))
+	stream := &blockingRecvServerStream{
+		ctx: ctx, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	defer close(stream.release)
+	done := make(chan error, 1)
+	go func() {
+		done <- rpc.monitorRequiredLeaderStream(nil, stream,
+			&grpc.StreamServerInfo{FullMethod: etcdserverpb.Watch_Watch_FullMethodName},
+			func(_ any, monitored grpc.ServerStream) error {
+				return monitored.RecvMsg(&etcdserverpb.WatchRequest{})
+			})
+	}()
+	select {
+	case <-stream.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("require-leader stream did not block in RecvMsg")
+	}
+
+	hasLeader.Store(false)
+	select {
+	case err := <-done:
+		requireAdmissionError(t, err, rpctypes.ErrGRPCNoLeader, codes.Unavailable, "etcdserver: no leader")
+	case <-time.After(2 * time.Second):
+		t.Fatal("require-leader stream did not interrupt blocked RecvMsg after leader loss")
 	}
 }
 

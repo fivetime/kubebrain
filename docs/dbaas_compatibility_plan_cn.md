@@ -44464,6 +44464,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TidbCluster Ready，3 KubeBrain/3 PD/3 TiKV 全部 Ready 且零重启。本项关闭单节点环境中的 PD
   quorum-loss 数据面证据窗口；跨节点/AZ、长时间 PD quorum-loss soak 与 require-leader watch
   在 DBaaS backend 失联时的精确错误时延仍保持开放。
+  A4202 关闭上述 require-leader Watch 差距。对照 upstream
+  `/root/etcd/tests/integration/clientv3/watch/watch_test.go::TestWatchWithRequireLeader` 和 clientv3
+  `watch.go` 对 `ErrNoLeader` 的不可重试终止处理，A4201 的真实 PD quorum-loss 首先新增并跑红：即使
+  15 秒 hold 已使 leader election renew 超时、写请求持续失败，`WithRequireLeader` Watch 在 helper
+  恢复后再等 15 秒仍不返回错误。根因是 `monitorRequiredLeaderStream` 只取消 interceptor 包装的
+  Context，而 KubeBrain 双向 Watch 主循环阻塞在底层 transport `RecvMsg`；该调用捕获的是包装前的
+  gRPC Context，不会被外层取消唤醒。旧 health stream 单测主动等待 `Context().Done()`，因而没有覆盖
+  真实 bidi idle receive。`serverStreamWithContext.RecvMsg` 现在用容量 1 的结果通道并发等待底层 receive
+  与监控 Context；leader 失效时先返回 cancel cause，让 handler unwind，底层 transport 随 RPC 结束
+  解除阻塞，且不会阻塞迟到的结果发送。新增回归让 handler 在客户端不再发送消息时停在 RecvMsg，
+  100ms leader poll 必须在 2 秒内返回精确 `ErrGRPCNoLeader`；连续 50 轮与 race 均通过。
+  现场源码镜像 `sha256:b9ac5e215bfc868c8af44ad8f7463e12a1cd64c229ec17fd30c1cecdcc9b1237`
+  滚动到 3/3 后，同一 15 秒 PD quorum-loss 由 RED 转 GREEN：clientv3 收到可
+  `errors.Is(..., rpctypes.ErrNoLeader)` 且文本精确为 `etcdserver: no leader` 的终止错误，普通 Watch
+  仍跨故障恢复，37 个提交键全部交付（38 responses、12 次瞬态失败、final revision 13519，
+  38.10 秒）。PD quorum helper 因此使用独立、1..300 秒 fail-closed 的
+  `PD_QUORUM_PARTITION_HOLD_SECONDS`（默认 15），默认参数复跑同样通过（36 个提交键、36 responses、
+  12 次瞬态失败、revision 13558，38.48 秒）。单轮 TiKV quorum-loss 反向门禁也通过：两个 store
+  `Up -> Disconnected -> Up`，258 个提交键全部交付（259 responses、11 次瞬态失败、revision 13818，
+  51.94 秒），证明共享 Watch oracle 的新断言没有削弱 A4198/A4200。最终规则零残留、TidbCluster
+  Ready，3 KubeBrain/3 PD/3 TiKV 全部 Ready 且零重启。
 
 ### P2：运维兼容和长期验证
 

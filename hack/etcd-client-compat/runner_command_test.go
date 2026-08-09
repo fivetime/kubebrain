@@ -312,6 +312,9 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.Contains(t, script, `partition_pd_quorum`)
 	require.Contains(t, script, `need exactly three healthy PD Pods`)
 	require.Contains(t, script, `node container lacks curl`)
+	require.Contains(t, script, `PD_QUORUM_PARTITION_HOLD_SECONDS="${PD_QUORUM_PARTITION_HOLD_SECONDS:-15}"`)
+	require.Contains(t, script, `PD_QUORUM_PARTITION_HOLD_SECONDS must be an integer in [1,300]`)
+	require.Contains(t, script, `sleep "$PD_QUORUM_PARTITION_HOLD_SECONDS"`)
 	require.Contains(t, script, `pd_pods=("$leader")`)
 	require.Contains(t, script, `http://${ip}:2379/health`)
 	require.Contains(t, script, `PD quorum loss observed`)
@@ -365,6 +368,8 @@ func TestWatchBackendFailoverHasBoundedConfigurableTimeout(t *testing.T) {
 	require.Contains(t, source, `os.Getenv("KUBEBRAIN_WATCH_BACKEND_FAILOVER_TIMEOUT")`)
 	require.Contains(t, source, `time.ParseDuration(configured)`)
 	require.Contains(t, source, `parsed, 30*time.Second`)
+	require.Contains(t, source, `require.ErrorIs(t, requireErr, rpctypes.ErrNoLeader)`)
+	require.Contains(t, source, `require-leader watch did not close with ErrNoLeader during backend quorum loss`)
 }
 
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
