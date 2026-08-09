@@ -44120,6 +44120,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   41641/CORRUPT 同时存在，且不接受额外或折叠记录。writer 和直接 buildSnapshot 测试已有更广的未知
   alarm/重复输入门禁，本项补齐的是 alarm-active → gRPC stream → checksummed bbolt 的组合证据。未发现
   runtime 差异；A4165 防止流式导出重构只保留数据而丢失灾难状态。
+  A4166 审计 `/root/etcd` 近期 `b35f739fa` 的 etcdctl Txn lease compare 修复。该提交只把
+  `lease("key") = "..."` 的文本值从错误的普通数值路径改为 base-16 `ParseInt(..., 16, 64)`，生成的
+  wire request 仍是 `Compare{Target: LEASE, Lease: int64}`，不要求数据面复制 CLI parser。KubeBrain 已
+  支持普通 Lease compare 和 signed Lease lifecycle，但此前未把两者交叉固定；新测试对 `-1`、MinInt64、
+  MaxInt64 分别执行显式 Grant、leased Put、相等 Compare_LEASE success 与 lease=0 failure，并要求 Range
+  response 原样返回 signed Lease ID。三种极值均保持完整 int64，未发生 uint 转换、截断或 attachment
+  lookup 漂移，未发现 runtime 差异。A4166 将 `b35f739fa` 归类为客户端版本修复，同时防止服务端未来
+  只对常见正 lease ID 保持兼容；DBaaS 发布工具链应采用包含该修复的 etcdctl，而非在服务端解析文本。
 
 ### P2：运维兼容和长期验证
 

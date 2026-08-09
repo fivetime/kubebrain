@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"net"
 	"sync"
@@ -6942,6 +6943,42 @@ func TestTxnCompareLeaseRunsSelectedBranch(t *testing.T) {
 	require.NotNil(t, rangeResp.Header)
 	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
 	require.Equal(t, []byte("matched"), rangeResp.Kvs[0].Value)
+}
+
+func TestTxnCompareSignedLeaseIDExtremesMatchEtcd(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+
+	for i, leaseID := range []int64{-1, math.MinInt64, math.MaxInt64} {
+		key := []byte(fmt.Sprintf("/registry/generic-txn/compare-signed-lease/%d", i))
+		_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+		require.NoError(t, err)
+		_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("leased"), Lease: leaseID})
+		require.NoError(t, err)
+
+		response, err := server.Txn(ctx, &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: key, Target: etcdserverpb.Compare_LEASE, Result: etcdserverpb.Compare_EQUAL,
+				TargetUnion: &etcdserverpb.Compare_Lease{Lease: leaseID},
+			}},
+			Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: key}},
+			}},
+		})
+		require.NoError(t, err)
+		require.True(t, response.Succeeded)
+		require.Equal(t, leaseID, response.Responses[0].GetResponseRange().Kvs[0].Lease)
+
+		response, err = server.Txn(ctx, &etcdserverpb.TxnRequest{
+			Compare: []*etcdserverpb.Compare{{
+				Key: key, Target: etcdserverpb.Compare_LEASE, Result: etcdserverpb.Compare_EQUAL,
+				TargetUnion: &etcdserverpb.Compare_Lease{Lease: 0},
+			}},
+		})
+		require.NoError(t, err)
+		require.False(t, response.Succeeded)
+	}
 }
 
 func TestTxnCompactRevisionCAS(t *testing.T) {
