@@ -43481,6 +43481,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   前应用同一门禁；注入 MaxInt64 published revision 的测试确认无 bbolt 文件创建，避免超界状态先触发
   昂贵扫描或转换成负数。当前 TiKV TSO revision 远低于该边界，本项是 artifact/export fail-closed，
   不修改在线 revision allocator。
+  A4094 对齐 Snapshot lease TTL 的官方上界：upstream
+  `/root/etcd/server/lease/lessor.go` 和 KubeBrain `lease.go` 都固定 MaxLeaseTTL=9,000,000,000 秒，
+  LeaseGrant 对更大值返回 TTLTooLarge/OutOfRange。该上界也略低于 Go `time.Duration(ttl)*time.Second`
+  的 signed overflow 边界；但 upstream lessor `initAndRecover` 从 backend 读取 leasepb 时只做最小 TTL
+  clamp，不重做最大值校验，promotion 的 `Lease.refresh` 会直接执行该乘法。因此旧 writer 可发布
+  API 不可达的 9,000,000,001 秒 lease，并让官方恢复后的 expiry 发生溢出或反向。standalone writer
+  现在用带 upstream 来源注释的同值常量约束 GrantedTTL，RemainingTTL 已由 A4086 保证不超过 grant；
+  红测固定超一秒失败，精确 MaxLeaseTTL 且 remaining==grant 的边界正例成功。snapshot race、server
+  Snapshot/Lease、逻辑转换器和 vet 回归通过；在线 LeaseGrant 行为本来正确，不触碰 TiKV 状态。
 
 ### P2：运维兼容和长期验证
 

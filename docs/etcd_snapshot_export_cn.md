@@ -114,4 +114,5 @@ Builder 在 Finish 时还会按物理 revision 顺序重建每个 key 的最终 
 版本覆盖或 tombstone 删除；不能把当前引用完整性误扩大成所有历史 lease 都必须保留。
 Lease metadata 要求 `0 <= remainingTTL <= grantedTTL`：0 表示没有有效 checkpoint，等于 granted
 可出现在刚 grant/renew 的导出点，大于 granted 会非法延长恢复后的租约。显式 lease ID 仍与
-upstream 一样允许负数，只禁止 0。
+upstream 一样允许负数，只禁止 0。grantedTTL 还不得超过 upstream `MaxLeaseTTL=9,000,000,000`
+秒；官方恢复路径不会替 artifact 重做该上界校验，超界值可能在 expiry 时间运算中溢出。

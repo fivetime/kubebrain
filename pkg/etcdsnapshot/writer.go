@@ -105,6 +105,10 @@ type Builder struct {
 
 const fallbackSubRevisionBase int64 = 1 << 32
 
+// Keep this wire boundary aligned with lease.MaxLeaseTTL without importing the
+// full server lease implementation into the standalone artifact writer.
+const maxLeaseTTLSeconds int64 = 9000000000
+
 func NewBuilder(path string, state State) (*Builder, error) {
 	if state.Revision <= 0 {
 		return nil, fmt.Errorf("snapshot revision must be positive: %d", state.Revision)
@@ -166,7 +170,8 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	}
 
 	for _, lease := range state.Leases {
-		if lease.ID == 0 || lease.GrantedTTL <= 0 || lease.RemainingTTL < 0 || lease.RemainingTTL > lease.GrantedTTL {
+		if lease.ID == 0 || lease.GrantedTTL <= 0 || lease.GrantedTTL > maxLeaseTTLSeconds ||
+			lease.RemainingTTL < 0 || lease.RemainingTTL > lease.GrantedTTL {
 			return fmt.Errorf("invalid lease id=%d granted_ttl=%d remaining_ttl=%d", lease.ID, lease.GrantedTTL, lease.RemainingTTL)
 		}
 		value, marshalErr := proto.Marshal(&leasepb.Lease{ID: lease.ID, TTL: lease.GrantedTTL, RemainingTTL: lease.RemainingTTL})

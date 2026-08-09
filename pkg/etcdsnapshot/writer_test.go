@@ -571,6 +571,19 @@ func TestWriteBackendRejectsLeaseRemainingTTLAboveGrant(t *testing.T) {
 	}}}), "upstream permits negative explicit IDs and a full-TTL checkpoint envelope")
 }
 
+func TestWriteBackendConstrainsLeaseTTLToUpstreamMaximum(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "too-large.db")
+	err := WriteBackend(path, State{Revision: 1, Leases: []Lease{{
+		ID: 7, GrantedTTL: maxLeaseTTLSeconds + 1, RemainingTTL: 1,
+	}}})
+	require.ErrorContains(t, err, "invalid lease id=7 granted_ttl=9000000001 remaining_ttl=1")
+
+	maxPath := filepath.Join(t.TempDir(), "maximum.db")
+	require.NoError(t, WriteBackend(maxPath, State{Revision: 1, Leases: []Lease{{
+		ID: 7, GrantedTTL: maxLeaseTTLSeconds, RemainingTTL: maxLeaseTTLSeconds,
+	}}}))
+}
+
 func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 	alarmWithUnknownFields := &etcdserverpb.AlarmMember{MemberID: 23, Alarm: etcdserverpb.AlarmType_NOSPACE}
 	alarmWithUnknownFields.ProtoReflect().SetUnknown([]byte{0xa0, 0x06, 0x01})
