@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -88,6 +90,25 @@ type metadataBarrierSnapshotBackend struct {
 type localSnapshotTrapBackend struct {
 	BackendShim
 	called bool
+}
+
+type fixedSnapshotRevisionBackend struct {
+	BackendShim
+	revision uint64
+}
+
+func (b *fixedSnapshotRevisionBackend) GetCurrentRevision() uint64 { return b.revision }
+
+func TestMaintenanceSnapshotRejectsRevisionWithoutSuccessorBeforeCapture(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.backend = &fixedSnapshotRevisionBackend{BackendShim: server.backend, revision: math.MaxInt64}
+
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	err := server.buildSnapshotOnce(context.Background(), path)
+	require.ErrorContains(t, err, "snapshot revision leaves no room for next etcd write")
+	_, statErr := os.Stat(path)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 type stalledSnapshotBackend struct {

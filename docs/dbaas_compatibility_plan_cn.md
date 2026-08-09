@@ -43471,6 +43471,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 1，auth revision 0 sentinel 仍独立保留，不能把 MVCC revision 下界误套到 auth metadata。
   Compact revision 0 也继续合法：两边均以“marker 存在且值为 0”区别首次 Compact(0) 与未 compact，
   本项只约束 snapshot current revision。snapshot/server/converter 回归通过，不修改在线状态。
+  A4093 为官方恢复后的下一次写保留 revision 空间：对照 upstream
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go`，storeTxnWrite 直接用 `beginRev+1` 编码新 row，并在
+  End 无边界判断地执行 `currentRev++`。若 writer 接受 snapshot revision=MaxInt64，官方 etcd 虽可
+  restore，但首个 Put 会把 signed main revision 溢出为负数，无法满足既有“下一写恰为 snapshot+1”
+  输出保证。WriteBackend/NewBuilder 现在要求 `revision < MaxInt64`；MaxInt64 红测固定两入口失败，
+  MaxInt64-1 正例仍成功，允许一次合法的 MaxInt64 写入而不擅自缩小更多 TSO 空间。在线
+  Maintenance.Snapshot 也在 safeBackendRevision 后、uint64→int64 cast、metadata 采集和 history scan
+  前应用同一门禁；注入 MaxInt64 published revision 的测试确认无 bbolt 文件创建，避免超界状态先触发
+  昂贵扫描或转换成负数。当前 TiKV TSO revision 远低于该边界，本项是 artifact/export fail-closed，
+  不修改在线 revision allocator。
 
 ### P2：运维兼容和长期验证
 

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"sort"
 
 	bolt "go.etcd.io/bbolt"
@@ -75,6 +76,9 @@ func WriteBackend(path string, state State) error {
 	if state.Revision <= 0 {
 		return fmt.Errorf("snapshot revision must be positive: %d", state.Revision)
 	}
+	if state.Revision >= math.MaxInt64 {
+		return fmt.Errorf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
+	}
 	builder, err := NewBuilder(path, state)
 	if err != nil {
 		return err
@@ -104,6 +108,9 @@ const fallbackSubRevisionBase int64 = 1 << 32
 func NewBuilder(path string, state State) (*Builder, error) {
 	if state.Revision <= 0 {
 		return nil, fmt.Errorf("snapshot revision must be positive: %d", state.Revision)
+	}
+	if state.Revision >= math.MaxInt64 {
+		return nil, fmt.Errorf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
 	}
 	db, err := bolt.Open(path, 0o600, nil)
 	if err != nil {

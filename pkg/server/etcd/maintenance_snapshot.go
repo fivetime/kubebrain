@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sort"
 	"time"
@@ -62,6 +63,9 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	revision, err := safeBackendRevision(ctx, s.backend)
 	if err != nil {
 		return err
+	}
+	if revision >= math.MaxInt64 {
+		return fmt.Errorf("snapshot revision leaves no room for next etcd write: %d", revision)
 	}
 	state, leaseIDs, leaseAttachments, err := s.snapshotMetadata(ctx, int64(revision))
 	if err != nil {

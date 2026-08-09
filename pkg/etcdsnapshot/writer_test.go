@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -70,6 +71,18 @@ func TestWriteBackendRejectsNonPositiveSnapshotRevision(t *testing.T) {
 		_, err = NewBuilder(path+"-builder", State{Revision: revision})
 		require.ErrorContains(t, err, fmt.Sprintf("snapshot revision must be positive: %d", revision))
 	}
+}
+
+func TestWriteBackendReservesNextOfficialRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "max.db")
+	err := WriteBackend(path, State{Revision: math.MaxInt64})
+	require.ErrorContains(t, err, fmt.Sprintf("snapshot revision leaves no room for next etcd write: %d", int64(math.MaxInt64)))
+	_, err = NewBuilder(path+"-builder", State{Revision: math.MaxInt64})
+	require.ErrorContains(t, err, "snapshot revision leaves no room for next etcd write")
+
+	require.NoError(t, WriteBackend(filepath.Join(t.TempDir(), "max-minus-one.db"), State{
+		Revision: math.MaxInt64 - 1,
+	}))
 }
 
 func TestBuilderUsesExactTxnSubrevisionInsteadOfPhysicalInputOrder(t *testing.T) {
