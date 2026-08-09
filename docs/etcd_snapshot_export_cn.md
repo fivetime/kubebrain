@@ -89,3 +89,6 @@ Auth revision 必须能够覆盖当前对象图所需的最少管理 mutation：
 `1 + user 数 + role 数 + user-role 边数 + permission 数`。空、禁用且无对象时允许 revision 0，
 它表示 upstream AuthStore 尚未初始化的 sentinel，恢复启动后会被持久化为 1；任何包含对象或启用
 状态但低于图下界的制品都会被拒绝，避免恢复出 token/permission fence 与管理历史不一致的状态。
+Builder 在 Finish 时还会按物理 revision 顺序重建每个 key 的最终 lease 引用；最终非零 lease ID
+必须存在于 lease bucket。历史版本引用后来已撤销的 lease 是合法的，只要该 key 随后被无 lease
+版本覆盖或 tombstone 删除；不能把当前引用完整性误扩大成所有历史 lease 都必须保留。

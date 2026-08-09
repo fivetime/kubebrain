@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	bolt "go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -392,6 +393,9 @@ func (b *Builder) Finish() error {
 	if b.finished {
 		return fmt.Errorf("snapshot builder is already finished")
 	}
+	if err := b.db.View(validateCurrentLeaseReferences); err != nil {
+		return err
+	}
 	if b.restoredRevision >= b.revision {
 		b.finished = true
 		return nil
@@ -414,6 +418,40 @@ func (b *Builder) Finish() error {
 		b.finished = true
 	}
 	return err
+}
+
+func validateCurrentLeaseReferences(tx *bolt.Tx) error {
+	currentLeases := make(map[string]int64)
+	if err := tx.Bucket(keyBucket).ForEach(func(revisionKey, value []byte) error {
+		var kv mvccpb.KeyValue
+		if err := proto.Unmarshal(value, &kv); err != nil {
+			return fmt.Errorf("decode MVCC record while validating leases: %w", err)
+		}
+		key := string(kv.Key)
+		if (len(revisionKey) == 18 && revisionKey[17] == 't') || kv.Lease == 0 {
+			delete(currentLeases, key)
+		} else {
+			currentLeases[key] = kv.Lease
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(currentLeases))
+	for key := range currentLeases {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	leases := tx.Bucket(leaseBucket)
+	for _, key := range keys {
+		leaseID := currentLeases[key]
+		leaseKey := make([]byte, 8)
+		binary.BigEndian.PutUint64(leaseKey, uint64(leaseID))
+		if leases.Get(leaseKey) == nil {
+			return fmt.Errorf("current key %q references missing lease %d", key, leaseID)
+		}
+	}
+	return nil
 }
 
 func (b *Builder) Close() error {

@@ -43384,6 +43384,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   旧实现错误成功；writer 现在在 marshal 前按逻辑 tuple 查重并回滚整个 metadata transaction。
   正例同时固定同一 member 的 NOSPACE 与 CORRUPT、以及未知 AlarmType 都可由官方 AlarmStore 恢复，
   避免把身份收紧误写成 member ID 唯一。本项不改变在线 alarm 或 TiKV 状态。
+  A4085 固定 Snapshot 当前 MVCC key 到 lease bucket 的引用完整性：对照 upstream
+  `/root/etcd/server/storage/mvcc/kvstore.go:restoreChunk/store.restore`，restore 会按物理 revision
+  顺序维护每个 key 的最终 lease ID，再调用 lessor.Attach；`lessor.Attach` 对不存在的 lease 返回
+  ErrLeaseNotFound，但 store 只记录错误并继续启动，使 key 保留一个无法 TTL 查询、续租或到期删除的
+  悬空 lease 字段。在线 Maintenance.Snapshot 已在 pinned metadata/history barrier 下复核当前记录，
+  但通用 Builder/离线调用方此前可绕过该保护。现在 Finish 在发布前扫描私有 bbolt key bucket，按与
+  upstream 相同的物理顺序重建最终 key→lease map，并要求每个非零最终 lease 在 lease bucket 存在；
+  错误按 key 排序后稳定 fail closed。红测证明旧 writer 会发布当前 key 引用缺失 lease 的制品；两个
+  正例确认历史版本引用已撤销 lease 后，只要后续被无 lease 版本覆盖或 tombstone 删除仍然合法，
+  没有把历史审计错误收紧成“所有版本 lease 都必须仍存活”。既有带 lease 官方 lessor/MVCC restore
+  样本继续覆盖有效 attached key。本项只校验 snapshot artifact，不修改在线 lease/TiKV 状态。
 
 ### P2：运维兼容和长期验证
 

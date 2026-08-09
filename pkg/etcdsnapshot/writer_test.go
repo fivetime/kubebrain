@@ -243,6 +243,32 @@ func TestBuilderPreservesHistoryTombstonesAndRealCompactWatermark(t *testing.T) 
 	}))
 }
 
+func TestBuilderRejectsMissingCurrentLeaseButAllowsHistoricalReference(t *testing.T) {
+	t.Run("current reference", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		err := WriteBackend(path, State{Revision: 2, Records: []Record{{
+			Key: []byte("leased"), Value: []byte("value"), CreateRevision: 2, ModRevision: 2, Version: 1, Lease: 17,
+		}}})
+		require.ErrorContains(t, err, `current key "leased" references missing lease 17`)
+	})
+
+	t.Run("overwritten historical reference", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		require.NoError(t, WriteBackend(path, State{Revision: 3, PreserveHistory: true, Records: []Record{
+			{Key: []byte("key"), Value: []byte("old"), CreateRevision: 2, ModRevision: 2, Version: 1, Lease: 17},
+			{Key: []byte("key"), Value: []byte("current"), CreateRevision: 2, ModRevision: 3, Version: 2},
+		}}))
+	})
+
+	t.Run("deleted historical reference", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "snapshot.db")
+		require.NoError(t, WriteBackend(path, State{Revision: 3, PreserveHistory: true, Records: []Record{
+			{Key: []byte("key"), Value: []byte("old"), CreateRevision: 2, ModRevision: 2, Version: 1, Lease: 17},
+			{Key: []byte("key"), ModRevision: 3, Tombstone: true},
+		}}))
+	})
+}
+
 func TestBuilderOmitsCompactMarkersForUncompactedHistory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, WriteBackend(path, State{
