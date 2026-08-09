@@ -102,9 +102,9 @@ fresh_inventory="$("$script_dir/cold-snapshot-preflight.sh" | jq -cS .)"
 witness_file_copy="${input_dir}/semantic-witness.jsonl"
 witness_file_sha256="$(freeze_input "$SEMANTIC_WITNESS_FILE" "$witness_file_copy" "semantic witness file")"
 witness_status="$(cd "$script_dir/../.." && INPUT="$witness_file_copy" EXPECTED_PREFIX="$EXPECTED_WITNESS_PREFIX" \
-  MIN_RECORDS=1 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" REQUIRE_GRANTED_TTL=true \
+  MIN_RECORDS=0 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" REQUIRE_GRANTED_TTL=true \
   go run ./hack/backup/cmd/logical-status)"
-jq -e '.format == "kubebrain.logical.v2" and (.revision > 0) and (.records > 0) and
+jq -e '.format == "kubebrain.logical.v2" and (.revision > 0) and (.records >= 0) and (.leases >= 0) and
   (.sha256 | test("^[0-9a-f]{64}$"))' <<<"$witness_status" >/dev/null || fail_input "semantic witness status is invalid"
 verify_witness_file() {
   local current

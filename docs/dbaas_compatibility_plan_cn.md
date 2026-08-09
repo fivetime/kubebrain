@@ -43908,6 +43908,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   黑盒先用完整 receipt 生成 canonical manifest，再删除 source KubeBrain UID，固定重新 admission 在任何
   target kubectl access 前拒绝。该身份不参与目标命名，但属于证明停机 witness 与物理 snapshot 来自同一
   数据面的必要链路，不能因为 snapshotHandle 足以驱动 CSI restore 而降级为可选元数据。
+  A4146 修复 cold CSI 备份链对合法空 etcd keyspace 的错误拒绝。etcd 的空 Range/keyspace 是正常状态，
+  `logical-export`/backupfile footer 也原生支持 `records=0, leases=0`，但 cold snapshot executor 硬编码
+  `MIN_RECORDS=1` 与 `.records > 0`，renderer 和最终 semantic receipt validator 又各自要求 records
+  正数，导致新建但尚无业务 key 的通用 DBaaS 实例无法完成冷备恢复；同时 renderer 没有拒绝负 lease
+  count，形成相反方向的 schema 缺口。当前 executor 使用 `MIN_RECORDS=0`，要求 records/leases 均为
+  非负且 revision 为正；renderer 与 semantic verifier 同步允许零并拒绝负数。单元红测覆盖空 witness
+  过去被拒、负 lease 过去被接受，receipt-chain 测试证明零 records/leases 仍可完成严格 SHA、时间与身份
+  绑定；cold snapshot executor 黑盒用只有 header/footer 的真实 v2 artifact 发布六卷 snapshot receipt，
+  cold restore executor 也从零记录 receipt 创建、验证并发布恢复 receipt。空集合的 historical/current
+  exact 比较仍必须精确为空，恢复后 watch Put/Delete probe 继续提供活性与 revision 语义证明，因此这不是
+  跳过 semantic gate，而是把合法的 etcd 空状态纳入同一门禁。
 
 ### P2：运维兼容和长期验证
 

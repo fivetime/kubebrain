@@ -1336,7 +1336,7 @@ func validateSemanticReceipt(receipt semanticReceipt) error {
 		!validDigest(receipt.RestoreManifestSHA256) ||
 		receipt.WitnessFormat != backupfile.Format ||
 		receipt.WitnessRevision <= 0 ||
-		receipt.WitnessRecords <= 0 ||
+		receipt.WitnessRecords < 0 ||
 		receipt.WitnessLeases < 0 ||
 		receipt.RestoredClusterID == "" ||
 		receipt.TargetKubeSystemUID == "" ||

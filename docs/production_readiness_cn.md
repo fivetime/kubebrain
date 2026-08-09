@@ -981,7 +981,8 @@ ALLOW_COLD_PHYSICAL_SNAPSHOT=true \
 ```
 
 控制面必须先阻断该实例的新写入，再用当前 `logical-export.sh` 对实例完整 keyspace prefix 生成
-`kubebrain.logical.v2` witness；executor 默认要求 witness 至少一个记录、创建不超过 300 秒，并
+`kubebrain.logical.v2` witness；executor 允许合法的零记录/零 lease witness（空 etcd keyspace 也是
+完整状态），要求记录数和 lease 数非负、revision 为正、创建不超过 300 秒，并
 在任何 mutation 前验证内部 digest、prefix、格式，并以 `REQUIRE_GRANTED_TTL=true` 逐条确认 lease
 同时具有合法的 remaining TTL 与 granted TTL。旧 artifact 仍可用于逻辑恢复，但包含 lease 且缺
 `granted_ttl` 时会在 pause、缩容或创建 VolumeSnapshot 前失败，不能作为物理 lease identity 证据。

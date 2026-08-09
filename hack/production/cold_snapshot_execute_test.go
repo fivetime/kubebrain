@@ -25,11 +25,13 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 		postRestoreContentDrift bool
 		precreateReceipt        bool
 		witnessPathDrift        bool
+		emptyWitness            bool
 		wantReceipt             bool
 		wantExistingReceipt     bool
 		wantError               string
 	}{
 		{name: "success restores service and publishes receipt", wantReceipt: true},
+		{name: "empty keyspace witness publishes receipt", emptyWitness: true, wantReceipt: true},
 		{name: "witness path drift after capture still publishes receipt", witnessPathDrift: true, wantReceipt: true},
 		{name: "snapshot failure restores service without receipt", failSnapshot: true},
 		{name: "content driver mismatch restores service without receipt", contentDriver: "wrong.csi.test"},
@@ -47,6 +49,9 @@ func TestColdSnapshotExecuteAndRollback(t *testing.T) {
 			logFile := filepath.Join(dir, "kubectl.log")
 			require.NoError(t, os.WriteFile(inventoryFile, coldSnapshotInventory(t), 0o600))
 			require.NoError(t, os.WriteFile(witnessFile, coldSemanticWitness(t, "/registry"), 0o600))
+			if tc.emptyWitness {
+				require.NoError(t, os.WriteFile(witnessFile, coldEmptySemanticWitness(t, "/registry"), 0o600))
+			}
 			require.NoError(t, os.WriteFile(tamperedWitnessFile, coldLeasedSemanticWitness(t, "/registry", true), 0o600))
 			fakeKubectl := filepath.Join(dir, "kubectl")
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(coldSnapshotFakeKubectl), 0o755))
@@ -99,6 +104,9 @@ fi
 				firstSnapshot := receipt["snapshots"].([]any)[0].(map[string]any)
 				require.Equal(t, "handle-pv-pd-kb-pd-0", firstSnapshot["source_volume_handle"])
 				require.Equal(t, "kubebrain.logical.v2", receipt["semantic_witness"].(map[string]any)["format"])
+				if tc.emptyWitness {
+					require.Equal(t, float64(0), receipt["semantic_witness"].(map[string]any)["records"])
+				}
 			} else {
 				require.Error(t, err, string(output))
 				if tc.wantExistingReceipt {
@@ -633,6 +641,21 @@ func coldSemanticWitness(t *testing.T, prefix string) []byte {
 	digest := sha256.Sum256(hashed)
 	footer, err := json.Marshal(map[string]any{
 		"type": "footer", "records": 1, "sha256": fmt.Sprintf("%x", digest[:]),
+	})
+	require.NoError(t, err)
+	return append(hashed, append(footer, '\n')...)
+}
+
+func coldEmptySemanticWitness(t *testing.T, prefix string) []byte {
+	t.Helper()
+	header, err := json.Marshal(map[string]any{
+		"type": "kubebrain.logical.v2", "prefix": prefix, "revision": 10, "created_at_unix": time.Now().Unix(),
+	})
+	require.NoError(t, err)
+	hashed := append(append([]byte(nil), header...), '\n')
+	digest := sha256.Sum256(hashed)
+	footer, err := json.Marshal(map[string]any{
+		"type": "footer", "records": 0, "leases": 0, "sha256": fmt.Sprintf("%x", digest[:]),
 	})
 	require.NoError(t, err)
 	return append(hashed, append(footer, '\n')...)

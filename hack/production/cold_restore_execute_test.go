@@ -55,6 +55,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		missingSnapshotIdentity        bool
 		invalidSourceInventory         bool
 		invalidSourceIdentity          bool
+		emptyWitness                   bool
 		wantReceipt                    bool
 		wantPreexistingRestoreReceipt  bool
 		wantEmergency                  bool
@@ -63,6 +64,7 @@ func TestColdRestoreExecute(t *testing.T) {
 		wantError                      string
 	}{
 		{name: "restores storage and publishes receipt", wantReceipt: true, wantCreate: true, wantUnpause: true},
+		{name: "restores an empty keyspace witness", emptyWitness: true, wantReceipt: true, wantCreate: true, wantUnpause: true},
 		{name: "existing target fails before create", existing: true, wantError: "target resource already exists"},
 		{name: "tampered manifest fails before target access", tampered: true, wantError: "differs from the canonical rendering"},
 		{name: "future snapshot receipt fails before target access", futureReceipt: true, wantError: "created_at is in the future"},
@@ -132,6 +134,14 @@ func TestColdRestoreExecute(t *testing.T) {
 				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &incomplete))
 				incomplete["inventory"].(map[string]any)["kubebrain"].(map[string]any)["uid"] = ""
 				data, marshalErr := json.Marshal(incomplete)
+				require.NoError(t, marshalErr)
+				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
+			}
+			if tc.emptyWitness {
+				var empty map[string]any
+				require.NoError(t, json.Unmarshal(mustRead(t, receiptPath), &empty))
+				empty["semantic_witness"].(map[string]any)["records"] = float64(0)
+				data, marshalErr := json.Marshal(empty)
 				require.NoError(t, marshalErr)
 				require.NoError(t, os.WriteFile(receiptPath, data, 0o600))
 			}

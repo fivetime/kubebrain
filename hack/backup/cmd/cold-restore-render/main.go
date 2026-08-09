@@ -231,7 +231,7 @@ func render(r receipt, snapshotClass, storageClass string) (map[string]any, erro
 		return nil, errors.New("cold snapshot receipt predates semantic witness")
 	}
 	if r.SemanticWitness.Format != "kubebrain.logical.v2" || r.SemanticWitness.Prefix == "" ||
-		r.SemanticWitness.Revision <= 0 || r.SemanticWitness.Records <= 0 ||
+		r.SemanticWitness.Revision <= 0 || r.SemanticWitness.Records < 0 || r.SemanticWitness.Leases < 0 ||
 		!validDigest(r.SemanticWitness.SHA256) || !validDigest(r.SemanticWitness.FileSHA256) {
 		return nil, errors.New("cold snapshot receipt has no complete semantic witness binding")
 	}

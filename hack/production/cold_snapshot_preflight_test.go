@@ -144,6 +144,7 @@ func TestProductionReadinessColdSnapshotExamplesRequireExplicitContext(t *testin
 	require.Contains(t, doc, "拒绝晚于当前控制面时钟")
 	require.Contains(t, doc, "`witness.created_at_unix <= snapshot.created_at`")
 	require.Contains(t, doc, "`operation_id-source_pvc`")
+	require.Contains(t, doc, "空 etcd keyspace 也是")
 }
 
 func TestColdSnapshotPreflightRequiresExplicitApproval(t *testing.T) {

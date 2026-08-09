@@ -153,6 +153,21 @@ func TestValidateReceiptChain(t *testing.T) {
 	_, _, err = validateReceiptChain(status, witnessFileSHA, snapshotData, restoreData)
 	require.NoError(t, err)
 
+	emptyStatus := status
+	emptyStatus.Records = 0
+	emptyStatus.Leases = 0
+	emptySnapshot := cloneSnapshotReceipt(t, snapshot)
+	emptySnapshot.Witness.Records = 0
+	emptySnapshot.Witness.Leases = 0
+	emptySnapshotData, err := json.Marshal(emptySnapshot)
+	require.NoError(t, err)
+	emptyRestore := cloneRestoreReceipt(restore)
+	emptyRestore.SourceReceiptSHA = digest(emptySnapshotData)
+	emptyRestoreData, err := json.Marshal(emptyRestore)
+	require.NoError(t, err)
+	_, _, err = validateReceiptChain(emptyStatus, witnessFileSHA, emptySnapshotData, emptyRestoreData)
+	require.NoError(t, err, "an empty etcd keyspace must remain a valid exact witness chain")
+
 	missingSourcePVIdentity := cloneSnapshotReceipt(t, snapshot)
 	missingSourcePVIdentity.Inventory.PDPVCs[0].PVUID = ""
 	missingSourcePVData, err := json.Marshal(missingSourcePVIdentity)
@@ -585,6 +600,9 @@ func TestWriteAtomicSemanticReceipt(t *testing.T) {
 
 func TestValidateSemanticReceiptRequiresCompleteIdentity(t *testing.T) {
 	require.NoError(t, validateSemanticReceipt(validSemanticReceipt()))
+	emptyWitness := validSemanticReceipt()
+	emptyWitness.WitnessRecords = 0
+	require.NoError(t, validateSemanticReceipt(emptyWitness), "an empty etcd keyspace is a complete semantic witness")
 	equalSecond := validSemanticReceipt()
 	equalSecond.VerifiedAtUnix = 1_784_592_300
 	require.NoError(t, validateSemanticReceipt(equalSecond), "second-resolution restore and verification times may be equal")
@@ -599,6 +617,7 @@ func TestValidateSemanticReceiptRequiresCompleteIdentity(t *testing.T) {
 		{name: "source target UID reuse", mutate: func(r *semanticReceipt) { r.RestoredTidbClusterUID = r.SourceTidbClusterUID }},
 		{name: "missing namespace UID", mutate: func(r *semanticReceipt) { r.TargetNamespaceUID = "" }},
 		{name: "bad witness revision", mutate: func(r *semanticReceipt) { r.WitnessRevision = 0 }},
+		{name: "negative witness records", mutate: func(r *semanticReceipt) { r.WitnessRecords = -1 }},
 		{name: "missing historical proof", mutate: func(r *semanticReceipt) { r.HistoricalExact = false }},
 		{name: "missing watch proof", mutate: func(r *semanticReceipt) { r.WatchProbeSucceeded = false }},
 		{name: "delete before put", mutate: func(r *semanticReceipt) { r.ProbeDeleteRevision = r.ProbePutRevision }},

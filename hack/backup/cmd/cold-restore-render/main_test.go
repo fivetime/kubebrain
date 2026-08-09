@@ -47,6 +47,14 @@ func TestRenderColdRestoreManifest(t *testing.T) {
 	require.Equal(t, "tidb-cluster", tidbCluster["metadata"].(map[string]any)["namespace"])
 }
 
+func TestRenderColdRestoreManifestAllowsEmptySemanticWitness(t *testing.T) {
+	receipt := validReceipt()
+	receipt.SemanticWitness.Records = 0
+	receipt.SemanticWitness.Leases = 0
+	_, err := render(receipt, "target-snapshots", "target-storage")
+	require.NoError(t, err)
+}
+
 func TestWriteAtomic(t *testing.T) {
 	directory := t.TempDir()
 	path := filepath.Join(directory, "restore.json")
@@ -108,6 +116,8 @@ func TestRenderColdRestoreManifestRejectsIncompleteReceipts(t *testing.T) {
 		{name: "uppercase witness digest", mutate: func(r *receipt) {
 			r.SemanticWitness.SHA256 = strings.ToUpper(r.SemanticWitness.SHA256)
 		}, message: "semantic witness"},
+		{name: "negative witness records", mutate: func(r *receipt) { r.SemanticWitness.Records = -1 }, message: "semantic witness"},
+		{name: "negative witness leases", mutate: func(r *receipt) { r.SemanticWitness.Leases = -1 }, message: "semantic witness"},
 		{name: "renamed target blueprint", mutate: func(r *receipt) {
 			r.Inventory.RecoveryBlueprint.TidbCluster["metadata"].(map[string]any)["name"] = "other"
 		}, message: "identity does not match"},
