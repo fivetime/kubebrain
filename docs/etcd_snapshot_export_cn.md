@@ -74,3 +74,6 @@ metadata bucket 同样要求 lease ID、auth username 和 role name 分别唯一
 相同也视为上游状态不自洽并拒绝整个 metadata transaction，不能让 TTL、用户角色或权限由 slice
 顺序决定。Alarm 以完整 `(member ID, alarm type)` protobuf 为 key，同一 member 同时携带
 NOSPACE/CORRUPT 是合法状态，不按 member ID 错误去重。
+Auth snapshot 还必须满足上游管理 API 可达的不变量：每个用户的 role 列表不重复且全部引用已存在
+role；`authEnabled=true` 时必须存在 root 用户，且该用户持有 root role。违反任一条件都会回滚完整
+metadata transaction，避免恢复出无法通过正常 AuthEnable/RoleDelete 路径产生的权限状态。

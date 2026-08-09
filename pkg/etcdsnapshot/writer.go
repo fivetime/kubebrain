@@ -208,6 +208,9 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 			return err
 		}
 	}
+	if err = validateAuthState(state.Auth); err != nil {
+		return err
+	}
 	for _, alarm := range state.Alarms {
 		if alarm == nil {
 			return fmt.Errorf("snapshot contains nil alarm")
@@ -221,6 +224,46 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 		}
 	}
 	return nil
+}
+
+func validateAuthState(auth Auth) error {
+	roleNames := make(map[string]struct{}, len(auth.Roles))
+	for _, role := range auth.Roles {
+		if role != nil && len(role.Name) != 0 {
+			roleNames[string(role.Name)] = struct{}{}
+		}
+	}
+	var root *authpb.User
+	for _, user := range auth.Users {
+		if user == nil || len(user.Name) == 0 {
+			continue
+		}
+		if string(user.Name) == "root" {
+			root = user
+		}
+		seenRoles := make(map[string]struct{}, len(user.Roles))
+		for _, role := range user.Roles {
+			if _, exists := seenRoles[role]; exists {
+				return fmt.Errorf("auth user %q repeats role %q", user.Name, role)
+			}
+			seenRoles[role] = struct{}{}
+			if _, exists := roleNames[role]; !exists {
+				return fmt.Errorf("auth user %q references missing role %q", user.Name, role)
+			}
+		}
+	}
+	if !auth.Enabled {
+		return nil
+	}
+	if root == nil {
+		return fmt.Errorf("enabled auth requires root user")
+	}
+	for _, role := range root.Roles {
+		if role == "root" {
+			return nil
+		}
+	}
+	return fmt.Errorf("enabled auth requires root user to have root role")
 }
 
 func (b *Builder) Append(records []Record) error {

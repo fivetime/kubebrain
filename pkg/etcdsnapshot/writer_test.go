@@ -416,6 +416,56 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 	}
 }
 
+func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
+	rootRole := &authpb.Role{Name: []byte("root")}
+	for _, test := range []struct {
+		name string
+		auth Auth
+		want string
+	}{
+		{
+			name: "enabled without root user",
+			auth: Auth{Enabled: true, Revision: 7, Roles: []*authpb.Role{rootRole}},
+			want: "enabled auth requires root user",
+		},
+		{
+			name: "enabled root lacks root role",
+			auth: Auth{Enabled: true, Revision: 7,
+				Users: []*authpb.User{{Name: []byte("root")}},
+				Roles: []*authpb.Role{rootRole}},
+			want: "enabled auth requires root user to have root role",
+		},
+		{
+			name: "user references missing role",
+			auth: Auth{
+				Users: []*authpb.User{{Name: []byte("alice"), Roles: []string{"missing"}}},
+			},
+			want: `auth user "alice" references missing role "missing"`,
+		},
+		{
+			name: "user repeats role",
+			auth: Auth{
+				Users: []*authpb.User{{Name: []byte("alice"), Roles: []string{"reader", "reader"}}},
+				Roles: []*authpb.Role{{Name: []byte("reader")}},
+			},
+			want: `auth user "alice" repeats role "reader"`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			err := WriteBackend(path, State{Auth: test.auth})
+			require.ErrorContains(t, err, test.want)
+			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
+			require.NoError(t, openErr)
+			defer db.Close()
+			require.NoError(t, db.View(func(tx *bolt.Tx) error {
+				require.Nil(t, tx.Bucket(schema.Auth.Name()), "inconsistent auth must roll back metadata")
+				return nil
+			}))
+		})
+	}
+}
+
 func TestOfficialAuthAndAlarmStoresRecoverGeneratedBackend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	password, err := bcrypt.GenerateFromPassword([]byte("alice-secret"), bcrypt.MinCost)

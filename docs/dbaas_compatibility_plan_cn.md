@@ -43323,6 +43323,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新实现返回稳定错误且 backend 没有半写 metadata bucket；既有 upstream lease/auth/alarm store restore
   测试保持通过。Alarm 的完整 protobuf key 允许同一 member 合法同时持有 NOSPACE/CORRUPT，不按
   member ID 误去重。本项只收紧 snapshot 制品构造，不改变在线 TiKV 状态机。
+  A4079 固定 Snapshot auth graph 一致性：upstream
+  `/root/etcd/server/auth/store.go:AuthEnable` 在持久化 enabled 前强制 root 用户存在且持有 root role；
+  `RoleDelete` 删除 role 后会在同一 batch 遍历所有用户并移除引用，`UserGrantRole` 也只接受已存在
+  role。因此官方管理 API 可达状态中不存在 enabled-without-root、悬空 role 引用或同一用户重复 role。
+  旧 writer 仅逐条 marshal/Put，会把这四类不自洽 Auth slice 写成可被 etcd 打开的 backend，恢复后
+  permission cache 与管理语义不再对应任何合法 etcd 历史。现在 metadata transaction 在对象身份
+  查重后构建 role 集合，逐用户拒绝重复/缺失 role，并在 enabled 状态验证 root 用户及其 root role；
+  任一失败回滚所有 metadata bucket。四个红测证明旧实现均错误成功，新实现返回稳定错误；正常
+  enabled root+reader snapshot 继续由 upstream auth/alarm store 恢复测试覆盖，`pkg/etcdsnapshot`
+  race、server Snapshot 与逻辑转换器回归通过。该项只校验 snapshot auth 制品图，不改变在线 auth
+  RPC 或 TiKV 持久状态。
 
 ### P2：运维兼容和长期验证
 
