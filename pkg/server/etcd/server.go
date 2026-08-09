@@ -248,6 +248,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdClientGRPCBytesCounters(metricCli)
 	initEtcdServerStreamFailureCounters(metricCli)
 	initEtcdMVCCKeysGauge(metricCli)
+	initEtcdBackendSnapshotDuration(metricCli)
 	return server
 }
 

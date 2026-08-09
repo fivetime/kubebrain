@@ -146,6 +146,34 @@ func TestBackendCommitHistogramUsesUpstreamBuckets(t *testing.T) {
 	t.Fatal("backend commit histogram family not gathered")
 }
 
+func TestBackendSnapshotHistogramUsesUpstreamBuckets(t *testing.T) {
+	newRegistry := prometheus.NewRegistry()
+	registerer, gather = newRegistry, newRegistry
+	defer func() {
+		registerer, gather = prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	}()
+
+	p := NewMetrics()
+	registrar := p.(metrics.HistogramRegistrar)
+	assert.NoError(t, registrar.RegisterHistogram("etcd.disk.backend_snapshot_duration_seconds"))
+	families, err := gather.Gather()
+	assert.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "etcd_disk_backend_snapshot_duration_seconds" {
+			continue
+		}
+		histogram := family.GetMetric()[0].GetHistogram()
+		assert.Zero(t, histogram.GetSampleCount())
+		buckets := histogram.GetBucket()
+		assert.Len(t, buckets, 17)
+		for i, bucket := range buckets {
+			assert.InDelta(t, 0.01*float64(uint64(1)<<i), bucket.GetUpperBound(), 1e-10)
+		}
+		return
+	}
+	t.Fatal("backend snapshot histogram family not gathered")
+}
+
 func Test_convertToFloat64(t *testing.T) {
 	t.Run("valid_input", func(t *testing.T) {
 		inputs := []interface{}{

@@ -43092,6 +43092,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单元测试固定成功 batch、CAS failure 与 direct delete 各产生一个样本，并固定 compatibility-only
   wrapper 不产生 `storage.batch.duration`；生产只读 gate 要求 `_count` family 存在并新增
   `backend_commit_metrics=ok` 摘要。
+- A4060 实现 upstream backend snapshot duration histogram：上游
+  `/root/etcd/server/storage/backend/metrics.go` 与 `backend.go` 在 bbolt read transaction
+  snapshot 建立后开始计时，并在 snapshot close 停止 transfer timer，观察
+  `etcd_disk_backend_snapshot_duration_seconds`；bucket 为 10ms 起、2 倍递增、共 17 桶。
+  KubeBrain 不直接发送 TiKV 物理快照，但 Maintenance Snapshot 会在 leader 上从 pinned
+  TiKV MVCC/history/auth/lease/alarm 状态构建临时 bbolt artifact 并流式发送，因此等价生命周期是
+  leader 本地 `sendSnapshot` 从开始构建到最终 digest frame 成功或任一失败返回。follower 只代理
+  leader response，不重复观察本地 histogram。`RPCServer.New` 通过
+  `HistogramRegistrar` 注册 count=0 family，不伪造延迟样本；Prometheus adapter 使用 upstream
+  精确 buckets。回归测试固定成功下载与注入首帧 Send 失败各产生一个样本；生产只读 gate 要求
+  `_count` family 存在并新增 `backend_snapshot_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

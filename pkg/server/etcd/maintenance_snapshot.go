@@ -273,6 +273,8 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 }
 
 func (s *RPCServer) sendSnapshot(stream etcdserverpb.Maintenance_SnapshotServer) error {
+	started := time.Now()
+	defer func() { emitEtcdBackendSnapshotDuration(s.metricCli, time.Since(started)) }()
 	tmp, err := os.CreateTemp("", ".kubebrain-maintenance-snapshot-*.db")
 	if err != nil {
 		return err

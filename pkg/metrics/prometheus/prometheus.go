@@ -242,6 +242,9 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	if name == "etcd.disk.backend_commit_duration_seconds" {
 		// Match server/storage/backend/metrics.go: 1ms through 8.192s.
 		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
+	} else if name == "etcd.disk.backend_snapshot_duration_seconds" {
+		// Match server/storage/backend/metrics.go: 10ms through 655.36s.
+		opts.Buckets = prometheus.ExponentialBuckets(0.01, 2, 17)
 	}
 	vec = prometheus.NewHistogramVec(opts, pw.extractLabelNames(labels))
 	registerer.MustRegister(vec)

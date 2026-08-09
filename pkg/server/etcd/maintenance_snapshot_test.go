@@ -27,6 +27,43 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
+type failingMaintenanceSnapshotServer struct {
+	*maintenanceSnapshotServer
+	err error
+}
+
+func (s *failingMaintenanceSnapshotServer) Send(*etcdserverpb.SnapshotResponse) error {
+	return s.err
+}
+
+func TestMaintenanceSnapshotDurationObservedForSuccessAndSendFailure(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{},
+		&maintenanceSnapshotServer{ctx: context.Background()}))
+	sendErr := fmt.Errorf("injected snapshot send failure")
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, &failingMaintenanceSnapshotServer{
+		maintenanceSnapshotServer: &maintenanceSnapshotServer{ctx: context.Background()},
+		err:                       sendErr,
+	})
+	require.ErrorIs(t, err, sendErr)
+
+	var samples []recordedHistogram
+	for _, histogram := range rec.histograms {
+		if histogram.name == etcdBackendSnapshotDurationMetric {
+			samples = append(samples, histogram)
+		}
+	}
+	require.Len(t, samples, 2)
+	for _, sample := range samples {
+		require.GreaterOrEqual(t, sample.value.(float64), float64(0))
+		require.Empty(t, sample.tags)
+	}
+}
+
 type streamingSnapshotBackend struct {
 	BackendShim
 	fullRangeLists int
