@@ -11,6 +11,8 @@ BACKEND_FAULT_MODE="${BACKEND_FAULT_MODE:-pod-replacement}"
 KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-180}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
+TIKV_QUORUM_PARTITION_CYCLES="${TIKV_QUORUM_PARTITION_CYCLES:-1}"
+TIKV_QUORUM_PARTITION_INTERVAL_SECONDS="${TIKV_QUORUM_PARTITION_INTERVAL_SECONDS:-0}"
 partition_pod_ip=""
 partition_tag=""
 dual_partition_pod_ips=()
@@ -207,6 +209,27 @@ partition_tikv_quorum() {
   return 1
 }
 
+partition_tikv_quorum_soak() {
+  local cycle
+  if [[ ! "$TIKV_QUORUM_PARTITION_CYCLES" =~ ^[1-9][0-9]*$ ]] ||
+    (( TIKV_QUORUM_PARTITION_CYCLES > 20 )); then
+    echo "TIKV_QUORUM_PARTITION_CYCLES must be an integer in [1,20]" >&2
+    exit 1
+  fi
+  if [[ ! "$TIKV_QUORUM_PARTITION_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] ||
+    (( TIKV_QUORUM_PARTITION_INTERVAL_SECONDS > 300 )); then
+    echo "TIKV_QUORUM_PARTITION_INTERVAL_SECONDS must be an integer in [0,300]" >&2
+    exit 1
+  fi
+  for cycle in $(seq 1 "$TIKV_QUORUM_PARTITION_CYCLES"); do
+    echo "TiKV quorum partition cycle ${cycle}/${TIKV_QUORUM_PARTITION_CYCLES}"
+    partition_tikv_quorum
+    if (( cycle < TIKV_QUORUM_PARTITION_CYCLES )); then
+      sleep "$TIKV_QUORUM_PARTITION_INTERVAL_SECONDS"
+    fi
+  done
+}
+
 partition_tikv_member() {
   local tikv_pod store_state privileged attempts cluster_json
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
@@ -369,8 +392,14 @@ if [[ "${1:-}" == "--partition-tikv-quorum" ]]; then
   partition_tikv_quorum
   exit 0
 fi
+if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
+  need docker
+  need jq
+  partition_tikv_quorum_soak
+  exit 0
+fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-tikv-member|--partition-tikv-quorum]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -434,7 +463,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
   tikv-quorum-loss)
     need docker
     need jq
-    run_watch_recovery_test "TiKV quorum-loss network partition" "$self --partition-tikv-quorum"
+    run_watch_recovery_test "TiKV quorum-loss network partition" "$self --partition-tikv-quorum-soak"
     ;;
   *)
     echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2

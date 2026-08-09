@@ -44438,6 +44438,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Up -> Disconnected -> Up`，21 次失败均保持可重试契约，恢复后线性一致 Range 的 70 个提交键与
   Watch 恰好一致（71 responses，final revision 11817）。本项只收敛已实测的两类 TiKV 瞬态原因，
   不把所有未知 backend 文本一概映射；新出现的 transport/region 原因仍须逐类取证。
+  A4200 把单次 TiKV quorum loss 门禁扩展为同一连续 Watch/Range oracle 上的有界重复 soak。
+  `TIKV_QUORUM_PARTITION_CYCLES`（1..20，默认 1）和
+  `TIKV_QUORUM_PARTITION_INTERVAL_SECONDS`（0..300，默认 0）均在首次注入前 fail-closed；每轮重新
+  读取当前 Up store 并按 leaderCount 选择两个成员，完整验证两者
+  `Up -> Disconnected -> Up`，轮间只在上一轮明确恢复后等待。真实独立 3 副本 KubeBrain/3 PD/3 TiKV
+  上连续三轮分别隔离 `kb-tikv-0/kb-tikv-1`、`kb-tikv-1/kb-tikv-0`、
+  `kb-tikv-1/kb-tikv-2`，191.23 秒内三轮状态转换与规则清理全部通过；同一 Watch 从测试开始持续到
+  最终线性一致 Range 核对，1091 个已提交键全部恰好交付（1092 responses，43 次可重试瞬态写失败，
+  final revision 12910），值、revision 和全局严格递增顺序一致。最终规则零残留、TidbCluster Ready，
+  3 KubeBrain/3 PD/3 TiKV 均 Ready 且零重启。该门禁覆盖同进程内多次失去/恢复 TiKV quorum，仍不以
+  三轮短测代替跨节点/AZ 与小时级 soak；后两项继续保持 P1/P2 开放。
 
 ### P2：运维兼容和长期验证
 
