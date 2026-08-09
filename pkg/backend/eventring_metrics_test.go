@@ -65,3 +65,11 @@ func TestNotifyBatchCountsAbortedRevisionOncePerTransaction(t *testing.T) {
 	}
 	require.Equal(t, 1, aborted, "a failed multi-key transaction must count one aborted revision")
 }
+
+func TestInitRevisionMetricsPublishesZeroBaseline(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	initRevisionMetrics(recorder)
+	require.Equal(t, []compactMetricRecord{{
+		kind: "counter", name: "revision.generator.aborted", value: 0,
+	}}, recorder.records)
+}

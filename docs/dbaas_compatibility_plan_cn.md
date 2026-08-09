@@ -44314,6 +44314,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV 指标联合分析。该项没有宣称关闭连续编号差异，而是首次把正常冲突/失败造成的可观察跳号与
   `revision.generator.invalid`（allocator 倒退）及 `watch.collector.skipped_revision`（writer 死亡自愈）
   分开量化，为未来提交时编号协议重构建立基线。
+  A4188 消除 A4187 指标在健康零事件实例上的 absent-series 歧义。Prometheus wrapper 采用首次 emit
+  动态注册，若只在 aborted revision 出现时 `+1`，正常实例根本没有该 time series，发布门禁和 dashboard
+  无法区分“连续运行、值为 0”与“旧镜像/抓取错误”。`NewBackend` 现在与 upstream 兼容指标初始化相同，
+  在启动 worker 前用 `EmitCounter(..., 0)` 注册 `revision.generator.aborted`；后续失败批次仍按 A4187
+  每 revision 加一，counter 不会被重置。独立初始化测试精确固定 name/type/value，revision 分类与实际
+  notifyBatch 单次计数普通连续 20 轮通过；完整 backend 和 race 门禁继续覆盖。可观测性文档明确 series
+  缺失必须按部署/抓取错误处理。该改动不改变 revision 分配、TiKV commit 或 Watch 行为，只使尚未关闭的
+  连续编号差距具备 fail-closed 的零基线证据。
 
 ### P2：运维兼容和长期验证
 

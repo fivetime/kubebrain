@@ -543,6 +543,7 @@ const minWatchProgressNotifyInterval = 100 * time.Millisecond
 func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) Backend {
 	config.complete()
 	initEtcdMVCCCompactionMetrics(metricCli)
+	initRevisionMetrics(metricCli)
 	ks, ksErr := coder.NewKeyspace(config.Keyspace)
 	if ksErr != nil {
 		// Validated at flag parsing; reaching here is a programming error, and
@@ -632,6 +633,12 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	b.startWorker(b.emitCountIndexMetrics)
 
 	return b
+}
+
+func initRevisionMetrics(metricCli metrics.Metrics) {
+	// Register the counter even while it is zero. A missing series must mean a
+	// scrape/deployment problem, not be ambiguous with a contiguous revision run.
+	_ = metricCli.EmitCounter("revision.generator.aborted", 0)
 }
 
 func (b *backend) startWorker(run func(context.Context)) bool {
