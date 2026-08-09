@@ -30,6 +30,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 // MemberList lists the current cluster membership.
@@ -317,16 +318,30 @@ func (s *RPCServer) MemberUpdate(ctx context.Context, request *etcdserverpb.Memb
 func (s *RPCServer) MemberPromote(ctx context.Context, request *etcdserverpb.MemberPromoteRequest) (*etcdserverpb.MemberPromoteResponse, error) {
 	s.metricCli.EmitCounter("member.promote", 1)
 	if err := s.requireAuthenticated(ctx, true); err != nil {
+		s.emitLearnerPromoteFailure(err)
 		return nil, err
 	}
 	member := s.memberByID(request.GetID())
 	if member == nil {
+		s.emitLearnerPromoteFailure(rpctypes.ErrGRPCMemberNotFound)
 		return nil, rpctypes.ErrGRPCMemberNotFound
 	}
 	if !member.GetIsLearner() {
+		s.emitLearnerPromoteFailure(rpctypes.ErrGRPCMemberNotLearner)
 		return nil, rpctypes.ErrGRPCMemberNotLearner
 	}
-	return nil, memberMutationPlatformManagedError()
+	err := memberMutationPlatformManagedError()
+	s.emitLearnerPromoteFailure(err)
+	return nil, err
+}
+
+func (s *RPCServer) emitLearnerPromoteFailure(err error) {
+	// Match EtcdServer.PromoteMember: every terminal non-forwarded promotion
+	// error is counted with its error string as the upstream `Reason` label.
+	// A valid learner still fails here because DBaaS control plane reconciliation,
+	// rather than this data-plane process, owns membership mutation.
+	_ = s.metricCli.EmitCounter("etcd.server.learner_promote_failures", 1,
+		metrics.Tag("Reason", err.Error()))
 }
 
 func (s *RPCServer) memberByID(id uint64) *etcdserverpb.Member {

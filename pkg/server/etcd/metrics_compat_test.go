@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/stats"
 
@@ -145,6 +147,38 @@ func TestEtcdMVCCHashDurationHistogramsUseUpstreamMetricNames(t *testing.T) {
 		{name: "etcd.mvcc.hash_duration_seconds", value: 1.5},
 		{name: "etcd.mvcc.hash_rev_duration_seconds", value: 2.0},
 	}, rec.histograms)
+}
+
+func TestMemberPromoteFailuresUseUpstreamMetricNameAndReasonLabel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 11, Name: "voter"},
+		{ID: 12, Name: "learner", IsLearner: true},
+	})
+
+	for _, id := range []uint64{99, 11, 12} {
+		_, err := server.MemberPromote(context.Background(), &etcdserverpb.MemberPromoteRequest{ID: id})
+		require.Error(t, err)
+	}
+
+	var failures []recordedCounter
+	for _, counter := range rec.counters {
+		if counter.name == "etcd.server.learner_promote_failures" {
+			failures = append(failures, counter)
+		}
+	}
+	require.Len(t, failures, 3)
+	require.Equal(t, metrics.Tag("Reason", rpctypes.ErrGRPCMemberNotFound.Error()), failures[0].tags[0])
+	require.Equal(t, metrics.Tag("Reason", rpctypes.ErrGRPCMemberNotLearner.Error()), failures[1].tags[0])
+	require.Equal(t, "Reason", failures[2].tags[0].Name)
+	require.Contains(t, failures[2].tags[0].Value, "DBaaS control plane")
+	for _, failure := range failures {
+		require.Equal(t, 1, failure.value)
+		require.Len(t, failure.tags, 1)
+	}
 }
 
 func TestEtcdMVCCWatchEventCounterUsesUpstreamMetricName(t *testing.T) {

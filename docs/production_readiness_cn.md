@@ -482,7 +482,7 @@ MVCC operation counter `etcd_mvcc_range_total`、`etcd_mvcc_put_total`、
 `go_sched_gomaxprocs_threads`、`os_fd_used`、`os_fd_limit`、
 server 状态指标 `etcd_server_has_leader`、`etcd_server_is_leader`、
 `etcd_server_leader_changes_seen_total`、
-`etcd_server_is_learner`，
+`etcd_server_is_learner`、`etcd_server_learner_promote_successes`，
 client request 指标 `etcd_server_client_requests_total`，
 server stream failure 指标 `etcd_network_server_stream_failures_total`，
 传统 `/health` 计数指标 `etcd_server_health_success` 与
@@ -495,6 +495,8 @@ raft proposal 兼容指标 `etcd_server_proposals_committed_total`、
 `etcd_server_proposals_applied_total`、`etcd_server_proposals_pending` 与
 `etcd_server_proposals_failed_total`（KubeBrain 不运行 etcd raft proposal pipeline，均固定为
 0；不得替换为 MVCC revision、public write RPC 或 TiKV transaction），
+learner promotion 兼容指标 `etcd_server_learner_promote_successes`（成员变更由 DBaaS
+控制面承担，数据面成功数固定为 0；带 `Reason` 的 failures family 仅在实际失败请求后出现），
 auth revision 指标 `etcd_debugging_auth_revision`，
 quota 指标 `etcd_server_quota_backend_bytes`，
 MVCC db size 指标 `etcd_mvcc_db_total_size_in_bytes` 与

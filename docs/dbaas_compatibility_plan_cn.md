@@ -43065,6 +43065,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   只在真实物理删除发生后出现。900-key 多 batch 测试锁定 7 个 pause 样本（每个用户 key
   一次 enqueue 3 个删除项，阈值在完整 key family 后检查，允许轻微越过 128）；注入 batch
   commit 失败的回归测试锁定 1 次失败 batch + 3 次成功 fallback delete 共 4 个样本。
+- A4058 实现 upstream learner promotion counters：上游
+  `/root/etcd/server/etcdserver/metrics.go` 注册
+  `etcd_server_learner_promote_successes` 与带 `Reason` 标签的
+  `etcd_server_learner_promote_failures`，`EtcdServer.PromoteMember` 在成功 promote 后递增
+  successes，在终止的非 leader-forward error 上按 `err.Error()` 递增 failures。KubeBrain 的
+  member mutation 由 DBaaS 控制面拥有，数据面永不成功执行 embedded-etcd raft learner
+  promotion，因此 server state 刷新以 0 稳定注册 successes；实际 `MemberPromote` 请求在
+  auth、member-not-found、member-not-learner 或 platform-managed boundary 返回终止错误时，
+  按 upstream `Reason` 标签递增 failures。不能把 TiKV learner、PD 调度或控制面扩缩容结果
+  混入这两个 etcd server family。只读生产 gate 固定 successes family 存在；failures 是
+  CounterVec，保持 upstream 无实际失败 label 时不产生伪造 time series。
 
 ### P2：运维兼容和长期验证
 

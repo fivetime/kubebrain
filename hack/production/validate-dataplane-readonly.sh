@@ -325,6 +325,10 @@ expect_info_metrics_boundary() {
     echo "info metrics mismatch: expected etcd_server_is_learner" >&2
     exit 1
   fi
+  if [[ "$info_metrics" != *"etcd_server_learner_promote_successes{"* && "$info_metrics" != *"etcd_server_learner_promote_successes "* ]]; then
+    echo "info metrics mismatch: expected etcd_server_learner_promote_successes" >&2
+    exit 1
+  fi
   if [[ "$info_metrics" != *"etcd_server_snapshot_apply_in_progress_total{"* && "$info_metrics" != *"etcd_server_snapshot_apply_in_progress_total "* ]]; then
     echo "info metrics mismatch: expected etcd_server_snapshot_apply_in_progress_total" >&2
     exit 1

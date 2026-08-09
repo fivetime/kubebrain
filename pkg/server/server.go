@@ -260,6 +260,12 @@ func (s *server) refreshServerStateMetrics(ctx context.Context) {
 	s.metricCli.EmitGauge("etcd.server.proposals_applied_total", 0)
 	s.metricCli.EmitGauge("etcd.server.proposals_pending", 0)
 	s.metricCli.EmitCounter("etcd.server.proposals_failed_total", 0)
+	// Upstream increments this counter only after an embedded etcd raft learner
+	// is successfully promoted. KubeBrain exposes membership through the etcd
+	// API, but DBaaS control plane reconciliation owns all member mutations; the
+	// data-plane process never performs a raft learner promotion. Keep the
+	// scalar upstream family present at its exact process-level value, zero.
+	s.metricCli.EmitCounter("etcd.server.learner_promote_successes", 0)
 
 	isLearner := false
 	if s.etcdServer != nil {
