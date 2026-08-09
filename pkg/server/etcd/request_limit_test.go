@@ -70,6 +70,38 @@ func TestResponseHeadersIncludeSharedRaftTerm(t *testing.T) {
 	require.Equal(t, uint64(4), watch.Header.RaftTerm)
 }
 
+func TestStatusHeaderReusesBodyRaftTermAcrossLeadershipChange(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	termReads := 0
+	server.peers = testPeerService{
+		isLeader: true,
+		currentTermFn: func() uint64 {
+			termReads++
+			if termReads == 1 {
+				return 7
+			}
+			return 8
+		},
+	}
+	handler := func(ctx context.Context, request any) (any, error) {
+		return server.Status(ctx, request.(*etcdserverpb.StatusRequest))
+	}
+
+	reply, err := server.stampUnary(
+		context.Background(),
+		&etcdserverpb.StatusRequest{},
+		&grpc.UnaryServerInfo{FullMethod: etcdserverpb.Maintenance_Status_FullMethodName},
+		handler,
+	)
+	require.NoError(t, err)
+	response := reply.(*etcdserverpb.StatusResponse)
+	require.Equal(t, uint64(7), response.RaftTerm)
+	require.Equal(t, response.RaftTerm, response.Header.RaftTerm)
+	require.Equal(t, 1, termReads, "Status header must reuse the body term snapshot")
+}
+
 func TestRangeStreamNestedResponseHeaderIsStamped(t *testing.T) {
 	response := &etcdserverpb.RangeStreamResponse{
 		RangeResponse: &etcdserverpb.RangeResponse{

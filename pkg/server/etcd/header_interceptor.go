@@ -439,9 +439,18 @@ func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnarySer
 	}
 	resp, err := handler(ctx, req)
 	if err == nil {
-		term, termErr := s.responseRaftTerm(ctx)
-		if termErr != nil {
-			return nil, termErr
+		var term uint64
+		if statusResponse, ok := resp.(*etcdserverpb.StatusResponse); ok {
+			// Status already snapshots the Raft term for its response body. Reuse
+			// that value so a concurrent leadership change cannot make the body
+			// and response header describe different terms.
+			term = statusResponse.RaftTerm
+		} else {
+			var termErr error
+			term, termErr = s.responseRaftTerm(ctx)
+			if termErr != nil {
+				return nil, termErr
+			}
 		}
 		stampHeader(resp, s.backend.ClusterID(), s.localMemberID(), term)
 	}

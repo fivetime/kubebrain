@@ -44128,6 +44128,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   response 原样返回 signed Lease ID。三种极值均保持完整 int64，未发生 uint 转换、截断或 attachment
   lookup 漂移，未发现 runtime 差异。A4166 将 `b35f739fa` 归类为客户端版本修复，同时防止服务端未来
   只对常见正 lease ID 保持兼容；DBaaS 发布工具链应采用包含该修复的 etcdctl，而非在服务端解析文本。
+  A4167 审计 `/root/etcd` 近期 `37ee7b40f` 删除 endpoint status fields 中重复 RaftTerm 的变更。
+  upstream 以 `StatusResponse.Header.RaftTerm` 与 `StatusResponse.RaftTerm` 来自同一任期为前提，只保留
+  header 字段。KubeBrain 原先在 `Status` handler 中为 body 读取一次 term，成功返回后又在 unary header
+  interceptor 中读取一次；若两次读取之间正好发生 leadership term 切换，同一响应会出现 body=7、
+  header=8，破坏该客户端可观察不变量。现在 interceptor 对 `StatusResponse` 复用 handler 已取得的
+  body term，并继续独立填充 cluster/member metadata；其他 RPC 的 header term 路径不变。确定性回归测试
+  注入 7→8 的 term source，要求只读取一次且 header/body 均为 7，并与 client/v3 Status metadata、普通
+  response header 及 cached-term 测试联合重复。A4167 修复了真实任期切换窗口，也使 DBaaS endpoint
+  status 能安全采用新 etcdctl 的单字段输出而不隐藏自相矛盾的服务端状态。
 
 ### P2：运维兼容和长期验证
 
