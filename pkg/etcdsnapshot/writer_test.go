@@ -321,6 +321,21 @@ func TestBuilderUsesCompactionAnchorForMVCCLifecycle(t *testing.T) {
 	}))
 }
 
+func TestBuilderRejectsRepeatedKeyWithinOneCompleteRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.db")
+	err := WriteBackend(path, State{
+		Revision: 12, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 10,
+		Records: []Record{
+			{Key: []byte("key"), Value: []byte("anchor"), CreateRevision: 10, ModRevision: 10, Version: 1},
+			{Key: []byte("key"), Value: []byte("second"), CreateRevision: 10, ModRevision: 12, Version: 2,
+				SubRevision: 0, TotalChanges: 2, Ordered: true},
+			{Key: []byte("key"), Value: []byte("third"), CreateRevision: 10, ModRevision: 12, Version: 3,
+				SubRevision: 1, TotalChanges: 2, Ordered: true},
+		},
+	})
+	require.ErrorContains(t, err, `revision 12 repeats key "key"`)
+}
+
 func TestBuilderOmitsRevisionMarkerWhenRealRowAlreadyPinsRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	require.NoError(t, WriteBackend(path, State{

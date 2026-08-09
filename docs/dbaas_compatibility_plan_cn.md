@@ -43490,6 +43490,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   现在用带 upstream 来源注释的同值常量约束 GrantedTTL，RemainingTTL 已由 A4086 保证不超过 grant；
   红测固定超一秒失败，精确 MaxLeaseTTL 且 remaining==grant 的边界正例成功。snapshot race、server
   Snapshot/Lease、逻辑转换器和 vet 回归通过；在线 LeaseGrant 行为本来正确，不触碰 TiKV 状态。
+  A4095 固定完整历史中同一 `(main revision,key)` 只能有一个有效 change：对照 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go:checkIntervals`，同一选中 Txn 分支的 Put/Put 和
+  Put/DeleteRange key 重叠直接返回 DuplicateKey；DeleteRange/DeleteRange 虽可重叠，但第二个操作
+  从 staged view 读取时目标已不存在，不再产生第二个 tombstone。KubeBrain `validateTxnIntervals` 与
+  staged executor 已有同样规则。旧 Builder 却可在 compact anchor version=1 后，为同一 key/main
+  写入 ordered sub=0/version=2 与 sub=1/version=3；A4088/A4090 的事务顺序与总数均自洽，A4091 的
+  per-key version 也连续，因此该公开 API 不可达状态会被错误发布。MVCC lifecycle 扫描现在对严格
+  大于 compact watermark 的每个 main 维护仅覆盖当前事务的 key set，重复立即 fail closed；set 在
+  main 切换时释放，额外内存受单事务 key 数而非全历史规模约束。红测固定旧错误成功；watermark 内
+  anchor 继续不应用完整事务限制。snapshot race、server Txn/Snapshot、backend history、转换器与
+  vet 回归通过；在线 Txn/TiKV 写路径未改变。
 
 ### P2：运维兼容和长期验证
 

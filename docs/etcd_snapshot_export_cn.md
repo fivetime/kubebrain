@@ -88,6 +88,8 @@ PreserveHistory 还会按物理 revision 重建每个 key 的 generation。compa
 记录可作为已压缩 anchor；之后每次 Put 必须保持 create revision 且 version 精确 +1，tombstone 必须
 终止一个 live generation，下一次重建必须满足 `createRevision=modRevision, version=1`。这样既不要求
 已压缩版本仍存在，也不会发布可启动但 protobuf KV metadata 与恢复索引不一致的历史。
+严格大于 compact watermark 时，同一 main revision 也只能修改同一 key 一次；公开 Txn 会拒绝
+Put/Put、Put/DeleteRange 的重叠，重叠 DeleteRange 的后续操作也不会再次产生已删除 key 的事件。
 metadata bucket 同样要求 lease ID、auth username、role name 和 alarm `(member ID, alarm type)`
 分别唯一；重复身份即使内容完全
 相同也视为上游状态不自洽并拒绝整个 metadata transaction，不能让 TTL、用户角色或权限由 slice

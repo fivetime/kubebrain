@@ -475,6 +475,8 @@ type mvccGenerationState struct {
 
 func validateMVCCLifecycle(tx *bolt.Tx, compactRevision int64) error {
 	live := make(map[string]mvccGenerationState)
+	seenMain := int64(-1)
+	seenRevisionKeys := make(map[string]struct{})
 	return tx.Bucket(keyBucket).ForEach(func(revisionKey, value []byte) error {
 		if len(revisionKey) < 17 {
 			return fmt.Errorf("invalid MVCC revision key length %d", len(revisionKey))
@@ -494,6 +496,14 @@ func validateMVCCLifecycle(tx *bolt.Tx, compactRevision int64) error {
 			}
 			return nil
 		}
+		if main != seenMain {
+			seenMain = main
+			seenRevisionKeys = make(map[string]struct{})
+		}
+		if _, exists := seenRevisionKeys[key]; exists {
+			return fmt.Errorf("revision %d repeats key %q", main, key)
+		}
+		seenRevisionKeys[key] = struct{}{}
 		previous, exists := live[key]
 		if tombstone {
 			if !exists {
