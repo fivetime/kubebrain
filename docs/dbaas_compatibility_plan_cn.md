@@ -44245,6 +44245,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归以同一 32-hex fingerprint、相隔十分钟的两个 firing payload 精确要求两个不同 name，并确认两次
   都只 submit 未审批 `maxAttempts=1` Operation、零 scale/delete。receiver admission 文案与生产手册同步
   改为 alert occurrence 派生；默认 executor 副本和人工/策略 approve 边界未放宽。
+  A4180 将 A4179 的 occurrence identity 从对象名贯穿到 immutable parameter digest 与执行端 fence。
+  仅改变名称无法从 Operation 关联的 immutable parameters 审计 hash 前像，也无法阻止参数内容与
+  `parametersSha256` 同时漂移后复用错误审批。policy runner 现在把 `alert_fingerprint`、`alert_starts_at`、
+  `alert_occurrence_id` 写入规范 JSON；repair wrapper 冻结并验证参数 SHA 后重新计算同一
+  `SHA-256(fingerprint+startsAt)`，要求 20-hex occurrence、claim name 与 operationID 三者精确一致，才会
+  启动 destructive primitive。正向 operation/takeover/失败测试使用真实 occurrence identity；负向测试
+  将 occurrence 改为全零并同步重算参数摘要，旧 wrapper 会启动 repair，新 wrapper 在子进程前拒绝且
+  repair log 为空。该纵深栅栏不授予 receiver approve/status/scale/delete 权限，也不改变 executor 默认
+  0 副本、冷却、三次失败、UID/cluster-ID/PVC/quorum 或 receipt 校验。
 
 ### P2：运维兼容和长期验证
 

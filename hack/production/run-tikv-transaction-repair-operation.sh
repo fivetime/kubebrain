@@ -74,14 +74,16 @@ chmod 0600 "$frozen_parameters"
 }
 
 parameters="$($JQ -er '[
+  .alert_fingerprint, .alert_starts_at, .alert_occurrence_id,
   .endpoint, .kubebrain_namespace, .kubebrain_statefulset,
   .tidb_namespace, .tidb_cluster, .expected_kubebrain_statefulset_uid,
   .expected_tidb_cluster_uid, (.expected_cluster_id|tostring),
   (.required_failed_probes|tostring), (.probe_interval_seconds|tostring),
   (.probe_timeout_seconds|tostring), (.pod_ready_timeout_seconds|tostring),
   (.repair_cooldown_seconds|tostring)
-] | select(length == 13 and all(. != null and . != "")) | @tsv' "$frozen_parameters")" || die "repair parameters are incomplete"
-IFS=$'\t' read -r endpoint kb_namespace kb_statefulset tidb_namespace tidb_cluster \
+] | select(length == 16 and all(. != null and . != "")) | @tsv' "$frozen_parameters")" || die "repair parameters are incomplete"
+IFS=$'\t' read -r alert_fingerprint alert_starts_at alert_occurrence_id \
+  endpoint kb_namespace kb_statefulset tidb_namespace tidb_cluster \
   expected_kb_uid expected_tidb_uid expected_cluster_id required_failed_probes \
   probe_interval probe_timeout pod_timeout cooldown <<<"$parameters"
 for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"; do
@@ -89,6 +91,9 @@ for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"
 done
 [[ "$endpoint" =~ ^https?://[^[:space:],]+$ ]] || die "repair endpoint is invalid"
 [[ "$expected_cluster_id" =~ ^[1-9][0-9]*$ && "$required_failed_probes" =~ ^[1-9][0-9]*$ && "$probe_interval" =~ ^[0-9]+$ && "$probe_timeout" =~ ^[1-9][0-9]*$ && "$pod_timeout" =~ ^[1-9][0-9]*$ && "$cooldown" =~ ^[1-9][0-9]*$ ]] || die "repair numeric parameter is invalid"
+[[ "$alert_fingerprint" =~ ^[a-f0-9]{16,64}$ && "$alert_starts_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && "$alert_occurrence_id" =~ ^[a-f0-9]{20}$ ]] || die "repair alert occurrence identity is invalid"
+computed_occurrence_id="$(printf '%s\n%s\n' "$alert_fingerprint" "$alert_starts_at" | sha256sum | cut -c1-20)"
+[[ "$computed_occurrence_id" == "$alert_occurrence_id" && "$name" == "tikv-repair-${alert_occurrence_id}" && "$operation_id" == "$name" ]] || die "repair alert occurrence identity does not match the operation"
 
 attempt_hash="$(printf '%s' "$operation_id" | sha256sum | cut -c1-20)"
 repair_attempt_id="op-${attempt_hash}"

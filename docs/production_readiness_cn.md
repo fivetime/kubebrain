@@ -239,7 +239,9 @@ runner 只接受恰好一个 `status=firing`、alertname 精确等于
 和 cluster ID，以 alert fingerprint 与本次 `startsAt` 的 SHA-256 派生确定性
 Operation/immutable Secret 名，生成规范参数 JSON
 和 SHA-256，并幂等提交 `maxAttempts: 1` 的 Pending Operation。已存在 Secret 必须 immutable 且
-内容摘要完全相同，否则 fail closed。
+内容摘要完全相同，否则 fail closed。参数 JSON 同时冻结原始 fingerprint、`startsAt` 和派生
+occurrence ID；repair executor 会重新计算 occurrence hash，并要求 Operation name/operation ID 与其一致，
+因此即使参数内容和 parameters SHA 被一起替换，也不能把一次告警的审批用于另一次 occurrence。
 
 runner 从不调用 approve，也没有 scale、Pod delete 或 PVC 权限；因此告警只能产生未审批请求，
 不能绕过 A4074 的人工/策略审批。resolved、重复匹配、过新的、未来时间、错误实例标签或身份漂移

@@ -62,8 +62,10 @@ parameters_file="$temp_dir/parameters.json"
 $JQ -cnS \
   --arg endpoint "$ENDPOINT" --arg kbns "$KUBEBRAIN_NAMESPACE" --arg kbsts "$KUBEBRAIN_STATEFULSET" \
   --arg tidbns "$TIDB_NAMESPACE" --arg tidb "$TIDB_CLUSTER" --arg kbuid "$kb_uid" \
-  --arg tidbuid "$tidb_uid" --argjson cluster "$cluster_id" '
-  {endpoint:$endpoint,kubebrain_namespace:$kbns,kubebrain_statefulset:$kbsts,
+  --arg tidbuid "$tidb_uid" --argjson cluster "$cluster_id" --arg fingerprint "$fingerprint" \
+  --arg starts_at "$starts_at" --arg occurrence "$occurrence_id" '
+  {alert_fingerprint:$fingerprint,alert_occurrence_id:$occurrence,alert_starts_at:$starts_at,
+   endpoint:$endpoint,kubebrain_namespace:$kbns,kubebrain_statefulset:$kbsts,
    tidb_namespace:$tidbns,tidb_cluster:$tidb,
    expected_kubebrain_statefulset_uid:$kbuid,expected_tidb_cluster_uid:$tidbuid,
    expected_cluster_id:$cluster,required_failed_probes:3,probe_interval_seconds:5,

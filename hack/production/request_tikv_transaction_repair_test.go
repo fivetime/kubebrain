@@ -25,6 +25,15 @@ elif [[ "$*" == *"get tidbcluster kb"* ]]; then
 elif [[ "$*" == *"get secret tikv-repair-"*"-parameters"* ]]; then
   exit 1
 elif [[ "$*" == *"create secret generic"* ]]; then
+  parameters_file=""
+  for arg in "$@"; do
+    [[ "$arg" == --from-file=parameters.json=* ]] && parameters_file="${arg#--from-file=parameters.json=}"
+  done
+  [[ -f "$parameters_file" ]]
+  fingerprint="$(jq -er '.alert_fingerprint' "$parameters_file")"
+  starts_at="$(jq -er '.alert_starts_at' "$parameters_file")"
+  occurrence="$(jq -er '.alert_occurrence_id' "$parameters_file")"
+  [[ "$occurrence" == "$(printf '%s\n%s\n' "$fingerprint" "$starts_at" | sha256sum | cut -c1-20)" ]]
   printf '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"probe"},"data":{}}\n'
 elif [[ "$*" == *"create -f -"* ]]; then
   payload="$(cat)"
