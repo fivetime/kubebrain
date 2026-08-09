@@ -10,6 +10,8 @@ EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
 EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 ENDPOINT="${ENDPOINT:-}"
 REPAIR_ATTEMPT_ID="${REPAIR_ATTEMPT_ID:-}"
+REPAIR_COOLDOWN_SECONDS="${REPAIR_COOLDOWN_SECONDS:-3600}"
+NOW_UNIX="${NOW_UNIX:-$(date +%s)}"
 REQUIRED_FAILED_PROBES="${REQUIRED_FAILED_PROBES:-3}"
 PROBE_INTERVAL_SECONDS="${PROBE_INTERVAL_SECONDS:-5}"
 PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS:-10}"
@@ -27,7 +29,9 @@ die() { echo "$*" >&2; exit 1; }
 [[ -n "$EXPECTED_TIDB_CLUSTER_UID" ]] || die "EXPECTED_TIDB_CLUSTER_UID is required"
 [[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_CLUSTER_ID must be a positive integer"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
-[[ "$REPAIR_ATTEMPT_ID" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "REPAIR_ATTEMPT_ID must be a DNS label"
+[[ "$REPAIR_ATTEMPT_ID" =~ ^[a-z0-9]([-a-z0-9]{0,28}[a-z0-9])?$ ]] || die "REPAIR_ATTEMPT_ID must be a DNS label of at most 30 characters"
+[[ "$REPAIR_COOLDOWN_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "REPAIR_COOLDOWN_SECONDS must be a positive integer"
+[[ "$NOW_UNIX" =~ ^[1-9][0-9]*$ ]] || die "NOW_UNIX must be a positive Unix timestamp"
 for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_SECONDS; do
   [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
 done
@@ -46,14 +50,50 @@ original_kb_replicas="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRA
 [[ "$original_kb_replicas" == "3" ]] || die "repair requires exactly 3 desired KubeBrain replicas"
 
 repair_lock="kubebrain-tikv-transaction-repair-lock"
+cooldown_record="kubebrain-tikv-transaction-repair-last-success"
+last_success="$(kctl -n "$TIDB_NAMESPACE" get configmap "$cooldown_record" \
+  -o 'jsonpath={.data.tidb-cluster-uid}{"\t"}{.data.completed-at-unix}' 2>/dev/null || true)"
+if [[ -n "$last_success" ]]; then
+  last_uid="${last_success%%$'\t'*}"
+  last_completed="${last_success#*$'\t'}"
+  [[ "$last_completed" =~ ^[1-9][0-9]*$ ]] || die "repair cooldown record is malformed"
+  if [[ "$last_uid" == "$EXPECTED_TIDB_CLUSTER_UID" ]]; then
+    (( NOW_UNIX >= last_completed )) || die "repair cooldown record is from the future"
+    elapsed=$((NOW_UNIX - last_completed))
+    (( elapsed >= REPAIR_COOLDOWN_SECONDS )) || die "repair cooldown is active for another $((REPAIR_COOLDOWN_SECONDS - elapsed)) seconds"
+  fi
+fi
+
 kctl -n "$TIDB_NAMESPACE" create configmap "$repair_lock" \
   --from-literal="attempt-id=$REPAIR_ATTEMPT_ID" \
   --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" >/dev/null ||
   die "another TiKV transaction-path repair holds $TIDB_NAMESPACE/$repair_lock"
-cleanup_lock() {
+attempt_record="kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}"
+repair_phase="preflight"
+receipt_created=false
+cleanup_repair() {
+  local status="$?"
+  if [[ "$receipt_created" == "true" && "$repair_phase" != "completed" ]]; then
+    kctl -n "$TIDB_NAMESPACE" patch configmap "$attempt_record" --type=merge \
+      -p "{\"data\":{\"phase\":\"$repair_phase\",\"finished-at-unix\":\"$(date +%s)\"}}" >/dev/null 2>&1 || true
+  fi
   kctl -n "$TIDB_NAMESPACE" delete configmap "$repair_lock" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  return "$status"
 }
-trap cleanup_lock EXIT
+trap cleanup_repair EXIT
+kctl -n "$TIDB_NAMESPACE" create configmap "$attempt_record" \
+  --from-literal="attempt-id=$REPAIR_ATTEMPT_ID" \
+  --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" \
+  --from-literal="cluster-id=$EXPECTED_CLUSTER_ID" \
+  --from-literal="started-at-unix=$NOW_UNIX" \
+  --from-literal="phase=$repair_phase" >/dev/null || die "repair attempt receipt already exists or cannot be created"
+receipt_created=true
+persist_phase() {
+  local next_phase="$1"
+  kctl -n "$TIDB_NAMESPACE" patch configmap "$attempt_record" --type=merge \
+    -p "{\"data\":{\"phase\":\"$next_phase\"}}" >/dev/null
+  repair_phase="$next_phase"
+}
 
 tikv_status() {
   kctl -n "$TIDB_NAMESPACE" get pods \
@@ -100,6 +140,7 @@ transaction_probe() {
 
 for ((probe=1; probe<=REQUIRED_FAILED_PROBES; probe++)); do
   if transaction_probe; then
+    persist_phase "refused-healthy"
     die "transaction probe ${probe} succeeded; refusing repair of a healthy data plane"
   fi
   (( probe == REQUIRED_FAILED_PROBES )) || sleep "$PROBE_INTERVAL_SECONDS"
@@ -108,11 +149,13 @@ done
 ready_kb="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.status.readyReplicas}')"
 [[ -z "$ready_kb" || "$ready_kb" == "0" ]] || die "repair requires KubeBrain to be exactly 0 Ready after failed transaction probes"
 
+persist_phase "quiescing-kubebrain"
 echo "confirmed ${REQUIRED_FAILED_PROBES} consecutive transaction failures; scaling KubeBrain to zero"
 kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null
 kctl -n "$KUBEBRAIN_NAMESPACE" wait --for=delete pod -l "app.kubernetes.io/name=kubebrain,app.kubernetes.io/instance=${KUBEBRAIN_STATEFULSET}" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
 
 for ordinal in 2 1 0; do
+  persist_phase "replacing-tikv-${ordinal}"
   pod="${TIDB_CLUSTER}-tikv-${ordinal}"
   old_identity="$(kctl -n "$TIDB_NAMESPACE" get pod "$pod" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}')"
   old_uid="${old_identity%%$'\t'*}"
@@ -128,12 +171,27 @@ for ordinal in 2 1 0; do
   validate_tikv_ready || die "TiKV quorum did not recover after replacing $pod"
 done
 
+persist_phase "restoring-kubebrain"
 echo "TiKV replacements converged; restoring KubeBrain replicas"
 kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas="$original_kb_replicas" >/dev/null
 kctl -n "$KUBEBRAIN_NAMESPACE" rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
 if ! transaction_probe; then
+  repair_phase="failed-final-transaction-probe"
   kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null || true
   die "TiKV repair completed but end-to-end transaction verification failed; KubeBrain was returned to zero replicas"
 fi
+
+persist_phase "persisting-cooldown"
+completed_at_unix="$(date +%s)"
+if ! kctl -n "$TIDB_NAMESPACE" create configmap "$cooldown_record" \
+  --from-literal="tidb-cluster-uid=$EXPECTED_TIDB_CLUSTER_UID" \
+  --from-literal="cluster-id=$EXPECTED_CLUSTER_ID" \
+  --from-literal="attempt-id=$REPAIR_ATTEMPT_ID" \
+  --from-literal="completed-at-unix=$completed_at_unix" >/dev/null 2>&1; then
+  kctl -n "$TIDB_NAMESPACE" patch configmap "$cooldown_record" --type=merge \
+    -p "{\"data\":{\"tidb-cluster-uid\":\"$EXPECTED_TIDB_CLUSTER_UID\",\"cluster-id\":\"$EXPECTED_CLUSTER_ID\",\"attempt-id\":\"$REPAIR_ATTEMPT_ID\",\"completed-at-unix\":\"$completed_at_unix\"}}" >/dev/null ||
+    die "repair succeeded but cooldown receipt could not be persisted"
+fi
+persist_phase "completed"
 
 echo "TiKV transaction-path repair succeeded: every Pod retained its PVC and end-to-end Put/Get/Delete recovered"

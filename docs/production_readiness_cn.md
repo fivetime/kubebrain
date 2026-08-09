@@ -186,6 +186,17 @@ Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。
 namespace 中读取 StatefulSet/Pod/TidbCluster、缩放指定 KubeBrain StatefulSet、创建/删除固定锁
 ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delete 权限。
 
+每次调用还会创建不可复用的
+`ConfigMap/kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}`，持续写入 `preflight`、
+`refused-healthy`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、
+`persisting-cooldown` 或 `completed` 阶段；异常退出会把当时阶段和完成时间留在 receipt 中，
+不会随单例锁删除。成功后另写固定
+`ConfigMap/kubebrain-tikv-transaction-repair-last-success`，包含 TidbCluster UID、cluster ID、
+attempt ID 和完成 Unix 时间。后续调用默认在同一 TidbCluster UID 的 3600 秒冷却窗口内、时间戳
+来自未来或记录格式损坏时 fail closed；可通过正整数 `REPAIR_COOLDOWN_SECONDS` 调整窗口。
+旧 TidbCluster UID 的冷却记录不会阻止一个已重建的新集群，但 receipt 仍保留供审计。attempt ID
+限制为至多 30 字符的 DNS label，从而使派生 ConfigMap 名保持合法且不能覆盖既有 attempt。
+
 ## 生产镜像追踪
 
 Docker 构建不会把 `.git` 复制到镜像上下文，因此版本、完整 commit SHA 和 UTC 构建时间

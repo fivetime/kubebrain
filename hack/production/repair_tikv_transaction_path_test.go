@@ -25,7 +25,13 @@ elif [[ "$args" == *"get tidbcluster kb"* ]]; then
   printf 'tc-uid\t7671\t3\t3'
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.spec.replicas}"* ]]; then
   printf '3'
-elif [[ "$args" == *" create configmap kubebrain-tikv-transaction-repair-lock "* || "$args" == *" delete configmap kubebrain-tikv-transaction-repair-lock "* ]]; then
+elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-success"* ]]; then
+  if [[ -n "${FAKE_COOLDOWN:-}" ]]; then
+    printf '%s' "$FAKE_COOLDOWN"
+  else
+    exit 1
+  fi
+elif [[ "$args" == *" create configmap "* || "$args" == *" patch configmap "* || "$args" == *" delete configmap kubebrain-tikv-transaction-repair-lock "* ]]; then
   :
 elif [[ "$args" == *"get pods -l"* && "$args" == *"component=tikv"* ]]; then
   for ordinal in 0 1 2; do
@@ -73,6 +79,8 @@ fi
 		"EXPECTED_CLUSTER_ID=7671",
 		"ENDPOINT=http://kubebrain-client.kubebrain-system.svc:3379",
 		"REPAIR_ATTEMPT_ID=repair-test-1",
+		"REPAIR_COOLDOWN_SECONDS=3600",
+		"NOW_UNIX=1786254000",
 		"REQUIRED_FAILED_PROBES=3",
 		"PROBE_INTERVAL_SECONDS=0",
 		"PROBE_TIMEOUT_SECONDS=1",
@@ -87,7 +95,7 @@ fi
 	require.NoError(t, err)
 	log := string(logData)
 	require.Equal(t, 3, strings.Count(log, "delete pod kb-tikv-"), log)
-	requireOrder(t, log, "create configmap kubebrain-tikv-transaction-repair-lock", "--replicas=0", "delete pod kb-tikv-2", "delete pod kb-tikv-1", "delete pod kb-tikv-0", "--replicas=3", "delete configmap kubebrain-tikv-transaction-repair-lock")
+	requireOrder(t, log, "create configmap kubebrain-tikv-transaction-repair-lock", "create configmap kubebrain-tikv-repair-repair-test-1", "--replicas=0", "delete pod kb-tikv-2", "delete pod kb-tikv-1", "delete pod kb-tikv-0", "--replicas=3", "create configmap kubebrain-tikv-transaction-repair-last-success", "delete configmap kubebrain-tikv-transaction-repair-lock")
 	require.NotContains(t, log, "delete pvc")
 
 	for ordinal := 0; ordinal < 3; ordinal++ {
@@ -102,9 +110,19 @@ fi
 	require.NoError(t, err)
 	healthyLog := string(healthyLogData)
 	require.Contains(t, healthyLog, "create configmap kubebrain-tikv-transaction-repair-lock")
+	require.Contains(t, healthyLog, "refused-healthy")
 	require.Contains(t, healthyLog, "delete configmap kubebrain-tikv-transaction-repair-lock")
 	require.NotContains(t, healthyLog, " scale ")
 	require.NotContains(t, healthyLog, "delete pod")
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	cooldownOutput, cooldownErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_COOLDOWN=tc-uid\t1786253990"))
+	require.Error(t, cooldownErr)
+	require.Contains(t, string(cooldownOutput), "repair cooldown is active")
+	cooldownLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.NotContains(t, string(cooldownLogData), " create configmap ")
 }
 
 func TestRepairTiKVTransactionPathRequiresExplicitAuthorizationBeforeKubectl(t *testing.T) {

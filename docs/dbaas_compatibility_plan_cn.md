@@ -43257,6 +43257,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Put/Get/Delete 验证；验证失败则重新缩到 0。fake-kubectl 契约测试覆盖完整成功序列、无 PVC
   delete 和授权前零调用，真实健康集群反向演练证明首次成功事务会在 scale/delete 前拒绝修复。
   持久冷却、attempt receipt 与策略审批仍属于 controller 层，不能把本执行原语宣称为全自动。
+  A4073 把前两项落到执行器：每个至多 30 字符的 attempt ID 创建不可复用的持久 ConfigMap
+  receipt，并在 preflight、健康拒绝、停止 KubeBrain、逐 TiKV replacement、恢复、写冷却和完成
+  阶段持续更新；异常退出保留终止阶段与时间，单例锁仍自动释放。成功修复写固定 last-success
+  ConfigMap，绑定 TidbCluster UID/cluster ID/attempt/completed Unix time；默认同 UID 3600 秒内、
+  future timestamp 或 malformed receipt 都在取得修复锁前 fail closed，新 TidbCluster UID 不受旧
+  冷却误伤。契约测试覆盖成功阶段顺序、健康 `refused-healthy` receipt、冷却期零 create/scale/delete。
+  controller 尚需把告警状态映射为 attempt 创建策略并执行审批，执行器本身已可跨 controller 重启
+  保留幂等/冷却证据。
 
 ### P2：运维兼容和长期验证
 
