@@ -43706,6 +43706,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不会把历史 watch 的 `StartRevision-1` 同步种子误作已消费 source。peer client 不请求 fragmentation，外部 wire
   fragmentation 又发生在完整 WatchResult 校验后，因此同事务同 revision events 不会被跨批误杀。完整 Watch、
   etcdproxy 测试和 vet 通过。
+  A4123 跟进 `/root/etcd` 新基线 `5cd9f4ee1` 的 peer HTTP 有界读取安全修复（upstream
+  `1b01776cc`）：KubeBrain 不运行 upstream lease peer handler，但自身 `/members/hashkv` 仍对请求 body
+  直接 `io.ReadAll`，peer 连接可在 JSON 校验前制造无界内存增长。红测发送 64 KiB+1 非法 body，旧实现完整
+  读入后返回 400。handler 现在用与 upstream 一致的 64 KiB `http.MaxBytesReader` ceiling，超限明确返回
+  413 `request body too large`，普通读取/JSON 错误仍保持 400，method/path/cluster-ID admission 优先级不变。
+  同轮审计 `f1f8893b1` 的 nested Txn bbolt quota cost：KubeBrain 在选定嵌套分支构造 TiKV 原子 plan 后按实际
+  key/value delta 结算 logical quota，不使用 upstream 的预估 `costTxnReq`，因此不机械移植。全部 peer HashKV
+  回归与 vet 通过。
 
 ### P2：运维兼容和长期验证
 

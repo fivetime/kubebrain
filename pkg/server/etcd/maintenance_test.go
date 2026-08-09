@@ -677,6 +677,14 @@ func TestPeerHashKVHandlerRejectsBadPeerRequests(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			wantBody:   "error unmarshalling request",
 		},
+		{
+			name:       "body too large",
+			method:     http.MethodGet,
+			target:     PeerHashKVPath,
+			body:       bytes.NewReader(bytes.Repeat([]byte("x"), maxPeerHashKVRequestBytes+1)),
+			wantStatus: http.StatusRequestEntityTooLarge,
+			wantBody:   "request body too large",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

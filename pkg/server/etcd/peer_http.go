@@ -37,6 +37,11 @@ const PeerHashKVPath = "/members/hashkv"
 
 const etcdClusterIDHeader = "X-Etcd-Cluster-ID"
 
+// HashKVRequest carries only a revision. Match upstream's peer HTTP request
+// ceiling so a compromised peer cannot make the handler buffer an unbounded
+// body before JSON validation.
+const maxPeerHashKVRequestBytes = 64 * 1024
+
 // GetPeerHttpHandlers returns etcd-compatible peer HTTP handlers.
 func (s *RPCServer) GetPeerHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
@@ -164,8 +169,13 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPeerHashKVRequestBytes))
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "error reading body", http.StatusBadRequest)
 		return
 	}
