@@ -43,6 +43,7 @@ func (b *rangeRevisionProbeBackend) CountAtRevision(_ context.Context, _, _ []by
 func (b *rangeRevisionProbeBackend) GetCurrentRevision() uint64 { return 11 }
 
 func TestBackendShimNormalizesSignedRangeRevision(t *testing.T) {
+	metricCli := prommetrics.NewMetrics()
 	for _, tc := range []struct {
 		name string
 		wire int64
@@ -54,7 +55,7 @@ func TestBackendShimNormalizesSignedRangeRevision(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			probe := &rangeRevisionProbeBackend{}
-			shim := NewBackendShim(probe, prommetrics.NewMetrics())
+			shim := NewBackendShim(probe, metricCli)
 			req := &etcdserverpb.RangeRequest{
 				Key: []byte("/signed-revision/"), RangeEnd: []byte("/signed-revision0"), Revision: tc.wire,
 			}

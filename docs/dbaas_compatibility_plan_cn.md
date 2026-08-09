@@ -43143,6 +43143,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   增量 0 稳定注册 family；单元测试锁定零值。生产只读 gate 要求唯一值为 0，覆盖 family 缺失和
   非零负例，并新增 `slow_apply_metrics=ok` 摘要；真实 RPC/TiKV 延迟继续由 request/backend commit
   histograms 与 TiKV 原生指标观测。
+- A4065 实现 upstream MVCC range duration histogram：上游
+  `/root/etcd/server/etcdserver/txn/metrics.go` 与 `txn/range.go` 在每次实际 `txn.Range`
+  完成后观察 `etcd_server_range_duration_seconds{success}`，使用 0.1ms 起、2 倍递增、共 20 个
+  buckets。KubeBrain 的等价边界位于 backend shim 的 point `Get` 与 range `List`：从调用独立
+  TiKV/PD-backed MVCC backend 前开始，到结果或错误返回时结束，因此 public Range、Txn compare、
+  nested Range 和 staged transaction 的实际读取均有样本；鉴权、linearizable read barrier、gRPC
+  发送与只走 count-index 的读取不混入 storage range latency。成功和失败分别使用 upstream
+  `success="true|false"` 标签，Prometheus adapter 固定精确 20 桶。测试锁定名称、标签、point/range
+  wiring 和 bucket 边界；生产只读 gate 在真实 prefix Range 后要求 `_count` family 存在，并新增
+  `range_duration_metrics=ok` 摘要。
 
 ### P2：运维兼容和长期验证
 

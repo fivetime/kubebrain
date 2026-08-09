@@ -885,7 +885,10 @@ func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRan
 	return deleteResp, nil
 }
 
-func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (_ *etcdserverpb.RangeResponse, retErr error) {
+	start := time.Now()
+	defer func() { emitEtcdRangeDuration(b.metricCli, time.Since(start), retErr) }()
+
 	// transform request from etcd protobuf to kube-brain protobuf
 	request := &proto.GetRequest{
 		Key:      r.Key,
@@ -906,7 +909,10 @@ func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*e
 	return applyRangeOptions(resp, r), nil
 }
 
-func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (_ *etcdserverpb.RangeResponse, retErr error) {
+	start := time.Now()
+	defer func() { emitEtcdRangeDuration(b.metricCli, time.Since(start), retErr) }()
+
 	limit := r.Limit
 	if needsFullRangeMaterialization(r) {
 		limit = 0

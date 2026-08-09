@@ -125,6 +125,35 @@ func TestEmitEtcdRequestDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
 	}, rec.histograms[1].tags)
 }
 
+func TestEmitEtcdRangeDurationUsesUpstreamMetricNameAndLabels(t *testing.T) {
+	rec := &recordingMetrics{}
+
+	emitEtcdRangeDuration(rec, 1500*time.Millisecond, nil)
+	emitEtcdRangeDuration(rec, 2*time.Second, errors.New("boom"))
+
+	require.Equal(t, []recordedHistogram{
+		{name: "etcd.server.range_duration_seconds", value: 1.5, tags: []metrics.T{metrics.Tag("success", "true")}},
+		{name: "etcd.server.range_duration_seconds", value: 2.0, tags: []metrics.T{metrics.Tag("success", "false")}},
+	}, rec.histograms)
+}
+
+func TestBackendShimObservesPointAndRangeMVCCReads(t *testing.T) {
+	rec := &recordingMetrics{}
+	shim := NewBackendShim(&rangeRevisionProbeBackend{}, rec)
+
+	_, err := shim.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("point")})
+	require.NoError(t, err)
+	_, err = shim.List(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")})
+	require.NoError(t, err)
+
+	require.Len(t, rec.histograms, 2)
+	for _, observed := range rec.histograms {
+		require.Equal(t, etcdRangeDurationMetric, observed.name)
+		require.Equal(t, []metrics.T{metrics.Tag("success", "true")}, observed.tags)
+		require.GreaterOrEqual(t, observed.value.(float64), 0.0)
+	}
+}
+
 func TestEmitWatchSendLoopDurationsUseUpstreamMetricNames(t *testing.T) {
 	rec := &recordingMetrics{}
 

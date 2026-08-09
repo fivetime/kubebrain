@@ -147,6 +147,32 @@ func TestBackendCommitHistogramUsesUpstreamBuckets(t *testing.T) {
 	t.Fatal("backend commit histogram family not gathered")
 }
 
+func TestEtcdRangeDurationHistogramUsesUpstreamBuckets(t *testing.T) {
+	newRegistry := prometheus.NewRegistry()
+	registerer, gather = newRegistry, newRegistry
+	defer func() {
+		registerer, gather = prometheus.DefaultRegisterer, prometheus.DefaultGatherer
+	}()
+
+	p := NewMetrics()
+	assert.NoError(t, p.EmitHistogram("etcd.server.range_duration_seconds", 0.25, metrics.Tag("success", "true")))
+	families, err := gather.Gather()
+	assert.NoError(t, err)
+	for _, family := range families {
+		if family.GetName() != "etcd_server_range_duration_seconds" {
+			continue
+		}
+		histogram := family.GetMetric()[0].GetHistogram()
+		assert.EqualValues(t, 1, histogram.GetSampleCount())
+		assert.Len(t, histogram.GetBucket(), 20)
+		for i, bucket := range histogram.GetBucket() {
+			assert.InDelta(t, 0.0001*float64(uint64(1)<<i), bucket.GetUpperBound(), 1e-12)
+		}
+		return
+	}
+	t.Fatal("etcd range duration histogram family not gathered")
+}
+
 func TestBackendBboltCommitPhaseHistogramsUseUpstreamBuckets(t *testing.T) {
 	newRegistry := prometheus.NewRegistry()
 	registerer, gather = newRegistry, newRegistry
