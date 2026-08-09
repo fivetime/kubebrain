@@ -44356,6 +44356,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   resolver 提前/延迟排空旧 SubConn 都会失败。当前 `/root/etcd` reference 与独立 3 副本 KubeBrain/
   3 PD/3 TiKV 普通连续 3 轮（34.559 秒）、race 连续 3 轮（36.087 秒）通过。该有限批量门禁关闭了
   单 lease 无法证明 renewal 分叉的窗口；小时级高基数 renewal storm 与网络分区仍保留为 P1 soak。
+  A4193 补齐同一 lease 多 endpoint 的 EndpointManager/resolver 交叉路径。未续租 TTL=3 lease 现在同时
+  挂接两个不同 UNKNOWN health backend；官方 `NewWatchChannel` 必须先以单个五 endpoint initial batch
+  建立快照，并在 lease 自然过期时只交付一个恰含两个目标 key 的 delete update batch。随后既有
+  `round_robin` connection 还必须连续 20 次不再命中 UNKNOWN，同时继续命中独立续租 lease 的
+  SERVICE_UNKNOWN endpoint，防止仅验证 manager 切片却遗漏 resolver SubConn 排空。`/root/etcd`
+  reference 与独立 3 副本 KubeBrain/3 PD/3 TiKV 普通连续 3 轮（34.716 秒）、race 连续 3 轮
+  （36.907 秒）通过。既有 Lease expiry 差分已证明底层多 key Watch frame/PrevKV/revision；本项新增的
+  是官方 naming 消费层保留同批删除并完成路由摘流，高基数 attachment 与长时分区仍归 P1 soak。
 
 ### P2：运维兼容和长期验证
 

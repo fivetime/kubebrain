@@ -33,6 +33,7 @@ type namingOutcome struct {
 	RoundRobinDeleteDone  bool
 	RoundRobinRejoinDone  bool
 	LeaseExpiryDrainDone  bool
+	LeaseExpiryAtomicDone bool
 	LeaseRenewalDrainDone bool
 	ResolverInitial       string
 	ResolverAfterDelete   string
@@ -58,6 +59,7 @@ func TestNamingDifferentialAgainstReferenceEtcd(t *testing.T) {
 		RoundRobinDeleteDone:  true,
 		RoundRobinRejoinDone:  true,
 		LeaseExpiryDrainDone:  true,
+		LeaseExpiryAtomicDone: true,
 		LeaseRenewalDrainDone: true,
 		ResolverInitial:       "SERVING",
 		ResolverAfterDelete:   "NOT_SERVING",
@@ -173,6 +175,8 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	defer stopNotServing()
 	unknownAddr, stopUnknown := startNamingHealthServer(t, healthpb.HealthCheckResponse_UNKNOWN)
 	defer stopUnknown()
+	unknownPeerAddr, stopUnknownPeer := startNamingHealthServer(t, healthpb.HealthCheckResponse_UNKNOWN)
+	defer stopUnknownPeer()
 	serviceUnknownAddr, stopServiceUnknown := startNamingHealthServer(t, healthpb.HealthCheckResponse_SERVICE_UNKNOWN)
 	defer stopServiceUnknown()
 	resolverPrefix := base + "resolver"
@@ -239,6 +243,8 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	require.NoError(t, err)
 	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/expiring",
 		endpoints.Endpoint{Addr: unknownAddr}, clientv3.WithLease(expiringLease.ID)))
+	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/expiring-peer",
+		endpoints.Endpoint{Addr: unknownPeerAddr}, clientv3.WithLease(expiringLease.ID)))
 	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/renewed",
 		endpoints.Endpoint{Addr: serviceUnknownAddr}, clientv3.WithLease(renewedLease.ID)))
 	withExpiringStatuses := make(map[string]struct{}, 4)
@@ -252,11 +258,31 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		withExpiringStatuses[response.Status.String()] = struct{}{}
 		return len(withExpiringStatuses) == 4
 	}, 5*time.Second, 20*time.Millisecond,
-		"round_robin resolver did not add both leased endpoints")
+		"round_robin resolver did not add all leased endpoints")
+	expiryWatchCtx, expiryWatchCancel := context.WithCancel(ctx)
+	defer expiryWatchCancel()
+	expiryUpdates, err := resolverManager.NewWatchChannel(expiryWatchCtx)
+	require.NoError(t, err)
+	require.Len(t, receiveNamingUpdates(t, ctx, expiryUpdates), 5,
+		"endpoint manager initial snapshot must include both permanent and all leased endpoints")
 	time.Sleep(1500 * time.Millisecond)
 	keepAlive, err := client.KeepAliveOnce(ctx, renewedLease.ID)
 	require.NoError(t, err)
 	require.Positive(t, keepAlive.TTL)
+	expiryBatch := receiveNamingUpdates(t, ctx, expiryUpdates)
+	require.Len(t, expiryBatch, 2, "one lease expiry must publish one two-endpoint delete batch")
+	expiredKeys := map[string]bool{
+		resolverPrefix + "/expiring":      false,
+		resolverPrefix + "/expiring-peer": false,
+	}
+	for _, update := range expiryBatch {
+		require.Equal(t, endpoints.Delete, update.Op)
+		_, expected := expiredKeys[update.Key]
+		require.Truef(t, expected, "unexpected endpoint expired with shared lease: %q", update.Key)
+		expiredKeys[update.Key] = true
+	}
+	leaseExpiryAtomicDone := expiredKeys[resolverPrefix+"/expiring"] &&
+		expiredKeys[resolverPrefix+"/expiring-peer"]
 	consecutiveAfterExpiry := 0
 	renewedObservedAfterExpiry := false
 	require.Eventually(t, func() bool {
@@ -339,6 +365,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		RoundRobinDeleteDone:  roundRobinDeleteDone,
 		RoundRobinRejoinDone:  roundRobinRejoinDone,
 		LeaseExpiryDrainDone:  leaseExpiryDrainDone,
+		LeaseExpiryAtomicDone: leaseExpiryAtomicDone,
 		LeaseRenewalDrainDone: leaseRenewalDrainDone,
 		ResolverInitial:       resolverInitial,
 		ResolverAfterDelete:   resolverAfterDelete,
