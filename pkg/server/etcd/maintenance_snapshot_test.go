@@ -99,6 +99,39 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 		historical := runHashKV("--rev", fmt.Sprint(revisions[1]))
 		require.Equal(t, revisions[1], historical.HashRevision)
 		require.Zero(t, historical.CompactRevision)
+
+		stream := &maintenanceSnapshotServer{ctx: ctx}
+		require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
+		require.GreaterOrEqual(t, len(stream.responses), 2)
+		var artifact []byte
+		for _, response := range stream.responses {
+			artifact = append(artifact, response.Blob...)
+		}
+		require.Equal(t, int64(sha256.Size), int64(len(artifact))%512,
+			"official tools recognize the final 32 bytes as the snapshot checksum")
+		artifactPath := filepath.Join(t.TempDir(), "snapshot-with-checksum.db")
+		require.NoError(t, os.WriteFile(artifactPath, artifact, 0o600))
+		command = exec.CommandContext(ctx, etcdutl, "--write-out=json", "snapshot", "status", artifactPath)
+		output, commandErr = command.CombinedOutput()
+		require.NoError(t, commandErr, string(output))
+		var snapshotStatus struct {
+			Revision int64  `json:"revision"`
+			TotalKey int    `json:"totalKey"`
+			Version  string `json:"version"`
+		}
+		require.NoError(t, json.Unmarshal(output, &snapshotStatus), string(output))
+		require.Equal(t, revisions[len(revisions)-1], snapshotStatus.Revision)
+		require.Positive(t, snapshotStatus.TotalKey)
+		require.Equal(t, Version, snapshotStatus.Version)
+
+		restoredDir := filepath.Join(t.TempDir(), "restored.etcd")
+		command = exec.CommandContext(ctx, etcdutl, "snapshot", "restore", artifactPath,
+			"--data-dir", restoredDir, "--name", "snapshot-checksum",
+			"--initial-cluster", "snapshot-checksum=http://127.0.0.1:42380",
+			"--initial-advertise-peer-urls", "http://127.0.0.1:42380")
+		output, commandErr = command.CombinedOutput()
+		require.NoError(t, commandErr, string(output))
+		require.FileExists(t, filepath.Join(restoredDir, "member", "snap", "db"))
 	}
 }
 

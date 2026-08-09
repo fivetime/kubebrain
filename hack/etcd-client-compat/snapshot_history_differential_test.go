@@ -3,6 +3,7 @@ package compat
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -159,7 +160,7 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 	require.NoError(t, err)
 
 	snapshotPath := filepath.Join(t.TempDir(), "kubebrain-snapshot.db")
-	require.NoError(t, os.WriteFile(snapshotPath, downloadSnapshotBackend(t, endpoint), 0o600))
+	require.NoError(t, os.WriteFile(snapshotPath, downloadSnapshotArtifact(t, endpoint), 0o600))
 	type offlineHashKV struct {
 		HashRevision    int64 `json:"hashRevision"`
 		CompactRevision int64 `json:"compactRevision"`
@@ -186,7 +187,7 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 	restoredDir := filepath.Join(t.TempDir(), "restored.etcd")
 	const restoredEndpoint = "127.0.0.1:42479"
 	restore := exec.CommandContext(ctx, etcdutl, "snapshot", "restore", snapshotPath,
-		"--skip-hash-check", "--data-dir", restoredDir, "--name", "a3537-restored",
+		"--data-dir", restoredDir, "--name", "a3537-restored",
 		"--initial-cluster", "a3537-restored=http://127.0.0.1:42480",
 		"--initial-advertise-peer-urls", "http://127.0.0.1:42480")
 	output, err := restore.CombinedOutput()
@@ -340,6 +341,15 @@ func TestSnapshotOmitsRedundantRevisionMarker(t *testing.T) {
 
 func downloadSnapshotBackend(t *testing.T, endpoint string) []byte {
 	t.Helper()
+	artifact := downloadSnapshotArtifact(t, endpoint)
+	require.Greater(t, len(artifact), sha256.Size)
+	digest := sha256.Sum256(artifact[:len(artifact)-sha256.Size])
+	require.Equal(t, digest[:], artifact[len(artifact)-sha256.Size:])
+	return artifact[:len(artifact)-sha256.Size]
+}
+
+func downloadSnapshotArtifact(t *testing.T, endpoint string) []byte {
+	t.Helper()
 	target := strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	require.NoError(t, err)
@@ -359,7 +369,7 @@ func downloadSnapshotBackend(t *testing.T, endpoint string) []byte {
 	}
 	require.GreaterOrEqual(t, len(responses), 2)
 	var out []byte
-	for _, response := range responses[:len(responses)-1] {
+	for _, response := range responses {
 		out = append(out, response.Blob...)
 	}
 	return out

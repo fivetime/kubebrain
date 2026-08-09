@@ -44194,6 +44194,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   未发现 runtime schema 差异。同期新增 upstream `1ebfb59bc` 只是复现 exact-key READ 用户用
   `WithFromKey` Watch 越权的 e2e；该漏洞及官方 clientv3 零泄漏黑盒已由 A4124 对照修复提交
   `7cf71ec9e` 永久覆盖，本轮记录测试来源而不重复修改 Watch runtime。
+  A4174 封闭实际 Snapshot RPC 完整制品与内部裸 backend 之间的自动化缺口。既有
+  `downloadSnapshotBackend` 丢弃最后 checksum frame，官方恢复测试又传 `--skip-hash-check`；因此
+  buildSnapshot/bbolt/hashkv 绿色仍不能证明 client 下载到的 `backend || SHA-256(backend)` 能通过官方
+  完整性校验。`TestSnapshotPassesBboltConsistencyCheck` 现在额外调用真实 `Maintenance.Snapshot`，拼接
+  包括最终 32-byte digest 在内的所有 frame，固定文件长度 `mod 512 == 32`，再由当前 upstream
+  `etcdutl snapshot status` 核对 revision、storage version 和正 user-key count，并在不使用
+  `--skip-hash-check` 时完成 restore。真实 endpoint 集成测试新增 `downloadSnapshotArtifact`；裸 backend
+  helper 会先自行验证 SHA-256，而官方 etcd restore 路径改为直接消费完整 artifact 并启用默认 hash check。
+  对照 upstream `756c7a6b2` 当前 restore/verify 工具迁移后从 `/root/etcd/etcdutl` 构建的二进制，status
+  与严格 restore 均通过，未发现 runtime wire/hash 差异；该门禁可阻止未来最后一帧遗漏、digest 覆盖范围
+  或 versioned snapshot metadata 漂移被仅检查裸 bbolt 的测试掩盖。
 
 ### P2：运维兼容和长期验证
 
