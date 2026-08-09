@@ -51,7 +51,11 @@ if [[ "$replicas" != "3/3" ]]; then
 fi
 
 self="$ROOT_DIR/hack/dev/lease-renewal-failover-smoke.sh"
-echo "Running 64-lease renewal soak across three ${STATEFULSET} leader replacements"
+soak_clients="${KUBEBRAIN_LEASE_RENEWAL_SOAK_CLIENTS:-8}"
+soak_leases_per_client="${KUBEBRAIN_LEASE_RENEWAL_SOAK_LEASES_PER_CLIENT:-8}"
+soak_cycles="${KUBEBRAIN_LEASE_RENEWAL_SOAK_FAILOVER_CYCLES:-3}"
+soak_duration="${KUBEBRAIN_LEASE_RENEWAL_SOAK_DURATION:-rapid}"
+echo "Running lease renewal soak: clients=${soak_clients} leases/client=${soak_leases_per_client} leader replacements=${soak_cycles} duration=${soak_duration}"
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \

@@ -44364,6 +44364,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   reference 与独立 3 副本 KubeBrain/3 PD/3 TiKV 普通连续 3 轮（34.716 秒）、race 连续 3 轮
   （36.907 秒）通过。既有 Lease expiry 差分已证明底层多 key Watch frame/PrevKV/revision；本项新增的
   是官方 naming 消费层保留同批删除并完成路由摘流，高基数 attachment 与长时分区仍归 P1 soak。
+  A4194 把既有 repeated-leader lease renewal 快速门禁升级为可执行的持续 soak，而不再把 4 分钟
+  test timeout 误当成持续时间。新增 fail-closed 参数
+  `KUBEBRAIN_LEASE_RENEWAL_SOAK_{DURATION,CLIENTS,LEASES_PER_CLIENT,FAILOVER_CYCLES,TTL}`：默认仍保持
+  8×8 lease、3 次快速 replacement、TTL=30s；显式 duration 时把每轮当前 leader replacement 均匀
+  分布在整个窗口，等待期间任何 keepalive channel 关闭、错误 ID 或非正 TTL 都立即失败。参数限制为
+  最多 256 clients、每 client 4096 leases、总计 100000 leases、100 次故障和 7 天 duration，非法、
+  空值或超界配置拒绝启动，避免把拼写错误退化为快速假 soak。脚本输出同步展示实际 client/lease/
+  replacement/duration，不再硬编码“64 leases”。配置与等待单测普通 20 轮、race 10 轮通过；独立
+  3 副本 KubeBrain/3 PD/3 TiKV 上以 2 分钟、8×16=128 leases、3 次均匀 leader replacement 实跑
+  147.23 秒通过，覆盖多个 TTL/keepalive 周期，并完成逐 lease Revoke、TTL=-1、Leases 列表、前缀清理
+  与最终 StatefulSet 3/3 rollout。该运行证明持续调度器可用并扩大现场证据，但完整小时级、高并发上限
+  和网络分区仍保持 P1 开放，不能由本次两分钟运行宣称关闭。
 
 ### P2：运维兼容和长期验证
 
