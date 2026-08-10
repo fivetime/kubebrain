@@ -45042,6 +45042,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Created(7) -> Canceled(7)`；聚焦 Watch 普通测试及相关 race 均通过。真实 TiKV/PD 不参与此纯 gRPC backpressure 顺序，但生产
   多路复用 stream 的慢 reader soak 仍应在既知环境恢复后补跑。
 
+- A4257 隔离 Watch handler 与不可取消的底层 Recv，避免普通长连接在 context 结束后泄漏。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go`：upstream 明确把 `recvLoop` 放在独立 goroutine，主 handler 同时 select
+  receive error 与 `stream.Context().Done()`，因为某些 ServerStream 的 transport Recv 使用不同 context、取消后仍可能阻塞。
+  KubeBrain 此前直接在 handler 中调用 `ws.Recv()`；A4202 的 `serverStreamWithContext` 只为带 `WithRequireLeader` metadata 的
+  wrapped stream 提供额外中断，普通 Watch 仍依赖具体 transport 行为。现在每条请求由单一 recv pump 执行，主循环逐次发放 token，
+  因此不预取、并发或重排请求；handler 在等待结果时也监听公开 stream context，可立即进入既有 watcher/control/quota 清理。
+  handler 退出后关闭私有 stop，底层 Recv 若迟到只会丢弃结果并结束，不再访问已关闭的 watcher 状态。EOF 仍保留现有半关闭语义：
+  仅停止 request side，response side 等到 stream context 结束。确定性测试使用故意忽略 context 的 Recv，证明取消后 100ms 内 RPC
+  以标准 `Canceled` 返回、active stream 归零，随后释放底层 Recv 也安全收尾；半关闭与 A4256 慢 Created/cancel 顺序回归以及 race
+  均通过。该修复不访问存储；真实 TiKV/PD 不适用，但公网代理/异常 transport 下的 goroutine 长时 soak 仍待生产环境验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

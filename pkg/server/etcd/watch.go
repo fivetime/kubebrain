@@ -69,6 +69,11 @@ type watchControlResponse struct {
 	done chan error
 }
 
+type watchReceiveResult struct {
+	request *etcdserverpb.WatchRequest
+	err     error
+}
+
 // watcher correspond to one stream, one watcher has many watches
 type watcher struct {
 	sync.Mutex
@@ -334,8 +339,13 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 	w.id = atomic.AddInt64(&watcherID, 1)
 	w.controlWG.Add(1)
 	go w.sendControls()
+	receiveNext := make(chan struct{})
+	receiveResults := make(chan watchReceiveResult)
+	receiveStop := make(chan struct{})
+	go pumpWatchRequests(ws, receiveNext, receiveResults, receiveStop)
 	klog.InfoS("new watcher", "id", w.id)
 	defer func() {
+		close(receiveStop)
 		s.activeWatchStreams.Add(-1)
 		w.Close()
 		if errors.Is(err, context.Canceled) {
@@ -344,7 +354,18 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 	}()
 
 	for {
-		msg, err := ws.Recv()
+		var msg *etcdserverpb.WatchRequest
+		select {
+		case receiveNext <- struct{}{}:
+		case <-ws.Context().Done():
+			return ws.Context().Err()
+		}
+		select {
+		case result := <-receiveResults:
+			msg, err = result.request, result.err
+		case <-ws.Context().Done():
+			return ws.Context().Err()
+		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				// CloseSend only half-closes a bidirectional watch stream. Keep the
@@ -536,6 +557,31 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 		} else {
 			s.metricCli.EmitCounter("watch.request.unsupported", 1)
 			klog.Info("watch receive message unsupported type")
+		}
+	}
+}
+
+// pumpWatchRequests keeps the transport Recv outside the handler goroutine.
+// Some ServerStream implementations do not unblock an in-flight Recv when a
+// wrapped stream context is canceled. Matching upstream's recvLoop isolation
+// lets Watch still unwind; at most this pump remains blocked in transport code,
+// and a late result is discarded after receiveStop without touching watcher
+// state that the handler has already closed.
+func pumpWatchRequests(ws etcdserverpb.Watch_WatchServer, next <-chan struct{}, results chan<- watchReceiveResult, receiveStop <-chan struct{}) {
+	for {
+		select {
+		case <-next:
+		case <-receiveStop:
+			return
+		}
+		request, err := ws.Recv()
+		select {
+		case results <- watchReceiveResult{request: request, err: err}:
+		case <-receiveStop:
+			return
+		}
+		if err != nil {
+			return
 		}
 	}
 }

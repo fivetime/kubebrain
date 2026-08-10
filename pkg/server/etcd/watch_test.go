@@ -3464,6 +3464,20 @@ type halfClosedWatchServer struct {
 	once sync.Once
 }
 
+type contextIgnoringWatchServer struct {
+	*fakeWatchServer
+	entered chan struct{}
+	release chan struct{}
+	exited  chan struct{}
+}
+
+func (s *contextIgnoringWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	close(s.entered)
+	<-s.release
+	close(s.exited)
+	return nil, context.Canceled
+}
+
 func (s *halfClosedWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
 	var request *etcdserverpb.WatchRequest
 	s.once.Do(func() { request = <-s.recv })
@@ -3500,6 +3514,39 @@ func (s *controllableWatchServer) snapshot() []*etcdserverpb.WatchResponse {
 	out := make([]*etcdserverpb.WatchResponse, len(s.sent))
 	copy(out, s.sent)
 	return out
+}
+
+func TestWatchContextCancellationDoesNotWaitForBlockedRecv(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &contextIgnoringWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		entered:         make(chan struct{}),
+		release:         make(chan struct{}),
+		exited:          make(chan struct{}),
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	<-stream.entered
+	cancel()
+	select {
+	case err := <-done:
+		require.Equal(t, codes.Canceled, status.Code(err))
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("watch handler waited for a transport Recv that ignored context cancellation")
+	}
+	require.Zero(t, server.activeWatchStreams.Load())
+
+	// A late transport result must terminate only the detached receive pump; it
+	// must not access the watcher or its already-closed control channel.
+	close(stream.release)
+	select {
+	case <-stream.exited:
+	case <-time.After(time.Second):
+		t.Fatal("detached receive pump did not finish after transport release")
+	}
 }
 
 func TestWatchHalfCloseKeepsResponseStreamAlive(t *testing.T) {
