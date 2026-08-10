@@ -117,6 +117,15 @@ func TestAuthRepositoryClassifiesMalformedPersistentMetadata(t *testing.T) {
 			},
 			want: `auth token generation key identity "alice" disagrees with payload name "bob"`,
 		},
+		{
+			name: "token generation wrong length", key: authRecordKey(authTokenGenerationsKey, "alice"),
+			value: func(t *testing.T) []byte {
+				value, err := proto.Marshal(&authpb.User{Name: []byte("alice"), Password: make([]byte, authUserTokenGenerationBytes-1)})
+				require.NoError(t, err)
+				return value
+			},
+			want: `auth token generation "alice" has length 15, want 16`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

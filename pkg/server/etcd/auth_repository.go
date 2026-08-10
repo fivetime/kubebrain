@@ -228,6 +228,11 @@ func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*a
 				"auth token generation key identity %q disagrees with payload name %q", identity, generation.Name,
 			))
 		}
+		if len(generation.Password) != authUserTokenGenerationBytes {
+			return nil, markInvalidAuthMetadata(fmt.Errorf(
+				"auth token generation %q has length %d, want %d", identity, len(generation.Password), authUserTokenGenerationBytes,
+			))
+		}
 		snapshot.TokenGenerations[identity] = &generation
 	}
 	return snapshot, nil

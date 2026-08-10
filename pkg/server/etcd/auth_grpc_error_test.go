@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
@@ -19,6 +20,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -189,6 +191,21 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 				return err
 			},
 			want: "auth config revision is zero",
+		},
+		{
+			name: "invalid token generation length",
+			corrupt: func(ctx context.Context, server *RPCServer) error {
+				value, err := proto.Marshal(&authpb.User{Name: []byte("alice"), Password: make([]byte, authUserTokenGenerationBytes-1)})
+				if err != nil {
+					return err
+				}
+				return server.backend.InternalPut(ctx, authRecordKey(authTokenGenerationsKey, "alice"), value)
+			},
+			call: func(ctx context.Context, connection *grpc.ClientConn) error {
+				_, err := etcdserverpb.NewKVClient(connection).Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
+				return err
+			},
+			want: `auth token generation "alice" has length 15, want 16`,
 		},
 		{
 			name: "generic alarm",

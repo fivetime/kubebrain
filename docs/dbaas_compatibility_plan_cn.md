@@ -44785,6 +44785,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   repository 红测验证 role 零部分写及 revision 不回绕，真实 bufconn gRPC 分别注入 zero/MaxUint64 并固定
   DataLoss/ResourceExhausted；既有并发 auth CAS、token fence 和 Snapshot A4097 门禁继续保持。
 
+- A4229 补齐 KubeBrain 私有 per-user token generation 的持久化 schema 校验。该记录用 `authpb.User.Password`
+  承载 `crypto/rand` 生成的固定 16-byte 撤销代际；缺失记录是滚动升级中的合法 legacy 状态，首次签发会以 CAS
+  lazy migration 创建，但“记录存在且长度不是 16”不可重建，也不能等到 Authenticate 时才返回普通
+  `invalid auth user token generation`/`Unknown`。A4215 已校验 generation key、base64 identity、protobuf 与 payload
+  Name，却遗漏 Password 长度。repository restore 现在在发布 auth snapshot 前严格检查 exact 16 bytes，保留原 identity
+  诊断并标记 `errInvalidAuthMetadata`；因此 KV/Auth/Snapshot 的统一入口分别稳定得到 `DataLoss` 或
+  `FailedPrecondition`，不会缓存半有效 generation。memkv 表测注入 15-byte payload，真实 bufconn KV.Range
+  固定 DataLoss；既有无 generation 用户的 lazy migration 测试继续通过，证明 missing 与 malformed 边界未混淆。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
