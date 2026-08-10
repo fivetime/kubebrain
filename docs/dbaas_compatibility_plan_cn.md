@@ -44651,6 +44651,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `FailedPrecondition`、精确诊断和零 partial frame；显式 `Unavailable` alarm read 对照保持原 status。
   standalone backend/generic 回归也固定 `errors.Is` 契约，使 DBaaS 修复工具可稳定识别 alarm 持久布局
   损坏，而不会依赖三套易漂移的错误文本。
+  A4217 对照 upstream `/root/etcd/server/storage/schema/lease.go` 以 big-endian lease ID 同时定义 backend
+  key 与 `leasepb.Lease.ID` 的单一身份，以及 KubeBrain rolling-upgrade 中“同 ID internal 记录覆盖 legacy
+  user-MVCC 记录”的既定迁移规则。`loadLeaseRecords` 原先完全忽略 key 后缀，只按 JSON payload `id`
+  建 map；不同 key 可汇聚到同一 payload ID 并按 Go map 顺序非确定覆盖，Snapshot 还会成功产出无法证明
+  来源的 lease。现严格解析 `leases/<decimal-id>`，要求十进制 canonical（仍允许 etcd 支持的负显式 ID）
+  且 key ID 与 payload ID 一致；legacy/internal 两条布局的违约均进入既有 `errInvalidLeaseMetadata`。
+  红测固定 legacy mismatch、internal mismatch 和前导零非 canonical key，raw Snapshot 要求
+  `ErrInvalidSnapshotMetadata`/`FailedPrecondition`、精确双 ID 诊断和零 partial frame。正向回归同时证明
+  canonical 同 ID 时 internal 仍覆盖 legacy 且不携带迁移标记；缺失 lease 的 orphan attachment 继续由
+  sweeper 容忍/回收，没有被错误收紧为持久损坏。
 
 ### P2：运维兼容和长期验证
 

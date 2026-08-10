@@ -1285,6 +1285,68 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 	}
 }
 
+func TestLoadLeaseRecordsRejectsMismatchedStorageIdentity(t *testing.T) {
+	tests := []struct {
+		name  string
+		write func(context.Context, *RPCServer, []byte) error
+		want  string
+	}{
+		{
+			name: "legacy user MVCC key",
+			write: func(ctx context.Context, server *RPCServer, raw []byte) error {
+				_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(7200), Value: raw})
+				return err
+			},
+			want: "legacy lease metadata key id 7200 disagrees with payload id 7201",
+		},
+		{
+			name: "internal key",
+			write: func(ctx context.Context, server *RPCServer, raw []byte) error {
+				return server.backend.InternalPut(ctx, leaseStorageKey(7200), raw)
+			},
+			want: "lease metadata key id 7200 disagrees with payload id 7201",
+		},
+		{
+			name: "noncanonical internal key",
+			write: func(ctx context.Context, server *RPCServer, raw []byte) error {
+				return server.backend.InternalPut(ctx, append(append([]byte(nil), leaseStoragePrefix...), []byte("07201")...), raw)
+			},
+			want: `lease metadata key "\x00kubebrain/leases/07201" is not canonical`,
+		},
+	}
+	raw := canonicalLeaseRecord(t, 7201)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			require.NoError(t, test.write(ctx, server, raw))
+
+			_, _, err := server.loadLeaseRecords(ctx)
+			require.ErrorIs(t, err, errInvalidLeaseMetadata)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
+func TestLoadLeaseRecordsKeepsInternalOverrideForMatchingLegacyIdentity(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const id int64 = 7220
+	legacy, err := json.Marshal(leaseRecord{ID: id, TTL: 30, Keys: []string{"legacy-key"}})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: legacy})
+	require.NoError(t, err)
+	current, err := json.Marshal(leaseRecord{ID: id, TTL: 60})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(id), current))
+
+	records, _, err := server.loadLeaseRecords(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []leaseRecord{{ID: id, TTL: 60}}, records)
+}
+
 func leaseRecordWithUnknownField(t *testing.T, id int64) []byte {
 	t.Helper()
 	base := canonicalLeaseRecord(t, id)

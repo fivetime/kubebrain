@@ -121,6 +121,17 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 	return record, nil
 }
 
+func leaseMetadataStorageID(key []byte) (int64, error) {
+	if !bytes.HasPrefix(key, leaseStoragePrefix) {
+		return 0, markInvalidLeaseMetadata(fmt.Errorf("lease metadata key %q is outside prefix %q", key, leaseStoragePrefix))
+	}
+	id, err := strconv.ParseInt(string(key[len(leaseStoragePrefix):]), 10, 64)
+	if err != nil || !bytes.Equal(key, leaseStorageKey(id)) {
+		return 0, markInvalidLeaseMetadata(fmt.Errorf("lease metadata key %q is not canonical", key))
+	}
+	return id, nil
+}
+
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (_ *etcdserverpb.LeaseGrantResponse, retErr error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
 	// Upstream quotaLeaseServer wraps LeaseServer, so an unavailable configured
@@ -1488,17 +1499,35 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	// record wins when both layouts contain the same lease ID.
 	recordByID := make(map[int64]leaseRecord, len(resp.Kvs)+len(internalRecords))
 	for _, kv := range resp.Kvs {
+		keyID, keyErr := leaseMetadataStorageID(kv.Key)
+		if keyErr != nil {
+			return nil, nil, keyErr
+		}
 		record, err := decodeLeaseRecord(kv.Value)
 		if err != nil {
 			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err))
 		}
+		if record.ID != keyID {
+			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+				"legacy lease metadata key id %d disagrees with payload id %d", keyID, record.ID,
+			))
+		}
 		record.LegacyStorage = true
 		recordByID[record.ID] = record
 	}
-	for _, value := range internalRecords {
+	for key, value := range internalRecords {
+		keyID, keyErr := leaseMetadataStorageID([]byte(key))
+		if keyErr != nil {
+			return nil, nil, keyErr
+		}
 		record, err := decodeLeaseRecord(value)
 		if err != nil {
 			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode lease metadata: %w", err))
+		}
+		if record.ID != keyID {
+			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+				"lease metadata key id %d disagrees with payload id %d", keyID, record.ID,
+			))
 		}
 		recordByID[record.ID] = record
 	}
