@@ -44873,6 +44873,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍为 B 且 A/B 的 Keys 分别为空/包含 key，官方 client/v3 `TimeToLive(WithAttachedKeys)` 黑盒验证相同结果。真实 TiKV/PD
   滚动布局注入仍待既知环境故障恢复后补跑。
 
+- A4240 消除多个 legacy lease 同时声明同一 key 时的随机 owner。旧 monolithic rebind 若在跨 record 更新之间中断，可能
+  留下 A/B 两个 `Keys` 集合；此前 `recordByID` map 的随机遍历顺序决定 `keyLeaseIndex`，进而决定哪个 lease 到期会删除该
+  key。load 现在检测跨 lease 重复 inline key：只有存在且指向一个当前 meta record 的新 attachment 时才允许恢复，并由
+  attachment 作为 authoritative owner；否则标记 `errInvalidLeaseMetadata`。apply inline records 时也即时从 previous owner
+  key set 删除覆盖项，确保无论 map 顺序如何，最终 attachment pass 都能清除所有非权威 owner。歧义表测与 Snapshot
+  `FailedPrecondition` 固定 fail-closed；A4239 的 direct/official client 回归现升级为 A/B 都声明 key，再证明 attachment B
+  稳定裁决。真实 TiKV/PD 故障环境恢复后仍需补跑该滚动中断布局。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -149,7 +149,7 @@ func TestClientLeaseReloadKeepsNewAttachmentOverLegacyOwner(t *testing.T) {
 	require.NoError(t, err)
 	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(legacyLeaseID), Value: legacy})
 	require.NoError(t, err)
-	current, err := jsonMarshalLeaseRecord(newLeaseID, 200, nil)
+	current, err := jsonMarshalLeaseRecord(newLeaseID, 200, []string{key})
 	require.NoError(t, err)
 	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(newLeaseID), current))
 	require.NoError(t, server.backend.InternalPut(ctx, leaseAttachKey(key), []byte(fmt.Sprint(newLeaseID))))

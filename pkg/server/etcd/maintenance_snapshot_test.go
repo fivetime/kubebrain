@@ -1509,6 +1509,26 @@ func TestMaintenanceSnapshotClassifiesEmptyLeaseAttachmentKey(t *testing.T) {
 	require.Empty(t, stream.responses)
 }
 
+func TestMaintenanceSnapshotClassifiesAmbiguousLegacyLeaseOwner(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const key = "/lease/snapshot-ambiguous-owner"
+	for _, id := range []int64{73_110, 73_111} {
+		data, err := json.Marshal(leaseRecord{ID: id, TTL: 30, Keys: []string{key}})
+		require.NoError(t, err)
+		_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: data})
+		require.NoError(t, err)
+	}
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
+	require.ErrorContains(t, err, `legacy lease key "/lease/snapshot-ambiguous-owner" has conflicting owners 73110 and 73111`)
+	require.Empty(t, stream.responses)
+}
+
 func TestMaintenanceSnapshotClassifiesMismatchedLeaseStorageIdentity(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

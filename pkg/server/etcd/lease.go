@@ -1579,6 +1579,27 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 		}
 		attachments[userKey] = id
 	}
+	legacyOwners := make(map[string]int64)
+	for _, record := range records {
+		for _, key := range record.Keys {
+			previous, duplicate := legacyOwners[key]
+			if !duplicate || previous == record.ID {
+				legacyOwners[key] = record.ID
+				continue
+			}
+			attachmentID, resolved := attachments[key]
+			_, ownerExists := recordByID[attachmentID]
+			if !resolved || !ownerExists {
+				first, second := previous, record.ID
+				if first > second {
+					first, second = second, first
+				}
+				return nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+					"legacy lease key %q has conflicting owners %d and %d", key, first, second,
+				))
+			}
+		}
+	}
 	return records, attachments, nil
 }
 
@@ -1690,6 +1711,11 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		}
 		// Legacy (pre-#17) monolithic key list, if present. New records carry none.
 		for _, key := range record.Keys {
+			if previousID, bound := m.keyLeaseIndex[key]; bound && previousID != st.id {
+				if previous := m.leases[previousID]; previous != nil {
+					delete(previous.keys, key)
+				}
+			}
 			st.keys[key] = struct{}{}
 			m.keyLeaseIndex[key] = st.id
 		}
