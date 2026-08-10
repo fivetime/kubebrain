@@ -158,13 +158,16 @@ TIDB_NAMESPACE=tidb-cluster \
 TIDB_CLUSTER=kb \
 EXPECTED_TIKV_STORES=3 \
 MAX_TIKV_DISK_USED_PERCENT=90 \
+MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT=125 \
 hack/production/validate-tikv-region-health.sh
 ```
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
 同时逐一在 Ready TiKV Pod 内对 `/var/lib/tikv` 执行只读 `df -P`，按真实挂载文件系统拒绝超过
-阈值的磁盘水位。一次运行会汇总 Region 与磁盘的全部异常后返回非零，不会因先遇到某一类异常
+阈值的磁盘水位；每个 Bound PVC 的 `.status.capacity.storage` 还必须能解析，实际文件系统容量不得
+超过声明容量的 125%，该容差只能在 100%–125% 范围收紧、不能调高绕过。一次运行会汇总 Region、
+容量隔离与磁盘水位的全部异常后返回非零，不会因先遇到某一类异常
 而隐藏另一类根因。运行身份需要读取 Pod、访问 Kubernetes Service proxy 和固定 TiKV Pod
 `pods/exec` 的权限；脚本不写 PD/TiKV，不删除 Pod/PVC，也不代替端到端事务探测。
 
@@ -172,7 +175,8 @@ hack/production/validate-tikv-region-health.sh
 store `1005` peer 同时 pending/down：该 store 本地保留旧 epoch 的 Region `1010`，持续以
 `msg is overlapped with exist region` 拒绝新 Region；三个 5Gi PVC 实际又共享宿主机 2TiB、97%
 已用的文件系统，TiKV heartbeat 报 `disk_usage: AlmostFull`。门禁会同时报告 Region/store ID
-和三个 Pod 的真实 97% 水位，从而避免把控制面 Ready 误当成事务数据面健康。
+和三个 Pod 的真实 97% 水位，并指出 5Gi 声明实际暴露约 2TiB 文件系统，从而避免把控制面 Ready
+或 PVC API 中的名义容量误当成事务数据面健康。
 
 `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 专门识别三项同时成立且持续
 2 分钟的反常状态：KubeBrain StatefulSet 为 0 Ready、3 个 TiKV metrics target 均可抓取、TiKV
@@ -208,8 +212,9 @@ Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。
 在任何 scale 或 Pod delete 前拒绝修复。连续事务失败后，脚本还会重新取得精确三 TiKV
 Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/tikv` 的真实挂载水位；任一 Pod 超过默认 90% 时记录
 `refused-disk-pressure` 并在任何 scale/delete 前退出。该阈值可通过
-`MAX_TIKV_DISK_USED_PERCENT` 下调，但不得用调高阈值绕过容量处置；同 PVC 重启不会释放共享宿主
-文件系统空间。
+`MAX_TIKV_DISK_USED_PERCENT` 下调，但不得用调高阈值绕过容量处置。脚本还要求实际文件系统容量
+不超过 Bound PVC 容量的 125%；容量 quantity 不可解析或 local-path 等目录卷暴露过大的宿主文件
+系统时记录 `refused-storage-safety`。同 PVC 重启不会释放共享宿主文件系统空间，也不会恢复容量隔离。
 
 该脚本是 controller 可调用的执行原语，不是完整自动 controller：调用方仍须持久化告警首次
 发生时间、修复冷却时间、attempt receipt 和人工/策略审批。其 ServiceAccount 只应获得目标两个
@@ -220,7 +225,7 @@ ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delet
 两个 UID、cluster ID、attempt ID、完成时间、精确 3 个 repaired TiKV Pod、PVC preserved 与
 transaction verified，可被 Operation wrapper 重读并计算 SHA-256。每次调用还会创建不可复用的
 `ConfigMap/kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}`，持续写入 `preflight`、
-`refused-healthy`、`refused-disk-pressure`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、
+`refused-healthy`、`refused-disk-pressure`、`refused-storage-safety`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、
 `persisting-cooldown` 或 `completed` 阶段；异常退出会把当时阶段和完成时间留在 receipt 中，
 不会随单例锁删除。成功后另写固定
 `ConfigMap/kubebrain-tikv-transaction-repair-last-success`，包含 TidbCluster UID、cluster ID、

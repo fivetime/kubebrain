@@ -22,9 +22,12 @@ elif [[ "$args" == *"/regions/check/pending-peer"* && "${FAKE_PENDING_REGION:-fa
   printf '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":1005}],"down_peers":[{"peer":{"store_id":1005}}]}]}'
 elif [[ "$args" == *"/regions/check/"* ]]; then
   printf '{"count":0,"regions":[]}'
+elif [[ "$args" == *"get pvc tikv-kb-tikv-"* ]]; then
+  printf '%s' "${FAKE_PVC_CAPACITY:-5Gi}"
 elif [[ "$args" == *" exec "* && "$args" == *" df -P "* ]]; then
   used="${FAKE_DISK_USED_PERCENT:-42}"
-  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test 100000 42000 58000 %s%% /var/lib/tikv\n' "$used"
+  capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/tikv\n' "$capacity" "$used"
 else
   echo "unexpected kubectl invocation: $args" >&2
   exit 99
@@ -41,6 +44,11 @@ fi
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "TiKV region health gate passed")
 
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh",
+		append(baseEnv, "FAKE_PVC_CAPACITY=5G", "FAKE_DISK_CAPACITY_KIB=4882813"))
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "TiKV region health gate passed")
+
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PENDING_REGION=true"))
 	require.Error(t, err)
 	require.Contains(t, string(output), `PD pending-peer region health mismatch: regions=[{"id":76009,"leader_store_id":1001,"pending_store_ids":[1005],"down_store_ids":[1005]}]`)
@@ -49,6 +57,19 @@ fi
 	require.Error(t, err)
 	require.Contains(t, string(output), "TiKV disk pressure: pod=kb-tikv-0")
 	require.Contains(t, string(output), "used=97% threshold=90%")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_DISK_CAPACITY_KIB=2112663500"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "TiKV filesystem capacity isolation mismatch: pod=kb-tikv-0")
+	require.Contains(t, string(output), "declared=5Gi filesystem_capacity_kib=2112663500 allowed_percent=125%")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT=126"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be between 100 and 125")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PVC_CAPACITY=5Zi"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "TiKV PVC capacity is unsupported or malformed")
 }
 
 func TestValidateTiKVRegionHealthRequiresExplicitContext(t *testing.T) {

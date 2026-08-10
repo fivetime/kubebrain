@@ -19,6 +19,7 @@ PROBE_INTERVAL_SECONDS="${PROBE_INTERVAL_SECONDS:-5}"
 PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS:-10}"
 POD_READY_TIMEOUT_SECONDS="${POD_READY_TIMEOUT_SECONDS:-300}"
 MAX_TIKV_DISK_USED_PERCENT="${MAX_TIKV_DISK_USED_PERCENT:-90}"
+MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT="${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT:-125}"
 TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
 ALLOW_TIKV_POD_REPAIR="${ALLOW_TIKV_POD_REPAIR:-false}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
@@ -44,6 +45,9 @@ for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_S
 done
 [[ "$MAX_TIKV_DISK_USED_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_DISK_USED_PERCENT must be a positive integer"
 (( MAX_TIKV_DISK_USED_PERCENT <= 90 )) || die "MAX_TIKV_DISK_USED_PERCENT must be at most 90"
+[[ "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be a positive integer"
+(( MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT >= 100 && MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT <= 125 )) || \
+  die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be between 100 and 125"
 [[ "$TIKV_DATA_DIR" == /* && "$TIKV_DATA_DIR" != *[[:cntrl:]]* ]] || die "TIKV_DATA_DIR must be an absolute path"
 [[ "$PROBE_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "PROBE_INTERVAL_SECONDS must be a non-negative integer"
 for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CLUSTER REPAIR_STATE_NAMESPACE; do
@@ -106,6 +110,24 @@ persist_phase() {
     -p "{\"data\":{\"phase\":\"$next_phase\"}}" >/dev/null
   repair_phase="$next_phase"
 }
+quantity_to_kib() {
+  local quantity="$1" value unit multiplier
+  if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
+    value="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+    case "$unit" in Ki) multiplier=1;; Mi) multiplier=1024;; Gi) multiplier=1048576;; Ti) multiplier=1073741824;; esac
+    printf '%s\n' "$((value * multiplier))"
+  elif [[ "$quantity" =~ ^([1-9][0-9]*)(K|M|G|T)$ ]]; then
+    value="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+    case "$unit" in K) multiplier=1000;; M) multiplier=1000000;; G) multiplier=1000000000;; T) multiplier=1000000000000;; esac
+    printf '%s\n' "$(((value * multiplier + 1023) / 1024))"
+  elif [[ "$quantity" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s\n' "$(((quantity + 1023) / 1024))"
+  else
+    return 1
+  fi
+}
 
 tikv_status() {
   kctl -n "$TIDB_NAMESPACE" get pods \
@@ -162,6 +184,7 @@ ready_kb="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULS
 [[ -z "$ready_kb" || "$ready_kb" == "0" ]] || die "repair requires KubeBrain to be exactly 0 Ready after failed transaction probes"
 
 disk_errors=()
+capacity_isolation_mismatch=false
 disk_tikv_rows="$(tikv_status)" || die "cannot refresh TiKV topology before disk-pressure fence"
 disk_tikv_names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$disk_tikv_rows")"
 [[ "$disk_tikv_names" == "$expected_names" ]] || die "TiKV quorum/PVC fence changed before disk-pressure check"
@@ -175,14 +198,23 @@ while IFS=$'\t' read -r pod pod_uid ready pvc; do
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \
     die "TiKV disk usage response is malformed for ${pod}: ${disk_row}"
+  pvc_capacity="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc" -o 'jsonpath={.status.capacity.storage}')"
+  pvc_capacity_kib="$(quantity_to_kib "$pvc_capacity")" || \
+    die "TiKV PVC capacity is unsupported or malformed for ${pod}/${pvc}: ${pvc_capacity:-missing}"
+  if (( capacity_kib * 100 > pvc_capacity_kib * MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT )); then
+    capacity_isolation_mismatch=true
+    disk_errors+=("pod=${pod} pvc=${pvc} declared=${pvc_capacity} filesystem_capacity_kib=${capacity_kib} allowed_percent=${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT}%")
+  fi
   if (( used_percent > MAX_TIKV_DISK_USED_PERCENT )); then
     disk_errors+=("pod=${pod} pvc=${pvc} used=${used_percent}% available_kib=${available_kib} capacity_kib=${capacity_kib}")
   fi
 done <<<"$disk_tikv_rows"
 if (( ${#disk_errors[@]} > 0 )); then
-  persist_phase "refused-disk-pressure"
-  printf 'refusing TiKV Pod repair under disk pressure (threshold=%s%%, path=%s): %s\n' \
-    "$MAX_TIKV_DISK_USED_PERCENT" "$TIKV_DATA_DIR" "${disk_errors[*]}" >&2
+  refusal_phase="refused-disk-pressure"
+  [[ "$capacity_isolation_mismatch" == "false" ]] || refusal_phase="refused-storage-safety"
+  persist_phase "$refusal_phase"
+  printf 'refusing TiKV Pod repair under disk pressure or capacity-isolation mismatch (used_threshold=%s%%, capacity_limit=%s%%, path=%s): %s\n' \
+    "$MAX_TIKV_DISK_USED_PERCENT" "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" "$TIKV_DATA_DIR" "${disk_errors[*]}" >&2
   exit 1
 fi
 

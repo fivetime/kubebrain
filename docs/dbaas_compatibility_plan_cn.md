@@ -45222,6 +45222,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod/PVC、也不发布成功 receipt。现场 A4276 的只读门禁已提供真实 97% RED；由于当前 KubeBrain
   StatefulSet 有意保持 0 desired，本轮不伪造 repair 授权去执行真实破坏路径。
 
+- A4278 将 A4276 暴露的 kind/local-path 容量隔离失真从现场描述升级为可执行不变量。
+  dev TidbCluster、PVC 与 hostPath PV API 均声明每个 TiKV 卷为 5Gi，但容器内 `df -P` 显示
+  2,112,663,500KiB（约 1.968TiB），证明 rancher local-path 目录没有提供 PVC 容量边界；即使宿主机
+  从 97% 降到健康水位，TiKV 的 AlmostFull 判断仍会被同节点其他目录影响。只读 Region gate 与破坏性
+  repair preflight 现在都读取每个 Bound PVC 的 `.status.capacity.storage`，用 fail-closed quantity
+  parser 支持常用 `Ki/Mi/Gi/Ti`、`K/M/G/T` 和整数字节，再把声明 KiB 与同一 Pod `tikv` 容器可见
+  文件系统容量比较；实际容量最多允许声明值的 125%，且阈值只能在 100%–125% 收紧。unsupported/
+  malformed quantity、PVC 查询失败和容量超界均拒绝通过。fake-kubectl 固定 5Gi≈5Gi GREEN、
+  5Gi→2,112,663,500KiB RED 和 126% 绕过 RED；真实 kind 同时报告三个 Pod 的 region、97% 水位与
+  容量隔离三类证据。repair 容量失真路径持久化 `refused-storage-safety`，且测试证明第一次 scale、
+  Pod/PVC delete 与成功 receipt 均未发生。本项不把 dev hostPath 当生产存储；生产 500Gi 清单仍必须
+  由支持容量边界、拓扑和快照的 CSI StorageClass 落地。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -5,6 +5,7 @@ TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_TIKV_STORES="${EXPECTED_TIKV_STORES:-3}"
 MAX_TIKV_DISK_USED_PERCENT="${MAX_TIKV_DISK_USED_PERCENT:-90}"
+MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT="${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT:-125}"
 TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
 PROBE_TIMEOUT="${PROBE_TIMEOUT:-10s}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
@@ -15,10 +16,12 @@ JQ="${JQ:-jq}"
 die() { echo "$*" >&2; exit 1; }
 
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
-for variable in EXPECTED_TIKV_STORES MAX_TIKV_DISK_USED_PERCENT; do
+for variable in EXPECTED_TIKV_STORES MAX_TIKV_DISK_USED_PERCENT MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT; do
   [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
 done
 (( MAX_TIKV_DISK_USED_PERCENT < 100 )) || die "MAX_TIKV_DISK_USED_PERCENT must be less than 100"
+(( MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT >= 100 && MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT <= 125 )) || \
+  die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be between 100 and 125"
 [[ "$TIDB_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "TIDB_NAMESPACE must be a DNS label"
 [[ "$TIDB_CLUSTER" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "TIDB_CLUSTER must be a DNS label"
 [[ "$TIKV_DATA_DIR" == /* && "$TIKV_DATA_DIR" != *[[:cntrl:]]* ]] || die "TIKV_DATA_DIR must be an absolute path"
@@ -29,6 +32,24 @@ context_args=()
 kctl() { "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$KUBECTL" "${context_args[@]}" "$@"; }
 health_errors=()
 record_health_error() { health_errors+=("$1"); }
+quantity_to_kib() {
+  local quantity="$1" value unit multiplier
+  if [[ "$quantity" =~ ^([1-9][0-9]*)(Ki|Mi|Gi|Ti)$ ]]; then
+    value="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+    case "$unit" in Ki) multiplier=1;; Mi) multiplier=1024;; Gi) multiplier=1048576;; Ti) multiplier=1073741824;; esac
+    printf '%s\n' "$((value * multiplier))"
+  elif [[ "$quantity" =~ ^([1-9][0-9]*)(K|M|G|T)$ ]]; then
+    value="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+    case "$unit" in K) multiplier=1000;; M) multiplier=1000000;; G) multiplier=1000000000;; T) multiplier=1000000000000;; esac
+    printf '%s\n' "$(((value * multiplier + 1023) / 1024))"
+  elif [[ "$quantity" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s\n' "$(((quantity + 1023) / 1024))"
+  else
+    return 1
+  fi
+}
 
 selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv"
 tikv_rows="$(kctl -n "$TIDB_NAMESPACE" get pods -l "$selector" \
@@ -62,6 +83,12 @@ while IFS=$'\t' read -r pod ready pvc; do
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \
     die "TiKV disk usage response is malformed for ${pod}: ${disk_row}"
+  pvc_capacity="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc" -o 'jsonpath={.status.capacity.storage}')"
+  pvc_capacity_kib="$(quantity_to_kib "$pvc_capacity")" || \
+    die "TiKV PVC capacity is unsupported or malformed for ${pod}/${pvc}: ${pvc_capacity:-missing}"
+  if (( capacity_kib * 100 > pvc_capacity_kib * MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT )); then
+    record_health_error "TiKV filesystem capacity isolation mismatch: pod=${pod} pvc=${pvc} declared=${pvc_capacity} filesystem_capacity_kib=${capacity_kib} allowed_percent=${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT}%"
+  fi
   if (( used_percent > MAX_TIKV_DISK_USED_PERCENT )); then
     record_health_error "TiKV disk pressure: pod=${pod} pvc=${pvc} path=${TIKV_DATA_DIR} used=${used_percent}% threshold=${MAX_TIKV_DISK_USED_PERCENT}% available_kib=${available_kib} capacity_kib=${capacity_kib}"
   fi

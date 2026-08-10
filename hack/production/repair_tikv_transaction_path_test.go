@@ -57,7 +57,10 @@ elif [[ "$args" == *"exec kubebrain-0"* ]]; then
   fi
 elif [[ "$args" == *"exec kb-tikv-"* && "$args" == *" df -P /var/lib/tikv"* ]]; then
   used="${FAKE_DISK_USED_PERCENT:-42}"
-  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test 100000 42000 58000 %s%% /var/lib/tikv\n' "$used"
+  capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/tikv\n' "$capacity" "$used"
+elif [[ "$args" == *"get pvc tikv-kb-tikv-"* ]]; then
+  printf '%s' "${FAKE_PVC_CAPACITY:-5Gi}"
 elif [[ "$args" == *"get pod kb-tikv-"* ]]; then
   ordinal="${args#*get pod kb-tikv-}"
   ordinal="${ordinal%% *}"
@@ -142,7 +145,7 @@ fi
 	diskOutput, diskErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_DISK_USED_PERCENT=97"))
 	require.Error(t, diskErr)
-	require.Contains(t, string(diskOutput), "refusing TiKV Pod repair under disk pressure")
+	require.Contains(t, string(diskOutput), "refusing TiKV Pod repair under disk pressure or capacity-isolation mismatch")
 	require.Contains(t, string(diskOutput), "pod=kb-tikv-0 pvc=tikv-kb-tikv-0 used=97%")
 	require.Contains(t, string(diskOutput), "pod=kb-tikv-1 pvc=tikv-kb-tikv-1 used=97%")
 	require.Contains(t, string(diskOutput), "pod=kb-tikv-2 pvc=tikv-kb-tikv-2 used=97%")
@@ -152,6 +155,20 @@ fi
 	require.Contains(t, diskLog, "refused-disk-pressure")
 	require.NotContains(t, diskLog, " scale ")
 	require.NotContains(t, diskLog, "delete pod")
+	require.NoFileExists(t, receiptPath)
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	capacityOutput, capacityErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_DISK_CAPACITY_KIB=2112663500"))
+	require.Error(t, capacityErr)
+	require.Contains(t, string(capacityOutput), "capacity-isolation mismatch")
+	require.Contains(t, string(capacityOutput), "pod=kb-tikv-0 pvc=tikv-kb-tikv-0 declared=5Gi filesystem_capacity_kib=2112663500 allowed_percent=125%")
+	capacityLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	capacityLog := string(capacityLogData)
+	require.Contains(t, capacityLog, "refused-storage-safety")
+	require.NotContains(t, capacityLog, " scale ")
+	require.NotContains(t, capacityLog, "delete pod")
 	require.NoFileExists(t, receiptPath)
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
@@ -193,5 +210,22 @@ func TestRepairTiKVTransactionPathRequiresExplicitAuthorizationBeforeKubectl(t *
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "MAX_TIKV_DISK_USED_PERCENT must be at most 90")
+	require.NoFileExists(t, logPath)
+
+	output, err = runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", []string{
+		"KUBECTL=" + fakeKubectl,
+		"FAKE_LOG=" + logPath,
+		"KUBE_CONTEXT=test-context",
+		"ALLOW_TIKV_POD_REPAIR=true",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=kb-uid",
+		"EXPECTED_TIDB_CLUSTER_UID=tc-uid",
+		"EXPECTED_CLUSTER_ID=7671",
+		"ENDPOINT=http://kubebrain:3379",
+		"REPAIR_ATTEMPT_ID=repair-test-3",
+		"RECEIPT_OUTPUT=" + filepath.Join(tempDir, "receipt-3.json"),
+		"MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT=126",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be between 100 and 125")
 	require.NoFileExists(t, logPath)
 }
