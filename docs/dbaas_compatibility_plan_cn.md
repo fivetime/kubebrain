@@ -45409,6 +45409,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   legacy history 来源迁移或产品明确放弃该历史后，才允许修改此状态。本项记录真实不可恢复边界，
   不改变 Snapshot wire/runtime，也不把 fail-closed 误写成协议完整兼容。
 
+- A4293 在核心 `pkg/server/etcd` 完整测试 189.638 秒全绿、近期 upstream Txn 修复已有直接差分覆盖后，
+  关闭生产发布可遗漏 PD/Region/storage gate 的编排缺口。此前 `validate-instance-ready.sh` 与
+  `validate-tikv-region-health.sh` 仅在文档中要求分别运行，自动化调用方可以只执行 endpoint/事务门禁
+  就发布，漏过 pending/down Region、store 非 Up、六卷非 CSI/身份碰撞、容量隔离或磁盘压力。
+  新增唯一组合入口 `validate-production-release.sh`：必须显式 `KUBE_CONTEXT`，先运行完整 instance
+  readiness，成功后才运行 Region/storage health；任一非零立即 fail-fast，不输出成功标记。两个命令
+  默认绑定脚本自身目录，覆盖值必须是可执行绝对路径，避免 PATH 或工作目录漂移把门禁替换掉。
+  测试固定成功顺序 `instance→region`、instance 失败时 Region 零调用、Region 失败时整体失败，以及
+  缺 context 在两个命令前拒绝；production runner 静态门禁同步通过。生产就绪文档把组合入口提升为
+  发布必经路径，独立 Region 命令仅保留排障用途。本项不合并两套检查实现，也不让 endpoint 事务
+  成功替代 PD/Region/持久卷健康证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -149,8 +149,17 @@ hack/production/wait-tidbcluster-ready.sh
 “TCP 可连接但 Debug gRPC 不完成”的半故障。它不执行 `KvPrewrite/KvCommit`，不能证明事务
 KV 路径健康；完整实例门禁随后通过 KubeBrain 执行 etcd Put/Get/Delete。三层证据不可相互替代。
 
-Pod Ready、TiKV Debug gRPC 和端到端请求之外，发布与故障处置前还应执行独立 PD/Region
-只读门禁：
+生产发布不得分别手工选择门禁；统一入口先执行完整实例 readiness/endpoint/事务验证，成功后再执行
+PD/Region/storage 只读门禁，任一步失败即停止：
+
+```bash
+KUBE_CONTEXT=production \
+hack/production/validate-production-release.sh
+```
+
+组合入口默认调用同目录的 `validate-instance-ready.sh` 和 `validate-tikv-region-health.sh`，且只接受
+可执行绝对路径覆盖，避免 PATH 劫持；`KUBE_CONTEXT` 缺失时不会启动任一子门禁。排障时可单独重跑
+PD/Region 门禁。调用组合入口时必须同时提供两个子脚本在下文列出的全部 `EXPECTED_*` 参数：
 
 ```bash
 KUBE_CONTEXT=production \
