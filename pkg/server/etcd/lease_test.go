@@ -1213,6 +1213,20 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 			},
 			want: `decode lease attachment for key "/lease/bad-internal": strconv.ParseInt: parsing "not-an-id": invalid syntax`,
 		},
+		{
+			name: "reserved_zero_attachment",
+			write: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, leaseAttachKey("/lease/zero"), []byte("0"))
+			},
+			want: `lease attachment for key "/lease/zero" references reserved id 0`,
+		},
+		{
+			name: "noncanonical_attachment",
+			write: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, leaseAttachKey("/lease/noncanonical"), []byte("01"))
+			},
+			want: `lease attachment for key "/lease/noncanonical" has noncanonical id "01"`,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1226,6 +1240,22 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 			require.EqualError(t, err, test.want)
 		})
 	}
+}
+
+func TestLoadLeaseRecordsPreservesCanonicalNegativeLeaseIdentity(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	data, err := json.Marshal(leaseRecord{ID: -1, TTL: 30})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(-1), data))
+	require.NoError(t, server.backend.InternalPut(ctx, leaseAttachKey("/lease/negative"), []byte("-1")))
+
+	records, attachments, err := server.loadLeaseRecords(ctx)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	require.Equal(t, int64(-1), records[0].ID)
+	require.Equal(t, int64(-1), attachments["/lease/negative"])
 }
 
 func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
@@ -1280,6 +1310,18 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
 			},
 			want: `decode lease metadata: lease ttl 9000000001 exceeds maximum 9000000000`,
+		},
+		{
+			name: "internal_reserved_zero_id",
+			raw: func(t *testing.T, _ int64) []byte {
+				value, err := json.Marshal(leaseRecord{ID: 0, TTL: 30})
+				require.NoError(t, err)
+				return value
+			},
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
+			},
+			want: `decode lease metadata: lease id 0 is reserved for no lease`,
 		},
 		{
 			name: "internal_oversized_remaining_ttl",

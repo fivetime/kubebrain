@@ -44851,6 +44851,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `FailedPrecondition`。本轮涉及损坏元数据注入，当前真实 TiKV/PD 测试环境的既知运行故障下未执行破坏性用例，待环境
   恢复后补跑相同 internal lease record 的 reload/snapshot 验证。
 
+- A4237 固定持久 lease identity 的 zero sentinel 与 canonical 编码。对照 `/root/etcd/server/lease/lessor.go`，ID 0 是
+  `NoLease`；client LeaseGrant 的 ID 0 在进入 lessor 前会分配非零 ID，因此合法 backend 不会出现 lease 0。负 ID 则由
+  上游 integration `TestV3LeaseNegativeID` 明确要求跨重启恢复，不能一并拒绝。KubeBrain 现在解码 meta record 时拒绝 ID 0，
+  attachment 同样拒绝引用 0，并要求其十进制文本精确等于 `strconv.FormatInt`，防止 `01` 等多个编码表示同一 owner。
+  canonical 负 ID/attachment 继续恢复。load 表测覆盖 zero、noncanonical 与 `-1`，Maintenance Snapshot 黑盒固定 zero record
+  为零 partial frame 的 `FailedPrecondition`。本轮同样未在存在既知故障的真实 TiKV/PD 环境写入破坏记录，待环境恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

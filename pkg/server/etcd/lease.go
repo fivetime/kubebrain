@@ -118,6 +118,9 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return leaseRecord{}, errors.New("lease metadata contains trailing JSON")
 	}
+	if record.ID == 0 {
+		return leaseRecord{}, errors.New("lease id 0 is reserved for no lease")
+	}
 	if record.TTL > maxLeaseTTL {
 		return leaseRecord{}, fmt.Errorf("lease ttl %d exceeds maximum %d", record.TTL, maxLeaseTTL)
 	}
@@ -1578,6 +1581,12 @@ func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
 	id, err := strconv.ParseInt(string(value), 10, 64)
 	if err != nil {
 		return 0, markInvalidLeaseMetadata(fmt.Errorf("decode lease attachment for key %q: %w", userKey, err))
+	}
+	if id == 0 {
+		return 0, markInvalidLeaseMetadata(fmt.Errorf("lease attachment for key %q references reserved id 0", userKey))
+	}
+	if !bytes.Equal(value, []byte(strconv.FormatInt(id, 10))) {
+		return 0, markInvalidLeaseMetadata(fmt.Errorf("lease attachment for key %q has noncanonical id %q", userKey, value))
 	}
 	return id, nil
 }
