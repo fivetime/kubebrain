@@ -331,6 +331,9 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 
 	noSpace, err := s.backend.NoSpaceAlarms(ctx)
 	if err != nil {
+		if errors.Is(err, backend.ErrInvalidAlarmMetadata) {
+			return production.State{}, nil, nil, fmt.Errorf("%w: %v", production.ErrInvalidSnapshotMetadata, err)
+		}
 		return production.State{}, nil, nil, err
 	}
 	for _, memberID := range noSpace {
@@ -338,6 +341,9 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 	}
 	corrupt, err := s.backend.CorruptAlarms(ctx)
 	if err != nil {
+		if errors.Is(err, backend.ErrInvalidAlarmMetadata) {
+			return production.State{}, nil, nil, fmt.Errorf("%w: %v", production.ErrInvalidSnapshotMetadata, err)
+		}
 		return production.State{}, nil, nil, err
 	}
 	for _, memberID := range corrupt {
@@ -345,6 +351,9 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 	}
 	generic, err := s.genericAlarms(ctx, etcdserverpb.AlarmType_NONE)
 	if err != nil {
+		if errors.Is(err, backend.ErrInvalidAlarmMetadata) {
+			return production.State{}, nil, nil, fmt.Errorf("%w: %v", production.ErrInvalidSnapshotMetadata, err)
+		}
 		return production.State{}, nil, nil, err
 	}
 	state.Alarms = append(state.Alarms, generic...)

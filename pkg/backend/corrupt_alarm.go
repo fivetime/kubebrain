@@ -88,7 +88,7 @@ func (b *backend) readCorruptAlarms(ctx context.Context) ([]uint64, []byte, bool
 	}
 	for i := 1; i < len(members); i++ {
 		if members[i-1] >= members[i] {
-			return nil, nil, false, errors.New("corrupt alarm metadata is not strictly ordered")
+			return nil, nil, false, invalidAlarmMetadataf("corrupt alarm metadata is not strictly ordered")
 		}
 	}
 	return members, raw, true, nil
@@ -98,14 +98,14 @@ func decodeCorruptAlarmMembers(raw []byte) ([]uint64, error) {
 	var members []uint64
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(&members); err != nil {
-		return nil, err
+		return nil, invalidAlarmMetadataf("%v", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, errors.New("corrupt alarm metadata contains trailing JSON")
+		return nil, invalidAlarmMetadataf("corrupt alarm metadata contains trailing JSON")
 	}
 	if members == nil {
-		return nil, errors.New("corrupt alarm metadata must be a JSON array")
+		return nil, invalidAlarmMetadataf("corrupt alarm metadata must be a JSON array")
 	}
 	return members, nil
 }

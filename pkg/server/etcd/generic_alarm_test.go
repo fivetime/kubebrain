@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
 )
 
 func TestGenericAlarmConcurrentCASPreservesTypesAndMembers(t *testing.T) {
@@ -108,6 +110,7 @@ func TestGenericAlarmRejectsMalformedMetadata(t *testing.T) {
 			defer closeFn()
 			require.NoError(t, server.backend.InternalPut(context.Background(), genericAlarmKey, []byte(test.raw)))
 			_, err := server.genericAlarms(context.Background(), etcdserverpb.AlarmType_NONE)
+			require.ErrorIs(t, err, backend.ErrInvalidAlarmMetadata)
 			require.ErrorContains(t, err, test.err, fmt.Sprintf("raw metadata %q", test.raw))
 		})
 	}

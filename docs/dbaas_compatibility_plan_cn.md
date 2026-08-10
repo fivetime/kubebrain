@@ -44641,6 +44641,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   捕获两个入口都将该类包装为 `ErrInvalidSnapshotMetadata`/`FailedPrecondition`，且不发送 partial frame；
   独立 `InternalGet` `Unavailable` 对照证明 storage status 不进入 sentinel。由此 DBaaS 备份在 auth 持久
   布局损坏时 fail-closed，不会静默覆盖 identity，也不会把 TiKV 暂时读取失败误判为需人工修复。
+  A4216 补齐 A4212 的 alarm metadata 早退路径，并对照 upstream
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go::NewAlarmStore` 从 backend alarm bucket 恢复完整
+  alarm set 的前提。KubeBrain 的 NOSPACE 二进制 member set、CORRUPT JSON member set 和 generic JSON
+  type/member set 各自已有严格长度、排序、非空与保留类型校验，但错误均无共同类型，Snapshot 在 writer
+  前退出后泄漏 `Unknown`。新增共享 `backend.ErrInvalidAlarmMetadata`，只包装三种格式的确定性解码/规范化
+  失败；`InternalGet`、CAS 和 transport errors 不包装。Snapshot metadata 的三处读取均将该 sentinel
+  提升为 `ErrInvalidSnapshotMetadata`，raw 表测分别注入非法 NOSPACE、CORRUPT 与 generic 持久值，要求
+  `FailedPrecondition`、精确诊断和零 partial frame；显式 `Unavailable` alarm read 对照保持原 status。
+  standalone backend/generic 回归也固定 `errors.Is` 契约，使 DBaaS 修复工具可稳定识别 alarm 持久布局
+  损坏，而不会依赖三套易漂移的错误文本。
 
 ### P2：运维兼容和长期验证
 

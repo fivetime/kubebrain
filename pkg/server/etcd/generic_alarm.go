@@ -144,30 +144,30 @@ func (s *RPCServer) readGenericAlarmState(
 	var entries []genericAlarmEntry
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(&entries); err != nil {
-		return nil, nil, false, fmt.Errorf("decode generic alarm metadata: %w", err)
+		return nil, nil, false, fmt.Errorf("%w: decode generic alarm metadata: %v", backend.ErrInvalidAlarmMetadata, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return nil, nil, false, errors.New("generic alarm metadata contains trailing JSON")
+		return nil, nil, false, fmt.Errorf("%w: generic alarm metadata contains trailing JSON", backend.ErrInvalidAlarmMetadata)
 	}
 	if entries == nil {
-		return nil, nil, false, errors.New("generic alarm metadata must be a JSON array")
+		return nil, nil, false, fmt.Errorf("%w: generic alarm metadata must be a JSON array", backend.ErrInvalidAlarmMetadata)
 	}
 	for i, entry := range entries {
 		if entry.Alarm == int32(etcdserverpb.AlarmType_NONE) ||
 			entry.Alarm == int32(etcdserverpb.AlarmType_NOSPACE) ||
 			entry.Alarm == int32(etcdserverpb.AlarmType_CORRUPT) {
-			return nil, nil, false, fmt.Errorf("generic alarm metadata contains reserved type %d", entry.Alarm)
+			return nil, nil, false, fmt.Errorf("%w: generic alarm metadata contains reserved type %d", backend.ErrInvalidAlarmMetadata, entry.Alarm)
 		}
 		if i > 0 && entries[i-1].Alarm >= entry.Alarm {
-			return nil, nil, false, errors.New("generic alarm metadata types are not strictly ordered")
+			return nil, nil, false, fmt.Errorf("%w: generic alarm metadata types are not strictly ordered", backend.ErrInvalidAlarmMetadata)
 		}
 		if len(entry.Members) == 0 {
-			return nil, nil, false, errors.New("generic alarm metadata contains an empty member set")
+			return nil, nil, false, fmt.Errorf("%w: generic alarm metadata contains an empty member set", backend.ErrInvalidAlarmMetadata)
 		}
 		for memberIndex := 1; memberIndex < len(entry.Members); memberIndex++ {
 			if entry.Members[memberIndex-1] >= entry.Members[memberIndex] {
-				return nil, nil, false, errors.New("generic alarm metadata members are not strictly ordered")
+				return nil, nil, false, fmt.Errorf("%w: generic alarm metadata members are not strictly ordered", backend.ErrInvalidAlarmMetadata)
 			}
 		}
 	}

@@ -75,13 +75,13 @@ func decodeQuotaAlarms(value []byte) ([]uint64, error) {
 		return []uint64{binary.BigEndian.Uint64(value)}, nil
 	}
 	if len(value) < 17 || value[0] != quotaAlarmSetTag || (len(value)-1)%8 != 0 {
-		return nil, fmt.Errorf("invalid NOSPACE alarm metadata length %d", len(value))
+		return nil, invalidAlarmMetadataf("invalid NOSPACE alarm metadata length %d", len(value))
 	}
 	members := make([]uint64, 0, (len(value)-1)/8)
 	for offset := 1; offset < len(value); offset += 8 {
 		memberID := binary.BigEndian.Uint64(value[offset:])
 		if len(members) > 0 && memberID <= members[len(members)-1] {
-			return nil, fmt.Errorf("NOSPACE alarm members are not strictly ordered")
+			return nil, invalidAlarmMetadataf("NOSPACE alarm members are not strictly ordered")
 		}
 		members = append(members, memberID)
 	}

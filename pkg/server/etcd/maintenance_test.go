@@ -1150,6 +1150,7 @@ func TestCorruptAlarmMetadataRejectsInvalidJSON(t *testing.T) {
 				Key: []byte("alarms/corrupt"), Value: []byte(test.raw),
 			}}))
 			_, err := server.backend.CorruptAlarms(ctx)
+			require.ErrorIs(t, err, backend.ErrInvalidAlarmMetadata)
 			require.ErrorContains(t, err, test.err)
 		})
 	}

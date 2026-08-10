@@ -315,8 +315,10 @@ func TestNoSpaceAlarmRejectsInvalidMetadata(t *testing.T) {
 			require.NoError(t, b.InternalPut(ctx, quotaAlarmKey, test.raw))
 
 			_, err := b.NoSpaceAlarms(ctx)
+			require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
 			require.ErrorContains(t, err, test.err)
 			_, active, err := b.NoSpaceAlarm(ctx)
+			require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
 			require.ErrorContains(t, err, test.err)
 			require.False(t, active)
 		})
@@ -414,6 +416,7 @@ func TestQuotaAlarmSetEncodingRejectsNonCanonicalMetadata(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := decodeQuotaAlarms(test.raw)
+			require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
 			require.ErrorContains(t, err, test.err)
 		})
 	}

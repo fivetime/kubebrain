@@ -1463,6 +1463,48 @@ func TestMaintenanceSnapshotClassifiesMalformedAuthMetadata(t *testing.T) {
 	require.Empty(t, stream.responses)
 }
 
+func TestMaintenanceSnapshotClassifiesMalformedAlarmMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		key  []byte
+		raw  []byte
+		want string
+	}{
+		{name: "NOSPACE", key: []byte("quota/alarm/nospace"), raw: []byte{2}, want: "invalid NOSPACE alarm metadata length 1"},
+		{name: "CORRUPT", key: []byte("alarms/corrupt"), raw: []byte("null"), want: "corrupt alarm metadata must be a JSON array"},
+		{name: "generic", key: genericAlarmKey, raw: []byte("null"), want: "generic alarm metadata must be a JSON array"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			require.NoError(t, server.backend.InternalPut(ctx, test.key, test.raw))
+			stream := &maintenanceSnapshotServer{ctx: ctx}
+
+			err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+			require.Equal(t, codes.FailedPrecondition, status.Code(err))
+			require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
+			require.ErrorContains(t, err, test.want)
+			require.Empty(t, stream.responses)
+		})
+	}
+}
+
+func TestMaintenanceSnapshotPreservesAlarmMetadataReadStatusError(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	want := status.Error(codes.Unavailable, "alarm metadata backend unavailable")
+	server.backend = &alarmReadErrorBackendShim{BackendShim: server.backend, err: want}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.ErrorIs(t, err, want)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.NotContains(t, err.Error(), etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
+	require.Empty(t, stream.responses)
+}
+
 func TestMaintenanceSnapshotClassifiesMalformedHistoryStream(t *testing.T) {
 	tests := []struct {
 		kind string
