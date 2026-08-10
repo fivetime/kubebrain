@@ -45083,6 +45083,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   64 KiB metadata 经真实 h2c 到达 handler 且响应 `ProtoMajor=2`，再固定 2 MiB header 在发送前被 server advertised limit 拒绝；
   HTTP/1 子例仍固定 64 KiB 成功与 2 MiB 返回 431。该项不访问存储，真实 TiKV/PD 不适用。
 
+- A4262 补齐 A4260/A4261 在生产 client TLS listener 上的 HTTP/2 执行证据。既有 endpoint 集成测试只证明 mTLS、ALPN 与
+  `/health` 能协商 HTTP/2，未验证 `identityTLSListener -> cmux -> newHTTPServer` 整条链是否发布并执行 1 MiB header-list
+  limit。现在复用真实 client/peer 证书、双栈 client port 和强制 TLS HTTP/2 transport：64 KiB metadata 必须经完整链返回
+  HTTP/2 200，2 MiB metadata 必须被 peer advertised limit 拒绝。该项不访问 TiKV/PD；测试 backend 使用本地 Badger，真实集群
+  无需因纯 transport admission 回归而重跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

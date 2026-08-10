@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,6 +194,25 @@ func TestRunEndpoint(t *testing.T) {
 		},
 	}
 	waitForEndpointHealthProto(t, h2Client, fmt.Sprintf("https://127.0.0.1:%d/health", clientPort), 2)
+
+	h2URL := fmt.Sprintf("https://127.0.0.1:%d/health", clientPort)
+	request, err := http.NewRequest(http.MethodGet, h2URL, nil)
+	ast.NoError(err)
+	request.Header.Set("X-Etcd-Compatible-Metadata", strings.Repeat("a", 64<<10))
+	response, err := h2Client.Do(request)
+	ast.NoError(err)
+	if response != nil {
+		ast.Equal(2, response.ProtoMajor)
+		ast.Equal(http.StatusOK, response.StatusCode)
+		ast.NoError(response.Body.Close())
+	}
+
+	request, err = http.NewRequest(http.MethodGet, h2URL, nil)
+	ast.NoError(err)
+	request.Header.Set("X-Oversized-Metadata", strings.Repeat("a", 2<<20))
+	response, err = h2Client.Do(request)
+	ast.Nil(response)
+	ast.ErrorContains(err, "request header list larger than peer's advertised limit")
 }
 
 func TestRunEndpointBindFailureStopsBackgroundWorkBeforeBackendClose(t *testing.T) {
