@@ -253,7 +253,10 @@ func (b *backend) scanQuotaUsage(ctx context.Context, revision uint64) (int64, e
 		}
 		for _, kv := range response.GetRangeResponse().GetKvs() {
 			keyBytes := int64(len(kv.GetKey()))
-			valueBytes := logicalStoredValueSize(kv.GetValue())
+			valueBytes, sizeErr := logicalStoredValueSize(kv.GetValue())
+			if sizeErr != nil {
+				return 0, sizeErr
+			}
 			if keyBytes > maxInt64-usage || valueBytes > maxInt64-usage-keyBytes {
 				return 0, fmt.Errorf("quota usage overflows int64")
 			}
@@ -551,10 +554,13 @@ func (b *backend) emitQuotaMetrics(usage int64, noSpace bool) {
 	b.metricCli.EmitGauge("quota.nospace", alarm)
 }
 
-func logicalStoredValueSize(value []byte) int64 {
-	_, raw, ok := decodeValueWithMeta(value)
-	if ok {
-		return int64(len(raw))
+func logicalStoredValueSize(value []byte) (int64, error) {
+	_, raw, ok, err := DecodeInlineValueChecked(value)
+	if err != nil {
+		return 0, err
 	}
-	return int64(len(value))
+	if ok {
+		return int64(len(raw)), nil
+	}
+	return int64(len(value)), nil
 }

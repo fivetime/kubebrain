@@ -14,7 +14,11 @@
 
 package backend
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
 
 // Approach A-core: inline a key version's etcd metadata (create_revision,
 // version, and — for leased keys — the lease ID) into the stored object value,
@@ -115,12 +119,58 @@ func DecodeInlineValue(stored []byte) (meta EtcdMetadata, rawValue []byte, inlin
 	return decodeValueWithMeta(stored)
 }
 
+// DecodeInlineValueChecked distinguishes legacy raw values from malformed or
+// unsupported values in KubeBrain's reserved inline-metadata namespace. The
+// older DecodeInlineValue API cannot report corruption and remains for source
+// compatibility; online read, write, watch, quota, and snapshot paths must use
+// this checked form.
+func DecodeInlineValueChecked(stored []byte) (meta EtcdMetadata, rawValue []byte, inlined bool, err error) {
+	if len(stored) < len(valueMetaMagic) || !bytes.Equal(stored[:3], valueMetaMagic[:3]) {
+		return EtcdMetadata{}, stored, false, nil
+	}
+	var minimum int
+	switch stored[3] {
+	case valueMetaMagic[3]:
+		minimum = valueMetaHeaderLen
+	case valueMetaMagicV2[3]:
+		minimum = valueMetaHeaderLenV2
+	case valueMetaMagicV3[3]:
+		minimum = valueMetaHeaderLen
+	default:
+		return EtcdMetadata{}, nil, false, fmt.Errorf("%w: unsupported inline value metadata version %d", ErrInvalidMVCCMetadata, stored[3])
+	}
+	if len(stored) < minimum {
+		return EtcdMetadata{}, nil, false, fmt.Errorf(
+			"%w: inline value metadata v%d length %d is shorter than %d",
+			ErrInvalidMVCCMetadata, stored[3], len(stored), minimum,
+		)
+	}
+	meta, rawValue, inlined = decodeValueWithMeta(stored)
+	if meta.CreateRevision == 0 {
+		return EtcdMetadata{}, nil, false, fmt.Errorf("%w: inline value metadata create revision is zero", ErrInvalidMVCCMetadata)
+	}
+	if meta.Version == 0 {
+		return EtcdMetadata{}, nil, false, fmt.Errorf("%w: inline value metadata version is zero", ErrInvalidMVCCMetadata)
+	}
+	if stored[3] == valueMetaMagicV2[3] && meta.Lease == 0 {
+		return EtcdMetadata{}, nil, false, fmt.Errorf("%w: inline value metadata v2 lease is zero", ErrInvalidMVCCMetadata)
+	}
+	return meta, rawValue, inlined, nil
+}
+
 // StripInlineValue returns the raw value with any inline-metadata envelope
 // removed (passthrough for legacy values). For consumers that need only the
 // value, not the metadata.
 func StripInlineValue(stored []byte) []byte {
 	_, raw, _ := decodeValueWithMeta(stored)
 	return raw
+}
+
+// StripInlineValueChecked removes a valid envelope and rejects malformed or
+// unsupported encodings in the reserved namespace.
+func StripInlineValueChecked(stored []byte) ([]byte, error) {
+	_, raw, _, err := DecodeInlineValueChecked(stored)
+	return raw, err
 }
 
 // decodeValueWithMeta splits an enveloped value into its metadata and raw value.

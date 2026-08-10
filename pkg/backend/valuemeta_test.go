@@ -16,6 +16,7 @@ package backend
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -102,5 +103,60 @@ func TestValueMetaLegacyValuesNotMistaken(t *testing.T) {
 		require.False(t, ok)
 		require.Equal(t, EtcdMetadata{}, meta)
 		require.True(t, bytes.Equal(v, rawOut))
+	}
+}
+
+func TestDecodeInlineValueCheckedRejectsMalformedReservedEnvelope(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{name: "short v1", raw: []byte{0, 'k', 'b', 1}, want: "inline value metadata v1 length 4 is shorter than 20"},
+		{name: "short v2", raw: []byte{0, 'k', 'b', 2}, want: "inline value metadata v2 length 4 is shorter than 28"},
+		{name: "short v3", raw: []byte{0, 'k', 'b', 3}, want: "inline value metadata v3 length 4 is shorter than 20"},
+		{name: "unknown version", raw: []byte{0, 'k', 'b', 99}, want: "unsupported inline value metadata version 99"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, _, err := DecodeInlineValueChecked(test.raw)
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+
+	for _, legacy := range [][]byte{nil, {0}, {0, 'k'}, {0, 'k', 'b'}, {0, 'x', 'b'}, []byte("ordinary value")} {
+		_, raw, inlined, err := DecodeInlineValueChecked(legacy)
+		require.NoError(t, err)
+		require.False(t, inlined)
+		require.Equal(t, legacy, raw)
+	}
+}
+
+func TestDecodeInlineValueCheckedRejectsInvalidMetadataFields(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+		want string
+	}{
+		{name: "zero create revision", raw: encodeValueWithMeta(nil, EtcdMetadata{Version: 1}), want: "create revision is zero"},
+		{name: "zero version", raw: encodeValueWithMeta(nil, EtcdMetadata{CreateRevision: 1}), want: "version is zero"},
+	}
+	v2ZeroLease := make([]byte, valueMetaHeaderLenV2)
+	copy(v2ZeroLease, valueMetaMagicV2)
+	binary.BigEndian.PutUint64(v2ZeroLease[4:], 1)
+	binary.BigEndian.PutUint64(v2ZeroLease[12:], 1)
+	tests = append(tests, struct {
+		name string
+		raw  []byte
+		want string
+	}{name: "v2 zero lease", raw: v2ZeroLease, want: "v2 lease is zero"})
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, _, err := DecodeInlineValueChecked(test.raw)
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.ErrorContains(t, err, test.want)
+		})
 	}
 }

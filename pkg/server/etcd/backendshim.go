@@ -422,7 +422,11 @@ func (b *backendShim) Delete(ctx context.Context, key []byte, revision int64, in
 	if response.Succeeded || includeFailureRange {
 		var kvs []*mvccpb.KeyValue
 		if response.Kv != nil {
-			kvs = append(kvs, b.kvToEtcdKv(ctx, response.Kv))
+			kv, err := b.kvToEtcdKv(ctx, response.Kv)
+			if err != nil {
+				return nil, err
+			}
+			kvs = append(kvs, kv)
 		}
 		deleteResponse.Responses = []*etcdserverpb.ResponseOp{
 			{
@@ -459,7 +463,11 @@ func (b *backendShim) CompareDelete(ctx context.Context, r *etcdserverpb.DeleteR
 			Deleted: 1,
 		}
 		if r.PrevKv && response.Kv != nil {
-			deleteResp.PrevKvs = append(deleteResp.PrevKvs, b.kvToEtcdKv(ctx, response.Kv))
+			kv, err := b.kvToEtcdKv(ctx, response.Kv)
+			if err != nil {
+				return nil, err
+			}
+			deleteResp.PrevKvs = append(deleteResp.PrevKvs, kv)
 		}
 		resp.Responses = []*etcdserverpb.ResponseOp{{
 			Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{
@@ -469,7 +477,11 @@ func (b *backendShim) CompareDelete(ctx context.Context, r *etcdserverpb.DeleteR
 	} else if includeFailureRange {
 		var kvs []*mvccpb.KeyValue
 		if response.Kv != nil {
-			kvs = append(kvs, b.kvToEtcdKv(ctx, response.Kv))
+			kv, err := b.kvToEtcdKv(ctx, response.Kv)
+			if err != nil {
+				return nil, err
+			}
+			kvs = append(kvs, kv)
 		}
 		resp.Responses = []*etcdserverpb.ResponseOp{{
 			Response: &etcdserverpb.ResponseOp_ResponseRange{
@@ -530,7 +542,11 @@ func (b *backendShim) Update(ctx context.Context, rev int64, r *etcdserverpb.Put
 	} else if includeFailureRange {
 		var kvs []*mvccpb.KeyValue
 		if response.Kv != nil {
-			kvs = append(kvs, b.kvToEtcdKv(ctx, response.Kv))
+			kv, convertErr := b.kvToEtcdKv(ctx, response.Kv)
+			if convertErr != nil {
+				return nil, convertErr
+			}
+			kvs = append(kvs, kv)
 		}
 		resp.Responses = []*etcdserverpb.ResponseOp{
 			{
@@ -575,7 +591,10 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 		}
 		var current *mvccpb.KeyValue
 		if getResp.Kv != nil {
-			current = b.kvToEtcdKv(ctx, getResp.Kv)
+			current, err = b.kvToEtcdKv(ctx, getResp.Kv)
+			if err != nil {
+				return nil, err
+			}
 		}
 		put, err := effectivePutRequestFromCurrent(r, current)
 		if err != nil {
@@ -795,18 +814,25 @@ func (b *backendShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, gu
 			if r.Deleted {
 				dr.Deleted = 1
 				if prevKv[i] {
-					dr.PrevKvs = append(dr.PrevKvs, b.kvToEtcdKv(ctx, &proto.KeyValue{
+					kv, convertErr := b.kvToEtcdKv(ctx, &proto.KeyValue{
 						Key:      r.Key,
 						Value:    r.PrevValue,
 						Revision: r.PrevRevision,
-					}))
+					})
+					if convertErr != nil {
+						return nil, rev, nil, convertErr
+					}
+					dr.PrevKvs = append(dr.PrevKvs, kv)
 				}
 			}
 			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponseDeleteRange{ResponseDeleteRange: dr}}
 		} else {
 			pr := &etcdserverpb.PutResponse{Header: txnHeader(int64(rev))}
 			if prevKv[i] && !r.Created && r.PrevRevision != 0 {
-				pr.PrevKv = b.kvToEtcdKv(ctx, &proto.KeyValue{Key: r.Key, Value: r.PrevValue, Revision: r.PrevRevision})
+				pr.PrevKv, err = b.kvToEtcdKv(ctx, &proto.KeyValue{Key: r.Key, Value: r.PrevValue, Revision: r.PrevRevision})
+				if err != nil {
+					return nil, rev, nil, err
+				}
 			}
 			responses[i] = &etcdserverpb.ResponseOp{Response: &etcdserverpb.ResponseOp_ResponsePut{ResponsePut: pr}}
 		}
@@ -850,7 +876,11 @@ func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRan
 		if resp.Succeeded {
 			deleteResp.Deleted = 1
 			if r.PrevKv && resp.Kv != nil {
-				deleteResp.PrevKvs = append(deleteResp.PrevKvs, b.kvToEtcdKv(ctx, resp.Kv))
+				kv, convertErr := b.kvToEtcdKv(ctx, resp.Kv)
+				if convertErr != nil {
+					return nil, convertErr
+				}
+				deleteResp.PrevKvs = append(deleteResp.PrevKvs, kv)
 			}
 		}
 		return deleteResp, nil
@@ -878,7 +908,11 @@ func (b *backendShim) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRan
 		deleteResp.Deleted = int64(len(resp.Kvs))
 		if r.PrevKv {
 			for _, kv := range resp.Kvs {
-				deleteResp.PrevKvs = append(deleteResp.PrevKvs, b.kvToEtcdKv(ctx, kv))
+				converted, convertErr := b.kvToEtcdKv(ctx, kv)
+				if convertErr != nil {
+					return nil, convertErr
+				}
+				deleteResp.PrevKvs = append(deleteResp.PrevKvs, converted)
 			}
 		}
 	}
@@ -903,7 +937,11 @@ func (b *backendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (_ 
 		Header: txnHeader(int64(response.Header.Revision)),
 	}
 	if response.Kv != nil {
-		resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, response.Kv))
+		kv, convertErr := b.kvToEtcdKv(ctx, response.Kv)
+		if convertErr != nil {
+			return nil, convertErr
+		}
+		resp.Kvs = append(resp.Kvs, kv)
 		resp.Count = 1
 	}
 	return applyRangeOptions(resp, r), nil
@@ -951,7 +989,11 @@ func (b *backendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (_
 	// per-kv conversion needs no extra storage read; legacy values fall back to
 	// the etcdmeta lookup inside kvToEtcdKv.
 	for _, kv := range response.Kvs {
-		resp.Kvs = append(resp.Kvs, b.kvToEtcdKv(ctx, kv))
+		converted, convertErr := b.kvToEtcdKv(ctx, kv)
+		if convertErr != nil {
+			return nil, convertErr
+		}
+		resp.Kvs = append(resp.Kvs, converted)
 	}
 	return applyRangeOptions(resp, r), nil
 }
@@ -1179,7 +1221,12 @@ func (b *backendShim) translateRangeStream(
 					Kvs:    make([]*mvccpb.KeyValue, 0, len(rr.Kvs)),
 				}
 				for _, kv := range rr.Kvs {
-					etcdResp.Kvs = append(etcdResp.Kvs, b.kvToEtcdKv(ctx, kv))
+					converted, convertErr := b.kvToEtcdKv(ctx, kv)
+					if convertErr != nil {
+						send(rangeStreamChunk{err: convertErr})
+						return
+					}
+					etcdResp.Kvs = append(etcdResp.Kvs, converted)
 				}
 				if !send(rangeStreamChunk{resp: etcdResp}) {
 					return

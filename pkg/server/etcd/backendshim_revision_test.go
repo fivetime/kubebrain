@@ -6,6 +6,7 @@ package etcd
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"testing"
 
@@ -23,6 +24,23 @@ type rangeRevisionProbeBackend struct {
 	getRevision   uint64
 	listRevision  uint64
 	countRevision uint64
+}
+
+type malformedInlineValueBackend struct {
+	backend.Backend
+	value       []byte
+	metadataErr error
+}
+
+func (b *malformedInlineValueBackend) Get(context.Context, *proto.GetRequest) (*proto.GetResponse, error) {
+	return &proto.GetResponse{
+		Header: &proto.ResponseHeader{Revision: 11},
+		Kv:     &proto.KeyValue{Key: []byte("key"), Value: b.value, Revision: 11},
+	}, nil
+}
+
+func (b *malformedInlineValueBackend) GetEtcdMetadata(context.Context, []byte, uint64) (backend.EtcdMetadata, error) {
+	return backend.EtcdMetadata{}, b.metadataErr
 }
 
 func (b *rangeRevisionProbeBackend) Get(_ context.Context, req *proto.GetRequest) (*proto.GetResponse, error) {
@@ -71,4 +89,28 @@ func TestBackendShimNormalizesSignedRangeRevision(t *testing.T) {
 			require.Equal(t, tc.want, probe.countRevision, "CountOnly revision")
 		})
 	}
+}
+
+func TestBackendShimGetRejectsMalformedInlineValue(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+	shim.backend = &malformedInlineValueBackend{Backend: shim.backend, value: []byte{0, 'k', 'b', 3}}
+	response, err := shim.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("key")})
+	require.ErrorIs(t, err, backend.ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "inline value metadata v3 length 4 is shorter than 20")
+	require.Nil(t, response)
+}
+
+func TestBackendShimGetPropagatesLegacyMetadataError(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+	want := fmt.Errorf("%w: invalid etcd metadata length 1", backend.ErrInvalidMVCCMetadata)
+	shim.backend = &malformedInlineValueBackend{Backend: shim.backend, value: []byte("legacy"), metadataErr: want}
+
+	response, err := shim.Get(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("key")})
+	require.ErrorIs(t, err, backend.ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "invalid etcd metadata length 1")
+	require.Nil(t, response)
 }

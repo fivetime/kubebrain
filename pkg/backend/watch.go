@@ -417,7 +417,10 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 		} else {
 			// Prefer the metadata inlined in the value we already read (approach
 			// A); fall back to a lookup for legacy un-enveloped values.
-			meta, _, ok := decodeValueWithMeta(val)
+			meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
+			if decodeErr != nil {
+				return nil, decodeErr
+			}
 			if !ok {
 				var err error
 				meta, err = b.GetEtcdMetadata(ctx, key, rev)

@@ -40,7 +40,11 @@ func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision u
 	// Prefer inline metadata carried in the object value (approach A).
 	stored, _, err := b.getInternalVal(ctx, key, modRevision)
 	if err == nil {
-		if meta, _, ok := decodeValueWithMeta(stored); ok {
+		meta, _, ok, decodeErr := DecodeInlineValueChecked(stored)
+		if decodeErr != nil {
+			return EtcdMetadata{}, decodeErr
+		}
+		if ok {
 			return meta, nil
 		}
 	} else if !errors.Is(err, storage.ErrKeyNotFound) {

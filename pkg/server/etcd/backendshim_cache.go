@@ -324,8 +324,8 @@ func (r *prevKvResolver) hintedPreviousEtcdKv(key []byte, revision uint64, versi
 // carries in its inline envelope, for the hint cache's direct-predecessor
 // proof. Legacy (un-enveloped) values yield zeros, which never hit.
 func inlineVersionMeta(value []byte) (version, createRev int64) {
-	meta, _, inlined := backend.DecodeInlineValue(value)
-	if !inlined {
+	meta, _, inlined, err := backend.DecodeInlineValueChecked(value)
+	if err != nil || !inlined {
 		return 0, 0
 	}
 	return int64(meta.Version), int64(meta.CreateRevision)

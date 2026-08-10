@@ -147,7 +147,10 @@ func main() {
 	if err != nil {
 		fatalf("tikv get object key: %v", err)
 	}
-	rawObjectValue := backend.StripInlineValue(objectValue)
+	rawObjectValue, err := backend.StripInlineValueChecked(objectValue)
+	if err != nil {
+		fatalf("decode tikv object value: %v", err)
+	}
 	if value != "" && !bytes.Equal(rawObjectValue, []byte(value)) {
 		fatalf("unexpected tikv object value %q, want %q", string(rawObjectValue), value)
 	}

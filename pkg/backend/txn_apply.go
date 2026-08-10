@@ -194,7 +194,10 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 					return nil, 0, false, verr
 				}
 				p.prevValue = val
-				meta, _, ok := decodeValueWithMeta(val)
+				meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
+				if decodeErr != nil {
+					return nil, 0, false, decodeErr
+				}
 				if !ok {
 					meta, verr = b.GetEtcdMetadata(ctx, op.Key, p.curRev)
 					if verr != nil {
@@ -379,13 +382,21 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				continue
 			}
 			if p.op.Delete {
-				delta -= int64(len(p.op.Key)) + logicalStoredValueSize(p.prevValue)
+				previousSize, sizeErr := logicalStoredValueSize(p.prevValue)
+				if sizeErr != nil {
+					return nil, baseRevision, false, sizeErr
+				}
+				delta -= int64(len(p.op.Key)) + previousSize
 				continue
 			}
 			if p.create {
 				delta += int64(len(p.op.Key))
 			} else {
-				delta -= logicalStoredValueSize(p.prevValue)
+				previousSize, sizeErr := logicalStoredValueSize(p.prevValue)
+				if sizeErr != nil {
+					return nil, baseRevision, false, sizeErr
+				}
+				delta -= previousSize
 			}
 			delta += int64(len(p.op.Value))
 		}

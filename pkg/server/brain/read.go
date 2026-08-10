@@ -28,12 +28,17 @@ import (
 
 // stripKvs removes the inline-metadata envelope (approach A) from each value so
 // KubeBrain-native clients get the raw value. Passthrough for legacy values.
-func stripKvs(kvs []*proto.KeyValue) {
+func stripKvs(kvs []*proto.KeyValue) error {
 	for _, kv := range kvs {
 		if kv != nil {
-			kv.Value = b.StripInlineValue(kv.Value)
+			var err error
+			kv.Value, err = b.StripInlineValueChecked(kv.Value)
+			if err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 func (s *Server) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error) {
@@ -49,7 +54,10 @@ func (s *Server) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetRespon
 		klog.ErrorS(err, "brain server get failed", "key", string(r.Key), "revision", r.Revision)
 	}
 	if response != nil && response.Kv != nil {
-		response.Kv.Value = b.StripInlineValue(response.Kv.Value)
+		response.Kv.Value, err = b.StripInlineValueChecked(response.Kv.Value)
+		if err != nil {
+			response = nil
+		}
 	}
 	// emit metrics
 	s.emitMethodMetric(readMetric, "get", err, time.Since(start))
@@ -72,7 +80,10 @@ func (s *Server) Range(ctx context.Context, r *proto.RangeRequest) (*proto.Range
 		klog.ErrorS(err, "brain server range failed", "key", string(r.Key), "end", string(r.End), "limit", r.Limit, "revision", r.Revision)
 	}
 	if response != nil {
-		stripKvs(response.Kvs)
+		if stripErr := stripKvs(response.Kvs); stripErr != nil {
+			response = nil
+			err = stripErr
+		}
 	}
 	// emit metrics
 	s.emitMethodMetric(readMetric, "range", err, time.Since(start))
@@ -141,7 +152,10 @@ func (s *Server) RangeStream(r *proto.RangeRequest, server proto.Read_RangeStrea
 	responseSize := 0
 	for response := range ch {
 		if response.RangeResponse != nil {
-			stripKvs(response.RangeResponse.Kvs)
+			if err = stripKvs(response.RangeResponse.Kvs); err != nil {
+				s.emitMethodMetric(readMetric, "range-stream", err, time.Since(start))
+				return err
+			}
 		}
 		responseSize += response.Size()
 		err = server.Send(response)

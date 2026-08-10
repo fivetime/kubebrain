@@ -681,7 +681,11 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 				LeaseKnown:  bytes.Equal(stored, tombStoneBytes),
 			}
 			if !record.Tombstone {
-				meta, rawValue, inlined := DecodeInlineValue(stored)
+				meta, rawValue, inlined, decodeErr := DecodeInlineValueChecked(stored)
+				if decodeErr != nil {
+					send(SnapshotHistoryChunk{Revision: rev, Err: decodeErr})
+					return
+				}
 				if !inlined {
 					meta, decodeErr = b.GetEtcdMetadata(ctx, userKey, modRevision)
 					if decodeErr != nil {

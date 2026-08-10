@@ -212,6 +212,11 @@ func TestDecodeQuotaUsageClassifiesInvalidMetadata(t *testing.T) {
 	}
 }
 
+func TestLogicalStoredValueSizeRejectsMalformedInlineEnvelope(t *testing.T) {
+	_, err := logicalStoredValueSize([]byte{0, 'k', 'b', 3})
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+}
+
 func TestLogicalQuotaAlarmRejectsAllPutsUntilCapacityRecovery(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 6)
 	key := []byte("key")

@@ -68,6 +68,23 @@ func TestBackendShimWatchFailsBatchWhenAnyEventCannotBeTranslated(t *testing.T) 
 	require.False(t, ok)
 }
 
+func TestWatchEventRejectsMalformedInlineValue(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+
+	event, err := shim.watchEventToEtcdEvent(context.Background(), &proto.Event{
+		Type:     proto.Event_CREATE,
+		Revision: 7,
+		Kv: &proto.KeyValue{
+			Key: []byte("/watch/corrupt-inline"), Value: []byte{0, 'k', 'b', 2}, Revision: 7,
+		},
+	})
+	require.ErrorIs(t, err, backend.ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "inline value metadata v2 length 4 is shorter than 28")
+	require.Nil(t, event)
+}
+
 // TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing pins #52: a PUT
 // (update) watch event must keep the create_revision carried inline in its value
 // even when the previous-version lookup returns nil, so the update is not

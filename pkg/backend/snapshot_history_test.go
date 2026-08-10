@@ -112,6 +112,45 @@ func TestSnapshotHistoryStreamClassifiesInvalidLegacyMetadata(t *testing.T) {
 	require.Empty(t, records)
 }
 
+func TestSnapshotHistoryStreamRejectsMalformedInlineEnvelope(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/snapshot-history/corrupt-inline")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	batch := kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), []byte{0, 'k', 'b', 1}, 0)
+	require.NoError(t, batch.Commit(ctx))
+	beforeRevision := b.GetCurrentRevision()
+	updated, updateErr := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("replacement"), Revision: created.Header.Revision,
+	}})
+	require.ErrorIs(t, updateErr, ErrInvalidMVCCMetadata)
+	require.Nil(t, updated)
+	require.Equal(t, beforeRevision, b.GetCurrentRevision(), "rejected corruption must not consume a revision")
+
+	stream, err := b.SnapshotHistoryStream(ctx, created.Header.Revision)
+	require.NoError(t, err)
+	var records []SnapshotHistoryRecord
+	var streamErr error
+	for chunk := range stream {
+		records = append(records, chunk.Records...)
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	require.ErrorIs(t, streamErr, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, streamErr, "inline value metadata v1 length 4 is shorter than 20")
+	require.Empty(t, records)
+}
+
 func TestSnapshotHistoryStreamJoinsExactTxnSubrevisions(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

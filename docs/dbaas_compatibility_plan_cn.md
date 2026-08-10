@@ -44690,6 +44690,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status、TiKV leaf cause 与纯文本反例边界。Maintenance Snapshot 继续采用更具体的 durable-source
   `FailedPrecondition` 且零 partial frame，使备份编排可要求修复/迁移 legacy metadata，而在线客户端不会
   把同一不可恢复行当作瞬态 `Unknown` 重试。
+  A4221 将 A4220 从 legacy sidecar 扩展到当前 inline value envelope。KubeBrain 的 v1/v3 头固定 20 字节、
+  v2 固定 28 字节，并以 `\x00kb<version>` 保留 namespace；旧 decoder 只有在完整头存在时才认 envelope，
+  因而短 v1/v2/v3、未知版本会被当作普通 legacy value 返回客户端，Watch 还可能在 sidecar miss 后伪造
+  create_revision/version=1。新增 `DecodeInlineValueChecked`：少于 4 字节仍保留 etcd 任意历史 value 的兼容
+  空间；一旦出现完整保留 stem/version，则拒绝短头、未知版本、零 create revision/version 和 v2 零 lease，
+  统一携带 `ErrInvalidMVCCMetadata`。backend 的 update/atomic Txn、history/watch 构造、quota rebuild/delta 与
+  Snapshot capture，etcd shim 的 point/range/stream、Txn failure/PrevKv、DeleteRange 和 Watch event，以及
+  原生 brain read 与 TiKV smoke verifier 均改用 checked 路径。红测证明损坏当前值在 revision 分配前阻断
+  Update、quota 不把头字节计成用户数据、Range 不返回响应、Watch 不发布事件、Snapshot 不发送 record；
+  同时移除 etcd shim 对 legacy sidecar 读取失败后伪造 create_revision/version=1 的降级，使 A4220 sentinel
+  与 TiKV transport error 都能原样到达共享 interceptor，而不会生成看似有效的 KV；
+  普通 client-facing RPC 继续由 A4220 映射 `DataLoss`，Snapshot 继续为 `FailedPrecondition`。旧无 error
+  helper 只为源码兼容保留，生产路径审计确认无调用，防止 rolling-upgrade 未知格式被旧副本静默降级。
 
 ### P2：运维兼容和长期验证
 

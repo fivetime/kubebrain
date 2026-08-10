@@ -20,7 +20,6 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"go.etcd.io/etcd/api/v3/mvccpb"
-	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
@@ -48,7 +47,10 @@ func (wt *watchTranslator) watchEventToEtcdEvent(ctx context.Context, e *proto.E
 	revision := watchEventRevision(e)
 	switch e.Type {
 	case proto.Event_CREATE:
-		kv := wt.kvToEtcdKv(ctx, e.Kv)
+		kv, err := wt.kvToEtcdKv(ctx, e.Kv)
+		if err != nil {
+			return nil, err
+		}
 		kv.ModRevision = int64(revision)
 		wt.shim.noteEvent(e.Kv.Key, revision, kv, false)
 		return &mvccpb.Event{
@@ -56,7 +58,10 @@ func (wt *watchTranslator) watchEventToEtcdEvent(ctx context.Context, e *proto.E
 			Kv:   kv,
 		}, nil
 	case proto.Event_PUT:
-		kv := wt.kvToEtcdKv(ctx, e.Kv)
+		kv, err := wt.kvToEtcdKv(ctx, e.Kv)
+		if err != nil {
+			return nil, err
+		}
 		kv.ModRevision = int64(revision)
 		prevKv := wt.shim.cachedPreviousEtcdKv(e.Kv.Key, revision, kv.Version, kv.CreateRevision)
 		// A PUT event is an update, never a create, so its CreateRevision must
@@ -86,7 +91,10 @@ func (wt *watchTranslator) watchEventToEtcdEvent(ctx context.Context, e *proto.E
 			PrevKv: prevKv,
 		}, nil
 	case proto.Event_DELETE:
-		prevKv := wt.kvToEtcdKv(ctx, e.Kv)
+		prevKv, err := wt.kvToEtcdKv(ctx, e.Kv)
+		if err != nil {
+			return nil, err
+		}
 		kv := &mvccpb.KeyValue{
 			ModRevision: int64(revision),
 			Key:         e.Kv.Key,
@@ -118,21 +126,23 @@ func validateBackendWatchEvent(e *proto.Event) error {
 	}
 }
 
-func (wt *watchTranslator) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *mvccpb.KeyValue {
+func (wt *watchTranslator) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) (*mvccpb.KeyValue, error) {
 	if kv == nil {
-		return nil
+		return nil, nil
 	}
 	// Approach A: prefer create_revision/version inlined in the stored value —
 	// no metadata lookup, and the envelope is stripped so the client gets the
 	// raw value. Legacy (un-enveloped) values fall back to the etcdmeta lookup.
-	meta, rawValue, inlined := backend.DecodeInlineValue(kv.Value)
+	meta, rawValue, inlined, err := backend.DecodeInlineValueChecked(kv.Value)
+	if err != nil {
+		return nil, err
+	}
 	if !inlined {
 		rawValue = kv.Value
 		var err error
 		meta, err = wt.shim.cachedMetadata(ctx, kv.Key, kv.Revision)
 		if err != nil {
-			klog.V(4).InfoS("failed to read etcd metadata", "key", kv.Key, "revision", kv.Revision, "err", err)
-			meta = backend.EtcdMetadata{CreateRevision: kv.Revision, Version: 1}
+			return nil, err
 		}
 	}
 	if meta.CreateRevision == 0 {
@@ -160,5 +170,5 @@ func (wt *watchTranslator) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) *
 	} else if wt.shim.leaseLookup != nil {
 		out.Lease = wt.shim.leaseLookup(string(kv.Key))
 	}
-	return out
+	return out, nil
 }
