@@ -14,8 +14,10 @@
 
 // Package countindex is an in-memory, key-sorted, versioned index (etcd
 // treeIndex-style) maintained on the leader. It answers the exact number of
-// live keys in a range at any (non-compacted) revision in O(range) without
-// scanning storage, rooting the O(N^2) paginated-count read amplification.
+// live keys in a range at any (non-compacted) revision without scanning
+// storage. The first count at a revision uses O(range) traversal; repeated
+// counts at that pinned revision use a lazily built live-key rank snapshot and
+// answer in O(log N), rooting paginated-count read amplification.
 // See docs/read_amp_a_index_cn.md.
 package countindex
 
@@ -46,14 +48,9 @@ func (a *keyItem) Less(b btree.Item) bool {
 // entry <= rev exists and is not a tombstone. Callers must only query rev >=
 // the compaction revision.
 func (k *keyItem) liveAt(rev uint64) bool {
-	latest := -1
-	for i := range k.revs {
-		if k.revs[i].revision <= rev {
-			latest = i
-		} else {
-			break
-		}
-	}
+	latest := sort.Search(len(k.revs), func(i int) bool {
+		return k.revs[i].revision > rev
+	}) - 1
 	return latest >= 0 && !k.revs[latest].tombstone
 }
 
@@ -110,6 +107,22 @@ type TreeIndex struct {
 	// loading, the tree is only partially populated, so Ready reports false and
 	// counts fall back to a scan until the load completes.
 	loading bool
+	// rankMu protects the lazy immutable live-key snapshot. It is always taken
+	// after mu (read or write), which keeps cache construction atomic with tree
+	// mutations without making cache hits take the exclusive tree lock.
+	rankMu sync.Mutex
+	rank   rankSnapshot
+}
+
+type rankSnapshot struct {
+	// candidateRev is the revision seen once. We deliberately keep its first
+	// query on the O(range) path so a one-off narrow count does not pay an O(N)
+	// full-index build. A second query at the same revision builds keys.
+	candidateRev   uint64
+	candidateValid bool
+	revision       uint64
+	valid          bool
+	keys           []*keyItem
 }
 
 // New builds an empty index. maxKeys caps tracked keys (0 = unlimited).
@@ -121,7 +134,28 @@ func (t *TreeIndex) checkOverflowLocked() {
 	if t.maxKeys > 0 && t.tree.Len() > t.maxKeys {
 		t.overflowed = true
 		t.tree = btree.New(32) // free memory; counts fall back to a scan
+		t.clearRankLocked()
 	}
+}
+
+// clearRankLocked is called with t.mu held exclusively. Lock ordering is
+// t.mu -> rankMu everywhere.
+func (t *TreeIndex) clearRankLocked() {
+	t.rankMu.Lock()
+	t.rank = rankSnapshot{}
+	t.rankMu.Unlock()
+}
+
+// invalidateRankAtLocked invalidates snapshots whose historical view can be
+// changed by an event at rev. A later event cannot affect a pinned older view,
+// so retaining it is both correct and important for pagination during writes.
+func (t *TreeIndex) invalidateRankAtLocked(rev uint64) {
+	t.rankMu.Lock()
+	if (t.rank.valid && rev <= t.rank.revision) ||
+		(t.rank.candidateValid && rev <= t.rank.candidateRev) {
+		t.rank = rankSnapshot{}
+	}
+	t.rankMu.Unlock()
 }
 
 // Apply records that key changed at rev (tombstone=true for a delete). It must
@@ -132,6 +166,7 @@ func (t *TreeIndex) Apply(key []byte, rev uint64, tombstone bool) {
 	if t.overflowed {
 		return
 	}
+	t.invalidateRankAtLocked(rev)
 	t.applyLocked(key, rev, tombstone)
 	t.checkOverflowLocked()
 	if rev > t.readyRev {
@@ -206,6 +241,7 @@ func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, em
 		baseRev = t.readyRev
 	}
 	t.tree = btree.New(32)
+	t.clearRankLocked()
 	t.overflowed = false
 	t.loading = true
 	t.baseRev = baseRev
@@ -302,6 +338,51 @@ func (t *TreeIndex) CountIfReady(start, end []byte, rev uint64) (int, bool) {
 }
 
 func (t *TreeIndex) countLocked(start, end []byte, rev uint64) int {
+	t.rankMu.Lock()
+	if t.rank.valid && t.rank.revision == rev {
+		n := countRank(t.rank.keys, start, end)
+		t.rankMu.Unlock()
+		return n
+	}
+	if t.rank.candidateValid && t.rank.candidateRev == rev {
+		keys := make([]*keyItem, 0, t.tree.Len())
+		t.tree.Ascend(func(it btree.Item) bool {
+			ki := it.(*keyItem)
+			if ki.liveAt(rev) {
+				keys = append(keys, ki)
+			}
+			return true
+		})
+		t.rank = rankSnapshot{revision: rev, valid: true, keys: keys}
+		n := countRank(keys, start, end)
+		t.rankMu.Unlock()
+		return n
+	}
+	// Preserve a still-correct snapshot for another pinned revision until this
+	// revision proves hot enough (a second query) to replace it.
+	t.rank.candidateRev = rev
+	t.rank.candidateValid = true
+	t.rankMu.Unlock()
+	return t.countRangeLocked(start, end, rev)
+}
+
+func countRank(keys []*keyItem, start, end []byte) int {
+	lo := sort.Search(len(keys), func(i int) bool {
+		return bytes.Compare(keys[i].key, start) >= 0
+	})
+	hi := len(keys)
+	if len(end) != 0 {
+		hi = sort.Search(len(keys), func(i int) bool {
+			return bytes.Compare(keys[i].key, end) >= 0
+		})
+	}
+	if hi < lo {
+		return 0
+	}
+	return hi - lo
+}
+
+func (t *TreeIndex) countRangeLocked(start, end []byte, rev uint64) int {
 	n := 0
 	iter := func(it btree.Item) bool {
 		if it.(*keyItem).liveAt(rev) {
@@ -321,6 +402,7 @@ func (t *TreeIndex) countLocked(start, end []byte, rev uint64) int {
 func (t *TreeIndex) Compact(compactRev uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.clearRankLocked()
 	var dead []*keyItem
 	t.tree.Ascend(func(it btree.Item) bool {
 		ki := it.(*keyItem)

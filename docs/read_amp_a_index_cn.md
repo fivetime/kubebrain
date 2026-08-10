@@ -1,7 +1,7 @@
 # A-index 设计 — 内存态 key 索引（根治精确计数 #5/#27/#29）
 
 > 目标：给 leader 一个内存态、按 key 排序、带版本的索引，使 `[start,end)` 在**任意修订号**下的**精确活键计数**为 O(log N + 命中区间)，根治分页 count 的 O(N²) 全量扫描。
-> 状态：**已实现并上线（MVP）。** commit `1fe5833`（`pkg/backend/countindex` 包）+ `e885b8d`（接线）+ `27e4bfc`（文档）。behind `--enable-count-index`（+ `--count-index-max-keys`，默认 5M，超限自动禁用回退扫描）。实测 N=20k：分页 LIST 10.5s→1.44s、CountOnly 350ms→6.6ms/0 iters、历史 LIST 10.7s→1.33s。ROOT #5/#27/#29。关联 `docs/read_amp_approach_a_cn.md`、`docs/read_amp_baseline_cn.md`。
+> 状态：**已实现。** commit `1fe5833`（`pkg/backend/countindex` 包）+ `e885b8d`（接线）+ `27e4bfc`（文档）；后续已补齐固定 revision 的惰性 rank 快照。behind `--enable-count-index`（+ `--count-index-max-keys`，默认 5M，超限自动禁用回退扫描）。实测 N=20k：分页 LIST 10.5s→1.44s、CountOnly 350ms→6.6ms/0 iters、历史 LIST 10.7s→1.33s。ROOT #5/#27/#29。关联 `docs/read_amp_approach_a_cn.md`、`docs/read_amp_baseline_cn.md`。
 
 ## 为什么必须"带版本"（诚实的架构结论）
 apiserver 分页 LIST 在第 2 页起**固定 revision**（continue token 里编码），并用 `hasMore = len(Kvs) < Count` 判是否还有下一页、用 `Count` 算 RemainingItemCount。因此 `Count` 必须是**固定 rev 下 `[continueKey, end)` 的精确活键数**：
@@ -28,7 +28,7 @@ type treeIndex struct {
     // 附带每层子树的“活键计数”以支持 O(log N) rank（Fenwick/augmented btree）
 }
 ```
-- **有序容器**：优先 `github.com/google/btree`（若已在依赖）——支持范围遍历；rank/count 用**增广 btree**（每节点缓存子树 key 数）或退化为区间遍历 O(命中键数)（对单资源前缀，命中 = 该资源键数，通常远小于总量，可接受）。**MVP 用区间遍历**（O(区间活键数)），增广 rank 作为后续优化。
+- **有序容器**：`github.com/google/btree` 保存版本索引。某 revision 首次 Count 用区间遍历；同 revision 第二次请求惰性生成按 key 排序的 live-item 切片，之后用两次二分做 O(log N) rank。这样不依赖 `google/btree` 未导出的节点，也无需维护“随查询 revision 改变”的单一 subtree live count。
 
 - **在 rev 处判活**：某 key 在 rev r 下活着 ⟺ 它有 `revision ≤ r` 且该"世代"最新的 `revision ≤ r` **不是 tombstone**，且 ≥ compactRevision。count([a,b), r) = 遍历 [a,b) 内的 keyIndex，逐个判活并计数。
 
@@ -36,7 +36,7 @@ type treeIndex struct {
 - **Put(key, rev)**：`keyIndex.revisions append {rev, false}`（新建则插入 tree）。
 - **Tombstone(key, rev)**：append `{rev, true}`。
 - **Compact(rev)**：对每个 keyIndex，丢弃 ≤ rev 的历史（保留跨越 rev 的最新世代起点）；若最新是 ≤rev 的 tombstone，则整个 keyIndex 删除。
-- **Count(start,end,rev)** / **CountAt**：区间遍历 + 判活。
+- **Count(start,end,rev)** / **CountAt**：首个请求区间遍历 + 判活；固定 revision 的重复请求使用 live-key rank 快照二分。
 - 全部在 `treeIndex.mu` 下；读用 RLock。
 
 ## 维护（数据来源 = 有序事件流）
@@ -63,7 +63,7 @@ KubeBrain 的 `collectStorageWriteEvents` 已**按修订号严格有序**处理�
 
 ## 分期
 1. **MVP**：treeIndex（区间遍历 count，无增广 rank）+ collector 维护 + 选主重建（当前态 + compactRev..current 历史）+ 回退扫描 + shadow 校验 + feature-flag。验证：harness 分页 LIST（N=20k）从 10.5s→亚秒；`TestRangeLimitCountReportsTotalMatches` 及所有兼容测试仍绿（精确 count 保持）；真实 apiserver 分页/删除中途分页正确。
-2. **优化**：增广 btree 做 O(log N) rank；followers 本地索引或统一代理；A-core-2 复用索引给 watch。
+2. **优化（已完成）**：固定 revision 的惰性 live-key 快照做 O(log N) rank；首个窄请求不退化，连续分页消除重复遍历。followers 本地索引或统一代理、A-core-2 复用索引给 watch 仍是独立演进项。
 
 ## 风险
 - 内存（有上限 + 回退兜底）。
@@ -72,4 +72,4 @@ KubeBrain 的 `collectStorageWriteEvents` 已**按修订号严格有序**处理�
 - 历史世代深度（compaction 裁剪 + 对已 compact 的 pinned rev 返回 ErrCompacted，与 etcd 一致）。
 
 ## 状态
-**已实现并上线（MVP，2026-07-02）。** 见文档顶部状态行的 commit 与实测数据；后续可选优化 = O(log N) 增广-btree rank（`[opt]`，已显式推迟,非缺陷）。
+**已实现（MVP 2026-07-02；rank 优化 2026-08-10）。** 见文档顶部状态行与实测数据。rank 采用固定 revision 惰性快照而非侵入式增广 btree：分页总成本为一次 O(N) 构建加每页 O(log N)，同时保留首个一次性窄 Count 的 O(区间) 路径。

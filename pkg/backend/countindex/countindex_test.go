@@ -39,6 +39,113 @@ func TestCountLiveKeysAtRevision(t *testing.T) {
 	require.Equal(t, uint64(3), idx.ReadyRev())
 }
 
+func TestRepeatedRevisionBuildsRankSnapshot(t *testing.T) {
+	idx := New(0)
+	idx.Apply(k("/a"), 1, false)
+	idx.Apply(k("/b"), 2, false)
+	idx.Apply(k("/c"), 3, false)
+	idx.Apply(k("/b"), 4, true)
+
+	// A one-off query stays on the range iterator and only nominates the
+	// revision, avoiding a full-index build for narrow requests.
+	require.Equal(t, 1, idx.Count(k("/a"), k("/c"), 4))
+	require.False(t, idx.rank.valid)
+	require.True(t, idx.rank.candidateValid)
+	require.Equal(t, uint64(4), idx.rank.candidateRev)
+
+	// The second query at the pinned revision builds the live sorted snapshot;
+	// subsequent shrinking pagination ranges are rank lookups over the same data.
+	require.Equal(t, 2, idx.Count(k("/"), k("0"), 4))
+	require.True(t, idx.rank.valid)
+	require.Equal(t, uint64(4), idx.rank.revision)
+	require.Len(t, idx.rank.keys, 2)
+	keys := idx.rank.keys
+	require.Equal(t, 1, idx.Count(k("/c"), k("0"), 4))
+	require.Equal(t, keys, idx.rank.keys)
+
+	// The first query at another revision only nominates it and leaves the hot
+	// revision-4 snapshot available to concurrent pinned pagination.
+	require.Equal(t, 3, idx.Count(k("/"), k("0"), 3))
+	require.Equal(t, uint64(4), idx.rank.revision)
+	require.Equal(t, keys, idx.rank.keys)
+	require.Equal(t, 1, idx.Count(k("/c"), k("0"), 4))
+	require.Zero(t, idx.Count(k("/z"), k("/a"), 4), "reversed empty range")
+}
+
+func TestRankSnapshotInvalidationPreservesPinnedRevision(t *testing.T) {
+	idx := New(0)
+	idx.Apply(k("/a"), 10, false)
+	idx.Count(k("/"), k("0"), 10)
+	idx.Count(k("/"), k("0"), 10)
+	require.True(t, idx.rank.valid)
+
+	// A later mutation cannot change the view at revision 10, so pagination at
+	// that pinned revision keeps its snapshot and remains correct.
+	idx.Apply(k("/b"), 11, false)
+	require.True(t, idx.rank.valid)
+	require.Equal(t, 1, idx.Count(k("/"), k("0"), 10))
+
+	// Reset/compaction and an out-of-order rebuild event can change the indexed
+	// historical view and must invalidate the snapshot.
+	idx.Apply(k("/z"), 9, false)
+	require.False(t, idx.rank.valid)
+	require.Equal(t, 2, idx.Count(k("/"), k("0"), 10))
+	idx.Count(k("/"), k("0"), 10)
+	require.True(t, idx.rank.valid)
+	idx.Compact(10)
+	require.False(t, idx.rank.valid)
+}
+
+func TestRankSnapshotConcurrentPinnedCountAndLaterApply(t *testing.T) {
+	idx := New(0)
+	for i := 1; i <= 100; i++ {
+		idx.Apply([]byte(fmt.Sprintf("/k/%03d", i)), uint64(i), false)
+	}
+	idx.Count(k("/k/"), k("/k0"), 100)
+	idx.Count(k("/k/"), k("/k0"), 100)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 101; i <= 200; i++ {
+			idx.Apply([]byte(fmt.Sprintf("/k/%03d", i)), uint64(i), false)
+		}
+	}()
+	for i := 0; i < 500; i++ {
+		require.Equal(t, 100, idx.Count(k("/k/"), k("/k0"), 100))
+	}
+	<-done
+	require.Equal(t, 100, idx.Count(k("/k/"), k("/k0"), 100))
+	require.Equal(t, 200, idx.Count(k("/k/"), k("/k0"), 200))
+	require.Equal(t, 200, idx.Count(k("/k/"), k("/k0"), 200))
+}
+
+func BenchmarkRepeatedCountAtPinnedRevision(b *testing.B) {
+	idx := New(0)
+	for i := 0; i < 100_000; i++ {
+		idx.Apply([]byte(fmt.Sprintf("/registry/pods/%06d", i)), uint64(i+1), false)
+	}
+	start := []byte("/registry/pods/050000")
+	rev := idx.ReadyRev()
+
+	b.Run("range-traversal", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			idx.mu.RLock()
+			_ = idx.countRangeLocked(start, nil, rev)
+			idx.mu.RUnlock()
+		}
+	})
+	b.Run("hot-rank-snapshot", func(b *testing.B) {
+		// Nominate and build outside the timed region.
+		idx.Count(start, nil, rev)
+		idx.Count(start, nil, rev)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_ = idx.Count(start, nil, rev)
+		}
+	})
+}
+
 func TestDeleteAndRecreateAcrossRevisions(t *testing.T) {
 	idx := New(0)
 	idx.Apply(k("/x"), 1, false) // put

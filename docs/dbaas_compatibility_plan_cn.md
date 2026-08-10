@@ -45587,6 +45587,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   数据面收敛。backend 内容/历史/逻辑与物理 compaction、损坏 key fail-closed、raw gRPC 和官方 client/v3
   门禁共同证明当前是内容哈希而非 revision 占位符，故 #R14 改为已闭环。
 
+- A4306 完成 73 项历史审核中最后一个低优先级 count-index rank 优化。现有
+  `google/btree` 不暴露节点，且子树“活键数”会随查询 revision 改变，直接维护单份 augmented count
+  既不能回答历史分页，又容易在 tombstone/compaction/rebuild 交错时静默错数。当前实现利用 etcd/Kubernetes
+  分页会固定 revision 的公开语义：某 revision 首次 Count 仍按请求范围遍历，避免一次性窄查询退化；同一
+  revision 第二次 Count 构建一次只含 live `*keyItem` 的有序 rank 快照，后续页面通过上下界二分在
+  O(log N) 返回精确 `[start,end)` 数量。因此完整分页从 O(N²/pageSize) 变成 O(N + pages·logN)，又不复制
+  value 或 key。更晚 revision 的有序 Apply 不会改变 pinned 快照，故持续写入时继续复用；乱序 rebuild
+  Apply、Reset、overflow 和 Compact 会在同一锁序下失效，`liveAt` 的 per-key history 查找也改为二分。
+  确定性测试覆盖 tombstone/历史范围、缓存建立与复用、较新写保留旧快照、乱序历史写和 compaction
+  失效；race 测试通过。100k key、后半范围的重复 Count 基准从 1.38–1.59ms/op 降至 203–230ns/op。
+  `audit_remediation_todo_cn.md` 因而更新为 73/73；这关闭性能 TODO，不改变 count-index unavailable/
+  overflow 时回退 TiKV 扫描的正确性合同，也不宣称解决独立的 Snapshot/PITR 运维边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
