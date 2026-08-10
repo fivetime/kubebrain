@@ -222,7 +222,8 @@ hack/production/repair-tikv-transaction-path.sh
 和 cluster ID 与 receipt 相等，并固定要求 3×KubeBrain、3×PD、3×TiKV。它先用 ConfigMap
 `kubebrain-tikv-transaction-repair-lock` 排除并发执行，再把 KubeBrain 缩到 0，按 TiKV
 `2→1→0` 逐 Pod 删除重建；每一步必须取得新 Pod UID、保留原 PVC 名并重新达到精确 3 Ready，
-因此不会删除 PVC，也不会主动同时破坏 quorum。全部 TiKV 收敛后才恢复 3 个 KubeBrain，最终
+且每一步恢复后必须再次确认 PD 精确 3 Ready；PD quorum 漂移会停止后续 TiKV 删除并保持
+KubeBrain 隔离。因此不会删除 PVC，也不会主动同时破坏 quorum。全部 TiKV 收敛后才恢复 3 个 KubeBrain，最终
 Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。健康集群的第一次成功探测会
 在任何 scale 或 Pod delete 前拒绝修复。连续事务失败后，脚本还会重新取得精确三 PD 与三 TiKV
 Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/pd`、`/var/lib/tikv` 的真实挂载水位；任一 Pod 超过默认 90% 时记录

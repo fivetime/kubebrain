@@ -44,6 +44,9 @@ elif [[ "$args" == *"get pods -l"* && "$args" == *"component=tikv"* ]]; then
   done
 elif [[ "$args" == *"get pods -l"* && "$args" == *"component=pd"* ]]; then
   ready="${FAKE_PD_READY:-True}"
+  if [[ "${FAKE_PD_FAIL_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
+    ready=False
+  fi
   for ordinal in 0 1 2; do
     printf 'kb-pd-%s\tuid-pd-%s\t%s\tpd-kb-pd-%s\n' "$ordinal" "$ordinal" "$ready" "$ordinal"
   done
@@ -164,6 +167,21 @@ fi
 	require.NotContains(t, healthyLog, " scale ")
 	require.NotContains(t, healthyLog, "delete pod")
 	require.NoFileExists(t, receiptPath)
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	pdDuringOutput, pdDuringErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_PD_FAIL_AFTER_REPLACEMENT=true"))
+	require.Error(t, pdDuringErr)
+	require.Contains(t, string(pdDuringOutput), "PD quorum changed after replacing kb-tikv-2")
+	pdDuringLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	pdDuringLog := string(pdDuringLogData)
+	require.Equal(t, 1, strings.Count(pdDuringLog, "delete pod kb-tikv-"), pdDuringLog)
+	require.Contains(t, pdDuringLog, "replacing-tikv-2")
+	require.NotContains(t, pdDuringLog, "delete pod kb-tikv-1")
+	require.NotContains(t, pdDuringLog, "--replicas=3")
+	require.NoFileExists(t, receiptPath)
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	pdReadyOutput, pdReadyErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",

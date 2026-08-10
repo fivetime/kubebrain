@@ -305,6 +305,7 @@ for ordinal in 2 1 0; do
   new_pvc="${new_identity#*$'\t'}"
   [[ "$new_uid" != "$old_uid" && "$new_pvc" == "$old_pvc" ]] || die "$pod same-PVC replacement fence failed"
   validate_tikv_ready || die "TiKV quorum did not recover after replacing $pod"
+  validate_pd_ready || die "PD quorum changed after replacing $pod; refusing further TiKV replacements"
 done
 
 persist_phase "restoring-kubebrain"

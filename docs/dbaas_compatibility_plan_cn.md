@@ -45296,6 +45296,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt。PD 只作为修复依赖被检查，不会被本执行器重启。当前真实 kind 会被 A4282 已证实的六卷
   hostPath/97% 栅栏拒绝，因此本轮仍不伪造授权运行破坏性 repair。
 
+- A4284 把 A4283 的 PD 依赖栅栏从破坏前快照延伸到三步 TiKV replacement 状态机。旧循环每次
+  删除/重建 TiKV 后只调用 `validate_tikv_ready`；若数分钟修复窗口中 PD quorum 同时下降，脚本仍会
+  继续删除下一台 TiKV，叠加两个故障域。现在每个目标 Pod 完成 Ready、新 UID、同 PVC 和三 TiKV
+  Ready 验证后，必须再次通过精确三 PD UID/Ready/PVC 检查，才会从 ordinal 2 前进到 1、再到 0。
+  fake-cluster 在第一次 kb-tikv-2 replacement 后注入 PD NotReady，脚本于持久 phase
+  `replacing-tikv-2` 退出：日志精确只有一次 TiKV delete，不出现 kb-tikv-1 delete、`replicas=3`、
+  final transaction probe、cooldown 或成功 receipt；KubeBrain 保持 scale 0，需人工恢复 PD 并提交
+  新审批 operation。健康 fixture 仍完成 2→1→0 和最终 Put/Get/Delete。本项不尝试自动修复 PD，
+  也不在部分执行后自动回滚已安全重建的单个 TiKV Pod。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
