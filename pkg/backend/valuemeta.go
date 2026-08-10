@@ -16,9 +16,25 @@ package backend
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 )
+
+type previousLeaseContextKey struct{}
+
+// WithPreviousLease records an authoritative previous-version lease captured
+// while the etcd layer holds its lease attachment write barrier. It lets the
+// point-update path preserve upgrade-era raw/v1 provenance without changing the
+// public backend request structs.
+func WithPreviousLease(ctx context.Context, lease int64) context.Context {
+	return context.WithValue(ctx, previousLeaseContextKey{}, lease)
+}
+
+func previousLeaseFromContext(ctx context.Context) (int64, bool) {
+	lease, ok := ctx.Value(previousLeaseContextKey{}).(int64)
+	return lease, ok
+}
 
 // Approach A-core: inline a key version's etcd metadata (create_revision,
 // version, and — for leased keys — the lease ID) into the stored object value,

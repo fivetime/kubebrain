@@ -50,6 +50,14 @@ type TxnWriteOp struct {
 	// inlined into the version's value envelope so the lease is recorded
 	// per-version (review #9). Ignored for deletes.
 	Lease int64
+	// PrevLeaseKnown says the caller captured the previous version's lease from
+	// an authoritative attachment snapshot that remains stable through this
+	// transaction. When an update/delete turns a legacy raw/v1 current row into
+	// history, TxnApply uses this provenance to upgrade that old row in place to
+	// v2/v3. The rewrite is part of the same storage batch, so it consumes no
+	// extra MVCC revision and emits no extra watch event.
+	PrevLeaseKnown bool
+	PrevLease      int64
 }
 
 // TxnGuard asserts that a compared key is either still live at exactly Revision,
@@ -115,13 +123,15 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 
 // txnPrep holds the pre-read state and planned outcome for one op.
 type txnPrep struct {
-	op        TxnWriteOp
-	rvBytes   []byte // exact revision-key value read (nil if key absent)
-	curRev    uint64 // current mod revision (0 if absent)
-	effective bool   // whether this op produces a batch write
-	create    bool   // put: create/recreate rather than update
-	prevValue []byte // enveloped previous value (update/delete)
-	meta      EtcdMetadata
+	op          TxnWriteOp
+	rvBytes     []byte // exact revision-key value read (nil if key absent)
+	curRev      uint64 // current mod revision (0 if absent)
+	effective   bool   // whether this op produces a batch write
+	create      bool   // put: create/recreate rather than update
+	prevValue   []byte // enveloped previous value (update/delete)
+	prevMeta    EtcdMetadata
+	migratePrev bool
+	meta        EtcdMetadata
 }
 
 type txnGuardPrep struct {
@@ -184,6 +194,20 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 					return nil, 0, false, verr
 				}
 				p.prevValue = val
+				if b.config.EnableEtcdCompatibility && op.PrevLeaseKnown && !InlineValueLeaseKnown(val) {
+					meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
+					if decodeErr != nil {
+						return nil, 0, false, decodeErr
+					}
+					if !ok {
+						meta, verr = b.GetEtcdMetadata(ctx, op.Key, p.curRev)
+						if verr != nil {
+							return nil, 0, false, verr
+						}
+					}
+					meta.Lease = op.PrevLease
+					p.prevMeta, p.migratePrev = meta, true
+				}
 			}
 		} else {
 			p.effective = true
@@ -203,6 +227,10 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 					if verr != nil {
 						return nil, 0, false, verr
 					}
+				}
+				if b.config.EnableEtcdCompatibility && op.PrevLeaseKnown && !InlineValueLeaseKnown(val) {
+					meta.Lease = op.PrevLease
+					p.prevMeta, p.migratePrev = meta, true
 				}
 				p.meta = meta
 			}
@@ -494,6 +522,15 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 		revisionKey := b.coder.EncodeRevisionKey(p.op.Key)
 		objectKey := b.coder.EncodeObjectKey(p.op.Key, newRevision)
+		if p.migratePrev {
+			previousObjectKey := b.coder.EncodeObjectKey(p.op.Key, p.curRev)
+			_, raw, _, decodeErr := DecodeInlineValueChecked(p.prevValue)
+			if decodeErr != nil {
+				b.notifyInvalidTxn(preps, newRevision, decodeErr)
+				return nil, newRevision, false, decodeErr
+			}
+			batch.CAS(previousObjectKey, encodeValueWithMeta(raw, p.prevMeta), p.prevValue, 0)
+		}
 		// Each write stages its event-log entry on the same batch (#45), with the
 		// verb/prevRev Phase 5 publishes for it — the replay path treats a missing
 		// entry at a committed revision as a failed-CAS hole and silently skips it,

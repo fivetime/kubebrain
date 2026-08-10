@@ -1274,14 +1274,15 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		return nil, err
 	}
 	// When a lease is involved (the new put binds one, or the key currently holds
-	// one), write the value and its lease attachment record atomically so the
-	// binding can never be lost independently of the value (review #2). The common
-	// leaseless put keeps the cheap single-write path.
+	// one), write the value and its lease attachment record atomically. For the
+	// common leaseless path, pass the locked attachment snapshot through context
+	// so backend.Update can provenance-upgrade an old raw/v1 current row without
+	// bypassing the established single-write/auth-guard path.
 	var response *etcdserverpb.PutResponse
 	if prevLease := s.leaseIDForKey(string(put.Key)); put.Lease != 0 || prevLease != 0 {
 		response, err = s.putLeasedAtomic(ctx, put, prevLease)
 	} else {
-		response, err = s.backend.Put(ctx, put)
+		response, err = s.backend.Put(backend.WithPreviousLease(ctx, 0), put)
 	}
 	if err == nil {
 		s.recordEtcdMVCCPutSize(put.Key, put.Value)

@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 的当前 lease 可由 pinned attachment 恢复，但含 lease 不可判定的旧历史版本时 snapshot 明确失败，避免伪造 Lease=0；物理 Compact 清除含糊版本后恢复可用 |
+| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；升级前已经成为历史且 lease 不可判定的版本仍明确失败，物理 Compact 清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -45693,6 +45693,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:210ee85a4ddabe6071b02f2eb2821ebc4c6759fae516ba9909c93f37ac0b8f07`，以
   `65532:65532` 直接执行新 helper 并按预期 fail closed。该项交付审批/lease fencing/audit 链，仍未在真实 retained-v1 生产
   keyspace 执行不可逆 compaction；A4311 的来源限制与 TiKV/PD 物理 PITR 缺口均保持开放。
+
+- A4313 收窄升级历史 Snapshot 缺口，避免 raw/v1 current 行在升级后的第一次 mutation 中继续产生新的
+  lease provenance 不可判定历史。对照
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go::storeTxnWrite.End` 只有 transaction 真正产生 changes 才将
+  current revision 增加一次的语义，etcd 层在
+  `leaseWriteMu` 持有期间把 authoritative current attachment（包括“明确不存在”即 lease=0）随写请求传给
+  backend；backend 在原用户 Put/Delete 的同一个 TiKV batch 内，对旧 object revision 做 exact-value CAS，
+  将 raw/v1 原位改写为带旧 lease 的 v2 或明确 lease=0 的 v3，同时保留 create/mod revision、version、key
+  和 value。revision-index CAS 证明该 object 仍是 current，冲突时整批重读重试；迁移不单独申请 TSO
+  revision、不写 event log、不发布 Watch 事件，也不改变逻辑 quota。普通无 lease Put 保留原 point-update
+  与 auth write-guard 路径，leased Put、generic Txn、DeleteRange/revoke 则使用同批 `TxnWriteOp` provenance。
+  回归覆盖 leased v1→历史保留正确 lease、unleased v1→v3、迁移后恰好仍只有两个 MVCC 版本，以及授权
+  mutation-before-commit 竞态不被绕过。该预防只修复升级时仍为 current 的行；在升级前已经进入 history
+  且 lease 永久丢失的版本仍必须 fail closed，并继续由 A4311/A4312 的显式历史丢弃流程处理。
 
 ### P2：运维兼容和长期验证
 

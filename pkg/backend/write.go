@@ -289,6 +289,21 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	}
 
 	old = KeyVal{Key: key, Revision: modRevision, Val: oldVal}
+	var migratedPrevious []byte
+	if previousLease, known := previousLeaseFromContext(ctx); b.config.EnableEtcdCompatibility && known && !InlineValueLeaseKnown(oldVal) {
+		previousMeta, raw, ok, decodeErr := DecodeInlineValueChecked(oldVal)
+		if decodeErr != nil {
+			return b.GetCurrentRevision(), old, decodeErr
+		}
+		if !ok {
+			previousMeta, decodeErr = b.GetEtcdMetadata(ctx, key, modRevision)
+			if decodeErr != nil {
+				return b.GetCurrentRevision(), old, decodeErr
+			}
+		}
+		previousMeta.Lease = previousLease
+		migratedPrevious = encodeValueWithMeta(raw, previousMeta)
+	}
 
 	newRevision, err = b.deal(oldRevision)
 	if err != nil {
@@ -326,6 +341,9 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 	}
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, expectedRevisionBytes, 0)
+	if migratedPrevious != nil {
+		batch.CAS(b.coder.EncodeObjectKey(key, modRevision), migratedPrevious, oldVal, 0)
+	}
 	batch.Put(objectKey, tombStoneBytes, 0)
 	appendEventLog(b.ks, batch, newRevision, key, proto.Event_DELETE, expectedRevision, 0, 1)
 	b.stageDurableRevision(batch, newRevision)
@@ -523,6 +541,24 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	if err != nil {
 		return 0, EtcdMetadata{}, err
 	}
+	var previousStored, migratedPrevious []byte
+	if previousLease, known := previousLeaseFromContext(ctx); b.config.EnableEtcdCompatibility && known {
+		previousStored, _, err = b.getInternalVal(ctx, key, oldRevision)
+		if err != nil {
+			return 0, EtcdMetadata{}, err
+		}
+		if !InlineValueLeaseKnown(previousStored) {
+			previousMeta, raw, _, decodeErr := DecodeInlineValueChecked(previousStored)
+			if decodeErr != nil {
+				return 0, EtcdMetadata{}, decodeErr
+			}
+			if previousMeta.CreateRevision == 0 {
+				previousMeta = meta
+			}
+			previousMeta.Lease = previousLease
+			migratedPrevious = encodeValueWithMeta(raw, previousMeta)
+		}
+	}
 	var newRevision uint64
 	newRevision, err = b.deal(oldRevision)
 	if err != nil {
@@ -556,6 +592,9 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	}
 	batch := b.kv.BeginBatchWrite()
 	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
+	if migratedPrevious != nil {
+		batch.CAS(b.coder.EncodeObjectKey(key, oldRevision), migratedPrevious, previousStored, 0)
+	}
 	b.putTxnObject(batch, objectKey, key, value, meta, newRevision)
 	appendEventLog(b.ks, batch, newRevision, key, proto.Event_PUT, oldRevision, 0, 1)
 	b.stageDurableRevision(batch, newRevision)

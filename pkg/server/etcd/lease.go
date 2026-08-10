@@ -645,7 +645,10 @@ func (m *leaseManager) ensureLeaseExists(id int64) error {
 // record either way.
 func (m *leaseManager) putLeasedAtomic(ctx context.Context, put *etcdserverpb.PutRequest, prevLease int64) (*etcdserverpb.PutResponse, error) {
 	userKey := string(put.Key)
-	ops := []backend.TxnWriteOp{{Key: put.Key, Value: put.Value, Lease: put.Lease}}
+	ops := []backend.TxnWriteOp{{
+		Key: put.Key, Value: put.Value, Lease: put.Lease,
+		PrevLeaseKnown: true, PrevLease: prevLease,
+	}}
 	if put.Lease != 0 {
 		ops = append(ops, backend.TxnWriteOp{
 			Internal: true,
@@ -699,9 +702,12 @@ func (m *leaseManager) unbindKeyIndexOnly(key string) {
 func (m *leaseManager) withLeaseAttachmentOps(writes []backend.TxnWriteOp) ([]backend.TxnWriteOp, int) {
 	userCount := len(writes)
 	out := append([]backend.TxnWriteOp(nil), writes...)
-	for _, op := range writes {
+	for i, op := range writes {
 		key := string(op.Key)
 		previous := m.leaseIDForKey(key)
+		op.PrevLeaseKnown = true
+		op.PrevLease = previous
+		out[i] = op
 		switch {
 		case op.Delete && previous != 0:
 			out = append(out, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)})
@@ -1124,7 +1130,7 @@ func (m *leaseManager) deleteLeasedKey(ctx context.Context, id int64, key string
 		// between this read and the delete (a keepalive re-Put, or a reassignment
 		// whose value write landed but whose index update has not yet) does not get
 		// its new value clobbered; a failed compare loops to re-check the binding.
-		dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
+		dresp, err := m.srv.backend.Delete(backend.WithPreviousLease(ctx, id), []byte(key), resp.Kvs[0].ModRevision, false)
 		if err != nil {
 			return err
 		}
@@ -1156,7 +1162,9 @@ func (m *leaseManager) deleteLeasedKeysAtomic(ctx context.Context, id int64, key
 				return 0, err
 			}
 			if len(resp.Kvs) > 0 && resp.Kvs[0].Lease == id {
-				ops = append(ops, backend.TxnWriteOp{Delete: true, Key: []byte(key)})
+				ops = append(ops, backend.TxnWriteOp{
+					Delete: true, Key: []byte(key), PrevLeaseKnown: true, PrevLease: id,
+				})
 				guards = append(guards, backend.TxnGuard{Key: []byte(key), Revision: uint64(resp.Kvs[0].ModRevision)})
 			}
 			// Reclaim the durable binding even if the user key is already gone or

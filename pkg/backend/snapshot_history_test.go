@@ -5,6 +5,7 @@ package backend
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"testing"
 	"time"
@@ -18,6 +19,165 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+func TestTxnApplyMigratesLegacyCurrentLeaseBeforeItBecomesHistory(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/snapshot-history/migrate-current-lease")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("legacy")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	// Model an upgrade-era v1 row: create/version are known, but its lease was
+	// persisted only in the authoritative current-key attachment.
+	v1 := make([]byte, valueMetaHeaderLen+len("legacy"))
+	copy(v1, valueMetaMagic)
+	binary.BigEndian.PutUint64(v1[4:], created.Header.Revision)
+	binary.BigEndian.PutUint64(v1[12:], 1)
+	copy(v1[valueMetaHeaderLen:], "legacy")
+	batch := b.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), v1, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	results, updatedRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: key, Value: []byte("replacement"),
+		PrevLeaseKnown: true, PrevLease: 1751,
+	}}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	waitCommitted(t, b, updatedRevision)
+
+	stream, err := b.SnapshotHistoryStream(ctx, updatedRevision)
+	require.NoError(t, err)
+	var records []SnapshotHistoryRecord
+	for chunk := range stream {
+		require.NoError(t, chunk.Err)
+		records = append(records, chunk.Records...)
+	}
+	require.Len(t, records, 2)
+	require.Equal(t, created.Header.Revision, records[0].ModRevision)
+	require.EqualValues(t, 1751, records[0].Lease)
+	require.True(t, records[0].LeaseKnown)
+	require.Equal(t, updatedRevision, records[1].ModRevision)
+	require.Zero(t, records[1].Lease)
+	require.True(t, records[1].LeaseKnown)
+}
+
+func TestPointUpdateMigratesKnownUnleasedLegacyCurrentVersion(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/snapshot-history/migrate-current-unleased")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("legacy")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	v1 := make([]byte, valueMetaHeaderLen+len("legacy"))
+	copy(v1, valueMetaMagic)
+	binary.BigEndian.PutUint64(v1[4:], created.Header.Revision)
+	binary.BigEndian.PutUint64(v1[12:], 1)
+	copy(v1[valueMetaHeaderLen:], "legacy")
+	batch := b.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), v1, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	updated, err := b.Update(WithPreviousLease(ctx, 0), &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("replacement"), Revision: created.Header.Revision,
+	}})
+	require.NoError(t, err)
+	require.True(t, updated.Succeeded)
+	waitCommitted(t, b, updated.Header.Revision)
+
+	stored, err := b.kv.Get(ctx, b.coder.EncodeObjectKey(key, created.Header.Revision))
+	require.NoError(t, err)
+	require.True(t, hasValueMetaV3(stored), "known lease=0 must become an explicit v3 envelope")
+	meta, raw, ok, err := DecodeInlineValueChecked(stored)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, []byte("legacy"), raw)
+	require.Equal(t, created.Header.Revision, meta.CreateRevision)
+	require.EqualValues(t, 1, meta.Version)
+	require.Zero(t, meta.Lease)
+
+	stream, err := b.SnapshotHistoryStream(ctx, updated.Header.Revision)
+	require.NoError(t, err)
+	var records []SnapshotHistoryRecord
+	for chunk := range stream {
+		require.NoError(t, chunk.Err)
+		records = append(records, chunk.Records...)
+	}
+	require.Len(t, records, 2, "migration must not create an extra MVCC version")
+	require.True(t, records[0].LeaseKnown)
+	require.Equal(t, created.Header.Revision, records[0].ModRevision)
+	require.Equal(t, updated.Header.Revision, records[1].ModRevision)
+}
+
+func TestTxnDeleteMigratesLegacyCurrentLeaseBeforeTombstone(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/snapshot-history/migrate-before-delete")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("legacy")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+	v1 := make([]byte, valueMetaHeaderLen+len("legacy"))
+	copy(v1, valueMetaMagic)
+	binary.BigEndian.PutUint64(v1[4:], created.Header.Revision)
+	binary.BigEndian.PutUint64(v1[12:], 1)
+	copy(v1[valueMetaHeaderLen:], "legacy")
+	batch := b.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), v1, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	results, deletedRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: key, Delete: true, PrevLeaseKnown: true, PrevLease: 1752,
+	}}, nil)
+	require.NoError(t, err)
+	require.True(t, results[0].Deleted)
+	waitCommitted(t, b, deletedRevision)
+
+	stream, err := b.SnapshotHistoryStream(ctx, deletedRevision)
+	require.NoError(t, err)
+	var records []SnapshotHistoryRecord
+	for chunk := range stream {
+		require.NoError(t, chunk.Err)
+		records = append(records, chunk.Records...)
+	}
+	require.Len(t, records, 2)
+	require.EqualValues(t, 1752, records[0].Lease)
+	require.True(t, records[0].LeaseKnown)
+	require.True(t, records[1].Tombstone)
+}
+
+func TestPointDeleteMigratesLegacyCurrentLeaseBeforeTombstone(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/snapshot-history/migrate-point-delete")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("legacy")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+	v1 := make([]byte, valueMetaHeaderLen+len("legacy"))
+	copy(v1, valueMetaMagic)
+	binary.BigEndian.PutUint64(v1[4:], created.Header.Revision)
+	binary.BigEndian.PutUint64(v1[12:], 1)
+	copy(v1[valueMetaHeaderLen:], "legacy")
+	batch := b.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), v1, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	deleted, err := b.Delete(WithPreviousLease(ctx, 1753), &proto.DeleteRequest{
+		Key: key, Revision: created.Header.Revision,
+	})
+	require.NoError(t, err)
+	require.True(t, deleted.Succeeded)
+	waitCommitted(t, b, deleted.Header.Revision)
+
+	stream, err := b.SnapshotHistoryStream(ctx, deleted.Header.Revision)
+	require.NoError(t, err)
+	var records []SnapshotHistoryRecord
+	for chunk := range stream {
+		require.NoError(t, chunk.Err)
+		records = append(records, chunk.Records...)
+	}
+	require.Len(t, records, 2)
+	require.EqualValues(t, 1753, records[0].Lease)
+	require.True(t, records[0].LeaseKnown)
+	require.True(t, records[1].Tombstone)
+}
 
 func TestSnapshotHistoryStreamPreservesLegacyMetadataTombstoneAndCurrentVersion(t *testing.T) {
 	ctrl := gomock.NewController(t)

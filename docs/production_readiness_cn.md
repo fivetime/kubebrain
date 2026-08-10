@@ -2394,9 +2394,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   `ColdPhysicalSnapshot` Operation executor；隔离目标也具备 source/manifest/target UID 绑定、
   单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
   仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
-- **升级前 lease provenance 缺失只能通过显式丢弃旧 MVCC 历史缓解。** 旧 raw/v1 value 没有
-  持久化每个 retained version 当时的 lease，key 后续 rebind 后无法可靠重建；在线 Snapshot 会返回
-  `FailedPrecondition`，不得猜成 `Lease=0`。先执行只读诊断（退出码 3 表示命中特定限制）：
+- **升级前已成为历史的 lease provenance 缺失只能通过显式丢弃旧 MVCC 历史缓解。** 旧 raw/v1
+  current value 会在升级后的第一次 Put/Delete 的同一事务中按锁定 attachment 原位升级为 v2/v3，
+  不增加 revision 或 Watch 事件，因此不会再制造新的含糊历史；但升级前已经 retained 的历史版本没有
+  持久化当时 lease，仍无法可靠重建。在线 Snapshot 会返回 `FailedPrecondition`，不得猜成
+  `Lease=0`。先执行只读诊断（退出码 3 表示命中特定限制）：
 
   ```shell
   ACTION=diagnose \
