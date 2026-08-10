@@ -44774,6 +44774,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ResourceExhausted`。coder、memkv metadata/watermark 与 allocator 表测覆盖 MaxInt64、MaxInt64+1、tombstone
   revision 和游标不前移，既有 DataLoss/FailedPrecondition durable-corruption 契约保持不变。
 
+- A4228 把 A4097 仅用于逻辑 Snapshot artifact 的 auth revision 下一写保护落实到在线 TiKV repository。
+  对照 upstream `/root/etcd/server/auth/store.go::commitRevision` 对 `uint64` 直接加一：0 是未初始化/无身份 sentinel，
+  因而 live `auth/config` 存在且 revision=0 属于损坏，revision=MaxUint64 虽可读取和 AuthEnable，但任何会推进
+  revision 的 User/Role/Permission/AuthDisable 变更都不能回绕为 0。旧 `decodeAuthConfig` 接受零值，
+  `mutateConfig` 对 MaxUint64 无条件 `+1` 并将整个 metadata CAS 以 revision 0 成功提交。现在 decoder 对持久零值
+  标记 `errInvalidAuthMetadata`，普通 KV/auth 入口稳定返回 `DataLoss`；mutation 在构造任何 CAS operation 前检测
+  MaxUint64，返回 `errAuthRevisionExhausted` 并映射 `ResourceExhausted`，不写 config 或目标 record。真正缺失 config
+  仍表示 disabled、revision 1，精确 MaxUint64 的只读与不增 revision 的 enable 行为不被误判为 corruption。
+  repository 红测验证 role 零部分写及 revision 不回绕，真实 bufconn gRPC 分别注入 zero/MaxUint64 并固定
+  DataLoss/ResourceExhausted；既有并发 auth CAS、token fence 和 Snapshot A4097 门禁继续保持。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

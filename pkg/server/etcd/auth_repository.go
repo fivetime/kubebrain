@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ var (
 const initialAuthRevision = 1
 
 var errInvalidAuthMetadata = errors.New("auth metadata is inconsistent")
+var errAuthRevisionExhausted = errors.New("etcd auth revision space exhausted")
 
 type invalidAuthMetadataError struct {
 	cause error
@@ -83,7 +85,11 @@ func decodeAuthConfig(value []byte) (authConfig, error) {
 	if len(value) != 9 || value[0] > 1 {
 		return authConfig{}, markInvalidAuthMetadata(fmt.Errorf("invalid auth config encoding"))
 	}
-	return authConfig{Enabled: value[0] == 1, Revision: binary.BigEndian.Uint64(value[1:])}, nil
+	config := authConfig{Enabled: value[0] == 1, Revision: binary.BigEndian.Uint64(value[1:])}
+	if config.Revision == 0 {
+		return authConfig{}, markInvalidAuthMetadata(fmt.Errorf("auth config revision is zero"))
+	}
+	return config, nil
 }
 
 func decodeAuthRecordIdentity(prefix []byte, key string) (string, error) {
@@ -264,6 +270,9 @@ func (r *authRepository) enable(ctx context.Context, expected authConfig) (authC
 }
 
 func (r *authRepository) mutateConfig(ctx context.Context, expected authConfig, enabled bool, mutations ...authMutation) (authConfig, error) {
+	if expected.Revision == math.MaxUint64 {
+		return authConfig{}, errAuthRevisionExhausted
+	}
 	next := authConfig{Enabled: enabled, Revision: expected.Revision + 1}
 	ops := make([]backend.InternalCASOp, 0, len(mutations)+1)
 	configOp := backend.InternalCASOp{Key: authConfigKey, Value: encodeAuthConfig(next)}

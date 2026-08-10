@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -78,6 +79,13 @@ func TestAuthRepositoryClassifiesMalformedPersistentMetadata(t *testing.T) {
 			want:  "invalid auth config encoding",
 		},
 		{
+			name: "zero config revision", key: authConfigKey,
+			value: func(*testing.T) []byte {
+				return encodeAuthConfig(authConfig{})
+			},
+			want: "auth config revision is zero",
+		},
+		{
 			name: "malformed user", key: authRecordKey(authUsersKey, "alice"),
 			value: func(*testing.T) []byte { return []byte{0xff} },
 			want:  "decode auth user",
@@ -124,6 +132,26 @@ func TestAuthRepositoryClassifiesMalformedPersistentMetadata(t *testing.T) {
 				"classification must not replace the existing operator diagnostic")
 		})
 	}
+}
+
+func TestAuthRepositoryRevisionExhaustionDoesNotWrapOrMutate(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	repo := newAuthRepository(server.backend)
+	maximum := authConfig{Revision: math.MaxUint64}
+	require.NoError(t, server.backend.InternalPut(ctx, authConfigKey, encodeAuthConfig(maximum)))
+
+	_, err := repo.mutate(ctx, maximum, authMutation{
+		Key:   authRecordKey(authRolesKey, "must-not-exist"),
+		Value: &authpb.Role{Name: []byte("must-not-exist")},
+	})
+	require.ErrorIs(t, err, errAuthRevisionExhausted)
+
+	after, err := repo.load(ctx)
+	require.NoError(t, err)
+	require.Equal(t, maximum, after.Config)
+	require.NotContains(t, after.Roles, "must-not-exist")
 }
 
 func TestAuthRepositoryPreservesMetadataReadStatusError(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"sort"
 	"testing"
@@ -51,6 +52,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata), codes.DataLoss},
 		{fmt.Errorf("%w: decode quota usage", backend.ErrInvalidQuotaMetadata), codes.DataLoss},
 		{fmt.Errorf("%w: decode legacy value metadata", backend.ErrInvalidMVCCMetadata), codes.DataLoss},
+		{errAuthRevisionExhausted, codes.ResourceExhausted},
 		{backend.ErrQuotaUninitialized, codes.Unavailable},
 	}
 	for _, test := range tests {
@@ -164,6 +166,7 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 		corrupt func(context.Context, *RPCServer) error
 		call    func(context.Context, *grpc.ClientConn) error
 		want    string
+		code    codes.Code
 	}{
 		{
 			name: "auth config",
@@ -175,6 +178,17 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 				return err
 			},
 			want: "invalid auth config encoding",
+		},
+		{
+			name: "zero auth revision",
+			corrupt: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, authConfigKey, encodeAuthConfig(authConfig{}))
+			},
+			call: func(ctx context.Context, connection *grpc.ClientConn) error {
+				_, err := etcdserverpb.NewKVClient(connection).Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
+				return err
+			},
+			want: "auth config revision is zero",
 		},
 		{
 			name: "generic alarm",
@@ -189,6 +203,18 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 			},
 			want: "generic alarm metadata must be a JSON array",
 		},
+		{
+			name: "auth revision exhausted",
+			corrupt: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, authConfigKey, encodeAuthConfig(authConfig{Revision: math.MaxUint64}))
+			},
+			call: func(ctx context.Context, connection *grpc.ClientConn) error {
+				_, err := etcdserverpb.NewAuthClient(connection).RoleAdd(ctx, &etcdserverpb.AuthRoleAddRequest{Name: "must-not-exist"})
+				return err
+			},
+			want: "etcd auth revision space exhausted",
+			code: codes.ResourceExhausted,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -200,6 +226,7 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 			grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 			etcdserverpb.RegisterKVServer(grpcServer, server)
 			etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+			etcdserverpb.RegisterAuthServer(grpcServer, server)
 			listener := bufconn.Listen(1 << 20)
 			go func() { _ = grpcServer.Serve(listener) }()
 			t.Cleanup(grpcServer.Stop)
@@ -210,7 +237,11 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 			t.Cleanup(func() { require.NoError(t, connection.Close()) })
 
 			err = test.call(ctx, connection)
-			require.Equal(t, codes.DataLoss, status.Code(err))
+			wantCode := test.code
+			if wantCode == codes.OK {
+				wantCode = codes.DataLoss
+			}
+			require.Equal(t, wantCode, status.Code(err))
 			require.Contains(t, status.Convert(err).Message(), test.want)
 		})
 	}
