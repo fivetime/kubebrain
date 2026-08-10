@@ -45443,8 +45443,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   避免误缩放重建后的同名实例。确定性测试覆盖双门禁成功顺序、首次健康失败零 scale、健康检查后 UID
   漂移零 scale、第二次健康失败回滚、事务失败回滚，以及扩容后同名 StatefulSet UID 被替换时绝不按
   name 回滚新对象；测试纳入 bounded command runner。本项没有触碰
-  现场异常 Region，也不伪称真实故障验证已恢复。原语尚未接入审批 Operation type/严格参数 Secret/
-  receipt/最小 RBAC，生产文档明确禁止直接调用；授权与审计编排仍是下一项必须关闭的 P1 缺口。
+  现场异常 Region，也不伪称真实故障验证已恢复。该阶段原语尚未接入审批 Operation type/严格参数
+  Secret/receipt/最小 RBAC，生产文档禁止直接调用；这一当时开放的 P1 缺口由 A4296 关闭。
+
+- A4296 关闭 A4295 明确保留的恢复授权、接管与审计编排缺口。恢复原语现在要求外部 request ID 和
+  尚不存在的绝对 receipt 路径，成功后原子发布严格
+  `kubebrain.tikv-repair-recovery.receipt.v1`：绑定 request/attempt、KubeBrain/TidbCluster UID、cluster
+  ID、3 Ready、storage health 与 transaction verified。新增 `TiKVTransactionRecovery` Operation 类型，
+  同步进入 CRD、queue 支持/高风险审批集合、AdmissionPolicy、worker type→ServiceAccount 绑定和终态
+  audit artifact 白名单。`request-tikv-transaction-recovery.sh` 只接受现场 KubeBrain desired/Ready=0、
+  TidbCluster 3 PD/3 TiKV Ready，以外部 `REQUEST_ID + 两个 UID + cluster ID` 派生确定性 Operation 名，
+  创建规范 immutable 11 字段参数 Secret 和 maxAttempts=1 的未审批 Pending 对象；专属 requester RBAC
+  只有身份读取与 Operation/Secret create/get，Admission 进一步固定 namespace、名称、type、requestedBy、
+  instance、Secret/key 和 payload 形状，没有 approve/scale/exec/storage 权限。
+  `run-tikv-transaction-recovery-operation.sh` 在 claim 后冻结并复核参数 digest/schema，重算 request hash，
+  持续 heartbeat 后才调用原语；成功后验证完整 receipt SHA，worker 接管时复验已有 receipt 而不重复
+  scale，执行或 receipt 失败终止 Operation 且要求新审批。零副本 recovery executor 使用独立 SA、Secret
+  和 workspace；其 RBAC 只可缩放固定 KubeBrain StatefulSet、观察/exec KubeBrain Pod，并只读
+  TidbCluster、PD proxy、PD/TiKV Pod、六个 PVC/PV，明确没有 TiKV Pod/PVC/PV delete。测试覆盖 requester
+  不自批且不产生 scale/exec/delete、非零数据面写前拒绝、runner success/fail/takeover/未知字段/畸形
+  claim namespace、request-to-operation 哈希绑定、receipt 绑定、类型审批/审计和 manifest/RBAC 权限面。
+  现场 Region 76009 仍异常，因此未启用 executor 或执行恢复；真实故障验证继续保持开放。
 
 ### P2：运维兼容和长期验证
 

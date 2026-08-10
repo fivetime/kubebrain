@@ -296,10 +296,36 @@ repair 在 TiKV replacement 已完成但最终事务仍失败时会主动把 Kub
 扩到 3 Ready 后再次运行同一 Region/storage gate 并再次冻结身份，最后从 KubeBrain Pod 内执行
 Put/Get/Delete。扩容后的任一 gate、身份或事务失败都会在 UID 仍匹配时回退到 0 副本。
 
-该原语当前是后续审批型 recovery executor 的底层构件，不是直接生产入口；在 Operation type、严格参数
-Secret、receipt 和最小 RBAC 完成接线前不得手工运行。尤其不能通过设置
-`ALLOW_KUBEBRAIN_RECOVERY=true` 绕过现有高风险操作审批。本阶段只关闭“恢复动作本身会绕过
-Region/storage 检查或失败后保持 3 副本”的执行原语缺口，尚未关闭授权与审计编排缺口。
+该原语不是直接生产入口，不能通过手工设置 `ALLOW_KUBEBRAIN_RECOVERY=true` 绕过高风险操作审批。
+合法入口是只读 requester：
+
+```bash
+REQUEST_ID=change-2026-001 \
+KUBE_CONTEXT=production \
+ENDPOINT=https://kubebrain-client.kubebrain-system.svc:3379 \
+hack/production/request-tikv-transaction-recovery.sh
+```
+
+requester 要求 KubeBrain desired/Ready 都为 0、TidbCluster UID/cluster ID 完整且 3 PD/3 TiKV Ready，
+将外部 `REQUEST_ID`、两个 UID、cluster ID、endpoint 和有界 timeout 写入规范 immutable Secret；
+Operation 名由这些身份共同散列得到。它只提交 `maxAttempts: 1`、requestedBy 固定为
+`platform:tikv-repair-recovery` 的未审批 Pending `TiKVTransactionRecovery`，绝不调用 approve。
+AdmissionPolicy 把 requester 身份限制为该 Operation/Secret 的固定名称和形状。平台 approver 必须像
+其他高风险操作一样写入独立、不可变 approval ID 后，才可把
+`kubebrain-tikv-transaction-recovery-executor` 从 0 扩为 1；处理完恢复为 0。
+
+runner 再校验参数 SHA-256、严格 11 字段 schema、claim namespace/type/requester/owner、Secret/key、
+instance，并用 `request_id + StatefulSet UID + TidbCluster UID + cluster ID` 重算 Operation 名。
+原语成功时原子发布 receipt，固定 request/attempt ID、两个 UID、cluster ID、3 Ready、双次 storage
+health 与 transaction verified。worker 若在成功后、提交 Operation 终态前崩溃，接管者只复验同一
+receipt 并提交 Succeeded，不会再次 scale；原语失败或 receipt 不合法则 Operation 终止为 Failed，
+必须创建新的外部请求和审批。
+
+部署需同时应用 `kubebrain-tikv-transaction-recovery-requester-rbac.yaml`、
+`kubebrain-tikv-transaction-recovery-requester-admission.yaml`、
+`kubebrain-tikv-transaction-recovery-rbac.yaml` 和 executor 模板。requester 只有读取两个身份及创建
+Operation/Secret 的权限，没有 approve、scale、Pod exec 或存储权限；executor 能缩放固定 StatefulSet、
+从其 Pod 执行事务，并只读 PD/TiKV/六个 PVC/PV，明确没有 TiKV Pod/PVC/PV delete 权限。
 
 Alertmanager webhook payload 通过以下 policy runner 映射为待审批请求：
 

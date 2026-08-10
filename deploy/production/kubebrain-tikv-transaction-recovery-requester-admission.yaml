@@ -1,0 +1,63 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-tikv-recovery-request-operation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [dbaas.kubebrain.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE]
+        resources: [kubebrainoperations]
+        scope: Namespaced
+  matchConditions:
+    - name: recovery-requester
+      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
+  validations:
+    - expression: 'object.metadata.namespace == "kubebrain-repair-operations"'
+      message: recovery requester is restricted to the isolated repair queue
+    - expression: 'object.metadata.name.matches("^tikv-recovery-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name'
+      message: recovery operation identity must be deterministic
+    - expression: 'object.spec.type == "TiKVTransactionRecovery" && object.spec.requestedBy == "platform:tikv-repair-recovery" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1'
+      message: recovery operation shape is fixed
+    - expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")'
+      message: recovery operation must bind its immutable parameter Secret
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-tikv-recovery-request-operation
+spec:
+  policyName: kubebrain-tikv-recovery-request-operation
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-tikv-recovery-request-parameters
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [secrets]
+        scope: Namespaced
+  matchConditions:
+    - name: recovery-requester
+      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-transaction-recovery-requester"'
+  validations:
+    - expression: 'object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-recovery-[a-f0-9]{20}-parameters$")'
+      message: recovery parameter Secret identity is fixed
+    - expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data'
+      message: recovery parameters must be one immutable opaque payload
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-tikv-recovery-request-parameters
+spec:
+  policyName: kubebrain-tikv-recovery-request-parameters
+  validationActions: [Deny]

@@ -10,6 +10,8 @@ EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
 EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 ENDPOINT="${ENDPOINT:-}"
 RECOVERY_ATTEMPT_ID="${RECOVERY_ATTEMPT_ID:-}"
+RECOVERY_REQUEST_ID="${RECOVERY_REQUEST_ID:-}"
+RECEIPT_OUTPUT="${RECEIPT_OUTPUT:-}"
 POD_READY_TIMEOUT_SECONDS="${POD_READY_TIMEOUT_SECONDS:-300}"
 PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS:-10}"
 ALLOW_KUBEBRAIN_RECOVERY="${ALLOW_KUBEBRAIN_RECOVERY:-false}"
@@ -17,6 +19,7 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
 JQ="${JQ:-jq}"
+DATE="${DATE:-date}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REGION_HEALTH_COMMAND="${REGION_HEALTH_COMMAND:-${SCRIPT_DIR}/validate-tikv-region-health.sh}"
 
@@ -29,6 +32,9 @@ die() { echo "$*" >&2; exit 1; }
 [[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_CLUSTER_ID must be a positive integer"
 [[ "$ENDPOINT" =~ ^https?://[^[:space:],]+$ ]] || die "ENDPOINT must be exactly one HTTP(S) URL"
 [[ "$RECOVERY_ATTEMPT_ID" =~ ^[a-z0-9]([-a-z0-9]{0,28}[a-z0-9])?$ ]] || die "RECOVERY_ATTEMPT_ID must be a DNS label of at most 30 characters"
+[[ "$RECOVERY_REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "RECOVERY_REQUEST_ID must be a DNS-compatible external decision ID"
+[[ -n "$RECEIPT_OUTPUT" && "$RECEIPT_OUTPUT" == /* ]] || die "RECEIPT_OUTPUT must be an absolute path"
+[[ ! -e "$RECEIPT_OUTPUT" ]] || die "RECEIPT_OUTPUT already exists"
 [[ "$POD_READY_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "POD_READY_TIMEOUT_SECONDS must be a positive integer"
 [[ "$PROBE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "PROBE_TIMEOUT_SECONDS must be a positive integer"
 (( POD_READY_TIMEOUT_SECONDS <= 1800 )) || die "POD_READY_TIMEOUT_SECONDS must be at most 1800"
@@ -128,5 +134,14 @@ probe() {
 }
 probe || die "KubeBrain recovery transaction verification failed; data plane was returned to zero replicas"
 
+completed_at_unix="$($DATE +%s)"
+[[ "$completed_at_unix" =~ ^[1-9][0-9]*$ ]] || die "completion time is invalid"
+receipt_tmp="${RECEIPT_OUTPUT}.tmp.${RECOVERY_ATTEMPT_ID}"
+umask 077
+printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":"%s","ready_replicas":3,"request_id":"%s","storage_health_verified":true,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
+  "$RECOVERY_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
+  "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$RECOVERY_REQUEST_ID" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" || \
+  die "cannot write recovery receipt"
+mv -f -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish recovery receipt"
 completed=true
 echo "KubeBrain recovery succeeded: three replicas are Ready, storage health is stable, and Put/Get/Delete passed"

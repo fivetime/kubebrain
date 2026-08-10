@@ -187,19 +187,67 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 
 	binding := documents[3]
 	require.Equal(t, "RoleBinding", binding.Kind)
-	require.Len(t, binding.Subjects, 7)
+	require.Len(t, binding.Subjects, 8)
 	for _, name := range []string{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-restore-cutover-executor",
 		"kubebrain-post-restore-audit-executor",
 		"kubebrain-certificate-rotation-executor", "kubebrain-destroy-executor",
 		"kubebrain-tikv-transaction-repair-executor",
+		"kubebrain-tikv-transaction-recovery-executor",
 	} {
 		require.Contains(t, binding.Subjects, rbacParty{
 			Kind: "ServiceAccount", Name: name, Namespace: "kubebrain-operations",
 		})
 	}
 	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-worker"}, binding.RoleRef)
+}
+
+func TestTiKVTransactionRecoveryRBACCannotDeleteStorage(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-tikv-transaction-recovery-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 6)
+	require.Equal(t, "kubebrain-system", documents[0].Metadata.Namespace)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"apps"}, Resources: []string{"statefulsets"}, ResourceNames: []string{"kubebrain"}, Verbs: []string{"get", "watch"}},
+		{APIGroups: []string{"apps"}, Resources: []string{"statefulsets/scale"}, ResourceNames: []string{"kubebrain"}, Verbs: []string{"get", "patch", "update"}},
+		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "watch"}},
+		{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
+	}, documents[0].Rules)
+	require.Equal(t, "tidb-cluster", documents[2].Metadata.Namespace)
+	for _, rule := range documents[2].Rules {
+		require.NotContains(t, rule.Verbs, "delete")
+		require.NotContains(t, rule.Verbs, "patch")
+		require.NotContains(t, rule.Verbs, "update")
+	}
+	require.Equal(t, "ClusterRole", documents[4].Kind)
+	require.Equal(t, []rbacRule{{APIGroups: []string{""}, Resources: []string{"persistentvolumes"}, Verbs: []string{"get"}}}, documents[4].Rules)
+	require.Equal(t, rbacParty{Kind: "ClusterRole", Name: "kubebrain-tikv-transaction-recovery-pv-reader"}, documents[5].RoleRef)
+}
+
+func TestTiKVTransactionRecoveryRequesterCanOnlyReadIdentityAndSubmit(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-tikv-transaction-recovery-requester-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 7)
+	require.Equal(t, "ServiceAccount", documents[0].Kind)
+	require.Equal(t, "kubebrain-repair-operations", documents[0].Metadata.Namespace)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
+	}, documents[1].Rules)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"apps"}, Resources: []string{"statefulsets"},
+		ResourceNames: []string{"kubebrain"}, Verbs: []string{"get"},
+	}}, documents[3].Rules)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"pingcap.com"}, Resources: []string{"tidbclusters"},
+		ResourceNames: []string{"kb"}, Verbs: []string{"get"},
+	}}, documents[5].Rules)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	for _, forbidden := range []string{"pods/exec", "statefulsets/scale", "persistentvolumeclaims", "verbs: [delete", "verbs: [patch", "verbs: [update"} {
+		require.NotContains(t, string(data), forbidden)
+	}
 }
 
 func TestTiKVTransactionRepairRBACIsNamespacedAndCannotDeletePVCs(t *testing.T) {
@@ -267,7 +315,10 @@ func TestTiKVRepairAlertReceiverUsesAnIsolatedNonDestructiveQueue(t *testing.T) 
 	}, receiverRole.Rules)
 	require.Equal(t, []rbacRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}}}, parameterReader.Rules)
 	require.Equal(t, rbacParty{Kind: "ClusterRole", Name: "kubebrain-operation-worker-managed-namespace"}, workerBinding.RoleRef)
-	require.Equal(t, []rbacParty{{Kind: "ServiceAccount", Name: "kubebrain-tikv-transaction-repair-executor", Namespace: "kubebrain-operations"}}, workerBinding.Subjects)
+	require.ElementsMatch(t, []rbacParty{
+		{Kind: "ServiceAccount", Name: "kubebrain-tikv-transaction-repair-executor", Namespace: "kubebrain-operations"},
+		{Kind: "ServiceAccount", Name: "kubebrain-tikv-transaction-recovery-executor", Namespace: "kubebrain-operations"},
+	}, workerBinding.Subjects)
 	require.Equal(t, rbacParty{Kind: "ClusterRole", Name: "kubebrain-operation-approver-managed-namespace"}, approverBinding.RoleRef)
 
 	data, err := os.ReadFile(path)
@@ -350,7 +401,7 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.VersionAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, "request.userInfo.username")
 	require.Contains(t, policy.Spec.Validations[4].Expression, "kubebrain-operation-approver")
-	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, policy.Spec.Validations[4].Expression, operationType)
 	}
 	require.NotContains(t, policy.Spec.Validations[4].Expression, `"Backup"`)

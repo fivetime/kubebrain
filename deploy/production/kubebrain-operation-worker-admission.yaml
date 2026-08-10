@@ -28,6 +28,8 @@ spec:
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-certificate-rotation-executor") ||
         (object.spec.type == "TiKVTransactionRepair" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-tikv-transaction-repair-executor") ||
+        (object.spec.type == "TiKVTransactionRecovery" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-tikv-transaction-recovery-executor") ||
         (object.spec.type == "Destroy" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-destroy-executor")
       message: operation status updates require the executor identity bound to the operation type

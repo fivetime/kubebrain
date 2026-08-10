@@ -664,6 +664,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"run-tikv-transaction-repair-operation.sh", "kubebrain-tikv-transaction-repair-executor-env",
 			"kubebrain-tikv-transaction-repair-executor-workspace",
 		},
+		"kubebrain-tikv-transaction-recovery-executor": {
+			"run-tikv-transaction-recovery-operation.sh", "kubebrain-tikv-transaction-recovery-executor-env",
+			"kubebrain-tikv-transaction-recovery-executor-workspace",
+		},
 		"kubebrain-destroy-executor": {
 			"run-destroy-operation.sh", "kubebrain-destroy-executor-env",
 			"kubebrain-destroy-executor-workspace",
@@ -734,7 +738,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		require.NotNil(t, workspace)
 		require.Equal(t, want.claim,
 			nestedString(t, workspace, "persistentVolumeClaim", "claimName"))
-		if name == "kubebrain-tikv-transaction-repair-executor" {
+		if name == "kubebrain-tikv-transaction-repair-executor" || name == "kubebrain-tikv-transaction-recovery-executor" {
 			require.Nil(t, parameterToken)
 			require.Nil(t, parameterCA)
 			env, found, err := unstructured.NestedSlice(container.Object, "env")
@@ -887,7 +891,8 @@ func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) 
 	for _, name := range []string{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
-		"kubebrain-certificate-rotation-executor", "kubebrain-destroy-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
+		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",
 	} {
 		require.Contains(t, expression, name)
 	}
@@ -958,6 +963,51 @@ func TestTiKVRepairAlertReceiverAdmissionPinsRequestShapeAndIdentity(t *testing.
 
 			binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", tc.name)
 			require.Equal(t, tc.name, nestedString(t, binding, "spec", "policyName"))
+			actions, found, err := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Equal(t, []string{"Deny"}, actions)
+		})
+	}
+}
+
+func TestTiKVRecoveryRequesterAdmissionPinsPendingRequestShape(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-tikv-transaction-recovery-requester-admission.yaml")
+	for _, tc := range []struct {
+		name      string
+		resource  string
+		fragments []string
+	}{
+		{
+			name: "kubebrain-tikv-recovery-request-operation", resource: "kubebrainoperations",
+			fragments: []string{`^tikv-recovery-[a-f0-9]{20}$`, `TiKVTransactionRecovery`,
+				`platform:tikv-repair-recovery`, `maxAttempts == 1`, `parameters.json`},
+		},
+		{
+			name: "kubebrain-tikv-recovery-request-parameters", resource: "secrets",
+			fragments: []string{`^tikv-recovery-[a-f0-9]{20}-parameters$`, `object.immutable == true`,
+				`object.type == "Opaque"`, `size(object.data) == 1`, `parameters.json`},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", tc.name)
+			require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+			conditions, found, err := unstructured.NestedSlice(policy.Object, "spec", "matchConditions")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, conditions, 1)
+			require.Contains(t, conditions[0].(map[string]any)["expression"], "kubebrain-tikv-transaction-recovery-requester")
+			validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+			require.NoError(t, err)
+			require.True(t, found)
+			var text strings.Builder
+			for _, validation := range validations {
+				text.WriteString(validation.(map[string]any)["expression"].(string))
+			}
+			for _, fragment := range tc.fragments {
+				require.Contains(t, text.String(), fragment)
+			}
+			binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", tc.name)
 			actions, found, err := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
 			require.NoError(t, err)
 			require.True(t, found)
@@ -1076,7 +1126,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
-	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, approvalExpression, `"`+operationType+`"`)
 	}
 	require.NotContains(t, approvalExpression, `"Backup"`)

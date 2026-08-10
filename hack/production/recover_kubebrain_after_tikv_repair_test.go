@@ -15,6 +15,9 @@ func TestRecoverKubeBrainAfterTiKVRepair(t *testing.T) {
 		output, err := runProductionScriptCommand(t, "recover-kubebrain-after-tikv-repair.sh", env)
 		require.NoError(t, err, string(output))
 		require.Contains(t, string(output), "KubeBrain recovery succeeded")
+		receipt, readErr := os.ReadFile(recoveryEnvValue(env, "RECEIPT_OUTPUT"))
+		require.NoError(t, readErr)
+		require.JSONEq(t, `{"attempt_id":"recovery-1","cluster_id":7671,"completed_at_unix":1786380000,"format":"kubebrain.tikv-repair-recovery.receipt.v1","kubebrain_statefulset_uid":"kb-uid","ready_replicas":3,"request_id":"change-2026-001","storage_health_verified":true,"tidb_cluster_uid":"tc-uid","transaction_verified":true}`, string(receipt))
 		log := readRecoveryLog(t, logPath)
 		require.Equal(t, 2, strings.Count(log, "region-health\n"), log)
 		requireOrder(t, log, "region-health", "scale statefulset kubebrain --replicas=3", "rollout status statefulset/kubebrain", "exec kubebrain-0 -c kubebrain -- etcdctl")
@@ -84,8 +87,11 @@ func recoveryFixture(t *testing.T) ([]string, string) {
 	uidPath := filepath.Join(dir, "uid")
 	logPath := filepath.Join(dir, "calls.log")
 	regionCountPath := filepath.Join(dir, "region-count")
+	receiptPath := filepath.Join(dir, "recovery.receipt.json")
 	require.NoError(t, os.WriteFile(statePath, []byte("0"), 0o600))
 	require.NoError(t, os.WriteFile(uidPath, []byte("kb-uid"), 0o600))
+	dateCommand := filepath.Join(dir, "date")
+	require.NoError(t, os.WriteFile(dateCommand, []byte("#!/usr/bin/env bash\nprintf '1786380000\\n'\n"), 0o755))
 
 	fakeKubectl := filepath.Join(dir, "kubectl")
 	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
@@ -146,6 +152,9 @@ fi
 		"EXPECTED_CLUSTER_ID=7671",
 		"ENDPOINT=http://kubebrain:3379",
 		"RECOVERY_ATTEMPT_ID=recovery-1",
+		"RECOVERY_REQUEST_ID=change-2026-001",
+		"RECEIPT_OUTPUT=" + receiptPath,
+		"DATE=" + dateCommand,
 		"KUBECTL=" + fakeKubectl,
 		"REGION_HEALTH_COMMAND=" + regionGate,
 		"RECOVERY_LOG=" + logPath,
@@ -153,6 +162,16 @@ fi
 		"RECOVERY_UID=" + uidPath,
 		"REGION_COUNT=" + regionCountPath,
 	}, logPath
+}
+
+func recoveryEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, value := range env {
+		if strings.HasPrefix(value, prefix) {
+			return strings.TrimPrefix(value, prefix)
+		}
+	}
+	return ""
 }
 
 func readRecoveryLog(t *testing.T, path string) string {

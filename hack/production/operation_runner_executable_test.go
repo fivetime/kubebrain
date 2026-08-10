@@ -28,6 +28,8 @@ func TestOperationRunnersRejectInvalidSubcommandBeforeClaim(t *testing.T) {
 			},
 		},
 		{name: "destroy command", script: "run-destroy-operation.sh", command: "DESTROY_COMMAND"},
+		{name: "TiKV repair command", script: "run-tikv-transaction-repair-operation.sh", command: "REPAIR_COMMAND"},
+		{name: "TiKV recovery command", script: "run-tikv-transaction-recovery-operation.sh", command: "RECOVERY_COMMAND"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -40,6 +42,7 @@ func TestOperationRunnersRejectInvalidSubcommandBeforeClaim(t *testing.T) {
 			env := []string{
 				"WORKER_ID=worker-a",
 				"OPERATIONCTL=" + operationctl,
+				"WORK_DIR=" + dir,
 				tc.command + "=" + missing,
 			}
 			for _, item := range tc.extraEnvs {

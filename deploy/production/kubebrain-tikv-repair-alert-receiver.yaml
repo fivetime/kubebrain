@@ -114,6 +114,9 @@ subjects:
   - kind: ServiceAccount
     name: kubebrain-tikv-transaction-repair-executor
     namespace: kubebrain-operations
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-recovery-executor
+    namespace: kubebrain-operations
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -137,6 +140,9 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-recovery-executor
     namespace: kubebrain-operations
 roleRef:
   apiGroup: rbac.authorization.k8s.io

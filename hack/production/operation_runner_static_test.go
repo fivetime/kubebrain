@@ -17,6 +17,7 @@ func TestOperationRunnersExposeHeartbeatIntervalOverride(t *testing.T) {
 		"run-post-restore-audit-operation.sh",
 		"run-restore-cutover-operation.sh",
 		"run-tikv-transaction-repair-operation.sh",
+		"run-tikv-transaction-recovery-operation.sh",
 	} {
 		t.Run(script, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join(".", script))
@@ -64,6 +65,7 @@ func TestOperationRunnersThatTrustClaimNamespaceHaveFailClosedTests(t *testing.T
 		{testFile: "run_post_restore_audit_operation_test.go", script: "run-post-restore-audit-operation.sh"},
 		{testFile: "run_restore_cutover_operation_test.go", script: "run-restore-cutover-operation.sh"},
 		{testFile: "run_tikv_transaction_repair_operation_test.go", script: "run-tikv-transaction-repair-operation.sh"},
+		{testFile: "run_tikv_transaction_recovery_operation_test.go", script: "run-tikv-transaction-recovery-operation.sh"},
 	} {
 		t.Run(tc.script, func(t *testing.T) {
 			script, err := os.ReadFile(filepath.Join(".", tc.script))

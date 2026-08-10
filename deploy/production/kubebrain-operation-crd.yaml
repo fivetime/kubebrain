@@ -105,6 +105,7 @@ spec:
                     - PostRestoreAudit
                     - CertificateRotation
                     - TiKVTransactionRepair
+                    - TiKVTransactionRecovery
                     - Destroy
                 parametersSHA256:
                   type: string
