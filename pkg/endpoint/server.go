@@ -75,10 +75,6 @@ func newHTTPMuxWithHandlers(handlersMaps ...map[string]http.Handler) *http.Serve
 	return mux
 }
 
-func newHTTPAccessControlledServer(cors, hostWhitelist []string, handlersMaps ...map[string]http.Handler) exposedServer {
-	return newHttpServer(newHTTPAccessControlledHandler(cors, hostWhitelist, handlersMaps...))
-}
-
 func newHTTPAccessControlledHandler(cors, hostWhitelist []string, handlersMaps ...map[string]http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	for _, handlersMap := range handlersMaps {
@@ -225,30 +221,6 @@ func (h *httpServer) serve(listener net.Listener) error {
 
 func (h *httpServer) close() error {
 	return h.svr.Close()
-}
-
-func newGrpcServer(svr *grpc.Server) exposedServer {
-	return &grpcServer{Server: svr}
-}
-
-type grpcServer struct {
-	*grpc.Server
-}
-
-func (g *grpcServer) name() string {
-	return "grpc"
-}
-
-func (g *grpcServer) matchWriters() []cmux.MatchWriter {
-	return matchersToMatchWriters(cmux.HTTP2())
-}
-
-func (g *grpcServer) serve(listener net.Listener) error {
-	return g.Serve(listener)
-}
-
-func (g *grpcServer) close() error {
-	return closeGRPCServer(g.Server)
 }
 
 func closeGRPCServer(server *grpc.Server) error {

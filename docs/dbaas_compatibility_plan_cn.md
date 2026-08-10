@@ -45101,6 +45101,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   map 只包含空 service `"" -> SERVING`，不得意外发布 `etcdserverpb.KV`、Brain 私有 service 或其他逐服务名称。该项也证明
   `List` 能穿过 KubeBrain client interceptor，而不是因新增 method 未分类返回错误；不访问 TiKV/PD。
 
+- A4265 修复 A4129/A4130 安全基线后的模块与工具链回退。当前 upstream `baeac759f` 已将
+  `x/crypto/net/sys/text` 对齐到 0.54/0.57/0.47/0.40；KubeBrain 主模块却重新解析到
+  0.52/0.55/0.45/0.37，且只有 client-compat 声明了旧的 `toolchain go1.26.4`，其余四个 module 在
+  `GOTOOLCHAIN=auto` 下会接受宿主 go1.26.0。实测 go1.26.0 的 govulncheck 命中 18 个可达标准库漏洞，包含 TLS、x509、HTTP/2
+  和 URL parsing。现在主模块同步 upstream 依赖组（MVS 同步提升 `x/sync=0.22.0`、`x/term=0.45.0`），全部五个 module
+  统一声明 `toolchain go1.26.5`。同一宿主随后逐模块解析为 go1.26.5，五次 `govulncheck@v1.6.0 ./...` 均为零可达漏洞。
+  该项改变构建与传输安全基线，不改变 TiKV 数据语义；真实 TiKV/PD 不适用，但发布仍必须使用已固定 digest 的 1.26.5 builder。
+
+- A4266 恢复升级后发布门禁的全量 `staticcheck@v0.7.0 ./...`。删除已被 handler 直连路径取代的 endpoint/gRPC 包装层，以及被
+  `stageTxnWithCursor` 原子分阶段执行器取代、仅自递归且不可达的旧 `executeTxnWithCursor`；后者若继续保留，容易让后续维护误用
+  已不满足单 revision 原子提交的顺序执行路径。快照 revision 的 `int64` 上界检查改为可成立的等号边界，结构化 metrics wiring
+  测试则明确记录继续使用 `parser.ParseDir` 是为了扫描当前 package 并自行排除测试文件；同时去掉 namespaced range 回归中的死赋值。
+  清理不改变客户端可观察语义，事务与快照相关回归继续作为保护；该项不访问 TiKV/PD。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

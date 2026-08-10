@@ -2974,18 +2974,16 @@ func TestNamespacedFromKeyPrefixEndPreservesAdjacentKeys(t *testing.T) {
 	prefix := []byte("/registry/namespace-prefix/tenant/")
 	prefixEnd := []byte("/registry/namespace-prefix/tenant0")
 	adjacentKey := []byte("/registry/namespace-prefix/tenant0/outside")
-	var lastPutRevision int64
 	for _, suffix := range []byte{'a', 'b', 'c'} {
-		putResp, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key:   append(append([]byte{}, prefix...), suffix),
 			Value: []byte{'v', suffix},
 		})
 		require.NoError(t, err)
-		lastPutRevision = putResp.Header.Revision
 	}
 	adjacentPut, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: adjacentKey, Value: []byte("outside")})
 	require.NoError(t, err)
-	lastPutRevision = adjacentPut.Header.Revision
+	lastPutRevision := adjacentPut.Header.Revision
 
 	visible, err := server.Range(ctx, &etcdserverpb.RangeRequest{
 		Key:      prefix,

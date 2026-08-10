@@ -2,6 +2,8 @@ module bigstream
 
 go 1.26
 
+toolchain go1.26.5
+
 require go.etcd.io/etcd/client/v3 v3.7.0
 
 require (

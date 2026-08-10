@@ -2,7 +2,7 @@ module github.com/kubewharf/kubebrain/hack/etcd-client-compat
 
 go 1.26
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/anishathalye/porcupine v1.1.0

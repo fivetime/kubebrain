@@ -353,8 +353,10 @@ manifest 前，应从每个 build stage/final image 提取全部可执行文件�
 再合并 manifest list。
 
 CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.5；Dockerfile 同时固定
-精确 patch tag 和不可变 digest。CI 使用固定 `govulncheck` 版本扫描根模块与生产对象存储
-子模块的可达漏洞，使用固定 `staticcheck` 版本扫描两模块，并使用固定 tag+digest 的
+精确 patch tag 和不可变 digest。根模块及 objectstore、etcd-client-compat、bigstream、loadgen
+四个独立模块都必须声明 `toolchain go1.26.5`，让 `GOTOOLCHAIN=auto` 的本地 build/test/scan 也不能
+静默退回存在已知标准库漏洞的 1.26.0。CI 使用固定 `govulncheck` 版本扫描全部五个模块的可达漏洞，
+使用固定 `staticcheck` 版本扫描生产模块，并使用固定 tag+digest 的
 ShellCheck 镜像检查全部 Git 跟踪 shell 脚本的 warning/error；任一命中均阻止发布。CI 构建 TiKV 和
 Badger image 时必须显式传入 `TARGETARCH=amd64` 及上述三项 metadata，并回读 OCI
 revision、运行用户和 kubectl 版本。release workflow 必须使用 QEMU、Buildx 和

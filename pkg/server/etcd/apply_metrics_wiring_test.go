@@ -30,6 +30,7 @@ func TestApplyDurationWiresEverySupportedUpstreamV3Op(t *testing.T) {
 	}
 
 	fset := token.NewFileSet()
+	//lint:ignore SA1019 ParseDir is intentional for this package-local structural guard; test files are filtered below.
 	packages, err := parser.ParseDir(fset, ".", nil, 0)
 	require.NoError(t, err)
 	pkg := packages["etcd"]
