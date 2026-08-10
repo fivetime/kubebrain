@@ -2109,6 +2109,60 @@ func TestLeaseKeepAliveRejectsStaleOrChangedEpochWhileWaitingForRenewal(t *testi
 	}
 }
 
+func TestLeaseWritesKeepInitialStaleLeadershipDecision(t *testing.T) {
+	tests := []struct {
+		name string
+		op   string
+		call func(*RPCServer) error
+	}{
+		{
+			name: "grant",
+			op:   "lease grant",
+			call: func(server *RPCServer) error {
+				_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: 70032, TTL: 30})
+				return err
+			},
+		},
+		{
+			name: "revoke",
+			op:   "lease revoke",
+			call: func(server *RPCServer) error {
+				_, err := server.LeaseRevoke(context.Background(), &etcdserverpb.LeaseRevokeRequest{ID: 70032})
+				return err
+			},
+		},
+		{
+			name: "keepalive",
+			op:   "lease keepalive",
+			call: func(server *RPCServer) error {
+				return server.LeaseKeepAlive(&fakeLeaseKeepAliveServer{
+					requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: 70032}},
+				})
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			var checks atomic.Int32
+			server.peers = testPeerService{
+				isLeaderFn: func() bool { return true },
+				epochFn: func() (uint64, bool) {
+					if checks.Add(1) == 1 {
+						return 1, false
+					}
+					return 2, true
+				},
+			}
+
+			requireLeaseFollowerUnavailable(t, tt.call(server), tt.op+" error addr is test-peer leader test-peer")
+			require.Equal(t, int32(1), checks.Load(),
+				"routing must not turn an already-observed stale decision into an empty local success")
+		})
+	}
+}
+
 func TestLeaseKeepAliveProxiesDemotionWhileWaitingForRenewal(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

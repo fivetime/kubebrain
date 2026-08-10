@@ -44909,6 +44909,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   竞态表测覆盖 stale freshness、changed epoch、deadline 未变化及既有 demotion/proxy，lease read 回归覆盖 stale-but-flagged-leader。
   真实 TiKV/PD partition + delayed client-go demotion 仍待既知环境故障恢复后补跑。
 
+- A4244 修复 lease 写入口在 leadership stale→fresh 翻转时吞掉请求。Grant/Revoke/KeepAlive 先调用
+  `EpochAndLeadingFresh` 决定本地或 follower 路径；此前第一次得到 false 后又调用 `requireLeaseLeader`，若节点恰在两次读取间
+  获得新 term，第二次会返回 nil，于是 proxy disabled 的 Grant/Revoke 返回 `(nil,nil)`，KeepAlive 则结束 stream 且没有任何
+  response。该请求既未按旧 term 执行，也未在新 term reload 后重试，不符合 etcd 的确定响应/可重试错误契约。现在首次 stale
+  决策即固定为既有 `Unavailable`（或在 proxy enabled 时转发），不会被第二次本地状态读取反转；等待锁后发现 epoch/freshness
+  变化的 A4243 路径同样使用直接 unavailable helper。表驱动 seam 对 Grant、Revoke、KeepAlive 让第一次检查返回 epoch 1/stale、
+  后续检查返回 epoch 2/fresh，固定三者均只消费一次路由快照且返回非空精确错误。真实 TiKV/PD 快速 re-election 注入仍待环境恢复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

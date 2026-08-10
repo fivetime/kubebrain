@@ -169,7 +169,6 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	}
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
-		err := m.requireLeaseLeader("lease grant")
 		if m.srv.peers.EtcdProxyEnabled() {
 			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
 			if err != nil {
@@ -179,7 +178,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 			m.srv.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
 		}
-		return nil, err
+		return nil, m.leaseLeaderUnavailable("lease grant")
 	}
 	if err := m.requireLeaseReady(); err != nil {
 		return nil, err
@@ -288,7 +287,6 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	ctx = withAuthWriteGuard(ctx, caller)
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
-		err := m.requireLeaseLeader("lease revoke")
 		if m.srv.peers.EtcdProxyEnabled() {
 			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
 			if err != nil {
@@ -298,7 +296,7 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 			m.srv.observeForwardedRevision(response.GetHeader(), err)
 			return response, err
 		}
-		return nil, err
+		return nil, m.leaseLeaderUnavailable("lease revoke")
 	}
 	if err := m.requireLeaseReady(); err != nil {
 		return nil, err
@@ -382,9 +380,8 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
 				return authErr
 			}
-			err := m.requireLeaseLeader("lease keepalive")
 			if !m.srv.peers.EtcdProxyEnabled() {
-				return err
+				return m.leaseLeaderUnavailable("lease keepalive")
 			}
 			if err := forward(); err != nil {
 				return err
