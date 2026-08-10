@@ -170,7 +170,7 @@ spec:
           args:
             - --listen-address=:8443
             - --namespace=kubebrain-operations
-            - --additional-namespace=kubebrain-repair-operations
+            - --additional-readiness-namespace=kubebrain-repair-operations
             - --token-audience=kubebrain-operation-parameters
             - --tls-cert-file=/var/run/kubebrain-parameter-tls/tls.crt
             - --tls-key-file=/var/run/kubebrain-parameter-tls/tls.key

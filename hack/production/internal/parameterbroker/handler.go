@@ -36,13 +36,12 @@ var serviceAccountTypes = map[string]string{
 }
 
 type Handler struct {
-	tokens            kubernetes.Interface
-	dynamic           dynamic.Interface
-	identityNamespace string
-	queueNamespaces   []string
-	queueNamespaceSet map[string]struct{}
-	audience          string
-	requestTimeout    time.Duration
+	tokens              kubernetes.Interface
+	dynamic             dynamic.Interface
+	identityNamespace   string
+	readinessNamespaces []string
+	audience            string
+	requestTimeout      time.Duration
 }
 
 type parameterRequestIdentity struct {
@@ -54,7 +53,7 @@ type parameterRequestIdentity struct {
 
 func NewHandler(
 	tokens kubernetes.Interface, dynamicClient dynamic.Interface, namespace, audience string,
-	requestTimeout time.Duration, additionalNamespaces ...string,
+	requestTimeout time.Duration, additionalReadinessNamespaces ...string,
 ) (*Handler, error) {
 	if tokens == nil || dynamicClient == nil {
 		return nil, errors.New("kubernetes clients are required")
@@ -68,21 +67,21 @@ func NewHandler(
 	if requestTimeout <= 0 {
 		return nil, errors.New("request timeout must be positive")
 	}
-	queueNamespaces := []string{namespace}
-	queueNamespaceSet := map[string]struct{}{namespace: {}}
-	for _, additional := range additionalNamespaces {
+	readinessNamespaces := []string{namespace}
+	readinessNamespaceSet := map[string]struct{}{namespace: {}}
+	for _, additional := range additionalReadinessNamespaces {
 		if problems := validation.IsDNS1123Label(additional); len(problems) != 0 {
-			return nil, errors.New("invalid additional parameter broker namespace " + additional + ": " + problems[0])
+			return nil, errors.New("invalid additional readiness namespace " + additional + ": " + problems[0])
 		}
-		if _, exists := queueNamespaceSet[additional]; exists {
-			return nil, errors.New("duplicate parameter broker namespace " + additional)
+		if _, exists := readinessNamespaceSet[additional]; exists {
+			return nil, errors.New("duplicate readiness namespace " + additional)
 		}
-		queueNamespaces = append(queueNamespaces, additional)
-		queueNamespaceSet[additional] = struct{}{}
+		readinessNamespaces = append(readinessNamespaces, additional)
+		readinessNamespaceSet[additional] = struct{}{}
 	}
 	return &Handler{
 		tokens: tokens, dynamic: dynamicClient, identityNamespace: namespace, audience: audience,
-		queueNamespaces: queueNamespaces, queueNamespaceSet: queueNamespaceSet, requestTimeout: requestTimeout,
+		readinessNamespaces: readinessNamespaces, requestTimeout: requestTimeout,
 	}, nil
 }
 
@@ -112,10 +111,6 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	identity, err := parameterIdentityFromQuery(request.URL.Query())
 	if err != nil {
 		http.Error(response, "namespace, name, owner, and positive attempt are required", http.StatusBadRequest)
-		return
-	}
-	if _, allowed := h.queueNamespaceSet[identity.namespace]; !allowed {
-		http.Error(response, "parameters unavailable", http.StatusForbidden)
 		return
 	}
 	operationType, err := h.authenticate(request, token)
@@ -196,7 +191,7 @@ func (h *Handler) Ready(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, h.requestTimeout)
 	defer cancel()
 	const probeName = "kubebrain-readiness-probe-do-not-create"
-	for _, namespace := range h.queueNamespaces {
+	for _, namespace := range h.readinessNamespaces {
 		if _, err := h.dynamic.Resource(operationqueue.Resource).Namespace(namespace).
 			Get(ctx, probeName, metav1.GetOptions{}); err != nil && !isExpectedProbeNotFound(err, probeName) {
 			return fmt.Errorf("probe operation API in %s: %w", namespace, err)

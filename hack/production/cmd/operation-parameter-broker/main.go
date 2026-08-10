@@ -23,11 +23,11 @@ import (
 var inClusterConfig = rest.InClusterConfig
 
 func main() {
-	var address, namespace, additionalNamespace, audience, certFile, keyFile, kubeconfig string
+	var address, namespace, additionalReadinessNamespace, audience, certFile, keyFile, kubeconfig string
 	var certReloadInterval, kubernetesRequestTimeout time.Duration
 	flag.StringVar(&address, "listen-address", ":8443", "HTTPS listen address")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
-	flag.StringVar(&additionalNamespace, "additional-namespace", "", "additional isolated operation queue namespace")
+	flag.StringVar(&additionalReadinessNamespace, "additional-readiness-namespace", "", "additional operation queue namespace covered by readiness")
 	flag.StringVar(&audience, "token-audience", "kubebrain-operation-parameters", "required projected service account token audience")
 	flag.StringVar(&certFile, "tls-cert-file", "", "HTTPS server certificate")
 	flag.StringVar(&keyFile, "tls-key-file", "", "HTTPS server private key")
@@ -42,12 +42,12 @@ func main() {
 	if err := namespaceinventory.ValidateOne(namespace); err != nil {
 		log.Fatal("--namespace: ", err)
 	}
-	if additionalNamespace != "" {
-		if err := namespaceinventory.ValidateOne(additionalNamespace); err != nil {
-			log.Fatal("--additional-namespace: ", err)
+	if additionalReadinessNamespace != "" {
+		if err := namespaceinventory.ValidateOne(additionalReadinessNamespace); err != nil {
+			log.Fatal("--additional-readiness-namespace: ", err)
 		}
-		if additionalNamespace == namespace {
-			log.Fatal("--additional-namespace must differ from --namespace")
+		if additionalReadinessNamespace == namespace {
+			log.Fatal("--additional-readiness-namespace must differ from --namespace")
 		}
 	}
 	certificate, err := tlscertreload.New(certFile, keyFile)
@@ -73,12 +73,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	additionalNamespaces := []string{}
-	if additionalNamespace != "" {
-		additionalNamespaces = append(additionalNamespaces, additionalNamespace)
+	additionalReadinessNamespaces := []string{}
+	if additionalReadinessNamespace != "" {
+		additionalReadinessNamespaces = append(additionalReadinessNamespaces, additionalReadinessNamespace)
 	}
 	handler, err := parameterbroker.NewHandler(
-		tokens, dynamicClient, namespace, audience, kubernetesRequestTimeout, additionalNamespaces...,
+		tokens, dynamicClient, namespace, audience, kubernetesRequestTimeout, additionalReadinessNamespaces...,
 	)
 	if err != nil {
 		log.Fatal(err)

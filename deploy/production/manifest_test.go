@@ -830,7 +830,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 	require.True(t, found)
 	require.Contains(t, args, "--tls-reload-interval=30s")
 	require.Contains(t, args, "--kubernetes-request-timeout=5s")
-	require.Contains(t, args, "--additional-namespace=kubebrain-repair-operations")
+	require.Contains(t, args, "--additional-readiness-namespace=kubebrain-repair-operations")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	assertReadOnlyTLSSecretVolume(t, pod, container,
 		"tls", "kubebrain-operation-parameter-broker-tls", "/var/run/kubebrain-parameter-tls")

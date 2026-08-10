@@ -225,7 +225,7 @@ func TestHandlerRejectsUnexpectedBodyBeforeAuthenticationAndOperationAPI(t *test
 	requireNoStoreHeaders(t, response)
 }
 
-func TestHandlerRejectsUnconfiguredQueueNamespaceBeforeAuthentication(t *testing.T) {
+func TestHandlerDelegatesManagedQueueNamespaceAuthorizationToKubernetesRBAC(t *testing.T) {
 	dynamicClient, claim, _ := claimedOperation(t)
 	tokens := tokenClient(
 		"system:serviceaccount:test:kubebrain-post-restore-audit-executor",
@@ -242,8 +242,9 @@ func TestHandlerRejectsUnconfiguredQueueNamespaceBeforeAuthentication(t *testing
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	require.Equal(t, http.StatusForbidden, response.Code)
-	require.Empty(t, tokens.Actions())
-	require.Empty(t, dynamicClient.Actions())
+	require.Len(t, tokens.Actions(), 1, "a valid managed namespace must reach TokenReview")
+	require.Len(t, dynamicClient.Actions(), 1, "Kubernetes RBAC and the Operation GET decide namespace access")
+	require.Equal(t, "other", dynamicClient.Actions()[0].GetNamespace())
 }
 
 func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
@@ -457,6 +458,25 @@ func TestNewHandlerRejectsInvalidNamespaceBeforeAPI(t *testing.T) {
 	require.ErrorContains(t, err, "invalid parameter broker namespace ops.ns")
 	require.Empty(t, dynamicClient.Actions())
 	require.Empty(t, tokens.Actions())
+}
+
+func TestNewHandlerRejectsInvalidOrDuplicateReadinessNamespace(t *testing.T) {
+	tokens := kubernetesfake.NewSimpleClientset()
+	dynamicClient := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	for _, tc := range []struct {
+		name       string
+		additional string
+		want       string
+	}{
+		{name: "invalid", additional: "repair.queue", want: "invalid additional readiness namespace"},
+		{name: "duplicate", additional: "test", want: "duplicate readiness namespace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second, tc.additional)
+			require.Nil(t, handler)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
 }
 
 func claimedOperation(t *testing.T) (*fake.FakeDynamicClient, *operationqueue.Claim, []byte) {

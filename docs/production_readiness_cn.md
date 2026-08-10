@@ -418,8 +418,9 @@ Bearer token 与 Service DNS 名。
 receiver 与其参数 Secret/Operation 固定在 `kubebrain-repair-operations`，不进入含备份、恢复和销毁
 参数的通用 queue。独立 inventory 只供 TiKV repair/recovery executor claim；两个 executor 都通过
 短期、固定 audience 的 projected token 从通用 parameter broker 读取参数，不持有任何 namespace 的
-Secret 权限。broker 以单独 Role 只读隔离 queue 的 Operation/Secret，并在服务内只允许
-`kubebrain-operations` 与 `kubebrain-repair-operations` 两个显式 namespace。receiver SA 仅可
+Secret 权限。broker 以单独 Role 只读隔离 queue 的 Operation/Secret，readiness 显式覆盖
+`kubebrain-operations` 与 `kubebrain-repair-operations` 两个基础 queue。业务请求可访问的
+namespace 仍由 broker SA 的逐 namespace RBAC 决定，以支持平台动态加入受管租户 queue。receiver SA 仅可
 get/create 该 namespace 的 Secret 和 Operation，并只读指定 KubeBrain StatefulSet 与 TidbCluster
 身份；它不能 update Operation（因此不能 approve）、写 status、管理 Lease、缩放 StatefulSet、
 访问 Pod 或删除任何资源。中央 approver/archiver 和 repair worker 通过逐 namespace RoleBinding
@@ -3064,8 +3065,9 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 不得回退为直接读取 Secret。`/v1/parameters` 只能携带 `namespace`、`name`、`owner` 和
 `attempt` 四个 query 参数且必须各恰好出现一次；缺失、重复、未知参数或非正 attempt 都应返回 400，
 `namespace` 必须是 DNS label，`name` 必须是 DNS subdomain，`owner` 必须符合 operation
-queue worker identity audit text 规则；namespace 还必须在 broker 的显式 queue allowlist 中，其他合法
-DNS namespace 在 TokenReview 和 Operation API 前以 403 拒绝。`/v1/parameters` 不接受 request body。query
+queue worker identity audit text 规则。合法 DNS namespace 会继续经过 TokenReview、Operation type/
+owner/attempt fence 和 Kubernetes RBAC；未授权 namespace 统一返回 403，不能依赖 HTTP 层静态列表封死
+平台动态受管 queue。`/v1/parameters` 不接受 request body。query
 identity 与 body 形状校验发生在 TokenReview 前，
 畸形请求不能消耗认证、Operation 或 Secret API；该边界同时避免代理、审计日志或客户端对
 重复参数取值不一致。`operationctl --action parameters`

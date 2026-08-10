@@ -45526,6 +45526,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   runbook 同步给出 `no/yes/no/no/yes` 的五项 `auth can-i` 预期。本项未部署 broker、扩 executor、读取现场
   Secret 或执行真实 repair。
 
+- A4301 修正 A4300 首版 namespace allowlist 对通用 DBaaS managed queue 的过度收紧。Operation worker、
+  scheduler inventory 与 `kubebrain-operation-parameter-broker-managed-namespace` 原本允许平台动态增加租户
+  namespace；若 broker HTTP 层只接受 central+repair 两个静态值，租户 Backup/Restore executor 即使持有
+  正确 projected identity、Operation lease 和逐 namespace RBAC，也会在 TokenReview 前被 403，破坏既有
+  多租户控制面。现在 `--additional-readiness-namespace` 只要求 broker 在接流前同时探测 repair queue 的
+  Operation/Secret API，不充当业务 allowlist。业务 namespace 先做严格 DNS/query 校验，再经过 TokenReview
+  的 SA→type、Operation owner/attempt/type 与 Kubernetes 逐 namespace RBAC；未授权 namespace 仍统一 403，
+  而平台新增且已授权的 managed queue 无需重启 broker 或修改静态参数。测试固定合法 managed namespace
+  会实际到达 TokenReview 和该 namespace 的 Operation GET，同时非法/重复 readiness namespace 在任何
+  kubeconfig/API 前拒绝；双 queue readiness、repair/recovery 端到端参数读取及 broker-only Secret 权限
+  继续通过。本项不改变 A4300 的 repair 最小权限，也未操作真实集群。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
