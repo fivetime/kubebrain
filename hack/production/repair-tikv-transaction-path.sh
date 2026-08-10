@@ -29,6 +29,8 @@ MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT="${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT:-12
 TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
 PD_DATA_DIR="${PD_DATA_DIR:-/var/lib/pd}"
 ALLOW_TIKV_POD_REPAIR="${ALLOW_TIKV_POD_REPAIR:-false}"
+REPAIR_MODE="${REPAIR_MODE:-transaction}"
+EXPECTED_ABNORMAL_STORE_IDS="${EXPECTED_ABNORMAL_STORE_IDS:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
 COMMAND_TIMEOUT="${COMMAND_TIMEOUT:-timeout}"
@@ -39,6 +41,14 @@ die() { echo "$*" >&2; exit 1; }
 
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
 [[ "$ALLOW_TIKV_POD_REPAIR" == "true" ]] || die "refusing TiKV Pod repair without ALLOW_TIKV_POD_REPAIR=true"
+[[ "$REPAIR_MODE" == "transaction" || "$REPAIR_MODE" == "quiesced" ]] || die "REPAIR_MODE must be transaction or quiesced"
+if [[ "$REPAIR_MODE" == "quiesced" ]]; then
+  [[ "$EXPECTED_ABNORMAL_STORE_IDS" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] ||
+    die "EXPECTED_ABNORMAL_STORE_IDS must be a comma-separated list of positive store IDs in quiesced mode"
+  normalized_expected_abnormal_store_ids="$(tr ',' '\n' <<<"$EXPECTED_ABNORMAL_STORE_IDS" | sort -n -u | paste -sd, -)"
+  [[ "$normalized_expected_abnormal_store_ids" == "$EXPECTED_ABNORMAL_STORE_IDS" ]] ||
+    die "EXPECTED_ABNORMAL_STORE_IDS must be sorted and unique"
+fi
 [[ -n "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]] || die "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"
 [[ -n "$EXPECTED_TIDB_CLUSTER_UID" ]] || die "EXPECTED_TIDB_CLUSTER_UID is required"
 [[ "$EXPECTED_CLUSTER_ID" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_CLUSTER_ID must be a positive integer"
@@ -81,7 +91,13 @@ actual_cluster_identity="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUS
 expected_cluster_identity="$EXPECTED_TIDB_CLUSTER_UID"$'\t'"$EXPECTED_CLUSTER_ID"$'\t3\t3'
 [[ "$actual_cluster_identity" == "$expected_cluster_identity" ]] || die "TidbCluster identity/topology fence failed"
 original_kb_replicas="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.spec.replicas}')"
-[[ "$original_kb_replicas" == "3" ]] || die "repair requires exactly 3 desired KubeBrain replicas"
+if [[ "$REPAIR_MODE" == "transaction" ]]; then
+  [[ "$original_kb_replicas" == "3" ]] || die "transaction repair requires exactly 3 desired KubeBrain replicas"
+else
+  [[ "$original_kb_replicas" == "0" ]] || die "quiesced repair requires exactly 0 desired KubeBrain replicas"
+  validate_quiesced_ready="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.status.readyReplicas}')"
+  [[ -z "$validate_quiesced_ready" || "$validate_quiesced_ready" == "0" ]] || die "quiesced repair requires exactly 0 Ready KubeBrain replicas"
+fi
 
 repair_lock="kubebrain-tikv-transaction-repair-lock"
 cooldown_record="kubebrain-tikv-transaction-repair-last-success"
@@ -317,16 +333,20 @@ transaction_probe() {
     etcdctl --endpoints="$ENDPOINT" "${etcdctl_tls_args[@]}" del "$probe_key" >/dev/null 2>&1
 }
 
-for ((probe=1; probe<=REQUIRED_FAILED_PROBES; probe++)); do
-  if transaction_probe; then
-    persist_phase "refused-healthy"
-    die "transaction probe ${probe} succeeded; refusing repair of a healthy data plane"
-  fi
-  (( probe == REQUIRED_FAILED_PROBES )) || sleep "$PROBE_INTERVAL_SECONDS"
-done
+if [[ "$REPAIR_MODE" == "transaction" ]]; then
+  for ((probe=1; probe<=REQUIRED_FAILED_PROBES; probe++)); do
+    if transaction_probe; then
+      persist_phase "refused-healthy"
+      die "transaction probe ${probe} succeeded; refusing repair of a healthy data plane"
+    fi
+    (( probe == REQUIRED_FAILED_PROBES )) || sleep "$PROBE_INTERVAL_SECONDS"
+  done
 
-ready_kb="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.status.readyReplicas}')"
-[[ -z "$ready_kb" || "$ready_kb" == "0" ]] || die "repair requires KubeBrain to be exactly 0 Ready after failed transaction probes"
+  ready_kb="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.status.readyReplicas}')"
+  [[ -z "$ready_kb" || "$ready_kb" == "0" ]] || die "repair requires KubeBrain to be exactly 0 Ready after failed transaction probes"
+else
+  require_kubebrain_quiesced "KubeBrain zero-replica identity fence failed before quiesced repair"
+fi
 
 disk_errors=()
 capacity_isolation_mismatch=false
@@ -416,6 +436,11 @@ fi
 pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
 declare -A abnormal_store_ids=()
 initial_abnormal_store_ids="$(read_abnormal_store_ids)" || die "cannot read a valid PD abnormal store target set before repair"
+if [[ "$REPAIR_MODE" == "quiesced" ]]; then
+  actual_abnormal_store_ids="$(paste -sd, - <<<"$initial_abnormal_store_ids")"
+  [[ "$actual_abnormal_store_ids" == "$EXPECTED_ABNORMAL_STORE_IDS" ]] ||
+    die "PD abnormal store targets do not match the approved quiesced repair: expected=${EXPECTED_ABNORMAL_STORE_IDS} current=${actual_abnormal_store_ids:-none}"
+fi
 while IFS= read -r store_id; do
   [[ -n "$store_id" ]] || continue
   abnormal_store_ids[$store_id]=1
@@ -450,14 +475,24 @@ if (( ${#abnormal_store_ids[@]} > 0 )); then
     fi
   done
 else
+  if [[ "$REPAIR_MODE" == "quiesced" ]]; then
+    persist_phase "refused-healthy"
+    die "quiesced repair requires at least one PD pending/down Region store target"
+  fi
   replacement_ordinals=(2 1 0)
 fi
 
-persist_phase "quiescing-kubebrain"
-echo "confirmed ${REQUIRED_FAILED_PROBES} consecutive transaction failures; scaling KubeBrain to zero"
-kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null
-kctl -n "$KUBEBRAIN_NAMESPACE" wait --for=delete pod -l "app.kubernetes.io/name=kubebrain,app.kubernetes.io/instance=${KUBEBRAIN_STATEFULSET}" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
-require_kubebrain_quiesced "KubeBrain isolation identity/replica fence failed after quiescing"
+if [[ "$REPAIR_MODE" == "transaction" ]]; then
+  persist_phase "quiescing-kubebrain"
+  echo "confirmed ${REQUIRED_FAILED_PROBES} consecutive transaction failures; scaling KubeBrain to zero"
+  kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null
+  kctl -n "$KUBEBRAIN_NAMESPACE" wait --for=delete pod -l "app.kubernetes.io/name=kubebrain,app.kubernetes.io/instance=${KUBEBRAIN_STATEFULSET}" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
+  require_kubebrain_quiesced "KubeBrain isolation identity/replica fence failed after quiescing"
+else
+  persist_phase "confirmed-quiesced-kubebrain"
+  require_kubebrain_quiesced "KubeBrain isolation identity/replica fence failed before quiesced replacement"
+  echo "confirmed KubeBrain is already quiesced; repairing only identified abnormal TiKV stores"
+fi
 validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after quiescing"
 if (( targeted_replacement_count > 0 )); then
   wait_for_abnormal_store_ids "$initial_abnormal_store_ids" || die "PD abnormal store targets changed after quiescing; refusing stale TiKV replacement"
@@ -503,14 +538,19 @@ for ordinal in "${replacement_ordinals[@]}"; do
   fi
 done
 
-persist_phase "restoring-kubebrain"
-echo "TiKV replacements converged; restoring KubeBrain replicas"
-kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas="$original_kb_replicas" >/dev/null
-kctl -n "$KUBEBRAIN_NAMESPACE" rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
-if ! transaction_probe; then
-  repair_phase="failed-final-transaction-probe"
-  kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null || true
-  die "TiKV repair completed but end-to-end transaction verification failed; KubeBrain was returned to zero replicas"
+if [[ "$REPAIR_MODE" == "transaction" ]]; then
+  persist_phase "restoring-kubebrain"
+  echo "TiKV replacements converged; restoring KubeBrain replicas"
+  kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas="$original_kb_replicas" >/dev/null
+  kctl -n "$KUBEBRAIN_NAMESPACE" rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
+  if ! transaction_probe; then
+    repair_phase="failed-final-transaction-probe"
+    kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null || true
+    die "TiKV repair completed but end-to-end transaction verification failed; KubeBrain was returned to zero replicas"
+  fi
+else
+  persist_phase "verified-quiesced-repair"
+  require_kubebrain_quiesced "KubeBrain isolation identity/replica fence changed after quiesced repair"
 fi
 
 persist_phase "persisting-cooldown"
@@ -528,10 +568,21 @@ persist_phase "completed"
 
 receipt_tmp="${RECEIPT_OUTPUT}.tmp.${REPAIR_ATTEMPT_ID}"
 umask 077
-printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
-  "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
-  "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
-  die "cannot write repair receipt"
+if [[ "$REPAIR_MODE" == "transaction" ]]; then
+  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
+    "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
+    "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
+    die "cannot write repair receipt"
+else
+  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":"%s","pvc_preserved":true,"regions_verified":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s"}\n' \
+    "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
+    "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
+    die "cannot write quiesced repair receipt"
+fi
 mv -f -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish repair receipt"
 
-echo "TiKV transaction-path repair succeeded: every Pod retained its PVC and end-to-end Put/Get/Delete recovered"
+if [[ "$REPAIR_MODE" == "transaction" ]]; then
+  echo "TiKV transaction-path repair succeeded: every Pod retained its PVC and end-to-end Put/Get/Delete recovered"
+else
+  echo "TiKV quiesced repair succeeded: identified stores retained their PVCs, Regions converged, and KubeBrain remains at zero replicas"
+fi

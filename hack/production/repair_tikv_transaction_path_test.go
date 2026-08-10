@@ -39,7 +39,7 @@ elif [[ "$args" == *"get tidbcluster kb"* ]]; then
   fi
   printf 'tc-uid\t7671\t3\t%s' "$tikv_replicas"
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.spec.replicas}"* ]]; then
-  printf '3'
+  printf '%s' "${FAKE_INITIAL_KB_REPLICAS:-3}"
 elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-success"* ]]; then
   if [[ -n "${FAKE_COOLDOWN:-}" ]]; then
     printf '%s' "$FAKE_COOLDOWN"
@@ -219,6 +219,44 @@ fi
 	require.Contains(t, string(targetedReceipt), `"repaired_tikv_pods":1`)
 	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-0")))
 	require.NoError(t, os.Remove(receiptPath))
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	quiescedOutput, quiescedErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "REPAIR_MODE=quiesced", "EXPECTED_ABNORMAL_STORE_IDS=1005", "FAKE_INITIAL_KB_REPLICAS=0", "FAKE_ABNORMAL_STORE_ORDINAL=2"))
+	require.NoError(t, quiescedErr, string(quiescedOutput))
+	require.Contains(t, string(quiescedOutput), "quiesced repair succeeded")
+	quiescedLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	quiescedLog := string(quiescedLogData)
+	require.Equal(t, 1, strings.Count(quiescedLog, "delete pod kb-tikv-"), quiescedLog)
+	require.Contains(t, quiescedLog, "delete pod kb-tikv-2")
+	require.NotContains(t, quiescedLog, " scale statefulset ")
+	require.NotContains(t, quiescedLog, "exec kubebrain-0")
+	quiescedReceipt, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"attempt_id":"repair-test-1",
+		"cluster_id":7671,
+		"completed_at_unix":1786250000,
+		"format":"kubebrain.tikv-quiesced-repair.receipt.v1",
+		"kubebrain_quiesced":true,
+		"kubebrain_statefulset_uid":"kb-uid",
+		"pvc_preserved":true,
+		"regions_verified":true,
+		"repaired_tikv_pods":1,
+		"tidb_cluster_uid":"tc-uid"
+	}`, string(quiescedReceipt))
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+	require.NoError(t, os.Remove(receiptPath))
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	quiescedHealthyOutput, quiescedHealthyErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "REPAIR_MODE=quiesced", "EXPECTED_ABNORMAL_STORE_IDS=1005", "FAKE_INITIAL_KB_REPLICAS=0"))
+	require.Error(t, quiescedHealthyErr)
+	require.Contains(t, string(quiescedHealthyOutput), "do not match the approved quiesced repair")
+	quiescedHealthyLog, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.NotContains(t, string(quiescedHealthyLog), "delete pod")
+	require.NotContains(t, string(quiescedHealthyLog), " scale ")
+	require.NoFileExists(t, receiptPath)
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	healthyOutput, healthyErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_HEALTHY_BEFORE=true"))

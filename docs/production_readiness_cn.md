@@ -296,6 +296,17 @@ repair 在 TiKV replacement 已完成但最终事务仍失败时会主动把 Kub
 扩到 3 Ready 后再次运行同一 Region/storage gate 并再次冻结身份，最后从 KubeBrain Pod 内执行
 Put/Get/Delete。扩容后的任一 gate、身份或事务失败都会在 UID 仍匹配时回退到 0 副本。
 
+如果 KubeBrain 已是 0 副本而 PD 仍有 pending/down Region，不能直接进入上述 recovery，因为 storage
+gate 必须拒绝；普通 transaction repair 也不能临时扩容数据面来制造失败探针。底层
+`repair-tikv-transaction-path.sh` 因而支持显式 `REPAIR_MODE=quiesced`：只接受目标 StatefulSet
+desired/Ready=0，跳过 endpoint transaction probe 和 scale-to-zero，要求审批参数中的
+`EXPECTED_ABNORMAL_STORE_IDS` 是排序去重的正整数集合且与 PD 初始 pending/down store 快照完全一致，
+只重建映射到这些 store 的 TiKV Pod。它继续执行既有 PD 身份、三 store Up、六卷 CSI/PVC/PV、磁盘、
+target drift 和连续 Region 收敛栅栏；成功后要求 KubeBrain 仍为相同 UID 的 0 副本，输出独立
+`kubebrain.tikv-quiesced-repair.receipt.v1`，不执行 recovery 或伪造 transaction verified。
+该模式目前只是下一阶段审批 runner 的执行原语，尚不得直接设置环境变量运行；在 requester、Operation
+参数/receipt 校验和专属调用路径接线完成前，现场异常 Region 继续保持隔离。
+
 该原语不是直接生产入口，不能通过手工设置 `ALLOW_KUBEBRAIN_RECOVERY=true` 绕过高风险操作审批。
 合法入口是只读 requester：
 

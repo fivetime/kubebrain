@@ -45465,6 +45465,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   claim namespace、request-to-operation 哈希绑定、receipt 绑定、类型审批/审计和 manifest/RBAC 权限面。
   现场 Region 76009 仍异常，因此未启用 executor 或执行恢复；真实故障验证继续保持开放。
 
+- A4297 关闭 A4296 之后暴露的 repair/recovery 状态机死锁。真实现场 KubeBrain StatefulSet UID
+  `ddf7cd91-f18f-49b1-a536-1708a6f5bff2` 仍 desired/Ready=0，TidbCluster UID
+  `4ff62b99-5253-49e5-9319-4ffbe7b2a099`、cluster ID `7671787914125326611`、3 PD/3 TiKV Ready，但 PD
+  pending/down 集合仍精确指向 store 1005。A4296 recovery 必须因 Region gate 拒绝，而原 transaction
+  repair 必须因起始 desired!=3 拒绝，二者都正确却无法推进。`repair-tikv-transaction-path.sh` 新增显式
+  `REPAIR_MODE=quiesced`：只接受同 UID KubeBrain desired/Ready=0，跳过 endpoint 失败探针和 scale-to-zero，
+  且强制审批方提供排序去重的 `EXPECTED_ABNORMAL_STORE_IDS`；执行前 PD pending/down store 快照必须与其
+  精确相等。该模式禁止“无异常证据时重建全部 3 store”的 fallback，只复用既有目标映射、PD/TiKV/PVC/
+  PV/磁盘 fence、逐目标 UID+同 PVC 重建、目标集合消费和连续 Region 收敛；全程任何 KubeBrain unquiesce
+  或身份漂移都 fail closed。成功后不恢复数据面、不执行 transaction probe，而原子输出独立
+  `kubebrain.tikv-quiesced-repair.receipt.v1`，固定 `kubebrain_quiesced=true`、`regions_verified=true`、
+  PVC preserved 和实际目标数。确定性回归证明 store 1005 只删除 kb-tikv-2、零 KubeBrain scale/exec、
+  receipt 精确且最终仍隔离；无异常或审批 target 不匹配时在任何 delete 前拒绝。普通 3→0→repair→3
+  事务模式及其原 receipt 保持通过。本项未执行现场 delete；quiesced 模式尚未接入审批 requester/runner，
+  因而仍禁止直接调用，下一项需关闭该授权编排缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
