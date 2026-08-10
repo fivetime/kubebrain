@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v6"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v7"
 )
 
 var (
@@ -81,6 +81,16 @@ type LogWindow struct {
 	ArtifactSegments   int    `json:"artifact_verified_segment_count"`
 	ArtifactTotalBytes uint64 `json:"artifact_total_bytes"`
 	MetadataResolvedTS uint64 `json:"metadata_max_resolved_ts"`
+	RemoteInventorySHA string `json:"remote_inventory_sha256"`
+	ObjectStoreID      string `json:"object_store_id"`
+	Bucket             string `json:"bucket"`
+	ObjectPrefix       string `json:"object_prefix"`
+	ArtifactMetadata   int    `json:"artifact_metadata_count"`
+	ArtifactData       int    `json:"artifact_data_object_count"`
+	ArtifactControl    int    `json:"artifact_control_object_count"`
+	RemoteExact        bool   `json:"remote_exact_versions_verified"`
+	MinRetainUntilUnix int64  `json:"min_retain_until_unix"`
+	InventoryCheckedAt int64  `json:"inventory_checked_at_unix"`
 }
 
 type Target struct {
@@ -163,7 +173,7 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 		Format:    PlanFormat,
 		Source:    Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
 		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes},
-		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS},
+		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
 		Target:    Target{ClusterID: in.TargetClusterID, EmptyWitnessSHA256: in.EmptyWitnessSHA256},
 		RestoreTS: in.RestoreTS, ReadOnly: true,
 	}
@@ -237,10 +247,14 @@ func (p Plan) Validate() error {
 	if err := validateS3Prefix(p.Log.StoragePrefix); err != nil {
 		return fmt.Errorf("log storage: %w", err)
 	}
+	logBucket, logPrefix, err := splitS3Prefix(p.Log.StoragePrefix)
+	if err != nil || p.Log.Bucket != logBucket || p.Log.ObjectPrefix != logPrefix || safeText("log object store ID", p.Log.ObjectStoreID) != nil {
+		return errors.New("log remote inventory scope does not match storage prefix")
+	}
 	if !sha256RE.MatchString(p.Log.StorageSHA256) {
 		return errors.New("invalid log storage backend SHA-256")
 	}
-	if !sha256RE.MatchString(p.Log.ReadyReceiptSHA256) || !sha256RE.MatchString(p.Log.ArtifactReceiptSHA) || !sha256RE.MatchString(p.Log.ArtifactManifest) || p.Log.ArtifactObjects < 2 || p.Log.ArtifactSegments <= 0 || p.Log.ArtifactTotalBytes == 0 || p.Log.MetadataResolvedTS == 0 {
+	if !sha256RE.MatchString(p.Log.ReadyReceiptSHA256) || !sha256RE.MatchString(p.Log.ArtifactReceiptSHA) || !sha256RE.MatchString(p.Log.ArtifactManifest) || !sha256RE.MatchString(p.Log.RemoteInventorySHA) || p.Log.ObjectStoreID == "" || p.Log.Bucket == "" || p.Log.ObjectPrefix == "" || !p.Log.RemoteExact || p.Log.MinRetainUntilUnix <= p.Log.InventoryCheckedAt || p.Log.InventoryCheckedAt <= 0 || p.Log.ArtifactObjects < 0 || p.Log.ArtifactSegments < 0 || p.Log.ArtifactMetadata < 0 || p.Log.ArtifactData < 0 || p.Log.ArtifactControl < 0 || p.Log.ArtifactObjects != p.Log.ArtifactMetadata+p.Log.ArtifactData+p.Log.ArtifactControl || (p.Log.ArtifactMetadata == 0) != (p.Log.ArtifactData == 0) || (p.Log.ArtifactData == 0) != (p.Log.ArtifactSegments == 0) || (p.Log.ArtifactMetadata > 0 && p.Log.MetadataResolvedTS == 0) || (p.Log.ArtifactObjects == 0) != (p.Log.ArtifactTotalBytes == 0) {
 		return errors.New("invalid log artifact receipt evidence")
 	}
 	if !p.ReadOnly {

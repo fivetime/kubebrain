@@ -411,6 +411,10 @@ func WriteBlobReceiptAtomic(path string, receipt BlobReceipt) error {
 }
 
 func writeJSONAtomic(path string, value any, description string, readExisting func(string) (any, error)) error {
+	return writeJSONAtomicLimit(path, value, description, maxObjectStoreJSONBytes, readExisting)
+}
+
+func writeJSONAtomicLimit(path string, value any, description string, limit int, readExisting func(string) (any, error)) error {
 	if path == "" {
 		return errors.New("receipt output path is empty")
 	}
@@ -419,8 +423,8 @@ func writeJSONAtomic(path string, value any, description string, readExisting fu
 		return err
 	}
 	data = append(data, '\n')
-	if err := validateObjectStoreJSONSize(description, data); err != nil {
-		return err
+	if len(data) > limit {
+		return fmt.Errorf("%s exceeds %d bytes", description, limit)
 	}
 	dir := filepath.Dir(path)
 	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")

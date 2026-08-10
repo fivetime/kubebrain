@@ -14,6 +14,7 @@ import (
 	"os"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 )
 
 const maxReceiptBytes = 4 << 20
@@ -22,16 +23,17 @@ func main() {
 	taskCreate := flag.String("task-create", "", "exact native-pitr-task-create.v4 receipt")
 	taskReady := flag.String("task-ready", "", "exact native-pitr-task-ready.v4 receipt")
 	artifactRoot := flag.String("artifact-root", "", "exact local mirror of v1/backupmeta metadata and referenced log objects")
+	remoteInventory := flag.String("remote-inventory", "", "canonical native-pitr-object-inventory.v1 receipt")
 	flag.Parse()
-	if err := run(*taskCreate, *taskReady, *artifactRoot, os.Stdout); err != nil {
+	if err := run(*taskCreate, *taskReady, *remoteInventory, *artifactRoot, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR log artifact verify:", err)
 		os.Exit(1)
 	}
 }
 
-func run(taskCreatePath, taskReadyPath, artifactRoot string, out io.Writer) error {
-	if taskCreatePath == "" || taskReadyPath == "" || artifactRoot == "" {
-		return errors.New("task-create, task-ready, and artifact-root are required")
+func run(taskCreatePath, taskReadyPath, remoteInventoryPath, artifactRoot string, out io.Writer) error {
+	if taskCreatePath == "" || taskReadyPath == "" || remoteInventoryPath == "" || artifactRoot == "" {
+		return errors.New("task-create, task-ready, remote-inventory, and artifact-root are required")
 	}
 	taskBytes, err := readReceipt(taskCreatePath)
 	if err != nil {
@@ -49,8 +51,13 @@ func run(taskCreatePath, taskReadyPath, artifactRoot string, out io.Writer) erro
 	if err != nil {
 		return err
 	}
+	inventory, inventoryBytes, err := pitrinventory.ReadCanonical(remoteInventoryPath)
+	if err != nil {
+		return err
+	}
 	taskDigest, readyDigest := sha256.Sum256(taskBytes), sha256.Sum256(readyBytes)
-	receipt, err := nativepitr.VerifyLogArtifacts(task, hex.EncodeToString(taskDigest[:]), ready, hex.EncodeToString(readyDigest[:]), artifactRoot)
+	inventoryDigest := sha256.Sum256(inventoryBytes)
+	receipt, err := nativepitr.VerifyLogArtifacts(task, hex.EncodeToString(taskDigest[:]), ready, hex.EncodeToString(readyDigest[:]), inventory, hex.EncodeToString(inventoryDigest[:]), artifactRoot)
 	if err != nil {
 		return err
 	}

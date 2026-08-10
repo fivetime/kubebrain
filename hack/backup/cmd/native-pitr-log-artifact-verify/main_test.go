@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 	"github.com/stretchr/testify/require"
@@ -33,19 +34,25 @@ func TestRunVerifiesLogMirror(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "v1/log"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "v1/backupmeta/1.meta"), metaBytes, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, file.Path), data, 0o600))
-	paths := []string{filepath.Join(dir, "task.json"), filepath.Join(dir, "ready.json")}
+	metaDigest := sha256.Sum256(metaBytes)
+	inventory := pitrinventory.Receipt{Format: pitrinventory.Format, ObjectStoreID: "store-a", Bucket: "bucket", Prefix: "log-a", Entries: []pitrinventory.Entry{{Name: "v1/backupmeta/1.meta", ObjectKey: "log-a/v1/backupmeta/1.meta", VersionID: "v-meta", Bytes: int64(len(metaBytes)), SHA256: hex.EncodeToString(metaDigest[:]), RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_100_000_000}, {Name: "v1/log/data.log", ObjectKey: "log-a/v1/log/data.log", VersionID: "v-data", Bytes: int64(len(data)), SHA256: hex.EncodeToString(digest[:]), RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_100_000_000}}, ObjectCount: 2, TotalBytes: uint64(len(metaBytes) + len(data)), Pages: 1, PaginationExhausted: true, ExactVersionsVerified: true, MinRetainUntilUnix: 2_050_000_000, CheckedAtUnix: 2_000_000_000}
+	paths := []string{filepath.Join(dir, "task.json"), filepath.Join(dir, "ready.json"), filepath.Join(dir, "inventory.json")}
 	for i, receipt := range []any{task, ready} {
 		b, err := json.Marshal(receipt)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(paths[i], b, 0o600))
 	}
+	inventoryBytes, err := json.Marshal(inventory)
+	require.NoError(t, err)
+	inventoryBytes = append(inventoryBytes, '\n')
+	require.NoError(t, os.WriteFile(paths[2], inventoryBytes, 0o600))
 	var out bytes.Buffer
-	require.NoError(t, run(paths[0], paths[1], root, &out))
+	require.NoError(t, run(paths[0], paths[1], paths[2], root, &out))
 	got, err := nativepitr.DecodeLogArtifactReceipt(bytes.NewReader(out.Bytes()))
 	require.NoError(t, err)
 	require.Equal(t, 1, got.VerifiedSegmentCount)
 }
 
 func TestRunRequiresInputs(t *testing.T) {
-	require.ErrorContains(t, run("", "", "", &bytes.Buffer{}), "required")
+	require.ErrorContains(t, run("", "", "", "", &bytes.Buffer{}), "required")
 }

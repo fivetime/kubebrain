@@ -45,7 +45,7 @@ func validLogArtifactReceipt(t *testing.T, task TaskCreateReceipt, ready TaskRea
 	b, err := json.Marshal(objects)
 	require.NoError(t, err)
 	h := sha256.Sum256(b)
-	return LogArtifactReceipt{Format: LogArtifactReceiptFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: taskSHA, TaskReadySHA256: readySHA, StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, Objects: objects, ObjectCount: 2, MetadataCount: 1, DataObjectCount: 1, VerifiedSegmentCount: 1, TotalBytes: 30, ManifestSHA256: hex.EncodeToString(h[:]), MetadataMaxResolvedTS: ready.GlobalCheckpointTS, ExactMirror: true, AllSegmentsVerified: true}
+	return LogArtifactReceipt{Format: LogArtifactReceiptFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: taskSHA, TaskReadySHA256: readySHA, StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: digest, ObjectStoreID: "store-a", Bucket: "bucket", ObjectPrefix: "immutable/task-1", MinRetainUntilUnix: 2_050_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: objects, ObjectCount: 2, MetadataCount: 1, DataObjectCount: 1, VerifiedSegmentCount: 1, TotalBytes: 30, ManifestSHA256: hex.EncodeToString(h[:]), MetadataMaxResolvedTS: ready.GlobalCheckpointTS, ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}
 }
 
 func validArtifactReceipt(t *testing.T, full FullSnapshotReceipt, fullReceiptSHA string) ArtifactReceipt {

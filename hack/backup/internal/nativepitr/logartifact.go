@@ -15,10 +15,11 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 )
 
-const LogArtifactReceiptFormat = "kubebrain.native-pitr-log-artifacts.v1"
+const LogArtifactReceiptFormat = "kubebrain.native-pitr-log-artifacts.v2"
 
 type LogArtifactObject struct {
 	Name   string `json:"name"`
@@ -28,26 +29,34 @@ type LogArtifactObject struct {
 }
 
 type LogArtifactReceipt struct {
-	Format                string              `json:"format"`
-	ClusterID             uint64              `json:"cluster_id"`
-	Keyspace              string              `json:"keyspace"`
-	TaskName              string              `json:"task_name"`
-	TaskCreateSHA256      string              `json:"task_create_receipt_sha256"`
-	TaskReadySHA256       string              `json:"task_ready_receipt_sha256"`
-	StartTS               uint64              `json:"start_ts"`
-	GlobalCheckpointTS    uint64              `json:"global_checkpoint_ts"`
-	StoragePrefix         string              `json:"storage_prefix"`
-	StorageSHA256         string              `json:"storage_backend_sha256"`
-	Objects               []LogArtifactObject `json:"objects"`
-	ObjectCount           int                 `json:"object_count"`
-	MetadataCount         int                 `json:"metadata_count"`
-	DataObjectCount       int                 `json:"data_object_count"`
-	VerifiedSegmentCount  int                 `json:"verified_segment_count"`
-	TotalBytes            uint64              `json:"total_bytes"`
-	ManifestSHA256        string              `json:"manifest_sha256"`
-	MetadataMaxResolvedTS uint64              `json:"metadata_max_resolved_ts"`
-	ExactMirror           bool                `json:"exact_local_mirror"`
-	AllSegmentsVerified   bool                `json:"all_segments_verified"`
+	Format                 string              `json:"format"`
+	ClusterID              uint64              `json:"cluster_id"`
+	Keyspace               string              `json:"keyspace"`
+	TaskName               string              `json:"task_name"`
+	TaskCreateSHA256       string              `json:"task_create_receipt_sha256"`
+	TaskReadySHA256        string              `json:"task_ready_receipt_sha256"`
+	StartTS                uint64              `json:"start_ts"`
+	GlobalCheckpointTS     uint64              `json:"global_checkpoint_ts"`
+	StoragePrefix          string              `json:"storage_prefix"`
+	StorageSHA256          string              `json:"storage_backend_sha256"`
+	RemoteInventorySHA256  string              `json:"remote_inventory_sha256"`
+	ObjectStoreID          string              `json:"object_store_id"`
+	Bucket                 string              `json:"bucket"`
+	ObjectPrefix           string              `json:"object_prefix"`
+	MinRetainUntilUnix     int64               `json:"min_retain_until_unix"`
+	InventoryCheckedAtUnix int64               `json:"inventory_checked_at_unix"`
+	Objects                []LogArtifactObject `json:"objects"`
+	ObjectCount            int                 `json:"object_count"`
+	MetadataCount          int                 `json:"metadata_count"`
+	DataObjectCount        int                 `json:"data_object_count"`
+	ControlObjectCount     int                 `json:"control_object_count"`
+	VerifiedSegmentCount   int                 `json:"verified_segment_count"`
+	TotalBytes             uint64              `json:"total_bytes"`
+	ManifestSHA256         string              `json:"manifest_sha256"`
+	MetadataMaxResolvedTS  uint64              `json:"metadata_max_resolved_ts"`
+	ExactMirror            bool                `json:"exact_local_mirror"`
+	RemoteVersionsVerified bool                `json:"remote_exact_versions_verified"`
+	AllSegmentsVerified    bool                `json:"all_segments_verified"`
 }
 
 type logDataObject struct {
@@ -56,7 +65,7 @@ type logDataObject struct {
 	segments []*backuppb.DataFileInfo
 }
 
-func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyReceipt, readySHA, root string) (LogArtifactReceipt, error) {
+func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyReceipt, readySHA string, inventory pitrinventory.Receipt, inventorySHA, root string) (LogArtifactReceipt, error) {
 	if err := validateTaskCreateReceipt(task); err != nil {
 		return LogArtifactReceipt{}, err
 	}
@@ -66,15 +75,38 @@ func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyR
 	if !readyMatchesTask(ready, task) {
 		return LogArtifactReceipt{}, errors.New("task-ready receipt does not match task-create receipt")
 	}
-	if !sha256RE.MatchString(taskSHA) || !sha256RE.MatchString(readySHA) {
+	if !sha256RE.MatchString(taskSHA) || !sha256RE.MatchString(readySHA) || !sha256RE.MatchString(inventorySHA) {
 		return LogArtifactReceipt{}, errors.New("invalid native PITR receipt SHA-256")
 	}
 	if root == "" {
 		return LogArtifactReceipt{}, errors.New("log artifact root is required")
 	}
+	if err := inventory.Validate(); err != nil {
+		return LogArtifactReceipt{}, err
+	}
+	bucket, prefix, err := splitS3Prefix(task.LogStoragePrefix)
+	if err != nil || inventory.Bucket != bucket || inventory.Prefix != prefix {
+		return LogArtifactReceipt{}, errors.New("remote inventory does not match task log storage")
+	}
 	actual, err := scanMirror(root)
 	if err != nil {
 		return LogArtifactReceipt{}, err
+	}
+	if len(actual) != inventory.ObjectCount {
+		return LogArtifactReceipt{}, errors.New("local log mirror does not match remote exact-version inventory")
+	}
+	inventoryEntries := make(map[string]pitrinventory.Entry, len(inventory.Entries))
+	objects := make([]LogArtifactObject, 0, len(inventory.Entries))
+	for _, entry := range inventory.Entries {
+		if !actual[entry.Name] {
+			return LogArtifactReceipt{}, fmt.Errorf("remote inventory object %q is missing from local mirror", entry.Name)
+		}
+		object, err := verifyInventoryObject(filepath.Join(root, filepath.FromSlash(entry.Name)), entry)
+		if err != nil {
+			return LogArtifactReceipt{}, fmt.Errorf("verify remote inventory object %q: %w", entry.Name, err)
+		}
+		inventoryEntries[entry.Name] = entry
+		objects = append(objects, object)
 	}
 	metadataPaths := make([]string, 0)
 	for name := range actual {
@@ -82,12 +114,8 @@ func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyR
 			metadataPaths = append(metadataPaths, name)
 		}
 	}
-	if len(metadataPaths) == 0 {
-		return LogArtifactReceipt{}, errors.New("log artifact mirror contains no BR stream metadata")
-	}
 	sort.Strings(metadataPaths)
 	expected := make(map[string]*logDataObject)
-	objects := make([]LogArtifactObject, 0, len(actual))
 	segmentCount := 0
 	maxResolved := uint64(0)
 	for _, name := range metadataPaths {
@@ -106,13 +134,13 @@ func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyR
 			return LogArtifactReceipt{}, fmt.Errorf("validate stream metadata %q: %w", name, err)
 		}
 		digest := sha256.Sum256(content)
-		objects = append(objects, LogArtifactObject{Name: name, Bytes: uint64(len(content)), SHA256: hex.EncodeToString(digest[:]), Kind: "metadata"})
+		if entry := inventoryEntries[name]; entry.SHA256 != hex.EncodeToString(digest[:]) || entry.Bytes != int64(len(content)) {
+			return LogArtifactReceipt{}, fmt.Errorf("stream metadata %q differs from remote inventory", name)
+		}
+		setLogObjectKind(objects, name, "metadata")
 	}
-	if segmentCount == 0 || len(expected) == 0 {
+	if (segmentCount == 0) != (len(expected) == 0) {
 		return LogArtifactReceipt{}, errors.New("stream metadata contains no verifiable log segments")
-	}
-	if len(actual) != len(metadataPaths)+len(expected) {
-		return LogArtifactReceipt{}, errors.New("log artifact root is not an exact BR stream metadata/data mirror")
 	}
 	dataNames := make([]string, 0, len(expected))
 	for name := range expected {
@@ -127,7 +155,11 @@ func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyR
 		if err != nil {
 			return LogArtifactReceipt{}, fmt.Errorf("verify log data object %q: %w", name, err)
 		}
-		objects = append(objects, object)
+		entry, ok := inventoryEntries[name]
+		if !ok || entry.Bytes != int64(object.Bytes) || entry.SHA256 != object.SHA256 {
+			return LogArtifactReceipt{}, fmt.Errorf("log data object %q differs from remote inventory", name)
+		}
+		setLogObjectKind(objects, name, "data")
 	}
 	sort.Slice(objects, func(i, j int) bool { return objects[i].Name < objects[j].Name })
 	manifest, err := json.Marshal(objects)
@@ -142,7 +174,39 @@ func VerifyLogArtifacts(task TaskCreateReceipt, taskSHA string, ready TaskReadyR
 		}
 		total += object.Bytes
 	}
-	return LogArtifactReceipt{Format: LogArtifactReceiptFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: taskSHA, TaskReadySHA256: readySHA, StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, Objects: objects, ObjectCount: len(objects), MetadataCount: len(metadataPaths), DataObjectCount: len(expected), VerifiedSegmentCount: segmentCount, TotalBytes: total, ManifestSHA256: hex.EncodeToString(manifestDigest[:]), MetadataMaxResolvedTS: maxResolved, ExactMirror: true, AllSegmentsVerified: true}, nil
+	return LogArtifactReceipt{Format: LogArtifactReceiptFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: taskSHA, TaskReadySHA256: readySHA, StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: inventorySHA, ObjectStoreID: inventory.ObjectStoreID, Bucket: inventory.Bucket, ObjectPrefix: inventory.Prefix, MinRetainUntilUnix: inventory.MinRetainUntilUnix, InventoryCheckedAtUnix: inventory.CheckedAtUnix, Objects: objects, ObjectCount: len(objects), MetadataCount: len(metadataPaths), DataObjectCount: len(expected), ControlObjectCount: len(objects) - len(metadataPaths) - len(expected), VerifiedSegmentCount: segmentCount, TotalBytes: total, ManifestSHA256: hex.EncodeToString(manifestDigest[:]), MetadataMaxResolvedTS: maxResolved, ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}, nil
+}
+
+func verifyInventoryObject(path string, entry pitrinventory.Entry) (LogArtifactObject, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return LogArtifactObject{}, err
+	}
+	defer f.Close()
+	h := sha256.New()
+	n, err := io.Copy(h, io.LimitReader(f, entry.Bytes+1))
+	if err != nil || n != entry.Bytes || hex.EncodeToString(h.Sum(nil)) != entry.SHA256 {
+		return LogArtifactObject{}, errors.New("size or SHA-256 does not match remote exact version")
+	}
+	return LogArtifactObject{Name: entry.Name, Bytes: uint64(entry.Bytes), SHA256: entry.SHA256, Kind: "control"}, nil
+}
+
+func setLogObjectKind(objects []LogArtifactObject, name, kind string) {
+	for i := range objects {
+		if objects[i].Name == name {
+			objects[i].Kind = kind
+			return
+		}
+	}
+}
+
+func splitS3Prefix(value string) (string, string, error) {
+	trimmed := strings.TrimPrefix(value, "s3://")
+	parts := strings.SplitN(trimmed, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", errors.New("invalid S3 prefix")
+	}
+	return parts[0], strings.TrimSuffix(parts[1], "/"), nil
 }
 
 func collectLogMetadata(meta *backuppb.Metadata, expected map[string]*logDataObject, segmentCount *int, maxResolved *uint64) error {
@@ -315,19 +379,23 @@ func DecodeLogArtifactReceipt(r io.Reader) (LogArtifactReceipt, error) {
 }
 
 func (r LogArtifactReceipt) Validate() error {
-	if r.Format != LogArtifactReceiptFormat || r.ClusterID == 0 || !r.ExactMirror || !r.AllSegmentsVerified {
-		return errors.New("input is not a successful native PITR log-artifacts v1 receipt")
+	if r.Format != LogArtifactReceiptFormat || r.ClusterID == 0 || !r.ExactMirror || !r.RemoteVersionsVerified || !r.AllSegmentsVerified {
+		return errors.New("input is not a successful native PITR log-artifacts v2 receipt")
 	}
-	if !dnsLabel.MatchString(r.TaskName) || r.Keyspace == "" || r.StartTS == 0 || r.GlobalCheckpointTS < r.StartTS || r.MetadataMaxResolvedTS == 0 || r.ObjectCount != len(r.Objects) || r.MetadataCount <= 0 || r.DataObjectCount <= 0 || r.VerifiedSegmentCount <= 0 || r.ObjectCount != r.MetadataCount+r.DataObjectCount || r.TotalBytes == 0 {
+	if !dnsLabel.MatchString(r.TaskName) || r.Keyspace == "" || r.StartTS == 0 || r.GlobalCheckpointTS < r.StartTS || r.ObjectCount != len(r.Objects) || r.MetadataCount < 0 || r.DataObjectCount < 0 || r.ControlObjectCount < 0 || r.VerifiedSegmentCount < 0 || r.ObjectCount != r.MetadataCount+r.DataObjectCount+r.ControlObjectCount || (r.MetadataCount == 0) != (r.DataObjectCount == 0) || (r.DataObjectCount == 0) != (r.VerifiedSegmentCount == 0) || (r.MetadataCount > 0 && r.MetadataMaxResolvedTS == 0) {
 		return errors.New("log artifact receipt has invalid identity, timestamp, or inventory totals")
 	}
-	if !sha256RE.MatchString(r.TaskCreateSHA256) || !sha256RE.MatchString(r.TaskReadySHA256) || !sha256RE.MatchString(r.StorageSHA256) || !sha256RE.MatchString(r.ManifestSHA256) {
+	if !sha256RE.MatchString(r.TaskCreateSHA256) || !sha256RE.MatchString(r.TaskReadySHA256) || !sha256RE.MatchString(r.StorageSHA256) || !sha256RE.MatchString(r.RemoteInventorySHA256) || !sha256RE.MatchString(r.ManifestSHA256) || safeText("object store ID", r.ObjectStoreID) != nil || r.MinRetainUntilUnix <= r.InventoryCheckedAtUnix || r.InventoryCheckedAtUnix <= 0 {
 		return errors.New("log artifact receipt has invalid digest evidence")
 	}
 	if err := validateS3Prefix(r.StoragePrefix); err != nil {
 		return err
 	}
-	copyObjects := append([]LogArtifactObject(nil), r.Objects...)
+	bucket, prefix, err := splitS3Prefix(r.StoragePrefix)
+	if err != nil || r.Bucket != bucket || r.ObjectPrefix != prefix {
+		return errors.New("log artifact receipt remote inventory scope does not match storage prefix")
+	}
+	copyObjects := append(make([]LogArtifactObject, 0, len(r.Objects)), r.Objects...)
 	sort.Slice(copyObjects, func(i, j int) bool { return copyObjects[i].Name < copyObjects[j].Name })
 	manifest, err := json.Marshal(copyObjects)
 	if err != nil {
@@ -337,12 +405,12 @@ func (r LogArtifactReceipt) Validate() error {
 	var total uint64
 	metadataCount, dataCount := 0, 0
 	for i, object := range copyObjects {
-		if object != r.Objects[i] || validateObjectName(object.Name) != nil || object.Bytes == 0 || !sha256RE.MatchString(object.SHA256) || (object.Kind != "metadata" && object.Kind != "data") || (i > 0 && copyObjects[i-1].Name == object.Name) {
+		if object != r.Objects[i] || validateObjectName(object.Name) != nil || object.Bytes == 0 || !sha256RE.MatchString(object.SHA256) || (object.Kind != "metadata" && object.Kind != "data" && object.Kind != "control") || (i > 0 && copyObjects[i-1].Name == object.Name) {
 			return errors.New("log artifact receipt contains an invalid or unsorted object entry")
 		}
 		if object.Kind == "metadata" {
 			metadataCount++
-		} else {
+		} else if object.Kind == "data" {
 			dataCount++
 		}
 		if math.MaxUint64-total < object.Bytes {
@@ -350,7 +418,7 @@ func (r LogArtifactReceipt) Validate() error {
 		}
 		total += object.Bytes
 	}
-	if metadataCount != r.MetadataCount || dataCount != r.DataObjectCount || total != r.TotalBytes || hex.EncodeToString(digest[:]) != r.ManifestSHA256 {
+	if metadataCount != r.MetadataCount || dataCount != r.DataObjectCount || len(r.Objects)-metadataCount-dataCount != r.ControlObjectCount || total != r.TotalBytes || hex.EncodeToString(digest[:]) != r.ManifestSHA256 {
 		return errors.New("log artifact receipt inventory totals or manifest digest do not match")
 	}
 	return nil

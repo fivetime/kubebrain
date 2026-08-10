@@ -123,6 +123,16 @@ func main() {
 			log.Fatal(err)
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+	case "pitr-inventory":
+		receipt, err := objectstore.CapturePITRInventory(ctx, client, objectstore.PITRInventoryRequest{
+			ObjectStoreID: os.Getenv("OBJECT_STORE_ID"), Bucket: os.Getenv("S3_BUCKET"),
+			Prefix: os.Getenv("INVENTORY_PREFIX"), MinRetainUntilUnix: int64Env("MIN_RETAIN_UNTIL_UNIX"),
+			ReceiptOutput: os.Getenv("RECEIPT_OUTPUT"),
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
+		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	case "usage":
 		allowedFormats := stringArrayEnv("ALLOWED_FORMATS_JSON")
 		receipt, err := objectstore.MeasureUsage(ctx, client, objectstore.UsageRequest{
@@ -135,7 +145,7 @@ func main() {
 		}
 		_ = json.NewEncoder(os.Stdout).Encode(receipt)
 	default:
-		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, or usage")
+		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, pitr-inventory, or usage")
 	}
 }
 

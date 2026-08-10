@@ -1851,8 +1851,7 @@ PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出
 隔离的区间。
 
 仍需实现和验证的生产闭环包括：持久 operation 对 task/advancer 的长期监管、源集群确为单租户
-独立集群的可审计 witness、对象存储中 log/checkpoint 的完整 inventory 与 digest、full/log 对象的
-远端 immutable version 身份与下载 provenance、
+独立集群的可审计 witness、full snapshot 对象的远端 immutable version 身份与下载 provenance、
 将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，以及在指定时间点完成
 逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
 实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
@@ -1919,27 +1918,51 @@ meta-index 的大小和 SHA-256，并拒绝缺失、额外、重复、越界路�
 直到恢复链能够安全绑定 crypter key。此 receipt 证明下载镜像字节与 `backupmeta` 一致，但不证明
 远端下载来源、object version 或 Object Lock 不可变性；生产控制面仍须补齐这些远端 witness。
 
-对 log prefix 下载 `v1/backupmeta/**/*.meta` 及其引用的全部数据对象后，再运行：
+先直接从 immutable log prefix 捕获权威远端清单：
+
+```shell
+ACTION=pitr-inventory \
+OBJECT_STORE_ID=production-backup-store \
+S3_BUCKET=immutable-bucket \
+INVENTORY_PREFIX=instance/run-id/log \
+MIN_RETAIN_UNTIL_UNIX="$RESTORE_RETENTION_DEADLINE" \
+RECEIPT_OUTPUT=/evidence/native-pitr-log-remote-inventory.json \
+S3_ENDPOINT="$S3_ENDPOINT" AWS_REGION="$AWS_REGION" \
+AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+  hack/backup/logical-object.sh
+```
+
+`ACTION=pitr-inventory` 使用 `ListObjectVersions` 的 key/version 双 marker 直到非 truncated 页，拒绝
+delete marker、同 key 多版本和非 latest version；随后对每个 exact version 执行 HEAD、Object Lock
+retention 和流式 GET/SHA-256，输出 canonical `kubebrain.native-pitr-object-inventory.v1`。空 prefix
+也会生成分页已穷尽、对象数为零的有效 receipt；这才是“没有日志对象”的权威证据，而不是空本地目录。
+capture receipt 当前上限 64 MiB，超限会 fail closed，超大集群仍需后续分片/Merkle inventory。
+2026-08-10 已在隔离 MinIO Object Lock 环境实际验证该路径：两个 COMPLIANCE-retained object
+经一页版本列表穷尽，分别绑定独立 version ID，流式复算总计 35,053 字节并生成 canonical receipt；
+测试容器、网络和本地 receipt 随后均已清理。
+
+按 receipt 中的 exact key/version 下载完整镜像后，再运行：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-log-artifact-verify \
   --task-create=/evidence/native-pitr-task-create.json \
   --task-ready=/evidence/native-pitr-task-ready.json \
+  --remote-inventory=/evidence/native-pitr-log-remote-inventory.json \
   --artifact-root=/evidence/log-mirror
 ```
 
-输出 `kubebrain.native-pitr-log-artifacts.v1`。校验器按 TiKV/BR v7.5.1 写读两端的真实协议处理
+输出 `kubebrain.native-pitr-log-artifacts.v2`。校验器先逐对象核对本地字节与远端 exact-version
+inventory 的 size/SHA-256，再按 TiKV/BR v7.5.1 写读两端的真实协议处理
 V1 独立文件和 V2 merged object：V2 的 `range_offset/range_length` 定位压缩分片，解压后字节数
 必须等于 `DataFileInfo.length`，SHA-256 也在解压后分片上复算；同时对 metadata 与整个物理 merged
 object 生成本地 digest。命令绑定 exact task-create/task-ready receipt、log storage backend、global
 checkpoint，并拒绝损坏分片、缺失/额外对象、危险路径、非普通文件、未知压缩算法和非 canonical
 receipt。旧格式空 CF 按 TiKV 兼容语义解释为 default CF。
 
-这个 v1 receipt 只证明“给定本地镜像中的所有 metadata 引用都存在且字节正确”，不能从本地目录
-反证远端没有遗漏 `.meta`；metadata 的最大 resolved TS 也不能替代 PD global checkpoint，因为空闲
-区间可以只推进 checkpoint 而不产生新日志文件。因此当前 verifier 对完全空的 log mirror fail closed，
-生产可用前仍须增加带 object version 的权威、分页穷尽远端 inventory receipt，才能安全证明有日志
-时无遗漏、无日志时确实为空。restore plan 绑定该证据但不把它升级解释为远端完整性证明。
+v2 receipt 同时绑定 remote inventory 文件 SHA-256、object-store/bucket/prefix、exact task-ready receipt
+和本地对象 manifest。有日志时证明远端无额外版本且所有 metadata 引用均验真；权威 inventory 为空时
+也允许安全表达空闲窗口。metadata 的最大 resolved TS 仍不能替代 PD global checkpoint，因为空闲区间
+可以只推进 checkpoint 而不产生新日志文件；时间窗口继续以 exact task-ready receipt 为权威。
 
 在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready/log-artifacts receipt 生成严格只读计划：
 
@@ -1955,7 +1978,7 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v6`。source cluster/range、task start/commit、full backup TSO、
+输出 `kubebrain.native-pitr-restore-plan.v7`。source cluster/range、task start/commit、full backup TSO、
 exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner，以及 exact ready/log-artifact receipt digest、日志对象 manifest/字节数/分片数全部来自严格 receipt，命令不再
 接受这些值的自由参数；并拒绝 receipt 文件 digest/身份链不一致、source/target cluster ID 相同、
