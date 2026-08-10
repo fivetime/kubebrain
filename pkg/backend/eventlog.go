@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"sync"
@@ -238,6 +239,11 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		}
 		return false
 	})
+	if validationErr := validateEventLogEntries(entries); validationErr != nil {
+		b.metricCli.EmitCounter("watch.event_log.malformed", 1)
+		klog.ErrorS(validationErr, "event log entries are inconsistent; falling back to scan", "from", fromRevision, "to", toRevision)
+		return nil, false, nil
+	}
 	selfContained := exactRevisionEntriesComplete(entries, fromRevision, toRevision)
 	if touchesUntrustedWindow && !selfContained {
 		return nil, false, nil
@@ -308,6 +314,54 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	klog.V(2).InfoS("watch history served from event log", "prefix", prefix,
 		"from", fromRevision, "to", toRevision, "events", len(events), "latency", time.Since(ts))
 	return events, true, nil
+}
+
+func validateEventLogEntries(entries []eventLogPending) error {
+	for start := 0; start < len(entries); {
+		revision := entries[start].rev
+		if revision == 0 {
+			return fmt.Errorf("event log contains revision zero")
+		}
+		end := start
+		ordered := entries[start].ordered
+		for end < len(entries) && entries[end].rev == revision {
+			entry := entries[end]
+			if entry.ordered != ordered {
+				return fmt.Errorf("event revision %d mixes ordered and legacy entries", revision)
+			}
+			if len(entry.userKey) == 0 {
+				return fmt.Errorf("event revision %d contains an empty key", revision)
+			}
+			switch entry.verb {
+			case proto.Event_CREATE:
+				if entry.prevRev != 0 {
+					return fmt.Errorf("CREATE event revision %d has previous revision %d", revision, entry.prevRev)
+				}
+			case proto.Event_PUT, proto.Event_DELETE:
+				if entry.prevRev == 0 || entry.prevRev >= revision {
+					return fmt.Errorf("%s event revision %d has invalid previous revision %d", entry.verb, revision, entry.prevRev)
+				}
+			default:
+				return fmt.Errorf("event revision %d has unsupported verb %d", revision, entry.verb)
+			}
+			end++
+		}
+		if ordered {
+			total := uint32(end - start)
+			for i := start; i < end; i++ {
+				entry := entries[i]
+				wantSub := uint32(i - start)
+				if entry.total != total || entry.sub != wantSub {
+					return fmt.Errorf(
+						"ordered event revision %d entry %d has subrevision=%d total=%d, want subrevision=%d total=%d",
+						revision, i-start, entry.sub, entry.total, wantSub, total,
+					)
+				}
+			}
+		}
+		start = end
+	}
+	return nil
 }
 
 func exactRevisionEntriesComplete(entries []eventLogPending, fromRevision, toRevision uint64) bool {

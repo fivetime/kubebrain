@@ -44727,6 +44727,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Unavailable` relist 契约。真实坏 delimiter 测试贯穿 scanner terminal encode/decode；handler 表测固定
   DataLoss/InvalidArgument/Unavailable 三分支与零 partial chunk。旧 consumer 仍能将 envelope 视为非空
   terminal error，因此滚动升级 fail closed；后续发布新 client proto 时可迁移为显式 error detail 字段。
+  A4224 审计 durable event log 的可信边界。该日志与 upstream 从 MVCC backend revision rows 恢复 watch
+  history 的职责相似，但在 KubeBrain 中是随 authoritative object version 同事务写入的加速/排序索引；窗口
+  不可信时仍可完整扫描 object history，因此不能把每个坏 entry 直接升级成 `DataLoss`。旧 replay 只校验
+  payload 长度与 ordered total 非零：长度合法但 verb=255 的 exact revision 会被误认“self-contained”，随后
+  Watch translator 才报 unsupported event；可信多 revision 窗口还会接受 legacy/ordered 混排、subrevision
+  gap/duplicate 与 total 不一致，产生错误 txn 事件顺序。现排序后按 revision 统一验证：key 非空，verb 仅
+  CREATE/PUT/DELETE，CREATE prev=0，PUT/DELETE 满足 0<prev<revision，同一 revision 格式一致；ordered
+  组的物理条数、重复 total 与连续 subrevision 必须完全一致。任一违约增加 malformed metric 并令
+  `served=false`，由既有 bounded object scan 重建 Watch，而不是返回损坏日志中的事件。真实 memkv 红测把
+  已提交 CREATE 的 event row 改成合法长度的 verb=255，证明 direct replay 拒绝且 public history fallback
+  仍恢复正确 CREATE；表测覆盖 mixed/gap/total/prev/empty-key 和合法 legacy/ordered 对照。Snapshot 对 event
+  log 只采纳逐条合法 order hint，跨整 revision 的缺口/混排仍由 A4210 writer provenance 校验
+  `FailedPrecondition`，不会以 key-sort 伪造 etcd txn subrevision。
 
 ### P2：运维兼容和长期验证
 

@@ -338,3 +338,75 @@ func TestEventLogWatermarkGates(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, served, "an incomplete ordered revision must fall back")
 }
+
+func TestEventLogReplayFallsBackForInvalidOrderedVerb(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/elog_invalid_verb/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	key := path.Join(pfx, "key")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+
+	batch := kv.BeginBatchWrite()
+	batch.CAS(
+		b.ks.EncodeEventLogKey(created.Header.Revision, []byte(key)),
+		coder.EncodeOrderedEventLogValue(0xff, 0, 0, 1),
+		coder.EncodeOrderedEventLogValue(byte(proto.Event_CREATE), 0, 0, 1), 0,
+	)
+	require.NoError(t, batch.Commit(ctx))
+
+	events, served, err := b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
+	require.NoError(t, err)
+	require.False(t, served)
+	require.Empty(t, events)
+
+	recovered, err := b.historyWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision, created.Header.Revision)
+	require.NoError(t, err)
+	require.Len(t, recovered, 1)
+	require.Equal(t, proto.Event_CREATE, recovered[0].Type)
+	require.Equal(t, []byte(key), recovered[0].Kv.Key)
+}
+
+func TestValidateEventLogEntries(t *testing.T) {
+	create := func(rev uint64, key string, ordered bool, sub, total uint32) eventLogPending {
+		return eventLogPending{verb: proto.Event_CREATE, rev: rev, userKey: []byte(key), ordered: ordered, sub: sub, total: total}
+	}
+	put := func(rev, prev uint64, key string, ordered bool, sub, total uint32) eventLogPending {
+		return eventLogPending{verb: proto.Event_PUT, rev: rev, prevRev: prev, userKey: []byte(key), ordered: ordered, sub: sub, total: total}
+	}
+	tests := []struct {
+		name    string
+		entries []eventLogPending
+		wantErr string
+	}{
+		{name: "legacy", entries: []eventLogPending{create(2, "a", false, 0, 0)}},
+		{name: "ordered", entries: []eventLogPending{create(3, "a", true, 0, 2), put(3, 2, "b", true, 1, 2)}},
+		{name: "zero revision", entries: []eventLogPending{create(0, "a", false, 0, 0)}, wantErr: "revision zero"},
+		{name: "mixed formats", entries: []eventLogPending{create(4, "a", false, 0, 0), put(4, 3, "b", true, 1, 2)}, wantErr: "mixes ordered and legacy"},
+		{name: "subrevision gap", entries: []eventLogPending{create(5, "a", true, 0, 2), put(5, 4, "b", true, 2, 2)}, wantErr: "subrevision=2 total=2"},
+		{name: "inconsistent total", entries: []eventLogPending{create(6, "a", true, 0, 3), put(6, 5, "b", true, 1, 3)}, wantErr: "total=3"},
+		{name: "create previous revision", entries: []eventLogPending{{verb: proto.Event_CREATE, rev: 7, prevRev: 6, userKey: []byte("a")}}, wantErr: "CREATE event revision 7 has previous revision 6"},
+		{name: "put future previous revision", entries: []eventLogPending{put(8, 8, "a", false, 0, 0)}, wantErr: "invalid previous revision 8"},
+		{name: "empty key", entries: []eventLogPending{create(9, "", false, 0, 0)}, wantErr: "contains an empty key"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateEventLogEntries(test.entries)
+			if test.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, test.wantErr)
+		})
+	}
+}
