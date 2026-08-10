@@ -44828,6 +44828,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   permission enum 仍按上游兼容语义保留并只产生 deny，不被误判为损坏。repository 表测覆盖畸形范围与未知 enum，真实
   bufconn KV.Range 固定畸形持久 role 返回 DataLoss，避免任何半有效 snapshot 进入授权路径。
 
+- A4234 固定持久 user roles 的排序不变量，消除损坏状态下的 root 越权差异。对照
+  `/root/etcd/server/auth/store.go` 的 `UserGrantRole`/`hasRootRole`，合法 mutation 总以 `sort.Strings` 保存 roles，root
+  判定则依赖 `sort.SearchStrings`；因此无序 `['z','root']` 在上游不会命中 root。KubeBrain 授权层为正常快照使用线性
+  role 扫描，先前会把同一损坏记录识别为 root 并绕过全部权限检查。repository 现在于 snapshot 发布前要求 roles
+  `sort.StringsAreSorted`，无序记录标记 `errInvalidAuthMetadata` 并由普通 RPC 返回 `DataLoss`。缺失的非 root role 引用
+  仍保持上游的 deny-only 行为，不扩大本轮校验。repository 表测与真实 bufconn KV.Range 均覆盖无序 root 记录。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

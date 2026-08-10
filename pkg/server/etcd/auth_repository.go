@@ -196,6 +196,11 @@ func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*a
 				"auth user key identity %q disagrees with payload name %q", identity, user.Name,
 			))
 		}
+		if !sort.StringsAreSorted(user.Roles) {
+			return nil, markInvalidAuthMetadata(fmt.Errorf(
+				"auth user %q roles are not sorted", identity,
+			))
+		}
 		snapshot.Users[identity] = &user
 	}
 	for key, value := range rolesRaw {

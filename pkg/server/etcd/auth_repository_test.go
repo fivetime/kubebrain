@@ -100,6 +100,15 @@ func TestAuthRepositoryClassifiesMalformedPersistentMetadata(t *testing.T) {
 			want: `auth user key identity "alice" disagrees with payload name "bob"`,
 		},
 		{
+			name: "unsorted user roles", key: authRecordKey(authUsersKey, "alice"),
+			value: func(t *testing.T) []byte {
+				value, err := proto.Marshal(&authpb.User{Name: []byte("alice"), Roles: []string{"z", "root"}})
+				require.NoError(t, err)
+				return value
+			},
+			want: `auth user "alice" roles are not sorted`,
+		},
+		{
 			name: "role key mismatch", key: authRecordKey(authRolesKey, "reader"),
 			value: func(t *testing.T) []byte {
 				value, err := proto.Marshal(&authpb.Role{Name: []byte("writer")})
