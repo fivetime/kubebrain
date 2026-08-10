@@ -3670,6 +3670,12 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"30811a06a",
 		"5cd9f4ee1",
 		"A4272",
+		"A4273",
+		"c773d39ec",
+		"56aa6982a",
+		"79ca4d925",
+		"e0f270361",
+		"2c07f1ebb",
 		"4309e77d4",
 		"1a961fc42",
 		"b35f739fa",
@@ -3711,6 +3717,21 @@ func TestGRPCSecurityBaselineIsPinnedAcrossModules(t *testing.T) {
 		contents, err := os.ReadFile(modulePath)
 		require.NoError(t, err, modulePath)
 		require.Contains(t, string(contents), "google.golang.org/grpc v1.83.0", modulePath)
+	}
+}
+
+func TestRuntimeObservabilityDependencyBaselineIsPinned(t *testing.T) {
+	modulePath := filepath.Join("..", "..", "go.mod")
+	contents, err := os.ReadFile(modulePath)
+	require.NoError(t, err)
+	module := string(contents)
+	for _, dependency := range []string{
+		"github.com/prometheus/client_golang v1.24.1",
+		"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.69.0",
+		"go.opentelemetry.io/proto/otlp v1.11.0",
+		"go.uber.org/zap v1.28.0",
+	} {
+		require.Contains(t, module, dependency)
 	}
 }
 

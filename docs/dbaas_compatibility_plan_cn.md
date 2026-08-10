@@ -45168,6 +45168,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LEASE 比较语义。真实 TiKV/PD 执行仍受当前已记录的 `KvPrewrite context deadline exceeded` 半故障限制，
   环境恢复后应以 A4271 构建的三件套重跑本场景；本轮可先在 reference 端证明当前 CLI oracle 行为。
 
+- A4273 同步当前 upstream 运行时可观测性依赖基线。对照 `2c07f1ebb`、`56aa6982a`、`79ca4d925`、
+  `e0f270361` 与 `c773d39ec`，主模块把 Prometheus client 从 1.23.2 提升到 1.24.1、zap 从 1.27.1
+  提升到 1.28.0、otelgrpc 从 0.68.0 提升到 0.69.0、OTLP proto 从 1.10.0 提升到 1.11.0；MVS
+  同步解析 `prometheus/common=0.70.1`、`prometheus/procfs=0.21.1`、`yaml/v2=2.4.4` 与当前 genproto。
+  gRPC 1.83.0 和 A4265 的 `x/crypto/net/sys/text` 版本保持不变。永久模块门禁钉住四个直接运行时
+  基线，防止 tidy 或间接依赖回退；metrics exposition、gRPC/HTTP endpoint、OTLP 初始化和结构化日志
+  测试用于证明升级不改变 etcd 客户端可观察协议。该项不访问 TiKV/PD，也不把 upstream 自身尚未同步
+  vendor 的状态复制进本仓。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
