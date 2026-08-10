@@ -64,7 +64,8 @@ kctl() { "$KUBECTL" "${kubectl_context_args[@]}" "$@"; }
 actual_kb_uid="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}')"
 [[ "$actual_kb_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]] || die "KubeBrain StatefulSet UID fence failed"
 actual_cluster_identity="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')"
-[[ "$actual_cluster_identity" == "$EXPECTED_TIDB_CLUSTER_UID"$'\t'"$EXPECTED_CLUSTER_ID"$'\t3\t3' ]] || die "TidbCluster identity/topology fence failed"
+expected_cluster_identity="$EXPECTED_TIDB_CLUSTER_UID"$'\t'"$EXPECTED_CLUSTER_ID"$'\t3\t3'
+[[ "$actual_cluster_identity" == "$expected_cluster_identity" ]] || die "TidbCluster identity/topology fence failed"
 original_kb_replicas="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.spec.replicas}')"
 [[ "$original_kb_replicas" == "3" ]] || die "repair requires exactly 3 desired KubeBrain replicas"
 
@@ -165,6 +166,28 @@ validate_pd_ready() {
   [[ "$rows" == "$expected_pd_status" ]]
 }
 validate_pd_ready || die "PD quorum/PVC fence failed before repair"
+validate_tidb_cluster_identity() {
+  local identity
+  identity="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')" || return 1
+  [[ "$identity" == "$expected_cluster_identity" ]]
+}
+validate_kubebrain_quiesced() {
+  local identity actual_uid desired ready
+  identity="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}')" || return 1
+  IFS=$'\t' read -r actual_uid desired ready <<<"$identity"
+  [[ "$actual_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" && "$desired" == "0" && ( -z "$ready" || "$ready" == "0" ) ]]
+}
+require_kubebrain_quiesced() {
+  local message="$1" live_uid
+  if validate_kubebrain_quiesced; then
+    return 0
+  fi
+  live_uid="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)"
+  if [[ "$live_uid" == "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
+    kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null 2>&1 || true
+  fi
+  die "$message"
+}
 
 kb_pod="${KUBEBRAIN_STATEFULSET}-0"
 kb_args="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="kubebrain")].args[*]}{.}{"\n"}{end}')"
@@ -294,10 +317,14 @@ persist_phase "quiescing-kubebrain"
 echo "confirmed ${REQUIRED_FAILED_PROBES} consecutive transaction failures; scaling KubeBrain to zero"
 kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null
 kctl -n "$KUBEBRAIN_NAMESPACE" wait --for=delete pod -l "app.kubernetes.io/name=kubebrain,app.kubernetes.io/instance=${KUBEBRAIN_STATEFULSET}" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
+require_kubebrain_quiesced "KubeBrain isolation identity/replica fence failed after quiescing"
+validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after quiescing"
 
 for ordinal in 2 1 0; do
   persist_phase "replacing-tikv-${ordinal}"
   pod="${TIDB_CLUSTER}-tikv-${ordinal}"
+  require_kubebrain_quiesced "KubeBrain isolation identity/replica fence changed before replacing $pod"
+  validate_tidb_cluster_identity || die "TidbCluster identity/topology changed before replacing $pod"
   old_identity="$(kctl -n "$TIDB_NAMESPACE" get pod "$pod" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}')"
   old_uid="${old_identity%%$'\t'*}"
   old_pvc="${old_identity#*$'\t'}"
@@ -310,6 +337,8 @@ for ordinal in 2 1 0; do
   new_pvc="${new_identity#*$'\t'}"
   [[ "$new_uid" != "$old_uid" && "$new_pvc" == "$old_pvc" ]] || die "$pod same-PVC replacement fence failed"
   validate_tikv_ready || die "TiKV quorum did not recover after replacing $pod"
+  require_kubebrain_quiesced "KubeBrain isolation identity/replica fence changed after replacing $pod; refusing further TiKV replacements"
+  validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after replacing $pod; refusing further TiKV replacements"
   validate_pd_ready || die "PD identity/quorum/PVC changed after replacing $pod; refusing further TiKV replacements"
 done
 

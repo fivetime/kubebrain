@@ -22,10 +22,22 @@ func TestRepairTiKVTransactionPath(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_LOG"
 args="$*"
-if [[ "$args" == *"get statefulset kubebrain -o jsonpath={.metadata.uid}"* ]]; then
+if [[ "$args" == *"get statefulset kubebrain"* && "$args" == *".metadata.uid"* && "$args" == *".status.readyReplicas"* ]]; then
+  desired=0
+  ready=0
+  if [[ "${FAKE_KB_UNQUIESCE_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
+    desired=1
+    ready=1
+  fi
+  printf 'kb-uid\t%s\t%s' "$desired" "$ready"
+elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.metadata.uid}"* ]]; then
   printf 'kb-uid'
 elif [[ "$args" == *"get tidbcluster kb"* ]]; then
-  printf 'tc-uid\t7671\t3\t3'
+  tikv_replicas=3
+  if [[ "${FAKE_TIDB_TOPOLOGY_DRIFT_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
+    tikv_replicas=4
+  fi
+  printf 'tc-uid\t7671\t3\t%s' "$tikv_replicas"
 elif [[ "$args" == *"get statefulset kubebrain -o jsonpath={.spec.replicas}"* ]]; then
   printf '3'
 elif [[ "$args" == *"get configmap kubebrain-tikv-transaction-repair-last-success"* ]]; then
@@ -186,6 +198,42 @@ fi
 	require.NotContains(t, pdDuringLog, "--replicas=3")
 	require.NoFileExists(t, receiptPath)
 	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+
+	for _, tc := range []struct {
+		name    string
+		env     string
+		message string
+	}{
+		{
+			name:    "KubeBrain unquiesced",
+			env:     "FAKE_KB_UNQUIESCE_AFTER_REPLACEMENT=true",
+			message: "KubeBrain isolation identity/replica fence changed after replacing kb-tikv-2",
+		},
+		{
+			name:    "TidbCluster topology drift",
+			env:     "FAKE_TIDB_TOPOLOGY_DRIFT_AFTER_REPLACEMENT=true",
+			message: "TidbCluster identity/topology changed after replacing kb-tikv-2",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+			output, runErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", append(env, tc.env))
+			require.Error(t, runErr)
+			require.Contains(t, string(output), tc.message)
+			logData, readErr := os.ReadFile(logPath)
+			require.NoError(t, readErr)
+			log := string(logData)
+			require.Equal(t, 1, strings.Count(log, "delete pod kb-tikv-"), log)
+			require.Contains(t, log, "replacing-tikv-2")
+			require.NotContains(t, log, "delete pod kb-tikv-1")
+			require.NotContains(t, log, "--replicas=3")
+			if tc.name == "KubeBrain unquiesced" {
+				require.Equal(t, 2, strings.Count(log, "scale statefulset kubebrain --replicas=0"), log)
+			}
+			require.NoFileExists(t, receiptPath)
+			require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+		})
+	}
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	pdIdentityOutput, pdIdentityErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",

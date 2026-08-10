@@ -45329,6 +45329,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时发现 A4283 后 RBAC 测试仍硬编码旧的七文档且禁止任何 PVC/PV 字样；回归现已对齐九文档，精确
   要求六个命名 PVC 仅 `get`、PV ClusterRole 仅 `get`，继续以 exact rule 防止 PVC/PV delete 扩权。
 
+- A4287 将 TiKV repair 的持续控制面 fence 扩展到 TidbCluster 与 KubeBrain。旧执行器仅在取得修复锁
+  前读取一次 TidbCluster UID/clusterID/3×PD/3×TiKV，并在三次失败 probe 后读取一次 KubeBrain
+  Ready；KubeBrain scale 0 后的三步 replacement 窗口中，外部控制器重新扩容 KubeBrain，或同名
+  TidbCluster 被替换、cluster ID/3×3 topology 漂移，仍可能继续删除下一台 TiKV。现在 destructive
+  loop 首次删除前、每次删除前和每次重建后都重新要求 TidbCluster 四元组等于授权基线，并要求
+  KubeBrain StatefulSet UID 未变、desired replicas=0、ready replicas=0/空。若同一授权 StatefulSet
+  被重新扩容，执行器先 best-effort scale 0 再退出；若 UID 已变则不修改新对象，只 fail closed。
+  fake-cluster 分别在 kb-tikv-2 重建后注入 KubeBrain desired/ready=1 和 TiKV replicas 3→4，两条路径
+  都持久停在 `replacing-tikv-2`、仅一次 TiKV delete、无 kb-tikv-1/restore/final probe/成功 receipt；
+  KubeBrain 漂移路径额外证明第二次 scale 0 已执行。健康 2→1→0、PD Ready/UID 漂移与 storage safety
+  路径继续通过。本项不接管 TidbCluster 扩缩容，也不操作 UID 已变化的 KubeBrain StatefulSet。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
