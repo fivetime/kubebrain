@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -302,6 +303,38 @@ func TestAuthManagerUserAddIgnoresHashedPasswordLikePublicEtcd(t *testing.T) {
 	snapshot, err = manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.NoError(t, bcrypt.CompareHashAndPassword(snapshot.Users["alice"].Password, []byte("changed")))
+}
+
+func TestAuthManagerUserAddReplacesOrphanTokenGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	manager, tokens := bootstrapAuthForToken(t, server)
+	require.NoError(t, manager.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "old"}))
+	oldToken, err := tokens.authenticate(ctx, "alice", "old")
+	require.NoError(t, err)
+
+	before, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	orphan := proto.Clone(before.TokenGenerations["alice"]).(*authpb.User)
+	_, err = manager.repo.mutate(ctx, before.Config, authMutation{
+		Key: authRecordKey(authUsersKey, "alice"), Delete: true,
+		Expected: before.Users["alice"], ExpectedExists: true,
+	})
+	require.NoError(t, err, "simulate deletion by a peer predating generation records")
+
+	addCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	require.NoError(t, manager.userAdd(addCtx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "new"}))
+	after, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	require.NotNil(t, after.Users["alice"])
+	require.NotNil(t, after.TokenGenerations["alice"])
+	require.NotEqual(t, orphan.Password, after.TokenGenerations["alice"].Password)
+	require.NoError(t, bcrypt.CompareHashAndPassword(after.Users["alice"].Password, []byte("new")))
+
+	_, err = tokens.verify(ctx, oldToken)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken, "recreated identity must not inherit the deleted user's tokens")
 }
 
 func TestAuthManagerEmptyPasswordChangeMatchesEtcd(t *testing.T) {

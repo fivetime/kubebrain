@@ -99,9 +99,18 @@ func (m *authManager) userAddWithPassword(ctx context.Context, request *etcdserv
 			options = proto.Clone(request.Options).(*authpb.UserAddOptions)
 		}
 		user := &authpb.User{Name: []byte(request.Name), Password: password, Options: options}
+		generationMutation := authMutation{Key: authRecordKey(authTokenGenerationsKey, request.Name), Value: generation}
+		// A rolling-upgrade peer that predates per-user generations can delete
+		// the user without deleting this private record. Replace that orphan
+		// atomically when the name is recreated instead of retrying an
+		// impossible create-only CAS forever.
+		if orphan := snapshot.TokenGenerations[request.Name]; orphan != nil {
+			generationMutation.Expected = orphan
+			generationMutation.ExpectedExists = true
+		}
 		_, err := m.repo.mutate(ctx, snapshot.Config,
 			authMutation{Key: authRecordKey(authUsersKey, request.Name), Value: user},
-			authMutation{Key: authRecordKey(authTokenGenerationsKey, request.Name), Value: generation},
+			generationMutation,
 		)
 		return err
 	}, m.repo.load)

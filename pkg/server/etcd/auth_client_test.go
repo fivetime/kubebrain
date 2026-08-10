@@ -314,10 +314,19 @@ func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {
 
 	_, err = root.UserAdd(ctx, "a1136-user", "first")
 	require.NoError(t, err)
-	_, err = bootstrap.Authenticate(ctx, "a1136-user", "first")
+	oldIdentity, err := bootstrap.Authenticate(ctx, "a1136-user", "first")
+	require.NoError(t, err)
+	beforeDelete, err := server.auth.repo.load(ctx)
+	require.NoError(t, err)
+	orphanGeneration := beforeDelete.TokenGenerations["a1136-user"]
+	require.NotNil(t, orphanGeneration)
+	orphanValue, err := marshalAuthRecord(orphanGeneration)
 	require.NoError(t, err)
 	_, err = root.UserDelete(ctx, "a1136-user")
 	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx,
+		authRecordKey(authTokenGenerationsKey, "a1136-user"), orphanValue),
+		"simulate a rolling-upgrade peer leaving the private generation record behind")
 	_, err = bootstrap.Authenticate(ctx, "a1136-user", "first")
 	requireAuthClientError(t, err, codes.Unknown, "etcdserver: authentication failed, invalid user ID or password", rpctypes.ErrAuthFailed)
 
@@ -325,6 +334,8 @@ func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {
 	require.NoError(t, err)
 	_, err = bootstrap.Authenticate(ctx, "a1136-user", "first")
 	require.NoError(t, err)
+	_, err = server.tokens.verify(ctx, oldIdentity.Token)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
 	_, err = root.UserChangePassword(ctx, "a1136-user", "second")
 	require.NoError(t, err)
 	_, err = root.UserChangePassword(ctx, "a1136-user", "third")

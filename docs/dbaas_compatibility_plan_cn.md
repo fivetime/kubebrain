@@ -44803,6 +44803,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   传播。真实 bufconn 同时固定 Authenticate 签发和带既有 token 的 KV.Range 在损坏密钥下返回 `DataLoss`，单元回归
   证明 `storage.ErrUnavailable` 不再被掩盖；删除密钥仍不静默轮换且返回 invalid-token。
 
+- A4231 修复 per-user token generation 引入后的滚动升级同名用户重建死循环。上游
+  `/root/etcd/server/auth/simple_token.go` 仅维护进程内 token map，没有该持久记录；KubeBrain 的新版本则在 TiKV 中
+  原子删除 user 与 generation。若尚不认识 generation schema 的旧 Pod 删除用户，会合法留下 orphan generation；新版本
+  `UserAdd` 看到用户名空缺后仍执行 generation create-only CAS，因 orphan 永远存在而无限重试，最终只随 context deadline
+  失败。现在重建用户时若 snapshot 已发现 orphan，就以其确定值作为 CAS expected 并原子替换成新随机 generation；并发
+  删除/重建仍由 CAS 重新求值。官方 client/v3 bufconn 回归注入旧版本删除形状后证明 UserAdd/Authenticate 正常完成，旧身份
+  token 被拒；manager 回归同时固定新密码、generation 已轮换且操作不等待超时。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
