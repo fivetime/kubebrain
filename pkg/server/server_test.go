@@ -230,6 +230,11 @@ func TestGRPCHealthNamedServiceMatchesEtcd(t *testing.T) {
 	empty, err := client.Check(ctx, &healthpb.HealthCheckRequest{})
 	require.NoError(t, err)
 	require.Equal(t, healthpb.HealthCheckResponse_SERVING, empty.Status)
+	listed, err := client.List(ctx, &healthpb.HealthListRequest{})
+	require.NoError(t, err)
+	require.Equal(t, map[string]*healthpb.HealthCheckResponse{
+		"": {Status: healthpb.HealthCheckResponse_SERVING},
+	}, listed.Statuses)
 
 	const namedService = "etcdserverpb.KV"
 	_, err = client.Check(ctx, &healthpb.HealthCheckRequest{Service: namedService})

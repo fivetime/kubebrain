@@ -45096,6 +45096,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   service SERVING 及上述两个 named-service 外观，防止未来为负载均衡器便利而产生反向 etcd 不兼容。KubeBrain 仍保留“仅当前
   ready leader 对空 service 报 SERVING”的 DBaaS 路由策略差异；本项只固定 service-name 语义，不访问 TiKV/PD。
 
+- A4264 固定 grpc-go health `List` 的 etcd surface。当前 health protobuf 除 `Check`/`Watch` 外还提供 unary `List`；KubeBrain
+  和 upstream 都由同一标准 health server 注册该 RPC，但既有兼容门禁从未调用。A4263 的真实客户端回归现继续调用 `List`，要求
+  map 只包含空 service `"" -> SERVING`，不得意外发布 `etcdserverpb.KV`、Brain 私有 service 或其他逐服务名称。该项也证明
+  `List` 能穿过 KubeBrain client interceptor，而不是因新增 method 未分类返回错误；不访问 TiKV/PD。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
