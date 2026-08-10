@@ -45713,6 +45713,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   reserve-space 的 `AlmostFull` 写保护而正确失败；只在一次性隔离 store 中将 reserve-space 设为 0、
   capacity 限为 1GiB 后复测，未放宽生产磁盘门禁或写入共享集群。
 
+- A4314 修复 A4313 真实 TiKV 验证暴露的 conformance gate 生命周期缺口，而不伪造新的 etcd runtime
+  差异。最新 upstream `/root/etcd@5cd9f4ee1` 的新增
+  `tests/common/member_test.go::TestMemberListSerializable` 已由 A4127/A4128 的 barrier、raw gRPC 与官方
+  clientv3 测试覆盖，矩阵中也没有另一个可由代码恢复的 Snapshot 历史来源缺口；本轮因此修复真实证据
+  问题。共享 `RunBatchWriteContract` 原来使用无限 `context.Background()`，TiKV `AlmostFull` 正确拒绝写时
+  client-go backoff 可令门禁长时间无结果；现在整轮受 30 秒 context 限制。它还声称适合 persistent/shared
+  backend，却把每个 subtest 的随机键永久留在集群；现在在 storage client close 之前按精确 subtest prefix
+  扫描、批量删除并复读确认为空，cleanup 自带独立 30 秒边界。memkv/badger 合同各连续 10 轮通过，
+  TiKV 无 endpoint 时仍明确 skip；隔离 `pingcap/pd:v7.5.1` + `pingcap/tikv:v7.5.1` 上完整合同连续
+  20 轮 6.004 秒通过，测试键与
+  容器均已清理。该项只让真实存储门禁 bounded、可重复且无残留，不改变生产请求 deadline、TiKV
+  `AlmostFull` 行为或 Snapshot/PITR 状态。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

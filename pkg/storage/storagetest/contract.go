@@ -24,6 +24,7 @@ package storagetest
 import (
 	"context"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -37,7 +38,11 @@ import (
 // storage produced by newKV. Keys are scoped by run and subtest so the contract
 // is safe against persistent/shared backends where a new client is not empty.
 func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStorage) {
-	ctx := context.Background()
+	// A real TiKV can deliberately reject writes while its store is AlmostFull.
+	// Never let a conformance run retry forever behind client-go backoff: the
+	// contract is a release gate and must fail within a bounded diagnostic window.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 	runPrefix := fmt.Sprintf("\x00storagetest/%d/", time.Now().UnixNano())
 	key := func(t *testing.T, name string) []byte {
 		return []byte(runPrefix + t.Name() + "/" + name)
@@ -69,9 +74,54 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 		t.Cleanup(func() { require.NoError(t, it.Close()) })
 		return it
 	}
+	prefixEnd := func(prefix []byte) []byte {
+		end := append([]byte(nil), prefix...)
+		for i := len(end) - 1; i >= 0; i-- {
+			if end[i] != 0xff {
+				end[i]++
+				return end[:i+1]
+			}
+		}
+		return []byte{0xff}
+	}
+	newScopedKV := func(t *testing.T) storage.KvStorage {
+		kv := newKV(t)
+		subtestPrefix := []byte(runPrefix + t.Name() + "/")
+		// Register after newKV's close cleanup: testing runs cleanups LIFO, so
+		// every generated row is physically removed while the client is live.
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cleanupCancel()
+			it, err := kv.Iter(cleanupCtx, subtestPrefix, prefixEnd(subtestPrefix), 0, 0)
+			require.NoError(t, err)
+			var keys [][]byte
+			for {
+				err = it.Next(cleanupCtx)
+				if err != nil {
+					break
+				}
+				keys = append(keys, append([]byte(nil), it.Key()...))
+			}
+			require.ErrorIs(t, err, io.EOF)
+			require.NoError(t, it.Close())
+			if len(keys) == 0 {
+				return
+			}
+			batch := kv.BeginBatchWrite()
+			for _, key := range keys {
+				batch.Del(key)
+			}
+			require.NoError(t, batch.Commit(cleanupCtx))
+			verify, verifyErr := kv.Iter(cleanupCtx, subtestPrefix, prefixEnd(subtestPrefix), 0, 0)
+			require.NoError(t, verifyErr)
+			require.ErrorIs(t, verify.Next(cleanupCtx), io.EOF)
+			require.NoError(t, verify.Close())
+		})
+		return kv
+	}
 
 	t.Run("PutIfNotExist_on_missing_commits", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		b := kv.BeginBatchWrite()
 		b.PutIfNotExist(key(t, "k"), []byte("v"), 0)
 		require.NoError(t, b.Commit(ctx))
@@ -81,7 +131,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("PutIfNotExist_on_existing_fails_CAS", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
 		b.PutIfNotExist(key(t, "k"), []byte("v2"), 0)
@@ -92,7 +142,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("CAS_matching_old_commits", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
 		b.CAS(key(t, "k"), []byte("v2"), []byte("v1"), 0)
@@ -102,7 +152,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("CAS_mismatched_old_fails_CAS", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
 		b.CAS(key(t, "k"), []byte("v2"), []byte("WRONG"), 0)
@@ -113,7 +163,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("CAS_on_missing_fails_CAS", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		b := kv.BeginBatchWrite()
 		b.CAS(key(t, "k"), []byte("v2"), []byte("v1"), 0)
 		err := b.Commit(ctx)
@@ -122,7 +172,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("Put_overwrites_unconditionally", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
 		b.Put(key(t, "k"), []byte("v2"), 0)
@@ -132,7 +182,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("Del_removes", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "k", "v1")
 		b := kv.BeginBatchWrite()
 		b.Del(key(t, "k"))
@@ -141,7 +191,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("DelCurrent_unchanged_snapshot_removes", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "k", "v1")
 		it := snapshotOne(t, kv, "k")
 		b := kv.BeginBatchWrite()
@@ -151,7 +201,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("DelCurrent_changed_snapshot_fails_CAS", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "k", "v1")
 		it := snapshotOne(t, kv, "k")
 		seed(t, kv, "k", "v2")
@@ -166,7 +216,7 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 	})
 
 	t.Run("batch_is_atomic_on_conflict", func(t *testing.T) {
-		kv := newKV(t)
+		kv := newScopedKV(t)
 		seed(t, kv, "guard", "g1")
 		b := kv.BeginBatchWrite()
 		b.Put(key(t, "sibling"), []byte("s"), 0)                 // would-be write
