@@ -15,6 +15,10 @@ OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"
 JQ="${JQ:-jq}"
 
 die() { echo "$*" >&2; exit 1; }
+resolve_executable() {
+  local value="$1"
+  if [[ "$value" == */* ]]; then [[ -x "$value" ]] || return 1; printf '%s' "$value"; else command -v "$value"; fi
+}
 [[ "$REQUEST_ID" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "REQUEST_ID must be a DNS-compatible external maintenance decision ID"
 [[ -f "$PREFLIGHT_FILE" && -f "$SEMANTIC_WITNESS_FILE" ]] || die "PREFLIGHT_FILE and SEMANTIC_WITNESS_FILE are required"
 [[ "$(wc -c <"$PREFLIGHT_FILE")" -le 524288 && "$(wc -c <"$SEMANTIC_WITNESS_FILE")" -le 524288 ]] || die "snapshot evidence exceeds the immutable parameter budget"
@@ -22,7 +26,7 @@ die() { echo "$*" >&2; exit 1; }
 [[ "$WITNESS_MAX_AGE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "WITNESS_MAX_AGE_SECONDS must be positive"
 [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ && "$FENCE_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || die "snapshot timeout parameters are invalid"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "OPERATION_NAMESPACE must be a DNS label"
-[[ -x "$OPERATIONCTL" ]] || die "OPERATIONCTL must be executable"
+OPERATIONCTL="$(resolve_executable "$OPERATIONCTL")" || die "OPERATIONCTL must be executable"
 
 inventory="$($JQ -ceS 'select(.format == "kubebrain.cold-physical-snapshot-preflight.v2")' "$PREFLIGHT_FILE")" || die "preflight inventory format is invalid"
 identity="$($JQ -er '[.kubebrain.namespace,.kubebrain.statefulset,.kubebrain.uid,.storage.namespace,.storage.tidb_cluster,.storage.uid,(.storage.cluster_id|tostring)] | select(all(.[]; type == "string" and length > 0)) | @tsv' <<<"$inventory")" || die "preflight inventory identity is incomplete"

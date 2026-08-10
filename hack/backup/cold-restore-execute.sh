@@ -11,6 +11,8 @@ EXPECTED_TARGET_NAMESPACE_UID="${EXPECTED_TARGET_NAMESPACE_UID:-}"
 ALLOW_COLD_PHYSICAL_RESTORE="${ALLOW_COLD_PHYSICAL_RESTORE:-false}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-15m}"
 KUBECTL="${KUBECTL:-kubectl}"
+COLD_RESTORE_RENDER_COMMAND="${COLD_RESTORE_RENDER_COMMAND:-go run ./hack/backup/cmd/cold-restore-render}"
+STORAGE_CAPACITY_VERIFY_COMMAND="${STORAGE_CAPACITY_VERIFY_COMMAND:-go run ./hack/backup/cmd/storage-capacity-verify}"
 
 fail_input() { echo "$1" >&2; exit 2; }
 [[ "$ALLOW_COLD_PHYSICAL_RESTORE" == true ]] || fail_input "set ALLOW_COLD_PHYSICAL_RESTORE=true only for an approved isolated restore target"
@@ -23,6 +25,10 @@ fail_input() { echo "$1" >&2; exit 2; }
 [[ "$WAIT_TIMEOUT" =~ ^[1-9][0-9]*(s|m|h)$ ]] || fail_input "WAIT_TIMEOUT must be a positive kubectl duration"
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
+read -r -a cold_restore_render_command <<<"$COLD_RESTORE_RENDER_COMMAND"
+read -r -a storage_capacity_verify_command <<<"$STORAGE_CAPACITY_VERIFY_COMMAND"
+[[ ${#cold_restore_render_command[@]} -gt 0 && ${#storage_capacity_verify_command[@]} -gt 0 ]] ||
+  fail_input "restore helper commands are required"
 
 render_dir="$(mktemp -d)"
 receipt_tmp=""
@@ -98,7 +104,7 @@ rendered="${render_dir}/manifest.json"
 applied_manifest="${render_dir}/applied-manifest.json"
 printf '%s\n' "$manifest" >"$applied_manifest"
 chmod 600 "$applied_manifest"
-(cd "$ROOT_DIR" && go run ./hack/backup/cmd/cold-restore-render \
+(cd "$ROOT_DIR" && "${cold_restore_render_command[@]}" \
   --receipt "$source_receipt_copy" \
   --target-snapshot-class "$snapshot_class" \
   --target-storage-class "$storage_class" \
@@ -113,7 +119,9 @@ verify_source_receipt() {
     { echo "cold snapshot receipt changed after validation" >&2; exit 1; }
 }
 
-kctl() { "$KUBECTL" --context "$KUBE_CONTEXT" "$@"; }
+kubectl_args=()
+[[ "$KUBE_CONTEXT" == "in-cluster" ]] || kubectl_args+=(--context "$KUBE_CONTEXT")
+kctl() { "$KUBECTL" "${kubectl_args[@]}" "$@"; }
 validate_target_identity() {
   actual_cluster_uid="$(kctl get namespace kube-system -o jsonpath='{.metadata.uid}')"
   [[ "$actual_cluster_uid" == "$EXPECTED_TARGET_KUBE_SYSTEM_UID" ]] ||
@@ -268,7 +276,7 @@ validate_restored_storage_inventory() {
   ' <<<"$pvs" >/dev/null || { echo "restored PV inventory does not match bound PVCs" >&2; exit 1; }
   capacity_inventory="$(jq -cn --argjson claims "$pvcs" --argjson pvs "$pvs" \
     '{claims:($claims | map({name,pv,requested_storage})),pvs:($pvs | map({name,capacity}))}')"
-  printf '%s' "$capacity_inventory" | (cd "$ROOT_DIR" && go run ./hack/backup/cmd/storage-capacity-verify) || {
+  printf '%s' "$capacity_inventory" | (cd "$ROOT_DIR" && "${storage_capacity_verify_command[@]}") || {
     echo "restored PV capacity is smaller than bound PVC request" >&2
     exit 1
   }

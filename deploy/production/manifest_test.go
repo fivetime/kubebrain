@@ -652,6 +652,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"run-cold-physical-snapshot-operation.sh", "kubebrain-cold-physical-snapshot-executor-env",
 			"kubebrain-cold-physical-snapshot-executor-workspace",
 		},
+		"kubebrain-cold-physical-restore-executor": {
+			"run-cold-physical-restore-operation.sh", "kubebrain-cold-physical-restore-executor-env",
+			"kubebrain-cold-physical-restore-executor-workspace",
+		},
 		"kubebrain-restore-cutover-executor": {
 			"run-restore-cutover-operation.sh", "kubebrain-restore-cutover-executor-env",
 			"kubebrain-restore-cutover-executor-workspace",
@@ -895,6 +899,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 	require.ElementsMatch(t, []any{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-cold-physical-snapshot-executor",
+		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
 		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",
@@ -972,6 +977,52 @@ func TestColdPhysicalSnapshotRequesterAdmissionIsFailClosed(t *testing.T) {
 	require.Contains(t, expressions, `request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-requester"`)
 	require.Contains(t, expressions, `object.spec.maxAttempts == 1`)
 	require.Contains(t, expressions, `object.spec.parametersSecretRef.name == object.metadata.name + "-parameters"`)
+}
+
+func TestColdPhysicalRestoreRequesterAdmissionIsFailClosed(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-cold-physical-restore-requester-admission.yaml")
+	require.Len(t, objects, 4)
+	operation := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-cold-restore-request-operation")
+	require.Equal(t, "Fail", nestedString(t, operation, "spec", "failurePolicy"))
+	conditions, found, err := unstructured.NestedSlice(operation.Object, "spec", "matchConditions")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Contains(t, conditions[0].(map[string]any)["expression"].(string), `object.spec.type == "ColdPhysicalRestore"`)
+	validations, found, err := unstructured.NestedSlice(operation.Object, "spec", "validations")
+	require.NoError(t, err)
+	require.True(t, found)
+	expressions := ""
+	for _, raw := range validations {
+		expressions += raw.(map[string]any)["expression"].(string)
+	}
+	require.Contains(t, expressions, `object.spec.maxAttempts == 1`)
+	require.Contains(t, expressions, `request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"`)
+	for _, name := range []string{"kubebrain-cold-restore-request-operation", "kubebrain-cold-restore-request-parameters"} {
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)
+		actions, found, err := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, []string{"Deny"}, actions)
+	}
+}
+
+func TestColdPhysicalRestoreTargetAdmissionRestrictsCreateIdentity(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-cold-physical-restore-target-admission.yaml")
+	require.Len(t, objects, 2)
+	policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-cold-restore-target-create")
+	require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+	validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+	require.NoError(t, err)
+	require.True(t, found)
+	expressions := ""
+	for _, raw := range validations {
+		expressions += raw.(map[string]any)["expression"].(string)
+	}
+	require.Contains(t, expressions, `kubebrain-cold-physical-restore-executor`)
+	require.Contains(t, expressions, `object.metadata.name == "kb"`)
+	require.Contains(t, expressions, `object.spec.paused == true`)
+	require.Contains(t, expressions, `^kb-restore-cold-snapshot-[a-f0-9]{20}-[a-f0-9]{12}$`)
+	require.NotContains(t, expressions, `delete`)
 }
 
 func TestTiKVRepairAlertReceiverAdmissionPinsRequestShapeAndIdentity(t *testing.T) {
@@ -1253,7 +1304,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
-	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, approvalExpression, `"`+operationType+`"`)
 	}
 	require.NotContains(t, approvalExpression, `"Backup"`)

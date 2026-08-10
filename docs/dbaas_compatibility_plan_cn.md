@@ -45626,6 +45626,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/production` 全包串行回归在 600 秒总门禁耗尽时才进入既有 restore-traffic marker 子例而超时；
   被截断的目标用例随后独立 3.178 秒通过，因此不把该次全包记为绿色，也没有制造与本提交无关的修复。
 
+- A4309 把 cold CSI 的隔离恢复侧接入独立、持久且单次审批的 `ColdPhysicalRestore` Operation。
+  Operation 必须部署在隔离目标集群：requester 只读取目标 `kube-system`/`tidb-cluster` namespace UID，
+  冻结 A4308 `cold-snapshot-<hash>` receipt 的原始字节、canonical restore manifest、两者 SHA-256 和
+  target UID，写入 immutable Secret 与未审批 Operation；runner 使用目标 in-cluster service account，
+  复算 deterministic operation identity、持续 heartbeat，并在 source receipt、manifest 或 target UID
+  任一漂移时拒绝 mutation。运行镜像新增预编译 `cold-restore-render`/`storage-capacity-verify`，底层
+  restore 原语不再依赖 Go toolchain，也正确区分显式 `in-cluster` 与 kubeconfig context。
+  executor RBAC 只能创建/读取恢复所需 TidbCluster、PVC、VolumeSnapshot/Content，不能删除 PVC、PV 或
+  retained snapshot；由于 Kubernetes RBAC 不能用 resourceNames 限制 create，额外 target admission
+  把 TidbCluster 固定为 paused 3 PD/3 TiKV `kb`，PVC 固定为六个 operator 名称，snapshot/content 固定为
+  receipt-derived 名称、operation label、Retain policy 和 pre-provisioned binding。任何执行失败直接终止为
+  `Failed` 并保留目标资源供审计，不能自动 retry。完整 cold restore failure matrix 90.888 秒通过；这仍是
+  可部署的 restore-side 编排能力，不是一次真实 CSI 隔离恢复成功证据，物理 DR 缺口继续保持打开。
+  `hack/production` 全包在放宽为符合当前串行体量的 15 分钟门禁后 892.590 秒全绿；发布 CI 应拆分
+  cold snapshot/restore 等长矩阵并并行执行，不能继续依赖只剩约 7 秒余量的单包总超时。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

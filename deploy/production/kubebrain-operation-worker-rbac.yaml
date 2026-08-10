@@ -79,6 +79,9 @@ subjects:
     name: kubebrain-cold-physical-snapshot-executor
     namespace: kubebrain-operations
   - kind: ServiceAccount
+    name: kubebrain-cold-physical-restore-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
     name: kubebrain-restore-cutover-executor
     namespace: kubebrain-operations
   - kind: ServiceAccount

@@ -187,10 +187,11 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 
 	binding := documents[3]
 	require.Equal(t, "RoleBinding", binding.Kind)
-	require.Len(t, binding.Subjects, 9)
+	require.Len(t, binding.Subjects, 10)
 	for _, name := range []string{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-cold-physical-snapshot-executor",
+		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor",
 		"kubebrain-post-restore-audit-executor",
 		"kubebrain-certificate-rotation-executor", "kubebrain-destroy-executor",
@@ -261,6 +262,39 @@ func TestColdPhysicalSnapshotRequesterCanOnlySubmitImmutableEvidence(t *testing.
 		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
 	}, documents[1].Rules)
+}
+
+func TestColdPhysicalRestoreRBACCreatesButNeverDeletesIsolatedResources(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-cold-physical-restore-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 4)
+	created := map[string]bool{}
+	for _, document := range documents {
+		for _, rule := range document.Rules {
+			require.NotContains(t, rule.Verbs, "delete")
+			require.NotContains(t, rule.Verbs, "deletecollection")
+			if rbacContains(rule.Verbs, "create") {
+				for _, resource := range rule.Resources {
+					created[resource] = true
+				}
+			}
+		}
+	}
+	for _, resource := range []string{"tidbclusters", "persistentvolumeclaims", "volumesnapshots", "volumesnapshotcontents"} {
+		require.True(t, created[resource], resource)
+	}
+	require.False(t, created["persistentvolumes"])
+}
+
+func TestColdPhysicalRestoreRequesterCanOnlySubmitAndReadTargetUIDs(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-cold-physical-restore-requester-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 5)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
+	}, documents[1].Rules)
+	require.Equal(t, []rbacRule{{APIGroups: []string{""}, Resources: []string{"namespaces"}, ResourceNames: []string{"kube-system", "tidb-cluster"}, Verbs: []string{"get"}}}, documents[3].Rules)
 }
 
 func TestTiKVTransactionRecoveryRequesterCanOnlyReadIdentityAndSubmit(t *testing.T) {
@@ -465,7 +499,7 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.VersionAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, "request.userInfo.username")
 	require.Contains(t, policy.Spec.Validations[4].Expression, "kubebrain-operation-approver")
-	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, policy.Spec.Validations[4].Expression, operationType)
 	}
 	require.NotContains(t, policy.Spec.Validations[4].Expression, `"Backup"`)

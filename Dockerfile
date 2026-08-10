@@ -68,6 +68,8 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-logical-export ./hack/backup/cmd/logical-export \
     && go build -trimpath -o /src/bin/kubebrain-logical-status ./hack/backup/cmd/logical-status \
     && go build -trimpath -o /src/bin/kubebrain-cold-snapshot-receipt ./hack/backup/cmd/cold-snapshot-receipt \
+    && go build -trimpath -o /src/bin/kubebrain-cold-restore-render ./hack/backup/cmd/cold-restore-render \
+    && go build -trimpath -o /src/bin/kubebrain-storage-capacity-verify ./hack/backup/cmd/storage-capacity-verify \
     && go build -trimpath -o /src/bin/kubebrain-logical-verify ./hack/backup/cmd/logical-verify \
     && go build -trimpath -o /src/bin/kubebrain-logical-etcd-snapshot ./hack/backup/cmd/logical-etcd-snapshot \
     && go build -trimpath -o /src/bin/kubebrain-etcd-audit-probe ./hack/production/cmd/etcd-audit-probe \
@@ -114,12 +116,14 @@ COPY --from=build /src/bin/kubebrain-logical-object /usr/local/bin/kubebrain-log
 COPY --from=build /src/bin/kubebrain-logical-export /usr/local/bin/kubebrain-logical-export
 COPY --from=build /src/bin/kubebrain-logical-status /usr/local/bin/kubebrain-logical-status
 COPY --from=build /src/bin/kubebrain-cold-snapshot-receipt /usr/local/bin/kubebrain-cold-snapshot-receipt
+COPY --from=build /src/bin/kubebrain-cold-restore-render /usr/local/bin/kubebrain-cold-restore-render
+COPY --from=build /src/bin/kubebrain-storage-capacity-verify /usr/local/bin/kubebrain-storage-capacity-verify
 COPY --from=build /src/bin/kubebrain-logical-verify /usr/local/bin/kubebrain-logical-verify
 COPY --from=build /src/bin/kubebrain-logical-etcd-snapshot /usr/local/bin/kubebrain-logical-etcd-snapshot
 COPY --from=build /src/bin/kubebrain-etcd-audit-probe /usr/local/bin/kubebrain-etcd-audit-probe
 COPY --from=build /src/bin/kubebrain-uid-delete /usr/local/bin/kubebrain-uid-delete
 COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl
-COPY hack/backup/logical-export.sh hack/backup/logical-status.sh hack/backup/logical-verify.sh hack/backup/cold-snapshot-preflight.sh hack/backup/cold-snapshot-execute.sh /opt/kubebrain/hack/backup/
+COPY hack/backup/logical-export.sh hack/backup/logical-status.sh hack/backup/logical-verify.sh hack/backup/cold-snapshot-preflight.sh hack/backup/cold-snapshot-execute.sh hack/backup/cold-restore-execute.sh /opt/kubebrain/hack/backup/
 COPY hack/production/*.sh /opt/kubebrain/hack/production/
 
 ARG KUBEBRAIN_VERSION

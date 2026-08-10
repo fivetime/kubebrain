@@ -1,0 +1,56 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: kubebrain-cold-physical-restore, namespace: tidb-cluster}
+rules:
+  - apiGroups: [pingcap.com]
+    resources: [tidbclusters]
+    verbs: [create]
+  - apiGroups: [pingcap.com]
+    resources: [tidbclusters]
+    resourceNames: [kb]
+    verbs: [get, patch, watch]
+  - apiGroups: [apps]
+    resources: [statefulsets]
+    resourceNames: [kb-pd, kb-tikv]
+    verbs: [get, patch, watch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [create, get, list, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [create, get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: kubebrain-cold-physical-restore, namespace: tidb-cluster}
+subjects:
+  - {kind: ServiceAccount, name: kubebrain-cold-physical-restore-executor, namespace: kubebrain-operations}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: kubebrain-cold-physical-restore}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: kubebrain-cold-physical-restore-cluster}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    resourceNames: [kube-system, tidb-cluster]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotcontents]
+    verbs: [create, get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: kubebrain-cold-physical-restore-cluster}
+subjects:
+  - {kind: ServiceAccount, name: kubebrain-cold-physical-restore-executor, namespace: kubebrain-operations}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kubebrain-cold-physical-restore-cluster}

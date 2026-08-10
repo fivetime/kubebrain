@@ -48,6 +48,30 @@ func TestColdReceiptPublishersUseUnpredictableSameDirectoryTemporaryFiles(t *tes
 	}
 }
 
+func TestColdRestoreExecuteUsesExplicitInClusterCredentialsWithoutKubeconfigContext(t *testing.T) {
+	dir := t.TempDir()
+	receiptPath := filepath.Join(dir, "snapshot.json")
+	manifestPath := filepath.Join(dir, "restore.json")
+	require.NoError(t, os.WriteFile(receiptPath, coldRestoreSnapshotReceipt(t), 0o600))
+	output, err := runColdRestoreRender(t, receiptPath, manifestPath)
+	require.NoError(t, err, string(output))
+	logPath := filepath.Join(dir, "kubectl.log")
+	kubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(kubectl, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >>\"$KUBECTL_LOG\"\nprintf wrong-target-uid\n"), 0o755))
+	result, runErr := runColdRestoreExecute(t, []string{
+		"KUBECTL=" + kubectl, "KUBECTL_LOG=" + logPath, "KUBE_CONTEXT=in-cluster",
+		"RECEIPT_FILE=" + receiptPath, "RESTORE_MANIFEST=" + manifestPath,
+		"RESTORE_RECEIPT_FILE=" + filepath.Join(dir, "restore-receipt.json"),
+		"EXPECTED_TARGET_KUBE_SYSTEM_UID=expected-target-uid",
+		"EXPECTED_TARGET_NAMESPACE_UID=target-namespace-uid", "ALLOW_COLD_PHYSICAL_RESTORE=true",
+	})
+	require.Error(t, runErr)
+	require.Contains(t, string(result), "target kube-system UID mismatch")
+	calls := string(mustRead(t, logPath))
+	require.Contains(t, calls, "get namespace kube-system")
+	require.NotContains(t, calls, "--context")
+}
+
 func TestColdRestoreExecute(t *testing.T) {
 	for _, tc := range []struct {
 		name                           string

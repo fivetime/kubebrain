@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: kubebrain-cold-physical-restore-requester, namespace: kubebrain-operations}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: kubebrain-cold-physical-restore-requester, namespace: kubebrain-operations}
+rules:
+  - {apiGroups: [dbaas.kubebrain.io], resources: [kubebrainoperations], verbs: [create, get]}
+  - {apiGroups: [""], resources: [secrets], verbs: [create, get]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: kubebrain-cold-physical-restore-requester, namespace: kubebrain-operations}
+subjects:
+  - {kind: ServiceAccount, name: kubebrain-cold-physical-restore-requester, namespace: kubebrain-operations}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: kubebrain-cold-physical-restore-requester}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: kubebrain-cold-physical-restore-requester-target-identity}
+rules:
+  - {apiGroups: [""], resources: [namespaces], resourceNames: [kube-system, tidb-cluster], verbs: [get]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: kubebrain-cold-physical-restore-requester-target-identity}
+subjects:
+  - {kind: ServiceAccount, name: kubebrain-cold-physical-restore-requester, namespace: kubebrain-operations}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kubebrain-cold-physical-restore-requester-target-identity}

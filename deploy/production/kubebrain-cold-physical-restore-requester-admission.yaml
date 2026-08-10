@@ -1,0 +1,41 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-cold-restore-request-operation}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
+  matchConditions:
+    - {name: cold-restore-scope, expression: 'object.spec.type == "ColdPhysicalRestore" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"'}
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"', message: cold restore operations require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: cold restore requester is restricted to the isolated target operation queue}
+    - {expression: 'object.metadata.name.matches("^cold-restore-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: cold restore operation identity must be deterministic}
+    - {expression: 'object.spec.type == "ColdPhysicalRestore" && object.spec.requestedBy == "platform:cold-physical-restore" && object.spec.instance == "kb" && object.spec.maxAttempts == 1', message: cold restore operation shape is fixed}
+    - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: cold restore operation must bind its immutable parameter Secret}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-cold-restore-request-operation}
+spec: {policyName: kubebrain-cold-restore-request-operation, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-cold-restore-request-parameters}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - {name: cold-restore-parameter-scope, expression: '(object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^cold-restore-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"'}
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-requester"', message: cold restore parameter Secrets require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^cold-restore-[a-f0-9]{20}-parameters$")', message: cold restore parameter Secret identity is fixed}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: cold restore parameters must be one immutable opaque payload}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-cold-restore-request-parameters}
+spec: {policyName: kubebrain-cold-restore-request-parameters, validationActions: [Deny]}

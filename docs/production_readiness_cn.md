@@ -1221,7 +1221,7 @@ TiKV cluster ID 或 KubeBrain 数据语义；这些仍须由后续 restore execu
 renderer 读取 `kubebrain.cold-physical-snapshot.v2` receipt 时必须拒绝未知字段和尾随第二个
 JSON 值，不能把恢复证据合同之外的字段静默忽略后继续渲染清单。
 
-隔离目标的候选恢复 executor 必须显式绑定两个 Kubernetes UID，不能隐式使用当前 context：
+隔离目标的底层恢复原语必须显式绑定两个 Kubernetes UID，不能隐式使用当前 context：
 
 ```shell
 KUBE_CONTEXT=isolated-restore \
@@ -1233,6 +1233,26 @@ RESTORE_RECEIPT_FILE=cold-restore-receipt.json \
 ALLOW_COLD_PHYSICAL_RESTORE=true \
   hack/backup/cold-restore-execute.sh
 ```
+
+生产入口不是直接运行上述脚本，而是在**隔离目标集群**安装 Operation CRD/worker/broker 以及
+`kubebrain-cold-physical-restore-{requester-rbac,requester-admission,rbac,target-admission}.yaml`，
+再由专用 requester 冻结 source receipt、canonical restore manifest 和目标两个 namespace UID：
+
+```shell
+REQUEST_ID=change-2026-restore-001 \
+KUBE_CONTEXT=isolated-restore \
+RECEIPT_FILE=cold-snapshot-receipt.json \
+TARGET_SNAPSHOT_CLASS=retained-csi \
+TARGET_STORAGE_CLASS=encrypted-csi \
+  hack/production/request-cold-physical-restore.sh
+```
+
+requester 只读取 `kube-system`/`tidb-cluster` UID，并创建 immutable parameter Secret 与未审批、
+`maxAttempts: 1` 的 `ColdPhysicalRestore` Operation；它不会创建、patch 或删除任何数据资源。
+专用 approver 核对外部变更单、source receipt SHA-256、rendered manifest SHA-256 和目标 UID 后，
+才能把默认零副本的 restore executor 扩为 1。runner 只能在目标集群使用 in-cluster service account，
+不能挂载生产集群管理员 kubeconfig；丢失 Operation heartbeat 会终止子进程，执行失败直接进入
+`Failed`，因为目标可能已经存在部分 retained 对象，禁止同一 operation 自动重试。
 
 执行器先用同一 renderer 重新生成并规范化比对 manifest，验证 kube-system/目标 namespace UID、
 VolumeSnapshot/TidbCluster API、snapshot class 的 driver+Retain policy、storage class provisioner，
@@ -2371,8 +2391,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   不能再把“使用 BR”写成已完成替代方案。在线 etcd snapshot 与
   `kubebrain.logical.v2` 都不能代替存储引擎级 PITR。冷 CSI 多 PVC full
   snapshot 已具备默认停用、单次审批、参数摘要/集群身份/语义 witness 绑定的持久
-  `ColdPhysicalSnapshot` Operation executor；上线声明仍需在真实 CSI 环境完成多 PVC
-  全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
+  `ColdPhysicalSnapshot` Operation executor；隔离目标也具备 source/manifest/target UID 绑定、
+  单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
+  仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
 - `hack/backup/logical-export.sh` / `logical-restore.sh` 是当前生产备份与隔离恢复入口；上线
   前必须按本节后文完成 artifact 完整性、Object Lock、恢复 receipt 和持续审计门禁，不能
   只用一次本地导出成功声称具备 DR。
@@ -3099,7 +3120,7 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 不变。轮换 CA 时必须先把旧、新 CA 同时发布到 executor trust bundle，再换 broker
 叶证书，最后确认所有 executor 使用新 CA 后撤旧；服务端热加载不能替代该双信任窗口。
 
-六类生产 executor 模板位于
+十类生产 executor 模板位于
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
 之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须
 创建 `kubebrain-certificate-rotation-executor-hooks` Secret，键
@@ -3121,7 +3142,7 @@ one-shot Operation 做 claim/heartbeat/receipt 演练，再扩到两个副本并
 滚动策略允许升级期间短暂三副本竞争，所有外部 hook 因此必须按 operation UID 和 attempt
 幂等。
 
-六类模板使用独立 ServiceAccount。它们能读取 Operation、更新 status 和管理实例 Lease，
+十类模板使用独立 ServiceAccount。它们能读取 Operation、更新 status 和管理实例 Lease，
 但不能调用 Secret API；动态参数只能由 broker 在验证 SA 类型、owner、attempt 和 Lease
 后返回。该边界阻断同 namespace 的跨类型 Secret 读取，但 env Secret/PVC 本身仍由 kubelet
 挂载，节点或 broker 被攻陷不在此边界内。更高等级租户仍应拆分 operation namespace、

@@ -28,6 +28,7 @@ var serviceAccountTypes = map[string]string{
 	"kubebrain-backup-executor":                    "Backup",
 	"kubebrain-backup-deletion-executor":           "BackupDeletion",
 	"kubebrain-cold-physical-snapshot-executor":    "ColdPhysicalSnapshot",
+	"kubebrain-cold-physical-restore-executor":     "ColdPhysicalRestore",
 	"kubebrain-restore-cutover-executor":           "RestoreCutover",
 	"kubebrain-post-restore-audit-executor":        "PostRestoreAudit",
 	"kubebrain-certificate-rotation-executor":      "CertificateRotation",

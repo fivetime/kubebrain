@@ -1,0 +1,60 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-cold-restore-target-create}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [pingcap.com], apiVersions: [v1alpha1], operations: [CREATE], resources: [tidbclusters], scope: Namespaced}
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [persistentvolumeclaims], scope: Namespaced}
+      - {apiGroups: [snapshot.storage.k8s.io], apiVersions: [v1], operations: [CREATE], resources: [volumesnapshots], scope: Namespaced}
+      - {apiGroups: [snapshot.storage.k8s.io], apiVersions: [v1], operations: [CREATE], resources: [volumesnapshotcontents], scope: Cluster}
+  matchConditions:
+    - name: cold-restore-target-scope
+      expression: |
+        request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-executor" ||
+        (has(object.metadata.labels) && "kubebrain.io/operation-id" in object.metadata.labels &&
+          object.metadata.labels["kubebrain.io/operation-id"].matches("^cold-snapshot-[a-f0-9]{20}$")) ||
+        (has(object.metadata.annotations) && "kubebrain.io/cold-restore-operation" in object.metadata.annotations &&
+          object.metadata.annotations["kubebrain.io/cold-restore-operation"].matches("^cold-snapshot-[a-f0-9]{20}$"))
+  validations:
+    - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-executor"'
+      message: cold restore target objects require the dedicated executor identity
+    - expression: 'request.resource.resource == "volumesnapshotcontents" || object.metadata.namespace == "tidb-cluster"'
+      message: cold restore namespaced targets are restricted to tidb-cluster
+    - expression: |
+        request.resource.resource != "tidbclusters" ||
+        (object.metadata.name == "kb" && has(object.metadata.annotations) &&
+          object.metadata.annotations["kubebrain.io/cold-restore-operation"].matches("^cold-snapshot-[a-f0-9]{20}$") &&
+          object.spec.paused == true && object.spec.pd.replicas == 3 && object.spec.tikv.replicas == 3)
+      message: cold restore TidbCluster identity and initial pause are fixed
+    - expression: |
+        request.resource.resource != "persistentvolumeclaims" ||
+        (object.metadata.name.matches("^(pd-kb-pd|tikv-kb-tikv)-[0-2]$") &&
+          object.metadata.labels["kubebrain.io/operation-id"].matches("^cold-snapshot-[a-f0-9]{20}$") &&
+          object.spec.dataSource.apiGroup == "snapshot.storage.k8s.io" && object.spec.dataSource.kind == "VolumeSnapshot" &&
+          object.spec.dataSource.name.matches("^kb-restore-cold-snapshot-[a-f0-9]{20}-[a-f0-9]{12}$"))
+      message: cold restore PVC source must be a deterministic retained snapshot
+    - expression: |
+        !(request.resource.resource in ["volumesnapshots", "volumesnapshotcontents"]) ||
+        (object.metadata.name.matches("^kb-restore-cold-snapshot-[a-f0-9]{20}-[a-f0-9]{12}$") &&
+          object.metadata.labels["kubebrain.io/operation-id"].matches("^cold-snapshot-[a-f0-9]{20}$"))
+      message: cold restore snapshot identity must be deterministic
+    - expression: |
+        request.resource.resource != "volumesnapshots" ||
+        (object.spec.source.volumeSnapshotContentName == object.metadata.name &&
+          object.spec.volumeSnapshotClassName != "")
+      message: cold restore VolumeSnapshot must bind its deterministic pre-provisioned content
+    - expression: |
+        request.resource.resource != "volumesnapshotcontents" ||
+        (object.spec.deletionPolicy == "Retain" && object.spec.source.snapshotHandle != "" &&
+          object.spec.volumeSnapshotRef.apiVersion == "snapshot.storage.k8s.io/v1" &&
+          object.spec.volumeSnapshotRef.kind == "VolumeSnapshot" &&
+          object.spec.volumeSnapshotRef.namespace == "tidb-cluster" &&
+          object.spec.volumeSnapshotRef.name == object.metadata.name)
+      message: cold restore VolumeSnapshotContent must retain and bind its deterministic snapshot
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-cold-restore-target-create}
+spec: {policyName: kubebrain-cold-restore-target-create, validationActions: [Deny]}
