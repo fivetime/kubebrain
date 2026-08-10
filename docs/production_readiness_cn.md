@@ -1950,6 +1950,26 @@ bootstrap guard；全部通过才释放该 guard，并输出 `kubebrain.native-p
 返回的全局最小 safepoint 若已越过 checkpoint 仍会报错；生产监管还必须持续保证 coordinator
 safepoint 与 checkpoint 前进，ready receipt 不是长期健康证明。
 
+停止 task 时禁止直接调用官方无条件删除入口。必须同时提供 create/ready 两份 receipt：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-task-delete \
+  --task-create=/evidence/native-pitr-task-create.json \
+  --task-ready=/evidence/native-pitr-task-ready.json \
+  --pd=kb-pd-0.storage.svc:2379,kb-pd-1.storage.svc:2379 \
+  --ca=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key
+```
+
+命令要求两份 receipt 与当前 cluster ID 完全一致，重新读取并验证 owner/task/range/advancer/
+checkpoint，拒绝 checkpoint 倒退，然后以持久 owner、task protobuf 和精确 range value 为 compare
+条件，在一个事务中删除该 task 的 info、ranges、checkpoint、storage-checkpoint、pause、last-error
+及 KubeBrain owner。比较失败不会删除任何 key。输出 `kubebrain.native-pitr-task-delete.v1` 固化最终
+checkpoint；它仍不是备份完成 receipt。advancer 会从 task 删除事件自行清除共享
+`log-backup-coordinator` safepoint，命令绝不主动删除该全局 safepoint，以免影响并发观察者或未来
+版本的多 task 能力。生产监管必须另行确认 advancer 已观察删除且 coordinator safepoint 已按预期
+收敛。固定源码审计还发现 v7.5.1 官方删除 storage-checkpoint 时使用无尾 `/` 的字符串前缀，可能
+覆盖同名前缀的 sibling task；KubeBrain 事务使用 `/<task>/` 边界，不继承该误删范围。
+
 上线前至少执行一次全 `/registry` 隔离恢复，要求非空、记录数一致、逐 key/value 校验
 通过且清理成功：
 
