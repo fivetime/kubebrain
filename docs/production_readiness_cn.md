@@ -149,6 +149,31 @@ hack/production/wait-tidbcluster-ready.sh
 “TCP 可连接但 Debug gRPC 不完成”的半故障。它不执行 `KvPrewrite/KvCommit`，不能证明事务
 KV 路径健康；完整实例门禁随后通过 KubeBrain 执行 etcd Put/Get/Delete。三层证据不可相互替代。
 
+Pod Ready、TiKV Debug gRPC 和端到端请求之外，发布与故障处置前还应执行独立 PD/Region
+只读门禁：
+
+```bash
+KUBE_CONTEXT=production \
+TIDB_NAMESPACE=tidb-cluster \
+TIDB_CLUSTER=kb \
+EXPECTED_TIKV_STORES=3 \
+MAX_TIKV_DISK_USED_PERCENT=90 \
+hack/production/validate-tikv-region-health.sh
+```
+
+该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
+`pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
+同时逐一在 Ready TiKV Pod 内对 `/var/lib/tikv` 执行只读 `df -P`，按真实挂载文件系统拒绝超过
+阈值的磁盘水位。一次运行会汇总 Region 与磁盘的全部异常后返回非零，不会因先遇到某一类异常
+而隐藏另一类根因。运行身份需要读取 Pod、访问 Kubernetes Service proxy 和固定 TiKV Pod
+`pods/exec` 的权限；脚本不写 PD/TiKV，不删除 Pod/PVC，也不代替端到端事务探测。
+
+本地 kind 曾出现 3 个 TiKV Pod 全部 Ready、PD 3 个 store 全部 Up，但 Region `76009` 的
+store `1005` peer 同时 pending/down：该 store 本地保留旧 epoch 的 Region `1010`，持续以
+`msg is overlapped with exist region` 拒绝新 Region；三个 5Gi PVC 实际又共享宿主机 2TiB、97%
+已用的文件系统，TiKV heartbeat 报 `disk_usage: AlmostFull`。门禁会同时报告 Region/store ID
+和三个 Pod 的真实 97% 水位，从而避免把控制面 Ready 误当成事务数据面健康。
+
 `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 专门识别三项同时成立且持续
 2 分钟的反常状态：KubeBrain StatefulSet 为 0 Ready、3 个 TiKV metrics target 均可抓取、TiKV
 没有报告缺失 Region leader。这正是“TCP/heartbeat/Debug 正常但事务卡死”的运行时分类，不能

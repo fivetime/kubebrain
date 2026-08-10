@@ -45200,6 +45200,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestSnapshotFailsClosedAndRecoversAcrossBackendFailover` 在执行注入 command 前校验，审计后不重复接线。
   该项只强化真实 TiKV/PD 故障证据，不执行本轮环境中的破坏性重启。
 
+- A4276 把本地独立 TiKV/PD 集群的“Pod/Store 表面健康但 Region 数据面异常”固化成发布门禁。
+  现场 PD 显示 3 个 store 均 `Up`，但 Region `76009` 的 store `1005` peer 持续至少 600 秒同时
+  pending/down；PD 中相邻 Region `1010` 已是 split 后边界，而 store `1005` 日志仍保留 version 77
+  的旧宽范围 `1010`，每约 2 秒以 `msg is overlapped with exist region` 拒绝 version 78 的
+  `76009`。三个声明 5Gi 的 PVC 在 kind 中实际映射到同一个 2TiB、97% 已用的宿主文件系统，消息
+  同时报 `disk_usage: AlmostFull`。新增 `validate-tikv-region-health.sh`：显式 context、DNS label、
+  超时与数量输入门禁后，经 Kubernetes Service proxy 验证 PD store 数/状态和 pending/down/miss/
+  extra/learner 五类 Region checker，再逐 Ready TiKV Pod/PVC 读取真实 `/var/lib/tikv` 文件系统水位；
+  所有异常一次汇总后 fail closed。fake-kubectl 回归固定健康 GREEN、`76009/1005` pending/down RED、
+  97% 磁盘 RED 和缺失 context RED；真实现场只读运行同时稳定报告两类 Region 异常与三个 Pod 磁盘
+  压力。本项不自动删除 peer、Region、Pod 或 PVC，修复仍必须经过已有审批、quorum 和 receipt 栅栏。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
