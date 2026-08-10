@@ -329,9 +329,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	for chunk := range ch {
 		if chunk.err != nil {
 			s.metricCli.EmitCounter("read.range_stream.err", 1)
-			// Surface as Unavailable so the apiserver relists instead of trusting a
-			// truncated stream.
-			return status.Error(codes.Unavailable, chunk.err.Error())
+			return rangeStreamStatusErr(chunk.err)
 		}
 		headerRev = chunk.resp.Header.Revision
 		if dataRevision == 0 {
@@ -523,6 +521,9 @@ func rangeStreamStatusErr(err error) error {
 	}
 	if _, ok := status.FromError(err); ok {
 		return err
+	}
+	if errors.Is(err, backend.ErrInvalidMVCCMetadata) {
+		return status.Error(codes.DataLoss, err.Error())
 	}
 	return status.Error(codes.Unavailable, err.Error())
 }

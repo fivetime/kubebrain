@@ -17,7 +17,6 @@ package etcd
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -35,6 +34,7 @@ import (
 	gproto "google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
@@ -1210,7 +1210,7 @@ func (b *backendShim) translateRangeStream(
 					// inner RangeResponse). On success, forward the pinned revision as
 					// a header-only final chunk.
 					if in.Err != "" {
-						send(rangeStreamChunk{err: errors.New(in.Err)})
+						send(rangeStreamChunk{err: streamerror.DecodeOrPlain(in.Err)})
 						return
 					}
 					send(rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(int64(rr.Header.Revision))}})

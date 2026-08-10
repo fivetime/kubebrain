@@ -10,6 +10,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -249,7 +250,7 @@ func (b *backend) scanQuotaUsage(ctx context.Context, revision uint64) (int64, e
 	const maxInt64 = int64(^uint64(0) >> 1)
 	for response := range stream {
 		if response.GetErr() != "" {
-			return 0, errors.New(response.GetErr())
+			return 0, streamerror.DecodeOrPlain(response.GetErr())
 		}
 		for _, kv := range response.GetRangeResponse().GetKvs() {
 			keyBytes := int64(len(kv.GetKey()))

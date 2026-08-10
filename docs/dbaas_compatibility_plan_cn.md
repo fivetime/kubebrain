@@ -44716,6 +44716,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   heal 覆盖；另篡改物理 delimiter，Range/Hash/Snapshot 均拒绝且 Snapshot 零 records。普通 RPC 继续映射
   `DataLoss`，Snapshot 为 `FailedPrecondition`。内部 `StreamRangeResponse.err` 仍只有 string，虽已不会静默
   漏行，但跨该内部流边界会丢失 sentinel 类型；后续需增加结构化错误码，不能用易漂移文本猜测关闭差距。
+  A4223 关闭上述内部 RangeStream 类型丢失。当前 `kubebrain-client v0.2.1` proto 只提供 `string err`，直接
+  增字段需要同步发布客户端模块；因此先在该字段内定义向后兼容的 `kubebrain.stream.error/v1:` envelope，
+  payload 为 base64url 编码 JSON `{kind,code,message}`。producer 只对 `ErrInvalidMVCCMetadata` 与已有非
+  Unknown gRPC status 编码，普通错误继续保留原字符串；consumer 仅在固定版本前缀、合法 base64/JSON、
+  已知 kind/code 全部成立时恢复类型，未知版本/格式保持 opaque，不从 message 关键词猜测。scanner terminal
+  统一编码；quota rebuild、etcd backend shim 与原生 brain stream 解码，其中 brain 对 typed terminal 直接
+  终止流，不把 envelope 当普通响应发送。RangeStream handler 不再把所有 mid-stream error 强制改成
+  `Unavailable`：恢复出的 MVCC 损坏返回 `DataLoss`，已有 gRPC status 保持原码，未分类错误仍按既定
+  `Unavailable` relist 契约。真实坏 delimiter 测试贯穿 scanner terminal encode/decode；handler 表测固定
+  DataLoss/InvalidArgument/Unavailable 三分支与零 partial chunk。旧 consumer 仍能将 envelope 视为非空
+  terminal error，因此滚动升级 fail closed；后续发布新 client proto 时可迁移为显式 error detail 字段。
 
 ### P2：运维兼容和长期验证
 

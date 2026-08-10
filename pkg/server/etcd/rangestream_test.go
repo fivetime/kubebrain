@@ -32,7 +32,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	v2proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
@@ -73,6 +76,23 @@ type prematureRangeStreamBackendShim struct {
 type revisionRecordingRangeStreamBackendShim struct {
 	BackendShim
 	revision uint64
+}
+
+type encodedErrorRangeStreamBackend struct {
+	backend.Backend
+	err error
+}
+
+func (b *encodedErrorRangeStreamBackend) RangeStream(
+	context.Context, []byte, []byte, uint64,
+) (<-chan *v2proto.StreamRangeResponse, error) {
+	ch := make(chan *v2proto.StreamRangeResponse, 1)
+	ch <- &v2proto.StreamRangeResponse{
+		RangeResponse: &v2proto.RangeResponse{Header: &v2proto.ResponseHeader{Revision: 7}},
+		Err:           streamerror.Encode(b.err),
+	}
+	close(ch)
+	return ch, nil
 }
 
 func (b *revisionRecordingRangeStreamBackendShim) RangeStreamChan(
@@ -778,6 +798,50 @@ func TestRangeStreamRejectsPrematureBackendClose(t *testing.T) {
 	requireRangeStreamStatusError(t, err, codes.Unavailable, "range stream ended without terminal metadata")
 	require.Empty(t, stream.sent,
 		"the final bounded data chunk stays buffered until terminal metadata validates completion")
+}
+
+func TestRangeStreamPreservesTypedBackendStreamError(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		code    codes.Code
+		message string
+	}{
+		{
+			name:    "MVCC corruption",
+			err:     coder.MarkInvalidMVCCMetadata(errors.New("decode streamed object key")),
+			code:    codes.DataLoss,
+			message: "decode streamed object key",
+		},
+		{
+			name:    "untyped backend failure",
+			err:     errors.New("ordinary stream failure"),
+			code:    codes.Unavailable,
+			message: "ordinary stream failure",
+		},
+		{
+			name:    "existing gRPC status",
+			err:     status.Error(codes.InvalidArgument, "stream rejected"),
+			code:    codes.InvalidArgument,
+			message: "stream rejected",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, cleanup := newRangeStreamTestServer(t)
+			defer cleanup()
+			shim := server.backend.(*backendShim)
+			shim.backend = &encodedErrorRangeStreamBackend{Backend: shim.backend, err: test.err}
+
+			stream := &fakeRangeStreamServer{ctx: context.Background()}
+			err := server.RangeStream(&etcdserverpb.RangeRequest{
+				Key: []byte("/typed-error/"), RangeEnd: []byte("/typed-error0"), Serializable: true,
+			}, stream)
+			require.Equal(t, test.code, status.Code(err))
+			require.Equal(t, test.message, status.Convert(err).Message())
+			require.Empty(t, stream.sent)
+		})
+	}
 }
 
 func TestRangeStreamPartialThenCompacted(t *testing.T) {

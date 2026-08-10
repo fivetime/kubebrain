@@ -14,6 +14,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
@@ -206,6 +207,17 @@ func TestSnapshotHistoryStreamRejectsMalformedObjectKey(t *testing.T) {
 	})
 	require.ErrorIs(t, listErr, ErrInvalidMVCCMetadata)
 	require.Nil(t, list)
+	streamed, rangeStreamErr := b.RangeStream(ctx, []byte(prefix+"/object-key/"), PrefixEnd([]byte(prefix+"/object-key/")), revision)
+	require.NoError(t, rangeStreamErr)
+	var encodedErr string
+	for response := range streamed {
+		if response.GetErr() != "" {
+			encodedErr = response.GetErr()
+		}
+	}
+	decodedErr, ok := streamerror.Decode(encodedErr)
+	require.True(t, ok)
+	require.ErrorIs(t, decodedErr, ErrInvalidMVCCMetadata)
 
 	stream, err := b.SnapshotHistoryStream(ctx, revision)
 	require.NoError(t, err)

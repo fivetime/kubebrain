@@ -32,6 +32,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -313,7 +314,7 @@ func getListStreamEnd(revision uint64, err error) *proto.StreamRangeResponse {
 	}
 	if err != nil {
 		// if err occurs, set it in CancelReason field
-		response.Err = err.Error()
+		response.Err = streamerror.Encode(err)
 	}
 	return response
 }

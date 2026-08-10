@@ -24,6 +24,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	b "github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 )
 
 // stripKvs removes the inline-metadata envelope (approach A) from each value so
@@ -151,6 +152,12 @@ func (s *Server) RangeStream(r *proto.RangeRequest, server proto.Read_RangeStrea
 	}
 	responseSize := 0
 	for response := range ch {
+		if response.GetErr() != "" {
+			if typedErr, ok := streamerror.Decode(response.GetErr()); ok {
+				s.emitMethodMetric(readMetric, "range-stream", typedErr, time.Since(start))
+				return typedErr
+			}
+		}
 		if response.RangeResponse != nil {
 			if err = stripKvs(response.RangeResponse.Kvs); err != nil {
 				s.emitMethodMetric(readMetric, "range-stream", err, time.Since(start))
