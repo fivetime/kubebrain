@@ -507,6 +507,21 @@ func TestEveryEtcdctlRunnerVerifiesProvenance(t *testing.T) {
 	}
 }
 
+func TestReferenceEtcdToolchainBuilderIsIsolatedAndVerified(t *testing.T) {
+	data, err := os.ReadFile("build-reference-etcd-toolchain.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `git -C "$REFERENCE_ETCD_SOURCE_DIR" status --porcelain --untracked-files=normal`)
+	require.Contains(t, script, `reference etcd build directory must be empty`)
+	require.Contains(t, script, `BINDIR="$relative_build_dir" GOWORK=off GO_BUILD_FLAGS=-mod=readonly ./scripts/build.sh`)
+	require.Contains(t, script, `for binary_name in etcd etcdctl etcdutl`)
+	require.Contains(t, script, `verify-reference-etcd-provenance.sh`)
+	require.Contains(t, script, `REFERENCE_ETCD_BIN=%q`)
+	require.Contains(t, script, `ETCDCTL_BIN=%q`)
+	require.Contains(t, script, `ETCDUTL_BINARY=%q`)
+	require.NotContains(t, script, `rm -rf`)
+}
+
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 	for _, testFile := range []string{
 		"admission_replica_restart_test.go",

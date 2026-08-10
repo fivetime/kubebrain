@@ -45147,6 +45147,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   etcdutl snapshot 入口同样 fail closed。工具 build-info fixture、真实陈旧 etcdctl mismatch、wrapper 接线与默认 skip 路径均有回归。
   compat 全量、定向 race、vet/govulncheck 及全仓 ShellCheck 通过；该项不访问 TiKV/PD。
 
+- A4271 为 A4268-A4270 的 fail-closed 门禁补齐可重复重建路径。新增 `build-reference-etcd-toolchain.sh`：要求
+  `REFERENCE_ETCD_SOURCE_DIR` 是 clean Git worktree、显式输出目录为空（未给出时用 revision 命名的 `mktemp`），然后调用 upstream
+  自己的 `scripts/build.sh` 一次生成 etcd/etcdctl/etcdutl。当前 upstream vendor 尚停在旧 module graph，直接 `make build -mod=vendor`
+  会报 inconsistent vendoring；builder 使用 `GOWORK=off GO_BUILD_FLAGS=-mod=readonly`，读取各子模块已提交的 go.mod/go.sum，既不执行
+  tidy/vendor 也不修改 reference tree。真实 `/root/etcd@5cd9f4ee1380` 构建已通过，三件套 build metadata 都精确为完整 HEAD，server
+  同时自报短 SHA `5cd9f4ee1`；构建后 source 仍 clean。脚本随后逐件调用 provenance verifier，只有全部匹配才输出可复制的四个 runner
+  环境变量。静态契约固定 clean/empty/readonly/三件套验证且禁止递归删除；compat、race、vet/vuln 和 ShellCheck 继续作为门禁。该项不
+  访问 TiKV/PD，只让当前源码 oracle 从“正确拒绝旧制品”推进到“可审计地产生可用新制品”。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

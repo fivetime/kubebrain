@@ -2163,6 +2163,19 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   同一 helper 还从 `go version -m` 的 `vcs.revision` 校验官方 etcdctl/etcdutl，并拒绝
   `vcs.modified=true` 的 dirty build；SHA 缺失、畸形或
   不匹配时禁止运行，不能用陈旧 server/CLI binary 替代所声明源码 revision 的差分 oracle。
+  默认 binary 不匹配时，不得覆盖 reference source tree 中的旧制品；使用独立空目录重建并显式传给 runner：
+
+  ```shell
+  REFERENCE_ETCD_BUILD_DIR=/tmp/kubebrain-reference-etcd-current \
+    hack/etcd-client-compat/build-reference-etcd-toolchain.sh
+  export REFERENCE_ETCD_BIN=/tmp/kubebrain-reference-etcd-current/etcd
+  export REFERENCE_ETCD_BINARY="$REFERENCE_ETCD_BIN"
+  export ETCDCTL_BIN=/tmp/kubebrain-reference-etcd-current/etcdctl
+  export ETCDUTL_BINARY=/tmp/kubebrain-reference-etcd-current/etcdutl
+  ```
+
+  builder 要求 reference source worktree clean、输出目录为空，调用 upstream `scripts/build.sh`，并以
+  `GOWORK=off -mod=readonly` 保证不会通过同步 workspace/vendor 或修改 go.sum 偷渡依赖变化；完成后再次校验三件套。
   发布验证还必须让未 Unlock/Resign 的自动 lease 自然过期，确认内部 keepalive 已停止、
   lease TTL 最终为 -1 且键自动删除。到期前最后一秒 TTL=0 在 JSON 中会省略 `TTL`
   字段但仍保留 `grantedTTL=60`，不能将该瞬间误判为 lease 已不存在。
