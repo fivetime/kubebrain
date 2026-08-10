@@ -9,6 +9,7 @@ TIMEOUT="${TIMEOUT:-180s}"
 RECOVERY_SETTLE_SECONDS="${RECOVERY_SETTLE_SECONDS:-10}"
 BACKEND_FAULT_MODE="${BACKEND_FAULT_MODE:-pod-replacement}"
 KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
+ETCDUTL_BINARY="${ETCDUTL_BINARY:-/root/etcd/bin/etcdutl}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-180}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 PD_QUORUM_PARTITION_HOLD_SECONDS="${PD_QUORUM_PARTITION_HOLD_SECONDS:-15}"
@@ -621,6 +622,20 @@ run_repeated_require_leader_test() {
   wait_backend_ready
 }
 
+run_snapshot_failover_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_SNAPSHOT_BACKEND_FAILOVER_COMMAND="$command" \
+      ETCDUTL_BINARY="$ETCDUTL_BINARY" \
+      go test . -run '^TestSnapshotFailsClosedAndRecoversAcrossBackendFailover$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 wait_backend_ready
 
 self="$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh"
@@ -648,6 +663,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_watch_recovery_test "PD quorum-loss network partition" "$self --partition-pd-quorum-soak"
     run_lease_require_leader_test "PD quorum-loss LeaseKeepAlive" "$self --partition-pd-quorum-soak"
     run_repeated_require_leader_test "Repeated PD quorum-loss require-leader streams" "$self --partition-pd-quorum"
+    run_snapshot_failover_test "PD quorum-loss Snapshot" "$self --partition-pd-quorum"
     ;;
   tikv-network-partition)
     need docker

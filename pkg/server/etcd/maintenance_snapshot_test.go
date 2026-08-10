@@ -34,6 +34,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
@@ -1306,6 +1307,38 @@ func TestMaintenanceSnapshotRejectsUnknownHistoricalLegacyLease(t *testing.T) {
 	_, err = server.Compact(ctx, &etcdserverpb.CompactionRequest{Revision: current.Header.Revision, Physical: true})
 	require.NoError(t, err)
 	require.NoError(t, server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "after-compact.db")))
+}
+
+type invalidLifecycleSnapshotBackend struct {
+	BackendShim
+}
+
+func (b *invalidLifecycleSnapshotBackend) GetCurrentRevision() uint64 { return 3 }
+
+func (b *invalidLifecycleSnapshotBackend) SnapshotHistoryStreamChan(
+	_ context.Context, revision uint64,
+) (<-chan backend.SnapshotHistoryChunk, error) {
+	chunks := make(chan backend.SnapshotHistoryChunk, 2)
+	chunks <- backend.SnapshotHistoryChunk{Revision: revision, Records: []backend.SnapshotHistoryRecord{
+		{Key: []byte("invalid-lifecycle"), Value: []byte("v1"), CreateRevision: 2, ModRevision: 2, Version: 1, LeaseKnown: true},
+		{Key: []byte("invalid-lifecycle"), Value: []byte("v2"), CreateRevision: 3, ModRevision: 3, Version: 1, LeaseKnown: true, Current: true},
+	}}
+	chunks <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}
+	close(chunks)
+	return chunks, nil
+}
+
+func TestMaintenanceSnapshotClassifiesInvalidRetainedMVCCLifecycle(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.backend = &invalidLifecycleSnapshotBackend{BackendShim: server.backend}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidMVCCLifecycle.Error())
+	require.ErrorContains(t, err, `key "invalid-lifecycle"`)
+	require.Empty(t, stream.responses)
 }
 
 func TestMaintenanceSnapshotRejectsCurrentLeaseDisagreeingWithPinnedAttachment(t *testing.T) {

@@ -305,6 +305,7 @@ func TestBuilderRejectsImpossibleMVCCLifecycleAboveCompactWatermark(t *testing.T
 				Revision: 6, PreserveHistory: true, HasCompactRevision: true, CompactRevision: 3,
 				Records: test.records,
 			})
+			require.ErrorIs(t, err, ErrInvalidMVCCLifecycle)
 			require.ErrorContains(t, err, test.want)
 		})
 	}

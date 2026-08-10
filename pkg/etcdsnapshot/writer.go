@@ -6,6 +6,7 @@ package etcdsnapshot
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -18,6 +19,10 @@ import (
 	"go.etcd.io/etcd/server/v3/lease/leasepb"
 	"google.golang.org/protobuf/proto"
 )
+
+// ErrInvalidMVCCLifecycle marks retained source history that cannot be
+// restored without inventing an etcd generation, version, or tombstone.
+var ErrInvalidMVCCLifecycle = errors.New("snapshot retained MVCC history is inconsistent")
 
 var (
 	keyBucket         = []byte("key")
@@ -453,7 +458,7 @@ func (b *Builder) Finish() error {
 				return err
 			}
 			if err := validateMVCCLifecycle(tx, b.compactRevision); err != nil {
-				return err
+				return fmt.Errorf("%w: %v", ErrInvalidMVCCLifecycle, err)
 			}
 		}
 		return validateCurrentLeaseReferences(tx)

@@ -34,6 +34,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
@@ -537,7 +538,7 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		return nil
 	}
 	err = s.sendSnapshot(stream)
-	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) {
+	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) || errors.Is(err, etcdsnapshot.ErrInvalidMVCCLifecycle) {
 		// This is durable source-data provenance, not an opaque server fault:
 		// retrying the same retained history cannot succeed until it is compacted.
 		// Preserve the key/revision diagnostic while giving DBaaS automation a

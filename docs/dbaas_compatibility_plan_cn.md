@@ -44543,6 +44543,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kb-pd-1/kb-pd-0`、`kb-pd-0/kb-pd-1`、`kb-pd-1/kb-pd-0`，116.04 秒内六条新建 raw 流的
   code/message、三次 lease 恢复及三次 KV 写后读全部通过。该项证明 require-leader monitor 在恢复后
   可重复 re-arm，不把一次成功外推为进程终身正确；跨节点/AZ 与小时级 churn soak 仍保持开放。
+  A4207 把 Maintenance Snapshot 纳入真实 PD quorum-loss 门禁。对照 upstream
+  `server/etcdserver/api/v3rpc/maintenance.go` 的 Snapshot 流式发送/取消语义，以及
+  `etcdutl/snapshot/v3_snapshot.go` 对尾部 SHA-256 和 bbolt 状态的校验：新增破坏性 oracle 在故障前
+  写入 `before`，确认 mutation 已进入可重试不可用窗口后发起 `SnapshotWithVersion`，要求其以
+  `Unavailable` 或 `DeadlineExceeded` fail-closed；恢复后写入 `after`，每次使用 fresh client 重试，
+  成功 artifact 必须同时通过尾部 digest、官方 `etcdutl snapshot status`，并在 bbolt retained MVCC
+  history 中包含故障两侧键。旧运行时现场 RED 证明 fault-window 正确超时，但恢复后先短暂出现
+  leader snapshot proxy `DataLoss`，随后稳定暴露旧历史生命周期矛盾：某键 revision 10122 的
+  create/version 为 10121/1、期望 10121/2；该错误原先错误映射为 gRPC `Unknown`。writer 现用
+  `ErrInvalidMVCCLifecycle` 标记所有 retained history 生命周期校验失败，Maintenance 映射为确定性的
+  `FailedPrecondition`，明确拒绝伪造 etcd version；单元与 race 回归均固定 code、sentinel、key 且不得
+  发送部分 snapshot。现场 GREEN 尚未宣称：多轮 PD fault 后原独立 TiKV 集群、以及随后新建的空白
+  3 PD/3 TiKV 集群，均在最初单键 election transaction 上出现 client-go batch response timeout；
+  TiKV/PD Pod 与 TCP preflight 为健康，但 TiKV 指标记录 raft peer unreachable，迁移 region leader、
+  有序重启 TiKV/PD 仍不能恢复。实验性的 timeout/1PC/fence 分块改动因未改善单键写入且会改变安全
+  时序，已全部撤回。Snapshot 仍保持“部分兼容”，本项在该 kind/TiKV 环境恢复并跑出 fault-window
+  与 post-recovery artifact（或确定性 legacy `FailedPrecondition`）证据前保持开放。
 
 ### P2：运维兼容和长期验证
 

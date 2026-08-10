@@ -331,6 +331,8 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.Contains(t, script, `KUBEBRAIN_REPEATED_REQUIRE_LEADER_COMMAND="$command"`)
 	require.Contains(t, script, `KUBEBRAIN_REPEATED_REQUIRE_LEADER_CYCLES="$PD_QUORUM_PARTITION_CYCLES"`)
 	require.Contains(t, script, `TestRequireLeaderStreamsAcrossRepeatedBackendFailover`)
+	require.Contains(t, script, `KUBEBRAIN_SNAPSHOT_BACKEND_FAILOVER_COMMAND="$command"`)
+	require.Contains(t, script, `TestSnapshotFailsClosedAndRecoversAcrossBackendFailover`)
 	require.NotContains(t, script, "eval ")
 }
 
