@@ -2057,7 +2057,7 @@ func TestCompactedWatchKeepsIDReservedUntilTerminalControlIsOrdered(t *testing.T
 	w.Close()
 }
 
-func TestSlowWatchCancelTransfersQuotaOwnershipAcrossConcurrentClose(t *testing.T) {
+func TestSlowWatchCancelReleasesQuotaOnceBeforeConcurrentClose(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	server.SetMaxWatches(1)
@@ -2079,14 +2079,17 @@ func TestSlowWatchCancelTransfersQuotaOwnershipAcrossConcurrentClose(t *testing.
 		w.Cancel(7, compactedRevisionError(), true)
 	}()
 	<-backend.entered
+	require.Zero(t, server.activeWatches,
+		"a closing logical watch must release admission quota before terminal metadata lookup finishes")
+	require.True(t, server.acquireWatch(), "slow terminal ordering must not block unrelated watch admission")
+	server.releaseWatch()
 	w.Close()
-	require.Equal(t, int64(1), server.activeWatches,
-		"Close must not release quota ownership transferred to the slow cancel path")
+	require.Zero(t, server.activeWatches, "Close must not double-release quota from the retained closing entry")
 
 	close(backend.release)
 	<-cancelDone
 	require.Zero(t, server.activeWatches)
-	require.True(t, server.acquireWatch(), "quota must be released exactly once after cancellation finishes")
+	require.True(t, server.acquireWatch(), "quota must remain reusable after cancellation finishes")
 	server.releaseWatch()
 }
 

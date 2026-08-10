@@ -716,9 +716,9 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 			found = true
 			generation = c
 			quotaHeld = c.quotaHeld
-			// Transfer quota ownership to this cancellation path. Close may run
-			// while compact-revision resolution is blocked and must not release
-			// the retained closing entry a second time.
+			// The logical watch stops consuming admission quota immediately even
+			// though its ID remains reserved for terminal-control ordering. Clear
+			// ownership under watcherMu so concurrent Close cannot double-release.
 			c.quotaHeld = false
 			klog.InfoS("cancel context", "watcher", w.id, "watch", id, "start", c.start, "end", c.end)
 			if c.cancel != nil {
@@ -727,6 +727,9 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 		}
 	}
 	w.Unlock()
+	if quotaHeld {
+		w.grpcServer.releaseWatch()
+	}
 	// etcd emits at most one cancellation response for a watch. The closing CAS
 	// suppresses the backend goroutine's later close response as well as requests
 	// for unknown IDs, while retaining the ID through terminal-control ordering.
@@ -770,9 +773,6 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 		delete(w.watches, id)
 	}
 	w.Unlock()
-	if quotaHeld {
-		w.grpcServer.releaseWatch()
-	}
 	if serr != nil {
 		if isExpectedWatchCloseError(serr) {
 			klog.V(4).InfoS("cancel response skipped because watch stream is closed", "watcher", w.id, "watch", id, "err", serr)
