@@ -388,7 +388,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			if r.StartRevision < 0 {
 				// etcd treats a negative start revision as an immediately canceled
 				// create, while keeping the multiplexed stream usable for later watches.
-				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+				if err := w.SendControl(canceledWatchCreateResponse(
 					w.responseRevision(), rpctypes.ErrCompacted.Error(),
 				)); err != nil {
 					return err
@@ -404,7 +404,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				}
 			}
 			if authErr != nil {
-				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+				if err := w.SendControl(canceledWatchCreateResponse(
 					w.responseRevision(), watchAuthCancelReason(authErr),
 				)); err != nil {
 					return err
@@ -415,7 +415,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			// stream. A follower must not turn this deterministic control response
 			// into Unavailable merely because its leader read barrier is down.
 			if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
-				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+				if err := w.SendControl(canceledWatchCreateResponse(
 					w.responseRevision(), "mvcc: watcher range is empty",
 				)); err != nil {
 					return err
@@ -423,7 +423,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				continue
 			}
 			if r.WatchId != 0 && w.hasWatchID(r.WatchId) {
-				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+				if err := w.SendControl(canceledWatchCreateResponse(
 					w.responseRevision(), "mvcc: duplicate watch ID provided on the WatchStream",
 				)); err != nil {
 					return err
@@ -432,7 +432,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			}
 			quotaReserved := s.maxWatches != 0
 			if !s.acquireWatch() {
-				if err := w.SendControlAndWait(canceledWatchCreateResponse(
+				if err := w.SendControl(canceledWatchCreateResponse(
 					w.responseRevision(), watchQuotaCancelReason,
 				)); err != nil {
 					return err
@@ -482,7 +482,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				r.StartRevision = int64(w.responseRevision()) + 1
 			}
 
-			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved)
+			w.start(watchCtx, r, uint64(progressStartRevision), quotaReserved, false)
 		} else if cancelRequest := msg.GetCancelRequest(); cancelRequest != nil {
 			// Match etcd's stream-local cancellation: removing an existing watch
 			// does not require a leader read barrier. Its terminal response reports
@@ -569,10 +569,10 @@ func watchAuthCancelReason(err error) string {
 }
 
 func (w *watcher) Start(c context.Context, r *etcdserverpb.WatchCreateRequest) {
-	w.start(c, r, uint64(r.StartRevision), false)
+	w.start(c, r, uint64(r.StartRevision), false, true)
 }
 
-func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64, quotaReserved bool) {
+func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, progressStartRevision uint64, quotaReserved, waitForCreated bool) {
 	w.Lock()
 	ctx, cancel := context.WithCancel(c)
 	releaseReservedQuota := func() {
@@ -646,8 +646,9 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		syncedRev:             initSyncedRev,
 	}
 	w.watches[id] = generation
-	if len(w.watches) > 1 {
-		klog.InfoS("watcher reuse", "id", w.id, "size", len(w.watches))
+	watchCount := len(w.watches)
+	if watchCount > 1 {
+		klog.InfoS("watcher reuse", "id", w.id, "size", watchCount)
 	}
 	w.Unlock()
 	w.metricCli.EmitGauge("watch.watch_id", id)
@@ -668,11 +669,12 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		// live subscriber before scanning history, so the handoff is lossless.
 		r.StartRevision = int64(createdRev) + 1
 	}
-	if err := w.SendControlAndWait(&etcdserverpb.WatchResponse{
+	createdDone, err := w.sendControlWithCompletion(&etcdserverpb.WatchResponse{
 		Header:  txnHeader(int64(createdRev)),
 		Created: true,
 		WatchId: id,
-	}); err != nil {
+	})
+	if err != nil {
 		klog.ErrorS(err, "watch send create watch response err", "wacher", w.id, "watch", id)
 		w.CancelGeneration(id, generation, err, false)
 		return
@@ -681,8 +683,27 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 	w.wg.Add(1)
 	key := string(r.Key)
 	w.metricCli.EmitCounter("watch.watch", 1)
-	go w.watchGeneration(ctx, id, r, generation)
-	klog.InfoS("watch start", "id", id, "count", len(w.watches), "key", key, "revision", r.StartRevision)
+	waitAndStartGeneration := func() {
+		if sendErr := <-createdDone; sendErr != nil {
+			klog.ErrorS(sendErr, "watch send create watch response err", "watcher", w.id, "watch", id)
+			w.CancelGeneration(id, generation, sendErr, false)
+			w.wg.Done()
+			return
+		}
+		w.watchGeneration(ctx, id, r, generation)
+	}
+	if waitForCreated {
+		if sendErr := <-createdDone; sendErr != nil {
+			klog.ErrorS(sendErr, "watch send create watch response err", "watcher", w.id, "watch", id)
+			w.CancelGeneration(id, generation, sendErr, false)
+			w.wg.Done()
+			return
+		}
+		go w.watchGeneration(ctx, id, r, generation)
+	} else {
+		go waitAndStartGeneration()
+	}
+	klog.InfoS("watch start", "id", id, "count", watchCount, "key", key, "revision", r.StartRevision)
 }
 
 // allocateWatchIDLocked selects an ID while w is locked.
@@ -856,29 +877,22 @@ func (w *watcher) SendControl(resp *etcdserverpb.WatchResponse) error {
 	if w.controlCh == nil {
 		return w.Send(resp)
 	}
-	select {
-	case w.controlCh <- watchControlResponse{resp: resp}:
-		return nil
-	case <-w.watchServer.Context().Done():
-		return w.watchServer.Context().Err()
-	}
+	_, err := w.sendControlWithCompletion(resp)
+	return err
 }
 
-func (w *watcher) SendControlAndWait(resp *etcdserverpb.WatchResponse) error {
+func (w *watcher) sendControlWithCompletion(resp *etcdserverpb.WatchResponse) (<-chan error, error) {
 	if w.controlCh == nil {
-		return w.Send(resp)
+		done := make(chan error, 1)
+		done <- w.Send(resp)
+		return done, nil
 	}
 	done := make(chan error, 1)
 	select {
 	case w.controlCh <- watchControlResponse{resp: resp, done: done}:
+		return done, nil
 	case <-w.watchServer.Context().Done():
-		return w.watchServer.Context().Err()
-	}
-	select {
-	case err := <-done:
-		return err
-	case <-w.watchServer.Context().Done():
-		return w.watchServer.Context().Err()
+		return nil, w.watchServer.Context().Err()
 	}
 }
 

@@ -160,6 +160,25 @@ type blockingFirstSendWatchServer struct {
 	sent    []*etcdserverpb.WatchResponse
 }
 
+type queuedControlWatchServer struct {
+	*blockingFirstSendWatchServer
+	reqs       []*etcdserverpb.WatchRequest
+	next       int
+	secondRecv chan struct{}
+}
+
+func (s *queuedControlWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
+	if s.next >= len(s.reqs) {
+		return nil, context.Canceled
+	}
+	if s.next == 1 {
+		close(s.secondRecv)
+	}
+	req := s.reqs[s.next]
+	s.next++
+	return req, nil
+}
+
 func (s *blockingFirstSendWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
 	s.once.Do(func() {
 		close(s.started)
@@ -218,6 +237,51 @@ func TestWatchControlSendDoesNotBlockBehindSlowEventSend(t *testing.T) {
 	responses := stream.snapshot()
 	require.Len(t, responses[0].Events, 1)
 	require.True(t, responses[1].Canceled)
+}
+
+func TestWatchCreatedSendDoesNotBlockReceivingCancel(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	base := &blockingFirstSendWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		started:         make(chan struct{}),
+		release:         make(chan struct{}),
+	}
+	stream := &queuedControlWatchServer{
+		blockingFirstSendWatchServer: base,
+		secondRecv:                   make(chan struct{}),
+		reqs: []*etcdserverpb.WatchRequest{
+			{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+				Key: []byte("/watch/nonblocking-created"), WatchId: 7,
+			}}},
+			{RequestUnion: &etcdserverpb.WatchRequest_CancelRequest{CancelRequest: &etcdserverpb.WatchCancelRequest{
+				WatchId: 7,
+			}}},
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	<-stream.started
+	select {
+	case <-stream.secondRecv:
+		// Upstream's buffered ctrlStream lets the receive loop consume this
+		// cancellation even while the client is not reading Created.
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("watch receive loop blocked on sending Created")
+	}
+	require.Empty(t, stream.snapshot())
+
+	close(stream.release)
+	require.Equal(t, codes.Canceled, status.Code(<-done))
+	responses := stream.snapshot()
+	require.Len(t, responses, 2)
+	require.True(t, responses[0].Created)
+	require.False(t, responses[0].Canceled)
+	require.Equal(t, int64(7), responses[0].WatchId)
+	require.False(t, responses[1].Created)
+	require.True(t, responses[1].Canceled)
+	require.Equal(t, int64(7), responses[1].WatchId)
 }
 
 func TestIsExpectedWatchCloseError(t *testing.T) {
@@ -3366,7 +3430,7 @@ func TestRewrittenFromNowWatchPreservesPublishedProgressFloor(t *testing.T) {
 		Key:            []byte("/registry/watch/from-now"),
 		StartRevision:  int64(published) + 1,
 		ProgressNotify: true,
-	}, 0, false)
+	}, 0, false, true)
 
 	// The rewritten watch is caught up through published, and must remain
 	// immediately progress-eligible as an original from-now request.

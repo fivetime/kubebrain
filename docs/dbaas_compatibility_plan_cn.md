@@ -45031,6 +45031,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ConsistentListFromCache 3 秒等待窗口而保留的已记录 DBaaS 策略差异，并非本轮协议修正。真实 TiKV/PD 慢 compact cancel 与
   并发 RequestProgress 仍受既知环境故障限制，恢复后需补跑。
 
+- A4256 恢复 upstream Watch control stream 的非阻塞接收语义，同时保持 Created-before-events。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go`：上游 recv loop 只把 Created/Canceled 放入 16 深度 `ctrlStream`，不会等待
+  gRPC Send，因此客户端暂时不读 response 时仍可提交 cancel 或后续 create；send loop 则在 Created 前缓存同 ID event。KubeBrain
+  已有同容量 `controlCh`，但有效 create 仍调用 `SendControlAndWait`，会把整个 receive loop 卡在慢客户端上。现在 control enqueue
+  可返回 generation-scoped completion channel：公开 Watch 路径立即继续 Recv，backend generation 等 Created 真正发送成功后才
+  启动，所以 event/progress 仍不可能越过 Created；直接单元辅助保留“等 Created 后返回、generation 异步运行”的确定性接口。
+  negative revision、auth、invalid range、duplicate ID 和 quota canceled-create 同样只等待 control queue 容量，不再等待 wire。
+  阻塞式回归让首个 Created 的 Send 停住，证明服务端仍消费紧随其后的 Cancel，释放后 wire 严格得到
+  `Created(7) -> Canceled(7)`；聚焦 Watch 普通测试及相关 race 均通过。真实 TiKV/PD 不参与此纯 gRPC backpressure 顺序，但生产
+  多路复用 stream 的慢 reader soak 仍应在既知环境恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
