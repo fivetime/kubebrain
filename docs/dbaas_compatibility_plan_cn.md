@@ -45177,6 +45177,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试用于证明升级不改变 etcd 客户端可观察协议。该项不访问 TiKV/PD，也不把 upstream 自身尚未同步
   vendor 的状态复制进本仓。
 
+- A4274 补齐 A4270 对官方 etcdutl 消费者的跨 module provenance 审计。A4171/A4172 的主模块
+  Snapshot 制品测试可通过 `KUBEBRAIN_ETCDUTL_BIN`（或旧 alias）直接执行 `bbolt check` 与两组
+  `hashkv`，此前未调用共享 verifier；陈旧 `/root/etcd/bin/etcdutl@d947b2086` 因而仍能为当前
+  `/root/etcd@5cd9f4ee1380` 的 bbolt/schema 行为背书。两个入口现在都在读取制品前把实际 binary
+  传给 `verify-reference-etcd-provenance.sh`，沿用 build-info `vcs.revision`、modified-worktree 拒绝和
+  expected SHA full/prefix 匹配；显式配置了工具却不匹配时 fail closed，而未配置时仍只运行内建 bbolt
+  consistency 检查。静态接线门禁固定主模块 2/2，compat verifier 自身的 stale/modified fixture 继续
+  固定 RED。门禁生效后当前工具还揭示旧 oracle 的两处漂移：未压缩 MVCC store 的官方 sentinel 是
+  `compactRevision=-1`（不是旧断言 0），离线工具直接输出 `mvcc.ErrCompacted/ErrFutureRev` 文本，不带
+  gRPC `etcdserver:` 前缀；断言现与当前 upstream `hashkv_command_test.go` 对齐，RPC 错误合同不变。
+  当前 provenance 工具对同一 KubeBrain 制品的 `bbolt check`、latest/historical/compacted `hashkv` 全部
+  通过。该项强化 Snapshot 兼容证据，不改变制品 schema 或 TiKV 数据路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

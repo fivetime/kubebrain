@@ -3,6 +3,7 @@ package compat
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -3671,6 +3672,7 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"5cd9f4ee1",
 		"A4272",
 		"A4273",
+		"A4274",
 		"c773d39ec",
 		"56aa6982a",
 		"79ca4d925",
@@ -3733,6 +3735,14 @@ func TestRuntimeObservabilityDependencyBaselineIsPinned(t *testing.T) {
 	} {
 		require.Contains(t, module, dependency)
 	}
+}
+
+func TestMainModuleEtcdutlConsumersVerifyProvenance(t *testing.T) {
+	testPath := filepath.Join("..", "..", "pkg", "server", "etcd", "maintenance_snapshot_test.go")
+	contents, err := os.ReadFile(testPath)
+	require.NoError(t, err)
+	require.Equal(t, 2, strings.Count(string(contents), "requireReferenceEtcdToolProvenance(t,"),
+		"every main-module etcdutl execution path must fail closed on stale build provenance")
 }
 
 func TestScaleLoadgenNetworkSecurityBaselineIsPinned(t *testing.T) {

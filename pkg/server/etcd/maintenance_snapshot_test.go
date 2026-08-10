@@ -92,6 +92,7 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 		etcdutl = os.Getenv("KUBEBRAIN_ETCDUTL_BBOLT_BIN")
 	}
 	if etcdutl != "" {
+		requireReferenceEtcdToolProvenance(t, ctx, etcdutl)
 		command := exec.CommandContext(ctx, etcdutl, "bbolt", "check", path)
 		output, commandErr := command.CombinedOutput()
 		require.NoError(t, commandErr, string(output))
@@ -112,10 +113,10 @@ func TestSnapshotPassesBboltConsistencyCheck(t *testing.T) {
 		}
 		latest := runHashKV()
 		require.Equal(t, revisions[len(revisions)-1], latest.HashRevision)
-		require.Zero(t, latest.CompactRevision)
+		require.Equal(t, int64(-1), latest.CompactRevision)
 		historical := runHashKV("--rev", fmt.Sprint(revisions[1]))
 		require.Equal(t, revisions[1], historical.HashRevision)
-		require.Zero(t, historical.CompactRevision)
+		require.Equal(t, int64(-1), historical.CompactRevision)
 
 		stream := &maintenanceSnapshotServer{ctx: ctx}
 		require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
@@ -1116,6 +1117,7 @@ func TestMaintenanceSnapshotPreservesActualCompactWatermark(t *testing.T) {
 	if etcdutl == "" {
 		return
 	}
+	requireReferenceEtcdToolProvenance(t, context.Background(), etcdutl)
 	type hashKVResult struct {
 		HashRevision    int64 `json:"hashRevision"`
 		CompactRevision int64 `json:"compactRevision"`
@@ -1140,10 +1142,19 @@ func TestMaintenanceSnapshotPreservesActualCompactWatermark(t *testing.T) {
 	}
 	_, output, commandErr := runHashKV(updated.Header.Revision - 1)
 	require.Error(t, commandErr)
-	require.Contains(t, string(output), rpctypes.ErrCompacted.Error())
+	require.Contains(t, string(output), mvcc.ErrCompacted.Error())
 	_, output, commandErr = runHashKV(updated.Header.Revision + 1)
 	require.Error(t, commandErr)
-	require.Contains(t, string(output), rpctypes.ErrFutureRev.Error())
+	require.Contains(t, string(output), mvcc.ErrFutureRev.Error())
+}
+
+func requireReferenceEtcdToolProvenance(t *testing.T, ctx context.Context, binary string) {
+	t.Helper()
+	verifier := filepath.Join("..", "..", "..", "hack", "etcd-client-compat", "verify-reference-etcd-provenance.sh")
+	command := exec.CommandContext(ctx, verifier)
+	command.Env = append(os.Environ(), "REFERENCE_ETCD_BIN="+binary)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
 }
 
 func TestMaintenanceSnapshotCancellationInterruptsStalledStream(t *testing.T) {
