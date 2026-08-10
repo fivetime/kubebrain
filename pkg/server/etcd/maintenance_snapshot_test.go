@@ -385,12 +385,18 @@ type corruptCurrentLeaseSnapshotBackend struct {
 type malformedHistoryStreamSnapshotBackend struct {
 	BackendShim
 	kind string
+	err  error
 }
 
 func (b *malformedHistoryStreamSnapshotBackend) SnapshotHistoryStreamChan(
 	_ context.Context, revision uint64,
 ) (<-chan backend.SnapshotHistoryChunk, error) {
 	out := make(chan backend.SnapshotHistoryChunk, 3)
+	if b.err != nil {
+		out <- backend.SnapshotHistoryChunk{Revision: revision, Err: b.err}
+		close(out)
+		return out, nil
+	}
 	record := backend.SnapshotHistoryRecord{
 		Key: []byte("malformed-history-stream"), Value: []byte("value"), CreateRevision: revision,
 		ModRevision: revision, Version: 1, LeaseKnown: true, Current: true,

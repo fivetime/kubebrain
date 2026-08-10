@@ -44623,6 +44623,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   chunk 自带的 backend 错误不包装该 sentinel，独立 raw 对照固定 gRPC `Unavailable` 原码，Context、
   leadership 和 revision-change 重试路径也不改写。由此 leader 直连和 follower 代理对“不完整或越序的
   Snapshot 流”采用同一不可恢复完整性语义，而不会把 TiKV 暂时不可用误报成数据损坏。
+  A4214 审计 A4213 的 chunk-error 旁路是否绕过 A4209 transport 叶子分类。生产 client-facing
+  server-streaming 调用实际经过 `header_interceptor.go::stampStream` 和 `authGRPCError`，因此无需在
+  Snapshot handler 重复映射；直接 handler 单测不能作为 wire code 证据。新增真实 bufconn Maintenance
+  Snapshot 门禁，在首个 history chunk 分别注入多层 `%w` 的 `epoch_not_match` 叶子、包装的
+  `InvalidArgument` status、以及仅以 `no available connections` 结尾但无 cause 的普通错误，客户端
+  `Recv` 必须依次观察 `Unavailable`、`InvalidArgument`、`Unknown`，且保留完整诊断。该测试在现有实现
+  上直接 GREEN，证明 A4209 已覆盖 server-streaming Snapshot；本项只固化黑盒证据，没有添加可能与
+  interceptor 双重分类的生产代码，也不把纯文本启发式扩散到 Snapshot。
 
 ### P2：运维兼容和长期验证
 

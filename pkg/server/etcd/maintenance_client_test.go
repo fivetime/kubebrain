@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -122,6 +123,55 @@ func TestClientSnapshotCancellationInterruptsBackendBuild(t *testing.T) {
 	cancel()
 	_, err = snapshot.Read(make([]byte, 1))
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestClientSnapshotClassifiesOnlyLeafBackendTransportCause(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		code codes.Code
+	}{
+		{
+			name: "wrapped TiKV cause",
+			err:  fmt.Errorf("snapshot scan failed: %w", fmt.Errorf("region send failed: %w", fmt.Errorf("epoch_not_match:<>"))),
+			code: codes.Unavailable,
+		},
+		{
+			name: "wrapped gRPC status",
+			err:  fmt.Errorf("snapshot scan failed: %w", status.Error(codes.InvalidArgument, "epoch_not_match:<>")),
+			code: codes.InvalidArgument,
+		},
+		{
+			name: "plain suffix text",
+			err:  fmt.Errorf("snapshot scan failed permanently: no available connections"),
+			code: codes.Unknown,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.backend = &malformedHistoryStreamSnapshotBackend{BackendShim: server.backend, err: test.err}
+
+			grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+			etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+			listener := bufconn.Listen(1 << 20)
+			go func() { _ = grpcServer.Serve(listener) }()
+			t.Cleanup(grpcServer.Stop)
+
+			connection, err := grpc.NewClient("passthrough:///snapshot-transport-error",
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, connection.Close()) })
+
+			stream, err := etcdserverpb.NewMaintenanceClient(connection).Snapshot(context.Background(), &etcdserverpb.SnapshotRequest{})
+			require.NoError(t, err)
+			_, err = stream.Recv()
+			require.Equal(t, test.code, status.Code(err))
+			require.Contains(t, status.Convert(err).Message(), test.err.Error())
+		})
+	}
 }
 
 func TestRawGRPCSnapshotMatchesEtcdChunkAndDigestProtocol(t *testing.T) {
