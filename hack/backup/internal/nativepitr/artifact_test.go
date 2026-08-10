@@ -48,7 +48,8 @@ func TestVerifyFullArtifactsLegacyAndRecursiveIndex(t *testing.T) {
 	for _, indexed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "recursive index"}[indexed], func(t *testing.T) {
 			full, root, fullDigest := artifactFixture(t, indexed)
-			receipt, err := VerifyFullArtifacts(full, fullDigest, root)
+			inventory := inventoryForMirror(t, full.StoragePrefix, root)
+			receipt, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
 			require.NoError(t, err)
 			require.True(t, receipt.AllObjectsVerified)
 			wantCount := 2
@@ -72,16 +73,17 @@ func TestVerifyFullArtifactsFailsClosed(t *testing.T) {
 		}, "size or SHA-256"},
 		{"missing object", func(t *testing.T, root string) {
 			require.NoError(t, os.Remove(filepath.Join(root, "1/region_write.sst")))
-		}, "exact backupmeta object mirror"},
+		}, "local full mirror"},
 		{"extra object", func(t *testing.T, root string) {
 			require.NoError(t, os.WriteFile(filepath.Join(root, "extra"), []byte("extra"), 0o600))
-		}, "exact backupmeta object mirror"},
+		}, "local full mirror"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			full, root, fullDigest := artifactFixture(t, false)
+			inventory := inventoryForMirror(t, full.StoragePrefix, root)
 			tt.edit(t, root)
-			_, err := VerifyFullArtifacts(full, fullDigest, root)
+			_, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
@@ -99,14 +101,24 @@ func TestVerifyFullArtifactsRejectsUnsafeAndEncryptedMetadata(t *testing.T) {
 		require.NoError(t, err)
 		root := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(root, "backupmeta"), metaBytes, 0o600))
-		_, err = VerifyFullArtifacts(full, digest, root)
+		inventory := inventoryForMirror(t, full.StoragePrefix, root)
+		_, err = VerifyFullArtifacts(full, digest, inventory, digest, root)
 		require.Error(t, err)
 	}
 }
 
+func TestVerifyFullArtifactsRejectsRemoteVersionMismatch(t *testing.T) {
+	full, root, fullDigest := artifactFixture(t, false)
+	inventory := inventoryForMirror(t, full.StoragePrefix, root)
+	inventory.Entries[0].SHA256 = strings.Repeat("f", 64)
+	_, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
+	require.ErrorContains(t, err, "remote inventory object")
+}
+
 func TestDecodeArtifactReceiptIsStrict(t *testing.T) {
 	full, root, fullDigest := artifactFixture(t, false)
-	receipt, err := VerifyFullArtifacts(full, fullDigest, root)
+	inventory := inventoryForMirror(t, full.StoragePrefix, root)
+	receipt, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
 	require.NoError(t, err)
 	b, err := json.Marshal(receipt)
 	require.NoError(t, err)
@@ -121,7 +133,7 @@ func TestDecodeArtifactReceiptIsStrict(t *testing.T) {
 	_, err = DecodeArtifactReceipt(strings.NewReader(string(b)))
 	require.ErrorContains(t, err, "manifest digest")
 
-	receipt, err = VerifyFullArtifacts(full, fullDigest, root)
+	receipt, err = VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
 	require.NoError(t, err)
 	receipt.Objects[0], receipt.Objects[1] = receipt.Objects[1], receipt.Objects[0]
 	b, err = json.Marshal(receipt)

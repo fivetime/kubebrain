@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 	"github.com/stretchr/testify/require"
@@ -37,9 +38,20 @@ func TestRunVerifiesExactMirror(t *testing.T) {
 	require.NoError(t, os.WriteFile(fullPath, fullBytes, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "backupmeta"), metaBytes, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "1/write.sst"), content, 0o600))
+	metaDigest := sha256.Sum256(metaBytes)
+	inventory := pitrinventory.Receipt{Format: pitrinventory.Format, ObjectStoreID: "store-a", Bucket: "bucket", Prefix: "full-a", Entries: []pitrinventory.Entry{{Name: "1/write.sst", ObjectKey: "full-a/1/write.sst", VersionID: "v-data", Bytes: int64(len(content)), SHA256: hex.EncodeToString(digest[:]), RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_100_000_000}, {Name: "backupmeta", ObjectKey: "full-a/backupmeta", VersionID: "v-meta", Bytes: int64(len(metaBytes)), SHA256: hex.EncodeToString(metaDigest[:]), RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_100_000_000}}, ObjectCount: 2, TotalBytes: uint64(len(content) + len(metaBytes)), Pages: 1, PaginationExhausted: true, ExactVersionsVerified: true, MinRetainUntilUnix: 2_050_000_000, CheckedAtUnix: 2_000_000_000}
+	inventoryBytes, err := json.Marshal(inventory)
+	require.NoError(t, err)
+	inventoryBytes = append(inventoryBytes, '\n')
+	inventoryPath := filepath.Join(dir, "inventory.json")
+	require.NoError(t, os.WriteFile(inventoryPath, inventoryBytes, 0o600))
 	var out bytes.Buffer
-	require.NoError(t, run(fullPath, root, &out))
+	require.NoError(t, run(fullPath, inventoryPath, root, &out))
 	var receipt nativepitr.ArtifactReceipt
 	require.NoError(t, json.Unmarshal(out.Bytes(), &receipt))
 	require.Equal(t, 2, receipt.ObjectCount)
+}
+
+func TestRunRequiresRemoteInventory(t *testing.T) {
+	require.ErrorContains(t, run("", "", "", &bytes.Buffer{}), "required")
 }

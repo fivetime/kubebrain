@@ -1851,8 +1851,8 @@ PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出
 隔离的区间。
 
 仍需实现和验证的生产闭环包括：持久 operation 对 task/advancer 的长期监管、源集群确为单租户
-独立集群的可审计 witness、full snapshot 对象的远端 immutable version 身份与下载 provenance、
-将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，以及在指定时间点完成
+独立集群的可审计 witness、将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，
+以及在指定时间点完成
 逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
 实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
 
@@ -1903,20 +1903,26 @@ source cluster、create 文件 digest 和 backupmeta SHA-256。该实验实际�
 receipt 仍诚实保留 `object_existence_checked=false`，因为该 receipt 本身只解析 `backupmeta`，不把
 一次对象列表观测冒充完整性证明。
 
-将同一 immutable full prefix 下载为一个只包含 `backupmeta` 及其引用对象的精确本地镜像后，运行：
+先对 immutable full prefix 运行与下文 log 相同的 `ACTION=pitr-inventory`，将
+`INVENTORY_PREFIX` 指向 full prefix，并把 canonical receipt 写到
+`/evidence/native-pitr-full-remote-inventory.json`。再按 receipt 的 exact key/version 下载完整镜像并运行：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --remote-inventory=/evidence/native-pitr-full-remote-inventory.json \
   --artifact-root=/evidence/full-mirror
 ```
 
 该命令递归遍历 BR legacy `BackupMeta.files` 和 v2 `FileIndex`/`MetaFile` 树，流式复算每个 SST 与
 meta-index 的大小和 SHA-256，并拒绝缺失、额外、重复、越界路径、符号链接及非普通文件。输出
-`kubebrain.native-pitr-full-artifacts.v1`，绑定 exact full-snapshot receipt SHA-256、排序后的完整对象
-清单、总字节和 manifest digest。当前只接受 plaintext BR 产物；遇到 `cipher_iv` 会 fail closed，
-直到恢复链能够安全绑定 crypter key。此 receipt 证明下载镜像字节与 `backupmeta` 一致，但不证明
-远端下载来源、object version 或 Object Lock 不可变性；生产控制面仍须补齐这些远端 witness。
+`kubebrain.native-pitr-full-artifacts.v2`，先要求本地对象集合、大小和 SHA-256 与分页穷尽的远端
+exact-version inventory 完全相等，再绑定 exact full-snapshot receipt、排序后的 BR 对象清单、总字节、
+manifest digest、Object Lock 最小保留期和 inventory 检查时间。当前只接受 plaintext BR 产物；遇到
+`cipher_iv` 会 fail closed，直到恢复链能够安全绑定 crypter key。
+2026-08-10 另在隔离 MinIO Object Lock 环境以 `backupmeta`/`1/write.sst` 布局实际验证 full-prefix
+inventory 层：一页穷尽两个独立 version、总计 21,447 字节并通过 COMPLIANCE retention 与流式
+SHA-256；测试内容只用于验证远端对象链，不宣称是可恢复 BR SST。隔离容器、网络和 receipt 已清理。
 
 先直接从 immutable log prefix 捕获权威远端清单：
 
@@ -1978,7 +1984,7 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v7`。source cluster/range、task start/commit、full backup TSO、
+输出 `kubebrain.native-pitr-restore-plan.v8`。source cluster/range、task start/commit、full backup TSO、
 exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner，以及 exact ready/log-artifact receipt digest、日志对象 manifest/字节数/分片数全部来自严格 receipt，命令不再
 接受这些值的自由参数；并拒绝 receipt 文件 digest/身份链不一致、source/target cluster ID 相同、

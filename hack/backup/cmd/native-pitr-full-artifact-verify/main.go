@@ -14,6 +14,7 @@ import (
 	"os"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 )
 
 const maxReceiptBytes = 4 << 20
@@ -21,16 +22,17 @@ const maxReceiptBytes = 4 << 20
 func main() {
 	fullSnapshot := flag.String("full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
 	artifactRoot := flag.String("artifact-root", "", "exact local mirror root containing backupmeta and all referenced objects")
+	remoteInventory := flag.String("remote-inventory", "", "canonical native-pitr-object-inventory.v1 receipt")
 	flag.Parse()
-	if err := run(*fullSnapshot, *artifactRoot, os.Stdout); err != nil {
+	if err := run(*fullSnapshot, *remoteInventory, *artifactRoot, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR full artifact verify:", err)
 		os.Exit(1)
 	}
 }
 
-func run(fullSnapshotPath, artifactRoot string, out io.Writer) error {
-	if fullSnapshotPath == "" || artifactRoot == "" {
-		return errors.New("full-snapshot and artifact-root are required")
+func run(fullSnapshotPath, remoteInventoryPath, artifactRoot string, out io.Writer) error {
+	if fullSnapshotPath == "" || remoteInventoryPath == "" || artifactRoot == "" {
+		return errors.New("full-snapshot, remote-inventory, and artifact-root are required")
 	}
 	b, err := readReceipt(fullSnapshotPath)
 	if err != nil {
@@ -40,8 +42,13 @@ func run(fullSnapshotPath, artifactRoot string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	inventory, inventoryBytes, err := pitrinventory.ReadCanonical(remoteInventoryPath)
+	if err != nil {
+		return err
+	}
 	digest := sha256.Sum256(b)
-	receipt, err := nativepitr.VerifyFullArtifacts(full, hex.EncodeToString(digest[:]), artifactRoot)
+	inventoryDigest := sha256.Sum256(inventoryBytes)
+	receipt, err := nativepitr.VerifyFullArtifacts(full, hex.EncodeToString(digest[:]), inventory, hex.EncodeToString(inventoryDigest[:]), artifactRoot)
 	if err != nil {
 		return err
 	}

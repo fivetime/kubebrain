@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v7"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v8"
 )
 
 var (
@@ -65,6 +65,13 @@ type FullSnapshot struct {
 	ArtifactManifestSHA   string `json:"artifact_manifest_sha256"`
 	ArtifactObjectCount   int    `json:"artifact_object_count"`
 	ArtifactTotalBytes    uint64 `json:"artifact_total_bytes"`
+	RemoteInventorySHA256 string `json:"remote_inventory_sha256"`
+	ObjectStoreID         string `json:"object_store_id"`
+	Bucket                string `json:"bucket"`
+	ObjectPrefix          string `json:"object_prefix"`
+	MinRetainUntilUnix    int64  `json:"min_retain_until_unix"`
+	InventoryCheckedAt    int64  `json:"inventory_checked_at_unix"`
+	RemoteExact           bool   `json:"remote_exact_versions_verified"`
 }
 
 type LogWindow struct {
@@ -172,7 +179,7 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 	plan := Plan{
 		Format:    PlanFormat,
 		Source:    Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
-		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes},
+		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified},
 		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
 		Target:    Target{ClusterID: in.TargetClusterID, EmptyWitnessSHA256: in.EmptyWitnessSHA256},
 		RestoreTS: in.RestoreTS, ReadOnly: true,
@@ -235,11 +242,18 @@ func (p Plan) Validate() error {
 	if !sha256RE.MatchString(p.Full.ReceiptSHA256) || !sha256RE.MatchString(p.Full.ArtifactReceiptSHA256) || !sha256RE.MatchString(p.Full.ArtifactManifestSHA) || p.Full.ArtifactObjectCount < 2 || p.Full.ArtifactTotalBytes == 0 {
 		return errors.New("invalid full snapshot artifact receipt evidence")
 	}
+	if !sha256RE.MatchString(p.Full.RemoteInventorySHA256) || safeText("full object store ID", p.Full.ObjectStoreID) != nil || !p.Full.RemoteExact || p.Full.MinRetainUntilUnix <= p.Full.InventoryCheckedAt || p.Full.InventoryCheckedAt <= 0 {
+		return errors.New("invalid full snapshot remote inventory evidence")
+	}
 	if !sha256RE.MatchString(p.Target.EmptyWitnessSHA256) {
 		return errors.New("invalid target empty-witness SHA-256")
 	}
 	if err := validateS3Prefix(p.Full.StoragePrefix); err != nil {
 		return fmt.Errorf("full snapshot storage: %w", err)
+	}
+	fullBucket, fullPrefix, err := splitS3Prefix(p.Full.StoragePrefix)
+	if err != nil || p.Full.Bucket != fullBucket || p.Full.ObjectPrefix != fullPrefix {
+		return errors.New("full remote inventory scope does not match storage prefix")
 	}
 	if err := safeText("advancer owner", p.Log.AdvancerOwner); err != nil {
 		return err

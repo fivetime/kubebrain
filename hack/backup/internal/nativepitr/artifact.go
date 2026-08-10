@@ -15,11 +15,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 )
 
 const (
-	ArtifactReceiptFormat = "kubebrain.native-pitr-full-artifacts.v1"
+	ArtifactReceiptFormat = "kubebrain.native-pitr-full-artifacts.v2"
 	maxMetaIndexBytes     = int64(64 << 20)
 )
 
@@ -31,32 +32,63 @@ type ArtifactObject struct {
 }
 
 type ArtifactReceipt struct {
-	Format             string           `json:"format"`
-	ClusterID          uint64           `json:"cluster_id"`
-	Keyspace           string           `json:"keyspace"`
-	TaskName           string           `json:"task_name"`
-	BackupTS           uint64           `json:"backup_ts"`
-	StoragePrefix      string           `json:"storage_prefix"`
-	FullReceiptSHA256  string           `json:"full_snapshot_receipt_sha256"`
-	BackupMetaSHA256   string           `json:"backupmeta_sha256"`
-	Objects            []ArtifactObject `json:"objects"`
-	ObjectCount        int              `json:"object_count"`
-	TotalBytes         uint64           `json:"total_bytes"`
-	ManifestSHA256     string           `json:"manifest_sha256"`
-	ExactMirror        bool             `json:"exact_local_mirror"`
-	Encryption         string           `json:"encryption"`
-	AllObjectsVerified bool             `json:"all_objects_verified"`
+	Format                 string           `json:"format"`
+	ClusterID              uint64           `json:"cluster_id"`
+	Keyspace               string           `json:"keyspace"`
+	TaskName               string           `json:"task_name"`
+	BackupTS               uint64           `json:"backup_ts"`
+	StoragePrefix          string           `json:"storage_prefix"`
+	FullReceiptSHA256      string           `json:"full_snapshot_receipt_sha256"`
+	BackupMetaSHA256       string           `json:"backupmeta_sha256"`
+	RemoteInventorySHA256  string           `json:"remote_inventory_sha256"`
+	ObjectStoreID          string           `json:"object_store_id"`
+	Bucket                 string           `json:"bucket"`
+	ObjectPrefix           string           `json:"object_prefix"`
+	MinRetainUntilUnix     int64            `json:"min_retain_until_unix"`
+	InventoryCheckedAtUnix int64            `json:"inventory_checked_at_unix"`
+	Objects                []ArtifactObject `json:"objects"`
+	ObjectCount            int              `json:"object_count"`
+	TotalBytes             uint64           `json:"total_bytes"`
+	ManifestSHA256         string           `json:"manifest_sha256"`
+	ExactMirror            bool             `json:"exact_local_mirror"`
+	RemoteVersionsVerified bool             `json:"remote_exact_versions_verified"`
+	Encryption             string           `json:"encryption"`
+	AllObjectsVerified     bool             `json:"all_objects_verified"`
 }
 
-func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256, root string) (ArtifactReceipt, error) {
+func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256 string, inventory pitrinventory.Receipt, inventorySHA, root string) (ArtifactReceipt, error) {
 	if err := validateFullSnapshotReceipt(full); err != nil {
 		return ArtifactReceipt{}, err
 	}
-	if !sha256RE.MatchString(fullReceiptSHA256) {
+	if !sha256RE.MatchString(fullReceiptSHA256) || !sha256RE.MatchString(inventorySHA) {
 		return ArtifactReceipt{}, errors.New("invalid full-snapshot receipt SHA-256")
 	}
 	if root == "" {
 		return ArtifactReceipt{}, errors.New("artifact root is required")
+	}
+	if err := inventory.Validate(); err != nil {
+		return ArtifactReceipt{}, err
+	}
+	bucket, prefix, err := splitS3Prefix(full.StoragePrefix)
+	if err != nil || inventory.Bucket != bucket || inventory.Prefix != prefix {
+		return ArtifactReceipt{}, errors.New("remote inventory does not match full snapshot storage")
+	}
+	actual, err := scanMirror(root)
+	if err != nil {
+		return ArtifactReceipt{}, err
+	}
+	if len(actual) != inventory.ObjectCount {
+		return ArtifactReceipt{}, errors.New("local full mirror does not match remote exact-version inventory")
+	}
+	remote := make(map[string]pitrinventory.Entry, len(inventory.Entries))
+	for _, entry := range inventory.Entries {
+		if !actual[entry.Name] {
+			return ArtifactReceipt{}, fmt.Errorf("remote inventory object %q is missing from local mirror", entry.Name)
+		}
+		if _, err := verifyInventoryObject(filepath.Join(root, filepath.FromSlash(entry.Name)), entry); err != nil {
+			return ArtifactReceipt{}, fmt.Errorf("verify remote inventory object %q: %w", entry.Name, err)
+		}
+		remote[entry.Name] = entry
 	}
 	backupMetaPath := filepath.Join(root, "backupmeta")
 	backupMetaBytes, err := readLimitedFile(backupMetaPath, full.BackupMetaBytes)
@@ -86,12 +118,11 @@ func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256, root strin
 	if len(expected) == 0 {
 		return ArtifactReceipt{}, errors.New("backupmeta contains no verifiable data objects")
 	}
-	actual, err := scanMirror(root)
-	if err != nil {
-		return ArtifactReceipt{}, err
-	}
-	if len(actual) != len(expected)+1 || !actual["backupmeta"] {
+	if len(actual) != len(expected)+1 || !actual["backupmeta"] || len(remote) != len(expected)+1 {
 		return ArtifactReceipt{}, errors.New("artifact root is not an exact backupmeta object mirror")
+	}
+	if entry := remote["backupmeta"]; entry.Bytes != int64(len(backupMetaBytes)) || entry.SHA256 != full.BackupMetaSHA256 {
+		return ArtifactReceipt{}, errors.New("backupmeta differs from remote exact-version inventory")
 	}
 	objects := make([]ArtifactObject, 0, len(expected)+1)
 	objects = append(objects, ArtifactObject{Name: "backupmeta", Bytes: uint64(len(backupMetaBytes)), SHA256: full.BackupMetaSHA256, Kind: "backupmeta"})
@@ -102,6 +133,10 @@ func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256, root strin
 		object, err := verifyObject(filepath.Join(root, filepath.FromSlash(name)), file, objectKind(file))
 		if err != nil {
 			return ArtifactReceipt{}, fmt.Errorf("verify backup object %q: %w", name, err)
+		}
+		entry, ok := remote[name]
+		if !ok || entry.Bytes != int64(object.Bytes) || entry.SHA256 != object.SHA256 {
+			return ArtifactReceipt{}, fmt.Errorf("backup object %q differs from remote exact-version inventory", name)
 		}
 		objects = append(objects, object)
 	}
@@ -118,7 +153,7 @@ func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256, root strin
 		}
 		total += object.Bytes
 	}
-	return ArtifactReceipt{Format: ArtifactReceiptFormat, ClusterID: full.ClusterID, Keyspace: full.Keyspace, TaskName: full.TaskName, BackupTS: full.BackupTS, StoragePrefix: full.StoragePrefix, FullReceiptSHA256: fullReceiptSHA256, BackupMetaSHA256: full.BackupMetaSHA256, Objects: objects, ObjectCount: len(objects), TotalBytes: total, ManifestSHA256: hex.EncodeToString(manifestDigest[:]), ExactMirror: true, Encryption: "plaintext", AllObjectsVerified: true}, nil
+	return ArtifactReceipt{Format: ArtifactReceiptFormat, ClusterID: full.ClusterID, Keyspace: full.Keyspace, TaskName: full.TaskName, BackupTS: full.BackupTS, StoragePrefix: full.StoragePrefix, FullReceiptSHA256: fullReceiptSHA256, BackupMetaSHA256: full.BackupMetaSHA256, RemoteInventorySHA256: inventorySHA, ObjectStoreID: inventory.ObjectStoreID, Bucket: inventory.Bucket, ObjectPrefix: inventory.Prefix, MinRetainUntilUnix: inventory.MinRetainUntilUnix, InventoryCheckedAtUnix: inventory.CheckedAtUnix, Objects: objects, ObjectCount: len(objects), TotalBytes: total, ManifestSHA256: hex.EncodeToString(manifestDigest[:]), ExactMirror: true, RemoteVersionsVerified: true, Encryption: "plaintext", AllObjectsVerified: true}, nil
 }
 
 func DecodeArtifactReceipt(r io.Reader) (ArtifactReceipt, error) {
@@ -138,17 +173,21 @@ func DecodeArtifactReceipt(r io.Reader) (ArtifactReceipt, error) {
 }
 
 func (r ArtifactReceipt) Validate() error {
-	if r.Format != ArtifactReceiptFormat || r.ClusterID == 0 || !r.ExactMirror || !r.AllObjectsVerified || r.Encryption != "plaintext" {
-		return errors.New("input is not a successful native PITR full-artifacts v1 receipt")
+	if r.Format != ArtifactReceiptFormat || r.ClusterID == 0 || !r.ExactMirror || !r.RemoteVersionsVerified || !r.AllObjectsVerified || r.Encryption != "plaintext" {
+		return errors.New("input is not a successful native PITR full-artifacts v2 receipt")
 	}
 	if !dnsLabel.MatchString(r.TaskName) || r.Keyspace == "" || r.BackupTS == 0 || r.ObjectCount != len(r.Objects) || r.ObjectCount < 2 || r.TotalBytes == 0 {
 		return errors.New("artifact receipt has invalid identity or inventory totals")
 	}
-	if !sha256RE.MatchString(r.FullReceiptSHA256) || !sha256RE.MatchString(r.BackupMetaSHA256) || !sha256RE.MatchString(r.ManifestSHA256) {
+	if !sha256RE.MatchString(r.FullReceiptSHA256) || !sha256RE.MatchString(r.BackupMetaSHA256) || !sha256RE.MatchString(r.RemoteInventorySHA256) || !sha256RE.MatchString(r.ManifestSHA256) || safeText("object store ID", r.ObjectStoreID) != nil || r.MinRetainUntilUnix <= r.InventoryCheckedAtUnix || r.InventoryCheckedAtUnix <= 0 {
 		return errors.New("artifact receipt has invalid digest evidence")
 	}
 	if err := validateS3Prefix(r.StoragePrefix); err != nil {
 		return err
+	}
+	bucket, prefix, err := splitS3Prefix(r.StoragePrefix)
+	if err != nil || r.Bucket != bucket || r.ObjectPrefix != prefix {
+		return errors.New("full artifact receipt remote inventory scope does not match storage prefix")
 	}
 	copyObjects := append([]ArtifactObject(nil), r.Objects...)
 	sort.Slice(copyObjects, func(i, j int) bool { return copyObjects[i].Name < copyObjects[j].Name })

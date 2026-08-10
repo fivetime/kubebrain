@@ -23,7 +23,7 @@ func main() {
 	var in nativepitr.ReceiptPlanInputs
 	flag.StringVar(&taskCreate, "task-create", "", "exact native-pitr-task-create.v4 receipt")
 	flag.StringVar(&fullSnapshot, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
-	flag.StringVar(&fullArtifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v1 receipt")
+	flag.StringVar(&fullArtifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v2 receipt")
 	flag.StringVar(&taskReady, "task-ready", "", "exact native-pitr-task-ready.v4 receipt")
 	flag.StringVar(&logArtifacts, "log-artifacts", "", "exact native-pitr-log-artifacts.v2 receipt")
 	flag.Uint64Var(&in.TargetClusterID, "target-cluster-id", 0, "fresh isolated target PD cluster ID")

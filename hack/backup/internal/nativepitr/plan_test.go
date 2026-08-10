@@ -57,7 +57,9 @@ func validArtifactReceipt(t *testing.T, full FullSnapshotReceipt, fullReceiptSHA
 	b, err := json.Marshal(objects)
 	require.NoError(t, err)
 	h := sha256.Sum256(b)
-	return ArtifactReceipt{Format: ArtifactReceiptFormat, ClusterID: full.ClusterID, Keyspace: full.Keyspace, TaskName: full.TaskName, BackupTS: full.BackupTS, StoragePrefix: full.StoragePrefix, FullReceiptSHA256: fullReceiptSHA, BackupMetaSHA256: full.BackupMetaSHA256, Objects: objects, ObjectCount: len(objects), TotalBytes: uint64(full.BackupMetaBytes) + 10, ManifestSHA256: hex.EncodeToString(h[:]), ExactMirror: true, Encryption: "plaintext", AllObjectsVerified: true}
+	bucket, prefix, err := splitS3Prefix(full.StoragePrefix)
+	require.NoError(t, err)
+	return ArtifactReceipt{Format: ArtifactReceiptFormat, ClusterID: full.ClusterID, Keyspace: full.Keyspace, TaskName: full.TaskName, BackupTS: full.BackupTS, StoragePrefix: full.StoragePrefix, FullReceiptSHA256: fullReceiptSHA, BackupMetaSHA256: full.BackupMetaSHA256, RemoteInventorySHA256: digest, ObjectStoreID: "store-a", Bucket: bucket, ObjectPrefix: prefix, MinRetainUntilUnix: 2_050_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: objects, ObjectCount: len(objects), TotalBytes: uint64(full.BackupMetaBytes) + 10, ManifestSHA256: hex.EncodeToString(h[:]), ExactMirror: true, RemoteVersionsVerified: true, Encryption: "plaintext", AllObjectsVerified: true}
 }
 
 func TestPlanRejectsBrokenChain(t *testing.T) {
@@ -72,6 +74,7 @@ func TestPlanRejectsBrokenChain(t *testing.T) {
 		{"checkpoint behind restore", func(p *Plan) { p.Log.GlobalCheckpointTS = 139 }, "exceeds durable"},
 		{"same target", func(p *Plan) { p.Target.ClusterID = 11 }, "must differ"},
 		{"bad backup digest", func(p *Plan) { p.Full.BackupMetaSHA256 = "ABC" }, "backupmeta"},
+		{"missing full remote proof", func(p *Plan) { p.Full.RemoteExact = false }, "remote inventory"},
 		{"bad witness", func(p *Plan) { p.Target.EmptyWitnessSHA256 = "" }, "empty-witness"},
 		{"missing advancer", func(p *Plan) { p.Log.AdvancerOwner = "" }, "advancer owner"},
 		{"unsafe storage", func(p *Plan) { p.Full.StoragePrefix = " s3://bucket" }, "storage prefix"},

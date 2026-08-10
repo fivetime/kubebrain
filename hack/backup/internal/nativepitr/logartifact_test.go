@@ -55,8 +55,10 @@ func logArtifactFixture(t *testing.T, v2 bool) (TaskCreateReceipt, TaskReadyRece
 	return task, ready, root
 }
 
-func inventoryForRoot(t *testing.T, task TaskCreateReceipt, root string) pitrinventory.Receipt {
+func inventoryForMirror(t *testing.T, storagePrefix, root string) pitrinventory.Receipt {
 	t.Helper()
+	bucket, prefix, err := splitS3Prefix(storagePrefix)
+	require.NoError(t, err)
 	entries := make([]pitrinventory.Entry, 0)
 	var total uint64
 	require.NoError(t, filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
@@ -73,19 +75,19 @@ func inventoryForRoot(t *testing.T, task TaskCreateReceipt, root string) pitrinv
 		}
 		h := sha256.Sum256(b)
 		name := filepath.ToSlash(rel)
-		entries = append(entries, pitrinventory.Entry{Name: name, ObjectKey: "immutable/task-1/" + name, VersionID: "version-" + strings.ReplaceAll(name, "/", "-"), Bytes: int64(len(b)), SHA256: hex.EncodeToString(h[:]), RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_100_000_000})
+		entries = append(entries, pitrinventory.Entry{Name: name, ObjectKey: prefix + "/" + name, VersionID: "version-" + strings.ReplaceAll(name, "/", "-"), Bytes: int64(len(b)), SHA256: hex.EncodeToString(h[:]), RetentionMode: "COMPLIANCE", RetainUntilUnix: 2_100_000_000})
 		total += uint64(len(b))
 		return nil
 	}))
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return pitrinventory.Receipt{Format: pitrinventory.Format, ObjectStoreID: "store-a", Bucket: "bucket", Prefix: "immutable/task-1", Entries: entries, ObjectCount: len(entries), TotalBytes: total, Pages: 1, PaginationExhausted: true, ExactVersionsVerified: true, MinRetainUntilUnix: 2_050_000_000, CheckedAtUnix: 2_000_000_000}
+	return pitrinventory.Receipt{Format: pitrinventory.Format, ObjectStoreID: "store-a", Bucket: bucket, Prefix: prefix, Entries: entries, ObjectCount: len(entries), TotalBytes: total, Pages: 1, PaginationExhausted: true, ExactVersionsVerified: true, MinRetainUntilUnix: 2_050_000_000, CheckedAtUnix: 2_000_000_000}
 }
 
 func TestVerifyLogArtifactsV1AndCompressedV2(t *testing.T) {
 	for _, v2 := range []bool{false, true} {
 		t.Run(map[bool]string{false: "v1", true: "compressed-v2"}[v2], func(t *testing.T) {
 			task, ready, root := logArtifactFixture(t, v2)
-			inventory := inventoryForRoot(t, task, root)
+			inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
 			receipt, err := VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
 			require.NoError(t, err)
 			require.Equal(t, 2, receipt.ObjectCount)
@@ -99,7 +101,7 @@ func TestVerifyLogArtifactsAcceptsAuthoritativeEmptyInventory(t *testing.T) {
 	task, _ := readyTask(t)
 	ready := readyReceiptFor(task)
 	root := t.TempDir()
-	inventory := inventoryForRoot(t, task, root)
+	inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
 	receipt, err := VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
 	require.NoError(t, err)
 	require.Zero(t, receipt.ObjectCount)
@@ -125,7 +127,7 @@ func TestVerifyLogArtifactsFailsClosed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			task, ready, root := logArtifactFixture(t, false)
-			inventory := inventoryForRoot(t, task, root)
+			inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
 			tt.edit(t, root)
 			_, err := VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
 			require.ErrorContains(t, err, tt.want)
@@ -145,14 +147,14 @@ func TestVerifyLogArtifactsRejectsDuplicateV1Object(t *testing.T) {
 	b, err = meta.Marshal()
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(metaPath, b, 0o600))
-	inventory := inventoryForRoot(t, task, root)
+	inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
 	_, err = VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
 	require.ErrorContains(t, err, "exactly one complete segment")
 }
 
 func TestDecodeLogArtifactReceiptIsStrictAndCanonical(t *testing.T) {
 	task, ready, root := logArtifactFixture(t, false)
-	inventory := inventoryForRoot(t, task, root)
+	inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
 	receipt, err := VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
 	require.NoError(t, err)
 	b, err := json.Marshal(receipt)
