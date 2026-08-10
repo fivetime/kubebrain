@@ -117,7 +117,7 @@ func (w *watcher) clientCancelResponseRevision() uint64 {
 
 func (w *watcher) syncControlRevision(ctx context.Context) error {
 	revision := w.backend.GetPublishedRevision()
-	if !w.grpcServer.peers.IsLeader() {
+	if _, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh(); !leadingFresh {
 		if err := w.grpcServer.peers.SyncReadRevision(ctx); err != nil {
 			return readBarrierStatusErr(err)
 		}
@@ -448,8 +448,11 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 					watchCtx, etcdproxy.AuthorizedWatchProxyMetadataKey, "1",
 				)
 			}
-			// normal watch request can only be handled by leader
-			if !s.peers.IsLeader() && !s.peers.EtcdProxyEnabled() {
+			// A local watch generation is leader-only. Use the same lease-freshness
+			// boundary as linearizable reads; client-go's leader flag can remain true
+			// briefly after this replica has already self-fenced.
+			_, leadingFresh := s.peers.EpochAndLeadingFresh()
+			if !leadingFresh && !s.peers.EtcdProxyEnabled() {
 				releaseReservedQuota()
 				s.metricCli.EmitCounter("watch.follower", 1)
 				leaderInfo := s.peers.GetLeaderInfo()
@@ -457,7 +460,7 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				return status.Errorf(codes.Unavailable, "watch error addr is %s leader %s", s.backend.GetResourceLock().Identity(), leaderInfo)
 			}
 			progressStartRevision := r.StartRevision
-			if !s.peers.IsLeader() && r.StartRevision == 0 {
+			if !leadingFresh && r.StartRevision == 0 {
 				r.StartRevision = int64(w.responseRevision()) + 1
 			}
 
@@ -919,7 +922,8 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		case result, ok := <-ch:
 			if !ok {
 				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", string(r.Key))
-				roleTransition := localGeneration || w.grpcServer.peers.IsLeader()
+				_, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
+				roleTransition := localGeneration || leadingFresh
 				if ctx.Err() == nil && roleTransition && w.grpcServer.peers.EtcdProxyEnabled() && !w.nextWatchRevisionCompacted(ctx, id) {
 					// Backend and proxy channels are generation-scoped. A local
 					// generation closes on leadership loss; a proxy generation closes
@@ -931,7 +935,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 					var reopenErr error
 					ch, localGeneration, reopenErr = w.reopenWatchChannel(ctx, r, backendPrefix, watchRevision)
 					if reopenErr == nil {
-						klog.InfoS("[watch stream] watch resumed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision, "local", w.grpcServer.peers.IsLeader())
+						klog.InfoS("[watch stream] watch resumed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision, "local", localGeneration)
 						continue
 					}
 					if ctx.Err() != nil {
@@ -1167,7 +1171,7 @@ func emitWatchSendLoopProgressDuration(metricCli metrics.Metrics, duration time.
 // the node's current role. The local backend and follower proxy expose the same
 // WatchResult stream, so callers can resume between them at an explicit revision.
 func (w *watcher) openWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, error) {
-	if w.grpcServer.peers.IsLeader() {
+	if _, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh(); leadingFresh {
 		ch, err := w.backend.Watch(ctx, backendPrefix, revision)
 		return ch, true, err
 	}

@@ -1680,6 +1680,72 @@ func TestFollowerWatchReadBarrierFailureIsRetryable(t *testing.T) {
 	require.Empty(t, stream.sent, "a watch without a revision fence must not be created")
 }
 
+func TestStaleFreshnessWatchCannotOpenLocalGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	var barrierCalls atomic.Int64
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return 7, false },
+		syncReadFn: func(context.Context) error {
+			barrierCalls.Add(1)
+			return nil
+		},
+	}
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: context.Background()},
+		reqs: []*etcdserverpb.WatchRequest{{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/stale-freshness")},
+			},
+		}},
+	}
+
+	err := server.Watch(stream)
+	requireWatchStatusError(t, err, codes.Unavailable, "watch error addr is test-peer leader test-peer")
+	require.Equal(t, int64(1), barrierCalls.Load(), "a stale leader flag must not bypass the control revision fence")
+	require.Empty(t, stream.sent, "a self-fenced replica must not publish a local watch generation")
+	require.Zero(t, server.activeWatches, "failed stale creation must release its watch slot")
+}
+
+func TestStaleFreshnessWatchUsesFollowerProxyGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	proxyCh := make(chan etcdproxy.WatchResult)
+	close(proxyCh)
+	var watchedRevision uint64
+	server.peers = testPeerService{
+		isLeaderFn:   func() bool { return true },
+		epochFn:      func() (uint64, bool) { return 7, false },
+		proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			server.backend.SetCurrentRevision(50)
+			return nil
+		},
+		watchFn: func(_ context.Context, _, _ []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			watchedRevision = revision
+			return proxyCh, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := &scriptedWatchServer{
+		fakeWatchServer: &fakeWatchServer{ctx: ctx},
+		reqs: []*etcdserverpb.WatchRequest{{
+			RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+				CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/watch/stale-proxy"), WatchId: 418},
+			},
+		}},
+	}
+
+	err := server.Watch(stream)
+	requireWatchCanceled(t, err)
+	require.Equal(t, uint64(51), watchedRevision,
+		"a stale leader flag must use the synchronized follower R+1 proxy generation")
+	require.NotEmpty(t, stream.sent)
+	require.True(t, stream.sent[0].Created)
+}
+
 func TestFollowerWatchLocalRejectionsPrecedeReadBarrier(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

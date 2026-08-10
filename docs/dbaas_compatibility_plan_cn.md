@@ -44917,6 +44917,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   变化的 A4243 路径同样使用直接 unavailable helper。表驱动 seam 对 Grant、Revoke、KeepAlive 让第一次检查返回 epoch 1/stale、
   后续检查返回 epoch 2/fresh，固定三者均只消费一次路由快照且返回非空精确错误。真实 TiKV/PD 快速 re-election 注入仍待环境恢复。
 
+- A4245 让 Watch 的本地 generation 选择服从 leader freshness，而不只服从滞后的 client-go leader flag。正常 Watch 只能由
+  leader 本地订阅；此前 `syncControlRevision`、create routing、revision-zero 的 R+1 rewrite、generation reopen 都使用
+  `IsLeader()`。当本机已超过 `RenewDeadline` 自隔离但 `OnStoppedLeading` 尚未执行时，它会跳过线性 control-revision fence，
+  从本地 published revision 创建 generation，可能在 successor 已提交后返回过低 Created/progress header。现在 control fence、
+  create routing 和 `openWatchChannel` 统一使用 `EpochAndLeadingFresh`：proxy disabled 返回既有精确 `Unavailable` 并释放 quota；
+  proxy enabled 先同步 current revision，再从 R+1 打开远端 generation；generation 关闭后的 local/proxy 选择也使用 freshness。
+  确定性测试构造 `IsLeader=true/fresh=false`，分别证明零本地 response/slot 泄漏，以及 proxy 收到 revision 51 而非从 stale local
+  revision 启动。本项只关闭创建与 generation reopen 的错误选源；已建立的普通（非 require-leader）generation 在无 channel
+  关闭时仍依赖 `OnStoppedLeading -> CloseWatchers` 唤醒，显式 require-leader stream 则已有 100ms 生命周期 fence。真实
+  TiKV/PD stale-leader Watch 切换仍待环境恢复后补跑，并需继续量化普通 stream 在 callback 延迟窗口内的交付边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
