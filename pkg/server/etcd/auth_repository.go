@@ -224,6 +224,13 @@ func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*a
 				))
 			}
 		}
+		if !sort.SliceIsSorted(role.KeyPermission, func(i, j int) bool {
+			return bytes.Compare(role.KeyPermission[i].Key, role.KeyPermission[j].Key) < 0
+		}) {
+			return nil, markInvalidAuthMetadata(fmt.Errorf(
+				"auth role %q permissions are not sorted", identity,
+			))
+		}
 		snapshot.Roles[identity] = &role
 	}
 	for key, value := range generationsRaw {

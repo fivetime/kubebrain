@@ -131,6 +131,20 @@ func TestAuthRepositoryClassifiesMalformedPersistentMetadata(t *testing.T) {
 			want: `auth role "reader" permission 0 has invalid range`,
 		},
 		{
+			name: "unsorted role permissions", key: authRecordKey(authRolesKey, "reader"),
+			value: func(t *testing.T) []byte {
+				value, err := proto.Marshal(&authpb.Role{
+					Name: []byte("reader"), KeyPermission: []*authpb.Permission{
+						{PermType: authpb.READ, Key: []byte("z")},
+						{PermType: authpb.READ, Key: []byte("a")},
+					},
+				})
+				require.NoError(t, err)
+				return value
+			},
+			want: `auth role "reader" permissions are not sorted`,
+		},
+		{
 			name: "token generation key mismatch", key: authRecordKey(authTokenGenerationsKey, "alice"),
 			value: func(t *testing.T) []byte {
 				value, err := proto.Marshal(&authpb.User{Name: []byte("bob"), Password: make([]byte, authUserTokenGenerationBytes)})

@@ -44835,6 +44835,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sort.StringsAreSorted`，无序记录标记 `errInvalidAuthMetadata` 并由普通 RPC 返回 `DataLoss`。缺失的非 root role 引用
   仍保持上游的 deny-only 行为，不扩大本轮校验。repository 表测与真实 bufconn KV.Range 均覆盖无序 root 记录。
 
+- A4235 固定持久 role permission 的 key 排序不变量。对照 `/root/etcd/server/auth/store.go` 的
+  `RoleGrantPermission`，上游以 `sort.Search` 查找首个 `Key >= request.Key`，每次新增后再按 key 排序；同 key 不同
+  RangeEnd 的重复条目则是 A594 已确认的合法上游行为。无序 TiKV 记录会使后续 grant 在错误位置更新或追加，造成权限集合
+  与 auth revision 正常推进但实际授权结果漂移。repository 现在完成逐项 range 校验后，用仅比较 key 的稳定排序断言阻止
+  无序 snapshot 发布；相同 key 仍被接受。repository 表测、既有同 key 三条目回归和真实 bufconn KV.Range 分别固定损坏
+  拒绝、合法重复保留及 `DataLoss` 错误契约。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

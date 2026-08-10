@@ -243,6 +243,26 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 			want: `auth user "alice" roles are not sorted`,
 		},
 		{
+			name: "unsorted role permissions",
+			corrupt: func(ctx context.Context, server *RPCServer) error {
+				value, err := proto.Marshal(&authpb.Role{
+					Name: []byte("reader"), KeyPermission: []*authpb.Permission{
+						{PermType: authpb.READ, Key: []byte("z")},
+						{PermType: authpb.READ, Key: []byte("a")},
+					},
+				})
+				if err != nil {
+					return err
+				}
+				return server.backend.InternalPut(ctx, authRecordKey(authRolesKey, "reader"), value)
+			},
+			call: func(ctx context.Context, connection *grpc.ClientConn) error {
+				_, err := etcdserverpb.NewKVClient(connection).Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
+				return err
+			},
+			want: `auth role "reader" permissions are not sorted`,
+		},
+		{
 			name: "generic alarm",
 			corrupt: func(ctx context.Context, server *RPCServer) error {
 				return server.backend.InternalPut(ctx, genericAlarmKey, []byte("null"))
