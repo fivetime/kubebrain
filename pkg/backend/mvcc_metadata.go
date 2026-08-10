@@ -14,8 +14,17 @@
 
 package backend
 
-import "errors"
+import (
+	"fmt"
 
-// ErrInvalidMVCCMetadata marks persisted per-version etcd metadata that cannot
-// be decoded. Retrying the same durable row cannot repair its encoding.
-var ErrInvalidMVCCMetadata = errors.New("MVCC metadata is inconsistent")
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+)
+
+// ErrInvalidMVCCMetadata marks a persisted revision index, object key, or
+// per-version etcd metadata value that cannot be decoded. Retrying the same
+// durable row cannot repair its encoding.
+var ErrInvalidMVCCMetadata = coder.ErrInvalidMVCCMetadata
+
+func invalidMVCCMetadataError(err error, format string, args ...any) error {
+	return coder.MarkInvalidMVCCMetadata(fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err))
+}

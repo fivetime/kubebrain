@@ -649,6 +649,11 @@ func (w *worker) runWithBackoffRetry(ctx context.Context, receiver resultReceive
 		if count, scanErr = w.run(ctx, receiver); scanErr == nil {
 			return true, nil
 		}
+		if errors.Is(scanErr, coder.ErrInvalidMVCCMetadata) {
+			// A deterministic persisted encoding error cannot be repaired by
+			// restarting the same partition scan.
+			return false, scanErr
+		}
 		if !receiver.retriable() {
 			// A streaming receiver has already emitted chunks it cannot recall;
 			// re-scanning this partition from its start would re-send those keys
@@ -662,7 +667,7 @@ func (w *worker) runWithBackoffRetry(ctx context.Context, receiver resultReceive
 	if err != nil {
 		// fail after retry, scanErr records the latest scan err
 		if wait.Interrupted(err) {
-			err = fmt.Errorf("partition %d reached the max retry time: %d, encounter latest error %v", w.idx, scanBackoffSteps, scanErr)
+			err = fmt.Errorf("partition %d reached the max retry time: %d, encounter latest error: %w", w.idx, scanBackoffSteps, scanErr)
 		}
 	}
 
@@ -865,8 +870,7 @@ func (w *worker) runRead(
 			if w.isInternalStorageKey != nil && w.isInternalStorageKey(rawKey) {
 				continue
 			}
-			klog.Errorf("unmarshal object key %s failed %v", rawKey, decodeErr)
-			continue
+			return 0, decodeErr
 		}
 		value := it.Val()
 		valSize += int64(len(value))

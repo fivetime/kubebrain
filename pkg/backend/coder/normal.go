@@ -86,11 +86,11 @@ func (n *normalEncoderDecoder) RevisionBoundaryForBorder(border []byte) ([]byte,
 // Decode implements Coder interface
 func (n *normalEncoderDecoder) Decode(internalKey []byte) (userKey []byte, revision uint64, err error) {
 	if len(internalKey) < len(n.magic)+9 || !bytes.Equal(internalKey[:len(n.magic)], n.magic) {
-		return nil, 0, errors.Errorf("magic number not right for object key %v", hex.EncodeToString(internalKey))
+		return nil, 0, MarkInvalidMVCCMetadata(errors.Errorf("magic number not right for object key %v", hex.EncodeToString(internalKey)))
 	}
 
 	if internalKey[len(internalKey)-9] != splitByte {
-		return nil, 0, errors.Errorf("split byte not right for object key %v", hex.EncodeToString(internalKey))
+		return nil, 0, MarkInvalidMVCCMetadata(errors.Errorf("split byte not right for object key %v", hex.EncodeToString(internalKey)))
 	}
 
 	revision = binary.BigEndian.Uint64(internalKey[len(internalKey)-8:])

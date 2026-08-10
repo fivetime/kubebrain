@@ -151,6 +151,80 @@ func TestSnapshotHistoryStreamRejectsMalformedInlineEnvelope(t *testing.T) {
 	require.Empty(t, records)
 }
 
+func TestRevisionIndexCorruptionIsClassifiedAndNotHealed(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/revision-index/corrupt")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	batch := kv.BeginBatchWrite()
+	batch.CAS(b.coder.EncodeRevisionKey(key), []byte{1}, uint64ToBytes(created.Header.Revision), 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	response, err := b.Get(ctx, &proto.GetRequest{Key: key})
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "revision index for key")
+	require.Nil(t, response)
+	_, err = b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: key, Value: []byte("replacement"), Revision: created.Header.Revision}})
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	_, txnRevision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("txn-replacement")}}, nil)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.Zero(t, txnRevision)
+	_, txnRevision, err = b.TxnApply(ctx, []TxnWriteOp{{Key: []byte(prefix + "/revision-index/other"), Value: []byte("value")}}, []TxnGuard{{Key: key, Revision: created.Header.Revision}})
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.Zero(t, txnRevision)
+	stored, getErr := kv.Get(ctx, b.coder.EncodeRevisionKey(key))
+	require.NoError(t, getErr)
+	require.Equal(t, []byte{1}, stored, "durable corruption must not enter orphan-index healing")
+}
+
+func TestSnapshotHistoryStreamRejectsMalformedObjectKey(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/object-key/corrupt")
+	revision := b.GetCurrentRevision()
+	malformed := b.coder.EncodeObjectKey(key, revision)
+	malformed[len(malformed)-9] = '!'
+	batch := kv.BeginBatchWrite()
+	batch.Put(malformed, []byte("value"), 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	list, listErr := b.List(ctx, &proto.RangeRequest{
+		Key: []byte(prefix + "/object-key/"), End: PrefixEnd([]byte(prefix + "/object-key/")),
+	})
+	require.ErrorIs(t, listErr, ErrInvalidMVCCMetadata)
+	require.Nil(t, list)
+
+	stream, err := b.SnapshotHistoryStream(ctx, revision)
+	require.NoError(t, err)
+	var streamErr error
+	var records []SnapshotHistoryRecord
+	for chunk := range stream {
+		records = append(records, chunk.Records...)
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	require.ErrorIs(t, streamErr, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, streamErr, "decode snapshot object key")
+	require.Empty(t, records)
+
+	_, hashErr := b.HashKV(ctx, int64(revision))
+	require.ErrorIs(t, hashErr, ErrInvalidMVCCMetadata)
+}
+
 func TestSnapshotHistoryStreamJoinsExactTxnSubrevisions(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

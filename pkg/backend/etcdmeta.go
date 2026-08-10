@@ -83,7 +83,7 @@ func (b *backend) getEtcdMetadata(ctx context.Context, key []byte, revision uint
 		}
 		userKey, candidateRevision, decodeErr := b.coder.Decode(iter.Key())
 		if decodeErr != nil {
-			return EtcdMetadata{}, decodeErr
+			return EtcdMetadata{}, invalidMVCCMetadataError(decodeErr, "decode legacy etcd metadata object key")
 		}
 		if candidateRevision == 0 || !bytes.Equal(userKey, metaKey) {
 			continue

@@ -44703,6 +44703,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 TiKV transport error 都能原样到达共享 interceptor，而不会生成看似有效的 KV；
   普通 client-facing RPC 继续由 A4220 映射 `DataLoss`，Snapshot 继续为 `FailedPrecondition`。旧无 error
   helper 只为源码兼容保留，生产路径审计确认无调用，防止 rolling-upgrade 未知格式被旧副本静默降级。
+  A4222 继续覆盖 MVCC revision index 与物理 object key。对照 upstream
+  `/root/etcd/server/storage/mvcc/revision.go::BytesToBucketKey` 对非法 17/18 字节 revision key 直接拒绝：
+  KubeBrain 每键 revision index 同样只允许 8 字节 live 或 9 字节 tombstone，物理 object key 必须匹配
+  keyspace magic、`$` delimiter 与 8 字节 revision。原实现的 Parse/Decode 错误没有 durable 类型；更严重的
+  是 scanner 与 Snapshot 遇到坏 object row 会记录后 `continue`，向客户端或备份静默漏键。现把 sentinel
+  权威定义下沉到 `backend/coder`，`backend.ErrInvalidMVCCMetadata` 保持别名；多 cause wrapper 保留原
+  `Error()` 文本，并让 `errors.Is` 同时识别 sentinel 与 `ErrInvalidRevFormat`。Get/Update、atomic Txn write/
+  guard、create-conflict 诊断、legacy sidecar、Watch history、HashKV、普通 Range 与 Snapshot 都增加具体
+  key/path 上下文。scanner 对该类错误立即停止，不再做三轮无效 backoff，也不再跳过 row。真实 memkv
+  红测注入 1 字节 revision index，证明 Get/Update/Txn 在分配 revision 前 fail closed、坏值不会被 orphan
+  heal 覆盖；另篡改物理 delimiter，Range/Hash/Snapshot 均拒绝且 Snapshot 零 records。普通 RPC 继续映射
+  `DataLoss`，Snapshot 为 `FailedPrecondition`。内部 `StreamRangeResponse.err` 仍只有 string，虽已不会静默
+  漏行，但跨该内部流边界会丢失 sentinel 类型；后续需增加结构化错误码，不能用易漂移文本猜测关闭差距。
 
 ### P2：运维兼容和长期验证
 

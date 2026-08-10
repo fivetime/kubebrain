@@ -107,7 +107,7 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 	} else {
 		currentRevision, _, parseErr := coder.ParseRevision(revisionValue)
 		if parseErr != nil {
-			return nil, 0, parseErr
+			return nil, 0, invalidMVCCMetadataError(parseErr, "decode revision index for key %q", key)
 		}
 
 		// The revision index gives exact point reads a collision-free fast path.
@@ -148,7 +148,7 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 
 		userKey, candidateRevision, decodeErr := b.coder.Decode(iter.Key())
 		if decodeErr != nil {
-			return nil, 0, decodeErr
+			return nil, 0, invalidMVCCMetadataError(decodeErr, "decode historical object key")
 		}
 		if candidateRevision == 0 || !bytes.Equal(userKey, key) {
 			continue
@@ -657,7 +657,8 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 			}
 			userKey, modRevision, decodeErr := b.coder.Decode(rawKey)
 			if decodeErr != nil {
-				continue
+				send(SnapshotHistoryChunk{Revision: rev, Err: invalidMVCCMetadataError(decodeErr, "decode snapshot object key")})
+				return
 			}
 			boundary, boundaryOK := b.coder.RevisionBoundaryForBorder(rawKey)
 			if !boundaryOK {

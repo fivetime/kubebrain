@@ -151,7 +151,7 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 
 	prevRevision, isTombstone, parseErr := coder.ParseRevision(oldRev)
 	if parseErr != nil {
-		return nil, false, parseErr
+		return nil, false, invalidMVCCMetadataError(parseErr, "decode revision index for key %q after create conflict", key)
 	}
 	if isTombstone && prevRevision < revision {
 		return oldRev, true, err

@@ -167,7 +167,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		default:
 			cr, isTomb, perr := coder.ParseRevision(rv)
 			if perr != nil {
-				return nil, 0, false, perr
+				return nil, 0, false, invalidMVCCMetadataError(perr, "decode revision index for key %q", op.Key)
 			}
 			p.rvBytes = rv
 			p.curRev = cr
@@ -247,7 +247,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		} else {
 			curRev, tombstone, perr := coder.ParseRevision(rv)
 			if perr != nil {
-				return nil, 0, false, perr
+				return nil, 0, false, invalidMVCCMetadataError(perr, "decode transaction guard revision index for key %q", g.Key)
 			}
 			if (g.Absent && !tombstone) || (!g.Absent && (tombstone || curRev != g.Revision)) {
 				return nil, 0, false, ErrTxnGuardConflict

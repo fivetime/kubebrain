@@ -131,7 +131,7 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 		if len(key) > 0 && !b.ks.IsInternalStorageKey(key) {
 			userKey, objectRevision, decodeErr := b.coder.Decode(key)
 			if decodeErr != nil {
-				return HashKVResult{}, decodeErr
+				return HashKVResult{}, invalidMVCCMetadataError(decodeErr, "decode hash object key")
 			}
 			boundary, ok := b.coder.RevisionBoundaryForBorder(key)
 			if !ok {

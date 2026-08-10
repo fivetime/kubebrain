@@ -43,5 +43,5 @@ func ParseRevision(revisionBytes []byte) (rev uint64, isTombStone bool, err erro
 	// may be caused by
 	// 1. issues of storage
 	// 2. unexpected writing
-	return 0, false, ErrInvalidRevFormat
+	return 0, false, MarkInvalidMVCCMetadata(ErrInvalidRevFormat)
 }

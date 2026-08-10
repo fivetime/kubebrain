@@ -371,7 +371,7 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 		}
 		key, rev, err := b.coder.Decode(iter.Key())
 		if err != nil {
-			return nil, err
+			return nil, invalidMVCCMetadataError(err, "decode watch history object key")
 		}
 		if !bytes.HasPrefix(key, prefixBytes) {
 			continue
