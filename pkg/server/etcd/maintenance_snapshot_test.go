@@ -1341,6 +1341,40 @@ func TestMaintenanceSnapshotClassifiesInvalidRetainedMVCCLifecycle(t *testing.T)
 	require.Empty(t, stream.responses)
 }
 
+type incompleteOrderedHistorySnapshotBackend struct {
+	BackendShim
+}
+
+func (b *incompleteOrderedHistorySnapshotBackend) GetCurrentRevision() uint64 { return 3 }
+
+func (b *incompleteOrderedHistorySnapshotBackend) SnapshotHistoryStreamChan(
+	_ context.Context, revision uint64,
+) (<-chan backend.SnapshotHistoryChunk, error) {
+	chunks := make(chan backend.SnapshotHistoryChunk, 2)
+	chunks <- backend.SnapshotHistoryChunk{Revision: revision, Records: []backend.SnapshotHistoryRecord{
+		{
+			Key: []byte("incomplete-txn"), Value: []byte("first"), CreateRevision: 2, ModRevision: 2,
+			Version: 1, LeaseKnown: true, SubRevision: 0, TotalChanges: 2, Ordered: true, Current: true,
+		},
+	}}
+	chunks <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}
+	close(chunks)
+	return chunks, nil
+}
+
+func TestMaintenanceSnapshotClassifiesIncompleteOrderedRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.backend = &incompleteOrderedHistorySnapshotBackend{BackendShim: server.backend}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidRetainedHistory.Error())
+	require.ErrorContains(t, err, "ordered revision 2 contains 1 changes, want 2")
+	require.Empty(t, stream.responses)
+}
+
 func TestMaintenanceSnapshotRejectsCurrentLeaseDisagreeingWithPinnedAttachment(t *testing.T) {
 	server, closeFn := newTestRPCServerWithCompatibility(t, false)
 	defer closeFn()

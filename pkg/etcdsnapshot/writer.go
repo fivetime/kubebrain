@@ -20,9 +20,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// ErrInvalidMVCCLifecycle marks retained source history that cannot be
-// restored without inventing an etcd generation, version, or tombstone.
-var ErrInvalidMVCCLifecycle = errors.New("snapshot retained MVCC history is inconsistent")
+// ErrInvalidRetainedHistory marks retained source history that cannot be
+// restored without inventing an etcd transaction event, generation, version,
+// or tombstone.
+var ErrInvalidRetainedHistory = errors.New("snapshot retained MVCC history is inconsistent")
+
+// ErrInvalidMVCCLifecycle is retained for callers that adopted the narrower
+// A4207 name. It aliases the broader retained-history class.
+var ErrInvalidMVCCLifecycle = ErrInvalidRetainedHistory
 
 var (
 	keyBucket         = []byte("key")
@@ -379,7 +384,7 @@ func (b *Builder) Append(records []Record) error {
 	}
 	for i := range records {
 		if err := validateRecord(records[i], b.revision); err != nil {
-			return fmt.Errorf("record %d: %w", b.nextSub+int64(i)+1, err)
+			return fmt.Errorf("%w: record %d: %v", ErrInvalidRetainedHistory, b.nextSub+int64(i)+1, err)
 		}
 	}
 	pendingTotals := make(map[int64]int64)
@@ -388,10 +393,10 @@ func (b *Builder) Append(records []Record) error {
 			continue
 		}
 		if total, exists := b.orderedTotals[rec.ModRevision]; exists && total != rec.TotalChanges {
-			return fmt.Errorf("ordered revision %d reports total changes %d, previously %d", rec.ModRevision, rec.TotalChanges, total)
+			return fmt.Errorf("%w: ordered revision %d reports total changes %d, previously %d", ErrInvalidRetainedHistory, rec.ModRevision, rec.TotalChanges, total)
 		}
 		if total, exists := pendingTotals[rec.ModRevision]; exists && total != rec.TotalChanges {
-			return fmt.Errorf("ordered revision %d reports inconsistent total changes %d and %d", rec.ModRevision, total, rec.TotalChanges)
+			return fmt.Errorf("%w: ordered revision %d reports inconsistent total changes %d and %d", ErrInvalidRetainedHistory, rec.ModRevision, total, rec.TotalChanges)
 		}
 		pendingTotals[rec.ModRevision] = rec.TotalChanges
 	}
@@ -419,7 +424,7 @@ func (b *Builder) Append(records []Record) error {
 			if rec.Ordered {
 				tombstoneKey := append(append([]byte(nil), revisionKey...), 't')
 				if keys.Get(revisionKey) != nil || keys.Get(tombstoneKey) != nil {
-					return fmt.Errorf("duplicate ordered revision %d/%d", rec.ModRevision, rec.SubRevision)
+					return fmt.Errorf("%w: duplicate ordered revision %d/%d", ErrInvalidRetainedHistory, rec.ModRevision, rec.SubRevision)
 				}
 			}
 			if rec.Tombstone {
@@ -455,10 +460,10 @@ func (b *Builder) Finish() error {
 	if err := b.db.View(func(tx *bolt.Tx) error {
 		if b.preserveHistory {
 			if err := validateOrderedRevisionContinuity(tx, b.compactRevision, b.orderedTotals); err != nil {
-				return err
+				return fmt.Errorf("%w: %v", ErrInvalidRetainedHistory, err)
 			}
 			if err := validateMVCCLifecycle(tx, b.compactRevision); err != nil {
-				return fmt.Errorf("%w: %v", ErrInvalidMVCCLifecycle, err)
+				return fmt.Errorf("%w: %v", ErrInvalidRetainedHistory, err)
 			}
 		}
 		return validateCurrentLeaseReferences(tx)

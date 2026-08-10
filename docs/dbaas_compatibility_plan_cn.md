@@ -44582,6 +44582,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   server/compat 和 vet 回归用于防止后续重新扩大文本启发式。现场 TiDB 日志中的
   `throwing pseudo region error due to no replica available` 只是 selector 诊断，实际请求错误仍记录为
   `epoch_not_match`/deadline，因此没有把该日志句子臆测成新的 wire error 分类。
+  A4210 将 A4207 的 Snapshot durable provenance 分类从单键 lifecycle 扩展到完整 retained-history
+  不变量。writer 原先仅在 create/version/tombstone 校验失败时包装
+  `ErrInvalidMVCCLifecycle`；同样不可由重试修复的 ordered txn subrevision gap、ordered/fallback 混排、
+  声明 total 缺尾或不一致、重复 revision/subrevision，以及单条 record 元数据非法仍以普通错误离开，
+  Maintenance 最终泄漏 gRPC `Unknown`。新增更准确的 `ErrInvalidRetainedHistory`，旧
+  `ErrInvalidMVCCLifecycle` 保持同一 sentinel 别名以兼容已有调用方；Append/Finish 只对来源记录与历史
+  连续性校验包装该类，bbolt I/O、Context 和传输故障不改写。writer 红测固定 gap/mix/missing-tail/
+  duplicate/inconsistent-total 的 `errors.Is` 契约，raw Snapshot 回归注入 total=2 但仅保留 subrevision=0
+  的事务，要求无任何 partial frame 且返回 `FailedPrecondition` 与精确 revision 诊断。由此 DBaaS 备份
+  编排可把所有持久历史不可恢复形状统一归为“需 compaction/迁移处理”，而不会把它们当瞬态重试风暴。
 
 ### P2：运维兼容和长期验证
 

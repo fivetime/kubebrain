@@ -160,6 +160,7 @@ func TestBuilderRejectsDuplicateOrderedRevisionWithoutOverwritingHistory(t *test
 				})
 			}
 			require.ErrorContains(t, err, "duplicate ordered revision 7/2")
+			require.ErrorIs(t, err, ErrInvalidRetainedHistory)
 			require.NoError(t, builder.Finish())
 			require.NoError(t, builder.Close())
 
@@ -197,7 +198,9 @@ func TestBuilderRejectsOrderedSubrevisionGapAboveCompactWatermark(t *testing.T) 
 		{Key: []byte("first"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, TotalChanges: 3, Ordered: true},
 		{Key: []byte("third"), Value: []byte("three"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 2, TotalChanges: 3, Ordered: true},
 	}))
-	require.ErrorContains(t, builder.Finish(), "ordered revision 12 has subrevision 2, want 1")
+	finishErr := builder.Finish()
+	require.ErrorIs(t, finishErr, ErrInvalidMVCCLifecycle)
+	require.ErrorContains(t, finishErr, "ordered revision 12 has subrevision 2, want 1")
 
 	// Finish validates all committed batches, so a later scanner batch can fill
 	// the gap before the private artifact is finalized.
@@ -217,6 +220,7 @@ func TestBuilderRejectsMixedOrderedAndFallbackRecordsAboveCompactWatermark(t *te
 			{Key: []byte("fallback"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1},
 		},
 	})
+	require.ErrorIs(t, err, ErrInvalidMVCCLifecycle)
 	require.ErrorContains(t, err, "revision 12 mixes ordered and fallback records")
 
 	anchorPath := filepath.Join(t.TempDir(), "anchor.db")
@@ -240,7 +244,9 @@ func TestBuilderRequiresDeclaredOrderedTransactionTotal(t *testing.T) {
 			{Key: []byte("first"), Value: []byte("one"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 0, TotalChanges: 3, Ordered: true},
 			{Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1, SubRevision: 1, TotalChanges: 3, Ordered: true},
 		}))
-		require.ErrorContains(t, builder.Finish(), "ordered revision 12 contains 2 changes, want 3")
+		finishErr := builder.Finish()
+		require.ErrorIs(t, finishErr, ErrInvalidMVCCLifecycle)
+		require.ErrorContains(t, finishErr, "ordered revision 12 contains 2 changes, want 3")
 		require.NoError(t, builder.Append([]Record{{
 			Key: []byte("third"), Value: []byte("three"), CreateRevision: 12, ModRevision: 12, Version: 1,
 			SubRevision: 2, TotalChanges: 3, Ordered: true,
@@ -261,6 +267,7 @@ func TestBuilderRequiresDeclaredOrderedTransactionTotal(t *testing.T) {
 			Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1,
 			SubRevision: 1, TotalChanges: 3, Ordered: true,
 		}})
+		require.ErrorIs(t, err, ErrInvalidRetainedHistory)
 		require.ErrorContains(t, err, "ordered revision 12 reports total changes 3, previously 2")
 		require.NoError(t, builder.Append([]Record{{
 			Key: []byte("second"), Value: []byte("two"), CreateRevision: 12, ModRevision: 12, Version: 1,
