@@ -396,11 +396,10 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		}
 
 		renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
-		ttl, err := m.refreshLeaseAuthorized(renewCtx, caller, req.ID)
+		ttl, err := m.refreshLeaseAuthorized(renewCtx, caller, req.ID, epoch)
 		if errors.Is(err, errLeaseDemotedDuringRenew) {
-			leaderErr := m.requireLeaseLeader("lease keepalive")
 			if !m.srv.peers.EtcdProxyEnabled() {
-				return leaderErr
+				return m.leaseLeaderUnavailable("lease keepalive")
 			}
 			if err := forward(); err != nil {
 				return err
@@ -933,20 +932,29 @@ func (m *leaseManager) leaseIDForKey(key string) int64 {
 }
 
 func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error) {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		return 0, errLeaseDemotedDuringRenew
+	}
 	m.leaseCheckpointMu.Lock()
 	// Serialize against revoke/expiry. In particular, an expiry callback that
 	// already won the exclusive lock must finish before this renewal, while a
 	// successful renewal prevents expiry from observing the old deadline.
 	m.leaseWriteMu.RLock()
-	return m.refreshLeaseHoldingLocks(ctx, id, m.leaseWriteMu.RUnlock, m.leaseWriteMu.RLock, nil, func() {
+	return m.refreshLeaseHoldingLocks(ctx, id, epoch, m.leaseWriteMu.RUnlock, m.leaseWriteMu.RLock, nil, func() {
 		m.leaseWriteMu.RUnlock()
 		m.leaseCheckpointMu.Unlock()
 	})
 }
 
-func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authCaller, id int64) (int64, error) {
+func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authCaller, id int64, epoch uint64) (int64, error) {
 	if caller == nil || caller.isRoot() {
-		return m.refreshLease(ctx, id)
+		m.leaseCheckpointMu.Lock()
+		m.leaseWriteMu.RLock()
+		return m.refreshLeaseHoldingLocks(ctx, id, epoch, m.leaseWriteMu.RUnlock, m.leaseWriteMu.RLock, nil, func() {
+			m.leaseWriteMu.RUnlock()
+			m.leaseCheckpointMu.Unlock()
+		})
 	}
 
 	// Put/Txn use the shared side of leaseWriteMu from lease validation through
@@ -960,7 +968,7 @@ func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authC
 		m.leaseCheckpointMu.Unlock()
 		return 0, err
 	}
-	return m.refreshLeaseHoldingLocks(ctx, id, m.leaseWriteMu.Unlock, m.leaseWriteMu.Lock, func() error {
+	return m.refreshLeaseHoldingLocks(ctx, id, epoch, m.leaseWriteMu.Unlock, m.leaseWriteMu.Lock, func() error {
 		return m.authorizeLeaseKeys(ctx, caller, m.keysForLease(id), authpb.WRITE)
 	}, func() {
 		m.leaseWriteMu.Unlock()
@@ -976,6 +984,7 @@ func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authC
 func (m *leaseManager) refreshLeaseHoldingLocks(
 	ctx context.Context,
 	id int64,
+	epoch uint64,
 	unlockWrite, lockWrite func(),
 	afterRelock func() error,
 	unlock func(),
@@ -985,7 +994,7 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 	// extend only its private in-memory deadline and report a successful renew.
 	// Match etcd lessor.Renew returning ErrNotPrimary after demotion; the caller
 	// then forwards to the current leader when proxying is enabled.
-	if !m.srv.peers.IsLeader() {
+	if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
 		unlock()
 		return 0, errLeaseDemotedDuringRenew
 	}
@@ -1046,7 +1055,7 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		// Revalidate after reacquiring the renewal lock as well; otherwise a
 		// demoted manager could still publish a private deadline after this method's
 		// entry fence passed.
-		if !m.srv.peers.IsLeader() {
+		if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
 			unlock()
 			return 0, errLeaseDemotedDuringRenew
 		}
@@ -1446,9 +1455,13 @@ func (m *leaseManager) requireLeaseReady() error {
 }
 
 func (m *leaseManager) requireLeaseLeader(op string) error {
-	if m.srv.peers.IsLeader() {
+	if _, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); leadingFresh {
 		return m.requireLeaseReady()
 	}
+	return m.leaseLeaderUnavailable(op)
+}
+
+func (m *leaseManager) leaseLeaderUnavailable(op string) error {
 	m.srv.metricCli.EmitCounter("lease.follower", 1)
 	return status.Errorf(codes.Unavailable, "%s error addr is %s leader %s", op, m.srv.backend.GetResourceLock().Identity(), m.srv.peers.GetLeaderInfo())
 }

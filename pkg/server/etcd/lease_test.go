@@ -2055,6 +2055,60 @@ func TestLeaseKeepAliveRejectsDemotionWhileWaitingForRenewal(t *testing.T) {
 	require.Empty(t, stream.sent)
 }
 
+func TestLeaseKeepAliveRejectsStaleOrChangedEpochWhileWaitingForRenewal(t *testing.T) {
+	tests := []struct {
+		name      string
+		nextEpoch uint64
+		nextFresh bool
+	}{
+		{name: "stale freshness", nextEpoch: 1, nextFresh: false},
+		{name: "changed epoch", nextEpoch: 2, nextFresh: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			const leaseID int64 = 70031
+			_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: leaseID, TTL: 30})
+			require.NoError(t, err)
+
+			var epoch atomic.Uint64
+			epoch.Store(1)
+			var fresh atomic.Bool
+			fresh.Store(true)
+			routed := make(chan struct{})
+			var routedOnce sync.Once
+			server.peers = testPeerService{
+				isLeaderFn: func() bool { return true },
+				epochFn: func() (uint64, bool) {
+					if fresh.Load() {
+						routedOnce.Do(func() { close(routed) })
+					}
+					return epoch.Load(), fresh.Load()
+				},
+			}
+			server.leaseMu.Lock()
+			before := server.leases[leaseID].deadline
+			server.leaseMu.Unlock()
+			server.leaseCheckpointMu.Lock()
+			stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+			done := make(chan error, 1)
+			go func() { done <- server.LeaseKeepAlive(stream) }()
+			<-routed
+			epoch.Store(tt.nextEpoch)
+			fresh.Store(tt.nextFresh)
+			server.leaseCheckpointMu.Unlock()
+
+			requireLeaseFollowerUnavailable(t, <-done, "lease keepalive error addr is test-peer leader test-peer")
+			require.Empty(t, stream.sent)
+			server.leaseMu.Lock()
+			after := server.leases[leaseID].deadline
+			server.leaseMu.Unlock()
+			require.Equal(t, before, after, "a stale or superseded term must not extend its private lease deadline")
+		})
+	}
+}
+
 func TestLeaseKeepAliveProxiesDemotionWhileWaitingForRenewal(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

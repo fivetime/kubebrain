@@ -44899,6 +44899,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   deadline 回绕到过去。回归验证默认/自定义配置传播、checkpointed lease 的内部 deadline 与公开 TTL 均包含 extension。
   真实 TiKV/PD leader failover 仍受既知环境故障限制，恢复后需补跑 keepalive 跨选主窗口场景。
 
+- A4243 封闭 lease RPC 绕过 leader freshness 自隔离的窗口。上游 lessor 在 demotion 后以 `ErrNotPrimary` 拒绝 Renew，
+  KubeBrain 还必须满足 TiKV 共享存储下更强的 `EpochAndLeadingFresh` 写 fence：client-go leader flag 可能仍为 true，但最后一次
+  renew 已超过 `RenewDeadline`，此时节点不得继续只修改私有 deadline 并返回 KeepAlive 成功。此前 KeepAlive 入口捕获 fresh
+  epoch 后，在等待 checkpoint/revoke 锁期间只复核 `IsLeader()`；无 checkpoint 的 lease 不触发 backend commit fence，freshness
+  过期或同节点进入新 epoch 都会漏过，前一情况还可能从 demotion 分支返回 nil 而不发送 response。现在 renewal 全程携带入口
+  epoch，发布 deadline 前及 checkpoint CAS 后同时要求 fresh 且 epoch 未变；失败统一按既有 follower/proxy 路径返回
+  `Unavailable` 或转发。`requireLeaseLeader` 也统一使用 freshness，使 TTL/List 不再从已自隔离节点返回本地 snapshot。确定性锁
+  竞态表测覆盖 stale freshness、changed epoch、deadline 未变化及既有 demotion/proxy，lease read 回归覆盖 stale-but-flagged-leader。
+  真实 TiKV/PD partition + delayed client-go demotion 仍待既知环境故障恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

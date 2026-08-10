@@ -66,6 +66,20 @@ func TestFollowerLeaseReadsDoNotServeStaleState(t *testing.T) {
 	requireLeaseFollowerUnavailable(t, err, "lease leases error addr is follower-peer leader test-peer")
 }
 
+func TestStaleFreshnessLeaseReadsDoNotServeLocalState(t *testing.T) {
+	server, _, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return 7, false },
+	}
+
+	_, err := server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: 123})
+	requireLeaseFollowerUnavailable(t, err, "lease time-to-live error addr is lease-inline-test-peer leader test-peer")
+	_, err = server.LeaseLeases(context.Background(), &etcdserverpb.LeaseLeasesRequest{})
+	requireLeaseFollowerUnavailable(t, err, "lease leases error addr is lease-inline-test-peer leader test-peer")
+}
+
 func TestLeaseReadsRejectDemotionAfterInitialLeaderCheck(t *testing.T) {
 	tests := []struct {
 		name string
