@@ -18,6 +18,7 @@ import (
 
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -61,10 +62,18 @@ func (b *backend) GetDurableRevision(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if len(value) != 8 {
-		return 0, fmt.Errorf("invalid durable revision watermark length %d", len(value))
+	return decodeDurableRevisionWatermark(value)
+}
+
+func decodeDurableRevisionWatermark(value []byte) (uint64, error) {
+	revision, err := coder.ParseRevisionWatermark(value)
+	if err != nil {
+		return 0, invalidMVCCMetadataError(err, "decode durable revision watermark")
 	}
-	return binary.BigEndian.Uint64(value), nil
+	if revision == 0 {
+		return 0, invalidMVCCMetadataError(fmt.Errorf("revision is zero"), "decode durable revision watermark")
+	}
+	return revision, nil
 }
 
 // InitializeLeadershipRevision restores the client-visible MVCC sequence from
@@ -128,11 +137,14 @@ func (b *backend) persistDurableRevisionContext(ctx context.Context, target uint
 			err = batch.Commit(ctx)
 		case err != nil:
 			return err
-		case len(current) != 8:
-			return fmt.Errorf("invalid durable revision watermark length %d", len(current))
-		case binary.BigEndian.Uint64(current) >= target:
-			return nil
 		default:
+			revision, decodeErr := decodeDurableRevisionWatermark(current)
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if revision >= target {
+				return nil
+			}
 			batch := b.kv.BeginBatchWrite()
 			batch.CAS(key, want, current, 0)
 			err = batch.Commit(ctx)

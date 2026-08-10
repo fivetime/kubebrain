@@ -44752,6 +44752,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `DataLoss`，Snapshot 的源数据契约继续映射 `FailedPrecondition`。memkv 回归同时证明 fresh load、HashKV、
   setCompactRecord 与 scanner 不再 panic 或把损坏状态当未 compact，coder 表测固定 exact-width 边界。
 
+- A4226 把同一 exact-width/fail-closed 契约扩展到 `revision/committed`。该 TiKV 行是冷 Leader 恢复 allocator、
+  冷 Follower 生成 serializable response header 以及 Snapshot 固定 capture revision 的权威用户 MVCC 水位；
+  缺失表示 etcd 空库并规范化为 revision 1，但“存在且为空/短/带尾字节”与合法长度的 revision 0 都不是空库。
+  旧 `GetDurableRevision` 和后台 CAS persister 对前三者只返回未分类普通错误，零值则被接受并可能令冷启动 allocator
+  回到 0，最终经 grpc-go 泄漏 `Unknown`。现在读取和 CAS 重试共同使用 strict 8-byte decoder，并额外拒绝零 revision，
+  全部标记 `ErrInvalidMVCCMetadata`；因此普通 KV/Maintenance 路径稳定映射 `DataLoss`，Snapshot 在写出任何制品前
+  映射 `FailedPrecondition`，而真正 missing row 的空库兼容行为不变。memkv 表测逐一注入 empty/short/trailing/zero，
+  同时证明 direct read、后台 monotonic persist 与 leadership initialization 全部拒绝，正常 resolved write、单调性和
+  连续 revision 回归继续通过。对照 upstream `/root/etcd/server/storage/mvcc/kvstore.go::restore`：恢复的 revision
+  状态属于启动完整性边界，不能把不可解码的持久化值解释为一次可重试存储故障。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

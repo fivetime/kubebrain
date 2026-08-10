@@ -20,9 +20,9 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 )
 
-// ErrInvalidMVCCMetadata marks a persisted revision index, object key, or
-// per-version etcd metadata value that cannot be decoded. Retrying the same
-// durable row cannot repair its encoding.
+// ErrInvalidMVCCMetadata marks a persisted revision index, object key,
+// revision watermark, or per-version etcd metadata value that cannot be
+// decoded. Retrying the same durable row cannot repair its encoding.
 var ErrInvalidMVCCMetadata = coder.ErrInvalidMVCCMetadata
 
 func invalidMVCCMetadataError(err error, format string, args ...any) error {

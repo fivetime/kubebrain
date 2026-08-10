@@ -16,8 +16,8 @@ package coder
 
 import "errors"
 
-// ErrInvalidMVCCMetadata marks a persisted revision index or object key that
-// violates KubeBrain's MVCC storage encoding.
+// ErrInvalidMVCCMetadata marks a persisted revision index, object key, or
+// revision watermark that violates KubeBrain's MVCC storage encoding.
 var ErrInvalidMVCCMetadata = errors.New("MVCC metadata is inconsistent")
 
 type invalidMVCCMetadataError struct {

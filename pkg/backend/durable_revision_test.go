@@ -10,6 +10,7 @@ package backend
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -40,6 +41,33 @@ func TestDurableRevisionNeverMovesBackward(t *testing.T) {
 	revision, err := b.GetDurableRevision(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, uint64(200), revision)
+}
+
+func TestDurableRevisionCorruptionFailsClosed(t *testing.T) {
+	validZero := make([]byte, 8)
+	valid := make([]byte, 8)
+	binary.BigEndian.PutUint64(valid, 42)
+	for _, test := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "empty", raw: nil},
+		{name: "short", raw: []byte{1}},
+		{name: "trailing bytes", raw: append(valid, 0)},
+		{name: "zero", raw: validZero},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			batch := b.kv.BeginBatchWrite()
+			batch.Put(b.ks.EncodeInternalKey(durableRevisionKey), test.raw, 0)
+			require.NoError(t, batch.Commit(ctx))
+
+			_, err := b.GetDurableRevision(ctx)
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.ErrorIs(t, b.persistDurableRevisionContext(ctx, 100), ErrInvalidMVCCMetadata)
+			require.ErrorIs(t, b.InitializeLeadershipRevision(ctx, 100), ErrInvalidMVCCMetadata)
+		})
+	}
 }
 
 func TestLeadershipRevisionKeepsUserRevisionsContiguous(t *testing.T) {
