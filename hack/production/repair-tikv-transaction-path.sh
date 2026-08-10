@@ -21,6 +21,7 @@ POD_READY_TIMEOUT_SECONDS="${POD_READY_TIMEOUT_SECONDS:-300}"
 MAX_TIKV_DISK_USED_PERCENT="${MAX_TIKV_DISK_USED_PERCENT:-90}"
 MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT="${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT:-125}"
 TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
+PD_DATA_DIR="${PD_DATA_DIR:-/var/lib/pd}"
 ALLOW_TIKV_POD_REPAIR="${ALLOW_TIKV_POD_REPAIR:-false}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
@@ -50,6 +51,7 @@ done
 (( MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT >= 100 && MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT <= 125 )) || \
   die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be between 100 and 125"
 [[ "$TIKV_DATA_DIR" == /* && "$TIKV_DATA_DIR" != *[[:cntrl:]]* ]] || die "TIKV_DATA_DIR must be an absolute path"
+[[ "$PD_DATA_DIR" == /* && "$PD_DATA_DIR" != *[[:cntrl:]]* ]] || die "PD_DATA_DIR must be an absolute path"
 [[ "$PROBE_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "PROBE_INTERVAL_SECONDS must be a non-negative integer"
 for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CLUSTER REPAIR_STATE_NAMESPACE; do
   [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "$variable must be a DNS label"
@@ -135,15 +137,28 @@ tikv_status() {
     -l "app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=tikv" \
     -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="tikv")].persistentVolumeClaim.claimName}{"\n"}{end}' | sort
 }
+pd_status() {
+  kctl -n "$TIDB_NAMESPACE" get pods \
+    -l "app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=pd" \
+    -o 'jsonpath={range .items[*]}{.metadata.name}{"\t"}{.metadata.uid}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.spec.volumes[?(@.name=="pd")].persistentVolumeClaim.claimName}{"\n"}{end}' | sort
+}
 
-expected_names="$(printf '%s\n' "${TIDB_CLUSTER}-tikv-0" "${TIDB_CLUSTER}-tikv-1" "${TIDB_CLUSTER}-tikv-2")"
+expected_tikv_names="$(printf '%s\n' "${TIDB_CLUSTER}-tikv-0" "${TIDB_CLUSTER}-tikv-1" "${TIDB_CLUSTER}-tikv-2")"
+expected_pd_names="$(printf '%s\n' "${TIDB_CLUSTER}-pd-0" "${TIDB_CLUSTER}-pd-1" "${TIDB_CLUSTER}-pd-2")"
 validate_tikv_ready() {
   local rows names
   rows="$(tikv_status)" || return 1
   names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$rows")"
-  [[ "$names" == "$expected_names" ]]
+  [[ "$names" == "$expected_tikv_names" ]]
 }
 validate_tikv_ready || die "TiKV quorum/PVC fence failed before repair"
+validate_pd_ready() {
+  local rows names
+  rows="$(pd_status)" || return 1
+  names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$rows")"
+  [[ "$names" == "$expected_pd_names" ]]
+}
+validate_pd_ready || die "PD quorum/PVC fence failed before repair"
 
 kb_pod="${KUBEBRAIN_STATEFULSET}-0"
 kb_args="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={range .spec.template.spec.containers[?(@.name=="kubebrain")].args[*]}{.}{"\n"}{end}')"
@@ -189,35 +204,42 @@ capacity_isolation_mismatch=false
 storage_identity_mismatch=false
 declare -A seen_pv_uids=()
 declare -A seen_volume_handles=()
-disk_tikv_rows="$(tikv_status)" || die "cannot refresh TiKV topology before disk-pressure fence"
+disk_tikv_rows="$(tikv_status)" || die "cannot refresh TiKV topology before storage-safety fence"
 disk_tikv_names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$disk_tikv_rows")"
-[[ "$disk_tikv_names" == "$expected_names" ]] || die "TiKV quorum/PVC fence changed before disk-pressure check"
+[[ "$disk_tikv_names" == "$expected_tikv_names" ]] || die "TiKV quorum/PVC fence changed before storage-safety check"
+disk_pd_rows="$(pd_status)" || die "cannot refresh PD topology before storage-safety fence"
+disk_pd_names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$disk_pd_rows")"
+[[ "$disk_pd_names" == "$expected_pd_names" ]] || die "PD quorum/PVC fence changed before storage-safety check"
+validate_storage_safety() {
+  local component="$1" container="$2" data_dir="$3" rows="$4"
+  local pod pod_uid ready pvc disk_row capacity_kib available_kib used_percent_text used_percent
+  local pvc_json pvc_uid pv pvc_capacity pvc_capacity_kib pv_json pv_uid csi_driver volume_handle volume_identity
 while IFS=$'\t' read -r pod pod_uid ready pvc; do
   [[ -n "$pod" && -n "$pod_uid" && "$ready" == "True" && -n "$pvc" ]] || continue
   disk_row="$($COMMAND_TIMEOUT --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
-    "$KUBECTL" "${kubectl_context_args[@]}" -n "$TIDB_NAMESPACE" exec "$pod" -c tikv -- \
-    df -P "$TIKV_DATA_DIR" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')" || \
-    die "cannot read TiKV disk usage for ${pod}"
+    "$KUBECTL" "${kubectl_context_args[@]}" -n "$TIDB_NAMESPACE" exec "$pod" -c "$container" -- \
+    df -P "$data_dir" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')" || \
+    die "cannot read ${component} disk usage for ${pod}"
   IFS=$'\t' read -r capacity_kib available_kib used_percent_text <<<"$disk_row"
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \
-    die "TiKV disk usage response is malformed for ${pod}: ${disk_row}"
+    die "${component} disk usage response is malformed for ${pod}: ${disk_row}"
   pvc_json="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc" -o json)"
   if ! "$JQ" -e --arg name "$pvc" '
     .metadata.name == $name and (.metadata.uid | type == "string" and length > 0) and
     .status.phase == "Bound" and (.spec.volumeName | type == "string" and length > 0) and
     (.status.capacity.storage | type == "string" and length > 0)
   ' >/dev/null <<<"$pvc_json"; then
-    die "TiKV PVC binding is malformed for ${pod}/${pvc}"
+    die "${component} PVC binding is malformed for ${pod}/${pvc}"
   fi
   pvc_uid="$("$JQ" -r '.metadata.uid' <<<"$pvc_json")"
   pv="$("$JQ" -r '.spec.volumeName' <<<"$pvc_json")"
   pvc_capacity="$("$JQ" -r '.status.capacity.storage' <<<"$pvc_json")"
   pvc_capacity_kib="$(quantity_to_kib "$pvc_capacity")" || \
-    die "TiKV PVC capacity is unsupported or malformed for ${pod}/${pvc}: ${pvc_capacity:-missing}"
+    die "${component} PVC capacity is unsupported or malformed for ${pod}/${pvc}: ${pvc_capacity:-missing}"
   if (( capacity_kib * 100 > pvc_capacity_kib * MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT )); then
     capacity_isolation_mismatch=true
-    disk_errors+=("pod=${pod} pvc=${pvc} declared=${pvc_capacity} filesystem_capacity_kib=${capacity_kib} allowed_percent=${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT}%")
+    disk_errors+=("component=${component} pod=${pod} pvc=${pvc} declared=${pvc_capacity} filesystem_capacity_kib=${capacity_kib} allowed_percent=${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT}%")
   fi
   pv_json="$(kctl get pv "$pv" -o json)"
   if ! "$JQ" -e --arg namespace "$TIDB_NAMESPACE" --arg pvc "$pvc" --arg pvc_uid "$pvc_uid" '
@@ -228,7 +250,7 @@ while IFS=$'\t' read -r pod pod_uid ready pvc; do
     (.spec.csi.volumeHandle | type == "string" and length > 0)
   ' >/dev/null <<<"$pv_json"; then
     storage_identity_mismatch=true
-    disk_errors+=("pod=${pod} pvc=${pvc} pv=${pv} is not an exactly bound CSI volume")
+    disk_errors+=("component=${component} pod=${pod} pvc=${pvc} pv=${pv} is not an exactly bound CSI volume")
   else
     pv_uid="$("$JQ" -r '.metadata.uid' <<<"$pv_json")"
     csi_driver="$("$JQ" -r '.spec.csi.driver' <<<"$pv_json")"
@@ -236,27 +258,30 @@ while IFS=$'\t' read -r pod pod_uid ready pvc; do
     volume_identity="${csi_driver}"$'\x1f'"${volume_handle}"
     if [[ -n "${seen_pv_uids[$pv_uid]:-}" ]]; then
       storage_identity_mismatch=true
-      disk_errors+=("duplicate pv_uid=${pv_uid} pvc=${pvc} previous_pvc=${seen_pv_uids[$pv_uid]}")
+      disk_errors+=("component=${component} duplicate pv_uid=${pv_uid} pvc=${pvc} previous_pvc=${seen_pv_uids[$pv_uid]}")
     else
       seen_pv_uids[$pv_uid]="$pvc"
     fi
     if [[ -n "${seen_volume_handles[$volume_identity]:-}" ]]; then
       storage_identity_mismatch=true
-      disk_errors+=("duplicate csi_driver=${csi_driver} volume_handle=${volume_handle} pvc=${pvc} previous_pvc=${seen_volume_handles[$volume_identity]}")
+      disk_errors+=("component=${component} duplicate csi_driver=${csi_driver} volume_handle=${volume_handle} pvc=${pvc} previous_pvc=${seen_volume_handles[$volume_identity]}")
     else
       seen_volume_handles[$volume_identity]="$pvc"
     fi
   fi
   if (( used_percent > MAX_TIKV_DISK_USED_PERCENT )); then
-    disk_errors+=("pod=${pod} pvc=${pvc} used=${used_percent}% available_kib=${available_kib} capacity_kib=${capacity_kib}")
+    disk_errors+=("component=${component} pod=${pod} pvc=${pvc} used=${used_percent}% available_kib=${available_kib} capacity_kib=${capacity_kib}")
   fi
-done <<<"$disk_tikv_rows"
+done <<<"$rows"
+}
+validate_storage_safety PD pd "$PD_DATA_DIR" "$disk_pd_rows"
+validate_storage_safety TiKV tikv "$TIKV_DATA_DIR" "$disk_tikv_rows"
 if (( ${#disk_errors[@]} > 0 )); then
   refusal_phase="refused-disk-pressure"
   [[ "$capacity_isolation_mismatch" == "false" && "$storage_identity_mismatch" == "false" ]] || refusal_phase="refused-storage-safety"
   persist_phase "$refusal_phase"
-  printf 'refusing TiKV Pod repair because the storage-safety fence failed (used_threshold=%s%%, capacity_limit=%s%%, path=%s): %s\n' \
-    "$MAX_TIKV_DISK_USED_PERCENT" "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" "$TIKV_DATA_DIR" "${disk_errors[*]}" >&2
+  printf 'refusing TiKV Pod repair because the PD/TiKV storage-safety fence failed (used_threshold=%s%%, capacity_limit=%s%%, pd_path=%s, tikv_path=%s): %s\n' \
+    "$MAX_TIKV_DISK_USED_PERCENT" "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" "$PD_DATA_DIR" "$TIKV_DATA_DIR" "${disk_errors[*]}" >&2
   exit 1
 fi
 

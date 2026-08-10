@@ -78,6 +78,13 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    resourceNames: [pd-kb-pd-0, pd-kb-pd-1, pd-kb-pd-2, tikv-kb-tikv-0, tikv-kb-tikv-1, tikv-kb-tikv-2]
+    verbs: [get]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -92,3 +99,25 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: kubebrain-tikv-transaction-repair
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebrain-tikv-transaction-repair-pv-reader
+rules:
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubebrain-tikv-transaction-repair-pv-reader
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-tikv-transaction-repair-executor
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebrain-tikv-transaction-repair-pv-reader

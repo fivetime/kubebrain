@@ -224,13 +224,13 @@ hack/production/repair-tikv-transaction-path.sh
 `2→1→0` 逐 Pod 删除重建；每一步必须取得新 Pod UID、保留原 PVC 名并重新达到精确 3 Ready，
 因此不会删除 PVC，也不会主动同时破坏 quorum。全部 TiKV 收敛后才恢复 3 个 KubeBrain，最终
 Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。健康集群的第一次成功探测会
-在任何 scale 或 Pod delete 前拒绝修复。连续事务失败后，脚本还会重新取得精确三 TiKV
-Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/tikv` 的真实挂载水位；任一 Pod 超过默认 90% 时记录
+在任何 scale 或 Pod delete 前拒绝修复。连续事务失败后，脚本还会重新取得精确三 PD 与三 TiKV
+Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/pd`、`/var/lib/tikv` 的真实挂载水位；任一 Pod 超过默认 90% 时记录
 `refused-disk-pressure` 并在任何 scale/delete 前退出。该阈值可通过
 `MAX_TIKV_DISK_USED_PERCENT` 下调，但不得用调高阈值绕过容量处置。脚本还要求实际文件系统容量
 不超过 Bound PVC 容量的 125%；容量 quantity 不可解析或 local-path 等目录卷暴露过大的宿主文件
 系统时记录 `refused-storage-safety`。同 PVC 重启不会释放共享宿主文件系统空间，也不会恢复容量隔离。
-同一 preflight 还会检查 PVC→PV claimRef、Bound phase、CSI driver/volumeHandle，以及整组三卷 PV UID
+同一 preflight 还会检查 PVC→PV claimRef、Bound phase、CSI driver/volumeHandle，以及整组六卷 PV UID
 和 `(CSI driver, volumeHandle)` 唯一性；hostPath 或身份碰撞同样记录 `refused-storage-safety` 并禁止进入缩容阶段。
 
 该脚本是 controller 可调用的执行原语，不是完整自动 controller：调用方仍须持久化告警首次
@@ -270,8 +270,10 @@ Operation 终态前崩溃时，接管者会复验同一 receipt 并完成提交�
 部署该 executor 还必须应用
 `deploy/production/kubebrain-tikv-transaction-repair-rbac.yaml`。权限被拆成三个 namespace：
 专用 repair-state namespace 中只管理 repair ConfigMap 状态；KubeBrain namespace 中只读取/缩放指定 StatefulSet、
-观察 Pod 和执行固定容器探针；TiKV namespace 中只读取指定 TidbCluster、观察并删除 Pod。
-该角色没有 PVC/PV、Secret、Deployment 或任意集群级写权限。executor 默认 `replicas: 0`，平台
+观察 Pod 和执行固定容器探针；TiKV namespace 中只读取指定 TidbCluster、观察并删除 Pod、对固定
+六个 PVC 执行 `get`，并为 PD/TiKV 数据容器执行只读 `df`。唯一集群级权限是
+`persistentvolumes/get`，用于从动态 PV 名核验 CSI 身份；没有 PVC/PV 写权限，也没有 Secret、
+Deployment 或其他集群级权限。executor 默认 `replicas: 0`，平台
 只有在已审批 repair operation 待处理时才应扩为 1，处理完再缩回 0。
 
 Alertmanager webhook payload 通过以下 policy runner 映射为待审批请求：

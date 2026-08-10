@@ -45284,6 +45284,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   97% hostPath 文件系统，六卷均非 CSI，同时 `76009/1005` 仍 pending/down。本项扩展只读发布门禁，
   不重启 PD/TiKV，也不声称当前单节点 kind 满足生产持久化要求。
 
+- A4283 防止高风险 `repair-tikv-transaction-path.sh` 绕过 A4282 的 PD 存储依赖门禁。旧 repair
+  虽要求 TidbCluster spec 为 3×PD/3×TiKV，却只读取 TiKV Pod/PVC/PV；调用方跳过发布 gate 时，PD
+  NotReady、hostPath、共享 CSI handle、2Gi→1.968TiB 隔离漂移或 97% 水位仍可能进入 TiKV 缩容。
+  repair 现在新增精确三 PD Pod/UID/Ready/PVC fence，并在连续事务失败、KubeBrain 0 Ready 后重新
+  获取 PD 与 TiKV 两份拓扑快照。共享 storage-safety 函数按 PD `pd:/var/lib/pd`、TiKV
+  `tikv:/var/lib/tikv` 检查 df、PVC quantity、Bound CSI claimRef，并在六卷全局集合上约束 PV UID 与
+  `(driver,volumeHandle)` 唯一；全部六个 PV 查询完成后才允许 `scale 0`。fixture 的成功路径固定
+  `last PD PV → last TiKV PV → scale 0 → 2/1/0 replacement` 顺序；PD NotReady、仅 PD 97%、hostPath
+  与六卷 handle collision 均 RED，持久化对应 refused phase，且零 scale、零 Pod/PVC delete、零成功
+  receipt。PD 只作为修复依赖被检查，不会被本执行器重启。当前真实 kind 会被 A4282 已证实的六卷
+  hostPath/97% 栅栏拒绝，因此本轮仍不伪造授权运行破坏性 repair。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

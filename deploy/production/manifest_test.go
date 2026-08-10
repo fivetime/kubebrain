@@ -1258,6 +1258,67 @@ func TestBackupSchedulerIsHAAndLeastPrivilege(t *testing.T) {
 	require.EqualValues(t, 1, nestedInt64(t, pdb, "spec", "maxUnavailable"))
 }
 
+func TestTiKVTransactionRepairRBACCoversReadOnlyStorageFence(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-tikv-transaction-repair-rbac.yaml")
+	var tidbRole, pvRole, pvBinding *unstructured.Unstructured
+	for _, object := range objects {
+		name := object.GetName()
+		switch {
+		case object.GetKind() == "Role" && name == "kubebrain-tikv-transaction-repair" && object.GetNamespace() == "tidb-cluster":
+			tidbRole = object
+		case object.GetKind() == "ClusterRole" && name == "kubebrain-tikv-transaction-repair-pv-reader":
+			pvRole = object
+		case object.GetKind() == "ClusterRoleBinding" && name == "kubebrain-tikv-transaction-repair-pv-reader":
+			pvBinding = object
+		}
+	}
+	require.NotNil(t, tidbRole)
+	require.NotNil(t, pvRole)
+	require.NotNil(t, pvBinding)
+
+	rules, found, err := unstructured.NestedSlice(tidbRole.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	findRule := func(resource string) map[string]any {
+		t.Helper()
+		for _, raw := range rules {
+			rule := raw.(map[string]any)
+			resources := rule["resources"].([]any)
+			for _, candidate := range resources {
+				if candidate == resource {
+					return rule
+				}
+			}
+		}
+		return nil
+	}
+	execRule := findRule("pods/exec")
+	require.NotNil(t, execRule)
+	require.Equal(t, []any{"create"}, execRule["verbs"])
+	pvcRule := findRule("persistentvolumeclaims")
+	require.NotNil(t, pvcRule)
+	require.Equal(t, []any{"get"}, pvcRule["verbs"])
+	require.ElementsMatch(t, []any{
+		"pd-kb-pd-0", "pd-kb-pd-1", "pd-kb-pd-2",
+		"tikv-kb-tikv-0", "tikv-kb-tikv-1", "tikv-kb-tikv-2",
+	}, pvcRule["resourceNames"])
+
+	pvRules, found, err := unstructured.NestedSlice(pvRole.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, pvRules, 1)
+	require.Equal(t, []any{"persistentvolumes"}, pvRules[0].(map[string]any)["resources"])
+	require.Equal(t, []any{"get"}, pvRules[0].(map[string]any)["verbs"])
+	require.Equal(t, "ClusterRole", nestedString(t, pvBinding, "roleRef", "kind"))
+	require.Equal(t, "kubebrain-tikv-transaction-repair-pv-reader", nestedString(t, pvBinding, "roleRef", "name"))
+	subjects, found, err := unstructured.NestedSlice(pvBinding.Object, "subjects")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, subjects, 1)
+	require.Equal(t, "kubebrain-tikv-transaction-repair-executor", subjects[0].(map[string]any)["name"])
+	require.Equal(t, "kubebrain-operations", subjects[0].(map[string]any)["namespace"])
+}
+
 func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	objects := decodeManifest(t, "monitoring.yaml")
 	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
