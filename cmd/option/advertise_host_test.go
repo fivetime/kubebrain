@@ -69,11 +69,21 @@ func TestAdvertiseClientURLsFlagBinds(t *testing.T) {
 }
 
 func TestValidateRejectsInvalidAdvertiseClientURLs(t *testing.T) {
-	o := NewOptions()
-	o.advertiseClientURLs = []string{"http://etcd.example.com"}
-	err := o.Validate()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "advertise-client-urls")
+	for _, advertisedURL := range []string{
+		"http://etcd.example.com",
+		"https://:2379",
+		"https://etcd.example.com:0",
+		"https://etcd.example.com:65536",
+		"https://etcd.example.com:etcd",
+	} {
+		t.Run(advertisedURL, func(t *testing.T) {
+			o := NewOptions()
+			o.advertiseClientURLs = []string{advertisedURL}
+			err := o.Validate()
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "advertise-client-urls")
+		})
+	}
 }
 
 func TestInitialClusterValidationRequiresAdvertisedPeerIdentity(t *testing.T) {

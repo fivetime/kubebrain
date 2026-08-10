@@ -45063,6 +45063,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RBAC deny、token generation 失效、Observe 空流及 generic concurrency error 黑盒和 race 均继续通过。该项只修复服务错误外观，
   不访问 TiKV/PD；真实多副本 concurrency soak 无需因本轮重跑，仍沿用既有独立长期门禁。
 
+- A4259 加固 MemberList 拓扑发布前的 advertised client URL 启动校验。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/member.go` 与 clientv3 endpoint `Sync`/`AutoSync` 行为：MemberList 的排序、
+  linearizable/serializable 选项、header、learner 和 ClientURLs 字段未发现新的 wire 差异；但 KubeBrain 的静态拓扑入口仅调用
+  `net.SplitHostPort`，会接受空 host、端口 0、超出 65535 的端口和非数字 service name。官方 clientv3 会用这些返回值整体替换
+  endpoint 集，因此一次 Sync 就可能把健康客户端切到全部不可拨号的地址。现在 `ValidateAdvertiseClientURLs` 要求非空 host，且端口
+  必须是 1..65535 的十进制整数；helper 表测和实际 `KubeBrainOption.Validate` 启动入口均覆盖缺 host、零端口、越界端口和 service
+  name。该项是纯配置门禁，不访问存储，真实 TiKV/PD 不适用；生产发布仍应由控制面验证 ClientURLs 从租户网络实际可达。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

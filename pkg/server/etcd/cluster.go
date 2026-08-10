@@ -230,8 +230,13 @@ func ValidateAdvertiseClientURLs(raw []string) ([]string, error) {
 			u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
 			return nil, fmt.Errorf("invalid advertised client URL %q", value)
 		}
-		if _, _, err := net.SplitHostPort(u.Host); err != nil {
+		host, port, err := net.SplitHostPort(u.Host)
+		if err != nil || host == "" || port == "" {
 			return nil, fmt.Errorf("invalid advertised client URL %q: host and port are required", value)
+		}
+		clientPort, err := strconv.Atoi(port)
+		if err != nil || clientPort <= 0 || clientPort > 65535 {
+			return nil, fmt.Errorf("invalid advertised client URL %q: invalid port", value)
 		}
 		canonical := strings.TrimSuffix(u.String(), "/")
 		if _, ok := seen[canonical]; ok {
