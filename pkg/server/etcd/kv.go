@@ -1552,10 +1552,11 @@ func (s *RPCServer) executeGenericTxn(ctx context.Context, txn *etcdserverpb.Txn
 		); err != nil {
 			return nil, err
 		}
-		// Prefer the atomic single-revision path when the chosen branch is a set of
-		// distinct-key writes (#4). The compare guards make it serializable: a guard
-		// conflict means a compared key changed, so re-evaluate the compares and
-		// retry. Ineligible shapes fall back to the (unchanged) sequential path.
+		// Prefer the flattened atomic single-revision path when the chosen branch is
+		// a set of distinct-key writes (#4). Compare guards make it serializable: a
+		// guard conflict means a compared key changed, so re-evaluate the compares
+		// and retry. Other valid shapes use the staged atomic executor below; there
+		// is no sequential multi-commit fallback.
 		resp, handled, err := s.tryAtomicGenericTxn(ctx, txn, paths, guards)
 		if errors.Is(err, backend.ErrTxnGuardConflict) {
 			continue

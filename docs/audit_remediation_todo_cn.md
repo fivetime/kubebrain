@@ -115,8 +115,8 @@
 - [x] **#4** [high] Generic txn path (executeGenericTxn) is not atomic: compares are plain reads and ops are independent writes  
   `pkg/server/etcd/kv.go` + `pkg/backend/txn_apply.go`。设计见 `docs/txn_atomicity_4_cn.md`。
   - **Tier 1**：`backend.TxnApply` 把选中分支的多写 op（≥2、distinct key 的 put/单键 delete）**单 revision 原子应用**（仿 DeleteRange：一次 deal + 一个 batch 每 key `CAS(读到的原始字节)` + object 写 + 原子 commit + `notifyBatch`）；写-CAS 冲突有界重试模拟 etcd 无条件覆盖，非-CAS 提交错误发 invalid 事件让 collector 不 stall。修「每 op 各自 revision」「部分应用」。
-  - **Tier 2（TOCTOU 隔离）**：compare 求值时对**存在的单键 compare** 捕获 OCC guard（`{key, 当前 revision}`），在同一 batch 里以**首位 no-op `CAS(revisionKey, R, R)`** 断言 compare key 未变。guard 冲突（compare key 变了）→ `ErrTxnGuardConflict`，etcd 层**重评 compare 并重试**（有界 deadline）；写冲突仍走 backend 内部重试。guard 与写 key **不相交**时才走原子路径（相交→回退）。使「compare→多写」可串行化。**残留**：absent compare key（无「断言不存在」CAS 原语）与 range compare 不 guard，仍是 Tier 1 语义（写原子、compare TOCTOU）——已记录。
-  - 不支持形状（nested、range 读、单 op、IgnoreLease/Value、多键 range delete、compare∩write）**回退旧顺序路径，不回归**。
+  - **Tier 2（TOCTOU 隔离）**：compare 求值时捕获存在键的精确 revision guard，也捕获不存在键的 absent guard；同一 batch 在写前复核，冲突则 `ErrTxnGuardConflict`，etcd 层**重评 compare 并重试**（有界 deadline）。range/from-key compare 通过 `BeginRangeTxn` 的全 logical-write predicate barrier 排除 phantom insert；compare 与 write 重叠同样由 guard+原子 commit 正确处理。
+  - **完整 staged 原子路径（后续闭环）**：`cd38dc86` 将 nested、range 读、IgnoreLease/Value、多键 range delete 和重叠 mutation 先在固定 base revision 的逻辑视图中 staging，最后一次 `TxnApply` 提交；`02f669be` 删除最后的 legacy sequential fallback。所有被服务端接受的 Txn 写入均单 batch、单 revision，只有协议校验拒绝的畸形 oneof 不执行。
   - 测试：`TestTxnApply*`（单 rev 原子 / tombstone 重建 / no-op 不耗 rev / **guard 冲突不写** / 64 并发 distinct / 24 并发同 key CAS 重试无丢更新）；黑盒 `TestTxnMultiWriteSingleRevision`+`TestTxnCompareMultiWriteSingleRevision`（多写落单 rev + guarded 路径端到端）。backend+etcd 全套 + `-race` 干净；部署后全 smoke（各 txn/compare 形状）+ compat 绿。
 - [x] **#52** [low] Watch PUT events fall back to CreateRevision=ModRevision when prev-version lookup fails — updates misreported as creates and PrevKv dropped  
   `pkg/server/etcd/backendshim.go` `watchEventToEtcdEvent` PUT 分支 — prevKv 查询失败时原**无条件**把 `CreateRevision=ModRevision`（IsCreate 误报 true）。改为：PUT 是 update 永不是 create，**优先用值内联的 create_revision**（approach A，kvToEtcdKv 已填），仅当未知（legacy 无内联/解码失败）才用 prevKv 推导，最后兜底 `ModRevision-1` 保证 `IsCreate()=false`；PrevKv 一律附带（查询失败则 nil，但不再污染事件类型）。单测 `TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing`（内联 createRev 在 prevKv=nil 时保留）+ 更正 `TestWatchEventToEtcdEventRemainsUpdateWhenPrevKvUnavailable`（原测试固化了 bug）；黑盒 `TestWatchUpdateReportsUpdateNotCreate`（update 事件 IsCreate=false、createRev 正确、PrevKv 存在）。
@@ -216,16 +216,16 @@
 
 ## 第二轮代码审查（review round 2，2026-07-03）
 
-9 条独立审查意见，逐条核实属实性后分类处理。**接受并修**：#R1/#R2/#R6/#R8/#R9；**记文档、不改代码**（k8s 消费路径下安全、仅通用 etcd 语义未完整）：#R3/#R4/#R5。
+9 条独立审查意见，逐条核实属实性后分类处理。初轮**接受并修**：#R1/#R2/#R6/#R8/#R9；当时仅记录的 #R3/#R4 后续也已闭环，只有 #R5 保留为 TiKV 大事务上限下的显式边界。
 
 - [x] **#R1** [med] Lease revoke/expire 用无条件 `Delete(rev=0)` 删键，可能删掉被并发 Put 重绑到另一 lease 的新值  
   `pkg/server/etcd/lease.go` — `06b46ba`。新增 `deleteLeasedKey`：删前 (1) 在 `leaseMu` 下复核 `keyLeaseIndex[key]==id`（已重绑/解绑→跳过）；(2) 读当前 modRev 做 **compare-delete**（keepalive re-Put 会失败→循环复核，重绑到别的 lease→不动）。`revoke`/`expire` 两处都改用它。`TestDeleteLeasedKeyCompareDeleteGuardsReassignment`（A→B 重绑后 A 的 revoke 不得删该键；正控：仍绑 A 的键必删）。
 - [x] **#R2** [med] Put 与 attach 非原子、attach 错误被吞 → leased key 可能成永不过期的孤儿  
   `eedb5d7` — 见 #R9（同一根因，一并修）。leased 单 Put 现走单条原子 `TxnApply` 批（value + attachment 同批提交）；清 lease 时同批删 attachment。`TestLeasedPutWritesAttachmentAtomically`。
-- [~] **#R3** [low] 通用 txn compare guard（范围比较 / 不存在键 guard）未完整支持 → **k8s 安全，未改**  
-  k8s apiserver 的事务只用**单键 mod-revision 比较**（guaranteed_update 的乐观并发）；范围比较、`CreateRevision==0`「键不存在」等通用 etcd guard 形态 apiserver 不产生。当前 `TxnApply` 的单键 CAS guard（#4 Tier 2）已覆盖 apiserver 全部形态并保证可串行化。通用 etcd 完整 guard 属独立特性，收益低，未做。
-- [~] **#R4** [low] txn 顺序回退路径对不支持的 txn 形态不保证完整原子性 → **k8s 安全，未改**  
-  apiserver 的 txn 形态（单键 put/delete + 单键比较）走 `tryAtomicGenericTxn` 的原子批；仅**非 apiserver** 的多形态混合 txn 落到顺序回退（逐 op 提交、非单一 revision）。create 原子性由 `PutIfNotExist` 保证。对通用 etcd 客户端的完整多 op 原子性属独立改动，未做。
+- [x] **#R3** [low] 通用 txn compare guard（范围比较 / 不存在键 guard）未完整支持 → **后续已闭环**
+  `d5139498` 的初版仅保护存在的单键 compare；后续 `TxnGuard{Exists:false}` 已让不存在键 guard 与 tombstone/并发 create 同批复核，`2c421fa1` 为 range/from-key compare 持有 logical-write predicate barrier 直至选中分支提交，排除范围 phantom。point/range/from-key 的 VERSION/CREATE/MOD/VALUE/LEASE、空集合、缺失键、混合多 compare 与 nested compare 均已有 raw gRPC/reference etcd 双端差分；`TestTxnApplyAbsentGuard*` 和 `TestTxnRangeCompareExcludesPhantomInsert` 固定两个原 TOCTOU 缺口。
+- [x] **#R4** [low] txn 顺序回退路径对不支持的 txn 形态不保证完整原子性 → **后续已闭环**
+  `cd38dc86` 新增 staged generic executor：nested、range read/delete、IgnoreValue/IgnoreLease、重叠 delete 等不能 flatten 的合法形态在固定 base revision 上构造逻辑视图，最后经一次 `TxnApply` 单 batch/单 revision 提交；`02f669be` 将剩余 ineligible shape 也路由到 staged executor，旧 sequential multi-commit fallback 已不存在。atomic/staged 的嵌套响应 header、PrevKV、range filter/sort/limit、单 revision 与失败零写均有 reference 双端门禁。
 - [~] **#R5** [low] 大范围 DeleteRange 分块、非单一原子 txn → **by-design，未改**  
   `883006b`（分块）已落。TiKV 事务有大小上界（单 txn 不能无界大），故超大范围 DeleteRange **无法**作为一个原子 txn 提交；分块是存储层的固有约束而非缺陷。k8s 的 delete-collection 语义不要求整批跨键原子。详见生产就绪文档。
 - [x] **#R6** [med] leader 就绪门控：`onStartedLeading` 先置 SERVING 再 reload lease，reload 失败仅记日志继续  
@@ -235,13 +235,13 @@
 - [x] **#R9** [low] `KeyValue.Lease` 取自内存索引（当前绑定），非按 MVCC 版本 → 历史读/prevKv/delete 事件的 lease 不准  
   `eedb5d7` — lease 现按版本内联进 value envelope（新 v2 `\x00kb\x02`，未 leased 版本仍 v1 无体积回退）；读按版本回填、仅 legacy v1 回退到内存索引，无需迁移。串 create/update/TxnApply 与 watch 事件 meta。`TestLeaseInlinedPerVersion`（历史读报该版本的 lease 而非当前绑定）、`TestValueMetaV2Lease`（v1/v2 round-trip + 向后兼容）。同时根治 #R2：value 里已有权威 per-version lease，`deleteLeasedKey` 删前据此复核，杜绝 stale attachment 误删。
 
-> 编号用 #R* 前缀以别于上文一轮审计的 #NN。#R2 与 #R9 同 commit（`eedb5d7`）；原子性覆盖 leased 单 Put（leased key 的主导路径：Events、masterlease endpoints），罕见的 generic-txn 路径仍按版本内联 lease（#R9）但 attachment 走 best-effort，由 `deleteLeasedKey` 的 per-version 复核兜底；range-delete 的 detach 保持 best-effort（残留 attachment 指向 tombstone，过期时为 no-op）。
+> 编号用 #R* 前缀以别于上文一轮审计的 #NN。#R2 与 #R9 初始同 commit（`eedb5d7`）；后续 atomic/staged generic Txn 都通过 `withLeaseAttachmentOps` 把用户 KV 与 attachment mutation 放入同一次 `TxnApply`，range delete 的 detach 也随同一批提交，不再是 best-effort 双写。
 
 ---
 
 ## 第三轮代码审查（review round 3，2026-07-03）
 
-5 条意见，核实后：**接受并修** #R10/#R11；**已在二轮闭环** #R12(=#R2/#R9)、#R13(=#R4)；**记文档、不改代码** #R14。
+5 条意见，核实后：**接受并修** #R10/#R11；#R12(=#R2/#R9) 当轮已闭环，#R13(=#R4) 后续闭环；**记文档、不改代码** #R14。
 
 - [x] **#R10** [low] 历史 CountOnly 忽略请求 revision，按当前 revision 计数  
   `pkg/server/etcd/kv.go` — `969aa75`。快 Count 路径的守卫 `hasRangeRevisionFilters` 只看 `Min/MaxMod/CreateRevision`、**不看 `r.Revision`**；且 `CountRequest` proto（外部 `kubebrain-client` 模块）无 revision 字段。改：快路径再加 `r.Revision == 0` 门控，带 revision 的 CountOnly 落到 `List`（按 `r.Revision` 读快照、`applyRangeOptions` 在 CountOnly 时剥 Kvs 只留 Count）。**k8s 安全**：apiserver 的分页 count 走 List 响应的 `Count` 字段，不发带 revision 的 CountOnly；纯正确性修复。`TestCountOnlyHonorsRequestRevision`（rev3 后删 1 键 → 按 rev3 count 仍 3、按当前 count 2）。
@@ -249,7 +249,7 @@
   `pkg/server/etcd/watch.go` — `969aa75`。created `WatchResponse` 原发空 header；clientv3 用 created header revision 作为 from-now watch 的**恢复点**，created 后首事件前断线可能从 0 恢复而跳事件。改为回填当前已发布 revision（`GetPublishedRevision()`，即 seed progress-notify 用的那个安全下界，不会跳事件）。`TestWatchCreatedHeaderReportsCurrentRevision`（created header == published revision，非 0）。
 - [x] **#R12** [med] lease attach/detach 未与用户 KV 写在同一原子事务、且 lease id 未内联进 value meta  
   **已在二轮闭环** = #R2 + #R9（`eedb5d7`）。lease id 已按版本内联进 value envelope；leased 单 Put 的 value+attachment 已同一 `TxnApply` 批原子提交、不再吞错误。审查建议的"废掉外置 `leasekeys/` 双写"**有意未做**：`leasekeys/` 是 failover 时 O(leased-keys) 重建索引的来源，废掉会逼 reload 全量扫描；现已是**单条原子写**而非双写，核心顾虑已消除。
-- [~] **#R13** [low] generic txn fallback 仍非 etcd 单事务 → **k8s 安全，未改** = #R4。见上。
+- [x] **#R13** [low] generic txn fallback 仍非 etcd 单事务 → **后续已闭环** = #R4。见上。
 - [~] **#R14** [low] Hash/HashKV 是 revision hash、非 MVCC 内容 hash → **架构上基本 N/A，未改**  
   `pkg/server/etcd/maintenance.go` — `Hash`/`HashKV` 返回 `revisionHash(revision)`。etcd 的 HashKV 用于检测**多成员间 MVCC 内容分叉**；KubeBrain 是 TiKV 上的**单一逻辑副本**（复制/一致性由 TiKV raft 负责），无 etcd 式成员会分叉，该用途基本不适用；apiserver 也不调 HashKV。真做按内容 hash = 全量扫描 keyspace（代价大、收益低，仅对迁移校验/ops 工具有点用）。记为已知差异，暂缓，除非有 ops 校验需求再按需实现。
 

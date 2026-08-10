@@ -45551,6 +45551,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   获取/丢失只改变 peer 而不污染 client。本项不访问 TiKV/PD，也不改变 HTTP `/health`、`/ready` 的
   Leader/proxy 可用性门控。
 
+- A4303 清理通用 Txn 原子性审计中的过期差距，避免生产评估继续把已闭环能力标成“仅 Kubernetes
+  安全”。复核当前实现与提交历史确认：`TxnGuard{Exists:false}` 已覆盖不存在键/并发 create，range 与
+  from-key compare 由 `BeginRangeTxn` 持有全 logical-write predicate barrier 到提交完成，排除 phantom；
+  `cd38dc86` 的 staged executor 将 nested、range read/delete、IgnoreValue/IgnoreLease 和重叠 mutation
+  在固定 base revision 上求值，最终只调用一次 `TxnApply`，`02f669be` 又删除最后的 legacy sequential
+  fallback。故所有通过协议校验且在 `max-txn-ops`/`max-delete-range-keys` admission 内的 Txn 写入均为
+  单 batch、单 MVCC revision，而不是只覆盖 apiserver fast shape。现有 raw gRPC/reference etcd 差分已
+  覆盖五类 compare target、point/prefix/from-key/empty、缺失 guard、多 compare、nested path、PrevKV、
+  staged range/filter/sort/limit 与失败零写；确定性并发测试覆盖 absent-create guard 和 range phantom。
+  同时修正 `executeGenericTxn` 中仍声称会回退“unchanged sequential path”的陈旧注释。审计项 #R3、
+  #R4、#R13 改为已闭环；大范围 DeleteRange 的显式 admission/分块边界 #R5 不随之扩大。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
