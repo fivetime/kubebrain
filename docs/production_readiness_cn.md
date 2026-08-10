@@ -288,6 +288,19 @@ Operation 终态前崩溃时，接管者会复验同一 receipt 并完成提交�
 Deployment 或其他集群级权限。executor 默认 `replicas: 0`，平台
 只有在已审批 repair operation 待处理时才应扩为 1，处理完再缩回 0。
 
+repair 在 TiKV replacement 已完成但最终事务仍失败时会主动把 KubeBrain 留在 0 副本，避免把尚未
+证明正确的数据面重新暴露给租户。该状态不能靠手工 `kubectl scale` 解除。仓库提供受控恢复原语
+`recover-kubebrain-after-tikv-repair.sh`：它要求显式授权、精确 StatefulSet/TidbCluster UID、cluster ID、
+唯一 attempt ID 和单一 endpoint；只接受目标 StatefulSet 当前 desired/Ready 均为 0，以及 3 PD/3 TiKV
+且 TidbCluster Ready。脚本在扩容前运行完整 `validate-tikv-region-health.sh`，随后重新读取两类身份；
+扩到 3 Ready 后再次运行同一 Region/storage gate 并再次冻结身份，最后从 KubeBrain Pod 内执行
+Put/Get/Delete。扩容后的任一 gate、身份或事务失败都会在 UID 仍匹配时回退到 0 副本。
+
+该原语当前是后续审批型 recovery executor 的底层构件，不是直接生产入口；在 Operation type、严格参数
+Secret、receipt 和最小 RBAC 完成接线前不得手工运行。尤其不能通过设置
+`ALLOW_KUBEBRAIN_RECOVERY=true` 绕过现有高风险操作审批。本阶段只关闭“恢复动作本身会绕过
+Region/storage 检查或失败后保持 3 副本”的执行原语缺口，尚未关闭授权与审计编排缺口。
+
 Alertmanager webhook payload 通过以下 policy runner 映射为待审批请求：
 
 ```bash

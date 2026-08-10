@@ -92,6 +92,7 @@ func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 		{testFile: "validate_production_release_test.go", script: "validate-production-release.sh"},
 		{testFile: "validate_instance_ready_test.go", script: "validate-instance-ready.sh"},
 		{testFile: "validate_certificate_rotation_test.go", script: "validate-certificate-rotation.sh"},
+		{testFile: "recover_kubebrain_after_tikv_repair_test.go", script: "recover-kubebrain-after-tikv-repair.sh"},
 		{testFile: "wait_tidbcluster_ready_test.go", script: "wait-tidbcluster-ready.sh"},
 	} {
 		t.Run(tc.testFile, func(t *testing.T) {

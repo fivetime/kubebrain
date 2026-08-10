@@ -45430,6 +45430,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试同时把新脚本纳入 bounded command helper 清单，防止其测试退回无 process-group/timeout 清理的
   裸 `exec.Command`。本项不声称所有外部平台流水线已更新；仓库内权威发布命令和防回退证据已闭环。
 
+- A4295 针对真实 kind 环境暴露的 repair fail-closed 后续状态增加受控恢复原语。现场 3 PD/3 TiKV
+  Pod 与 TidbCluster 已 Ready，但 PD 仍报告 Region 76009 在 store 1005 上 pending/down，TiKV 日志显示
+  它与旧 Region 1010 key range 重叠；KubeBrain StatefulSet 则按既有 final transaction fence 保持
+  desired=0。upstream `/root/etcd` 的成员进程与内嵌 bbolt/Raft 一起恢复，不存在独立 TiKV/PD 数据面
+  的等价入口；这是为了维持其客户端可观察可用性而必须由 DBaaS 控制面承担的职责。该状态不能直接
+  scale 3，也不能把 Pod Ready 当 Region 正确。新增
+  `recover-kubebrain-after-tikv-repair.sh`，要求显式授权、精确 KubeBrain/TidbCluster UID、cluster ID、
+  attempt ID 和 endpoint；仅接受 KubeBrain desired/Ready=0、TidbCluster 3 PD/3 TiKV Ready。扩容前运行
+  完整 Region/store/PVC/PV/容量/磁盘门禁并复核身份，扩到精确 3 Ready 后再次运行同一门禁、再次复核
+  身份，最后从 Pod 内执行 Put/Get/Delete；扩容后的任何错误只在 StatefulSet UID 仍相同时回滚为 0，
+  避免误缩放重建后的同名实例。确定性测试覆盖双门禁成功顺序、首次健康失败零 scale、健康检查后 UID
+  漂移零 scale、第二次健康失败回滚、事务失败回滚，以及扩容后同名 StatefulSet UID 被替换时绝不按
+  name 回滚新对象；测试纳入 bounded command runner。本项没有触碰
+  现场异常 Region，也不伪称真实故障验证已恢复。原语尚未接入审批 Operation type/严格参数 Secret/
+  receipt/最小 RBAC，生产文档明确禁止直接调用；授权与审计编排仍是下一项必须关闭的 P1 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
