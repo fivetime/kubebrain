@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v5"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v6"
 )
 
 var (
@@ -74,6 +74,13 @@ type LogWindow struct {
 	AdvancerOwner      string `json:"advancer_owner"`
 	StoragePrefix      string `json:"storage_prefix"`
 	StorageSHA256      string `json:"storage_backend_sha256"`
+	ReadyReceiptSHA256 string `json:"task_ready_receipt_sha256"`
+	ArtifactReceiptSHA string `json:"artifact_receipt_sha256"`
+	ArtifactManifest   string `json:"artifact_manifest_sha256"`
+	ArtifactObjects    int    `json:"artifact_object_count"`
+	ArtifactSegments   int    `json:"artifact_verified_segment_count"`
+	ArtifactTotalBytes uint64 `json:"artifact_total_bytes"`
+	MetadataResolvedTS uint64 `json:"metadata_max_resolved_ts"`
 }
 
 type Target struct {
@@ -95,6 +102,8 @@ type ReceiptPlanInputs struct {
 	TaskCreateSHA256      string
 	FullSnapshotSHA256    string
 	ArtifactReceiptSHA256 string
+	TaskReadySHA256       string
+	LogArtifactSHA256     string
 	TargetClusterID       uint64
 	EmptyWitnessSHA256    string
 	RestoreTS             uint64
@@ -122,7 +131,7 @@ func ValidatePreflight(p Preflight) error { return validatePreflight(p) }
 
 // BuildFromReceipts constructs a restore plan without operator-supplied source
 // timestamps, artifact digests, storage locations, or advancer identities.
-func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifacts ArtifactReceipt, ready TaskReadyReceipt, in ReceiptPlanInputs) (Plan, error) {
+func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifacts ArtifactReceipt, ready TaskReadyReceipt, logs LogArtifactReceipt, in ReceiptPlanInputs) (Plan, error) {
 	if err := validateTaskCreateReceipt(task); err != nil {
 		return Plan{}, err
 	}
@@ -135,6 +144,9 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 	if err := artifacts.Validate(); err != nil {
 		return Plan{}, err
 	}
+	if err := logs.Validate(); err != nil {
+		return Plan{}, err
+	}
 	if !sha256RE.MatchString(in.TaskCreateSHA256) || full.TaskCreateSHA256 != in.TaskCreateSHA256 {
 		return Plan{}, errors.New("full snapshot does not bind the exact task-create receipt")
 	}
@@ -144,11 +156,14 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 	if !sha256RE.MatchString(in.FullSnapshotSHA256) || !sha256RE.MatchString(in.ArtifactReceiptSHA256) || artifacts.FullReceiptSHA256 != in.FullSnapshotSHA256 || artifacts.ClusterID != full.ClusterID || artifacts.Keyspace != full.Keyspace || artifacts.TaskName != full.TaskName || artifacts.BackupTS != full.BackupTS || artifacts.StoragePrefix != full.StoragePrefix || artifacts.BackupMetaSHA256 != full.BackupMetaSHA256 {
 		return Plan{}, errors.New("full artifact receipt does not bind the exact full snapshot")
 	}
+	if !sha256RE.MatchString(in.TaskReadySHA256) || !sha256RE.MatchString(in.LogArtifactSHA256) || logs.TaskCreateSHA256 != in.TaskCreateSHA256 || logs.TaskReadySHA256 != in.TaskReadySHA256 || logs.ClusterID != task.ClusterID || logs.Keyspace != task.Keyspace || logs.TaskName != task.TaskName || logs.StartTS != task.StartTS || logs.GlobalCheckpointTS != ready.GlobalCheckpointTS || logs.StoragePrefix != task.LogStoragePrefix || logs.StorageSHA256 != task.LogStorageSHA256 {
+		return Plan{}, errors.New("log artifact receipt does not bind the exact task and task-ready receipts")
+	}
 	plan := Plan{
 		Format:    PlanFormat,
 		Source:    Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
 		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes},
-		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256},
+		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS},
 		Target:    Target{ClusterID: in.TargetClusterID, EmptyWitnessSHA256: in.EmptyWitnessSHA256},
 		RestoreTS: in.RestoreTS, ReadOnly: true,
 	}
@@ -224,6 +239,9 @@ func (p Plan) Validate() error {
 	}
 	if !sha256RE.MatchString(p.Log.StorageSHA256) {
 		return errors.New("invalid log storage backend SHA-256")
+	}
+	if !sha256RE.MatchString(p.Log.ReadyReceiptSHA256) || !sha256RE.MatchString(p.Log.ArtifactReceiptSHA) || !sha256RE.MatchString(p.Log.ArtifactManifest) || p.Log.ArtifactObjects < 2 || p.Log.ArtifactSegments <= 0 || p.Log.ArtifactTotalBytes == 0 || p.Log.MetadataResolvedTS == 0 {
+		return errors.New("invalid log artifact receipt evidence")
 	}
 	if !p.ReadOnly {
 		return errors.New("restore plan must be marked read-only")

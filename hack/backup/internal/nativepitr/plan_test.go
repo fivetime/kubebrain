@@ -32,9 +32,20 @@ func validReceiptPlan(t *testing.T) Plan {
 	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
 	require.NoError(t, err)
 	artifacts := validArtifactReceipt(t, full, digest)
-	plan, err := BuildFromReceipts(task, full, artifacts, readyReceiptFor(task), ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	ready := readyReceiptFor(task)
+	logs := validLogArtifactReceipt(t, task, ready, digest, digest)
+	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
 	require.NoError(t, err)
 	return plan
+}
+
+func validLogArtifactReceipt(t *testing.T, task TaskCreateReceipt, ready TaskReadyReceipt, taskSHA, readySHA string) LogArtifactReceipt {
+	t.Helper()
+	objects := []LogArtifactObject{{Name: "v1/backupmeta/1.meta", Bytes: 10, SHA256: digest, Kind: "metadata"}, {Name: "v1/log/1.log", Bytes: 20, SHA256: digest, Kind: "data"}}
+	b, err := json.Marshal(objects)
+	require.NoError(t, err)
+	h := sha256.Sum256(b)
+	return LogArtifactReceipt{Format: LogArtifactReceiptFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: taskSHA, TaskReadySHA256: readySHA, StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, Objects: objects, ObjectCount: 2, MetadataCount: 1, DataObjectCount: 1, VerifiedSegmentCount: 1, TotalBytes: 30, ManifestSHA256: hex.EncodeToString(h[:]), MetadataMaxResolvedTS: ready.GlobalCheckpointTS, ExactMirror: true, AllSegmentsVerified: true}
 }
 
 func validArtifactReceipt(t *testing.T, full FullSnapshotReceipt, fullReceiptSHA string) ArtifactReceipt {
@@ -81,25 +92,31 @@ func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
 	require.NoError(t, err)
 	ready := readyReceiptFor(task)
 	artifacts := validArtifactReceipt(t, full, digest)
-	in := ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140}
-	plan, err := BuildFromReceipts(task, full, artifacts, ready, in)
+	logs := validLogArtifactReceipt(t, task, ready, digest, digest)
+	in := ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140}
+	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, in)
 	require.NoError(t, err)
 	require.Equal(t, full.BackupTS, plan.Full.BackupTS)
 	require.Equal(t, ready.AdvancerOwner, plan.Log.AdvancerOwner)
 
 	full.TaskName = "other"
-	_, err = BuildFromReceipts(task, full, artifacts, ready, in)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, in)
 	require.ErrorContains(t, err, "different source tasks")
 
 	full.TaskName = task.TaskName
 	in.TaskCreateSHA256 = strings.Repeat("f", 64)
-	_, err = BuildFromReceipts(task, full, artifacts, ready, in)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, in)
 	require.ErrorContains(t, err, "exact task-create")
 
 	in.TaskCreateSHA256 = digest
 	artifacts.FullReceiptSHA256 = strings.Repeat("f", 64)
-	_, err = BuildFromReceipts(task, full, artifacts, ready, in)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, in)
 	require.ErrorContains(t, err, "exact full snapshot")
+
+	artifacts.FullReceiptSHA256 = digest
+	logs.TaskReadySHA256 = strings.Repeat("f", 64)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, in)
+	require.ErrorContains(t, err, "exact task")
 }
 
 func TestDecodePreflightIsStrict(t *testing.T) {

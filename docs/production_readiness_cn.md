@@ -1919,7 +1919,29 @@ meta-index 的大小和 SHA-256，并拒绝缺失、额外、重复、越界路�
 直到恢复链能够安全绑定 crypter key。此 receipt 证明下载镜像字节与 `backupmeta` 一致，但不证明
 远端下载来源、object version 或 Object Lock 不可变性；生产控制面仍须补齐这些远端 witness。
 
-在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready receipt 生成严格只读计划：
+对 log prefix 下载 `v1/backupmeta/**/*.meta` 及其引用的全部数据对象后，再运行：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-log-artifact-verify \
+  --task-create=/evidence/native-pitr-task-create.json \
+  --task-ready=/evidence/native-pitr-task-ready.json \
+  --artifact-root=/evidence/log-mirror
+```
+
+输出 `kubebrain.native-pitr-log-artifacts.v1`。校验器按 TiKV/BR v7.5.1 写读两端的真实协议处理
+V1 独立文件和 V2 merged object：V2 的 `range_offset/range_length` 定位压缩分片，解压后字节数
+必须等于 `DataFileInfo.length`，SHA-256 也在解压后分片上复算；同时对 metadata 与整个物理 merged
+object 生成本地 digest。命令绑定 exact task-create/task-ready receipt、log storage backend、global
+checkpoint，并拒绝损坏分片、缺失/额外对象、危险路径、非普通文件、未知压缩算法和非 canonical
+receipt。旧格式空 CF 按 TiKV 兼容语义解释为 default CF。
+
+这个 v1 receipt 只证明“给定本地镜像中的所有 metadata 引用都存在且字节正确”，不能从本地目录
+反证远端没有遗漏 `.meta`；metadata 的最大 resolved TS 也不能替代 PD global checkpoint，因为空闲
+区间可以只推进 checkpoint 而不产生新日志文件。因此当前 verifier 对完全空的 log mirror fail closed，
+生产可用前仍须增加带 object version 的权威、分页穷尽远端 inventory receipt，才能安全证明有日志
+时无遗漏、无日志时确实为空。restore plan 绑定该证据但不把它升级解释为远端完整性证明。
+
+在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready/log-artifacts receipt 生成严格只读计划：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-restore-plan \
@@ -1927,14 +1949,15 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
   --full-artifacts=/evidence/native-pitr-full-artifacts.json \
   --task-ready=/evidence/native-pitr-task-ready.json \
+  --log-artifacts=/evidence/native-pitr-log-artifacts.json \
   --target-cluster-id="$TARGET_CLUSTER_ID" \
   --target-empty-witness-sha256="$EMPTY_WITNESS_SHA256" \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v5`。source cluster/range、task start/commit、full backup TSO、
+输出 `kubebrain.native-pitr-restore-plan.v6`。source cluster/range、task start/commit、full backup TSO、
 exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
-owner 全部来自严格 receipt，命令不再
+owner，以及 exact ready/log-artifact receipt digest、日志对象 manifest/字节数/分片数全部来自严格 receipt，命令不再
 接受这些值的自由参数；并拒绝 receipt 文件 digest/身份链不一致、source/target cluster ID 相同、
 非空目标证据缺失、artifact digest 非规范，以及不满足
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记

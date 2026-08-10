@@ -15,6 +15,7 @@ require (
 	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/huandu/skiplist v1.1.0
+	github.com/klauspost/compress v1.19.1
 	github.com/kubewharf/kubebrain-client v0.2.1
 	github.com/pingcap/kvproto v0.0.0-20230403051650-e166ae588106
 	github.com/pingcap/log v1.1.1-0.20221110025148-ca232912c9f3
