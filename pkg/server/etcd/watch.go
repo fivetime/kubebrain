@@ -888,7 +888,9 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 
 	backendPrefix := watchBackendPrefix(r.Key, r.RangeEnd)
 	watchRevision := uint64(r.StartRevision)
-	ch, localGeneration, generationEpoch, err := w.openWatchChannel(ctx, r, backendPrefix, watchRevision)
+	generationCtx, cancelGeneration := context.WithCancel(ctx)
+	defer func() { cancelGeneration() }()
+	ch, localGeneration, generationEpoch, err := w.openWatchChannel(generationCtx, r, backendPrefix, watchRevision)
 	klog.InfoS("[watch stream] watch", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "backendPrefix", backendPrefix, "rev", r.StartRevision)
 	if err != nil {
 		w.metricCli.EmitCounter("watch.backend.err", 1)
@@ -926,17 +928,49 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		// advanced only after Send succeeds, so discarding an unread result from
 		// an obsolete generation remains both gap-free and duplicate-free.
 		watchRevision = nextUndeliveredWatchRevision(wt, watchRevision)
+		cancelGeneration()
+		nextGenerationCtx, nextCancelGeneration := context.WithCancel(ctx)
 		var reopenErr error
-		ch, localGeneration, generationEpoch, reopenErr = w.reopenWatchChannel(ctx, r, backendPrefix, watchRevision)
+		ch, localGeneration, generationEpoch, reopenErr = w.reopenWatchChannel(nextGenerationCtx, r, backendPrefix, watchRevision)
 		if reopenErr == nil {
+			cancelGeneration = nextCancelGeneration
 			klog.InfoS("[watch stream] watch resumed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision, "local", localGeneration)
 			return true
 		}
+		nextCancelGeneration()
 		if ctx.Err() == nil {
 			klog.ErrorS(reopenErr, "[watch stream] watch resume failed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision)
 		}
 		return false
 	}
+	fenceLocalGeneration := func() (current, resumed bool) {
+		if !localGeneration {
+			return true, false
+		}
+		currentEpoch, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
+		if leadingFresh && currentEpoch == generationEpoch {
+			return true, false
+		}
+		// OnStoppedLeading may lag the renew-deadline self fence. Do not
+		// publish anything newly observed from that obsolete local generation;
+		// the authoritative generation must replay it from syncedRev+1.
+		klog.InfoS("[watch stream] local generation leadership fence changed", "watcher", w.id, "watch", id, "key", string(r.Key), "generationEpoch", generationEpoch, "currentEpoch", currentEpoch, "leadingFresh", leadingFresh)
+		if ctx.Err() == nil && resumeGeneration() {
+			return false, true
+		}
+		if ctx.Err() != nil {
+			return false, false
+		}
+		compacted := w.nextWatchRevisionCompacted(ctx, id)
+		var staleErr error
+		if compacted {
+			staleErr = compactedRevisionError()
+		}
+		w.Cancel(id, staleErr, compacted)
+		return false, false
+	}
+
+watchLoop:
 	for {
 		select {
 		case result, ok := <-ch:
@@ -959,27 +993,11 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
 				return
 			}
-			if localGeneration {
-				currentEpoch, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
-				if !leadingFresh || currentEpoch != generationEpoch {
-					// OnStoppedLeading may lag the renew-deadline self fence. Do not
-					// publish anything newly observed from that obsolete local
-					// generation; the current leader must replay it from syncedRev+1.
-					klog.InfoS("[watch stream] local generation leadership fence changed", "watcher", w.id, "watch", id, "key", string(r.Key), "generationEpoch", generationEpoch, "currentEpoch", currentEpoch, "leadingFresh", leadingFresh)
-					if ctx.Err() == nil && resumeGeneration() {
-						continue
-					}
-					if ctx.Err() != nil {
-						return
-					}
-					compacted := w.nextWatchRevisionCompacted(ctx, id)
-					var staleErr error
-					if compacted {
-						staleErr = compactedRevisionError()
-					}
-					w.Cancel(id, staleErr, compacted)
-					return
+			if current, resumed := fenceLocalGeneration(); !current {
+				if resumed {
+					continue watchLoop
 				}
+				return
 			}
 			if result.Err != nil {
 				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", string(r.Key), "err", result.Err)
@@ -1020,6 +1038,12 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 						cancel()
 						return
 					}
+				}
+				if current, resumed := fenceLocalGeneration(); !current {
+					if resumed {
+						continue watchLoop
+					}
+					return
 				}
 				// In-band progress marker: it FIFO-guarantees it sits behind every
 				// matching event <= its revision (all such events were read and Sent
@@ -1082,6 +1106,12 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				}
 			}
 			if len(events) == 0 {
+				if current, resumed := fenceLocalGeneration(); !current {
+					if resumed {
+						continue watchLoop
+					}
+					return
+				}
 				// etcd advances the watcher's min revision even when its filters
 				// suppress every event in a batch. Preserve that delivered
 				// watermark so the next progress response does not lag behind
@@ -1104,6 +1134,12 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 			if headerErr := w.grpcServer.stampWatchResponseHeader(ctx, watchResponse); headerErr != nil {
 				sendErr = headerErr
 			} else {
+				if current, resumed := fenceLocalGeneration(); !current {
+					if resumed {
+						continue watchLoop
+					}
+					return
+				}
 				w.metricCli.EmitGauge("watch.watch_stream.push", watchResponse.Header.Revision)
 				w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
 				start := time.Now()

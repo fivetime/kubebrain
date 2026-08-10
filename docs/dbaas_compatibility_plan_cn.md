@@ -44942,6 +44942,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且 proxy 仍从 10 恢复。
   真实 TiKV/PD partition、renew-deadline self-fence 与延迟 `OnStoppedLeading` 组合仍受既知环境故障限制，恢复后需补跑。
 
+- A4247 把 A4246 的 generation fence 从“收到 `WatchResult` 时”收紧到每个可观察发布点。事件在初次 fence 后仍可能执行过滤、
+  PrevKV compact-watermark 查询和 response header 构造；若 renew deadline 或 epoch 在这些步骤中变化，只做入口检查仍会由旧
+  generation 发送事件。现在本地 result 在 in-band progress 推进、全过滤 batch 推进 watermark，以及事件 wire send 前再次要求
+  generation epoch 不变且 leader fresh；失败统一丢弃尚未发布的 batch，并从未交付 revision 重开当前权威 generation。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` send loop 的“成功发送后推进 watch revision”顺序，KubeBrain 仍只在 Send 成功后
+  更新 `syncedRev`。每次重开还会先取消旧 generation 的独立子 context，确保延迟的 `OnStoppedLeading` 不会留下无人消费的本地
+  producer。阻塞式确定性测试让 revision 10 的旧 leader 事件先通过入口 fence，再卡在 PrevKV compact revision 查询；
+  freshness 过期后释放查询，证明旧值没有上 wire、watermark 未越过 9，proxy 从 10 重放且客户端只收到权威值。真实 TiKV/PD
+  delayed compact read + leadership expiry 注入仍受既知环境故障限制，恢复后需补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

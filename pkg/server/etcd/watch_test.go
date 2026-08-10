@@ -1102,14 +1102,43 @@ type roleSwitchWatchBackend struct {
 
 type generationWatchBackend struct {
 	BackendShim
-	generations []<-chan etcdproxy.WatchResult
-	called      chan uint64
+	generations             []<-chan etcdproxy.WatchResult
+	called                  chan uint64
+	firstGenerationCanceled chan struct{}
 }
 
-func (b *generationWatchBackend) Watch(_ context.Context, _ string, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+type blockingWatchCompactRevisionBackend struct {
+	BackendShim
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int64
+}
+
+func (b *blockingWatchCompactRevisionBackend) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {
+	if b.calls.Add(1) != 2 {
+		return b.BackendShim.GetCompactRevisionFresh(ctx)
+	}
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+		return 0, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
+func (b *generationWatchBackend) Watch(ctx context.Context, _ string, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 	b.called <- revision
+	first := len(b.generations) > 1
 	ch := b.generations[0]
 	b.generations = b.generations[1:]
+	if first && b.firstGenerationCanceled != nil {
+		go func() {
+			<-ctx.Done()
+			close(b.firstGenerationCanceled)
+		}()
+	}
 	return ch, nil
 }
 
@@ -1509,10 +1538,12 @@ func TestLeaderWatchFencesEstablishedLocalGenerationAfterEpochChange(t *testing.
 	oldLocalCh := make(chan etcdproxy.WatchResult, 2)
 	newLocalCh := make(chan etcdproxy.WatchResult, 1)
 	localCalled := make(chan uint64, 2)
+	oldGenerationCanceled := make(chan struct{})
 	server.backend = &generationWatchBackend{
-		BackendShim: server.backend,
-		generations: []<-chan etcdproxy.WatchResult{oldLocalCh, newLocalCh},
-		called:      localCalled,
+		BackendShim:             server.backend,
+		generations:             []<-chan etcdproxy.WatchResult{oldLocalCh, newLocalCh},
+		called:                  localCalled,
+		firstGenerationCanceled: oldGenerationCanceled,
 	}
 	var fresh atomic.Bool
 	fresh.Store(true)
@@ -1556,6 +1587,7 @@ func TestLeaderWatchFencesEstablishedLocalGenerationAfterEpochChange(t *testing.
 		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/b"), Value: []byte("stale-local"), ModRevision: 11},
 	}}}
 	require.Equal(t, uint64(11), <-localCalled, "new epoch must resume after the last delivered revision")
+	<-oldGenerationCanceled
 	newLocalCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
 		Type: mvccpb.PUT, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/fenced/b"), Value: []byte("authoritative-new-epoch"), ModRevision: 11},
 	}}}
@@ -1616,6 +1648,78 @@ func TestLeaderWatchFreshnessLossDiscardsLocalProgressBeforeResume(t *testing.T)
 	require.Equal(t, uint64(10), <-proxyCalled)
 	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
 	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.sourceRev))
+
+	cancel()
+	close(proxyCh)
+	<-done
+}
+
+func TestLeaderWatchRechecksFreshnessAfterPrevKVAssemblyBeforeSend(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	localCh := make(chan etcdproxy.WatchResult, 1)
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	localCalled := make(chan uint64, 1)
+	blockedBackend := &blockingWatchCompactRevisionBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = &roleSwitchWatchBackend{BackendShim: blockedBackend, local: localCh, called: localCalled}
+	var fresh atomic.Bool
+	fresh.Store(true)
+	proxyCalled := make(chan uint64, 1)
+	server.peers = testPeerService{
+		isLeaderFn:   func() bool { return true },
+		epochFn:      func() (uint64, bool) { return 7, fresh.Load() },
+		proxyEnabled: true,
+		watchFn: func(_ context.Context, _, _ []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			proxyCalled <- revision
+			return proxyCh, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: {
+			start: "/registry/watch/send-fence/", end: "/registry/watch/send-fence0", syncedRev: 9, sourceRev: 9,
+		}},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/send-fence/"), RangeEnd: []byte("/registry/watch/send-fence0"),
+			StartRevision: 10, PrevKv: true,
+		})
+	}()
+	require.Equal(t, uint64(10), <-localCalled)
+	localCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("stale-local"), ModRevision: 10},
+		PrevKv: &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("old"),
+			ModRevision: 9},
+	}}}
+	<-blockedBackend.entered
+
+	// The result passed its receive-time fence, then leadership freshness
+	// expired while PrevKV visibility was being resolved. The send-time fence
+	// must discard it without advancing revision 9.
+	fresh.Store(false)
+	close(blockedBackend.release)
+	require.Equal(t, uint64(10), <-proxyCalled)
+	proxyCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/send-fence/a"), Value: []byte("authoritative-proxy"), ModRevision: 10},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	responses := stream.snapshot()
+	require.Equal(t, []byte("authoritative-proxy"), responses[0].Events[0].Kv.Value)
 
 	cancel()
 	close(proxyCh)
