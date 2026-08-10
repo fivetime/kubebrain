@@ -32,7 +32,7 @@
 | `member add/remove/update/promote` | 平台替代 | KubeBrain 副本无本地数据，使用 DBaaS 扩缩或重配置 |
 | `move-leader` | 平台替代 | 使用 DBaaS rollout/failover；数据面选主自动完成 |
 | `downgrade validate/enable/cancel` | 平台替代 | 使用版本化 rollout/rollback，不启动 etcd downgrade job |
-| `snapshot save` | 支持 | 在线 `Maintenance.Snapshot` 在固定 revision 流式生成带 SHA-256 的官方 backend snapshot，保留 history、compact watermark、当前 lease、auth 与 alarm |
+| `snapshot save` | 支持（升级历史有条件） | 在线 `Maintenance.Snapshot` 在固定 revision 流式生成带 SHA-256 的官方 backend snapshot，保留 history、compact watermark、当前 lease、auth 与 alarm；升级前 raw/v1 retained version 若已永久缺失逐版本 lease provenance，会以 `FailedPrecondition` 拒绝伪造制品，可先用 `hack/backup/remediate-legacy-snapshot-history.sh` 只读诊断，并经审批显式丢弃旧历史后恢复 |
 | `snapshot restore/status` | 客户端离线 | 可直接处理在线 RPC 生成的 backend snapshot；仍不识别未经转换的 `kubebrain.logical.v2` artifact |
 | `make-mirror` | 支持 | 发布门禁双向验证 prefix 基线、1001-key 分页、持续增删改、`--rev` 历史重放/compacted 错误及 source/destination 双端 RBAC；跨区域长期镜像仍需独立 soak |
 | `check perf`、`check datascale` | 非生产保证 | 仅为客户端负载工具；不能替代 KubeBrain 正确性、容量或 SLO 验证 |

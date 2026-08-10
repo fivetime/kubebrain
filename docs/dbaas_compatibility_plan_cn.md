@@ -45653,6 +45653,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   完整 matrix 和调用次数；ShellCheck 与分片自校验通过。该项不改变数据面或以分片替代真实消费者/
   TiKV 验证，只让已有生产故障矩阵持续成为可执行发布门禁。
 
+- A4311 把 A3590/A3592 已证明但只存在于源码注释和单测中的 legacy Snapshot 恢复办法交付为
+  fail-closed 运维入口。对照 `/root/etcd/server/storage/mvcc/kv_test.go::TestKVCompactReserveLastValue`
+  与 `tests/integration/v3_grpc_test.go::TestV3CompactCurrentRev` 固定的 physical compaction 保留每键当前
+  版本、删除 watermark 以前 superseded versions 语义，以及现有
+  `TestMaintenanceSnapshotRejectsUnknownHistoricalLegacyLease` 的“压缩前拒绝、同步物理压缩到当前
+  revision 后成功”证明，新增 `hack/backup/remediate-legacy-snapshot-history.sh`。默认 diagnose 只读取
+  endpoint status 并尝试 Snapshot；只有错误精确包含 KubeBrain 的 retained legacy lease diagnostic，
+  才输出候选 cluster ID/revision 并以独立退出码 3 提示审批。执行侧必须同时确认单一 endpoint、cluster
+  ID、当前 revision 与 `ALLOW_IRREVERSIBLE_LEGACY_HISTORY_COMPACTION=true`，任一漂移、健康 Snapshot、
+  其他失败或既有输出都在 mutation 前拒绝；成功 physical Compact 后下载到同目录临时文件，经官方
+  `etcdutl snapshot status` 验证才以原子 no-clobber link 发布。确定性黑盒覆盖只读诊断、revision 漂移、健康/Unavailable
+  反例绝不 compact、`MaxUint64` cluster ID 精确绑定，以及正确的 compact→snapshot→status→publish
+  顺序；目标用例 10 轮 5.734 秒、production shard 1/2 分别 259.824/182.155 秒、vet、ShellCheck 和
+  diff check 均通过。该入口没有推断已丢失 lease，
+  也不自动压缩：用户明确选择永久放弃旧历史后才能恢复在线 Snapshot；因此矩阵仍保留“升级历史有
+  条件”，且该缓解不关闭独立 TiKV/PD 物理 PITR 缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

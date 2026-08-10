@@ -2394,6 +2394,39 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   `ColdPhysicalSnapshot` Operation executor；隔离目标也具备 source/manifest/target UID 绑定、
   单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
   仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
+- **升级前 lease provenance 缺失只能通过显式丢弃旧 MVCC 历史缓解。** 旧 raw/v1 value 没有
+  持久化每个 retained version 当时的 lease，key 后续 rebind 后无法可靠重建；在线 Snapshot 会返回
+  `FailedPrecondition`，不得猜成 `Lease=0`。先执行只读诊断（退出码 3 表示命中特定限制）：
+
+  ```shell
+  ACTION=diagnose \
+    ENDPOINT=https://kubebrain.example:2379 \
+    ETCDCTL_CACERT=/run/tls/ca.crt \
+    ETCDCTL_CERT=/run/tls/tls.crt \
+    ETCDCTL_KEY=/run/tls/tls.key \
+    hack/backup/remediate-legacy-snapshot-history.sh
+  ```
+
+  若业务明确接受所有 `revision <= EXPECTED_REVISION` 的历史读和 watch 永久不可用，应先记录诊断
+  输出并走变更审批，再用完全相同的单 endpoint、cluster ID 和 revision 执行：
+
+  ```shell
+  ACTION=compact \
+    ENDPOINT=https://kubebrain.example:2379 \
+    CONFIRM_ENDPOINT=https://kubebrain.example:2379 \
+    EXPECTED_CLUSTER_ID=123456789 \
+    EXPECTED_REVISION=987654321 \
+    ALLOW_IRREVERSIBLE_LEGACY_HISTORY_COMPACTION=true \
+    OUTPUT=/var/lib/kubebrain-backup/post-legacy-remediation.db \
+    ETCDCTL_CACERT=/run/tls/ca.crt \
+    ETCDCTL_CERT=/run/tls/tls.crt \
+    ETCDCTL_KEY=/run/tls/tls.key \
+    hack/backup/remediate-legacy-snapshot-history.sh
+  ```
+
+  工具只在预检精确命中 legacy lease diagnostic 时调用同步 `compact --physical`，其他 Snapshot
+  失败和已健康实例均拒绝 mutation；压缩提交后才下载新制品，并通过官方 `etcdutl snapshot status`
+  才原子发布 `OUTPUT`。该操作不可回滚且不能修复 corruption，也不等价于 TiKV/PD 物理 PITR。
 - `hack/backup/logical-export.sh` / `logical-restore.sh` 是当前生产备份与隔离恢复入口；上线
   前必须按本节后文完成 artifact 完整性、Object Lock、恢复 receipt 和持续审计门禁，不能
   只用一次本地导出成功声称具备 DR。
