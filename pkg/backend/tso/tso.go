@@ -15,8 +15,12 @@
 package tso
 
 import (
+	"errors"
+	"math"
 	"sync/atomic"
 )
+
+var ErrRevisionExhausted = errors.New("etcd MVCC revision space exhausted")
 
 // TSO is the controller of continuous revision windows
 type TSO interface {
@@ -59,7 +63,15 @@ func (n *naiveTSO) GetRevision() (maxCommittedRevision uint64) {
 
 // Deal implement TSO interface
 func (n *naiveTSO) Deal() (revision uint64, err error) {
-	return atomic.AddUint64(&n.dealRevision, 1), err
+	for {
+		current := atomic.LoadUint64(&n.dealRevision)
+		if current >= math.MaxInt64 {
+			return current, ErrRevisionExhausted
+		}
+		if atomic.CompareAndSwapUint64(&n.dealRevision, current, current+1) {
+			return current + 1, nil
+		}
+	}
 }
 
 // Dealt implement TSO interface

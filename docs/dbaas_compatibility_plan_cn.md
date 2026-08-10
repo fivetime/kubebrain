@@ -44763,6 +44763,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   连续 revision 回归继续通过。对照 upstream `/root/etcd/server/storage/mvcc/kvstore.go::restore`：恢复的 revision
   状态属于启动完整性边界，不能把不可解码的持久化值解释为一次可重试存储故障。
 
+- A4227 封闭内部 `uint64` MVCC revision/version 到 etcd protobuf `int64` 的符号边界。对照 upstream
+  `/root/etcd/server/storage/mvcc/kvstore.go` restore 只扫描到 `Revision{Main: math.MaxInt64, Sub: math.MaxInt64}`，
+  且公开 ResponseHeader、KeyValue create/mod revision 与 version 均为正 `int64`。KubeBrain 原 decoder 会接受
+  `MaxInt64+1..MaxUint64` 的 revision index、object/event-log key、compact/durable watermark 和 inline/legacy
+  create_revision/version，随后在 backend shim 中直接 cast 为负数；naive TSO 还会在 MaxInt64 后继续分配甚至最终
+  uint64 回绕，异步 CAS retry 因直接调用 TSO 可绕过 backend 层检查。现在所有持久化 decoder 在源头拒绝 wire
+  overflow 并标记 `ErrInvalidMVCCMetadata`，合法 MaxInt64 边界仍可读取；TSO 使用 CAS allocator，在 MaxInt64
+  原地返回共享 `ErrRevisionExhausted`，主写入和异步 retry 均不能落盘超范围 revision，统一 gRPC 映射为
+  `ResourceExhausted`。coder、memkv metadata/watermark 与 allocator 表测覆盖 MaxInt64、MaxInt64+1、tombstone
+  revision 和游标不前移，既有 DataLoss/FailedPrecondition durable-corruption 契约保持不变。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

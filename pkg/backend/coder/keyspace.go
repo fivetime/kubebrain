@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"regexp"
 )
 
@@ -165,5 +166,9 @@ func (k *Keyspace) DecodeEventLogKey(key []byte) (revision uint64, userKey []byt
 		return 0, nil, fmt.Errorf("not an event log key: %q", key)
 	}
 	rest := key[len(k.elogMagic):]
-	return binary.BigEndian.Uint64(rest[:8]), rest[8:], nil
+	revision = binary.BigEndian.Uint64(rest[:8])
+	if revision > math.MaxInt64 {
+		return 0, nil, MarkInvalidMVCCMetadata(fmt.Errorf("event log revision %d exceeds MaxInt64", revision))
+	}
+	return revision, rest[8:], nil
 }

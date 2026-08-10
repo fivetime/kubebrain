@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
+	"math"
 
 	"github.com/pkg/errors"
 
@@ -114,8 +116,27 @@ func decodeEtcdMetadata(raw []byte) (EtcdMetadata, error) {
 	if len(raw) != 16 {
 		return EtcdMetadata{}, errors.Wrapf(ErrInvalidMVCCMetadata, "invalid etcd metadata length %d", len(raw))
 	}
-	return EtcdMetadata{
+	meta := EtcdMetadata{
 		CreateRevision: binary.BigEndian.Uint64(raw[:8]),
 		Version:        binary.BigEndian.Uint64(raw[8:]),
-	}, nil
+	}
+	if err := validateEtcdMetadata(meta, "legacy etcd metadata"); err != nil {
+		return EtcdMetadata{}, err
+	}
+	return meta, nil
+}
+
+func validateEtcdMetadata(meta EtcdMetadata, source string) error {
+	switch {
+	case meta.CreateRevision == 0:
+		return fmt.Errorf("%w: %s create revision is zero", ErrInvalidMVCCMetadata, source)
+	case meta.CreateRevision > math.MaxInt64:
+		return fmt.Errorf("%w: %s create revision %d exceeds MaxInt64", ErrInvalidMVCCMetadata, source, meta.CreateRevision)
+	case meta.Version == 0:
+		return fmt.Errorf("%w: %s version is zero", ErrInvalidMVCCMetadata, source)
+	case meta.Version > math.MaxInt64:
+		return fmt.Errorf("%w: %s version %d exceeds MaxInt64", ErrInvalidMVCCMetadata, source, meta.Version)
+	default:
+		return nil
+	}
 }

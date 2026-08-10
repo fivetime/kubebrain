@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -678,12 +679,20 @@ func (b *backend) Close() error {
 	return b.closeErr
 }
 
-var ErrRevisionDriftBack = errors.New("revision drift back")
+var (
+	ErrRevisionDriftBack = errors.New("revision drift back")
+	ErrRevisionExhausted = tso.ErrRevisionExhausted
+)
 
 func (b *backend) deal(prevRevision uint64) (uint64, error) {
 	rev, err := b.tso.Deal()
 	if err != nil {
 		return 0, err
+	}
+	if rev == 0 || rev > math.MaxInt64 {
+		klog.ErrorS(ErrRevisionExhausted, "deal", "generated", rev)
+		b.metricCli.EmitCounter("revision.generator.invalid", 1)
+		return rev, ErrRevisionExhausted
 	}
 	if prevRevision > 0 && rev < prevRevision {
 		klog.ErrorS(ErrRevisionDriftBack, "deal", "generated", rev, "prev", prevRevision)

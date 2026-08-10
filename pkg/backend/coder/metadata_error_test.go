@@ -15,7 +15,9 @@
 package coder
 
 import (
+	"encoding/binary"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -25,6 +27,17 @@ func TestParseRevisionPreservesDiagnosticAndClassifiesCorruption(t *testing.T) {
 	_, _, err := ParseRevision([]byte{1})
 	require.EqualError(t, err, ErrInvalidRevFormat.Error())
 	require.ErrorIs(t, err, ErrInvalidRevFormat)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+}
+
+func TestParseRevisionRejectsWireOverflow(t *testing.T) {
+	raw := make([]byte, RevisionValueLength)
+	binary.BigEndian.PutUint64(raw, uint64(math.MaxInt64)+1)
+	_, _, err := ParseRevision(raw)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "exceeds MaxInt64")
+
+	_, _, err = ParseRevision(append(raw, 0))
 	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
 }
 

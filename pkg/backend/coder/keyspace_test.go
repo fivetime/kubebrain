@@ -16,6 +16,7 @@ package coder
 
 import (
 	"bytes"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -105,6 +106,13 @@ func TestKeyspaceCoderRejectsForeignKeys(t *testing.T) {
 	require.False(t, ok)
 	_, _, err = a.DecodeEventLogKey(b.EncodeEventLogKey(42, []byte("k")))
 	require.ErrorContains(t, err, "not an event log key:")
+}
+
+func TestDecodeEventLogKeyRejectsWireOverflow(t *testing.T) {
+	ks := DefaultKeyspace()
+	_, _, err := ks.DecodeEventLogKey(ks.EncodeEventLogKey(uint64(math.MaxInt64)+1, []byte("key")))
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "exceeds MaxInt64")
 }
 
 func TestIsInternalStorageKey(t *testing.T) {

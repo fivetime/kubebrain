@@ -15,10 +15,23 @@
 package tso
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestDealRejectsEtcdWireRevisionOverflow(t *testing.T) {
+	n := NewTSO()
+	n.Init(math.MaxInt64 - 1)
+	revision, err := n.Deal()
+	require.NoError(t, err)
+	require.Equal(t, uint64(math.MaxInt64), revision)
+	revision, err = n.Deal()
+	require.ErrorIs(t, err, ErrRevisionExhausted)
+	require.Equal(t, uint64(math.MaxInt64), revision)
+	require.Equal(t, uint64(math.MaxInt64), n.Dealt())
+}
 
 // TestCommitIsMonotonic pins that the committed revision never moves backwards:
 // a stale Commit (e.g. the event collector racing a watch-overflow reset) must

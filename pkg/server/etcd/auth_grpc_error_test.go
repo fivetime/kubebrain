@@ -128,6 +128,11 @@ func TestClientInterceptorClassifiesOnlyLeafBackendTransportCause(t *testing.T) 
 			err:  fmt.Errorf("%w: invalid etcd metadata length 1", backend.ErrInvalidMVCCMetadata),
 			code: codes.DataLoss,
 		},
+		{
+			name: "revision exhausted",
+			err:  backend.ErrRevisionExhausted,
+			code: codes.ResourceExhausted,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

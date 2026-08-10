@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -141,6 +142,8 @@ func TestDecodeInlineValueCheckedRejectsInvalidMetadataFields(t *testing.T) {
 	}{
 		{name: "zero create revision", raw: encodeValueWithMeta(nil, EtcdMetadata{Version: 1}), want: "create revision is zero"},
 		{name: "zero version", raw: encodeValueWithMeta(nil, EtcdMetadata{CreateRevision: 1}), want: "version is zero"},
+		{name: "create revision overflow", raw: encodeValueWithMeta(nil, EtcdMetadata{CreateRevision: uint64(math.MaxInt64) + 1, Version: 1}), want: "create revision 9223372036854775808 exceeds MaxInt64"},
+		{name: "version overflow", raw: encodeValueWithMeta(nil, EtcdMetadata{CreateRevision: 1, Version: uint64(math.MaxInt64) + 1}), want: "version 9223372036854775808 exceeds MaxInt64"},
 	}
 	v2ZeroLease := make([]byte, valueMetaHeaderLenV2)
 	copy(v2ZeroLease, valueMetaMagicV2)

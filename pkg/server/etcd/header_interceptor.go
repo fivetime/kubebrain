@@ -638,6 +638,8 @@ func authGRPCError(err error) error {
 		return status.Error(codes.DataLoss, err.Error())
 	case errors.Is(err, backend.ErrQuotaUninitialized):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, backend.ErrRevisionExhausted):
+		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, storage.ErrUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, storage.ErrUncertainResult):

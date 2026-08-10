@@ -16,9 +16,11 @@ package coder
 
 import (
 	"bytes"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCompatible(t *testing.T) {
@@ -30,6 +32,13 @@ func TestCompatible(t *testing.T) {
 	ast.Equal("/registry/test", string(uk))
 	ast.Equal(0, int(rev))
 	ast.NoError(err)
+}
+
+func TestDecodeObjectKeyRejectsWireOverflow(t *testing.T) {
+	c := DefaultKeyspace().NewCoder()
+	_, _, err := c.Decode(c.EncodeObjectKey([]byte("/overflow"), uint64(math.MaxInt64)+1))
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "exceeds MaxInt64")
 }
 
 func TestObjectKeyspaceEnd(t *testing.T) {

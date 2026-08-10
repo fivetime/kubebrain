@@ -10,6 +10,8 @@ package backend
 
 import (
 	"context"
+	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -21,6 +23,8 @@ import (
 )
 
 func TestCompactWatermarkCorruptionFailsClosed(t *testing.T) {
+	overflow := make([]byte, coder.RevisionValueLength)
+	binary.BigEndian.PutUint64(overflow, uint64(math.MaxInt64)+1)
 	for _, test := range []struct {
 		name string
 		raw  []byte
@@ -28,6 +32,7 @@ func TestCompactWatermarkCorruptionFailsClosed(t *testing.T) {
 		{name: "empty", raw: nil},
 		{name: "short", raw: []byte{1}},
 		{name: "trailing bytes", raw: make([]byte, coder.RevisionValueLength+1)},
+		{name: "wire overflow", raw: overflow},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctrl := gomock.NewController(t)

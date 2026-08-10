@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
 	"testing"
 	"time"
 
@@ -148,4 +149,22 @@ func TestGetEtcdMetadataClassifiesInvalidLegacyEncoding(t *testing.T) {
 	_, err := b.GetEtcdMetadata(s.ctx, key, revision)
 	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
 	require.ErrorContains(t, err, "invalid etcd metadata length 1")
+}
+
+func TestGetEtcdMetadataRejectsLegacyWireOverflow(t *testing.T) {
+	s, closeSuite := newTestSuites(t, memKvStorage)
+	defer closeSuite()
+	b := s.backend.(*backend)
+	key := []byte("/registry/items/overflow-metadata")
+	const revision = uint64(42)
+	raw := make([]byte, 16)
+	binary.BigEndian.PutUint64(raw[:8], uint64(math.MaxInt64)+1)
+	binary.BigEndian.PutUint64(raw[8:], 1)
+	batch := s.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(b.etcdMetadataUserKey(key), revision), raw, 0)
+	require.NoError(t, batch.Commit(s.ctx))
+
+	_, err := b.GetEtcdMetadata(s.ctx, key, revision)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "create revision 9223372036854775808 exceeds MaxInt64")
 }

@@ -11,6 +11,7 @@ package backend
 import (
 	"context"
 	"encoding/binary"
+	"math"
 	"testing"
 	"time"
 
@@ -47,6 +48,8 @@ func TestDurableRevisionCorruptionFailsClosed(t *testing.T) {
 	validZero := make([]byte, 8)
 	valid := make([]byte, 8)
 	binary.BigEndian.PutUint64(valid, 42)
+	overflow := make([]byte, 8)
+	binary.BigEndian.PutUint64(overflow, uint64(math.MaxInt64)+1)
 	for _, test := range []struct {
 		name string
 		raw  []byte
@@ -55,6 +58,7 @@ func TestDurableRevisionCorruptionFailsClosed(t *testing.T) {
 		{name: "short", raw: []byte{1}},
 		{name: "trailing bytes", raw: append(valid, 0)},
 		{name: "zero", raw: validZero},
+		{name: "wire overflow", raw: overflow},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			b, ctx := newTxnApplyBackend(t)
@@ -68,6 +72,14 @@ func TestDurableRevisionCorruptionFailsClosed(t *testing.T) {
 			require.ErrorIs(t, b.InitializeLeadershipRevision(ctx, 100), ErrInvalidMVCCMetadata)
 		})
 	}
+}
+
+func TestRevisionAllocatorRejectsWireOverflow(t *testing.T) {
+	b, _ := newTxnApplyBackend(t)
+	b.tso.Init(math.MaxInt64)
+	revision, err := b.deal(math.MaxInt64)
+	require.Zero(t, revision)
+	require.ErrorIs(t, err, ErrRevisionExhausted)
 }
 
 func TestLeadershipRevisionKeepsUserRevisionsContiguous(t *testing.T) {

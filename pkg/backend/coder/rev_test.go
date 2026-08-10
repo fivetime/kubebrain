@@ -10,6 +10,7 @@ package coder
 
 import (
 	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -21,8 +22,14 @@ func TestParseRevisionWatermarkRequiresExactWidth(t *testing.T) {
 	revision, err := ParseRevisionWatermark(valid)
 	require.NoError(t, err)
 	require.Equal(t, uint64(42), revision)
+	binary.BigEndian.PutUint64(valid, math.MaxInt64)
+	revision, err = ParseRevisionWatermark(valid)
+	require.NoError(t, err)
+	require.Equal(t, uint64(math.MaxInt64), revision)
 
-	for _, raw := range [][]byte{{1}, append(append([]byte(nil), valid...), 0)} {
+	overflow := make([]byte, RevisionValueLength)
+	binary.BigEndian.PutUint64(overflow, uint64(math.MaxInt64)+1)
+	for _, raw := range [][]byte{{1}, append(append([]byte(nil), valid...), 0), overflow} {
 		_, err = ParseRevisionWatermark(raw)
 		require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
 	}

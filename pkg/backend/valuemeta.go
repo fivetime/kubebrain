@@ -146,11 +146,8 @@ func DecodeInlineValueChecked(stored []byte) (meta EtcdMetadata, rawValue []byte
 		)
 	}
 	meta, rawValue, inlined = decodeValueWithMeta(stored)
-	if meta.CreateRevision == 0 {
-		return EtcdMetadata{}, nil, false, fmt.Errorf("%w: inline value metadata create revision is zero", ErrInvalidMVCCMetadata)
-	}
-	if meta.Version == 0 {
-		return EtcdMetadata{}, nil, false, fmt.Errorf("%w: inline value metadata version is zero", ErrInvalidMVCCMetadata)
+	if validationErr := validateEtcdMetadata(meta, "inline value metadata"); validationErr != nil {
+		return EtcdMetadata{}, nil, false, validationErr
 	}
 	if stored[3] == valueMetaMagicV2[3] && meta.Lease == 0 {
 		return EtcdMetadata{}, nil, false, fmt.Errorf("%w: inline value metadata v2 lease is zero", ErrInvalidMVCCMetadata)

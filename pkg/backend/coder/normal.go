@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/hex"
+	"math"
 
 	"github.com/pkg/errors"
 )
@@ -94,6 +95,9 @@ func (n *normalEncoderDecoder) Decode(internalKey []byte) (userKey []byte, revis
 	}
 
 	revision = binary.BigEndian.Uint64(internalKey[len(internalKey)-8:])
+	if revision > math.MaxInt64 {
+		return nil, 0, MarkInvalidMVCCMetadata(errors.Errorf("object revision %d exceeds MaxInt64", revision))
+	}
 	userKey = internalKey[len(n.magic) : len(internalKey)-9]
 	return
 }
