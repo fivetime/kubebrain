@@ -44485,6 +44485,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Up -> Disconnected -> Up`，258 个提交键全部交付（259 responses、11 次瞬态失败、revision 13818，
   51.94 秒），证明共享 Watch oracle 的新断言没有削弱 A4198/A4200。最终规则零残留、TidbCluster
   Ready，3 KubeBrain/3 PD/3 TiKV 全部 Ready 且零重启。
+  A4203 将 A4202 的 bidi idle-Recv 修复从 Watch 扩展为独立 LeaseKeepAlive 现场门禁。对照 upstream
+  `/root/etcd/tests/integration/clientv3/lease/lease_test.go::TestLeaseWithRequireLeader`：同一个 clientv3
+  lessor 先建立 require-leader keepalive、再建立普通 keepalive并取得首个正 TTL；另建 raw
+  `etcdserverpb.LeaseKeepAlive` require-leader 流，取得首个 response 后保持客户端静默，使服务端明确
+  阻塞在下一次 RecvMsg。真实 PD quorum-loss 恢复后，raw 流必须返回 gRPC `Unavailable` 且 message
+  精确为 `etcdserver: no leader`；高层 clientv3 只关闭带 require-leader 的 channel，普通 channel
+  500ms 内不得关闭，并由 `KeepAliveOnce` 在 45 秒界内证明同一普通 lease 可恢复续租。开发中曾把
+  普通行为错误收窄成“绑定当前 balancer connection 的 raw stream 必须原地存活”，实际收到合法的
+  connection-closing Canceled；该假设与 upstream 检查高层 lessor 重连的层级不符，已删除而未伪装成
+  runtime 缺口。Lease oracle 与 Watch/Range oracle 使用独立 client、独立故障轮次，避免 raw stream、
+  lessor 和 Watch 共享连接造成测试污染。最终默认 `pd-quorum-loss` 组合门禁第一轮 39.71 秒通过：
+  Watch 的 35 个提交键全部交付（36 responses、13 次瞬态失败、final revision 14336）；第二轮
+  LeaseKeepAlive 36.22 秒通过上述 raw code/message、高层 channel 分流与恢复续租全部断言。两轮均
+  隔离 `kb-pd-2/kb-pd-0` 并实际观测不可达/恢复，规则零残留、TidbCluster Ready。该项不新增 runtime
+  代码，而是为 A4202 已同时覆盖的 Watch/Lease 双向流补足与 upstream 同层级的独立真实故障证据。
 
 ### P2：运维兼容和长期验证
 

@@ -565,6 +565,19 @@ run_watch_recovery_test() {
   wait_backend_ready
 }
 
+run_lease_require_leader_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_LEASE_BACKEND_FAILOVER_COMMAND="$command" \
+      go test . -run '^TestLeaseKeepAliveRequireLeaderAcrossBackendFailover$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 wait_backend_ready
 
 self="$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh"
@@ -590,6 +603,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need docker
     need jq
     run_watch_recovery_test "PD quorum-loss network partition" "$self --partition-pd-quorum"
+    run_lease_require_leader_test "PD quorum-loss LeaseKeepAlive" "$self --partition-pd-quorum"
     ;;
   tikv-network-partition)
     need docker

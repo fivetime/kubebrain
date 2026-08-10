@@ -322,6 +322,8 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.Contains(t, script, `trap cleanup_dual_partition EXIT`)
 	require.Contains(t, script, `PD quorum partition recovered members`)
 	require.Contains(t, script, `KUBEBRAIN_WATCH_BACKEND_FAILOVER_COMMAND="$command"`)
+	require.Contains(t, script, `KUBEBRAIN_LEASE_BACKEND_FAILOVER_COMMAND="$command"`)
+	require.Contains(t, script, `TestLeaseKeepAliveRequireLeaderAcrossBackendFailover`)
 	require.NotContains(t, script, "eval ")
 }
 
@@ -370,6 +372,18 @@ func TestWatchBackendFailoverHasBoundedConfigurableTimeout(t *testing.T) {
 	require.Contains(t, source, `parsed, 30*time.Second`)
 	require.Contains(t, source, `require.ErrorIs(t, requireErr, rpctypes.ErrNoLeader)`)
 	require.Contains(t, source, `require-leader watch did not close with ErrNoLeader during backend quorum loss`)
+}
+
+func TestLeaseRequireLeaderBackendFailoverCoversWireAndClientContracts(t *testing.T) {
+	data, err := os.ReadFile("lease_require_leader_backend_failover_test.go")
+	require.NoError(t, err)
+	source := string(data)
+	require.Contains(t, source, `context.WithTimeout(context.Background(), 3*time.Minute)`)
+	require.Contains(t, source, `rawLease.LeaseKeepAlive(clientv3.WithRequireLeader(ctx))`)
+	require.Contains(t, source, `require.Equal(t, codes.Unavailable, status.Code(requireErr))`)
+	require.Contains(t, source, `require.Equal(t, rpctypes.ErrNoLeader.Error(), status.Convert(requireErr).Message())`)
+	require.Contains(t, source, `ordinary KeepAlive channel closed after require-leader stream failure`)
+	require.Contains(t, source, `ordinary KeepAliveOnce must recover after backend quorum loss`)
 }
 
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
