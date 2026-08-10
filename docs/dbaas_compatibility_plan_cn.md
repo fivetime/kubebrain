@@ -45273,6 +45273,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   各自验证到恰好两条目标 series。本项不把 Prometheus `for` 替代 A4280 的发布前连续采样，也不自动
   触发破坏性 repair。
 
+- A4282 将 A4278/A4279 的存储安全门禁从三 TiKV 卷扩展到独立 PD+TiKV 的全部六卷。监控与计费
+  早已要求 6 条 PVC volume stats，但发布前脚本此前只检查 TiKV，因而 PD 使用 hostPath、共享 CSI
+  handle、容量隔离失真或磁盘压力仍可能漏过。脚本新增精确 3 Ready PD Pod/PVC 拓扑门禁，固定
+  operator 的 `pd` volume、`pd` container 与 `/var/lib/pd` 数据目录；共享存储检查函数随后对 PD、TiKV
+  分别验证 df 响应、Bound PVC/容量、精确 claimRef、Bound CSI PV，并在整个六卷集合上约束 PV UID
+  与 `(driver, volumeHandle)` 唯一。fake-cluster 新增 PD Ready 漂移 RED、仅 PD 97% RED 且不误报
+  TiKV、六卷健康 GREEN；既有 TiKV/quantity/hostPath/collision/Region 窗口覆盖继续通过。真实 kind
+  默认 3/6/5s 运行 37 秒后确认三 PD 的 2Gi PVC 与三 TiKV 的 5Gi PVC 全部暴露同一约 1.968TiB、
+  97% hostPath 文件系统，六卷均非 CSI，同时 `76009/1005` 仍 pending/down。本项扩展只读发布门禁，
+  不重启 PD/TiKV，也不声称当前单节点 kind 满足生产持久化要求。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -156,6 +156,7 @@ Pod Ready、TiKV Debug gRPC 和端到端请求之外，发布与故障处置前�
 KUBE_CONTEXT=production \
 TIDB_NAMESPACE=tidb-cluster \
 TIDB_CLUSTER=kb \
+EXPECTED_PD_MEMBERS=3 \
 EXPECTED_TIKV_STORES=3 \
 MAX_TIKV_DISK_USED_PERCENT=90 \
 MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT=125 \
@@ -169,20 +170,20 @@ hack/production/validate-tikv-region-health.sh
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
 Region checker 默认在最多 6 个样本内要求连续 3 个健康样本、间隔 5 秒，因而一次短暂 split/调度
 不会直接判定为持久故障；窗口有界为最多 20 个样本、单次间隔最多 60 秒，不能配置成无限等待。
-同时逐一在 Ready TiKV Pod 内对 `/var/lib/tikv` 执行只读 `df -P`，按真实挂载文件系统拒绝超过
+同时逐一在 Ready PD/TiKV Pod 内对 `/var/lib/pd`、`/var/lib/tikv` 执行只读 `df -P`，按真实挂载文件系统拒绝超过
 阈值的磁盘水位；每个 Bound PVC 的 `.status.capacity.storage` 还必须能解析，实际文件系统容量不得
 超过声明容量的 125%，该容差只能在 100%–125% 范围收紧、不能调高绕过。一次运行会汇总 Region、
 容量隔离与磁盘水位的全部异常后返回非零。每个 PVC 还必须精确绑定 `Bound` CSI PV：claimRef
-固定 namespace/name/UID，PV UID 与非空 `(CSI driver, volumeHandle)` 在 TiKV 卷集合内各自唯一；hostPath、
+固定 namespace/name/UID，PV UID 与非空 `(CSI driver, volumeHandle)` 在 PD+TiKV 六卷集合内各自唯一；hostPath、
 空 CSI 身份或 handle collision 都会失败。门禁不会因先遇到某一类异常
 而隐藏另一类根因。运行身份需要读取 Pod、访问 Kubernetes Service proxy 和固定 TiKV Pod
 `pods/exec` 的权限；脚本不写 PD/TiKV，不删除 Pod/PVC，也不代替端到端事务探测。
 
-本地 kind 曾出现 3 个 TiKV Pod 全部 Ready、PD 3 个 store 全部 Up，但 Region `76009` 的
+本地 kind 曾出现 3 个 PD 与 3 个 TiKV Pod 全部 Ready、PD 3 个 store 全部 Up，但 Region `76009` 的
 store `1005` peer 同时 pending/down：该 store 本地保留旧 epoch 的 Region `1010`，持续以
 `msg is overlapped with exist region` 拒绝新 Region；三个 5Gi PVC 实际又共享宿主机 2TiB、97%
 已用的文件系统，TiKV heartbeat 报 `disk_usage: AlmostFull`。门禁会同时报告 Region/store ID
-和三个 Pod 的真实 97% 水位，并指出 5Gi 声明实际暴露约 2TiB 文件系统，从而避免把控制面 Ready
+和全部六个 Pod 的真实 97% 水位，并指出 PD 2Gi、TiKV 5Gi 声明都实际暴露约 2TiB 文件系统，从而避免把控制面 Ready
 或 PVC API 中的名义容量误当成事务数据面健康。
 
 持续监控使用 PD 原生 `pd_regions_status` gauge。`KubeBrainPDRegionPeerUnhealthy` 按 `type` 分别观察

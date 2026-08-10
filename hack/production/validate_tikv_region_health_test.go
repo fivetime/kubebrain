@@ -15,7 +15,12 @@ func TestValidateTiKVRegionHealth(t *testing.T) {
 set -euo pipefail
 args="$*"
 if [[ "$args" == *"get pods -l"* ]]; then
-  printf 'kb-tikv-0\tTrue\ttikv-kb-tikv-0\nkb-tikv-1\tTrue\ttikv-kb-tikv-1\nkb-tikv-2\tTrue\ttikv-kb-tikv-2\n'
+  if [[ "$args" == *"component=pd"* ]]; then
+    ready="${FAKE_PD_READY:-True}"
+    printf 'kb-pd-0\t%s\tpd-kb-pd-0\nkb-pd-1\t%s\tpd-kb-pd-1\nkb-pd-2\t%s\tpd-kb-pd-2\n' "$ready" "$ready" "$ready"
+  else
+    printf 'kb-tikv-0\tTrue\ttikv-kb-tikv-0\nkb-tikv-1\tTrue\ttikv-kb-tikv-1\nkb-tikv-2\tTrue\ttikv-kb-tikv-2\n'
+  fi
 elif [[ "$args" == *"/stores"* ]]; then
   printf '{"count":3,"stores":[{"store":{"id":1001,"address":"tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"tikv-2:20160","state_name":"Up"}}]}'
 elif [[ "$args" == *"/regions/check/pending-peer"* ]]; then
@@ -27,25 +32,29 @@ elif [[ "$args" == *"/regions/check/pending-peer"* ]]; then
   fi
 elif [[ "$args" == *"/regions/check/"* ]]; then
   printf '{"count":0,"regions":[]}'
-elif [[ "$args" == *"get pvc tikv-kb-tikv-"* ]]; then
+elif [[ "$args" == *"get pvc "* ]]; then
   pvc="${args#*get pvc }"
   pvc="${pvc%% *}"
-  ordinal="${pvc##*-}"
-  printf '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$ordinal" "$ordinal" "${FAKE_PVC_CAPACITY:-5Gi}"
+  printf '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$pvc" "$pvc" "${FAKE_PVC_CAPACITY:-5Gi}"
 elif [[ "$args" == *"get pv pv-"* ]]; then
   pv="${args#*get pv }"
   pv="${pv%% *}"
-  ordinal="${pv##*-}"
+  pvc="${pv#pv-}"
   if [[ "${FAKE_HOSTPATH_PV:-false}" == "true" ]]; then
-    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"tikv-kb-tikv-%s","uid":"pvc-uid-%s"},"hostPath":{"path":"/data/%s"}},"status":{"phase":"Bound"}}' "$pv" "$ordinal" "$ordinal" "$ordinal" "$ordinal"
+    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"hostPath":{"path":"/data/%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$pvc"
   else
-    handle="volume-$ordinal"
+    handle="volume-$pvc"
     [[ "${FAKE_DUPLICATE_HANDLE:-false}" != "true" ]] || handle="volume-shared"
-    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"tikv-kb-tikv-%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$ordinal" "$ordinal" "$ordinal" "$handle"
+    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$handle"
   fi
 elif [[ "$args" == *" exec "* && "$args" == *" df -P "* ]]; then
-  used="${FAKE_DISK_USED_PERCENT:-42}"
-  capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
+  if [[ "$args" == *"exec kb-pd-"* ]]; then
+    used="${FAKE_PD_DISK_USED_PERCENT:-42}"
+    capacity="${FAKE_PD_DISK_CAPACITY_KIB:-5242880}"
+  else
+    used="${FAKE_DISK_USED_PERCENT:-42}"
+    capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
+  fi
   printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/tikv\n' "$capacity" "$used"
 else
   echo "unexpected kubectl invocation: $args" >&2
@@ -64,12 +73,12 @@ fi
 	env := baseEnv
 	output, err := runProductionScriptCommand(t, "validate-tikv-region-health.sh", env)
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "TiKV region health gate passed")
+	require.Contains(t, string(output), "TiKV/PD region health gate passed")
 
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh",
 		append(baseEnv, "FAKE_PVC_CAPACITY=5G", "FAKE_DISK_CAPACITY_KIB=4882813"))
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "TiKV region health gate passed")
+	require.Contains(t, string(output), "TiKV/PD region health gate passed")
 
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PENDING_REGION=true"))
 	require.Error(t, err)
@@ -91,7 +100,7 @@ fi
 
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PVC_CAPACITY=5Zi"))
 	require.Error(t, err)
-	require.Contains(t, string(output), "TiKV PVC capacity is unsupported or malformed")
+	require.Contains(t, string(output), "PVC capacity is unsupported or malformed")
 
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_HOSTPATH_PV=true"))
 	require.Error(t, err)
@@ -100,6 +109,15 @@ fi
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_DUPLICATE_HANDLE=true"))
 	require.Error(t, err)
 	require.Contains(t, string(output), "TiKV storage identity collision")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PD_READY=False"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "PD Pod/PVC health mismatch")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PD_DISK_USED_PERCENT=97"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "PD disk pressure: pod=kb-pd-0")
+	require.NotContains(t, string(output), "TiKV disk pressure")
 
 	transientState := filepath.Join(tempDir, "transient-region-seen")
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv,
