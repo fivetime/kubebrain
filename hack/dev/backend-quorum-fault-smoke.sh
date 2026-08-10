@@ -607,6 +607,20 @@ run_lease_require_leader_test() {
   wait_backend_ready
 }
 
+run_repeated_require_leader_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_REPEATED_REQUIRE_LEADER_COMMAND="$command" \
+      KUBEBRAIN_REPEATED_REQUIRE_LEADER_CYCLES="$PD_QUORUM_PARTITION_CYCLES" \
+      go test . -run '^TestRequireLeaderStreamsAcrossRepeatedBackendFailover$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 wait_backend_ready
 
 self="$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh"
@@ -633,6 +647,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need jq
     run_watch_recovery_test "PD quorum-loss network partition" "$self --partition-pd-quorum-soak"
     run_lease_require_leader_test "PD quorum-loss LeaseKeepAlive" "$self --partition-pd-quorum-soak"
+    run_repeated_require_leader_test "Repeated PD quorum-loss require-leader streams" "$self --partition-pd-quorum"
     ;;
   tikv-network-partition)
     need docker

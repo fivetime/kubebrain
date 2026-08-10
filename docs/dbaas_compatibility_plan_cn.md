@@ -44531,6 +44531,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kb-pd-1/kb-pd-0`，101.73 秒内 raw require-leader 错误、高层 channel 分流及普通 lease 在完整
   三轮后的恢复续租全部通过。最终规则零残留、TidbCluster Ready。该三轮短测证明同一进程连续
   丢失/恢复 PD quorum 的数据面连续性，但不替代跨节点/AZ 或小时级 partition soak；后两项仍开放。
+  A4206 补齐 A4205 中 require-leader 只在首轮终止、后续循环仅由普通流覆盖的证据窗口。对照
+  upstream `TestWatchWithRequireLeader` 和 `TestLeaseWithRequireLeader`，新增独立破坏性 oracle：每轮
+  在健康 backend 上重新创建 raw Watch 与 raw LeaseKeepAlive require-leader 流，分别取得 Created
+  和正 TTL 首响应后保持接收阻塞；再单独执行一次 PD quorum-loss。两条流每轮都必须返回 gRPC
+  `Unavailable` 且 message 精确为 `etcdserver: no leader`，随后同一 client 必须由普通
+  `KeepAliveOnce`、Put 和线性一致 Range 证明恢复，才允许建立下一轮流。循环数复用
+  `PD_QUORUM_PARTITION_CYCLES` 的 1..20 fail-closed 边界，runner 明确传给测试，但每次 command 只
+  注入一轮，避免 shell 内部多轮把逐轮断言压扁成最终结果。runner 静态门禁先跑红证明旧流程没有该
+  oracle；实现后编译/race 门禁通过。真实独立 3 KubeBrain/3 PD/3 TiKV 上三轮依次隔离
+  `kb-pd-1/kb-pd-0`、`kb-pd-0/kb-pd-1`、`kb-pd-1/kb-pd-0`，116.04 秒内六条新建 raw 流的
+  code/message、三次 lease 恢复及三次 KV 写后读全部通过。该项证明 require-leader monitor 在恢复后
+  可重复 re-arm，不把一次成功外推为进程终身正确；跨节点/AZ 与小时级 churn soak 仍保持开放。
 
 ### P2：运维兼容和长期验证
 
