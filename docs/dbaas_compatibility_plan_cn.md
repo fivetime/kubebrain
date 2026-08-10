@@ -44962,6 +44962,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   路由。确定性测试保持旧 local channel 静默且 `IsLeader=true/fresh=false`，证明 ticker 主动让 proxy 从 revision 10 接管，代理
   marker 到达前不发送 revision 9，随后只报告 revision 10。真实 TiKV/PD quiet-watch failover 仍待既知环境故障恢复后补跑。
 
+- A4249 修复 proxy-disabled 部署中 fresh leader 无法恢复本地 Watch generation 的可用性差距。此前统一的
+  `resumeGeneration` 把 `EtcdProxyEnabled` 当成所有重开的必要条件；即使节点始终 fresh，backend channel 因 generation rollover
+  关闭也会直接向客户端发送 cancel。上游 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的逻辑 WatchStream 不会因为内部 watch
+  generation 更替而终止。现在“存在 fresh local source”或“peer proxy enabled”任一成立即可从 `syncedRev+1` 恢复；proxy disabled
+  且等待期间 freshness 丢失时立即返回无权威源错误，避免 reopen loop 永久重试。确定性测试在完全禁用 proxy 时关闭 revision 10
+  的第一代本地 channel，证明旧 context 被取消、第二代从 11 打开且 stream 无 cancel；反向测试证明 stale-but-IsLeader 节点在
+  100ms reconnect 等待后终止而非旋转。同期审计 `WithRequireLeader`：其契约是集群存在已知 leader，并非要求接入节点本地 fresh；
+  生产 `HasLeader` 已对本地 renew deadline 和远端 observation TTL 做 freshness 到期，因此保持现有 stream monitor 语义。真实
+  TiKV/PD proxy-disabled leader generation rollover 仍待既知环境故障恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

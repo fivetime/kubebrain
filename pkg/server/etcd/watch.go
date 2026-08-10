@@ -920,7 +920,8 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		progressC = progressTicker.C
 	}
 	resumeGeneration := func() bool {
-		if !w.grpcServer.peers.EtcdProxyEnabled() || w.nextWatchRevisionCompacted(ctx, id) {
+		_, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
+		if (!leadingFresh && !w.grpcServer.peers.EtcdProxyEnabled()) || w.nextWatchRevisionCompacted(ctx, id) {
 			return false
 		}
 		// Backend and proxy channels are generation-scoped. Resume from the
@@ -1261,6 +1262,11 @@ func (w *watcher) reopenWatchChannel(ctx context.Context, r *etcdserverpb.WatchC
 		return nil, false, 0, err
 	}
 	for {
+		if !w.grpcServer.peers.EtcdProxyEnabled() {
+			if _, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh(); !leadingFresh {
+				return nil, false, 0, errors.New("watch has no fresh local generation and peer proxy is disabled")
+			}
+		}
 		ch, local, epoch, err := w.openWatchChannel(ctx, r, backendPrefix, revision)
 		if err == nil {
 			return ch, local, epoch, nil

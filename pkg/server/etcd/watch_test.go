@@ -1539,6 +1539,88 @@ func TestLeaderWatchResumesThroughProxyAfterLocalGenerationCloses(t *testing.T) 
 	<-done
 }
 
+func TestFreshLeaderReopensLocalWatchWithoutPeerProxy(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	firstCh := make(chan etcdproxy.WatchResult, 1)
+	secondCh := make(chan etcdproxy.WatchResult, 1)
+	called := make(chan uint64, 2)
+	firstCanceled := make(chan struct{})
+	server.backend = &generationWatchBackend{
+		BackendShim:             server.backend,
+		generations:             []<-chan etcdproxy.WatchResult{firstCh, secondCh},
+		called:                  called,
+		firstGenerationCanceled: firstCanceled,
+	}
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return 7, true },
+		// Peer proxy is intentionally disabled. A fresh leader still owns an
+		// authoritative local source and must not cancel on generation rollover.
+		proxyEnabled: false,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches:   map[int64]*watch{7: {start: "/registry/watch/local-reopen/", syncedRev: 9, sourceRev: 9}},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/local-reopen/"), StartRevision: 10,
+		})
+	}()
+	require.Equal(t, uint64(10), <-called)
+	firstCh <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/local-reopen/"), Value: []byte("first"), ModRevision: 10},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 1 }, time.Second, time.Millisecond)
+	close(firstCh)
+
+	require.Equal(t, uint64(11), <-called, "fresh local reopen must resume after the delivered revision")
+	<-firstCanceled
+	secondCh <- etcdproxy.WatchResult{Revision: 11, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/local-reopen/"), Value: []byte("second"), ModRevision: 11},
+	}}}
+	require.Eventually(t, func() bool { return len(stream.snapshot()) == 2 }, time.Second, time.Millisecond)
+	for _, response := range stream.snapshot() {
+		require.False(t, response.Canceled)
+	}
+
+	cancel()
+	close(secondCh)
+	<-done
+}
+
+func TestLocalWatchReopenStopsWhenFreshnessIsLostWithoutPeerProxy(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{
+		isLeaderFn:   func() bool { return true }, // stale client-go flag
+		epochFn:      func() (uint64, bool) { return 7, false },
+		proxyEnabled: false,
+	}
+	w := &watcher{backend: server.backend, grpcServer: server, metricCli: server.metricCli}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	started := time.Now()
+	_, _, _, err := w.reopenWatchChannel(ctx, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/no-source"),
+	}, "/registry/watch/no-source", 10)
+	require.EqualError(t, err, "watch has no fresh local generation and peer proxy is disabled")
+	require.Less(t, time.Since(started), 500*time.Millisecond,
+		"reopen must not retry forever when no authoritative source is reachable")
+}
+
 func TestLeaderWatchFencesEstablishedLocalGenerationAfterEpochChange(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
