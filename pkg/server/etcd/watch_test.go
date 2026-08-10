@@ -1876,6 +1876,59 @@ func TestLeaderWatchRechecksFreshnessAfterPrevKVAssemblyBeforeSend(t *testing.T)
 	<-done
 }
 
+func TestWatchCancelResponsePrecedesNoLaterEventSend(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	results := make(chan etcdproxy.WatchResult, 1)
+	called := make(chan uint64, 1)
+	server.backend = &roleSwitchWatchBackend{BackendShim: server.backend, local: results, called: called}
+	headerEntered := make(chan struct{})
+	headerRelease := make(chan struct{})
+	server.peers = testPeerService{
+		isLeaderFn:    func() bool { return true },
+		epochFn:       func() (uint64, bool) { return 7, true },
+		currentTermFn: func() uint64 { return 0 },
+		leadershipTermFn: func(context.Context) (uint64, error) {
+			close(headerEntered)
+			<-headerRelease
+			return 7, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: {
+			cancel: cancel, start: "/registry/watch/cancel-order", syncedRev: 9, sourceRev: 9,
+		}},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/cancel-order"), StartRevision: 10,
+	})
+	require.Equal(t, uint64(10), <-called)
+	results <- etcdproxy.WatchResult{Revision: 10, Events: []*mvccpb.Event{{
+		Type: mvccpb.PUT,
+		Kv:   &mvccpb.KeyValue{Key: []byte("/registry/watch/cancel-order"), Value: []byte("must-not-follow-cancel"), ModRevision: 10},
+	}}}
+	<-headerEntered
+
+	// The event was already assembled but had not committed to the stream. A
+	// client cancellation removes the WatchId and sends its terminal response;
+	// releasing header assembly afterward must not resurrect that WatchId.
+	w.CancelRequest(7)
+	responses := stream.snapshot()
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Empty(t, responses[0].Events)
+	close(headerRelease)
+	w.wg.Wait()
+	require.Equal(t, responses, stream.snapshot(), "no event may appear after the terminal cancellation response")
+}
+
 func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

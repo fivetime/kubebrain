@@ -44972,6 +44972,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   生产 `HasLeader` 已对本地 renew deadline 和远端 observation TTL 做 freshness 到期，因此保持现有 stream monitor 语义。真实
   TiKV/PD proxy-disabled leader generation rollover 仍待既知环境故障恢复后补跑。
 
+- A4250 固定 Watch client cancel 的终止 wire-order。对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go`：上游先从
+  `watchStream` 取消 ID，再把 Canceled control response 放入与 event send loop 协调的流；客户端观察到 terminal frame 后不应再
+  收到同一 WatchId 的事件。KubeBrain 此前只在 map 中删除 watch 并异步排队 control，而已取到 result、正在 PrevKV/header 组装的
+  goroutine 随后仍可调用普通 `Send`；若 cancel 先获得 `sendMu`，wire 上会出现 `Canceled -> Events`。现在事件、周期 progress 和
+  每个 fragment 都通过 `SendWatch`：在持有同一 `sendMu` 时检查 WatchId 仍 active。这样事件要么先提交并位于 Canceled 之前，
+  要么观察到删除并以内部 inactive sentinel 静默退出；fragment 中途 cancel 也不会在 terminal frame 后继续发送剩余片段。
+  Created/Cancel/RequestProgress revision 来源同期审计通过：Created 使用 follower read barrier 后的 `controlRev`，client Cancel 的
+  terminal current revision 不会造成跳事件，stream-wide progress 只使用 delivered watermark。阻塞式竞态测试让事件通过 backend
+  校验后卡在 Raft term/header 获取，先发送 client Canceled 再释放组装，证明 stream 始终只有 terminal frame。真实 TiKV/PD
+  cancel 与慢 header/fragment 组合仍待既知环境故障恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
