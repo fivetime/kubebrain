@@ -29,6 +29,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -210,10 +211,11 @@ func (b *backend) loadCompactRevisionState(ctx context.Context) (uint64, bool, e
 	if err != nil {
 		return 0, false, err
 	}
-	if len(val) < 8 {
-		return 0, false, nil
+	revision, parseErr := coder.ParseRevisionWatermark(val)
+	if parseErr != nil {
+		return 0, false, invalidMVCCMetadataError(parseErr, "decode compact revision watermark")
 	}
-	return binary.BigEndian.Uint64(val), true, nil
+	return revision, true, nil
 }
 
 // updateCompactRevCache advances the cached compact revision (never backwards)
@@ -636,10 +638,13 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		klog.ErrorS(err, "get compact revision failed")
 		return false, err
 	}
-	// stored compact revision is not nil
-	if len(val) > 0 {
+	compactRecordExists := err == nil
+	if compactRecordExists {
 		// compare stored compact revision with current compact revision
-		compactRevision := binary.BigEndian.Uint64(val)
+		compactRevision, parseErr := coder.ParseRevisionWatermark(val)
+		if parseErr != nil {
+			return false, invalidMVCCMetadataError(parseErr, "decode compact revision watermark")
+		}
 		if compactRevision >= revision {
 			klog.InfoS("compact revision not greater than stored, skip", "compactRev", compactRevision, "currentRev", revision)
 			// revision has already been compacted; must not lower the watermark
@@ -652,7 +657,7 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		return false, err
 	}
 	batch := b.kv.BeginBatchWrite()
-	if len(val) > 0 {
+	if compactRecordExists {
 		// if compact revision already set before
 		batch.CAS(getCompactKey(b.config.Prefix), revisionBytes, val, 0)
 	} else {
@@ -669,8 +674,12 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		// already-compacted revision is not an error), and let that other compactor
 		// own the physical GC (advanced=false). Only a still-behind watermark or a
 		// genuine storage error surfaces.
-		if cur, gerr := b.kv.Get(ctx, getCompactKey(b.config.Prefix)); gerr == nil && len(cur) >= 8 {
-			if storedRev := binary.BigEndian.Uint64(cur); storedRev >= revision {
+		if cur, gerr := b.kv.Get(ctx, getCompactKey(b.config.Prefix)); gerr == nil {
+			storedRev, parseErr := coder.ParseRevisionWatermark(cur)
+			if parseErr != nil {
+				return false, invalidMVCCMetadataError(parseErr, "decode compact revision watermark after CAS conflict")
+			}
+			if storedRev >= revision {
 				b.updateCompactRevCache(storedRev)
 				return false, nil
 			}

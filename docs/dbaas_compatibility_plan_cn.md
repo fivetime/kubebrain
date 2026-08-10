@@ -44741,6 +44741,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   log 只采纳逐条合法 order hint，跨整 revision 的缺口/混排仍由 A4210 writer provenance 校验
   `FailedPrecondition`，不会以 key-sort 伪造 etcd txn subrevision。
 
+- A4225 继续审计决定历史可读边界的 compact watermark。对照 `/root/etcd/server/storage/mvcc/store.go`
+  的 fixed-width revision 编码及 `kvstore.go::restore` 在启动时恢复 finished/scheduled compact revision 的
+  fail-closed 位置，KubeBrain 原有五条读取路径并不一致：`loadCompactRevisionState` 把短值当作不存在，
+  `setCompactRecord` 与 scanner read path 对短值直接 `BigEndian.Uint64` panic，长度大于 8 的值又被接受；
+  scanner 的 CAS 冲突还无条件假定竞争者写入了更高的合法 watermark。这可能放宽已经物理删除历史的读屏障，
+  或由单个 TiKV 元数据损坏击穿进程。现在 coder 提供仅接受精确 8 字节的 revision-watermark decoder，backend
+  fresh/cache、HashKV、Compact admission/竞争复读和 scanner Range/physical Compact 全部共用该门禁；空值、短值、
+  尾字节以及竞争后畸形 winner 均携带 `ErrInvalidMVCCMetadata` fail closed。普通 KV/Compact RPC 由统一拦截器映射
+  `DataLoss`，Snapshot 的源数据契约继续映射 `FailedPrecondition`。memkv 回归同时证明 fresh load、HashKV、
+  setCompactRecord 与 scanner 不再 panic 或把损坏状态当未 compact，coder 表测固定 exact-width 边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

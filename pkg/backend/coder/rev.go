@@ -17,7 +17,19 @@ package coder
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 )
+
+// ParseRevisionWatermark decodes an exact-width persisted MVCC watermark.
+// Unlike ParseRevision, watermarks never carry the tombstone suffix; accepting
+// either a short value or trailing bytes would make corruption look like a
+// missing/valid compaction boundary.
+func ParseRevisionWatermark(value []byte) (uint64, error) {
+	if len(value) != RevisionValueLength {
+		return 0, MarkInvalidMVCCMetadata(fmt.Errorf("invalid revision watermark length %d", len(value)))
+	}
+	return binary.BigEndian.Uint64(value), nil
+}
 
 const (
 	RevisionValueLength                 = 8

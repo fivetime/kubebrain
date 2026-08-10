@@ -1092,22 +1092,40 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 		if err != nil && err != storage.ErrKeyNotFound {
 			return err
 		}
-		if len(val) >= 8 && binary.BigEndian.Uint64(val) >= revision {
-			// already compacted at an equal-or-higher revision
-			return nil
+		compactRecordExists := err == nil
+		if compactRecordExists {
+			storedRevision, parseErr := coder.ParseRevisionWatermark(val)
+			if parseErr != nil {
+				return parseErr
+			}
+			if storedRevision >= revision {
+				// already compacted at an equal-or-higher revision
+				return nil
+			}
 		}
 		bs := make([]byte, 8)
 		binary.BigEndian.PutUint64(bs, revision)
 		batch := r.store.BeginBatchWrite()
-		if len(val) > 0 {
+		if compactRecordExists {
 			batch.CAS(r.config.CompactKey, bs, val, 0)
 		} else {
 			batch.PutIfNotExist(r.config.CompactKey, bs, 0)
 		}
 		err = batch.Commit(ctx)
 		if errors.Is(err, storage.ErrCASFailed) {
-			// a concurrent compactor advanced it; the watermark did not regress
-			return nil
+			// Verify the winner instead of assuming every conflicting writer
+			// advanced a valid watermark.
+			current, getErr := r.store.Get(ctx, r.config.CompactKey)
+			if getErr != nil {
+				return getErr
+			}
+			storedRevision, parseErr := coder.ParseRevisionWatermark(current)
+			if parseErr != nil {
+				return parseErr
+			}
+			if storedRevision >= revision {
+				return nil
+			}
 		}
 		return err
 	}
@@ -1125,7 +1143,10 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 		return err
 	}
 	// compare compact revision and range revision
-	compactRevision := binary.BigEndian.Uint64(val)
+	compactRevision, parseErr := coder.ParseRevisionWatermark(val)
+	if parseErr != nil {
+		return parseErr
+	}
 	if compactRevision > revision {
 		// revision has already been compacted
 		err := fmt.Errorf("range stream revision %d less than compact revision %d", revision, compactRevision)

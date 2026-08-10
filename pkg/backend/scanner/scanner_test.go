@@ -89,6 +89,23 @@ func TestAdjustPartitionBorders(t *testing.T) {
 	}
 }
 
+func TestScannerRejectsCorruptCompactWatermark(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	c := coder.DefaultKeyspace().NewCoder()
+	compactKey := []byte("/compact-corrupt")
+	batch := kv.BeginBatchWrite()
+	batch.Put(compactKey, []byte{1}, 0)
+	require.NoError(t, batch.Commit(context.Background()))
+
+	sc := NewScanner(kv, c, Config{CompactKey: compactKey, Tombstone: []byte("tomb")}, m)
+	_, err := sc.Range(context.Background(), c.EncodeObjectKey([]byte("/a"), 0), c.EncodeObjectKey([]byte("/z"), 0), 1, 0)
+	require.ErrorIs(t, err, coder.ErrInvalidMVCCMetadata)
+}
+
 // TestScannerCrossPartitionTombstoneLargeGap reproduces the exact shape of the
 // live "poison key" anomaly: a user key whose live base object and its later
 // tombstone are separated by a HUGE inter-version revision gap (the real values
