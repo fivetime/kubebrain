@@ -44661,6 +44661,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `ErrInvalidSnapshotMetadata`/`FailedPrecondition`、精确双 ID 诊断和零 partial frame。正向回归同时证明
   canonical 同 ID 时 internal 仍覆盖 legacy 且不携带迁移标记；缺失 lease 的 orphan attachment 继续由
   sweeper 容忍/回收，没有被错误收紧为持久损坏。
+  A4218 将 A4212/A4215/A4216/A4217 的 durable metadata 类型从 Snapshot 专用编排信号扩展到普通公开
+  RPC。对照 upstream `authStore.Recover`、`lessor.initAndRecover` 和
+  `v3alarm.NewAlarmStore::restore`：这些 backend 状态无法解码时恢复本身失败，不能作为可继续服务的普通
+  `Unknown`。client-facing unary/stream handler 错误都会经过 `stampUnary/stampStream → authGRPCError`；
+  现按 `errInvalidAuthMetadata`、`errInvalidLeaseMetadata`、`backend.ErrInvalidAlarmMetadata` 类型统一映射
+  gRPC `DataLoss` 并保留原诊断，位置在 TiKV transport 文本边界之前且不使用文本匹配。Snapshot 已在
+  handler 内把同类来源转换为更具体的 `ErrInvalidSnapshotMetadata`/`FailedPrecondition`，跨 interceptor
+  不会被二次覆盖。真实 bufconn 红测先证明三 sentinel 原先均为 `Unknown`，修复后统一 `DataLoss`；另以
+  实际损坏的 `auth/config` 调 KV Range、损坏 generic alarm JSON 调 Maintenance Alarm，证明不是 fake
+  handler 自洽。wrapped TiKV cause、已有 `InvalidArgument` status 和纯文本后缀反例继续固定原边界。
 
 ### P2：运维兼容和长期验证
 

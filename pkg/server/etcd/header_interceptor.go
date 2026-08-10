@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -624,6 +625,14 @@ func authGRPCError(err error) error {
 		return rpctypes.ErrGRPCInvalidAuthMgmt
 	case errors.Is(err, rpctypes.ErrAuthOldRevision):
 		return rpctypes.ErrGRPCAuthOldRevision
+	case errors.Is(err, errInvalidAuthMetadata), errors.Is(err, errInvalidLeaseMetadata),
+		errors.Is(err, backend.ErrInvalidAlarmMetadata):
+		// Upstream refuses to recover malformed auth/lease/alarm backend state.
+		// KubeBrain can encounter the same durable corruption during live TiKV
+		// reads, so expose an integrity failure rather than grpc-go's fallback
+		// Unknown. Snapshot converts these to its narrower FailedPrecondition
+		// contract before reaching this shared interceptor.
+		return status.Error(codes.DataLoss, err.Error())
 	case errors.Is(err, storage.ErrUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, storage.ErrUncertainResult):

@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -18,6 +19,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -44,6 +46,9 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{storage.NewErrUncertainResult(context.DeadlineExceeded), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("epoch_not_match:<>")), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("no available connections")), codes.Unavailable},
+		{markInvalidAuthMetadata(errors.New("decode auth config")), codes.DataLoss},
+		{markInvalidLeaseMetadata(errors.New("decode lease record")), codes.DataLoss},
+		{fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata), codes.DataLoss},
 	}
 	for _, test := range tests {
 		require.Equal(t, test.code, status.Code(authGRPCError(test.err)))
@@ -100,6 +105,21 @@ func TestClientInterceptorClassifiesOnlyLeafBackendTransportCause(t *testing.T) 
 			err:  fmt.Errorf("failed to get user key: no available connections"),
 			code: codes.Unknown,
 		},
+		{
+			name: "invalid auth metadata",
+			err:  markInvalidAuthMetadata(errors.New("decode auth config")),
+			code: codes.DataLoss,
+		},
+		{
+			name: "invalid lease metadata",
+			err:  markInvalidLeaseMetadata(errors.New("decode lease record")),
+			code: codes.DataLoss,
+		},
+		{
+			name: "invalid alarm metadata",
+			err:  fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata),
+			code: codes.DataLoss,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -121,6 +141,64 @@ func TestClientInterceptorClassifiesOnlyLeafBackendTransportCause(t *testing.T) 
 			_, err = etcdserverpb.NewKVClient(connection).Range(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("key")})
 			require.Equal(t, test.code, status.Code(err))
 			require.Contains(t, status.Convert(err).Message(), test.err.Error())
+		})
+	}
+}
+
+func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
+	tests := []struct {
+		name    string
+		corrupt func(context.Context, *RPCServer) error
+		call    func(context.Context, *grpc.ClientConn) error
+		want    string
+	}{
+		{
+			name: "auth config",
+			corrupt: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, authConfigKey, []byte{2})
+			},
+			call: func(ctx context.Context, connection *grpc.ClientConn) error {
+				_, err := etcdserverpb.NewKVClient(connection).Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("key")})
+				return err
+			},
+			want: "invalid auth config encoding",
+		},
+		{
+			name: "generic alarm",
+			corrupt: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, genericAlarmKey, []byte("null"))
+			},
+			call: func(ctx context.Context, connection *grpc.ClientConn) error {
+				_, err := etcdserverpb.NewMaintenanceClient(connection).Alarm(ctx, &etcdserverpb.AlarmRequest{
+					Action: etcdserverpb.AlarmRequest_GET, Alarm: etcdserverpb.AlarmType(127),
+				})
+				return err
+			},
+			want: "generic alarm metadata must be a JSON array",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			require.NoError(t, test.corrupt(ctx, server))
+
+			grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+			etcdserverpb.RegisterKVServer(grpcServer, server)
+			etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+			listener := bufconn.Listen(1 << 20)
+			go func() { _ = grpcServer.Serve(listener) }()
+			t.Cleanup(grpcServer.Stop)
+			connection, err := grpc.NewClient("passthrough:///metadata-corruption",
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+				grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, connection.Close()) })
+
+			err = test.call(ctx, connection)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.Contains(t, status.Convert(err).Message(), test.want)
 		})
 	}
 }
