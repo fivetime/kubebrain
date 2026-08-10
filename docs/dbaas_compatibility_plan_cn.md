@@ -45706,7 +45706,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 auth write-guard 路径，leased Put、generic Txn、DeleteRange/revoke 则使用同批 `TxnWriteOp` provenance。
   回归覆盖 leased v1→历史保留正确 lease、unleased v1→v3、迁移后恰好仍只有两个 MVCC 版本，以及授权
   mutation-before-commit 竞态不被绕过。该预防只修复升级时仍为 current 的行；在升级前已经进入 history
-  且 lease 永久丢失的版本仍必须 fail closed，并继续由 A4311/A4312 的显式历史丢弃流程处理。
+  且 lease 永久丢失的版本仍必须 fail closed，并继续由 A4311/A4312 的显式历史丢弃流程处理。新增环境
+  门控的 `TestLegacyCurrentLeaseProvenanceTiKV` 使用唯一 named keyspace，并在关闭 client 前物理清除该
+  keyspace；隔离 `pingcap/pd:v7.5.1` + `pingcap/tikv:v7.5.1` 上共享 BatchWrite contract 0.389 秒通过，
+  provenance update/delete 20 轮 1.972 秒通过。首次运行因宿主盘使用率 97% 命中 TiKV 默认 5GiB
+  reserve-space 的 `AlmostFull` 写保护而正确失败；只在一次性隔离 store 中将 reserve-space 设为 0、
+  capacity 限为 1GiB 后复测，未放宽生产磁盘门禁或写入共享集群。
 
 ### P2：运维兼容和长期验证
 
