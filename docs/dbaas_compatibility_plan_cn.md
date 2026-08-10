@@ -44881,6 +44881,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `FailedPrecondition` 固定 fail-closed；A4239 的 direct/official client 回归现升级为 A/B 都声明 key，再证明 attachment B
   稳定裁决。真实 TiKV/PD 故障环境恢复后仍需补跑该滚动中断布局。
 
+- A4241 让不确定提交后的在线 lease 索引对账复用启动恢复的 attachment 校验。此前恢复会拒绝 ID 0、`01` 等非规范
+  十进制 ID 和空 user key，但 `reconcileLeaseIndexesAtRevision` 直接 `ParseInt`：同一损坏记录在运行中可能被解释为 detach
+  或错误 owner，令内存索引与 durable metadata 分叉。现在在线对账同样经 `parseLeaseAttachmentRecord` fail-closed；发现损坏
+  时保留最后一个已知内存绑定，发出既有 `lease.uncertain_reconcile.err` 指标并停止本轮修复，真正缺失 attachment 的正常
+  detach 语义不变。表测覆盖 zero、noncanonical 与空 key，既有 committed-uncertain 重试和 generation fencing 回归继续证明
+  合法记录可修复且旧 term 不能覆盖 reload。该路径涉及 TiKV 不确定提交；真实 TiKV/PD 故障注入仍受既知环境故障限制，待
+  环境恢复后补跑，当前内存后端门禁不作为替代证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -794,7 +794,7 @@ func (m *leaseManager) reconcileLeaseIndexesAtRevision(workerCtx context.Context
 			cancel()
 			switch {
 			case err == nil:
-				id, parseErr := strconv.ParseInt(string(value), 10, 64)
+				id, parseErr := parseLeaseAttachmentRecord(key, value)
 				if parseErr != nil {
 					m.leaseWriteMu.Unlock()
 					m.srv.metricCli.EmitCounter("lease.uncertain_reconcile.err", 1)

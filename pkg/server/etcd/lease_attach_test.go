@@ -1193,6 +1193,49 @@ func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) 
 		"an old-term uncertain reconciliation must not overwrite the reloaded lease snapshot")
 }
 
+func TestUncertainLeaseReconcileRejectsInvalidDurableAttachments(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value []byte
+	}{
+		{name: "reserved zero", key: "/registry/events/uncertain-zero", value: []byte("0")},
+		{name: "noncanonical id", key: "/registry/events/uncertain-noncanonical", value: []byte("055140")},
+		{name: "empty user key", key: "", value: []byte("55140")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, b, cleanup := newLeaseTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			const leaseID int64 = 55140
+
+			var epoch atomic.Uint64
+			epoch.Store(1)
+			peers := testPeerService{
+				isLeaderFn: func() bool { return true },
+				epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+			}
+			server.peers = peers
+			b.SetLeadershipFence(peers.EpochAndLeadingFresh)
+			_, err := server.LeaseGrant(backend.WithLeadershipEpoch(ctx, 1),
+				&etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+			require.NoError(t, err)
+
+			server.leaseMu.Lock()
+			server.bindKeyToLeaseLocked(leaseID, tt.key)
+			generation := server.leaseGeneration
+			server.leaseMu.Unlock()
+			require.NoError(t, b.InternalPut(backend.WithLeadershipEpoch(ctx, 1), leaseAttachKey(tt.key), tt.value))
+
+			server.reconcileLeaseIndexesAtRevision(ctx, b.GetCurrentRevision(), []string{tt.key}, 1, generation)
+
+			require.Equal(t, leaseID, server.leaseIDForKey(tt.key),
+				"invalid durable metadata must not overwrite the last known in-memory binding")
+		})
+	}
+}
+
 func requireLeaseAttachTooManyRequestsError(t *testing.T, err error) {
 	t.Helper()
 	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooManyRequests)
