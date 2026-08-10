@@ -45248,6 +45248,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非生产存储 RED；本项不要求普通运行 gate 存在 VolumeSnapshotClass，完整快照能力继续由 cold
   snapshot preflight 独立验证。
 
+- A4280 为 A4276/A4279 的 PD Region checker 增加时间维度，避免把正常 split/调度中的单次
+  pending peer 与持续 600 秒的 `76009/1005` 半故障混为一谈。只读 gate 默认在最多 6 次采样内
+  要求连续 3 次 `pending/down/miss/extra/learner` 五类 checker 全部为空，样本间隔 5 秒；任何异常会
+  重置连续计数，窗口结束仍未收敛时输出最后一组 region/leader/pending/down store 证据和明确的
+  “未达到连续健康样本”诊断。输入要求 required/max 为正整数、required≤max≤20、0≤interval≤60，
+  因而既支持测试零间隔，也不能变成无限等待。fake PD 回归证明单次健康 GREEN、首样本 pending 后
+  连续三次健康 GREEN、持续 `76009/1005` pending RED 和非法窗口 pre-kubectl RED。真实 kind 使用
+  默认 3/6/5s 在 35 秒有界窗口后仍同时报告 `76009` pending/down、三卷 hostPath/5Gi→1.968TiB
+  隔离漂移和 97% 水位，证明该异常不是瞬态调度噪声。本项只改变只读发布/诊断门禁，不延长
+  KubeBrain 客户请求超时，也不自动执行 PD operator、peer 删除或 TiKV 重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

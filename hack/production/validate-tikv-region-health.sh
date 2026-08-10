@@ -8,6 +8,9 @@ MAX_TIKV_DISK_USED_PERCENT="${MAX_TIKV_DISK_USED_PERCENT:-90}"
 MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT="${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT:-125}"
 TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
 PROBE_TIMEOUT="${PROBE_TIMEOUT:-10s}"
+REQUIRED_HEALTHY_REGION_SAMPLES="${REQUIRED_HEALTHY_REGION_SAMPLES:-3}"
+MAX_REGION_HEALTH_SAMPLES="${MAX_REGION_HEALTH_SAMPLES:-6}"
+REGION_HEALTH_INTERVAL_SECONDS="${REGION_HEALTH_INTERVAL_SECONDS:-5}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
 TIMEOUT_CMD="${TIMEOUT_CMD:-timeout}"
@@ -16,9 +19,13 @@ JQ="${JQ:-jq}"
 die() { echo "$*" >&2; exit 1; }
 
 [[ -n "$KUBE_CONTEXT" ]] || die "KUBE_CONTEXT is required"
-for variable in EXPECTED_TIKV_STORES MAX_TIKV_DISK_USED_PERCENT MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT; do
+for variable in EXPECTED_TIKV_STORES MAX_TIKV_DISK_USED_PERCENT MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT REQUIRED_HEALTHY_REGION_SAMPLES MAX_REGION_HEALTH_SAMPLES; do
   [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
 done
+[[ "$REGION_HEALTH_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "REGION_HEALTH_INTERVAL_SECONDS must be a non-negative integer"
+(( REQUIRED_HEALTHY_REGION_SAMPLES <= MAX_REGION_HEALTH_SAMPLES )) || die "REQUIRED_HEALTHY_REGION_SAMPLES must not exceed MAX_REGION_HEALTH_SAMPLES"
+(( MAX_REGION_HEALTH_SAMPLES <= 20 )) || die "MAX_REGION_HEALTH_SAMPLES must be at most 20"
+(( REGION_HEALTH_INTERVAL_SECONDS <= 60 )) || die "REGION_HEALTH_INTERVAL_SECONDS must be at most 60"
 (( MAX_TIKV_DISK_USED_PERCENT < 100 )) || die "MAX_TIKV_DISK_USED_PERCENT must be less than 100"
 (( MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT >= 100 && MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT <= 125 )) || \
   die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be between 100 and 125"
@@ -70,13 +77,34 @@ if ! "$JQ" -e --argjson expected "$EXPECTED_TIKV_STORES" '
   record_health_error "PD store health mismatch: expected ${EXPECTED_TIKV_STORES} Up stores; stores=${summary}"
 fi
 
-for check in pending-peer down-peer miss-peer extra-peer learner-peer; do
-  check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")"
-  if ! "$JQ" -e '.count == 0 and (.regions | type == "array") and (.regions | length == 0)' >/dev/null <<<"$check_json"; then
-    region_summary="$("$JQ" -c '[.regions[]? | {id,leader_store_id:(.leader.store_id // 0),pending_store_ids:[.pending_peers[]?.store_id],down_store_ids:[.down_peers[]?.peer.store_id]}]' <<<"$check_json" 2>/dev/null || printf 'malformed')"
-    record_health_error "PD ${check} region health mismatch: regions=${region_summary}"
+consecutive_healthy_region_samples=0
+last_region_errors=()
+for ((sample=1; sample<=MAX_REGION_HEALTH_SAMPLES; sample++)); do
+  sample_region_errors=()
+  for check in pending-peer down-peer miss-peer extra-peer learner-peer; do
+    check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")"
+    if ! "$JQ" -e '.count == 0 and (.regions | type == "array") and (.regions | length == 0)' >/dev/null <<<"$check_json"; then
+      region_summary="$("$JQ" -c '[.regions[]? | {id,leader_store_id:(.leader.store_id // 0),pending_store_ids:[.pending_peers[]?.store_id],down_store_ids:[.down_peers[]?.peer.store_id]}]' <<<"$check_json" 2>/dev/null || printf 'malformed')"
+      sample_region_errors+=("PD ${check} region health mismatch: regions=${region_summary}")
+    fi
+  done
+  if (( ${#sample_region_errors[@]} == 0 )); then
+    ((consecutive_healthy_region_samples+=1))
+    if (( consecutive_healthy_region_samples >= REQUIRED_HEALTHY_REGION_SAMPLES )); then
+      break
+    fi
+  else
+    consecutive_healthy_region_samples=0
+    last_region_errors=("${sample_region_errors[@]}")
   fi
+  (( sample == MAX_REGION_HEALTH_SAMPLES )) || sleep "$REGION_HEALTH_INTERVAL_SECONDS"
 done
+if (( consecutive_healthy_region_samples < REQUIRED_HEALTHY_REGION_SAMPLES )); then
+  for region_error in "${last_region_errors[@]}"; do
+    record_health_error "$region_error"
+  done
+  record_health_error "PD region health did not reach ${REQUIRED_HEALTHY_REGION_SAMPLES} consecutive healthy samples within ${MAX_REGION_HEALTH_SAMPLES} samples"
+fi
 
 while IFS=$'\t' read -r pod ready pvc; do
   [[ -n "$pod" && "$ready" == "True" && -n "$pvc" ]] || continue
@@ -136,4 +164,4 @@ if (( ${#health_errors[@]} > 0 )); then
   exit 1
 fi
 
-echo "TiKV region health gate passed: stores=${EXPECTED_TIKV_STORES}, abnormal_regions=0, max_disk_used_percent=${MAX_TIKV_DISK_USED_PERCENT}"
+echo "TiKV region health gate passed: stores=${EXPECTED_TIKV_STORES}, abnormal_regions=0, consecutive_region_samples=${REQUIRED_HEALTHY_REGION_SAMPLES}, max_disk_used_percent=${MAX_TIKV_DISK_USED_PERCENT}"

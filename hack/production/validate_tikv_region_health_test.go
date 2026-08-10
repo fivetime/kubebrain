@@ -18,8 +18,13 @@ if [[ "$args" == *"get pods -l"* ]]; then
   printf 'kb-tikv-0\tTrue\ttikv-kb-tikv-0\nkb-tikv-1\tTrue\ttikv-kb-tikv-1\nkb-tikv-2\tTrue\ttikv-kb-tikv-2\n'
 elif [[ "$args" == *"/stores"* ]]; then
   printf '{"count":3,"stores":[{"store":{"id":1001,"address":"tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"tikv-2:20160","state_name":"Up"}}]}'
-elif [[ "$args" == *"/regions/check/pending-peer"* && "${FAKE_PENDING_REGION:-false}" == "true" ]]; then
-  printf '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":1005}],"down_peers":[{"peer":{"store_id":1005}}]}]}'
+elif [[ "$args" == *"/regions/check/pending-peer"* ]]; then
+  if [[ "${FAKE_PENDING_REGION:-false}" == "true" || ( "${FAKE_TRANSIENT_PENDING:-false}" == "true" && ! -e "$FAKE_REGION_STATE" ) ]]; then
+    [[ "${FAKE_TRANSIENT_PENDING:-false}" != "true" ]] || : >"$FAKE_REGION_STATE"
+    printf '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":1005}],"down_peers":[{"peer":{"store_id":1005}}]}]}'
+  else
+    printf '{"count":0,"regions":[]}'
+  fi
 elif [[ "$args" == *"/regions/check/"* ]]; then
   printf '{"count":0,"regions":[]}'
 elif [[ "$args" == *"get pvc tikv-kb-tikv-"* ]]; then
@@ -52,6 +57,9 @@ fi
 		"KUBECTL=" + fakeKubectl,
 		"KUBE_CONTEXT=test-context",
 		"PROBE_TIMEOUT=1s",
+		"REQUIRED_HEALTHY_REGION_SAMPLES=1",
+		"MAX_REGION_HEALTH_SAMPLES=1",
+		"REGION_HEALTH_INTERVAL_SECONDS=0",
 	}
 	env := baseEnv
 	output, err := runProductionScriptCommand(t, "validate-tikv-region-health.sh", env)
@@ -92,6 +100,18 @@ fi
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_DUPLICATE_HANDLE=true"))
 	require.Error(t, err)
 	require.Contains(t, string(output), "TiKV storage identity collision")
+
+	transientState := filepath.Join(tempDir, "transient-region-seen")
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv,
+		"FAKE_TRANSIENT_PENDING=true", "FAKE_REGION_STATE="+transientState,
+		"REQUIRED_HEALTHY_REGION_SAMPLES=3", "MAX_REGION_HEALTH_SAMPLES=4"))
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "consecutive_region_samples=3")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv,
+		"REQUIRED_HEALTHY_REGION_SAMPLES=4", "MAX_REGION_HEALTH_SAMPLES=3"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "REQUIRED_HEALTHY_REGION_SAMPLES must not exceed MAX_REGION_HEALTH_SAMPLES")
 }
 
 func TestValidateTiKVRegionHealthRequiresExplicitContext(t *testing.T) {

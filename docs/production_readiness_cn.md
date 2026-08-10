@@ -159,11 +159,16 @@ TIDB_CLUSTER=kb \
 EXPECTED_TIKV_STORES=3 \
 MAX_TIKV_DISK_USED_PERCENT=90 \
 MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT=125 \
+REQUIRED_HEALTHY_REGION_SAMPLES=3 \
+MAX_REGION_HEALTH_SAMPLES=6 \
+REGION_HEALTH_INTERVAL_SECONDS=5 \
 hack/production/validate-tikv-region-health.sh
 ```
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
+Region checker 默认在最多 6 个样本内要求连续 3 个健康样本、间隔 5 秒，因而一次短暂 split/调度
+不会直接判定为持久故障；窗口有界为最多 20 个样本、单次间隔最多 60 秒，不能配置成无限等待。
 同时逐一在 Ready TiKV Pod 内对 `/var/lib/tikv` 执行只读 `df -P`，按真实挂载文件系统拒绝超过
 阈值的磁盘水位；每个 Bound PVC 的 `.status.capacity.storage` 还必须能解析，实际文件系统容量不得
 超过声明容量的 125%，该容差只能在 100%–125% 范围收紧、不能调高绕过。一次运行会汇总 Region、
