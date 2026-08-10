@@ -44858,6 +44858,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canonical 负 ID/attachment 继续恢复。load 表测覆盖 zero、noncanonical 与 `-1`，Maintenance Snapshot 黑盒固定 zero record
   为零 partial frame 的 `FailedPrecondition`。本轮同样未在存在既知故障的真实 TiKV/PD 环境写入破坏记录，待环境恢复后补跑。
 
+- A4238 拒绝无法由 etcd KV API 产生的空 lease attachment key。上游 `/root/etcd/server/etcdserver/api/v3rpc/key.go`
+  在 Put/Delete/Txn 入口统一拒绝空 key，因此合法 lease backend 不会含 `leasekeys/` 裸前缀，也不会在旧 monolithic record
+  的 `Keys` 中保存空字符串。KubeBrain 先前会恢复该条目，migration/revoke 随后尝试 attach/delete 空用户 key，可能使租约
+  清理失败或留下不可操作的 owner 索引。现在 attachment parser 在解析 ID 前拒绝空 user key，lease record decoder 逐项拒绝
+  legacy empty key；指向不存在 lease 的非空 orphan attachment 仍按既有 sweeper 自愈，不被升级为损坏。load 表测覆盖两种
+  layout，Maintenance Snapshot 黑盒固定零 partial frame 的 `FailedPrecondition`。真实 TiKV/PD 破坏性补跑仍受既知环境故障限制。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -1495,6 +1495,20 @@ func TestMaintenanceSnapshotClassifiesReservedZeroLeaseID(t *testing.T) {
 	require.Empty(t, stream.responses)
 }
 
+func TestMaintenanceSnapshotClassifiesEmptyLeaseAttachmentKey(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.backend.InternalPut(ctx, leaseAttachKey(""), []byte("1")))
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
+	require.ErrorContains(t, err, "lease attachment has empty user key")
+	require.Empty(t, stream.responses)
+}
+
 func TestMaintenanceSnapshotClassifiesMismatchedLeaseStorageIdentity(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -127,6 +127,11 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 	if record.RemainingTTL > maxLeaseTTL {
 		return leaseRecord{}, fmt.Errorf("lease remaining ttl %d exceeds maximum %d", record.RemainingTTL, maxLeaseTTL)
 	}
+	for index, key := range record.Keys {
+		if key == "" {
+			return leaseRecord{}, fmt.Errorf("lease key %d is empty", index)
+		}
+	}
 	return record, nil
 }
 
@@ -1578,6 +1583,9 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 }
 
 func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
+	if userKey == "" {
+		return 0, markInvalidLeaseMetadata(errors.New("lease attachment has empty user key"))
+	}
 	id, err := strconv.ParseInt(string(value), 10, 64)
 	if err != nil {
 		return 0, markInvalidLeaseMetadata(fmt.Errorf("decode lease attachment for key %q: %w", userKey, err))

@@ -1221,6 +1221,13 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 			want: `lease attachment for key "/lease/zero" references reserved id 0`,
 		},
 		{
+			name: "empty_attachment_key",
+			write: func(ctx context.Context, server *RPCServer) error {
+				return server.backend.InternalPut(ctx, leaseAttachKey(""), []byte("1"))
+			},
+			want: `lease attachment has empty user key`,
+		},
+		{
 			name: "noncanonical_attachment",
 			write: func(ctx context.Context, server *RPCServer) error {
 				return server.backend.InternalPut(ctx, leaseAttachKey("/lease/noncanonical"), []byte("01"))
@@ -1322,6 +1329,19 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
 			},
 			want: `decode lease metadata: lease id 0 is reserved for no lease`,
+		},
+		{
+			name: "legacy_empty_attached_key",
+			raw: func(t *testing.T, id int64) []byte {
+				value, err := json.Marshal(leaseRecord{ID: id, TTL: 30, Keys: []string{""}})
+				require.NoError(t, err)
+				return value
+			},
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: raw})
+				return err
+			},
+			want: `decode legacy lease metadata for key "\x00kubebrain/leases/7106": lease key 0 is empty`,
 		},
 		{
 			name: "internal_oversized_remaining_ttl",
