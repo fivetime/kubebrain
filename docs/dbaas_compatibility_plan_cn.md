@@ -44500,6 +44500,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LeaseKeepAlive 36.22 秒通过上述 raw code/message、高层 channel 分流与恢复续租全部断言。两轮均
   隔离 `kb-pd-2/kb-pd-0` 并实际观测不可达/恢复，规则零残留、TidbCluster Ready。该项不新增 runtime
   代码，而是为 A4202 已同时覆盖的 Watch/Lease 双向流补足与 upstream 同层级的独立真实故障证据。
+  A4204 补齐 A4202 仅处理接收侧后仍存在的发送侧阻塞窗口。对照 upstream require-leader monitor
+  在 leader 丢失后取消 stream Context 并返回 `ErrGRPCNoLeader` 的契约，新增确定性回归让 handler
+  阻塞在底层 `SendMsg`（模拟客户端不读取、HTTP/2 flow-control 窗口耗尽）；修复前即使 leader 已失效，
+  2 秒内仍不能退出。根因与 idle `RecvMsg` 相同：gRPC transport I/O 使用 interceptor 包装前捕获的
+  Context，单独取消包装 Context 不会唤醒底层发送。`serverStreamWithContext.SendMsg` 现在与 RecvMsg
+  对称地通过容量 1 的结果通道竞争底层发送和监控 Context；leader 丢失时立即向 handler 返回 cancel
+  cause，RPC unwind 后 transport 负责解除底层发送，迟到结果也不会阻塞 goroutine。blocked Send/Recv
+  回归连续 50 轮及 race 均通过。候选源码镜像
+  `sha256:abdf5eb291a8c4ecc184caa69113a98b72056c77808f82dfcc615897dbc4e868` 滚动到 3/3 后，
+  真实 PD quorum-loss 组合门禁再次通过：Watch 轮 41.49 秒内 38 个提交事件全部交付
+  （39 responses、12 次瞬态失败、final revision 14376），Lease require-leader 轮 38.25 秒内通过
+  raw `Unavailable`/`etcdserver: no leader`、高层 channel 分流及普通 lease 恢复续租断言。两轮均实际
+  隔离两个 PD 并恢复，规则零残留、TidbCluster Ready。真实门禁用于证明发送侧改动未破坏
+  Watch/Lease 恢复；flow-control 饱和本身由可重复的阻塞 SendMsg 单测直接覆盖，尚未声称完成公网慢
+  客户端或大响应压力验证。
 
 ### P2：运维兼容和长期验证
 
