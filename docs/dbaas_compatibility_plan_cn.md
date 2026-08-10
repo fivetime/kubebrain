@@ -38606,9 +38606,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   membership、metrics 与 read checks；这些底层 KubeBrain public surface 已分别由 endpoint
   status/health、MemberList、Prometheus metrics parity、Range/linearizable read 和生产只读探测覆盖。
   当前 `/root/etcd/bin/etcdctl` 仍返回 `unknown command "diagnosis"`，说明本地官方二进制尚未包含
-  该源码功能；因此本轮不增加依赖该二进制的 live test。后续等官方二进制或本仓测试 fixture
-  含 `diagnosis` 后，应新增黑盒 smoke，校验 KubeBrain endpoint 下 JSON report 至少能完成
-  status、member、metrics 和 read plugins。
+  该源码功能；因此本轮不增加依赖该二进制的 live test。后续审计确认该功能先由 `b1ae123a7`
+  合入，随后由 `4309e77d4` 删除并经 merge `1a961fc42` 进入当前 `5cd9f4ee1380` 主线；当前源码与
+  当前源码构建的官方 CLI 都不再提供 `diagnosis`。因此原“未来补 diagnosis smoke”待办已关闭，
+  不能把已撤销的实验命令当作 KubeBrain 客户端兼容要求；底层 status、member、metrics 和 read
+  surface 继续由各自的官方客户端/黑盒门禁覆盖。
 
   对照 `417e46d7e`、`0589e4bb8`、`93583d0c0`、`3d0b39bdb`、`d3e3308cd`、
   `f57a28fa8` 与 `386eb3023`：官方变更集中在 robustness model/report/patch history、
@@ -45155,6 +45157,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时自报短 SHA `5cd9f4ee1`；构建后 source 仍 clean。脚本随后逐件调用 provenance verifier，只有全部匹配才输出可复制的四个 runner
   环境变量。静态契约固定 clean/empty/readonly/三件套验证且禁止递归删除；compat、race、vet/vuln 和 ShellCheck 继续作为门禁。该项不
   访问 TiKV/PD，只让当前源码 oracle 从“正确拒绝旧制品”推进到“可审计地产生可用新制品”。
+
+- A4272 把 A4166 对当前 upstream `b35f739fa` 的 `etcdctl txn` lease compare 分类推进为真实 CLI
+  执行证据。官方 CLI 输出 lease ID 时使用十六进制，但旧交互式 txn parser 把 compare value 当字符串交给
+  要求 int64 的 clientv3 Compare；真实旧
+  `/root/etcd/bin/etcdctl` 在请求发出前复现 `panic: bad value`（exit 2）。新增 current-provenance 官方
+  `etcdctl` 双端黑盒：分别在 reference etcd 与 KubeBrain 创建并绑定真实租约，把该 ID 以 `%x` 回填到
+  `lease(key) = "..."`，要求 success branch 落盘。该变化属于官方 CLI 文本到既有 `Compare_LEASE int64`
+  wire 字段的解析修复，KubeBrain 服务端无需复制 parser；既有 raw gRPC compare matrix 继续覆盖服务器端
+  LEASE 比较语义。真实 TiKV/PD 执行仍受当前已记录的 `KvPrewrite context deadline exceeded` 半故障限制，
+  环境恢复后应以 A4271 构建的三件套重跑本场景；本轮可先在 reference 端证明当前 CLI oracle 行为。
 
 ### P2：运维兼容和长期验证
 
