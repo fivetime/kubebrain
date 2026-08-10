@@ -45131,6 +45131,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   runner 全部强制调用；契约测试固定匹配成功、真实 mismatch 诊断与 8/8 接线，防止某个专项入口绕过。该项强化测试证据，不访问
   TiKV/PD，也不把旧 binary 的行为记录成运行时兼容差距。
 
+- A4269 补齐 A4268 首轮按 `REFERENCE_ETCD_BIN` 搜索遗漏的 restart oracle。cold-header、alarm restart 和 replica restart
+  三个 runner 使用旧变量名 `REFERENCE_ETCD_BINARY`，其 Go 测试会自行多次启动/停止官方进程，因此原 8/8 门禁仍可被这三条 wrapper
+  或直接 `go test` 绕过。接线矩阵现扩大为 11/11，三个 wrapper 在任何 reference 启动前映射变量并调用共享 verifier；测试侧共享
+  `startCompatCommand` 只要发现正在启动 `REFERENCE_ETCD_BINARY`，也会独立执行同一 provenance 校验。这样 txn/watch restart、idle/
+  cold header、lease expiry、HashKV/compaction、alarm、restore/delete 和 snapshot-history 等直接 oracle 都 fail closed，而普通 subprocess
+  不受影响。compat 全量、定向 race、vet/govulncheck 与全仓 ShellCheck 通过；该项仍只强化测试证据，不访问 TiKV/PD。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -62,6 +62,7 @@ if [[ ! -x "$REFERENCE_ETCD_BINARY" ]]; then
   echo "reference etcd binary is not executable: $REFERENCE_ETCD_BINARY" >&2
   exit 1
 fi
+REFERENCE_ETCD_BIN="$REFERENCE_ETCD_BINARY" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"
 if [[ ! -x "$ETCDCTL_BIN" ]]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
   exit 1

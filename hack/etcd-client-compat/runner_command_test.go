@@ -78,6 +78,9 @@ func runCompatCommand(ctx context.Context, commandName string, args []string, en
 
 func startCompatCommand(t *testing.T, commandName string, args ...string) func() {
 	t.Helper()
+	if referenceBinary := os.Getenv("REFERENCE_ETCD_BINARY"); referenceBinary != "" && commandName == referenceBinary {
+		requireReferenceEtcdProvenance(t, referenceBinary)
+	}
 	processCtx, cancel := context.WithCancel(context.Background())
 	command := exec.CommandContext(processCtx, commandName, args...)
 	configureCompatProcessGroup(command)
@@ -97,6 +100,16 @@ func startCompatCommand(t *testing.T, commandName string, args ...string) func()
 	}
 	t.Cleanup(stop)
 	return stop
+}
+
+func requireReferenceEtcdProvenance(t *testing.T, binary string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), compatScriptCommandTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, "bash", "verify-reference-etcd-provenance.sh")
+	command.Env = append(os.Environ(), "REFERENCE_ETCD_BIN="+binary)
+	output, err := command.CombinedOutput()
+	require.NoError(t, err, string(output))
 }
 
 func configureCompatProcessGroup(command *exec.Cmd) {
@@ -426,14 +439,17 @@ func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 
 func TestEveryReferenceEtcdRunnerVerifiesProvenance(t *testing.T) {
 	runners := []string{
+		"run-alarm-restart-recovery.sh",
 		"run-auth-differential.sh",
 		"run-automatic-quota-differential.sh",
+		"run-cold-header-recovery.sh",
 		"run-differential.sh",
 		"run-direct-moveleader-differential.sh",
 		"run-jwt-differential.sh",
 		"run-make-mirror-differential.sh",
 		"run-rangestream-compaction-differential.sh",
 		"run-rangestream-oversize-differential.sh",
+		"run-replica-restart-revision.sh",
 	}
 	for _, runner := range runners {
 		data, err := os.ReadFile(runner)
