@@ -888,7 +888,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 
 	backendPrefix := watchBackendPrefix(r.Key, r.RangeEnd)
 	watchRevision := uint64(r.StartRevision)
-	ch, localGeneration, err := w.openWatchChannel(ctx, r, backendPrefix, watchRevision)
+	ch, localGeneration, generationEpoch, err := w.openWatchChannel(ctx, r, backendPrefix, watchRevision)
 	klog.InfoS("[watch stream] watch", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "backendPrefix", backendPrefix, "rev", r.StartRevision)
 	if err != nil {
 		w.metricCli.EmitCounter("watch.backend.err", 1)
@@ -917,6 +917,26 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		defer progressTicker.Stop()
 		progressC = progressTicker.C
 	}
+	resumeGeneration := func() bool {
+		if !w.grpcServer.peers.EtcdProxyEnabled() || w.nextWatchRevisionCompacted(ctx, id) {
+			return false
+		}
+		// Backend and proxy channels are generation-scoped. Resume from the
+		// first revision not actually delivered to the client. syncedRev is
+		// advanced only after Send succeeds, so discarding an unread result from
+		// an obsolete generation remains both gap-free and duplicate-free.
+		watchRevision = nextUndeliveredWatchRevision(wt, watchRevision)
+		var reopenErr error
+		ch, localGeneration, generationEpoch, reopenErr = w.reopenWatchChannel(ctx, r, backendPrefix, watchRevision)
+		if reopenErr == nil {
+			klog.InfoS("[watch stream] watch resumed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision, "local", localGeneration)
+			return true
+		}
+		if ctx.Err() == nil {
+			klog.ErrorS(reopenErr, "[watch stream] watch resume failed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision)
+		}
+		return false
+	}
 	for {
 		select {
 		case result, ok := <-ch:
@@ -924,24 +944,11 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", string(r.Key))
 				_, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
 				roleTransition := localGeneration || leadingFresh
-				if ctx.Err() == nil && roleTransition && w.grpcServer.peers.EtcdProxyEnabled() && !w.nextWatchRevisionCompacted(ctx, id) {
-					// Backend and proxy channels are generation-scoped. A local
-					// generation closes on leadership loss; a proxy generation closes
-					// when this replica becomes leader. Resume from the first revision
-					// not actually delivered to the client in either direction.
-					// This is both gap-free and duplicate-free because syncedRev is
-					// advanced only after Send succeeds.
-					watchRevision = nextUndeliveredWatchRevision(wt, watchRevision)
-					var reopenErr error
-					ch, localGeneration, reopenErr = w.reopenWatchChannel(ctx, r, backendPrefix, watchRevision)
-					if reopenErr == nil {
-						klog.InfoS("[watch stream] watch resumed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision, "local", localGeneration)
-						continue
-					}
-					if ctx.Err() != nil {
-						return
-					}
-					klog.ErrorS(reopenErr, "[watch stream] watch resume failed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision)
+				if ctx.Err() == nil && roleTransition && resumeGeneration() {
+					continue
+				}
+				if ctx.Err() != nil {
+					return
 				}
 				compacted := w.nextWatchRevisionCompacted(ctx, id)
 				var closeErr error
@@ -951,6 +958,28 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 				w.Cancel(id, closeErr, compacted)
 				klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
 				return
+			}
+			if localGeneration {
+				currentEpoch, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
+				if !leadingFresh || currentEpoch != generationEpoch {
+					// OnStoppedLeading may lag the renew-deadline self fence. Do not
+					// publish anything newly observed from that obsolete local
+					// generation; the current leader must replay it from syncedRev+1.
+					klog.InfoS("[watch stream] local generation leadership fence changed", "watcher", w.id, "watch", id, "key", string(r.Key), "generationEpoch", generationEpoch, "currentEpoch", currentEpoch, "leadingFresh", leadingFresh)
+					if ctx.Err() == nil && resumeGeneration() {
+						continue
+					}
+					if ctx.Err() != nil {
+						return
+					}
+					compacted := w.nextWatchRevisionCompacted(ctx, id)
+					var staleErr error
+					if compacted {
+						staleErr = compactedRevisionError()
+					}
+					w.Cancel(id, staleErr, compacted)
+					return
+				}
 			}
 			if result.Err != nil {
 				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", string(r.Key), "err", result.Err)
@@ -1170,34 +1199,35 @@ func emitWatchSendLoopProgressDuration(metricCli metrics.Metrics, duration time.
 // openWatchChannel binds one watch generation to the authoritative source for
 // the node's current role. The local backend and follower proxy expose the same
 // WatchResult stream, so callers can resume between them at an explicit revision.
-func (w *watcher) openWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, error) {
-	if _, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh(); leadingFresh {
+func (w *watcher) openWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, uint64, error) {
+	epoch, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
+	if leadingFresh {
 		ch, err := w.backend.Watch(ctx, backendPrefix, revision)
-		return ch, true, err
+		return ch, true, epoch, err
 	}
 	ch, err := w.grpcServer.peers.Watch(ctx, r.Key, r.RangeEnd, revision)
-	return ch, false, err
+	return ch, false, 0, err
 }
 
 // reopenWatchChannel tolerates the short no-leader interval between terms. A
 // closed generation is not a terminal watch cancellation; retry until a current
 // leader can serve the explicit resume revision or the client goes away.
-func (w *watcher) reopenWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, error) {
+func (w *watcher) reopenWatchChannel(ctx context.Context, r *etcdserverpb.WatchCreateRequest, backendPrefix string, revision uint64) (<-chan etcdproxy.WatchResult, bool, uint64, error) {
 	// Avoid a hot loop when a proxy implementation briefly returns an already-
 	// closed generation while its leader cache is converging.
 	if err := waitWatchReconnect(ctx); err != nil {
-		return nil, false, err
+		return nil, false, 0, err
 	}
 	for {
-		ch, local, err := w.openWatchChannel(ctx, r, backendPrefix, revision)
+		ch, local, epoch, err := w.openWatchChannel(ctx, r, backendPrefix, revision)
 		if err == nil {
-			return ch, local, nil
+			return ch, local, epoch, nil
 		}
 		if isWatchCompactedError(err) {
-			return nil, false, err
+			return nil, false, 0, err
 		}
 		if err := waitWatchReconnect(ctx); err != nil {
-			return nil, false, err
+			return nil, false, 0, err
 		}
 	}
 }

@@ -44928,6 +44928,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   关闭时仍依赖 `OnStoppedLeading -> CloseWatchers` 唤醒，显式 require-leader stream 则已有 100ms 生命周期 fence。真实
   TiKV/PD stale-leader Watch 切换仍待环境恢复后补跑，并需继续量化普通 stream 在 callback 延迟窗口内的交付边界。
 
+- A4246 封闭已建立本地 Watch generation 在 self-fence 与 `OnStoppedLeading` 回调之间继续交付的窗口。对照
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的单一 MVCC `WatchStream` 发送顺序，以及 KubeBrain 独立 TiKV/PD 数据面必须由
+  当前 fresh leader 承担本地订阅的架构约束：此前 A4245 只在创建和 channel reopen 时选源；若 renew deadline 已过而 client-go
+  leader flag 和本地 channel 尚未关闭，旧 generation 的下一批事件或 in-band progress 仍会被消费，并可能把 successor term
+  窗口内的 revision 当成本地权威进度。现在每个本地 `WatchResult` 在校验、推进 watermark 或发送前重新检查
+  `EpochAndLeadingFresh`，同时要求 epoch 与创建 generation 时一致；freshness 丢失或同节点进入新 epoch 时丢弃该 generation 的
+  未交付结果，并严格从最后成功发送的 `syncedRev+1` 重开 proxy。
+  proxy disabled 时按既有 generation-close 契约取消 stream，绝不发布旧结果。定时及按需 progress 只读取已经成功交付的
+  `syncedRev`，因此静默 channel 即使等待延迟回调也不会宣称未交付的 successor revision。确定性竞态测试保持
+  `IsLeader=true` 且不关闭旧 channel：epoch-change 用例注入 revision 11 的 stale-local 事件，证明新 epoch 的本地 generation 从
+  11 恢复且客户端只收到新 generation 的权威值；freshness-loss 用例注入 progress revision 20，证明两个 watermark 均保持 9
+  且 proxy 仍从 10 恢复。
+  真实 TiKV/PD partition、renew-deadline self-fence 与延迟 `OnStoppedLeading` 组合仍受既知环境故障限制，恢复后需补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
