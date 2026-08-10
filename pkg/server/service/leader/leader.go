@@ -175,6 +175,15 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// LeaseExpiryExtension returns the election window a newly promoted data-plane
+// leader must add to recovered lease deadlines. It is the client-go analogue of
+// etcd's Raft ElectionTimeout passed to lessor.Promote: keepalives cannot be
+// served while leadership is unavailable, so that interval must not consume a
+// client's remaining lease lifetime.
+func (c Config) LeaseExpiryExtension() time.Duration {
+	return c.withDefaults().LeaseDuration
+}
+
 // Validate enforces the ordering client-go requires and that the #39 write-fence
 // self-fencing stays safe: RetryPeriod < RenewDeadline < LeaseDuration. Called on
 // the operator-supplied values (defaults already applied).

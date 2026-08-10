@@ -44889,6 +44889,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   合法记录可修复且旧 term 不能覆盖 reload。该路径涉及 TiKV 不确定提交；真实 TiKV/PD 故障注入仍受既知环境故障限制，待
   环境恢复后补跑，当前内存后端门禁不作为替代证据。
 
+- A4242 对齐 leader promotion 的 lease election-window 延长。上游
+  `/root/etcd/server/etcdserver/server.go` 在新 term 首个 committed entry 后调用
+  `lessor.Promote(ElectionTimeout())`，`/root/etcd/server/lease/lessor.go` 再以
+  `remainingTTL/grantedTTL + ElectionTimeout` 重建 expiry，避免选主期间无法 keepalive 的时间从客户端 lease 寿命中扣除。
+  KubeBrain 先前 reload 只设置 `now + remainingTTL/grantedTTL`。现在生产装配把 client-go leader election 的有效
+  `LeaseDuration` 作为对应 failover window 传给 lease manager，`ReloadLeases` 对全部恢复 deadline 加上该窗口；零配置使用
+  既有 8 秒默认，自定义配置使用实际 lease duration，新 Grant/Renew 不额外延长。极端 TTL/配置组合使用饱和 duration，防止
+  deadline 回绕到过去。回归验证默认/自定义配置传播、checkpointed lease 的内部 deadline 与公开 TTL 均包含 extension。
+  真实 TiKV/PD leader failover 仍受既知环境故障限制，恢复后需补跑 keepalive 跨选主窗口场景。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

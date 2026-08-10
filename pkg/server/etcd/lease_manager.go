@@ -71,6 +71,9 @@ type leaseManager struct {
 	// leaseMu.
 	orphanSweepStop     chan struct{}
 	orphanSweepInterval time.Duration
+	// leasePromotionExtension protects recovered leases from losing lifetime
+	// during the leader-election window. Configured before Campaign starts.
+	leasePromotionExtension time.Duration
 	// leasedKeyCount mirrors len(keyLeaseIndex) for a lock-free fast path in
 	// leaseIDForKey: the read path resolves an attached lease for every returned
 	// KeyValue, and the overwhelmingly common case (a range over keys that hold

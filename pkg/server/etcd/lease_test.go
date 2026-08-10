@@ -2400,6 +2400,34 @@ func TestLeaseRecoveryClampsPersistedGrantedTTLToMinimumLikeEtcd(t *testing.T) {
 	}
 }
 
+func TestLeaseRecoveryExtendsDeadlineByElectionWindowLikeEtcdPromote(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 82_032
+	const remainingTTL int64 = 7
+	extension := 3 * time.Second
+	server.SetLeasePromotionExtension(extension)
+	record, err := json.Marshal(leaseRecord{ID: leaseID, TTL: 30, RemainingTTL: remainingTTL})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), record))
+
+	before := time.Now()
+	require.NoError(t, server.ReloadLeases(ctx))
+
+	server.leaseMu.Lock()
+	deadline := server.leases[leaseID].deadline
+	server.leaseMu.Unlock()
+	require.WithinDuration(t, before.Add(time.Duration(remainingTTL)*time.Second+extension), deadline, 250*time.Millisecond,
+		"promotion must preserve lease lifetime lost during the election window")
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, ttl.TTL, remainingTTL+int64(extension/time.Second)-1,
+		"the public TTL must include the election window immediately after promotion")
+	require.Equal(t, time.Duration(math.MaxInt64), leaseRecoveryDuration(maxLeaseTTL, time.Duration(math.MaxInt64)),
+		"an extreme configured election window must saturate instead of wrapping the deadline into the past")
+}
+
 // TestLeaseRevokeCompletesWhileRenewCheckpointIsBlocked mirrors upstream
 // f8f1074b4/TestLeaseRevokeDuringRenew. A slow remaining-TTL checkpoint must
 // not make the higher-priority Revoke wait, and a renewal that resumes after

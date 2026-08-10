@@ -1665,7 +1665,7 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 // applyLeaseRecords atomically replaces the in-memory lease state from storage:
 // it stops existing expiry timers, rebuilds the lease map from the meta records
 // and the key->lease bindings from the per-key attachment records, and schedules
-// timers from a fresh now+TTL deadline. Any lease whose meta still carried an
+// timers from a fresh now+TTL+election-window deadline. Any lease whose meta still carried an
 // inline key list (a pre-#17 record) is included in the returned slice so the
 // leader can migrate it to the new per-key format. Safe on both first restore
 // (empty maps) and leadership reload.
@@ -1705,7 +1705,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 			// TTL checkpoint bounds failover extension for long leases. Without a
 			// checkpoint, use the granted TTL; legacy absolute deadlines remain
 			// ignored because keepalive never maintained them.
-			deadline: now.Add(time.Duration(recoveryTTL) * time.Second),
+			deadline: now.Add(leaseRecoveryDuration(recoveryTTL, m.leasePromotionExtension)),
 			keys:     make(map[string]struct{}, len(record.Keys)),
 			revoked:  make(chan struct{}),
 		}
@@ -1759,6 +1759,17 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 	}
 	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	return legacy
+}
+
+func leaseRecoveryDuration(ttl int64, extension time.Duration) time.Duration {
+	duration := time.Duration(ttl) * time.Second
+	if extension <= 0 {
+		return duration
+	}
+	if extension > time.Duration(math.MaxInt64)-duration {
+		return time.Duration(math.MaxInt64)
+	}
+	return duration + extension
 }
 
 func spreadLeaseExpiries(leases []*leaseState, revokeRate int) {

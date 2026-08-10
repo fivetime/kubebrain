@@ -168,6 +168,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.etcdServer.SetRequestRateLimit(config.MaxRequestRate, config.RequestRateBurst)
 	s.etcdServer.SetMaxDeleteRangeKeys(config.MaxDeleteRangeKeys)
 	s.etcdServer.SetMaxWatches(config.MaxWatches)
+	s.etcdServer.SetLeasePromotionExtension(config.getLeaderConfig().LeaseExpiryExtension())
 	s.etcdServer.SetAuthConfiguration(config.AuthToken, config.BcryptCost, config.AuthTokenTTL)
 	s.etcdServer.SetClientCertAuth(config.ClientCertAuth)
 	// MemberList ClientURLs: advertise the homogeneous client port with the

@@ -165,6 +165,16 @@ func (s *RPCServer) SetMaxWatches(limit uint32) {
 	s.maxWatches = limit
 }
 
+// SetLeasePromotionExtension configures the election window added to every
+// recovered lease when this replica becomes leader, matching etcd's
+// lessor.Promote(ElectionTimeout). It is configured before Campaign starts.
+func (s *RPCServer) SetLeasePromotionExtension(extension time.Duration) {
+	if extension < 0 {
+		extension = 0
+	}
+	s.leasePromotionExtension = extension
+}
+
 type leaseState struct {
 	id              int64
 	ttl             int64

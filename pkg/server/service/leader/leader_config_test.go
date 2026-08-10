@@ -28,9 +28,11 @@ func TestLeaderConfigDefaultsAndValidate(t *testing.T) {
 	require.Equal(t, defaultRenewDeadline, d.RenewDeadline)
 	require.Equal(t, defaultRetryPeriod, d.RetryPeriod)
 	require.NoError(t, Config{}.Validate())
+	require.Equal(t, defaultLeaseDuration, Config{}.LeaseExpiryExtension())
 
 	// A valid tighter set (faster failover) passes.
 	require.NoError(t, Config{LeaseDuration: 4 * time.Second, RenewDeadline: 2 * time.Second, RetryPeriod: 500 * time.Millisecond}.Validate())
+	require.Equal(t, 4*time.Second, Config{LeaseDuration: 4 * time.Second}.LeaseExpiryExtension())
 
 	// Partial config: only the set fields override; the rest default. Here a
 	// too-large RenewDeadline (>= default LeaseDuration 8s) must be rejected.
