@@ -91,6 +91,25 @@ func TestOperationSubmitterRBACIsNamespacedAndCannotMutateStatus(t *testing.T) {
 	require.Equal(t, rbacParty{Kind: "Role", Name: "kubebrain-operation-submitter"}, binding.RoleRef)
 }
 
+func TestLegacySnapshotRemediationRequesterCanOnlySubmitImmutableEvidence(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-legacy-snapshot-remediation-requester-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 3)
+	require.Equal(t, "kubebrain-legacy-snapshot-remediation-requester", documents[0].Metadata.Name)
+	require.NotNil(t, documents[0].Automount)
+	require.False(t, *documents[0].Automount)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
+	}, documents[1].Rules)
+	for _, rule := range documents[1].Rules {
+		require.NotContains(t, rule.Resources, "kubebrainoperations/status")
+		require.NotContains(t, rule.Verbs, "update")
+		require.NotContains(t, rule.Verbs, "patch")
+		require.NotContains(t, rule.Verbs, "delete")
+	}
+}
+
 func TestOperationAPIRBACCanOnlySubmitAndReadOperations(t *testing.T) {
 	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-api.yaml")
 	documents := decodeRBACManifest(t, path)
@@ -187,11 +206,12 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 
 	binding := documents[3]
 	require.Equal(t, "RoleBinding", binding.Kind)
-	require.Len(t, binding.Subjects, 10)
+	require.Len(t, binding.Subjects, 11)
 	for _, name := range []string{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-cold-physical-restore-executor",
+		"kubebrain-legacy-snapshot-remediation-executor",
 		"kubebrain-restore-cutover-executor",
 		"kubebrain-post-restore-audit-executor",
 		"kubebrain-certificate-rotation-executor", "kubebrain-destroy-executor",
@@ -499,7 +519,7 @@ func TestOperationAuditAdmissionRequiresFinalizerAndReleaseEvidence(t *testing.T
 	require.Contains(t, policy.Spec.Validations[3].Expression, operationaudit.VersionAnnotation)
 	require.Contains(t, policy.Spec.Validations[4].Expression, "request.userInfo.username")
 	require.Contains(t, policy.Spec.Validations[4].Expression, "kubebrain-operation-approver")
-	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, policy.Spec.Validations[4].Expression, operationType)
 	}
 	require.NotContains(t, policy.Spec.Validations[4].Expression, `"Backup"`)

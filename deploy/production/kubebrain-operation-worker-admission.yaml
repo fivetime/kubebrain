@@ -24,6 +24,8 @@ spec:
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-executor") ||
         (object.spec.type == "ColdPhysicalRestore" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-restore-executor") ||
+        (object.spec.type == "LegacySnapshotHistoryRemediation" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-executor") ||
         (object.spec.type == "RestoreCutover" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-executor") ||
         (object.spec.type == "PostRestoreAudit" &&

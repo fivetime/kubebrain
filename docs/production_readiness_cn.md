@@ -2426,7 +2426,25 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 
   工具只在预检精确命中 legacy lease diagnostic 时调用同步 `compact --physical`，其他 Snapshot
   失败和已健康实例均拒绝 mutation；压缩提交后才下载新制品，并通过官方 `etcdutl snapshot status`
-  才原子发布 `OUTPUT`。该操作不可回滚且不能修复 corruption，也不等价于 TiKV/PD 物理 PITR。
+  才原子发布 `OUTPUT`。上述直调只用于 break-glass；生产默认入口是持久审批 Operation：
+
+  ```shell
+  kubectl apply -f deploy/production/kubebrain-legacy-snapshot-remediation-requester-admission.yaml
+  kubectl apply -f deploy/production/kubebrain-legacy-snapshot-remediation-requester-rbac.yaml
+  kubectl apply -f deploy/production/kubebrain-operation-executors.yaml
+
+  REQUEST_ID=change-2026-legacy-history \
+    ENDPOINT=https://kubebrain.example:2379 \
+    KUBE_CONTEXT=production \
+    hack/production/request-legacy-snapshot-remediation.sh
+  ```
+
+  requester 只运行原生只读诊断并创建 immutable parameter Secret 和未审批 Pending
+  `LegacySnapshotHistoryRemediation(maxAttempts=1)`；专用 approver 核对冻结的 endpoint、cluster ID、
+  revision 和外部变更单后才能批准。专用 executor 默认 0 副本，使用预编译 clientv3 helper，持续
+  heartbeat；失败直接终止且明确提示 compaction 可能已提交，禁止自动重试。成功制品和 receipt 位于
+  专用 RWX workspace。executor env Secret 只挂 TLS/root etcd 凭据，不得把凭据写入 Operation 参数。
+  该操作不可回滚且不能修复 corruption，也不等价于 TiKV/PD 物理 PITR。
 - `hack/backup/logical-export.sh` / `logical-restore.sh` 是当前生产备份与隔离恢复入口；上线
   前必须按本节后文完成 artifact 完整性、Object Lock、恢复 receipt 和持续审计门禁，不能
   只用一次本地导出成功声称具备 DR。
@@ -3153,7 +3171,7 @@ Pod UID，更新 Secret 后在 30 秒加 probe 容差内验证 endpoint 呈现�
 不变。轮换 CA 时必须先把旧、新 CA 同时发布到 executor trust bundle，再换 broker
 叶证书，最后确认所有 executor 使用新 CA 后撤旧；服务端热加载不能替代该双信任窗口。
 
-十类生产 executor 模板位于
+十一类生产 executor 模板位于
 `deploy/production/kubebrain-operation-executors.yaml`，默认全部为零副本。启用任意一类
 之前必须创建同名 `*-executor-env` Secret 和 `*-executor-workspace` PVC；证书轮换还必须
 创建 `kubebrain-certificate-rotation-executor-hooks` Secret，键
@@ -3175,7 +3193,7 @@ one-shot Operation 做 claim/heartbeat/receipt 演练，再扩到两个副本并
 滚动策略允许升级期间短暂三副本竞争，所有外部 hook 因此必须按 operation UID 和 attempt
 幂等。
 
-十类模板使用独立 ServiceAccount。它们能读取 Operation、更新 status 和管理实例 Lease，
+十一类模板使用独立 ServiceAccount。它们能读取 Operation、更新 status 和管理实例 Lease，
 但不能调用 Secret API；动态参数只能由 broker 在验证 SA 类型、owner、attempt 和 Lease
 后返回。该边界阻断同 namespace 的跨类型 Secret 读取，但 env Secret/PVC 本身仍由 kubelet
 挂载，节点或 broker 被攻陷不在此边界内。更高等级租户仍应拆分 operation namespace、

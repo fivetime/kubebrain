@@ -25,16 +25,17 @@ import (
 const maxTokenBytes = 16 << 10
 
 var serviceAccountTypes = map[string]string{
-	"kubebrain-backup-executor":                    "Backup",
-	"kubebrain-backup-deletion-executor":           "BackupDeletion",
-	"kubebrain-cold-physical-snapshot-executor":    "ColdPhysicalSnapshot",
-	"kubebrain-cold-physical-restore-executor":     "ColdPhysicalRestore",
-	"kubebrain-restore-cutover-executor":           "RestoreCutover",
-	"kubebrain-post-restore-audit-executor":        "PostRestoreAudit",
-	"kubebrain-certificate-rotation-executor":      "CertificateRotation",
-	"kubebrain-tikv-transaction-repair-executor":   "TiKVTransactionRepair",
-	"kubebrain-tikv-transaction-recovery-executor": "TiKVTransactionRecovery",
-	"kubebrain-destroy-executor":                   "Destroy",
+	"kubebrain-backup-executor":                      "Backup",
+	"kubebrain-backup-deletion-executor":             "BackupDeletion",
+	"kubebrain-cold-physical-snapshot-executor":      "ColdPhysicalSnapshot",
+	"kubebrain-cold-physical-restore-executor":       "ColdPhysicalRestore",
+	"kubebrain-legacy-snapshot-remediation-executor": "LegacySnapshotHistoryRemediation",
+	"kubebrain-restore-cutover-executor":             "RestoreCutover",
+	"kubebrain-post-restore-audit-executor":          "PostRestoreAudit",
+	"kubebrain-certificate-rotation-executor":        "CertificateRotation",
+	"kubebrain-tikv-transaction-repair-executor":     "TiKVTransactionRepair",
+	"kubebrain-tikv-transaction-recovery-executor":   "TiKVTransactionRecovery",
+	"kubebrain-destroy-executor":                     "Destroy",
 }
 
 type Handler struct {

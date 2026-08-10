@@ -103,6 +103,7 @@ spec:
                     - BackupDeletion
                     - ColdPhysicalSnapshot
                     - ColdPhysicalRestore
+                    - LegacySnapshotHistoryRemediation
                     - RestoreCutover
                     - PostRestoreAudit
                     - CertificateRotation

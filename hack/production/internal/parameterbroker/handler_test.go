@@ -57,6 +57,7 @@ func TestHandlerAuthenticatesHighRiskExecutorTypes(t *testing.T) {
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},
+		{serviceAccount: "kubebrain-legacy-snapshot-remediation-executor", operationType: "LegacySnapshotHistoryRemediation"},
 	} {
 		t.Run(tc.serviceAccount, func(t *testing.T) {
 			handler, err := NewHandler(
@@ -83,6 +84,7 @@ func TestHandlerReturnsHighRiskParametersThroughTypeBoundBrokerIdentity(t *testi
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},
+		{serviceAccount: "kubebrain-legacy-snapshot-remediation-executor", operationType: "LegacySnapshotHistoryRemediation"},
 	} {
 		t.Run(tc.operationType, func(t *testing.T) {
 			parameters := []byte(`{"repair":"bound"}`)
@@ -529,7 +531,7 @@ func claimedOperationWithType(
 	})
 	require.NoError(t, err)
 	if operationType == "TiKVTransactionRepair" || operationType == "TiKVTransactionRecovery" ||
-		operationType == "ColdPhysicalSnapshot" || operationType == "ColdPhysicalRestore" {
+		operationType == "ColdPhysicalSnapshot" || operationType == "ColdPhysicalRestore" || operationType == "LegacySnapshotHistoryRemediation" {
 		_, err = queue.Approve(
 			context.Background(), operationName, operationaudit.ApproverUsername, "change-test-1",
 		)

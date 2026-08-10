@@ -1,0 +1,43 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-legacy-snapshot-remediation-request-operation}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
+  matchConditions:
+    - name: legacy-remediation-scope
+      expression: 'object.spec.type == "LegacySnapshotHistoryRemediation" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"', message: legacy remediation operations require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations"', message: legacy remediation requester is restricted to the production operation queue}
+    - {expression: 'object.metadata.name.matches("^legacy-snapshot-remediation-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: legacy remediation operation identity must be deterministic}
+    - {expression: 'object.spec.type == "LegacySnapshotHistoryRemediation" && object.spec.requestedBy == "platform:legacy-snapshot-remediation" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1', message: legacy remediation operation shape is fixed}
+    - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")', message: legacy remediation operation must bind its immutable parameter Secret}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-legacy-snapshot-remediation-request-operation}
+spec: {policyName: kubebrain-legacy-snapshot-remediation-request-operation, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-legacy-snapshot-remediation-request-parameters}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - name: legacy-remediation-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^legacy-snapshot-remediation-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-legacy-snapshot-remediation-requester"', message: legacy remediation parameter Secrets require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^legacy-snapshot-remediation-[a-f0-9]{20}-parameters$")', message: legacy remediation parameter Secret identity is fixed}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: legacy remediation parameters must be one immutable opaque payload}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-legacy-snapshot-remediation-request-parameters}
+spec: {policyName: kubebrain-legacy-snapshot-remediation-request-parameters, validationActions: [Deny]}

@@ -45670,6 +45670,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   也不自动压缩：用户明确选择永久放弃旧历史后才能恢复在线 Snapshot；因此矩阵仍保留“升级历史有
   条件”，且该缓解不关闭独立 TiKV/PD 物理 PITR 缺口。
 
+- A4312 将 A4311 的 break-glass 物理 Compact 纳入 DBaaS 持久 Operation，而不把“人工说已审批”当作
+  可审计控制。接线审计确认运行镜像只有 Alpine `etcd-ctl 3.6.10`，没有与数据面 API 同版本固定的
+  3.7 `etcdutl`；executor 不能依赖发行版 CLI 的版本和命令集合。因此新增预编译
+  `kubebrain-legacy-snapshot-remediation`，直接使用官方 clientv3 Status、Snapshot
+  和 `WithCompactPhysical`，下载制品同时验证尾部 SHA-256 与 bbolt consistency，并以 link(2)
+  no-clobber 发布。其确定性 fake-client 回归固定：只有精确 endpoint/cluster ID/current revision 与
+  irreversible opt-in 全匹配才调用 Compact，`MaxUint64` cluster ID 不经浮点解析，identity 漂移时零
+  mutation。
+
+  新 `LegacySnapshotHistoryRemediation` CRD 类型属于强制审批高风险集合。只读 requester 必须先让
+  native diagnose 精确返回 legacy lease limitation，才冻结 request ID、单 endpoint、cluster ID 和
+  revision 到 immutable Secret，并提交 deterministic、未审批、`maxAttempts=1` Operation；专用 admission
+  阻止该身份创建其他 type/Secret shape，最小 RBAC 没有 approve、status、update、patch 或 delete。
+  专用 runner 复算参数摘要和 operation identity、持续 heartbeat，调用 helper 时才注入不可逆 opt-in；
+  失败直接写终态 `Failed`，因为 logical watermark 可能已经提交，绝不 requeue/retry。成功后在独立 RWX
+  workspace 保留标准 backend artifact 和绑定 endpoint/cluster/revision/artifact SHA-256 的 receipt。
+  executor、parameter broker identity/network policy、worker admission/RBAC、audit allowlist 和运行镜像均
+  已接线，Deployment 默认 0 副本。native 核心 20 轮、requester/runner 10 轮、非 production 全模块、
+  全仓 vet、ShellCheck 和 production 279 项四分片（59/81/69/70，分别
+  129.152/239.514/163.707/407.933 秒）均通过；完整 TiKV 镜像构建成功，测试 image ID
+  `sha256:210ee85a4ddabe6071b02f2eb2821ebc4c6759fae516ba9909c93f37ac0b8f07`，以
+  `65532:65532` 直接执行新 helper 并按预期 fail closed。该项交付审批/lease fencing/audit 链，仍未在真实 retained-v1 生产
+  keyspace 执行不可逆 compaction；A4311 的来源限制与 TiKV/PD 物理 PITR 缺口均保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

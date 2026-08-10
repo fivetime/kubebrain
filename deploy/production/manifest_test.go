@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -522,6 +523,7 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Contains(t, operationTypes, "BackupDeletion")
+	require.Contains(t, operationTypes, "LegacySnapshotHistoryRemediation")
 	tenantType := nestedString(
 		t, version, "schema", "openAPIV3Schema", "properties", "spec",
 		"properties", "tenant", "type",
@@ -655,6 +657,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		"kubebrain-cold-physical-restore-executor": {
 			"run-cold-physical-restore-operation.sh", "kubebrain-cold-physical-restore-executor-env",
 			"kubebrain-cold-physical-restore-executor-workspace",
+		},
+		"kubebrain-legacy-snapshot-remediation-executor": {
+			"run-legacy-snapshot-remediation-operation.sh", "kubebrain-legacy-snapshot-remediation-executor-env",
+			"kubebrain-legacy-snapshot-remediation-executor-workspace",
 		},
 		"kubebrain-restore-cutover-executor": {
 			"run-restore-cutover-operation.sh", "kubebrain-restore-cutover-executor-env",
@@ -801,6 +807,16 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 	}
 }
 
+func TestLegacySnapshotRemediationNativeHelperIsInRuntimeImage(t *testing.T) {
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	text := string(dockerfile)
+	require.Contains(t, text, "go build -trimpath -o /src/bin/kubebrain-legacy-snapshot-remediation ./hack/backup/cmd/legacy-snapshot-remediation")
+	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-legacy-snapshot-remediation /usr/local/bin/kubebrain-legacy-snapshot-remediation")
+	require.NotContains(t, text, "COPY --from=build /src/bin/etcdctl")
+	require.NotContains(t, text, "COPY --from=build /src/bin/etcdutl")
+}
+
 func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-parameter-broker.yaml")
 	deployment := objectByKindAndName(
@@ -902,7 +918,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
 		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
-		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",
+		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-legacy-snapshot-remediation-executor", "kubebrain-destroy-executor",
 	}, values)
 
 	managed := objectByKindAndName(
@@ -915,6 +931,21 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 	for _, raw := range managedRules {
 		require.NotContains(t, raw.(map[string]any)["resources"].([]any), "secrets")
 	}
+}
+
+func TestLegacySnapshotRemediationRequesterAdmissionIsFailClosed(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-legacy-snapshot-remediation-requester-admission.yaml")
+	require.Len(t, objects, 4)
+	operation := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-legacy-snapshot-remediation-request-operation")
+	require.Equal(t, "Fail", nestedString(t, operation, "spec", "failurePolicy"))
+	operationText := fmt.Sprint(operation.Object)
+	require.Contains(t, operationText, "LegacySnapshotHistoryRemediation")
+	require.Contains(t, operationText, "kubebrain-legacy-snapshot-remediation-requester")
+	require.Contains(t, operationText, "maxAttempts == 1")
+	parameters := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-legacy-snapshot-remediation-request-parameters")
+	parameterText := fmt.Sprint(parameters.Object)
+	require.Contains(t, parameterText, "object.immutable == true")
+	require.Contains(t, parameterText, `size(object.data) == 1`)
 }
 
 func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) {
@@ -1304,7 +1335,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
-	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, approvalExpression, `"`+operationType+`"`)
 	}
 	require.NotContains(t, approvalExpression, `"Backup"`)

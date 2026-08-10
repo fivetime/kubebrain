@@ -69,6 +69,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-logical-status ./hack/backup/cmd/logical-status \
     && go build -trimpath -o /src/bin/kubebrain-cold-snapshot-receipt ./hack/backup/cmd/cold-snapshot-receipt \
     && go build -trimpath -o /src/bin/kubebrain-cold-restore-render ./hack/backup/cmd/cold-restore-render \
+    && go build -trimpath -o /src/bin/kubebrain-legacy-snapshot-remediation ./hack/backup/cmd/legacy-snapshot-remediation \
     && go build -trimpath -o /src/bin/kubebrain-storage-capacity-verify ./hack/backup/cmd/storage-capacity-verify \
     && go build -trimpath -o /src/bin/kubebrain-logical-verify ./hack/backup/cmd/logical-verify \
     && go build -trimpath -o /src/bin/kubebrain-logical-etcd-snapshot ./hack/backup/cmd/logical-etcd-snapshot \
@@ -117,6 +118,7 @@ COPY --from=build /src/bin/kubebrain-logical-export /usr/local/bin/kubebrain-log
 COPY --from=build /src/bin/kubebrain-logical-status /usr/local/bin/kubebrain-logical-status
 COPY --from=build /src/bin/kubebrain-cold-snapshot-receipt /usr/local/bin/kubebrain-cold-snapshot-receipt
 COPY --from=build /src/bin/kubebrain-cold-restore-render /usr/local/bin/kubebrain-cold-restore-render
+COPY --from=build /src/bin/kubebrain-legacy-snapshot-remediation /usr/local/bin/kubebrain-legacy-snapshot-remediation
 COPY --from=build /src/bin/kubebrain-storage-capacity-verify /usr/local/bin/kubebrain-storage-capacity-verify
 COPY --from=build /src/bin/kubebrain-logical-verify /usr/local/bin/kubebrain-logical-verify
 COPY --from=build /src/bin/kubebrain-logical-etcd-snapshot /usr/local/bin/kubebrain-logical-etcd-snapshot
