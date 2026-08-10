@@ -3,6 +3,7 @@ package production_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -56,4 +57,14 @@ func TestValidateProductionReleaseRejectsMissingContextBeforeEitherGate(t *testi
 	output, err := runProductionScriptCommand(t, "validate-production-release.sh", nil)
 	require.Error(t, err)
 	require.Contains(t, string(output), "KUBE_CONTEXT is required")
+}
+
+func TestProductionReadinessRunbookUsesCompositeReleaseGate(t *testing.T) {
+	docPath := filepath.Join("..", "..", "docs", "production_readiness_cn.md")
+	contents, err := os.ReadFile(docPath)
+	require.NoError(t, err)
+	doc := string(contents)
+	require.GreaterOrEqual(t, strings.Count(doc, "hack/production/validate-production-release.sh"), 2)
+	require.NotContains(t, doc, "  hack/production/validate-instance-ready.sh\n```",
+		"formal release command blocks must not bypass the composite Region/storage gate")
 }

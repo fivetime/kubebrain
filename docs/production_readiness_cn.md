@@ -608,7 +608,7 @@ ENDPOINT=https://instance-a.example:2379 \
 ETCDCTL_CACERT=/run/secrets/ca.crt \
 ETCDCTL_CERT=/run/secrets/client.crt \
 ETCDCTL_KEY=/run/secrets/client.key \
-  hack/production/validate-instance-ready.sh
+  hack/production/validate-production-release.sh
 ```
 
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
@@ -781,7 +781,7 @@ endpoint hash 都等于期望 hash，revision/compact revision 非负，且每�
 compact revision 不得大于同一响应的 hash revision；该项适合冻结写入窗口、升级或恢复后
 钉住 HashKV 诊断结果。它不写入实例，因此
 可用于升级、恢复、网络策略或证书轮换前后的快速数据面存活门禁；
-它不能替代 `validate-instance-ready.sh` 的完整 release gate，也不能替代写入、lease、watch
+它不能替代 `validate-production-release.sh` 的完整组合 release gate，也不能替代写入、lease、watch
 或恢复正确性演练。
 启用 Status 校验时，脚本还会读取 HTTP gRPC-gateway 的 `/v3/maintenance/status`、
 `/v3/auth/status`、`/v3/maintenance/alarm`、client 口 `/version` 以及从 `READYZ_URL`

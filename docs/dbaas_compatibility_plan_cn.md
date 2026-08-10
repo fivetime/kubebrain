@@ -45421,6 +45421,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   发布必经路径，独立 Region 命令仅保留排障用途。本项不合并两套检查实现，也不让 endpoint 事务
   成功替代 PD/Region/持久卷健康证据。
 
+- A4294 完成 A4293 的正式 runbook 接入审计。生产就绪文档前部虽新增组合入口，后部包含全部
+  `EXPECTED_*`/TLS/etcdctl 参数的权威发布命令块仍直接执行 `validate-instance-ready.sh`，复制该命令
+  会继续绕过 Region/storage gate。该命令现改为 `validate-production-release.sh`，快速只读检查的说明
+  也明确不能替代“完整组合 release gate”。`TestProductionReadinessRunbookUsesCompositeReleaseGate`
+  要求文档至少在入口说明和完整命令各引用一次组合脚本，并禁止 fenced code block 末尾直接调用旧
+  instance 子门禁；旧脚本仍可由组合器和自身单测直接调用，不影响分层调试。production runner 静态
+  测试同时把新脚本纳入 bounded command helper 清单，防止其测试退回无 process-group/timeout 清理的
+  裸 `exec.Command`。本项不声称所有外部平台流水线已更新；仓库内权威发布命令和防回退证据已闭环。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
