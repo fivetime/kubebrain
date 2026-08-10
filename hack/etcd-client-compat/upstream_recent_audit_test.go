@@ -3672,6 +3672,7 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"5cd9f4ee1",
 		"fb30879ec",
 		"A4285",
+		"A4292",
 		"A4272",
 		"A4273",
 		"A4274",
@@ -3749,6 +3750,27 @@ func TestCLIProgressDependencyDoesNotLeakIntoDataplaneModules(t *testing.T) {
 		require.NoError(t, err, modulePath)
 		require.NotContains(t, string(contents), "github.com/cheggaaa/pb/v3", modulePath)
 	}
+}
+
+func TestCompatibilityMatrixKeepsIrrecoverableLegacySnapshotBoundaryOpen(t *testing.T) {
+	planPath := filepath.Join("..", "..", "docs", "dbaas_compatibility_plan_cn.md")
+	contents, err := os.ReadFile(planPath)
+	require.NoError(t, err)
+	plan := string(contents)
+	matrixStart := strings.Index(plan, "## 当前矩阵")
+	matrixEnd := strings.Index(plan[matrixStart:], "## 实施顺序")
+	require.GreaterOrEqual(t, matrixStart, 0)
+	require.Greater(t, matrixEnd, 0)
+	matrix := plan[matrixStart : matrixStart+matrixEnd]
+	require.Equal(t, 1, strings.Count(matrix, "部分兼容"), "Snapshot must remain the only explicitly partial matrix row")
+	require.Contains(t, matrix, "| Maintenance | Snapshot | 部分兼容")
+	require.Contains(t, matrix, "含 lease 不可判定的旧历史版本时 snapshot 明确失败")
+
+	sourcePath := filepath.Join("..", "..", "pkg", "server", "etcd", "maintenance_snapshot.go")
+	source, err := os.ReadFile(sourcePath)
+	require.NoError(t, err)
+	require.Contains(t, string(source), "!record.Current && !record.Tombstone && !record.LeaseKnown")
+	require.Contains(t, string(source), "errSnapshotHistoricalLeaseUnknown")
 }
 
 func TestMainModuleEtcdutlConsumersVerifyProvenance(t *testing.T) {

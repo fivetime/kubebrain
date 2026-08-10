@@ -45396,6 +45396,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一次 delete 并在消费 fence 停止。健康单目标和无 abnormal fallback 继续通过。本项允许先完成
   KubeBrain quiesce 再因漂移拒绝，但不会根据未经重新稳定采样的旧快照删除任何 TiKV。
 
+- A4292 回到服务端矩阵复核唯一显式“部分兼容”的 Maintenance Snapshot。权威 `/root/etcd` 仍为
+  `5cd9f4ee13801e18825d661e5005ae599460bc3a`；upstream bbolt MVCC 每个版本原生保存 lease ID，而
+  KubeBrain 早期 raw/v1 value 在写入时没有逐版本 lease 字段。对已经 rebind 的 retained 旧版本，
+  当前 attachment 只能证明最新 owner，无法区分历史 lease=0、旧 lease A 或旧 lease B；不存在可由
+  当前 TiKV 状态或 upstream 源码恢复的事实。把未知值猜成 0 会让 etcdutl restore 成功却伪造历史，
+  回填当前 attachment 同样会把未来 owner 倒灌到旧 revision，因此本轮不制造看似兼容的迁移。
+  `TestCompatibilityMatrixKeepsIrrecoverableLegacySnapshotBoundaryOpen` 现在要求当前矩阵恰好只有 Snapshot
+  一项“部分兼容”，固定“含 lease 不可判定的旧历史版本时明确失败”，并直接约束 runtime 仍对
+  `!Current && !Tombstone && !LeaseKnown` 返回 `errSnapshotHistoricalLeaseUnknown`。物理 Compact 清除
+  含糊 retained version 后 Snapshot 恢复，所有新 v2 版本已有权威 lease provenance；只有完成可证明的
+  legacy history 来源迁移或产品明确放弃该历史后，才允许修改此状态。本项记录真实不可恢复边界，
+  不改变 Snapshot wire/runtime，也不把 fail-closed 误写成协议完整兼容。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
