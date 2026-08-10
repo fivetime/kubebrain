@@ -45642,6 +45642,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/production` 全包在放宽为符合当前串行体量的 15 分钟门禁后 892.590 秒全绿；发布 CI 应拆分
   cold snapshot/restore 等长矩阵并并行执行，不能继续依赖只剩约 7 秒余量的单包总超时。
 
+- A4310 关闭 A4309 实测暴露的 production 发布门禁容量风险。复核 `/root/etcd@5cd9f4ee1` 后确认
+  当前 HEAD 已由 A4271–A4274 覆盖，73/73 协议 TODO 也已关闭，因此没有伪造新的 client-visible
+  兼容缺口；本轮只修真实 CI 可靠性。新增 `hack/production/test-shard.sh` 从
+  `go test -list '^Test'` 动态发现全部顶层测试，以测试名 SHA-256 模 4 确定归属，不维护会遗漏新增测试的
+  手写正则。`--verify` 对当前 267 项得到 58/75/66/68 四个非空、互斥分片；CI 普通 package job
+  精确排除且只排除 `hack/production`，独立 0–3 matrix job 各自直接执行一个 shard，任一失败都会让
+  workflow 失败。四片本机最终分别 110.802、236.917、149.186、366.638 秒通过，并行 wall time 从
+  串行 892.590 秒降到约 372 秒，最长片仍有充足 15 分钟测试预算。静态回归固定 workflow 的排除式、
+  完整 matrix 和调用次数；ShellCheck 与分片自校验通过。该项不改变数据面或以分片替代真实消费者/
+  TiKV 验证，只让已有生产故障矩阵持续成为可执行发布门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

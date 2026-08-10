@@ -51,6 +51,23 @@ KubeBrain 的目标不是"内部函数看起来对"，而是**"对 Kubernetes �
 
 - `hack/dev/{watch-soak,compact-soak,fault-smoke,compact-fault-smoke,lease-fault-smoke,ha-smoke,rollout-smoke,tikv-persistence-smoke}.sh`。
 
+### Production 运维测试分片
+
+`hack/production` 包含 cold snapshot/restore、repair、cutover、销毁和证书轮换等大量带等待器的
+故障矩阵，串行全包已达到约 15 分钟。CI 的普通 `go test` job 因此从 `go list ./...` 中只排除
+`github.com/kubewharf/kubebrain/hack/production`，该包由独立四路 matrix job 执行：
+
+```bash
+hack/production/test-shard.sh --verify 4
+hack/production/test-shard.sh 0 4 # shard index 为 0..3
+```
+
+分片不是手工维护的测试前缀 allowlist。脚本读取 `go test -list '^Test'`，以完整顶层测试名的
+SHA-256 对 shard 总数取模；新增或改名测试会自动且只进入一个 shard。`--verify` 要求发现至少一个
+测试、每片非空并报告精确计数，仓库测试还固定 workflow 必须排除单包全量执行并配置 0–3 四片。
+本地仍可用 `go test ./hack/production -count=1 -timeout=15m` 做串行总门禁；分片只缩短 wall time，
+不减少断言、子测试或故障场景。
+
 ## 开发闭环
 
 ```
