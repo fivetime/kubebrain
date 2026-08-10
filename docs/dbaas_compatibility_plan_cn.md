@@ -44983,6 +44983,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   校验后卡在 Raft term/header 获取，先发送 client Canceled 再释放组装，证明 stream 始终只有 terminal frame。真实 TiKV/PD
   cancel 与慢 header/fragment 组合仍待既知环境故障恢复后补跑。
 
+- A4251 把 A4250 的发送资格从数值 WatchId 收紧为具体逻辑 watch generation。etcd 允许显式 WatchId 在取消后复用；此前
+  `SendWatch` 只检查 `w.watches[id]` 是否存在，因此旧 goroutine 在 terminal Canceled 后完成慢 header 组装时，若同一 ID 已被新
+  create 占用，就会误把 replacement 当成自身仍 active，并在新 Created 后发送旧 key/range 的事件。现在 `Watch` 启动时捕获的
+  `*watch` 必须与 map 中当前指针完全一致，事件、periodic progress 和每个 fragment 才能提交；删除或同 ID replacement 都返回
+  inactive sentinel。对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 中 `ids`/底层 `WatchID` 生命周期，wire 上每个 Created
+  generation 不再被前代事件污染。确定性测试让旧 revision 10 事件卡在 header term 查询，依次发送旧 Canceled 和同 ID 新
+  Created，再释放旧 goroutine，证明响应序列严格止于 `[Canceled(old), Created(new)]`。真实 TiKV/PD cancel/recreate 与慢发送组合
+  仍待既知环境故障恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

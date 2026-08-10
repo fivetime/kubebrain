@@ -1876,7 +1876,7 @@ func TestLeaderWatchRechecksFreshnessAfterPrevKVAssemblyBeforeSend(t *testing.T)
 	<-done
 }
 
-func TestWatchCancelResponsePrecedesNoLaterEventSend(t *testing.T) {
+func TestWatchCancelAndIDReusePrecedeNoOldGenerationEventSend(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 
@@ -1917,16 +1917,26 @@ func TestWatchCancelResponsePrecedesNoLaterEventSend(t *testing.T) {
 	<-headerEntered
 
 	// The event was already assembled but had not committed to the stream. A
-	// client cancellation removes the WatchId and sends its terminal response;
-	// releasing header assembly afterward must not resurrect that WatchId.
+	// client cancellation removes the WatchId and sends its terminal response.
+	// Reuse the same explicit ID before releasing the old generation: mere map
+	// existence must not let that old event impersonate the replacement watch.
 	w.CancelRequest(7)
+	replacement := &watch{start: "/registry/watch/replacement", syncedRev: 19, sourceRev: 19}
+	w.Lock()
+	w.watches[7] = replacement
+	w.Unlock()
+	require.NoError(t, w.SendControl(&etcdserverpb.WatchResponse{
+		Header: txnHeader(19), WatchId: 7, Created: true,
+	}))
 	responses := stream.snapshot()
-	require.Len(t, responses, 1)
+	require.Len(t, responses, 2)
 	require.True(t, responses[0].Canceled)
 	require.Empty(t, responses[0].Events)
+	require.True(t, responses[1].Created)
+	require.False(t, responses[1].Canceled)
 	close(headerRelease)
 	w.wg.Wait()
-	require.Equal(t, responses, stream.snapshot(), "no event may appear after the terminal cancellation response")
+	require.Equal(t, responses, stream.snapshot(), "the old generation must not publish through a reused WatchId")
 }
 
 func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {

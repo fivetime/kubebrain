@@ -795,18 +795,19 @@ func (w *watcher) Send(resp *etcdserverpb.WatchResponse) error {
 	return err
 }
 
-// SendWatch orders the active-watch check with every wire send. Cancel removes
-// the watch before queuing its control response; holding sendMu here means an
-// event either commits to the wire before that Canceled frame, or observes the
-// removal and is suppressed. A canceled WatchId can therefore never reappear
-// after its terminal response, including between response fragments.
-func (w *watcher) SendWatch(id int64, resp *etcdserverpb.WatchResponse) error {
+// SendWatch orders the watch-generation check with every wire send. Cancel
+// removes the watch before queuing its control response; holding sendMu here
+// means an event either commits to the wire before that Canceled frame, or
+// observes the removal/reuse and is suppressed. A canceled generation can
+// therefore never reappear after its terminal response, including when the
+// client has reused the same WatchId or between response fragments.
+func (w *watcher) SendWatch(id int64, generation *watch, resp *etcdserverpb.WatchResponse) error {
 	w.sendMu.Lock()
 	defer w.sendMu.Unlock()
 	w.Lock()
-	_, active := w.watches[id]
+	current, active := w.watches[id]
 	w.Unlock()
-	if !active {
+	if !active || generation == nil || current != generation {
 		return errWatchInactive
 	}
 	err := w.watchServer.Send(resp)
@@ -1167,7 +1168,7 @@ watchLoop:
 				w.metricCli.EmitHistogram("watch.watch_stream.push.size", proto.Size(watchResponse))
 				start := time.Now()
 				sendWatch := func(response *etcdserverpb.WatchResponse) error {
-					return w.SendWatch(id, response)
+					return w.SendWatch(id, wt, response)
 				}
 				if r.Fragment {
 					sendErr = sendWatchFragments(watchResponse, w.grpcServer.watchFragmentBytes(), sendWatch)
@@ -1232,7 +1233,7 @@ watchLoop:
 			}
 			w.metricCli.EmitGauge("watch.watch_stream.progress", progressResp.Header.Revision)
 			start := time.Now()
-			if sendErr = w.SendWatch(id, progressResp); errors.Is(sendErr, errWatchInactive) {
+			if sendErr = w.SendWatch(id, wt, progressResp); errors.Is(sendErr, errWatchInactive) {
 				return
 			} else if sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.progress.err", 1)
