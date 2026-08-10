@@ -29,11 +29,11 @@ var (
 
 func decodeQuotaUsage(value []byte) (int64, error) {
 	if len(value) != 8 {
-		return 0, fmt.Errorf("invalid quota usage metadata length %d", len(value))
+		return 0, invalidQuotaMetadataf("invalid quota usage metadata length %d", len(value))
 	}
 	usage := binary.BigEndian.Uint64(value)
 	if usage > uint64(^uint64(0)>>1) {
-		return 0, fmt.Errorf("quota usage overflows int64: %d", usage)
+		return 0, invalidQuotaMetadataf("quota usage overflows int64: %d", usage)
 	}
 	return int64(usage), nil
 }

@@ -49,6 +49,8 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{markInvalidAuthMetadata(errors.New("decode auth config")), codes.DataLoss},
 		{markInvalidLeaseMetadata(errors.New("decode lease record")), codes.DataLoss},
 		{fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata), codes.DataLoss},
+		{fmt.Errorf("%w: decode quota usage", backend.ErrInvalidQuotaMetadata), codes.DataLoss},
+		{backend.ErrQuotaUninitialized, codes.Unavailable},
 	}
 	for _, test := range tests {
 		require.Equal(t, test.code, status.Code(authGRPCError(test.err)))

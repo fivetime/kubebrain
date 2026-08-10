@@ -10,14 +10,19 @@ package etcd
 
 import (
 	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -144,6 +149,46 @@ func TestQuotaRPCNoSpaceRecoveryAndStatus(t *testing.T) {
 	require.Empty(t, deactivate.Alarms)
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("m"), Value: []byte("x")})
 	require.NoError(t, err)
+}
+
+func TestQuotaRPCClassifiesPersistentUsageCorruption(t *testing.T) {
+	server := newQuotaRPCServer(t, 100)
+	ctx := context.Background()
+	require.NoError(t, server.backend.InternalPut(ctx, []byte("quota/usage"), []byte{1}))
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	connection, err := grpc.NewClient("passthrough:///quota-metadata-corruption",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, connection.Close()) })
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err = etcdserverpb.NewMaintenanceClient(connection).Status(callCtx, &etcdserverpb.StatusRequest{})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "invalid quota usage metadata length 1")
+	_, err = etcdserverpb.NewKVClient(connection).Put(callCtx, &etcdserverpb.PutRequest{Key: []byte("key"), Value: []byte("value")})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "invalid quota usage metadata length 1")
+}
+
+func TestQuotaRPCClassifiesDirtyTrackingAsUnavailable(t *testing.T) {
+	server := newQuotaRPCServer(t, 100)
+	ctx := context.Background()
+	require.NoError(t, server.backend.InternalPut(ctx, []byte("quota/tracking"), []byte{0}))
+
+	err := authGRPCError(func() error {
+		_, _, _, statusErr := server.backend.QuotaStatus(ctx)
+		return statusErr
+	}())
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.NotEqual(t, codes.DataLoss, status.Code(err))
 }
 
 func TestQuotaRPCAlarmMutationNoOpsMatchEtcd(t *testing.T) {

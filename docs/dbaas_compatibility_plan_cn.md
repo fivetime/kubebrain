@@ -44671,6 +44671,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不会被二次覆盖。真实 bufconn 红测先证明三 sentinel 原先均为 `Unknown`，修复后统一 `DataLoss`；另以
   实际损坏的 `auth/config` 调 KV Range、损坏 generic alarm JSON 调 Maintenance Alarm，证明不是 fake
   handler 自洽。wrapped TiKV cause、已有 `InvalidArgument` status 和纯文本后缀反例继续固定原边界。
+  A4219 将逻辑 quota checkpoint 的持久损坏纳入同一在线错误契约。etcd upstream 的 quota usage 可由
+  backend 大小重新计算；KubeBrain 为避免每次请求扫描 TiKV，额外持久化 `quota/usage` 与
+  `quota/tracking`。tracking 缺失或 dirty 表示 checkpoint 尚可重建，继续返回
+  `ErrQuotaUninitialized`，跨 gRPC 明确映射为可重试 `Unavailable`；只有 tracking 已 clean、但 usage
+  长度非法或无符号值溢出 `int64` 时，才包装新的 `backend.ErrInvalidQuotaMetadata` 并映射为
+  `DataLoss`。真实 bufconn 回归同时覆盖 Maintenance Status 与 KV Put：前者直接报告损坏，后者在事务
+  apply 再读 checkpoint 时 fail-closed，均保留精确诊断；dirty tracking 对照保持 `Unavailable`。
+  NOSPACE 仍是正常容量耗尽及 alarm 语义，TiKV transport/status 也不进入该 sentinel，避免把可恢复的
+  初始化或基础设施故障误报为持久数据损坏。
 
 ### P2：运维兼容和长期验证
 

@@ -201,6 +201,17 @@ func TestQuotaStatusEmitsEtcdCompatibleQuotaMetrics(t *testing.T) {
 	require.Equal(t, float64(10), metrics.gauge("etcd.server.quota_backend_bytes"))
 }
 
+func TestDecodeQuotaUsageClassifiesInvalidMetadata(t *testing.T) {
+	tests := [][]byte{
+		{1},
+		bytes.Repeat([]byte{0xff}, 8),
+	}
+	for _, raw := range tests {
+		_, err := decodeQuotaUsage(raw)
+		require.ErrorIs(t, err, ErrInvalidQuotaMetadata)
+	}
+}
+
 func TestLogicalQuotaAlarmRejectsAllPutsUntilCapacityRecovery(t *testing.T) {
 	b, ctx := newQuotaBackend(t, 6)
 	key := []byte("key")
