@@ -45089,6 +45089,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   HTTP/2 200，2 MiB metadata 必须被 peer advertised limit 拒绝。该项不访问 TiKV/PD；测试 backend 使用本地 Badger，真实集群
   无需因纯 transport admission 回归而重跑。
 
+- A4263 固定 gRPC health 的 service-name 合同。对照 upstream
+  `server/etcdserver/api/v3rpc/health.go`，etcd 只对空 service `""` 设置全局 SERVING/NOT_SERVING，不为
+  `etcdserverpb.KV` 等具体服务另设状态；named `Check` 因而返回 `NotFound/unknown service`，named `Watch` 首帧返回
+  `SERVICE_UNKNOWN`。KubeBrain 同样使用标准 gRPC health server，但此前只测试空 service。新增真实 bufconn 回归同时固定空
+  service SERVING 及上述两个 named-service 外观，防止未来为负载均衡器便利而产生反向 etcd 不兼容。KubeBrain 仍保留“仅当前
+  ready leader 对空 service 报 SERVING”的 DBaaS 路由策略差异；本项只固定 service-name 语义，不访问 TiKV/PD。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
