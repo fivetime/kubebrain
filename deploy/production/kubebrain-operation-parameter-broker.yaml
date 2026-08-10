@@ -242,6 +242,7 @@ spec:
                 values:
                   - kubebrain-backup-executor
                   - kubebrain-backup-deletion-executor
+                  - kubebrain-cold-physical-snapshot-executor
                   - kubebrain-restore-cutover-executor
                   - kubebrain-post-restore-audit-executor
                   - kubebrain-certificate-rotation-executor

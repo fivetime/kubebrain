@@ -45612,6 +45612,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   etcd wire/runtime 行为，但让 Auth、KV、Lease、Watch、Maintenance 与 Cluster 的统一竞态回归重新成为
   可信发布门禁，避免超时把后段真实竞态和后续兼容回归永久遮蔽。
 
+- A4308 把已有的 CSI 多 PVC 冷快照原语接入持久、可审计的生产 Operation，而不把脚本存在误报为
+  DBaaS 能力已交付。新增 `ColdPhysicalSnapshot` CRD 类型、专用 requester/executor 身份、不可预批准的
+  deterministic request、单次人工审批、immutable parameter Secret、参数 SHA-256、KubeBrain/TidbCluster/
+  TiKV cluster ID 与 logical.v2 witness 绑定，以及 heartbeat fencing。executor 默认 `replicas: 0`，失败后
+  只进入终态 `Failed` 而不自动重试，因为 Retain VolumeSnapshot 可能已经部分创建；专用 RBAC 可创建、
+  读取和等待 VolumeSnapshot，但没有任何 snapshot/content/PVC/PV 删除权限。运行镜像新增预编译
+  `kubebrain-cold-snapshot-receipt` 并复制 preflight/execute 原语，helper 不再依赖运行镜像中的 Go toolchain；
+  `KUBE_CONTEXT=in-cluster` 明确使用 Pod service-account 凭据，同时仍拒绝空 context。请求器黑盒、runner
+  成功/终态失败、RBAC/manifest、队列审批、参数代理、审计、完整 cold snapshot failure matrix（163.754 秒）、
+  vet、脚本语法和 diff check 均通过。该项交付的是受控 snapshot-side executor；真实 CSI 多卷快照与隔离
+  恢复演练、restore-side 持久 Operation 和日志型 PITR 仍未完成，不能据此关闭物理 DR 缺口。一次
+  `hack/production` 全包串行回归在 600 秒总门禁耗尽时才进入既有 restore-traffic marker 子例而超时；
+  被截断的目标用例随后独立 3.178 秒通过，因此不把该次全包记为绿色，也没有制造与本提交无关的修复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

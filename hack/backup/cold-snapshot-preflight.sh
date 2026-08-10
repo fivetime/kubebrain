@@ -35,7 +35,7 @@ done
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 
 kubectl_args=()
-if [[ -n "$KUBE_CONTEXT" ]]; then
+if [[ "$KUBE_CONTEXT" != "in-cluster" ]]; then
   kubectl_args+=(--context "$KUBE_CONTEXT")
 fi
 

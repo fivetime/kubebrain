@@ -648,6 +648,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"run-backup-deletion-operation.sh", "kubebrain-backup-deletion-executor-env",
 			"kubebrain-backup-deletion-executor-workspace",
 		},
+		"kubebrain-cold-physical-snapshot-executor": {
+			"run-cold-physical-snapshot-operation.sh", "kubebrain-cold-physical-snapshot-executor-env",
+			"kubebrain-cold-physical-snapshot-executor-workspace",
+		},
 		"kubebrain-restore-cutover-executor": {
 			"run-restore-cutover-operation.sh", "kubebrain-restore-cutover-executor-env",
 			"kubebrain-restore-cutover-executor-workspace",
@@ -890,6 +894,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 	values := expressions[0].(map[string]any)["values"].([]any)
 	require.ElementsMatch(t, []any{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
+		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
 		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",
@@ -935,6 +940,38 @@ func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, []string{"Deny"}, actions)
+}
+
+func TestColdPhysicalSnapshotRequesterAdmissionIsFailClosed(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-cold-physical-snapshot-requester-admission.yaml")
+	require.Len(t, objects, 4)
+	for _, name := range []string{"kubebrain-cold-snapshot-request-operation", "kubebrain-cold-snapshot-request-parameters"} {
+		policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", name)
+		require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)
+		require.Equal(t, name, nestedString(t, binding, "spec", "policyName"))
+		actions, found, err := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
+		require.NoError(t, err)
+		require.True(t, found)
+		require.Equal(t, []string{"Deny"}, actions)
+	}
+	operation := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-cold-snapshot-request-operation")
+	conditions, found, err := unstructured.NestedSlice(operation.Object, "spec", "matchConditions")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, conditions, 1)
+	require.Contains(t, conditions[0].(map[string]any)["expression"].(string), `object.spec.type == "ColdPhysicalSnapshot"`)
+	validations, found, err := unstructured.NestedSlice(operation.Object, "spec", "validations")
+	require.NoError(t, err)
+	require.True(t, found)
+	expressions := ""
+	for _, raw := range validations {
+		expressions += raw.(map[string]any)["expression"].(string)
+	}
+	require.Contains(t, expressions, `object.spec.type == "ColdPhysicalSnapshot"`)
+	require.Contains(t, expressions, `request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-requester"`)
+	require.Contains(t, expressions, `object.spec.maxAttempts == 1`)
+	require.Contains(t, expressions, `object.spec.parametersSecretRef.name == object.metadata.name + "-parameters"`)
 }
 
 func TestTiKVRepairAlertReceiverAdmissionPinsRequestShapeAndIdentity(t *testing.T) {
@@ -1216,7 +1253,7 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		`request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-operation-approver"`)
 	require.Contains(t, approvalExpression, `object.status.phase == "Pending"`)
 	require.Contains(t, approvalExpression, `approval-id"].matches("^[a-z0-9]`)
-	for _, operationType := range []string{"BackupDeletion", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
+	for _, operationType := range []string{"BackupDeletion", "ColdPhysicalSnapshot", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy"} {
 		require.Contains(t, approvalExpression, `"`+operationType+`"`)
 	}
 	require.NotContains(t, approvalExpression, `"Backup"`)

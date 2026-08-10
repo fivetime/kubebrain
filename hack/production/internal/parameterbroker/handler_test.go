@@ -48,13 +48,14 @@ func TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters(t *testing.T) {
 	require.Equal(t, parameters, response.Body.Bytes())
 }
 
-func TestHandlerAuthenticatesTiKVRepairQueueExecutorTypes(t *testing.T) {
+func TestHandlerAuthenticatesHighRiskExecutorTypes(t *testing.T) {
 	for _, tc := range []struct {
 		serviceAccount string
 		operationType  string
 	}{
 		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
+		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 	} {
 		t.Run(tc.serviceAccount, func(t *testing.T) {
 			handler, err := NewHandler(
@@ -72,13 +73,14 @@ func TestHandlerAuthenticatesTiKVRepairQueueExecutorTypes(t *testing.T) {
 	}
 }
 
-func TestHandlerReturnsRepairQueueParametersThroughTypeBoundBrokerIdentity(t *testing.T) {
+func TestHandlerReturnsHighRiskParametersThroughTypeBoundBrokerIdentity(t *testing.T) {
 	for _, tc := range []struct {
 		serviceAccount string
 		operationType  string
 	}{
 		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
+		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 	} {
 		t.Run(tc.operationType, func(t *testing.T) {
 			parameters := []byte(`{"repair":"bound"}`)
@@ -524,7 +526,8 @@ func claimedOperationWithType(
 		ParametersKey: "parameters.json", MaxAttempts: 3,
 	})
 	require.NoError(t, err)
-	if operationType == "TiKVTransactionRepair" || operationType == "TiKVTransactionRecovery" {
+	if operationType == "TiKVTransactionRepair" || operationType == "TiKVTransactionRecovery" ||
+		operationType == "ColdPhysicalSnapshot" {
 		_, err = queue.Approve(
 			context.Background(), operationName, operationaudit.ApproverUsername, "change-test-1",
 		)

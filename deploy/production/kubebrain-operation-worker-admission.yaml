@@ -20,6 +20,8 @@ spec:
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-executor") ||
         (object.spec.type == "BackupDeletion" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-deletion-executor") ||
+        (object.spec.type == "ColdPhysicalSnapshot" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-cold-physical-snapshot-executor") ||
         (object.spec.type == "RestoreCutover" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-restore-cutover-executor") ||
         (object.spec.type == "PostRestoreAudit" &&

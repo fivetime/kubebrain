@@ -1,0 +1,64 @@
+package production_test
+
+import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+func TestRunColdPhysicalSnapshotOperationIsBoundAndTerminal(t *testing.T) {
+	dir := t.TempDir()
+	witness := "witness-record"
+	witnessSHA := fmt.Sprintf("%x", sha256.Sum256([]byte(witness)))
+	requestID := "change-2026-001"
+	requestHash := fmt.Sprintf("%x", sha256.Sum256([]byte(requestID+"\nkb-uid\ntc-uid\n7671\n"+witnessSHA+"\n")))[:20]
+	name := "cold-snapshot-" + requestHash
+	parameterBytes := []byte(fmt.Sprintf(`{"expected_witness_prefix":"/","fence_settle_seconds":5,"inventory":{"format":"kubebrain.cold-physical-snapshot-preflight.v2","kubebrain":{"namespace":"kubebrain-system","statefulset":"kubebrain","uid":"kb-uid"},"pd_pvcs":[{"name":"pd-0"}],"recovery_blueprint":{"tidbcluster":{"apiVersion":"pingcap.com/v1alpha1","kind":"TidbCluster"}},"storage":{"cluster_id":"7671","namespace":"tidb-cluster","tidb_cluster":"kb","uid":"tc-uid"},"tikv_pvcs":[{"name":"tikv-0"}],"volume_snapshot_class":{"deletion_policy":"Retain","driver":"csi.test","name":"retained"}},"request_id":"%s","semantic_witness":"%s","semantic_witness_sha256":"%s","wait_timeout":"10m","witness_max_age_seconds":300}`, requestID, witness, witnessSHA))
+	parameters := filepath.Join(dir, "parameters.json")
+	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
+	digest := fmt.Sprintf("%x", sha256.Sum256(parameterBytes))
+	operationLog := filepath.Join(dir, "operation.log")
+	operationctl := filepath.Join(dir, "operationctl")
+	require.NoError(t, os.WriteFile(operationctl, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$OPERATION_LOG"
+if [[ "$*" == *"--action claim"* ]]; then
+ printf '{"namespace":"kubebrain-operations","name":"%s","operation_id":"%s","instance":"kubebrain","type":"ColdPhysicalSnapshot","requested_by":"platform:cold-physical-snapshot","owner":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","attempt":1,"parameters_sha256":"%s"}\n' "$OPERATION_NAME" "$OPERATION_NAME" "$WORKER_ID" "$OPERATION_NAME" "$EXPECTED_DIGEST"
+fi
+`), 0o755))
+	snapshotLog := filepath.Join(dir, "snapshot.log")
+	snapshot := filepath.Join(dir, "snapshot")
+	require.NoError(t, os.WriteFile(snapshot, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+env | sort >"$SNAPSHOT_LOG"
+[[ "${FAIL_SNAPSHOT:-false}" != true ]] || exit 9
+jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"kubebrain.cold-physical-snapshot.v2",operation_id:$id,created_at:"2026-08-10T00:00:00Z",inventory:{kubebrain:{uid:"kb-uid"},storage:{uid:"tc-uid"},pd_pvcs:[{}],tikv_pvcs:[{}]},snapshots:[{},{}],semantic_witness:{file_sha256:$witness}}' >"$RECEIPT_FILE"
+`), 0o755))
+	env := []string{"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "OPERATIONCTL=" + operationctl,
+		"SNAPSHOT_COMMAND=" + snapshot, "WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"EXPECTED_DIGEST=" + digest, "OPERATION_NAME=" + name, "OPERATION_LOG=" + operationLog,
+		"SNAPSHOT_LOG=" + snapshotLog, "EXPECTED_WITNESS_SHA=" + witnessSHA}
+	output, err := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", env)
+	require.NoError(t, err, string(output))
+	operations, err := os.ReadFile(operationLog)
+	require.NoError(t, err)
+	require.Contains(t, string(operations), "--type ColdPhysicalSnapshot")
+	require.Contains(t, string(operations), "--action succeed")
+	snapshotEnvironment, err := os.ReadFile(snapshotLog)
+	require.NoError(t, err)
+	require.Contains(t, string(snapshotEnvironment), "ALLOW_COLD_PHYSICAL_SNAPSHOT=true")
+	require.Contains(t, string(snapshotEnvironment), "KUBE_CONTEXT=in-cluster")
+
+	require.NoError(t, os.Remove(filepath.Join(dir, name+".receipt.json")))
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	failure, failureErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env, "FAIL_SNAPSHOT=true"))
+	require.Error(t, failureErr, string(failure))
+	failureOperations, err := os.ReadFile(operationLog)
+	require.NoError(t, err)
+	require.Contains(t, string(failureOperations), "--action fail")
+	require.NotContains(t, string(failureOperations), "--action retry")
+}

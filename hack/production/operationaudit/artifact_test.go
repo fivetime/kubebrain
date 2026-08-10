@@ -506,7 +506,7 @@ func TestOperationAuditAcceptsBackupDeletion(t *testing.T) {
 
 func TestOperationAuditRequiresApprovalForHighRiskTypes(t *testing.T) {
 	for _, operationType := range []string{
-		"RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion",
+		"RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot",
 	} {
 		artifact := terminalArtifact()
 		artifact.Type = operationType

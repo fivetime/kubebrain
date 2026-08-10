@@ -2370,7 +2370,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   full/PITR 不包含 KubeBrain transactional keys，BR raw 也不能提供跨 CF 一致快照，因此
   不能再把“使用 BR”写成已完成替代方案。在线 etcd snapshot 与
   `kubebrain.logical.v2` 都不能代替存储引擎级 PITR。冷 CSI 多 PVC full
-  snapshot 仍需完成全停机 executor 和隔离恢复演练，日志型 PITR 继续未完成。
+  snapshot 已具备默认停用、单次审批、参数摘要/集群身份/语义 witness 绑定的持久
+  `ColdPhysicalSnapshot` Operation executor；上线声明仍需在真实 CSI 环境完成多 PVC
+  全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
 - `hack/backup/logical-export.sh` / `logical-restore.sh` 是当前生产备份与隔离恢复入口；上线
   前必须按本节后文完成 artifact 完整性、Object Lock、恢复 receipt 和持续审计门禁，不能
   只用一次本地导出成功声称具备 DR。

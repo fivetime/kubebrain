@@ -12,6 +12,8 @@ WITNESS_MAX_AGE_SECONDS="${WITNESS_MAX_AGE_SECONDS:-300}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-10m}"
 FENCE_SETTLE_SECONDS="${FENCE_SETTLE_SECONDS:-5}"
 KUBECTL="${KUBECTL:-kubectl}"
+LOGICAL_STATUS_COMMAND="${LOGICAL_STATUS_COMMAND:-go run ./hack/backup/cmd/logical-status}"
+COLD_SNAPSHOT_RECEIPT_COMMAND="${COLD_SNAPSHOT_RECEIPT_COMMAND:-go run ./hack/backup/cmd/cold-snapshot-receipt}"
 
 fail_input() { echo "$1" >&2; exit 2; }
 [[ "$ALLOW_COLD_PHYSICAL_SNAPSHOT" == "true" ]] ||
@@ -28,6 +30,10 @@ fail_input() { echo "$1" >&2; exit 2; }
 [[ "$FENCE_SETTLE_SECONDS" =~ ^[0-9]+$ ]] || fail_input "FENCE_SETTLE_SECONDS must be a non-negative integer"
 command -v jq >/dev/null 2>&1 || fail_input "jq is required"
 command -v sha256sum >/dev/null 2>&1 || fail_input "sha256sum is required"
+read -r -a logical_status_command <<<"$LOGICAL_STATUS_COMMAND"
+read -r -a cold_snapshot_receipt_command <<<"$COLD_SNAPSHOT_RECEIPT_COMMAND"
+[[ ${#logical_status_command[@]} -gt 0 && ${#cold_snapshot_receipt_command[@]} -gt 0 ]] ||
+  fail_input "snapshot helper commands are required"
 
 input_dir="$(mktemp -d)"
 receipt_tmp=""
@@ -107,7 +113,7 @@ witness_file_copy="${input_dir}/semantic-witness.jsonl"
 witness_file_sha256="$(freeze_input "$SEMANTIC_WITNESS_FILE" "$witness_file_copy" "semantic witness file")"
 witness_status="$(cd "$script_dir/../.." && INPUT="$witness_file_copy" EXPECTED_PREFIX="$EXPECTED_WITNESS_PREFIX" \
   MIN_RECORDS=0 MAX_AGE_SECONDS="$WITNESS_MAX_AGE_SECONDS" REQUIRE_GRANTED_TTL=true \
-  go run ./hack/backup/cmd/logical-status)"
+  "${logical_status_command[@]}")"
 jq -e '.format == "kubebrain.logical.v2" and (.revision > 0) and (.records >= 0) and (.leases >= 0) and
   (.sha256 | test("^[0-9a-f]{64}$"))' <<<"$witness_status" >/dev/null || fail_input "semantic witness status is invalid"
 verify_witness_file() {
@@ -119,7 +125,7 @@ verify_witness_file() {
 verify_witness_file
 
 kubectl_args=()
-[[ -z "${KUBE_CONTEXT:-}" ]] || kubectl_args+=(--context "$KUBE_CONTEXT")
+[[ "$KUBE_CONTEXT" == "in-cluster" ]] || kubectl_args+=(--context "$KUBE_CONTEXT")
 kctl() { "$KUBECTL" "${kubectl_args[@]}" "$@"; }
 
 validate_snapshot_targets_absent() {
@@ -428,7 +434,7 @@ printf '%s\n' "$inventory" >"$inventory_receipt_input"
 printf '%s\n' "$snapshots" >"$snapshots_receipt_input"
 printf '%s\n' "$witness_status" >"$witness_status_input"
 chmod 600 "$inventory_receipt_input" "$snapshots_receipt_input" "$witness_status_input"
-(cd "$script_dir/../.." && go run ./hack/backup/cmd/cold-snapshot-receipt \
+(cd "$script_dir/../.." && "${cold_snapshot_receipt_command[@]}" \
   --inventory "$inventory_receipt_input" --snapshots "$snapshots_receipt_input" \
   --witness-status "$witness_status_input" --operation-id "$OPERATION_ID" \
   --created-at "$snapshot_created_at" --witness-file-sha256 "$witness_file_sha256") >"$receipt_tmp"
