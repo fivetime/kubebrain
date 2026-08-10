@@ -1,6 +1,7 @@
 package nativepitr
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -30,9 +31,22 @@ func validReceiptPlan(t *testing.T) Plan {
 	task, _ := readyTask(t)
 	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
 	require.NoError(t, err)
-	plan, err := BuildFromReceipts(task, full, readyReceiptFor(task), ReceiptPlanInputs{TaskCreateSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	artifacts := validArtifactReceipt(t, full, digest)
+	plan, err := BuildFromReceipts(task, full, artifacts, readyReceiptFor(task), ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
 	require.NoError(t, err)
 	return plan
+}
+
+func validArtifactReceipt(t *testing.T, full FullSnapshotReceipt, fullReceiptSHA string) ArtifactReceipt {
+	t.Helper()
+	objects := []ArtifactObject{
+		{Name: "backupmeta", Bytes: uint64(full.BackupMetaBytes), SHA256: full.BackupMetaSHA256, Kind: "backupmeta"},
+		{Name: "data/write.sst", Bytes: 10, SHA256: digest, Kind: "data"},
+	}
+	b, err := json.Marshal(objects)
+	require.NoError(t, err)
+	h := sha256.Sum256(b)
+	return ArtifactReceipt{Format: ArtifactReceiptFormat, ClusterID: full.ClusterID, Keyspace: full.Keyspace, TaskName: full.TaskName, BackupTS: full.BackupTS, StoragePrefix: full.StoragePrefix, FullReceiptSHA256: fullReceiptSHA, BackupMetaSHA256: full.BackupMetaSHA256, Objects: objects, ObjectCount: len(objects), TotalBytes: uint64(full.BackupMetaBytes) + 10, ManifestSHA256: hex.EncodeToString(h[:]), ExactMirror: true, Encryption: "plaintext", AllObjectsVerified: true}
 }
 
 func TestPlanRejectsBrokenChain(t *testing.T) {
@@ -66,18 +80,26 @@ func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
 	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
 	require.NoError(t, err)
 	ready := readyReceiptFor(task)
-	plan, err := BuildFromReceipts(task, full, ready, ReceiptPlanInputs{TaskCreateSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	artifacts := validArtifactReceipt(t, full, digest)
+	in := ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140}
+	plan, err := BuildFromReceipts(task, full, artifacts, ready, in)
 	require.NoError(t, err)
 	require.Equal(t, full.BackupTS, plan.Full.BackupTS)
 	require.Equal(t, ready.AdvancerOwner, plan.Log.AdvancerOwner)
 
 	full.TaskName = "other"
-	_, err = BuildFromReceipts(task, full, ready, ReceiptPlanInputs{TaskCreateSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	_, err = BuildFromReceipts(task, full, artifacts, ready, in)
 	require.ErrorContains(t, err, "different source tasks")
 
 	full.TaskName = task.TaskName
-	_, err = BuildFromReceipts(task, full, ready, ReceiptPlanInputs{TaskCreateSHA256: strings.Repeat("f", 64), TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	in.TaskCreateSHA256 = strings.Repeat("f", 64)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, in)
 	require.ErrorContains(t, err, "exact task-create")
+
+	in.TaskCreateSHA256 = digest
+	artifacts.FullReceiptSHA256 = strings.Repeat("f", 64)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, in)
+	require.ErrorContains(t, err, "exact full snapshot")
 }
 
 func TestDecodePreflightIsStrict(t *testing.T) {

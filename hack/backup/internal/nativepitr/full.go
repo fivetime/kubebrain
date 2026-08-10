@@ -69,6 +69,9 @@ func BuildFullSnapshot(task TaskCreateReceipt, taskCreateSHA256, storagePrefix s
 	if meta.StartVersion != 0 || meta.EndVersion == 0 {
 		return FullSnapshotReceipt{}, errors.New("backupmeta is not a full point-in-time snapshot")
 	}
+	if meta.SchemaIndex != nil || meta.RawRangeIndex != nil || meta.DdlIndexes != nil || len(meta.Schemas) != 0 || len(meta.RawRanges) != 0 || len(meta.Ddls) != 0 {
+		return FullSnapshotReceipt{}, errors.New("transactional KV backupmeta contains unexpected schema, raw-range, or DDL inventory")
+	}
 	if meta.EndVersion < task.CommittedAtTS {
 		return FullSnapshotReceipt{}, errors.New("full snapshot precedes task metadata commit")
 	}

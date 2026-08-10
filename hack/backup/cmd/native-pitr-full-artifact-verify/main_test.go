@@ -1,0 +1,45 @@
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	backuppb "github.com/pingcap/kvproto/pkg/brpb"
+	"github.com/stretchr/testify/require"
+)
+
+const testDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func TestRunVerifiesExactMirror(t *testing.T) {
+	dir := t.TempDir()
+	ks, err := coder.NewKeyspace("tenant-a")
+	require.NoError(t, err)
+	task := nativepitr.TaskCreateReceipt{Format: nativepitr.TaskCreateFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", StartTS: 100, CommittedAtTS: 110, EndTS: 1000, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), LogStoragePrefix: "s3://bucket/log-a", LogStorageSHA256: testDigest, PreflightSHA256: testDigest, OwnerKey: nativepitr.TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-operation-a", BootstrapSafePointTTL: 7200, AtomicMetadataCreated: true}
+	content := []byte("sst-data")
+	digest := sha256.Sum256(content)
+	file := &backuppb.File{Name: "1/write.sst", Cf: "write", Size_: uint64(len(content)), Sha256: digest[:]}
+	metaBytes, err := (&backuppb.BackupMeta{ClusterId: 11, StartVersion: 0, EndVersion: 120, IsTxnKv: true, Files: []*backuppb.File{file}}).Marshal()
+	require.NoError(t, err)
+	full, err := nativepitr.BuildFullSnapshot(task, testDigest, "s3://bucket/full-a", metaBytes)
+	require.NoError(t, err)
+	fullBytes, err := json.Marshal(full)
+	require.NoError(t, err)
+	fullPath := filepath.Join(dir, "full.json")
+	root := filepath.Join(dir, "mirror")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "1"), 0o700))
+	require.NoError(t, os.WriteFile(fullPath, fullBytes, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "backupmeta"), metaBytes, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "1/write.sst"), content, 0o600))
+	var out bytes.Buffer
+	require.NoError(t, run(fullPath, root, &out))
+	var receipt nativepitr.ArtifactReceipt
+	require.NoError(t, json.Unmarshal(out.Bytes(), &receipt))
+	require.Equal(t, 2, receipt.ObjectCount)
+}

@@ -47,6 +47,7 @@ func TestBuildFullSnapshotRejectsUnboundOrIncompleteMetadata(t *testing.T) {
 			m.EndVersion = task.StartTS - 1
 		}, "precedes task metadata commit"},
 		{"no files", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.FileIndex = nil }, "inventory"},
+		{"unexpected schema index", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.SchemaIndex = &backuppb.MetaFile{} }, "unexpected schema"},
 		{"unsafe storage", func(_ *TaskCreateReceipt, _ *backuppb.BackupMeta, s *string) { *s = "s3://key:secret@bucket/prefix" }, "storage prefix"},
 	}
 	for _, tt := range tests {

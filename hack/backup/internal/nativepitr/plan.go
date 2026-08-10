@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v4"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v5"
 )
 
 var (
@@ -56,10 +56,15 @@ type Source struct {
 }
 
 type FullSnapshot struct {
-	BackupTS         uint64 `json:"backup_ts"`
-	BackupMetaSHA256 string `json:"backupmeta_sha256"`
-	StoragePrefix    string `json:"storage_prefix"`
-	Mode             string `json:"mode"`
+	BackupTS              uint64 `json:"backup_ts"`
+	BackupMetaSHA256      string `json:"backupmeta_sha256"`
+	StoragePrefix         string `json:"storage_prefix"`
+	Mode                  string `json:"mode"`
+	ReceiptSHA256         string `json:"receipt_sha256"`
+	ArtifactReceiptSHA256 string `json:"artifact_receipt_sha256"`
+	ArtifactManifestSHA   string `json:"artifact_manifest_sha256"`
+	ArtifactObjectCount   int    `json:"artifact_object_count"`
+	ArtifactTotalBytes    uint64 `json:"artifact_total_bytes"`
 }
 
 type LogWindow struct {
@@ -87,10 +92,12 @@ type Plan struct {
 }
 
 type ReceiptPlanInputs struct {
-	TaskCreateSHA256   string
-	TargetClusterID    uint64
-	EmptyWitnessSHA256 string
-	RestoreTS          uint64
+	TaskCreateSHA256      string
+	FullSnapshotSHA256    string
+	ArtifactReceiptSHA256 string
+	TargetClusterID       uint64
+	EmptyWitnessSHA256    string
+	RestoreTS             uint64
 }
 
 func DecodePreflight(r io.Reader) (Preflight, error) {
@@ -115,7 +122,7 @@ func ValidatePreflight(p Preflight) error { return validatePreflight(p) }
 
 // BuildFromReceipts constructs a restore plan without operator-supplied source
 // timestamps, artifact digests, storage locations, or advancer identities.
-func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, ready TaskReadyReceipt, in ReceiptPlanInputs) (Plan, error) {
+func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifacts ArtifactReceipt, ready TaskReadyReceipt, in ReceiptPlanInputs) (Plan, error) {
 	if err := validateTaskCreateReceipt(task); err != nil {
 		return Plan{}, err
 	}
@@ -125,16 +132,22 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, ready T
 	if err := validateTaskReadyReceipt(ready); err != nil {
 		return Plan{}, err
 	}
+	if err := artifacts.Validate(); err != nil {
+		return Plan{}, err
+	}
 	if !sha256RE.MatchString(in.TaskCreateSHA256) || full.TaskCreateSHA256 != in.TaskCreateSHA256 {
 		return Plan{}, errors.New("full snapshot does not bind the exact task-create receipt")
 	}
 	if !readyMatchesTask(ready, task) || full.ClusterID != task.ClusterID || full.Keyspace != task.Keyspace || full.TaskName != task.TaskName || full.TaskStartTS != task.StartTS || full.TaskCommittedAtTS != task.CommittedAtTS || full.TaskEndTS != task.EndTS || full.StartKeyHex != task.StartKeyHex || full.EndKeyHex != task.EndKeyHex {
 		return Plan{}, errors.New("native PITR receipts describe different source tasks")
 	}
+	if !sha256RE.MatchString(in.FullSnapshotSHA256) || !sha256RE.MatchString(in.ArtifactReceiptSHA256) || artifacts.FullReceiptSHA256 != in.FullSnapshotSHA256 || artifacts.ClusterID != full.ClusterID || artifacts.Keyspace != full.Keyspace || artifacts.TaskName != full.TaskName || artifacts.BackupTS != full.BackupTS || artifacts.StoragePrefix != full.StoragePrefix || artifacts.BackupMetaSHA256 != full.BackupMetaSHA256 {
+		return Plan{}, errors.New("full artifact receipt does not bind the exact full snapshot")
+	}
 	plan := Plan{
 		Format:    PlanFormat,
 		Source:    Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
-		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn"},
+		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes},
 		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256},
 		Target:    Target{ClusterID: in.TargetClusterID, EmptyWitnessSHA256: in.EmptyWitnessSHA256},
 		RestoreTS: in.RestoreTS, ReadOnly: true,
@@ -193,6 +206,9 @@ func (p Plan) Validate() error {
 	}
 	if !sha256RE.MatchString(p.Full.BackupMetaSHA256) {
 		return errors.New("invalid backupmeta SHA-256")
+	}
+	if !sha256RE.MatchString(p.Full.ReceiptSHA256) || !sha256RE.MatchString(p.Full.ArtifactReceiptSHA256) || !sha256RE.MatchString(p.Full.ArtifactManifestSHA) || p.Full.ArtifactObjectCount < 2 || p.Full.ArtifactTotalBytes == 0 {
+		return errors.New("invalid full snapshot artifact receipt evidence")
 	}
 	if !sha256RE.MatchString(p.Target.EmptyWitnessSHA256) {
 		return errors.New("invalid target empty-witness SHA-256")

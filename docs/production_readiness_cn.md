@@ -1851,7 +1851,8 @@ PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出
 隔离的区间。
 
 仍需实现和验证的生产闭环包括：持久 operation 对 task/advancer 的长期监管、源集群确为单租户
-独立集群的可审计 witness、对象存储中全部 SST/log/checkpoint 的存在性与 digest 完整性、
+独立集群的可审计 witness、对象存储中 log/checkpoint 的完整 inventory 与 digest、full/log 对象的
+远端 immutable version 身份与下载 provenance、
 将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，以及在指定时间点完成
 逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
 实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
@@ -1900,22 +1901,39 @@ TS 不能证明 task 已先创建，因此 v4 在 metadata transaction 成功后
 SST，且 `task_committed_at_ts=468294809075843073 < BackupTS=468294813545660418`；权威字段为
 `is_txn_kv=true,is_raw_kv=false,start=0,legacy_files=2`，receipt 成功绑定
 source cluster、create 文件 digest 和 backupmeta SHA-256。该实验实际观察到三个 MinIO 对象，但
-receipt 仍诚实保留 `object_existence_checked=false`，因为尚未实现可重放的全对象 digest verifier。
+receipt 仍诚实保留 `object_existence_checked=false`，因为该 receipt 本身只解析 `backupmeta`，不把
+一次对象列表观测冒充完整性证明。
 
-在真正 restore executor 修改目标前，控制面只接受 create/full/ready receipt 生成严格只读计划：
+将同一 immutable full prefix 下载为一个只包含 `backupmeta` 及其引用对象的精确本地镜像后，运行：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
+  --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --artifact-root=/evidence/full-mirror
+```
+
+该命令递归遍历 BR legacy `BackupMeta.files` 和 v2 `FileIndex`/`MetaFile` 树，流式复算每个 SST 与
+meta-index 的大小和 SHA-256，并拒绝缺失、额外、重复、越界路径、符号链接及非普通文件。输出
+`kubebrain.native-pitr-full-artifacts.v1`，绑定 exact full-snapshot receipt SHA-256、排序后的完整对象
+清单、总字节和 manifest digest。当前只接受 plaintext BR 产物；遇到 `cipher_iv` 会 fail closed，
+直到恢复链能够安全绑定 crypter key。此 receipt 证明下载镜像字节与 `backupmeta` 一致，但不证明
+远端下载来源、object version 或 Object Lock 不可变性；生产控制面仍须补齐这些远端 witness。
+
+在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready receipt 生成严格只读计划：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-restore-plan \
   --task-create=/evidence/native-pitr-task-create.json \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --full-artifacts=/evidence/native-pitr-full-artifacts.json \
   --task-ready=/evidence/native-pitr-task-ready.json \
   --target-cluster-id="$TARGET_CLUSTER_ID" \
   --target-empty-witness-sha256="$EMPTY_WITNESS_SHA256" \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v4`。source cluster/range、task start/commit、full backup TSO、
-backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
+输出 `kubebrain.native-pitr-restore-plan.v5`。source cluster/range、task start/commit、full backup TSO、
+exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner 全部来自严格 receipt，命令不再
 接受这些值的自由参数；并拒绝 receipt 文件 digest/身份链不一致、source/target cluster ID 相同、
 非空目标证据缺失、artifact digest 非规范，以及不满足
