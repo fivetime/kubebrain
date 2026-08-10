@@ -18,6 +18,8 @@ REQUIRED_FAILED_PROBES="${REQUIRED_FAILED_PROBES:-3}"
 PROBE_INTERVAL_SECONDS="${PROBE_INTERVAL_SECONDS:-5}"
 PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS:-10}"
 POD_READY_TIMEOUT_SECONDS="${POD_READY_TIMEOUT_SECONDS:-300}"
+MAX_TIKV_DISK_USED_PERCENT="${MAX_TIKV_DISK_USED_PERCENT:-90}"
+TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
 ALLOW_TIKV_POD_REPAIR="${ALLOW_TIKV_POD_REPAIR:-false}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 KUBECTL="${KUBECTL:-kubectl}"
@@ -40,6 +42,9 @@ die() { echo "$*" >&2; exit 1; }
 for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_SECONDS; do
   [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
 done
+[[ "$MAX_TIKV_DISK_USED_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_DISK_USED_PERCENT must be a positive integer"
+(( MAX_TIKV_DISK_USED_PERCENT <= 90 )) || die "MAX_TIKV_DISK_USED_PERCENT must be at most 90"
+[[ "$TIKV_DATA_DIR" == /* && "$TIKV_DATA_DIR" != *[[:cntrl:]]* ]] || die "TIKV_DATA_DIR must be an absolute path"
 [[ "$PROBE_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "PROBE_INTERVAL_SECONDS must be a non-negative integer"
 for variable in KUBEBRAIN_NAMESPACE KUBEBRAIN_STATEFULSET TIDB_NAMESPACE TIDB_CLUSTER REPAIR_STATE_NAMESPACE; do
   [[ "${!variable}" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "$variable must be a DNS label"
@@ -155,6 +160,31 @@ done
 
 ready_kb="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.status.readyReplicas}')"
 [[ -z "$ready_kb" || "$ready_kb" == "0" ]] || die "repair requires KubeBrain to be exactly 0 Ready after failed transaction probes"
+
+disk_errors=()
+disk_tikv_rows="$(tikv_status)" || die "cannot refresh TiKV topology before disk-pressure fence"
+disk_tikv_names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$disk_tikv_rows")"
+[[ "$disk_tikv_names" == "$expected_names" ]] || die "TiKV quorum/PVC fence changed before disk-pressure check"
+while IFS=$'\t' read -r pod pod_uid ready pvc; do
+  [[ -n "$pod" && -n "$pod_uid" && "$ready" == "True" && -n "$pvc" ]] || continue
+  disk_row="$($COMMAND_TIMEOUT --signal=TERM "${PROBE_TIMEOUT_SECONDS}s" \
+    "$KUBECTL" "${kubectl_context_args[@]}" -n "$TIDB_NAMESPACE" exec "$pod" -c tikv -- \
+    df -P "$TIKV_DATA_DIR" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')" || \
+    die "cannot read TiKV disk usage for ${pod}"
+  IFS=$'\t' read -r capacity_kib available_kib used_percent_text <<<"$disk_row"
+  used_percent="${used_percent_text%%%}"
+  [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \
+    die "TiKV disk usage response is malformed for ${pod}: ${disk_row}"
+  if (( used_percent > MAX_TIKV_DISK_USED_PERCENT )); then
+    disk_errors+=("pod=${pod} pvc=${pvc} used=${used_percent}% available_kib=${available_kib} capacity_kib=${capacity_kib}")
+  fi
+done <<<"$disk_tikv_rows"
+if (( ${#disk_errors[@]} > 0 )); then
+  persist_phase "refused-disk-pressure"
+  printf 'refusing TiKV Pod repair under disk pressure (threshold=%s%%, path=%s): %s\n' \
+    "$MAX_TIKV_DISK_USED_PERCENT" "$TIKV_DATA_DIR" "${disk_errors[*]}" >&2
+  exit 1
+fi
 
 persist_phase "quiescing-kubebrain"
 echo "confirmed ${REQUIRED_FAILED_PROBES} consecutive transaction failures; scaling KubeBrain to zero"

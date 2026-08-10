@@ -57,7 +57,7 @@ done
 
 while IFS=$'\t' read -r pod ready pvc; do
   [[ -n "$pod" && "$ready" == "True" && -n "$pvc" ]] || continue
-  disk_row="$(kctl -n "$TIDB_NAMESPACE" exec "$pod" -- df -P "$TIKV_DATA_DIR" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')"
+  disk_row="$(kctl -n "$TIDB_NAMESPACE" exec "$pod" -c tikv -- df -P "$TIKV_DATA_DIR" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')"
   IFS=$'\t' read -r capacity_kib available_kib used_percent_text <<<"$disk_row"
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \

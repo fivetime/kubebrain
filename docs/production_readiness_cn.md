@@ -205,7 +205,11 @@ hack/production/repair-tikv-transaction-path.sh
 `2→1→0` 逐 Pod 删除重建；每一步必须取得新 Pod UID、保留原 PVC 名并重新达到精确 3 Ready，
 因此不会删除 PVC，也不会主动同时破坏 quorum。全部 TiKV 收敛后才恢复 3 个 KubeBrain，最终
 Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。健康集群的第一次成功探测会
-在任何 scale 或 Pod delete 前拒绝修复。
+在任何 scale 或 Pod delete 前拒绝修复。连续事务失败后，脚本还会重新取得精确三 TiKV
+Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/tikv` 的真实挂载水位；任一 Pod 超过默认 90% 时记录
+`refused-disk-pressure` 并在任何 scale/delete 前退出。该阈值可通过
+`MAX_TIKV_DISK_USED_PERCENT` 下调，但不得用调高阈值绕过容量处置；同 PVC 重启不会释放共享宿主
+文件系统空间。
 
 该脚本是 controller 可调用的执行原语，不是完整自动 controller：调用方仍须持久化告警首次
 发生时间、修复冷却时间、attempt receipt 和人工/策略审批。其 ServiceAccount 只应获得目标两个
@@ -216,7 +220,7 @@ ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delet
 两个 UID、cluster ID、attempt ID、完成时间、精确 3 个 repaired TiKV Pod、PVC preserved 与
 transaction verified，可被 Operation wrapper 重读并计算 SHA-256。每次调用还会创建不可复用的
 `ConfigMap/kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}`，持续写入 `preflight`、
-`refused-healthy`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、
+`refused-healthy`、`refused-disk-pressure`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、
 `persisting-cooldown` 或 `completed` 阶段；异常退出会把当时阶段和完成时间留在 receipt 中，
 不会随单例锁删除。成功后另写固定
 `ConfigMap/kubebrain-tikv-transaction-repair-last-success`，包含 TidbCluster UID、cluster ID、

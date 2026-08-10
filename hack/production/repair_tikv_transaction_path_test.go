@@ -55,6 +55,9 @@ elif [[ "$args" == *"exec kubebrain-0"* ]]; then
   else
     printf '1\n'
   fi
+elif [[ "$args" == *"exec kb-tikv-"* && "$args" == *" df -P /var/lib/tikv"* ]]; then
+  used="${FAKE_DISK_USED_PERCENT:-42}"
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test 100000 42000 58000 %s%% /var/lib/tikv\n' "$used"
 elif [[ "$args" == *"get pod kb-tikv-"* ]]; then
   ordinal="${args#*get pod kb-tikv-}"
   ordinal="${ordinal%% *}"
@@ -100,7 +103,7 @@ fi
 	require.NoError(t, err)
 	log := string(logData)
 	require.Equal(t, 3, strings.Count(log, "delete pod kb-tikv-"), log)
-	requireOrder(t, log, "create configmap kubebrain-tikv-transaction-repair-lock", "create configmap kubebrain-tikv-repair-repair-test-1", "--replicas=0", "delete pod kb-tikv-2", "delete pod kb-tikv-1", "delete pod kb-tikv-0", "--replicas=3", "create configmap kubebrain-tikv-transaction-repair-last-success", "delete configmap kubebrain-tikv-transaction-repair-lock")
+	requireOrder(t, log, "create configmap kubebrain-tikv-transaction-repair-lock", "create configmap kubebrain-tikv-repair-repair-test-1", "df -P /var/lib/tikv", "--replicas=0", "delete pod kb-tikv-2", "delete pod kb-tikv-1", "delete pod kb-tikv-0", "--replicas=3", "create configmap kubebrain-tikv-transaction-repair-last-success", "delete configmap kubebrain-tikv-transaction-repair-lock")
 	require.NotContains(t, log, "delete pvc")
 	receipt, err := os.ReadFile(receiptPath)
 	require.NoError(t, err)
@@ -136,6 +139,22 @@ fi
 	require.NoFileExists(t, receiptPath)
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	diskOutput, diskErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_DISK_USED_PERCENT=97"))
+	require.Error(t, diskErr)
+	require.Contains(t, string(diskOutput), "refusing TiKV Pod repair under disk pressure")
+	require.Contains(t, string(diskOutput), "pod=kb-tikv-0 pvc=tikv-kb-tikv-0 used=97%")
+	require.Contains(t, string(diskOutput), "pod=kb-tikv-1 pvc=tikv-kb-tikv-1 used=97%")
+	require.Contains(t, string(diskOutput), "pod=kb-tikv-2 pvc=tikv-kb-tikv-2 used=97%")
+	diskLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	diskLog := string(diskLogData)
+	require.Contains(t, diskLog, "refused-disk-pressure")
+	require.NotContains(t, diskLog, " scale ")
+	require.NotContains(t, diskLog, "delete pod")
+	require.NoFileExists(t, receiptPath)
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	cooldownOutput, cooldownErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_COOLDOWN=tc-uid\t1786253990"))
 	require.Error(t, cooldownErr)
@@ -157,5 +176,22 @@ func TestRepairTiKVTransactionPathRequiresExplicitAuthorizationBeforeKubectl(t *
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "ALLOW_TIKV_POD_REPAIR=true")
+	require.NoFileExists(t, logPath)
+
+	output, err = runProductionScriptCommand(t, "repair-tikv-transaction-path.sh", []string{
+		"KUBECTL=" + fakeKubectl,
+		"FAKE_LOG=" + logPath,
+		"KUBE_CONTEXT=test-context",
+		"ALLOW_TIKV_POD_REPAIR=true",
+		"EXPECTED_KUBEBRAIN_STATEFULSET_UID=kb-uid",
+		"EXPECTED_TIDB_CLUSTER_UID=tc-uid",
+		"EXPECTED_CLUSTER_ID=7671",
+		"ENDPOINT=http://kubebrain:3379",
+		"REPAIR_ATTEMPT_ID=repair-test-2",
+		"RECEIPT_OUTPUT=" + filepath.Join(tempDir, "receipt.json"),
+		"MAX_TIKV_DISK_USED_PERCENT=91",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "MAX_TIKV_DISK_USED_PERCENT must be at most 90")
 	require.NoFileExists(t, logPath)
 }

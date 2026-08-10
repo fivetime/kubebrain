@@ -45212,6 +45212,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   97% 磁盘 RED 和缺失 context RED；真实现场只读运行同时稳定报告两类 Region 异常与三个 Pod 磁盘
   压力。本项不自动删除 peer、Region、Pod 或 PVC，修复仍必须经过已有审批、quorum 和 receipt 栅栏。
 
+- A4277 防止 A4276 检出的容量故障被同 PVC TiKV 重启误当成可修复的进程半故障。
+  `repair-tikv-transaction-path.sh` 在连续事务失败、KubeBrain 0 Ready 栅栏通过后、第一次 scale/delete
+  之前重新取得精确 3 个 Ready TiKV Pod/UID/PVC 的同一份拓扑快照；随后以独立硬超时逐 Pod 执行
+  `df -P /var/lib/tikv`，要求响应字段为整数且使用率不超过默认 90%。拓扑刷新失败/漂移、df 失败或
+  畸形输出均 fail closed；一个或多个 Pod 超阈值时汇总全部 pod/PVC/available/capacity 证据，持久化
+  `refused-disk-pressure` attempt phase 后退出。回归证明正常 42% 路径仍严格在磁盘检查之后才执行
+  `scale 0` 和 `2→1→0` Pod replacement；三 Pod 97% 路径输出全部压力证据，既不 scale、也不删除
+  Pod/PVC、也不发布成功 receipt。现场 A4276 的只读门禁已提供真实 97% RED；由于当前 KubeBrain
+  StatefulSet 有意保持 0 desired，本轮不伪造 repair 授权去执行真实破坏路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
