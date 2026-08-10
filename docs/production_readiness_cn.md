@@ -1856,6 +1856,41 @@ backup 与 log 起点衔接、GC safepoint 租约和故障续租、对象存储 
 逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
 实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
 
+对官方 TiDB/BR v7.5.1 tag `7d16cc79e81bbf573124df3fd9351c26963f3e70` 的进一步审计固定了
+编排顺序。`streamhelper.MetaDataClient.PutTask` 用一条 etcd transaction 原子写 task 与全部
+range；checkpoint advancer 通过 `/tidb/br-stream/owner` 选主，持续汇总每个 Region checkpoint、
+写 global checkpoint 并把 `log_backup` service GC safepoint 推进到安全水位。因此只注册 task
+而不运行 advancer 不是可用 PITR。`br backup txn` / `br restore txn` 可以生成和恢复跨 CF 一致的
+transactional SST，但 v7.5.1 实际忽略 txn 命令声明的 start/end range、始终处理整个集群，且仍
+标记为 experimental；这只适合目标架构要求的独立 PD/TiKV 集群，不能用于共享集群 tenant
+级物理恢复。
+
+日志恢复不能直接调用官方 `br restore point` 冒充完成：该路径先从 TiDB schema 构造 table-ID
+rewrite rules，`RestoreKVFiles` 会跳过所有没有对应 table rule 的日志文件；KubeBrain magic
+范围不是 TiDB table key。自有 restore 必须复用底层 `ApplyKVFile`/ImportSST 能力并为整个
+KubeBrain range 使用 identity rewrite，同时证明不会处理范围外文件。
+
+在真正 restore executor 修改目标前，控制面可先生成严格只读计划：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-restore-plan \
+  --source-preflight=/evidence/native-pitr-preflight.json \
+  --task-start-ts="$TASK_START_TS" \
+  --full-backup-ts="$FULL_BACKUP_TS" \
+  --backupmeta-sha256="$BACKUPMETA_SHA256" \
+  --storage-prefix=s3://immutable-bucket/instance/run-id \
+  --global-checkpoint-ts="$GLOBAL_CHECKPOINT_TS" \
+  --advancer-owner="$ADVANCER_OWNER" \
+  --target-cluster-id="$TARGET_CLUSTER_ID" \
+  --target-empty-witness-sha256="$EMPTY_WITNESS_SHA256" \
+  --restore-ts="$RESTORE_TS"
+```
+
+输出 `kubebrain.native-pitr-restore-plan.v1`，严格拒绝未知/尾随 preflight JSON、source/target
+cluster ID 相同、非空目标证据缺失、artifact digest 非规范，以及不满足
+`task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记
+`read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。
+
 上线前至少执行一次全 `/registry` 隔离恢复，要求非空、记录数一致、逐 key/value 校验
 通过且清理成功：
 
