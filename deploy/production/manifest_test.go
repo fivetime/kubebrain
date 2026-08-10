@@ -971,6 +971,66 @@ func TestTiKVRepairAlertReceiverAdmissionPinsRequestShapeAndIdentity(t *testing.
 	}
 }
 
+func TestTiKVQuiescedRepairRequesterAdmissionPinsPendingRequestShape(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-tikv-quiesced-repair-requester-admission.yaml")
+	for _, tc := range []struct {
+		name              string
+		resource          string
+		requiredFragments []string
+	}{
+		{
+			name:     "kubebrain-tikv-quiesced-repair-request-operation",
+			resource: "kubebrainoperations",
+			requiredFragments: []string{
+				`^tikv-quiesced-repair-[a-f0-9]{20}$`, `TiKVTransactionRepair`,
+				`platform:tikv-quiesced-repair`, `parameters.json`, `maxAttempts == 1`,
+			},
+		},
+		{
+			name:     "kubebrain-tikv-quiesced-repair-request-parameters",
+			resource: "secrets",
+			requiredFragments: []string{
+				`^tikv-quiesced-repair-[a-f0-9]{20}-parameters$`, `object.immutable == true`,
+				`object.type == "Opaque"`, `size(object.data) == 1`, `parameters.json`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", tc.name)
+			require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+			rules, found, err := unstructured.NestedSlice(policy.Object, "spec", "matchConstraints", "resourceRules")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, rules, 1)
+			require.Equal(t, []any{tc.resource}, rules[0].(map[string]any)["resources"].([]any))
+			require.Equal(t, []any{"CREATE"}, rules[0].(map[string]any)["operations"].([]any))
+			conditions, found, err := unstructured.NestedSlice(policy.Object, "spec", "matchConditions")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Len(t, conditions, 1)
+			condition := conditions[0].(map[string]any)["expression"].(string)
+			require.Contains(t, condition, `system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester`)
+			validations, found, err := unstructured.NestedSlice(policy.Object, "spec", "validations")
+			require.NoError(t, err)
+			require.True(t, found)
+			var expressions strings.Builder
+			for _, validation := range validations {
+				expressions.WriteString(validation.(map[string]any)["expression"].(string))
+				expressions.WriteByte('\n')
+			}
+			for _, fragment := range tc.requiredFragments {
+				require.Contains(t, expressions.String(), fragment)
+			}
+			binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", tc.name)
+			require.Equal(t, tc.name, nestedString(t, binding, "spec", "policyName"))
+			actions, found, err := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions")
+			require.NoError(t, err)
+			require.True(t, found)
+			require.Equal(t, []string{"Deny"}, actions)
+		})
+	}
+}
+
 func TestTiKVRecoveryRequesterAdmissionPinsPendingRequestShape(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-tikv-transaction-recovery-requester-admission.yaml")
 	for _, tc := range []struct {

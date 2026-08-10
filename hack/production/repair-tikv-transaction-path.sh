@@ -574,9 +574,11 @@ if [[ "$REPAIR_MODE" == "transaction" ]]; then
     "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
     die "cannot write repair receipt"
 else
-  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":"%s","pvc_preserved":true,"regions_verified":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s"}\n' \
+  repaired_store_ids_json="$(printf '%s\n' "$EXPECTED_ABNORMAL_STORE_IDS" | "$JQ" -Rce 'split(",") | map(tonumber)')" ||
+    die "cannot encode repaired store identities"
+  printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-quiesced-repair.receipt.v1","kubebrain_quiesced":true,"kubebrain_statefulset_uid":"%s","pvc_preserved":true,"regions_verified":true,"repaired_store_ids":%s,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s"}\n' \
     "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
-    "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
+    "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$repaired_store_ids_json" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
     die "cannot write quiesced repair receipt"
 fi
 mv -f -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish repair receipt"

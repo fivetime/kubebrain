@@ -1,0 +1,63 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-tikv-quiesced-repair-request-operation
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [dbaas.kubebrain.io]
+        apiVersions: [v1alpha1]
+        operations: [CREATE]
+        resources: [kubebrainoperations]
+        scope: Namespaced
+  matchConditions:
+    - name: quiesced-repair-requester
+      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester"'
+  validations:
+    - expression: 'object.metadata.namespace == "kubebrain-repair-operations"'
+      message: quiesced repair requester is restricted to the isolated repair queue
+    - expression: 'object.metadata.name.matches("^tikv-quiesced-repair-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name'
+      message: quiesced repair operation identity must be deterministic
+    - expression: 'object.spec.type == "TiKVTransactionRepair" && object.spec.requestedBy == "platform:tikv-quiesced-repair" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 1'
+      message: quiesced repair operation shape is fixed
+    - expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$")'
+      message: quiesced repair operation must bind its immutable parameter Secret
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-tikv-quiesced-repair-request-operation
+spec:
+  policyName: kubebrain-tikv-quiesced-repair-request-operation
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kubebrain-tikv-quiesced-repair-request-parameters
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [secrets]
+        scope: Namespaced
+  matchConditions:
+    - name: quiesced-repair-requester
+      expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-repair-operations:kubebrain-tikv-quiesced-repair-requester"'
+  validations:
+    - expression: 'object.metadata.namespace == "kubebrain-repair-operations" && object.metadata.name.matches("^tikv-quiesced-repair-[a-f0-9]{20}-parameters$")'
+      message: quiesced repair parameter Secret identity is fixed
+    - expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data'
+      message: quiesced repair parameters must be one immutable opaque payload
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kubebrain-tikv-quiesced-repair-request-parameters
+spec:
+  policyName: kubebrain-tikv-quiesced-repair-request-parameters
+  validationActions: [Deny]

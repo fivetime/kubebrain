@@ -250,6 +250,31 @@ func TestTiKVTransactionRecoveryRequesterCanOnlyReadIdentityAndSubmit(t *testing
 	}
 }
 
+func TestTiKVQuiescedRepairRequesterCanOnlyReadFrozenTargetsAndSubmit(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-tikv-quiesced-repair-requester-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 7)
+	require.Equal(t, "ServiceAccount", documents[0].Kind)
+	require.Equal(t, "kubebrain-repair-operations", documents[0].Metadata.Namespace)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
+	}, documents[1].Rules)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{"apps"}, Resources: []string{"statefulsets"},
+		ResourceNames: []string{"kubebrain"}, Verbs: []string{"get"},
+	}}, documents[3].Rules)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"pingcap.com"}, Resources: []string{"tidbclusters"}, ResourceNames: []string{"kb"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"services/proxy"}, ResourceNames: []string{"http:kb-pd:2379"}, Verbs: []string{"get"}},
+	}, documents[5].Rules)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	for _, forbidden := range []string{"pods", "pods/exec", "statefulsets/scale", "persistentvolumeclaims", "verbs: [delete", "verbs: [patch", "verbs: [update"} {
+		require.NotContains(t, string(data), forbidden)
+	}
+}
+
 func TestTiKVTransactionRepairRBACIsNamespacedAndCannotDeletePVCs(t *testing.T) {
 	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-tikv-transaction-repair-rbac.yaml")
 	documents := decodeRBACManifest(t, path)

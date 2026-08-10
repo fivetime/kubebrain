@@ -242,6 +242,7 @@ fi
 		"kubebrain_statefulset_uid":"kb-uid",
 		"pvc_preserved":true,
 		"regions_verified":true,
+		"repaired_store_ids":[1005],
 		"repaired_tikv_pods":1,
 		"tidb_cluster_uid":"tc-uid"
 	}`, string(quiescedReceipt))

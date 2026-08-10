@@ -81,39 +81,85 @@ chmod 0600 "$frozen_parameters"
   exit 1
 }
 
-$JQ -e 'keys == [
-  "alert_fingerprint", "alert_occurrence_id", "alert_starts_at", "endpoint",
-  "expected_cluster_id", "expected_kubebrain_statefulset_uid", "expected_tidb_cluster_uid",
-  "kubebrain_namespace", "kubebrain_statefulset", "pod_ready_timeout_seconds",
-  "probe_interval_seconds", "probe_timeout_seconds", "repair_cooldown_seconds",
-  "required_failed_probes", "tidb_cluster", "tidb_namespace"
-]' "$frozen_parameters" >/dev/null || die "repair parameter schema is invalid"
+repair_flow=""
+case "$claimed_requester" in
+  alertmanager:transaction-path-policy) repair_flow="transaction" ;;
+  platform:tikv-quiesced-repair) repair_flow="quiesced" ;;
+  *) die "repair claim requester is unsupported" ;;
+esac
 
-parameters="$($JQ -er '[
-  .alert_fingerprint, .alert_starts_at, .alert_occurrence_id,
-  .endpoint, .kubebrain_namespace, .kubebrain_statefulset,
-  .tidb_namespace, .tidb_cluster, .expected_kubebrain_statefulset_uid,
-  .expected_tidb_cluster_uid, (.expected_cluster_id|tostring),
-  (.required_failed_probes|tostring), (.probe_interval_seconds|tostring),
-  (.probe_timeout_seconds|tostring), (.pod_ready_timeout_seconds|tostring),
-  (.repair_cooldown_seconds|tostring)
-] | select(length == 16 and all(. != null and . != "")) | @tsv' "$frozen_parameters")" || die "repair parameters are incomplete"
-IFS=$'\t' read -r alert_fingerprint alert_starts_at alert_occurrence_id \
-  endpoint kb_namespace kb_statefulset tidb_namespace tidb_cluster \
-  expected_kb_uid expected_tidb_uid expected_cluster_id required_failed_probes \
-  probe_interval probe_timeout pod_timeout cooldown <<<"$parameters"
+if [[ "$repair_flow" == "transaction" ]]; then
+  $JQ -e 'keys == [
+    "alert_fingerprint", "alert_occurrence_id", "alert_starts_at", "endpoint",
+    "expected_cluster_id", "expected_kubebrain_statefulset_uid", "expected_tidb_cluster_uid",
+    "kubebrain_namespace", "kubebrain_statefulset", "pod_ready_timeout_seconds",
+    "probe_interval_seconds", "probe_timeout_seconds", "repair_cooldown_seconds",
+    "required_failed_probes", "tidb_cluster", "tidb_namespace"
+  ]' "$frozen_parameters" >/dev/null || die "repair parameter schema is invalid"
+  parameters="$($JQ -er '[
+    .alert_fingerprint, .alert_starts_at, .alert_occurrence_id,
+    .endpoint, .kubebrain_namespace, .kubebrain_statefulset,
+    .tidb_namespace, .tidb_cluster, .expected_kubebrain_statefulset_uid,
+    .expected_tidb_cluster_uid, (.expected_cluster_id|tostring),
+    (.required_failed_probes|tostring), (.probe_interval_seconds|tostring),
+    (.probe_timeout_seconds|tostring), (.pod_ready_timeout_seconds|tostring),
+    (.repair_cooldown_seconds|tostring)
+  ] | select(length == 16 and all(. != null and . != "")) | @tsv' "$frozen_parameters")" || die "repair parameters are incomplete"
+  IFS=$'\t' read -r alert_fingerprint alert_starts_at alert_occurrence_id \
+    endpoint kb_namespace kb_statefulset tidb_namespace tidb_cluster \
+    expected_kb_uid expected_tidb_uid expected_cluster_id required_failed_probes \
+    probe_interval probe_timeout pod_timeout cooldown <<<"$parameters"
+  expected_abnormal_store_ids=""
+  request_id=""
+else
+  $JQ -e '
+    keys == ["endpoint","expected_abnormal_store_ids","expected_cluster_id",
+      "expected_kubebrain_statefulset_uid","expected_tidb_cluster_uid",
+      "kubebrain_namespace","kubebrain_statefulset","pod_ready_timeout_seconds",
+      "probe_timeout_seconds","repair_cooldown_seconds","request_id","tidb_cluster","tidb_namespace"] and
+    (.expected_abnormal_store_ids | type == "array" and length > 0 and
+      all(.[]; type == "number" and . == floor and . > 0) and . == (sort | unique))
+  ' "$frozen_parameters" >/dev/null || die "quiesced repair parameter schema is invalid"
+  parameters="$($JQ -er '[
+    .endpoint, .kubebrain_namespace, .kubebrain_statefulset, .tidb_namespace,
+    .tidb_cluster, .expected_kubebrain_statefulset_uid, .expected_tidb_cluster_uid,
+    (.expected_cluster_id|tostring), (.expected_abnormal_store_ids|map(tostring)|join(",")),
+    (.probe_timeout_seconds|tostring), (.pod_ready_timeout_seconds|tostring),
+    (.repair_cooldown_seconds|tostring), .request_id
+  ] | select(length == 13 and all(. != null and . != "")) | @tsv' "$frozen_parameters")" ||
+    die "quiesced repair parameters are incomplete"
+  IFS=$'\t' read -r endpoint kb_namespace kb_statefulset tidb_namespace tidb_cluster \
+    expected_kb_uid expected_tidb_uid expected_cluster_id expected_abnormal_store_ids \
+    probe_timeout pod_timeout cooldown request_id <<<"$parameters"
+  required_failed_probes=1
+  probe_interval=0
+fi
 for value in "$kb_namespace" "$kb_statefulset" "$tidb_namespace" "$tidb_cluster"; do
   [[ "$value" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || die "repair resource identity is invalid"
 done
 [[ "$endpoint" =~ ^https?://[^[:space:],]+$ ]] || die "repair endpoint is invalid"
 [[ "$expected_cluster_id" =~ ^[1-9][0-9]*$ && "$required_failed_probes" =~ ^[1-9][0-9]*$ && "$probe_interval" =~ ^[0-9]+$ && "$probe_timeout" =~ ^[1-9][0-9]*$ && "$pod_timeout" =~ ^[1-9][0-9]*$ && "$cooldown" =~ ^[1-9][0-9]*$ ]] || die "repair numeric parameter is invalid"
-[[ "$alert_fingerprint" =~ ^[a-f0-9]{16,64}$ && "$alert_starts_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && "$alert_occurrence_id" =~ ^[a-f0-9]{20}$ ]] || die "repair alert occurrence identity is invalid"
-computed_occurrence_id="$(printf '%s\n%s\n' "$alert_fingerprint" "$alert_starts_at" | sha256sum | cut -c1-20)"
-[[ "$computed_occurrence_id" == "$alert_occurrence_id" && "$name" == "tikv-repair-${alert_occurrence_id}" && "$operation_id" == "$name" ]] || die "repair alert occurrence identity does not match the operation"
-[[ "$claimed_type" == "TiKVTransactionRepair" && "$claimed_requester" == "alertmanager:transaction-path-policy" &&
-  "$claimed_owner" == "$WORKER_ID" && "$claimed_parameters_secret" == "${name}-parameters" &&
-  "$claimed_parameters_key" == "parameters.json" && "$instance" == "$kb_statefulset" ]] ||
-  die "repair claim identity does not match the approved alert operation"
+if [[ "$repair_flow" == "quiesced" && ( "$probe_timeout" -gt 60 || "$pod_timeout" -gt 1800 ) ]]; then
+  die "quiesced repair timeout parameter exceeds the requester bound"
+fi
+if [[ "$repair_flow" == "transaction" ]]; then
+  [[ "$alert_fingerprint" =~ ^[a-f0-9]{16,64}$ && "$alert_starts_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T && "$alert_occurrence_id" =~ ^[a-f0-9]{20}$ ]] || die "repair alert occurrence identity is invalid"
+  computed_occurrence_id="$(printf '%s\n%s\n' "$alert_fingerprint" "$alert_starts_at" | sha256sum | cut -c1-20)"
+  [[ "$computed_occurrence_id" == "$alert_occurrence_id" && "$name" == "tikv-repair-${alert_occurrence_id}" && "$operation_id" == "$name" ]] || die "repair alert occurrence identity does not match the operation"
+else
+  [[ "$request_id" =~ ^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$ ]] || die "quiesced repair request identity is invalid"
+  request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$request_id" "$expected_kb_uid" "$expected_tidb_uid" "$expected_cluster_id" "$expected_abnormal_store_ids" | sha256sum | cut -c1-20)"
+  [[ "$name" == "tikv-quiesced-repair-${request_hash}" && "$operation_id" == "$name" ]] ||
+    die "quiesced repair request identity does not match the operation"
+fi
+if [[ "$claimed_type" != "TiKVTransactionRepair" || "$claimed_owner" != "$WORKER_ID" ||
+  "$claimed_parameters_secret" != "${name}-parameters" || "$claimed_parameters_key" != "parameters.json" ||
+  "$instance" != "$kb_statefulset" ]]; then
+  if [[ "$repair_flow" == "transaction" ]]; then
+    die "repair claim identity does not match the approved alert operation"
+  fi
+  die "quiesced repair claim identity does not match the approved operation"
+fi
 
 attempt_hash="$(printf '%s' "$operation_id" | sha256sum | cut -c1-20)"
 repair_attempt_id="op-${attempt_hash}"
@@ -130,6 +176,9 @@ repair_env=(
   "PROBE_TIMEOUT_SECONDS=$probe_timeout" "POD_READY_TIMEOUT_SECONDS=$pod_timeout"
   "REPAIR_COOLDOWN_SECONDS=$cooldown"
 )
+if [[ "$repair_flow" == "quiesced" ]]; then
+  repair_env+=("REPAIR_MODE=quiesced" "EXPECTED_ABNORMAL_STORE_IDS=$expected_abnormal_store_ids")
+fi
 
 if [[ ! -e "$receipt_output" ]]; then
   env "${repair_env[@]}" "$REPAIR_COMMAND" &
@@ -158,24 +207,42 @@ if [[ ! -e "$receipt_output" ]]; then
     exit 1
   fi
   if [[ "$repair_rc" -ne 0 ]]; then
-    run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "TiKV transaction repair exited ${repair_rc}; a new approved operation is required" >/dev/null
+    run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "TiKV ${repair_flow} repair exited ${repair_rc}; a new approved operation is required" >/dev/null
     exit 1
   fi
 fi
 
-$JQ -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" '
-  keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_statefulset_uid","pvc_preserved","repaired_tikv_pods","tidb_cluster_uid","transaction_verified"] and
-  .format == "kubebrain.tikv-transaction-repair.receipt.v1" and
-  .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
-  .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and
-  .pvc_preserved == true and
-  (.repaired_tikv_pods | type == "number" and . == floor and . >= 1 and . <= 3) and
-  .transaction_verified == true and
-  (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null || {
+receipt_valid=false
+if [[ "$repair_flow" == "transaction" ]]; then
+  if $JQ -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" '
+    keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_statefulset_uid","pvc_preserved","repaired_tikv_pods","tidb_cluster_uid","transaction_verified"] and
+    .format == "kubebrain.tikv-transaction-repair.receipt.v1" and
+    .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
+    .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and .pvc_preserved == true and
+    (.repaired_tikv_pods | type == "number" and . == floor and . >= 1 and . <= 3) and
+    .transaction_verified == true and
+    (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null; then
+    receipt_valid=true
+  fi
+else
+  expected_target_count="$(tr ',' '\n' <<<"$expected_abnormal_store_ids" | wc -l | tr -d ' ')"
+  expected_target_ids="$($JQ -cn --arg ids "$expected_abnormal_store_ids" '$ids | split(",") | map(tonumber)')"
+  if $JQ -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --arg tidb_uid "$expected_tidb_uid" --argjson cluster_id "$expected_cluster_id" --argjson target_count "$expected_target_count" --argjson target_ids "$expected_target_ids" '
+    keys == ["attempt_id","cluster_id","completed_at_unix","format","kubebrain_quiesced","kubebrain_statefulset_uid","pvc_preserved","regions_verified","repaired_store_ids","repaired_tikv_pods","tidb_cluster_uid"] and
+    .format == "kubebrain.tikv-quiesced-repair.receipt.v1" and
+    .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
+    .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and
+    .kubebrain_quiesced == true and .pvc_preserved == true and .regions_verified == true and .repaired_store_ids == $target_ids and
+    .repaired_tikv_pods == $target_count and
+    (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null; then
+    receipt_valid=true
+  fi
+fi
+[[ "$receipt_valid" == "true" ]] || {
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "repair receipt invalid; a new approved operation is required" >/dev/null
   exit 1
 }
 receipt_digest="$(file_sha256 "$receipt_output")"
 [[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "repair receipt digest is invalid"
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
-  --receipt-sha256 "$receipt_digest" --message "TiKV transaction repair completed" >/dev/null
+  --receipt-sha256 "$receipt_digest" --message "TiKV ${repair_flow} repair completed" >/dev/null

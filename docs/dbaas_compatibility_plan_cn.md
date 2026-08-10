@@ -45476,10 +45476,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PV/磁盘 fence、逐目标 UID+同 PVC 重建、目标集合消费和连续 Region 收敛；全程任何 KubeBrain unquiesce
   或身份漂移都 fail closed。成功后不恢复数据面、不执行 transaction probe，而原子输出独立
   `kubebrain.tikv-quiesced-repair.receipt.v1`，固定 `kubebrain_quiesced=true`、`regions_verified=true`、
-  PVC preserved 和实际目标数。确定性回归证明 store 1005 只删除 kb-tikv-2、零 KubeBrain scale/exec、
+  PVC preserved、实际目标数和精确 `repaired_store_ids`。确定性回归证明 store 1005 只删除 kb-tikv-2、零 KubeBrain scale/exec、
   receipt 精确且最终仍隔离；无异常或审批 target 不匹配时在任何 delete 前拒绝。普通 3→0→repair→3
   事务模式及其原 receipt 保持通过。本项未执行现场 delete；quiesced 模式尚未接入审批 requester/runner，
   因而仍禁止直接调用，下一项需关闭该授权编排缺口。
+
+- A4298 关闭 A4297 保留的静默修复授权编排缺口，并复用既有 `TiKVTransactionRepair` 高风险类型和唯一
+  repair executor，避免两个 worker 竞争同一 Operation type。新增 `request-tikv-quiesced-repair.sh` 只读
+  验证 KubeBrain 精确 desired/Ready=0、TidbCluster 固定 UID/cluster ID/3 PD/3 TiKV Ready，并从 PD
+  pending/down checker 生成排序去重且非空的 store ID 快照；外部 `REQUEST_ID + 两个 UID + cluster ID +
+  store IDs` 共同派生确定性名称。requester 创建严格 13 字段 immutable Secret 和 maxAttempts=1 的未审批
+  Pending Operation，不自行 approve。专属 RBAC 只有固定 StatefulSet/TidbCluster/PD service proxy 的 get
+  与隔离队列 Operation/Secret create/get，不含 Pod、exec、scale、PVC/PV 或任何 delete/patch/update；
+  AdmissionPolicy 进一步固定 requester 身份、namespace、名称、type、requestedBy、instance、Secret/key/
+  SHA 和 immutable 单字段 payload。
+  `run-tikv-transaction-repair-operation.sh` 按已 claim 的 requester 选择互斥严格 schema：保留原 alert
+  transaction 流程，静默流程则重算包含精确 store 集合的 request hash，向同一原语传递
+  `REPAIR_MODE=quiesced`，并验证 receipt 中 KubeBrain/TidbCluster/cluster/attempt、隔离状态、Region 收敛、
+  PVC 保留、目标数量与精确 `repaired_store_ids`。接管只复验已有 receipt，不重复删除 TiKV；参数 target
+  漂移、名称 hash 漂移、receipt store 漂移均在再次调用原语前 fail closed。请求器、runner、原语、RBAC
+  和 Admission 的确定性测试覆盖成功、健康 Region 拒绝、无自批/无写权限、target 冻结及 takeover。
+  本项仍未向真实集群提交/审批 Operation，也没有删除现场 Pod；部署准入与执行现场修复必须使用外部
+  变更审批 ID，修复成功后仍需经 A4296 recovery 的独立审批恢复 KubeBrain。
 
 ### P2：运维兼容和长期验证
 
