@@ -1,15 +1,31 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+type authMetadataReadErrorBackend struct {
+	BackendShim
+	err error
+}
+
+func (b *authMetadataReadErrorBackend) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	if bytes.Equal(key, authConfigKey) {
+		return nil, b.err
+	}
+	return b.BackendShim.InternalGet(ctx, key)
+}
 
 func TestAuthRepositoryPersistsAndRecoversAtomicSnapshot(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
@@ -47,4 +63,77 @@ func TestAuthRepositoryPersistsAndRecoversAtomicSnapshot(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, next, afterConflict.Config)
 	require.True(t, proto.Equal(user, afterConflict.Users["root"]), "conflicting mutation must not partially replace user")
+}
+
+func TestAuthRepositoryClassifiesMalformedPersistentMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   []byte
+		value func(*testing.T) []byte
+		want  string
+	}{
+		{
+			name: "invalid config", key: authConfigKey,
+			value: func(*testing.T) []byte { return []byte{2} },
+			want:  "invalid auth config encoding",
+		},
+		{
+			name: "malformed user", key: authRecordKey(authUsersKey, "alice"),
+			value: func(*testing.T) []byte { return []byte{0xff} },
+			want:  "decode auth user",
+		},
+		{
+			name: "user key mismatch", key: authRecordKey(authUsersKey, "alice"),
+			value: func(t *testing.T) []byte {
+				value, err := proto.Marshal(&authpb.User{Name: []byte("bob")})
+				require.NoError(t, err)
+				return value
+			},
+			want: `auth user key identity "alice" disagrees with payload name "bob"`,
+		},
+		{
+			name: "role key mismatch", key: authRecordKey(authRolesKey, "reader"),
+			value: func(t *testing.T) []byte {
+				value, err := proto.Marshal(&authpb.Role{Name: []byte("writer")})
+				require.NoError(t, err)
+				return value
+			},
+			want: `auth role key identity "reader" disagrees with payload name "writer"`,
+		},
+		{
+			name: "token generation key mismatch", key: authRecordKey(authTokenGenerationsKey, "alice"),
+			value: func(t *testing.T) []byte {
+				value, err := proto.Marshal(&authpb.User{Name: []byte("bob"), Password: make([]byte, authUserTokenGenerationBytes)})
+				require.NoError(t, err)
+				return value
+			},
+			want: `auth token generation key identity "alice" disagrees with payload name "bob"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			require.NoError(t, server.backend.InternalPut(ctx, test.key, test.value(t)))
+
+			_, err := newAuthRepository(server.backend).load(ctx)
+			require.ErrorIs(t, err, errInvalidAuthMetadata)
+			require.ErrorContains(t, err, test.want)
+			require.NotContains(t, err.Error(), errInvalidAuthMetadata.Error(),
+				"classification must not replace the existing operator diagnostic")
+		})
+	}
+}
+
+func TestAuthRepositoryPreservesMetadataReadStatusError(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	want := status.Error(codes.Unavailable, "auth metadata backend unavailable")
+	repo := newAuthRepository(&authMetadataReadErrorBackend{BackendShim: server.backend, err: want})
+
+	_, err := repo.load(context.Background())
+	require.ErrorIs(t, err, want)
+	require.False(t, errors.Is(err, errInvalidAuthMetadata))
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }

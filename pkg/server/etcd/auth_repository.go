@@ -1,12 +1,14 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -24,6 +26,25 @@ var (
 )
 
 const initialAuthRevision = 1
+
+var errInvalidAuthMetadata = errors.New("auth metadata is inconsistent")
+
+type invalidAuthMetadataError struct {
+	cause error
+}
+
+func (e *invalidAuthMetadataError) Error() string { return e.cause.Error() }
+func (e *invalidAuthMetadataError) Unwrap() error { return e.cause }
+func (e *invalidAuthMetadataError) Is(target error) bool {
+	return target == errInvalidAuthMetadata
+}
+
+func markInvalidAuthMetadata(err error) error {
+	if err == nil || errors.Is(err, errInvalidAuthMetadata) {
+		return err
+	}
+	return &invalidAuthMetadataError{cause: err}
+}
 
 func waitAuthRetry(ctx context.Context, attempt int) error {
 	shift := attempt
@@ -60,9 +81,27 @@ func encodeAuthConfig(config authConfig) []byte {
 
 func decodeAuthConfig(value []byte) (authConfig, error) {
 	if len(value) != 9 || value[0] > 1 {
-		return authConfig{}, fmt.Errorf("invalid auth config encoding")
+		return authConfig{}, markInvalidAuthMetadata(fmt.Errorf("invalid auth config encoding"))
 	}
 	return authConfig{Enabled: value[0] == 1, Revision: binary.BigEndian.Uint64(value[1:])}, nil
+}
+
+func decodeAuthRecordIdentity(prefix []byte, key string) (string, error) {
+	if !strings.HasPrefix(key, string(prefix)) {
+		return "", markInvalidAuthMetadata(fmt.Errorf("auth record key %q is outside prefix %q", key, prefix))
+	}
+	encoded := strings.TrimPrefix(key, string(prefix))
+	if encoded == "" {
+		return "", markInvalidAuthMetadata(fmt.Errorf("auth record key %q has an empty identity", key))
+	}
+	identity, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", markInvalidAuthMetadata(fmt.Errorf("decode auth record identity from key %q: %v", key, err))
+	}
+	if len(identity) == 0 {
+		return "", markInvalidAuthMetadata(fmt.Errorf("auth record key %q has an empty identity", key))
+	}
+	return string(identity), nil
 }
 
 func authRecordKey(prefix []byte, name string) []byte {
@@ -138,25 +177,52 @@ func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*a
 		TokenGenerations: make(map[string]*authpb.User),
 	}
 	for key, value := range usersRaw {
+		identity, identityErr := decodeAuthRecordIdentity(authUsersKey, key)
+		if identityErr != nil {
+			return nil, identityErr
+		}
 		var user authpb.User
 		if err := proto.Unmarshal(value, &user); err != nil {
-			return nil, fmt.Errorf("decode auth user %q: %w", key, err)
+			return nil, markInvalidAuthMetadata(fmt.Errorf("decode auth user %q: %w", key, err))
 		}
-		snapshot.Users[string(user.Name)] = &user
+		if !bytes.Equal([]byte(identity), user.Name) {
+			return nil, markInvalidAuthMetadata(fmt.Errorf(
+				"auth user key identity %q disagrees with payload name %q", identity, user.Name,
+			))
+		}
+		snapshot.Users[identity] = &user
 	}
 	for key, value := range rolesRaw {
+		identity, identityErr := decodeAuthRecordIdentity(authRolesKey, key)
+		if identityErr != nil {
+			return nil, identityErr
+		}
 		var role authpb.Role
 		if err := proto.Unmarshal(value, &role); err != nil {
-			return nil, fmt.Errorf("decode auth role %q: %w", key, err)
+			return nil, markInvalidAuthMetadata(fmt.Errorf("decode auth role %q: %w", key, err))
 		}
-		snapshot.Roles[string(role.Name)] = &role
+		if !bytes.Equal([]byte(identity), role.Name) {
+			return nil, markInvalidAuthMetadata(fmt.Errorf(
+				"auth role key identity %q disagrees with payload name %q", identity, role.Name,
+			))
+		}
+		snapshot.Roles[identity] = &role
 	}
 	for key, value := range generationsRaw {
+		identity, identityErr := decodeAuthRecordIdentity(authTokenGenerationsKey, key)
+		if identityErr != nil {
+			return nil, identityErr
+		}
 		var generation authpb.User
 		if err := proto.Unmarshal(value, &generation); err != nil {
-			return nil, fmt.Errorf("decode auth token generation %q: %w", key, err)
+			return nil, markInvalidAuthMetadata(fmt.Errorf("decode auth token generation %q: %w", key, err))
 		}
-		snapshot.TokenGenerations[string(generation.Name)] = &generation
+		if !bytes.Equal([]byte(identity), generation.Name) {
+			return nil, markInvalidAuthMetadata(fmt.Errorf(
+				"auth token generation key identity %q disagrees with payload name %q", identity, generation.Name,
+			))
+		}
+		snapshot.TokenGenerations[identity] = &generation
 	}
 	return snapshot, nil
 }

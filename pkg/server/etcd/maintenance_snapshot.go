@@ -288,6 +288,9 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 	state := production.State{Revision: revision}
 	auth, err := s.auth.repo.load(ctx)
 	if err != nil {
+		if errors.Is(err, errInvalidAuthMetadata) {
+			return production.State{}, nil, nil, fmt.Errorf("%w: %v", production.ErrInvalidSnapshotMetadata, err)
+		}
 		return production.State{}, nil, nil, err
 	}
 	state.Auth.Enabled = auth.Config.Enabled

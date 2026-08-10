@@ -44631,6 +44631,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `Recv` 必须依次观察 `Unavailable`、`InvalidArgument`、`Unknown`，且保留完整诊断。该测试在现有实现
   上直接 GREEN，证明 A4209 已覆盖 server-streaming Snapshot；本项只固化黑盒证据，没有添加可能与
   interceptor 双重分类的生产代码，也不把纯文本启发式扩散到 Snapshot。
+  A4215 补齐 A4212 之前未覆盖的 auth repository 早退路径，并继续对照 upstream
+  `/root/etcd/server/auth/store.go::Recover` 与 `server/storage/schema/auth_{users,roles}.go` 中 bucket key
+  和 protobuf identity 共同定义恢复对象的布局。KubeBrain 原先在 auth config 编码或 user/role/token
+  generation protobuf 损坏时返回普通错误，Snapshot 在认证预检阶段即泄漏 `Unknown`；更隐蔽的是存储
+  key 的 base64 identity 与 payload `Name` 从未核对，两个来源分叉时会按 map 迭代结果构造不可证明的
+  auth 快照。新增不改变原 `Error()` 诊断的内部 `errInvalidAuthMetadata`，校验 key prefix/base64/非空
+  identity 以及 user、role、token-generation 的 key↔payload 一致性。Snapshot 的认证预检和固定 metadata
+  捕获两个入口都将该类包装为 `ErrInvalidSnapshotMetadata`/`FailedPrecondition`，且不发送 partial frame；
+  独立 `InternalGet` `Unavailable` 对照证明 storage status 不进入 sentinel。由此 DBaaS 备份在 auth 持久
+  布局损坏时 fail-closed，不会静默覆盖 identity，也不会把 TiKV 暂时读取失败误判为需人工修复。
 
 ### P2：运维兼容和长期验证
 

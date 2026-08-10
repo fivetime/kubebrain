@@ -454,6 +454,9 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 	s.metricCli.EmitCounter("maintenance.snapshot", 1)
 	caller, err := s.authCallerFromContext(stream.Context())
 	if err != nil {
+		if errors.Is(err, errInvalidAuthMetadata) {
+			return status.Error(codes.FailedPrecondition, fmt.Sprintf("%s: %v", etcdsnapshot.ErrInvalidSnapshotMetadata, err))
+		}
 		return err
 	}
 	if caller != nil {
