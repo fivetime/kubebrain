@@ -3670,6 +3670,8 @@ func TestRecentUpstreamAuditIsRecorded(t *testing.T) {
 		"756c7a6b2",
 		"30811a06a",
 		"5cd9f4ee1",
+		"fb30879ec",
+		"A4285",
 		"A4272",
 		"A4273",
 		"A4274",
@@ -3735,6 +3737,17 @@ func TestRuntimeObservabilityDependencyBaselineIsPinned(t *testing.T) {
 		"go.uber.org/zap v1.28.0",
 	} {
 		require.Contains(t, module, dependency)
+	}
+}
+
+func TestCLIProgressDependencyDoesNotLeakIntoDataplaneModules(t *testing.T) {
+	for _, modulePath := range []string{
+		filepath.Join("..", "..", "go.mod"),
+		"go.mod",
+	} {
+		contents, err := os.ReadFile(modulePath)
+		require.NoError(t, err, modulePath)
+		require.NotContains(t, string(contents), "github.com/cheggaaa/pb/v3", modulePath)
 	}
 }
 

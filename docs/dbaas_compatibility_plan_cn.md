@@ -45306,6 +45306,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新审批 operation。健康 fixture 仍完成 2→1→0 和最终 Put/Get/Delete。本项不尝试自动修复 PD，
   也不在部分执行后自动回滚已安全重建的单个 TiKV Pod。
 
+- A4285 复核权威 `/root/etcd`：工作树保持 clean，`main` HEAD 仍为已记录的
+  `5cd9f4ee13801e18825d661e5005ae599460bc3a`，因此 A4273 之后没有新的 upstream 源码区间需要
+  移植。额外逐文件审计最近非 merge 提交 `fb30879ec`：它只在 upstream 根模块、`etcdctl`、
+  `etcdutl`、`tests` 与 `tools/mod` 将 CLI 进度条 `github.com/cheggaaa/pb/v3` 从 3.1.7 升至
+  3.2.0，并联动 colorable/isatty/runewidth 等终端展示依赖；没有修改服务端 API、protobuf/wire、
+  KV/Txn/Watch/Lease/Auth 语义或 TiKV/PD 数据路径。KubeBrain 主数据面模块和官方 client 兼容 runner
+  均不导入该库，故不做无协议收益的机械 dependency sync。`TestRecentUpstreamAuditIsRecorded` 固定
+  A4285、完整 HEAD 与该 commit 分类；`TestCLIProgressDependencyDoesNotLeakIntoDataplaneModules`
+  同时约束两个数据面相关模块不得因本次审计引入 CLI progress dependency。reference etcd 工具的
+  provenance 仍绑定上述完整 HEAD；后续 HEAD 变化时必须重新生成差集并按公开可观察语义分类。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
