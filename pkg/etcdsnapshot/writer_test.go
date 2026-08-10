@@ -431,6 +431,7 @@ func TestBuilderRejectsMissingCurrentLeaseButAllowsHistoricalReference(t *testin
 		err := WriteBackend(path, State{Revision: 2, Records: []Record{{
 			Key: []byte("leased"), Value: []byte("value"), CreateRevision: 2, ModRevision: 2, Version: 1, Lease: 17,
 		}}})
+		require.ErrorIs(t, err, ErrInvalidRetainedHistory)
 		require.ErrorContains(t, err, `current key "leased" references missing lease 17`)
 	})
 

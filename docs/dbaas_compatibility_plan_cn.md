@@ -44592,6 +44592,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   duplicate/inconsistent-total 的 `errors.Is` 契约，raw Snapshot 回归注入 total=2 但仅保留 subrevision=0
   的事务，要求无任何 partial frame 且返回 `FailedPrecondition` 与精确 revision 诊断。由此 DBaaS 备份
   编排可把所有持久历史不可恢复形状统一归为“需 compaction/迁移处理”，而不会把它们当瞬态重试风暴。
+  A4211 补齐 retained MVCC 当前版本到 lease metadata 的交叉引用分类。独立 writer 原先会拒绝“当前
+  key 指向不存在 lease”，但错误未包装 `ErrInvalidRetainedHistory`；在线 Snapshot 捕获若发现流中
+  lease 与同一 barrier 下固定的 attachment 不一致，则连续八次重试后仍只返回普通
+  `errSnapshotChanged`，经 Maintenance 泄漏为 gRPC `Unknown`。现保持单次不一致为可重试
+  `errSnapshotChanged`，并携带 key、流中 lease、固定 attachment 等诊断；只有八次独立捕获均失败才
+  同时包装 `ErrInvalidRetainedHistory`，raw Snapshot 因而 fail-closed 为 `FailedPrecondition` 且不发送
+  partial frame。writer 的缺失 lease 引用也纳入同一 sentinel。回归同时固定直接调用仍可
+  `errors.Is(err, errSnapshotChanged)`、重试耗尽后可识别 durable sentinel，以及跨 gRPC 边界的
+  code/message；leader 变化仍保持 `etcdserver: leader changed`，bbolt I/O 与传输故障不改写。
 
 ### P2：运维兼容和长期验证
 

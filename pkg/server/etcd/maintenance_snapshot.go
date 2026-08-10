@@ -48,7 +48,7 @@ func (s *RPCServer) buildSnapshot(ctx context.Context, path string) error {
 			if errors.Is(err, errSnapshotLeaderChanged) {
 				return rpctypes.ErrGRPCLeaderChanged
 			}
-			return fmt.Errorf("capture stable etcd snapshot: %w", err)
+			return fmt.Errorf("%w: capture stable etcd snapshot: %w", production.ErrInvalidRetainedHistory, err)
 		}
 		select {
 		case <-ctx.Done():
@@ -212,18 +212,24 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 				if record.LeaseKnown {
 					if (record.Lease == 0 && attached) ||
 						(record.Lease != 0 && (!attached || attachedLease != record.Lease)) {
-						return errSnapshotChanged
+						return fmt.Errorf(
+							"%w: current key %q lease %d disagrees with pinned attachment %d (attached=%t)",
+							errSnapshotChanged, record.Key, record.Lease, attachedLease, attached,
+						)
 					}
 				} else if attached {
 					record.Lease = attachedLease
 				}
 				if record.Lease != 0 {
 					if _, ok := leaseIDs[record.Lease]; !ok {
-						return errSnapshotChanged
+						return fmt.Errorf(
+							"%w: current key %q references missing captured lease %d",
+							errSnapshotChanged, record.Key, record.Lease,
+						)
 					}
 				}
 				if attached && attachedLease == 0 {
-					return errSnapshotChanged
+					return fmt.Errorf("%w: current key %q has a zero pinned lease attachment", errSnapshotChanged, record.Key)
 				}
 			}
 			records = append(records, production.Record{

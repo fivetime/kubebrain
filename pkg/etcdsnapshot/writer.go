@@ -466,7 +466,10 @@ func (b *Builder) Finish() error {
 				return fmt.Errorf("%w: %v", ErrInvalidRetainedHistory, err)
 			}
 		}
-		return validateCurrentLeaseReferences(tx)
+		if err := validateCurrentLeaseReferences(tx); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidRetainedHistory, err)
+		}
+		return nil
 	}); err != nil {
 		return err
 	}

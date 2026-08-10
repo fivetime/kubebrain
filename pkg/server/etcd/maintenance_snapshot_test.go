@@ -1395,5 +1395,30 @@ func TestMaintenanceSnapshotRejectsCurrentLeaseDisagreeingWithPinnedAttachment(t
 	}
 	err = server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "snapshot.db"))
 	require.ErrorIs(t, err, errSnapshotChanged)
+	require.ErrorIs(t, err, etcdsnapshot.ErrInvalidRetainedHistory)
 	require.Positive(t, put.Header.Revision)
+}
+
+func TestMaintenanceSnapshotClassifiesRepeatedPinnedLeaseMismatch(t *testing.T) {
+	server, closeFn := newTestRPCServerWithCompatibility(t, false)
+	defer closeFn()
+	ctx := context.Background()
+	attached, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: 1811, TTL: 300})
+	require.NoError(t, err)
+	other, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: 1812, TTL: 300})
+	require.NoError(t, err)
+	key := []byte("/snapshot/repeated-pinned-lease-mismatch")
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: attached.ID})
+	require.NoError(t, err)
+
+	server.backend = &corruptCurrentLeaseSnapshotBackend{
+		BackendShim: server.backend, key: key, value: []byte("value"), lease: other.ID,
+	}
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidRetainedHistory.Error())
+	require.ErrorContains(t, err, string(key))
+	require.ErrorContains(t, err, "1812")
+	require.Empty(t, stream.responses)
 }
