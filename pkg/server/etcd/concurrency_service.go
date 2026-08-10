@@ -16,7 +16,9 @@ package etcd
 
 import (
 	"context"
+	"errors"
 
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election"
 	"go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
@@ -82,10 +84,27 @@ func normalizeConcurrencyAuthError(err error) error {
 	if err == nil {
 		return nil
 	}
-	switch status.Code(err) {
-	case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied:
-		return status.Error(codes.Unknown, status.Convert(err).Message())
-	default:
-		return err
+	// The upstream Lock/Election servers return errors from their internal
+	// client verbatim. KubeBrain needs one narrow translation because its local
+	// client preserves modern typed auth codes whereas the reference dedicated
+	// services expose these four auth failures as Unknown. Do not translate every
+	// error sharing those broad codes: transport interceptors and future request
+	// validation can legitimately return InvalidArgument, Unauthenticated, or
+	// PermissionDenied and upstream would preserve them.
+	for _, authErr := range []error{
+		rpctypes.ErrGRPCUserEmpty,
+		rpctypes.ErrGRPCInvalidAuthToken,
+		rpctypes.ErrGRPCPermissionDenied,
+		rpctypes.ErrGRPCAuthOldRevision,
+	} {
+		if errors.Is(err, authErr) || sameGRPCStatus(err, authErr) {
+			return status.Error(codes.Unknown, status.Convert(err).Message())
+		}
 	}
+	return err
+}
+
+func sameGRPCStatus(left, right error) bool {
+	return status.Code(left) == status.Code(right) &&
+		status.Convert(left).Message() == status.Convert(right).Message()
 }

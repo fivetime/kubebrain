@@ -46,6 +46,30 @@ func (s *fakeElectionObserveServer) Send(*v3electionpb.LeaderResponse) error {
 	return nil
 }
 
+func TestNormalizeConcurrencyAuthErrorIsNarrow(t *testing.T) {
+	for _, authErr := range []error{
+		rpctypes.ErrGRPCUserEmpty,
+		rpctypes.ErrGRPCInvalidAuthToken,
+		rpctypes.ErrGRPCPermissionDenied,
+		rpctypes.ErrGRPCAuthOldRevision,
+	} {
+		normalized := normalizeConcurrencyAuthError(authErr)
+		require.Equal(t, codes.Unknown, status.Code(normalized))
+		require.Equal(t, status.Convert(authErr).Message(), status.Convert(normalized).Message())
+	}
+
+	for _, unrelated := range []error{
+		status.Error(codes.InvalidArgument, "interceptor rejected a malformed route"),
+		status.Error(codes.Unauthenticated, "transport credentials expired"),
+		status.Error(codes.PermissionDenied, "network policy denied the peer"),
+		status.Error(codes.Unavailable, "connection unavailable"),
+		context.Canceled,
+	} {
+		require.Same(t, unrelated, normalizeConcurrencyAuthError(unrelated),
+			"non-auth delegate errors must retain their upstream status and identity")
+	}
+}
+
 type dedicatedConcurrencyAuthContexts struct {
 	anonymous context.Context
 	root      context.Context

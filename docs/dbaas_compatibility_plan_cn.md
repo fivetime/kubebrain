@@ -45053,6 +45053,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   以标准 `Canceled` 返回、active stream 归零，随后释放底层 Recv 也安全收尾；半关闭与 A4256 慢 Created/cancel 顺序回归以及 race
   均通过。该修复不访问存储；真实 TiKV/PD 不适用，但公网代理/异常 transport 下的 goroutine 长时 soak 仍待生产环境验证。
 
+- A4258 收窄 dedicated Lock/Election service 的 auth error 归一化边界。服务实现直接复用 upstream v3.7
+  `v3lock.NewLockServer`/`v3election.NewElectionServer`；KubeBrain 只需把内部 client 保留的四个 canonical auth status
+  （user empty、invalid token、permission denied、auth old revision）转换为 reference dedicated service 可见的 `Unknown`。
+  旧 `normalizeConcurrencyAuthError` 却按 gRPC code 匹配，把任何 `InvalidArgument`、`Unauthenticated` 或
+  `PermissionDenied` 都改成 Unknown；来自 transport/interceptor 或未来非认证 request validation 的同码错误因此偏离 upstream
+  “delegate error 原样返回”的契约。现在只按四个 rpctypes canonical code+message/typed identity 转换，其他错误保留原对象、code
+  和 message。表测固定四个 auth 正例，以及三个同码不同语义反例、Unavailable 和 context cancellation；既有 missing/invalid token、
+  RBAC deny、token generation 失效、Observe 空流及 generic concurrency error 黑盒和 race 均继续通过。该项只修复服务错误外观，
+  不访问 TiKV/PD；真实多副本 concurrency soak 无需因本轮重跑，仍沿用既有独立长期门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
