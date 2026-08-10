@@ -241,7 +241,7 @@
 
 ## 第三轮代码审查（review round 3，2026-07-03）
 
-5 条意见，核实后：**接受并修** #R10/#R11；#R12(=#R2/#R9) 当轮已闭环，#R13(=#R4) 后续闭环；**记文档、不改代码** #R14。
+5 条意见，核实后：**接受并修** #R10/#R11；#R12(=#R2/#R9) 当轮已闭环，#R13(=#R4) 与 #R14 后续闭环。
 
 - [x] **#R10** [low] 历史 CountOnly 忽略请求 revision，按当前 revision 计数  
   `pkg/server/etcd/kv.go` — `969aa75`。快 Count 路径的守卫 `hasRangeRevisionFilters` 只看 `Min/MaxMod/CreateRevision`、**不看 `r.Revision`**；且 `CountRequest` proto（外部 `kubebrain-client` 模块）无 revision 字段。改：快路径再加 `r.Revision == 0` 门控，带 revision 的 CountOnly 落到 `List`（按 `r.Revision` 读快照、`applyRangeOptions` 在 CountOnly 时剥 Kvs 只留 Count）。**k8s 安全**：apiserver 的分页 count 走 List 响应的 `Count` 字段，不发带 revision 的 CountOnly；纯正确性修复。`TestCountOnlyHonorsRequestRevision`（rev3 后删 1 键 → 按 rev3 count 仍 3、按当前 count 2）。
@@ -250,8 +250,8 @@
 - [x] **#R12** [med] lease attach/detach 未与用户 KV 写在同一原子事务、且 lease id 未内联进 value meta  
   **已在二轮闭环** = #R2 + #R9（`eedb5d7`）。lease id 已按版本内联进 value envelope；leased 单 Put 的 value+attachment 已同一 `TxnApply` 批原子提交、不再吞错误。审查建议的"废掉外置 `leasekeys/` 双写"**有意未做**：`leasekeys/` 是 failover 时 O(leased-keys) 重建索引的来源，废掉会逼 reload 全量扫描；现已是**单条原子写**而非双写，核心顾虑已消除。
 - [x] **#R13** [low] generic txn fallback 仍非 etcd 单事务 → **后续已闭环** = #R4。见上。
-- [~] **#R14** [low] Hash/HashKV 是 revision hash、非 MVCC 内容 hash → **架构上基本 N/A，未改**  
-  `pkg/server/etcd/maintenance.go` — `Hash`/`HashKV` 返回 `revisionHash(revision)`。etcd 的 HashKV 用于检测**多成员间 MVCC 内容分叉**；KubeBrain 是 TiKV 上的**单一逻辑副本**（复制/一致性由 TiKV raft 负责），无 etcd 式成员会分叉，该用途基本不适用；apiserver 也不调 HashKV。真做按内容 hash = 全量扫描 keyspace（代价大、收益低，仅对迁移校验/ops 工具有点用）。记为已知差异，暂缓，除非有 ops 校验需求再按需实现。
+- [x] **#R14** [low] Hash/HashKV 是 revision hash、非 MVCC 内容 hash → **后续已闭环**
+  `a825dad1` 已把 `HashKV` 改为 CRC32C 扫描指定 revision 可见的真实租户 MVCC history：排除 revision-zero index 与内部 service metadata，逻辑 compaction 后只保留 watermark 前每键最后存活版本，并保证 physical GC 前后结果稳定；`9057ee52` 又将 backend `Hash` 分离为包含完整编码域和内部元数据的物理诊断。两者都在 `logicalWriteMu` 下取得一致快照，返回 current/hash/compact revision 并映射 compacted/future 错误，不再调用 `revisionHash`。由于 TiKV 编码域与 bbolt bucket/page 布局不同，在线 hash **有意不要求与另一个 reference cluster 数值相等**；兼容合同是同一 KubeBrain 数据面各 endpoint 在相同 revision/compaction 状态收敛、内容或内部状态变化有感、官方 schema/header/error 可消费。backend 内容/历史/compaction/corruption 测试、raw gRPC revision 边界和多副本/重启黑盒已覆盖。
 
 ---
 

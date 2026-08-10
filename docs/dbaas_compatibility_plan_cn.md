@@ -45574,6 +45574,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已验证 129-key 成功单 revision、257-key 两入口均拒绝且零写。因此 #R5 改为已闭环，当前唯一保留差异
   是生产配置主动收紧的可观测 admission，而不是数据面原子性缺口。
 
+- A4305 清理最后一个陈旧 review-round 差距 #R14。旧记录声称 Maintenance `Hash`/`HashKV` 仍返回
+  `revisionHash(revision)`；当前代码和历史证明该结论在 A41 之后已失效：`a825dad1` 的 `HashKV` 在
+  `logicalWriteMu` 一致快照内按请求 revision 扫描真实租户 MVCC history，以 CRC32C 覆盖编码 key/value，
+  排除 revision-zero index 与内部 service metadata，并在逻辑 compaction 后只纳入 watermark 前每键最后
+  存活版本；`9057ee52` 将 backend `Hash` 独立为包含完整租户编码域和内部元数据的物理诊断。因此用户
+  内容/历史/lease envelope 或 compaction 可改变 `HashKV`，内部 lease/auth/quota 状态只改变 `Hash`，
+  physical GC 不改变同一逻辑 `HashKV`。public response 同时保留 current/hash/compact revision、
+  compacted/future 错误与 auth/header 合同。TiKV 编码和 upstream bbolt bucket/page 不同，两个独立集群的
+  hash 数值不可移植且不应强行相等；reference differential 明确要求两端都满足 Hash 稳定、HashKV revision
+  对齐、detached lease 只改变 backend Hash 等结构不变量，而 KubeBrain 多 endpoint/重启测试要求同一共享
+  数据面收敛。backend 内容/历史/逻辑与物理 compaction、损坏 key fail-closed、raw gRPC 和官方 client/v3
+  门禁共同证明当前是内容哈希而非 revision 占位符，故 #R14 改为已闭环。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
