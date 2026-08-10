@@ -242,15 +242,25 @@ func (w *watcher) progressSyncedRevSnapshot() (snapshot map[int64]uint64, allEli
 	w.Lock()
 	defer w.Unlock()
 	snapshot = make(map[int64]uint64, len(w.watches))
-	allEligible = len(w.watches) > 0
+	active := 0
 	for id, wt := range w.watches {
+		// Cancellation retains the map entry until its terminal control is
+		// ordered, so a create cannot reuse the ID too early. It is no longer an
+		// active watcher, however, and etcd's RequestProgressAll excludes a watch
+		// as soon as cancellation begins. In particular, do not let a slow compact
+		// revision lookup manufacture a WatchId=-1 progress response for a watch
+		// that can no longer deliver events.
+		if wt.closing.Load() {
+			continue
+		}
+		active++
 		syncedRev := atomic.LoadUint64(&wt.syncedRev)
 		if wt.progressStartRevision > syncedRev {
-			allEligible = false
 			continue
 		}
 		snapshot[id] = syncedRev
 	}
+	allEligible = active > 0 && len(snapshot) == active
 	return snapshot, allEligible
 }
 
@@ -262,6 +272,9 @@ func (w *watcher) minSyncedRevision() (uint64, bool) {
 	var minRev uint64
 	found := false
 	for _, wt := range w.watches {
+		if wt.closing.Load() {
+			continue
+		}
 		rev := atomic.LoadUint64(&wt.syncedRev)
 		if !found || rev < minRev {
 			minRev = rev

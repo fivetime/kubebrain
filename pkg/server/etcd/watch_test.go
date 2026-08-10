@@ -2093,6 +2093,53 @@ func TestSlowWatchCancelReleasesQuotaOnceBeforeConcurrentClose(t *testing.T) {
 	server.releaseWatch()
 }
 
+func TestSlowWatchCancelIsExcludedFromStreamProgress(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	backend := &blockingCancelCompactRevisionBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	wt := &watch{cancel: func() {}, syncedRev: 11}
+	w := &watcher{
+		backend: backend, watchServer: &fakeWatchServer{ctx: context.Background()}, grpcServer: server,
+		watches:   map[int64]*watch{7: wt},
+		metricCli: server.metricCli,
+	}
+
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		w.CancelGeneration(7, wt, compactedRevisionError(), true)
+	}()
+	<-backend.entered
+
+	// The ID remains reserved until the compacted terminal response is ordered,
+	// but upstream has already removed this logical watcher from progressAll.
+	require.True(t, wt.closing.Load())
+	snapshot, allEligible := w.progressSyncedRevSnapshot()
+	require.Empty(t, snapshot)
+	require.False(t, allEligible)
+	_, active := w.minSyncedRevision()
+	require.False(t, active)
+	_, synced := w.waitStreamProgressRevision(context.Background(), 11, time.Millisecond)
+	require.False(t, synced, "a closing-only stream must not emit WatchId=-1 progress")
+
+	w.Lock()
+	w.watches[8] = &watch{syncedRev: 15}
+	w.Unlock()
+	snapshot, allEligible = w.progressSyncedRevSnapshot()
+	require.True(t, allEligible, "a closing generation must not hold back an active synchronized watch")
+	require.Equal(t, map[int64]uint64{8: 15}, snapshot)
+	rev, active := w.minSyncedRevision()
+	require.True(t, active)
+	require.Equal(t, uint64(15), rev)
+
+	close(backend.release)
+	<-cancelDone
+}
+
 func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

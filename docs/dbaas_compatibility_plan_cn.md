@@ -45019,6 +45019,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   check，写/renew 携带 epoch；合法嵌套 Txn 已进入通用执行器，剩余 unsupported 仅是校验层拒绝的畸形 oneof。真实 TiKV/PD 慢
   compact cancel 下的 admission 恢复仍待既知环境故障恢复后补跑。
 
+- A4255 将 terminal ordering 暂留的 closing Watch generation 从 stream-wide progress 集合排除。对照
+  `/root/etcd/server/storage/mvcc/watcher.go` 的 `Cancel`/`RequestProgressAll`：上游取消开始后 watcher 已不再参与 `progressAll`；
+  KubeBrain 的 A4252 为防止 ID 过早复用会在慢 compact-revision 查询期间保留 map entry，此前
+  `progressSyncedRevSnapshot`/`minSyncedRevision` 仍把它当作 active，可能为已无法交付事件的 closing-only stream 发送额外
+  `WatchId=-1` progress，或让它拖住其他 watch 的按需进度。现在 progress 快照和最小 delivered watermark 都跳过 closing
+  generation；ID reservation、terminal control 顺序及 admission quota 生命周期不变。确定性测试阻塞 compact revision 查询，
+  同时证明 ID 仍 closing、progress snapshot 为空、stream 没有 active watermark，且等待逻辑不会伪造同步成功。同期审计确认自动
+  WatchId 分配与 upstream 同样从 0 单调递增、跳过 active 显式 ID，并接受 `-1`/`MinInt64`/`MaxInt64` 显式值；`int64` 回绕也保持
+  同构，不引入自定义保留值。周期 progress 的默认 1 秒（upstream 默认约 10 分钟并带 jitter）是为 Kubernetes 1.37
+  ConsistentListFromCache 3 秒等待窗口而保留的已记录 DBaaS 策略差异，并非本轮协议修正。真实 TiKV/PD 慢 compact cancel 与
+  并发 RequestProgress 仍受既知环境故障限制，恢复后需补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
