@@ -57,6 +57,10 @@ func TestDifferentialRunnerRejectsUnreachableAdvertisedClientURL(t *testing.T) {
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
 	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
 if [[ "$*" == *"member list -w json"* ]]; then
   printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://internal.invalid:3379"]}]}'
   exit 0
@@ -92,6 +96,10 @@ func TestDifferentialRunnerRejectsMissingAdvertisedClientURLs(t *testing.T) {
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
 	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
 if [[ "$*" == *"member list -w json"* ]]; then
   printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":[]}]}'
   exit 0
@@ -123,6 +131,10 @@ func TestDifferentialRunnerChecksClusterLocalAdvertisedURLInSelectedPod(t *testi
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
 	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'Git SHA: d947b2086\n'
+  exit 0
+fi
 if [[ "$*" == *"member list -w json"* ]]; then
   printf '%s\n' '{"members":[{"name":"kubebrain-0","clientURLs":["http://internal.invalid:3379"]}]}'
   exit 0

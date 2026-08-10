@@ -166,6 +166,7 @@ func etcdctlEndpointClusterHealthWithAuth(t *testing.T, endpoint string) bool {
 	if etcdctl == "" {
 		etcdctl = "/root/etcd/bin/etcdctl"
 	}
+	requireReferenceEtcdProvenance(t, etcdctl)
 	commandCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	output, err := runCompatCommandContext(t, commandCtx, etcdctl, []string{

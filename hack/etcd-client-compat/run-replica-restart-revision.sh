@@ -84,6 +84,7 @@ if [[ ! -x "$ETCDCTL_BIN" ]]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
   exit 1
 fi
+REFERENCE_ETCD_BIN="$ETCDCTL_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"
 if ! "$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" endpoint health; then
   echo "disposable restart endpoint health preflight failed: $KUBEBRAIN_RESTART_ENDPOINT" >&2
   exit 1

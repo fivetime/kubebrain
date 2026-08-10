@@ -18,19 +18,34 @@ if [[ -z "$expected_sha" ]]; then
   fi
 fi
 
-version_output="$("$REFERENCE_ETCD_BIN" --version 2>&1)" || {
-  echo "reference etcd --version failed: $REFERENCE_ETCD_BIN" >&2
-  exit 1
-}
 actual_sha=""
+build_modified=""
+build_info="$(go version -m "$REFERENCE_ETCD_BIN" 2>/dev/null || true)"
 while IFS= read -r line; do
   case "$line" in
-    "Git SHA: "*)
-      actual_sha="${line#Git SHA: }"
-      break
+    *$'build\tvcs.revision='*)
+      actual_sha="${line##*vcs.revision=}"
+      ;;
+    *$'build\tvcs.modified='*)
+      build_modified="${line##*vcs.modified=}"
       ;;
   esac
-done <<<"$version_output"
+done <<<"$build_info"
+
+if [[ -z "$actual_sha" ]]; then
+  version_output="$("$REFERENCE_ETCD_BIN" --version 2>&1)" || {
+    echo "reference etcd --version failed: $REFERENCE_ETCD_BIN" >&2
+    exit 1
+  }
+  while IFS= read -r line; do
+    case "$line" in
+      "Git SHA: "*)
+        actual_sha="${line#Git SHA: }"
+        break
+        ;;
+    esac
+  done <<<"$version_output"
+fi
 
 expected_sha="${expected_sha,,}"
 actual_sha="${actual_sha,,}"
@@ -40,6 +55,10 @@ if [[ ! "$expected_sha" =~ ^[0-9a-f]{7,40}$ ]]; then
 fi
 if [[ ! "$actual_sha" =~ ^[0-9a-f]{7,40}$ ]]; then
   echo "reference etcd binary reports an invalid Git SHA: ${actual_sha:-<empty>}" >&2
+  exit 1
+fi
+if [[ "$build_modified" == true ]]; then
+  echo "reference etcd binary was built from a modified worktree: $REFERENCE_ETCD_BIN" >&2
   exit 1
 fi
 if [[ "$expected_sha" != "$actual_sha"* && "$actual_sha" != "$expected_sha"* ]]; then

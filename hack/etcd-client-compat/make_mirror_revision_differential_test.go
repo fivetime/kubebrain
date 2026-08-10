@@ -38,6 +38,7 @@ func TestMakeMirrorRevisionAndCompactionDifferential(t *testing.T) {
 	if _, err := os.Stat(etcdctl); err != nil {
 		t.Skipf("etcdctl binary unavailable: %v", err)
 	}
+	requireReferenceEtcdProvenance(t, etcdctl)
 
 	referenceToKubeBrain := runMakeMirrorRevisionScenario(
 		t, etcdctl, referenceEndpoint, kubeBrainEndpoint, "revision-reference-to-kubebrain",

@@ -133,6 +133,7 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 	if endpoint == "" || etcdutl == "" || etcd == "" {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT, ETCDUTL_BINARY, and REFERENCE_ETCD_BINARY")
 	}
+	requireReferenceEtcdProvenance(t, etcdutl)
 	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	require.NoError(t, err)
 	defer client.Close()

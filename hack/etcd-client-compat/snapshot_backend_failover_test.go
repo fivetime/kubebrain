@@ -37,6 +37,7 @@ func TestSnapshotFailsClosedAndRecoversAcrossBackendFailover(t *testing.T) {
 	if etcdutl == "" {
 		t.Fatal("set ETCDUTL_BINARY to the official etcdutl binary")
 	}
+	requireReferenceEtcdProvenance(t, etcdutl)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

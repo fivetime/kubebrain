@@ -437,6 +437,34 @@ func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	require.Contains(t, string(output), "expected=5cd9f4ee13801e18825d661e5005ae599460bc3a")
 }
 
+func TestReferenceEtcdProvenanceVerifierReadsGoBuildInfo(t *testing.T) {
+	tempDir := t.TempDir()
+	binary := tempDir + "/etcdctl"
+	require.NoError(t, os.WriteFile(binary, []byte("#!/usr/bin/env bash\nprintf 'etcdctl version: 3.8.0-alpha.0\\nAPI version: 3.8\\n'\n"), 0o700))
+	fakeGo := tempDir + "/go"
+	require.NoError(t, os.WriteFile(fakeGo, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$2: go1.26.5\" $'\\tbuild\\tvcs.revision=5cd9f4ee13801e18825d661e5005ae599460bc3a'\n"), 0o700))
+
+	run := func() ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), compatScriptCommandTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "bash", "verify-reference-etcd-provenance.sh")
+		cmd.Env = append(os.Environ(),
+			"PATH="+tempDir+":"+os.Getenv("PATH"),
+			"REFERENCE_ETCD_BIN="+binary,
+			"REFERENCE_ETCD_EXPECTED_GIT_SHA=5cd9f4ee13801e18825d661e5005ae599460bc3a",
+		)
+		return cmd.CombinedOutput()
+	}
+	output, err := run()
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "reference etcd provenance verified: 5cd9f4ee13801e18825d661e5005ae599460bc3a")
+
+	require.NoError(t, os.WriteFile(fakeGo, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$2: go1.26.5\" $'\\tbuild\\tvcs.revision=5cd9f4ee13801e18825d661e5005ae599460bc3a' $'\\tbuild\\tvcs.modified=true'\n"), 0o700))
+	output, err = run()
+	require.Error(t, err)
+	require.Contains(t, string(output), "reference etcd binary was built from a modified worktree")
+}
+
 func TestEveryReferenceEtcdRunnerVerifiesProvenance(t *testing.T) {
 	runners := []string{
 		"run-alarm-restart-recovery.sh",
@@ -455,6 +483,27 @@ func TestEveryReferenceEtcdRunnerVerifiesProvenance(t *testing.T) {
 		data, err := os.ReadFile(runner)
 		require.NoError(t, err)
 		require.Contains(t, string(data), `"$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"`, runner)
+	}
+}
+
+func TestEveryEtcdctlRunnerVerifiesProvenance(t *testing.T) {
+	runners := []string{
+		"run-alarm-restart-recovery.sh",
+		"run-auth-differential.sh",
+		"run-automatic-quota-differential.sh",
+		"run-cold-header-recovery.sh",
+		"run-differential.sh",
+		"run-direct-moveleader-differential.sh",
+		"run-direct-replica-consistency.sh",
+		"run-jwt-differential.sh",
+		"run-make-mirror-differential.sh",
+		"run-rangestream-compaction-differential.sh",
+		"run-replica-restart-revision.sh",
+	}
+	for _, runner := range runners {
+		data, err := os.ReadFile(runner)
+		require.NoError(t, err)
+		require.Contains(t, string(data), `REFERENCE_ETCD_BIN="$ETCDCTL_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"`, runner)
 	}
 }
 

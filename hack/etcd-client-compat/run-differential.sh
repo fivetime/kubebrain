@@ -77,6 +77,7 @@ if [ ! -x "$ETCDCTL_BIN" ]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
   exit 1
 fi
+REFERENCE_ETCD_BIN="$ETCDCTL_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"
 if [[ -n "$KUBEBRAIN_METRICS_ENDPOINT" ]] &&
   ! curl --fail --silent --max-time 5 \
     "$(http_endpoint_url "$KUBEBRAIN_METRICS_ENDPOINT")/metrics" >/dev/null; then

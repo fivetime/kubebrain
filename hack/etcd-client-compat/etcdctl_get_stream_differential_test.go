@@ -24,6 +24,7 @@ func TestEtcdctlGetStreamDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if etcdctl == "" {
 		etcdctl = "/root/etcd/bin/etcdctl"
 	}
+	requireReferenceEtcdProvenance(t, etcdctl)
 	for name, endpoint := range map[string]string{
 		"reference": reference,
 		"kubebrain": compatEndpoint(t),

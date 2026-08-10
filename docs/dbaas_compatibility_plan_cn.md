@@ -45138,6 +45138,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cold header、lease expiry、HashKV/compaction、alarm、restore/delete 和 snapshot-history 等直接 oracle 都 fail closed，而普通 subprocess
   不受影响。compat 全量、定向 race、vet/govulncheck 与全仓 ShellCheck 通过；该项仍只强化测试证据，不访问 TiKV/PD。
 
+- A4270 将 provenance 从 reference server 扩展到官方客户端/制品工具。`etcdctl version`/`etcdutl version` 不打印 Git SHA，
+  但 `go version -m` 证明当前两个默认 binary 也构建自 `d947b2086344...`，并携带旧 grpc、semver 与 `x/*` 依赖；仅校验 server
+  仍会让 CLI 输出、make-mirror、事务 stdin parsing 或 snapshot restore/status 的 oracle 与 `/root/etcd@5cd9f4ee1380` 漂移。
+  共享 verifier 现优先读取 Go build info 的 `vcs.revision`、拒绝 `vcs.modified=true`，仅在 metadata 不可用时回退 server
+  `Git SHA:` 输出。所有 11 个使用
+  etcdctl 的 runner 都在调用前校验；直接运行的 Auth health、make-mirror、single-quote txn、get stream 差分也下沉校验；两个直接
+  etcdutl snapshot 入口同样 fail closed。工具 build-info fixture、真实陈旧 etcdctl mismatch、wrapper 接线与默认 skip 路径均有回归。
+  compat 全量、定向 race、vet/govulncheck 及全仓 ShellCheck 通过；该项不访问 TiKV/PD。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

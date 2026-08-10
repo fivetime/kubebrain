@@ -31,6 +31,7 @@ func TestMakeMirrorBidirectionalDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if _, err := os.Stat(etcdctl); err != nil {
 		t.Skipf("etcdctl binary unavailable: %v", err)
 	}
+	requireReferenceEtcdProvenance(t, etcdctl)
 
 	referenceToKubeBrain := runMakeMirrorDirection(
 		t, etcdctl, reference, compatEndpoint(t), "reference-to-kubebrain",
@@ -59,6 +60,7 @@ func TestMakeMirrorPaginatedBaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if _, err := os.Stat(etcdctl); err != nil {
 		t.Skipf("etcdctl binary unavailable: %v", err)
 	}
+	requireReferenceEtcdProvenance(t, etcdctl)
 
 	source, err := clientv3.New(clientv3.Config{
 		Endpoints: []string{compatEndpoint(t)}, DialTimeout: 3 * time.Second,

@@ -36,6 +36,7 @@ func TestMakeMirrorAuthenticatedBidirectionalDifferential(t *testing.T) {
 	if _, err := os.Stat(etcdctl); err != nil {
 		t.Skipf("etcdctl binary unavailable: %v", err)
 	}
+	requireReferenceEtcdProvenance(t, etcdctl)
 
 	setupMirrorAuth(t, referenceEndpoint)
 	setupMirrorAuth(t, kubeBrainEndpoint)
