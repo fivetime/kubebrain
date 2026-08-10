@@ -316,6 +316,35 @@ func TestAuthTokenLazilyMigratesLegacyUserGeneration(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestAuthTokenRefreshesReplicaCachedBeforeLazyGenerationMigration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	manager := newAuthManager(server.backend)
+	password, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.DefaultCost)
+	require.NoError(t, err)
+	initial, err := manager.repo.load(ctx)
+	require.NoError(t, err)
+	_, err = manager.repo.mutate(ctx, initial.Config, authMutation{
+		Key:   authRecordKey(authUsersKey, "root"),
+		Value: &authpb.User{Name: []byte("root"), Password: password, Roles: []string{"root"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, manager.enable(ctx))
+
+	staleReplica := newAuthTokenManager(server.backend)
+	before, err := staleReplica.snapshots.current(ctx)
+	require.NoError(t, err)
+	require.Nil(t, before.TokenGenerations["root"])
+	issuer := newAuthTokenManager(server.backend)
+	token, err := issuer.authenticate(ctx, "root", "secret")
+	require.NoError(t, err)
+
+	claims, err := staleReplica.verify(ctx, token)
+	require.NoError(t, err, "a replica with a stale negative generation cache must refresh once")
+	require.Equal(t, "root", claims.Username)
+}
+
 func requireAuthTokenError(t *testing.T, err error, want error, code codes.Code, message string) {
 	t.Helper()
 	require.ErrorIs(t, err, want)

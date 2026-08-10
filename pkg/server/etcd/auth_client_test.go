@@ -272,6 +272,50 @@ func TestClientAuthenticateRejectsTokenInvalidatedDuringHeaderBarrier(t *testing
 	require.True(t, statusResponse.Enabled)
 }
 
+func TestClientAuthAcceptsTokenAfterRemoteLazyGenerationMigration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	password, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
+	require.NoError(t, err)
+	initial, err := server.auth.repo.load(ctx)
+	require.NoError(t, err)
+	_, err = server.auth.repo.mutate(ctx, initial.Config, authMutation{
+		Key:   authRecordKey(authUsersKey, "root"),
+		Value: &authpb.User{Name: []byte("root"), Password: password, Roles: []string{"root"}},
+	})
+	require.NoError(t, err)
+	require.NoError(t, server.auth.enable(ctx))
+
+	staleReplica := newAuthTokenManager(server.backend)
+	cached, err := staleReplica.snapshots.current(ctx)
+	require.NoError(t, err)
+	require.Nil(t, cached.TokenGenerations["root"])
+	token, err := server.tokens.authenticate(ctx, "root", "secret")
+	require.NoError(t, err)
+	server.tokens = staleReplica
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{"bufnet"}, DialTimeout: time.Second, Token: token,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err = client.Get(requestCtx, "/a4232/remote-lazy-generation")
+	require.NoError(t, err)
+}
+
 func TestClientAuthAddUserAfterDeleteAndPasswordRotation(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

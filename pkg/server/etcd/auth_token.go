@@ -310,8 +310,26 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 		return claims, nil
 	}
 	generation, err := base64.RawURLEncoding.DecodeString(claims.Generation)
+	if err != nil {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+	}
 	currentGeneration := snapshot.TokenGenerations[claims.Username]
-	if err != nil || currentGeneration == nil || !hmac.Equal(generation, currentGeneration.Password) {
+	if currentGeneration == nil {
+		// Lazy migration intentionally does not advance the auth revision. A
+		// different replica may therefore have cached the same revision before
+		// the generation was created. A validly signed generation-bearing token
+		// is the signal to refresh that one stale-negative cache entry.
+		m.snapshots.invalidate()
+		snapshot, err = m.snapshots.current(ctx)
+		if err != nil {
+			return authTokenClaims{}, err
+		}
+		if !snapshot.Config.Enabled || snapshot.Users[claims.Username] == nil {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		}
+		currentGeneration = snapshot.TokenGenerations[claims.Username]
+	}
+	if currentGeneration == nil || !hmac.Equal(generation, currentGeneration.Password) {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
 	return claims, nil

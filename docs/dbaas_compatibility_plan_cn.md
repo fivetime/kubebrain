@@ -44811,6 +44811,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   删除/重建仍由 CAS 重新求值。官方 client/v3 bufconn 回归注入旧版本删除形状后证明 UserAdd/Authenticate 正常完成，旧身份
   token 被拒；manager 回归同时固定新密码、generation 已轮换且操作不等待超时。
 
+- A4232 修复多 Pod 对 legacy 用户执行 generation lazy migration 时的 stale-negative cache。KubeBrain 为避免迁移本身
+  使全局 auth revision 前进，首次签发只以独立 CAS 创建 generation；但 auth snapshot cache 以 config revision 为共享
+  失效信号。Pod B 若先缓存“该用户没有 generation”，Pod A 随后迁移并签发的合法 token 会被 B 持续拒绝，直到另一次
+  auth mutation 或 B 本地签发偶然清缓存。现在 simple-token 在签名、claims 和用户均已验证后，仅当 generation claim
+  存在而本地 snapshot 缺项时失效缓存并强制稳定重读一次，再重新检查 auth enabled、用户存在性及 generation 常量时间
+  比较；普通伪造 token、legacy 无 generation token 和 generation mismatch 均不会触发反复扫描。双 manager 回归固定同一
+  backend 上的跨副本时序，官方 client/v3 bufconn 回归将预热旧 snapshot 的 manager 安装为服务副本并证明新 token 的
+  KV Range 首次即可成功。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
