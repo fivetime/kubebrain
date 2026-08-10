@@ -45259,6 +45259,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   隔离漂移和 97% 水位，证明该异常不是瞬态调度噪声。本项只改变只读发布/诊断门禁，不延长
   KubeBrain 客户请求超时，也不自动执行 PD operator、peer 删除或 TiKV 重启。
 
+- A4281 把 A4280 的手工只读判定接入持续 Prometheus 告警，并修正既有事务路径告警的错误
+  “健康 TiKV 控制面”分类。真实三 PD `/metrics` 均暴露
+  `pd_regions_status{type="pending-peer-region-count"}` 与 `down-peer-region-count`，当前值各为 1；新增
+  `KubeBrainPDRegionPeerUnhealthy` 以 `max by(type)>0` 持续 2 分钟触发 critical，保留异常类型和值，
+  runbook 指向 `validate-tikv-region-health.sh` 取得具体 Region/store/PV 身份。新增
+  `KubeBrainPDRegionHealthMetricsMissing` 要求 3×2=6 条 series，持续 5 分钟数量漂移触发 warning，防止
+  metric/version/scrape 漂移被 PromQL 空向量误当作零异常。原
+  `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 现在除三 TiKV target 和
+  `tikv_raftstore_leader_missing==0` 外，还要求 pending/down 两类 PD gauge 的全局 max 为 0；当前
+  `76009/1005` 场景因此不再被矛盾地描述成控制面健康，而由专属 Region peer 告警接管。manifest
+  回归精确固定三条表达式、2m/5m 时窗、critical/warning severity 和运行手册文案；三 PD 真实 metrics
+  各自验证到恰好两条目标 series。本项不把 Prometheus `for` 替代 A4280 的发布前连续采样，也不自动
+  触发破坏性 repair。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

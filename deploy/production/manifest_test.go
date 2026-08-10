@@ -1287,13 +1287,14 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	transactionPathRule := prometheusRuleByAlert(t, groups,
 		"KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane")
 	require.Equal(t,
-		`((kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) == 0) and on() (count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) == 3) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0)`,
+		`((kube_statefulset_status_replicas_ready{namespace="kubebrain-system",statefulset="kubebrain"} or on() vector(0)) == 0) and on() (count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) == 3) and on() (max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) == 0) and on() (max(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) == 0)`,
 		transactionPathRule["expr"])
 	require.Equal(t, "2m", transactionPathRule["for"])
 	require.Equal(t, "critical", transactionPathRule["labels"].(map[string]any)["severity"])
 	description := transactionPathRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, description, "end-to-end etcd transaction probe")
 	require.Contains(t, description, "same-PVC TiKV repair")
+	require.Contains(t, description, "no pending/down peer Regions")
 
 	overflowRule := prometheusRuleByAlert(t, groups, "KubeBrainCountIndexOverflowed")
 	require.Equal(t, `max(count_index_overflowed{namespace="kubebrain-system"}) > 0`, overflowRule["expr"])
@@ -1388,11 +1389,13 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	for alert, expr := range map[string]string{
-		"KubeBrainPDInsufficientReplicas":      `count(up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1) < 3`,
-		"KubeBrainTiKVInsufficientReplicas":    `count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) < 3`,
-		"KubeBrainPDLeaderUnavailable":         `sum(etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"}) != 1`,
-		"KubeBrainTiKVRegionLeaderMissing":     `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
-		"KubeBrainStorageVolumeMetricsMissing": `count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6`,
+		"KubeBrainPDInsufficientReplicas":       `count(up{namespace="tidb-cluster",service="kb-pd-metrics"} == 1) < 3`,
+		"KubeBrainTiKVInsufficientReplicas":     `count(up{namespace="tidb-cluster",service="kb-tikv-metrics"} == 1) < 3`,
+		"KubeBrainPDLeaderUnavailable":          `sum(etcd_server_is_leader{namespace="tidb-cluster",service="kb-pd-metrics"}) != 1`,
+		"KubeBrainTiKVRegionLeaderMissing":      `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
+		"KubeBrainPDRegionPeerUnhealthy":        `max by (type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) > 0`,
+		"KubeBrainPDRegionHealthMetricsMissing": `count(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) != 6`,
+		"KubeBrainStorageVolumeMetricsMissing":  `count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6`,
 		"KubeBrainStorageVolumeLow": `(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"} / ` +
 			`kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 0.15`,
 		"KubeBrainResourceMetricsMissing":      `((count(container_memory_working_set_bytes{namespace="kubebrain-system",container="kubebrain",image!=""}) + count(container_memory_working_set_bytes{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",image!=""})) < 9) or ((count(kube_pod_container_resource_limits{namespace="kubebrain-system",container="kubebrain",resource="memory",unit="byte"}) + count(kube_pod_container_resource_limits{namespace="tidb-cluster",pod=~"kb-(pd|tikv)-[0-2]",container=~"pd|tikv",resource="memory",unit="byte"})) < 9)`,
@@ -1413,6 +1416,12 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		case "KubeBrainLogicalBackupMetricsMissing":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
 			require.Equal(t, "1h", alertRule["for"])
+		case "KubeBrainPDRegionHealthMetricsMissing":
+			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
+			require.Equal(t, "5m", alertRule["for"])
+		case "KubeBrainPDRegionPeerUnhealthy":
+			require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
+			require.Equal(t, "2m", alertRule["for"])
 		case "KubeBrainDataPlaneCPUThrottlingHigh", "KubeBrainNetworkErrors", "KubeBrainNetworkPacketDrops":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
 			if alert == "KubeBrainDataPlaneCPUThrottlingHigh" {
@@ -1424,6 +1433,16 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 			require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
 		}
 	}
+	regionPeerRule := prometheusRuleByAlert(t, groups, "KubeBrainPDRegionPeerUnhealthy")
+	require.Contains(t,
+		regionPeerRule["annotations"].(map[string]any)["description"],
+		"validate-tikv-region-health.sh",
+	)
+	regionMetricsRule := prometheusRuleByAlert(t, groups, "KubeBrainPDRegionHealthMetricsMissing")
+	require.Contains(t,
+		regionMetricsRule["annotations"].(map[string]any)["description"],
+		"6 series",
+	)
 }
 
 func TestProductionMonitoringProvidesInstanceMetering(t *testing.T) {
@@ -1544,6 +1563,7 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"kube_statefulset_status_replicas_ready",
 		"kubelet_volume_stats_available_bytes",
 		"kubelet_volume_stats_capacity_bytes",
+		"pd_regions_status",
 		"tikv_raftstore_leader_missing",
 		"up",
 	} {
