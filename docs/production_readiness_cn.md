@@ -1933,6 +1933,23 @@ backup-stream 与 `log-backup-coordinator` 三层 safepoint。该证据证明 ta
 不证明 full snapshot 或 restore；生产 operation 仍必须在 bootstrap TTL 进入安全余量前确认
 advancer owner、global checkpoint 和 coordinator safepoint持续健康，否则 fail closed。
 
+该确认和 bootstrap safepoint 交接由只读状态入口完成（唯一写操作是先续租、成功后删除本
+operation 自己的 bootstrap safepoint）：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-task-ready \
+  --task-create=/evidence/native-pitr-task-create.json \
+  --pd=kb-pd-0.storage.svc:2379,kb-pd-1.storage.svc:2379 \
+  --ca=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key
+```
+
+命令先核对 receipt 的 cluster ID，再在一个 etcd 读取事务中验证持久 owner 与 receipt 完全一致、
+task protobuf 的 name/start/end 一致、只有一个精确 tenant range、advancer 已选主，且
+`central_global` 是位于 task 时间区间内的 8-byte checkpoint。任一条件失败都会保留并续租
+bootstrap guard；全部通过才释放该 guard，并输出 `kubebrain.native-pitr-task-ready.v1`。释放后
+返回的全局最小 safepoint 若已越过 checkpoint 仍会报错；生产监管还必须持续保证 coordinator
+safepoint 与 checkpoint 前进，ready receipt 不是长期健康证明。
+
 上线前至少执行一次全 `/registry` 隔离恢复，要求非空、记录数一致、逐 key/value 校验
 通过且清理成功：
 
