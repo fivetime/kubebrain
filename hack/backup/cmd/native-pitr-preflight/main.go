@@ -62,6 +62,7 @@ type receipt struct {
 	TaskRangesKey string         `json:"task_ranges_prefix"`
 	OwnershipKeys []string       `json:"ownership_paths_checked"`
 	TaskAvailable bool           `json:"task_name_available"`
+	TaskCount     int64          `json:"existing_task_count"`
 	Stores        []storeReceipt `json:"stores"`
 	ReadOnly      bool           `json:"read_only"`
 }
@@ -137,6 +138,13 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 		{metaPrefix + "/last-error/" + o.task + "/", true},
 	}
 	checked := make([]string, 0, len(ownership))
+	allTasks, err := client.Get(ctx, []byte(metaPrefix+"/info/"), pd.WithPrefix())
+	if err != nil {
+		return fmt.Errorf("read backup-stream task list: %w", err)
+	}
+	if allTasks.GetCount() != 0 {
+		return fmt.Errorf("backup-stream already has %d task(s); TiKV v7.5.1 supports one", allTasks.GetCount())
+	}
 	for _, item := range ownership {
 		opts := []pd.OpOption(nil)
 		if item.prefix {
@@ -163,7 +171,7 @@ func inspect(ctx context.Context, client pdAPI, o options, addrs []string, ks *c
 	if clusterID == 0 {
 		return errors.New("PD returned zero cluster ID")
 	}
-	result := receipt{Format: "kubebrain.native-pitr-preflight.v1", ClusterID: clusterID, PDAddrs: addrs, Keyspace: ks.Name(), TaskName: o.task, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), TaskInfoKey: string(infoKey), TaskRangesKey: string(rangesPrefix), OwnershipKeys: checked, TaskAvailable: true, ReadOnly: true}
+	result := receipt{Format: "kubebrain.native-pitr-preflight.v1", ClusterID: clusterID, PDAddrs: addrs, Keyspace: ks.Name(), TaskName: o.task, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), TaskInfoKey: string(infoKey), TaskRangesKey: string(rangesPrefix), OwnershipKeys: checked, TaskAvailable: true, TaskCount: 0, ReadOnly: true}
 	for _, store := range stores {
 		if store.GetState() != metapb.StoreState_Up {
 			continue

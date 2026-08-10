@@ -101,6 +101,11 @@ func TestInspectFailsClosed(t *testing.T) {
 		err := inspect(context.Background(), p, options{task: "t"}, nil, ks, &bytes.Buffer{})
 		require.ErrorContains(t, err, "already has metadata")
 	})
+	t.Run("different task collision", func(t *testing.T) {
+		p := &fakePD{clusterID: 1, counts: map[string]int64{metaPrefix + "/info/": 1}}
+		err := inspect(context.Background(), p, options{task: "t"}, nil, ks, &bytes.Buffer{})
+		require.ErrorContains(t, err, "supports one")
+	})
 	t.Run("orphan checkpoint collision", func(t *testing.T) {
 		p := &fakePD{clusterID: 1, counts: map[string]int64{metaPrefix + "/checkpoint/t/": 1}}
 		err := inspect(context.Background(), p, options{task: "t"}, nil, ks, &bytes.Buffer{})

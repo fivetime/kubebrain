@@ -1850,8 +1850,8 @@ go run ./hack/backup/cmd/native-pitr-preflight \
 PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出范围为一个连续且 tenant
 隔离的区间。
 
-仍需实现和验证的生产闭环包括：持久 operation 对 task/range 元数据的原子所有权、full
-backup 与 log 起点衔接、GC safepoint 租约和故障续租、对象存储 manifest/checkpoint 完整性、
+仍需实现和验证的生产闭环包括：持久 operation 对 task/advancer 的长期监管、full
+backup 与 log 起点衔接、对象存储 manifest/checkpoint 完整性、
 将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，以及在指定时间点完成
 逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
 实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
@@ -1890,6 +1890,48 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
 cluster ID 相同、非空目标证据缺失、artifact digest 非规范，以及不满足
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记
 `read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。
+
+arbitrary-range task 的安全创建入口现为：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-task-create \
+  --preflight=/evidence/native-pitr-preflight.json \
+  --s3-endpoint=https://s3.example.invalid \
+  --s3-region=region-a \
+  --s3-bucket=immutable-backups \
+  --s3-prefix=instances/instance-a/pitr/task-id \
+  --s3-provider=aws \
+  --ca=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key
+```
+
+`start-ts=0` 会取得新的 PD TSO。命令先注册 operation UUID 唯一、TTL 两小时的 bootstrap
+service safepoint；如果全局 GC 已越过该 TSO，立即失败并只清理自己的 safepoint。随后一条 etcd
+transaction 同时比较全局 `/kubebrain/native-pitr/owner`、全局 task info 前缀，以及该 task 的
+ranges/checkpoint/storage-checkpoint/last-error 前缀均为空，再原子写 owner record、
+`StreamBackupTaskInfo` protobuf 和完整 tenant range。
+并发冲突或写失败同样只移除本 operation 的 bootstrap safepoint，避免失败重试解除另一个已成功
+操作的保护。输出 `kubebrain.native-pitr-task-create.v1` 绑定 exact preflight SHA-256、cluster/
+keyspace/range、start/end TSO、owner key 和 bootstrap safepoint。当前只接受 S3-compatible
+backend，强制 bucket/prefix 非空并拒绝把 access key、secret 或 session token 嵌入 PD metadata；
+生产必须使用 TiKV workload identity。
+
+task 创建后必须以相同 PD/TLS 配置长期运行官方 v7.5.1 standalone advancer；该子命令虽隐藏且
+描述为 debug，源码路径不创建 TiDB domain，实际可直接管理独立 PD/TiKV。v7.5.1 的 flag parser
+仍要求显式 task name：
+
+```shell
+br log advancer \
+  --pd=kb-pd-0.storage.svc:2379,kb-pd-1.storage.svc:2379 \
+  --task-name=instance-a-native-pitr
+```
+
+2026-08-10 隔离验证使用 PD/TiKV/BR v7.5.1 与 MinIO：TiKV 从原子 metadata 加载一个精确
+命名 KubeBrain range，KubeBrain 写入四个 `/registry` key 后生成 421-byte `.log`、376-byte
+backup metadata 和 8-byte global checkpoint 对象；standalone advancer 成功选主，将
+`central_global` 从 task start 推进到写入之后。PD 同时显示 operation 唯一 bootstrap、每-store
+backup-stream 与 `log-backup-coordinator` 三层 safepoint。该证据证明 task/flush/checkpoint 链，
+不证明 full snapshot 或 restore；生产 operation 仍必须在 bootstrap TTL 进入安全余量前确认
+advancer owner、global checkpoint 和 coordinator safepoint持续健康，否则 fail closed。
 
 上线前至少执行一次全 `/registry` 隔离恢复，要求非空、记录数一致、逐 key/value 校验
 通过且清理成功：

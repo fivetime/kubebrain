@@ -38,6 +38,7 @@ type Preflight struct {
 	TaskRangesKey string   `json:"task_ranges_prefix"`
 	OwnershipKeys []string `json:"ownership_paths_checked"`
 	TaskAvailable bool     `json:"task_name_available"`
+	TaskCount     int64    `json:"existing_task_count"`
 	Stores        []struct {
 		ID      uint64 `json:"id"`
 		Address string `json:"address"`
@@ -109,6 +110,10 @@ func DecodePreflight(r io.Reader) (Preflight, error) {
 	}
 	return p, nil
 }
+
+// ValidatePreflight verifies that a receipt proves the exact tenant range and
+// every metadata ownership path needed before task creation.
+func ValidatePreflight(p Preflight) error { return validatePreflight(p) }
 
 func Build(p Preflight, in Inputs) (Plan, error) {
 	if err := validatePreflight(p); err != nil {
@@ -194,7 +199,7 @@ func validatePreflight(p Preflight) error {
 	if p.Format != PreflightFormat || !p.ReadOnly {
 		return errors.New("source is not a read-only native PITR preflight v1 receipt")
 	}
-	if p.ClusterID == 0 || !p.TaskAvailable || len(p.Stores) == 0 {
+	if p.ClusterID == 0 || !p.TaskAvailable || p.TaskCount != 0 || len(p.Stores) == 0 {
 		return errors.New("source preflight did not prove an available task and TiKV stores")
 	}
 	if !dnsLabel.MatchString(p.TaskName) {
