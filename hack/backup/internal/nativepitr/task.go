@@ -11,17 +11,19 @@ import (
 	"time"
 
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
+	"github.com/tikv/client-go/v2/oracle"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 const (
 	TaskOwnerKey          = "/kubebrain/native-pitr/owner"
-	TaskCreateFormat      = "kubebrain.native-pitr-task-create.v2"
+	TaskCreateFormat      = "kubebrain.native-pitr-task-create.v4"
 	bootstrapSafePointTTL = int64((2 * time.Hour) / time.Second)
 )
 
 type SafePointClient interface {
 	UpdateServiceGCSafePoint(context.Context, string, int64, uint64) (uint64, error)
+	GetTS(context.Context) (int64, int64, error)
 }
 
 type AtomicMetadata interface {
@@ -67,6 +69,7 @@ type TaskCreateReceipt struct {
 	Keyspace              string `json:"keyspace"`
 	TaskName              string `json:"task_name"`
 	StartTS               uint64 `json:"start_ts"`
+	CommittedAtTS         uint64 `json:"task_committed_at_ts"`
 	EndTS                 uint64 `json:"end_ts"`
 	StartKeyHex           string `json:"start_key_hex"`
 	EndKeyHex             string `json:"end_key_hex"`
@@ -147,7 +150,15 @@ func CreateTask(ctx context.Context, safePoints SafePointClient, metadata Atomic
 	if !created {
 		return TaskCreateReceipt{}, cleanupBootstrap(ctx, safePoints, bootstrapID, errors.New("native PITR owner, task, or range was concurrently created"))
 	}
-	return TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, LogStoragePrefix: logStoragePrefix, LogStorageSHA256: logStorageSHA256, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: bootstrapID, BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}, nil
+	physical, logical, err := safePoints.GetTS(ctx)
+	if err != nil {
+		return TaskCreateReceipt{}, fmt.Errorf("obtain post-commit task TSO (task metadata and bootstrap guard remain): %w", err)
+	}
+	committedAtTS := oracle.ComposeTS(physical, logical)
+	if committedAtTS < in.StartTS || committedAtTS >= in.EndTS {
+		return TaskCreateReceipt{}, errors.New("post-commit task TSO is outside the task interval; task metadata and bootstrap guard remain")
+	}
+	return TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, CommittedAtTS: committedAtTS, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, LogStoragePrefix: logStoragePrefix, LogStorageSHA256: logStorageSHA256, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: bootstrapID, BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}, nil
 }
 
 func validateTaskStorage(storage *backuppb.StorageBackend) error {

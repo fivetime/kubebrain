@@ -14,7 +14,7 @@ import (
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 )
 
-const FullSnapshotFormat = "kubebrain.native-pitr-full-snapshot.v1"
+const FullSnapshotFormat = "kubebrain.native-pitr-full-snapshot.v3"
 
 type FullSnapshotReceipt struct {
 	Format                 string `json:"format"`
@@ -22,7 +22,9 @@ type FullSnapshotReceipt struct {
 	Keyspace               string `json:"keyspace"`
 	TaskName               string `json:"task_name"`
 	TaskStartTS            uint64 `json:"task_start_ts"`
+	TaskCommittedAtTS      uint64 `json:"task_committed_at_ts"`
 	TaskEndTS              uint64 `json:"task_end_ts"`
+	BackupStartTS          uint64 `json:"backup_start_ts"`
 	BackupTS               uint64 `json:"backup_ts"`
 	StartKeyHex            string `json:"start_key_hex"`
 	EndKeyHex              string `json:"end_key_hex"`
@@ -64,10 +66,13 @@ func BuildFullSnapshot(task TaskCreateReceipt, taskCreateSHA256, storagePrefix s
 	if !meta.IsTxnKv || meta.IsRawKv {
 		return FullSnapshotReceipt{}, errors.New("backupmeta is not a transactional KV backup")
 	}
-	if meta.StartVersion == 0 || meta.StartVersion != meta.EndVersion {
+	if meta.StartVersion != 0 || meta.EndVersion == 0 {
 		return FullSnapshotReceipt{}, errors.New("backupmeta is not a full point-in-time snapshot")
 	}
-	if meta.EndVersion < task.StartTS || meta.EndVersion >= task.EndTS {
+	if meta.EndVersion < task.CommittedAtTS {
+		return FullSnapshotReceipt{}, errors.New("full snapshot precedes task metadata commit")
+	}
+	if meta.EndVersion >= task.EndTS {
 		return FullSnapshotReceipt{}, errors.New("full snapshot timestamp is outside the log task interval")
 	}
 	hasFileIndex := meta.FileIndex != nil && (len(meta.FileIndex.DataFiles) > 0 || len(meta.FileIndex.MetaFiles) > 0)
@@ -77,7 +82,7 @@ func BuildFullSnapshot(task TaskCreateReceipt, taskCreateSHA256, storagePrefix s
 	digest := sha256.Sum256(backupMetaBytes)
 	return FullSnapshotReceipt{
 		Format: FullSnapshotFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName,
-		TaskStartTS: task.StartTS, TaskEndTS: task.EndTS, BackupTS: meta.EndVersion,
+		TaskStartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, TaskEndTS: task.EndTS, BackupStartTS: meta.StartVersion, BackupTS: meta.EndVersion,
 		StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, StoragePrefix: storagePrefix,
 		BackupMetaSHA256: hex.EncodeToString(digest[:]), BackupMetaBytes: int64(len(backupMetaBytes)), TaskCreateSHA256: taskCreateSHA256,
 		BRVersion: meta.BrVersion, ClusterVersion: meta.ClusterVersion, BackupMetaVersion: meta.Version,
@@ -104,9 +109,9 @@ func DecodeFullSnapshot(r io.Reader) (FullSnapshotReceipt, error) {
 
 func validateFullSnapshotReceipt(r FullSnapshotReceipt) error {
 	if r.Format != FullSnapshotFormat || r.ClusterID == 0 || !r.Transactional || r.Scope != "whole-cluster" || !r.BackupMetaInventory || r.ObjectExistenceChecked {
-		return errors.New("input is not a successful native PITR full-snapshot v1 receipt")
+		return errors.New("input is not a successful native PITR full-snapshot v3 receipt")
 	}
-	if !dnsLabel.MatchString(r.TaskName) || r.Keyspace == "" || r.TaskStartTS == 0 || r.BackupTS < r.TaskStartTS || r.BackupTS >= r.TaskEndTS {
+	if !dnsLabel.MatchString(r.TaskName) || r.Keyspace == "" || r.TaskStartTS == 0 || r.TaskCommittedAtTS < r.TaskStartTS || r.BackupStartTS != 0 || r.BackupTS < r.TaskCommittedAtTS || r.BackupTS >= r.TaskEndTS {
 		return errors.New("full-snapshot receipt has invalid identity or timestamp chain")
 	}
 	ks, err := coder.NewKeyspace(r.Keyspace)

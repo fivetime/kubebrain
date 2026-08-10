@@ -9,16 +9,30 @@ import (
 
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 	"github.com/stretchr/testify/require"
+	"github.com/tikv/client-go/v2/oracle"
 )
 
 type fakeSafePoints struct {
-	minimum uint64
-	err     error
-	calls   []struct {
+	minimum   uint64
+	err       error
+	commitTS  uint64
+	commitErr error
+	calls     []struct {
 		id  string
 		ttl int64
 		ts  uint64
 	}
+}
+
+func (f *fakeSafePoints) GetTS(context.Context) (int64, int64, error) {
+	if f.commitErr != nil {
+		return 0, 0, f.commitErr
+	}
+	ts := f.commitTS
+	if ts == 0 {
+		ts = 110
+	}
+	return oracle.ExtractPhysical(ts), oracle.ExtractLogical(ts), nil
 }
 
 func (f *fakeSafePoints) UpdateServiceGCSafePoint(_ context.Context, id string, ttl int64, ts uint64) (uint64, error) {
@@ -106,6 +120,18 @@ func TestCreateTaskFailsClosedAndRemovesOwnGuard(t *testing.T) {
 		_, err := CreateTask(context.Background(), sp, meta, taskInput())
 		require.ErrorContains(t, err, "etcd down")
 		require.Len(t, sp.calls, 2)
+	})
+	t.Run("post-commit TSO error keeps guard", func(t *testing.T) {
+		sp := &fakeSafePoints{minimum: 90, commitErr: errors.New("TSO unavailable")}
+		_, err := CreateTask(context.Background(), sp, &fakeMetadata{created: true}, taskInput())
+		require.ErrorContains(t, err, "task metadata and bootstrap guard remain")
+		require.Len(t, sp.calls, 1)
+	})
+	t.Run("post-commit TSO outside interval keeps guard", func(t *testing.T) {
+		sp := &fakeSafePoints{minimum: 90, commitTS: 1_000}
+		_, err := CreateTask(context.Background(), sp, &fakeMetadata{created: true}, taskInput())
+		require.ErrorContains(t, err, "outside the task interval")
+		require.Len(t, sp.calls, 1)
 	})
 }
 

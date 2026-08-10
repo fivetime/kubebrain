@@ -1881,12 +1881,26 @@ go run ./hack/backup/cmd/native-pitr-full-snapshot-receipt \
 ```
 
 命令直接解析 protobuf，以其中的 cluster ID、`is_txn_kv`、start/end version 和 file index 为
-权威值；要求 source cluster 与 task-create 一致、非 raw KV、full backup 的 start/end TSO 相等、
-backup TSO 位于 log task 时间窗口，并计算原始 backupmeta SHA-256。输出
-`kubebrain.native-pitr-full-snapshot.v1`，还绑定 exact task-create 文件 SHA-256、tenant range、BR/
+权威值；要求 source cluster 与 task-create 一致、非 raw KV，并按 v7.5.1 `backup_txn.go` 的真实
+请求语义验证 full backup 为 `start_version=0,end_version=BackupTS`（通用 BackupMeta 注释中的
+start=end 规则不适用于 txn 子命令）；backup TSO 还必须位于 log task 时间窗口，并计算原始
+backupmeta SHA-256。输出
+`kubebrain.native-pitr-full-snapshot.v3`，还绑定 exact task-create 文件 SHA-256、tenant range、BR/
 cluster/meta 版本和 S3 prefix。由于 v7.5.1 `backup txn` 忽略声明 range，receipt 明示
 `scope=whole-cluster`；它不声称源集群独立，也明确记录 `object_existence_checked=false`，因此不能
 替代 S3 全对象 inventory/digest witness。
+
+2026-08-10 对 PD/TiKV/BR v7.5.1 + MinIO 的第二轮隔离实测先暴露并修正了两项假设。真实 txn
+`backupmeta` 是 `start_version=0` 而非 start=end；固定源码确认 `RunBackupTxn` 无条件构造空
+start/end 的 whole-cluster range，并把 request 写为 `(0, currentTS]`。此外，仅凭可回填 task start
+TS 不能证明 task 已先创建，因此 v4 在 metadata transaction 成功后再取 fresh PD TSO，并固化
+`task_committed_at_ts`。负向实测中，创建 task 后拿
+更早的 full backupmeta 会以“precedes task metadata commit”拒绝。随后创建 task 再执行 full backup，
+最终 v4 顺序实测成功生成 631-byte backupmeta、1435-byte default-CF SST 和 3008-byte write-CF
+SST，且 `task_committed_at_ts=468294809075843073 < BackupTS=468294813545660418`；权威字段为
+`is_txn_kv=true,is_raw_kv=false,start=0,legacy_files=2`，receipt 成功绑定
+source cluster、create 文件 digest 和 backupmeta SHA-256。该实验实际观察到三个 MinIO 对象，但
+receipt 仍诚实保留 `object_existence_checked=false`，因为尚未实现可重放的全对象 digest verifier。
 
 在真正 restore executor 修改目标前，控制面只接受 create/full/ready receipt 生成严格只读计划：
 
@@ -1900,7 +1914,7 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v2`。source cluster/range、task start、full backup TSO、
+输出 `kubebrain.native-pitr-restore-plan.v4`。source cluster/range、task start/commit、full backup TSO、
 backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner 全部来自严格 receipt，命令不再
 接受这些值的自由参数；并拒绝 receipt 文件 digest/身份链不一致、source/target cluster ID 相同、
@@ -1927,13 +1941,16 @@ transaction 同时比较全局 `/kubebrain/native-pitr/owner`、全局 task info
 ranges/checkpoint/storage-checkpoint/last-error 前缀均为空，再原子写 owner record、
 `StreamBackupTaskInfo` protobuf 和完整 tenant range。
 并发冲突或写失败同样只移除本 operation 的 bootstrap safepoint，避免失败重试解除另一个已成功
-操作的保护。输出 `kubebrain.native-pitr-task-create.v2` 绑定 exact preflight SHA-256、cluster/
+操作的保护。输出 `kubebrain.native-pitr-task-create.v4` 绑定 exact preflight SHA-256、cluster/
 keyspace/range、start/end TSO、规范化 log `s3://bucket/prefix`、无凭据 StorageBackend protobuf
 SHA-256、owner key 和 bootstrap safepoint。该摘要同时覆盖 endpoint、region、provider 与 path-style；
 owner record 同样固化 URI/摘要，ready 阶段会与实际 task storage protobuf 复核。当前只接受 S3-compatible
 backend，强制 bucket/prefix 非空并拒绝把 access key、secret 或 session token 嵌入 PD metadata；
-生产必须使用 TiKV workload identity。新增 storage 身份字段是破坏性 contract 变更，因此 create/ready
-以及消费它们的新 restore plan 使用 v2；早期实验性 v1 receipt 不会被静默接受。
+生产必须使用 TiKV workload identity。metadata transaction 成功后，命令会另取 fresh PD TSO 并
+固化 `task_committed_at_ts`；后续 full receipt 要求 backup TSO 不早于它，阻断用回填 start TSO 伪造
+“task 已先于 full backup 存在”的覆盖链。若 post-commit TSO 获取失败，已创建 task 与 bootstrap
+guard 保留且不输出 receipt，必须按孤儿 operation 修复。新增该时间证据是破坏性 contract 变更，
+因此 create/ready 以及消费它们的新 restore plan 使用 v4；早期实验性 v1/v2/v3 receipt 不会被静默接受。
 
 task 创建后必须以相同 PD/TLS 配置长期运行官方 v7.5.1 standalone advancer；该子命令虽隐藏且
 描述为 debug，源码路径不创建 TiDB domain，实际可直接管理独立 PD/TiKV。v7.5.1 的 flag parser
@@ -1966,7 +1983,7 @@ go run ./hack/backup/cmd/native-pitr-task-ready \
 命令先核对 receipt 的 cluster ID，再在一个 etcd 读取事务中验证持久 owner 与 receipt 完全一致、
 task protobuf 的 name/start/end 一致、只有一个精确 tenant range、advancer 已选主，且
 `central_global` 是位于 task 时间区间内的 8-byte checkpoint。任一条件失败都会保留并续租
-bootstrap guard；全部通过才释放该 guard，并在 `kubebrain.native-pitr-task-ready.v2` 中固化
+bootstrap guard；全部通过才释放该 guard，并在 `kubebrain.native-pitr-task-ready.v4` 中固化
 election owner identity 与 checkpoint。释放后
 返回的全局最小 safepoint 若已越过 checkpoint 仍会报错；生产监管还必须持续保证 coordinator
 safepoint 与 checkpoint 前进，ready receipt 不是长期健康证明。
@@ -1984,7 +2001,7 @@ go run ./hack/backup/cmd/native-pitr-task-delete \
 命令要求两份 receipt 与当前 cluster ID 完全一致，重新读取并验证 owner/task/range/advancer/
 checkpoint，拒绝 checkpoint 倒退，然后以持久 owner、task protobuf 和精确 range value 为 compare
 条件，在一个事务中删除该 task 的 info、ranges、checkpoint、storage-checkpoint、pause、last-error
-及 KubeBrain owner。比较失败不会删除任何 key。输出 `kubebrain.native-pitr-task-delete.v1` 固化最终
+及 KubeBrain owner。比较失败不会删除任何 key。输出 `kubebrain.native-pitr-task-delete.v3` 固化最终
 checkpoint；它仍不是备份完成 receipt。advancer 会从 task 删除事件自行清除共享
 `log-backup-coordinator` safepoint，命令绝不主动删除该全局 safepoint，以免影响并发观察者或未来
 版本的多 task 能力。生产监管必须另行确认 advancer 已观察删除且 coordinator safepoint 已按预期

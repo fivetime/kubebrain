@@ -42,6 +42,7 @@ func TestPlanRejectsBrokenChain(t *testing.T) {
 		want string
 	}{
 		{"log starts after snapshot", func(p *Plan) { p.Log.StartTS = 121 }, "start no later"},
+		{"task committed after snapshot", func(p *Plan) { p.Log.TaskCommittedAtTS = 121 }, "metadata must commit"},
 		{"restore before snapshot", func(p *Plan) { p.RestoreTS = 119 }, "precedes full"},
 		{"checkpoint behind restore", func(p *Plan) { p.Log.GlobalCheckpointTS = 139 }, "exceeds durable"},
 		{"same target", func(p *Plan) { p.Target.ClusterID = 11 }, "must differ"},

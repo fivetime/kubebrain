@@ -11,7 +11,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-const TaskDeleteFormat = "kubebrain.native-pitr-task-delete.v1"
+const TaskDeleteFormat = "kubebrain.native-pitr-task-delete.v3"
 
 type TaskDeleteMetadata interface {
 	TaskStatusMetadata
@@ -55,6 +55,7 @@ type TaskDeleteReceipt struct {
 	Keyspace           string `json:"keyspace"`
 	TaskName           string `json:"task_name"`
 	StartTS            uint64 `json:"start_ts"`
+	CommittedAtTS      uint64 `json:"task_committed_at_ts"`
 	EndTS              uint64 `json:"end_ts"`
 	FinalCheckpointTS  uint64 `json:"final_checkpoint_ts"`
 	PreflightSHA256    string `json:"preflight_sha256"`
@@ -107,12 +108,12 @@ func DeleteTask(ctx context.Context, metadata TaskDeleteMetadata, clusterID uint
 	if !deleted {
 		return TaskDeleteReceipt{}, errors.New("task metadata changed concurrently; nothing was deleted")
 	}
-	return TaskDeleteReceipt{Format: TaskDeleteFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, EndTS: task.EndTS, FinalCheckpointTS: checkpoint, PreflightSHA256: task.PreflightSHA256, OwnerKey: TaskOwnerKey, MetadataDeleted: true, CoordinatorManaged: true}, nil
+	return TaskDeleteReceipt{Format: TaskDeleteFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, CommittedAtTS: task.CommittedAtTS, EndTS: task.EndTS, FinalCheckpointTS: checkpoint, PreflightSHA256: task.PreflightSHA256, OwnerKey: TaskOwnerKey, MetadataDeleted: true, CoordinatorManaged: true}, nil
 }
 
 func validateTaskReadyReceipt(ready TaskReadyReceipt) error {
-	if ready.Format != TaskReadyFormat || ready.ClusterID == 0 || !ready.BootstrapReleased || !ready.MetadataSnapshotValid || ready.GlobalCheckpointTS < ready.StartTS || ready.GlobalCheckpointTS >= ready.EndTS {
-		return errors.New("input is not a successful native PITR task-ready v2 receipt")
+	if ready.Format != TaskReadyFormat || ready.ClusterID == 0 || !ready.BootstrapReleased || !ready.MetadataSnapshotValid || ready.CommittedAtTS < ready.StartTS || ready.GlobalCheckpointTS < ready.CommittedAtTS || ready.GlobalCheckpointTS >= ready.EndTS {
+		return errors.New("input is not a successful native PITR task-ready v4 receipt")
 	}
 	if !dnsLabel.MatchString(ready.TaskName) || ready.Keyspace == "" || !sha256RE.MatchString(ready.PreflightSHA256) || ready.BootstrapSafePointID == "" {
 		return errors.New("task-ready receipt has invalid identity evidence")
@@ -124,5 +125,5 @@ func validateTaskReadyReceipt(ready TaskReadyReceipt) error {
 }
 
 func readyMatchesTask(ready TaskReadyReceipt, task TaskCreateReceipt) bool {
-	return ready.ClusterID == task.ClusterID && ready.Keyspace == task.Keyspace && ready.TaskName == task.TaskName && ready.StartTS == task.StartTS && ready.EndTS == task.EndTS && ready.PreflightSHA256 == task.PreflightSHA256 && ready.BootstrapSafePointID == task.BootstrapSafePointID
+	return ready.ClusterID == task.ClusterID && ready.Keyspace == task.Keyspace && ready.TaskName == task.TaskName && ready.StartTS == task.StartTS && ready.CommittedAtTS == task.CommittedAtTS && ready.EndTS == task.EndTS && ready.PreflightSHA256 == task.PreflightSHA256 && ready.BootstrapSafePointID == task.BootstrapSafePointID
 }

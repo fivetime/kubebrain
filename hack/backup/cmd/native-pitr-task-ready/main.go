@@ -29,7 +29,7 @@ type options struct {
 func main() {
 	pingcaplog.SetLevel(zapcore.ErrorLevel)
 	var o options
-	flag.StringVar(&o.taskCreate, "task-create", "", "exact native-pitr-task-create.v2 receipt")
+	flag.StringVar(&o.taskCreate, "task-create", "", "exact native-pitr-task-create.v4 receipt")
 	flag.StringVar(&o.pd, "pd", "", "comma-separated PD endpoints for the task cluster")
 	flag.StringVar(&o.ca, "ca", "", "PD CA file")
 	flag.StringVar(&o.cert, "cert", "", "PD client certificate file")

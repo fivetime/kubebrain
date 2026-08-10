@@ -13,7 +13,7 @@ import (
 
 func fullMeta(t *testing.T, task TaskCreateReceipt) []byte {
 	t.Helper()
-	b, err := (&backuppb.BackupMeta{ClusterId: task.ClusterID, BrVersion: "v7.5.1", ClusterVersion: "7.5.1", Version: 1, StartVersion: 120, EndVersion: 120, IsTxnKv: true, FileIndex: &backuppb.MetaFile{DataFiles: []*backuppb.File{{Name: "1_2_3.sst"}}}}).Marshal()
+	b, err := (&backuppb.BackupMeta{ClusterId: task.ClusterID, BrVersion: "v7.5.1", ClusterVersion: "7.5.1", Version: 1, StartVersion: 0, EndVersion: 120, IsTxnKv: true, FileIndex: &backuppb.MetaFile{DataFiles: []*backuppb.File{{Name: "1_2_3.sst"}}}}).Marshal()
 	require.NoError(t, err)
 	return b
 }
@@ -42,11 +42,10 @@ func TestBuildFullSnapshotRejectsUnboundOrIncompleteMetadata(t *testing.T) {
 		{"cluster mismatch", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.ClusterId++ }, "cluster ID"},
 		{"not txn", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.IsTxnKv = false }, "transactional"},
 		{"raw mode", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.IsRawKv = true }, "transactional"},
-		{"incremental", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.StartVersion-- }, "full point-in-time"},
+		{"incremental", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.StartVersion = 1 }, "full point-in-time"},
 		{"before task", func(task *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) {
-			m.StartVersion = task.StartTS - 1
 			m.EndVersion = task.StartTS - 1
-		}, "outside"},
+		}, "precedes task metadata commit"},
 		{"no files", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.FileIndex = nil }, "inventory"},
 		{"unsafe storage", func(_ *TaskCreateReceipt, _ *backuppb.BackupMeta, s *string) { *s = "s3://key:secret@bucket/prefix" }, "storage prefix"},
 	}

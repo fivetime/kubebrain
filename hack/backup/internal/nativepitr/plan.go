@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v2"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v4"
 )
 
 var (
@@ -64,6 +64,7 @@ type FullSnapshot struct {
 
 type LogWindow struct {
 	StartTS            uint64 `json:"start_ts"`
+	TaskCommittedAtTS  uint64 `json:"task_committed_at_ts"`
 	GlobalCheckpointTS uint64 `json:"global_checkpoint_ts"`
 	AdvancerOwner      string `json:"advancer_owner"`
 	StoragePrefix      string `json:"storage_prefix"`
@@ -127,14 +128,14 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, ready T
 	if !sha256RE.MatchString(in.TaskCreateSHA256) || full.TaskCreateSHA256 != in.TaskCreateSHA256 {
 		return Plan{}, errors.New("full snapshot does not bind the exact task-create receipt")
 	}
-	if !readyMatchesTask(ready, task) || full.ClusterID != task.ClusterID || full.Keyspace != task.Keyspace || full.TaskName != task.TaskName || full.TaskStartTS != task.StartTS || full.TaskEndTS != task.EndTS || full.StartKeyHex != task.StartKeyHex || full.EndKeyHex != task.EndKeyHex {
+	if !readyMatchesTask(ready, task) || full.ClusterID != task.ClusterID || full.Keyspace != task.Keyspace || full.TaskName != task.TaskName || full.TaskStartTS != task.StartTS || full.TaskCommittedAtTS != task.CommittedAtTS || full.TaskEndTS != task.EndTS || full.StartKeyHex != task.StartKeyHex || full.EndKeyHex != task.EndKeyHex {
 		return Plan{}, errors.New("native PITR receipts describe different source tasks")
 	}
 	plan := Plan{
 		Format:    PlanFormat,
 		Source:    Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
 		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn"},
-		Log:       LogWindow{StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256},
+		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256},
 		Target:    Target{ClusterID: in.TargetClusterID, EmptyWitnessSHA256: in.EmptyWitnessSHA256},
 		RestoreTS: in.RestoreTS, ReadOnly: true,
 	}
@@ -172,11 +173,14 @@ func (p Plan) Validate() error {
 	if !bytes.Equal(start, ks.ObjectKeyspaceStart()) || !bytes.Equal(end, ks.ObjectKeyspaceEnd()) {
 		return errors.New("source key range does not match keyspace")
 	}
-	if p.Log.StartTS == 0 || p.Full.BackupTS == 0 || p.RestoreTS == 0 || p.Log.GlobalCheckpointTS == 0 {
+	if p.Log.StartTS == 0 || p.Log.TaskCommittedAtTS == 0 || p.Full.BackupTS == 0 || p.RestoreTS == 0 || p.Log.GlobalCheckpointTS == 0 {
 		return errors.New("all PITR timestamps must be non-zero")
 	}
 	if p.Log.StartTS > p.Full.BackupTS {
 		return errors.New("log task must start no later than the full snapshot")
+	}
+	if p.Log.StartTS > p.Log.TaskCommittedAtTS || p.Log.TaskCommittedAtTS > p.Full.BackupTS {
+		return errors.New("log task metadata must commit before the full snapshot")
 	}
 	if p.Full.BackupTS > p.RestoreTS {
 		return errors.New("restore timestamp precedes full snapshot")

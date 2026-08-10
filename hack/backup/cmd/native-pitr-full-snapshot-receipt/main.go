@@ -22,7 +22,7 @@ const (
 )
 
 func main() {
-	taskCreate := flag.String("task-create", "", "exact native-pitr-task-create.v2 receipt")
+	taskCreate := flag.String("task-create", "", "exact native-pitr-task-create.v4 receipt")
 	backupMeta := flag.String("backupmeta", "", "downloaded BR txn backupmeta protobuf")
 	storagePrefix := flag.String("storage-prefix", "", "immutable s3:// bucket/prefix containing backupmeta and SSTs")
 	flag.Parse()

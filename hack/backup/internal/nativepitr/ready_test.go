@@ -27,7 +27,7 @@ func readyTask(t *testing.T) (TaskCreateReceipt, TaskStatusSnapshot) {
 	in := taskInput()
 	storageDigest, err := storageBackendSHA256(s3Storage())
 	require.NoError(t, err)
-	task := TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, LogStoragePrefix: "s3://bucket/immutable/task-1", LogStorageSHA256: storageDigest, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-operation-1", BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}
+	task := TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, CommittedAtTS: 110, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, LogStoragePrefix: "s3://bucket/immutable/task-1", LogStorageSHA256: storageDigest, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-operation-1", BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}
 	owner, err := json.Marshal(ownerRecord{Format: TaskCreateFormat, ClusterID: task.ClusterID, TaskName: task.TaskName, PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, LogStoragePrefix: task.LogStoragePrefix, LogStorageSHA256: task.LogStorageSHA256})
 	require.NoError(t, err)
 	info, err := (&backuppb.StreamBackupTaskInfo{Name: task.TaskName, StartTs: task.StartTS, EndTs: task.EndTS, Storage: s3Storage()}).Marshal()

@@ -16,7 +16,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-const TaskReadyFormat = "kubebrain.native-pitr-task-ready.v2"
+const TaskReadyFormat = "kubebrain.native-pitr-task-ready.v4"
 
 type TaskStatusSnapshot struct {
 	Owner, Info, AdvancerOwner, GlobalCheckpoint []byte
@@ -64,6 +64,7 @@ type TaskReadyReceipt struct {
 	Keyspace              string `json:"keyspace"`
 	TaskName              string `json:"task_name"`
 	StartTS               uint64 `json:"start_ts"`
+	CommittedAtTS         uint64 `json:"task_committed_at_ts"`
 	EndTS                 uint64 `json:"end_ts"`
 	GlobalCheckpointTS    uint64 `json:"global_checkpoint_ts"`
 	AdvancerOwner         string `json:"advancer_owner"`
@@ -118,14 +119,14 @@ func CheckTaskReady(ctx context.Context, safePoints SafePointClient, metadata Ta
 	if minimum > checkpoint {
 		return TaskReadyReceipt{}, fmt.Errorf("GC safepoint %d passed global checkpoint %d while releasing bootstrap guard", minimum, checkpoint)
 	}
-	return TaskReadyReceipt{Format: TaskReadyFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, EndTS: task.EndTS, GlobalCheckpointTS: checkpoint, AdvancerOwner: string(snapshot.AdvancerOwner), PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}, nil
+	return TaskReadyReceipt{Format: TaskReadyFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, CommittedAtTS: task.CommittedAtTS, EndTS: task.EndTS, GlobalCheckpointTS: checkpoint, AdvancerOwner: string(snapshot.AdvancerOwner), PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}, nil
 }
 
 func validateTaskCreateReceipt(task TaskCreateReceipt) error {
 	if task.Format != TaskCreateFormat || !task.AtomicMetadataCreated || task.ClusterID == 0 {
-		return errors.New("input is not a successful native PITR task-create v2 receipt")
+		return errors.New("input is not a successful native PITR task-create v4 receipt")
 	}
-	if !dnsLabel.MatchString(task.TaskName) || task.Keyspace == "" || task.StartTS == 0 || task.EndTS <= task.StartTS {
+	if !dnsLabel.MatchString(task.TaskName) || task.Keyspace == "" || task.StartTS == 0 || task.CommittedAtTS < task.StartTS || task.EndTS <= task.CommittedAtTS {
 		return errors.New("task-create receipt has invalid identity or timestamps")
 	}
 	ks, err := coder.NewKeyspace(task.Keyspace)
