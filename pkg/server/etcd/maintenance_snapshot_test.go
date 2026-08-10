@@ -1463,6 +1463,22 @@ func TestMaintenanceSnapshotClassifiesMalformedLeaseMetadata(t *testing.T) {
 	require.Empty(t, stream.responses)
 }
 
+func TestMaintenanceSnapshotClassifiesOversizedLeaseTTL(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	data, err := json.Marshal(leaseRecord{ID: 4214, TTL: maxLeaseTTL + 1})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(4214), data))
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
+	require.ErrorContains(t, err, "decode lease metadata: lease ttl 9000000001 exceeds maximum 9000000000")
+	require.Empty(t, stream.responses)
+}
+
 func TestMaintenanceSnapshotClassifiesMismatchedLeaseStorageIdentity(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

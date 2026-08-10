@@ -44842,6 +44842,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无序 snapshot 发布；相同 key 仍被接受。repository 表测、既有同 key 三条目回归和真实 bufconn KV.Range 分别固定损坏
   拒绝、合法重复保留及 `DataLoss` 错误契约。
 
+- A4236 阻止超大持久 lease TTL 在恢复时发生 `time.Duration` 回绕。LeaseGrant 已把 granted TTL 限制为
+  `maxLeaseTTL=9000000000` 秒，etcd checkpoint 的 remaining TTL 也不会超过该边界；但 KubeBrain JSON 恢复此前接受任意
+  正 `int64`，随后执行 `time.Duration(recoveryTTL)*time.Second`，损坏值可回绕为负数并使租约/附着键在 leader reload 后
+  错误立即过期。`decodeLeaseRecord` 现在在时间运算前分别拒绝超限 `TTL` 与 `RemainingTTL`，由现有 typed wrapper 映射为
+  `errInvalidLeaseMetadata`；负 granted TTL 仍按上游 `initAndRecover` 语义提升到 MinLeaseTTL，0/负 remaining TTL 仍视为
+  unset。memkv 恢复表测覆盖两个上限并保留最小值回归，Maintenance Snapshot 黑盒固定零 partial frame 与
+  `FailedPrecondition`。本轮涉及损坏元数据注入，当前真实 TiKV/PD 测试环境的既知运行故障下未执行破坏性用例，待环境
+  恢复后补跑相同 internal lease record 的 reload/snapshot 验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

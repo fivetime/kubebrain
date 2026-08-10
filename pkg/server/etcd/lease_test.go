@@ -1269,6 +1269,30 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 			},
 			want: `decode lease metadata: lease metadata contains trailing JSON`,
 		},
+		{
+			name: "internal_oversized_ttl",
+			raw: func(t *testing.T, id int64) []byte {
+				value, err := json.Marshal(leaseRecord{ID: id, TTL: maxLeaseTTL + 1})
+				require.NoError(t, err)
+				return value
+			},
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
+			},
+			want: `decode lease metadata: lease ttl 9000000001 exceeds maximum 9000000000`,
+		},
+		{
+			name: "internal_oversized_remaining_ttl",
+			raw: func(t *testing.T, id int64) []byte {
+				value, err := json.Marshal(leaseRecord{ID: id, TTL: 30, RemainingTTL: maxLeaseTTL + 1})
+				require.NoError(t, err)
+				return value
+			},
+			write: func(ctx context.Context, server *RPCServer, id int64, raw []byte) error {
+				return server.backend.InternalPut(ctx, leaseStorageKey(id), raw)
+			},
+			want: `decode lease metadata: lease remaining ttl 9000000001 exceeds maximum 9000000000`,
+		},
 	}
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

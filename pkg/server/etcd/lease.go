@@ -118,6 +118,12 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		return leaseRecord{}, errors.New("lease metadata contains trailing JSON")
 	}
+	if record.TTL > maxLeaseTTL {
+		return leaseRecord{}, fmt.Errorf("lease ttl %d exceeds maximum %d", record.TTL, maxLeaseTTL)
+	}
+	if record.RemainingTTL > maxLeaseTTL {
+		return leaseRecord{}, fmt.Errorf("lease remaining ttl %d exceeds maximum %d", record.RemainingTTL, maxLeaseTTL)
+	}
 	return record, nil
 }
 
