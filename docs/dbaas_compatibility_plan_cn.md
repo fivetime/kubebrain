@@ -45077,6 +45077,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `http.DefaultMaxHeaderBytes`，保留 5 秒 `ReadHeaderTimeout` 和 2 分钟 `IdleTimeout`；网络级回归固定 64 KiB header 成功、2 MiB
   header 返回 431，既恢复兼容窗口又继续限制 header admission。该项只涉及 HTTP 连接层，不访问存储，真实 TiKV/PD 不适用。
 
+- A4261 补齐 A4260 在同 listener 明文 HTTP/2 路径上的执行证据。endpoint 同时启用 HTTP/1、TLS HTTP/2 和 h2c，Go 对 HTTP/2
+  使用对端 SETTINGS 中的 header-list limit，而不是 HTTP/1 的 431 解析路径；仅检查 `http.Server.MaxHeaderBytes` 与 HTTP/1
+  因而不能证明 JSON gateway 的 h2c 入口实际受同一边界保护。网络回归现用标准库只启用 `UnencryptedHTTP2` 的 transport，先固定
+  64 KiB metadata 经真实 h2c 到达 handler 且响应 `ProtoMajor=2`，再固定 2 MiB header 在发送前被 server advertised limit 拒绝；
+  HTTP/1 子例仍固定 64 KiB 成功与 2 MiB 返回 431。该项不访问存储，真实 TiKV/PD 不适用。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

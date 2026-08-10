@@ -96,24 +96,49 @@ func TestHTTPServerEnforcesEtcdCompatibleHeaderLimit(t *testing.T) {
 		require.ErrorIs(t, <-done, http.ErrServerClosed)
 	})
 
-	client := &http.Client{Timeout: 5 * time.Second}
-	request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String(), nil)
-	require.NoError(t, err)
-	// This is deliberately above KubeBrain's former 32 KiB limit but below
-	// upstream etcd's effective net/http default.
-	request.Header.Set("X-Etcd-Compatible-Metadata", strings.Repeat("a", 64<<10))
-	response, err := client.Do(request)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusNoContent, response.StatusCode)
-	require.NoError(t, response.Body.Close())
+	for _, tt := range []struct {
+		name       string
+		transport  *http.Transport
+		protoMajor int
+	}{
+		{name: "HTTP/1", transport: &http.Transport{}, protoMajor: 1},
+		{name: "h2c", transport: h2cTransport(), protoMajor: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &http.Client{Transport: tt.transport, Timeout: 5 * time.Second}
+			t.Cleanup(tt.transport.CloseIdleConnections)
+			request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String(), nil)
+			require.NoError(t, err)
+			// This is deliberately above KubeBrain's former 32 KiB limit but below
+			// upstream etcd's effective net/http default.
+			request.Header.Set("X-Etcd-Compatible-Metadata", strings.Repeat("a", 64<<10))
+			response, err := client.Do(request)
+			require.NoError(t, err)
+			require.Equal(t, tt.protoMajor, response.ProtoMajor)
+			require.Equal(t, http.StatusNoContent, response.StatusCode)
+			require.NoError(t, response.Body.Close())
 
-	request, err = http.NewRequest(http.MethodGet, "http://"+listener.Addr().String(), nil)
-	require.NoError(t, err)
-	request.Header.Set("X-Oversized-Metadata", strings.Repeat("a", 2<<20))
-	response, err = client.Do(request)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusRequestHeaderFieldsTooLarge, response.StatusCode)
-	require.NoError(t, response.Body.Close())
+			request, err = http.NewRequest(http.MethodGet, "http://"+listener.Addr().String(), nil)
+			require.NoError(t, err)
+			request.Header.Set("X-Oversized-Metadata", strings.Repeat("a", 2<<20))
+			response, err = client.Do(request)
+			if tt.protoMajor == 2 {
+				// HTTP/2 rejects an oversized header list by resetting the stream;
+				// HTTP/1 can return a regular 431 response instead.
+				require.ErrorContains(t, err, "request header list larger than peer's advertised limit")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, http.StatusRequestHeaderFieldsTooLarge, response.StatusCode)
+			require.NoError(t, response.Body.Close())
+		})
+	}
+}
+
+func h2cTransport() *http.Transport {
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	return &http.Transport{Protocols: protocols}
 }
 
 func TestMetricsHTTPServerGatesPprofOnInfoPort(t *testing.T) {
