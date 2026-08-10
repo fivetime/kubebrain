@@ -45600,6 +45600,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `audit_remediation_todo_cn.md` 因而更新为 73/73；这关闭性能 TODO，不改变 count-index unavailable/
   overflow 时回退 TiKV 扫描的正确性合同，也不宣称解决独立的 Snapshot/PITR 运维边界。
 
+- A4307 恢复 `pkg/server/etcd` 全包 race 门禁的可执行性，并修掉由此暴露的 Watch 测试竞态。
+  共享 `newTestRPCServer` 此前让数千条协议测试沿用生产 `bcrypt.DefaultCost=10`；单独 Auth race
+  子集也会跑满 10 分钟，并因共用 2–5 秒 RPC context 产生大量伪 `DeadlineExceeded`，导致真正位于
+  后段的 Watch/stream 测试根本无法进入。测试 helper 现在只对普通语义测试使用
+  `bcrypt.MinCost`；生产默认、非法 cost 回退、显式 cost 哈希和 option/server 接线仍由独立测试按
+  DefaultCost/配置值执行，因此没有降低运行时密码强度或删除 cost oracle。Auth race 子集由超时失败
+  降为执行 123 秒全绿；全包随即在 443 秒内走到尾部，并揭示 `fakeWatchServer.Send` 写 response slice
+  与 filter-enum 用例 `Eventually` 直接读 slice 的真实测试竞态。fake stream 现以 mutex 保护 append，
+  并通过复制 snapshot 读取；目标用例连续 20 轮 race 通过，最终全包 401 秒 race 全绿。该项不改变
+  etcd wire/runtime 行为，但让 Auth、KV、Lease、Watch、Maintenance 与 Cluster 的统一竞态回归重新成为
+  可信发布门禁，避免超时把后段真实竞态和后续兼容回归永久遮蔽。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

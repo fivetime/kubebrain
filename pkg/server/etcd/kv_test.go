@@ -32,6 +32,7 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/namespace"
+	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -472,6 +473,13 @@ func newTestRPCServerWithCompatibility(t *testing.T, enableEtcdCompatibility boo
 		EnableEtcdCompatibility: enableEtcdCompatibility,
 	}, metrics)
 	server := New(b, metrics, testPeerService{isLeader: true})
+	// The shared helper backs thousands of protocol tests, including hundreds
+	// of auth mutations. Production defaults to bcrypt.DefaultCost, whose work
+	// factor is independently covered by TestAuthManagerUsesConfiguredBcryptCost
+	// and the option wiring tests. Keep ordinary semantic/race tests at MinCost
+	// so their short RPC contexts measure protocol behavior rather than queueing
+	// behind minutes of intentionally expensive password hashing.
+	server.auth.bcryptCost = bcrypt.MinCost
 	return server, func() {
 		server.stopLeases()
 		require.NoError(t, kv.Close())

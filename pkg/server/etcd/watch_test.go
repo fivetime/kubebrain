@@ -48,6 +48,7 @@ import (
 type fakeWatchServer struct {
 	etcdserverpb.Watch_WatchServer
 	ctx     context.Context
+	mu      sync.Mutex
 	sent    []*etcdserverpb.WatchResponse
 	recvErr error
 	sendErr error
@@ -57,8 +58,16 @@ func (s *fakeWatchServer) Send(resp *etcdserverpb.WatchResponse) error {
 	if s.sendErr != nil {
 		return s.sendErr
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sent = append(s.sent, resp)
 	return nil
+}
+
+func (s *fakeWatchServer) sentResponses() []*etcdserverpb.WatchResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]*etcdserverpb.WatchResponse(nil), s.sent...)
 }
 
 func (s *fakeWatchServer) Recv() (*etcdserverpb.WatchRequest, error) {
@@ -3389,12 +3398,13 @@ func TestWatchFilterEnumUnknownAndDuplicateMatchEtcd(t *testing.T) {
 					{Type: mvccpb.DELETE, Kv: &mvccpb.KeyValue{Key: []byte("/registry/watch/filter-enum/a"), ModRevision: 3}},
 				},
 			}
-			require.Eventually(t, func() bool { return len(stream.sent) == 1 }, time.Second, time.Millisecond)
-			require.Len(t, stream.sent[0].Events, len(tc.wantTypes))
+			require.Eventually(t, func() bool { return len(stream.sentResponses()) == 1 }, time.Second, time.Millisecond)
+			responses := stream.sentResponses()
+			require.Len(t, responses[0].Events, len(tc.wantTypes))
 			for i, want := range tc.wantTypes {
-				require.Equal(t, want, stream.sent[0].Events[i].Type)
+				require.Equal(t, want, responses[0].Events[i].Type)
 			}
-			require.Equal(t, int64(3), stream.sent[0].Header.Revision)
+			require.Equal(t, int64(3), responses[0].Header.Revision)
 
 			close(fed)
 			<-done
