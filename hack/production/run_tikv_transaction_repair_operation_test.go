@@ -34,7 +34,7 @@ fi
 set -euo pipefail
 env | sort >"$REPAIR_LOG"
 [[ "${FAKE_REPAIR_FAIL:-false}" != "true" ]] || exit 9
-printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":3,"tidb_cluster_uid":"%s","transaction_verified":true}\n' "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
+printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s","transaction_verified":true}\n' "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${FAKE_REPAIRED_TIKV_PODS:-3}" "$EXPECTED_TIDB_CLUSTER_UID" >"$RECEIPT_OUTPUT"
 `), 0o755))
 
 	output, err := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
@@ -47,6 +47,7 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 		"EXPECTED_DIGEST=" + digest,
 		"OPERATION_LOG=" + operationLog,
 		"REPAIR_LOG=" + repairLog,
+		"FAKE_REPAIRED_TIKV_PODS=1",
 	})
 	require.NoError(t, err, string(output))
 	operationData, err := os.ReadFile(operationLog)

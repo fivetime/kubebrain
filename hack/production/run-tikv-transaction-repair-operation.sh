@@ -168,7 +168,9 @@ $JQ -e --arg attempt_id "$repair_attempt_id" --arg kb_uid "$expected_kb_uid" --a
   .format == "kubebrain.tikv-transaction-repair.receipt.v1" and
   .attempt_id == $attempt_id and .kubebrain_statefulset_uid == $kb_uid and
   .tidb_cluster_uid == $tidb_uid and .cluster_id == $cluster_id and
-  .pvc_preserved == true and .repaired_tikv_pods == 3 and .transaction_verified == true and
+  .pvc_preserved == true and
+  (.repaired_tikv_pods | type == "number" and . == floor and . >= 1 and . <= 3) and
+  .transaction_verified == true and
   (.completed_at_unix | type == "number" and . > 0 and . == floor)' "$receipt_output" >/dev/null || {
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "repair receipt invalid; a new approved operation is required" >/dev/null
   exit 1

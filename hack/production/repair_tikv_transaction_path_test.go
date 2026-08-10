@@ -71,7 +71,11 @@ elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"containers"* ]]
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"readyReplicas"* ]]; then
   printf '0'
 elif [[ "$args" == *"exec kubebrain-0"* ]]; then
-  [[ "${FAKE_HEALTHY_BEFORE:-false}" == "true" || ( -e "$FAKE_STATE/replaced-0" && -e "$FAKE_STATE/replaced-1" && -e "$FAKE_STATE/replaced-2" ) ]] || exit 1
+  target_repaired=false
+  if [[ -n "${FAKE_ABNORMAL_STORE_ORDINAL:-}" && -e "$FAKE_STATE/replaced-${FAKE_ABNORMAL_STORE_ORDINAL}" && "${FAKE_PERSISTENT_ABNORMAL_REGION:-false}" != "true" ]]; then
+    target_repaired=true
+  fi
+  [[ "${FAKE_HEALTHY_BEFORE:-false}" == "true" || "$target_repaired" == "true" || ( -e "$FAKE_STATE/replaced-0" && -e "$FAKE_STATE/replaced-1" && -e "$FAKE_STATE/replaced-2" ) ]] || exit 1
   if [[ "$args" == *" put "* ]]; then
     printf 'OK\n'
   elif [[ "$args" == *" get "* ]]; then
@@ -197,10 +201,14 @@ fi
 	targetedLogData, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	targetedLog := string(targetedLogData)
-	requireOrder(t, targetedLog, "delete pod kb-tikv-0", "delete pod kb-tikv-2", "delete pod kb-tikv-1")
-	for ordinal := 0; ordinal < 3; ordinal++ {
-		require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-"+string(rune('0'+ordinal)))))
-	}
+	require.Equal(t, 1, strings.Count(targetedLog, "delete pod kb-tikv-"), targetedLog)
+	require.Contains(t, targetedLog, "delete pod kb-tikv-0")
+	require.NotContains(t, targetedLog, "delete pod kb-tikv-1")
+	require.NotContains(t, targetedLog, "delete pod kb-tikv-2")
+	targetedReceipt, err := os.ReadFile(receiptPath)
+	require.NoError(t, err)
+	require.Contains(t, string(targetedReceipt), `"repaired_tikv_pods":1`)
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-0")))
 	require.NoError(t, os.Remove(receiptPath))
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	healthyOutput, healthyErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",

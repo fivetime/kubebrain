@@ -220,10 +220,12 @@ hack/production/repair-tikv-transaction-path.sh
 
 脚本默认要求 3 次连续 Put/Get/Delete 失败、KubeBrain 精确 0 Ready、KubeBrain/TidbCluster UID
 和 cluster ID 与 receipt 相等，并固定要求 3×KubeBrain、3×PD、3×TiKV。它先用 ConfigMap
-`kubebrain-tikv-transaction-repair-lock` 排除并发执行，再把 KubeBrain 缩到 0，按 TiKV
-`2→1→0` 逐 Pod 删除重建；每一步必须取得新 Pod UID、保留原 PVC 名并重新达到精确 3 Ready，
-且每一步恢复后必须再次确认 PD 精确 3 Ready；PD quorum 漂移会停止后续 TiKV 删除并保持
-KubeBrain 隔离。因此不会删除 PVC，也不会主动同时破坏 quorum。全部 TiKV 收敛后才恢复 3 个 KubeBrain，最终
+`kubebrain-tikv-transaction-repair-lock` 排除并发执行，再把 KubeBrain 缩到 0。若 PD pending/down
+Region 能严格映射到 TiKV Pod，则只重建对应的 1–3 个异常 Pod；没有 abnormal peer 证据的非 Region
+事务故障才按 `2→1→0` fallback。每一步必须取得新 Pod UID、保留原 PVC 名并重新达到精确 3 Ready，
+且每一步恢复后必须再次确认 PD 精确 3 Ready/store Up；目标重建后 Region 未持续收敛或 PD quorum
+漂移会停止后续 TiKV 删除并保持 KubeBrain 隔离。因此不会删除 PVC，也不会主动同时破坏 quorum。
+选定 TiKV 收敛后才恢复 3 个 KubeBrain，最终
 Put/Get/Delete 失败会再次把 KubeBrain 缩到 0 并以非零状态退出。健康集群的第一次成功探测会
 在任何 scale 或 Pod delete 前拒绝修复。连续事务失败后，脚本还会重新取得精确三 PD 与三 TiKV
 Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/pd`、`/var/lib/tikv` 的真实挂载水位；任一 Pod 超过默认 90% 时记录
@@ -240,7 +242,7 @@ namespace 中读取 StatefulSet/Pod/TidbCluster、缩放指定 KubeBrain Statefu
 ConfigMap、删除指定 TiKV Pod 所需的最小权限；不得获得 PVC delete 权限。
 
 每次调用要求一个尚不存在的绝对 `RECEIPT_OUTPUT`，成功时原子发布严格 JSON receipt；文件绑定
-两个 UID、cluster ID、attempt ID、完成时间、精确 3 个 repaired TiKV Pod、PVC preserved 与
+两个 UID、cluster ID、attempt ID、完成时间、实际 1–3 个 repaired TiKV Pod、PVC preserved 与
 transaction verified，可被 Operation wrapper 重读并计算 SHA-256。每次调用还会创建不可复用的
 `ConfigMap/kubebrain-tikv-repair-${REPAIR_ATTEMPT_ID}`，持续写入 `preflight`、
 `refused-healthy`、`refused-disk-pressure`、`refused-storage-safety`、`quiescing-kubebrain`、`replacing-tikv-N`、`restoring-kubebrain`、

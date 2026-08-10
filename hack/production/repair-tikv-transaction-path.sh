@@ -416,9 +416,6 @@ if (( ${#abnormal_store_ids[@]} > 0 )); then
       ((targeted_replacement_count+=1))
     fi
   done
-  for ordinal in 2 1 0; do
-    [[ -n "${abnormal_ordinals[$ordinal]:-}" ]] || replacement_ordinals+=("$ordinal")
-  done
 else
   replacement_ordinals=(2 1 0)
 fi
@@ -483,9 +480,9 @@ persist_phase "completed"
 
 receipt_tmp="${RECEIPT_OUTPUT}.tmp.${REPAIR_ATTEMPT_ID}"
 umask 077
-printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":3,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
+printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":%s,"format":"kubebrain.tikv-transaction-repair.receipt.v1","kubebrain_statefulset_uid":"%s","pvc_preserved":true,"repaired_tikv_pods":%s,"tidb_cluster_uid":"%s","transaction_verified":true}\n' \
   "$REPAIR_ATTEMPT_ID" "$EXPECTED_CLUSTER_ID" "$completed_at_unix" \
-  "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
+  "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" "${#replacement_ordinals[@]}" "$EXPECTED_TIDB_CLUSTER_UID" >"$receipt_tmp" ||
   die "cannot write repair receipt"
 mv -f -- "$receipt_tmp" "$RECEIPT_OUTPUT" || die "cannot publish repair receipt"
 

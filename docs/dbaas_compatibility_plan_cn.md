@@ -45371,6 +45371,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项不根据 Region leader 自动执行 PD operator/peer remove，也不承诺 restart 能修复磁盘上永久
   overlap；持续异常会保留 KubeBrain scale 0 并要求人工检查 PD/TiKV 数据与 operator。
 
+- A4290 把 A4289 的“目标优先”收紧为“只修目标”。A4289 虽先重建 abnormal peer 对应 ordinal，
+  Region 已连续全绿后仍把其余健康 store 追加到 replacement 队列，造成无必要的两次数据面重启。
+  现在存在严格映射的 abnormal store 集合时，队列只包含对应的 1–3 个唯一 ordinal；五类 Region
+  持续收敛后直接恢复 KubeBrain 并执行最终 Put/Get/Delete。若事务仍失败，既有 final probe fence
+  会再次 scale 0 并要求新审批，不以盲删健康 store 作为隐式 fallback；完全没有 abnormal peer 证据
+  时才保留 2→1→0 非 Region 故障路径。fake-cluster 的 store 1001/kb-tikv-0 成功场景现在精确只有
+  一次 delete，明确不出现 kb-tikv-1/2，并在 Region 全绿后完成最终事务。receipt 的
+  `repaired_tikv_pods` 改为实际队列长度；Operation wrapper 从硬编码 3 改为严格整数 1–3，继续固定
+  exact keys、UID、cluster ID、attempt、完成时间、PVC preserved 与 transaction verified，测试以
+  单目标 receipt 完成 claim/succeed/takeover 验证。生产就绪文档同步移除固定 2→1→0/精确 3 repaired
+  的过期描述。本项减少破坏面，不自动处理无法映射或 Region 未收敛的 store。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
