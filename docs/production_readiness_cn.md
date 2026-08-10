@@ -1970,7 +1970,26 @@ v2 receipt 同时绑定 remote inventory 文件 SHA-256、object-store/bucket/pr
 也允许安全表达空闲窗口。metadata 的最大 resolved TS 仍不能替代 PD global checkpoint，因为空闲区间
 可以只推进 checkpoint 而不产生新日志文件；时间窗口继续以 exact task-ready receipt 为权威。
 
-在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready/log-artifacts receipt 生成严格只读计划：
+在生成计划前，先对独立目标 PD/TiKV 做只读全事务键空间检查：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-target-empty \
+  --pd-addrs="$TARGET_PD_ADDRS" \
+  --ca=/target-tls/ca.crt --cert=/target-tls/tls.crt --key=/target-tls/tls.key \
+  > /evidence/native-pitr-target-snapshot-empty.json
+```
+
+命令分别从 PD client 与 txnkv client 读取 cluster ID 并要求一致，记录排序后的 PD 地址和全部 Up
+TiKV store，在 fresh PD TSO 上以 key-only iterator 从无界起点扫描到无界终点；发现任意可见 committed
+transactional key 即 fail closed。输出 `kubebrain.native-pitr-target-snapshot-empty.v1`，明确把证明范围
+限定为“该 TSO 的整个事务快照为空”。它不会谎称已经证明历史 MVCC 版本或 RawKV 数据不存在；因此生产
+provisioner 仍必须交付全新、独立且未复用数据目录的 TiKV/PD 集群，未来 restore executor 也必须在首个
+写操作前重新检查，不能把旧 receipt 当作长期锁。
+2026-08-10 已用隔离的 PD/TiKV v7.5.1、全新独立 data volume 实际运行该命令：receipt 绑定真实且
+相互一致的 cluster ID、1 个 Up store、fresh snapshot TSO，并完成空的全事务键空间扫描。验证后两个
+容器与两个 data volume 均已精确删除。
+
+在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready/log-artifacts/target-snapshot-empty receipt 生成严格只读计划：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-restore-plan \
@@ -1979,16 +1998,16 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --full-artifacts=/evidence/native-pitr-full-artifacts.json \
   --task-ready=/evidence/native-pitr-task-ready.json \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
-  --target-cluster-id="$TARGET_CLUSTER_ID" \
-  --target-empty-witness-sha256="$EMPTY_WITNESS_SHA256" \
+  --target-snapshot-empty=/evidence/native-pitr-target-snapshot-empty.json \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v8`。source cluster/range、task start/commit、full backup TSO、
+输出 `kubebrain.native-pitr-restore-plan.v9`。source cluster/range、task start/commit、full backup TSO、
 exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner，以及 exact ready/log-artifact receipt digest、日志对象 manifest/字节数/分片数全部来自严格 receipt，命令不再
-接受这些值的自由参数；并拒绝 receipt 文件 digest/身份链不一致、source/target cluster ID 相同、
-非空目标证据缺失、artifact digest 非规范，以及不满足
+接受这些值的自由参数；目标 cluster ID、snapshot TSO、扫描范围与 store 数也只能来自 exact target receipt，
+不再接受自由填写的 cluster ID 或 emptiness digest。计划拒绝 receipt 文件 digest/身份链不一致、
+source/target cluster ID 相同、目标快照非空或过度声称物理空白、artifact digest 非规范，以及不满足
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记
 `read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。
 
@@ -2647,9 +2666,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
   仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
   TiKV 源码审计及隔离 v7.5.1 运行验证已经证明 arbitrary transactional range 的 full/log
-  backup 原语存在；`native-pitr-preflight` 现在可只读验证 tenant 范围、PD task ownership 与
-  每个 Up store 的 log-backup 服务。这缩小了缺口，但尚未实现 task/safepoint 生命周期和
-  transactional restore，因此不能改变本项“未完成”的结论。
+  backup 原语存在；`native-pitr-preflight` 可只读验证 tenant 范围、PD task ownership 与每个 Up
+  store 的 log-backup 服务，create/ready/delete receipt 已约束 task/safepoint 生命周期，full/log
+  artifact receipt 已绑定不可变远端 exact versions；目标侧 snapshot-empty receipt 也已消除计划中的
+  自由 target ID/emptiness digest。这显著缩小了缺口，但 native transactional restore executor、
+  首写前原子防漂移和恢复后 etcd 语义验真仍未实现，因此不能改变本项“未完成”的结论。
 - **升级前已成为历史的 lease provenance 缺失只能通过显式丢弃旧 MVCC 历史缓解。** 旧 raw/v1
   current value 会在升级后的第一次 Put/Delete 的同一事务中按锁定 attachment 原位升级为 v2/v3，
   不增加 revision 或 Watch 事件，因此不会再制造新的含糊历史；但升级前已经 retained 的历史版本没有

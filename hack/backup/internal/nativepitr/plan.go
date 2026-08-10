@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v8"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v9"
 )
 
 var (
@@ -101,8 +101,16 @@ type LogWindow struct {
 }
 
 type Target struct {
-	ClusterID          uint64 `json:"cluster_id"`
-	EmptyWitnessSHA256 string `json:"empty_witness_sha256"`
+	ClusterID                   uint64 `json:"cluster_id"`
+	SnapshotEmptyReceiptSHA256  string `json:"snapshot_empty_receipt_sha256"`
+	SnapshotTS                  uint64 `json:"snapshot_ts"`
+	ScanScope                   string `json:"scan_scope"`
+	VisibleCommittedKeyCount    uint64 `json:"visible_committed_key_count"`
+	HistoricalMVCCAbsenceProven bool   `json:"historical_mvcc_absence_proven"`
+	RawKVAbsenceProven          bool   `json:"raw_kv_absence_proven"`
+	CheckedAtUnix               int64  `json:"checked_at_unix"`
+	PDAddressCount              int    `json:"pd_address_count"`
+	UpStoreCount                int    `json:"up_store_count"`
 }
 
 type Plan struct {
@@ -121,8 +129,7 @@ type ReceiptPlanInputs struct {
 	ArtifactReceiptSHA256 string
 	TaskReadySHA256       string
 	LogArtifactSHA256     string
-	TargetClusterID       uint64
-	EmptyWitnessSHA256    string
+	TargetReceiptSHA256   string
 	RestoreTS             uint64
 }
 
@@ -148,7 +155,7 @@ func ValidatePreflight(p Preflight) error { return validatePreflight(p) }
 
 // BuildFromReceipts constructs a restore plan without operator-supplied source
 // timestamps, artifact digests, storage locations, or advancer identities.
-func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifacts ArtifactReceipt, ready TaskReadyReceipt, logs LogArtifactReceipt, in ReceiptPlanInputs) (Plan, error) {
+func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifacts ArtifactReceipt, ready TaskReadyReceipt, logs LogArtifactReceipt, target TargetSnapshotEmptyReceipt, in ReceiptPlanInputs) (Plan, error) {
 	if err := validateTaskCreateReceipt(task); err != nil {
 		return Plan{}, err
 	}
@@ -164,6 +171,12 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 	if err := logs.Validate(); err != nil {
 		return Plan{}, err
 	}
+	if err := target.Validate(); err != nil {
+		return Plan{}, err
+	}
+	if !sha256RE.MatchString(in.TargetReceiptSHA256) {
+		return Plan{}, errors.New("invalid exact target snapshot-empty receipt SHA-256")
+	}
 	if !sha256RE.MatchString(in.TaskCreateSHA256) || full.TaskCreateSHA256 != in.TaskCreateSHA256 {
 		return Plan{}, errors.New("full snapshot does not bind the exact task-create receipt")
 	}
@@ -177,11 +190,18 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 		return Plan{}, errors.New("log artifact receipt does not bind the exact task and task-ready receipts")
 	}
 	plan := Plan{
-		Format:    PlanFormat,
-		Source:    Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
-		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified},
-		Log:       LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
-		Target:    Target{ClusterID: in.TargetClusterID, EmptyWitnessSHA256: in.EmptyWitnessSHA256},
+		Format: PlanFormat,
+		Source: Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
+		Full:   FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified},
+		Log:    LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
+		Target: Target{
+			ClusterID: target.ClusterID, SnapshotEmptyReceiptSHA256: in.TargetReceiptSHA256,
+			SnapshotTS: target.SnapshotTS, ScanScope: target.ScanScope,
+			VisibleCommittedKeyCount:    target.VisibleCommittedKeyCount,
+			HistoricalMVCCAbsenceProven: target.HistoricalMVCCAbsenceProven,
+			RawKVAbsenceProven:          target.RawKVAbsenceProven, CheckedAtUnix: target.CheckedAtUnix,
+			PDAddressCount: len(target.PDAddrs), UpStoreCount: len(target.Stores),
+		},
 		RestoreTS: in.RestoreTS, ReadOnly: true,
 	}
 	if err := plan.Validate(); err != nil {
@@ -245,8 +265,8 @@ func (p Plan) Validate() error {
 	if !sha256RE.MatchString(p.Full.RemoteInventorySHA256) || safeText("full object store ID", p.Full.ObjectStoreID) != nil || !p.Full.RemoteExact || p.Full.MinRetainUntilUnix <= p.Full.InventoryCheckedAt || p.Full.InventoryCheckedAt <= 0 {
 		return errors.New("invalid full snapshot remote inventory evidence")
 	}
-	if !sha256RE.MatchString(p.Target.EmptyWitnessSHA256) {
-		return errors.New("invalid target empty-witness SHA-256")
+	if !sha256RE.MatchString(p.Target.SnapshotEmptyReceiptSHA256) || p.Target.SnapshotTS == 0 || p.Target.ScanScope != WholeTransactionalKeyspace || p.Target.VisibleCommittedKeyCount != 0 || p.Target.HistoricalMVCCAbsenceProven || p.Target.RawKVAbsenceProven || p.Target.CheckedAtUnix <= 0 || p.Target.PDAddressCount <= 0 || p.Target.UpStoreCount <= 0 {
+		return errors.New("invalid target snapshot-empty receipt evidence")
 	}
 	if err := validateS3Prefix(p.Full.StoragePrefix); err != nil {
 		return fmt.Errorf("full snapshot storage: %w", err)
