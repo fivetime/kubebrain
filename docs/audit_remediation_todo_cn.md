@@ -216,7 +216,7 @@
 
 ## 第二轮代码审查（review round 2，2026-07-03）
 
-9 条独立审查意见，逐条核实属实性后分类处理。初轮**接受并修**：#R1/#R2/#R6/#R8/#R9；当时仅记录的 #R3/#R4 后续也已闭环，只有 #R5 保留为 TiKV 大事务上限下的显式边界。
+9 条独立审查意见，逐条核实属实性后分类处理。初轮**接受并修**：#R1/#R2/#R6/#R8/#R9；当时仅记录的 #R3/#R4/#R5 后续均已闭环。
 
 - [x] **#R1** [med] Lease revoke/expire 用无条件 `Delete(rev=0)` 删键，可能删掉被并发 Put 重绑到另一 lease 的新值  
   `pkg/server/etcd/lease.go` — `06b46ba`。新增 `deleteLeasedKey`：删前 (1) 在 `leaseMu` 下复核 `keyLeaseIndex[key]==id`（已重绑/解绑→跳过）；(2) 读当前 modRev 做 **compare-delete**（keepalive re-Put 会失败→循环复核，重绑到别的 lease→不动）。`revoke`/`expire` 两处都改用它。`TestDeleteLeasedKeyCompareDeleteGuardsReassignment`（A→B 重绑后 A 的 revoke 不得删该键；正控：仍绑 A 的键必删）。
@@ -226,8 +226,8 @@
   `d5139498` 的初版仅保护存在的单键 compare；后续 `TxnGuard{Exists:false}` 已让不存在键 guard 与 tombstone/并发 create 同批复核，`2c421fa1` 为 range/from-key compare 持有 logical-write predicate barrier 直至选中分支提交，排除范围 phantom。point/range/from-key 的 VERSION/CREATE/MOD/VALUE/LEASE、空集合、缺失键、混合多 compare 与 nested compare 均已有 raw gRPC/reference etcd 双端差分；`TestTxnApplyAbsentGuard*` 和 `TestTxnRangeCompareExcludesPhantomInsert` 固定两个原 TOCTOU 缺口。
 - [x] **#R4** [low] txn 顺序回退路径对不支持的 txn 形态不保证完整原子性 → **后续已闭环**
   `cd38dc86` 新增 staged generic executor：nested、range read/delete、IgnoreValue/IgnoreLease、重叠 delete 等不能 flatten 的合法形态在固定 base revision 上构造逻辑视图，最后经一次 `TxnApply` 单 batch/单 revision 提交；`02f669be` 将剩余 ineligible shape 也路由到 staged executor，旧 sequential multi-commit fallback 已不存在。atomic/staged 的嵌套响应 header、PrevKV、range filter/sort/limit、单 revision 与失败零写均有 reference 双端门禁。
-- [~] **#R5** [low] 大范围 DeleteRange 分块、非单一原子 txn → **by-design，未改**  
-  `883006b`（分块）已落。TiKV 事务有大小上界（单 txn 不能无界大），故超大范围 DeleteRange **无法**作为一个原子 txn 提交；分块是存储层的固有约束而非缺陷。k8s 的 delete-collection 语义不要求整批跨键原子。详见生产就绪文档。
+- [x] **#R5** [low] 大范围 DeleteRange 分块、非单一原子 txn → **后续已闭环**
+  `0cda1ad0`/`8d6f1ef9` 删除分块语义：普通、leased 与 Txn 内 range delete 都先取得完整逻辑 key 集，再把用户 tombstone、lease attachment 和 watch event 经一次 `TxnApply` 单 batch/单 MVCC revision 提交；尾部故障整批零写。`--max-delete-range-keys=0` 默认保持 upstream 不限 key 数，生产显式设 1024 时用 `limit+1` 有界扫描在任何写/revision 分配前返回标准 `ResourceExhausted`，不会以部分提交换可用性。`TestBackendDeleteRangeLargeRangeIsAtomic`、两个 129-key 尾部故障测试及普通/Txn admission 测试固定该合同；独立 TiKV/PD 黑盒已验证 129-key 单 revision 和 257-key 超限零写。
 - [x] **#R6** [med] leader 就绪门控：`onStartedLeading` 先置 SERVING 再 reload lease，reload 失败仅记日志继续  
   `pkg/server/server.go` — `0ad81cf`。`ReloadLeases` 移到 `SetServing` **之前**并**失败重试**（ctx 可取消）到成功，节点绝不在 lease 状态未重建时对外就绪（否则 stale follower 快照的过期计时器会误删 keepalive 的 lease 或漏挂新授的）。`RebuildCountIndex` 仍留在 SetServing 之后（未就绪时 count 回退全扫、绝不给错值，故其失败不该门控就绪）。残留微窗见 commit（`leader=1` 在回调前置位）。
 - [x] **#R8** [low] compact 水位 CAS 并发冲突被当错误返回（非幂等）  

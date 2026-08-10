@@ -45563,6 +45563,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时修正 `executeGenericTxn` 中仍声称会回退“unchanged sequential path”的陈旧注释。审计项 #R3、
   #R4、#R13 改为已闭环；大范围 DeleteRange 的显式 admission/分块边界 #R5 不随之扩大。
 
+- A4304 继续清理 #R5 的过期大范围 DeleteRange 差距。A4303 保守保留该项后，重新沿公开 RPC、leased
+  attachment、Txn staged executor、backend commit 和生产参数逐层核验，确认 A82 已由 `0cda1ad0`/
+  `8d6f1ef9` 删除旧 128-key chunk 路径：所有 range delete 先形成完整逻辑 key 集，再把用户 tombstone、
+  lease attachment 与 watch event 经一次 `TxnApply` 提交，故成功只有一个 MVCC revision，任意尾部失败
+  都是整批零写。默认 `--max-delete-range-keys=0` 与 upstream 一样不限制 key 数；生产显式配置 1024 时，
+  普通 RPC 与 Txn 都以 `limit+1` 有界扫描在任何写入和 revision 分配前返回标准 `ResourceExhausted`，
+  不会通过分块产生 partial success。确定性测试覆盖 backend 300-key 单 revision、leased/leaseless 129-key
+  尾部故障全回滚、普通/Txn 超限后 key 与 revision 原样保留；A82 的独立 TiKV/PD 官方 client/v3 黑盒
+  已验证 129-key 成功单 revision、257-key 两入口均拒绝且零写。因此 #R5 改为已闭环，当前唯一保留差异
+  是生产配置主动收紧的可观测 admission，而不是数据面原子性缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
