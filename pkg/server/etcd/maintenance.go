@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/go-semver/semver"
+	"github.com/Masterminds/semver/v3"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
@@ -620,10 +620,10 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 		if err != nil {
 			return nil, err
 		}
-		current := semver.Must(semver.NewVersion(Version))
+		current := semver.MustParse(Version)
 		return &etcdserverpb.DowngradeResponse{
 			Header:  header,
-			Version: fmt.Sprintf("%d.%d", current.Major, current.Minor),
+			Version: fmt.Sprintf("%d.%d", current.Major(), current.Minor()),
 		}, nil
 	default:
 		return nil, status.Error(codes.Unknown, "etcdserver: unknown method")
@@ -633,14 +633,18 @@ func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.Downgra
 
 func parseDowngradeVersion(value string) (*semver.Version, error) {
 	if version, err := semver.NewVersion(value); err == nil {
-		return version, nil
+		return semver.New(version.Major(), version.Minor(), 0, "", ""), nil
 	}
-	return semver.NewVersion(value + ".0")
+	version, err := semver.NewVersion(value + ".0")
+	if err != nil {
+		return nil, err
+	}
+	return semver.New(version.Major(), version.Minor(), 0, "", ""), nil
 }
 
 func validDowngradeTargetVersion(target *semver.Version) bool {
-	current := semver.Must(semver.NewVersion(Version))
-	return target.Major == current.Major && target.Minor == current.Minor-1
+	current := semver.MustParse(Version)
+	return target.Equal(semver.New(current.Major(), current.Minor()-1, 0, "", ""))
 }
 
 func (s *RPCServer) requireAuthenticated(ctx context.Context, root bool) error {

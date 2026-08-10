@@ -45115,6 +45115,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   测试则明确记录继续使用 `parser.ParseDir` 是为了扫描当前 package 并自行排除测试文件；同时去掉 namespaced range 回归中的死赋值。
   清理不改变客户端可观察语义，事务与快照相关回归继续作为保护；该项不访问 TiKV/PD。
 
+- A4267 对齐当前 upstream `d0079a8c8`/`5cd9f4ee1380` 的 Downgrade 版本解析。官方从 coreos semver 迁移到
+  `Masterminds/semver/v3@v3.5.0` 后，`convertToClusterVersion` 接受 SemVer-ish 输入并归一化为 major/minor：例如
+  `VALIDATE v3.6` 成功，单段 `3` 可解析但因不是前一 minor 返回 `invalid downgrade target version`。KubeBrain 旧 parser 对两者
+  都提前返回 `wrong downgrade target version format`。raw bufconn gRPC RED 先复现该差异；生产 parser 随后同步官方依赖、解析与
+  patch/pre-release/metadata 归一化，并保持 ENABLE 由 DBaaS 控制面托管的既有边界。差分测试新增两项输入；使用当前源码临时构建的
+  官方 etcd 验证为 GREEN（仓库既有 `/root/etcd/bin/etcd` 是迁移前旧构建，不能作为该源码 revision 的 oracle）。服务全包、compat
+  全包、定向 race、vet/staticcheck/govulncheck 均通过。该项只影响 Maintenance 请求分类，不访问 TiKV/PD。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

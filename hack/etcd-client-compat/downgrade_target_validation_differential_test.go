@@ -29,6 +29,8 @@ func TestDowngradeTargetValidationDifferentialAgainstReferenceEtcd(t *testing.T)
 	}
 	referenceOutcomes := downgradeTargetValidationOutcomes(t, reference)
 	require.Equal(t, []downgradeTargetValidationOutcome{
+		{Name: "validate-v-prefixed-previous", Code: "OK", Message: ""},
+		{Name: "validate-major-only", Code: "InvalidArgument", Message: "etcdserver: invalid downgrade target version"},
 		{Name: "validate-current", Code: "InvalidArgument", Message: "etcdserver: invalid downgrade target version"},
 		{Name: "validate-too-old", Code: "InvalidArgument", Message: "etcdserver: invalid downgrade target version"},
 		{Name: "enable-future", Code: "InvalidArgument", Message: "etcdserver: invalid downgrade target version"},
@@ -51,6 +53,8 @@ func downgradeTargetValidationOutcomes(t *testing.T, endpoint string) []downgrad
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, serverVersion.Minor, int64(2))
 	current := fmt.Sprintf("%d.%d", serverVersion.Major, serverVersion.Minor)
+	previousWithV := fmt.Sprintf("v%d.%d", serverVersion.Major, serverVersion.Minor-1)
+	majorOnly := fmt.Sprintf("%d", serverVersion.Major)
 	tooOld := fmt.Sprintf("%d.%d", serverVersion.Major, serverVersion.Minor-2)
 	future := fmt.Sprintf("%d.%d", serverVersion.Major, serverVersion.Minor+1)
 
@@ -58,6 +62,8 @@ func downgradeTargetValidationOutcomes(t *testing.T, endpoint string) []downgrad
 		name    string
 		request *etcdserverpb.DowngradeRequest
 	}{
+		{name: "validate-v-prefixed-previous", request: &etcdserverpb.DowngradeRequest{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: previousWithV}},
+		{name: "validate-major-only", request: &etcdserverpb.DowngradeRequest{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: majorOnly}},
 		{name: "validate-current", request: &etcdserverpb.DowngradeRequest{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: current}},
 		{name: "validate-too-old", request: &etcdserverpb.DowngradeRequest{Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: tooOld}},
 		{name: "enable-future", request: &etcdserverpb.DowngradeRequest{Action: etcdserverpb.DowngradeRequest_ENABLE, Version: future}},

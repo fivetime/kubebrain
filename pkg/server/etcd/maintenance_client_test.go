@@ -351,6 +351,12 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, ClusterVersion, validateResponse.GetVersion())
 	require.NotNil(t, validateResponse.GetHeader())
+	validateResponse, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
+		Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: "v3.6",
+	})
+	require.NoError(t, err)
+	require.Equal(t, ClusterVersion, validateResponse.GetVersion())
+	require.NotNil(t, validateResponse.GetHeader())
 	_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 		Action: etcdserverpb.DowngradeRequest_ENABLE, Version: "3.6.0",
 	})
@@ -366,7 +372,7 @@ func TestRawGRPCPlatformManagedMaintenanceReturnsActionableErrors(t *testing.T) 
 		Action: etcdserverpb.DowngradeRequest_ENABLE, Version: "not-semver",
 	})
 	require.ErrorIs(t, err, rpctypes.ErrGRPCWrongDowngradeVersionFormat)
-	for _, version := range []string{"3.7.0", "3.5", "4.0"} {
+	for _, version := range []string{"3", "3.7.0", "3.5", "4.0"} {
 		_, err = maintenance.Downgrade(ctx, &etcdserverpb.DowngradeRequest{
 			Action: etcdserverpb.DowngradeRequest_VALIDATE, Version: version,
 		})
