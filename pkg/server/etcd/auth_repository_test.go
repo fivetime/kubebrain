@@ -39,7 +39,7 @@ func TestAuthRepositoryPersistsAndRecoversAtomicSnapshot(t *testing.T) {
 	require.Equal(t, authConfig{Revision: initialAuthRevision}, empty.Config)
 
 	user := &authpb.User{Name: []byte("root"), Password: []byte("bcrypt-hash"), Roles: []string{"root"}}
-	role := &authpb.Role{Name: []byte("root"), KeyPermission: []*authpb.Permission{{PermType: authpb.READWRITE, Key: []byte{}, RangeEnd: []byte{0}}}}
+	role := &authpb.Role{Name: []byte("root"), KeyPermission: []*authpb.Permission{{PermType: authpb.READWRITE, Key: []byte{0}, RangeEnd: []byte{0}}}}
 	next, err := repo.mutate(ctx, empty.Config,
 		authMutation{Key: authRecordKey(authUsersKey, "root"), Value: user},
 		authMutation{Key: authRecordKey(authRolesKey, "root"), Value: role},
@@ -109,6 +109,19 @@ func TestAuthRepositoryClassifiesMalformedPersistentMetadata(t *testing.T) {
 			want: `auth role key identity "reader" disagrees with payload name "writer"`,
 		},
 		{
+			name: "role permission invalid range", key: authRecordKey(authRolesKey, "reader"),
+			value: func(t *testing.T) []byte {
+				value, err := proto.Marshal(&authpb.Role{
+					Name: []byte("reader"), KeyPermission: []*authpb.Permission{{
+						PermType: authpb.READ, RangeEnd: []byte{0},
+					}},
+				})
+				require.NoError(t, err)
+				return value
+			},
+			want: `auth role "reader" permission 0 has invalid range`,
+		},
+		{
 			name: "token generation key mismatch", key: authRecordKey(authTokenGenerationsKey, "alice"),
 			value: func(t *testing.T) []byte {
 				value, err := proto.Marshal(&authpb.User{Name: []byte("bob"), Password: make([]byte, authUserTokenGenerationBytes)})
@@ -161,6 +174,22 @@ func TestAuthRepositoryRevisionExhaustionDoesNotWrapOrMutate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, maximum, after.Config)
 	require.NotContains(t, after.Roles, "must-not-exist")
+}
+
+func TestAuthRepositoryPreservesUnknownPermissionTypeAsDenyOnly(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	role := &authpb.Role{Name: []byte("reader"), KeyPermission: []*authpb.Permission{{
+		PermType: authpb.Permission_Type(99), Key: []byte("/unknown/"), RangeEnd: []byte("/unknown0"),
+	}}}
+	value, err := proto.Marshal(role)
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, authRecordKey(authRolesKey, "reader"), value))
+
+	snapshot, err := newAuthRepository(server.backend).load(ctx)
+	require.NoError(t, err)
+	require.Equal(t, authpb.Permission_Type(99), snapshot.Roles["reader"].KeyPermission[0].PermType)
 }
 
 func TestAuthRepositoryPreservesMetadataReadStatusError(t *testing.T) {

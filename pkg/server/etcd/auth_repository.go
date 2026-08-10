@@ -212,6 +212,13 @@ func (r *authRepository) loadRecords(ctx context.Context, config authConfig) (*a
 				"auth role key identity %q disagrees with payload name %q", identity, role.Name,
 			))
 		}
+		for index, permission := range role.KeyPermission {
+			if permission == nil || !validPermissionRange(permission.Key, permission.RangeEnd) {
+				return nil, markInvalidAuthMetadata(fmt.Errorf(
+					"auth role %q permission %d has invalid range", identity, index,
+				))
+			}
+		}
 		snapshot.Roles[identity] = &role
 	}
 	for key, value := range generationsRaw {

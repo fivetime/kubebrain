@@ -44820,6 +44820,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backend 上的跨副本时序，官方 client/v3 bufconn 回归将预热旧 snapshot 的 manager 安装为服务副本并证明新 token 的
   KV Range 首次即可成功。
 
+- A4233 阻止损坏 role permission 在恢复后扩大权限。对照 `/root/etcd/server/auth/range_perm_cache.go` 的
+  `isValidPermissionRange`，合法 RoleGrant 必须有非空 key，且 range end 只能为空、严格大于 key 或为开放端 `[0]`。
+  KubeBrain repository 先前只校验 role key/payload identity；TiKV 中若出现 `Key=[]、RangeEnd=[0]`，授权合并算法会把它
+  当作从最小 key 开始的开放区间，使普通 role 获得全键空间，而不是暴露持久损坏。现在 auth snapshot 发布前逐项复用
+  同一 range validator，nil/空 key/逆序或等端点均标记 `errInvalidAuthMetadata`，普通 RPC 稳定返回 `DataLoss`。未知
+  permission enum 仍按上游兼容语义保留并只产生 deny，不被误判为损坏。repository 表测覆盖畸形范围与未知 enum，真实
+  bufconn KV.Range 固定畸形持久 role 返回 DataLoss，避免任何半有效 snapshot 进入授权路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
