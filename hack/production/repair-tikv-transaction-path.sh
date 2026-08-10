@@ -152,11 +152,17 @@ validate_tikv_ready() {
   [[ "$names" == "$expected_tikv_names" ]]
 }
 validate_tikv_ready || die "TiKV quorum/PVC fence failed before repair"
+expected_pd_status=""
 validate_pd_ready() {
   local rows names
   rows="$(pd_status)" || return 1
   names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$rows")"
-  [[ "$names" == "$expected_pd_names" ]]
+  [[ "$names" == "$expected_pd_names" ]] || return 1
+  if [[ -z "$expected_pd_status" ]]; then
+    expected_pd_status="$rows"
+    return 0
+  fi
+  [[ "$rows" == "$expected_pd_status" ]]
 }
 validate_pd_ready || die "PD quorum/PVC fence failed before repair"
 
@@ -208,8 +214,7 @@ disk_tikv_rows="$(tikv_status)" || die "cannot refresh TiKV topology before stor
 disk_tikv_names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$disk_tikv_rows")"
 [[ "$disk_tikv_names" == "$expected_tikv_names" ]] || die "TiKV quorum/PVC fence changed before storage-safety check"
 disk_pd_rows="$(pd_status)" || die "cannot refresh PD topology before storage-safety fence"
-disk_pd_names="$(awk -F '\t' 'NF == 4 && $2 != "" && $3 == "True" && $4 != "" {print $1}' <<<"$disk_pd_rows")"
-[[ "$disk_pd_names" == "$expected_pd_names" ]] || die "PD quorum/PVC fence changed before storage-safety check"
+[[ "$disk_pd_rows" == "$expected_pd_status" ]] || die "PD identity/quorum/PVC fence changed before storage-safety check"
 validate_storage_safety() {
   local component="$1" container="$2" data_dir="$3" rows="$4"
   local pod pod_uid ready pvc disk_row capacity_kib available_kib used_percent_text used_percent
@@ -305,7 +310,7 @@ for ordinal in 2 1 0; do
   new_pvc="${new_identity#*$'\t'}"
   [[ "$new_uid" != "$old_uid" && "$new_pvc" == "$old_pvc" ]] || die "$pod same-PVC replacement fence failed"
   validate_tikv_ready || die "TiKV quorum did not recover after replacing $pod"
-  validate_pd_ready || die "PD quorum changed after replacing $pod; refusing further TiKV replacements"
+  validate_pd_ready || die "PD identity/quorum/PVC changed after replacing $pod; refusing further TiKV replacements"
 done
 
 persist_phase "restoring-kubebrain"

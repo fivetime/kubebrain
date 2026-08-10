@@ -205,7 +205,7 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 func TestTiKVTransactionRepairRBACIsNamespacedAndCannotDeletePVCs(t *testing.T) {
 	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-tikv-transaction-repair-rbac.yaml")
 	documents := decodeRBACManifest(t, path)
-	require.Len(t, documents, 7)
+	require.Len(t, documents, 9)
 	require.Equal(t, "Namespace", documents[0].Kind)
 	require.Equal(t, "kubebrain-repair-state", documents[0].Metadata.Name)
 	require.Equal(t, "kubebrain-repair-state", documents[1].Metadata.Namespace)
@@ -224,11 +224,20 @@ func TestTiKVTransactionRepairRBACIsNamespacedAndCannotDeletePVCs(t *testing.T) 
 	require.Equal(t, []rbacRule{
 		{APIGroups: []string{"pingcap.com"}, Resources: []string{"tidbclusters"}, ResourceNames: []string{"kb"}, Verbs: []string{"get"}},
 		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "watch", "delete"}},
+		{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
+		{
+			APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"},
+			ResourceNames: []string{"pd-kb-pd-0", "pd-kb-pd-1", "pd-kb-pd-2", "tikv-kb-tikv-0", "tikv-kb-tikv-1", "tikv-kb-tikv-2"},
+			Verbs:         []string{"get"},
+		},
 	}, documents[5].Rules)
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.NotContains(t, string(data), "persistentvolumeclaims")
-	require.NotContains(t, string(data), "persistentvolumes")
+	require.Equal(t, "ClusterRole", documents[7].Kind)
+	require.Equal(t, "kubebrain-tikv-transaction-repair-pv-reader", documents[7].Metadata.Name)
+	require.Equal(t, []rbacRule{{
+		APIGroups: []string{""}, Resources: []string{"persistentvolumes"}, Verbs: []string{"get"},
+	}}, documents[7].Rules)
+	require.Equal(t, "ClusterRoleBinding", documents[8].Kind)
+	require.Equal(t, rbacParty{Kind: "ClusterRole", Name: "kubebrain-tikv-transaction-repair-pv-reader"}, documents[8].RoleRef)
 }
 
 func TestTiKVRepairAlertReceiverUsesAnIsolatedNonDestructiveQueue(t *testing.T) {

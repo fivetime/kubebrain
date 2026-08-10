@@ -45317,6 +45317,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同时约束两个数据面相关模块不得因本次审计引入 CLI progress dependency。reference etcd 工具的
   provenance 仍绑定上述完整 HEAD；后续 HEAD 变化时必须重新生成差集并按公开可观察语义分类。
 
+- A4286 收紧 A4284 的 PD 操作期身份栅栏。此前 `validate_pd_ready` 每次只验证三个预期 Pod 名称均
+  Ready 且带非空 UID/PVC；若 TiKV replacement 窗口中 PD operator 同时替换一个同名 PD Pod，新的
+  UID 仍会通过检查，执行器会在控制面成员尚处恢复期时继续删除下一台 TiKV。repair 现在于破坏前
+  冻结三条排序后的 `pod name/UID/Ready/PVC` 基线，storage-safety 刷新及每次 TiKV 重建后都要求整份
+  PD 身份快照逐字一致；PD NotReady、Pod UID 替换或 PVC 映射变化均会在当前 TiKV Pod Ready 后停止
+  状态机，不再进行下一次删除。fake-cluster 新增首次 kb-tikv-2 重建后仅将 kb-pd-1 UID 从 old 改为
+  new 的 RED：执行器持久停在 `replacing-tikv-2`，日志只有一次 TiKV delete，不出现 kb-tikv-1、恢复
+  KubeBrain、最终事务 probe 或成功 receipt；既有 PD NotReady 与健康 2→1→0 路径继续通过。本项只
+  fail closed，不自动回滚已重建 TiKV，也不干预由 DBaaS/operator 管理的 PD replacement。整包验证
+  同时发现 A4283 后 RBAC 测试仍硬编码旧的七文档且禁止任何 PVC/PV 字样；回归现已对齐九文档，精确
+  要求六个命名 PVC 仅 `get`、PV ClusterRole 仅 `get`，继续以 exact rule 防止 PVC/PV delete 扩权。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

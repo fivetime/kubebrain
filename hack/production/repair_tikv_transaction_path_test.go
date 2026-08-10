@@ -48,7 +48,11 @@ elif [[ "$args" == *"get pods -l"* && "$args" == *"component=pd"* ]]; then
     ready=False
   fi
   for ordinal in 0 1 2; do
-    printf 'kb-pd-%s\tuid-pd-%s\t%s\tpd-kb-pd-%s\n' "$ordinal" "$ordinal" "$ready" "$ordinal"
+    generation=old
+    if [[ "${FAKE_PD_REPLACE_AFTER_TIKV_REPLACEMENT:-false}" == "true" && "$ordinal" == "1" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
+      generation=new
+    fi
+    printf 'kb-pd-%s\tuid-pd-%s-%s\t%s\tpd-kb-pd-%s\n' "$ordinal" "$generation" "$ordinal" "$ready" "$ordinal"
   done
 elif [[ "$args" == *"get statefulset kubebrain"* && "$args" == *"containers"* ]]; then
   printf '%s\n' '--advertise-client-urls=http://kubebrain-client.kubebrain-system.svc:3379'
@@ -172,7 +176,7 @@ fi
 	pdDuringOutput, pdDuringErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_PD_FAIL_AFTER_REPLACEMENT=true"))
 	require.Error(t, pdDuringErr)
-	require.Contains(t, string(pdDuringOutput), "PD quorum changed after replacing kb-tikv-2")
+	require.Contains(t, string(pdDuringOutput), "PD identity/quorum/PVC changed after replacing kb-tikv-2")
 	pdDuringLogData, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	pdDuringLog := string(pdDuringLogData)
@@ -180,6 +184,21 @@ fi
 	require.Contains(t, pdDuringLog, "replacing-tikv-2")
 	require.NotContains(t, pdDuringLog, "delete pod kb-tikv-1")
 	require.NotContains(t, pdDuringLog, "--replicas=3")
+	require.NoFileExists(t, receiptPath)
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	pdIdentityOutput, pdIdentityErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_PD_REPLACE_AFTER_TIKV_REPLACEMENT=true"))
+	require.Error(t, pdIdentityErr)
+	require.Contains(t, string(pdIdentityOutput), "PD identity/quorum/PVC changed after replacing kb-tikv-2")
+	pdIdentityLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	pdIdentityLog := string(pdIdentityLogData)
+	require.Equal(t, 1, strings.Count(pdIdentityLog, "delete pod kb-tikv-"), pdIdentityLog)
+	require.Contains(t, pdIdentityLog, "replacing-tikv-2")
+	require.NotContains(t, pdIdentityLog, "delete pod kb-tikv-1")
+	require.NotContains(t, pdIdentityLog, "--replicas=3")
 	require.NoFileExists(t, receiptPath)
 	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
 
