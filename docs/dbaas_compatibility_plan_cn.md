@@ -44614,6 +44614,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均要求 `FailedPrecondition`、精确诊断且零 partial frame；revision 达到 `MaxInt64` 也携带同一
   sentinel。DBaaS 备份编排现可区分“需迁移/修复的持久 metadata”与可重试存储/传输故障，而不再把
   前者作为 gRPC `Unknown` 无限重试。
+  A4213 对照 upstream `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Snapshot` 必须完整读取
+  固定 backend snapshot 后再发送 SHA-256 的完整性边界，并与 KubeBrain 已有 follower proxy malformed
+  termination `DataLoss` 契约对齐。leader 本地 history stream 原先在“固定 revision 前关闭、terminal
+  携带 records、terminal 后继续 records、无 terminal”时泄漏 `Unknown`，且重复 terminal 会被错误接受
+  为成功 artifact。新增仅供内部判型的 `errSnapshotHistoryStreamProtocol`，五种结构违约统一在 raw
+  Snapshot 返回 `DataLoss`、保留精确形状诊断且不得发送 partial frame；重复 terminal 现在 fail-closed。
+  chunk 自带的 backend 错误不包装该 sentinel，独立 raw 对照固定 gRPC `Unavailable` 原码，Context、
+  leadership 和 revision-change 重试路径也不改写。由此 leader 直连和 follower 代理对“不完整或越序的
+  Snapshot 流”采用同一不可恢复完整性语义，而不会把 TiKV 暂时不可用误报成数据损坏。
 
 ### P2：运维兼容和长期验证
 

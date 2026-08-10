@@ -382,6 +382,38 @@ type corruptCurrentLeaseSnapshotBackend struct {
 	lease      int64
 }
 
+type malformedHistoryStreamSnapshotBackend struct {
+	BackendShim
+	kind string
+}
+
+func (b *malformedHistoryStreamSnapshotBackend) SnapshotHistoryStreamChan(
+	_ context.Context, revision uint64,
+) (<-chan backend.SnapshotHistoryChunk, error) {
+	out := make(chan backend.SnapshotHistoryChunk, 3)
+	record := backend.SnapshotHistoryRecord{
+		Key: []byte("malformed-history-stream"), Value: []byte("value"), CreateRevision: revision,
+		ModRevision: revision, Version: 1, LeaseKnown: true, Current: true,
+	}
+	switch b.kind {
+	case "closed before pin":
+	case "terminal carries records":
+		out <- backend.SnapshotHistoryChunk{Revision: revision, Records: []backend.SnapshotHistoryRecord{record}, Done: true}
+	case "records after terminal":
+		out <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}
+		out <- backend.SnapshotHistoryChunk{Revision: revision, Records: []backend.SnapshotHistoryRecord{record}}
+	case "missing terminal":
+		out <- backend.SnapshotHistoryChunk{Revision: revision}
+	case "duplicate terminal":
+		out <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}
+		out <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}
+	case "chunk unavailable":
+		out <- backend.SnapshotHistoryChunk{Revision: revision, Err: status.Error(codes.Unavailable, "history backend unavailable")}
+	}
+	close(out)
+	return out, nil
+}
+
 func (b *corruptCurrentLeaseSnapshotBackend) SnapshotHistoryStreamChan(_ context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
 	out := make(chan backend.SnapshotHistoryChunk, 2)
 	out <- backend.SnapshotHistoryChunk{Revision: revision, Records: []backend.SnapshotHistoryRecord{{
@@ -1408,6 +1440,44 @@ func TestMaintenanceSnapshotClassifiesMalformedLeaseMetadata(t *testing.T) {
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
 	require.ErrorContains(t, err, "decode lease metadata: lease metadata contains trailing JSON")
+	require.Empty(t, stream.responses)
+}
+
+func TestMaintenanceSnapshotClassifiesMalformedHistoryStream(t *testing.T) {
+	tests := []struct {
+		kind string
+		want string
+	}{
+		{kind: "closed before pin", want: "range stream ended before establishing its pinned revision"},
+		{kind: "terminal carries records", want: "range stream terminal chunk contains records"},
+		{kind: "records after terminal", want: "range stream returned records after its terminal chunk"},
+		{kind: "missing terminal", want: "range stream ended without a terminal revision"},
+		{kind: "duplicate terminal", want: "range stream returned duplicate terminal chunks"},
+	}
+	for _, test := range tests {
+		t.Run(test.kind, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.backend = &malformedHistoryStreamSnapshotBackend{BackendShim: server.backend, kind: test.kind}
+			stream := &maintenanceSnapshotServer{ctx: context.Background()}
+
+			err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+			require.Equal(t, codes.DataLoss, status.Code(err))
+			require.ErrorContains(t, err, test.want)
+			require.Empty(t, stream.responses)
+		})
+	}
+}
+
+func TestMaintenanceSnapshotPreservesHistoryStreamStatusError(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.backend = &malformedHistoryStreamSnapshotBackend{BackendShim: server.backend, kind: "chunk unavailable"}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.ErrorContains(t, err, "history backend unavailable")
 	require.Empty(t, stream.responses)
 }
 

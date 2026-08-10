@@ -31,6 +31,12 @@ var errSnapshotLeaderChanged = errors.New("snapshot leadership changed while it 
 
 var errSnapshotHistoricalLeaseUnknown = errors.New("snapshot cannot determine lease for retained legacy version")
 
+var errSnapshotHistoryStreamProtocol = errors.New("snapshot history stream protocol violation")
+
+func snapshotHistoryStreamProtocolErrorf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errSnapshotHistoryStreamProtocol, fmt.Sprintf(format, args...))
+}
+
 // buildSnapshot retries a capture if its pinned stream and captured metadata
 // cannot form a valid state (for example, a KV references no captured lease).
 // Each failed attempt owns a fresh bbolt file; no partially captured backend can
@@ -141,7 +147,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return fmt.Errorf("range stream ended before establishing its pinned revision")
+		return snapshotHistoryStreamProtocolErrorf("range stream ended before establishing its pinned revision")
 	}
 	if firstChunk.Err != nil {
 		return firstChunk.Err
@@ -182,14 +188,17 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 			return errSnapshotChanged
 		}
 		if chunk.Done {
+			if sawTerminal {
+				return snapshotHistoryStreamProtocolErrorf("range stream returned duplicate terminal chunks")
+			}
 			if len(chunk.Records) != 0 {
-				return fmt.Errorf("range stream terminal chunk contains records")
+				return snapshotHistoryStreamProtocolErrorf("range stream terminal chunk contains records")
 			}
 			sawTerminal = true
 			return nil
 		}
 		if sawTerminal {
-			return fmt.Errorf("range stream returned records after its terminal chunk")
+			return snapshotHistoryStreamProtocolErrorf("range stream returned records after its terminal chunk")
 		}
 		records := make([]production.Record, 0, len(chunk.Records))
 		for _, record := range chunk.Records {
@@ -255,7 +264,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 					if err := ctx.Err(); err != nil {
 						return err
 					}
-					return fmt.Errorf("range stream ended without a terminal revision")
+					return snapshotHistoryStreamProtocolErrorf("range stream ended without a terminal revision")
 				}
 				if err = builder.Finish(); err != nil {
 					return fmt.Errorf("finish etcd snapshot backend: %w", err)

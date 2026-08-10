@@ -538,6 +538,12 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		return nil
 	}
 	err = s.sendSnapshot(stream)
+	if errors.Is(err, errSnapshotHistoryStreamProtocol) {
+		// The local capture stream has already crossed its fixed-revision
+		// integrity boundary. Missing, duplicate, or out-of-order termination is
+		// the leader-side equivalent of a malformed proxied Snapshot stream.
+		return status.Error(codes.DataLoss, err.Error())
+	}
 	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) || errors.Is(err, etcdsnapshot.ErrInvalidRetainedHistory) ||
 		errors.Is(err, etcdsnapshot.ErrInvalidSnapshotMetadata) {
 		// This is durable source-data provenance, not an opaque server fault:
