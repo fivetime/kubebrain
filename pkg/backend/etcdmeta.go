@@ -108,7 +108,7 @@ func encodeEtcdMetadata(meta EtcdMetadata) []byte {
 
 func decodeEtcdMetadata(raw []byte) (EtcdMetadata, error) {
 	if len(raw) != 16 {
-		return EtcdMetadata{}, errors.Errorf("invalid etcd metadata length %d", len(raw))
+		return EtcdMetadata{}, errors.Wrapf(ErrInvalidMVCCMetadata, "invalid etcd metadata length %d", len(raw))
 	}
 	return EtcdMetadata{
 		CreateRevision: binary.BigEndian.Uint64(raw[:8]),

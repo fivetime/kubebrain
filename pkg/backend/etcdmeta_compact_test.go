@@ -133,3 +133,19 @@ func TestLegacyEtcdMetadataDollarExtensionDoesNotShadowShorterKey(t *testing.T) 
 		})
 	}
 }
+
+func TestGetEtcdMetadataClassifiesInvalidLegacyEncoding(t *testing.T) {
+	s, closeSuite := newTestSuites(t, memKvStorage)
+	defer closeSuite()
+	b := s.backend.(*backend)
+
+	key := []byte("/registry/items/corrupt-metadata")
+	const revision = uint64(42)
+	batch := s.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(b.etcdMetadataUserKey(key), revision), []byte{1}, 0)
+	require.NoError(t, batch.Commit(s.ctx))
+
+	_, err := b.GetEtcdMetadata(s.ctx, key, revision)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "invalid etcd metadata length 1")
+}

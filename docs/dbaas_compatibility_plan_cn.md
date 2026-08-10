@@ -44680,6 +44680,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   apply 再读 checkpoint 时 fail-closed，均保留精确诊断；dirty tracking 对照保持 `Unavailable`。
   NOSPACE 仍是正常容量耗尽及 alarm 语义，TiKV transport/status 也不进入该 sentinel，避免把可恢复的
   初始化或基础设施故障误报为持久数据损坏。
+  A4220 补齐 rolling-upgrade 遗留的 per-version MVCC metadata 编码损坏分类。对照 upstream
+  `/root/etcd/server/storage/mvcc/revision.go::BytesToBucketKey`：非法 revision 长度会直接 panic，不能被
+  当作可重试 backend 故障继续服务；KubeBrain 的旧布局则把 create revision/version 固定编码为 16 字节
+  `etcdmeta` 行，原先长度损坏虽会被 decode 拒绝，却经公开 RPC 泄漏为 `Unknown`。新增
+  `backend.ErrInvalidMVCCMetadata`，只包装该确定性长度违约；TiKV Get/Iter、object-key decode 与 Context
+  错误保持原链。backend 红测实际覆盖损坏行的 `GetEtcdMetadata` 与完整 Snapshot history scan，后者不得
+  输出伪造 record；真实 bufconn KV Range 固定普通 client-facing RPC 为 `DataLoss`，并保留 wrapped
+  status、TiKV leaf cause 与纯文本反例边界。Maintenance Snapshot 继续采用更具体的 durable-source
+  `FailedPrecondition` 且零 partial frame，使备份编排可要求修复/迁移 legacy metadata，而在线客户端不会
+  把同一不可恢复行当作瞬态 `Unknown` 重试。
 
 ### P2：运维兼容和长期验证
 

@@ -1435,6 +1435,20 @@ func TestMaintenanceSnapshotClassifiesInvalidMetadata(t *testing.T) {
 	require.Empty(t, stream.responses)
 }
 
+func TestMaintenanceSnapshotClassifiesInvalidBackendMVCCMetadata(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	want := fmt.Errorf("%w: invalid etcd metadata length 1", backend.ErrInvalidMVCCMetadata)
+	server.backend = &malformedHistoryStreamSnapshotBackend{BackendShim: server.backend, err: want}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, backend.ErrInvalidMVCCMetadata.Error())
+	require.ErrorContains(t, err, "invalid etcd metadata length 1")
+	require.Empty(t, stream.responses)
+}
+
 func TestMaintenanceSnapshotClassifiesMalformedLeaseMetadata(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

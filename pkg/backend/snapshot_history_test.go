@@ -80,6 +80,38 @@ func TestSnapshotHistoryStreamPreservesLegacyMetadataTombstoneAndCurrentVersion(
 	require.True(t, matching[3].Current)
 }
 
+func TestSnapshotHistoryStreamClassifiesInvalidLegacyMetadata(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity()}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/snapshot-history/corrupt-legacy-metadata")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	batch := kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(b.etcdMetadataUserKey(key), created.Header.Revision), []byte{1}, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	stream, err := b.SnapshotHistoryStream(ctx, created.Header.Revision)
+	require.NoError(t, err)
+	var records []SnapshotHistoryRecord
+	var streamErr error
+	for chunk := range stream {
+		records = append(records, chunk.Records...)
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+	}
+	require.ErrorIs(t, streamErr, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, streamErr, "invalid etcd metadata length 1")
+	require.Empty(t, records)
+}
+
 func TestSnapshotHistoryStreamJoinsExactTxnSubrevisions(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()

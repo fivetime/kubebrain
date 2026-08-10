@@ -548,7 +548,7 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		return status.Error(codes.DataLoss, err.Error())
 	}
 	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) || errors.Is(err, etcdsnapshot.ErrInvalidRetainedHistory) ||
-		errors.Is(err, etcdsnapshot.ErrInvalidSnapshotMetadata) {
+		errors.Is(err, etcdsnapshot.ErrInvalidSnapshotMetadata) || errors.Is(err, backend.ErrInvalidMVCCMetadata) {
 		// This is durable source-data provenance, not an opaque server fault:
 		// retrying the same history or metadata cannot succeed until the source is
 		// compacted, migrated, or repaired.

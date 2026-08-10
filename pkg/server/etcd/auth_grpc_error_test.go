@@ -50,6 +50,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{markInvalidLeaseMetadata(errors.New("decode lease record")), codes.DataLoss},
 		{fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata), codes.DataLoss},
 		{fmt.Errorf("%w: decode quota usage", backend.ErrInvalidQuotaMetadata), codes.DataLoss},
+		{fmt.Errorf("%w: decode legacy value metadata", backend.ErrInvalidMVCCMetadata), codes.DataLoss},
 		{backend.ErrQuotaUninitialized, codes.Unavailable},
 	}
 	for _, test := range tests {
@@ -120,6 +121,11 @@ func TestClientInterceptorClassifiesOnlyLeafBackendTransportCause(t *testing.T) 
 		{
 			name: "invalid alarm metadata",
 			err:  fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata),
+			code: codes.DataLoss,
+		},
+		{
+			name: "invalid MVCC metadata",
+			err:  fmt.Errorf("%w: invalid etcd metadata length 1", backend.ErrInvalidMVCCMetadata),
 			code: codes.DataLoss,
 		},
 	}
