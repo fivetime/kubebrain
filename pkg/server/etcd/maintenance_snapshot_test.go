@@ -349,6 +349,7 @@ func TestMaintenanceSnapshotRejectsRevisionWithoutSuccessorBeforeCapture(t *test
 
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	err := server.buildSnapshotOnce(context.Background(), path)
+	require.ErrorIs(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata)
 	require.ErrorContains(t, err, "snapshot revision leaves no room for next etcd write")
 	_, statErr := os.Stat(path)
 	require.ErrorIs(t, statErr, os.ErrNotExist)
@@ -1345,6 +1346,14 @@ type incompleteOrderedHistorySnapshotBackend struct {
 	BackendShim
 }
 
+type duplicateAlarmSnapshotBackend struct {
+	BackendShim
+}
+
+func (b *duplicateAlarmSnapshotBackend) NoSpaceAlarms(context.Context) ([]uint64, error) {
+	return []uint64{4212, 4212}, nil
+}
+
 func (b *incompleteOrderedHistorySnapshotBackend) GetCurrentRevision() uint64 { return 3 }
 
 func (b *incompleteOrderedHistorySnapshotBackend) SnapshotHistoryStreamChan(
@@ -1372,6 +1381,33 @@ func TestMaintenanceSnapshotClassifiesIncompleteOrderedRevision(t *testing.T) {
 	require.Equal(t, codes.FailedPrecondition, status.Code(err))
 	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidRetainedHistory.Error())
 	require.ErrorContains(t, err, "ordered revision 2 contains 1 changes, want 2")
+	require.Empty(t, stream.responses)
+}
+
+func TestMaintenanceSnapshotClassifiesInvalidMetadata(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.backend = &duplicateAlarmSnapshotBackend{BackendShim: server.backend}
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
+	require.ErrorContains(t, err, "duplicate alarm member=4212 type=NOSPACE")
+	require.Empty(t, stream.responses)
+}
+
+func TestMaintenanceSnapshotClassifiesMalformedLeaseMetadata(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(4213), leaseRecordWithTrailingJSON(t, 4213)))
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+
+	err := server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+	require.ErrorContains(t, err, etcdsnapshot.ErrInvalidSnapshotMetadata.Error())
+	require.ErrorContains(t, err, "decode lease metadata: lease metadata contains trailing JSON")
 	require.Empty(t, stream.responses)
 }
 

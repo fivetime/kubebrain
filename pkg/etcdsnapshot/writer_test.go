@@ -579,6 +579,7 @@ func TestWriteBackendPreservesAuthLeasesAndAlarms(t *testing.T) {
 func TestWriteBackendRejectsLeaseRemainingTTLAboveGrant(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.db")
 	err := WriteBackend(path, State{Revision: 1, Leases: []Lease{{ID: -7, GrantedTTL: 60, RemainingTTL: 61}}})
+	require.ErrorIs(t, err, ErrInvalidSnapshotMetadata)
 	require.ErrorContains(t, err, "invalid lease id=-7 granted_ttl=60 remaining_ttl=61")
 
 	db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
@@ -652,6 +653,7 @@ func TestWriteBackendRejectsDuplicateMetadataIdentities(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")
 			err := WriteBackend(path, test.state)
+			require.ErrorIs(t, err, ErrInvalidSnapshotMetadata)
 			require.ErrorContains(t, err, test.want)
 
 			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
@@ -714,6 +716,7 @@ func TestWriteBackendRejectsInconsistentAuthState(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "snapshot.db")
 			err := WriteBackend(path, State{Revision: 1, Auth: test.auth})
+			require.ErrorIs(t, err, ErrInvalidSnapshotMetadata)
 			require.ErrorContains(t, err, test.want)
 			db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})
 			require.NoError(t, openErr)
@@ -767,6 +770,7 @@ func TestWriteBackendRejectsReservedNoneAlarm(t *testing.T) {
 	err := WriteBackend(path, State{Revision: 1, Alarms: []*etcdserverpb.AlarmMember{{
 		MemberID: 23, Alarm: etcdserverpb.AlarmType_NONE,
 	}}})
+	require.ErrorIs(t, err, ErrInvalidSnapshotMetadata)
 	require.ErrorContains(t, err, "snapshot contains reserved NONE alarm for member 23")
 
 	db, openErr := bolt.Open(path, 0o400, &bolt.Options{ReadOnly: true})

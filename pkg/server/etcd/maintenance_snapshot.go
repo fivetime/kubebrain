@@ -94,7 +94,7 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		return err
 	}
 	if revision >= math.MaxInt64 {
-		return fmt.Errorf("snapshot revision leaves no room for next etcd write: %d", revision)
+		return fmt.Errorf("%w: snapshot revision leaves no room for next etcd write: %d", production.ErrInvalidSnapshotMetadata, revision)
 	}
 	state, leaseIDs, leaseAttachments, err := s.snapshotMetadata(ctx, int64(revision))
 	if err != nil {
@@ -292,6 +292,9 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 
 	leaseRecords, leaseAttachments, err := s.loadLeaseRecords(ctx)
 	if err != nil {
+		if errors.Is(err, errInvalidLeaseMetadata) {
+			return production.State{}, nil, nil, fmt.Errorf("%w: %v", production.ErrInvalidSnapshotMetadata, err)
+		}
 		return production.State{}, nil, nil, err
 	}
 	now := time.Now()

@@ -51,6 +51,25 @@ var leaseAttachPrefix = []byte("\x00kubebrain/leasekeys/")
 
 var errLeaseDemotedDuringRenew = errors.New("lease manager demoted during renew")
 
+var errInvalidLeaseMetadata = errors.New("lease metadata is inconsistent")
+
+type invalidLeaseMetadataError struct {
+	cause error
+}
+
+func (e *invalidLeaseMetadataError) Error() string { return e.cause.Error() }
+func (e *invalidLeaseMetadataError) Unwrap() error { return e.cause }
+func (e *invalidLeaseMetadataError) Is(target error) bool {
+	return target == errInvalidLeaseMetadata
+}
+
+func markInvalidLeaseMetadata(err error) error {
+	if err == nil || errors.Is(err, errInvalidLeaseMetadata) {
+		return err
+	}
+	return &invalidLeaseMetadataError{cause: err}
+}
+
 func (m *leaseManager) keysForLease(id int64) []string {
 	if id == 0 {
 		return nil
@@ -1471,7 +1490,7 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	for _, kv := range resp.Kvs {
 		record, err := decodeLeaseRecord(kv.Value)
 		if err != nil {
-			return nil, nil, fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err)
+			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err))
 		}
 		record.LegacyStorage = true
 		recordByID[record.ID] = record
@@ -1479,7 +1498,7 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	for _, value := range internalRecords {
 		record, err := decodeLeaseRecord(value)
 		if err != nil {
-			return nil, nil, fmt.Errorf("decode lease metadata: %w", err)
+			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode lease metadata: %w", err))
 		}
 		recordByID[record.ID] = record
 	}
@@ -1523,7 +1542,7 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
 	id, err := strconv.ParseInt(string(value), 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("decode lease attachment for key %q: %w", userKey, err)
+		return 0, markInvalidLeaseMetadata(fmt.Errorf("decode lease attachment for key %q: %w", userKey, err))
 	}
 	return id, nil
 }

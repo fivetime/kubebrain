@@ -44601,6 +44601,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   partial frame。writer 的缺失 lease 引用也纳入同一 sentinel。回归同时固定直接调用仍可
   `errors.Is(err, errSnapshotChanged)`、重试耗尽后可识别 durable sentinel，以及跨 gRPC 边界的
   code/message；leader 变化仍保持 `etcdserver: leader changed`，bbolt I/O 与传输故障不改写。
+  A4212 对照 upstream `/root/etcd/server/lease/lessor.go::initAndRecover`、
+  `/root/etcd/server/auth/store.go::Recover` 和
+  `/root/etcd/server/etcdserver/api/v3alarm/alarms.go::NewAlarmStore`，将 Snapshot 的持久 metadata 与
+  retained MVCC history 分开判型。writer 对 revision/compact
+  watermark、lease TTL/ID、auth graph/identity/permission、alarm identity/type 的确定性不变量新增
+  `ErrInvalidSnapshotMetadata`；protobuf 无法序列化的来源值也归入该类，而文件打开、bucket I/O 和
+  TiKV 读取错误保持原错误链。持久 lease JSON/attachment 在进入 writer 前可能已由
+  `loadLeaseRecords` 拒绝，因此新增不改变既有 `Error()` 文本的内部 `errInvalidLeaseMetadata` 类型，
+  Snapshot 仅凭 `errors.Is` 将它提升为 metadata sentinel，不使用文本匹配。standalone writer 回归覆盖
+  lease/auth/alarm，raw Snapshot 分别注入重复 NOSPACE alarm 和带尾随 JSON 的 internal lease record，
+  均要求 `FailedPrecondition`、精确诊断且零 partial frame；revision 达到 `MaxInt64` 也携带同一
+  sentinel。DBaaS 备份编排现可区分“需迁移/修复的持久 metadata”与可重试存储/传输故障，而不再把
+  前者作为 gRPC `Unknown` 无限重试。
 
 ### P2：运维兼容和长期验证
 

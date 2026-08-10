@@ -538,9 +538,11 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		return nil
 	}
 	err = s.sendSnapshot(stream)
-	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) || errors.Is(err, etcdsnapshot.ErrInvalidRetainedHistory) {
+	if errors.Is(err, errSnapshotHistoricalLeaseUnknown) || errors.Is(err, etcdsnapshot.ErrInvalidRetainedHistory) ||
+		errors.Is(err, etcdsnapshot.ErrInvalidSnapshotMetadata) {
 		// This is durable source-data provenance, not an opaque server fault:
-		// retrying the same retained history cannot succeed until it is compacted.
+		// retrying the same history or metadata cannot succeed until the source is
+		// compacted, migrated, or repaired.
 		// Preserve the key/revision diagnostic while giving DBaaS automation a
 		// stable non-transient class instead of grpc-go's fallback Unknown.
 		return status.Error(codes.FailedPrecondition, err.Error())

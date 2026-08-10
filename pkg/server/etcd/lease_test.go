@@ -1222,6 +1222,7 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 			require.NoError(t, test.write(ctx, server))
 
 			_, _, err := server.loadLeaseRecords(ctx)
+			require.ErrorIs(t, err, errInvalidLeaseMetadata)
 			require.EqualError(t, err, test.want)
 		})
 	}
@@ -1278,6 +1279,7 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 			require.NoError(t, test.write(ctx, server, id, test.raw(t, id)))
 
 			_, _, err := server.loadLeaseRecords(ctx)
+			require.ErrorIs(t, err, errInvalidLeaseMetadata)
 			require.EqualError(t, err, test.want)
 		})
 	}

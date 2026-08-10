@@ -25,6 +25,11 @@ import (
 // or tombstone.
 var ErrInvalidRetainedHistory = errors.New("snapshot retained MVCC history is inconsistent")
 
+// ErrInvalidSnapshotMetadata marks durable lease, auth, alarm, compaction, or
+// revision metadata that cannot be encoded into a restorable etcd backend.
+// Storage I/O and transport failures must not be wrapped with this sentinel.
+var ErrInvalidSnapshotMetadata = errors.New("snapshot metadata is inconsistent")
+
 // ErrInvalidMVCCLifecycle is retained for callers that adopted the narrower
 // A4207 name. It aliases the broader retained-history class.
 var ErrInvalidMVCCLifecycle = ErrInvalidRetainedHistory
@@ -85,10 +90,10 @@ type State struct {
 // integrity hash. Maintenance.Snapshot streams that hash as its final message.
 func WriteBackend(path string, state State) error {
 	if state.Revision <= 0 {
-		return fmt.Errorf("snapshot revision must be positive: %d", state.Revision)
+		return invalidSnapshotMetadataf("snapshot revision must be positive: %d", state.Revision)
 	}
 	if state.Revision >= math.MaxInt64 {
-		return fmt.Errorf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
+		return invalidSnapshotMetadataf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
 	}
 	builder, err := NewBuilder(path, state)
 	if err != nil {
@@ -122,10 +127,10 @@ const maxLeaseTTLSeconds int64 = 9000000000
 
 func NewBuilder(path string, state State) (*Builder, error) {
 	if state.Revision <= 0 {
-		return nil, fmt.Errorf("snapshot revision must be positive: %d", state.Revision)
+		return nil, invalidSnapshotMetadataf("snapshot revision must be positive: %d", state.Revision)
 	}
 	if state.Revision >= math.MaxInt64 {
-		return nil, fmt.Errorf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
+		return nil, invalidSnapshotMetadataf("snapshot revision leaves no room for next etcd write: %d", state.Revision)
 	}
 	db, err := bolt.Open(path, 0o600, nil)
 	if err != nil {
@@ -170,7 +175,7 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 			compactRevision = state.CompactRevision
 		}
 		if compactRevision < 0 || compactRevision > state.Revision {
-			return fmt.Errorf("invalid compact revision %d for snapshot revision %d", compactRevision, state.Revision)
+			return invalidSnapshotMetadataf("invalid compact revision %d for snapshot revision %d", compactRevision, state.Revision)
 		}
 		compact := revisionBytes(compactRevision, 0)
 		for _, name := range [][]byte{[]byte("scheduledCompactRev"), []byte("finishedCompactRev")} {
@@ -183,17 +188,17 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	for _, lease := range state.Leases {
 		if lease.ID == 0 || lease.GrantedTTL <= 0 || lease.GrantedTTL > maxLeaseTTLSeconds ||
 			lease.RemainingTTL < 0 || lease.RemainingTTL > lease.GrantedTTL {
-			return fmt.Errorf("invalid lease id=%d granted_ttl=%d remaining_ttl=%d", lease.ID, lease.GrantedTTL, lease.RemainingTTL)
+			return invalidSnapshotMetadataf("invalid lease id=%d granted_ttl=%d remaining_ttl=%d", lease.ID, lease.GrantedTTL, lease.RemainingTTL)
 		}
 		value, marshalErr := proto.Marshal(&leasepb.Lease{ID: lease.ID, TTL: lease.GrantedTTL, RemainingTTL: lease.RemainingTTL})
 		if marshalErr != nil {
-			return marshalErr
+			return fmt.Errorf("%w: marshal lease %d: %v", ErrInvalidSnapshotMetadata, lease.ID, marshalErr)
 		}
 		leaseKey := make([]byte, 8)
 		binary.BigEndian.PutUint64(leaseKey, uint64(lease.ID))
 		leases := tx.Bucket(leaseBucket)
 		if leases.Get(leaseKey) != nil {
-			return fmt.Errorf("duplicate lease id %d", lease.ID)
+			return invalidSnapshotMetadataf("duplicate lease id %d", lease.ID)
 		}
 		if err = leases.Put(leaseKey, value); err != nil {
 			return err
@@ -213,18 +218,18 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	}
 	for _, user := range state.Auth.Users {
 		if user == nil || len(user.Name) == 0 {
-			return fmt.Errorf("snapshot contains invalid auth user")
+			return invalidSnapshotMetadataf("snapshot contains invalid auth user")
 		}
 		if !utf8.Valid(user.Name) {
-			return fmt.Errorf("snapshot contains invalid UTF-8 auth user name %q", user.Name)
+			return invalidSnapshotMetadataf("snapshot contains invalid UTF-8 auth user name %q", user.Name)
 		}
 		users := tx.Bucket(authUsersBucket)
 		if users.Get(user.Name) != nil {
-			return fmt.Errorf("duplicate auth user %q", user.Name)
+			return invalidSnapshotMetadataf("duplicate auth user %q", user.Name)
 		}
 		value, marshalErr := proto.Marshal(user)
 		if marshalErr != nil {
-			return marshalErr
+			return fmt.Errorf("%w: marshal auth user %q: %v", ErrInvalidSnapshotMetadata, user.Name, marshalErr)
 		}
 		if err = users.Put(user.Name, value); err != nil {
 			return err
@@ -232,25 +237,25 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	}
 	for _, role := range state.Auth.Roles {
 		if role == nil || len(role.Name) == 0 {
-			return fmt.Errorf("snapshot contains invalid auth role")
+			return invalidSnapshotMetadataf("snapshot contains invalid auth role")
 		}
 		if !utf8.Valid(role.Name) {
-			return fmt.Errorf("snapshot contains invalid UTF-8 auth role name %q", role.Name)
+			return invalidSnapshotMetadataf("snapshot contains invalid UTF-8 auth role name %q", role.Name)
 		}
 		roles := tx.Bucket(authRolesBucket)
 		if roles.Get(role.Name) != nil {
-			return fmt.Errorf("duplicate auth role %q", role.Name)
+			return invalidSnapshotMetadataf("duplicate auth role %q", role.Name)
 		}
 		value, marshalErr := proto.Marshal(role)
 		if marshalErr != nil {
-			return marshalErr
+			return fmt.Errorf("%w: marshal auth role %q: %v", ErrInvalidSnapshotMetadata, role.Name, marshalErr)
 		}
 		if err = roles.Put(role.Name, value); err != nil {
 			return err
 		}
 	}
 	if err = validateAuthState(state.Auth); err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalidSnapshotMetadata, err)
 	}
 	seenAlarms := make(map[struct {
 		memberID uint64
@@ -258,28 +263,32 @@ func writeMetadata(tx *bolt.Tx, state State) error {
 	}]struct{}, len(state.Alarms))
 	for _, alarm := range state.Alarms {
 		if alarm == nil {
-			return fmt.Errorf("snapshot contains nil alarm")
+			return invalidSnapshotMetadataf("snapshot contains nil alarm")
 		}
 		if alarm.Alarm == etcdserverpb.AlarmType_NONE {
-			return fmt.Errorf("snapshot contains reserved NONE alarm for member %d", alarm.MemberID)
+			return invalidSnapshotMetadataf("snapshot contains reserved NONE alarm for member %d", alarm.MemberID)
 		}
 		identity := struct {
 			memberID uint64
 			alarm    etcdserverpb.AlarmType
 		}{alarm.MemberID, alarm.Alarm}
 		if _, exists := seenAlarms[identity]; exists {
-			return fmt.Errorf("duplicate alarm member=%d type=%s", alarm.MemberID, alarm.Alarm)
+			return invalidSnapshotMetadataf("duplicate alarm member=%d type=%s", alarm.MemberID, alarm.Alarm)
 		}
 		seenAlarms[identity] = struct{}{}
 		key, marshalErr := proto.Marshal(alarm)
 		if marshalErr != nil {
-			return marshalErr
+			return fmt.Errorf("%w: marshal alarm member=%d type=%s: %v", ErrInvalidSnapshotMetadata, alarm.MemberID, alarm.Alarm, marshalErr)
 		}
 		if err = tx.Bucket(alarmBucket).Put(key, nil); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func invalidSnapshotMetadataf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidSnapshotMetadata, fmt.Sprintf(format, args...))
 }
 
 func validateAuthState(auth Auth) error {
