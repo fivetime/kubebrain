@@ -25,10 +25,12 @@ func (f fakeTaskStatus) ReadTaskStatus(context.Context, TaskCreateReceipt) (Task
 func readyTask(t *testing.T) (TaskCreateReceipt, TaskStatusSnapshot) {
 	t.Helper()
 	in := taskInput()
-	task := TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-operation-1", BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}
-	owner, err := json.Marshal(ownerRecord{Format: TaskCreateFormat, ClusterID: task.ClusterID, TaskName: task.TaskName, PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID})
+	storageDigest, err := storageBackendSHA256(s3Storage())
 	require.NoError(t, err)
-	info, err := (&backuppb.StreamBackupTaskInfo{Name: task.TaskName, StartTs: task.StartTS, EndTs: task.EndTS}).Marshal()
+	task := TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, LogStoragePrefix: "s3://bucket/immutable/task-1", LogStorageSHA256: storageDigest, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-operation-1", BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}
+	owner, err := json.Marshal(ownerRecord{Format: TaskCreateFormat, ClusterID: task.ClusterID, TaskName: task.TaskName, PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, LogStoragePrefix: task.LogStoragePrefix, LogStorageSHA256: task.LogStorageSHA256})
+	require.NoError(t, err)
+	info, err := (&backuppb.StreamBackupTaskInfo{Name: task.TaskName, StartTs: task.StartTS, EndTs: task.EndTS, Storage: s3Storage()}).Marshal()
 	require.NoError(t, err)
 	checkpoint := make([]byte, 8)
 	binary.BigEndian.PutUint64(checkpoint, 150)
@@ -58,6 +60,11 @@ func TestCheckTaskReadyFailsClosedWithoutReleasingGuard(t *testing.T) {
 		{"wrong cluster", func(task *TaskCreateReceipt, _ *TaskStatusSnapshot) { task.ClusterID++ }, "connected PD cluster"},
 		{"owner mismatch", func(_ *TaskCreateReceipt, s *TaskStatusSnapshot) { s.Owner = []byte(`{}`) }, "owner"},
 		{"task mismatch", func(_ *TaskCreateReceipt, s *TaskStatusSnapshot) { s.Info = []byte("bad") }, "task"},
+		{"storage mismatch", func(task *TaskCreateReceipt, s *TaskStatusSnapshot) {
+			info, err := (&backuppb.StreamBackupTaskInfo{Name: task.TaskName, StartTs: task.StartTS, EndTs: task.EndTS}).Marshal()
+			require.NoError(t, err)
+			s.Info = info
+		}, "storage"},
 		{"extra range", func(_ *TaskCreateReceipt, s *TaskStatusSnapshot) { s.Ranges["extra"] = []byte("range") }, "exact tenant range"},
 		{"no advancer", func(_ *TaskCreateReceipt, s *TaskStatusSnapshot) { s.AdvancerOwner = nil }, "no elected owner"},
 		{"no checkpoint", func(_ *TaskCreateReceipt, s *TaskStatusSnapshot) { s.GlobalCheckpoint = nil }, "checkpoint"},

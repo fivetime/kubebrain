@@ -3,6 +3,7 @@ package nativepitr
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -61,6 +62,8 @@ func TestCreateTaskInstallsGuardThenAtomicallyCreatesMetadata(t *testing.T) {
 	require.Equal(t, bootstrapSafePointTTL, sp.calls[0].ttl)
 	require.Equal(t, TaskCreateFormat, receipt.Format)
 	require.True(t, receipt.AtomicMetadataCreated)
+	require.Equal(t, "s3://bucket/immutable/task-1", receipt.LogStoragePrefix)
+	require.Regexp(t, sha256RE, receipt.LogStorageSHA256)
 	require.Equal(t, []string{TaskOwnerKey, taskInput().Preflight.TaskInfoKey, taskInput().Preflight.TaskRangesKey + string(mustDecodeHex(t, taskInput().Preflight.StartKeyHex))}, meta.absent)
 	require.Equal(t, []string{
 		"/tidb/br-stream/info/",
@@ -76,6 +79,10 @@ func TestCreateTaskInstallsGuardThenAtomicallyCreatesMetadata(t *testing.T) {
 	require.Equal(t, taskInput().Preflight.TaskName, info.Name)
 	require.Equal(t, "bucket", info.Storage.GetS3().Bucket)
 	require.Equal(t, mustDecodeHex(t, taskInput().Preflight.EndKeyHex), meta.values[meta.absent[2]])
+	var owner ownerRecord
+	require.NoError(t, json.Unmarshal(meta.values[TaskOwnerKey], &owner))
+	require.Equal(t, receipt.LogStoragePrefix, owner.LogStoragePrefix)
+	require.Equal(t, receipt.LogStorageSHA256, owner.LogStorageSHA256)
 }
 
 func TestCreateTaskFailsClosedAndRemovesOwnGuard(t *testing.T) {
@@ -111,6 +118,7 @@ func TestCreateTaskRejectsUnsafeInputBeforeMutation(t *testing.T) {
 		{"bad timestamps", func(i *TaskCreateInput) { i.EndTS = i.StartTS }, "timestamps"},
 		{"missing storage", func(i *TaskCreateInput) { i.Storage = nil }, "storage"},
 		{"embedded credentials", func(i *TaskCreateInput) { i.Storage.GetS3().AccessKey = "secret" }, "credentials"},
+		{"unsafe storage URI", func(i *TaskCreateInput) { i.Storage.GetS3().Bucket = "key:secret@bucket" }, "storage"},
 		{"bad preflight digest", func(i *TaskCreateInput) { i.PreflightSHA256 = "bad" }, "SHA-256"},
 		{"bad operation ID", func(i *TaskCreateInput) { i.OperationID = "" }, "operation ID"},
 	}

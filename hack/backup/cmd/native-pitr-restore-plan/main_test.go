@@ -2,8 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,31 +16,30 @@ import (
 
 const testDigest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
-func TestRunWritesCanonicalPlan(t *testing.T) {
+func TestRunWritesPlanFromExactReceipts(t *testing.T) {
+	dir := t.TempDir()
 	ks, err := coder.NewKeyspace("tenant-a")
 	require.NoError(t, err)
-	task := "tenant-a-pitr"
-	info, ranges := "/tidb/br-stream/info/"+task, "/tidb/br-stream/ranges/"+task+"/"
-	p := map[string]any{
-		"format": nativepitr.PreflightFormat, "cluster_id": 11, "pd_addrs": []string{"pd:2379"},
-		"keyspace": "tenant-a", "task_name": task, "start_key_hex": fmt.Sprintf("%x", ks.ObjectKeyspaceStart()), "end_key_hex": fmt.Sprintf("%x", ks.ObjectKeyspaceEnd()),
-		"task_info_key": info, "task_ranges_prefix": ranges,
-		"ownership_paths_checked": []string{info, ranges, "/tidb/br-stream/checkpoint/" + task + "/", "/tidb/br-stream/storage-checkpoint/" + task + "/", "/tidb/br-stream/pause/" + task, "/tidb/br-stream/last-error/" + task + "/"}, "task_name_available": true, "read_only": true,
-		"stores": []map[string]any{{"id": 1, "address": "tikv:20160", "log_backup_service": "available"}},
-	}
-	b, err := json.Marshal(p)
+	task := nativepitr.TaskCreateReceipt{Format: nativepitr.TaskCreateFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", StartTS: 100, EndTS: 1000, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), LogStoragePrefix: "s3://bucket/immutable/log-a", LogStorageSHA256: testDigest, PreflightSHA256: testDigest, OwnerKey: nativepitr.TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-operation-a", BootstrapSafePointTTL: 7200, AtomicMetadataCreated: true}
+	taskBytes, err := json.Marshal(task)
 	require.NoError(t, err)
-	path := filepath.Join(t.TempDir(), "preflight.json")
-	require.NoError(t, os.WriteFile(path, b, 0o600))
-	in := nativepitr.Inputs{TaskStartTS: 100, FullBackupTS: 120, BackupMetaSHA256: testDigest, StoragePrefix: "s3://bucket/run", GlobalCheckpointTS: 200, AdvancerOwner: "owner-1", TargetClusterID: 22, EmptyWitnessSHA256: testDigest, RestoreTS: 180}
+	taskDigest := sha256.Sum256(taskBytes)
+	full := nativepitr.FullSnapshotReceipt{Format: nativepitr.FullSnapshotFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", TaskStartTS: 100, TaskEndTS: 1000, BackupTS: 120, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, StoragePrefix: "s3://bucket/immutable/full-a", BackupMetaSHA256: testDigest, BackupMetaBytes: 100, TaskCreateSHA256: hex.EncodeToString(taskDigest[:]), HasFileIndex: true, Transactional: true, Scope: "whole-cluster", BackupMetaInventory: true}
+	ready := nativepitr.TaskReadyReceipt{Format: nativepitr.TaskReadyFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", StartTS: 100, EndTS: 1000, GlobalCheckpointTS: 200, AdvancerOwner: "owner-1", PreflightSHA256: testDigest, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
+	paths := []string{filepath.Join(dir, "task.json"), filepath.Join(dir, "full.json"), filepath.Join(dir, "ready.json")}
+	for i, value := range []any{task, full, ready} {
+		b, err := json.Marshal(value)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(paths[i], b, 0o600))
+	}
 	var out bytes.Buffer
-	require.NoError(t, run(path, in, &out))
+	require.NoError(t, run(paths[0], paths[1], paths[2], nativepitr.ReceiptPlanInputs{TargetClusterID: 22, EmptyWitnessSHA256: testDigest, RestoreTS: 180}, &out))
 	var plan nativepitr.Plan
 	require.NoError(t, json.Unmarshal(out.Bytes(), &plan))
 	require.NoError(t, plan.Validate())
 	require.Equal(t, byte('\n'), out.Bytes()[out.Len()-1])
 }
 
-func TestRunRejectsMissingSource(t *testing.T) {
-	require.ErrorContains(t, run("", nativepitr.Inputs{}, &bytes.Buffer{}), "required")
+func TestRunRejectsMissingReceipts(t *testing.T) {
+	require.ErrorContains(t, run("", "", "", nativepitr.ReceiptPlanInputs{}, &bytes.Buffer{}), "required")
 }

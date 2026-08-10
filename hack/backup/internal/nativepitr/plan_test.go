@@ -25,46 +25,58 @@ func validPreflight() Preflight {
 	return p
 }
 
-func validInputs() Inputs {
-	return Inputs{TaskStartTS: 100, FullBackupTS: 120, BackupMetaSHA256: digest, StoragePrefix: "s3://bucket/immutable/run-1", GlobalCheckpointTS: 200, AdvancerOwner: "advancer-1", TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 180}
-}
-
-func TestBuildRestorePlan(t *testing.T) {
-	plan, err := Build(validPreflight(), validInputs())
+func validReceiptPlan(t *testing.T) Plan {
+	t.Helper()
+	task, _ := readyTask(t)
+	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
 	require.NoError(t, err)
-	require.Equal(t, PlanFormat, plan.Format)
-	require.Equal(t, uint64(11), plan.Source.ClusterID)
-	require.Equal(t, uint64(120), plan.Full.BackupTS)
-	require.Equal(t, "br-txn", plan.Full.Mode)
-	require.True(t, plan.ReadOnly)
-	require.NoError(t, plan.Validate())
-	plan.Source.EndKeyHex = "ff"
-	require.ErrorContains(t, plan.Validate(), "does not match keyspace")
+	plan, err := BuildFromReceipts(task, full, readyReceiptFor(task), ReceiptPlanInputs{TaskCreateSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	require.NoError(t, err)
+	return plan
 }
 
-func TestBuildRejectsBrokenChain(t *testing.T) {
+func TestPlanRejectsBrokenChain(t *testing.T) {
 	tests := []struct {
 		name string
-		edit func(*Inputs)
+		edit func(*Plan)
 		want string
 	}{
-		{"log starts after snapshot", func(i *Inputs) { i.TaskStartTS = 121 }, "start no later"},
-		{"restore before snapshot", func(i *Inputs) { i.RestoreTS = 119 }, "precedes full"},
-		{"checkpoint behind restore", func(i *Inputs) { i.GlobalCheckpointTS = 179 }, "exceeds durable"},
-		{"same target", func(i *Inputs) { i.TargetClusterID = 11 }, "must differ"},
-		{"bad backup digest", func(i *Inputs) { i.BackupMetaSHA256 = "ABC" }, "backupmeta"},
-		{"bad witness", func(i *Inputs) { i.EmptyWitnessSHA256 = "" }, "empty-witness"},
-		{"missing advancer", func(i *Inputs) { i.AdvancerOwner = "" }, "advancer owner"},
-		{"unsafe storage", func(i *Inputs) { i.StoragePrefix = " s3://bucket" }, "storage prefix"},
+		{"log starts after snapshot", func(p *Plan) { p.Log.StartTS = 121 }, "start no later"},
+		{"restore before snapshot", func(p *Plan) { p.RestoreTS = 119 }, "precedes full"},
+		{"checkpoint behind restore", func(p *Plan) { p.Log.GlobalCheckpointTS = 139 }, "exceeds durable"},
+		{"same target", func(p *Plan) { p.Target.ClusterID = 11 }, "must differ"},
+		{"bad backup digest", func(p *Plan) { p.Full.BackupMetaSHA256 = "ABC" }, "backupmeta"},
+		{"bad witness", func(p *Plan) { p.Target.EmptyWitnessSHA256 = "" }, "empty-witness"},
+		{"missing advancer", func(p *Plan) { p.Log.AdvancerOwner = "" }, "advancer owner"},
+		{"unsafe storage", func(p *Plan) { p.Full.StoragePrefix = " s3://bucket" }, "storage prefix"},
+		{"wrong tenant range", func(p *Plan) { p.Source.EndKeyHex = "ff" }, "does not match keyspace"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in := validInputs()
-			tt.edit(&in)
-			_, err := Build(validPreflight(), in)
-			require.ErrorContains(t, err, tt.want)
+			plan := validReceiptPlan(t)
+			tt.edit(&plan)
+			require.ErrorContains(t, plan.Validate(), tt.want)
 		})
 	}
+}
+
+func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
+	task, _ := readyTask(t)
+	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
+	require.NoError(t, err)
+	ready := readyReceiptFor(task)
+	plan, err := BuildFromReceipts(task, full, ready, ReceiptPlanInputs{TaskCreateSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	require.NoError(t, err)
+	require.Equal(t, full.BackupTS, plan.Full.BackupTS)
+	require.Equal(t, ready.AdvancerOwner, plan.Log.AdvancerOwner)
+
+	full.TaskName = "other"
+	_, err = BuildFromReceipts(task, full, ready, ReceiptPlanInputs{TaskCreateSHA256: digest, TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	require.ErrorContains(t, err, "different source tasks")
+
+	full.TaskName = task.TaskName
+	_, err = BuildFromReceipts(task, full, ready, ReceiptPlanInputs{TaskCreateSHA256: strings.Repeat("f", 64), TargetClusterID: 22, EmptyWitnessSHA256: digest, RestoreTS: 140})
+	require.ErrorContains(t, err, "exact task-create")
 }
 
 func TestDecodePreflightIsStrict(t *testing.T) {

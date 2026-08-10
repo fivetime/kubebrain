@@ -2,10 +2,12 @@ package nativepitr
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
@@ -14,7 +16,7 @@ import (
 
 const (
 	TaskOwnerKey          = "/kubebrain/native-pitr/owner"
-	TaskCreateFormat      = "kubebrain.native-pitr-task-create.v1"
+	TaskCreateFormat      = "kubebrain.native-pitr-task-create.v2"
 	bootstrapSafePointTTL = int64((2 * time.Hour) / time.Second)
 )
 
@@ -68,6 +70,8 @@ type TaskCreateReceipt struct {
 	EndTS                 uint64 `json:"end_ts"`
 	StartKeyHex           string `json:"start_key_hex"`
 	EndKeyHex             string `json:"end_key_hex"`
+	LogStoragePrefix      string `json:"log_storage_prefix"`
+	LogStorageSHA256      string `json:"log_storage_backend_sha256"`
 	PreflightSHA256       string `json:"preflight_sha256"`
 	OwnerKey              string `json:"owner_key"`
 	BootstrapSafePointID  string `json:"bootstrap_safepoint_id"`
@@ -81,6 +85,8 @@ type ownerRecord struct {
 	TaskName             string `json:"task_name"`
 	PreflightSHA256      string `json:"preflight_sha256"`
 	BootstrapSafePointID string `json:"bootstrap_safepoint_id"`
+	LogStoragePrefix     string `json:"log_storage_prefix"`
+	LogStorageSHA256     string `json:"log_storage_backend_sha256"`
 }
 
 func CreateTask(ctx context.Context, safePoints SafePointClient, metadata AtomicMetadata, in TaskCreateInput) (TaskCreateReceipt, error) {
@@ -116,7 +122,12 @@ func CreateTask(ctx context.Context, safePoints SafePointClient, metadata Atomic
 	}
 	start, _ := hex.DecodeString(in.Preflight.StartKeyHex)
 	end, _ := hex.DecodeString(in.Preflight.EndKeyHex)
-	ownerBytes, err := json.Marshal(ownerRecord{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, TaskName: in.Preflight.TaskName, PreflightSHA256: in.PreflightSHA256, BootstrapSafePointID: bootstrapID})
+	logStoragePrefix := canonicalS3Prefix(in.Storage)
+	logStorageSHA256, err := storageBackendSHA256(in.Storage)
+	if err != nil {
+		return TaskCreateReceipt{}, cleanupBootstrap(ctx, safePoints, bootstrapID, err)
+	}
+	ownerBytes, err := json.Marshal(ownerRecord{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, TaskName: in.Preflight.TaskName, PreflightSHA256: in.PreflightSHA256, BootstrapSafePointID: bootstrapID, LogStoragePrefix: logStoragePrefix, LogStorageSHA256: logStorageSHA256})
 	if err != nil {
 		return TaskCreateReceipt{}, cleanupBootstrap(ctx, safePoints, bootstrapID, err)
 	}
@@ -136,7 +147,7 @@ func CreateTask(ctx context.Context, safePoints SafePointClient, metadata Atomic
 	if !created {
 		return TaskCreateReceipt{}, cleanupBootstrap(ctx, safePoints, bootstrapID, errors.New("native PITR owner, task, or range was concurrently created"))
 	}
-	return TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: bootstrapID, BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}, nil
+	return TaskCreateReceipt{Format: TaskCreateFormat, ClusterID: in.Preflight.ClusterID, Keyspace: in.Preflight.Keyspace, TaskName: in.Preflight.TaskName, StartTS: in.StartTS, EndTS: in.EndTS, StartKeyHex: in.Preflight.StartKeyHex, EndKeyHex: in.Preflight.EndKeyHex, LogStoragePrefix: logStoragePrefix, LogStorageSHA256: logStorageSHA256, PreflightSHA256: in.PreflightSHA256, OwnerKey: TaskOwnerKey, BootstrapSafePointID: bootstrapID, BootstrapSafePointTTL: bootstrapSafePointTTL, AtomicMetadataCreated: true}, nil
 }
 
 func validateTaskStorage(storage *backuppb.StorageBackend) error {
@@ -159,7 +170,24 @@ func validateTaskStorage(storage *backuppb.StorageBackend) error {
 	if s3.AccessKey != "" || s3.SecretAccessKey != "" || s3.SessionToken != "" {
 		return errors.New("embedded S3 credentials are forbidden; use workload identity")
 	}
+	if err := validateS3Prefix(canonicalS3Prefix(storage)); err != nil {
+		return fmt.Errorf("log storage: %w", err)
+	}
 	return nil
+}
+
+func canonicalS3Prefix(storage *backuppb.StorageBackend) string {
+	s3 := storage.GetS3()
+	return "s3://" + s3.Bucket + "/" + strings.TrimLeft(s3.Prefix, "/")
+}
+
+func storageBackendSHA256(storage *backuppb.StorageBackend) (string, error) {
+	b, err := storage.Marshal()
+	if err != nil {
+		return "", fmt.Errorf("marshal log storage backend: %w", err)
+	}
+	digest := sha256.Sum256(b)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 func cleanupBootstrap(ctx context.Context, safePoints SafePointClient, id string, cause error) error {

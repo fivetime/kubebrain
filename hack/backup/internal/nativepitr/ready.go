@@ -16,7 +16,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-const TaskReadyFormat = "kubebrain.native-pitr-task-ready.v1"
+const TaskReadyFormat = "kubebrain.native-pitr-task-ready.v2"
 
 type TaskStatusSnapshot struct {
 	Owner, Info, AdvancerOwner, GlobalCheckpoint []byte
@@ -66,6 +66,7 @@ type TaskReadyReceipt struct {
 	StartTS               uint64 `json:"start_ts"`
 	EndTS                 uint64 `json:"end_ts"`
 	GlobalCheckpointTS    uint64 `json:"global_checkpoint_ts"`
+	AdvancerOwner         string `json:"advancer_owner"`
 	PreflightSHA256       string `json:"preflight_sha256"`
 	BootstrapSafePointID  string `json:"bootstrap_safepoint_id"`
 	BootstrapReleased     bool   `json:"bootstrap_safepoint_released"`
@@ -117,12 +118,12 @@ func CheckTaskReady(ctx context.Context, safePoints SafePointClient, metadata Ta
 	if minimum > checkpoint {
 		return TaskReadyReceipt{}, fmt.Errorf("GC safepoint %d passed global checkpoint %d while releasing bootstrap guard", minimum, checkpoint)
 	}
-	return TaskReadyReceipt{Format: TaskReadyFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, EndTS: task.EndTS, GlobalCheckpointTS: checkpoint, PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}, nil
+	return TaskReadyReceipt{Format: TaskReadyFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, EndTS: task.EndTS, GlobalCheckpointTS: checkpoint, AdvancerOwner: string(snapshot.AdvancerOwner), PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}, nil
 }
 
 func validateTaskCreateReceipt(task TaskCreateReceipt) error {
 	if task.Format != TaskCreateFormat || !task.AtomicMetadataCreated || task.ClusterID == 0 {
-		return errors.New("input is not a successful native PITR task-create v1 receipt")
+		return errors.New("input is not a successful native PITR task-create v2 receipt")
 	}
 	if !dnsLabel.MatchString(task.TaskName) || task.Keyspace == "" || task.StartTS == 0 || task.EndTS <= task.StartTS {
 		return errors.New("task-create receipt has invalid identity or timestamps")
@@ -141,20 +142,30 @@ func validateTaskCreateReceipt(task TaskCreateReceipt) error {
 	}
 	bootstrapPrefix := "kubebrain-native-pitr-bootstrap-"
 	operationID := strings.TrimPrefix(task.BootstrapSafePointID, bootstrapPrefix)
-	if !sha256RE.MatchString(task.PreflightSHA256) || task.OwnerKey != TaskOwnerKey || task.BootstrapSafePointTTL != bootstrapSafePointTTL || !strings.HasPrefix(task.BootstrapSafePointID, bootstrapPrefix) || !dnsLabel.MatchString(operationID) {
+	if !sha256RE.MatchString(task.PreflightSHA256) || !sha256RE.MatchString(task.LogStorageSHA256) || task.OwnerKey != TaskOwnerKey || task.BootstrapSafePointTTL != bootstrapSafePointTTL || !strings.HasPrefix(task.BootstrapSafePointID, bootstrapPrefix) || !dnsLabel.MatchString(operationID) {
 		return errors.New("task-create receipt has invalid ownership evidence")
+	}
+	if err := validateS3Prefix(task.LogStoragePrefix); err != nil {
+		return fmt.Errorf("task-create log storage: %w", err)
 	}
 	return nil
 }
 
 func validateTaskStatus(task TaskCreateReceipt, snapshot TaskStatusSnapshot) (uint64, error) {
 	var owner ownerRecord
-	if err := json.Unmarshal(snapshot.Owner, &owner); err != nil || owner.Format != TaskCreateFormat || owner.ClusterID != task.ClusterID || owner.TaskName != task.TaskName || owner.PreflightSHA256 != task.PreflightSHA256 || owner.BootstrapSafePointID != task.BootstrapSafePointID {
+	if err := json.Unmarshal(snapshot.Owner, &owner); err != nil || owner.Format != TaskCreateFormat || owner.ClusterID != task.ClusterID || owner.TaskName != task.TaskName || owner.PreflightSHA256 != task.PreflightSHA256 || owner.BootstrapSafePointID != task.BootstrapSafePointID || owner.LogStoragePrefix != task.LogStoragePrefix || owner.LogStorageSHA256 != task.LogStorageSHA256 {
 		return 0, errors.New("stored native PITR owner does not match task receipt")
 	}
 	var info backuppb.StreamBackupTaskInfo
 	if err := info.Unmarshal(snapshot.Info); err != nil || info.Name != task.TaskName || info.StartTs != task.StartTS || info.EndTs != task.EndTS {
 		return 0, errors.New("stored backup-stream task does not match task receipt")
+	}
+	if validateTaskStorage(info.Storage) != nil {
+		return 0, errors.New("stored backup-stream storage does not match task receipt")
+	}
+	storageDigest, storageErr := storageBackendSHA256(info.Storage)
+	if storageErr != nil || canonicalS3Prefix(info.Storage) != task.LogStoragePrefix || storageDigest != task.LogStorageSHA256 {
+		return 0, errors.New("stored backup-stream storage does not match task receipt")
 	}
 	start, _ := hex.DecodeString(task.StartKeyHex)
 	end, _ := hex.DecodeString(task.EndKeyHex)

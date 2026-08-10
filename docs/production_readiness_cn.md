@@ -1850,8 +1850,8 @@ go run ./hack/backup/cmd/native-pitr-preflight \
 PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出范围为一个连续且 tenant
 隔离的区间。
 
-仍需实现和验证的生产闭环包括：持久 operation 对 task/advancer 的长期监管、full
-backup 与 log 起点衔接、对象存储 manifest/checkpoint 完整性、
+仍需实现和验证的生产闭环包括：持久 operation 对 task/advancer 的长期监管、源集群确为单租户
+独立集群的可审计 witness、对象存储中全部 SST/log/checkpoint 的存在性与 digest 完整性、
 将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，以及在指定时间点完成
 逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
 实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
@@ -1870,24 +1870,41 @@ rewrite rules，`RestoreKVFiles` 会跳过所有没有对应 table rule 的日�
 范围不是 TiDB table key。自有 restore 必须复用底层 `ApplyKVFile`/ImportSST 能力并为整个
 KubeBrain range 使用 identity rewrite，同时证明不会处理范围外文件。
 
-在真正 restore executor 修改目标前，控制面可先生成严格只读计划：
+完成 BR transactional full backup 并从相同 immutable prefix 下载原始 `backupmeta` 后，先生成
+full snapshot receipt：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-full-snapshot-receipt \
+  --task-create=/evidence/native-pitr-task-create.json \
+  --backupmeta=/evidence/backupmeta \
+  --storage-prefix=s3://immutable-bucket/instance/run-id/full
+```
+
+命令直接解析 protobuf，以其中的 cluster ID、`is_txn_kv`、start/end version 和 file index 为
+权威值；要求 source cluster 与 task-create 一致、非 raw KV、full backup 的 start/end TSO 相等、
+backup TSO 位于 log task 时间窗口，并计算原始 backupmeta SHA-256。输出
+`kubebrain.native-pitr-full-snapshot.v1`，还绑定 exact task-create 文件 SHA-256、tenant range、BR/
+cluster/meta 版本和 S3 prefix。由于 v7.5.1 `backup txn` 忽略声明 range，receipt 明示
+`scope=whole-cluster`；它不声称源集群独立，也明确记录 `object_existence_checked=false`，因此不能
+替代 S3 全对象 inventory/digest witness。
+
+在真正 restore executor 修改目标前，控制面只接受 create/full/ready receipt 生成严格只读计划：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-restore-plan \
-  --source-preflight=/evidence/native-pitr-preflight.json \
-  --task-start-ts="$TASK_START_TS" \
-  --full-backup-ts="$FULL_BACKUP_TS" \
-  --backupmeta-sha256="$BACKUPMETA_SHA256" \
-  --storage-prefix=s3://immutable-bucket/instance/run-id \
-  --global-checkpoint-ts="$GLOBAL_CHECKPOINT_TS" \
-  --advancer-owner="$ADVANCER_OWNER" \
+  --task-create=/evidence/native-pitr-task-create.json \
+  --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --task-ready=/evidence/native-pitr-task-ready.json \
   --target-cluster-id="$TARGET_CLUSTER_ID" \
   --target-empty-witness-sha256="$EMPTY_WITNESS_SHA256" \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v1`，严格拒绝未知/尾随 preflight JSON、source/target
-cluster ID 相同、非空目标证据缺失、artifact digest 非规范，以及不满足
+输出 `kubebrain.native-pitr-restore-plan.v2`。source cluster/range、task start、full backup TSO、
+backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
+owner 全部来自严格 receipt，命令不再
+接受这些值的自由参数；并拒绝 receipt 文件 digest/身份链不一致、source/target cluster ID 相同、
+非空目标证据缺失、artifact digest 非规范，以及不满足
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记
 `read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。
 
@@ -1910,10 +1927,13 @@ transaction 同时比较全局 `/kubebrain/native-pitr/owner`、全局 task info
 ranges/checkpoint/storage-checkpoint/last-error 前缀均为空，再原子写 owner record、
 `StreamBackupTaskInfo` protobuf 和完整 tenant range。
 并发冲突或写失败同样只移除本 operation 的 bootstrap safepoint，避免失败重试解除另一个已成功
-操作的保护。输出 `kubebrain.native-pitr-task-create.v1` 绑定 exact preflight SHA-256、cluster/
-keyspace/range、start/end TSO、owner key 和 bootstrap safepoint。当前只接受 S3-compatible
+操作的保护。输出 `kubebrain.native-pitr-task-create.v2` 绑定 exact preflight SHA-256、cluster/
+keyspace/range、start/end TSO、规范化 log `s3://bucket/prefix`、无凭据 StorageBackend protobuf
+SHA-256、owner key 和 bootstrap safepoint。该摘要同时覆盖 endpoint、region、provider 与 path-style；
+owner record 同样固化 URI/摘要，ready 阶段会与实际 task storage protobuf 复核。当前只接受 S3-compatible
 backend，强制 bucket/prefix 非空并拒绝把 access key、secret 或 session token 嵌入 PD metadata；
-生产必须使用 TiKV workload identity。
+生产必须使用 TiKV workload identity。新增 storage 身份字段是破坏性 contract 变更，因此 create/ready
+以及消费它们的新 restore plan 使用 v2；早期实验性 v1 receipt 不会被静默接受。
 
 task 创建后必须以相同 PD/TLS 配置长期运行官方 v7.5.1 standalone advancer；该子命令虽隐藏且
 描述为 debug，源码路径不创建 TiDB domain，实际可直接管理独立 PD/TiKV。v7.5.1 的 flag parser
@@ -1946,7 +1966,8 @@ go run ./hack/backup/cmd/native-pitr-task-ready \
 命令先核对 receipt 的 cluster ID，再在一个 etcd 读取事务中验证持久 owner 与 receipt 完全一致、
 task protobuf 的 name/start/end 一致、只有一个精确 tenant range、advancer 已选主，且
 `central_global` 是位于 task 时间区间内的 8-byte checkpoint。任一条件失败都会保留并续租
-bootstrap guard；全部通过才释放该 guard，并输出 `kubebrain.native-pitr-task-ready.v1`。释放后
+bootstrap guard；全部通过才释放该 guard，并在 `kubebrain.native-pitr-task-ready.v2` 中固化
+election owner identity 与 checkpoint。释放后
 返回的全局最小 safepoint 若已越过 checkpoint 仍会报错；生产监管还必须持续保证 coordinator
 safepoint 与 checkpoint 前进，ready receipt 不是长期健康证明。
 

@@ -32,7 +32,7 @@ func (f *fakeTaskDelete) DeleteOwnedTask(_ context.Context, _ TaskCreateReceipt,
 }
 
 func readyReceiptFor(task TaskCreateReceipt) TaskReadyReceipt {
-	return TaskReadyReceipt{Format: TaskReadyFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, EndTS: task.EndTS, GlobalCheckpointTS: 150, PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
+	return TaskReadyReceipt{Format: TaskReadyFormat, ClusterID: task.ClusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, EndTS: task.EndTS, GlobalCheckpointTS: 150, AdvancerOwner: "advancer-1", PreflightSHA256: task.PreflightSHA256, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
 }
 
 func TestDeleteTaskBindsReceiptsAndFinalCheckpoint(t *testing.T) {

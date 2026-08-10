@@ -112,10 +112,13 @@ func DeleteTask(ctx context.Context, metadata TaskDeleteMetadata, clusterID uint
 
 func validateTaskReadyReceipt(ready TaskReadyReceipt) error {
 	if ready.Format != TaskReadyFormat || ready.ClusterID == 0 || !ready.BootstrapReleased || !ready.MetadataSnapshotValid || ready.GlobalCheckpointTS < ready.StartTS || ready.GlobalCheckpointTS >= ready.EndTS {
-		return errors.New("input is not a successful native PITR task-ready v1 receipt")
+		return errors.New("input is not a successful native PITR task-ready v2 receipt")
 	}
 	if !dnsLabel.MatchString(ready.TaskName) || ready.Keyspace == "" || !sha256RE.MatchString(ready.PreflightSHA256) || ready.BootstrapSafePointID == "" {
 		return errors.New("task-ready receipt has invalid identity evidence")
+	}
+	if err := safeText("advancer owner", ready.AdvancerOwner); err != nil {
+		return err
 	}
 	return nil
 }

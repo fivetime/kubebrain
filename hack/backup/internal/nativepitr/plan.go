@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v1"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v2"
 )
 
 var (
@@ -66,6 +66,8 @@ type LogWindow struct {
 	StartTS            uint64 `json:"start_ts"`
 	GlobalCheckpointTS uint64 `json:"global_checkpoint_ts"`
 	AdvancerOwner      string `json:"advancer_owner"`
+	StoragePrefix      string `json:"storage_prefix"`
+	StorageSHA256      string `json:"storage_backend_sha256"`
 }
 
 type Target struct {
@@ -83,13 +85,8 @@ type Plan struct {
 	ReadOnly  bool         `json:"read_only"`
 }
 
-type Inputs struct {
-	TaskStartTS        uint64
-	FullBackupTS       uint64
-	BackupMetaSHA256   string
-	StoragePrefix      string
-	GlobalCheckpointTS uint64
-	AdvancerOwner      string
+type ReceiptPlanInputs struct {
+	TaskCreateSHA256   string
 	TargetClusterID    uint64
 	EmptyWitnessSHA256 string
 	RestoreTS          uint64
@@ -115,18 +112,31 @@ func DecodePreflight(r io.Reader) (Preflight, error) {
 // every metadata ownership path needed before task creation.
 func ValidatePreflight(p Preflight) error { return validatePreflight(p) }
 
-func Build(p Preflight, in Inputs) (Plan, error) {
-	if err := validatePreflight(p); err != nil {
+// BuildFromReceipts constructs a restore plan without operator-supplied source
+// timestamps, artifact digests, storage locations, or advancer identities.
+func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, ready TaskReadyReceipt, in ReceiptPlanInputs) (Plan, error) {
+	if err := validateTaskCreateReceipt(task); err != nil {
 		return Plan{}, err
+	}
+	if err := validateFullSnapshotReceipt(full); err != nil {
+		return Plan{}, err
+	}
+	if err := validateTaskReadyReceipt(ready); err != nil {
+		return Plan{}, err
+	}
+	if !sha256RE.MatchString(in.TaskCreateSHA256) || full.TaskCreateSHA256 != in.TaskCreateSHA256 {
+		return Plan{}, errors.New("full snapshot does not bind the exact task-create receipt")
+	}
+	if !readyMatchesTask(ready, task) || full.ClusterID != task.ClusterID || full.Keyspace != task.Keyspace || full.TaskName != task.TaskName || full.TaskStartTS != task.StartTS || full.TaskEndTS != task.EndTS || full.StartKeyHex != task.StartKeyHex || full.EndKeyHex != task.EndKeyHex {
+		return Plan{}, errors.New("native PITR receipts describe different source tasks")
 	}
 	plan := Plan{
 		Format:    PlanFormat,
-		Source:    Source{ClusterID: p.ClusterID, Keyspace: p.Keyspace, StartKeyHex: p.StartKeyHex, EndKeyHex: p.EndKeyHex, TaskName: p.TaskName},
-		Full:      FullSnapshot{BackupTS: in.FullBackupTS, BackupMetaSHA256: in.BackupMetaSHA256, StoragePrefix: in.StoragePrefix, Mode: "br-txn"},
-		Log:       LogWindow{StartTS: in.TaskStartTS, GlobalCheckpointTS: in.GlobalCheckpointTS, AdvancerOwner: in.AdvancerOwner},
+		Source:    Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
+		Full:      FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn"},
+		Log:       LogWindow{StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256},
 		Target:    Target{ClusterID: in.TargetClusterID, EmptyWitnessSHA256: in.EmptyWitnessSHA256},
-		RestoreTS: in.RestoreTS,
-		ReadOnly:  true,
+		RestoreTS: in.RestoreTS, ReadOnly: true,
 	}
 	if err := plan.Validate(); err != nil {
 		return Plan{}, err
@@ -183,11 +193,17 @@ func (p Plan) Validate() error {
 	if !sha256RE.MatchString(p.Target.EmptyWitnessSHA256) {
 		return errors.New("invalid target empty-witness SHA-256")
 	}
-	if err := safeText("storage prefix", p.Full.StoragePrefix); err != nil {
-		return err
+	if err := validateS3Prefix(p.Full.StoragePrefix); err != nil {
+		return fmt.Errorf("full snapshot storage: %w", err)
 	}
 	if err := safeText("advancer owner", p.Log.AdvancerOwner); err != nil {
 		return err
+	}
+	if err := validateS3Prefix(p.Log.StoragePrefix); err != nil {
+		return fmt.Errorf("log storage: %w", err)
+	}
+	if !sha256RE.MatchString(p.Log.StorageSHA256) {
+		return errors.New("invalid log storage backend SHA-256")
 	}
 	if !p.ReadOnly {
 		return errors.New("restore plan must be marked read-only")
