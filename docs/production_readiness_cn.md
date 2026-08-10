@@ -1826,6 +1826,36 @@ TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 f
 功能，不能提供已经验证的 transactional KV 跨 CF 一致快照。因此控制面必须拒绝
 `br-full`、`br-pitr` 和 `br-raw`，并保留物理 PITR 为显式未完成项。
 
+这里的结论只否定 TiDB BR/Operator 的现成编排，并不表示 TiKV 缺少底层原语。源码审计确认：
+TiKV `BackupRequest` 在 transactional 模式直接接受任意 `start_key`/`end_key` 和
+`start_version`/`end_version`；backup-stream 的 `table_filter` 仅用于展示，真正订阅范围来自
+PD MetaStorage 的 `/tidb/br-stream/ranges/<task>/` 二进制键值。TiKV 会将该范围包装为 data key、
+按 Region 订阅事务提交并维护 checkpoint，因此 KubeBrain 的完整 tenant 物理范围可以成为
+独立任务，不需要伪造 TiDB table ID 或 schema。
+
+上线前可执行只读能力预检：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-preflight \
+  --pd-addrs=kb-pd-0.storage.svc:2379,kb-pd-1.storage.svc:2379 \
+  --keyspace=kubebrain-system \
+  --task-name=kubebrain-system-native-pitr \
+  --ca=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key
+```
+
+成功输出 `kubebrain.native-pitr-preflight.v1`：绑定 PD cluster ID、排序后的 PD 地址、tenant
+完整物理 start/end key、预期 MetaStorage task/range 路径，并确认所有 `Up` TiKV store 均暴露
+`logbackup.LogBackup` gRPC 服务且任务名尚未被占用。该命令只读，不注册任务、不写备份对象、
+不建立 service GC safepoint，也不把“原语存在”宣称为可恢复 PITR。2026-08-10 已在隔离的
+PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出范围为一个连续且 tenant
+隔离的区间。
+
+仍需实现和验证的生产闭环包括：持久 operation 对 task/range 元数据的原子所有权、full
+backup 与 log 起点衔接、GC safepoint 租约和故障续租、对象存储 manifest/checkpoint 完整性、
+将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，以及在指定时间点完成
+逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
+实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
+
 上线前至少执行一次全 `/registry` 隔离恢复，要求非空、记录数一致、逐 key/value 校验
 通过且清理成功：
 
@@ -2394,6 +2424,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   `ColdPhysicalSnapshot` Operation executor；隔离目标也具备 source/manifest/target UID 绑定、
   单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
   仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
+  TiKV 源码审计及隔离 v7.5.1 运行验证已经证明 arbitrary transactional range 的 full/log
+  backup 原语存在；`native-pitr-preflight` 现在可只读验证 tenant 范围、PD task ownership 与
+  每个 Up store 的 log-backup 服务。这缩小了缺口，但尚未实现 task/safepoint 生命周期和
+  transactional restore，因此不能改变本项“未完成”的结论。
 - **升级前已成为历史的 lease provenance 缺失只能通过显式丢弃旧 MVCC 历史缓解。** 旧 raw/v1
   current value 会在升级后的第一次 Put/Delete 的同一事务中按锁定 attachment 原位升级为 v2/v3，
   不增加 revision 或 Watch 事件，因此不会再制造新的含糊历史；但升级前已经 retained 的历史版本没有
