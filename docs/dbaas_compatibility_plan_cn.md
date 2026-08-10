@@ -45341,6 +45341,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 漂移路径额外证明第二次 scale 0 已执行。健康 2→1→0、PD Ready/UID 漂移与 storage safety
   路径继续通过。本项不接管 TidbCluster 扩缩容，也不操作 UID 已变化的 KubeBrain StatefulSet。
 
+- A4288 不再把 Kubernetes TiKV Pod Ready 等同于 PD store 已恢复。旧 replacement loop 等 Pod Ready
+  后只数三条 Ready Pod，PD 仍可能把新进程对应 store 报为 `Down`/非 Up，执行器却立即删除下一台，
+  从而叠加两个不可用 store。现在每次同 PVC、新 UID replacement 完成后，通过 apiserver service proxy
+  读取 PD `/pd/api/v1/stores`，要求 count/list 均精确为 3、每个正整数 store ID 的 `state_name=Up`，并
+  默认在最多 6 次采样中取得连续 3 次健康（5 秒间隔）才继续。采样数限制 1–20、间隔限制 0–60 秒，
+  且 required 不得超过 max；失败输出精简的 store ID/address/state 并停在当前 `replacing-tikv-N`
+  phase。fake-cluster 新增 kb-tikv-2 Pod 已 Ready 但 store 1005 仍 Down 的 RED，确认只有一次 delete、
+  无 kb-tikv-1/KubeBrain restore/final probe/成功 receipt；健康路径用单次零间隔参数保持确定性。
+  executor 的 namespaced Role 同步只增加命名 `http:kb-pd:2379` 的 `services/proxy get`，RBAC 回归按
+  exact rule 固定，不能代理任意 Service；既有 Pod delete/exec、六 PVC get 与 PV get 边界不变。
+  本项证明 store membership 已恢复，不声称 pending/down/miss/extra/learner Region 已收敛；原始异常
+  store 可能位于后续 ordinal，因此不能在每次非目标 replacement 后强制 Region 全绿。后续需按 PD
+  abnormal peer 的 store ID 安全定位首个 replacement 目标，再把 A4280 的持续 Region 健康窗口接入。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

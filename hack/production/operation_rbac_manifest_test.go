@@ -225,6 +225,7 @@ func TestTiKVTransactionRepairRBACIsNamespacedAndCannotDeletePVCs(t *testing.T) 
 		{APIGroups: []string{"pingcap.com"}, Resources: []string{"tidbclusters"}, ResourceNames: []string{"kb"}, Verbs: []string{"get"}},
 		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "watch", "delete"}},
 		{APIGroups: []string{""}, Resources: []string{"pods/exec"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"services/proxy"}, ResourceNames: []string{"http:kb-pd:2379"}, Verbs: []string{"get"}},
 		{
 			APIGroups: []string{""}, Resources: []string{"persistentvolumeclaims"},
 			ResourceNames: []string{"pd-kb-pd-0", "pd-kb-pd-1", "pd-kb-pd-2", "tikv-kb-tikv-0", "tikv-kb-tikv-1", "tikv-kb-tikv-2"},

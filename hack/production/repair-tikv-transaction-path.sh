@@ -18,6 +18,9 @@ REQUIRED_FAILED_PROBES="${REQUIRED_FAILED_PROBES:-3}"
 PROBE_INTERVAL_SECONDS="${PROBE_INTERVAL_SECONDS:-5}"
 PROBE_TIMEOUT_SECONDS="${PROBE_TIMEOUT_SECONDS:-10}"
 POD_READY_TIMEOUT_SECONDS="${POD_READY_TIMEOUT_SECONDS:-300}"
+REQUIRED_HEALTHY_STORE_SAMPLES="${REQUIRED_HEALTHY_STORE_SAMPLES:-3}"
+MAX_STORE_HEALTH_SAMPLES="${MAX_STORE_HEALTH_SAMPLES:-6}"
+STORE_HEALTH_INTERVAL_SECONDS="${STORE_HEALTH_INTERVAL_SECONDS:-5}"
 MAX_TIKV_DISK_USED_PERCENT="${MAX_TIKV_DISK_USED_PERCENT:-90}"
 MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT="${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT:-125}"
 TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
@@ -42,9 +45,13 @@ die() { echo "$*" >&2; exit 1; }
 [[ ! -e "$RECEIPT_OUTPUT" ]] || die "RECEIPT_OUTPUT already exists"
 [[ "$REPAIR_COOLDOWN_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "REPAIR_COOLDOWN_SECONDS must be a positive integer"
 [[ "$NOW_UNIX" =~ ^[1-9][0-9]*$ ]] || die "NOW_UNIX must be a positive Unix timestamp"
-for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_SECONDS; do
+for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_SECONDS REQUIRED_HEALTHY_STORE_SAMPLES MAX_STORE_HEALTH_SAMPLES; do
   [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
 done
+[[ "$STORE_HEALTH_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "STORE_HEALTH_INTERVAL_SECONDS must be a non-negative integer"
+(( REQUIRED_HEALTHY_STORE_SAMPLES <= MAX_STORE_HEALTH_SAMPLES )) || die "REQUIRED_HEALTHY_STORE_SAMPLES must not exceed MAX_STORE_HEALTH_SAMPLES"
+(( MAX_STORE_HEALTH_SAMPLES <= 20 )) || die "MAX_STORE_HEALTH_SAMPLES must be at most 20"
+(( STORE_HEALTH_INTERVAL_SECONDS <= 60 )) || die "STORE_HEALTH_INTERVAL_SECONDS must be at most 60"
 [[ "$MAX_TIKV_DISK_USED_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_DISK_USED_PERCENT must be a positive integer"
 (( MAX_TIKV_DISK_USED_PERCENT <= 90 )) || die "MAX_TIKV_DISK_USED_PERCENT must be at most 90"
 [[ "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be a positive integer"
@@ -170,6 +177,29 @@ validate_tidb_cluster_identity() {
   local identity
   identity="$(kctl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.metadata.uid}{"\t"}{.status.clusterID}{"\t"}{.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}')" || return 1
   [[ "$identity" == "$expected_cluster_identity" ]]
+}
+validate_pd_stores_up() {
+  local pd_proxy stores_json summary
+  local consecutive=0
+  pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
+  for ((sample=1; sample<=MAX_STORE_HEALTH_SAMPLES; sample++)); do
+    stores_json="$(kctl get --raw "${pd_proxy}/stores")" || return 1
+    if "$JQ" -e --argjson expected 3 '
+      .count == $expected and (.stores | length == $expected) and
+      all(.stores[]; .store.id > 0 and .store.state_name == "Up")
+    ' >/dev/null <<<"$stores_json"; then
+      ((consecutive+=1))
+      if (( consecutive >= REQUIRED_HEALTHY_STORE_SAMPLES )); then
+        return 0
+      fi
+    else
+      consecutive=0
+      summary="$("$JQ" -c '[.stores[]? | {id:.store.id,address:.store.address,state:.store.state_name}]' <<<"$stores_json" 2>/dev/null || printf 'malformed')"
+      echo "PD store health has not converged: ${summary}" >&2
+    fi
+    (( sample == MAX_STORE_HEALTH_SAMPLES )) || sleep "$STORE_HEALTH_INTERVAL_SECONDS"
+  done
+  return 1
 }
 validate_kubebrain_quiesced() {
   local identity actual_uid desired ready
@@ -337,6 +367,7 @@ for ordinal in 2 1 0; do
   new_pvc="${new_identity#*$'\t'}"
   [[ "$new_uid" != "$old_uid" && "$new_pvc" == "$old_pvc" ]] || die "$pod same-PVC replacement fence failed"
   validate_tikv_ready || die "TiKV quorum did not recover after replacing $pod"
+  validate_pd_stores_up || die "PD did not report 3 sustained Up TiKV stores after replacing $pod; refusing further TiKV replacements"
   require_kubebrain_quiesced "KubeBrain isolation identity/replica fence changed after replacing $pod; refusing further TiKV replacements"
   validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after replacing $pod; refusing further TiKV replacements"
   validate_pd_ready || die "PD identity/quorum/PVC changed after replacing $pod; refusing further TiKV replacements"

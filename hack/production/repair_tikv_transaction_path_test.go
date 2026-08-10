@@ -87,6 +87,12 @@ elif [[ "$args" == *"exec kb-pd-"* && "$args" == *" df -P /var/lib/pd"* ]]; then
   used="${FAKE_PD_DISK_USED_PERCENT:-42}"
   capacity="${FAKE_PD_DISK_CAPACITY_KIB:-2097152}"
   printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/pd\n' "$capacity" "$used"
+elif [[ "$args" == *"/pd/api/v1/stores"* ]]; then
+  store_state=Up
+  if [[ "${FAKE_PD_STORE_DOWN_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
+    store_state=Down
+  fi
+  printf '{"count":3,"stores":[{"store":{"id":1001,"address":"kb-tikv-0:20160","state_name":"Up"}},{"store":{"id":1004,"address":"kb-tikv-1:20160","state_name":"Up"}},{"store":{"id":1005,"address":"kb-tikv-2:20160","state_name":"%s"}}]}' "$store_state"
 elif [[ "$args" == *"get pvc "* ]]; then
   pvc="${args#*get pvc }"
   pvc="${pvc%% *}"
@@ -139,6 +145,9 @@ fi
 		"PROBE_INTERVAL_SECONDS=0",
 		"PROBE_TIMEOUT_SECONDS=1",
 		"POD_READY_TIMEOUT_SECONDS=1",
+		"REQUIRED_HEALTHY_STORE_SAMPLES=1",
+		"MAX_STORE_HEALTH_SAMPLES=1",
+		"STORE_HEALTH_INTERVAL_SECONDS=0",
 		"FAKE_LOG=" + logPath,
 		"FAKE_STATE=" + stateDir,
 	}
@@ -196,6 +205,21 @@ fi
 	require.Contains(t, pdDuringLog, "replacing-tikv-2")
 	require.NotContains(t, pdDuringLog, "delete pod kb-tikv-1")
 	require.NotContains(t, pdDuringLog, "--replicas=3")
+	require.NoFileExists(t, receiptPath)
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	pdStoreOutput, pdStoreErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_PD_STORE_DOWN_AFTER_REPLACEMENT=true"))
+	require.Error(t, pdStoreErr)
+	require.Contains(t, string(pdStoreOutput), "PD did not report 3 sustained Up TiKV stores after replacing kb-tikv-2")
+	require.Contains(t, string(pdStoreOutput), `"id":1005`)
+	pdStoreLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	pdStoreLog := string(pdStoreLogData)
+	require.Equal(t, 1, strings.Count(pdStoreLog, "delete pod kb-tikv-"), pdStoreLog)
+	require.NotContains(t, pdStoreLog, "delete pod kb-tikv-1")
+	require.NotContains(t, pdStoreLog, "--replicas=3")
 	require.NoFileExists(t, receiptPath)
 	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
 
