@@ -45095,8 +45095,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `server/etcdserver/api/v3rpc/health.go`，etcd 只对空 service `""` 设置全局 SERVING/NOT_SERVING，不为
   `etcdserverpb.KV` 等具体服务另设状态；named `Check` 因而返回 `NotFound/unknown service`，named `Watch` 首帧返回
   `SERVICE_UNKNOWN`。KubeBrain 同样使用标准 gRPC health server，但此前只测试空 service。新增真实 bufconn 回归同时固定空
-  service SERVING 及上述两个 named-service 外观，防止未来为负载均衡器便利而产生反向 etcd 不兼容。KubeBrain 仍保留“仅当前
-  ready leader 对空 service 报 SERVING”的 DBaaS 路由策略差异；本项只固定 service-name 语义，不访问 TiKV/PD。
+  service SERVING 及上述两个 named-service 外观，防止未来为负载均衡器便利而产生反向 etcd 不兼容。当时 KubeBrain 仍保留“仅当前
+  ready leader 对空 service 报 SERVING”的 DBaaS 路由策略差异；该差异后由 A4302 收敛，本项只固定 service-name 语义，不访问 TiKV/PD。
 
 - A4264 固定 grpc-go health `List` 的 etcd surface。当前 health protobuf 除 `Check`/`Watch` 外还提供 unary `List`；KubeBrain
   和 upstream 都由同一标准 health server 注册该 RPC，但既有兼容门禁从未调用。A4263 的真实客户端回归现继续调用 `List`，要求
@@ -45537,6 +45537,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   会实际到达 TokenReview 和该 namespace 的 Operation GET，同时非法/重复 readiness namespace 在任何
   kubeconfig/API 前拒绝；双 queue readiness、repair/recovery 端到端参数读取及 broker-only Secret 权限
   继续通过。本项不改变 A4300 的 repair 最小权限，也未操作真实集群。
+
+- A4302 收敛公开 gRPC Health 空 service 的 follower 兼容性差异。对照 upstream
+  `server/etcdserver/api/v3rpc/health.go`：etcd 在成员 gRPC server 可接流后对空 service `""` 发布
+  `SERVING`，不把该通用 transport health 复用为 Leader 身份信号。KubeBrain 此前把同一个 health server
+  同时注册到 client 与 peer listener，并由 leadership callback 翻转，导致可正常接流和代理请求的 follower
+  在公开 client port 返回 `NOT_SERVING`；若直接改成所有成员 `SERVING`，内部 etcdproxy 又会把 follower
+  误选为转发 Leader。现在两套信号显式拆分：公开 client listener 独立、始终按 upstream 发布空 service
+  `SERVING`；私有 peer listener 继续只在 durable Leader startup（physical compaction、quota、lease 与
+  event-log 初始化）完成后发布 `SERVING`，供 etcdproxy 和本机 readiness 使用，丢失 leadership 时仅撤销
+  该内部信号。named `Check`/`Watch`/`List` 仍保持 A4263/A4264 的 `NotFound`/`SERVICE_UNKNOWN`/仅空 service
+  合同。确定性真实 gRPC bufconn 回归固定 follower 状态下 client=`SERVING`、peer=`NOT_SERVING`，Leader
+  获取/丢失只改变 peer 而不污染 client。本项不访问 TiKV/PD，也不改变 HTTP `/health`、`/ready` 的
+  Leader/proxy 可用性门控。
 
 ### P2：运维兼容和长期验证
 

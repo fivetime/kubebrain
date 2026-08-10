@@ -80,8 +80,13 @@ type server struct {
 	etcdServer *etcd.RPCServer
 	// kube brain protocol grpc server
 	brainServer *brain.Server
-	// health server to tell client whether this instance is leader
+	// healthServer is registered only on the internal peer listener. Its empty
+	// service is a durable-leader readiness signal used by etcdproxy routing.
 	healthServer *health.Server
+	// clientHealthServer implements the public etcd gRPC health contract. Like
+	// upstream etcd, a reachable public gRPC server reports the empty service as
+	// SERVING independently of this member's leadership role.
+	clientHealthServer *health.Server
 
 	leaderElection leader.LeaderElection
 	peers          service.PeerService
@@ -136,17 +141,17 @@ func (s *server) Close() error {
 func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
 	runCtx, cancel := context.WithCancel(ctx)
 	s := &server{
-		// health server to tell client whether this instance is leader
-		healthServer:     health.NewServer(),
-		metricCli:        metricCli,
-		backend:          backend,
-		config:           config,
-		cancel:           cancel,
-		campaignDone:     make(chan struct{}),
-		quotaMetricsDone: make(chan struct{}),
-		alarmMetricsDone: make(chan struct{}),
-		fdMetricsDone:    make(chan struct{}),
-		stateMetricsDone: make(chan struct{}),
+		healthServer:       health.NewServer(),
+		clientHealthServer: health.NewServer(),
+		metricCli:          metricCli,
+		backend:            backend,
+		config:             config,
+		cancel:             cancel,
+		campaignDone:       make(chan struct{}),
+		quotaMetricsDone:   make(chan struct{}),
+		alarmMetricsDone:   make(chan struct{}),
+		fdMetricsDone:      make(chan struct{}),
+		stateMetricsDone:   make(chan struct{}),
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
@@ -508,8 +513,8 @@ func (s *server) onStartedLeading(ctx context.Context) {
 }
 
 // onStoppedLeading is invoked when this instance loses leadership. It must report
-// NOT_SERVING so health-checking clients/load balancers stop routing to this node
-// as leader — previously it wrongly set SERVING (#61).
+// NOT_SERVING on the private peer health service so internal forwarding stops
+// routing to this node as leader — previously it wrongly set SERVING (#61).
 func (s *server) onStoppedLeading() {
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	// The local event collector is leader-authoritative. Retire subscriptions
@@ -526,7 +531,8 @@ func (s *server) onStoppedLeading() {
 
 // RegisterClient implements Server interface
 func (s *server) RegisterClient(server *grpc.Server) {
-	s.register(server)
+	s.registerServices(server)
+	s.registerClientHealth(server)
 }
 
 // ClientServerOptions implements Server interface
@@ -541,14 +547,28 @@ func (s *server) PeerServerOptions() []grpc.ServerOption {
 
 // RegisterPeer implement Server interface
 func (s *server) RegisterPeer(server *grpc.Server) {
-	s.register(server)
+	s.registerServices(server)
+	s.registerPeerHealth(server)
 }
 
-func (s *server) register(server *grpc.Server) {
+func (s *server) registerServices(server *grpc.Server) {
 	// register grpc method to grpc server
 	s.etcdServer.Register(server)
 	s.brainServer.Register(server)
-	// set NOT_SERVEING when initialized
+}
+
+func (s *server) registerClientHealth(server *grpc.Server) {
+	// Upstream etcd starts accepting gRPC only after server readiness and then
+	// advertises the empty health service as SERVING on every member. KubeBrain's
+	// public listener is already able to proxy leader-bound requests, so follower
+	// leadership must not make this generic transport-health signal unhealthy.
+	s.clientHealthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(server, s.clientHealthServer)
+}
+
+func (s *server) registerPeerHealth(server *grpc.Server) {
+	// The private peer listener deliberately retains KubeBrain's stronger signal:
+	// etcdproxy dials only a member that has completed leader startup durably.
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	healthpb.RegisterHealthServer(server, s.healthServer)
 }

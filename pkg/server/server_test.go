@@ -248,6 +248,48 @@ func TestGRPCHealthNamedServiceMatchesEtcd(t *testing.T) {
 	require.Equal(t, healthpb.HealthCheckResponse_SERVICE_UNKNOWN, named.Status)
 }
 
+func TestClientHealthIsIndependentFromPeerLeaderReadiness(t *testing.T) {
+	s := &server{
+		healthServer:       health.NewServer(),
+		clientHealthServer: health.NewServer(),
+	}
+	clientGRPC := grpc.NewServer()
+	peerGRPC := grpc.NewServer()
+	s.registerClientHealth(clientGRPC)
+	s.registerPeerHealth(peerGRPC)
+
+	check := func(grpcServer *grpc.Server) healthpb.HealthCheckResponse_ServingStatus {
+		listener := bufconn.Listen(1 << 20)
+		go func() { _ = grpcServer.Serve(listener) }()
+		t.Cleanup(grpcServer.Stop)
+		conn, err := grpc.NewClient("passthrough:///health",
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}))
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, conn.Close()) })
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
+		require.NoError(t, err)
+		return resp.Status
+	}
+
+	// Upstream etcd advertises the empty service as SERVING once the public gRPC
+	// server accepts traffic, regardless of whether this member is the leader.
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, check(clientGRPC))
+	// The peer listener is an internal KubeBrain routing surface. Its empty-service
+	// health remains a durable-leader readiness signal for etcdproxy.
+	require.Equal(t, healthpb.HealthCheckResponse_NOT_SERVING, check(peerGRPC))
+
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, check(peerGRPC))
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, check(clientGRPC),
+		"leadership loss must not make a reachable public etcd endpoint unhealthy")
+}
+
 func TestRevisionHandlerRestoresColdLeaderFromDurableRevision(t *testing.T) {
 	metrics := &healthMetricRecorder{}
 	kv := imemkv.NewKvStorage()
