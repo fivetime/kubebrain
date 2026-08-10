@@ -1166,6 +1166,12 @@ watchLoop:
 			if sendErr != nil {
 				continue
 			}
+			if current, resumed := fenceLocalGeneration(); !current {
+				if resumed {
+					continue watchLoop
+				}
+				return
+			}
 			if !progressState.tick() {
 				// Match etcd: an event proves progress, so suppress the next
 				// periodic response and rearm the watch for the following tick.

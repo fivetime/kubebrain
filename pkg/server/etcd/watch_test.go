@@ -1105,6 +1105,7 @@ type generationWatchBackend struct {
 	generations             []<-chan etcdproxy.WatchResult
 	called                  chan uint64
 	firstGenerationCanceled chan struct{}
+	progressInterval        time.Duration
 }
 
 type blockingWatchCompactRevisionBackend struct {
@@ -1140,6 +1141,13 @@ func (b *generationWatchBackend) Watch(ctx context.Context, _ string, revision u
 		}()
 	}
 	return ch, nil
+}
+
+func (b *generationWatchBackend) WatchProgressNotifyInterval() time.Duration {
+	if b.progressInterval > 0 {
+		return b.progressInterval
+	}
+	return b.BackendShim.WatchProgressNotifyInterval()
 }
 
 func TestWatchRejectsVisibleEventBelowRequestedStartRevision(t *testing.T) {
@@ -1648,6 +1656,66 @@ func TestLeaderWatchFreshnessLossDiscardsLocalProgressBeforeResume(t *testing.T)
 	require.Equal(t, uint64(10), <-proxyCalled)
 	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.syncedRev))
 	require.Equal(t, uint64(9), atomic.LoadUint64(&wt.sourceRev))
+
+	cancel()
+	close(proxyCh)
+	<-done
+}
+
+func TestPeriodicProgressTickRehomesQuietSelfFencedGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	localCh := make(chan etcdproxy.WatchResult)
+	proxyCh := make(chan etcdproxy.WatchResult, 1)
+	localCalled := make(chan uint64, 1)
+	server.backend = &generationWatchBackend{
+		BackendShim: server.backend, generations: []<-chan etcdproxy.WatchResult{localCh},
+		called: localCalled, progressInterval: 5 * time.Millisecond,
+	}
+	var fresh atomic.Bool
+	fresh.Store(true)
+	proxyCalled := make(chan uint64, 1)
+	server.peers = testPeerService{
+		isLeaderFn:   func() bool { return true }, // OnStoppedLeading remains delayed.
+		epochFn:      func() (uint64, bool) { return 7, fresh.Load() },
+		proxyEnabled: true,
+		watchFn: func(_ context.Context, _, _ []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			proxyCalled <- revision
+			return proxyCh, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &controllableWatchServer{ctx: ctx}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: {
+			start: "/registry/watch/quiet-fenced", progressStartRevision: 10, syncedRev: 9, sourceRev: 9,
+		}},
+		metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/quiet-fenced"), StartRevision: 10, ProgressNotify: true,
+		})
+	}()
+	require.Equal(t, uint64(10), <-localCalled)
+	fresh.Store(false)
+
+	// No local result and no OnStoppedLeading callback arrives. The periodic
+	// progress tick itself must fence and rehome the quiet generation before it
+	// can emit a stale-node progress response.
+	require.Equal(t, uint64(10), <-proxyCalled)
+	require.Empty(t, stream.snapshot())
+	proxyCh <- etcdproxy.WatchResult{ProgressRevision: 10}
+	require.Eventually(t, func() bool {
+		responses := stream.snapshot()
+		return len(responses) == 1 && responses[0].Header.GetRevision() == 10
+	}, time.Second, time.Millisecond)
 
 	cancel()
 	close(proxyCh)

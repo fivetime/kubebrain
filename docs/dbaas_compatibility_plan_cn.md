@@ -44952,6 +44952,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   freshness 过期后释放查询，证明旧值没有上 wire、watermark 未越过 9，proxy 从 10 重放且客户端只收到权威值。真实 TiKV/PD
   delayed compact read + leadership expiry 注入仍受既知环境故障限制，恢复后需补跑。
 
+- A4248 让 `ProgressNotify` 的周期 tick 也承担静默 generation 的领导权 fence。A4247 已覆盖 result 驱动路径，但一个没有事件和
+  in-band marker 的本地 watch 在 `OnStoppedLeading` 延迟时只能持续发送旧 `syncedRev`，不会触发权威源切换。虽然该 header 不会
+  越过已交付数据，长期停留旧 generation 会损害 progress liveness。现在每次周期 progress 在 eligibility 判断和 Send 前先复核
+  generation epoch/freshness；失效时不发送旧节点 progress，先取消旧 generation context，再从 `syncedRev+1` 重开 local/proxy。
+  对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的 `progressTicker -> RequestProgress`，KubeBrain 保留“事件后抑制下一次通知”
+  和 per-watch revision 语义。按需 `RequestProgress` 的审计结论不同：它只对所有 watch 已成功交付的最小 `syncedRev` 回包，且
+  `KickWatchProgress` 产生的 marker 仍经过 A4246/A4247 fence，因此不会把 stale global revision 宣称为已交付，无需另开控制面
+  路由。确定性测试保持旧 local channel 静默且 `IsLeader=true/fresh=false`，证明 ticker 主动让 proxy 从 revision 10 接管，代理
+  marker 到达前不发送 revision 9，随后只报告 revision 10。真实 TiKV/PD quiet-watch failover 仍待既知环境故障恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
