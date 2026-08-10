@@ -60,7 +60,21 @@ elif [[ "$args" == *"exec kb-tikv-"* && "$args" == *" df -P /var/lib/tikv"* ]]; 
   capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
   printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/tikv\n' "$capacity" "$used"
 elif [[ "$args" == *"get pvc tikv-kb-tikv-"* ]]; then
-  printf '%s' "${FAKE_PVC_CAPACITY:-5Gi}"
+  pvc="${args#*get pvc }"
+  pvc="${pvc%% *}"
+  ordinal="${pvc##*-}"
+  printf '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$ordinal" "$ordinal" "${FAKE_PVC_CAPACITY:-5Gi}"
+elif [[ "$args" == *"get pv pv-"* ]]; then
+  pv="${args#*get pv }"
+  pv="${pv%% *}"
+  ordinal="${pv##*-}"
+  if [[ "${FAKE_HOSTPATH_PV:-false}" == "true" ]]; then
+    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"tikv-kb-tikv-%s","uid":"pvc-uid-%s"},"hostPath":{"path":"/data/%s"}},"status":{"phase":"Bound"}}' "$pv" "$ordinal" "$ordinal" "$ordinal" "$ordinal"
+  else
+    handle="volume-$ordinal"
+    [[ "${FAKE_DUPLICATE_HANDLE:-false}" != "true" ]] || handle="volume-shared"
+    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"tikv-kb-tikv-%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$ordinal" "$ordinal" "$ordinal" "$handle"
+  fi
 elif [[ "$args" == *"get pod kb-tikv-"* ]]; then
   ordinal="${args#*get pod kb-tikv-}"
   ordinal="${ordinal%% *}"
@@ -106,7 +120,7 @@ fi
 	require.NoError(t, err)
 	log := string(logData)
 	require.Equal(t, 3, strings.Count(log, "delete pod kb-tikv-"), log)
-	requireOrder(t, log, "create configmap kubebrain-tikv-transaction-repair-lock", "create configmap kubebrain-tikv-repair-repair-test-1", "df -P /var/lib/tikv", "--replicas=0", "delete pod kb-tikv-2", "delete pod kb-tikv-1", "delete pod kb-tikv-0", "--replicas=3", "create configmap kubebrain-tikv-transaction-repair-last-success", "delete configmap kubebrain-tikv-transaction-repair-lock")
+	requireOrder(t, log, "create configmap kubebrain-tikv-transaction-repair-lock", "create configmap kubebrain-tikv-repair-repair-test-1", "df -P /var/lib/tikv", "get pv pv-2 -o json", "--replicas=0", "delete pod kb-tikv-2", "delete pod kb-tikv-1", "delete pod kb-tikv-0", "--replicas=3", "create configmap kubebrain-tikv-transaction-repair-last-success", "delete configmap kubebrain-tikv-transaction-repair-lock")
 	require.NotContains(t, log, "delete pvc")
 	receipt, err := os.ReadFile(receiptPath)
 	require.NoError(t, err)
@@ -142,10 +156,36 @@ fi
 	require.NoFileExists(t, receiptPath)
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	storageOutput, storageErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_HOSTPATH_PV=true"))
+	require.Error(t, storageErr)
+	require.Contains(t, string(storageOutput), "is not an exactly bound CSI volume")
+	storageLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	storageLog := string(storageLogData)
+	require.Contains(t, storageLog, "refused-storage-safety")
+	require.NotContains(t, storageLog, " scale ")
+	require.NotContains(t, storageLog, "delete pod")
+	require.NoFileExists(t, receiptPath)
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	duplicateOutput, duplicateErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_DUPLICATE_HANDLE=true"))
+	require.Error(t, duplicateErr)
+	require.Contains(t, string(duplicateOutput), "duplicate csi_driver=csi.example.test volume_handle=volume-shared")
+	duplicateLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	duplicateLog := string(duplicateLogData)
+	require.Contains(t, duplicateLog, "refused-storage-safety")
+	require.NotContains(t, duplicateLog, " scale ")
+	require.NotContains(t, duplicateLog, "delete pod")
+	require.NoFileExists(t, receiptPath)
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	diskOutput, diskErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_DISK_USED_PERCENT=97"))
 	require.Error(t, diskErr)
-	require.Contains(t, string(diskOutput), "refusing TiKV Pod repair under disk pressure or capacity-isolation mismatch")
+	require.Contains(t, string(diskOutput), "refusing TiKV Pod repair because the storage-safety fence failed")
 	require.Contains(t, string(diskOutput), "pod=kb-tikv-0 pvc=tikv-kb-tikv-0 used=97%")
 	require.Contains(t, string(diskOutput), "pod=kb-tikv-1 pvc=tikv-kb-tikv-1 used=97%")
 	require.Contains(t, string(diskOutput), "pod=kb-tikv-2 pvc=tikv-kb-tikv-2 used=97%")
@@ -161,7 +201,7 @@ fi
 	capacityOutput, capacityErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_DISK_CAPACITY_KIB=2112663500"))
 	require.Error(t, capacityErr)
-	require.Contains(t, string(capacityOutput), "capacity-isolation mismatch")
+	require.Contains(t, string(capacityOutput), "storage-safety fence failed")
 	require.Contains(t, string(capacityOutput), "pod=kb-tikv-0 pvc=tikv-kb-tikv-0 declared=5Gi filesystem_capacity_kib=2112663500 allowed_percent=125%")
 	capacityLogData, err := os.ReadFile(logPath)
 	require.NoError(t, err)

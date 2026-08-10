@@ -31,6 +31,8 @@ context_args=()
 [[ "$KUBE_CONTEXT" == "in-cluster" ]] || context_args=(--context "$KUBE_CONTEXT")
 kctl() { "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$KUBECTL" "${context_args[@]}" "$@"; }
 health_errors=()
+declare -A seen_pv_uids=()
+declare -A seen_volume_handles=()
 record_health_error() { health_errors+=("$1"); }
 quantity_to_kib() {
   local quantity="$1" value unit multiplier
@@ -83,11 +85,46 @@ while IFS=$'\t' read -r pod ready pvc; do
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \
     die "TiKV disk usage response is malformed for ${pod}: ${disk_row}"
-  pvc_capacity="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc" -o 'jsonpath={.status.capacity.storage}')"
+  pvc_json="$(kctl -n "$TIDB_NAMESPACE" get pvc "$pvc" -o json)"
+  if ! "$JQ" -e --arg name "$pvc" '
+    .metadata.name == $name and (.metadata.uid | type == "string" and length > 0) and
+    .status.phase == "Bound" and (.spec.volumeName | type == "string" and length > 0) and
+    (.status.capacity.storage | type == "string" and length > 0)
+  ' >/dev/null <<<"$pvc_json"; then
+    die "TiKV PVC binding is malformed for ${pod}/${pvc}"
+  fi
+  pvc_uid="$("$JQ" -r '.metadata.uid' <<<"$pvc_json")"
+  pv="$("$JQ" -r '.spec.volumeName' <<<"$pvc_json")"
+  pvc_capacity="$("$JQ" -r '.status.capacity.storage' <<<"$pvc_json")"
   pvc_capacity_kib="$(quantity_to_kib "$pvc_capacity")" || \
     die "TiKV PVC capacity is unsupported or malformed for ${pod}/${pvc}: ${pvc_capacity:-missing}"
   if (( capacity_kib * 100 > pvc_capacity_kib * MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT )); then
     record_health_error "TiKV filesystem capacity isolation mismatch: pod=${pod} pvc=${pvc} declared=${pvc_capacity} filesystem_capacity_kib=${capacity_kib} allowed_percent=${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT}%"
+  fi
+  pv_json="$(kctl get pv "$pv" -o json)"
+  if ! "$JQ" -e --arg namespace "$TIDB_NAMESPACE" --arg pvc "$pvc" --arg pvc_uid "$pvc_uid" '
+    .status.phase == "Bound" and (.metadata.uid | type == "string" and length > 0) and
+    .spec.claimRef.apiVersion == "v1" and .spec.claimRef.kind == "PersistentVolumeClaim" and
+    .spec.claimRef.namespace == $namespace and .spec.claimRef.name == $pvc and .spec.claimRef.uid == $pvc_uid and
+    (.spec.csi.driver | type == "string" and length > 0) and
+    (.spec.csi.volumeHandle | type == "string" and length > 0)
+  ' >/dev/null <<<"$pv_json"; then
+    record_health_error "TiKV storage identity mismatch: pod=${pod} pvc=${pvc} pv=${pv} must be a Bound CSI volume with an exact claimRef"
+  else
+    pv_uid="$("$JQ" -r '.metadata.uid' <<<"$pv_json")"
+    csi_driver="$("$JQ" -r '.spec.csi.driver' <<<"$pv_json")"
+    volume_handle="$("$JQ" -r '.spec.csi.volumeHandle' <<<"$pv_json")"
+    volume_identity="${csi_driver}"$'\x1f'"${volume_handle}"
+    if [[ -n "${seen_pv_uids[$pv_uid]:-}" ]]; then
+      record_health_error "TiKV storage identity collision: pv_uid=${pv_uid} pvc=${pvc} previous_pvc=${seen_pv_uids[$pv_uid]}"
+    else
+      seen_pv_uids[$pv_uid]="$pvc"
+    fi
+    if [[ -n "${seen_volume_handles[$volume_identity]:-}" ]]; then
+      record_health_error "TiKV storage identity collision: csi_driver=${csi_driver} volume_handle=${volume_handle} pvc=${pvc} previous_pvc=${seen_volume_handles[$volume_identity]}"
+    else
+      seen_volume_handles[$volume_identity]="$pvc"
+    fi
   fi
   if (( used_percent > MAX_TIKV_DISK_USED_PERCENT )); then
     record_health_error "TiKV disk pressure: pod=${pod} pvc=${pvc} path=${TIKV_DATA_DIR} used=${used_percent}% threshold=${MAX_TIKV_DISK_USED_PERCENT}% available_kib=${available_kib} capacity_kib=${capacity_kib}"

@@ -167,7 +167,9 @@ hack/production/validate-tikv-region-health.sh
 同时逐一在 Ready TiKV Pod 内对 `/var/lib/tikv` 执行只读 `df -P`，按真实挂载文件系统拒绝超过
 阈值的磁盘水位；每个 Bound PVC 的 `.status.capacity.storage` 还必须能解析，实际文件系统容量不得
 超过声明容量的 125%，该容差只能在 100%–125% 范围收紧、不能调高绕过。一次运行会汇总 Region、
-容量隔离与磁盘水位的全部异常后返回非零，不会因先遇到某一类异常
+容量隔离与磁盘水位的全部异常后返回非零。每个 PVC 还必须精确绑定 `Bound` CSI PV：claimRef
+固定 namespace/name/UID，PV UID 与非空 `(CSI driver, volumeHandle)` 在 TiKV 卷集合内各自唯一；hostPath、
+空 CSI 身份或 handle collision 都会失败。门禁不会因先遇到某一类异常
 而隐藏另一类根因。运行身份需要读取 Pod、访问 Kubernetes Service proxy 和固定 TiKV Pod
 `pods/exec` 的权限；脚本不写 PD/TiKV，不删除 Pod/PVC，也不代替端到端事务探测。
 
@@ -215,6 +217,8 @@ Pod/UID/PVC 拓扑，并逐 Pod 检查 `/var/lib/tikv` 的真实挂载水位；�
 `MAX_TIKV_DISK_USED_PERCENT` 下调，但不得用调高阈值绕过容量处置。脚本还要求实际文件系统容量
 不超过 Bound PVC 容量的 125%；容量 quantity 不可解析或 local-path 等目录卷暴露过大的宿主文件
 系统时记录 `refused-storage-safety`。同 PVC 重启不会释放共享宿主文件系统空间，也不会恢复容量隔离。
+同一 preflight 还会检查 PVC→PV claimRef、Bound phase、CSI driver/volumeHandle，以及整组三卷 PV UID
+和 `(CSI driver, volumeHandle)` 唯一性；hostPath 或身份碰撞同样记录 `refused-storage-safety` 并禁止进入缩容阶段。
 
 该脚本是 controller 可调用的执行原语，不是完整自动 controller：调用方仍须持久化告警首次
 发生时间、修复冷却时间、attempt receipt 和人工/策略审批。其 ServiceAccount 只应获得目标两个

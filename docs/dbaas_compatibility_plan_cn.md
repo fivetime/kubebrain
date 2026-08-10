@@ -45235,6 +45235,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Pod/PVC delete 与成功 receipt 均未发生。本项不把 dev hostPath 当生产存储；生产 500Gi 清单仍必须
   由支持容量边界、拓扑和快照的 CSI StorageClass 落地。
 
+- A4279 把冷 CSI 快照链已经要求的 PVC→PV→CSI 身份不变量前移到日常 Region gate 和 TiKV repair
+  preflight。容量大小一致并不能排除人为 quota 的 hostPath、错误 claimRef、复用 PV 或 CSI handle；
+  这些后端既不能证明独立设备身份，也会让快照/恢复来源不可信。两个入口现在逐 TiKV PVC 要求
+  name/UID、Bound phase、非空 PV name/容量完整；对应 PV 必须 Bound，claimRef 的 apiVersion/kind/
+  namespace/name/UID 精确回指该 PVC，且含非空 `spec.csi.driver` 与 `volumeHandle`。整组三卷的 PV UID
+  和 `(CSI driver, volumeHandle)` 分别全局唯一。只读 gate 汇总 hostPath/identity/collision RED；repair 在同一份二次
+  拓扑快照上完成全部 PV 查询后才允许第一次 scale，任何非 CSI 或碰撞均持久化
+  `refused-storage-safety`，零 scale、零 Pod/PVC delete、零成功 receipt。fake-cluster 覆盖三卷 CSI
+  GREEN、hostPath RED、共享 handle RED，并固定最后一个 PV 查询早于 `scale 0`。真实 kind 三个 PV
+  均为 `spec.hostPath` 且 `spec.csi=null`，因此即使未来清理到低于 90% 并修复容量显示，也仍会作为
+  非生产存储 RED；本项不要求普通运行 gate 存在 VolumeSnapshotClass，完整快照能力继续由 cold
+  snapshot preflight 独立验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

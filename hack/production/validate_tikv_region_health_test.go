@@ -23,7 +23,21 @@ elif [[ "$args" == *"/regions/check/pending-peer"* && "${FAKE_PENDING_REGION:-fa
 elif [[ "$args" == *"/regions/check/"* ]]; then
   printf '{"count":0,"regions":[]}'
 elif [[ "$args" == *"get pvc tikv-kb-tikv-"* ]]; then
-  printf '%s' "${FAKE_PVC_CAPACITY:-5Gi}"
+  pvc="${args#*get pvc }"
+  pvc="${pvc%% *}"
+  ordinal="${pvc##*-}"
+  printf '{"metadata":{"name":"%s","uid":"pvc-uid-%s"},"spec":{"volumeName":"pv-%s"},"status":{"phase":"Bound","capacity":{"storage":"%s"}}}' "$pvc" "$ordinal" "$ordinal" "${FAKE_PVC_CAPACITY:-5Gi}"
+elif [[ "$args" == *"get pv pv-"* ]]; then
+  pv="${args#*get pv }"
+  pv="${pv%% *}"
+  ordinal="${pv##*-}"
+  if [[ "${FAKE_HOSTPATH_PV:-false}" == "true" ]]; then
+    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"tikv-kb-tikv-%s","uid":"pvc-uid-%s"},"hostPath":{"path":"/data/%s"}},"status":{"phase":"Bound"}}' "$pv" "$ordinal" "$ordinal" "$ordinal" "$ordinal"
+  else
+    handle="volume-$ordinal"
+    [[ "${FAKE_DUPLICATE_HANDLE:-false}" != "true" ]] || handle="volume-shared"
+    printf '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"tikv-kb-tikv-%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$ordinal" "$ordinal" "$ordinal" "$handle"
+  fi
 elif [[ "$args" == *" exec "* && "$args" == *" df -P "* ]]; then
   used="${FAKE_DISK_USED_PERCENT:-42}"
   capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
@@ -70,6 +84,14 @@ fi
 	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_PVC_CAPACITY=5Zi"))
 	require.Error(t, err)
 	require.Contains(t, string(output), "TiKV PVC capacity is unsupported or malformed")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_HOSTPATH_PV=true"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "must be a Bound CSI volume with an exact claimRef")
+
+	output, err = runProductionScriptCommand(t, "validate-tikv-region-health.sh", append(baseEnv, "FAKE_DUPLICATE_HANDLE=true"))
+	require.Error(t, err)
+	require.Contains(t, string(output), "TiKV storage identity collision")
 }
 
 func TestValidateTiKVRegionHealthRequiresExplicitContext(t *testing.T) {
