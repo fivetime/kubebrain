@@ -45355,6 +45355,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   store 可能位于后续 ordinal，因此不能在每次非目标 replacement 后强制 Region 全绿。后续需按 PD
   abnormal peer 的 store ID 安全定位首个 replacement 目标，再把 A4280 的持续 Region 健康窗口接入。
 
+- A4289 将 A4288 留下的 abnormal peer 证据真正接入 destructive 顺序。旧 repair 始终按 2→1→0
+  重建；若 PD pending/down peer 指向 kb-tikv-0，先删除两个健康 store 不但没有修复原故障，还扩大
+  恢复窗口。执行器现在在 KubeBrain scale 0 与任何 TiKV delete 前，通过命名 PD service proxy 读取
+  `pending-peer`/`down-peer` Region，严格解码每个 pending/down store ID，再从 `/stores` 的正整数
+  ID 与非空 address 映射到唯一 `${TIDB_CLUSTER}-tikv-[0-2]` ordinal。任一异常 ID 缺失、地址不能映射
+  或响应 malformed 都在 mutation 前 fail closed；有目标时先按 2/1/0 的确定性子序重建全部异常
+  ordinal，再处理其余健康 ordinal；无异常 peer 时保留原 2→1→0 fallback，覆盖非 Region 型事务故障。
+  全部已识别目标完成后，新增与 A4280 相同的 pending/down/miss/extra/learner 五类 Region 持续窗口：
+  默认最多 6 次、5 秒间隔，必须连续 3 次 count/list 都为零，才允许删除第一个健康 store。参数限制
+  required≤max≤20、interval≤60 秒。fake-cluster 让 store 1001 指向 kb-tikv-0，验证实际顺序变为
+  0→2→1；另一场景让 store 1005/kb-tikv-2 重建后 pending Region 持续存在，验证 phase 停在
+  `replacing-tikv-2`、只有一次 delete、无健康 store delete/KubeBrain restore/成功 receipt。A4288 的
+  三 store 持续 Up 门禁仍先执行，A4286/A4287 的 PD/TidbCluster/KubeBrain identity fence 随后执行。
+  本项不根据 Region leader 自动执行 PD operator/peer remove，也不承诺 restart 能修复磁盘上永久
+  overlap；持续异常会保留 KubeBrain scale 0 并要求人工检查 PD/TiKV 数据与 operator。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

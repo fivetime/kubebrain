@@ -21,6 +21,9 @@ POD_READY_TIMEOUT_SECONDS="${POD_READY_TIMEOUT_SECONDS:-300}"
 REQUIRED_HEALTHY_STORE_SAMPLES="${REQUIRED_HEALTHY_STORE_SAMPLES:-3}"
 MAX_STORE_HEALTH_SAMPLES="${MAX_STORE_HEALTH_SAMPLES:-6}"
 STORE_HEALTH_INTERVAL_SECONDS="${STORE_HEALTH_INTERVAL_SECONDS:-5}"
+REQUIRED_HEALTHY_REGION_SAMPLES="${REQUIRED_HEALTHY_REGION_SAMPLES:-3}"
+MAX_REGION_HEALTH_SAMPLES="${MAX_REGION_HEALTH_SAMPLES:-6}"
+REGION_HEALTH_INTERVAL_SECONDS="${REGION_HEALTH_INTERVAL_SECONDS:-5}"
 MAX_TIKV_DISK_USED_PERCENT="${MAX_TIKV_DISK_USED_PERCENT:-90}"
 MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT="${MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT:-125}"
 TIKV_DATA_DIR="${TIKV_DATA_DIR:-/var/lib/tikv}"
@@ -45,13 +48,17 @@ die() { echo "$*" >&2; exit 1; }
 [[ ! -e "$RECEIPT_OUTPUT" ]] || die "RECEIPT_OUTPUT already exists"
 [[ "$REPAIR_COOLDOWN_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "REPAIR_COOLDOWN_SECONDS must be a positive integer"
 [[ "$NOW_UNIX" =~ ^[1-9][0-9]*$ ]] || die "NOW_UNIX must be a positive Unix timestamp"
-for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_SECONDS REQUIRED_HEALTHY_STORE_SAMPLES MAX_STORE_HEALTH_SAMPLES; do
+for variable in REQUIRED_FAILED_PROBES PROBE_TIMEOUT_SECONDS POD_READY_TIMEOUT_SECONDS REQUIRED_HEALTHY_STORE_SAMPLES MAX_STORE_HEALTH_SAMPLES REQUIRED_HEALTHY_REGION_SAMPLES MAX_REGION_HEALTH_SAMPLES; do
   [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
 done
 [[ "$STORE_HEALTH_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "STORE_HEALTH_INTERVAL_SECONDS must be a non-negative integer"
 (( REQUIRED_HEALTHY_STORE_SAMPLES <= MAX_STORE_HEALTH_SAMPLES )) || die "REQUIRED_HEALTHY_STORE_SAMPLES must not exceed MAX_STORE_HEALTH_SAMPLES"
 (( MAX_STORE_HEALTH_SAMPLES <= 20 )) || die "MAX_STORE_HEALTH_SAMPLES must be at most 20"
 (( STORE_HEALTH_INTERVAL_SECONDS <= 60 )) || die "STORE_HEALTH_INTERVAL_SECONDS must be at most 60"
+[[ "$REGION_HEALTH_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] || die "REGION_HEALTH_INTERVAL_SECONDS must be a non-negative integer"
+(( REQUIRED_HEALTHY_REGION_SAMPLES <= MAX_REGION_HEALTH_SAMPLES )) || die "REQUIRED_HEALTHY_REGION_SAMPLES must not exceed MAX_REGION_HEALTH_SAMPLES"
+(( MAX_REGION_HEALTH_SAMPLES <= 20 )) || die "MAX_REGION_HEALTH_SAMPLES must be at most 20"
+(( REGION_HEALTH_INTERVAL_SECONDS <= 60 )) || die "REGION_HEALTH_INTERVAL_SECONDS must be at most 60"
 [[ "$MAX_TIKV_DISK_USED_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_DISK_USED_PERCENT must be a positive integer"
 (( MAX_TIKV_DISK_USED_PERCENT <= 90 )) || die "MAX_TIKV_DISK_USED_PERCENT must be at most 90"
 [[ "$MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT" =~ ^[1-9][0-9]*$ ]] || die "MAX_TIKV_FILESYSTEM_CAPACITY_PERCENT must be a positive integer"
@@ -201,6 +208,32 @@ validate_pd_stores_up() {
   done
   return 1
 }
+validate_pd_regions_healthy() {
+  local pd_proxy check check_json summary
+  local consecutive=0 sample_healthy
+  pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
+  for ((sample=1; sample<=MAX_REGION_HEALTH_SAMPLES; sample++)); do
+    sample_healthy=true
+    for check in pending-peer down-peer miss-peer extra-peer learner-peer; do
+      check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")" || return 1
+      if ! "$JQ" -e '.count == 0 and (.regions | type == "array") and (.regions | length == 0)' >/dev/null <<<"$check_json"; then
+        sample_healthy=false
+        summary="$("$JQ" -c '[.regions[]? | {id,leader_store_id:(.leader.store_id // 0),pending_store_ids:[.pending_peers[]?.store_id],down_store_ids:[.down_peers[]?.peer.store_id]}]' <<<"$check_json" 2>/dev/null || printf 'malformed')"
+        echo "PD ${check} Region health has not converged: ${summary}" >&2
+      fi
+    done
+    if [[ "$sample_healthy" == "true" ]]; then
+      ((consecutive+=1))
+      if (( consecutive >= REQUIRED_HEALTHY_REGION_SAMPLES )); then
+        return 0
+      fi
+    else
+      consecutive=0
+    fi
+    (( sample == MAX_REGION_HEALTH_SAMPLES )) || sleep "$REGION_HEALTH_INTERVAL_SECONDS"
+  done
+  return 1
+}
 validate_kubebrain_quiesced() {
   local identity actual_uid desired ready
   identity="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}')" || return 1
@@ -343,6 +376,53 @@ if (( ${#disk_errors[@]} > 0 )); then
   exit 1
 fi
 
+pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
+declare -A abnormal_store_ids=()
+for check in pending-peer down-peer; do
+  check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")" || die "cannot read PD ${check} Regions before repair"
+  "$JQ" -e '
+    (.count | type == "number" and . >= 0) and (.regions | type == "array") and
+    all(.regions[]?; all(.pending_peers[]?; .store_id > 0) and all(.down_peers[]?; .peer.store_id > 0))
+  ' >/dev/null <<<"$check_json" || die "PD ${check} Region response is malformed"
+  while IFS= read -r store_id; do
+    [[ "$store_id" =~ ^[1-9][0-9]*$ ]] || die "PD ${check} returned an invalid abnormal store ID"
+    abnormal_store_ids[$store_id]=1
+  done < <("$JQ" -r '[.regions[]? | (.pending_peers[]?.store_id), (.down_peers[]?.peer.store_id)] | unique | .[]' <<<"$check_json")
+done
+
+replacement_ordinals=()
+targeted_replacement_count=0
+if (( ${#abnormal_store_ids[@]} > 0 )); then
+  stores_json="$(kctl get --raw "${pd_proxy}/stores")" || die "cannot map abnormal PD stores before repair"
+  "$JQ" -e '
+    (.count | type == "number" and . >= 0) and (.stores | type == "array") and
+    all(.stores[]?; .store.id > 0 and (.store.address | type == "string" and length > 0))
+  ' >/dev/null <<<"$stores_json" || die "PD stores response is malformed while mapping abnormal stores"
+  declare -A abnormal_ordinals=()
+  mapped_abnormal_stores=0
+  while IFS=$'\t' read -r store_id address; do
+    [[ -n "${abnormal_store_ids[$store_id]:-}" ]] || continue
+    if [[ "$address" =~ ^${TIDB_CLUSTER}-tikv-([012])([.:]|$) ]]; then
+      abnormal_ordinals[${BASH_REMATCH[1]}]=1
+      ((mapped_abnormal_stores+=1))
+    else
+      die "abnormal PD store ${store_id} address cannot be mapped to an expected TiKV Pod: ${address}"
+    fi
+  done < <("$JQ" -r '.stores[]? | [.store.id, .store.address] | @tsv' <<<"$stores_json")
+  (( mapped_abnormal_stores == ${#abnormal_store_ids[@]} )) || die "not every abnormal PD store maps to an expected TiKV Pod"
+  for ordinal in 2 1 0; do
+    if [[ -n "${abnormal_ordinals[$ordinal]:-}" ]]; then
+      replacement_ordinals+=("$ordinal")
+      ((targeted_replacement_count+=1))
+    fi
+  done
+  for ordinal in 2 1 0; do
+    [[ -n "${abnormal_ordinals[$ordinal]:-}" ]] || replacement_ordinals+=("$ordinal")
+  done
+else
+  replacement_ordinals=(2 1 0)
+fi
+
 persist_phase "quiescing-kubebrain"
 echo "confirmed ${REQUIRED_FAILED_PROBES} consecutive transaction failures; scaling KubeBrain to zero"
 kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --replicas=0 >/dev/null
@@ -350,7 +430,8 @@ kctl -n "$KUBEBRAIN_NAMESPACE" wait --for=delete pod -l "app.kubernetes.io/name=
 require_kubebrain_quiesced "KubeBrain isolation identity/replica fence failed after quiescing"
 validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after quiescing"
 
-for ordinal in 2 1 0; do
+replacement_index=0
+for ordinal in "${replacement_ordinals[@]}"; do
   persist_phase "replacing-tikv-${ordinal}"
   pod="${TIDB_CLUSTER}-tikv-${ordinal}"
   require_kubebrain_quiesced "KubeBrain isolation identity/replica fence changed before replacing $pod"
@@ -371,6 +452,10 @@ for ordinal in 2 1 0; do
   require_kubebrain_quiesced "KubeBrain isolation identity/replica fence changed after replacing $pod; refusing further TiKV replacements"
   validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after replacing $pod; refusing further TiKV replacements"
   validate_pd_ready || die "PD identity/quorum/PVC changed after replacing $pod; refusing further TiKV replacements"
+  ((replacement_index+=1))
+  if (( targeted_replacement_count > 0 && replacement_index == targeted_replacement_count )); then
+    validate_pd_regions_healthy || die "PD Regions did not converge after replacing all identified abnormal stores; refusing healthy TiKV replacements"
+  fi
 done
 
 persist_phase "restoring-kubebrain"

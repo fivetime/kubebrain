@@ -87,6 +87,15 @@ elif [[ "$args" == *"exec kb-pd-"* && "$args" == *" df -P /var/lib/pd"* ]]; then
   used="${FAKE_PD_DISK_USED_PERCENT:-42}"
   capacity="${FAKE_PD_DISK_CAPACITY_KIB:-2097152}"
   printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/pd\n' "$capacity" "$used"
+elif [[ "$args" == *"/pd/api/v1/regions/check/"* ]]; then
+  ordinal="${FAKE_ABNORMAL_STORE_ORDINAL:-}"
+  check="${args##*/regions/check/}"
+  if [[ -n "$ordinal" && "$check" == "pending-peer" && ( "${FAKE_PERSISTENT_ABNORMAL_REGION:-false}" == "true" || ! -e "$FAKE_STATE/replaced-$ordinal" ) ]]; then
+    case "$ordinal" in 0) store_id=1001;; 1) store_id=1004;; 2) store_id=1005;; *) exit 98;; esac
+    printf '{"count":1,"regions":[{"id":76009,"leader":{"store_id":1001},"pending_peers":[{"store_id":%s}],"down_peers":[]}]}' "$store_id"
+  else
+    printf '{"count":0,"regions":[]}'
+  fi
 elif [[ "$args" == *"/pd/api/v1/stores"* ]]; then
   store_state=Up
   if [[ "${FAKE_PD_STORE_DOWN_AFTER_REPLACEMENT:-false}" == "true" ]] && compgen -G "$FAKE_STATE/replaced-*" >/dev/null; then
@@ -148,6 +157,9 @@ fi
 		"REQUIRED_HEALTHY_STORE_SAMPLES=1",
 		"MAX_STORE_HEALTH_SAMPLES=1",
 		"STORE_HEALTH_INTERVAL_SECONDS=0",
+		"REQUIRED_HEALTHY_REGION_SAMPLES=1",
+		"MAX_REGION_HEALTH_SAMPLES=1",
+		"REGION_HEALTH_INTERVAL_SECONDS=0",
 		"FAKE_LOG=" + logPath,
 		"FAKE_STATE=" + stateDir,
 	}
@@ -179,6 +191,18 @@ fi
 	}
 	require.NoError(t, os.Remove(receiptPath))
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	targetedOutput, targetedErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_ABNORMAL_STORE_ORDINAL=0"))
+	require.NoError(t, targetedErr, string(targetedOutput))
+	targetedLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	targetedLog := string(targetedLogData)
+	requireOrder(t, targetedLog, "delete pod kb-tikv-0", "delete pod kb-tikv-2", "delete pod kb-tikv-1")
+	for ordinal := 0; ordinal < 3; ordinal++ {
+		require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-"+string(rune('0'+ordinal)))))
+	}
+	require.NoError(t, os.Remove(receiptPath))
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	healthyOutput, healthyErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_HEALTHY_BEFORE=true"))
 	require.Error(t, healthyErr)
@@ -205,6 +229,21 @@ fi
 	require.Contains(t, pdDuringLog, "replacing-tikv-2")
 	require.NotContains(t, pdDuringLog, "delete pod kb-tikv-1")
 	require.NotContains(t, pdDuringLog, "--replicas=3")
+	require.NoFileExists(t, receiptPath)
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	regionOutput, regionErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_ABNORMAL_STORE_ORDINAL=2", "FAKE_PERSISTENT_ABNORMAL_REGION=true"))
+	require.Error(t, regionErr)
+	require.Contains(t, string(regionOutput), "PD Regions did not converge after replacing all identified abnormal stores")
+	regionLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	regionLog := string(regionLogData)
+	require.Equal(t, 1, strings.Count(regionLog, "delete pod kb-tikv-"), regionLog)
+	require.Contains(t, regionLog, "delete pod kb-tikv-2")
+	require.NotContains(t, regionLog, "delete pod kb-tikv-1")
+	require.NotContains(t, regionLog, "--replicas=3")
 	require.NoFileExists(t, receiptPath)
 	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
 
