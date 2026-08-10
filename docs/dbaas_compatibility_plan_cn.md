@@ -44572,6 +44572,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   原 TiKV 配置、3/3 Ready 和零 KubeBrain 副本均已恢复。但独立 TiDB DML 在 45 秒内仍超时，说明
   当前 kind 环境的 Raft/副本可用性问题尚未解除；因此 A4208 只宣称确定性编译/runner 门禁，未伪称
   真实 fault GREEN，待存储环境恢复后与 A4207 Snapshot 一并执行。
+  A4209 收紧 A4199 的 TiKV 瞬态错误映射边界。A4199 文档要求只匹配错误链“最内层原因”，旧实现却
+  没有遍历 `errors.Unwrap`，而是从整段 `Error()` 文本截取最后一个 `: ` 后缀；任意无 cause 的普通
+  错误只要文本以 `no available connections` 结束，就会被误升为可重试 `Unavailable`。红测固定该
+  反例以及多层 `%w`、包装非 Unknown gRPC status 三种形状；实现现逐层检查错误链，若任一层已有
+  非 Unknown gRPC code 就不改写，只在叶子原因精确匹配 `no available connections` 或
+  `epoch_not_match:*`。raw gRPC client 门禁证明多层真实 TiKV cause 仍为 `Unavailable`、包装的
+  `InvalidArgument` 仍为 `InvalidArgument`、纯文本后缀保持 `Unknown`；定向普通 20 轮与 race、完整
+  server/compat 和 vet 回归用于防止后续重新扩大文本启发式。现场 TiDB 日志中的
+  `throwing pseudo region error due to no replica available` 只是 selector 诊断，实际请求错误仍记录为
+  `epoch_not_match`/deadline，因此没有把该日志句子臆测成新的 wire error 分类。
 
 ### P2：运维兼容和长期验证
 

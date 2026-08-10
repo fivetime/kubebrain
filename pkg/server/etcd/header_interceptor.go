@@ -642,14 +642,20 @@ func authGRPCError(err error) error {
 }
 
 func isRetryableBackendTransportError(err error) bool {
-	if err == nil || status.Code(err) != codes.Unknown {
-		return false
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		// A wrapper can hide GRPCStatus from status.Code(err). Preserve any
+		// authoritative non-Unknown status found deeper in the chain instead of
+		// reclassifying its message as a TiKV transport reason.
+		if status.Code(current) != codes.Unknown {
+			return false
+		}
+		if errors.Unwrap(current) != nil {
+			continue
+		}
+		cause := current.Error()
+		return cause == "no available connections" || strings.HasPrefix(cause, "epoch_not_match:")
 	}
-	cause := err.Error()
-	if separator := strings.LastIndex(cause, ": "); separator >= 0 {
-		cause = cause[separator+2:]
-	}
-	return cause == "no available connections" || strings.HasPrefix(cause, "epoch_not_match:")
+	return false
 }
 
 type stampedServerStream struct {
