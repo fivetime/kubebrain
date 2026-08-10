@@ -234,6 +234,43 @@ validate_pd_regions_healthy() {
   done
   return 1
 }
+read_abnormal_store_ids() {
+  local pd_proxy check check_json
+  local -A ids=()
+  pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
+  for check in pending-peer down-peer; do
+    check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")" || return 1
+    "$JQ" -e '
+      (.count | type == "number" and . >= 0) and (.regions | type == "array") and
+      all(.regions[]?; all(.pending_peers[]?; .store_id > 0) and all(.down_peers[]?; .peer.store_id > 0))
+    ' >/dev/null <<<"$check_json" || return 1
+    while IFS= read -r store_id; do
+      [[ "$store_id" =~ ^[1-9][0-9]*$ ]] || return 1
+      ids[$store_id]=1
+    done < <("$JQ" -r '[.regions[]? | (.pending_peers[]?.store_id), (.down_peers[]?.peer.store_id)] | unique | .[]' <<<"$check_json")
+  done
+  if (( ${#ids[@]} > 0 )); then
+    printf '%s\n' "${!ids[@]}" | sort -n
+  fi
+}
+wait_for_abnormal_store_ids() {
+  local expected="$1" current
+  local consecutive=0
+  for ((sample=1; sample<=MAX_REGION_HEALTH_SAMPLES; sample++)); do
+    current="$(read_abnormal_store_ids)" || return 1
+    if [[ "$current" == "$expected" ]]; then
+      ((consecutive+=1))
+      if (( consecutive >= REQUIRED_HEALTHY_REGION_SAMPLES )); then
+        return 0
+      fi
+    else
+      consecutive=0
+      echo "PD abnormal store target set has not converged: expected=${expected//$'\n'/,} current=${current//$'\n'/,}" >&2
+    fi
+    (( sample == MAX_REGION_HEALTH_SAMPLES )) || sleep "$REGION_HEALTH_INTERVAL_SECONDS"
+  done
+  return 1
+}
 validate_kubebrain_quiesced() {
   local identity actual_uid desired ready
   identity="$(kctl -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" -o 'jsonpath={.metadata.uid}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}')" || return 1
@@ -378,17 +415,11 @@ fi
 
 pd_proxy="/api/v1/namespaces/${TIDB_NAMESPACE}/services/http:${TIDB_CLUSTER}-pd:2379/proxy/pd/api/v1"
 declare -A abnormal_store_ids=()
-for check in pending-peer down-peer; do
-  check_json="$(kctl get --raw "${pd_proxy}/regions/check/${check}")" || die "cannot read PD ${check} Regions before repair"
-  "$JQ" -e '
-    (.count | type == "number" and . >= 0) and (.regions | type == "array") and
-    all(.regions[]?; all(.pending_peers[]?; .store_id > 0) and all(.down_peers[]?; .peer.store_id > 0))
-  ' >/dev/null <<<"$check_json" || die "PD ${check} Region response is malformed"
-  while IFS= read -r store_id; do
-    [[ "$store_id" =~ ^[1-9][0-9]*$ ]] || die "PD ${check} returned an invalid abnormal store ID"
-    abnormal_store_ids[$store_id]=1
-  done < <("$JQ" -r '[.regions[]? | (.pending_peers[]?.store_id), (.down_peers[]?.peer.store_id)] | unique | .[]' <<<"$check_json")
-done
+initial_abnormal_store_ids="$(read_abnormal_store_ids)" || die "cannot read a valid PD abnormal store target set before repair"
+while IFS= read -r store_id; do
+  [[ -n "$store_id" ]] || continue
+  abnormal_store_ids[$store_id]=1
+done <<<"$initial_abnormal_store_ids"
 
 replacement_ordinals=()
 targeted_replacement_count=0
@@ -399,11 +430,13 @@ if (( ${#abnormal_store_ids[@]} > 0 )); then
     all(.stores[]?; .store.id > 0 and (.store.address | type == "string" and length > 0))
   ' >/dev/null <<<"$stores_json" || die "PD stores response is malformed while mapping abnormal stores"
   declare -A abnormal_ordinals=()
+  declare -A abnormal_store_ordinals_by_id=()
   mapped_abnormal_stores=0
   while IFS=$'\t' read -r store_id address; do
     [[ -n "${abnormal_store_ids[$store_id]:-}" ]] || continue
     if [[ "$address" =~ ^${TIDB_CLUSTER}-tikv-([012])([.:]|$) ]]; then
       abnormal_ordinals[${BASH_REMATCH[1]}]=1
+      abnormal_store_ordinals_by_id[$store_id]="${BASH_REMATCH[1]}"
       ((mapped_abnormal_stores+=1))
     else
       die "abnormal PD store ${store_id} address cannot be mapped to an expected TiKV Pod: ${address}"
@@ -426,6 +459,9 @@ kctl -n "$KUBEBRAIN_NAMESPACE" scale statefulset "$KUBEBRAIN_STATEFULSET" --repl
 kctl -n "$KUBEBRAIN_NAMESPACE" wait --for=delete pod -l "app.kubernetes.io/name=kubebrain,app.kubernetes.io/instance=${KUBEBRAIN_STATEFULSET}" --timeout="${POD_READY_TIMEOUT_SECONDS}s" >/dev/null
 require_kubebrain_quiesced "KubeBrain isolation identity/replica fence failed after quiescing"
 validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after quiescing"
+if (( targeted_replacement_count > 0 )); then
+  wait_for_abnormal_store_ids "$initial_abnormal_store_ids" || die "PD abnormal store targets changed after quiescing; refusing stale TiKV replacement"
+fi
 
 replacement_index=0
 for ordinal in "${replacement_ordinals[@]}"; do
@@ -450,6 +486,18 @@ for ordinal in "${replacement_ordinals[@]}"; do
   validate_tidb_cluster_identity || die "TidbCluster identity/topology changed after replacing $pod; refusing further TiKV replacements"
   validate_pd_ready || die "PD identity/quorum/PVC changed after replacing $pod; refusing further TiKV replacements"
   ((replacement_index+=1))
+  if (( targeted_replacement_count > 0 )); then
+    for store_id in "${!abnormal_store_ids[@]}"; do
+      if [[ "${abnormal_store_ordinals_by_id[$store_id]}" == "$ordinal" ]]; then
+        unset "abnormal_store_ids[$store_id]"
+      fi
+    done
+    remaining_abnormal_store_ids=""
+    if (( ${#abnormal_store_ids[@]} > 0 )); then
+      remaining_abnormal_store_ids="$(printf '%s\n' "${!abnormal_store_ids[@]}" | sort -n)"
+    fi
+    wait_for_abnormal_store_ids "$remaining_abnormal_store_ids" || die "PD abnormal store targets changed after replacing $pod; refusing stale TiKV replacement"
+  fi
   if (( targeted_replacement_count > 0 && replacement_index == targeted_replacement_count )); then
     validate_pd_regions_healthy || die "PD Regions did not converge after replacing all identified abnormal stores; refusing healthy TiKV replacements"
   fi

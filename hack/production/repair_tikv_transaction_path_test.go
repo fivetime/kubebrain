@@ -93,6 +93,9 @@ elif [[ "$args" == *"exec kb-pd-"* && "$args" == *" df -P /var/lib/pd"* ]]; then
   printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/pd\n' "$capacity" "$used"
 elif [[ "$args" == *"/pd/api/v1/regions/check/"* ]]; then
   ordinal="${FAKE_ABNORMAL_STORE_ORDINAL:-}"
+  if [[ "${FAKE_ABNORMAL_DRIFT_AFTER_QUIESCE:-false}" == "true" && -e "$FAKE_STATE/quiesced" ]]; then
+    ordinal=1
+  fi
   check="${args##*/regions/check/}"
   if [[ -n "$ordinal" && "$check" == "pending-peer" && ( "${FAKE_PERSISTENT_ABNORMAL_REGION:-false}" == "true" || ! -e "$FAKE_STATE/replaced-$ordinal" ) ]]; then
     case "$ordinal" in 0) store_id=1001;; 1) store_id=1004;; 2) store_id=1005;; *) exit 98;; esac
@@ -133,7 +136,13 @@ elif [[ "$args" == *"delete pod kb-tikv-"* ]]; then
   ordinal="${args#*delete pod kb-tikv-}"
   ordinal="${ordinal%% *}"
   : >"$FAKE_STATE/replaced-$ordinal"
-elif [[ "$args" == *" scale statefulset kubebrain --replicas="* || "$args" == *" wait "* || "$args" == *" rollout status "* ]]; then
+elif [[ "$args" == *" scale statefulset kubebrain --replicas="* ]]; then
+  if [[ "$args" == *"--replicas=0"* ]]; then
+    : >"$FAKE_STATE/quiesced"
+  else
+    rm -f "$FAKE_STATE/quiesced"
+  fi
+elif [[ "$args" == *" wait "* || "$args" == *" rollout status "* ]]; then
   :
 else
   echo "unexpected kubectl invocation: $args" >&2
@@ -244,7 +253,7 @@ fi
 	regionOutput, regionErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
 		append(env, "FAKE_ABNORMAL_STORE_ORDINAL=2", "FAKE_PERSISTENT_ABNORMAL_REGION=true"))
 	require.Error(t, regionErr)
-	require.Contains(t, string(regionOutput), "PD Regions did not converge after replacing all identified abnormal stores")
+	require.Contains(t, string(regionOutput), "PD abnormal store targets changed after replacing kb-tikv-2")
 	regionLogData, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	regionLog := string(regionLogData)
@@ -254,6 +263,20 @@ fi
 	require.NotContains(t, regionLog, "--replicas=3")
 	require.NoFileExists(t, receiptPath)
 	require.NoError(t, os.Remove(filepath.Join(stateDir, "replaced-2")))
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "quiesced")))
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	targetDriftOutput, targetDriftErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",
+		append(env, "FAKE_ABNORMAL_STORE_ORDINAL=0", "FAKE_ABNORMAL_DRIFT_AFTER_QUIESCE=true"))
+	require.Error(t, targetDriftErr)
+	require.Contains(t, string(targetDriftOutput), "PD abnormal store targets changed after quiescing")
+	targetDriftLogData, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	targetDriftLog := string(targetDriftLogData)
+	require.NotContains(t, targetDriftLog, "delete pod kb-tikv-")
+	require.NotContains(t, targetDriftLog, "--replicas=3")
+	require.NoFileExists(t, receiptPath)
+	require.NoError(t, os.Remove(filepath.Join(stateDir, "quiesced")))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	pdStoreOutput, pdStoreErr := runProductionScriptCommand(t, "repair-tikv-transaction-path.sh",

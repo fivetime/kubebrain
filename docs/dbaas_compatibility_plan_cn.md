@@ -45383,6 +45383,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单目标 receipt 完成 claim/succeed/takeover 验证。生产就绪文档同步移除固定 2→1→0/精确 3 repaired
   的过期描述。本项减少破坏面，不自动处理无法映射或 Region 未收敛的 store。
 
+- A4291 关闭 target discovery 与 delete 之间的 stale abnormal-store TOCTOU。A4289/A4290 在 storage
+  preflight 后只读取一次 pending/down store ID；KubeBrain quiesce、Pod wait 或前一个 target 重建
+  期间若异常 peer 自愈、迁移到另一 store 或新增异常，旧队列仍会删除已健康的 TiKV。repair 现在用
+  同一严格解码函数生成排序去重的 abnormal ID 快照，并把该集合当作逐步消费的状态：quiesce 完成后
+  必须在最多 6 次采样中连续 3 次与初始集合完全相同，才允许首次 delete；每个目标同 PVC 重建后，
+  删除映射到该 ordinal 的已处理 ID，再要求 PD 当前集合连续等于精确剩余集合，才允许下一目标。
+  current 多一个、少一个、换 store、malformed 或 API 失败都会输出 expected/current 并 fail closed；
+  最后集合为空后仍执行 A4289 的五类 Region 全绿窗口，覆盖 miss/extra/learner 等无明确目标异常。
+  fake-cluster 在初始 store 1001/kb-tikv-0 discovery 后、KubeBrain scale 0 时把异常迁移到 store 1004，
+  验证零 TiKV delete、无 restore/receipt；另一路让 kb-tikv-2 重建后 store 1005 仍在集合中，验证只有
+  一次 delete 并在消费 fence 停止。健康单目标和无 abnormal fallback 继续通过。本项允许先完成
+  KubeBrain quiesce 再因漂移拒绝，但不会根据未经重新稳定采样的旧快照删除任何 TiKV。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
