@@ -12,6 +12,8 @@ KIND_NODE_CONTAINER="${KIND_NODE_CONTAINER:-kubebrain-dev-control-plane}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-180}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 PD_QUORUM_PARTITION_HOLD_SECONDS="${PD_QUORUM_PARTITION_HOLD_SECONDS:-15}"
+PD_QUORUM_PARTITION_CYCLES="${PD_QUORUM_PARTITION_CYCLES:-1}"
+PD_QUORUM_PARTITION_INTERVAL_SECONDS="${PD_QUORUM_PARTITION_INTERVAL_SECONDS:-0}"
 TIKV_QUORUM_PARTITION_CYCLES="${TIKV_QUORUM_PARTITION_CYCLES:-1}"
 TIKV_QUORUM_PARTITION_INTERVAL_SECONDS="${TIKV_QUORUM_PARTITION_INTERVAL_SECONDS:-0}"
 partition_pod_ip=""
@@ -209,6 +211,27 @@ partition_pd_quorum() {
   done
   echo "PD quorum members did not recover within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
   return 1
+}
+
+partition_pd_quorum_soak() {
+  local cycle
+  if [[ ! "$PD_QUORUM_PARTITION_CYCLES" =~ ^[1-9][0-9]*$ ]] ||
+    (( PD_QUORUM_PARTITION_CYCLES > 20 )); then
+    echo "PD_QUORUM_PARTITION_CYCLES must be an integer in [1,20]" >&2
+    exit 1
+  fi
+  if [[ ! "$PD_QUORUM_PARTITION_INTERVAL_SECONDS" =~ ^[0-9]+$ ]] ||
+    (( PD_QUORUM_PARTITION_INTERVAL_SECONDS > 300 )); then
+    echo "PD_QUORUM_PARTITION_INTERVAL_SECONDS must be an integer in [0,300]" >&2
+    exit 1
+  fi
+  for cycle in $(seq 1 "$PD_QUORUM_PARTITION_CYCLES"); do
+    echo "PD quorum partition cycle ${cycle}/${PD_QUORUM_PARTITION_CYCLES}"
+    partition_pd_quorum
+    if (( cycle < PD_QUORUM_PARTITION_CYCLES )); then
+      sleep "$PD_QUORUM_PARTITION_INTERVAL_SECONDS"
+    fi
+  done
 }
 
 partition_tikv_quorum() {
@@ -511,6 +534,12 @@ if [[ "${1:-}" == "--partition-pd-quorum" ]]; then
   partition_pd_quorum
   exit 0
 fi
+if [[ "${1:-}" == "--partition-pd-quorum-soak" ]]; then
+  need docker
+  need jq
+  partition_pd_quorum_soak
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-tikv-member" ]]; then
   need docker
   need jq
@@ -530,7 +559,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-quorum|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -602,8 +631,8 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
   pd-quorum-loss)
     need docker
     need jq
-    run_watch_recovery_test "PD quorum-loss network partition" "$self --partition-pd-quorum"
-    run_lease_require_leader_test "PD quorum-loss LeaseKeepAlive" "$self --partition-pd-quorum"
+    run_watch_recovery_test "PD quorum-loss network partition" "$self --partition-pd-quorum-soak"
+    run_lease_require_leader_test "PD quorum-loss LeaseKeepAlive" "$self --partition-pd-quorum-soak"
     ;;
   tikv-network-partition)
     need docker

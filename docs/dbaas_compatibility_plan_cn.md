@@ -44515,6 +44515,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   隔离两个 PD 并恢复，规则零残留、TidbCluster Ready。真实门禁用于证明发送侧改动未破坏
   Watch/Lease 恢复；flow-control 饱和本身由可重复的阻塞 SendMsg 单测直接覆盖，尚未声称完成公网慢
   客户端或大响应压力验证。
+  A4205 把 PD quorum-loss 从单次故障门禁扩展为同一数据面连接上的有界重复 soak。继续对照
+  `/root/etcd/tests/integration/network_partition_test.go` 的无 quorum 恢复后 progress oracle，以及
+  clientv3 Watch/Lease require-leader 测试的 leader-loss 契约；新增
+  `PD_QUORUM_PARTITION_CYCLES`（1..20，默认 1）和
+  `PD_QUORUM_PARTITION_INTERVAL_SECONDS`（0..300，默认 0），两项均在首次写入 iptables 前
+  fail-closed。每轮重新读取当前 PD leader 和精确三个 Running/Ready 成员，重新执行双成员健康
+  preflight、双向隔离、实际不可达、规则清理与逐成员 `/health=true` 恢复验证，不能复用上一轮的
+  leader 或 Pod IP 证据。静态 runner 门禁先跑红证明旧 helper 无循环能力，补齐后 GREEN；非法
+  `cycles=0` 的现场调用也在注入前精确拒绝。真实独立 3 KubeBrain/3 PD/3 TiKV 上，Watch 故障序列
+  连续三轮分别隔离 `kb-pd-0/kb-pd-1`、`kb-pd-2/kb-pd-0`、`kb-pd-1/kb-pd-0`，101.37 秒内
+  同一普通 Watch 跨三次失去/恢复 quorum，最终 Range 的 35 个提交事件全部交付（32 responses，
+  33 次可重试瞬态失败，final revision 14413），require-leader Watch 在首轮按契约终止。独立 Lease
+  序列再执行三轮，依次隔离 `kb-pd-2/kb-pd-0`、`kb-pd-1/kb-pd-0`、
+  `kb-pd-1/kb-pd-0`，101.73 秒内 raw require-leader 错误、高层 channel 分流及普通 lease 在完整
+  三轮后的恢复续租全部通过。最终规则零残留、TidbCluster Ready。该三轮短测证明同一进程连续
+  丢失/恢复 PD quorum 的数据面连续性，但不替代跨节点/AZ 或小时级 partition soak；后两项仍开放。
 
 ### P2：运维兼容和长期验证
 
