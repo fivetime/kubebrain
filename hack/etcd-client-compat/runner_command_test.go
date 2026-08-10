@@ -397,6 +397,51 @@ func TestLeaseRequireLeaderBackendFailoverCoversWireAndClientContracts(t *testin
 	require.Contains(t, source, `ordinary KeepAliveOnce must recover after backend quorum loss`)
 }
 
+func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
+	tempDir := t.TempDir()
+	binary := tempDir + "/etcd"
+	require.NoError(t, os.WriteFile(binary, []byte("#!/usr/bin/env bash\nprintf 'etcd Version: 3.8.0-alpha.0\\nGit SHA: d947b2086\\n'\n"), 0o700))
+
+	run := func(expected string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), compatScriptCommandTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "bash", "verify-reference-etcd-provenance.sh")
+		cmd.Env = append(os.Environ(),
+			"REFERENCE_ETCD_BIN="+binary,
+			"REFERENCE_ETCD_EXPECTED_GIT_SHA="+expected,
+		)
+		return cmd.CombinedOutput()
+	}
+
+	output, err := run("d947b2086abcdef0123456789abcdef012345678")
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(output), "reference etcd provenance verified: d947b2086")
+
+	output, err = run("5cd9f4ee13801e18825d661e5005ae599460bc3a")
+	require.Error(t, err)
+	require.Contains(t, string(output), "reference etcd Git SHA mismatch")
+	require.Contains(t, string(output), "binary=d947b2086")
+	require.Contains(t, string(output), "expected=5cd9f4ee13801e18825d661e5005ae599460bc3a")
+}
+
+func TestEveryReferenceEtcdRunnerVerifiesProvenance(t *testing.T) {
+	runners := []string{
+		"run-auth-differential.sh",
+		"run-automatic-quota-differential.sh",
+		"run-differential.sh",
+		"run-direct-moveleader-differential.sh",
+		"run-jwt-differential.sh",
+		"run-make-mirror-differential.sh",
+		"run-rangestream-compaction-differential.sh",
+		"run-rangestream-oversize-differential.sh",
+	}
+	for _, runner := range runners {
+		data, err := os.ReadFile(runner)
+		require.NoError(t, err)
+		require.Contains(t, string(data), `"$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"`, runner)
+	}
+}
+
 func TestCompatKubernetesRestartCommandsUseBoundedHelpers(t *testing.T) {
 	for _, testFile := range []string{
 		"admission_replica_restart_test.go",

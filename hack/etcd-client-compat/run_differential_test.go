@@ -13,6 +13,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func writeFakeReferenceEtcd(t *testing.T, dir string) string {
+	t.Helper()
+	binary := filepath.Join(dir, "etcd")
+	require.NoError(t, os.WriteFile(binary, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "--version" ]]; then
+  printf 'etcd Version: 3.8.0-alpha.0\nGit SHA: d947b2086\n'
+  exit 0
+fi
+exit 0
+`), 0o755))
+	return binary
+}
+
 func TestDifferentialRunnerRejectsInvalidDestructiveApprovalBeforeDependencies(t *testing.T) {
 	dir := t.TempDir()
 	env := []string{
@@ -39,6 +53,7 @@ func TestDifferentialRunnerRejectsMissingDestructiveApprovalBeforeDependencies(t
 
 func TestDifferentialRunnerRejectsUnreachableAdvertisedClientURL(t *testing.T) {
 	dir := t.TempDir()
+	fakeEtcd := writeFakeReferenceEtcd(t, dir)
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
 	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
@@ -61,7 +76,8 @@ exit 1
 		"PATH=" + dir + ":" + os.Getenv("PATH"),
 		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
 		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
-		"REFERENCE_ETCD_BIN=/bin/true",
+		"REFERENCE_ETCD_BIN=" + fakeEtcd,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
 		"ETCDCTL_BIN=" + fakeEtcdctl,
 	}
 	output, err := runDifferentialScript(t, env)
@@ -72,6 +88,7 @@ exit 1
 
 func TestDifferentialRunnerRejectsMissingAdvertisedClientURLs(t *testing.T) {
 	dir := t.TempDir()
+	fakeEtcd := writeFakeReferenceEtcd(t, dir)
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
 	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
@@ -91,7 +108,8 @@ exit 1
 		"PATH=" + dir + ":" + os.Getenv("PATH"),
 		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
 		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
-		"REFERENCE_ETCD_BIN=/bin/true",
+		"REFERENCE_ETCD_BIN=" + fakeEtcd,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
 		"ETCDCTL_BIN=" + fakeEtcdctl,
 	}
 	output, err := runDifferentialScript(t, env)
@@ -101,6 +119,7 @@ exit 1
 
 func TestDifferentialRunnerChecksClusterLocalAdvertisedURLInSelectedPod(t *testing.T) {
 	dir := t.TempDir()
+	fakeEtcd := writeFakeReferenceEtcd(t, dir)
 	fakeEtcdctl := filepath.Join(dir, "etcdctl")
 	require.NoError(t, os.WriteFile(fakeEtcdctl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
@@ -133,7 +152,8 @@ exec "$@"
 		"PATH=" + dir + ":" + os.Getenv("PATH"),
 		"KUBEBRAIN_ETCD_ENDPOINT=127.0.0.1:22379",
 		"ALLOW_DESTRUCTIVE_DIFFERENTIAL=true",
-		"REFERENCE_ETCD_BIN=/bin/true",
+		"REFERENCE_ETCD_BIN=" + fakeEtcd,
+		"REFERENCE_ETCD_EXPECTED_GIT_SHA=d947b2086",
 		"ETCDCTL_BIN=" + fakeEtcdctl,
 		"KUBECTL=" + fakeKubectl,
 		"KUBECTL_LOG=" + kubectlLog,

@@ -27,6 +27,7 @@ for command in go kubectl curl jq; do
   command -v "$command" >/dev/null 2>&1 || { echo "missing required command: $command" >&2; exit 1; }
 done
 test -x "$REFERENCE_ETCD_BIN" || { echo "reference etcd is not executable: $REFERENCE_ETCD_BIN" >&2; exit 1; }
+REFERENCE_ETCD_BIN="$REFERENCE_ETCD_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"
 
 data_dir="$(mktemp -d /tmp/kubebrain-a3558-reference.XXXXXX)"
 reference_log="$data_dir/reference.log"

@@ -45123,6 +45123,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   官方 etcd 验证为 GREEN（仓库既有 `/root/etcd/bin/etcd` 是迁移前旧构建，不能作为该源码 revision 的 oracle）。服务全包、compat
   全包、定向 race、vet/staticcheck/govulncheck 均通过。该项只影响 Maintenance 请求分类，不访问 TiKV/PD。
 
+- A4268 封闭官方差分 oracle 的 build provenance 缺口。A4267 现场发现 `/root/etcd` HEAD 已是
+  `5cd9f4ee1380`，默认 `/root/etcd/bin/etcd --version` 却仍自报 `Git SHA: d947b2086`；直接运行既有 runner 会把迁移前
+  semver 行为误当成当前源码权威结果。新增共享 `verify-reference-etcd-provenance.sh`，默认从 reference source HEAD 推导期望 SHA，
+  也允许外部构建显式声明期望值；binary SHA 缺失、非十六进制、少于 7 位或与期望 full/short prefix 不一致都在 reference 启动和
+  destructive test 前 fail closed。Auth、automatic quota、通用矩阵、direct MoveLeader、JWT、make-mirror 及两条 RangeStream
+  runner 全部强制调用；契约测试固定匹配成功、真实 mismatch 诊断与 8/8 接线，防止某个专项入口绕过。该项强化测试证据，不访问
+  TiKV/PD，也不把旧 binary 的行为记录成运行时兼容差距。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
