@@ -314,6 +314,37 @@ func TestLegacyLeaseRecordMigratesToAttachments(t *testing.T) {
 	require.Equal(t, int64(200), rec.TTL)
 }
 
+func TestLegacyLeaseMigrationPreservesAuthoritativeAttachmentOwner(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		legacyLeaseID = int64(55_130)
+		newLeaseID    = int64(55_131)
+		key           = "/registry/events/reassigned-during-upgrade"
+	)
+	legacy, err := jsonMarshalLeaseRecord(legacyLeaseID, 200, []string{key})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(legacyLeaseID), Value: legacy})
+	require.NoError(t, err)
+	current, err := jsonMarshalLeaseRecord(newLeaseID, 200, nil)
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(newLeaseID), current))
+	require.NoError(t, server.backend.InternalPut(ctx, leaseAttachKey(key), []byte(strconv.FormatInt(newLeaseID, 10))))
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	attachment, err := server.backend.InternalGet(ctx, leaseAttachKey(key))
+	require.NoError(t, err)
+	require.Equal(t, strconv.FormatInt(newLeaseID, 10), string(attachment),
+		"legacy migration must not overwrite a newer authoritative attachment")
+	legacyTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: legacyLeaseID, Keys: true})
+	require.NoError(t, err)
+	require.Empty(t, legacyTTL.Keys)
+	currentTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: newLeaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte(key)}, currentTTL.Keys)
+}
+
 func jsonMarshalLeaseRecord(id, ttl int64, keys []string) ([]byte, error) {
 	return json.Marshal(leaseRecord{ID: id, TTL: ttl, Keys: keys})
 }

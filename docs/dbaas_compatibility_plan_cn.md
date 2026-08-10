@@ -44865,6 +44865,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   legacy empty key；指向不存在 lease 的非空 orphan attachment 仍按既有 sweeper 自愈，不被升级为损坏。load 表测覆盖两种
   layout，Maintenance Snapshot 黑盒固定零 partial frame 的 `FailedPrecondition`。真实 TiKV/PD 破坏性补跑仍受既知环境故障限制。
 
+- A4239 修复滚动升级中新 attachment owner 被 legacy migration 覆盖。恢复同时读取旧 monolithic `Keys` 与新
+  `leasekeys/<key>`；后者是与当前 value/rebind 原子提交的 authoritative owner。此前 apply 虽让 `keyLeaseIndex` 指向新
+  lease B，却没有从旧 lease A 的 `keys` 集合移除该 key；紧随其后的 A migration 会再次写 attachment=A，令 durable owner
+  倒退。现在应用 attachment 覆盖时同步从 previous lease key set 删除冲突 key，再加入 authoritative lease，因此 migrate A
+  不再触碰该 attachment；既有 revoke 的 owner/mod-revision guard 继续作为运行时第二道保护。恢复回归固定 attachment 最终
+  仍为 B 且 A/B 的 Keys 分别为空/包含 key，官方 client/v3 `TimeToLive(WithAttachedKeys)` 黑盒验证相同结果。真实 TiKV/PD
+  滚动布局注入仍待既知环境故障恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

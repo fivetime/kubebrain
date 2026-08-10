@@ -136,6 +136,48 @@ func TestClientLeaseReadBoundaryAndAttachedKeys(t *testing.T) {
 	require.True(t, containsLive)
 }
 
+func TestClientLeaseReloadKeepsNewAttachmentOverLegacyOwner(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		legacyLeaseID = int64(55_132)
+		newLeaseID    = int64(55_133)
+		key           = "/a4239/reassigned-during-upgrade"
+	)
+	legacy, err := jsonMarshalLeaseRecord(legacyLeaseID, 200, []string{key})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(legacyLeaseID), Value: legacy})
+	require.NoError(t, err)
+	current, err := jsonMarshalLeaseRecord(newLeaseID, 200, nil)
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(newLeaseID), current))
+	require.NoError(t, server.backend.InternalPut(ctx, leaseAttachKey(key), []byte(fmt.Sprint(newLeaseID))))
+	require.NoError(t, server.ReloadLeases(ctx))
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterLeaseServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{"bufnet"}, DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	legacyTTL, err := client.TimeToLive(ctx, clientv3.LeaseID(legacyLeaseID), clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Empty(t, legacyTTL.Keys)
+	currentTTL, err := client.TimeToLive(ctx, clientv3.LeaseID(newLeaseID), clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte(key)}, currentTTL.Keys)
+}
+
 func TestClientLeaseTimeToLiveRevokedLeaseReturnsMinusOne(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

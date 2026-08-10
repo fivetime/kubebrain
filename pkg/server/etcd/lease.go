@@ -1705,6 +1705,11 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		if !ok {
 			continue
 		}
+		if previousID, bound := m.keyLeaseIndex[key]; bound && previousID != id {
+			if previous := m.leases[previousID]; previous != nil {
+				delete(previous.keys, key)
+			}
+		}
 		st.keys[key] = struct{}{}
 		m.keyLeaseIndex[key] = id
 	}
