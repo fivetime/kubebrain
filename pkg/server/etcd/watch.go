@@ -133,6 +133,10 @@ type watch struct {
 	cancel     func()
 	start, end string
 	quotaHeld  bool
+	// closing is set before terminal cancellation work begins. The WatchId stays
+	// reserved in watches until its Canceled control is queued, preventing a new
+	// explicit create from overtaking a slow compact/error cancellation.
+	closing atomic.Bool
 	// progressStartRevision is the client's requested progress floor. It normally
 	// equals WatchCreateRequest.StartRevision, except when a follower rewrites a
 	// from-now request to R+1 internally to close the proxy registration gap.
@@ -620,7 +624,7 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 	} else if r.StartRevision == 0 {
 		initSyncedRev = w.backend.GetPublishedRevision()
 	}
-	w.watches[id] = &watch{
+	generation := &watch{
 		cancel:                cancel,
 		start:                 string(r.Key),
 		end:                   string(r.RangeEnd),
@@ -628,6 +632,7 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		progressStartRevision: progressStartRevision,
 		syncedRev:             initSyncedRev,
 	}
+	w.watches[id] = generation
 	if len(w.watches) > 1 {
 		klog.InfoS("watcher reuse", "id", w.id, "size", len(w.watches))
 	}
@@ -656,14 +661,14 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		WatchId: id,
 	}); err != nil {
 		klog.ErrorS(err, "watch send create watch response err", "wacher", w.id, "watch", id)
-		w.Cancel(id, err, false)
+		w.CancelGeneration(id, generation, err, false)
 		return
 	}
 
 	w.wg.Add(1)
 	key := string(r.Key)
 	w.metricCli.EmitCounter("watch.watch", 1)
-	go w.Watch(ctx, id, r)
+	go w.watchGeneration(ctx, id, r, generation)
 	klog.InfoS("watch start", "id", id, "count", len(w.watches), "key", key, "revision", r.StartRevision)
 }
 
@@ -686,14 +691,18 @@ func (w *watcher) allocateWatchIDLocked(requested int64) (id int64, duplicate bo
 }
 
 func (w *watcher) Cancel(id int64, err error, compact bool) {
-	w.cancel(id, err, compact, false)
+	w.cancel(id, nil, err, compact, false)
+}
+
+func (w *watcher) CancelGeneration(id int64, generation *watch, err error, compact bool) {
+	w.cancel(id, generation, err, compact, false)
 }
 
 func (w *watcher) CancelRequest(id int64) {
-	w.cancel(id, nil, false, true)
+	w.cancel(id, nil, nil, false, true)
 }
 
-func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
+func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRequest bool) {
 	klog.InfoS("watch cancel", "watcher", w.id, "watch", id, "err", err, "compact", compact)
 	var tags []metrics.T
 	tags = append(tags, metrics.Tag("compact", strconv.FormatBool(compact)))
@@ -701,23 +710,26 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 	w.Lock()
 	found := false
 	quotaHeld := false
-	if c, ok := w.watches[id]; ok {
-		found = true
-		quotaHeld = c.quotaHeld
-		klog.InfoS("cancel context", "watcher", w.id, "watch", id, "start", c.start, "end", c.end)
-		if c.cancel != nil {
-			c.cancel()
+	var generation *watch
+	if c, ok := w.watches[id]; ok && (expected == nil || c == expected) {
+		if c.closing.CompareAndSwap(false, true) {
+			found = true
+			generation = c
+			quotaHeld = c.quotaHeld
+			// Transfer quota ownership to this cancellation path. Close may run
+			// while compact-revision resolution is blocked and must not release
+			// the retained closing entry a second time.
+			c.quotaHeld = false
+			klog.InfoS("cancel context", "watcher", w.id, "watch", id, "start", c.start, "end", c.end)
+			if c.cancel != nil {
+				c.cancel()
+			}
 		}
-		delete(w.watches, id)
 	}
 	w.Unlock()
-	if quotaHeld {
-		w.grpcServer.releaseWatch()
-	}
-	// etcd emits at most one cancellation response for a watch. A client cancel
-	// removes the watch before its backend goroutine observes the canceled
-	// context, so suppress that goroutine's later close response as well as
-	// requests for unknown IDs.
+	// etcd emits at most one cancellation response for a watch. The closing CAS
+	// suppresses the backend goroutine's later close response as well as requests
+	// for unknown IDs, while retaining the ID through terminal-control ordering.
 	if !found {
 		return
 	}
@@ -751,6 +763,16 @@ func (w *watcher) cancel(id int64, err error, compact, clientRequest bool) {
 		WatchId:         id,
 		CompactRevision: compactRevision,
 	})
+	// SendControl returning means the terminal response is either already sent
+	// or ordered in controlCh. Only now may a create reuse this explicit ID.
+	w.Lock()
+	if w.watches[id] == generation {
+		delete(w.watches, id)
+	}
+	w.Unlock()
+	if quotaHeld {
+		w.grpcServer.releaseWatch()
+	}
 	if serr != nil {
 		if isExpectedWatchCloseError(serr) {
 			klog.V(4).InfoS("cancel response skipped because watch stream is closed", "watcher", w.id, "watch", id, "err", serr)
@@ -796,9 +818,9 @@ func (w *watcher) Send(resp *etcdserverpb.WatchResponse) error {
 }
 
 // SendWatch orders the watch-generation check with every wire send. Cancel
-// removes the watch before queuing its control response; holding sendMu here
-// means an event either commits to the wire before that Canceled frame, or
-// observes the removal/reuse and is suppressed. A canceled generation can
+// marks the generation closing before queuing its control response; holding
+// sendMu here means an event either commits to the wire before that transition,
+// or observes closing/removal/reuse and is suppressed. A canceled generation can
 // therefore never reappear after its terminal response, including when the
 // client has reused the same WatchId or between response fragments.
 func (w *watcher) SendWatch(id int64, generation *watch, resp *etcdserverpb.WatchResponse) error {
@@ -807,7 +829,7 @@ func (w *watcher) SendWatch(id int64, generation *watch, resp *etcdserverpb.Watc
 	w.Lock()
 	current, active := w.watches[id]
 	w.Unlock()
-	if !active || generation == nil || current != generation {
+	if !active || generation == nil || current != generation || generation.closing.Load() {
 		return errWatchInactive
 	}
 	err := w.watchServer.Send(resp)
@@ -890,7 +912,17 @@ func (w *watcher) Close() {
 }
 
 func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest) {
+	w.Lock()
+	wt := w.watches[id]
+	w.Unlock()
+	w.watchGeneration(ctx, id, r, wt)
+}
+
+func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb.WatchCreateRequest, wt *watch) {
 	defer w.wg.Done()
+	if wt == nil {
+		return
+	}
 	// etcd keys are arbitrary byte strings — do NOT police their shape here. A
 	// leading-'/' heuristic used to gate this path (a relic of the retired
 	// StartRevision<0 range-stream overload, #67), which silently rejected every
@@ -899,10 +931,10 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 	// that IS invalid — a negative start revision — is rejected at request
 	// decode in the stream loop above.
 	if compacted, err := w.isCompactedWatchRevision(ctx, r.StartRevision); err != nil {
-		w.Cancel(id, err, isWatchCompactedError(err))
+		w.CancelGeneration(id, wt, err, isWatchCompactedError(err))
 		return
 	} else if compacted {
-		w.Cancel(id, compactedRevisionError(), true)
+		w.CancelGeneration(id, wt, compactedRevisionError(), true)
 		return
 	}
 
@@ -918,16 +950,9 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 	if err != nil {
 		w.metricCli.EmitCounter("watch.backend.err", 1)
 		klog.ErrorS(err, "[watch stream] cancel due to backend watch err", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision)
-		w.Cancel(id, err, isWatchCompactedError(err))
+		w.CancelGeneration(id, wt, err, isWatchCompactedError(err))
 		return
 	}
-
-	// Hold the *watch so this goroutine can advance syncedRev as events are sent
-	// and the progress ticker can read it (the stream Recv goroutine reads it too,
-	// hence atomic access on the field).
-	w.Lock()
-	wt := w.watches[id]
-	w.Unlock()
 
 	var sendErr error
 	var progressTicker *time.Ticker
@@ -990,7 +1015,7 @@ func (w *watcher) Watch(ctx context.Context, id int64, r *etcdserverpb.WatchCrea
 		if compacted {
 			staleErr = compactedRevisionError()
 		}
-		w.Cancel(id, staleErr, compacted)
+		w.CancelGeneration(id, wt, staleErr, compacted)
 		return false, false
 	}
 
@@ -1013,7 +1038,7 @@ watchLoop:
 				if compacted {
 					closeErr = compactedRevisionError()
 				}
-				w.Cancel(id, closeErr, compacted)
+				w.CancelGeneration(id, wt, closeErr, compacted)
 				klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
 				return
 			}
@@ -1025,13 +1050,13 @@ watchLoop:
 			}
 			if result.Err != nil {
 				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", string(r.Key), "err", result.Err)
-				w.Cancel(id, result.Err, isWatchCompactedError(result.Err))
+				w.CancelGeneration(id, wt, result.Err, isWatchCompactedError(result.Err))
 				return
 			}
 			if resultErr := invalidWatchResultShape(result); resultErr != nil {
 				w.metricCli.EmitCounter("watch.backend.invalid_result", 1)
 				klog.ErrorS(resultErr, "[watch stream] cancel due to invalid backend result", "watcher", w.id, "watch", id)
-				w.Cancel(id, resultErr, false)
+				w.CancelGeneration(id, wt, resultErr, false)
 				cancel()
 				return
 			}
@@ -1039,7 +1064,7 @@ watchLoop:
 				revisionErr := fmt.Errorf("watch backend returned progress revision %d exceeds MaxInt64", result.ProgressRevision)
 				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
 				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable progress revision", "watcher", w.id, "watch", id)
-				w.Cancel(id, revisionErr, false)
+				w.CancelGeneration(id, wt, revisionErr, false)
 				cancel()
 				return
 			}
@@ -1047,7 +1072,7 @@ watchLoop:
 				revisionErr := fmt.Errorf("watch backend returned batch revision %d exceeds MaxInt64", result.Revision)
 				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
 				klog.ErrorS(revisionErr, "[watch stream] cancel due to unrepresentable batch revision", "watcher", w.id, "watch", id)
-				w.Cancel(id, revisionErr, false)
+				w.CancelGeneration(id, wt, revisionErr, false)
 				cancel()
 				return
 			}
@@ -1058,7 +1083,7 @@ watchLoop:
 						revisionErr := fmt.Errorf("watch backend returned progress revision %d below source revision %d", result.ProgressRevision, sourceRevision)
 						w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
 						klog.ErrorS(revisionErr, "[watch stream] cancel due to regressing progress revision", "watcher", w.id, "watch", id)
-						w.Cancel(id, revisionErr, false)
+						w.CancelGeneration(id, wt, revisionErr, false)
 						cancel()
 						return
 					}
@@ -1093,7 +1118,7 @@ watchLoop:
 			if revisionErr != nil {
 				w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
 				klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend batch revision", "watcher", w.id, "watch", id)
-				w.Cancel(id, revisionErr, false)
+				w.CancelGeneration(id, wt, revisionErr, false)
 				cancel()
 				return
 			}
@@ -1123,7 +1148,7 @@ watchLoop:
 						revisionErr := fmt.Errorf("watch backend returned event revision %d below watch start revision %d", eventRevision, r.StartRevision)
 						w.metricCli.EmitCounter("watch.backend.invalid_revision", 1)
 						klog.ErrorS(revisionErr, "[watch stream] cancel due to invalid backend event revision", "watcher", w.id, "watch", id)
-						w.Cancel(id, revisionErr, false)
+						w.CancelGeneration(id, wt, revisionErr, false)
 						cancel()
 						return
 					}
@@ -1183,7 +1208,7 @@ watchLoop:
 			if sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.push.err", 1)
 				klog.ErrorS(sendErr, "[watch stream] watch send err, cancel", "watcher", w.id, "watch", id)
-				w.Cancel(id, sendErr, false)
+				w.CancelGeneration(id, wt, sendErr, false)
 				cancel()
 			} else if wt != nil {
 				// These events are now delivered; the watch is synced through the
@@ -1238,7 +1263,7 @@ watchLoop:
 			} else if sendErr != nil {
 				w.metricCli.EmitCounter("watch.watch_stream.progress.err", 1)
 				klog.ErrorS(sendErr, "[watch stream] progress send err, cancel", "watcher", w.id, "watch", id)
-				w.Cancel(id, sendErr, false)
+				w.CancelGeneration(id, wt, sendErr, false)
 				cancel()
 			}
 			emitWatchSendLoopProgressDuration(w.metricCli, time.Since(start))

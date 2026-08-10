@@ -44992,6 +44992,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Created，再释放旧 goroutine，证明响应序列严格止于 `[Canceled(old), Created(new)]`。真实 TiKV/PD cancel/recreate 与慢发送组合
   仍待既知环境故障恢复后补跑。
 
+- A4252 把显式 WatchId 的释放点延后到 terminal control 已经发送或进入 FIFO `controlCh` 之后。backend error/compaction cancel
+  与 client cancel 不同，它由 watch goroutine 异步触发；此前先删除 map entry，再做可能阻塞的 fresh compact-revision 查询，新的
+  create 可在旧 Canceled 尚未排队时复用 ID，形成 `Created(new) -> Canceled(old)`，客户端无法区分并会误终止 replacement。
+  现在 cancel 以原子 `closing` 状态停止该 generation 的所有 event/progress/fragment 发送，但继续保留 ID；并发 create 按上游
+  active-ID 规则得到 duplicate canceled-create。terminal control 排序完成后才按 generation identity 删除 entry，此时后续 Created
+  必然位于旧 Canceled 之后。进入 closing 时还原子转移 quota 所有权给 cancel 路径，避免慢 compact read 与 `watcher.Close()` 并发
+  时双重释放。阻塞式测试固定 wire 顺序为 `duplicate(-1) -> Canceled(old, compact=12) -> Created(new)`；并发 Close 测试证明 quota
+  在慢 cancel 完成前保持占用、完成后精确释放一次。对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 中 WatchID 只在底层
+  Cancel 成功并生成 control 后离开 active 集合。真实 TiKV/PD compact cancel、ID reuse 与 stream disconnect 组合仍待环境恢复。
+
+- A4253 将 watch goroutine 发起的内部取消同样绑定到启动时捕获的 `*watch` generation。A4251 已阻止旧 generation 通过复用 ID
+  发送 event，但其 backend error、invalid result、compaction 或 send failure 路径仍调用仅含数值 ID 的 `Cancel`；client cancel 后
+  replacement 若已占用同 ID，迟到的旧错误会把新 watch 标记 closing 并发送伪 terminal response。现在内部路径统一调用
+  `CancelGeneration(id, expected, ...)`，只有 map 中仍是原指针时才能进入 closing；client CancelRequest 保留“取消当前 ID”语义。
+  `Watch` 在任何可能阻塞的 initial compaction/open 之前捕获 generation，连启动失败也不会误伤后继。确定性测试让已取消 producer
+  忽略 context 并迟到返回 backend error，在同 ID replacement Created 后证明响应仍只有旧 Canceled 与新 Created，且 map 指针
+  保持 replacement。真实 TiKV/PD late proxy/backend failure 与快速 ID reuse 组合仍待既知环境故障恢复后补跑。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

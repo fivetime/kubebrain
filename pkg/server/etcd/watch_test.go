@@ -1116,6 +1116,23 @@ type blockingWatchCompactRevisionBackend struct {
 	calls   atomic.Int64
 }
 
+type blockingCancelCompactRevisionBackend struct {
+	BackendShim
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingCancelCompactRevisionBackend) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {
+	b.once.Do(func() { close(b.entered) })
+	select {
+	case <-b.release:
+		return 12, nil
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
+}
+
 func (b *blockingWatchCompactRevisionBackend) GetCompactRevisionFresh(ctx context.Context) (uint64, error) {
 	if b.calls.Add(1) != 2 {
 		return b.BackendShim.GetCompactRevisionFresh(ctx)
@@ -1937,6 +1954,140 @@ func TestWatchCancelAndIDReusePrecedeNoOldGenerationEventSend(t *testing.T) {
 	close(headerRelease)
 	w.wg.Wait()
 	require.Equal(t, responses, stream.snapshot(), "the old generation must not publish through a reused WatchId")
+}
+
+func TestOldWatchErrorCannotCancelReusedID(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	results := make(chan etcdproxy.WatchResult, 1)
+	called := make(chan uint64, 1)
+	server.backend = &roleSwitchWatchBackend{BackendShim: server.backend, local: results, called: called}
+	server.peers = testPeerService{isLeader: true}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: ctx}}
+	oldGeneration := &watch{cancel: cancel, start: "/registry/watch/old-error", syncedRev: 9, sourceRev: 9}
+	w := &watcher{
+		backend: server.backend, watchServer: stream, grpcServer: server,
+		watches: map[int64]*watch{7: oldGeneration}, metricCli: server.metricCli,
+	}
+	w.wg.Add(1)
+	go w.Watch(ctx, 7, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/old-error"), StartRevision: 10,
+	})
+	require.Equal(t, uint64(10), <-called)
+	w.CancelRequest(7)
+
+	replacement := &watch{start: "/registry/watch/replacement", syncedRev: 19, sourceRev: 19}
+	w.Lock()
+	w.watches[7] = replacement
+	w.Unlock()
+	require.NoError(t, w.SendControl(&etcdserverpb.WatchResponse{
+		Header: txnHeader(19), WatchId: 7, Created: true,
+	}))
+
+	// The canceled producer ignores its context and reports a late failure. Its
+	// generation-bound cancel must not close the replacement sharing ID 7.
+	results <- etcdproxy.WatchResult{Err: errors.New("late old-generation failure")}
+	w.wg.Wait()
+	responses := stream.snapshot()
+	require.Len(t, responses, 2)
+	require.True(t, responses[0].Canceled)
+	require.True(t, responses[1].Created)
+	w.Lock()
+	require.Same(t, replacement, w.watches[7])
+	w.Unlock()
+}
+
+func TestCompactedWatchKeepsIDReservedUntilTerminalControlIsOrdered(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	backend := &blockingCancelCompactRevisionBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	stream := &createCallbackWatchServer{fakeWatchServer: &fakeWatchServer{ctx: context.Background()}}
+	w := &watcher{
+		backend: backend, watchServer: stream, grpcServer: server,
+		watches:   map[int64]*watch{7: {cancel: func() {}, start: "/registry/watch/old"}},
+		metricCli: server.metricCli,
+	}
+
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		w.Cancel(7, compactedRevisionError(), true)
+	}()
+	<-backend.entered
+
+	// The old generation is already closing, but its compact revision (and thus
+	// terminal frame) is not ready. Reusing ID 7 now must be rejected as a
+	// duplicate rather than emitting Created(new) ahead of Canceled(old).
+	w.Start(context.Background(), &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/replacement"), WatchId: 7, StartRevision: 20,
+	})
+	responses := stream.snapshot()
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Created)
+	require.True(t, responses[0].Canceled)
+	require.Equal(t, int64(-1), responses[0].WatchId)
+	require.Contains(t, responses[0].CancelReason, "duplicate watch ID")
+
+	close(backend.release)
+	<-cancelDone
+	responses = stream.snapshot()
+	require.Len(t, responses, 2)
+	require.True(t, responses[1].Canceled)
+	require.Equal(t, int64(7), responses[1].WatchId)
+	require.Equal(t, int64(12), responses[1].CompactRevision)
+
+	// Once the terminal control is ordered, the explicit ID is reusable.
+	newCtx, cancelNew := context.WithCancel(context.Background())
+	w.Start(newCtx, &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/registry/watch/replacement"), WatchId: 7, StartRevision: 20,
+	})
+	responses = stream.snapshot()
+	require.Len(t, responses, 3)
+	require.True(t, responses[2].Created)
+	require.False(t, responses[2].Canceled)
+	require.Equal(t, int64(7), responses[2].WatchId)
+
+	cancelNew()
+	w.Close()
+}
+
+func TestSlowWatchCancelTransfersQuotaOwnershipAcrossConcurrentClose(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetMaxWatches(1)
+	server.activeWatches = 1
+	backend := &blockingCancelCompactRevisionBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	w := &watcher{
+		backend: backend, watchServer: &fakeWatchServer{ctx: context.Background()}, grpcServer: server,
+		watches:   map[int64]*watch{7: {cancel: func() {}, quotaHeld: true}},
+		metricCli: server.metricCli,
+	}
+
+	cancelDone := make(chan struct{})
+	go func() {
+		defer close(cancelDone)
+		w.Cancel(7, compactedRevisionError(), true)
+	}()
+	<-backend.entered
+	w.Close()
+	require.Equal(t, int64(1), server.activeWatches,
+		"Close must not release quota ownership transferred to the slow cancel path")
+
+	close(backend.release)
+	<-cancelDone
+	require.Zero(t, server.activeWatches)
+	require.True(t, server.acquireWatch(), "quota must be released exactly once after cancellation finishes")
+	server.releaseWatch()
 }
 
 func TestFollowerWatchResumesLocallyAfterProxyGenerationCloses(t *testing.T) {
