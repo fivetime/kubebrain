@@ -38,6 +38,7 @@ if [[ ! -x "$ETCDCTL_BIN" ]]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
   exit 1
 fi
+REFERENCE_ETCD_BIN="$ETCDCTL_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"
 
 kubebrain_replicas="$(kubectl --context "$KUBE_CONTEXT" -n "$KUBEBRAIN_NAMESPACE" get statefulset "$KUBEBRAIN_STATEFULSET" \
   -o jsonpath='{.spec.replicas}')"

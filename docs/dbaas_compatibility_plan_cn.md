@@ -45190,6 +45190,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   当前 provenance 工具对同一 KubeBrain 制品的 `bbolt check`、latest/historical/compacted `hashkv` 全部
   通过。该项强化 Snapshot 兼容证据，不改变制品 schema 或 TiKV 数据路径。
 
+- A4275 将 A4268-A4274 的官方工具 provenance 门禁扩展到破坏性三副本全量重启 smoke。
+  `hack/dev/restart-persistence-smoke.sh` 此前直接使用默认 `/root/etcd/bin/etcdctl@d947b2086` 做
+  endpoint health、alarm、prefix 与 lease 前后对账；即使 server/client source 已是
+  `5cd9f4ee1380`，陈旧 CLI 仍可决定故障演练是否通过。runner 现在完成显式 destructive approval、
+  context、依赖和 executable 检查后，立即把实际 `ETCDCTL_BIN` 交给共享 verifier；SHA/modified
+  不匹配会在第一次 kubectl topology read、更不会在 Pod 重启前失败。静态回归同时固定 verifier
+  存在且严格位于 `kubebrain_replicas` 查询之前。backend quorum smoke 的 etcdutl 已由
+  `TestSnapshotFailsClosedAndRecoversAcrossBackendFailover` 在执行注入 command 前校验，审计后不重复接线。
+  该项只强化真实 TiKV/PD 故障证据，不执行本轮环境中的破坏性重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

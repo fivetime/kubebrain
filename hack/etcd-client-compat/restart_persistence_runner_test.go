@@ -2,6 +2,7 @@ package compat
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -20,6 +21,10 @@ func TestRestartPersistenceRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, contents, "alarm disarm")
 	require.Contains(t, contents, "restart endpoint leaked compat keys")
 	require.Contains(t, contents, `tidbcluster/$TIDB_CLUSTER`)
+	provenance := `REFERENCE_ETCD_BIN="$ETCDCTL_BIN" "$ROOT_DIR/hack/etcd-client-compat/verify-reference-etcd-provenance.sh"`
+	require.Contains(t, contents, provenance)
+	require.Less(t, strings.Index(contents, provenance), strings.Index(contents, `kubebrain_replicas="$(kubectl`),
+		"etcdctl provenance must fail closed before the first cluster read or destructive restart")
 	require.NotContains(t, contents, "KUBEBRAIN_RESTART_PERSISTENCE_COMMAND")
 	require.NotContains(t, contents, `bash -c`)
 }
