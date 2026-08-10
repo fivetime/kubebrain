@@ -45071,6 +45071,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必须是 1..65535 的十进制整数；helper 表测和实际 `KubeBrainOption.Validate` 启动入口均覆盖缺 host、零端口、越界端口和 service
   name。该项是纯配置门禁，不访问存储，真实 TiKV/PD 不适用；生产发布仍应由控制面验证 ClientURLs 从租户网络实际可达。
 
+- A4260 对齐 endpoint HTTP header 大小上限。A718 为 client gateway、health 和 info/metrics HTTP server 增加慢首部防护时，
+  把 `MaxHeaderBytes` 收紧到 32 KiB；但 upstream etcd 的 `server/embed/serve.go` 未覆盖该字段，实际沿用 Go 的 1 MiB 默认值。
+  这会让携带较大 JWT、代理元数据或 tracing baggage、且能被 etcd 接受的请求在 KubeBrain 提前收到 431。现在显式使用
+  `http.DefaultMaxHeaderBytes`，保留 5 秒 `ReadHeaderTimeout` 和 2 分钟 `IdleTimeout`；网络级回归固定 64 KiB header 成功、2 MiB
+  header 返回 431，既恢复兼容窗口又继续限制 header admission。该项只涉及 HTTP 连接层，不访问存储，真实 TiKV/PD 不适用。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

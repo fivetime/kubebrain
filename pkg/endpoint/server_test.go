@@ -20,7 +20,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/soheilhy/cmux"
 	"github.com/stretchr/testify/require"
@@ -79,6 +81,39 @@ func TestNewHttpServerBoundsHeaderAdmission(t *testing.T) {
 	require.True(t, server.svr.Protocols.UnencryptedHTTP2())
 	require.Zero(t, server.svr.ReadTimeout)
 	require.Zero(t, server.svr.WriteTimeout)
+}
+
+func TestHTTPServerEnforcesEtcdCompatibleHeaderLimit(t *testing.T) {
+	server := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- server.serve(listener) }()
+	t.Cleanup(func() {
+		require.NoError(t, server.close())
+		require.ErrorIs(t, <-done, http.ErrServerClosed)
+	})
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String(), nil)
+	require.NoError(t, err)
+	// This is deliberately above KubeBrain's former 32 KiB limit but below
+	// upstream etcd's effective net/http default.
+	request.Header.Set("X-Etcd-Compatible-Metadata", strings.Repeat("a", 64<<10))
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+
+	request, err = http.NewRequest(http.MethodGet, "http://"+listener.Addr().String(), nil)
+	require.NoError(t, err)
+	request.Header.Set("X-Oversized-Metadata", strings.Repeat("a", 2<<20))
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusRequestHeaderFieldsTooLarge, response.StatusCode)
+	require.NoError(t, response.Body.Close())
 }
 
 func TestMetricsHTTPServerGatesPprofOnInfoPort(t *testing.T) {

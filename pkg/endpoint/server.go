@@ -180,7 +180,10 @@ func addCORSHeaders(w http.ResponseWriter, origin string) {
 const (
 	httpReadHeaderTimeout = 5 * time.Second
 	httpIdleTimeout       = 2 * time.Minute
-	httpMaxHeaderBytes    = 32 << 10
+	// Match net/http's default, which is also the effective limit used by
+	// upstream etcd. Keeping the value explicit preserves bounded admission
+	// without rejecting metadata that an etcd endpoint accepts.
+	httpMaxHeaderBytes = http.DefaultMaxHeaderBytes
 )
 
 func newHttpServer(handler http.Handler) exposedServer {
