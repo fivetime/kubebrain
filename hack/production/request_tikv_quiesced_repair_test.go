@@ -100,3 +100,25 @@ fi
 	require.NoError(t, readErr)
 	require.False(t, strings.Contains(string(logData), "secret"))
 }
+
+func TestProductionRunbookUsesAuthorizedTiKVQuiescedRepairPath(t *testing.T) {
+	docPath := filepath.Join("..", "..", "docs", "production_readiness_cn.md")
+	data, err := os.ReadFile(docPath)
+	require.NoError(t, err)
+	doc := string(data)
+	for _, required := range []string{
+		"hack/production/request-tikv-quiesced-repair.sh",
+		"deploy/production/kubebrain-tikv-quiesced-repair-requester-admission.yaml",
+		"deploy/production/kubebrain-tikv-quiesced-repair-requester-rbac.yaml",
+		"deploy/production/kubebrain-tikv-transaction-repair-rbac.yaml",
+		"deploy/production/kubebrain-operation-executors.yaml",
+		"repaired_store_ids",
+		"TiKVTransactionRecovery",
+	} {
+		require.Contains(t, doc, required)
+	}
+	require.NotContains(t, doc, "该模式目前只是下一阶段审批 runner 的执行原语")
+	requestIndex := strings.Index(doc, "hack/production/request-tikv-quiesced-repair.sh")
+	recoveryIndex := strings.Index(doc, "hack/production/request-tikv-transaction-recovery.sh")
+	require.Greater(t, recoveryIndex, requestIndex, "quiesced repair must precede the independently approved recovery step")
+}

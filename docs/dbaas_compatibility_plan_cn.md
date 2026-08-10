@@ -45499,6 +45499,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项仍未向真实集群提交/审批 Operation，也没有删除现场 Pod；部署准入与执行现场修复必须使用外部
   变更审批 ID，修复成功后仍需经 A4296 recovery 的独立审批恢复 KubeBrain。
 
+- A4299 完成 A4298 的权威生产 runbook 接入审计。生产就绪文档此前仍把
+  `REPAIR_MODE=quiesced` 描述为“下一阶段尚未接线”，没有给出只读 requester 命令、准入/RBAC 安装顺序
+  或 repair→recovery 的双审批边界，平台照抄文档无法使用已实现的安全入口，反而容易继续依赖手工环境
+  变量。文档现在固定 `request-tikv-quiesced-repair.sh` 的外部 request ID/context/endpoint 调用，明确
+  requester 冻结两个 UID、cluster ID 与精确 store IDs、只提交未审批 maxAttempts=1 Operation；列出 repair
+  RBAC、quiesced requester Admission/RBAC 和唯一 executor 清单，并要求 Admission 先于实际 requester
+  凭据。执行成功仍保持 KubeBrain 0 副本，必须再走独立 `TiKVTransactionRecovery` 请求/审批，不能把一次
+  Pod 修复审批扩张为恢复租户流量授权。回归测试要求权威文档同时包含 requester、四份清单、精确
+  `repaired_store_ids` 和 repair-before-recovery 顺序，并禁止陈旧“尚未接线”措辞回归。本项只修正仓库内
+  可操作入口与防回退证据，没有 apply 现场清单、创建 Operation、approve、scale 或删除 Pod。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

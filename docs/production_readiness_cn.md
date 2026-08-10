@@ -304,8 +304,38 @@ desired/Ready=0，跳过 endpoint transaction probe 和 scale-to-zero，要求�
 只重建映射到这些 store 的 TiKV Pod。它继续执行既有 PD 身份、三 store Up、六卷 CSI/PVC/PV、磁盘、
 target drift 和连续 Region 收敛栅栏；成功后要求 KubeBrain 仍为相同 UID 的 0 副本，输出独立
 `kubebrain.tikv-quiesced-repair.receipt.v1`，不执行 recovery 或伪造 transaction verified。
-该模式目前只是下一阶段审批 runner 的执行原语，尚不得直接设置环境变量运行；在 requester、Operation
-参数/receipt 校验和专属调用路径接线完成前，现场异常 Region 继续保持隔离。
+该原语仍不得通过手工设置 `REPAIR_MODE=quiesced` 直接运行。合法入口是只读 requester；它冻结
+KubeBrain/TidbCluster UID、cluster ID 和当前精确异常 store 集合，并提交未审批 Operation：
+
+```bash
+REQUEST_ID=change-2026-002 \
+KUBE_CONTEXT=production \
+ENDPOINT=https://kubebrain-client.kubebrain-system.svc:3379 \
+hack/production/request-tikv-quiesced-repair.sh
+```
+
+requester 要求 KubeBrain desired/Ready 精确为 0、TidbCluster 3 PD/3 TiKV Ready，且 PD 至少报告一个
+有效 pending/down store；它不会执行 scale、Pod delete、exec 或 approve。Operation 名同时绑定外部
+`REQUEST_ID`、两个 UID、cluster ID 和排序去重后的 store IDs，参数 Secret 为 immutable 且
+`maxAttempts: 1`。平台 approver 必须核对外部变更单与冻结 store 集合后写入独立 approval ID，才能将
+既有 `kubebrain-tikv-transaction-repair-executor` 从 0 扩为 1。runner 按 requester 身份选择严格的
+quiesced schema，重算 Operation 名，只允许原语修复已审批 store；receipt 还必须逐项返回相同
+`repaired_store_ids`。worker 接管只复验已有 receipt，不会重复删除 TiKV Pod。修复成功后 KubeBrain
+仍保持 0 副本，必须再走下文独立的 `TiKVTransactionRecovery` 请求和审批，不能由 repair 自动恢复流量。
+
+在 Operation CRD、managed-namespace RBAC、worker/audit Admission 和 parameter broker 就绪后，静默
+修复路径还必须应用以下清单；Admission 必须早于授予 requester 身份实际凭据：
+
+```bash
+kubectl apply -f deploy/production/kubebrain-tikv-transaction-repair-rbac.yaml
+kubectl apply -f deploy/production/kubebrain-tikv-quiesced-repair-requester-admission.yaml
+kubectl apply -f deploy/production/kubebrain-tikv-quiesced-repair-requester-rbac.yaml
+kubectl apply -f deploy/production/kubebrain-operation-executors.yaml
+```
+
+requester RBAC 只有固定 StatefulSet/TidbCluster/PD proxy 的只读访问和隔离 queue 中 Operation/Secret
+create/get；没有 Pod、scale、exec、PVC/PV 或 delete/patch/update 权限。executor 复用唯一
+`TiKVTransactionRepair` worker 与既有破坏性最小权限，避免同一类型被两个 worker 竞争领取。
 
 该原语不是直接生产入口，不能通过手工设置 `ALLOW_KUBEBRAIN_RECOVERY=true` 绕过高风险操作审批。
 合法入口是只读 requester：
