@@ -44560,6 +44560,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   有序重启 TiKV/PD 仍不能恢复。实验性的 timeout/1PC/fence 分块改动因未改善单键写入且会改变安全
   时序，已全部撤回。Snapshot 仍保持“部分兼容”，本项在该 kind/TiKV 环境恢复并跑出 fault-window
   与 post-recovery artifact（或确定性 legacy `FailedPrecondition`）证据前保持开放。
+  A4208 对照 upstream 最新
+  `/root/etcd/tests/common/member_test.go::TestMemberListSerializable`（`845cd3885`），把 MemberList
+  的 consistency flag 从单元级 read-barrier 断言提升为真实 PD quorum-loss 黑盒门禁。新增 opt-in
+  用例在故障 helper 仍活跃时反复发起 400ms linearizable MemberList，必须实际观察
+  `DeadlineExceeded`；随后同一连接上的 serializable MemberList 必须在 1 秒内返回与故障前完全相同的
+  静态成员快照，证明它没有误入 TiKV/PD read barrier；PD 恢复后 linearizable 调用还必须重新成功。
+  runner 在 `pd-quorum-loss` 模式中使用独立故障轮次执行该用例，并由静态测试固定环境变量与测试名，
+  避免未来只保留健康态 flag 差分。实现期间也完成了 A4207 环境回滚审计：TiDB Operator 因固定名
+  `kb-tikv` ConfigMap 在哈希版本切换时缺失而停在 2/3，已从当前期望哈希对象恢复该非数据配置；
+  原 TiKV 配置、3/3 Ready 和零 KubeBrain 副本均已恢复。但独立 TiDB DML 在 45 秒内仍超时，说明
+  当前 kind 环境的 Raft/副本可用性问题尚未解除；因此 A4208 只宣称确定性编译/runner 门禁，未伪称
+  真实 fault GREEN，待存储环境恢复后与 A4207 Snapshot 一并执行。
 
 ### P2：运维兼容和长期验证
 

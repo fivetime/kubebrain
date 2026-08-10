@@ -622,6 +622,19 @@ run_repeated_require_leader_test() {
   wait_backend_ready
 }
 
+run_memberlist_quorum_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_MEMBERLIST_QUORUM_FAILOVER_COMMAND="$command" \
+      go test . -run '^TestMemberListSerializableSurvivesBackendQuorumLoss$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 run_snapshot_failover_test() {
   local label="$1"
   local command="$2"
@@ -660,6 +673,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
   pd-quorum-loss)
     need docker
     need jq
+    run_memberlist_quorum_test "PD quorum-loss MemberList consistency modes" "$self --partition-pd-quorum"
     run_watch_recovery_test "PD quorum-loss network partition" "$self --partition-pd-quorum-soak"
     run_lease_require_leader_test "PD quorum-loss LeaseKeepAlive" "$self --partition-pd-quorum-soak"
     run_repeated_require_leader_test "Repeated PD quorum-loss require-leader streams" "$self --partition-pd-quorum"
