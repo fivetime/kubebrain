@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
@@ -267,6 +268,41 @@ func TestClientRPCsClassifyPersistedMetadataCorruption(t *testing.T) {
 func TestAuthGRPCErrorPreservesEtcdNoPasswordBehavior(t *testing.T) {
 	err := authGRPCError(errNoPasswordUser)
 	requireAuthGRPCStatusError(t, err, codes.Unknown, errNoPasswordUser.Error())
+}
+
+func TestAuthTokenSigningKeyCorruptionIsDataLossOverGRPC(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+	require.NoError(t, server.auth.roleAdd(ctx, "root"))
+	require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+	require.NoError(t, server.auth.enable(ctx))
+	token, err := server.tokens.authenticate(ctx, "root", "secret")
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, authTokenSigningKey, []byte("truncated")))
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	connection, err := grpc.NewClient("passthrough:///auth-signing-key-corruption",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, connection.Close()) })
+
+	_, err = etcdserverpb.NewAuthClient(connection).Authenticate(ctx,
+		&etcdserverpb.AuthenticateRequest{Name: "root", Password: "secret"})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "invalid auth token signing key")
+
+	authenticated := metadata.NewOutgoingContext(ctx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, token))
+	_, err = etcdserverpb.NewKVClient(connection).Range(authenticated, &etcdserverpb.RangeRequest{Key: []byte("key")})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Contains(t, status.Convert(err).Message(), "invalid auth token signing key")
 }
 
 func requireAuthGRPCStatusError(t *testing.T, err error, code codes.Code, message string) {

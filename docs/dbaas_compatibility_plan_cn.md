@@ -44794,6 +44794,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `FailedPrecondition`，不会缓存半有效 generation。memkv 表测注入 15-byte payload，真实 bufconn KV.Range
   固定 DataLoss；既有无 generation 用户的 lazy migration 测试继续通过，证明 missing 与 malformed 边界未混淆。
 
+- A4230 修复 KubeBrain 私有 simple-token 签名密钥的持久故障分类。上游
+  `/root/etcd/server/auth/simple_token.go` 的 token 只保存在进程内且明确不是密码学签名；KubeBrain 为适配无状态
+  DBaaS Pod 使用 TiKV 中的 32-byte HMAC 密钥，因此该额外持久状态必须有独立完整性契约。此前密钥缺失、长度损坏和
+  TiKV 读取失败在验证路径中都会降级为 `ErrInvalidAuthToken`，把服务端损坏/不可用误报成客户端凭据错误；签发路径的
+  非法长度则落成普通 `Unknown`。现在 `loadSigningKey` 将存在但非 32-byte 的记录标记为
+  `errInvalidAuthMetadata`，verify 仅对确实不存在的 legacy/missing key 保持 fail-closed invalid-token，其他读取错误原样
+  传播。真实 bufconn 同时固定 Authenticate 签发和带既有 token 的 KV.Range 在损坏密钥下返回 `DataLoss`，单元回归
+  证明 `storage.ErrUnavailable` 不再被掩盖；删除密钥仍不静默轮换且返回 invalid-token。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

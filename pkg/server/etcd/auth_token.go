@@ -104,7 +104,7 @@ func (m *authTokenManager) loadSigningKey(ctx context.Context) ([]byte, error) {
 		return nil, err
 	}
 	if len(key) != authTokenKeyBytes {
-		return nil, errors.New("invalid auth token signing key")
+		return nil, markInvalidAuthMetadata(errors.New("invalid auth token signing key"))
 	}
 	return key, nil
 }
@@ -271,7 +271,10 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 	}
 	key, err := m.loadSigningKey(ctx)
 	if err != nil {
-		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
+		}
+		return authTokenClaims{}, err
 	}
 	if !hmac.Equal(signature, signAuthToken(key, payload)) {
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken

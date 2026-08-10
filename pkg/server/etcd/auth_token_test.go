@@ -1,6 +1,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"strings"
@@ -19,6 +20,18 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+type authSigningKeyReadErrorBackend struct {
+	BackendShim
+	err error
+}
+
+func (b *authSigningKeyReadErrorBackend) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
+	if bytes.Equal(key, authTokenSigningKey) {
+		return nil, b.err
+	}
+	return b.BackendShim.InternalGet(ctx, key)
+}
 
 func bootstrapAuthForToken(t *testing.T, server *RPCServer) (*authManager, *authTokenManager) {
 	t.Helper()
@@ -190,6 +203,20 @@ func TestAuthTokenVerificationFailsClosedWithoutSigningKey(t *testing.T) {
 	requireAuthTokenError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 	_, err = server.backend.InternalGet(ctx, authTokenSigningKey)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound, "verification must not silently rotate a missing signing key")
+}
+
+func TestAuthTokenVerificationPreservesSigningKeyBackendFailure(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, tokens := bootstrapAuthForToken(t, server)
+	ctx := context.Background()
+	token, err := tokens.authenticate(ctx, "root", "secret")
+	require.NoError(t, err)
+
+	want := storage.ErrUnavailable
+	failing := newAuthTokenManager(&authSigningKeyReadErrorBackend{BackendShim: server.backend, err: want})
+	_, err = failing.verify(ctx, token)
+	require.ErrorIs(t, err, want, "backend failure must not be disguised as an invalid client token")
 }
 
 func TestAuthTokenSigningKeySurvivesManagerRecreationAndExpires(t *testing.T) {
