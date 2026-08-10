@@ -23,10 +23,11 @@ import (
 var inClusterConfig = rest.InClusterConfig
 
 func main() {
-	var address, namespace, audience, certFile, keyFile, kubeconfig string
+	var address, namespace, additionalNamespace, audience, certFile, keyFile, kubeconfig string
 	var certReloadInterval, kubernetesRequestTimeout time.Duration
 	flag.StringVar(&address, "listen-address", ":8443", "HTTPS listen address")
 	flag.StringVar(&namespace, "namespace", "kubebrain-operations", "operation namespace")
+	flag.StringVar(&additionalNamespace, "additional-namespace", "", "additional isolated operation queue namespace")
 	flag.StringVar(&audience, "token-audience", "kubebrain-operation-parameters", "required projected service account token audience")
 	flag.StringVar(&certFile, "tls-cert-file", "", "HTTPS server certificate")
 	flag.StringVar(&keyFile, "tls-key-file", "", "HTTPS server private key")
@@ -40,6 +41,14 @@ func main() {
 	}
 	if err := namespaceinventory.ValidateOne(namespace); err != nil {
 		log.Fatal("--namespace: ", err)
+	}
+	if additionalNamespace != "" {
+		if err := namespaceinventory.ValidateOne(additionalNamespace); err != nil {
+			log.Fatal("--additional-namespace: ", err)
+		}
+		if additionalNamespace == namespace {
+			log.Fatal("--additional-namespace must differ from --namespace")
+		}
 	}
 	certificate, err := tlscertreload.New(certFile, keyFile)
 	if err != nil {
@@ -64,8 +73,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	additionalNamespaces := []string{}
+	if additionalNamespace != "" {
+		additionalNamespaces = append(additionalNamespaces, additionalNamespace)
+	}
 	handler, err := parameterbroker.NewHandler(
-		tokens, dynamicClient, namespace, audience, kubernetesRequestTimeout,
+		tokens, dynamicClient, namespace, audience, kubernetesRequestTimeout, additionalNamespaces...,
 	)
 	if err != nil {
 		log.Fatal(err)

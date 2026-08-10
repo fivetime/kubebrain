@@ -45510,6 +45510,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `repaired_store_ids` 和 repair-before-recovery 顺序，并禁止陈旧“尚未接线”措辞回归。本项只修正仓库内
   可操作入口与防回退证据，没有 apply 现场清单、创建 Operation、approve、scale 或删除 Pod。
 
+- A4300 关闭 TiKV repair/recovery executor 参数读取绕过统一 broker 的接线与最小权限缺口。隔离 repair
+  queue 创建时曾为两个 executor 直接绑定 `secrets/get`；同时 broker NetworkPolicy 虽列出 repair executor，
+  服务端 identity→type 表却不接受 repair/recovery，recovery 也未进入网络白名单。因此 A4298/A4299 的
+  审批链若按 manifest 启动，会依赖 executor 的宽权限直读，而不能获得 broker 对 type、owner、attempt、
+  immutable Secret 和 digest 的统一 fence。现在 broker 显式接受两个 SA 并分别绑定
+  `TiKVTransactionRepair`/`TiKVTransactionRecovery`；两个 Deployment 都挂载 1 小时、固定
+  `kubebrain-operation-parameters` audience 的 projected token 与 CA，只通过 HTTPS broker 获取参数。
+  原 repair queue parameter-reader Role/Binding 已删除，改由 broker 专属 Role 只读该 queue 的 Operation/
+  Secret，executor 对任何 Secret 均无权限；NetworkPolicy 同时允许 repair 和 recovery Pod。
+  broker 新增显式 additional namespace allowlist：合法但未配置的 namespace 在 TokenReview/Kubernetes API
+  前拒绝，readiness 则逐一探测 central 与 repair queue 的 Operation/Secret API，避免 RBAC 漂移时仍接流。
+  单元测试固定两种 SA/type 映射、未授权 namespace 零 TokenReview/API、双 queue readiness；manifest/RBAC
+  测试固定 token/CA/env、broker-only repair Secret 权限、网络白名单并禁止旧 direct reader 回归。权威
+  runbook 同步给出 `no/yes/no/no/yes` 的五项 `auth can-i` 预期。本项未部署 broker、扩 executor、读取现场
+  Secret 或执行真实 repair。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

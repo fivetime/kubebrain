@@ -110,6 +110,8 @@ func TestProductionRunbookUsesAuthorizedTiKVQuiescedRepairPath(t *testing.T) {
 		"hack/production/request-tikv-quiesced-repair.sh",
 		"deploy/production/kubebrain-tikv-quiesced-repair-requester-admission.yaml",
 		"deploy/production/kubebrain-tikv-quiesced-repair-requester-rbac.yaml",
+		"deploy/production/kubebrain-tikv-repair-alert-receiver.yaml",
+		"deploy/production/kubebrain-operation-parameter-broker.yaml",
 		"deploy/production/kubebrain-tikv-transaction-repair-rbac.yaml",
 		"deploy/production/kubebrain-operation-executors.yaml",
 		"repaired_store_ids",

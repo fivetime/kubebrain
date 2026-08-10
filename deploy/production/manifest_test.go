@@ -739,8 +739,6 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		require.Equal(t, want.claim,
 			nestedString(t, workspace, "persistentVolumeClaim", "claimName"))
 		if name == "kubebrain-tikv-transaction-repair-executor" || name == "kubebrain-tikv-transaction-recovery-executor" {
-			require.Nil(t, parameterToken)
-			require.Nil(t, parameterCA)
 			env, found, err := unstructured.NestedSlice(container.Object, "env")
 			require.NoError(t, err)
 			require.True(t, found)
@@ -753,28 +751,25 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			}
 			require.Equal(t, "kubebrain-repair-operations", envByName["OPERATION_NAMESPACE"])
 			require.Equal(t, "kubebrain-tikv-repair-operation-inventory", envByName["OPERATION_NAMESPACE_INVENTORY_CONFIGMAP"])
-			require.NotContains(t, envByName, "OPERATION_PARAMETERS_ENDPOINT")
-			require.NotContains(t, envByName, "OPERATION_PARAMETERS_TOKEN_FILE")
-			require.NotContains(t, envByName, "OPERATION_PARAMETERS_CA_FILE")
-		} else {
-			require.NotNil(t, parameterToken)
-			require.NotNil(t, parameterCA)
-			sources, found, err := unstructured.NestedSlice(
-				parameterToken.Object, "projected", "sources",
-			)
-			require.NoError(t, err)
-			require.True(t, found)
-			require.EqualValues(t, 0440, nestedInt64(t, parameterToken, "projected", "defaultMode"))
-			require.Len(t, sources, 1)
-			tokenSource := &unstructured.Unstructured{Object: sources[0].(map[string]any)}
-			require.Equal(t, "token", nestedString(t, tokenSource, "serviceAccountToken", "path"))
-			require.Equal(t, "kubebrain-operation-parameters",
-				nestedString(t, tokenSource, "serviceAccountToken", "audience"))
-			require.EqualValues(t, 3600,
-				nestedInt64(t, tokenSource, "serviceAccountToken", "expirationSeconds"))
-			require.Equal(t, "kubebrain-operation-parameter-broker-ca",
-				nestedString(t, parameterCA, "configMap", "name"))
+			require.Equal(t, "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc", envByName["OPERATION_PARAMETERS_ENDPOINT"])
 		}
+		require.NotNil(t, parameterToken)
+		require.NotNil(t, parameterCA)
+		sources, found, err := unstructured.NestedSlice(
+			parameterToken.Object, "projected", "sources",
+		)
+		require.NoError(t, err)
+		require.True(t, found)
+		require.EqualValues(t, 0440, nestedInt64(t, parameterToken, "projected", "defaultMode"))
+		require.Len(t, sources, 1)
+		tokenSource := &unstructured.Unstructured{Object: sources[0].(map[string]any)}
+		require.Equal(t, "token", nestedString(t, tokenSource, "serviceAccountToken", "path"))
+		require.Equal(t, "kubebrain-operation-parameters",
+			nestedString(t, tokenSource, "serviceAccountToken", "audience"))
+		require.EqualValues(t, 3600,
+			nestedInt64(t, tokenSource, "serviceAccountToken", "expirationSeconds"))
+		require.Equal(t, "kubebrain-operation-parameter-broker-ca",
+			nestedString(t, parameterCA, "configMap", "name"))
 		if name == "kubebrain-certificate-rotation-executor" {
 			require.NotNil(t, hooks)
 			require.Equal(t, "kubebrain-certificate-rotation-executor-hooks",
@@ -798,7 +793,7 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 	}
 }
 
-func TestOperationParameterBrokerOwnsGenericExecutorParameterSecretPermission(t *testing.T) {
+func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-parameter-broker.yaml")
 	deployment := objectByKindAndName(
 		t, objects, "Deployment", "kubebrain-operation-parameter-broker",
@@ -835,6 +830,7 @@ func TestOperationParameterBrokerOwnsGenericExecutorParameterSecretPermission(t 
 	require.True(t, found)
 	require.Contains(t, args, "--tls-reload-interval=30s")
 	require.Contains(t, args, "--kubernetes-request-timeout=5s")
+	require.Contains(t, args, "--additional-namespace=kubebrain-repair-operations")
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	assertReadOnlyTLSSecretVolume(t, pod, container,
 		"tls", "kubebrain-operation-parameter-broker-tls", "/var/run/kubebrain-parameter-tls")
@@ -848,6 +844,27 @@ func TestOperationParameterBrokerOwnsGenericExecutorParameterSecretPermission(t 
 	require.Equal(t, []any{"get"}, rules[0].(map[string]any)["verbs"].([]any))
 	require.Equal(t, []any{"secrets"}, rules[1].(map[string]any)["resources"].([]any))
 	require.Equal(t, []any{"get"}, rules[1].(map[string]any)["verbs"].([]any))
+	repairRole := objectByKindAndName(t, objects, "Role", "kubebrain-operation-parameter-broker-repair-queue")
+	require.Equal(t, "kubebrain-repair-operations", repairRole.GetNamespace())
+	repairRules, found, err := unstructured.NestedSlice(repairRole.Object, "rules")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, repairRules, 2)
+	require.Equal(t, []any{"kubebrainoperations"}, repairRules[0].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"get"}, repairRules[0].(map[string]any)["verbs"].([]any))
+	require.Equal(t, []any{"secrets"}, repairRules[1].(map[string]any)["resources"].([]any))
+	require.Equal(t, []any{"get"}, repairRules[1].(map[string]any)["verbs"].([]any))
+	repairBinding := objectByKindAndName(t, objects, "RoleBinding", "kubebrain-operation-parameter-broker-repair-queue")
+	require.Equal(t, "kubebrain-repair-operations", repairBinding.GetNamespace())
+	require.Equal(t, "kubebrain-operation-parameter-broker-repair-queue",
+		nestedString(t, repairBinding, "roleRef", "name"))
+	repairSubjects, found, err := unstructured.NestedSlice(repairBinding.Object, "subjects")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, repairSubjects, 1)
+	repairSubject := &unstructured.Unstructured{Object: repairSubjects[0].(map[string]any)}
+	require.Equal(t, "kubebrain-operation-parameter-broker", nestedString(t, repairSubject, "name"))
+	require.Equal(t, "kubebrain-operations", nestedString(t, repairSubject, "namespace"))
 
 	tokenRole := objectByKindAndName(
 		t, objects, "ClusterRole", "kubebrain-operation-parameter-broker-token-review",
@@ -864,6 +881,19 @@ func TestOperationParameterBrokerOwnsGenericExecutorParameterSecretPermission(t 
 	require.Equal(t, "kubebrain-operation-parameter-broker", nestedString(
 		t, networkPolicy, "spec", "podSelector", "matchLabels", "app.kubernetes.io/name",
 	))
+	ingress, found, err := unstructured.NestedSlice(networkPolicy.Object, "spec", "ingress")
+	require.NoError(t, err)
+	require.True(t, found)
+	from := ingress[0].(map[string]any)["from"].([]any)
+	selector := from[0].(map[string]any)["podSelector"].(map[string]any)
+	expressions := selector["matchExpressions"].([]any)
+	values := expressions[0].(map[string]any)["values"].([]any)
+	require.ElementsMatch(t, []any{
+		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
+		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
+		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
+		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",
+	}, values)
 
 	managed := objectByKindAndName(
 		t, decodeManifest(t, "kubebrain-operation-managed-namespace-rbac.yaml"),

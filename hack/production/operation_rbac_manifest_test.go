@@ -338,7 +338,7 @@ func TestTiKVRepairAlertReceiverUsesAnIsolatedNonDestructiveQueue(t *testing.T) 
 		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
 		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
 	}, receiverRole.Rules)
-	require.Equal(t, []rbacRule{{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"get"}}}, parameterReader.Rules)
+	require.Empty(t, parameterReader.Rules, "repair executors must fetch parameters through the broker")
 	require.Equal(t, rbacParty{Kind: "ClusterRole", Name: "kubebrain-operation-worker-managed-namespace"}, workerBinding.RoleRef)
 	require.ElementsMatch(t, []rbacParty{
 		{Kind: "ServiceAccount", Name: "kubebrain-tikv-transaction-repair-executor", Namespace: "kubebrain-operations"},
@@ -351,6 +351,7 @@ func TestTiKVRepairAlertReceiverUsesAnIsolatedNonDestructiveQueue(t *testing.T) 
 	require.NotContains(t, string(data), "persistentvolumeclaims")
 	require.NotContains(t, string(data), "pods/exec")
 	require.NotContains(t, string(data), "verbs: [delete")
+	require.NotContains(t, string(data), "kubebrain-tikv-repair-parameter-reader")
 }
 
 func TestOperationArchiverRBACCanOnlyReadAndReleaseOperations(t *testing.T) {

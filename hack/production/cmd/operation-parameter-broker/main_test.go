@@ -67,6 +67,28 @@ func TestMainRejectsInvalidNamespaceBeforeKubeconfig(t *testing.T) {
 	require.Contains(t, string(output), "invalid namespace ops.ns")
 }
 
+func TestMainRejectsInvalidOrDuplicateAdditionalNamespaceBeforeKubeconfig(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		namespace  string
+		additional string
+		want       string
+	}{
+		{name: "invalid", namespace: "ops", additional: "repair.queue", want: "--additional-namespace: invalid namespace repair.queue"},
+		{name: "duplicate", namespace: "ops", additional: "ops", want: "--additional-namespace must differ from --namespace"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := testcommand.GoRun(t, ".",
+				"--namespace", tc.namespace,
+				"--additional-namespace", tc.additional,
+				"--tls-cert-file", "cert.pem", "--tls-key-file", "key.pem",
+			)
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.want)
+		})
+	}
+}
+
 func TestNewHTTPServerUsesHardenedTLSAndTimeouts(t *testing.T) {
 	handler := http.NewServeMux()
 	server := newHTTPServer("127.0.0.1:8443", handler, fakeServerCertificate{})

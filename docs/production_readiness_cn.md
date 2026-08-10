@@ -327,11 +327,17 @@ quiesced schema，重算 Operation 名，只允许原语修复已审批 store；
 修复路径还必须应用以下清单；Admission 必须早于授予 requester 身份实际凭据：
 
 ```bash
+kubectl apply -f deploy/production/kubebrain-tikv-repair-alert-receiver.yaml
+kubectl apply -f deploy/production/kubebrain-operation-parameter-broker.yaml
 kubectl apply -f deploy/production/kubebrain-tikv-transaction-repair-rbac.yaml
 kubectl apply -f deploy/production/kubebrain-tikv-quiesced-repair-requester-admission.yaml
 kubectl apply -f deploy/production/kubebrain-tikv-quiesced-repair-requester-rbac.yaml
 kubectl apply -f deploy/production/kubebrain-operation-executors.yaml
 ```
+
+第一份清单负责先创建隔离 namespace、inventory 和 worker/approver/archiver bindings；其 receiver TLS/
+Bearer Secrets 必须按下文先行配置。随后必须重新应用 parameter broker 清单，确保 repair queue 的
+broker-only Role/Binding 已创建；不能忽略单个 `kubectl apply` 失败后继续扩 executor。
 
 requester RBAC 只有固定 StatefulSet/TidbCluster/PD proxy 的只读访问和隔离 queue 中 Operation/Secret
 create/get；没有 Pod、scale、exec、PVC/PV 或 delete/patch/update 权限。executor 复用唯一
@@ -410,8 +416,10 @@ Service 的 NetworkPolicy 默认只允许 `monitoring` namespace 中标签为
 Bearer token 与 Service DNS 名。
 
 receiver 与其参数 Secret/Operation 固定在 `kubebrain-repair-operations`，不进入含备份、恢复和销毁
-参数的通用 queue。独立 inventory 只供 TiKV repair executor claim；该 executor 直接读取隔离
-namespace 的参数 Secret，通用 parameter broker 不获得跨 namespace Secret 权限。receiver SA 仅可
+参数的通用 queue。独立 inventory 只供 TiKV repair/recovery executor claim；两个 executor 都通过
+短期、固定 audience 的 projected token 从通用 parameter broker 读取参数，不持有任何 namespace 的
+Secret 权限。broker 以单独 Role 只读隔离 queue 的 Operation/Secret，并在服务内只允许
+`kubebrain-operations` 与 `kubebrain-repair-operations` 两个显式 namespace。receiver SA 仅可
 get/create 该 namespace 的 Secret 和 Operation，并只读指定 KubeBrain StatefulSet 与 TidbCluster
 身份；它不能 update Operation（因此不能 approve）、写 status、管理 Lease、缩放 StatefulSet、
 访问 Pod 或删除任何资源。中央 approver/archiver 和 repair worker 通过逐 namespace RoleBinding
@@ -3039,9 +3047,15 @@ kubectl -n kubebrain-operations auth can-i get secrets \
   --as=system:serviceaccount:kubebrain-operations:kubebrain-backup-executor
 kubectl -n kubebrain-operations auth can-i get secrets \
   --as=system:serviceaccount:kubebrain-operations:kubebrain-operation-parameter-broker
+kubectl -n kubebrain-repair-operations auth can-i get secrets \
+  --as=system:serviceaccount:kubebrain-operations:kubebrain-tikv-transaction-repair-executor
+kubectl -n kubebrain-repair-operations auth can-i get secrets \
+  --as=system:serviceaccount:kubebrain-operations:kubebrain-tikv-transaction-recovery-executor
+kubectl -n kubebrain-repair-operations auth can-i get secrets \
+  --as=system:serviceaccount:kubebrain-operations:kubebrain-operation-parameter-broker
 ```
 
-结果必须依次为 `no`、`yes`。broker SA 另有且只有 TokenReview create ClusterRole；禁止授予
+结果必须依次为 `no`、`yes`、`no`、`no`、`yes`。broker SA 另有且只有 TokenReview create ClusterRole；禁止授予
 Secret list/watch、Operation list/watch/status 或 Lease 权限。projected token audience
 固定为 `kubebrain-operation-parameters`，不能复用默认 Kubernetes API token。broker
 解析 `Authorization` 时对 Bearer scheme 大小写不敏感，但会在 TokenReview 前拒绝空 token、
@@ -3050,7 +3064,8 @@ Secret list/watch、Operation list/watch/status 或 Lease 权限。projected tok
 不得回退为直接读取 Secret。`/v1/parameters` 只能携带 `namespace`、`name`、`owner` 和
 `attempt` 四个 query 参数且必须各恰好出现一次；缺失、重复、未知参数或非正 attempt 都应返回 400，
 `namespace` 必须是 DNS label，`name` 必须是 DNS subdomain，`owner` 必须符合 operation
-queue worker identity audit text 规则。`/v1/parameters` 不接受 request body。query
+queue worker identity audit text 规则；namespace 还必须在 broker 的显式 queue allowlist 中，其他合法
+DNS namespace 在 TokenReview 和 Operation API 前以 403 拒绝。`/v1/parameters` 不接受 request body。query
 identity 与 body 形状校验发生在 TokenReview 前，
 畸形请求不能消耗认证、Operation 或 Secret API；该边界同时避免代理、审计日志或客户端对
 重复参数取值不一致。`operationctl --action parameters`
@@ -3064,7 +3079,7 @@ CA 文件。broker 未显式传入 kubeconfig 时先使用 Pod ServiceAccount �
 
 broker 的 `/readyz` 只接受 GET，其他 method 在证书或依赖探测前返回 405。GET `/readyz`
 不只检查当前 TLS 证书，还会在同一个 `--kubernetes-request-timeout=5s` 预算内探测
-TokenReview create、Operation get 和 Secret get 三条实际服务路径。探测使用固定不存在的
+TokenReview create，以及两个显式 queue 各自的 Operation get 和 Secret get 实际服务路径。探测使用固定不存在的
 对象名和无效 token，不读取业务 Secret；
 NotFound/未认证结果表示 API 路径可用，transport、discovery、超时或 RBAC 错误均返回 503
 并把 Pod 摘出 Service。`/healthz` 仍只表示进程存活，不能作为接流条件。业务参数请求也

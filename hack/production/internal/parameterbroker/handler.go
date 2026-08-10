@@ -25,18 +25,22 @@ import (
 const maxTokenBytes = 16 << 10
 
 var serviceAccountTypes = map[string]string{
-	"kubebrain-backup-executor":               "Backup",
-	"kubebrain-backup-deletion-executor":      "BackupDeletion",
-	"kubebrain-restore-cutover-executor":      "RestoreCutover",
-	"kubebrain-post-restore-audit-executor":   "PostRestoreAudit",
-	"kubebrain-certificate-rotation-executor": "CertificateRotation",
-	"kubebrain-destroy-executor":              "Destroy",
+	"kubebrain-backup-executor":                    "Backup",
+	"kubebrain-backup-deletion-executor":           "BackupDeletion",
+	"kubebrain-restore-cutover-executor":           "RestoreCutover",
+	"kubebrain-post-restore-audit-executor":        "PostRestoreAudit",
+	"kubebrain-certificate-rotation-executor":      "CertificateRotation",
+	"kubebrain-tikv-transaction-repair-executor":   "TiKVTransactionRepair",
+	"kubebrain-tikv-transaction-recovery-executor": "TiKVTransactionRecovery",
+	"kubebrain-destroy-executor":                   "Destroy",
 }
 
 type Handler struct {
 	tokens            kubernetes.Interface
 	dynamic           dynamic.Interface
 	identityNamespace string
+	queueNamespaces   []string
+	queueNamespaceSet map[string]struct{}
 	audience          string
 	requestTimeout    time.Duration
 }
@@ -50,7 +54,7 @@ type parameterRequestIdentity struct {
 
 func NewHandler(
 	tokens kubernetes.Interface, dynamicClient dynamic.Interface, namespace, audience string,
-	requestTimeout time.Duration,
+	requestTimeout time.Duration, additionalNamespaces ...string,
 ) (*Handler, error) {
 	if tokens == nil || dynamicClient == nil {
 		return nil, errors.New("kubernetes clients are required")
@@ -64,9 +68,21 @@ func NewHandler(
 	if requestTimeout <= 0 {
 		return nil, errors.New("request timeout must be positive")
 	}
+	queueNamespaces := []string{namespace}
+	queueNamespaceSet := map[string]struct{}{namespace: {}}
+	for _, additional := range additionalNamespaces {
+		if problems := validation.IsDNS1123Label(additional); len(problems) != 0 {
+			return nil, errors.New("invalid additional parameter broker namespace " + additional + ": " + problems[0])
+		}
+		if _, exists := queueNamespaceSet[additional]; exists {
+			return nil, errors.New("duplicate parameter broker namespace " + additional)
+		}
+		queueNamespaces = append(queueNamespaces, additional)
+		queueNamespaceSet[additional] = struct{}{}
+	}
 	return &Handler{
 		tokens: tokens, dynamic: dynamicClient, identityNamespace: namespace, audience: audience,
-		requestTimeout: requestTimeout,
+		queueNamespaces: queueNamespaces, queueNamespaceSet: queueNamespaceSet, requestTimeout: requestTimeout,
 	}, nil
 }
 
@@ -96,6 +112,10 @@ func (h *Handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 	identity, err := parameterIdentityFromQuery(request.URL.Query())
 	if err != nil {
 		http.Error(response, "namespace, name, owner, and positive attempt are required", http.StatusBadRequest)
+		return
+	}
+	if _, allowed := h.queueNamespaceSet[identity.namespace]; !allowed {
+		http.Error(response, "parameters unavailable", http.StatusForbidden)
 		return
 	}
 	operationType, err := h.authenticate(request, token)
@@ -176,13 +196,15 @@ func (h *Handler) Ready(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, h.requestTimeout)
 	defer cancel()
 	const probeName = "kubebrain-readiness-probe-do-not-create"
-	if _, err := h.dynamic.Resource(operationqueue.Resource).Namespace(h.identityNamespace).
-		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !isExpectedProbeNotFound(err, probeName) {
-		return fmt.Errorf("probe operation API: %w", err)
-	}
-	if _, err := h.dynamic.Resource(operationqueue.SecretResource).Namespace(h.identityNamespace).
-		Get(ctx, probeName, metav1.GetOptions{}); err != nil && !isExpectedProbeNotFound(err, probeName) {
-		return fmt.Errorf("probe Secret API: %w", err)
+	for _, namespace := range h.queueNamespaces {
+		if _, err := h.dynamic.Resource(operationqueue.Resource).Namespace(namespace).
+			Get(ctx, probeName, metav1.GetOptions{}); err != nil && !isExpectedProbeNotFound(err, probeName) {
+			return fmt.Errorf("probe operation API in %s: %w", namespace, err)
+		}
+		if _, err := h.dynamic.Resource(operationqueue.SecretResource).Namespace(namespace).
+			Get(ctx, probeName, metav1.GetOptions{}); err != nil && !isExpectedProbeNotFound(err, probeName) {
+			return fmt.Errorf("probe Secret API in %s: %w", namespace, err)
+		}
 	}
 	if _, err := h.tokens.AuthenticationV1().TokenReviews().Create(
 		ctx,

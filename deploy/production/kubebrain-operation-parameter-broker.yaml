@@ -69,6 +69,39 @@ roleRef:
   kind: Role
   name: kubebrain-operation-parameter-broker
 ---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebrain-operation-parameter-broker-repair-queue
+  namespace: kubebrain-repair-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-parameter-broker
+    app.kubernetes.io/part-of: kubebrain
+rules:
+  - apiGroups: [dbaas.kubebrain.io]
+    resources: [kubebrainoperations]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebrain-operation-parameter-broker-repair-queue
+  namespace: kubebrain-repair-operations
+  labels:
+    app.kubernetes.io/name: kubebrain-operation-parameter-broker
+    app.kubernetes.io/part-of: kubebrain
+subjects:
+  - kind: ServiceAccount
+    name: kubebrain-operation-parameter-broker
+    namespace: kubebrain-operations
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebrain-operation-parameter-broker-repair-queue
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -137,6 +170,7 @@ spec:
           args:
             - --listen-address=:8443
             - --namespace=kubebrain-operations
+            - --additional-namespace=kubebrain-repair-operations
             - --token-audience=kubebrain-operation-parameters
             - --tls-cert-file=/var/run/kubebrain-parameter-tls/tls.crt
             - --tls-key-file=/var/run/kubebrain-parameter-tls/tls.key
@@ -212,6 +246,7 @@ spec:
                   - kubebrain-post-restore-audit-executor
                   - kubebrain-certificate-rotation-executor
                   - kubebrain-tikv-transaction-repair-executor
+                  - kubebrain-tikv-transaction-recovery-executor
                   - kubebrain-destroy-executor
       ports:
         - {protocol: TCP, port: 8443}

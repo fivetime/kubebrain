@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/operationqueue"
+	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 	"github.com/stretchr/testify/require"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -45,6 +46,61 @@ func TestHandlerReturnsOnlyCurrentTypeBoundWorkerParameters(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code)
 	requireNoStoreHeaders(t, response)
 	require.Equal(t, parameters, response.Body.Bytes())
+}
+
+func TestHandlerAuthenticatesTiKVRepairQueueExecutorTypes(t *testing.T) {
+	for _, tc := range []struct {
+		serviceAccount string
+		operationType  string
+	}{
+		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
+		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
+	} {
+		t.Run(tc.serviceAccount, func(t *testing.T) {
+			handler, err := NewHandler(
+				tokenClient("system:serviceaccount:test:"+tc.serviceAccount,
+					[]string{testAudience}, true),
+				fake.NewSimpleDynamicClient(runtime.NewScheme()), "test", testAudience, time.Second,
+			)
+			require.NoError(t, err)
+			operationType, err := handler.authenticate(
+				httptest.NewRequest(http.MethodGet, "/v1/parameters", nil), "valid",
+			)
+			require.NoError(t, err)
+			require.Equal(t, tc.operationType, operationType)
+		})
+	}
+}
+
+func TestHandlerReturnsRepairQueueParametersThroughTypeBoundBrokerIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		serviceAccount string
+		operationType  string
+	}{
+		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
+		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
+	} {
+		t.Run(tc.operationType, func(t *testing.T) {
+			parameters := []byte(`{"repair":"bound"}`)
+			dynamicClient, claim, expected := claimedOperationWithType(
+				t, parameters, tc.operationType, "repair-1", "repair-worker", "repair-parameters",
+			)
+			handler, err := NewHandler(
+				tokenClient("system:serviceaccount:test:"+tc.serviceAccount,
+					[]string{testAudience}, true),
+				dynamicClient, "test", testAudience, time.Second,
+			)
+			require.NoError(t, err)
+			request := httptest.NewRequest(http.MethodGet,
+				fmt.Sprintf("/v1/parameters?namespace=test&name=%s&owner=%s&attempt=%d",
+					claim.Name, claim.Owner, claim.Attempt), nil)
+			request.Header.Set("Authorization", "Bearer valid")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			require.Equal(t, http.StatusOK, response.Code)
+			require.Equal(t, expected, response.Body.Bytes())
+		})
+	}
 }
 
 func TestHandlerRejectsAmbiguousRequiredQueryParameters(t *testing.T) {
@@ -167,6 +223,27 @@ func TestHandlerRejectsUnexpectedBodyBeforeAuthenticationAndOperationAPI(t *test
 	require.Empty(t, tokens.Actions())
 	require.Empty(t, dynamicClient.Actions())
 	requireNoStoreHeaders(t, response)
+}
+
+func TestHandlerRejectsUnconfiguredQueueNamespaceBeforeAuthentication(t *testing.T) {
+	dynamicClient, claim, _ := claimedOperation(t)
+	tokens := tokenClient(
+		"system:serviceaccount:test:kubebrain-post-restore-audit-executor",
+		[]string{testAudience}, true,
+	)
+	handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second, "repair")
+	require.NoError(t, err)
+	dynamicClient.ClearActions()
+	tokens.ClearActions()
+	request := httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/v1/parameters?namespace=other&name=%s&owner=%s&attempt=%d",
+			claim.Name, claim.Owner, claim.Attempt), nil)
+	request.Header.Set("Authorization", "Bearer valid")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	require.Equal(t, http.StatusForbidden, response.Code)
+	require.Empty(t, tokens.Actions())
+	require.Empty(t, dynamicClient.Actions())
 }
 
 func TestHandlerFailsClosedForIdentityTypeAudienceAndFencing(t *testing.T) {
@@ -301,12 +378,16 @@ func TestReadyChecksOperationSecretAndTokenReviewAPIs(t *testing.T) {
 		},
 	)
 	tokens := tokenClient("", nil, false)
-	handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second)
+	handler, err := NewHandler(tokens, dynamicClient, "test", testAudience, time.Second, "repair")
 	require.NoError(t, err)
 	require.NoError(t, handler.Ready(context.Background()))
-	require.Len(t, dynamicClient.Actions(), 2)
+	require.Len(t, dynamicClient.Actions(), 4)
 	require.Equal(t, "kubebrainoperations", dynamicClient.Actions()[0].GetResource().Resource)
 	require.Equal(t, "secrets", dynamicClient.Actions()[1].GetResource().Resource)
+	require.Equal(t, "test", dynamicClient.Actions()[0].GetNamespace())
+	require.Equal(t, "repair", dynamicClient.Actions()[2].GetNamespace())
+	require.Equal(t, "kubebrainoperations", dynamicClient.Actions()[2].GetResource().Resource)
+	require.Equal(t, "secrets", dynamicClient.Actions()[3].GetResource().Resource)
 	require.Len(t, tokens.Actions(), 1)
 	require.Equal(t, "tokenreviews", tokens.Actions()[0].GetResource().Resource)
 }
@@ -319,14 +400,14 @@ func TestReadyFailsClosedWhenAnyCriticalAPIIsUnavailable(t *testing.T) {
 		err      error
 		want     string
 	}{
-		{name: "operation API", resource: "kubebrainoperations", err: errors.New("dependency unavailable"), want: "probe operation API: dependency unavailable"},
-		{name: "Secret API", resource: "secrets", err: errors.New("dependency unavailable"), want: "probe Secret API: dependency unavailable"},
+		{name: "operation API", resource: "kubebrainoperations", err: errors.New("dependency unavailable"), want: "probe operation API in test: dependency unavailable"},
+		{name: "Secret API", resource: "secrets", err: errors.New("dependency unavailable"), want: "probe Secret API in test: dependency unavailable"},
 		{
 			name: "operation CRD route", resource: "kubebrainoperations",
 			err: apierrors.NewNotFound(schema.GroupResource{
 				Group: operationqueue.Resource.Group, Resource: operationqueue.Resource.Resource,
 			}, ""),
-			want: `probe operation API: kubebrainoperations.dbaas.kubebrain.io "" not found`,
+			want: `probe operation API in test: kubebrainoperations.dbaas.kubebrain.io "" not found`,
 		},
 		{name: "TokenReview API", tokens: true, want: "probe TokenReview API: dependency unavailable"},
 	}
@@ -388,6 +469,15 @@ func claimedOperationWithParameters(
 	parameters []byte,
 ) (*fake.FakeDynamicClient, *operationqueue.Claim, []byte) {
 	t.Helper()
+	return claimedOperationWithType(
+		t, parameters, "PostRestoreAudit", "audit-1", "audit-worker", "audit-parameters",
+	)
+}
+
+func claimedOperationWithType(
+	t *testing.T, parameters []byte, operationType, operationName, worker, secretName string,
+) (*fake.FakeDynamicClient, *operationqueue.Claim, []byte) {
+	t.Helper()
 	client := fake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
 			operationqueue.Resource:       "KubeBrainOperationList",
@@ -400,7 +490,7 @@ func claimedOperationWithParameters(
 	_, err := client.Resource(operationqueue.SecretResource).Namespace("test").Create(
 		context.Background(), &unstructured.Unstructured{Object: map[string]any{
 			"apiVersion": "v1", "kind": "Secret",
-			"metadata":  map[string]any{"name": "audit-parameters"},
+			"metadata":  map[string]any{"name": secretName},
 			"immutable": true,
 			"data": map[string]any{
 				"parameters.json": base64.StdEncoding.EncodeToString(parameters),
@@ -408,13 +498,19 @@ func claimedOperationWithParameters(
 		}}, metav1.CreateOptions{},
 	)
 	require.NoError(t, err)
-	_, err = queue.Submit(context.Background(), "audit-1", operationqueue.Spec{
-		OperationID: "audit-1", Instance: "instance-a", Type: "PostRestoreAudit",
-		ParametersSHA256: digest, ParametersSecret: "audit-parameters",
+	_, err = queue.Submit(context.Background(), operationName, operationqueue.Spec{
+		OperationID: operationName, Instance: "instance-a", Type: operationType,
+		ParametersSHA256: digest, ParametersSecret: secretName,
 		ParametersKey: "parameters.json", MaxAttempts: 3,
 	})
 	require.NoError(t, err)
-	claim, err := queue.Claim(context.Background(), "audit-worker", "PostRestoreAudit", time.Hour)
+	if operationType == "TiKVTransactionRepair" || operationType == "TiKVTransactionRecovery" {
+		_, err = queue.Approve(
+			context.Background(), operationName, operationaudit.ApproverUsername, "change-test-1",
+		)
+		require.NoError(t, err)
+	}
+	claim, err := queue.Claim(context.Background(), worker, operationType, time.Hour)
 	require.NoError(t, err)
 	return client, claim, parameters
 }

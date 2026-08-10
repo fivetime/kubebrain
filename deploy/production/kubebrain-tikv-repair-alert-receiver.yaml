@@ -103,8 +103,8 @@ roleRef:
   kind: Role
   name: kubebrain-tikv-repair-alert-reader
 ---
-# Only the repair executor sees this queue and its parameter Secrets. The generic
-# parameter broker remains scoped to kubebrain-operations.
+# Repair executors can claim this queue, but parameter Secrets are read only by
+# the parameter broker using its dedicated repair-queue Role.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -121,33 +121,6 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
   name: kubebrain-operation-worker-managed-namespace
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: kubebrain-tikv-repair-parameter-reader
-  namespace: kubebrain-repair-operations
-rules:
-  - apiGroups: [""]
-    resources: [secrets]
-    verbs: [get]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: kubebrain-tikv-repair-parameter-reader
-  namespace: kubebrain-repair-operations
-subjects:
-  - kind: ServiceAccount
-    name: kubebrain-tikv-transaction-repair-executor
-    namespace: kubebrain-operations
-  - kind: ServiceAccount
-    name: kubebrain-tikv-transaction-recovery-executor
-    namespace: kubebrain-operations
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: kubebrain-tikv-repair-parameter-reader
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
