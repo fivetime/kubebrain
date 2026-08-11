@@ -9,8 +9,8 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, or target-store-enospc-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, or target-pd-leader-enospc-resume" >&2
   exit 2
 fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
@@ -30,6 +30,7 @@ names=()
 mounted_dirs=()
 source_pd_names=()
 target_pd_names=()
+target_pd_data_dirs=()
 source_tikv_names=()
 target_tikv_names=()
 source_pd_endpoints=()
@@ -85,6 +86,15 @@ if [[ "$fault_injection" == target-store-enospc-resume ]]; then
   mount -t tmpfs -o size=768m,mode=1777 kb-native-pitr-enospc "$target_enospc_data_dir"
   mounted_dirs+=("$target_enospc_data_dir")
 fi
+if [[ "$fault_injection" == target-pd-leader-enospc-resume ]]; then
+  for index in $(seq 0 $((topology_size - 1))); do
+    target_pd_data_dir="$drill_tmp/target-pd-$index-data"
+    mkdir -p "$target_pd_data_dir"
+    mount -t tmpfs -o size=512m,mode=1777 "kb-native-pitr-pd-enospc-$index" "$target_pd_data_dir"
+    mounted_dirs+=("$target_pd_data_dir")
+    target_pd_data_dirs+=("$target_pd_data_dir")
+  done
+fi
 
 for index in $(seq 0 $((topology_size - 1))); do
   source_client_port=$((42379 + index * 10)); source_peer_port=$((42380 + index * 10))
@@ -92,7 +102,11 @@ for index in $(seq 0 $((topology_size - 1))); do
   docker run -d --name "${source_pd_names[$index]}" --network host --tmpfs /data:rw,size=512m,mode=1777 pingcap/pd:v7.5.1 \
     --name="src-pd-$index" --data-dir=/data --client-urls="http://127.0.0.1:$source_client_port" --advertise-client-urls="http://127.0.0.1:$source_client_port" \
     --peer-urls="http://127.0.0.1:$source_peer_port" --advertise-peer-urls="http://127.0.0.1:$source_peer_port" --initial-cluster="$source_initial_csv" --log-file= >/dev/null
-  docker run -d --name "${target_pd_names[$index]}" --network host --tmpfs /data:rw,size=512m,mode=1777 pingcap/pd:v7.5.1 \
+  target_pd_data_args=(--tmpfs /data:rw,size=512m,mode=1777)
+  if [[ "$fault_injection" == target-pd-leader-enospc-resume ]]; then
+    target_pd_data_args=(-v "${target_pd_data_dirs[$index]}:/data")
+  fi
+  docker run -d --name "${target_pd_names[$index]}" --network host "${target_pd_data_args[@]}" pingcap/pd:v7.5.1 \
     --name="tgt-pd-$index" --data-dir=/data --client-urls="http://127.0.0.1:$target_client_port" --advertise-client-urls="http://127.0.0.1:$target_client_port" \
     --peer-urls="http://127.0.0.1:$target_peer_port" --advertise-peer-urls="http://127.0.0.1:$target_peer_port" --initial-cluster="$target_initial_csv" --log-file= >/dev/null
 done
@@ -183,6 +197,23 @@ elif [[ "$fault_injection" == target-store-enospc-resume ]]; then
     KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINER="${target_tikv_names[0]}"
     KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR="$target_enospc_data_dir"
     KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_STATUS=127.0.0.1:21180
+  )
+elif [[ "$fault_injection" == target-pd-leader-enospc-resume ]]; then
+  leader_name=$(curl -fsS http://127.0.0.1:43379/pd/api/v1/leader | jq -er '.name | select(type == "string" and length > 0)')
+  fault_pd_index=-1
+  for index in $(seq 0 $((topology_size - 1))); do
+    if [[ "$leader_name" == "tgt-pd-$index" ]]; then fault_pd_index=$index; break; fi
+  done
+  if [[ "$fault_pd_index" == -1 ]]; then
+    echo "live target PD leader $leader_name does not map to a managed integration container" >&2
+    exit 1
+  fi
+  echo "ENOSPC injection selected live target PD leader $leader_name" >&2
+  fault_env=(
+    KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_CONTAINER="${target_pd_names[$fault_pd_index]}"
+    KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_DATA_DIR="${target_pd_data_dirs[$fault_pd_index]}"
+    KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_ENDPOINT="127.0.0.1:$((43379 + fault_pd_index * 10))"
+    KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_MEMBER="$leader_name"
   )
 elif [[ "$fault_injection" == target-leader-member-pause-store-resume || "$fault_injection" == target-leader-member-pause-store-during-br-resume ]]; then
   leader_name=$(curl -fsS http://127.0.0.1:43379/pd/api/v1/leader | jq -er '.name | select(type == "string" and length > 0)')

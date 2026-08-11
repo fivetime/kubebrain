@@ -46005,6 +46005,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   identity 恢复”的证据缺口；双 store/PD 磁盘满、真实 CSI/PVC 扩容或 replacement、长时间满盘、PD
   调度水位与跨 AZ 组合故障仍开放。
 
+- A4338 将物理 ENOSPC 矩阵扩展到 live PD leader。新增三节点专用
+  `target-pd-leader-enospc-resume`：target 三个 PD 各使用独立 512 MiB 宿主 tmpfs，所有 TiKV fully
+  replicated 后从 `/pd/api/v1/leader` 精确映射现场 leader name、容器、client endpoint 和数据目录；未知
+  identity 在填盘前 fail closed。`TestNativePDLeaderENOSPCRealCluster` 先由 embedded-etcd MemberList 固定
+  leader member ID，再填满其卷并通过 official clientv3 向 disposable PD 探针前缀提交 256 KiB value，
+  直到 PD 自身日志出现 `No space left on device`/OS error 28。现场 `tgt-pd-0` 退出，剩余 PD quorum 的
+  embedded-etcd leader ID 必须与旧 ID 不同；运行中的 KubeBrain 在 PD admission session/election 重建期间
+  出现有界 `Unavailable`/deadline，约 12 秒后通过相同完整 endpoint 列表恢复 tenant Put。宿主删除压力
+  文件并重启同一容器后，MemberList 必须仍以原 name/ID 列出该 member；故障前、故障中和恢复后 tenant
+  value 全部可读。2026-08-11 全用例 17.75 秒通过，清理后无容器、三个挂载或临时目录残留。该项关闭
+  “单 PD leader 物理满盘、PD 重选主、KubeBrain 有界恢复及同 member 清障”的证据缺口，不承诺零瞬断；
+  两个 PD 同时满盘、PD member replacement、真实 PVC 扩容、长期满盘和 TiKV+PD 组合故障仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

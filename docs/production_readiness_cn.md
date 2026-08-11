@@ -2333,6 +2333,22 @@ low-space 状态判定；同时要求剩余两 store 多数派可提交，释放
 CSI/PVC 上验证水位告警、扩容或 replacement、数据再平衡和长时间恢复；本用例只证明一个 TiKV store
 满盘时的三副本多数派与同 identity 清障恢复，不覆盖两个 store、PD 数据盘或跨 AZ 组合故障。
 
+live PD leader 的物理满盘门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-pd-leader-enospc-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativePDLeaderENOSPCRealCluster \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+该 profile 给三个 target PD 各自挂载 512 MiB 独立宿主 tmpfs，但只填满运行时从 PD API 识别的 live
+leader。门禁必须同时看到 PD 自身 OS error 28、embedded-etcd leader ID 切换、KubeBrain 经有界
+admission/election 重建后恢复 Put，以及清障重启后原 PD member name/ID 不变。2026-08-11 现场 leader
+为 `tgt-pd-0`，约 12 秒瞬时不可写后恢复，全测试 17.75 秒通过。该窗口应由客户端重试预算吸收，不能
+宣传成零中断；若两个 PD 数据盘同时不可写则没有多数派，不在本门禁的可用性承诺内。生产仍须在真实
+PVC 上演练容量告警、扩容或 member replacement，并验证 PD 与 TiKV 同时受压时的组合行为。
+
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
 `continuous_writer_exclusion=true`、`fence_handoff_proven=true`、
