@@ -9,8 +9,8 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, or target-leader-member-pause-store-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, or target-leader-member-pause-store-during-br-resume" >&2
   exit 2
 fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
@@ -148,7 +148,7 @@ go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pit
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 log_env=()
 fault_env=()
-if [[ "$fault_injection" == target-leader-member-pause-store-resume ]]; then
+if [[ "$fault_injection" == target-leader-member-pause-store-resume || "$fault_injection" == target-leader-member-pause-store-during-br-resume ]]; then
   leader_name=$(curl -fsS http://127.0.0.1:43379/pd/api/v1/leader | jq -er '.name | select(type == "string" and length > 0)')
   fault_pd_index=-1
   for index in $(seq 0 $((topology_size - 1))); do
@@ -166,6 +166,9 @@ if [[ "$fault_injection" == target-leader-member-pause-store-resume ]]; then
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_RECOVERY_CONTAINER="${target_pd_names[$fault_pd_index]}"
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_RECOVERY_ADDRESS="127.0.0.1:$((43379 + fault_pd_index * 10))"
   )
+  if [[ "$fault_injection" == target-leader-member-pause-store-during-br-resume ]]; then
+    fault_env+=(KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_DURING_BR=true)
+  fi
 elif [[ "$fault_injection" != none ]]; then
   fault_pd_index=2
   if [[ "$fault_injection" == preferred-member-pause-store-resume ]]; then fault_pd_index=0; fi

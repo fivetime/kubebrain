@@ -2290,6 +2290,11 @@ TiKV store 同时 pause 后完成 PD 重选主、KubeBrain 冷启动、原 lease
 leader 与一个 target TiKV store，并将故障持续到 fence、log replay、两次 target KubeBrain 冷启动、handoff
 和最终 semantic receipt 全部完成后才恢复。2026-08-11 现场选择 `tgt-pd-0`，PD 切换至其余 endpoint，
 stream-log 全链路 113.07 秒通过；该结果不声称 BR import 本身能在相同故障下完成。
+`target-leader-member-pause-store-during-br-resume` profile 以 pinned BR 的
+`switch to import mode at beginning` 日志作为 fail-closed 触发点，pause 现场 target PD leader 与一个 store
+10 秒并验证同一 identity 恢复。2026-08-11 现场选择 `tgt-pd-0`，BR restore 12.33 秒、全链路 55.62 秒
+通过。对照的持续故障试跑中数据 import 已到 100%，但 BR scheduler/config 收尾在 3 分钟 deadline 内未完成；
+因此这里只支持“import 窗口瞬时故障并恢复”，持续 outage 仍是明确边界。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、

@@ -7,7 +7,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -15,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +53,29 @@ func TestFaultContainersRejectMalformedInput(t *testing.T) {
 	require.Nil(t, faultContainers(""))
 	require.Nil(t, faultContainers("pd-0,,tikv-0"))
 	require.Nil(t, faultContainers("pd/0"))
+}
+
+func TestFaultMarkerWriterMatchesAcrossWritesOnce(t *testing.T) {
+	var output bytes.Buffer
+	triggers := 0
+	w := &faultMarkerWriter{dst: &output, marker: []byte("import mode"), trigger: func() error {
+		triggers++
+		return nil
+	}}
+	for _, part := range []string{"switch to im", "port mode at beginning\n", "import mode again"} {
+		_, err := w.Write([]byte(part))
+		require.NoError(t, err)
+	}
+	require.Equal(t, "switch to import mode at beginning\nimport mode again", output.String())
+	require.Equal(t, 1, triggers)
+}
+
+func TestFaultMarkerWriterPropagatesTriggerError(t *testing.T) {
+	w := &faultMarkerWriter{dst: io.Discard, marker: []byte("marker"), trigger: func() error {
+		return errors.New("pause failed")
+	}}
+	_, err := w.Write([]byte("marker"))
+	require.ErrorContains(t, err, "pause failed")
 }
 
 func pdHTTPEndpoints(addresses []string) []string {
@@ -94,6 +120,141 @@ func injectContainerLoss(t *testing.T, ctx context.Context, raw string) bool {
 		require.Equal(t, "true", strings.TrimSpace(string(state)), "fault target %s is not paused", container)
 	}
 	return true
+}
+
+type brFaultRunner struct {
+	commandRunner
+	ctx           context.Context
+	raw           string
+	recoveryDelay time.Duration
+	mu            sync.Mutex
+	injected      bool
+	recovered     bool
+	err           error
+	recoveryDone  chan error
+}
+
+func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	marker := &faultMarkerWriter{dst: stderr, marker: []byte("switch to import mode at beginning"), trigger: func() error {
+		err := pauseContainers(r.ctx, r.raw)
+		r.mu.Lock()
+		r.injected, r.err = err == nil, err
+		if err == nil {
+			r.recoveryDone = make(chan error, 1)
+			go func() {
+				timer := time.NewTimer(r.recoveryDelay)
+				defer timer.Stop()
+				select {
+				case <-r.ctx.Done():
+					r.recoveryDone <- r.ctx.Err()
+				case <-timer.C:
+					recoveryErr := unpauseContainers(r.ctx, r.raw)
+					r.mu.Lock()
+					r.recovered = recoveryErr == nil
+					r.mu.Unlock()
+					r.recoveryDone <- recoveryErr
+				}
+			}()
+		}
+		r.mu.Unlock()
+		return err
+	}}
+	err := r.commandRunner.Run(ctx, name, args, stdout, marker)
+	r.mu.Lock()
+	injectionErr, injected, recoveryDone := r.err, r.injected, r.recoveryDone
+	r.mu.Unlock()
+	if injectionErr != nil {
+		return fmt.Errorf("inject target fault during BR import: %w", injectionErr)
+	}
+	if err == nil && !injected {
+		return errors.New("BR import-mode marker was not observed before restore completed")
+	}
+	if recoveryDone != nil {
+		if recoveryErr := <-recoveryDone; recoveryErr != nil {
+			return fmt.Errorf("recover target fault during BR import: %w", recoveryErr)
+		}
+	}
+	return err
+}
+
+func (r *brFaultRunner) faultInjected() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.injected
+}
+
+func (r *brFaultRunner) faultRecovered() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.recovered
+}
+
+type faultMarkerWriter struct {
+	dst       io.Writer
+	marker    []byte
+	triggered bool
+	buffer    []byte
+	trigger   func() error
+}
+
+func (w *faultMarkerWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if err != nil || w.triggered {
+		return n, err
+	}
+	w.buffer = append(w.buffer, p[:n]...)
+	if bytes.Contains(w.buffer, w.marker) {
+		w.triggered = true
+		if triggerErr := w.trigger(); triggerErr != nil {
+			return n, triggerErr
+		}
+	}
+	if keep := len(w.marker) - 1; len(w.buffer) > keep {
+		w.buffer = append(w.buffer[:0], w.buffer[len(w.buffer)-keep:]...)
+	}
+	return n, nil
+}
+
+func pauseContainers(ctx context.Context, raw string) error {
+	containers := faultContainers(raw)
+	if len(containers) == 0 {
+		return errors.New("invalid or empty fault container list")
+	}
+	args := append([]string{"pause"}, containers...)
+	if output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("pause fault containers: %w: %s", err, output)
+	}
+	for _, container := range containers {
+		state, err := exec.CommandContext(ctx, "docker", "inspect", "--format={{.State.Paused}}", container).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("inspect fault container %s: %w: %s", container, err, state)
+		}
+		if strings.TrimSpace(string(state)) != "true" {
+			return fmt.Errorf("fault target %s is not paused", container)
+		}
+	}
+	return nil
+}
+
+func unpauseContainers(ctx context.Context, raw string) error {
+	containers := faultContainers(raw)
+	if len(containers) == 0 {
+		return errors.New("invalid or empty fault container list")
+	}
+	args := append([]string{"unpause"}, containers...)
+	if output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("unpause fault containers: %w: %s", err, output)
+	}
+	for _, container := range containers {
+		state, err := exec.CommandContext(ctx, "docker", "inspect", "--format={{.State.Paused}}", container).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("inspect recovered container %s: %w: %s", container, err, state)
+		}
+		if strings.TrimSpace(string(state)) != "false" {
+			return fmt.Errorf("fault target %s remains paused", container)
+		}
+	}
+	return nil
 }
 
 func recoverContainer(t *testing.T, ctx context.Context, container, address string) {
@@ -353,11 +514,24 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, os.WriteFile(admissionPath, admissionBytes, 0o600))
 
 	var receiptOut strings.Builder
-	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, approve: digest(planBytes), timeout: 3 * time.Minute}, osRunner{}, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
+	runner := commandRunner(osRunner{})
+	var importFault *brFaultRunner
+	if setting := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_DURING_BR"); setting != "" {
+		require.Equal(t, "true", setting, "invalid target BR fault setting")
+		importFault = &brFaultRunner{commandRunner: runner, ctx: ctx, raw: os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"), recoveryDelay: 10 * time.Second}
+		runner = importFault
+	}
+	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, approve: digest(planBytes), timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
-	targetFaultInjected := injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"))
+	targetFaultInjected := false
+	if importFault != nil {
+		require.True(t, importFault.faultInjected(), "target fault was not injected during BR import")
+		require.True(t, importFault.faultRecovered(), "target fault was not recovered during BR import")
+	} else {
+		targetFaultInjected = injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"))
+	}
 	var fenceReceipt nativepitr.RestorationFenceReceipt
 	var fenceToken restorationfence.Token
 	var fenceBytes []byte

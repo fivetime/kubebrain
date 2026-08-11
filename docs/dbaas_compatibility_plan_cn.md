@@ -45960,6 +45960,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过。该项不宣称 BR import 自身可穿越 target leader/store 故障；BR 期间故障、跨 AZ 分区、磁盘满、
   双 store 丢失和长 soak 仍开放。
 
+- A4334 将 target 故障前移到 pinned BR txn import 内部。新增
+  `target-leader-member-pause-store-during-br-resume` profile，并由 integration runner 监听 BR stderr 的
+  `switch to import mode at beginning` 精确标记；marker 支持跨 Write chunk 匹配、只触发一次，marker 缺失、
+  pause/unpause 或容器状态验证失败均 fail closed。2026-08-11 现场 leader 为 `tgt-pd-0`；命中 marker 后将
+  该 PD 与 target TiKV-0 pause 10 秒，数据 import 达 100%，PD quorum 重选主，随后按相同容器 identity
+  恢复，BR scheduler/config 收尾成功，restore 本身 12.33 秒，后续 fence、log replay、两次 KubeBrain
+  冷启动、handoff 与 semantic receipt 全链路 55.62 秒通过。对照试跑将同一故障持续保持时，数据 import
+  虽达 100%，但 pinned BR v7.5.1 的 scheduler/config 收尾在 3 分钟 deadline 内未完成并被终止；故该项只
+  关闭“BR import 窗口内定向 leader+store 瞬时故障并恢复”的缺口，持续故障、双 store 丢失、跨 AZ 分区、
+  磁盘满和长 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
