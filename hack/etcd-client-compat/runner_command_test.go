@@ -494,6 +494,18 @@ func TestBackendPDCrossNodeTotalLossCanOutlastLeaseTTL(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeTotalLossCanExpireLeaseBurst(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-total-loss-lease-expiry-burst)`)
+	require.Contains(t, script, `run_pd_total_loss_lease_expiry_burst_test`)
+	require.Contains(t, script, `KUBEBRAIN_PD_LONG_LOSS_LEASE_BURST_COMMAND`)
+	require.Contains(t, script, `TestLeaseExpiryBurstAfterPDTotalLoss`)
+	require.Contains(t, script, `"PD_QUORUM_PARTITION_HOLD_SECONDS=90 $self --partition-pd-all-cross-node"`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

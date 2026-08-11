@@ -46723,6 +46723,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   门禁现先用无副作用 Range 有界证明同一 credentialed client 已重连，再只执行一次 Put，避免用可能已提交
   的重复 mutation 探测连接。该隔离测试复跑通过，生产 auth/Watch 语义未作放宽。
 
+- A4383 关闭 A4382 保留的“大量 lease 同时过期”缺口，并与既有
+  `lease_expiry_spread_failover_test.go` 的 TTL=600、仅检查恢复 deadline 分散门禁区分：新增
+  `pd-cross-node-total-loss-lease-expiry-burst` mode，创建 1200 个独立 TTL=60 lease，每个绑定唯一键，
+  数量明确超过 KubeBrain 默认每秒 1000 个 recovered-lease revoke budget；准备完成后同时停止续租，
+  从完整键集之后的 revision 建立 PrevKV Watch，再强制三个跨 worker PD endpoint blackout 90 秒。observer
+  必须先证明 0 个 endpoint 可达，等待 TTL+3 秒后仍证明全失，避免恢复调度掩盖真实批量过期。
+  首次 RED 直接 Grant/Put 时，准备阶段超过 TTL，故障注入前早期 lease 已自然过期；第二次为每个 lease
+  建立高层 KeepAlive 流，在第 540 个 lease 遇到瞬态 ResourceExhausted 后把 channel close 误判为永久失败；
+  第三次自动重建 1200 条流导致近十万 goroutine，10 分钟超时且仍未注入故障。最终门禁改为每 10 秒对
+  已准备 lease 执行一次有界 32 并发 KeepAliveOnce 扫描，完成后停止并等待扫描退出，既吸收瞬态背压，
+  又不把客户端流风暴混入服务端 expiry/revoke 语义。
+  2026-08-11 disposable `kubebrain-pd-lease-burst` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、14379/14380 拓扑最终通过，全程 399.64 秒：隔离持续超过全部 lease TTL，恢复后 Watch
+  收到 1200/1200 个唯一 DELETE，单键 lease 的 ModRevision 按交付顺序严格递增，每条 PrevKV lease ID
+  均与 Grant 对应；新 client 最终确认前缀为空，LeaseList 不含任一测试 lease。TiDBCluster 与三个
+  KubeBrain 副本恢复 Ready，四个 node 无 iptables 残留。本项关闭 kind bridge 上超过默认 revoke budget
+  的批量自然过期、删除历史与回收完整性证据；分钟级以上持续分区、更大规模 burst、独立宿主/AZ、人工
+  慢恢复及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
