@@ -45855,6 +45855,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   source 冻结动作的分布式原子性；DBaaS 控制面仍须把冻结 writer、导出 witness、取得 backup/restore TSO
   和解除冻结编排为 durable、可恢复、单操作者的 operation。
 
+- A4325 开始实现 source capture 的 storage-atomic 冻结证明，先交付 fence 后的 authoritative revision
+  probe。新增 `nativepitr.InspectFencedSourceRevision`：在 source restoration fence 已排斥 writer 的前提下，
+  使用 fresh TiKV snapshot 扫描 plan keyspace 的全部用户 MVCC object revision，并与
+  `revision/committed` durable watermark 取最大值；后者覆盖最新 tombstone 已被 physical compaction 清除
+  的情况，前者覆盖后台 watermark 暂时落后。探针只跳过 coder 明确认出的 tenant internal/event-log 物理
+  namespace，任何其他不可解码 key 都按 corruption fail closed。共享 backend 新增不构造 serving backend
+  的 `ReadDurableRevision` 只读入口，缺失 marker 按 etcd 初始化 revision 1 处理。memkv 回归覆盖 object ahead、
+  compacted watermark ahead、internal/event-log 排除及未知编码拒绝；nativepitr/backend/coder 测试通过。
+  本项尚未签发 source-capture receipt，也未把 source fence、witness、capture TSO 与 plan v11 串联，因此不能
+  单独证明 source 冻结窗口；下一阶段实现 acquire/finalize CLI、写入竞态与真实 TiKV 演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

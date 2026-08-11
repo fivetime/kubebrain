@@ -65,6 +65,24 @@ func (b *backend) GetDurableRevision(ctx context.Context) (uint64, error) {
 	return decodeDurableRevisionWatermark(value)
 }
 
+// ReadDurableRevision reads the authoritative persisted user-revision
+// watermark without constructing a serving backend. Restore tooling uses this
+// only after a storage-atomic writer fence has been acquired.
+func ReadDurableRevision(ctx context.Context, store storage.KvStorage, keyspace string) (uint64, error) {
+	ks, err := coder.NewKeyspace(keyspace)
+	if err != nil {
+		return 0, err
+	}
+	value, err := store.Get(ctx, ks.EncodeInternalKey(durableRevisionKey))
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return 1, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return decodeDurableRevisionWatermark(value)
+}
+
 func decodeDurableRevisionWatermark(value []byte) (uint64, error) {
 	revision, err := coder.ParseRevisionWatermark(value)
 	if err != nil {
