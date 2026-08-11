@@ -46394,8 +46394,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Range 仍返回旧 checkpoint 值与严格早于 leader 新写的 header，证明路由不是由测试请求偶然预热。
   三 PD/三 TiKV、双 KubeBrain cold-follower 现场先以 21.00 秒通过；加入只预热一次的生产成本约束后再以
   20.83 秒通过，backend/server/storage/integration 全量回归通过且 runner 无残留。
-  本项只保证 checkpoint 建立时 PD 报告的现有 Region 集合；隔离后的 split/merge、leader relocation 导致
-  client-go 主动失效缓存、缓存容量淘汰以及进程在无 PD 时冷启动仍 fail closed。若要覆盖动态 topology，
+  本项只保证 checkpoint 建立时 PD 报告的现有 Region 集合；隔离后的 split 由 A4365 补齐，merge、leader relocation 导致
+  client-go 主动失效缓存、缓存容量淘汰以及进程在无 PD 时冷启动仍 fail closed。若要覆盖其余动态 topology，
   需要可观测的周期/事件驱动 cache refresh 与真实 split/transfer 门禁，不能用每秒全量 ScanRegions 硬撑。
 
 - A4364 将 A4359 的“进程随机 service ID、shutdown 不主动 release、由 TTL 回收”从代码推理提升为真实
@@ -46414,6 +46414,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   原语，KubeBrain 单元测试已固定传入 TTL 和本地只使用半 TTL；生产仍需监控异常退出后 stale service
   数量及 PD 时间同步。故障中启动的新进程无法连接 PD 注册自己的 pin 时仍必须 fail closed，不能继承
   仅存在于前任进程的保护。
+
+- A4365 关闭 A4363 保留的“follower 已与 PD 隔离后发生 Region split”证据缺口。源码审计确认
+  client-go v2.0.7 `RegionCache.OnRegionEpochNotMatch` 会从 TiKV 返回的真实
+  `EpochNotMatch.CurrentRegions` 构造并安装新 Region，而 `txnsnapshot` 对真实 epoch mismatch 不做需要 PD
+  的普通 region-miss backoff；PD client 同时提供 `SplitRegions`。因此无需加入弱化错误或周期轮询的
+  KubeBrain 旁路，而应直接验证该底层自愈契约。A4362/A4363 的 cold-follower 门禁现在在故障前额外写入
+  `topology/a`、`topology/z`，仍不从 follower 读取这些用户键；等待 checkpoint 后隔离 follower 到全部
+  三个 PD client port并确认其 admission session 已过期。健康测试进程随后用 PD SDK 在 named keyspace
+  的物理 `EncodeRevisionKey("topology/m")` 处执行真实 split；因为直接 PD client 不经过 client-go
+  `CodecPDClient`，split key 明确先用 TiKV memcomparable `codec.EncodeBytes` 编码。门禁要求 PD 返回
+  `FinishedPercentage=100` 和非空新 Region IDs，再用故障前 JWT 对隔离 follower 发起跨 split prefix
+  serializable Range：必须返回两个 checkpoint 值，header 不早于最后一个 topology write 且严格早于
+  健康 leader 隔离后的新 write。这样既证明 scan 跨越新边界，也证明没有代理或重新向 PD 定位。
+  2026-08-11 三 PD/三 TiKV、双 KubeBrain 现场连续以 20.97/20.80 秒通过，integration/backend/server/
+  storage 全量回归通过且 runner 无残留。
+  本项仅关闭 split：TiKV 的 epoch mismatch 响应携带完整替代 Region，因此可离线修复；merge 是否给出
+  同等充分 metadata、Region leader transfer 后旧 store 返回的 NotLeader 是否总携带可用 leader、store
+  address cache 失效以及 cache capacity eviction 尚未做真实门禁，仍必须在无法自愈时 fail closed，不能
+  推广本项结论为任意 topology change 均可用。
 
 ### P2：运维兼容和长期验证
 

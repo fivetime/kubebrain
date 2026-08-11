@@ -35,6 +35,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 	"github.com/stretchr/testify/require"
+	tikvcodec "github.com/tikv/client-go/v2/util/codec"
 	pd "github.com/tikv/pd/client"
 	"go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -1221,6 +1222,10 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	followerRawKV := etcdserverpb.NewKVClient(followerRawConnection)
 	oldPut, err := leaderClient.Put(ctx, "shared", "follower-checkpoint-old")
 	require.NoError(t, err)
+	_, err = leaderClient.Put(ctx, "topology/a", "before-split-a")
+	require.NoError(t, err)
+	topologyPut, err := leaderClient.Put(ctx, "topology/z", "before-split-z")
+	require.NoError(t, err)
 	// Do not read the user key through the follower before isolation. Its only
 	// chance to cache the key's Region is checkpoint publication warmup.
 	time.Sleep(1500 * time.Millisecond)
@@ -1244,6 +1249,16 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 		attemptCancel()
 		return getErr == nil && response.Count == 1
 	}, 30*time.Second, 250*time.Millisecond, "only the isolated follower admission session must expire")
+	pdc, err := pd.NewClientWithContext(ctx, strings.Split(targetPD, ","), pd.SecurityOption{})
+	require.NoError(t, err)
+	defer pdc.Close()
+	physicalKeyspace, err := coder.NewKeyspace(keyspace)
+	require.NoError(t, err)
+	splitKey := physicalKeyspace.NewCoder().EncodeRevisionKey([]byte("topology/m"))
+	splitResponse, err := pdc.SplitRegions(ctx, [][]byte{tikvcodec.EncodeBytes(nil, splitKey)})
+	require.NoError(t, err)
+	require.EqualValues(t, 100, splitResponse.GetFinishedPercentage())
+	require.NotEmpty(t, splitResponse.GetRegionsId())
 
 	serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
 	serializableCtx = metadata.NewOutgoingContext(
@@ -1259,6 +1274,18 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.GreaterOrEqual(t, serializable.Header.Revision, oldPut.Header.Revision)
 	require.Less(t, serializable.Header.Revision, newPut.Header.Revision,
 		"the follower must serve its own checkpoint rather than proxying to the healthy leader")
+	topologyCtx, topologyCancel := context.WithTimeout(ctx, 5*time.Second)
+	topologyCtx = metadata.NewOutgoingContext(
+		topologyCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	topology, err := followerRawKV.Range(topologyCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("topology/"), RangeEnd: []byte(clientv3.GetPrefixRangeEnd("topology/")), Serializable: true,
+	})
+	topologyCancel()
+	require.NoError(t, err, "TiKV EpochNotMatch metadata must repair the isolated follower cache after a split")
+	require.Equal(t, map[string]string{"topology/a": "before-split-a", "topology/z": "before-split-z"}, mapFromRange(topology))
+	require.GreaterOrEqual(t, topology.Header.Revision, topologyPut.Header.Revision)
+	require.Less(t, topology.Header.Revision, newPut.Header.Revision)
 
 	restoreNetwork()
 	require.Eventually(t, func() bool {
@@ -1358,6 +1385,14 @@ func slicesCompact(values []string) []string {
 		}
 	}
 	return result
+}
+
+func mapFromRange(response *etcdserverpb.RangeResponse) map[string]string {
+	values := make(map[string]string, len(response.Kvs))
+	for _, kv := range response.Kvs {
+		values[string(kv.Key)] = string(kv.Value)
+	}
+	return values
 }
 
 // TestNativeLegacyLeaseHistorySnapshotRealCluster proves that a legacy value
