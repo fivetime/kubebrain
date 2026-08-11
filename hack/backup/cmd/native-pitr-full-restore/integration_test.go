@@ -1212,14 +1212,16 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer followerClient.Close()
+	followerAuthenticated, err := followerClient.Authenticate(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	followerRawConnection, err := grpc.NewClient(followerEndpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer followerRawConnection.Close()
+	followerRawKV := etcdserverpb.NewKVClient(followerRawConnection)
 	oldPut, err := leaderClient.Put(ctx, "shared", "follower-checkpoint-old")
 	require.NoError(t, err)
-	require.Eventually(t, func() bool {
-		attempt, attemptCancel := context.WithTimeout(ctx, 2*time.Second)
-		response, getErr := followerClient.Get(attempt, "shared", clientv3.WithSerializable())
-		attemptCancel()
-		return getErr == nil && len(response.Kvs) == 1 && string(response.Kvs[0].Value) == "follower-checkpoint-old"
-	}, 15*time.Second, 250*time.Millisecond)
+	// Do not read the user key through the follower before isolation. Its only
+	// chance to cache the key's Region is checkpoint publication warmup.
 	time.Sleep(1500 * time.Millisecond)
 
 	pdClient, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(targetPD, ","), DialTimeout: time.Second})
@@ -1243,7 +1245,12 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	}, 30*time.Second, 250*time.Millisecond, "only the isolated follower admission session must expire")
 
 	serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
-	serializable, err := followerClient.Get(serializableCtx, "shared", clientv3.WithSerializable())
+	serializableCtx = metadata.NewOutgoingContext(
+		serializableCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	serializable, err := followerRawKV.Range(serializableCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("shared"), Serializable: true,
+	})
 	serializableCancel()
 	require.NoError(t, err)
 	require.Len(t, serializable.Kvs, 1)

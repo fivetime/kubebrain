@@ -172,8 +172,39 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	if minimum > c.Timestamp {
 		return fmt.Errorf("%w: GC safepoint %d passed snapshot %d", ErrSerializableCheckpointUnavailable, minimum, c.Timestamp)
 	}
+	if !b.serializableCheckpointRegionsWarmed.Load() {
+		if err := b.warmSerializableCheckpoint(ctx, c.Timestamp); err != nil {
+			return err
+		}
+		b.serializableCheckpointRegionsWarmed.Store(true)
+	}
 	c.ValidUntil = time.Now().Add(serializableCheckpointUsable)
 	b.serializableCheckpoint.Store(&c)
+	return nil
+}
+
+// warmSerializableCheckpoint makes the TiKV txn client's Region cache usable
+// without PD before publishing c. ScanRegions alone is insufficient because it
+// uses the PD client directly and does not populate the txn client's cache; a
+// snapshot point lookup at every returned Region start does.
+func (b *backend) warmSerializableCheckpoint(ctx context.Context, timestamp uint64) error {
+	reader, ok := storage.FindCapability[storage.SnapshotGetter](b.kv)
+	if !ok {
+		return ErrSerializableCheckpointUnavailable
+	}
+	partitions, err := b.kv.GetPartitions(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd())
+	if err != nil {
+		return fmt.Errorf("discover checkpoint regions: %w", err)
+	}
+	if len(partitions) == 0 {
+		return fmt.Errorf("%w: no checkpoint regions", ErrSerializableCheckpointUnavailable)
+	}
+	for _, partition := range partitions {
+		_, err := reader.GetAt(ctx, partition.Start, timestamp)
+		if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
+			return fmt.Errorf("warm checkpoint region at %x: %w", partition.Start, err)
+		}
+	}
 	return nil
 }
 

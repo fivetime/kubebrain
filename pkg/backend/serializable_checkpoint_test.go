@@ -22,14 +22,17 @@ import (
 
 type checkpointTestStorage struct {
 	storage.KvStorage
-	mu          sync.Mutex
-	timestamp   uint64
-	minimum     uint64
-	protectedID string
-	protectedTS uint64
-	releasedID  string
-	tsoReads    int
-	partitions  int
+	mu              sync.Mutex
+	timestamp       uint64
+	minimum         uint64
+	protectedID     string
+	protectedTS     uint64
+	warmReads       int
+	getAtErr        error
+	releasedID      string
+	tsoReads        int
+	partitions      int
+	partitionStarts [][]byte
 }
 
 func (s *checkpointTestStorage) GetTimestampOracle(context.Context) (uint64, error) {
@@ -43,11 +46,30 @@ func (s *checkpointTestStorage) GetTimestampOracle(context.Context) (uint64, err
 func (s *checkpointTestStorage) GetPartitions(ctx context.Context, start, end []byte) ([]storage.Partition, error) {
 	s.mu.Lock()
 	s.partitions++
+	starts := append([][]byte(nil), s.partitionStarts...)
 	s.mu.Unlock()
+	if len(starts) != 0 {
+		partitions := make([]storage.Partition, 0, len(starts))
+		for index, partitionStart := range starts {
+			partitionEnd := end
+			if index+1 < len(starts) {
+				partitionEnd = starts[index+1]
+			}
+			partitions = append(partitions, storage.Partition{Start: partitionStart, End: partitionEnd})
+		}
+		return partitions, nil
+	}
 	return s.KvStorage.GetPartitions(ctx, start, end)
 }
 
 func (s *checkpointTestStorage) GetAt(ctx context.Context, key []byte, _ uint64) ([]byte, error) {
+	s.mu.Lock()
+	s.warmReads++
+	err := s.getAtErr
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return s.KvStorage.Get(ctx, key)
 }
 
@@ -104,6 +126,8 @@ func TestSerializableCheckpointBindsRevisionCompactAndAuthAtSnapshot(t *testing.
 	require.Equal(t, c.Timestamp, served.Timestamp)
 	require.NotEmpty(t, store.protectedID)
 	require.Equal(t, c.Timestamp, store.protectedTS)
+	require.Positive(t, store.partitions)
+	require.Positive(t, store.warmReads)
 }
 
 func TestSerializableCheckpointFailsClosedAfterGCPassedOrLocalDeadline(t *testing.T) {
@@ -119,6 +143,33 @@ func TestSerializableCheckpointFailsClosedAfterGCPassedOrLocalDeadline(t *testin
 	b.serializableCheckpoint.Store(&c)
 	_, err = b.GetSerializableCheckpoint()
 	require.True(t, errors.Is(err, ErrSerializableCheckpointUnavailable))
+}
+
+func TestSerializableCheckpointFailsClosedWhenRegionWarmupFails(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), getAtErr: storage.ErrUnavailable}
+	b := newCheckpointBackend(t, store)
+	err := b.protectSerializableCheckpoint(context.Background(), SerializableCheckpoint{Revision: 5, Timestamp: 200})
+	require.ErrorIs(t, err, storage.ErrUnavailable)
+	_, err = b.GetSerializableCheckpoint()
+	require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
+}
+
+func TestSerializableCheckpointWarmsEveryTenantRegionBeforePublication(t *testing.T) {
+	store := &checkpointTestStorage{
+		KvStorage: memkv.NewKvStorage(), partitionStarts: [][]byte{{0x10}, {0x20}, {0x30}},
+	}
+	b := newCheckpointBackend(t, store)
+	require.NoError(t, b.protectSerializableCheckpoint(
+		context.Background(), SerializableCheckpoint{Revision: 5, Timestamp: 200},
+	))
+	require.NoError(t, b.protectSerializableCheckpoint(
+		context.Background(), SerializableCheckpoint{Revision: 6, Timestamp: 201},
+	))
+	store.mu.Lock()
+	require.Equal(t, 3, store.warmReads)
+	store.mu.Unlock()
+	_, err := b.GetSerializableCheckpoint()
+	require.NoError(t, err)
 }
 
 func TestSerializableCheckpointCodecRejectsUnsafeMetadata(t *testing.T) {

@@ -408,10 +408,11 @@ type backend struct {
 	// durableRevisionTarget and durableRevisionSignal coalesce collector progress
 	// into monotonic background persistence, so a slow metadata write cannot
 	// delay watch fan-out or user-write acknowledgement.
-	durableRevisionTarget           uint64
-	durableRevisionSignal           chan struct{}
-	serializableCheckpoint          atomic.Pointer[SerializableCheckpoint]
-	serializableCheckpointServiceID string
+	durableRevisionTarget               uint64
+	durableRevisionSignal               chan struct{}
+	serializableCheckpoint              atomic.Pointer[SerializableCheckpoint]
+	serializableCheckpointServiceID     string
+	serializableCheckpointRegionsWarmed atomic.Bool
 
 	// logicalWriteMu is a leader-local predicate-lock substitute. Ordinary
 	// logical writes take RLock and therefore remain fully concurrent. A generic

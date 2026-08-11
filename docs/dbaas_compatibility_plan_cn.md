@@ -46310,7 +46310,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 不早于 acknowledged revision，默认 Range 则稳定返回 stale-leadership `Unavailable`；解除隔离
   后原进程恢复。最终三 PD/三 TiKV 现场 28.35 秒通过，runner 清理无残留。
   本项不是无限期本地副本承诺：checkpoint 异步发布窗口约 1 秒，只有已经成功 pin 且 region cache 足以
-  定位现有 Region 的 snapshot 在 2.5 分钟本地安全窗内受支持；冷 cache、隔离期间 Region split/merge 或
+  定位现有 Region 的 snapshot 在 2.5 分钟本地安全窗内受支持；启动时冷 cache 由 A4363 补齐，隔离期间 Region split/merge 或
   leader relocation、超过安全窗的长分区、进程重启后无法向 PD 续租，以及 RangeStream 尚未由本项证明，
   均继续 fail closed 或保持开放，后续需分别补真实门禁。Serializable read-only Txn 由 A4360 补齐。
 
@@ -46331,7 +46331,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Txn 比较 `before` 的 value，并在成功分支读取 `before`、`second` 两个 serializable Range；隔离全部 PD
   client port 且 admission session 已过期后，Txn 仍返回正确分支、两个故障前值及完全一致的 header
   revision，随后默认 linearizable Range 仍失败，解除隔离后原进程恢复。2026-08-11 最终整例 25.14 秒
-  通过且 runner 无资源残留。边界继承 A4359 的 1 秒发布窗口、2.5 分钟本地安全窗和 warm Region cache
+  通过且 runner 无资源残留。边界继承 A4359 的 1 秒发布窗口、2.5 分钟本地安全窗；启动时 cold Region
+  cache 由 A4363 补齐，
   要求；upstream `IsTxnReadonly` 不把 nested Txn 当作该快速路径，因此 nested 或混合读写 Txn 不在本项
   范围。Serializable latest RangeStream 由 A4361 补齐。
 
@@ -46353,7 +46354,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   原进程恢复。首次现场运行揭示 clientv3 stream interceptor 会在建流时主动重新 Authenticate，因而在
   PD 隔离时先失败；这不是服务端 RangeStream 读取差距，最终门禁明确复用故障前 token，同时仍经过服务端
   本地 JWT signature/claims/auth snapshot 校验。修正后的三 PD/三 TiKV 整例 28.22 秒通过，runner 无残留。
-  边界仍是 A4359 的约 1 秒发布窗口、2.5 分钟本地安全窗和 warm Region cache；`Revision>0` historical
+  边界仍是 A4359 的约 1 秒发布窗口、2.5 分钟本地安全窗；启动时 cold Region cache 由 A4363 补齐，
+  `Revision>0` historical
   stream、隔离期间 Region topology 变化、超长流跨越本地安全窗或 safepoint TTL、以及客户端自身要求在线
   重新登录的策略，不由本项改变或扩大承诺。
 
@@ -46363,8 +46365,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster` 先启动 root-owned leader，再启动 UID 65534
   follower，并用 Maintenance Status 精确要求两端 Leader ID 相同、首进程 `MemberId==Leader`、目标进程
   `MemberId!=Leader`，避免把第二个可连接 endpoint 误认作 follower。两进程共享 HS256 JWT 配置和独立
-  admission session；leader 写入 `shared=...old` 后，follower 先以 authenticated serializable Get 完整
-  warm auth/Region state，并等待 checkpoint publication。owner iptables 随后只切断 follower 到三个 PD
+  admission session；leader 写入 `shared=...old` 后，follower 等待 checkpoint publication。A4362 现场
+  曾先用 authenticated serializable Get warm state；A4363 已移除该前置用户读取。owner iptables 随后只切断 follower 到三个 PD
   client port，健康 leader 仍可把同一 key 覆盖成更高 revision 的 `...new`，健康 PD 中 session 数必须从
   2 精确降为 1。隔离 follower 的 serializable Get 必须返回旧值，header revision 不早于旧 write、严格
   早于新 write；因此结果不可能来自仍健康的 leader proxy，而只能来自 follower 已加载、以自己随机
@@ -46374,7 +46376,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项增强的是 follower durable-load 和独立 pin 的真实证据，没有扩大 A4359 的时间/Region-cache边界：
   follower 必须在故障前成功启动、读取 shared checkpoint 并向 PD 建立自己的 service safepoint；故障中
   新启动或重启的进程无法证明旧 snapshot 仍受保护，仍须 fail closed。跨宿主 peer 网络分区、滚动升级
-  中旧请求与新进程 pin 交叠、cold Region cache 和 Region topology 变化继续开放。
+  中旧请求与新进程 pin 交叠和 Region topology 变化继续开放；启动时 cold Region cache 由 A4363 补齐。
+
+- A4363 关闭 A4359/A4362 的“进程启动后尚未读过目标用户 Region”缺口。审计 TiKV client-go 后确认现有
+  `store.GetPartitions` 直接调用 PD `ScanRegions`，返回边界但不会填充 txn client 自身 Region cache；因此
+  只在 checkpoint scanner 中跳过 partition discovery 不能帮助 cold follower。现在每进程第一次发布
+  serializable checkpoint 时，必须先成功注册 PD service safepoint，再对
+  `Keyspace.ObjectKeyspaceStart()` 到 `ObjectKeyspaceEnd()` 做 Region discovery，并以该 checkpoint TSO
+  对每个 Region 的起点执行一次真实 `SnapshotGetter.GetAt`。`ErrKeyNotFound` 只表示探针键不存在，仍已
+  完成路由；任何 discovery、snapshot RPC 或空 partition 结果都会阻止 checkpoint 进入 atomic pointer，
+  请求继续 fail closed。Region cache 与逻辑 revision 无关，所以一次成功预热由进程级 atomic flag 记住，
+  后续每秒 safepoint 续租或新 revision checkpoint 不再全租户重复 `ScanRegions`，避免高写入集群产生每秒
+  O(Region) 控制面流量；首次失败则不置位，后台继续有界重试。
+  确定性测试覆盖 warmup error 不发布、三 Region 起点各 lookup 一次、后续不同 TSO 不重复预热，并通过
+  backend race。A4362 真实 follower 门禁现只在故障前通过 follower `Authenticate` 取得 JWT，从未对
+  `shared` 用户键做 Get；隔离 follower 到全部三个 PD client port 后，raw gRPC authenticated serializable
+  Range 仍返回旧 checkpoint 值与严格早于 leader 新写的 header，证明路由不是由测试请求偶然预热。
+  三 PD/三 TiKV、双 KubeBrain cold-follower 现场先以 21.00 秒通过；加入只预热一次的生产成本约束后再以
+  20.83 秒通过，backend/server/storage/integration 全量回归通过且 runner 无残留。
+  本项只保证 checkpoint 建立时 PD 报告的现有 Region 集合；隔离后的 split/merge、leader relocation 导致
+  client-go 主动失效缓存、缓存容量淘汰以及进程在无 PD 时冷启动仍 fail closed。若要覆盖动态 topology，
+  需要可观测的周期/事件驱动 cache refresh 与真实 split/transfer 门禁，不能用每秒全量 ScanRegions 硬撑。
 
 ### P2：运维兼容和长期验证
 
