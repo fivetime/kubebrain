@@ -2065,6 +2065,34 @@ Up store identity 与 plan-bound receipt 一致。成功输出 `kubebrain.native
 外部 BR 进程原子保持的 target writer fence，空白扫描与 BR 首写间仍有竞态；生产控制面必须确保目标
 未启动 KubeBrain/其他 writer。该执行收据不能用于宣称 PITR 或 etcd 语义恢复完成。
 
+当 plan 的 `restore_ts > full_snapshot.backup_ts` 时，同一个 full executor 仍只执行并记录 base
+whole-cluster txn import，随后必须在 KubeBrain/其他 target writer 保持停机的窗口内运行独立日志回放：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-log-replay \
+  --plan=/evidence/native-pitr-restore-plan.json \
+  --full-restore=/evidence/native-pitr-full-restore.json \
+  --log-artifacts=/evidence/native-pitr-log-artifacts.json \
+  --log-root=/evidence/log-mirror \
+  --target-pd-addrs="$TARGET_PD_ADDRS" \
+  --target-ca=/target-tls/ca.crt \
+  --target-cert=/target-tls/tls.crt \
+  --target-key=/target-tls/tls.key \
+  --approve-plan-sha256="$PLAN_SHA256" \
+  > /evidence/native-pitr-log-replay.json
+```
+
+该执行器不创建 TiDB domain，也不套用 table/DB ID rewrite rule。它重新核对 exact-version mirror，直接
+解析 BR v7.5.1 stream 的 memcomparable MVCC key、default/write CF、short value/long value，仅接受完整
+落在 plan tenant 物理范围内且 commit TSO 属于 `(backup_ts, restore_ts]` 的 PUT/DELETE；长值必须能由
+`(raw key,start_ts)` 精确关联 default CF。mutation 按 `(commit_ts,key)` 规范排序，同一 source commit
+TSO 的全部 mutation 与 target 内部 checkpoint 在一条 TiKV transaction 中提交；checkpoint 绑定 exact
+plan/mutation digest，失败重跑只从完整 source transaction 边界继续。成功输出
+`kubebrain.native-pitr-log-replay.v1`，但仍固定 `target_write_fence_proven=false`、
+`post_restore_semantic_validated=false`、`pitr_complete=false`。当前实现已通过编码、范围、摘要、长短值、
+事务分组、原子 checkpoint 和续跑单测；尚未用官方 log-backup 服务产生的真实 v7.5.1 stream 制品完成
+双集群演练，也尚未实现所有 KubeBrain writer 必须遵守的恢复 fence，因此仍是实验性恢复阶段。
+
 2026-08-11 已通过 `hack/backup/run-native-pitr-full-restore-integration.sh` 完成隔离真实演练：脚本启动
 两套 cluster ID 不同、数据目录独立的 PD/TiKV v7.5.1 集群及当前源码构建的 source/target KubeBrain。
 source 通过真实 etcd API 写入一个 600 秒租约键和一个普通键，冻结 writer 后生成完整 `/` logical.v2
@@ -2777,8 +2805,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   `cipher_info`/crypter 参数，而 `CipherIv` 在官方 plaintext 模式也存在，故生产还需增加独立的加密模式
   attestation，不能只凭 backupmeta 声称 plaintext。full-only 恢复后的独立语义门禁现已实现严格
   receipt/PD cluster ID/witness 摘要链、历史/current/lease 精确比较与真实 Watch 写删探针，并已完成
-  双集群真实演练；但备份前 witness 尚未由 plan 原子绑定。range-aware log restore 与首写前原子防漂移
-  仍未实现，因此不能改变本项“未完成”的结论。
+  双集群真实演练；但备份前 witness 尚未由 plan 原子绑定。range-aware log materializer/executor 现已
+  实现 default/write CF 解析、tenant/TSO 过滤、原始 mutation 分组及原子 checkpoint 续跑，但真实官方
+  stream 双集群演练、log 后语义门禁与首写前原子防漂移仍未完成，因此不能改变本项“未完成”的结论。
   对 TiDB/BR v7.5.1（tag commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`）的 restore 源码审计还确认：
   `br restore txn` 能直接导入 transactional BackupMeta 的 SST，适合 KubeBrain arbitrary range 的 full
   阶段；但 `br restore point` 不能直接复用为 KubeBrain 日志恢复器。其 `RunStreamRestore` 会创建 TiDB

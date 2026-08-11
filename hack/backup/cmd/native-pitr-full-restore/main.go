@@ -92,10 +92,6 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if o.approve != planSHA {
 		return errors.New("approve-plan-sha256 must equal the exact plan file SHA-256")
 	}
-	if plan.RestoreTS != plan.Full.BackupTS {
-		return errors.New("full-only executor refuses a plan requiring log replay")
-	}
-
 	fullBytes, err := readSmall(o.full)
 	if err != nil {
 		return err
