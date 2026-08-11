@@ -46574,6 +46574,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   kind 中的 PD leader 单向丢包和数据面连续性；它仍不等价于跨节点/AZ 的 latency、带宽、conntrack/NAT
   或 network-fabric 故障，跨 AZ 预生产验证继续开放。
 
+- A4375 将 A4374 从单 node network namespace 推进到真实跨 node 的 PD 单向分区。对照
+  `/root/etcd/tests/integration/network_partition_test.go` 只在成员确实位于不同故障域后声明 partition
+  证据：`hack/dev/up.sh` 新增 fail-closed `KIND_WORKER_NODES=3..10`，为每个 kind worker 标记独立 dev zone，
+  并仅在该模式把 `deploy/dev/tidb-cluster-multinode-patch.yaml` 的 required hostname anti-affinity 合入
+  PD/TiKV；默认单 node manifest 不受影响。`pd-cross-node-asymmetric-partition` helper 在注入前要求三个
+  PD Pod 映射到三个不同 node，动态取得 live leader 的 `.spec.nodeName`，只在该 privileged worker 的
+  FORWARD 链按 leader Pod source IP 插入带 PID comment 的 DROP；任何共宿、未知 node 或非 privileged
+  node container 都在修改网络前拒绝。
+  2026-08-11 disposable `kubebrain-cross` 以 1 control-plane + 3 worker、3 PD/3 TiKV/3 KubeBrain 和独立
+  6379/6380 端口启动；PD 与 TiKV 各自严格分布于 `dev-zone-1/2/3`。跨节点门禁连续三轮通过：首轮在
+  `kubebrain-cross-worker2` 隔离 `kb-pd-1`，leader 切至 `kb-pd-0`，27.88 秒内完成 385 次操作；第二轮
+  58.85 秒通过；第三轮再次在 worker2 隔离 `kb-pd-1` 并切至 `kb-pd-2`，40.91 秒内完成 1289 次操作。
+  每轮均恢复后逐键复读并等待 TiDBCluster Ready，最终四个 node 均无 iptables 残留。本项关闭 kind
+  bridge 上跨 node 的 outbound-only PD leader 分区证据，但仍不等价于独立宿主/AZ 的真实延迟、带宽、
+  conntrack/NAT、underlay failure 或长时间分区；这些预生产故障矩阵继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

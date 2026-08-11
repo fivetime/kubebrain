@@ -12,6 +12,7 @@ TIDB_OPERATOR_VERSION="${TIDB_OPERATOR_VERSION:-v1.6.5}"
 KUBEBRAIN_REPLICAS="${KUBEBRAIN_REPLICAS:-1}"
 KIND_CLIENT_HOST_PORT="${KIND_CLIENT_HOST_PORT:-3379}"
 KIND_PEER_HOST_PORT="${KIND_PEER_HOST_PORT:-3380}"
+KIND_WORKER_NODES="${KIND_WORKER_NODES:-0}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -29,6 +30,11 @@ validate_version_token TIDB_OPERATOR_VERSION
 validate_positive_integer KUBEBRAIN_REPLICAS
 validate_positive_integer KIND_CLIENT_HOST_PORT
 validate_positive_integer KIND_PEER_HOST_PORT
+if [[ ! "$KIND_WORKER_NODES" =~ ^[0-9]+$ ]] ||
+  (( KIND_WORKER_NODES != 0 && (KIND_WORKER_NODES < 3 || KIND_WORKER_NODES > 10) )); then
+  echo "KIND_WORKER_NODES must be 0 or an integer in [3,10]" >&2
+  exit 1
+fi
 if (( KIND_CLIENT_HOST_PORT > 65535 || KIND_PEER_HOST_PORT > 65535 )); then
   echo "KIND_CLIENT_HOST_PORT and KIND_PEER_HOST_PORT must be in [1,65535]" >&2
   exit 1
@@ -71,6 +77,7 @@ cd "$ROOT_DIR"
 kind_config="deploy/dev/kind-config.yaml"
 tmp_kind_config=""
 tmp_kubebrain_manifest=""
+tmp_tidb_manifest=""
 cleanup() {
   if [ -n "$tmp_kind_config" ] && [ -f "$tmp_kind_config" ]; then
     rm -f "$tmp_kind_config"
@@ -78,17 +85,30 @@ cleanup() {
   if [ -n "$tmp_kubebrain_manifest" ] && [ -f "$tmp_kubebrain_manifest" ]; then
     rm -f "$tmp_kubebrain_manifest"
   fi
+  if [ -n "$tmp_tidb_manifest" ] && [ -f "$tmp_tidb_manifest" ]; then
+    rm -f "$tmp_tidb_manifest"
+  fi
 }
 trap cleanup EXIT
 
-if [ -n "$KIND_NODE_IMAGE" ] || [[ "$KIND_CLIENT_HOST_PORT" != 3379 || "$KIND_PEER_HOST_PORT" != 3380 ]]; then
+if [ -n "$KIND_NODE_IMAGE" ] || [[ "$KIND_CLIENT_HOST_PORT" != 3379 || "$KIND_PEER_HOST_PORT" != 3380 ]] ||
+  (( KIND_WORKER_NODES > 0 )); then
   tmp_kind_config="$(mktemp)"
-  awk -v client_port="$KIND_CLIENT_HOST_PORT" -v peer_port="$KIND_PEER_HOST_PORT" -v node_image="$KIND_NODE_IMAGE" '
+  awk -v client_port="$KIND_CLIENT_HOST_PORT" -v peer_port="$KIND_PEER_HOST_PORT" \
+    -v node_image="$KIND_NODE_IMAGE" -v workers="$KIND_WORKER_NODES" '
     $1 == "hostPort:" && $2 == "3379" { sub(/hostPort:[[:space:]]*3379/, "hostPort: " client_port) }
     $1 == "hostPort:" && $2 == "3380" { sub(/hostPort:[[:space:]]*3380/, "hostPort: " peer_port) }
     { print }
     $0 ~ /^[[:space:]]*-[[:space:]]*role:[[:space:]]*control-plane[[:space:]]*$/ {
       if (node_image != "") print "    image: " node_image
+    }
+    END {
+      for (i = 1; i <= workers; i++) {
+        print "  - role: worker"
+        if (node_image != "") print "    image: " node_image
+        print "    labels:"
+        print "      topology.kubernetes.io/zone: dev-zone-" i
+      }
     }
   ' deploy/dev/kind-config.yaml >"$tmp_kind_config"
   kind_config="$tmp_kind_config"
@@ -126,7 +146,14 @@ kubectl wait --namespace tidb-admin \
   --timeout=180s
 
 kubectl create namespace tidb-cluster --dry-run=client -o yaml | kubectl apply -f -
-kubectl apply -f deploy/dev/tidb-cluster.yaml
+tidb_manifest="deploy/dev/tidb-cluster.yaml"
+if (( KIND_WORKER_NODES > 0 )); then
+  tmp_tidb_manifest="$(mktemp)"
+  kubectl patch --local --type=merge -f "$tidb_manifest" \
+    --patch-file deploy/dev/tidb-cluster-multinode-patch.yaml -o yaml >"$tmp_tidb_manifest"
+  tidb_manifest="$tmp_tidb_manifest"
+fi
+kubectl apply -f "$tidb_manifest"
 
 wait_pods_ready tidb-cluster 'app.kubernetes.io/component=pd,app.kubernetes.io/instance=kb' 600s
 wait_pods_ready tidb-cluster 'app.kubernetes.io/component=tikv,app.kubernetes.io/instance=kb' 600s

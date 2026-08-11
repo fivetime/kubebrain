@@ -1,0 +1,19 @@
+spec:
+  pd:
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: pd
+                app.kubernetes.io/instance: kb
+            topologyKey: kubernetes.io/hostname
+  tikv:
+    affinity:
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: tikv
+                app.kubernetes.io/instance: kb
+            topologyKey: kubernetes.io/hostname

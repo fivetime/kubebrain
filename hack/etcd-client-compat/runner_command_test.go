@@ -334,14 +334,34 @@ func TestBackendQuorumPDAsymmetricPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendQuorumPDCrossNodeAsymmetricPartitionTargetsLeaderNode(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-asymmetric-partition)`)
+	require.Contains(t, script, `--partition-pd-leader-cross-node-outbound`)
+	require.Contains(t, script, `partition_pd_leader outbound cross-node`)
+	require.Contains(t, script, `local placement="${2:-any}"`)
+	require.Contains(t, script, `expected 3 distinct PD nodes`)
+	require.Contains(t, script, `KIND_NODE_CONTAINER="$old_leader_node"`)
+	require.Contains(t, script, `Cross-node PD partition targets $old_leader on $KIND_NODE_CONTAINER`)
+	require.Contains(t, script, `docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip"`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestDevStackSupportsIsolatedHostPortsAndLowDiskTestHosts(t *testing.T) {
 	up, err := os.ReadFile("../dev/up.sh")
 	require.NoError(t, err)
 	upScript := string(up)
 	require.Contains(t, upScript, `KIND_CLIENT_HOST_PORT="${KIND_CLIENT_HOST_PORT:-3379}"`)
 	require.Contains(t, upScript, `KIND_PEER_HOST_PORT="${KIND_PEER_HOST_PORT:-3380}"`)
+	require.Contains(t, upScript, `KIND_WORKER_NODES="${KIND_WORKER_NODES:-0}"`)
 	require.Contains(t, upScript, `KIND_CLIENT_HOST_PORT and KIND_PEER_HOST_PORT must differ`)
+	require.Contains(t, upScript, `KIND_WORKER_NODES must be 0 or an integer in [3,10]`)
 	require.Contains(t, upScript, `-v client_port="$KIND_CLIENT_HOST_PORT"`)
+	require.Contains(t, upScript, `-v node_image="$KIND_NODE_IMAGE" -v workers="$KIND_WORKER_NODES"`)
+	require.Contains(t, upScript, `topology.kubernetes.io/zone: dev-zone-`)
+	require.Contains(t, upScript, `--patch-file deploy/dev/tidb-cluster-multinode-patch.yaml`)
 	require.Contains(t, upScript, `sub(/hostPort:[[:space:]]*3379/, "hostPort: " client_port)`)
 	require.Contains(t, upScript, `127.0.0.1:${KIND_CLIENT_HOST_PORT}`)
 	require.Contains(t, upScript, `kubectl scale statefulset/kubebrain`)
@@ -354,6 +374,14 @@ func TestDevStackSupportsIsolatedHostPortsAndLowDiskTestHosts(t *testing.T) {
 	require.Contains(t, manifest, `reserve-space = "0MiB"`)
 	require.Contains(t, manifest, `reserve-raft-space = "0MiB"`)
 	require.Contains(t, manifest, `Production must keep TiKV's reserve-space protection`)
+
+	multinodePatch, err := os.ReadFile("../../deploy/dev/tidb-cluster-multinode-patch.yaml")
+	require.NoError(t, err)
+	patch := string(multinodePatch)
+	require.Equal(t, 2, strings.Count(patch, `requiredDuringSchedulingIgnoredDuringExecution:`))
+	require.Contains(t, patch, `app.kubernetes.io/component: pd`)
+	require.Contains(t, patch, `app.kubernetes.io/component: tikv`)
+	require.Equal(t, 2, strings.Count(patch, `topologyKey: kubernetes.io/hostname`))
 }
 
 func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {

@@ -459,11 +459,43 @@ partition_tikv_member() {
 
 partition_pd_leader() {
   local direction="${1:-symmetric}"
-  local old_leader new_leader privileged attempts
+  local placement="${2:-any}"
+  local old_leader old_leader_node new_leader privileged attempts
+  local -a pd_nodes
 
   if [[ "$direction" != "symmetric" && "$direction" != "outbound" ]]; then
     echo "invalid PD leader partition direction: $direction" >&2
     exit 1
+  fi
+  if [[ "$placement" != "any" && "$placement" != "cross-node" ]]; then
+    echo "invalid PD leader partition placement: $placement" >&2
+    exit 1
+  fi
+  old_leader="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.status.pd.leader.name}')"
+  if [[ "$old_leader" != "$TIDB_CLUSTER-pd-"* ]]; then
+    echo "refusing to partition PD leader ${old_leader:-missing}: unexpected Pod name" >&2
+    exit 1
+  fi
+  partition_pod_ip="$(kubectl -n "$TIDB_NAMESPACE" get pod "$old_leader" -o jsonpath='{.status.podIP}')"
+  if [[ ! "$partition_pod_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    echo "refusing to partition PD leader $old_leader: invalid IPv4 Pod IP $partition_pod_ip" >&2
+    exit 1
+  fi
+  if [[ "$placement" == "cross-node" ]]; then
+    old_leader_node="$(kubectl -n "$TIDB_NAMESPACE" get pod "$old_leader" -o jsonpath='{.spec.nodeName}')"
+    mapfile -t pd_nodes < <(kubectl -n "$TIDB_NAMESPACE" get pods \
+      -l "app.kubernetes.io/component=pd,app.kubernetes.io/instance=$TIDB_CLUSTER" \
+      -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u)
+    if (( ${#pd_nodes[@]} != 3 )); then
+      echo "refusing cross-node PD partition: expected 3 distinct PD nodes, got ${#pd_nodes[@]}" >&2
+      exit 1
+    fi
+    if [[ -z "$old_leader_node" ]]; then
+      echo "refusing cross-node PD partition: leader $old_leader has no assigned node" >&2
+      exit 1
+    fi
+    KIND_NODE_CONTAINER="$old_leader_node"
+    echo "Cross-node PD partition targets $old_leader on $KIND_NODE_CONTAINER"
   fi
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
     echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
@@ -485,16 +517,6 @@ partition_pd_leader() {
   fi
   docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -S FORWARD >/dev/null
 
-  old_leader="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o jsonpath='{.status.pd.leader.name}')"
-  if [[ "$old_leader" != "$TIDB_CLUSTER-pd-"* ]]; then
-    echo "refusing to partition PD leader ${old_leader:-missing}: unexpected Pod name" >&2
-    exit 1
-  fi
-  partition_pod_ip="$(kubectl -n "$TIDB_NAMESPACE" get pod "$old_leader" -o jsonpath='{.status.podIP}')"
-  if [[ ! "$partition_pod_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    echo "refusing to partition PD leader $old_leader: invalid IPv4 Pod IP $partition_pod_ip" >&2
-    exit 1
-  fi
   partition_tag="kubebrain-pd-partition-${old_leader}-$$"
   trap cleanup_partition EXIT
   trap 'cleanup_partition; exit 130' INT
@@ -553,6 +575,11 @@ if [[ "${1:-}" == "--partition-pd-leader-outbound" ]]; then
   partition_pd_leader outbound
   exit 0
 fi
+if [[ "${1:-}" == "--partition-pd-leader-cross-node-outbound" ]]; then
+  need docker
+  partition_pd_leader outbound cross-node
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-pd-quorum" ]]; then
   need docker
   need jq
@@ -584,7 +611,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -698,6 +725,11 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need docker
     run_quorum_test "PD leader outbound-only network partition" "$self --partition-pd-leader-outbound"
     ;;
+  pd-cross-node-asymmetric-partition)
+    need docker
+    run_quorum_test "cross-node PD leader outbound-only network partition" \
+      "$self --partition-pd-leader-cross-node-outbound"
+    ;;
   pd-quorum-loss)
     need docker
     need jq
@@ -718,7 +750,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_watch_recovery_test "TiKV quorum-loss network partition" "$self --partition-tikv-quorum-soak"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-quorum-loss, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac
