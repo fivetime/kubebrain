@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
@@ -1378,6 +1379,46 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	unpauseOutput, err := exec.CommandContext(ctx, "docker", "unpause", leaderContainer).CombinedOutput()
 	require.NoError(t, err, "unpause Region leader store: %s", unpauseOutput)
 	storePaused = false
+	quorumLossContainers := tikvContainers[:2]
+	quorumPauseOutput, err := exec.CommandContext(
+		ctx, "docker", "pause", quorumLossContainers[0], quorumLossContainers[1],
+	).CombinedOutput()
+	require.NoError(t, err, "pause two TiKV stores: %s", quorumPauseOutput)
+	quorumStoresPaused := true
+	t.Cleanup(func() {
+		if quorumStoresPaused {
+			_ = exec.Command("docker", "unpause", quorumLossContainers[0], quorumLossContainers[1]).Run()
+		}
+	})
+	quorumLossCtx, quorumLossCancel := context.WithTimeout(ctx, 5*time.Second)
+	quorumLossCtx = metadata.NewOutgoingContext(
+		quorumLossCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	quorumLoss, err := followerRawKV.Range(quorumLossCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("topology/z"), Serializable: true,
+	})
+	quorumLossCancel()
+	require.Error(t, err, "a two-store quorum loss must not return checkpoint data")
+	require.Nil(t, quorumLoss)
+	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded,
+		"a two-store quorum loss must time out rather than return stale data: %v", err)
+	quorumUnpauseOutput, err := exec.CommandContext(
+		ctx, "docker", "unpause", quorumLossContainers[0], quorumLossContainers[1],
+	).CombinedOutput()
+	require.NoError(t, err, "unpause two TiKV stores: %s", quorumUnpauseOutput)
+	quorumStoresPaused = false
+	quorumRecoveryCtx, quorumRecoveryCancel := context.WithTimeout(ctx, 15*time.Second)
+	quorumRecoveryCtx = metadata.NewOutgoingContext(
+		quorumRecoveryCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	quorumRecovery, err := followerRawKV.Range(quorumRecoveryCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("topology/z"), Serializable: true,
+	})
+	quorumRecoveryCancel()
+	require.NoError(t, err, "checkpoint reads must recover after the TiKV quorum returns")
+	require.Len(t, quorumRecovery.Kvs, 1)
+	require.Equal(t, []byte("before-split-z"), quorumRecovery.Kvs[0].Value)
+	require.Equal(t, topology.Header.Revision, quorumRecovery.Header.Revision)
 	encodedTopologyA := tikvcodec.EncodeBytes(nil, physicalKeyspace.NewCoder().EncodeRevisionKey([]byte("topology/a")))
 	leftRegion, err := pdc.GetRegion(ctx, encodedTopologyA)
 	require.NoError(t, err)
@@ -1414,16 +1455,20 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 		"an isolated merge must time out rather than return stale or partial data: %v", err)
 
 	restoreNetwork()
-	mergedRecoveryCtx, mergedRecoveryCancel := context.WithTimeout(ctx, 10*time.Second)
-	mergedRecoveryCtx = metadata.NewOutgoingContext(
-		mergedRecoveryCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
-	)
-	mergedRecovery, err := followerRawKV.Range(mergedRecoveryCtx, &etcdserverpb.RangeRequest{
-		Key: []byte("topology/"), RangeEnd: []byte(clientv3.GetPrefixRangeEnd("topology/")), Serializable: true,
-	})
-	mergedRecoveryCancel()
-	require.NoError(t, err, "the same follower must repair the merged Region after PD connectivity returns")
-	require.Equal(t, map[string]string{"topology/a": "before-split-a", "topology/z": "before-split-z"}, mapFromRange(mergedRecovery))
+	require.Eventually(t, func() bool {
+		mergedRecoveryCtx, mergedRecoveryCancel := context.WithTimeout(ctx, 3*time.Second)
+		mergedRecoveryCtx = metadata.NewOutgoingContext(
+			mergedRecoveryCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+		)
+		mergedRecovery, rangeErr := followerRawKV.Range(mergedRecoveryCtx, &etcdserverpb.RangeRequest{
+			Key: []byte("topology/"), RangeEnd: []byte(clientv3.GetPrefixRangeEnd("topology/")), Serializable: true,
+		})
+		mergedRecoveryCancel()
+		return rangeErr == nil && maps.Equal(
+			map[string]string{"topology/a": "before-split-a", "topology/z": "before-split-z"},
+			mapFromRange(mergedRecovery),
+		)
+	}, 30*time.Second, 500*time.Millisecond, "the same follower must repair the merged Region after PD connectivity returns")
 	require.Eventually(t, func() bool {
 		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
 		response, getErr := followerClient.Get(attempt, "shared")

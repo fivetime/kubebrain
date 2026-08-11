@@ -46503,6 +46503,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   replacement，或两个 store 同时失联。上述情形需要 PD `GetStore`/重新放置且在 PD 隔离时应继续
   fail closed；store replacement/address change 仍开放，不能以本项推广关闭。
 
+- A4370 将 A4369 保留的“双 TiKV store 同时失联”升级为真实负向门禁。单 store failover 恢复原容器
+  后，测试从 runner 提供的受管映射中选择两个不同 target TiKV 容器并同时 `docker pause`，保留第三个
+  peer 但故意破坏三副本 Raft quorum。follower 此时仍与全部 PD 隔离；对 `topology/z` 的 raw authenticated
+  serializable Range 使用 5 秒 deadline，必须返回 `DeadlineExceeded` 且 response 为 nil，禁止把单个
+  无 quorum peer 的本地状态、旧连接或 stale checkpoint 当作成功。随后显式 unpause 两个 store（并有
+  cleanup 幂等兜底），同一 point Range 必须在 15 秒内恢复并返回原 checkpoint header/value。
+  双 store pause 会让多个 txn client 的 store/Region cache 标为待重解析；因此后续解除 PD DROP 后的
+  merge recovery 从一次 10 秒 RPC 改为 30 秒有界 `Eventually`，每次尝试限 3 秒，最终仍必须精确返回
+  `topology/a`、`topology/z` 两个值，不能以任意成功或部分结果放宽。首轮发现旧单次门禁在 A4370 新故障
+  后超时，而双 store fail-closed 与 point recovery 已通过；修正后的完整现场连续以 57.25/49.45 秒通过；
+  integration/backend/server/storage 全量回归通过且 runner 无残留。
+  本项关闭的是 quorum-loss 安全性与原 store 恢复；三副本失去两个 store 时可用性按 Raft 原理不可能，
+  DBaaS 必须告警/恢复而不能承诺读服务。以新 store replacement、peer re-replication 或 address change
+  恢复仍需要 PD，继续作为开放的运维兼容边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
