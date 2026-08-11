@@ -14,6 +14,7 @@ import (
 	"github.com/golang/mock/gomock"
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/stretchr/testify/require"
+	tikvcfg "github.com/tikv/client-go/v2/config"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -34,6 +35,7 @@ type checkpointTestStorage struct {
 	tsoReads        int
 	partitions      int
 	partitionStarts [][]byte
+	warmerCalls     int
 }
 
 func (s *checkpointTestStorage) GetTimestampOracle(context.Context) (uint64, error) {
@@ -76,6 +78,18 @@ func (s *checkpointTestStorage) GetAt(ctx context.Context, key []byte, _ uint64)
 
 func (s *checkpointTestStorage) BatchGetAt(ctx context.Context, keys [][]byte, _ uint64) (map[string][]byte, error) {
 	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
+}
+
+func (s *checkpointTestStorage) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timestamp uint64) error {
+	s.mu.Lock()
+	s.warmerCalls++
+	s.mu.Unlock()
+	for _, start := range starts {
+		if _, err := s.GetAt(ctx, start, timestamp); err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *checkpointTestStorage) ProtectSnapshot(_ context.Context, id string, ttl time.Duration, timestamp uint64) (uint64, error) {
@@ -169,9 +183,17 @@ func TestSerializableCheckpointWarmsEveryTenantRegionBeforePublication(t *testin
 	))
 	store.mu.Lock()
 	require.Equal(t, 3, store.warmReads)
+	require.Equal(t, 1, store.warmerCalls)
 	store.mu.Unlock()
 	_, err := b.GetSerializableCheckpoint()
 	require.NoError(t, err)
+}
+
+func TestSerializableCheckpointUsableWindowExpiresBeforeDefaultRegionCacheTTL(t *testing.T) {
+	regionCacheTTL := time.Duration(tikvcfg.GetGlobalConfig().TiKVClient.RegionCacheTTL) * time.Second
+	require.Positive(t, regionCacheTTL)
+	require.Less(t, serializableCheckpointUsable, regionCacheTTL,
+		"a protected checkpoint must fail closed before an idle warmed Region can be evicted")
 }
 
 func TestSerializableCheckpointCodecRejectsUnsafeMetadata(t *testing.T) {

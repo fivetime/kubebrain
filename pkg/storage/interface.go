@@ -166,6 +166,17 @@ type SnapshotGetter interface {
 	BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64) (map[string][]byte, error)
 }
 
+// SnapshotRegionWarmer is an OPTIONAL capability for keeping the storage
+// client's routing caches usable without its topology service. starts must be
+// physical keys that cover every Region needed by the caller. Implementations
+// with multiple independent routing caches must touch every cache, not merely
+// the next round-robin client. The method must not discover partitions itself:
+// routing-cache population is separated from topology discovery so it cannot
+// silently omit one of the caller's already-authoritative starts.
+type SnapshotRegionWarmer interface {
+	WarmSnapshotRegions(ctx context.Context, starts [][]byte, timestamp uint64) error
+}
+
 // SnapshotProtector is an OPTIONAL capability for pinning an engine snapshot
 // against MVCC garbage collection. serviceID identifies one live consumer;
 // implementations must expire the protection after ttl unless it is renewed.

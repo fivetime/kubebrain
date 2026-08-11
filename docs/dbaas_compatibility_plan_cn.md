@@ -46468,6 +46468,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缺口，需要让隔离进程获得可信、可持续更新的 Region directory（或上游 client/TiKV 提供足够的 merged
   Region metadata），并以本门禁翻转为隔离期间成功且 header/value 仍固定在受保护 checkpoint 为验收。
 
+- A4368 修复 A4363 warmup 对多 client 部署覆盖不足的问题。生产默认创建 16 个 round-robin
+  `txnkv.Client`，每个 client 都有独立 PD connection、Region cache 与 TSO dispatcher；旧实现对每个
+  Region start 只调用一次通用 `GetAt`，会轮转到一个 client，而不是让每个 client 都缓存所有 Region。
+  新增可选 `storage.SnapshotRegionWarmer` 能力：backend 仍只在 PD 健康时发现 tenant object keyspace 的完整
+  partitions，并复制不可变 physical starts；TiKV 实现随后对每个 txn client 的指定 snapshot 逐一 point
+  read 所有 starts，missing key 仍视为成功，任一真实 RPC 错误都会阻止 checkpoint 发布。非 TiKV engine
+  保留原 `SnapshotGetter` fallback，不扩大通用接口的强制实现面。
+  单元测试用三个独立 recording readers × 三个 Region starts 精确证明 3×3 全覆盖，backend 测试证明首次
+  publication 走 warmer 且后续相同 checkpoint 不重复 warm；相关 race 门禁通过。真实三 PD/三 TiKV、双
+  KubeBrain 现场在 follower 隔离全部 PD 后、split 前，对从未经 follower 业务读取的 `topology/a` 连续
+  发起 32 次 raw authenticated serializable Range，覆盖默认 16-client balancer 两轮，全部必须返回同一
+  checkpoint header/value；随后原有 split、leader transfer、merge fail-closed/recovery 链条继续执行。
+  现场连续以 30.18/30.14 秒通过；integration/backend/server/storage 全量回归通过且 runner 无残留。
+  client-go 默认 Region idle TTL 为 600 秒，而 checkpoint 本地 usable window 为 150 秒；新增测试锁定
+  `150s < 600s`，因此默认配置会先让 checkpoint fail closed，不会在合法服务窗口内因 idle eviction 丢失
+  已 warm Region。KubeBrain 当前不暴露缩短该 TTL 的配置，故默认 cache eviction 缺口至此关闭；未来若
+  暴露 TTL，必须验证其严格大于 checkpoint usable window，不能用后台读放大掩盖错误配置。Region merge
+  与 store replacement/address change 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

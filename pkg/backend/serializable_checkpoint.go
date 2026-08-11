@@ -199,10 +199,25 @@ func (b *backend) warmSerializableCheckpoint(ctx context.Context, timestamp uint
 	if len(partitions) == 0 {
 		return fmt.Errorf("%w: no checkpoint regions", ErrSerializableCheckpointUnavailable)
 	}
+	starts := make([][]byte, 0, len(partitions))
 	for _, partition := range partitions {
-		_, err := reader.GetAt(ctx, partition.Start, timestamp)
+		starts = append(starts, append([]byte(nil), partition.Start...))
+	}
+	if warmer, supported := storage.FindCapability[storage.SnapshotRegionWarmer](b.kv); supported {
+		if err := warmer.WarmSnapshotRegions(ctx, starts, timestamp); err != nil {
+			return fmt.Errorf("warm checkpoint regions: %w", err)
+		}
+	} else if err := warmSnapshotRegionStarts(ctx, reader, starts, timestamp); err != nil {
+		return err
+	}
+	return nil
+}
+
+func warmSnapshotRegionStarts(ctx context.Context, reader storage.SnapshotGetter, starts [][]byte, timestamp uint64) error {
+	for _, start := range starts {
+		_, err := reader.GetAt(ctx, start, timestamp)
 		if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
-			return fmt.Errorf("warm checkpoint region at %x: %w", partition.Start, err)
+			return fmt.Errorf("warm checkpoint region at %x: %w", start, err)
 		}
 	}
 	return nil

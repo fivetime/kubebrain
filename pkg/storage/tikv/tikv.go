@@ -55,6 +55,7 @@ type clientBalancer struct {
 
 var _ storage.SnapshotGetter = (*store)(nil)
 var _ storage.SnapshotProtector = (*store)(nil)
+var _ storage.SnapshotRegionWarmer = (*store)(nil)
 
 // defaultClientNum is the fallback number of round-robined txnkv clients when
 // the caller passes a non-positive count. Each client carries its own PD
@@ -399,6 +400,36 @@ func (s *store) GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte
 		return nil, errors.Wrapf(err, "failed to get key %s at snapshot %d", string(key), timestamp)
 	}
 	return val, nil
+}
+
+// WarmSnapshotRegions touches every supplied Region through every independent
+// txn client. NewKvStorage deliberately creates multiple clients for request
+// distribution, and each owns a separate Region cache; warming through
+// getClient would therefore leave most caches dependent on PD.
+func (s *store) WarmSnapshotRegions(ctx context.Context, starts [][]byte, timestamp uint64) error {
+	if timestamp == 0 {
+		return errors.New("snapshot timestamp must be non-zero")
+	}
+	return warmSnapshotRegionReaders(ctx, starts, len(s.clients), func(clientIndex int) snapshotRegionReader {
+		return s.clients[clientIndex].GetSnapshot(timestamp)
+	})
+}
+
+type snapshotRegionReader interface {
+	Get(context.Context, []byte) ([]byte, error)
+}
+
+func warmSnapshotRegionReaders(ctx context.Context, starts [][]byte, clientCount int, readerFor func(int) snapshotRegionReader) error {
+	for clientIndex := 0; clientIndex < clientCount; clientIndex++ {
+		snapshot := readerFor(clientIndex)
+		for _, start := range starts {
+			_, err := snapshot.Get(ctx, start)
+			if err != nil && !tikverr.IsErrNotFound(err) {
+				return errors.Wrapf(err, "failed to warm snapshot region at %x through client %d", start, clientIndex)
+			}
+		}
+	}
+	return nil
 }
 
 // BatchGet implements storage.BatchGetter: fetch all keys in one snapshot read.

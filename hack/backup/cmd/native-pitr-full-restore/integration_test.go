@@ -1275,6 +1275,20 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.GreaterOrEqual(t, serializable.Header.Revision, oldPut.Header.Revision)
 	require.Less(t, serializable.Header.Revision, newPut.Header.Revision,
 		"the follower must serve its own checkpoint rather than proxying to the healthy leader")
+	for attempt := 0; attempt < 32; attempt++ {
+		multiClientCtx, multiClientCancel := context.WithTimeout(ctx, 3*time.Second)
+		multiClientCtx = metadata.NewOutgoingContext(
+			multiClientCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+		)
+		multiClient, rangeErr := followerRawKV.Range(multiClientCtx, &etcdserverpb.RangeRequest{
+			Key: []byte("topology/a"), Serializable: true,
+		})
+		multiClientCancel()
+		require.NoError(t, rangeErr, "checkpoint warmup must cover every round-robin TiKV client cache (attempt %d)", attempt)
+		require.Len(t, multiClient.Kvs, 1)
+		require.Equal(t, []byte("before-split-a"), multiClient.Kvs[0].Value)
+		require.Equal(t, serializable.Header.Revision, multiClient.Header.Revision)
+	}
 	topologyCtx, topologyCancel := context.WithTimeout(ctx, 5*time.Second)
 	topologyCtx = metadata.NewOutgoingContext(
 		topologyCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
