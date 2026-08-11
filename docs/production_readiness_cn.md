@@ -2671,6 +2671,13 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   artifact receipt 已绑定不可变远端 exact versions；目标侧 snapshot-empty receipt 也已消除计划中的
   自由 target ID/emptiness digest。这显著缩小了缺口，但 native transactional restore executor、
   首写前原子防漂移和恢复后 etcd 语义验真仍未实现，因此不能改变本项“未完成”的结论。
+  对 TiDB/BR v7.5.1（tag commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`）的 restore 源码审计还确认：
+  `br restore txn` 能直接导入 transactional BackupMeta 的 SST，适合 KubeBrain arbitrary range 的 full
+  阶段；但 `br restore point` 不能直接复用为 KubeBrain 日志恢复器。其 `RunStreamRestore` 会创建 TiDB
+  domain、恢复 DDL/meta、构造 upstream/downstream table-ID rewrite rules，再用这些规则筛选和重写 DML
+  文件，而 KubeBrain 日志是非 TiDB table schema 管理的任意事务键范围。后续执行器必须把 full-only
+  `restore txn` 与 range-aware log replay 分阶段实现；在后者真实完成前，禁止用官方 point restore 的
+  成功退出或只完成 full restore 来声称 PITR 已完成。
 - **升级前已成为历史的 lease provenance 缺失只能通过显式丢弃旧 MVCC 历史缓解。** 旧 raw/v1
   current value 会在升级后的第一次 Put/Delete 的同一事务中按锁定 attachment 原位升级为 v2/v3，
   不增加 revision 或 Watch 事件，因此不会再制造新的含糊历史；但升级前已经 retained 的历史版本没有
