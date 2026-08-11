@@ -45980,6 +45980,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   stream-log 全链路 44.39 秒通过。该项关闭“双 store 丢失时 fail closed 且恢复后不产生幽灵提交”的缺口；
   它不承诺无多数派时可用，跨 AZ 非对称分区、磁盘满和长 soak 仍开放。
 
+- A4336 对标 `/root/etcd/tests/integration/clientv3/kv_test.go:TestKVPutError` 及 server capped-applier 的
+  sticky NOSPACE 行为，补上此前只由 memkv/公开差分测试间接证明的真实 TiKV 持久化证据。新增 opt-in
+  `TestNativeQuotaRealTiKV`，在 disposable 三 PD/三 TiKV target 的独立 `quota-integration` keyspace 上以
+  10 B quota 写入 9 B，再要求增长写通过 official clientv3 返回可被 `errors.Is` 识别的
+  `rpctypes.ErrNoSpace`；AlarmList、Status 的 9 B logical usage/10 B quota/NOSPACE 也必须一致。关闭并以
+  同一 keyspace 重启 KubeBrain 后，数据和 NOSPACE alarm 仍存在，缩小 Put 仍被 sticky capped state
+  拒绝；Delete 可释放容量但不隐式解除 alarm，只有显式 AlarmDisarm 后新 Put 才恢复，最终 Status 为
+  7 B 且无错误。2026-08-11 真实三副本用例 2.94 秒通过。该证据验证的是 KubeBrain tenant logical quota
+  状态在 TiKV 上的原子持久化及 etcd 可观察契约，不是 TiKV/PD 文件系统 ENOSPC；后者需要受控小容量卷、
+  store replacement/恢复流程和宿主机保护，仍是独立开放的基础设施故障项，不能用本用例关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

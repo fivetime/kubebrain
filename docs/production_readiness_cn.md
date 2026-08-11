@@ -2300,6 +2300,20 @@ handoff 后暂停三副本 target 的两个 TiKV store，KubeBrain 冷启动在 
 3 秒 Put 不可用；恢复同一两个 store 后原进程完成启动，失败写不可见，后续 Put/Delete 与 semantic receipt
 成功。2026-08-11 真实 stream-log 全链路 44.39 秒通过；这不是双 store 故障下的可用性承诺。
 
+tenant logical quota 的真实 TiKV 发布门禁可复用同一 disposable 三副本环境：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeQuotaRealTiKV \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+该用例以 10 B quota 固定超限写的标准 NOSPACE 错误、Alarm/Status、KubeBrain 重启后的 alarm/data
+持久性、sticky 状态下拒绝缩小 Put、Delete 降容以及 disarm 后恢复写入；2026-08-11 在独立三 PD/三
+TiKV target 上 2.94 秒通过。它不向 store 文件系统写满数据，也不能替代物理 ENOSPC 演练。生产物理
+磁盘满测试必须使用受控小容量独立卷并验证 PD/TiKV 的水位、调度、store replacement、告警和恢复；不得
+直接填满宿主机或本脚本的 64 GiB tmpfs，也不得以逻辑 `--quota-backend-bytes` 结果宣称物理磁盘容错通过。
+
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
 `continuous_writer_exclusion=true`、`fence_handoff_proven=true`、

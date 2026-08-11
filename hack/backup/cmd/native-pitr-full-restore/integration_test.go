@@ -31,6 +31,8 @@ import (
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 	"github.com/stretchr/testify/require"
 	pd "github.com/tikv/pd/client"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -42,6 +44,87 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 
 func TestNativeLogReplayRealBR(t *testing.T) {
 	testNativeRestoreRealBR(t, true)
+}
+
+// TestNativeQuotaRealTiKV verifies etcd's logical quota/NOSPACE contract on a
+// disposable real TiKV keyspace. It deliberately does not simulate physical
+// ENOSPC: filling a store filesystem is a separate infrastructure failure mode.
+func TestNativeQuotaRealTiKV(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	if targetPD == "" || serverBinary == "" {
+		t.Skip("set KUBEBRAIN_NATIVE_PITR_TARGET_PD and KUBEBRAIN_NATIVE_PITR_SERVER")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	const endpoint = "127.0.0.1:45379"
+
+	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "quota-initial", "quota-integration", "--quota-backend-bytes=10")
+	client := waitForEndpoint(t, ctx, endpoint, server)
+
+	_, err := client.Put(ctx, "a", "1234") // 5 logical bytes.
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "b", "123") // 9 logical bytes total.
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "c", "x") // 11 bytes would exceed the quota.
+	require.ErrorIs(t, err, rpctypes.ErrNoSpace)
+
+	alarms, err := client.AlarmList(ctx)
+	require.NoError(t, err)
+	require.Len(t, alarms.Alarms, 1)
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, alarms.Alarms[0].Alarm)
+	status, err := client.Status(ctx, endpoint)
+	require.NoError(t, err)
+	require.EqualValues(t, 9, status.DbSize)
+	require.EqualValues(t, 9, status.DbSizeInUse)
+	require.EqualValues(t, 10, status.DbSizeQuota)
+	require.Contains(t, strings.Join(status.Errors, " "), "NOSPACE")
+	got, err := client.Get(ctx, "a")
+	require.NoError(t, err)
+	require.Len(t, got.Kvs, 1)
+	require.Equal(t, []byte("1234"), got.Kvs[0].Value)
+
+	require.NoError(t, client.Close())
+	server.stop(t)
+
+	server = startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "quota-restart", "quota-integration", "--quota-backend-bytes=10")
+	defer server.stop(t)
+	client = waitForEndpoint(t, ctx, endpoint, server)
+	defer client.Close()
+
+	alarms, err = client.AlarmList(ctx)
+	require.NoError(t, err)
+	require.Len(t, alarms.Alarms, 1, "NOSPACE must survive a KubeBrain restart")
+	require.Equal(t, etcdserverpb.AlarmType_NOSPACE, alarms.Alarms[0].Alarm)
+	for key, value := range map[string]string{"a": "1234", "b": "123"} {
+		got, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, got.Kvs, 1)
+		require.Equal(t, []byte(value), got.Kvs[0].Value)
+	}
+	_, err = client.Put(ctx, "a", "1")
+	require.ErrorIs(t, err, rpctypes.ErrNoSpace, "sticky NOSPACE must cap even a shrinking Put")
+	_, err = client.Delete(ctx, "b")
+	require.NoError(t, err, "Delete must remain available for capacity recovery")
+	stillActive, err := client.AlarmList(ctx)
+	require.NoError(t, err)
+	require.Len(t, stillActive.Alarms, 1, "capacity recovery must not implicitly disarm NOSPACE")
+
+	_, err = client.AlarmDisarm(ctx, (*clientv3.AlarmMember)(alarms.Alarms[0]))
+	require.NoError(t, err)
+	cleared, err := client.AlarmList(ctx)
+	require.NoError(t, err)
+	require.Empty(t, cleared.Alarms)
+	_, err = client.Put(ctx, "c", "x")
+	require.NoError(t, err)
+	status, err = client.Status(ctx, endpoint)
+	require.NoError(t, err)
+	require.EqualValues(t, 7, status.DbSize)
+	require.EqualValues(t, 7, status.DbSizeInUse)
+	require.EqualValues(t, 10, status.DbSizeQuota)
+	require.Empty(t, status.Errors)
 }
 
 func TestPDHTTPEndpointsPreserveEveryAddress(t *testing.T) {
@@ -744,15 +827,21 @@ func runReceiptOutputEnv(t *testing.T, ctx context.Context, env []string, binary
 
 func startKubeBrain(t *testing.T, ctx context.Context, binary, pdAddrs, root, label string) *runningServer {
 	t.Helper()
+	return startKubeBrainForKeyspace(t, ctx, binary, pdAddrs, root, label, "restore-integration")
+}
+
+func startKubeBrainForKeyspace(t *testing.T, ctx context.Context, binary, pdAddrs, root, label, keyspace string, extraArgs ...string) *runningServer {
+	t.Helper()
 	peerPort, infoPort := freeTCPPort(t), freeTCPPort(t)
 	logFile, err := os.Create(filepath.Join(root, label+"-kubebrain.log"))
 	require.NoError(t, err)
-	cmd := exec.CommandContext(ctx, binary,
+	args := []string{
 		"--port=45379", fmt.Sprintf("--peer-port=%d", peerPort), fmt.Sprintf("--info-port=%d", infoPort),
 		"--advertise-host=127.0.0.1", "--advertise-client-urls=http://127.0.0.1:45379",
 		fmt.Sprintf("--initial-cluster=integration=http://127.0.0.1:%d", peerPort),
-		"--pd-addrs="+pdAddrs, "--keyspace=restore-integration", "--compatible-with-etcd=true",
-	)
+		"--pd-addrs=" + pdAddrs, "--keyspace=" + keyspace, "--compatible-with-etcd=true",
+	}
+	cmd := exec.CommandContext(ctx, binary, append(args, extraArgs...)...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	require.NoError(t, cmd.Start())
 	require.NoError(t, logFile.Close())
