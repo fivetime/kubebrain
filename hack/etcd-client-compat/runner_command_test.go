@@ -317,6 +317,23 @@ func TestBackendQuorumPDNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendQuorumPDAsymmetricPartitionHelperIsRecoverable(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-asymmetric-partition)`)
+	require.Contains(t, script, `--partition-pd-leader-outbound`)
+	require.Contains(t, script, `partition_pd_leader outbound`)
+	require.Contains(t, script, `local direction="${1:-symmetric}"`)
+	require.Contains(t, script, `if [[ "$direction" == "symmetric" ]]`)
+	require.Contains(t, script, `iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip"`)
+	require.Contains(t, script, `iptables -w 5 -C FORWARD -s "$partition_pod_ip"`)
+	require.Contains(t, script, `PD outbound partition unexpectedly installed an inbound DROP rule`)
+	require.Contains(t, script, `cleanup_partition`)
+	require.Contains(t, script, `PD $direction network partition changed leader`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

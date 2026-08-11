@@ -458,7 +458,13 @@ partition_tikv_member() {
 }
 
 partition_pd_leader() {
+  local direction="${1:-symmetric}"
   local old_leader new_leader privileged attempts
+
+  if [[ "$direction" != "symmetric" && "$direction" != "outbound" ]]; then
+    echo "invalid PD leader partition direction: $direction" >&2
+    exit 1
+  fi
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
     echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
     exit 1
@@ -495,15 +501,28 @@ partition_pd_leader() {
   trap 'cleanup_partition; exit 143' TERM
   docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$partition_pod_ip" \
     -m comment --comment "$partition_tag-out" -j DROP
-  docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip" \
-    -m comment --comment "$partition_tag-in" -j DROP
+  if [[ "$direction" == "symmetric" ]]; then
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-in" -j DROP
+  fi
+  if ! docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -s "$partition_pod_ip" \
+    -m comment --comment "$partition_tag-out" -j DROP; then
+    echo "PD $direction partition did not install its outbound DROP rule" >&2
+    return 1
+  fi
+  if [[ "$direction" == "outbound" ]] &&
+    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -C FORWARD -d "$partition_pod_ip" \
+      -m comment --comment "$partition_tag-in" -j DROP 2>/dev/null; then
+    echo "PD outbound partition unexpectedly installed an inbound DROP rule" >&2
+    return 1
+  fi
 
   attempts=$((PARTITION_FAILOVER_TIMEOUT_SECONDS * 2))
   for _ in $(seq 1 "$attempts"); do
     new_leader="$(kubectl -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
       -o jsonpath='{.status.pd.leader.name}' 2>/dev/null || true)"
     if [[ "$new_leader" == "$TIDB_CLUSTER-pd-"* && "$new_leader" != "$old_leader" ]]; then
-      echo "PD network partition changed leader: $old_leader -> $new_leader"
+      echo "PD $direction network partition changed leader: $old_leader -> $new_leader"
       sleep "$PARTITION_HOLD_SECONDS"
       cleanup_partition
       partition_pod_ip=""
@@ -527,6 +546,11 @@ fi
 if [[ "${1:-}" == "--partition-pd-leader" ]]; then
   need docker
   partition_pd_leader
+  exit 0
+fi
+if [[ "${1:-}" == "--partition-pd-leader-outbound" ]]; then
+  need docker
+  partition_pd_leader outbound
   exit 0
 fi
 if [[ "${1:-}" == "--partition-pd-quorum" ]]; then
@@ -560,7 +584,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-tikv-member|--partition-tikv-quorum|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -670,6 +694,10 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need docker
     run_quorum_test "PD leader network partition" "$self --partition-pd-leader"
     ;;
+  pd-asymmetric-partition)
+    need docker
+    run_quorum_test "PD leader outbound-only network partition" "$self --partition-pd-leader-outbound"
+    ;;
   pd-quorum-loss)
     need docker
     need jq
@@ -690,7 +718,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_watch_recovery_test "TiKV quorum-loss network partition" "$self --partition-tikv-quorum-soak"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-quorum-loss, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-quorum-loss, tikv-network-partition, or tikv-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac
