@@ -46688,6 +46688,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   注入规则。本项关闭 kind bridge 上短时 PD 全失期间全量 KubeBrain 冷启动的 fail-closed、持久性与客户端
   重连证据；长分区、独立宿主/AZ、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4381 将 A4380 的全量同时恢复推进为可观测的 0 -> 1 -> 2 -> 3 PD 分阶段恢复边界，对照
+  `/root/etcd/tests/integration/network_partition_test.go` 中无 quorum 分区必须丢失 leader、恢复 quorum 后才可
+  重新选主并进展的不变量。`partition_pd_quorum` 新增 `restart-kubebrain-staged` action 与逐成员精确 cleanup：
+  三个 PD endpoint 全失并替换全部 KubeBrain UID 后，先仅删除旧 leader 所在 worker 的两条规则并保持
+  20 秒，再恢复第二个成员形成 quorum 并保持 120 秒，最后恢复第三个成员；任意退出仍由原 PID comment
+  trap 清理所有尚存规则。新 `pd-cross-node-staged-recovery-restart` 门禁从 control-plane observer 直接统计
+  endpoint 的 transport reachability：恰好 1 个可达时，用该阶段新建的官方 clientv3 channel 发起 1 秒
+  Range/Put，二者都必须无 response 且失败；恰好 2 个可达时，必须在第三个仍隔离的前后 oracle 内读回
+  故障前基线并成功提交新写，最终再证明 3 个 endpoint 全部恢复。
+  首次真实 RED 发现 observer 使用 `curl --fail` 会把“HTTP 可达但因单成员无 quorum 而返回 unhealthy 状态”
+  计成不可达；oracle 改为只按 TCP/HTTP transport 成功计数，健康与数据面进展仍由后续多数派 Range/Put
+  独立证明。2026-08-11 disposable `kubebrain-pd-staged` 在 1 control-plane + 3 dev-zone worker、3 PD/
+  3 TiKV/3 KubeBrain、12379/12380 拓扑最终通过，全程 175.49 秒；单成员阶段严格 fail closed，双成员阶段
+  在第三成员仍隔离时恢复持久值和写进展，随后三成员、TiDBCluster 与 KubeBrain StatefulSet 全部 Ready。
+  本项关闭 kind bridge 上 PD 冷启动后的最小 quorum 分阶段恢复证据；更长分区、独立宿主/AZ、人工慢速
+  endpoint 恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

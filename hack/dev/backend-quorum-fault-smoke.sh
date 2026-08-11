@@ -13,6 +13,8 @@ ETCDUTL_BINARY="${ETCDUTL_BINARY:-/root/etcd/bin/etcdutl}"
 PARTITION_FAILOVER_TIMEOUT_SECONDS="${PARTITION_FAILOVER_TIMEOUT_SECONDS:-180}"
 PARTITION_HOLD_SECONDS="${PARTITION_HOLD_SECONDS:-2}"
 PD_QUORUM_PARTITION_HOLD_SECONDS="${PD_QUORUM_PARTITION_HOLD_SECONDS:-15}"
+PD_STAGED_SINGLE_MEMBER_HOLD_SECONDS="${PD_STAGED_SINGLE_MEMBER_HOLD_SECONDS:-20}"
+PD_STAGED_QUORUM_HOLD_SECONDS="${PD_STAGED_QUORUM_HOLD_SECONDS:-120}"
 PD_QUORUM_PARTITION_CYCLES="${PD_QUORUM_PARTITION_CYCLES:-1}"
 PD_QUORUM_PARTITION_INTERVAL_SECONDS="${PD_QUORUM_PARTITION_INTERVAL_SECONDS:-0}"
 TIKV_QUORUM_PARTITION_CYCLES="${TIKV_QUORUM_PARTITION_CYCLES:-1}"
@@ -92,6 +94,34 @@ cleanup_dual_partition() {
   fi
 }
 
+cleanup_dual_partition_member() {
+  local index="$1"
+  local ip="${dual_partition_pod_ips[$index]}"
+  local tag="${dual_partition_tags[$index]}"
+  local node="${dual_partition_node_containers[$index]}"
+  local cleanup_failed=0
+  if docker exec "$node" iptables -w 5 -C FORWARD -s "$ip" \
+    -m comment --comment "$tag-out" -j DROP 2>/dev/null; then
+    docker exec "$node" iptables -w 5 -D FORWARD -s "$ip" \
+      -m comment --comment "$tag-out" -j DROP >/dev/null || cleanup_failed=1
+  fi
+  if docker exec "$node" iptables -w 5 -C FORWARD -d "$ip" \
+    -m comment --comment "$tag-in" -j DROP 2>/dev/null; then
+    docker exec "$node" iptables -w 5 -D FORWARD -d "$ip" \
+      -m comment --comment "$tag-in" -j DROP >/dev/null || cleanup_failed=1
+  fi
+  if docker exec "$node" iptables -w 5 -C FORWARD -s "$ip" \
+    -m comment --comment "$tag-out" -j DROP 2>/dev/null ||
+    docker exec "$node" iptables -w 5 -C FORWARD -d "$ip" \
+      -m comment --comment "$tag-in" -j DROP 2>/dev/null; then
+    cleanup_failed=1
+  fi
+  if (( cleanup_failed != 0 )); then
+    echo "failed to remove backend partition rules for $ip ($tag) on $node" >&2
+    return 1
+  fi
+}
+
 partition_pd_quorum() {
   local placement="${1:-any}"
   local action="${2:-none}"
@@ -102,12 +132,13 @@ partition_pd_quorum() {
     echo "invalid PD quorum partition placement: $placement" >&2
     exit 1
   fi
-  if [[ "$action" != "none" && "$action" != "restart-kubebrain" ]]; then
+  if [[ "$action" != "none" && "$action" != "restart-kubebrain" &&
+    "$action" != "restart-kubebrain-staged" ]]; then
     echo "invalid PD quorum partition action: $action" >&2
     exit 1
   fi
-  if [[ "$action" == "restart-kubebrain" && "$placement" != "cross-node-all" ]]; then
-    echo "restart-kubebrain requires cross-node-all PD placement" >&2
+  if [[ "$action" != "none" && "$placement" != "cross-node-all" ]]; then
+    echo "$action requires cross-node-all PD placement" >&2
     exit 1
   fi
   target_count=2
@@ -126,6 +157,14 @@ partition_pd_quorum() {
   if [[ ! "$PD_QUORUM_PARTITION_HOLD_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
     (( PD_QUORUM_PARTITION_HOLD_SECONDS > 300 )); then
     echo "PD_QUORUM_PARTITION_HOLD_SECONDS must be an integer in [1,300]" >&2
+    exit 1
+  fi
+  if [[ "$action" == "restart-kubebrain-staged" ]] &&
+    { [[ ! "$PD_STAGED_SINGLE_MEMBER_HOLD_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+      (( PD_STAGED_SINGLE_MEMBER_HOLD_SECONDS > 300 )) ||
+      [[ ! "$PD_STAGED_QUORUM_HOLD_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
+      (( PD_STAGED_QUORUM_HOLD_SECONDS > 300 )); }; then
+    echo "PD_STAGED_SINGLE_MEMBER_HOLD_SECONDS and PD_STAGED_QUORUM_HOLD_SECONDS must be integers in [1,300]" >&2
     exit 1
   fi
   privileged="$(docker inspect "$KIND_NODE_CONTAINER" --format '{{.HostConfig.Privileged}}')"
@@ -238,7 +277,7 @@ partition_pd_quorum() {
   else
     echo "PD quorum loss observed: ${pd_pods[*]} are unreachable"
   fi
-  if [[ "$action" == "restart-kubebrain" ]]; then
+  if [[ "$action" == "restart-kubebrain" || "$action" == "restart-kubebrain-staged" ]]; then
     kubebrain_pods_json="$(kubectl -n kubebrain-dev get pods \
       -l app.kubernetes.io/name=kubebrain -o json)"
     old_uids_json="$(jq -c '[.items[].metadata.uid]' <<<"$kubebrain_pods_json")"
@@ -269,6 +308,14 @@ partition_pd_quorum() {
     fi
   fi
   sleep "$PD_QUORUM_PARTITION_HOLD_SECONDS"
+  if [[ "$action" == "restart-kubebrain-staged" ]]; then
+    cleanup_dual_partition_member 0
+    echo "PD staged recovery has one reachable member: ${pd_pods[0]}"
+    sleep "$PD_STAGED_SINGLE_MEMBER_HOLD_SECONDS"
+    cleanup_dual_partition_member 1
+    echo "PD staged recovery has quorum candidates: ${pd_pods[0]} ${pd_pods[1]}"
+    sleep "$PD_STAGED_QUORUM_HOLD_SECONDS"
+  fi
   cleanup_dual_partition
   dual_partition_pod_ips=()
   dual_partition_tags=()
@@ -749,6 +796,12 @@ if [[ "${1:-}" == "--partition-pd-all-cross-node-restart-kubebrain" ]]; then
   partition_pd_quorum cross-node-all restart-kubebrain
   exit 0
 fi
+if [[ "${1:-}" == "--partition-pd-all-cross-node-staged-restart-kubebrain" ]]; then
+  need docker
+  need jq
+  partition_pd_quorum cross-node-all restart-kubebrain-staged
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-tikv-member" ]]; then
   need docker
   need jq
@@ -780,7 +833,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-pd-all-cross-node-restart-kubebrain|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-pd-all-cross-node-restart-kubebrain|--partition-pd-all-cross-node-staged-restart-kubebrain|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -882,6 +935,19 @@ run_pd_total_loss_restart_test() {
   wait_backend_ready
 }
 
+run_pd_staged_recovery_restart_test() {
+  local command="$1"
+  echo "Running cross-node staged PD recovery after KubeBrain cold restart"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_PD_STAGED_RECOVERY_COMMAND="$command" \
+      go test . -run '^TestKubeBrainColdRestartRequiresRecoveredPDQuorum$' -count=1 -v
+  )
+  kubectl -n kubebrain-dev rollout status statefulset/kubebrain --timeout="$TIMEOUT"
+  wait_backend_ready
+}
+
 wait_backend_ready
 
 self="$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh"
@@ -954,6 +1020,12 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need jq
     run_pd_total_loss_restart_test "$self --partition-pd-all-cross-node-restart-kubebrain"
     ;;
+  pd-cross-node-staged-recovery-restart)
+    need docker
+    need jq
+    run_pd_staged_recovery_restart_test \
+      "$self --partition-pd-all-cross-node-staged-restart-kubebrain"
+    ;;
   tikv-network-partition)
     need docker
     need jq
@@ -976,7 +1048,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "$self --partition-tikv-quorum-cross-node"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac
