@@ -636,6 +636,17 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 			result.acknowledged[key] = value
 		}
 		require.NotEmpty(t, result.ambiguousKey, "cycle %d must fail closed after the PD majority is unavailable", cycle)
+		serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
+		serializableMembers, memberErr := client.MemberList(serializableCtx, clientv3.WithSerializable())
+		serializableCancel()
+		require.NoError(t, memberErr, "cycle %d serializable MemberList must use the local topology snapshot", cycle)
+		require.Len(t, serializableMembers.Members, 1)
+		require.Equal(t, "integration", serializableMembers.Members[0].Name)
+		linearizableCtx, linearizableCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, memberErr = client.MemberList(linearizableCtx)
+		linearizableCancel()
+		require.Error(t, memberErr, "cycle %d linearizable MemberList must not bypass the unavailable read barrier", cycle)
+		require.Contains(t, []codes.Code{codes.Unavailable, codes.DeadlineExceeded}, status.Code(memberErr))
 		if checkSnapshot {
 			faultSnapshotCtx, faultSnapshotCancel := context.WithTimeout(ctx, 5*time.Second)
 			faultSnapshot, snapshotErr := client.SnapshotWithVersion(faultSnapshotCtx)

@@ -706,6 +706,13 @@ func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
 func TestMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	_, err := server.tokens.snapshots.current(context.Background())
+	require.NoError(t, err)
+	authReadErr := errors.New("PD quorum unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend,
+		err:         authReadErr,
+	}
 	barrierStarted := make(chan struct{}, 1)
 	server.peers = testPeerService{syncReadFn: func(ctx context.Context) error {
 		barrierStarted <- struct{}{}

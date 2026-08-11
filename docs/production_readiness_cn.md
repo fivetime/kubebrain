@@ -2467,6 +2467,17 @@ version，生成绑定该 version ID 的 receipt，远端仍只有一个 version
 通过。worker 的持久化参数、artifact 或其摘要必须跨 retry 保持不变；receipt 缺失只能触发相同请求的
 reconciliation，不能触发对象删除、随机换 key 或重新导出不同内容。
 
+2026-08-11 的 A4353 将 MemberList 的读一致性选项纳入真实三节点 PD 多数派故障门禁。连续两轮填满并
+停止两个 PD 后，普通写必须失败；auth disabled 场景的
+`client.MemberList(ctx, clientv3.WithSerializable())` 必须在 3 秒内从本节点已观察到的 DBaaS 静态拓扑
+返回成员 `integration`，而默认 linearizable MemberList 必须返回 `Unavailable` 或
+`DeadlineExceeded`，不能借本地拓扑绕过 read barrier。释放压力并重启相同 PD 后，原有数据恢复和
+重复故障校验继续执行；整例 68.03 秒通过。该能力依赖进程已成功观察到 auth-disabled snapshot；冷启动
+期间 PD 不可读时应 fail closed。auth enabled 时仍必须访问持久 auth state 验证 token/revision，当前不承诺
+MemberList 在 PD quorum 丢失期间可用。生产发现/探活可使用 serializable MemberList，但需要强一致拓扑
+或启用认证的调用方不能把它当成 quorum health probe；应继续使用默认 MemberList、Status/readiness 和
+告警组合判断控制面可写性。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

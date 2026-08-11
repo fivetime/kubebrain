@@ -46188,6 +46188,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过且无资源残留。该项证明 receipt 丢失不是自动删除受保护对象的理由；Operation retry 必须保持身份
   和 artifact 不变。参数或 artifact 漂移会按既有 identity/digest gate 冲突失败，不能借重试重新定义备份。
 
+- A4353 把 upstream `/root/etcd/tests/common/member_test.go::TestMemberListSerializable`
+  （`845cd3885`）的单成员失去 quorum 契约落到真实独立 TiKV/PD 拓扑。修复前虽然 A4127/A4128
+  已证明 serializable `MemberList` 不调用显式 read barrier，但 `requireAuthenticated` 仍会从 PD-backed
+  internal key 刷新 auth config，因此两个 PD ENOSPC 后该请求仍超时，和 upstream 本地 applied membership
+  语义不符。现在 auth snapshot cache 只向该入口暴露“本节点已经观察到 auth disabled”这一窄状态；
+  serializable 请求据此直接返回 DBaaS 静态 topology snapshot，默认 linearizable 请求仍先通过
+  `SyncReadRevision`，不会绕过 quorum fence。确定性测试在 auth config backend 强制返回
+  `PD quorum unavailable` 时验证 serializable 成功，并继续验证 linearizable caller deadline；官方
+  client/v3 黑盒覆盖 `WithSerializable()` wire option。三节点真实门禁
+  `TestNativeTwoPDENOSPCRealCluster` 连续两轮填满两个 PD：每轮故障写失败后 serializable MemberList
+  均在 3 秒内返回唯一名为 `integration` 的成员，默认 MemberList 返回 `Unavailable` 或
+  `DeadlineExceeded`；释放压力并重启原 PD 后原有恢复校验继续通过，整例 68.03 秒通过且 runner 清理
+  资源。边界保持显式：auth-enabled 请求仍走完整 token/auth revision 校验，本项不声称它在 PD quorum
+  丢失时可用；后续若要扩大该可用性，必须先实现不弱化 AuthEnable/credential fence 的本地 applied
+  auth state，而不能复用 stale disabled 快照绕过认证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

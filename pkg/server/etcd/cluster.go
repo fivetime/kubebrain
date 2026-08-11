@@ -45,6 +45,16 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 	// established before auth is checked. Besides preserving upstream error
 	// precedence, this keeps membership and credentials ordered against the same
 	// point in the cluster timeline when auth state changes concurrently.
+	if !req.GetLinearizable() {
+		// Upstream serves serializable membership from the member's local
+		// applied state even without quorum. Auth-disabled is by far the common
+		// topology-discovery path; once that state has been observed locally,
+		// do not turn this RPC back into a PD read through auth config refresh.
+		// A cached enabled state still takes the full credential path below.
+		if s.tokens.snapshots.cachedDisabled() {
+			return s.memberListResponse(s.membersSnapshot()), nil
+		}
+	}
 	if err := s.requireAuthenticated(ctx, false); err != nil {
 		return nil, err
 	}
