@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,6 +29,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/semanticverify"
+	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
@@ -900,6 +902,130 @@ func TestNativePDNetworkQuorumLossRealCluster(t *testing.T) {
 		require.NoError(t, getErr)
 		require.Len(t, response.Kvs, 1)
 	}
+}
+
+// TestNativeKubeBrainPDNetworkIsolationRealCluster isolates only the
+// KubeBrain process from a healthy target PD quorum. TiKV and the test process
+// remain connected, so the test observes admission-session expiry and
+// fail-closed recovery independently of backend quorum loss.
+func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	chain := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CHAIN")
+	uidValue := os.Getenv("KUBEBRAIN_NATIVE_PITR_ISOLATED_UID")
+	pdPorts := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS"), ",")
+	tikvStatuses := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_STATUS_ADDRESSES"), ",")
+	if targetPD == "" || serverBinary == "" || chain == "" || uidValue == "" || len(pdPorts) != 3 || len(tikvStatuses) != 3 {
+		t.Skip("set the native PITR KubeBrain-to-PD isolation integration environment")
+	}
+	parsedUID, err := strconv.ParseUint(uidValue, 10, 32)
+	require.NoError(t, err)
+	require.NotZero(t, parsedUID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	runIPTables := func(args ...string) {
+		commandArgs := append([]string{"-w", "5"}, args...)
+		output, commandErr := exec.CommandContext(ctx, "iptables", commandArgs...).CombinedOutput()
+		require.NoError(t, commandErr, "iptables %s: %s", strings.Join(args, " "), output)
+	}
+	restoreNetwork := func() {
+		output, commandErr := exec.Command("iptables", "-w", "5", "-F", chain).CombinedOutput()
+		require.NoError(t, commandErr, "flush network fault chain: %s", output)
+	}
+	t.Cleanup(restoreNetwork)
+
+	pdClient, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(targetPD, ","), DialTimeout: time.Second})
+	require.NoError(t, err)
+	defer pdClient.Close()
+	_, err = pdClient.Put(ctx, "/kubebrain-integration/process-isolation/before", "healthy-pd-quorum")
+	require.NoError(t, err)
+
+	root := t.TempDir()
+	const keyspace = "pd-process-isolation-integration"
+	server := startKubeBrainForKeyspaceAsUID(t, ctx, serverBinary, targetPD, root, "pd-process-isolation",
+		keyspace, uint32(parsedUID))
+	defer server.stop(t)
+	const endpoint = "127.0.0.1:45379"
+	client := waitForEndpoint(t, ctx, endpoint, server)
+	defer client.Close()
+	_, err = client.Put(ctx, "before", "durable-before-pd-isolation")
+	require.NoError(t, err)
+	sessions, err := pdClient.Get(ctx, admissionfence.SessionsPrefix(keyspace), clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, sessions.Count, "the running process must own one admission session before isolation")
+
+	for _, port := range pdPorts {
+		runIPTables("-A", chain, "-m", "owner", "--uid-owner", uidValue, "-p", "tcp", "--dport", port,
+			"-m", "comment", "--comment", "kubebrain-process-pd-isolation", "-j", "DROP")
+	}
+	// A root-owned control connection still commits through PD, proving that
+	// the cluster retained quorum while only the data-plane process was cut off.
+	_, err = pdClient.Put(ctx, "/kubebrain-integration/process-isolation/during", "pd-still-writable")
+	require.NoError(t, err)
+	for _, address := range tikvStatuses {
+		connection, dialErr := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", address)
+		require.NoError(t, dialErr, "TiKV status listener %s must remain reachable", address)
+		require.NoError(t, connection.Close())
+	}
+
+	acknowledged := make(map[string]string)
+	ambiguousKey, ambiguousValue := "", ""
+	require.Eventually(t, func() bool {
+		index := len(acknowledged)
+		key := fmt.Sprintf("during-%02d", index)
+		value := fmt.Sprintf("value-%02d", index)
+		attempt, attemptCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, putErr := client.Put(attempt, key, value)
+		attemptCancel()
+		if putErr == nil {
+			acknowledged[key] = value
+			return false
+		}
+		ambiguousKey, ambiguousValue = key, value
+		return true
+	}, 30*time.Second, 250*time.Millisecond, "KubeBrain must stop writes when its PD admission session becomes stale")
+	require.NotEmpty(t, ambiguousKey)
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 2*time.Second)
+		response, getErr := pdClient.Get(attempt, admissionfence.SessionsPrefix(keyspace), clientv3.WithPrefix())
+		attemptCancel()
+		return getErr == nil && response.Count == 0
+	}, 30*time.Second, 250*time.Millisecond, "the isolated process admission lease must expire from healthy PD")
+
+	serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
+	_, err = client.Get(serializableCtx, "before", clientv3.WithSerializable())
+	serializableCancel()
+	require.Error(t, err, "current TiKV transactional reads need PD TSO even when etcd consistency is serializable")
+	linearizableCtx, linearizableCancel := context.WithTimeout(ctx, 3*time.Second)
+	_, err = client.Get(linearizableCtx, "before")
+	linearizableCancel()
+	require.Error(t, err, "linearizable reads must not bypass the isolated PD read barrier")
+
+	restoreNetwork()
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, putErr := client.Put(attempt, "after", "durable-after-pd-isolation-recovery")
+		attemptCancel()
+		return putErr == nil
+	}, 45*time.Second, 500*time.Millisecond, "the same KubeBrain process must re-register its PD session and resume writes")
+	sessions, err = pdClient.Get(ctx, admissionfence.SessionsPrefix(keyspace), clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.EqualValues(t, 1, sessions.Count, "the recovered process must own a fresh admission session")
+	for key, value := range acknowledged {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, []byte(value), response.Kvs[0].Value)
+	}
+	ambiguous, err := client.Get(ctx, ambiguousKey)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(ambiguous.Kvs), 1)
+	if len(ambiguous.Kvs) == 1 {
+		require.Equal(t, []byte(ambiguousValue), ambiguous.Kvs[0].Value)
+	}
+	_, err = pdClient.Delete(ctx, "/kubebrain-integration/process-isolation/", clientv3.WithPrefix())
+	require.NoError(t, err)
 }
 
 // TestNativeLegacyLeaseHistorySnapshotRealCluster proves that a legacy value
@@ -1940,6 +2066,10 @@ func startKubeBrain(t *testing.T, ctx context.Context, binary, pdAddrs, root, la
 }
 
 func startKubeBrainForKeyspace(t *testing.T, ctx context.Context, binary, pdAddrs, root, label, keyspace string, extraArgs ...string) *runningServer {
+	return startKubeBrainForKeyspaceAsUID(t, ctx, binary, pdAddrs, root, label, keyspace, 0, extraArgs...)
+}
+
+func startKubeBrainForKeyspaceAsUID(t *testing.T, ctx context.Context, binary, pdAddrs, root, label, keyspace string, uid uint32, extraArgs ...string) *runningServer {
 	t.Helper()
 	peerPort, infoPort := freeTCPPort(t), freeTCPPort(t)
 	logFile, err := os.Create(filepath.Join(root, label+"-kubebrain.log"))
@@ -1951,6 +2081,9 @@ func startKubeBrainForKeyspace(t *testing.T, ctx context.Context, binary, pdAddr
 		"--pd-addrs=" + pdAddrs, "--keyspace=" + keyspace, "--compatible-with-etcd=true",
 	}
 	cmd := exec.CommandContext(ctx, binary, append(args, extraArgs...)...)
+	if uid != 0 {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uid, Gid: uid}}
+	}
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	require.NoError(t, cmd.Start())
 	require.NoError(t, logFile.Close())

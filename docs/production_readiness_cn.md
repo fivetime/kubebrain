@@ -551,7 +551,7 @@ runner、GHCR 权限或外部服务可用。
 
 **真-k3s 驱动挖出并已修复的缺陷（已合入 main）**：watch progress-notify 冻结（拖垮 apiserver watchcache）、MVCC 孤儿键自愈、scanner 跨-partition List 复活删除键、大 DeleteRange 单事务失败。
 
-**仍属"未验证 / 需生产规模化"（非功能缺失）**：① 真正大规模（几百上千节点、10万+ 对象、持续高吞吐）；② 真分布式跨机/跨 AZ（当前全在单宿主，磁盘 IO 上限、网络分区未测）；③ 过载对 lease 敏感客户端的边界（p99 尖峰 1–2s 会触发续租超时 + KubeBrain leader 主动重启）；④ 数天/数周长时 soak（compaction 长周期、内存长期走势）；⑤ 更广 k8s 版本兼容矩阵（已系统测 v1.35/v1.36）。
+**仍属"未验证 / 需生产规模化"（非功能缺失）**：① 真正大规模（几百上千节点、10万+ 对象、持续高吞吐）；② 真分布式跨机/跨 AZ（当前网络分区只在单宿主精确端口/进程 owner 规则验证，仍未覆盖真实 fabric、延迟和带宽）；③ 过载对 lease 敏感客户端的边界（p99 尖峰 1–2s 会触发续租超时 + KubeBrain leader 主动重启）；④ 数天/数周长时 soak（compaction 长周期、内存长期走势）；⑤ 更广 k8s 版本兼容矩阵（已系统测 v1.35/v1.36）。
 
 ## Kubernetes apiserver 接入前验证
 
@@ -2514,6 +2514,16 @@ runner 要求 root 与可用的 host iptables，为本次 PID 创建专用 chain
 或容器。生产执行前必须确认规则目标端口属于一次性
 集群，禁止复用该 profile 操作共享宿主；本门禁仍是单宿主 loopback 对称 peer partition，不能替代跨 AZ
 单向分区、延迟/丢包抖动、NAT/conntrack 或 network fabric 演练。
+
+2026-08-11 的 A4357 将分区边界缩到单个 KubeBrain 进程：runner 以 UID 65534 启动它，并用 iptables
+`owner --uid-owner` 仅阻断该进程到三个 target PD client port；root-owned 控制探针继续向健康 PD quorum
+写入，三个 TiKV status listener 持续可达。必须观察 admission leased session 从 1 过期到 0，随后数据面
+写 fail closed；解除规则后同一 PID 重新注册 session（count=1）并恢复写入。真实用例先以 31.18 秒通过，
+临时目录权限收紧为 0711 后以 29.82 秒复验通过；所有
+acknowledged/ambiguous 写按恢复后读取对账。该结果证明孤岛写保护，不等于孤岛读兼容：当前 TiKV
+transactional Range 需要 PD TSO，所以 `WithSerializable()` 也会超时；上游 etcd 隔离成员可读本地 applied
+bbolt。这是已知兼容性差距，不得把 TiKV status 可达解释为 serializable Range 可用，也不得通过跳过 TSO
+做不安全的“最新读”。生产客户端应把该场景视为 endpoint 不可用并切换到仍连接 PD 的 KubeBrain 副本。
 
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 

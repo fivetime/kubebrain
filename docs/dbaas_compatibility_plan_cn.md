@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；当前无已知语义差异，继续扩大生成式输入与长时故障 soak |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；A4357 证明单个 KubeBrain 与健康 PD 隔离时，TiKV transactional Range 仍需 PD TSO，故 serializable Range 不具备 upstream 本地 applied backend 的隔离成员可读性，该架构差距保持开放 |
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；当前无已知语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -46253,6 +46253,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项是单宿主 loopback 上的精确端口对称 peer partition，只关闭“真实 TCP 丢包与原进程原 identity 恢复”
   缺口；它不模拟跨节点/AZ latency、带宽、conntrack/NAT、单向链路或 network fabric failure，跨 AZ 非对称
   分区与长时间 soak 仍开放。
+
+- A4357 新增只隔离 KubeBrain→PD、而不破坏 PD/TiKV 集群的非对称故障门禁。native runner 以专用 UID
+  `65534` 启动 disposable KubeBrain，再由 iptables OUTPUT owner match 只 DROP 该 UID 到三个 target PD
+  client port 的报文；root-owned 官方 client 仍能直接向同一 PD embedded-etcd 提交写，三个 TiKV status
+  listener 也持续可达。`TestNativeKubeBrainPDNetworkIsolationRealCluster` 在分区前确认 admission session
+  prefix 精确有一个 leased key；分区后官方 client Put 不再返回成功，健康 PD 最终观察 session count 从 1
+  降到 0；恢复 packet flow 后不重启原进程，session count 回到 1、写入恢复，全部 acknowledged 写逐条复读，
+  首个失败写按不确定结果只允许不存在或值精确匹配。2026-08-11 真实三 PD/三 TiKV 用例先以 31.18 秒通过，
+  临时目录权限收紧为仅可穿越的 0711 后以 29.82 秒复验通过，
+  runner 失败/成功路径均清理 owner rule、chain、容器和临时目录。
+  本门禁同时固定一个不能隐藏的 upstream 差距：etcd 隔离成员可从本地 applied bbolt 服务 serializable
+  Range；KubeBrain 没有本地 MVCC 副本，TiKV transactional read 即使不要求 etcd linearizable barrier 仍需
+  PD TSO，因此该请求在本场景也超时，而 A4353-A4356 的 MemberList 因只读本地 topology/auth snapshot 仍可
+  成功。不能只绕过 auth/read barrier 伪造修复；关闭差距需要安全持久化并验证“最后 applied TiKV snapshot
+  TSO + 对应 auth/revision/compact watermark”，或明确把它保留为 DBaaS 架构边界。跨宿主/AZ、延迟抖动与
+  长时间隔离仍开放。
 
 ### P2：运维兼容和长期验证
 
