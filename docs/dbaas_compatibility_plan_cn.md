@@ -46651,6 +46651,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   验证。本项关闭 kind bridge 上两个跨 node PD 成员短时 quorum loss 的五项数据面证据；独立宿主/AZ、
   长分区、PD 全失、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4379 将 A4378 保留的“PD quorum 已丢失但第三个 client endpoint 仍可达”与“三个 PD endpoint 全部
+  transport blackout”拆成独立门禁。`partition_pd_quorum` 新增 fail-closed `cross-node-all` placement：
+  仍先从同一 ready Pod 快照确定 live leader，但会再选择两个不同 peer，要求三个 PD 精确分布在三个
+  worker，并在 observer 逐 endpoint health preflight 成功后，把每个 Pod 的 source/destination DROP 写入
+  其自身 privileged node。所有插入、隔离反查、恢复 health 和清理循环均按动态 target 数组执行；原
+  单 node/跨 node 两目标 quorum-loss 继续固定为 leader+一个 peer。新 helper 与 soak helper 分别暴露
+  `--partition-pd-all-cross-node`/`--partition-pd-all-cross-node-soak`，PID comment、逐 node EXIT/INT/TERM
+  cleanup 和残留反查保持不变。
+  对照 `/root/etcd/tests/integration/network_partition_test.go` 中无 quorum 分区恢复后必须重新选主并进展的
+  不变量，`pd-cross-node-total-loss` 复用完整五项官方 clientv3 矩阵，但每轮要求 observer 明确证明三个
+  endpoint 同时不可达，不能把仅无多数派冒充全失。2026-08-11 disposable `kubebrain-pd-total` 在
+  1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/3 KubeBrain、10379/10380 拓扑先通过独立 helper
+  注入/恢复，再连续通过 MemberList 58.59 秒；Watch 51.07 秒，80 个提交事件恰好一次交付（81 responses、
+  18 次瞬态写、final revision 82）；LeaseKeepAlive 51.20 秒；重复 require-leader streams 50.76 秒；
+  Snapshot 52.60 秒，隔离期 fail closed、恢复后由 `/root/etcd@5cd9f4ee1380...` provenance 已验证的
+  官方 etcdutl 校验。本项关闭 kind bridge 上三个跨 node PD client endpoint 短时全失的五项数据面证据；
+  长分区、进程重启期间全失、独立宿主/AZ、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障
+  继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

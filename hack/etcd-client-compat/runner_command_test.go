@@ -438,6 +438,22 @@ func TestBackendPDCrossNodeQuorumLossUsesObserverAndTargetNodes(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeTotalLossTargetsEveryMember(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-total-loss)`)
+	require.Contains(t, script, `--partition-pd-all-cross-node`)
+	require.Contains(t, script, `--partition-pd-all-cross-node-soak`)
+	require.Contains(t, script, `partition_pd_quorum cross-node-all`)
+	require.Contains(t, script, `partition_pd_quorum_soak cross-node-all`)
+	require.Contains(t, script, `target_count=3`)
+	require.Contains(t, script, `PD total loss observed`)
+	require.Contains(t, script, `cross-node PD total-loss MemberList consistency modes`)
+	require.Contains(t, script, `cross-node PD total-loss Snapshot`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
