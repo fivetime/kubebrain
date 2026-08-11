@@ -301,6 +301,47 @@ func TestConditionalUploadRejectsInsufficientRealS3Retention(t *testing.T) {
 	require.Empty(t, versions.DeleteMarkers)
 }
 
+func TestRestartRecoversReceiptAfterRealS3Commit(t *testing.T) {
+	directEndpoint, bucket, accessKey, secretKey := realObjectStoreEnv(t)
+	client := realS3Client(t, directEndpoint, accessKey, secretKey)
+	now := time.Now().UTC()
+	objectKey := "reconcile/receipt-write-failure.jsonl"
+	badReceiptPath := filepath.Join(t.TempDir(), "missing", "receipt.json")
+	request := UploadRequest{
+		Input: writeLargeCancellationArtifact(t), Instance: "receipt-integration", BackupID: "receipt-1",
+		ObjectStoreID: "minio-integration", Bucket: bucket, ObjectKey: objectKey,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: now.Add(2 * time.Hour).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 300,
+		ReceiptOutput: badReceiptPath, Now: now,
+	}
+	_, err := Upload(t.Context(), client, request)
+	require.ErrorContains(t, err, "no such file or directory")
+	versions, err := client.ListObjectVersions(t.Context(), &s3.ListObjectVersionsInput{
+		Bucket: aws.String(bucket), Prefix: aws.String(objectKey),
+	})
+	require.NoError(t, err)
+	require.Len(t, versions.Versions, 1)
+	committedVersion := aws.ToString(versions.Versions[0].VersionId)
+	require.NotEmpty(t, committedVersion)
+
+	restarted := request
+	restarted.ReceiptOutput = filepath.Join(t.TempDir(), "receipt.json")
+	restarted.Now = now.Add(time.Second)
+	receipt, err := Upload(t.Context(), client, restarted)
+	require.NoError(t, err)
+	require.Equal(t, committedVersion, receipt.VersionID)
+	persisted, err := ReadReceipt(restarted.ReceiptOutput)
+	require.NoError(t, err)
+	require.Equal(t, receipt, persisted)
+	versions, err = client.ListObjectVersions(t.Context(), &s3.ListObjectVersionsInput{
+		Bucket: aws.String(bucket), Prefix: aws.String(objectKey),
+	})
+	require.NoError(t, err)
+	require.Len(t, versions.Versions, 1, "restart recovery must reuse the committed version")
+	require.Equal(t, committedVersion, aws.ToString(versions.Versions[0].VersionId))
+	require.Empty(t, versions.DeleteMarkers)
+}
+
 func realObjectStoreEnv(t *testing.T) (string, string, string, string) {
 	t.Helper()
 	directEndpoint := os.Getenv("KUBEBRAIN_OBJECTSTORE_CANCEL_S3_ENDPOINT")

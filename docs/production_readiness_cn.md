@@ -2460,6 +2460,13 @@ metadata 与 COMPLIANCE mode 均匹配请求，但服务端权威 retain-until �
 读取 retention；403、缺失 retention 或期限/mode 不符都必须保持备份未验证，禁止手工把 metadata 当作
 Object Lock 生效证明。
 
+2026-08-11 的 A4352 覆盖 MinIO 对象已经提交并通过远端核验、但本地 receipt 原子写失败的重启窗口。
+测试让 receipt 父目录在最终 CreateTemp 时返回 ENOENT；首次调用失败后远端已有唯一锁定 version。第二次
+以完全相同的 Operation identity、object key 和 artifact 在新可写路径重试，uploader 对账并复用原
+version，生成绑定该 version ID 的 receipt，远端仍只有一个 version、无 delete marker；真实用例 3.14 秒
+通过。worker 的持久化参数、artifact 或其摘要必须跨 retry 保持不变；receipt 缺失只能触发相同请求的
+reconciliation，不能触发对象删除、随机换 key 或重新导出不同内容。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

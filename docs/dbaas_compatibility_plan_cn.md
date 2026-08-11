@@ -46178,6 +46178,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   retention 字段只是绑定意图，不能替代对象存储的权威 lock state；生产 credential 必须具备读取 exact
   version retention 的权限，权限缺失或 API 不可用均应 fail closed，不能降级为普通版本备份。
 
+- A4352 验证对象已提交/核验与 receipt 原子落盘之间的 crash window 可在重启后收敛。新增
+  `TestRestartRecoversReceiptAfterRealS3Commit`，首次 Upload 使用不存在的 receipt 父目录：启动时路径确实
+  不存在，故不会被幂等预检查提前拦截；真实 MinIO 条件 PUT、exact version body/metadata/retention 校验
+  全部完成后，`WriteReceiptAtomic` 的 CreateTemp 才以 `ENOENT` 失败。测试确认此时远端已有且只有一个
+  COMPLIANCE version；随后以相同 instance/backup ID/bucket/key、相同 artifact 和新的可写 receipt 路径
+  模拟 worker 重启。第二次条件 PUT 冲突后必须完整对账原 version、原子写出 receipt，receipt.VersionID
+  必须等于首次已提交 version，ListObjectVersions 仍为 1 且无 delete marker。2026-08-11 真实用例 3.14 秒
+  通过且无资源残留。该项证明 receipt 丢失不是自动删除受保护对象的理由；Operation retry 必须保持身份
+  和 artifact 不变。参数或 artifact 漂移会按既有 identity/digest gate 冲突失败，不能借重试重新定义备份。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
