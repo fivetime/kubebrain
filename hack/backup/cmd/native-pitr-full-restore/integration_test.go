@@ -1138,7 +1138,12 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	pdPorts := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS"), ",")
 	tikvContainers := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CONTAINERS"), ",")
 	tikvAddresses := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CLIENT_ADDRESSES"), ",")
+	spareTiKVContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_SPARE_TIKV_CONTAINER")
+	spareTiKVAddress := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_SPARE_TIKV_CLIENT_ADDRESS")
+	spareTiKVStatus := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_SPARE_TIKV_STATUS_ADDRESS")
+	tikvConfig := os.Getenv("KUBEBRAIN_NATIVE_PITR_TIKV_CONFIG")
 	if targetPD == "" || serverBinary == "" || chain == "" || uidValue == "" || pdContainer == "" ||
+		spareTiKVContainer == "" || spareTiKVAddress == "" || spareTiKVStatus == "" || tikvConfig == "" ||
 		len(pdPorts) != 3 || len(tikvContainers) != 3 || len(tikvAddresses) != 3 {
 		t.Skip("set the native PITR KubeBrain follower-to-PD isolation integration environment")
 	}
@@ -1149,7 +1154,7 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	parsedUID, err := strconv.ParseUint(uidValue, 10, 32)
 	require.NoError(t, err)
 	require.NotZero(t, parsedUID)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
 	runIPTables := func(args ...string) {
@@ -1419,6 +1424,74 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Len(t, quorumRecovery.Kvs, 1)
 	require.Equal(t, []byte("before-split-z"), quorumRecovery.Kvs[0].Value)
 	require.Equal(t, topology.Header.Revision, quorumRecovery.Header.Revision)
+	spareOutput, err := exec.CommandContext(
+		ctx, "docker", "run", "-d", "--name", spareTiKVContainer, "--network", "host",
+		"--tmpfs", "/data:rw,size=64g,mode=1777", "-v", tikvConfig+":/native-pitr-integration.toml:ro",
+		"pingcap/tikv:v7.5.1", "--config=/native-pitr-integration.toml", "--addr="+spareTiKVAddress,
+		"--advertise-addr="+spareTiKVAddress, "--status-addr="+spareTiKVStatus, "--pd="+targetPD,
+		"--data-dir=/data", "--log-file=",
+	).CombinedOutput()
+	require.NoError(t, err, "start spare TiKV store: %s", spareOutput)
+	require.Eventually(t, func() bool {
+		_, curlErr := exec.CommandContext(ctx, "curl", "-fsS", "http://"+spareTiKVStatus+"/status").CombinedOutput()
+		return curlErr == nil
+	}, 60*time.Second, time.Second, "spare TiKV status endpoint must become healthy")
+	var spareStoreID uint64
+	require.Eventually(t, func() bool {
+		stores, storesErr := pdc.GetAllStores(ctx)
+		if storesErr != nil {
+			return false
+		}
+		for _, store := range stores {
+			if store.GetAddress() == spareTiKVAddress {
+				spareStoreID = store.GetId()
+				return spareStoreID != 0
+			}
+		}
+		return false
+	}, 60*time.Second, 500*time.Millisecond, "PD must register the spare TiKV store")
+	deleteStoreOutput, err := exec.CommandContext(
+		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+		"store", "delete", strconv.FormatUint(targetStoreID, 10),
+	).CombinedOutput()
+	require.NoError(t, err, "delete replaced TiKV store: %s", deleteStoreOutput)
+	require.Contains(t, string(deleteStoreOutput), "Success")
+	require.Eventually(t, func() bool {
+		updated, getErr := pdc.GetRegionByID(ctx, region.Meta.Id)
+		if getErr != nil || updated == nil || updated.Meta == nil {
+			return false
+		}
+		foundSpare := false
+		for _, peer := range updated.Meta.Peers {
+			if peer.StoreId == targetStoreID {
+				return false
+			}
+			foundSpare = foundSpare || peer.StoreId == spareStoreID
+		}
+		return foundSpare && len(updated.Meta.Peers) == 3
+	}, 90*time.Second, 500*time.Millisecond, "PD must replace the deleted Region peer with the spare store")
+	replacementLeaderOutput, err := exec.CommandContext(
+		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+		"operator", "add", "transfer-leader", strconv.FormatUint(region.Meta.Id, 10), strconv.FormatUint(spareStoreID, 10),
+	).CombinedOutput()
+	require.NoError(t, err, "transfer Region leader to replacement store: %s", replacementLeaderOutput)
+	require.Contains(t, string(replacementLeaderOutput), "Success")
+	require.Eventually(t, func() bool {
+		updated, getErr := pdc.GetRegionByID(ctx, region.Meta.Id)
+		return getErr == nil && updated != nil && updated.Leader != nil && updated.Leader.StoreId == spareStoreID
+	}, 30*time.Second, 250*time.Millisecond, "PD must move the Region leader to the replacement store")
+	replacementCtx, replacementCancel := context.WithTimeout(ctx, 5*time.Second)
+	replacementCtx = metadata.NewOutgoingContext(
+		replacementCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	replacement, err := followerRawKV.Range(replacementCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("topology/z"), Serializable: true,
+	})
+	replacementCancel()
+	require.Error(t, err, "an isolated follower cannot resolve a replacement store address and must fail closed")
+	require.Nil(t, replacement)
+	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.DeadlineExceeded,
+		"replacement address discovery must time out rather than return stale data: %v", err)
 	encodedTopologyA := tikvcodec.EncodeBytes(nil, physicalKeyspace.NewCoder().EncodeRevisionKey([]byte("topology/a")))
 	leftRegion, err := pdc.GetRegion(ctx, encodedTopologyA)
 	require.NoError(t, err)

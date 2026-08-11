@@ -46518,6 +46518,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DBaaS 必须告警/恢复而不能承诺读服务。以新 store replacement、peer re-replication 或 address change
   恢复仍需要 PD，继续作为开放的运维兼容边界。
 
+- A4371 将“新 store replacement/peer re-replication”从开放推理升级为真实负向门禁。runner 预留并纳入
+  cleanup/collision 审计的第 4 个 disposable TiKV 容器名，向测试传入独立 client/status address 和只读
+  TiKV config。A4370 quorum 恢复后，测试动态启动全新空 data-dir 的 TiKV v7.5.1，先要求 status HTTP
+  成功，再通过 PD `GetAllStores` 将 address 解析为非零新 store ID。随后用 `/pd-ctl store delete` 驱逐
+  `topology/z` 的一个原始 cached peer store；`GetRegionByID` 必须权威证明三副本 peers 已排除旧 store、包含
+  spare store，才允许把 Region leader 真实 transfer 到 spare。这样不是端口转发或暂停旧进程，而是
+  peer ID/store ID/address 均变化的实际 re-replication。
+  follower 从启动至此仍被 owner DROP 隔离全部 PD，且 checkpoint warmup 时新 store 尚不存在；其 point
+  Range 必须在 5 秒后返回 `DeadlineExceeded` 且 response 为 nil。旧 peer 的 EpochNotMatch/NotLeader 即使
+  携带新 store ID，也不能提供可信 address；client-go 必须回查 PD 并 fail closed，禁止猜测地址、使用被
+  驱逐 peer 或返回 stale 数据。解除 PD DROP 后，既有 30 秒有界 merge/recovery 门禁继续要求完整双 key
+  结果，证明同一 follower 最终能解析 replacement store 并恢复。
+  首次现场暴露测试误把 TiKV `/status` 的空 2xx body 当作失败；现场日志证明 spare 已注册并正在接收
+  snapshot/replacement，修正为与 runner 一致的 HTTP 退出码判定后，三 PD/四 TiKV、双 KubeBrain 完整
+  链条连续以 65.45/58.10 秒通过；integration/backend/server/storage 全量回归通过且含 spare 的 runner
+  无残留。
+  本项确认 replacement 在 PD 隔离期间是明确 fail-closed 可用性边界、PD 恢复后可自愈；它不关闭“同一
+  store ID 原地修改 address/DNS 指向”的独立缓存刷新路径，也不提供无 PD 的新地址分发机制。若 DBaaS
+  要在 PD control plane 故障期间继续容忍全新 stores，必须引入受签名/版本化的 out-of-band Region/store
+  directory，而不能降低本门禁为猜测连接。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

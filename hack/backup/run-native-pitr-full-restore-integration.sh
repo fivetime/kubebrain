@@ -73,7 +73,8 @@ done
 br_container=kb-native-pitr-br-integration
 minio_container=kb-native-pitr-minio-integration
 mc_container=kb-native-pitr-mc-integration
-names+=("${source_pd_names[@]}" "${target_pd_names[@]}" "${source_tikv_names[@]}" "${target_tikv_names[@]}" "$br_container" "$minio_container" "$mc_container")
+target_spare_tikv_container=kb-native-pitr-tgt-tikv-spare-integration
+names+=("${source_pd_names[@]}" "${target_pd_names[@]}" "${source_tikv_names[@]}" "${target_tikv_names[@]}" "$target_spare_tikv_container" "$br_container" "$minio_container" "$mc_container")
 source_pd_csv=$(IFS=,; echo "${source_pd_endpoints[*]}")
 target_pd_csv=$(IFS=,; echo "${target_pd_endpoints[*]}")
 source_initial_csv=$(IFS=,; echo "${source_initial_cluster[*]}")
@@ -269,6 +270,10 @@ elif [[ "$fault_injection" == target-kubebrain-pd-network-isolation-resume ]]; t
     KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_STATUS_ADDRESSES=127.0.0.1:21180,127.0.0.1:21181,127.0.0.1:21182
     KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CONTAINERS="$(IFS=,; echo "${target_tikv_names[*]}")"
     KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CLIENT_ADDRESSES=127.0.0.1:43160,127.0.0.1:43161,127.0.0.1:43162
+    KUBEBRAIN_NATIVE_PITR_TARGET_SPARE_TIKV_CONTAINER="$target_spare_tikv_container"
+    KUBEBRAIN_NATIVE_PITR_TARGET_SPARE_TIKV_CLIENT_ADDRESS=127.0.0.1:43163
+    KUBEBRAIN_NATIVE_PITR_TARGET_SPARE_TIKV_STATUS_ADDRESS=127.0.0.1:21183
+    KUBEBRAIN_NATIVE_PITR_TIKV_CONFIG="$tikv_config"
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_CONTAINER="${target_pd_names[0]}"
   )
 elif [[ "$fault_injection" == target-pd-leader-enospc-resume || "$fault_injection" == target-pd-leader-store-enospc-resume ]]; then
