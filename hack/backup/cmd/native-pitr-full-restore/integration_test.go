@@ -1122,6 +1122,145 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster proves that a real
+// non-leader process loads and protects the shared durable checkpoint. The
+// leader remains healthy and advances the key after only the follower loses
+// PD, so the old serializable value cannot be mistaken for a proxied response.
+func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	chain := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CHAIN")
+	uidValue := os.Getenv("KUBEBRAIN_NATIVE_PITR_ISOLATED_UID")
+	pdPorts := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS"), ",")
+	if targetPD == "" || serverBinary == "" || chain == "" || uidValue == "" || len(pdPorts) != 3 {
+		t.Skip("set the native PITR KubeBrain follower-to-PD isolation integration environment")
+	}
+	parsedUID, err := strconv.ParseUint(uidValue, 10, 32)
+	require.NoError(t, err)
+	require.NotZero(t, parsedUID)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	runIPTables := func(args ...string) {
+		output, commandErr := exec.CommandContext(ctx, "iptables", append([]string{"-w", "5"}, args...)...).CombinedOutput()
+		require.NoError(t, commandErr, "iptables %s: %s", strings.Join(args, " "), output)
+	}
+	restoreNetwork := func() {
+		output, commandErr := exec.Command("iptables", "-w", "5", "-F", chain).CombinedOutput()
+		require.NoError(t, commandErr, "flush network fault chain: %s", output)
+	}
+	t.Cleanup(restoreNetwork)
+
+	root := t.TempDir()
+	jwtFile, err := os.CreateTemp(os.TempDir(), "pd-follower-isolation-jwt-secret-")
+	require.NoError(t, err)
+	jwtSecret := jwtFile.Name()
+	t.Cleanup(func() { _ = os.Remove(jwtSecret) })
+	_, err = jwtFile.Write([]byte("pd-follower-isolation-jwt-shared-secret"))
+	require.NoError(t, err)
+	require.NoError(t, jwtFile.Close())
+	require.NoError(t, os.Chmod(jwtSecret, 0o444))
+
+	leaderClientPort, followerClientPort := freeTCPPort(t), freeTCPPort(t)
+	leaderPeerPort, followerPeerPort := freeTCPPort(t), freeTCPPort(t)
+	initialCluster := fmt.Sprintf(
+		"leader=http://127.0.0.1:%d,follower=http://127.0.0.1:%d", leaderPeerPort, followerPeerPort,
+	)
+	const keyspace = "pd-follower-isolation-integration"
+	authArg := "--auth-token=jwt,sign-method=HS256,priv-key=" + jwtSecret
+	leaderServer := startKubeBrainReplicaAsUID(
+		t, ctx, serverBinary, targetPD, root, "pd-follower-leader", keyspace, 0,
+		leaderClientPort, leaderPeerPort, freeTCPPort(t), initialCluster, authArg,
+	)
+	defer leaderServer.stop(t)
+	leaderEndpoint := fmt.Sprintf("127.0.0.1:%d", leaderClientPort)
+	bootstrap := waitForEndpoint(t, ctx, leaderEndpoint, leaderServer)
+
+	followerServer := startKubeBrainReplicaAsUID(
+		t, ctx, serverBinary, targetPD, root, "pd-follower-reader", keyspace, uint32(parsedUID),
+		followerClientPort, followerPeerPort, freeTCPPort(t), initialCluster, authArg,
+	)
+	defer followerServer.stop(t)
+	followerEndpoint := fmt.Sprintf("127.0.0.1:%d", followerClientPort)
+	followerBootstrap := waitForEndpoint(t, ctx, followerEndpoint, followerServer)
+	defer followerBootstrap.Close()
+
+	leaderStatus, err := bootstrap.Status(ctx, leaderEndpoint)
+	require.NoError(t, err)
+	followerStatus, err := followerBootstrap.Status(ctx, followerEndpoint)
+	require.NoError(t, err)
+	require.Equal(t, leaderStatus.Leader, followerStatus.Leader)
+	require.Equal(t, leaderStatus.Header.MemberId, leaderStatus.Leader, "the first process must retain leadership")
+	require.NotEqual(t, followerStatus.Header.MemberId, followerStatus.Leader, "the isolated process must be a real follower")
+
+	_, err = bootstrap.UserAdd(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "root")
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "root", "root")
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+	require.NoError(t, bootstrap.Close())
+	leaderClient, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{leaderEndpoint}, DialTimeout: time.Second, Username: "root", Password: "root-secret",
+	})
+	require.NoError(t, err)
+	defer leaderClient.Close()
+	followerClient, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{followerEndpoint}, DialTimeout: time.Second, Username: "root", Password: "root-secret",
+	})
+	require.NoError(t, err)
+	defer followerClient.Close()
+	oldPut, err := leaderClient.Put(ctx, "shared", "follower-checkpoint-old")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 2*time.Second)
+		response, getErr := followerClient.Get(attempt, "shared", clientv3.WithSerializable())
+		attemptCancel()
+		return getErr == nil && len(response.Kvs) == 1 && string(response.Kvs[0].Value) == "follower-checkpoint-old"
+	}, 15*time.Second, 250*time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
+
+	pdClient, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(targetPD, ","), DialTimeout: time.Second})
+	require.NoError(t, err)
+	defer pdClient.Close()
+	sessions, err := pdClient.Get(ctx, admissionfence.SessionsPrefix(keyspace), clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.EqualValues(t, 2, sessions.Count)
+	for _, port := range pdPorts {
+		runIPTables("-A", chain, "-m", "owner", "--uid-owner", uidValue, "-p", "tcp", "--dport", port,
+			"-m", "comment", "--comment", "kubebrain-follower-pd-isolation", "-j", "DROP")
+	}
+	newPut, err := leaderClient.Put(ctx, "shared", "leader-new-after-follower-isolation")
+	require.NoError(t, err)
+	require.Greater(t, newPut.Header.Revision, oldPut.Header.Revision)
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 2*time.Second)
+		response, getErr := pdClient.Get(attempt, admissionfence.SessionsPrefix(keyspace), clientv3.WithPrefix())
+		attemptCancel()
+		return getErr == nil && response.Count == 1
+	}, 30*time.Second, 250*time.Millisecond, "only the isolated follower admission session must expire")
+
+	serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
+	serializable, err := followerClient.Get(serializableCtx, "shared", clientv3.WithSerializable())
+	serializableCancel()
+	require.NoError(t, err)
+	require.Len(t, serializable.Kvs, 1)
+	require.Equal(t, []byte("follower-checkpoint-old"), serializable.Kvs[0].Value)
+	require.GreaterOrEqual(t, serializable.Header.Revision, oldPut.Header.Revision)
+	require.Less(t, serializable.Header.Revision, newPut.Header.Revision,
+		"the follower must serve its own checkpoint rather than proxying to the healthy leader")
+
+	restoreNetwork()
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+		response, getErr := followerClient.Get(attempt, "shared")
+		attemptCancel()
+		return getErr == nil && len(response.Kvs) == 1 && string(response.Kvs[0].Value) == "leader-new-after-follower-isolation"
+	}, 45*time.Second, 500*time.Millisecond, "the same follower must recover and observe the leader's newer value")
+}
+
 // TestNativeLegacyLeaseHistorySnapshotRealCluster proves that a legacy value
 // whose retained version has no durable lease provenance cannot be exported as
 // a plausible etcd snapshot. Physical compaction removes the ambiguous version
@@ -2166,12 +2305,28 @@ func startKubeBrainForKeyspace(t *testing.T, ctx context.Context, binary, pdAddr
 func startKubeBrainForKeyspaceAsUID(t *testing.T, ctx context.Context, binary, pdAddrs, root, label, keyspace string, uid uint32, extraArgs ...string) *runningServer {
 	t.Helper()
 	peerPort, infoPort := freeTCPPort(t), freeTCPPort(t)
+	return startKubeBrainReplicaAsUID(
+		t, ctx, binary, pdAddrs, root, label, keyspace, uid, 45379, peerPort, infoPort,
+		fmt.Sprintf("integration=http://127.0.0.1:%d", peerPort), extraArgs...,
+	)
+}
+
+func startKubeBrainReplicaAsUID(
+	t *testing.T,
+	ctx context.Context,
+	binary, pdAddrs, root, label, keyspace string,
+	uid uint32,
+	clientPort, peerPort, infoPort int,
+	initialCluster string,
+	extraArgs ...string,
+) *runningServer {
+	t.Helper()
 	logFile, err := os.Create(filepath.Join(root, label+"-kubebrain.log"))
 	require.NoError(t, err)
 	args := []string{
-		"--port=45379", fmt.Sprintf("--peer-port=%d", peerPort), fmt.Sprintf("--info-port=%d", infoPort),
-		"--advertise-host=127.0.0.1", "--advertise-client-urls=http://127.0.0.1:45379",
-		fmt.Sprintf("--initial-cluster=integration=http://127.0.0.1:%d", peerPort),
+		fmt.Sprintf("--port=%d", clientPort), fmt.Sprintf("--peer-port=%d", peerPort), fmt.Sprintf("--info-port=%d", infoPort),
+		"--advertise-host=127.0.0.1", fmt.Sprintf("--advertise-client-urls=http://127.0.0.1:%d", clientPort),
+		"--initial-cluster=" + initialCluster,
 		"--pd-addrs=" + pdAddrs, "--keyspace=" + keyspace, "--compatible-with-etcd=true",
 	}
 	cmd := exec.CommandContext(ctx, binary, append(args, extraArgs...)...)

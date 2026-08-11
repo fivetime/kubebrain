@@ -46357,6 +46357,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   stream、隔离期间 Region topology 变化、超长流跨越本地安全窗或 safepoint TTL、以及客户端自身要求在线
   重新登录的策略，不由本项改变或扩大承诺。
 
+- A4362 将 A4359-A4361 只在“原 leader freshness 失效”进程上做的现场证明扩展为真正的多 KubeBrain
+  follower。native integration 启动器现在可为每个副本指定独立 client/peer/info port、共同的完整
+  `initial-cluster`、UID 与同一 keyspace；新门禁
+  `TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster` 先启动 root-owned leader，再启动 UID 65534
+  follower，并用 Maintenance Status 精确要求两端 Leader ID 相同、首进程 `MemberId==Leader`、目标进程
+  `MemberId!=Leader`，避免把第二个可连接 endpoint 误认作 follower。两进程共享 HS256 JWT 配置和独立
+  admission session；leader 写入 `shared=...old` 后，follower 先以 authenticated serializable Get 完整
+  warm auth/Region state，并等待 checkpoint publication。owner iptables 随后只切断 follower 到三个 PD
+  client port，健康 leader 仍可把同一 key 覆盖成更高 revision 的 `...new`，健康 PD 中 session 数必须从
+  2 精确降为 1。隔离 follower 的 serializable Get 必须返回旧值，header revision 不早于旧 write、严格
+  早于新 write；因此结果不可能来自仍健康的 leader proxy，而只能来自 follower 已加载、以自己随机
+  service safepoint ID 保护的 shared durable checkpoint。解除隔离后，不重启任一进程，follower 的普通
+  read 最终看到 leader 新值。2026-08-11 三 PD/三 TiKV、双 KubeBrain 现场连续以 22.92/21.10 秒通过，
+  integration/backend/server/storage 全量回归通过，runner 清理无容器和 iptables 残留。
+  本项增强的是 follower durable-load 和独立 pin 的真实证据，没有扩大 A4359 的时间/Region-cache边界：
+  follower 必须在故障前成功启动、读取 shared checkpoint 并向 PD 建立自己的 service safepoint；故障中
+  新启动或重启的进程无法证明旧 snapshot 仍受保护，仍须 fail closed。跨宿主 peer 网络分区、滚动升级
+  中旧请求与新进程 pin 交叠、cold Region cache 和 Region topology 变化继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
