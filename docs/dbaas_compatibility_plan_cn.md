@@ -46122,6 +46122,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不再让测试静默 skip。该项关闭“历史 lease 不可恢复时的确定性 FailedPrecondition”缺口；compact 会删除
   watch 历史，生产执行前仍必须评估 watcher/revision 影响并保留备份，不能将其描述为无损迁移。
 
+- A4347 关闭 A4345 保留的对象存储落盘取消缺口，并澄清实现并不存在需要猜测清理的 multipart upload。
+  对照 `/root/etcd/client/v3/snapshot/v3_snapshot.go`：官方本地 `snapshot save` 先写 `.part`、校验 checksum、
+  fsync 后 rename，任何 stream error 都删除 `.part`。KubeBrain 的生产对象备份对应使用一个带
+  `If-None-Match:*`、SHA-256、Object Lock 的 S3 `PutObject`，接口不暴露 Create/UploadPart/Complete，
+  所以取消契约是“单 PUT 不得发布 partial object 或 receipt”；若服务端可能已提交但响应丢失，A 系列
+  既有逻辑会用 `context.WithoutCancel` 的有界 context 做 Head/Get/retention 对账，而不是盲目重传覆盖。
+  新增 `TestCanceledPutObjectLeavesNoRemoteArtifact`：runner 建立带 versioning/Object Lock 的真实 MinIO
+  bucket，通过限速 reverse proxy 让约 8 MiB `kubebrain.logical.v2` artifact 正在 PUT 时取消 context；
+  要求 Upload 返回上传及对账错误、不生成 receipt，直连 MinIO Head 必须明确为 `NotFound/NoSuchKey`，
+  `ListMultipartUploads` 必须为空。2026-08-11 当前代码连续以 0.84/0.88 秒通过，runner 清理无残留。
+  本项证明客户端取消且服务端未提交时的原子不可见性；已提交但响应丢失仍按可验证成功对账，不能承诺
+  网络分区中即时知道提交结果。若未来改用 multipart，必须先新增 upload ID 持久化、AbortMultipartUpload、
+  restart reconciliation 与真实 orphan inventory 门禁，不能沿用本项结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -2420,6 +2420,16 @@ SHA-256、官方 etcdutl 和 bbolt 检查；真实运行 2.88 秒通过。现场
 不可逆地删除旧 watch 历史：必须先确认受影响 keyspace、备份与 watcher 容忍窗口，且只能在诊断精确匹配
 该 legacy provenance 错误时执行。runner 对该门禁缺少 etcdutl 会直接失败，不能用 skip 充当验证成功。
 
+2026-08-11 的 A4347 固定对象备份取消语义。当前 uploader 只允许条件单次 `PutObject`，同时提交 artifact
+SHA-256 metadata、Object Lock 和 `If-None-Match:*`；没有调用 S3 multipart API，因此取消后不得留下
+可见 partial object、receipt 或 incomplete multipart。真实 MinIO 门禁用限速代理在约 8 MiB artifact
+传输中取消，直连 Head 精确返回 `NotFound/NoSuchKey`、receipt 不存在、`ListMultipartUploads` 为空，
+连续运行 0.84/0.88 秒通过。若 PUT 的错误响应可能发生在服务端提交之后，worker 会脱离已取消的调用
+context，在有界 reconciliation context 中验证 exact metadata/body/retention/version，再决定发布 receipt；
+这是“不确定结果对账”，不是取消后强删对象。生产网络策略必须允许该对账窗口访问对象存储，并对
+Operation 长时间无 receipt 告警。未来采用 multipart 前必须补齐 upload ID 的持久化、abort、重启回收和
+orphan inventory；否则不得声称具备 multipart 清理能力。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

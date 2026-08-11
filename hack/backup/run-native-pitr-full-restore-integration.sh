@@ -297,7 +297,7 @@ elif [[ "$fault_injection" != none ]]; then
     KUBEBRAIN_NATIVE_PITR_COLD_RESTART_DURING_FAULT=true
   )
 fi
-if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
+if [[ "$test_name" == TestNativeLogReplayRealBR || "$test_name" == TestCanceledPutObjectLeavesNoRemoteArtifact ]]; then
   docker run -d --name "$minio_container" --network host --tmpfs /data:rw,size=4g,mode=1777 \
     -e MINIO_ROOT_USER=kubebrain-drill -e MINIO_ROOT_PASSWORD=kubebrain-drill-secret \
     minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address=:49000 --console-address=:49001 >/dev/null
@@ -310,13 +310,19 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   docker cp "$mc_container:/usr/bin/mc" "$drill_tmp/mc"
   chmod 0755 "$drill_tmp/mc"
   export MC_HOST_drill=http://kubebrain-drill:kubebrain-drill-secret@127.0.0.1:49000
-  "$drill_tmp/mc" mb drill/kubebrain-pitr >/dev/null
+  if [[ "$test_name" == TestCanceledPutObjectLeavesNoRemoteArtifact ]]; then
+    "$drill_tmp/mc" mb --with-lock drill/kubebrain-pitr >/dev/null
+  else
+    "$drill_tmp/mc" mb drill/kubebrain-pitr >/dev/null
+  fi
+  export AWS_ACCESS_KEY_ID=kubebrain-drill AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret AWS_REGION=us-east-1
+fi
+if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   go build -o "$drill_tmp/native-pitr-preflight" ./hack/backup/cmd/native-pitr-preflight
   go build -o "$drill_tmp/native-pitr-task-create" ./hack/backup/cmd/native-pitr-task-create
   go build -o "$drill_tmp/native-pitr-restoration-fence" ./hack/backup/cmd/native-pitr-restoration-fence
   go build -o "$drill_tmp/native-pitr-log-replay" ./hack/backup/cmd/native-pitr-log-replay
   go build -o "$drill_tmp/native-pitr-semantic-verify" ./hack/backup/cmd/native-pitr-semantic-verify
-  export AWS_ACCESS_KEY_ID=kubebrain-drill AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret AWS_REGION=us-east-1
   log_env=(
     KUBEBRAIN_NATIVE_PITR_PREFLIGHT="$drill_tmp/native-pitr-preflight"
     KUBEBRAIN_NATIVE_PITR_TASK_CREATE="$drill_tmp/native-pitr-task-create"
@@ -330,7 +336,16 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   )
 fi
 
-if ! env "${log_env[@]}" "${fault_env[@]}" \
+if [[ "$test_name" == TestCanceledPutObjectLeavesNoRemoteArtifact ]]; then
+  if ! (cd hack/backup/objectstore && env \
+    KUBEBRAIN_OBJECTSTORE_CANCEL_S3_ENDPOINT=http://127.0.0.1:49000 \
+    KUBEBRAIN_OBJECTSTORE_CANCEL_S3_BUCKET=kubebrain-pitr \
+    AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" AWS_REGION="$AWS_REGION" \
+    go test -count=1 -run '^TestCanceledPutObjectLeavesNoRemoteArtifact$' -v ./internal/objectstore </dev/null); then
+    docker logs "$minio_container" >&2 || true
+    exit 1
+  fi
+elif ! env "${log_env[@]}" "${fault_env[@]}" \
   TMPDIR="$shared_dir" \
   KUBEBRAIN_NATIVE_PITR_SOURCE_PD="$source_pd_csv" \
   KUBEBRAIN_NATIVE_PITR_TARGET_PD="$target_pd_csv" \
