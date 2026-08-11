@@ -45902,6 +45902,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后者覆盖多 store log backup/checkpoint/replay。该项关闭“只在单副本证明当前 pinned native PITR 链”的
   证据缺口；跨可用区网络分区、member/store 中途故障、磁盘满、长 soak、滚动版本矩阵仍是开放项。
 
+- A4329 增加三副本 source 瞬时 quorum 故障矩阵，并记录不能越界外推的 BR/冷启动限制。脚本新增仅允许
+  topology 3 的 `KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=member-pause-store-resume`；注入前除六个 store Up
+  外，还强制 source/target 每个 region 的 peer 数等于配置副本数且无 pending peer。演练用 Docker pause
+  保留磁盘与 store/member identity，同时暂停 source 的一个非首选 PD member 和一个 TiKV store；full-only
+  在剩余 quorum 上完成完整 witness Range，stream-log 则由故障前已运行的同一 KubeBrain 实例完成 leased
+  Put、Delete、新 Put 和 witness。两者随后 unpause 同一 TiKV/PD identity，再进入 source capture、pinned
+  BR 与 target semantic 链；加入 fully-replicated 门禁后的 full-only 为 35.41 秒，stream-log 为 47.48 秒；
+  测试逐容器复核 paused state、恢复后的原 status
+  endpoint，并对 fault mode、容器名和单节点误用 fail closed。现场负向试验也形成明确差距证据：tmpfs 下
+  stop/start 不是同一 store，故改用 pause；BR v7.5.1 在首个 PD endpoint 或已登记 TiKV store 持续不可达时
+  长时间等待，source/target 全范围探针和带不可达配置 endpoint 的 KubeBrain 冷启动也未证明快速 failover。
+  因此本项只关闭“已运行 source 在单 member+store 瞬时故障下保持 etcd 语义并可恢复后完成 PITR”的缺口；
+  故障跨越 backup/restore、leader/首选 PD 丢失、冷启动、target store loss、跨 AZ 分区仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

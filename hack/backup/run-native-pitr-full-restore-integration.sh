@@ -8,6 +8,15 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   echo "KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE must be 1 or 3" >&2
   exit 2
 fi
+fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none or member-pause-store-resume" >&2
+  exit 2
+fi
+if [[ "$fault_injection" == member-pause-store-resume && "$topology_size" != 3 ]]; then
+  echo "member-pause-store-resume requires KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3" >&2
+  exit 2
+fi
 drill_tmp=$(mktemp -d /tmp/kb-native-pitr-full-restore.XXXXXX)
 shared_dir="$drill_tmp/shared"
 tikv_config="$PWD/hack/backup/native-pitr-tikv-integration.toml"
@@ -119,6 +128,15 @@ for port in 42379 43379; do
   done
 done
 
+for port in 42379 43379; do
+  for attempt in $(seq 1 90); do
+    fully_replicated=$(curl -fsS "http://127.0.0.1:$port/pd/api/v1/regions" | jq --argjson replicas "$topology_size" '(.count > 0) and ([.regions[] | ((.peers | length) == $replicas) and (((.pending_peers // []) | length) == 0)] | all)')
+    if [[ "$fully_replicated" == true ]]; then break; fi
+    if [[ "$attempt" == 90 ]]; then echo "PD $port regions did not reach $topology_size replicas without pending peers" >&2; exit 1; fi
+    sleep 1
+  done
+done
+
 docker create --name "$br_container" pingcap/br:v7.5.1 >/dev/null
 docker cp "$br_container:/br" "$drill_tmp/br"
 chmod 0755 "$drill_tmp/br"
@@ -129,6 +147,16 @@ go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pit
 
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 log_env=()
+fault_env=()
+if [[ "$fault_injection" == member-pause-store-resume ]]; then
+  fault_env=(
+    KUBEBRAIN_NATIVE_PITR_SOURCE_FAULT_CONTAINERS="${source_pd_names[2]},${source_tikv_names[0]}"
+    KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_CONTAINER="${source_tikv_names[0]}"
+    KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_ADDRESS=127.0.0.1:20180
+    KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_CONTAINER="${source_pd_names[2]}"
+    KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_ADDRESS=127.0.0.1:42399
+  )
+fi
 if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   docker run -d --name "$minio_container" --network host --tmpfs /data:rw,size=4g,mode=1777 \
     -e MINIO_ROOT_USER=kubebrain-drill -e MINIO_ROOT_PASSWORD=kubebrain-drill-secret \
@@ -162,7 +190,7 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   )
 fi
 
-if ! env "${log_env[@]}" \
+if ! env "${log_env[@]}" "${fault_env[@]}" \
   TMPDIR="$shared_dir" \
   KUBEBRAIN_NATIVE_PITR_SOURCE_PD="$source_pd_csv" \
   KUBEBRAIN_NATIVE_PITR_TARGET_PD="$target_pd_csv" \

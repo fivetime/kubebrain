@@ -2109,7 +2109,10 @@ witness/lease/watch/history 语义验证。运行命令为
 `KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR
 ./hack/backup/run-native-pitr-full-restore-integration.sh`。发布前的三副本矩阵使用
 `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3`；该模式为 source/target 各启动 3 PD + 3 TiKV、配置三副本并在
-全部 store 为 Up 后才进入演练。其他值会在创建资源前被拒绝。
+全部 store 为 Up、全部 region 达到三副本且没有 pending peer 后才进入演练。其他值会在创建资源前被拒绝。
+瞬时 source quorum 演练再设置 `KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=member-pause-store-resume`：暂停一个
+非首选 PD member 与一个 TiKV store，在相同运行实例上完成 etcd 读写后 unpause 同一 store/member identity，
+再进入 capture/BR。该模式只允许三节点拓扑。
 
 full import 后先以同一 operation ID 获取 TiKV restoration fence，再由 admission release 命令同时消费
 admission/full/fence 三份 exact receipt。命令在开放 PD gate 前验证两侧 token，开放后再次验证 257 个
@@ -2268,6 +2271,11 @@ token 的 plan-bound 原子交接（12.84 秒），stream-log 路径验证了从
 同日三副本矩阵也已实际通过：source/target 各 3 PD + 3 TiKV，full-only 为 23.74 秒，stream-log 为
 34.45 秒。该演练同时修复了 task-status client 把逗号分隔 PD 列表误当成单一 HTTP endpoint 的问题；现在
 每个 PD 地址均转换为独立 clientv3 endpoint。三副本成功不等价于跨可用区分区、磁盘满或长时间 soak。
+随后 fault-injection 矩阵也通过：full-only 在 source PD/TiKV 各 pause 一节点时完成 witness Range，恢复同一
+identity 后 35.41 秒完成；stream-log 在 pause 窗口内完成 leased Put、Delete、新 Put 和 witness，恢复后
+47.48 秒完成最终 semantic receipt。现场同时确认当前 pinned BR、source/target 全范围探针及 KubeBrain 冷
+启动在配置 endpoint/store 持续不可达时可能等待，因此演练在 BR 前恢复 store/member；持续故障穿越 backup/
+restore、首选或 leader PD 丢失、故障窗口冷启动和 target store loss 均未关闭。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、

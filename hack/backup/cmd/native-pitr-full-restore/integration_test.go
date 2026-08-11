@@ -45,12 +45,76 @@ func TestPDHTTPEndpointsPreserveEveryAddress(t *testing.T) {
 	require.Equal(t, []string{"http://127.0.0.1:42379", "http://127.0.0.1:42389", "http://127.0.0.1:42399"}, pdHTTPEndpoints([]string{"127.0.0.1:42379", "127.0.0.1:42389", "127.0.0.1:42399"}))
 }
 
+func TestFaultContainersRejectMalformedInput(t *testing.T) {
+	require.Equal(t, []string{"pd-0", "tikv-0"}, faultContainers("pd-0,tikv-0"))
+	require.Nil(t, faultContainers(""))
+	require.Nil(t, faultContainers("pd-0,,tikv-0"))
+	require.Nil(t, faultContainers("pd/0"))
+}
+
 func pdHTTPEndpoints(addresses []string) []string {
 	endpoints := make([]string, len(addresses))
 	for i, address := range addresses {
 		endpoints[i] = "http://" + address
 	}
 	return endpoints
+}
+
+func faultContainers(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		if part == "" || strings.Trim(part, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") != "" {
+			return nil
+		}
+		if _, ok := seen[part]; ok {
+			return nil
+		}
+		seen[part] = struct{}{}
+	}
+	return parts
+}
+
+func injectContainerLoss(t *testing.T, ctx context.Context, raw string) bool {
+	t.Helper()
+	containers := faultContainers(raw)
+	if raw == "" {
+		return false
+	}
+	require.NotEmpty(t, containers, "invalid fault container list")
+	args := append([]string{"pause"}, containers...)
+	output, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	for _, container := range containers {
+		state, inspectErr := exec.CommandContext(ctx, "docker", "inspect", "--format={{.State.Paused}}", container).CombinedOutput()
+		require.NoError(t, inspectErr, "%s", state)
+		require.Equal(t, "true", strings.TrimSpace(string(state)), "fault target %s is not paused", container)
+	}
+	return true
+}
+
+func recoverContainer(t *testing.T, ctx context.Context, container, address string) {
+	t.Helper()
+	if container == "" && address == "" {
+		return
+	}
+	require.Len(t, faultContainers(container), 1, "invalid recovery container")
+	require.NotEmpty(t, address, "recovery address is required")
+	output, err := exec.CommandContext(ctx, "docker", "unpause", container).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.DialTimeout("tcp", address, 250*time.Millisecond)
+		if dialErr == nil {
+			require.NoError(t, conn.Close())
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("recovered fault target %s did not listen on %s", container, address)
 }
 
 func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
@@ -125,10 +189,15 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, os.WriteFile(sourceTaskPath, taskBytes, 0o600))
 	var sourceCaptureFencePath, sourceCapturePath string
 	if !withLogs {
+		injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_FAULT_CONTAINERS"))
 		witnessStatus = writeWitness(t, ctx, cli, witnessPath)
+		recoverContainer(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_CONTAINER"), os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_ADDRESS"))
+		recoverContainer(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_CONTAINER"), os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_ADDRESS"))
 	}
-	require.NoError(t, cli.Close())
-	sourceServer.stop(t)
+	if !withLogs {
+		require.NoError(t, cli.Close())
+		sourceServer.stop(t)
+	}
 	if !withLogs {
 		sourceCaptureFenceBytes := runReceiptOutput(t, ctx, sourceCaptureCommand, "--action=acquire", "--task-create="+sourceTaskPath, "--source-witness="+witnessPath, "--operation-id=restore-integration-source", "--source-pd-addrs="+sourcePD, "--timeout=1m")
 		sourceCaptureFence, decodeErr := nativepitr.DecodeSourceCaptureFenceReceipt(bytes.NewReader(sourceCaptureFenceBytes))
@@ -145,6 +214,9 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	backup := exec.CommandContext(ctx, br, "backup", "txn", "--pd", strings.Join(sourceAddrs, ","), "--storage", "local://"+artifactRoot, "--backupts", fmt.Sprint(backupTS), "--checksum=false", "--log-file", "/dev/stderr")
 	backup.Stdout, backup.Stderr = os.Stderr, os.Stderr
 	require.NoError(t, backup.Run())
+	if withLogs {
+		injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_FAULT_CONTAINERS"))
+	}
 
 	restoreTS := backupTS
 	var ready nativepitr.TaskReadyReceipt
@@ -152,8 +224,6 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	var logs nativepitr.LogArtifactReceipt
 	var logRoot string
 	if withLogs {
-		sourceServer = startKubeBrain(t, ctx, server, sourcePD, root, "source-log-window")
-		cli = waitForEndpoint(t, ctx, endpoint, sourceServer)
 		_, err = cli.Put(ctx, "/native-full", "kubebrain-after-full", clientv3.WithLease(lease.ID))
 		require.NoError(t, err)
 		_, err = cli.Delete(ctx, "/native-unleased")
@@ -161,6 +231,8 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		_, err = cli.Put(ctx, "/native-after-full", strings.Repeat("log-value-", 64))
 		require.NoError(t, err)
 		witnessStatus = writeWitness(t, ctx, cli, witnessPath)
+		recoverContainer(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_CONTAINER"), os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_ADDRESS"))
+		recoverContainer(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_CONTAINER"), os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_ADDRESS"))
 		require.NoError(t, cli.Close())
 		sourceServer.stop(t)
 		sourceCaptureFenceBytes := runReceiptOutput(t, ctx, sourceCaptureCommand, "--action=acquire", "--task-create="+sourceTaskPath, "--source-witness="+witnessPath, "--operation-id=restore-integration-source", "--source-pd-addrs="+sourcePD, "--timeout=1m")
