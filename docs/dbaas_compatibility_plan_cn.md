@@ -46606,6 +46606,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   跨 node store 的 quorum loss、独立宿主/AZ、长分区以及 latency/bandwidth/conntrack/underlay 组合故障
   仍保持开放。
 
+- A4377 将 A4198 的双 TiKV quorum-loss Watch 一致性门禁推进到两个实际 worker，并由现场 RED 修复一条
+  新的 etcd 错误契约差距。双规则状态从共享 `KIND_NODE_CONTAINER + IP/tag` 改为逐目标持有
+  `node container + Pod IP + PID tag`；`tikv-cross-node-quorum-loss` 在注入前要求三个 TiKV 位于三个不同
+  node，把 leaderCount 最高的两个 Up store 各自绑定到其 `.spec.nodeName`，分别在两个 privileged worker
+  安装 source/destination DROP。cleanup、EXIT/INT/TERM trap 和残留反查逐三元组执行；既有单 node PD/TiKV
+  quorum 模式也显式填充相同 node 数组，保持原行为。
+  修复前真实门禁连续两次都正确观察两个 store `Up -> Disconnected -> Up`，但 Watch workload 失败：TiKV
+  client-go v2.0.7 在 Region cache 无法向 PD 重新加载时用 `%v` 丢失 error chain，返回叶子文本
+  `loadRegion from PD failed, key: ..., err: rpc error: code = DeadlineExceeded ...`；KubeBrain 因此向 official
+  clientv3 泄漏 gRPC `Unknown`，writer 将暂时故障视为永久错误并退出，恢复后无法新增八次成功写。现
+  `isRetryableBackendTransportError` 只在最内层 cause 具有 TiKV 固定 `key:`/`regionID:` 前缀、最后一个
+  `rpc error: code =` 精确为 `DeadlineExceeded` 或 `Unavailable` 时映射为 gRPC `Unavailable`；嵌入用户
+  文本、`InvalidArgument` 和已有非 Unknown status 均保持原 code，避免宽泛字符串匹配掩盖永久错误。
+  TDD 先固定现场正例与伪装/永久负例为 RED，再转 GREEN。
+  2026-08-11 修复镜像在 disposable `kubebrain-tikv-quorum-cross` 的 1 control-plane + 3 dev-zone worker、
+  3 PD/3 TiKV/3 KubeBrain、8379/8380 拓扑连续两轮通过。两轮都将
+  `kb-tikv-0@worker2` 与 `kb-tikv-1@worker3` 置为 Disconnected 并恢复：首轮 76.00 秒，最终线性 Range
+  的 632 个提交键与 Watch 632 个事件逐键/值/revision 恰好一次一致（633 responses、16 次不确定写、
+  final revision 1368）；复跑 88.32 秒，57 个提交事件一致（50 batched responses、28 次不确定写、final
+  revision 1427）。本项关闭 kind bridge 上两个跨 node TiKV store 的短时 quorum loss 与错误映射证据；
+  独立宿主/AZ、长分区、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

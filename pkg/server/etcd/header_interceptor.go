@@ -671,9 +671,25 @@ func isRetryableBackendTransportError(err error) bool {
 			continue
 		}
 		cause := current.Error()
-		return cause == "no available connections" || strings.HasPrefix(cause, "epoch_not_match:")
+		return cause == "no available connections" || strings.HasPrefix(cause, "epoch_not_match:") ||
+			isRetryableTiKVLoadRegionError(cause)
 	}
 	return false
+}
+
+func isRetryableTiKVLoadRegionError(cause string) bool {
+	if !strings.HasPrefix(cause, "loadRegion from PD failed, key: ") &&
+		!strings.HasPrefix(cause, "loadRegion from PD failed, regionID: ") {
+		return false
+	}
+	const marker = ", err: rpc error: code = "
+	markerIndex := strings.LastIndex(cause, marker)
+	if markerIndex < 0 {
+		return false
+	}
+	grpcCause := cause[markerIndex+len(marker):]
+	return strings.HasPrefix(grpcCause, "DeadlineExceeded desc = ") ||
+		strings.HasPrefix(grpcCause, "Unavailable desc = ")
 }
 
 type stampedServerStream struct {

@@ -470,6 +470,23 @@ func TestBackendTiKVQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendTiKVCrossNodeQuorumLossBindsEachStoreToItsNode(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-quorum-loss)`)
+	require.Contains(t, script, `--partition-tikv-quorum-cross-node`)
+	require.Contains(t, script, `partition_tikv_quorum cross-node`)
+	require.Contains(t, script, `local placement="${1:-any}"`)
+	require.Contains(t, script, `expected 3 distinct TiKV nodes`)
+	require.Contains(t, script, `dual_partition_node_containers+=("$node")`)
+	require.Contains(t, script, `node="${dual_partition_node_containers[$index]}"`)
+	require.Contains(t, script, `docker exec "$node" iptables -w 5 -I FORWARD 1 -s "$ip"`)
+	require.Contains(t, script, `docker exec "$node" iptables -w 5 -D FORWARD -s "$ip"`)
+	require.Contains(t, script, `on nodes: ${dual_partition_node_containers[*]}`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestWatchBackendFailoverHasBoundedConfigurableTimeout(t *testing.T) {
 	data, err := os.ReadFile("watch_backend_failover_test.go")
 	require.NoError(t, err)

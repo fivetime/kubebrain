@@ -50,6 +50,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{storage.NewErrUncertainResult(context.DeadlineExceeded), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("epoch_not_match:<>")), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("no available connections")), codes.Unavailable},
+		{fmt.Errorf("failed to get key: %w", fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80")), codes.Unavailable},
 		{markInvalidAuthMetadata(errors.New("decode auth config")), codes.DataLoss},
 		{markInvalidLeaseMetadata(errors.New("decode lease record")), codes.DataLoss},
 		{fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata), codes.DataLoss},
@@ -74,6 +75,8 @@ func TestRetryableBackendTransportErrorUsesInnermostCause(t *testing.T) {
 	for _, cause := range []error{
 		fmt.Errorf("epoch_not_match:<>"),
 		fmt.Errorf("no available connections"),
+		fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80"),
+		fmt.Errorf("loadRegion from PD failed, regionID: 42, err: rpc error: code = Unavailable desc = connection refused"),
 	} {
 		wrapped := fmt.Errorf("snapshot scan: %w", fmt.Errorf("region request: %w", cause))
 		require.True(t, isRetryableBackendTransportError(wrapped), cause.Error())
@@ -90,6 +93,10 @@ func TestRetryableBackendTransportErrorUsesInnermostCause(t *testing.T) {
 	// keeps user-controlled diagnostics from opting themselves into retry.
 	require.False(t, isRetryableBackendTransportError(
 		fmt.Errorf("failed to get user key: no available connections")))
+	require.False(t, isRetryableBackendTransportError(
+		fmt.Errorf("failed to get user key: loadRegion from PD failed, key: fake, err: rpc error: code = DeadlineExceeded desc = fake")))
+	require.False(t, isRetryableBackendTransportError(
+		fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = InvalidArgument desc = malformed key", "57FB80")))
 }
 
 func TestClientInterceptorClassifiesOnlyLeafBackendTransportCause(t *testing.T) {
@@ -101,6 +108,12 @@ func TestClientInterceptorClassifiesOnlyLeafBackendTransportCause(t *testing.T) 
 		{
 			name: "wrapped TiKV cause",
 			err:  fmt.Errorf("range failed: %w", fmt.Errorf("region send failed: %w", fmt.Errorf("epoch_not_match:<>"))),
+			code: codes.Unavailable,
+		},
+		{
+			name: "wrapped TiKV load region timeout",
+			err: fmt.Errorf("failed to get key: %w", fmt.Errorf(
+				"loadRegion from PD failed, regionID: 42, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded")),
 			code: codes.Unavailable,
 		},
 		{
