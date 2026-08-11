@@ -45928,6 +45928,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   identity 后 source capture、BR、replay 与 final semantic receipt 61.52 秒通过。该项关闭既有 source 的
   故障窗口冷启动；BR/全范围探针期间持续 store/member 不可达、首选/leader PD 丢失、target 故障仍开放。
 
+- A4331 关闭 txnkv 初始化对配置首项 PD 的偏置。A4330 的并发 pool 在首项 pause 时仍由每个
+  `txnkv.NewClient` 于初始 GetTSO 返回 `ErrClientGetTSO`，全部槽位因此快速但整体失败。新增
+  `createTxnClientWithEndpointRotation`：pool 槽位从不同 endpoint 顺序开始；单次初始化失败后最多按 PD 数
+  轮转首项，任一成功即保留该 client，全部失败才返回带尝试数的错误。每次都复制地址 slice，不改写共享
+  配置；空 endpoint 集在 factory 前拒绝。确定性测试固定首项失败后精确顺序、全部轮转失败和空集边界，
+  pool 并发/race 继续通过。三副本 `preferred-member-pause-store-resume` 真实演练暂停配置第一项 PD 与一个
+  TiKV store，关闭旧 KubeBrain 后使用原完整 endpoint 列表冷启动；经历有界 election `Unavailable` 后带
+  原 lease Put、Delete、新 Put 成功，恢复相同 identity 后 source capture、BR、log replay 和 final semantic
+  receipt 72.72 秒通过。该 profile 未记录 pause 时的 PD leader identity，因此只关闭“配置首项不可达”的
+  缺口；定向 leader loss、BR/全范围探针期间持续故障、target store loss 和跨 AZ 分区仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

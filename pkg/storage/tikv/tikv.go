@@ -71,14 +71,35 @@ func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStor
 			c.Security = tikvcfg.NewSecurity(sec.CAPath, sec.CertPath, sec.KeyPath, sec.VerifyCN)
 		})
 	}
-	clients, err := createTxnClients(clientNum, func(_ int) (*txnkv.Client, error) {
-		return txnkv.NewClient(pdAddrs)
+	clients, err := createTxnClients(clientNum, func(index int) (*txnkv.Client, error) {
+		return createTxnClientWithEndpointRotation(pdAddrs, index, func(addrs []string) (*txnkv.Client, error) {
+			return txnkv.NewClient(addrs)
+		})
 	})
 	if err != nil {
 		return nil, err
 	}
 	s := NewKvStoreWithClient(clients)
 	return s, nil
+}
+
+func createTxnClientWithEndpointRotation(pdAddrs []string, start int, factory func([]string) (*txnkv.Client, error)) (*txnkv.Client, error) {
+	if len(pdAddrs) == 0 {
+		return nil, errors.New("no PD endpoints configured")
+	}
+	var lastErr error
+	for attempt := 0; attempt < len(pdAddrs); attempt++ {
+		first := (start + attempt) % len(pdAddrs)
+		rotated := make([]string, 0, len(pdAddrs))
+		rotated = append(rotated, pdAddrs[first:]...)
+		rotated = append(rotated, pdAddrs[:first]...)
+		client, err := factory(rotated)
+		if err == nil {
+			return client, nil
+		}
+		lastErr = err
+	}
+	return nil, errors.Wrapf(lastErr, "all %d PD endpoint rotations failed", len(pdAddrs))
 }
 
 func createTxnClients(clientNum int, factory func(int) (*txnkv.Client, error)) ([]*txnkv.Client, error) {

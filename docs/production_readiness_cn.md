@@ -2277,7 +2277,11 @@ identity 后 35.41 秒完成；stream-log 在 pause 窗口内完成 leased Put�
 pause 窗口关闭旧 KubeBrain 并用完整三 endpoint 配置冷启动新实例；它在预期的短暂 `Unavailable` 选主窗口
 后取得写权，完成带旧 lease 的 Put、Delete、新 Put，并在恢复相同 PD/TiKV identity 后于 61.52 秒完成最终
 semantic receipt。当前 pinned BR 和 source/target 全范围探针仍要求在进入受审 backup/restore 前恢复
-store/member；持续故障穿越 backup/restore、首选或 leader PD 丢失和 target store loss 均未关闭。
+store/member；持续故障穿越 backup/restore、定向 leader PD 丢失和 target store loss 均未关闭。
+进一步的 `preferred-member-pause-store-resume` profile 暂停配置列表第一项 PD。txnkv pool 对每个槽位轮转
+endpoint 顺序，并在初始化 TSO 失败时有界尝试其余首项；真实 cold-start stream-log 在第一项 PD 与一个
+TiKV store paused 时启动、取得写权并完成最终 semantic receipt，72.72 秒通过。该 profile 证明的是配置
+首项不可达，不声称该 member 当时一定是 PD leader。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、

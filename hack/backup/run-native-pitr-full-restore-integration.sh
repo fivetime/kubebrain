@@ -9,12 +9,12 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none or member-pause-store-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, or preferred-member-pause-store-resume" >&2
   exit 2
 fi
-if [[ "$fault_injection" == member-pause-store-resume && "$topology_size" != 3 ]]; then
-  echo "member-pause-store-resume requires KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3" >&2
+if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
+  echo "$fault_injection requires KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3" >&2
   exit 2
 fi
 drill_tmp=$(mktemp -d /tmp/kb-native-pitr-full-restore.XXXXXX)
@@ -148,13 +148,15 @@ go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pit
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 log_env=()
 fault_env=()
-if [[ "$fault_injection" == member-pause-store-resume ]]; then
+if [[ "$fault_injection" != none ]]; then
+  fault_pd_index=2
+  if [[ "$fault_injection" == preferred-member-pause-store-resume ]]; then fault_pd_index=0; fi
   fault_env=(
-    KUBEBRAIN_NATIVE_PITR_SOURCE_FAULT_CONTAINERS="${source_pd_names[2]},${source_tikv_names[0]}"
+    KUBEBRAIN_NATIVE_PITR_SOURCE_FAULT_CONTAINERS="${source_pd_names[$fault_pd_index]},${source_tikv_names[0]}"
     KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_CONTAINER="${source_tikv_names[0]}"
     KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_ADDRESS=127.0.0.1:20180
-    KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_CONTAINER="${source_pd_names[2]}"
-    KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_ADDRESS=127.0.0.1:42399
+    KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_CONTAINER="${source_pd_names[$fault_pd_index]}"
+    KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_ADDRESS="127.0.0.1:$((42379 + fault_pd_index * 10))"
     KUBEBRAIN_NATIVE_PITR_COLD_RESTART_DURING_FAULT=true
   )
 fi
