@@ -46148,6 +46148,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt”“明确不存在→可重试”“存在但 identity/digest 不同→冲突失败”；reconciliation 超时或对象
   存储不可达仍保持不确定并重排 Operation，不能自动删除受 Object Lock 保护的版本。
 
+- A4349 将 A4348 文档中的“对象存在但 identity/digest 不同→冲突失败”提升为真实 Object Lock 门禁。
+  新增 `TestConditionalUploadRefusesConflictingRealS3Object`，先在带 versioning/COMPLIANCE lock 的 MinIO
+  bucket 以目标 key 写入不同 `kubebrain-backup-id` 和 body，再用正式 Upload 对同 key、不同 backup ID
+  执行 `If-None-Match:*` 条件写。MinIO 返回 precondition failure 后，uploader 只能 Head 现有对象并校验；
+  metadata/size 不匹配必须返回 `refusing to replace conflicting object`，不得把冲突解释为自己的重试成果。
+  测试要求 receipt 不存在，ListObjectVersions 精确保留原来的一个 version、无 delete marker，并按原
+  version Get 后逐字节等于预置 body。2026-08-11 真实用例连续以 1.87/2.27 秒通过且无资源残留。该项证明 backup ID
+  到 object key 的不可变唯一性及 Object Lock 下的不覆盖原则；平台必须为每次 Operation 生成确定性且
+  唯一的 key，并把冲突升级为人工调查，不能自动改 key 产生无法由 inventory 追踪的旁路备份。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

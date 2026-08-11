@@ -2438,6 +2438,14 @@ last-modified 与 retention，确认全部匹配后仍原子发布 receipt；真
 但 identity/digest 不同必须人工处理冲突；对象存储不可达则维持不确定状态并告警。Object Lock 下禁止用
 “清理失败上传”为由删除一个尚未完成身份核验的版本。
 
+2026-08-11 的 A4349 用真实 MinIO 验证对象冲突必须 fail closed：目标 key 已存在另一 backup identity 的
+COMPLIANCE 锁定 version 时，条件 PUT 的 precondition failure 只允许读取核验，metadata/size 不同必须
+返回 `refusing to replace conflicting object`。真实用例连续以 1.87/2.27 秒通过，未生成 receipt，远端仍只有原
+version、原 body，无第二 version 或 delete marker。告警与 runbook 应把这种冲突视为 backup ID/key
+分配、重复 Operation 或租户边界异常；禁止自动覆盖、删除、绕过 Object Lock，亦禁止静默换随机 key。
+处置前应保全 Operation 参数摘要、现有 version ID、metadata 和 inventory receipt，再由控制面决定是否
+修正映射或创建一个身份完整的新 Operation。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

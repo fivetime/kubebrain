@@ -20,6 +20,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
@@ -155,6 +156,53 @@ func TestCommittedPutObjectResponseLossReconcilesRealS3(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, versions.Versions, 1, "response loss must not cause an overwrite retry")
 	require.Empty(t, versions.DeleteMarkers)
+}
+
+func TestConditionalUploadRefusesConflictingRealS3Object(t *testing.T) {
+	directEndpoint, bucket, accessKey, secretKey := realObjectStoreEnv(t)
+	client := realS3Client(t, directEndpoint, accessKey, secretKey)
+	objectKey := "conflict/existing-locked-object.jsonl"
+	retainUntil := time.Now().Add(time.Hour).UTC()
+	originalBody := []byte("different protected object")
+	original, err := client.PutObject(t.Context(), &s3.PutObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(objectKey), Body: bytes.NewReader(originalBody),
+		ContentLength: aws.Int64(int64(len(originalBody))),
+		Metadata: map[string]string{
+			"kubebrain-backup-id": "different-backup",
+		},
+		ObjectLockMode:            types.ObjectLockModeCompliance,
+		ObjectLockRetainUntilDate: aws.Time(retainUntil),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, aws.ToString(original.VersionId))
+
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	_, err = Upload(t.Context(), client, UploadRequest{
+		Input: writeLargeCancellationArtifact(t), Instance: "conflict-integration", BackupID: "conflict-1",
+		ObjectStoreID: "minio-integration", Bucket: bucket, ObjectKey: objectKey,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: time.Now().Add(2 * time.Hour).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 300,
+		ReceiptOutput: receiptPath,
+	})
+	require.ErrorContains(t, err, "refusing to replace conflicting object")
+	_, statErr := os.Stat(receiptPath)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+
+	versions, err := client.ListObjectVersions(t.Context(), &s3.ListObjectVersionsInput{
+		Bucket: aws.String(bucket), Prefix: aws.String(objectKey),
+	})
+	require.NoError(t, err)
+	require.Len(t, versions.Versions, 1)
+	require.Equal(t, aws.ToString(original.VersionId), aws.ToString(versions.Versions[0].VersionId))
+	require.Empty(t, versions.DeleteMarkers)
+	remote, err := client.GetObject(t.Context(), &s3.GetObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(objectKey), VersionId: original.VersionId,
+	})
+	require.NoError(t, err)
+	defer remote.Body.Close()
+	remoteBody, err := io.ReadAll(remote.Body)
+	require.NoError(t, err)
+	require.Equal(t, originalBody, remoteBody)
 }
 
 func realObjectStoreEnv(t *testing.T) (string, string, string, string) {

@@ -10,6 +10,12 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
+objectstore_integration=false
+case "$test_name" in
+  TestCanceledPutObjectLeavesNoRemoteArtifact|TestCommittedPutObjectResponseLossReconcilesRealS3|TestConditionalUploadRefusesConflictingRealS3Object)
+    objectstore_integration=true
+    ;;
+esac
 if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-store-reserve-enospc-recover && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-two-pd-enospc-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
   echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, target-store-reserve-enospc-recover, target-two-store-enospc-resume, target-pd-leader-enospc-resume, target-two-pd-enospc-resume, or target-pd-leader-store-enospc-resume" >&2
   exit 2
@@ -297,7 +303,7 @@ elif [[ "$fault_injection" != none ]]; then
     KUBEBRAIN_NATIVE_PITR_COLD_RESTART_DURING_FAULT=true
   )
 fi
-if [[ "$test_name" == TestNativeLogReplayRealBR || "$test_name" == TestCanceledPutObjectLeavesNoRemoteArtifact || "$test_name" == TestCommittedPutObjectResponseLossReconcilesRealS3 ]]; then
+if [[ "$test_name" == TestNativeLogReplayRealBR || "$objectstore_integration" == true ]]; then
   docker run -d --name "$minio_container" --network host --tmpfs /data:rw,size=4g,mode=1777 \
     -e MINIO_ROOT_USER=kubebrain-drill -e MINIO_ROOT_PASSWORD=kubebrain-drill-secret \
     minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address=:49000 --console-address=:49001 >/dev/null
@@ -310,7 +316,7 @@ if [[ "$test_name" == TestNativeLogReplayRealBR || "$test_name" == TestCanceledP
   docker cp "$mc_container:/usr/bin/mc" "$drill_tmp/mc"
   chmod 0755 "$drill_tmp/mc"
   export MC_HOST_drill=http://kubebrain-drill:kubebrain-drill-secret@127.0.0.1:49000
-  if [[ "$test_name" == TestCanceledPutObjectLeavesNoRemoteArtifact || "$test_name" == TestCommittedPutObjectResponseLossReconcilesRealS3 ]]; then
+  if [[ "$objectstore_integration" == true ]]; then
     "$drill_tmp/mc" mb --with-lock drill/kubebrain-pitr >/dev/null
   else
     "$drill_tmp/mc" mb drill/kubebrain-pitr >/dev/null
@@ -336,7 +342,7 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   )
 fi
 
-if [[ "$test_name" == TestCanceledPutObjectLeavesNoRemoteArtifact || "$test_name" == TestCommittedPutObjectResponseLossReconcilesRealS3 ]]; then
+if [[ "$objectstore_integration" == true ]]; then
   if ! (cd hack/backup/objectstore && env \
     KUBEBRAIN_OBJECTSTORE_CANCEL_S3_ENDPOINT=http://127.0.0.1:49000 \
     KUBEBRAIN_OBJECTSTORE_CANCEL_S3_BUCKET=kubebrain-pitr \
