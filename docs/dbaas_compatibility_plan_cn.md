@@ -44561,7 +44561,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV/PD Pod 与 TCP preflight 为健康，但 TiKV 指标记录 raft peer unreachable，迁移 region leader、
   有序重启 TiKV/PD 仍不能恢复。实验性的 timeout/1PC/fence 分块改动因未改善单键写入且会改变安全
   时序，已全部撤回。Snapshot 仍保持“部分兼容”，本项在该 kind/TiKV 环境恢复并跑出 fault-window
-  与 post-recovery artifact（或确定性 legacy `FailedPrecondition`）证据前保持开放。
+  与 post-recovery artifact（或确定性 legacy `FailedPrecondition`）证据前保持开放。A4343 后续使用全新
+  disposable 三 PD/三 TiKV 集群和双 PD 物理 ENOSPC 关闭了该现场证据缺口，旧 kind 集群的损坏不再被
+  当成 Snapshot 运行时结论。
   A4208 对照 upstream 最新
   `/root/etcd/tests/common/member_test.go::TestMemberListSerializable`（`845cd3885`），把 MemberList
   的 consistency flag 从单元级 read-barrier 断言提升为真实 PD quorum-loss 黑盒门禁。新增 opt-in
@@ -46067,6 +46069,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持逐值可读，恢复后新 Put 成功。2026-08-11 真实用例 15.45 秒通过且无容器、挂载残留。该项证明双
   PD 物理满盘时 fail closed 与原 identity 恢复，不承诺故障窗口可用；第三 PD 同时故障、持续满盘、真实
   PVC 扩容/member replacement、跨 AZ 分区叠加故障和长 soak 仍开放。
+
+- A4343 在 A4342 的确定性双 PD 物理满盘窗口关闭 A4207 的 Maintenance Snapshot 现场缺口。对照
+  `/root/etcd/tests/integration/clientv3/maintenance_test.go` 的 SnapshotWithVersion timeout/inflight
+  错误与 content digest 契约，第二任 PD leader 出现 OS error 28、KubeBrain 已对 Put fail closed 后，
+  official clientv3 打开 Snapshot stream 并完整读取；它必须在 5 秒内以 `DeadlineExceeded` 或
+  `Unavailable` 失败，不能返回部分或伪造成功 artifact。恢复两个原 PD member 并确认三个 member ID
+  不变、写入 `after` 后，再次 SnapshotWithVersion 必须返回版本 `3.7.0`，artifact 尾部 SHA-256 必须
+  匹配，`/root/etcd/bin/etcdutl --write-out=json snapshot status` 必须接受；测试还直接读取 bbolt 的官方
+  MVCC key bucket，确认故障前 `before` 与恢复后 `after` 均实际保存在 artifact，而不是只验证容器格式。
+  2026-08-11 真实三副本用例 28.79 秒通过：故障流精确以 `DeadlineExceeded` 关闭，恢复流完整下载，且
+  无容器或挂载残留。该项证明短时 PD quorum loss 的 Snapshot fail-closed 与恢复后 artifact 完整性；
+  大数据量慢读取消、连续多轮故障、历史 lease 不可恢复时的确定性 `FailedPrecondition`、真实 PVC 和
+  小时级 soak 仍需各自门禁。
 
 ### P2：运维兼容和长期验证
 

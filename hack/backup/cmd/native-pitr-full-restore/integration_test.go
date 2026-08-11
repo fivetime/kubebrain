@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -32,9 +33,15 @@ import (
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 	"github.com/stretchr/testify/require"
 	pd "github.com/tikv/pd/client"
+	"go.etcd.io/bbolt"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/server/v3/storage/schema"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestNativeFullRestoreRealBR is an opt-in destructive integration test for
@@ -549,7 +556,8 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	containers := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_CONTAINERS"), ",")
 	dataDirs := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_DATA_DIRS"), ",")
 	memberNames := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_MEMBERS"), ",")
-	if targetPD == "" || serverBinary == "" || len(containers) != 3 || len(dataDirs) != 3 || len(memberNames) != 3 || containers[0] == "" || dataDirs[0] == "" {
+	etcdutl := os.Getenv("KUBEBRAIN_NATIVE_PITR_ETCDUTL")
+	if targetPD == "" || serverBinary == "" || etcdutl == "" || len(containers) != 3 || len(dataDirs) != 3 || len(memberNames) != 3 || containers[0] == "" || dataDirs[0] == "" {
 		t.Skip("set the native PITR two-PD ENOSPC integration environment")
 	}
 
@@ -626,6 +634,15 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 		acknowledged[key] = value
 	}
 	require.NotEmpty(t, ambiguousKey, "KubeBrain must fail closed after the PD majority is unavailable")
+	faultSnapshotCtx, faultSnapshotCancel := context.WithTimeout(ctx, 5*time.Second)
+	faultSnapshot, snapshotErr := client.SnapshotWithVersion(faultSnapshotCtx)
+	if snapshotErr == nil {
+		_, snapshotErr = io.ReadAll(faultSnapshot.Snapshot)
+		_ = faultSnapshot.Snapshot.Close()
+	}
+	faultSnapshotCancel()
+	require.Error(t, snapshotErr, "snapshot must fail closed while the PD majority is unavailable")
+	require.Contains(t, []codes.Code{codes.Unavailable, codes.DeadlineExceeded}, status.Code(snapshotErr))
 
 	for _, pressurePath := range pressurePaths {
 		require.NoError(t, os.Remove(pressurePath))
@@ -653,6 +670,22 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 		attemptCancel()
 		return putErr == nil
 	}, 45*time.Second, 500*time.Millisecond)
+	snapshotCtx, snapshotCancel := context.WithTimeout(ctx, 45*time.Second)
+	recoveredSnapshot, err := client.SnapshotWithVersion(snapshotCtx)
+	require.NoError(t, err)
+	require.Equal(t, "3.7.0", recoveredSnapshot.Version)
+	snapshotBytes, err := io.ReadAll(recoveredSnapshot.Snapshot)
+	require.NoError(t, err)
+	require.NoError(t, recoveredSnapshot.Snapshot.Close())
+	snapshotCancel()
+	require.Greater(t, len(snapshotBytes), sha256.Size)
+	digest := sha256.Sum256(snapshotBytes[:len(snapshotBytes)-sha256.Size])
+	require.Equal(t, digest[:], snapshotBytes[len(snapshotBytes)-sha256.Size:])
+	snapshotPath := filepath.Join(t.TempDir(), "post-pd-quorum-recovery.db")
+	require.NoError(t, os.WriteFile(snapshotPath, snapshotBytes, 0o600))
+	statusOutput, statusErr := exec.CommandContext(ctx, etcdutl, "--write-out=json", "snapshot", "status", snapshotPath).CombinedOutput()
+	require.NoError(t, statusErr, "%s", statusOutput)
+	requireSnapshotKeys(t, snapshotPath, []string{"before", "after"})
 
 	for key, value := range acknowledged {
 		response, getErr := client.Get(ctx, key)
@@ -672,6 +705,31 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, before.Kvs, 1)
 	require.Equal(t, []byte("durable-before-pd-quorum-loss"), before.Kvs[0].Value)
+}
+
+func requireSnapshotKeys(t *testing.T, path string, expected []string) {
+	t.Helper()
+	db, err := bbolt.Open(path, 0o400, &bbolt.Options{ReadOnly: true})
+	require.NoError(t, err)
+	defer db.Close()
+	found := make(map[string]bool, len(expected))
+	require.NoError(t, db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(schema.Key.Name())
+		if bucket == nil {
+			return errors.New("snapshot has no MVCC key bucket")
+		}
+		return bucket.ForEach(func(_, value []byte) error {
+			kv := new(mvccpb.KeyValue)
+			if err := proto.Unmarshal(value, kv); err != nil {
+				return err
+			}
+			found[string(kv.Key)] = true
+			return nil
+		})
+	}))
+	for _, key := range expected {
+		require.True(t, found[key], "snapshot does not retain key %q", key)
+	}
 }
 
 func currentEtcdLeader(t *testing.T, ctx context.Context, client *clientv3.Client, endpoints []string) uint64 {

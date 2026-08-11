@@ -17,6 +17,14 @@ if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
   echo "$fault_injection requires KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3" >&2
   exit 2
 fi
+etcdutl_bin=""
+if [[ "$fault_injection" == target-two-pd-enospc-resume ]]; then
+  etcdutl_bin=${KUBEBRAIN_ETCDUTL_BIN:-/root/etcd/bin/etcdutl}
+  if [[ ! -x "$etcdutl_bin" ]]; then
+    echo "target-two-pd-enospc-resume requires executable KUBEBRAIN_ETCDUTL_BIN (default /root/etcd/bin/etcdutl)" >&2
+    exit 1
+  fi
+fi
 drill_tmp=$(mktemp -d /tmp/kb-native-pitr-full-restore.XXXXXX)
 shared_dir="$drill_tmp/shared"
 tikv_config="$PWD/hack/backup/native-pitr-tikv-integration.toml"
@@ -218,6 +226,7 @@ elif [[ "$fault_injection" == target-two-pd-enospc-resume ]]; then
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_CONTAINERS="$(IFS=,; echo "${target_pd_names[*]}")"
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_DATA_DIRS="$(IFS=,; echo "${target_pd_data_dirs[*]}")"
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_MEMBERS="tgt-pd-0,tgt-pd-1,tgt-pd-2"
+    KUBEBRAIN_NATIVE_PITR_ETCDUTL="$etcdutl_bin"
   )
 elif [[ "$fault_injection" == target-pd-leader-enospc-resume || "$fault_injection" == target-pd-leader-store-enospc-resume ]]; then
   leader_name=$(curl -fsS http://127.0.0.1:43379/pd/api/v1/leader | jq -er '.name | select(type == "string" and length > 0)')

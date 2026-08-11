@@ -2385,6 +2385,13 @@ hack/backup/run-native-pitr-full-restore-integration.sh
 不能把本门禁的成功当作双 PD 故障下的可用性承诺；真实 PVC 恢复时间、WAL 损坏检查和跨 AZ 网络故障
 必须另行演练。
 
+同一门禁还覆盖 Maintenance Snapshot：PD 无多数派时 SnapshotWithVersion 必须在 5 秒内以
+`DeadlineExceeded`/`Unavailable` 结束，禁止保存该失败流；恢复后 artifact 必须同时通过 clientv3
+版本检查、尾部 SHA-256、官方 `etcdutl snapshot status`，并在 bbolt MVCC bucket 中包含故障前后探针
+key。2026-08-11 加强后的全用例 28.79 秒通过。runner 默认使用 `/root/etcd/bin/etcdutl`，不同环境必须
+通过 `KUBEBRAIN_ETCDUTL_BIN` 指向经过版本管理的可执行文件；工具缺失时门禁 fail closed。该验证不能
+替代大数据量 snapshot 的慢客户端取消、恢复演练或对象存储不可变性检查。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell
