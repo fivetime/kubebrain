@@ -506,6 +506,18 @@ func TestBackendPDCrossNodeTotalLossCanExpireLeaseBurst(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeTotalLossCanOverlapConcurrencySessions(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-total-loss-session-overlap)`)
+	require.Contains(t, script, `run_pd_total_loss_session_overlap_test`)
+	require.Contains(t, script, `KUBEBRAIN_PD_SESSION_OVERLAP_COMMAND`)
+	require.Contains(t, script, `TestConcurrencySessionsOverlapPDTotalLoss`)
+	require.Contains(t, script, `"PD_QUORUM_PARTITION_HOLD_SECONDS=45 $self --partition-pd-all-cross-node"`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

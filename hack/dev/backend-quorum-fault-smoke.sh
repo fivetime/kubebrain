@@ -972,6 +972,18 @@ run_pd_total_loss_lease_expiry_burst_test() {
   wait_backend_ready
 }
 
+run_pd_total_loss_session_overlap_test() {
+  local command="$1"
+  echo "Running concurrency.Session requests overlapping cross-node PD total loss"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_PD_SESSION_OVERLAP_COMMAND="$command" \
+      go test . -run '^TestConcurrencySessionsOverlapPDTotalLoss$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 wait_backend_ready
 
 self="$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh"
@@ -1062,6 +1074,12 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_pd_total_loss_lease_expiry_burst_test \
       "PD_QUORUM_PARTITION_HOLD_SECONDS=90 $self --partition-pd-all-cross-node"
     ;;
+  pd-cross-node-total-loss-session-overlap)
+    need docker
+    need jq
+    run_pd_total_loss_session_overlap_test \
+      "PD_QUORUM_PARTITION_HOLD_SECONDS=45 $self --partition-pd-all-cross-node"
+    ;;
   tikv-network-partition)
     need docker
     need jq
@@ -1084,7 +1102,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "$self --partition-tikv-quorum-cross-node"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

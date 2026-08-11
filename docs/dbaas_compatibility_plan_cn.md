@@ -46742,6 +46742,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的批量自然过期、删除历史与回收完整性证据；分钟级以上持续分区、更大规模 burst、独立宿主/AZ、人工
   慢恢复及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4384 对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go::TestV3LeaseFailureOverlap`，补齐外部
+  `concurrency.NewSession` 的 Grant/KeepAlive/Close 请求与 PD 故障重叠语义；这不同于 A4345 的 KubeBrain
+  内部 admission session 自愈，也不由 A4382/A4383 的自然过期门禁覆盖。新增
+  `pd-cross-node-total-loss-session-overlap` mode，在故障前先并发创建并关闭 8 个 session；三个跨 worker
+  PD endpoint 全失后再发起 8 个请求，2 秒内禁止返回任何伪成功；固定 45 秒 blackout 的后段再发起 8 个
+  恢复交界请求。每个重叠请求必须在 90 秒内有界结束：成功则 Close 后同时以 TTL=-1 和 LeaseList 不含 ID
+  证明回收，失败则只接受 upstream 允许的 connection-loss/DeadlineExceeded/Unavailable/Canceled，明确拒绝
+  Unknown 或永久错误；恢复后另起 8 个 session 必须全部成功创建、关闭并回收，防止先前故障污染 client。
+  首轮现场通过后，加强 LeaseList oracle 的复跑暴露了门禁自身的过强假设：45 秒网络恢复后入口 proxy 的
+  admission 收敛可耗尽重叠请求剩余 deadline，16 个请求全部规范返回 DeadlineExceeded；upstream 原测试
+  明确允许该瞬态结果，并不保证故障中请求最终成功。删除“至少一个重叠请求成功”的额外约束后，仍保留
+  fail-closed、错误契约、有界结束、成功 lease 回收和故障后新进展五个可观测不变量。
+  2026-08-11 disposable `kubebrain-pd-session-overlap` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、15379/15380 拓扑最终通过，全程 130.03 秒：故障中与恢复交界各 8 个请求均以
+  DeadlineExceeded 收敛、0 个伪成功；恢复后的 LeaseList 探针经历规范 Unavailable 后恢复，8 个新 session
+  全部创建并完成双重回收验证。TiDBCluster 与三个 KubeBrain 副本恢复 Ready。本项关闭 kind bridge 上外部
+  session recipe 与 PD 全失重叠的错误及恢复证据；更长请求 deadline 下跨故障自动成功、独立宿主/AZ、慢恢复
+  和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
