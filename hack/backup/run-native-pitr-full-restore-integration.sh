@@ -9,8 +9,8 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, target-two-store-enospc-resume, target-pd-leader-enospc-resume, or target-pd-leader-store-enospc-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-store-reserve-enospc-recover && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, target-store-reserve-enospc-recover, target-two-store-enospc-resume, target-pd-leader-enospc-resume, or target-pd-leader-store-enospc-resume" >&2
   exit 2
 fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
@@ -22,6 +22,9 @@ shared_dir="$drill_tmp/shared"
 tikv_config="$PWD/hack/backup/native-pitr-tikv-integration.toml"
 if [[ "$fault_injection" == target-store-enospc-resume || "$fault_injection" == target-two-store-enospc-resume || "$fault_injection" == target-pd-leader-store-enospc-resume ]]; then
   tikv_config="$PWD/hack/backup/native-pitr-tikv-enospc-integration.toml"
+fi
+if [[ "$fault_injection" == target-store-reserve-enospc-recover ]]; then
+  tikv_config="$PWD/hack/backup/native-pitr-tikv-enospc-reserve-integration.toml"
 fi
 mkdir -p "$shared_dir"
 chmod 0777 "$shared_dir"
@@ -82,6 +85,7 @@ trap cleanup EXIT INT TERM
 
 target_enospc_count=0
 if [[ "$fault_injection" == target-store-enospc-resume ]]; then target_enospc_count=1; fi
+if [[ "$fault_injection" == target-store-reserve-enospc-recover ]]; then target_enospc_count=1; fi
 if [[ "$fault_injection" == target-two-store-enospc-resume ]]; then target_enospc_count=2; fi
 if [[ "$fault_injection" == target-pd-leader-store-enospc-resume ]]; then target_enospc_count=1; fi
 for ((index=0; index<target_enospc_count; index++)); do
@@ -197,7 +201,7 @@ if [[ "$fault_injection" == target-two-store-quorum-loss-resume ]]; then
     KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_LOSS_CONTAINERS="${target_tikv_names[0]},${target_tikv_names[1]}"
     KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_RECOVERY_ADDRESSES=127.0.0.1:21180,127.0.0.1:21181
   )
-elif [[ "$fault_injection" == target-store-enospc-resume ]]; then
+elif [[ "$fault_injection" == target-store-enospc-resume || "$fault_injection" == target-store-reserve-enospc-recover ]]; then
   fault_env=(
     KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINER="${target_tikv_names[0]}"
     KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR="${target_enospc_data_dirs[0]}"

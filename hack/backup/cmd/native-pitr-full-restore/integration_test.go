@@ -205,6 +205,128 @@ func TestNativePhysicalENOSPCRealTiKV(t *testing.T) {
 	}
 }
 
+// TestNativeTiKVEmergencyReserveRealCluster verifies that TiKV's configured
+// data placeholder provides operator-releasable recovery space without a
+// process restart when one bounded store reaches physical ENOSPC. TiKV v7.5.1
+// neither releases it automatically nor materializes reserve-raft-space as a
+// second observable placeholder when raft-engine shares the data filesystem.
+func TestNativeTiKVEmergencyReserveRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	storeContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINER")
+	storeDataDir := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR")
+	if targetPD == "" || serverBinary == "" || storeContainer == "" || storeDataDir == "" {
+		t.Skip("set the native PITR TiKV reserve ENOSPC integration environment")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	pdc, err := pd.NewClientWithContext(ctx, strings.Split(targetPD, ","), pd.SecurityOption{})
+	require.NoError(t, err)
+	defer pdc.Close()
+	storeID := requireStoreIDAtAddress(t, ctx, pdc, "127.0.0.1:43160")
+	originalPID := containerPID(t, ctx, storeContainer)
+	reserveFiles := findSpacePlaceholderFiles(t, storeDataDir)
+	require.Len(t, reserveFiles, 1, "raft-engine should expose only TiKV's data emergency reserve")
+	reserveFile := reserveFiles[0]
+	reserveInfo, err := os.Stat(reserveFile)
+	require.NoError(t, err)
+	// TiKV reserves 20% of the configured logical reserve as physically
+	// allocated recovery space. With this drill's 64 MiB reserve-space the
+	// observable placeholder is therefore 12.8 MiB.
+	const physicalReserveBytes = int64(64 * 1024 * 1024 / 5)
+	require.Equal(t, physicalReserveBytes, reserveInfo.Size())
+	t.Logf("TiKV data emergency reserve file: %s", reserveFile)
+
+	root := t.TempDir()
+	const endpoint = "127.0.0.1:45379"
+	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "reserve-enospc", "reserve-enospc-integration")
+	defer server.stop(t)
+	client := waitForEndpoint(t, ctx, endpoint, server)
+	defer client.Close()
+	_, err = client.Put(ctx, "before", "durable-before-reserve-release")
+	require.NoError(t, err)
+
+	pressurePath := filepath.Join(storeDataDir, "kubebrain-enospc-pressure")
+	defer os.Remove(pressurePath)
+	fillBoundedFilesystem(t, ctx, storeDataDir, pressurePath)
+	require.Eventually(t, func() bool {
+		return containerLogContains(ctx, storeContainer, "disk usage Normal->AlreadyFull")
+	}, 30*time.Second, 500*time.Millisecond, "TiKV did not enter preventive disk-full protection")
+	largeValue := strings.Repeat("r", 768*1024)
+	acknowledged := make([]string, 0, 16)
+	for index := 0; index < 16; index++ {
+		key := fmt.Sprintf("reserve-acknowledged-%03d", index)
+		attempt, attemptCancel := context.WithTimeout(ctx, 15*time.Second)
+		_, putErr := client.Put(attempt, key, largeValue)
+		attemptCancel()
+		if putErr == nil {
+			acknowledged = append(acknowledged, key)
+		}
+	}
+	require.NotEmpty(t, acknowledged, "the remaining TiKV majority did not keep the data plane available")
+	require.False(t, containerLogContains(ctx, storeContainer, "no space left on device", "os error 28"), "reserve protection failed to prevent TiKV from reaching physical ENOSPC")
+	reserveInfo, err = os.Stat(reserveFile)
+	require.NoError(t, err, "TiKV v7.5.1 unexpectedly released its operator reserve automatically")
+	require.Equal(t, physicalReserveBytes, reserveInfo.Size())
+	require.NoError(t, os.Remove(reserveFile), "operator could not release TiKV's emergency reserve")
+	_, err = os.Stat(reserveFile)
+	require.ErrorIs(t, err, fs.ErrNotExist)
+	require.Equal(t, originalPID, containerPID(t, ctx, storeContainer), "reserve recovery must not depend on process restart")
+	var stat syscall.Statfs_t
+	require.NoError(t, syscall.Statfs(storeDataDir, &stat))
+	require.GreaterOrEqual(t, stat.Bavail*uint64(stat.Bsize), uint64(8*1024*1024), "reserve release did not create a recovery budget")
+	require.NoError(t, os.Remove(pressurePath))
+	require.Eventually(t, func() bool {
+		return containerLogContains(ctx, storeContainer, "AlreadyFull->Normal")
+	}, 30*time.Second, 500*time.Millisecond, "TiKV did not leave disk-full protection after cleanup")
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, putErr := client.Put(attempt, "after", "durable-after-reserve-recovery")
+		attemptCancel()
+		return putErr == nil
+	}, 45*time.Second, 500*time.Millisecond)
+	require.Equal(t, originalPID, containerPID(t, ctx, storeContainer))
+	require.Equal(t, storeID, requireStoreIDAtAddress(t, ctx, pdc, "127.0.0.1:43160"))
+	for _, key := range acknowledged {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, []byte(largeValue), response.Kvs[0].Value)
+	}
+	before, err := client.Get(ctx, "before")
+	require.NoError(t, err)
+	require.Len(t, before.Kvs, 1)
+	require.Equal(t, []byte("durable-before-reserve-release"), before.Kvs[0].Value)
+}
+
+func findSpacePlaceholderFiles(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && entry.Name() == "space_placeholder_file" {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	sort.Strings(paths)
+	return paths
+}
+
+func containerPID(t *testing.T, ctx context.Context, container string) string {
+	t.Helper()
+	output, err := exec.CommandContext(ctx, "docker", "inspect", "--format={{.State.Pid}}", container).CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	pid := strings.TrimSpace(string(output))
+	require.NotEmpty(t, pid)
+	require.NotEqual(t, "0", pid)
+	return pid
+}
+
 // TestNativeTwoStoreENOSPCRealTiKV verifies fail-closed behavior after physical
 // ENOSPC removes a TiKV majority. Failed client calls are reconciled after
 // recovery instead of being incorrectly classified as definitely uncommitted.

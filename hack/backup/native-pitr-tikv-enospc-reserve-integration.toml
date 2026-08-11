@@ -1,0 +1,13 @@
+# Disposable emergency-reserve drill. Production reserve sizes must be derived
+# from the supported TiKV capacity plan rather than copied from this small test.
+[storage]
+reserve-space = "64MiB"
+reserve-raft-space = "32MiB"
+background-error-recovery-window = "1s"
+
+[log-backup]
+min-ts-interval = "1s"
+max-flush-interval = "11s"
+
+[resolved-ts]
+advance-ts-interval = "1s"

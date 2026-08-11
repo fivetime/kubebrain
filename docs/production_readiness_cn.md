@@ -2333,6 +2333,25 @@ low-space 状态判定；同时要求剩余两 store 多数派可提交，释放
 CSI/PVC 上验证水位告警、扩容或 replacement、数据再平衡和长时间恢复；本用例只证明一个 TiKV store
 满盘时的三副本多数派与同 identity 清障恢复，不覆盖两个 store、PD 数据盘或跨 AZ 组合故障。
 
+非零 emergency reserve 的隔离门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-store-reserve-enospc-recover \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeTiKVEmergencyReserveRealCluster \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+专用 profile 的 64 MiB/32 MiB 数值只适用于 768 MiB disposable tmpfs，不是生产容量建议。TiKV v7.5.1
+会取 `reserve-space` 与卷容量 5% 的较大者作为逻辑写保护阈值，但物理占位文件是该值的 20%；本门禁现场
+得到一个 12.8 MiB `space_placeholder_file`。卷被外部压力填至不足 1 MiB 后，store 应进入
+`AlreadyFull`，而不是由 TiKV 撞出 OS error 28；剩余两副本应继续提交。该版本不会自动释放占位文件，
+紧急 runbook 必须先确认精确 store/卷身份及多数派健康，再由 operator 删除该精确文件以获得清障预算，
+随后优先扩容或移除外部压力。本门禁要求目标 TiKV 不重启便回到 `Normal`，且 PID/store ID 不变；
+2026-08-11 真实运行 6.95 秒通过。raft-engine 与 KV 共盘时没有独立可观察的 raft 占位文件，故不得把
+`reserve-raft-space` 配置存在解释为独立 raft 应急空间已经验证。生产删除占位文件后还必须补做容量、
+副本健康与告警闭环，不能把这 20% 小文件当作长期可用容量。
+
 live PD leader 的物理满盘门禁使用：
 
 ```shell

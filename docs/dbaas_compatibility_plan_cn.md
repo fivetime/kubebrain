@@ -46042,6 +46042,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后 Put 均通过；全用例 79.49 秒，无资源残留。该项证明一个 PD leader 与一个 TiKV store 同时物理满盘
   的有界恢复，不承诺零瞬断；两个任一层成员、跨 AZ 分区叠加满盘、真实 PVC replacement 和长 soak 仍开放。
 
+- A4341 验证 TiKV 非零 emergency reserve 的真实边界，避免把 A4337 为制造 OS error 28 而使用的零 reserve
+  profile 误当作生产建议。新增 `target-store-reserve-enospc-recover` 与
+  `TestNativeTiKVEmergencyReserveRealCluster`，为 target TiKV-0 使用 768 MiB 隔离 tmpfs，并配置
+  `reserve-space=64MiB`、`reserve-raft-space=32MiB`。对照 TiKV v7.5.1
+  `components/server/src/common.rs`，逻辑 reserve 是配置值与磁盘容量 5% 的较大者，而物理
+  `space_placeholder_file` 只分配逻辑 reserve 的 20%；现场因此精确得到一个 12.8 MiB 文件。宿主压力文件
+  将可用空间降至 1 MiB 以下后，目标 store 从 `Normal` 进入 `AlreadyFull`，普通 Raft 写被预防性保护，
+  TiKV 日志没有 OS error 28，另外两个 store 仍形成多数派并确认提交。v7.5.1 不会在运行期自动删除占位
+  文件；测试要求 operator 显式删除它并确认至少释放 8 MiB，随后移除压力文件，目标 store 在不重启、
+  PID 与 PD store ID 均不变的情况下回到 `Normal`，所有已确认写逐值可读。2026-08-11 真实用例 6.95 秒
+  通过且无资源残留。raft-engine 与 KV 共用文件系统时只观察到一个数据占位文件，配置被接受的
+  `reserve-raft-space` 没有独立物化；因此本项不声称存在独立 raft recovery budget。生产仍需由告警与
+  runbook 驱动扩容/replacement，删除占位文件只能作为受控应急动作，且必须按实际卷容量验证阈值。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
