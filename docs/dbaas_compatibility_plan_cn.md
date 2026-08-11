@@ -45726,6 +45726,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   容器均已清理。该项只让真实存储门禁 bounded、可重复且无残留，不改变生产请求 deadline、TiKV
   `AlmostFull` 行为或 Snapshot/PITR 状态。
 
+- A4315 将 transactional TiKV native PITR 从合成日志解析推进到官方 v7.5.1 stream 双集群真实恢复。
+  对照 TiDB tag `v7.5.1` 的 `br/pkg/streamhelper` 与 TiKV tag `v7.5.1` 的 `components/backup-stream`，确认
+  task range 元数据使用原始事务键，TiKV 内部再做 memcomparable 编码；checkpoint 初次停在 0 的原因
+  是隔离测试只等待 45 秒而 TiKV 默认 `log-backup.max-flush-interval=3m`，并非 range 双重编码。
+  新增仅供 disposable drill 使用且通过 TiKV `--config-check` 的配置，把官方允许的刷新下限设为 11 秒、
+  resolved TS 推进设为 1 秒，不改变生产配置。真实 stream 又证明 metadata/file `max_ts` 可包含高于
+  `resolved_ts` 的 prewrite start TS；artifact verifier 现接受该官方语义，仍严格验证非零 resolved TS、
+  min/max、entry count、CF、压缩 range、对象长度与 SHA-256，并增加 V1/V2 回归。重启 source 后 lease
+  remaining TTL 因 etcd-compatible promote election window 可暂时大于 granted TTL，logical.v2 writer/
+  verifier 与 status 检查改为要求 granted TTL 为正，同时继续验证 lease identity 和 attached keys。
+  `TestNativeLogReplayRealBR` 已在两套独立 PD/TiKV、MinIO、pinned BR 上完成 task/advancer、full backup、
+  full 后 Put/Delete/长值、checkpoint、exact mirror、range/TSO-aware materialize、事务边界 checkpointed
+  replay，以及 target logical witness 的 revision/value/lease/Watch/物理历史验证；原 full-only 演练也
+  重新通过。该证据证明实验性日志恢复数据路径可工作，但 post-log semantic receipt 尚未独立发布，
+  生产 writer fence 及其与 plan/receipt 的原子绑定仍未实现，所以 PITR 生产缺口继续保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

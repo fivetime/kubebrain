@@ -64,7 +64,7 @@ func requireGrantedTTL(path string) error {
 	}
 	defer verified.Close()
 	return verified.Leases(func(lease record.Lease) error {
-		if lease.GrantedTTL <= 0 || lease.GrantedTTL < lease.TTL {
+		if lease.GrantedTTL <= 0 {
 			return fmt.Errorf("lease %d lacks a valid granted_ttl; re-export with the current logical exporter", lease.ID)
 		}
 		return nil

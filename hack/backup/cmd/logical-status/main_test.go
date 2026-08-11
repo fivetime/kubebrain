@@ -19,6 +19,7 @@ func TestRequireGrantedTTL(t *testing.T) {
 		wantError string
 	}{
 		{name: "current lease", lease: &record.Lease{ID: 1, TTL: 30, GrantedTTL: 60}},
+		{name: "promotion extension", lease: &record.Lease{ID: 1, TTL: 63, GrantedTTL: 60}},
 		{name: "legacy lease", lease: &record.Lease{ID: 1, TTL: 30}, wantError: "lacks a valid granted_ttl"},
 		{name: "no leases"},
 	}

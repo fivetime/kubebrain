@@ -97,6 +97,32 @@ func TestVerifyLogArtifactsV1AndCompressedV2(t *testing.T) {
 	}
 }
 
+func TestVerifyLogArtifactsAcceptsStartTSBeyondResolvedCommitBoundary(t *testing.T) {
+	for _, v2 := range []bool{false, true} {
+		t.Run(map[bool]string{false: "v1", true: "v2"}[v2], func(t *testing.T) {
+			task, ready, root := logArtifactFixture(t, v2)
+			metaPath := filepath.Join(root, "v1/backupmeta/0001.meta")
+			b, err := os.ReadFile(metaPath)
+			require.NoError(t, err)
+			var meta backuppb.Metadata
+			require.NoError(t, meta.Unmarshal(b))
+			meta.MaxTs = meta.ResolvedTs + 1
+			if v2 {
+				meta.FileGroups[0].MaxTs = meta.MaxTs
+				meta.FileGroups[0].DataFilesInfo[0].MaxTs = meta.MaxTs
+			} else {
+				meta.Files[0].MaxTs = meta.MaxTs
+			}
+			b, err = meta.Marshal()
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(metaPath, b, 0o600))
+			inventory := inventoryForMirror(t, task.LogStoragePrefix, root)
+			_, err = VerifyLogArtifacts(task, digest, ready, digest, inventory, digest, root)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestVerifyLogArtifactsAcceptsAuthoritativeEmptyInventory(t *testing.T) {
 	task, _ := readyTask(t)
 	ready := readyReceiptFor(task)

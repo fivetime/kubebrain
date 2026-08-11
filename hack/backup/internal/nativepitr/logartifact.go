@@ -213,8 +213,11 @@ func collectLogMetadata(meta *backuppb.Metadata, expected map[string]*logDataObj
 	if meta.MetaVersion != backuppb.MetaVersion_V1 && meta.MetaVersion != backuppb.MetaVersion_V2 {
 		return errors.New("unsupported BR stream metadata version")
 	}
-	if meta.MinTs == 0 || meta.MaxTs < meta.MinTs || meta.ResolvedTs < meta.MaxTs {
-		return errors.New("invalid stream metadata timestamp bounds")
+	// MaxTs includes both commit timestamps and prewrite start timestamps. A
+	// transaction may start after this file's resolved commit boundary, so BR
+	// legitimately emits MaxTs > ResolvedTs.
+	if meta.MinTs == 0 || meta.MaxTs < meta.MinTs || meta.ResolvedTs == 0 {
+		return fmt.Errorf("invalid stream metadata timestamp bounds: min_ts=%d max_ts=%d resolved_ts=%d", meta.MinTs, meta.MaxTs, meta.ResolvedTs)
 	}
 	if meta.ResolvedTs > *maxResolved {
 		*maxResolved = meta.ResolvedTs
@@ -261,7 +264,7 @@ func addLogDataObject(expected map[string]*logDataObject, name string, length ui
 	if length > math.MaxInt64 || file.Length > math.MaxInt64 || file.RangeOffset > math.MaxInt64 || file.RangeLength > math.MaxInt64 {
 		return fmt.Errorf("log object %q exceeds supported local verifier size", name)
 	}
-	if length == 0 || len(file.Sha256) != sha256.Size || file.Length == 0 || file.NumberOfEntries <= 0 || file.MinTs == 0 || file.MaxTs < file.MinTs || file.ResolvedTs < file.MaxTs || (file.Cf != "" && file.Cf != "default" && file.Cf != "write") {
+	if length == 0 || len(file.Sha256) != sha256.Size || file.Length == 0 || file.NumberOfEntries <= 0 || file.MinTs == 0 || file.MaxTs < file.MinTs || file.ResolvedTs == 0 || (file.Cf != "" && file.Cf != "default" && file.Cf != "write") {
 		return fmt.Errorf("log segment in %q has incomplete digest, size, timestamp, entry, or CF metadata", name)
 	}
 	if file.CompressionType != backuppb.CompressionType_UNKNOWN && file.CompressionType != backuppb.CompressionType_ZSTD {

@@ -1,0 +1,8 @@
+# Fast feedback for the disposable native-PITR integration clusters. Production
+# TiKV keeps its independently managed log-backup intervals.
+[log-backup]
+min-ts-interval = "1s"
+max-flush-interval = "11s"
+
+[resolved-ts]
+advance-ts-interval = "1s"

@@ -115,11 +115,11 @@ func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
 	}
 }
 
-func TestAddLeaseRejectsGrantedTTLBelowRemainingTTL(t *testing.T) {
+func TestAddLeaseAcceptsEtcdPromotionExtensionAboveGrantedTTL(t *testing.T) {
 	writer, err := NewAtomicWriter(filepath.Join(t.TempDir(), "backup.jsonl"), "/registry", 42)
 	require.NoError(t, err)
 	defer writer.Abort()
-	require.ErrorContains(t, writer.AddLease(record.Lease{ID: 123, TTL: 30, GrantedTTL: 29}), "granted_ttl")
+	require.NoError(t, writer.AddLease(record.Lease{ID: 123, TTL: 30, GrantedTTL: 29}))
 }
 
 func TestOpenVerifiedRejectsTruncatedAndCorruptBackup(t *testing.T) {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -30,12 +32,25 @@ import (
 // TestNativeFullRestoreRealBR is an opt-in destructive integration test for
 // two disposable, dedicated PD/TiKV clusters. The caller owns their lifecycle.
 func TestNativeFullRestoreRealBR(t *testing.T) {
+	testNativeRestoreRealBR(t, false)
+}
+
+func TestNativeLogReplayRealBR(t *testing.T) {
+	testNativeRestoreRealBR(t, true)
+}
+
+func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	sourcePD := os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_PD")
 	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
 	br := os.Getenv("KUBEBRAIN_NATIVE_PITR_BR")
 	server := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
 	if sourcePD == "" || targetPD == "" || br == "" || server == "" {
 		t.Skip("set KUBEBRAIN_NATIVE_PITR_SOURCE_PD, KUBEBRAIN_NATIVE_PITR_TARGET_PD, KUBEBRAIN_NATIVE_PITR_BR, and KUBEBRAIN_NATIVE_PITR_SERVER")
+	}
+	preflight, taskCreate, mc := os.Getenv("KUBEBRAIN_NATIVE_PITR_PREFLIGHT"), os.Getenv("KUBEBRAIN_NATIVE_PITR_TASK_CREATE"), os.Getenv("KUBEBRAIN_NATIVE_PITR_MC")
+	s3Endpoint, s3Bucket, s3Prefix := os.Getenv("KUBEBRAIN_NATIVE_PITR_S3_ENDPOINT"), os.Getenv("KUBEBRAIN_NATIVE_PITR_S3_BUCKET"), os.Getenv("KUBEBRAIN_NATIVE_PITR_S3_PREFIX")
+	if withLogs && (preflight == "" || taskCreate == "" || mc == "" || s3Endpoint == "" || s3Bucket == "" || s3Prefix == "") {
+		t.Skip("set native PITR preflight/task-create/mc and S3 integration variables")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
@@ -49,7 +64,7 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 	root := t.TempDir()
 	const endpoint = "http://127.0.0.1:45379"
 	sourceServer := startKubeBrain(t, ctx, server, sourcePD, root, "source")
-	cli := waitForEndpoint(t, ctx, endpoint)
+	cli := waitForEndpoint(t, ctx, endpoint, sourceServer)
 	lease, err := cli.Grant(ctx, 600)
 	require.NoError(t, err)
 	_, err = cli.Put(ctx, "/native-full", "kubebrain-native-full-restore-v1", clientv3.WithLease(lease.ID))
@@ -57,7 +72,23 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 	_, err = cli.Put(ctx, "/native-unleased", "persistent")
 	require.NoError(t, err)
 	witnessPath := filepath.Join(root, "source.logical.v2")
-	witnessStatus := writeWitness(t, ctx, cli, witnessPath)
+	var task nativepitr.TaskCreateReceipt
+	var taskBytes []byte
+	var advancer *runningServer
+	if withLogs {
+		preflightPath := filepath.Join(root, "preflight.json")
+		preflightBytes := runOutput(t, ctx, preflight, "--pd-addrs="+sourcePD, "--keyspace=restore-integration", "--task-name=restore-integration", "--timeout=30s")
+		require.NoError(t, os.WriteFile(preflightPath, preflightBytes, 0o600))
+		taskBytes = runOutput(t, ctx, taskCreate, "--preflight="+preflightPath, "--s3-endpoint="+s3Endpoint, "--s3-region=us-east-1", "--s3-bucket="+s3Bucket, "--s3-prefix="+s3Prefix, "--s3-provider=aws", "--s3-force-path-style=true", "--timeout=30s")
+		var decodeErr error
+		task, decodeErr = nativepitr.DecodeTaskCreate(bytes.NewReader(taskBytes))
+		require.NoError(t, decodeErr)
+		advancer = startProcess(t, ctx, filepath.Join(root, "advancer.log"), br, "log", "advancer", "--pd", sourcePD, "--task-name", task.TaskName, "--tick-interval=1s", "--try-advance-threshold=1s", "--log-file=/dev/stderr")
+	}
+	var witnessStatus backupfile.Status
+	if !withLogs {
+		witnessStatus = writeWitness(t, ctx, cli, witnessPath)
+	}
 	require.NoError(t, cli.Close())
 	sourceServer.stop(t)
 
@@ -65,7 +96,6 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 	require.NoError(t, err)
 	backupTS, err := sourceKV.GetTimestampOracle(ctx)
 	require.NoError(t, err)
-	require.NoError(t, sourceKV.Close())
 
 	artifactRoot := filepath.Join(root, "br")
 	require.NoError(t, os.Mkdir(artifactRoot, 0o700))
@@ -73,17 +103,80 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 	backup.Stdout, backup.Stderr = os.Stderr, os.Stderr
 	require.NoError(t, backup.Run())
 
+	restoreTS := backupTS
+	var ready nativepitr.TaskReadyReceipt
+	var readyBytes []byte
+	var logs nativepitr.LogArtifactReceipt
+	var logRoot string
+	if withLogs {
+		sourceServer = startKubeBrain(t, ctx, server, sourcePD, root, "source-log-window")
+		cli = waitForEndpoint(t, ctx, endpoint, sourceServer)
+		_, err = cli.Put(ctx, "/native-full", "kubebrain-after-full", clientv3.WithLease(lease.ID))
+		require.NoError(t, err)
+		_, err = cli.Delete(ctx, "/native-unleased")
+		require.NoError(t, err)
+		_, err = cli.Put(ctx, "/native-after-full", strings.Repeat("log-value-", 64))
+		require.NoError(t, err)
+		witnessStatus = writeWitness(t, ctx, cli, witnessPath)
+		require.NoError(t, cli.Close())
+		sourceServer.stop(t)
+		restoreTS, err = sourceKV.GetTimestampOracle(ctx)
+		require.NoError(t, err)
+		metadataClient, err := clientv3.New(clientv3.Config{Endpoints: []string{"http://" + sourcePD}, DialTimeout: 5 * time.Second})
+		require.NoError(t, err)
+		defer metadataClient.Close()
+		pdcReady, err := pd.NewClientWithContext(ctx, sourceAddrs, pd.SecurityOption{})
+		require.NoError(t, err)
+		defer pdcReady.Close()
+		deadline := time.Now().Add(45 * time.Second)
+		var lastSnapshot nativepitr.TaskStatusSnapshot
+		for {
+			snapshot, statusErr := (nativepitr.EtcdMetadata{KV: metadataClient.KV}).ReadTaskStatus(ctx, task)
+			lastSnapshot = snapshot
+			if statusErr == nil && len(snapshot.GlobalCheckpoint) == 8 && binary.BigEndian.Uint64(snapshot.GlobalCheckpoint) >= restoreTS {
+				break
+			}
+			if time.Now().After(deadline) {
+				advancerLog, _ := os.ReadFile(filepath.Join(root, "advancer.log"))
+				t.Fatalf("log checkpoint did not reach restore TSO %d: status=%v owner=%q checkpoint=%x advancer-log=%s", restoreTS, statusErr, lastSnapshot.AdvancerOwner, lastSnapshot.GlobalCheckpoint, advancerLog)
+			}
+			time.Sleep(time.Second)
+		}
+		ready, err = nativepitr.CheckTaskReady(ctx, pdcReady, nativepitr.EtcdMetadata{KV: metadataClient.KV}, task.ClusterID, task)
+		require.NoError(t, err)
+		readyBytes, err = json.Marshal(ready)
+		require.NoError(t, err)
+		stop := exec.CommandContext(ctx, br, "log", "stop", "--pd", sourcePD, "--task-name", task.TaskName, "--log-file=/dev/stderr")
+		stop.Stdout, stop.Stderr = os.Stderr, os.Stderr
+		require.NoError(t, stop.Run())
+		advancer.stop(t)
+		logRoot = filepath.Join(root, "log-mirror")
+		require.NoError(t, os.Mkdir(logRoot, 0o700))
+		copyCommand := exec.CommandContext(ctx, mc, "cp", "--recursive", "drill/"+s3Bucket+"/"+strings.Trim(s3Prefix, "/")+"/", logRoot)
+		copyCommand.Stdout, copyCommand.Stderr = os.Stderr, os.Stderr
+		require.NoError(t, copyCommand.Run())
+		logInventory := inventoryForRoot(t, logRoot, s3Bucket, strings.Trim(s3Prefix, "/"))
+		logs, err = nativepitr.VerifyLogArtifacts(task, digest(taskBytes), ready, digest(readyBytes), logInventory, digest(canonicalJSON(t, logInventory)), logRoot)
+		require.NoError(t, err)
+	}
+	require.NoError(t, sourceKV.Close())
+
 	pdc, err := pd.NewClientWithContext(ctx, sourceAddrs, pd.SecurityOption{})
 	require.NoError(t, err)
 	clusterID := pdc.GetClusterID(ctx)
 	pdc.Close()
 	require.NotZero(t, clusterID)
 	const d = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	endTS := backupTS + (uint64((10*time.Minute)/time.Millisecond) << 18)
-	task := nativepitr.TaskCreateReceipt{Format: nativepitr.TaskCreateFormat, ClusterID: clusterID, Keyspace: ks.Name(), TaskName: "restore-integration", StartTS: backupTS - 2, CommittedAtTS: backupTS - 1, EndTS: endTS, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), LogStoragePrefix: "s3://integration/log/task", LogStorageSHA256: d, PreflightSHA256: d, OwnerKey: nativepitr.TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-restore-integration", BootstrapSafePointTTL: 7200, AtomicMetadataCreated: true}
-	taskBytes := canonicalFile(t, filepath.Join(t.TempDir(), "task.json"), task)
+	if !withLogs {
+		endTS := backupTS + (uint64((10*time.Minute)/time.Millisecond) << 18)
+		task = nativepitr.TaskCreateReceipt{Format: nativepitr.TaskCreateFormat, ClusterID: clusterID, Keyspace: ks.Name(), TaskName: "restore-integration", StartTS: backupTS - 2, CommittedAtTS: backupTS - 1, EndTS: endTS, StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), LogStoragePrefix: "s3://integration/log/task", LogStorageSHA256: d, PreflightSHA256: d, OwnerKey: nativepitr.TaskOwnerKey, BootstrapSafePointID: "kubebrain-native-pitr-bootstrap-restore-integration", BootstrapSafePointTTL: 7200, AtomicMetadataCreated: true}
+		taskBytes = canonicalFile(t, filepath.Join(t.TempDir(), "task.json"), task)
+	}
 	full, err := nativepitr.BuildFullSnapshot(task, digest(taskBytes), "s3://integration/full/snapshot", mustRead(t, filepath.Join(artifactRoot, "backupmeta")))
 	require.NoError(t, err)
+	if !withLogs {
+		restoreTS = full.BackupTS
+	}
 	fullPath := filepath.Join(t.TempDir(), "full.json")
 	fullBytes := canonicalFile(t, fullPath, full)
 
@@ -104,14 +197,19 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 	targetPath := filepath.Join(t.TempDir(), "target.json")
 	targetBytes := canonicalFile(t, targetPath, targetEvidence)
 
-	ready := nativepitr.TaskReadyReceipt{Format: nativepitr.TaskReadyFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, CommittedAtTS: task.CommittedAtTS, EndTS: task.EndTS, GlobalCheckpointTS: full.BackupTS + 1, AdvancerOwner: "integration-owner", PreflightSHA256: d, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
-	readyBytes, err := json.Marshal(ready)
-	require.NoError(t, err)
-	emptyObjects := []nativepitr.LogArtifactObject{}
-	emptyManifest, err := json.Marshal(emptyObjects)
-	require.NoError(t, err)
-	logs := nativepitr.LogArtifactReceipt{Format: nativepitr.LogArtifactReceiptFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: digest(taskBytes), TaskReadySHA256: digest(readyBytes), StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: d, ObjectStoreID: "integration", Bucket: "integration", ObjectPrefix: "log/task", MinRetainUntilUnix: 2_100_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: emptyObjects, ManifestSHA256: digest(emptyManifest), ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}
-	plan, err := nativepitr.BuildFromReceipts(task, full, artifact, ready, logs, sourceEvidence, targetEvidence, nativepitr.ReceiptPlanInputs{TaskCreateSHA256: digest(taskBytes), FullSnapshotSHA256: digest(fullBytes), ArtifactReceiptSHA256: digest(artifactBytes), TaskReadySHA256: digest(readyBytes), LogArtifactSHA256: d, SourceExclusiveSHA256: digest(sourceBytes), TargetReceiptSHA256: digest(targetBytes), RestoreTS: full.BackupTS})
+	logReceiptSHA := d
+	if !withLogs {
+		ready = nativepitr.TaskReadyReceipt{Format: nativepitr.TaskReadyFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, CommittedAtTS: task.CommittedAtTS, EndTS: task.EndTS, GlobalCheckpointTS: full.BackupTS + 1, AdvancerOwner: "integration-owner", PreflightSHA256: d, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
+		readyBytes, err = json.Marshal(ready)
+		require.NoError(t, err)
+		emptyObjects := []nativepitr.LogArtifactObject{}
+		emptyManifest, marshalErr := json.Marshal(emptyObjects)
+		require.NoError(t, marshalErr)
+		logs = nativepitr.LogArtifactReceipt{Format: nativepitr.LogArtifactReceiptFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: digest(taskBytes), TaskReadySHA256: digest(readyBytes), StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: d, ObjectStoreID: "integration", Bucket: "integration", ObjectPrefix: "log/task", MinRetainUntilUnix: 2_100_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: emptyObjects, ManifestSHA256: digest(emptyManifest), ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}
+	} else {
+		logReceiptSHA = digest(canonicalJSON(t, logs))
+	}
+	plan, err := nativepitr.BuildFromReceipts(task, full, artifact, ready, logs, sourceEvidence, targetEvidence, nativepitr.ReceiptPlanInputs{TaskCreateSHA256: digest(taskBytes), FullSnapshotSHA256: digest(fullBytes), ArtifactReceiptSHA256: digest(artifactBytes), TaskReadySHA256: digest(readyBytes), LogArtifactSHA256: logReceiptSHA, SourceExclusiveSHA256: digest(sourceBytes), TargetReceiptSHA256: digest(targetBytes), RestoreTS: restoreTS})
 	require.NoError(t, err)
 	planPath := filepath.Join(t.TempDir(), "plan.json")
 	planBytes := canonicalFile(t, planPath, plan)
@@ -121,10 +219,25 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
+	if withLogs {
+		manifest, mutations, materializeErr := nativepitr.MaterializeReplay(logs, logReceiptSHA, logRoot, full.BackupTS, plan.RestoreTS)
+		require.NoError(t, materializeErr)
+		require.NotEmpty(t, mutations)
+		targetKV, storageErr := storagetikv.NewKvStorage(targetAddrs, 1, storagetikv.Security{})
+		require.NoError(t, storageErr)
+		apply, applyErr := nativepitr.ApplyReplay(ctx, targetKV, digest(planBytes), manifest, mutations)
+		require.NoError(t, applyErr)
+		require.NoError(t, targetKV.Close())
+		require.Equal(t, manifest.MutationCount, apply.AppliedMutations)
+		replayReceipt, receiptErr := nativepitr.BuildLogReplayExecution(plan, restore, manifest, nativepitr.LogReplayExecutionReceipt{PlanSHA256: digest(planBytes), FullRestoreReceiptSHA256: digest([]byte(receiptOut.String())), LogArtifactReceiptSHA256: logReceiptSHA, AppliedMutations: apply.AppliedMutations, AppliedTransactions: apply.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, StartedAtUnix: time.Now().Add(-time.Second).Unix(), CompletedAtUnix: time.Now().Unix()})
+		require.NoError(t, receiptErr)
+		require.True(t, replayReceipt.LogReplayCompleted)
+		require.False(t, replayReceipt.PITRComplete)
+	}
 
 	targetServer := startKubeBrain(t, ctx, server, targetPD, root, "target")
 	defer targetServer.stop(t)
-	targetClient := waitForEndpoint(t, ctx, endpoint)
+	targetClient := waitForEndpoint(t, ctx, endpoint, targetServer)
 	defer targetClient.Close()
 	verified, err := backupfile.OpenVerified(witnessPath)
 	require.NoError(t, err)
@@ -132,15 +245,39 @@ func TestNativeFullRestoreRealBR(t *testing.T) {
 	observation, err := semanticverify.Verify(ctx, targetClient, verified, "/native-pitr-integration-probe")
 	require.NoError(t, err)
 	require.NoError(t, semanticverify.VerifyTargetProbeHistory(ctx, targetAddrs, storagetikv.Security{}, task.Keyspace, observation))
-	semanticReceipt, err := nativepitr.BuildFullSemanticVerification(plan, full, restore, witnessStatus, nativepitr.FullSemanticVerificationInput{PlanSHA256: digest(planBytes), FullSnapshotSHA256: digest(fullBytes), FullRestoreSHA256: digest([]byte(receiptOut.String())), WitnessFileSHA256: digest(mustRead(t, witnessPath)), HistoricalHeaderRevision: observation.HistoricalHeaderRevision, CurrentHeaderRevision: observation.CurrentHeaderRevision, ProbePutRevision: observation.ProbePutRevision, ProbeDeleteRevision: observation.ProbeDeleteRevision, HistoricalExact: observation.HistoricalExact, CurrentExact: observation.CurrentExact, LeaseIdentityExact: observation.LeaseIdentityExact, WatchProbeSucceeded: observation.WatchProbeSucceeded, TargetProbeHistoryExact: true, VerifiedAtUnix: time.Now().UTC().Unix()})
-	require.NoError(t, err)
-	require.True(t, semanticReceipt.FullRestoreSemanticValidated)
-	require.False(t, semanticReceipt.PITRComplete)
+	if !withLogs {
+		semanticReceipt, buildErr := nativepitr.BuildFullSemanticVerification(plan, full, restore, witnessStatus, nativepitr.FullSemanticVerificationInput{PlanSHA256: digest(planBytes), FullSnapshotSHA256: digest(fullBytes), FullRestoreSHA256: digest([]byte(receiptOut.String())), WitnessFileSHA256: digest(mustRead(t, witnessPath)), HistoricalHeaderRevision: observation.HistoricalHeaderRevision, CurrentHeaderRevision: observation.CurrentHeaderRevision, ProbePutRevision: observation.ProbePutRevision, ProbeDeleteRevision: observation.ProbeDeleteRevision, HistoricalExact: observation.HistoricalExact, CurrentExact: observation.CurrentExact, LeaseIdentityExact: observation.LeaseIdentityExact, WatchProbeSucceeded: observation.WatchProbeSucceeded, TargetProbeHistoryExact: true, VerifiedAtUnix: time.Now().UTC().Unix()})
+		require.NoError(t, buildErr)
+		require.True(t, semanticReceipt.FullRestoreSemanticValidated)
+		require.False(t, semanticReceipt.PITRComplete)
+	}
 }
 
 type runningServer struct {
-	cmd  *exec.Cmd
-	done chan error
+	cmd     *exec.Cmd
+	done    chan error
+	logPath string
+}
+
+func startProcess(t *testing.T, ctx context.Context, logPath, binary string, args ...string) *runningServer {
+	t.Helper()
+	logFile, err := os.Create(logPath)
+	require.NoError(t, err)
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	require.NoError(t, cmd.Start())
+	require.NoError(t, logFile.Close())
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	return &runningServer{cmd: cmd, done: done, logPath: logPath}
+}
+
+func runOutput(t *testing.T, ctx context.Context, binary string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	return output
 }
 
 func startKubeBrain(t *testing.T, ctx context.Context, binary, pdAddrs, root, label string) *runningServer {
@@ -158,7 +295,7 @@ func startKubeBrain(t *testing.T, ctx context.Context, binary, pdAddrs, root, la
 	require.NoError(t, logFile.Close())
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	return &runningServer{cmd: cmd, done: done}
+	return &runningServer{cmd: cmd, done: done, logPath: filepath.Join(root, label+"-kubebrain.log")}
 }
 
 func (s *runningServer) stop(t *testing.T) {
@@ -176,7 +313,7 @@ func (s *runningServer) stop(t *testing.T) {
 	s.cmd = nil
 }
 
-func waitForEndpoint(t *testing.T, ctx context.Context, endpoint string) *clientv3.Client {
+func waitForEndpoint(t *testing.T, ctx context.Context, endpoint string, server *runningServer) *clientv3.Client {
 	t.Helper()
 	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
 	require.NoError(t, err)
@@ -191,7 +328,8 @@ func waitForEndpoint(t *testing.T, ctx context.Context, endpoint string) *client
 		time.Sleep(250 * time.Millisecond)
 	}
 	cli.Close()
-	require.NoError(t, err, "KubeBrain endpoint did not become ready")
+	logBytes, logErr := os.ReadFile(server.logPath)
+	require.NoError(t, err, "KubeBrain endpoint did not become ready; log-read-error=%v log=%s", logErr, logBytes)
 	return nil
 }
 
@@ -230,6 +368,12 @@ func canonicalFile(t *testing.T, path string, v any) []byte {
 	b = append(b, '\n')
 	require.NoError(t, os.WriteFile(path, b, 0o600))
 	return b
+}
+func canonicalJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return append(b, '\n')
 }
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()

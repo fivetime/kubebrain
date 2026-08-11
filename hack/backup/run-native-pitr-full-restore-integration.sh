@@ -5,6 +5,7 @@ set -euo pipefail
 # clusters use independent PD/TiKV processes and memory-backed data dirs.
 drill_tmp=$(mktemp -d /tmp/kb-native-pitr-full-restore.XXXXXX)
 shared_dir="$drill_tmp/shared"
+tikv_config="$PWD/hack/backup/native-pitr-tikv-integration.toml"
 mkdir -p "$shared_dir"
 chmod 0777 "$shared_dir"
 
@@ -14,6 +15,8 @@ names=(
   kb-native-pitr-tgt-pd-integration
   kb-native-pitr-tgt-tikv-integration
   kb-native-pitr-br-integration
+  kb-native-pitr-minio-integration
+  kb-native-pitr-mc-integration
 )
 cleanup() {
   for name in "${names[@]}"; do
@@ -46,11 +49,15 @@ for port in 42379 43379; do
 done
 
 docker run -d --name "${names[1]}" --network host --tmpfs /data:rw,size=64g,mode=1777 \
-  -v "$shared_dir:$shared_dir" pingcap/tikv:v7.5.1 \
+	-e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
+  -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
+  --config=/native-pitr-integration.toml \
   --addr=127.0.0.1:42160 --advertise-addr=127.0.0.1:42160 --status-addr=127.0.0.1:20180 \
   --pd=127.0.0.1:42379 --data-dir=/data --log-file= >/dev/null
 docker run -d --name "${names[3]}" --network host --tmpfs /data:rw,size=64g,mode=1777 \
-  -v "$shared_dir:$shared_dir" pingcap/tikv:v7.5.1 \
+	-e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
+  -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
+  --config=/native-pitr-integration.toml \
   --addr=127.0.0.1:43160 --advertise-addr=127.0.0.1:43160 --status-addr=127.0.0.1:21180 \
   --pd=127.0.0.1:43379 --data-dir=/data --log-file= >/dev/null
 
@@ -77,9 +84,43 @@ docker cp "${names[4]}:/br" "$drill_tmp/br"
 chmod 0755 "$drill_tmp/br"
 go build -o "$drill_tmp/kubebrain" ./cmd
 
-TMPDIR="$shared_dir" \
-KUBEBRAIN_NATIVE_PITR_SOURCE_PD=127.0.0.1:42379 \
-KUBEBRAIN_NATIVE_PITR_TARGET_PD=127.0.0.1:43379 \
-KUBEBRAIN_NATIVE_PITR_BR="$drill_tmp/br" \
-KUBEBRAIN_NATIVE_PITR_SERVER="$drill_tmp/kubebrain" \
-go test -count=1 -run '^TestNativeFullRestoreRealBR$' -v ./hack/backup/cmd/native-pitr-full-restore
+test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
+log_env=()
+if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
+  docker run -d --name "${names[5]}" --network host --tmpfs /data:rw,size=4g,mode=1777 \
+    -e MINIO_ROOT_USER=kubebrain-drill -e MINIO_ROOT_PASSWORD=kubebrain-drill-secret \
+    minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address=:49000 --console-address=:49001 >/dev/null
+  for attempt in $(seq 1 60); do
+    if curl -fsS http://127.0.0.1:49000/minio/health/live >/dev/null; then break; fi
+    if [[ "$attempt" == 60 ]]; then echo "MinIO did not become healthy" >&2; exit 1; fi
+    sleep 1
+  done
+  docker create --name "${names[6]}" quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z >/dev/null
+  docker cp "${names[6]}:/usr/bin/mc" "$drill_tmp/mc"
+  chmod 0755 "$drill_tmp/mc"
+  export MC_HOST_drill=http://kubebrain-drill:kubebrain-drill-secret@127.0.0.1:49000
+  "$drill_tmp/mc" mb drill/kubebrain-pitr >/dev/null
+  go build -o "$drill_tmp/native-pitr-preflight" ./hack/backup/cmd/native-pitr-preflight
+  go build -o "$drill_tmp/native-pitr-task-create" ./hack/backup/cmd/native-pitr-task-create
+  export AWS_ACCESS_KEY_ID=kubebrain-drill AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret AWS_REGION=us-east-1
+  log_env=(
+    KUBEBRAIN_NATIVE_PITR_PREFLIGHT="$drill_tmp/native-pitr-preflight"
+    KUBEBRAIN_NATIVE_PITR_TASK_CREATE="$drill_tmp/native-pitr-task-create"
+    KUBEBRAIN_NATIVE_PITR_MC="$drill_tmp/mc"
+    KUBEBRAIN_NATIVE_PITR_S3_ENDPOINT=http://127.0.0.1:49000
+    KUBEBRAIN_NATIVE_PITR_S3_BUCKET=kubebrain-pitr
+    KUBEBRAIN_NATIVE_PITR_S3_PREFIX=logs/restore-integration
+  )
+fi
+
+if ! env "${log_env[@]}" \
+  TMPDIR="$shared_dir" \
+  KUBEBRAIN_NATIVE_PITR_SOURCE_PD=127.0.0.1:42379 \
+  KUBEBRAIN_NATIVE_PITR_TARGET_PD=127.0.0.1:43379 \
+  KUBEBRAIN_NATIVE_PITR_BR="$drill_tmp/br" \
+  KUBEBRAIN_NATIVE_PITR_SERVER="$drill_tmp/kubebrain" \
+  go test -count=1 -run "^${test_name}$" -v ./hack/backup/cmd/native-pitr-full-restore; then
+  echo "source TiKV log follows" >&2
+  docker logs "${names[1]}" >&2 || true
+  exit 1
+fi
