@@ -540,6 +540,154 @@ func TestNativePDLeaderENOSPCRealCluster(t *testing.T) {
 	}
 }
 
+// TestNativeTwoPDENOSPCRealCluster verifies fail-closed behavior after two
+// successive live PD leaders reach physical ENOSPC. A failed KubeBrain write
+// is reconciled after the same embedded-etcd members recover.
+func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	containers := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_CONTAINERS"), ",")
+	dataDirs := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_DATA_DIRS"), ",")
+	memberNames := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_MEMBERS"), ",")
+	if targetPD == "" || serverBinary == "" || len(containers) != 3 || len(dataDirs) != 3 || len(memberNames) != 3 || containers[0] == "" || dataDirs[0] == "" {
+		t.Skip("set the native PITR two-PD ENOSPC integration environment")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	pdEndpoints := strings.Split(targetPD, ",")
+	pdEtcd, err := clientv3.New(clientv3.Config{Endpoints: pdEndpoints, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	defer pdEtcd.Close()
+	members, err := pdEtcd.MemberList(ctx)
+	require.NoError(t, err)
+	memberIDs := make(map[string]uint64, 3)
+	for _, member := range members.Members {
+		memberIDs[member.Name] = member.ID
+	}
+	for _, name := range memberNames {
+		require.NotZero(t, memberIDs[name], "PD member %s is absent", name)
+	}
+	initialLeaderID := currentEtcdLeader(t, ctx, pdEtcd, pdEndpoints)
+
+	root := t.TempDir()
+	const endpoint = "127.0.0.1:45379"
+	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "two-pd-enospc", "two-pd-enospc-integration")
+	defer server.stop(t)
+	client := waitForEndpoint(t, ctx, endpoint, server)
+	defer client.Close()
+	_, err = client.Put(ctx, "before", "durable-before-pd-quorum-loss")
+	require.NoError(t, err)
+
+	pressurePaths := make([]string, 0, 2)
+	faultedIndexes := make([]int, 0, 2)
+	faultLeader := func(leaderID uint64, sequence int) {
+		leaderIndex := -1
+		for index, name := range memberNames {
+			if memberIDs[name] == leaderID {
+				leaderIndex = index
+				break
+			}
+		}
+		require.NotEqual(t, -1, leaderIndex, "live PD leader %x has no managed member", leaderID)
+		pressurePath := filepath.Join(dataDirs[leaderIndex], fmt.Sprintf("kubebrain-pd-enospc-pressure-%d", sequence))
+		pressurePaths = append(pressurePaths, pressurePath)
+		t.Cleanup(func() { _ = os.Remove(pressurePath) })
+		faultedIndexes = append(faultedIndexes, leaderIndex)
+		fillBoundedFilesystem(t, ctx, dataDirs[leaderIndex], pressurePath)
+		probeValue := strings.Repeat("p", 256*1024)
+		require.Eventually(t, func() bool {
+			attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+			_, _ = pdEtcd.Put(attempt, fmt.Sprintf("/kubebrain-integration/two-pd-enospc/%d/%d", sequence, time.Now().UnixNano()), probeValue)
+			attemptCancel()
+			return containerLogContains(ctx, containers[leaderIndex], "no space left on device", "os error 28")
+		}, 45*time.Second, 250*time.Millisecond, "PD leader %s did not surface physical ENOSPC", memberNames[leaderIndex])
+	}
+
+	faultLeader(initialLeaderID, 0)
+	secondLeaderID := waitForDifferentEtcdLeader(t, ctx, pdEtcd, pdEndpoints, initialLeaderID)
+	require.NotEqual(t, initialLeaderID, secondLeaderID)
+	faultLeader(secondLeaderID, 1)
+
+	acknowledged := make(map[string]string)
+	ambiguousKey := ""
+	ambiguousValue := ""
+	for index := 0; index < 20; index++ {
+		key := fmt.Sprintf("during-pd-quorum-loss-%02d", index)
+		value := fmt.Sprintf("value-%02d", index)
+		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, putErr := client.Put(attempt, key, value)
+		attemptCancel()
+		if putErr != nil {
+			ambiguousKey = key
+			ambiguousValue = value
+			break
+		}
+		acknowledged[key] = value
+	}
+	require.NotEmpty(t, ambiguousKey, "KubeBrain must fail closed after the PD majority is unavailable")
+
+	for _, pressurePath := range pressurePaths {
+		require.NoError(t, os.Remove(pressurePath))
+	}
+	for _, index := range faultedIndexes {
+		restartOutput, restartErr := exec.CommandContext(ctx, "docker", "restart", containers[index]).CombinedOutput()
+		require.NoError(t, restartErr, "%s", restartOutput)
+	}
+	waitForAddresses(t, ctx, strings.Join(pdEndpoints, ","))
+	require.Eventually(t, func() bool {
+		response, listErr := pdEtcd.MemberList(ctx)
+		if listErr != nil || len(response.Members) != len(memberIDs) {
+			return false
+		}
+		for _, member := range response.Members {
+			if memberIDs[member.Name] != member.ID {
+				return false
+			}
+		}
+		return true
+	}, 45*time.Second, 500*time.Millisecond, "recovered PD members must retain their identities")
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, putErr := client.Put(attempt, "after", "durable-after-pd-quorum-recovery")
+		attemptCancel()
+		return putErr == nil
+	}, 45*time.Second, 500*time.Millisecond)
+
+	for key, value := range acknowledged {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, []byte(value), response.Kvs[0].Value)
+	}
+	ambiguous, err := client.Get(ctx, ambiguousKey)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(ambiguous.Kvs), 1)
+	if len(ambiguous.Kvs) == 1 {
+		require.Equal(t, []byte(ambiguousValue), ambiguous.Kvs[0].Value)
+	}
+	_, err = pdEtcd.Delete(ctx, "/kubebrain-integration/two-pd-enospc/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	before, err := client.Get(ctx, "before")
+	require.NoError(t, err)
+	require.Len(t, before.Kvs, 1)
+	require.Equal(t, []byte("durable-before-pd-quorum-loss"), before.Kvs[0].Value)
+}
+
+func currentEtcdLeader(t *testing.T, ctx context.Context, client *clientv3.Client, endpoints []string) uint64 {
+	t.Helper()
+	for _, endpoint := range endpoints {
+		attempt, cancel := context.WithTimeout(ctx, time.Second)
+		status, err := client.Status(attempt, endpoint)
+		cancel()
+		if err == nil && status.Leader != 0 {
+			return status.Leader
+		}
+	}
+	require.FailNow(t, "embedded etcd has no observable leader")
+	return 0
+}
+
 // TestNativePDLeaderAndStoreENOSPCRealCluster combines independent PD-leader
 // and TiKV-store disk failures to prove that both remaining quorums converge.
 func TestNativePDLeaderAndStoreENOSPCRealCluster(t *testing.T) {

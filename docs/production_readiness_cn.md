@@ -2368,6 +2368,23 @@ admission/election 重建后恢复 Put，以及清障重启后原 PD member name
 宣传成零中断；若两个 PD 数据盘同时不可写则没有多数派，不在本门禁的可用性承诺内。生产仍须在真实
 PVC 上演练容量告警、扩容或 member replacement，并验证 PD 与 TiKV 同时受压时的组合行为。
 
+双 PD 物理满盘、失去 embedded-etcd 多数派的 fail-closed 门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-two-pd-enospc-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeTwoPDENOSPCRealCluster \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+脚本会为三个 PD 建立独立 512 MiB tmpfs，但测试只连续填满两任现场 leader：第一任出现 OS error 28 并
+完成选主后，才对新 leader 注入第二次物理 ENOSPC，避免固定成员选择掩盖“仍有 quorum”的情况。第二次
+故障后 KubeBrain 必须在 session/election 失效窗口内停止接受写入；deadline 或错误响应不能解释为必未
+提交，恢复后必须用线性化 Get 对账。2026-08-11 真实运行 15.45 秒通过，两个故障 member 以原 name/ID
+恢复，三 member identity 全部保持不变。生产告警应在首个 PD 进入容量风险时立即扩容或 replacement，
+不能把本门禁的成功当作双 PD 故障下的可用性承诺；真实 PVC 恢复时间、WAL 损坏检查和跨 AZ 网络故障
+必须另行演练。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

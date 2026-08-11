@@ -46056,6 +46056,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `reserve-raft-space` 没有独立物化；因此本项不声称存在独立 raft recovery budget。生产仍需由告警与
   runbook 驱动扩容/replacement，删除占位文件只能作为受控应急动作，且必须按实际卷容量验证阈值。
 
+- A4342 将 A4338 的单 PD leader 满盘扩展到 embedded-etcd 多数派丢失。新增
+  `target-two-pd-enospc-resume` 与 `TestNativeTwoPDENOSPCRealCluster`，三个 target PD 各使用独立
+  512 MiB 宿主 tmpfs；测试不是固定选择两个成员，而是先读取 embedded-etcd leader ID，填满该 leader
+  并以 256 KiB 探针写耗尽 WAL，确认其日志出现 OS error 28，再等待新 leader ID 后对第二任现场 leader
+  重复同一故障，从而确定性移除 PD 多数派。运行中的 KubeBrain 在 session/election 失效窗口先出现有界
+  deadline，随后 Put 明确返回 `Unavailable`，没有在无 PD quorum 时伪造成功。失败响应仍按
+  `/root/etcd/tests/robustness/validate` 的模型作为不确定结果：释放两个压力文件、重启相同容器和数据目录、
+  确认三个 name/member ID 全部不变后，以线性化 Get 将该写对账为合法的存在或不存在；此前所有已确认写
+  保持逐值可读，恢复后新 Put 成功。2026-08-11 真实用例 15.45 秒通过且无容器、挂载残留。该项证明双
+  PD 物理满盘时 fail closed 与原 identity 恢复，不承诺故障窗口可用；第三 PD 同时故障、持续满盘、真实
+  PVC 扩容/member replacement、跨 AZ 分区叠加故障和长 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
