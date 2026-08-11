@@ -46777,6 +46777,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无 iptables 残留。本项关闭 kind bridge 上长 deadline session 自动跨越 PD 全失及延迟 admission 恢复的
   证据；独立宿主/AZ、分钟级人工慢恢复和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4386 将 A4385 的长 deadline 自动恢复边界从 Session/LeaseGrant 推进到持久 `LeaseRevoke`，对照
+  `/root/etcd/tests/integration/clientv3/lease/lease_test.go::TestLeaseRevoke` 并叠加完整 PD blackout。新增
+  `pd-cross-node-total-loss-lease-revoke-long-deadline` mode：预建 16 个 TTL=300 lease，各绑定唯一键并从
+  完整准备 revision 启动 WithPrevKV Watch；三个跨 worker PD endpoint 全失后发起 8 个 Revoke，恢复交界
+  再发起 8 个，每个只有一次应用调用和 180 秒 deadline。要求故障期 2 秒内无伪完成，恢复后 16/16 全部
+  依靠 clientv3 内部重试成功，前缀为空、TTL=-1、LeaseList 无 ID 残留，且 Watch 收到 16 条唯一 DELETE，
+  每条 PrevKV 的值和 lease ID 与准备记录一致。
+  首次真实 RED 中 16 个 Revoke 虽在当前恢复速度下勉强成功，但新 leader 初始化期间连续返回
+  `write rejected: leadership changed during commit`，数秒内消耗约 50 次有限重试；紧随其后的 Range 又快速
+  耗尽约 100 次重试并失败，证明 A4385 的 startup parking 只覆盖 Grant，Revoke 仍依赖偶然时间余量。
+  现在本地 `LeaseRevoke` 与 `LeaseGrant` 一样，在 durable lease/event/checkpoint 初始化完成前有界停放，
+  context 取消仍立即退出；单元测试固定未 Ready 不提交、Ready 后完成并使 TTL=-1。
+  2026-08-11 disposable `kubebrain-pd-revoke-long` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、17379/17380 拓扑通过，全程 108.93 秒：16/16 Revoke 自动成功，键、lease 与 Watch 历史
+  三个 oracle 全部闭合；三个 KubeBrain 与 TiDBCluster 恢复 Ready、四个 node 无 iptables 残留。故障期间
+  `kb-pd-1` 被 liveness 重启一次并恢复，数据面副本均无重启。本项关闭 kind bridge 上 Revoke 跨 PD 全失
+  与延迟 leader 初始化的自动恢复证据；多键/大批量 Revoke storm、独立宿主/AZ、分钟级慢恢复及
+  latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

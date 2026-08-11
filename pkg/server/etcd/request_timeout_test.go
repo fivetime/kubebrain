@@ -97,3 +97,26 @@ func TestWaitLeaderReadyParksUntilStartupCompletes(t *testing.T) {
 	server.SetLeaderReady(true)
 	require.NoError(t, <-done)
 }
+
+func TestLeaseRevokeWaitsForLeaderStartup(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	grant, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: 9821, TTL: 300})
+	require.NoError(t, err)
+	server.SetLeaderReady(false)
+	done := make(chan error, 1)
+	go func() {
+		_, revokeErr := server.LeaseRevoke(context.Background(), &etcdserverpb.LeaseRevokeRequest{ID: grant.ID})
+		done <- revokeErr
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("LeaseRevoke returned before leader startup completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	server.SetLeaderReady(true)
+	require.NoError(t, <-done)
+	ttl, err := server.LeaseTimeToLive(context.Background(), &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL)
+}

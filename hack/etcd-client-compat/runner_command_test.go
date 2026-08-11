@@ -623,6 +623,17 @@ func TestLeaseRequireLeaderBackendFailoverCoversWireAndClientContracts(t *testin
 	require.Contains(t, source, `ordinary KeepAliveOnce must recover after backend quorum loss`)
 }
 
+func TestBackendPDCrossNodeTotalLossCanRecoverLongDeadlineLeaseRevokes(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-total-loss-lease-revoke-long-deadline)`)
+	require.Contains(t, script, `KUBEBRAIN_PD_LEASE_REVOKE_LONG_DEADLINE_COMMAND="$command"`)
+	require.Contains(t, script, `TestLeaseRevokesWithLongDeadlineSurvivePDTotalLoss`)
+	require.Contains(t, script, `PD_QUORUM_PARTITION_HOLD_SECONDS=45`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"

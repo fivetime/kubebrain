@@ -306,6 +306,12 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		}
 		return nil, m.leaseLeaderUnavailable("lease revoke")
 	}
+	// Revoke is a durable lease/key mutation and must not race the new leader's
+	// lease/event/checkpoint reload. Parking here also avoids consuming grpc-go's
+	// finite retry budget on a rapid stream of leadership-fence rejections.
+	if err := m.srv.waitLeaderReady(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireLeaseReady(); err != nil {
 		return nil, err
 	}
