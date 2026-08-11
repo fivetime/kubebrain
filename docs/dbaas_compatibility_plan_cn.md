@@ -45879,6 +45879,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   plan 强制消费，full-only 真实路径也尚未改成 capture-before-backup，因此生产门禁仍保持开放；下一项升级
   plan 并覆盖两种路径。
 
+- A4327 关闭 A4326 保留的 plan/source-capture 绑定与 full-only 路径缺口。restore plan 升级为
+  `kubebrain.native-pitr-restore-plan.v12`，强制消费 exact `kubebrain.native-pitr-source-capture.v1`，并绑定
+  receipt SHA、task-create SHA、operation ID、fence/capture TSO 与连续 source writer exclusion；CLI 删除
+  自由 `--restore-ts`，restore TSO 只能由 capture receipt 派生。task/full/witness cluster、keyspace、revision
+  与全部摘要链任一不一致均 fail closed。full-only 在 source fence 持有期间执行 whole-cluster backup，因此
+  snapshot 会携带 257 个 source token；新增 `restorationfence.AcquireFrom` 只允许 plan 可推导的 exact source
+  predecessor、open/absent 或同一 target token 原子转换为目标 restore token，foreign token 仍拒绝，普通
+  `Acquire` 的 partial-owner fail-closed 语义保持不变。2026-08-11 的官方 BR v7.5.1 disposable 双 PD/TiKV
+  演练中，full-only 以 snapshot 内 predecessor handoff 12.84 秒通过，stream-log 从 open fence 取得所有权并
+  完成最终 etcd semantic receipt 27.54 秒通过；全部 backup packages、nativepitr/restorationfence race、vet、
+  Shell 与 diff 检查通过。该阶段关闭当前单 PD/单 TiKV、受审 writer 与 pinned BR 链的 source capture 门禁，
+  但多 PD/多 TiKV、跨可用区故障、磁盘满、长时间 soak、版本升级矩阵和控制面 durable operation 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
