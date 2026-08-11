@@ -45939,6 +45939,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   receipt 72.72 秒通过。该 profile 未记录 pause 时的 PD leader identity，因此只关闭“配置首项不可达”的
   缺口；定向 leader loss、BR/全范围探针期间持续故障、target store loss 和跨 AZ 分区仍开放。
 
+- A4332 将 A4331 的“配置首项”证据升级为定向 live PD leader 故障。新增三节点专用
+  `leader-member-pause-store-resume` profile：在所有 region fully replicated 后读取 source PD
+  `/pd/api/v1/leader`，要求非空 leader name 精确匹配本次受控 `src-pd-N` 集合，再派生唯一容器与恢复
+  endpoint；未知/漂移 identity 在 pause 前 fail closed，并把实际 leader 写入演练日志。2026-08-11 现场
+  leader 为 `src-pd-2`；脚本将其与一个 TiKV store 同时 pause，随后关闭旧 KubeBrain，以原完整三 PD
+  endpoint 配置冷启动新实例。PD quorum 完成 leader failover，txn pool endpoint rotation 绕开失效 leader，
+  KubeBrain 经有界 election `Unavailable` 后取得写权，原 lease Put、Delete、新 Put 均成功；unpause 相同
+  member/store identity 后 source capture、BR、log replay 和 final semantic receipt 73.97 秒通过。该项关闭
+  source 侧“定向 PD leader + 单 store 瞬时故障期间冷启动”的缺口；故障持续穿越 pinned BR/全范围探针、
+  target leader/store 故障、跨 AZ 分区、磁盘满与长 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

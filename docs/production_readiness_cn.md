@@ -2282,6 +2282,10 @@ store/member；持续故障穿越 backup/restore、定向 leader PD 丢失和 ta
 endpoint 顺序，并在初始化 TSO 失败时有界尝试其余首项；真实 cold-start stream-log 在第一项 PD 与一个
 TiKV store paused 时启动、取得写权并完成最终 semantic receipt，72.72 秒通过。该 profile 证明的是配置
 首项不可达，不声称该 member 当时一定是 PD leader。
+`leader-member-pause-store-resume` profile 会在注入前读取 source PD `/pd/api/v1/leader`，只接受能精确映射
+到本次 disposable 集群 `src-pd-N` 的 member，并输出实际选择；2026-08-11 现场选择 `src-pd-2`，与一个
+TiKV store 同时 pause 后完成 PD 重选主、KubeBrain 冷启动、原 lease 写入及最终 semantic receipt，73.97 秒
+通过。该结果仍不覆盖 leader/store 故障持续穿越 pinned BR 或 target restore。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
