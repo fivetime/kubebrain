@@ -3,21 +3,44 @@ set -euo pipefail
 
 # Destructive only to the exact disposable resources named below. The two
 # clusters use independent PD/TiKV processes and memory-backed data dirs.
+topology_size=${KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE:-1}
+if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE must be 1 or 3" >&2
+  exit 2
+fi
 drill_tmp=$(mktemp -d /tmp/kb-native-pitr-full-restore.XXXXXX)
 shared_dir="$drill_tmp/shared"
 tikv_config="$PWD/hack/backup/native-pitr-tikv-integration.toml"
 mkdir -p "$shared_dir"
 chmod 0777 "$shared_dir"
 
-names=(
-  kb-native-pitr-src-pd-integration
-  kb-native-pitr-src-tikv-integration
-  kb-native-pitr-tgt-pd-integration
-  kb-native-pitr-tgt-tikv-integration
-  kb-native-pitr-br-integration
-  kb-native-pitr-minio-integration
-  kb-native-pitr-mc-integration
-)
+names=()
+source_pd_names=()
+target_pd_names=()
+source_tikv_names=()
+target_tikv_names=()
+source_pd_endpoints=()
+target_pd_endpoints=()
+source_initial_cluster=()
+target_initial_cluster=()
+for index in $(seq 0 $((topology_size - 1))); do
+  source_pd_names+=("kb-native-pitr-src-pd-$index-integration")
+  target_pd_names+=("kb-native-pitr-tgt-pd-$index-integration")
+  source_tikv_names+=("kb-native-pitr-src-tikv-$index-integration")
+  target_tikv_names+=("kb-native-pitr-tgt-tikv-$index-integration")
+  source_pd_endpoints+=("127.0.0.1:$((42379 + index * 10))")
+  target_pd_endpoints+=("127.0.0.1:$((43379 + index * 10))")
+  source_initial_cluster+=("src-pd-$index=http://127.0.0.1:$((42380 + index * 10))")
+  target_initial_cluster+=("tgt-pd-$index=http://127.0.0.1:$((43380 + index * 10))")
+done
+br_container=kb-native-pitr-br-integration
+minio_container=kb-native-pitr-minio-integration
+mc_container=kb-native-pitr-mc-integration
+names+=("${source_pd_names[@]}" "${target_pd_names[@]}" "${source_tikv_names[@]}" "${target_tikv_names[@]}" "$br_container" "$minio_container" "$mc_container")
+source_pd_csv=$(IFS=,; echo "${source_pd_endpoints[*]}")
+target_pd_csv=$(IFS=,; echo "${target_pd_endpoints[*]}")
+source_initial_csv=$(IFS=,; echo "${source_initial_cluster[*]}")
+target_initial_csv=$(IFS=,; echo "${target_initial_cluster[*]}")
 cleanup() {
   for name in "${names[@]}"; do
     docker rm -f "$name" >/dev/null 2>&1 || true
@@ -33,35 +56,43 @@ for name in "${names[@]}"; do
   fi
 done
 
-docker run -d --name "${names[0]}" --network host --tmpfs /data:rw,size=512m,mode=1777 pingcap/pd:v7.5.1 \
-  --name=src-pd --data-dir=/data --client-urls=http://127.0.0.1:42379 --advertise-client-urls=http://127.0.0.1:42379 \
-  --peer-urls=http://127.0.0.1:42380 --advertise-peer-urls=http://127.0.0.1:42380 --initial-cluster=src-pd=http://127.0.0.1:42380 --log-file= >/dev/null
-docker run -d --name "${names[2]}" --network host --tmpfs /data:rw,size=512m,mode=1777 pingcap/pd:v7.5.1 \
-  --name=tgt-pd --data-dir=/data --client-urls=http://127.0.0.1:43379 --advertise-client-urls=http://127.0.0.1:43379 \
-  --peer-urls=http://127.0.0.1:43380 --advertise-peer-urls=http://127.0.0.1:43380 --initial-cluster=tgt-pd=http://127.0.0.1:43380 --log-file= >/dev/null
+for index in $(seq 0 $((topology_size - 1))); do
+  source_client_port=$((42379 + index * 10)); source_peer_port=$((42380 + index * 10))
+  target_client_port=$((43379 + index * 10)); target_peer_port=$((43380 + index * 10))
+  docker run -d --name "${source_pd_names[$index]}" --network host --tmpfs /data:rw,size=512m,mode=1777 pingcap/pd:v7.5.1 \
+    --name="src-pd-$index" --data-dir=/data --client-urls="http://127.0.0.1:$source_client_port" --advertise-client-urls="http://127.0.0.1:$source_client_port" \
+    --peer-urls="http://127.0.0.1:$source_peer_port" --advertise-peer-urls="http://127.0.0.1:$source_peer_port" --initial-cluster="$source_initial_csv" --log-file= >/dev/null
+  docker run -d --name "${target_pd_names[$index]}" --network host --tmpfs /data:rw,size=512m,mode=1777 pingcap/pd:v7.5.1 \
+    --name="tgt-pd-$index" --data-dir=/data --client-urls="http://127.0.0.1:$target_client_port" --advertise-client-urls="http://127.0.0.1:$target_client_port" \
+    --peer-urls="http://127.0.0.1:$target_peer_port" --advertise-peer-urls="http://127.0.0.1:$target_peer_port" --initial-cluster="$target_initial_csv" --log-file= >/dev/null
+done
 
-for port in 42379 43379; do
+for endpoint in "${source_pd_endpoints[@]}" "${target_pd_endpoints[@]}"; do
   for attempt in $(seq 1 60); do
-    if curl -fsS "http://127.0.0.1:$port/pd/api/v1/health" >/dev/null; then break; fi
-    if [[ "$attempt" == 60 ]]; then echo "PD $port did not become healthy" >&2; exit 1; fi
+    if curl -fsS "http://$endpoint/pd/api/v1/health" >/dev/null; then break; fi
+    if [[ "$attempt" == 60 ]]; then echo "PD $endpoint did not become healthy" >&2; exit 1; fi
     sleep 1
   done
 done
 
-docker run -d --name "${names[1]}" --network host --tmpfs /data:rw,size=64g,mode=1777 \
-	-e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
-  -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
-  --config=/native-pitr-integration.toml \
-  --addr=127.0.0.1:42160 --advertise-addr=127.0.0.1:42160 --status-addr=127.0.0.1:20180 \
-  --pd=127.0.0.1:42379 --data-dir=/data --log-file= >/dev/null
-docker run -d --name "${names[3]}" --network host --tmpfs /data:rw,size=64g,mode=1777 \
-	-e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
-  -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
-  --config=/native-pitr-integration.toml \
-  --addr=127.0.0.1:43160 --advertise-addr=127.0.0.1:43160 --status-addr=127.0.0.1:21180 \
-  --pd=127.0.0.1:43379 --data-dir=/data --log-file= >/dev/null
+for index in $(seq 0 $((topology_size - 1))); do
+  source_tikv_port=$((42160 + index)); source_status_port=$((20180 + index))
+  target_tikv_port=$((43160 + index)); target_status_port=$((21180 + index))
+  docker run -d --name "${source_tikv_names[$index]}" --network host --tmpfs /data:rw,size=64g,mode=1777 \
+    -e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
+    -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
+    --config=/native-pitr-integration.toml --addr="127.0.0.1:$source_tikv_port" --advertise-addr="127.0.0.1:$source_tikv_port" \
+    --status-addr="127.0.0.1:$source_status_port" --pd="$source_pd_csv" --data-dir=/data --log-file= >/dev/null
+  docker run -d --name "${target_tikv_names[$index]}" --network host --tmpfs /data:rw,size=64g,mode=1777 \
+    -e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
+    -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
+    --config=/native-pitr-integration.toml --addr="127.0.0.1:$target_tikv_port" --advertise-addr="127.0.0.1:$target_tikv_port" \
+    --status-addr="127.0.0.1:$target_status_port" --pd="$target_pd_csv" --data-dir=/data --log-file= >/dev/null
+done
 
-for port in 20180 21180; do
+status_ports=()
+for index in $(seq 0 $((topology_size - 1))); do status_ports+=("$((20180 + index))" "$((21180 + index))"); done
+for port in "${status_ports[@]}"; do
   for attempt in $(seq 1 90); do
     if curl -fsS "http://127.0.0.1:$port/status" >/dev/null; then break; fi
     if [[ "$attempt" == 90 ]]; then echo "TiKV $port did not become healthy" >&2; exit 1; fi
@@ -69,18 +100,27 @@ for port in 20180 21180; do
   done
 done
 
-for spec in "${names[0]} 42379" "${names[2]} 43379"; do
+for spec in "${source_pd_names[0]} 42379" "${target_pd_names[0]} 43379"; do
   read -r container port <<<"$spec"
   for attempt in $(seq 1 60); do
-    docker exec "$container" /pd-ctl -u "http://127.0.0.1:$port" config set max-replicas 1 >"$drill_tmp/pdctl-$port" 2>&1 || true
+    docker exec "$container" /pd-ctl -u "http://127.0.0.1:$port" config set max-replicas "$topology_size" >"$drill_tmp/pdctl-$port" 2>&1 || true
     if rg -q Success "$drill_tmp/pdctl-$port"; then break; fi
     if [[ "$attempt" == 60 ]]; then cat "$drill_tmp/pdctl-$port" >&2; exit 1; fi
     sleep 1
   done
 done
 
-docker create --name "${names[4]}" pingcap/br:v7.5.1 >/dev/null
-docker cp "${names[4]}:/br" "$drill_tmp/br"
+for port in 42379 43379; do
+  for attempt in $(seq 1 90); do
+    up_stores=$(curl -fsS "http://127.0.0.1:$port/pd/api/v1/stores" | jq '[.stores[] | select(.store.state_name == "Up")] | length')
+    if [[ "$up_stores" == "$topology_size" ]]; then break; fi
+    if [[ "$attempt" == 90 ]]; then echo "PD $port saw $up_stores/$topology_size Up stores" >&2; exit 1; fi
+    sleep 1
+  done
+done
+
+docker create --name "$br_container" pingcap/br:v7.5.1 >/dev/null
+docker cp "$br_container:/br" "$drill_tmp/br"
 chmod 0755 "$drill_tmp/br"
 go build -o "$drill_tmp/kubebrain" ./cmd
 go build -o "$drill_tmp/native-pitr-admission-fence" ./hack/backup/cmd/native-pitr-admission-fence
@@ -90,7 +130,7 @@ go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pit
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 log_env=()
 if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
-  docker run -d --name "${names[5]}" --network host --tmpfs /data:rw,size=4g,mode=1777 \
+  docker run -d --name "$minio_container" --network host --tmpfs /data:rw,size=4g,mode=1777 \
     -e MINIO_ROOT_USER=kubebrain-drill -e MINIO_ROOT_PASSWORD=kubebrain-drill-secret \
     minio/minio:RELEASE.2025-04-22T22-12-26Z server /data --address=:49000 --console-address=:49001 >/dev/null
   for attempt in $(seq 1 60); do
@@ -98,8 +138,8 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
     if [[ "$attempt" == 60 ]]; then echo "MinIO did not become healthy" >&2; exit 1; fi
     sleep 1
   done
-  docker create --name "${names[6]}" quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z >/dev/null
-  docker cp "${names[6]}:/usr/bin/mc" "$drill_tmp/mc"
+  docker create --name "$mc_container" quay.io/minio/mc:RELEASE.2025-04-16T18-13-26Z >/dev/null
+  docker cp "$mc_container:/usr/bin/mc" "$drill_tmp/mc"
   chmod 0755 "$drill_tmp/mc"
   export MC_HOST_drill=http://kubebrain-drill:kubebrain-drill-secret@127.0.0.1:49000
   "$drill_tmp/mc" mb drill/kubebrain-pitr >/dev/null
@@ -124,8 +164,8 @@ fi
 
 if ! env "${log_env[@]}" \
   TMPDIR="$shared_dir" \
-  KUBEBRAIN_NATIVE_PITR_SOURCE_PD=127.0.0.1:42379 \
-  KUBEBRAIN_NATIVE_PITR_TARGET_PD=127.0.0.1:43379 \
+  KUBEBRAIN_NATIVE_PITR_SOURCE_PD="$source_pd_csv" \
+  KUBEBRAIN_NATIVE_PITR_TARGET_PD="$target_pd_csv" \
   KUBEBRAIN_NATIVE_PITR_BR="$drill_tmp/br" \
   KUBEBRAIN_NATIVE_PITR_SERVER="$drill_tmp/kubebrain" \
   KUBEBRAIN_NATIVE_PITR_ADMISSION="$drill_tmp/native-pitr-admission-fence" \
@@ -133,6 +173,6 @@ if ! env "${log_env[@]}" \
   KUBEBRAIN_NATIVE_PITR_SOURCE_CAPTURE="$drill_tmp/native-pitr-source-capture" \
   go test -count=1 -run "^${test_name}$" -v ./hack/backup/cmd/native-pitr-full-restore; then
   echo "source TiKV log follows" >&2
-  docker logs "${names[1]}" >&2 || true
+  docker logs "${source_tikv_names[0]}" >&2 || true
   exit 1
 fi

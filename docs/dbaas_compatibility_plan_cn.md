@@ -45892,6 +45892,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Shell 与 diff 检查通过。该阶段关闭当前单 PD/单 TiKV、受审 writer 与 pinned BR 链的 source capture 门禁，
   但多 PD/多 TiKV、跨可用区故障、磁盘满、长时间 soak、版本升级矩阵和控制面 durable operation 仍保持开放。
 
+- A4328 将 native PITR 从单 PD/单 TiKV disposable 证据扩展到对称三副本拓扑。演练脚本新增 fail-closed
+  `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=1|3`，三节点模式为 source/target 分别创建 3 个 PD member 与
+  3 个独立 TiKV store，传递完整 PD endpoint 列表、设置 `max-replicas=3`，并等待六个 store 全部为 Up；
+  cleanup 由静态精确命名扩展为拓扑派生的完整资源集合，非法值在任何 Docker 资源创建前退出。首次真实
+  stream-log 演练暴露 task-status client 将 `pd1,pd2,pd3` 拼成单个 `http://` endpoint，导致 advancer 已
+  越过 restore TSO 而 metadata read 阻塞；现逐地址构造 clientv3 endpoint，并以普通单测固定三地址形状。
+  官方 BR v7.5.1 三副本 full-only（23.74 秒）和 stream-log + MinIO + final semantic（34.45 秒）均通过，
+  后者覆盖多 store log backup/checkpoint/replay。该项关闭“只在单副本证明当前 pinned native PITR 链”的
+  证据缺口；跨可用区网络分区、member/store 中途故障、磁盘满、长 soak、滚动版本矩阵仍是开放项。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

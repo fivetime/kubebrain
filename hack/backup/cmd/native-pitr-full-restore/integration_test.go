@@ -41,6 +41,18 @@ func TestNativeLogReplayRealBR(t *testing.T) {
 	testNativeRestoreRealBR(t, true)
 }
 
+func TestPDHTTPEndpointsPreserveEveryAddress(t *testing.T) {
+	require.Equal(t, []string{"http://127.0.0.1:42379", "http://127.0.0.1:42389", "http://127.0.0.1:42399"}, pdHTTPEndpoints([]string{"127.0.0.1:42379", "127.0.0.1:42389", "127.0.0.1:42399"}))
+}
+
+func pdHTTPEndpoints(addresses []string) []string {
+	endpoints := make([]string, len(addresses))
+	for i, address := range addresses {
+		endpoints[i] = "http://" + address
+	}
+	return endpoints
+}
+
 func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	sourcePD := os.Getenv("KUBEBRAIN_NATIVE_PITR_SOURCE_PD")
 	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
@@ -157,7 +169,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		restoreTS = sourceCaptureFence.FenceSnapshotTS
 		sourceCaptureFencePath = filepath.Join(root, "source-capture-fence.json")
 		require.NoError(t, os.WriteFile(sourceCaptureFencePath, sourceCaptureFenceBytes, 0o600))
-		metadataClient, err := clientv3.New(clientv3.Config{Endpoints: []string{"http://" + sourcePD}, DialTimeout: 5 * time.Second})
+		metadataClient, err := clientv3.New(clientv3.Config{Endpoints: pdHTTPEndpoints(sourceAddrs), DialTimeout: 5 * time.Second})
 		require.NoError(t, err)
 		defer metadataClient.Close()
 		pdcReady, err := pd.NewClientWithContext(ctx, sourceAddrs, pd.SecurityOption{})

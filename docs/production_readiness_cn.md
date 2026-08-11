@@ -2107,7 +2107,9 @@ restore worker 直接写入，写入前后全部 257 个 token 保持一致；�
 witness/lease/watch/history 语义验证。运行命令为
 `./hack/backup/run-native-pitr-full-restore-integration.sh` 和
 `KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR
-./hack/backup/run-native-pitr-full-restore-integration.sh`。
+./hack/backup/run-native-pitr-full-restore-integration.sh`。发布前的三副本矩阵使用
+`KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3`；该模式为 source/target 各启动 3 PD + 3 TiKV、配置三副本并在
+全部 store 为 Up 后才进入演练。其他值会在创建资源前被拒绝。
 
 full import 后先以同一 operation ID 获取 TiKV restoration fence，再由 admission release 命令同时消费
 admission/full/fence 三份 exact receipt。命令在开放 PD gate 前验证两侧 token，开放后再次验证 257 个
@@ -2192,7 +2194,7 @@ Watch；探针删除后又直连 plan-bound target TiKV 读回其 Put revision �
 矛盾，v2 现只豁免且精确绑定受审协调范围。演练同时校正了两个真实
 backupmeta 合同：txn backup 的空 DDL 以 JSON `[]` 编码；plaintext BackupRequest 生成的 SST 仍携带
 随机 16-byte `CipherIv`，因此不能以该字段存在与否推断外部 BR crypter 模式。脚本使用 64 GiB
-逻辑容量的按需 tmpfs 避免宿主机磁盘水位影响，并通过 trap 精确清理 4 个集群容器、BR copy 容器和
+逻辑容量的按需 tmpfs 避免宿主机磁盘水位影响，并通过 trap 精确清理所选拓扑的全部集群容器、BR copy 容器和
 临时目录；演练结束后已核验无同名前缀容器或临时目录残留。
 
 同日又以 `KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR` 完成官方 stream 路径：source 在创建
@@ -2263,6 +2265,9 @@ fence 约束的是遵守 KubeBrain restoration fence 协议的 writer，不泛�
 2026-08-11 的 disposable 双集群演练中，full-only 路径验证了 snapshot 内源 fence token 到目标 restore
 token 的 plan-bound 原子交接（12.84 秒），stream-log 路径验证了从 open fence 获取目标所有权并完成最终
 语义校验（27.54 秒）；两条路径均使用 plan v12，未传入自由 restore TSO。
+同日三副本矩阵也已实际通过：source/target 各 3 PD + 3 TiKV，full-only 为 23.74 秒，stream-log 为
+34.45 秒。该演练同时修复了 task-status client 把逗号分隔 PD 列表误当成单一 HTTP endpoint 的问题；现在
+每个 PD 地址均转换为独立 clientv3 endpoint。三副本成功不等价于跨可用区分区、磁盘满或长时间 soak。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
