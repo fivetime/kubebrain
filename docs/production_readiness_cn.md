@@ -2273,9 +2273,11 @@ token 的 plan-bound 原子交接（12.84 秒），stream-log 路径验证了从
 每个 PD 地址均转换为独立 clientv3 endpoint。三副本成功不等价于跨可用区分区、磁盘满或长时间 soak。
 随后 fault-injection 矩阵也通过：full-only 在 source PD/TiKV 各 pause 一节点时完成 witness Range，恢复同一
 identity 后 35.41 秒完成；stream-log 在 pause 窗口内完成 leased Put、Delete、新 Put 和 witness，恢复后
-47.48 秒完成最终 semantic receipt。现场同时确认当前 pinned BR、source/target 全范围探针及 KubeBrain 冷
-启动在配置 endpoint/store 持续不可达时可能等待，因此演练在 BR 前恢复 store/member；持续故障穿越 backup/
-restore、首选或 leader PD 丢失、故障窗口冷启动和 target store loss 均未关闭。
+47.48 秒完成最终 semantic receipt。后续 A4330 将默认 16 个 txnkv client 从串行改为并发构建后，又在相同
+pause 窗口关闭旧 KubeBrain 并用完整三 endpoint 配置冷启动新实例；它在预期的短暂 `Unavailable` 选主窗口
+后取得写权，完成带旧 lease 的 Put、Delete、新 Put，并在恢复相同 PD/TiKV identity 后于 61.52 秒完成最终
+semantic receipt。当前 pinned BR 和 source/target 全范围探针仍要求在进入受审 backup/restore 前恢复
+store/member；持续故障穿越 backup/restore、首选或 leader PD 丢失和 target store loss 均未关闭。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、

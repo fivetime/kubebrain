@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -70,17 +71,42 @@ func NewKvStorage(pdAddrs []string, clientNum int, sec Security) (storage.KvStor
 			c.Security = tikvcfg.NewSecurity(sec.CAPath, sec.CertPath, sec.KeyPath, sec.VerifyCN)
 		})
 	}
-	clients := make([]*txnkv.Client, 0, clientNum)
-	for i := 0; i < clientNum; i++ {
-		txnClient, err := txnkv.NewClient(pdAddrs)
-		if err != nil {
-			closeClient(clients)
-			return nil, errors.Wrap(err, "failed to create txn client")
-		}
-		clients = append(clients, txnClient)
+	clients, err := createTxnClients(clientNum, func(_ int) (*txnkv.Client, error) {
+		return txnkv.NewClient(pdAddrs)
+	})
+	if err != nil {
+		return nil, err
 	}
 	s := NewKvStoreWithClient(clients)
 	return s, nil
+}
+
+func createTxnClients(clientNum int, factory func(int) (*txnkv.Client, error)) ([]*txnkv.Client, error) {
+	clients := make([]*txnkv.Client, clientNum)
+	errs := make([]error, clientNum)
+	var wg sync.WaitGroup
+	wg.Add(clientNum)
+	for i := 0; i < clientNum; i++ {
+		go func(index int) {
+			defer wg.Done()
+			clients[index], errs[index] = factory(index)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err == nil {
+			continue
+		}
+		created := make([]*txnkv.Client, 0, clientNum)
+		for _, client := range clients {
+			if client != nil {
+				created = append(created, client)
+			}
+		}
+		closeClient(created)
+		return nil, errors.Wrapf(err, "failed to create txn client %d", i)
+	}
+	return clients, nil
 }
 
 func NewKvStoreWithStorage(sts []*tikv.KVStore) storage.KvStorage {

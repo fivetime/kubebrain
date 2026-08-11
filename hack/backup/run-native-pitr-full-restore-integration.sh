@@ -155,6 +155,7 @@ if [[ "$fault_injection" == member-pause-store-resume ]]; then
     KUBEBRAIN_NATIVE_PITR_SOURCE_RECOVERY_ADDRESS=127.0.0.1:20180
     KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_CONTAINER="${source_pd_names[2]}"
     KUBEBRAIN_NATIVE_PITR_SOURCE_PD_RECOVERY_ADDRESS=127.0.0.1:42399
+    KUBEBRAIN_NATIVE_PITR_COLD_RESTART_DURING_FAULT=true
   )
 fi
 if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then

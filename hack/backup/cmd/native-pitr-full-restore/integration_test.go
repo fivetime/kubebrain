@@ -224,8 +224,20 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	var logs nativepitr.LogArtifactReceipt
 	var logRoot string
 	if withLogs {
-		_, err = cli.Put(ctx, "/native-full", "kubebrain-after-full", clientv3.WithLease(lease.ID))
-		require.NoError(t, err)
+		if coldRestart := os.Getenv("KUBEBRAIN_NATIVE_PITR_COLD_RESTART_DURING_FAULT"); coldRestart != "" {
+			require.Equal(t, "true", coldRestart, "invalid cold restart setting")
+			require.NoError(t, cli.Close())
+			sourceServer.stop(t)
+			sourceServer = startKubeBrain(t, ctx, server, sourcePD, root, "source-log-window")
+			cli = waitForEndpoint(t, ctx, endpoint, sourceServer)
+			waitForLeader(t, ctx, cli, endpoint, sourceServer)
+		}
+		if os.Getenv("KUBEBRAIN_NATIVE_PITR_COLD_RESTART_DURING_FAULT") == "true" {
+			require.NoError(t, putEventually(ctx, cli, "/native-full", "kubebrain-after-full", 45*time.Second, clientv3.WithLease(lease.ID)))
+		} else {
+			_, err = cli.Put(ctx, "/native-full", "kubebrain-after-full", clientv3.WithLease(lease.ID))
+			require.NoError(t, err)
+		}
 		_, err = cli.Delete(ctx, "/native-unleased")
 		require.NoError(t, err)
 		_, err = cli.Put(ctx, "/native-after-full", strings.Repeat("log-value-", 64))
@@ -569,6 +581,38 @@ func waitForEndpoint(t *testing.T, ctx context.Context, endpoint string, server 
 	logBytes, logErr := os.ReadFile(server.logPath)
 	require.NoError(t, err, "KubeBrain endpoint did not become ready; log-read-error=%v log=%s", logErr, logBytes)
 	return nil
+}
+
+func waitForLeader(t *testing.T, ctx context.Context, cli *clientv3.Client, endpoint string, server *runningServer) {
+	t.Helper()
+	deadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(deadline) {
+		attempt, cancel := context.WithTimeout(ctx, time.Second)
+		status, err := cli.Status(attempt, endpoint)
+		cancel()
+		if err == nil && status.Leader != 0 {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	logBytes, logErr := os.ReadFile(server.logPath)
+	require.NoError(t, logErr)
+	t.Fatalf("KubeBrain did not publish a leader: %s", logBytes)
+}
+
+func putEventually(ctx context.Context, cli *clientv3.Client, key, value string, timeout time.Duration, opts ...clientv3.OpOption) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		attempt, cancel := context.WithTimeout(ctx, 3*time.Second)
+		_, lastErr = cli.Put(attempt, key, value, opts...)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("KubeBrain did not become writable: %w", lastErr)
 }
 
 func writeWitness(t *testing.T, ctx context.Context, cli *clientv3.Client, path string) backupfile.Status {

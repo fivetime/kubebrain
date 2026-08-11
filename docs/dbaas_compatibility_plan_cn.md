@@ -45916,6 +45916,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   因此本项只关闭“已运行 source 在单 member+store 瞬时故障下保持 etcd 语义并可恢复后完成 PITR”的缺口；
   故障跨越 backup/restore、leader/首选 PD 丢失、冷启动、target store loss、跨 AZ 分区仍保持开放。
 
+- A4330 关闭 A4329 暴露的“非首选 PD member + TiKV store 不可达时 KubeBrain 冷启动被 txn client pool
+  串行放大”缺口。根因是默认 16 个 `txnkv.NewClient` 逐个构建，每个都独立承担 PD endpoint 探测延迟；现
+  `createTxnClients` 按固定槽位并发创建，等待全部完成后按最低槽位稳定返回错误，并在任一失败时关闭全部
+  已成功 client，保持原 round-robin 数量和身份语义。确定性测试用 barrier 证明 16 个 factory 在任一释放前
+  全部启动，race 通过，并固定并发乱序错误仍报告 slot 0。对照 `/root/etcd/client/v3/client.go` 的单一
+  `DialTimeout` endpoint 建连边界，KubeBrain 不再把同一 endpoint 等待串行乘以 pool 大小。真实三副本
+  stream-log 演练在一个非首选 PD member 与一个 TiKV store pause 后关闭旧进程，用完整三 endpoint 配置冷
+  启动新 KubeBrain；listener/Status 先就绪，旧 election lease 窗口内 Put 如 upstream 预期返回瞬时
+  `Unavailable`，有界等待新 leader 后，带原 600 秒 lease 的 Put、Delete、新 Put 均成功。恢复相同 PD/TiKV
+  identity 后 source capture、BR、replay 与 final semantic receipt 61.52 秒通过。该项关闭既有 source 的
+  故障窗口冷启动；BR/全范围探针期间持续 store/member 不可达、首选/leader PD 丢失、target 故障仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
