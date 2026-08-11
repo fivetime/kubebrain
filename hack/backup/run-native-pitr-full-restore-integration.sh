@@ -83,6 +83,7 @@ docker create --name "${names[4]}" pingcap/br:v7.5.1 >/dev/null
 docker cp "${names[4]}:/br" "$drill_tmp/br"
 chmod 0755 "$drill_tmp/br"
 go build -o "$drill_tmp/kubebrain" ./cmd
+go build -o "$drill_tmp/native-pitr-admission-fence" ./hack/backup/cmd/native-pitr-admission-fence
 
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 log_env=()
@@ -125,6 +126,7 @@ if ! env "${log_env[@]}" \
   KUBEBRAIN_NATIVE_PITR_TARGET_PD=127.0.0.1:43379 \
   KUBEBRAIN_NATIVE_PITR_BR="$drill_tmp/br" \
   KUBEBRAIN_NATIVE_PITR_SERVER="$drill_tmp/kubebrain" \
+  KUBEBRAIN_NATIVE_PITR_ADMISSION="$drill_tmp/native-pitr-admission-fence" \
   go test -count=1 -run "^${test_name}$" -v ./hack/backup/cmd/native-pitr-full-restore; then
   echo "source TiKV log follows" >&2
   docker logs "${names[1]}" >&2 || true

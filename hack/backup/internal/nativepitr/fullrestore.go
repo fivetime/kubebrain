@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const FullRestoreExecutionFormat = "kubebrain.native-pitr-full-restore.v1"
+const FullRestoreExecutionFormat = "kubebrain.native-pitr-full-restore.v2"
 
 // FullRestoreExecutionReceipt records only BR's transactional full-snapshot
 // import. It deliberately cannot represent completed log replay or PITR.
@@ -18,6 +18,7 @@ type FullRestoreExecutionReceipt struct {
 	SourceExclusiveSHA256        string                     `json:"source_range_exclusive_receipt_sha256"`
 	FullArtifactSHA256           string                     `json:"full_artifact_receipt_sha256"`
 	ArtifactManifestSHA256       string                     `json:"artifact_manifest_sha256"`
+	RestoreAdmissionSHA256       string                     `json:"restore_admission_receipt_sha256"`
 	PreWriteTarget               TargetSnapshotEmptyReceipt `json:"pre_write_target"`
 	BRVersion                    string                     `json:"br_version"`
 	BRBinarySHA256               string                     `json:"br_binary_sha256"`
@@ -26,6 +27,7 @@ type FullRestoreExecutionReceipt struct {
 	WholeClusterTxnImport        bool                       `json:"whole_cluster_txn_import"`
 	SourceVisibleRangeExclusive  bool                       `json:"source_visible_range_exclusive"`
 	TargetWriteFenceProven       bool                       `json:"target_write_fence_proven"`
+	FullImportAdmissionProven    bool                       `json:"full_import_admission_proven"`
 	FullSnapshotRestored         bool                       `json:"full_snapshot_restored"`
 	LogReplayCompleted           bool                       `json:"log_replay_completed"`
 	PostRestoreSemanticValidated bool                       `json:"post_restore_semantic_validated"`
@@ -33,10 +35,10 @@ type FullRestoreExecutionReceipt struct {
 }
 
 func (r FullRestoreExecutionReceipt) Validate() error {
-	if r.Format != FullRestoreExecutionFormat || !r.WholeClusterTxnImport || !r.SourceVisibleRangeExclusive || !r.FullSnapshotRestored || r.TargetWriteFenceProven || r.LogReplayCompleted || r.PostRestoreSemanticValidated || r.PITRComplete {
-		return errors.New("receipt is not a bounded full-only native restore v1")
+	if r.Format != FullRestoreExecutionFormat || !r.WholeClusterTxnImport || !r.SourceVisibleRangeExclusive || !r.FullSnapshotRestored || !r.TargetWriteFenceProven || !r.FullImportAdmissionProven || r.LogReplayCompleted || r.PostRestoreSemanticValidated || r.PITRComplete {
+		return errors.New("receipt is not an admission-fenced full-only native restore v2")
 	}
-	for _, value := range []string{r.PlanSHA256, r.SourceExclusiveSHA256, r.FullArtifactSHA256, r.ArtifactManifestSHA256, r.BRBinarySHA256} {
+	for _, value := range []string{r.PlanSHA256, r.SourceExclusiveSHA256, r.FullArtifactSHA256, r.ArtifactManifestSHA256, r.RestoreAdmissionSHA256, r.BRBinarySHA256} {
 		if !sha256RE.MatchString(value) {
 			return errors.New("full restore receipt contains invalid digest evidence")
 		}

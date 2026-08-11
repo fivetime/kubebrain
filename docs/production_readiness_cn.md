@@ -2021,6 +2021,7 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
   --source-range-exclusive=/evidence/native-pitr-source-range-exclusive.json \
   --target-snapshot-empty=/evidence/native-pitr-target-snapshot-empty.json \
+  --restore-admission=/evidence/native-pitr-restore-admission.json \
   --restore-ts="$RESTORE_TS"
 ```
 
@@ -2058,17 +2059,21 @@ SHA-256 也必须一致。调用参数刻意不传无效的 start/end，而是�
 安全范围来自 source-range-exclusive 证据，不来自 BR 已知会忽略的 flag。
 
 首写前会重新连接 target PD/txnkv，以 fresh RC 全键空间扫描确认仍为空，并要求 cluster ID、PD 地址及
-Up store identity 与 plan-bound receipt 一致。成功输出 `kubebrain.native-pitr-full-restore.v1`，固定记录
+Up store identity 与 plan-bound receipt 一致。运行 full executor 前必须先执行
+`native-pitr-admission-fence --action=acquire`，其 receipt 绑定 exact plan、target PD cluster ID、keyspace
+和 operation ID，并证明 PD metadata gate 已关闭且 active session 为零。成功输出
+`kubebrain.native-pitr-full-restore.v2`，固定记录
 `whole_cluster_txn_import=true`、`source_visible_range_exclusive=true`、`full_snapshot_restored=true`，同时
-固定 `target_write_fence_proven=false`、`log_replay_completed=false`、
-`post_restore_semantic_validated=false`、`pitr_complete=false`。这是有意的失败闭合边界：当前没有能跨
-外部 BR 进程获取、续持并由 receipt 证明的 target writer fence，空白扫描与 BR 首写间仍有竞态；生产
-控制面必须确保目标未启动 KubeBrain/其他 writer。数据面已经新增 tenant-scoped 持久
+记录 `full_import_admission_proven=true`、`target_write_fence_proven=true`，并固定
+`log_replay_completed=false`、`post_restore_semantic_validated=false`、`pitr_complete=false`。执行器在 BR
+前、BR 完成后及 receipt 输出前都复核同一 PD token 和零 session，且要求 admission receipt 在 BR 前取得、
+执行期间文件不漂移。数据面另有 tenant-scoped 持久
 `restoration-fence` 原语：leader election acquire/renew CAS 控制键，生产 backend 的所有 user/internal
 transaction 轮转 CAS 256 个写分片之一；恢复方在一个事务中关闭控制键和全部分片时可原子排斥所有
 in-flight writer，同时避免正常写共享单一热键，且重启不能绕过。恢复命令和 log replay receipt 已绑定
-该 fence；但 whole-cluster full import 及 fence-to-semantic 的受控交接仍未覆盖，所以 full restore receipt
-不能用于宣称 PITR 或 etcd 语义恢复完成，也继续固定 `target_write_fence_proven=false`。
+该 fence。whole-cluster full import 已由 PD admission 覆盖；剩余边界是先获取 post-full TiKV fence 再释放
+PD gate 的跨栅栏 handoff 尚未 receipt 化，所以 full restore receipt 仍不能用于宣称 PITR 或 etcd 语义恢复
+完成，`pitr_complete` 继续为 false。
 
 固定 BR v7.5.1 的 `backup txn` / `restore txn` 是 whole-cluster 路径并忽略声明的 start/end；因此同一目标
 TiKV 集群内的事务型 fence 会随 full SST 一起进入覆盖范围。不得据此宣称 fence 覆盖了 BR full import

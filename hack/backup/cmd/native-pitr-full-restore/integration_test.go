@@ -23,6 +23,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/semanticverify"
+	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
@@ -46,7 +47,8 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
 	br := os.Getenv("KUBEBRAIN_NATIVE_PITR_BR")
 	server := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
-	if sourcePD == "" || targetPD == "" || br == "" || server == "" {
+	admissionCommand := os.Getenv("KUBEBRAIN_NATIVE_PITR_ADMISSION")
+	if sourcePD == "" || targetPD == "" || br == "" || server == "" || admissionCommand == "" {
 		t.Skip("set KUBEBRAIN_NATIVE_PITR_SOURCE_PD, KUBEBRAIN_NATIVE_PITR_TARGET_PD, KUBEBRAIN_NATIVE_PITR_BR, and KUBEBRAIN_NATIVE_PITR_SERVER")
 	}
 	preflight, taskCreate, mc := os.Getenv("KUBEBRAIN_NATIVE_PITR_PREFLIGHT"), os.Getenv("KUBEBRAIN_NATIVE_PITR_TASK_CREATE"), os.Getenv("KUBEBRAIN_NATIVE_PITR_MC")
@@ -218,9 +220,14 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	planPath := filepath.Join(t.TempDir(), "plan.json")
 	planBytes := canonicalFile(t, planPath, plan)
+	admissionBytes := runReceiptOutput(t, ctx, admissionCommand, "--action=acquire", "--plan="+planPath, "--operation-id=restore-integration", "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
+	admissionReceipt, err := nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes))
+	require.NoError(t, err)
+	admissionPath := filepath.Join(t.TempDir(), "admission.json")
+	require.NoError(t, os.WriteFile(admissionPath, admissionBytes, 0o600))
 
 	var receiptOut strings.Builder
-	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, approve: digest(planBytes), timeout: 3 * time.Minute}, osRunner{}, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
+	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, approve: digest(planBytes), timeout: 3 * time.Minute}, osRunner{}, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
@@ -245,6 +252,12 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	require.Equal(t, withLogs, resumed)
 	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
+	admissionToken, err := admissionReceipt.Token()
+	require.NoError(t, err)
+	admissionClient, err := clientv3.New(clientv3.Config{Endpoints: []string{"http://" + targetPD}, DialTimeout: 5 * time.Second})
+	require.NoError(t, err)
+	require.NoError(t, admissionfence.Release(ctx, admissionClient, task.Keyspace, admissionToken))
+	require.NoError(t, admissionClient.Close())
 	if withLogs {
 		fencePath = filepath.Join(t.TempDir(), "fence.json")
 		require.NoError(t, os.WriteFile(fencePath, fenceBytes, 0o600))

@@ -45817,6 +45817,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   演练也在启用 session 后通过。该项只交付所有数据面进程必须遵守的外部 durable 原语；restore CLI 与
   full/log/final receipt 尚未绑定它，因此 `target_write_fence_proven` 和 `pitr_complete` 继续保持 false。
 
+- A4322 将 PD admission 接入真实 BR full executor。新增 `native-pitr-admission-fence` acquire/verify CLI 与
+  `kubebrain.native-pitr-restore-admission.v1` receipt，绑定 exact plan、target cluster ID、keyspace、operation
+  ID 和 canonical token，并只有在 active session range 为空时才能关闭 PD gate。full executor 强制消费
+  exact admission receipt，在 BR `restore txn` 前、完成后和输出前都向 target PD 复核同一 token及零 session，
+  同时要求 receipt 先于 BR start 且文件不漂移。`kubebrain.native-pitr-full-restore.v2` 因而可以诚实记录
+  `full_import_admission_proven=true`、`target_write_fence_proven=true`，但仍保持 log/post-semantic/PITR false。
+  full-only 与官方 stream-log 两条真实双 PD/TiKV + pinned BR v7.5.1 演练均通过；演练在 full 后先获取
+  TiKV 257-key restoration fence，再开放 PD gate，持续保持至少一个 writer gate。该跨栅栏顺序目前仍由
+  演练代码直接执行、尚无 handoff receipt，因此不能把 replay/final `pitr_complete` 改为 true；下一项把
+  admission-to-restoration handoff 原子时序纳入证据链。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

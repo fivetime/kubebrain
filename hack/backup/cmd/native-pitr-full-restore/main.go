@@ -23,17 +23,20 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
+	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
 	pingcaplog "github.com/pingcap/log"
+	"github.com/tikv/pd/client/tlsutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap/zapcore"
 )
 
 const maxReceiptBytes = 4 << 20
 
 type options struct {
-	plan, full, artifacts, inventory, artifactRoot string
-	sourceExclusive, target                        string
-	pdAddrs, ca, cert, key, brBinary, approve      string
-	timeout                                        time.Duration
+	plan, full, artifacts, inventory, artifactRoot, admission string
+	sourceExclusive, target                                   string
+	pdAddrs, ca, cert, key, brBinary, approve                 string
+	timeout                                                   time.Duration
 }
 
 type commandRunner interface {
@@ -62,6 +65,7 @@ func main() {
 	flag.StringVar(&o.artifactRoot, "artifact-root", "", "absolute local exact-version full backup mirror")
 	flag.StringVar(&o.sourceExclusive, "source-range-exclusive", "", "exact source range-exclusive receipt bound by plan")
 	flag.StringVar(&o.target, "target-snapshot-empty", "", "exact target snapshot-empty receipt bound by plan")
+	flag.StringVar(&o.admission, "restore-admission", "", "exact PD-backed restore admission receipt")
 	flag.StringVar(&o.pdAddrs, "pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "ca", "", "target CA file")
 	flag.StringVar(&o.cert, "cert", "", "target client certificate")
@@ -156,9 +160,32 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if !reflect.DeepEqual(addrs, target.PDAddrs) {
 		return errors.New("target PD addresses differ from plan-bound receipt")
 	}
+	admissionBytes, err := readSmall(o.admission)
+	if err != nil {
+		return err
+	}
+	admission, err := nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes))
+	if err != nil {
+		return err
+	}
+	if admission.PlanSHA256 != planSHA || admission.TargetClusterID != plan.Target.ClusterID || admission.Keyspace != plan.Source.Keyspace {
+		return errors.New("restore admission receipt does not match plan")
+	}
+	admissionToken, err := admission.Token()
+	if err != nil {
+		return err
+	}
 
 	ctx, cancel := context.WithTimeout(parent, o.timeout)
 	defer cancel()
+	admissionClient, err := newAdmissionClient(addrs, o.ca, o.cert, o.key)
+	if err != nil {
+		return err
+	}
+	defer admissionClient.Close()
+	if err := admissionfence.Verify(ctx, admissionClient, plan.Source.Keyspace, admissionToken); err != nil {
+		return fmt.Errorf("pre-BR restore admission: %w", err)
+	}
 	fresh, err := inspectTarget(ctx, addrs, o.ca, o.cert, o.key, now().Unix())
 	if err != nil {
 		return fmt.Errorf("pre-write target recheck: %w", err)
@@ -185,8 +212,14 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	}
 
 	started := now().Unix()
+	if admission.AcquiredAtUnix > started {
+		return errors.New("restore admission was acquired after BR start")
+	}
 	if err := runner.Run(ctx, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key), logs, logs); err != nil {
 		return fmt.Errorf("BR transactional full restore failed: %w", err)
+	}
+	if err := admissionfence.Verify(ctx, admissionClient, plan.Source.Keyspace, admissionToken); err != nil {
+		return fmt.Errorf("post-BR restore admission: %w", err)
 	}
 	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot); err != nil {
 		return errors.New("local full mirror changed during restore")
@@ -196,7 +229,14 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 		return errors.New("BR binary changed during restore")
 	}
 
-	receipt := nativepitr.FullRestoreExecutionReceipt{Format: nativepitr.FullRestoreExecutionFormat, PlanSHA256: planSHA, SourceExclusiveSHA256: digest(sourceBytes), FullArtifactSHA256: digest(artifactBytes), ArtifactManifestSHA256: artifact.ManifestSHA256, PreWriteTarget: fresh, BRVersion: version, BRBinarySHA256: brSHA, StartedAtUnix: started, CompletedAtUnix: now().Unix(), WholeClusterTxnImport: true, SourceVisibleRangeExclusive: true, FullSnapshotRestored: true}
+	stableAdmission, err := readSmall(o.admission)
+	if err != nil || !bytes.Equal(stableAdmission, admissionBytes) {
+		return errors.New("restore admission receipt changed during restore")
+	}
+	if err := admissionfence.Verify(ctx, admissionClient, plan.Source.Keyspace, admissionToken); err != nil {
+		return fmt.Errorf("final restore admission: %w", err)
+	}
+	receipt := nativepitr.FullRestoreExecutionReceipt{Format: nativepitr.FullRestoreExecutionFormat, PlanSHA256: planSHA, SourceExclusiveSHA256: digest(sourceBytes), FullArtifactSHA256: digest(artifactBytes), ArtifactManifestSHA256: artifact.ManifestSHA256, RestoreAdmissionSHA256: digest(admissionBytes), PreWriteTarget: fresh, BRVersion: version, BRBinarySHA256: brSHA, StartedAtUnix: started, CompletedAtUnix: now().Unix(), WholeClusterTxnImport: true, SourceVisibleRangeExclusive: true, TargetWriteFenceProven: true, FullImportAdmissionProven: true, FullSnapshotRestored: true}
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
@@ -221,7 +261,7 @@ func verifyMirror(full nativepitr.FullSnapshotReceipt, fullBytes []byte, artifac
 }
 
 func validateOptions(o options) error {
-	if o.plan == "" || o.full == "" || o.artifacts == "" || o.inventory == "" || o.artifactRoot == "" || o.sourceExclusive == "" || o.target == "" || o.pdAddrs == "" || o.brBinary == "" || o.timeout <= 0 {
+	if o.plan == "" || o.full == "" || o.artifacts == "" || o.inventory == "" || o.artifactRoot == "" || o.sourceExclusive == "" || o.target == "" || o.admission == "" || o.pdAddrs == "" || o.brBinary == "" || o.timeout <= 0 {
 		return errors.New("all receipt, artifact, target, BR, and positive timeout options are required")
 	}
 	if !filepath.IsAbs(o.artifactRoot) || filepath.Clean(o.artifactRoot) != o.artifactRoot {
@@ -231,6 +271,14 @@ func validateOptions(o options) error {
 		return errors.New("cert and key must be set together and require ca")
 	}
 	return nil
+}
+
+func newAdmissionClient(addrs []string, ca, cert, key string) (*clientv3.Client, error) {
+	tlsConfig, err := (tlsutil.TLSConfig{CAPath: ca, CertPath: cert, KeyPath: key}).ToTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	return clientv3.New(clientv3.Config{Endpoints: addrs, DialTimeout: 5 * time.Second, TLS: tlsConfig})
 }
 func readSmall(path string) ([]byte, error) {
 	f, err := os.Open(path)

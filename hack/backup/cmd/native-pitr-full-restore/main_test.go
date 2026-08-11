@@ -15,7 +15,7 @@ func TestBuildBRArgsUsesExplicitWholeClusterTxnImport(t *testing.T) {
 	}
 }
 func TestValidateOptionsFailsClosed(t *testing.T) {
-	good := options{plan: "p", full: "f", artifacts: "a", inventory: "i", artifactRoot: "/mirror", sourceExclusive: "s", target: "t", pdAddrs: "pd:2379", brBinary: "br", timeout: time.Second}
+	good := options{plan: "p", full: "f", artifacts: "a", inventory: "i", artifactRoot: "/mirror", sourceExclusive: "s", target: "t", admission: "d", pdAddrs: "pd:2379", brBinary: "br", timeout: time.Second}
 	require.NoError(t, validateOptions(good))
 	bad := good
 	bad.artifactRoot = "relative"
