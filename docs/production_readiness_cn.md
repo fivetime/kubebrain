@@ -2207,6 +2207,19 @@ endpoint 行为和 target 物理集群绑定，避免“PD 对了但 endpoint �
 admission fence，收据明确保持 `target_full_import_fence_proven=false`、`pitr_complete=false`；该分层字段
 防止用回放和后置语义成功掩盖全量导入期间的 writer 竞态。
 
+TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
+每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
+恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能
+有一方成功。session TTL 为 15 秒，数据面在最后一次 keepalive 后 7.5 秒即把 admission freshness 置为 false，
+并把它与 leadership epoch 一起放进每次 TiKV commit 的最终栅栏；即使进程与 PD 分区但仍能访问 TiKV，也会
+在 PD 可能删除 session、恢复方可能取得 gate 之前先停止写入。Badger 本地模式不启用该外部原语。
+
+该 PD admission 原语已通过真实 embedded-etcd 的 active-session/closed-gate、20 轮并发注册与 acquire
+单赢家、freshness 提前失效及 race 测试，并通过双 PD/TiKV full-only BR 演练确认正常 session 生命周期不
+破坏恢复语义。目前 restore CLI 尚未签发/消费 admission receipt，所以 full restore receipt 仍必须保持
+`target_write_fence_proven=false`；只有 acquire-before-BR、verify-after-BR、后续 handoff 与最终 semantic
+receipt 全部绑定后，才能把 whole-cluster full import 窗口记为已证明。
+
 arbitrary-range task 的安全创建入口现为：
 
 ```shell

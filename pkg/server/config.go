@@ -51,6 +51,8 @@ type Config struct {
 	RenewDeadline time.Duration
 	RetryPeriod   time.Duration
 
+	AdmissionFresh func() bool
+
 	MaxTxnOps       uint
 	MaxRequestBytes uint
 	// MaxRequestsInFlight limits concurrent public client RPCs per process.

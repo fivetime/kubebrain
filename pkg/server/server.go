@@ -162,7 +162,13 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// Wire the write fence: the backend re-checks this leadership epoch/freshness
 	// immediately before every data commit, so a deposed leader's in-flight write
 	// is rejected instead of committed-yet-unwatched (FINDING #39).
-	backend.SetLeadershipFence(election.EpochAndLeadingFresh)
+	backend.SetLeadershipFence(func() (uint64, bool) {
+		epoch, fresh := election.EpochAndLeadingFresh()
+		if config.AdmissionFresh != nil {
+			fresh = fresh && config.AdmissionFresh()
+		}
+		return epoch, fresh
+	})
 	// revisionSyncer sync revision from leader to follower
 	peerService := service.NewPeerService(runCtx, election, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server

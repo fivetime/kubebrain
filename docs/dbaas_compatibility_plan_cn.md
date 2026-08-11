@@ -45806,6 +45806,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD/TiKV、MinIO 和 pinned BR v7.5.1 上通过。该闭环消除了手工 release 与内部 builder 伪证据，但仍不能
   覆盖 whole-cluster full import 窗口；下一项继续实现外部 durable admission fence。
 
+- A4321 建立位于 TiKV SST 之外的 PD-backed restore admission 基础契约。TiKV 模式下每个 KubeBrain 进程
+  启动时在 target PD embedded-etcd 的 tenant scope 注册 15 秒 leased identity session；注册 transaction
+  必须比较 gate=`open`，恢复 acquire transaction 则以 prefix range compare 要求所有 session 均不存在并
+  同时写入 plan/cluster/keyspace-bound token，所以并发启动与关闭 gate 严格单赢家。keepalive freshness 在
+  TTL 一半即失效，并与现有 leadership epoch 共同进入每次 TiKV batch commit 的最终 admission check，确保
+  与 PD 隔离但仍连通 TiKV 的旧进程在 session 真正过期、恢复方可能取得 gate 前先自我写隔离。共享包提供
+  exact-token `Acquire/Verify/Release`；embedded-etcd 测试覆盖 active session 阻止 acquire、closed gate 阻止
+  session、20 轮并发单赢家、foreign ownership 与 freshness，race 通过；现有真实双 PD/TiKV full-only BR
+  演练也在启用 session 后通过。该项只交付所有数据面进程必须遵守的外部 durable 原语；restore CLI 与
+  full/log/final receipt 尚未绑定它，因此 `target_write_fence_proven` 和 `pitr_complete` 继续保持 false。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -18,10 +18,15 @@
 package option
 
 import (
+	"context"
 	"fmt"
+	"time"
 
 	"github.com/spf13/pflag"
+	"github.com/tikv/pd/client/tlsutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 )
@@ -37,6 +42,40 @@ type storageConfig struct {
 	certFile string
 	keyFile  string
 	verifyCN []string
+}
+
+type tikvProcessAdmission struct {
+	session *admissionfence.Session
+	client  *clientv3.Client
+}
+
+func (a *tikvProcessAdmission) Fresh() bool { return a.session.Fresh() }
+func (a *tikvProcessAdmission) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sessionErr := a.session.Close(ctx)
+	clientErr := a.client.Close()
+	if sessionErr != nil {
+		return sessionErr
+	}
+	return clientErr
+}
+
+func (s *storageConfig) buildProcessAdmission(ctx context.Context, keyspace, identity string) (processAdmission, error) {
+	tlsConfig, err := (tlsutil.TLSConfig{CAPath: s.caFile, CertPath: s.certFile, KeyPath: s.keyFile, CertAllowedCN: s.verifyCN}).ToTLSConfig()
+	if err != nil {
+		return nil, fmt.Errorf("build PD admission TLS: %w", err)
+	}
+	client, err := clientv3.New(clientv3.Config{Endpoints: s.pdAddrs, DialTimeout: 5 * time.Second, TLS: tlsConfig})
+	if err != nil {
+		return nil, fmt.Errorf("connect PD admission metadata: %w", err)
+	}
+	session, err := admissionfence.StartSession(ctx, client, keyspace, identity, 15*time.Second)
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("register PD restore admission session: %w", err)
+	}
+	return &tikvProcessAdmission{session: session, client: client}, nil
 }
 
 func newStorageConfig() *storageConfig {

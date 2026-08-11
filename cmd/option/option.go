@@ -82,6 +82,11 @@ type KubeBrainOption struct {
 	watchProgressNotifyInterval time.Duration
 }
 
+type processAdmission interface {
+	Fresh() bool
+	Close() error
+}
+
 func NewOptions() *KubeBrainOption {
 	return &KubeBrainOption{
 		epsConf: &endpoint.Config{
@@ -415,6 +420,15 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 	kv, err := o.storageConfig.buildStorage()
 	if err != nil {
 		return err
+	}
+	admission, err := o.storageConfig.buildProcessAdmission(ctx, o.Keyspace, identity)
+	if err != nil {
+		_ = kv.Close()
+		return err
+	}
+	if admission != nil {
+		defer admission.Close()
+		o.epsConf.AdmissionFresh = admission.Fresh
 	}
 
 	// Coordination keys (election lock, compact watermark) live at raw keys

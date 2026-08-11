@@ -18,6 +18,7 @@
 package option
 
 import (
+	"context"
 	"github.com/spf13/pflag"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -44,4 +45,8 @@ func (s *storageConfig) validate() error {
 
 func (s *storageConfig) buildStorage() (storage.KvStorage, error) {
 	return badger.NewKvStorage(s.Config)
+}
+
+func (s *storageConfig) buildProcessAdmission(context.Context, string, string) (processAdmission, error) {
+	return nil, nil
 }
