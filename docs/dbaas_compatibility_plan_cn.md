@@ -46136,6 +46136,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   网络分区中即时知道提交结果。若未来改用 multipart，必须先新增 upload ID 持久化、AbortMultipartUpload、
   restart reconciliation 与真实 orphan inventory 门禁，不能沿用本项结论。
 
+- A4348 为 A4347 的另一半不确定结果补充真实对象存储证据：取消发生在 S3 已持久化单 PUT、但成功响应
+  尚未到达 worker 时，不能把它当作“未提交”重传或删除。新增
+  `TestCommittedPutObjectResponseLossReconcilesRealS3`，reverse proxy 先完整转发约 8 MiB artifact 到带
+  versioning/Object Lock 的 MinIO，收到成功响应后故意丢弃响应并取消原调用 context。Upload 必须进入
+  `context.WithoutCancel` 派生的有界 reconciliation，按 Head exact metadata/size/version、Get body digest、
+  ListObjectVersions last-modified 与 GetObjectRetention 全部核验后发布 receipt。测试再从直连 MinIO 读取
+  receipt 指定 version，要求 artifact file SHA-256 metadata 一致、目标 key 精确只有一个 version 且没有
+  delete marker，证明没有因响应丢失执行覆盖重传。2026-08-11 真实用例 1.35 秒通过且无资源残留；既有
+  fake-S3 committed-response regression 继续覆盖相同分支。该项把对象写结果划分为“可验证已提交→成功
+  receipt”“明确不存在→可重试”“存在但 identity/digest 不同→冲突失败”；reconciliation 超时或对象
+  存储不可达仍保持不确定并重排 Operation，不能自动删除受 Object Lock 保护的版本。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -102,6 +102,73 @@ func TestCanceledPutObjectLeavesNoRemoteArtifact(t *testing.T) {
 	require.Empty(t, incomplete.Uploads, "the single-PUT workflow must not leave multipart state")
 }
 
+func TestCommittedPutObjectResponseLossReconcilesRealS3(t *testing.T) {
+	directEndpoint, bucket, accessKey, secretKey := realObjectStoreEnv(t)
+	target, err := url.Parse(directEndpoint)
+	require.NoError(t, err)
+	uploadCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	var lost sync.Once
+	proxy.ModifyResponse = func(response *http.Response) error {
+		if response.Request.Method == http.MethodPut {
+			lost.Do(cancel)
+			return errors.New("injected loss of committed PutObject response")
+		}
+		return nil
+	}
+	proxy.ErrorHandler = func(response http.ResponseWriter, _ *http.Request, proxyErr error) {
+		http.Error(response, proxyErr.Error(), http.StatusBadGateway)
+	}
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+
+	client := realS3Client(t, server.URL, accessKey, secretKey)
+	directClient := realS3Client(t, directEndpoint, accessKey, secretKey)
+	artifact := writeLargeCancellationArtifact(t)
+	receiptPath := filepath.Join(t.TempDir(), "receipt.json")
+	objectKey := "reconcile/committed-response-loss.jsonl"
+	receipt, err := Upload(uploadCtx, client, UploadRequest{
+		Input: artifact, Instance: "reconcile-integration", BackupID: "reconcile-1",
+		ObjectStoreID: "minio-integration", Bucket: bucket, ObjectKey: objectKey,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: time.Now().Add(time.Hour).Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 300,
+		ReceiptOutput: receiptPath,
+	})
+	require.NoError(t, err)
+	require.ErrorIs(t, uploadCtx.Err(), context.Canceled)
+	require.NotEmpty(t, receipt.VersionID)
+	require.True(t, receipt.RemoteVerified)
+	persisted, err := ReadReceipt(receiptPath)
+	require.NoError(t, err)
+	require.Equal(t, receipt, persisted)
+
+	head, err := directClient.HeadObject(t.Context(), &s3.HeadObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(objectKey), VersionId: aws.String(receipt.VersionID),
+	})
+	require.NoError(t, err)
+	require.Equal(t, receipt.VersionID, aws.ToString(head.VersionId))
+	require.Equal(t, receipt.ArtifactFileSHA256, head.Metadata["kubebrain-artifact-file-sha256"])
+	versions, err := directClient.ListObjectVersions(t.Context(), &s3.ListObjectVersionsInput{
+		Bucket: aws.String(bucket), Prefix: aws.String(objectKey),
+	})
+	require.NoError(t, err)
+	require.Len(t, versions.Versions, 1, "response loss must not cause an overwrite retry")
+	require.Empty(t, versions.DeleteMarkers)
+}
+
+func realObjectStoreEnv(t *testing.T) (string, string, string, string) {
+	t.Helper()
+	directEndpoint := os.Getenv("KUBEBRAIN_OBJECTSTORE_CANCEL_S3_ENDPOINT")
+	bucket := os.Getenv("KUBEBRAIN_OBJECTSTORE_CANCEL_S3_BUCKET")
+	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	if directEndpoint == "" || bucket == "" || accessKey == "" || secretKey == "" {
+		t.Skip("set the real object-store cancellation integration environment")
+	}
+	return directEndpoint, bucket, accessKey, secretKey
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }

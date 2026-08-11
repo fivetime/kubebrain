@@ -2430,6 +2430,14 @@ context，在有界 reconciliation context 中验证 exact metadata/body/retenti
 Operation 长时间无 receipt 告警。未来采用 multipart 前必须补齐 upload ID 的持久化、abort、重启回收和
 orphan inventory；否则不得声称具备 multipart 清理能力。
 
+2026-08-11 的 A4348 验证相反边界：MinIO 已接受并锁定对象，但代理丢失 PUT 成功响应并同时取消 worker
+原 context。uploader 使用独立有界 reconciliation context 读取 exact version 的 metadata、内容 digest、
+last-modified 与 retention，确认全部匹配后仍原子发布 receipt；真实用例 1.35 秒通过，直连 inventory
+显示目标 key 只有一个 version、无 delete marker，因此没有盲目覆盖重传。运行手册必须把无 receipt 的
+失败区分为：Head 明确不存在可由同一 Operation/backup ID 重试；对象完全匹配可恢复 receipt；对象存在
+但 identity/digest 不同必须人工处理冲突；对象存储不可达则维持不确定状态并告警。Object Lock 下禁止用
+“清理失败上传”为由删除一个尚未完成身份核验的版本。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell
