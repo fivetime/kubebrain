@@ -444,6 +444,7 @@ func TestReadyRejectsDisconnectedLeaderTransport(t *testing.T) {
 type testLeaderElection struct {
 	leaderAddress string
 	isLeader      bool
+	leadingFresh  *bool
 	refresh       func()
 }
 
@@ -471,6 +472,9 @@ func (t *testLeaderElection) IsLeader() bool {
 }
 
 func (t *testLeaderElection) EpochAndLeadingFresh() (uint64, bool) {
+	if t.leadingFresh != nil {
+		return 0, *t.leadingFresh
+	}
 	return 0, t.isLeader
 }
 
@@ -534,6 +538,33 @@ func TestWatchGenerationClosesWhenFollowerBecomesLeader(t *testing.T) {
 		require.False(t, ok, "proxy generation must yield to the local leader")
 	case <-ctx.Done():
 		t.Fatal("proxy generation remained open after local promotion")
+	}
+}
+
+func TestWatchGenerationStaysOpenForStaleLocalLeader(t *testing.T) {
+	leadingFresh := false
+	election := &testLeaderElection{
+		leaderAddress: "127.0.0.1:1",
+		isLeader:      true,
+		leadingFresh:  &leadingFresh,
+	}
+	proxy := &etcdProxy{election: election, dialTimeout: 10 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	watch, err := proxy.Watch(ctx, []byte("/stale-leader"), nil, 42)
+	require.NoError(t, err)
+	select {
+	case _, ok := <-watch:
+		require.True(t, ok, "stale local leader flag must not close the proxy generation")
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	cancel()
+	select {
+	case _, ok := <-watch:
+		require.False(t, ok, "caller cancellation must close the pending proxy watch")
+	case <-time.After(time.Second):
+		t.Fatal("pending stale-leader proxy watch did not stop after caller cancellation")
 	}
 }
 

@@ -93,8 +93,13 @@ cleanup_dual_partition() {
 }
 
 partition_pd_quorum() {
-  local privileged deadline leader pods_json index pod ip response all_healthy
-  local -a all_pd_pods pd_pods
+  local placement="${1:-any}"
+  local privileged deadline leader pods_json index pod ip node response all_healthy
+  local -a all_pd_pods pd_pods pd_nodes
+  if [[ "$placement" != "any" && "$placement" != "cross-node" ]]; then
+    echo "invalid PD quorum partition placement: $placement" >&2
+    exit 1
+  fi
   if [[ ! "$KIND_NODE_CONTAINER" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
     echo "invalid KIND_NODE_CONTAINER: $KIND_NODE_CONTAINER" >&2
     exit 1
@@ -148,6 +153,13 @@ partition_pd_quorum() {
     echo "refusing PD quorum partition: need the leader and one distinct peer" >&2
     exit 1
   fi
+  if [[ "$placement" == "cross-node" ]]; then
+    mapfile -t pd_nodes < <(jq -r '.items[].spec.nodeName' <<<"$pods_json" | sort -u)
+    if (( ${#pd_nodes[@]} != 3 )); then
+      echo "refusing cross-node PD quorum partition: expected 3 distinct PD nodes, got ${#pd_nodes[@]}" >&2
+      exit 1
+    fi
+  fi
 
   dual_partition_pod_ips=()
   dual_partition_tags=()
@@ -166,19 +178,35 @@ partition_pd_quorum() {
       echo "refusing to partition PD member $pod: preflight health is not true" >&2
       exit 1
     fi
+    node="$KIND_NODE_CONTAINER"
+    if [[ "$placement" == "cross-node" ]]; then
+      node="$(jq -er --arg pod "$pod" '.items[] | select(.metadata.name == $pod) | .spec.nodeName' \
+        <<<"$pods_json")"
+    fi
+    if [[ ! "$node" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+      echo "refusing PD quorum partition: invalid target node container ${node:-missing}" >&2
+      exit 1
+    fi
+    privileged="$(docker inspect "$node" --format '{{.HostConfig.Privileged}}')"
+    if [[ "$privileged" != "true" ]]; then
+      echo "refusing PD quorum partition: target node container $node is not privileged" >&2
+      exit 1
+    fi
+    docker exec "$node" iptables -w 5 -S FORWARD >/dev/null
     dual_partition_pod_ips+=("$ip")
     dual_partition_tags+=("kubebrain-pd-quorum-${pod}-$$")
-    dual_partition_node_containers+=("$KIND_NODE_CONTAINER")
+    dual_partition_node_containers+=("$node")
   done
-  echo "PD quorum partition selected members: ${pd_pods[*]}"
+  echo "PD quorum partition selected members: ${pd_pods[*]} on nodes: ${dual_partition_node_containers[*]}"
   trap cleanup_dual_partition EXIT
   trap 'cleanup_dual_partition; exit 130' INT
   trap 'cleanup_dual_partition; exit 143' TERM
   for index in 0 1; do
     ip="${dual_partition_pod_ips[$index]}"
-    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -s "$ip" \
+    node="${dual_partition_node_containers[$index]}"
+    docker exec "$node" iptables -w 5 -I FORWARD 1 -s "$ip" \
       -m comment --comment "${dual_partition_tags[$index]}-out" -j DROP
-    docker exec "$KIND_NODE_CONTAINER" iptables -w 5 -I FORWARD 1 -d "$ip" \
+    docker exec "$node" iptables -w 5 -I FORWARD 1 -d "$ip" \
       -m comment --comment "${dual_partition_tags[$index]}-in" -j DROP
   done
   for index in 0 1; do
@@ -220,6 +248,7 @@ partition_pd_quorum() {
 }
 
 partition_pd_quorum_soak() {
+  local placement="${1:-any}"
   local cycle
   if [[ ! "$PD_QUORUM_PARTITION_CYCLES" =~ ^[1-9][0-9]*$ ]] ||
     (( PD_QUORUM_PARTITION_CYCLES > 20 )); then
@@ -233,7 +262,7 @@ partition_pd_quorum_soak() {
   fi
   for cycle in $(seq 1 "$PD_QUORUM_PARTITION_CYCLES"); do
     echo "PD quorum partition cycle ${cycle}/${PD_QUORUM_PARTITION_CYCLES}"
-    partition_pd_quorum
+    partition_pd_quorum "$placement"
     if (( cycle < PD_QUORUM_PARTITION_CYCLES )); then
       sleep "$PD_QUORUM_PARTITION_INTERVAL_SECONDS"
     fi
@@ -640,6 +669,18 @@ if [[ "${1:-}" == "--partition-pd-quorum-soak" ]]; then
   partition_pd_quorum_soak
   exit 0
 fi
+if [[ "${1:-}" == "--partition-pd-quorum-cross-node" ]]; then
+  need docker
+  need jq
+  partition_pd_quorum cross-node
+  exit 0
+fi
+if [[ "${1:-}" == "--partition-pd-quorum-cross-node-soak" ]]; then
+  need docker
+  need jq
+  partition_pd_quorum_soak cross-node
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-tikv-member" ]]; then
   need docker
   need jq
@@ -671,7 +712,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -799,6 +840,20 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_repeated_require_leader_test "Repeated PD quorum-loss require-leader streams" "$self --partition-pd-quorum"
     run_snapshot_failover_test "PD quorum-loss Snapshot" "$self --partition-pd-quorum"
     ;;
+  pd-cross-node-quorum-loss)
+    need docker
+    need jq
+    run_memberlist_quorum_test "cross-node PD quorum-loss MemberList consistency modes" \
+      "$self --partition-pd-quorum-cross-node"
+    run_watch_recovery_test "cross-node PD quorum-loss network partition" \
+      "$self --partition-pd-quorum-cross-node-soak"
+    run_lease_require_leader_test "cross-node PD quorum-loss LeaseKeepAlive" \
+      "$self --partition-pd-quorum-cross-node-soak"
+    run_repeated_require_leader_test "Repeated cross-node PD quorum-loss require-leader streams" \
+      "$self --partition-pd-quorum-cross-node"
+    run_snapshot_failover_test "cross-node PD quorum-loss Snapshot" \
+      "$self --partition-pd-quorum-cross-node"
+    ;;
   tikv-network-partition)
     need docker
     need jq
@@ -821,7 +876,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "$self --partition-tikv-quorum-cross-node"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

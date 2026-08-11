@@ -418,6 +418,26 @@ func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeQuorumLossUsesObserverAndTargetNodes(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-quorum-loss)`)
+	require.Contains(t, script, `--partition-pd-quorum-cross-node`)
+	require.Contains(t, script, `--partition-pd-quorum-cross-node-soak`)
+	require.Contains(t, script, `partition_pd_quorum cross-node`)
+	require.Contains(t, script, `partition_pd_quorum_soak cross-node`)
+	require.Contains(t, script, `local placement="${1:-any}"`)
+	require.Contains(t, script, `expected 3 distinct PD nodes`)
+	require.Contains(t, script, `dual_partition_node_containers+=("$node")`)
+	require.Contains(t, script, `docker exec "$KIND_NODE_CONTAINER" curl`)
+	require.Contains(t, script, `docker exec "$node" iptables -w 5 -I FORWARD 1 -s "$ip"`)
+	require.Contains(t, script, `on nodes: ${dual_partition_node_containers[*]}`)
+	require.Contains(t, script, `cross-node PD quorum-loss MemberList consistency modes`)
+	require.Contains(t, script, `cross-node PD quorum-loss Snapshot`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

@@ -695,7 +695,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 			// cannot make progress in that role because leaders intentionally have no
 			// forwarding client. Close this generation so the outer Watch pipeline can
 			// reopen the same logical Watch against its local backend.
-			if e.election.IsLeader() {
+			if _, leadingFresh := e.election.EpochAndLeadingFresh(); leadingFresh {
 				klog.InfoS("etcd proxy watch yielding to local leader", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
 				return
 			}

@@ -98,12 +98,25 @@ func TestRequireLeaderStreamsAcrossRepeatedBackendFailover(t *testing.T) {
 			return keepAliveErr == nil && recovered != nil && recovered.TTL > 0
 		}, 45*time.Second, 100*time.Millisecond, "cycle %d ordinary lease must recover", cycle)
 		key := prefix + fmt.Sprintf("recovered-%d", cycle)
-		_, err = cli.Put(ctx, key, fmt.Sprintf("value-%d", cycle))
-		require.NoError(t, err, "cycle %d Put after recovery", cycle)
-		got, getErr := cli.Get(ctx, key)
-		require.NoError(t, getErr, "cycle %d Range after recovery", cycle)
+		value := fmt.Sprintf("value-%d", cycle)
+		require.Eventually(t, func() bool {
+			callCtx, callCancel := context.WithTimeout(ctx, 3*time.Second)
+			defer callCancel()
+			_, putErr := cli.Put(callCtx, key, value)
+			return putErr == nil
+		}, 45*time.Second, 100*time.Millisecond,
+			"cycle %d Put must recover after ordinary lease path", cycle)
+		var got *clientv3.GetResponse
+		require.Eventually(t, func() bool {
+			callCtx, callCancel := context.WithTimeout(ctx, 3*time.Second)
+			defer callCancel()
+			var getErr error
+			got, getErr = cli.Get(callCtx, key)
+			return getErr == nil && len(got.Kvs) == 1
+		}, 45*time.Second, 100*time.Millisecond,
+			"cycle %d Range must recover after Put", cycle)
 		require.Len(t, got.Kvs, 1)
-		require.Equal(t, fmt.Sprintf("value-%d", cycle), string(got.Kvs[0].Value))
+		require.Equal(t, value, string(got.Kvs[0].Value))
 		_, _ = cli.Revoke(ctx, lease.ID)
 	}
 

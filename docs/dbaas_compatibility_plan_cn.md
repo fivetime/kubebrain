@@ -46628,6 +46628,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 1427）。本项关闭 kind bridge 上两个跨 node TiKV store 的短时 quorum loss 与错误映射证据；
   独立宿主/AZ、长分区、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4378 对照 `/root/etcd/tests/integration/network_partition_test.go`，将 PD quorum-loss 的五项兼容矩阵
+  从单 node 观测者网络命名空间推进到两个真实 worker。`pd-cross-node-quorum-loss` 要求三个 ready PD Pod
+  精确分布在三个不同 node；仍由 control-plane container 作为独立 observer 执行 PD health 断言，但 leader
+  与一个 peer 的 source/destination DROP 分别写入各自 privileged worker。每条规则继续绑定 PID 唯一
+  comment，并由逐 node cleanup、EXIT/INT/TERM trap 和残留反查恢复；共宿、未知 node、非 privileged
+  container 或不足三个 ready PD 均在修改网络前 fail closed。新 mode 连续运行 MemberList serializable
+  consistency、Watch/Range、LeaseKeepAlive require-leader、重复 Watch/Lease require-leader streams 与
+  Snapshot 五个官方 clientv3 oracle，避免用单一 workload 推广整个 etcd 数据面。
+  首轮真实 Watch 暴露入口节点的旧 `IsLeader()` 标志在 renew deadline 过后仍短暂为真：follower proxy
+  主动关闭 generation 让位，但 `EpochAndLeadingFresh()` 已为 false，外层无法把它认作有效角色转换，最终
+  无错误取消客户端 Watch，59 个已提交事件只交付 50 个。代理现在只向 fresh local leader 让位；单测固定
+  stale `IsLeader=true`/fresh=false 时 generation 必须保持，真实复验 55/55 个事件完整交付。重复流门禁还
+  发现普通 KeepAlive 在一个 ingress 恢复不等于 NodePort 后续 Put 已命中完成 write-fence 的副本；恢复
+  oracle 因此分别在有界 45 秒内等待 lease、Put 与 Range，而不把规范的瞬态 `Unavailable` 误报为永久失败。
+  Snapshot 首次被 provenance 门禁正确拒绝，因为旧 `/root/etcd/bin/etcdutl` 来自 `d947b208...`；使用
+  `build-reference-etcd-toolchain.sh` 从 clean `/root/etcd@5cd9f4ee1380...` 重建并验证官方工具后才继续。
+  2026-08-11 disposable `kubebrain-pd-quorum-cross` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、9379/9380 拓扑的最终连续矩阵全部通过：MemberList 35.69 秒；Watch 59.75 秒，60 个提交
+  事件恰好一次交付（61 responses、481 次瞬态写、final revision 1649）；LeaseKeepAlive 50.60 秒；重复
+  require-leader streams 51.02 秒；Snapshot 51.98 秒且隔离期 fail closed、恢复后由当前官方 etcdutl
+  验证。本项关闭 kind bridge 上两个跨 node PD 成员短时 quorum loss 的五项数据面证据；独立宿主/AZ、
+  长分区、PD 全失、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
