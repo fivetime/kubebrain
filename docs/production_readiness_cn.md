@@ -2349,6 +2349,21 @@ admission/election 重建后恢复 Put，以及清障重启后原 PD member name
 宣传成零中断；若两个 PD 数据盘同时不可写则没有多数派，不在本门禁的可用性承诺内。生产仍须在真实
 PVC 上演练容量告警、扩容或 member replacement，并验证 PD 与 TiKV 同时受压时的组合行为。
 
+两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-two-store-enospc-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeTwoStoreENOSPCRealTiKV \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+两个受限卷必须各自触发 TiKV OS error 28；失去多数派后新 Put 不得返回成功。恢复原两个 store ID 后，
+门禁逐条读取全部 acknowledged 写。对于超时/错误调用，不得在客户端响应缺失时宣称“必未提交”：必须像
+etcd robustness history 一样在恢复后线性化读取，将它对账为存在或不存在，再继续后续写入。2026-08-11
+真实用例 153.74 秒通过。该门禁证明的是多数派丢失时 fail closed 和恢复后的提交完整性，不是无多数派
+可用性；生产 runbook 还必须规定超时 mutation 的幂等键、重试或 read-after-recovery reconciliation 策略。
+
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
 `continuous_writer_exclusion=true`、`fence_handoff_proven=true`、

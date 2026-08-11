@@ -9,8 +9,8 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, or target-pd-leader-enospc-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, target-two-store-enospc-resume, or target-pd-leader-enospc-resume" >&2
   exit 2
 fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
@@ -20,7 +20,7 @@ fi
 drill_tmp=$(mktemp -d /tmp/kb-native-pitr-full-restore.XXXXXX)
 shared_dir="$drill_tmp/shared"
 tikv_config="$PWD/hack/backup/native-pitr-tikv-integration.toml"
-if [[ "$fault_injection" == target-store-enospc-resume ]]; then
+if [[ "$fault_injection" == target-store-enospc-resume || "$fault_injection" == target-two-store-enospc-resume ]]; then
   tikv_config="$PWD/hack/backup/native-pitr-tikv-enospc-integration.toml"
 fi
 mkdir -p "$shared_dir"
@@ -33,6 +33,7 @@ target_pd_names=()
 target_pd_data_dirs=()
 source_tikv_names=()
 target_tikv_names=()
+target_enospc_data_dirs=()
 source_pd_endpoints=()
 target_pd_endpoints=()
 source_initial_cluster=()
@@ -79,13 +80,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-target_enospc_data_dir=
-if [[ "$fault_injection" == target-store-enospc-resume ]]; then
-  target_enospc_data_dir="$drill_tmp/target-tikv-0-data"
+target_enospc_count=0
+if [[ "$fault_injection" == target-store-enospc-resume ]]; then target_enospc_count=1; fi
+if [[ "$fault_injection" == target-two-store-enospc-resume ]]; then target_enospc_count=2; fi
+for ((index=0; index<target_enospc_count; index++)); do
+  target_enospc_data_dir="$drill_tmp/target-tikv-$index-data"
   mkdir -p "$target_enospc_data_dir"
-  mount -t tmpfs -o size=768m,mode=1777 kb-native-pitr-enospc "$target_enospc_data_dir"
+  mount -t tmpfs -o size=768m,mode=1777 "kb-native-pitr-enospc-$index" "$target_enospc_data_dir"
   mounted_dirs+=("$target_enospc_data_dir")
-fi
+  target_enospc_data_dirs+=("$target_enospc_data_dir")
+done
 if [[ "$fault_injection" == target-pd-leader-enospc-resume ]]; then
   for index in $(seq 0 $((topology_size - 1))); do
     target_pd_data_dir="$drill_tmp/target-pd-$index-data"
@@ -128,8 +132,8 @@ for index in $(seq 0 $((topology_size - 1))); do
     --config=/native-pitr-integration.toml --addr="127.0.0.1:$source_tikv_port" --advertise-addr="127.0.0.1:$source_tikv_port" \
     --status-addr="127.0.0.1:$source_status_port" --pd="$source_pd_csv" --data-dir=/data --log-file= >/dev/null
   target_data_args=(--tmpfs /data:rw,size=64g,mode=1777)
-  if [[ "$fault_injection" == target-store-enospc-resume && "$index" == 0 ]]; then
-    target_data_args=(-v "$target_enospc_data_dir:/data")
+  if (( index < target_enospc_count )); then
+    target_data_args=(-v "${target_enospc_data_dirs[$index]}:/data")
   fi
   docker run -d --name "${target_tikv_names[$index]}" --network host "${target_data_args[@]}" \
     -e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
@@ -195,8 +199,14 @@ if [[ "$fault_injection" == target-two-store-quorum-loss-resume ]]; then
 elif [[ "$fault_injection" == target-store-enospc-resume ]]; then
   fault_env=(
     KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINER="${target_tikv_names[0]}"
-    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR="$target_enospc_data_dir"
+    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR="${target_enospc_data_dirs[0]}"
     KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_STATUS=127.0.0.1:21180
+  )
+elif [[ "$fault_injection" == target-two-store-enospc-resume ]]; then
+  fault_env=(
+    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINERS="${target_tikv_names[0]},${target_tikv_names[1]}"
+    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIRS="${target_enospc_data_dirs[0]},${target_enospc_data_dirs[1]}"
+    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_STATUSES=127.0.0.1:21180,127.0.0.1:21181
   )
 elif [[ "$fault_injection" == target-pd-leader-enospc-resume ]]; then
   leader_name=$(curl -fsS http://127.0.0.1:43379/pd/api/v1/leader | jq -er '.name | select(type == "string" and length > 0)')

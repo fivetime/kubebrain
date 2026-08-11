@@ -205,6 +205,114 @@ func TestNativePhysicalENOSPCRealTiKV(t *testing.T) {
 	}
 }
 
+// TestNativeTwoStoreENOSPCRealTiKV verifies fail-closed behavior after physical
+// ENOSPC removes a TiKV majority. Failed client calls are reconciled after
+// recovery instead of being incorrectly classified as definitely uncommitted.
+func TestNativeTwoStoreENOSPCRealTiKV(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	containers := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINERS"), ",")
+	dataDirs := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIRS"), ",")
+	statuses := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_STATUSES")
+	if targetPD == "" || serverBinary == "" || len(containers) != 2 || len(dataDirs) != 2 || statuses == "" || containers[0] == "" || dataDirs[0] == "" {
+		t.Skip("set the native PITR two-store ENOSPC integration environment")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	pdc, err := pd.NewClientWithContext(ctx, strings.Split(targetPD, ","), pd.SecurityOption{})
+	require.NoError(t, err)
+	defer pdc.Close()
+	storeIDs := []uint64{
+		requireStoreIDAtAddress(t, ctx, pdc, "127.0.0.1:43160"),
+		requireStoreIDAtAddress(t, ctx, pdc, "127.0.0.1:43161"),
+	}
+
+	root := t.TempDir()
+	const endpoint = "127.0.0.1:45379"
+	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "two-store-enospc", "two-store-enospc-integration")
+	defer server.stop(t)
+	client := waitForEndpoint(t, ctx, endpoint, server)
+	defer client.Close()
+	_, err = client.Put(ctx, "before", "durable-before-quorum-loss")
+	require.NoError(t, err)
+
+	largeValue := strings.Repeat("q", 768*1024)
+	acknowledged := make([]string, 0, 256)
+	pressurePaths := make([]string, 2)
+	for storeIndex := 0; storeIndex < 2; storeIndex++ {
+		pressurePaths[storeIndex] = filepath.Join(dataDirs[storeIndex], "kubebrain-enospc-pressure")
+		defer os.Remove(pressurePaths[storeIndex])
+		fillBoundedFilesystem(t, ctx, dataDirs[storeIndex], pressurePaths[storeIndex])
+		observedENOSPC := false
+		for writeIndex := 0; writeIndex < 256; writeIndex++ {
+			key := fmt.Sprintf("acknowledged-%d-%03d", storeIndex, writeIndex)
+			attempt, attemptCancel := context.WithTimeout(ctx, 15*time.Second)
+			_, putErr := client.Put(attempt, key, largeValue)
+			attemptCancel()
+			if putErr == nil {
+				acknowledged = append(acknowledged, key)
+			}
+			if containerLogContains(ctx, containers[storeIndex], "no space left on device", "os error 28") {
+				observedENOSPC = true
+				break
+			}
+		}
+		require.True(t, observedENOSPC, "TiKV store %d did not surface physical ENOSPC", storeIndex)
+	}
+	require.NotEmpty(t, acknowledged, "the first single-store fault window must retain acknowledged progress")
+
+	ambiguousCtx, ambiguousCancel := context.WithTimeout(ctx, 5*time.Second)
+	_, ambiguousErr := client.Put(ambiguousCtx, "ambiguous-at-quorum-loss", "reconcile-after-recovery")
+	ambiguousCancel()
+	require.Error(t, ambiguousErr, "a two-store ENOSPC quorum loss must not return write success")
+
+	for index, pressurePath := range pressurePaths {
+		require.NoError(t, os.Remove(pressurePath))
+		restartOutput, restartErr := exec.CommandContext(ctx, "docker", "restart", containers[index]).CombinedOutput()
+		require.NoError(t, restartErr, "%s", restartOutput)
+	}
+	waitForAddresses(t, ctx, statuses)
+	for index, address := range []string{"127.0.0.1:43160", "127.0.0.1:43161"} {
+		wantID := storeIDs[index]
+		require.Eventually(t, func() bool {
+			return requireStoreIDAtAddressNoFail(ctx, pdc, address) == wantID
+		}, 45*time.Second, 500*time.Millisecond, "recovered store %d must retain its original identity", index)
+	}
+
+	for _, key := range acknowledged {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1, "every acknowledged write must survive quorum recovery")
+		require.Equal(t, []byte(largeValue), response.Kvs[0].Value)
+	}
+	// A timeout/error is not proof of non-commit. A linearizable read reconciles
+	// the operation to either legal state before subsequent progress.
+	ambiguous, err := client.Get(ctx, "ambiguous-at-quorum-loss")
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(ambiguous.Kvs), 1)
+	if len(ambiguous.Kvs) == 1 {
+		require.Equal(t, []byte("reconcile-after-recovery"), ambiguous.Kvs[0].Value)
+	}
+	_, err = client.Put(ctx, "after", "durable-after-quorum-recovery")
+	require.NoError(t, err)
+	before, err := client.Get(ctx, "before")
+	require.NoError(t, err)
+	require.Len(t, before.Kvs, 1)
+	require.Equal(t, []byte("durable-before-quorum-loss"), before.Kvs[0].Value)
+}
+
+func fillBoundedFilesystem(t *testing.T, ctx context.Context, dataDir, pressurePath string) {
+	t.Helper()
+	fill := exec.CommandContext(ctx, "dd", "if=/dev/zero", "of="+pressurePath, "bs=1M", "status=none", "conv=fsync")
+	fillOutput, fillErr := fill.CombinedOutput()
+	require.Error(t, fillErr, "unbounded dd must stop at the bounded test filesystem")
+	require.Contains(t, strings.ToLower(string(fillOutput)), "no space left on device")
+	var stat syscall.Statfs_t
+	require.NoError(t, syscall.Statfs(dataDir, &stat))
+	require.Less(t, stat.Bavail*uint64(stat.Bsize), uint64(1024*1024), "test filesystem was not filled")
+}
+
 // TestNativePDLeaderENOSPCRealCluster verifies that physical disk exhaustion
 // of the live PD leader is handled as a single control-plane member failure.
 func TestNativePDLeaderENOSPCRealCluster(t *testing.T) {

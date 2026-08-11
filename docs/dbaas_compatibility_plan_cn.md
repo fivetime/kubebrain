@@ -46018,6 +46018,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   “单 PD leader 物理满盘、PD 重选主、KubeBrain 有界恢复及同 member 清障”的证据缺口，不承诺零瞬断；
   两个 PD 同时满盘、PD member replacement、真实 PVC 扩容、长期满盘和 TiKV+PD 组合故障仍开放。
 
+- A4339 对标 `/root/etcd/tests/robustness` 将超时操作作为可线性化未确定结果处理的模型，把 A4337 从单
+  store 可用性扩展到两个 TiKV store 物理 ENOSPC 后的 fail-closed 与恢复。新增三节点
+  `target-two-store-enospc-resume`，为 target TiKV-0/1 分别挂载独立 768 MiB 宿主 tmpfs；测试先固定两个
+  PD store ID，逐个填满卷并用 768 KiB MVCC 写耗尽预分配文件，要求两个 TiKV 日志各自出现
+  `No space left on device`/OS error 28。第一 store 满盘期间所有收到成功响应的 key 被加入 acknowledged
+  集；第二 store 满盘并失去多数派后，专用 Put 必须不再返回成功。测试不把该 error/timeout 擅自解释为
+  “必未提交”：释放两个压力文件、重启相同容器和数据目录、确认两个地址仍映射原 store ID 后，逐条读取
+  全部 acknowledged key，并以线性化 Get 将最后一次错误写对账为合法的存在或不存在，再要求新 Put 成功。
+  2026-08-11 真实用例 153.74 秒通过，清理后无容器、挂载或临时目录残留。该项关闭“双 TiKV 物理满盘
+  时不伪造成功、恢复多数派后保留所有已确认提交并可消解不确定结果”的缺口；无多数派期间不承诺读写
+  可用，真实 PVC replacement/扩容、长时间满盘、第三 store 压力及 PD+TiKV 组合故障仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
