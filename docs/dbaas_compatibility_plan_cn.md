@@ -46333,7 +46333,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision，随后默认 linearizable Range 仍失败，解除隔离后原进程恢复。2026-08-11 最终整例 25.14 秒
   通过且 runner 无资源残留。边界继承 A4359 的 1 秒发布窗口、2.5 分钟本地安全窗和 warm Region cache
   要求；upstream `IsTxnReadonly` 不把 nested Txn 当作该快速路径，因此 nested 或混合读写 Txn 不在本项
-  范围，RangeStream 也仍开放。
+  范围。Serializable latest RangeStream 由 A4361 补齐。
+
+- A4361 关闭 A4359 留下的 serializable latest RangeStream checkpoint 缺口。对照 upstream
+  `/root/etcd/server/etcdserver/v3_server.go::EtcdServer.RangeStream`：`Serializable=true` 跳过
+  `LinearizableReadNotify`，授权、整个 stream read 和最终 auth revision 检查都在同一个 `doSerialize`
+  边界。KubeBrain 现在对 `Revision=0` 且节点不是 leader 或 leadership freshness 已失效的请求，在任何
+  point/count/empty 委托或 partition stream 开始前只附加一次受保护 checkpoint。A4359 已接线的显式 TSO
+  贯穿 auth internal reads、safe current/header revision、decoded range、scanner iterator 和逐 chunk compact
+  检查；离线 scanner 使用单个逻辑 partition，不调用 PD TSO 或 Region partition discovery。最终数据帧的
+  aggregate Count 和 header 固定到 checkpoint，所有数据帧来自同一 snapshot；发送失败和 stale-auth fence
+  的既有优先级不变。显式 historical stream 保持原路径，linearizable stream 仍执行 read barrier。
+  确定性测试以 `IsLeader=true`、freshness=false 模拟隔离窗口，要求不触发 barrier、后端 context 包含精确
+  TSO，并得到 value、Count=1 和 checkpoint terminal header；目标 race 以及 backend/server/storage 全量
+  回归通过。真实 `TestNativeKubeBrainPDNetworkIsolationRealCluster` 在故障前额外写入 `stream/one` 与
+  `stream/two` 并签发 HS256 JWT；隔离 KubeBrain 到三个 PD client port、等待 admission session 过期后，
+  独立 raw gRPC 客户端用该 token metadata 发起 serializable RangeStream，必须完整返回两个值、Count=2，
+  terminal header revision 不早于最后一次 acknowledged stream write，随后 linearizable Range 仍失败且
+  原进程恢复。首次现场运行揭示 clientv3 stream interceptor 会在建流时主动重新 Authenticate，因而在
+  PD 隔离时先失败；这不是服务端 RangeStream 读取差距，最终门禁明确复用故障前 token，同时仍经过服务端
+  本地 JWT signature/claims/auth snapshot 校验。修正后的三 PD/三 TiKV 整例 28.22 秒通过，runner 无残留。
+  边界仍是 A4359 的约 1 秒发布窗口、2.5 分钟本地安全窗和 warm Region cache；`Revision>0` historical
+  stream、隔离期间 Region topology 变化、超长流跨越本地安全窗或 safepoint TTL、以及客户端自身要求在线
+  重新登录的策略，不由本项改变或扩大承诺。
 
 ### P2：运维兼容和长期验证
 

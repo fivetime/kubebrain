@@ -41,7 +41,10 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/storage/schema"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -970,9 +973,19 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	})
 	require.NoError(t, err)
 	defer client.Close()
+	authenticated, err := client.Authenticate(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	rawConnection, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer rawConnection.Close()
+	rawKV := etcdserverpb.NewKVClient(rawConnection)
 	beforePut, err := client.Put(ctx, "before", "durable-before-pd-isolation")
 	require.NoError(t, err)
 	secondPut, err := client.Put(ctx, "second", "same-checkpoint")
+	require.NoError(t, err)
+	_, err = client.Put(ctx, "stream/one", "stream-value-one")
+	require.NoError(t, err)
+	streamSecondPut, err := client.Put(ctx, "stream/two", "stream-value-two")
 	require.NoError(t, err)
 	// The checkpoint worker publishes at one-second cadence. Confirm the write
 	// has had a full publication window before cutting the process off from PD;
@@ -1045,6 +1058,39 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Equal(t, []byte("same-checkpoint"), serializableTxn.Responses[1].GetResponseRange().Kvs[0].Value)
 	require.Equal(t, serializableTxn.Header.Revision, serializableTxn.Responses[0].GetResponseRange().Header.Revision)
 	require.Equal(t, serializableTxn.Header.Revision, serializableTxn.Responses[1].GetResponseRange().Header.Revision)
+	serializableStreamCtx, serializableStreamCancel := context.WithTimeout(ctx, 3*time.Second)
+	serializableStreamCtx = metadata.NewOutgoingContext(
+		serializableStreamCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, authenticated.Token),
+	)
+	serializableStream, err := rawKV.RangeStream(
+		serializableStreamCtx,
+		&etcdserverpb.RangeRequest{
+			Key: []byte("stream/"), RangeEnd: []byte(clientv3.GetPrefixRangeEnd("stream/")), Serializable: true,
+		},
+	)
+	require.NoError(t, err)
+	streamed := make(map[string]string)
+	var streamTerminal *etcdserverpb.RangeResponse
+	for {
+		chunk, recvErr := serializableStream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		require.NoError(t, recvErr, "the protected checkpoint must serve serializable RangeStream without PD")
+		response := chunk.GetRangeResponse()
+		require.NotNil(t, response)
+		for _, kv := range response.Kvs {
+			streamed[string(kv.Key)] = string(kv.Value)
+		}
+		if response.Header != nil {
+			streamTerminal = response
+		}
+	}
+	serializableStreamCancel()
+	require.Equal(t, map[string]string{"stream/one": "stream-value-one", "stream/two": "stream-value-two"}, streamed)
+	require.NotNil(t, streamTerminal)
+	require.EqualValues(t, 2, streamTerminal.Count)
+	require.GreaterOrEqual(t, streamTerminal.Header.Revision, streamSecondPut.Header.Revision)
 	linearizableCtx, linearizableCancel := context.WithTimeout(ctx, 3*time.Second)
 	_, err = client.Get(linearizableCtx, "before")
 	linearizableCancel()

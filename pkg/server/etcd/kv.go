@@ -228,6 +228,15 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if hasRangeRevisionFilters(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
+	if r.Serializable && r.Revision == 0 {
+		_, leadingFresh := s.peers.EpochAndLeadingFresh()
+		if !s.peers.IsLeader() || !leadingFresh {
+			if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+				ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+				s.metricCli.EmitCounter("read.range_stream.checkpoint", 1)
+			}
+		}
+	}
 	// CountOnly has no KV payload to stream. A point lookup is inherently
 	// bounded to one KV, and empty/reversed intervals must not enter the
 	// partition scanner: its encoded MVCC borders are meaningful only for a

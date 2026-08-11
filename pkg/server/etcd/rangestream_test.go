@@ -37,6 +37,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -76,6 +77,31 @@ type prematureRangeStreamBackendShim struct {
 type revisionRecordingRangeStreamBackendShim struct {
 	BackendShim
 	revision uint64
+}
+
+type checkpointRangeStreamBackendShim struct {
+	*checkpointRangeBackendShim
+	used bool
+}
+
+func (b *checkpointRangeStreamBackendShim) RangeStreamChan(
+	ctx context.Context, _, _ []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	timestamp, ok := storage.SnapshotTimestampFromContext(ctx)
+	if !ok || timestamp != b.checkpoint.Timestamp || revision != 0 {
+		return nil, storage.ErrUnavailable
+	}
+	b.used = true
+	ch := make(chan rangeStreamChunk, 2)
+	ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{
+		Header: txnHeader(int64(b.checkpoint.Revision)),
+		Kvs: []*mvccpb.KeyValue{{
+			Key: []byte("/checkpoint/key"), Value: []byte("checkpoint"), ModRevision: int64(b.checkpoint.Revision),
+		}},
+	}}
+	ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(int64(b.checkpoint.Revision))}}
+	close(ch)
+	return ch, nil
 }
 
 type encodedErrorRangeStreamBackend struct {
@@ -417,6 +443,39 @@ func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
 	linearizable := &fakeRangeStreamServer{ctx: ctx}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")}, linearizable)
 	requireReadBarrierUnavailable(t, err, syncErr.Error())
+}
+
+func TestStaleLeaderSerializableRangeStreamUsesProtectedCheckpoint(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 41, Timestamp: 111, CompactRevision: 9, ValidUntil: time.Now().Add(time.Minute),
+	}
+	checkpointRange := &checkpointRangeBackendShim{BackendShim: server.backend, checkpoint: checkpoint}
+	shim := &checkpointRangeStreamBackendShim{checkpointRangeBackendShim: checkpointRange}
+	server.backend = shim
+	server.tokens.snapshots = newAuthSnapshotCache(shim)
+	server.peers = testPeerService{
+		isLeader: true,
+		epochFn:  func() (uint64, bool) { return 5, false },
+		syncReadFn: func(context.Context) error {
+			t.Fatal("serializable RangeStream must not perform leader revision sync")
+			return nil
+		},
+	}
+
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/checkpoint/"), RangeEnd: []byte("/checkpoint0"), Serializable: true,
+	}, stream)
+	require.NoError(t, err)
+	require.True(t, shim.used)
+	require.NotEmpty(t, stream.sent)
+	terminal := stream.sent[len(stream.sent)-1].GetRangeResponse()
+	require.NotNil(t, terminal.Header)
+	require.Equal(t, int64(checkpoint.Revision), terminal.Header.Revision)
+	require.EqualValues(t, 1, terminal.Count)
+	require.Equal(t, []byte("checkpoint"), terminal.Kvs[0].Value)
 }
 
 func TestHistoricalRangeStreamUsesDurableFollowerWatermark(t *testing.T) {
