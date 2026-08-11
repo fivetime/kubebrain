@@ -46239,6 +46239,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   整例 68.95 秒且无资源残留。client-certificate 已有 TLS/mTLS listener 与 official client 覆盖，本项新增
   的是 PD-backed auth store 不可读时的确定性 local-path 证明；未重复搭建一套只为同一路径的现场 PKI。
 
+- A4356 将 A4353-A4355 的双 PD ENOSPC 证据扩展到真实 TCP 丢包，避免把进程停止或磁盘错误等同于网络
+  分区。disposable native runner 新增 `target-pd-network-quorum-loss-resume`：以独立、按 PID 命名的 host
+  iptables chain 挂到 OUTPUT，仅 DROP 三个目标 PD peer listener 与两个 client listener 的精确端口；第三个
+  client endpoint 始终可达，因此 PD API 的失败证明的是 embedded-etcd Raft 无多数派，而非所有 endpoint
+  都无法连接。chain 在 Go test cleanup 与 runner EXIT/INT/TERM cleanup 两层清空并删除，现场通过后确认
+  无规则、容器或临时目录残留。新增 `TestNativePDNetworkQuorumLossRealCluster` 在 auth-enabled HS256 JWT
+  场景先保存数据与三成员 identity；分区后直接 PD Put 和 KubeBrain Put 均超时/失败，authenticated
+  serializable MemberList 从完整本地 applied snapshot 返回唯一 `integration` 成员，默认 linearizable
+  MemberList 返回 `Unavailable`/caller deadline。恢复 packet flow 后不重启任何 PD/KubeBrain 进程，写入在
+  45 秒门限内恢复，前后数据和三成员 topology 均保留。2026-08-11 真实三 PD/三 TiKV 用例先以 15.83 秒
+  通过，补强三成员 name→ID 精确检查后以 41.12 秒复验通过。
+  本项是单宿主 loopback 上的精确端口对称 peer partition，只关闭“真实 TCP 丢包与原进程原 identity 恢复”
+  缺口；它不模拟跨节点/AZ latency、带宽、conntrack/NAT、单向链路或 network fabric failure，跨 AZ 非对称
+  分区与长时间 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

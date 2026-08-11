@@ -2497,6 +2497,24 @@ signature、expiry、username/revision claims，默认 MemberList 仍 fail close
 原子挂载、限制文件权限并随 Pod 一致发布；key/CA 轮换应滚动重启并通过默认 linearizable 探针确认新配置，
 不能假设 serializable 请求会从不可用 PD 获取新的认证材料。
 
+2026-08-11 的 A4356 增加不依赖 pause/ENOSPC 的 PD 网络多数派故障门禁。运行方式：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-pd-network-quorum-loss-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativePDNetworkQuorumLossRealCluster \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+runner 要求 root 与可用的 host iptables，为本次 PID 创建专用 chain，只丢弃 target 三个 PD peer 端口和
+两个 client 端口；保留的第三 client endpoint 可连接但不能完成 Raft 写。故障期间认证写和默认 MemberList
+必须 fail closed，HS256 JWT 的 serializable MemberList 仍只读本地完整 applied auth/topology snapshot。
+清空 chain 后不重启进程，写入、三成员 identity 和故障前数据均须恢复；2026-08-11 真实三 PD/三 TiKV
+用例先以 15.83 秒通过，补强 name→ID 精确检查后以 41.12 秒复验通过，EXIT 清理后未留下 iptables rule
+或容器。生产执行前必须确认规则目标端口属于一次性
+集群，禁止复用该 profile 操作共享宿主；本门禁仍是单宿主 loopback 对称 peer partition，不能替代跨 AZ
+单向分区、延迟/丢包抖动、NAT/conntrack 或 network fabric 演练。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

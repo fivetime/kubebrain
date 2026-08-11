@@ -16,8 +16,8 @@ case "$test_name" in
     objectstore_integration=true
     ;;
 esac
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-store-reserve-enospc-recover && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-two-pd-enospc-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, target-store-reserve-enospc-recover, target-two-store-enospc-resume, target-pd-leader-enospc-resume, target-two-pd-enospc-resume, or target-pd-leader-store-enospc-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-store-reserve-enospc-recover && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-two-pd-enospc-resume && "$fault_injection" != target-pd-network-quorum-loss-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, target-store-reserve-enospc-recover, target-two-store-enospc-resume, target-pd-leader-enospc-resume, target-two-pd-enospc-resume, target-pd-network-quorum-loss-resume, or target-pd-leader-store-enospc-resume" >&2
   exit 2
 fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
@@ -46,6 +46,7 @@ chmod 0777 "$shared_dir"
 
 names=()
 mounted_dirs=()
+network_partition_chain=""
 source_pd_names=()
 target_pd_names=()
 target_pd_data_dirs=()
@@ -83,6 +84,13 @@ for name in "${names[@]}"; do
 done
 cleanup() {
   cleanup_mount_failed=false
+  if [[ -n "$network_partition_chain" ]]; then
+    while iptables -w 5 -C OUTPUT -j "$network_partition_chain" 2>/dev/null; do
+      iptables -w 5 -D OUTPUT -j "$network_partition_chain" >/dev/null 2>&1 || break
+    done
+    iptables -w 5 -F "$network_partition_chain" >/dev/null 2>&1 || true
+    iptables -w 5 -X "$network_partition_chain" >/dev/null 2>&1 || true
+  fi
   for name in "${names[@]}"; do
     docker rm -f "$name" >/dev/null 2>&1 || true
   done
@@ -97,6 +105,16 @@ cleanup() {
   fi
 }
 trap cleanup EXIT INT TERM
+
+if [[ "$fault_injection" == target-pd-network-quorum-loss-resume ]]; then
+  if [[ $(id -u) != 0 ]] || ! command -v iptables >/dev/null 2>&1 || ! iptables -w 5 -S OUTPUT >/dev/null 2>&1; then
+    echo "$fault_injection requires root and a usable host iptables OUTPUT chain" >&2
+    exit 1
+  fi
+  network_partition_chain="KBPDNET$$"
+  iptables -w 5 -N "$network_partition_chain"
+  iptables -w 5 -I OUTPUT 1 -j "$network_partition_chain"
+fi
 
 target_enospc_count=0
 if [[ "$fault_injection" == target-store-enospc-resume ]]; then target_enospc_count=1; fi
@@ -233,6 +251,12 @@ elif [[ "$fault_injection" == target-two-pd-enospc-resume ]]; then
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_DATA_DIRS="$(IFS=,; echo "${target_pd_data_dirs[*]}")"
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_MEMBERS="tgt-pd-0,tgt-pd-1,tgt-pd-2"
     KUBEBRAIN_NATIVE_PITR_ETCDUTL="$etcdutl_bin"
+  )
+elif [[ "$fault_injection" == target-pd-network-quorum-loss-resume ]]; then
+  fault_env=(
+    KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CHAIN="$network_partition_chain"
+    KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS=43379,43389
+    KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_PEER_PORTS=43380,43390,43400
   )
 elif [[ "$fault_injection" == target-pd-leader-enospc-resume || "$fault_injection" == target-pd-leader-store-enospc-resume ]]; then
   leader_name=$(curl -fsS http://127.0.0.1:43379/pd/api/v1/leader | jq -er '.name | select(type == "string" and length > 0)')

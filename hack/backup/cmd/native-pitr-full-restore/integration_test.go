@@ -780,6 +780,128 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	require.Equal(t, []byte("durable-before-pd-quorum-loss"), before.Kvs[0].Value)
 }
 
+// TestNativePDNetworkQuorumLossRealCluster cuts every target PD peer listener
+// at the host TCP layer while keeping one client listener reachable. This
+// distinguishes loss of the embedded-etcd quorum from process pause/ENOSPC and
+// proves that KubeBrain fails closed, retains its authenticated serializable
+// local MemberList, and resumes against the same processes after packet flow
+// is restored.
+func TestNativePDNetworkQuorumLossRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	chain := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CHAIN")
+	clientPorts := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS"), ",")
+	peerPorts := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_PEER_PORTS"), ",")
+	if targetPD == "" || serverBinary == "" || chain == "" || len(clientPorts) != 2 || len(peerPorts) != 3 {
+		t.Skip("set the native PITR PD network-quorum-loss integration environment")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	runIPTables := func(args ...string) {
+		commandArgs := append([]string{"-w", "5"}, args...)
+		output, err := exec.CommandContext(ctx, "iptables", commandArgs...).CombinedOutput()
+		require.NoError(t, err, "iptables %s: %s", strings.Join(args, " "), output)
+	}
+	restoreNetwork := func() {
+		output, err := exec.Command("iptables", "-w", "5", "-F", chain).CombinedOutput()
+		require.NoError(t, err, "flush network fault chain: %s", output)
+	}
+	t.Cleanup(restoreNetwork)
+
+	pdEndpoints := strings.Split(targetPD, ",")
+	pdClient, err := clientv3.New(clientv3.Config{Endpoints: pdEndpoints, DialTimeout: time.Second})
+	require.NoError(t, err)
+	defer pdClient.Close()
+	membersBefore, err := pdClient.MemberList(ctx)
+	require.NoError(t, err)
+	require.Len(t, membersBefore.Members, 3)
+	memberIDs := make(map[string]uint64, len(membersBefore.Members))
+	for _, member := range membersBefore.Members {
+		memberIDs[member.Name] = member.ID
+	}
+
+	root := t.TempDir()
+	jwtSecret := filepath.Join(root, "member-list-jwt-secret")
+	require.NoError(t, os.WriteFile(jwtSecret, []byte("pd-network-quorum-loss-jwt-secret"), 0o600))
+	const endpoint = "127.0.0.1:45379"
+	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "pd-network-loss", "pd-network-loss-integration",
+		"--auth-token=jwt,sign-method=HS256,priv-key="+jwtSecret)
+	defer server.stop(t)
+	bootstrap := waitForEndpoint(t, ctx, endpoint, server)
+	_, err = bootstrap.UserAdd(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "root")
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "root", "root")
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+	require.NoError(t, bootstrap.Close())
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoint}, DialTimeout: time.Second,
+		Username: "root", Password: "root-secret",
+	})
+	require.NoError(t, err)
+	defer client.Close()
+	_, err = client.Put(ctx, "before", "durable-before-network-quorum-loss")
+	require.NoError(t, err)
+
+	// Dropping every peer listener stops all Raft request directions. Dropping
+	// two client listeners leaves the third endpoint observable, proving that
+	// failures below are quorum loss rather than simple endpoint unreachability.
+	for _, port := range peerPorts {
+		runIPTables("-A", chain, "-p", "tcp", "--dport", port, "-m", "comment", "--comment", "kubebrain-pd-peer-partition", "-j", "DROP")
+	}
+	for _, port := range clientPorts {
+		runIPTables("-A", chain, "-p", "tcp", "--dport", port, "-m", "comment", "--comment", "kubebrain-pd-client-partition", "-j", "DROP")
+	}
+
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, putErr := pdClient.Put(attempt, "/kubebrain-integration/network-partition-probe", "blocked")
+		attemptCancel()
+		return putErr != nil
+	}, 20*time.Second, 250*time.Millisecond, "reachable PD client endpoint must lose its Raft quorum")
+	attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+	_, err = client.Put(attempt, "during", "must-not-be-acknowledged")
+	attemptCancel()
+	require.Error(t, err, "KubeBrain write must fail closed without the PD quorum")
+	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.Unavailable || status.Code(err) == codes.DeadlineExceeded,
+		"unexpected fail-closed write error: %v", err)
+	serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
+	localMembers, err := client.MemberList(serializableCtx, clientv3.WithSerializable())
+	serializableCancel()
+	require.NoError(t, err)
+	require.Len(t, localMembers.Members, 1)
+	require.Equal(t, "integration", localMembers.Members[0].Name)
+	linearizableCtx, linearizableCancel := context.WithTimeout(ctx, 3*time.Second)
+	_, err = client.MemberList(linearizableCtx)
+	linearizableCancel()
+	require.Error(t, err)
+	require.True(t, errors.Is(err, context.DeadlineExceeded) || status.Code(err) == codes.Unavailable || status.Code(err) == codes.DeadlineExceeded,
+		"unexpected linearizable MemberList error: %v", err)
+
+	restoreNetwork()
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, putErr := client.Put(attempt, "after", "durable-after-network-recovery")
+		attemptCancel()
+		return putErr == nil
+	}, 45*time.Second, 500*time.Millisecond, "KubeBrain must resume writes after PD peer traffic recovers")
+	membersAfter, err := pdClient.MemberList(ctx)
+	require.NoError(t, err)
+	require.Len(t, membersAfter.Members, len(membersBefore.Members))
+	for _, member := range membersAfter.Members {
+		require.Equal(t, memberIDs[member.Name], member.ID, "PD member %s changed identity", member.Name)
+	}
+	for _, key := range []string{"before", "after"} {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+	}
+}
+
 // TestNativeLegacyLeaseHistorySnapshotRealCluster proves that a legacy value
 // whose retained version has no durable lease provenance cannot be exported as
 // a plausible etcd snapshot. Physical compaction removes the ambiguous version
