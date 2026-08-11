@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	tikverr "github.com/tikv/client-go/v2/error"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 // TestBatchCommitWithFailedBeginReturnsErrorNotPanic reproduces the crash where
@@ -41,6 +43,16 @@ func TestBatchCommitWithFailedBeginReturnsErrorNotPanic(t *testing.T) {
 		err := b.Commit(context.Background())
 		require.ErrorIs(t, err, beginErr)
 	})
+}
+
+func TestUnavailableBeginErrorPreservesRetryableClassification(t *testing.T) {
+	err := unavailableBeginError("read", errors.New("pd unavailable"))
+	require.ErrorIs(t, err, storage.ErrUnavailable)
+	require.ErrorContains(t, err, "failed to create read txn: pd unavailable")
+
+	empty := unavailableBeginError("write", errors.New(""))
+	require.ErrorIs(t, empty, storage.ErrUnavailable)
+	require.ErrorContains(t, empty, "failed to create write txn")
 }
 
 func TestUncertainCommitErrorClassifiesTxnLockNotFound(t *testing.T) {

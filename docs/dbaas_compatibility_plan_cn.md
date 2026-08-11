@@ -46761,6 +46761,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   session recipe 与 PD 全失重叠的错误及恢复证据；更长请求 deadline 下跨故障自动成功、独立宿主/AZ、慢恢复
   和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4385 关闭 A4384 保留的“更长请求 deadline 下跨故障自动成功”缺口：新增
+  `pd-cross-node-total-loss-session-long-deadline` mode，在三个跨 worker PD endpoint 固定全失 45 秒期间
+  发起 8 个外部 `concurrency.NewSession`，恢复交界前再发起 8 个；每个请求使用 180 秒 deadline，禁止
+  应用层重试，要求 16/16 全部依靠 clientv3 内部重试成功，随后 Close，并以 TTL=-1 与 LeaseList 不含 ID
+  双重证明无 lease 泄漏。RED 依次暴露三层恢复缺陷：TiKV `Begin()` 的 PD/TSO 故障被普通包装成 gRPC
+  Unknown；同一进程丢失并重获领导权时沿用旧 storage-fence token，导致新任期永久自我 fence；leader
+  启动初始化期间本地 LeaseGrant 快速返回 Unavailable，在数秒内耗尽 grpc-go 约 100 次有限重试预算。
+  现在 TiKV Begin 失败显式归类为 `storage.ErrUnavailable`；每个新的共享 `LeaderTransitions` 任期轮换 fence
+  token、普通续租保持不变；本地 leader 在 durable lease/event/checkpoint 初始化完成前有界停放 LeaseGrant，
+  避免恢复期重试风暴，同时仍受调用方 context 约束。
+  2026-08-11 disposable `kubebrain-pd-session-long` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、16379/16380 拓扑最终通过，全程 129.83 秒：16/16 个故障中及恢复交界 session 无应用层
+  重试自动成功，全部关闭并完成双重回收验证；TiDBCluster 与三个 KubeBrain 副本恢复 Ready，四个 node
+  无 iptables 残留。本项关闭 kind bridge 上长 deadline session 自动跨越 PD 全失及延迟 admission 恢复的
+  证据；独立宿主/AZ、分钟级人工慢恢复和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

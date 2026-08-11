@@ -307,7 +307,13 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 	r.mu.Lock()
 	tso := r.tso
 	lastVal := r.lastVal
-	installFence := ler.HolderIdentity == r.lockConfig.Identity && !r.fenceInstalled
+	// A process can lose leadership and later reacquire it without observing an
+	// intermediate holder record (for example while PD is unavailable). In that
+	// case fenceInstalled still describes its old term even though another
+	// candidate has rotated the durable token. Rotate again for every new shared
+	// LeaderTransitions term; ordinary renewals retain the token.
+	installFence := ler.HolderIdentity == r.lockConfig.Identity &&
+		(!r.fenceInstalled || ler.LeaderTransitions != r.record.LeaderTransitions)
 	r.mu.Unlock()
 	if tso == 0 {
 		return errors.New("endpoint not initialized, call get or create first")

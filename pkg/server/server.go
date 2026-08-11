@@ -431,6 +431,7 @@ const leaderReloadRetryInterval = time.Second
 func (s *server) onPreparingLeading() {
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	if s.etcdServer != nil {
+		s.etcdServer.SetLeaderReady(false)
 		s.etcdServer.PrepareLeaseReload()
 	}
 }
@@ -521,6 +522,9 @@ func (s *server) onStartedLeading(ctx context.Context) {
 		}
 	}
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	if s.etcdServer != nil {
+		s.etcdServer.SetLeaderReady(true)
+	}
 	// The count index can trail readiness: until it is Ready() at a revision,
 	// counts fall back to a full scan (never a wrong count), so a rebuild failure
 	// must not gate serving. Rebuild from a fresh snapshot; a follower's collector
@@ -536,6 +540,9 @@ func (s *server) onStartedLeading(ctx context.Context) {
 // routing to this node as leader — previously it wrongly set SERVING (#61).
 func (s *server) onStoppedLeading() {
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+	if s.etcdServer != nil {
+		s.etcdServer.SetLeaderReady(false)
+	}
 	// The local event collector is leader-authoritative. Retire subscriptions
 	// immediately when this term ends so an RPC that was opened on this former
 	// leader can resume through the proxy instead of remaining open and silent.

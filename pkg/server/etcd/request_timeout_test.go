@@ -80,3 +80,20 @@ func TestDeleteRangePropagatesServerAndClientDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestWaitLeaderReadyParksUntilStartupCompletes(t *testing.T) {
+	server := &RPCServer{}
+	server.SetLeaderReady(false)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- server.waitLeaderReady(ctx) }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("leader startup wait returned early: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	server.SetLeaderReady(true)
+	require.NoError(t, <-done)
+}

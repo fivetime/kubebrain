@@ -105,6 +105,7 @@ type RPCServer struct {
 	activeWatches        int64
 	activeWatchStreams   atomic.Int64
 	mvccPutSizeBytes     atomic.Int64
+	leaderReady          atomic.Bool
 	// Serializes the runtime etcd auth transition with legacy native unary
 	// calls on the public listener. AuthEnable drains already-admitted calls
 	// before committing, then new calls observe enabled auth and fail closed.
@@ -196,6 +197,9 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 		maxTxnOps:         defaultMaxTxnOps,
 		maxRequestBytes:   defaultMaxRequestBytes,
 	}
+	// Direct-constructed and single-node servers have no asynchronous leader
+	// startup lifecycle. The production server toggles this around each term.
+	server.leaderReady.Store(true)
 	server.auth = newAuthManager(server.backend)
 	server.tokens = newAuthTokenManager(server.backend)
 	server.auth.repo.afterMutation = server.tokens.snapshots.invalidate
@@ -265,6 +269,28 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	initEtcdWALMetrics(metricCli)
 	initEtcdRaftSnapshotMetrics(metricCli)
 	return server
+}
+
+func (s *RPCServer) SetLeaderReady(ready bool) {
+	s.leaderReady.Store(ready)
+}
+
+func (s *RPCServer) waitLeaderReady(ctx context.Context) error {
+	if s.leaderReady.Load() {
+		return nil
+	}
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if s.leaderReady.Load() {
+				return nil
+			}
+		}
+	}
 }
 
 // Close stops lease timers and waits for every lease-owned background task.

@@ -180,6 +180,14 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		}
 		return nil, m.leaseLeaderUnavailable("lease grant")
 	}
+	// A newly elected local leader is published before it has reloaded durable
+	// lease/event/checkpoint state. Keep this unary call parked during that
+	// bounded startup window instead of rapidly returning Unavailable: grpc-go's
+	// finite retry policy can otherwise exhaust all attempts long before the
+	// caller's deadline during a PD recovery.
+	if err := m.srv.waitLeaderReady(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireLeaseReady(); err != nil {
 		return nil, err
 	}

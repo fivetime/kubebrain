@@ -518,6 +518,18 @@ func TestBackendPDCrossNodeTotalLossCanOverlapConcurrencySessions(t *testing.T) 
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeTotalLossCanRecoverLongDeadlineSessions(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-total-loss-session-long-deadline)`)
+	require.Contains(t, script, `run_pd_total_loss_session_long_deadline_test`)
+	require.Contains(t, script, `KUBEBRAIN_PD_SESSION_LONG_DEADLINE_COMMAND`)
+	require.Contains(t, script, `TestConcurrencySessionsWithLongDeadlineSurvivePDTotalLoss`)
+	require.Contains(t, script, `"PD_QUORUM_PARTITION_HOLD_SECONDS=45 $self --partition-pd-all-cross-node"`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

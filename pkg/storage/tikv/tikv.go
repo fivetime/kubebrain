@@ -360,6 +360,9 @@ func (s *store) BeginBatchWrite() storage.BatchWrite {
 		return err
 	}
 	b.txn, err = s.getClient().Begin()
+	if err != nil {
+		err = unavailableBeginError("write", err)
+	}
 	b.list = append(b.list, f)
 	return b
 }
@@ -367,7 +370,7 @@ func (s *store) BeginBatchWrite() storage.BatchWrite {
 func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
 	txn, err := s.getClient().Begin()
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to create read txn")
+		return nil, unavailableBeginError("read", err)
 	}
 
 	val, err = txn.Get(ctx, key)
@@ -383,6 +386,15 @@ func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
 		return nil, errors.Wrapf(err, "failed to commit read txn of key %s", string(key))
 	}
 	return val, nil
+}
+
+// Beginning a TiKV transaction obtains a timestamp from PD. A failure at this
+// boundary is therefore an availability failure, even when client-go returns
+// an untyped (and occasionally empty) error. Mark it explicitly so the gRPC
+// boundary returns Unavailable and etcd clients can retry within their request
+// deadline instead of treating grpc-go's fallback Unknown as permanent.
+func unavailableBeginError(kind string, err error) error {
+	return fmt.Errorf("%w: failed to create %s txn: %v", storage.ErrUnavailable, kind, err)
 }
 
 // GetAt reads a point key from an explicit TiKV MVCC snapshot. It deliberately

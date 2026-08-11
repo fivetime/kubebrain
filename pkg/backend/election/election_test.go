@@ -118,6 +118,18 @@ func TestResourceLockRotatesShardedStorageFenceOnlyOnProcessOwnership(t *testing
 	require.True(t, ok)
 	require.Equal(t, tokenA, tokenAfterRenew)
 
+	// The same running process may lose and reacquire leadership without a Get
+	// that observes the intermediate holder. A new shared term must rotate its
+	// stale cached token; otherwise every subsequent write self-fences forever.
+	record.LeaderTransitions++
+	require.NoError(t, lockA.Update(ctx, record))
+	_, tokenAReacquired, ok := providerA.StorageFenceToken(0)
+	require.True(t, ok)
+	require.NotEqual(t, tokenA, tokenAReacquired)
+	stored, err = kv.Get(ctx, keyA0)
+	require.NoError(t, err)
+	require.Equal(t, tokenAReacquired, stored)
+
 	managerB := NewResourceLockManager(Config{Prefix: prefix, Identity: "peer-b", Timeout: time.Second}, kv)
 	lockB := managerB.GetResourceLock()
 	_, _, err = lockB.Get(ctx)

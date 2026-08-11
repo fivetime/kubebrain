@@ -37,7 +37,7 @@ func TestConcurrencySessionsOverlapPDTotalLoss(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, client.Close()) }()
 
-	baseline := startSessionWave(ctx, client, 8)
+	baseline := startSessionWave(ctx, client, 8, 90*time.Second)
 	baselineIDs := collectSessionWave(t, ctx, baseline, nil, 8, true)
 	assertSessionLeasesGone(t, ctx, client, baselineIDs)
 
@@ -62,14 +62,14 @@ func TestConcurrencySessionsOverlapPDTotalLoss(t *testing.T) {
 
 	require.Eventually(t, func() bool { return reachablePDCount(t, ctx) == 0 },
 		30*time.Second, 200*time.Millisecond, "all PD endpoints must become unreachable")
-	during := startSessionWave(ctx, client, 8)
+	during := startSessionWave(ctx, client, 8, 90*time.Second)
 	earlyDuring := assertNoSuccessfulSession(t, during, 2*time.Second)
 
 	// The runner fixes a 45-second blackout. Start another wave late enough to
 	// overlap requests already in flight with the recovery boundary.
 	time.Sleep(25 * time.Second)
 	require.Equal(t, 0, reachablePDCount(t, ctx), "recovery-boundary wave must start during PD total loss")
-	boundary := startSessionWave(ctx, client, 8)
+	boundary := startSessionWave(ctx, client, 8, 90*time.Second)
 
 	result := <-commandDone
 	commandWaited = true
@@ -82,9 +82,72 @@ func TestConcurrencySessionsOverlapPDTotalLoss(t *testing.T) {
 	t.Logf("overlapped sessions completed successfully: during=%d boundary=%d", len(duringIDs), len(boundaryIDs))
 	assertSessionLeasesGone(t, ctx, client, append(duringIDs, boundaryIDs...))
 
-	after := startSessionWave(ctx, client, 8)
+	after := startSessionWave(ctx, client, 8, 90*time.Second)
 	afterIDs := collectSessionWave(t, ctx, after, nil, 8, true)
 	assertSessionLeasesGone(t, ctx, client, afterIDs)
+}
+
+// TestConcurrencySessionsWithLongDeadlineSurvivePDTotalLoss strengthens the
+// failure-overlap contract for callers that provision a request deadline long
+// enough to span both the PD blackout and KubeBrain admission convergence.
+// Every in-flight NewSession must then finish successfully without an
+// application-level retry, and every successful lease must remain revocable.
+func TestConcurrencySessionsWithLongDeadlineSurvivePDTotalLoss(t *testing.T) {
+	command := os.Getenv("KUBEBRAIN_PD_SESSION_LONG_DEADLINE_COMMAND")
+	if command == "" {
+		t.Skip("set KUBEBRAIN_PD_SESSION_LONG_DEADLINE_COMMAND to run destructive long-deadline overlap")
+	}
+	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
+	if endpoint == "" {
+		t.Fatal("set KUBEBRAIN_ETCD_ENDPOINT explicitly for long-deadline overlap")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+
+	type commandResult struct {
+		output []byte
+		err    error
+	}
+	commandDone := make(chan commandResult, 1)
+	go func() {
+		output, commandErr := runCompatShellCommandContext(t, ctx, command)
+		commandDone <- commandResult{output: output, err: commandErr}
+	}()
+	commandWaited := false
+	defer func() {
+		if commandWaited {
+			return
+		}
+		result := <-commandDone
+		require.NoErrorf(t, result.err, "long-deadline PD total-loss cleanup: %s",
+			strings.TrimSpace(string(result.output)))
+	}()
+
+	require.Eventually(t, func() bool { return reachablePDCount(t, ctx) == 0 },
+		30*time.Second, 200*time.Millisecond, "all PD endpoints must become unreachable")
+	during := startSessionWave(ctx, client, 8, 180*time.Second)
+	earlyDuring := assertNoSuccessfulSession(t, during, 2*time.Second)
+	require.Empty(t, earlyDuring, "long-deadline requests must remain in flight during PD total loss")
+
+	time.Sleep(25 * time.Second)
+	require.Equal(t, 0, reachablePDCount(t, ctx), "long-deadline boundary wave must start during PD total loss")
+	boundary := startSessionWave(ctx, client, 8, 180*time.Second)
+
+	result := <-commandDone
+	commandWaited = true
+	require.NoErrorf(t, result.err, "long-deadline PD total-loss command: %s",
+		strings.TrimSpace(string(result.output)))
+	t.Logf("long-deadline PD total-loss command: %s", strings.TrimSpace(string(result.output)))
+
+	duringIDs := collectSessionWave(t, ctx, during, nil, 8, true)
+	boundaryIDs := collectSessionWave(t, ctx, boundary, nil, 8, true)
+	require.Len(t, duringIDs, 8)
+	require.Len(t, boundaryIDs, 8)
+	assertSessionLeasesGone(t, ctx, client, append(duringIDs, boundaryIDs...))
 }
 
 type sessionOutcome struct {
@@ -93,11 +156,16 @@ type sessionOutcome struct {
 	err     error
 }
 
-func startSessionWave(ctx context.Context, client *clientv3.Client, count int) chan sessionOutcome {
+func startSessionWave(
+	ctx context.Context,
+	client *clientv3.Client,
+	count int,
+	timeout time.Duration,
+) chan sessionOutcome {
 	outcomes := make(chan sessionOutcome, count)
 	for range count {
 		go func() {
-			requestCtx, requestCancel := context.WithTimeout(ctx, 90*time.Second)
+			requestCtx, requestCancel := context.WithTimeout(ctx, timeout)
 			session, err := concurrency.NewSession(client,
 				concurrency.WithTTL(20), concurrency.WithContext(requestCtx))
 			if err != nil {
