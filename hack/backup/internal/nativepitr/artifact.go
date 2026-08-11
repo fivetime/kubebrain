@@ -231,9 +231,6 @@ func walkMetaIndex(root string, index *backuppb.MetaFile, expected map[string]*b
 		}
 	}
 	for _, node := range index.MetaFiles {
-		if len(node.CipherIv) != 0 {
-			return errors.New("encrypted BR meta indexes are not supported without a bound crypter key")
-		}
 		if err := addExpectedFile(expected, node); err != nil {
 			return err
 		}
@@ -266,9 +263,8 @@ func addExpectedFile(expected map[string]*backuppb.File, file *backuppb.File) er
 	if len(file.Sha256) != sha256.Size || file.Size_ == 0 {
 		return fmt.Errorf("backup object %q has incomplete size or SHA-256 metadata", file.Name)
 	}
-	if len(file.CipherIv) != 0 {
-		return fmt.Errorf("encrypted backup object %q is not supported without a bound crypter key", file.Name)
-	}
+	// TiKV v7.5.1 emits a random CipherIv even when BackupRequest.cipher_info
+	// defaults to Plaintext. The IV therefore cannot attest encryption mode.
 	if _, exists := expected[file.Name]; exists {
 		return fmt.Errorf("backupmeta contains duplicate object %q", file.Name)
 	}

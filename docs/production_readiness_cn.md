@@ -2063,6 +2063,16 @@ Up store identity 与 plan-bound receipt 一致。成功输出 `kubebrain.native
 外部 BR 进程原子保持的 target writer fence，空白扫描与 BR 首写间仍有竞态；生产控制面必须确保目标
 未启动 KubeBrain/其他 writer。该执行收据不能用于宣称 PITR 或 etcd 语义恢复完成。
 
+2026-08-11 已通过 `hack/backup/run-native-pitr-full-restore-integration.sh` 完成隔离真实演练：脚本启动
+两套 cluster ID 不同、数据目录独立的 PD/TiKV v7.5.1 集群，在 source 写入一个真实 KubeBrain 编码
+revision key，使用 pinned BR v7.5.1 `backup txn` 生成含 1 KV/1 SST 的 whole-cluster 制品，再由上述
+executor 在 fresh target-empty 复验后执行 `restore txn`。BR 报告 1 file/1 KV 导入成功，测试随后通过
+target txnkv client 以原编码 key 读回字节并与 source value 精确比较。演练同时校正了两个真实
+backupmeta 合同：txn backup 的空 DDL 以 JSON `[]` 编码；plaintext BackupRequest 生成的 SST 仍携带
+随机 16-byte `CipherIv`，因此不能以该字段存在与否推断外部 BR crypter 模式。脚本使用 64 GiB
+逻辑容量的按需 tmpfs 避免宿主机磁盘水位影响，并通过 trap 精确清理 4 个集群容器、BR copy 容器和
+临时目录；演练结束后已核验无同名前缀容器或临时目录残留。
+
 arbitrary-range task 的安全创建入口现为：
 
 ```shell
@@ -2723,7 +2733,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   artifact receipt 已绑定不可变远端 exact versions；目标侧 snapshot-empty receipt 也已消除计划中的
   自由 target ID/emptiness digest。full-only executor 现可在 exact plan 审批、source range-exclusive、
   fresh target-empty 与 local mirror 双重复验后运行 pinned BR whole-cluster txn import，但 receipt 明确
-  不宣称 writer fence、日志回放、PITR 或语义验真。range-aware log restore、首写前原子防漂移和恢复后
+  不宣称 writer fence、日志回放、PITR 或语义验真。2026-08-11 的独立双集群真实演练已证明 full-only
+  路径能恢复并直接读回 KubeBrain 编码字节；但当前 full receipt 尚未绑定 BR backup invocation 的
+  `cipher_info`/crypter 参数，而 `CipherIv` 在官方 plaintext 模式也存在，故生产还需增加独立的加密模式
+  attestation，不能只凭 backupmeta 声称 plaintext。range-aware log restore、首写前原子防漂移和恢复后
   etcd 语义验真仍未实现，因此不能改变本项“未完成”的结论。
   对 TiDB/BR v7.5.1（tag commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`）的 restore 源码审计还确认：
   `br restore txn` 能直接导入 transactional BackupMeta 的 SST，适合 KubeBrain arbitrary range 的 full

@@ -33,6 +33,21 @@ func TestBuildFullSnapshotUsesBackupMetaAuthority(t *testing.T) {
 	require.True(t, receipt.HasFileIndex)
 }
 
+func TestBuildFullSnapshotAcceptsBRTransactionalEmptyIndexes(t *testing.T) {
+	task, _ := readyTask(t)
+	var meta backuppb.BackupMeta
+	require.NoError(t, meta.Unmarshal(fullMeta(t, task)))
+	meta.SchemaIndex = &backuppb.MetaFile{}
+	meta.RawRangeIndex = &backuppb.MetaFile{}
+	meta.DdlIndexes = &backuppb.MetaFile{}
+	meta.Ddls = []byte("[]")
+	b, err := meta.Marshal()
+	require.NoError(t, err)
+
+	_, err = BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", b)
+	require.NoError(t, err)
+}
+
 func TestBuildFullSnapshotRejectsUnboundOrIncompleteMetadata(t *testing.T) {
 	tests := []struct {
 		name string
@@ -47,7 +62,12 @@ func TestBuildFullSnapshotRejectsUnboundOrIncompleteMetadata(t *testing.T) {
 			m.EndVersion = task.StartTS - 1
 		}, "precedes task metadata commit"},
 		{"no files", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.FileIndex = nil }, "inventory"},
-		{"unexpected schema index", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) { m.SchemaIndex = &backuppb.MetaFile{} }, "unexpected schema"},
+		{"unexpected schema index", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) {
+			m.SchemaIndex = &backuppb.MetaFile{Schemas: []*backuppb.Schema{{Db: []byte("db")}}}
+		}, "unexpected schema"},
+		{"unexpected DDL", func(_ *TaskCreateReceipt, m *backuppb.BackupMeta, _ *string) {
+			m.Ddls = []byte(`[{"query":"create table t"}]`)
+		}, "unexpected schema"},
 		{"unsafe storage", func(_ *TaskCreateReceipt, _ *backuppb.BackupMeta, s *string) { *s = "s3://key:secret@bucket/prefix" }, "storage prefix"},
 	}
 	for _, tt := range tests {

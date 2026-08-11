@@ -69,8 +69,11 @@ func BuildFullSnapshot(task TaskCreateReceipt, taskCreateSHA256, storagePrefix s
 	if meta.StartVersion != 0 || meta.EndVersion == 0 {
 		return FullSnapshotReceipt{}, errors.New("backupmeta is not a full point-in-time snapshot")
 	}
-	if meta.SchemaIndex != nil || meta.RawRangeIndex != nil || meta.DdlIndexes != nil || len(meta.Schemas) != 0 || len(meta.RawRanges) != 0 || len(meta.Ddls) != 0 {
-		return FullSnapshotReceipt{}, errors.New("transactional KV backupmeta contains unexpected schema, raw-range, or DDL inventory")
+	// BR v7.5.1 backup txn materializes empty schema/raw/DDL MetaFile
+	// messages even though a transactional KV backup has no such inventory.
+	// Reject inventory content, not the protobuf presence bit.
+	if metaFileHasContent(meta.SchemaIndex) || metaFileHasContent(meta.RawRangeIndex) || metaFileHasContent(meta.DdlIndexes) || len(meta.Schemas) != 0 || len(meta.RawRanges) != 0 || ddlInventoryHasContent(meta.Ddls) {
+		return FullSnapshotReceipt{}, fmt.Errorf("transactional KV backupmeta contains unexpected schema, raw-range, or DDL inventory: schema=%d raw=%d ddl=%d schema_index=%s raw_index=%s ddl_index=%s", len(meta.Schemas), len(meta.RawRanges), len(meta.Ddls), metaFileInventory(meta.SchemaIndex), metaFileInventory(meta.RawRangeIndex), metaFileInventory(meta.DdlIndexes))
 	}
 	if meta.EndVersion < task.CommittedAtTS {
 		return FullSnapshotReceipt{}, errors.New("full snapshot precedes task metadata commit")
@@ -92,6 +95,22 @@ func BuildFullSnapshot(task TaskCreateReceipt, taskCreateSHA256, storagePrefix s
 		HasFileIndex: hasFileIndex, LegacyFileCount: len(meta.Files), Transactional: true,
 		Scope: "whole-cluster", BackupMetaInventory: true, ObjectExistenceChecked: false,
 	}, nil
+}
+
+func ddlInventoryHasContent(ddls []byte) bool {
+	var entries []json.RawMessage
+	return len(ddls) != 0 && (json.Unmarshal(ddls, &entries) != nil || len(entries) != 0)
+}
+
+func metaFileHasContent(index *backuppb.MetaFile) bool {
+	return index != nil && (len(index.MetaFiles) != 0 || len(index.DataFiles) != 0 || len(index.Schemas) != 0 || len(index.RawRanges) != 0 || len(index.Ddls) != 0)
+}
+
+func metaFileInventory(index *backuppb.MetaFile) string {
+	if index == nil {
+		return "nil"
+	}
+	return fmt.Sprintf("meta:%d,data:%d,schema:%d,raw:%d,ddl:%d", len(index.MetaFiles), len(index.DataFiles), len(index.Schemas), len(index.RawRanges), len(index.Ddls))
 }
 
 func DecodeFullSnapshot(r io.Reader) (FullSnapshotReceipt, error) {

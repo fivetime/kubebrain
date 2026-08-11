@@ -15,7 +15,7 @@ import (
 
 func fileFor(name, cf string, content []byte) *backuppb.File {
 	digest := sha256.Sum256(content)
-	return &backuppb.File{Name: name, Cf: cf, Size_: uint64(len(content)), Sha256: digest[:]}
+	return &backuppb.File{Name: name, Cf: cf, Size_: uint64(len(content)), Sha256: digest[:], CipherIv: make([]byte, 16)}
 }
 
 func artifactFixture(t *testing.T, indexed bool) (FullSnapshotReceipt, string, string) {
@@ -89,11 +89,10 @@ func TestVerifyFullArtifactsFailsClosed(t *testing.T) {
 	}
 }
 
-func TestVerifyFullArtifactsRejectsUnsafeAndEncryptedMetadata(t *testing.T) {
+func TestVerifyFullArtifactsRejectsUnsafeMetadata(t *testing.T) {
 	task, _ := readyTask(t)
 	for _, file := range []*backuppb.File{
 		{Name: "../escape.sst", Size_: 1, Sha256: make([]byte, 32)},
-		{Name: "data.sst", Size_: 1, Sha256: make([]byte, 32), CipherIv: []byte("iv")},
 	} {
 		metaBytes, err := (&backuppb.BackupMeta{ClusterId: task.ClusterID, StartVersion: 0, EndVersion: 120, IsTxnKv: true, Files: []*backuppb.File{file}}).Marshal()
 		require.NoError(t, err)
