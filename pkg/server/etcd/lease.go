@@ -402,6 +402,14 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			}
 			continue
 		}
+		// Renewal is a durable lease metadata mutation. A newly elected local
+		// leader must finish reloading lease/event/checkpoint state before it
+		// serves the first request on an existing keepalive stream. Parking the
+		// message here also prevents a recovering client stream from rapidly
+		// cycling through grpc-go's finite retry budget on startup fence errors.
+		if err := m.srv.waitLeaderReady(stream.Context()); err != nil {
+			return err
+		}
 		if err := m.requireLeaseReady(); err != nil {
 			return err
 		}

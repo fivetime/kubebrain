@@ -120,3 +120,26 @@ func TestLeaseRevokeWaitsForLeaderStartup(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), ttl.TTL)
 }
+
+func TestLeaseKeepAliveWaitsForLeaderStartup(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	grant, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: 9822, TTL: 300})
+	require.NoError(t, err)
+	server.SetLeaderReady(false)
+	stream := &fakeLeaseKeepAliveServer{
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: grant.ID}},
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	select {
+	case err := <-done:
+		t.Fatalf("LeaseKeepAlive returned before leader startup completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	server.SetLeaderReady(true)
+	require.NoError(t, <-done)
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, grant.ID, stream.sent[0].ID)
+	require.Positive(t, stream.sent[0].TTL)
+}

@@ -46796,6 +46796,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与延迟 leader 初始化的自动恢复证据；多键/大批量 Revoke storm、独立宿主/AZ、分钟级慢恢复及
   latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4387 将 A4385/A4386 的 leader startup 停放边界补齐到双向流 `LeaseKeepAlive`，对照 upstream
+  `/root/etcd/tests/integration/clientv3/lease/lease_test.go::TestLeaseKeepAlive` 与
+  `TestV3LeaseFailureOverlap`。此前 fresh local leader 在 durable lease/event/checkpoint 状态尚未装载完成时，
+  `LeaseGrant` 与 `LeaseRevoke` 会等待 ready，但已重连的 KeepAlive stream 每条消息仍直接经过
+  `requireLeaseReady`，可能快速返回启动期错误并消耗 clientv3 的流重建/重试窗口。现在本地 renewal 在取得
+  fresh leadership epoch 后同样受调用方 stream context 约束地等待 `leaderReady`，再读取 lease state 和写入
+  checkpoint；follower proxy 路径保持不变。TDD 单测先证明旧实现会在 leader startup 未完成时提前返回 nil，
+  修复后要求同一 stream 停放并在 ready 后返回原 lease ID 与正 TTL。
+  新增 `pd-cross-node-total-loss-lease-keepalive-long-deadline` 门禁：故障前创建 8 个 TTL=300 lease、附属键并
+  各自建立高层 KeepAlive channel，三个跨 worker PD endpoint 固定全失 45 秒；逐流证明黑洞期间不关闭，
+  后段再一次性发起 8 个 180 秒 `KeepAliveOnce`，2 秒内不得完成。2026-08-11 disposable
+  `kubebrain-pd-keepalive-long` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/3 KubeBrain、
+  18379/18380 拓扑通过，全程 136.52 秒：8/8 个单次 renewal 无应用层重试自动成功，8/8 条故障前 channel
+  在恢复后继续交付原 ID 与正 TTL；逐键 Range 仍绑定对应 lease，最终全部 Revoke 成功。三个数据面副本、
+  PD/TiKV 均 Ready 且零重启，四节点无故障注入残留。本项关闭普通 KeepAlive channel 与长 deadline
+  KeepAliveOnce 自动跨越 PD 全失及 leader startup 的证据；独立宿主/AZ、分钟级人工慢恢复和
+  latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
