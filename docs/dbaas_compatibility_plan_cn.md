@@ -45866,6 +45866,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项尚未签发 source-capture receipt，也未把 source fence、witness、capture TSO 与 plan v11 串联，因此不能
   单独证明 source 冻结窗口；下一阶段实现 acquire/finalize CLI、写入竞态与真实 TiKV 演练。
 
+- A4326 将 A4325 探针接入 source-capture acquire/finalize CLI 与两阶段 receipt。`acquire` 消费 exact
+  task-create 和完整 `/` logical.v2 witness，以 `operation + task SHA + source cluster + keyspace` 构造
+  source restoration token，原子关闭 control + 256 writer shards 后扫描 authoritative revision；只有它与
+  witness revision 精确相等、live PD cluster ID 正确、fence 仍完整且输入未漂移时才签发
+  `kubebrain.native-pitr-source-capture-fence.v1`。receipt 同时固化 witness 文件/content SHA、fence snapshot
+  TSO、token digest 和 257-key ownership。`finalize` 消费 exact fence/full receipt，要求 full backup TSO 不晚于
+  capture TSO、capture TSO 位于 fence 后且 task end 前；在 release 前完成全部绑定和输入稳定性复核，再以
+  exact token 原子开放 257 keys，签发 `kubebrain.native-pitr-source-capture.v1`。官方 v7.5.1 stream-log 双
+  PD/TiKV + MinIO 演练已实际执行 acquire，以 fence snapshot TSO 作为 restore point，等待 checkpoint 后
+  finalize/release，再完成原有 full restore、replay 与 semantic 链，44.81 秒通过。该 receipt 尚未由 restore
+  plan 强制消费，full-only 真实路径也尚未改成 capture-before-backup，因此生产门禁仍保持开放；下一项升级
+  plan 并覆盖两种路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

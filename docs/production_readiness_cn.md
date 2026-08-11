@@ -2249,9 +2249,14 @@ revision、创建时间和计数与 plan v11 完全一致。full-only 收据仍�
 
 source capture 的下一阶段基础探针已落地：恢复 worker 在取得 source TiKV restoration fence 后，可用
 `nativepitr.InspectFencedSourceRevision` 将 plan keyspace 中全部可解码用户 object 的最高 revision 与 durable
-committed watermark 取最大值，再与 plan-bound witness revision 对照；未知物理编码 fail closed。当前它仍是
-内部只读原语，尚无 acquire/finalize CLI 或 source-capture receipt，生产 runbook 不得把该探针存在本身当作
-冻结证明。
+committed watermark 取最大值，再与 plan-bound witness revision 对照；未知物理编码 fail closed。该内部
+只读原语只有被下述 source-capture receipt 链消费时才构成证据，不能单独当作冻结证明。
+
+实验性 `native-pitr-source-capture` 现提供 `acquire`/`finalize`：前者在 source writer 停止并生成 witness
+后，以 task-bound token 原子关闭 257 个 TiKV fence key，并要求 authoritative revision 与 witness revision
+相等；后者在 full receipt/capture TSO 时序通过后精确释放并签发连续排写 receipt。stream-log disposable
+drill 已实际走通，但 restore plan 尚未强制绑定该 receipt，full-only drill 也尚未迁移，所以当前生产操作仍
+不得省略外部 source freeze 编排或把该实验收据当作最终门禁。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、

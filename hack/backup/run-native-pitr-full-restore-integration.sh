@@ -107,6 +107,7 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   go build -o "$drill_tmp/native-pitr-restoration-fence" ./hack/backup/cmd/native-pitr-restoration-fence
   go build -o "$drill_tmp/native-pitr-log-replay" ./hack/backup/cmd/native-pitr-log-replay
   go build -o "$drill_tmp/native-pitr-semantic-verify" ./hack/backup/cmd/native-pitr-semantic-verify
+  go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pitr-source-capture
   export AWS_ACCESS_KEY_ID=kubebrain-drill AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret AWS_REGION=us-east-1
   log_env=(
     KUBEBRAIN_NATIVE_PITR_PREFLIGHT="$drill_tmp/native-pitr-preflight"
@@ -114,6 +115,7 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
     KUBEBRAIN_NATIVE_PITR_FENCE="$drill_tmp/native-pitr-restoration-fence"
     KUBEBRAIN_NATIVE_PITR_LOG_REPLAY="$drill_tmp/native-pitr-log-replay"
     KUBEBRAIN_NATIVE_PITR_SEMANTIC_VERIFY="$drill_tmp/native-pitr-semantic-verify"
+    KUBEBRAIN_NATIVE_PITR_SOURCE_CAPTURE="$drill_tmp/native-pitr-source-capture"
     KUBEBRAIN_NATIVE_PITR_MC="$drill_tmp/mc"
     KUBEBRAIN_NATIVE_PITR_S3_ENDPOINT=http://127.0.0.1:49000
     KUBEBRAIN_NATIVE_PITR_S3_BUCKET=kubebrain-pitr
