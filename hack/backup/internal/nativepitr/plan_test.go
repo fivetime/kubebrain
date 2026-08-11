@@ -18,6 +18,10 @@ func validWitness() backupfile.Status {
 	return backupfile.Status{Format: backupfile.Format, Prefix: "/", Revision: 119, CreatedAtUnix: 100, Records: 3, Leases: 1, SHA256: digest}
 }
 
+func validSourceCapture(task TaskCreateReceipt, full FullSnapshotReceipt, witness backupfile.Status, captureTS uint64) SourceCaptureReceipt {
+	return SourceCaptureReceipt{Format: SourceCaptureReceiptFormat, SourceCaptureFenceSHA256: digest, TaskCreateSHA256: digest, FullSnapshotSHA256: digest, WitnessFileSHA256: digest, WitnessContentSHA256: witness.SHA256, OperationID: "capture-1", SourceClusterID: task.ClusterID, Keyspace: task.Keyspace, WitnessRevision: witness.Revision, FullBackupTS: full.BackupTS, CaptureTS: captureTS, FenceSnapshotTS: full.BackupTS, ContinuousSourceExclusion: true, AllFenceKeysReopened: true, FinalizedAtUnix: 110}
+}
+
 func validPreflight() Preflight {
 	ks, _ := coder.NewKeyspace("tenant-a")
 	task := "tenant-a-pitr"
@@ -39,7 +43,8 @@ func validReceiptPlan(t *testing.T) Plan {
 	artifacts := validArtifactReceipt(t, full, digest)
 	ready := readyReceiptFor(task)
 	logs := validLogArtifactReceipt(t, task, ready, digest, digest)
-	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, validSourceExclusive(t), validTarget(), ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, SourceExclusiveSHA256: digest, TargetReceiptSHA256: digest, WitnessFileSHA256: digest, Witness: validWitness(), RestoreTS: 140})
+	witness := validWitness()
+	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, validSourceExclusive(t), validTarget(), ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, SourceExclusiveSHA256: digest, TargetReceiptSHA256: digest, WitnessFileSHA256: digest, Witness: witness, SourceCaptureSHA256: digest, SourceCapture: validSourceCapture(task, full, witness, 140), RestoreTS: 140})
 	require.NoError(t, err)
 	return plan
 }
@@ -79,7 +84,7 @@ func TestPlanRejectsBrokenChain(t *testing.T) {
 	}{
 		{"log starts after snapshot", func(p *Plan) { p.Log.StartTS = 121 }, "start no later"},
 		{"task committed after snapshot", func(p *Plan) { p.Log.TaskCommittedAtTS = 121 }, "metadata must commit"},
-		{"restore before snapshot", func(p *Plan) { p.RestoreTS = 119 }, "precedes full"},
+		{"restore before snapshot", func(p *Plan) { p.RestoreTS, p.SourceCapture.CaptureTS, p.SourceCapture.FenceSnapshotTS = 119, 119, 119 }, "precedes full"},
 		{"checkpoint behind restore", func(p *Plan) { p.Log.GlobalCheckpointTS = 139 }, "exceeds durable"},
 		{"same target", func(p *Plan) { p.Target.ClusterID = 11 }, "must differ"},
 		{"bad backup digest", func(p *Plan) { p.Full.BackupMetaSHA256 = "ABC" }, "backupmeta"},
@@ -91,6 +96,7 @@ func TestPlanRejectsBrokenChain(t *testing.T) {
 		{"wrong tenant range", func(p *Plan) { p.Source.EndKeyHex = "ff" }, "does not match keyspace"},
 		{"missing source exclusivity", func(p *Plan) { p.Source.RangeExclusiveReceiptSHA256 = "" }, "range-exclusive"},
 		{"missing source witness", func(p *Plan) { p.SourceWitness.FileSHA256 = "" }, "source witness"},
+		{"missing source capture", func(p *Plan) { p.SourceCapture.ReceiptSHA256 = "" }, "source capture"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -117,7 +123,8 @@ func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
 	ready := readyReceiptFor(task)
 	artifacts := validArtifactReceipt(t, full, digest)
 	logs := validLogArtifactReceipt(t, task, ready, digest, digest)
-	in := ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, SourceExclusiveSHA256: digest, TargetReceiptSHA256: digest, WitnessFileSHA256: digest, Witness: validWitness(), RestoreTS: 140}
+	witness := validWitness()
+	in := ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, SourceExclusiveSHA256: digest, TargetReceiptSHA256: digest, WitnessFileSHA256: digest, Witness: witness, SourceCaptureSHA256: digest, SourceCapture: validSourceCapture(task, full, witness, 140), RestoreTS: 140}
 	target := validTarget()
 	sourceExclusive := validSourceExclusive(t)
 	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
@@ -131,10 +138,12 @@ func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
 
 	full.TaskName = task.TaskName
 	in.TaskCreateSHA256 = strings.Repeat("f", 64)
+	in.SourceCapture.TaskCreateSHA256 = in.TaskCreateSHA256
 	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	require.ErrorContains(t, err, "exact task-create")
 
 	in.TaskCreateSHA256 = digest
+	in.SourceCapture.TaskCreateSHA256 = digest
 	artifacts.FullReceiptSHA256 = strings.Repeat("f", 64)
 	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	require.ErrorContains(t, err, "exact full snapshot")

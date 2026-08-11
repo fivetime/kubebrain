@@ -58,7 +58,7 @@ func (osRunner) Run(ctx context.Context, name string, args []string, stdout, std
 func main() {
 	pingcaplog.SetLevel(zapcore.ErrorLevel)
 	var o options
-	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v11 receipt")
+	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v12 receipt")
 	flag.StringVar(&o.full, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
 	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v2 receipt")
 	flag.StringVar(&o.inventory, "remote-inventory", "", "exact native-pitr-object-inventory.v1 receipt")

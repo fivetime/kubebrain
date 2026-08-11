@@ -2011,7 +2011,7 @@ provisioner 仍必须交付全新、独立且未复用数据目录的 TiKV/PD �
 容器与两个 data volume 均已精确删除。
 
 在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready/log-artifacts/
-source-range-exclusive/target-snapshot-empty receipt 与已冻结 source 生成的完整 `/` logical.v2 witness，
+source-range-exclusive/target-snapshot-empty/source-capture receipt 与已冻结 source 生成的完整 `/` logical.v2 witness，
 生成严格只读计划：
 
 ```shell
@@ -2024,19 +2024,21 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --source-range-exclusive=/evidence/native-pitr-source-range-exclusive.json \
   --target-snapshot-empty=/evidence/native-pitr-target-snapshot-empty.json \
   --source-witness=/evidence/source-full-keyspace.logical.v2 \
-  --restore-ts="$RESTORE_TS"
+  --source-capture=/evidence/native-pitr-source-capture.json
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v11`。source cluster/range、task start/commit、full backup TSO、
+输出 `kubebrain.native-pitr-restore-plan.v12`。restore TSO 只能来自 exact source-capture receipt，命令不再
+接受自由填写的 `--restore-ts`。source cluster/range、task start/commit、full backup TSO、
 exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner，以及 exact ready/log-artifact receipt digest、日志对象 manifest/字节数/分片数全部来自严格 receipt，命令不再
 接受这些值的自由参数；source 范围外空白证明、目标 cluster ID、snapshot TSO、扫描范围与 store 数也只能来自 exact receipt，
 不再接受自由填写的 cluster ID 或 emptiness digest。计划拒绝 receipt 文件 digest/身份链不一致、
 source/target cluster ID 相同、目标快照非空或过度声称物理空白、artifact digest 非规范，以及不满足
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记
-`read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。plan v11 还固化
+`read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。plan v12 还固化
 witness 文件 SHA-256、logical content SHA-256、revision、创建时间、record/lease 数及完整 `/` 前缀；生成器
-在解析校验前后分别流式计算文件摘要，任何 TOCTOU 漂移都会 fail closed。
+在解析校验前后分别流式计算文件摘要，任何 TOCTOU 漂移都会 fail closed；同时绑定 source-capture receipt
+SHA-256、operation ID、capture/fence TSO 和连续 source writer 排除结论，并复核 task/full/witness 的完整身份链。
 
 计划生成后、执行 whole-cluster transactional full import 前，必须先关闭位于 target PD embedded-etcd
 中的外部准入 gate。operation ID 在整条恢复链保持不变：
@@ -2069,7 +2071,7 @@ go run ./hack/backup/cmd/native-pitr-full-restore \
   --approve-plan-sha256="$PLAN_SHA256"
 ```
 
-审批字符串必须等于 exact plan 文件 SHA-256。执行器重新解析全部 receipt，复核 plan v11 绑定的 source
+审批字符串必须等于 exact plan 文件 SHA-256。执行器重新解析全部 receipt，复核 plan v12 绑定的 source
 range-exclusive/target-empty/full artifact 摘要链，在 BR 前后递归重算 local exact-version mirror，且
 BR binary 必须同时匹配 v7.5.1 和 commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`，执行前后 binary
 SHA-256 也必须一致。调用参数刻意不传无效的 start/end，而是如实运行 whole-cluster `restore txn`；
@@ -2242,7 +2244,7 @@ watch 探针删除后，验证器还会通过 plan-bound target PD 直连 TiKV�
 Put revision 的历史版本，并精确核对 inline value、create revision、version 与 lease ID；这一步把 etcd
 endpoint 行为和 target 物理集群绑定，避免“PD 对了但 endpoint 指向另一套存储”仍误通过。输入 receipt
 和 witness 在验证前后都会重读/重算 SHA-256，阻止 TOCTOU 替换；verifier 还要求文件摘要、content 摘要、
-revision、创建时间和计数与 plan v11 完全一致。full-only 收据仍固定
+revision、创建时间和计数与 plan v12 完全一致。full-only 收据仍固定
 `log_replay_validated=false`、`pitr_complete=false`。plan 绑定消除了恢复后替换 witness 的空间，但生产
 控制面仍必须把“冻结 source writer→生成 witness→取得 full backup/restore TSO”编排为同一受审操作；
 文件摘要绑定本身不等价于冻结动作的分布式原子性。
@@ -2252,11 +2254,15 @@ source capture 的下一阶段基础探针已落地：恢复 worker 在取得 so
 committed watermark 取最大值，再与 plan-bound witness revision 对照；未知物理编码 fail closed。该内部
 只读原语只有被下述 source-capture receipt 链消费时才构成证据，不能单独当作冻结证明。
 
-实验性 `native-pitr-source-capture` 现提供 `acquire`/`finalize`：前者在 source writer 停止并生成 witness
+`native-pitr-source-capture` 提供 `acquire`/`finalize`：前者在 source writer 停止并生成 witness
 后，以 task-bound token 原子关闭 257 个 TiKV fence key，并要求 authoritative revision 与 witness revision
-相等；后者在 full receipt/capture TSO 时序通过后精确释放并签发连续排写 receipt。stream-log disposable
-drill 已实际走通，但 restore plan 尚未强制绑定该 receipt，full-only drill 也尚未迁移，所以当前生产操作仍
-不得省略外部 source freeze 编排或把该实验收据当作最终门禁。
+相等；后者在 full receipt/capture TSO 时序通过后精确释放并签发连续排写 receipt。restore plan v12 已将
+该 receipt 设为强制输入，并拒绝 task/full/witness digest、revision、capture window 或连续排写证明不一致。
+这使 restore TSO 从受审 capture 链派生，但仍要求 DBaaS 编排器在 acquire 前停止所有 source writer；该
+fence 约束的是遵守 KubeBrain restoration fence 协议的 writer，不泛化为任意直连 TiKV 写入者。
+2026-08-11 的 disposable 双集群演练中，full-only 路径验证了 snapshot 内源 fence token 到目标 restore
+token 的 plan-bound 原子交接（12.84 秒），stream-log 路径验证了从 open fence 获取目标所有权并完成最终
+语义校验（27.54 秒）；两条路径均使用 plan v12，未传入自由 restore TSO。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、

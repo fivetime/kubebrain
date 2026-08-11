@@ -13,6 +13,7 @@ func semanticFixture(t *testing.T) (Plan, FullSnapshotReceipt, FullRestoreExecut
 	t.Helper()
 	plan := validReceiptPlan(t)
 	plan.RestoreTS = plan.Full.BackupTS
+	plan.SourceCapture.CaptureTS = plan.Full.BackupTS
 	task, _ := readyTask(t)
 	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
 	require.NoError(t, err)

@@ -38,7 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 	var o options
-	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v11 receipt")
+	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v12 receipt")
 	flag.StringVar(&o.fullRestore, "full-restore", "", "exact native-pitr-full-restore.v2 receipt")
 	flag.StringVar(&o.logArtifacts, "log-artifacts", "", "exact native-pitr-log-artifacts.v2 receipt")
 	flag.StringVar(&o.logRoot, "log-root", "", "local exact-version log artifact mirror")

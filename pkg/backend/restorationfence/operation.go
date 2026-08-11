@@ -62,14 +62,32 @@ func (t Token) SHA256() (string, error) {
 // the exact same token is idempotent; any foreign or partially-held state fails
 // closed. The caller must independently verify the live target cluster ID.
 func Acquire(ctx context.Context, store storage.KvStorage, prefix string, token Token) (resumed bool, err error) {
+	return AcquireFrom(ctx, store, prefix, token, nil)
+}
+
+// AcquireFrom acquires the fence like Acquire, and additionally permits an
+// exact predecessor token to be atomically replaced. This is used when a
+// whole-cluster snapshot carries a source capture fence into the target.
+func AcquireFrom(ctx context.Context, store storage.KvStorage, prefix string, token Token, predecessor *Token) (resumed bool, err error) {
 	tokenBytes, err := token.Bytes()
 	if err != nil {
 		return false, err
 	}
+	var predecessorBytes []byte
+	if predecessor != nil {
+		predecessorBytes, err = predecessor.Bytes()
+		if err != nil {
+			return false, err
+		}
+		if bytes.Equal(predecessorBytes, tokenBytes) {
+			return false, errors.New("restoration fence predecessor equals new owner")
+		}
+	}
 	keys := AllKeys(prefix)
 	type action struct {
-		key     []byte
-		missing bool
+		key      []byte
+		expected []byte
+		missing  bool
 	}
 	actions := make([]action, 0, len(keys))
 	allHeld := true
@@ -82,7 +100,10 @@ func Acquire(ctx context.Context, store storage.KvStorage, prefix string, token 
 			continue
 		case getErr == nil && bytes.Equal(value, []byte(Open)):
 			allHeld = false
-			actions = append(actions, action{key: key})
+			actions = append(actions, action{key: key, expected: []byte(Open)})
+		case getErr == nil && predecessor != nil && bytes.Equal(value, predecessorBytes):
+			allHeld = false
+			actions = append(actions, action{key: key, expected: predecessorBytes})
 		case errors.Is(getErr, storage.ErrKeyNotFound):
 			allHeld = false
 			actions = append(actions, action{key: key, missing: true})
@@ -95,7 +116,7 @@ func Acquire(ctx context.Context, store storage.KvStorage, prefix string, token 
 	if allHeld {
 		return true, nil
 	}
-	if held != 0 {
+	if predecessor == nil && held != 0 {
 		return false, errors.New("restoration fence is only partially held by this operation")
 	}
 	batch := store.BeginBatchWrite()
@@ -103,7 +124,7 @@ func Acquire(ctx context.Context, store storage.KvStorage, prefix string, token 
 		if action.missing {
 			batch.PutIfNotExist(action.key, tokenBytes, 0)
 		} else {
-			batch.CAS(action.key, tokenBytes, []byte(Open), 0)
+			batch.CAS(action.key, tokenBytes, action.expected, 0)
 		}
 	}
 	if err := batch.Commit(ctx); err != nil {

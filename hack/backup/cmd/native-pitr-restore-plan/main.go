@@ -20,7 +20,7 @@ import (
 const maxReceiptBytes = 4 << 20
 
 func main() {
-	var taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, witness string
+	var taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, witness, sourceCapture string
 	var in nativepitr.ReceiptPlanInputs
 	flag.StringVar(&taskCreate, "task-create", "", "exact native-pitr-task-create.v4 receipt")
 	flag.StringVar(&fullSnapshot, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
@@ -30,16 +30,16 @@ func main() {
 	flag.StringVar(&sourceExclusive, "source-range-exclusive", "", "exact native-pitr-source-range-exclusive.v2 receipt")
 	flag.StringVar(&targetEmpty, "target-snapshot-empty", "", "exact native-pitr-target-snapshot-empty.v1 receipt")
 	flag.StringVar(&witness, "source-witness", "", "exact full-keyspace kubebrain.logical.v2 source witness")
-	flag.Uint64Var(&in.RestoreTS, "restore-ts", 0, "requested point-in-time TSO")
+	flag.StringVar(&sourceCapture, "source-capture", "", "exact native-pitr-source-capture.v1 receipt")
 	flag.Parse()
-	if err := run(taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, witness, in, os.Stdout); err != nil {
+	if err := run(taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, witness, sourceCapture, in, os.Stdout); err != nil {
 		fail(err)
 	}
 }
 
-func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, logArtifactsPath, sourceExclusivePath, targetEmptyPath, witnessPath string, in nativepitr.ReceiptPlanInputs, out io.Writer) error {
-	if taskCreatePath == "" || fullSnapshotPath == "" || fullArtifactsPath == "" || taskReadyPath == "" || logArtifactsPath == "" || sourceExclusivePath == "" || targetEmptyPath == "" || witnessPath == "" {
-		return errors.New("task-create, full-snapshot, full-artifacts, task-ready, log-artifacts, source-range-exclusive, target-snapshot-empty, and source-witness are required")
+func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, logArtifactsPath, sourceExclusivePath, targetEmptyPath, witnessPath, sourceCapturePath string, in nativepitr.ReceiptPlanInputs, out io.Writer) error {
+	if taskCreatePath == "" || fullSnapshotPath == "" || fullArtifactsPath == "" || taskReadyPath == "" || logArtifactsPath == "" || sourceExclusivePath == "" || targetEmptyPath == "" || witnessPath == "" || sourceCapturePath == "" {
+		return errors.New("task-create, full-snapshot, full-artifacts, task-ready, log-artifacts, source-range-exclusive, target-snapshot-empty, source-witness, and source-capture are required")
 	}
 	taskBytes, err := readReceipt(taskCreatePath)
 	if err != nil {
@@ -109,6 +109,14 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	if err := verifiedWitness.Close(); err != nil {
 		return err
 	}
+	sourceCaptureBytes, err := readReceipt(sourceCapturePath)
+	if err != nil {
+		return err
+	}
+	sourceCapture, err := nativepitr.DecodeSourceCaptureReceipt(bytes.NewReader(sourceCaptureBytes))
+	if err != nil {
+		return err
+	}
 	taskDigest := sha256.Sum256(taskBytes)
 	fullDigest := sha256.Sum256(fullBytes)
 	artifactDigest := sha256.Sum256(artifactBytes)
@@ -123,6 +131,7 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	if witnessDigest != witnessDigestBefore {
 		return errors.New("source witness changed while restore plan was being built")
 	}
+	sourceCaptureDigest := sha256.Sum256(sourceCaptureBytes)
 	in.TaskCreateSHA256 = hex.EncodeToString(taskDigest[:])
 	in.FullSnapshotSHA256 = hex.EncodeToString(fullDigest[:])
 	in.ArtifactReceiptSHA256 = hex.EncodeToString(artifactDigest[:])
@@ -132,6 +141,9 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	in.TargetReceiptSHA256 = hex.EncodeToString(targetDigest[:])
 	in.WitnessFileSHA256 = witnessDigest
 	in.Witness = witnessStatus
+	in.SourceCaptureSHA256 = hex.EncodeToString(sourceCaptureDigest[:])
+	in.SourceCapture = sourceCapture
+	in.RestoreTS = sourceCapture.CaptureTS
 	plan, err := nativepitr.BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	if err != nil {
 		return err

@@ -79,6 +79,40 @@ func TestAcquireRejectsPartiallyMatchingFence(t *testing.T) {
 	require.Equal(t, []byte(Open), value)
 }
 
+func TestAcquireFromTransfersExactPredecessor(t *testing.T) {
+	store := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	ctx := context.Background()
+	prefix := "/kubebrain-internal/ks-a1001"
+	predecessor := testToken(t, "source-capture")
+	target := testToken(t, "target-restore")
+	_, err := Acquire(ctx, store, prefix, predecessor)
+	require.NoError(t, err)
+
+	resumed, err := AcquireFrom(ctx, store, prefix, target, &predecessor)
+	require.NoError(t, err)
+	require.False(t, resumed)
+	require.NoError(t, Verify(ctx, store, prefix, target))
+	resumed, err = AcquireFrom(ctx, store, prefix, target, &predecessor)
+	require.NoError(t, err)
+	require.True(t, resumed)
+}
+
+func TestAcquireFromRejectsForeignToken(t *testing.T) {
+	store := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	ctx := context.Background()
+	prefix := "/kubebrain-internal/ks-a1001"
+	foreign := testToken(t, "foreign")
+	_, err := Acquire(ctx, store, prefix, foreign)
+	require.NoError(t, err)
+
+	predecessor := testToken(t, "source-capture")
+	_, err = AcquireFrom(ctx, store, prefix, testToken(t, "target-restore"), &predecessor)
+	require.ErrorContains(t, err, "held by another operation")
+	require.NoError(t, Verify(ctx, store, prefix, foreign))
+}
+
 func TestReleaseRejectsForeignShardWithoutOpeningAnyKey(t *testing.T) {
 	store := memkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
