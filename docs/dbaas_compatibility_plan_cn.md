@@ -46447,8 +46447,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   无残留。
   本项证明的是 Region leader 在已知三副本 store 集合内转移；若目标 store address 在 checkpoint warmup
   后才出现、store 被 tombstone/replaced、网络使所有 cached peers 不可达，或 TiKV 返回空 leader hint，
-  client-go 仍可能需要 PD 并按设计 fail closed。Region merge、store replacement/address change、cache
-  eviction 与跨宿主网络故障继续开放。
+  client-go 仍可能需要 PD 并按设计 fail closed。Region merge 的负向边界由 A4367 固化；store
+  replacement/address change、cache eviction 与跨宿主网络故障继续开放。
+
+- A4367 将 A4366 保留的 Region merge 问题从推理升级为真实负向门禁。测试在 follower 已隔离三个 PD
+  client port、且已成功离线处理 split 和 leader transfer 后，分别用 PD SDK 定位 `topology/a` 与
+  `topology/z` 的两个相邻 Region，并在 disposable PD 容器执行真实
+  `/pd-ctl operator add merge-region <right> <left>`。命令必须返回 Success，且 PD 的两次 `GetRegion`
+  必须最终报告两个 key 属于同一 Region，排除 operator 仅被接受但尚未完成。随后隔离 follower 对跨原
+  split 边界的 serializable Range 当前不能仅靠 TiKV metadata 自愈：5 秒 deadline 必须返回
+  `DeadlineExceeded` 且无 response，禁止返回 stale/partial checkpoint；解除 owner DROP 后，同一 raw
+  authenticated Range 必须成功并精确返回两个旧值，再验证 follower 恢复观察健康 leader 的新 revision。
+  2026-08-11 现场将 deadline 扩到 20 秒仍确定性超时，证明不是短 backoff 抖动；这也与 client-go 的
+  merge/source Region 失效后需要向 PD 重新定位的行为一致。最终负向门禁在三 PD/三 TiKV、双
+  KubeBrain 现场连续以 38.09/32.04 秒通过；integration/backend/server/storage 全量回归通过且 runner
+  无残留。测试同时把 PD split 的单次 RPC 改为 30 秒有界重试，但仍要求权威结果 100% 且 Region IDs
+  非空，避免调度瞬时 deadline 把 merge 结论污染为基础设施抖动。
+  因而 split 与已知 peers 内的 leader transfer 可在 checkpoint 模式离线自愈，但 merge 仍是明确的
+  fail-closed 可用性缺口，不能宣传为 PD 故障期间任意 Region topology change 均透明。后续若要关闭该
+  缺口，需要让隔离进程获得可信、可持续更新的 Region directory（或上游 client/TiKV 提供足够的 merged
+  Region metadata），并以本门禁翻转为隔离期间成功且 header/value 仍固定在受保护 checkpoint 为验收。
 
 ### P2：运维兼容和长期验证
 
