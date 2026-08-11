@@ -94,10 +94,20 @@ cleanup_dual_partition() {
 
 partition_pd_quorum() {
   local placement="${1:-any}"
+  local action="${2:-none}"
   local privileged deadline leader pods_json index pod ip node response all_healthy target_count
-  local -a all_pd_pods pd_pods pd_nodes
+  local kubebrain_pods_json old_uids_json replicas_replaced
+  local -a all_pd_pods pd_pods pd_nodes kubebrain_pods
   if [[ "$placement" != "any" && "$placement" != "cross-node" && "$placement" != "cross-node-all" ]]; then
     echo "invalid PD quorum partition placement: $placement" >&2
+    exit 1
+  fi
+  if [[ "$action" != "none" && "$action" != "restart-kubebrain" ]]; then
+    echo "invalid PD quorum partition action: $action" >&2
+    exit 1
+  fi
+  if [[ "$action" == "restart-kubebrain" && "$placement" != "cross-node-all" ]]; then
+    echo "restart-kubebrain requires cross-node-all PD placement" >&2
     exit 1
   fi
   target_count=2
@@ -227,6 +237,36 @@ partition_pd_quorum() {
     echo "PD total loss observed: ${pd_pods[*]} are unreachable"
   else
     echo "PD quorum loss observed: ${pd_pods[*]} are unreachable"
+  fi
+  if [[ "$action" == "restart-kubebrain" ]]; then
+    kubebrain_pods_json="$(kubectl -n kubebrain-dev get pods \
+      -l app.kubernetes.io/name=kubebrain -o json)"
+    old_uids_json="$(jq -c '[.items[].metadata.uid]' <<<"$kubebrain_pods_json")"
+    if [[ "$(jq 'length' <<<"$old_uids_json")" -ne 3 ]]; then
+      echo "refusing KubeBrain restart during PD total loss: expected 3 replicas" >&2
+      return 1
+    fi
+    mapfile -t kubebrain_pods < <(jq -r '.items[].metadata.name' <<<"$kubebrain_pods_json")
+    kubectl -n kubebrain-dev delete pods "${kubebrain_pods[@]}" --wait=false
+    deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
+    replicas_replaced=false
+    while (( SECONDS < deadline )); do
+      kubebrain_pods_json="$(kubectl --request-timeout=5s -n kubebrain-dev get pods \
+        -l app.kubernetes.io/name=kubebrain -o json 2>/dev/null || true)"
+      replicas_replaced="$(jq -r --argjson old "$old_uids_json" '
+        (.items | length) == 3 and all(.items[];
+          (.metadata.uid as $uid | ($old | index($uid)) == null) and
+          .status.phase == "Running")' <<<"$kubebrain_pods_json" 2>/dev/null || true)"
+      if [[ "$replicas_replaced" == "true" ]]; then
+        echo "KubeBrain replicas replaced during PD total loss"
+        break
+      fi
+      sleep 0.5
+    done
+    if [[ "$replicas_replaced" != "true" ]]; then
+      echo "KubeBrain replicas were not replaced during PD total loss within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
+      return 1
+    fi
   fi
   sleep "$PD_QUORUM_PARTITION_HOLD_SECONDS"
   cleanup_dual_partition
@@ -703,6 +743,12 @@ if [[ "${1:-}" == "--partition-pd-all-cross-node-soak" ]]; then
   partition_pd_quorum_soak cross-node-all
   exit 0
 fi
+if [[ "${1:-}" == "--partition-pd-all-cross-node-restart-kubebrain" ]]; then
+  need docker
+  need jq
+  partition_pd_quorum cross-node-all restart-kubebrain
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-tikv-member" ]]; then
   need docker
   need jq
@@ -734,7 +780,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-pd-all-cross-node-restart-kubebrain|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -823,6 +869,19 @@ run_snapshot_failover_test() {
   wait_backend_ready
 }
 
+run_pd_total_loss_restart_test() {
+  local command="$1"
+  echo "Running cross-node PD total-loss KubeBrain cold restart"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_PD_TOTAL_LOSS_RESTART_COMMAND="$command" \
+      go test . -run '^TestKubeBrainColdRestartFailsClosedAndRecoversAcrossPDTotalLoss$' -count=1 -v
+  )
+  kubectl -n kubebrain-dev rollout status statefulset/kubebrain --timeout="$TIMEOUT"
+  wait_backend_ready
+}
+
 wait_backend_ready
 
 self="$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh"
@@ -890,6 +949,11 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_snapshot_failover_test "cross-node PD total-loss Snapshot" \
       "$self --partition-pd-all-cross-node"
     ;;
+  pd-cross-node-total-loss-restart)
+    need docker
+    need jq
+    run_pd_total_loss_restart_test "$self --partition-pd-all-cross-node-restart-kubebrain"
+    ;;
   tikv-network-partition)
     need docker
     need jq
@@ -912,7 +976,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "$self --partition-tikv-quorum-cross-node"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

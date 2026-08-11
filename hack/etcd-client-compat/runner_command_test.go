@@ -454,6 +454,19 @@ func TestBackendPDCrossNodeTotalLossTargetsEveryMember(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeTotalLossCanRestartEveryKubeBrainReplica(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-total-loss-restart)`)
+	require.Contains(t, script, `--partition-pd-all-cross-node-restart-kubebrain`)
+	require.Contains(t, script, `partition_pd_quorum cross-node-all restart-kubebrain`)
+	require.Contains(t, script, `app.kubernetes.io/name=kubebrain`)
+	require.Contains(t, script, `KubeBrain replicas replaced during PD total loss`)
+	require.Contains(t, script, `TestKubeBrainColdRestartFailsClosedAndRecoversAcrossPDTotalLoss`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

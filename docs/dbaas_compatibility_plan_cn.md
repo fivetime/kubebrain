@@ -46670,6 +46670,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   长分区、进程重启期间全失、独立宿主/AZ、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障
   继续开放。
 
+- A4380 关闭 A4379 保留的“PD 全失期间数据面进程冷启动”证据缺口。新增
+  `pd-cross-node-total-loss-restart` 门禁：在三个不同 worker 上逐一切断全部 PD client endpoint 后，先保存
+  三个 KubeBrain Pod UID，再无等待删除全部副本；helper 必须观察三个新 UID 均进入 Running 才维持黑洞，
+  随后恢复全部规则。官方 clientv3 测试要求冷实例在无当前 PD coordination barrier 时，1 秒线性 Range
+  与 Put 均不得返回 response 或伪成功；恢复后既要由新 channel 读回故障前提交值，也要由跨越整个故障的
+  原 channel 自动重连、读回相同值并完成新写，最终三个 UID 必须仍是黑洞期间启动的替换实例。测试退出前
+  会等待 helper 完成 cleanup，避免 assertion 取消子进程后遗留 iptables 规则。
+  首次真实 RED 发现 NodePort reset 由 clientv3 暴露为本地 balancer `Unknown`，门禁现只窄化接受包含
+  `latest balancer error` 的本地传输错误，不放宽服务端 `Unknown`；同时修复失败路径必须 drain helper。
+  后续 RED 证明测试的 30/60 秒恢复窗口短于冷启动重试及 gRPC 默认 120 秒最大连接退避，并非数据损坏：
+  Kubernetes Running 后各进程在 PD 恢复前重启 4 次，最终 3379 才开始监听。窗口现分别覆盖 90 秒冷启动
+  收敛和 150 秒旧 channel 重连，但恢复判据始终是真实 Range/Put，不以 Pod 状态代替。
+  2026-08-11 disposable `kubebrain-pd-restart` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、11379/11380 拓扑最终通过：三个 PD endpoint 同时不可达，三个副本全部换 UID，故障期读写
+  fail closed；恢复后新旧 client channel 均读回基线且新写成功，全程 133.35 秒。四个 node 最终无故障
+  注入规则。本项关闭 kind bridge 上短时 PD 全失期间全量 KubeBrain 冷启动的 fail-closed、持久性与客户端
+  重连证据；长分区、独立宿主/AZ、慢恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
