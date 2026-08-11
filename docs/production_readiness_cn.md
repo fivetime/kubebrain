@@ -2295,6 +2295,10 @@ stream-log 全链路 113.07 秒通过；该结果不声称 BR import 本身能�
 10 秒并验证同一 identity 恢复。2026-08-11 现场选择 `tgt-pd-0`，BR restore 12.33 秒、全链路 55.62 秒
 通过。对照的持续故障试跑中数据 import 已到 100%，但 BR scheduler/config 收尾在 3 分钟 deadline 内未完成；
 因此这里只支持“import 窗口瞬时故障并恢复”，持续 outage 仍是明确边界。
+`target-two-store-quorum-loss-resume` profile 对标 etcd“无多数派不提交、恢复多数派后继续推进”的原则：在
+handoff 后暂停三副本 target 的两个 TiKV store，KubeBrain 冷启动在 lease/election 状态恢复阶段 fail closed，
+3 秒 Put 不可用；恢复同一两个 store 后原进程完成启动，失败写不可见，后续 Put/Delete 与 semantic receipt
+成功。2026-08-11 真实 stream-log 全链路 44.39 秒通过；这不是双 store 故障下的可用性承诺。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、

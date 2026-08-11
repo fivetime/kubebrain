@@ -606,9 +606,31 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	}
 	require.NoError(t, targetKV.Close())
 
+	targetQuorumLoss := injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_LOSS_CONTAINERS"))
 	targetServer := startKubeBrain(t, ctx, server, targetPD, root, "target")
 	defer targetServer.stop(t)
-	targetClient := waitForEndpoint(t, ctx, endpoint, targetServer)
+	var targetClient *clientv3.Client
+	if targetQuorumLoss {
+		unavailableClient, clientErr := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+		require.NoError(t, clientErr)
+		writeCtx, writeCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, writeErr := unavailableClient.Put(writeCtx, "/native-pitr-quorum-loss-probe", "must-not-commit")
+		writeCancel()
+		require.Error(t, writeErr, "target write unexpectedly committed without a TiKV quorum")
+		require.NoError(t, unavailableClient.Close())
+		require.NoError(t, unpauseContainers(ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_LOSS_CONTAINERS")))
+		waitForAddresses(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_RECOVERY_ADDRESSES"))
+		targetClient = waitForEndpoint(t, ctx, endpoint, targetServer)
+		waitForLeader(t, ctx, targetClient, endpoint, targetServer)
+		failedWrite, getErr := targetClient.Get(ctx, "/native-pitr-quorum-loss-probe")
+		require.NoError(t, getErr)
+		require.Empty(t, failedWrite.Kvs, "write attempted without quorum became visible after recovery")
+		require.NoError(t, putEventually(ctx, targetClient, "/native-pitr-quorum-recovery-probe", "recovered", 45*time.Second))
+		_, deleteErr := targetClient.Delete(ctx, "/native-pitr-quorum-recovery-probe")
+		require.NoError(t, deleteErr)
+	} else {
+		targetClient = waitForEndpoint(t, ctx, endpoint, targetServer)
+	}
 	defer targetClient.Close()
 	if withLogs {
 		semanticBytes := runReceiptOutputEnv(t, ctx, []string{"ENDPOINT=" + endpoint}, semanticCommand, "--plan="+planPath, "--full-snapshot="+fullPath, "--full-restore="+restorePath, "--log-replay="+replayPath, "--admission-handoff="+admissionHandoffPath, "--fence-handoff="+handoffPath, "--witness="+witnessPath, "--probe-prefix=/native-pitr-integration-probe", "--target-pd-addrs="+targetPD, "--timeout=1m")
@@ -651,6 +673,27 @@ func waitForTCP(t *testing.T, ctx context.Context, address string, server *runni
 	logBytes, logErr := os.ReadFile(server.logPath)
 	require.NoError(t, logErr)
 	t.Fatalf("KubeBrain TCP listener did not become ready: %s", logBytes)
+}
+
+func waitForAddresses(t *testing.T, ctx context.Context, raw string) {
+	t.Helper()
+	addresses, err := parseAddrs(raw)
+	require.NoError(t, err)
+	require.NotEmpty(t, addresses)
+	for _, address := range addresses {
+		deadline := time.Now().Add(45 * time.Second)
+		for time.Now().Before(deadline) {
+			conn, dialErr := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "tcp", address)
+			if dialErr == nil {
+				require.NoError(t, conn.Close())
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		conn, dialErr := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "tcp", address)
+		require.NoError(t, dialErr, "recovered target did not listen on %s", address)
+		require.NoError(t, conn.Close())
+	}
 }
 
 type runningServer struct {

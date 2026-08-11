@@ -45971,6 +45971,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   关闭“BR import 窗口内定向 leader+store 瞬时故障并恢复”的缺口，持续故障、双 store 丢失、跨 AZ 分区、
   磁盘满和长 soak 仍开放。
 
+- A4335 对标 `/root/etcd/tests/integration/network_partition_test.go` 的“无分区持有多数派时必须丢失 leader，
+  恢复后再证明推进”原则，新增三节点 `target-two-store-quorum-loss-resume` profile。PITR fence/handoff 完成后
+  同时 pause target TiKV-0/1，只保留一个 store；KubeBrain 冷启动在恢复 lease/election 持久状态时不开放
+  client listener，3 秒有界 Put 返回不可用。测试随后按精确 container identity unpause 两个 store、等待两个
+  status endpoint 恢复，要求同一 KubeBrain 进程完成启动和 leader 发布，并先读取确认无 quorum 时尝试的
+  key 从未提交，再执行恢复后 Put/Delete，最后继续 full-keyspace semantic receipt。2026-08-11 真实
+  stream-log 全链路 44.39 秒通过。该项关闭“双 store 丢失时 fail closed 且恢复后不产生幽灵提交”的缺口；
+  它不承诺无多数派时可用，跨 AZ 非对称分区、磁盘满和长 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
