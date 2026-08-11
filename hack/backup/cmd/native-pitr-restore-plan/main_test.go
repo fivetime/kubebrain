@@ -42,15 +42,16 @@ func TestRunWritesPlanFromExactReceipts(t *testing.T) {
 	require.NoError(t, err)
 	logManifestDigest := sha256.Sum256(logObjectBytes)
 	logs := nativepitr.LogArtifactReceipt{Format: nativepitr.LogArtifactReceiptFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", TaskCreateSHA256: hex.EncodeToString(taskDigest[:]), TaskReadySHA256: hex.EncodeToString(readyDigest[:]), StartTS: 100, GlobalCheckpointTS: 200, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: testDigest, ObjectStoreID: "store-a", Bucket: "bucket", ObjectPrefix: "immutable/log-a", MinRetainUntilUnix: 2_050_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: logObjects, ObjectCount: 2, MetadataCount: 1, DataObjectCount: 1, VerifiedSegmentCount: 1, TotalBytes: 30, ManifestSHA256: hex.EncodeToString(logManifestDigest[:]), MetadataMaxResolvedTS: 200, ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}
+	sourceExclusive := nativepitr.SourceRangeExclusiveReceipt{Format: nativepitr.SourceRangeExclusiveFormat, ClusterID: 11, PDAddrs: []string{"source-pd:2379"}, Keyspace: "tenant-a", StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, SnapshotTS: 120, FullSnapshotReceiptSHA256: hex.EncodeToString(fullDigest[:]), CheckedAtUnix: 2_000_000_000, ReadOnly: true}
 	target := nativepitr.TargetSnapshotEmptyReceipt{Format: nativepitr.TargetSnapshotEmptyFormat, ClusterID: 22, PDAddrs: []string{"pd:2379"}, Stores: []nativepitr.TargetStore{{ID: 1, Address: "tikv:20160"}}, SnapshotTS: 130, ScanScope: nativepitr.WholeTransactionalKeyspace, CheckedAtUnix: 2_000_000_000, ReadOnly: true}
-	paths := []string{filepath.Join(dir, "task.json"), filepath.Join(dir, "full.json"), filepath.Join(dir, "artifacts.json"), filepath.Join(dir, "ready.json"), filepath.Join(dir, "logs.json"), filepath.Join(dir, "target.json")}
-	for i, value := range []any{task, full, artifacts, ready, logs, target} {
+	paths := []string{filepath.Join(dir, "task.json"), filepath.Join(dir, "full.json"), filepath.Join(dir, "artifacts.json"), filepath.Join(dir, "ready.json"), filepath.Join(dir, "logs.json"), filepath.Join(dir, "source-exclusive.json"), filepath.Join(dir, "target.json")}
+	for i, value := range []any{task, full, artifacts, ready, logs, sourceExclusive, target} {
 		b, err := json.Marshal(value)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(paths[i], b, 0o600))
 	}
 	var out bytes.Buffer
-	require.NoError(t, run(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], nativepitr.ReceiptPlanInputs{RestoreTS: 180}, &out))
+	require.NoError(t, run(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], nativepitr.ReceiptPlanInputs{RestoreTS: 180}, &out))
 	var plan nativepitr.Plan
 	require.NoError(t, json.Unmarshal(out.Bytes(), &plan))
 	require.NoError(t, plan.Validate())
@@ -58,5 +59,5 @@ func TestRunWritesPlanFromExactReceipts(t *testing.T) {
 }
 
 func TestRunRejectsMissingReceipts(t *testing.T) {
-	require.ErrorContains(t, run("", "", "", "", "", "", nativepitr.ReceiptPlanInputs{}, &bytes.Buffer{}), "required")
+	require.ErrorContains(t, run("", "", "", "", "", "", "", nativepitr.ReceiptPlanInputs{}, &bytes.Buffer{}), "required")
 }

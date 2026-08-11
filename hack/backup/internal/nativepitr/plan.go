@@ -18,7 +18,7 @@ import (
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v9"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v10"
 )
 
 var (
@@ -48,11 +48,16 @@ type Preflight struct {
 }
 
 type Source struct {
-	ClusterID   uint64 `json:"cluster_id"`
-	Keyspace    string `json:"keyspace"`
-	StartKeyHex string `json:"start_key_hex"`
-	EndKeyHex   string `json:"end_key_hex"`
-	TaskName    string `json:"task_name"`
+	ClusterID                   uint64 `json:"cluster_id"`
+	Keyspace                    string `json:"keyspace"`
+	StartKeyHex                 string `json:"start_key_hex"`
+	EndKeyHex                   string `json:"end_key_hex"`
+	TaskName                    string `json:"task_name"`
+	RangeExclusiveReceiptSHA256 string `json:"range_exclusive_receipt_sha256"`
+	ExclusiveSnapshotTS         uint64 `json:"exclusive_snapshot_ts"`
+	OutsideVisibleKeyCount      uint64 `json:"outside_visible_key_count"`
+	HistoricalMVCCAbsenceProven bool   `json:"historical_mvcc_absence_proven"`
+	PDAddressCount              int    `json:"pd_address_count"`
 }
 
 type FullSnapshot struct {
@@ -129,6 +134,7 @@ type ReceiptPlanInputs struct {
 	ArtifactReceiptSHA256 string
 	TaskReadySHA256       string
 	LogArtifactSHA256     string
+	SourceExclusiveSHA256 string
 	TargetReceiptSHA256   string
 	RestoreTS             uint64
 }
@@ -153,9 +159,25 @@ func DecodePreflight(r io.Reader) (Preflight, error) {
 // every metadata ownership path needed before task creation.
 func ValidatePreflight(p Preflight) error { return validatePreflight(p) }
 
+func DecodePlan(r io.Reader) (Plan, error) {
+	var plan Plan
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&plan); err != nil {
+		return plan, fmt.Errorf("decode native PITR restore plan: %w", err)
+	}
+	if err := requireEOF(dec); err != nil {
+		return plan, errors.New("native PITR restore plan contains trailing JSON")
+	}
+	if err := plan.Validate(); err != nil {
+		return plan, err
+	}
+	return plan, nil
+}
+
 // BuildFromReceipts constructs a restore plan without operator-supplied source
 // timestamps, artifact digests, storage locations, or advancer identities.
-func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifacts ArtifactReceipt, ready TaskReadyReceipt, logs LogArtifactReceipt, target TargetSnapshotEmptyReceipt, in ReceiptPlanInputs) (Plan, error) {
+func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifacts ArtifactReceipt, ready TaskReadyReceipt, logs LogArtifactReceipt, sourceExclusive SourceRangeExclusiveReceipt, target TargetSnapshotEmptyReceipt, in ReceiptPlanInputs) (Plan, error) {
 	if err := validateTaskCreateReceipt(task); err != nil {
 		return Plan{}, err
 	}
@@ -174,6 +196,12 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 	if err := target.Validate(); err != nil {
 		return Plan{}, err
 	}
+	if err := sourceExclusive.Validate(); err != nil {
+		return Plan{}, err
+	}
+	if !sha256RE.MatchString(in.SourceExclusiveSHA256) || sourceExclusive.FullSnapshotReceiptSHA256 != in.FullSnapshotSHA256 || sourceExclusive.ClusterID != full.ClusterID || sourceExclusive.Keyspace != full.Keyspace || sourceExclusive.StartKeyHex != full.StartKeyHex || sourceExclusive.EndKeyHex != full.EndKeyHex || sourceExclusive.SnapshotTS != full.BackupTS {
+		return Plan{}, errors.New("source range-exclusive receipt does not bind the exact full snapshot")
+	}
 	if !sha256RE.MatchString(in.TargetReceiptSHA256) {
 		return Plan{}, errors.New("invalid exact target snapshot-empty receipt SHA-256")
 	}
@@ -191,7 +219,7 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 	}
 	plan := Plan{
 		Format: PlanFormat,
-		Source: Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName},
+		Source: Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName, RangeExclusiveReceiptSHA256: in.SourceExclusiveSHA256, ExclusiveSnapshotTS: sourceExclusive.SnapshotTS, OutsideVisibleKeyCount: sourceExclusive.OutsideVisibleKeyCount, HistoricalMVCCAbsenceProven: sourceExclusive.HistoricalMVCCAbsenceProven, PDAddressCount: len(sourceExclusive.PDAddrs)},
 		Full:   FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified},
 		Log:    LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
 		Target: Target{
@@ -237,6 +265,9 @@ func (p Plan) Validate() error {
 	}
 	if !bytes.Equal(start, ks.ObjectKeyspaceStart()) || !bytes.Equal(end, ks.ObjectKeyspaceEnd()) {
 		return errors.New("source key range does not match keyspace")
+	}
+	if !sha256RE.MatchString(p.Source.RangeExclusiveReceiptSHA256) || p.Source.ExclusiveSnapshotTS != p.Full.BackupTS || p.Source.OutsideVisibleKeyCount != 0 || p.Source.HistoricalMVCCAbsenceProven || p.Source.PDAddressCount <= 0 {
+		return errors.New("invalid source range-exclusive receipt evidence")
 	}
 	if p.Log.StartTS == 0 || p.Log.TaskCommittedAtTS == 0 || p.Full.BackupTS == 0 || p.RestoreTS == 0 || p.Log.GlobalCheckpointTS == 0 {
 		return errors.New("all PITR timestamps must be non-zero")

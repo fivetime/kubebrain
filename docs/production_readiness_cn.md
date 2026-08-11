@@ -1970,6 +1970,24 @@ v2 receipt 同时绑定 remote inventory 文件 SHA-256、object-store/bucket/pr
 也允许安全表达空闲窗口。metadata 的最大 resolved TS 仍不能替代 PD global checkpoint，因为空闲区间
 可以只推进 checkpoint 而不产生新日志文件；时间窗口继续以 exact task-ready receipt 为权威。
 
+由于固定的 BR v7.5.1 `backup txn` 实际忽略 start/end 并生成 whole-cluster snapshot，在生成 restore
+plan 前还必须回到 source cluster，以 full backup 的精确历史 TSO 检查范围外可见事务键：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-source-exclusive \
+  --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --pd-addrs="$SOURCE_PD_ADDRS" \
+  --ca=/source-tls/ca.crt --cert=/source-tls/tls.crt --key=/source-tls/tls.key \
+  > /evidence/native-pitr-source-range-exclusive.json
+```
+
+命令分别核对 PD、txnkv 与 full receipt 的 cluster ID，在 `backup_ts` 使用 key-only RC snapshot
+（忽略锁而不触发 SI lock resolution）扫描
+`[-∞, tenant_start)` 和 `[tenant_end, +∞)`；任一范围出现 committed visible key 即失败。输出
+`kubebrain.native-pitr-source-range-exclusive.v1` 并绑定 exact full receipt SHA-256。该证据证明 full
+snapshot 的逻辑可见内容未跨租户范围，但不声称已证明旧 tombstone/MVCC history 物理不存在；这与
+`backup txn (0, backup_ts]` 保留历史版本的事实必须同时记录，恢复后的语义验证仍不能省略。
+
 在生成计划前，先对独立目标 PD/TiKV 做只读全事务键空间检查：
 
 ```shell
@@ -1980,7 +1998,8 @@ go run ./hack/backup/cmd/native-pitr-target-empty \
 ```
 
 命令分别从 PD client 与 txnkv client 读取 cluster ID 并要求一致，记录排序后的 PD 地址和全部 Up
-TiKV store，在 fresh PD TSO 上以 key-only iterator 从无界起点扫描到无界终点；发现任意可见 committed
+TiKV store，在 fresh PD TSO 上以 key-only RC iterator 从无界起点扫描到无界终点；RC 忽略锁，避免
+SI scanner 为 resolve lock 改写本应只读的目标；发现任意可见 committed
 transactional key 即 fail closed。输出 `kubebrain.native-pitr-target-snapshot-empty.v1`，明确把证明范围
 限定为“该 TSO 的整个事务快照为空”。它不会谎称已经证明历史 MVCC 版本或 RawKV 数据不存在；因此生产
 provisioner 仍必须交付全新、独立且未复用数据目录的 TiKV/PD 集群，未来 restore executor 也必须在首个
@@ -1989,7 +2008,7 @@ provisioner 仍必须交付全新、独立且未复用数据目录的 TiKV/PD �
 相互一致的 cluster ID、1 个 Up store、fresh snapshot TSO，并完成空的全事务键空间扫描。验证后两个
 容器与两个 data volume 均已精确删除。
 
-在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready/log-artifacts/target-snapshot-empty receipt 生成严格只读计划：
+在真正 restore executor 修改目标前，控制面只接受 create/full/full-artifacts/ready/log-artifacts/source-range-exclusive/target-snapshot-empty receipt 生成严格只读计划：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-restore-plan \
@@ -1998,14 +2017,15 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --full-artifacts=/evidence/native-pitr-full-artifacts.json \
   --task-ready=/evidence/native-pitr-task-ready.json \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
+  --source-range-exclusive=/evidence/native-pitr-source-range-exclusive.json \
   --target-snapshot-empty=/evidence/native-pitr-target-snapshot-empty.json \
   --restore-ts="$RESTORE_TS"
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v9`。source cluster/range、task start/commit、full backup TSO、
+输出 `kubebrain.native-pitr-restore-plan.v10`。source cluster/range、task start/commit、full backup TSO、
 exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner，以及 exact ready/log-artifact receipt digest、日志对象 manifest/字节数/分片数全部来自严格 receipt，命令不再
-接受这些值的自由参数；目标 cluster ID、snapshot TSO、扫描范围与 store 数也只能来自 exact target receipt，
+接受这些值的自由参数；source 范围外空白证明、目标 cluster ID、snapshot TSO、扫描范围与 store 数也只能来自 exact receipt，
 不再接受自由填写的 cluster ID 或 emptiness digest。计划拒绝 receipt 文件 digest/身份链不一致、
 source/target cluster ID 相同、目标快照非空或过度声称物理空白、artifact digest 非规范，以及不满足
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记

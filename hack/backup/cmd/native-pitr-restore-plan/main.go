@@ -19,24 +19,25 @@ import (
 const maxReceiptBytes = 4 << 20
 
 func main() {
-	var taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, targetEmpty string
+	var taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty string
 	var in nativepitr.ReceiptPlanInputs
 	flag.StringVar(&taskCreate, "task-create", "", "exact native-pitr-task-create.v4 receipt")
 	flag.StringVar(&fullSnapshot, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
 	flag.StringVar(&fullArtifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v2 receipt")
 	flag.StringVar(&taskReady, "task-ready", "", "exact native-pitr-task-ready.v4 receipt")
 	flag.StringVar(&logArtifacts, "log-artifacts", "", "exact native-pitr-log-artifacts.v2 receipt")
+	flag.StringVar(&sourceExclusive, "source-range-exclusive", "", "exact native-pitr-source-range-exclusive.v1 receipt")
 	flag.StringVar(&targetEmpty, "target-snapshot-empty", "", "exact native-pitr-target-snapshot-empty.v1 receipt")
 	flag.Uint64Var(&in.RestoreTS, "restore-ts", 0, "requested point-in-time TSO")
 	flag.Parse()
-	if err := run(taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, targetEmpty, in, os.Stdout); err != nil {
+	if err := run(taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, in, os.Stdout); err != nil {
 		fail(err)
 	}
 }
 
-func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, logArtifactsPath, targetEmptyPath string, in nativepitr.ReceiptPlanInputs, out io.Writer) error {
-	if taskCreatePath == "" || fullSnapshotPath == "" || fullArtifactsPath == "" || taskReadyPath == "" || logArtifactsPath == "" || targetEmptyPath == "" {
-		return errors.New("task-create, full-snapshot, full-artifacts, task-ready, log-artifacts, and target-snapshot-empty are required")
+func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, logArtifactsPath, sourceExclusivePath, targetEmptyPath string, in nativepitr.ReceiptPlanInputs, out io.Writer) error {
+	if taskCreatePath == "" || fullSnapshotPath == "" || fullArtifactsPath == "" || taskReadyPath == "" || logArtifactsPath == "" || sourceExclusivePath == "" || targetEmptyPath == "" {
+		return errors.New("task-create, full-snapshot, full-artifacts, task-ready, log-artifacts, source-range-exclusive, and target-snapshot-empty are required")
 	}
 	taskBytes, err := readReceipt(taskCreatePath)
 	if err != nil {
@@ -78,6 +79,14 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	if err != nil {
 		return err
 	}
+	sourceExclusiveBytes, err := readReceipt(sourceExclusivePath)
+	if err != nil {
+		return err
+	}
+	sourceExclusive, err := nativepitr.DecodeSourceRangeExclusive(bytes.NewReader(sourceExclusiveBytes))
+	if err != nil {
+		return err
+	}
 	targetBytes, err := readReceipt(targetEmptyPath)
 	if err != nil {
 		return err
@@ -91,14 +100,16 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	artifactDigest := sha256.Sum256(artifactBytes)
 	readyDigest := sha256.Sum256(readyBytes)
 	logArtifactDigest := sha256.Sum256(logArtifactBytes)
+	sourceExclusiveDigest := sha256.Sum256(sourceExclusiveBytes)
 	targetDigest := sha256.Sum256(targetBytes)
 	in.TaskCreateSHA256 = hex.EncodeToString(taskDigest[:])
 	in.FullSnapshotSHA256 = hex.EncodeToString(fullDigest[:])
 	in.ArtifactReceiptSHA256 = hex.EncodeToString(artifactDigest[:])
 	in.TaskReadySHA256 = hex.EncodeToString(readyDigest[:])
 	in.LogArtifactSHA256 = hex.EncodeToString(logArtifactDigest[:])
+	in.SourceExclusiveSHA256 = hex.EncodeToString(sourceExclusiveDigest[:])
 	in.TargetReceiptSHA256 = hex.EncodeToString(targetDigest[:])
-	plan, err := nativepitr.BuildFromReceipts(task, full, artifacts, ready, logs, target, in)
+	plan, err := nativepitr.BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	if err != nil {
 		return err
 	}

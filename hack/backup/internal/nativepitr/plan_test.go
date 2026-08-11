@@ -34,7 +34,7 @@ func validReceiptPlan(t *testing.T) Plan {
 	artifacts := validArtifactReceipt(t, full, digest)
 	ready := readyReceiptFor(task)
 	logs := validLogArtifactReceipt(t, task, ready, digest, digest)
-	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, validTarget(), ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, TargetReceiptSHA256: digest, RestoreTS: 140})
+	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, validSourceExclusive(t), validTarget(), ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, SourceExclusiveSHA256: digest, TargetReceiptSHA256: digest, RestoreTS: 140})
 	require.NoError(t, err)
 	return plan
 }
@@ -84,6 +84,7 @@ func TestPlanRejectsBrokenChain(t *testing.T) {
 		{"missing advancer", func(p *Plan) { p.Log.AdvancerOwner = "" }, "advancer owner"},
 		{"unsafe storage", func(p *Plan) { p.Full.StoragePrefix = " s3://bucket" }, "storage prefix"},
 		{"wrong tenant range", func(p *Plan) { p.Source.EndKeyHex = "ff" }, "does not match keyspace"},
+		{"missing source exclusivity", func(p *Plan) { p.Source.RangeExclusiveReceiptSHA256 = "" }, "range-exclusive"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -94,6 +95,15 @@ func TestPlanRejectsBrokenChain(t *testing.T) {
 	}
 }
 
+func TestDecodePlanIsStrict(t *testing.T) {
+	b, err := json.Marshal(validReceiptPlan(t))
+	require.NoError(t, err)
+	_, err = DecodePlan(strings.NewReader(string(b)))
+	require.NoError(t, err)
+	_, err = DecodePlan(strings.NewReader(string(b) + `{}`))
+	require.ErrorContains(t, err, "trailing")
+}
+
 func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
 	task, _ := readyTask(t)
 	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
@@ -101,31 +111,37 @@ func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
 	ready := readyReceiptFor(task)
 	artifacts := validArtifactReceipt(t, full, digest)
 	logs := validLogArtifactReceipt(t, task, ready, digest, digest)
-	in := ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, TargetReceiptSHA256: digest, RestoreTS: 140}
+	in := ReceiptPlanInputs{TaskCreateSHA256: digest, FullSnapshotSHA256: digest, ArtifactReceiptSHA256: digest, TaskReadySHA256: digest, LogArtifactSHA256: digest, SourceExclusiveSHA256: digest, TargetReceiptSHA256: digest, RestoreTS: 140}
 	target := validTarget()
-	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, target, in)
+	sourceExclusive := validSourceExclusive(t)
+	plan, err := BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	require.NoError(t, err)
 	require.Equal(t, full.BackupTS, plan.Full.BackupTS)
 	require.Equal(t, ready.AdvancerOwner, plan.Log.AdvancerOwner)
 
 	full.TaskName = "other"
-	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, target, in)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	require.ErrorContains(t, err, "different source tasks")
 
 	full.TaskName = task.TaskName
 	in.TaskCreateSHA256 = strings.Repeat("f", 64)
-	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, target, in)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	require.ErrorContains(t, err, "exact task-create")
 
 	in.TaskCreateSHA256 = digest
 	artifacts.FullReceiptSHA256 = strings.Repeat("f", 64)
-	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, target, in)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	require.ErrorContains(t, err, "exact full snapshot")
 
 	artifacts.FullReceiptSHA256 = digest
 	logs.TaskReadySHA256 = strings.Repeat("f", 64)
-	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, target, in)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	require.ErrorContains(t, err, "exact task")
+
+	logs.TaskReadySHA256 = digest
+	sourceExclusive.FullSnapshotReceiptSHA256 = strings.Repeat("f", 64)
+	_, err = BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
+	require.ErrorContains(t, err, "exact full snapshot")
 }
 
 func TestDecodePreflightIsStrict(t *testing.T) {
