@@ -639,6 +639,13 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 			}
 			return nil, s.notLeaderErr("txn")
 		}
+		// The local leadership record becomes visible before durable startup
+		// state has finished loading. Keep a caller with sufficient deadline
+		// parked instead of rapidly consuming clientv3's finite unary retries on
+		// transient leadership-fence failures.
+		if err := s.waitLeaderReady(ctx); err != nil {
+			return nil, err
+		}
 		if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
 			return nil, authErr
 		}
@@ -1279,6 +1286,9 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		}
 		return nil, s.notLeaderErr("put")
 	}
+	if err := s.waitLeaderReady(ctx); err != nil {
+		return nil, err
+	}
 	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
 		return nil, authErr
 	}
@@ -1362,6 +1372,9 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 			return response, err
 		}
 		return nil, s.notLeaderErr("delete range")
+	}
+	if err := s.waitLeaderReady(ctx); err != nil {
+		return nil, err
 	}
 	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
 		return nil, authErr

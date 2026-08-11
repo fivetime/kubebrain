@@ -143,3 +143,55 @@ func TestLeaseKeepAliveWaitsForLeaderStartup(t *testing.T) {
 	require.Equal(t, grant.ID, stream.sent[0].ID)
 	require.Positive(t, stream.sent[0].TTL)
 }
+
+func TestKVWritesWaitForLeaderStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*RPCServer)
+		apply   func(*RPCServer) error
+	}{
+		{
+			name: "put",
+			apply: func(server *RPCServer) error {
+				_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/startup/put"), Value: []byte("value")})
+				return err
+			},
+		},
+		{
+			name: "delete range",
+			prepare: func(server *RPCServer) {
+				_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/startup/delete"), Value: []byte("value")})
+				require.NoError(t, err)
+			},
+			apply: func(server *RPCServer) error {
+				_, err := server.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{Key: []byte("/startup/delete")})
+				return err
+			},
+		},
+		{
+			name: "txn",
+			apply: func(server *RPCServer) error {
+				_, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("/startup/txn"), Value: []byte("value")}}}}})
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			if tc.prepare != nil {
+				tc.prepare(server)
+			}
+			server.SetLeaderReady(false)
+			done := make(chan error, 1)
+			go func() { done <- tc.apply(server) }()
+			select {
+			case err := <-done:
+				t.Fatalf("%s returned before leader startup completed: %v", tc.name, err)
+			case <-time.After(50 * time.Millisecond):
+			}
+			server.SetLeaderReady(true)
+			require.NoError(t, <-done)
+		})
+	}
+}

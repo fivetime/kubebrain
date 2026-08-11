@@ -46814,6 +46814,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KeepAliveOnce 自动跨越 PD 全失及 leader startup 的证据；独立宿主/AZ、分钟级人工慢恢复和
   latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4388 将 A4385–A4387 的 leader startup 停放边界扩展到通用写 `Put`、`DeleteRange` 和 write `Txn`，
+  并对照 upstream `/root/etcd/tests/integration/clientv3/connectivity/black_hole_test.go` 的
+  `TestBalancerUnderBlackholeNoKeepAlivePut/Delete/Txn`。三条路径原先在确认 fresh local leadership 后直接进入
+  auth/backend apply；新 leader 已发布但 durable startup 尚未完成时会立即返回，单元 RED 中三者均在约
+  20ms 内成功穿过显式 `leaderReady=false`。现在只有 write Txn（read-only Txn 不变）、Put 和 DeleteRange
+  在本地 fresh leader 路径有界停放，受原 RPC context/deadline 约束；follower proxy、validation、quota 和
+  auth 的既有错误顺序保持不变。
+  新增 `pd-cross-node-total-loss-kv-write-long-deadline` 门禁，在三个跨 worker PD endpoint 固定全失 45 秒的
+  起始与恢复交界各发起一组 Put/DeleteRange/compare-Txn。第一次现场 RED 还纠正了门禁自身的过强假设：
+  clientv3 不承诺自动重放非幂等写，旧 leader 上已进入 TiKV 的请求可在 PD 恢复前后以规范 `Unavailable`
+  结束；强求 6/6 单调用成功超出 upstream 测试契约。最终门禁因此只接受
+  Unavailable/DeadlineExceeded/Canceled，恢复后先 Range 判定每项是否已提交，仅重试缺失效果；Put 使用
+  同值、Delete 仅在 seed 仍存在时执行、Txn 以 Version=0 compare 防重复，并要求 Watch 对六个逻辑键各交付
+  恰好一个 PUT/DELETE，Delete 的 PrevKV 必须保持 seed 值。
+  2026-08-11 disposable `kubebrain-pd-kv-write-long` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、19379/19380 拓扑最终通过，全程 110.16 秒：故障起始波 0/3 直接成功，恢复交界波 2/3
+  直接成功，其余以规范 Unavailable 收敛并经读后最小重试补齐；最终六键状态和六条唯一 Watch 事件全部
+  闭合，无 Unknown 或永久错误。三个 KubeBrain 与 TiKV 零重启并恢复 Ready；`kb-pd-0` 在初始部署期有
+  一次 liveness restart 后稳定，TiDBCluster Ready，四节点无故障规则残留。本项关闭通用写在新 leader
+  startup 窗口的提前服务差距，并固定 PD 全失重叠时 upstream 所需的错误、歧义消解与恢复契约；独立宿主/
+  AZ、分钟级慢恢复和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
