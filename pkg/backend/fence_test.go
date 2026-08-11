@@ -259,6 +259,43 @@ func TestFencedCreateCannotCommitAfterSuccessorAcquiresStorageLease(t *testing.T
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 }
 
+func TestRestorationFenceRejectsInflightWriteStorageAtomically(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	base := newBadgerStorage(t, assert.New(t))
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	kv := &blockBeforeCommitStorage{KvStorage: base, entered: make(chan struct{}), release: make(chan struct{})}
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: "leader"}, m).(*backend)
+	b.SetLeadershipFence(func() (uint64, bool) { return 7, true })
+	record := resourcelock.LeaderElectionRecord{HolderIdentity: "leader", LeaseDurationSeconds: 8}
+	require.NoError(t, b.GetResourceLock().Create(context.Background(), record))
+	fenceKey, open, ok := b.GetResourceLock().(backendelection.RestorationFenceTokenProvider).RestorationFenceToken(0)
+	require.True(t, ok)
+
+	kv.trigger.Store(true)
+	key := []byte(path.Join(prefix, "restoration-fence/inflight"))
+	userBatch := b.kv.BeginBatchWrite()
+	userBatch.Put(key, []byte(testVal), 0)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- userBatch.Commit(WithLeadershipEpoch(context.Background(), 7))
+	}()
+	select {
+	case <-kv.entered:
+	case <-time.After(time.Second):
+		t.Fatal("write did not reach blocked storage commit")
+	}
+
+	closed := []byte(`{"operation_id":"restore-1"}`)
+	acquire := base.BeginBatchWrite()
+	acquire.CAS(fenceKey, closed, open, 0)
+	require.NoError(t, acquire.Commit(context.Background()))
+	close(kv.release)
+	require.ErrorIs(t, <-errCh, ErrRestorationFenced)
+	_, err := base.Get(context.Background(), key)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
 func TestStorageFencePreservesOrdinaryUserCASConflict(t *testing.T) {
 	ast := assert.New(t)
 	ctrl := gomock.NewController(t)

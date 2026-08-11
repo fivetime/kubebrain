@@ -40,6 +40,7 @@ func TestErrClass(t *testing.T) {
 		{context.DeadlineExceeded, "deadline"},
 		{backend.ErrLeadershipFenced, "fenced"},
 		{fmt.Errorf("wrap: %w", backend.ErrLeadershipFenced), "fenced"},
+		{backend.ErrRestorationFenced, "fenced"},
 		{status.Error(codes.OutOfRange, "compacted"), "revision"},
 		{status.Error(codes.Unavailable, "no leader"), "unavailable"},
 		{status.Error(codes.DeadlineExceeded, "timeout"), "deadline"},

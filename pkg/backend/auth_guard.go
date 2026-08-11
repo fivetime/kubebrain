@@ -52,5 +52,14 @@ func (b *backend) commitUserBatch(ctx context.Context, batch storage.BatchWrite)
 	if errors.As(err, &conflict) && bytes.Equal(conflict.Key, encodedGuard) {
 		return ErrInternalWriteGuardConflict
 	}
+	// Badger and TiKV can lose the precise conflicting key at optimistic commit,
+	// and an appended no-op fence CAS can be the surfaced conflict instead. The
+	// authorization decision is stale whenever its durable guard changed.
+	if errors.Is(err, storage.ErrCASFailed) || errors.Is(err, ErrLeadershipFenced) || errors.Is(err, ErrRestorationFenced) {
+		current, getErr := b.kv.Get(ctx, encodedGuard)
+		if errors.Is(getErr, storage.ErrKeyNotFound) || (getErr == nil && !bytes.Equal(current, guard.expected)) {
+			return ErrInternalWriteGuardConflict
+		}
+	}
 	return err
 }

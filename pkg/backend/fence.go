@@ -32,6 +32,11 @@ import (
 // (FINDING #39 write fencing).
 var ErrLeadershipFenced = errors.New("write rejected: leadership changed during commit")
 
+// ErrRestorationFenced means a persistent target restoration fence closed
+// before this storage transaction committed. Unlike the in-process leadership
+// fence, this gate is shared by every replica and survives process restarts.
+var ErrRestorationFenced = errors.New("write rejected: target restoration fence is closed")
+
 type leadershipFencedStorage struct {
 	storage.KvStorage
 	backend *backend
@@ -55,32 +60,51 @@ type leadershipFencedBatch struct {
 }
 
 func (b *leadershipFencedBatch) Commit(ctx context.Context) error {
-	if _, admitted := leadershipEpochFromContext(ctx); !admitted {
-		return b.BatchWrite.Commit(ctx)
-	}
 	h, _ := b.storage.backend.fenceFn.Load().(fenceHolder)
-	provider, ok := b.storage.backend.election.GetResourceLock().(election.StorageFenceTokenProvider)
-	if h.fn == nil || !ok {
-		return b.BatchWrite.Commit(ctx)
+	var restorationKey, restorationToken []byte
+	restorationProvider, restorationGuarded := b.storage.backend.election.GetResourceLock().(election.RestorationFenceTokenProvider)
+	if h.fn != nil && restorationGuarded {
+		restorationKey, restorationToken, restorationGuarded = restorationProvider.RestorationFenceToken(b.shard)
+	} else {
+		restorationGuarded = false
 	}
-	key, token, ok := provider.StorageFenceToken(b.shard)
-	if !ok {
+	if restorationGuarded {
+		b.BatchWrite.CAS(restorationKey, restorationToken, restorationToken, 0)
+	}
+	_, admitted := leadershipEpochFromContext(ctx)
+	provider, providerOK := b.storage.backend.election.GetResourceLock().(election.StorageFenceTokenProvider)
+	var key, token []byte
+	leadershipGuarded := false
+	if h.fn != nil && admitted && providerOK {
+		key, token, leadershipGuarded = provider.StorageFenceToken(b.shard)
+	}
+	if leadershipGuarded {
+		// Writing the same token makes this shard part of the transaction's
+		// write conflict set. A successor changes every shard atomically with
+		// acquisition.
+		b.BatchWrite.CAS(key, token, token, 0)
+	} else if h.fn != nil && admitted {
 		// Direct-constructed tests may install an in-memory fence without ever
 		// campaigning. Production cannot publish fresh leadership before its lock
 		// Update installs the token, so preserve those test/single-node paths.
-		return b.BatchWrite.Commit(ctx)
 	}
-	// Writing the same token makes this shard part of the transaction's write
-	// conflict set. A successor changes every shard atomically with acquisition.
-	b.BatchWrite.CAS(key, token, token, 0)
 	err := b.BatchWrite.Commit(ctx)
 	if !errors.Is(err, storage.ErrCASFailed) {
 		return err
 	}
-	var conflict *storage.Conflict
-	if errors.As(err, &conflict) && bytes.Equal(conflict.Key, key) {
-		b.storage.backend.metricCli.EmitCounter("write.fence.reject", 1)
-		return ErrLeadershipFenced
+	// A no-op CAS can itself conflict with another transaction that wrote the
+	// same unchanged token. Storage engines may report that guard key even when
+	// the real semantic conflict is elsewhere, so classify only from its current
+	// value, never from Conflict.Key alone.
+	if restorationGuarded {
+		current, getErr := b.storage.KvStorage.Get(ctx, restorationKey)
+		if errors.Is(getErr, storage.ErrKeyNotFound) || (getErr == nil && !bytes.Equal(current, restorationToken)) {
+			b.storage.backend.metricCli.EmitCounter("write.restoration_fence.reject", 1)
+			return ErrRestorationFenced
+		}
+	}
+	if !leadershipGuarded {
+		return err
 	}
 	// TiKV/Badger can report commit-time write conflicts without the key. Read
 	// the guard only on that error path to distinguish a leadership conflict

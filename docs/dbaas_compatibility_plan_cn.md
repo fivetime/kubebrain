@@ -45742,6 +45742,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   重新通过。该证据证明实验性日志恢复数据路径可工作，但 post-log semantic receipt 尚未独立发布，
   生产 writer fence 及其与 plan/receipt 的原子绑定仍未实现，所以 PITR 生产缺口继续保持开放。
 
+- A4316 开始实现 native restore 的跨进程持久 writer fence，而不是把“停掉当前看到的 Pod”当作原子
+  停写证明。每个 keyspace 的 raw coordination namespace 新增一个 `restoration-fence` 控制键和 256 个
+  `restoration-fence-shard/*` 写栅栏，首次 election create/get 以 `PutIfNotExist` 初始化为 `open`；leader
+  election 的 acquire/renew transaction CAS 控制键，已启用生产 leadership fence 的 backend
+  user/internal batch 则轮转 CAS 一个分片，避免所有正常写集中到同一个热键。恢复 worker 将在单一事务中
+  把控制键和全部分片从 `open` CAS 为同一个 plan-bound token；它与已经进入 storage Commit 的 KubeBrain
+  写事务只能有一方成功。关闭后新写返回 `Unavailable`，election renewal 失败，进程重启也因读取到
+  closed control token 无法重新竞选并覆盖 fence。direct-constructed/single-node 测试在未初始化 election
+  gate 时保持原有 fail-open 行为。Badger 阻塞 commit 竞态证明对应分片关闭获胜后旧写返回
+  `ErrRestorationFenced` 且目标 key 未落盘；memkv election 回归证明 renewal 与另一进程 restart 均无法
+  绕过 closed token。该项只交付所有 KubeBrain writer 必须遵守的 storage-atomic 数据面原语；恢复侧
+  acquire/release command、plan/target/semantic receipt 绑定及真实 TiKV 竞态演练仍是下一项，故当前
+  native restore receipt 仍不得把 `target_write_fence_proven` 标为 true。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

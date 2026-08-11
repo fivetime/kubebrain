@@ -2062,8 +2062,13 @@ Up store identity 与 plan-bound receipt 一致。成功输出 `kubebrain.native
 `whole_cluster_txn_import=true`、`source_visible_range_exclusive=true`、`full_snapshot_restored=true`，同时
 固定 `target_write_fence_proven=false`、`log_replay_completed=false`、
 `post_restore_semantic_validated=false`、`pitr_complete=false`。这是有意的失败闭合边界：当前没有能跨
-外部 BR 进程原子保持的 target writer fence，空白扫描与 BR 首写间仍有竞态；生产控制面必须确保目标
-未启动 KubeBrain/其他 writer。该执行收据不能用于宣称 PITR 或 etcd 语义恢复完成。
+外部 BR 进程获取、续持并由 receipt 证明的 target writer fence，空白扫描与 BR 首写间仍有竞态；生产
+控制面必须确保目标未启动 KubeBrain/其他 writer。数据面已经新增 tenant-scoped 持久
+`restoration-fence` 原语：leader election acquire/renew CAS 控制键，生产 backend 的所有 user/internal
+transaction 轮转 CAS 256 个写分片之一；恢复方在一个事务中关闭控制键和全部分片时可原子排斥所有
+in-flight writer，同时避免正常写共享单一热键，且重启不能绕过。但 acquire/release 命令及
+plan/semantic receipt 绑定尚未接入本执行器，所以该执行收据仍不能用于宣称 PITR 或 etcd 语义恢复完成，
+也继续固定 `target_write_fence_proven=false`。
 
 当 plan 的 `restore_ts > full_snapshot.backup_ts` 时，同一个 full executor 仍只执行并记录 base
 whole-cluster txn import，随后必须在 KubeBrain/其他 target writer 保持停机的窗口内运行独立日志回放：

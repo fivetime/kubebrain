@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -127,4 +128,29 @@ func TestResourceLockRotatesShardedStorageFenceOnlyOnProcessOwnership(t *testing
 	_, tokenBRestart, ok := lockBRestart.(StorageFenceTokenProvider).StorageFenceToken(0)
 	require.True(t, ok)
 	require.NotEqual(t, tokenB, tokenBRestart)
+}
+
+func TestRestorationFenceStopsElectionRenewalAndRestart(t *testing.T) {
+	kv := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	const prefix = "/registry/restoration-fence"
+	ctx := context.Background()
+	manager := NewResourceLockManager(Config{Prefix: prefix, Identity: "peer-a", Timeout: time.Second}, kv)
+	lock := manager.GetResourceLock()
+	record := resourcelock.LeaderElectionRecord{HolderIdentity: "peer-a", LeaseDurationSeconds: 8}
+	require.NoError(t, lock.Create(ctx, record))
+	provider := lock.(RestorationFenceTokenProvider)
+	key, open, ok := provider.RestorationFenceControlToken()
+	require.True(t, ok)
+	require.Equal(t, []byte(restorationFenceOpen), open)
+
+	closed := []byte(`{"operation_id":"restore-1"}`)
+	batch := kv.BeginBatchWrite()
+	batch.CAS(key, closed, open, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	require.ErrorIs(t, lock.Update(ctx, record), storage.ErrCASFailed)
+	restarted := NewResourceLockManager(Config{Prefix: prefix, Identity: "peer-b", Timeout: time.Second}, kv).GetResourceLock()
+	_, _, err := restarted.Get(ctx)
+	require.ErrorContains(t, err, "fenced for target restoration")
 }

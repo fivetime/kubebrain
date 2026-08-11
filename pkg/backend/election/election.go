@@ -43,6 +43,16 @@ func getElectionKey(prefix string) []byte {
 	return []byte(fmt.Sprintf("%s/election", prefix))
 }
 
+const restorationFenceOpen = "open"
+
+func getRestorationFenceKey(prefix string) []byte {
+	return []byte(fmt.Sprintf("%s/restoration-fence", prefix))
+}
+
+func getRestorationFenceShardKey(prefix string, shard uint64) []byte {
+	return []byte(fmt.Sprintf("%s/restoration-fence-shard/%02x", prefix, shard%storageFenceShardCount))
+}
+
 const storageFenceShardCount = 256
 
 func getStorageFenceKey(prefix string, shard uint64) []byte {
@@ -56,6 +66,14 @@ type StorageFenceTokenProvider interface {
 	StorageFenceToken(shard uint64) (key, expected []byte, ok bool)
 }
 
+// RestorationFenceTokenProvider exposes the durable, tenant-scoped restoration
+// gate. Regular transactions join one shard, avoiding a single hot write key. A
+// restore worker closes the control key and every shard in one transaction.
+type RestorationFenceTokenProvider interface {
+	RestorationFenceToken(shard uint64) (key, expected []byte, ok bool)
+	RestorationFenceControlToken() (key, expected []byte, ok bool)
+}
+
 type Config struct {
 	Prefix   string
 	Identity string
@@ -65,8 +83,10 @@ type Config struct {
 // NewResourceLockManager build a manager for resource lock
 func NewResourceLockManager(config Config, store storage.KvStorage) ResourceLockManager {
 	fenceKeys := make([][]byte, storageFenceShardCount)
+	restorationFenceKeys := make([][]byte, storageFenceShardCount)
 	for shard := range fenceKeys {
 		fenceKeys[shard] = getStorageFenceKey(config.Prefix, uint64(shard))
+		restorationFenceKeys[shard] = getRestorationFenceShardKey(config.Prefix, uint64(shard))
 	}
 	return &resourceLockManager{
 		resourceLock: &resourceLock{
@@ -74,9 +94,11 @@ func NewResourceLockManager(config Config, store storage.KvStorage) ResourceLock
 			lockConfig: resourcelock.ResourceLockConfig{
 				Identity: config.Identity,
 			},
-			electionKey: getElectionKey(config.Prefix),
-			fenceKeys:   fenceKeys,
-			timeout:     config.Timeout,
+			electionKey:          getElectionKey(config.Prefix),
+			restorationFenceKey:  getRestorationFenceKey(config.Prefix),
+			restorationFenceKeys: restorationFenceKeys,
+			fenceKeys:            fenceKeys,
+			timeout:              config.Timeout,
 		},
 	}
 }
@@ -97,13 +119,16 @@ type resourceLock struct {
 	// the single leader-election goroutine (Get/Create/Update) and read
 	// concurrently by RPC goroutines via Describe (#60/#68). Storage I/O is done
 	// outside the lock; only the field access is guarded.
-	mu          sync.Mutex
-	record      resourcelock.LeaderElectionRecord
-	lastVal     []byte
-	tso         uint64
-	electionKey []byte
-	fenceKeys   [][]byte
-	timeout     time.Duration
+	mu                          sync.Mutex
+	record                      resourcelock.LeaderElectionRecord
+	lastVal                     []byte
+	tso                         uint64
+	electionKey                 []byte
+	restorationFenceKey         []byte
+	restorationFenceKeys        [][]byte
+	restorationFenceInitialized bool
+	fenceKeys                   [][]byte
+	timeout                     time.Duration
 	// fenceToken is unique to this process's current/most-recent ownership.
 	// fenceInstalled becomes false after observing/releasing another holder so
 	// the next acquisition rotates all shards atomically with the election CAS.
@@ -120,6 +145,9 @@ func (r *resourceLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRec
 	if err := r.getRecord(ctx); err != nil {
 		return nil, nil, err
 	}
+	if err := r.ensureRestorationFenceOpen(ctx); err != nil {
+		return nil, nil, err
+	}
 
 	if err := r.getTso(ctx); err != nil {
 		return nil, nil, err
@@ -133,6 +161,57 @@ func (r *resourceLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRec
 	rawCopy := append([]byte(nil), r.lastVal...)
 	r.mu.Unlock()
 	return &recordCopy, rawCopy, nil
+}
+
+func (r *resourceLock) ensureRestorationFenceOpen(parent context.Context) error {
+	ctx, cancel := r.genContext(parent)
+	defer cancel()
+	value, err := r.store.Get(ctx, r.restorationFenceKey)
+	if err == nil {
+		if !bytes.Equal(value, []byte(restorationFenceOpen)) {
+			return errors.New("KubeBrain writes are fenced for target restoration")
+		}
+		r.mu.Lock()
+		initialized := r.restorationFenceInitialized
+		r.mu.Unlock()
+		if initialized {
+			return nil
+		}
+	}
+	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
+		return err
+	}
+
+	// Upgrade an existing tenant lazily. Only absent keys are inserted so an
+	// already-open shard is never made a needless write-conflict hotspot.
+	missing := make([][]byte, 0, len(r.restorationFenceKeys)+1)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		missing = append(missing, r.restorationFenceKey)
+	}
+	for _, key := range r.restorationFenceKeys {
+		value, getErr := r.store.Get(ctx, key)
+		switch {
+		case getErr == nil && !bytes.Equal(value, []byte(restorationFenceOpen)):
+			return errors.New("KubeBrain writes are fenced for target restoration")
+		case errors.Is(getErr, storage.ErrKeyNotFound):
+			missing = append(missing, key)
+		case getErr != nil:
+			return getErr
+		}
+	}
+	if len(missing) > 0 {
+		batch := r.store.BeginBatchWrite()
+		for _, key := range missing {
+			batch.PutIfNotExist(key, []byte(restorationFenceOpen), 0)
+		}
+		if err := batch.Commit(ctx); err != nil {
+			return err
+		}
+	}
+	r.mu.Lock()
+	r.restorationFenceInitialized = true
+	r.mu.Unlock()
+	return nil
 }
 
 func (r *resourceLock) getRecord(parent context.Context) (err error) {
@@ -194,6 +273,10 @@ func (r *resourceLock) Create(parent context.Context, ler resourcelock.LeaderEle
 	}
 	batch := r.store.BeginBatchWrite()
 	batch.PutIfNotExist(r.electionKey, lerBytes, 0)
+	batch.PutIfNotExist(r.restorationFenceKey, []byte(restorationFenceOpen), 0)
+	for _, key := range r.restorationFenceKeys {
+		batch.PutIfNotExist(key, []byte(restorationFenceOpen), 0)
+	}
 	var fenceToken []byte
 	if ler.HolderIdentity == r.lockConfig.Identity {
 		fenceToken = []byte(uuid.NewString())
@@ -222,6 +305,7 @@ func (r *resourceLock) Create(parent context.Context, ler resourcelock.LeaderEle
 		r.fenceToken = fenceToken
 		r.fenceInstalled = true
 	}
+	r.restorationFenceInitialized = true
 	r.mu.Unlock()
 	return nil
 }
@@ -245,6 +329,7 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 
 	batch := r.store.BeginBatchWrite()
 	batch.CAS(r.electionKey, recordBytes, lastVal, 0)
+	batch.CAS(r.restorationFenceKey, []byte(restorationFenceOpen), []byte(restorationFenceOpen), 0)
 	var fenceToken []byte
 	if installFence {
 		fenceToken = []byte(uuid.NewString())
@@ -291,6 +376,25 @@ func (r *resourceLock) StorageFenceToken(shard uint64) (key, expected []byte, ok
 	key = append([]byte(nil), r.fenceKeys[shard%uint64(len(r.fenceKeys))]...)
 	expected = append([]byte(nil), r.fenceToken...)
 	return key, expected, true
+}
+
+func (r *resourceLock) RestorationFenceToken(shard uint64) (key, expected []byte, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.restorationFenceInitialized || len(r.restorationFenceKeys) == 0 {
+		return nil, nil, false
+	}
+	key = r.restorationFenceKeys[shard%uint64(len(r.restorationFenceKeys))]
+	return append([]byte(nil), key...), []byte(restorationFenceOpen), true
+}
+
+func (r *resourceLock) RestorationFenceControlToken() (key, expected []byte, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.restorationFenceInitialized {
+		return nil, nil, false
+	}
+	return append([]byte(nil), r.restorationFenceKey...), []byte(restorationFenceOpen), true
 }
 
 // RecordEvent implements resourcelock.Interface

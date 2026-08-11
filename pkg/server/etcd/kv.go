@@ -2003,6 +2003,9 @@ func mapFenceErr(err error) error {
 	if errors.Is(err, backend.ErrLeadershipFenced) {
 		return status.Errorf(codes.Unavailable, "write rejected: leadership changed during commit, retry on current leader")
 	}
+	if errors.Is(err, backend.ErrRestorationFenced) {
+		return status.Error(codes.Unavailable, "write rejected: target restoration is in progress")
+	}
 	if errors.Is(err, backend.ErrInternalWriteGuardConflict) {
 		return rpctypes.ErrAuthOldRevision
 	}
@@ -2044,8 +2047,8 @@ func errClass(err error) string {
 		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "deadline"
-	case errors.Is(err, backend.ErrLeadershipFenced):
-		return "fenced" // leadership changed during commit; client retries the new leader
+	case errors.Is(err, backend.ErrLeadershipFenced), errors.Is(err, backend.ErrRestorationFenced):
+		return "fenced" // leadership changed or a persistent restoration fence is closed
 	}
 	switch status.Code(err) {
 	case codes.OK:
