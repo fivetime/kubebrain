@@ -35,7 +35,7 @@ import (
 )
 
 const ReplayManifestFormat = "kubebrain.native-pitr-log-replay-manifest.v1"
-const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v1"
+const LogReplayExecutionFormat = "kubebrain.native-pitr-log-replay.v2"
 
 type ReplayMutation struct {
 	CommitTS uint64 `json:"commit_ts"`
@@ -88,33 +88,35 @@ type replayCheckpoint struct {
 }
 
 type LogReplayExecutionReceipt struct {
-	Format                       string `json:"format"`
-	PlanSHA256                   string `json:"plan_sha256"`
-	FullRestoreReceiptSHA256     string `json:"full_restore_receipt_sha256"`
-	LogArtifactReceiptSHA256     string `json:"log_artifact_receipt_sha256"`
-	ArtifactManifestSHA256       string `json:"artifact_manifest_sha256"`
-	MutationsSHA256              string `json:"mutations_sha256"`
-	SourceClusterID              uint64 `json:"source_cluster_id"`
-	TargetClusterID              uint64 `json:"target_cluster_id"`
-	Keyspace                     string `json:"keyspace"`
-	BackupTS                     uint64 `json:"backup_ts"`
-	RestoreTS                    uint64 `json:"restore_ts"`
-	MutationCount                int    `json:"mutation_count"`
-	TransactionCount             int    `json:"transaction_count"`
-	AppliedMutations             int    `json:"applied_mutations_this_run"`
-	AppliedTransactions          int    `json:"applied_transactions_this_run"`
-	LastCommitTS                 uint64 `json:"last_commit_ts,omitempty"`
-	Resumed                      bool   `json:"resumed_from_checkpoint"`
-	CheckpointAtomic             bool   `json:"checkpoint_atomic_with_source_transaction"`
-	TargetWriteFenceProven       bool   `json:"target_write_fence_proven"`
-	LogReplayCompleted           bool   `json:"log_replay_completed"`
-	PostRestoreSemanticValidated bool   `json:"post_restore_semantic_validated"`
-	PITRComplete                 bool   `json:"pitr_complete"`
-	StartedAtUnix                int64  `json:"started_at_unix"`
-	CompletedAtUnix              int64  `json:"completed_at_unix"`
+	Format                        string `json:"format"`
+	PlanSHA256                    string `json:"plan_sha256"`
+	FullRestoreReceiptSHA256      string `json:"full_restore_receipt_sha256"`
+	LogArtifactReceiptSHA256      string `json:"log_artifact_receipt_sha256"`
+	ArtifactManifestSHA256        string `json:"artifact_manifest_sha256"`
+	MutationsSHA256               string `json:"mutations_sha256"`
+	RestorationFenceReceiptSHA256 string `json:"restoration_fence_receipt_sha256"`
+	SourceClusterID               uint64 `json:"source_cluster_id"`
+	TargetClusterID               uint64 `json:"target_cluster_id"`
+	Keyspace                      string `json:"keyspace"`
+	BackupTS                      uint64 `json:"backup_ts"`
+	RestoreTS                     uint64 `json:"restore_ts"`
+	MutationCount                 int    `json:"mutation_count"`
+	TransactionCount              int    `json:"transaction_count"`
+	AppliedMutations              int    `json:"applied_mutations_this_run"`
+	AppliedTransactions           int    `json:"applied_transactions_this_run"`
+	LastCommitTS                  uint64 `json:"last_commit_ts,omitempty"`
+	Resumed                       bool   `json:"resumed_from_checkpoint"`
+	CheckpointAtomic              bool   `json:"checkpoint_atomic_with_source_transaction"`
+	ReplayWriteFenceProven        bool   `json:"replay_write_fence_proven"`
+	TargetWriteFenceProven        bool   `json:"target_write_fence_proven"`
+	LogReplayCompleted            bool   `json:"log_replay_completed"`
+	PostRestoreSemanticValidated  bool   `json:"post_restore_semantic_validated"`
+	PITRComplete                  bool   `json:"pitr_complete"`
+	StartedAtUnix                 int64  `json:"started_at_unix"`
+	CompletedAtUnix               int64  `json:"completed_at_unix"`
 }
 
-func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, manifest ReplayManifest, in LogReplayExecutionReceipt) (LogReplayExecutionReceipt, error) {
+func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, manifest ReplayManifest, fence RestorationFenceReceipt, fenceSHA string, in LogReplayExecutionReceipt) (LogReplayExecutionReceipt, error) {
 	if err := plan.Validate(); err != nil {
 		return LogReplayExecutionReceipt{}, err
 	}
@@ -124,7 +126,10 @@ func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, man
 	if err := manifest.Validate(); err != nil {
 		return LogReplayExecutionReceipt{}, err
 	}
-	if plan.RestoreTS <= plan.Full.BackupTS || restore.PlanSHA256 != in.PlanSHA256 || in.LogArtifactReceiptSHA256 != manifest.LogArtifactReceiptSHA256 || in.LastCommitTS != manifest.LastCommitTS || manifest.LogArtifactReceiptSHA256 != plan.Log.ArtifactReceiptSHA || manifest.ArtifactManifestSHA256 != plan.Log.ArtifactManifest || manifest.Keyspace != plan.Source.Keyspace || manifest.StartExclusiveTS != plan.Full.BackupTS || manifest.RestoreTS != plan.RestoreTS {
+	if err := fence.Validate(); err != nil {
+		return LogReplayExecutionReceipt{}, err
+	}
+	if plan.RestoreTS <= plan.Full.BackupTS || restore.PlanSHA256 != in.PlanSHA256 || fence.PlanSHA256 != in.PlanSHA256 || fence.TargetClusterID != plan.Target.ClusterID || fence.Keyspace != plan.Source.Keyspace || in.LogArtifactReceiptSHA256 != manifest.LogArtifactReceiptSHA256 || in.LastCommitTS != manifest.LastCommitTS || manifest.LogArtifactReceiptSHA256 != plan.Log.ArtifactReceiptSHA || manifest.ArtifactManifestSHA256 != plan.Log.ArtifactManifest || manifest.Keyspace != plan.Source.Keyspace || manifest.StartExclusiveTS != plan.Full.BackupTS || manifest.RestoreTS != plan.RestoreTS || !sha256RE.MatchString(fenceSHA) || in.RestorationFenceReceiptSHA256 != fenceSHA || fence.VerifiedAtUnix > in.StartedAtUnix {
 		return LogReplayExecutionReceipt{}, errors.New("log replay evidence does not match restore plan")
 	}
 	in.Format = LogReplayExecutionFormat
@@ -132,7 +137,7 @@ func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, man
 	in.BackupTS, in.RestoreTS = plan.Full.BackupTS, plan.RestoreTS
 	in.ArtifactManifestSHA256, in.MutationsSHA256 = manifest.ArtifactManifestSHA256, manifest.MutationsSHA256
 	in.MutationCount, in.TransactionCount = manifest.MutationCount, manifest.TransactionCount
-	in.CheckpointAtomic, in.LogReplayCompleted = true, true
+	in.CheckpointAtomic, in.ReplayWriteFenceProven, in.LogReplayCompleted = true, true, true
 	in.TargetWriteFenceProven, in.PostRestoreSemanticValidated, in.PITRComplete = false, false, false
 	if err := in.Validate(); err != nil {
 		return LogReplayExecutionReceipt{}, err
@@ -141,10 +146,10 @@ func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, man
 }
 
 func (r LogReplayExecutionReceipt) Validate() error {
-	if r.Format != LogReplayExecutionFormat || r.SourceClusterID == 0 || r.TargetClusterID == 0 || r.SourceClusterID == r.TargetClusterID || r.Keyspace == "" || r.BackupTS == 0 || r.RestoreTS <= r.BackupTS || r.MutationCount < 0 || r.TransactionCount < 0 || r.AppliedMutations < 0 || r.AppliedTransactions < 0 || r.AppliedMutations > r.MutationCount || r.AppliedTransactions > r.TransactionCount || !r.CheckpointAtomic || !r.LogReplayCompleted || r.TargetWriteFenceProven || r.PostRestoreSemanticValidated || r.PITRComplete || r.StartedAtUnix <= 0 || r.CompletedAtUnix < r.StartedAtUnix {
+	if r.Format != LogReplayExecutionFormat || r.SourceClusterID == 0 || r.TargetClusterID == 0 || r.SourceClusterID == r.TargetClusterID || r.Keyspace == "" || r.BackupTS == 0 || r.RestoreTS <= r.BackupTS || r.MutationCount < 0 || r.TransactionCount < 0 || r.AppliedMutations < 0 || r.AppliedTransactions < 0 || r.AppliedMutations > r.MutationCount || r.AppliedTransactions > r.TransactionCount || !r.CheckpointAtomic || !r.ReplayWriteFenceProven || !r.LogReplayCompleted || r.TargetWriteFenceProven || r.PostRestoreSemanticValidated || r.PITRComplete || r.StartedAtUnix <= 0 || r.CompletedAtUnix < r.StartedAtUnix {
 		return errors.New("native PITR log replay receipt is incomplete")
 	}
-	for _, value := range []string{r.PlanSHA256, r.FullRestoreReceiptSHA256, r.LogArtifactReceiptSHA256, r.ArtifactManifestSHA256, r.MutationsSHA256} {
+	for _, value := range []string{r.PlanSHA256, r.FullRestoreReceiptSHA256, r.LogArtifactReceiptSHA256, r.ArtifactManifestSHA256, r.MutationsSHA256, r.RestorationFenceReceiptSHA256} {
 		if !sha256RE.MatchString(value) {
 			return errors.New("native PITR log replay receipt has invalid digest")
 		}

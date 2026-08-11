@@ -45780,6 +45780,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./hack/backup/run-native-pitr-full-restore-integration.sh`。证据仍只覆盖 acquire 之后的阶段，不能把 full import
   窗口或总 `target_write_fence_proven` 改成 true。
 
+- A4319 将 post-full writer fence 从演练辅助条件提升为 native log replay 的强制输入。日志回放命令新增
+  `--restoration-fence`，重新解析并绑定 exact plan SHA、target cluster ID、keyspace 和 fence receipt
+  SHA-256；回放前后都以 receipt 的 exact token 验证 control + 256 shards，且 plan/full/log/fence 任一输入
+  在执行期间漂移都会 fail closed。`kubebrain.native-pitr-log-replay.v2` 新增
+  `restoration_fence_receipt_sha256` 与 `replay_write_fence_proven=true`，同时继续保持总
+  `target_write_fence_proven=false`、`post_restore_semantic_validated=false`、`pitr_complete=false`。
+  `TestNativeLogReplayRealBR` 已改为实际调用 fence acquire CLI 和 log replay CLI，并在两套独立 PD/TiKV、
+  MinIO 与 pinned BR v7.5.1 上通过；两个 CLI 也把 PingCAP 内部日志固定到 stderr，stdout 只发布 canonical
+  JSON receipt。该证据证明 fence 覆盖了日志回放窗口，但不覆盖 whole-cluster full import；closed fence
+  又会阻止后置语义验证所需的 KubeBrain 选主，因此下一阶段必须设计 receipt 化的受控交接或外部 durable
+  admission fence，不能用本项把总 PITR 门禁改成 true。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,15 +48,18 @@ func TestMaterializeReplayResolvesDefaultAndShortValues(t *testing.T) {
 	require.Equal(t, ReplayMutation{CommitTS: 140, Key: keyA, Delete: true}, mutations[2])
 }
 
-func TestBuildLogReplayExecutionRemainsPreSemanticAndUnfenced(t *testing.T) {
+func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing.T) {
 	plan := validReceiptPlan(t)
 	restore := validFullRestoreExecution()
 	restore.PlanSHA256 = digest
 	manifest := ReplayManifest{Format: ReplayManifestFormat, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, ArtifactManifestSHA256: plan.Log.ArtifactManifest, Keyspace: plan.Source.Keyspace, StartExclusiveTS: plan.Full.BackupTS, RestoreTS: plan.RestoreTS, MutationCount: 1, TransactionCount: 1, PutCount: 1, FirstCommitTS: plan.RestoreTS, LastCommitTS: plan.RestoreTS, MutationsSHA256: digest, AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true}
 	now := time.Now().Unix()
-	receipt, err := BuildLogReplayExecution(plan, restore, manifest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now})
+	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
+	require.NoError(t, err)
+	receipt, err := BuildLogReplayExecution(plan, restore, manifest, fence, digest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now})
 	require.NoError(t, err)
 	require.True(t, receipt.LogReplayCompleted)
+	require.True(t, receipt.ReplayWriteFenceProven)
 	require.False(t, receipt.TargetWriteFenceProven)
 	require.False(t, receipt.PostRestoreSemanticValidated)
 	require.False(t, receipt.PITRComplete)
@@ -63,6 +67,23 @@ func TestBuildLogReplayExecutionRemainsPreSemanticAndUnfenced(t *testing.T) {
 	require.NoError(t, json.NewEncoder(&encoded).Encode(receipt))
 	_, err = DecodeLogReplayExecution(&encoded)
 	require.NoError(t, err)
+}
+
+func TestBuildLogReplayExecutionRejectsWrongOrLateFence(t *testing.T) {
+	plan := validReceiptPlan(t)
+	restore := validFullRestoreExecution()
+	restore.PlanSHA256 = digest
+	manifest := ReplayManifest{Format: ReplayManifestFormat, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, ArtifactManifestSHA256: plan.Log.ArtifactManifest, Keyspace: plan.Source.Keyspace, StartExclusiveTS: plan.Full.BackupTS, RestoreTS: plan.RestoreTS, MutationCount: 1, TransactionCount: 1, PutCount: 1, FirstCommitTS: plan.RestoreTS, LastCommitTS: plan.RestoreTS, MutationsSHA256: digest, AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true}
+	now := time.Now().Unix()
+	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
+	require.NoError(t, err)
+	input := LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now}
+
+	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, strings.Repeat("b", 64), input)
+	require.ErrorContains(t, err, "does not match")
+	fence.VerifiedAtUnix = now + 1
+	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, digest, input)
+	require.ErrorContains(t, err, "does not match")
 }
 
 func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {

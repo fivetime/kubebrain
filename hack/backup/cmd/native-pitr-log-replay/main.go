@@ -17,24 +17,32 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
+	pingcaplog "github.com/pingcap/log"
 	pd "github.com/tikv/pd/client"
+	"go.uber.org/zap/zapcore"
 )
 
 const maxReceiptBytes = 4 << 20
 
 type options struct {
-	plan, fullRestore, logArtifacts, logRoot string
-	pdAddrs, ca, cert, key, approve          string
-	timeout                                  time.Duration
+	plan, fullRestore, logArtifacts, logRoot, fenceReceipt string
+	pdAddrs, ca, cert, key, approve                        string
+	timeout                                                time.Duration
 }
 
 func main() {
+	if err := configurePingCAPLogging(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	var o options
 	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v10 receipt")
 	flag.StringVar(&o.fullRestore, "full-restore", "", "exact native-pitr-full-restore.v1 receipt")
 	flag.StringVar(&o.logArtifacts, "log-artifacts", "", "exact native-pitr-log-artifacts.v2 receipt")
 	flag.StringVar(&o.logRoot, "log-root", "", "local exact-version log artifact mirror")
+	flag.StringVar(&o.fenceReceipt, "restoration-fence", "", "exact plan-bound restoration fence receipt")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "target-ca", "", "target PD CA file")
 	flag.StringVar(&o.cert, "target-cert", "", "target PD client certificate")
@@ -48,9 +56,22 @@ func main() {
 	}
 }
 
+func configurePingCAPLogging() error {
+	sink := zapcore.AddSync(os.Stderr)
+	logger, props, err := pingcaplog.InitLoggerWithWriteSyncer(&pingcaplog.Config{
+		Level:  "error",
+		Format: "text",
+	}, sink, sink)
+	if err != nil {
+		return fmt.Errorf("configure PingCAP logging: %w", err)
+	}
+	pingcaplog.ReplaceGlobals(logger, props)
+	return nil
+}
+
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
-	if o.plan == "" || o.fullRestore == "" || o.logArtifacts == "" || o.logRoot == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 {
-		return errors.New("plan, full-restore, log-artifacts, log-root, target-pd-addrs, approval, and positive timeout are required")
+	if o.plan == "" || o.fullRestore == "" || o.logArtifacts == "" || o.logRoot == "" || o.fenceReceipt == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 {
+		return errors.New("plan, full-restore, log-artifacts, log-root, restoration-fence, target-pd-addrs, approval, and positive timeout are required")
 	}
 	if (o.ca == "") != (o.cert == "") || (o.ca == "") != (o.key == "") {
 		return errors.New("target-ca, target-cert, and target-key must be supplied together")
@@ -93,6 +114,21 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
+	fenceBytes, err := readStable(o.fenceReceipt)
+	if err != nil {
+		return err
+	}
+	fence, err := nativepitr.DecodeRestorationFenceReceipt(bytes.NewReader(fenceBytes))
+	if err != nil {
+		return err
+	}
+	if fence.PlanSHA256 != planSHA || fence.TargetClusterID != plan.Target.ClusterID || fence.Keyspace != plan.Source.Keyspace {
+		return errors.New("restoration fence receipt does not match plan")
+	}
+	fenceToken, err := fence.Token()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(parent, o.timeout)
 	defer cancel()
 	addrs, err := parseAddrs(o.pdAddrs)
@@ -117,9 +153,15 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		return err
 	}
 	defer store.Close()
+	if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, fenceToken); err != nil {
+		return err
+	}
 	started := now().UTC().Unix()
 	result, err := nativepitr.ApplyReplay(ctx, store, planSHA, manifest, mutations)
 	if err != nil {
+		return err
+	}
+	if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, fenceToken); err != nil {
 		return err
 	}
 	if err := verifyStable(o.plan, planBytes); err != nil {
@@ -131,7 +173,11 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err := verifyStable(o.logArtifacts, logBytes); err != nil {
 		return err
 	}
-	receipt, err := nativepitr.BuildLogReplayExecution(plan, restore, manifest, nativepitr.LogReplayExecutionReceipt{PlanSHA256: planSHA, FullRestoreReceiptSHA256: digest(restoreBytes), LogArtifactReceiptSHA256: logSHA, AppliedMutations: result.AppliedMutations, AppliedTransactions: result.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, Resumed: result.Resumed, StartedAtUnix: started, CompletedAtUnix: now().UTC().Unix()})
+	if err := verifyStable(o.fenceReceipt, fenceBytes); err != nil {
+		return err
+	}
+	fenceSHA := digest(fenceBytes)
+	receipt, err := nativepitr.BuildLogReplayExecution(plan, restore, manifest, fence, fenceSHA, nativepitr.LogReplayExecutionReceipt{PlanSHA256: planSHA, FullRestoreReceiptSHA256: digest(restoreBytes), LogArtifactReceiptSHA256: logSHA, RestorationFenceReceiptSHA256: fenceSHA, AppliedMutations: result.AppliedMutations, AppliedTransactions: result.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, Resumed: result.Resumed, StartedAtUnix: started, CompletedAtUnix: now().UTC().Unix()})
 	if err != nil {
 		return err
 	}

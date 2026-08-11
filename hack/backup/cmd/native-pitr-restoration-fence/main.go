@@ -20,7 +20,9 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
+	pingcaplog "github.com/pingcap/log"
 	pd "github.com/tikv/pd/client"
+	"go.uber.org/zap/zapcore"
 )
 
 const maxReceiptBytes = 4 << 20
@@ -32,6 +34,10 @@ type options struct {
 }
 
 func main() {
+	if err := configurePingCAPLogging(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	var o options
 	flag.StringVar(&o.action, "action", "acquire", "acquire or verify")
 	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v10 receipt")
@@ -48,6 +54,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, "native PITR restoration fence:", err)
 		os.Exit(1)
 	}
+}
+
+func configurePingCAPLogging() error {
+	sink := zapcore.AddSync(os.Stderr)
+	logger, props, err := pingcaplog.InitLoggerWithWriteSyncer(&pingcaplog.Config{
+		Level:  "error",
+		Format: "text",
+	}, sink, sink)
+	if err != nil {
+		return fmt.Errorf("configure PingCAP logging: %w", err)
+	}
+	pingcaplog.ReplaceGlobals(logger, props)
+	return nil
 }
 
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {

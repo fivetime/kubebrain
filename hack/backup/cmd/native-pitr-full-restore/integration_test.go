@@ -50,8 +50,9 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		t.Skip("set KUBEBRAIN_NATIVE_PITR_SOURCE_PD, KUBEBRAIN_NATIVE_PITR_TARGET_PD, KUBEBRAIN_NATIVE_PITR_BR, and KUBEBRAIN_NATIVE_PITR_SERVER")
 	}
 	preflight, taskCreate, mc := os.Getenv("KUBEBRAIN_NATIVE_PITR_PREFLIGHT"), os.Getenv("KUBEBRAIN_NATIVE_PITR_TASK_CREATE"), os.Getenv("KUBEBRAIN_NATIVE_PITR_MC")
+	fenceCommand, replayCommand := os.Getenv("KUBEBRAIN_NATIVE_PITR_FENCE"), os.Getenv("KUBEBRAIN_NATIVE_PITR_LOG_REPLAY")
 	s3Endpoint, s3Bucket, s3Prefix := os.Getenv("KUBEBRAIN_NATIVE_PITR_S3_ENDPOINT"), os.Getenv("KUBEBRAIN_NATIVE_PITR_S3_BUCKET"), os.Getenv("KUBEBRAIN_NATIVE_PITR_S3_PREFIX")
-	if withLogs && (preflight == "" || taskCreate == "" || mc == "" || s3Endpoint == "" || s3Bucket == "" || s3Prefix == "") {
+	if withLogs && (preflight == "" || taskCreate == "" || mc == "" || fenceCommand == "" || replayCommand == "" || s3Endpoint == "" || s3Bucket == "" || s3Prefix == "") {
 		t.Skip("set native PITR preflight/task-create/mc and S3 integration variables")
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
@@ -200,6 +201,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	targetBytes := canonicalFile(t, targetPath, targetEvidence)
 
 	logReceiptSHA := d
+	var logPath string
 	if !withLogs {
 		ready = nativepitr.TaskReadyReceipt{Format: nativepitr.TaskReadyFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, CommittedAtTS: task.CommittedAtTS, EndTS: task.EndTS, GlobalCheckpointTS: full.BackupTS + 1, AdvancerOwner: "integration-owner", PreflightSHA256: d, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
 		readyBytes, err = json.Marshal(ready)
@@ -209,7 +211,8 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, marshalErr)
 		logs = nativepitr.LogArtifactReceipt{Format: nativepitr.LogArtifactReceiptFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: digest(taskBytes), TaskReadySHA256: digest(readyBytes), StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: d, ObjectStoreID: "integration", Bucket: "integration", ObjectPrefix: "log/task", MinRetainUntilUnix: 2_100_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: emptyObjects, ManifestSHA256: digest(emptyManifest), ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}
 	} else {
-		logReceiptSHA = digest(canonicalJSON(t, logs))
+		logPath = filepath.Join(t.TempDir(), "logs.json")
+		logReceiptSHA = digest(canonicalFile(t, logPath, logs))
 	}
 	plan, err := nativepitr.BuildFromReceipts(task, full, artifact, ready, logs, sourceEvidence, targetEvidence, nativepitr.ReceiptPlanInputs{TaskCreateSHA256: digest(taskBytes), FullSnapshotSHA256: digest(fullBytes), ArtifactReceiptSHA256: digest(artifactBytes), TaskReadySHA256: digest(readyBytes), LogArtifactSHA256: logReceiptSHA, SourceExclusiveSHA256: digest(sourceBytes), TargetReceiptSHA256: digest(targetBytes), RestoreTS: restoreTS})
 	require.NoError(t, err)
@@ -221,25 +224,38 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
-	fenceReceipt, fenceToken, err := nativepitr.BuildRestorationFenceReceipt(plan, digest(planBytes), "restore-integration", time.Now().Unix(), false)
-	require.NoError(t, err)
+	var fenceReceipt nativepitr.RestorationFenceReceipt
+	var fenceToken restorationfence.Token
+	var fenceBytes []byte
+	if withLogs {
+		fenceBytes = runReceiptOutput(t, ctx, fenceCommand, "--action=acquire", "--plan="+planPath, "--operation-id=restore-integration", "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
+		fenceReceipt, err = nativepitr.DecodeRestorationFenceReceipt(bytes.NewReader(fenceBytes))
+		require.NoError(t, err)
+		fenceToken, err = fenceReceipt.Token()
+		require.NoError(t, err)
+	} else {
+		fenceReceipt, fenceToken, err = nativepitr.BuildRestorationFenceReceipt(plan, digest(planBytes), "restore-integration", time.Now().Unix(), false)
+		require.NoError(t, err)
+		fenceBytes = canonicalJSON(t, fenceReceipt)
+	}
 	targetKV, err := storagetikv.NewKvStorage(targetAddrs, 1, storagetikv.Security{})
 	require.NoError(t, err)
 	resumed, err := restorationfence.Acquire(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken)
 	require.NoError(t, err)
-	require.False(t, resumed)
+	require.Equal(t, withLogs, resumed)
 	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 	if withLogs {
-		manifest, mutations, materializeErr := nativepitr.MaterializeReplay(logs, logReceiptSHA, logRoot, full.BackupTS, plan.RestoreTS)
-		require.NoError(t, materializeErr)
-		require.NotEmpty(t, mutations)
-		apply, applyErr := nativepitr.ApplyReplay(ctx, targetKV, digest(planBytes), manifest, mutations)
-		require.NoError(t, applyErr)
-		require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
-		require.Equal(t, manifest.MutationCount, apply.AppliedMutations)
-		replayReceipt, receiptErr := nativepitr.BuildLogReplayExecution(plan, restore, manifest, nativepitr.LogReplayExecutionReceipt{PlanSHA256: digest(planBytes), FullRestoreReceiptSHA256: digest([]byte(receiptOut.String())), LogArtifactReceiptSHA256: logReceiptSHA, AppliedMutations: apply.AppliedMutations, AppliedTransactions: apply.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, StartedAtUnix: time.Now().Add(-time.Second).Unix(), CompletedAtUnix: time.Now().Unix()})
+		fencePath := filepath.Join(t.TempDir(), "fence.json")
+		require.NoError(t, os.WriteFile(fencePath, fenceBytes, 0o600))
+		restorePath := filepath.Join(t.TempDir(), "restore.json")
+		require.NoError(t, os.WriteFile(restorePath, []byte(receiptOut.String()), 0o600))
+		replayBytes := runReceiptOutput(t, ctx, replayCommand, "--plan="+planPath, "--full-restore="+restorePath, "--log-artifacts="+logPath, "--log-root="+logRoot, "--restoration-fence="+fencePath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=1m")
+		replayReceipt, receiptErr := nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
 		require.NoError(t, receiptErr)
+		require.Positive(t, replayReceipt.AppliedMutations)
+		require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 		require.True(t, replayReceipt.LogReplayCompleted)
+		require.True(t, replayReceipt.ReplayWriteFenceProven)
 		require.False(t, replayReceipt.PITRComplete)
 	}
 
@@ -318,6 +334,15 @@ func runOutput(t *testing.T, ctx context.Context, binary string, args ...string)
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "%s", output)
 	return output
+}
+
+func runReceiptOutput(t *testing.T, ctx context.Context, binary string, args ...string) []byte {
+	t.Helper()
+	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, os.Stderr
+	require.NoError(t, cmd.Run())
+	return stdout.Bytes()
 }
 
 func startKubeBrain(t *testing.T, ctx context.Context, binary, pdAddrs, root, label string) *runningServer {

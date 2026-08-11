@@ -2066,9 +2066,9 @@ Up store identity 与 plan-bound receipt 一致。成功输出 `kubebrain.native
 控制面必须确保目标未启动 KubeBrain/其他 writer。数据面已经新增 tenant-scoped 持久
 `restoration-fence` 原语：leader election acquire/renew CAS 控制键，生产 backend 的所有 user/internal
 transaction 轮转 CAS 256 个写分片之一；恢复方在一个事务中关闭控制键和全部分片时可原子排斥所有
-in-flight writer，同时避免正常写共享单一热键，且重启不能绕过。但 acquire/release 命令及
-plan/semantic receipt 绑定尚未接入本执行器，所以该执行收据仍不能用于宣称 PITR 或 etcd 语义恢复完成，
-也继续固定 `target_write_fence_proven=false`。
+in-flight writer，同时避免正常写共享单一热键，且重启不能绕过。恢复命令和 log replay receipt 已绑定
+该 fence；但 whole-cluster full import 及 fence-to-semantic 的受控交接仍未覆盖，所以 full restore receipt
+不能用于宣称 PITR 或 etcd 语义恢复完成，也继续固定 `target_write_fence_proven=false`。
 
 固定 BR v7.5.1 的 `backup txn` / `restore txn` 是 whole-cluster 路径并忽略声明的 start/end；因此同一目标
 TiKV 集群内的事务型 fence 会随 full SST 一起进入覆盖范围。不得据此宣称 fence 覆盖了 BR full import
@@ -2095,6 +2095,7 @@ go run ./hack/backup/cmd/native-pitr-log-replay \
   --full-restore=/evidence/native-pitr-full-restore.json \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
   --log-root=/evidence/log-mirror \
+  --restoration-fence=/evidence/native-pitr-restoration-fence.json \
   --target-pd-addrs="$TARGET_PD_ADDRS" \
   --target-ca=/target-tls/ca.crt \
   --target-cert=/target-tls/tls.crt \
@@ -2108,12 +2109,14 @@ go run ./hack/backup/cmd/native-pitr-log-replay \
 落在 plan tenant 物理范围内且 commit TSO 属于 `(backup_ts, restore_ts]` 的 PUT/DELETE；长值必须能由
 `(raw key,start_ts)` 精确关联 default CF。mutation 按 `(commit_ts,key)` 规范排序，同一 source commit
 TSO 的全部 mutation 与 target 内部 checkpoint 在一条 TiKV transaction 中提交；checkpoint 绑定 exact
-plan/mutation digest，失败重跑只从完整 source transaction 边界继续。成功输出
-`kubebrain.native-pitr-log-replay.v1`，但仍固定 `target_write_fence_proven=false`、
-`post_restore_semantic_validated=false`、`pitr_complete=false`。当前实现已通过编码、范围、摘要、长短值、
-事务分组、原子 checkpoint 和续跑单测，并已用官方 log-backup 服务产生的真实 v7.5.1 stream 制品完成
-双集群演练；但执行收据仍未绑定后置语义收据，也尚未实现所有 KubeBrain writer 必须遵守的恢复 fence，
-因此仍是实验性恢复阶段。
+plan/mutation digest，失败重跑只从完整 source transaction 边界继续。执行前后必须以 receipt 内的 exact
+token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence 四个输入文件未漂移。成功输出
+`kubebrain.native-pitr-log-replay.v2`，以 `restoration_fence_receipt_sha256` 绑定 exact fence receipt，并记录
+`replay_write_fence_proven=true`；总 `target_write_fence_proven`、`post_restore_semantic_validated`、
+`pitr_complete` 仍为 false。当前实现已通过编码、范围、摘要、长短值、事务分组、原子 checkpoint、续跑与
+错误 fence 绑定单测，并已用实际 acquire/replay CLI 和官方 v7.5.1 stream 制品完成双集群演练。后置语义
+校验需要 KubeBrain 选主，而 closed fence 会有意阻止选主；在受控 release/启动/验证交接或外部 admission
+fence 被 receipt 化之前，该阶段仍不能升级为完整 PITR 证明。
 
 2026-08-11 已通过 `hack/backup/run-native-pitr-full-restore-integration.sh` 完成隔离真实演练：脚本启动
 两套 cluster ID 不同、数据目录独立的 PD/TiKV v7.5.1 集群及当前源码构建的 source/target KubeBrain。
