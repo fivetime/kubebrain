@@ -45828,6 +45828,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   演练代码直接执行、尚无 handoff receipt，因此不能把 replay/final `pitr_complete` 改为 true；下一项把
   admission-to-restoration handoff 原子时序纳入证据链。
 
+- A4323 完成受支持 native PITR 链的连续 writer exclusion 证据。新增
+  `kubebrain.native-pitr-admission-handoff.v1`：admission release 必须消费 exact plan、PD admission、full
+  restore v2 与 post-full TiKV restoration-fence receipt，证明 admission 在 full start 前取得、fence 在 full
+  完成后取得、两者 operation ID 一致；命令只在同时验证 PD token 与全部 257 个 TiKV fence key、并复核
+  输入未漂移后开放 PD gate，开放后再次验证 TiKV fence 才签发 handoff。日志回放升级为
+  `kubebrain.native-pitr-log-replay.v3`，强制绑定该 handoff 与同一 restoration fence，记录
+  `continuous_writer_exclusion=true`、`target_write_fence_proven=true`。post-replay release 仍由 exact replay
+  receipt 驱动；最终 `kubebrain.native-pitr-semantic-verify.v1` 直接消费 admission handoff 与 restoration
+  handoff，并在完整 logical witness、lease、Txn、Watch 及 target TiKV 物理历史全部通过后记录
+  `target_full_import_fence_proven=true`、`post_restore_semantic_validated=true`、`pitr_complete=true`。
+  full-only 与官方 v7.5.1 stream-log 两条真实双 PD/TiKV + MinIO + pinned BR 演练重新通过；全部 backup
+  packages、race、vet 与脚本检查通过。该完成结论严格限于独立空白 target、所有 KubeBrain writer 启用
+  PD leased session、受审单一恢复操作者及当前 pinned v7.5.1 链；任意旁路 TiKV writer、恶意 token holder、
+  多版本/多 store/多 PD 生产矩阵、控制面 durable orchestration 和长时间故障注入仍是开放的生产化差距。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -18,6 +18,8 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
 	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
+	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
+	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 	pingcaplog "github.com/pingcap/log"
 	pd "github.com/tikv/pd/client"
 	"github.com/tikv/pd/client/tlsutil"
@@ -28,9 +30,9 @@ import (
 const maxReceiptBytes = 4 << 20
 
 type options struct {
-	action, plan, receipt, operationID, pdAddrs string
-	ca, cert, key, approve                      string
-	timeout                                     time.Duration
+	action, plan, receipt, fullRestore, restorationFence, operationID, pdAddrs string
+	ca, cert, key, approve                                                     string
+	timeout                                                                    time.Duration
 }
 
 func main() {
@@ -39,9 +41,11 @@ func main() {
 		os.Exit(1)
 	}
 	var o options
-	flag.StringVar(&o.action, "action", "acquire", "acquire or verify")
+	flag.StringVar(&o.action, "action", "acquire", "acquire, verify, or release")
 	flag.StringVar(&o.plan, "plan", "", "exact native PITR restore plan")
 	flag.StringVar(&o.receipt, "admission-receipt", "", "exact admission receipt (required for verify)")
+	flag.StringVar(&o.fullRestore, "full-restore", "", "exact full restore v2 receipt (required for release)")
+	flag.StringVar(&o.restorationFence, "restoration-fence", "", "exact post-full restoration fence receipt (required for release)")
 	flag.StringVar(&o.operationID, "operation-id", "", "immutable restore operation ID (required for acquire)")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "target-ca", "", "target PD CA file")
@@ -67,7 +71,7 @@ func configureLogging() error {
 }
 
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
-	if o.plan == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 || (o.action != "acquire" && o.action != "verify") {
+	if o.plan == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 || (o.action != "acquire" && o.action != "verify" && o.action != "release") {
 		return errors.New("valid action, plan, target PD, approval, and positive timeout are required")
 	}
 	if (o.ca == "") != (o.cert == "") || (o.ca == "") != (o.key == "") {
@@ -111,8 +115,8 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	defer cli.Close()
 	switch o.action {
 	case "acquire":
-		if o.operationID == "" || o.receipt != "" {
-			return errors.New("acquire requires operation-id and forbids admission-receipt")
+		if o.operationID == "" || o.receipt != "" || o.fullRestore != "" || o.restorationFence != "" {
+			return errors.New("acquire requires operation-id and forbids receipt inputs")
 		}
 		provisional, token, err := nativepitr.BuildRestoreAdmissionReceipt(plan, planSHA, o.operationID, now().Unix(), false)
 		if err != nil {
@@ -128,8 +132,8 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		}
 		return json.NewEncoder(out).Encode(receipt)
 	case "verify":
-		if o.receipt == "" || o.operationID != "" {
-			return errors.New("verify requires admission-receipt and forbids operation-id")
+		if o.receipt == "" || o.operationID != "" || o.fullRestore != "" || o.restorationFence != "" {
+			return errors.New("verify requires admission-receipt and forbids other action inputs")
 		}
 		b, err := readBounded(o.receipt)
 		if err != nil {
@@ -151,6 +155,71 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 		}
 		_, err = out.Write(b)
 		return err
+	case "release":
+		if o.receipt == "" || o.fullRestore == "" || o.restorationFence == "" || o.operationID != "" {
+			return errors.New("release requires admission-receipt, full-restore, and restoration-fence")
+		}
+		admissionBytes, err := readBounded(o.receipt)
+		if err != nil {
+			return err
+		}
+		admission, err := nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes))
+		if err != nil {
+			return err
+		}
+		fullBytes, err := readBounded(o.fullRestore)
+		if err != nil {
+			return err
+		}
+		full, err := nativepitr.DecodeFullRestoreExecution(bytes.NewReader(fullBytes))
+		if err != nil {
+			return err
+		}
+		fenceBytes, err := readBounded(o.restorationFence)
+		if err != nil {
+			return err
+		}
+		fence, err := nativepitr.DecodeRestorationFenceReceipt(bytes.NewReader(fenceBytes))
+		if err != nil {
+			return err
+		}
+		admissionToken, err := admission.Token()
+		if err != nil {
+			return err
+		}
+		fenceToken, err := fence.Token()
+		if err != nil {
+			return err
+		}
+		store, err := storagetikv.NewKvStorage(addrs, 1, storagetikv.Security{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, fenceToken); err != nil {
+			return err
+		}
+		if err := admissionfence.Verify(ctx, cli, admission.Keyspace, admissionToken); err != nil {
+			return err
+		}
+		for path, expected := range map[string][]byte{o.plan: planBytes, o.receipt: admissionBytes, o.fullRestore: fullBytes, o.restorationFence: fenceBytes} {
+			got, err := readBounded(path)
+			if err != nil || !bytes.Equal(got, expected) {
+				return fmt.Errorf("input %q changed before admission handoff", path)
+			}
+		}
+		releasedAt := now().Unix()
+		handoff, err := nativepitr.BuildAdmissionHandoff(plan, planSHA, admission, digest(admissionBytes), full, digest(fullBytes), fence, digest(fenceBytes), releasedAt)
+		if err != nil {
+			return err
+		}
+		if err := admissionfence.Release(ctx, cli, admission.Keyspace, admissionToken); err != nil {
+			return err
+		}
+		if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, fenceToken); err != nil {
+			return fmt.Errorf("restoration fence lost during admission handoff: %w", err)
+		}
+		return json.NewEncoder(out).Encode(handoff)
 	}
 	panic("validated action")
 }

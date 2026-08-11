@@ -42,7 +42,7 @@ func main() {
 	flag.StringVar(&o.action, "action", "acquire", "acquire, verify, or release")
 	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v10 receipt")
 	flag.StringVar(&o.receipt, "fence-receipt", "", "exact fence receipt (required for verify/release)")
-	flag.StringVar(&o.replayReceipt, "log-replay-receipt", "", "exact native-pitr-log-replay.v2 receipt (required for release)")
+	flag.StringVar(&o.replayReceipt, "log-replay-receipt", "", "exact native-pitr-log-replay.v3 receipt (required for release)")
 	flag.StringVar(&o.operationID, "operation-id", "", "immutable restore operation ID (required for acquire)")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "target-ca", "", "target PD CA file")

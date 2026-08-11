@@ -51,7 +51,7 @@ type Config struct {
 	RenewDeadline time.Duration
 	RetryPeriod   time.Duration
 
-	AdmissionFresh func() bool
+	AdmissionFresh func() bool `json:"-"`
 
 	MaxTxnOps       uint
 	MaxRequestBytes uint

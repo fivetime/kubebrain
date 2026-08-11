@@ -23,7 +23,6 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/semanticverify"
-	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
@@ -221,7 +220,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	planPath := filepath.Join(t.TempDir(), "plan.json")
 	planBytes := canonicalFile(t, planPath, plan)
 	admissionBytes := runReceiptOutput(t, ctx, admissionCommand, "--action=acquire", "--plan="+planPath, "--operation-id=restore-integration", "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
-	admissionReceipt, err := nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes))
+	_, err = nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes))
 	require.NoError(t, err)
 	admissionPath := filepath.Join(t.TempDir(), "admission.json")
 	require.NoError(t, os.WriteFile(admissionPath, admissionBytes, 0o600))
@@ -252,18 +251,18 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	require.Equal(t, withLogs, resumed)
 	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
-	admissionToken, err := admissionReceipt.Token()
-	require.NoError(t, err)
-	admissionClient, err := clientv3.New(clientv3.Config{Endpoints: []string{"http://" + targetPD}, DialTimeout: 5 * time.Second})
-	require.NoError(t, err)
-	require.NoError(t, admissionfence.Release(ctx, admissionClient, task.Keyspace, admissionToken))
-	require.NoError(t, admissionClient.Close())
+	fencePath = filepath.Join(t.TempDir(), "fence.json")
+	require.NoError(t, os.WriteFile(fencePath, fenceBytes, 0o600))
+	restorePath = filepath.Join(t.TempDir(), "restore.json")
+	require.NoError(t, os.WriteFile(restorePath, []byte(receiptOut.String()), 0o600))
+	admissionHandoffBytes := runReceiptOutput(t, ctx, admissionCommand, "--action=release", "--plan="+planPath, "--admission-receipt="+admissionPath, "--full-restore="+restorePath, "--restoration-fence="+fencePath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
+	admissionHandoff, handoffErr := nativepitr.DecodeAdmissionHandoff(bytes.NewReader(admissionHandoffBytes))
+	require.NoError(t, handoffErr)
+	require.True(t, admissionHandoff.ContinuousWriterExclusion)
+	admissionHandoffPath := filepath.Join(t.TempDir(), "admission-handoff.json")
+	require.NoError(t, os.WriteFile(admissionHandoffPath, admissionHandoffBytes, 0o600))
 	if withLogs {
-		fencePath = filepath.Join(t.TempDir(), "fence.json")
-		require.NoError(t, os.WriteFile(fencePath, fenceBytes, 0o600))
-		restorePath = filepath.Join(t.TempDir(), "restore.json")
-		require.NoError(t, os.WriteFile(restorePath, []byte(receiptOut.String()), 0o600))
-		replayBytes := runReceiptOutput(t, ctx, replayCommand, "--plan="+planPath, "--full-restore="+restorePath, "--log-artifacts="+logPath, "--log-root="+logRoot, "--restoration-fence="+fencePath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=1m")
+		replayBytes := runReceiptOutput(t, ctx, replayCommand, "--plan="+planPath, "--full-restore="+restorePath, "--log-artifacts="+logPath, "--log-root="+logRoot, "--restoration-fence="+fencePath, "--admission-handoff="+admissionHandoffPath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=1m")
 		replayPath = filepath.Join(t.TempDir(), "replay.json")
 		require.NoError(t, os.WriteFile(replayPath, replayBytes, 0o600))
 		replayReceipt, receiptErr := nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
@@ -272,6 +271,8 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 		require.True(t, replayReceipt.LogReplayCompleted)
 		require.True(t, replayReceipt.ReplayWriteFenceProven)
+		require.True(t, replayReceipt.ContinuousWriterExclusion)
+		require.True(t, replayReceipt.TargetWriteFenceProven)
 		require.False(t, replayReceipt.PITRComplete)
 	}
 
@@ -306,12 +307,14 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	targetClient := waitForEndpoint(t, ctx, endpoint, targetServer)
 	defer targetClient.Close()
 	if withLogs {
-		semanticBytes := runReceiptOutputEnv(t, ctx, []string{"ENDPOINT=" + endpoint}, semanticCommand, "--plan="+planPath, "--full-snapshot="+fullPath, "--full-restore="+restorePath, "--log-replay="+replayPath, "--fence-handoff="+handoffPath, "--witness="+witnessPath, "--probe-prefix=/native-pitr-integration-probe", "--target-pd-addrs="+targetPD, "--timeout=1m")
+		semanticBytes := runReceiptOutputEnv(t, ctx, []string{"ENDPOINT=" + endpoint}, semanticCommand, "--plan="+planPath, "--full-snapshot="+fullPath, "--full-restore="+restorePath, "--log-replay="+replayPath, "--admission-handoff="+admissionHandoffPath, "--fence-handoff="+handoffPath, "--witness="+witnessPath, "--probe-prefix=/native-pitr-integration-probe", "--target-pd-addrs="+targetPD, "--timeout=1m")
 		semanticReceipt, semanticErr := nativepitr.DecodePITRSemanticVerification(bytes.NewReader(semanticBytes))
 		require.NoError(t, semanticErr)
 		require.True(t, semanticReceipt.PostRestoreSemanticValidated)
 		require.True(t, semanticReceipt.FenceHandoffProven)
-		require.False(t, semanticReceipt.PITRComplete)
+		require.True(t, semanticReceipt.TargetFullImportFenceProven)
+		require.True(t, semanticReceipt.ContinuousWriterExclusion)
+		require.True(t, semanticReceipt.PITRComplete)
 	} else {
 		verified, openErr := backupfile.OpenVerified(witnessPath)
 		require.NoError(t, openErr)
@@ -390,12 +393,13 @@ func runReceiptOutputEnv(t *testing.T, ctx context.Context, env []string, binary
 
 func startKubeBrain(t *testing.T, ctx context.Context, binary, pdAddrs, root, label string) *runningServer {
 	t.Helper()
+	peerPort, infoPort := freeTCPPort(t), freeTCPPort(t)
 	logFile, err := os.Create(filepath.Join(root, label+"-kubebrain.log"))
 	require.NoError(t, err)
 	cmd := exec.CommandContext(ctx, binary,
-		"--port=45379", "--peer-port=45380", "--info-port=45080",
+		"--port=45379", fmt.Sprintf("--peer-port=%d", peerPort), fmt.Sprintf("--info-port=%d", infoPort),
 		"--advertise-host=127.0.0.1", "--advertise-client-urls=http://127.0.0.1:45379",
-		"--initial-cluster=integration=http://127.0.0.1:45380",
+		fmt.Sprintf("--initial-cluster=integration=http://127.0.0.1:%d", peerPort),
 		"--pd-addrs="+pdAddrs, "--keyspace=restore-integration", "--compatible-with-etcd=true",
 	)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
@@ -404,6 +408,15 @@ func startKubeBrain(t *testing.T, ctx context.Context, binary, pdAddrs, root, la
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	return &runningServer{cmd: cmd, done: done, logPath: filepath.Join(root, label+"-kubebrain.log")}
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := listener.Addr().(*net.TCPAddr).Port
+	require.NoError(t, listener.Close())
+	return port
 }
 
 func (s *runningServer) stop(t *testing.T) {

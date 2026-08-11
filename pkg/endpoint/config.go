@@ -111,7 +111,7 @@ type Config struct {
 
 	// AdmissionFresh is backed by a leased session in PD metadata. TiKV writes
 	// are admitted only while both leadership and this external session are fresh.
-	AdmissionFresh func() bool
+	AdmissionFresh func() bool `json:"-"`
 
 	// GRPCMaxConnectionAge bounds how long one HTTP/2 transport can retain a
 	// pre-rotation TLS identity. Zero disables aging. Grace is the drain window

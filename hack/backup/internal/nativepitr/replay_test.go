@@ -56,11 +56,13 @@ func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing
 	now := time.Now().Unix()
 	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
 	require.NoError(t, err)
-	receipt, err := BuildLogReplayExecution(plan, restore, manifest, fence, digest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now})
+	handoff := replayAdmissionHandoff(t, plan, restore, fence, now)
+	receipt, err := BuildLogReplayExecution(plan, restore, manifest, fence, digest, handoff, digest, LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now})
 	require.NoError(t, err)
 	require.True(t, receipt.LogReplayCompleted)
 	require.True(t, receipt.ReplayWriteFenceProven)
-	require.False(t, receipt.TargetWriteFenceProven)
+	require.True(t, receipt.TargetWriteFenceProven)
+	require.True(t, receipt.ContinuousWriterExclusion)
 	require.False(t, receipt.PostRestoreSemanticValidated)
 	require.False(t, receipt.PITRComplete)
 	var encoded bytes.Buffer
@@ -77,13 +79,23 @@ func TestBuildLogReplayExecutionRejectsWrongOrLateFence(t *testing.T) {
 	now := time.Now().Unix()
 	fence, _, err := BuildRestorationFenceReceipt(plan, digest, "restore-1", now-1, false)
 	require.NoError(t, err)
-	input := LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now}
+	handoff := replayAdmissionHandoff(t, plan, restore, fence, now)
+	input := LogReplayExecutionReceipt{PlanSHA256: digest, FullRestoreReceiptSHA256: digest, LogArtifactReceiptSHA256: plan.Log.ArtifactReceiptSHA, RestorationFenceReceiptSHA256: digest, AdmissionHandoffReceiptSHA256: digest, AppliedMutations: 1, AppliedTransactions: 1, LastCommitTS: plan.RestoreTS, StartedAtUnix: now, CompletedAtUnix: now}
 
-	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, strings.Repeat("b", 64), input)
+	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, strings.Repeat("b", 64), handoff, digest, input)
 	require.ErrorContains(t, err, "does not match")
 	fence.VerifiedAtUnix = now + 1
-	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, digest, input)
+	_, err = BuildLogReplayExecution(plan, restore, manifest, fence, digest, handoff, digest, input)
 	require.ErrorContains(t, err, "does not match")
+}
+
+func replayAdmissionHandoff(t *testing.T, plan Plan, restore FullRestoreExecutionReceipt, fence RestorationFenceReceipt, startedAt int64) AdmissionHandoffReceipt {
+	t.Helper()
+	admission, _, err := BuildRestoreAdmissionReceipt(plan, digest, fence.OperationID, 8, false)
+	require.NoError(t, err)
+	handoff, err := BuildAdmissionHandoff(plan, digest, admission, digest, restore, digest, fence, digest, startedAt-1)
+	require.NoError(t, err)
+	return handoff
 }
 
 func TestApplyReplayCheckpointsAndResumesExactly(t *testing.T) {

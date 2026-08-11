@@ -2021,7 +2021,6 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
   --source-range-exclusive=/evidence/native-pitr-source-range-exclusive.json \
   --target-snapshot-empty=/evidence/native-pitr-target-snapshot-empty.json \
-  --restore-admission=/evidence/native-pitr-restore-admission.json \
   --restore-ts="$RESTORE_TS"
 ```
 
@@ -2034,11 +2033,23 @@ source/target cluster ID 相同、目标快照非空或过度声称物理空白�
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记
 `read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。
 
-当且仅当 `restore_ts == full_snapshot.backup_ts`、即计划不需要日志回放时，当前可以显式批准并执行
-whole-cluster transactional full import：
+计划生成后、执行 whole-cluster transactional full import 前，必须先关闭位于 target PD embedded-etcd
+中的外部准入 gate。operation ID 在整条恢复链保持不变：
 
 ```shell
 PLAN_SHA256="$(sha256sum /evidence/native-pitr-restore-plan.json | awk '{print $1}')"
+go run ./hack/backup/cmd/native-pitr-admission-fence \
+  --action=acquire \
+  --plan=/evidence/native-pitr-restore-plan.json \
+  --operation-id="$RESTORE_OPERATION_ID" \
+  --target-pd-addrs="$TARGET_PD_ADDRS" \
+  --approve-plan-sha256="$PLAN_SHA256" \
+  > /evidence/native-pitr-restore-admission.json
+```
+
+随后显式批准并执行 full import；full-only 与带日志计划使用同一条 base restore 路径：
+
+```shell
 go run ./hack/backup/cmd/native-pitr-full-restore \
   --plan=/evidence/native-pitr-restore-plan.json \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
@@ -2047,6 +2058,7 @@ go run ./hack/backup/cmd/native-pitr-full-restore \
   --artifact-root=/evidence/full-mirror \
   --source-range-exclusive=/evidence/native-pitr-source-range-exclusive.json \
   --target-snapshot-empty=/evidence/native-pitr-target-snapshot-empty.json \
+  --restore-admission=/evidence/native-pitr-restore-admission.json \
   --pd-addrs="$TARGET_PD_ADDRS" \
   --br-binary=/opt/tidb-v7.5.1/br \
   --approve-plan-sha256="$PLAN_SHA256"
@@ -2071,9 +2083,8 @@ Up store identity 与 plan-bound receipt 一致。运行 full executor 前必须
 `restoration-fence` 原语：leader election acquire/renew CAS 控制键，生产 backend 的所有 user/internal
 transaction 轮转 CAS 256 个写分片之一；恢复方在一个事务中关闭控制键和全部分片时可原子排斥所有
 in-flight writer，同时避免正常写共享单一热键，且重启不能绕过。恢复命令和 log replay receipt 已绑定
-该 fence。whole-cluster full import 已由 PD admission 覆盖；剩余边界是先获取 post-full TiKV fence 再释放
-PD gate 的跨栅栏 handoff 尚未 receipt 化，所以 full restore receipt 仍不能用于宣称 PITR 或 etcd 语义恢复
-完成，`pitr_complete` 继续为 false。
+该 fence。full receipt 只证明 base import，本身仍固定 `pitr_complete=false`；完整日志链还必须取得
+post-full TiKV fence，并通过下述 receipt 化交接证明开放 PD gate 前后至少一个 writer gate 始终关闭。
 
 固定 BR v7.5.1 的 `backup txn` / `restore txn` 是 whole-cluster 路径并忽略声明的 start/end；因此同一目标
 TiKV 集群内的事务型 fence 会随 full SST 一起进入覆盖范围。不得据此宣称 fence 覆盖了 BR full import
@@ -2091,8 +2102,31 @@ witness/lease/watch/history 语义验证。运行命令为
 `KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR
 ./hack/backup/run-native-pitr-full-restore-integration.sh`。
 
-当 plan 的 `restore_ts > full_snapshot.backup_ts` 时，同一个 full executor 仍只执行并记录 base
-whole-cluster txn import，随后必须在 KubeBrain/其他 target writer 保持停机的窗口内运行独立日志回放：
+full import 后先以同一 operation ID 获取 TiKV restoration fence，再由 admission release 命令同时消费
+admission/full/fence 三份 exact receipt。命令在开放 PD gate 前验证两侧 token，开放后再次验证 257 个
+TiKV fence key，成功才签发连续排写交接收据：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-restoration-fence \
+  --action=acquire \
+  --plan=/evidence/native-pitr-restore-plan.json \
+  --operation-id="$RESTORE_OPERATION_ID" \
+  --target-pd-addrs="$TARGET_PD_ADDRS" \
+  --approve-plan-sha256="$PLAN_SHA256" \
+  > /evidence/native-pitr-restoration-fence.json
+
+go run ./hack/backup/cmd/native-pitr-admission-fence \
+  --action=release \
+  --plan=/evidence/native-pitr-restore-plan.json \
+  --admission-receipt=/evidence/native-pitr-restore-admission.json \
+  --full-restore=/evidence/native-pitr-full-restore.json \
+  --restoration-fence=/evidence/native-pitr-restoration-fence.json \
+  --target-pd-addrs="$TARGET_PD_ADDRS" \
+  --approve-plan-sha256="$PLAN_SHA256" \
+  > /evidence/native-pitr-admission-handoff.json
+```
+
+当 plan 的 `restore_ts > full_snapshot.backup_ts` 时，随后在 TiKV fence 持有期间运行独立日志回放：
 
 ```shell
 go run ./hack/backup/cmd/native-pitr-log-replay \
@@ -2101,6 +2135,7 @@ go run ./hack/backup/cmd/native-pitr-log-replay \
   --log-artifacts=/evidence/native-pitr-log-artifacts.json \
   --log-root=/evidence/log-mirror \
   --restoration-fence=/evidence/native-pitr-restoration-fence.json \
+  --admission-handoff=/evidence/native-pitr-admission-handoff.json \
   --target-pd-addrs="$TARGET_PD_ADDRS" \
   --target-ca=/target-tls/ca.crt \
   --target-cert=/target-tls/tls.crt \
@@ -2116,12 +2151,11 @@ go run ./hack/backup/cmd/native-pitr-log-replay \
 TSO 的全部 mutation 与 target 内部 checkpoint 在一条 TiKV transaction 中提交；checkpoint 绑定 exact
 plan/mutation digest，失败重跑只从完整 source transaction 边界继续。执行前后必须以 receipt 内的 exact
 token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence 四个输入文件未漂移。成功输出
-`kubebrain.native-pitr-log-replay.v2`，以 `restoration_fence_receipt_sha256` 绑定 exact fence receipt，并记录
-`replay_write_fence_proven=true`；总 `target_write_fence_proven`、`post_restore_semantic_validated`、
-`pitr_complete` 仍为 false。当前实现已通过编码、范围、摘要、长短值、事务分组、原子 checkpoint、续跑与
-错误 fence 绑定单测，并已用实际 acquire/replay CLI 和官方 v7.5.1 stream 制品完成双集群演练。后置语义
-校验需要 KubeBrain 选主，而 closed fence 会有意阻止选主；在受控 release/启动/验证交接或外部 admission
-fence 被 receipt 化之前，该阶段仍不能升级为完整 PITR 证明。
+`kubebrain.native-pitr-log-replay.v3`，同时绑定 exact restoration fence 与 admission-handoff receipt，并记录
+`replay_write_fence_proven=true`、`continuous_writer_exclusion=true`、`target_write_fence_proven=true`；
+回放收据本身仍固定 `post_restore_semantic_validated=false`、`pitr_complete=false`。当前实现已通过编码、
+范围、摘要、长短值、事务分组、原子 checkpoint、续跑与错误交接绑定单测，并用实际 CLI 和官方 v7.5.1
+stream 制品完成双集群演练。
 
 日志回放成功后不得直接手工删除 fence key。必须用 exact replay receipt 驱动原子交接：
 
@@ -2191,6 +2225,7 @@ witness，并额外传入：
 
 ```shell
   --log-replay=/evidence/native-pitr-log-replay.json \
+  --admission-handoff=/evidence/native-pitr-admission-handoff.json \
   --fence-handoff=/evidence/native-pitr-restoration-fence-handoff.json
 ```
 
@@ -2206,11 +2241,13 @@ endpoint 行为和 target 物理集群绑定，避免“PD 对了但 endpoint �
 摘要，因此生产流程还必须增加“冻结写入→witness→full backup”的不可分割控制面收据，不能仅凭手工
 文件顺序把 writer fence 视为已证明。
 
-日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay 与 handoff receipt，
-并记录 `replay_write_fence_proven=true`、`fence_handoff_proven=true`、
-`post_restore_semantic_validated=true`。由于固定 BR 的 whole-cluster full import 窗口仍没有外部 durable
-admission fence，收据明确保持 `target_full_import_fence_proven=false`、`pitr_complete=false`；该分层字段
-防止用回放和后置语义成功掩盖全量导入期间的 writer 竞态。
+日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
+post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
+`continuous_writer_exclusion=true`、`fence_handoff_proven=true`、
+`post_restore_semantic_validated=true`、`target_full_import_fence_proven=true`、`pitr_complete=true`。
+该结论只适用于当前受支持的受限链：独立空白 target PD/TiKV、所有 KubeBrain writer 均启用 PD session
+准入、pinned BR v7.5.1 whole-cluster base import、plan-bound stream replay 以及 exact receipt 链；它不是对
+任意 TiKV writer、恶意并发恢复操作者或未验证版本矩阵的泛化证明。
 
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
@@ -2220,10 +2257,10 @@ TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导�
 在 PD 可能删除 session、恢复方可能取得 gate 之前先停止写入。Badger 本地模式不启用该外部原语。
 
 该 PD admission 原语已通过真实 embedded-etcd 的 active-session/closed-gate、20 轮并发注册与 acquire
-单赢家、freshness 提前失效及 race 测试，并通过双 PD/TiKV full-only BR 演练确认正常 session 生命周期不
-破坏恢复语义。目前 restore CLI 尚未签发/消费 admission receipt，所以 full restore receipt 仍必须保持
-`target_write_fence_proven=false`；只有 acquire-before-BR、verify-after-BR、后续 handoff 与最终 semantic
-receipt 全部绑定后，才能把 whole-cluster full import 窗口记为已证明。
+单赢家、freshness 提前失效及 race 测试。restore CLI 现已完成 acquire-before-BR、BR 前后复核、与 TiKV
+restoration fence 的 receipt 化交接，并由最终 semantic receipt 绑定；full-only 与 stream-log 双集群演练
+均通过。生产仍需由 DBaaS 控制面保证只有受审恢复身份持有 operation token，并持续执行版本矩阵、故障注入
+与规模验证。
 
 arbitrary-range task 的安全创建入口现为：
 

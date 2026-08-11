@@ -27,7 +27,7 @@ import (
 const maxReceiptBytes = 4 << 20
 
 type options struct {
-	plan, fullRestore, logArtifacts, logRoot, fenceReceipt string
+	plan, fullRestore, logArtifacts, logRoot, fenceReceipt, admissionHandoff string
 	pdAddrs, ca, cert, key, approve                        string
 	timeout                                                time.Duration
 }
@@ -43,6 +43,7 @@ func main() {
 	flag.StringVar(&o.logArtifacts, "log-artifacts", "", "exact native-pitr-log-artifacts.v2 receipt")
 	flag.StringVar(&o.logRoot, "log-root", "", "local exact-version log artifact mirror")
 	flag.StringVar(&o.fenceReceipt, "restoration-fence", "", "exact plan-bound restoration fence receipt")
+	flag.StringVar(&o.admissionHandoff, "admission-handoff", "", "exact admission-to-restoration handoff receipt")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "target-ca", "", "target PD CA file")
 	flag.StringVar(&o.cert, "target-cert", "", "target PD client certificate")
@@ -70,7 +71,7 @@ func configurePingCAPLogging() error {
 }
 
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
-	if o.plan == "" || o.fullRestore == "" || o.logArtifacts == "" || o.logRoot == "" || o.fenceReceipt == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 {
+	if o.plan == "" || o.fullRestore == "" || o.logArtifacts == "" || o.logRoot == "" || o.fenceReceipt == "" || o.admissionHandoff == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 {
 		return errors.New("plan, full-restore, log-artifacts, log-root, restoration-fence, target-pd-addrs, approval, and positive timeout are required")
 	}
 	if (o.ca == "") != (o.cert == "") || (o.ca == "") != (o.key == "") {
@@ -129,6 +130,11 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
+	handoffBytes, err := readStable(o.admissionHandoff)
+	if err != nil { return err }
+	handoff, err := nativepitr.DecodeAdmissionHandoff(bytes.NewReader(handoffBytes))
+	if err != nil { return err }
+	if handoff.PlanSHA256 != planSHA || handoff.TargetClusterID != plan.Target.ClusterID || handoff.Keyspace != plan.Source.Keyspace || handoff.RestorationFenceReceiptSHA256 != digest(fenceBytes) || handoff.FullRestoreReceiptSHA256 != digest(restoreBytes) { return errors.New("admission handoff receipt does not match replay inputs") }
 	ctx, cancel := context.WithTimeout(parent, o.timeout)
 	defer cancel()
 	addrs, err := parseAddrs(o.pdAddrs)
@@ -176,8 +182,10 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err := verifyStable(o.fenceReceipt, fenceBytes); err != nil {
 		return err
 	}
+	if err := verifyStable(o.admissionHandoff, handoffBytes); err != nil { return err }
 	fenceSHA := digest(fenceBytes)
-	receipt, err := nativepitr.BuildLogReplayExecution(plan, restore, manifest, fence, fenceSHA, nativepitr.LogReplayExecutionReceipt{PlanSHA256: planSHA, FullRestoreReceiptSHA256: digest(restoreBytes), LogArtifactReceiptSHA256: logSHA, RestorationFenceReceiptSHA256: fenceSHA, AppliedMutations: result.AppliedMutations, AppliedTransactions: result.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, Resumed: result.Resumed, StartedAtUnix: started, CompletedAtUnix: now().UTC().Unix()})
+	handoffSHA := digest(handoffBytes)
+	receipt, err := nativepitr.BuildLogReplayExecution(plan, restore, manifest, fence, fenceSHA, handoff, handoffSHA, nativepitr.LogReplayExecutionReceipt{PlanSHA256: planSHA, FullRestoreReceiptSHA256: digest(restoreBytes), LogArtifactReceiptSHA256: logSHA, RestorationFenceReceiptSHA256: fenceSHA, AdmissionHandoffReceiptSHA256: handoffSHA, AppliedMutations: result.AppliedMutations, AppliedTransactions: result.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, Resumed: result.Resumed, StartedAtUnix: started, CompletedAtUnix: now().UTC().Unix()})
 	if err != nil {
 		return err
 	}
