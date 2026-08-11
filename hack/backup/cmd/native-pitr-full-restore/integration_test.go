@@ -578,8 +578,13 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 		require.NotZero(t, memberIDs[name], "PD member %s is absent", name)
 	}
 	root := t.TempDir()
+	jwtSecret := filepath.Join(root, "member-list-jwt-secret")
+	require.NoError(t, os.WriteFile(jwtSecret, []byte("two-pd-enospc-jwt-shared-secret"), 0o600))
 	const endpoint = "127.0.0.1:45379"
-	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "two-pd-enospc", "two-pd-enospc-integration")
+	server := startKubeBrainForKeyspace(
+		t, ctx, serverBinary, targetPD, root, "two-pd-enospc", "two-pd-enospc-integration",
+		"--auth-token=jwt,sign-method=HS256,priv-key="+jwtSecret,
+	)
 	defer server.stop(t)
 	bootstrap := waitForEndpoint(t, ctx, endpoint, server)
 	_, err = bootstrap.UserAdd(ctx, "root", "root-secret")

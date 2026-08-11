@@ -2488,6 +2488,15 @@ PD 不可用时 fail closed。serializable 的 auth view 和 upstream 隔离 mem
 auth mutation 会先使 local token snapshot 失效，旧 token 不会继续走本地路径。不能把
 serializable MemberList 当作“最新权限已传播”的证明。
 
+2026-08-11 的 A4355 将真实门禁的 token provider 升级为 HS256 JWT。JWT 私钥文件由 disposable runner
+以 0600 创建，KubeBrain 使用 `--auth-token=jwt,...` 启动，官方 client 通过 root password 获取 JWT；连续
+两轮双 PD ENOSPC 中 serializable MemberList 只用本地 provider key 与完整 applied auth snapshot 验证
+signature、expiry、username/revision claims，默认 MemberList 仍 fail closed，恢复与数据对账继续通过，
+整例 68.95 秒。确定性 client-certificate 用例也证明 verified CN 可走同一 local snapshot，而 gateway
+标记请求不能借服务端证书 CN 获得身份。生产 JWT key 与 client CA/CRL 都属于本地认证根：必须由 Secret
+原子挂载、限制文件权限并随 Pod 一致发布；key/CA 轮换应滚动重启并通过默认 linearizable 探针确认新配置，
+不能假设 serializable 请求会从不可用 PD 获取新的认证材料。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

@@ -776,6 +776,50 @@ func TestMemberListSerializableAuthenticatesFromLocalAppliedState(t *testing.T) 
 	require.ErrorIs(t, err, storageErr, "a local auth mutation must invalidate applied state and fail closed")
 }
 
+func TestMemberListSerializableJWTAndClientCertificateUseLocalAppliedState(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	secret := writeJWTKey(t, "member-list-secret", []byte("member-list-shared-secret"))
+	require.NoError(t, server.tokens.configureProvider("jwt,sign-method=HS256,priv-key="+secret))
+	snapshot, err := server.tokens.snapshots.current(context.Background())
+	require.NoError(t, err)
+	token, err := server.tokens.jwt.issue("alice", snapshot.Config.Revision, time.Now())
+	require.NoError(t, err)
+	jwtCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, token))
+	server.SetClientCertAuth(true)
+
+	storageErr := errors.New("PD quorum unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend,
+		err:         storageErr,
+	}
+
+	for name, requestCtx := range map[string]context.Context{
+		"JWT":                jwtCtx,
+		"client certificate": verifiedTLSContext(context.Background(), "alice"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response, listErr := server.MemberList(requestCtx, &etcdserverpb.MemberListRequest{})
+			require.NoError(t, listErr)
+			require.NotEmpty(t, response.Members)
+		})
+	}
+
+	gatewayTLS := metadata.NewIncomingContext(
+		verifiedTLSContext(context.Background(), "alice"),
+		metadata.Pairs("grpcgateway-accept", "application/json"),
+	)
+	_, err = server.MemberList(gatewayTLS, &etcdserverpb.MemberListRequest{})
+	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+
+	require.NoError(t, server.auth.roleAdd(context.Background(), "member-list-cache-invalidator"))
+	for _, requestCtx := range []context.Context{jwtCtx, verifiedTLSContext(context.Background(), "alice")} {
+		_, err = server.MemberList(requestCtx, &etcdserverpb.MemberListRequest{})
+		require.ErrorIs(t, err, storageErr, "a local auth mutation must invalidate every provider's applied state")
+	}
+}
+
 func TestMemberListLinearizableHeaderRevisionMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

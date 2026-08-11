@@ -188,6 +188,57 @@ func TestClientMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T
 	require.Positive(t, barriers.Load(), "default MemberList must send Linearizable=true")
 }
 
+func TestClientJWTMemberListSerializableSurvivesUnavailableAuthStore(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	secret := writeJWTKey(t, "client-member-list-secret", []byte("client-member-list-shared-secret"))
+	require.NoError(t, server.tokens.configureProvider("jwt,sign-method=HS256,priv-key="+secret))
+	snapshot, err := server.tokens.snapshots.current(context.Background())
+	require.NoError(t, err)
+	token, err := server.tokens.jwt.issue("alice", snapshot.Config.Revision, time.Now())
+	require.NoError(t, err)
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{"bufnet"},
+		DialTimeout: time.Second,
+		Token:       token,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+				return listener.Dial()
+			}),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	storageErr := errors.New("PD quorum unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend,
+		err:         storageErr,
+	}
+	var barriers atomic.Int32
+	server.peers = testPeerService{syncReadFn: func(context.Context) error {
+		barriers.Add(1)
+		return storageErr
+	}}
+
+	response, err := client.MemberList(context.Background(), clientv3.WithSerializable())
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Members)
+	require.Zero(t, barriers.Load())
+	response, err = client.MemberList(context.Background())
+	require.Nil(t, response)
+	require.Error(t, err)
+	require.Positive(t, barriers.Load())
+}
+
 func TestClientMemberListAndSyncUseAdvertisedClientURLs(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

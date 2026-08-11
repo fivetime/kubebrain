@@ -46224,6 +46224,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   snapshot invalidation，本机密码变更测试证明旧 local state 不会继续使用；
   而未完整观察的状态绝不会部分启用。需要最新 auth revision 的安全决策仍必须走 linearizable RPC。
 
+- A4355 补齐 A4354 只用 simple token 做现场证明的 provider 证据缺口。继续对照 upstream
+  `authStore.AuthInfoFromCtx`/`AuthInfoFromTLS`、JWT `tokenJWT.info` 与
+  `EtcdServer.MemberList`：确定性测试在完整 auth snapshot 加载后切断 auth config backend，分别以
+  HS256 JWT 和 verified client certificate CN `alice` 调用 serializable MemberList，二者均不得回读 PD；
+  带 `grpcgateway-accept` 的证书身份仍返回 `UserEmpty`，防止 gateway 使用服务端证书 CommonName；随后
+  本机 role mutation 必须同时 invalidate 两种 provider 的 local state，PD read 被注入失败时二者都返回
+  原存储错误而非继续成功。新增官方 client/v3 `Config.Token` 黑盒测试证明 JWT 被正确放入 per-RPC
+  credentials：`WithSerializable()` 返回成员且 barrier 计数为零，默认 MemberList 进入 barrier 并失败。
+  真实三 PD/三 TiKV 双 PD ENOSPC 门禁改用
+  `--auth-token=jwt,sign-method=HS256,priv-key=...`；官方 client 通过 username/password 获取 JWT 后连续
+  两轮验证 authenticated serializable MemberList，本地 JWT signature/expiry/claims 验证在 PD quorum
+  丢失时成功，linearizable 与 snapshot/write 仍 fail closed，恢复后的认证写和不确定结果对账通过，
+  整例 68.95 秒且无资源残留。client-certificate 已有 TLS/mTLS listener 与 official client 覆盖，本项新增
+  的是 PD-backed auth store 不可读时的确定性 local-path 证明；未重复搭建一套只为同一路径的现场 PKI。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
