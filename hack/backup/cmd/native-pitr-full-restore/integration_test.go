@@ -357,6 +357,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
+	targetFaultInjected := injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"))
 	var fenceReceipt nativepitr.RestorationFenceReceipt
 	var fenceToken restorationfence.Token
 	var fenceBytes []byte
@@ -455,6 +456,10 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, buildErr)
 		require.True(t, semanticReceipt.FullRestoreSemanticValidated)
 		require.False(t, semanticReceipt.PITRComplete)
+	}
+	if targetFaultInjected {
+		recoverContainer(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_RECOVERY_CONTAINER"), os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_RECOVERY_ADDRESS"))
+		recoverContainer(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_RECOVERY_CONTAINER"), os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_RECOVERY_ADDRESS"))
 	}
 }
 

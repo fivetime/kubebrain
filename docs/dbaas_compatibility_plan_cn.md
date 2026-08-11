@@ -45950,6 +45950,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   source 侧“定向 PD leader + 单 store 瞬时故障期间冷启动”的缺口；故障持续穿越 pinned BR/全范围探针、
   target leader/store 故障、跨 AZ 分区、磁盘满与长 soak 仍开放。
 
+- A4333 关闭 target 侧“恢复后定向 PD leader + 单 store 持续故障”的缺口。新增三节点专用
+  `target-leader-member-pause-store-resume` profile：启动测试前读取 target PD `/pd/api/v1/leader`，要求
+  非空 leader name 精确匹配受控 `tgt-pd-N`，未知 identity 在注入前 fail closed。故障注入点位于 pinned BR
+  成功且 full restore receipt 已解码之后，现场将 `tgt-pd-0` 与 target TiKV-0 pause；故障保持穿越 target
+  txn pool 初始化、restoration fence 获取、log replay、受 fence 的 KubeBrain 冷启动和拒写探针、admission
+  与 restoration fence handoff、正式 KubeBrain 冷启动及最终 full-keyspace semantic probe，完成后才按相同
+  container/address identity 恢复。PD quorum 切换到其余 endpoint，2026-08-11 stream-log 全链路 113.07 秒
+  通过。该项不宣称 BR import 自身可穿越 target leader/store 故障；BR 期间故障、跨 AZ 分区、磁盘满、
+  双 store 丢失和长 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

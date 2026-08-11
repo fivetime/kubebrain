@@ -2286,6 +2286,10 @@ TiKV store paused 时启动、取得写权并完成最终 semantic receipt，72.
 到本次 disposable 集群 `src-pd-N` 的 member，并输出实际选择；2026-08-11 现场选择 `src-pd-2`，与一个
 TiKV store 同时 pause 后完成 PD 重选主、KubeBrain 冷启动、原 lease 写入及最终 semantic receipt，73.97 秒
 通过。该结果仍不覆盖 leader/store 故障持续穿越 pinned BR 或 target restore。
+`target-leader-member-pause-store-resume` profile 则在 BR 已完成、恢复 receipt 已验证后暂停现场 target PD
+leader 与一个 target TiKV store，并将故障持续到 fence、log replay、两次 target KubeBrain 冷启动、handoff
+和最终 semantic receipt 全部完成后才恢复。2026-08-11 现场选择 `tgt-pd-0`，PD 切换至其余 endpoint，
+stream-log 全链路 113.07 秒通过；该结果不声称 BR import 本身能在相同故障下完成。
 
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
