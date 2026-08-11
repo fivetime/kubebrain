@@ -2411,6 +2411,15 @@ multipart abort 演练。
 一次自动恢复不会耗尽重连能力，但仍应对反复重建计数和不新鲜持续时间告警；两轮短故障不能替代小时级
 抖动、长期 lease churn、PVC replacement 或跨 AZ 分区演练。
 
+2026-08-11 的 A4346 为 legacy raw/v1 历史 lease 歧义增加真实 TiKV/PD 门禁。测试以旧模式写入带 lease
+的 v1、再覆盖为不带 lease 的 v2，停止进程后用当前兼容模式打开同一 keyspace；Snapshot reader 必须以
+`FailedPrecondition` 返回包含 key/revision 的 provenance 诊断，不能导出把未知历史 lease 伪装为 0 的
+artifact。对当前 revision 执行 physical Compact 后，当前 v2 值仍可读，快照恢复并通过 3.7.0 version、
+SHA-256、官方 etcdutl 和 bbolt 检查；真实运行 2.88 秒通过。现场可使用
+`hack/backup/remediate-legacy-snapshot-history.sh` 做相同的 preflight/compact/verify，但 physical compact
+不可逆地删除旧 watch 历史：必须先确认受影响 keyspace、备份与 watcher 容忍窗口，且只能在诊断精确匹配
+该 legacy provenance 错误时执行。runner 对该门禁缺少 etcdutl 会直接失败，不能用 skip 充当验证成功。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

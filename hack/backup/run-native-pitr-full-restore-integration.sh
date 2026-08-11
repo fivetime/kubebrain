@@ -9,6 +9,7 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
+test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-store-reserve-enospc-recover && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-two-pd-enospc-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
   echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-store-enospc-resume, target-store-reserve-enospc-recover, target-two-store-enospc-resume, target-pd-leader-enospc-resume, target-two-pd-enospc-resume, or target-pd-leader-store-enospc-resume" >&2
   exit 2
@@ -18,10 +19,10 @@ if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
   exit 2
 fi
 etcdutl_bin=""
-if [[ "$fault_injection" == target-two-pd-enospc-resume ]]; then
+if [[ "$fault_injection" == target-two-pd-enospc-resume || "$test_name" == TestNativeLegacyLeaseHistorySnapshotRealCluster ]]; then
   etcdutl_bin=${KUBEBRAIN_ETCDUTL_BIN:-/root/etcd/bin/etcdutl}
   if [[ ! -x "$etcdutl_bin" ]]; then
-    echo "target-two-pd-enospc-resume requires executable KUBEBRAIN_ETCDUTL_BIN (default /root/etcd/bin/etcdutl)" >&2
+    echo "$test_name requires executable KUBEBRAIN_ETCDUTL_BIN (default /root/etcd/bin/etcdutl)" >&2
     exit 1
   fi
 fi
@@ -201,7 +202,6 @@ go build -o "$drill_tmp/native-pitr-admission-fence" ./hack/backup/cmd/native-pi
 go build -o "$drill_tmp/native-pitr-restore-plan" ./hack/backup/cmd/native-pitr-restore-plan
 go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pitr-source-capture
 
-test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 log_env=()
 fault_env=()
 if [[ "$fault_injection" == target-two-store-quorum-loss-resume ]]; then
@@ -334,6 +334,7 @@ if ! env "${log_env[@]}" "${fault_env[@]}" \
   TMPDIR="$shared_dir" \
   KUBEBRAIN_NATIVE_PITR_SOURCE_PD="$source_pd_csv" \
   KUBEBRAIN_NATIVE_PITR_TARGET_PD="$target_pd_csv" \
+  KUBEBRAIN_NATIVE_PITR_ETCDUTL="$etcdutl_bin" \
   KUBEBRAIN_NATIVE_PITR_BR="$drill_tmp/br" \
   KUBEBRAIN_NATIVE_PITR_SERVER="$drill_tmp/kubebrain" \
   KUBEBRAIN_NATIVE_PITR_ADMISSION="$drill_tmp/native-pitr-admission-fence" \

@@ -46109,6 +46109,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ./pkg/backend/admissionfence` 同时通过。该项证明短时间隔的两次 session/election 恢复可重复，不外推为
   无限次数或小时级稳定性；长 soak、持续网络抖动、真实 PVC 与对象存储 multipart abort 仍开放。
 
+- A4346 将此前只有内存/bufconn 覆盖的 legacy lease provenance 拒绝路径提升为真实 TiKV/PD 迁移门禁。
+  etcd 自身的 bbolt MVCC value 对每个版本持久化 lease；KubeBrain 早期 raw/v1 envelope 没有该字段，因此
+  一个 leased v1 被 unleased v2 覆盖后，当前 attachment 不能证明 retained v1 的 lease。新增
+  `TestNativeLegacyLeaseHistorySnapshotRealCluster` 先用 `--compatible-with-etcd=false` 在真实 target TiKV
+  写出该旧格式历史，再停止进程、以当前兼容模式连接同一 keyspace。官方 clientv3 Snapshot reader 必须
+  返回 `FailedPrecondition`，诊断必须包含 `snapshot cannot determine lease for retained legacy version`、key
+  和 revision，禁止生成把未知 lease 静默写成 0 的有效外观 artifact。随后按 remediation runbook 对当前
+  revision 做 physical Compact；同一 key/value 保持可读，新 Snapshot 返回 3.7.0，并通过尾部 SHA-256、
+  `/root/etcd/bin/etcdutl snapshot status` 与 bbolt MVCC key 检查。2026-08-11 真实用例 2.88 秒通过且无
+  资源残留。runner 现在对此测试也强制要求可执行 `KUBEBRAIN_ETCDUTL_BIN`，缺失时在建集群前 fail closed，
+  不再让测试静默 skip。该项关闭“历史 lease 不可恢复时的确定性 FailedPrecondition”缺口；compact 会删除
+  watch 历史，生产执行前仍必须评估 watcher/revision 影响并保留备份，不能将其描述为无损迁移。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

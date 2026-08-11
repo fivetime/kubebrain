@@ -748,6 +748,77 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	require.Equal(t, []byte("durable-before-pd-quorum-loss"), before.Kvs[0].Value)
 }
 
+// TestNativeLegacyLeaseHistorySnapshotRealCluster proves that a legacy value
+// whose retained version has no durable lease provenance cannot be exported as
+// a plausible etcd snapshot. Physical compaction removes the ambiguous version
+// and restores snapshot availability without changing keyspace identity.
+func TestNativeLegacyLeaseHistorySnapshotRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	etcdutl := os.Getenv("KUBEBRAIN_NATIVE_PITR_ETCDUTL")
+	if targetPD == "" || serverBinary == "" || etcdutl == "" {
+		t.Skip("set the native PITR legacy lease snapshot integration environment")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	const endpoint = "127.0.0.1:45379"
+	const keyspace = "legacy-lease-snapshot-integration"
+	key := "/snapshot/legacy-historical-lease"
+
+	legacyServer := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "legacy-writer", keyspace,
+		"--compatible-with-etcd=false")
+	defer legacyServer.stop(t)
+	legacyClient := waitForEndpoint(t, ctx, endpoint, legacyServer)
+	t.Cleanup(func() { _ = legacyClient.Close() })
+	grant, err := legacyClient.Grant(ctx, 300)
+	require.NoError(t, err)
+	legacy, err := legacyClient.Put(ctx, key, "leased-v1", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	current, err := legacyClient.Put(ctx, key, "unleased-v2")
+	require.NoError(t, err)
+	require.NoError(t, legacyClient.Close())
+	legacyServer.stop(t)
+
+	currentServer := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "current-reader", keyspace)
+	defer currentServer.stop(t)
+	client := waitForEndpoint(t, ctx, endpoint, currentServer)
+	defer client.Close()
+
+	failedSnapshot, snapshotErr := client.SnapshotWithVersion(ctx)
+	if snapshotErr == nil {
+		_, snapshotErr = io.ReadAll(failedSnapshot.Snapshot)
+		_ = failedSnapshot.Snapshot.Close()
+	}
+	require.Error(t, snapshotErr)
+	require.Equal(t, codes.FailedPrecondition, status.Code(snapshotErr))
+	require.Contains(t, status.Convert(snapshotErr).Message(), "snapshot cannot determine lease for retained legacy version")
+	require.Contains(t, status.Convert(snapshotErr).Message(), key)
+	require.Contains(t, status.Convert(snapshotErr).Message(), fmt.Sprintf("revision %d", legacy.Header.Revision))
+
+	_, err = client.Compact(ctx, current.Header.Revision, clientv3.WithCompactPhysical())
+	require.NoError(t, err)
+	recovered, err := client.SnapshotWithVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "3.7.0", recovered.Version)
+	snapshotBytes, err := io.ReadAll(recovered.Snapshot)
+	require.NoError(t, err)
+	require.NoError(t, recovered.Snapshot.Close())
+	require.Greater(t, len(snapshotBytes), sha256.Size)
+	digest := sha256.Sum256(snapshotBytes[:len(snapshotBytes)-sha256.Size])
+	require.Equal(t, digest[:], snapshotBytes[len(snapshotBytes)-sha256.Size:])
+	snapshotPath := filepath.Join(t.TempDir(), "legacy-history-remediated.db")
+	require.NoError(t, os.WriteFile(snapshotPath, snapshotBytes, 0o600))
+	statusOutput, statusErr := exec.CommandContext(ctx, etcdutl, "--write-out=json", "snapshot", "status", snapshotPath).CombinedOutput()
+	require.NoError(t, statusErr, "%s", statusOutput)
+	requireSnapshotKeys(t, snapshotPath, []string{key})
+	response, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, response.Kvs, 1)
+	require.Equal(t, []byte("unleased-v2"), response.Kvs[0].Value)
+}
+
 func filterLogLines(log []byte, needles ...string) string {
 	var selected []string
 	for _, line := range strings.Split(string(log), "\n") {
