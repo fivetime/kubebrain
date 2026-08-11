@@ -2031,6 +2031,38 @@ source/target cluster ID 相同、目标快照非空或过度声称物理空白�
 `task_start_ts <= full_backup_ts <= restore_ts <= global_checkpoint_ts` 的链。plan 始终标记
 `read_only=true`，只绑定下一阶段输入，不是 backup/restore receipt，也不授权写目标集群。
 
+当且仅当 `restore_ts == full_snapshot.backup_ts`、即计划不需要日志回放时，当前可以显式批准并执行
+whole-cluster transactional full import：
+
+```shell
+PLAN_SHA256="$(sha256sum /evidence/native-pitr-restore-plan.json | awk '{print $1}')"
+go run ./hack/backup/cmd/native-pitr-full-restore \
+  --plan=/evidence/native-pitr-restore-plan.json \
+  --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --full-artifacts=/evidence/native-pitr-full-artifacts.json \
+  --remote-inventory=/evidence/native-pitr-full-remote-inventory.json \
+  --artifact-root=/evidence/full-mirror \
+  --source-range-exclusive=/evidence/native-pitr-source-range-exclusive.json \
+  --target-snapshot-empty=/evidence/native-pitr-target-snapshot-empty.json \
+  --pd-addrs="$TARGET_PD_ADDRS" \
+  --br-binary=/opt/tidb-v7.5.1/br \
+  --approve-plan-sha256="$PLAN_SHA256"
+```
+
+审批字符串必须等于 exact plan 文件 SHA-256。执行器重新解析全部 receipt，复核 plan v10 绑定的 source
+range-exclusive/target-empty/full artifact 摘要链，在 BR 前后递归重算 local exact-version mirror，且
+BR binary 必须同时匹配 v7.5.1 和 commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`，执行前后 binary
+SHA-256 也必须一致。调用参数刻意不传无效的 start/end，而是如实运行 whole-cluster `restore txn`；
+安全范围来自 source-range-exclusive 证据，不来自 BR 已知会忽略的 flag。
+
+首写前会重新连接 target PD/txnkv，以 fresh RC 全键空间扫描确认仍为空，并要求 cluster ID、PD 地址及
+Up store identity 与 plan-bound receipt 一致。成功输出 `kubebrain.native-pitr-full-restore.v1`，固定记录
+`whole_cluster_txn_import=true`、`source_visible_range_exclusive=true`、`full_snapshot_restored=true`，同时
+固定 `target_write_fence_proven=false`、`log_replay_completed=false`、
+`post_restore_semantic_validated=false`、`pitr_complete=false`。这是有意的失败闭合边界：当前没有能跨
+外部 BR 进程原子保持的 target writer fence，空白扫描与 BR 首写间仍有竞态；生产控制面必须确保目标
+未启动 KubeBrain/其他 writer。该执行收据不能用于宣称 PITR 或 etcd 语义恢复完成。
+
 arbitrary-range task 的安全创建入口现为：
 
 ```shell
@@ -2689,8 +2721,10 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   backup 原语存在；`native-pitr-preflight` 可只读验证 tenant 范围、PD task ownership 与每个 Up
   store 的 log-backup 服务，create/ready/delete receipt 已约束 task/safepoint 生命周期，full/log
   artifact receipt 已绑定不可变远端 exact versions；目标侧 snapshot-empty receipt 也已消除计划中的
-  自由 target ID/emptiness digest。这显著缩小了缺口，但 native transactional restore executor、
-  首写前原子防漂移和恢复后 etcd 语义验真仍未实现，因此不能改变本项“未完成”的结论。
+  自由 target ID/emptiness digest。full-only executor 现可在 exact plan 审批、source range-exclusive、
+  fresh target-empty 与 local mirror 双重复验后运行 pinned BR whole-cluster txn import，但 receipt 明确
+  不宣称 writer fence、日志回放、PITR 或语义验真。range-aware log restore、首写前原子防漂移和恢复后
+  etcd 语义验真仍未实现，因此不能改变本项“未完成”的结论。
   对 TiDB/BR v7.5.1（tag commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`）的 restore 源码审计还确认：
   `br restore txn` 能直接导入 transactional BackupMeta 的 SST，适合 KubeBrain arbitrary range 的 full
   阶段；但 `br restore point` 不能直接复用为 KubeBrain 日志恢复器。其 `RunStreamRestore` 会创建 TiDB

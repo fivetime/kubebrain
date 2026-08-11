@@ -1,0 +1,293 @@
+// Command native-pitr-full-restore executes BR's whole-cluster transactional
+// full import for a plan that proves visible source keys are range-exclusive.
+// It never claims that logs or post-restore etcd semantics were verified.
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+	"github.com/kubewharf/kubebrain/hack/backup/internal/pitrinventory"
+	pingcaplog "github.com/pingcap/log"
+	"go.uber.org/zap/zapcore"
+)
+
+const maxReceiptBytes = 4 << 20
+
+type options struct {
+	plan, full, artifacts, inventory, artifactRoot string
+	sourceExclusive, target                        string
+	pdAddrs, ca, cert, key, brBinary, approve      string
+	timeout                                        time.Duration
+}
+
+type commandRunner interface {
+	Output(context.Context, string, ...string) ([]byte, error)
+	Run(context.Context, string, []string, io.Writer, io.Writer) error
+}
+type inspectTargetFn func(context.Context, []string, string, string, string, int64) (nativepitr.TargetSnapshotEmptyReceipt, error)
+type osRunner struct{}
+
+func (osRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+func (osRunner) Run(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	return cmd.Run()
+}
+
+func main() {
+	pingcaplog.SetLevel(zapcore.ErrorLevel)
+	var o options
+	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v10 receipt")
+	flag.StringVar(&o.full, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
+	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v2 receipt")
+	flag.StringVar(&o.inventory, "remote-inventory", "", "exact native-pitr-object-inventory.v1 receipt")
+	flag.StringVar(&o.artifactRoot, "artifact-root", "", "absolute local exact-version full backup mirror")
+	flag.StringVar(&o.sourceExclusive, "source-range-exclusive", "", "exact source range-exclusive receipt bound by plan")
+	flag.StringVar(&o.target, "target-snapshot-empty", "", "exact target snapshot-empty receipt bound by plan")
+	flag.StringVar(&o.pdAddrs, "pd-addrs", "", "comma-separated target PD addresses")
+	flag.StringVar(&o.ca, "ca", "", "target CA file")
+	flag.StringVar(&o.cert, "cert", "", "target client certificate")
+	flag.StringVar(&o.key, "key", "", "target client private key")
+	flag.StringVar(&o.brBinary, "br-binary", "br", "BR v7.5.1 executable")
+	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
+	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "full restore deadline")
+	flag.Parse()
+	if err := execute(context.Background(), o, osRunner{}, nativepitr.InspectLiveTargetSnapshotEmpty, os.Stdout, os.Stderr, time.Now); err != nil {
+		fmt.Fprintln(os.Stderr, "native PITR full restore:", err)
+		os.Exit(1)
+	}
+}
+
+func execute(parent context.Context, o options, runner commandRunner, inspectTarget inspectTargetFn, out, logs io.Writer, now func() time.Time) error {
+	if err := validateOptions(o); err != nil {
+		return err
+	}
+	planBytes, err := readSmall(o.plan)
+	if err != nil {
+		return err
+	}
+	plan, err := nativepitr.DecodePlan(bytes.NewReader(planBytes))
+	if err != nil {
+		return err
+	}
+	planSHA := digest(planBytes)
+	if o.approve != planSHA {
+		return errors.New("approve-plan-sha256 must equal the exact plan file SHA-256")
+	}
+	if plan.RestoreTS != plan.Full.BackupTS {
+		return errors.New("full-only executor refuses a plan requiring log replay")
+	}
+
+	fullBytes, err := readSmall(o.full)
+	if err != nil {
+		return err
+	}
+	if digest(fullBytes) != plan.Full.ReceiptSHA256 {
+		return errors.New("full-snapshot receipt does not match plan")
+	}
+	full, err := nativepitr.DecodeFullSnapshot(bytes.NewReader(fullBytes))
+	if err != nil {
+		return err
+	}
+
+	sourceBytes, err := readSmall(o.sourceExclusive)
+	if err != nil {
+		return err
+	}
+	if digest(sourceBytes) != plan.Source.RangeExclusiveReceiptSHA256 {
+		return errors.New("source range-exclusive receipt does not match plan")
+	}
+	source, err := nativepitr.DecodeSourceRangeExclusive(bytes.NewReader(sourceBytes))
+	if err != nil {
+		return err
+	}
+	if source.FullSnapshotReceiptSHA256 != digest(fullBytes) || source.ClusterID != plan.Source.ClusterID || source.SnapshotTS != plan.Full.BackupTS {
+		return errors.New("source range-exclusive receipt identity does not match plan")
+	}
+
+	artifactBytes, err := readSmall(o.artifacts)
+	if err != nil {
+		return err
+	}
+	if digest(artifactBytes) != plan.Full.ArtifactReceiptSHA256 {
+		return errors.New("full-artifact receipt does not match plan")
+	}
+	artifact, err := nativepitr.DecodeArtifactReceipt(bytes.NewReader(artifactBytes))
+	if err != nil {
+		return err
+	}
+	inventory, inventoryBytes, err := pitrinventory.ReadCanonical(o.inventory)
+	if err != nil {
+		return err
+	}
+	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot); err != nil {
+		return err
+	}
+
+	targetBytes, err := readSmall(o.target)
+	if err != nil {
+		return err
+	}
+	if digest(targetBytes) != plan.Target.SnapshotEmptyReceiptSHA256 {
+		return errors.New("target snapshot-empty receipt does not match plan")
+	}
+	target, err := nativepitr.DecodeTargetSnapshotEmpty(bytes.NewReader(targetBytes))
+	if err != nil {
+		return err
+	}
+	addrs, err := parseAddrs(o.pdAddrs)
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(addrs, target.PDAddrs) {
+		return errors.New("target PD addresses differ from plan-bound receipt")
+	}
+
+	ctx, cancel := context.WithTimeout(parent, o.timeout)
+	defer cancel()
+	fresh, err := inspectTarget(ctx, addrs, o.ca, o.cert, o.key, now().Unix())
+	if err != nil {
+		return fmt.Errorf("pre-write target recheck: %w", err)
+	}
+	if fresh.ClusterID != plan.Target.ClusterID || fresh.ClusterID != target.ClusterID || fresh.SnapshotTS < target.SnapshotTS || !reflect.DeepEqual(fresh.Stores, target.Stores) {
+		return errors.New("pre-write target identity differs from approved plan")
+	}
+
+	resolved, err := exec.LookPath(o.brBinary)
+	if err != nil {
+		return fmt.Errorf("resolve BR binary: %w", err)
+	}
+	versionBytes, err := runner.Output(ctx, resolved, "--version")
+	if err != nil {
+		return fmt.Errorf("read BR version: %w: %s", err, strings.TrimSpace(string(versionBytes)))
+	}
+	version := strings.TrimSpace(string(versionBytes))
+	if !pinnedBR(version) {
+		return fmt.Errorf("BR must be exact v7.5.1 build, got %q", version)
+	}
+	brSHA, err := fileDigest(resolved)
+	if err != nil {
+		return err
+	}
+
+	started := now().Unix()
+	if err := runner.Run(ctx, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key), logs, logs); err != nil {
+		return fmt.Errorf("BR transactional full restore failed: %w", err)
+	}
+	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot); err != nil {
+		return errors.New("local full mirror changed during restore")
+	}
+	postBRHash, err := fileDigest(resolved)
+	if err != nil || postBRHash != brSHA {
+		return errors.New("BR binary changed during restore")
+	}
+
+	receipt := nativepitr.FullRestoreExecutionReceipt{Format: nativepitr.FullRestoreExecutionFormat, PlanSHA256: planSHA, SourceExclusiveSHA256: digest(sourceBytes), FullArtifactSHA256: digest(artifactBytes), ArtifactManifestSHA256: artifact.ManifestSHA256, PreWriteTarget: fresh, BRVersion: version, BRBinarySHA256: brSHA, StartedAtUnix: started, CompletedAtUnix: now().Unix(), WholeClusterTxnImport: true, SourceVisibleRangeExclusive: true, FullSnapshotRestored: true}
+	if err := receipt.Validate(); err != nil {
+		return err
+	}
+	b, err := json.Marshal(receipt)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	_, err = out.Write(b)
+	return err
+}
+
+func verifyMirror(full nativepitr.FullSnapshotReceipt, fullBytes []byte, artifact nativepitr.ArtifactReceipt, inventory pitrinventory.Receipt, inventoryBytes []byte, root string) error {
+	got, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), inventory, digest(inventoryBytes), root)
+	if err != nil {
+		return fmt.Errorf("reverify local full mirror: %w", err)
+	}
+	if !reflect.DeepEqual(got, artifact) {
+		return errors.New("reverified local mirror differs from plan-bound artifact receipt")
+	}
+	return nil
+}
+
+func validateOptions(o options) error {
+	if o.plan == "" || o.full == "" || o.artifacts == "" || o.inventory == "" || o.artifactRoot == "" || o.sourceExclusive == "" || o.target == "" || o.pdAddrs == "" || o.brBinary == "" || o.timeout <= 0 {
+		return errors.New("all receipt, artifact, target, BR, and positive timeout options are required")
+	}
+	if !filepath.IsAbs(o.artifactRoot) || filepath.Clean(o.artifactRoot) != o.artifactRoot {
+		return errors.New("artifact-root must be an absolute clean path")
+	}
+	if (o.cert == "") != (o.key == "") || ((o.cert != "" || o.key != "") && o.ca == "") {
+		return errors.New("cert and key must be set together and require ca")
+	}
+	return nil
+}
+func readSmall(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > maxReceiptBytes {
+		return nil, fmt.Errorf("receipt %s exceeds %d bytes", path, maxReceiptBytes)
+	}
+	return b, nil
+}
+func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+func fileDigest(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+func parseAddrs(raw string) ([]string, error) {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		a := strings.TrimSpace(p)
+		if a == "" || strings.Contains(a, "://") || seen[a] {
+			return nil, errors.New("invalid or duplicate target PD address")
+		}
+		seen[a] = true
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+func pinnedBR(v string) bool {
+	return strings.Contains(v, "Release Version: v7.5.1\n") && strings.Contains(v, "Git Commit Hash: 7d16cc79e81bbf573124df3fd9351c26963f3e70\n")
+}
+func buildBRArgs(addrs []string, root, ca, cert, key string) []string {
+	args := []string{"restore", "txn", "--pd", strings.Join(addrs, ","), "--storage", "local://" + root, "--send-credentials-to-tikv=false", "--check-requirements=true", "--checksum=false", "--log-file", "/dev/stderr"}
+	if ca != "" {
+		args = append(args, "--ca", ca)
+	}
+	if cert != "" {
+		args = append(args, "--cert", cert, "--key", key)
+	}
+	return args
+}
