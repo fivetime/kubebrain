@@ -46705,6 +46705,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项关闭 kind bridge 上 PD 冷启动后的最小 quorum 分阶段恢复证据；更长分区、独立宿主/AZ、人工慢速
   endpoint 恢复以及 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4382 将此前仅覆盖 TTL=600 短故障恢复的 PD Lease 门禁推进到“全失持续时间超过 lease TTL”的时间语义，
+  对照 `/root/etcd/tests/integration/clientv3/lease/lease_test.go::TestLeaseRenewLostQuorum` 的恢复续租边界，并
+  补齐其故障必须短于 TTL 的反面场景。新增 `pd-cross-node-total-loss-lease-expiry` mode，内部强制三个跨
+  worker PD endpoint blackout 45 秒，避免调用者用默认 15 秒误把短故障当成长故障。官方 clientv3 oracle
+  先创建 TTL=10 lease 和附属键，并从 Put 后 revision 启动带 PrevKV Watch；observer 证明三 endpoint 全部
+  不可达后发起 1 秒 KeepAliveOnce，要求无 response 且失败，再等待 TTL+3 秒并再次证明仍为 0 个可达。
+  恢复后由新 channel 要求附属键为空、LeaseTimeToLive 返回 -1，同时故障前 Watch 必须续接到 DELETE，
+  delete revision 大于 Put revision，PrevKV 的值与 lease ID 都必须保持，防止超时续租被延迟应用、lease
+  复活、附属键泄漏或过期删除丢失历史。
+  2026-08-11 disposable `kubebrain-pd-long-lease` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、13379/13380 拓扑通过，全程 140.34 秒；45 秒隔离与恢复均由 endpoint health oracle 明确
+  证明，最终 TiDBCluster Ready，数据面完成过期 lease 的原子删除。本项关闭 kind bridge 上超过单个短
+  lease TTL 的 PD 全失时间语义；分钟级/小时级长分区、大量 lease 同时过期、独立宿主/AZ、人工慢恢复及
+  latency/bandwidth/conntrack/underlay 组合故障继续开放。完整核心回归还稳定复现既有 auth-disable Watch
+  测试的 bufconn 时序 RED：停止旧 server 后立即 Put，client 尚未完成 transport reconnect 时偶发返回 EOF；
+  门禁现先用无副作用 Range 有界证明同一 credentialed client 已重连，再只执行一次 Put，避免用可能已提交
+  的重复 mutation 探测连接。该隔离测试复跑通过，生产 auth/Watch 语义未作放宽。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

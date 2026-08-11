@@ -948,6 +948,18 @@ run_pd_staged_recovery_restart_test() {
   wait_backend_ready
 }
 
+run_pd_total_loss_lease_expiry_test() {
+  local command="$1"
+  echo "Running cross-node PD total loss beyond lease TTL"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_PD_LONG_LOSS_LEASE_COMMAND="$command" \
+      go test . -run '^TestLeaseExpiresAfterPDTotalLossOutlastsTTL$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
 wait_backend_ready
 
 self="$ROOT_DIR/hack/dev/backend-quorum-fault-smoke.sh"
@@ -1026,6 +1038,12 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_pd_staged_recovery_restart_test \
       "$self --partition-pd-all-cross-node-staged-restart-kubebrain"
     ;;
+  pd-cross-node-total-loss-lease-expiry)
+    need docker
+    need jq
+    run_pd_total_loss_lease_expiry_test \
+      "PD_QUORUM_PARTITION_HOLD_SECONDS=45 $self --partition-pd-all-cross-node"
+    ;;
   tikv-network-partition)
     need docker
     need jq
@@ -1048,7 +1066,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "$self --partition-tikv-quorum-cross-node"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

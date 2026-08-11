@@ -549,6 +549,16 @@ func TestClientAuthDisableKeepsCredentialedWatchUsableAfterReconnect(t *testing.
 	go func() { _ = secondGRPC.Serve(secondListener) }()
 	t.Cleanup(secondGRPC.Stop)
 
+	// firstGRPC.Stop closes the old transport asynchronously from the client's
+	// point of view. Prove that this same client has completed its reconnect
+	// before issuing the single mutation whose Watch event is asserted below;
+	// retrying Put itself would make an EOF outcome commit-ambiguous.
+	require.Eventually(t, func() bool {
+		probeCtx, probeCancel := context.WithTimeout(ctx, time.Second)
+		defer probeCancel()
+		_, probeErr := client.Get(probeCtx, key)
+		return probeErr == nil
+	}, 5*time.Second, 10*time.Millisecond, "credentialed client did not reconnect after auth disable")
 	_, err = client.Put(ctx, key, "value")
 	require.NoError(t, err)
 	for {
