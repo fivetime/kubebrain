@@ -45991,6 +45991,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   状态在 TiKV 上的原子持久化及 etcd 可观察契约，不是 TiKV/PD 文件系统 ENOSPC；后者需要受控小容量卷、
   store replacement/恢复流程和宿主机保护，仍是独立开放的基础设施故障项，不能用本用例关闭。
 
+- A4337 将 A4336 的逻辑配额边界推进到真实单 store 文件系统 ENOSPC。对照
+  `/root/etcd/tests/robustness/README.md` 将 disk failure 作为成员级故障、而不是客户端 NOSPACE alarm 的
+  原则，新增三节点专用 `target-store-enospc-resume` profile 和
+  `TestNativePhysicalENOSPCRealTiKV`。脚本只为 target TiKV-0 挂载 768 MiB 的独立宿主 tmpfs，trap 先删除
+  精确命名容器再卸载并删除精确临时目录；非法 profile/非三节点拓扑在资源创建前拒绝。测试先记录该地址
+  的 PD store ID，再由宿主压力文件把卷实际填至不足 1 MiB，并持续通过 official clientv3 提交 256 KiB
+  MVCC 写，直到 TiKV 自身日志出现 `No space left on device`/OS error 28；另外两个 store 形成多数派，故障
+  窗口写仍成功。释放压力文件后重启同一容器和同一持久数据目录，status 恢复且 PD 地址仍映射到原 store
+  ID，故障前、故障中最后一次提交及恢复后写入全部逐值可读。2026-08-11 真实演练 91.88 秒通过，结束后
+  无容器、挂载或临时目录残留。专用 TOML 把 TiKV emergency reserve 降为 0 仅用于在小卷中制造故障，
+  明确禁止复制到生产。该项关闭“单 TiKV store 物理 ENOSPC 时三副本数据面保持多数派提交、清障后同
+  identity 恢复”的证据缺口；双 store/PD 磁盘满、真实 CSI/PVC 扩容或 replacement、长时间满盘、PD
+  调度水位与跨 AZ 组合故障仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

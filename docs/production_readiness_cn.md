@@ -2314,6 +2314,25 @@ TiKV target 上 2.94 秒通过。它不向 store 文件系统写满数据，也�
 磁盘满测试必须使用受控小容量独立卷并验证 PD/TiKV 的水位、调度、store replacement、告警和恢复；不得
 直接填满宿主机或本脚本的 64 GiB tmpfs，也不得以逻辑 `--quota-backend-bytes` 结果宣称物理磁盘容错通过。
 
+单 target TiKV store 的物理 ENOSPC 发布门禁使用专用受限卷 profile：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-store-enospc-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativePhysicalENOSPCRealTiKV \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+profile 仅将 target TiKV-0 放在 768 MiB 的独立宿主 tmpfs；压力文件不会写入宿主根文件系统，清理顺序是
+删除容器、卸载精确挂载、删除临时目录。用例必须看到 TiKV 自身的 OS error 28，不能只凭 `dd` 失败或 PD
+low-space 状态判定；同时要求剩余两 store 多数派可提交，释放空间并重启后地址保持原 store ID，三阶段
+数据全部可读。2026-08-11 真实运行 91.88 秒通过且无资源残留。
+
+`native-pitr-tikv-enospc-integration.toml` 将 `reserve-space`、`reserve-raft-space` 设为 0，只为让小卷可启动
+并确定性触发 ENOSPC，严禁用于生产。生产必须按 TiKV 支持矩阵保留 emergency space，并另行在真实
+CSI/PVC 上验证水位告警、扩容或 replacement、数据再平衡和长时间恢复；本用例只证明一个 TiKV store
+满盘时的三副本多数派与同 identity 清障恢复，不覆盖两个 store、PD 数据盘或跨 AZ 组合故障。
+
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
 `continuous_writer_exclusion=true`、`fence_handoff_proven=true`、

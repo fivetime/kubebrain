@@ -1,0 +1,14 @@
+# Disposable ENOSPC profile. Zero reserve files let a bounded 768 MiB test
+# volume start TiKV; production deployments must retain independently sized
+# emergency reserves and must not copy these settings.
+[storage]
+reserve-space = "0MiB"
+reserve-raft-space = "0MiB"
+background-error-recovery-window = "1s"
+
+[log-backup]
+min-ts-interval = "1s"
+max-flush-interval = "11s"
+
+[resolved-ts]
+advance-ts-interval = "1s"

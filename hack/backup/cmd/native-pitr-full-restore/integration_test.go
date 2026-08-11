@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -125,6 +126,117 @@ func TestNativeQuotaRealTiKV(t *testing.T) {
 	require.EqualValues(t, 7, status.DbSizeInUse)
 	require.EqualValues(t, 10, status.DbSizeQuota)
 	require.Empty(t, status.Errors)
+}
+
+// TestNativePhysicalENOSPCRealTiKV fills one bounded target store filesystem,
+// verifies that a three-replica data plane still commits through the remaining
+// quorum, then restores the same store data directory and identity.
+func TestNativePhysicalENOSPCRealTiKV(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	storeContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINER")
+	storeDataDir := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR")
+	storeStatus := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_STATUS")
+	if targetPD == "" || serverBinary == "" || storeContainer == "" || storeDataDir == "" || storeStatus == "" {
+		t.Skip("set the native PITR target and ENOSPC integration environment")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	pdc, err := pd.NewClientWithContext(ctx, strings.Split(targetPD, ","), pd.SecurityOption{})
+	require.NoError(t, err)
+	defer pdc.Close()
+	storeID := requireStoreIDAtAddress(t, ctx, pdc, "127.0.0.1:43160")
+
+	root := t.TempDir()
+	const endpoint = "127.0.0.1:45379"
+	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "physical-enospc", "physical-enospc-integration")
+	defer server.stop(t)
+	client := waitForEndpoint(t, ctx, endpoint, server)
+	defer client.Close()
+	_, err = client.Put(ctx, "before", "durable-before-pressure")
+	require.NoError(t, err)
+
+	pressurePath := filepath.Join(storeDataDir, "kubebrain-enospc-pressure")
+	defer os.Remove(pressurePath)
+	fill := exec.CommandContext(ctx, "dd", "if=/dev/zero", "of="+pressurePath, "bs=1M", "status=none", "conv=fsync")
+	fillOutput, fillErr := fill.CombinedOutput()
+	require.Error(t, fillErr, "unbounded dd must stop at the bounded test filesystem")
+	require.Contains(t, strings.ToLower(string(fillOutput)), "no space left on device")
+	var stat syscall.Statfs_t
+	require.NoError(t, syscall.Statfs(storeDataDir, &stat))
+	require.Less(t, stat.Bavail*uint64(stat.Bsize), uint64(1024*1024), "test store filesystem was not filled")
+
+	largeValue := strings.Repeat("x", 256*1024)
+	lastPressureKey := ""
+	observedENOSPC := false
+	for index := 0; index < 512; index++ {
+		lastPressureKey = fmt.Sprintf("during-pressure-%03d", index)
+		faultWriteCtx, faultWriteCancel := context.WithTimeout(ctx, 45*time.Second)
+		_, err = client.Put(faultWriteCtx, lastPressureKey, largeValue)
+		faultWriteCancel()
+		require.NoError(t, err, "the remaining two stores must preserve write quorum")
+		if containerLogContains(ctx, storeContainer, "no space left on device", "os error 28") {
+			observedENOSPC = true
+			break
+		}
+	}
+	require.True(t, observedENOSPC, "TiKV did not surface physical ENOSPC after exhausting preallocated files")
+
+	require.NoError(t, os.Remove(pressurePath))
+	restartOutput, err := exec.CommandContext(ctx, "docker", "restart", storeContainer).CombinedOutput()
+	require.NoError(t, err, "%s", restartOutput)
+	waitForAddresses(t, ctx, storeStatus)
+	require.Eventually(t, func() bool {
+		return requireStoreIDAtAddressNoFail(ctx, pdc, "127.0.0.1:43160") == storeID
+	}, 45*time.Second, 500*time.Millisecond, "the recovered address must retain its original PD store identity")
+
+	_, err = client.Put(ctx, "after", "durable-after-recovery")
+	require.NoError(t, err)
+	for key, value := range map[string]string{
+		"before":        "durable-before-pressure",
+		lastPressureKey: largeValue,
+		"after":         "durable-after-recovery",
+	} {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, []byte(value), response.Kvs[0].Value)
+	}
+}
+
+func requireStoreIDAtAddress(t *testing.T, ctx context.Context, client pd.Client, address string) uint64 {
+	t.Helper()
+	storeID := requireStoreIDAtAddressNoFail(ctx, client, address)
+	require.NotZero(t, storeID, "PD has no store at %s", address)
+	return storeID
+}
+
+func requireStoreIDAtAddressNoFail(ctx context.Context, client pd.Client, address string) uint64 {
+	stores, err := client.GetAllStores(ctx)
+	if err != nil {
+		return 0
+	}
+	for _, store := range stores {
+		if store.GetAddress() == address {
+			return store.GetId()
+		}
+	}
+	return 0
+}
+
+func containerLogContains(ctx context.Context, container string, needles ...string) bool {
+	output, err := exec.CommandContext(ctx, "docker", "logs", "--tail", "300", container).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(output))
+	for _, needle := range needles {
+		if strings.Contains(lower, strings.ToLower(needle)) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPDHTTPEndpointsPreserveEveryAddress(t *testing.T) {

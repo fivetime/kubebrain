@@ -9,8 +9,8 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
   exit 2
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, or target-two-store-quorum-loss-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-store-enospc-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, or target-store-enospc-resume" >&2
   exit 2
 fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
@@ -20,10 +20,14 @@ fi
 drill_tmp=$(mktemp -d /tmp/kb-native-pitr-full-restore.XXXXXX)
 shared_dir="$drill_tmp/shared"
 tikv_config="$PWD/hack/backup/native-pitr-tikv-integration.toml"
+if [[ "$fault_injection" == target-store-enospc-resume ]]; then
+  tikv_config="$PWD/hack/backup/native-pitr-tikv-enospc-integration.toml"
+fi
 mkdir -p "$shared_dir"
 chmod 0777 "$shared_dir"
 
 names=()
+mounted_dirs=()
 source_pd_names=()
 target_pd_names=()
 source_tikv_names=()
@@ -50,20 +54,37 @@ source_pd_csv=$(IFS=,; echo "${source_pd_endpoints[*]}")
 target_pd_csv=$(IFS=,; echo "${target_pd_endpoints[*]}")
 source_initial_csv=$(IFS=,; echo "${source_initial_cluster[*]}")
 target_initial_csv=$(IFS=,; echo "${target_initial_cluster[*]}")
-cleanup() {
-  for name in "${names[@]}"; do
-    docker rm -f "$name" >/dev/null 2>&1 || true
-  done
-  find "$drill_tmp" -depth -delete
-}
-trap cleanup EXIT INT TERM
-
 for name in "${names[@]}"; do
   if docker container inspect "$name" >/dev/null 2>&1; then
     echo "refusing to replace existing container $name" >&2
+    find "$drill_tmp" -depth -delete
     exit 1
   fi
 done
+cleanup() {
+  cleanup_mount_failed=false
+  for name in "${names[@]}"; do
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  done
+  for mount_dir in "${mounted_dirs[@]}"; do
+    if mountpoint -q "$mount_dir" && ! umount "$mount_dir"; then
+      echo "failed to unmount disposable integration path $mount_dir; preserving it for manual cleanup" >&2
+      cleanup_mount_failed=true
+    fi
+  done
+  if [[ "$cleanup_mount_failed" == false ]]; then
+    find "$drill_tmp" -depth -delete
+  fi
+}
+trap cleanup EXIT INT TERM
+
+target_enospc_data_dir=
+if [[ "$fault_injection" == target-store-enospc-resume ]]; then
+  target_enospc_data_dir="$drill_tmp/target-tikv-0-data"
+  mkdir -p "$target_enospc_data_dir"
+  mount -t tmpfs -o size=768m,mode=1777 kb-native-pitr-enospc "$target_enospc_data_dir"
+  mounted_dirs+=("$target_enospc_data_dir")
+fi
 
 for index in $(seq 0 $((topology_size - 1))); do
   source_client_port=$((42379 + index * 10)); source_peer_port=$((42380 + index * 10))
@@ -92,7 +113,11 @@ for index in $(seq 0 $((topology_size - 1))); do
     -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
     --config=/native-pitr-integration.toml --addr="127.0.0.1:$source_tikv_port" --advertise-addr="127.0.0.1:$source_tikv_port" \
     --status-addr="127.0.0.1:$source_status_port" --pd="$source_pd_csv" --data-dir=/data --log-file= >/dev/null
-  docker run -d --name "${target_tikv_names[$index]}" --network host --tmpfs /data:rw,size=64g,mode=1777 \
+  target_data_args=(--tmpfs /data:rw,size=64g,mode=1777)
+  if [[ "$fault_injection" == target-store-enospc-resume && "$index" == 0 ]]; then
+    target_data_args=(-v "$target_enospc_data_dir:/data")
+  fi
+  docker run -d --name "${target_tikv_names[$index]}" --network host "${target_data_args[@]}" \
     -e AWS_ACCESS_KEY_ID=kubebrain-drill -e AWS_SECRET_ACCESS_KEY=kubebrain-drill-secret \
     -v "$shared_dir:$shared_dir" -v "$tikv_config:/native-pitr-integration.toml:ro" pingcap/tikv:v7.5.1 \
     --config=/native-pitr-integration.toml --addr="127.0.0.1:$target_tikv_port" --advertise-addr="127.0.0.1:$target_tikv_port" \
@@ -152,6 +177,12 @@ if [[ "$fault_injection" == target-two-store-quorum-loss-resume ]]; then
   fault_env=(
     KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_LOSS_CONTAINERS="${target_tikv_names[0]},${target_tikv_names[1]}"
     KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_RECOVERY_ADDRESSES=127.0.0.1:21180,127.0.0.1:21181
+  )
+elif [[ "$fault_injection" == target-store-enospc-resume ]]; then
+  fault_env=(
+    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINER="${target_tikv_names[0]}"
+    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR="$target_enospc_data_dir"
+    KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_STATUS=127.0.0.1:21180
   )
 elif [[ "$fault_injection" == target-leader-member-pause-store-resume || "$fault_injection" == target-leader-member-pause-store-during-br-resume ]]; then
   leader_name=$(curl -fsS http://127.0.0.1:43379/pd/api/v1/leader | jq -er '.name | select(type == "string" and length > 0)')
