@@ -334,9 +334,14 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 	if err != nil {
 		return err
 	}
-	// The ownership token became durable with the election record even if the
-	// following diagnostic TSO read fails. Retain it for in-flight write fences.
+	// The election record (and possibly the ownership token) became durable even
+	// if the following TSO read fails. Publish all committed CAS state before
+	// that fallible read so the next renewal compares against the value that is
+	// actually in storage. Otherwise an ambiguous post-commit TSO outage leaves
+	// this process retrying the old CAS value forever after PD recovers.
 	r.mu.Lock()
+	r.lastVal = recordBytes
+	r.record = ler
 	if len(fenceToken) > 0 {
 		r.fenceToken = fenceToken
 		r.fenceInstalled = true
@@ -352,8 +357,6 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 	}
 	r.mu.Lock()
 	r.tso = newTso
-	r.lastVal = recordBytes
-	r.record = ler
 	r.mu.Unlock()
 	return nil
 }

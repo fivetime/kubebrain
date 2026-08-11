@@ -46083,6 +46083,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   大数据量慢读取消、连续多轮故障、历史 lease 不可恢复时的确定性 `FailedPrecondition`、真实 PVC 和
   小时级 soak 仍需各自门禁。
 
+- A4344 关闭 A4343 保留的大数据量 Snapshot 中途取消缺口，并修复该门禁暴露的同进程恢复缺陷。对照
+  `/root/etcd/tests/integration/clientv3/maintenance_test.go:TestMaintenanceSnapshotWithVersionErrorInflight`，
+  恢复双 PD ENOSPC 后先写入约 18 MiB 数据，打开 `SnapshotWithVersion` 后立即取消 context；reader 必须
+  以 `errors.Is(err, context.Canceled)` 结束，不能把预读的部分 artifact 当成功。新鲜 context 随后必须
+  完整下载 3.7.0 artifact，通过尾部 SHA-256、官方 `etcdutl snapshot status` 和 bbolt MVCC key 检查。
+  真实故障同时发现两个恢复漏洞：TiKV election record 已提交但随后 TSO 读取失败时，本地仍持旧 CAS
+  predecessor；PD admission `KeepAlive` channel 关闭后则永久失鲜。现在 election lock 在事务提交后先
+  发布已提交 record，再刷新 TSO；admission session 在失联时立即 fail closed，并在旧租约消失、gate
+  仍开放后自动申请新租约和 session key。相应回归覆盖 post-commit TSO failure 后下一次 renewal、session
+  lease 被撤销后的同进程重新注册，以及重新竞选必须达到 `EpochAndLeadingFresh`。2026-08-11 真实三副本
+  双 PD ENOSPC 全用例连续以 24.87/39.64 秒通过；后一次明确等待旧 15 秒 admission lease 自然过期后
+  重建，故障期 Snapshot deadline、恢复写、取消流和随后完整 artifact 均符合上游契约且无资源残留。
+  仍开放连续多轮 admission 抖动、小时级慢读/soak、真实 PVC 与对象存储落盘取消。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

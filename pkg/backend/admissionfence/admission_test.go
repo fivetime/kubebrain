@@ -75,6 +75,24 @@ func TestSessionFreshnessExpiresBeforeLease(t *testing.T) {
 	require.False(t, s.Fresh())
 }
 
+func TestSessionReRegistersAfterKeepAliveStreamEnds(t *testing.T) {
+	cli := testClient(t)
+	ctx := t.Context()
+	session, err := StartSession(ctx, cli, "recover", "replica-1:2380", 6*time.Second)
+	require.NoError(t, err)
+	oldLease := clientv3.LeaseID(session.leaseID.Load())
+	_, err = cli.Revoke(ctx, oldLease)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return session.Fresh() && clientv3.LeaseID(session.leaseID.Load()) != oldLease
+	}, 5*time.Second, 50*time.Millisecond, "session must replace a lost keepalive lease in the same process")
+	response, err := cli.Get(ctx, SessionKey("recover", "replica-1:2380"))
+	require.NoError(t, err)
+	require.Len(t, response.Kvs, 1)
+	require.Equal(t, int64(session.leaseID.Load()), response.Kvs[0].Lease)
+	require.NoError(t, session.Close(ctx))
+}
+
 func TestIPv6ProcessIdentityIsAccepted(t *testing.T) {
 	cli := testClient(t)
 	session, err := StartSession(t.Context(), cli, "a1001", "[2001:db8::1]:2380", 6*time.Second)

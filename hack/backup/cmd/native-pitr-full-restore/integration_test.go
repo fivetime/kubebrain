@@ -651,7 +651,7 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 		restartOutput, restartErr := exec.CommandContext(ctx, "docker", "restart", containers[index]).CombinedOutput()
 		require.NoError(t, restartErr, "%s", restartOutput)
 	}
-	waitForAddresses(t, ctx, strings.Join(pdEndpoints, ","))
+	waitForContainerAddresses(t, ctx, pdEndpoints, containers)
 	require.Eventually(t, func() bool {
 		response, listErr := pdEtcd.MemberList(ctx)
 		if listErr != nil || len(response.Members) != len(memberIDs) {
@@ -664,12 +664,41 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 		}
 		return true
 	}, 45*time.Second, 500*time.Millisecond, "recovered PD members must retain their identities")
-	require.Eventually(t, func() bool {
+	recoveredWrite := false
+	recoveryDeadline := time.Now().Add(45 * time.Second)
+	for time.Now().Before(recoveryDeadline) {
 		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
 		_, putErr := client.Put(attempt, "after", "durable-after-pd-quorum-recovery")
 		attemptCancel()
-		return putErr == nil
-	}, 45*time.Second, 500*time.Millisecond)
+		if putErr == nil {
+			recoveredWrite = true
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if !recoveredWrite {
+		serverLog, _ := os.ReadFile(server.logPath)
+		t.Fatalf("KubeBrain did not resume writes after PD quorum recovery:\n%s", filterLogLines(serverLog,
+			"attempting to acquire leader lease", "successfully acquired lease", "start leading", "leadership lost",
+			"initialize acquired", "restore acquired", "failed to renew", "leadership fence rejected", "leadership freshness check"))
+	}
+	// Exceed gRPC's receive window so cancellation is observed while the
+	// application is still reading rather than after the whole snapshot was
+	// opportunistically buffered by the transport.
+	largeSnapshotValue := strings.Repeat("s", 768*1024)
+	for index := 0; index < 24; index++ {
+		_, err = client.Put(ctx, fmt.Sprintf("large-snapshot-%02d", index), largeSnapshotValue)
+		require.NoError(t, err)
+	}
+	cancelSnapshotCtx, cancelSnapshot := context.WithCancel(ctx)
+	canceledSnapshot, err := client.SnapshotWithVersion(cancelSnapshotCtx)
+	require.NoError(t, err)
+	cancelSnapshot()
+	_, canceledReadErr := io.Copy(io.Discard, canceledSnapshot.Snapshot)
+	_ = canceledSnapshot.Snapshot.Close()
+	require.Error(t, canceledReadErr, "an in-flight canceled snapshot must not appear complete")
+	require.ErrorIs(t, canceledReadErr, context.Canceled)
+
 	snapshotCtx, snapshotCancel := context.WithTimeout(ctx, 45*time.Second)
 	recoveredSnapshot, err := client.SnapshotWithVersion(snapshotCtx)
 	require.NoError(t, err)
@@ -685,7 +714,7 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	require.NoError(t, os.WriteFile(snapshotPath, snapshotBytes, 0o600))
 	statusOutput, statusErr := exec.CommandContext(ctx, etcdutl, "--write-out=json", "snapshot", "status", snapshotPath).CombinedOutput()
 	require.NoError(t, statusErr, "%s", statusOutput)
-	requireSnapshotKeys(t, snapshotPath, []string{"before", "after"})
+	requireSnapshotKeys(t, snapshotPath, []string{"before", "after", "large-snapshot-00", "large-snapshot-23"})
 
 	for key, value := range acknowledged {
 		response, getErr := client.Get(ctx, key)
@@ -705,6 +734,20 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, before.Kvs, 1)
 	require.Equal(t, []byte("durable-before-pd-quorum-loss"), before.Kvs[0].Value)
+}
+
+func filterLogLines(log []byte, needles ...string) string {
+	var selected []string
+	for _, line := range strings.Split(string(log), "\n") {
+		lower := strings.ToLower(line)
+		for _, needle := range needles {
+			if strings.Contains(lower, strings.ToLower(needle)) {
+				selected = append(selected, line)
+				break
+			}
+		}
+	}
+	return strings.Join(selected, "\n")
 }
 
 func requireSnapshotKeys(t *testing.T, path string, expected []string) {
@@ -1581,6 +1624,29 @@ func waitForAddresses(t *testing.T, ctx context.Context, raw string) {
 		}
 		conn, dialErr := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "tcp", address)
 		require.NoError(t, dialErr, "recovered target did not listen on %s", address)
+		require.NoError(t, conn.Close())
+	}
+}
+
+func waitForContainerAddresses(t *testing.T, ctx context.Context, addresses, containers []string) {
+	t.Helper()
+	require.Len(t, containers, len(addresses))
+	for index, address := range addresses {
+		deadline := time.Now().Add(45 * time.Second)
+		for time.Now().Before(deadline) {
+			conn, dialErr := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "tcp", address)
+			if dialErr == nil {
+				require.NoError(t, conn.Close())
+				break
+			}
+			time.Sleep(250 * time.Millisecond)
+		}
+		conn, dialErr := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "tcp", address)
+		if dialErr != nil {
+			state, _ := exec.CommandContext(ctx, "docker", "inspect", "--format={{json .State}}", containers[index]).CombinedOutput()
+			logs, _ := exec.CommandContext(ctx, "docker", "logs", "--tail", "100", containers[index]).CombinedOutput()
+			t.Fatalf("container %s did not recover listener %s: %v\nstate: %s\nlogs:\n%s", containers[index], address, dialErr, state, logs)
+		}
 		require.NoError(t, conn.Close())
 	}
 }

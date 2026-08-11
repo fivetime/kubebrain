@@ -323,9 +323,10 @@ func TestCampaignReacquiresLeadershipAfterStorageOutage(t *testing.T) {
 	}
 	require.True(t, lock.failUpdates.Load())
 	require.Eventually(t, func() bool {
-		return starts.Load() >= 2 && stops.Load() >= 1 && election.IsLeader()
+		_, fresh := election.EpochAndLeadingFresh()
+		return starts.Load() >= 2 && stops.Load() >= 1 && election.IsLeader() && fresh
 	}, 4*time.Second, 20*time.Millisecond,
-		"campaign must remain alive and reacquire leadership after storage recovers")
+		"campaign must remain alive and reacquire fresh leadership after storage recovers")
 	require.Equal(t, int32(1), maxActiveCallbacks.Load(),
 		"adjacent leadership callbacks must never overlap")
 	require.False(t, preparePublishedLeader.Load(),

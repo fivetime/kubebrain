@@ -169,9 +169,10 @@ func VerifyOpen(ctx context.Context, cli *clientv3.Client, keyspace string) erro
 // restore can observe the sessions prefix as empty.
 type Session struct {
 	cli     *clientv3.Client
-	leaseID clientv3.LeaseID
+	leaseID atomic.Int64
 	ttl     time.Duration
 	lastAck atomic.Int64
+	cancel  context.CancelFunc
 	done    chan struct{}
 }
 
@@ -179,9 +180,23 @@ func StartSession(ctx context.Context, cli *clientv3.Client, keyspace, identity 
 	if identity == "" || len(identity) > 512 || !utf8.ValidString(identity) || strings.ContainsRune(identity, '\x00') || ttl < 3*time.Second {
 		return nil, errors.New("invalid restore admission session parameters")
 	}
+	runCtx, cancel := context.WithCancel(ctx)
+	leaseID, keepalive, err := establishSession(runCtx, cli, keyspace, identity, ttl)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	s := &Session{cli: cli, ttl: ttl, cancel: cancel, done: make(chan struct{})}
+	s.leaseID.Store(int64(leaseID))
+	s.lastAck.Store(time.Now().UnixNano())
+	go s.run(runCtx, keyspace, identity, keepalive)
+	return s, nil
+}
+
+func establishSession(ctx context.Context, cli *clientv3.Client, keyspace, identity string, ttl time.Duration) (clientv3.LeaseID, <-chan *clientv3.LeaseKeepAliveResponse, error) {
 	grant, err := cli.Grant(ctx, int64(ttl/time.Second))
 	if err != nil {
-		return nil, err
+		return 0, nil, err
 	}
 	register := func(gateCmp clientv3.Cmp, initialize bool) (bool, error) {
 		ops := []clientv3.Op{clientv3.OpPut(SessionKey(keyspace, identity), identity, clientv3.WithLease(grant.ID))}
@@ -196,28 +211,59 @@ func StartSession(ctx context.Context, cli *clientv3.Client, keyspace, identity 
 		ok, err = register(clientv3.Compare(clientv3.Version(GateKey(keyspace)), "=", 0), true)
 	}
 	if err != nil || !ok {
-		_, _ = cli.Revoke(context.Background(), grant.ID)
+		revokeBestEffort(cli, grant.ID)
 		if err != nil {
-			return nil, fmt.Errorf("register restore admission session: %w", err)
+			return 0, nil, fmt.Errorf("register restore admission session: %w", err)
 		}
-		return nil, errors.New("restore admission is closed or this process identity is already active")
+		return 0, nil, errors.New("restore admission is closed or this process identity is already active")
 	}
 	keepalive, err := cli.KeepAlive(ctx, grant.ID)
 	if err != nil {
-		_, _ = cli.Revoke(context.Background(), grant.ID)
-		return nil, err
+		revokeBestEffort(cli, grant.ID)
+		return 0, nil, err
 	}
-	s := &Session{cli: cli, leaseID: grant.ID, ttl: ttl, done: make(chan struct{})}
-	s.lastAck.Store(time.Now().UnixNano())
-	go func() {
-		defer close(s.done)
+	return grant.ID, keepalive, nil
+}
+
+func revokeBestEffort(cli *clientv3.Client, leaseID clientv3.LeaseID) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = cli.Revoke(ctx, leaseID)
+}
+
+func (s *Session) run(ctx context.Context, keyspace, identity string, keepalive <-chan *clientv3.LeaseKeepAliveResponse) {
+	defer close(s.done)
+	for {
 		for response := range keepalive {
 			if response != nil {
 				s.lastAck.Store(time.Now().UnixNano())
 			}
 		}
-	}()
-	return s, nil
+		// The stream ending is an uncertainty boundary. Stop admitting writes
+		// immediately; a replacement registration will mark the session fresh.
+		s.lastAck.Store(0)
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			leaseID, next, err := establishSession(ctx, s.cli, keyspace, identity, s.ttl)
+			if err == nil {
+				s.leaseID.Store(int64(leaseID))
+				s.lastAck.Store(time.Now().UnixNano())
+				keepalive = next
+				break
+			}
+			timer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			case <-timer.C:
+			}
+		}
+	}
 }
 
 func (s *Session) Fresh() bool {
@@ -226,6 +272,12 @@ func (s *Session) Fresh() bool {
 }
 
 func (s *Session) Close(ctx context.Context) error {
-	_, err := s.cli.Revoke(ctx, s.leaseID)
+	s.cancel()
+	select {
+	case <-s.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	_, err := s.cli.Revoke(ctx, clientv3.LeaseID(s.leaseID.Load()))
 	return err
 }

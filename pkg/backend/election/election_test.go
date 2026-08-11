@@ -17,6 +17,7 @@ package election
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -28,6 +29,18 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type postCommitTSOFailureStorage struct {
+	storage.KvStorage
+	failTSO bool
+}
+
+func (s *postCommitTSOFailureStorage) GetTimestampOracle(ctx context.Context) (uint64, error) {
+	if s.failTSO {
+		return 0, errors.New("PD unavailable after commit")
+	}
+	return s.KvStorage.GetTimestampOracle(ctx)
+}
 
 func TestResourceLockRejectsMalformedElectionMetadata(t *testing.T) {
 	base, err := json.Marshal(resourcelock.LeaderElectionRecord{
@@ -129,6 +142,32 @@ func TestResourceLockRotatesShardedStorageFenceOnlyOnProcessOwnership(t *testing
 	_, tokenBRestart, ok := lockBRestart.(StorageFenceTokenProvider).StorageFenceToken(0)
 	require.True(t, ok)
 	require.NotEqual(t, tokenB, tokenBRestart)
+}
+
+func TestResourceLockUpdateReconcilesCommittedRecordAfterPostCommitTSOFailure(t *testing.T) {
+	kv := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	store := &postCommitTSOFailureStorage{KvStorage: kv}
+	const prefix = "/registry/post-commit-tso-failure"
+	ctx := context.Background()
+	lock := NewResourceLockManager(Config{Prefix: prefix, Identity: "peer-a", Timeout: time.Second}, store).GetResourceLock()
+	record := resourcelock.LeaderElectionRecord{HolderIdentity: "peer-a", LeaseDurationSeconds: 8}
+	require.NoError(t, lock.Create(ctx, record))
+
+	firstRenew := metav1.NewTime(time.Unix(100, 0))
+	record.RenewTime = firstRenew
+	store.failTSO = true
+	require.ErrorContains(t, lock.Update(ctx, record), "PD unavailable after commit")
+
+	// The transaction above committed. A later renewal must use its value as
+	// the CAS predecessor instead of becoming permanently wedged on stale state.
+	store.failTSO = false
+	secondRenew := metav1.NewTime(time.Unix(200, 0))
+	record.RenewTime = secondRenew
+	require.NoError(t, lock.Update(ctx, record))
+	stored, _, err := lock.Get(ctx)
+	require.NoError(t, err)
+	require.True(t, stored.RenewTime.Equal(&secondRenew))
 }
 
 func TestRestorationFenceStopsElectionRenewalAndRestart(t *testing.T) {

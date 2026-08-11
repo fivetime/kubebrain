@@ -2392,6 +2392,17 @@ key。2026-08-11 加强后的全用例 28.79 秒通过。runner 默认使用 `/r
 通过 `KUBEBRAIN_ETCDUTL_BIN` 指向经过版本管理的可执行文件；工具缺失时门禁 fail closed。该验证不能
 替代大数据量 snapshot 的慢客户端取消、恢复演练或对象存储不可变性检查。
 
+2026-08-11 的 A4344 将该门禁扩展为约 18 MiB artifact 的 in-flight cancel：按上游 clientv3 契约使用
+`errors.Is(err, context.Canceled)` 判定 reader 失败（不能用 `status.Code`，因为 client 的
+`ContextError` 会返回 Go context error），随后用新 context 完整下载并再次执行 digest、etcdutl 与 bbolt
+检查。演练还要求运行中进程在 PD quorum 恢复后自动重建 admission leased session；keepalive stream
+关闭后 freshness 必须立即 fail closed，只有旧 session 消失且 gate 仍为 open、新租约和 session key
+成功注册后才能恢复写入。election renewal 的事务若已提交但 post-commit TSO 读取失败，也必须保存已提交
+CAS predecessor，避免恢复后永久用旧 record 续约。加强后的真实三副本用例连续以 24.87/39.64 秒通过；
+后一次现场等待旧 15 秒 admission lease 自然过期并自动重建。生产监控应将 admission session 长时间
+不新鲜与 election renew 失败分开告警；本门禁仍不替代小时级慢客户端、真实 PVC 恢复和对象存储
+multipart abort 演练。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell
