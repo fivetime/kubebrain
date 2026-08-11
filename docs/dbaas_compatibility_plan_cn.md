@@ -46285,6 +46285,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   safepoint；还要在 warm/cold region-cache、进程重启和真实 KubeBrain→PD packet isolation 下证明读取
   行为。完成这些之前，客户端 serializable Range 的 A4357 差距仍保持开放。
 
+- A4359 在 A4358 的显式 TiKV snapshot 基础上关闭“已建立 checkpoint 且仍在本地安全窗内”的
+  serializable latest Range 隔离缺口。对照 upstream
+  `/root/etcd/server/etcdserver/v3_server.go::EtcdServer.Range`：`Serializable=true` 不执行
+  `LinearizableReadNotify`，而是从成员本地 applied MVCC backend 读取。KubeBrain 现在由 leader 在
+  `logicalWriteMu` 排他区内同时读取逻辑 revision、compact watermark 与原始 auth revision，先确保
+  revision durable，再取得 TiKV TSO 并把四者作为 versioned internal checkpoint 原子持久化；状态未变化
+  时复用原 TSO，避免每秒制造无意义 snapshot。每个进程使用随机且有界长度的独立 PD service safepoint
+  ID，以 5 分钟 TTL 每秒续租，但本地最多只把它视为可用 2.5 分钟；PD 返回的全局 minimum 已越过 TSO、
+  metadata 畸形、续租失败或本地期限届满均 fail closed。进程退出不主动提前释放 pin，避免 graceful
+  shutdown 中仍在执行的请求失去保护；异常退出或滚动替换由 TTL 有界回收，且新旧进程不会共用 ID。
+  leader 状态变化时读取 durable checkpoint，获得 pin 后才发布；新 leader 则在 health 标记 SERVING 前
+  同步建立首个 checkpoint。point、range、revision index、object、compact watermark 与 auth internal
+  reads 都从 request context 取得同一个显式 TSO，离线 scan 不再访问 PD 做 TSO 或 Region partition
+  discovery；response header 固定为 checkpoint revision。仅 `Serializable=true && Revision=0` 且节点不是
+  leader 或 leadership freshness 已失效时走该路径；健康 leader 保持新鲜快路径，显式 historical Range
+  保持既有语义，linearizable Range 仍必须经过 quorum/lease fence。
+  单元测试覆盖 checkpoint codec、revision/compact/auth 绑定、GC 已越界与本地超时拒绝、无额外 TSO/
+  partition discovery 的 point/range、未变化 snapshot 复用、进程 pin ID 唯一性和 follower server routing；
+  新增用例的 race 测试以及 `pkg/backend`、`pkg/server/etcd`、`pkg/server`、`pkg/storage/...` 全量回归通过。
+  `TestNativeKubeBrainPDNetworkIsolationRealCluster` 现使用 HS256 JWT：故障前创建 root、启用 auth、取得
+  token 并确认 `before` 写；以 owner iptables 隔离该 KubeBrain 进程到全部三个 PD client port，等待
+  admission session 过期后，官方 client/v3 authenticated `WithSerializable()` 仍返回 `before` 且 header
+  revision 不早于 acknowledged revision，默认 Range 则稳定返回 stale-leadership `Unavailable`；解除隔离
+  后原进程恢复。最终三 PD/三 TiKV 现场 28.35 秒通过，runner 清理无残留。
+  本项不是无限期本地副本承诺：checkpoint 异步发布窗口约 1 秒，只有已经成功 pin 且 region cache 足以
+  定位现有 Region 的 snapshot 在 2.5 分钟本地安全窗内受支持；冷 cache、隔离期间 Region split/merge 或
+  leader relocation、超过安全窗的长分区、进程重启后无法向 PD 续租，以及 serializable Txn/RangeStream
+  尚未由本项证明，均继续 fail closed 或保持开放，后续需分别补真实门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

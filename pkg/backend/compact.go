@@ -204,7 +204,7 @@ func (b *backend) loadCompactRevision(ctx context.Context) (uint64, error) {
 }
 
 func (b *backend) loadCompactRevisionState(ctx context.Context) (uint64, bool, error) {
-	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
+	val, err := b.snapshotGet(ctx, getCompactKey(b.config.Prefix))
 	if err == storage.ErrKeyNotFound {
 		return 0, false, nil
 	}
@@ -230,6 +230,9 @@ func (b *backend) updateCompactRevCache(revision uint64) {
 }
 
 func (b *backend) safeCurrentRevision(ctx context.Context) (uint64, error) {
+	if checkpoint, ok := serializableCheckpointFromContext(ctx); ok {
+		return checkpoint.Revision, nil
+	}
 	currentRevision := b.tso.GetRevision()
 	// A brand-new serving process has no local user-revision watermark. Restore
 	// it from the revision committed atomically with user mutations before using

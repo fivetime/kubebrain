@@ -54,6 +54,7 @@ type clientBalancer struct {
 }
 
 var _ storage.SnapshotGetter = (*store)(nil)
+var _ storage.SnapshotProtector = (*store)(nil)
 
 // defaultClientNum is the fallback number of round-robined txnkv clients when
 // the caller passes a non-positive count. Each client carries its own PD
@@ -244,6 +245,26 @@ func (s *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err e
 		return 0, fmt.Errorf("%w: fail to get timestamp: %v", storage.ErrUnavailable, err)
 	}
 	return timestamp, err
+}
+
+func (s *store) ProtectSnapshot(ctx context.Context, serviceID string, ttl time.Duration, timestamp uint64) (uint64, error) {
+	if serviceID == "" || ttl <= 0 || timestamp == 0 {
+		return 0, errors.New("snapshot protection requires service ID, positive TTL, and timestamp")
+	}
+	seconds := int64((ttl + time.Second - 1) / time.Second)
+	minimum, err := s.getClient().GetPDClient().UpdateServiceGCSafePoint(ctx, serviceID, seconds, timestamp)
+	if err != nil {
+		return 0, errors.Wrap(err, "protect snapshot with PD service safepoint")
+	}
+	return minimum, nil
+}
+
+func (s *store) ReleaseSnapshot(ctx context.Context, serviceID string) error {
+	if serviceID == "" {
+		return errors.New("snapshot protection requires service ID")
+	}
+	_, err := s.getClient().GetPDClient().UpdateServiceGCSafePoint(ctx, serviceID, 0, 0)
+	return errors.Wrap(err, "release snapshot PD service safepoint")
 }
 
 func maxBytes(a []byte, b []byte) []byte {

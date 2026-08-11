@@ -942,15 +942,40 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NoError(t, err)
 
 	root := t.TempDir()
+	jwtFile, err := os.CreateTemp(os.TempDir(), "pd-process-isolation-jwt-secret-")
+	require.NoError(t, err)
+	jwtSecret := jwtFile.Name()
+	t.Cleanup(func() { _ = os.Remove(jwtSecret) })
+	_, err = jwtFile.Write([]byte("pd-process-isolation-jwt-shared-secret"))
+	require.NoError(t, err)
+	require.NoError(t, jwtFile.Close())
+	require.NoError(t, os.Chmod(jwtSecret, 0o444))
 	const keyspace = "pd-process-isolation-integration"
 	server := startKubeBrainForKeyspaceAsUID(t, ctx, serverBinary, targetPD, root, "pd-process-isolation",
-		keyspace, uint32(parsedUID))
+		keyspace, uint32(parsedUID), "--auth-token=jwt,sign-method=HS256,priv-key="+jwtSecret)
 	defer server.stop(t)
 	const endpoint = "127.0.0.1:45379"
-	client := waitForEndpoint(t, ctx, endpoint, server)
-	defer client.Close()
-	_, err = client.Put(ctx, "before", "durable-before-pd-isolation")
+	bootstrap := waitForEndpoint(t, ctx, endpoint, server)
+	_, err = bootstrap.UserAdd(ctx, "root", "root-secret")
 	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "root")
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "root", "root")
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+	require.NoError(t, bootstrap.Close())
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoint}, DialTimeout: time.Second, Username: "root", Password: "root-secret",
+	})
+	require.NoError(t, err)
+	defer client.Close()
+	beforePut, err := client.Put(ctx, "before", "durable-before-pd-isolation")
+	require.NoError(t, err)
+	// The checkpoint worker publishes at one-second cadence. Confirm the write
+	// has had a full publication window before cutting the process off from PD;
+	// an outage racing that asynchronous window is intentionally fail-closed.
+	time.Sleep(1500 * time.Millisecond)
 	sessions, err := pdClient.Get(ctx, admissionfence.SessionsPrefix(keyspace), clientv3.WithPrefix())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, sessions.Count, "the running process must own one admission session before isolation")
@@ -994,9 +1019,12 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	}, 30*time.Second, 250*time.Millisecond, "the isolated process admission lease must expire from healthy PD")
 
 	serializableCtx, serializableCancel := context.WithTimeout(ctx, 3*time.Second)
-	_, err = client.Get(serializableCtx, "before", clientv3.WithSerializable())
+	serializable, err := client.Get(serializableCtx, "before", clientv3.WithSerializable())
 	serializableCancel()
-	require.Error(t, err, "current TiKV transactional reads need PD TSO even when etcd consistency is serializable")
+	require.NoError(t, err, "a protected applied checkpoint must serve serializable Range without PD TSO")
+	require.Len(t, serializable.Kvs, 1)
+	require.Equal(t, []byte("durable-before-pd-isolation"), serializable.Kvs[0].Value)
+	require.GreaterOrEqual(t, serializable.Header.Revision, beforePut.Header.Revision)
 	linearizableCtx, linearizableCancel := context.WithTimeout(ctx, 3*time.Second)
 	_, err = client.Get(linearizableCtx, "before")
 	linearizableCancel()

@@ -507,6 +507,19 @@ func (s *server) onStartedLeading(ctx context.Context) {
 		case <-time.After(leaderReloadRetryInterval):
 		}
 	}
+	for {
+		err := s.backend.RefreshSerializableCheckpoint(ctx)
+		if err == nil {
+			break
+		}
+		s.metricCli.EmitCounter("serializable.checkpoint.initialize_err", 1)
+		klog.ErrorS(err, "initialize serializable checkpoint failed; retrying before serving")
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(leaderReloadRetryInterval):
+		}
+	}
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	// The count index can trail readiness: until it is Ready() at a revision,
 	// counts fall back to a full scan (never a wrong count), so a rebuild failure

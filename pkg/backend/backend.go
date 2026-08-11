@@ -159,6 +159,12 @@ type Backend interface {
 	// authoritative (compacted-watch cancel, #33).
 	GetCompactRevisionFresh(ctx context.Context) (uint64, error)
 
+	// GetSerializableCheckpoint returns this process's currently GC-protected
+	// engine snapshot, or ErrSerializableCheckpointUnavailable when it has not
+	// been established or its local safety deadline has elapsed.
+	GetSerializableCheckpoint() (SerializableCheckpoint, error)
+	RefreshSerializableCheckpoint(ctx context.Context) error
+
 	// Get read a kv from storage
 	Get(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error)
 
@@ -402,8 +408,10 @@ type backend struct {
 	// durableRevisionTarget and durableRevisionSignal coalesce collector progress
 	// into monotonic background persistence, so a slow metadata write cannot
 	// delay watch fan-out or user-write acknowledgement.
-	durableRevisionTarget uint64
-	durableRevisionSignal chan struct{}
+	durableRevisionTarget           uint64
+	durableRevisionSignal           chan struct{}
+	serializableCheckpoint          atomic.Pointer[SerializableCheckpoint]
+	serializableCheckpointServiceID string
 
 	// logicalWriteMu is a leader-local predicate-lock substitute. Ordinary
 	// logical writes take RLock and therefore remain fully concurrent. A generic
@@ -577,14 +585,15 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			bufSize:          config.WatchFanoutBuffer,
 			progressKick:     make(chan struct{}, 1),
 		},
-		historyScanSem:        make(chan struct{}, historyScanConcurrency),
-		historyScanGroup:      newScanGroup(),
-		commitNotify:          newCommitNotify(),
-		durableRevisionSignal: make(chan struct{}, 1),
-		compactSignal:         make(chan struct{}, 1),
-		metricCli:             metricCli,
-		workerCtx:             workerCtx,
-		workerCancel:          workerCancel,
+		historyScanSem:                  make(chan struct{}, historyScanConcurrency),
+		historyScanGroup:                newScanGroup(),
+		commitNotify:                    newCommitNotify(),
+		durableRevisionSignal:           make(chan struct{}, 1),
+		serializableCheckpointServiceID: newSerializableCheckpointServiceID(config.Keyspace, config.Identity),
+		compactSignal:                   make(chan struct{}, 1),
+		metricCli:                       metricCli,
+		workerCtx:                       workerCtx,
+		workerCancel:                    workerCancel,
 	}
 	b.compactCtx.Store(compactContextHolder{ctx: workerCtx})
 	// User/internal batches opened through the backend carry a sharded storage
@@ -620,6 +629,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	// write into watch chan, trigger by create/ update/ delete method in storage interface
 	b.startWorker(b.collectStorageWriteEvents)
 	b.startWorker(b.runDurableRevisionPersister)
+	b.startWorker(b.runSerializableCheckpoint)
 
 	// broadcast fan-out to all subscribed watchers
 	b.startWorker(func(ctx context.Context) { b.watcherHub.Stream(ctx, b.watchChan) })

@@ -63,6 +63,19 @@ func (s *RPCServer) rangeWithAfterRead(
 	if err := validateRangeRequest(r); err != nil {
 		return nil, err
 	}
+	// An upstream etcd follower serves an explicitly serializable latest Range
+	// from its local applied backend even while it cannot reach quorum. A
+	// KubeBrain follower has no bbolt replica, so use its GC-protected TiKV
+	// checkpoint when available. Healthy leaders retain the current fast path;
+	// followers without a complete/valid checkpoint also retain the ordinary
+	// TiKV path and fail closed if PD is unavailable.
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if r.Serializable && r.Revision == 0 && (!s.peers.IsLeader() || !leadingFresh) {
+		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+			ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+			s.metricCli.EmitCounter("read.serializable.checkpoint", 1)
+		}
+	}
 	// A durable follower snapshot is sufficient only for an explicitly
 	// serializable request. A linearizable historical read still has to observe
 	// the leader's current revision in its response header, even though its KVs

@@ -43,6 +43,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -73,6 +74,36 @@ type testPeerService struct {
 type compareDeleteTrapBackendShim struct {
 	BackendShim
 	called bool
+}
+
+type checkpointRangeBackendShim struct {
+	BackendShim
+	checkpoint backend.SerializableCheckpoint
+	used       bool
+}
+
+func (b *checkpointRangeBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.checkpoint, nil
+}
+
+func (b *checkpointRangeBackendShim) InternalGet(_ context.Context, key []byte) ([]byte, error) {
+	return b.BackendShim.InternalGet(context.Background(), key)
+}
+
+func (b *checkpointRangeBackendShim) InternalRange(_ context.Context, prefix []byte) (map[string][]byte, error) {
+	return b.BackendShim.InternalRange(context.Background(), prefix)
+}
+
+func (b *checkpointRangeBackendShim) Get(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	timestamp, ok := storage.SnapshotTimestampFromContext(ctx)
+	if !ok || timestamp != b.checkpoint.Timestamp {
+		return nil, storage.ErrUnavailable
+	}
+	b.used = true
+	return &etcdserverpb.RangeResponse{
+		Header: txnHeader(int64(b.checkpoint.Revision)),
+		Kvs:    []*mvccpb.KeyValue{{Key: append([]byte(nil), r.Key...), Value: []byte("checkpoint"), ModRevision: int64(b.checkpoint.Revision)}},
+	}, nil
 }
 
 func (b *compareDeleteTrapBackendShim) CompareDelete(
@@ -519,6 +550,26 @@ func TestPutCreatesAndOverwritesKey(t *testing.T) {
 	require.Len(t, rangeResp.Kvs, 1)
 	require.Equal(t, []byte("v2"), rangeResp.Kvs[0].Value)
 	require.Greater(t, rangeResp.Kvs[0].ModRevision, firstRevision)
+}
+
+func TestFollowerSerializableLatestRangeUsesProtectedCheckpoint(t *testing.T) {
+	base, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 23, Timestamp: 99, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointRangeBackendShim{BackendShim: base.backend, checkpoint: checkpoint}
+	base.backend = shim
+	base.tokens.snapshots = newAuthSnapshotCache(shim)
+	base.peers = testPeerService{isLeader: false}
+
+	response, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/checkpoint"), Serializable: true,
+	})
+	require.NoError(t, err)
+	require.True(t, shim.used)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Equal(t, []byte("checkpoint"), response.Kvs[0].Value)
 }
 
 func TestSerializableRangeBypassesLeaderRevisionSync(t *testing.T) {

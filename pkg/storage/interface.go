@@ -20,6 +20,19 @@ import (
 	"time"
 )
 
+type snapshotTimestampContextKey struct{}
+
+// WithSnapshotTimestamp pins storage reads in ctx to an already protected
+// engine snapshot. Ordinary reads continue to obtain a fresh timestamp.
+func WithSnapshotTimestamp(ctx context.Context, timestamp uint64) context.Context {
+	return context.WithValue(ctx, snapshotTimestampContextKey{}, timestamp)
+}
+
+func SnapshotTimestampFromContext(ctx context.Context) (uint64, bool) {
+	timestamp, ok := ctx.Value(snapshotTimestampContextKey{}).(uint64)
+	return timestamp, ok && timestamp != 0
+}
+
 // ExclusiveKvStorage defines the context individual KvStorage for the background job.
 // * Leader runs background compaction periodically, which will may lead to high network io throughput on several tcp
 // * conns of a single client. In this case, background compaction can make a notable impact on the latency of writing
@@ -151,6 +164,16 @@ type BatchGetter interface {
 type SnapshotGetter interface {
 	GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte, error)
 	BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64) (map[string][]byte, error)
+}
+
+// SnapshotProtector is an OPTIONAL capability for pinning an engine snapshot
+// against MVCC garbage collection. serviceID identifies one live consumer;
+// implementations must expire the protection after ttl unless it is renewed.
+// The returned value is the cluster-wide minimum service safepoint. A caller
+// must reject timestamp when that minimum has already advanced past it.
+type SnapshotProtector interface {
+	ProtectSnapshot(ctx context.Context, serviceID string, ttl time.Duration, timestamp uint64) (minimum uint64, err error)
+	ReleaseSnapshot(ctx context.Context, serviceID string) error
 }
 
 // FeatureSupport indicates whether storage engine support some non-core feature

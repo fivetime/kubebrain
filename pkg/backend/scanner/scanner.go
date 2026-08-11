@@ -120,11 +120,15 @@ func (r *scanner) Range(ctx context.Context, start []byte, end []byte, revision 
 }
 
 func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error) {
-	tso, err := r.store.GetTimestampOracle(ctx)
-	if err != nil {
-		return nil, err
+	tso, pinned := storage.SnapshotTimestampFromContext(ctx)
+	if !pinned {
+		var err error
+		tso, err = r.store.GetTimestampOracle(ctx)
+		if err != nil {
+			return nil, err
+		}
 	}
-	err = r.checkCompactRace(ctx, revision, false)
+	err := r.checkCompactRace(ctx, revision, false)
 	if err != nil {
 		return nil, err
 	}
@@ -211,16 +215,24 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 func (r *scanner) rangeStreamOrdered(ctx context.Context, start, end []byte, revision uint64, keysOnly bool, output chan<- *proto.StreamRangeResponse) error {
 	workerCtx, cancelWorkers := context.WithCancel(ctx)
 	defer cancelWorkers()
-	tso, err := r.store.GetTimestampOracle(workerCtx)
-	if err != nil {
-		return err
+	tso, pinned := storage.SnapshotTimestampFromContext(workerCtx)
+	if !pinned {
+		var err error
+		tso, err = r.store.GetTimestampOracle(workerCtx)
+		if err != nil {
+			return err
+		}
 	}
 	if err := r.checkCompactRace(workerCtx, revision, false); err != nil {
 		return err
 	}
-	partitions, err := r.store.GetPartitions(workerCtx, start, end)
-	if err != nil {
-		return err
+	partitions := []storage.Partition{{Start: start, End: end}}
+	if !pinned {
+		var err error
+		partitions, err = r.store.GetPartitions(workerCtx, start, end)
+		if err != nil {
+			return err
+		}
 	}
 	partitions = r.adjustPartitionsBorders(partitions)
 
@@ -462,19 +474,27 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 	}
 	startTime := time.Now()
 
-	tso, err := store.GetTimestampOracle(ctx)
+	tso, pinned := storage.SnapshotTimestampFromContext(ctx)
+	if !pinned {
+		var err error
+		tso, err = store.GetTimestampOracle(ctx)
+		if err != nil {
+			return 0, err
+		}
+	}
+
+	err := r.checkCompactRace(ctx, revision, compact)
 	if err != nil {
 		return 0, err
 	}
 
-	err = r.checkCompactRace(ctx, revision, compact)
-	if err != nil {
-		return 0, err
-	}
-
-	partitions, err := store.GetPartitions(ctx, start, end)
-	if err != nil {
-		return 0, err
+	partitions := []storage.Partition{{Start: start, End: end}}
+	if !pinned {
+		var err error
+		partitions, err = store.GetPartitions(ctx, start, end)
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	partitions = r.adjustPartitionsBorders(partitions)
@@ -1088,7 +1108,7 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 		// it (e.g. a stale/retried compact at a smaller revision), after which
 		// range requests at already-compacted revisions would wrongly pass the
 		// guard below and return incomplete data.
-		val, err := r.store.Get(ctx, r.config.CompactKey)
+		val, err := scannerGet(ctx, r.store, r.config.CompactKey)
 		if err != nil && err != storage.ErrKeyNotFound {
 			return err
 		}
@@ -1115,7 +1135,7 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 		if errors.Is(err, storage.ErrCASFailed) {
 			// Verify the winner instead of assuming every conflicting writer
 			// advanced a valid watermark.
-			current, getErr := r.store.Get(ctx, r.config.CompactKey)
+			current, getErr := scannerGet(ctx, r.store, r.config.CompactKey)
 			if getErr != nil {
 				return getErr
 			}
@@ -1133,7 +1153,7 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 	// if scan is triggered by range and range stream, check compact race
 	// check is processed after get snapshot, so that even compact happens concurrently, it will not affect data for this range
 	// get compact revision
-	val, err := r.store.Get(ctx, r.config.CompactKey)
+	val, err := scannerGet(ctx, r.store, r.config.CompactKey)
 	if err != nil {
 		// if compact_key is not initialized, return nil
 		if err == storage.ErrKeyNotFound {
@@ -1153,4 +1173,15 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 		return err
 	}
 	return nil
+}
+
+func scannerGet(ctx context.Context, store storage.KvStorage, key []byte) ([]byte, error) {
+	if timestamp, ok := storage.SnapshotTimestampFromContext(ctx); ok {
+		reader, supported := storage.FindCapability[storage.SnapshotGetter](store)
+		if !supported {
+			return nil, storage.ErrUnavailable
+		}
+		return reader.GetAt(ctx, key, timestamp)
+	}
+	return store.Get(ctx, key)
 }

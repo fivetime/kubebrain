@@ -40,12 +40,13 @@ func rawPrefixEnd(prefix []byte) []byte {
 }
 
 func (b *backend) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
-	return b.kv.Get(ctx, b.ks.EncodeInternalKey(key))
+	return b.snapshotGet(ctx, b.ks.EncodeInternalKey(key))
 }
 
 func (b *backend) InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error) {
 	start := b.ks.EncodeInternalKey(prefix)
-	it, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), 0, 0)
+	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	it, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), timestamp, 0)
 	if err != nil {
 		return nil, err
 	}

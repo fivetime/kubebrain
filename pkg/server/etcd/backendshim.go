@@ -89,6 +89,7 @@ type BackendShim interface {
 	// GetCompactRevisionFresh bypasses the compact-revision TTL cache; used
 	// where the value is returned to clients as authoritative (#33).
 	GetCompactRevisionFresh(ctx context.Context) (uint64, error)
+	GetSerializableCheckpoint() (backend.SerializableCheckpoint, error)
 
 	// DeleteRange removes one key or all keys in a range.
 	DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
@@ -299,6 +300,10 @@ func (b *backendShim) DisarmCorrupt(ctx context.Context, memberID uint64) (bool,
 
 func (b *backendShim) GetDurableRevision(ctx context.Context) (uint64, error) {
 	return b.backend.GetDurableRevision(ctx)
+}
+
+func (b *backendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return b.backend.GetSerializableCheckpoint()
 }
 
 func (b *backendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {

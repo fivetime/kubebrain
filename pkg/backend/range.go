@@ -96,7 +96,7 @@ func (b *backend) get(ctx context.Context, key []byte, revision uint64) (val []b
 
 func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint64) (val []byte, modRevision uint64, err error) {
 	requestedRevision := revision
-	revisionValue, err := b.kv.Get(ctx, b.coder.EncodeRevisionKey(key))
+	revisionValue, err := b.snapshotGet(ctx, b.coder.EncodeRevisionKey(key))
 	if err != nil {
 		if !errors.Is(err, storage.ErrKeyNotFound) {
 			return nil, 0, err
@@ -115,7 +115,7 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 		// versions of "a$extension" sort inside the reverse-scan interval for "a".
 		// Reading the indexed object key directly cannot confuse those two keys.
 		if requestedRevision == 0 || requestedRevision >= currentRevision {
-			val, getErr := b.kv.Get(ctx, b.coder.EncodeObjectKey(key, currentRevision))
+			val, getErr := b.snapshotGet(ctx, b.coder.EncodeObjectKey(key, currentRevision))
 			if getErr != nil {
 				return nil, 0, getErr
 			}
@@ -131,7 +131,8 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 	// Historical reads and legacy orphan recovery need the reverse interval. It
 	// is not a unique prefix when the raw key contains the delimiter, so do not
 	// cap the iterator at the first physical row: decode and skip foreign keys.
-	iter, err := b.kv.Iter(ctx, startKey, endKey, 0, 0)
+	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	iter, err := b.kv.Iter(ctx, startKey, endKey, timestamp, 0)
 	if err != nil {
 		return nil, 0, err
 	}
