@@ -46311,8 +46311,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后原进程恢复。最终三 PD/三 TiKV 现场 28.35 秒通过，runner 清理无残留。
   本项不是无限期本地副本承诺：checkpoint 异步发布窗口约 1 秒，只有已经成功 pin 且 region cache 足以
   定位现有 Region 的 snapshot 在 2.5 分钟本地安全窗内受支持；冷 cache、隔离期间 Region split/merge 或
-  leader relocation、超过安全窗的长分区、进程重启后无法向 PD 续租，以及 serializable Txn/RangeStream
-  尚未由本项证明，均继续 fail closed 或保持开放，后续需分别补真实门禁。
+  leader relocation、超过安全窗的长分区、进程重启后无法向 PD 续租，以及 RangeStream 尚未由本项证明，
+  均继续 fail closed 或保持开放，后续需分别补真实门禁。Serializable read-only Txn 由 A4360 补齐。
+
+- A4360 把 A4359 的单 Range checkpoint 扩展到 upstream
+  `/root/etcd/server/etcdserver/v3_server.go::EtcdServer.Txn` 与
+  `/root/etcd/server/etcdserver/txn/txn.go::IsTxnSerializable` 定义的 read-only serializable Txn：只有成功和
+  失败分支的每个顶层 operation 都是 `Serializable=true` Range 时才可跳过 linearizable read barrier。
+  KubeBrain 在节点不是 leader 或本地 leadership freshness 已失效时，于认证前只取得一次受保护 checkpoint
+  并放入 request context；auth snapshot/token 校验、全部 compare、所选分支的多个 Range、compact revision
+  校验和最终 auth-revision fence 因而都使用同一 TiKV TSO。Txn 的 base revision、外层 header 和每个 Range
+  header 固定为 checkpoint revision；这也修复了 A4359 中 empty non-from-key Range 虽使用 checkpoint、但
+  header 仍可能取进程 revision cache 的遗漏。checkpoint 不可用时保持原 durable/fresh 路径，PD 不可达
+  则 fail closed；含任一 non-serializable Range 或写操作的 Txn 不会进入该路径。
+  确定性测试用 freshness=false 但 `IsLeader=true` 的故障形态，要求不执行 read barrier，compare 选中成功
+  分支且外层/子 Range header 一致；同组测试新增 empty Range checkpoint header 回归，目标 race 与
+  backend/server/storage 全量包回归通过。带 HS256 JWT 的
+  `TestNativeKubeBrainPDNetworkIsolationRealCluster` 进一步在三 PD/三 TiKV 现场，以同一个官方 client/v3
+  Txn 比较 `before` 的 value，并在成功分支读取 `before`、`second` 两个 serializable Range；隔离全部 PD
+  client port 且 admission session 已过期后，Txn 仍返回正确分支、两个故障前值及完全一致的 header
+  revision，随后默认 linearizable Range 仍失败，解除隔离后原进程恢复。2026-08-11 最终整例 25.14 秒
+  通过且 runner 无资源残留。边界继承 A4359 的 1 秒发布窗口、2.5 分钟本地安全窗和 warm Region cache
+  要求；upstream `IsTxnReadonly` 不把 nested Txn 当作该快速路径，因此 nested 或混合读写 Txn 不在本项
+  范围，RangeStream 也仍开放。
 
 ### P2：运维兼容和长期验证
 

@@ -47,7 +47,10 @@ func WithSerializableCheckpoint(ctx context.Context, c SerializableCheckpoint) c
 	return context.WithValue(ctx, serializableCheckpointContextKey{}, c)
 }
 
-func serializableCheckpointFromContext(ctx context.Context) (SerializableCheckpoint, bool) {
+// SerializableCheckpointFromContext returns the request-pinned checkpoint.
+// Its local safety deadline is checked before it is attached; an in-flight
+// request may continue using that already protected snapshot until completion.
+func SerializableCheckpointFromContext(ctx context.Context) (SerializableCheckpoint, bool) {
 	c, ok := ctx.Value(serializableCheckpointContextKey{}).(SerializableCheckpoint)
 	return c, ok && c.Revision != 0 && c.Timestamp != 0
 }

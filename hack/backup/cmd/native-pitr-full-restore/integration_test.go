@@ -972,6 +972,8 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	defer client.Close()
 	beforePut, err := client.Put(ctx, "before", "durable-before-pd-isolation")
 	require.NoError(t, err)
+	secondPut, err := client.Put(ctx, "second", "same-checkpoint")
+	require.NoError(t, err)
 	// The checkpoint worker publishes at one-second cadence. Confirm the write
 	// has had a full publication window before cutting the process off from PD;
 	// an outage racing that asynchronous window is intentionally fail-closed.
@@ -1025,6 +1027,24 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Len(t, serializable.Kvs, 1)
 	require.Equal(t, []byte("durable-before-pd-isolation"), serializable.Kvs[0].Value)
 	require.GreaterOrEqual(t, serializable.Header.Revision, beforePut.Header.Revision)
+	serializableTxnCtx, serializableTxnCancel := context.WithTimeout(ctx, 3*time.Second)
+	serializableTxn, err := client.Txn(serializableTxnCtx).
+		If(clientv3.Compare(clientv3.Value("before"), "=", "durable-before-pd-isolation")).
+		Then(
+			clientv3.OpGet("before", clientv3.WithSerializable()),
+			clientv3.OpGet("second", clientv3.WithSerializable()),
+		).
+		Else(clientv3.OpGet("unexpected", clientv3.WithSerializable())).
+		Commit()
+	serializableTxnCancel()
+	require.NoError(t, err, "one protected checkpoint must serve compare and every serializable Txn Range")
+	require.True(t, serializableTxn.Succeeded)
+	require.GreaterOrEqual(t, serializableTxn.Header.Revision, secondPut.Header.Revision)
+	require.Len(t, serializableTxn.Responses, 2)
+	require.Equal(t, []byte("durable-before-pd-isolation"), serializableTxn.Responses[0].GetResponseRange().Kvs[0].Value)
+	require.Equal(t, []byte("same-checkpoint"), serializableTxn.Responses[1].GetResponseRange().Kvs[0].Value)
+	require.Equal(t, serializableTxn.Header.Revision, serializableTxn.Responses[0].GetResponseRange().Header.Revision)
+	require.Equal(t, serializableTxn.Header.Revision, serializableTxn.Responses[1].GetResponseRange().Header.Revision)
 	linearizableCtx, linearizableCancel := context.WithTimeout(ctx, 3*time.Second)
 	_, err = client.Get(linearizableCtx, "before")
 	linearizableCancel()

@@ -86,6 +86,10 @@ func (b *checkpointRangeBackendShim) GetSerializableCheckpoint() (backend.Serial
 	return b.checkpoint, nil
 }
 
+func (b *checkpointRangeBackendShim) GetCompactRevisionFresh(context.Context) (uint64, error) {
+	return b.checkpoint.CompactRevision, nil
+}
+
 func (b *checkpointRangeBackendShim) InternalGet(_ context.Context, key []byte) ([]byte, error) {
 	return b.BackendShim.InternalGet(context.Background(), key)
 }
@@ -570,6 +574,53 @@ func TestFollowerSerializableLatestRangeUsesProtectedCheckpoint(t *testing.T) {
 	require.True(t, shim.used)
 	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
 	require.Equal(t, []byte("checkpoint"), response.Kvs[0].Value)
+
+	empty, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("z"), RangeEnd: []byte("a"), Serializable: true,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(checkpoint.Revision), empty.Header.Revision)
+	require.Empty(t, empty.Kvs)
+}
+
+func TestStaleLeaderSerializableReadonlyTxnUsesProtectedCheckpoint(t *testing.T) {
+	base, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 31, Timestamp: 101, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointRangeBackendShim{BackendShim: base.backend, checkpoint: checkpoint}
+	base.backend = shim
+	base.tokens.snapshots = newAuthSnapshotCache(shim)
+	base.peers = testPeerService{
+		isLeader: true,
+		epochFn:  func() (uint64, bool) { return 4, false },
+		syncReadFn: func(context.Context) error {
+			t.Fatal("serializable read-only txn must not perform leader revision sync")
+			return nil
+		},
+	}
+
+	response, err := base.Txn(context.Background(), &etcdserverpb.TxnRequest{
+		Compare: []*etcdserverpb.Compare{{
+			Key: []byte("/compare"), Target: etcdserverpb.Compare_VALUE, Result: etcdserverpb.Compare_EQUAL,
+			TargetUnion: &etcdserverpb.Compare_Value{Value: []byte("checkpoint")},
+		}},
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/success"), Serializable: true},
+		}}},
+		Failure: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{Key: []byte("/failure"), Serializable: true},
+		}}},
+	})
+	require.NoError(t, err)
+	require.True(t, response.Succeeded)
+	require.True(t, shim.used)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	rangeResponse := response.Responses[0].GetResponseRange()
+	require.NotNil(t, rangeResponse)
+	require.Equal(t, int64(checkpoint.Revision), rangeResponse.Header.Revision)
+	require.Equal(t, []byte("checkpoint"), rangeResponse.Kvs[0].Value)
 }
 
 func TestSerializableRangeBypassesLeaderRevisionSync(t *testing.T) {

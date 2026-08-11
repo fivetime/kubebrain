@@ -583,6 +583,17 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		return nil, err
 	}
 	readOnly := txnIsReadonly(txn)
+	checkpointTxn := false
+	if readOnly && txnIsSerializable(txn) {
+		_, leadingFresh := s.peers.EpochAndLeadingFresh()
+		if !s.peers.IsLeader() || !leadingFresh {
+			if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
+				ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+				checkpointTxn = true
+				s.metricCli.EmitCounter("read.serializable_txn.checkpoint", 1)
+			}
+		}
+	}
 	// Match EtcdServer.Txn: a read-only transaction containing any
 	// non-serializable Range establishes its linearizable read barrier before
 	// authorization and execution. Besides preserving etcd's error ordering,
@@ -650,7 +661,9 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 			revision uint64
 			err      error
 		)
-		if txnIsSerializable(txn) {
+		if checkpointTxn {
+			revision, err = safeBackendRevision(ctx, s.backend)
+		} else if txnIsSerializable(txn) {
 			revision, err = s.serializableTxnRevision(ctx)
 		} else {
 			// SyncReadRevision above already established the linearizable
@@ -2097,23 +2110,26 @@ func (s *RPCServer) observeForwardedRevision(header *etcdserverpb.ResponseHeader
 	}
 }
 
-func safeBackendRevision(ctx context.Context, backend BackendShim) (uint64, error) {
-	currentRevision := backend.GetCurrentRevision()
+func safeBackendRevision(ctx context.Context, backendShim BackendShim) (uint64, error) {
+	if checkpoint, ok := backend.SerializableCheckpointFromContext(ctx); ok {
+		return checkpoint.Revision, nil
+	}
+	currentRevision := backendShim.GetCurrentRevision()
 	// Latest serializable reads may execute directly on a cold follower without
 	// a leader barrier. Recover the shared user watermark before consulting the
 	// compact lower bound; compaction can legitimately lag far behind the latest
 	// snapshot and therefore cannot identify the response header on its own.
 	if currentRevision == 0 {
-		durableRevision, err := backend.GetDurableRevision(ctx)
+		durableRevision, err := backendShim.GetDurableRevision(ctx)
 		if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
 			return 0, err
 		}
 		if err == nil && durableRevision > currentRevision {
 			currentRevision = durableRevision
-			backend.SetCurrentRevision(currentRevision)
+			backendShim.SetCurrentRevision(currentRevision)
 		}
 	}
-	compactRevision, err := backend.GetCompactRevision(ctx)
+	compactRevision, err := backendShim.GetCompactRevision(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -2123,10 +2139,10 @@ func safeBackendRevision(ctx context.Context, backend BackendShim) (uint64, erro
 	// normalized to etcd's initial revision 1.
 	if currentRevision == 0 && compactRevision == 0 {
 		currentRevision = 1
-		backend.SetCurrentRevision(currentRevision)
+		backendShim.SetCurrentRevision(currentRevision)
 	} else if compactRevision > currentRevision {
 		currentRevision = compactRevision
-		backend.SetCurrentRevision(currentRevision)
+		backendShim.SetCurrentRevision(currentRevision)
 	}
 	return currentRevision, nil
 }

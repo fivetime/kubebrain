@@ -230,7 +230,7 @@ func (b *backend) updateCompactRevCache(revision uint64) {
 }
 
 func (b *backend) safeCurrentRevision(ctx context.Context) (uint64, error) {
-	if checkpoint, ok := serializableCheckpointFromContext(ctx); ok {
+	if checkpoint, ok := SerializableCheckpointFromContext(ctx); ok {
 		return checkpoint.Revision, nil
 	}
 	currentRevision := b.tso.GetRevision()
