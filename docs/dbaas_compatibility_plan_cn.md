@@ -46168,6 +46168,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   metadata 但返回错误 body，备份仍 fail closed。大规模 artifact 的完整下载会增加 reconciliation RTO
   和 egress，生产超时必须按最大对象尺寸配置，不能为缩短恢复而跳过 digest。
 
+- A4351 固定 receipt 发布的 Object Lock 最终门禁，避免“内容正确”掩盖实际保留策略不足。新增
+  `TestConditionalUploadRejectsInsufficientRealS3Retention`：预置的 MinIO version 使用真实 artifact body、
+  file SHA-256、全部正式 metadata 和正确 COMPLIANCE mode，其中 metadata 声明请求的两小时 retain-until，
+  但 exact-version Object Lock API 实际只配置一小时。条件冲突后 Head identity/size、完整 Get digest 均
+  通过，`GetObjectRetention` 必须发现服务端权威期限不匹配并返回
+  `remote object retention does not match the requested policy`；receipt 不得生成，ListObjectVersions 仍只有
+  原 version、无 delete marker。2026-08-11 真实用例 4.28 秒通过且无资源残留。该项证明 metadata 中的
+  retention 字段只是绑定意图，不能替代对象存储的权威 lock state；生产 credential 必须具备读取 exact
+  version retention 的权限，权限缺失或 API 不可用均应 fail closed，不能降级为普通版本备份。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -251,6 +251,56 @@ func TestConditionalUploadRejectsMatchingMetadataCorruptRealS3Body(t *testing.T)
 	require.Empty(t, versions.DeleteMarkers)
 }
 
+func TestConditionalUploadRejectsInsufficientRealS3Retention(t *testing.T) {
+	directEndpoint, bucket, accessKey, secretKey := realObjectStoreEnv(t)
+	client := realS3Client(t, directEndpoint, accessKey, secretKey)
+	artifactPath := writeLargeCancellationArtifact(t)
+	artifact, err := backupfile.OpenVerified(artifactPath)
+	require.NoError(t, err)
+	defer artifact.Close()
+	body, err := os.ReadFile(artifact.Path())
+	require.NoError(t, err)
+	info, err := os.Stat(artifact.Path())
+	require.NoError(t, err)
+	checksum, artifactFileSHA256, err := fileSHA256(artifact.Path())
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	requestedRetention := now.Add(2 * time.Hour)
+	actualRetention := now.Add(time.Hour)
+	objectKey := "conflict/insufficient-retention.jsonl"
+	request := UploadRequest{
+		Input: artifactPath, Instance: "retention-integration", BackupID: "retention-1",
+		ObjectStoreID: "minio-integration", Bucket: bucket, ObjectKey: objectKey,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: requestedRetention.Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 300,
+		ReceiptOutput: filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+	metadata := artifactMetadata(request, artifact.Status(), artifactFileSHA256, info.Size(), requestedRetention)
+	original, err := client.PutObject(t.Context(), &s3.PutObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(objectKey), Body: bytes.NewReader(body),
+		ContentLength:             aws.Int64(info.Size()),
+		ChecksumAlgorithm:         types.ChecksumAlgorithmSha256,
+		ChecksumSHA256:            aws.String(checksum),
+		Metadata:                  metadata,
+		ObjectLockMode:            types.ObjectLockModeCompliance,
+		ObjectLockRetainUntilDate: aws.Time(actualRetention),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, aws.ToString(original.VersionId))
+
+	_, err = Upload(t.Context(), client, request)
+	require.ErrorContains(t, err, "remote object retention does not match the requested policy")
+	_, statErr := os.Stat(request.ReceiptOutput)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+	versions, err := client.ListObjectVersions(t.Context(), &s3.ListObjectVersionsInput{
+		Bucket: aws.String(bucket), Prefix: aws.String(objectKey),
+	})
+	require.NoError(t, err)
+	require.Len(t, versions.Versions, 1)
+	require.Equal(t, aws.ToString(original.VersionId), aws.ToString(versions.Versions[0].VersionId))
+	require.Empty(t, versions.DeleteMarkers)
+}
+
 func realObjectStoreEnv(t *testing.T) (string, string, string, string) {
 	t.Helper()
 	directEndpoint := os.Getenv("KUBEBRAIN_OBJECTSTORE_CANCEL_S3_ENDPOINT")

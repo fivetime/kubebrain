@@ -2453,6 +2453,13 @@ exact version 完整下载并重算 SHA-256，以 `remote object file SHA-256 mi
 完整 Get 计入对象存储带宽、费用与 Operation deadline；超时后保持待对账状态，禁止仅凭 ETag、metadata
 或 Content-Length 人工补写 receipt。
 
+2026-08-11 的 A4351 验证内容完整仍不代表合规保留已生效。真实 MinIO version 的 body、SHA-256、size、
+metadata 与 COMPLIANCE mode 均匹配请求，但服务端权威 retain-until 比 metadata 声明和 Operation 请求少
+一小时；Head 与完整 Get 通过后，`GetObjectRetention` 以 policy mismatch 阻止 receipt。真实用例 4.28 秒
+通过，远端无额外 version/delete marker。对象存储 IAM 必须允许 worker 对 receipt 指定 exact version
+读取 retention；403、缺失 retention 或期限/mode 不符都必须保持备份未验证，禁止手工把 metadata 当作
+Object Lock 生效证明。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell
