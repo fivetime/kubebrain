@@ -24,7 +24,8 @@
 - **P1** `--compatible-with-etcd` 默认改 **true**——原默认 false 时多副本部署漏配该 flag 会让 follower 拒写,clientv3 对 mutable RPC 不重试 → ~2/3 写持续失败而读自愈。非 etcd(brain-client)消费者显式关闭。
 - **P1** RangeStream 内部通道缓冲 1000→8(带 value 路径)——gate 默认开后这是 apiserver 冷启动默认路径,深缓冲=每流 30 万个带 value KV 的内存尖峰;浅缓冲让 gRPC 流控背压穿透到扫描。keysOnly(count-index rebuild)保留深缓冲。
 - **P2** 分区 worker 已流出块后禁止重试(`retriable()`)——重扫会重发 key 违反 disjoint-chunks 契约;现改为流以错误终止,客户端干净 relist。
-- **P2** RangeStream 收到 `Limit>0` 返回 Unimplemented——分区并行扫描无法全局截断,静默忽略会给"无错误的错答案"。
+- **P2** RangeStream 已支持 `Limit>0` 的全局截断，并在固定 revision 上返回与 unary Range 相同的
+  `Count/More`；自定义排序和 revision filters 按 etcd 3.7 契约返回 Unimplemented。
 - **P2** info 口注册 `GET /version`。
 - **P2** MemberList 的 ClientURLs 按 client 口 + 实际 TLS scheme 构造(原 `http://host:peerPort` 会把 AutoSync 客户端引向不服务 KV 的明文端口)。
 

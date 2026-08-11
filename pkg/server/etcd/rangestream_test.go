@@ -79,6 +79,12 @@ type revisionRecordingRangeStreamBackendShim struct {
 	revision uint64
 }
 
+type writeBeforeRangeStreamBackendShim struct {
+	BackendShim
+	before   func() error
+	revision uint64
+}
+
 type checkpointRangeStreamBackendShim struct {
 	*checkpointRangeBackendShim
 	used bool
@@ -88,7 +94,7 @@ func (b *checkpointRangeStreamBackendShim) RangeStreamChan(
 	ctx context.Context, _, _ []byte, revision uint64,
 ) (<-chan rangeStreamChunk, error) {
 	timestamp, ok := storage.SnapshotTimestampFromContext(ctx)
-	if !ok || timestamp != b.checkpoint.Timestamp || revision != 0 {
+	if !ok || timestamp != b.checkpoint.Timestamp || revision != b.checkpoint.Revision {
 		return nil, storage.ErrUnavailable
 	}
 	b.used = true
@@ -125,6 +131,16 @@ func (b *revisionRecordingRangeStreamBackendShim) RangeStreamChan(
 	ctx context.Context, start, end []byte, revision uint64,
 ) (<-chan rangeStreamChunk, error) {
 	b.revision = revision
+	return b.BackendShim.RangeStreamChan(ctx, start, end, revision)
+}
+
+func (b *writeBeforeRangeStreamBackendShim) RangeStreamChan(
+	ctx context.Context, start, end []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	b.revision = revision
+	if err := b.before(); err != nil {
+		return nil, err
+	}
 	return b.BackendShim.RangeStreamChan(ctx, start, end, revision)
 }
 
@@ -243,8 +259,8 @@ func TestRangeStreamNormalizesNegativeRevisionBeforeBackend(t *testing.T) {
 		wire int64
 		want uint64
 	}{
-		{name: "minus one", wire: -1, want: 0},
-		{name: "minimum int64", wire: math.MinInt64, want: 0},
+		{name: "minus one", wire: -1, want: uint64(put.Header.Revision)},
+		{name: "minimum int64", wire: math.MinInt64, want: uint64(put.Header.Revision)},
 		{name: "positive", wire: put.Header.Revision, want: uint64(put.Header.Revision)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,6 +272,45 @@ func TestRangeStreamNormalizesNegativeRevisionBeforeBackend(t *testing.T) {
 				"etcd revision <= 0 means latest; the backend must receive its revision 0 sentinel without unsigned wrap")
 		})
 	}
+}
+
+func TestRangeStreamPinsLatestBeforeBackendStreamStarts(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	seed, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte("/pin-before-open/a"), Value: []byte("seed"),
+	})
+	require.NoError(t, err)
+	underlying := server.backend
+	shim := &writeBeforeRangeStreamBackendShim{BackendShim: underlying}
+	shim.before = func() error {
+		_, writeErr := server.Put(ctx, &etcdserverpb.PutRequest{
+			Key: []byte("/pin-before-open/z"), Value: []byte("late"),
+		})
+		return writeErr
+	}
+	server.backend = shim
+
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/pin-before-open/"), RangeEnd: []byte("/pin-before-open0"),
+	}, stream))
+
+	require.Equal(t, uint64(seed.Header.Revision), shim.revision,
+		"latest RangeStream must pass its already observed header revision to the backend")
+	var keys []string
+	for _, chunk := range stream.sent {
+		for _, kv := range chunk.RangeResponse.Kvs {
+			keys = append(keys, string(kv.Key))
+		}
+	}
+	require.Equal(t, []string{"/pin-before-open/a"}, keys,
+		"a write after the start revision is observed must not leak into the stream")
+	final := stream.sent[len(stream.sent)-1].RangeResponse
+	require.Equal(t, seed.Header.Revision, final.Header.Revision)
+	require.EqualValues(t, 1, final.Count)
 }
 
 func TestRangeStreamEmptyRangeStillSendsHeaderRevision(t *testing.T) {

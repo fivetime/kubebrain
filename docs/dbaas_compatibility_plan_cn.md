@@ -46539,6 +46539,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   要在 PD control plane 故障期间继续容忍全新 stores，必须引入受签名/版本化的 out-of-band Region/store
   directory，而不能降低本门禁为猜测连接。
 
+- A4372 对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `rangeStream` 修复 latest RangeStream 的
+  起始快照竞态。上游首个 Range 同时取得数据与 revision，并立即把后续块固定到该 revision；KubeBrain
+  原先先用 `safeBackendRevision` 生成最终 header，随后仍向 backend 传 revision 0，使 backend 再次采样
+  current revision。若写入恰好落在两次采样之间，流会在旧 header 下包含新 KV，破坏 etcd 的单快照契约。
+  现在所有 wire revision <= 0（etcd 的 latest 语义）都会把已观测的 stream header revision 显式传给
+  backend；显式历史 revision 保持不变，serializable checkpoint 也固定到 checkpoint revision/timestamp。
+  `TestRangeStreamPinsLatestBeforeBackendStreamStarts` 在 header 采样后、backend stream 打开前确定性插入新键，
+  并证明返回仅含旧键、header/count 与固定 revision 一致；负 revision、流中并发写和 checkpoint 回归继续
+  覆盖另外三条快照路径。同步修正 `docs/k8s137-readiness.md` 中早于 Limit 实现的过期 Unimplemented 说明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

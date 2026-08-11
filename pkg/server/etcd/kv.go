@@ -309,6 +309,15 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	// on a quiet store, it no longer pins the stream to its start revision and
 	// can admit writes committed while a partitioned scan is in progress.
 	backendRevision := normalizeRangeRevision(r.Revision)
+	if backendRevision == 0 {
+		// Upstream pins a latest RangeStream to the revision returned by its
+		// first Range call. safeBackendRevision above is our equivalent start
+		// observation, so pass it explicitly to the backend. Leaving revision 0
+		// would make backend.RangeStream sample the revision a second time; a
+		// write between those two observations could then leak newer KVs under
+		// an older response header.
+		backendRevision = streamHeaderRevision
+	}
 	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
 	if err != nil {
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
