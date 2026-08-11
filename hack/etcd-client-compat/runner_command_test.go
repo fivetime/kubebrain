@@ -432,6 +432,23 @@ func TestBackendQuorumTiKVNetworkPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendQuorumTiKVCrossNodePartitionTargetsSelectedStoreNode(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-partition)`)
+	require.Contains(t, script, `--partition-tikv-member-cross-node`)
+	require.Contains(t, script, `partition_tikv_member cross-node`)
+	require.Contains(t, script, `local placement="${1:-any}"`)
+	require.Contains(t, script, `expected 3 distinct TiKV nodes`)
+	require.Contains(t, script, `KIND_NODE_CONTAINER="$tikv_node"`)
+	require.Contains(t, script, `Cross-node TiKV partition targets $tikv_pod on $KIND_NODE_CONTAINER`)
+	require.Contains(t, script, `partition_tag="kubebrain-tikv-partition-${tikv_pod}-$$"`)
+	require.Contains(t, script, `TiKV network partition changed store state`)
+	require.Contains(t, script, `TiKV network partition recovered store`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestBackendTiKVQuorumLossHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)

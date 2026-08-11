@@ -46590,6 +46590,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   bridge 上跨 node 的 outbound-only PD leader 分区证据，但仍不等价于独立宿主/AZ 的真实延迟、带宽、
   conntrack/NAT、underlay failure 或长时间分区；这些预生产故障矩阵继续开放。
 
+- A4376 将 A4197 的 leader-heavy TiKV member 双向分区门禁从固定 node 推进到 A4375 的三 worker
+  拓扑。新增 `tikv-cross-node-partition` placement：仍从同一 TidbCluster status 快照选择
+  `state=Up && leaderCount>0` 中 leaderCount 最大的 store，且保留 `Up -> non-Up -> Up` 强 oracle；在
+  写规则前另外要求三个 TiKV Pod 精确映射到三个不同 node，再把目标 Pod 的 `.spec.nodeName` 绑定为
+  唯一 privileged node container。规则只在该 worker 的 FORWARD 链按目标 Pod source/destination IP
+  双向 DROP，并继续由 PID comment、EXIT/INT/TERM trap、精确删除和反查保证可恢复；共宿、未知 target
+  node、非法 container 或状态未转换均 fail closed。原 `tikv-network-partition` 单 node 行为保持不变。
+  2026-08-11 disposable `kubebrain-tikv-cross` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain 和 7379/7380 端口上连续三轮通过。首轮选择
+  `kb-tikv-2@kubebrain-tikv-cross-worker3`，明确经历 `Up -> Disconnected -> Up`，76.09 秒内完成 419 次
+  Put/Txn/Get；第二轮因 Region leader 重分布选择 `kb-tikv-1@worker2`，77.20 秒内完成 1431 次；第三轮
+  再选择 `kb-tikv-2@worker3`，75.61 秒内完成 2175 次。三轮恢复后逐键复读、TiDBCluster Ready 和
+  node 规则清理均通过。本项关闭 kind bridge 上单个 leader-heavy TiKV store 的跨 node 分区证据；两个
+  跨 node store 的 quorum loss、独立宿主/AZ、长分区以及 latency/bandwidth/conntrack/underlay 组合故障
+  仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
