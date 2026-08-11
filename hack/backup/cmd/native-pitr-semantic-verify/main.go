@@ -1,5 +1,5 @@
 // Command native-pitr-semantic-verify proves etcd behavior after a bounded
-// native full restore. It deliberately cannot attest log replay or PITR.
+// native full restore or plan-bound log replay and fence handoff.
 package main
 
 import (
@@ -21,22 +21,31 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/semanticverify"
 	"github.com/kubewharf/kubebrain/hack/internal/etcdutil"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
+	pingcaplog "github.com/pingcap/log"
 	pd "github.com/tikv/pd/client"
+	"go.uber.org/zap/zapcore"
 )
 
 const maxInputBytes = 4 << 20
 
 type options struct {
-	plan, full, restore, witness, probePrefix, pdAddrs, ca, cert, key string
-	timeout                                                           time.Duration
+	plan, full, restore, replay, handoff, witness string
+	probePrefix, pdAddrs, ca, cert, key           string
+	timeout                                       time.Duration
 }
 
 func main() {
+	if err := configurePingCAPLogging(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	var o options
 	flag.StringVar(&o.plan, "plan", "", "exact native PITR restore plan")
 	flag.StringVar(&o.full, "full-snapshot", "", "exact full snapshot receipt")
 	flag.StringVar(&o.restore, "full-restore", "", "exact full restore execution receipt")
-	flag.StringVar(&o.witness, "witness", "", "full-keyspace kubebrain.logical.v2 witness captured before backup")
+	flag.StringVar(&o.replay, "log-replay", "", "exact log replay receipt (required when plan includes logs)")
+	flag.StringVar(&o.handoff, "fence-handoff", "", "exact fence handoff receipt (required when plan includes logs)")
+	flag.StringVar(&o.witness, "witness", "", "full-keyspace kubebrain.logical.v2 witness captured at the plan restore point")
 	flag.StringVar(&o.probePrefix, "probe-prefix", "/kubebrain-native-restore-probe", "non-production prefix for the write/watch probe")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "target-ca", "", "target PD CA file")
@@ -48,6 +57,16 @@ func main() {
 		fmt.Fprintln(os.Stderr, "native PITR semantic verify:", err)
 		os.Exit(1)
 	}
+}
+
+func configurePingCAPLogging() error {
+	sink := zapcore.AddSync(os.Stderr)
+	logger, props, err := pingcaplog.InitLoggerWithWriteSyncer(&pingcaplog.Config{Level: "error", Format: "text"}, sink, sink)
+	if err != nil {
+		return fmt.Errorf("configure PingCAP logging: %w", err)
+	}
+	pingcaplog.ReplaceGlobals(logger, props)
+	return nil
 }
 
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
@@ -87,8 +106,30 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	if plan.RestoreTS != plan.Full.BackupTS {
-		return errors.New("full semantic verifier refuses a plan requiring log replay")
+	withLogs := plan.RestoreTS > plan.Full.BackupTS
+	if withLogs != (o.replay != "" && o.handoff != "") {
+		return errors.New("log-replay and fence-handoff must both be supplied exactly when the plan requires log replay")
+	}
+	var replayBytes, handoffBytes []byte
+	var replay nativepitr.LogReplayExecutionReceipt
+	var handoff nativepitr.RestorationFenceHandoffReceipt
+	if withLogs {
+		replayBytes, err = readStable(o.replay)
+		if err != nil {
+			return err
+		}
+		replay, err = nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
+		if err != nil {
+			return err
+		}
+		handoffBytes, err = readStable(o.handoff)
+		if err != nil {
+			return err
+		}
+		handoff, err = nativepitr.DecodeRestorationFenceHandoff(bytes.NewReader(handoffBytes))
+		if err != nil {
+			return err
+		}
 	}
 	witnessSHA, err := fileDigest(o.witness)
 	if err != nil {
@@ -145,6 +186,14 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err := verifyStable(o.restore, restoreBytes); err != nil {
 		return err
 	}
+	if withLogs {
+		if err := verifyStable(o.replay, replayBytes); err != nil {
+			return err
+		}
+		if err := verifyStable(o.handoff, handoffBytes); err != nil {
+			return err
+		}
+	}
 	postWitnessSHA, err := fileDigest(o.witness)
 	if err != nil {
 		return err
@@ -152,12 +201,20 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if postWitnessSHA != witnessSHA {
 		return errors.New("semantic witness changed during verification")
 	}
-	receipt, err := nativepitr.BuildFullSemanticVerification(plan, full, restore, verified.Status(), nativepitr.FullSemanticVerificationInput{PlanSHA256: digest(planBytes), FullSnapshotSHA256: digest(fullBytes), FullRestoreSHA256: digest(restoreBytes), WitnessFileSHA256: witnessSHA, HistoricalHeaderRevision: observation.HistoricalHeaderRevision, CurrentHeaderRevision: observation.CurrentHeaderRevision, ProbePutRevision: observation.ProbePutRevision, ProbeDeleteRevision: observation.ProbeDeleteRevision, HistoricalExact: observation.HistoricalExact, CurrentExact: observation.CurrentExact, LeaseIdentityExact: observation.LeaseIdentityExact, WatchProbeSucceeded: observation.WatchProbeSucceeded, TargetProbeHistoryExact: true, VerifiedAtUnix: now().UTC().Unix()})
+	enc := json.NewEncoder(out)
+	enc.SetEscapeHTML(false)
+	base := nativepitr.FullSemanticVerificationInput{PlanSHA256: digest(planBytes), FullSnapshotSHA256: digest(fullBytes), FullRestoreSHA256: digest(restoreBytes), WitnessFileSHA256: witnessSHA, HistoricalHeaderRevision: observation.HistoricalHeaderRevision, CurrentHeaderRevision: observation.CurrentHeaderRevision, ProbePutRevision: observation.ProbePutRevision, ProbeDeleteRevision: observation.ProbeDeleteRevision, HistoricalExact: observation.HistoricalExact, CurrentExact: observation.CurrentExact, LeaseIdentityExact: observation.LeaseIdentityExact, WatchProbeSucceeded: observation.WatchProbeSucceeded, TargetProbeHistoryExact: true, VerifiedAtUnix: now().UTC().Unix()}
+	if withLogs {
+		receipt, err := nativepitr.BuildPITRSemanticVerification(plan, full, restore, replay, handoff, verified.Status(), nativepitr.PITRSemanticVerificationInput{FullSemanticVerificationInput: base, LogReplaySHA256: digest(replayBytes), FenceHandoffSHA256: digest(handoffBytes)})
+		if err != nil {
+			return err
+		}
+		return enc.Encode(receipt)
+	}
+	receipt, err := nativepitr.BuildFullSemanticVerification(plan, full, restore, verified.Status(), base)
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(out)
-	enc.SetEscapeHTML(false)
 	return enc.Encode(receipt)
 }
 

@@ -1,4 +1,4 @@
-// Command native-pitr-restoration-fence atomically acquires or verifies the
+// Command native-pitr-restoration-fence atomically acquires, verifies, or releases the
 // persistent KubeBrain writer gate for one approved native PITR plan.
 package main
 
@@ -28,9 +28,9 @@ import (
 const maxReceiptBytes = 4 << 20
 
 type options struct {
-	action, plan, receipt, operationID, pdAddrs string
-	ca, cert, key, approve                      string
-	timeout                                     time.Duration
+	action, plan, receipt, replayReceipt, operationID, pdAddrs string
+	ca, cert, key, approve                                     string
+	timeout                                                    time.Duration
 }
 
 func main() {
@@ -39,9 +39,10 @@ func main() {
 		os.Exit(1)
 	}
 	var o options
-	flag.StringVar(&o.action, "action", "acquire", "acquire or verify")
+	flag.StringVar(&o.action, "action", "acquire", "acquire, verify, or release")
 	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v10 receipt")
-	flag.StringVar(&o.receipt, "fence-receipt", "", "exact fence receipt (required for verify)")
+	flag.StringVar(&o.receipt, "fence-receipt", "", "exact fence receipt (required for verify/release)")
+	flag.StringVar(&o.replayReceipt, "log-replay-receipt", "", "exact native-pitr-log-replay.v2 receipt (required for release)")
 	flag.StringVar(&o.operationID, "operation-id", "", "immutable restore operation ID (required for acquire)")
 	flag.StringVar(&o.pdAddrs, "target-pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "target-ca", "", "target PD CA file")
@@ -70,7 +71,7 @@ func configurePingCAPLogging() error {
 }
 
 func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
-	if o.plan == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 || (o.action != "acquire" && o.action != "verify") {
+	if o.plan == "" || o.pdAddrs == "" || o.approve == "" || o.timeout <= 0 || (o.action != "acquire" && o.action != "verify" && o.action != "release") {
 		return errors.New("valid action, plan, target-pd-addrs, approval, and positive timeout are required")
 	}
 	if (o.ca == "") != (o.cert == "") || (o.ca == "") != (o.key == "") {
@@ -114,8 +115,8 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 func operate(ctx context.Context, o options, plan nativepitr.Plan, planSHA string, store storage.KvStorage, out io.Writer, now func() time.Time) error {
 	switch o.action {
 	case "acquire":
-		if o.operationID == "" || o.receipt != "" {
-			return errors.New("acquire requires operation-id and forbids fence-receipt")
+		if o.operationID == "" || o.receipt != "" || o.replayReceipt != "" {
+			return errors.New("acquire requires operation-id and forbids receipt inputs")
 		}
 		provisional, token, err := nativepitr.BuildRestorationFenceReceipt(plan, planSHA, o.operationID, now().Unix(), false)
 		if err != nil {
@@ -131,8 +132,8 @@ func operate(ctx context.Context, o options, plan nativepitr.Plan, planSHA strin
 		}
 		return json.NewEncoder(out).Encode(receipt)
 	case "verify":
-		if o.receipt == "" || o.operationID != "" {
-			return errors.New("verify requires fence-receipt and forbids operation-id")
+		if o.receipt == "" || o.operationID != "" || o.replayReceipt != "" {
+			return errors.New("verify requires fence-receipt and forbids operation-id and log-replay-receipt")
 		}
 		b, err := readBounded(o.receipt)
 		if err != nil {
@@ -154,9 +155,81 @@ func operate(ctx context.Context, o options, plan nativepitr.Plan, planSHA strin
 		}
 		_, err = out.Write(b)
 		return err
+	case "release":
+		if o.receipt == "" || o.replayReceipt == "" || o.operationID != "" {
+			return errors.New("release requires fence-receipt and log-replay-receipt and forbids operation-id")
+		}
+		fenceBytes, err := readBounded(o.receipt)
+		if err != nil {
+			return err
+		}
+		fence, err := nativepitr.DecodeRestorationFenceReceipt(bytes.NewReader(fenceBytes))
+		if err != nil {
+			return err
+		}
+		replayBytes, err := readBounded(o.replayReceipt)
+		if err != nil {
+			return err
+		}
+		replay, err := nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
+		if err != nil {
+			return err
+		}
+		fenceSHA, replaySHA := digest(fenceBytes), digest(replayBytes)
+		if fence.PlanSHA256 != planSHA || fence.TargetClusterID != plan.Target.ClusterID || fence.Keyspace != plan.Source.Keyspace ||
+			replay.PlanSHA256 != planSHA || replay.TargetClusterID != plan.Target.ClusterID || replay.Keyspace != plan.Source.Keyspace ||
+			replay.RestorationFenceReceiptSHA256 != fenceSHA {
+			return errors.New("release receipts do not match approved plan and each other")
+		}
+		token, err := fence.Token()
+		if err != nil {
+			return err
+		}
+		if err := verifyDigestStable(o.plan, planSHA); err != nil {
+			return err
+		}
+		if err := verifyStable(o.receipt, fenceBytes); err != nil {
+			return err
+		}
+		if err := verifyStable(o.replayReceipt, replayBytes); err != nil {
+			return err
+		}
+		if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, token); err != nil {
+			return err
+		}
+		if err := restorationfence.Release(ctx, store, fence.CoordinationPrefix, token); err != nil {
+			return err
+		}
+		handoff, err := nativepitr.BuildRestorationFenceHandoff(plan, planSHA, fence, fenceSHA, replay, replaySHA, now().Unix())
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(out).Encode(handoff)
 	default:
 		panic("validated action")
 	}
+}
+
+func verifyStable(path string, expected []byte) error {
+	got, err := readBounded(path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, expected) {
+		return fmt.Errorf("input %q changed during fence operation", path)
+	}
+	return nil
+}
+
+func verifyDigestStable(path, expectedSHA string) error {
+	got, err := readBounded(path)
+	if err != nil {
+		return err
+	}
+	if digest(got) != expectedSHA {
+		return fmt.Errorf("input %q changed during fence operation", path)
+	}
+	return nil
 }
 
 func readBounded(path string) ([]byte, error) {

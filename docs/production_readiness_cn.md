@@ -2118,6 +2118,24 @@ token 逐一验证 control + 256 shards，并再次确认 plan/full/log/fence �
 校验需要 KubeBrain 选主，而 closed fence 会有意阻止选主；在受控 release/启动/验证交接或外部 admission
 fence 被 receipt 化之前，该阶段仍不能升级为完整 PITR 证明。
 
+日志回放成功后不得直接手工删除 fence key。必须用 exact replay receipt 驱动原子交接：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-restoration-fence \
+  --action=release \
+  --plan=/evidence/native-pitr-restore-plan.json \
+  --fence-receipt=/evidence/native-pitr-restoration-fence.json \
+  --log-replay-receipt=/evidence/native-pitr-log-replay.json \
+  --target-pd-addrs="$TARGET_PD_ADDRS" \
+  --approve-plan-sha256="$PLAN_SHA256" \
+  > /evidence/native-pitr-restoration-fence-handoff.json
+```
+
+命令先复核 exact plan/fence/replay 三条 SHA-256 绑定及 live target cluster ID，再确认 257 个键仍由原 token
+持有；输入稳定性复核全部通过后才以单一 TiKV transaction CAS 为 `open`，并逐键复读。成功输出
+`kubebrain.native-pitr-restoration-fence-handoff.v1`。foreign/partial owner、输入漂移或任一 CAS 失败均不得
+开放部分 key 或签发 handoff receipt。
+
 2026-08-11 已通过 `hack/backup/run-native-pitr-full-restore-integration.sh` 完成隔离真实演练：脚本启动
 两套 cluster ID 不同、数据目录独立的 PD/TiKV v7.5.1 集群及当前源码构建的 source/target KubeBrain。
 source 通过真实 etcd API 写入一个 600 秒租约键和一个普通键，冻结 writer 后生成完整 `/` logical.v2
@@ -2163,6 +2181,14 @@ go run ./hack/backup/cmd/native-pitr-semantic-verify \
   > /evidence/native-pitr-full-semantic.json
 ```
 
+若 plan 包含日志回放，`WITNESS_FILE` 必须改为 source 在目标 restore TSO 后冻结写入时生成的完整 `/`
+witness，并额外传入：
+
+```shell
+  --log-replay=/evidence/native-pitr-log-replay.json \
+  --fence-handoff=/evidence/native-pitr-restoration-fence-handoff.json
+```
+
 命令直接向 target PD 复核 live cluster ID 与 plan/restore receipt 一致，再在 witness revision 与当前
 revision 分别逐 key 比较 value、create/mod revision、version 和 lease；逐 lease 比较 identity、有效
 TTL、granted TTL 与排序后的 attached keys；最后执行带 lease 的条件 Put、线性读、Watch PUT/DELETE、
@@ -2174,6 +2200,12 @@ endpoint 行为和 target 物理集群绑定，避免“PD 对了但 endpoint �
 语义，固定 `log_replay_validated=false`、`pitr_complete=false`；当前 full plan 尚未在备份前绑定 witness
 摘要，因此生产流程还必须增加“冻结写入→witness→full backup”的不可分割控制面收据，不能仅凭手工
 文件顺序把 writer fence 视为已证明。
+
+日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay 与 handoff receipt，
+并记录 `replay_write_fence_proven=true`、`fence_handoff_proven=true`、
+`post_restore_semantic_validated=true`。由于固定 BR 的 whole-cluster full import 窗口仍没有外部 durable
+admission fence，收据明确保持 `target_full_import_fence_proven=false`、`pitr_complete=false`；该分层字段
+防止用回放和后置语义成功掩盖全量导入期间的 writer 竞态。
 
 arbitrary-range task 的安全创建入口现为：
 

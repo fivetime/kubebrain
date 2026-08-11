@@ -45792,6 +45792,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   又会阻止后置语义验证所需的 KubeBrain 选主，因此下一阶段必须设计 receipt 化的受控交接或外部 durable
   admission fence，不能用本项把总 PITR 门禁改成 true。
 
+- A4320 补齐 replay fence 到 post-restore semantic verification 的 receipt 化交接。共享
+  `restorationfence.Release` 现在在 exact-token 257-key CAS transaction 后逐键证明全部为 `open`，foreign
+  shard 回归证明失败提交不会提前开放 control key。`native-pitr-restoration-fence --action=release` 强制消费
+  exact plan、fence v1 和 replay v2 receipt，先复核 immutable SHA-256 链及 live target cluster ID，再原子
+  release 并输出 `kubebrain.native-pitr-restoration-fence-handoff.v1`；输入稳定性复核位于 release 前，避免
+  “已开放但因输入漂移无收据”的失败副作用。`native-pitr-semantic-verify` 不再把 log plan 一概拒绝，而是
+  强制消费 replay + handoff，继续按 etcd 可观察合同逐 key 核对历史/current revision、value、version、
+  lease identity/attached keys，执行条件 Txn 与 PUT/DELETE Watch，并直连 plan-bound target TiKV 核对探针
+  物理历史。成功的 `kubebrain.native-pitr-semantic-verify.v1` 记录 replay fence、handoff 和 post-semantic 均
+  已证明，但明确保留 `target_full_import_fence_proven=false`、`pitr_complete=false`。真实
+  `TestNativeLogReplayRealBR` 已实际调用 acquire、replay、release/handoff、semantic 四个 CLI，在两套独立
+  PD/TiKV、MinIO 和 pinned BR v7.5.1 上通过。该闭环消除了手工 release 与内部 builder 伪证据，但仍不能
+  覆盖 whole-cluster full import 窗口；下一项继续实现外部 durable admission fence。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

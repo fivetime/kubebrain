@@ -35,6 +35,7 @@ func TestAcquireVerifyReleaseRestorationFence(t *testing.T) {
 	_, err = Acquire(ctx, store, "/kubebrain-internal/ks-a1001", other)
 	require.ErrorContains(t, err, "held by another operation")
 	require.NoError(t, Release(ctx, store, "/kubebrain-internal/ks-a1001", token))
+	require.NoError(t, VerifyOpen(ctx, store, "/kubebrain-internal/ks-a1001"))
 	_, err = Acquire(ctx, store, "/kubebrain-internal/ks-a1001", other)
 	require.NoError(t, err)
 }
@@ -76,4 +77,27 @@ func TestAcquireRejectsPartiallyMatchingFence(t *testing.T) {
 	value, err := store.Get(ctx, ShardKey(prefix, 0))
 	require.NoError(t, err)
 	require.Equal(t, []byte(Open), value)
+}
+
+func TestReleaseRejectsForeignShardWithoutOpeningAnyKey(t *testing.T) {
+	store := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	ctx := context.Background()
+	prefix := "/kubebrain-internal/ks-a1001"
+	token := testToken(t, "restore-1")
+	_, err := Acquire(ctx, store, prefix, token)
+	require.NoError(t, err)
+	foreign, err := testToken(t, "restore-2").Bytes()
+	require.NoError(t, err)
+	batch := store.BeginBatchWrite()
+	batch.Put(ShardKey(prefix, 17), foreign, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	err = Release(ctx, store, prefix, token)
+	require.Error(t, err)
+	control, err := store.Get(ctx, ControlKey(prefix))
+	require.NoError(t, err)
+	want, err := token.Bytes()
+	require.NoError(t, err)
+	require.Equal(t, want, control, "failed atomic release must not open the control key")
 }

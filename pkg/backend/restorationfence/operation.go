@@ -130,6 +130,17 @@ func Verify(ctx context.Context, store storage.KvStorage, prefix string, token T
 	return nil
 }
 
+// VerifyOpen proves that every control and writer key is initialized and open.
+func VerifyOpen(ctx context.Context, store storage.KvStorage, prefix string) error {
+	for _, key := range AllKeys(prefix) {
+		value, err := store.Get(ctx, key)
+		if err != nil || !bytes.Equal(value, []byte(Open)) {
+			return fmt.Errorf("restoration fence is not open at %q", key)
+		}
+	}
+	return nil
+}
+
 // Release atomically reopens every key only for its exact current owner.
 func Release(ctx context.Context, store storage.KvStorage, prefix string, token Token) error {
 	tokenBytes, err := token.Bytes()
@@ -143,5 +154,5 @@ func Release(ctx context.Context, store storage.KvStorage, prefix string, token 
 	if err := batch.Commit(ctx); err != nil {
 		return fmt.Errorf("atomically release restoration fence: %w", err)
 	}
-	return nil
+	return VerifyOpen(ctx, store, prefix)
 }
