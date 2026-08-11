@@ -2478,6 +2478,16 @@ MemberList 在 PD quorum 丢失期间可用。生产发现/探活可使用 seria
 或启用认证的调用方不能把它当成 quorum health probe；应继续使用默认 MemberList、Status/readiness 和
 告警组合判断控制面可写性。
 
+2026-08-11 的 A4354 将上述门禁升级为 auth enabled：故障前通过官方 client 创建并认证 root，连续两轮
+双 PD ENOSPC 期间携带该 token 的 `WithSerializable()` MemberList 仍从本节点完整 applied auth snapshot
+验证 HMAC、expiry、user 和 token generation 后返回；默认 MemberList 继续依赖 PD quorum。最终代码整例
+58.45 秒（此前一轮 61.36 秒）通过，恢复后认证写、已确认写与不确定写对账均保持正确。只有 snapshot 和 signing key 都已完整加载时
+才允许本地验证；冷启动、cache invalidation、lazy generation 尚未观察等不完整状态会回退持久存储并在
+PD 不可用时 fail closed。serializable 的 auth view 和 upstream 隔离 member 一样可能落后，因此权限撤销、
+密码轮换、用户删除后的强制即时生效检查必须使用默认 linearizable 调用并监控 quorum；所有本机成功
+auth mutation 会先使 local token snapshot 失效，旧 token 不会继续走本地路径。不能把
+serializable MemberList 当作“最新权限已传播”的证明。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

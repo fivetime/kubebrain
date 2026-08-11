@@ -198,6 +198,7 @@ func New(backend b.Backend, metricCli metrics.Metrics, peers service.PeerService
 	}
 	server.auth = newAuthManager(server.backend)
 	server.tokens = newAuthTokenManager(server.backend)
+	server.auth.repo.afterMutation = server.tokens.snapshots.invalidate
 	// The lease subsystem borrows its deps from server (backend/peers/metrics),
 	// so it is wired after server exists and reads them live through server.
 	server.leaseManager = newLeaseManager(server, time.Now().UnixNano())

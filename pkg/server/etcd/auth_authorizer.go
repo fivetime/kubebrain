@@ -66,6 +66,43 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	}, nil
 }
 
+// authCallerFromCachedContext authenticates against this member's already
+// observed applied auth state. ok=false means that state is incomplete and the
+// caller must use authCallerFromContext; it never means authentication passed.
+func (s *RPCServer) authCallerFromCachedContext(ctx context.Context) (*authCaller, error, bool) {
+	snapshot, ok := s.tokens.snapshots.cachedSnapshot()
+	if !ok {
+		return nil, nil, false
+	}
+	if !snapshot.Config.Enabled {
+		return nil, nil, true
+	}
+	credential, ok := authCredentialFromContext(ctx)
+	if !ok {
+		caller, err := s.authCallerFromTLS(ctx, snapshot)
+		return caller, err, true
+	}
+	token, err := authTokenFromCredential(credential)
+	if err != nil {
+		return nil, err, true
+	}
+	claims, err, complete := s.tokens.verifyCached(token, snapshot)
+	if !complete {
+		return nil, nil, false
+	}
+	if err != nil {
+		return nil, err, true
+	}
+	revision := snapshot.Config.Revision
+	if s.tokens.jwt != nil {
+		revision = claims.Revision
+	}
+	return &authCaller{
+		username: claims.Username, revision: revision,
+		snapshot: snapshot, forwardToken: credential,
+	}, nil, true
+}
+
 // validateEtcdApplyAuthInfo mirrors EtcdServer.processInternalRaftRequestOnce's
 // AuthInfoFromCtx step. Missing credentials are represented by a nil AuthInfo
 // upstream and reach the apply-time authorization wrapper; malformed or invalid

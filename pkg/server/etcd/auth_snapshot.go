@@ -24,10 +24,10 @@ func (c *authSnapshotCache) invalidate() {
 	c.mu.Unlock()
 }
 
-func (c *authSnapshotCache) cachedDisabled() bool {
+func (c *authSnapshotCache) cachedSnapshot() (*authSnapshot, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.snapshot != nil && !c.snapshot.Config.Enabled
+	return c.snapshot, c.snapshot != nil
 }
 
 func (c *authSnapshotCache) current(ctx context.Context) (*authSnapshot, error) {

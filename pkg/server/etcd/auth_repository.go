@@ -124,7 +124,10 @@ type authSnapshot struct {
 	TokenGenerations map[string]*authpb.User
 }
 
-type authRepository struct{ backend BackendShim }
+type authRepository struct {
+	backend       BackendShim
+	afterMutation func()
+}
 
 func newAuthRepository(backend BackendShim) *authRepository {
 	return &authRepository{backend: backend}
@@ -290,6 +293,9 @@ func (r *authRepository) enable(ctx context.Context, expected authConfig) (authC
 	if err := r.backend.InternalCAS(ctx, []backend.InternalCASOp{op}); err != nil {
 		return authConfig{}, err
 	}
+	if r.afterMutation != nil {
+		r.afterMutation()
+	}
 	return next, nil
 }
 
@@ -323,6 +329,9 @@ func (r *authRepository) mutateConfig(ctx context.Context, expected authConfig, 
 	}
 	if err := r.backend.InternalCAS(ctx, ops); err != nil {
 		return authConfig{}, err
+	}
+	if r.afterMutation != nil {
+		r.afterMutation()
 	}
 	return next, nil
 }

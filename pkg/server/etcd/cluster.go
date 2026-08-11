@@ -50,8 +50,13 @@ func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberList
 		// applied state even without quorum. Auth-disabled is by far the common
 		// topology-discovery path; once that state has been observed locally,
 		// do not turn this RPC back into a PD read through auth config refresh.
-		// A cached enabled state still takes the full credential path below.
-		if s.tokens.snapshots.cachedDisabled() {
+		// An enabled snapshot is accepted only after the complete local token,
+		// JWT, or client-certificate credential path validates it; an incomplete
+		// applied state falls through to the authoritative storage-backed path.
+		if _, err, complete := s.authCallerFromCachedContext(ctx); complete {
+			if err != nil {
+				return nil, err
+			}
 			return s.memberListResponse(s.membersSnapshot()), nil
 		}
 	}

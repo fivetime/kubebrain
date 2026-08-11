@@ -46204,6 +46204,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   丢失时可用；后续若要扩大该可用性，必须先实现不弱化 AuthEnable/credential fence 的本地 applied
   auth state，而不能复用 stale disabled 快照绕过认证。
 
+- A4354 关闭 A4353 明确保留的 auth-enabled serializable MemberList quorum-loss 缺口，同时保持
+  fail-closed。对照 upstream `EtcdServer.MemberList` 使用成员本地 applied auth store 的顺序：KubeBrain
+  新增 `authCallerFromCachedContext`，只在本节点已经完整加载 auth snapshot 时进入本地认证；simple token
+  还必须已有完整 32-byte signing key、有效 HMAC/时间窗、用户与 per-user generation，JWT 与 client-cert
+  沿用各自本地验证契约。首次成功创建 signing key 现在也原子写入进程缓存，修复此前只有“从存储读取
+  已存在 key”才缓存的不对称。任何 snapshot/key 缺失、generation-bearing token 对应 generation 尚未
+  applied 的情况都返回 incomplete 并回退正常 PD-backed 路径；PD 不可用时因此失败，不能把缓存 miss
+  推断成认证成功。畸形 token 和匿名 auth-enabled 请求则由完整本地状态确定性返回
+  `InvalidAuthToken`/`UserEmpty`。确定性测试同时切断 auth config 与 signing-key backend read，验证合法
+  token 成功、匿名/篡改凭据拒绝、主动 invalidate 后合法 token 也回退并以原存储错误 fail closed；官方
+  client/v3 测试改为 `Username=alice`/`Password=secret` 后再注入 read-barrier 故障，锁定
+  `WithSerializable()` 成功与默认 MemberList caller deadline。真实三 PD/三 TiKV 门禁在故障前创建 root、
+  启用 auth 并让官方 client 获取 token，随后连续两轮填满两个 PD；每轮 authenticated serializable
+  MemberList 返回静态成员，linearizable 返回 `Unavailable`/`DeadlineExceeded`，恢复后同一认证 client
+  的写入与 acknowledged/ambiguous reconciliation 全部通过，最终代码真实整例 58.45 秒（此前一轮
+  61.36 秒）且无资源残留。这里的“本地
+  applied”与 upstream serializable 一样允许成员暂时滞后；所有成功 auth config CAS 统一触发 token
+  snapshot invalidation，本机密码变更测试证明旧 local state 不会继续使用；
+  而未完整观察的状态绝不会部分启用。需要最新 auth revision 的安全决策仍必须走 linearizable RPC。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

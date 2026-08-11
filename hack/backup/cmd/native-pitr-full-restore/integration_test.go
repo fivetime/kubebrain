@@ -581,7 +581,23 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	const endpoint = "127.0.0.1:45379"
 	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "two-pd-enospc", "two-pd-enospc-integration")
 	defer server.stop(t)
-	client := waitForEndpoint(t, ctx, endpoint, server)
+	bootstrap := waitForEndpoint(t, ctx, endpoint, server)
+	_, err = bootstrap.UserAdd(ctx, "root", "root-secret")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "root")
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "root", "root")
+	require.NoError(t, err)
+	_, err = bootstrap.AuthEnable(ctx)
+	require.NoError(t, err)
+	require.NoError(t, bootstrap.Close())
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints:   []string{endpoint},
+		DialTimeout: time.Second,
+		Username:    "root",
+		Password:    "root-secret",
+	})
+	require.NoError(t, err)
 	defer client.Close()
 	_, err = client.Put(ctx, "before", "durable-before-pd-quorum-loss")
 	require.NoError(t, err)

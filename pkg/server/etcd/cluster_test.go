@@ -743,6 +743,39 @@ func TestMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T) {
 	}
 }
 
+func TestMemberListSerializableAuthenticatesFromLocalAppliedState(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+
+	storageErr := errors.New("PD quorum unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend,
+		err:         storageErr,
+	}
+	server.tokens.repo.backend = &authSigningKeyReadErrorBackend{
+		BackendShim: server.backend,
+		err:         storageErr,
+	}
+
+	response, err := server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{})
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Members)
+
+	_, err = server.MemberList(context.Background(), &etcdserverpb.MemberListRequest{})
+	requireClusterAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
+
+	tamperedCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, "not-a-valid-token",
+	))
+	_, err = server.MemberList(tamperedCtx, &etcdserverpb.MemberListRequest{})
+	requireClusterAuthError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
+
+	require.NoError(t, server.auth.userChangePassword(context.Background(), "alice", "changed-secret", ""))
+	_, err = server.MemberList(aliceCtx, &etcdserverpb.MemberListRequest{})
+	require.ErrorIs(t, err, storageErr, "a local auth mutation must invalidate applied state and fail closed")
+}
+
 func TestMemberListLinearizableHeaderRevisionMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

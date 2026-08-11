@@ -140,18 +140,12 @@ func TestRawGRPCMemberListLinearizableBarrierErrors(t *testing.T) {
 func TestClientMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	setupAuthKVUser(t, server)
 	var barriers atomic.Int32
-	server.peers = testPeerService{
-		isLeader: true,
-		syncReadFn: func(ctx context.Context) error {
-			barriers.Add(1)
-			<-ctx.Done()
-			return ctx.Err()
-		},
-	}
 
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	etcdserverpb.RegisterClusterServer(grpcServer, server)
+	etcdserverpb.RegisterAuthServer(grpcServer, server)
 	listener := bufconn.Listen(1 << 20)
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
@@ -159,6 +153,8 @@ func TestClientMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{"bufnet"},
 		DialTimeout: time.Second,
+		Username:    "alice",
+		Password:    "secret",
 		DialOptions: []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
@@ -168,6 +164,14 @@ func TestClientMemberListSerializableSurvivesUnavailableReadBarrier(t *testing.T
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	server.peers = testPeerService{
+		isLeader: true,
+		syncReadFn: func(ctx context.Context) error {
+			barriers.Add(1)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
 
 	serializableCtx, cancelSerializable := context.WithTimeout(context.Background(), time.Second)
 	defer cancelSerializable()

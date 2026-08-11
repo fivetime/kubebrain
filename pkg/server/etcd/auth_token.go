@@ -11,6 +11,7 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -46,6 +47,9 @@ type authTokenManager struct {
 	ttl       time.Duration
 	jwt       *jwtTokenProvider
 	nop       bool
+
+	signingKeyMu sync.RWMutex
+	signingKey   []byte
 
 	afterPasswordCheck func()
 }
@@ -106,7 +110,23 @@ func (m *authTokenManager) loadSigningKey(ctx context.Context) ([]byte, error) {
 	if len(key) != authTokenKeyBytes {
 		return nil, markInvalidAuthMetadata(errors.New("invalid auth token signing key"))
 	}
+	m.rememberSigningKey(key)
 	return key, nil
+}
+
+func (m *authTokenManager) rememberSigningKey(key []byte) {
+	m.signingKeyMu.Lock()
+	m.signingKey = append(m.signingKey[:0], key...)
+	m.signingKeyMu.Unlock()
+}
+
+func (m *authTokenManager) cachedSigningKey() ([]byte, bool) {
+	m.signingKeyMu.RLock()
+	defer m.signingKeyMu.RUnlock()
+	if len(m.signingKey) != authTokenKeyBytes {
+		return nil, false
+	}
+	return append([]byte(nil), m.signingKey...), true
 }
 
 func (m *authTokenManager) ensureSigningKey(ctx context.Context) ([]byte, error) {
@@ -124,6 +144,9 @@ func (m *authTokenManager) ensureSigningKey(ctx context.Context) ([]byte, error)
 	err = m.repo.backend.InternalCAS(ctx, []backend.InternalCASOp{{Key: authTokenSigningKey, Value: key}})
 	if errors.Is(err, storage.ErrCASFailed) {
 		return m.loadSigningKey(ctx)
+	}
+	if err == nil {
+		m.rememberSigningKey(key)
 	}
 	return key, err
 }
@@ -333,6 +356,78 @@ func (m *authTokenManager) verify(ctx context.Context, token string) (authTokenC
 		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken
 	}
 	return claims, nil
+}
+
+// verifyCached verifies a token solely against state this member has already
+// observed. It is used only by explicitly serializable local RPCs. The final
+// bool is false when the local applied state is incomplete and the caller must
+// fall back to the authoritative storage-backed path rather than infer either
+// acceptance or rejection.
+func (m *authTokenManager) verifyCached(token string, snapshot *authSnapshot) (authTokenClaims, error, bool) {
+	if snapshot == nil {
+		return authTokenClaims{}, nil, false
+	}
+	if m.nop {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	if m.jwt != nil {
+		claims, err := m.jwt.verify(token, m.now())
+		return claims, err, true
+	}
+	key, ok := m.cachedSigningKey()
+	if !ok {
+		return authTokenClaims{}, nil, false
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil || !hmac.Equal(signature, signAuthToken(key, payload)) {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	now := m.now()
+	claims, err := decodeAuthTokenClaims(payload)
+	if err != nil || claims.Username == "" || claims.Revision == 0 ||
+		claims.IssuedAt > now.Add(authTokenClockSkew).Unix() || claims.Expires <= now.Unix() || claims.Expires <= claims.IssuedAt {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	if !snapshot.Config.Enabled {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	if claims.Certificate {
+		if claims.Generation != "" {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+		}
+		return claims, nil, true
+	}
+	if snapshot.Users[claims.Username] == nil {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	if claims.Generation == "" {
+		if claims.Revision != snapshot.Config.Revision {
+			return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+		}
+		return claims, nil, true
+	}
+	generation, err := base64.RawURLEncoding.DecodeString(claims.Generation)
+	if err != nil {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	currentGeneration := snapshot.TokenGenerations[claims.Username]
+	if currentGeneration == nil {
+		// A generation-bearing token may have been issued by another replica
+		// while this cache still holds the same-revision pre-migration snapshot.
+		return authTokenClaims{}, nil, false
+	}
+	if !hmac.Equal(generation, currentGeneration.Password) {
+		return authTokenClaims{}, rpctypes.ErrInvalidAuthToken, true
+	}
+	return claims, nil, true
 }
 
 func decodeAuthTokenClaims(payload []byte) (authTokenClaims, error) {
