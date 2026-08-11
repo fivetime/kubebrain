@@ -1133,8 +1133,9 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
 	chain := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CHAIN")
 	uidValue := os.Getenv("KUBEBRAIN_NATIVE_PITR_ISOLATED_UID")
+	pdContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_CONTAINER")
 	pdPorts := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS"), ",")
-	if targetPD == "" || serverBinary == "" || chain == "" || uidValue == "" || len(pdPorts) != 3 {
+	if targetPD == "" || serverBinary == "" || chain == "" || uidValue == "" || pdContainer == "" || len(pdPorts) != 3 {
 		t.Skip("set the native PITR KubeBrain follower-to-PD isolation integration environment")
 	}
 	parsedUID, err := strconv.ParseUint(uidValue, 10, 32)
@@ -1286,6 +1287,43 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Equal(t, map[string]string{"topology/a": "before-split-a", "topology/z": "before-split-z"}, mapFromRange(topology))
 	require.GreaterOrEqual(t, topology.Header.Revision, topologyPut.Header.Revision)
 	require.Less(t, topology.Header.Revision, newPut.Header.Revision)
+	encodedTopologyZ := tikvcodec.EncodeBytes(nil, physicalKeyspace.NewCoder().EncodeRevisionKey([]byte("topology/z")))
+	region, err := pdc.GetRegion(ctx, encodedTopologyZ)
+	require.NoError(t, err)
+	require.NotNil(t, region)
+	require.NotNil(t, region.Meta)
+	require.NotNil(t, region.Leader)
+	var targetStoreID uint64
+	for _, peer := range region.Meta.Peers {
+		if peer.StoreId != region.Leader.StoreId {
+			targetStoreID = peer.StoreId
+			break
+		}
+	}
+	require.NotZero(t, targetStoreID)
+	pdEndpoint := strings.Split(targetPD, ",")[0]
+	transferOutput, err := exec.CommandContext(
+		ctx, "docker", "exec", pdContainer, "/pd-ctl", "-u", pdEndpoint,
+		"operator", "add", "transfer-leader", strconv.FormatUint(region.Meta.Id, 10), strconv.FormatUint(targetStoreID, 10),
+	).CombinedOutput()
+	require.NoError(t, err, "transfer Region leader: %s", transferOutput)
+	require.Contains(t, string(transferOutput), "Success")
+	require.Eventually(t, func() bool {
+		updated, getErr := pdc.GetRegionByID(ctx, region.Meta.Id)
+		return getErr == nil && updated != nil && updated.Leader != nil && updated.Leader.StoreId == targetStoreID
+	}, 30*time.Second, 250*time.Millisecond, "PD must complete the requested Region leader transfer")
+	transferredCtx, transferredCancel := context.WithTimeout(ctx, 5*time.Second)
+	transferredCtx = metadata.NewOutgoingContext(
+		transferredCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	transferred, err := followerRawKV.Range(transferredCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("topology/z"), Serializable: true,
+	})
+	transferredCancel()
+	require.NoError(t, err, "TiKV NotLeader metadata must repair the isolated follower cache after leader transfer")
+	require.Len(t, transferred.Kvs, 1)
+	require.Equal(t, []byte("before-split-z"), transferred.Kvs[0].Value)
+	require.Equal(t, topology.Header.Revision, transferred.Header.Revision)
 
 	restoreNetwork()
 	require.Eventually(t, func() bool {

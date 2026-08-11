@@ -46429,10 +46429,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   健康 leader 隔离后的新 write。这样既证明 scan 跨越新边界，也证明没有代理或重新向 PD 定位。
   2026-08-11 三 PD/三 TiKV、双 KubeBrain 现场连续以 20.97/20.80 秒通过，integration/backend/server/
   storage 全量回归通过且 runner 无残留。
-  本项仅关闭 split：TiKV 的 epoch mismatch 响应携带完整替代 Region，因此可离线修复；merge 是否给出
-  同等充分 metadata、Region leader transfer 后旧 store 返回的 NotLeader 是否总携带可用 leader、store
-  address cache 失效以及 cache capacity eviction 尚未做真实门禁，仍必须在无法自愈时 fail closed，不能
-  推广本项结论为任意 topology change 均可用。
+  本项仅关闭 split：TiKV 的 epoch mismatch 响应携带完整替代 Region，因此可离线修复；Region leader
+  transfer 由 A4366 补齐。merge 是否给出同等充分 metadata、store address cache 失效以及 cache capacity
+  eviction 尚未做真实门禁，仍必须在无法自愈时 fail closed，不能推广本项结论为任意 topology change
+  均可用。
+
+- A4366 关闭 A4365 保留的“PD 隔离期间 Region leader transfer”证据缺口。继续使用 split 后且 follower
+  已无法访问三个 PD client port 的现场：测试通过 PD SDK `GetRegion` 定位 `topology/z` revision-index
+  所在 Region，从完整 peers 中选择一个非当前 leader store，再在 disposable PD 容器执行真实
+  `/pd-ctl operator add transfer-leader <region> <store>`。命令必须返回 Success，随后反复调用
+  `GetRegionByID`，直到 PD 权威 Leader.StoreId 精确等于目标 store，避免只证明 operator 被接受而未完成。
+  此时隔离 follower 的 TiKV cache 仍指向旧 leader；用故障前 HS256 JWT 发起 serializable point Range，
+  client-go 必须仅根据旧 TiKV 返回的 `NotLeader` metadata 切换工作 peer，并返回 checkpoint 中
+  `before-split-z`，response header 与 transfer 前跨 split Range 完全相同。任何向 PD 重新定位或代理到
+  健康 KubeBrain leader 都会被 owner DROP 或 revision/value 断言识别。2026-08-11 三 PD/三 TiKV、双
+  KubeBrain 现场连续以 21.83/20.83 秒通过，integration/backend/server/storage 全量回归通过且 runner
+  无残留。
+  本项证明的是 Region leader 在已知三副本 store 集合内转移；若目标 store address 在 checkpoint warmup
+  后才出现、store 被 tombstone/replaced、网络使所有 cached peers 不可达，或 TiKV 返回空 leader hint，
+  client-go 仍可能需要 PD 并按设计 fail closed。Region merge、store replacement/address change、cache
+  eviction 与跨宿主网络故障继续开放。
 
 ### P2：运维兼容和长期验证
 
