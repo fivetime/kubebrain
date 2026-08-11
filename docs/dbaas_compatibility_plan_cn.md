@@ -46487,6 +46487,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   暴露 TTL，必须验证其严格大于 checkpoint usable window，不能用后台读放大掩盖错误配置。Region merge
   与 store replacement/address change 仍开放。
 
+- A4369 关闭“已知 peers 中当前 leader store 进程失联”的真实证据缺口。runner 向隔离用例显式传入三
+  个 target TiKV client address 与受管容器的一一映射；测试在 A4366 已完成真实 leader transfer 后，
+  通过 PD `GetStore(targetStoreID)` 取得权威 address 并反查唯一容器，拒绝任何未受管目标。随后执行真实
+  `docker pause` 冻结 follower cache 当前指向的 Region leader store，并由 `GetRegionByID` 等待剩余两
+  个 TiKV peer 形成 quorum、权威 leader store ID 非零且不同于故障 store。此时 follower 仍被 owner
+  DROP 隔离全部 PD；raw authenticated serializable point Range 必须仅沿 checkpoint warmup 缓存的 peers
+  切换，返回 `topology/z=before-split-z` 且 header 与故障前 checkpoint 完全相同。测试显式 unpause 原
+  store，cleanup 也保留幂等兜底，再继续 Region merge 的 fail-closed/recovery 链条，防止故障资源泄漏或
+  用例提前退出掩盖恢复问题。2026-08-11 三 PD/三 TiKV、双 KubeBrain 现场连续以 35.13/60.70 秒通过；
+  第二轮额外耗时来自 KubeBrain election 初始化重试，store failover 与全部断言仍通过；integration/
+  backend/server/storage 全量回归通过且 runner 无残留。
+  本项证明的是 Region 已知三副本中一个进程/地址暂时不可达，client-go 可轮询 cached peers 并利用新
+  leader hint；它不证明同一 store ID 的 address 被永久修改、旧地址被其他进程复用、store tombstone 后
+  replacement，或两个 store 同时失联。上述情形需要 PD `GetStore`/重新放置且在 PD 隔离时应继续
+  fail closed；store replacement/address change 仍开放，不能以本项推广关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

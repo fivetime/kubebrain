@@ -267,6 +267,8 @@ elif [[ "$fault_injection" == target-kubebrain-pd-network-isolation-resume ]]; t
     KUBEBRAIN_NATIVE_PITR_ISOLATED_UID=65534
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS=43379,43389,43399
     KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_STATUS_ADDRESSES=127.0.0.1:21180,127.0.0.1:21181,127.0.0.1:21182
+    KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CONTAINERS="$(IFS=,; echo "${target_tikv_names[*]}")"
+    KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CLIENT_ADDRESSES=127.0.0.1:43160,127.0.0.1:43161,127.0.0.1:43162
     KUBEBRAIN_NATIVE_PITR_TARGET_PD_CONTAINER="${target_pd_names[0]}"
   )
 elif [[ "$fault_injection" == target-pd-leader-enospc-resume || "$fault_injection" == target-pd-leader-store-enospc-resume ]]; then

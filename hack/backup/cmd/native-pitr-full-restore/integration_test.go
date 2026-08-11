@@ -1135,8 +1135,15 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	uidValue := os.Getenv("KUBEBRAIN_NATIVE_PITR_ISOLATED_UID")
 	pdContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_CONTAINER")
 	pdPorts := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS"), ",")
-	if targetPD == "" || serverBinary == "" || chain == "" || uidValue == "" || pdContainer == "" || len(pdPorts) != 3 {
+	tikvContainers := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CONTAINERS"), ",")
+	tikvAddresses := strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_TIKV_CLIENT_ADDRESSES"), ",")
+	if targetPD == "" || serverBinary == "" || chain == "" || uidValue == "" || pdContainer == "" ||
+		len(pdPorts) != 3 || len(tikvContainers) != 3 || len(tikvAddresses) != 3 {
 		t.Skip("set the native PITR KubeBrain follower-to-PD isolation integration environment")
+	}
+	tikvContainerByAddress := make(map[string]string, len(tikvAddresses))
+	for index, address := range tikvAddresses {
+		tikvContainerByAddress[address] = tikvContainers[index]
 	}
 	parsedUID, err := strconv.ParseUint(uidValue, 10, 32)
 	require.NoError(t, err)
@@ -1338,6 +1345,39 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Len(t, transferred.Kvs, 1)
 	require.Equal(t, []byte("before-split-z"), transferred.Kvs[0].Value)
 	require.Equal(t, topology.Header.Revision, transferred.Header.Revision)
+	leaderStore, err := pdc.GetStore(ctx, targetStoreID)
+	require.NoError(t, err)
+	require.NotNil(t, leaderStore)
+	leaderContainer := tikvContainerByAddress[leaderStore.GetAddress()]
+	require.NotEmpty(t, leaderContainer, "leader store address %q must map to a managed TiKV container", leaderStore.GetAddress())
+	pauseOutput, err := exec.CommandContext(ctx, "docker", "pause", leaderContainer).CombinedOutput()
+	require.NoError(t, err, "pause Region leader store: %s", pauseOutput)
+	storePaused := true
+	t.Cleanup(func() {
+		if storePaused {
+			_ = exec.Command("docker", "unpause", leaderContainer).Run()
+		}
+	})
+	require.Eventually(t, func() bool {
+		updated, getErr := pdc.GetRegionByID(ctx, region.Meta.Id)
+		return getErr == nil && updated != nil && updated.Leader != nil &&
+			updated.Leader.StoreId != 0 && updated.Leader.StoreId != targetStoreID
+	}, 30*time.Second, 250*time.Millisecond, "the remaining TiKV quorum must elect a leader away from the paused store")
+	storeFailoverCtx, storeFailoverCancel := context.WithTimeout(ctx, 10*time.Second)
+	storeFailoverCtx = metadata.NewOutgoingContext(
+		storeFailoverCtx, metadata.Pairs(rpctypes.TokenFieldNameGRPC, followerAuthenticated.Token),
+	)
+	storeFailover, err := followerRawKV.Range(storeFailoverCtx, &etcdserverpb.RangeRequest{
+		Key: []byte("topology/z"), Serializable: true,
+	})
+	storeFailoverCancel()
+	require.NoError(t, err, "cached peers must keep checkpoint reads available after the cached leader store disappears")
+	require.Len(t, storeFailover.Kvs, 1)
+	require.Equal(t, []byte("before-split-z"), storeFailover.Kvs[0].Value)
+	require.Equal(t, topology.Header.Revision, storeFailover.Header.Revision)
+	unpauseOutput, err := exec.CommandContext(ctx, "docker", "unpause", leaderContainer).CombinedOutput()
+	require.NoError(t, err, "unpause Region leader store: %s", unpauseOutput)
+	storePaused = false
 	encodedTopologyA := tikvcodec.EncodeBytes(nil, physicalKeyspace.NewCoder().EncodeRevisionKey([]byte("topology/a")))
 	leftRegion, err := pdc.GetRegion(ctx, encodedTopologyA)
 	require.NoError(t, err)
