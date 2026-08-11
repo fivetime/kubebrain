@@ -1982,10 +1982,12 @@ go run ./hack/backup/cmd/native-pitr-source-exclusive \
 ```
 
 命令分别核对 PD、txnkv 与 full receipt 的 cluster ID，在 `backup_ts` 使用 key-only RC snapshot
-（忽略锁而不触发 SI lock resolution）扫描
-`[-∞, tenant_start)` 和 `[tenant_end, +∞)`；任一范围出现 committed visible key 即失败。输出
-`kubebrain.native-pitr-source-range-exclusive.v1` 并绑定 exact full receipt SHA-256。该证据证明 full
-snapshot 的逻辑可见内容未跨租户范围，但不声称已证明旧 tombstone/MVCC history 物理不存在；这与
+（忽略锁而不触发 SI lock resolution）扫描租户范围之外的所有区间，但明确排除并绑定
+`/kubebrain-internal/ks-<keyspace>/` 原始协调范围。该范围承载 election/fence，只进入 whole-cluster
+base snapshot，不属于应用 MVCC 日志；除此之外任一范围出现 committed visible key 即失败。输出
+`kubebrain.native-pitr-source-range-exclusive.v2`，固化协调范围边界并绑定 exact full receipt SHA-256。
+该证据证明 full snapshot 的逻辑可见内容只含租户数据和受审协调键，但不声称已证明旧
+tombstone/MVCC history 物理不存在；这与
 `backup txn (0, backup_ts]` 保留历史版本的事实必须同时记录，恢复后的语义验证仍不能省略。
 
 在生成计划前，先对独立目标 PD/TiKV 做只读全事务键空间检查：
@@ -2064,14 +2066,50 @@ Up store identity 与 plan-bound receipt 一致。成功输出 `kubebrain.native
 未启动 KubeBrain/其他 writer。该执行收据不能用于宣称 PITR 或 etcd 语义恢复完成。
 
 2026-08-11 已通过 `hack/backup/run-native-pitr-full-restore-integration.sh` 完成隔离真实演练：脚本启动
-两套 cluster ID 不同、数据目录独立的 PD/TiKV v7.5.1 集群，在 source 写入一个真实 KubeBrain 编码
-revision key，使用 pinned BR v7.5.1 `backup txn` 生成含 1 KV/1 SST 的 whole-cluster 制品，再由上述
-executor 在 fresh target-empty 复验后执行 `restore txn`。BR 报告 1 file/1 KV 导入成功，测试随后通过
-target txnkv client 以原编码 key 读回字节并与 source value 精确比较。演练同时校正了两个真实
+两套 cluster ID 不同、数据目录独立的 PD/TiKV v7.5.1 集群及当前源码构建的 source/target KubeBrain。
+source 通过真实 etcd API 写入一个 600 秒租约键和一个普通键，冻结 writer 后生成完整 `/` logical.v2
+witness，再使用 pinned BR v7.5.1 完成 whole-cluster backup/restore。target 启动后逐项通过 witness
+revision 历史读、current 读、lease identity/TTL/attached keys、条件 Put/Delete、线性读及 PUT/DELETE
+Watch；探针删除后又直连 plan-bound target TiKV 读回其 Put revision 历史版本并核对 inline metadata。
+该真实路径也暴露并修复了 source-exclusive v1 无法容纳 KubeBrain 自身 256-shard election fence 的
+矛盾，v2 现只豁免且精确绑定受审协调范围。演练同时校正了两个真实
 backupmeta 合同：txn backup 的空 DDL 以 JSON `[]` 编码；plaintext BackupRequest 生成的 SST 仍携带
 随机 16-byte `CipherIv`，因此不能以该字段存在与否推断外部 BR crypter 模式。脚本使用 64 GiB
 逻辑容量的按需 tmpfs 避免宿主机磁盘水位影响，并通过 trap 精确清理 4 个集群容器、BR copy 容器和
 临时目录；演练结束后已核验无同名前缀容器或临时目录残留。
+
+full restore 后必须先启动与 plan `source.keyspace` 一致、且明确指向恢复后 target PD 的受审 KubeBrain
+实例，再运行独立语义门禁；`WITNESS_FILE` 必须是 full backup 前冻结写入后从 source 导出的完整 `/`
+前缀 `kubebrain.logical.v2`，不能用子前缀或恢复后重新导出的文件替代：
+
+```shell
+ENDPOINT=https://restored-kubebrain.example:2379 \
+ETCD_CACERT=/target-tls/ca.crt \
+ETCD_CERT=/target-tls/tls.crt \
+ETCD_KEY=/target-tls/tls.key \
+go run ./hack/backup/cmd/native-pitr-semantic-verify \
+  --plan=/evidence/native-pitr-restore-plan.json \
+  --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --full-restore=/evidence/native-pitr-full-restore.json \
+  --witness=/evidence/source-full-keyspace.logical.v2 \
+  --target-pd-addrs="$TARGET_PD_ADDRS" \
+  --target-ca=/target-tls/ca.crt \
+  --target-cert=/target-tls/tls.crt \
+  --target-key=/target-tls/tls.key \
+  > /evidence/native-pitr-full-semantic.json
+```
+
+命令直接向 target PD 复核 live cluster ID 与 plan/restore receipt 一致，再在 witness revision 与当前
+revision 分别逐 key 比较 value、create/mod revision、version 和 lease；逐 lease 比较 identity、有效
+TTL、granted TTL 与排序后的 attached keys；最后执行带 lease 的条件 Put、线性读、Watch PUT/DELETE、
+条件 Delete 和 Revoke。全部通过才输出 `kubebrain.native-pitr-full-semantic-verify.v1`。输入 receipt 和
+watch 探针删除后，验证器还会通过 plan-bound target PD 直连 TiKV，按 tenant 编码 object key 读取该
+Put revision 的历史版本，并精确核对 inline value、create revision、version 与 lease ID；这一步把 etcd
+endpoint 行为和 target 物理集群绑定，避免“PD 对了但 endpoint 指向另一套存储”仍误通过。输入 receipt
+和 witness 在验证前后都会重读/重算 SHA-256，阻止 TOCTOU 替换。该收据明确只证明 full restore 的 etcd
+语义，固定 `log_replay_validated=false`、`pitr_complete=false`；当前 full plan 尚未在备份前绑定 witness
+摘要，因此生产流程还必须增加“冻结写入→witness→full backup”的不可分割控制面收据，不能仅凭手工
+文件顺序把 writer fence 视为已证明。
 
 arbitrary-range task 的安全创建入口现为：
 
@@ -2734,10 +2772,13 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   自由 target ID/emptiness digest。full-only executor 现可在 exact plan 审批、source range-exclusive、
   fresh target-empty 与 local mirror 双重复验后运行 pinned BR whole-cluster txn import，但 receipt 明确
   不宣称 writer fence、日志回放、PITR 或语义验真。2026-08-11 的独立双集群真实演练已证明 full-only
-  路径能恢复并直接读回 KubeBrain 编码字节；但当前 full receipt 尚未绑定 BR backup invocation 的
+  路径能恢复租约/普通键并通过历史/current/lease/Watch 语义及 target TiKV 物理绑定；但当前 full receipt
+  尚未绑定 BR backup invocation 的
   `cipher_info`/crypter 参数，而 `CipherIv` 在官方 plaintext 模式也存在，故生产还需增加独立的加密模式
-  attestation，不能只凭 backupmeta 声称 plaintext。range-aware log restore、首写前原子防漂移和恢复后
-  etcd 语义验真仍未实现，因此不能改变本项“未完成”的结论。
+  attestation，不能只凭 backupmeta 声称 plaintext。full-only 恢复后的独立语义门禁现已实现严格
+  receipt/PD cluster ID/witness 摘要链、历史/current/lease 精确比较与真实 Watch 写删探针，并已完成
+  双集群真实演练；但备份前 witness 尚未由 plan 原子绑定。range-aware log restore 与首写前原子防漂移
+  仍未实现，因此不能改变本项“未完成”的结论。
   对 TiDB/BR v7.5.1（tag commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`）的 restore 源码审计还确认：
   `br restore txn` 能直接导入 transactional BackupMeta 的 SST，适合 KubeBrain arbitrary range 的 full
   阶段；但 `br restore point` 不能直接复用为 KubeBrain 日志恢复器。其 `RunStreamRestore` 会创建 TiDB

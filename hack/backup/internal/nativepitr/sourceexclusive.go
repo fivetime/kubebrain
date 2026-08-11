@@ -14,7 +14,7 @@ import (
 	pd "github.com/tikv/pd/client"
 )
 
-const SourceRangeExclusiveFormat = "kubebrain.native-pitr-source-range-exclusive.v1"
+const SourceRangeExclusiveFormat = "kubebrain.native-pitr-source-range-exclusive.v2"
 
 type SourceRangeExclusiveReceipt struct {
 	Format                      string   `json:"format"`
@@ -23,6 +23,9 @@ type SourceRangeExclusiveReceipt struct {
 	Keyspace                    string   `json:"keyspace"`
 	StartKeyHex                 string   `json:"start_key_hex"`
 	EndKeyHex                   string   `json:"end_key_hex"`
+	CoordinationStartKeyHex     string   `json:"coordination_start_key_hex"`
+	CoordinationEndKeyHex       string   `json:"coordination_end_key_hex"`
+	CoordinationRangeExcluded   bool     `json:"coordination_range_excluded_from_log"`
 	SnapshotTS                  uint64   `json:"snapshot_ts"`
 	FullSnapshotReceiptSHA256   string   `json:"full_snapshot_receipt_sha256"`
 	OutsideVisibleKeyCount      uint64   `json:"outside_visible_key_count"`
@@ -52,7 +55,11 @@ func InspectSourceRangeExclusive(ctx context.Context, probe SourceRangeProbe, fu
 	}
 	start, _ := hex.DecodeString(full.StartKeyHex)
 	end, _ := hex.DecodeString(full.EndKeyHex)
-	for _, bounds := range [][2][]byte{{nil, start}, {end, nil}} {
+	coordStart, coordEnd := coordinationRange(full.Keyspace)
+	// KubeBrain's raw election/fence keys are intentionally restored by the
+	// whole-cluster base snapshot but are not application MVCC changes and must
+	// not enter the tenant log stream. Prove that every other raw range is empty.
+	for _, bounds := range [][2][]byte{{nil, coordStart}, {coordEnd, start}, {end, nil}} {
 		found, err := probe.HasVisibleKey(ctx, full.BackupTS, bounds[0], bounds[1])
 		if err != nil {
 			return SourceRangeExclusiveReceipt{}, fmt.Errorf("scan source outside keyspace: %w", err)
@@ -61,7 +68,7 @@ func InspectSourceRangeExclusive(ctx context.Context, probe SourceRangeProbe, fu
 			return SourceRangeExclusiveReceipt{}, errors.New("source has a visible transactional key outside the KubeBrain range at backup TSO")
 		}
 	}
-	receipt := SourceRangeExclusiveReceipt{Format: SourceRangeExclusiveFormat, ClusterID: full.ClusterID, PDAddrs: append([]string(nil), addrs...), Keyspace: full.Keyspace, StartKeyHex: full.StartKeyHex, EndKeyHex: full.EndKeyHex, SnapshotTS: full.BackupTS, FullSnapshotReceiptSHA256: fullSHA, CheckedAtUnix: checkedAt, ReadOnly: true}
+	receipt := SourceRangeExclusiveReceipt{Format: SourceRangeExclusiveFormat, ClusterID: full.ClusterID, PDAddrs: append([]string(nil), addrs...), Keyspace: full.Keyspace, StartKeyHex: full.StartKeyHex, EndKeyHex: full.EndKeyHex, CoordinationStartKeyHex: hex.EncodeToString(coordStart), CoordinationEndKeyHex: hex.EncodeToString(coordEnd), CoordinationRangeExcluded: true, SnapshotTS: full.BackupTS, FullSnapshotReceiptSHA256: fullSHA, CheckedAtUnix: checkedAt, ReadOnly: true}
 	if err := receipt.Validate(); err != nil {
 		return SourceRangeExclusiveReceipt{}, err
 	}
@@ -99,6 +106,10 @@ func (r SourceRangeExclusiveReceipt) Validate() error {
 	if err != nil || r.StartKeyHex != hex.EncodeToString(ks.ObjectKeyspaceStart()) || r.EndKeyHex != hex.EncodeToString(ks.ObjectKeyspaceEnd()) {
 		return errors.New("source range-exclusive receipt range does not match keyspace")
 	}
+	coordStart, coordEnd := coordinationRange(r.Keyspace)
+	if !r.CoordinationRangeExcluded || r.CoordinationStartKeyHex != hex.EncodeToString(coordStart) || r.CoordinationEndKeyHex != hex.EncodeToString(coordEnd) {
+		return errors.New("source receipt does not bind the excluded KubeBrain coordination range")
+	}
 	if len(r.PDAddrs) == 0 {
 		return errors.New("source range-exclusive receipt has no PD addresses")
 	}
@@ -108,6 +119,18 @@ func (r SourceRangeExclusiveReceipt) Validate() error {
 		}
 	}
 	return nil
+}
+
+func coordinationRange(keyspace string) ([]byte, []byte) {
+	prefix := []byte("/kubebrain-internal/ks-" + keyspace + "/")
+	end := append([]byte(nil), prefix...)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] != 0xff {
+			end[i]++
+			return prefix, end[:i+1]
+		}
+	}
+	return prefix, []byte{0xff}
 }
 
 func DecodeSourceRangeExclusive(r io.Reader) (SourceRangeExclusiveReceipt, error) {

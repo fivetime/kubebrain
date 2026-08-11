@@ -31,7 +31,8 @@ func validSourceExclusive(t *testing.T) SourceRangeExclusiveReceipt {
 	t.Helper()
 	ks, err := coder.NewKeyspace("tenant-a")
 	require.NoError(t, err)
-	return SourceRangeExclusiveReceipt{Format: SourceRangeExclusiveFormat, ClusterID: 11, PDAddrs: []string{"pd:2379"}, Keyspace: "tenant-a", StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), SnapshotTS: 120, FullSnapshotReceiptSHA256: digest, CheckedAtUnix: 2_000_000_000, ReadOnly: true}
+	coordStart, coordEnd := coordinationRange("tenant-a")
+	return SourceRangeExclusiveReceipt{Format: SourceRangeExclusiveFormat, ClusterID: 11, PDAddrs: []string{"pd:2379"}, Keyspace: "tenant-a", StartKeyHex: hex.EncodeToString(ks.ObjectKeyspaceStart()), EndKeyHex: hex.EncodeToString(ks.ObjectKeyspaceEnd()), CoordinationStartKeyHex: hex.EncodeToString(coordStart), CoordinationEndKeyHex: hex.EncodeToString(coordEnd), CoordinationRangeExcluded: true, SnapshotTS: 120, FullSnapshotReceiptSHA256: digest, CheckedAtUnix: 2_000_000_000, ReadOnly: true}
 }
 
 func TestSourceRangeExclusiveReceiptIsStrictAndBounded(t *testing.T) {
@@ -48,6 +49,9 @@ func TestSourceRangeExclusiveReceiptIsStrictAndBounded(t *testing.T) {
 	r = validSourceExclusive(t)
 	r.HistoricalMVCCAbsenceProven = true
 	require.ErrorContains(t, r.Validate(), "bounded")
+	r = validSourceExclusive(t)
+	r.CoordinationRangeExcluded = false
+	require.ErrorContains(t, r.Validate(), "coordination")
 }
 
 func TestInspectSourceRangeExclusiveScansBothOutsideRanges(t *testing.T) {
@@ -57,10 +61,10 @@ func TestInspectSourceRangeExclusiveScansBothOutsideRanges(t *testing.T) {
 	p := &fakeSourceRangeProbe{pdID: task.ClusterID, txnID: task.ClusterID}
 	receipt, err := InspectSourceRangeExclusive(context.Background(), p, full, digest, []string{"pd:2379"}, 1)
 	require.NoError(t, err)
-	require.Equal(t, 2, p.calls)
+	require.Equal(t, 3, p.calls)
 	require.True(t, p.closed)
 	require.Equal(t, full.BackupTS, receipt.SnapshotTS)
-	for _, foundAt := range []int{1, 2} {
+	for _, foundAt := range []int{1, 2, 3} {
 		p = &fakeSourceRangeProbe{pdID: task.ClusterID, txnID: task.ClusterID, foundAt: foundAt}
 		_, err = InspectSourceRangeExclusive(context.Background(), p, full, digest, []string{"pd:2379"}, 1)
 		require.ErrorContains(t, err, "outside")

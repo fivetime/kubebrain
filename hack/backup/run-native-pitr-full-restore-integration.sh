@@ -75,9 +75,11 @@ done
 docker create --name "${names[4]}" pingcap/br:v7.5.1 >/dev/null
 docker cp "${names[4]}:/br" "$drill_tmp/br"
 chmod 0755 "$drill_tmp/br"
+go build -o "$drill_tmp/kubebrain" ./cmd
 
 TMPDIR="$shared_dir" \
 KUBEBRAIN_NATIVE_PITR_SOURCE_PD=127.0.0.1:42379 \
 KUBEBRAIN_NATIVE_PITR_TARGET_PD=127.0.0.1:43379 \
 KUBEBRAIN_NATIVE_PITR_BR="$drill_tmp/br" \
+KUBEBRAIN_NATIVE_PITR_SERVER="$drill_tmp/kubebrain" \
 go test -count=1 -run '^TestNativeFullRestoreRealBR$' -v ./hack/backup/cmd/native-pitr-full-restore
