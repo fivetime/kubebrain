@@ -418,6 +418,141 @@ func TestNativePDLeaderENOSPCRealCluster(t *testing.T) {
 	}
 }
 
+// TestNativePDLeaderAndStoreENOSPCRealCluster combines independent PD-leader
+// and TiKV-store disk failures to prove that both remaining quorums converge.
+func TestNativePDLeaderAndStoreENOSPCRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	storeContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_CONTAINER")
+	storeDataDir := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_DATA_DIR")
+	storeStatus := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_ENOSPC_STATUS")
+	pdContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_CONTAINER")
+	pdDataDir := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_DATA_DIR")
+	pdEndpoint := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_ENDPOINT")
+	pdMemberName := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_ENOSPC_MEMBER")
+	if targetPD == "" || serverBinary == "" || storeContainer == "" || storeDataDir == "" || storeStatus == "" || pdContainer == "" || pdDataDir == "" || pdEndpoint == "" || pdMemberName == "" {
+		t.Skip("set the combined target PD/TiKV ENOSPC integration environment")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	pdEndpoints := strings.Split(targetPD, ",")
+	pdc, err := pd.NewClientWithContext(ctx, pdEndpoints, pd.SecurityOption{})
+	require.NoError(t, err)
+	defer pdc.Close()
+	storeID := requireStoreIDAtAddress(t, ctx, pdc, "127.0.0.1:43160")
+	pdEtcd, err := clientv3.New(clientv3.Config{Endpoints: pdEndpoints, DialTimeout: 3 * time.Second})
+	require.NoError(t, err)
+	defer pdEtcd.Close()
+	members, err := pdEtcd.MemberList(ctx)
+	require.NoError(t, err)
+	oldPDLeaderID := uint64(0)
+	for _, member := range members.Members {
+		if member.Name == pdMemberName {
+			oldPDLeaderID = member.ID
+			break
+		}
+	}
+	require.NotZero(t, oldPDLeaderID)
+
+	root := t.TempDir()
+	const endpoint = "127.0.0.1:45379"
+	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "combined-enospc", "combined-enospc-integration")
+	defer server.stop(t)
+	client := waitForEndpoint(t, ctx, endpoint, server)
+	defer client.Close()
+	_, err = client.Put(ctx, "before", "durable-before-combined-pressure")
+	require.NoError(t, err)
+
+	storePressure := filepath.Join(storeDataDir, "kubebrain-enospc-pressure")
+	pdPressure := filepath.Join(pdDataDir, "kubebrain-pd-enospc-pressure")
+	defer os.Remove(storePressure)
+	defer os.Remove(pdPressure)
+	fillBoundedFilesystem(t, ctx, storeDataDir, storePressure)
+	largeValue := strings.Repeat("c", 768*1024)
+	acknowledged := make([]string, 0, 256)
+	storeENOSPC := false
+	for index := 0; index < 256; index++ {
+		key := fmt.Sprintf("combined-acknowledged-%03d", index)
+		attempt, attemptCancel := context.WithTimeout(ctx, 15*time.Second)
+		_, putErr := client.Put(attempt, key, largeValue)
+		attemptCancel()
+		if putErr == nil {
+			acknowledged = append(acknowledged, key)
+		}
+		if containerLogContains(ctx, storeContainer, "no space left on device", "os error 28") {
+			storeENOSPC = true
+			break
+		}
+	}
+	require.True(t, storeENOSPC)
+	require.NotEmpty(t, acknowledged)
+
+	fillBoundedFilesystem(t, ctx, pdDataDir, pdPressure)
+	pdENOSPC := false
+	pdProbeValue := strings.Repeat("p", 256*1024)
+	for index := 0; index < 512; index++ {
+		attempt, attemptCancel := context.WithTimeout(ctx, 10*time.Second)
+		_, _ = pdEtcd.Put(attempt, fmt.Sprintf("/kubebrain-integration/combined-enospc/%04d", index), pdProbeValue)
+		attemptCancel()
+		if containerLogContains(ctx, pdContainer, "no space left on device", "os error 28") {
+			pdENOSPC = true
+			break
+		}
+	}
+	require.True(t, pdENOSPC)
+	newPDLeaderID := waitForDifferentEtcdLeader(t, ctx, pdEtcd, pdEndpoints, oldPDLeaderID)
+	require.NotEqual(t, oldPDLeaderID, newPDLeaderID)
+	require.Eventually(t, func() bool {
+		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+		_, putErr := client.Put(attempt, "during-combined-pressure", "durable-through-combined-quorums")
+		attemptCancel()
+		return putErr == nil
+	}, 45*time.Second, 500*time.Millisecond)
+
+	require.NoError(t, os.Remove(pdPressure))
+	require.NoError(t, os.Remove(storePressure))
+	for _, container := range []string{pdContainer, storeContainer} {
+		restartOutput, restartErr := exec.CommandContext(ctx, "docker", "restart", container).CombinedOutput()
+		require.NoError(t, restartErr, "%s", restartOutput)
+	}
+	waitForAddresses(t, ctx, pdEndpoint+","+storeStatus)
+	require.Eventually(t, func() bool {
+		return requireStoreIDAtAddressNoFail(ctx, pdc, "127.0.0.1:43160") == storeID
+	}, 45*time.Second, 500*time.Millisecond)
+	require.Eventually(t, func() bool {
+		response, listErr := pdEtcd.MemberList(ctx)
+		if listErr != nil {
+			return false
+		}
+		for _, member := range response.Members {
+			if member.Name == pdMemberName && member.ID == oldPDLeaderID {
+				return true
+			}
+		}
+		return false
+	}, 45*time.Second, 500*time.Millisecond)
+	_, err = pdEtcd.Delete(ctx, "/kubebrain-integration/combined-enospc/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	for _, key := range acknowledged {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, []byte(largeValue), response.Kvs[0].Value)
+	}
+	for key, value := range map[string]string{
+		"before":                   "durable-before-combined-pressure",
+		"during-combined-pressure": "durable-through-combined-quorums",
+	} {
+		response, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, []byte(value), response.Kvs[0].Value)
+	}
+	_, err = client.Put(ctx, "after", "durable-after-combined-recovery")
+	require.NoError(t, err)
+}
+
 func waitForDifferentEtcdLeader(t *testing.T, ctx context.Context, client *clientv3.Client, endpoints []string, oldLeaderID uint64) uint64 {
 	t.Helper()
 	var leaderID uint64

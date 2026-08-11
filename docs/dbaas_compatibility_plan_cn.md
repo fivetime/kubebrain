@@ -46030,6 +46030,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   时不伪造成功、恢复多数派后保留所有已确认提交并可消解不确定结果”的缺口；无多数派期间不承诺读写
   可用，真实 PVC replacement/扩容、长时间满盘、第三 store 压力及 PD+TiKV 组合故障仍开放。
 
+- A4340 关闭 A4339 保留的单 PD + 单 TiKV 组合磁盘故障证据缺口。新增
+  `target-pd-leader-store-enospc-resume`，同时复用一个 768 MiB target TiKV-0 卷和三个独立 512 MiB
+  target PD 卷；运行时从 PD API 选择 live leader，仍在任何填盘前绑定其 name/container/endpoint/data
+  dir。`TestNativePDLeaderAndStoreENOSPCRealCluster` 先固定 TiKV store ID 与 PD member ID，填满 TiKV-0
+  并用 768 KiB MVCC 写直到其日志出现 OS error 28、保存全部 acknowledged key；随后填满 live PD leader，
+  以 embedded-etcd 探针写耗尽其 WAL，并要求 PD 日志也出现 OS error 28、leader ID 切换。2026-08-11
+  现场 leader 为 `tgt-pd-1`；PD client 在约 17 秒后切到 `tgt-pd-0`，KubeBrain 经 session/election 窗口后
+  在剩余两个 PD 和两个 TiKV 多数派上成功 Put。释放两个压力文件并重启原容器后，MemberList/store list
+  分别保持原 PD member ID/TiKV store ID，全部 acknowledged key、故障前 key、组合故障窗口 key 和恢复
+  后 Put 均通过；全用例 79.49 秒，无资源残留。该项证明一个 PD leader 与一个 TiKV store 同时物理满盘
+  的有界恢复，不承诺零瞬断；两个任一层成员、跨 AZ 分区叠加满盘、真实 PVC replacement 和长 soak 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

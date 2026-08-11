@@ -2364,6 +2364,21 @@ etcd robustness history 一样在恢复后线性化读取，将它对账为存�
 真实用例 153.74 秒通过。该门禁证明的是多数派丢失时 fail closed 和恢复后的提交完整性，不是无多数派
 可用性；生产 runbook 还必须规定超时 mutation 的幂等键、重试或 read-after-recovery reconciliation 策略。
 
+单 live PD leader 与单 TiKV store 组合满盘门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-pd-leader-store-enospc-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativePDLeaderAndStoreENOSPCRealCluster \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+该用例必须分别看到 TiKV 和 PD 自身的 OS error 28、PD leader ID 切换，并要求 KubeBrain 在剩余两个 PD
+与两个 TiKV 的多数派上有界恢复；清障重启后两个原 identity 和全部 acknowledged tenant 写必须保留。
+2026-08-11 现场 PD 从 `tgt-pd-1` 切到 `tgt-pd-0` 约耗时 17 秒，全用例 79.49 秒通过。生产客户端超时
+与重试预算必须覆盖该控制面 session/election 窗口；本门禁不支持零瞬断，也不覆盖任一层两个成员同时
+故障、跨 AZ 分区叠加磁盘满、真实 PVC replacement 或长时间压力。
+
 日志路径全部通过时输出 `kubebrain.native-pitr-semantic-verify.v1`，绑定 exact replay、admission handoff 与
 post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`、
 `continuous_writer_exclusion=true`、`fence_handoff_proven=true`、
