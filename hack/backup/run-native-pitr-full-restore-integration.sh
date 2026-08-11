@@ -376,7 +376,10 @@ if [[ "$test_name" == TestNativeLogReplayRealBR ]]; then
   )
 fi
 
-if [[ "$objectstore_integration" == true ]]; then
+if [[ "$test_name" == TestExplicitSnapshotGetter ]]; then
+  KUBEBRAIN_TIKV_PD="$target_pd_csv" \
+    go test -count=1 -run '^TestExplicitSnapshotGetter$' -v ./pkg/storage/tikv
+elif [[ "$objectstore_integration" == true ]]; then
   if ! (cd hack/backup/objectstore && env \
     KUBEBRAIN_OBJECTSTORE_CANCEL_S3_ENDPOINT=http://127.0.0.1:49000 \
     KUBEBRAIN_OBJECTSTORE_CANCEL_S3_BUCKET=kubebrain-pitr \

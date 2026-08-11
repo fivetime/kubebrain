@@ -53,6 +53,8 @@ type clientBalancer struct {
 	idx     uint64
 }
 
+var _ storage.SnapshotGetter = (*store)(nil)
+
 // defaultClientNum is the fallback number of round-robined txnkv clients when
 // the caller passes a non-positive count. Each client carries its own PD
 // connections, region cache and TSO dispatcher, so an excessive count
@@ -361,6 +363,23 @@ func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
 	return val, nil
 }
 
+// GetAt reads a point key from an explicit TiKV MVCC snapshot. It deliberately
+// avoids Begin/GetTimestampOracle: callers use it only with a checkpoint TSO
+// already acquired while PD was healthy.
+func (s *store) GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte, error) {
+	if timestamp == 0 {
+		return nil, errors.New("snapshot timestamp must be non-zero")
+	}
+	val, err := s.getClient().GetSnapshot(timestamp).Get(ctx, key)
+	if err != nil {
+		if tikverr.IsErrNotFound(err) {
+			return nil, storage.ErrKeyNotFound
+		}
+		return nil, errors.Wrapf(err, "failed to get key %s at snapshot %d", string(key), timestamp)
+	}
+	return val, nil
+}
+
 // BatchGet implements storage.BatchGetter: fetch all keys in one snapshot read.
 // Unlike Get (a full begin/commit transaction per key), this takes a single TSO
 // and issues one snapshot BatchGet, which the client fans out per-region and runs
@@ -380,6 +399,23 @@ func (s *store) BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte,
 	m, err := snapshot.BatchGet(ctx, keys)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to batch get from tikv snapshot")
+	}
+	return m, nil
+}
+
+// BatchGetAt is BatchGet at an explicit TiKV MVCC snapshot and does not contact
+// the timestamp oracle. Region-cache misses may still require PD; the DBaaS
+// isolation gate separately verifies the warmed-cache failure mode.
+func (s *store) BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64) (map[string][]byte, error) {
+	if timestamp == 0 {
+		return nil, errors.New("snapshot timestamp must be non-zero")
+	}
+	if len(keys) == 0 {
+		return map[string][]byte{}, nil
+	}
+	m, err := s.getClient().GetSnapshot(timestamp).BatchGet(ctx, keys)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to batch get from TiKV snapshot %d", timestamp)
 	}
 	return m, nil
 }

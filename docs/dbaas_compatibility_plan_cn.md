@@ -46270,6 +46270,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TSO + 对应 auth/revision/compact watermark”，或明确把它保留为 DBaaS 架构边界。跨宿主/AZ、延迟抖动与
   长时间隔离仍开放。
 
+- A4358 开始关闭 A4357 暴露的 serializable Range 隔离缺口，但本项只提交可独立验证的存储基础，
+  不把“可以指定 TiKV snapshot”误写成“已经具备安全的 etcd 本地 applied read”。源码审计确认
+  KubeBrain `naiveTSO` 是独立的连续 etcd revision allocator，`revision/committed` 也只持久化该逻辑
+  revision；二者都不是 TiKV TSO。现有 `Get`、`BatchGet` 与 scanner 在 timestamp=0 时会重新向 PD
+  取 TSO，所以只跳过 server read barrier/auth refresh 仍然会在 PD 隔离时失败。storage 新增 optional
+  `SnapshotGetter`，TiKV 实现 `GetAt`/`BatchGetAt`，和已经支持显式 timestamp 的 `Iter` 一样直接构造
+  `GetSnapshot(timestamp)`，明确拒绝 timestamp=0，且保持 point missing=`ErrKeyNotFound`、batch missing
+  omitted 的既有契约。真实单 PD/TiKV 门禁 `TestExplicitSnapshotGetter` 在第一次写后取得 TSO、第二次
+  覆盖，再证明 point/batch 显式快照均返回旧值；2026-08-11 整例 0.10 秒通过，runner 已支持该测试并
+  清理 disposable 集群；storage package 与 race 测试通过。
+  下一阶段仍必须把“所有已解析 revision 之后取得的 snapshot TSO”与对应 revision、auth revision、
+  compact watermark 组成一致 checkpoint，并为它建立可续租且不会由死亡实例永久钉住 GC 的 service
+  safepoint；还要在 warm/cold region-cache、进程重启和真实 KubeBrain→PD packet isolation 下证明读取
+  行为。完成这些之前，客户端 serializable Range 的 A4357 差距仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

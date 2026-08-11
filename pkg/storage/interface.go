@@ -138,6 +138,21 @@ type BatchGetter interface {
 	BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error)
 }
 
+// SnapshotGetter is an OPTIONAL KvStorage capability for reads at a caller-
+// supplied engine snapshot timestamp. Unlike Get and BatchGet, these methods
+// must not obtain a fresh timestamp from the storage oracle. A DBaaS data plane
+// can therefore keep serving a previously established serializable checkpoint
+// while its PD/TSO path is temporarily unavailable, provided that checkpoint
+// is still protected from engine GC.
+//
+// The timestamp is storage-engine specific and must have been obtained from
+// the same storage cluster. Callers MUST NOT infer one from an etcd MVCC
+// revision: KubeBrain revisions and TiKV timestamps are independent sequences.
+type SnapshotGetter interface {
+	GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte, error)
+	BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64) (map[string][]byte, error)
+}
+
 // FeatureSupport indicates whether storage engine support some non-core feature
 type FeatureSupport interface {
 	SupportTTL() bool

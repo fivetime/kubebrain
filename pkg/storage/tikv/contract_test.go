@@ -15,6 +15,7 @@
 package tikv
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -41,4 +42,40 @@ func TestBatchWriteContract(t *testing.T) {
 		t.Cleanup(func() { require.NoError(t, kv.Close()) })
 		return kv
 	})
+}
+
+// TestExplicitSnapshotGetter proves the timestamp-bearing API sees a stable
+// historical value and, unlike Get/BatchGet, does not implicitly advance to a
+// newer TSO.
+func TestExplicitSnapshotGetter(t *testing.T) {
+	pd := os.Getenv("KUBEBRAIN_TIKV_PD")
+	if pd == "" {
+		t.Skip("set KUBEBRAIN_TIKV_PD=<pd-addrs> to run the TiKV snapshot contract")
+	}
+	kv, err := NewKvStorage(strings.Split(pd, ","), 1, Security{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	reader := kv.(storage.SnapshotGetter)
+	ctx := context.Background()
+	key := []byte("kubebrain/storage-contract/explicit-snapshot")
+	cleanup := kv.BeginBatchWrite()
+	cleanup.Del(key)
+	_ = cleanup.Commit(ctx)
+
+	first := kv.BeginBatchWrite()
+	first.Put(key, []byte("before"), 0)
+	require.NoError(t, first.Commit(ctx))
+	ts, err := kv.GetTimestampOracle(ctx)
+	require.NoError(t, err)
+	second := kv.BeginBatchWrite()
+	second.Put(key, []byte("after"), 0)
+	require.NoError(t, second.Commit(ctx))
+
+	got, err := reader.GetAt(ctx, key, ts)
+	require.NoError(t, err)
+	require.Equal(t, []byte("before"), got)
+	batch, err := reader.BatchGetAt(ctx, [][]byte{key, []byte("missing")}, ts)
+	require.NoError(t, err)
+	require.Equal(t, []byte("before"), batch[string(key)])
+	require.NotContains(t, batch, "missing")
 }
