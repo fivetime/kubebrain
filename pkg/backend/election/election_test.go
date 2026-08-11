@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
@@ -142,7 +143,7 @@ func TestRestorationFenceStopsElectionRenewalAndRestart(t *testing.T) {
 	provider := lock.(RestorationFenceTokenProvider)
 	key, open, ok := provider.RestorationFenceControlToken()
 	require.True(t, ok)
-	require.Equal(t, []byte(restorationFenceOpen), open)
+	require.Equal(t, []byte(restorationfence.Open), open)
 
 	closed := []byte(`{"operation_id":"restore-1"}`)
 	batch := kv.BeginBatchWrite()

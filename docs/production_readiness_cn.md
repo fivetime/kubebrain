@@ -2070,6 +2070,15 @@ in-flight writer，同时避免正常写共享单一热键，且重启不能绕�
 plan/semantic receipt 绑定尚未接入本执行器，所以该执行收据仍不能用于宣称 PITR 或 etcd 语义恢复完成，
 也继续固定 `target_write_fence_proven=false`。
 
+固定 BR v7.5.1 的 `backup txn` / `restore txn` 是 whole-cluster 路径并忽略声明的 start/end；因此同一目标
+TiKV 集群内的事务型 fence 会随 full SST 一起进入覆盖范围。不得据此宣称 fence 覆盖了 BR full import
+窗口：full import 仍要求控制面停掉并禁止启动所有 target writer。仓库提供
+`native-pitr-restoration-fence --action=acquire`，在 full import 完成后把控制键与 256 个写分片一次性绑定到
+`operation_id + plan_sha256 + target_cluster_id + keyspace`，并输出
+`kubebrain.native-pitr-restoration-fence.v1` receipt；`--action=verify --fence-receipt=...` 会重新核对 live PD
+cluster ID、exact plan 以及全部 257 个 token。该 receipt 当前只证明获取之后的 log replay/semantic 阶段
+仍由同一个持有者隔离，不能反向证明此前 full import 没有 writer，也不能单独把总 PITR receipt 标为完成。
+
 当 plan 的 `restore_ts > full_snapshot.backup_ts` 时，同一个 full executor 仍只执行并记录 base
 whole-cluster txn import，随后必须在 KubeBrain/其他 target writer 保持停机的窗口内运行独立日志回放：
 

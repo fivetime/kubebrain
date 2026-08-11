@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -43,17 +44,7 @@ func getElectionKey(prefix string) []byte {
 	return []byte(fmt.Sprintf("%s/election", prefix))
 }
 
-const restorationFenceOpen = "open"
-
-func getRestorationFenceKey(prefix string) []byte {
-	return []byte(fmt.Sprintf("%s/restoration-fence", prefix))
-}
-
-func getRestorationFenceShardKey(prefix string, shard uint64) []byte {
-	return []byte(fmt.Sprintf("%s/restoration-fence-shard/%02x", prefix, shard%storageFenceShardCount))
-}
-
-const storageFenceShardCount = 256
+const storageFenceShardCount = restorationfence.ShardCount
 
 func getStorageFenceKey(prefix string, shard uint64) []byte {
 	return []byte(fmt.Sprintf("%s/election-fence/%02x", prefix, shard%storageFenceShardCount))
@@ -83,10 +74,10 @@ type Config struct {
 // NewResourceLockManager build a manager for resource lock
 func NewResourceLockManager(config Config, store storage.KvStorage) ResourceLockManager {
 	fenceKeys := make([][]byte, storageFenceShardCount)
-	restorationFenceKeys := make([][]byte, storageFenceShardCount)
+	restorationFenceKeys := make([][]byte, restorationfence.ShardCount)
 	for shard := range fenceKeys {
 		fenceKeys[shard] = getStorageFenceKey(config.Prefix, uint64(shard))
-		restorationFenceKeys[shard] = getRestorationFenceShardKey(config.Prefix, uint64(shard))
+		restorationFenceKeys[shard] = restorationfence.ShardKey(config.Prefix, uint64(shard))
 	}
 	return &resourceLockManager{
 		resourceLock: &resourceLock{
@@ -95,7 +86,7 @@ func NewResourceLockManager(config Config, store storage.KvStorage) ResourceLock
 				Identity: config.Identity,
 			},
 			electionKey:          getElectionKey(config.Prefix),
-			restorationFenceKey:  getRestorationFenceKey(config.Prefix),
+			restorationFenceKey:  restorationfence.ControlKey(config.Prefix),
 			restorationFenceKeys: restorationFenceKeys,
 			fenceKeys:            fenceKeys,
 			timeout:              config.Timeout,
@@ -168,7 +159,7 @@ func (r *resourceLock) ensureRestorationFenceOpen(parent context.Context) error 
 	defer cancel()
 	value, err := r.store.Get(ctx, r.restorationFenceKey)
 	if err == nil {
-		if !bytes.Equal(value, []byte(restorationFenceOpen)) {
+		if !bytes.Equal(value, []byte(restorationfence.Open)) {
 			return errors.New("KubeBrain writes are fenced for target restoration")
 		}
 		r.mu.Lock()
@@ -191,7 +182,7 @@ func (r *resourceLock) ensureRestorationFenceOpen(parent context.Context) error 
 	for _, key := range r.restorationFenceKeys {
 		value, getErr := r.store.Get(ctx, key)
 		switch {
-		case getErr == nil && !bytes.Equal(value, []byte(restorationFenceOpen)):
+		case getErr == nil && !bytes.Equal(value, []byte(restorationfence.Open)):
 			return errors.New("KubeBrain writes are fenced for target restoration")
 		case errors.Is(getErr, storage.ErrKeyNotFound):
 			missing = append(missing, key)
@@ -202,7 +193,7 @@ func (r *resourceLock) ensureRestorationFenceOpen(parent context.Context) error 
 	if len(missing) > 0 {
 		batch := r.store.BeginBatchWrite()
 		for _, key := range missing {
-			batch.PutIfNotExist(key, []byte(restorationFenceOpen), 0)
+			batch.PutIfNotExist(key, []byte(restorationfence.Open), 0)
 		}
 		if err := batch.Commit(ctx); err != nil {
 			return err
@@ -273,9 +264,9 @@ func (r *resourceLock) Create(parent context.Context, ler resourcelock.LeaderEle
 	}
 	batch := r.store.BeginBatchWrite()
 	batch.PutIfNotExist(r.electionKey, lerBytes, 0)
-	batch.PutIfNotExist(r.restorationFenceKey, []byte(restorationFenceOpen), 0)
+	batch.PutIfNotExist(r.restorationFenceKey, []byte(restorationfence.Open), 0)
 	for _, key := range r.restorationFenceKeys {
-		batch.PutIfNotExist(key, []byte(restorationFenceOpen), 0)
+		batch.PutIfNotExist(key, []byte(restorationfence.Open), 0)
 	}
 	var fenceToken []byte
 	if ler.HolderIdentity == r.lockConfig.Identity {
@@ -329,7 +320,7 @@ func (r *resourceLock) Update(parent context.Context, ler resourcelock.LeaderEle
 
 	batch := r.store.BeginBatchWrite()
 	batch.CAS(r.electionKey, recordBytes, lastVal, 0)
-	batch.CAS(r.restorationFenceKey, []byte(restorationFenceOpen), []byte(restorationFenceOpen), 0)
+	batch.CAS(r.restorationFenceKey, []byte(restorationfence.Open), []byte(restorationfence.Open), 0)
 	var fenceToken []byte
 	if installFence {
 		fenceToken = []byte(uuid.NewString())
@@ -385,7 +376,7 @@ func (r *resourceLock) RestorationFenceToken(shard uint64) (key, expected []byte
 		return nil, nil, false
 	}
 	key = r.restorationFenceKeys[shard%uint64(len(r.restorationFenceKeys))]
-	return append([]byte(nil), key...), []byte(restorationFenceOpen), true
+	return append([]byte(nil), key...), []byte(restorationfence.Open), true
 }
 
 func (r *resourceLock) RestorationFenceControlToken() (key, expected []byte, ok bool) {
@@ -394,7 +385,7 @@ func (r *resourceLock) RestorationFenceControlToken() (key, expected []byte, ok 
 	if !r.restorationFenceInitialized {
 		return nil, nil, false
 	}
-	return append([]byte(nil), r.restorationFenceKey...), []byte(restorationFenceOpen), true
+	return append([]byte(nil), r.restorationFenceKey...), []byte(restorationfence.Open), true
 }
 
 // RecordEvent implements resourcelock.Interface

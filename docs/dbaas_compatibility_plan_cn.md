@@ -45756,6 +45756,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   acquire/release command、plan/target/semantic receipt 绑定及真实 TiKV 竞态演练仍是下一项，故当前
   native restore receipt 仍不得把 `target_write_fence_proven` 标为 true。
 
+- A4317 在接入 fence receipt 时确认固定 BR v7.5.1 的 txn full 路径是 whole-cluster，且已知会忽略
+  start/end；目标集群内的事务型 fence 本身处于 full SST 导入范围，所以它不能诚实证明 BR full import
+  全窗口。为避免扩大错误承诺，本轮没有修改 full/log/final receipt 的总
+  `target_write_fence_proven=false`。新增共享 `pkg/backend/restorationfence` key/token 契约和原子
+  `Acquire/Verify/Release`：获取把缺失或 `open` 的 control + 256 shards 在一个 TiKV transaction 内改成
+  canonical token，混入 foreign/partial owner 时 fail closed，同 token 重试幂等，释放也要求全部 key 仍由
+  exact token 持有。新增 `native-pitr-restoration-fence` acquire/verify 命令；它先绑定并核对 exact plan SHA、
+  live target PD cluster ID、keyspace 与 operation ID，再发布
+  `kubebrain.native-pitr-restoration-fence.v1` receipt。该证据的当前合法范围是 full import 后的 log replay
+  与 semantic validation 隔离；要覆盖 full import，仍需外部 durable admission/control-plane fence，或后续
+  采用不会导入 coordination namespace 的受证明 range-aware full restore。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
