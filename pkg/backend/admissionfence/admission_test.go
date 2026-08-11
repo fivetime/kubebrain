@@ -80,16 +80,18 @@ func TestSessionReRegistersAfterKeepAliveStreamEnds(t *testing.T) {
 	ctx := t.Context()
 	session, err := StartSession(ctx, cli, "recover", "replica-1:2380", 6*time.Second)
 	require.NoError(t, err)
-	oldLease := clientv3.LeaseID(session.leaseID.Load())
-	_, err = cli.Revoke(ctx, oldLease)
-	require.NoError(t, err)
-	require.Eventually(t, func() bool {
-		return session.Fresh() && clientv3.LeaseID(session.leaseID.Load()) != oldLease
-	}, 5*time.Second, 50*time.Millisecond, "session must replace a lost keepalive lease in the same process")
-	response, err := cli.Get(ctx, SessionKey("recover", "replica-1:2380"))
-	require.NoError(t, err)
-	require.Len(t, response.Kvs, 1)
-	require.Equal(t, int64(session.leaseID.Load()), response.Kvs[0].Lease)
+	for cycle := 1; cycle <= 2; cycle++ {
+		oldLease := clientv3.LeaseID(session.leaseID.Load())
+		_, err = cli.Revoke(ctx, oldLease)
+		require.NoError(t, err)
+		require.Eventually(t, func() bool {
+			return session.Fresh() && clientv3.LeaseID(session.leaseID.Load()) != oldLease
+		}, 5*time.Second, 50*time.Millisecond, "cycle %d must replace a lost keepalive lease in the same process", cycle)
+		response, getErr := cli.Get(ctx, SessionKey("recover", "replica-1:2380"))
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, int64(session.leaseID.Load()), response.Kvs[0].Lease)
+	}
 	require.NoError(t, session.Close(ctx))
 }
 

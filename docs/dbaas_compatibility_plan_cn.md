@@ -46097,6 +46097,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   重建，故障期 Snapshot deadline、恢复写、取消流和随后完整 artifact 均符合上游契约且无资源残留。
   仍开放连续多轮 admission 抖动、小时级慢读/soak、真实 PVC 与对象存储落盘取消。
 
+- A4345 关闭 A4344 保留的“只证明一次 admission 重建”缺口。`TestSessionReRegistersAfterKeepAliveStreamEnds`
+  现在在同一个 `Session` 上连续撤销两代 lease；每一轮都要求 freshness 恢复、lease ID 前进，且 PD 中
+  session key 绑定当前 lease，证明 run loop 不会在第一次替换后退出或继续引用旧租约。真实
+  `TestNativeTwoPDENOSPCRealCluster` 也改为在同一 KubeBrain 进程和同一组三 PD 数据目录中执行两轮完整
+  故障：每轮分别把两任 live embedded-etcd leader 填到物理 OS error 28，要求 PD 无多数派后写 fail
+  closed，将首个错误写保留为不确定结果；移除压力文件并重启原容器后，三个 name/member ID 必须保持
+  不变，新写必须恢复。首轮仍额外验证故障期 Snapshot fail closed、约 18 MiB in-flight cancel、新鲜
+  snapshot 的 SHA-256、官方 etcdutl 与 bbolt 内容；第二轮结束后统一逐值检查两轮全部 acknowledged 写，
+  并分别对账两次不确定写。2026-08-11 真实三副本用例 51.47 秒通过且 runner 清理成功；`go test -race
+  ./pkg/backend/admissionfence` 同时通过。该项证明短时间隔的两次 session/election 恢复可重复，不外推为
+  无限次数或小时级稳定性；长 soak、持续网络抖动、真实 PVC 与对象存储 multipart abort 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

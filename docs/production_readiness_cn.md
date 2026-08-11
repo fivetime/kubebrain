@@ -2403,6 +2403,14 @@ CAS predecessor，避免恢复后永久用旧 record 续约。加强后的真实
 不新鲜与 election renew 失败分开告警；本门禁仍不替代小时级慢客户端、真实 PVC 恢复和对象存储
 multipart abort 演练。
 
+2026-08-11 的 A4345 在同一个 KubeBrain 进程中连续执行两轮上述双 PD 物理满盘与恢复，而不是重启服务
+后重复单轮测试。每轮都重新按 live leader ID 选择两任故障成员，验证无 quorum 时写 fail closed、恢复
+原 name/member ID 后新写成功，并对账该轮错误响应对应的不确定写；首轮的 Snapshot failure、18 MiB
+取消流和完整 artifact 校验继续保留。真实三副本运行 51.47 秒通过。admission 单测还在同一 Session 上
+连续撤销两代 lease，每代都必须重新注册 session key 并恢复 freshness，race 检查通过。运维上这意味着
+一次自动恢复不会耗尽重连能力，但仍应对反复重建计数和不新鲜持续时间告警；两轮短故障不能替代小时级
+抖动、长期 lease churn、PVC replacement 或跨 AZ 分区演练。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

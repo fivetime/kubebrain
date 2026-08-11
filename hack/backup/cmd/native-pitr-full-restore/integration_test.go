@@ -547,9 +547,10 @@ func TestNativePDLeaderENOSPCRealCluster(t *testing.T) {
 	}
 }
 
-// TestNativeTwoPDENOSPCRealCluster verifies fail-closed behavior after two
-// successive live PD leaders reach physical ENOSPC. A failed KubeBrain write
-// is reconciled after the same embedded-etcd members recover.
+// TestNativeTwoPDENOSPCRealCluster verifies two consecutive quorum-loss and
+// recovery cycles in one KubeBrain process. Each cycle fills two successive
+// live PD leaders to physical ENOSPC and reconciles the first failed write
+// after the same embedded-etcd members recover.
 func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
 	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
@@ -576,8 +577,6 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	for _, name := range memberNames {
 		require.NotZero(t, memberIDs[name], "PD member %s is absent", name)
 	}
-	initialLeaderID := currentEtcdLeader(t, ctx, pdEtcd, pdEndpoints)
-
 	root := t.TempDir()
 	const endpoint = "127.0.0.1:45379"
 	server := startKubeBrainForKeyspace(t, ctx, serverBinary, targetPD, root, "two-pd-enospc", "two-pd-enospc-integration")
@@ -587,101 +586,112 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	_, err = client.Put(ctx, "before", "durable-before-pd-quorum-loss")
 	require.NoError(t, err)
 
-	pressurePaths := make([]string, 0, 2)
-	faultedIndexes := make([]int, 0, 2)
-	faultLeader := func(leaderID uint64, sequence int) {
-		leaderIndex := -1
-		for index, name := range memberNames {
-			if memberIDs[name] == leaderID {
-				leaderIndex = index
+	type cycleResult struct {
+		acknowledged                 map[string]string
+		ambiguousKey, ambiguousValue string
+	}
+	runFaultCycle := func(cycle int, checkSnapshot bool) cycleResult {
+		pressurePaths := make([]string, 0, 2)
+		faultedIndexes := make([]int, 0, 2)
+		faultLeader := func(leaderID uint64, sequence int) {
+			leaderIndex := -1
+			for index, name := range memberNames {
+				if memberIDs[name] == leaderID {
+					leaderIndex = index
+					break
+				}
+			}
+			require.NotEqual(t, -1, leaderIndex, "live PD leader %x has no managed member", leaderID)
+			pressurePath := filepath.Join(dataDirs[leaderIndex], fmt.Sprintf("kubebrain-pd-enospc-pressure-%d-%d", cycle, sequence))
+			pressurePaths = append(pressurePaths, pressurePath)
+			t.Cleanup(func() { _ = os.Remove(pressurePath) })
+			faultedIndexes = append(faultedIndexes, leaderIndex)
+			fillBoundedFilesystem(t, ctx, dataDirs[leaderIndex], pressurePath)
+			probeValue := strings.Repeat("p", 256*1024)
+			require.Eventually(t, func() bool {
+				attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+				_, _ = pdEtcd.Put(attempt, fmt.Sprintf("/kubebrain-integration/two-pd-enospc/%d/%d/%d", cycle, sequence, time.Now().UnixNano()), probeValue)
+				attemptCancel()
+				return containerLogContains(ctx, containers[leaderIndex], "no space left on device", "os error 28")
+			}, 45*time.Second, 250*time.Millisecond, "cycle %d PD leader %s did not surface physical ENOSPC", cycle, memberNames[leaderIndex])
+		}
+
+		initialLeaderID := currentEtcdLeader(t, ctx, pdEtcd, pdEndpoints)
+		faultLeader(initialLeaderID, 0)
+		secondLeaderID := waitForDifferentEtcdLeader(t, ctx, pdEtcd, pdEndpoints, initialLeaderID)
+		require.NotEqual(t, initialLeaderID, secondLeaderID)
+		faultLeader(secondLeaderID, 1)
+
+		result := cycleResult{acknowledged: make(map[string]string)}
+		for index := 0; index < 20; index++ {
+			key := fmt.Sprintf("cycle-%d-during-pd-quorum-loss-%02d", cycle, index)
+			value := fmt.Sprintf("cycle-%d-value-%02d", cycle, index)
+			attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+			_, putErr := client.Put(attempt, key, value)
+			attemptCancel()
+			if putErr != nil {
+				result.ambiguousKey, result.ambiguousValue = key, value
 				break
 			}
+			result.acknowledged[key] = value
 		}
-		require.NotEqual(t, -1, leaderIndex, "live PD leader %x has no managed member", leaderID)
-		pressurePath := filepath.Join(dataDirs[leaderIndex], fmt.Sprintf("kubebrain-pd-enospc-pressure-%d", sequence))
-		pressurePaths = append(pressurePaths, pressurePath)
-		t.Cleanup(func() { _ = os.Remove(pressurePath) })
-		faultedIndexes = append(faultedIndexes, leaderIndex)
-		fillBoundedFilesystem(t, ctx, dataDirs[leaderIndex], pressurePath)
-		probeValue := strings.Repeat("p", 256*1024)
+		require.NotEmpty(t, result.ambiguousKey, "cycle %d must fail closed after the PD majority is unavailable", cycle)
+		if checkSnapshot {
+			faultSnapshotCtx, faultSnapshotCancel := context.WithTimeout(ctx, 5*time.Second)
+			faultSnapshot, snapshotErr := client.SnapshotWithVersion(faultSnapshotCtx)
+			if snapshotErr == nil {
+				_, snapshotErr = io.ReadAll(faultSnapshot.Snapshot)
+				_ = faultSnapshot.Snapshot.Close()
+			}
+			faultSnapshotCancel()
+			require.Error(t, snapshotErr, "snapshot must fail closed while the PD majority is unavailable")
+			require.Contains(t, []codes.Code{codes.Unavailable, codes.DeadlineExceeded}, status.Code(snapshotErr))
+		}
+
+		for _, pressurePath := range pressurePaths {
+			require.NoError(t, os.Remove(pressurePath))
+		}
+		for _, index := range faultedIndexes {
+			restartOutput, restartErr := exec.CommandContext(ctx, "docker", "restart", containers[index]).CombinedOutput()
+			require.NoError(t, restartErr, "%s", restartOutput)
+		}
+		waitForContainerAddresses(t, ctx, pdEndpoints, containers)
 		require.Eventually(t, func() bool {
-			attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
-			_, _ = pdEtcd.Put(attempt, fmt.Sprintf("/kubebrain-integration/two-pd-enospc/%d/%d", sequence, time.Now().UnixNano()), probeValue)
-			attemptCancel()
-			return containerLogContains(ctx, containers[leaderIndex], "no space left on device", "os error 28")
-		}, 45*time.Second, 250*time.Millisecond, "PD leader %s did not surface physical ENOSPC", memberNames[leaderIndex])
-	}
-
-	faultLeader(initialLeaderID, 0)
-	secondLeaderID := waitForDifferentEtcdLeader(t, ctx, pdEtcd, pdEndpoints, initialLeaderID)
-	require.NotEqual(t, initialLeaderID, secondLeaderID)
-	faultLeader(secondLeaderID, 1)
-
-	acknowledged := make(map[string]string)
-	ambiguousKey := ""
-	ambiguousValue := ""
-	for index := 0; index < 20; index++ {
-		key := fmt.Sprintf("during-pd-quorum-loss-%02d", index)
-		value := fmt.Sprintf("value-%02d", index)
-		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
-		_, putErr := client.Put(attempt, key, value)
-		attemptCancel()
-		if putErr != nil {
-			ambiguousKey = key
-			ambiguousValue = value
-			break
-		}
-		acknowledged[key] = value
-	}
-	require.NotEmpty(t, ambiguousKey, "KubeBrain must fail closed after the PD majority is unavailable")
-	faultSnapshotCtx, faultSnapshotCancel := context.WithTimeout(ctx, 5*time.Second)
-	faultSnapshot, snapshotErr := client.SnapshotWithVersion(faultSnapshotCtx)
-	if snapshotErr == nil {
-		_, snapshotErr = io.ReadAll(faultSnapshot.Snapshot)
-		_ = faultSnapshot.Snapshot.Close()
-	}
-	faultSnapshotCancel()
-	require.Error(t, snapshotErr, "snapshot must fail closed while the PD majority is unavailable")
-	require.Contains(t, []codes.Code{codes.Unavailable, codes.DeadlineExceeded}, status.Code(snapshotErr))
-
-	for _, pressurePath := range pressurePaths {
-		require.NoError(t, os.Remove(pressurePath))
-	}
-	for _, index := range faultedIndexes {
-		restartOutput, restartErr := exec.CommandContext(ctx, "docker", "restart", containers[index]).CombinedOutput()
-		require.NoError(t, restartErr, "%s", restartOutput)
-	}
-	waitForContainerAddresses(t, ctx, pdEndpoints, containers)
-	require.Eventually(t, func() bool {
-		response, listErr := pdEtcd.MemberList(ctx)
-		if listErr != nil || len(response.Members) != len(memberIDs) {
-			return false
-		}
-		for _, member := range response.Members {
-			if memberIDs[member.Name] != member.ID {
+			response, listErr := pdEtcd.MemberList(ctx)
+			if listErr != nil || len(response.Members) != len(memberIDs) {
 				return false
 			}
+			for _, member := range response.Members {
+				if memberIDs[member.Name] != member.ID {
+					return false
+				}
+			}
+			return true
+		}, 45*time.Second, 500*time.Millisecond, "cycle %d recovered PD members must retain their identities", cycle)
+		recoveredWrite := false
+		recoveryDeadline := time.Now().Add(45 * time.Second)
+		for time.Now().Before(recoveryDeadline) {
+			attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
+			_, putErr := client.Put(attempt, fmt.Sprintf("after-cycle-%d", cycle), fmt.Sprintf("durable-after-pd-quorum-recovery-%d", cycle))
+			attemptCancel()
+			if putErr == nil {
+				recoveredWrite = true
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
 		}
-		return true
-	}, 45*time.Second, 500*time.Millisecond, "recovered PD members must retain their identities")
-	recoveredWrite := false
-	recoveryDeadline := time.Now().Add(45 * time.Second)
-	for time.Now().Before(recoveryDeadline) {
-		attempt, attemptCancel := context.WithTimeout(ctx, 3*time.Second)
-		_, putErr := client.Put(attempt, "after", "durable-after-pd-quorum-recovery")
-		attemptCancel()
-		if putErr == nil {
-			recoveredWrite = true
-			break
+		if !recoveredWrite {
+			serverLog, _ := os.ReadFile(server.logPath)
+			t.Fatalf("KubeBrain did not resume writes after PD quorum recovery cycle %d:\n%s", cycle, filterLogLines(serverLog,
+				"attempting to acquire leader lease", "successfully acquired lease", "start leading", "leadership lost",
+				"initialize acquired", "restore acquired", "failed to renew"))
 		}
-		time.Sleep(500 * time.Millisecond)
+		_, err = pdEtcd.Delete(ctx, fmt.Sprintf("/kubebrain-integration/two-pd-enospc/%d/", cycle), clientv3.WithPrefix())
+		require.NoError(t, err)
+		return result
 	}
-	if !recoveredWrite {
-		serverLog, _ := os.ReadFile(server.logPath)
-		t.Fatalf("KubeBrain did not resume writes after PD quorum recovery:\n%s", filterLogLines(serverLog,
-			"attempting to acquire leader lease", "successfully acquired lease", "start leading", "leadership lost",
-			"initialize acquired", "restore acquired", "failed to renew", "leadership fence rejected", "leadership freshness check"))
-	}
+
+	cycleResults := []cycleResult{runFaultCycle(1, true)}
 	// Exceed gRPC's receive window so cancellation is observed while the
 	// application is still reading rather than after the whole snapshot was
 	// opportunistically buffered by the transport.
@@ -714,22 +724,24 @@ func TestNativeTwoPDENOSPCRealCluster(t *testing.T) {
 	require.NoError(t, os.WriteFile(snapshotPath, snapshotBytes, 0o600))
 	statusOutput, statusErr := exec.CommandContext(ctx, etcdutl, "--write-out=json", "snapshot", "status", snapshotPath).CombinedOutput()
 	require.NoError(t, statusErr, "%s", statusOutput)
-	requireSnapshotKeys(t, snapshotPath, []string{"before", "after", "large-snapshot-00", "large-snapshot-23"})
+	requireSnapshotKeys(t, snapshotPath, []string{"before", "after-cycle-1", "large-snapshot-00", "large-snapshot-23"})
 
-	for key, value := range acknowledged {
-		response, getErr := client.Get(ctx, key)
+	cycleResults = append(cycleResults, runFaultCycle(2, false))
+
+	for _, result := range cycleResults {
+		for key, value := range result.acknowledged {
+			response, getErr := client.Get(ctx, key)
+			require.NoError(t, getErr)
+			require.Len(t, response.Kvs, 1)
+			require.Equal(t, []byte(value), response.Kvs[0].Value)
+		}
+		ambiguous, getErr := client.Get(ctx, result.ambiguousKey)
 		require.NoError(t, getErr)
-		require.Len(t, response.Kvs, 1)
-		require.Equal(t, []byte(value), response.Kvs[0].Value)
+		require.LessOrEqual(t, len(ambiguous.Kvs), 1)
+		if len(ambiguous.Kvs) == 1 {
+			require.Equal(t, []byte(result.ambiguousValue), ambiguous.Kvs[0].Value)
+		}
 	}
-	ambiguous, err := client.Get(ctx, ambiguousKey)
-	require.NoError(t, err)
-	require.LessOrEqual(t, len(ambiguous.Kvs), 1)
-	if len(ambiguous.Kvs) == 1 {
-		require.Equal(t, []byte(ambiguousValue), ambiguous.Kvs[0].Value)
-	}
-	_, err = pdEtcd.Delete(ctx, "/kubebrain-integration/two-pd-enospc/", clientv3.WithPrefix())
-	require.NoError(t, err)
 	before, err := client.Get(ctx, "before")
 	require.NoError(t, err)
 	require.Len(t, before.Kvs, 1)
