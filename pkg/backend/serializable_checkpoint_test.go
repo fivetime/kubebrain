@@ -27,6 +27,7 @@ type checkpointTestStorage struct {
 	minimum         uint64
 	protectedID     string
 	protectedTS     uint64
+	protectedTTL    time.Duration
 	warmReads       int
 	getAtErr        error
 	releasedID      string
@@ -77,10 +78,10 @@ func (s *checkpointTestStorage) BatchGetAt(ctx context.Context, keys [][]byte, _
 	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
 }
 
-func (s *checkpointTestStorage) ProtectSnapshot(_ context.Context, id string, _ time.Duration, timestamp uint64) (uint64, error) {
+func (s *checkpointTestStorage) ProtectSnapshot(_ context.Context, id string, ttl time.Duration, timestamp uint64) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.protectedID, s.protectedTS = id, timestamp
+	s.protectedID, s.protectedTS, s.protectedTTL = id, timestamp, ttl
 	return s.minimum, nil
 }
 
@@ -126,6 +127,7 @@ func TestSerializableCheckpointBindsRevisionCompactAndAuthAtSnapshot(t *testing.
 	require.Equal(t, c.Timestamp, served.Timestamp)
 	require.NotEmpty(t, store.protectedID)
 	require.Equal(t, c.Timestamp, store.protectedTS)
+	require.Equal(t, serializableCheckpointTTL, store.protectedTTL)
 	require.Positive(t, store.partitions)
 	require.Positive(t, store.warmReads)
 }

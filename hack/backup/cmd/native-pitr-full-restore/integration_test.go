@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1266,6 +1267,97 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 		attemptCancel()
 		return getErr == nil && len(response.Kvs) == 1 && string(response.Kvs[0].Value) == "leader-new-after-follower-isolation"
 	}, 45*time.Second, 500*time.Millisecond, "the same follower must recover and observe the leader's newer value")
+}
+
+func TestNativeKubeBrainRollingCheckpointPinsRealCluster(t *testing.T) {
+	targetPD := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD")
+	serverBinary := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
+	pdContainer := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_CONTAINER")
+	if targetPD == "" || serverBinary == "" || pdContainer == "" {
+		t.Skip("set the native PITR rolling checkpoint pin integration environment")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	leaderClientPort, followerClientPort := freeTCPPort(t), freeTCPPort(t)
+	leaderPeerPort, followerPeerPort := freeTCPPort(t), freeTCPPort(t)
+	initialCluster := fmt.Sprintf(
+		"leader=http://127.0.0.1:%d,follower=http://127.0.0.1:%d", leaderPeerPort, followerPeerPort,
+	)
+	const keyspace = "rolling-checkpoint-pin-integration"
+	leaderServer := startKubeBrainReplicaAsUID(
+		t, ctx, serverBinary, targetPD, root, "rolling-pin-leader", keyspace, 0,
+		leaderClientPort, leaderPeerPort, freeTCPPort(t), initialCluster,
+	)
+	defer leaderServer.stop(t)
+	leaderEndpoint := fmt.Sprintf("127.0.0.1:%d", leaderClientPort)
+	leaderClient := waitForEndpoint(t, ctx, leaderEndpoint, leaderServer)
+	defer leaderClient.Close()
+
+	startFollower := func(label string) *runningServer {
+		return startKubeBrainReplicaAsUID(
+			t, ctx, serverBinary, targetPD, root, label, keyspace, 0,
+			followerClientPort, followerPeerPort, freeTCPPort(t), initialCluster,
+		)
+	}
+	followerServer := startFollower("rolling-pin-follower-old")
+	followerEndpoint := fmt.Sprintf("127.0.0.1:%d", followerClientPort)
+	followerClient := waitForEndpoint(t, ctx, followerEndpoint, followerServer)
+	require.Eventually(t, func() bool {
+		leaderStatus, leaderErr := leaderClient.Status(ctx, leaderEndpoint)
+		followerStatus, followerErr := followerClient.Status(ctx, followerEndpoint)
+		return leaderErr == nil && followerErr == nil &&
+			leaderStatus.Header.MemberId == leaderStatus.Leader &&
+			followerStatus.Header.MemberId != followerStatus.Leader
+	}, 15*time.Second, 250*time.Millisecond)
+
+	var oldIDs []string
+	require.Eventually(t, func() bool {
+		oldIDs = checkpointServiceIDsFromPDCTL(t, ctx, pdContainer, strings.Split(targetPD, ",")[0])
+		return len(oldIDs) == 2
+	}, 15*time.Second, 250*time.Millisecond, "leader and old follower must register distinct checkpoint pins")
+	require.NoError(t, followerClient.Close())
+	followerServer.stop(t)
+	stillPinned := checkpointServiceIDsFromPDCTL(t, ctx, pdContainer, strings.Split(targetPD, ",")[0])
+	require.ElementsMatch(t, oldIDs, stillPinned,
+		"graceful process stop must not release a pin that an in-flight request could still need")
+
+	replacementServer := startFollower("rolling-pin-follower-new")
+	defer replacementServer.stop(t)
+	replacementClient := waitForEndpoint(t, ctx, followerEndpoint, replacementServer)
+	defer replacementClient.Close()
+	var rollingIDs []string
+	require.Eventually(t, func() bool {
+		rollingIDs = checkpointServiceIDsFromPDCTL(t, ctx, pdContainer, strings.Split(targetPD, ",")[0])
+		return len(rollingIDs) == 3
+	}, 15*time.Second, 250*time.Millisecond, "replacement must add its own pin without advancing the old process pin")
+	for _, oldID := range oldIDs {
+		require.Contains(t, rollingIDs, oldID)
+	}
+}
+
+var checkpointServiceIDPattern = regexp.MustCompile(`kubebrain-serializable-[0-9a-f]{24}`)
+
+func checkpointServiceIDsFromPDCTL(t *testing.T, ctx context.Context, container, endpoint string) []string {
+	t.Helper()
+	output, err := exec.CommandContext(ctx, "docker", "exec", container, "/pd-ctl", "-u", endpoint, "service-gc-safepoint").CombinedOutput()
+	require.NoError(t, err, "pd-ctl service-gc-safepoint: %s", output)
+	matches := checkpointServiceIDPattern.FindAllString(string(output), -1)
+	sort.Strings(matches)
+	return slicesCompact(matches)
+}
+
+func slicesCompact(values []string) []string {
+	if len(values) < 2 {
+		return values
+	}
+	result := values[:1]
+	for _, value := range values[1:] {
+		if value != result[len(result)-1] {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 // TestNativeLegacyLeaseHistorySnapshotRealCluster proves that a legacy value

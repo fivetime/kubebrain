@@ -46375,8 +46375,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   integration/backend/server/storage 全量回归通过，runner 清理无容器和 iptables 残留。
   本项增强的是 follower durable-load 和独立 pin 的真实证据，没有扩大 A4359 的时间/Region-cache边界：
   follower 必须在故障前成功启动、读取 shared checkpoint 并向 PD 建立自己的 service safepoint；故障中
-  新启动或重启的进程无法证明旧 snapshot 仍受保护，仍须 fail closed。跨宿主 peer 网络分区、滚动升级
-  中旧请求与新进程 pin 交叠和 Region topology 变化继续开放；启动时 cold Region cache 由 A4363 补齐。
+  新启动或重启的进程无法证明旧 snapshot 仍受保护，仍须 fail closed。跨宿主 peer 网络分区和 Region
+  topology 变化继续开放；启动时 cold Region cache 由 A4363、滚动升级 pin 交叠由 A4364 补齐。
 
 - A4363 关闭 A4359/A4362 的“进程启动后尚未读过目标用户 Region”缺口。审计 TiKV client-go 后确认现有
   `store.GetPartitions` 直接调用 PD `ScanRegions`，返回边界但不会填充 txn client 自身 Region cache；因此
@@ -46397,6 +46397,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项只保证 checkpoint 建立时 PD 报告的现有 Region 集合；隔离后的 split/merge、leader relocation 导致
   client-go 主动失效缓存、缓存容量淘汰以及进程在无 PD 时冷启动仍 fail closed。若要覆盖动态 topology，
   需要可观测的周期/事件驱动 cache refresh 与真实 split/transfer 门禁，不能用每秒全量 ScanRegions 硬撑。
+
+- A4364 将 A4359 的“进程随机 service ID、shutdown 不主动 release、由 TTL 回收”从代码推理提升为真实
+  PD 滚动交叠门禁。runner 在 KubeBrain→PD fault profile 中向测试暴露一个 disposable target PD 容器，
+  `TestNativeKubeBrainRollingCheckpointPinsRealCluster` 启动共享 keyspace 的 leader 与真正 follower，并用
+  Maintenance Status 锁定角色后，直接执行容器内 `/pd-ctl service-gc-safepoint`。输出必须出现两个不同的
+  `kubebrain-serializable-<24 hex>` service ID；停止旧 follower 后立即复查，两个 ID 必须原样保留，证明
+  graceful shutdown 不会解除仍可能被 in-flight request 使用的 snapshot。随后以完全相同 client/peer
+  port 和 peer identity 启动 replacement follower，PD 必须同时保留旧两个 ID 并新增第三个不同 ID；这
+  证明随机 nonce 是进程级而非 identity 级，新进程续租/推进自己的 checkpoint 不会覆盖旧进程 pin。
+  service ID 提取会排序去重，不能把 pd-ctl 重复显示或 `gc_worker` 误计为 checkpoint 实例。2026-08-11
+  真实三 PD/三 TiKV 双进程→替换进程门禁连续以 4.62/4.59 秒通过，脚本语法、integration/backend/server/
+  storage 全量回归通过，runner 无容器或规则残留。
+  本项证明的是 rolling overlap 与“不提前释放”；旧 ID 的最终回收仍由实现固定的 5 分钟 PD TTL 保证，
+  没有为了缩短测试而加入生产可调的危险 TTL，也没有让测试等待五分钟。PD service TTL/expiry 属于 PD
+  原语，KubeBrain 单元测试已固定传入 TTL 和本地只使用半 TTL；生产仍需监控异常退出后 stale service
+  数量及 PD 时间同步。故障中启动的新进程无法连接 PD 注册自己的 pin 时仍必须 fail closed，不能继承
+  仅存在于前任进程的保护。
 
 ### P2：运维兼容和长期验证
 
