@@ -12,7 +12,7 @@ fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
 objectstore_integration=false
 case "$test_name" in
-  TestCanceledPutObjectLeavesNoRemoteArtifact|TestCommittedPutObjectResponseLossReconcilesRealS3|TestConditionalUploadRefusesConflictingRealS3Object)
+  TestCanceledPutObjectLeavesNoRemoteArtifact|TestCommittedPutObjectResponseLossReconcilesRealS3|TestConditionalUploadRefusesConflictingRealS3Object|TestConditionalUploadRejectsMatchingMetadataCorruptRealS3Body)
     objectstore_integration=true
     ;;
 esac

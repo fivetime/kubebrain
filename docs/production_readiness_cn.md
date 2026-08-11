@@ -2446,6 +2446,13 @@ version、原 body，无第二 version 或 delete marker。告警与 runbook 应
 处置前应保全 Operation 参数摘要、现有 version ID、metadata 和 inventory receipt，再由控制面决定是否
 修正映射或创建一个身份完整的新 Operation。
 
+2026-08-11 的 A4350 验证 Head 成功仍不足以发布 receipt。真实 MinIO 中预置一个与正式备份 metadata、
+size、retention 完全相同但 body 等长损坏的锁定 version；uploader 在条件冲突后通过 Head gate，随后对
+exact version 完整下载并重算 SHA-256，以 `remote object file SHA-256 mismatch` fail closed。真实用例
+6.45 秒通过，receipt 不存在，远端没有新增 version 或 delete marker。生产容量规划必须把不确定 PUT 的
+完整 Get 计入对象存储带宽、费用与 Operation deadline；超时后保持待对账状态，禁止仅凭 ETag、metadata
+或 Content-Length 人工补写 receipt。
+
 两个 TiKV store 同时物理满盘的 fail-closed/recovery 门禁使用：
 
 ```shell

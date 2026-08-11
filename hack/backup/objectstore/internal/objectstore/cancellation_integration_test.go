@@ -205,6 +205,52 @@ func TestConditionalUploadRefusesConflictingRealS3Object(t *testing.T) {
 	require.Equal(t, originalBody, remoteBody)
 }
 
+func TestConditionalUploadRejectsMatchingMetadataCorruptRealS3Body(t *testing.T) {
+	directEndpoint, bucket, accessKey, secretKey := realObjectStoreEnv(t)
+	client := realS3Client(t, directEndpoint, accessKey, secretKey)
+	artifactPath := writeLargeCancellationArtifact(t)
+	artifact, err := backupfile.OpenVerified(artifactPath)
+	require.NoError(t, err)
+	defer artifact.Close()
+	info, err := os.Stat(artifact.Path())
+	require.NoError(t, err)
+	_, artifactFileSHA256, err := fileSHA256(artifact.Path())
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	retainUntil := now.Add(time.Hour)
+	objectKey := "conflict/matching-metadata-corrupt-body.jsonl"
+	request := UploadRequest{
+		Input: artifactPath, Instance: "corrupt-integration", BackupID: "corrupt-1",
+		ObjectStoreID: "minio-integration", Bucket: bucket, ObjectKey: objectKey,
+		RetentionMode: "COMPLIANCE", RetainUntilUnix: retainUntil.Unix(),
+		ExpectedPrefix: "/registry", MinRecords: 1, MaxAgeSeconds: 300,
+		ReceiptOutput: filepath.Join(t.TempDir(), "receipt.json"), Now: now,
+	}
+	metadata := artifactMetadata(request, artifact.Status(), artifactFileSHA256, info.Size(), retainUntil)
+	corruptBody := bytes.Repeat([]byte("z"), int(info.Size()))
+	original, err := client.PutObject(t.Context(), &s3.PutObjectInput{
+		Bucket: aws.String(bucket), Key: aws.String(objectKey), Body: bytes.NewReader(corruptBody),
+		ContentLength:             aws.Int64(info.Size()),
+		Metadata:                  metadata,
+		ObjectLockMode:            types.ObjectLockModeCompliance,
+		ObjectLockRetainUntilDate: aws.Time(retainUntil),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, aws.ToString(original.VersionId))
+
+	_, err = Upload(t.Context(), client, request)
+	require.ErrorContains(t, err, "remote object file SHA-256 mismatch")
+	_, statErr := os.Stat(request.ReceiptOutput)
+	require.ErrorIs(t, statErr, os.ErrNotExist)
+	versions, err := client.ListObjectVersions(t.Context(), &s3.ListObjectVersionsInput{
+		Bucket: aws.String(bucket), Prefix: aws.String(objectKey),
+	})
+	require.NoError(t, err)
+	require.Len(t, versions.Versions, 1)
+	require.Equal(t, aws.ToString(original.VersionId), aws.ToString(versions.Versions[0].VersionId))
+	require.Empty(t, versions.DeleteMarkers)
+}
+
 func realObjectStoreEnv(t *testing.T) (string, string, string, string) {
 	t.Helper()
 	directEndpoint := os.Getenv("KUBEBRAIN_OBJECTSTORE_CANCEL_S3_ENDPOINT")

@@ -46158,6 +46158,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   到 object key 的不可变唯一性及 Object Lock 下的不覆盖原则；平台必须为每次 Operation 生成确定性且
   唯一的 key，并把冲突升级为人工调查，不能自动改 key 产生无法由 inventory 追踪的旁路备份。
 
+- A4350 防止把 A4349 的 Head metadata/size 检查误当作内容完整性证明。新增
+  `TestConditionalUploadRejectsMatchingMetadataCorruptRealS3Body`：从真实约 8 MiB logical artifact 计算
+  正式 uploader 会写入的全部 metadata、字节长度和 retention，再预置一个这些字段完全相同、但 body 用
+  等长错误字节替换的 COMPLIANCE 锁定 MinIO version。条件 PUT 冲突后的 Head 校验应通过，随后 uploader
+  必须按 exact version 完整 Get 并重算 file SHA-256，稳定返回 `remote object file SHA-256 mismatch`；
+  receipt 不得出现，远端仍精确只有原 version、无 delete marker。2026-08-11 真实用例 6.45 秒通过且无
+  资源残留。该项证明 metadata 只用于快速 identity gate，不能取代读取内容；对象存储或中间层若能伪造
+  metadata 但返回错误 body，备份仍 fail closed。大规模 artifact 的完整下载会增加 reconciliation RTO
+  和 egress，生产超时必须按最大对象尺寸配置，不能为缩短恢复而跳过 digest。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
