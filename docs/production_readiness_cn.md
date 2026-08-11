@@ -2078,6 +2078,13 @@ TiKV 集群内的事务型 fence 会随 full SST 一起进入覆盖范围。不�
 `kubebrain.native-pitr-restoration-fence.v1` receipt；`--action=verify --fence-receipt=...` 会重新核对 live PD
 cluster ID、exact plan 以及全部 257 个 token。该 receipt 当前只证明获取之后的 log replay/semantic 阶段
 仍由同一个持有者隔离，不能反向证明此前 full import 没有 writer，也不能单独把总 PITR receipt 标为完成。
+双集群 disposable drill 已同时覆盖 full-only 与官方 stream-log replay：获取后启动真实 KubeBrain 时监听端口
+存在，但选主因 closed control token 失败，clientv3 Put 返回 `Unavailable`；日志 mutation 由持有 fence 的
+restore worker 直接写入，写入前后全部 257 个 token 保持一致；精确 release 后 KubeBrain 才能选主并通过
+witness/lease/watch/history 语义验证。运行命令为
+`./hack/backup/run-native-pitr-full-restore-integration.sh` 和
+`KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR
+./hack/backup/run-native-pitr-full-restore-integration.sh`。
 
 当 plan 的 `restore_ts > full_snapshot.backup_ts` 时，同一个 full executor 仍只执行并记录 base
 whole-cluster txn import，随后必须在 KubeBrain/其他 target writer 保持停机的窗口内运行独立日志回放：

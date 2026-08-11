@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/semanticverify"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	storagetikv "github.com/kubewharf/kubebrain/pkg/storage/tikv"
 	"github.com/stretchr/testify/require"
 	pd "github.com/tikv/pd/client"
@@ -219,21 +221,43 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
+	fenceReceipt, fenceToken, err := nativepitr.BuildRestorationFenceReceipt(plan, digest(planBytes), "restore-integration", time.Now().Unix(), false)
+	require.NoError(t, err)
+	targetKV, err := storagetikv.NewKvStorage(targetAddrs, 1, storagetikv.Security{})
+	require.NoError(t, err)
+	resumed, err := restorationfence.Acquire(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken)
+	require.NoError(t, err)
+	require.False(t, resumed)
+	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 	if withLogs {
 		manifest, mutations, materializeErr := nativepitr.MaterializeReplay(logs, logReceiptSHA, logRoot, full.BackupTS, plan.RestoreTS)
 		require.NoError(t, materializeErr)
 		require.NotEmpty(t, mutations)
-		targetKV, storageErr := storagetikv.NewKvStorage(targetAddrs, 1, storagetikv.Security{})
-		require.NoError(t, storageErr)
 		apply, applyErr := nativepitr.ApplyReplay(ctx, targetKV, digest(planBytes), manifest, mutations)
 		require.NoError(t, applyErr)
-		require.NoError(t, targetKV.Close())
+		require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 		require.Equal(t, manifest.MutationCount, apply.AppliedMutations)
 		replayReceipt, receiptErr := nativepitr.BuildLogReplayExecution(plan, restore, manifest, nativepitr.LogReplayExecutionReceipt{PlanSHA256: digest(planBytes), FullRestoreReceiptSHA256: digest([]byte(receiptOut.String())), LogArtifactReceiptSHA256: logReceiptSHA, AppliedMutations: apply.AppliedMutations, AppliedTransactions: apply.AppliedTransactions, LastCommitTS: manifest.LastCommitTS, StartedAtUnix: time.Now().Add(-time.Second).Unix(), CompletedAtUnix: time.Now().Unix()})
 		require.NoError(t, receiptErr)
 		require.True(t, replayReceipt.LogReplayCompleted)
 		require.False(t, replayReceipt.PITRComplete)
 	}
+
+	// A real target process can start its listeners, but the imported keyspace
+	// cannot elect a leader or accept writes while the plan-bound token is held.
+	fencedTarget := startKubeBrain(t, ctx, server, targetPD, root, "target-fenced")
+	waitForTCP(t, ctx, "127.0.0.1:45379", fencedTarget)
+	fencedClient, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second})
+	require.NoError(t, err)
+	writeCtx, writeCancel := context.WithTimeout(ctx, 3*time.Second)
+	_, fencedWriteErr := fencedClient.Put(writeCtx, "/must-not-commit-during-restore", "blocked")
+	writeCancel()
+	require.Error(t, fencedWriteErr)
+	require.NoError(t, fencedClient.Close())
+	fencedTarget.stop(t)
+	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
+	require.NoError(t, restorationfence.Release(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
+	require.NoError(t, targetKV.Close())
 
 	targetServer := startKubeBrain(t, ctx, server, targetPD, root, "target")
 	defer targetServer.stop(t)
@@ -251,6 +275,22 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.True(t, semanticReceipt.FullRestoreSemanticValidated)
 		require.False(t, semanticReceipt.PITRComplete)
 	}
+}
+
+func waitForTCP(t *testing.T, ctx context.Context, address string, server *runningServer) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "tcp", address)
+		if err == nil {
+			require.NoError(t, conn.Close())
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	logBytes, logErr := os.ReadFile(server.logPath)
+	require.NoError(t, logErr)
+	t.Fatalf("KubeBrain TCP listener did not become ready: %s", logBytes)
 }
 
 type runningServer struct {

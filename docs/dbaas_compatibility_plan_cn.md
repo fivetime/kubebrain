@@ -45768,6 +45768,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 semantic validation 隔离；要覆盖 full import，仍需外部 durable admission/control-plane fence，或后续
   采用不会导入 coordination namespace 的受证明 range-aware full restore。
 
+- A4318 把 post-full fence 证据加入真实双集群 TiKV/PD 演练。`TestNativeFullRestoreRealBR` 与
+  `TestNativeLogReplayRealBR` 都在官方 BR v7.5.1 whole-cluster full import 完成后，以 exact plan SHA、target
+  cluster ID、keyspace 和 operation ID 构造 token，并在目标 TiKV 的一个 transaction 中获取 control + 256
+  shards。带日志路径在持有 token 时直接应用 plan-bound replay mutations，前后逐键验证 257 个值未漂移；
+  随后真实启动 target KubeBrain，TCP listener 可达但 leader election 因 closed control token 失败，clientv3
+  Put 返回 `Unavailable` 且无法落盘。演练再次验证 token 完整后才以 exact token 原子 release，重启目标并
+  完成 witness/lease/watch/history semantic verification。以下两条 disposable drill 均通过：
+  `./hack/backup/run-native-pitr-full-restore-integration.sh`；
+  `KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR
+  ./hack/backup/run-native-pitr-full-restore-integration.sh`。证据仍只覆盖 acquire 之后的阶段，不能把 full import
+  窗口或总 `target_write_fence_proven` 改成 true。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
