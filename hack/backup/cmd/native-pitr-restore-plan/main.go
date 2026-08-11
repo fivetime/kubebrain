@@ -13,13 +13,14 @@ import (
 	"io"
 	"os"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
 )
 
 const maxReceiptBytes = 4 << 20
 
 func main() {
-	var taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty string
+	var taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, witness string
 	var in nativepitr.ReceiptPlanInputs
 	flag.StringVar(&taskCreate, "task-create", "", "exact native-pitr-task-create.v4 receipt")
 	flag.StringVar(&fullSnapshot, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
@@ -28,16 +29,17 @@ func main() {
 	flag.StringVar(&logArtifacts, "log-artifacts", "", "exact native-pitr-log-artifacts.v2 receipt")
 	flag.StringVar(&sourceExclusive, "source-range-exclusive", "", "exact native-pitr-source-range-exclusive.v2 receipt")
 	flag.StringVar(&targetEmpty, "target-snapshot-empty", "", "exact native-pitr-target-snapshot-empty.v1 receipt")
+	flag.StringVar(&witness, "source-witness", "", "exact full-keyspace kubebrain.logical.v2 source witness")
 	flag.Uint64Var(&in.RestoreTS, "restore-ts", 0, "requested point-in-time TSO")
 	flag.Parse()
-	if err := run(taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, in, os.Stdout); err != nil {
+	if err := run(taskCreate, fullSnapshot, fullArtifacts, taskReady, logArtifacts, sourceExclusive, targetEmpty, witness, in, os.Stdout); err != nil {
 		fail(err)
 	}
 }
 
-func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, logArtifactsPath, sourceExclusivePath, targetEmptyPath string, in nativepitr.ReceiptPlanInputs, out io.Writer) error {
-	if taskCreatePath == "" || fullSnapshotPath == "" || fullArtifactsPath == "" || taskReadyPath == "" || logArtifactsPath == "" || sourceExclusivePath == "" || targetEmptyPath == "" {
-		return errors.New("task-create, full-snapshot, full-artifacts, task-ready, log-artifacts, source-range-exclusive, and target-snapshot-empty are required")
+func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, logArtifactsPath, sourceExclusivePath, targetEmptyPath, witnessPath string, in nativepitr.ReceiptPlanInputs, out io.Writer) error {
+	if taskCreatePath == "" || fullSnapshotPath == "" || fullArtifactsPath == "" || taskReadyPath == "" || logArtifactsPath == "" || sourceExclusivePath == "" || targetEmptyPath == "" || witnessPath == "" {
+		return errors.New("task-create, full-snapshot, full-artifacts, task-ready, log-artifacts, source-range-exclusive, target-snapshot-empty, and source-witness are required")
 	}
 	taskBytes, err := readReceipt(taskCreatePath)
 	if err != nil {
@@ -95,6 +97,18 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	if err != nil {
 		return err
 	}
+	witnessDigestBefore, err := digestFile(witnessPath)
+	if err != nil {
+		return err
+	}
+	verifiedWitness, err := backupfile.OpenVerified(witnessPath)
+	if err != nil {
+		return err
+	}
+	witnessStatus := verifiedWitness.Status()
+	if err := verifiedWitness.Close(); err != nil {
+		return err
+	}
 	taskDigest := sha256.Sum256(taskBytes)
 	fullDigest := sha256.Sum256(fullBytes)
 	artifactDigest := sha256.Sum256(artifactBytes)
@@ -102,6 +116,13 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	logArtifactDigest := sha256.Sum256(logArtifactBytes)
 	sourceExclusiveDigest := sha256.Sum256(sourceExclusiveBytes)
 	targetDigest := sha256.Sum256(targetBytes)
+	witnessDigest, err := digestFile(witnessPath)
+	if err != nil {
+		return err
+	}
+	if witnessDigest != witnessDigestBefore {
+		return errors.New("source witness changed while restore plan was being built")
+	}
 	in.TaskCreateSHA256 = hex.EncodeToString(taskDigest[:])
 	in.FullSnapshotSHA256 = hex.EncodeToString(fullDigest[:])
 	in.ArtifactReceiptSHA256 = hex.EncodeToString(artifactDigest[:])
@@ -109,6 +130,8 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	in.LogArtifactSHA256 = hex.EncodeToString(logArtifactDigest[:])
 	in.SourceExclusiveSHA256 = hex.EncodeToString(sourceExclusiveDigest[:])
 	in.TargetReceiptSHA256 = hex.EncodeToString(targetDigest[:])
+	in.WitnessFileSHA256 = witnessDigest
+	in.Witness = witnessStatus
 	plan, err := nativepitr.BuildFromReceipts(task, full, artifacts, ready, logs, sourceExclusive, target, in)
 	if err != nil {
 		return err
@@ -120,6 +143,19 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	b = append(b, '\n')
 	_, err = out.Write(b)
 	return err
+}
+
+func digestFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func readReceipt(path string) ([]byte, error) {

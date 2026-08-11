@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/stretchr/testify/require"
@@ -46,14 +47,18 @@ func TestRunWritesPlanFromExactReceipts(t *testing.T) {
 	coordEnd := []byte("/kubebrain-internal/ks-tenant-a0")
 	sourceExclusive := nativepitr.SourceRangeExclusiveReceipt{Format: nativepitr.SourceRangeExclusiveFormat, ClusterID: 11, PDAddrs: []string{"source-pd:2379"}, Keyspace: "tenant-a", StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, CoordinationStartKeyHex: hex.EncodeToString(coordStart), CoordinationEndKeyHex: hex.EncodeToString(coordEnd), CoordinationRangeExcluded: true, SnapshotTS: 120, FullSnapshotReceiptSHA256: hex.EncodeToString(fullDigest[:]), CheckedAtUnix: 2_000_000_000, ReadOnly: true}
 	target := nativepitr.TargetSnapshotEmptyReceipt{Format: nativepitr.TargetSnapshotEmptyFormat, ClusterID: 22, PDAddrs: []string{"pd:2379"}, Stores: []nativepitr.TargetStore{{ID: 1, Address: "tikv:20160"}}, SnapshotTS: 130, ScanScope: nativepitr.WholeTransactionalKeyspace, CheckedAtUnix: 2_000_000_000, ReadOnly: true}
-	paths := []string{filepath.Join(dir, "task.json"), filepath.Join(dir, "full.json"), filepath.Join(dir, "artifacts.json"), filepath.Join(dir, "ready.json"), filepath.Join(dir, "logs.json"), filepath.Join(dir, "source-exclusive.json"), filepath.Join(dir, "target.json")}
+	paths := []string{filepath.Join(dir, "task.json"), filepath.Join(dir, "full.json"), filepath.Join(dir, "artifacts.json"), filepath.Join(dir, "ready.json"), filepath.Join(dir, "logs.json"), filepath.Join(dir, "source-exclusive.json"), filepath.Join(dir, "target.json"), filepath.Join(dir, "source.logical.v2")}
 	for i, value := range []any{task, full, artifacts, ready, logs, sourceExclusive, target} {
 		b, err := json.Marshal(value)
 		require.NoError(t, err)
 		require.NoError(t, os.WriteFile(paths[i], b, 0o600))
 	}
+	w, err := backupfile.NewAtomicWriter(paths[7], "/", 119)
+	require.NoError(t, err)
+	_, err = w.Commit()
+	require.NoError(t, err)
 	var out bytes.Buffer
-	require.NoError(t, run(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], nativepitr.ReceiptPlanInputs{RestoreTS: 180}, &out))
+	require.NoError(t, run(paths[0], paths[1], paths[2], paths[3], paths[4], paths[5], paths[6], paths[7], nativepitr.ReceiptPlanInputs{RestoreTS: 180}, &out))
 	var plan nativepitr.Plan
 	require.NoError(t, json.Unmarshal(out.Bytes(), &plan))
 	require.NoError(t, plan.Validate())
@@ -61,5 +66,5 @@ func TestRunWritesPlanFromExactReceipts(t *testing.T) {
 }
 
 func TestRunRejectsMissingReceipts(t *testing.T) {
-	require.ErrorContains(t, run("", "", "", "", "", "", "", nativepitr.ReceiptPlanInputs{}, &bytes.Buffer{}), "required")
+	require.ErrorContains(t, run("", "", "", "", "", "", "", "", nativepitr.ReceiptPlanInputs{}, &bytes.Buffer{}), "required")
 }

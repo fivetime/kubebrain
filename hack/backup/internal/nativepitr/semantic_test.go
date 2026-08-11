@@ -21,6 +21,7 @@ func semanticFixture(t *testing.T) (Plan, FullSnapshotReceipt, FullRestoreExecut
 	restore.ArtifactManifestSHA256 = plan.Full.ArtifactManifestSHA
 	restore.StartedAtUnix, restore.CompletedAtUnix = 100, 110
 	witness := backupfile.Status{Format: backupfile.Format, Prefix: "/", Revision: 119, CreatedAtUnix: 90, Records: 2, Leases: 1, SHA256: digest}
+	plan.SourceWitness = SourceWitness{Format: witness.Format, FileSHA256: digest, ContentSHA256: witness.SHA256, Prefix: witness.Prefix, Revision: witness.Revision, CreatedAtUnix: witness.CreatedAtUnix, Records: witness.Records, Leases: witness.Leases}
 	in := FullSemanticVerificationInput{PlanSHA256: digest, FullSnapshotSHA256: digest, FullRestoreSHA256: digest, WitnessFileSHA256: digest, HistoricalHeaderRevision: 120, CurrentHeaderRevision: 120, ProbePutRevision: 121, ProbeDeleteRevision: 122, HistoricalExact: true, CurrentExact: true, LeaseIdentityExact: true, WatchProbeSucceeded: true, TargetProbeHistoryExact: true, VerifiedAtUnix: 111}
 	return plan, full, restore, witness, in
 }
@@ -45,6 +46,9 @@ func TestBuildFullSemanticVerificationRejectsBrokenChain(t *testing.T) {
 		}},
 		{"partial witness", func(_ *Plan, _ *FullSnapshotReceipt, _ *FullRestoreExecutionReceipt, w *backupfile.Status, _ *FullSemanticVerificationInput) {
 			w.Prefix = "/registry"
+		}},
+		{"substituted witness", func(_ *Plan, _ *FullSnapshotReceipt, _ *FullRestoreExecutionReceipt, w *backupfile.Status, _ *FullSemanticVerificationInput) {
+			w.SHA256 = strings.Repeat("f", 64)
 		}},
 		{"witness after backup", func(_ *Plan, _ *FullSnapshotReceipt, _ *FullRestoreExecutionReceipt, w *backupfile.Status, _ *FullSemanticVerificationInput) {
 			w.Revision = 121

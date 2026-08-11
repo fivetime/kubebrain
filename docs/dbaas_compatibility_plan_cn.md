@@ -45843,6 +45843,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD leased session、受审单一恢复操作者及当前 pinned v7.5.1 链；任意旁路 TiKV writer、恶意 token holder、
   多版本/多 store/多 PD 生产矩阵、控制面 durable orchestration 和长时间故障注入仍是开放的生产化差距。
 
+- A4324 关闭最终 semantic witness 可在 restore plan 生成后被替换的来源证据缺口。restore plan 升级为
+  `kubebrain.native-pitr-restore-plan.v11`，新增强制 `--source-witness` 输入并固化完整 `/`
+  `kubebrain.logical.v2` 文件 SHA-256、logical content SHA-256、revision、创建时间、record/lease 数；plan
+  生成器在 logical parser 校验前后分别流式计算摘要，文件漂移时不签发计划。full-only 与 log PITR semantic
+  builder 均要求运行时 witness 的全部状态及 exact 文件摘要与 plan 完全一致，合法但不同摘要的替代文件也
+  fail closed；semantic CLI 原有执行前后摘要复核继续阻止验证期间 TOCTOU。全部 `hack/backup/...`、race、
+  vet、Shell 语法与 diff 检查通过；真实 full-only（10.21 秒）和官方 v7.5.1 stream-log（26.68 秒）双
+  PD/TiKV 演练均实际调用 plan v11 CLI 并以 plan-bound witness 通过。该项证明恢复计划生成后 witness
+  不可替换，但文件绑定不等于
+  source 冻结动作的分布式原子性；DBaaS 控制面仍须把冻结 writer、导出 witness、取得 backup/restore TSO
+  和解除冻结编排为 durable、可恢复、单操作者的 operation。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

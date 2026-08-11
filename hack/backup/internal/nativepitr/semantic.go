@@ -81,6 +81,9 @@ func BuildFullSemanticVerification(plan Plan, full FullSnapshotReceipt, restore 
 	if witness.Format != backupfile.Format || witness.Prefix != "/" || witness.Revision <= 0 || witness.Records < 0 || witness.Leases < 0 || !sha256RE.MatchString(witness.SHA256) || witness.CreatedAtUnix <= 0 {
 		return FullSemanticVerificationReceipt{}, errors.New("semantic witness is not a complete full-keyspace logical.v2 artifact")
 	}
+	if plan.SourceWitness.FileSHA256 != in.WitnessFileSHA256 || plan.SourceWitness.ContentSHA256 != witness.SHA256 || plan.SourceWitness.Format != witness.Format || plan.SourceWitness.Prefix != witness.Prefix || plan.SourceWitness.Revision != witness.Revision || plan.SourceWitness.CreatedAtUnix != witness.CreatedAtUnix || plan.SourceWitness.Records != witness.Records || plan.SourceWitness.Leases != witness.Leases {
+		return FullSemanticVerificationReceipt{}, errors.New("semantic witness does not match restore plan")
+	}
 	if uint64(witness.Revision) > full.BackupTS || witness.CreatedAtUnix > restore.StartedAtUnix {
 		return FullSemanticVerificationReceipt{}, errors.New("semantic witness was not captured before the full snapshot restore chain")
 	}

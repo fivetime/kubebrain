@@ -90,6 +90,9 @@ func BuildPITRSemanticVerification(plan Plan, full FullSnapshotReceipt, restore 
 	if witness.Format != backupfile.Format || witness.Prefix != "/" || witness.Revision <= 0 || witness.Records < 0 || witness.Leases < 0 || !sha256RE.MatchString(witness.SHA256) || witness.CreatedAtUnix <= 0 || witness.CreatedAtUnix > replay.StartedAtUnix {
 		return PITRSemanticVerificationReceipt{}, errors.New("PITR semantic witness is not a pre-replay full-keyspace logical.v2 artifact")
 	}
+	if plan.SourceWitness.FileSHA256 != base.WitnessFileSHA256 || plan.SourceWitness.ContentSHA256 != witness.SHA256 || plan.SourceWitness.Format != witness.Format || plan.SourceWitness.Prefix != witness.Prefix || plan.SourceWitness.Revision != witness.Revision || plan.SourceWitness.CreatedAtUnix != witness.CreatedAtUnix || plan.SourceWitness.Records != witness.Records || plan.SourceWitness.Leases != witness.Leases {
+		return PITRSemanticVerificationReceipt{}, errors.New("PITR semantic witness does not match restore plan")
+	}
 	if base.VerifiedAtUnix < handoff.ReleasedAtUnix {
 		return PITRSemanticVerificationReceipt{}, errors.New("PITR semantic verification predates fence handoff")
 	}

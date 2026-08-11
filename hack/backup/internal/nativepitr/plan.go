@@ -13,12 +13,13 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 )
 
 const (
 	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v10"
+	PlanFormat      = "kubebrain.native-pitr-restore-plan.v11"
 )
 
 var (
@@ -118,14 +119,26 @@ type Target struct {
 	UpStoreCount                int    `json:"up_store_count"`
 }
 
+type SourceWitness struct {
+	Format        string `json:"format"`
+	FileSHA256    string `json:"file_sha256"`
+	ContentSHA256 string `json:"content_sha256"`
+	Prefix        string `json:"prefix"`
+	Revision      int64  `json:"revision"`
+	CreatedAtUnix int64  `json:"created_at_unix"`
+	Records       int    `json:"records"`
+	Leases        int    `json:"leases"`
+}
+
 type Plan struct {
-	Format    string       `json:"format"`
-	Source    Source       `json:"source"`
-	Full      FullSnapshot `json:"full_snapshot"`
-	Log       LogWindow    `json:"log_window"`
-	Target    Target       `json:"target"`
-	RestoreTS uint64       `json:"restore_ts"`
-	ReadOnly  bool         `json:"read_only"`
+	Format        string        `json:"format"`
+	Source        Source        `json:"source"`
+	SourceWitness SourceWitness `json:"source_witness"`
+	Full          FullSnapshot  `json:"full_snapshot"`
+	Log           LogWindow     `json:"log_window"`
+	Target        Target        `json:"target"`
+	RestoreTS     uint64        `json:"restore_ts"`
+	ReadOnly      bool          `json:"read_only"`
 }
 
 type ReceiptPlanInputs struct {
@@ -136,6 +149,8 @@ type ReceiptPlanInputs struct {
 	LogArtifactSHA256     string
 	SourceExclusiveSHA256 string
 	TargetReceiptSHA256   string
+	WitnessFileSHA256     string
+	Witness               backupfile.Status
 	RestoreTS             uint64
 }
 
@@ -205,6 +220,9 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 	if !sha256RE.MatchString(in.TargetReceiptSHA256) {
 		return Plan{}, errors.New("invalid exact target snapshot-empty receipt SHA-256")
 	}
+	if !sha256RE.MatchString(in.WitnessFileSHA256) || in.Witness.Format != backupfile.Format || in.Witness.Prefix != "/" || in.Witness.Revision <= 0 || in.Witness.CreatedAtUnix <= 0 || in.Witness.Records < 0 || in.Witness.Leases < 0 || !sha256RE.MatchString(in.Witness.SHA256) {
+		return Plan{}, errors.New("source witness is not an exact full-keyspace logical.v2 artifact")
+	}
 	if !sha256RE.MatchString(in.TaskCreateSHA256) || full.TaskCreateSHA256 != in.TaskCreateSHA256 {
 		return Plan{}, errors.New("full snapshot does not bind the exact task-create receipt")
 	}
@@ -218,10 +236,11 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 		return Plan{}, errors.New("log artifact receipt does not bind the exact task and task-ready receipts")
 	}
 	plan := Plan{
-		Format: PlanFormat,
-		Source: Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName, RangeExclusiveReceiptSHA256: in.SourceExclusiveSHA256, ExclusiveSnapshotTS: sourceExclusive.SnapshotTS, OutsideVisibleKeyCount: sourceExclusive.OutsideVisibleKeyCount, HistoricalMVCCAbsenceProven: sourceExclusive.HistoricalMVCCAbsenceProven, PDAddressCount: len(sourceExclusive.PDAddrs)},
-		Full:   FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified},
-		Log:    LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
+		Format:        PlanFormat,
+		Source:        Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName, RangeExclusiveReceiptSHA256: in.SourceExclusiveSHA256, ExclusiveSnapshotTS: sourceExclusive.SnapshotTS, OutsideVisibleKeyCount: sourceExclusive.OutsideVisibleKeyCount, HistoricalMVCCAbsenceProven: sourceExclusive.HistoricalMVCCAbsenceProven, PDAddressCount: len(sourceExclusive.PDAddrs)},
+		SourceWitness: SourceWitness{Format: in.Witness.Format, FileSHA256: in.WitnessFileSHA256, ContentSHA256: in.Witness.SHA256, Prefix: in.Witness.Prefix, Revision: in.Witness.Revision, CreatedAtUnix: in.Witness.CreatedAtUnix, Records: in.Witness.Records, Leases: in.Witness.Leases},
+		Full:          FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified},
+		Log:           LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
 		Target: Target{
 			ClusterID: target.ClusterID, SnapshotEmptyReceiptSHA256: in.TargetReceiptSHA256,
 			SnapshotTS: target.SnapshotTS, ScanScope: target.ScanScope,
@@ -268,6 +287,9 @@ func (p Plan) Validate() error {
 	}
 	if !sha256RE.MatchString(p.Source.RangeExclusiveReceiptSHA256) || p.Source.ExclusiveSnapshotTS != p.Full.BackupTS || p.Source.OutsideVisibleKeyCount != 0 || p.Source.HistoricalMVCCAbsenceProven || p.Source.PDAddressCount <= 0 {
 		return errors.New("invalid source range-exclusive receipt evidence")
+	}
+	if p.SourceWitness.Format != backupfile.Format || p.SourceWitness.Prefix != "/" || !sha256RE.MatchString(p.SourceWitness.FileSHA256) || !sha256RE.MatchString(p.SourceWitness.ContentSHA256) || p.SourceWitness.Revision <= 0 || p.SourceWitness.CreatedAtUnix <= 0 || p.SourceWitness.Records < 0 || p.SourceWitness.Leases < 0 {
+		return errors.New("invalid plan-bound source witness evidence")
 	}
 	if p.Log.StartTS == 0 || p.Log.TaskCommittedAtTS == 0 || p.Full.BackupTS == 0 || p.RestoreTS == 0 || p.Log.GlobalCheckpointTS == 0 {
 		return errors.New("all PITR timestamps must be non-zero")

@@ -29,6 +29,7 @@ func pitrSemanticFixture(t *testing.T) (Plan, FullSnapshotReceipt, FullRestoreEx
 	handoff, err := BuildRestorationFenceHandoff(plan, digest, fence, digest, replay, digest, 111)
 	require.NoError(t, err)
 	witness := backupfile.Status{Format: backupfile.Format, Prefix: "/", Revision: 119, CreatedAtUnix: 105, Records: 3, Leases: 1, SHA256: digest}
+	plan.SourceWitness = SourceWitness{Format: witness.Format, FileSHA256: digest, ContentSHA256: witness.SHA256, Prefix: witness.Prefix, Revision: witness.Revision, CreatedAtUnix: witness.CreatedAtUnix, Records: witness.Records, Leases: witness.Leases}
 	base := FullSemanticVerificationInput{PlanSHA256: digest, FullSnapshotSHA256: digest, FullRestoreSHA256: digest, WitnessFileSHA256: digest, HistoricalHeaderRevision: 120, CurrentHeaderRevision: 120, ProbePutRevision: 121, ProbeDeleteRevision: 122, HistoricalExact: true, CurrentExact: true, LeaseIdentityExact: true, WatchProbeSucceeded: true, TargetProbeHistoryExact: true, VerifiedAtUnix: 112}
 	return plan, full, restore, replay, admissionHandoff, handoff, witness, PITRSemanticVerificationInput{FullSemanticVerificationInput: base, LogReplaySHA256: digest, FenceHandoffSHA256: digest, AdmissionHandoffSHA256: digest}
 }
@@ -68,4 +69,11 @@ func TestBuildPITRSemanticVerificationRejectsCrossOperationHandoff(t *testing.T)
 	handoff.OperationID = "restore-2"
 	_, err := BuildPITRSemanticVerification(plan, full, restore, replay, admissionHandoff, handoff, witness, in)
 	require.ErrorContains(t, err, "does not match")
+}
+
+func TestBuildPITRSemanticVerificationRejectsSubstitutedWitness(t *testing.T) {
+	plan, full, restore, replay, admissionHandoff, handoff, witness, in := pitrSemanticFixture(t)
+	witness.SHA256 = strings.Repeat("f", 64)
+	_, err := BuildPITRSemanticVerification(plan, full, restore, replay, admissionHandoff, handoff, witness, in)
+	require.ErrorContains(t, err, "does not match restore plan")
 }

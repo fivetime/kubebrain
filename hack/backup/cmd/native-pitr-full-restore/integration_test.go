@@ -47,8 +47,9 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	br := os.Getenv("KUBEBRAIN_NATIVE_PITR_BR")
 	server := os.Getenv("KUBEBRAIN_NATIVE_PITR_SERVER")
 	admissionCommand := os.Getenv("KUBEBRAIN_NATIVE_PITR_ADMISSION")
-	if sourcePD == "" || targetPD == "" || br == "" || server == "" || admissionCommand == "" {
-		t.Skip("set KUBEBRAIN_NATIVE_PITR_SOURCE_PD, KUBEBRAIN_NATIVE_PITR_TARGET_PD, KUBEBRAIN_NATIVE_PITR_BR, and KUBEBRAIN_NATIVE_PITR_SERVER")
+	restorePlanCommand := os.Getenv("KUBEBRAIN_NATIVE_PITR_RESTORE_PLAN")
+	if sourcePD == "" || targetPD == "" || br == "" || server == "" || admissionCommand == "" || restorePlanCommand == "" {
+		t.Skip("set the native PITR source/target PD, BR, server, admission, and restore-plan binaries")
 	}
 	preflight, taskCreate, mc := os.Getenv("KUBEBRAIN_NATIVE_PITR_PREFLIGHT"), os.Getenv("KUBEBRAIN_NATIVE_PITR_TASK_CREATE"), os.Getenv("KUBEBRAIN_NATIVE_PITR_MC")
 	fenceCommand, replayCommand, semanticCommand := os.Getenv("KUBEBRAIN_NATIVE_PITR_FENCE"), os.Getenv("KUBEBRAIN_NATIVE_PITR_LOG_REPLAY"), os.Getenv("KUBEBRAIN_NATIVE_PITR_SEMANTIC_VERIFY")
@@ -190,18 +191,17 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	artifact, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), inventory, digest(inventoryBytes), artifactRoot)
 	require.NoError(t, err)
 	artifactPath := filepath.Join(t.TempDir(), "artifact.json")
-	artifactBytes := canonicalFile(t, artifactPath, artifact)
+	canonicalFile(t, artifactPath, artifact)
 
 	sourceEvidence, err := nativepitr.InspectLiveSourceRangeExclusive(ctx, full, digest(fullBytes), sourceAddrs, "", "", "", time.Now().Unix())
 	require.NoError(t, err)
 	sourcePath := filepath.Join(t.TempDir(), "source.json")
-	sourceBytes := canonicalFile(t, sourcePath, sourceEvidence)
+	canonicalFile(t, sourcePath, sourceEvidence)
 	targetEvidence, err := nativepitr.InspectLiveTargetSnapshotEmpty(ctx, targetAddrs, "", "", "", time.Now().Unix())
 	require.NoError(t, err)
 	targetPath := filepath.Join(t.TempDir(), "target.json")
-	targetBytes := canonicalFile(t, targetPath, targetEvidence)
+	canonicalFile(t, targetPath, targetEvidence)
 
-	logReceiptSHA := d
 	var logPath string
 	if !withLogs {
 		ready = nativepitr.TaskReadyReceipt{Format: nativepitr.TaskReadyFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, StartTS: task.StartTS, CommittedAtTS: task.CommittedAtTS, EndTS: task.EndTS, GlobalCheckpointTS: full.BackupTS + 1, AdvancerOwner: "integration-owner", PreflightSHA256: d, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
@@ -213,12 +213,21 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		logs = nativepitr.LogArtifactReceipt{Format: nativepitr.LogArtifactReceiptFormat, ClusterID: clusterID, Keyspace: task.Keyspace, TaskName: task.TaskName, TaskCreateSHA256: digest(taskBytes), TaskReadySHA256: digest(readyBytes), StartTS: task.StartTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, RemoteInventorySHA256: d, ObjectStoreID: "integration", Bucket: "integration", ObjectPrefix: "log/task", MinRetainUntilUnix: 2_100_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: emptyObjects, ManifestSHA256: digest(emptyManifest), ExactMirror: true, RemoteVersionsVerified: true, AllSegmentsVerified: true}
 	} else {
 		logPath = filepath.Join(t.TempDir(), "logs.json")
-		logReceiptSHA = digest(canonicalFile(t, logPath, logs))
+		canonicalFile(t, logPath, logs)
 	}
-	plan, err := nativepitr.BuildFromReceipts(task, full, artifact, ready, logs, sourceEvidence, targetEvidence, nativepitr.ReceiptPlanInputs{TaskCreateSHA256: digest(taskBytes), FullSnapshotSHA256: digest(fullBytes), ArtifactReceiptSHA256: digest(artifactBytes), TaskReadySHA256: digest(readyBytes), LogArtifactSHA256: logReceiptSHA, SourceExclusiveSHA256: digest(sourceBytes), TargetReceiptSHA256: digest(targetBytes), RestoreTS: restoreTS})
+	taskPath := filepath.Join(t.TempDir(), "task.json")
+	require.NoError(t, os.WriteFile(taskPath, taskBytes, 0o600))
+	readyPath := filepath.Join(t.TempDir(), "ready.json")
+	require.NoError(t, os.WriteFile(readyPath, readyBytes, 0o600))
+	if logPath == "" {
+		logPath = filepath.Join(t.TempDir(), "logs.json")
+		require.NoError(t, os.WriteFile(logPath, canonicalJSON(t, logs), 0o600))
+	}
+	planBytes := runReceiptOutput(t, ctx, restorePlanCommand, "--task-create="+taskPath, "--full-snapshot="+fullPath, "--full-artifacts="+artifactPath, "--task-ready="+readyPath, "--log-artifacts="+logPath, "--source-range-exclusive="+sourcePath, "--target-snapshot-empty="+targetPath, "--source-witness="+witnessPath, "--restore-ts="+fmt.Sprint(restoreTS))
+	plan, err := nativepitr.DecodePlan(bytes.NewReader(planBytes))
 	require.NoError(t, err)
 	planPath := filepath.Join(t.TempDir(), "plan.json")
-	planBytes := canonicalFile(t, planPath, plan)
+	require.NoError(t, os.WriteFile(planPath, planBytes, 0o600))
 	admissionBytes := runReceiptOutput(t, ctx, admissionCommand, "--action=acquire", "--plan="+planPath, "--operation-id=restore-integration", "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
 	_, err = nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes))
 	require.NoError(t, err)
