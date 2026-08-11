@@ -46561,6 +46561,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   iptables 无本轮残留，StatefulSet 已恢复原 0 副本。故本项只交付可恢复门禁，真实单向分区证据仍明确
   开放；必须先修复/重建该 dev TiKV Region，再运行通过，不能把未注入故障的失败记作兼容性结论。
 
+- A4374 在全新 disposable `kubebrain-asym` kind 集群关闭 A4373 的单宿主真实证据缺口，并修复门禁环境
+  的可复现性问题。`hack/dev/up.sh` 现在允许用 `KIND_CLIENT_HOST_PORT`/`KIND_PEER_HOST_PORT` 创建隔离
+  的并行集群，校验端口范围和冲突，且按实际 workload kind 对 KubeBrain StatefulSet 执行 scale、restart
+  与 rollout；`deploy/dev/tidb-cluster.yaml` 仅为 disposable 本地测试关闭 TiKV data/raft reserve-space，避免
+  共享开发宿主的全盘剩余百分比把逻辑 5Gi 测试卷误判为 AlmostFull，生产仍必须保留该保护。
+  2026-08-11 在独立 5379/5380 宿主端口、3 PD/3 TiKV/3 KubeBrain 拓扑上真实执行
+  `BACKEND_FAULT_MODE=pd-asymmetric-partition`：旧 leader `kb-pd-2` 的 outbound-only FORWARD 规则生效后，
+  其余成员选出 `kb-pd-1`；八 worker 在 42.07 秒命令窗口内完成 1310 次 Put/Txn/Get，恢复后逐键复读
+  通过；随即复跑又令 `kb-pd-1` 切换到 `kb-pd-0`，在 27.10 秒内完成 339 次操作并通过恢复复读。
+  两轮最终 TiDBCluster 均 Ready，带 PID comment 的 iptables 规则无残留。这证明当前门禁能覆盖单宿主
+  kind 中的 PD leader 单向丢包和数据面连续性；它仍不等价于跨节点/AZ 的 latency、带宽、conntrack/NAT
+  或 network-fabric 故障，跨 AZ 预生产验证继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

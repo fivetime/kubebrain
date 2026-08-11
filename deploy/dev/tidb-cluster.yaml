@@ -20,7 +20,15 @@ spec:
     replicas: 3
     requests:
       storage: 5Gi
-    config: {}
+    # Disposable local clusters often share a nearly-full development host.
+    # Production must keep TiKV's reserve-space protection; this dev-only
+    # manifest disables it so the requested 5Gi logical volume, rather than
+    # the host filesystem's free percentage, defines the test capacity.
+    config: |
+      [storage]
+      reserve-space = "0MiB"
+      [raftstore]
+      reserve-raft-space = "0MiB"
   tidb:
     baseImage: pingcap/tidb
     replicas: 1

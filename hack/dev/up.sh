@@ -10,6 +10,8 @@ IMAGE_NAME="${IMAGE_NAME:-kubebrain:dev}"
 KIND_NODE_IMAGE="${KIND_NODE_IMAGE:-}"
 TIDB_OPERATOR_VERSION="${TIDB_OPERATOR_VERSION:-v1.6.5}"
 KUBEBRAIN_REPLICAS="${KUBEBRAIN_REPLICAS:-1}"
+KIND_CLIENT_HOST_PORT="${KIND_CLIENT_HOST_PORT:-3379}"
+KIND_PEER_HOST_PORT="${KIND_PEER_HOST_PORT:-3380}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -25,6 +27,16 @@ if [ -n "$KIND_NODE_IMAGE" ]; then
 fi
 validate_version_token TIDB_OPERATOR_VERSION
 validate_positive_integer KUBEBRAIN_REPLICAS
+validate_positive_integer KIND_CLIENT_HOST_PORT
+validate_positive_integer KIND_PEER_HOST_PORT
+if (( KIND_CLIENT_HOST_PORT > 65535 || KIND_PEER_HOST_PORT > 65535 )); then
+  echo "KIND_CLIENT_HOST_PORT and KIND_PEER_HOST_PORT must be in [1,65535]" >&2
+  exit 1
+fi
+if [[ "$KIND_CLIENT_HOST_PORT" == "$KIND_PEER_HOST_PORT" ]]; then
+  echo "KIND_CLIENT_HOST_PORT and KIND_PEER_HOST_PORT must differ" >&2
+  exit 1
+fi
 
 need docker
 need kind
@@ -69,12 +81,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ -n "$KIND_NODE_IMAGE" ]; then
+if [ -n "$KIND_NODE_IMAGE" ] || [[ "$KIND_CLIENT_HOST_PORT" != 3379 || "$KIND_PEER_HOST_PORT" != 3380 ]]; then
   tmp_kind_config="$(mktemp)"
-  awk '
+  awk -v client_port="$KIND_CLIENT_HOST_PORT" -v peer_port="$KIND_PEER_HOST_PORT" -v node_image="$KIND_NODE_IMAGE" '
+    $1 == "hostPort:" && $2 == "3379" { sub(/hostPort:[[:space:]]*3379/, "hostPort: " client_port) }
+    $1 == "hostPort:" && $2 == "3380" { sub(/hostPort:[[:space:]]*3380/, "hostPort: " peer_port) }
     { print }
     $0 ~ /^[[:space:]]*-[[:space:]]*role:[[:space:]]*control-plane[[:space:]]*$/ {
-      print "    image: " ENVIRON["KIND_NODE_IMAGE"]
+      if (node_image != "") print "    image: " node_image
     }
   ' deploy/dev/kind-config.yaml >"$tmp_kind_config"
   kind_config="$tmp_kind_config"
@@ -120,18 +134,18 @@ wait_pods_ready tidb-cluster 'app.kubernetes.io/component=tikv,app.kubernetes.io
 tmp_kubebrain_manifest="$(mktemp)"
 sed "s#image: kubebrain:dev#image: ${IMAGE_NAME}#g" deploy/dev/kubebrain-tikv.yaml >"$tmp_kubebrain_manifest"
 kubectl apply -f "$tmp_kubebrain_manifest"
-kubectl scale deployment/kubebrain --namespace kubebrain-dev --replicas="$KUBEBRAIN_REPLICAS"
-kubectl rollout restart deployment/kubebrain --namespace kubebrain-dev
-kubectl rollout status deployment/kubebrain --namespace kubebrain-dev --timeout=180s
+kubectl scale statefulset/kubebrain --namespace kubebrain-dev --replicas="$KUBEBRAIN_REPLICAS"
+kubectl rollout restart statefulset/kubebrain --namespace kubebrain-dev
+kubectl rollout status statefulset/kubebrain --namespace kubebrain-dev --timeout=180s
 
 cat <<EOF
 KubeBrain dev stack is ready.
 
 Host endpoint:
-  127.0.0.1:3379
+  127.0.0.1:${KIND_CLIENT_HOST_PORT}
 
 Useful commands:
-  kubectl -n kubebrain-dev logs deploy/kubebrain -f
+  kubectl -n kubebrain-dev logs statefulset/kubebrain -f
   kubectl -n tidb-cluster get pods
   hack/dev/smoke-etcd-client.sh
 EOF

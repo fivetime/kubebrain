@@ -334,6 +334,28 @@ func TestBackendQuorumPDAsymmetricPartitionHelperIsRecoverable(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestDevStackSupportsIsolatedHostPortsAndLowDiskTestHosts(t *testing.T) {
+	up, err := os.ReadFile("../dev/up.sh")
+	require.NoError(t, err)
+	upScript := string(up)
+	require.Contains(t, upScript, `KIND_CLIENT_HOST_PORT="${KIND_CLIENT_HOST_PORT:-3379}"`)
+	require.Contains(t, upScript, `KIND_PEER_HOST_PORT="${KIND_PEER_HOST_PORT:-3380}"`)
+	require.Contains(t, upScript, `KIND_CLIENT_HOST_PORT and KIND_PEER_HOST_PORT must differ`)
+	require.Contains(t, upScript, `-v client_port="$KIND_CLIENT_HOST_PORT"`)
+	require.Contains(t, upScript, `sub(/hostPort:[[:space:]]*3379/, "hostPort: " client_port)`)
+	require.Contains(t, upScript, `127.0.0.1:${KIND_CLIENT_HOST_PORT}`)
+	require.Contains(t, upScript, `kubectl scale statefulset/kubebrain`)
+	require.Contains(t, upScript, `kubectl rollout status statefulset/kubebrain`)
+	require.NotContains(t, upScript, `deployment/kubebrain --namespace kubebrain-dev`)
+
+	tidb, err := os.ReadFile("../../deploy/dev/tidb-cluster.yaml")
+	require.NoError(t, err)
+	manifest := string(tidb)
+	require.Contains(t, manifest, `reserve-space = "0MiB"`)
+	require.Contains(t, manifest, `reserve-raft-space = "0MiB"`)
+	require.Contains(t, manifest, `Production must keep TiKV's reserve-space protection`)
+}
+
 func TestBackendPDQuorumLossHelperIsRecoverable(t *testing.T) {
 	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
 	require.NoError(t, err)
