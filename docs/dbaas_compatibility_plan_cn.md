@@ -46942,6 +46942,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   代际隔离及 Revoke/attached-key 原子性，不替代 streaming KeepAlive 长窗口、自然过期跨故障、独立 AZ、
   conntrack/NAT/underlay failure 或分钟/小时级 soak。
 
+- A4395 将 A4394 的 lease 不确定结果证明对称扩展到 TiKV data/raft path，仍对照 upstream
+  `/root/etcd/tests/integration/clientv3/lease/lease_test.go` 的 `TestLeaseRenewLostQuorum`、
+  `TestV3LeaseFailureOverlap` 及 Grant/Revoke/KeepAlive/TimeToLive 契约。新增
+  `tikv-cross-node-degraded-network-lease-linearizability`，复用 A4394 的两套 5 client × 30 operation
+  nondeterministic history、外部故障 warmup、至少一个歧义/至少一个确定成功约束和 Porcupine 实时顺序
+  检查，但把 netem 目标切换为分布在三个不同 worker 的全部 TiKV store；这使 lease metadata、attached-key
+  mutation 与 Revoke 删除必须穿过实际 TiKV transaction/Region/raft 路径，而不是只证明 PD/TSO 扰动。
+  2026-08-12 disposable `kubebrain-tikv-netem-lease` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、26379/26380 拓扑通过：三个 TiKV namespace 同时承受 `250ms +/- 50ms`、`2%` loss、
+  `20mbit`、30 秒 netem。首次完整门禁中 generation 与 lifecycle 均为 Porcupine `Ok`，lifecycle 历史
+  39.58 秒、含 7 个歧义 RPC，测试包总耗时 77.445 秒；首次 generation 摘要被高频 client 重试日志截断，
+  因此同集群独立重跑而不猜测，37.65 秒采集 150 操作和 18 个歧义 RPC，并再次为 `Ok`。现场确实观察到
+  Region/leader 切换、proxy-not-ready、DeadlineExceeded/Unavailable/Canceled，错误本身不作为成功条件。
+  恢复后三个 KubeBrain、PD、TiKV 均 Ready，TiDBCluster Ready，三个 TiKV 零重启且 namespace 最终均为
+  `qdisc noqueue`；`kb-pd-0` 唯一一次 restart 于 `01:23:39Z` 初始部署期结束，早于门禁。本项证明当前
+  强度下 TiKV 数据/raft 路径退化时显式 lease ID 代际隔离与 Revoke/attached-key 原子性，不替代自然过期
+  跨故障、streaming KeepAlive 长窗口、独立 AZ、conntrack/NAT/underlay failure 或分钟/小时级 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
