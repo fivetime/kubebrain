@@ -48079,6 +48079,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   user/internal key 因编码空间隔离仍合法。回归证明 user/internal duplicate 均不落 durable counter，同 raw 跨空间
   transaction 则原子成功。
 
+- A4484 继续把 etcd 请求不变量下沉到 TxnApply direct/internal 边界。新增 `ErrTxnInvalidRequest`，在取得 logical/
+  revision lock 和访问 TiKV 前拒绝空 user/internal write key、空 guard key、`Absent=true` 却携带 revision，以及
+  present guard 的 zero revision。普通 RPC validator 已先返回 etcd 的 EmptyKey/InvalidArgument；本层校验防止
+  lease/revoke、测试工具或未来 DBaaS 内部调用绕过前门后生成不可解码 event key 或含糊 compare。回归逐项证明
+  错误不创建 durable revision counter。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

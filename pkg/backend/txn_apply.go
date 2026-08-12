@@ -41,6 +41,11 @@ var ErrTxnGuardConflict = errors.New("txn compare guard conflict")
 // direct Backend users from storage-dependent read-your-write CAS behavior.
 var ErrTxnDuplicateKey = errors.New("txn contains duplicate write key")
 
+// ErrTxnInvalidRequest identifies an impossible backend transaction shape.
+// Public etcd RPCs reject these earlier; this boundary protects internal/direct
+// callers without assigning them a durable revision.
+var ErrTxnInvalidRequest = errors.New("invalid txn apply request")
+
 var errTxnResolvedNotCommitted = errors.New("uncertain txn resolved as not committed")
 
 // TxnWriteOp is one write in a transaction: a Put (Delete=false) or a
@@ -102,7 +107,7 @@ type TxnWriteResult struct {
 // and an internal key may share raw bytes because their encoded keyspaces are
 // disjoint. Duplicate writes are rejected before any read or revision allocation.
 func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, revision uint64, err error) {
-	if err := validateTxnWriteOps(ops); err != nil {
+	if err := validateTxnApplyRequest(ops, guards); err != nil {
 		return nil, 0, err
 	}
 	unlock := b.lockLogicalWrite(ctx)
@@ -133,10 +138,13 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 	}
 }
 
-func validateTxnWriteOps(ops []TxnWriteOp) error {
+func validateTxnApplyRequest(ops []TxnWriteOp, guards []TxnGuard) error {
 	seenUser := make(map[string]struct{}, len(ops))
 	seenInternal := make(map[string]struct{}, len(ops))
 	for i := range ops {
+		if len(ops[i].Key) == 0 {
+			return fmt.Errorf("%w: write %d has empty key", ErrTxnInvalidRequest, i)
+		}
 		seen := seenUser
 		if ops[i].Internal {
 			seen = seenInternal
@@ -146,6 +154,18 @@ func validateTxnWriteOps(ops []TxnWriteOp) error {
 			return fmt.Errorf("%w: internal=%t key=%q", ErrTxnDuplicateKey, ops[i].Internal, ops[i].Key)
 		}
 		seen[key] = struct{}{}
+	}
+	for i := range guards {
+		guard := guards[i]
+		if len(guard.Key) == 0 {
+			return fmt.Errorf("%w: guard %d has empty key", ErrTxnInvalidRequest, i)
+		}
+		if guard.Absent && guard.Revision != 0 {
+			return fmt.Errorf("%w: absent guard %d has revision %d", ErrTxnInvalidRequest, i, guard.Revision)
+		}
+		if !guard.Absent && guard.Revision == 0 {
+			return fmt.Errorf("%w: present guard %d has zero revision", ErrTxnInvalidRequest, i)
+		}
 	}
 	return nil
 }

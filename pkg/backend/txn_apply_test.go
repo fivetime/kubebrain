@@ -538,6 +538,32 @@ func TestTxnApplyAllowsSameRawKeyAcrossUserAndInternalKeyspaces(t *testing.T) {
 	require.Equal(t, []byte("internal"), internalValue)
 }
 
+func TestTxnApplyRejectsInvalidShapesBeforeRevisionAllocation(t *testing.T) {
+	validOp := []TxnWriteOp{{Key: []byte("valid"), Value: []byte("value")}}
+	for _, tc := range []struct {
+		name   string
+		ops    []TxnWriteOp
+		guards []TxnGuard
+	}{
+		{name: "empty user key", ops: []TxnWriteOp{{Value: []byte("value")}}},
+		{name: "empty internal key", ops: []TxnWriteOp{{Internal: true, Value: []byte("value")}}},
+		{name: "empty guard key", ops: validOp, guards: []TxnGuard{{Absent: true}}},
+		{name: "absent guard with revision", ops: validOp, guards: []TxnGuard{{Key: []byte("guard"), Absent: true, Revision: 1}}},
+		{name: "present guard with zero revision", ops: validOp, guards: []TxnGuard{{Key: []byte("guard")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			before := b.GetCurrentRevision()
+			_, revision, err := b.TxnApply(ctx, tc.ops, tc.guards)
+			require.ErrorIs(t, err, ErrTxnInvalidRequest)
+			require.Zero(t, revision)
+			require.Equal(t, before, b.GetCurrentRevision())
+			_, err = b.kv.Get(ctx, b.ks.EncodeInternalKey(durableRevisionKey))
+			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+		})
+	}
+}
+
 // TestTxnApplyRecreateOverTombstone verifies a put on a previously-deleted key
 // creates it fresh (version resets to 1, new create revision).
 func TestTxnApplyRecreateOverTombstone(t *testing.T) {

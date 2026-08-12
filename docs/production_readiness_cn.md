@@ -2928,6 +2928,8 @@ phantom watch events。
 TxnApply 在 backend 边界再次强制 etcd duplicate-write-key 约束：同一 user/internal keyspace 的重复 mutation 在任何
 存储读取和 revision allocation 前失败；user 与 internal 编码空间可安全复用相同 raw bytes。这同时保护绕过普通
 KV RPC validation 的 lease/revoke 与直接 Backend 调用。
+TxnApply 同样在存储访问前拒绝空 write/guard key 和矛盾的 absent/present revision guard；公开 RPC 仍由既有 etcd
+validator 返回标准 EmptyKey/InvalidArgument，本层为内部及直接调用提供无 revision 副作用的 fail-fast 防线。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
