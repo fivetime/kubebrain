@@ -24,6 +24,17 @@ IFS=$'\t' read -r namespace name operation_id instance type requester owner secr
    "$secret" == "${name}-parameters" && "$key" == parameters.json && "$attempt" == 1 && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "restore claim identity is invalid"
 capture="$(mktemp -d "$WORK_DIR/cold-restore.XXXXXX")"; child=0; heartbeat=0
 cleanup() { [[ $child == 0 ]] || kill "$child" 2>/dev/null || true; [[ $heartbeat == 0 ]] || kill "$heartbeat" 2>/dev/null || true; rm -rf -- "$capture"; }; trap cleanup EXIT INT TERM
+finalize_heartbeat() {
+  local hrc=0
+  if [[ $heartbeat != 0 ]]; then
+    kill "$heartbeat" 2>/dev/null || true
+    set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
+    [[ $hrc != 75 ]] || { echo "operation heartbeat failed; restore worker was fenced" >&2; return 1; }
+  fi
+  runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; restore worker was fenced" >&2; return 1;
+  }
+}
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
 [[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "restore parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
@@ -45,11 +56,12 @@ if [[ ! -e "$restore_receipt" ]]; then
     STORAGE_CAPACITY_VERIFY_COMMAND=/usr/local/bin/kubebrain-storage-capacity-verify "$RESTORE_COMMAND" & child=$!
   ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
   set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
-  [[ $rc == 0 ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold restore exited ${rc}; retained target resources require audit" >/dev/null; exit 1; }
+  [[ $rc == 0 ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold restore exited ${rc}; retained target resources require audit" >/dev/null; exit 1; }
 fi
 source_operation="$($JQ -er '.operation_id' "$receipt")"
 $JQ -e --arg source_operation "$source_operation" --arg source_sha "$source_sha" --arg kube_uid "$kube_uid" --arg namespace_uid "$namespace_uid" '
  .format=="kubebrain.cold-physical-restore.v1" and .operation_id==$source_operation and .source_receipt_sha256==$source_sha and
  .target.kube_system_uid==$kube_uid and .target.namespace_uid==$namespace_uid and .target.namespace=="tidb-cluster" and .target.tidb_cluster=="kb" and
- (.target.cluster_id|tostring|test("^[1-9][0-9]*$"))' "$restore_receipt" >/dev/null || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold restore receipt is invalid" >/dev/null; exit 1; }
-receipt_sha="$(sha "$restore_receipt")"; runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "cold physical restore completed on isolated target" >/dev/null
+ (.target.cluster_id|tostring|test("^[1-9][0-9]*$"))' "$restore_receipt" >/dev/null || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold restore receipt is invalid" >/dev/null; exit 1; }
+receipt_sha="$(sha "$restore_receipt")"; finalize_heartbeat || exit 1
+runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "cold physical restore completed on isolated target" >/dev/null

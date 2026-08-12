@@ -3342,8 +3342,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   前述 snapshot/restore 以及 legacy history remediation worker 都要求
   `0 < HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`；默认值为 lease 的三分之一，短 lease 下至少为 1 秒，
   无法在首次 heartbeat 前保有租约的配置会在 claim 前拒绝，禁止 `sleep 0` 忙循环或过期后才续租。heartbeat
-  从底层 snapshot/restore/remediation 命令启动一直保持到 receipt 验证、摘要计算和 terminal `succeed/fail`
-  提交返回；child 完成后写入本地完成标记，后续 heartbeat 故障不会向已退出、可能被复用的 child PID 发信号。
+  从底层 snapshot/restore/remediation 命令启动一直覆盖 receipt 验证和摘要计算；terminal `succeed/fail` 前
+  worker 停止并回收后台进程、拒绝已观察到的 fencing 退出，再同步续租一个完整 lease，只有成功才立即提交
+  owner+attempt CAS。child 完成后写入本地完成标记，后续 heartbeat 故障不会向已退出、可能被复用的 child PID 发信号。
   仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
   TiKV 源码审计及隔离 v7.5.1 运行验证已经证明 arbitrary transactional range 的 full/log
   backup 原语存在；`native-pitr-preflight` 可只读验证 tenant 范围、PD task ownership 与每个 Up

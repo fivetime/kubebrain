@@ -30,6 +30,17 @@ OPERATION_NAMESPACE="$namespace"
 capture="$(mktemp -d "$WORK_DIR/cold-snapshot.XXXXXX")"; child=0; heartbeat=0
 cleanup() { [[ $child == 0 ]] || kill "$child" 2>/dev/null || true; [[ $heartbeat == 0 ]] || kill "$heartbeat" 2>/dev/null || true; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
+finalize_heartbeat() {
+  local hrc=0
+  if [[ $heartbeat != 0 ]]; then
+    kill "$heartbeat" 2>/dev/null || true
+    set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
+    [[ $hrc != 75 ]] || { echo "operation heartbeat failed; snapshot worker was fenced" >&2; return 1; }
+  fi
+  runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; snapshot worker was fenced" >&2; return 1;
+  }
+}
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
 [[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "snapshot parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
@@ -54,10 +65,11 @@ if [[ ! -e "$receipt" ]]; then
     COLD_SNAPSHOT_RECEIPT_COMMAND=/usr/local/bin/kubebrain-cold-snapshot-receipt "$SNAPSHOT_COMMAND" & child=$!
   ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
   set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
-  [[ $rc == 0 ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot exited ${rc}; inspect retained snapshots before a new approved operation" >/dev/null; exit 1; }
+  [[ $rc == 0 ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot exited ${rc}; inspect retained snapshots before a new approved operation" >/dev/null; exit 1; }
 fi
 $JQ -e --arg id "$name" --arg witness_sha "$witness_sha" --arg kb_uid "$kb_uid" --arg tidb_uid "$tidb_uid" '
  .format=="kubebrain.cold-physical-snapshot.v2" and .operation_id==$id and
  .semantic_witness.file_sha256==$witness_sha and .inventory.kubebrain.uid==$kb_uid and .inventory.storage.uid==$tidb_uid and
- (.snapshots|type=="array") and (.snapshots|length) == ((.inventory.pd_pvcs|length)+(.inventory.tikv_pvcs|length))' "$receipt" >/dev/null || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot receipt is invalid" >/dev/null; exit 1; }
-receipt_sha="$(sha "$receipt")"; runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "cold physical snapshot completed" >/dev/null
+ (.snapshots|type=="array") and (.snapshots|length) == ((.inventory.pd_pvcs|length)+(.inventory.tikv_pvcs|length))' "$receipt" >/dev/null || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot receipt is invalid" >/dev/null; exit 1; }
+receipt_sha="$(sha "$receipt")"; finalize_heartbeat || exit 1
+runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "cold physical snapshot completed" >/dev/null

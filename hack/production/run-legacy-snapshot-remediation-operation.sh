@@ -26,6 +26,17 @@ IFS=$'\t' read -r namespace name operation_id instance type requester owner secr
 capture="$(mktemp -d "$WORK_DIR/legacy-remediation.XXXXXX")"; child=0; heartbeat=0
 cleanup() { [[ $child == 0 ]] || kill "$child" 2>/dev/null || true; [[ $heartbeat == 0 ]] || kill "$heartbeat" 2>/dev/null || true; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
+finalize_heartbeat() {
+  local hrc=0
+  if [[ $heartbeat != 0 ]]; then
+    kill "$heartbeat" 2>/dev/null || true
+    set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
+    [[ $hrc != 75 ]] || { echo "operation heartbeat failed; remediation worker was fenced" >&2; return 1; }
+  fi
+  runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; remediation worker was fenced" >&2; return 1;
+  }
+}
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
 [[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
@@ -40,10 +51,11 @@ env ACTION=compact ENDPOINT="$endpoint" CONFIRM_ENDPOINT="$endpoint" EXPECTED_CL
   ALLOW_IRREVERSIBLE_LEGACY_HISTORY_COMPACTION=true OUTPUT="$artifact" "$REMEDIATION_COMMAND" >"$capture/remediation.log" 2>&1 & child=$!
 ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
 set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
-[[ $rc == 0 && -s "$artifact" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy snapshot remediation exited ${rc}; compaction may already be committed, inspect before any new operation" >/dev/null; exit 1; }
+[[ $rc == 0 && -s "$artifact" ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy snapshot remediation exited ${rc}; compaction may already be committed, inspect before any new operation" >/dev/null; exit 1; }
 artifact_sha="$(sha "$artifact")"; bytes="$(wc -c <"$artifact" | tr -d ' ')"; now="$(date +%s)"; temp_receipt="$capture/receipt.json"
 $JQ -cnS --arg operation_id "$name" --arg request_id "$request_id" --arg endpoint "$endpoint" --arg cluster_id "$cluster_id" --arg revision "$revision" \
   --arg artifact "$artifact" --arg artifact_sha256 "$artifact_sha" --argjson bytes "$bytes" --argjson completed_at_unix "$now" \
   '{format:"kubebrain.legacy-snapshot-remediation.v1",operation_id:$operation_id,request_id:$request_id,endpoint:$endpoint,cluster_id:$cluster_id,compacted_revision:$revision,artifact:{path:$artifact,sha256:$artifact_sha256,bytes:$bytes},completed_at_unix:$completed_at_unix}' >"$temp_receipt"
-ln "$temp_receipt" "$receipt" || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation receipt publication failed; inspect committed artifact" >/dev/null; exit 1; }
-receipt_sha="$(sha "$receipt")"; runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "legacy snapshot history remediation completed" >/dev/null
+ln "$temp_receipt" "$receipt" || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation receipt publication failed; inspect committed artifact" >/dev/null; exit 1; }
+receipt_sha="$(sha "$receipt")"; finalize_heartbeat || exit 1
+runctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --receipt-sha256 "$receipt_sha" --message "legacy snapshot history remediation completed" >/dev/null

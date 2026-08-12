@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -28,8 +29,9 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
  printf '{"namespace":"kubebrain-operations","name":"%s","operation_id":"%s","instance":"kubebrain","type":"ColdPhysicalSnapshot","requested_by":"platform:cold-physical-snapshot","owner":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","attempt":1,"parameters_sha256":"%s"}\n' "$OPERATION_NAME" "$OPERATION_NAME" "$WORKER_ID" "$OPERATION_NAME" "$EXPECTED_DIGEST"
-elif [[ "$*" == *"--action heartbeat"* && -f "$SUCCEED_ACTIVE" ]]; then
- touch "$HEARTBEAT_DURING_SUCCEED"
+elif [[ "$*" == *"--action heartbeat"* ]]; then
+ [[ ! -f "$SUCCEED_ACTIVE" ]] || touch "$HEARTBEAT_DURING_SUCCEED"
+ [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
 elif [[ "$*" == *"--action succeed"* ]]; then
  touch "$SUCCEED_ACTIVE"
  sleep 0.3
@@ -55,7 +57,11 @@ jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"
 	require.NoError(t, err)
 	require.Contains(t, string(operations), "--type ColdPhysicalSnapshot")
 	require.Contains(t, string(operations), "--action succeed")
-	require.FileExists(t, filepath.Join(dir, "heartbeat-during-succeed"))
+	require.NoFileExists(t, filepath.Join(dir, "heartbeat-during-succeed"))
+	lastHeartbeat := strings.LastIndex(string(operations), "--action heartbeat")
+	succeed := strings.LastIndex(string(operations), "--action succeed")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, succeed, lastHeartbeat)
 	snapshotEnvironment, err := os.ReadFile(snapshotLog)
 	require.NoError(t, err)
 	require.Contains(t, string(snapshotEnvironment), "ALLOW_COLD_PHYSICAL_SNAPSHOT=true")
@@ -69,4 +75,14 @@ jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"
 	require.NoError(t, err)
 	require.Contains(t, string(failureOperations), "--action fail")
 	require.NotContains(t, string(failureOperations), "--action retry")
+
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	heartbeatFailure, heartbeatFailureErr := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", append(env,
+		"FAIL_HEARTBEAT=true", "HEARTBEAT_INTERVAL_SECONDS=10"))
+	require.Error(t, heartbeatFailureErr, string(heartbeatFailure))
+	require.Contains(t, string(heartbeatFailure), "final heartbeat failed; snapshot worker was fenced")
+	heartbeatFailureOperations, err := os.ReadFile(operationLog)
+	require.NoError(t, err)
+	require.NotContains(t, string(heartbeatFailureOperations), "--action succeed")
+	require.NotContains(t, string(heartbeatFailureOperations), "--action fail")
 }

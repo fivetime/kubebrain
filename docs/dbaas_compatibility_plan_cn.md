@@ -47894,6 +47894,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   信号。terminal operationctl 仍以 owner+attempt 做最终 fencing，因此 heartbeat/claim 竞态不能让旧 owner
   提交成功。该修复强化现有 cold physical durable operation，不等于 native PITR 多阶段编排已经落地。
 
+- A4458 修正 A4457 后台 heartbeat 与 terminal CAS 的最后竞态。A4457 让后台循环继续运行到 `succeed` 返回，
+  但 terminal 状态可能使并发 heartbeat 正常失败；更关键的是，child 完成后的后台失败退出码未必在提交前被
+  父进程消费。RED 让底层 snapshot 成功、后台周期大于执行时间，并使 operationctl 的最终同步 heartbeat
+  失败；A4457 没有最终续租，仍提交 `succeed`。三个 worker 现在于 terminal `fail/succeed` 前 kill/wait 后台
+  heartbeat：若其已因 fencing 以 75 退出则停止；否则立即执行一次同步 owner+attempt heartbeat，将 lease
+  延长完整周期，失败时既不提交 Succeeded 也不提交 Failed，留给当前 authoritative owner/status 仲裁。同步
+  续租成功后才紧邻执行 terminal CAS。正向回归固定 operation log 中最后一次 heartbeat 严格先于 succeed，
+  且 succeed 的 300ms 窗口内不再有并发 heartbeat；负向回归固定最终续租失败时零 terminal mutation。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
