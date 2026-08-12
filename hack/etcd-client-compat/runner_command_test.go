@@ -777,6 +777,18 @@ func TestBackendTiKVDegradedNetworkRunsPorcupineLeaseExpiryHistory(t *testing.T)
 	require.Contains(t, text, `natural lease deletion committed after the external fault recovered`)
 }
 
+func TestBackendPDDegradedNetworkRunsPorcupineLeaseExpiryHistory(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-degraded-network-lease-expiry-linearizability)`)
+	require.Contains(t, script, `"Porcupine lease expiry history across cross-node PD network degradation"`)
+	require.Contains(t, script, `TestClientV3LeaseNaturalExpiryHistoryIsLinearizable`)
+	require.Contains(t, script, `"$self --degrade-pd-all-cross-node"`)
+	require.Contains(t, script, `run_degraded_network_lease_expiry_linearizability_test`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"

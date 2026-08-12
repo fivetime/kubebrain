@@ -46982,6 +46982,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   部署期结束，早于门禁。本项证明当前强度下 TiKV 弱网跨越自然过期 deadline 后可恢复原子删除，不替代
   PD 同类组合弱网、多个同时过期 lease、streaming KeepAlive 竞争、独立 AZ 或分钟/小时级 soak。
 
+- A4397 将 A4396 的 deadline-overlap 自然过期历史对称扩展到 PD/TSO control path，并在真实 RED 中修正
+  Porcupine 模型对 upstream `LeaseTimeToLive` 的错误解释。继续对照
+  `/root/etcd/tests/integration/clientv3/lease/lease_test.go::TestLeaseTimeToLive` 与 etcd lessor 的异步 revoke
+  语义；新增 `pd-cross-node-degraded-network-lease-expiry-linearizability`，复用同一 8 秒 TTL、30 秒 netem、
+  Watch delete operation 和 deadline 必须在故障内越过的断言，仅把故障目标切换到三个不同 worker 上的
+  全部 PD endpoint。
+  首次真实门禁在 33.784 秒得到 `Illegal`：TimeToLive 已返回负 TTL，随后 linearizable Get 仍短暂读到
+  attached key，之后 Watch delete 才到达。源码复核确认这不是服务端原子性裂缝：KubeBrain
+  `remainingTTL` 明确对齐 etcd `lessor.Lease.Remaining`，deadline 已过但异步 revoke 尚未提交时 lease/key
+  仍保留且公开 TTL 可降到负数；官方 client 的 `TTL=-1` 不能区分“已到期待 revoke”与“lease record 已
+  删除”。旧 generation model 错把负 TTL 当成删除已线性化，制造了假 RED。模型现在只让非负 TTL 证明
+  generation 仍 live，负 TTL 保持当前状态，真正的 alive→deleted 转换仍只由 Watch-backed `leaseExpire`
+  operation 完成；新增单测证明负 TTL 后暂存 key 合法，而 delete 后再次观测非负 TTL 仍为 `Illegal`。
+  2026-08-12 disposable `kubebrain-pd-netem-expiry` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、28379/28380 拓扑复跑通过：三个 PD namespace 同时施加 `250ms +/- 50ms`、`2%` loss、
+  `20mbit`、30 秒 netem，8 秒 deadline 与 delete transaction 均在故障仍生效时完成，Watch/Range/TTL
+  历史 Porcupine `Ok`，门禁耗时 33.544 秒且返回级歧义为 0。恢复后三个 KubeBrain、PD、TiKV 均 Ready，
+  TiDBCluster Ready，三个 TiKV 零重启；`kb-pd-0` 唯一一次 restart 于 `01:49:12Z` 初始部署期结束，早于
+  门禁，三个 PD namespace 最终均为 `qdisc noqueue`。本项与 A4396 共同固定路径差异：当前强度的 PD
+  弱网不阻断已有 TiKV expiry commit，而 TiKV 全 store 弱网会把 delete 推迟到恢复；两者都不替代多 lease
+  同时过期、streaming KeepAlive 竞争、独立 AZ 或分钟/小时级 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

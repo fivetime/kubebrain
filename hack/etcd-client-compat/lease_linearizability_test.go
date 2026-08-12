@@ -129,7 +129,11 @@ var leaseGenerationModel = (&porcupine.NondeterministicModel{
 				return []interface{}{current}
 			}
 		case leaseTimeToLive:
-			if out.alive == current.alive {
+			// etcd's TimeToLive can return a negative TTL after the deadline while
+			// asynchronous revoke still retains the lease and attached keys. A
+			// non-negative TTL proves the generation is live; a negative TTL is
+			// observationally ambiguous until the Watch delete linearizes expiry.
+			if !out.alive || current.alive {
 				return []interface{}{current}
 			}
 		case leaseKeepAlive:
@@ -304,6 +308,23 @@ func TestLeaseGenerationModelRequiresAtomicNaturalExpiry(t *testing.T) {
 	staleLease := append(append([]porcupine.Operation{}, prefix...),
 		porcupine.Operation{ClientId: 2, Input: leaseInput{kind: leaseTimeToLive}, Call: 7, Output: leaseGenerationOutput{alive: true}, Return: 8})
 	require.Equal(t, porcupine.Illegal, porcupine.CheckOperationsTimeout(leaseGenerationModel, staleLease, time.Second))
+}
+
+func TestLeaseGenerationModelAllowsNegativeTTLBeforeNaturalExpiryDelete(t *testing.T) {
+	history := []porcupine.Operation{
+		{ClientId: 0, Input: leaseInput{kind: leaseGrant}, Call: 1, Output: leaseGenerationOutput{}, Return: 2},
+		{ClientId: 0, Input: leaseInput{kind: leasePut, value: 7}, Call: 3, Output: leaseGenerationOutput{}, Return: 4},
+		{ClientId: 1, Input: leaseInput{kind: leaseTimeToLive}, Call: 5, Output: leaseGenerationOutput{alive: false}, Return: 6},
+		{ClientId: 2, Input: leaseInput{kind: leaseRead}, Call: 7, Output: leaseGenerationOutput{present: true, value: 7}, Return: 8},
+		{ClientId: 3, Input: leaseInput{kind: leaseExpire}, Call: 9, Output: leaseGenerationOutput{}, Return: 10},
+		{ClientId: 1, Input: leaseInput{kind: leaseTimeToLive}, Call: 11, Output: leaseGenerationOutput{alive: false}, Return: 12},
+		{ClientId: 2, Input: leaseInput{kind: leaseRead}, Call: 13, Output: leaseGenerationOutput{}, Return: 14},
+	}
+	require.Equal(t, porcupine.Ok, porcupine.CheckOperationsTimeout(leaseGenerationModel, history, time.Second))
+
+	staleLiveTTL := append(append([]porcupine.Operation{}, history...),
+		porcupine.Operation{ClientId: 1, Input: leaseInput{kind: leaseTimeToLive}, Call: 15, Output: leaseGenerationOutput{alive: true}, Return: 16})
+	require.Equal(t, porcupine.Illegal, porcupine.CheckOperationsTimeout(leaseGenerationModel, staleLiveTTL, time.Second))
 }
 
 func TestLeaseModelRequiresAtomicKeyDeletionOnRevoke(t *testing.T) {
