@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type leaseGrantResponseLossReplayOutcome struct {
@@ -18,6 +21,17 @@ type leaseGrantResponseLossReplayOutcome struct {
 	ReturnedLeasePresent bool
 	OrphanLeaseCount     int
 	AllNewLeasesLive     bool
+	RevisionDelta        int64
+}
+
+type explicitLeaseGrantResponseLossOutcome struct {
+	ResponseDiscarded    bool
+	FirstUnavailable     bool
+	SecondReplicaDialed  bool
+	RetryLeaseExists     bool
+	NewLeaseCount        int
+	ExplicitLeasePresent bool
+	ExplicitLeaseLive    bool
 	RevisionDelta        int64
 }
 
@@ -44,6 +58,32 @@ func TestLeaseGrantResponseLossReplayAcrossReplicasDifferential(t *testing.T) {
 	reference := runLeaseGrantResponseLossReplayScenario(t, referenceEndpoints, "etcd")
 	require.Equal(t, want, reference)
 	require.Equal(t, reference, runLeaseGrantResponseLossReplayScenario(t, kubeBrainEndpoints, "kubebrain"))
+}
+
+// TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential proves the
+// reconciliation path available to platforms that allocate an ID before the
+// RPC. A raw non-repeatable call exposes response loss as Unavailable; an
+// explicit retry on another replica returns LeaseExist and cannot allocate an
+// orphan generation.
+func TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential(t *testing.T) {
+	referenceEndpoints := splitRequiredDirectEndpoints(t, "REFERENCE_ETCD_DIRECT_ENDPOINTS")
+	kubeBrainEndpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
+	requireDistinctDirectReplicaTopology(t, referenceEndpoints)
+	requireDistinctDirectReplicaTopology(t, kubeBrainEndpoints)
+
+	want := explicitLeaseGrantResponseLossOutcome{
+		ResponseDiscarded:    true,
+		FirstUnavailable:     true,
+		SecondReplicaDialed:  true,
+		RetryLeaseExists:     true,
+		NewLeaseCount:        1,
+		ExplicitLeasePresent: true,
+		ExplicitLeaseLive:    true,
+		RevisionDelta:        0,
+	}
+	reference := runExplicitLeaseGrantResponseLossScenario(t, referenceEndpoints, "etcd")
+	require.Equal(t, want, reference)
+	require.Equal(t, reference, runExplicitLeaseGrantResponseLossScenario(t, kubeBrainEndpoints, "kubebrain"))
 }
 
 func runLeaseGrantResponseLossReplayScenario(
@@ -149,6 +189,103 @@ func runLeaseGrantResponseLossReplayScenario(
 		ReturnedLeasePresent: returnedPresent,
 		OrphanLeaseCount:     orphans,
 		AllNewLeasesLive:     allLive,
+		RevisionDelta:        after.Header.Revision - before.Header.Revision,
+	}
+}
+
+func runExplicitLeaseGrantResponseLossScenario(
+	t *testing.T,
+	endpoints []string,
+	instance string,
+) explicitLeaseGrantResponseLossOutcome {
+	t.Helper()
+	bridge := newTCPBridge(t, endpoints[0])
+	throughBridge, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{bridge.Endpoint()}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, throughBridge.Close()) })
+	observer, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, observer.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	// Ask the cluster for a collision-free ID, remove that temporary lease, then
+	// use the ID through the raw explicit-ID API under test.
+	reserved, err := observer.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = observer.Revoke(ctx, reserved.ID)
+	require.NoError(t, err)
+	baseline, err := observer.Leases(ctx)
+	require.NoError(t, err)
+	baselineIDs := leaseIDSet(baseline)
+	warm, err := throughBridge.Leases(ctx)
+	require.NoError(t, err)
+	require.Equal(t, baselineIDs, leaseIDSet(warm))
+	require.True(t, bridge.DialedTarget(endpoints[0]))
+	probeKey := fmt.Sprintf("/dbaas-explicit-lease-grant-response-loss/%s/%d", instance, time.Now().UnixNano())
+	before, err := observer.Get(ctx, probeKey)
+	require.NoError(t, err)
+
+	rawLease := etcdserverpb.NewLeaseClient(throughBridge.ActiveConnection())
+	request := &etcdserverpb.LeaseGrantRequest{ID: int64(reserved.ID), TTL: 60}
+	droppedBefore := bridge.DroppedBytes()
+	bridge.BlackholeResponses()
+	firstDone := make(chan error, 1)
+	go func() {
+		_, firstErr := rawLease.LeaseGrant(ctx, request)
+		firstDone <- firstErr
+	}()
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := observer.TimeToLive(ctx, reserved.ID)
+		return ttlErr == nil && ttl.TTL > 0
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return bridge.DroppedBytes() > droppedBefore }, 2*time.Second, 10*time.Millisecond)
+	bridge.SetTarget(endpoints[1])
+	bridge.DropConnections()
+	bridge.Resume()
+
+	var firstErr error
+	select {
+	case firstErr = <-firstDone:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err())
+	}
+	// Re-establish the switched HTTP/2 connection with an immutable read before
+	// issuing the application's one explicit retry.
+	_, err = throughBridge.Leases(ctx)
+	require.NoError(t, err)
+	require.True(t, bridge.DialedTarget(endpoints[1]))
+	_, retryErr := rawLease.LeaseGrant(ctx, request)
+	final, err := observer.Leases(ctx)
+	require.NoError(t, err)
+	newIDs := newLeaseIDs(final, baselineIDs)
+	present := false
+	for _, id := range newIDs {
+		present = present || id == reserved.ID
+	}
+	ttl, err := observer.TimeToLive(ctx, reserved.ID)
+	require.NoError(t, err)
+	after, err := observer.Get(ctx, probeKey)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, _ = observer.Revoke(cleanupCtx, reserved.ID)
+	})
+
+	return explicitLeaseGrantResponseLossOutcome{
+		ResponseDiscarded:   bridge.DroppedBytes() > droppedBefore,
+		FirstUnavailable:    status.Code(firstErr) == codes.Unavailable,
+		SecondReplicaDialed: bridge.DialedTarget(endpoints[1]),
+		RetryLeaseExists: status.Code(retryErr) == codes.FailedPrecondition &&
+			status.Convert(retryErr).Message() == "etcdserver: lease already exists",
+		NewLeaseCount:        len(newIDs),
+		ExplicitLeasePresent: present,
+		ExplicitLeaseLive:    ttl.TTL > 0,
 		RevisionDelta:        after.Header.Revision - before.Header.Revision,
 	}
 }

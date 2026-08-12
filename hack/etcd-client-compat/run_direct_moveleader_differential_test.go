@@ -22,6 +22,7 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "ResponseLossReplayAcrossReplicas")
 	require.Contains(t, string(script), "ReplayAfterSameIDRegrant")
 	require.Contains(t, string(script), "GrantResponseLossReplayAcrossReplicas")
+	require.Contains(t, string(script), "ExplicitLeaseGrantResponseLossRetryAcrossReplicas")
 }
 
 func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidScopeBeforeDependencies(t *testing.T) {

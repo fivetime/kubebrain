@@ -47120,6 +47120,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不能把一次高层 `Grant(0)` 成功误解为故障窗口内只创建过一条 lease。平台通用幂等 request token、孤儿
   lease 审计/计费告警与真实外部 L4/L7 连接迁移仍保持开放。
 
+- A4404 为 A4403 的 DBaaS 缓解建议补上权威差分证据，证明“平台预分配显式 ID + raw Grant + 对账重试”
+  确实不会复制 lease。审计 `/root/etcd/client/v3/retry_interceptor.go` 与生成的 raw Lease client：直接通过
+  `etcdserverpb.NewLeaseClient(client.ActiveConnection())` 发起的调用采用默认 non-repeatable、`max=0`，不会
+  获得高层 `retryLeaseClient.LeaseGrant` 注入的 repeatable policy。新增
+  `TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential`：先向集群申请一个无碰撞 ID 并 revoke
+  临时 lease，再以该 ID 向 replica 0 发起 raw Grant；确认 metadata 已提交且 response 被丢弃后强制断连，
+  首次调用必须返回 `Unavailable`。bridge 切到 replica 1 后先用 immutable LeaseList 建立新 HTTP/2 连接，
+  应用只发起一次相同显式 ID raw retry；它必须返回 raw gRPC `FailedPrecondition` 和精确消息
+  `etcdserver: lease already exists`。replica 2 对账必须只发现一条新 lease、ID 精确匹配、TTL 为正，且 user
+  KV revision delta 为 0。
+  首次真实门禁除错误分类外全部满足：reference raw stub 已返回正确 FailedPrecondition/message，但测试错误
+  使用仅由 clientv3 `ContextError` 包装后才成立的 `rpctypes.ErrLeaseExist` 做 `errors.Is`，造成假 RED；改按
+  raw wire code/message 校验后，2026-08-12 clean `/root/etcd@5cd9f4ee1380...` 三成员 reference 与
+  disposable `kubebrain-explicit-grant-loss` 独立 3 PD/3 TiKV/3 KubeBrain 均通过。包含 A4401–A4404 的
+  `lease-response-loss` 组合门禁耗时 1.336 秒；A4404 两端均记录首次 `Unavailable/EOF`、显式 retry
+  `FailedPrecondition/lease already exists`，并保持 1 条 live lease、revision delta 0。本项关闭显式 ID
+  对账策略的正确性证据缺口，但没有把它伪装成普通 clientv3 `Grant(0)` 的透明幂等：平台仍需持久保存
+  allocation ID、区分首次 Unavailable 与 retry LeaseExist，并执行 TTL/List 核对。平台通用 request token、
+  自动 ID orphan lease 审计/计费告警及真实外部 L4/L7 连接迁移仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

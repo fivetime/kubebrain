@@ -60,10 +60,10 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 case "$TEST_SCOPE" in
   all)
-    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas)Differential$'
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$'
     ;;
   lease-response-loss|lease-revoke-cross-replica)
-    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas)Differential$'
+    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$'
     ;;
   *)
     echo "TEST_SCOPE must be all, lease-response-loss, or lease-revoke-cross-replica" >&2
