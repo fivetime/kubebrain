@@ -3,11 +3,17 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"; WORKER_ID="${WORKER_ID:-}"
 OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"; LEASE_SECONDS="${LEASE_SECONDS:-120}"
-HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
+HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; RESTORE_COMMAND="${RESTORE_COMMAND:-${ROOT_DIR}/hack/backup/cold-restore-execute.sh}"
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; JQ="${JQ:-jq}"
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
+if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then
+  HEARTBEAT_INTERVAL_SECONDS=$((LEASE_SECONDS / 3)); ((HEARTBEAT_INTERVAL_SECONDS > 0)) || HEARTBEAT_INTERVAL_SECONDS=1
+fi
+[[ "$HEARTBEAT_INTERVAL_SECONDS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
+  awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
+  die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ "$OPERATION_NAMESPACE" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ && -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -d "$WORK_DIR" ]] || die "restore worker configuration is invalid"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }; sha() { sha256sum "$1" | cut -d ' ' -f1; }
 claim="$(runctl --action claim --owner "$WORKER_ID" --type ColdPhysicalRestore --lease "${LEASE_SECONDS}s")"

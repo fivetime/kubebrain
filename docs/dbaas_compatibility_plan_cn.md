@@ -47876,6 +47876,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   +两族 Slice”，负向覆盖声明 IPv6 却携带 IPv4 addresses。该判断面向 Kubernetes IP address Slice，不支持
   FQDN addressType；生产 KubeBrain Service 也不使用 ExternalName/FQDN EndpointSlice。
 
+- A4456 修复物理 snapshot/restore durable worker 的 lease heartbeat 配置缺口。ColdPhysicalSnapshot、
+  ColdPhysicalRestore 和 LegacySnapshotHistoryRemediation 都用整数 `LEASE_SECONDS/3` 生成默认 heartbeat，
+  但不像其他长期 operation worker 那样验证 interval；lease 为 1 或 2 时默认值为 0，显式 0 也会被接受，
+  worker 领取任务后可能进入 `sleep 0` 忙循环。三个 RED 均设置 lease=2/heartbeat=0，旧脚本越过配置阶段并
+  实际调用 claim，最终只报 claim 不完整。新实现先验证 worker/lease，再为短 lease 设置 1 秒默认下限，要求
+  heartbeat 是正十进制数且严格小于 lease，并在任何 operationctl 调用前失败。回归还证明 lease=2 且未显式
+  interval 时使用安全默认并能继续到 claim。这统一了现有冷物理恢复基础的持久租约契约，但不等于 native
+  PITR 多阶段链已由一个 durable KubeBrainOperation 编排；后者仍是明确开放项。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

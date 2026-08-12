@@ -2,11 +2,17 @@
 set -euo pipefail
 
 WORKER_ID="${WORKER_ID:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
-LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
+LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 OPERATIONCTL="${OPERATIONCTL:-kubebrain-operationctl}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 REMEDIATION_COMMAND="${REMEDIATION_COMMAND:-kubebrain-legacy-snapshot-remediation}"; WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; JQ="${JQ:-jq}"
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
+if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then
+  HEARTBEAT_INTERVAL_SECONDS=$((LEASE_SECONDS / 3)); ((HEARTBEAT_INTERVAL_SECONDS > 0)) || HEARTBEAT_INTERVAL_SECONDS=1
+fi
+[[ "$HEARTBEAT_INTERVAL_SECONDS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
+  awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
+  die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ -x "$OPERATIONCTL" && -x "$REMEDIATION_COMMAND" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }; sha() { sha256sum "$1" | cut -d ' ' -f1; }
 claim="$(runctl --action claim --owner "$WORKER_ID" --type LegacySnapshotHistoryRemediation --lease "${LEASE_SECONDS}s")"

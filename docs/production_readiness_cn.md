@@ -3339,6 +3339,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   snapshot 已具备默认停用、单次审批、参数摘要/集群身份/语义 witness 绑定的持久
   `ColdPhysicalSnapshot` Operation executor；隔离目标也具备 source/manifest/target UID 绑定、
   单次审批和 fail-closed target admission 的 `ColdPhysicalRestore` Operation executor。上线声明
+  前述 snapshot/restore 以及 legacy history remediation worker 都要求
+  `0 < HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`；默认值为 lease 的三分之一，短 lease 下至少为 1 秒，
+  无法在首次 heartbeat 前保有租约的配置会在 claim 前拒绝，禁止 `sleep 0` 忙循环或过期后才续租。
   仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
   TiKV 源码审计及隔离 v7.5.1 运行验证已经证明 arbitrary transactional range 的 full/log
   backup 原语存在；`native-pitr-preflight` 可只读验证 tenant 范围、PD task ownership 与每个 Up
