@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -240,6 +241,20 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "release gate passed",
 		},
 		{
+			name:       "dual-stack EndpointSlices",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			podsJSON: fakeDualStackKubeBrainPodsJSON(
+				"registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+			endpointSlicesJSON: fakeDualStackEndpointSlicesJSON([]string{
+				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
+			}),
+			wantOK:     true,
+			wantOutput: "release gate passed",
+		},
+		{
 			name:           "runs etcdctl from selected cluster Pod",
 			image:          "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -469,6 +484,17 @@ func TestValidateInstanceReady(t *testing.T) {
 			endpointSlicesJSON: fakeEndpointSlicesWithPortJSON([]string{
 				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
 			}, true, 3380, "uid-client-service"),
+			wantOutput: "EndpointSlices do not match",
+		},
+		{
+			name:       "client EndpointSlice address drift",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			endpointSlicesJSON: fakeEndpointSlicesWithRouteJSON([]string{
+				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
+			}, true, 3379, "uid-client-service", []string{"10.0.0.99", "10.0.0.11", "10.0.0.12"}),
 			wantOutput: "EndpointSlices do not match",
 		},
 		{
@@ -1377,12 +1403,34 @@ func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating 
 			"spec":     map[string]any{"containers": []map[string]any{{"name": "kubebrain", "image": image}}},
 			"status": map[string]any{
 				"phase":             "Running",
+				"podIP":             fmt.Sprintf("10.0.0.%d", index+10),
+				"podIPs":            []map[string]any{{"ip": fmt.Sprintf("10.0.0.%d", index+10)}},
 				"conditions":        []map[string]any{{"type": "Ready", "status": readyStatus}},
 				"containerStatuses": []map[string]any{{"name": "kubebrain", "ready": ready, "imageID": runtimeImageID}},
 			},
 		}
 	}
 	encoded, err := json.Marshal(map[string]any{"items": items})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func fakeDualStackKubeBrainPodsJSON(image string) string {
+	var document map[string]any
+	if err := json.Unmarshal([]byte(fakeKubeBrainPodsJSON("uid-kubebrain", "kb-new", image, true, false)), &document); err != nil {
+		panic(err)
+	}
+	for index, rawItem := range document["items"].([]any) {
+		item := rawItem.(map[string]any)
+		status := item["status"].(map[string]any)
+		status["podIPs"] = []any{
+			map[string]any{"ip": fmt.Sprintf("10.0.0.%d", index+10)},
+			map[string]any{"ip": fmt.Sprintf("fd00::%d", index+10)},
+		}
+	}
+	encoded, err := json.Marshal(document)
 	if err != nil {
 		panic(err)
 	}
@@ -1418,11 +1466,20 @@ func fakeEndpointSlicesJSON(podUIDs []string, ready bool, serviceUIDs ...string)
 }
 
 func fakeEndpointSlicesWithPortJSON(podUIDs []string, ready bool, port int, serviceUID string) string {
+	addresses := make([]string, len(podUIDs))
+	for index := range addresses {
+		addresses[index] = fmt.Sprintf("10.0.0.%d", index+10)
+	}
+	return fakeEndpointSlicesWithRouteJSON(podUIDs, ready, port, serviceUID, addresses)
+}
+
+func fakeEndpointSlicesWithRouteJSON(podUIDs []string, ready bool, port int, serviceUID string, addresses []string) string {
 	endpoints := make([]map[string]any, len(podUIDs))
 	for index, podUID := range podUIDs {
 		endpoints[index] = map[string]any{
 			"conditions": map[string]any{"ready": ready, "serving": ready, "terminating": false},
-			"targetRef":  map[string]any{"kind": "Pod", "uid": podUID},
+			"targetRef":  map[string]any{"kind": "Pod", "name": "kubebrain-" + string(rune('0'+index)), "uid": podUID},
+			"addresses":  []string{addresses[index]},
 		}
 	}
 	encoded, err := json.Marshal(map[string]any{"items": []map[string]any{{
@@ -1435,6 +1492,24 @@ func fakeEndpointSlicesWithPortJSON(podUIDs []string, ready bool, port int, serv
 		"ports":     []map[string]any{{"name": "client", "protocol": "TCP", "port": port}},
 		"endpoints": endpoints,
 	}}})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func fakeDualStackEndpointSlicesJSON(podUIDs []string) string {
+	var ipv4Document, ipv6Document map[string]any
+	ipv4 := []string{"10.0.0.10", "10.0.0.11", "10.0.0.12"}
+	ipv6 := []string{"fd00::10", "fd00::11", "fd00::12"}
+	if err := json.Unmarshal([]byte(fakeEndpointSlicesWithRouteJSON(podUIDs, true, 3379, "uid-client-service", ipv4)), &ipv4Document); err != nil {
+		panic(err)
+	}
+	if err := json.Unmarshal([]byte(fakeEndpointSlicesWithRouteJSON(podUIDs, true, 3379, "uid-client-service", ipv6)), &ipv6Document); err != nil {
+		panic(err)
+	}
+	ipv4Document["items"] = append(ipv4Document["items"].([]any), ipv6Document["items"].([]any)...)
+	encoded, err := json.Marshal(ipv4Document)
 	if err != nil {
 		panic(err)
 	}

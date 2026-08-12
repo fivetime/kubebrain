@@ -436,8 +436,20 @@ if ! printf '%s' "$kubebrain_pods_json" | "$JQ" -e \
   echo "KubeBrain Pod set does not match the expected StatefulSet ownership and converged release" >&2
   exit 1
 fi
-if ! expected_pod_uids_json="$(printf '%s' "$kubebrain_pods_json" | "$JQ" -ce '[.items[].metadata.uid] | sort')"; then
-  echo "failed to extract KubeBrain Pod resource identities" >&2
+if ! expected_pod_routes_json="$(printf '%s' "$kubebrain_pods_json" | "$JQ" -ce '
+  if all(.items[];
+    ((.metadata.name | type) == "string" and (.metadata.name | length) > 0) and
+    ((.metadata.uid | type) == "string" and (.metadata.uid | length) > 0) and
+    ((.status.podIPs | type) == "array" and (.status.podIPs | length) > 0) and
+    all(.status.podIPs[]; ((.ip | type) == "string" and (.ip | length) > 0)) and
+    ([.status.podIPs[].ip] | length) == ([.status.podIPs[].ip] | unique | length)
+  ) then
+    [.items[] as $pod | $pod.status.podIPs[] |
+      {uid:$pod.metadata.uid,name:$pod.metadata.name,address:.ip}] |
+      sort_by(.uid,.name,.address)
+  else error("invalid Pod route identity") end
+')"; then
+  echo "failed to extract KubeBrain Pod route identities" >&2
   exit 1
 fi
 if ! client_service_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get service "$KUBEBRAIN_CLIENT_SERVICE" -o json)"; then
@@ -467,7 +479,7 @@ if ! endpoint_slices_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAME
 fi
 if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
   --arg service "$KUBEBRAIN_CLIENT_SERVICE" --arg serviceUID "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" \
-  --argjson port "$EXPECTED_PORT" --argjson expectedPodUIDs "$expected_pod_uids_json" '
+  --argjson port "$EXPECTED_PORT" --argjson expectedPodRoutes "$expected_pod_routes_json" '
   all(.items[]?;
     .metadata.labels["kubernetes.io/service-name"] == $service and
     ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
@@ -476,12 +488,16 @@ if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
     (.ports | length) == 1 and .ports[0].name == "client" and
     (.ports[0].protocol // "TCP") == "TCP" and .ports[0].port == $port
   ) and
-  ([.items[]?.endpoints[]?] | length) == ($expectedPodUIDs | length) and
   all(.items[]?.endpoints[]?;
     .conditions.ready == true and .conditions.serving == true and (.conditions.terminating // false) == false and
-    .targetRef.kind == "Pod" and ((.targetRef.uid // "") | length) > 0
+    .targetRef.kind == "Pod" and ((.targetRef.name // "") | length) > 0 and
+    ((.targetRef.uid // "") | length) > 0 and
+    ((.addresses | type) == "array" and (.addresses | length) > 0) and
+    all(.addresses[]; ((type == "string") and (length > 0)))
   ) and
-  ([.items[]?.endpoints[]?.targetRef.uid] | sort) == $expectedPodUIDs
+  ([.items[]? | .endpoints[]? as $endpoint | $endpoint.addresses[] |
+    {uid:$endpoint.targetRef.uid,name:$endpoint.targetRef.name,address:.}] |
+    sort_by(.uid,.name,.address)) == $expectedPodRoutes
 ' >/dev/null; then
   echo "KubeBrain client Service EndpointSlices do not match the expected ready Pod identities" >&2
   exit 1

@@ -47850,6 +47850,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   唯一 controller owner，且每个 Slice 只能发布同名 TCP client expected port，随后才比较 Ready Pod UID 集合。末尾还重读并比较 Service 路由投影，防止验证期间
   改写入口。该校验绑定 Kubernetes 服务发现身份，不替代外部 LB/DNS 的独立发布证明。
 
+- A4453 把 EndpointSlice targetRef 身份继续绑定到实际 Pod IP。A4452 已验证 Service/owner/port 和 Ready Pod
+  UID 集合，但 Slice 可保留正确 targetRef UID、同时把 `addresses` 改为其他 IP，旧门禁仍成功。RED 让三个
+  targetRef UID/name、owner、conditions 和 client port 全部正确，只把第一个 address 从 Pod `10.0.0.10`
+  改为 `10.0.0.99`，旧实现确定性放行。新门禁从同一份已验证 KubeBrain Pod JSON 中要求每个 Pod 至少一个
+  非空且不重复的 `status.podIPs`，展开并排序 `{uid,name,address}`；随后展开所有 EndpointSlice route 做精确
+  集合比较。它不再用“endpoint 数必须等于 Pod 数”的单栈假设，因此同一 Pod 在 IPv4/IPv6 Slice 各出现一次
+  仍可表达，同时任何缺失、重复、异名或错误地址均 fail closed。外部 LB 到 ClusterIP 的网络路径仍需独立验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
