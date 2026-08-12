@@ -48085,6 +48085,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease/revoke、测试工具或未来 DBaaS 内部调用绕过前门后生成不可解码 event key 或含糊 compare。回归逐项证明
   错误不创建 durable revision counter。
 
+- A4485 将 uncertain witness 矛盾接入持久 CORRUPT alarm。新增 `ErrTxnWitnessCorrupt` 区分 payload mismatch/partial
+  markers 与普通 TiKV transport read error；resolver 首次确认矛盾后用本地 identity 派生 member ID 调用
+  `ArmCorrupt`，成功后继续保留 resolution/compaction pin 并重试而不猜测 outcome。KubeBrain KV/Txn/Lease 写前门
+  已实时读取该持久 alarm 并返回 etcd `ErrGRPCCorrupt`，Status/AlarmList/metrics 也会暴露它。新增回归注入 corrupt
+  marker，要求自动告警持久化并验证 worker 可取消退出；告警写失败会计数并在后续解析轮次重试。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

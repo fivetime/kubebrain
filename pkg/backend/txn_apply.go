@@ -46,6 +46,11 @@ var ErrTxnDuplicateKey = errors.New("txn contains duplicate write key")
 // callers without assigning them a durable revision.
 var ErrTxnInvalidRequest = errors.New("invalid txn apply request")
 
+// ErrTxnWitnessCorrupt means durable records contradict the atomic transaction
+// shape. The resolver must not guess an outcome and must arm CORRUPT so public
+// mutations fail closed until an operator repairs and disarms the member.
+var ErrTxnWitnessCorrupt = errors.New("txn durable witness is corrupt")
+
 var errTxnResolvedNotCommitted = errors.New("uncertain txn resolved as not committed")
 
 // TxnWriteOp is one write in a transaction: a Put (Delete=false) or a
@@ -759,6 +764,7 @@ func txnEffectiveUserWriteCount(preps []txnPrep) int {
 
 func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep, revision uint64) {
 	retryDelay := 100 * time.Millisecond
+	corruptArmed := false
 	for {
 		ctx, cancel := context.WithTimeout(workerCtx, unaryRpcTimeout)
 		committed, err := b.txnCommitRecorded(ctx, preps, revision)
@@ -766,6 +772,21 @@ func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep
 		if err != nil {
 			if workerCtx.Err() != nil {
 				return
+			}
+			if errors.Is(err, ErrTxnWitnessCorrupt) && !corruptArmed {
+				alarmCtx, alarmCancel := context.WithTimeout(workerCtx, unaryRpcTimeout)
+				alarmErr := b.ArmCorrupt(alarmCtx, b.localAlarmMemberID())
+				alarmCancel()
+				if alarmErr == nil {
+					corruptArmed = true
+					b.metricCli.EmitCounter("txn.uncertain.witness_corrupt", 1)
+					klog.ErrorS(err, "armed CORRUPT alarm for inconsistent uncertain transaction witness",
+						"revision", revision, "memberID", b.localAlarmMemberID())
+				} else {
+					b.metricCli.EmitCounter("txn.uncertain.witness_corrupt_alarm_failed", 1)
+					klog.ErrorS(alarmErr, "failed to arm CORRUPT alarm for inconsistent uncertain transaction witness",
+						"revision", revision)
+				}
 			}
 			b.metricCli.EmitCounter("txn.uncertain.resolve.retry", 1)
 			klog.ErrorS(err, "failed to resolve uncertain txn; retrying whole transaction",
@@ -829,7 +850,7 @@ func (b *backend) txnCommitRecorded(ctx context.Context, preps []txnPrep, revisi
 		case err == nil && bytes.Equal(value, expectedValue):
 			found++
 		case err == nil:
-			return false, fmt.Errorf("uncertain txn event marker mismatch for key %q at revision %d", p.op.Key, revision)
+			return false, fmt.Errorf("%w: event marker mismatch for key %q at revision %d", ErrTxnWitnessCorrupt, p.op.Key, revision)
 		case errors.Is(err, storage.ErrKeyNotFound):
 		default:
 			return false, err
@@ -843,8 +864,8 @@ func (b *backend) txnCommitRecorded(ctx context.Context, preps []txnPrep, revisi
 	case found == 0:
 		return false, nil
 	default:
-		return false, fmt.Errorf("uncertain txn has mixed event markers: found %d of %d at revision %d",
-			found, expected, revision)
+		return false, fmt.Errorf("%w: mixed event markers: found %d of %d at revision %d",
+			ErrTxnWitnessCorrupt, found, expected, revision)
 	}
 }
 

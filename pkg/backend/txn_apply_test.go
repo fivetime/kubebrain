@@ -482,6 +482,7 @@ func TestTxnCommitRecordedValidatesExactOrderedMarkers(t *testing.T) {
 	require.NoError(t, partial.Commit(ctx))
 	committed, err = b.txnCommitRecorded(ctx, preps, revision)
 	require.False(t, committed)
+	require.ErrorIs(t, err, ErrTxnWitnessCorrupt)
 	require.ErrorContains(t, err, "mixed event markers")
 
 	corrupt := b.kv.BeginBatchWrite()
@@ -489,7 +490,38 @@ func TestTxnCommitRecordedValidatesExactOrderedMarkers(t *testing.T) {
 	require.NoError(t, corrupt.Commit(ctx))
 	committed, err = b.txnCommitRecorded(ctx, preps, revision)
 	require.False(t, committed)
+	require.ErrorIs(t, err, ErrTxnWitnessCorrupt)
 	require.ErrorContains(t, err, "event marker mismatch")
+}
+
+func TestUncertainTxnCorruptWitnessArmsPersistentAlarm(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	revision := b.GetCurrentRevision() + 1
+	preps := []txnPrep{{
+		op: TxnWriteOp{Key: []byte(prefix + "/marker/corrupt-alarm")}, effective: true, create: true,
+	}}
+	key := b.ks.EncodeEventLogKey(revision, preps[0].op.Key)
+	seed := b.kv.BeginBatchWrite()
+	seed.Put(key, []byte("corrupt"), 0)
+	require.NoError(t, seed.Commit(ctx))
+
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		b.resolveUncertainTxn(workerCtx, preps, revision)
+	}()
+	wantMember := b.localAlarmMemberID()
+	require.Eventually(t, func() bool {
+		members, err := b.CorruptAlarms(ctx)
+		return err == nil && len(members) == 1 && members[0] == wantMember
+	}, time.Second, 5*time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("uncertain resolver did not stop after cancellation")
+	}
 }
 
 func TestTxnApplyRejectsDuplicateKeysBeforeRevisionAllocation(t *testing.T) {

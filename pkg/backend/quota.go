@@ -90,6 +90,10 @@ func decodeQuotaAlarms(value []byte) ([]uint64, error) {
 }
 
 func (b *backend) quotaAlarmMemberID() uint64 {
+	return b.localAlarmMemberID()
+}
+
+func (b *backend) localAlarmMemberID() uint64 {
 	return uint64(crc32.ChecksumIEEE([]byte(b.config.Identity)))
 }
 
