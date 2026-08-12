@@ -9,11 +9,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateProductionReleaseRunsBothGatesFailFast(t *testing.T) {
+func TestValidateProductionReleaseRunsAllGatesFailFast(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "gates.log")
 	instanceGate := filepath.Join(tempDir, "instance-gate")
 	regionGate := filepath.Join(tempDir, "region-gate")
+	latencyGate := filepath.Join(tempDir, "latency-gate")
 	require.NoError(t, os.WriteFile(instanceGate, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf 'instance\n' >>"$GATE_LOG"
@@ -24,10 +25,16 @@ set -euo pipefail
 printf 'region\n' >>"$GATE_LOG"
 [[ "${FAIL_REGION:-false}" != "true" ]]
 `), 0o755))
+	require.NoError(t, os.WriteFile(latencyGate, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+printf 'latency\n' >>"$GATE_LOG"
+[[ "${FAIL_LATENCY:-false}" != "true" ]]
+`), 0o755))
 	baseEnv := []string{
 		"KUBE_CONTEXT=test-context",
 		"INSTANCE_READY_COMMAND=" + instanceGate,
 		"REGION_HEALTH_COMMAND=" + regionGate,
+		"STORAGE_LATENCY_COMMAND=" + latencyGate,
 		"GATE_LOG=" + logPath,
 	}
 
@@ -36,7 +43,7 @@ printf 'region\n' >>"$GATE_LOG"
 	require.Contains(t, string(output), "production release gate passed")
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, "instance\nregion\n", string(log))
+	require.Equal(t, "instance\nregion\nlatency\n", string(log))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_INSTANCE=true"))
@@ -51,6 +58,13 @@ printf 'region\n' >>"$GATE_LOG"
 	log, err = os.ReadFile(logPath)
 	require.NoError(t, err)
 	require.Equal(t, "instance\nregion\n", string(log))
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_LATENCY=true"))
+	require.Error(t, err, string(output))
+	log, err = os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.Equal(t, "instance\nregion\nlatency\n", string(log))
 }
 
 func TestValidateProductionReleaseRejectsMissingContextBeforeEitherGate(t *testing.T) {

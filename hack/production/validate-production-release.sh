@@ -5,6 +5,7 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 INSTANCE_READY_COMMAND="${INSTANCE_READY_COMMAND:-${SCRIPT_DIR}/validate-instance-ready.sh}"
 REGION_HEALTH_COMMAND="${REGION_HEALTH_COMMAND:-${SCRIPT_DIR}/validate-tikv-region-health.sh}"
+STORAGE_LATENCY_COMMAND="${STORAGE_LATENCY_COMMAND:-${SCRIPT_DIR}/validate-storage-latency-slo.sh}"
 
 die() { echo "$*" >&2; exit 1; }
 
@@ -13,8 +14,11 @@ die() { echo "$*" >&2; exit 1; }
   die "INSTANCE_READY_COMMAND must be an executable absolute path"
 [[ "$REGION_HEALTH_COMMAND" == /* && -x "$REGION_HEALTH_COMMAND" ]] || \
   die "REGION_HEALTH_COMMAND must be an executable absolute path"
+[[ "$STORAGE_LATENCY_COMMAND" == /* && -x "$STORAGE_LATENCY_COMMAND" ]] || \
+  die "STORAGE_LATENCY_COMMAND must be an executable absolute path"
 
 "$INSTANCE_READY_COMMAND"
 "$REGION_HEALTH_COMMAND"
+"$STORAGE_LATENCY_COMMAND"
 
-echo "KubeBrain production release gate passed: instance readiness and PD/TiKV Region/storage health are both verified"
+echo "KubeBrain production release gate passed: instance readiness, PD/TiKV Region/storage health, and storage latency SLO are verified"

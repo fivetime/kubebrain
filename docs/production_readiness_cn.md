@@ -154,12 +154,16 @@ PD/Region/storage 只读门禁，任一步失败即停止：
 
 ```bash
 KUBE_CONTEXT=production \
+PROMETHEUS_URL=https://prometheus.monitoring.svc:9090 \
+PROMETHEUS_BEARER_TOKEN_FILE=/run/secrets/prometheus/token \
 hack/production/validate-production-release.sh
 ```
 
-组合入口默认调用同目录的 `validate-instance-ready.sh` 和 `validate-tikv-region-health.sh`，且只接受
+组合入口默认依次调用同目录的 `validate-instance-ready.sh`、`validate-tikv-region-health.sh` 和
+`validate-storage-latency-slo.sh`，且只接受
 可执行绝对路径覆盖，避免 PATH 劫持；`KUBE_CONTEXT` 缺失时不会启动任一子门禁。排障时可单独重跑
-PD/Region 门禁。调用组合入口时必须同时提供两个子脚本在下文列出的全部 `EXPECTED_*` 参数：
+PD/Region 或存储延迟门禁。调用组合入口时必须同时提供三个子脚本在下文列出的全部 `EXPECTED_*` 参数，
+以及 HTTPS Prometheus endpoint；认证 token 通过可选的只读绝对路径传入，不能放进命令行 query：
 
 ```bash
 KUBE_CONTEXT=production \
@@ -174,6 +178,25 @@ MAX_REGION_HEALTH_SAMPLES=6 \
 REGION_HEALTH_INTERVAL_SECONDS=5 \
 hack/production/validate-tikv-region-health.sh
 ```
+
+存储延迟子门禁可独立执行：
+
+```bash
+PROMETHEUS_URL=https://prometheus.monitoring.svc:9090 \
+PROMETHEUS_BEARER_TOKEN_FILE=/run/secrets/prometheus/token \
+TIDB_NAMESPACE=tidb-cluster \
+TIDB_CLUSTER=kb \
+EXPECTED_PD_MEMBERS=3 \
+EXPECTED_TIKV_STORES=3 \
+MAX_STORAGE_P99_SECONDS=1 \
+hack/production/validate-storage-latency-slo.sh
+```
+
+它用 Prometheus instant query 读取与生产告警完全相同的 5 分钟 p99 表达式，要求 PD WAL fsync、TiKV
+RaftDB write、TiKV KVDB write 各自返回精确的预期副本数，所有值为有限非负十进制且不超过阈值；再以
+三个 histogram `_count` family 独立证明 series 完整；`TIDB_NAMESPACE`/`TIDB_CLUSTER` 选择目标租户的
+metrics Service，二者必须是 DNS label。API/transport 错误、空/重复/缺失 series、NaN/Inf、
+超阈值或非 HTTPS URL 都返回非零。该脚本只读 Prometheus，不把一次通过解释为卷的永久 IOPS 保证。
 
 该脚本通过 Kubernetes Service proxy 读取 PD API，要求所有 TiKV store 为 `Up`，并要求
 `pending-peer`、`down-peer`、`miss-peer`、`extra-peer`、`learner-peer` 五类异常 Region 均为零；
@@ -702,6 +725,8 @@ TIDB_CLUSTER=kb \
 EXPECTED_KUBEBRAIN_REPLICAS=3 \
 EXPECTED_PD_REPLICAS=3 \
 EXPECTED_TIKV_REPLICAS=3 \
+PROMETHEUS_URL=https://prometheus.monitoring.svc:9090 \
+PROMETHEUS_BEARER_TOKEN_FILE=/run/secrets/prometheus/token \
 ENDPOINT=https://instance-a.example:2379 \
 ETCDCTL_CACERT=/run/secrets/ca.crt \
 ETCDCTL_CERT=/run/secrets/client.crt \

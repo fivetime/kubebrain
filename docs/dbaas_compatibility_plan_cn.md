@@ -47690,6 +47690,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   allowlist；这不声称当前 shared hostPath 已满足 SLO，也不改变 A4433 的 RED，只使独立 CSI/worker 上的
   下一次 CA/Envoy 与 TTL=3 验收具备可审计的前置和持续告警。
 
+- A4435 把 A4434 的被动告警接入唯一生产发布入口。此前文档要求 CA/Envoy 与短租约验收前确认 latency
+  metrics 完整且告警无 pending/firing，但 `validate-production-release.sh` 实际只顺序执行 instance 与
+  Region/storage identity 两门，仍可能在 Prometheus `for` 窗口内放行慢盘。新增只读
+  `validate-storage-latency-slo.sh`，只接受无 query/fragment 的 HTTPS Prometheus base URL，可从只读绝对
+  路径载入单行 bearer token；经 DNS label 校验的 `TIDB_NAMESPACE`/`TIDB_CLUSTER` 将查询绑定到目标租户
+  的 PD/TiKV metrics Service。它以 A4434 同一三条 5 分钟 p99 表达式要求 PD WAL、TiKV RaftDB/KVDB
+  各返回精确 3 个有限十进制 sample 且全部 <=1 秒，再用三个 `_count` query 独立证明 replica series
+  完整。transport/API error、空/重复/缺失 series、NaN/Inf、超阈值和不安全 URL 全部 fail closed。
+  TDD 先证明旧组合入口日志只有 `instance→region` 且脚本不存在；实现后固定
+  `instance→region→latency` 顺序，前门失败不会启动后门。该即时 gate 补足 alert `for` 尚未成熟的窗口，
+  不替代 A4434 持续告警，也不把一次 query 通过升级为底层卷长期 SLO 证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
