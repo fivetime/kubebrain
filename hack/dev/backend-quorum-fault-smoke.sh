@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
+KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-dev}"
 ENDPOINT="${ENDPOINT:-127.0.0.1:3379}"
 TIMEOUT="${TIMEOUT:-180s}"
 RECOVERY_SETTLE_SECONDS="${RECOVERY_SETTLE_SECONDS:-10}"
@@ -495,12 +496,48 @@ partition_pd_quorum_soak() {
   done
 }
 
+restart_kubebrain_during_backend_loss() {
+  local pods_json old_uids_json deadline replaced
+  local -a pods
+  pods_json="$(kubectl -n "$KUBEBRAIN_NAMESPACE" get pods \
+    -l app.kubernetes.io/name=kubebrain -o json)"
+  old_uids_json="$(jq -c '[.items[].metadata.uid]' <<<"$pods_json")"
+  if [[ "$(jq 'length' <<<"$old_uids_json")" -ne 3 ]]; then
+    echo "refusing KubeBrain restart during backend loss: expected 3 replicas" >&2
+    return 1
+  fi
+  mapfile -t pods < <(jq -r '.items[].metadata.name' <<<"$pods_json")
+  kubectl -n "$KUBEBRAIN_NAMESPACE" delete pods "${pods[@]}" --wait=false
+  deadline=$((SECONDS + PARTITION_FAILOVER_TIMEOUT_SECONDS))
+  replaced=false
+  while (( SECONDS < deadline )); do
+    pods_json="$(kubectl --request-timeout=5s -n "$KUBEBRAIN_NAMESPACE" get pods \
+      -l app.kubernetes.io/name=kubebrain -o json 2>/dev/null || true)"
+    replaced="$(jq -r --argjson old "$old_uids_json" '
+      (.items | length) == 3 and all(.items[];
+        (.metadata.uid as $uid | ($old | index($uid)) == null) and
+        .status.phase == "Running")' <<<"$pods_json" 2>/dev/null || true)"
+    if [[ "$replaced" == "true" ]]; then
+      echo "KubeBrain replicas replaced while backend quorum was unavailable"
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "KubeBrain replicas were not replaced during backend loss within ${PARTITION_FAILOVER_TIMEOUT_SECONDS}s" >&2
+  return 1
+}
+
 partition_tikv_quorum() {
   local placement="${1:-any}"
+  local action="${2:-none}"
   local privileged deadline cluster_json index pod ip node all_non_up all_up states previous_states
   local -a tikv_pods tikv_nodes
   if [[ "$placement" != "any" && "$placement" != "cross-node" ]]; then
     echo "invalid TiKV quorum partition placement: $placement" >&2
+    exit 1
+  fi
+  if [[ "$action" != "none" && "$action" != "restart-kubebrain" ]]; then
+    echo "invalid TiKV quorum partition action: $action" >&2
     exit 1
   fi
   if [[ ! "$PARTITION_FAILOVER_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] ||
@@ -603,6 +640,9 @@ partition_tikv_quorum() {
     return 1
   fi
   echo "TiKV quorum partition observed: $states"
+  if [[ "$action" == "restart-kubebrain" ]]; then
+    restart_kubebrain_during_backend_loss
+  fi
   sleep "$PARTITION_HOLD_SECONDS"
   cleanup_dual_partition
   dual_partition_pod_ips=()
@@ -967,6 +1007,12 @@ if [[ "${1:-}" == "--partition-tikv-quorum-cross-node" ]]; then
   partition_tikv_quorum cross-node
   exit 0
 fi
+if [[ "${1:-}" == "--partition-tikv-quorum-cross-node-restart-kubebrain" ]]; then
+  need docker
+  need jq
+  partition_tikv_quorum cross-node restart-kubebrain
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   need docker
   need jq
@@ -974,7 +1020,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-pd-all-cross-node-restart-kubebrain|--partition-pd-all-cross-node-staged-restart-kubebrain|--degrade-pd-all-cross-node|--degrade-tikv-all-cross-node|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-pd-all-cross-node-restart-kubebrain|--partition-pd-all-cross-node-staged-restart-kubebrain|--degrade-pd-all-cross-node|--degrade-tikv-all-cross-node|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-cross-node-restart-kubebrain|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -992,6 +1038,18 @@ run_quorum_test() {
     KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
       KUBEBRAIN_QUORUM_FAILOVER_COMMAND="$command" \
       go test . -run '^TestBackendQuorumFailoverKeepsServing$' -count=1 -v
+  )
+  wait_backend_ready
+}
+
+run_tikv_txn_restart_witness_test() {
+  local command="$1"
+  echo "Running multi-key transaction witness recovery across TiKV quorum loss and KubeBrain restart"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_TIKV_TXN_RESTART_FAULT_COMMAND="$command" \
+      go test . -run '^TestMultiKeyTxnWitnessSurvivesTiKVLossAndKubeBrainRestart$' -count=1 -v
   )
   wait_backend_ready
 }
@@ -1461,8 +1519,14 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     run_watch_recovery_test "cross-node TiKV quorum-loss network partition" \
       "$self --partition-tikv-quorum-cross-node"
     ;;
+  tikv-cross-node-quorum-loss-restart)
+    need docker
+    need jq
+    run_tikv_txn_restart_witness_test \
+      "PARTITION_HOLD_SECONDS=20 $self --partition-tikv-quorum-cross-node-restart-kubebrain"
+    ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, pd-cross-node-degraded-network-linearizability, pd-cross-node-degraded-network-lease-linearizability, pd-cross-node-degraded-network-lease-expiry-linearizability, tikv-network-partition, tikv-cross-node-partition, tikv-cross-node-degraded-network, tikv-cross-node-degraded-network-linearizability, tikv-cross-node-degraded-network-lease-linearizability, tikv-cross-node-degraded-network-lease-expiry-linearizability, tikv-cross-node-degraded-network-streaming-keepalive, tikv-cross-node-degraded-network-revoke-stream, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, pd-cross-node-degraded-network-linearizability, pd-cross-node-degraded-network-lease-linearizability, pd-cross-node-degraded-network-lease-expiry-linearizability, tikv-network-partition, tikv-cross-node-partition, tikv-cross-node-degraded-network, tikv-cross-node-degraded-network-linearizability, tikv-cross-node-degraded-network-lease-linearizability, tikv-cross-node-degraded-network-lease-expiry-linearizability, tikv-cross-node-degraded-network-streaming-keepalive, tikv-cross-node-degraded-network-revoke-stream, tikv-quorum-loss, tikv-cross-node-quorum-loss, or tikv-cross-node-quorum-loss-restart; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

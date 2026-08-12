@@ -2940,6 +2940,20 @@ seal，旧版本 revision 不会因缺少 seal 被误报。compaction 必须先�
 清理失败时本轮不得继续删除事件。修复底层 marker 后需由运维显式 AlarmDeactivate CORRUPT，随后领导权初始化会
 再次验证剩余 seals；禁止在未修复 witness 时仅解除告警恢复写流量。
 
+发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
+
+```shell
+ENDPOINT=127.0.0.1:3379 \
+BACKEND_FAULT_MODE=tikv-cross-node-quorum-loss-restart \
+hack/dev/backend-quorum-fault-smoke.sh
+```
+
+该模式会主动隔离两个 TiKV store 并在 backend quorum 不可用期间替换全部 KubeBrain Pod，具有破坏性，只能针对
+可丢弃环境运行。通过条件不是 Pod Ready：必须实际观测 ambiguous transaction，恢复后 fault 前后所有可见双键
+transaction 均成对存在且 value 一致、
+新 transaction 重新成功、AlarmList 无 CORRUPT，且脚本确认所有 network rules 已移除。若环境恢复超出默认八分钟，
+可显式设置 `KUBEBRAIN_TIKV_TXN_RESTART_TIMEOUT`，不得删除 ambiguity 或 pair-atomicity 断言来换取绿色结果。
+
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
 需要覆盖真实 namespace 删除和 namespace controller 清理路径时启用：

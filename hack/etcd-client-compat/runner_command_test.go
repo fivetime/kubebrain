@@ -605,6 +605,31 @@ func TestBackendTiKVCrossNodeQuorumLossBindsEachStoreToItsNode(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendTiKVCrossNodeQuorumLossRestartsKubeBrainForTxnWitnessRecovery(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-quorum-loss-restart)`)
+	require.Contains(t, script, `--partition-tikv-quorum-cross-node-restart-kubebrain`)
+	require.Contains(t, script, `partition_tikv_quorum cross-node restart-kubebrain`)
+	require.Contains(t, script, `KUBEBRAIN_TIKV_TXN_RESTART_FAULT_COMMAND="$command"`)
+	require.Contains(t, script, `TestMultiKeyTxnWitnessSurvivesTiKVLossAndKubeBrainRestart`)
+	require.Contains(t, script, `KubeBrain replicas replaced while backend quorum was unavailable`)
+	require.Contains(t, script, `PARTITION_HOLD_SECONDS=20`)
+	require.NotContains(t, script, "eval ")
+}
+
+func TestTiKVTxnRestartWitnessGateRequiresAmbiguityAtomicPairsAndNoCorruptAlarm(t *testing.T) {
+	data, err := os.ReadFile("tikv_txn_restart_witness_test.go")
+	require.NoError(t, err)
+	source := string(data)
+	require.Contains(t, source, `require.Positive(t, ambiguous.Load()`)
+	require.Contains(t, source, `pairs := make(map[string]pairState)`)
+	require.Contains(t, source, `state.left && state.right`)
+	require.Contains(t, source, `transaction pair %q has mismatched values`)
+	require.Contains(t, source, `assertNoCorruptAlarm(t, ctx, cli)`)
+}
+
 func TestWatchBackendFailoverHasBoundedConfigurableTimeout(t *testing.T) {
 	data, err := os.ReadFile("watch_backend_failover_test.go")
 	require.NoError(t, err)

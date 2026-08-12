@@ -48103,6 +48103,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   event rows，避免崩溃窗口把计划内压缩误报为损坏。回归覆盖重启自动告警、marker 修复后显式 disarm 并再次初始化、
   leadership watermark 不得屏蔽上一 term 的 seal，以及 compaction 同步清理 seal/event。
 
+- A4487 增加真实三 PD/三 TiKV、三 kind node 拓扑的 opt-in transaction restart gate。新
+  `TestMultiKeyTxnWitnessSurvivesTiKVLossAndKubeBrainRestart` 用六个独立双键 transaction writer 覆盖 fault
+  window；fault helper 按 leader count 选择两个 Up TiKV store，在各自 node network namespace 安装双向 DROP，
+  等待 Operator/PD 观测为 non-Up 后、quorum 恢复前替换全部三 KubeBrain Pod。测试要求窗口内至少出现一个客户端
+  ambiguous mutation，恢复后每个 key pair 必须同时存在且 value 完全相同，继续完成至少一轮 writer 数量的成功
+  transaction，并确认健康 TiKV 原子恢复没有产生 CORRUPT alarm。新增
+  `BACKEND_FAULT_MODE=tikv-cross-node-quorum-loss-restart` 与可独立调用的
+  `--partition-tikv-quorum-cross-node-restart-kubebrain`，所有 iptables 规则继续由 trap 回收。当前执行主机没有
+  kube context，因此本提交只证明 runner/test 契约和普通 client suite 通过；真实集群 ambiguous outcome、Pod
+  replacement、所有已提交/不确定请求留下的 pair atomicity 与 alarm 证据仍明确为待执行，不能用 mock 或脚本
+  存在性关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
