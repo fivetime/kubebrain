@@ -47658,6 +47658,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   repair preflight 和 cold snapshot gate 仍必须按 A4278/A4279 拒绝它，不能用本项宣称存储隔离或关闭 A4430
   的 rollout + 整体 TiKV/PD 延迟差距。
 
+- A4433 在 A4432 的 effective `--capacity=5GB` 接线上重跑完整 CA rollover + 三轮 Envoy rollout，证明
+  `AlreadyFull` 污染已经消除，但组合门禁仍为 RED。fresh `kubebrain-envoy-ca-a4433` 同样使用三个 zone
+  worker、独立 3 PD/3 TiKV/3 mTLS KubeBrain 和固定 Envoy 1.39.0；三个 TiKV PID 1 均带
+  `--capacity=5GB`，PD 全程把三个 store 报告为 `Up/capacity=5GiB/available≈4.71GiB`，完整 TiKV 日志中
+  `AlreadyFull`、disk-full 和 no-space 匹配数为 0。四个长期 Watch+TTL=3 client 覆盖三个 Envoy，明文和
+  无客户端证书探针被拒；第一轮 surge/old Pod 交叠期间，rotation hook 在三个 KubeBrain 的 new-CA leaf
+  与 old+new trust bundle 哈希全部收敛后返回。
+  普通门禁在第二轮关闭 cohort member 0 的 KeepAlive channel；最后正响应为
+  `16:14:22.212, TTL=3`，服务端随后查询为 TTL=-1。同期 PD leader `kb-pd-2` 于 `16:14:26.176`
+  报告 slow-disk heartbeat 超期 2.666 秒；`16:14:38.100` 再超期 2.973 秒，5 秒领导租约过期并下台，
+  直到 `16:14:44.218` 才重新 ready，TiKV 和三个 KubeBrain 在该窗内连续报告 PD not-leader、TSO/member
+  discovery 失败。现场宿主 load average 达 61.80，根分区显示 100% 使用、仅约 14GiB available；四个
+  Kind node 的累计 Block I/O 已达约 1.5/4.37/3.97/4.99GB。所有 TiKV、KubeBrain 和 Envoy 容器均未重启，
+  因而结果不是 Pod crash 或配置容量再次失效，而是共享 hostPath/宿主 I/O 抖动使整个 PD/TiKV 控制面超过
+  TTL=3 可用性预算。普通门禁 fail closed，未执行 race。
+  本项把 A4430 的结论收窄为可复现的基础设施前置条件：逻辑 store capacity 只修正 fullness 判定，不能提供
+  IOPS/延迟隔离。CA rollover + Envoy rollout 差距继续开放；下一次有效验收必须使用独立、具备容量和延迟
+  SLO 的预生产卷/worker，并同时记录 PD leader lease、TiKV commit latency 和宿主 I/O，而不能通过增大 TTL
+  或把状态放入 RAM 绕过 etcd 的短租约契约。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
