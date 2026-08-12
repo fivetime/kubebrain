@@ -34,6 +34,8 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "envoy-plaintext)")
 	require.Contains(t, string(script), "envoy-tls-passthrough)")
 	require.Contains(t, string(script), "TestEnvoyTLSPassthroughProfileDifferential")
+	require.Contains(t, string(script), "envoy-replica-drain)")
+	require.Contains(t, string(script), "TestEnvoyReplicaDrainDifferential")
 	require.Contains(t, string(script), "ENVOY_BINARY must name an executable Envoy binary")
 	require.Contains(t, string(script), "ENVOY_BOOTSTRAP_TEMPLATE must name a readable Envoy bootstrap")
 	require.Contains(t, string(script), `cd "$ROOT_DIR/hack/etcd-client-compat"`)

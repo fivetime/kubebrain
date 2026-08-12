@@ -114,7 +114,7 @@ spec:
               port: admin
             periodSeconds: 5
             timeoutSeconds: 2
-            failureThreshold: 3
+            failureThreshold: 1
           livenessProbe:
             httpGet:
               path: /server_info
@@ -125,9 +125,18 @@ spec:
             failureThreshold: 3
           lifecycle:
             preStop:
-              httpGet:
-                path: /healthcheck/fail
-                port: admin
+              exec:
+                command:
+                  - /usr/bin/timeout
+                  - "12"
+                  - /bin/bash
+                  - -ec
+                  - >-
+                    exec 3<>/dev/tcp/127.0.0.1/9901;
+                    printf 'POST /healthcheck/fail HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 0\r\n\r\n' >&3;
+                    IFS= read -r status <&3;
+                    [[ "$status" == $'HTTP/1.1 200 OK\r' ]];
+                    /bin/sleep 10
           volumeMounts:
             - name: bootstrap
               mountPath: /etc/envoy

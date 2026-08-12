@@ -19,6 +19,10 @@ Envoy `STRICT_DNS` 会看到每个 KubeBrain Pod IP，而不是把流量再次�
 - Envoy HTTP/2 schema 的并发 stream 最大值为 `2147483647`，低于 KubeBrain/etcd 的 uint32 最大值；生产容量
   仍以 KubeBrain `--max-watches=10000` 和 Envoy `max_requests=20000` 的较小业务上限为准；
 - 三副本 Envoy 使用 PDB、hostname 反亲和、非 root/read-only 容器、digest-pinned 镜像和显式 NetworkPolicy；
+- preStop 使用固定镜像中的 `/bin/bash` `/dev/tcp` 向 Envoy admin 发送显式 `POST /healthcheck/fail`，由
+  `/usr/bin/timeout` 限制为 12 秒，并校验 HTTP 200；readiness `failureThreshold=1`，hook 随后等待 10 秒，让
+  kubelet 与 EndpointSlice 有时间摘除旧 Pod，再由 Kubernetes 终止进程。Envoy admin 的 mutating endpoint
+  不接受 GET，固定官方镜像也不包含 curl；
 - admin `:9901` 仅供带 `dbaas.kubebrain.io/monitoring-access=true` 的 namespace 访问，不是租户入口；
 - `2380` 不终止或检查 TLS：客户端证书、服务端证书和 etcd 的证书 CN 身份均端到端保留，Envoy Pod 无需挂载
   租户 CA、证书或私钥；它不是 L7 路由，不能提供基于 RPC method 的策略；
@@ -51,3 +55,7 @@ KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:34379,127.0.0.1:35379,127.0.0.1:36379 \
 
 该隔离门禁用同一 `TLS_CERT_FILE` 启动临时 reference server 并作为测试 client，因此证书必须包含
 `serverAuth,clientAuth` 和 `TLS_SERVER_NAME` SAN；生产租户客户端仍应使用独立的 client-only certificate。
+
+跨 Envoy replica 的滚动迁移门禁使用 `TEST_SCOPE=envoy-replica-drain`。它先在 replica 0 上建立 Watch 与
+LeaseKeepAlive，再加入 replica 1、对旧 admin 执行与 production preStop 相同的 readiness fail 并停止旧进程；
+两个长流必须从新地址恢复，lease 必须跨原 TTL 存活。

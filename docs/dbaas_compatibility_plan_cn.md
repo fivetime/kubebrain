@@ -47344,6 +47344,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   render/client dry-run 通过。Envoy TLS termination/SDS、云厂商 LB、跨节点/AZ、NAT/conntrack/underlay 与
   平台 request token 仍保持开放，不能由 passthrough 结论关闭。
 
+- A4415 把 A4413/A4414 的“同一 downstream 地址停止并重启 Envoy”提升为两个独立 Envoy replica 地址间的
+  clientv3 迁移，并修复 production preStop 的真实协议错误。对照 upstream `/root/etcd/client/v3/watch.go`
+  `serveSubstream` 的可恢复 watch revision 与 `/root/etcd/client/v3/lease.go` `resetRecv`/`sendKeepAliveLoop`：
+  client 先只连接 Envoy replica 0，建立 CreatedNotify Watch 和 3 秒 LeaseKeepAlive 后才通过 `SetEndpoints`
+  加入 replica 1；测试向旧 replica admin 执行 `POST /healthcheck/fail`，必须观察 `/ready` 从 200 变为 503，
+  再终止旧 PID。后续 Watch event、同 lease ID 正 TTL keepalive 与超过原 TTL 的附租约 key 都必须经 replica 1
+  恢复，两个 channel 保持开放，并以第二个 admin 的 `cluster.kubebrain.upstream_rq_total` 排除仍从旧代理取流量。
+  新增 fail-closed `TEST_SCOPE=envoy-replica-drain` 与 `TestEnvoyReplicaDrainDifferential`，同一场景分别运行 clean
+  三成员 reference etcd 与 fresh 三副本 KubeBrain。
+  该门禁同时发现 A4413 production lifecycle 用 Kubernetes `httpGet` 调用 `/healthcheck/fail`，但 Envoy admin
+  的 mutating endpoint 不接受 GET，因此旧 Pod 实际不会先降 readiness。固定官方 Envoy 镜像不包含 curl，
+  所以 preStop 改用镜像已有的 `/usr/bin/timeout 12 /bin/bash` 和 `/dev/tcp` 发送最小 HTTP POST，并逐字节要求
+  状态行为 `$'HTTP/1.1 200 OK\r'`；readiness `failureThreshold` 收紧为 1，hook 再等待 10 秒供 kubelet 与
+  EndpointSlice 摘除旧地址。清单测试固定完整 argv，避免回退到 GET、无界阻塞、忽略 response 或立即退出。
+  同一固定镜像容器内实际执行该命令成功，随后原始 `GET /ready` 返回
+  `$'HTTP/1.1 503 Service Unavailable\r'`。2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建 reference，
+  在 disposable `kubebrain-envoy-drain` 独立 3 PD/3 TiKV/3 KubeBrain 上普通双端 12.27 秒通过；同一 fresh
+  现场 `GOFLAGS=-race` 双端 12.961 秒通过且无数据竞争。该项证明两个真实 Envoy PID/地址间的应用流恢复，
+  但尚未把 Envoy Deployment 实际调度到多节点，也不替代 Kubernetes EndpointSlice、云 LB、跨 AZ、
+  NAT/conntrack/underlay 与长时间滚动升级门禁，这些仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

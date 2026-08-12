@@ -40,7 +40,14 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
 	require.Equal(t, "/ready", nestedString(t, container, "readinessProbe", "httpGet", "path"))
-	require.Equal(t, "/healthcheck/fail", nestedString(t, container, "lifecycle", "preStop", "httpGet", "path"))
+	require.EqualValues(t, 1, nestedInt64(t, container, "readinessProbe", "failureThreshold"))
+	preStop, found, err := unstructured.NestedStringSlice(container.Object, "lifecycle", "preStop", "exec", "command")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{
+		"/usr/bin/timeout", "12", "/bin/bash", "-ec",
+		"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'POST /healthcheck/fail HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; IFS= read -r status <&3; [[ \"$status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 10",
+	}, preStop)
 	ports, found, err := unstructured.NestedSlice(container.Object, "ports")
 	require.NoError(t, err)
 	require.True(t, found)

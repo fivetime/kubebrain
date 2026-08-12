@@ -83,8 +83,11 @@ case "$TEST_SCOPE" in
   envoy-tls-passthrough)
     test_pattern='^TestEnvoyTLSPassthroughProfileDifferential$'
     ;;
+  envoy-replica-drain)
+    test_pattern='^TestEnvoyReplicaDrainDifferential$'
+    ;;
   *)
-    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, envoy-plaintext, or envoy-tls-passthrough" >&2
+    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, envoy-plaintext, envoy-tls-passthrough, or envoy-replica-drain" >&2
     exit 2
     ;;
 esac
@@ -108,7 +111,7 @@ if [[ "$TEST_SCOPE" == lease-revoke-tls-passthrough || "$TEST_SCOPE" == envoy-tl
   )
   export ETCDCTL_CACERT="$TLS_CA_FILE" ETCDCTL_CERT="$TLS_CERT_FILE" ETCDCTL_KEY="$TLS_KEY_FILE"
 fi
-if [[ "$TEST_SCOPE" == envoy-plaintext || "$TEST_SCOPE" == envoy-tls-passthrough ]]; then
+if [[ "$TEST_SCOPE" == envoy-plaintext || "$TEST_SCOPE" == envoy-tls-passthrough || "$TEST_SCOPE" == envoy-replica-drain ]]; then
   if [[ -z "$ENVOY_BINARY" || ! -x "$ENVOY_BINARY" ]]; then
     echo "ENVOY_BINARY must name an executable Envoy binary for the selected Envoy profile" >&2
     exit 2
