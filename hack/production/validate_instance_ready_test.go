@@ -461,6 +461,17 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput:  "client Service release mismatch",
 		},
 		{
+			name:       "client EndpointSlice port drift",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			endpointSlicesJSON: fakeEndpointSlicesWithPortJSON([]string{
+				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
+			}, true, 3380, "uid-client-service"),
+			wantOutput: "EndpointSlices do not match",
+		},
+		{
 			name:       "wrong storage topology",
 			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1403,6 +1414,10 @@ func fakeEndpointSlicesJSON(podUIDs []string, ready bool, serviceUIDs ...string)
 	if len(serviceUIDs) > 0 {
 		serviceUID = serviceUIDs[0]
 	}
+	return fakeEndpointSlicesWithPortJSON(podUIDs, ready, 3379, serviceUID)
+}
+
+func fakeEndpointSlicesWithPortJSON(podUIDs []string, ready bool, port int, serviceUID string) string {
 	endpoints := make([]map[string]any, len(podUIDs))
 	for index, podUID := range podUIDs {
 		endpoints[index] = map[string]any{
@@ -1417,6 +1432,7 @@ func fakeEndpointSlicesJSON(podUIDs []string, ready bool, serviceUIDs ...string)
 				"apiVersion": "v1", "kind": "Service", "name": "kubebrain-client", "uid": serviceUID, "controller": true,
 			}},
 		},
+		"ports":     []map[string]any{{"name": "client", "protocol": "TCP", "port": port}},
 		"endpoints": endpoints,
 	}}})
 	if err != nil {

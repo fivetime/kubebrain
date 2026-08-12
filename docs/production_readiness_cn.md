@@ -816,7 +816,8 @@ Pod targetRef UID 集合与当前 Pod 集合完全相同；默认 client Service
 `${KUBEBRAIN_STATEFULSET}-client`，与生产清单的 `kubebrain-client` 一致。Service 必须是非 headless ClusterIP、
 精确选择 KubeBrain name/instance labels，且只能暴露名为 `client`、指向容器命名端口 `client` 的期望 client
 port；每个 EndpointSlice 还必须以该 Service name/UID 作为唯一 controller owner，不能仅伪造
-`kubernetes.io/service-name` label。门禁末尾会再次比较 Service UID/type/clusterIP/selector/ports 投影；随后
+`kubernetes.io/service-name` label，并且只能发布同名 TCP `client` expected port。门禁末尾会再次比较
+Service UID/type/clusterIP/selector/ports 投影；随后
 读取运行时 MemberList，要求 cluster ID 与同一 immutable storage identity 精确一致、精确成员数、唯一且非零的 member ID/name、
 每个成员的 name/peer URL 映射与 immutable initial cluster 完全相同且无重复，且每个成员的
 client URL 集合无重复并与期望完全相同；`EXPECTED_INITIAL_CLUSTER` 遵循 etcd

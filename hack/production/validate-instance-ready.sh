@@ -467,12 +467,14 @@ if ! endpoint_slices_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAME
 fi
 if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
   --arg service "$KUBEBRAIN_CLIENT_SERVICE" --arg serviceUID "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" \
-  --argjson expectedPodUIDs "$expected_pod_uids_json" '
+  --argjson port "$EXPECTED_PORT" --argjson expectedPodUIDs "$expected_pod_uids_json" '
   all(.items[]?;
     .metadata.labels["kubernetes.io/service-name"] == $service and
     ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
     ([.metadata.ownerReferences[]? | select(.controller == true and .apiVersion == "v1" and
-      .kind == "Service" and .name == $service and .uid == $serviceUID)] | length) == 1
+      .kind == "Service" and .name == $service and .uid == $serviceUID)] | length) == 1 and
+    (.ports | length) == 1 and .ports[0].name == "client" and
+    (.ports[0].protocol // "TCP") == "TCP" and .ports[0].port == $port
   ) and
   ([.items[]?.endpoints[]?] | length) == ($expectedPodUIDs | length) and
   all(.items[]?.endpoints[]?;
