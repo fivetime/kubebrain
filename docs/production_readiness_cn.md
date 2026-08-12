@@ -2894,6 +2894,10 @@ tombstone index 重建，以及 live-index 冲突时 counter 与用户 mutation 
 metadata 迁移和 quota usage 更新表达为同一 storage transaction 内的 read-compare-write。事务内 `Get` 建立
 冲突依赖，替代静态 `PutIfNotExist/CAS`，并允许所有键在 allocator 决定 revision 后生成。混合多键回归覆盖
 三个连续 subrevision、internal 操作不计入 event total，以及 guard 翻转时 durable counter 与全部 mutation 回滚。
+单键 uncertain-result repair 另有 `stageUncertainRepairAtomic`：它在事务内校验原 operation revision index、
+分配新 revision、原样重写已存储 envelope/tombstone，并写 PUT/DELETE event。原样复制避免 compat value 被二次
+封装；PUT、DELETE 和 stale-index 冲突回滚均有回归。该 staging 尚未替换 retry queue 的旧 TSO 调用，必须与
+主写路径在同一切换提交中启用。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 

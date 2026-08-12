@@ -48015,6 +48015,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `total=3`；另在 guard 预读后注入 live index，确认 callback 返回 CAS conflict，durable counter 与用户写整体
   回滚。该 helper 尚未接入运行时，剩余切换阻塞面集中在 uncertain-result repair/collector 发布模型。
 
+- A4474 为单键 uncertain-result repair 增加 `stageUncertainRepairAtomic`。它以 durable counter 分配新 revision，
+  在同一 transaction 内精确校验原 operation 的 live/tombstone revision index，原样复制已存储 object bytes，并
+  写入对应 PUT/DELETE ordered event；这样 compat envelope 不会被普通 PUT encoder 二次包装。测试覆盖 PUT
+  envelope、DELETE tombstone 和 stale index 冲突，后者不得推进 counter。helper 仍未接入 retry queue，避免在
+  主路径保留旧 TSO 时形成双 allocator；下一阶段需把 repair 作为 callback 注入，并与主写/collector 一次切换。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

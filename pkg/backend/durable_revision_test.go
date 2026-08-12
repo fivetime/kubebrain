@@ -492,3 +492,46 @@ func TestTransactionalRevisionAllocatorStagesWholeTxn(t *testing.T) {
 	_, err = b.kv.Get(ctx, b.coder.EncodeRevisionKey(blockedKey))
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 }
+
+func TestTransactionalRevisionAllocatorStagesUncertainRepair(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value []byte
+		verb  proto.Event_EventType
+	}{
+		{name: "put envelope", value: encodeValueWithMeta([]byte("value"), EtcdMetadata{CreateRevision: 4, Version: 2, Lease: 7}), verb: proto.Event_PUT},
+		{name: "delete tombstone", value: tombStoneBytes, verb: proto.Event_DELETE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			b.persistDurableRevision(30)
+			key := []byte(prefix + "/atomic-repair/" + tc.name)
+			oldIndex := uint64ToBytes(30)
+			if tc.verb == proto.Event_DELETE {
+				oldIndex = append(oldIndex, 0)
+			}
+			seed := b.kv.BeginBatchWrite()
+			seed.Put(b.coder.EncodeRevisionKey(key), oldIndex, 0)
+			require.NoError(t, seed.Commit(ctx))
+
+			batch := b.kv.BeginBatchWrite()
+			allocated := b.stageUncertainRepairAtomic(batch, key, tc.value, 30, 17)
+			require.NoError(t, batch.Commit(ctx))
+			require.Equal(t, uint64(31), *allocated)
+			stored, err := b.kv.Get(ctx, b.coder.EncodeObjectKey(key, 31))
+			require.NoError(t, err)
+			require.Equal(t, tc.value, stored, "repair must preserve stored bytes verbatim")
+			eventKey, wantEvent := encodeEventLogEntry(b.ks, 31, key, tc.verb, 17, 0, 1)
+			gotEvent, err := b.kv.Get(ctx, eventKey)
+			require.NoError(t, err)
+			require.Equal(t, wantEvent, gotEvent)
+
+			conflict := b.kv.BeginBatchWrite()
+			b.stageUncertainRepairAtomic(conflict, key, []byte("must-not-land"), 30, 17)
+			require.ErrorIs(t, conflict.Commit(ctx), storage.ErrCASFailed)
+			durable, err := b.GetDurableRevision(ctx)
+			require.NoError(t, err)
+			require.Equal(t, uint64(31), durable)
+		})
+	}
+}
