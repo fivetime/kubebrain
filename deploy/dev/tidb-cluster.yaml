@@ -20,6 +20,11 @@ spec:
     replicas: 3
     requests:
       storage: 5Gi
+    # TiDB Operator v1.6.5 maps limits.storage to tikv-server --capacity.
+    # A raftstore.capacity TOML value is ineffective because the generated
+    # command always supplies --capacity and the CLI value wins.
+    limits:
+      storage: 5Gi
     # Disposable local clusters often share a nearly-full development host.
     # Production must keep TiKV's reserve-space protection; this dev-only
     # manifest disables the recovery reserve and caps TiKV's logical store at
@@ -30,7 +35,6 @@ spec:
       reserve-space = "0MiB"
       [raftstore]
       reserve-raft-space = "0MiB"
-      capacity = "5GiB"
   tidb:
     baseImage: pingcap/tidb
     replicas: 1

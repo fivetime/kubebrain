@@ -47636,16 +47636,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RAM-backed storage 或同租约过期后的补续掩盖。后续应在资源隔离的预生产 worker 上重跑，并把基础设施
   NodePort/Envoy 重连上界与 PD/TiKV 写入延迟 SLO 同时作为 TTL=3 发布前置条件。
 
-- A4431 修复 A4430 启动阶段暴露的 disposable TiKV 容量配置错误，但不弱化 A4278/A4279 的生产存储
+- A4431/A4432 修复 A4430 启动阶段暴露的 disposable TiKV 容量配置错误，并记录一次静态验证被真实
+  Operator 运行推翻后的纠偏过程，但不弱化 A4278/A4279 的生产存储
   fail-closed 栅栏。`deploy/dev/tidb-cluster.yaml` 此前只把 `storage.reserve-space` 和
   `raftstore.reserve-raft-space` 设为 0；它的注释却声称请求的 5Gi PVC 已定义测试容量。现场 TiKV 实际以
   `--capacity=0` 启动，在 2TiB、99% 使用率的 shared hostPath 上先返回 `AlreadyFull`，证明 reserve 归零
   只取消 recovery placeholder，并不会限制 store capacity。对照 `/root/tikv/components/server/src/common.rs`
-  的磁盘状态计算和 `/root/tikv/components/raftstore/src/store/config.rs`：只有非零
-  `raftstore.capacity` 才会把容量取为 `min(physical capacity, configured capacity)`，0 明确表示 no limit。
-  dev 清单现显式设置 `capacity = "5GiB"`，与 PVC request 对齐；TiKV v8.5.3 官方镜像对抽取出的同形 TOML
-  执行 `--config-check` 返回 `config check successful`。compat runner 的清单回归固定 reserve、logical
-  capacity 及注释中的边界，完整包 6.330 秒、目标 race 连续 10 轮 1.085 秒通过。
+  的磁盘状态计算和 `/root/tikv/components/raftstore/src/store/config.rs`：只有非零 capacity 才会把容量取为
+  `min(physical capacity, configured capacity)`，0 明确表示 no limit。A4431 最初把
+  `raftstore.capacity = "5GiB"` 写入 TOML；TiKV v8.5.3 `--config-check` 虽通过，但 fresh 三 worker 现场证明
+  TiDB Operator v1.6.5 仍生成 `--capacity=0`，CLI 在配置加载后覆盖 TOML，effective config 仍为 0KiB。
+  因此 A4432 对照 Operator `pkg/manager/member/tikv_member_manager.go`、
+  `pkg/controller/controller_utils.go::TiKVCapacity` 和 advanced example 的权威接线，把限制改为
+  `spec.tikv.limits.storage: 5Gi`，并从 TOML 删除无效 capacity。
+  同一 fresh `kubebrain-capacity-a4432` 现场滚动后三个 TiKV PID 1 均为 `--capacity=5GB`；即使各容器
+  `df -P /var/lib/tikv` 仍看到 2,112,663,500KiB、99% 的宿主分区，PD `/pd/api/v1/stores` 对三个 Up store
+  均报告 `capacity=5GiB`、约 4.7GiB available，TidbCluster 为 Ready/Normal。compat runner 的清单回归固定
+  reserve、Operator limits 接线、禁止 TOML capacity 及注释中的边界。
   该设置只让 disposable store 的 PD/fullness 逻辑不再错误继承整块宿主分区；hostPath 的 `df` 仍显示宿主
   容量，既没有 CSI identity、独立 volume handle，也没有真实 quota/snapshot 保证，因此生产 Region gate、
   repair preflight 和 cold snapshot gate 仍必须按 A4278/A4279 拒绝它，不能用本项宣称存储隔离或关闭 A4430
