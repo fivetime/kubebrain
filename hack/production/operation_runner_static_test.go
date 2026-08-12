@@ -92,6 +92,7 @@ func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 		{testFile: "validate_dataplane_readonly_test.go", script: "validate-dataplane-readonly.sh"},
 		{testFile: "validate_tikv_region_health_test.go", script: "validate-tikv-region-health.sh"},
 		{testFile: "validate_storage_latency_slo_test.go", script: "validate-storage-latency-slo.sh"},
+		{testFile: "validate_tidb_operator_ready_test.go", script: "validate-tidb-operator-ready.sh"},
 		{testFile: "validate_production_release_test.go", script: "validate-production-release.sh"},
 		{testFile: "validate_instance_ready_test.go", script: "validate-instance-ready.sh"},
 		{testFile: "validate_certificate_rotation_test.go", script: "validate-certificate-rotation.sh"},
@@ -109,6 +110,8 @@ func TestReleaseGateScriptTestsUseBoundedCommandHelper(t *testing.T) {
 				require.Contains(t, text, `runProductionScriptCommand(t, "validate-production-release.sh", baseEnv)`)
 			case "validate-storage-latency-slo.sh":
 				require.Contains(t, text, `runProductionScriptCommand(t, "validate-storage-latency-slo.sh", base)`)
+			case "validate-tidb-operator-ready.sh":
+				require.Contains(t, text, `runProductionScriptCommand(t, "validate-tidb-operator-ready.sh", base)`)
 			case "validate-certificate-rotation.sh":
 				require.Contains(t, text, `runValidateCertificateRotation(t, env)`)
 			default:

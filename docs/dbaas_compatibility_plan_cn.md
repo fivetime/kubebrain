@@ -47761,6 +47761,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该快照的 UID 随后继续作为 A4440 StatefulSet owner 链根；wait 后 CR 漂移因而 fail closed。它仍是发布
   稳态门禁，不替代真实 TiDB Operator 逐成员升级、回滚和故障注入矩阵。
 
+- A4443 把 storage rollout 的执行者纳入唯一生产发布入口。生产语义依赖 TiDB Operator v1.6.5 的
+  StatefulSet partition、probe 与 failover 行为，但旧入口从不读取 `tidb-admin/tidb-controller-manager`；
+  错误 UID、旧 template 或同 tag 不同运行 digest 的 Operator 仍可为 A4437–A4442 的 storage 对象背书。
+  TDD 先以不存在的 `validate-tidb-operator-ready.sh` RED，再固定 Deployment UID/unready、Pod unready 和
+  runtime digest 漂移全部 fail closed。新只读门禁验证收敛 Deployment 的 immutable UID/template，筛出
+  唯一由其控制且 Ready/Available 的 ReplicaSet，再把精确 Pod 数、ReplicaSet owner UID/template hash、
+  Running/Ready、spec image 与 runtime imageID digest 串成闭合链。组合入口顺序固定为
+  `operator→instance→region→latency`，Operator 失败时其余门禁零调用。该稳态身份验证是执行真实逐成员
+  升级/回滚矩阵的前提，不宣称矩阵本身已经完成。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

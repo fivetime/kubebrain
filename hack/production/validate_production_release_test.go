@@ -12,9 +12,15 @@ import (
 func TestValidateProductionReleaseRunsAllGatesFailFast(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "gates.log")
+	operatorGate := filepath.Join(tempDir, "operator-gate")
 	instanceGate := filepath.Join(tempDir, "instance-gate")
 	regionGate := filepath.Join(tempDir, "region-gate")
 	latencyGate := filepath.Join(tempDir, "latency-gate")
+	require.NoError(t, os.WriteFile(operatorGate, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+printf 'operator\n' >>"$GATE_LOG"
+[[ "${FAIL_OPERATOR:-false}" != "true" ]]
+`), 0o755))
 	require.NoError(t, os.WriteFile(instanceGate, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf 'instance\n' >>"$GATE_LOG"
@@ -32,6 +38,7 @@ printf 'latency\n' >>"$GATE_LOG"
 `), 0o755))
 	baseEnv := []string{
 		"KUBE_CONTEXT=test-context",
+		"TIDB_OPERATOR_COMMAND=" + operatorGate,
 		"INSTANCE_READY_COMMAND=" + instanceGate,
 		"REGION_HEALTH_COMMAND=" + regionGate,
 		"STORAGE_LATENCY_COMMAND=" + latencyGate,
@@ -43,28 +50,35 @@ printf 'latency\n' >>"$GATE_LOG"
 	require.Contains(t, string(output), "production release gate passed")
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, "instance\nregion\nlatency\n", string(log))
+	require.Equal(t, "operator\ninstance\nregion\nlatency\n", string(log))
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_OPERATOR=true"))
+	require.Error(t, err, string(output))
+	log, err = os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.Equal(t, "operator\n", string(log))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_INSTANCE=true"))
 	require.Error(t, err, string(output))
 	log, err = os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, "instance\n", string(log), "Region gate must not run after instance readiness fails")
+	require.Equal(t, "operator\ninstance\n", string(log), "Region gate must not run after instance readiness fails")
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_REGION=true"))
 	require.Error(t, err, string(output))
 	log, err = os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, "instance\nregion\n", string(log))
+	require.Equal(t, "operator\ninstance\nregion\n", string(log))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_LATENCY=true"))
 	require.Error(t, err, string(output))
 	log, err = os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, "instance\nregion\nlatency\n", string(log))
+	require.Equal(t, "operator\ninstance\nregion\nlatency\n", string(log))
 }
 
 func TestValidateProductionReleaseRejectsMissingContextBeforeEitherGate(t *testing.T) {

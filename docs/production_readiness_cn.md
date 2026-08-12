@@ -149,20 +149,23 @@ hack/production/wait-tidbcluster-ready.sh
 “TCP 可连接但 Debug gRPC 不完成”的半故障。它不执行 `KvPrewrite/KvCommit`，不能证明事务
 KV 路径健康；完整实例门禁随后通过 KubeBrain 执行 etcd Put/Get/Delete。三层证据不可相互替代。
 
-生产发布不得分别手工选择门禁；统一入口先执行完整实例 readiness/endpoint/事务验证，成功后再执行
+生产发布不得分别手工选择门禁；统一入口先验证负责 storage rollout 的 TiDB Operator 运行身份，再执行完整实例 readiness/endpoint/事务验证，成功后再执行
 PD/Region/storage 只读门禁，任一步失败即停止：
 
 ```bash
 KUBE_CONTEXT=production \
+EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID='<immutable deployment UID>' \
+EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
+EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
 PROMETHEUS_URL=https://prometheus.monitoring.svc:9090 \
 PROMETHEUS_BEARER_TOKEN_FILE=/run/secrets/prometheus/token \
 hack/production/validate-production-release.sh
 ```
 
-组合入口默认依次调用同目录的 `validate-instance-ready.sh`、`validate-tikv-region-health.sh` 和
+组合入口默认依次调用同目录的 `validate-tidb-operator-ready.sh`、`validate-instance-ready.sh`、`validate-tikv-region-health.sh` 和
 `validate-storage-latency-slo.sh`，且只接受
 可执行绝对路径覆盖，避免 PATH 劫持；`KUBE_CONTEXT` 缺失时不会启动任一子门禁。排障时可单独重跑
-PD/Region 或存储延迟门禁。调用组合入口时必须同时提供三个子脚本在下文列出的全部 `EXPECTED_*` 参数，
+Operator、PD/Region 或存储延迟门禁。调用组合入口时必须同时提供四个子脚本在下文列出的全部 `EXPECTED_*` 参数，
 以及 HTTPS Prometheus endpoint；认证 token 通过可选的只读绝对路径传入，不能放进命令行 query：
 
 ```bash
@@ -178,6 +181,24 @@ MAX_REGION_HEALTH_SAMPLES=6 \
 REGION_HEALTH_INTERVAL_SECONDS=5 \
 hack/production/validate-tikv-region-health.sh
 ```
+
+TiDB Operator 子门禁可独立执行：
+
+```bash
+KUBE_CONTEXT=production \
+TIDB_OPERATOR_NAMESPACE=tidb-admin \
+TIDB_OPERATOR_DEPLOYMENT=tidb-controller-manager \
+EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID='<immutable deployment UID>' \
+EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
+EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
+EXPECTED_TIDB_OPERATOR_REPLICAS=1 \
+hack/production/validate-tidb-operator-ready.sh
+```
+
+它要求 Deployment generation/副本和唯一 controller-manager container image 全部收敛，再从同一 namespace
+筛出唯一由该 Deployment UID 控制且 Ready/Available 的 ReplicaSet，最后要求其精确 Pod 数全部
+Running/Ready、非终止、template hash 与 owner UID 一致，并运行批准的 image digest。tag、UID、ReplicaSet、
+Pod 或 digest 任一漂移均 fail closed；仅有 Helm release 名称或 CRD 可用不能替代该运行身份链。
 
 存储延迟子门禁可独立执行：
 
@@ -679,6 +700,9 @@ namespace 与三组各三个 Pod 名，不执行调用方提供的任意 shell c
 ```shell
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
+EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID=<immutable-operator-deployment-uid> \
+EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
+EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
 EXPECTED_KUBEBRAIN_STATEFULSET_UID=<immutable-kubebrain-statefulset-uid> \
 EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=<immutable-kubebrain-client-service-uid> \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
