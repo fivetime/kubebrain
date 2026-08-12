@@ -47297,6 +47297,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的统一 `lease-response-loss` 门禁 35.573 秒；`GOFLAGS=-race` 统一门禁 51.308 秒，A4412 双端 13.49 秒且
   无数据竞争。真实 Envoy/云厂商 LB 配置、云 LB/NAT/conntrack 与跨节点网络设备仍未由此代理替代，继续开放。
 
+- A4413 首次加入可直接部署、可由真实进程校验的供应商中立 Envoy L7 profile，而不是继续用自研 proxy 代替
+  生产入口。`deploy/production/envoy` 是不改变默认 `kubebrain-client` 直连路径的可选 Kustomize overlay：
+  digest 固定为 Envoy 1.39.0，三副本 Deployment 配 PDB、hostname 反亲和、non-root/read-only/seccomp、
+  资源上限、preStop readiness fail、独立 client/admin Service 与最小 ingress/egress NetworkPolicy。独立
+  Ready-only headless `kubebrain-envoy-upstream` 让 `STRICT_DNS` 直接发现三个 Pod IP，避免再经 ClusterIP 二次
+  负载均衡；upstream/downstream 都按 HTTP/2 处理。route timeout、request/stream/route idle timeout、upstream
+  connection idle timeout 和 gRPC max stream duration 全部显式关闭，防止截断 Watch/KeepAlive；circuit breaker
+  `max_requests=20000` 覆盖清单的 10000 watch 上限。
+  真实 Envoy `--mode validate` 首轮拒绝直接照抄 etcd 的 `4294967295` concurrent streams：Envoy v3 schema 上限
+  是 `2147483647`；同轮还报告 `respect_dns_ttl` 与旧 admin `access_log_path` deprecated。profile 改用 Envoy
+  合法上限并删除两项弃用字段，未通过 runtime override 延命；随后固定镜像内二进制
+  `9aed67d.../1.39.0` 对同一 production bootstrap 校验成功，Kustomize render 与 Kubernetes client dry-run
+  也通过。清单单测固定 digest、安全上下文、PDB、Ready-only headless discovery、NetworkPolicy、HTTP/2 与
+  所有长流 timeout/capacity 不变量。
+  新增 `TestEnvoyPlaintextProfileDifferential` 和 fail-closed `TEST_SCOPE=envoy-plaintext`：测试只接受显式可执行
+  `ENVOY_BINARY` 与可读 bootstrap，同一配置分别代理 clean 三成员 reference etcd 和 fresh 三副本 KubeBrain，
+  覆盖 Put/Get、CreatedNotify Watch、3 秒 lease 的 streaming KeepAlive 跨 5 秒、MemberList、Status，并从
+  Envoy admin `cluster.kubebrain.upstream_rq_total` 证明请求确实经 L7 cluster。随后保持 client endpoint 不变，
+  停止真实 Envoy、把 bootstrap upstream 从 replica 0 改为 replica 1并重启；clientv3 必须重建 Watch 与
+  KeepAlive，事件继续交付且 lease 不过期。2026-08-12 在 disposable `kubebrain-envoy-l7` 独立 3 PD/3 TiKV/
+  3 KubeBrain 上最终双端 13.05 秒通过；`GOFLAGS=-race` 双端 11.93 秒通过且无数据竞争。当前 profile 明确只
+  覆盖 plaintext；Envoy mTLS/SDS、云厂商 LB、跨节点/AZ、NAT/conntrack/underlay 与平台 request token 继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

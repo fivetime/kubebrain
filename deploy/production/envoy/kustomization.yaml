@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: kubebrain-system
+resources:
+  - resources.yaml
+configMapGenerator:
+  - name: kubebrain-envoy-bootstrap
+    files:
+      - bootstrap.yaml
+generatorOptions:
+  labels:
+    app.kubernetes.io/name: kubebrain-envoy
+    app.kubernetes.io/instance: kubebrain
+    app.kubernetes.io/component: client-proxy

@@ -15,7 +15,7 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "reference direct client and peer endpoints must be mutually distinct")
 	require.Contains(t, string(script), "one healthy three-member topology with an in-set leader")
 	require.Contains(t, string(script), "TEST_COUNT must be a positive integer")
-	require.Contains(t, string(script), "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, or lease-revoke-tls-passthrough")
+	require.Contains(t, string(script), "TEST_SCOPE must be all, lease-response-loss")
 	require.Contains(t, string(script), "for index in 0 1 2")
 	require.Contains(t, string(script), `--name "reference-${index}"`)
 	require.Contains(t, string(script), "127.0.0.1:12379,127.0.0.1:22379,127.0.0.1:32379")
@@ -31,6 +31,9 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "KeepAliveResumesAcrossExternalL7Reset")
 	require.Contains(t, string(script), "MultiplexedStreamsResumeAcrossExternalL7Reset")
 	require.Contains(t, string(script), "multiplexed-stream-l7-reset)")
+	require.Contains(t, string(script), "envoy-plaintext)")
+	require.Contains(t, string(script), "ENVOY_BINARY must name an executable Envoy binary")
+	require.Contains(t, string(script), "ENVOY_BOOTSTRAP_TEMPLATE must name a readable Envoy bootstrap")
 	require.Contains(t, string(script), `cd "$ROOT_DIR/hack/etcd-client-compat"`)
 	require.Contains(t, string(script), `go build -o "$data_dir/tcp-switch-proxy" ./cmd/tcp-switch-proxy`)
 	require.Contains(t, string(script), `go build -o "$data_dir/grpc-switch-proxy" ./cmd/grpc-switch-proxy`)
@@ -45,7 +48,18 @@ func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidScopeBeforeDependencies
 		"TEST_SCOPE=typo-that-would-run-zero-tests",
 	})
 	require.Error(t, err)
-	require.Contains(t, string(output), "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, or lease-revoke-tls-passthrough")
+	require.Contains(t, string(output), "TEST_SCOPE must be all, lease-response-loss")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestDirectMoveLeaderDifferentialRunnerRequiresEnvoyBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-moveleader-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+		"TEST_SCOPE=envoy-plaintext",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "ENVOY_BINARY must name an executable Envoy binary")
 	require.NotContains(t, string(output), "missing required command")
 }
 

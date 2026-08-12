@@ -14,6 +14,8 @@ TLS_CA_FILE="${TLS_CA_FILE:-}"
 TLS_CERT_FILE="${TLS_CERT_FILE:-}"
 TLS_KEY_FILE="${TLS_KEY_FILE:-}"
 TLS_SERVER_NAME="${TLS_SERVER_NAME:-127.0.0.1}"
+ENVOY_BINARY="${ENVOY_BINARY:-}"
+ENVOY_BOOTSTRAP_TEMPLATE="${ENVOY_BOOTSTRAP_TEMPLATE:-$ROOT_DIR/deploy/production/envoy/bootstrap.yaml}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -75,8 +77,11 @@ case "$TEST_SCOPE" in
   multiplexed-stream-l7-reset)
     test_pattern='^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
     ;;
+  envoy-plaintext)
+    test_pattern='^TestEnvoyPlaintextProfileDifferential$'
+    ;;
   *)
-    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, or lease-revoke-tls-passthrough" >&2
+    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, or envoy-plaintext" >&2
     exit 2
     ;;
 esac
@@ -99,6 +104,16 @@ if [[ "$TEST_SCOPE" == lease-revoke-tls-passthrough ]]; then
     --client-cert-auth=true
   )
   export ETCDCTL_CACERT="$TLS_CA_FILE" ETCDCTL_CERT="$TLS_CERT_FILE" ETCDCTL_KEY="$TLS_KEY_FILE"
+fi
+if [[ "$TEST_SCOPE" == envoy-plaintext ]]; then
+  if [[ -z "$ENVOY_BINARY" || ! -x "$ENVOY_BINARY" ]]; then
+    echo "ENVOY_BINARY must name an executable Envoy binary for the plaintext profile" >&2
+    exit 2
+  fi
+  if [[ ! -r "$ENVOY_BOOTSTRAP_TEMPLATE" ]]; then
+    echo "ENVOY_BOOTSTRAP_TEMPLATE must name a readable Envoy bootstrap" >&2
+    exit 2
+  fi
 fi
 declare -a kubebrain_endpoints reference_client_endpoints reference_peer_endpoints
 parse_three_endpoints KUBEBRAIN_DIRECT_ENDPOINTS "$KUBEBRAIN_DIRECT_RAW" kubebrain_endpoints
@@ -247,6 +262,8 @@ done
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     EXTERNAL_TCP_SWITCH_PROXY_BINARY="$data_dir/tcp-switch-proxy" \
     EXTERNAL_GRPC_SWITCH_PROXY_BINARY="$data_dir/grpc-switch-proxy" \
+    EXTERNAL_ENVOY_BINARY="$ENVOY_BINARY" \
+    ENVOY_BOOTSTRAP_TEMPLATE="$ENVOY_BOOTSTRAP_TEMPLATE" \
     REFERENCE_ETCD_TLS_CA_FILE="$TLS_CA_FILE" \
     REFERENCE_ETCD_TLS_CERT_FILE="$TLS_CERT_FILE" \
     REFERENCE_ETCD_TLS_KEY_FILE="$TLS_KEY_FILE" \
