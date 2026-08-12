@@ -48169,6 +48169,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   快照。backend 表测固定三类非法代际在 Arm、Disarm、read 均 fail closed 且 member 不被删除；snapshot 回归直接注入
   非法 generation 并要求零响应 chunk。
 
+- A4495 关闭 CORRUPT disarm 的 absent/wrong-member no-op 校验旁路。A4494 已让公开 alarm read 校验 generation，
+  但 `DisarmCorrupt` 仍先查目标 member，未命中就返回 `(false,nil)`；因此 generation 已损坏且 member set 为空或请求
+  其他 owner 时，Maintenance DEACTIVATE 会伪装成健康成功。现在 generation 读取移到 member membership 判断之前，
+  所有 CORRUPT deactivate 形状都先验证安全代际，只有 metadata 健康时 wrong member 才保持 etcd 兼容空响应。
+  backend 表测对 invalid-length/zero/exhausted 三类代际分别增加 wrong-member 断言；direct server 固定 typed
+  `ErrInvalidAlarmMetadata`，raw gRPC 回归固定 `DataLoss` 和完整错误消息。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

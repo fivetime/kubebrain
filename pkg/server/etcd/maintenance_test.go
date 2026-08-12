@@ -1156,6 +1156,23 @@ func TestCorruptAlarmMetadataRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestCorruptAlarmDisarmWrongMemberRejectsMalformedGenerationDirect(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.backend.InternalPut(ctx, []byte("alarms/corrupt-generation"), []byte("bad")))
+
+	_, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_CORRUPT,
+		// No member owns this alarm. The no-op shape must still validate the
+		// generation that would guard any future activation/deactivation.
+		MemberID: 99117,
+	})
+	require.ErrorIs(t, err, backend.ErrInvalidAlarmMetadata)
+	require.ErrorContains(t, err, "corrupt alarm generation has length 3")
+}
+
 func TestMaintenanceHashHeadersStayPinnedToHashedRevision(t *testing.T) {
 	tests := []struct {
 		name string

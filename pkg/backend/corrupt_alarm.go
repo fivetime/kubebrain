@@ -89,13 +89,13 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 		if err != nil {
 			return false, err
 		}
-		index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
-		if index == len(members) || members[index] != memberID {
-			return false, nil
-		}
 		generation, generationRaw, generationExists, err := b.readCorruptAlarmGeneration(ctx)
 		if err != nil {
 			return false, err
+		}
+		index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
+		if index == len(members) || members[index] != memberID {
+			return false, nil
 		}
 		// A restart witness is durable evidence that a transaction's event set
 		// may be incomplete. Do not let an operator reopen writes merely by

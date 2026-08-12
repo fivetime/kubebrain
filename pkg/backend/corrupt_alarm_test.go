@@ -66,6 +66,10 @@ func TestCorruptAlarmGenerationMalformedFailsClosed(t *testing.T) {
 			removed, err := b.DisarmCorrupt(ctx, memberID)
 			require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
 			require.False(t, removed)
+			removed, err = b.DisarmCorrupt(ctx, memberID+1)
+			require.ErrorIs(t, err, ErrInvalidAlarmMetadata,
+				"a wrong-member no-op must not certify malformed safety metadata")
+			require.False(t, removed)
 			_, err = b.CorruptAlarms(ctx)
 			require.ErrorIs(t, err, ErrInvalidAlarmMetadata,
 				"alarm reads and write gates must not ignore an unusable generation")

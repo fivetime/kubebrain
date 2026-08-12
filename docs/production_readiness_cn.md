@@ -2949,6 +2949,8 @@ generation 是内部安全 metadata，不得删除、归零或手工回退。
 Alarm GET、写门禁和 Maintenance Snapshot 都会校验该 generation；非法长度、持久零值或代际耗尽会作为数据完整性
 错误拒绝服务/快照。灾难恢复前必须保留并验证这一行为，不能仅因 CORRUPT member JSON 可解析就判定 alarm metadata
 健康。
+即使待解除的 member 不存在，DEACTIVATE 也会先校验 generation；因此空响应只代表“metadata 健康但该 owner 未激活”，
+不能把任何 `DataLoss` 当作等价 no-op 忽略。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

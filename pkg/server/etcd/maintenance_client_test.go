@@ -1114,6 +1114,34 @@ func TestRawGRPCAlarmUnknownTypeLifecycleMatchesEtcd(t *testing.T) {
 	require.Empty(t, call(etcdserverpb.AlarmRequest_GET, 0))
 }
 
+func TestRawGRPCCorruptDisarmWrongMemberRejectsMalformedGeneration(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	require.NoError(t, server.backend.InternalPut(context.Background(),
+		[]byte("alarms/corrupt-generation"), []byte("bad")))
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	conn, err := grpc.NewClient("passthrough:///corrupt-generation-client",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	_, err = etcdserverpb.NewMaintenanceClient(conn).Alarm(context.Background(), &etcdserverpb.AlarmRequest{
+		Action: etcdserverpb.AlarmRequest_DEACTIVATE,
+		Alarm:  etcdserverpb.AlarmType_CORRUPT,
+		// This owner is absent; malformed generation must still fail closed.
+		MemberID: 99117,
+	})
+	require.Equal(t, codes.DataLoss, status.Code(err))
+	require.Equal(t, "alarm metadata is inconsistent: corrupt alarm generation has length 3",
+		status.Convert(err).Message())
+}
+
 func TestRawGRPCCombinedAlarmBlocksWritesAndRecovers(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
