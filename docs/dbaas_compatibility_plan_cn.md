@@ -47989,6 +47989,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CREATE object 和 ordered event，再由现有 `decodeValueWithMeta` 与存储读取逐字节复核。TxnApply/event-log race
   回归通过。该提交仍不启用新 allocator；它只把下一阶段所有写路径原子切换所需的编码面收敛为单一来源。
 
+- A4470：DELETE 的 revision index、tombstone object 与 ordered event 编码已抽为
+  `encodeDeleteMutation`，现有静态提交和未来 `AtomicBatch` 使用同一字节布局。动态 allocator 回归在事务内
+  `Get` 并校验旧 revision index 后写入删除 index/tombstone/event，并与静态编码逐项比对。审计同时确认
+  uncertain-result 异步修复不受普通逻辑写锁约束，因此不能通过“先迁移单个 RPC、提交后推进旧 TSO”过渡：
+  该窗口仍可能重复分配 revision。运行时启用继续等待全部写路径 staging 完成后的单点切换。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

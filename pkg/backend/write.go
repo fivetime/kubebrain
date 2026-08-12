@@ -328,10 +328,7 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 		return newRevision, old, fmt.Errorf("cas failed, new revision is %d existing revision is %d", newRevision, modRevision)
 	}
 
-	objectKey := b.coder.EncodeObjectKey(key, newRevision)
-	revisionKey := b.coder.EncodeRevisionKey(key)
-	expectedRevisionBytes := uint64ToBytes(expectedRevision)
-	newRevisionBytes := append(uint64ToBytes(newRevision), 0) // delete revision
+	encoded := b.encodeDeleteMutation(key, expectedRevision, newRevision)
 	// delete revision, key is {raw_key}:{0}, value is {revision}{deletion_flag}
 
 	// Fence just before the batch: the caller's notify publishes an invalid event
@@ -340,17 +337,43 @@ func (b *backend) delete(ctx context.Context, oldRevision uint64, key []byte) (n
 		return newRevision, old, err
 	}
 	batch := b.kv.BeginBatchWrite()
-	batch.CAS(revisionKey, newRevisionBytes, expectedRevisionBytes, 0)
+	batch.CAS(encoded.revisionKey, encoded.newRevisionValue, encoded.expectedRevisionValue, 0)
 	if migratedPrevious != nil {
 		batch.CAS(b.coder.EncodeObjectKey(key, modRevision), migratedPrevious, oldVal, 0)
 	}
-	batch.Put(objectKey, tombStoneBytes, 0)
-	appendEventLog(b.ks, batch, newRevision, key, proto.Event_DELETE, expectedRevision, 0, 1)
+	batch.Put(encoded.objectKey, encoded.objectValue, 0)
+	batch.Put(encoded.eventKey, encoded.eventValue, 0)
 	b.stageDurableRevision(batch, newRevision)
 	err = b.commitUserBatch(ctx, batch)
 
 	// todo: need an internal retry if there is any conflict error?
 	return newRevision, old, err
+}
+
+type encodedDeleteMutation struct {
+	revisionKey           []byte
+	expectedRevisionValue []byte
+	newRevisionValue      []byte
+	objectKey             []byte
+	objectValue           []byte
+	eventKey              []byte
+	eventValue            []byte
+}
+
+// encodeDeleteMutation is deliberately storage-API agnostic so the legacy
+// static batch and the transaction-local revision allocator stage identical
+// index, tombstone, and ordered event records during the allocator cutover.
+func (b *backend) encodeDeleteMutation(key []byte, expectedRevision, newRevision uint64) encodedDeleteMutation {
+	eventKey, eventValue := encodeEventLogEntry(b.ks, newRevision, key, proto.Event_DELETE, expectedRevision, 0, 1)
+	return encodedDeleteMutation{
+		revisionKey:           b.coder.EncodeRevisionKey(key),
+		expectedRevisionValue: uint64ToBytes(expectedRevision),
+		newRevisionValue:      append(uint64ToBytes(newRevision), 0),
+		objectKey:             b.coder.EncodeObjectKey(key, newRevision),
+		objectValue:           tombStoneBytes,
+		eventKey:              eventKey,
+		eventValue:            eventValue,
+	}
 }
 
 // healOrphanIndex repairs a key whose object versions exist but whose

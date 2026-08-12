@@ -9,6 +9,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -266,4 +267,48 @@ func TestTransactionalRevisionAllocatorReusesMVCCAndEventEncoders(t *testing.T) 
 	gotEvent, err := b.kv.Get(ctx, eventKey)
 	require.NoError(t, err)
 	require.Equal(t, wantEvent, gotEvent)
+}
+
+func TestTransactionalRevisionAllocatorReusesDeleteEncoder(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	b.persistDurableRevision(7)
+	userKey := []byte(prefix + "/transactional-delete/key")
+	encoded := b.encodeDeleteMutation(userKey, 7, 8)
+
+	// Seed the revision index that the delete must compare and replace.
+	seed := b.kv.BeginBatchWrite()
+	seed.Put(encoded.revisionKey, encoded.expectedRevisionValue, 0)
+	require.NoError(t, seed.Commit(ctx))
+
+	batch := b.kv.BeginBatchWrite()
+	allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+		require.Equal(t, uint64(8), revision)
+		mutation := b.encodeDeleteMutation(userKey, 7, revision)
+		current, err := txn.Get(ctx, mutation.revisionKey)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, mutation.expectedRevisionValue) {
+			return storage.ErrCASFailed
+		}
+		if err := txn.Put(mutation.revisionKey, mutation.newRevisionValue, 0); err != nil {
+			return err
+		}
+		if err := txn.Put(mutation.objectKey, mutation.objectValue, 0); err != nil {
+			return err
+		}
+		return txn.Put(mutation.eventKey, mutation.eventValue, 0)
+	})
+	require.NoError(t, batch.Commit(ctx))
+	require.Equal(t, uint64(8), *allocated)
+
+	gotIndex, err := b.kv.Get(ctx, encoded.revisionKey)
+	require.NoError(t, err)
+	require.Equal(t, encoded.newRevisionValue, gotIndex)
+	gotObject, err := b.kv.Get(ctx, encoded.objectKey)
+	require.NoError(t, err)
+	require.Equal(t, tombStoneBytes, gotObject)
+	gotEvent, err := b.kv.Get(ctx, encoded.eventKey)
+	require.NoError(t, err)
+	require.Equal(t, encoded.eventValue, gotEvent)
 }

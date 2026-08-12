@@ -2878,6 +2878,10 @@ MVCC object 与 ordered event log 的 revision-dependent 编码已拆成纯函�
 `AtomicBatch` 共用同一 value envelope、legacy metadata key/value 和 event key/value 生成逻辑，避免迁移时
 复制一套协议编码。动态 allocator 回归已把 revision=2 的 leased CREATE object/event 写入后交给现有 decoder
 复读，固定编码等价性。
+DELETE 的 revision index CAS 值、tombstone object 与 ordered DELETE event 也已收敛到
+`encodeDeleteMutation`。事务 allocator 回归在同一 Atomic 回调里读取并校验旧 index、写入删除标记和
+event，同时推进 durable revision，证明 Delete 可在最终切换时不依赖静态 `BatchWrite.CAS`；运行时仍需等
+Create/Update/Txn/uncertain-result repair 全部具备同类 staging 后一次性切换，禁止新旧 allocator 并存。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
