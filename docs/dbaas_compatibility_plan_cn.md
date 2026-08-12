@@ -47829,6 +47829,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   imageID 以该 digest 结尾。至此 KubeBrain、PD、TiKV 都同时验证 spec image 与 runtime imageID；该证据仍由
   kubelet/CRI status 提供，不替代 registry 签名或镜像准入策略。
 
+- A4451 封闭实例门禁跨长业务验证窗口的 controller rollout 竞态。旧流程先读取 TidbCluster、PD/TiKV 与
+  KubeBrain StatefulSet，再验证 Pods、启动参数、EndpointSlice、MemberList 和每个 advertised endpoint；若
+  controller 在首个快照后才开始 rollout，旧 Pod 仍可全部通过，而脚本不会再看 controller。两个 RED 分别让
+  KubeBrain generation/update revision 在第二次读取变更，以及让 TiKV update revision 在第二次读取变更；旧
+  实现都确定性成功。新门禁在所有 etcd proposal 完成后重读 TidbCluster，要求 immutable UID、起始 generation、
+  version、replicas、cluster ID 和 Ready 仍一致；再复用 storage 单快照校验重验 PD/TiKV owner、generation、
+  replicas、image、receipt revision 与收敛状态，并要求 UID/revision identity 与起点相同；最后精确比较
+  KubeBrain StatefulSet 的 generation/observed/replicas/revisions/image/UID 投影。该末尾 fence 给一次实例发布
+  验证建立首尾稳态边界，不宣称是两次读取之间每一瞬间的连续监控。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

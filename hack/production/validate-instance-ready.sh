@@ -250,6 +250,7 @@ if ! tidb_cluster_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" g
 fi
 if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e --arg name "$TIDB_CLUSTER" '
   .apiVersion == "pingcap.com/v1alpha1" and .kind == "TidbCluster" and .metadata.name == $name and
+  (.metadata.generation | type) == "number" and
   (.spec.pd.replicas | type) == "number" and (.spec.tikv.replicas | type) == "number" and
   ((.status.clusterID | tostring | length) > 0) and
   ((.metadata.uid | type) == "string" and (.metadata.uid | length) > 0) and
@@ -261,6 +262,7 @@ fi
 IFS=$'\t' read -r actual_pd_replicas actual_tikv_replicas actual_cluster_id actual_tidb_cluster_uid actual_tidb_version <<<"$(
   printf '%s' "$tidb_cluster_json" | "$JQ" -r '[.spec.pd.replicas,.spec.tikv.replicas,(.status.clusterID|tostring),.metadata.uid,.spec.version] | @tsv'
 )"
+tidb_cluster_generation="$(printf '%s' "$tidb_cluster_json" | "$JQ" -r '.metadata.generation')"
 if [[ "$actual_pd_replicas" != "$EXPECTED_PD_REPLICAS" || "$actual_tikv_replicas" != "$EXPECTED_TIKV_REPLICAS" ]]; then
   echo "TidbCluster topology mismatch: expected PD/TiKV ${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}, got ${actual_pd_replicas:-missing}/${actual_tikv_replicas:-missing}" >&2
   exit 1
@@ -795,5 +797,45 @@ for advertised_url in "${advertised_client_urls[@]}"; do
     exit 1
   fi
 done
+
+final_tidb_cluster_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)" || {
+  echo "failed to fence TidbCluster release snapshot" >&2
+  exit 1
+}
+if ! printf '%s' "$final_tidb_cluster_json" | "$JQ" -e \
+  --arg name "$TIDB_CLUSTER" --arg uid "$EXPECTED_TIDB_CLUSTER_UID" \
+  --arg generation "$tidb_cluster_generation" --arg clusterID "$EXPECTED_CLUSTER_ID" \
+  --arg version "$EXPECTED_TIDB_VERSION" --argjson pd "$EXPECTED_PD_REPLICAS" \
+  --argjson tikv "$EXPECTED_TIKV_REPLICAS" '
+    .apiVersion == "pingcap.com/v1alpha1" and .kind == "TidbCluster" and .metadata.name == $name and
+    .metadata.uid == $uid and (.metadata.generation | tostring) == $generation and
+    .metadata.deletionTimestamp == null and .spec.version == $version and
+    .spec.pd.replicas == $pd and .spec.tikv.replicas == $tikv and
+    (.status.clusterID | tostring) == $clusterID and
+    ([.status.conditions[]? | select(.type == "Ready")] | length) == 1 and
+    ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1
+  ' >/dev/null; then
+  echo "TidbCluster changed during validation" >&2
+  exit 1
+fi
+
+final_pd_identity="$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_STATEFULSET_REVISION")"
+final_tikv_identity="$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_STATEFULSET_REVISION")"
+if [[ "$final_pd_identity" != "${actual_pd_statefulset_uid}"$'\t'"${actual_pd_revision}" ||
+      "$final_tikv_identity" != "${actual_tikv_statefulset_uid}"$'\t'"${actual_tikv_revision}" ]]; then
+  echo "PD/TiKV StatefulSet identity changed during validation" >&2
+  exit 1
+fi
+
+final_kubebrain_status="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+  get statefulset "$KUBEBRAIN_STATEFULSET" \
+  -o 'jsonpath={.metadata.generation}{"\t"}{.status.observedGeneration}{"\t"}{.spec.replicas}{"\t"}{.status.readyReplicas}{"\t"}{.status.updatedReplicas}{"\t"}{.status.currentRevision}{"\t"}{.status.updateRevision}{"\t"}{.spec.template.spec.containers[?(@.name=="kubebrain")].image}{"\t"}{.metadata.uid}')" || {
+  echo "failed to fence KubeBrain StatefulSet" >&2
+  exit 1
+}
+if [[ "$final_kubebrain_status" != "$kubebrain_status" ]]; then
+  echo "KubeBrain StatefulSet changed during validation" >&2
+  exit 1
+fi
 
 echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_revision=${EXPECTED_KUBEBRAIN_STATEFULSET_REVISION} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} pd_digest=${EXPECTED_PD_IMAGE_DIGEST} pd_revision=${EXPECTED_PD_STATEFULSET_REVISION} tikv_image=${EXPECTED_TIKV_IMAGE} tikv_digest=${EXPECTED_TIKV_IMAGE_DIGEST} tikv_revision=${EXPECTED_TIKV_STATEFULSET_REVISION} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"

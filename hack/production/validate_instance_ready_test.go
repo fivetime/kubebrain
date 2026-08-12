@@ -82,6 +82,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		name                     string
 		image                    string
 		kubeStatus               string
+		finalKubeStatus          string
 		kubeArgs                 string
 		topology                 string
 		tidbVersion              string
@@ -92,6 +93,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		tikvOwnerUID             string
 		tikvTidbOwnerUID         string
 		tikvCurrentRevision      string
+		finalTikvSTSJSON         string
 		tidbSnapshotReady        *bool
 		healthOK                 bool
 		advertisedURLs           string
@@ -123,6 +125,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			healthOK:   true,
 			extraEnv:   []string{"EXPECTED_KUBEBRAIN_STATEFULSET_REVISION=kb-approved"},
 			wantOutput: "KubeBrain StatefulSet revision mismatch",
+		},
+		{
+			name:            "KubeBrain rollout starts during validation",
+			image:           "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:      "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			finalKubeStatus: "9\t8\t3\t3\t2\tkb-new\tkb-next\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tuid-kubebrain",
+			topology:        "3\t3",
+			healthOK:        true,
+			wantOutput:      "KubeBrain StatefulSet changed during validation",
 		},
 		{
 			name:        "wrong TiDB storage version",
@@ -195,6 +206,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			healthOK:   true,
 			extraEnv:   []string{"EXPECTED_TIKV_STATEFULSET_REVISION=tikv-approved"},
 			wantOutput: "TiKV StatefulSet revision mismatch",
+		},
+		{
+			name:             "TiKV rollout starts during validation",
+			image:            "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:       "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:         "3\t3",
+			healthOK:         true,
+			finalTikvSTSJSON: fakeStorageStatefulSetJSON("tikv", "uid-tikv-sts", "uid-tidb", "tikv-new", "tikv-next", "pingcap/tikv:v8.5.3"),
+			wantOutput:       "TiKV StatefulSet release snapshot mismatch",
 		},
 		{
 			name:              "TidbCluster becomes unready after convergence wait",
@@ -1011,7 +1031,11 @@ elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *".image}"* ]]; then
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *" -o json" ]]; then
   printf '%s' "$FAKE_PD_STS_JSON"
 elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *" -o json" ]]; then
-  printf '%s' "$FAKE_TIKV_STS_JSON"
+  calls=0
+  [[ ! -f "$FAKE_TIKV_STS_CALLS" ]] || calls="$(<"$FAKE_TIKV_STS_CALLS")"
+  calls=$((calls + 1))
+  printf '%s' "$calls" >"$FAKE_TIKV_STS_CALLS"
+  if [[ -n "$FAKE_FINAL_TIKV_STS_JSON" && "$calls" -ge 2 ]]; then printf '%s' "$FAKE_FINAL_TIKV_STS_JSON"; else printf '%s' "$FAKE_TIKV_STS_JSON"; fi
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath={.metadata.uid}"* ]]; then
   printf 'uid-pd-sts'
 elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath={.metadata.uid}"* ]]; then
@@ -1033,7 +1057,11 @@ elif [[ "$*" == *"get tidbcluster"* && "$*" == *".spec.pd.replicas"* ]]; then
 elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *".args"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_ARGS"
 elif [[ "$*" == *"get statefulset kubebrain"* && "$*" == *"jsonpath="* ]]; then
-  printf '%s' "$FAKE_KUBEBRAIN_STATUS"
+  calls=0
+  [[ ! -f "$FAKE_KUBEBRAIN_STATUS_CALLS" ]] || calls="$(<"$FAKE_KUBEBRAIN_STATUS_CALLS")"
+  calls=$((calls + 1))
+  printf '%s' "$calls" >"$FAKE_KUBEBRAIN_STATUS_CALLS"
+  if [[ -n "$FAKE_FINAL_KUBEBRAIN_STATUS" && "$calls" -ge 2 ]]; then printf '%s' "$FAKE_FINAL_KUBEBRAIN_STATUS"; else printf '%s' "$FAKE_KUBEBRAIN_STATUS"; fi
 elif [[ "$*" == *"get service kubebrain"* && "$*" == *"jsonpath="* ]]; then
   printf 'uid-client-service'
 elif [[ "$*" == *"get endpointslice"* && "$*" == *"kubernetes.io/service-name=kubebrain"* ]]; then
@@ -1163,6 +1191,8 @@ exit 1
 				"TIMEOUT_SECONDS=1",
 				"POLL_INTERVAL_SECONDS=0",
 				"FAKE_KUBEBRAIN_STATUS=" + kubeStatus,
+				"FAKE_FINAL_KUBEBRAIN_STATUS=" + tc.finalKubeStatus,
+				"FAKE_KUBEBRAIN_STATUS_CALLS=" + filepath.Join(dir, "kubebrain-status-calls"),
 				"FAKE_KUBEBRAIN_ARGS=" + kubeArgs,
 				"FAKE_KUBEBRAIN_PODS_JSON=" + podsJSON,
 				"FAKE_ENDPOINT_SLICES_JSON=" + endpointSlicesJSON,
@@ -1173,6 +1203,8 @@ exit 1
 				"FAKE_TIKV_IMAGE=" + tikvImage,
 				"FAKE_PD_STS_JSON=" + fakeStorageStatefulSetJSON("pd", "uid-pd-sts", "uid-tidb", "pd-new", "pd-new", "pingcap/pd:v8.5.3"),
 				"FAKE_TIKV_STS_JSON=" + fakeStorageStatefulSetJSON("tikv", "uid-tikv-sts", tikvTidbOwnerUID, tikvCurrentRevision, "tikv-new", tikvImage),
+				"FAKE_FINAL_TIKV_STS_JSON=" + tc.finalTikvSTSJSON,
+				"FAKE_TIKV_STS_CALLS=" + filepath.Join(dir, "tikv-sts-calls"),
 				"FAKE_PD_PODS_JSON=" + fakeStoragePodsJSON("pd", "kb-pd", "uid-pd-sts", "pd-new", "pingcap/pd:v8.5.3", "docker-pullable://pingcap/pd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 				"FAKE_TIKV_PODS_JSON=" + fakeStoragePodsJSON("tikv", tikvPodPrefix, tikvOwnerUID, "tikv-new", tikvImage, tikvImageID),
 				"FAKE_HEALTH_OK=" + boolString(tc.healthOK),
@@ -1211,7 +1243,7 @@ func fakeTidbClusterJSON(version, topology string, ready bool) string {
 	parts := strings.Split(topology, "\t")
 	encoded, err := json.Marshal(map[string]any{
 		"apiVersion": "pingcap.com/v1alpha1", "kind": "TidbCluster",
-		"metadata": map[string]any{"name": "kb", "uid": parts[3]},
+		"metadata": map[string]any{"name": "kb", "uid": parts[3], "generation": 8},
 		"spec":     map[string]any{"version": version, "pd": map[string]any{"replicas": json.Number(parts[0])}, "tikv": map[string]any{"replicas": json.Number(parts[1])}},
 		"status":   map[string]any{"clusterID": parts[2], "conditions": []map[string]any{{"type": "Ready", "status": status}}},
 	})
