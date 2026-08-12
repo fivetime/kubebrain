@@ -78,5 +78,6 @@ NODE_HOST=172.18.0.11 \
 Ready EndpointSlice，且任何采样点都保留至少两个 Ready target。同一稳定 NodePort 上的 CreatedNotify Watch
 和 TTL=3 LeaseKeepAlive 必须贯穿全部轮次，每轮结束都收到新的 Watch event、正 TTL keepalive，且附租约键
 最终仍存在。测试还会建立最多 30 个独立 Watch client，读取每个旧 Envoy Pod admin 的
-`http.kubebrain_downstream.downstream_cx_active`，只有三个副本都实际承载长期连接才开始 rollout；所有 cohort
-Watch 都必须逐轮恢复。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。
+`http.kubebrain_downstream.downstream_cx_active`，只有三个副本都实际承载长期连接才开始 rollout。每个 cohort
+client 都在同一 HTTP/2 connection 上建立独立 Watch 与 TTL=3 LeaseKeepAlive；两类 stream、各自附租约键和
+lease ID 都必须逐轮恢复。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。

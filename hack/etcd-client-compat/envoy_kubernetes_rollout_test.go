@@ -31,6 +31,10 @@ type envoyWatchCohortMember struct {
 	watch            clientv3.WatchChan
 	key              string
 	previousRevision int64
+	leaseID          clientv3.LeaseID
+	leaseKey         string
+	keepAlive        <-chan envoyKeepAliveObservation
+	keepAliveClosed  <-chan struct{}
 }
 
 func TestEnvoyKubernetesRollout(t *testing.T) {
@@ -64,20 +68,13 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	require.NoError(t, err)
 	initial := receiveExternalL7KeepAlive(t, ctx, keepAlive, grant.ID)
 	require.Positive(t, initial.TTL)
-	keepAliveObserved := make(chan envoyKeepAliveObservation, 256)
-	keepAliveClosed := make(chan struct{})
-	go func() {
-		defer close(keepAliveClosed)
-		for response := range keepAlive {
-			select {
-			case keepAliveObserved <- envoyKeepAliveObservation{response: response, at: time.Now()}:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
+	keepAliveObserved, keepAliveClosed := observeEnvoyKeepAlive(ctx, keepAlive)
 
-	cohort := []*envoyWatchCohortMember{{client: client, watch: watch, key: watchKey}}
+	cohort := []*envoyWatchCohortMember{{
+		client: client, watch: watch, key: watchKey,
+		leaseID: grant.ID, leaseKey: leaseKey,
+		keepAlive: keepAliveObserved, keepAliveClosed: keepAliveClosed,
+	}}
 	for member := 1; member < 30 && !allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace); member++ {
 		cohortClient, createErr := clientv3.New(clientv3.Config{
 			Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second,
@@ -88,8 +85,20 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		cohortWatch := cohortClient.Watch(ctx, cohortKey, clientv3.WithCreatedNotify())
 		cohortCreated := receiveExternalL7WatchResponse(t, ctx, cohortWatch)
 		require.True(t, cohortCreated.Created)
+		cohortGrant, grantErr := cohortClient.Grant(ctx, 3)
+		require.NoError(t, grantErr)
+		cohortLeaseKey := fmt.Sprintf("%s/lease-cohort-%d", prefix, member)
+		_, putErr := cohortClient.Put(ctx, cohortLeaseKey, "kept-alive", clientv3.WithLease(cohortGrant.ID))
+		require.NoError(t, putErr)
+		cohortKeepAlive, keepAliveErr := cohortClient.KeepAlive(ctx, cohortGrant.ID)
+		require.NoError(t, keepAliveErr)
+		cohortInitial := receiveExternalL7KeepAlive(t, ctx, cohortKeepAlive, cohortGrant.ID)
+		require.Positive(t, cohortInitial.TTL)
+		cohortObserved, cohortClosed := observeEnvoyKeepAlive(ctx, cohortKeepAlive)
 		cohort = append(cohort, &envoyWatchCohortMember{
 			client: cohortClient, watch: cohortWatch, key: cohortKey,
+			leaseID: cohortGrant.ID, leaseKey: cohortLeaseKey,
+			keepAlive: cohortObserved, keepAliveClosed: cohortClosed,
 		})
 	}
 	require.True(t, allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace),
@@ -160,36 +169,63 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 			member.previousRevision = watchResponse.Header.Revision
 		}
 
-		var recovered *clientv3.LeaseKeepAliveResponse
-		for recovered == nil {
+		for memberIndex, member := range cohort {
+			recovered := receiveEnvoyKeepAliveAfter(t, ctx, member.keepAlive, member.keepAliveClosed,
+				rolloutCompletedAt, cycle, memberIndex)
+			require.Equal(t, member.leaseID, recovered.ID)
+			require.Positive(t, recovered.TTL)
+		}
+	}
+	for _, member := range cohort {
+		leaseGet, getErr := member.client.Get(ctx, member.leaseKey)
+		require.NoError(t, getErr)
+		require.Len(t, leaseGet.Kvs, 1)
+		ttl, ttlErr := member.client.TimeToLive(ctx, member.leaseID)
+		require.NoError(t, ttlErr)
+		require.Positive(t, ttl.TTL)
+		require.True(t, channelStillOpenWatch(t, member.watch))
+		select {
+		case <-member.keepAliveClosed:
+			t.Fatal("cohort keepalive channel closed after Envoy rollout")
+		default:
+		}
+	}
+}
+
+func observeEnvoyKeepAlive(ctx context.Context, keepAlive <-chan *clientv3.LeaseKeepAliveResponse) (
+	<-chan envoyKeepAliveObservation, <-chan struct{},
+) {
+	observed := make(chan envoyKeepAliveObservation, 256)
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		for response := range keepAlive {
 			select {
-			case observation := <-keepAliveObserved:
-				if !observation.at.Before(rolloutCompletedAt) {
-					recovered = observation.response
-				}
-			case <-keepAliveClosed:
-				t.Fatalf("keepalive channel closed during Envoy rollout cycle %d", cycle)
+			case observed <- envoyKeepAliveObservation{response: response, at: time.Now()}:
 			case <-ctx.Done():
-				t.Fatalf("waiting for keepalive after Envoy rollout cycle %d: %v", cycle, ctx.Err())
+				return
 			}
 		}
-		require.NotNil(t, recovered)
-		require.Equal(t, grant.ID, recovered.ID)
-		require.Positive(t, recovered.TTL)
-	}
-	leaseGet, err := client.Get(ctx, leaseKey)
-	require.NoError(t, err)
-	require.Len(t, leaseGet.Kvs, 1)
-	ttl, err := client.TimeToLive(ctx, grant.ID)
-	require.NoError(t, err)
-	require.Positive(t, ttl.TTL)
-	for _, member := range cohort {
-		require.True(t, channelStillOpenWatch(t, member.watch))
-	}
-	select {
-	case <-keepAliveClosed:
-		t.Fatal("keepalive channel closed after Envoy rollout")
-	default:
+	}()
+	return observed, closed
+}
+
+func receiveEnvoyKeepAliveAfter(t *testing.T, ctx context.Context,
+	observed <-chan envoyKeepAliveObservation, closed <-chan struct{}, after time.Time, cycle, member int,
+) *clientv3.LeaseKeepAliveResponse {
+	t.Helper()
+	for {
+		select {
+		case observation := <-observed:
+			if !observation.at.Before(after) {
+				require.NotNil(t, observation.response)
+				return observation.response
+			}
+		case <-closed:
+			t.Fatalf("keepalive channel for cohort member %d closed during Envoy rollout cycle %d", member, cycle)
+		case <-ctx.Done():
+			t.Fatalf("waiting for cohort member %d keepalive after Envoy rollout cycle %d: %v", member, cycle, ctx.Err())
+		}
 	}
 }
 

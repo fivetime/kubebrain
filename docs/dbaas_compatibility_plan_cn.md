@@ -47441,6 +47441,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该项关闭“单连接不能证明所有 Envoy replica 的活跃流迁移”缺口；更高连接基数、小时级 churn、云 LB、跨 AZ、
   NAT/conntrack 与 underlay 故障仍保持开放。
 
+- A4420 把 A4419 的“所有副本承载 Watch，但只有主 client 承载 LeaseKeepAlive”收紧为逐 client 双流门禁。
+  cohort 每个 member 现在分别 Grant TTL=3 lease、写入自己的附租约 key、启动并持续消费独立 KeepAlive
+  channel；它与该 member 的独立 Watch 由同一个 clientv3 connection 多路复用。每轮 rollout 后，除逐 member
+  Watch event/revision 外，还必须为每个 lease 等到 rollout 完成时刻之后的 response，ID 精确等于原 Grant ID
+  且 TTL 为正；最终逐 client Range 附租约 key、TimeToLive、Watch channel 与 KeepAlive channel 全部仍存活。
+  任一 member 的 channel 关闭会报告准确 cycle/member，不允许用其他连接的成功掩盖。
+  2026-08-12 在全新 disposable `kubebrain-envoy-k8s-a4420` 的三个 zone worker、独立 3 PD/3 TiKV/
+  3 KubeBrain 与固定 Envoy 1.39.0 production resources 上，普通门禁建立 8 个独立 Watch+KeepAlive client
+  覆盖三个旧 Envoy Pod，三轮九次替换 216.04 秒通过；`GOFLAGS=-race` 以 3 个 client 覆盖三 Pod，212.57 秒
+  通过且无数据竞争。全部 TTL=3 lease 与附租约 key 贯穿约 3.5 分钟，逐轮均收到新 keepalive response；
+  Ready target 始终不少于 2，逐旧 UID drain-before-delete 继续成立。
+  本项关闭“多副本活跃连接只覆盖 Watch、不覆盖每连接 LeaseKeepAlive 多路恢复”的缺口；更高连接/lease 基数、
+  小时级 churn、云 LB、跨 AZ、NAT/conntrack 与 underlay 故障仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
