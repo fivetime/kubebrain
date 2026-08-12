@@ -2890,6 +2890,10 @@ CREATE/recreate 现也通过 `encodeCreateMutation` 统一 revision index、对�
 event；普通 Create 与 TxnApply create 分支不再各自拼接这些记录。Atomic 回归覆盖 index 缺失创建、精确
 tombstone index 重建，以及 live-index 冲突时 counter 与用户 mutation 整体回滚。至此 CREATE/PUT/DELETE
 三类用户 mutation 的 revision-dependent 编码面均可在事务内生成。
+`stageTxnAtomic` 已把 TxnApply 的缺失/存在 guard、internal metadata put/delete、CREATE/PUT/DELETE、历史
+metadata 迁移和 quota usage 更新表达为同一 storage transaction 内的 read-compare-write。事务内 `Get` 建立
+冲突依赖，替代静态 `PutIfNotExist/CAS`，并允许所有键在 allocator 决定 revision 后生成。混合多键回归覆盖
+三个连续 subrevision、internal 操作不计入 event total，以及 guard 翻转时 durable counter 与全部 mutation 回滚。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 

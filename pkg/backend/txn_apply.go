@@ -141,6 +141,136 @@ type txnGuardPrep struct {
 	missing bool
 }
 
+func atomicExpect(ctx context.Context, txn storage.AtomicBatch, key, expected []byte, missing bool) error {
+	current, err := txn.Get(ctx, key)
+	if missing {
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return storage.ErrCASFailed
+	}
+	if err != nil {
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			return storage.ErrCASFailed
+		}
+		return err
+	}
+	if !bytes.Equal(current, expected) {
+		return storage.ErrCASFailed
+	}
+	return nil
+}
+
+// stageTxnAtomic expresses every TxnApply guard and mutation using reads and
+// writes inside one storage transaction. AtomicBatch.Get establishes the same
+// conflict dependency as legacy CAS/PutIfNotExist, while allowing object/event
+// keys to be derived from a revision allocated by that transaction.
+func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, preps []txnPrep, guardPreps []txnGuardPrep, newRevision uint64, quotaUsageRaw []byte, nextQuotaUsage int64) error {
+	if b.config.QuotaBackendBytes > 0 {
+		key := b.ks.EncodeInternalKey(quotaUsageKey)
+		if err := atomicExpect(ctx, txn, key, quotaUsageRaw, quotaUsageRaw == nil); err != nil {
+			return err
+		}
+		if err := txn.Put(key, encodeQuotaUsage(nextQuotaUsage), 0); err != nil {
+			return err
+		}
+	}
+	for _, gp := range guardPreps {
+		if err := atomicExpect(ctx, txn, gp.key, gp.rvBytes, gp.missing); err != nil {
+			return err
+		}
+	}
+
+	eventTotal := uint32(txnEffectiveUserWriteCount(preps))
+	var eventSubRevision uint32
+	for i := range preps {
+		p := &preps[i]
+		if !p.effective {
+			continue
+		}
+		if p.op.Internal {
+			key := b.ks.EncodeInternalKey(p.op.Key)
+			if err := atomicExpect(ctx, txn, key, p.rvBytes, p.rvBytes == nil); err != nil {
+				return err
+			}
+			if p.op.Delete {
+				if err := txn.Del(key); err != nil {
+					return err
+				}
+			} else if err := txn.Put(key, p.op.Value, 0); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if p.migratePrev {
+			previousObjectKey := b.coder.EncodeObjectKey(p.op.Key, p.curRev)
+			if err := atomicExpect(ctx, txn, previousObjectKey, p.prevValue, false); err != nil {
+				return err
+			}
+			_, raw, _, err := DecodeInlineValueChecked(p.prevValue)
+			if err != nil {
+				return err
+			}
+			if err := txn.Put(previousObjectKey, encodeValueWithMeta(raw, p.prevMeta), 0); err != nil {
+				return err
+			}
+		}
+
+		var encoded encodedPutMutation
+		switch {
+		case p.op.Delete:
+			deleted := b.encodeDeleteMutationAt(p.op.Key, p.curRev, newRevision, eventSubRevision, eventTotal)
+			if err := atomicExpect(ctx, txn, deleted.revisionKey, p.rvBytes, false); err != nil {
+				return err
+			}
+			if err := txn.Put(deleted.revisionKey, deleted.newRevisionValue, 0); err != nil {
+				return err
+			}
+			if err := txn.Put(deleted.objectKey, deleted.objectValue, 0); err != nil {
+				return err
+			}
+			if err := txn.Put(deleted.eventKey, deleted.eventValue, 0); err != nil {
+				return err
+			}
+			eventSubRevision++
+			continue
+		case p.create:
+			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
+			encoded = b.encodeCreateMutation(p.op.Key, p.op.Value, p.meta, newRevision, eventSubRevision, eventTotal)
+		default:
+			if p.meta.CreateRevision == 0 {
+				p.meta.CreateRevision = p.curRev
+			}
+			if p.meta.Version == 0 {
+				p.meta.Version = 1
+			}
+			p.meta.Version++
+			p.meta.Lease = p.op.Lease
+			encoded = b.encodePutMutation(p.op.Key, p.op.Value, p.meta, p.curRev, newRevision, proto.Event_PUT, eventSubRevision, eventTotal)
+		}
+		if err := atomicExpect(ctx, txn, encoded.revisionKey, p.rvBytes, p.rvBytes == nil); err != nil {
+			return err
+		}
+		if err := txn.Put(encoded.revisionKey, encoded.newRevisionValue, 0); err != nil {
+			return err
+		}
+		for _, object := range encoded.objectMutations {
+			if err := txn.Put(object.key, object.value, 0); err != nil {
+				return err
+			}
+		}
+		if err := txn.Put(encoded.eventKey, encoded.eventValue, 0); err != nil {
+			return err
+		}
+		eventSubRevision++
+	}
+	return nil
+}
+
 func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, newRevision uint64, retry bool, err error) {
 	preps := make([]txnPrep, 0, len(ops))
 	prepByKey := make(map[string]*txnPrep, len(ops))

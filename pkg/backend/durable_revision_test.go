@@ -421,3 +421,74 @@ func TestTransactionalRevisionAllocatorReusesUpdateEncoder(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, encoded.eventValue, gotEvent)
 }
+
+func TestTransactionalRevisionAllocatorStagesWholeTxn(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	b.persistDurableRevision(10)
+	createKey := []byte(prefix + "/atomic-txn/create")
+	updateKey := []byte(prefix + "/atomic-txn/update")
+	deleteKey := []byte(prefix + "/atomic-txn/delete")
+	guardKey := []byte(prefix + "/atomic-txn/guard")
+	internalKey := []byte("atomic-txn/internal")
+	internalDeleteKey := []byte("atomic-txn/internal-delete")
+
+	seed := b.kv.BeginBatchWrite()
+	seed.Put(b.coder.EncodeRevisionKey(updateKey), uint64ToBytes(7), 0)
+	seed.Put(b.coder.EncodeRevisionKey(deleteKey), uint64ToBytes(8), 0)
+	seed.Put(b.ks.EncodeInternalKey(internalDeleteKey), []byte("old-internal"), 0)
+	require.NoError(t, seed.Commit(ctx))
+	preps := []txnPrep{
+		{op: TxnWriteOp{Key: createKey, Value: []byte("created")}, effective: true, create: true},
+		{op: TxnWriteOp{Key: updateKey, Value: []byte("updated"), Lease: 31}, rvBytes: uint64ToBytes(7), curRev: 7, effective: true, meta: EtcdMetadata{CreateRevision: 3, Version: 2}},
+		{op: TxnWriteOp{Key: deleteKey, Delete: true}, rvBytes: uint64ToBytes(8), curRev: 8, effective: true},
+		{op: TxnWriteOp{Key: internalKey, Value: []byte("internal"), Internal: true}, effective: true},
+		{op: TxnWriteOp{Key: internalDeleteKey, Delete: true, Internal: true}, rvBytes: []byte("old-internal"), effective: true},
+	}
+	guards := []txnGuardPrep{{key: b.coder.EncodeRevisionKey(guardKey), missing: true}}
+
+	batch := b.kv.BeginBatchWrite()
+	allocated := b.stageNextDurableRevision(batch, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
+		return b.stageTxnAtomic(callbackCtx, txn, preps, guards, revision, nil, 0)
+	})
+	require.NoError(t, batch.Commit(ctx))
+	require.Equal(t, uint64(11), *allocated)
+	require.Equal(t, uint64(11), preps[0].meta.CreateRevision)
+	require.Equal(t, int64(31), preps[1].meta.Lease)
+
+	for sub, key := range [][]byte{createKey, updateKey, deleteKey} {
+		verb := proto.Event_PUT
+		prev := uint64(7)
+		if sub == 0 {
+			verb, prev = proto.Event_CREATE, 0
+		} else if sub == 2 {
+			verb, prev = proto.Event_DELETE, 8
+		}
+		eventKey, want := encodeEventLogEntry(b.ks, 11, key, verb, prev, uint32(sub), 3)
+		got, err := b.kv.Get(ctx, eventKey)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	}
+	gotInternal, err := b.kv.Get(ctx, b.ks.EncodeInternalKey(internalKey))
+	require.NoError(t, err)
+	require.Equal(t, []byte("internal"), gotInternal)
+	_, err = b.kv.Get(ctx, b.ks.EncodeInternalKey(internalDeleteKey))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+
+	// A guard that changed after preparation aborts the counter and every user
+	// mutation in the same transaction.
+	guardSeed := b.kv.BeginBatchWrite()
+	guardSeed.Put(b.coder.EncodeRevisionKey(guardKey), uint64ToBytes(11), 0)
+	require.NoError(t, guardSeed.Commit(ctx))
+	blockedKey := []byte(prefix + "/atomic-txn/blocked")
+	blocked := []txnPrep{{op: TxnWriteOp{Key: blockedKey, Value: []byte("blocked")}, effective: true, create: true}}
+	conflict := b.kv.BeginBatchWrite()
+	b.stageNextDurableRevision(conflict, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
+		return b.stageTxnAtomic(callbackCtx, txn, blocked, guards, revision, nil, 0)
+	})
+	require.ErrorIs(t, conflict.Commit(ctx), storage.ErrCASFailed)
+	durable, err := b.GetDurableRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(11), durable)
+	_, err = b.kv.Get(ctx, b.coder.EncodeRevisionKey(blockedKey))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}

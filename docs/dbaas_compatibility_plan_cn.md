@@ -48008,6 +48008,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   编码面至此全部可由 Atomic callback 动态生成；尚未切换运行时 allocator，下一步处理 Txn guards/internal
   ops 与 uncertain-result repair 的执行模型。
 
+- A4473 新增 `stageTxnAtomic`，把 TxnApply guard、internal metadata、quota usage、历史 metadata 迁移和三类
+  用户 mutation 全部表达为事务内 read-compare-write。`AtomicBatch.Get` 对缺失或精确旧 bytes 建立存储冲突
+  依赖，因此最终 allocator 切换不再需要预先知道 revision 才能调用静态 `CAS/PutIfNotExist`。混合回归在一个
+  动态 revision 下提交 create/update/delete、internal put/delete，校验 ordered event 的 `subRevision=0..2`、
+  `total=3`；另在 guard 预读后注入 live index，确认 callback 返回 CAS conflict，durable counter 与用户写整体
+  回滚。该 helper 尚未接入运行时，剩余切换阻塞面集中在 uncertain-result repair/collector 发布模型。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
