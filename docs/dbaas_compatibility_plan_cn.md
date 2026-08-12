@@ -47958,6 +47958,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   每个 phase wait 后先写 completion marker，后台 fencing 不会误杀已退出/PID 复用的 child，cleanup 先回收进程再
   删除 marker 目录。正向回归固定最后 heartbeat 先于 succeed，既有 rollback 接管与 rollback 失败路径也纳入回归。
 
+- A4466 完成全部 durable worker 的 heartbeat interval/lease 配置契约。A4456 只为三个冷物理 worker 要求
+  `0 < interval < lease`；Backup、BackupDeletion、CertificateRotation、Destroy、PostRestoreAudit、
+  RestoreCutover、TiKV repair/recovery 仍只拒绝零值，接受 interval 等于或大于 lease，导致首次周期续租前 claim
+  已可被接管。跨 8 worker RED 统一设置 lease=6/interval=6，并让 fake operationctl 写调用标记；旧实现全部越过
+  配置阶段，其中 6 个实际调用 operationctl、两个 TiKV worker进入 claim。现在 8 个脚本均在任何 operationctl
+  调用前用数值比较要求正数且严格小于 lease，与三类冷物理 worker 一致；回归固定非法配置零 claim 调用。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

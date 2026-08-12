@@ -348,7 +348,7 @@ func TestBackupOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 
 func TestBackupOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
-	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=10\nHEARTBEAT_FAIL=true", "final heartbeat failed; backup worker was fenced")
+	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; backup worker was fenced")
 	log := f.log(t)
 	require.Contains(t, log, "--action heartbeat")
 	require.NotContains(t, log, "--action succeed")

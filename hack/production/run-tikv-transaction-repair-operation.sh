@@ -21,7 +21,9 @@ die() { echo "$*" >&2; exit 2; }
 command -v "$JQ" >/dev/null || die "jq is required"
 command -v sha256sum >/dev/null || die "sha256sum is required"
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
-[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$heartbeat_interval" != 0 ]] || die "HEARTBEAT_INTERVAL_SECONDS must be positive"
+[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
+  awk -v heartbeat="$heartbeat_interval" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
+  die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then

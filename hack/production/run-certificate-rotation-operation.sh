@@ -56,8 +56,9 @@ require_executable_file() {
 require_executable_file ROTATION_COMMAND "$ROTATION_COMMAND"
 
 heartbeat_interval="${HEARTBEAT_INTERVAL_SECONDS:-$((LEASE_SECONDS / 3))}"
-[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ && "$heartbeat_interval" != 0 ]] ||
-  { echo "HEARTBEAT_INTERVAL_SECONDS must be positive" >&2; exit 2; }
+[[ "$heartbeat_interval" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
+  awk -v heartbeat="$heartbeat_interval" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
+  { echo "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS" >&2; exit 2; }
 
 operationctl=()
 if [[ -n "$OPERATIONCTL" ]]; then

@@ -31,7 +31,7 @@ func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 
 func TestPostRestoreAuditOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
 	f := newOperationRunnerFixture(t)
-	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=10\nHEARTBEAT_FAIL=true", "final heartbeat failed; post-restore audit worker was fenced")
+	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; post-restore audit worker was fenced")
 	log := f.log(t)
 	require.Contains(t, log, "--action heartbeat")
 	require.NotContains(t, log, "--action succeed")

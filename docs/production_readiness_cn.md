@@ -4104,6 +4104,9 @@ A185 也支持显式 `KUBECONFIG_PATH`。
 工作结束后终止 heartbeat，涉及后续 terminal 提交的 worker 还会执行同步最终续租。续租失败时 heartbeat
 杀掉尚未完成的工作进程并返回 fencing 状态。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
+全部 11 个 heartbeat worker 都在 claim 前要求 `0 < HEARTBEAT_INTERVAL_SECONDS < LEASE_SECONDS`；
+小数 interval 用数值比较而非字符串比较。等于或大于 lease 的配置无法保证首次续租前所有权仍有效，必须
+fail closed，不能依赖 terminal 前的最终同步续租补救执行期间已经存在的 takeover 窗口。
 
 参数读取服务使用
 `deploy/production/kubebrain-operation-parameter-broker.yaml`，默认零副本。先签发服务端
