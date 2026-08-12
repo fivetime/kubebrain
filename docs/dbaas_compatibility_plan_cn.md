@@ -47059,6 +47059,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍忠实暴露 ambiguity，由 TTL/Range/List 对账，不伪造成功。尚未覆盖多 endpoint 跨副本响应丢失、同 ID
   快速 regrant 与旧请求 replay 竞争，或业务层通用幂等 request token。
 
+- A4401 关闭 A4400 保留的多 endpoint 跨副本 Revoke 响应丢失证据缺口。继续以
+  `/root/etcd/client/v3/retry.go::retryLeaseClient.LeaseRevoke` 的 repeatable policy 和 server
+  `apply/backend.go::LeaseRevoke` 的 `LeaseNotFound` 为权威契约；扩展测试 TCP bridge，使后续新连接可显式
+  切换 backend，并记录实际 dial 过的目标。新增
+  `TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential` 同时要求 reference etcd 与 KubeBrain 各提供
+  三条经 Maintenance Status 证明 cluster ID 一致、member ID 互异且 leader 在集合内的直连端点：请求先在
+  replica 0 提交并丢弃响应，replica 2 必须先观察到 TTL=-1，随后 bridge 才把连接强制切到 replica 1；
+  clientv3 第 0 次调用必须得到 `Unavailable/EOF`，第 1 次跨副本重放必须得到 typed `LeaseNotFound`。最终
+  replica 2 还必须确认 attached key 消失、LeaseList 不再含该 ID，且 user revision 只推进 1，排除第二副本
+  重复删除或副本状态分叉。
+  既有三成员 reference runner 现支持 fail-closed 的 `TEST_SCOPE=lease-revoke-cross-replica`，未知 scope 会在
+  依赖探测前退出，避免 `go test -run` 拼写错误以“零测试”伪绿；默认 `all` 仍包含 MoveLeader、RangeStream
+  follower 与本项。首次现场使用旧 `kubebrain-dbaas` 共享集群时，三个 Pod 已为 0/1 Ready，LeaseGrant 在
+  场景开始前持续 `proxy is not ready`，随后既有 RangeStream 用例也超时，因此不把无效环境判作协议 RED。
+  2026-08-12 在 disposable `kubebrain-revoke-cross-replica` 的独立 3 PD/3 TiKV/3 KubeBrain 拓扑，以及从
+  clean `/root/etcd@5cd9f4ee1380...` 重建的三成员 reference 集群上复跑通过，完整专项门禁 0.324 秒；两端
+  均明确记录 attempt 0 `Unavailable/EOF`、attempt 1 `NotFound`。本项证明共享 TiKV lease metadata 让旧请求
+  在另一 KubeBrain 副本上保持上游错误与单次删除语义；同 ID 快速 regrant 与旧请求 replay 竞争、真实
+  外部 L4/L7 负载均衡器连接迁移，以及业务层通用幂等 request token 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

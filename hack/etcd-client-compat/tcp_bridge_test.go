@@ -13,7 +13,6 @@ import (
 
 type tcpBridge struct {
 	listener net.Listener
-	target   string
 
 	blackholeMode atomic.Int32
 	dropped       atomic.Int64
@@ -21,6 +20,8 @@ type tcpBridge struct {
 	acceptedConns atomic.Int64
 	closed        atomic.Bool
 	mu            sync.Mutex
+	target        string
+	dialedTargets map[string]int
 	conns         map[net.Conn]struct{}
 	acceptWG      sync.WaitGroup
 	connWG        sync.WaitGroup
@@ -31,9 +32,10 @@ func newTCPBridge(t *testing.T, target string) *tcpBridge {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	bridge := &tcpBridge{
-		listener: listener,
-		target:   grpcTarget(target),
-		conns:    make(map[net.Conn]struct{}),
+		listener:      listener,
+		target:        grpcTarget(target),
+		dialedTargets: make(map[string]int),
+		conns:         make(map[net.Conn]struct{}),
 	}
 	bridge.acceptWG.Add(1)
 	go bridge.accept()
@@ -82,6 +84,20 @@ func (b *tcpBridge) AcceptedConnections() int64 {
 	return b.acceptedConns.Load()
 }
 
+// SetTarget changes the backend used by subsequently accepted connections.
+// Existing connections keep their current backend until they are dropped.
+func (b *tcpBridge) SetTarget(target string) {
+	b.mu.Lock()
+	b.target = grpcTarget(target)
+	b.mu.Unlock()
+}
+
+func (b *tcpBridge) DialedTarget(target string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dialedTargets[grpcTarget(target)] > 0
+}
+
 func (b *tcpBridge) Close() {
 	if !b.closed.CompareAndSwap(false, true) {
 		return
@@ -100,11 +116,13 @@ func (b *tcpBridge) accept() {
 			return
 		}
 		b.acceptedConns.Add(1)
-		outbound, err := net.DialTimeout("tcp", b.target, 3*time.Second)
+		target := b.currentTarget()
+		outbound, err := net.DialTimeout("tcp", target, 3*time.Second)
 		if err != nil {
 			_ = inbound.Close()
 			continue
 		}
+		b.recordDial(target)
 		if b.closed.Load() {
 			_ = inbound.Close()
 			_ = outbound.Close()
@@ -115,6 +133,18 @@ func (b *tcpBridge) accept() {
 		b.connWG.Add(1)
 		go b.forwardPair(inbound, outbound)
 	}
+}
+
+func (b *tcpBridge) currentTarget() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.target
+}
+
+func (b *tcpBridge) recordDial(target string) {
+	b.mu.Lock()
+	b.dialedTargets[target]++
+	b.mu.Unlock()
 }
 
 func (b *tcpBridge) forwardPair(inbound, outbound net.Conn) {

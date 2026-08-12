@@ -15,10 +15,22 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "reference direct client and peer endpoints must be mutually distinct")
 	require.Contains(t, string(script), "one healthy three-member topology with an in-set leader")
 	require.Contains(t, string(script), "TEST_COUNT must be a positive integer")
+	require.Contains(t, string(script), "TEST_SCOPE must be all or lease-revoke-cross-replica")
 	require.Contains(t, string(script), "for index in 0 1 2")
 	require.Contains(t, string(script), `--name "reference-${index}"`)
 	require.Contains(t, string(script), "127.0.0.1:12379,127.0.0.1:22379,127.0.0.1:32379")
-	require.Contains(t, string(script), "-run '^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$'")
+	require.Contains(t, string(script), "^TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential$")
+}
+
+func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidScopeBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-moveleader-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+		"TEST_SCOPE=typo-that-would-run-zero-tests",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "TEST_SCOPE must be all or lease-revoke-cross-replica")
+	require.NotContains(t, string(output), "missing required command")
 }
 
 func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidCountBeforeDependencies(t *testing.T) {

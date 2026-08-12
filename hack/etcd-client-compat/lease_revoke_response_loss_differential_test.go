@@ -34,6 +34,17 @@ type leaseRevokeResponseLossReplayOutcome struct {
 	RevisionDelta     int64
 }
 
+type leaseRevokeCrossReplicaReplayOutcome struct {
+	ResponseDiscarded   bool
+	ConnectionDropped   bool
+	SecondReplicaDialed bool
+	LeaseNotFound       bool
+	KeyDeleted          bool
+	LeaseMissing        bool
+	LeaseUnlisted       bool
+	RevisionDelta       int64
+}
+
 // TestLeaseRevokeResponseLossDifferentialAgainstReferenceEtcd fixes the
 // observable contract when a Revoke commits but its response is lost. The RPC
 // remains ambiguous to the caller, while its atomic key/lease effects must be
@@ -66,6 +77,32 @@ func TestLeaseRevokeResponseLossDifferentialAgainstReferenceEtcd(t *testing.T) {
 	}
 	require.Equal(t, wantReplay, runLeaseRevokeResponseLossReplayScenario(t, reference, "etcd"))
 	require.Equal(t, wantReplay, runLeaseRevokeResponseLossReplayScenario(t, compatEndpoint(t), "kubebrain"))
+}
+
+// TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential proves that the
+// repeatable client policy preserves the same observable result when the first
+// Revoke commits on one member but its retry is served by another member. A
+// switching TCP bridge makes the replica transition explicit instead of
+// relying on load-balancer scheduling.
+func TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential(t *testing.T) {
+	referenceEndpoints := splitRequiredDirectEndpoints(t, "REFERENCE_ETCD_DIRECT_ENDPOINTS")
+	kubeBrainEndpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
+	requireDistinctDirectReplicaTopology(t, referenceEndpoints)
+	requireDistinctDirectReplicaTopology(t, kubeBrainEndpoints)
+
+	want := leaseRevokeCrossReplicaReplayOutcome{
+		ResponseDiscarded:   true,
+		ConnectionDropped:   true,
+		SecondReplicaDialed: true,
+		LeaseNotFound:       true,
+		KeyDeleted:          true,
+		LeaseMissing:        true,
+		LeaseUnlisted:       true,
+		RevisionDelta:       1,
+	}
+	reference := runLeaseRevokeCrossReplicaReplayScenario(t, referenceEndpoints, "etcd")
+	require.Equal(t, want, reference)
+	require.Equal(t, reference, runLeaseRevokeCrossReplicaReplayScenario(t, kubeBrainEndpoints, "kubebrain"))
 }
 
 func runLeaseRevokeResponseLossScenario(t *testing.T, endpoint, instance string) leaseRevokeResponseLossOutcome {
@@ -200,5 +237,93 @@ func runLeaseRevokeResponseLossReplayScenario(
 		KeyDeleted:        len(after.Kvs) == 0,
 		LeaseMissing:      ttl.TTL == -1,
 		RevisionDelta:     after.Header.Revision - before.Header.Revision,
+	}
+}
+
+func runLeaseRevokeCrossReplicaReplayScenario(
+	t *testing.T,
+	endpoints []string,
+	instance string,
+) leaseRevokeCrossReplicaReplayOutcome {
+	t.Helper()
+	bridge := newTCPBridge(t, endpoints[0])
+	throughBridge, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{bridge.Endpoint()}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, throughBridge.Close()) })
+	observer, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, observer.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	prefix := fmt.Sprintf("/dbaas-lease-revoke-cross-replica-replay/%s/%d/", instance, time.Now().UnixNano())
+	key := prefix + "key"
+	grant, err := throughBridge.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = throughBridge.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	before, err := observer.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, before.Kvs, 1)
+	require.True(t, bridge.DialedTarget(endpoints[0]))
+
+	droppedBytesBefore := bridge.DroppedBytes()
+	droppedConnectionsBefore := bridge.DroppedConnections()
+	bridge.BlackholeResponses()
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, revokeErr := throughBridge.Revoke(ctx, grant.ID)
+		revokeDone <- revokeErr
+	}()
+
+	// Observe the committed effect through a third replica before forcing the
+	// client connection from the first replica to the second one.
+	require.Eventually(t, func() bool {
+		response, getErr := observer.TimeToLive(ctx, grant.ID)
+		return getErr == nil && response.TTL == -1
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return bridge.DroppedBytes() > droppedBytesBefore
+	}, 2*time.Second, 10*time.Millisecond)
+	responseDiscarded := bridge.DroppedBytes() > droppedBytesBefore
+	bridge.SetTarget(endpoints[1])
+	bridge.DropConnections()
+	bridge.Resume()
+
+	var revokeErr error
+	select {
+	case revokeErr = <-revokeDone:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err())
+	}
+	require.Eventually(t, func() bool {
+		return bridge.DialedTarget(endpoints[1])
+	}, 5*time.Second, 10*time.Millisecond)
+	after, err := observer.Get(ctx, key)
+	require.NoError(t, err)
+	ttl, err := observer.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	listed, err := observer.Leases(ctx)
+	require.NoError(t, err)
+	leaseUnlisted := true
+	for _, lease := range listed.Leases {
+		if lease.ID == grant.ID {
+			leaseUnlisted = false
+		}
+	}
+
+	return leaseRevokeCrossReplicaReplayOutcome{
+		ResponseDiscarded:   responseDiscarded,
+		ConnectionDropped:   bridge.DroppedConnections() > droppedConnectionsBefore,
+		SecondReplicaDialed: bridge.DialedTarget(endpoints[1]),
+		LeaseNotFound:       errors.Is(revokeErr, rpctypes.ErrLeaseNotFound),
+		KeyDeleted:          len(after.Kvs) == 0,
+		LeaseMissing:        ttl.TTL == -1,
+		LeaseUnlisted:       leaseUnlisted,
+		RevisionDelta:       after.Header.Revision - before.Header.Revision,
 	}
 }

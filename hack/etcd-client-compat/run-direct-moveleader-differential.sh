@@ -9,6 +9,7 @@ REFERENCE_CLIENT_RAW="${REFERENCE_DIRECT_CLIENT_ENDPOINTS:-127.0.0.1:12379,127.0
 REFERENCE_PEER_RAW="${REFERENCE_DIRECT_PEER_ENDPOINTS:-127.0.0.1:12380,127.0.0.1:22380,127.0.0.1:32380}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-1m}"
 TEST_COUNT="${TEST_COUNT:-1}"
+TEST_SCOPE="${TEST_SCOPE:-all}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -57,6 +58,18 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
   echo "TEST_COUNT must be a positive integer" >&2
   exit 2
 fi
+case "$TEST_SCOPE" in
+  all)
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential$'
+    ;;
+  lease-revoke-cross-replica)
+    test_pattern='^TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential$'
+    ;;
+  *)
+    echo "TEST_SCOPE must be all or lease-revoke-cross-replica" >&2
+    exit 2
+    ;;
+esac
 declare -a kubebrain_endpoints reference_client_endpoints reference_peer_endpoints
 parse_three_endpoints KUBEBRAIN_DIRECT_ENDPOINTS "$KUBEBRAIN_DIRECT_RAW" kubebrain_endpoints
 parse_three_endpoints REFERENCE_DIRECT_CLIENT_ENDPOINTS "$REFERENCE_CLIENT_RAW" reference_client_endpoints
@@ -195,7 +208,7 @@ done
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_DIRECT_ENDPOINTS="$(IFS=,; echo "${reference_client_endpoints[*]}")" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
-    go test . -run '^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$' \
+    go test . -run "$test_pattern" \
       -count="$TEST_COUNT" -timeout="$TEST_TIMEOUT" -v
 )
 test_succeeded=true
