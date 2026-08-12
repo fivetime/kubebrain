@@ -47779,6 +47779,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   replicas 均为零；新 rollout、未完成 scale-down 或两个 serving revision 均立即 fail closed。该稳态拒绝
   防止升级中途发布业务，不替代随后仍需执行的真实 Operator 升级/回滚兼容矩阵。
 
+- A4445 封闭 A4444 在 ReplicaSet 检查后的竞态：新 rollout 可在 RS 列表验证结束、Pod 验证期间才创建，
+  此时 A4444 尚未看到第二个 RS，仍可能按旧 Pod 成功。RED 让起始 Deployment generation=3/v1.6.5 完全
+  收敛，旧 RS/Pod 也健康，但在第二次 Deployment 读取返回 generation=4/v1.6.6；旧实现因没有末尾 fence
+  确定性放行。新门禁保存起始 generation，在全部 RS/Pod/digest 验证后重读 Deployment，要求 api/kind/name、
+  immutable UID、非删除、generation、replicas 和 template image 全部仍与起始批准状态一致。普通 status
+  resourceVersion 更新不会误伤，任何 spec rollout 都因 generation 或模板变化 fail closed。该 fence 只保证
+  一次发布检查的稳态线性边界，不替代真实升级过程中的持续 etcd 语义 oracle。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

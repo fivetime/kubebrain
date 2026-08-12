@@ -199,7 +199,8 @@ hack/production/validate-tidb-operator-ready.sh
 筛出唯一由该 Deployment UID 控制且 Ready/Available 的 ReplicaSet，并要求同一 Deployment 下其他历史
 ReplicaSet 的 spec/status/ready/available replicas 全部为零，拒绝刚启动或尚未清零的并行 rollout；最后要求 active RS 的精确 Pod 数全部
 Running/Ready、非终止、template hash 与 owner UID 一致，并运行批准的 image digest。tag、UID、ReplicaSet、
-Pod 或 digest 任一漂移均 fail closed；仅有 Helm release 名称或 CRD 可用不能替代该运行身份链。
+Pod 或 digest 任一漂移均 fail closed；Pod 校验后还会重读 Deployment，要求 UID、generation、replicas 和
+template image 与起始快照相同，拒绝门禁执行中启动的新 rollout。仅有 Helm release 名称或 CRD 可用不能替代该运行身份链。
 
 存储延迟子门禁可独立执行：
 

@@ -41,6 +41,7 @@ if ! printf '%s' "$deployment_json" | "$JQ" -e \
   ' >/dev/null; then
   die "TiDB Operator Deployment release mismatch"
 fi
+deployment_generation="$(printf '%s' "$deployment_json" | "$JQ" -r '.metadata.generation')"
 
 replicasets_json="$("$KUBECTL" "${kubectl_args[@]}" get replicasets -o json)" || die "failed to list TiDB Operator ReplicaSets"
 active_rs="$(printf '%s' "$replicasets_json" | "$JQ" -c \
@@ -96,6 +97,20 @@ if ! printf '%s' "$pods_json" | "$JQ" -e \
         ((.imageID | type) == "string") and (.imageID | endswith($digest)))] | length) == 1)
   ' >/dev/null; then
   die "TiDB Operator Pod runtime release mismatch"
+fi
+
+final_deployment_json="$("$KUBECTL" "${kubectl_args[@]}" get deployment "$TIDB_OPERATOR_DEPLOYMENT" -o json)" || \
+  die "failed to fence TiDB Operator Deployment"
+if ! printf '%s' "$final_deployment_json" | "$JQ" -e \
+  --arg name "$TIDB_OPERATOR_DEPLOYMENT" --arg uid "$EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID" \
+  --arg generation "$deployment_generation" --arg container "$TIDB_OPERATOR_CONTAINER" \
+  --arg image "$EXPECTED_TIDB_OPERATOR_IMAGE" --argjson expected "$EXPECTED_TIDB_OPERATOR_REPLICAS" '
+    .apiVersion == "apps/v1" and .kind == "Deployment" and .metadata.name == $name and .metadata.uid == $uid and
+    .metadata.deletionTimestamp == null and (.metadata.generation | tostring) == $generation and
+    .spec.replicas == $expected and
+    ([.spec.template.spec.containers[]? | select(.name == $container and .image == $image)] | length) == 1
+  ' >/dev/null; then
+  die "TiDB Operator Deployment changed during validation"
 fi
 
 echo "TiDB Operator release gate passed: deployment=${TIDB_OPERATOR_NAMESPACE}/${TIDB_OPERATOR_DEPLOYMENT} uid=${EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID} image=${EXPECTED_TIDB_OPERATOR_IMAGE} digest=${EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST} replicas=${EXPECTED_TIDB_OPERATOR_REPLICAS}"
