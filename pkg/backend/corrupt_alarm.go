@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,15 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
-var corruptAlarmKey = []byte("alarms/corrupt")
+var (
+	corruptAlarmKey           = []byte("alarms/corrupt")
+	corruptAlarmGenerationKey = []byte("alarms/corrupt-generation")
+
+	// ErrCorruptAlarmChanged means another replica activated or changed the
+	// alarm while a disarm was validating durable evidence. Requiring a fresh
+	// operator request prevents that new signal from being silently consumed.
+	ErrCorruptAlarmChanged = errors.New("corrupt alarm changed during disarm")
+)
 
 func (b *backend) ArmCorrupt(ctx context.Context, memberID uint64) error {
 	ctx, unlock := b.lockCorruptAlarm(ctx)
@@ -22,20 +31,29 @@ func (b *backend) ArmCorrupt(ctx context.Context, memberID uint64) error {
 		if err != nil {
 			return err
 		}
-		index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
-		if index < len(members) && members[index] == memberID {
-			return nil
-		}
-		members = append(members, 0)
-		copy(members[index+1:], members[index:])
-		members[index] = memberID
-		value, err := json.Marshal(members)
+		generation, generationRaw, generationExists, err := b.readCorruptAlarmGeneration(ctx)
 		if err != nil {
 			return err
 		}
-		err = b.InternalCAS(ctx, []InternalCASOp{{
-			Key: corruptAlarmKey, Value: value, Expected: raw, ExpectedExists: exists,
-		}})
+		index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
+		value := raw
+		if index == len(members) || members[index] != memberID {
+			members = append(members, 0)
+			copy(members[index+1:], members[index:])
+			members[index] = memberID
+			value, err = json.Marshal(members)
+			if err != nil {
+				return err
+			}
+		}
+		nextGeneration, err := encodeNextCorruptAlarmGeneration(generation)
+		if err != nil {
+			return err
+		}
+		err = b.InternalCAS(ctx, []InternalCASOp{
+			{Key: corruptAlarmKey, Value: value, Expected: raw, ExpectedExists: exists},
+			{Key: corruptAlarmGenerationKey, Value: nextGeneration, Expected: generationRaw, ExpectedExists: generationExists},
+		})
 		if errors.Is(err, storage.ErrCASFailed) {
 			continue
 		}
@@ -66,6 +84,10 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 		if index == len(members) || members[index] != memberID {
 			return false, nil
 		}
+		generation, generationRaw, generationExists, err := b.readCorruptAlarmGeneration(ctx)
+		if err != nil {
+			return false, err
+		}
 		// A restart witness is durable evidence that a transaction's event set
 		// may be incomplete. Do not let an operator reopen writes merely by
 		// clearing CORRUPT while that evidence still fails validation.
@@ -82,12 +104,46 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 				return false, err
 			}
 		}
-		err = b.InternalCAS(ctx, []InternalCASOp{op})
+		nextGeneration, err := encodeNextCorruptAlarmGeneration(generation)
+		if err != nil {
+			return false, err
+		}
+		err = b.InternalCAS(ctx, []InternalCASOp{
+			op,
+			{Key: corruptAlarmGenerationKey, Value: nextGeneration, Expected: generationRaw, ExpectedExists: generationExists},
+		})
 		if errors.Is(err, storage.ErrCASFailed) {
-			continue
+			return false, ErrCorruptAlarmChanged
 		}
 		return err == nil, err
 	}
+}
+
+func (b *backend) readCorruptAlarmGeneration(ctx context.Context) (uint64, []byte, bool, error) {
+	raw, err := b.InternalGet(ctx, corruptAlarmGenerationKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return 0, nil, false, nil
+	}
+	if err != nil {
+		return 0, nil, false, err
+	}
+	if len(raw) != 8 {
+		return 0, nil, false, invalidAlarmMetadataf("corrupt alarm generation has length %d", len(raw))
+	}
+	generation := binary.BigEndian.Uint64(raw)
+	if generation == 0 {
+		return 0, nil, false, invalidAlarmMetadataf("corrupt alarm generation is zero")
+	}
+	return generation, raw, true, nil
+}
+
+func encodeNextCorruptAlarmGeneration(current uint64) ([]byte, error) {
+	if current == ^uint64(0) {
+		return nil, invalidAlarmMetadataf("corrupt alarm generation overflow")
+	}
+	raw := make([]byte, 8)
+	binary.BigEndian.PutUint64(raw, current+1)
+	return raw, nil
 }
 
 type corruptAlarmOwnerKey struct{}

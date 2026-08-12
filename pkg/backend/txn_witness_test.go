@@ -242,6 +242,52 @@ func TestCorruptDisarmLinearizesConcurrentRearm(t *testing.T) {
 		"a concurrent resolver rearm ordered after disarm must remain persistent")
 }
 
+func TestCorruptDisarmRejectsCrossReplicaRearm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	wrapped := &blockingWitnessScanStorage{
+		KvStorage: store, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	ctx := context.Background()
+	disarmBackend := NewBackend(wrapped, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	rearmBackend := NewBackend(wrapped, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	disarmBackend.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	_, _, err := disarmBackend.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/restart-witness/cross-replica-rearm"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+	memberID := disarmBackend.localAlarmMemberID()
+	require.NoError(t, disarmBackend.ArmCorrupt(ctx, memberID))
+
+	wrapped.enabled.Store(true)
+	type disarmResult struct {
+		removed bool
+		err     error
+	}
+	disarmed := make(chan disarmResult, 1)
+	go func() {
+		removed, disarmErr := disarmBackend.DisarmCorrupt(ctx, memberID)
+		disarmed <- disarmResult{removed: removed, err: disarmErr}
+	}()
+	<-wrapped.entered
+	// The second backend models a resolver in another process: it shares TiKV
+	// metadata but not the leader-local alarm mutex.
+	rearmed := make(chan error, 1)
+	go func() { rearmed <- rearmBackend.ArmCorrupt(ctx, memberID) }()
+	require.NoError(t, <-rearmed)
+	close(wrapped.release)
+	result := <-disarmed
+	require.ErrorIs(t, result.err, ErrCorruptAlarmChanged)
+	require.False(t, result.removed)
+	members, err := disarmBackend.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{memberID}, members,
+		"a cross-replica rearm during validation requires a fresh operator decision")
+}
+
 func TestLeadershipWitnessEventScanTransportErrorDoesNotArmCorrupt(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)

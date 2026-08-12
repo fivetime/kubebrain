@@ -2060,6 +2060,9 @@ func mapFenceErr(err error) error {
 	if errors.Is(err, backend.ErrTxnWitnessCorrupt) {
 		return rpctypes.ErrGRPCCorrupt
 	}
+	if errors.Is(err, backend.ErrCorruptAlarmChanged) {
+		return rpctypes.ErrGRPCCorrupt
+	}
 	if errors.Is(err, backend.ErrNoSpace) {
 		return rpctypes.ErrGRPCNoSpace
 	}

@@ -2943,6 +2943,9 @@ malformed seal、扫描错误或未知未来版本都会拒绝解除。禁止通
 marker/seal 根因，再由 etcd Maintenance API 解除告警恢复写流量。
 解除过程会先排空当前 leader 的在途逻辑写，并与后台 uncertain transaction 的 CORRUPT 激活串行化；因此告警解除
 可能等待正在提交或解析的事务完成。运维超时后应重新读取 Alarm 状态，不得假定请求失败就代表告警仍在或已解除。
+多副本并发由 TiKV `alarms/corrupt-generation` 代际保护：解除扫描期间任何副本重新激活（即使 member 已存在）都会
+使本次解除返回 `DataLoss` 并保留告警。此时必须重新调查最新错误与 witness，不能盲目循环执行 alarm disarm；该
+generation 是内部安全 metadata，不得删除、归零或手工回退。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

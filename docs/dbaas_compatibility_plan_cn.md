@@ -48152,6 +48152,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CAS。确定性回归在 witness iterator 中暂停 disarm，再并发重申同 member alarm：重申必须等到解除线性化点之后，
   最终 alarm 仍持久存在；该测试同时捕获 exclusive barrier 调用 InternalCAS 时的锁重入死锁。
 
+- A4493 把 A4492 的进程内线性化扩展到多 KubeBrain 副本。单机 mutex 无法覆盖旧/新 leader 交接窗口，且
+  `ArmCorrupt` 对已存在 member 直接返回不会留下可供另一进程 CAS 观察的写。新增 tenant-scoped TiKV internal
+  `alarms/corrupt-generation`：每次 Arm（包括幂等重申）和成功 Disarm 都与 member set 在同一 transaction 中递增
+  big-endian generation。Disarm 在重验前读取 generation；若另一副本在扫描窗口重申或改变 alarm，双 key CAS
+  必须失败，当前解除请求返回标准 `DataLoss/ErrGRPCCorrupt`、保留 alarm，并要求新的运维判断而不是在内部循环中
+  吞掉新信号。generation 缺失按旧 metadata 的零代兼容迁移，非法长度、零值和溢出均 fail closed。双 backend
+  确定性回归共享同一 storage 但使用独立 mutex，在 disarm witness iterator 暂停期间由另一实例重申同 member，证明
+  解除被拒绝且 alarm 留存；另固定 1→2→3 代际和非法 metadata 路径。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
