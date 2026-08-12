@@ -47617,6 +47617,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 的慢 teardown 全局饿死短租约续期”差距；A4427/A4428 的 CA+Envoy 组合仍需用本镜像重新执行完整三轮
   真实门禁后才能改变状态，TiKV 整体不可用或同一租约已开始删除也不属于可续期保证。
 
+- A4430 使用 A4429 的 exact image 重跑 A4427/A4428 的完整组合门禁，但结果仍为 RED，因而没有关闭 CA
+  rollover + Envoy rollout 差距。fresh `kubebrain-envoy-ca-a4430` Kind 集群包含三个 zone worker、独立
+  3 PD/3 TiKV/3 mTLS KubeBrain 与固定 Envoy 1.39.0；长期客户端预先信任 old+new roots，服务端从 old-CA
+  leaf 原子切到 new-CA leaf 和 overlap inbound trust，三个 KubeBrain Pod 的 projected certificate/CA hash
+  全部收敛。一次有效普通运行以 5 个独立 Watch+TTL=3 KeepAlive client 覆盖三个 Envoy，明文与缺少客户端
+  证书的反向探针均按预期被拒绝；首个 surge 与三个 old UID 同时存在时暂停 rollout，Secret hook 完成后才
+  启动 EndpointSlice sampler 并恢复发布。
+  第一轮恢复发布后 cohort member 0 最后一次正 TTL 响应为 `15:36:22.449`；`15:36:25.683` 同窗 PD 报告
+  slow-disk heartbeat 超期 2.16 秒，KubeBrain 对 TiKV store 1004 的请求 `context deadline exceeded`，随后
+  服务端查询该 lease 已为 TTL=-1。宿主采样曾显示 load average 44，TiKV 另一次 raft write 达 3.53 秒；
+  I/O 短暂恢复后重跑仍在 rollout 引发的同类尖峰中失败。这不是 A4429 已修复的“某个无关 lease teardown
+  持有全局锁但续期请求已经到达”路径：该 lease 在 Envoy 连接迁移和 TiKV/PD 整体停顿期间没有及时形成可安全
+  接受的 renew，开始删除后也不能违背 etcd 语义复活。前置接线诊断还确认 production upstream Service 必须
+  同时匹配 `name=kubebrain,instance=kubebrain`，且宿主 NodePort 黑盒需显式加入测试来源 ingress policy；修正后
+  port-forward 与 NodePort 完整 mTLS 握手均通过。普通门禁已 fail closed，故未浪费资源执行预期更慢的 race
+  版本。A4429 的确定性隔离修复和黑盒结论保持有效，但 A4427/A4428 的组合差距继续开放；不能用提高 TTL、
+  RAM-backed storage 或同租约过期后的补续掩盖。后续应在资源隔离的预生产 worker 上重跑，并把基础设施
+  NodePort/Envoy 重连上界与 PD/TiKV 写入延迟 SLO 同时作为 TTL=3 发布前置条件。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
