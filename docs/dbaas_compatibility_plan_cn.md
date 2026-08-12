@@ -46854,6 +46854,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   越过新 leader startup 的差距，并固定 Compact 与 PD 全失重叠后的持久恢复语义；独立宿主/AZ、物理大规模
   compaction、分钟级慢恢复和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4390 将此前反复保留的 latency/bandwidth 组合故障从文字缺口推进为可重复的真实跨节点门禁，对照
+  upstream `/root/etcd/tests/integration/clientv3/connectivity/network_partition_test.go` 的
+  `TestBalancerUnderNetworkPartitionPut/Delete/Txn` 与 linearizable Get 场景。新增
+  `pd-cross-node-degraded-network`：只接受三只 Ready PD 严格分布在三个不同 kind worker，解析各 Pod sandbox
+  PID 后进入其 network namespace，在 `eth0` 同时施加可配置的 netem delay/jitter/loss/rate；默认窗口为
+  `250ms +/- 50ms`、`2%` 丢包、`20mbit` 和 30 秒。故障命令由 trap fail-closed 清理，并逐 namespace
+  复查不得残留 netem；门禁期间 8 个官方 client/v3 worker 循环 Put、unconditional Txn 和 linearizable
+  Get，允许规范的歧义/瞬态错误，但必须在退化仍生效时取得正向进展，清障后还须逐键写后读闭合。
+  2026-08-12 disposable `kubebrain-pd-netem` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、21379/21380 拓扑首次运行即通过：30 秒退化窗口内完成 158 次数据操作，期间只观察到
+  DeadlineExceeded/Unavailable 等预期瞬态结果，完整门禁 39.99 秒；恢复后 TiDBCluster Ready，三个
+  KubeBrain 与三个 TiKV 均 Ready/零重启，三只 PD Ready。`kb-pd-1` 的一次 restart 发生在
+  `00:21:13Z` 初始部署阶段，早于 `00:22:38Z` 故障门禁；三个 PD namespace 最终均为 `qdisc noqueue`。
+  本项关闭已验证强度下 PD 全成员跨节点 delay/jitter/loss/rate 组合的执行证据，不冒充独立宿主/AZ，
+  也不关闭 conntrack/NAT、underlay failure、更高丢包、分钟级退化或 TiKV 链路 netem，后者继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

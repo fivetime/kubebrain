@@ -667,6 +667,20 @@ func TestBackendPDCrossNodeTotalLossCanRecoverCompactWatermark(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeDegradedNetworkUsesPodNamespacesAndCleansUp(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-degraded-network)`)
+	require.Contains(t, script, `--degrade-pd-all-cross-node`)
+	require.Contains(t, script, `crictl inspectp "$sandbox"`)
+	require.Contains(t, script, `tc qdisc replace dev eth0 root netem delay`)
+	require.Contains(t, script, `loss "${PD_NETEM_LOSS_PERCENT}%" rate "$PD_NETEM_RATE"`)
+	require.Contains(t, script, `tc qdisc del dev eth0 root`)
+	require.Contains(t, script, `run_quorum_test "cross-node PD latency, loss, and bandwidth degradation"`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"
