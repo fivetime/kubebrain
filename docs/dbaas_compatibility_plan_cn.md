@@ -47711,6 +47711,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   count 缺失规则互补：前者覆盖 lookback 内的陈旧 series，后者覆盖彻底消失和副本数漂移。该阈值基于
   生产 ServiceMonitor 15 秒 scrape interval 提供四个抓取周期容差，不替代 Prometheus 自身可用性监控。
 
+- A4437 开始收窄开放的 PD/TiKV 滚动版本矩阵缺口。`validate-instance-ready.sh` 此前要求 TiDBCluster
+  Ready、PD/TiKV StatefulSet revision 收敛，并绑定 UID、clusterID 和副本数，却只对 KubeBrain 镜像做
+  精确校验；目标 CR 仍是旧 `spec.version`、Operator base image 漂移，或 TiKV 模板仍混用旧镜像时都能
+  通过唯一生产发布入口。TDD 分别固定目标 v8.5.3/实际 v8.5.2 和目标 TiKV v8.5.3/实际 v8.5.2 为 RED。
+  门禁现在要求显式、合法的 `EXPECTED_TIDB_VERSION`、`EXPECTED_PD_IMAGE`、`EXPECTED_TIKV_IMAGE`，在
+  UID/clusterID 后精确读取 CR version 与两个已收敛 StatefulSet 的容器镜像；任一缺失或漂移立即失败，
+  成功 receipt 同时输出三项 storage release identity。这阻止未完成或非预期 storage rollout 被发布为
+  健康，但不把单版本稳态校验宣称为跨版本兼容矩阵；真实逐成员升级、回滚与故障叠加仍保持 P2 开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

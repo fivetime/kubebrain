@@ -84,6 +84,9 @@ func TestValidateInstanceReady(t *testing.T) {
 		kubeStatus               string
 		kubeArgs                 string
 		topology                 string
+		tidbVersion              string
+		pdImage                  string
+		tikvImage                string
 		healthOK                 bool
 		advertisedURLs           string
 		unreachableAdvertisedURL string
@@ -105,6 +108,24 @@ func TestValidateInstanceReady(t *testing.T) {
 			healthOK:   true,
 			wantOK:     true,
 			wantOutput: "release gate passed",
+		},
+		{
+			name:        "wrong TiDB storage version",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			tidbVersion: "v8.5.2",
+			healthOK:    true,
+			wantOutput:  "TidbCluster storage release mismatch",
+		},
+		{
+			name:       "mixed TiKV storage image",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			tikvImage:  "pingcap/tikv:v8.5.2",
+			healthOK:   true,
+			wantOutput: "TidbCluster storage release mismatch",
 		},
 		{
 			name:       "tls release baseline",
@@ -889,6 +910,12 @@ elif [[ "$*" == *" exec "* ]]; then
   exec "$@"
 elif [[ "$*" == *"get tidbcluster"* && "$*" == *".status.conditions"* ]]; then
   printf 'True'
+elif [[ "$*" == *"get tidbcluster"* && "$*" == *".spec.version"* ]]; then
+  printf '%s' "$FAKE_TIDB_VERSION"
+elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *".image}"* ]]; then
+  printf '%s' "$FAKE_PD_IMAGE"
+elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *".image}"* ]]; then
+  printf '%s' "$FAKE_TIKV_IMAGE"
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath="* ]]; then
   printf '5\t5\t3\t3\t3\tpd-new\tpd-new'
 elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath="* ]]; then
@@ -967,6 +994,18 @@ exit 1
 			if strings.Count(kubeStatus, "\t") == 7 {
 				kubeStatus += "\tuid-kubebrain"
 			}
+			tidbVersion := tc.tidbVersion
+			if tidbVersion == "" {
+				tidbVersion = "v8.5.3"
+			}
+			pdImage := tc.pdImage
+			if pdImage == "" {
+				pdImage = "pingcap/pd:v8.5.3"
+			}
+			tikvImage := tc.tikvImage
+			if tikvImage == "" {
+				tikvImage = "pingcap/tikv:v8.5.3"
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"ETCDCTL=" + fakeEtcdctl,
@@ -977,6 +1016,9 @@ exit 1
 				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 				"EXPECTED_CLUSTER_ID=1",
 				"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
+				"EXPECTED_TIDB_VERSION=v8.5.3",
+				"EXPECTED_PD_IMAGE=pingcap/pd:v8.5.3",
+				"EXPECTED_TIKV_IMAGE=pingcap/tikv:v8.5.3",
 				"EXPECTED_INITIAL_CLUSTER=" + initialCluster,
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 				"EXPECTED_ADVERTISE_CLIENT_URLS=" + advertisedURLs,
@@ -992,6 +1034,9 @@ exit 1
 				"FAKE_KUBEBRAIN_PODS_JSON=" + podsJSON,
 				"FAKE_ENDPOINT_SLICES_JSON=" + endpointSlicesJSON,
 				"FAKE_TOPOLOGY=" + topology,
+				"FAKE_TIDB_VERSION=" + tidbVersion,
+				"FAKE_PD_IMAGE=" + pdImage,
+				"FAKE_TIKV_IMAGE=" + tikvImage,
 				"FAKE_HEALTH_OK=" + boolString(tc.healthOK),
 				"FAKE_UNREACHABLE_ADVERTISED_URL=" + tc.unreachableAdvertisedURL,
 				"FAKE_MEMBER_LIST_JSON=" + memberListJSON,
@@ -1096,11 +1141,15 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		return []string{
 			"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
+			"EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=uid-client-service",
 			"ENDPOINT=https://instance.example:2379",
 			"EXPECTED_KEYSPACE=instance-a",
 			"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
 			"EXPECTED_CLUSTER_ID=1",
 			"EXPECTED_TIDB_CLUSTER_UID=uid-tidb",
+			"EXPECTED_TIDB_VERSION=v8.5.3",
+			"EXPECTED_PD_IMAGE=pingcap/pd:v8.5.3",
+			"EXPECTED_TIKV_IMAGE=pingcap/tikv:v8.5.3",
 			"EXPECTED_INITIAL_CLUSTER=" + fakeInitialCluster,
 			"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 			"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -1135,6 +1184,11 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		{name: "initial cluster required", key: "EXPECTED_INITIAL_CLUSTER", want: "EXPECTED_INITIAL_CLUSTER is required"},
 		{name: "cluster id required", key: "EXPECTED_CLUSTER_ID", want: "EXPECTED_CLUSTER_ID is required"},
 		{name: "tidb cluster uid required", key: "EXPECTED_TIDB_CLUSTER_UID", want: "EXPECTED_TIDB_CLUSTER_UID is required"},
+		{name: "tidb version required", key: "EXPECTED_TIDB_VERSION", want: "EXPECTED_TIDB_VERSION is required"},
+		{name: "tidb version exact", key: "EXPECTED_TIDB_VERSION", value: "8.5", want: "must be an exact vMAJOR.MINOR.PATCH version"},
+		{name: "pd image required", key: "EXPECTED_PD_IMAGE", want: "EXPECTED_PD_IMAGE is required"},
+		{name: "pd image whitespace", key: "EXPECTED_PD_IMAGE", value: "pingcap/pd: v8.5.3", want: "must be an exact image reference without whitespace"},
+		{name: "tikv image required", key: "EXPECTED_TIKV_IMAGE", want: "EXPECTED_TIKV_IMAGE is required"},
 		{name: "kubebrain statefulset uid required", key: "EXPECTED_KUBEBRAIN_STATEFULSET_UID", want: "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

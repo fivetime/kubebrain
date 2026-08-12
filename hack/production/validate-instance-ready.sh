@@ -61,6 +61,9 @@ EXPECTED_PEER_CLIENT_CERT_AUTH="${EXPECTED_PEER_CLIENT_CERT_AUTH:-}"
 TIDB_NAMESPACE="${TIDB_NAMESPACE:-tidb-cluster}"
 TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
+EXPECTED_TIDB_VERSION="${EXPECTED_TIDB_VERSION:-}"
+EXPECTED_PD_IMAGE="${EXPECTED_PD_IMAGE:-}"
+EXPECTED_TIKV_IMAGE="${EXPECTED_TIKV_IMAGE:-}"
 EXPECTED_PD_REPLICAS="${EXPECTED_PD_REPLICAS:-3}"
 EXPECTED_TIKV_REPLICAS="${EXPECTED_TIKV_REPLICAS:-3}"
 ENDPOINT="${ENDPOINT:-}"
@@ -114,6 +117,24 @@ if [[ -z "$EXPECTED_TIDB_CLUSTER_UID" ]]; then
   echo "EXPECTED_TIDB_CLUSTER_UID is required" >&2
   exit 2
 fi
+if [[ -z "$EXPECTED_TIDB_VERSION" ]]; then
+  echo "EXPECTED_TIDB_VERSION is required" >&2
+  exit 2
+fi
+if ! [[ "$EXPECTED_TIDB_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "EXPECTED_TIDB_VERSION must be an exact vMAJOR.MINOR.PATCH version" >&2
+  exit 2
+fi
+for variable in EXPECTED_PD_IMAGE EXPECTED_TIKV_IMAGE; do
+  if [[ -z "${!variable}" ]]; then
+    echo "${variable} is required" >&2
+    exit 2
+  fi
+  if [[ "${!variable}" == *[[:space:]]* ]]; then
+    echo "${variable} must be an exact image reference without whitespace" >&2
+    exit 2
+  fi
+done
 if [[ -z "$EXPECTED_INITIAL_CLUSTER" ]]; then
   echo "EXPECTED_INITIAL_CLUSTER is required" >&2
   exit 2
@@ -213,6 +234,19 @@ if [[ "$actual_tidb_cluster_uid" != "$EXPECTED_TIDB_CLUSTER_UID" ]]; then
 fi
 if [[ "$actual_cluster_id" != "$EXPECTED_CLUSTER_ID" ]]; then
   echo "TidbCluster storage identity mismatch: expected cluster ID ${EXPECTED_CLUSTER_ID}, got ${actual_cluster_id:-missing}" >&2
+  exit 1
+fi
+
+actual_tidb_version="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
+  -o 'jsonpath={.spec.version}')"
+actual_pd_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-pd" \
+  -o 'jsonpath={.spec.template.spec.containers[?(@.name=="pd")].image}')"
+actual_tikv_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" \
+  -o 'jsonpath={.spec.template.spec.containers[?(@.name=="tikv")].image}')"
+if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ||
+  "$actual_pd_image" != "$EXPECTED_PD_IMAGE" ||
+  "$actual_tikv_image" != "$EXPECTED_TIKV_IMAGE" ]]; then
+  echo "TidbCluster storage release mismatch: expected version/PD/TiKV ${EXPECTED_TIDB_VERSION}/${EXPECTED_PD_IMAGE}/${EXPECTED_TIKV_IMAGE}, got ${actual_tidb_version:-missing}/${actual_pd_image:-missing}/${actual_tikv_image:-missing}" >&2
   exit 1
 fi
 
@@ -632,4 +666,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} tikv_image=${EXPECTED_TIKV_IMAGE} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
