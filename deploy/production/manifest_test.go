@@ -1715,6 +1715,10 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainTiKVRegionLeaderMissing":      `max(tikv_raftstore_leader_missing{namespace="tidb-cluster",service="kb-tikv-metrics"}) > 0`,
 		"KubeBrainPDRegionPeerUnhealthy":        `max by (type) (pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) > 0`,
 		"KubeBrainPDRegionHealthMetricsMissing": `count(pd_regions_status{namespace="tidb-cluster",service="kb-pd-metrics",type=~"pending-peer-region-count|down-peer-region-count"}) != 6`,
+		"KubeBrainPDWALFsyncLatencyHigh":        `histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket{namespace="tidb-cluster",service="kb-pd-metrics"}[5m]))) > 1`,
+		"KubeBrainTiKVRaftDBWriteLatencyHigh":   `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_raftdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
+		"KubeBrainTiKVKVDBWriteLatencyHigh":     `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_kvdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
+		"KubeBrainStorageLatencyMetricsMissing": `(count(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"}) != 3) or (count(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}) != 3) or (count(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}) != 3)`,
 		"KubeBrainStorageVolumeMetricsMissing":  `count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6`,
 		"KubeBrainStorageVolumeLow": `(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"} / ` +
 			`kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 0.15`,
@@ -1733,6 +1737,12 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		case "KubeBrainStorageVolumeMetricsMissing", "KubeBrainResourceMetricsMissing", "KubeBrainNetworkMetricsMissing":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
 			require.Equal(t, "15m", alertRule["for"])
+		case "KubeBrainStorageLatencyMetricsMissing":
+			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
+			require.Equal(t, "5m", alertRule["for"])
+		case "KubeBrainPDWALFsyncLatencyHigh", "KubeBrainTiKVRaftDBWriteLatencyHigh", "KubeBrainTiKVKVDBWriteLatencyHigh":
+			require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
+			require.Equal(t, "1m", alertRule["for"])
 		case "KubeBrainLogicalBackupMetricsMissing":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
 			require.Equal(t, "1h", alertRule["for"])
@@ -1862,6 +1872,8 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 
 	emitted := emittedMetricNames(t, "../../pkg")
 	for _, external := range []string{
+		"etcd_disk_wal_fsync_duration_seconds_bucket",
+		"etcd_disk_wal_fsync_duration_seconds_count",
 		"etcd_server_is_leader",
 		"container_cpu_cfs_periods_total",
 		"container_cpu_cfs_throttled_periods_total",
@@ -1885,6 +1897,10 @@ func TestProductionAlertMetricsExist(t *testing.T) {
 		"kubelet_volume_stats_capacity_bytes",
 		"pd_regions_status",
 		"tikv_raftstore_leader_missing",
+		"tikv_raftstore_store_write_kvdb_duration_seconds_bucket",
+		"tikv_raftstore_store_write_kvdb_duration_seconds_count",
+		"tikv_raftstore_store_write_raftdb_duration_seconds_bucket",
+		"tikv_raftstore_store_write_raftdb_duration_seconds_count",
 		"up",
 	} {
 		emitted[external] = struct{}{}

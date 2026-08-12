@@ -47678,6 +47678,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   SLO 的预生产卷/worker，并同时记录 PD leader lease、TiKV commit latency 和宿主 I/O，而不能通过增大 TTL
   或把状态放入 RAM 绕过 etcd 的短租约契约。
 
+- A4434 把 A4433 的现场根因固化为生产可观测 fail-closed 门禁。原 PrometheusRule 只检查 PD/TiKV
+  target 数、PD leader 数、Region peer/leader 和 PVC 水位；A4433 中所有 Pod Ready、store Up 时，PD
+  已因慢盘 heartbeat 延迟耗尽 5 秒 leader lease，监控没有在短租约失败前表达 tail-latency 越界。
+  对照 `/root/pd` 提交 `65e429d` 的官方 `PD_etcd_write_disk_latency` 规则，新增每实例 PD WAL fsync
+  5 分钟 p99 >1 秒持续 1 分钟 critical；对照 `/root/tikv/components/raftstore/src/store/metrics.rs`
+  的权威 histogram，再对 TiKV RaftDB 与 KVDB write p99 建立同阈值 critical。独立 missing-metrics
+  规则要求 3 个 PD WAL count、3 个 TiKV RaftDB count 和 3 个 TiKV KVDB count series 全部存在，持续
+  5 分钟缺失即 warning，禁止把无采样解释成健康。清单测试先以缺少
+  `KubeBrainTiKVRaftDBWriteLatencyHigh` 确定性 RED，再固定四条表达式、severity/for 和全部外部 metric
+  allowlist；这不声称当前 shared hostPath 已满足 SLO，也不改变 A4433 的 RED，只使独立 CSI/worker 上的
+  下一次 CA/Envoy 与 TTL=3 验收具备可审计的前置和持续告警。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

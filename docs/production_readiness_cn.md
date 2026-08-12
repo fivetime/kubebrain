@@ -202,6 +202,15 @@ target 各自暴露两条 gauge，共 6 条 series；持续 5 分钟不完整即
 零异常。`KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 的“控制面健康”前提也同时
 要求这两类 PD gauge 为零；否则应由 Region peer 告警分类，不能再仅凭 leader-missing=0 声称健康。
 
+副本数和 Region 状态之外还必须满足持久化 tail-latency 门禁。PrometheusRule
+`KubeBrainPDWALFsyncLatencyHigh`、`KubeBrainTiKVRaftDBWriteLatencyHigh` 和
+`KubeBrainTiKVKVDBWriteLatencyHigh` 按实例计算 5 分钟 p99，超过 1 秒持续 1 分钟即 critical；
+`KubeBrainStorageLatencyMetricsMissing` 要求三个 PD 与三个 TiKV 的对应 histogram count series
+完整，缺失不能按零延迟处理。该门禁直接覆盖“PD/TiKV 全部 Ready/Up，但共享或过载磁盘让 PD heartbeat
+晚于 leader lease、短租约先过期”的故障形状。上线、CA/Envoy 轮换和短租约 SLO 验收都必须在这些
+告警无 firing/pending 且指标完整的独立 CSI worker 上进行；只检查 PVC 容量、逻辑 TiKV capacity 或
+瞬时 `df` 水位不能证明 IOPS/延迟隔离。
+
 `KubeBrainTransactionPathUnavailableWithHealthyTiKVControlPlane` 专门识别三项同时成立且持续
 2 分钟的反常状态：KubeBrain StatefulSet 为 0 Ready、3 个 TiKV metrics target 均可抓取、TiKV
 没有报告缺失 Region leader。这正是“TCP/heartbeat/Debug 正常但事务卡死”的运行时分类，不能

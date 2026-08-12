@@ -427,6 +427,38 @@ spec:
           annotations:
             summary: KubeBrain PD Region health metrics are incomplete
             description: "Expected pending/down peer Region gauges from all three PD replicas, but found {{ $value }} of 6 series."
+        - alert: KubeBrainPDWALFsyncLatencyHigh
+          expr: histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket{namespace="tidb-cluster",service="kb-pd-metrics"}[5m]))) > 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain PD WAL fsync latency threatens leader availability
+            description: "PD {{ $labels.instance }} WAL fsync p99 is {{ $value }}s, above the 1s storage SLO. This can delay Raft heartbeats and expire the PD leader lease before replica-count or Region-health alerts fire."
+        - alert: KubeBrainTiKVRaftDBWriteLatencyHigh
+          expr: histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_raftdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain TiKV RaftDB write latency is high
+            description: "TiKV {{ $labels.instance }} RaftDB write p99 is {{ $value }}s, above the 1s storage SLO. Short etcd leases and mutation availability are at risk even if all stores remain Up."
+        - alert: KubeBrainTiKVKVDBWriteLatencyHigh
+          expr: histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_kvdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain TiKV KVDB write latency is high
+            description: "TiKV {{ $labels.instance }} KVDB write p99 is {{ $value }}s, above the 1s storage SLO. Treat the instance as outside its short-lease availability envelope."
+        - alert: KubeBrainStorageLatencyMetricsMissing
+          expr: (count(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"}) != 3) or (count(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}) != 3) or (count(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}) != 3)
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain storage latency telemetry is incomplete
+            description: "Expected PD WAL and TiKV RaftDB/KVDB write histograms from every storage replica. Do not declare the short-lease storage SLO healthy while any family is missing."
         - alert: KubeBrainStorageVolumeMetricsMissing
           expr: count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6
           for: 15m

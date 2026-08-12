@@ -57,6 +57,16 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 - **leader 频繁切换 / 抖动**:`rate(etcd_server_healthchecks_total{type="readyz",name="linearizable_read",status="error"}[5m]) > 0` 持续出现，或 `write.fence.reject` 持续增长，或 `/election` leader 地址频繁变。正常换主不应导致 Pod 重启；重启率 > 0 是独立的进程稳定性告警。→ 见 [[failover_tuning_cn.md]](租约调优)。
 - **共享存储不可读**:`etcd_server_healthcheck{type="livez",name="serializable_read"} == 0`，或对应 error counter 持续增长。它不依赖 KubeBrain leader，可直接指向 TiKV/PD、网络或租户 keyspace 读路径。
 - **写延迟过高**:`write.latency` p99 持续 > 你的 lease-sensitive 控制器续期窗口的一半(默认 controller-manager ~15s → 阈值 ~7s;满载 TiKV 单 region 热点会推高)。
+- **PD/TiKV 持久化延迟越界**：生产规则分别对
+  `etcd_disk_wal_fsync_duration_seconds_bucket`、
+  `tikv_raftstore_store_write_raftdb_duration_seconds_bucket` 和
+  `tikv_raftstore_store_write_kvdb_duration_seconds_bucket` 计算每个实例的 5 分钟 p99；任一持续 1 分钟
+  超过 1 秒即 critical。PD 官方告警本身也把 WAL fsync p99 >1s 视为 critical；对 KubeBrain 而言，
+  该延迟会先拖慢 PD Raft heartbeat/leader lease，再让 TiKV TSO 和短 etcd lease 续期整体失去进展，
+  即使 Pod Ready、store Up、Region leader-missing 仍为零也不能视为健康。
+  `KubeBrainStorageLatencyMetricsMissing` 另要求三个 PD WAL 和三个 TiKV RaftDB/KVDB histogram count
+  series 全部存在；缺失持续 5 分钟即 warning，禁止把没有采样误判成低延迟。阈值是发布下限，不是
+  云盘选型承诺；容量、IOPS 与 tail-latency SLO 仍需按套餐压测并收紧。
 - **etcd 兼容请求延迟过高**:`histogram_quantile(0.99, rate(etcd_server_request_duration_seconds_bucket[5m]))` 按 `type` 分组持续升高。它与 `read.latency`/`write.latency` 的 DBaaS-native method 维度互补，适合直接套用 upstream etcd dashboard。
 - **真故障率上升**:`rate(read/write{errclass="other"})` 或 `{errclass="deadline"}` 上升(把 `revision`/`unavailable`/`fenced` 排除 —— 那些客户端自愈)。
 - **gRPC 服务端故障**:
