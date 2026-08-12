@@ -35,6 +35,15 @@ type explicitLeaseGrantResponseLossOutcome struct {
 	RevisionDelta        int64
 }
 
+type orphanLeaseExpiryAfterGrantLossOutcome struct {
+	TwoLeasesCreated     bool
+	ReturnedLeaseRevoked bool
+	SingleOrphanObserved bool
+	OrphanExpired        bool
+	LeaseSetRestored     bool
+	RevisionDelta        int64
+}
+
 // TestLeaseGrantResponseLossReplayAcrossReplicasDifferential records the
 // upstream automatic-ID ambiguity. LeaseGrant is repeatable, but a replayed
 // ID=0 request allocates another lease; only the replay response reaches the
@@ -84,6 +93,29 @@ func TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential(t *testin
 	reference := runExplicitLeaseGrantResponseLossScenario(t, referenceEndpoints, "etcd")
 	require.Equal(t, want, reference)
 	require.Equal(t, reference, runExplicitLeaseGrantResponseLossScenario(t, kubeBrainEndpoints, "kubebrain"))
+}
+
+// TestOrphanLeaseExpiresAfterGrantResponseLossDifferential proves that the
+// extra automatic-ID lease exposed by response loss is bounded by its TTL. The
+// caller revokes only the returned ID; the unknown empty lease must disappear
+// through normal expiry without advancing the user KV revision.
+func TestOrphanLeaseExpiresAfterGrantResponseLossDifferential(t *testing.T) {
+	referenceEndpoints := splitRequiredDirectEndpoints(t, "REFERENCE_ETCD_DIRECT_ENDPOINTS")
+	kubeBrainEndpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
+	requireDistinctDirectReplicaTopology(t, referenceEndpoints)
+	requireDistinctDirectReplicaTopology(t, kubeBrainEndpoints)
+
+	want := orphanLeaseExpiryAfterGrantLossOutcome{
+		TwoLeasesCreated:     true,
+		ReturnedLeaseRevoked: true,
+		SingleOrphanObserved: true,
+		OrphanExpired:        true,
+		LeaseSetRestored:     true,
+		RevisionDelta:        0,
+	}
+	reference := runOrphanLeaseExpiryAfterGrantLossScenario(t, referenceEndpoints, "etcd")
+	require.Equal(t, want, reference)
+	require.Equal(t, reference, runOrphanLeaseExpiryAfterGrantLossScenario(t, kubeBrainEndpoints, "kubebrain"))
 }
 
 func runLeaseGrantResponseLossReplayScenario(
@@ -286,6 +318,115 @@ func runExplicitLeaseGrantResponseLossScenario(
 		NewLeaseCount:        len(newIDs),
 		ExplicitLeasePresent: present,
 		ExplicitLeaseLive:    ttl.TTL > 0,
+		RevisionDelta:        after.Header.Revision - before.Header.Revision,
+	}
+}
+
+func runOrphanLeaseExpiryAfterGrantLossScenario(
+	t *testing.T,
+	endpoints []string,
+	instance string,
+) orphanLeaseExpiryAfterGrantLossOutcome {
+	t.Helper()
+	bridge := newTCPBridge(t, endpoints[0])
+	throughBridge, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{bridge.Endpoint()}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, throughBridge.Close()) })
+	observer, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, observer.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	t.Cleanup(cancel)
+	baseline, err := observer.Leases(ctx)
+	require.NoError(t, err)
+	baselineIDs := leaseIDSet(baseline)
+	warm, err := throughBridge.Leases(ctx)
+	require.NoError(t, err)
+	require.Equal(t, baselineIDs, leaseIDSet(warm))
+	probeKey := fmt.Sprintf("/dbaas-orphan-lease-expiry-after-grant-loss/%s/%d", instance, time.Now().UnixNano())
+	before, err := observer.Get(ctx, probeKey)
+	require.NoError(t, err)
+
+	droppedBefore := bridge.DroppedBytes()
+	bridge.BlackholeResponses()
+	grantDone := make(chan *clientv3.LeaseGrantResponse, 1)
+	grantErrDone := make(chan error, 1)
+	go func() {
+		response, grantErr := throughBridge.Grant(ctx, 5)
+		grantDone <- response
+		grantErrDone <- grantErr
+	}()
+	require.Eventually(t, func() bool {
+		current, listErr := observer.Leases(ctx)
+		return listErr == nil && countNewLeaseIDs(current, baselineIDs) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return bridge.DroppedBytes() > droppedBefore }, 2*time.Second, 10*time.Millisecond)
+	bridge.SetTarget(endpoints[1])
+	bridge.DropConnections()
+	bridge.Resume()
+
+	var grant *clientv3.LeaseGrantResponse
+	select {
+	case grant = <-grantDone:
+		require.NoError(t, <-grantErrDone)
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err())
+	}
+	var created *clientv3.LeaseLeasesResponse
+	require.Eventually(t, func() bool {
+		var listErr error
+		created, listErr = observer.Leases(ctx)
+		return listErr == nil && countNewLeaseIDs(created, baselineIDs) == 2
+	}, 5*time.Second, 10*time.Millisecond)
+	newIDs := newLeaseIDs(created, baselineIDs)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		for _, id := range newIDs {
+			_, _ = observer.Revoke(cleanupCtx, id)
+		}
+	})
+	require.NotNil(t, grant)
+	orphanID := clientv3.LeaseID(0)
+	for _, id := range newIDs {
+		if id != grant.ID {
+			orphanID = id
+		}
+	}
+	twoCreated := len(newIDs) == 2
+	singleOrphan := orphanID != 0
+	_, revokeErr := observer.Revoke(ctx, grant.ID)
+	returnedRevoked := revokeErr == nil
+
+	orphanExpired := false
+	leaseSetRestored := false
+	require.Eventually(t, func() bool {
+		ttl, ttlErr := observer.TimeToLive(ctx, orphanID)
+		if ttlErr != nil || ttl.TTL != -1 {
+			return false
+		}
+		orphanExpired = true
+		current, listErr := observer.Leases(ctx)
+		if listErr != nil || countNewLeaseIDs(current, baselineIDs) != 0 {
+			return false
+		}
+		leaseSetRestored = true
+		return true
+	}, 15*time.Second, 50*time.Millisecond)
+	after, err := observer.Get(ctx, probeKey)
+	require.NoError(t, err)
+
+	return orphanLeaseExpiryAfterGrantLossOutcome{
+		TwoLeasesCreated:     twoCreated,
+		ReturnedLeaseRevoked: returnedRevoked,
+		SingleOrphanObserved: singleOrphan,
+		OrphanExpired:        orphanExpired,
+		LeaseSetRestored:     leaseSetRestored,
 		RevisionDelta:        after.Header.Revision - before.Header.Revision,
 	}
 }

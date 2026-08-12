@@ -47140,6 +47140,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   allocation ID、区分首次 Unavailable 与 retry LeaseExist，并执行 TTL/List 核对。平台通用 request token、
   自动 ID orphan lease 审计/计费告警及真实外部 L4/L7 连接迁移仍保持开放。
 
+- A4405 补齐 A4403 自动 ID orphan 的生命周期边界，区分“会在 TTL 内回收”与“可以当作从未创建”。既有
+  空 lease expiry 测试覆盖一般自然过期，但没有构造一次调用跨副本创建两条 lease、调用方只拿到第二个
+  ID 的 committed-response-loss 来源。新增
+  `TestOrphanLeaseExpiresAfterGrantResponseLossDifferential`，复用三条身份已验证的直连 endpoint：replica 0
+  提交 TTL=5 的首个自动 ID Grant 并丢 response，clientv3 切至 replica 1 自动重放，replica 2 必须观察到
+  两条新 lease。测试随后只 revoke 调用实际返回的 ID，明确不以测试掌握的 orphan ID 主动清理成功路径；
+  剩余唯一 orphan 必须自然变为 TTL=-1，LeaseList 必须恢复精确 baseline。两次 Grant、一次空 lease revoke
+  和 orphan expiry 都只修改内部 lease metadata，整个窗口 user KV revision delta 必须为 0。失败后的
+  `t.Cleanup` 仍 best-effort revoke 两个测试 ID，防止可复用环境污染，但不参与成功条件。
+  2026-08-12 clean `/root/etcd@5cd9f4ee1380...` 三成员 reference 与 disposable
+  `kubebrain-orphan-expiry` 独立 3 PD/3 TiKV/3 KubeBrain 均通过；A4405 双端合计 10.54 秒，包含 A4401–
+  A4405 的 `lease-response-loss` 组合门禁 11.860 秒。结果证明 KubeBrain 的未知空 lease 不会永久占用 TiKV
+  metadata，但在 TTL 到期前确实存在并可被 LeaseList/计费看到，不能因最终回收而否认 A4403 的临时资源
+  放大。平台仍应对自动 ID Grant 的 `Unavailable`/连接重放计数建立告警，并在严格配额或计费场景采用
+  A4404 显式 ID 对账路径；跨租户 orphan attribution、平台 request token 与真实外部 L4/L7 连接迁移仍
+  保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
