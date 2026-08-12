@@ -18,13 +18,16 @@ Envoy `STRICT_DNS` 会看到每个 KubeBrain Pod IP，而不是把流量再次�
   timeout 均关闭，不能截断合法的 Watch 与 LeaseKeepAlive 长流；
 - Envoy HTTP/2 schema 的并发 stream 最大值为 `2147483647`，低于 KubeBrain/etcd 的 uint32 最大值；生产容量
   仍以 KubeBrain `--max-watches=10000` 和 Envoy `max_requests=20000` 的较小业务上限为准；
-- 三副本 Envoy 使用 PDB、hostname 反亲和、非 root/read-only 容器、digest-pinned 镜像和显式 NetworkPolicy；
+- 三副本 Envoy 使用 PDB，以及按同一 `pod-template-hash` 计算、要求至少三个非 tainted hostname 域的
+  topology spread；`maxUnavailable=0/maxSurge=1` 允许 rollout 先增后减，最终同一 revision 仍回到三节点
+  各一副本。容器为 non-root/read-only，镜像 digest 固定，并使用显式 NetworkPolicy；
 - preStop 使用固定镜像中的 `/bin/bash` `/dev/tcp` 依次向 Envoy admin 发送显式
   `POST /healthcheck/fail` 与 `POST /drain_listeners?graceful`，逐项校验 HTTP 200；Envoy 以显式 5 秒
   `immediate` drain 在 10 秒 hook 宽限期内向已有 HTTP/2 stream 发起迁移。hook 在 readiness fail 后先等待
-  5 秒供 EndpointSlice/kube-proxy 摘除旧地址，再 drain listener 并等待 5 秒；Deployment `minReadySeconds=10`，
-  readiness `failureThreshold=1`，防止下一旧 Pod 在新 endpoint 尚未稳定传播时被摘除；整个 hook 由
-  `/usr/bin/timeout` 限制为 12 秒。Envoy admin 的 mutating endpoint 不接受 GET，固定官方镜像也不包含 curl；
+  5 秒供 EndpointSlice/kube-proxy 摘除旧地址，再 drain listener 并等待 5 秒；Deployment `minReadySeconds=20`，
+  readiness 每秒检查且 `failureThreshold=3`，避免短暂 CPU 抖动同时摘除多个健康副本；主动 readiness fail
+  仍会在 5 秒传播等待内生效。整个 hook 由 `/usr/bin/timeout` 限制为 20 秒，为固定 10 秒 sleep 外的 admin
+  往返保留余量。Envoy admin 的 mutating endpoint 不接受 GET，固定官方镜像也不包含 curl；
 - admin `:9901` 仅供带 `dbaas.kubebrain.io/monitoring-access=true` 的 namespace 访问，不是租户入口；
 - `2380` 不终止或检查 TLS：客户端证书、服务端证书和 etcd 的证书 CN 身份均端到端保留，Envoy Pod 无需挂载
   租户 CA、证书或私钥；它不是 L7 路由，不能提供基于 RPC method 的策略；
@@ -76,13 +79,16 @@ NODE_HOST=172.18.0.11 \
 `kubebrain-envoy-ingress` NetworkPolicy 准入。门禁会核对三个初始 Pod UID 与 Ready EndpointSlice target UID
 完全相同。默认连续执行三轮 Deployment restart，共替换九个 Pod；每轮都要求三个旧 Pod 各自在仍存在时先退出
 Ready EndpointSlice，且任何采样点都保留至少两个 Ready target。同一稳定 NodePort 上的 CreatedNotify Watch
-和 TTL=3 LeaseKeepAlive 必须贯穿全部轮次，每轮结束都收到新的 Watch event、正 TTL keepalive，且附租约键
+和 TTL=5 LeaseKeepAlive 必须贯穿全部轮次，每轮结束都收到新的 Watch event、正 TTL keepalive，且附租约键
 最终仍存在。测试还会建立最多 30 个独立 Watch client，读取每个旧 Envoy Pod admin 的
 `http.kubebrain_downstream.downstream_cx_active`，只有三个副本都实际承载长期连接才开始 rollout。每个 cohort
-client 都在同一 HTTP/2 connection 上建立独立 Watch 与 TTL=3 LeaseKeepAlive；两类 stream、各自附租约键和
+client 都在同一 HTTP/2 connection 上建立独立 Watch 与 TTL=5 LeaseKeepAlive；两类 stream、各自附租约键和
 lease ID 都必须逐轮恢复。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。
 
 设置全部四个 `TLS_CA_FILE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_SERVER_NAME` 后，同一门禁会把临时
 NodePort 切到 `2380`，通过 clientv3 mTLS 走 Envoy opaque TCP passthrough。四项必须全设且三个文件可读，否则
 fail closed；测试以每个 Pod 的 `listener.0.0.0.0_2380.downstream_cx_active` 证明 cohort 覆盖三个 TLS
 listener。证书由 KubeBrain 端而非 Envoy 验证，Envoy 仍不挂载租户私钥。
+门禁会在合法 cohort 建立后、rollout 前以及全部 rollout 后分别证明 plaintext 与缺少 client certificate 的
+连接被拒绝；反向探针后还要求每个 Envoy 恢复三个健康 upstream 且无 active ejection。Kind host-port/NodePort
+现场中 TTL=3 在连续三轮代理连接迁移时仍观察到真实租约过期，因此当前发布门禁不把 TTL=3 宣称为无损边界。

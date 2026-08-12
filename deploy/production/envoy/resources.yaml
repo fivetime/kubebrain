@@ -34,12 +34,12 @@ metadata:
     app.kubernetes.io/component: client-proxy
 spec:
   replicas: 3
-  minReadySeconds: 10
+  minReadySeconds: 20
   revisionHistoryLimit: 5
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1
+      maxUnavailable: 0
       maxSurge: 1
   selector:
     matchLabels:
@@ -63,14 +63,20 @@ spec:
         fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          minDomains: 3
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          nodeTaintsPolicy: Honor
+          matchLabelKeys:
+            - pod-template-hash
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: kubebrain-envoy
+              app.kubernetes.io/instance: kubebrain
       affinity:
         podAntiAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            - labelSelector:
-                matchLabels:
-                  app.kubernetes.io/name: kubebrain-envoy
-                  app.kubernetes.io/instance: kubebrain
-              topologyKey: kubernetes.io/hostname
           preferredDuringSchedulingIgnoredDuringExecution:
             - weight: 100
               podAffinityTerm:
@@ -117,9 +123,9 @@ spec:
             httpGet:
               path: /ready
               port: admin
-            periodSeconds: 5
+            periodSeconds: 1
             timeoutSeconds: 2
-            failureThreshold: 1
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /server_info
@@ -133,7 +139,7 @@ spec:
               exec:
                 command:
                   - /usr/bin/timeout
-                  - "12"
+                  - "20"
                   - /bin/bash
                   - -ec
                   - >-

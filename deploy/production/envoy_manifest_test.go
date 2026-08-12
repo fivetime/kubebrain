@@ -23,9 +23,23 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-envoy")
 	require.EqualValues(t, 3, nestedInt64(t, deployment, "spec", "replicas"))
-	require.EqualValues(t, 10, nestedInt64(t, deployment, "spec", "minReadySeconds"))
-	require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
+	require.EqualValues(t, 20, nestedInt64(t, deployment, "spec", "minReadySeconds"))
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
 	require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxSurge"))
+	spread, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "topologySpreadConstraints")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, spread, 1)
+	constraint := &unstructured.Unstructured{Object: spread[0].(map[string]any)}
+	require.EqualValues(t, 1, nestedInt64(t, constraint, "maxSkew"))
+	require.EqualValues(t, 3, nestedInt64(t, constraint, "minDomains"))
+	require.Equal(t, "kubernetes.io/hostname", nestedString(t, constraint, "topologyKey"))
+	require.Equal(t, "DoNotSchedule", nestedString(t, constraint, "whenUnsatisfiable"))
+	require.Equal(t, "Honor", nestedString(t, constraint, "nodeTaintsPolicy"))
+	matchLabelKeys, found, err := unstructured.NestedStringSlice(constraint.Object, "matchLabelKeys")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []string{"pod-template-hash"}, matchLabelKeys)
 	require.Equal(t, "kubebrain-envoy", nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
 	require.False(t, nestedBool(t, deployment, "spec", "template", "spec", "automountServiceAccountToken"))
 	require.EqualValues(t, 60, nestedInt64(t, deployment, "spec", "template", "spec", "terminationGracePeriodSeconds"))
@@ -50,12 +64,13 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 		"--drain-time-s", "5", "--drain-strategy", "immediate", "--log-level", "info",
 	}, args)
 	require.Equal(t, "/ready", nestedString(t, container, "readinessProbe", "httpGet", "path"))
-	require.EqualValues(t, 1, nestedInt64(t, container, "readinessProbe", "failureThreshold"))
+	require.EqualValues(t, 1, nestedInt64(t, container, "readinessProbe", "periodSeconds"))
+	require.EqualValues(t, 3, nestedInt64(t, container, "readinessProbe", "failureThreshold"))
 	preStop, found, err := unstructured.NestedStringSlice(container.Object, "lifecycle", "preStop", "exec", "command")
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Equal(t, []string{
-		"/usr/bin/timeout", "12", "/bin/bash", "-ec",
+		"/usr/bin/timeout", "20", "/bin/bash", "-ec",
 		"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'POST /healthcheck/fail HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; IFS= read -r status <&3; [[ \"$status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 5; exec 4<>/dev/tcp/127.0.0.1/9901; printf 'POST /drain_listeners?graceful HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&4; IFS= read -r drain_status <&4; [[ \"$drain_status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 5",
 	}, preStop)
 	ports, found, err := unstructured.NestedSlice(container.Object, "ports")

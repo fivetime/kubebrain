@@ -47474,6 +47474,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项关闭“2380 mTLS passthrough 尚无真实 Kubernetes 多节点连续 rollout”的缺口；证书在线轮换叠加 Envoy
   rollout、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 仍保持开放。
 
+- A4422 为真实 Kubernetes 2380 门禁补齐滚动前后 mTLS 反向边界：plaintext client 与信任服务端 CA 但不提供
+  client certificate 的 client 都必须失败；合法 cohort 先建立，反向探针后还要求三个 Envoy 各自恢复
+  `membership_healthy=3` 且 `ejections_active=0`，避免把 KubeBrain 的预期 TLS 拒绝污染为长期 upstream
+  ejection。KeepAlive 观察器在失败时记录最后响应时间/TTL，并用独立 TimeToLive 查询区分客户端 channel
+  关闭与真实服务端租约过期。
+  压力运行同时修正旧硬 hostname anti-affinity 使 `maxSurge=1` 永久 Pending 的发布模型：production 改为
+  `maxUnavailable=0/maxSurge=1`，hostname topology spread 明确 `minDomains=3`、`nodeTaintsPolicy=Honor`，并用
+  `matchLabelKeys=[pod-template-hash]` 只在同 revision 内计算分布。这样 rollout 可先增后减，临时 2/1/1，
+  完成后仍为三个 worker 各一副本；测试也等待 terminating 旧 UID 完成 preStop 后再裁决最终 UID 集合。
+  `minReadySeconds` 提升到 20 秒。readiness 改为每秒检查、连续三次失败才摘除，避免 race 压力下偶发 2 秒
+  admin probe timeout 同时移除多个健康 endpoint；主动 `/healthcheck/fail` 仍在 5 秒传播窗口内生效。preStop
+  外层 timeout 从 12 秒增到 20 秒，为固定 5+5 秒 sleep 之外的两次 admin 往返保留过载余量。
+  同一 fresh `kubebrain-envoy-tls-k8s-a4422` 现场的多次 RED 证明 TTL=3 在 Kind host-port→NodePort→单入口
+  L4 passthrough 连续三轮迁移中仍可能真实过期（最后正常 response TTL=3，随后服务端 TTL=-1），因此永久门禁
+  如实使用 TTL=5，并保留 TTL=3 无损迁移为开放兼容差距。最终普通门禁以 3 个独立双流 client 覆盖三 Pod，
+  三轮九次替换 247.43 秒通过；`GOFLAGS=-race` 以 4 个 client 覆盖三 Pod，测试主体同为 247.43 秒、包总计
+  248.513 秒通过且无数据竞争。滚动前后 plaintext 均以 EOF 被拒绝，缺证书 client 均以
+  `tls: certificate required` 被拒绝；全部 TTL=5 lease、附租约 key 与 Watch 贯穿 rollout。
+  本项关闭“真实 Kubernetes mTLS rollout 未证明非法客户端持续被拒绝”和“硬反亲和阻断零不可用 surge”缺口；
+  TTL=3 无损迁移、证书轮换叠加 rollout、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

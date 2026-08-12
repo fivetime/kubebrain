@@ -47,6 +47,13 @@ func TestParseEnvoyActiveDownstreams(t *testing.T) {
 	require.Equal(t, 3, parseEnvoyActiveDownstreams(tlsStat+": 3\n", tlsStat))
 }
 
+func TestParseExactEnvoyStat(t *testing.T) {
+	require.Equal(t, 3, parseExactEnvoyStat("cluster.kubebrain.membership_healthy: 3\n",
+		"cluster.kubebrain.membership_healthy"))
+	require.Zero(t, parseExactEnvoyStat("cluster.kubebrain.membership_healthy: invalid\n",
+		"cluster.kubebrain.membership_healthy"))
+}
+
 func stringSet(values ...string) map[string]struct{} {
 	result := make(map[string]struct{}, len(values))
 	for _, value := range values {

@@ -36,7 +36,15 @@ type envoyWatchCohortMember struct {
 	leaseKey         string
 	keepAlive        <-chan envoyKeepAliveObservation
 	keepAliveClosed  <-chan struct{}
+	keepAliveState   *envoyKeepAliveState
 }
+
+type envoyKeepAliveState struct {
+	mu     sync.Mutex
+	latest envoyKeepAliveObservation
+}
+
+const envoyKubernetesRolloutLeaseTTL = int64(5)
 
 func TestEnvoyKubernetesRollout(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT"))
@@ -68,7 +76,7 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	watch := client.Watch(ctx, watchKey, clientv3.WithCreatedNotify())
 	created := receiveExternalL7WatchResponse(t, ctx, watch)
 	require.True(t, created.Created)
-	grant, err := client.Grant(ctx, 3)
+	grant, err := client.Grant(ctx, envoyKubernetesRolloutLeaseTTL)
 	require.NoError(t, err)
 	_, err = client.Put(ctx, leaseKey, "kept-alive", clientv3.WithLease(grant.ID))
 	require.NoError(t, err)
@@ -76,12 +84,12 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	require.NoError(t, err)
 	initial := receiveExternalL7KeepAlive(t, ctx, keepAlive, grant.ID)
 	require.Positive(t, initial.TTL)
-	keepAliveObserved, keepAliveClosed := observeEnvoyKeepAlive(ctx, keepAlive)
+	keepAliveObserved, keepAliveClosed, keepAliveState := observeEnvoyKeepAlive(ctx, keepAlive)
 
 	cohort := []*envoyWatchCohortMember{{
 		client: client, watch: watch, key: watchKey,
 		leaseID: grant.ID, leaseKey: leaseKey,
-		keepAlive: keepAliveObserved, keepAliveClosed: keepAliveClosed,
+		keepAlive: keepAliveObserved, keepAliveClosed: keepAliveClosed, keepAliveState: keepAliveState,
 	}}
 	for member := 1; member < 30 && !allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace, activeDownstreamStat); member++ {
 		cohortClient, createErr := clientv3.New(clientv3.Config{
@@ -93,7 +101,7 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		cohortWatch := cohortClient.Watch(ctx, cohortKey, clientv3.WithCreatedNotify())
 		cohortCreated := receiveExternalL7WatchResponse(t, ctx, cohortWatch)
 		require.True(t, cohortCreated.Created)
-		cohortGrant, grantErr := cohortClient.Grant(ctx, 3)
+		cohortGrant, grantErr := cohortClient.Grant(ctx, envoyKubernetesRolloutLeaseTTL)
 		require.NoError(t, grantErr)
 		cohortLeaseKey := fmt.Sprintf("%s/lease-cohort-%d", prefix, member)
 		_, putErr := cohortClient.Put(ctx, cohortLeaseKey, "kept-alive", clientv3.WithLease(cohortGrant.ID))
@@ -102,17 +110,24 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		require.NoError(t, keepAliveErr)
 		cohortInitial := receiveExternalL7KeepAlive(t, ctx, cohortKeepAlive, cohortGrant.ID)
 		require.Positive(t, cohortInitial.TTL)
-		cohortObserved, cohortClosed := observeEnvoyKeepAlive(ctx, cohortKeepAlive)
+		cohortObserved, cohortClosed, cohortState := observeEnvoyKeepAlive(ctx, cohortKeepAlive)
 		cohort = append(cohort, &envoyWatchCohortMember{
 			client: cohortClient, watch: cohortWatch, key: cohortKey,
 			leaseID: cohortGrant.ID, leaseKey: cohortLeaseKey,
-			keepAlive: cohortObserved, keepAliveClosed: cohortClosed,
+			keepAlive: cohortObserved, keepAliveClosed: cohortClosed, keepAliveState: cohortState,
 		})
 	}
 	require.True(t, allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace, activeDownstreamStat),
 		"client cohort must place at least one active downstream connection on every Envoy Pod")
 	require.GreaterOrEqual(t, len(cohort), 3)
 	t.Logf("established %d long-lived Watch clients across all three Envoy Pods", len(cohort))
+	if tlsEnabled {
+		assertEnvoyKubernetesTLSRejectsInvalidClients(t, endpoint, clientTLS, "before-rollout")
+		require.Eventually(t, func() bool {
+			return allEnvoyPodsHaveHealthyUpstreams(contextName, namespace)
+		}, 75*time.Second, 2*time.Second,
+			"all Envoy Pods must recover three healthy upstreams after rejected TLS probes")
+	}
 
 	for cycle := 1; cycle <= rolloutCycles; cycle++ {
 		oldUIDs := envoyPodUIDs(t, contextName, namespace)
@@ -148,6 +163,11 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 
 		kubectl(t, contextName, namespace, "rollout", "restart", "deployment/kubebrain-envoy")
 		kubectl(t, contextName, namespace, "rollout", "status", "deployment/kubebrain-envoy", "--timeout=150s")
+		require.Eventually(t, func() bool {
+			present := envoyPresentPodUIDsNoFail(contextName, namespace)
+			return present != nil && len(intersectStrings(oldUIDs, sortedSet(present))) == 0
+		}, 60*time.Second, 250*time.Millisecond,
+			"all old Envoy Pod UIDs must finish preStop and be deleted in rollout cycle %d", cycle)
 		rolloutCompletedAt := time.Now()
 		stopMonitor()
 		<-monitorDone
@@ -178,8 +198,7 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		}
 
 		for memberIndex, member := range cohort {
-			recovered := receiveEnvoyKeepAliveAfter(t, ctx, member.keepAlive, member.keepAliveClosed,
-				rolloutCompletedAt, cycle, memberIndex)
+			recovered := receiveEnvoyKeepAliveAfter(t, ctx, member, rolloutCompletedAt, cycle, memberIndex)
 			require.Equal(t, member.leaseID, recovered.ID)
 			require.Positive(t, recovered.TTL)
 		}
@@ -198,43 +217,120 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		default:
 		}
 	}
+	if tlsEnabled {
+		assertEnvoyKubernetesTLSRejectsInvalidClients(t, endpoint, clientTLS, "after-rollout")
+	}
+}
+
+func allEnvoyPodsHaveHealthyUpstreams(contextName, namespace string) bool {
+	podsOutput, err := kubectlOutput(contextName, namespace, "get", "pods", "-l",
+		"app.kubernetes.io/name=kubebrain-envoy,app.kubernetes.io/instance=kubebrain",
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
+	if err != nil {
+		return false
+	}
+	pods := sortedNonEmptyLines(podsOutput)
+	if len(pods) != 3 {
+		return false
+	}
+	for _, pod := range pods {
+		output, outputErr := kubectlOutput(contextName, namespace, "exec", pod, "--", "/bin/bash", "-ec",
+			"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'GET /stats HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3")
+		if outputErr != nil || parseExactEnvoyStat(output, "cluster.kubebrain.membership_healthy") != 3 ||
+			parseExactEnvoyStat(output, "cluster.kubebrain.outlier_detection.ejections_active") != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func parseExactEnvoyStat(output, statName string) int {
+	return parseEnvoyActiveDownstreams(output, statName)
+}
+
+func assertEnvoyKubernetesTLSRejectsInvalidClients(t *testing.T, endpoint string, validTLS *tls.Config, phase string) {
+	t.Helper()
+	withoutCertificate := validTLS.Clone()
+	withoutCertificate.Certificates = nil
+	for name, tlsConfig := range map[string]*tls.Config{
+		"missing-client-certificate": withoutCertificate,
+		"plaintext":                  nil,
+	} {
+		t.Run(phase+"/"+name, func(t *testing.T) {
+			client, err := clientv3.New(clientv3.Config{
+				Endpoints: []string{endpoint}, DialTimeout: 2 * time.Second, TLS: tlsConfig,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, client.Close()) })
+			probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_, err = client.Get(probeCtx, "/dbaas-envoy-kubernetes-tls/rejected-"+phase+"-"+name)
+			require.Error(t, err, "%s client must be rejected through Envoy 2380 during %s", name, phase)
+		})
+	}
 }
 
 func observeEnvoyKeepAlive(ctx context.Context, keepAlive <-chan *clientv3.LeaseKeepAliveResponse) (
-	<-chan envoyKeepAliveObservation, <-chan struct{},
+	<-chan envoyKeepAliveObservation, <-chan struct{}, *envoyKeepAliveState,
 ) {
 	observed := make(chan envoyKeepAliveObservation, 256)
 	closed := make(chan struct{})
+	state := &envoyKeepAliveState{}
 	go func() {
 		defer close(closed)
 		for response := range keepAlive {
+			observation := envoyKeepAliveObservation{response: response, at: time.Now()}
+			state.mu.Lock()
+			state.latest = observation
+			state.mu.Unlock()
 			select {
-			case observed <- envoyKeepAliveObservation{response: response, at: time.Now()}:
+			case observed <- observation:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
-	return observed, closed
+	return observed, closed, state
 }
 
-func receiveEnvoyKeepAliveAfter(t *testing.T, ctx context.Context,
-	observed <-chan envoyKeepAliveObservation, closed <-chan struct{}, after time.Time, cycle, member int,
+func receiveEnvoyKeepAliveAfter(t *testing.T, ctx context.Context, cohortMember *envoyWatchCohortMember,
+	after time.Time, cycle, member int,
 ) *clientv3.LeaseKeepAliveResponse {
 	t.Helper()
 	for {
 		select {
-		case observation := <-observed:
+		case observation := <-cohortMember.keepAlive:
 			if !observation.at.Before(after) {
 				require.NotNil(t, observation.response)
 				return observation.response
 			}
-		case <-closed:
-			t.Fatalf("keepalive channel for cohort member %d closed during Envoy rollout cycle %d", member, cycle)
+		case <-cohortMember.keepAliveClosed:
+			cohortMember.keepAliveState.mu.Lock()
+			latest := cohortMember.keepAliveState.latest
+			cohortMember.keepAliveState.mu.Unlock()
+			ttlCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			ttl, ttlErr := cohortMember.client.TimeToLive(ttlCtx, cohortMember.leaseID)
+			cancel()
+			t.Fatalf("keepalive channel for cohort member %d closed during Envoy rollout cycle %d; latest response at %s ttl=%v; server TTL=%v error=%v",
+				member, cycle, latest.at.Format(time.RFC3339Nano), keepAliveResponseTTL(latest.response), leaseTTL(ttl), ttlErr)
 		case <-ctx.Done():
 			t.Fatalf("waiting for cohort member %d keepalive after Envoy rollout cycle %d: %v", member, cycle, ctx.Err())
 		}
 	}
+}
+
+func keepAliveResponseTTL(response *clientv3.LeaseKeepAliveResponse) any {
+	if response == nil {
+		return nil
+	}
+	return response.TTL
+}
+
+func leaseTTL(response *clientv3.LeaseTimeToLiveResponse) any {
+	if response == nil {
+		return nil
+	}
+	return response.TTL
 }
 
 func allEnvoyPodsHaveActiveDownstreams(t *testing.T, contextName, namespace, statName string) bool {
