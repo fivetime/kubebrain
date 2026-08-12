@@ -397,6 +397,16 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "Pod set does not match",
 		},
 		{
+			name:       "Pod runtime digest drift",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			podsJSON: fakeKubeBrainPodsJSON("uid-kubebrain", "kb-new", "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true, false,
+				"docker-pullable://registry/kubebrain@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"),
+			wantOutput: "Pod set does not match",
+		},
+		{
 			name:       "client Service has stale endpoint Pod identity",
 			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1259,7 +1269,11 @@ func fakeStoragePodsJSON(component, podPrefix, ownerUID, revision, image, imageI
 	return string(encoded)
 }
 
-func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating bool) string {
+func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating bool, runtimeImageIDs ...string) string {
+	runtimeImageID := "docker-pullable://" + image
+	if len(runtimeImageIDs) > 0 {
+		runtimeImageID = runtimeImageIDs[0]
+	}
 	items := make([]map[string]any, 3)
 	for index := range items {
 		metadata := map[string]any{
@@ -1282,8 +1296,9 @@ func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating 
 			"metadata": metadata,
 			"spec":     map[string]any{"containers": []map[string]any{{"name": "kubebrain", "image": image}}},
 			"status": map[string]any{
-				"phase":      "Running",
-				"conditions": []map[string]any{{"type": "Ready", "status": readyStatus}},
+				"phase":             "Running",
+				"conditions":        []map[string]any{{"type": "Ready", "status": readyStatus}},
+				"containerStatuses": []map[string]any{{"name": "kubebrain", "ready": ready, "imageID": runtimeImageID}},
 			},
 		}
 	}

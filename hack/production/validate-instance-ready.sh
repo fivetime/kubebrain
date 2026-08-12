@@ -90,6 +90,7 @@ if ! [[ "$EXPECTED_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]]; then
   echo "EXPECTED_IMAGE must be an immutable image reference with @sha256:<64 lowercase hex digest>" >&2
   exit 2
 fi
+EXPECTED_IMAGE_DIGEST="${EXPECTED_IMAGE##*@}"
 if [[ -z "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
   echo "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required" >&2
   exit 2
@@ -414,6 +415,7 @@ if ! printf '%s' "$kubebrain_pods_json" | "$JQ" -e \
   --arg statefulSetUID "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" \
   --arg revision "$update_revision" \
   --arg image "$EXPECTED_IMAGE" \
+  --arg digest "$EXPECTED_IMAGE_DIGEST" \
   --argjson expectedPodNames "$expected_pod_names_json" '
     (([.items[].metadata.name] | sort) == ($expectedPodNames | sort)) and
     all(.items[];
@@ -424,7 +426,9 @@ if ! printf '%s' "$kubebrain_pods_json" | "$JQ" -e \
       ([.metadata.ownerReferences[]? |
         select(.controller == true and .apiVersion == "apps/v1" and .kind == "StatefulSet" and
           .name == $statefulSet and .uid == $statefulSetUID)] | length) == 1 and
-      ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1
+      ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
+      ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and
+        ((.imageID | type) == "string") and (.imageID | endswith($digest)))] | length) == 1
     )
   ' >/dev/null; then
   echo "KubeBrain Pod set does not match the expected StatefulSet ownership and converged release" >&2

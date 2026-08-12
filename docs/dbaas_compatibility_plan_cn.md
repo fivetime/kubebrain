@@ -47821,6 +47821,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV 四类 workload 都同时绑定 rollout identity；ControllerRevision 仍不替代 KubeBrain immutable image digest
   或 storage runtime imageID digest。
 
+- A4450 补齐 KubeBrain Pod 的 runtime binary identity。A4438 已对 PD/TiKV 检查 kubelet
+  `containerStatuses.imageID`，但实例 Pod 只检查 spec 中带 `@sha256` 的 immutable image；若 runtime status
+  报告另一 digest，旧门禁仍成功。RED 保持 StatefulSet、Pod spec、revision、owner 和 readiness 全部正确，
+  仅把三个 KubeBrain container 的 imageID 改为另一 sha256，旧实现确定性放行。新实现从已通过格式校验的
+  `EXPECTED_IMAGE` 提取 digest，要求每个精确 ordinal Pod 中唯一、Ready 的 `kubebrain` container status
+  imageID 以该 digest 结尾。至此 KubeBrain、PD、TiKV 都同时验证 spec image 与 runtime imageID；该证据仍由
+  kubelet/CRI status 提供，不替代 registry 签名或镜像准入策略。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

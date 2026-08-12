@@ -801,7 +801,9 @@ StatefulSet metadata UID 与 operation receipt 中的 `EXPECTED_KUBEBRAIN_STATEF
 receipt 中的 `EXPECTED_KUBEBRAIN_STATEFULSET_REVISION`，使未被逐项解析的 env、ServiceAccount、volume 等
 PodTemplate 配置漂移也会 fail closed；再要求精确的
 ordinal Pod 集合全部为 Running/Ready、非终止、带有当前 controller revision、唯一的目标镜像，且
-controller StatefulSet name/UID 与 receipt 精确一致；随后校验 Pod template 中唯一的
+controller StatefulSet name/UID 与 receipt 精确一致；每个 Pod 的 Ready `kubebrain` container status
+还必须报告以 `EXPECTED_IMAGE` 中 sha256 结尾的 runtime `imageID`，避免只验证 spec 声明而未验证实际运行字节；
+随后校验 Pod template 中唯一的
 `--keyspace`、`--pd-addrs`、`--initial-cluster`、`--quota-backend-bytes`
 、`--advertise-client-urls`、client/peer/info listener 端口、advertise-host、etcd 兼容开关、
 count-index 开关与 key cap、存储指标开关、
