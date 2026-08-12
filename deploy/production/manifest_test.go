@@ -1719,6 +1719,7 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		"KubeBrainTiKVRaftDBWriteLatencyHigh":   `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_raftdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
 		"KubeBrainTiKVKVDBWriteLatencyHigh":     `histogram_quantile(0.99, sum by (instance, le) (rate(tikv_raftstore_store_write_kvdb_duration_seconds_bucket{namespace="tidb-cluster",service="kb-tikv-metrics"}[5m]))) > 1`,
 		"KubeBrainStorageLatencyMetricsMissing": `(count(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"}) != 3) or (count(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}) != 3) or (count(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"}) != 3)`,
+		"KubeBrainStorageLatencyMetricsStale":   `(max(time() - timestamp(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60)`,
 		"KubeBrainStorageVolumeMetricsMissing":  `count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6`,
 		"KubeBrainStorageVolumeLow": `(kubelet_volume_stats_available_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"} / ` +
 			`kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 0.15`,
@@ -1740,6 +1741,9 @@ func TestProductionMonitoringTracksPDAndTiKV(t *testing.T) {
 		case "KubeBrainStorageLatencyMetricsMissing":
 			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
 			require.Equal(t, "5m", alertRule["for"])
+		case "KubeBrainStorageLatencyMetricsStale":
+			require.Equal(t, "warning", alertRule["labels"].(map[string]any)["severity"])
+			require.Equal(t, "1m", alertRule["for"])
 		case "KubeBrainPDWALFsyncLatencyHigh", "KubeBrainTiKVRaftDBWriteLatencyHigh", "KubeBrainTiKVKVDBWriteLatencyHigh":
 			require.Equal(t, "critical", alertRule["labels"].(map[string]any)["severity"])
 			require.Equal(t, "1m", alertRule["for"])

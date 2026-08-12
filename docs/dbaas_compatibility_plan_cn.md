@@ -47702,6 +47702,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `instance→region→latency` 顺序，前门失败不会启动后门。该即时 gate 补足 alert `for` 尚未成熟的窗口，
   不替代 A4434 持续告警，也不把一次 query 通过升级为底层卷长期 SLO 证明。
 
+- A4436 关闭 A4434/A4435 对 Prometheus lookback 的 fail-open 窗口。旧 missing rule 和发布脚本只计算
+  histogram count 数量；抓取停止后，Prometheus 仍可在 lookback 窗口返回三个旧 series，旧 gate 因而会把
+  陈旧的低 p99 与完整 count 当成当前证据。TDD 固定“数量=3、p99=0.125 秒、sample age=61 秒”必须 RED，
+  并要求清单存在独立 stale alert。发布门禁现在对 PD WAL、TiKV RaftDB/KVDB 分别执行
+  `max(time()-timestamp(_count))`，默认最旧样本不得超过 60 秒；缺失、NaN/Inf 或超龄立即 fail closed。
+  `KubeBrainStorageLatencyMetricsStale` 使用相同三条 freshness 表达式，超龄持续 1 分钟 warning，与原有
+  count 缺失规则互补：前者覆盖 lookback 内的陈旧 series，后者覆盖彻底消失和副本数漂移。该阈值基于
+  生产 ServiceMonitor 15 秒 scrape interval 提供四个抓取周期容差，不替代 Prometheus 自身可用性监控。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

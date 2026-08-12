@@ -65,10 +65,12 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
   该延迟会先拖慢 PD Raft heartbeat/leader lease，再让 TiKV TSO 和短 etcd lease 续期整体失去进展，
   即使 Pod Ready、store Up、Region leader-missing 仍为零也不能视为健康。
   `KubeBrainStorageLatencyMetricsMissing` 另要求三个 PD WAL 和三个 TiKV RaftDB/KVDB histogram count
-  series 全部存在；缺失持续 5 分钟即 warning，禁止把没有采样误判成低延迟。阈值是发布下限，不是
+  series 全部存在；缺失持续 5 分钟即 warning。`KubeBrainStorageLatencyMetricsStale` 另以
+  `time()-timestamp(...)` 检查三个 family 的最旧样本，超过 60 秒持续 1 分钟即 warning，避免 Prometheus
+  lookback 仍返回已停止抓取的旧 series。缺失或陈旧都禁止被误判成低延迟。阈值是发布下限，不是
   云盘选型承诺；容量、IOPS 与 tail-latency SLO 仍需按套餐压测并收紧。
   正式发布入口会调用 `hack/production/validate-storage-latency-slo.sh`，以相同表达式对三个 PD/TiKV
-  副本执行即时 fail-closed 检查；这补足 Prometheus `for` 窗口尚未进入 firing 时的发布前拒绝，持续告警
+  副本执行即时 fail-closed 检查，同时拒绝超过可配置 sample age 的陈旧 telemetry；这补足 Prometheus `for` 窗口尚未进入 firing 时的发布前拒绝，持续告警
   仍负责发布后的运行时保护。
 - **etcd 兼容请求延迟过高**:`histogram_quantile(0.99, rate(etcd_server_request_duration_seconds_bucket[5m]))` 按 `type` 分组持续升高。它与 `read.latency`/`write.latency` 的 DBaaS-native method 维度互补，适合直接套用 upstream etcd dashboard。
 - **真故障率上升**:`rate(read/write{errclass="other"})` 或 `{errclass="deadline"}` 上升(把 `revision`/`unavailable`/`fenced` 排除 —— 那些客户端自愈)。

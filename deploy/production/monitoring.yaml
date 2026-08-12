@@ -459,6 +459,14 @@ spec:
           annotations:
             summary: KubeBrain storage latency telemetry is incomplete
             description: "Expected PD WAL and TiKV RaftDB/KVDB write histograms from every storage replica. Do not declare the short-lease storage SLO healthy while any family is missing."
+        - alert: KubeBrainStorageLatencyMetricsStale
+          expr: (max(time() - timestamp(etcd_disk_wal_fsync_duration_seconds_count{namespace="tidb-cluster",service="kb-pd-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60) or (max(time() - timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{namespace="tidb-cluster",service="kb-tikv-metrics"})) > 60)
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain storage latency telemetry is stale
+            description: "At least one PD WAL or TiKV RaftDB/KVDB histogram has not received a sample for more than 60 seconds. Prometheus lookback may still expose the old series; do not treat it as current SLO evidence."
         - alert: KubeBrainStorageVolumeMetricsMissing
           expr: count(kubelet_volume_stats_capacity_bytes{namespace="tidb-cluster",persistentvolumeclaim=~"(pd-kb-pd|tikv-kb-tikv)-[0-2]"}) < 6
           for: 15m

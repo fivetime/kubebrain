@@ -189,12 +189,15 @@ TIDB_CLUSTER=kb \
 EXPECTED_PD_MEMBERS=3 \
 EXPECTED_TIKV_STORES=3 \
 MAX_STORAGE_P99_SECONDS=1 \
+MAX_METRIC_AGE_SECONDS=60 \
 hack/production/validate-storage-latency-slo.sh
 ```
 
 它用 Prometheus instant query 读取与生产告警完全相同的 5 分钟 p99 表达式，要求 PD WAL fsync、TiKV
 RaftDB write、TiKV KVDB write 各自返回精确的预期副本数，所有值为有限非负十进制且不超过阈值；再以
-三个 histogram `_count` family 独立证明 series 完整；`TIDB_NAMESPACE`/`TIDB_CLUSTER` 选择目标租户的
+三个 histogram `_count` family 独立证明 series 完整，并以 `time()-timestamp(...)` 要求每个 family
+最旧样本不超过 60 秒，避免 Prometheus lookback 暂时保留的旧 series 被误判为当前证据；
+`TIDB_NAMESPACE`/`TIDB_CLUSTER` 选择目标租户的
 metrics Service，二者必须是 DNS label。API/transport 错误、空/重复/缺失 series、NaN/Inf、
 超阈值或非 HTTPS URL 都返回非零。该脚本只读 Prometheus，不把一次通过解释为卷的永久 IOPS 保证。
 
@@ -229,7 +232,8 @@ target 各自暴露两条 gauge，共 6 条 series；持续 5 分钟不完整即
 `KubeBrainPDWALFsyncLatencyHigh`、`KubeBrainTiKVRaftDBWriteLatencyHigh` 和
 `KubeBrainTiKVKVDBWriteLatencyHigh` 按实例计算 5 分钟 p99，超过 1 秒持续 1 分钟即 critical；
 `KubeBrainStorageLatencyMetricsMissing` 要求三个 PD 与三个 TiKV 的对应 histogram count series
-完整，缺失不能按零延迟处理。该门禁直接覆盖“PD/TiKV 全部 Ready/Up，但共享或过载磁盘让 PD heartbeat
+完整；`KubeBrainStorageLatencyMetricsStale` 在任一 family 最旧样本超过 60 秒并持续 1 分钟时告警，防止
+Prometheus lookback 把停止抓取的旧 series 暂时伪装成健康。缺失或陈旧都不能按零延迟处理。该门禁直接覆盖“PD/TiKV 全部 Ready/Up，但共享或过载磁盘让 PD heartbeat
 晚于 leader lease、短租约先过期”的故障形状。上线、CA/Envoy 轮换和短租约 SLO 验收都必须在这些
 告警无 firing/pending 且指标完整的独立 CSI worker 上进行；只检查 PVC 容量、逻辑 TiKV capacity 或
 瞬时 `df` 水位不能证明 IOPS/延迟隔离。

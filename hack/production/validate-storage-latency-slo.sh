@@ -8,6 +8,7 @@ TIDB_CLUSTER="${TIDB_CLUSTER:-kb}"
 EXPECTED_PD_MEMBERS="${EXPECTED_PD_MEMBERS:-3}"
 EXPECTED_TIKV_STORES="${EXPECTED_TIKV_STORES:-3}"
 MAX_STORAGE_P99_SECONDS="${MAX_STORAGE_P99_SECONDS:-1}"
+MAX_METRIC_AGE_SECONDS="${MAX_METRIC_AGE_SECONDS:-60}"
 QUERY_TIMEOUT_SECONDS="${QUERY_TIMEOUT_SECONDS:-10}"
 CURL="${CURL:-curl}"
 JQ="${JQ:-jq}"
@@ -18,7 +19,7 @@ die() { echo "$*" >&2; exit 1; }
 [[ "$PROMETHEUS_URL" == https://* ]] || die "PROMETHEUS_URL must use https"
 [[ "$PROMETHEUS_URL" != *[[:space:]]* && "$PROMETHEUS_URL" != *'?'* && "$PROMETHEUS_URL" != *'#'* ]] || \
   die "PROMETHEUS_URL must be an absolute HTTPS base URL without query, fragment, or whitespace"
-for variable in EXPECTED_PD_MEMBERS EXPECTED_TIKV_STORES QUERY_TIMEOUT_SECONDS; do
+for variable in EXPECTED_PD_MEMBERS EXPECTED_TIKV_STORES MAX_METRIC_AGE_SECONDS QUERY_TIMEOUT_SECONDS; do
   [[ "${!variable}" =~ ^[1-9][0-9]*$ ]] || die "$variable must be a positive integer"
 done
 [[ "$MAX_STORAGE_P99_SECONDS" =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] || \
@@ -85,6 +86,20 @@ validate_count() {
   fi
 }
 
+validate_freshness() {
+  local name="$1" query="$2" response
+  response="$(prometheus_query "$query")"
+  if ! "$JQ" -e --argjson maximum "$MAX_METRIC_AGE_SECONDS" '
+    (.data.result | length) == 1 and
+    (.data.result[0].value | type == "array" and length == 2) and
+    (.data.result[0].value[1] | type == "string" and test("^(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$")) and
+    ((.data.result[0].value[1] | tonumber) <= $maximum)
+  ' >/dev/null <<<"$response"; then
+    actual="$("$JQ" -r '.data.result[0].value[1] // "missing"' <<<"$response")"
+    die "${name}: oldest sample age exceeds ${MAX_METRIC_AGE_SECONDS}s or is malformed; age=${actual}"
+  fi
+}
+
 pd_selector="namespace=\"${TIDB_NAMESPACE}\",service=\"${TIDB_CLUSTER}-pd-metrics\""
 tikv_selector="namespace=\"${TIDB_NAMESPACE}\",service=\"${TIDB_CLUSTER}-tikv-metrics\""
 pd_wal="histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket{${pd_selector}}[5m])))"
@@ -97,5 +112,8 @@ validate_latency "TiKV KVDB write" "$tikv_kv" "$EXPECTED_TIKV_STORES"
 validate_count "PD WAL fsync metrics" "count(etcd_disk_wal_fsync_duration_seconds_count{${pd_selector}})" "$EXPECTED_PD_MEMBERS"
 validate_count "TiKV RaftDB write metrics" "count(tikv_raftstore_store_write_raftdb_duration_seconds_count{${tikv_selector}})" "$EXPECTED_TIKV_STORES"
 validate_count "TiKV KVDB write metrics" "count(tikv_raftstore_store_write_kvdb_duration_seconds_count{${tikv_selector}})" "$EXPECTED_TIKV_STORES"
+validate_freshness "PD WAL fsync metrics" "max(time() - timestamp(etcd_disk_wal_fsync_duration_seconds_count{${pd_selector}}))"
+validate_freshness "TiKV RaftDB write metrics" "max(time() - timestamp(tikv_raftstore_store_write_raftdb_duration_seconds_count{${tikv_selector}}))"
+validate_freshness "TiKV KVDB write metrics" "max(time() - timestamp(tikv_raftstore_store_write_kvdb_duration_seconds_count{${tikv_selector}}))"
 
-echo "KubeBrain storage latency SLO gate passed: PD WAL and TiKV RaftDB/KVDB p99 are within ${MAX_STORAGE_P99_SECONDS}s with complete replica telemetry"
+echo "KubeBrain storage latency SLO gate passed: PD WAL and TiKV RaftDB/KVDB p99 are within ${MAX_STORAGE_P99_SECONDS}s with complete telemetry no older than ${MAX_METRIC_AGE_SECONDS}s"

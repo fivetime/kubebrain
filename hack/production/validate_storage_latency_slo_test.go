@@ -37,6 +37,7 @@ func TestStorageLatencyGateMatchesProductionAlerts(t *testing.T) {
 	require.Equal(t, 3, strings.Count(script, "histogram_quantile(0.99"))
 	require.Equal(t, 3, strings.Count(script, "[5m]"))
 	require.Equal(t, 3, strings.Count(script, "validate_count "))
+	require.Equal(t, 3, strings.Count(script, "validate_freshness "))
 }
 
 func TestValidateStorageLatencySLOFailsClosed(t *testing.T) {
@@ -53,7 +54,10 @@ if [[ "${FAKE_PROM_ERROR:-false}" == true ]]; then
   printf '{"status":"error","error":"backend unavailable"}\n'
   exit 0
 fi
-if [[ "$query" == count\(* ]]; then
+if [[ "$query" == max\(time\(\)* ]]; then
+  value="${FAKE_METRIC_AGE:-15}"
+  printf '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%s"]}]}}\n' "$value"
+elif [[ "$query" == count\(* ]]; then
   value="${FAKE_SERIES_COUNT:-3}"
   printf '{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1,"%s"]}]}}\n' "$value"
 else
@@ -78,6 +82,7 @@ fi
 		"EXPECTED_PD_MEMBERS=3",
 		"EXPECTED_TIKV_STORES=3",
 		"MAX_STORAGE_P99_SECONDS=1",
+		"MAX_METRIC_AGE_SECONDS=60",
 	}
 
 	output, err := runProductionScriptCommand(t, "validate-storage-latency-slo.sh", base)
@@ -85,9 +90,9 @@ fi
 	require.Contains(t, string(output), "storage latency SLO gate passed")
 	queries, err := os.ReadFile(queryLog)
 	require.NoError(t, err)
-	require.Equal(t, 6, strings.Count(string(queries), "\n"))
-	require.Equal(t, 2, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-pd-metrics"`))
-	require.Equal(t, 4, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-tikv-metrics"`))
+	require.Equal(t, 9, strings.Count(string(queries), "\n"))
+	require.Equal(t, 3, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-pd-metrics"`))
+	require.Equal(t, 6, strings.Count(string(queries), `namespace="storage-a",service="tenant-a-tikv-metrics"`))
 
 	for _, tc := range []struct {
 		name string
@@ -99,6 +104,8 @@ fi
 		{name: "latency replica missing", env: "FAKE_LATENCY_RESULTS=2", want: "expected 3 series"},
 		{name: "latency replica duplicated", env: "FAKE_LATENCY_RESULTS=4", want: "expected 3 series"},
 		{name: "count family missing", env: "FAKE_SERIES_COUNT=2", want: "expected 3 series"},
+		{name: "metric sample stale", env: "FAKE_METRIC_AGE=61", want: "oldest sample age exceeds 60s"},
+		{name: "metric sample age is NaN", env: "FAKE_METRIC_AGE=NaN", want: "or is malformed"},
 		{name: "prometheus error", env: "FAKE_PROM_ERROR=true", want: "Prometheus query failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,6 +133,13 @@ func TestValidateStorageLatencySLORejectsUnsafeConfiguration(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "must be greater than zero")
+
+	output, err = runProductionScriptCommand(t, "validate-storage-latency-slo.sh", []string{
+		"PROMETHEUS_URL=https://prometheus.example.test",
+		"MAX_METRIC_AGE_SECONDS=0",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "MAX_METRIC_AGE_SECONDS must be a positive integer")
 
 	output, err = runProductionScriptCommand(t, "validate-storage-latency-slo.sh", []string{
 		"PROMETHEUS_URL=https://prometheus.example.test",
