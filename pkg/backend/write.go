@@ -30,44 +30,7 @@ import (
 
 // Create implements Backend interface
 func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *proto.CreateResponse, err error) {
-	if b.config.QuotaBackendBytes > 0 {
-		return b.quotaCreate(ctx, put)
-	}
-	unlock := b.lockLogicalWrite(ctx)
-	defer unlock()
-	b.revisionWriteMu.Lock()
-	defer b.revisionWriteMu.Unlock()
-	ts := time.Now()
-	defer func() {
-		txnLog("create",
-			put.GetKey(),
-			len(put.GetValue()),
-			0,
-			resp.GetHeader().GetRevision(),
-			resp.GetSucceeded(),
-			time.Since(ts),
-			err)
-	}()
-
-	revision, err := b.create(ctx, put.Key, put.Value, put.Lease)
-	b.notify(ctx, put.Key, b.eventValue(put.Value, EtcdMetadata{CreateRevision: revision, Version: 1, Lease: put.Lease}, err), revision, 0, err == nil, proto.Event_CREATE, err)
-	// ACK only after the committed watermark reaches this write, so the client
-	// can immediately read its own write at rev=0 (etcd apply-then-ack, #35).
-	b.waitCommittedRevision(ctx, revision)
-	if errors.Is(err, storage.ErrCASFailed) {
-		return &proto.CreateResponse{
-			Header:    responseHeader(revision),
-			Succeeded: false,
-		}, nil
-	} else if err != nil {
-		klog.ErrorS(err, "backend create err", "key", string(put.GetKey()), "revision", revision)
-		return nil, err
-	}
-
-	return &proto.CreateResponse{
-		Header:    responseHeader(revision),
-		Succeeded: true,
-	}, nil
+	return b.transactionalCreate(ctx, put)
 }
 
 func (b *backend) create(ctx context.Context, key []byte, value []byte, lease int64) (revision uint64, error error) {
@@ -190,14 +153,7 @@ func (b *backend) encodeCreateMutation(key, value []byte, meta EtcdMetadata, rev
 
 // Delete implements Backend interface
 func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (*proto.DeleteResponse, error) {
-	if b.config.QuotaBackendBytes > 0 {
-		return b.quotaDelete(ctx, r)
-	}
-	unlock := b.lockLogicalWrite(ctx)
-	defer unlock()
-	b.revisionWriteMu.Lock()
-	defer b.revisionWriteMu.Unlock()
-	return b.deleteOnce(ctx, r, true)
+	return b.transactionalDelete(ctx, r)
 }
 
 func (b *backend) deleteOnce(ctx context.Context, r *proto.DeleteRequest, allowHeal bool) (resp *proto.DeleteResponse, err error) {
@@ -486,14 +442,7 @@ func (b *backend) DeleteRange(ctx context.Context, kvs []*proto.KeyValue) (resp 
 
 // Update implements Backend interface
 func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (*proto.UpdateResponse, error) {
-	if b.config.QuotaBackendBytes > 0 {
-		return b.quotaUpdate(ctx, r)
-	}
-	unlock := b.lockLogicalWrite(ctx)
-	defer unlock()
-	b.revisionWriteMu.Lock()
-	defer b.revisionWriteMu.Unlock()
-	return b.updateOnce(ctx, r, true)
+	return b.transactionalUpdate(ctx, r)
 }
 
 func (b *backend) updateOnce(ctx context.Context, r *proto.UpdateRequest, allowHeal bool) (resp *proto.UpdateResponse, err error) {

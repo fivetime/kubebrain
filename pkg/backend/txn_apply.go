@@ -605,6 +605,12 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	newRevision = *allocated
 	if cerr != nil {
 		if errors.Is(cerr, storage.ErrUncertainResult) && txnHasEffectiveUserWrite(preps) {
+			// Some storage failures happen before the Atomic callback starts. No
+			// candidate revision was derived or written in that case, so there is
+			// no marker to resolve and no collector slot to release.
+			if newRevision == 0 {
+				return nil, 0, false, cerr
+			}
 			b.tso.AdvanceDealFloor(newRevision)
 			// A multi-key txn must never enter the single-key uncertain retry
 			// queue: if the original batch committed, that queue would rewrite

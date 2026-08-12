@@ -7,7 +7,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 )
 
-func (b *backend) quotaCreate(ctx context.Context, put *proto.CreateRequest) (*proto.CreateResponse, error) {
+func (b *backend) transactionalCreate(ctx context.Context, put *proto.CreateRequest) (*proto.CreateResponse, error) {
 	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{
 		Key: put.Key, Value: put.Value, Lease: put.Lease,
 	}}, []TxnGuard{{Key: put.Key, Absent: true}})
@@ -23,21 +23,42 @@ func (b *backend) quotaCreate(ctx context.Context, put *proto.CreateRequest) (*p
 	return &proto.CreateResponse{Header: responseHeader(revision), Succeeded: true}, nil
 }
 
-func (b *backend) quotaUpdate(ctx context.Context, request *proto.UpdateRequest) (*proto.UpdateResponse, error) {
+func (b *backend) transactionalUpdate(ctx context.Context, request *proto.UpdateRequest) (*proto.UpdateResponse, error) {
+	return b.transactionalUpdateOnce(ctx, request, true)
+}
+
+func (b *backend) transactionalUpdateOnce(ctx context.Context, request *proto.UpdateRequest, allowHeal bool) (*proto.UpdateResponse, error) {
 	key := request.GetKv().GetKey()
 	if request.GetKv().GetRevision() == 0 {
-		created, err := b.quotaCreate(ctx, &proto.CreateRequest{
+		created, err := b.transactionalCreate(ctx, &proto.CreateRequest{
 			Key: key, Value: request.GetKv().GetValue(), Lease: request.Lease,
 		})
 		if err != nil {
 			return nil, err
 		}
-		return &proto.UpdateResponse{Header: created.Header, Succeeded: created.Succeeded}, nil
+		response := &proto.UpdateResponse{Header: created.Header, Succeeded: created.Succeeded}
+		if !created.Succeeded {
+			value, modRevision, getErr := b.get(ctx, key, 0)
+			if getErr == nil {
+				response.Header.Revision = maxUint64(response.Header.Revision, modRevision)
+				response.Kv = &proto.KeyValue{Key: key, Value: value, Revision: modRevision}
+			}
+		}
+		return response, nil
 	}
-	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{
-		Key: key, Value: request.GetKv().GetValue(), Lease: request.Lease,
-	}}, []TxnGuard{{Key: key, Revision: request.GetKv().GetRevision()}})
+	op := TxnWriteOp{Key: key, Value: request.GetKv().GetValue(), Lease: request.Lease}
+	if previousLease, known := previousLeaseFromContext(ctx); known {
+		op.PrevLeaseKnown, op.PrevLease = true, previousLease
+	}
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+		op,
+	}, []TxnGuard{{Key: key, Revision: request.GetKv().GetRevision()}})
 	if errors.Is(err, ErrTxnGuardConflict) {
+		if allowHeal {
+			if healed, healErr := b.healOrphanIndex(ctx, key); healErr == nil && healed {
+				return b.transactionalUpdateOnce(ctx, request, false)
+			}
+		}
 		response := &proto.UpdateResponse{
 			Header: responseHeader(b.GetCurrentRevision()), Succeeded: false,
 		}
@@ -55,15 +76,26 @@ func (b *backend) quotaUpdate(ctx context.Context, request *proto.UpdateRequest)
 	return &proto.UpdateResponse{Header: responseHeader(revision), Succeeded: true}, nil
 }
 
-func (b *backend) quotaDelete(ctx context.Context, request *proto.DeleteRequest) (*proto.DeleteResponse, error) {
+func (b *backend) transactionalDelete(ctx context.Context, request *proto.DeleteRequest) (*proto.DeleteResponse, error) {
+	return b.transactionalDeleteOnce(ctx, request, true)
+}
+
+func (b *backend) transactionalDeleteOnce(ctx context.Context, request *proto.DeleteRequest, allowHeal bool) (*proto.DeleteResponse, error) {
 	guards := []TxnGuard(nil)
 	if request.Revision > 0 {
 		guards = []TxnGuard{{Key: request.Key, Revision: request.Revision}}
 	}
-	results, revision, err := b.TxnApply(ctx, []TxnWriteOp{{
-		Key: request.Key, Delete: true,
-	}}, guards)
+	op := TxnWriteOp{Key: request.Key, Delete: true}
+	if previousLease, known := previousLeaseFromContext(ctx); known {
+		op.PrevLeaseKnown, op.PrevLease = true, previousLease
+	}
+	results, revision, err := b.TxnApply(ctx, []TxnWriteOp{op}, guards)
 	if errors.Is(err, ErrTxnGuardConflict) {
+		if allowHeal {
+			if healed, healErr := b.healOrphanIndex(ctx, request.Key); healErr == nil && healed {
+				return b.transactionalDeleteOnce(ctx, request, false)
+			}
+		}
 		response := &proto.DeleteResponse{
 			Header: responseHeader(b.GetCurrentRevision()), Succeeded: false,
 		}
@@ -77,9 +109,15 @@ func (b *backend) quotaDelete(ctx context.Context, request *proto.DeleteRequest)
 	if err != nil {
 		return nil, err
 	}
+	if allowHeal && (len(results) != 1 || !results[0].Deleted) {
+		if healed, healErr := b.healOrphanIndex(ctx, request.Key); healErr == nil && healed {
+			return b.transactionalDeleteOnce(ctx, request, false)
+		}
+	}
 	b.waitCommittedRevision(ctx, revision)
-	response := &proto.DeleteResponse{Header: responseHeader(revision), Succeeded: true}
+	response := &proto.DeleteResponse{Header: responseHeader(revision)}
 	if len(results) == 1 && results[0].Deleted {
+		response.Succeeded = true
 		response.Kv = &proto.KeyValue{
 			Key: results[0].Key, Value: results[0].PrevValue, Revision: results[0].PrevRevision,
 		}

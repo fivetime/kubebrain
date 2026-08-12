@@ -632,7 +632,7 @@ func testBackendCreate(t *testing.T, targetStorage storageType) {
 		{
 			description:  "create twice",
 			putReq:       newCreateRequest(testKey, path.Join(testVal, "2")),
-			expectedResp: newCreateResponse(initRevision+2, false),
+			expectedResp: newCreateResponse(initRevision+1, false),
 		},
 	}
 
@@ -725,15 +725,15 @@ func testBackendUpdate(t *testing.T, targetStorage storageType) {
 			description:  "update a key which exists without revision",
 			key:          testKey,
 			value:        testVal,
-			expectedResp: newUpdateResponse(initRevision+2, false, newKeyValue(testKey, testVal, initRevision+1)),
+			expectedResp: newUpdateResponse(initRevision+1, false, newKeyValue(testKey, testVal, initRevision+1)),
 		},
 		{
 			description:   "update a key which exists with valid revision",
 			key:           testKey,
 			value:         testVal,
 			revision:      initRevision + 1,
-			expectedResp:  newUpdateResponse(initRevision+3, true, nil), // valid revision should return PutResponse
-			expectedEvent: newEvent(proto.Event_PUT, initRevision+3, newKeyValue(testKey, testVal, initRevision+3)),
+			expectedResp:  newUpdateResponse(initRevision+2, true, nil), // valid revision should return PutResponse
+			expectedEvent: newEvent(proto.Event_PUT, initRevision+2, newKeyValue(testKey, testVal, initRevision+2)),
 		},
 		{
 			description: "update a key which exist with invalid revision",
@@ -741,7 +741,7 @@ func testBackendUpdate(t *testing.T, targetStorage storageType) {
 			value:       testVal,
 			// todo
 			revision:     initRevision + 1,
-			expectedResp: newUpdateResponse(initRevision+4, false, newKeyValue(testKey, testVal, initRevision+3)),
+			expectedResp: newUpdateResponse(initRevision+2, false, newKeyValue(testKey, testVal, initRevision+2)),
 		},
 	}
 	for _, testcase := range testcases {
@@ -1378,19 +1378,18 @@ func testBackendDeleteAndCreate(t *testing.T, targetStorage storageType) {
 			expectedEvent: newEvent(proto.Event_DELETE, initRevision+2, newKeyValue(testKey, val1, initRevision+1)),
 		},
 		&createTestcase{
-			// A create over a tombstoned index retries at a FRESH revision and
-			// releases the first one as an invalid event (#44): the recreate
-			// consumes initRevision+3 (invalid, no watch event) and lands at
-			// initRevision+4.
+			// Transaction-local allocation validates the tombstone before commit,
+			// so recreate lands directly at the next revision without a failed
+			// PutIfNotExist allocation hole.
 			description:   "twice create",
 			putReq:        newCreateRequest(testKey, val2),
-			expectedResp:  newCreateResponse(initRevision+4, true),
-			expectedEvent: newEvent(proto.Event_CREATE, initRevision+4, newKeyValue(testKey, val2, initRevision+4)),
+			expectedResp:  newCreateResponse(initRevision+3, true),
+			expectedEvent: newEvent(proto.Event_CREATE, initRevision+3, newKeyValue(testKey, val2, initRevision+3)),
 		},
 		&getTestcase{
 			description:  "check",
 			getReq:       newGetRequest(0, testKey),
-			expectedResp: newGetResponse(initRevision+4, newKeyValue(testKey, val2, initRevision+4)),
+			expectedResp: newGetResponse(initRevision+3, newKeyValue(testKey, val2, initRevision+3)),
 		},
 	}
 

@@ -202,6 +202,10 @@ func testCompactConsistence(t *testing.T, deleteErrorIndexes []int64) {
 	}()
 	defer stopBackendWorkersForTest(b)
 
+	// etcd's initialized empty keyspace starts at revision 1. Production calls
+	// InitializeLeadershipRevision before serving; this direct backend test must
+	// establish the same baseline for the transaction-local allocator.
+	b.SetCurrentRevision(1)
 	initRevision := b.GetCurrentRevision()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

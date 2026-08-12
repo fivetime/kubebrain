@@ -58,19 +58,22 @@ func TestUpdateWithHugeClientRevisionDoesNotStallPipeline(t *testing.T) {
 	require.True(t, createResp.Succeeded)
 	waitCommitted(t, s.backend, createResp.Header.Revision)
 
-	// A client-supplied mod revision far beyond the TSO makes deal() consume a
-	// revision and fail with ErrRevisionDriftBack. The request must fail
-	// without freezing the pipeline.
-	_, err = s.backend.Update(s.ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+	// A client-supplied mod revision far beyond the current value is simply a
+	// failed compare. It must not allocate a durable revision.
+	before := s.backend.GetCurrentRevision()
+	response, err := s.backend.Update(s.ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
 		Key:      key,
 		Value:    []byte("v2"),
 		Revision: uint64(1) << 62,
 	}})
-	require.ErrorIs(t, err, ErrRevisionDriftBack)
+	require.NoError(t, err)
+	require.False(t, response.Succeeded)
+	require.Equal(t, before, s.backend.GetCurrentRevision())
 
-	// The pipeline must advance past the leaked revision.
+	// The next effective write advances exactly once and the pipeline stays live.
 	after, err := s.backend.Create(s.ctx, &proto.CreateRequest{Key: []byte(prefix + "/leak/drift/b"), Value: []byte("v")})
 	require.NoError(t, err)
+	require.Equal(t, before+1, after.Header.Revision)
 	waitCommitted(t, s.backend, after.Header.Revision)
 }
 
@@ -83,14 +86,18 @@ func TestDeleteWithHugeClientRevisionDoesNotStallPipeline(t *testing.T) {
 	require.NoError(t, err)
 	waitCommitted(t, s.backend, createResp.Header.Revision)
 
-	_, err = s.backend.Delete(s.ctx, &proto.DeleteRequest{
+	before := s.backend.GetCurrentRevision()
+	response, err := s.backend.Delete(s.ctx, &proto.DeleteRequest{
 		Key:      key,
 		Revision: uint64(1) << 62,
 	})
-	require.ErrorIs(t, err, ErrRevisionDriftBack)
+	require.NoError(t, err)
+	require.False(t, response.Succeeded)
+	require.Equal(t, before, s.backend.GetCurrentRevision())
 
 	after, err := s.backend.Create(s.ctx, &proto.CreateRequest{Key: []byte(prefix + "/leak/deldrift/b"), Value: []byte("v")})
 	require.NoError(t, err)
+	require.Equal(t, before+1, after.Header.Revision)
 	waitCommitted(t, s.backend, after.Header.Revision)
 }
 

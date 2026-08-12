@@ -48029,6 +48029,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   durable watermark。新增交错回归要求动态 Txn、旧 Create、动态 Txn revision 严格连续。尚未完成单键三路径及
   retry queue 的动态 allocator 接入，所以仍保留 TSO collector 兼容桥，不能宣称 allocator 迁移结束。
 
+- A4476 将公共 Create/Update/Delete 无条件路由至 TxnApply 的 transaction-local allocator；原 quota adapter 更名为
+  transactional adapter，quota=0 时仍走完全相同的 revision 路径。适配器保持冲突响应、delete prevKV、legacy
+  previous-lease provenance 和 orphan-index 自愈。共享 backend 测试的旧跳号预期已修正：重复 Create、stale
+  Update、missing Delete 不推进 revision，tombstone recreate 也不再消耗一次失败 slot。新增端到端序列要求三次
+  有效 create/update/delete 精确得到 `base+1..base+3`，中间三次无效 mutation revision 不变，最终 durable
+  counter 等于 delete revision。旧私有写 helper 和 async retry 尚为故障回归保留，但已不在公共 RPC 调用图中。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

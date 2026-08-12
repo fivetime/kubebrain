@@ -142,13 +142,12 @@ func TestFenceAdmitFailOpenWithoutEpoch(t *testing.T) {
 	ast.NoError(b.fenceAdmit(context.Background()))
 }
 
-// TestFencedCreateRejectsAndCollectorAdvances is the end-to-end regression probe
+// TestFencedCreateRejectsWithoutRevisionGap is the end-to-end regression probe
 // for FINDING #39 at the backend layer: a fenced Create must (a) return
-// ErrLeadershipFenced, (b) leave nothing in storage, and critically (c) still let
-// the event collector advance past the revision the fenced write consumed — the
-// per-op notify(...,err) fills an invalid ring slot so the collector never stalls.
-// A subsequent unfenced Create then commits and its event is emitted normally.
-func TestFencedCreateRejectsAndCollectorAdvances(t *testing.T) {
+// ErrLeadershipFenced, (b) leave nothing in storage, and (c) not allocate a
+// durable revision. A subsequent unfenced Create commits at the next revision
+// and its event is emitted normally.
+func TestFencedCreateRejectsWithoutRevisionGap(t *testing.T) {
 	ast := assert.New(t)
 	b, kv, closer := newFenceTestBackend(t)
 	defer closer()
@@ -174,10 +173,9 @@ func TestFencedCreateRejectsAndCollectorAdvances(t *testing.T) {
 	_, gerr := kv.Get(context.Background(), b.coder.EncodeRevisionKey([]byte(fencedKey)))
 	ast.ErrorIs(gerr, storage.ErrKeyNotFound)
 
-	// The collector must advance past the consumed revision (initRevision+1)
-	// rather than stalling on it, so leadership resumes cleanly.
-	waitUntilRevisionEqualOrTimeout(b, initRevision+1)
-	ast.Equal(initRevision+1, b.GetCurrentRevision())
+	// Admission failed inside the atomic transaction before revision allocation,
+	// so neither the durable watermark nor the collector advances.
+	ast.Equal(initRevision, b.GetCurrentRevision())
 
 	// Now leadership is healthy again: an unfenced create commits and emits.
 	b.SetLeadershipFence(func() (uint64, bool) { return 42, true })
@@ -186,12 +184,12 @@ func TestFencedCreateRejectsAndCollectorAdvances(t *testing.T) {
 	resp, err := b.Create(okCtx, newCreateRequest(okKey, testVal))
 	ast.NoError(err)
 	ast.True(resp.Succeeded)
-	ast.Equal(initRevision+2, resp.Header.Revision)
+	ast.Equal(initRevision+1, resp.Header.Revision)
 
 	select {
 	case events := <-output:
 		ast.NotEmpty(events)
-		ast.Equal(initRevision+2, events[len(events)-1].Revision)
+		ast.Equal(initRevision+1, events[len(events)-1].Revision)
 	case <-time.After(timeout):
 		ast.FailNow("expected watch event for the committed create")
 	}

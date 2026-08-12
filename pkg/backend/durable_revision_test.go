@@ -561,3 +561,46 @@ func TestTransactionalRevisionAllocatorBridgesLegacyTSOWriters(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, nextTransactionalRevision, durable)
 }
+
+func TestPublicSingleKeyWritesAllocateOnlyEffectiveRevisions(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	base := b.GetCurrentRevision()
+	key := []byte(prefix + "/transactional-single-key/key")
+
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	require.True(t, created.Succeeded)
+	require.Equal(t, base+1, created.Header.Revision)
+
+	duplicate, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("duplicate")})
+	require.NoError(t, err)
+	require.False(t, duplicate.Succeeded)
+	require.Equal(t, created.Header.Revision, duplicate.Header.Revision)
+
+	stale, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("stale"), Revision: base,
+	}})
+	require.NoError(t, err)
+	require.False(t, stale.Succeeded)
+	require.Equal(t, created.Header.Revision, stale.Header.Revision)
+
+	updated, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("v2"), Revision: created.Header.Revision,
+	}})
+	require.NoError(t, err)
+	require.True(t, updated.Succeeded)
+	require.Equal(t, base+2, updated.Header.Revision)
+
+	missing, err := b.Delete(ctx, &proto.DeleteRequest{Key: []byte(prefix + "/transactional-single-key/missing")})
+	require.NoError(t, err)
+	require.False(t, missing.Succeeded)
+	require.Equal(t, updated.Header.Revision, missing.Header.Revision)
+
+	deleted, err := b.Delete(ctx, &proto.DeleteRequest{Key: key, Revision: updated.Header.Revision})
+	require.NoError(t, err)
+	require.True(t, deleted.Succeeded)
+	require.Equal(t, base+3, deleted.Header.Revision)
+	durable, err := b.GetDurableRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, deleted.Header.Revision, durable)
+}

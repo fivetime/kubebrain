@@ -2905,6 +2905,11 @@ internal metadata、用户 mutations 与 event records 在一个 storage transac
 range/hash/compact/checkpoint 的 `logicalWriteMu` 语义；quota alarm 的 revision-neutral InternalCAS 不进入该锁。
 旧 repair 同批写 durable revision，保证“动态 Txn→旧单键/repair→动态 Txn”不会复用 revision。单键三路径和
 retry allocator 尚未迁移，因此这仍是受测试保护的过渡态，不是最终无 TSO 架构。
+公共 Create/Update/Delete 已统一路由到 TxnApply transaction-local allocator；quota=0 只跳过 quota mutation，
+不再选择旧写实现。适配层保留 Create-exists、Update/Delete stale revision 的响应和 orphan-index 自愈，并把
+context 中的 previous lease provenance 传入历史 metadata 迁移。失败 create/update guard、missing delete 均不推进
+revision；tombstone recreate 直接使用一个 revision，不再先制造失败 PutIfNotExist slot。旧 `create/update/delete`
+函数仅保留给 legacy/repair 回归，不再由公共 RPC 调用。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
