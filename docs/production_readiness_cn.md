@@ -2941,6 +2941,8 @@ seal，旧版本 revision 不会因缺少 seal 被误报。compaction 必须先�
 再次验证剩余 seals；`Alarm DEACTIVATE CORRUPT` 会在持久删除告警前强制重验全部现存 seal，任一 mismatch、
 malformed seal、扫描错误或未知未来版本都会拒绝解除。禁止通过直接修改内部 alarm metadata 绕过该栅栏；应先修复
 marker/seal 根因，再由 etcd Maintenance API 解除告警恢复写流量。
+解除过程会先排空当前 leader 的在途逻辑写，并与后台 uncertain transaction 的 CORRUPT 激活串行化；因此告警解除
+可能等待正在提交或解析的事务完成。运维超时后应重新读取 Alarm 状态，不得假定请求失败就代表告警仍在或已解除。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

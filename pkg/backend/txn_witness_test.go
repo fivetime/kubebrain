@@ -43,6 +43,26 @@ type witnessEventScanErrorStorage struct {
 	calls atomic.Int32
 }
 
+type blockingWitnessScanStorage struct {
+	storage.KvStorage
+	enabled  atomic.Bool
+	entered  chan struct{}
+	release  chan struct{}
+	signaled atomic.Bool
+}
+
+func (w *blockingWitnessScanStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
+	if w.enabled.Load() && w.signaled.CompareAndSwap(false, true) {
+		close(w.entered)
+		select {
+		case <-w.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return w.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
+
 func (w *witnessEventScanErrorStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
 	if w.calls.Add(1) == 2 {
 		return nil, errWitnessScanUnavailable
@@ -172,6 +192,54 @@ func TestCorruptDisarmWitnessScanErrorKeepsAlarm(t *testing.T) {
 	members, alarmErr := b.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
 	require.Equal(t, []uint64{memberID}, members, "an unverifiable witness set must keep the write fence armed")
+}
+
+func TestCorruptDisarmLinearizesConcurrentRearm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	wrapped := &blockingWitnessScanStorage{
+		KvStorage: store, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	ctx := context.Background()
+	b := NewBackend(wrapped, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	_, _, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/restart-witness/concurrent-rearm"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+	memberID := b.localAlarmMemberID()
+	require.NoError(t, b.ArmCorrupt(ctx, memberID))
+
+	wrapped.enabled.Store(true)
+	type disarmResult struct {
+		removed bool
+		err     error
+	}
+	disarmed := make(chan disarmResult, 1)
+	go func() {
+		removed, disarmErr := b.DisarmCorrupt(ctx, memberID)
+		disarmed <- disarmResult{removed: removed, err: disarmErr}
+	}()
+	<-wrapped.entered
+	rearmed := make(chan error, 1)
+	go func() { rearmed <- b.ArmCorrupt(ctx, memberID) }()
+	select {
+	case err := <-rearmed:
+		require.Failf(t, "concurrent rearm returned before disarm linearized", "err=%v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(wrapped.release)
+	result := <-disarmed
+	require.NoError(t, result.err)
+	require.True(t, result.removed)
+	require.NoError(t, <-rearmed)
+	members, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{memberID}, members,
+		"a concurrent resolver rearm ordered after disarm must remain persistent")
 }
 
 func TestLeadershipWitnessEventScanTransportErrorDoesNotArmCorrupt(t *testing.T) {

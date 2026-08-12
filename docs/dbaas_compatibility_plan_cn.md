@@ -48145,6 +48145,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   closed。回归先损坏双键 transaction 的一个 marker，证明重启可读但首次 disarm 失败且 alarm 保留，再恢复原
   marker 后才允许 disarm 并再次完成 leadership 初始化。
 
+- A4492 线性化 CORRUPT 激活与 A4491 的重验/解除窗口。仅在删除前扫描 seal 仍有竞态：已越过写前门的在途
+  transaction 可在扫描后进入 uncertain resolver；resolver 看到同 member alarm 已存在会把 Arm 当作幂等成功，随后
+  disarm CAS 将其删除并错误恢复写入。backend 现用 leader-local alarm mutex 串行 Arm/Disarm，Disarm 还持有独占
+  logical-write barrier 排空本 leader 的事务，并通过 context ownership 让重验发现损坏时安全重入 Arm 和 internal
+  CAS。确定性回归在 witness iterator 中暂停 disarm，再并发重申同 member alarm：重申必须等到解除线性化点之后，
+  最终 alarm 仍持久存在；该测试同时捕获 exclusive barrier 调用 InternalCAS 时的锁重入死锁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

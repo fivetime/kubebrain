@@ -417,6 +417,10 @@ type backend struct {
 	// etcd transaction with a range compare takes Lock across compare+commit,
 	// preventing inserts in the compared range from becoming invisible phantoms.
 	logicalWriteMu sync.RWMutex
+	// corruptAlarmMu linearizes alarm activation with evidence validation and
+	// disarm. In particular, an uncertain-transaction resolver must not observe
+	// an existing alarm and return just before a concurrent disarm deletes it.
+	corruptAlarmMu sync.Mutex
 	// revisionWriteMu serializes transaction planning, atomic revision allocation,
 	// and ordered event publication without changing the broader predicate lock.
 	revisionWriteMu sync.Mutex

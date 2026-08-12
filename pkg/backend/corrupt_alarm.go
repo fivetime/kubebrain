@@ -15,6 +15,8 @@ import (
 var corruptAlarmKey = []byte("alarms/corrupt")
 
 func (b *backend) ArmCorrupt(ctx context.Context, memberID uint64) error {
+	ctx, unlock := b.lockCorruptAlarm(ctx)
+	defer unlock()
 	for {
 		members, raw, exists, err := b.readCorruptAlarms(ctx)
 		if err != nil {
@@ -47,6 +49,14 @@ func (b *backend) CorruptAlarms(ctx context.Context) ([]uint64, error) {
 }
 
 func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error) {
+	// Drain this leader's in-flight logical writes before validating evidence.
+	// A write that already passed the server alarm gate can otherwise become
+	// uncertain and reassert the same alarm between validation and deletion.
+	b.logicalWriteMu.Lock()
+	defer b.logicalWriteMu.Unlock()
+	ctx = b.withLogicalWriteOwnership(ctx)
+	ctx, unlock := b.lockCorruptAlarm(ctx)
+	defer unlock()
 	for {
 		members, raw, exists, err := b.readCorruptAlarms(ctx)
 		if err != nil {
@@ -78,6 +88,16 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 		}
 		return err == nil, err
 	}
+}
+
+type corruptAlarmOwnerKey struct{}
+
+func (b *backend) lockCorruptAlarm(ctx context.Context) (context.Context, func()) {
+	if owner, _ := ctx.Value(corruptAlarmOwnerKey{}).(*backend); owner == b {
+		return ctx, func() {}
+	}
+	b.corruptAlarmMu.Lock()
+	return context.WithValue(ctx, corruptAlarmOwnerKey{}, b), b.corruptAlarmMu.Unlock
 }
 
 func (b *backend) readCorruptAlarms(ctx context.Context) ([]uint64, []byte, bool, error) {
