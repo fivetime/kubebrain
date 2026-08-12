@@ -727,6 +727,25 @@ func TestBackendPDDegradedNetworkRunsPorcupineHistories(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-degraded-network-lease-linearizability)`)
+	require.Contains(t, script, `"Porcupine lease histories across cross-node PD network degradation"`)
+	require.Contains(t, script, `TestClientV3LeaseGenerationHistoryIsLinearizable|TestClientV3LeaseLifecycleHistoryIsLinearizable`)
+	require.Contains(t, script, `"$self --degrade-pd-all-cross-node"`)
+	require.Contains(t, script, `run_degraded_network_lease_linearizability_test`)
+	require.NotContains(t, script, "eval ")
+
+	source, readErr := os.ReadFile("lease_linearizability_test.go")
+	require.NoError(t, readErr)
+	text := string(source)
+	require.Contains(t, text, `os.Getenv("KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND")`)
+	require.Contains(t, text, `require.Positive(t, ambiguousFailures.Load()`)
+	require.Contains(t, text, `require.Less(t, ambiguousFailures.Load(), int64(len(history))`)
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"

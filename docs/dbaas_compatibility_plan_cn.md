@@ -46922,6 +46922,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   强度下 PD/TSO 路径受扰时单键线性化与多键 Txn 原子性；独立宿主/AZ、conntrack/NAT、underlay failure
   以及分钟/小时级 soak 仍未执行并继续开放。
 
+- A4394 将 PD 组合弱网下的 Porcupine 证明从 KV/Txn 扩展到 lease 代际和 attached-key 生命周期，对照
+  upstream `/root/etcd/tests/integration/clientv3/lease/lease_test.go` 的 `TestLeaseRenewLostQuorum` 与
+  `TestV3LeaseFailureOverlap`，以及同文件 Grant/Revoke/KeepAlive/TimeToLive 基础契约。既有
+  `TestClientV3LeaseGenerationHistoryIsLinearizable` 和 `TestClientV3LeaseLifecycleHistoryIsLinearizable`
+  原先只支持 KubeBrain/PD/TiKV Pod 删除；现接入与 A4392/A4393 相同的显式
+  `KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND`、3 秒故障安装 warmup 和 fail-closed 命令回收。外部故障历史
+  各扩展到 5 client × 30 operation：代际模型并发同一显式 ID 的 Grant/Revoke、leased Put、KeepAlive、
+  TimeToLive 和 Get，生命周期模型并发 leased Put/Get/KeepAlive/Revoke，并要求 Revoke 与 attached key 删除
+  原子发生。timeout/Unavailable/Canceled mutation 仍解释为可能提交或未提交，但每套历史强制同时存在至少
+  一个歧义结果和一个确定成功结果，再由 Porcupine 检查完整实时顺序；无故障基线仍要求零歧义。
+  新增 `pd-cross-node-degraded-network-lease-linearizability` 后，2026-08-12 disposable
+  `kubebrain-pd-netem-lease` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/3 KubeBrain、25379/25380
+  拓扑首次通过：三个 PD namespace 同时施加 `250ms +/- 50ms`、`2%` loss、`20mbit`、30 秒 netem；
+  lease generation 历史 36.93 秒、含 10 个歧义 RPC，lifecycle 历史 36.35 秒、含 1 个，二者 Porcupine
+  均为 `Ok`，测试包总耗时 73.302 秒。同集群无故障基线 1.679 秒通过。恢复后三个 KubeBrain、PD、TiKV
+  均 Ready，TiDBCluster Ready；`kb-pd-1` 唯一一次 restart 于 `01:12:17Z` 初始部署期结束，早于门禁，
+  三个 PD namespace 最终均为 `qdisc noqueue`。本项证明当前强度下 PD/TSO 路径退化时显式 lease ID
+  代际隔离及 Revoke/attached-key 原子性，不替代 streaming KeepAlive 长窗口、自然过期跨故障、独立 AZ、
+  conntrack/NAT/underlay failure 或分钟/小时级 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

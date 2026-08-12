@@ -1010,6 +1010,20 @@ run_degraded_network_linearizability_test() {
   wait_backend_ready
 }
 
+run_degraded_network_lease_linearizability_test() {
+  local label="$1"
+  local command="$2"
+  echo "Running ${label}"
+  (
+    cd "$ROOT_DIR/hack/etcd-client-compat"
+    KUBEBRAIN_ETCD_ENDPOINT="$ENDPOINT" \
+      KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND="$command" \
+      go test . -run '^(TestClientV3LeaseGenerationHistoryIsLinearizable|TestClientV3LeaseLifecycleHistoryIsLinearizable)$' \
+        -count=1 -v
+  )
+  wait_backend_ready
+}
+
 run_watch_recovery_test() {
   local label="$1"
   local command="$2"
@@ -1338,6 +1352,13 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "Porcupine histories across cross-node PD network degradation" \
       "$self --degrade-pd-all-cross-node"
     ;;
+  pd-cross-node-degraded-network-lease-linearizability)
+    need docker
+    need jq
+    run_degraded_network_lease_linearizability_test \
+      "Porcupine lease histories across cross-node PD network degradation" \
+      "$self --degrade-pd-all-cross-node"
+    ;;
   tikv-network-partition)
     need docker
     need jq
@@ -1373,7 +1394,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "$self --partition-tikv-quorum-cross-node"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, pd-cross-node-degraded-network-linearizability, tikv-network-partition, tikv-cross-node-partition, tikv-cross-node-degraded-network, tikv-cross-node-degraded-network-linearizability, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, pd-cross-node-degraded-network-linearizability, pd-cross-node-degraded-network-lease-linearizability, tikv-network-partition, tikv-cross-node-partition, tikv-cross-node-degraded-network, tikv-cross-node-degraded-network-linearizability, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

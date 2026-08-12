@@ -333,6 +333,8 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 	if endpoint == "" {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the lease generation linearizability history")
 	}
+	failoverPod := linearizabilityDeletePod()
+	faultCommand := os.Getenv("KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND")
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	key := fmt.Sprintf("/dbaas-linearizability/lease-generation/%d", time.Now().UnixNano())
@@ -350,7 +352,7 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 	var clock atomic.Int64
 	var historyMu sync.Mutex
 	operationsPerClient := defaultOperationsPerClient
-	if failoverPod := linearizabilityDeletePod(); failoverPod != "" {
+	if failoverPod != "" || faultCommand != "" {
 		operationsPerClient = 30
 	}
 	history := make([]porcupine.Operation, 0, clients*operationsPerClient)
@@ -359,8 +361,14 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 	var ambiguousDetailsMu sync.Mutex
 	var ambiguousDetails []string
 	var workers sync.WaitGroup
-	failoverPod := linearizabilityDeletePod()
-	if failoverPod != "" {
+	if faultCommand != "" {
+		startLinearizabilityFaultCommand(t, ctx, faultCommand, setupErrCh, &workers)
+		select {
+		case <-ctx.Done():
+			require.NoError(t, ctx.Err())
+		case <-time.After(3 * time.Second):
+		}
+	} else if failoverPod != "" {
 		startLinearizabilityPodDeletion(ctx, &clock, failoverPod, setupErrCh, &workers)
 	}
 	for clientID := 0; clientID < clients; clientID++ {
@@ -407,9 +415,13 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Len(t, history, clients*operationsPerClient)
-	if failoverPod == "" {
+	if failoverPod == "" && faultCommand == "" {
 		require.Zero(t, ambiguousFailures.Load(),
 			"baseline history must not contain ambiguous RPC failures: %v", ambiguousDetails)
+	} else if faultCommand != "" {
+		require.Positive(t, ambiguousFailures.Load(), "fault history must exercise ambiguous RPC outcomes")
+		require.Less(t, ambiguousFailures.Load(), int64(len(history)), "fault history must retain known successful operations")
+		t.Logf("recorded %d ambiguous lease generation RPC failures during injected fault", ambiguousFailures.Load())
 	} else {
 		t.Logf("recorded %d ambiguous lease generation RPC failures during pod deletion", ambiguousFailures.Load())
 	}
@@ -557,19 +569,22 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 
 func TestClientV3LeaseLifecycleHistoryIsLinearizable(t *testing.T) {
 	const (
-		clients             = 5
-		operationsPerClient = 12
+		clients                    = 5
+		defaultOperationsPerClient = 12
 	)
 	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the lease lifecycle linearizability history")
 	}
 	failoverPod := linearizabilityDeletePod()
+	faultCommand := os.Getenv("KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND")
+	operationsPerClient := defaultOperationsPerClient
 	operationDelay := 10 * time.Millisecond
-	if failoverPod != "" {
+	if failoverPod != "" || faultCommand != "" {
 		// kubectl startup can outlast the short 60-operation baseline. Keep fault
-		// histories active long enough for storage and leader pod deletion to
-		// overlap client calls instead of accepting a no-op fault run.
+		// histories active long enough for storage/leader pod deletion or an
+		// external network fault to overlap client calls.
+		operationsPerClient = 30
 		operationDelay = 100 * time.Millisecond
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -597,7 +612,14 @@ func TestClientV3LeaseLifecycleHistoryIsLinearizable(t *testing.T) {
 	setupErrCh := make(chan error, clients+1)
 	var ambiguousFailures atomic.Int64
 	var workers sync.WaitGroup
-	if failoverPod != "" {
+	if faultCommand != "" {
+		startLinearizabilityFaultCommand(t, ctx, faultCommand, setupErrCh, &workers)
+		select {
+		case <-ctx.Done():
+			require.NoError(t, ctx.Err())
+		case <-time.After(3 * time.Second):
+		}
+	} else if failoverPod != "" {
 		startLinearizabilityPodDeletion(ctx, &clock, failoverPod, setupErrCh, &workers)
 	}
 	for clientID := 0; clientID < clients; clientID++ {
@@ -640,8 +662,12 @@ func TestClientV3LeaseLifecycleHistoryIsLinearizable(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Len(t, history, clients*operationsPerClient)
-	if failoverPod == "" {
+	if failoverPod == "" && faultCommand == "" {
 		require.Zero(t, ambiguousFailures.Load(), "baseline history must not contain ambiguous RPC failures")
+	} else if faultCommand != "" {
+		require.Positive(t, ambiguousFailures.Load(), "fault history must exercise ambiguous RPC outcomes")
+		require.Less(t, ambiguousFailures.Load(), int64(len(history)), "fault history must retain known successful operations")
+		t.Logf("recorded %d ambiguous lease RPC failures during injected fault", ambiguousFailures.Load())
 	} else if namespace := os.Getenv("LINEARIZABILITY_DELETE_NAMESPACE"); namespace != "" && namespace != "kubebrain-dev" {
 		t.Logf("recorded %d ambiguous lease RPC failures during %s pod deletion", ambiguousFailures.Load(), namespace)
 	} else {
