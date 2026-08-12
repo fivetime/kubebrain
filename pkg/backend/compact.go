@@ -630,6 +630,13 @@ func autoCompactTarget(currentRev, retention, compactRev uint64, leading bool) (
 func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanced bool, err error) {
 	b.logicalWriteMu.Lock()
 	defer b.logicalWriteMu.Unlock()
+	members, corruptGenerationRaw, corruptGenerationExists, err := b.readStableCorruptAlarmState(ctx)
+	if err != nil {
+		return false, err
+	}
+	if len(members) != 0 {
+		return false, ErrCorruptAlarmActive
+	}
 
 	// get stored compact revision
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
@@ -656,6 +663,13 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		return false, err
 	}
 	batch := b.kv.BeginBatchWrite()
+	corruptGenerationKey := b.ks.EncodeInternalKey(corruptAlarmGenerationKey)
+	if corruptGenerationExists {
+		batch.CAS(corruptGenerationKey, corruptGenerationRaw, corruptGenerationRaw, 0)
+	} else {
+		batch.PutIfNotExist(corruptGenerationKey, []byte{0}, 0)
+		batch.Del(corruptGenerationKey)
+	}
 	if compactRecordExists {
 		// if compact revision already set before
 		batch.CAS(getCompactKey(b.config.Prefix), revisionBytes, val, 0)
@@ -666,6 +680,17 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 	err = batch.Commit(ctx)
 	b.metricCli.EmitCounter("backend.set_compact_revision", 1)
 	if err != nil {
+		currentMembers, currentGenerationRaw, currentGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
+		if alarmErr != nil {
+			return false, alarmErr
+		}
+		if len(currentMembers) != 0 {
+			return false, ErrCorruptAlarmActive
+		}
+		if currentGenerationExists != corruptGenerationExists ||
+			!bytes.Equal(currentGenerationRaw, corruptGenerationRaw) {
+			return false, ErrCorruptAlarmChanged
+		}
 		// A concurrent compactor may have advanced the watermark between our read
 		// and our CAS commit, which fails the CAS. Re-read: if the stored revision
 		// already reached our target, the desired end state holds — treat it as

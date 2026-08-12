@@ -2957,6 +2957,8 @@ leader 在发布身份和 Ready 前也会校验 CORRUPT member/generation；命�
 CORRUPT 激活与所有有效 `TxnApply` 在 TiKV generation 上形成提交全序：即使请求早已通过 RPC 前门，alarm 先提交也会
 让 user/internal mutation 回滚并返回 `DataLoss`。压测和故障演练应保留“在途写与跨副本 alarm activation”场景，不能
 只验证 alarm 激活后的新请求。
+同一提交栅栏也覆盖 logical Compaction watermark；故障演练须确认跨副本 Arm 先提交时 compact revision 不前移，不能
+只观察物理 GC 是否运行。auth 管理和 alarm maintenance 依 upstream 语义仍可在 CORRUPT 下执行，不应误接入该写栅栏。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

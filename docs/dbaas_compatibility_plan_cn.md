@@ -48196,6 +48196,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后续写。Badger 确定性双 backend 回归在 writer storage commit 前暂停，由独立 backend 激活 alarm，分别证明 user
   key 与 internal-only metadata 均不落盘且 alarm 保留；无须预创建 generation，保持旧 tenant 平滑迁移。
 
+- A4498 补齐 upstream `applierV3Corrupt.Compaction` 的提交期等价栅栏。调用图审计确认 auth mutation 与 alarm
+  maintenance 在 upstream CorruptApplier 中本就不被覆盖，保留 `InternalCAS` 合法；KV/Lease 已归入 A4497
+  `TxnApply`，但 Compact 单独通过 `setCompactRecord` 写 logical watermark，仍只有 RPC 前门检查。现在该函数在持有
+  logical-write barrier 后取得稳定 alarm seqlock snapshot，并把 generation exact CAS/absent predicate 加入 compact
+  watermark 的同一 transaction。跨副本 Arm 先提交时返回 `ErrCorruptAlarmActive` 且 watermark 不前移；generation
+  发生无 active owner 的并发变化也返回 typed changed 错误而不把普通 CAS failure 泄漏成 Unknown。Badger 双 backend
+  回归在 compact storage commit 前暂停并由另一实例 Arm，证明 logical watermark 完全不存在且 alarm 获胜；physical
+  GC 只会在 watermark 已先提交（即 compaction 在线性化序中早于 alarm）时继续，符合 upstream apply 顺序。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -29,6 +29,8 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
+	ibadger "github.com/kubewharf/kubebrain/pkg/storage/badger"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -364,4 +366,35 @@ func TestCompactAsyncCapturesEpochForInternalCaller(t *testing.T) {
 	hasMarker, markerErr := b.HasCompactRevision(context.Background())
 	require.NoError(t, markerErr)
 	require.False(t, hasMarker, "internal compaction must be fenced if leadership changes before CAS")
+}
+
+func TestCompactWatermarkCommitIsFencedByConcurrentCrossReplicaCorruptActivation(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store, err := ibadger.NewKvStorage(ibadger.Config{Dir: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	blocking := &blockBeforeCommitStorage{
+		KvStorage: store, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	compactor := NewBackend(blocking, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	alarmer := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	target := uint64(time.Now().UnixNano())
+	compactor.SetCurrentRevision(target)
+
+	blocking.trigger.Store(true)
+	result := make(chan error, 1)
+	go func() {
+		_, compactErr := compactor.CompactAsync(context.Background(), target)
+		result <- compactErr
+	}()
+	<-blocking.entered
+	require.NoError(t, alarmer.ArmCorrupt(context.Background(), 4497002))
+	close(blocking.release)
+	require.ErrorIs(t, <-result, ErrCorruptAlarmActive)
+
+	_, err = store.Get(context.Background(), getCompactKey(config.Prefix))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound,
+		"a compact ordered after CORRUPT activation must not advance its watermark")
 }
