@@ -751,7 +751,8 @@ TidbCluster metadata UID 和 status
 `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致；TidbCluster `spec.version` 以及已收敛 PD/TiKV
 StatefulSet 模板中的精确容器镜像还必须分别匹配 `EXPECTED_TIDB_VERSION`、`EXPECTED_PD_IMAGE`、
 `EXPECTED_TIKV_IMAGE`，禁止在滚动升级未切齐或 base image 漂移时放行。
-每个 PD/TiKV Pod 还必须 Running/Ready、非终止，Pod spec 镜像必须匹配模板期望，且运行时
+每个 PD/TiKV Pod 集合还必须是目标 StatefulSet 的精确 ordinal 名称，controller owner name/UID 和
+`controller-revision-hash` 必须绑定当前 update revision；每个 Pod 必须 Running/Ready、非终止，Pod spec 镜像必须匹配模板期望，且运行时
 `containerStatuses.imageID` 必须以后端 receipt 中的 `EXPECTED_PD_IMAGE_DIGEST`/
 `EXPECTED_TIKV_IMAGE_DIGEST` 结尾，防止可变 tag 指向不同字节；随后要求 KubeBrain
 StatefulSet metadata UID 与 operation receipt 中的 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`

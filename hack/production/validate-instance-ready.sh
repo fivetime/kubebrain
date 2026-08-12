@@ -255,6 +255,10 @@ actual_pd_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get stat
   -o 'jsonpath={.spec.template.spec.containers[?(@.name=="pd")].image}')"
 actual_tikv_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" \
   -o 'jsonpath={.spec.template.spec.containers[?(@.name=="tikv")].image}')"
+actual_pd_statefulset_uid="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-pd" -o 'jsonpath={.metadata.uid}')"
+actual_tikv_statefulset_uid="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" -o 'jsonpath={.metadata.uid}')"
+actual_pd_revision="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-pd" -o 'jsonpath={.status.updateRevision}')"
+actual_tikv_revision="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" -o 'jsonpath={.status.updateRevision}')"
 if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ||
   "$actual_pd_image" != "$EXPECTED_PD_IMAGE" ||
   "$actual_tikv_image" != "$EXPECTED_TIKV_IMAGE" ]]; then
@@ -263,8 +267,16 @@ if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ||
 fi
 
 validate_storage_runtime() {
-  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_digest="$5"
-  local pods_json selector
+  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_digest="$5" owner_uid="$6" revision="$7"
+  local pods_json selector statefulset expected_names='[]' ordinal
+  statefulset="${TIDB_CLUSTER}-${component}"
+  [[ -n "$owner_uid" && -n "$revision" ]] || {
+    echo "${display} StatefulSet runtime identity is incomplete" >&2
+    exit 1
+  }
+  for ((ordinal = 0; ordinal < expected_replicas; ordinal++)); do
+    expected_names="$(printf '%s' "$expected_names" | "$JQ" -c --arg name "${statefulset}-${ordinal}" '. + [$name]')"
+  done
   selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=${component}"
   if ! pods_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get pods -l "$selector" -o json)"; then
     echo "failed to list ${display} Pods for runtime release verification" >&2
@@ -272,10 +284,15 @@ validate_storage_runtime() {
   fi
   if ! printf '%s' "$pods_json" | "$JQ" -e \
     --arg component "$component" --arg image "$expected_image" --arg digest "$expected_digest" \
-    --argjson expected "$expected_replicas" '
+    --arg statefulset "$statefulset" --arg ownerUID "$owner_uid" --arg revision "$revision" \
+    --argjson expected "$expected_replicas" --argjson expectedNames "$expected_names" '
       (.items | length) == $expected and
+      (([.items[].metadata.name] | sort) == ($expectedNames | sort)) and
       all(.items[];
         .metadata.deletionTimestamp == null and .status.phase == "Running" and
+        .metadata.labels["controller-revision-hash"] == $revision and
+        ([.metadata.ownerReferences[]? | select(.controller == true and .apiVersion == "apps/v1" and
+          .kind == "StatefulSet" and .name == $statefulset and .uid == $ownerUID)] | length) == 1 and
         ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
         ([.spec.containers[]? | select(.name == $component and .image == $image)] | length) == 1 and
         ([.status.containerStatuses[]? |
@@ -287,8 +304,8 @@ validate_storage_runtime() {
   fi
 }
 
-validate_storage_runtime "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_IMAGE_DIGEST"
-validate_storage_runtime "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_IMAGE_DIGEST"
+validate_storage_runtime "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_IMAGE_DIGEST" "$actual_pd_statefulset_uid" "$actual_pd_revision"
+validate_storage_runtime "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_IMAGE_DIGEST" "$actual_tikv_statefulset_uid" "$actual_tikv_revision"
 
 kubebrain_status="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get statefulset "$KUBEBRAIN_STATEFULSET" \

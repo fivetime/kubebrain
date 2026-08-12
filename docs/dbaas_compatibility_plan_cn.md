@@ -47728,6 +47728,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非终止、spec image 精确，并让每个 runtime imageID 以后端批准 digest 结尾。缺 Pod、未 Ready、tag 或
   digest 混用均 fail closed，成功输出同时记录两个 digest。该稳态证明仍不替代真实逐成员升级/回滚矩阵。
 
+- A4439 关闭 A4438 只按 label selector 和数量接受 storage Pod 的身份混淆窗口。三个误贴
+  `app.kubernetes.io/component=tikv` 标签的外来 Pod，只要 Ready、tag 和 digest 相同，旧门禁就会替代真正
+  `kb-tikv-{0,1,2}` 通过。RED 固定 foreign ordinal 集合及错误 StatefulSet owner UID；新门禁从 PD/TiKV
+  StatefulSet 读取 immutable UID 和 update revision，构造精确 ordinal 名称集合，并逐 Pod 要求唯一
+  apps/v1 StatefulSet controller owner name/UID 与 `controller-revision-hash` 一致。它与 A4438 的运行 digest
+  校验组合后，标签伪装、旧 revision、孤儿 Pod 和错误 controller 均 fail closed；真实升级矩阵仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

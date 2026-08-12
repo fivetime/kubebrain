@@ -88,6 +88,8 @@ func TestValidateInstanceReady(t *testing.T) {
 		pdImage                  string
 		tikvImage                string
 		tikvImageID              string
+		tikvPodPrefix            string
+		tikvOwnerUID             string
 		healthOK                 bool
 		advertisedURLs           string
 		unreachableAdvertisedURL string
@@ -136,6 +138,24 @@ func TestValidateInstanceReady(t *testing.T) {
 			tikvImageID: "docker-pullable://pingcap/tikv@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			healthOK:    true,
 			wantOutput:  "TiKV Pod runtime release mismatch",
+		},
+		{
+			name:          "TiKV selector returns foreign Pods",
+			image:         "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:    "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:      "3\t3",
+			tikvPodPrefix: "foreign-tikv",
+			healthOK:      true,
+			wantOutput:    "TiKV Pod runtime release mismatch",
+		},
+		{
+			name:         "TiKV Pod owner drift",
+			image:        "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:   "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:     "3\t3",
+			tikvOwnerUID: "uid-foreign-sts",
+			healthOK:     true,
+			wantOutput:   "TiKV Pod runtime release mismatch",
 		},
 		{
 			name:       "tls release baseline",
@@ -928,6 +948,14 @@ elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *".image}"* ]]; then
   printf '%s' "$FAKE_PD_IMAGE"
 elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *".image}"* ]]; then
   printf '%s' "$FAKE_TIKV_IMAGE"
+elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath={.metadata.uid}"* ]]; then
+  printf 'uid-pd-sts'
+elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath={.metadata.uid}"* ]]; then
+  printf 'uid-tikv-sts'
+elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath={.status.updateRevision}"* ]]; then
+  printf 'pd-new'
+elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath={.status.updateRevision}"* ]]; then
+  printf 'tikv-new'
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *"jsonpath="* ]]; then
   printf '5\t5\t3\t3\t3\tpd-new\tpd-new'
 elif [[ "$*" == *"get statefulset kb-tikv"* && "$*" == *"jsonpath="* ]]; then
@@ -1022,6 +1050,14 @@ exit 1
 			if tikvImageID == "" {
 				tikvImageID = "docker-pullable://pingcap/tikv@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 			}
+			tikvPodPrefix := tc.tikvPodPrefix
+			if tikvPodPrefix == "" {
+				tikvPodPrefix = "kb-tikv"
+			}
+			tikvOwnerUID := tc.tikvOwnerUID
+			if tikvOwnerUID == "" {
+				tikvOwnerUID = "uid-tikv-sts"
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"ETCDCTL=" + fakeEtcdctl,
@@ -1055,8 +1091,8 @@ exit 1
 				"FAKE_TIDB_VERSION=" + tidbVersion,
 				"FAKE_PD_IMAGE=" + pdImage,
 				"FAKE_TIKV_IMAGE=" + tikvImage,
-				"FAKE_PD_PODS_JSON=" + fakeStoragePodsJSON("pd", "pingcap/pd:v8.5.3", "docker-pullable://pingcap/pd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-				"FAKE_TIKV_PODS_JSON=" + fakeStoragePodsJSON("tikv", tikvImage, tikvImageID),
+				"FAKE_PD_PODS_JSON=" + fakeStoragePodsJSON("pd", "kb-pd", "uid-pd-sts", "pd-new", "pingcap/pd:v8.5.3", "docker-pullable://pingcap/pd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+				"FAKE_TIKV_PODS_JSON=" + fakeStoragePodsJSON("tikv", tikvPodPrefix, tikvOwnerUID, "tikv-new", tikvImage, tikvImageID),
 				"FAKE_HEALTH_OK=" + boolString(tc.healthOK),
 				"FAKE_UNREACHABLE_ADVERTISED_URL=" + tc.unreachableAdvertisedURL,
 				"FAKE_MEMBER_LIST_JSON=" + memberListJSON,
@@ -1085,12 +1121,16 @@ exit 1
 	}
 }
 
-func fakeStoragePodsJSON(component, image, imageID string) string {
+func fakeStoragePodsJSON(component, podPrefix, ownerUID, revision, image, imageID string) string {
 	items := make([]map[string]any, 3)
 	for index := range items {
 		items[index] = map[string]any{
-			"metadata": map[string]any{"name": "kb-" + component + "-" + string(rune('0'+index))},
-			"spec":     map[string]any{"containers": []map[string]any{{"name": component, "image": image}}},
+			"metadata": map[string]any{
+				"name":            podPrefix + "-" + string(rune('0'+index)),
+				"labels":          map[string]any{"controller-revision-hash": revision},
+				"ownerReferences": []map[string]any{{"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "kb-" + component, "uid": ownerUID, "controller": true}},
+			},
+			"spec": map[string]any{"containers": []map[string]any{{"name": component, "image": image}}},
 			"status": map[string]any{
 				"phase":             "Running",
 				"conditions":        []map[string]any{{"type": "Ready", "status": "True"}},
