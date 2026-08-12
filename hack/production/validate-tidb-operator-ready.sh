@@ -8,6 +8,7 @@ TIDB_OPERATOR_CONTAINER="${TIDB_OPERATOR_CONTAINER:-tidb-controller-manager}"
 EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID="${EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID:-}"
 EXPECTED_TIDB_OPERATOR_IMAGE="${EXPECTED_TIDB_OPERATOR_IMAGE:-}"
 EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST="${EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST:-}"
+EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH="${EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH:-}"
 EXPECTED_TIDB_OPERATOR_REPLICAS="${EXPECTED_TIDB_OPERATOR_REPLICAS:-1}"
 KUBECTL="${KUBECTL:-kubectl}"
 JQ="${JQ:-jq}"
@@ -23,6 +24,8 @@ done
   die "EXPECTED_TIDB_OPERATOR_IMAGE must be an exact image reference without whitespace"
 [[ "$EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || \
   die "EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST must be sha256:<64 lowercase hex>"
+[[ "$EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]] || \
+  die "EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH must be a DNS label"
 [[ "$EXPECTED_TIDB_OPERATOR_REPLICAS" =~ ^[1-9][0-9]*$ ]] || die "EXPECTED_TIDB_OPERATOR_REPLICAS must be a positive integer"
 
 kubectl_args=(--context "$KUBE_CONTEXT" -n "$TIDB_OPERATOR_NAMESPACE")
@@ -63,6 +66,8 @@ IFS=$'\t' read -r replicaset_name replicaset_uid pod_template_hash <<<"$(
 )"
 [[ -n "$replicaset_name" && -n "$replicaset_uid" && -n "$pod_template_hash" && "$pod_template_hash" != "null" ]] || \
   die "TiDB Operator ReplicaSet identity is incomplete"
+[[ "$pod_template_hash" == "$EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH" ]] || \
+  die "TiDB Operator ReplicaSet pod-template-hash mismatch"
 if ! printf '%s' "$replicasets_json" | "$JQ" -e \
   --arg deployment "$TIDB_OPERATOR_DEPLOYMENT" --arg deploymentUID "$EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID" \
   --arg activeUID "$replicaset_uid" '
@@ -113,4 +118,4 @@ if ! printf '%s' "$final_deployment_json" | "$JQ" -e \
   die "TiDB Operator Deployment changed during validation"
 fi
 
-echo "TiDB Operator release gate passed: deployment=${TIDB_OPERATOR_NAMESPACE}/${TIDB_OPERATOR_DEPLOYMENT} uid=${EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID} image=${EXPECTED_TIDB_OPERATOR_IMAGE} digest=${EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST} replicas=${EXPECTED_TIDB_OPERATOR_REPLICAS}"
+echo "TiDB Operator release gate passed: deployment=${TIDB_OPERATOR_NAMESPACE}/${TIDB_OPERATOR_DEPLOYMENT} uid=${EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID} image=${EXPECTED_TIDB_OPERATOR_IMAGE} digest=${EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST} pod_template_hash=${EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH} replicas=${EXPECTED_TIDB_OPERATOR_REPLICAS}"

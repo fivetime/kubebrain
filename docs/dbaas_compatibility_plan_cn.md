@@ -47795,6 +47795,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非零 RS/Pod/digest，失败时整体非零且无成功消息。两次检查把 Operator 异常限制在流水线首尾可观察边界；
   它不是中间每一瞬间的连续证明，真实 rollout 仍须持续 etcd oracle 覆盖。
 
+- A4447 把 TiDB Operator 的批准身份从镜像扩展到完整 PodTemplate rollout 身份。A4443-A4446 虽绑定
+  Deployment UID、image tag、runtime digest、ReplicaSet owner 和稳态 generation，但同一 digest 若以不同
+  args、env、ServiceAccount 或 volume 运行，仍可能改变协调行为并通过。RED 将 receipt 中批准的
+  `EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH` 改为与 active RS 不同的值，旧门禁确定性成功。新门禁要求该值
+  是非空 DNS label，并在读取唯一 active RS 后与其 Kubernetes `pod-template-hash` 精确相等；Pod 仍须继承
+  同一 hash，末尾 Deployment fence 仍拒绝验证期间 rollout。该 hash 用作 Kubernetes rollout receipt 身份，
+  不宣称具备加密抗碰撞性；镜像供应链身份继续由 runtime sha256 digest 独立证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

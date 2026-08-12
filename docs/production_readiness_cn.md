@@ -157,6 +157,7 @@ KUBE_CONTEXT=production \
 EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID='<immutable deployment UID>' \
 EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
 EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
+EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH='<approved pod-template-hash>' \
 PROMETHEUS_URL=https://prometheus.monitoring.svc:9090 \
 PROMETHEUS_BEARER_TOKEN_FILE=/run/secrets/prometheus/token \
 hack/production/validate-production-release.sh
@@ -190,6 +191,7 @@ TIDB_OPERATOR_DEPLOYMENT=tidb-controller-manager \
 EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID='<immutable deployment UID>' \
 EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
 EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
+EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH='<approved pod-template-hash>' \
 EXPECTED_TIDB_OPERATOR_REPLICAS=1 \
 hack/production/validate-tidb-operator-ready.sh
 ```
@@ -197,7 +199,9 @@ hack/production/validate-tidb-operator-ready.sh
 它要求 Deployment generation/副本和唯一 controller-manager container image 全部收敛，再从同一 namespace
 筛出唯一由该 Deployment UID 控制且 Ready/Available 的 ReplicaSet，并要求同一 Deployment 下其他历史
 ReplicaSet 的 spec/status/ready/available replicas 全部为零，拒绝刚启动或尚未清零的并行 rollout；最后要求 active RS 的精确 Pod 数全部
-Running/Ready、非终止、template hash 与 owner UID 一致，并运行批准的 image digest。tag、UID、ReplicaSet、
+Running/Ready、非终止、template hash 与 owner UID 一致，并运行批准的 image digest；active RS 的
+`pod-template-hash` 还必须等于发布 receipt 中批准的值，从而拒绝同一镜像下 args、env、ServiceAccount、
+volume 等完整 PodTemplate 配置漂移。该 hash 是 Kubernetes rollout 身份而非加密供应链摘要，二进制身份仍由 digest 绑定。tag、UID、ReplicaSet、
 Pod 或 digest 任一漂移均 fail closed；Pod 校验后还会重读 Deployment，要求 UID、generation、replicas 和
 template image 与起始快照相同，拒绝门禁执行中启动的新 rollout。仅有 Helm release 名称或 CRD 可用不能替代该运行身份链。
 组合入口在所有数据面检查后再次执行完整 Operator 门禁，防止控制器只在流水线开始时健康、随后于较慢的
@@ -706,6 +710,7 @@ KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID=<immutable-operator-deployment-uid> \
 EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
 EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
+EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=<approved-pod-template-hash> \
 EXPECTED_KUBEBRAIN_STATEFULSET_UID=<immutable-kubebrain-statefulset-uid> \
 EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=<immutable-kubebrain-client-service-uid> \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \

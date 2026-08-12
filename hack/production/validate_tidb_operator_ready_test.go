@@ -35,6 +35,7 @@ esac
 		"EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID=uid-operator",
 		"EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5",
 		"EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		"EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=abc",
 		"FAKE_DEPLOYMENT_JSON=" + deployment,
 		"FAKE_REPLICASETS_JSON=" + replicaSets,
 		"FAKE_PODS_JSON=" + pods,
@@ -57,6 +58,8 @@ esac
 		{name: "Deployment UID drift", env: "FAKE_DEPLOYMENT_JSON=" + fakeOperatorDeploymentJSON("uid-other", "pingcap/tidb-operator:v1.6.5", true), want: "Deployment release mismatch"},
 		{name: "second ReplicaSet starts rollout", env: "FAKE_REPLICASETS_JSON=" + fakeOperatorReplicaSetsDuringRolloutJSON("uid-operator", "pingcap/tidb-operator:v1.6.5"), want: "ReplicaSet rollout is not quiescent"},
 		{name: "rollout starts during validation", env: "FAKE_FINAL_DEPLOYMENT_JSON=" + fakeOperatorDeploymentGenerationJSON("uid-operator", "pingcap/tidb-operator:v1.6.6", 4), want: "Deployment changed during validation"},
+		{name: "Pod template hash is required", env: "EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=", want: "must be a DNS label"},
+		{name: "Pod template hash drift", env: "EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=approved", want: "ReplicaSet pod-template-hash mismatch"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.NoError(t, os.RemoveAll(filepath.Join(dir, "deployment-calls")))
