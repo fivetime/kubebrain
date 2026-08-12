@@ -47098,6 +47098,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   若业务需要跨请求幂等和代际隔离，必须使用平台层 request token/资源 generation，不能改变 etcd v3 wire
   语义。真实外部 L4/L7 连接迁移与平台通用幂等 request token 仍保持开放。
 
+- A4403 将 committed-response-loss 审计从 Revoke 扩展到自动 ID LeaseGrant，并固定另一个不能由兼容
+  server 私自消除的上游歧义。源码对照 `/root/etcd/server/etcdserver/v3_server.go::LeaseGrant` 与
+  `/root/etcd/client/v3/retry.go::retryLeaseClient.LeaseGrant`：clientv3 把 Grant 标为 repeatable，但调用方
+  发出的自动 ID request 始终是 `ID=0`；每个实际承接 attempt 的 server 都在自己的 request 对象上生成新
+  ID。若首个 Grant 已提交而 response 丢失，跨副本 retry 会再创建一条 lease，调用只收到第二条的 ID，
+  第一条成为正 TTL orphan。新增 `TestLeaseGrantResponseLossReplayAcrossReplicasDifferential`：先经 bridge
+  完成 LeaseList 预热，避免 response blackhole 误吞 HTTP/2 SETTINGS；replica 2 记录 baseline lease set 与
+  KV revision，replica 0 的首个 Grant 提交后丢响应，确认 lease set 恰增 1 才把连接切到 replica 1。最终
+  client 调用必须成功，集群相对 baseline 恰有两个不同新 ID，返回 ID 在集合内、另一个恰为单一 orphan，
+  两者 TTL 均为正，且 lease metadata 写入不推进 user KV revision。测试清理阶段显式 revoke 两条已知 ID，
+  不把 orphan 留给可复用环境。
+  首轮真实 reference RED 在 5.08 秒发现门禁缺少连接预热：blackhole 在 gRPC 建连前开启，首个 SETTINGS
+  被丢弃，Grant 从未抵达，故不能证明 committed-response-loss；补充 warm LeaseList 与 replica 0 实际 dial
+  断言后，2026-08-12 clean `/root/etcd@5cd9f4ee1380...` 三成员 reference 和 disposable
+  `kubebrain-grant-response-loss` 独立 3 PD/3 TiKV/3 KubeBrain 均通过。A4401–A4403 统一
+  `TEST_SCOPE=lease-response-loss` 组合门禁耗时 1.891 秒；A4403 两端均记录 attempt 0
+  `Unavailable/EOF` 后成功，并满足“2 条 live / 1 条 orphan / revision delta 0”。这证明 KubeBrain 跨副本
+  自动 ID 生成没有覆盖首条 TiKV metadata，同时忠实保留 upstream 泄漏窗口。DBaaS 使用约束是：需要严格
+  资源记账时应由平台先分配并持久化显式 ID，再通过 raw LeaseGrant 对账重试，或使用平台 request token；
+  不能把一次高层 `Grant(0)` 成功误解为故障窗口内只创建过一条 lease。平台通用幂等 request token、孤儿
+  lease 审计/计费告警与真实外部 L4/L7 连接迁移仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
