@@ -47157,6 +47157,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   A4404 显式 ID 对账路径；跨租户 orphan attribution、平台 request token 与真实外部 L4/L7 连接迁移仍
   保持开放。
 
+- A4406 关闭 A4401–A4405 反复保留的“响应丢失与 backend 迁移只由测试进程内 bridge 模拟”证据缺口。
+  宿主和仓库均没有可直接复用的 HAProxy/Envoy/socat，因此新增独立命令
+  `hack/etcd-client-compat/cmd/tcp-switch-proxy`：它以单独 PID 监听 TCP，支持 response-direction blackhole、
+  后续连接 target 切换、现有连接切断，以及 JSON stats；stats 记录实际 dial 的 backend 和丢弃字节数，
+  测试进程只通过 stdin/stdout 控制协议驱动，不能共享 Go 内存或直接操纵连接。新增
+  `TestLeaseGrantResponseLossAcrossExternalL4ProxyDifferential`，从外部进程 endpoint 完成 LeaseList 预热后，
+  向 replica 0 发起自动 ID Grant；replica 2 先确认首条 lease 已提交，proxy stats 必须证明响应字节已丢弃，
+  再把 target 切到 replica 1、断开旧连接并恢复转发。clientv3 必须自动成功，最终相对 baseline 精确新增
+  两条不同 live lease、返回 ID 属于集合、另一条为唯一 orphan，user revision delta 仍为 0；reference 与
+  KubeBrain 结果必须完全一致。
+  三成员 runner 现在从 compat 独立 Go module 的当前源码构建临时 proxy 二进制，并通过
+  `EXTERNAL_TCP_SWITCH_PROXY_BINARY` 显式交给测试，runner cleanup 随 reference data-dir 一并删除。首次现场
+  在测试启动前 fail closed：从仓库根 module 构建 nested compat package 被 Go 拒绝；改为进入 compat module
+  构建后，2026-08-12 clean `/root/etcd@5cd9f4ee1380...` 三成员 reference 与 disposable
+  `kubebrain-external-l4` 独立 3 PD/3 TiKV/3 KubeBrain 均通过。外部 L4 双端场景耗时 0.33 秒，A4401–A4406
+  统一 `lease-response-loss` 门禁 13.304 秒；两端均记录 attempt 0 `Unavailable/EOF`，proxy stats 证明真实
+  跨进程 response discard 和 replica 0→1 新连接迁移。本项证明语义不依赖进程内 bridge，但仍不是生产云
+  LB/NAT/conntrack 实现矩阵；TLS passthrough、真实 L7 gRPC proxy、跨节点网络设备和平台通用 request token
+  仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

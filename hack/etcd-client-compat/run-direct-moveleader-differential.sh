@@ -60,10 +60,10 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 case "$TEST_SCOPE" in
   all)
-    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
     ;;
   lease-response-loss|lease-revoke-cross-replica)
-    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
+    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
     ;;
   *)
     echo "TEST_SCOPE must be all, lease-response-loss, or lease-revoke-cross-replica" >&2
@@ -155,6 +155,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+(
+  cd "$ROOT_DIR/hack/etcd-client-compat"
+  go build -o "$data_dir/tcp-switch-proxy" ./cmd/tcp-switch-proxy
+)
+
 initial_cluster=""
 for index in 0 1 2; do
   if [[ -n "$initial_cluster" ]]; then
@@ -208,6 +213,7 @@ done
   cd "$ROOT_DIR/hack/etcd-client-compat"
   REFERENCE_ETCD_DIRECT_ENDPOINTS="$(IFS=,; echo "${reference_client_endpoints[*]}")" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
+    EXTERNAL_TCP_SWITCH_PROXY_BINARY="$data_dir/tcp-switch-proxy" \
     go test . -run "$test_pattern" \
       -count="$TEST_COUNT" -timeout="$TEST_TIMEOUT" -v
 )
