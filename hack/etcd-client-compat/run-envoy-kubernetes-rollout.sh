@@ -9,11 +9,32 @@ ROLLOUT_CYCLES="${ROLLOUT_CYCLES:-3}"
 NODE_HOST="${NODE_HOST:-}"
 NODE_PORT="${NODE_PORT:-}"
 NODE_ENDPOINT_PORT="${NODE_ENDPOINT_PORT:-}"
+TLS_CA_FILE="${TLS_CA_FILE:-}"
+TLS_CERT_FILE="${TLS_CERT_FILE:-}"
+TLS_KEY_FILE="${TLS_KEY_FILE:-}"
+TLS_SERVER_NAME="${TLS_SERVER_NAME:-}"
 SERVICE_NAME=kubebrain-envoy-rollout-gate
 
 if [[ -z "$KUBE_CONTEXT" ]]; then
   echo "set KUBE_CONTEXT explicitly; the rollout gate will not use an implicit current context" >&2
   exit 2
+fi
+tls_values=("$TLS_CA_FILE" "$TLS_CERT_FILE" "$TLS_KEY_FILE" "$TLS_SERVER_NAME")
+tls_nonempty=0
+for value in "${tls_values[@]}"; do
+  [[ -n "$value" ]] && ((tls_nonempty += 1))
+done
+if (( tls_nonempty != 0 && tls_nonempty != 4 )); then
+  echo "TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE, and TLS_SERVER_NAME must all be set for TLS passthrough" >&2
+  exit 2
+fi
+if (( tls_nonempty == 4 )); then
+  for tls_file in "$TLS_CA_FILE" "$TLS_CERT_FILE" "$TLS_KEY_FILE"; do
+    if [[ ! -r "$tls_file" ]]; then
+      echo "TLS_CA_FILE, TLS_CERT_FILE, and TLS_KEY_FILE must name readable files" >&2
+      exit 2
+    fi
+  done
 fi
 if [[ ! "$ROLLOUT_CYCLES" =~ ^[0-9]+$ ]] || (( ROLLOUT_CYCLES < 1 || ROLLOUT_CYCLES > 10 )); then
   echo "ROLLOUT_CYCLES must be an integer in [1,10]" >&2
@@ -60,8 +81,12 @@ cleanup() {
 trap cleanup EXIT
 cleanup
 
+service_port=2379
+if (( tls_nonempty == 4 )); then
+  service_port=2380
+fi
 kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" create service nodeport "$SERVICE_NAME" \
-  --tcp=2379:2379 --dry-run=client -o yaml | \
+  --tcp="${service_port}:${service_port}" --dry-run=client -o yaml | \
   kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" apply -f - >/dev/null
 kubectl --context "$KUBE_CONTEXT" --namespace "$NAMESPACE" patch service "$SERVICE_NAME" --type=json \
   -p '[{"op":"replace","path":"/spec/selector","value":{"app.kubernetes.io/name":"kubebrain-envoy","app.kubernetes.io/instance":"kubebrain"}}]' \
@@ -98,9 +123,18 @@ fi
 
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
+  tls_enabled=false
+  if (( tls_nonempty == 4 )); then
+    tls_enabled=true
+  fi
   KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT="${node_ip}:${endpoint_port}" \
     KUBEBRAIN_ENVOY_ROLLOUT_CONTEXT="$KUBE_CONTEXT" \
 	  KUBEBRAIN_ENVOY_ROLLOUT_NAMESPACE="$NAMESPACE" \
 	  KUBEBRAIN_ENVOY_ROLLOUT_CYCLES="$ROLLOUT_CYCLES" \
+	  KUBEBRAIN_ENVOY_ROLLOUT_TLS="$tls_enabled" \
+	  KUBERNETES_ENVOY_ROLLOUT_TLS_CA_FILE="$TLS_CA_FILE" \
+	  KUBERNETES_ENVOY_ROLLOUT_TLS_CERT_FILE="$TLS_CERT_FILE" \
+	  KUBERNETES_ENVOY_ROLLOUT_TLS_KEY_FILE="$TLS_KEY_FILE" \
+	  KUBERNETES_ENVOY_ROLLOUT_TLS_SERVER_NAME="$TLS_SERVER_NAME" \
 	  go test . -run '^TestEnvoyKubernetesRollout$' -count=1 -timeout="$TEST_TIMEOUT" -v
 )

@@ -22,6 +22,9 @@ func TestEnvoyKubernetesRolloutRunnerFailsClosed(t *testing.T) {
 		"ROLLOUT_CYCLES must be an integer in [1,10]",
 		`ROLLOUT_CYCLES="${ROLLOUT_CYCLES:-3}"`,
 		"KUBEBRAIN_ENVOY_ROLLOUT_CYCLES",
+		"TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE, and TLS_SERVER_NAME must all be set for TLS passthrough",
+		"KUBEBRAIN_ENVOY_ROLLOUT_TLS",
+		"KUBERNETES_ENVOY_ROLLOUT_TLS_SERVER_NAME",
 		"kubebrain-envoy-rollout-gate",
 		"KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT",
 		"TestEnvoyKubernetesRollout",
@@ -37,5 +40,16 @@ func TestEnvoyKubernetesRolloutRunnerRejectsImplicitContext(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "set KUBE_CONTEXT explicitly")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestEnvoyKubernetesRolloutRunnerRejectsPartialTLS(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-envoy-kubernetes-rollout.sh", []string{
+		"KUBE_CONTEXT=explicit-test-context",
+		"TLS_CA_FILE=/missing/ca.crt",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output),
+		"TLS_CA_FILE, TLS_CERT_FILE, TLS_KEY_FILE, and TLS_SERVER_NAME must all be set for TLS passthrough")
 	require.NotContains(t, string(output), "missing required command")
 }

@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"os/exec"
@@ -48,10 +49,17 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, rolloutCycles, 1)
 	require.LessOrEqual(t, rolloutCycles, 10)
+	tlsEnabled := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_TLS")) == "true"
+	var clientTLS *tls.Config
+	activeDownstreamStat := "http.kubebrain_downstream.downstream_cx_active"
+	if tlsEnabled {
+		clientTLS = loadExternalL4ClientTLS(t, "KUBERNETES_ENVOY_ROLLOUT")
+		activeDownstreamStat = "listener.0.0.0.0_2380.downstream_cx_active"
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	t.Cleanup(cancel)
-	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second, TLS: clientTLS})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
 
@@ -75,9 +83,9 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		leaseID: grant.ID, leaseKey: leaseKey,
 		keepAlive: keepAliveObserved, keepAliveClosed: keepAliveClosed,
 	}}
-	for member := 1; member < 30 && !allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace); member++ {
+	for member := 1; member < 30 && !allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace, activeDownstreamStat); member++ {
 		cohortClient, createErr := clientv3.New(clientv3.Config{
-			Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second,
+			Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second, TLS: clientTLS,
 		})
 		require.NoError(t, createErr)
 		t.Cleanup(func() { require.NoError(t, cohortClient.Close()) })
@@ -101,7 +109,7 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 			keepAlive: cohortObserved, keepAliveClosed: cohortClosed,
 		})
 	}
-	require.True(t, allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace),
+	require.True(t, allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace, activeDownstreamStat),
 		"client cohort must place at least one active downstream connection on every Envoy Pod")
 	require.GreaterOrEqual(t, len(cohort), 3)
 	t.Logf("established %d long-lived Watch clients across all three Envoy Pods", len(cohort))
@@ -229,22 +237,22 @@ func receiveEnvoyKeepAliveAfter(t *testing.T, ctx context.Context,
 	}
 }
 
-func allEnvoyPodsHaveActiveDownstreams(t *testing.T, contextName, namespace string) bool {
+func allEnvoyPodsHaveActiveDownstreams(t *testing.T, contextName, namespace, statName string) bool {
 	t.Helper()
 	pods := envoyPodNames(t, contextName, namespace)
 	require.Len(t, pods, 3)
 	for _, pod := range pods {
 		output := kubectl(t, contextName, namespace, "exec", pod, "--", "/bin/bash", "-ec",
-			"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'GET /stats?filter=http.kubebrain_downstream.downstream_cx_active HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3")
-		if parseEnvoyActiveDownstreams(output) < 1 {
+			fmt.Sprintf("exec 3<>/dev/tcp/127.0.0.1/9901; printf 'GET /stats?filter=%s HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3", statName))
+		if parseEnvoyActiveDownstreams(output, statName) < 1 {
 			return false
 		}
 	}
 	return true
 }
 
-func parseEnvoyActiveDownstreams(output string) int {
-	const prefix = "http.kubebrain_downstream.downstream_cx_active: "
+func parseEnvoyActiveDownstreams(output, statName string) int {
+	prefix := statName + ": "
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, prefix) {

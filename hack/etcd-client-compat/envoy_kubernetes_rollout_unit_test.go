@@ -39,10 +39,12 @@ func TestMinimumReadyEndpointCountFailsClosedWithoutSamples(t *testing.T) {
 }
 
 func TestParseEnvoyActiveDownstreams(t *testing.T) {
-	require.Equal(t, 7, parseEnvoyActiveDownstreams("HTTP/1.1 200 OK\r\n\r\n"+
-		"http.kubebrain_downstream.downstream_cx_active: 7\n"))
-	require.Zero(t, parseEnvoyActiveDownstreams("http.kubebrain_downstream.downstream_cx_active: invalid\n"))
-	require.Zero(t, parseEnvoyActiveDownstreams("cluster.kubebrain.upstream_cx_active: 7\n"))
+	const stat = "http.kubebrain_downstream.downstream_cx_active"
+	require.Equal(t, 7, parseEnvoyActiveDownstreams("HTTP/1.1 200 OK\r\n\r\n"+stat+": 7\n", stat))
+	require.Zero(t, parseEnvoyActiveDownstreams(stat+": invalid\n", stat))
+	require.Zero(t, parseEnvoyActiveDownstreams("cluster.kubebrain.upstream_cx_active: 7\n", stat))
+	const tlsStat = "listener.0.0.0.0_2380.downstream_cx_active"
+	require.Equal(t, 3, parseEnvoyActiveDownstreams(tlsStat+": 3\n", tlsStat))
 }
 
 func stringSet(values ...string) map[string]struct{} {

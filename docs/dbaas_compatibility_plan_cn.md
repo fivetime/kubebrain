@@ -47455,6 +47455,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项关闭“多副本活跃连接只覆盖 Watch、不覆盖每连接 LeaseKeepAlive 多路恢复”的缺口；更高连接/lease 基数、
   小时级 churn、云 LB、跨 AZ、NAT/conntrack 与 underlay 故障仍保持开放。
 
+- A4421 把 A4414 仅在宿主机双 Envoy 进程验证的 mTLS passthrough 提升为 A4420 同等级的真实 Kubernetes
+  多副本连续 rollout。runner 新增四项原子 TLS 输入：`TLS_CA_FILE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、
+  `TLS_SERVER_NAME` 必须全部提供，且三个文件可读，否则在访问集群前 fail closed；启用后临时 NodePort 从
+  2379 切到 2380，clientv3 加载真实 CA/client certificate，测试读取每个 Pod 的
+  `listener.0.0.0.0_2380.downstream_cx_active`，而不是错误依赖不存在的 tcp proxy active stat。Watch、
+  TTL=3 KeepAlive、附租约 key、逐 UID drain、至少两个 Ready target 与三轮九次替换全部复用同一强门禁。
+  disposable harness 为 KubeBrain client listener 生成一天有效的一次性 CA、含 `127.0.0.1` IP SAN 的
+  server-only certificate 和 CN=`cert-root` 的 client-only certificate；KubeBrain 以 `--client-cert-auth=true`
+  验证身份。Envoy 只转发 TLS record，不读取 CA/cert/key。首次以 node InternalIP 连接时 Go client 的显式
+  ServerName 与证书 SAN 路径未形成稳定现场，改用 Kind 已配置的宿主 `127.0.0.1:46379` 到 NodePort 30079
+  映射，证书校验和 kube-proxy 路径同时成立；两次初跑还发现 listener stat 实际名称包含地址编码
+  `0.0.0.0` 的四段零，修正后 cohort 才能精确证明三副本覆盖。
+  2026-08-12 在全新 `kubebrain-envoy-tls-k8s-a4421` 的三个 zone worker、独立 3 PD/3 TiKV/3 mTLS
+  KubeBrain 和固定 Envoy 1.39.0 production resources 上，普通门禁以 4 个独立双流 client 覆盖三 Pod，三轮
+  九次替换 213.92 秒通过；`GOFLAGS=-race` 以 3 个 client 覆盖三 Pod，207.62 秒通过且无数据竞争。所有
+  client certificate handshake 均端到端到达 KubeBrain，全部 Watch/lease/channel 与附租约 key 贯穿 rollout。
+  本项关闭“2380 mTLS passthrough 尚无真实 Kubernetes 多节点连续 rollout”的缺口；证书在线轮换叠加 Envoy
+  rollout、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

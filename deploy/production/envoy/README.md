@@ -81,3 +81,8 @@ Ready EndpointSlice，且任何采样点都保留至少两个 Ready target。同
 `http.kubebrain_downstream.downstream_cx_active`，只有三个副本都实际承载长期连接才开始 rollout。每个 cohort
 client 都在同一 HTTP/2 connection 上建立独立 Watch 与 TTL=3 LeaseKeepAlive；两类 stream、各自附租约键和
 lease ID 都必须逐轮恢复。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。
+
+设置全部四个 `TLS_CA_FILE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_SERVER_NAME` 后，同一门禁会把临时
+NodePort 切到 `2380`，通过 clientv3 mTLS 走 Envoy opaque TCP passthrough。四项必须全设且三个文件可读，否则
+fail closed；测试以每个 Pod 的 `listener.0.0.0.0_2380.downstream_cx_active` 证明 cohort 覆盖三个 TLS
+listener。证书由 KubeBrain 端而非 Envoy 验证，Envoy 仍不挂载租户私钥。
