@@ -47420,6 +47420,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该项关闭“单轮成功不能证明连续 rollout churn”和“readiness drain 不主动迁移已有 HTTP/2 stream”的缺口；
   小时级高频 churn、云 LB、跨 AZ、NAT/conntrack 与 underlay 故障仍保持开放。
 
+- A4419 关闭 A4418 只证明单个长期 HTTP/2 connection 的副本覆盖缺口。门禁现在保留一个独立 clientv3 Watch
+  cohort，逐个创建连接并通过每个旧 Envoy Pod admin 的
+  `http.kubebrain_downstream.downstream_cx_active` 计数验证分布；最多 30 个 client 仍不能让三个 Pod 都出现
+  active downstream 就 fail closed。每个 cohort member 使用独立 Watch key/connection，并在连续三轮 rollout
+  后分别 Put、接收唯一 event、验证自身 Header revision 严格递增和 channel 保持开放；原 TTL=3 KeepAlive
+  与附租约 key 同时保留。因此逐 UID drain-before-delete 不再只是“Pod 被替换”的控制面证据，而与三个旧副本
+  各自确有活跃长期流的数据面证据绑定。
+  cohort 首轮真实运行立即暴露 A4418 的迁移竞态：readiness fail 后马上 drain listener，client 重连时旧 Pod
+  仍可能存在于 kube-proxy/EndpointSlice，单轮在 53.77 秒关闭 KeepAlive。改成先等待 2 秒摘流再 drain 后单轮
+  63.84 秒通过，但三轮仍在第二/三轮分别暴露 Ready target 短降到 1 和 KeepAlive 关闭；说明 5 秒
+  `minReadySeconds` 与 2 秒摘流等待都不足以覆盖受观测负载影响的传播尾延迟。最终 production Deployment 使用
+  `minReadySeconds=10`；preStop 的固定 10 秒宽限期拆为 readiness fail 后等待 5 秒、再执行并校验 5 秒
+  immediate listener drain、最后等待 5 秒。TTL、至少两个 Ready target、逐 Pod drain 与三轮次数均未放宽。
+  2026-08-12 在全新 disposable `kubebrain-envoy-k8s-a4419` 的三个 zone worker、独立 3 PD/3 TiKV/
+  3 KubeBrain 与固定 Envoy 1.39.0 production resources 上，普通门禁建立 5 个长期 Watch client 覆盖三个旧
+  Envoy Pod，三轮九次替换 215.32 秒通过；`GOFLAGS=-race` 建立 3 个 client 即覆盖三 Pod，204.40 秒通过且无
+  数据竞争。所有 cohort Watch、主 Watch、TTL=3 KeepAlive 和附租约 key 贯穿完整 rollout，Ready target
+  始终不少于 2。
+  该项关闭“单连接不能证明所有 Envoy replica 的活跃流迁移”缺口；更高连接基数、小时级 churn、云 LB、跨 AZ、
+  NAT/conntrack 与 underlay 故障仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

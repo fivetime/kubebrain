@@ -23,7 +23,7 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 
 	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-envoy")
 	require.EqualValues(t, 3, nestedInt64(t, deployment, "spec", "replicas"))
-	require.EqualValues(t, 5, nestedInt64(t, deployment, "spec", "minReadySeconds"))
+	require.EqualValues(t, 10, nestedInt64(t, deployment, "spec", "minReadySeconds"))
 	require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxUnavailable"))
 	require.EqualValues(t, 1, nestedInt64(t, deployment, "spec", "strategy", "rollingUpdate", "maxSurge"))
 	require.Equal(t, "kubebrain-envoy", nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
@@ -56,7 +56,7 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, []string{
 		"/usr/bin/timeout", "12", "/bin/bash", "-ec",
-		"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'POST /healthcheck/fail HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; IFS= read -r status <&3; [[ \"$status\" == $'HTTP/1.1 200 OK\\r' ]]; exec 4<>/dev/tcp/127.0.0.1/9901; printf 'POST /drain_listeners?graceful HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&4; IFS= read -r drain_status <&4; [[ \"$drain_status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 10",
+		"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'POST /healthcheck/fail HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; IFS= read -r status <&3; [[ \"$status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 5; exec 4<>/dev/tcp/127.0.0.1/9901; printf 'POST /drain_listeners?graceful HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&4; IFS= read -r drain_status <&4; [[ \"$drain_status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 5",
 	}, preStop)
 	ports, found, err := unstructured.NestedSlice(container.Object, "ports")
 	require.NoError(t, err)

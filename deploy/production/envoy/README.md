@@ -21,7 +21,8 @@ Envoy `STRICT_DNS` 会看到每个 KubeBrain Pod IP，而不是把流量再次�
 - 三副本 Envoy 使用 PDB、hostname 反亲和、非 root/read-only 容器、digest-pinned 镜像和显式 NetworkPolicy；
 - preStop 使用固定镜像中的 `/bin/bash` `/dev/tcp` 依次向 Envoy admin 发送显式
   `POST /healthcheck/fail` 与 `POST /drain_listeners?graceful`，逐项校验 HTTP 200；Envoy 以显式 5 秒
-  `immediate` drain 在 10 秒 hook 宽限期内向已有 HTTP/2 stream 发起迁移。Deployment `minReadySeconds=5`，
+  `immediate` drain 在 10 秒 hook 宽限期内向已有 HTTP/2 stream 发起迁移。hook 在 readiness fail 后先等待
+  5 秒供 EndpointSlice/kube-proxy 摘除旧地址，再 drain listener 并等待 5 秒；Deployment `minReadySeconds=10`，
   readiness `failureThreshold=1`，防止下一旧 Pod 在新 endpoint 尚未稳定传播时被摘除；整个 hook 由
   `/usr/bin/timeout` 限制为 12 秒。Envoy admin 的 mutating endpoint 不接受 GET，固定官方镜像也不包含 curl；
 - admin `:9901` 仅供带 `dbaas.kubebrain.io/monitoring-access=true` 的 namespace 访问，不是租户入口；
@@ -76,4 +77,6 @@ NODE_HOST=172.18.0.11 \
 完全相同。默认连续执行三轮 Deployment restart，共替换九个 Pod；每轮都要求三个旧 Pod 各自在仍存在时先退出
 Ready EndpointSlice，且任何采样点都保留至少两个 Ready target。同一稳定 NodePort 上的 CreatedNotify Watch
 和 TTL=3 LeaseKeepAlive 必须贯穿全部轮次，每轮结束都收到新的 Watch event、正 TTL keepalive，且附租约键
-最终仍存在。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。
+最终仍存在。测试还会建立最多 30 个独立 Watch client，读取每个旧 Envoy Pod admin 的
+`http.kubebrain_downstream.downstream_cx_active`，只有三个副本都实际承载长期连接才开始 rollout；所有 cohort
+Watch 都必须逐轮恢复。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。

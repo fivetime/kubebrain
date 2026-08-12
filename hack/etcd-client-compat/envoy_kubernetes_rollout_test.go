@@ -26,6 +26,13 @@ type envoyKeepAliveObservation struct {
 	at       time.Time
 }
 
+type envoyWatchCohortMember struct {
+	client           *clientv3.Client
+	watch            clientv3.WatchChan
+	key              string
+	previousRevision int64
+}
+
 func TestEnvoyKubernetesRollout(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT"))
 	contextName := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_CONTEXT"))
@@ -70,7 +77,26 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		}
 	}()
 
-	var previousWatchRevision int64
+	cohort := []*envoyWatchCohortMember{{client: client, watch: watch, key: watchKey}}
+	for member := 1; member < 30 && !allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace); member++ {
+		cohortClient, createErr := clientv3.New(clientv3.Config{
+			Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second,
+		})
+		require.NoError(t, createErr)
+		t.Cleanup(func() { require.NoError(t, cohortClient.Close()) })
+		cohortKey := fmt.Sprintf("%s/watch-cohort-%d", prefix, member)
+		cohortWatch := cohortClient.Watch(ctx, cohortKey, clientv3.WithCreatedNotify())
+		cohortCreated := receiveExternalL7WatchResponse(t, ctx, cohortWatch)
+		require.True(t, cohortCreated.Created)
+		cohort = append(cohort, &envoyWatchCohortMember{
+			client: cohortClient, watch: cohortWatch, key: cohortKey,
+		})
+	}
+	require.True(t, allEnvoyPodsHaveActiveDownstreams(t, contextName, namespace),
+		"client cohort must place at least one active downstream connection on every Envoy Pod")
+	require.GreaterOrEqual(t, len(cohort), 3)
+	t.Logf("established %d long-lived Watch clients across all three Envoy Pods", len(cohort))
+
 	for cycle := 1; cycle <= rolloutCycles; cycle++ {
 		oldUIDs := envoyPodUIDs(t, contextName, namespace)
 		require.Len(t, oldUIDs, 3)
@@ -123,14 +149,16 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		require.GreaterOrEqual(t, minimumReady, 2,
 			"rollout cycle %d must retain at least two ready Envoy EndpointSlice targets", cycle)
 
-		watchValue := fmt.Sprintf("after-rollout-%d", cycle)
-		_, err = client.Put(ctx, watchKey, watchValue)
-		require.NoError(t, err)
-		watchResponse := receiveExternalL7WatchEvent(t, ctx, watch)
-		require.Len(t, watchResponse.Events, 1)
-		require.Equal(t, watchValue, string(watchResponse.Events[0].Kv.Value))
-		require.Greater(t, watchResponse.Header.Revision, previousWatchRevision)
-		previousWatchRevision = watchResponse.Header.Revision
+		for memberIndex, member := range cohort {
+			watchValue := fmt.Sprintf("after-rollout-%d-member-%d", cycle, memberIndex)
+			_, err = member.client.Put(ctx, member.key, watchValue)
+			require.NoError(t, err)
+			watchResponse := receiveExternalL7WatchEvent(t, ctx, member.watch)
+			require.Len(t, watchResponse.Events, 1)
+			require.Equal(t, watchValue, string(watchResponse.Events[0].Kv.Value))
+			require.Greater(t, watchResponse.Header.Revision, member.previousRevision)
+			member.previousRevision = watchResponse.Header.Revision
+		}
 
 		var recovered *clientv3.LeaseKeepAliveResponse
 		for recovered == nil {
@@ -155,12 +183,42 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	ttl, err := client.TimeToLive(ctx, grant.ID)
 	require.NoError(t, err)
 	require.Positive(t, ttl.TTL)
-	require.True(t, channelStillOpenWatch(t, watch))
+	for _, member := range cohort {
+		require.True(t, channelStillOpenWatch(t, member.watch))
+	}
 	select {
 	case <-keepAliveClosed:
 		t.Fatal("keepalive channel closed after Envoy rollout")
 	default:
 	}
+}
+
+func allEnvoyPodsHaveActiveDownstreams(t *testing.T, contextName, namespace string) bool {
+	t.Helper()
+	pods := envoyPodNames(t, contextName, namespace)
+	require.Len(t, pods, 3)
+	for _, pod := range pods {
+		output := kubectl(t, contextName, namespace, "exec", pod, "--", "/bin/bash", "-ec",
+			"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'GET /stats?filter=http.kubebrain_downstream.downstream_cx_active HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; cat <&3")
+		if parseEnvoyActiveDownstreams(output) < 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func parseEnvoyActiveDownstreams(output string) int {
+	const prefix = "http.kubebrain_downstream.downstream_cx_active: "
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			value, err := strconv.Atoi(strings.TrimPrefix(line, prefix))
+			if err == nil {
+				return value
+			}
+		}
+	}
+	return 0
 }
 
 func observedOldPodsDrainedBeforeDeletion(oldUIDs []string, samples []envoyRolloutSample) []string {
@@ -195,6 +253,14 @@ func envoyPodUIDs(t *testing.T, contextName, namespace string) []string {
 	output := kubectl(t, contextName, namespace, "get", "pods", "-l",
 		"app.kubernetes.io/name=kubebrain-envoy,app.kubernetes.io/instance=kubebrain",
 		"-o", "jsonpath={range .items[*]}{.metadata.uid}{'\\n'}{end}")
+	return sortedNonEmptyLines(output)
+}
+
+func envoyPodNames(t *testing.T, contextName, namespace string) []string {
+	t.Helper()
+	output := kubectl(t, contextName, namespace, "get", "pods", "-l",
+		"app.kubernetes.io/name=kubebrain-envoy,app.kubernetes.io/instance=kubebrain",
+		"-o", "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
 	return sortedNonEmptyLines(output)
 }
 
