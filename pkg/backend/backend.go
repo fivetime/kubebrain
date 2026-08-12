@@ -16,7 +16,6 @@ package backend
 
 import (
 	"context"
-	"errors"
 	"hash/fnv"
 	"sync"
 	"sync/atomic"
@@ -678,7 +677,6 @@ func (b *backend) Close() error {
 }
 
 var (
-	ErrRevisionDriftBack = errors.New("revision drift back")
 	ErrRevisionExhausted = tso.ErrRevisionExhausted
 )
 

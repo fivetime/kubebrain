@@ -595,9 +595,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// it creates no collector hole and must not publish an invalid event.
 	batch := b.kv.BeginBatchWrite()
 	allocated := b.stageNextDurableRevisionAfter(batch, baseRevision, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
-		if revision <= baseRevision {
-			return ErrRevisionDriftBack
-		}
 		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage)
 	})
 	cerr := b.commitUserBatch(ctx, batch)

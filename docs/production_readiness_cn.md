@@ -2920,6 +2920,8 @@ committed/dealt watermark 兼容视图，不承担 mutation revision allocation�
 watermark。revision exhaustion 由 storage transaction 内的 durable counter allocator 检查。
 event ring 的单事件 `notify` 入口已删除，生产代码只能用 `notifyBatch` 一次发布整笔 transaction 的全部事件或
 resolver-proven invalid placeholders，避免未来重新引入逐 key publication 和事务 watch 撕裂。
+对照 upstream watchable MVCC write transaction 后，旧 `ErrRevisionDriftBack` cutover 分支已删除：durable allocator
+固定从 durable counter 与 observed floor 的最大值加一，除 wire revision exhaustion 外不会倒退。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 

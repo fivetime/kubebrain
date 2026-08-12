@@ -48060,6 +48060,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   batch。watch overflow 测试使用 test-only 单事件构造器，不再让生产代码暴露可逐 key 发布事务的接口；zero
   revision 注释也改为 transaction-local allocator callback 尚未执行的语义。
 
+- A4481 对照 upstream `server/storage/mvcc/watchable_store_txn.go`：etcd 在一个 write txn 的 changes 非空时只推进
+  一次 main revision，并一次 `notify(rev, evs)` 发布整批事件。KubeBrain 当前 durable allocator + `notifyBatch`
+  已形成相同边界。随后删除仅剩于旧 allocator cutover 的 `ErrRevisionDriftBack` 和 TxnApply 不可达检查；
+  `stageNextDurableRevisionAfter` 在 `max(durable, observed floor)+1` 分配，唯一边界失败是 etcd wire revision
+  exhaustion，不再对客户端暴露一个实际上无法发生的 drift-back backend 错误。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
