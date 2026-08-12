@@ -476,8 +476,6 @@ freeze_audit_receipt() {
 child=0
 heartbeat_pid=0
 cleanup() {
-  rm -rf "$parameter_capture_dir"
-  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -486,8 +484,30 @@ cleanup() {
     kill "$heartbeat_pid" 2>/dev/null || true
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
+  rm -rf "$parameter_capture_dir"
+  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
 }
 trap cleanup EXIT INT TERM
+finalize_heartbeat() {
+  local heartbeat_rc=0
+  if [[ "$heartbeat_pid" -gt 0 ]]; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+    set +e
+    wait "$heartbeat_pid"
+    heartbeat_rc=$?
+    set -e
+    heartbeat_pid=0
+    if [[ "$heartbeat_rc" == 75 ]]; then
+      echo "operation heartbeat failed; post-restore audit worker was fenced" >&2
+      return 1
+    fi
+  fi
+  run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+    --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; post-restore audit worker was fenced" >&2
+    return 1
+  }
+}
 env "${audit_env[@]}" "$AUDIT_COMMAND" &
 child=$!
 (
@@ -495,7 +515,7 @@ child=$!
     sleep "$heartbeat_interval"
     if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
       --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-      kill "$child" 2>/dev/null || true
+      [[ -e "$parameter_capture_dir/child.done" ]] || kill "$child" 2>/dev/null || true
       exit 75
     fi
   done
@@ -504,46 +524,45 @@ heartbeat_pid=$!
 set +e
 wait "$child"
 audit_rc=$?
-kill "$heartbeat_pid" 2>/dev/null
-wait "$heartbeat_pid"
-heartbeat_rc=$?
 set -e
+: >"$parameter_capture_dir/child.done"
 child=0
-heartbeat_pid=0
-if [[ "$heartbeat_rc" == 75 ]]; then
-  echo "operation heartbeat failed; worker was fenced" >&2
-  exit 1
-fi
 if [[ "$audit_rc" != 0 ]]; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "post-restore audit exited ${audit_rc}" >/dev/null
   echo "post-restore audit failed and was requeued" >&2
   exit "$audit_rc"
 fi
 [[ -f "$receipt_output" ]] || {
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "audit receipt missing" >/dev/null
   echo "post-restore audit completed without its receipt" >&2
   exit 1
 }
 if ! freeze_audit_receipt; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "audit receipt invalid" >/dev/null
   echo "post-restore audit produced an invalid receipt" >&2
   exit 1
 fi
 if ! validate_audit_receipt; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "audit receipt invalid" >/dev/null
   echo "post-restore audit produced an invalid receipt" >&2
   exit 1
 fi
 if ! receipt_digest="$(validated_audit_receipt_digest)"; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "audit receipt invalid" >/dev/null
   echo "post-restore audit produced an invalid receipt" >&2
   exit 1
 fi
+finalize_heartbeat || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "post-restore audit completed" >/dev/null
 cleanup

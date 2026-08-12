@@ -24,6 +24,18 @@ func TestPostRestoreAuditOperationCompletesAndBindsReceipt(t *testing.T) {
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.NotContains(t, log, "--action retry")
+	lastHeartbeat := strings.LastIndex(log, "--action heartbeat")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
+}
+
+func TestPostRestoreAuditOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
+	f := newOperationRunnerFixture(t)
+	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=10\nHEARTBEAT_FAIL=true", "final heartbeat failed; post-restore audit worker was fenced")
+	log := f.log(t)
+	require.Contains(t, log, "--action heartbeat")
+	require.NotContains(t, log, "--action succeed")
+	require.NotContains(t, log, "--action retry")
 }
 
 func TestPostRestoreAuditOperationPassesFrozenEvidenceToAudit(t *testing.T) {
@@ -413,6 +425,8 @@ if [[ " $* " == *" --action claim "* ]]; then
   printf '{"namespace":"%s","name":"audit-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"PostRestoreAudit","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action parameters "* ]]; then
   cat "$MANAGED_PARAMETERS"
+elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
+  exit 1
 else
   echo '{}'
 fi

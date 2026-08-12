@@ -3621,8 +3621,10 @@ SHA-256 完全一致；后续 strict schema 校验、稳定 digest 复算和 Ope
 捕获窗口内发生漂移必须 fail closed，捕获后的原路径变化不得改变本次提交的 receipt
 SHA。
 `hack/production/run-post-restore-audit-operation.sh` 已把 A190 接入：
-只 claim PostRestoreAudit，核对参数 JSON 摘要，在子审计运行期间续租；heartbeat 失败会
-终止本地进程，审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。runner 会先拒绝
+只 claim PostRestoreAudit，核对参数 JSON 摘要；heartbeat 覆盖子审计、receipt 冻结/复验和摘要计算，
+child 完成前 fencing 会终止本地进程。terminal retry/succeed 前先回收后台循环、拒绝已观察到的
+fencing，再同步续租完整 lease，成功后才紧邻提交 owner+attempt CAS；最终续租失败不写 terminal 状态。
+审计失败 requeue，成功才将 receipt 摘要写入 Succeeded。runner 会先拒绝
 空的 state/receipt 路径、Service 身份、target instance、public endpoint、audit prefix
 和 receipt output；audit prefix 必须是绝对 key prefix、不能包含换行/回车/tab，且不能
 指向根或 Kubernetes `/registry` 数据；public endpoint 不能包含控制字符、DEL、引号或反斜杠。

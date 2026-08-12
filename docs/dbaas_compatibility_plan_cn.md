@@ -47928,6 +47928,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   evidence 缺失的 retry 以及最终 succeed 前均先回收后台循环、拒绝 75、同步续租完整 lease，再紧邻执行
   owner+attempt terminal CAS。最终续租失败固定为零 retry/succeed mutation，正常路径固定最后 heartbeat 早于 succeed。
 
+- A4462 关闭 PostRestoreAudit 的 child 后 lease 空窗。旧 worker 在审计子进程完成后立即停止 heartbeat，才冻结
+  audit receipt、校验其与 cutover state/receipt 的身份和时序绑定、重复计算稳定摘要；验证窗口跨过 lease 时仍可能
+  以陈旧 claim retry/succeed。RED 让审计快速成功、周期 heartbeat 尚未触发并拒绝最终 heartbeat，旧实现没有最终
+  续租且成功。新实现写 child completion marker 后让后台 heartbeat 覆盖完整 receipt pipeline，fencing 不会误杀
+  已退出/PID 复用的 child；每个 post-child retry 与 succeed 前回收后台循环、拒绝 75、同步续租完整 lease，再紧邻
+  owner+attempt terminal CAS。负向回归固定最终续租失败时零 retry/succeed，正向固定最后 heartbeat 先于 succeed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
