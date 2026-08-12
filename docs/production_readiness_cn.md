@@ -1559,7 +1559,10 @@ backup receipt、pre/post inventory manifest、pre/post inventory receipt 和 de
 执行同样的 strict schema 与字段绑定校验；参数中的 object store ID、manifest
 prefix/entry 以及 source backup receipt 的 bucket/object key/version 必须通过安全对象身份
 校验，S3 endpoint 不能包含控制字符、DEL、引号或反斜杠，危险参数不会进入 inventory/delete
-子流程。
+子流程。worker heartbeat 覆盖 pre/delete/post 对象工作流、三份证据冻结/复验、operation receipt
+发布与摘要计算；terminal retry/succeed 前回收后台循环、拒绝已观察到的 fencing，再同步续租完整
+lease，成功后才紧邻提交 owner+attempt CAS。最终续租失败不会写 terminal 状态，child completion
+marker 也防止收尾阶段的 fencing 路径误杀已退出且 PID 可能复用的进程。
 这样即使本地删除 receipt 随 Pod 丢失，重建后的 canonical JSON 和 SHA 也保持稳定。
 bucket 生命周期规则只能作为调度器，不能替代该完成证据。`DeleteObject` 返回错误也不等于
 服务端未提交：工具使用不继承原请求取消信号的独立 5 秒预算 Head 指定 version；只有

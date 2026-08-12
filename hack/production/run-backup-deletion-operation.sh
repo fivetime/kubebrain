@@ -339,7 +339,6 @@ run_workflow() {
 child=0
 heartbeat_pid=0
 cleanup() {
-  cleanup_inputs
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -348,8 +347,29 @@ cleanup() {
     kill "$heartbeat_pid" 2>/dev/null || true
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
+  cleanup_inputs
 }
 trap cleanup EXIT INT TERM
+finalize_heartbeat() {
+  local heartbeat_rc=0
+  if [[ "$heartbeat_pid" -gt 0 ]]; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+    set +e
+    wait "$heartbeat_pid"
+    heartbeat_rc=$?
+    set -e
+    heartbeat_pid=0
+    if [[ "$heartbeat_rc" == 75 ]]; then
+      echo "operation heartbeat failed; backup deletion worker was fenced" >&2
+      return 1
+    fi
+  fi
+  run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+    --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; backup deletion worker was fenced" >&2
+    return 1
+  }
+}
 run_workflow &
 child=$!
 (
@@ -357,7 +377,7 @@ child=$!
     sleep "$heartbeat_interval"
     if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
       --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-      kill "$child" 2>/dev/null || true
+      [[ -e "$managed_evidence_dir/child.done" ]] || kill "$child" 2>/dev/null || true
       exit 75
     fi
   done
@@ -366,17 +386,11 @@ heartbeat_pid=$!
 set +e
 wait "$child"
 workflow_rc=$?
-kill "$heartbeat_pid" 2>/dev/null
-wait "$heartbeat_pid"
-heartbeat_rc=$?
 set -e
+: >"$managed_evidence_dir/child.done"
 child=0
-heartbeat_pid=0
-if [[ "$heartbeat_rc" == 75 ]]; then
-  echo "operation heartbeat failed; worker was fenced" >&2
-  exit 1
-fi
 if [[ "$workflow_rc" != 0 ]]; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "backup deletion workflow exited ${workflow_rc}" >/dev/null
   echo "backup deletion workflow failed and was requeued" >&2
@@ -385,6 +399,7 @@ fi
 
 for receipt in "$pre_inventory_receipt" "$deletion_receipt" "$post_inventory_receipt"; do
   [[ -f "$receipt" ]] || {
+    finalize_heartbeat || exit 1
     run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
       --message "backup deletion evidence missing" >/dev/null
     echo "backup deletion workflow completed without all receipts" >&2
@@ -573,6 +588,7 @@ if ! receipt_digest="$(validated_operation_receipt_digest)"; then
   echo "backup deletion operation receipt is invalid" >&2
   exit 1
 fi
+finalize_heartbeat || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "exact backup version lifecycle completed" >/dev/null
 cleanup

@@ -26,6 +26,9 @@ func TestBackupDeletionOperationCompletesThreeGatesAndRetries(t *testing.T) {
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
 	require.NotContains(t, log, "--action retry")
+	lastHeartbeat := strings.LastIndex(log, "--action heartbeat")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 }
 
 func TestBackupDeletionOperationTreatsConcurrentReceiptPublishAsIdempotent(t *testing.T) {
@@ -404,6 +407,15 @@ func TestBackupDeletionOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f.run(t, false, "OBJECT_SLEEP=3\nHEARTBEAT_FAIL=true", "heartbeat failed")
 	require.NotContains(t, f.log(t), "--action succeed")
 	require.NotContains(t, f.log(t), "--action retry")
+}
+
+func TestBackupDeletionOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
+	f := newBackupDeletionFixture(t)
+	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=10\nHEARTBEAT_FAIL=true", "final heartbeat failed; backup deletion worker was fenced")
+	log := f.log(t)
+	require.Contains(t, log, "--action heartbeat")
+	require.NotContains(t, log, "--action succeed")
+	require.NotContains(t, log, "--action retry")
 }
 
 func TestBackupDeletionOperationRejectsInvalidClaimIdentityBeforeWorkflow(t *testing.T) {

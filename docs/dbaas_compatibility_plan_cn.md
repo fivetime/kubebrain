@@ -47920,6 +47920,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   retry 以及 succeed 前均回收后台循环、拒绝 75、同步续租完整 lease，再紧邻执行 owner+attempt terminal CAS。
   负向回归固定最终续租失败时零 retry/succeed mutation，正向回归固定最后 heartbeat 严格早于 succeed。
 
+- A4461 将相同的 terminal lease 所有权证明扩展到 BackupDeletion。旧 worker 在 pre-inventory、exact-version
+  delete 和 post-inventory 子流程返回后立即停止 heartbeat，随后才冻结三份生成证据、逐份双重 schema/digest
+  校验、原子发布并复验 operation receipt；该长窗口可能让旧 owner 以过期 claim retry 或 succeed。RED 让
+  三阶段快速成功、后台周期长于执行时间并拒绝最终 heartbeat，旧实现仍成功。新实现的 child completion marker
+  使后台 heartbeat 继续覆盖完整 evidence/receipt pipeline，且 fencing 不向已退出 child 发信号；workflow 失败、
+  evidence 缺失的 retry 以及最终 succeed 前均先回收后台循环、拒绝 75、同步续租完整 lease，再紧邻执行
+  owner+attempt terminal CAS。最终续租失败固定为零 retry/succeed mutation，正常路径固定最后 heartbeat 早于 succeed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
