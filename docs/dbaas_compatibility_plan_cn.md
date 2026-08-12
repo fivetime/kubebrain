@@ -47004,6 +47004,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   弱网不阻断已有 TiKV expiry commit，而 TiKV 全 store 弱网会把 delete 推迟到恢复；两者都不替代多 lease
   同时过期、streaming KeepAlive 竞争、独立 AZ 或分钟/小时级 soak。
 
+- A4398 关闭 A4397 仍保留的 TiKV 弱网下 high-level streaming KeepAlive channel 恢复证据缺口，对照
+  upstream `/root/etcd/tests/integration/clientv3/lease/lease_test.go` 的 `TestLeaseKeepAlive`、
+  `TestLeaseKeepAliveTTLTimeout` 与 `TestLeaseRenewLostQuorum`。仓内此前已有 PD 全失期间 8 条 300 秒 lease
+  stream 和长 deadline `KeepAliveOnce` 恢复门禁，但 TiKV 组合弱网只覆盖 unary KeepAliveOnce Porcupine
+  operation，无法证明官方 client/v3 的共享 stream、重发调度和 per-lease response channel 生命周期。
+  新增 `TestStreamingLeaseKeepAlivesRecoverAcrossTiKVDegradation` 与
+  `tikv-cross-node-degraded-network-streaming-keepalive`：先为四条 60 秒 lease 写入独立 attached key、启动
+  high-level `KeepAlive` 并逐条取得首个正 TTL；随后对三个不同 worker 上的全部 TiKV store 注入 30 秒
+  netem。故障启动 15 秒时命令必须仍在运行且任一 response channel 均不得关闭；清障后每条 channel 必须
+  再收到 ID 匹配的正 TTL，linearizable Get 必须保留原 lease binding，最后 Revoke 后键必须消失。
+  2026-08-12 disposable `kubebrain-tikv-netem-stream` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、29379/29380 拓扑首次通过：三个 TiKV namespace 同时施加 `250ms +/- 50ms`、`2%` loss、
+  `20mbit`、30 秒 netem，完整门禁 35.234 秒。恢复后三个 KubeBrain、PD、TiKV 均 Ready 且零重启，
+  TiDBCluster Ready，三个 TiKV namespace 最终均为 `qdisc noqueue`。本项证明故障短于已确认 TTL 时
+  client/v3 streaming KeepAlive channel 可跨 TiKV 退化恢复并保持 attached-key 所有权；不承诺故障超过 TTL
+  后 channel 不关闭，也不替代 revoke/expiry 同 stream 竞争、多租户大规模 stream、独立 AZ 或长时 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

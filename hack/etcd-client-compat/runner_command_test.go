@@ -789,6 +789,25 @@ func TestBackendPDDegradedNetworkRunsPorcupineLeaseExpiryHistory(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendTiKVDegradedNetworkRunsStreamingKeepAliveRecovery(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-degraded-network-streaming-keepalive)`)
+	require.Contains(t, script, `KUBEBRAIN_TIKV_STREAMING_KEEPALIVE_FAULT_COMMAND="$command"`)
+	require.Contains(t, script, `TestStreamingLeaseKeepAlivesRecoverAcrossTiKVDegradation`)
+	require.Contains(t, script, `"$self --degrade-tikv-all-cross-node"`)
+	require.Contains(t, script, `run_tikv_degraded_network_streaming_keepalive_test`)
+	require.NotContains(t, script, "eval ")
+
+	source, readErr := os.ReadFile("tikv_lease_keepalive_degraded_network_test.go")
+	require.NoError(t, readErr)
+	text := string(source)
+	require.Contains(t, text, `time.After(15 * time.Second)`)
+	require.Contains(t, text, `keepalive channel closed during TiKV degradation`)
+	require.Contains(t, text, `receivePositiveKeepAlive(t, ctx, lease.ch, lease.id)`)
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"
