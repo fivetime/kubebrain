@@ -47598,6 +47598,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rollout 绿色掩盖。后续应分别建立无 Envoy rollout 的 Secret-only 基线，并审计 KubeBrain 全局
   `leaseWriteMu`/到期删除的慢 TiKV I/O 是否阻塞无关 lease renewal。
 
+- A4429 修复 A4428 暴露的全局 lease teardown 阻塞。KubeBrain 原先让自然到期和显式 Revoke 在整个 TiKV
+  原子删键期间独占 `leaseWriteMu`，所有 LeaseKeepAlive 即使只更新另一个租约的内存 deadline，也必须等待；
+  一个超过 3 秒的独立租约删除即可耗尽合法 TTL=3 的完整客户端预算。对照
+  `/root/etcd/server/lease/lessor.go` 的 `lessor.Renew`/`l.refresh(0)`，普通续期是 per-lease 内存 deadline 更新，
+  不应被无关租约的 Raft revoke apply 串行化。实现用原子 `leaseTeardowns` 精确标记“当前 exclusive
+  `leaseWriteMu` owner 是 lease teardown”；只有无 checkpoint、deadline 尚未到期、领导权 epoch 未变且调用者
+  不需要逐 key RBAC 重验的续期，才能在该标记期间直接刷新自身 timer。reload、索引修复、普通 KV mutation、
+  checkpoint clear、受限用户续期以及同租约已开始的自然到期仍走原全局栅栏。
+  确定性 RED 用 blocking backend 卡住 lease A 的 TiKV 原子 metadata/key 删除，旧实现使 lease B 的真实 gRPC
+  KeepAlive 超过 500ms 门限仍阻塞在 `leaseWriteMu.RLock`；修复后 B 在同一上限内返回 TTL=3。反向测试同时证明同一 lease 的
+  renew 不能越过正在删键的 expiry，非 teardown exclusive writer 也不能被旁路。三项新测试普通/race 各连续
+  20/10 轮通过；既有 checkpoint/Revoke/领导权竞态同组普通 20 轮、race 10 轮通过，完整 `Lease` 测试集合
+  52.703 秒、完整 `pkg/server/etcd` 139.838 秒通过。
+  2026-08-12 在 fresh `kubebrain-lease-a4429` Kind、独立 3 PD/3 TiKV/3 KubeBrain 上新增黑盒门禁：64 个并发
+  TTL=3 附键租约集中到期并经真实 TiKV 删除期间，另一个 TTL=3 KeepAlive 至少收到两次后续正 TTL 响应，
+  channel、lease ID 与附键均保持；普通主体 4.85 秒、race 主体 4.62 秒（包 5.682 秒）通过。本项关闭“无关
+  lease 的慢 teardown 全局饿死短租约续期”差距；A4427/A4428 的 CA+Envoy 组合仍需用本镜像重新执行完整三轮
+  真实门禁后才能改变状态，TiKV 整体不可用或同一租约已开始删除也不属于可续期保证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

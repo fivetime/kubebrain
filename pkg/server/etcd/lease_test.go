@@ -1169,6 +1169,156 @@ func TestCorruptAlarmDefersNaturalLeaseExpiry(t *testing.T) {
 	require.False(t, retained)
 }
 
+// TestSlowLeaseExpiryDoesNotBlockUnrelatedRenewal mirrors etcd lessor.Renew's
+// per-lease deadline update: applying one expired lease's key deletion may be
+// slow, but it must not consume another lease's entire short TTL budget.
+func TestSlowLeaseExpiryDoesNotBlockUnrelatedRenewal(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	t.Cleanup(closeFn)
+	ctx := context.Background()
+	const expiredID, liveID int64 = 5152, 5153
+	expiredKey := []byte("slow-expiry")
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: expiredID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: expiredKey, Value: []byte("leased"), Lease: expiredID})
+	require.NoError(t, err)
+	_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 3, ID: liveID})
+	require.NoError(t, err)
+
+	server.leaseMu.Lock()
+	expired := server.leases[expiredID]
+	require.NotNil(t, expired)
+	expired.deadline = time.Now().Add(-time.Second)
+	expired.timer.Stop()
+	server.leaseMu.Unlock()
+
+	shim := &blockingLeaseMetaDeleteBackend{
+		BackendShim: server.backend,
+		key:         leaseStorageKey(expiredID),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	t.Cleanup(func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	})
+
+	expiryDone := make(chan struct{})
+	go func() {
+		server.expireLeaseWithContext(ctx, expiredID)
+		close(expiryDone)
+	}()
+	<-shim.entered
+
+	renewed := make(chan error, 1)
+	stream := &fakeLeaseKeepAliveServer{
+		ctx:      ctx,
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: liveID}},
+	}
+	go func() {
+		renewed <- server.LeaseKeepAlive(stream)
+	}()
+	select {
+	case renewErr := <-renewed:
+		require.NoError(t, renewErr)
+		require.Len(t, stream.sent, 1)
+		require.Equal(t, liveID, stream.sent[0].ID)
+		require.Equal(t, int64(3), stream.sent[0].TTL)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("unrelated lease renewal blocked behind slow TiKV expiry deletion")
+	}
+
+	close(shim.release)
+	select {
+	case <-expiryDone:
+	case <-time.After(time.Second):
+		t.Fatal("lease expiry did not finish after releasing the backend")
+	}
+}
+
+func TestLeaseRenewDoesNotBypassItsOwnSlowExpiry(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	t.Cleanup(closeFn)
+	ctx := context.Background()
+	const leaseID int64 = 5154
+	key := []byte("own-slow-expiry")
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("leased"), Lease: leaseID})
+	require.NoError(t, err)
+	server.leaseMu.Lock()
+	state := server.leases[leaseID]
+	state.deadline = time.Now().Add(-time.Second)
+	state.timer.Stop()
+	server.leaseMu.Unlock()
+
+	shim := &blockingLeaseMetaDeleteBackend{
+		BackendShim: server.backend,
+		key:         leaseStorageKey(leaseID),
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	t.Cleanup(func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	})
+	expiryDone := make(chan struct{})
+	go func() {
+		server.expireLeaseWithContext(ctx, leaseID)
+		close(expiryDone)
+	}()
+	<-shim.entered
+
+	renewed := make(chan error, 1)
+	go func() {
+		_, renewErr := server.refreshLease(ctx, leaseID)
+		renewed <- renewErr
+	}()
+	select {
+	case err := <-renewed:
+		t.Fatalf("same-lease renewal bypassed an expiry already deleting its keys: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(shim.release)
+	requireDirectLeaseError(t, <-renewed, rpctypes.ErrGRPCLeaseNotFound, codes.NotFound,
+		"etcdserver: requested lease not found")
+	<-expiryDone
+}
+
+func TestLeaseRenewDoesNotBypassNonTeardownWriteFence(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 5155
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+
+	server.leaseWriteMu.Lock()
+	renewed := make(chan error, 1)
+	go func() {
+		_, renewErr := server.refreshLease(ctx, leaseID)
+		renewed <- renewErr
+	}()
+	select {
+	case err := <-renewed:
+		server.leaseWriteMu.Unlock()
+		t.Fatalf("renewal bypassed a non-teardown lease write fence: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	server.leaseWriteMu.Unlock()
+	require.NoError(t, <-renewed)
+}
+
 func TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -322,6 +322,8 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	m.leaseWriteMu.Lock()
 	defer m.leaseWriteMu.Unlock()
+	m.leaseTeardowns.Add(1)
+	defer m.leaseTeardowns.Add(-1)
 	for _, key := range m.keysForLease(req.ID) {
 		if err = caller.require([]byte(key), nil, authpb.WRITE); err != nil {
 			return nil, err
@@ -961,25 +963,58 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 	if !leadingFresh {
 		return 0, errLeaseDemotedDuringRenew
 	}
+	return m.refreshLeaseUnrestricted(ctx, id, epoch)
+}
+
+func (m *leaseManager) refreshLeaseUnrestricted(ctx context.Context, id int64, epoch uint64) (int64, error) {
 	m.leaseCheckpointMu.Lock()
+	writeLocked := m.leaseWriteMu.TryRLock()
+	if !writeLocked && m.leaseTeardowns.Load() != 0 {
+		if ttl, renewed := m.refreshUncheckpointedLeaseDuringUnrelatedTeardown(id, epoch); renewed {
+			m.leaseCheckpointMu.Unlock()
+			return ttl, nil
+		}
+	}
+	if !writeLocked {
+		// TryRLock may have failed just before a teardown owner published its
+		// marker. Waiting is the safe fallback for every non-teardown writer and
+		// for the lease currently being revoked or expired.
+		m.leaseWriteMu.RLock()
+	}
 	// Serialize against revoke/expiry. In particular, an expiry callback that
 	// already won the exclusive lock must finish before this renewal, while a
 	// successful renewal prevents expiry from observing the old deadline.
-	m.leaseWriteMu.RLock()
 	return m.refreshLeaseHoldingLocks(ctx, id, epoch, m.leaseWriteMu.RUnlock, m.leaseWriteMu.RLock, nil, func() {
 		m.leaseWriteMu.RUnlock()
 		m.leaseCheckpointMu.Unlock()
 	})
 }
 
+// refreshUncheckpointedLeaseDuringUnrelatedTeardown is the narrow fast path
+// corresponding to etcd lessor.Renew's in-memory l.refresh(0). The caller holds
+// leaseCheckpointMu and has proved that the exclusive global writer is a lease
+// teardown. A teardown of this same lease can only reach backend I/O after its
+// deadline has expired (natural expiry) or may linearize after this concurrent
+// renew (explicit revoke); teardown of another lease cannot affect this state.
+func (m *leaseManager) refreshUncheckpointedLeaseDuringUnrelatedTeardown(id int64, epoch uint64) (int64, bool) {
+	if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
+		return 0, false
+	}
+	m.leaseMu.Lock()
+	defer m.leaseMu.Unlock()
+	st := m.leases[id]
+	if st == nil || st.remainingTTL != 0 || !st.deadline.After(time.Now()) {
+		return 0, false
+	}
+	st.deadline = time.Now().Add(time.Duration(st.ttl) * time.Second)
+	m.scheduleLeaseLocked(st)
+	m.scheduleLeaseCheckpointLocked(st)
+	return st.ttl, true
+}
+
 func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authCaller, id int64, epoch uint64) (int64, error) {
 	if caller == nil || caller.isRoot() {
-		m.leaseCheckpointMu.Lock()
-		m.leaseWriteMu.RLock()
-		return m.refreshLeaseHoldingLocks(ctx, id, epoch, m.leaseWriteMu.RUnlock, m.leaseWriteMu.RLock, nil, func() {
-			m.leaseWriteMu.RUnlock()
-			m.leaseCheckpointMu.Unlock()
-		})
+		return m.refreshLeaseUnrestricted(ctx, id, epoch)
 	}
 
 	// Put/Txn use the shared side of leaseWriteMu from lease validation through
@@ -1261,6 +1296,8 @@ func (m *leaseManager) expireLease(id int64) {
 func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int64) {
 	m.leaseWriteMu.Lock()
 	defer m.leaseWriteMu.Unlock()
+	m.leaseTeardowns.Add(1)
+	defer m.leaseTeardowns.Add(-1)
 
 	// time.Timer.Reset cannot prevent a callback that has already started.
 	// Recheck under the same operation lock used by refreshLease so a stale

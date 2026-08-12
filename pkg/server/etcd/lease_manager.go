@@ -53,6 +53,11 @@ type leaseManager struct {
 	// readers while still preventing a key from committing behind a completed
 	// revoke.
 	leaseWriteMu sync.RWMutex
+	// leaseTeardowns is non-zero only while the exclusive leaseWriteMu owner is
+	// deleting one lease. It lets an unrelated, checkpoint-free keepalive renew
+	// its in-memory deadline without waiting for slow TiKV I/O, while preserving
+	// the global fence for reload, index repair, and ordinary KV mutations.
+	leaseTeardowns atomic.Int64
 	// leaseCheckpointMu orders periodic remaining-TTL persistence against the
 	// renewal that clears a checkpoint. Both may otherwise run under the shared
 	// leaseWriteMu and commit stale metadata out of order.
