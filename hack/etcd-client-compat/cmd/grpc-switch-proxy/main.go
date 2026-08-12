@@ -137,7 +137,7 @@ func (p *proxy) handleUnary(_ any, stream grpc.ServerStream) error {
 	if !ok {
 		return status.Error(codes.Internal, "missing gRPC method")
 	}
-	if method == "/etcdserverpb.Watch/Watch" {
+	if method == "/etcdserverpb.Watch/Watch" || method == "/etcdserverpb.Lease/LeaseKeepAlive" {
 		return p.handleBidiStream(method, stream)
 	}
 	var request rawFrame

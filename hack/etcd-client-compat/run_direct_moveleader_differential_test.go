@@ -28,6 +28,7 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "RevokeResponseLossAcrossExternalL4TLSPassthrough")
 	require.Contains(t, string(script), "ResponseLossAcrossExternalL7Proxy")
 	require.Contains(t, string(script), "WatchResumesAcrossExternalL7Reset")
+	require.Contains(t, string(script), "KeepAliveResumesAcrossExternalL7Reset")
 	require.Contains(t, string(script), `cd "$ROOT_DIR/hack/etcd-client-compat"`)
 	require.Contains(t, string(script), `go build -o "$data_dir/tcp-switch-proxy" ./cmd/tcp-switch-proxy`)
 	require.Contains(t, string(script), `go build -o "$data_dir/grpc-switch-proxy" ./cmd/grpc-switch-proxy`)

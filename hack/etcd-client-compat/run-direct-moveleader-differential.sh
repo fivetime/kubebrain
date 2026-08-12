@@ -64,10 +64,10 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 case "$TEST_SCOPE" in
   all)
-    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$'
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$'
     ;;
   lease-response-loss|lease-revoke-cross-replica)
-    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$'
+    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$'
     ;;
   lease-revoke-tls-passthrough)
     test_pattern='^TestLeaseRevokeResponseLossAcrossExternalL4TLSPassthroughDifferential$'

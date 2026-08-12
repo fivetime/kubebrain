@@ -47259,6 +47259,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   streaming KeepAlive L7 reset、生产 Envoy/云厂商 LB 配置矩阵、云 LB/NAT/conntrack、跨节点网络设备和平台
   通用 request token 仍保持开放。
 
+- A4411 关闭 A4410 保留的 streaming LeaseKeepAlive L7 reset 缺口。上游
+  `/root/etcd/client/v3/lease.go` 的 `recvKeepAliveLoop` 对非 caller cancellation、非不可恢复错误持续调用
+  `resetRecv`；新 stream 的 `sendKeepAliveLoop` 会保留登记中的 lease，并在最近一次正 TTL 的三分之一处重发。
+  因此外部代理对 `/etcdserverpb.Lease/LeaseKeepAlive` 使用与 Watch 相同的 raw protobuf 双向逐帧转发和
+  active-stream registry，`fail-streams` 只让该 RPC 返回代理生成的 L7 `Unavailable`，不关闭 downstream
+  HTTP/2 connection。新增 `TestLeaseKeepAliveResumesAcrossExternalL7ResetDifferential`：经 proxy/replica 0
+  Grant 一个 3 秒 lease、写入附租约 key 并收到首次正 TTL；再把 target 切至 replica 1、重置活动 stream，
+  必须看到失败计数、replica 1 新 dial、重建后的 active stream 和同 lease ID 的正 TTL response。测试继续
+  消费续租响应至首次 response 后 5 秒，已超过原始 grant TTL；随后 replica 2 必须仍读到附租约 key、
+  TimeToLive 必须为正、Get revision 相对 Put 必须为 0，且 KeepAlive channel 不能关闭。这同时排除“只重连但
+  没有实际转发续租”和“续租错误推进全局 revision”。
+  2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建 reference 工具链，在 disposable
+  `kubebrain-keepalive-l7` 独立 3 PD/3 TiKV/3 KubeBrain 上通过：最终 A4411 双端 11.39 秒，包含 A4401–A4411
+  的统一 `lease-response-loss` 门禁 24.807 秒；同一 fresh 现场以 `GOFLAGS=-race` 重跑最终统一门禁
+  37.339 秒通过，A4411 双端 13.43 秒且无数据竞争。至此 Watch 与 KeepAlive 两类长期 stream 都有真实 L7
+  reset、跨 replica 重建和业务连续性证据；生产 Envoy/云厂商 LB 配置矩阵、云 LB/NAT/conntrack、跨节点
+  网络设备和平台通用 request token 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
