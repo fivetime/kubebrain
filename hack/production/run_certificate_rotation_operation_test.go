@@ -24,6 +24,18 @@ func TestCertificateRotationOperationCompletesLifecycle(t *testing.T) {
 	require.Contains(t, log, "--action succeed")
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
+	lastHeartbeat := strings.LastIndex(log, "--action heartbeat")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
+}
+
+func TestCertificateRotationOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
+	f := newRotationRunnerFixture(t)
+	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL_AFTER_COMPLETE=true", "final heartbeat failed; certificate rotation worker was fenced")
+	log := f.log(t)
+	require.Contains(t, log, "--action heartbeat")
+	require.NotContains(t, log, "--action succeed")
+	require.NotContains(t, log, "--action retry")
 }
 
 func TestCertificateRotationOperationRequeuesEveryStepFailure(t *testing.T) {
@@ -285,8 +297,11 @@ if [[ " $* " == *" --action claim "* ]]; then
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
   printf '{"namespace":"%s","name":"rotation-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"CertificateRotation","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
-elif [[ " $* " == *" --action heartbeat "* && ( "${HEARTBEAT_FAIL:-false}" == true || -n "${SLEEP_STEP:-}" ) ]]; then
-  exit 1
+elif [[ " $* " == *" --action heartbeat "* ]]; then
+  if [[ "${HEARTBEAT_FAIL:-false}" == true || -n "${SLEEP_STEP:-}" ]] ||
+    { [[ "${HEARTBEAT_FAIL_AFTER_COMPLETE:-false}" == true ]] && grep -Fxq 'gate complete' "$FAKE_DIR/actions.log"; }; then
+    exit 1
+  fi
 else
   echo '{}'
 fi

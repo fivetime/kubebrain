@@ -253,7 +253,6 @@ child=0
 heartbeat_pid=0
 fenced=false
 cleanup() {
-  cleanup_managed_inputs
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -262,13 +261,23 @@ cleanup() {
     kill "$heartbeat_pid" 2>/dev/null || true
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
+  cleanup_managed_inputs
 }
 trap cleanup EXIT INT TERM
+
+renew_terminal_lease() {
+  run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+    --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; certificate rotation worker was fenced" >&2
+    return 1
+  }
+}
 
 run_step() {
   local label="$1"
   shift
   local step_rc
+  rm -f "$managed_credentials_dir/child.done"
   env OPERATION_ID="$rotation_id" INSTANCE="$instance" PARAMETERS_INPUT="$PARAMETERS_INPUT" "$@" &
   child=$!
   (
@@ -276,7 +285,7 @@ run_step() {
       sleep "$heartbeat_interval"
       if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
         --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-        kill "$child" 2>/dev/null || true
+        [[ -e "$managed_credentials_dir/child.done" ]] || kill "$child" 2>/dev/null || true
         exit 75
       fi
     done
@@ -285,6 +294,7 @@ run_step() {
   set +e
   wait "$child"
   step_rc=$?
+  : >"$managed_credentials_dir/child.done"
   kill "$heartbeat_pid" 2>/dev/null
   wait "$heartbeat_pid"
   heartbeat_rc=$?
@@ -473,6 +483,7 @@ for step in "${steps[@]}"; do
   if [[ "$fenced" == true ]]; then
     exit 1
   fi
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "certificate rotation ${step} exited ${rc}" >/dev/null
   echo "certificate rotation failed during ${step} and was requeued" >&2
@@ -480,29 +491,34 @@ for step in "${steps[@]}"; do
 done
 
 [[ -f "$receipt_output" ]] || {
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "certificate rotation receipt missing" >/dev/null
   echo "certificate rotation completed without its receipt" >&2
   exit 1
 }
 if ! freeze_rotation_receipt; then
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "certificate rotation receipt invalid" >/dev/null
   echo "certificate rotation produced an invalid receipt" >&2
   exit 1
 fi
 if ! validate_rotation_receipt; then
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "certificate rotation receipt invalid" >/dev/null
   echo "certificate rotation produced an invalid receipt" >&2
   exit 1
 fi
 if ! receipt_digest="$(validated_rotation_receipt_digest)"; then
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "certificate rotation receipt invalid" >/dev/null
   echo "certificate rotation produced an invalid receipt" >&2
   exit 1
 fi
+renew_terminal_lease || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "certificate rotation completed" >/dev/null
 cleanup_managed_inputs

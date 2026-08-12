@@ -47935,6 +47935,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已退出/PID 复用的 child；每个 post-child retry 与 succeed 前回收后台循环、拒绝 75、同步续租完整 lease，再紧邻
   owner+attempt terminal CAS。负向回归固定最终续租失败时零 retry/succeed，正向固定最后 heartbeat 先于 succeed。
 
+- A4463 为 CertificateRotation 的 terminal 状态增加显式 lease 所有权证明。该 worker 的 begin/overlap/complete
+  gate 与两次证书发布各自运行独立 heartbeat，但最后一步结束后停止续租，随后才冻结、校验 rotation receipt 并
+  提交 succeed；快速步骤甚至可能从未产生一次 heartbeat。RED 让完整轮换成功后拒绝 heartbeat，旧实现仍成功。
+  新实现要求任一步失败的 retry、receipt 缺失/非法的 retry 以及最终 succeed 前同步 owner+attempt heartbeat，续租
+  完整 lease 后才紧邻 terminal CAS，失败时零 retry/succeed mutation。每一步 child wait 后还先写完成标记，后台
+  fencing 不再误杀已退出/PID 复用的 child；cleanup 也先回收进程再移除标记目录。正向回归固定最终 heartbeat
+  严格早于 succeed，负向固定最终 fencing 后不提交任何 terminal 状态。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

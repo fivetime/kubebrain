@@ -4087,12 +4087,15 @@ worker 镜像配置受控、可执行且必须幂等的 `PUBLISH_OVERLAP_COMMAND
 完整顺序为 begin gate、发布双 CA、overlap gate、发布仅新 CA/叶证书、complete gate。
 state-only 接管从双 CA 发布继续，overlap marker 从最终发布继续，已有 receipt 则重做
 complete 在线验证。任一步失败 requeue；新 owner/attempt 可安全重跑幂等 hook。旧 worker
-heartbeat fencing 后立即停止，不发布后续 Secret或提交状态。complete 仍要求新凭据成功、
+heartbeat fencing 后立即停止，不发布后续 Secret或提交状态。每个工作 child 返回时先写完成标记，
+避免并发 fencing 向已退出且 PID 可能复用的进程发信号；任何 retry 或最终 succeed 前都同步续租完整
+lease，失败时不写 terminal 状态，成功后才紧邻提交 owner+attempt CAS。complete 仍要求新凭据成功、
 旧凭据失败及新凭据再次成功，之后 operation Succeeded 绑定 A185 receipt SHA-256。
 A185 也支持显式 `KUBECONFIG_PATH`。
 
 所有 operation executor 的 heartbeat 均使用独立续租进程，主进程直接 `wait` 工作子进程；
-工作结束后终止 heartbeat。续租失败时 heartbeat 杀掉工作进程并返回 fencing 状态。禁止
+工作结束后终止 heartbeat，涉及后续 terminal 提交的 worker 还会执行同步最终续租。续租失败时 heartbeat
+杀掉尚未完成的工作进程并返回 fencing 状态。禁止
 使用 `kill -0` 轮询工作进程完成，因为未 wait 的 zombie 仍可能返回存在并造成无限续租。
 
 参数读取服务使用
