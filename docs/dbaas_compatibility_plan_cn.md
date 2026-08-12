@@ -47509,10 +47509,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   永久伪 kubectl 测试执行完整旧版状态迁移，精确固定 `maxUnavailable=1 apply → rollout → maxUnavailable=0
   apply → rollout` 顺序，并覆盖缺少显式 context 的写前拒绝；focused `hack/production` 门禁通过。README 提供
   可复制的生产调用及风险说明。focused 普通门禁 1.483 秒、race 2.565 秒通过；production Envoy 清单门禁
-  0.014 秒通过。完整 `hack/production` 包在 10 分钟全包上限被既有无关
-  `TestRestoreTrafficCutoverFailsClosed/public_data_mismatch` 卡住，本项不把该超时记作绿色，也没有为迁移改动该
-  恢复流量测试。本项不重建 A4422 已清理的 disposable TiKV/PD 数据面，也不把伪集群测试当作新的数据面证明；
+  0.014 秒通过。本项不重建 A4422 已清理的 disposable TiKV/PD 数据面，也不把伪集群测试当作新的数据面证明；
   它把 A4422 真实复现的升级死锁转换为可重复、fail-closed 的发布操作。
+
+- A4424 纠正 A4423 首次验证对完整 `hack/production` 超时的错误归因。首次执行时意外并发启动两套相同全包，
+  终止其中一个 parent 又不足以证明其 fixture 子进程没有干扰另一套；因此不能据此声称既有
+  `TestRestoreTrafficCutoverFailsClosed/public_data_mismatch` 稳定卡死。隔离复核中该子测试 1.35 秒通过；后续
+  15 分钟单实例全包实际在 `TestValidateTiKVRegionHealth` 处触发累计包超时，并曾在长序列中观察到一次
+  `TestRepairTiKVTransactionPath` fixture 抖动，而两项隔离运行分别在 36.12 秒、41.47 秒通过。
+  最终按仓库和 CI 的权威 SHA-256 四路分片验证：`--verify 4` 精确发现 281 个顶层测试，四片计数
+  59/81/71/70；shard 0/1/2/3 分别在 128.152/233.787/155.862/380.710 秒全部通过。四片测试时间合计
+  898.511 秒，未计编译/调度已经接近 15 分钟，因此本地串行全包文档上限从 15 分钟改为 20 分钟；CI 继续
+  使用四片，不减少任何顶层测试、子测试或故障场景。本项只修验证证据和预算，不改变 A4423 迁移实现。
 
 ### P2：运维兼容和长期验证
 
