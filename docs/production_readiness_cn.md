@@ -3713,7 +3713,10 @@ prefix 且不能包含控制字符或 DEL；endpoint 和 S3 endpoint 不能包�
 崩溃重试若 artifact 已存在则不覆盖，而是重新校验 exact prefix、最少记录数与 freshness 后
 继续。Object Lock upload 会重新下载 exact version 并核对 digest、revision、records、
 retention，成功后 operation status 绑定 object receipt SHA-256。
-整个导出/上传期间维持 operation heartbeat；失败 requeue，fencing 时终止本地流程。
+heartbeat 覆盖导出、上传、receipt 冻结/复验和摘要计算；terminal retry/succeed 前先停止并回收后台循环，
+拒绝已观察到的 fencing，再同步续租完整 lease，成功后才紧邻提交 owner+attempt CAS。最终续租失败时
+不写 terminal 状态，由 authoritative owner/status 决定后续处理；child 结束后的完成标记也避免 fencing
+路径误杀已退出且 PID 可能复用的进程。
 S3 access key/secret 和 etcd TLS 凭据只通过 worker Secret/env 注入，不进入参数文件或 CR。
 
 定期备份由 `KubeBrainBackupPolicy` 和双副本

@@ -47912,6 +47912,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Succeeded 或 Failed，成功时 operation log 固定最后一次 heartbeat 严格早于 terminal succeed。已有 durable
   receipt 的接管路径也执行同一最终所有权证明，因此不会以陈旧 claim 提交终态。
 
+- A4460 修复受保护逻辑 Backup 在对象工作流与 terminal 状态之间的 lease 空窗。旧 worker 在 export/object
+  child 返回后立即 kill/wait heartbeat，之后才冻结 object receipt、重复验证远端身份投影并计算摘要；这些
+  步骤若跨过 lease，旧 owner 仍可能提交 retry 或 succeed。RED 让快速上传成功、后台周期长于执行时间，并使
+  operationctl heartbeat 失败；旧实现没有最终续租且仍成功。新实现用 child completion marker 让后台续租
+  继续覆盖全部 receipt 收尾，并避免 heartbeat fencing 后向已退出、PID 可能复用的 child 发信号；每个 post-child
+  retry 以及 succeed 前均回收后台循环、拒绝 75、同步续租完整 lease，再紧邻执行 owner+attempt terminal CAS。
+  负向回归固定最终续租失败时零 retry/succeed mutation，正向回归固定最后 heartbeat 严格早于 succeed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -31,6 +31,9 @@ func TestBackupOperationCompletesProtectedUpload(t *testing.T) {
 	require.Contains(t, log, "--action succeed")
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
+	lastHeartbeat := strings.LastIndex(log, "--action heartbeat")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
 	require.FileExists(t, f.receipt)
 }
 
@@ -336,7 +339,16 @@ func TestBackupOperationLoadsManagedParameters(t *testing.T) {
 
 func TestBackupOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newBackupRunnerFixture(t, false)
-	f.run(t, false, "OBJECT_SLEEP=3", "heartbeat failed")
+	f.run(t, false, "OBJECT_SLEEP=3\nHEARTBEAT_FAIL=true", "heartbeat failed")
+	log := f.log(t)
+	require.Contains(t, log, "--action heartbeat")
+	require.NotContains(t, log, "--action succeed")
+	require.NotContains(t, log, "--action retry")
+}
+
+func TestBackupOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
+	f := newBackupRunnerFixture(t, false)
+	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=10\nHEARTBEAT_FAIL=true", "final heartbeat failed; backup worker was fenced")
 	log := f.log(t)
 	require.Contains(t, log, "--action heartbeat")
 	require.NotContains(t, log, "--action succeed")
@@ -382,7 +394,7 @@ if [[ " $* " == *" --action claim "* ]]; then
   printf '{"namespace":"%s","name":"backup-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"Backup","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
 elif [[ " $* " == *" --action parameters "* ]]; then
   cat "$MANAGED_PARAMETERS"
-elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-true}" == true ]]; then
+elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
   exit 1
 else
   echo '{}'

@@ -358,8 +358,6 @@ freeze_object_receipt() {
 child=0
 heartbeat_pid=0
 cleanup() {
-  rm -rf "$parameter_capture_dir"
-  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -368,8 +366,30 @@ cleanup() {
     kill "$heartbeat_pid" 2>/dev/null || true
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
+  rm -rf "$parameter_capture_dir"
+  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
 }
 trap cleanup EXIT INT TERM
+finalize_heartbeat() {
+  local heartbeat_rc=0
+  if [[ "$heartbeat_pid" -gt 0 ]]; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+    set +e
+    wait "$heartbeat_pid"
+    heartbeat_rc=$?
+    set -e
+    heartbeat_pid=0
+    if [[ "$heartbeat_rc" == 75 ]]; then
+      echo "operation heartbeat failed; backup worker was fenced" >&2
+      return 1
+    fi
+  fi
+  run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+    --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; backup worker was fenced" >&2
+    return 1
+  }
+}
 run_backup &
 child=$!
 (
@@ -377,7 +397,7 @@ child=$!
     sleep "$heartbeat_interval"
     if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
       --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-      kill "$child" 2>/dev/null || true
+      [[ -e "$parameter_capture_dir/child.done" ]] || kill "$child" 2>/dev/null || true
       exit 75
     fi
   done
@@ -386,46 +406,45 @@ heartbeat_pid=$!
 set +e
 wait "$child"
 backup_rc=$?
-kill "$heartbeat_pid" 2>/dev/null
-wait "$heartbeat_pid"
-heartbeat_rc=$?
 set -e
+: >"$parameter_capture_dir/child.done"
 child=0
-heartbeat_pid=0
-if [[ "$heartbeat_rc" == 75 ]]; then
-  echo "operation heartbeat failed; worker was fenced" >&2
-  exit 1
-fi
 if [[ "$backup_rc" != 0 ]]; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "backup workflow exited ${backup_rc}" >/dev/null
   echo "backup workflow failed and was requeued" >&2
   exit "$backup_rc"
 fi
 [[ -f "$receipt_output" ]] || {
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "object backup receipt missing" >/dev/null
   echo "backup workflow completed without its object receipt" >&2
   exit 1
 }
 if ! freeze_object_receipt; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "object backup receipt invalid after workflow" >/dev/null
   echo "backup workflow completed with an invalid object receipt" >&2
   exit 1
 fi
 if ! validate_object_receipt "$managed_artifact"; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "object backup receipt invalid after workflow" >/dev/null
   echo "backup workflow completed with an invalid object receipt" >&2
   exit 1
 fi
 if ! receipt_digest="$(validated_object_receipt_digest)"; then
+  finalize_heartbeat || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "object backup receipt invalid after workflow" >/dev/null
   echo "backup workflow completed with an invalid object receipt" >&2
   exit 1
 fi
+finalize_heartbeat || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "protected logical backup completed" >/dev/null
 cleanup
