@@ -656,6 +656,17 @@ func TestBackendPDCrossNodeTotalLossCanRecoverLongDeadlineKVWrites(t *testing.T)
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendPDCrossNodeTotalLossCanRecoverCompactWatermark(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-total-loss-compact-long-deadline)`)
+	require.Contains(t, script, `KUBEBRAIN_PD_COMPACT_LONG_DEADLINE_COMMAND="$command"`)
+	require.Contains(t, script, `TestCompactAcrossPDTotalLoss`)
+	require.Contains(t, script, `PD_QUORUM_PARTITION_HOLD_SECONDS=45`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"

@@ -21,6 +21,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
@@ -194,4 +195,30 @@ func TestKVWritesWaitForLeaderStartup(t *testing.T) {
 			require.NoError(t, <-done)
 		})
 	}
+}
+
+func TestCompactWaitsForLeaderStartup(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	for index := range 3 {
+		_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+			Key: []byte("/startup/compact"), Value: []byte{byte('0' + index)},
+		})
+		require.NoError(t, err)
+	}
+	server.SetLeaderReady(false)
+	done := make(chan error, 1)
+	go func() {
+		_, compactErr := server.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 2})
+		done <- compactErr
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("Compact returned before leader startup completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	server.SetLeaderReady(true)
+	require.NoError(t, <-done)
+	_, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/startup/compact"), Revision: 1})
+	require.ErrorContains(t, err, rpctypes.ErrCompacted.Error())
 }

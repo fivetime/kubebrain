@@ -1183,6 +1183,12 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 		}
 		return nil, s.notLeaderErr("compact")
 	}
+	// Compaction destroys MVCC history cluster-wide. Do not let a newly
+	// published leader advance the watermark until its durable event, lease and
+	// checkpoint startup barriers have completed.
+	if err := s.waitLeaderReady(ctx); err != nil {
+		return nil, err
+	}
 	defer beginEtcdApply(s.metricCli, "Compaction", &retErr)()
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err

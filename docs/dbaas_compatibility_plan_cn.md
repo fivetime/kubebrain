@@ -46836,6 +46836,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   startup 窗口的提前服务差距，并固定 PD 全失重叠时 upstream 所需的错误、歧义消解与恢复契约；独立宿主/
   AZ、分钟级慢恢复和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
 
+- A4389 将 leader startup 停放边界补齐到会销毁全局 MVCC 历史的 `Compact`，对照 upstream
+  `/root/etcd/tests/integration/clientv3/kv_test.go::TestKVCompact` 与 `TestKVCompactError`。此前 Compact 在
+  admin auth 与 fresh leader 路由后直接进入 SyncReadRevision/compact apply，新 leader 已发布但 durable
+  lease/event/checkpoint startup 未完成时仍可推进 watermark；单元 RED 中显式 `leaderReady=false` 后约
+  30ms 即成功返回。现在本地 fresh leader 在 apply 前受原 RPC context 约束地停放，follower proxy 和 admin
+  auth 的既有顺序保持不变；ready 后单测同时证明目标 revision 被压缩、旧历史 Range 返回 compacted。
+  新增 `pd-cross-node-total-loss-compact-long-deadline` 门禁：先写入 12 个独立键形成历史，在三个跨 worker
+  PD endpoint 固定全失 45 秒的起始与恢复交界分别请求递增 compact revision。对齐 upstream 非幂等写契约，
+  重叠请求允许成功、ErrCompacted 或 Unavailable/DeadlineExceeded/Canceled，但黑洞期间禁止伪成功；恢复后
+  以最大目标重试/ErrCompacted 闭合 durable watermark，再要求 12 个当前键完整、目标前一 revision 的 Range
+  返回 typed ErrCompacted，且新 Watch 立即以 Canceled、ErrCompacted 和不小于目标的 CompactRevision 结束。
+  2026-08-12 disposable `kubebrain-pd-compact-long` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、20379/20380 拓扑通过，全程 112.65 秒：故障起始请求规范返回 Unavailable，恢复交界请求
+  成功；重复 Compact 与历史 Range 均精确返回 compacted，Watch 和当前数据 oracle 全部闭合。三个数据面
+  副本、PD/TiKV 均 Ready 且零重启，TiDBCluster Ready，四节点无故障规则残留。本项关闭 MVCC 历史销毁
+  越过新 leader startup 的差距，并固定 Compact 与 PD 全失重叠后的持久恢复语义；独立宿主/AZ、物理大规模
+  compaction、分钟级慢恢复和 latency/bandwidth/conntrack/underlay 组合故障继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
