@@ -47384,6 +47384,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该项关闭“Envoy Deployment 未实际多节点滚动”和“未观察 EndpointSlice drain-before-delete”缺口；云厂商
   LB、跨 AZ 网络故障、NAT/conntrack/underlay、小时级 rollout/soak 仍保持开放，不能由 Kind NodePort 结论替代。
 
+- A4417 收紧 A4416 只要求“至少一个旧 Pod”被采样到 drain-before-delete 的证据边界，避免用一次成功推断
+  Deployment 的三个串行替换都遵守 lifecycle。`TestEnvoyKubernetesRollout` 现在为每个初始 Pod UID 分别收集
+  `present && !ready` 证据，最终集合必须与三个旧 UID 精确相同；同一采样序列的 Ready EndpointSlice target
+  最小值必须不少于 2，固定 production `maxUnavailable=1`、PDB `minAvailable=2` 与 preStop drain 共同提供的
+  发布可用性下界。纯单元门禁同时固定“漏掉最后一个 UID 必须失败”和“无采样/降到单 target 必须 fail
+  closed”，README 发布入口同步升级为全副本约束。
+  2026-08-12 在全新 disposable `kubebrain-envoy-k8s-a4417` Kind 集群中重建一个 control-plane、三个带独立
+  zone label 的 worker、独立 3 PD/3 TiKV/3 KubeBrain，并部署固定 Envoy 1.39.0 production resources。通过
+  control-plane InternalIP:NodePort 的普通门禁 38.16 秒通过；同一 fresh 现场 `GOFLAGS=-race` 门禁 37.18 秒
+  通过且无数据竞争。两轮各自完成三个 Envoy Pod 替换，三个旧 UID 全部具备独立摘流窗口，Ready target
+  始终不少于 2，Watch 与 TTL=3 KeepAlive/附租约 key 继续跨完整 rollout 存活。
+  本项关闭“只抽样一个 replica 的 drain 证据”和“滚动期间未固定最小 Ready endpoint 数”的缺口；它仍不是
+  小时级 churn/soak，也不替代云 LB、跨 AZ、NAT/conntrack 或 underlay 故障验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

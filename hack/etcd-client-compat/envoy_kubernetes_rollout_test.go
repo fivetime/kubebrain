@@ -105,10 +105,13 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	require.Empty(t, intersectStrings(oldUIDs, newUIDs), "rollout must replace every Envoy Pod identity")
 
 	samplesMu.Lock()
-	observedReadyDrain := observedOldPodDrainedBeforeDeletion(oldUIDs, samples)
+	drainedOldUIDs := observedOldPodsDrainedBeforeDeletion(oldUIDs, samples)
+	minimumReady := minimumReadyEndpointCount(samples)
 	samplesMu.Unlock()
-	require.True(t, observedReadyDrain,
-		"expected an old Envoy Pod UID to remain present after it was removed from ready EndpointSlice targets")
+	require.Equal(t, oldUIDs, drainedOldUIDs,
+		"every old Envoy Pod UID must remain present after it is removed from ready EndpointSlice targets")
+	require.GreaterOrEqual(t, minimumReady, 2,
+		"rolling update must retain at least two ready Envoy EndpointSlice targets")
 
 	_, err = client.Put(ctx, watchKey, "after-rollout")
 	require.NoError(t, err)
@@ -145,17 +148,31 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	}
 }
 
-func observedOldPodDrainedBeforeDeletion(oldUIDs []string, samples []envoyRolloutSample) bool {
+func observedOldPodsDrainedBeforeDeletion(oldUIDs []string, samples []envoyRolloutSample) []string {
+	drained := map[string]struct{}{}
 	for _, sample := range samples {
 		for _, uid := range oldUIDs {
 			_, present := sample.presentUIDs[uid]
 			_, ready := sample.readyUIDs[uid]
 			if present && !ready {
-				return true
+				drained[uid] = struct{}{}
 			}
 		}
 	}
-	return false
+	return sortedSet(drained)
+}
+
+func minimumReadyEndpointCount(samples []envoyRolloutSample) int {
+	if len(samples) == 0 {
+		return 0
+	}
+	minimum := len(samples[0].readyUIDs)
+	for _, sample := range samples[1:] {
+		if count := len(sample.readyUIDs); count < minimum {
+			minimum = count
+		}
+	}
+	return minimum
 }
 
 func envoyPodUIDs(t *testing.T, contextName, namespace string) []string {

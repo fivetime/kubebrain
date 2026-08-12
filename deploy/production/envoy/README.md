@@ -72,6 +72,7 @@ NODE_HOST=172.18.0.11 \
 `KUBE_CONTEXT` 必须显式指定；`NODE_HOST` 省略时使用集群首个 node 的 InternalIP。若 Kind 将 NodePort 映射到
 另一个宿主端口，可同时指定 `NODE_PORT` 和 `NODE_ENDPOINT_PORT`。测试客户端来源必须被
 `kubebrain-envoy-ingress` NetworkPolicy 准入。门禁会核对三个初始 Pod UID 与 Ready EndpointSlice target UID
-完全相同，执行 Deployment restart，并要求所有 UID 被替换、至少观察到一个旧 Pod 在仍存在时先退出 Ready
-EndpointSlice；同一稳定 NodePort 上的 CreatedNotify Watch 和 TTL=3 LeaseKeepAlive 必须贯穿全部三次 Pod
-替换，滚动后收到新 Watch event、正 TTL keepalive，且附租约键仍存在。临时 Service 会在退出时删除。
+完全相同，执行 Deployment restart，并要求所有 UID 被替换、三个旧 Pod 各自在仍存在时先退出 Ready
+EndpointSlice，且任何采样点都保留至少两个 Ready target；同一稳定 NodePort 上的 CreatedNotify Watch 和 TTL=3
+LeaseKeepAlive 必须贯穿全部三次 Pod 替换，滚动后收到新 Watch event、正 TTL keepalive，且附租约键仍存在。
+临时 Service 会在退出时删除。
