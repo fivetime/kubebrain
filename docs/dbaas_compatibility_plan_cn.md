@@ -48115,6 +48115,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   replacement、所有已提交/不确定请求留下的 pair atomicity 与 alarm 证据仍明确为待执行，不能用 mock 或脚本
   存在性关闭。
 
+- A4488 收敛 A4486 leadership witness validation 的启动内存。旧实现虽只有 seal/event 两次 TiKV iterator，仍为
+  每个未 compact transaction 保存 record、raw bytes、hash.Hash 与 count，长 compaction window 会让新 leader
+  在 Ready 前持有 O(transaction count) 对象。现在利用 internal witness key 与 event-log key 都按 big-endian
+  revision 排序，以两个 iterator 做流式 merge；只保留当前 seal 的 SHA-256/count，空间降为 O(单 transaction
+  events)。event iterator 延迟到首个有效 seal 才打开，并从该 revision 起扫，因此旧版本/空集群不读 event log，
+  也不会重扫 witness 引入前的 legacy event prefix。mismatch 告警前仍 point-read 复核 seal，维持与 compaction 的
+  竞态保护。256 笔双键 transaction 回归在中间删除一个 seal 模拟 legacy gap，证明后续 seal 不串 revision；再删除
+  倒数第二笔 marker，确认流式校验仍持久化 CORRUPT。另固定 no-witness 初始化只创建一个 iterator。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

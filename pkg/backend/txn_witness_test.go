@@ -17,6 +17,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -169,4 +170,51 @@ func TestLeadershipWitnessEventScanTransportErrorDoesNotArmCorrupt(t *testing.T)
 	members, alarmErr := restarted.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
 	require.Empty(t, members)
+}
+
+func TestLeadershipWitnessStreamingMergeValidatesSparseLargeWindow(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	const transactions = 256
+	var revisions []uint64
+	for i := 0; i < transactions; i++ {
+		_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+			{Key: []byte(fmt.Sprintf("%s/restart-witness/stream/%04d/z", prefix, i)), Value: []byte("z")},
+			{Key: []byte(fmt.Sprintf("%s/restart-witness/stream/%04d/a", prefix, i)), Value: []byte("a")},
+		}, nil)
+		require.NoError(t, err)
+		revisions = append(revisions, revision)
+	}
+	// Model a legacy event revision with no seal between sealed revisions; the
+	// merge must skip it without assigning it to either neighboring witness.
+	legacy := b.kv.BeginBatchWrite()
+	legacy.Del(b.ks.EncodeInternalKey(txnWitnessLogicalKey(revisions[transactions/2])))
+	require.NoError(t, legacy.Commit(ctx))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Empty(t, members)
+
+	corruptRevision := revisions[transactions-2]
+	corruptKey := b.ks.EncodeEventLogKey(corruptRevision,
+		[]byte(fmt.Sprintf("%s/restart-witness/stream/%04d/z", prefix, transactions-2)))
+	batch := b.kv.BeginBatchWrite()
+	batch.Del(corruptKey)
+	require.NoError(t, batch.Commit(ctx))
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, err = b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, members)
+}
+
+func TestLeadershipWithoutWitnessDoesNotOpenEventScan(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	wrapped := &witnessEventScanErrorStorage{KvStorage: store}
+	b := NewBackend(wrapped, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	require.NoError(t, b.InitializeLeadershipRevision(context.Background(), 0))
+	require.Equal(t, int32(1), wrapped.calls.Load(), "legacy/no-witness startup must not scan the event log")
 }

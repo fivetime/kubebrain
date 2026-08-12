@@ -2954,6 +2954,11 @@ transaction 均成对存在且 value 一致、
 新 transaction 重新成功、AlarmList 无 CORRUPT，且脚本确认所有 network rules 已移除。若环境恢复超出默认八分钟，
 可显式设置 `KUBEBRAIN_TIKV_TXN_RESTART_TIMEOUT`，不得删除 ambiguity 或 pair-atomicity 断言来换取绿色结果。
 
+leadership witness 启动校验使用 seal/event 两个 revision-ordered iterator 流式归并，内存只与单笔 transaction 的
+event 数量相关，不与 compaction window 内 transaction 总数相关。没有 seal 的旧版本集群不会打开 event iterator；
+首个 seal 之前的 legacy event prefix 也不会被扫描。若该阶段耗时或内存随未 compact transaction 数量线性增长，
+视为实现回退，不能仅通过放宽 readiness timeout 上线。
+
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
 需要覆盖真实 namespace 删除和 namespace controller 清理路径时启用：

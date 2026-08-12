@@ -21,7 +21,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"math"
 	"sort"
@@ -129,129 +128,104 @@ func eventMarkerIdentity(p *txnPrep) (verb proto.Event_EventType, previousRevisi
 // this binary. Legacy revisions have no seal and remain upgrade-compatible.
 func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 	start := b.ks.EncodeInternalKey(txnWitnessPrefix)
-	it, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), 0, 0)
+	witnesses, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), 0, 0)
 	if err != nil {
 		return err
 	}
-	type corruptWitness struct {
-		revision uint64
-		cause    error
-		key      []byte
-		raw      []byte
-	}
-	type persistedWitness struct {
-		record txnWitnessRecord
-		raw    []byte
-	}
-	records := make(map[uint64]persistedWitness)
-	var corrupt []corruptWitness
-	var minRevision, maxRevision uint64
+	defer witnesses.Close()
+	var events storage.Iter
+	defer func() {
+		if events != nil {
+			_ = events.Close()
+		}
+	}()
+
+	// Both physical families sort by big-endian revision. Merge their iterators
+	// in one pass and retain only the current transaction's hash state: startup
+	// memory is O(events in one txn), not O(uncompacted transactions).
+	var eventReady, eventEOF bool
+	var eventRevision uint64
 	for {
-		if err := it.Next(ctx); err != nil {
+		if err := witnesses.Next(ctx); err != nil {
 			if err == io.EOF {
-				break
+				return nil
 			}
-			_ = it.Close()
 			return err
 		}
-		key := append([]byte(nil), it.Key()...)
-		raw := append([]byte(nil), it.Val()...)
+		key := append([]byte(nil), witnesses.Key()...)
+		raw := append([]byte(nil), witnesses.Val()...)
 		logical := key[len(start)-len(txnWitnessPrefix):]
+		var revision uint64
+		var cause error
 		if len(logical) != len(txnWitnessPrefix)+8 {
-			corrupt = append(corrupt, corruptWitness{cause: fmt.Errorf("%w: malformed transaction witness key", ErrTxnWitnessCorrupt), key: key, raw: raw})
-			continue
-		}
-		revision := binary.BigEndian.Uint64(logical[len(txnWitnessPrefix):])
-		if revision == 0 || revision > math.MaxInt64 {
-			corrupt = append(corrupt, corruptWitness{revision: revision,
-				cause: fmt.Errorf("%w: invalid transaction witness revision", ErrTxnWitnessCorrupt), key: key, raw: raw})
-			continue
+			cause = fmt.Errorf("%w: malformed transaction witness key", ErrTxnWitnessCorrupt)
+		} else {
+			revision = binary.BigEndian.Uint64(logical[len(txnWitnessPrefix):])
+			if revision == 0 || revision > math.MaxInt64 {
+				cause = fmt.Errorf("%w: invalid transaction witness revision", ErrTxnWitnessCorrupt)
+			}
 		}
 		record, decodeErr := decodeTxnWitness(raw)
-		if decodeErr != nil {
-			corrupt = append(corrupt, corruptWitness{revision: revision,
-				cause: fmt.Errorf("%w: %v", ErrTxnWitnessCorrupt, decodeErr), key: key, raw: raw})
-			continue
+		if cause == nil && decodeErr != nil {
+			cause = fmt.Errorf("%w: %v", ErrTxnWitnessCorrupt, decodeErr)
 		}
-		records[revision] = persistedWitness{record: record, raw: raw}
-		if minRevision == 0 || revision < minRevision {
-			minRevision = revision
-		}
-		if revision > maxRevision {
-			maxRevision = revision
-		}
-	}
-	_ = it.Close()
-	for _, item := range corrupt {
-		present, err := b.txnWitnessStillPresent(ctx, item.key, item.raw)
-		if err != nil {
-			return err
-		}
-		if !present {
-			continue // compaction deleted the seal after the scan snapshot
-		}
-		if err := b.armPersistedWitnessCorrupt(ctx, item.revision, item.cause); err != nil {
-			return err
-		}
-	}
-	if len(records) == 0 {
-		return nil
-	}
-
-	// Event-log keys sort by (revision,userKey), so one sequential scan validates
-	// every retained seal. Avoid one TiKV transaction per revision during leader
-	// recovery: a long compaction window can contain millions of transactions.
-	type observedWitness struct {
-		h     hash.Hash
-		count uint32
-	}
-	observed := make(map[uint64]*observedWitness, len(records))
-	for revision := range records {
-		observed[revision] = &observedWitness{h: sha256.New()}
-	}
-	it, err = b.kv.Iter(ctx, b.ks.EventLogRangeStart(minRevision), b.ks.EventLogRangeEnd(maxRevision), 0, 0)
-	if err != nil {
-		return err
-	}
-	for {
-		if err := it.Next(ctx); err != nil {
-			if err == io.EOF {
-				break
+		if cause == nil {
+			if events == nil {
+				// Witness keys are revision ordered, so the first valid seal is the
+				// lowest revision that can matter. Do not rescan an arbitrarily large
+				// legacy event prefix that predates witness support.
+				events, err = b.kv.Iter(ctx, b.ks.EventLogRangeStart(revision), b.ks.EventLogRangeEnd(math.MaxInt64), 0, 0)
+				if err != nil {
+					return err
+				}
 			}
-			_ = it.Close()
-			return err
+			h := sha256.New()
+			var count uint32
+			for !eventEOF {
+				if !eventReady {
+					if nextErr := events.Next(ctx); nextErr != nil {
+						if nextErr == io.EOF {
+							eventEOF = true
+							break
+						}
+						return nextErr
+					}
+					eventRevision, _, decodeErr = b.ks.DecodeEventLogKey(events.Key())
+					if decodeErr != nil {
+						return decodeErr
+					}
+					eventReady = true
+				}
+				if eventRevision < revision {
+					eventReady = false
+					continue
+				}
+				if eventRevision > revision {
+					break
+				}
+				writeWitnessDigestEntry(h, eventLogRawEntry{key: events.Key(), value: events.Val()})
+				count++
+				eventReady = false
+			}
+			if count != record.count || !bytes.Equal(h.Sum(nil), record.digest[:]) {
+				cause = fmt.Errorf("%w: persisted witness mismatch at revision %d: found %d events, expected %d",
+					ErrTxnWitnessCorrupt, revision, count, record.count)
+			}
 		}
-		revision, _, decodeErr := b.ks.DecodeEventLogKey(it.Key())
-		if decodeErr != nil {
-			_ = it.Close()
-			return decodeErr
-		}
-		if state := observed[revision]; state != nil {
-			writeWitnessDigestEntry(state.h, eventLogRawEntry{key: it.Key(), value: it.Val()})
-			state.count++
-		}
-	}
-	_ = it.Close()
-	for revision, persisted := range records {
-		state := observed[revision]
-		if state.count == persisted.record.count && bytes.Equal(state.h.Sum(nil), persisted.record.digest[:]) {
+		if cause == nil {
 			continue
 		}
-		witnessKey := b.ks.EncodeInternalKey(txnWitnessLogicalKey(revision))
-		present, err := b.txnWitnessStillPresent(ctx, witnessKey, persisted.raw)
-		if err != nil {
-			return err
+		present, checkErr := b.txnWitnessStillPresent(ctx, key, raw)
+		if checkErr != nil {
+			return checkErr
 		}
 		if !present {
 			continue // compaction removed the seal before deleting these events
 		}
-		cause := fmt.Errorf("%w: persisted witness mismatch at revision %d: found %d events, expected %d",
-			ErrTxnWitnessCorrupt, revision, state.count, persisted.record.count)
 		if err := b.armPersistedWitnessCorrupt(ctx, revision, cause); err != nil {
 			return err
 		}
 	}
-	return nil
 }
 
 func (b *backend) txnWitnessStillPresent(ctx context.Context, key, expected []byte) (bool, error) {
