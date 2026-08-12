@@ -19,10 +19,11 @@ Envoy `STRICT_DNS` 会看到每个 KubeBrain Pod IP，而不是把流量再次�
 - Envoy HTTP/2 schema 的并发 stream 最大值为 `2147483647`，低于 KubeBrain/etcd 的 uint32 最大值；生产容量
   仍以 KubeBrain `--max-watches=10000` 和 Envoy `max_requests=20000` 的较小业务上限为准；
 - 三副本 Envoy 使用 PDB、hostname 反亲和、非 root/read-only 容器、digest-pinned 镜像和显式 NetworkPolicy；
-- preStop 使用固定镜像中的 `/bin/bash` `/dev/tcp` 向 Envoy admin 发送显式 `POST /healthcheck/fail`，由
-  `/usr/bin/timeout` 限制为 12 秒，并校验 HTTP 200；readiness `failureThreshold=1`，hook 随后等待 10 秒，让
-  kubelet 与 EndpointSlice 有时间摘除旧 Pod，再由 Kubernetes 终止进程。Envoy admin 的 mutating endpoint
-  不接受 GET，固定官方镜像也不包含 curl；
+- preStop 使用固定镜像中的 `/bin/bash` `/dev/tcp` 依次向 Envoy admin 发送显式
+  `POST /healthcheck/fail` 与 `POST /drain_listeners?graceful`，逐项校验 HTTP 200；Envoy 以显式 5 秒
+  `immediate` drain 在 10 秒 hook 宽限期内向已有 HTTP/2 stream 发起迁移。Deployment `minReadySeconds=5`，
+  readiness `failureThreshold=1`，防止下一旧 Pod 在新 endpoint 尚未稳定传播时被摘除；整个 hook 由
+  `/usr/bin/timeout` 限制为 12 秒。Envoy admin 的 mutating endpoint 不接受 GET，固定官方镜像也不包含 curl；
 - admin `:9901` 仅供带 `dbaas.kubebrain.io/monitoring-access=true` 的 namespace 访问，不是租户入口；
 - `2380` 不终止或检查 TLS：客户端证书、服务端证书和 etcd 的证书 CN 身份均端到端保留，Envoy Pod 无需挂载
   租户 CA、证书或私钥；它不是 L7 路由，不能提供基于 RPC method 的策略；
@@ -72,7 +73,7 @@ NODE_HOST=172.18.0.11 \
 `KUBE_CONTEXT` 必须显式指定；`NODE_HOST` 省略时使用集群首个 node 的 InternalIP。若 Kind 将 NodePort 映射到
 另一个宿主端口，可同时指定 `NODE_PORT` 和 `NODE_ENDPOINT_PORT`。测试客户端来源必须被
 `kubebrain-envoy-ingress` NetworkPolicy 准入。门禁会核对三个初始 Pod UID 与 Ready EndpointSlice target UID
-完全相同，执行 Deployment restart，并要求所有 UID 被替换、三个旧 Pod 各自在仍存在时先退出 Ready
-EndpointSlice，且任何采样点都保留至少两个 Ready target；同一稳定 NodePort 上的 CreatedNotify Watch 和 TTL=3
-LeaseKeepAlive 必须贯穿全部三次 Pod 替换，滚动后收到新 Watch event、正 TTL keepalive，且附租约键仍存在。
-临时 Service 会在退出时删除。
+完全相同。默认连续执行三轮 Deployment restart，共替换九个 Pod；每轮都要求三个旧 Pod 各自在仍存在时先退出
+Ready EndpointSlice，且任何采样点都保留至少两个 Ready target。同一稳定 NodePort 上的 CreatedNotify Watch
+和 TTL=3 LeaseKeepAlive 必须贯穿全部轮次，每轮结束都收到新的 Watch event、正 TTL keepalive，且附租约键
+最终仍存在。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。

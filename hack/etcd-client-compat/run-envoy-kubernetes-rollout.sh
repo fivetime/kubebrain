@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"
 NAMESPACE="${NAMESPACE:-kubebrain-system}"
-TEST_TIMEOUT="${TEST_TIMEOUT:-4m}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-8m}"
+ROLLOUT_CYCLES="${ROLLOUT_CYCLES:-3}"
 NODE_HOST="${NODE_HOST:-}"
 NODE_PORT="${NODE_PORT:-}"
 NODE_ENDPOINT_PORT="${NODE_ENDPOINT_PORT:-}"
@@ -12,6 +13,10 @@ SERVICE_NAME=kubebrain-envoy-rollout-gate
 
 if [[ -z "$KUBE_CONTEXT" ]]; then
   echo "set KUBE_CONTEXT explicitly; the rollout gate will not use an implicit current context" >&2
+  exit 2
+fi
+if [[ ! "$ROLLOUT_CYCLES" =~ ^[0-9]+$ ]] || (( ROLLOUT_CYCLES < 1 || ROLLOUT_CYCLES > 10 )); then
+  echo "ROLLOUT_CYCLES must be an integer in [1,10]" >&2
   exit 2
 fi
 for command in kubectl go; do
@@ -95,6 +100,7 @@ fi
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT="${node_ip}:${endpoint_port}" \
     KUBEBRAIN_ENVOY_ROLLOUT_CONTEXT="$KUBE_CONTEXT" \
-    KUBEBRAIN_ENVOY_ROLLOUT_NAMESPACE="$NAMESPACE" \
-    go test . -run '^TestEnvoyKubernetesRollout$' -count=1 -timeout="$TEST_TIMEOUT" -v
+	  KUBEBRAIN_ENVOY_ROLLOUT_NAMESPACE="$NAMESPACE" \
+	  KUBEBRAIN_ENVOY_ROLLOUT_CYCLES="$ROLLOUT_CYCLES" \
+	  go test . -run '^TestEnvoyKubernetesRollout$' -count=1 -timeout="$TEST_TIMEOUT" -v
 )

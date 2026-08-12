@@ -47398,6 +47398,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项关闭“只抽样一个 replica 的 drain 证据”和“滚动期间未固定最小 Ready endpoint 数”的缺口；它仍不是
   小时级 churn/soak，也不替代云 LB、跨 AZ、NAT/conntrack 或 underlay 故障验证。
 
+- A4418 把 A4417 的单轮发布扩展为同一 clientv3 Watch/LeaseKeepAlive 会话下默认连续三轮 Deployment restart，
+  共九次 Envoy Pod 替换。runner 新增 fail-closed `ROLLOUT_CYCLES`（默认 3，只接受 1–10），每轮分别验证三个
+  旧 UID 全部替换、逐 UID drain-before-delete、Ready EndpointSlice target 不少于 2，并写入轮次唯一 value；
+  同一 Watch 的 Header revision 必须逐轮严格递增，每轮完成时刻之后必须收到同 lease ID 的正 TTL response，
+  最终附租约 key 与 TimeToLive 仍存活。采样从 100ms 调整为 250ms，每个 10 秒 preStop 窗口仍有约 40 次机会，
+  避免 race client 与每秒 20 个外部 kubectl 进程争抢宿主资源。
+  首轮真实普通门禁在第三轮 RED：Ready target 短暂降到 1，暴露 Deployment `maxUnavailable=1` 只约束 Ready Pod，
+  不等待 EndpointSlice 稳定传播。尝试 `maxUnavailable=0` + topology spread 又证明不可滚动迁移：旧版本 Pod 的
+  required hostname anti-affinity 会让 surge 永久 Pending；即使为 topology spread 设置 `nodeTaintsPolicy=Honor`
+  排除 control-plane taint，旧 Pod 仍阻止第 4 个副本。因此保留硬跨节点反亲和及 `maxUnavailable=1`，增加
+  `minReadySeconds=5`，既兼容从既有版本升级，也让新 endpoint 稳定后才继续摘下一个旧 Pod。
+  随后普通门禁 159.80 秒通过，但 race 两次在第二轮关闭 KeepAlive channel，证明 readiness 摘流不迁移已有
+  HTTP/2 stream。production preStop 因此在 `/healthcheck/fail` 后再严格执行并校验
+  `POST /drain_listeners?graceful`；Envoy argv 显式固定 `--drain-time-s 5 --drain-strategy immediate`，使 GOAWAY/
+  connection migration 在 10 秒删除宽限期内完成，而不是等待默认长 drain 或到 SIGTERM 才突断。
+  2026-08-12 全新 disposable `kubebrain-envoy-k8s-a4418` 使用一个 control-plane、三个 zone worker、独立
+  3 PD/3 TiKV/3 KubeBrain 与固定 Envoy 1.39.0 production resources。最终普通三轮九次替换 160.80 秒、
+  `GOFLAGS=-race` 158.69 秒通过且无数据竞争；每轮三旧 UID 均有独立摘流证据、Ready target 始终不少于 2，
+  同一 Watch/TTL=3 KeepAlive 与租约键贯穿全部约 2.7 分钟。
+  该项关闭“单轮成功不能证明连续 rollout churn”和“readiness drain 不主动迁移已有 HTTP/2 stream”的缺口；
+  小时级高频 churn、云 LB、跨 AZ、NAT/conntrack 与 underlay 故障仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

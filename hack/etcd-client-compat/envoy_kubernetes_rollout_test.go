@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,12 +33,12 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	if endpoint == "" || contextName == "" || namespace == "" {
 		t.Skip("set KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT, KUBEBRAIN_ENVOY_ROLLOUT_CONTEXT, and KUBEBRAIN_ENVOY_ROLLOUT_NAMESPACE")
 	}
+	rolloutCycles, err := strconv.Atoi(strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_CYCLES")))
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, rolloutCycles, 1)
+	require.LessOrEqual(t, rolloutCycles, 10)
 
-	oldUIDs := envoyPodUIDs(t, contextName, namespace)
-	require.Len(t, oldUIDs, 3)
-	require.Equal(t, oldUIDs, envoyReadyEndpointUIDs(t, contextName, namespace))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	t.Cleanup(cancel)
 	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	require.NoError(t, err)
@@ -69,71 +70,85 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		}
 	}()
 
-	monitorCtx, stopMonitor := context.WithCancel(ctx)
-	var samplesMu sync.Mutex
-	var samples []envoyRolloutSample
-	monitorDone := make(chan struct{})
-	go func() {
-		defer close(monitorDone)
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-monitorCtx.Done():
-				return
-			case <-ticker.C:
-				ready := envoyReadyEndpointUIDsNoFail(contextName, namespace)
-				present := envoyPresentPodUIDsNoFail(contextName, namespace)
-				if ready != nil && present != nil {
-					samplesMu.Lock()
-					samples = append(samples, envoyRolloutSample{readyUIDs: ready, presentUIDs: present})
-					samplesMu.Unlock()
+	var previousWatchRevision int64
+	for cycle := 1; cycle <= rolloutCycles; cycle++ {
+		oldUIDs := envoyPodUIDs(t, contextName, namespace)
+		require.Len(t, oldUIDs, 3)
+		require.Equal(t, oldUIDs, envoyReadyEndpointUIDs(t, contextName, namespace))
+
+		monitorCtx, stopMonitor := context.WithCancel(ctx)
+		var samplesMu sync.Mutex
+		var samples []envoyRolloutSample
+		monitorDone := make(chan struct{})
+		go func() {
+			defer close(monitorDone)
+			// The preStop hook holds every drained Pod for ten seconds. A 250ms
+			// cadence gives forty observation opportunities per replica without
+			// making race-enabled clients compete with twenty kubectl processes/s.
+			ticker := time.NewTicker(250 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-monitorCtx.Done():
+					return
+				case <-ticker.C:
+					ready := envoyReadyEndpointUIDsNoFail(contextName, namespace)
+					present := envoyPresentPodUIDsNoFail(contextName, namespace)
+					if ready != nil && present != nil {
+						samplesMu.Lock()
+						samples = append(samples, envoyRolloutSample{readyUIDs: ready, presentUIDs: present})
+						samplesMu.Unlock()
+					}
 				}
 			}
-		}
-	}()
+		}()
 
-	kubectl(t, contextName, namespace, "rollout", "restart", "deployment/kubebrain-envoy")
-	kubectl(t, contextName, namespace, "rollout", "status", "deployment/kubebrain-envoy", "--timeout=150s")
-	rolloutCompletedAt := time.Now()
-	stopMonitor()
-	<-monitorDone
+		kubectl(t, contextName, namespace, "rollout", "restart", "deployment/kubebrain-envoy")
+		kubectl(t, contextName, namespace, "rollout", "status", "deployment/kubebrain-envoy", "--timeout=150s")
+		rolloutCompletedAt := time.Now()
+		stopMonitor()
+		<-monitorDone
 
-	newUIDs := envoyPodUIDs(t, contextName, namespace)
-	require.Len(t, newUIDs, 3)
-	require.Equal(t, newUIDs, envoyReadyEndpointUIDs(t, contextName, namespace))
-	require.Empty(t, intersectStrings(oldUIDs, newUIDs), "rollout must replace every Envoy Pod identity")
+		newUIDs := envoyPodUIDs(t, contextName, namespace)
+		require.Len(t, newUIDs, 3)
+		require.Equal(t, newUIDs, envoyReadyEndpointUIDs(t, contextName, namespace))
+		require.Empty(t, intersectStrings(oldUIDs, newUIDs), "rollout cycle %d must replace every Envoy Pod identity", cycle)
 
-	samplesMu.Lock()
-	drainedOldUIDs := observedOldPodsDrainedBeforeDeletion(oldUIDs, samples)
-	minimumReady := minimumReadyEndpointCount(samples)
-	samplesMu.Unlock()
-	require.Equal(t, oldUIDs, drainedOldUIDs,
-		"every old Envoy Pod UID must remain present after it is removed from ready EndpointSlice targets")
-	require.GreaterOrEqual(t, minimumReady, 2,
-		"rolling update must retain at least two ready Envoy EndpointSlice targets")
+		samplesMu.Lock()
+		drainedOldUIDs := observedOldPodsDrainedBeforeDeletion(oldUIDs, samples)
+		minimumReady := minimumReadyEndpointCount(samples)
+		samplesMu.Unlock()
+		require.Equal(t, oldUIDs, drainedOldUIDs,
+			"every old Envoy Pod UID in rollout cycle %d must drain before deletion", cycle)
+		require.GreaterOrEqual(t, minimumReady, 2,
+			"rollout cycle %d must retain at least two ready Envoy EndpointSlice targets", cycle)
 
-	_, err = client.Put(ctx, watchKey, "after-rollout")
-	require.NoError(t, err)
-	watchResponse := receiveExternalL7WatchEvent(t, ctx, watch)
-	require.Len(t, watchResponse.Events, 1)
-	require.Equal(t, "after-rollout", string(watchResponse.Events[0].Kv.Value))
-	var recovered *clientv3.LeaseKeepAliveResponse
-	for recovered == nil {
-		select {
-		case observation := <-keepAliveObserved:
-			if !observation.at.Before(rolloutCompletedAt) {
-				recovered = observation.response
+		watchValue := fmt.Sprintf("after-rollout-%d", cycle)
+		_, err = client.Put(ctx, watchKey, watchValue)
+		require.NoError(t, err)
+		watchResponse := receiveExternalL7WatchEvent(t, ctx, watch)
+		require.Len(t, watchResponse.Events, 1)
+		require.Equal(t, watchValue, string(watchResponse.Events[0].Kv.Value))
+		require.Greater(t, watchResponse.Header.Revision, previousWatchRevision)
+		previousWatchRevision = watchResponse.Header.Revision
+
+		var recovered *clientv3.LeaseKeepAliveResponse
+		for recovered == nil {
+			select {
+			case observation := <-keepAliveObserved:
+				if !observation.at.Before(rolloutCompletedAt) {
+					recovered = observation.response
+				}
+			case <-keepAliveClosed:
+				t.Fatalf("keepalive channel closed during Envoy rollout cycle %d", cycle)
+			case <-ctx.Done():
+				t.Fatalf("waiting for keepalive after Envoy rollout cycle %d: %v", cycle, ctx.Err())
 			}
-		case <-keepAliveClosed:
-			t.Fatal("keepalive channel closed during Envoy rollout")
-		case <-ctx.Done():
-			t.Fatalf("waiting for keepalive after Envoy rollout: %v", ctx.Err())
 		}
+		require.NotNil(t, recovered)
+		require.Equal(t, grant.ID, recovered.ID)
+		require.Positive(t, recovered.TTL)
 	}
-	require.NotNil(t, recovered)
-	require.Equal(t, grant.ID, recovered.ID)
-	require.Positive(t, recovered.TTL)
 	leaseGet, err := client.Get(ctx, leaseKey)
 	require.NoError(t, err)
 	require.Len(t, leaseGet.Kvs, 1)
