@@ -1856,18 +1856,12 @@ func TestOrphanIndexSelfHeal(t *testing.T) {
 		s.ast.NoError(err)
 		orphan(key)
 
-		// Without the heal, delete is a poisoned no-op: CAS on the missing index fails.
-		noHeal, err := b.deleteOnce(s.ctx, newDelRequest(0, key), false)
-		s.ast.NoError(err)
-		s.ast.False(noHeal.Succeeded)
-		_, _, rerr := b.get(s.ctx, []byte(key), 0)
-		s.ast.NoError(rerr) // still there
-
-		// With the heal (default path), delete succeeds and the key is gone.
+		// The public transactional path detects the missing index, repairs it
+		// revision-neutrally, retries, and deletes the key.
 		res, err := s.backend.Delete(s.ctx, newDelRequest(0, key))
 		s.ast.NoError(err)
 		s.ast.True(res.Succeeded)
-		_, _, rerr = b.get(s.ctx, []byte(key), 0)
+		_, _, rerr := b.get(s.ctx, []byte(key), 0)
 		s.ast.ErrorIs(rerr, storage.ErrKeyNotFound)
 	})
 
@@ -1878,14 +1872,7 @@ func TestOrphanIndexSelfHeal(t *testing.T) {
 		modRev := cresp.Header.Revision
 		orphan(key)
 
-		// Without the heal, update is a poisoned no-op.
-		noHeal, err := b.updateOnce(s.ctx, &proto.UpdateRequest{
-			Kv: &proto.KeyValue{Key: []byte(key), Value: []byte("v2"), Revision: modRev},
-		}, false)
-		s.ast.NoError(err)
-		s.ast.False(noHeal.Succeeded)
-
-		// With the heal, update succeeds and the new value is readable.
+		// The public transactional path repairs the index and retries once.
 		res, err := s.backend.Update(s.ctx, &proto.UpdateRequest{
 			Kv: &proto.KeyValue{Key: []byte(key), Value: []byte("v2"), Revision: modRev},
 		})

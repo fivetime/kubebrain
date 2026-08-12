@@ -48042,6 +48042,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   event，compact 只受 whole-transaction resolution pin 与 snapshot pin 限制。旧单键写 helper 仍待后续物理删除；
   TSO 当前仅保留 committed/dealt watermark 兼容视图和少量旧 helper，不再承担公共 mutation revision 分配。
 
+- A4478 物理删除 `write.go` 中旧 `create/createWithMetadata/createBatchWithMetadata`、`delete/deleteOnce/mustDeal`
+  和 `update/updateOnce` 实现，并删除 backend `deal()`；生产代码（排除独立 `tso` 包）已无 `.Deal()` 调用。
+  `write.go` 现在仅包含公共 transactional adapter、共享 revision-dependent encoder、revision-neutral orphan-index
+  修复和 TxnApply-backed DeleteRange。原先直接调用 no-heal 私有实现的测试改为只验证公共路径能够自愈；allocator
+  overflow 继续由 transaction-local durable counter 测试覆盖。TSO 对象仍作为 committed/dealt watermark 兼容视图，
+  但不再分配任何公共或私有 mutation revision。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

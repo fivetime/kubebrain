@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -417,8 +416,8 @@ type backend struct {
 	// etcd transaction with a range compare takes Lock across compare+commit,
 	// preventing inserts in the compared range from becoming invisible phantoms.
 	logicalWriteMu sync.RWMutex
-	// revisionWriteMu serializes legacy TSO writers with transaction-local
-	// allocation during the cutover without changing the broader predicate lock.
+	// revisionWriteMu serializes transaction planning, atomic revision allocation,
+	// and ordered event publication without changing the broader predicate lock.
 	revisionWriteMu sync.Mutex
 
 	// Background physical compaction. CompactAsync advances the logical compact
@@ -682,29 +681,6 @@ var (
 	ErrRevisionDriftBack = errors.New("revision drift back")
 	ErrRevisionExhausted = tso.ErrRevisionExhausted
 )
-
-func (b *backend) deal(prevRevision uint64) (uint64, error) {
-	rev, err := b.tso.Deal()
-	if err != nil {
-		return 0, err
-	}
-	if rev == 0 || rev > math.MaxInt64 {
-		klog.ErrorS(ErrRevisionExhausted, "deal", "generated", rev)
-		b.metricCli.EmitCounter("revision.generator.invalid", 1)
-		return rev, ErrRevisionExhausted
-	}
-	if prevRevision > 0 && rev < prevRevision {
-		klog.ErrorS(ErrRevisionDriftBack, "deal", "generated", rev, "prev", prevRevision)
-		b.metricCli.EmitCounter("revision.generator.invalid", 1)
-		return rev, ErrRevisionDriftBack
-	}
-
-	if rev%100 == 0 {
-		b.metricCli.EmitGauge("revision.generator", rev)
-	}
-
-	return rev, nil
-}
 
 // collectorStallState tracks how long the event collector has been waiting on a
 // single empty ring slot, so it can warn and then self-heal past an abandoned

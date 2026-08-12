@@ -80,14 +80,6 @@ func TestDurableRevisionCorruptionFailsClosed(t *testing.T) {
 	}
 }
 
-func TestRevisionAllocatorRejectsWireOverflow(t *testing.T) {
-	b, _ := newTxnApplyBackend(t)
-	b.tso.Init(math.MaxInt64)
-	revision, err := b.deal(math.MaxInt64)
-	require.Zero(t, revision)
-	require.ErrorIs(t, err, ErrRevisionExhausted)
-}
-
 func TestLeadershipRevisionKeepsUserRevisionsContiguous(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	publicRevision := b.GetCurrentRevision()

@@ -159,9 +159,9 @@ func TestUpdateMetadataReadFailureDoesNotStallPipeline(t *testing.T) {
 	require.NoError(t, err)
 	waitCommitted(t, b, createResp.Header.Revision)
 
-	// Fail the etcd-metadata read that update() performs after dealing its
-	// revision — a transient storage blip at exactly this point must not stall
-	// the pipeline.
+	// Fail the metadata pre-read performed before transaction-local revision
+	// allocation. The request fails without consuming a revision or stalling the
+	// pipeline.
 	atomic.StoreInt32(&fkv.remaining, 1)
 	_, err = b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
 		Key:      key,
