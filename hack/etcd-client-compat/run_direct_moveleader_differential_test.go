@@ -26,9 +26,12 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "OrphanLeaseExpiresAfterGrantResponseLoss")
 	require.Contains(t, string(script), "GrantResponseLossAcrossExternalL4Proxy")
 	require.Contains(t, string(script), "RevokeResponseLossAcrossExternalL4TLSPassthrough")
+	require.Contains(t, string(script), "ResponseLossAcrossExternalL7Proxy")
 	require.Contains(t, string(script), `cd "$ROOT_DIR/hack/etcd-client-compat"`)
 	require.Contains(t, string(script), `go build -o "$data_dir/tcp-switch-proxy" ./cmd/tcp-switch-proxy`)
+	require.Contains(t, string(script), `go build -o "$data_dir/grpc-switch-proxy" ./cmd/grpc-switch-proxy`)
 	require.Contains(t, string(script), `EXTERNAL_TCP_SWITCH_PROXY_BINARY="$data_dir/tcp-switch-proxy"`)
+	require.Contains(t, string(script), `EXTERNAL_GRPC_SWITCH_PROXY_BINARY="$data_dir/grpc-switch-proxy"`)
 }
 
 func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidScopeBeforeDependencies(t *testing.T) {

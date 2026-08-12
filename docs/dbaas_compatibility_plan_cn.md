@@ -47220,6 +47220,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TLS passthrough 由此有真实差分证据；生产云 LB/NAT/conntrack、真实 L7 gRPC proxy、跨节点网络设备和平台
   通用 request token 仍保持开放。
 
+- A4409 关闭 A4408 仍保留的“真实 L7 gRPC proxy”证据缺口，而不是把 TCP bridge 改名为 L7。新增独立命令
+  `hack/etcd-client-compat/cmd/grpc-switch-proxy`：使用 grpc-go unknown-service handler 与 raw protobuf codec
+  做通用 unary RPC forwarding，实际读取 method、request message 和 upstream gRPC status；Grant、Put、
+  Revoke 都经独立 PID 的 HTTP/2/gRPC server 转发。控制协议可在 upstream RPC 已成功返回后挂起 response、
+  切换后续 upstream target，再由代理主动向 client 返回明确 L7 `Unavailable: external L7 proxy discarded
+  committed response`；这与 A4406/A4407 关闭 socket 得到 EOF 的 L4 故障可观测地不同。
+  新增 `TestLeaseRevokeResponseLossAcrossExternalL7ProxyDifferential`：先经 proxy 向 replica 0 Grant/Put，第三
+  副本确认 key 基线；开启 response block 后发 Revoke，必须先由 replica 2 看到 TTL=-1，且 proxy stats 记录
+  一条完整 gRPC response 被截留。测试随后把 upstream 切至 replica 1 并释放为 L7 Unavailable，clientv3
+  repeatable interceptor 必须在同一 downstream HTTP/2 connection 上重放；proxy stats 必须证明新 upstream
+  dial，最终返回 typed LeaseNotFound，key/TTL/List 缺失且 revision 只 +1。runner 从 compat module 当前源码
+  同时构建临时 L4 与 L7 proxy，并把 A4409 纳入统一 response-loss scope，避免独立测试被主门禁漏跑。
+  2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建三成员 reference，在 disposable
+  `kubebrain-external-l7` 独立 3 PD/3 TiKV/3 KubeBrain 上通过。A4409 双端 0.37 秒，日志均明确 attempt 0 为
+  proxy 生成的 L7 Unavailable、attempt 1 为 `NotFound/lease not found`；包含 A4401–A4409 的统一明文
+  `lease-response-loss` 门禁 12.885 秒。当前 L7 代理聚焦 unary committed-response-loss，不等同于 Envoy/
+  同一 fresh 现场以 `GOFLAGS=-race` 重跑 A4401–A4409 统一门禁 22.276 秒通过，其中 A4409 双端 2.56 秒。
+  云厂商 LB 的完整生产配置矩阵；streaming Watch/KeepAlive L7 reset、生产云 LB/NAT/conntrack、跨节点网络
+  设备和平台通用 request token 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

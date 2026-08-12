@@ -64,10 +64,10 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 case "$TEST_SCOPE" in
   all)
-    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
     ;;
   lease-response-loss|lease-revoke-cross-replica)
-    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
+    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
     ;;
   lease-revoke-tls-passthrough)
     test_pattern='^TestLeaseRevokeResponseLossAcrossExternalL4TLSPassthroughDifferential$'
@@ -185,6 +185,7 @@ trap cleanup EXIT
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   go build -o "$data_dir/tcp-switch-proxy" ./cmd/tcp-switch-proxy
+  go build -o "$data_dir/grpc-switch-proxy" ./cmd/grpc-switch-proxy
 )
 
 initial_cluster=""
@@ -242,6 +243,7 @@ done
   REFERENCE_ETCD_DIRECT_ENDPOINTS="$(IFS=,; echo "${reference_client_endpoints[*]}")" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     EXTERNAL_TCP_SWITCH_PROXY_BINARY="$data_dir/tcp-switch-proxy" \
+    EXTERNAL_GRPC_SWITCH_PROXY_BINARY="$data_dir/grpc-switch-proxy" \
     REFERENCE_ETCD_TLS_CA_FILE="$TLS_CA_FILE" \
     REFERENCE_ETCD_TLS_CERT_FILE="$TLS_CERT_FILE" \
     REFERENCE_ETCD_TLS_KEY_FILE="$TLS_KEY_FILE" \
