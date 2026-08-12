@@ -38,9 +38,8 @@ artifact="$WORK_DIR/${name}.snapshot.db"; receipt="$WORK_DIR/${name}.receipt.jso
 
 env ACTION=compact ENDPOINT="$endpoint" CONFIRM_ENDPOINT="$endpoint" EXPECTED_CLUSTER_ID="$cluster_id" EXPECTED_REVISION="$revision" \
   ALLOW_IRREVERSIBLE_LEGACY_HISTORY_COMPACTION=true OUTPUT="$artifact" "$REMEDIATION_COMMAND" >"$capture/remediation.log" 2>&1 & child=$!
-( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
-set +e; wait "$child"; rc=$?; kill "$heartbeat" 2>/dev/null; wait "$heartbeat"; hrc=$?; set -e; child=0; heartbeat=0
-[[ $hrc != 75 ]] || { echo "operation heartbeat failed; remediation worker was fenced" >&2; exit 1; }
+( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
+set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
 [[ $rc == 0 && -s "$artifact" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy snapshot remediation exited ${rc}; compaction may already be committed, inspect before any new operation" >/dev/null; exit 1; }
 artifact_sha="$(sha "$artifact")"; bytes="$(wc -c <"$artifact" | tr -d ' ')"; now="$(date +%s)"; temp_receipt="$capture/receipt.json"
 $JQ -cnS --arg operation_id "$name" --arg request_id "$request_id" --arg endpoint "$endpoint" --arg cluster_id "$cluster_id" --arg revision "$revision" \

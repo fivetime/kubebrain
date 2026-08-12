@@ -28,6 +28,12 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
  printf '{"namespace":"kubebrain-operations","name":"%s","operation_id":"%s","instance":"kubebrain","type":"ColdPhysicalSnapshot","requested_by":"platform:cold-physical-snapshot","owner":"%s","parameters_secret":"%s-parameters","parameters_key":"parameters.json","attempt":1,"parameters_sha256":"%s"}\n' "$OPERATION_NAME" "$OPERATION_NAME" "$WORKER_ID" "$OPERATION_NAME" "$EXPECTED_DIGEST"
+elif [[ "$*" == *"--action heartbeat"* && -f "$SUCCEED_ACTIVE" ]]; then
+ touch "$HEARTBEAT_DURING_SUCCEED"
+elif [[ "$*" == *"--action succeed"* ]]; then
+ touch "$SUCCEED_ACTIVE"
+ sleep 0.3
+ rm -f "$SUCCEED_ACTIVE"
 fi
 `), 0o755))
 	snapshotLog := filepath.Join(dir, "snapshot.log")
@@ -42,12 +48,14 @@ jq -cn --arg id "$OPERATION_ID" --arg witness "$EXPECTED_WITNESS_SHA" '{format:"
 		"SNAPSHOT_COMMAND=" + snapshot, "WORK_DIR=" + dir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
 		"EXPECTED_DIGEST=" + digest, "OPERATION_NAME=" + name, "OPERATION_LOG=" + operationLog,
 		"SNAPSHOT_LOG=" + snapshotLog, "EXPECTED_WITNESS_SHA=" + witnessSHA}
+	env = append(env, "SUCCEED_ACTIVE="+filepath.Join(dir, "succeed-active"), "HEARTBEAT_DURING_SUCCEED="+filepath.Join(dir, "heartbeat-during-succeed"))
 	output, err := runProductionScriptCommand(t, "run-cold-physical-snapshot-operation.sh", env)
 	require.NoError(t, err, string(output))
 	operations, err := os.ReadFile(operationLog)
 	require.NoError(t, err)
 	require.Contains(t, string(operations), "--type ColdPhysicalSnapshot")
 	require.Contains(t, string(operations), "--action succeed")
+	require.FileExists(t, filepath.Join(dir, "heartbeat-during-succeed"))
 	snapshotEnvironment, err := os.ReadFile(snapshotLog)
 	require.NoError(t, err)
 	require.Contains(t, string(snapshotEnvironment), "ALLOW_COLD_PHYSICAL_SNAPSHOT=true")

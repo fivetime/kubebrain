@@ -47885,6 +47885,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   interval 时使用安全默认并能继续到 claim。这统一了现有冷物理恢复基础的持久租约契约，但不等于 native
   PITR 多阶段链已由一个 durable KubeBrainOperation 编排；后者仍是明确开放项。
 
+- A4457 把 A4456 的有效 heartbeat 从底层命令窗口延长到 operation terminal commit。三个旧 worker 都在
+  child 返回后立即 kill/wait heartbeat，随后才解析 receipt、校验身份、计算摘要并调用 `succeed`；收尾若超过
+  lease，另一个 worker 可重新 claim，而旧 owner 仍在生成终态证据。RED 让 fake `succeed` 保持 300ms，并以
+  100ms heartbeat 观察并发调用；旧实现没有任何 succeed-window heartbeat。新实现只 wait child 并立即写
+  `capture/child.done`，heartbeat 继续覆盖 receipt 校验和 terminal `fail/succeed` 所有权 CAS，最终由 EXIT trap
+  清理。heartbeat 失败在 child 完成前仍会 kill child；完成标记存在后不再向已退出且 PID 可能复用的进程发
+  信号。terminal operationctl 仍以 owner+attempt 做最终 fencing，因此 heartbeat/claim 竞态不能让旧 owner
+  提交成功。该修复强化现有 cold physical durable operation，不等于 native PITR 多阶段编排已经落地。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

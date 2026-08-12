@@ -43,9 +43,8 @@ if [[ ! -e "$restore_receipt" ]]; then
     EXPECTED_TARGET_KUBE_SYSTEM_UID="$kube_uid" EXPECTED_TARGET_NAMESPACE_UID="$namespace_uid" ALLOW_COLD_PHYSICAL_RESTORE=true \
     WAIT_TIMEOUT="$wait_timeout" COLD_RESTORE_RENDER_COMMAND=/usr/local/bin/kubebrain-cold-restore-render \
     STORAGE_CAPACITY_VERIFY_COMMAND=/usr/local/bin/kubebrain-storage-capacity-verify "$RESTORE_COMMAND" & child=$!
-  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
-  set +e; wait "$child"; rc=$?; kill "$heartbeat" 2>/dev/null; wait "$heartbeat"; hrc=$?; set -e; child=0; heartbeat=0
-  [[ $hrc != 75 ]] || { echo "operation heartbeat failed; restore worker was fenced" >&2; exit 1; }
+  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
+  set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
   [[ $rc == 0 ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold restore exited ${rc}; retained target resources require audit" >/dev/null; exit 1; }
 fi
 source_operation="$($JQ -er '.operation_id' "$receipt")"

@@ -52,9 +52,8 @@ if [[ ! -e "$receipt" ]]; then
     EXPECTED_WITNESS_PREFIX="$prefix" KUBE_CONTEXT=in-cluster ALLOW_COLD_PHYSICAL_SNAPSHOT=true WITNESS_MAX_AGE_SECONDS="$max_age" \
     WAIT_TIMEOUT="$wait_timeout" FENCE_SETTLE_SECONDS="$settle" LOGICAL_STATUS_COMMAND=/usr/local/bin/kubebrain-logical-status \
     COLD_SNAPSHOT_RECEIPT_COMMAND=/usr/local/bin/kubebrain-cold-snapshot-receipt "$SNAPSHOT_COMMAND" & child=$!
-  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
-  set +e; wait "$child"; rc=$?; kill "$heartbeat" 2>/dev/null; wait "$heartbeat"; hrc=$?; set -e; child=0; heartbeat=0
-  [[ $hrc != 75 ]] || { echo "operation heartbeat failed; snapshot worker was fenced" >&2; exit 1; }
+  ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
+  set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
   [[ $rc == 0 ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cold snapshot exited ${rc}; inspect retained snapshots before a new approved operation" >/dev/null; exit 1; }
 fi
 $JQ -e --arg id "$name" --arg witness_sha "$witness_sha" --arg kb_uid "$kb_uid" --arg tidb_uid "$tidb_uid" '
