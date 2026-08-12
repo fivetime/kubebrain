@@ -92,3 +92,20 @@ listener。证书由 KubeBrain 端而非 Envoy 验证，Envoy 仍不挂载租户
 门禁会在合法 cohort 建立后、rollout 前以及全部 rollout 后分别证明 plaintext 与缺少 client certificate 的
 连接被拒绝；反向探针后还要求每个 Envoy 恢复三个健康 upstream 且无 active ejection。Kind host-port/NodePort
 现场中 TTL=3 在连续三轮代理连接迁移时仍观察到真实租约过期，因此当前发布门禁不把 TTL=3 宣称为无损边界。
+
+从早于 A4422、仍使用 required hostname anti-affinity 的 Envoy Deployment 升级时，不能直接 apply 当前
+`maxUnavailable=0` 清单：旧 Pod 的对称硬反亲和会阻止第一个 surge Pod，形成永久 Pending。必须使用仓库内的
+两阶段迁移入口：
+
+```bash
+KUBE_CONTEXT=production-cluster \
+NAMESPACE=kubebrain-system \
+./hack/production/migrate-envoy-zero-unavailable.sh
+```
+
+脚本不接受隐式 current-context，并要求迁移前 `replicas=ready=available=3`。第一阶段只把同一 canonical profile
+临时渲染为 `maxUnavailable=1`，等待旧硬反亲和 Pod 全部被 topology-spread revision 替换，并验证三个 Ready
+Pod 分布在三个节点且共享同一非空 `pod-template-hash`；第二阶段再 apply 未修改的 canonical profile，确认
+`maxUnavailable=0/maxSurge=1`。清单 namespace 与目标不精确一致、出现未知 required affinity 或任一 cohort
+不变量不成立时均在 apply 前或收紧前 fail closed。已经处于新 topology revision 时脚本是幂等的，只执行
+canonical apply 与验证。

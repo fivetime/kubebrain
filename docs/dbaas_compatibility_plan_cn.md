@@ -47495,6 +47495,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项关闭“真实 Kubernetes mTLS rollout 未证明非法客户端持续被拒绝”和“硬反亲和阻断零不可用 surge”缺口；
   TTL=3 无损迁移、证书轮换叠加 rollout、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 继续开放。
 
+- A4423 修复 A4422 新稳态清单无法由旧硬反亲和版本直接在线升级的发布缺口。A4422 真实现场已经证明：同时
+  apply “移除 required hostname anti-affinity”与`maxUnavailable=0` 时，三个旧 Pod 自身的对称反亲和会阻止
+  第一个 surge Pod，Deployment 永久停在 Pending；冷启动通过不能证明既有生产实例可升级。
+  新增 `hack/production/migrate-envoy-zero-unavailable.sh` 执行显式两阶段迁移。它拒绝隐式 current-context，
+  在任何写入前要求目标 Deployment `replicas=ready=available=3`、`maxSurge=1`，并证明 canonical kustomize
+  清单 namespace 与目标精确一致、只含一个 `maxUnavailable: 0` 和 A4422 topology markers。检测到唯一受支持的
+  legacy required hostname affinity 时，第一阶段把同一 canonical 渲染结果仅临时改为 `maxUnavailable=1`，
+  apply 并等待 rollout；随后必须证明 required affinity 已消失、恰有三个 Ready Pod、三个不同 node 且共享
+  同一非空 `pod-template-hash`。第二阶段才 apply 未修改 canonical profile，并再次证明
+  `maxUnavailable=0/maxSurge=1` 与三节点 cohort。未知 required affinity、namespace/清单形状漂移或任一 cohort
+  不变量都 fail closed；已经迁移的 Deployment 走幂等 canonical apply 路径。
+  永久伪 kubectl 测试执行完整旧版状态迁移，精确固定 `maxUnavailable=1 apply → rollout → maxUnavailable=0
+  apply → rollout` 顺序，并覆盖缺少显式 context 的写前拒绝；focused `hack/production` 门禁通过。README 提供
+  可复制的生产调用及风险说明。focused 普通门禁 1.483 秒、race 2.565 秒通过；production Envoy 清单门禁
+  0.014 秒通过。完整 `hack/production` 包在 10 分钟全包上限被既有无关
+  `TestRestoreTrafficCutoverFailsClosed/public_data_mismatch` 卡住，本项不把该超时记作绿色，也没有为迁移改动该
+  恢复流量测试。本项不重建 A4422 已清理的 disposable TiKV/PD 数据面，也不把伪集群测试当作新的数据面证明；
+  它把 A4422 真实复现的升级死锁转换为可重复、fail-closed 的发布操作。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
