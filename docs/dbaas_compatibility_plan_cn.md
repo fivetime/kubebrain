@@ -47995,6 +47995,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   uncertain-result 异步修复不受普通逻辑写锁约束，因此不能通过“先迁移单个 RPC、提交后推进旧 TSO”过渡：
   该窗口仍可能重复分配 revision。运行时启用继续等待全部写路径 staging 完成后的单点切换。
 
+- A4471：UPDATE 的 revision index、新对象版本（含 compat inline metadata 或 legacy etcdmeta）与 ordered PUT
+  event 已收敛为 `encodePutMutation`。普通 Update 静态 batch 与事务 allocator 回归使用同一编码，后者在同一
+  Atomic transaction 内校验旧 index、推进 durable revision，并复读 index/object/event。TxnApply 的 update
+  与 delete 分支也已复用同一 encoder，并保留多键事务 `subRevision/total` 和精确 snapshot CAS bytes。该阶段
+  仍不启用 allocator；剩余主要 staging 面是 TxnApply create/guards/internal ops 与 uncertain-result repair。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

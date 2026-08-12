@@ -499,7 +499,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 	}
 	newRevLive := uint64ToBytes(newRevision)
-	newRevDeleted := append(uint64ToBytes(newRevision), 0)
 	eventTotal := uint32(txnEffectiveUserWriteCount(preps))
 	var eventSubRevision uint32
 	for i := range preps {
@@ -537,9 +536,13 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		// so a leaked write here is a silently lost watch event (review #51).
 		switch {
 		case p.op.Delete:
-			batch.CAS(revisionKey, newRevDeleted, p.rvBytes, 0)
-			batch.Put(objectKey, tombStoneBytes, 0)
-			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_DELETE, p.curRev, eventSubRevision, eventTotal)
+			encoded := b.encodeDeleteMutationAt(p.op.Key, p.curRev, newRevision, eventSubRevision, eventTotal)
+			// Preserve the exact pre-read bytes for the CAS. For a live value this
+			// equals encoded.expectedRevisionValue; retaining rvBytes also keeps
+			// corruption/conflict reporting tied to the transaction snapshot.
+			batch.CAS(encoded.revisionKey, encoded.newRevisionValue, p.rvBytes, 0)
+			batch.Put(encoded.objectKey, encoded.objectValue, 0)
+			batch.Put(encoded.eventKey, encoded.eventValue, 0)
 		case p.create:
 			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
 			if p.rvBytes == nil {
@@ -561,9 +564,12 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			// Rebind to this op's lease (review #9); do not inherit the prior
 			// version's lease.
 			p.meta.Lease = p.op.Lease
-			batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
-			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
-			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_PUT, p.curRev, eventSubRevision, eventTotal)
+			encoded := b.encodePutMutation(p.op.Key, p.op.Value, p.meta, p.curRev, newRevision, proto.Event_PUT, eventSubRevision, eventTotal)
+			batch.CAS(encoded.revisionKey, encoded.newRevisionValue, p.rvBytes, 0)
+			for _, mutation := range encoded.objectMutations {
+				batch.Put(mutation.key, mutation.value, 0)
+			}
+			batch.Put(encoded.eventKey, encoded.eventValue, 0)
 		}
 		eventSubRevision++
 	}

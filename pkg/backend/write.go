@@ -364,7 +364,11 @@ type encodedDeleteMutation struct {
 // static batch and the transaction-local revision allocator stage identical
 // index, tombstone, and ordered event records during the allocator cutover.
 func (b *backend) encodeDeleteMutation(key []byte, expectedRevision, newRevision uint64) encodedDeleteMutation {
-	eventKey, eventValue := encodeEventLogEntry(b.ks, newRevision, key, proto.Event_DELETE, expectedRevision, 0, 1)
+	return b.encodeDeleteMutationAt(key, expectedRevision, newRevision, 0, 1)
+}
+
+func (b *backend) encodeDeleteMutationAt(key []byte, expectedRevision, newRevision uint64, subRevision, total uint32) encodedDeleteMutation {
+	eventKey, eventValue := encodeEventLogEntry(b.ks, newRevision, key, proto.Event_DELETE, expectedRevision, subRevision, total)
 	return encodedDeleteMutation{
 		revisionKey:           b.coder.EncodeRevisionKey(key),
 		expectedRevisionValue: uint64ToBytes(expectedRevision),
@@ -603,10 +607,7 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 	// one: an update can rebind to a different lease or clear it (review #9).
 	meta.Lease = lease
 
-	objectKey := b.coder.EncodeObjectKey(key, newRevision)
-	revisionKey := b.coder.EncodeRevisionKey(key)
-	oldRevisionBytes := uint64ToBytes(oldRevision)
-	newRevisionBytes := uint64ToBytes(newRevision)
+	encoded := b.encodePutMutation(key, value, meta, oldRevision, newRevision, proto.Event_PUT, 0, 1)
 
 	// Fence just before the batch (FINDING #39); the caller's notify publishes an
 	// invalid event for newRevision so the collector advances past it.
@@ -614,14 +615,41 @@ func (b *backend) update(ctx context.Context, oldRevision uint64, key []byte, va
 		return newRevision, meta, err
 	}
 	batch := b.kv.BeginBatchWrite()
-	batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
+	batch.CAS(encoded.revisionKey, encoded.newRevisionValue, encoded.expectedRevisionValue, 0)
 	if migratedPrevious != nil {
 		batch.CAS(b.coder.EncodeObjectKey(key, oldRevision), migratedPrevious, previousStored, 0)
 	}
-	b.putTxnObject(batch, objectKey, key, value, meta, newRevision)
-	appendEventLog(b.ks, batch, newRevision, key, proto.Event_PUT, oldRevision, 0, 1)
+	for _, mutation := range encoded.objectMutations {
+		batch.Put(mutation.key, mutation.value, 0)
+	}
+	batch.Put(encoded.eventKey, encoded.eventValue, 0)
 	b.stageDurableRevision(batch, newRevision)
 	return newRevision, meta, b.commitUserBatch(ctx, batch)
+}
+
+type encodedPutMutation struct {
+	revisionKey           []byte
+	expectedRevisionValue []byte
+	newRevisionValue      []byte
+	objectMutations       []encodedMutation
+	eventKey              []byte
+	eventValue            []byte
+}
+
+// encodePutMutation contains every revision-dependent byte written by an
+// update. TxnApply can use the same encoding with non-zero sub-revisions, while
+// the future AtomicBatch path supplies newRevision inside the transaction.
+func (b *backend) encodePutMutation(key, value []byte, meta EtcdMetadata, previousRevision, newRevision uint64, verb proto.Event_EventType, subRevision, total uint32) encodedPutMutation {
+	objectKey := b.coder.EncodeObjectKey(key, newRevision)
+	eventKey, eventValue := encodeEventLogEntry(b.ks, newRevision, key, verb, previousRevision, subRevision, total)
+	return encodedPutMutation{
+		revisionKey:           b.coder.EncodeRevisionKey(key),
+		expectedRevisionValue: uint64ToBytes(previousRevision),
+		newRevisionValue:      uint64ToBytes(newRevision),
+		objectMutations:       b.encodeTxnObjectMutations(objectKey, key, value, meta, newRevision),
+		eventKey:              eventKey,
+		eventValue:            eventValue,
+	}
 }
 
 // eventValue wraps a successful PUT/CREATE watch event's value with its inline

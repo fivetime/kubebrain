@@ -312,3 +312,52 @@ func TestTransactionalRevisionAllocatorReusesDeleteEncoder(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, encoded.eventValue, gotEvent)
 }
+
+func TestTransactionalRevisionAllocatorReusesUpdateEncoder(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	b.persistDurableRevision(11)
+	userKey := []byte(prefix + "/transactional-update/key")
+	value := []byte("updated")
+	meta := EtcdMetadata{CreateRevision: 3, Version: 4, Lease: 29}
+	encoded := b.encodePutMutation(userKey, value, meta, 11, 12, proto.Event_PUT, 0, 1)
+
+	seed := b.kv.BeginBatchWrite()
+	seed.Put(encoded.revisionKey, encoded.expectedRevisionValue, 0)
+	require.NoError(t, seed.Commit(ctx))
+
+	batch := b.kv.BeginBatchWrite()
+	allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+		require.Equal(t, uint64(12), revision)
+		mutation := b.encodePutMutation(userKey, value, meta, 11, revision, proto.Event_PUT, 0, 1)
+		current, err := txn.Get(ctx, mutation.revisionKey)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, mutation.expectedRevisionValue) {
+			return storage.ErrCASFailed
+		}
+		if err := txn.Put(mutation.revisionKey, mutation.newRevisionValue, 0); err != nil {
+			return err
+		}
+		for _, object := range mutation.objectMutations {
+			if err := txn.Put(object.key, object.value, 0); err != nil {
+				return err
+			}
+		}
+		return txn.Put(mutation.eventKey, mutation.eventValue, 0)
+	})
+	require.NoError(t, batch.Commit(ctx))
+	require.Equal(t, uint64(12), *allocated)
+
+	gotIndex, err := b.kv.Get(ctx, encoded.revisionKey)
+	require.NoError(t, err)
+	require.Equal(t, encoded.newRevisionValue, gotIndex)
+	for _, object := range encoded.objectMutations {
+		got, getErr := b.kv.Get(ctx, object.key)
+		require.NoError(t, getErr)
+		require.Equal(t, object.value, got)
+	}
+	gotEvent, err := b.kv.Get(ctx, encoded.eventKey)
+	require.NoError(t, err)
+	require.Equal(t, encoded.eventValue, gotEvent)
+}

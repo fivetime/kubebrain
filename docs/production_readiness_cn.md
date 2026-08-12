@@ -2882,6 +2882,10 @@ DELETE 的 revision index CAS 值、tombstone object 与 ordered DELETE event �
 `encodeDeleteMutation`。事务 allocator 回归在同一 Atomic 回调里读取并校验旧 index、写入删除标记和
 event，同时推进 durable revision，证明 Delete 可在最终切换时不依赖静态 `BatchWrite.CAS`；运行时仍需等
 Create/Update/Txn/uncertain-result repair 全部具备同类 staging 后一次性切换，禁止新旧 allocator 并存。
+UPDATE 的 revision index、兼容 envelope/legacy metadata object mutations 与 ordered PUT event 已由
+`encodePutMutation` 统一生成；普通 Update 和 TxnApply update 分支共同使用它，TxnApply delete 也复用带
+`subRevision/total` 的 DELETE encoder。事务 allocator 回归在 revision=12 下校验 index、对象 metadata/value
+和 event 的逐字节结果，使单键与多键写在 allocator 切换前共享协议编码。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
