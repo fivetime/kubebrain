@@ -252,6 +252,21 @@ func TestValidateInstanceReady(t *testing.T) {
 			endpointSlicesJSON: fakeDualStackEndpointSlicesJSON([]string{
 				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
 			}),
+			serviceJSON: fakeClientServiceWithFamiliesJSON(3379, []string{"IPv4", "IPv6"}, "RequireDualStack"),
+			wantOK:      true,
+			wantOutput:  "release gate passed",
+		},
+		{
+			name:       "dual-stack Pods behind single-stack Service",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			podsJSON: fakeDualStackKubeBrainPodsJSON(
+				"registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+			endpointSlicesJSON: fakeEndpointSlicesJSON([]string{
+				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
+			}, true),
 			wantOK:     true,
 			wantOutput: "release gate passed",
 		},
@@ -496,6 +511,18 @@ func TestValidateInstanceReady(t *testing.T) {
 			endpointSlicesJSON: fakeEndpointSlicesWithRouteJSON([]string{
 				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
 			}, true, 3379, "uid-client-service", []string{"10.0.0.99", "10.0.0.11", "10.0.0.12"}),
+			wantOutput: "EndpointSlices do not match",
+		},
+		{
+			name:        "client EndpointSlice address family drift",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			healthOK:    true,
+			serviceJSON: fakeClientServiceWithFamiliesJSON(3379, []string{"IPv4", "IPv6"}, "RequireDualStack"),
+			endpointSlicesJSON: fakeEndpointSlicesWithDeclaredAddressTypeJSON([]string{
+				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
+			}, "IPv6"),
 			wantOutput: "EndpointSlices do not match",
 		},
 		{
@@ -1456,13 +1483,24 @@ func fakeDualStackKubeBrainPodsJSON(image string) string {
 }
 
 func fakeClientServiceJSON(port int) string {
+	return fakeClientServiceWithFamiliesJSON(port, []string{"IPv4"}, "SingleStack")
+}
+
+func fakeClientServiceWithFamiliesJSON(port int, families []string, policy string) string {
+	clusterIPs := []string{"10.96.0.42"}
+	if len(families) == 2 {
+		clusterIPs = append(clusterIPs, "fd00::42")
+	}
 	encoded, err := json.Marshal(map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Service",
 		"metadata":   map[string]any{"name": "kubebrain-client", "uid": "uid-client-service"},
 		"spec": map[string]any{
-			"type":      "ClusterIP",
-			"clusterIP": "10.96.0.42",
+			"type":           "ClusterIP",
+			"clusterIP":      clusterIPs[0],
+			"clusterIPs":     clusterIPs,
+			"ipFamilies":     families,
+			"ipFamilyPolicy": policy,
 			"selector": map[string]any{
 				"app.kubernetes.io/name": "kubebrain", "app.kubernetes.io/instance": "kubebrain",
 			},
@@ -1492,6 +1530,10 @@ func fakeEndpointSlicesWithPortJSON(podUIDs []string, ready bool, port int, serv
 }
 
 func fakeEndpointSlicesWithRouteJSON(podUIDs []string, ready bool, port int, serviceUID string, addresses []string) string {
+	addressType := "IPv4"
+	if len(addresses) > 0 && strings.Contains(addresses[0], ":") {
+		addressType = "IPv6"
+	}
 	endpoints := make([]map[string]any, len(podUIDs))
 	for index, podUID := range podUIDs {
 		endpoints[index] = map[string]any{
@@ -1501,6 +1543,7 @@ func fakeEndpointSlicesWithRouteJSON(podUIDs []string, ready bool, port int, ser
 		}
 	}
 	encoded, err := json.Marshal(map[string]any{"items": []map[string]any{{
+		"addressType": addressType,
 		"metadata": map[string]any{
 			"name":   "kubebrain-client-slice",
 			"uid":    "uid-client-slice",
@@ -1530,6 +1573,19 @@ func fakeDualStackEndpointSlicesJSON(podUIDs []string) string {
 	}
 	ipv4Document["items"] = append(ipv4Document["items"].([]any), ipv6Document["items"].([]any)...)
 	encoded, err := json.Marshal(ipv4Document)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func fakeEndpointSlicesWithDeclaredAddressTypeJSON(podUIDs []string, addressType string) string {
+	var document map[string]any
+	if err := json.Unmarshal([]byte(fakeEndpointSlicesJSON(podUIDs, true)), &document); err != nil {
+		panic(err)
+	}
+	document["items"].([]any)[0].(map[string]any)["addressType"] = addressType
+	encoded, err := json.Marshal(document)
 	if err != nil {
 		panic(err)
 	}

@@ -818,8 +818,11 @@ Pod targetRef UID 集合与当前 Pod 集合完全相同；默认 client Service
 port；每个 EndpointSlice 还必须以该 Service name/UID 作为唯一 controller owner，不能仅伪造
 `kubernetes.io/service-name` label，并且只能发布同名 TCP `client` expected port。门禁末尾会再次比较
 Service UID/type/clusterIP/selector/ports 投影。EndpointSlice 展开的每个路由还必须与同一次 KubeBrain Pod
-快照中的 `{Pod UID, Pod name, status.podIPs address}` 集合完全相等；该集合模型允许双栈时同一 Pod 在不同
-address-family Slice 中出现，但拒绝 targetRef 正确而 address 陈旧或伪造的路由；随后
+快照中的 `{Pod UID, Pod name, status.podIPs address}` 集合完全相等；期望地址族由 Service 的非空且一致的
+`clusterIPs`/`ipFamilies`/`ipFamilyPolicy` 决定，单栈 Service 只选择双栈 Pod 对应的一族，双栈 Service 则要求
+两族完整出现。每个 Slice 的 `addressType` 必须属于 Service ipFamilies，且与其所有 address 的 IPv4/IPv6
+形态一致；该集合模型允许双栈时同一 Pod 在不同 address-family Slice 中出现，但拒绝 targetRef 正确而
+address 陈旧或伪造的路由；随后
 读取运行时 MemberList，要求 cluster ID 与同一 immutable storage identity 精确一致、精确成员数、唯一且非零的 member ID/name、
 每个成员的 name/peer URL 映射与 immutable initial cluster 完全相同且无重复，且每个成员的
 client URL 集合无重复并与期望完全相同；`EXPECTED_INITIAL_CLUSTER` 遵循 etcd

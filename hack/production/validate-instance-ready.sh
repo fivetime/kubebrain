@@ -436,7 +436,7 @@ if ! printf '%s' "$kubebrain_pods_json" | "$JQ" -e \
   echo "KubeBrain Pod set does not match the expected StatefulSet ownership and converged release" >&2
   exit 1
 fi
-if ! expected_pod_routes_json="$(printf '%s' "$kubebrain_pods_json" | "$JQ" -ce '
+if ! pod_routes_json="$(printf '%s' "$kubebrain_pods_json" | "$JQ" -ce '
   if all(.items[];
     ((.metadata.name | type) == "string" and (.metadata.name | length) > 0) and
     ((.metadata.uid | type) == "string" and (.metadata.uid | length) > 0) and
@@ -445,8 +445,9 @@ if ! expected_pod_routes_json="$(printf '%s' "$kubebrain_pods_json" | "$JQ" -ce 
     ([.status.podIPs[].ip] | length) == ([.status.podIPs[].ip] | unique | length)
   ) then
     [.items[] as $pod | $pod.status.podIPs[] |
-      {uid:$pod.metadata.uid,name:$pod.metadata.name,address:.ip}] |
-      sort_by(.uid,.name,.address)
+      {uid:$pod.metadata.uid,name:$pod.metadata.name,address:.ip,
+       family:(if (.ip | contains(":")) then "IPv6" else "IPv4" end)}] |
+      sort_by(.uid,.name,.family,.address)
   else error("invalid Pod route identity") end
 ')"; then
   echo "failed to extract KubeBrain Pod route identities" >&2
@@ -462,6 +463,16 @@ if ! printf '%s' "$client_service_json" | "$JQ" -e \
     .apiVersion == "v1" and .kind == "Service" and .metadata.name == $name and .metadata.uid == $uid and
     .metadata.deletionTimestamp == null and .spec.type == "ClusterIP" and
     ((.spec.clusterIP | type) == "string" and (.spec.clusterIP | length) > 0 and .spec.clusterIP != "None") and
+    ((.spec.clusterIPs | type) == "array" and (.spec.clusterIPs | length) > 0 and
+      .spec.clusterIPs[0] == .spec.clusterIP and
+      (.spec.clusterIPs | length) == (.spec.clusterIPs | unique | length)) and
+    ((.spec.ipFamilies | type) == "array" and (.spec.ipFamilies | length) > 0 and
+      (.spec.ipFamilies | length) == (.spec.ipFamilies | unique | length) and
+      all(.spec.ipFamilies[]; . == "IPv4" or . == "IPv6") and
+      (.spec.ipFamilies | length) == (.spec.clusterIPs | length)) and
+    ((.spec.ipFamilyPolicy == "SingleStack" and (.spec.ipFamilies | length) == 1) or
+      (.spec.ipFamilyPolicy == "RequireDualStack" and (.spec.ipFamilies | length) == 2) or
+      (.spec.ipFamilyPolicy == "PreferDualStack" and ((.spec.ipFamilies | length) == 1 or (.spec.ipFamilies | length) == 2))) and
     .spec.selector == {"app.kubernetes.io/name": $workload, "app.kubernetes.io/instance": $workload} and
     (.spec.ports | length) == 1 and
     .spec.ports[0].name == "client" and (.spec.ports[0].protocol // "TCP") == "TCP" and
@@ -470,8 +481,15 @@ if ! printf '%s' "$client_service_json" | "$JQ" -e \
   echo "KubeBrain client Service release mismatch" >&2
   exit 1
 fi
+service_ip_families_json="$(printf '%s' "$client_service_json" | "$JQ" -c '.spec.ipFamilies')"
+expected_pod_routes_json="$(printf '%s' "$pod_routes_json" | "$JQ" -c \
+  --argjson families "$service_ip_families_json" '
+    map(select(.family as $family | ($families | index($family)) != null) | del(.family)) |
+    sort_by(.uid,.name,.address)
+  ')"
 client_service_fingerprint="$(printf '%s' "$client_service_json" | "$JQ" -c \
-  '{uid:.metadata.uid,type:.spec.type,clusterIP:.spec.clusterIP,selector:.spec.selector,ports:.spec.ports}')"
+  '{uid:.metadata.uid,type:.spec.type,clusterIP:.spec.clusterIP,clusterIPs:.spec.clusterIPs,
+    ipFamilies:.spec.ipFamilies,ipFamilyPolicy:.spec.ipFamilyPolicy,selector:.spec.selector,ports:.spec.ports}')"
 if ! endpoint_slices_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get endpointslice -l "kubernetes.io/service-name=${KUBEBRAIN_CLIENT_SERVICE}" -o json)"; then
   echo "failed to list KubeBrain client Service EndpointSlices" >&2
@@ -479,8 +497,11 @@ if ! endpoint_slices_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAME
 fi
 if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
   --arg service "$KUBEBRAIN_CLIENT_SERVICE" --arg serviceUID "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" \
-  --argjson port "$EXPECTED_PORT" --argjson expectedPodRoutes "$expected_pod_routes_json" '
+  --argjson port "$EXPECTED_PORT" --argjson serviceFamilies "$service_ip_families_json" \
+  --argjson expectedPodRoutes "$expected_pod_routes_json" '
   all(.items[]?;
+    .addressType as $addressType |
+    (($serviceFamilies | index($addressType)) != null) and
     ((.metadata.name | type) == "string" and (.metadata.name | length) > 0) and
     ((.metadata.uid | type) == "string" and (.metadata.uid | length) > 0) and
     .metadata.labels["kubernetes.io/service-name"] == $service and
@@ -488,7 +509,9 @@ if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
     ([.metadata.ownerReferences[]? | select(.controller == true and .apiVersion == "v1" and
       .kind == "Service" and .name == $service and .uid == $serviceUID)] | length) == 1 and
     (.ports | length) == 1 and .ports[0].name == "client" and
-    (.ports[0].protocol // "TCP") == "TCP" and .ports[0].port == $port
+    (.ports[0].protocol // "TCP") == "TCP" and .ports[0].port == $port and
+    all(.endpoints[]?.addresses[]?;
+      if $addressType == "IPv6" then contains(":") else (contains(":") | not) end)
   ) and
   all(.items[]?.endpoints[]?;
     .conditions.ready == true and .conditions.serving == true and (.conditions.terminating // false) == false and
@@ -508,6 +531,7 @@ endpoint_slices_fingerprint="$(printf '%s' "$endpoint_slices_json" | "$JQ" -c '
   [.items[] | {
     name:.metadata.name,
     uid:.metadata.uid,
+    addressType:.addressType,
     service:.metadata.labels["kubernetes.io/service-name"],
     owners:([.metadata.ownerReferences[]? |
       {apiVersion,kind,name,uid,controller:(.controller // false)}] | sort_by(.uid,.kind,.name)),
@@ -901,7 +925,8 @@ final_client_service_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAME
   exit 1
 }
 final_client_service_fingerprint="$(printf '%s' "$final_client_service_json" | "$JQ" -c \
-  '{uid:.metadata.uid,type:.spec.type,clusterIP:.spec.clusterIP,selector:.spec.selector,ports:.spec.ports}')"
+  '{uid:.metadata.uid,type:.spec.type,clusterIP:.spec.clusterIP,clusterIPs:.spec.clusterIPs,
+    ipFamilies:.spec.ipFamilies,ipFamilyPolicy:.spec.ipFamilyPolicy,selector:.spec.selector,ports:.spec.ports}')"
 if [[ "$final_client_service_fingerprint" != "$client_service_fingerprint" ]]; then
   echo "KubeBrain client Service changed during validation" >&2
   exit 1
@@ -916,6 +941,7 @@ final_endpoint_slices_fingerprint="$(printf '%s' "$final_endpoint_slices_json" |
   [.items[] | {
     name:.metadata.name,
     uid:.metadata.uid,
+    addressType:.addressType,
     service:.metadata.labels["kubernetes.io/service-name"],
     owners:([.metadata.ownerReferences[]? |
       {apiVersion,kind,name,uid,controller:(.controller // false)}] | sort_by(.uid,.kind,.name)),

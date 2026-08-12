@@ -47866,6 +47866,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   规范化投影；全部 controller、MemberList 和线性化 endpoint 检查完成后重读 Slice 并要求投影逐字节相等。
   该首尾 fence 拒绝验证窗口内的路由变化，不宣称提供 Kubernetes 对象的跨资源原子快照。
 
+- A4455 修正 A4453 对双栈 Pod/单栈 Service 的过度约束。Pod 可同时拥有 IPv4/IPv6，但 Kubernetes
+  SingleStack Service 只为 `.spec.ipFamilies` 中的一族生成 Slice；A4453 直接要求全部 `status.podIPs`，会把
+  合法的 IPv4-only Service 误判为缺少 IPv6 endpoint。RED 使用三个双栈 Pod、`SingleStack/IPv4` Service 和
+  仅 IPv4 Slice，A4453 确定性失败。新门禁要求 Service 的 clusterIP/clusterIPs 首项、数量和唯一性一致，
+  ipFamilies 非空/唯一且只含 IPv4/IPv6，并校验 SingleStack/PreferDualStack/RequireDualStack 与族数契约；
+  仅选择 Service 声明族对应的 Pod routes。每个 Slice addressType 还必须属于这些族，IPv6 Slice 的每个地址
+  必须含冒号、IPv4 Slice 不得含冒号。正向矩阵同时覆盖“双栈 Pod+单栈 Service”和“双栈 Pod+双栈 Service
+  +两族 Slice”，负向覆盖声明 IPv6 却携带 IPv4 addresses。该判断面向 Kubernetes IP address Slice，不支持
+  FQDN addressType；生产 KubeBrain Service 也不使用 ExternalName/FQDN EndpointSlice。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
