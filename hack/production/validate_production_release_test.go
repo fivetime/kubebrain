@@ -19,7 +19,9 @@ func TestValidateProductionReleaseRunsAllGatesFailFast(t *testing.T) {
 	require.NoError(t, os.WriteFile(operatorGate, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf 'operator\n' >>"$GATE_LOG"
-[[ "${FAIL_OPERATOR:-false}" != "true" ]]
+count=0; [[ ! -f "$OPERATOR_CALL_COUNT" ]] || count="$(<"$OPERATOR_CALL_COUNT")"
+printf '%s' "$((count + 1))" >"$OPERATOR_CALL_COUNT"
+if ((count > 0)); then [[ "${FAIL_OPERATOR_FENCE:-false}" != "true" ]]; else [[ "${FAIL_OPERATOR:-false}" != "true" ]]; fi
 `), 0o755))
 	require.NoError(t, os.WriteFile(instanceGate, []byte(`#!/usr/bin/env bash
 set -euo pipefail
@@ -43,16 +45,19 @@ printf 'latency\n' >>"$GATE_LOG"
 		"REGION_HEALTH_COMMAND=" + regionGate,
 		"STORAGE_LATENCY_COMMAND=" + latencyGate,
 		"GATE_LOG=" + logPath,
+		"OPERATOR_CALL_COUNT=" + filepath.Join(tempDir, "operator-calls"),
 	}
 
+	require.NoError(t, os.RemoveAll(filepath.Join(tempDir, "operator-calls")))
 	output, err := runProductionScriptCommand(t, "validate-production-release.sh", baseEnv)
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "production release gate passed")
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	require.Equal(t, "operator\ninstance\nregion\nlatency\n", string(log))
+	require.Equal(t, "operator\ninstance\nregion\nlatency\noperator\n", string(log))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(tempDir, "operator-calls")))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_OPERATOR=true"))
 	require.Error(t, err, string(output))
 	log, err = os.ReadFile(logPath)
@@ -60,6 +65,7 @@ printf 'latency\n' >>"$GATE_LOG"
 	require.Equal(t, "operator\n", string(log))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(tempDir, "operator-calls")))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_INSTANCE=true"))
 	require.Error(t, err, string(output))
 	log, err = os.ReadFile(logPath)
@@ -67,6 +73,7 @@ printf 'latency\n' >>"$GATE_LOG"
 	require.Equal(t, "operator\ninstance\n", string(log), "Region gate must not run after instance readiness fails")
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(tempDir, "operator-calls")))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_REGION=true"))
 	require.Error(t, err, string(output))
 	log, err = os.ReadFile(logPath)
@@ -74,11 +81,20 @@ printf 'latency\n' >>"$GATE_LOG"
 	require.Equal(t, "operator\ninstance\nregion\n", string(log))
 
 	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(tempDir, "operator-calls")))
 	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_LATENCY=true"))
 	require.Error(t, err, string(output))
 	log, err = os.ReadFile(logPath)
 	require.NoError(t, err)
 	require.Equal(t, "operator\ninstance\nregion\nlatency\n", string(log))
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o600))
+	require.NoError(t, os.RemoveAll(filepath.Join(tempDir, "operator-calls")))
+	output, err = runProductionScriptCommand(t, "validate-production-release.sh", append(baseEnv, "FAIL_OPERATOR_FENCE=true"))
+	require.Error(t, err, string(output))
+	log, err = os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.Equal(t, "operator\ninstance\nregion\nlatency\noperator\n", string(log))
 }
 
 func TestValidateProductionReleaseRejectsMissingContextBeforeEitherGate(t *testing.T) {

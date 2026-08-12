@@ -24,5 +24,6 @@ die() { echo "$*" >&2; exit 1; }
 "$INSTANCE_READY_COMMAND"
 "$REGION_HEALTH_COMMAND"
 "$STORAGE_LATENCY_COMMAND"
+"$TIDB_OPERATOR_COMMAND"
 
-echo "KubeBrain production release gate passed: TiDB Operator identity, instance readiness, PD/TiKV Region/storage health, and storage latency SLO are verified"
+echo "KubeBrain production release gate passed: TiDB Operator identity is fenced across instance readiness, PD/TiKV Region/storage health, and storage latency SLO verification"

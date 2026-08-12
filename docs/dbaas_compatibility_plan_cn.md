@@ -47787,6 +47787,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   resourceVersion 更新不会误伤，任何 spec rollout 都因 generation 或模板变化 fail closed。该 fence 只保证
   一次发布检查的稳态线性边界，不替代真实升级过程中的持续 etcd 语义 oracle。
 
+- A4446 把 A4445 的 Operator fence 扩展到整条组合发布流水线。旧组合入口只在最前面调用 Operator 门禁；
+  后续 instance、Region 和 Prometheus latency 检查可能耗时数十秒，期间控制器启动 rollout、digest 漂移
+  或失去 Ready 时，旧入口仍会按开头证据发布成功。RED 把 fake Operator 第二次调用设为失败，前三个数据面
+  门禁均成功，旧组合器因只调用一次而确定性假绿。入口现在固定
+  `operator→instance→region→latency→operator`：前置失败保持后门零调用，末尾完整重验 Deployment/唯一
+  非零 RS/Pod/digest，失败时整体非零且无成功消息。两次检查把 Operator 异常限制在流水线首尾可观察边界；
+  它不是中间每一瞬间的连续证明，真实 rollout 仍须持续 etcd oracle 覆盖。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

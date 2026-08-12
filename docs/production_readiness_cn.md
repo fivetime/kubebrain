@@ -149,8 +149,8 @@ hack/production/wait-tidbcluster-ready.sh
 “TCP 可连接但 Debug gRPC 不完成”的半故障。它不执行 `KvPrewrite/KvCommit`，不能证明事务
 KV 路径健康；完整实例门禁随后通过 KubeBrain 执行 etcd Put/Get/Delete。三层证据不可相互替代。
 
-生产发布不得分别手工选择门禁；统一入口先验证负责 storage rollout 的 TiDB Operator 运行身份，再执行完整实例 readiness/endpoint/事务验证，成功后再执行
-PD/Region/storage 只读门禁，任一步失败即停止：
+生产发布不得分别手工选择门禁；统一入口先验证负责 storage rollout 的 TiDB Operator 运行身份，再执行完整实例 readiness/endpoint/事务验证和
+PD/Region/storage 只读门禁，最后重新验证 Operator；任一步失败即停止：
 
 ```bash
 KUBE_CONTEXT=production \
@@ -162,8 +162,7 @@ PROMETHEUS_BEARER_TOKEN_FILE=/run/secrets/prometheus/token \
 hack/production/validate-production-release.sh
 ```
 
-组合入口默认依次调用同目录的 `validate-tidb-operator-ready.sh`、`validate-instance-ready.sh`、`validate-tikv-region-health.sh` 和
-`validate-storage-latency-slo.sh`，且只接受
+组合入口默认按 `operator→instance→region→latency→operator` 调用同目录四个脚本，且只接受
 可执行绝对路径覆盖，避免 PATH 劫持；`KUBE_CONTEXT` 缺失时不会启动任一子门禁。排障时可单独重跑
 Operator、PD/Region 或存储延迟门禁。调用组合入口时必须同时提供四个子脚本在下文列出的全部 `EXPECTED_*` 参数，
 以及 HTTPS Prometheus endpoint；认证 token 通过可选的只读绝对路径传入，不能放进命令行 query：
@@ -201,6 +200,8 @@ ReplicaSet 的 spec/status/ready/available replicas 全部为零，拒绝刚启�
 Running/Ready、非终止、template hash 与 owner UID 一致，并运行批准的 image digest。tag、UID、ReplicaSet、
 Pod 或 digest 任一漂移均 fail closed；Pod 校验后还会重读 Deployment，要求 UID、generation、replicas 和
 template image 与起始快照相同，拒绝门禁执行中启动的新 rollout。仅有 Helm release 名称或 CRD 可用不能替代该运行身份链。
+组合入口在所有数据面检查后再次执行完整 Operator 门禁，防止控制器只在流水线开始时健康、随后于较慢的
+Region/Prometheus 检查期间进入 rollout 或失去 Ready。
 
 存储延迟子门禁可独立执行：
 
