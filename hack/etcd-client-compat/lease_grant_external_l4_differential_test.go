@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,9 +55,40 @@ func TestLeaseRevokeResponseLossAcrossExternalL4ProxyDifferential(t *testing.T) 
 		LeaseUnlisted:       true,
 		RevisionDelta:       1,
 	}
-	reference := runExternalL4LeaseRevokeResponseLossScenario(t, binary, referenceEndpoints, "etcd")
+	reference := runExternalL4LeaseRevokeResponseLossScenario(t, binary, referenceEndpoints, "etcd", nil)
 	require.Equal(t, want, reference)
-	require.Equal(t, reference, runExternalL4LeaseRevokeResponseLossScenario(t, binary, kubeBrainEndpoints, "kubebrain"))
+	require.Equal(t, reference, runExternalL4LeaseRevokeResponseLossScenario(t, binary, kubeBrainEndpoints, "kubebrain", nil))
+}
+
+// TestLeaseRevokeResponseLossAcrossExternalL4TLSPassthroughDifferential fixes
+// the same replay contract while the standalone proxy forwards opaque TLS
+// records. The proxy receives no certificates and therefore cannot terminate,
+// inspect, or synthesize the gRPC response.
+func TestLeaseRevokeResponseLossAcrossExternalL4TLSPassthroughDifferential(t *testing.T) {
+	binary := strings.TrimSpace(os.Getenv("EXTERNAL_TCP_SWITCH_PROXY_BINARY"))
+	if binary == "" {
+		t.Skip("set EXTERNAL_TCP_SWITCH_PROXY_BINARY to run the external L4 TLS passthrough differential")
+	}
+	referenceTLS := loadExternalL4ClientTLS(t, "REFERENCE_ETCD")
+	kubeBrainTLS := loadExternalL4ClientTLS(t, "KUBEBRAIN")
+	referenceEndpoints := splitRequiredDirectEndpoints(t, "REFERENCE_ETCD_DIRECT_ENDPOINTS")
+	kubeBrainEndpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
+	requireDistinctDirectReplicaTopologyWithTLS(t, referenceEndpoints, referenceTLS)
+	requireDistinctDirectReplicaTopologyWithTLS(t, kubeBrainEndpoints, kubeBrainTLS)
+
+	want := leaseRevokeCrossReplicaReplayOutcome{
+		ResponseDiscarded:   true,
+		ConnectionDropped:   true,
+		SecondReplicaDialed: true,
+		LeaseNotFound:       true,
+		KeyDeleted:          true,
+		LeaseMissing:        true,
+		LeaseUnlisted:       true,
+		RevisionDelta:       1,
+	}
+	reference := runExternalL4LeaseRevokeResponseLossScenario(t, binary, referenceEndpoints, "etcd-tls", referenceTLS)
+	require.Equal(t, want, reference)
+	require.Equal(t, reference, runExternalL4LeaseRevokeResponseLossScenario(t, binary, kubeBrainEndpoints, "kubebrain-tls", kubeBrainTLS))
 }
 
 func runExternalL4LeaseRevokeResponseLossScenario(
@@ -62,16 +96,17 @@ func runExternalL4LeaseRevokeResponseLossScenario(
 	binary string,
 	endpoints []string,
 	instance string,
+	tlsConfig *tls.Config,
 ) leaseRevokeCrossReplicaReplayOutcome {
 	t.Helper()
 	proxy, endpoint := startExternalL4Proxy(t, binary, endpoints[0])
 	throughProxy, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
+		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second, TLS: tlsConfig,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, throughProxy.Close()) })
 	observer, err := clientv3.New(clientv3.Config{
-		Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second,
+		Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second, TLS: tlsConfig,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, observer.Close()) })
@@ -141,11 +176,51 @@ func runExternalL4LeaseRevokeResponseLossScenario(
 	}
 }
 
+func loadExternalL4ClientTLS(t *testing.T, prefix string) *tls.Config {
+	t.Helper()
+	caPath := strings.TrimSpace(os.Getenv(prefix + "_TLS_CA_FILE"))
+	certPath := strings.TrimSpace(os.Getenv(prefix + "_TLS_CERT_FILE"))
+	keyPath := strings.TrimSpace(os.Getenv(prefix + "_TLS_KEY_FILE"))
+	serverName := strings.TrimSpace(os.Getenv(prefix + "_TLS_SERVER_NAME"))
+	if caPath == "" || certPath == "" || keyPath == "" || serverName == "" {
+		t.Skipf("set %s_TLS_CA_FILE, %s_TLS_CERT_FILE, %s_TLS_KEY_FILE, and %s_TLS_SERVER_NAME", prefix, prefix, prefix, prefix)
+	}
+	caPEM, err := os.ReadFile(caPath)
+	require.NoError(t, err)
+	roots := x509.NewCertPool()
+	require.True(t, roots.AppendCertsFromPEM(caPEM), "parse %s TLS CA", prefix)
+	certificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+	require.NoError(t, err)
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		RootCAs:      roots,
+		Certificates: []tls.Certificate{certificate},
+		ServerName:   serverName,
+	}
+}
+
 type externalL4Proxy struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Scanner
 	cmd    *exec.Cmd
-	stderr bytes.Buffer
+	stderr lockedBuffer
+}
+
+type lockedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
 
 // TestLeaseGrantResponseLossAcrossExternalL4ProxyDifferential repeats the

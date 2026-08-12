@@ -10,6 +10,10 @@ REFERENCE_PEER_RAW="${REFERENCE_DIRECT_PEER_ENDPOINTS:-127.0.0.1:12380,127.0.0.1
 TEST_TIMEOUT="${TEST_TIMEOUT:-1m}"
 TEST_COUNT="${TEST_COUNT:-1}"
 TEST_SCOPE="${TEST_SCOPE:-all}"
+TLS_CA_FILE="${TLS_CA_FILE:-}"
+TLS_CERT_FILE="${TLS_CERT_FILE:-}"
+TLS_KEY_FILE="${TLS_KEY_FILE:-}"
+TLS_SERVER_NAME="${TLS_SERVER_NAME:-127.0.0.1}"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -65,11 +69,34 @@ case "$TEST_SCOPE" in
   lease-response-loss|lease-revoke-cross-replica)
     test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$'
     ;;
+  lease-revoke-tls-passthrough)
+    test_pattern='^TestLeaseRevokeResponseLossAcrossExternalL4TLSPassthroughDifferential$'
+    ;;
   *)
-    echo "TEST_SCOPE must be all, lease-response-loss, or lease-revoke-cross-replica" >&2
+    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, or lease-revoke-tls-passthrough" >&2
     exit 2
     ;;
 esac
+reference_scheme=http
+declare -a curl_tls_args=()
+declare -a etcd_tls_args=()
+if [[ "$TEST_SCOPE" == lease-revoke-tls-passthrough ]]; then
+  for tls_file in "$TLS_CA_FILE" "$TLS_CERT_FILE" "$TLS_KEY_FILE"; do
+    if [[ -z "$tls_file" || ! -r "$tls_file" ]]; then
+      echo "TLS_CA_FILE, TLS_CERT_FILE, and TLS_KEY_FILE must name readable files for TLS passthrough" >&2
+      exit 2
+    fi
+  done
+  reference_scheme=https
+  curl_tls_args=(--cacert "$TLS_CA_FILE" --cert "$TLS_CERT_FILE" --key "$TLS_KEY_FILE")
+  etcd_tls_args=(
+    --cert-file "$TLS_CERT_FILE"
+    --key-file "$TLS_KEY_FILE"
+    --trusted-ca-file "$TLS_CA_FILE"
+    --client-cert-auth=true
+  )
+  export ETCDCTL_CACERT="$TLS_CA_FILE" ETCDCTL_CERT="$TLS_CERT_FILE" ETCDCTL_KEY="$TLS_KEY_FILE"
+fi
 declare -a kubebrain_endpoints reference_client_endpoints reference_peer_endpoints
 parse_three_endpoints KUBEBRAIN_DIRECT_ENDPOINTS "$KUBEBRAIN_DIRECT_RAW" kubebrain_endpoints
 parse_three_endpoints REFERENCE_DIRECT_CLIENT_ENDPOINTS "$REFERENCE_CLIENT_RAW" reference_client_endpoints
@@ -122,7 +149,7 @@ if ! jq -e '
 fi
 
 for endpoint in "${reference_client_endpoints[@]}"; do
-  if curl --fail --silent --max-time 1 "http://${endpoint}/health" >/dev/null 2>&1; then
+  if curl --fail --silent --max-time 1 "${curl_tls_args[@]}" "${reference_scheme}://${endpoint}/health" >/dev/null 2>&1; then
     echo "reference direct client endpoint is already in use: $endpoint" >&2
     exit 1
   fi
@@ -172,14 +199,15 @@ for index in 0 1 2; do
   "$REFERENCE_ETCD_BIN" \
     --name "reference-${index}" \
     --data-dir "$data_dir/reference-${index}" \
-    --listen-client-urls "http://${reference_client_endpoints[$index]}" \
-    --advertise-client-urls "http://${reference_client_endpoints[$index]}" \
+    --listen-client-urls "${reference_scheme}://${reference_client_endpoints[$index]}" \
+    --advertise-client-urls "${reference_scheme}://${reference_client_endpoints[$index]}" \
     --listen-peer-urls "http://${reference_peer_endpoints[$index]}" \
     --initial-advertise-peer-urls "http://${reference_peer_endpoints[$index]}" \
     --initial-cluster "$initial_cluster" \
     --initial-cluster-token kubebrain-direct-moveleader-differential \
     --initial-cluster-state new \
     --log-level error \
+    "${etcd_tls_args[@]}" \
     >"$data_dir/reference-${index}.log" 2>&1 &
   reference_pids+=("$!")
 done
@@ -187,7 +215,7 @@ done
 for ((attempt = 0; attempt < 150; attempt++)); do
   ready=true
   for endpoint in "${reference_client_endpoints[@]}"; do
-    if ! curl --fail --silent --max-time 1 "http://${endpoint}/health" >/dev/null 2>&1; then
+    if ! curl --fail --silent --max-time 1 "${curl_tls_args[@]}" "${reference_scheme}://${endpoint}/health" >/dev/null 2>&1; then
       ready=false
     fi
   done
@@ -203,7 +231,7 @@ for ((attempt = 0; attempt < 150; attempt++)); do
   sleep 0.1
 done
 for endpoint in "${reference_client_endpoints[@]}"; do
-  if ! curl --fail --silent --max-time 1 "http://${endpoint}/health" >/dev/null; then
+  if ! curl --fail --silent --max-time 1 "${curl_tls_args[@]}" "${reference_scheme}://${endpoint}/health" >/dev/null; then
     echo "reference direct etcd member did not become healthy: $endpoint" >&2
     exit 1
   fi
@@ -214,6 +242,14 @@ done
   REFERENCE_ETCD_DIRECT_ENDPOINTS="$(IFS=,; echo "${reference_client_endpoints[*]}")" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     EXTERNAL_TCP_SWITCH_PROXY_BINARY="$data_dir/tcp-switch-proxy" \
+    REFERENCE_ETCD_TLS_CA_FILE="$TLS_CA_FILE" \
+    REFERENCE_ETCD_TLS_CERT_FILE="$TLS_CERT_FILE" \
+    REFERENCE_ETCD_TLS_KEY_FILE="$TLS_KEY_FILE" \
+    REFERENCE_ETCD_TLS_SERVER_NAME="$TLS_SERVER_NAME" \
+    KUBEBRAIN_TLS_CA_FILE="$TLS_CA_FILE" \
+    KUBEBRAIN_TLS_CERT_FILE="$TLS_CERT_FILE" \
+    KUBEBRAIN_TLS_KEY_FILE="$TLS_KEY_FILE" \
+    KUBEBRAIN_TLS_SERVER_NAME="$TLS_SERVER_NAME" \
     go test . -run "$test_pattern" \
       -count="$TEST_COUNT" -timeout="$TEST_TIMEOUT" -v
 )

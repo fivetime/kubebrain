@@ -47197,6 +47197,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   进程已覆盖 Grant 与 Revoke 两个方向，但生产云 LB/NAT/conntrack、TLS passthrough、真实 L7 gRPC proxy、
   跨节点网络设备和平台通用 request token 仍保持开放。
 
+- A4408 关闭 A4406/A4407 明确保留的 TLS passthrough 证据缺口。新增
+  `TestLeaseRevokeResponseLossAcrossExternalL4TLSPassthroughDifferential`，继续使用独立 PID 的字节级 proxy，
+  但 reference etcd 与 KubeBrain 的三个直连 client endpoint 都强制 mTLS；proxy 只收到 host:port，从未
+  获得 CA、server/client certificate 或 private key，因此不能终止 TLS、解析 gRPC 或合成 response。测试
+  为两端分别从 fail-closed 环境变量加载 CA/cert/key/server name，并把既有 direct topology helper 扩展为
+  TLS-aware dial：在 fault 前再次证明同 cluster ID、三个不同 member ID、一致且在集合内的 leader。随后
+  replica 0 完成 Revoke、replica 2 在切换前看到 TTL=-1、proxy 记录加密 response bytes 被 blackhole；proxy
+  切到 replica 1 并主动断开旧 TLS connection 后，clientv3 必须完成新 TLS handshake 并重放，最终返回
+  typed LeaseNotFound，key/lease/list 与 revision +1 契约和明文 reference 完全一致。
+  三成员 runner 新增独立 `TEST_SCOPE=lease-revoke-tls-passthrough`：缺少任一可读 TLS 文件即在依赖探测前
+  fail closed；reference client URL 改为 https 并启用 `client-cert-auth/trusted-ca`，curl、etcdctl 和 Go test
+  共享显式 mTLS credentials，普通 scope 保持 plaintext。2026-08-12 从 clean
+  `/root/etcd@5cd9f4ee1380...` 重建 reference，在 disposable `kubebrain-tls-l4` 的独立 3 PD/3 TiKV 上部署
+  三副本生产 TLS manifest（仅因单节点 kind 移除 required hostname anti-affinity）并通过；三个 endpoint
+  的 mTLS Status 先证明成员身份。差分耗时 0.46 秒，两端日志均明确 `AuthInfo: tls`、attempt 0
+  `Unavailable/EOF`、attempt 1 `NotFound/lease not found`。首轮测试在业务 RPC 前暴露 topology helper 仍用
+  plaintext，得到 TLS preface EOF；改为真正 TLS-aware helper 后通过，没有跳过身份门禁。此前尝试复用两天
+  的开发 TiKV 集群时持续 store DeadlineExceeded，已拒绝作为证据并改用 fresh disposable topology。
+  同一现场以 `GOFLAGS=-race` 重跑时还发现测试进程会在 `os/exec` 写 stderr 的同时读取 `bytes.Buffer.String`；
+  将 proxy stderr collector 改为 mutex 保护后，真实 TLS 双端 race 门禁 3.777 秒通过。
+  TLS passthrough 由此有真实差分证据；生产云 LB/NAT/conntrack、真实 L7 gRPC proxy、跨节点网络设备和平台
+  通用 request token 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

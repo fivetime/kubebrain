@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,16 +11,25 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 func requireDistinctDirectReplicaTopology(t *testing.T, endpoints []string) {
+	requireDistinctDirectReplicaTopologyWithTLS(t, endpoints, nil)
+}
+
+func requireDistinctDirectReplicaTopologyWithTLS(t *testing.T, endpoints []string, tlsConfig *tls.Config) {
 	t.Helper()
 	statuses := make([]*etcdserverpb.StatusResponse, 0, len(endpoints))
 	for _, rawEndpoint := range endpoints {
 		endpoint := strings.TrimSpace(rawEndpoint)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(insecure.NewCredentials()))
+		transportCredentials := credentials.TransportCredentials(insecure.NewCredentials())
+		if tlsConfig != nil {
+			transportCredentials = credentials.NewTLS(tlsConfig.Clone())
+		}
+		conn, err := grpc.NewClient(grpcTarget(endpoint), grpc.WithTransportCredentials(transportCredentials))
 		require.NoError(t, err)
 		statusResponse, statusErr := etcdserverpb.NewMaintenanceClient(conn).Status(ctx, &etcdserverpb.StatusRequest{})
 		cancel()
