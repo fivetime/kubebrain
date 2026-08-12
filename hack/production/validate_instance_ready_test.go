@@ -91,6 +91,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		tikvPodPrefix            string
 		tikvOwnerUID             string
 		tikvTidbOwnerUID         string
+		tikvCurrentRevision      string
 		healthOK                 bool
 		advertisedURLs           string
 		unreachableAdvertisedURL string
@@ -129,7 +130,7 @@ func TestValidateInstanceReady(t *testing.T) {
 			topology:   "3\t3",
 			tikvImage:  "pingcap/tikv:v8.5.2",
 			healthOK:   true,
-			wantOutput: "TidbCluster storage release mismatch",
+			wantOutput: "TiKV StatefulSet release snapshot mismatch",
 		},
 		{
 			name:        "TiKV runtime digest drift",
@@ -166,6 +167,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			tikvTidbOwnerUID: "uid-foreign-tidb",
 			healthOK:         true,
 			wantOutput:       "TiKV StatefulSet owner identity mismatch",
+		},
+		{
+			name:                "TiKV rollout starts after convergence wait",
+			image:               "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:          "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:            "3\t3",
+			tikvCurrentRevision: "tikv-old",
+			healthOK:            true,
+			wantOutput:          "TiKV StatefulSet release snapshot mismatch",
 		},
 		{
 			name:       "tls release baseline",
@@ -1076,6 +1086,10 @@ exit 1
 			if tikvTidbOwnerUID == "" {
 				tikvTidbOwnerUID = "uid-tidb"
 			}
+			tikvCurrentRevision := tc.tikvCurrentRevision
+			if tikvCurrentRevision == "" {
+				tikvCurrentRevision = "tikv-new"
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"ETCDCTL=" + fakeEtcdctl,
@@ -1109,8 +1123,8 @@ exit 1
 				"FAKE_TIDB_VERSION=" + tidbVersion,
 				"FAKE_PD_IMAGE=" + pdImage,
 				"FAKE_TIKV_IMAGE=" + tikvImage,
-				"FAKE_PD_STS_JSON=" + fakeStorageStatefulSetJSON("pd", "uid-pd-sts", "uid-tidb", "pd-new"),
-				"FAKE_TIKV_STS_JSON=" + fakeStorageStatefulSetJSON("tikv", "uid-tikv-sts", tikvTidbOwnerUID, "tikv-new"),
+				"FAKE_PD_STS_JSON=" + fakeStorageStatefulSetJSON("pd", "uid-pd-sts", "uid-tidb", "pd-new", "pd-new", "pingcap/pd:v8.5.3"),
+				"FAKE_TIKV_STS_JSON=" + fakeStorageStatefulSetJSON("tikv", "uid-tikv-sts", tikvTidbOwnerUID, tikvCurrentRevision, "tikv-new", tikvImage),
 				"FAKE_PD_PODS_JSON=" + fakeStoragePodsJSON("pd", "kb-pd", "uid-pd-sts", "pd-new", "pingcap/pd:v8.5.3", "docker-pullable://pingcap/pd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
 				"FAKE_TIKV_PODS_JSON=" + fakeStoragePodsJSON("tikv", tikvPodPrefix, tikvOwnerUID, "tikv-new", tikvImage, tikvImageID),
 				"FAKE_HEALTH_OK=" + boolString(tc.healthOK),
@@ -1141,18 +1155,23 @@ exit 1
 	}
 }
 
-func fakeStorageStatefulSetJSON(component, uid, tidbOwnerUID, revision string) string {
+func fakeStorageStatefulSetJSON(component, uid, tidbOwnerUID, currentRevision, updateRevision, image string) string {
 	encoded, err := json.Marshal(map[string]any{
 		"apiVersion": "apps/v1",
 		"kind":       "StatefulSet",
 		"metadata": map[string]any{
-			"name": "kb-" + component,
-			"uid":  uid,
+			"generation": 8,
+			"name":       "kb-" + component,
+			"uid":        uid,
 			"ownerReferences": []map[string]any{{
 				"apiVersion": "pingcap.com/v1alpha1", "kind": "TidbCluster", "name": "kb", "uid": tidbOwnerUID, "controller": true,
 			}},
 		},
-		"status": map[string]any{"updateRevision": revision},
+		"spec": map[string]any{
+			"replicas": 3,
+			"template": map[string]any{"spec": map[string]any{"containers": []map[string]any{{"name": component, "image": image}}}},
+		},
+		"status": map[string]any{"observedGeneration": 8, "readyReplicas": 3, "updatedReplicas": 3, "currentRevision": currentRevision, "updateRevision": updateRevision},
 	})
 	if err != nil {
 		panic(err)

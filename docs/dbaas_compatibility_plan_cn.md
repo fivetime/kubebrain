@@ -47744,6 +47744,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision 供 Pod 链验证。由此形成 receipt TidbCluster UID→StatefulSet UID/revision→Pod→runtime digest
   的闭合身份链；它仍不替代逐成员升级、回滚和故障叠加矩阵。
 
+- A4441 关闭 storage StatefulSet 多次读取产生的发布 TOCTOU。A4437–A4440 先用 jsonpath 读取 template
+  image，再另取 StatefulSet JSON 的 UID/updateRevision；`wait-tidbcluster-ready.sh` 返回后若新 rollout
+  启动，门禁可把旧 image 判断、currentRevision 仍旧和新的 updateRevision/owner 拼接为成功。RED 让 wait
+  阶段收敛，但后续 TiKV 快照为 `currentRevision=tikv-old`、`updateRevision=tikv-new`，旧门禁确定性放行。
+  新实现不再单独读取 PD/TiKV image；每个 StatefulSet 的单份 JSON 同时验证 owner 链、非空 UID、
+  generation 已 observed、spec/ready/updated replicas 精确、currentRevision=updateRevision 和唯一组件
+  template image，再从该快照提取 UID/revision 绑定 Pod。门禁中途启动 rollout 因而 fail closed；真实滚动
+  升级与回滚矩阵仍需现场执行，未由这个稳态快照替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

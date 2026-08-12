@@ -251,19 +251,13 @@ fi
 
 actual_tidb_version="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
   -o 'jsonpath={.spec.version}')"
-actual_pd_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-pd" \
-  -o 'jsonpath={.spec.template.spec.containers[?(@.name=="pd")].image}')"
-actual_tikv_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" \
-  -o 'jsonpath={.spec.template.spec.containers[?(@.name=="tikv")].image}')"
-if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ||
-  "$actual_pd_image" != "$EXPECTED_PD_IMAGE" ||
-  "$actual_tikv_image" != "$EXPECTED_TIKV_IMAGE" ]]; then
-  echo "TidbCluster storage release mismatch: expected version/PD/TiKV ${EXPECTED_TIDB_VERSION}/${EXPECTED_PD_IMAGE}/${EXPECTED_TIKV_IMAGE}, got ${actual_tidb_version:-missing}/${actual_pd_image:-missing}/${actual_tikv_image:-missing}" >&2
+if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ]]; then
+  echo "TidbCluster storage release mismatch: expected version ${EXPECTED_TIDB_VERSION}, got ${actual_tidb_version:-missing}" >&2
   exit 1
 fi
 
 storage_statefulset_identity() {
-  local component="$1" display="$2" statefulset object
+  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" statefulset object
   statefulset="${TIDB_CLUSTER}-${component}"
   if ! object="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "$statefulset" -o json)"; then
     echo "failed to read ${display} StatefulSet identity" >&2
@@ -282,11 +276,25 @@ storage_statefulset_identity() {
     echo "${display} StatefulSet owner identity mismatch: expected controller TidbCluster ${TIDB_CLUSTER}/${EXPECTED_TIDB_CLUSTER_UID}" >&2
     exit 1
   fi
+  if ! printf '%s' "$object" | "$JQ" -e \
+    --arg component "$component" --arg image "$expected_image" --argjson expected "$expected_replicas" '
+      (.metadata.generation | type) == "number" and
+      (.status.observedGeneration | type) == "number" and
+      .status.observedGeneration >= .metadata.generation and
+      .spec.replicas == $expected and .status.readyReplicas == $expected and
+      .status.updatedReplicas == $expected and
+      ((.status.currentRevision | type) == "string" and (.status.currentRevision | length) > 0) and
+      .status.currentRevision == .status.updateRevision and
+      ([.spec.template.spec.containers[]? | select(.name == $component and .image == $image)] | length) == 1
+    ' >/dev/null; then
+    echo "${display} StatefulSet release snapshot mismatch: expected ${expected_replicas} converged replicas and image ${expected_image}" >&2
+    exit 1
+  fi
   printf '%s' "$object" | "$JQ" -r '[.metadata.uid,.status.updateRevision] | @tsv'
 }
 
-IFS=$'\t' read -r actual_pd_statefulset_uid actual_pd_revision <<<"$(storage_statefulset_identity "pd" "PD")"
-IFS=$'\t' read -r actual_tikv_statefulset_uid actual_tikv_revision <<<"$(storage_statefulset_identity "tikv" "TiKV")"
+IFS=$'\t' read -r actual_pd_statefulset_uid actual_pd_revision <<<"$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE")"
+IFS=$'\t' read -r actual_tikv_statefulset_uid actual_tikv_revision <<<"$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE")"
 
 validate_storage_runtime() {
   local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_digest="$5" owner_uid="$6" revision="$7"
