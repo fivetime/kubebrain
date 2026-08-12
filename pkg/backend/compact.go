@@ -637,6 +637,10 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 	if len(members) != 0 {
 		return false, ErrCorruptAlarmActive
 	}
+	corruptGuard, err := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
+	if err != nil {
+		return false, err
+	}
 
 	// get stored compact revision
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
@@ -663,13 +667,7 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		return false, err
 	}
 	batch := b.kv.BeginBatchWrite()
-	corruptGenerationKey := b.ks.EncodeInternalKey(corruptAlarmGenerationKey)
-	if corruptGenerationExists {
-		batch.CAS(corruptGenerationKey, corruptGenerationRaw, corruptGenerationRaw, 0)
-	} else {
-		batch.PutIfNotExist(corruptGenerationKey, []byte{0}, 0)
-		batch.Del(corruptGenerationKey)
-	}
+	stageCorruptAlarmCommitGuard(batch, b.ks.EncodeInternalKey(corruptGuard.key), corruptGuard)
 	if compactRecordExists {
 		// if compact revision already set before
 		batch.CAS(getCompactKey(b.config.Prefix), revisionBytes, val, 0)
@@ -687,8 +685,7 @@ func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanc
 		if len(currentMembers) != 0 {
 			return false, ErrCorruptAlarmActive
 		}
-		if currentGenerationExists != corruptGenerationExists ||
-			!bytes.Equal(currentGenerationRaw, corruptGenerationRaw) {
+		if currentGenerationExists != corruptGenerationExists || !bytes.Equal(currentGenerationRaw, corruptGenerationRaw) {
 			return false, ErrCorruptAlarmChanged
 		}
 		// A concurrent compactor may have advanced the watermark between our read

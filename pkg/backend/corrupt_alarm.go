@@ -53,11 +53,19 @@ func (b *backend) ArmCorrupt(ctx context.Context, memberID uint64) error {
 		if err != nil {
 			return err
 		}
-		err = b.InternalCAS(ctx, []InternalCASOp{
+		ops := []InternalCASOp{
 			{Key: corruptAlarmKey, Value: value, Expected: raw, ExpectedExists: exists},
 			{Key: corruptAlarmGenerationKey, Value: nextGeneration, Expected: generationRaw, ExpectedExists: generationExists},
-		})
+		}
+		ops, err = b.appendCorruptAlarmFenceOps(ctx, ops, nextGeneration, generationRaw, generationExists)
+		if err != nil {
+			return err
+		}
+		err = b.InternalCAS(ctx, ops)
 		if errors.Is(err, storage.ErrCASFailed) {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			continue
 		}
 		return err
@@ -138,10 +146,15 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 		if err != nil {
 			return false, err
 		}
-		err = b.InternalCAS(ctx, []InternalCASOp{
+		ops := []InternalCASOp{
 			op,
 			{Key: corruptAlarmGenerationKey, Value: nextGeneration, Expected: generationRaw, ExpectedExists: generationExists},
-		})
+		}
+		ops, err = b.appendCorruptAlarmFenceOps(ctx, ops, nextGeneration, generationRaw, generationExists)
+		if err != nil {
+			return false, err
+		}
+		err = b.InternalCAS(ctx, ops)
 		if errors.Is(err, storage.ErrCASFailed) {
 			return false, ErrCorruptAlarmChanged
 		}

@@ -2959,6 +2959,10 @@ CORRUPT 激活与所有有效 `TxnApply` 在 TiKV generation 上形成提交全�
 只验证 alarm 激活后的新请求。
 同一提交栅栏也覆盖 logical Compaction watermark；故障演练须确认跨副本 Arm 先提交时 compact revision 不前移，不能
 只观察物理 GC 是否运行。auth 管理和 alarm maintenance 依 upstream 语义仍可在 CORRUPT 下执行，不应误接入该写栅栏。
+提交栅栏依赖 256 个 `alarms/corrupt-fence/<hex>` mutation shard，而不是 TiKV 的普通 snapshot read-set；禁止减少为
+单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
+会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在
+shard 上分散。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

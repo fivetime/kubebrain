@@ -222,13 +222,29 @@ func atomicExpect(ctx context.Context, txn storage.AtomicBatch, key, expected []
 }
 
 // stageTxnAtomic expresses every TxnApply guard and mutation using reads and
-// writes inside one storage transaction. AtomicBatch.Get establishes the same
-// conflict dependency as legacy CAS/PutIfNotExist, while allowing object/event
-// keys to be derived from a revision allocated by that transaction.
-func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, preps []txnPrep, guardPreps []txnGuardPrep, newRevision uint64, quotaUsageRaw []byte, nextQuotaUsage int64, corruptGenerationRaw []byte, corruptGenerationExists bool) error {
-	if err := atomicExpect(ctx, txn, b.ks.EncodeInternalKey(corruptAlarmGenerationKey),
-		corruptGenerationRaw, !corruptGenerationExists); err != nil {
+// writes inside one storage transaction. Value guards that must conflict on
+// TiKV also stage a mutation: TiKV optimistic prewrite does not validate an
+// arbitrary AtomicBatch.Get read set. Object/event keys may still be derived
+// from a revision allocated by that transaction.
+func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, preps []txnPrep, guardPreps []txnGuardPrep, newRevision uint64, quotaUsageRaw []byte, nextQuotaUsage int64, corruptGuard corruptAlarmCommitGuard) error {
+	guardKey := b.ks.EncodeInternalKey(corruptGuard.key)
+	if err := atomicExpect(ctx, txn, guardKey, corruptGuard.expected, !corruptGuard.exists); err != nil {
 		return err
+	}
+	// TiKV optimistic transactions validate mutation keys, not an arbitrary read
+	// set. Write the same shard value (or create+delete the legacy control key)
+	// so concurrent Arm/Disarm necessarily conflicts at prewrite.
+	if corruptGuard.exists {
+		if err := txn.Put(guardKey, corruptGuard.expected, 0); err != nil {
+			return err
+		}
+	} else {
+		if err := txn.Put(guardKey, []byte{0}, 0); err != nil {
+			return err
+		}
+		if err := txn.Del(guardKey); err != nil {
+			return err
+		}
 	}
 	if b.config.QuotaBackendBytes > 0 {
 		key := b.ks.EncodeInternalKey(quotaUsageKey)
@@ -499,17 +515,15 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		if len(members) != 0 {
 			return nil, baseRevision, false, ErrCorruptAlarmActive
 		}
+		corruptGuard, alarmErr := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
+		if alarmErr != nil {
+			return nil, baseRevision, false, alarmErr
+		}
 		if cerr := b.fenceAdmit(ctx); cerr != nil {
 			return nil, baseRevision, false, cerr
 		}
 		batch := b.kv.BeginBatchWrite()
-		corruptGenerationKey := b.ks.EncodeInternalKey(corruptAlarmGenerationKey)
-		if corruptGenerationExists {
-			batch.CAS(corruptGenerationKey, corruptGenerationRaw, corruptGenerationRaw, 0)
-		} else {
-			batch.PutIfNotExist(corruptGenerationKey, []byte{0}, 0)
-			batch.Del(corruptGenerationKey)
-		}
+		stageCorruptAlarmCommitGuard(batch, b.ks.EncodeInternalKey(corruptGuard.key), corruptGuard)
 		guardKeys := make(map[string]struct{}, len(guards))
 		for _, gp := range guardPreps {
 			guardKeys[string(gp.key)] = struct{}{}
@@ -568,6 +582,10 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	}
 	if len(members) != 0 {
 		return nil, baseRevision, false, ErrCorruptAlarmActive
+	}
+	corruptGuard, alarmErr := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
+	if alarmErr != nil {
+		return nil, baseRevision, false, alarmErr
 	}
 
 	var (
@@ -675,8 +693,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// it creates no collector hole and must not publish an invalid event.
 	batch := b.kv.BeginBatchWrite()
 	allocated := b.stageNextDurableRevisionAfter(batch, baseRevision, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
-		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage,
-			corruptGenerationRaw, corruptGenerationExists)
+		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage, corruptGuard)
 	})
 	cerr := b.commitUserBatch(ctx, batch)
 	newRevision = *allocated

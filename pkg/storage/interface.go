@@ -209,6 +209,10 @@ type Writer interface {
 // keys and values from data read by the same commit, but cannot open snapshots
 // or recursively commit another transaction.
 type AtomicBatch interface {
+	// Get reads through the transaction snapshot. Callers must not assume a read
+	// alone participates in commit conflict detection: TiKV optimistic 2PC checks
+	// mutation keys, whereas Badger also tracks reads. Stage Put/Del on safety
+	// guards that must conflict with concurrent writers.
 	Get(ctx context.Context, key []byte) ([]byte, error)
 	Put(key []byte, val []byte, ttl int64) error
 	Del(key []byte) error

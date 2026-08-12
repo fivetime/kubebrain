@@ -117,7 +117,7 @@ func (b *backend) InitializeLeadershipRevision(ctx context.Context, _ uint64) er
 	// presentation detail. Validate it before publishing this leadership term;
 	// a valid active CORRUPT alarm still permits a read-only leader, while an
 	// undecodable member set/generation cannot safely admit or disarm writes.
-	if _, err := b.CorruptAlarms(ctx); err != nil {
+	if err := b.ValidateCorruptAlarmMetadata(ctx); err != nil {
 		return err
 	}
 	// A same-process re-election can retain a committed watermark newer than a

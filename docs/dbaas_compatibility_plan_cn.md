@@ -48205,6 +48205,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归在 compact storage commit 前暂停并由另一实例 Arm，证明 logical watermark 完全不存在且 alarm 获胜；physical
   GC 只会在 watermark 已先提交（即 compaction 在线性化序中早于 alarm）时继续，符合 upstream apply 顺序。
 
+- A4499 修正 A4497/A4498 对 TiKV optimistic OCC read-set 的错误假设。Badger commit 会检查 transaction 读取集，
+  但 TiKV 2PC prewrite 只对 mutation key 做 write-conflict 检查；仅在 `AtomicBatch.Get(generation)` 比对值不会把该 key
+  送入 prewrite，因此先前 Badger 竞态回归不能证明真实 TiKV 安全。直接 no-op 写单一 generation 又会把所有 DBaaS
+  mutation 串行化。现在新增 256 个 tenant-scoped `alarms/corrupt-fence/<hex>` shard 和 version control：普通
+  TxnApply/Compaction round-robin 选择一个 shard，在同一 transaction 中 exact-read 后写回相同值（legacy 未初始化时
+  对 control key 执行 create+delete absent mutation）；Arm/Disarm 则与 member set/generation 在一个 TiKV transaction
+  中原子轮换全部 shard。这样 alarm 与每笔 mutation 必有共同 mutation key，且正常并发分散到 256 路。首次 alarm
+  操作把 A4493 的 existing generation/no-shard 状态原子迁移，不要求停机。leadership publication 和 Maintenance
+  Snapshot 通过 `ValidateCorruptAlarmMetadata` 一次性扫描全部 shard；热请求只读所选 shard，missing/mismatch/version
+  非法均 fail closed。回归固定 1→2 generation 时 256 shard 全部一致、existing generation 7→8 平滑迁移、单 shard
+  腐化拒绝 leadership/write，以及 snapshot 对 partial fence/version 损坏零输出。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

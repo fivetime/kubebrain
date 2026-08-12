@@ -113,6 +113,7 @@ type BackendShim interface {
 	DisarmNoSpace(ctx context.Context, memberID uint64) (bool, error)
 	ArmCorrupt(ctx context.Context, memberID uint64) error
 	CorruptAlarms(ctx context.Context) ([]uint64, error)
+	ValidateCorruptAlarmMetadata(ctx context.Context) error
 	DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error)
 
 	// BeginRangeTxn excludes logical writes while a range compare and its chosen
@@ -292,6 +293,10 @@ func (b *backendShim) ArmCorrupt(ctx context.Context, memberID uint64) error {
 
 func (b *backendShim) CorruptAlarms(ctx context.Context) ([]uint64, error) {
 	return b.backend.CorruptAlarms(ctx)
+}
+
+func (b *backendShim) ValidateCorruptAlarmMetadata(ctx context.Context) error {
+	return b.backend.ValidateCorruptAlarmMetadata(ctx)
 }
 
 func (b *backendShim) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error) {

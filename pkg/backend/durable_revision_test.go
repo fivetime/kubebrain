@@ -459,7 +459,8 @@ func TestTransactionalRevisionAllocatorStagesWholeTxn(t *testing.T) {
 
 	batch := b.kv.BeginBatchWrite()
 	allocated := b.stageNextDurableRevision(batch, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
-		return b.stageTxnAtomic(callbackCtx, txn, preps, guards, revision, nil, 0, nil, false)
+		return b.stageTxnAtomic(callbackCtx, txn, preps, guards, revision, nil, 0,
+			corruptAlarmCommitGuard{key: corruptAlarmFenceControlKey})
 	})
 	require.NoError(t, batch.Commit(ctx))
 	require.Equal(t, uint64(11), *allocated)
@@ -494,7 +495,8 @@ func TestTransactionalRevisionAllocatorStagesWholeTxn(t *testing.T) {
 	blocked := []txnPrep{{op: TxnWriteOp{Key: blockedKey, Value: []byte("blocked")}, effective: true, create: true}}
 	conflict := b.kv.BeginBatchWrite()
 	b.stageNextDurableRevision(conflict, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
-		return b.stageTxnAtomic(callbackCtx, txn, blocked, guards, revision, nil, 0, nil, false)
+		return b.stageTxnAtomic(callbackCtx, txn, blocked, guards, revision, nil, 0,
+			corruptAlarmCommitGuard{key: corruptAlarmFenceControlKey})
 	})
 	require.ErrorIs(t, conflict.Commit(ctx), storage.ErrCASFailed)
 	durable, err := b.GetDurableRevision(ctx)

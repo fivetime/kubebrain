@@ -339,6 +339,12 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 	for _, memberID := range noSpace {
 		state.Alarms = append(state.Alarms, &etcdserverpb.AlarmMember{MemberID: memberID, Alarm: etcdserverpb.AlarmType_NOSPACE})
 	}
+	if err := s.backend.ValidateCorruptAlarmMetadata(ctx); err != nil {
+		if errors.Is(err, backend.ErrInvalidAlarmMetadata) {
+			return production.State{}, nil, nil, fmt.Errorf("%w: %v", production.ErrInvalidSnapshotMetadata, err)
+		}
+		return production.State{}, nil, nil, err
+	}
 	corrupt, err := s.backend.CorruptAlarms(ctx)
 	if err != nil {
 		if errors.Is(err, backend.ErrInvalidAlarmMetadata) {

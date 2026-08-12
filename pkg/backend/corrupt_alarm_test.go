@@ -19,22 +19,39 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 func TestCorruptAlarmGenerationAdvancesOnIdempotentRearmAndDisarm(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	const memberID = uint64(41001)
+	require.NoError(t, b.ValidateCorruptAlarmMetadata(ctx), "legacy tenant with no fence keys is valid")
 
 	require.NoError(t, b.ArmCorrupt(ctx, memberID))
 	raw, err := b.InternalGet(ctx, corruptAlarmGenerationKey)
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), binary.BigEndian.Uint64(raw))
+	control, err := b.InternalGet(ctx, corruptAlarmFenceControlKey)
+	require.NoError(t, err)
+	require.Equal(t, []byte{1}, control)
+	for shard := uint64(0); shard < corruptAlarmFenceShardCount; shard++ {
+		guard, guardErr := b.InternalGet(ctx, corruptAlarmFenceShardKey(shard))
+		require.NoError(t, guardErr)
+		require.Equal(t, raw, guard)
+	}
+	require.NoError(t, b.ValidateCorruptAlarmMetadata(ctx))
 
 	require.NoError(t, b.ArmCorrupt(ctx, memberID))
 	raw, err = b.InternalGet(ctx, corruptAlarmGenerationKey)
 	require.NoError(t, err)
 	require.Equal(t, uint64(2), binary.BigEndian.Uint64(raw),
 		"an idempotent member rearm must still publish a cross-replica generation")
+	for shard := uint64(0); shard < corruptAlarmFenceShardCount; shard++ {
+		guard, guardErr := b.InternalGet(ctx, corruptAlarmFenceShardKey(shard))
+		require.NoError(t, guardErr)
+		require.Equal(t, raw, guard)
+	}
 
 	removed, err := b.DisarmCorrupt(ctx, memberID)
 	require.NoError(t, err)
@@ -42,6 +59,44 @@ func TestCorruptAlarmGenerationAdvancesOnIdempotentRearmAndDisarm(t *testing.T) 
 	raw, err = b.InternalGet(ctx, corruptAlarmGenerationKey)
 	require.NoError(t, err)
 	require.Equal(t, uint64(3), binary.BigEndian.Uint64(raw))
+}
+
+func TestCorruptAlarmFenceShardCorruptionFailsLeadershipValidationAndWrites(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	require.NoError(t, b.ArmCorrupt(ctx, 41003))
+	removed, err := b.DisarmCorrupt(ctx, 41003)
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.NoError(t, b.InternalPut(ctx, corruptAlarmFenceShardKey(0), []byte("wrong")))
+
+	err = b.ValidateCorruptAlarmMetadata(ctx)
+	require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
+	require.ErrorContains(t, err, "shard 00 generation mismatch")
+	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: []byte(prefix + "/bad-corrupt-fence"), Value: []byte("x")}}, nil)
+	require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
+	_, err = b.kv.Get(ctx, b.coder.EncodeRevisionKey([]byte(prefix+"/bad-corrupt-fence")))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
+func TestCorruptAlarmFenceMigratesExistingGenerationAtomically(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	const memberID = uint64(41004)
+	require.NoError(t, b.InternalPut(ctx, corruptAlarmKey, []byte("[41004]")))
+	generation := make([]byte, 8)
+	binary.BigEndian.PutUint64(generation, 7)
+	require.NoError(t, b.InternalPut(ctx, corruptAlarmGenerationKey, generation))
+	require.NoError(t, b.ValidateCorruptAlarmMetadata(ctx), "A4493 generation without shards is a valid migration source")
+
+	require.NoError(t, b.ArmCorrupt(ctx, memberID))
+	next, err := b.InternalGet(ctx, corruptAlarmGenerationKey)
+	require.NoError(t, err)
+	require.Equal(t, uint64(8), binary.BigEndian.Uint64(next))
+	require.NoError(t, b.ValidateCorruptAlarmMetadata(ctx))
+	for shard := uint64(0); shard < corruptAlarmFenceShardCount; shard++ {
+		guard, guardErr := b.InternalGet(ctx, corruptAlarmFenceShardKey(shard))
+		require.NoError(t, guardErr)
+		require.Equal(t, next, guard)
+	}
 }
 
 func TestCorruptAlarmGenerationMalformedFailsClosed(t *testing.T) {
