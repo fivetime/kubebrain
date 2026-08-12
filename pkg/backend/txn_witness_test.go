@@ -218,3 +218,49 @@ func TestLeadershipWithoutWitnessDoesNotOpenEventScan(t *testing.T) {
 	require.NoError(t, b.InitializeLeadershipRevision(context.Background(), 0))
 	require.Equal(t, int32(1), wrapped.calls.Load(), "legacy/no-witness startup must not scan the event log")
 }
+
+func TestLeadershipRejectsFutureWitnessVersionWithoutCorruptAlarm(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/restart-witness/future-version")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+	witnessKey := b.ks.EncodeInternalKey(txnWitnessLogicalKey(revision))
+	raw, err := b.kv.Get(ctx, witnessKey)
+	require.NoError(t, err)
+	future := append([]byte(nil), raw...)
+	future[0] = txnWitnessVersion + 1
+	batch := b.kv.BeginBatchWrite()
+	batch.Put(witnessKey, future, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	err = b.InitializeLeadershipRevision(ctx, 0)
+	require.ErrorIs(t, err, ErrTxnWitnessUnsupportedVersion)
+	require.ErrorContains(t, err, fmt.Sprintf("revision %d", revision))
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, members, "future metadata requires roll-forward, not a corruption repair")
+	stored, err := b.kv.Get(ctx, witnessKey)
+	require.NoError(t, err)
+	require.Equal(t, future, stored, "an older binary must preserve opaque future witness bytes")
+
+	repair := b.kv.BeginBatchWrite()
+	repair.Put(witnessKey, raw, 0)
+	require.NoError(t, repair.Commit(ctx))
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0), "rolling forward to a compatible decoder can lead")
+}
+
+func TestLeadershipMalformedCurrentWitnessStillArmsCorrupt(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/restart-witness/malformed-current")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+	witnessKey := b.ks.EncodeInternalKey(txnWitnessLogicalKey(revision))
+	batch := b.kv.BeginBatchWrite()
+	batch.Put(witnessKey, []byte{txnWitnessVersion}, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, members)
+}

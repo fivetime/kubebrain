@@ -33,6 +33,11 @@ import (
 
 var txnWitnessPrefix = []byte("txn/witness/")
 
+// ErrTxnWitnessUnsupportedVersion means storage was written by a newer binary.
+// It fences this process from leadership without classifying healthy, opaque
+// metadata as data corruption; an operator must roll forward, not repair data.
+var ErrTxnWitnessUnsupportedVersion = errors.New("unsupported transaction witness version")
+
 const (
 	txnWitnessVersion = byte(1)
 	txnWitnessSize    = 1 + 4 + sha256.Size
@@ -64,7 +69,10 @@ func encodeTxnWitness(entries []eventLogRawEntry) []byte {
 }
 
 func decodeTxnWitness(raw []byte) (txnWitnessRecord, error) {
-	if len(raw) != txnWitnessSize || raw[0] != txnWitnessVersion {
+	if len(raw) > 0 && raw[0] != txnWitnessVersion {
+		return txnWitnessRecord{}, fmt.Errorf("%w: %d", ErrTxnWitnessUnsupportedVersion, raw[0])
+	}
+	if len(raw) != txnWitnessSize {
 		return txnWitnessRecord{}, fmt.Errorf("invalid transaction witness encoding")
 	}
 	record := txnWitnessRecord{count: binary.BigEndian.Uint32(raw[1:5])}
@@ -166,6 +174,9 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 			}
 		}
 		record, decodeErr := decodeTxnWitness(raw)
+		if cause == nil && errors.Is(decodeErr, ErrTxnWitnessUnsupportedVersion) {
+			return fmt.Errorf("transaction witness at revision %d: %w", revision, decodeErr)
+		}
 		if cause == nil && decodeErr != nil {
 			cause = fmt.Errorf("%w: %v", ErrTxnWitnessCorrupt, decodeErr)
 		}

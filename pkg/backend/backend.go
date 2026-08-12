@@ -242,6 +242,8 @@ type Backend interface {
 	// InitializeLeadershipRevision restores the public committed revision and
 	// its allocation/collector cursor from TiKV. The election timestamp is
 	// accepted for the leader-service contract but must not enter MVCC revisions.
+	// ErrTxnWitnessUnsupportedVersion fences an older binary without classifying
+	// opaque metadata from a rolling upgrade as corruption.
 	InitializeLeadershipRevision(ctx context.Context, allocationFloor uint64) error
 
 	// GetPublishedRevision returns the highest revision whose events have been

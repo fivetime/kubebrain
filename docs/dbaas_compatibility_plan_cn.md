@@ -48124,6 +48124,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   竞态保护。256 笔双键 transaction 回归在中间删除一个 seal 模拟 legacy gap，证明后续 seal 不串 revision；再删除
   倒数第二笔 marker，确认流式校验仍持久化 CORRUPT。另固定 no-witness 初始化只创建一个 iterator。
 
+- A4489 修复 witness format 的 rolling upgrade/downgrade fence。A4486 的 decoder 把任何非 v1 bytes 都归为
+  malformed corruption；未来 binary 写入 v2 后，旧 Pod 若重新竞选会错误持久化 CORRUPT，把“需要 roll forward”
+  伪装成“需要修数据”。新增 `ErrTxnWitnessUnsupportedVersion`：非当前 version 的非空 seal 令
+  `InitializeLeadershipRevision` 失败，leader election 取消该 term 且不对外可写、不改 opaque bytes、不写 alarm；
+  compatible binary/decoder 恢复后可继续初始化。当前 v1 但长度/count/digest 非法仍属于真实 corruption 并自动
+  ArmCorrupt。回归分别固定 future v2 保留原 bytes/无 alarm/不可 lead，以及 current-v1 truncated seal 自动告警。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

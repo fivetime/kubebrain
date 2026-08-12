@@ -2959,6 +2959,10 @@ event 数量相关，不与 compaction window 内 transaction 总数相关。没
 首个 seal 之前的 legacy event prefix 也不会被扫描。若该阶段耗时或内存随未 compact transaction 数量线性增长，
 视为实现回退，不能仅通过放宽 readiness timeout 上线。
 
+witness seal 版本是领导权兼容栅栏：旧 binary 读取到未来版本时必须退出该 election term、保留原始 metadata 且不
+触发 CORRUPT。运维动作是继续 roll forward 到支持该格式的版本；不得 AlarmDeactivate、删除 seal 或把版本不兼容
+当作 TiKV 数据修复。只有当前已知版本的结构、count 或 digest 自相矛盾才进入 CORRUPT repair 流程。
+
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
 需要覆盖真实 namespace 删除和 namespace controller 清理路径时启用：
