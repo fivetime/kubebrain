@@ -48072,6 +48072,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   才发布 committed batch；全无 marker 判定未提交，部分缺失或任意 payload mismatch 持续 fail closed 并保留
   compaction pin。新增回归覆盖 none、exact、partial 和 corrupt marker 四种状态。
 
+- A4483 将 distinct-key 约束下沉到 backend `TxnApply`。server generic txn 已对齐 etcd 并拒绝 duplicate key，
+  但 lease/revoke 和直接 Backend 调用仍只依赖调用者约定；重复 key 会让同一 TiKV transaction 对 revision index
+  执行多次 read-your-write CAS，结果依赖 storage 实现。新增 `ErrTxnDuplicateKey` 和分 keyspace 预检，在任何读取、
+  fence 或 durable revision allocation 前拒绝同一 user keyspace 或 internal keyspace 的重复写；相同 raw bytes 的
+  user/internal key 因编码空间隔离仍合法。回归证明 user/internal duplicate 均不落 durable counter，同 raw 跨空间
+  transaction 则原子成功。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

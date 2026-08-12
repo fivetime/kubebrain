@@ -492,6 +492,52 @@ func TestTxnCommitRecordedValidatesExactOrderedMarkers(t *testing.T) {
 	require.ErrorContains(t, err, "event marker mismatch")
 }
 
+func TestTxnApplyRejectsDuplicateKeysBeforeRevisionAllocation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ops  []TxnWriteOp
+	}{
+		{name: "user", ops: []TxnWriteOp{
+			{Key: []byte("duplicate"), Value: []byte("first")},
+			{Key: []byte("duplicate"), Delete: true},
+		}},
+		{name: "internal", ops: []TxnWriteOp{
+			{Internal: true, Key: []byte("duplicate"), Value: []byte("first")},
+			{Internal: true, Key: []byte("duplicate"), Delete: true},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			before := b.GetCurrentRevision()
+			_, revision, err := b.TxnApply(ctx, tc.ops, nil)
+			require.ErrorIs(t, err, ErrTxnDuplicateKey)
+			require.Zero(t, revision)
+			require.Equal(t, before, b.GetCurrentRevision())
+			_, err = b.kv.Get(ctx, b.ks.EncodeInternalKey(durableRevisionKey))
+			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+		})
+	}
+}
+
+func TestTxnApplyAllowsSameRawKeyAcrossUserAndInternalKeyspaces(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/same-raw-key")
+	results, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+		{Key: key, Value: []byte("user")},
+		{Internal: true, Key: key, Value: []byte("internal")},
+	}, nil)
+	require.NoError(t, err)
+	require.NotZero(t, revision)
+	require.Len(t, results, 2)
+
+	userValue, userRevision := liveValue(t, b, ctx, key)
+	require.Equal(t, "user", userValue)
+	require.Equal(t, revision, userRevision)
+	internalValue, err := b.kv.Get(ctx, b.ks.EncodeInternalKey(key))
+	require.NoError(t, err)
+	require.Equal(t, []byte("internal"), internalValue)
+}
+
 // TestTxnApplyRecreateOverTombstone verifies a put on a previously-deleted key
 // creates it fresh (version resets to 1, new create revision).
 func TestTxnApplyRecreateOverTombstone(t *testing.T) {

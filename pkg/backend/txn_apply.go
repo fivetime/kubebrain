@@ -35,6 +35,12 @@ import (
 // chosen branch may have flipped) and retry.
 var ErrTxnGuardConflict = errors.New("txn compare guard conflict")
 
+// ErrTxnDuplicateKey rejects a backend transaction that would stage multiple
+// mutations against the same keyspace/key. etcd validates this at its RPC
+// boundary; enforcing it again here protects internal lease/revoke callers and
+// direct Backend users from storage-dependent read-your-write CAS behavior.
+var ErrTxnDuplicateKey = errors.New("txn contains duplicate write key")
+
 var errTxnResolvedNotCommitted = errors.New("uncertain txn resolved as not committed")
 
 // TxnWriteOp is one write in a transaction: a Put (Delete=false) or a
@@ -92,9 +98,13 @@ type TxnWriteResult struct {
 // resolved as one transaction from its durable event-log marker; it is never
 // split into per-key retry writes.
 //
-// Ops MUST target distinct keys; the caller is responsible for that (multi-write
-// to the same key needs intra-txn ordering that this batch does not model).
+// Ops must target distinct keys within each user/internal keyspace. A user key
+// and an internal key may share raw bytes because their encoded keyspaces are
+// disjoint. Duplicate writes are rejected before any read or revision allocation.
 func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, revision uint64, err error) {
+	if err := validateTxnWriteOps(ops); err != nil {
+		return nil, 0, err
+	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
 	b.revisionWriteMu.Lock()
@@ -121,6 +131,23 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 		}
 		return results, revision, err
 	}
+}
+
+func validateTxnWriteOps(ops []TxnWriteOp) error {
+	seenUser := make(map[string]struct{}, len(ops))
+	seenInternal := make(map[string]struct{}, len(ops))
+	for i := range ops {
+		seen := seenUser
+		if ops[i].Internal {
+			seen = seenInternal
+		}
+		key := string(ops[i].Key)
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("%w: internal=%t key=%q", ErrTxnDuplicateKey, ops[i].Internal, ops[i].Key)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
 }
 
 // txnPrep holds the pre-read state and planned outcome for one op.
