@@ -22,6 +22,19 @@ func TestRestoreCutoverOperationCompletesAllPhases(t *testing.T) {
 	require.Contains(t, log, "--action succeed")
 	require.Contains(t, log, "--namespace tenant-a-operations --action succeed")
 	require.NotContains(t, log, "--namespace ops --namespace tenant-a-operations")
+	lastHeartbeat := strings.LastIndex(log, "--action heartbeat")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, strings.LastIndex(log, "--action succeed"), lastHeartbeat)
+}
+
+func TestRestoreCutoverOperationDoesNotCommitAfterFinalHeartbeatFencing(t *testing.T) {
+	f := newCutoverRunnerFixture(t)
+	f.run(t, false, "HEARTBEAT_INTERVAL_SECONDS=5\nHEARTBEAT_FAIL=true", "final heartbeat failed; restore cutover worker was fenced")
+	log := f.log(t)
+	require.Contains(t, log, "--action heartbeat")
+	require.NotContains(t, log, "--action succeed")
+	require.NotContains(t, log, "--action fail")
+	require.NotContains(t, log, "--action retry")
 }
 
 func TestRestoreCutoverOperationPassesFrozenEvidenceToPhases(t *testing.T) {
@@ -314,7 +327,7 @@ func TestRestoreCutoverOperationRejectsInvalidPublicEndpointBeforePhases(t *test
 
 func TestRestoreCutoverOperationStopsWhenHeartbeatIsFenced(t *testing.T) {
 	f := newCutoverRunnerFixture(t)
-	f.run(t, false, "SLEEP_PHASE=prepare", "heartbeat failed")
+	f.run(t, false, "SLEEP_PHASE=prepare\nHEARTBEAT_FAIL=true", "heartbeat failed")
 	log := f.log(t)
 	require.Contains(t, log, "--action heartbeat")
 	require.NotContains(t, log, "--action retry")
@@ -422,7 +435,7 @@ if [[ " $* " == *" --action claim "* ]]; then
   instance="${CLAIM_INSTANCE:-instance-a}"
   namespace="${CLAIM_NAMESPACE:-tenant-a-operations}"
   printf '{"namespace":"%s","name":"cutover-1","uid":"uid-op","resource_version":"1","operation_id":"%s","instance":"%s","type":"RestoreCutover","parameters_sha256":"%s","owner":"worker-a","attempt":1,"lease_until_unix":999999}\n' "$namespace" "$operation_id" "$instance" "$digest"
-elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-true}" == true ]]; then
+elif [[ " $* " == *" --action heartbeat "* && "${HEARTBEAT_FAIL:-false}" == true ]]; then
   exit 1
 else
   echo '{}'

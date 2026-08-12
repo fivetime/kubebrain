@@ -252,8 +252,6 @@ child=0
 heartbeat_pid=0
 fenced=false
 cleanup() {
-  rm -rf "$parameter_capture_dir"
-  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -262,11 +260,22 @@ cleanup() {
     kill "$heartbeat_pid" 2>/dev/null || true
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
+  rm -rf "$parameter_capture_dir"
+  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
 }
 trap cleanup EXIT INT TERM
 
+renew_terminal_lease() {
+  run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+    --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; restore cutover worker was fenced" >&2
+    return 1
+  }
+}
+
 run_phase() {
   local phase="$1" phase_rc
+  rm -f "$parameter_capture_dir/child.done"
   env "${cutover_env[@]}" ACTION="$phase" "$CUTOVER_COMMAND" &
   child=$!
   (
@@ -274,7 +283,7 @@ run_phase() {
       sleep "$heartbeat_interval"
       if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
         --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-        kill "$child" 2>/dev/null || true
+        [[ -e "$parameter_capture_dir/child.done" ]] || kill "$child" 2>/dev/null || true
         exit 75
       fi
     done
@@ -283,6 +292,7 @@ run_phase() {
   set +e
   wait "$child"
   phase_rc=$?
+  : >"$parameter_capture_dir/child.done"
   kill "$heartbeat_pid" 2>/dev/null
   wait "$heartbeat_pid"
   heartbeat_rc=$?
@@ -457,11 +467,13 @@ freeze_cutover_receipt() {
 
 if [[ -e "$rollback_file" ]]; then
   if ! validate_restore_cutover_marker "$rollback_file" ROLLBACK "$source_instance"; then
+    renew_terminal_lease || exit 1
     run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
       --message "restore cutover rollback marker invalid" >/dev/null
     echo "restore cutover rollback marker invalid" >&2
     exit 1
   fi
+  renew_terminal_lease || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover was already rolled back" >/dev/null
   echo "restore cutover was already rolled back" >&2
@@ -484,6 +496,7 @@ else
       echo "operation heartbeat failed; worker was fenced during prepare" >&2
       exit 1
     fi
+    renew_terminal_lease || exit 1
     run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
       --message "restore cutover prepare exited ${rc}" >/dev/null
     echo "restore cutover prepare failed and was requeued" >&2
@@ -520,6 +533,7 @@ if [[ -n "$failure_phase" ]]; then
     fi
     rollback_result="failed(${rollback_rc})"
   fi
+  renew_terminal_lease || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover ${failure_phase} exited ${failure_rc}; rollback ${rollback_result}" >/dev/null
   echo "restore cutover failed during ${failure_phase}; rollback ${rollback_result}" >&2
@@ -527,29 +541,34 @@ if [[ -n "$failure_phase" ]]; then
 fi
 
 [[ -f "$receipt_output" ]] || {
+  renew_terminal_lease || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover receipt missing after complete" >/dev/null
   echo "restore cutover completed without its receipt" >&2
   exit 1
 }
 if ! freeze_cutover_receipt; then
+  renew_terminal_lease || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover receipt invalid after complete" >/dev/null
   echo "restore cutover produced an invalid receipt" >&2
   exit 1
 fi
 if ! validate_cutover_receipt; then
+  renew_terminal_lease || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover receipt invalid after complete" >/dev/null
   echo "restore cutover produced an invalid receipt" >&2
   exit 1
 fi
 if ! receipt_digest="$(validated_cutover_receipt_digest)"; then
+  renew_terminal_lease || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "restore cutover receipt invalid after complete" >/dev/null
   echo "restore cutover produced an invalid receipt" >&2
   exit 1
 fi
+renew_terminal_lease || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "restore traffic cutover completed" >/dev/null
 cleanup

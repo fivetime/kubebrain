@@ -47950,6 +47950,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CAS；最终续租失败时零 retry/succeed mutation。每个 child wait 后先写完成标记，后台 fencing 不向已退出/PID 复用
   的 child 发信号，cleanup 也先回收进程再删除 marker 目录。正向回归固定最后 heartbeat 严格先于 succeed。
 
+- A4465 封闭 RestoreCutover 多阶段切流与 terminal 状态之间的 lease 空窗。旧 worker 为 prepare/cutover/verify/
+  complete/rollback 各自启停 heartbeat，快速四阶段可能没有一次续租；最后还要冻结和重复校验 state、markers 与
+  cutover receipt，陈旧 owner 仍可能 retry/fail/succeed。RED 让完整切流成功且拒绝 heartbeat，旧实现仍成功。
+  新实现要求已有 rollback 的 fail、prepare retry、rollback 后 fail、receipt 缺失/非法的 fail 和最终 succeed
+  全部先同步 owner+attempt heartbeat，续租完整 lease 后才紧邻 terminal CAS；失败时零 retry/fail/succeed mutation。
+  每个 phase wait 后先写 completion marker，后台 fencing 不会误杀已退出/PID 复用的 child，cleanup 先回收进程再
+  删除 marker 目录。正向回归固定最后 heartbeat 先于 succeed，既有 rollback 接管与 rollback 失败路径也纳入回归。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
