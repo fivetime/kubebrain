@@ -131,16 +131,13 @@ func (b *backend) stageDurableRevision(batch storage.BatchWrite, revision uint64
 // the counter alone would create the same externally visible hole this helper
 // is intended to eliminate. Callers must retry the entire freshly constructed
 // batch on ErrCASFailed.
-//
-// This helper is deliberately not wired into the legacy TSO write paths yet:
-// mixing allocators would permit both to choose the same next revision.
 func (b *backend) stageNextDurableRevision(batch storage.BatchWrite, stage func(context.Context, storage.AtomicBatch, uint64) error) *uint64 {
 	return b.stageNextDurableRevisionAfter(batch, 0, stage)
 }
 
-// stageNextDurableRevisionAfter atomically folds a legacy committed floor into
-// the durable counter before allocating. It is used only during the allocator
-// cutover while old TSO writers are serialized with transactional writers.
+// stageNextDurableRevisionAfter atomically folds an observed committed floor
+// into the durable counter before allocating. The floor protects recovery and
+// compatibility states that may be newer than a stale durable counter.
 func (b *backend) stageNextDurableRevisionAfter(batch storage.BatchWrite, floor uint64, stage func(context.Context, storage.AtomicBatch, uint64) error) *uint64 {
 	var allocated uint64
 	key := b.ks.EncodeInternalKey(durableRevisionKey)

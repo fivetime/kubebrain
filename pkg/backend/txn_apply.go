@@ -575,9 +575,8 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 	}
 
-	// Phase 2: fence and bridge any legacy committed/failed TSO slots into the
-	// durable counter before allocating inside the user transaction. Writes are
-	// serialized during this cutover, so no legacy Deal can race this bridge.
+	// Phase 2: fence and fold the observed committed floor into the durable
+	// counter before allocating inside the user transaction.
 	if cerr := b.fenceAdmit(ctx); cerr != nil {
 		return nil, baseRevision, false, cerr
 	}

@@ -48049,6 +48049,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   overflow 继续由 transaction-local durable counter 测试覆盖。TSO 对象仍作为 committed/dealt watermark 兼容视图，
   但不再分配任何公共或私有 mutation revision。
 
+- A4479 从 backend `tso.TSO` 接口和 `naiveTSO` 实现删除已无调用的 `Deal()` allocator API，并删除对应的内存
+  allocator 测试。该类型现在明确只是 durable transaction revision 的本地投影：`AdvanceDealFloor` 记录已在
+  storage transaction 中分配、尚待 event collector 连续发布的最高 revision，`Commit` 发布连续 watermark。
+  revision exhaustion 仍由 `stageNextDurableRevisionAfter` 在 TiKV 原子回调中检查，避免把内存对象重新变成第二
+  allocator。相关 legacy/cutover 注释和 revision-leak 测试描述已同步收敛。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

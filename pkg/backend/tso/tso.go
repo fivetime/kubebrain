@@ -16,31 +16,25 @@ package tso
 
 import (
 	"errors"
-	"math"
 	"sync/atomic"
 )
 
 var ErrRevisionExhausted = errors.New("etcd MVCC revision space exhausted")
 
-// TSO is the controller of continuous revision windows
+// TSO tracks the locally observed and continuously committed revision watermarks.
 type TSO interface {
-
-	// Init set the starting line for dealing
+	// Init sets both watermarks to the recovered durable revision.
 	Init(start uint64)
 
 	// GetRevision returns the max committed continuous revision grow from init revision
 	GetRevision() (maxCommittedRevision uint64)
 
-	// Deal will generate a new revision for txn
-	Deal() (revision uint64, err error)
-
-	// Dealt returns the highest revision handed out by Deal so far. Every
-	// in-flight write holds a revision <= Dealt(); used by watch-overflow
-	// recovery to pick a reset watermark that covers all in-flight events.
+	// Dealt returns the highest transaction revision observed locally. It may be
+	// ahead of the continuously committed watermark while publication is pending.
 	Dealt() (revision uint64)
 
-	// AdvanceDealFloor raises the private allocation cursor without publishing
-	// the value as a committed MVCC revision.
+	// AdvanceDealFloor records a transaction-local durable allocation without
+	// publishing it as continuously committed.
 	AdvanceDealFloor(revision uint64)
 
 	// Commit is used for notifying that txn with revision has been done
@@ -50,7 +44,7 @@ type TSO interface {
 // todo: implement TSOController refer to tidb placement driver
 // 		 https://github.com/tikv/pd/blob/master/server/tso
 
-// naiveTSO is the allocator of revision based on the tso service of kv store
+// naiveTSO is an in-memory projection of durable transaction revision state.
 type naiveTSO struct {
 	committedRevision uint64
 	dealRevision      uint64
@@ -59,19 +53,6 @@ type naiveTSO struct {
 // GetRevision implement TSO interface
 func (n *naiveTSO) GetRevision() (maxCommittedRevision uint64) {
 	return atomic.LoadUint64(&n.committedRevision)
-}
-
-// Deal implement TSO interface
-func (n *naiveTSO) Deal() (revision uint64, err error) {
-	for {
-		current := atomic.LoadUint64(&n.dealRevision)
-		if current >= math.MaxInt64 {
-			return current, ErrRevisionExhausted
-		}
-		if atomic.CompareAndSwapUint64(&n.dealRevision, current, current+1) {
-			return current + 1, nil
-		}
-	}
 }
 
 // Dealt implement TSO interface

@@ -2916,6 +2916,8 @@ revision；tombstone recreate 直接使用一个 revision，不再先制造失�
 旧单键 TSO 写实现和 backend `deal()` 也已物理删除；backend 生产调用图不再调用 `TSO.Deal()`。`write.go` 只保留
 TxnApply 公共入口、共享 mutation encoder、revision-neutral orphan 修复和事务化 DeleteRange。现存 TSO 状态仅提供
 committed/dealt watermark 兼容视图，不承担 mutation revision allocation。
+`tso.TSO` 的 `Deal()` API 已删除，防止后续代码绕过 durable allocator；该对象只投影 observed/continuous
+watermark。revision exhaustion 由 storage transaction 内的 durable counter allocator 检查。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 

@@ -32,11 +32,8 @@ import (
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
-// These tests pin the invariant that every revision consumed from the TSO
-// eventually reaches the event collector, even when the write fails. A dealt
-// revision without a ring-buffer event permanently stalls
-// collectStorageWriteEvents (it consumes revisions strictly one at a time),
-// freezing the committed revision and with it every list and watch.
+// These tests pin that rejected transactional writes allocate no revision and
+// that every effective revision reaches the collector's continuous watermark.
 
 // waitCommitted asserts the committed revision catches up to rev, i.e. the
 // event pipeline is still advancing.
@@ -45,7 +42,7 @@ func waitCommitted(t *testing.T, b Backend, rev uint64) {
 	require.Eventually(t, func() bool {
 		return b.GetCurrentRevision() >= rev
 	}, 5*time.Second, 2*time.Millisecond,
-		"committed revision stuck at %d, want >= %d: a dealt revision leaked out of the event pipeline", b.GetCurrentRevision(), rev)
+		"committed revision stuck at %d, want >= %d", b.GetCurrentRevision(), rev)
 }
 
 func TestUpdateWithHugeClientRevisionDoesNotStallPipeline(t *testing.T) {

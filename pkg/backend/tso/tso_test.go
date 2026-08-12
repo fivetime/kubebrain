@@ -15,23 +15,10 @@
 package tso
 
 import (
-	"math"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
-
-func TestDealRejectsEtcdWireRevisionOverflow(t *testing.T) {
-	n := NewTSO()
-	n.Init(math.MaxInt64 - 1)
-	revision, err := n.Deal()
-	require.NoError(t, err)
-	require.Equal(t, uint64(math.MaxInt64), revision)
-	revision, err = n.Deal()
-	require.ErrorIs(t, err, ErrRevisionExhausted)
-	require.Equal(t, uint64(math.MaxInt64), revision)
-	require.Equal(t, uint64(math.MaxInt64), n.Dealt())
-}
 
 // TestCommitIsMonotonic pins that the committed revision never moves backwards:
 // a stale Commit (e.g. the event collector racing a watch-overflow reset) must
@@ -48,12 +35,11 @@ func TestCommitIsMonotonic(t *testing.T) {
 	require.Equal(t, uint64(200), n.GetRevision())
 }
 
-func TestDealtTracksHighestHandedOut(t *testing.T) {
+func TestDealtTracksHighestObserved(t *testing.T) {
 	n := NewTSO()
 	n.Init(10)
 	require.Equal(t, uint64(10), n.Dealt())
-	r, _ := n.Deal()
-	require.Equal(t, uint64(11), r)
+	n.AdvanceDealFloor(11)
 	require.Equal(t, uint64(11), n.Dealt())
 }
 
@@ -63,7 +49,4 @@ func TestAdvanceDealFloorDoesNotPublishRevision(t *testing.T) {
 	n.AdvanceDealFloor(1000)
 	require.Equal(t, uint64(10), n.GetRevision())
 	require.Equal(t, uint64(1000), n.Dealt())
-	revision, err := n.Deal()
-	require.NoError(t, err)
-	require.Equal(t, uint64(1001), revision)
 }

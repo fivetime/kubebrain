@@ -18,7 +18,7 @@ import "sync"
 
 // revisionPins protects event-log commit markers while an uncertain multi-key
 // transaction is being resolved. Counts make duplicate revisions safe even
-// though the TSO normally allocates each revision only once.
+// when multiple local observers temporarily pin the same durable revision.
 type revisionPins struct {
 	mu   sync.Mutex
 	refs map[uint64]uint
