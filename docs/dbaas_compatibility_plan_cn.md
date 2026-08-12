@@ -47584,6 +47584,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   因此本项提交可重复的负向诊断能力并如实保留“CA overlap + Envoy rollout 下 TTL=3 无损迁移”为开放差距；
   A4426 同 CA leaf rotation 绿色结论不受影响，也不外推到 CA 撤旧、云 LB 或跨 AZ 网络。
 
+- A4428 将 A4427 的负向结果进一步拆分到可归因的发布阶段。第一轮 restart 先等待一个 surge Envoy 与三个
+  old UID 同时存在，再暂停 Deployment；Secret rotation hook 运行期间不启动 250ms EndpointSlice/Pod sampler，
+  hook 返回后才启动采样并恢复 rollout。这样既保留真实 old/new Envoy 重叠，又把 projected Secret 收敛窗口与
+  高频 apiserver 读取隔离。fresh `kubebrain-envoy-ca-a4428` 现场中，三个 KubeBrain Pod 均完成 new-CA server
+  leaf 与 old+new inbound trust bundle 投影，但初次 old-only client root 运行在恢复 rollout 前已过期；该运行
+  同时说明 CA rollover 客户端必须预先分发 old+new roots，否则新 server leaf 上线后的任何重连都会按设计失败。
+  改用 old+new client roots 后，member 4 仍在第一轮以最后响应 TTL=3、服务端 TTL=-1 过期。事件证明首个旧
+  Envoy 直到 14:27:23 才删除，而最后 keepalive 为 14:27:06；KubeBrain/TiKV 日志在 14:27:09 同窗记录密集
+  PD TSO 0.3–1.57 秒延迟及 TiKV context deadline，排除旧 Envoy drain、Endpoint sampler 和不完整 client trust
+  为该次过期的充分原因。对照 `/root/etcd/server/lease/lessor.go` 的 `lessor.Renew`，TTL=3 仍是必须保留的合法
+  边界；当前证据把开放差距收窄为“独立 TiKV/PD 延迟尖峰期间的短租约续期隔离”，不能以提高 TTL 或宣称 CA
+  rollout 绿色掩盖。后续应分别建立无 Envoy rollout 的 Secret-only 基线，并审计 KubeBrain 全局
+  `leaseWriteMu`/到期删除的慢 TiKV I/O 是否阻塞无关 lease renewal。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

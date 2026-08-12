@@ -96,8 +96,11 @@ NodePort 新建的完整 mTLS 握手必须看到不同的服务端叶证书 SHA-
 若 hook 同时轮换 CA，可再原子设置五项 `TLS_ROTATED_CA_FILE`、`TLS_ROTATED_CERT_FILE`、
 `TLS_ROTATED_KEY_FILE`、`TLS_ROTATED_SERVER_NAME`、`TLS_RETIRED_CA_FILE`：全部 rollout 后仅新 CA+新 client
 必须成功，仅旧 CA 必须无法验证新服务端，拒绝探针后新凭据必须再次成功。五项不能部分设置，也不能脱离
-rotation hook。当前 Kind 门禁仍会在该组合下以 TTL=3 暴露真实租约过期，因此它是诊断入口，不是已通过的
-生产发布保证；服务端叶证书同 CA 轮换仍由 A4426 的绿色证据覆盖。
+rotation hook。长期 cohort 的初始 `TLS_CA_FILE` 必须在服务端切换前已包含 old+new roots；只提供 old CA
+会使滚动重连按设计拒绝 new-CA server，不能用于证明无损 CA rollover。即使使用 overlap roots，当前 Kind
+门禁仍会在该组合下以 TTL=3 暴露真实租约过期；A4428 已把高频 EndpointSlice sampler 移出 Secret 投影窗口，
+并证明过期与 TiKV/PD 延迟尖峰同窗，因此它是诊断入口，不是已通过的生产发布保证。服务端叶证书同 CA 轮换
+仍由 A4426 的绿色证据覆盖。
 
 设置全部四个 `TLS_CA_FILE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_SERVER_NAME` 后，同一门禁会把临时
 NodePort 切到 `2380`，通过 clientv3 mTLS 走 Envoy opaque TCP passthrough。四项必须全设且三个文件可读，否则

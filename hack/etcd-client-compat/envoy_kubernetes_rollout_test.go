@@ -151,35 +151,56 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		require.Len(t, oldUIDs, 3)
 		require.Equal(t, oldUIDs, envoyReadyEndpointUIDs(t, contextName, namespace))
 
-		monitorCtx, stopMonitor := context.WithCancel(ctx)
 		var samplesMu sync.Mutex
 		var samples []envoyRolloutSample
-		monitorDone := make(chan struct{})
-		go func() {
-			defer close(monitorDone)
-			// The preStop hook holds every drained Pod for ten seconds. A 250ms
-			// cadence gives forty observation opportunities per replica without
-			// making race-enabled clients compete with twenty kubectl processes/s.
-			ticker := time.NewTicker(250 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-monitorCtx.Done():
-					return
-				case <-ticker.C:
-					ready := envoyReadyEndpointUIDsNoFail(contextName, namespace)
-					present := envoyPresentPodUIDsNoFail(contextName, namespace)
-					if ready != nil && present != nil {
-						samplesMu.Lock()
-						samples = append(samples, envoyRolloutSample{readyUIDs: ready, presentUIDs: present})
-						samplesMu.Unlock()
+		var stopMonitor context.CancelFunc
+		var monitorDone chan struct{}
+		startMonitor := func() {
+			monitorCtx, cancelMonitor := context.WithCancel(ctx)
+			stopMonitor = cancelMonitor
+			monitorDone = make(chan struct{})
+			go func() {
+				defer close(monitorDone)
+				// The preStop hook holds every drained Pod for ten seconds. A 250ms
+				// cadence gives forty observation opportunities per replica without
+				// making race-enabled clients compete with twenty kubectl processes/s.
+				ticker := time.NewTicker(250 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-monitorCtx.Done():
+						return
+					case <-ticker.C:
+						ready := envoyReadyEndpointUIDsNoFail(contextName, namespace)
+						present := envoyPresentPodUIDsNoFail(contextName, namespace)
+						if ready != nil && present != nil {
+							samplesMu.Lock()
+							samples = append(samples, envoyRolloutSample{readyUIDs: ready, presentUIDs: present})
+							samplesMu.Unlock()
+						}
 					}
 				}
-			}
-		}()
+			}()
+		}
 
-		kubectl(t, contextName, namespace, "rollout", "restart", "deployment/kubebrain-envoy")
 		if cycle == 1 && tlsRotationCommand != "" {
+			kubectl(t, contextName, namespace, "rollout", "restart", "deployment/kubebrain-envoy")
+			require.Eventually(t, func() bool {
+				present := envoyPresentPodUIDsNoFail(contextName, namespace)
+				return present != nil && len(present) == 4 && len(intersectStrings(oldUIDs, sortedSet(present))) == 3
+			}, 30*time.Second, 250*time.Millisecond,
+				"rotation overlap requires one surge Envoy Pod before any old Pod is deleted")
+			kubectl(t, contextName, namespace, "rollout", "pause", "deployment/kubebrain-envoy")
+			// Keep the endpoint sampler out of the potentially long Secret projection
+			// hook. Besides reducing apiserver pressure, this gives a failed TTL=3
+			// renewal an unambiguous boundary: no sampler is running and all three old
+			// Envoys still exist until the hook has returned.
+			rolloutPaused := true
+			t.Cleanup(func() {
+				if rolloutPaused {
+					_, _ = kubectlOutput(contextName, namespace, "rollout", "resume", "deployment/kubebrain-envoy")
+				}
+			})
 			command := exec.CommandContext(ctx, tlsRotationCommand)
 			command.Env = append(os.Environ(),
 				"KUBEBRAIN_ENVOY_ROLLOUT_HOOK_CONTEXT="+contextName,
@@ -194,6 +215,12 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 			require.Greater(t, len(overlapUIDs), len(intersectStrings(oldUIDs, overlapUIDs)),
 				"TLS rotation command must finish after at least one new Envoy Pod has appeared")
 			t.Logf("TLS rotation overlap command completed during rollout cycle 1: %s", strings.TrimSpace(string(output)))
+			startMonitor()
+			kubectl(t, contextName, namespace, "rollout", "resume", "deployment/kubebrain-envoy")
+			rolloutPaused = false
+		} else {
+			startMonitor()
+			kubectl(t, contextName, namespace, "rollout", "restart", "deployment/kubebrain-envoy")
 		}
 		kubectl(t, contextName, namespace, "rollout", "status", "deployment/kubebrain-envoy", "--timeout=150s")
 		require.Eventually(t, func() bool {
