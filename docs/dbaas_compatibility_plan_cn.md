@@ -48055,6 +48055,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision exhaustion 仍由 `stageNextDurableRevisionAfter` 在 TiKV 原子回调中检查，避免把内存对象重新变成第二
   allocator。相关 legacy/cutover 注释和 revision-leak 测试描述已同步收敛。
 
+- A4480 删除 backend 单事件 `notify(...)` 入口，event ring 现在只有 `notifyBatch(...)` 一个生产 API；TxnApply
+  成功发布完整 transaction event batch，uncertain resolver 发布完整 committed batch 或完整 invalid placeholder
+  batch。watch overflow 测试使用 test-only 单事件构造器，不再让生产代码暴露可逐 key 发布事务的接口；zero
+  revision 注释也改为 transaction-local allocator callback 尚未执行的语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

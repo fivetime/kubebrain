@@ -22,7 +22,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+
+	"github.com/kubewharf/kubebrain/pkg/backend/common"
 )
+
+func notifyTestEvent(b *backend, key, value []byte, revision, previousRevision uint64, valid bool, eventType proto.Event_EventType, err error) {
+	b.notifyBatch([]*common.WatchEvent{{
+		Revision: revision, PrevRevision: previousRevision, Valid: valid,
+		ResourceVerb: eventType, Key: key, Value: value, Err: err,
+	}})
+}
 
 // TestWatchOverflowRecoversWithoutRegressOrStall pins the fixes for the
 // watch-overflow races: the reset must not move the committed revision backwards
@@ -40,7 +49,7 @@ func TestWatchOverflowRecoversWithoutRegressOrStall(t *testing.T) {
 
 	// Force an overflow: an event whose revision is a full ring capacity ahead.
 	over := start + watchersChanCapacity + 5
-	b.notify(s.ctx, []byte(prefix+"/x"), []byte("v"), over, 0, true, proto.Event_PUT, nil)
+	notifyTestEvent(b, []byte(prefix+"/x"), []byte("v"), over, 0, true, proto.Event_PUT, nil)
 
 	cur := b.GetCurrentRevision()
 	require.GreaterOrEqual(t, cur, start, "committed revision must never regress")
@@ -48,7 +57,7 @@ func TestWatchOverflowRecoversWithoutRegressOrStall(t *testing.T) {
 
 	// A stale event (revision < current) must be dropped, not regress the
 	// revision and not wedge the collector.
-	b.notify(s.ctx, []byte(prefix+"/stale"), []byte("v"), start+7, 0, true, proto.Event_PUT, nil)
+	notifyTestEvent(b, []byte(prefix+"/stale"), []byte("v"), start+7, 0, true, proto.Event_PUT, nil)
 	require.Equal(t, over, b.GetCurrentRevision(), "a stale event must not move the committed revision backwards")
 
 	// The pipeline must recover: a fresh write is delivered and the committed
@@ -81,10 +90,10 @@ func TestConcurrentNotifyDuringOverflowNoRaceNoStall(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perG; i++ {
 				rev := start + uint64(g*perG+i) + 1
-				b.notify(s.ctx, []byte(prefix+"/c"), []byte("v"), rev, 0, true, proto.Event_PUT, nil)
+				notifyTestEvent(b, []byte(prefix+"/c"), []byte("v"), rev, 0, true, proto.Event_PUT, nil)
 				if i%50 == 0 {
 					// occasionally trigger an overflow reset
-					b.notify(s.ctx, []byte(prefix+"/c"), []byte("v"),
+					notifyTestEvent(b, []byte(prefix+"/c"), []byte("v"),
 						b.GetCurrentRevision()+watchersChanCapacity+uint64(g)+1, 0, true, proto.Event_PUT, nil)
 				}
 			}
@@ -94,7 +103,7 @@ func TestConcurrentNotifyDuringOverflowNoRaceNoStall(t *testing.T) {
 
 	// Force a clean overflow so the current revision covers every dealt revision,
 	// then a fresh write must be delivered contiguously — proving no stall.
-	b.notify(s.ctx, []byte(prefix+"/c"), []byte("v"), b.GetCurrentRevision()+watchersChanCapacity+1, 0, true, proto.Event_PUT, nil)
+	notifyTestEvent(b, []byte(prefix+"/c"), []byte("v"), b.GetCurrentRevision()+watchersChanCapacity+1, 0, true, proto.Event_PUT, nil)
 	r, err := s.backend.Create(s.ctx, &proto.CreateRequest{Key: []byte(prefix + "/recover"), Value: []byte("v")})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {

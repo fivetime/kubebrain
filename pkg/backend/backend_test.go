@@ -1744,7 +1744,7 @@ func TestWatchEventOverflowResetsWatchState(t *testing.T) {
 
 	revision := b.GetCurrentRevision() + watchersChanCapacity
 	s.ast.NotPanics(func() {
-		b.notify(s.ctx, []byte(prefix+"/overflow"), []byte("value"), revision, 0, true, proto.Event_PUT, nil)
+		notifyTestEvent(b, []byte(prefix+"/overflow"), []byte("value"), revision, 0, true, proto.Event_PUT, nil)
 	})
 	s.ast.Equal(revision, b.GetCurrentRevision())
 	s.ast.True(b.watchCache.FindEvents(revision).empty)

@@ -15,18 +15,16 @@
 package backend
 
 import (
-	"context"
 	"sync"
 
 	"k8s.io/klog/v2"
-
-	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/common"
 )
 
 // This file holds the watch-event RING: the per-revision slot buffer and the
-// PRODUCER side (notify / notifyBatch fill a slot; handleWatchEventOverflow
+// PRODUCER side (notifyBatch fills a whole transaction slot;
+// handleWatchEventOverflow
 // resets the ring when the collector falls too far behind). The CONSUMER side
 // — collectStorageWriteEvents, which drains slots in revision order — lives in
 // backend.go next to the backend run loop.
@@ -67,32 +65,16 @@ func (s *watchEventSlot) reset() {
 	s.events = nil
 }
 
-// notify publishes a single watch event into the ring. ctx is retained for
-// caller symmetry (unused). It is a one-element notifyBatch: both share the
-// same stale-drop / overflow / append machinery so the ring's ordering
-// invariants have a single implementation.
-func (b *backend) notify(ctx context.Context,
-	key []byte, val []byte, revision, preRevision uint64, valid bool, eventType proto.Event_EventType, err error) {
-	b.notifyBatch([]*common.WatchEvent{{
-		Revision:     revision,
-		PrevRevision: preRevision,
-		Valid:        valid,
-		ResourceVerb: eventType,
-		Key:          key,
-		Value:        val,
-		Err:          err,
-	}})
-}
-
+// notifyBatch is the only event-ring producer. All events from one storage
+// transaction must be supplied together at their shared revision.
 func (b *backend) notifyBatch(events []*common.WatchEvent) {
 	if len(events) == 0 {
 		return
 	}
 	revision := events[0].Revision
 	if revision == 0 {
-		// No revision was consumed (e.g. update's pre-deal metadata Get failed,
-		// #44): nothing to fill in the ring, drop. Not an anomalous ring fill but
-		// an expected zero-consumption failure (review #51).
+		// The transaction failed before its durable allocator callback ran, so no
+		// revision exists and there is no ring slot to fill.
 		b.metricCli.EmitCounter("watch.event.zero_revision.dropped", 1)
 		return
 	}
@@ -155,8 +137,8 @@ func (b *backend) handleWatchEventOverflow(revision uint64) {
 	}
 	b.metricCli.EmitCounter("watch.event.buffer.full", 1)
 
-	// Jump to the highest dealt revision, not the triggering revision: every
-	// in-flight event carries a revision <= Dealt(), so after wiping all slots
+	// Jump to the highest locally observed revision, not the triggering revision:
+	// every in-flight event carries a revision <= Dealt(), so after wiping all slots
 	// nothing appended-but-needed is lost, and the collector recovers
 	// contiguously from the next write (Dealt()+1). Appends are blocked here, so
 	// no revision above the target can be sitting in a slot.
