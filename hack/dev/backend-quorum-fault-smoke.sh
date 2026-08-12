@@ -24,13 +24,19 @@ PD_NETEM_DELAY_MS="${PD_NETEM_DELAY_MS:-250}"
 PD_NETEM_JITTER_MS="${PD_NETEM_JITTER_MS:-50}"
 PD_NETEM_LOSS_PERCENT="${PD_NETEM_LOSS_PERCENT:-2}"
 PD_NETEM_RATE="${PD_NETEM_RATE:-20mbit}"
+TIKV_NETEM_HOLD_SECONDS="${TIKV_NETEM_HOLD_SECONDS:-30}"
+TIKV_NETEM_DELAY_MS="${TIKV_NETEM_DELAY_MS:-250}"
+TIKV_NETEM_JITTER_MS="${TIKV_NETEM_JITTER_MS:-50}"
+TIKV_NETEM_LOSS_PERCENT="${TIKV_NETEM_LOSS_PERCENT:-2}"
+TIKV_NETEM_RATE="${TIKV_NETEM_RATE:-20mbit}"
 partition_pod_ip=""
 partition_tag=""
 dual_partition_pod_ips=()
 dual_partition_tags=()
 dual_partition_node_containers=()
-pd_netem_nodes=()
-pd_netem_pids=()
+backend_netem_component=""
+backend_netem_nodes=()
+backend_netem_pids=()
 
 if ! [[ "$RECOVERY_SETTLE_SECONDS" =~ ^[0-9]+$ ]]; then
   echo "RECOVERY_SETTLE_SECONDS must be a non-negative integer" >&2
@@ -129,96 +135,120 @@ cleanup_dual_partition_member() {
   fi
 }
 
-cleanup_pd_netem() {
+cleanup_backend_netem() {
   local cleanup_failed=0 index node pid
-  for index in "${!pd_netem_nodes[@]}"; do
-    node="${pd_netem_nodes[$index]}"
-    pid="${pd_netem_pids[$index]}"
+  for index in "${!backend_netem_nodes[@]}"; do
+    node="${backend_netem_nodes[$index]}"
+    pid="${backend_netem_pids[$index]}"
     docker exec "$node" nsenter -t "$pid" -n tc qdisc del dev eth0 root >/dev/null 2>&1 || true
     if docker exec "$node" nsenter -t "$pid" -n tc qdisc show dev eth0 2>/dev/null | grep -q ' netem '; then
       cleanup_failed=1
     fi
   done
   if (( cleanup_failed != 0 )); then
-    echo "failed to remove PD netem rules" >&2
+    echo "failed to remove ${backend_netem_component:-backend} netem rules" >&2
     return 1
   fi
 }
 
-degrade_pd_cross_node_network() {
+degrade_backend_cross_node_network() {
+  local component="$1"
+  local hold_seconds="$2"
+  local delay_ms="$3"
+  local jitter_ms="$4"
+  local loss_percent="$5"
+  local rate="$6"
+  local component_label
   local pods_json healthy pod node sandbox pid qdisc index
-  local -a pd_pods pd_nodes
-  if [[ ! "$PD_NETEM_HOLD_SECONDS" =~ ^[1-9][0-9]*$ ]] || (( PD_NETEM_HOLD_SECONDS > 300 )); then
-    echo "PD_NETEM_HOLD_SECONDS must be an integer in [1,300]" >&2
+  local -a backend_pods backend_nodes
+  case "$component" in
+    pd) component_label="PD" ;;
+    tikv) component_label="TiKV" ;;
+    *) echo "invalid backend netem component: $component" >&2; exit 1 ;;
+  esac
+  if [[ ! "$hold_seconds" =~ ^[1-9][0-9]*$ ]] || (( hold_seconds > 300 )); then
+    echo "${component_label} netem hold seconds must be an integer in [1,300]" >&2
     exit 1
   fi
-  if [[ ! "$PD_NETEM_DELAY_MS" =~ ^[1-9][0-9]*$ ]] || (( PD_NETEM_DELAY_MS > 5000 )) ||
-    [[ ! "$PD_NETEM_JITTER_MS" =~ ^[0-9]+$ ]] || (( PD_NETEM_JITTER_MS > PD_NETEM_DELAY_MS )) ||
-    [[ ! "$PD_NETEM_LOSS_PERCENT" =~ ^([0-9]|[1-9][0-9])$ ]]; then
-    echo "PD netem delay must be in [1,5000]ms, jitter in [0,delay]ms, and loss in [0,99]%" >&2
+  if [[ ! "$delay_ms" =~ ^[1-9][0-9]*$ ]] || (( delay_ms > 5000 )) ||
+    [[ ! "$jitter_ms" =~ ^[0-9]+$ ]] || (( jitter_ms > delay_ms )) ||
+    [[ ! "$loss_percent" =~ ^([0-9]|[1-9][0-9])$ ]]; then
+    echo "${component_label} netem delay must be in [1,5000]ms, jitter in [0,delay]ms, and loss in [0,99]%" >&2
     exit 1
   fi
-  if [[ ! "$PD_NETEM_RATE" =~ ^[1-9][0-9]*(kbit|mbit|gbit)$ ]]; then
-    echo "PD_NETEM_RATE must be a positive kbit, mbit, or gbit value" >&2
+  if [[ ! "$rate" =~ ^[1-9][0-9]*(kbit|mbit|gbit)$ ]]; then
+    echo "${component_label} netem rate must be a positive kbit, mbit, or gbit value" >&2
     exit 1
   fi
   pods_json="$(kubectl -n "$TIDB_NAMESPACE" get pods \
-    -l "app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=pd" -o json)"
-  mapfile -t pd_pods < <(jq -r '.items | sort_by(.metadata.name)[] | .metadata.name' <<<"$pods_json")
-  mapfile -t pd_nodes < <(jq -r '.items[].spec.nodeName' <<<"$pods_json" | sort -u)
+    -l "app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=${component}" -o json)"
+  mapfile -t backend_pods < <(jq -r '.items | sort_by(.metadata.name)[] | .metadata.name' <<<"$pods_json")
+  mapfile -t backend_nodes < <(jq -r '.items[].spec.nodeName' <<<"$pods_json" | sort -u)
   healthy="$(jq -r '(.items | length) == 3 and all(.items[];
     .status.phase == "Running" and
     ((.status.containerStatuses // []) | length) > 0 and
     all(.status.containerStatuses[]; .ready == true))' <<<"$pods_json")"
-  if (( ${#pd_pods[@]} != 3 || ${#pd_nodes[@]} != 3 )) || [[ "$healthy" != "true" ]]; then
-    echo "refusing PD netem: need three healthy PD Pods on three distinct nodes" >&2
+  if (( ${#backend_pods[@]} != 3 || ${#backend_nodes[@]} != 3 )) || [[ "$healthy" != "true" ]]; then
+    echo "refusing ${component_label} netem: need three healthy ${component_label} Pods on three distinct nodes" >&2
     exit 1
   fi
 
-  pd_netem_nodes=()
-  pd_netem_pids=()
-  for pod in "${pd_pods[@]}"; do
+  backend_netem_component="$component_label"
+  backend_netem_nodes=()
+  backend_netem_pids=()
+  for pod in "${backend_pods[@]}"; do
     node="$(jq -er --arg pod "$pod" '.items[] | select(.metadata.name == $pod) | .spec.nodeName' <<<"$pods_json")"
     if [[ "$(docker inspect "$node" --format '{{.HostConfig.Privileged}}')" != "true" ]]; then
-      echo "refusing PD netem: node container $node is not privileged" >&2
+      echo "refusing ${component_label} netem: node container $node is not privileged" >&2
       exit 1
     fi
     sandbox="$(docker exec "$node" sh -c "crictl pods --name '$pod' -q | head -1")"
     pid="$(docker exec "$node" crictl inspectp "$sandbox" | jq -er '.info.pid')"
     if [[ ! "$pid" =~ ^[1-9][0-9]*$ ]]; then
-      echo "refusing PD netem: invalid sandbox PID for $pod" >&2
+      echo "refusing ${component_label} netem: invalid sandbox PID for $pod" >&2
       exit 1
     fi
     qdisc="$(docker exec "$node" nsenter -t "$pid" -n tc qdisc show dev eth0)"
     if grep -q ' netem ' <<<"$qdisc"; then
-      echo "refusing PD netem: $pod already has a netem qdisc" >&2
+      echo "refusing ${component_label} netem: $pod already has a netem qdisc" >&2
       exit 1
     fi
-    pd_netem_nodes+=("$node")
-    pd_netem_pids+=("$pid")
+    backend_netem_nodes+=("$node")
+    backend_netem_pids+=("$pid")
   done
 
-  trap cleanup_pd_netem EXIT
-  trap 'cleanup_pd_netem; exit 130' INT
-  trap 'cleanup_pd_netem; exit 143' TERM
-  for index in "${!pd_netem_nodes[@]}"; do
-    docker exec "${pd_netem_nodes[$index]}" nsenter -t "${pd_netem_pids[$index]}" -n \
-      tc qdisc replace dev eth0 root netem delay "${PD_NETEM_DELAY_MS}ms" "${PD_NETEM_JITTER_MS}ms" \
-      loss "${PD_NETEM_LOSS_PERCENT}%" rate "$PD_NETEM_RATE"
-    qdisc="$(docker exec "${pd_netem_nodes[$index]}" nsenter -t "${pd_netem_pids[$index]}" -n \
+  trap cleanup_backend_netem EXIT
+  trap 'cleanup_backend_netem; exit 130' INT
+  trap 'cleanup_backend_netem; exit 143' TERM
+  for index in "${!backend_netem_nodes[@]}"; do
+    docker exec "${backend_netem_nodes[$index]}" nsenter -t "${backend_netem_pids[$index]}" -n \
+      tc qdisc replace dev eth0 root netem delay "${delay_ms}ms" "${jitter_ms}ms" \
+      loss "${loss_percent}%" rate "$rate"
+    qdisc="$(docker exec "${backend_netem_nodes[$index]}" nsenter -t "${backend_netem_pids[$index]}" -n \
       tc qdisc show dev eth0)"
     if ! grep -q ' netem ' <<<"$qdisc"; then
-      echo "PD netem was not installed on ${pd_pods[$index]}" >&2
+      echo "${component_label} netem was not installed on ${backend_pods[$index]}" >&2
       return 1
     fi
   done
-  echo "PD cross-node netem active: delay=${PD_NETEM_DELAY_MS}ms jitter=${PD_NETEM_JITTER_MS}ms loss=${PD_NETEM_LOSS_PERCENT}% rate=$PD_NETEM_RATE"
-  sleep "$PD_NETEM_HOLD_SECONDS"
-  cleanup_pd_netem
-  pd_netem_nodes=()
-  pd_netem_pids=()
+  echo "${component_label} cross-node netem active: delay=${delay_ms}ms jitter=${jitter_ms}ms loss=${loss_percent}% rate=$rate"
+  sleep "$hold_seconds"
+  cleanup_backend_netem
+  backend_netem_component=""
+  backend_netem_nodes=()
+  backend_netem_pids=()
   trap - EXIT INT TERM
-  echo "PD cross-node netem removed"
+  echo "${component_label} cross-node netem removed"
+}
+
+degrade_pd_cross_node_network() {
+  degrade_backend_cross_node_network pd "$PD_NETEM_HOLD_SECONDS" "$PD_NETEM_DELAY_MS" \
+    "$PD_NETEM_JITTER_MS" "$PD_NETEM_LOSS_PERCENT" "$PD_NETEM_RATE"
+}
+
+degrade_tikv_cross_node_network() {
+  degrade_backend_cross_node_network tikv "$TIKV_NETEM_HOLD_SECONDS" "$TIKV_NETEM_DELAY_MS" \
+    "$TIKV_NETEM_JITTER_MS" "$TIKV_NETEM_LOSS_PERCENT" "$TIKV_NETEM_RATE"
 }
 
 partition_pd_quorum() {
@@ -907,6 +937,12 @@ if [[ "${1:-}" == "--degrade-pd-all-cross-node" ]]; then
   degrade_pd_cross_node_network
   exit 0
 fi
+if [[ "${1:-}" == "--degrade-tikv-all-cross-node" ]]; then
+  need docker
+  need jq
+  degrade_tikv_cross_node_network
+  exit 0
+fi
 if [[ "${1:-}" == "--partition-tikv-member" ]]; then
   need docker
   need jq
@@ -938,7 +974,7 @@ if [[ "${1:-}" == "--partition-tikv-quorum-soak" ]]; then
   exit 0
 fi
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-pd-all-cross-node-restart-kubebrain|--partition-pd-all-cross-node-staged-restart-kubebrain|--degrade-pd-all-cross-node|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
+  echo "usage: $0 [--partition-pd-leader|--partition-pd-leader-outbound|--partition-pd-leader-cross-node-outbound|--partition-pd-quorum|--partition-pd-quorum-soak|--partition-pd-quorum-cross-node|--partition-pd-quorum-cross-node-soak|--partition-pd-all-cross-node|--partition-pd-all-cross-node-soak|--partition-pd-all-cross-node-restart-kubebrain|--partition-pd-all-cross-node-staged-restart-kubebrain|--degrade-pd-all-cross-node|--degrade-tikv-all-cross-node|--partition-tikv-member|--partition-tikv-member-cross-node|--partition-tikv-quorum|--partition-tikv-quorum-cross-node|--partition-tikv-quorum-soak]" >&2
   exit 2
 fi
 
@@ -1291,6 +1327,12 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
     need jq
     run_quorum_test "cross-node TiKV member network partition" "$self --partition-tikv-member-cross-node"
     ;;
+  tikv-cross-node-degraded-network)
+    need docker
+    need jq
+    run_quorum_test "cross-node TiKV latency, loss, and bandwidth degradation" \
+      "$self --degrade-tikv-all-cross-node"
+    ;;
   tikv-quorum-loss)
     need docker
     need jq
@@ -1303,7 +1345,7 @@ kubectl -n '$TIDB_NAMESPACE' wait --for=condition=Ready 'pod/$tikv_pod' --timeou
       "$self --partition-tikv-quorum-cross-node"
     ;;
   *)
-    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, tikv-network-partition, tikv-cross-node-partition, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
+    echo "BACKEND_FAULT_MODE must be pod-replacement, pd-network-partition, pd-asymmetric-partition, pd-cross-node-asymmetric-partition, pd-quorum-loss, pd-cross-node-quorum-loss, pd-cross-node-total-loss, pd-cross-node-total-loss-restart, pd-cross-node-staged-recovery-restart, pd-cross-node-total-loss-lease-expiry, pd-cross-node-total-loss-lease-expiry-burst, pd-cross-node-total-loss-session-overlap, pd-cross-node-total-loss-session-long-deadline, pd-cross-node-total-loss-lease-revoke-long-deadline, pd-cross-node-total-loss-lease-keepalive-long-deadline, pd-cross-node-total-loss-kv-write-long-deadline, pd-cross-node-total-loss-compact-long-deadline, pd-cross-node-degraded-network, tikv-network-partition, tikv-cross-node-partition, tikv-cross-node-degraded-network, tikv-quorum-loss, or tikv-cross-node-quorum-loss; got $BACKEND_FAULT_MODE" >&2
     exit 1
     ;;
 esac

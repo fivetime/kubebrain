@@ -675,9 +675,22 @@ func TestBackendPDCrossNodeDegradedNetworkUsesPodNamespacesAndCleansUp(t *testin
 	require.Contains(t, script, `--degrade-pd-all-cross-node`)
 	require.Contains(t, script, `crictl inspectp "$sandbox"`)
 	require.Contains(t, script, `tc qdisc replace dev eth0 root netem delay`)
-	require.Contains(t, script, `loss "${PD_NETEM_LOSS_PERCENT}%" rate "$PD_NETEM_RATE"`)
+	require.Contains(t, script, `loss "${loss_percent}%" rate "$rate"`)
 	require.Contains(t, script, `tc qdisc del dev eth0 root`)
 	require.Contains(t, script, `run_quorum_test "cross-node PD latency, loss, and bandwidth degradation"`)
+	require.NotContains(t, script, "eval ")
+}
+
+func TestBackendTiKVCrossNodeDegradedNetworkUsesEveryStore(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-degraded-network)`)
+	require.Contains(t, script, `--degrade-tikv-all-cross-node`)
+	require.Contains(t, script, `degrade_backend_cross_node_network tikv "$TIKV_NETEM_HOLD_SECONDS"`)
+	require.Contains(t, script, `app.kubernetes.io/component=${component}`)
+	require.Contains(t, script, `need three healthy ${component_label} Pods on three distinct nodes`)
+	require.Contains(t, script, `run_quorum_test "cross-node TiKV latency, loss, and bandwidth degradation"`)
 	require.NotContains(t, script, "eval ")
 }
 

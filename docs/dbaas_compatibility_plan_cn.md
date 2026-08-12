@@ -46870,6 +46870,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项关闭已验证强度下 PD 全成员跨节点 delay/jitter/loss/rate 组合的执行证据，不冒充独立宿主/AZ，
   也不关闭 conntrack/NAT、underlay failure、更高丢包、分钟级退化或 TiKV 链路 netem，后者继续开放。
 
+- A4391 将 A4390 的同强度组合故障从 PD control path 推进到 TiKV data/raft path，并继续对照 upstream
+  `tests/integration/clientv3/connectivity/network_partition_test.go` 的 Put/Delete/Txn、长短 deadline
+  linearizable Get 错误与恢复契约。原 PD 专用 namespace 注入器已抽成 component 参数化原语，PD/TiKV
+  分别保留独立 hold/delay/jitter/loss/rate 配置，但共享三 Pod/三 node/Ready 前置检查、sandbox PID 解析、
+  qdisc 安装确认和 trap 后置清理，避免第二套故障代码产生不同的残留边界。新增
+  `tikv-cross-node-degraded-network`，默认同样对全部三个 store 同时施加 `250ms +/- 50ms`、`2%` 丢包、
+  `20mbit` 限速 30 秒；官方 client/v3 八 worker 必须在退化窗口仍有正向 Put/Txn/Get 进展，并在恢复后
+  逐键写读闭合，DeadlineExceeded/Unavailable/leadership change 只作为预期瞬态结果而非测试成功本身。
+  2026-08-12 disposable `kubebrain-tikv-netem` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、22379/22380 拓扑通过，完整门禁 35.94 秒。该强度已接近本地拓扑可用性边缘：退化窗口
+  大量请求超时或因 leader 切换返回 Unavailable，但仍有 2 次数据操作在规则生效期间完成；清障后八键
+  全部恢复写读。三个 KubeBrain、三个 TiKV 均 Ready/零重启，TiDBCluster Ready；`kb-pd-1` 唯一一次
+  restart 于 `00:32:14Z` 初始部署期结束，早于 `00:33:34Z` 门禁。三个 TiKV namespace 最终均恢复
+  `qdisc noqueue`。同集群再运行重构后的 PD 门禁 34.45 秒通过，退化窗口完成 178 次操作，证明共用原语
+  没有回退 A4390。本项关闭已验证强度下 TiKV 全 store 跨节点 delay/jitter/loss/rate 组合证据；独立宿主/
+  AZ、conntrack/NAT、underlay、更高丢包与分钟/小时级退化继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
