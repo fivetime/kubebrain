@@ -60,10 +60,10 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 case "$TEST_SCOPE" in
   all)
-    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential$'
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLeaseRevoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)Differential$'
     ;;
   lease-revoke-cross-replica)
-    test_pattern='^TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential$'
+    test_pattern='^TestLeaseRevoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant)Differential$'
     ;;
   *)
     echo "TEST_SCOPE must be all or lease-revoke-cross-replica" >&2

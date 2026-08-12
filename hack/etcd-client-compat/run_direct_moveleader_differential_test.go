@@ -19,7 +19,8 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "for index in 0 1 2")
 	require.Contains(t, string(script), `--name "reference-${index}"`)
 	require.Contains(t, string(script), "127.0.0.1:12379,127.0.0.1:22379,127.0.0.1:32379")
-	require.Contains(t, string(script), "^TestLeaseRevokeResponseLossReplayAcrossReplicasDifferential$")
+	require.Contains(t, string(script), "ResponseLossReplayAcrossReplicas")
+	require.Contains(t, string(script), "ReplayAfterSameIDRegrant")
 }
 
 func TestDirectMoveLeaderDifferentialRunnerRejectsInvalidScopeBeforeDependencies(t *testing.T) {

@@ -47079,6 +47079,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在另一 KubeBrain 副本上保持上游错误与单次删除语义；同 ID 快速 regrant 与旧请求 replay 竞争、真实
   外部 L4/L7 负载均衡器连接迁移，以及业务层通用幂等 request token 仍保持开放。
 
+- A4402 实测并固定 A4401 最后保留的“同 ID 快速 regrant 与旧 Revoke replay”边界，但结论不是增加
+  KubeBrain 私有代际 fence。源码审计 `/root/etcd/server/lease/lessor.go::Grant/Revoke`、
+  `server/etcdserver/apply/backend.go::LeaseRevoke` 与 `client/v3/retry.go` 后确认：公开
+  `LeaseRevokeRequest` 只有 ID，没有 generation 或 request token；old request 真正 apply 时会查当前
+  `leaseMap[id]`。因此第一次 Revoke 已提交但响应丢失后，若应用在 clientv3 自动重放前以相同显式 ID
+  regrant，旧调用会成功撤销 replacement lease，而不是返回 `LeaseNotFound`。为避免把更强但不兼容的语义
+  误实现到 TiKV metadata，新增 `TestLeaseRevokeReplayAfterSameIDRegrantDifferential`：replica 0 提交第一次
+  Revoke 并丢响应，replica 2 先确认旧 lease 缺失，再显式重授同一 ID、写入只属于新代际的 attached key；
+  bridge 随后强制旧 client 连到 replica 1 重放。reference etcd 与 KubeBrain 都必须让旧 Revoke 返回成功，
+  同时删除原 key 与 replacement key、再次移除 lease；从第一次 Revoke 前计，三个 user mutation（旧 key
+  删除、新 key Put、新 key 删除）必须恰好推进 revision 3。三成员 runner 的
+  `lease-revoke-cross-replica` scope 现同时包含 A4401/A4402，不允许只复跑较安全的 missing-ID 分支。
+  2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 构建三成员 reference，并在 disposable
+  `kubebrain-regrant-replay` 独立 3 PD/3 TiKV/3 KubeBrain 上通过；两项组合门禁 0.664 秒，A4402 双端均
+  明确先记录 attempt 0 `Unavailable/EOF`，随后旧调用成功。此项把兼容边界转化为 DBaaS 使用约束：收到
+  不确定 Revoke 后，调用方必须先以 TTL/Range/List 对账，并在 client 调用已终止前禁止复用该显式 ID；
+  若业务需要跨请求幂等和代际隔离，必须使用平台层 request token/资源 generation，不能改变 etcd v3 wire
+  语义。真实外部 L4/L7 连接迁移与平台通用幂等 request token 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
