@@ -48036,6 +48036,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   有效 create/update/delete 精确得到 `base+1..base+3`，中间三次无效 mutation revision 不变，最终 durable
   counter 等于 delete revision。旧私有写 helper 和 async retry 尚为故障回归保留，但已不在公共 RPC 调用图中。
 
+- A4477 删除已无生产入口的单键 `asyncFifoRetry` worker、队列实现和 compact pin。TiKV uncertain commit 只允许由
+  transaction event-log marker 按整笔事务判定：已提交则以原 revision 一次发布，未提交则发布 invalid placeholder
+  让 collector 越过该 revision，禁止逐 key 分配新 revision 重写。collector 不再识别或持有 legacy uncertain
+  event，compact 只受 whole-transaction resolution pin 与 snapshot pin 限制。旧单键写 helper 仍待后续物理删除；
+  TSO 当前仅保留 committed/dealt watermark 兼容视图和少量旧 helper，不再承担公共 mutation revision 分配。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

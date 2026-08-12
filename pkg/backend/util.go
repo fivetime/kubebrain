@@ -32,12 +32,6 @@ var (
 	noPrefixEnd    = []byte{0}
 )
 
-// retry config
-var (
-	retryInterval = 5 * time.Second
-	checkInterval = time.Second
-)
-
 const (
 	compactKey      = "compact_key"
 	unaryRpcTimeout = 1 * time.Second

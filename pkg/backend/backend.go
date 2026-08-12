@@ -31,7 +31,6 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
-	"github.com/kubewharf/kubebrain/pkg/backend/retry"
 	"github.com/kubewharf/kubebrain/pkg/backend/scanner"
 	"github.com/kubewharf/kubebrain/pkg/backend/tso"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
@@ -341,7 +340,6 @@ type backend struct {
 
 	scanner scanner.Scanner
 
-	asyncFifoRetry retry.AsyncFifoRetry
 	// uncertainTxnPins prevents logical/physical compaction from deleting the
 	// event-log markers used to resolve commit-undetermined multi-key txns.
 	uncertainTxnPins revisionPins
@@ -619,18 +617,6 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	// dropped into an O(all-keys) re-list (#34).
 	b.watcherHub.ringLookup = b.watchCache.FindEvents
 
-	asyncRetryConfig := retry.Config{
-		UnaryTimeout:       unaryRpcTimeout,
-		CheckInterval:      checkInterval,
-		RetryInterval:      retryInterval,
-		Tombstone:          tombStoneBytes,
-		DurableRevisionKey: b.ks.EncodeInternalKey(durableRevisionKey),
-		WriteLocker:        &b.revisionWriteMu,
-		Admit:              b.withCurrentLeadershipEpoch,
-		Fence:              b.fenceAdmit,
-	}
-	b.asyncFifoRetry = retry.NewAsyncFifoRetry(b.ks, b.coder, b.kv, b.metricCli, b.tso, b.getLatestInternalVal, b.notify, asyncRetryConfig)
-
 	// write into watch chan, trigger by create/ update/ delete method in storage interface
 	b.startWorker(b.collectStorageWriteEvents)
 	b.startWorker(b.runDurableRevisionPersister)
@@ -638,8 +624,6 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 
 	// broadcast fan-out to all subscribed watchers
 	b.startWorker(func(ctx context.Context) { b.watcherHub.Stream(ctx, b.watchChan) })
-
-	b.startWorker(b.asyncFifoRetry.Run)
 
 	// drain background physical-compaction requests scheduled by CompactAsync
 	b.startWorker(b.runCompactor)
@@ -762,18 +746,12 @@ func (s *collectorStallState) note(nextRevision, dealt uint64, leading bool, now
 func (s *collectorStallState) reset() { s.rev = 0 }
 
 func (b *backend) collectStorageWriteEvents(ctx context.Context) {
-	// Stall watchdog state. Every dealt revision is paired with a notify (valid or
-	// invalid) on every normal path, so a ring slot fills within the write RPC
-	// timeout (unaryRpcTimeout). A slot that stays empty far longer while its
-	// revision is below Dealt() means the writer goroutine died between deal and
-	// notify (panic / killed) — the revision will never arrive, and the collector
-	// would otherwise wait on it forever, freezing the committed revision and thus
-	// every list/watch on this node (a silent cluster-wide freeze). We surface it
-	// (warn+metric) and, once the writer is provably dead (>> the write timeout),
-	// advance past the hole so the stream self-heals instead of freezing.
+	// Stall watchdog state. Every allocated transaction revision is paired with
+	// either its committed event batch or a resolver-proven invalid placeholder.
+	// A slot that remains empty far beyond the RPC timeout indicates a writer died
+	// before publication; surface and eventually skip that abandoned revision so
+	// the committed watermark cannot freeze indefinitely.
 	var stall collectorStallState
-	var heldRevision uint64
-	var heldResolutions int
 	// infinite loop
 	for {
 		if ctx.Err() != nil {
@@ -791,13 +769,6 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 					// advances the revision, so never treat a follower's empty slot
 					// as a stall.
 					warn, skip := stall.note(nextRevision, b.tso.Dealt(), b.leadingFresh(), time.Now(), collectorStallWarnAfter, collectorStallSkipAfter)
-					if skip && heldRevision == nextRevision {
-						// An uncertain commit is not an abandoned writer: its repair
-						// queue owns this revision and will explicitly resolve the
-						// slot. Advancing here would let later events overtake a write
-						// that may already be durable.
-						skip = false
-					}
 					if skip {
 						// > the bounded write RPC timeout: the revision's writer is
 						// provably dead (a live one would have notified, valid or
@@ -838,26 +809,9 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 			b.observeCollectedRevision(watchEvents)
 			b.metricCli.EmitGauge("watch.set.current.revision", nextRevision)
 			validRevision := false
-			unresolvedRevision := false
 			for _, watchEvent := range watchEvents {
 				// invalid watch event, i.e. cas failed
 				if !watchEvent.Valid {
-					if errors.Is(watchEvent.Err, storage.ErrUncertainResult) {
-						// Hold the collector at this revision until the repair worker
-						// re-notifies an explicit resolved placeholder. Publishing a
-						// later revision first can permanently hide a committed write.
-						b.asyncFifoRetry.Append(watchEvent)
-						unresolvedRevision = true
-						if heldRevision == 0 {
-							heldRevision = nextRevision
-						}
-						heldResolutions++
-					} else if heldRevision == nextRevision && heldResolutions > 0 {
-						// One repair result releases one member of an uncertain
-						// multi-key revision. The revision remains held until every
-						// key in the original atomic batch has been resolved.
-						heldResolutions--
-					}
 					continue
 				}
 				validRevision = true
@@ -887,22 +841,6 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 				}
 				events = append(events, e)
 				b.watchCache.Add(e)
-			}
-			if unresolvedRevision || (heldRevision == nextRevision && heldResolutions > 0) {
-				if len(events) > 0 {
-					break
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-b.writeSignal:
-				case <-time.After(idleWaitTimeout):
-				}
-				continue
-			}
-			if heldRevision == nextRevision {
-				heldRevision = 0
-				heldResolutions = 0
 			}
 			if !validRevision && !b.ensureDurableRevision(ctx, nextRevision) {
 				return

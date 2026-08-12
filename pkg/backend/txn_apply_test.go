@@ -328,10 +328,6 @@ func TestTxnApplySingleRevisionAtomic(t *testing.T) {
 }
 
 func TestTxnApplyCommittedUncertainResultResolvesAsOneTransaction(t *testing.T) {
-	defaultRetryInterval, defaultCheckInterval := retryInterval, checkInterval
-	retryInterval, checkInterval = 10*time.Millisecond, 10*time.Millisecond
-	defer func() { retryInterval, checkInterval = defaultRetryInterval, defaultCheckInterval }()
-
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	metrics := mock.NewMinimalMetrics(ctrl)
@@ -364,8 +360,8 @@ func TestTxnApplyCommittedUncertainResultResolvesAsOneTransaction(t *testing.T) 
 	require.Equal(t, revision, leftRevision)
 	require.Equal(t, revision, rightRevision)
 
-	// Wait well past the shortened legacy single-key retry interval. The old
-	// path rewrote each key independently here, producing two newer revisions.
+	// The whole-transaction resolver must not rewrite either key at a newer
+	// revision after publishing the durable commit marker.
 	time.Sleep(100 * time.Millisecond)
 	_, leftRevision = liveValue(t, b, ctx, left)
 	_, rightRevision = liveValue(t, b, ctx, right)
@@ -421,10 +417,6 @@ func TestTxnApplyUncertainResultPinsCompactionUntilResolved(t *testing.T) {
 }
 
 func TestTxnApplyUncommittedUncertainResultSkipsAsOneTransaction(t *testing.T) {
-	defaultRetryInterval, defaultCheckInterval := retryInterval, checkInterval
-	retryInterval, checkInterval = 10*time.Millisecond, 10*time.Millisecond
-	defer func() { retryInterval, checkInterval = defaultRetryInterval, defaultCheckInterval }()
-
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	metrics := mock.NewMinimalMetrics(ctrl)

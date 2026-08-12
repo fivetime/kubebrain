@@ -88,9 +88,9 @@ type TxnWriteResult struct {
 // and partial application, #4 Tier 1). Each op is guarded by a CAS against the
 // exact revision-key bytes read in the same pass, so a concurrent modification
 // fails the whole batch; a definite CAS failure is retried (bounded by the RPC
-// timeout) to emulate etcd's unconditional overwrite, while any other commit
-// error publishes invalid events (so the event collector never stalls on the
-// dealt revision) and is returned for the async retry queue to re-resolve.
+// timeout) to emulate etcd's unconditional overwrite. An uncertain commit is
+// resolved as one transaction from its durable event-log marker; it is never
+// split into per-key retry writes.
 //
 // Ops MUST target distinct keys; the caller is responsible for that (multi-write
 // to the same key needs intra-txn ordering that this batch does not model).
@@ -852,10 +852,9 @@ func (b *backend) encodeTxnObjectMutations(objectKey, key, value []byte, meta Et
 	}
 }
 
-// notifyInvalidTxn fills the dealt revision's ring slot with invalid per-key
-// events when a txn batch does not commit, so the event collector advances past
-// the consumed revision and the async retry queue re-resolves each key — exactly
-// like DeleteRange's commit-failure path.
+// notifyInvalidTxn fills a transaction revision's ring slot with invalid
+// per-key placeholders after the durable resolver proves the batch did not
+// commit. The collector can then advance without publishing watch events.
 func (b *backend) notifyInvalidTxn(preps []txnPrep, newRevision uint64, cause error) {
 	invalid := make([]*common.WatchEvent, 0, len(preps))
 	for i := range preps {
