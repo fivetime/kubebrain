@@ -373,7 +373,10 @@ func TestDevStackSupportsIsolatedHostPortsAndLowDiskTestHosts(t *testing.T) {
 	manifest := string(tidb)
 	require.Contains(t, manifest, `reserve-space = "0MiB"`)
 	require.Contains(t, manifest, `reserve-raft-space = "0MiB"`)
+	require.Contains(t, manifest, `capacity = "5GiB"`)
 	require.Contains(t, manifest, `Production must keep TiKV's reserve-space protection`)
+	require.Contains(t, manifest, `hostPath filesystem is still not a capacity-`)
+	require.Contains(t, manifest, `must fail the production storage-safety gate`)
 
 	multinodePatch, err := os.ReadFile("../../deploy/dev/tidb-cluster-multinode-patch.yaml")
 	require.NoError(t, err)

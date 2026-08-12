@@ -22,13 +22,15 @@ spec:
       storage: 5Gi
     # Disposable local clusters often share a nearly-full development host.
     # Production must keep TiKV's reserve-space protection; this dev-only
-    # manifest disables it so the requested 5Gi logical volume, rather than
-    # the host filesystem's free percentage, defines the test capacity.
+    # manifest disables the recovery reserve and caps TiKV's logical store at
+    # the requested 5Gi. The hostPath filesystem is still not a capacity-
+    # isolated CSI volume and must fail the production storage-safety gate.
     config: |
       [storage]
       reserve-space = "0MiB"
       [raftstore]
       reserve-raft-space = "0MiB"
+      capacity = "5GiB"
   tidb:
     baseImage: pingcap/tidb
     replicas: 1
