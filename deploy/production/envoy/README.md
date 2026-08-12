@@ -59,3 +59,19 @@ KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:34379,127.0.0.1:35379,127.0.0.1:36379 \
 跨 Envoy replica 的滚动迁移门禁使用 `TEST_SCOPE=envoy-replica-drain`。它先在 replica 0 上建立 Watch 与
 LeaseKeepAlive，再加入 replica 1、对旧 admin 执行与 production preStop 相同的 readiness fail 并停止旧进程；
 两个长流必须从新地址恢复，lease 必须跨原 TTL 存活。
+
+真实 Kubernetes 滚动门禁要求三副本 Envoy 已分别 Ready 在三个 node，并通过临时 NodePort 走 kube-proxy：
+
+```bash
+KUBE_CONTEXT=kind-kubebrain-envoy-k8s \
+NAMESPACE=kubebrain-system \
+NODE_HOST=172.18.0.11 \
+./hack/etcd-client-compat/run-envoy-kubernetes-rollout.sh
+```
+
+`KUBE_CONTEXT` 必须显式指定；`NODE_HOST` 省略时使用集群首个 node 的 InternalIP。若 Kind 将 NodePort 映射到
+另一个宿主端口，可同时指定 `NODE_PORT` 和 `NODE_ENDPOINT_PORT`。测试客户端来源必须被
+`kubebrain-envoy-ingress` NetworkPolicy 准入。门禁会核对三个初始 Pod UID 与 Ready EndpointSlice target UID
+完全相同，执行 Deployment restart，并要求所有 UID 被替换、至少观察到一个旧 Pod 在仍存在时先退出 Ready
+EndpointSlice；同一稳定 NodePort 上的 CreatedNotify Watch 和 TTL=3 LeaseKeepAlive 必须贯穿全部三次 Pod
+替换，滚动后收到新 Watch event、正 TTL keepalive，且附租约键仍存在。临时 Service 会在退出时删除。

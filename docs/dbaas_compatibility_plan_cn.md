@@ -47365,6 +47365,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   但尚未把 Envoy Deployment 实际调度到多节点，也不替代 Kubernetes EndpointSlice、云 LB、跨 AZ、
   NAT/conntrack/underlay 与长时间滚动升级门禁，这些仍保持开放。
 
+- A4416 首次把 A4415 的宿主机双进程模型提升为真实 Kubernetes Deployment/Service/EndpointSlice 与
+  kube-proxy NodePort 门禁。新增 fail-closed `run-envoy-kubernetes-rollout.sh`：必须显式指定 kube context，且
+  只接受三个 Ready Envoy Pod 分布在三个不同 node、production Service 恰有三个 Ready EndpointSlice target；
+  runner 创建只选择 Envoy 的临时 NodePort Service，并在任意退出路径删除。测试在稳定 NodePort 上先建立
+  CreatedNotify Watch 和 TTL=3 LeaseKeepAlive，再执行 `kubectl rollout restart/status`；三个旧 Pod UID 必须
+  全部被新 UID 替换，最终 Ready EndpointSlice UID 必须与新 Pod UID 精确相同，100ms 采样还必须捕获至少一个
+  旧 UID 仍存在、但已从 Ready EndpointSlice 摘除的窗口，直接证明 A4415 preStop drain 发生在删除之前。
+  滚动期间持续消费 KeepAlive，结束后必须收到完成时刻之后的同 lease ID 正 TTL 响应；同一 Watch 收到滚动后
+  Put，附租约 key 与 TimeToLive 仍存在，两个 stream 都未关闭。
+  2026-08-12 在 disposable `kubebrain-envoy-k8s` Kind 集群中使用一个 control-plane、三个 worker（分别标记
+  dev-zone-1/2/3）、独立 3 PD/3 TiKV/3 KubeBrain 和固定 Envoy 1.39.0 production resources 验证。三个 Envoy
+  分别落在三个 worker；测试通过 node InternalIP:NodePort 进入 kube-proxy。现场也验证 production
+  NetworkPolicy 会拒绝缺少 `app.kubernetes.io/instance=kubebrain` 的测试上游及未准入的宿主客户端，补齐生产
+  标签并仅为 disposable harness 放行来源后，最终普通门禁 37.48 秒、`GOFLAGS=-race` 门禁 38.84 秒通过且无数据
+  竞争。首轮门禁在 38.09 秒后正确暴露测试客户端未持续读取 KeepAlive response、导致自身队列背压和 lease
+  过期的建模错误；改为滚动全过程消费后通过，没有放宽 TTL 或生产 drain。
+  该项关闭“Envoy Deployment 未实际多节点滚动”和“未观察 EndpointSlice drain-before-delete”缺口；云厂商
+  LB、跨 AZ 网络故障、NAT/conntrack/underlay、小时级 rollout/soak 仍保持开放，不能由 Kind NodePort 结论替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
