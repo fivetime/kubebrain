@@ -454,6 +454,44 @@ func TestTxnApplyUncommittedUncertainResultSkipsAsOneTransaction(t *testing.T) {
 	require.Zero(t, rightRevision)
 }
 
+func TestTxnCommitRecordedValidatesExactOrderedMarkers(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	revision := b.GetCurrentRevision() + 1
+	preps := []txnPrep{
+		{op: TxnWriteOp{Key: []byte(prefix + "/marker/create")}, effective: true, create: true},
+		{op: TxnWriteOp{Key: []byte(prefix + "/marker/delete"), Delete: true}, effective: true, curRev: revision - 1},
+	}
+
+	committed, err := b.txnCommitRecorded(ctx, preps, revision)
+	require.NoError(t, err)
+	require.False(t, committed)
+
+	createKey, createValue := encodeEventLogEntry(b.ks, revision, preps[0].op.Key, proto.Event_CREATE, 0, 0, 2)
+	deleteKey, deleteValue := encodeEventLogEntry(b.ks, revision, preps[1].op.Key, proto.Event_DELETE, revision-1, 1, 2)
+	seed := b.kv.BeginBatchWrite()
+	seed.Put(createKey, createValue, 0)
+	seed.Put(deleteKey, deleteValue, 0)
+	require.NoError(t, seed.Commit(ctx))
+
+	committed, err = b.txnCommitRecorded(ctx, preps, revision)
+	require.NoError(t, err)
+	require.True(t, committed)
+
+	partial := b.kv.BeginBatchWrite()
+	partial.Del(deleteKey)
+	require.NoError(t, partial.Commit(ctx))
+	committed, err = b.txnCommitRecorded(ctx, preps, revision)
+	require.False(t, committed)
+	require.ErrorContains(t, err, "mixed event markers")
+
+	corrupt := b.kv.BeginBatchWrite()
+	corrupt.Put(deleteKey, []byte("wrong-marker"), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+	committed, err = b.txnCommitRecorded(ctx, preps, revision)
+	require.False(t, committed)
+	require.ErrorContains(t, err, "event marker mismatch")
+}
+
 // TestTxnApplyRecreateOverTombstone verifies a put on a previously-deleted key
 // creates it fresh (version resets to 1, new create revision).
 func TestTxnApplyRecreateOverTombstone(t *testing.T) {

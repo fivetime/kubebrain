@@ -48066,6 +48066,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `stageNextDurableRevisionAfter` 在 `max(durable, observed floor)+1` 分配，唯一边界失败是 etcd wire revision
   exhaustion，不再对客户端暴露一个实际上无法发生的 drift-back backend 错误。
 
+- A4482 收紧 TiKV commit-undetermined resolver 的 durable witness。旧实现只要每个预期 event-log key 存在就把
+  txn 判为 committed，未校验 value；错误 verb、previous revision、subrevision 或 total 的 marker 可能触发 phantom
+  watch publication。`txnCommitRecorded` 现在按 prep 顺序重建每个 ordered marker 并逐字节比对，只有全部精确匹配
+  才发布 committed batch；全无 marker 判定未提交，部分缺失或任意 payload mismatch 持续 fail closed 并保留
+  compaction pin。新增回归覆盖 none、exact、partial 和 corrupt marker 四种状态。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -755,22 +755,34 @@ func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep
 	}
 }
 
-// txnCommitRecorded checks event-log records written atomically with every
-// effective user mutation. All present means the transaction committed; none
-// means it did not. A mixed result contradicts TiKV batch atomicity and is
-// retried rather than guessed.
+// txnCommitRecorded checks the exact event-log records written atomically with
+// every effective user mutation. All exact records means the transaction
+// committed; none means it did not. A missing subset or mismatched payload
+// contradicts TiKV atomicity/durable integrity and is retried rather than guessed.
 func (b *backend) txnCommitRecorded(ctx context.Context, preps []txnPrep, revision uint64) (bool, error) {
 	expected, found := 0, 0
+	total := uint32(txnEffectiveUserWriteCount(preps))
+	var subRevision uint32
 	for i := range preps {
 		p := &preps[i]
 		if !p.effective || p.op.Internal {
 			continue
 		}
 		expected++
-		_, err := b.kv.Get(ctx, b.ks.EncodeEventLogKey(revision, p.op.Key))
+		verb, previousRevision := proto.Event_PUT, p.curRev
+		if p.op.Delete {
+			verb = proto.Event_DELETE
+		} else if p.create {
+			verb, previousRevision = proto.Event_CREATE, 0
+		}
+		key, expectedValue := encodeEventLogEntry(b.ks, revision, p.op.Key, verb, previousRevision, subRevision, total)
+		subRevision++
+		value, err := b.kv.Get(ctx, key)
 		switch {
-		case err == nil:
+		case err == nil && bytes.Equal(value, expectedValue):
 			found++
+		case err == nil:
+			return false, fmt.Errorf("uncertain txn event marker mismatch for key %q at revision %d", p.op.Key, revision)
 		case errors.Is(err, storage.ErrKeyNotFound):
 		default:
 			return false, err
