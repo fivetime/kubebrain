@@ -179,6 +179,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput:          "TiKV StatefulSet release snapshot mismatch",
 		},
 		{
+			name:       "TiKV approved revision drift",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   []string{"EXPECTED_TIKV_STATEFULSET_REVISION=tikv-approved"},
+			wantOutput: "TiKV StatefulSet revision mismatch",
+		},
+		{
 			name:              "TidbCluster becomes unready after convergence wait",
 			image:             "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:        "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1121,6 +1130,8 @@ exit 1
 				"EXPECTED_TIKV_IMAGE=pingcap/tikv:v8.5.3",
 				"EXPECTED_PD_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				"EXPECTED_TIKV_IMAGE_DIGEST=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+				"EXPECTED_PD_STATEFULSET_REVISION=pd-new",
+				"EXPECTED_TIKV_STATEFULSET_REVISION=tikv-new",
 				"EXPECTED_INITIAL_CLUSTER=" + initialCluster,
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 				"EXPECTED_ADVERTISE_CLIENT_URLS=" + advertisedURLs,
@@ -1325,6 +1336,8 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 			"EXPECTED_TIKV_IMAGE=pingcap/tikv:v8.5.3",
 			"EXPECTED_PD_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			"EXPECTED_TIKV_IMAGE_DIGEST=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			"EXPECTED_PD_STATEFULSET_REVISION=pd-new",
+			"EXPECTED_TIKV_STATEFULSET_REVISION=tikv-new",
 			"EXPECTED_INITIAL_CLUSTER=" + fakeInitialCluster,
 			"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 			"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -1367,6 +1380,9 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		{name: "pd digest required", key: "EXPECTED_PD_IMAGE_DIGEST", want: "EXPECTED_PD_IMAGE_DIGEST is required"},
 		{name: "pd digest exact", key: "EXPECTED_PD_IMAGE_DIGEST", value: "sha256:abcd", want: "must be sha256:<64 lowercase hex>"},
 		{name: "tikv digest required", key: "EXPECTED_TIKV_IMAGE_DIGEST", want: "EXPECTED_TIKV_IMAGE_DIGEST is required"},
+		{name: "pd revision required", key: "EXPECTED_PD_STATEFULSET_REVISION", want: "EXPECTED_PD_STATEFULSET_REVISION is required"},
+		{name: "pd revision exact", key: "EXPECTED_PD_STATEFULSET_REVISION", value: "PD revision", want: "must be a DNS subdomain"},
+		{name: "tikv revision required", key: "EXPECTED_TIKV_STATEFULSET_REVISION", want: "EXPECTED_TIKV_STATEFULSET_REVISION is required"},
 		{name: "kubebrain statefulset uid required", key: "EXPECTED_KUBEBRAIN_STATEFULSET_UID", want: "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -47803,6 +47803,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同一 hash，末尾 Deployment fence 仍拒绝验证期间 rollout。该 hash 用作 Kubernetes rollout receipt 身份，
   不宣称具备加密抗碰撞性；镜像供应链身份继续由 runtime sha256 digest 独立证明。
 
+- A4448 把 A4447 的 rollout receipt 身份继续下沉到实际承载数据的 PD/TiKV StatefulSet。A4437-A4442
+  已要求 storage version、image、runtime digest、TidbCluster/StatefulSet owner UID、精确 ordinal 和
+  `currentRevision == updateRevision`，但同一镜像下修改 args、env、ServiceAccount 或 volume 并完整滚完后，
+  旧门禁会把新的任意 revision 当作批准版本。RED 构造已完全收敛且 Pod 均绑定 `tikv-new` 的 TiKV StatefulSet，
+  同时让 receipt 批准 `tikv-approved`，旧实现确定性发布成功。新门禁要求 PD/TiKV 两个期望 ControllerRevision
+  都是非空 DNS subdomain，并将同一 StatefulSet JSON 中的 update revision 与 receipt 精确比较，再让所有 Pod
+  的 `controller-revision-hash` 继承该值。ControllerRevision 只作为 Kubernetes rollout 身份，不替代 runtime
+  sha256 digest，也不宣称已完成跨版本升级/回滚矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

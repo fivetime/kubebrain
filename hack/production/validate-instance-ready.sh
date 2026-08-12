@@ -66,6 +66,8 @@ EXPECTED_PD_IMAGE="${EXPECTED_PD_IMAGE:-}"
 EXPECTED_TIKV_IMAGE="${EXPECTED_TIKV_IMAGE:-}"
 EXPECTED_PD_IMAGE_DIGEST="${EXPECTED_PD_IMAGE_DIGEST:-}"
 EXPECTED_TIKV_IMAGE_DIGEST="${EXPECTED_TIKV_IMAGE_DIGEST:-}"
+EXPECTED_PD_STATEFULSET_REVISION="${EXPECTED_PD_STATEFULSET_REVISION:-}"
+EXPECTED_TIKV_STATEFULSET_REVISION="${EXPECTED_TIKV_STATEFULSET_REVISION:-}"
 EXPECTED_PD_REPLICAS="${EXPECTED_PD_REPLICAS:-3}"
 EXPECTED_TIKV_REPLICAS="${EXPECTED_TIKV_REPLICAS:-3}"
 ENDPOINT="${ENDPOINT:-}"
@@ -144,6 +146,13 @@ for variable in EXPECTED_PD_IMAGE_DIGEST EXPECTED_TIKV_IMAGE_DIGEST; do
   fi
   if ! [[ "${!variable}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
     echo "${variable} must be sha256:<64 lowercase hex>" >&2
+    exit 2
+  fi
+done
+for variable in EXPECTED_PD_STATEFULSET_REVISION EXPECTED_TIKV_STATEFULSET_REVISION; do
+  value="${!variable}"
+  if [[ ${#value} -gt 253 ]] || ! [[ "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$ ]]; then
+    echo "${variable} is required and must be a DNS subdomain" >&2
     exit 2
   fi
 done
@@ -276,7 +285,7 @@ if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e '
 fi
 
 storage_statefulset_identity() {
-  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" statefulset object
+  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_revision="$5" statefulset object actual_revision
   statefulset="${TIDB_CLUSTER}-${component}"
   if ! object="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "$statefulset" -o json)"; then
     echo "failed to read ${display} StatefulSet identity" >&2
@@ -309,11 +318,16 @@ storage_statefulset_identity() {
     echo "${display} StatefulSet release snapshot mismatch: expected ${expected_replicas} converged replicas and image ${expected_image}" >&2
     exit 1
   fi
+  actual_revision="$(printf '%s' "$object" | "$JQ" -r '.status.updateRevision')"
+  if [[ "$actual_revision" != "$expected_revision" ]]; then
+    echo "${display} StatefulSet revision mismatch: expected ${expected_revision}, got ${actual_revision:-missing}" >&2
+    exit 1
+  fi
   printf '%s' "$object" | "$JQ" -r '[.metadata.uid,.status.updateRevision] | @tsv'
 }
 
-IFS=$'\t' read -r actual_pd_statefulset_uid actual_pd_revision <<<"$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE")"
-IFS=$'\t' read -r actual_tikv_statefulset_uid actual_tikv_revision <<<"$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE")"
+IFS=$'\t' read -r actual_pd_statefulset_uid actual_pd_revision <<<"$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_STATEFULSET_REVISION")"
+IFS=$'\t' read -r actual_tikv_statefulset_uid actual_tikv_revision <<<"$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_STATEFULSET_REVISION")"
 
 validate_storage_runtime() {
   local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_digest="$5" owner_uid="$6" revision="$7"
@@ -773,4 +787,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} pd_digest=${EXPECTED_PD_IMAGE_DIGEST} tikv_image=${EXPECTED_TIKV_IMAGE} tikv_digest=${EXPECTED_TIKV_IMAGE_DIGEST} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} pd_digest=${EXPECTED_PD_IMAGE_DIGEST} pd_revision=${EXPECTED_PD_STATEFULSET_REVISION} tikv_image=${EXPECTED_TIKV_IMAGE} tikv_digest=${EXPECTED_TIKV_IMAGE_DIGEST} tikv_revision=${EXPECTED_TIKV_STATEFULSET_REVISION} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
