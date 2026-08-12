@@ -47277,6 +47277,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   reset、跨 replica 重建和业务连续性证据；生产 Envoy/云厂商 LB 配置矩阵、云 LB/NAT/conntrack、跨节点
   网络设备和平台通用 request token 仍保持开放。
 
+- A4412 把 A4410/A4411 的两条单流证据提升为同一 client HTTP/2 connection 上的真实多路恢复。L7 proxy
+  的 active-stream registry 现同时记录 grpc-go `peer.FromContext` 提供的 downstream remote address，stats
+  返回去重后的 `activePeers`；因此测试可以区分“一条连接上的两个 HTTP/2 stream”和“两条独立连接各跑一
+  个 stream”。新增 `TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential`：同一 client 先建立一个
+  CreatedNotify Watch 和一个 3 秒 LeaseKeepAlive，proxy 必须报告 `ActiveStreams=2, ActivePeers=1`。测试经
+  replica 2 写入 reset 前 Watch 事件，然后把 target 切到 replica 1，并用一次 `fail-streams` 同时令两条 RPC
+  返回 L7 Unavailable；失败计数必须恰好 +2，恢复后仍须为两个 active stream、一个 downstream peer，且
+  replica 1 至少发生两次 upstream dial。随后 Watch 只交付 reset 后的新值且 ModRevision 恰好 +1；KeepAlive
+  收到同 ID 正 TTL，并持续超过原始 grant TTL，第三副本仍能读取附租约 key、TTL 为正、该 key 的
+  ModRevision 仍等于首次 Put revision，两条 channel 都保持开放。
+  首次统一运行只在 reference 端触发了一个测试建模错误：前一 A4411 lease 在 client cleanup 后后台自然过期，
+  合法把全局 Header revision 从本场景最后 Put 的 15 推进到 16，而当前 lease key 的 ModRevision 始终保持
+  13；focused 复跑则为 etcd `2/2/4/4`、KubeBrain `16/16/18/18`（lease Put/key Mod/最后 Put/最终 Header）。
+  因此移除不具并发安全性的“全局 Header 必须静止”，保留当前 lease key ModRevision 不变这一强不变量；
+  A4411 隔离场景继续单独证明 KeepAlive 本身不推进全局 revision，没有把真实差异弱化掉。
+  2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建 reference，在 disposable
+  `kubebrain-multiplex-l7` 独立 3 PD/3 TiKV/3 KubeBrain 上最终通过：A4412 双端 11.43 秒，包含 A4401–A4412
+  的统一 `lease-response-loss` 门禁 35.573 秒；`GOFLAGS=-race` 统一门禁 51.308 秒，A4412 双端 13.49 秒且
+  无数据竞争。真实 Envoy/云厂商 LB 配置、云 LB/NAT/conntrack 与跨节点网络设备仍未由此代理替代，继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

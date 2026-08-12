@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -53,6 +54,7 @@ type proxy struct {
 	droppedResponses int
 	nextStreamID     uint64
 	streams          map[uint64]chan struct{}
+	streamPeers      map[uint64]string
 	failedStreams    int
 }
 
@@ -63,6 +65,7 @@ type response struct {
 	DroppedResponses int            `json:"droppedResponses,omitempty"`
 	Dials            map[string]int `json:"dials,omitempty"`
 	ActiveStreams    int            `json:"activeStreams,omitempty"`
+	ActivePeers      int            `json:"activePeers,omitempty"`
 	FailedStreams    int            `json:"failedStreams,omitempty"`
 }
 
@@ -82,6 +85,7 @@ func main() {
 	p := &proxy{
 		listener: listener, target: strings.TrimSpace(*target),
 		dials: make(map[string]int), streams: make(map[uint64]chan struct{}),
+		streamPeers: make(map[uint64]string),
 	}
 	p.server = grpc.NewServer(
 		grpc.ForceServerCodec(rawCodec{}),
@@ -188,7 +192,11 @@ func (p *proxy) handleBidiStream(method string, downstream grpc.ServerStream) er
 	if err != nil {
 		return err
 	}
-	streamID, fail := p.registerStream()
+	downstreamPeer := ""
+	if peerInfo, ok := peer.FromContext(downstream.Context()); ok && peerInfo.Addr != nil {
+		downstreamPeer = peerInfo.Addr.String()
+	}
+	streamID, fail := p.registerStream(downstreamPeer)
 	defer p.unregisterStream(streamID)
 	errors := make(chan error, 2)
 	go relayRawStream(downstream, upstream, errors)
@@ -276,18 +284,20 @@ func (p *proxy) failBlockedResponses() bool {
 	return true
 }
 
-func (p *proxy) registerStream() (uint64, <-chan struct{}) {
+func (p *proxy) registerStream(downstreamPeer string) (uint64, <-chan struct{}) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.nextStreamID++
 	fail := make(chan struct{})
 	p.streams[p.nextStreamID] = fail
+	p.streamPeers[p.nextStreamID] = downstreamPeer
 	return p.nextStreamID, fail
 }
 
 func (p *proxy) unregisterStream(id uint64) {
 	p.mu.Lock()
 	delete(p.streams, id)
+	delete(p.streamPeers, id)
 	p.mu.Unlock()
 }
 
@@ -298,6 +308,7 @@ func (p *proxy) failStreams() int {
 	for id, stream := range p.streams {
 		close(stream)
 		delete(p.streams, id)
+		delete(p.streamPeers, id)
 	}
 	p.failedStreams += failed
 	return failed
@@ -310,9 +321,15 @@ func (p *proxy) stats() response {
 	for target, count := range p.dials {
 		dials[target] = count
 	}
+	peers := make(map[string]struct{})
+	for _, downstreamPeer := range p.streamPeers {
+		if downstreamPeer != "" {
+			peers[downstreamPeer] = struct{}{}
+		}
+	}
 	return response{
 		OK: true, DroppedResponses: p.droppedResponses, Dials: dials,
-		ActiveStreams: len(p.streams), FailedStreams: p.failedStreams,
+		ActiveStreams: len(p.streams), ActivePeers: len(peers), FailedStreams: p.failedStreams,
 	}
 }
 

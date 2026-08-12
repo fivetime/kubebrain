@@ -64,13 +64,16 @@ if [[ ! "$TEST_COUNT" =~ ^[1-9][0-9]*$ ]]; then
 fi
 case "$TEST_SCOPE" in
   all)
-    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$'
+    test_pattern='^Test(MoveLeaderFollower|RangeStreamFollower)DifferentialAgainstReferenceEtcd$|^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$|^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
     ;;
   lease-response-loss|lease-revoke-cross-replica)
-    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$'
+    test_pattern='^TestLease(Revoke(ResponseLossReplayAcrossReplicas|ReplayAfterSameIDRegrant|ResponseLossAcrossExternalL4Proxy|ResponseLossAcrossExternalL7Proxy)|GrantResponseLossReplayAcrossReplicas|GrantResponseLossAcrossExternalL4Proxy|KeepAliveResumesAcrossExternalL7Reset)Differential$|^TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential$|^TestOrphanLeaseExpiresAfterGrantResponseLossDifferential$|^TestWatchResumesAcrossExternalL7ResetDifferential$|^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
     ;;
   lease-revoke-tls-passthrough)
     test_pattern='^TestLeaseRevokeResponseLossAcrossExternalL4TLSPassthroughDifferential$'
+    ;;
+  multiplexed-stream-l7-reset)
+    test_pattern='^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
     ;;
   *)
     echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, or lease-revoke-tls-passthrough" >&2
