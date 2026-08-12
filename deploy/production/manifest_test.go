@@ -1613,6 +1613,12 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	require.Equal(t, "critical", transactionPathRule["labels"].(map[string]any)["severity"])
 	description := transactionPathRule["annotations"].(map[string]any)["description"].(string)
 	require.Contains(t, description, "end-to-end etcd transaction probe")
+	incompatibleWitness := prometheusRuleByAlert(t, groups, "KubeBrainIncompatibleTransactionWitness")
+	require.Equal(t,
+		`sum(increase(leader_election_initialize_incompatible_witness{namespace="kubebrain-system"}[10m])) > 0`,
+		incompatibleWitness["expr"])
+	require.Equal(t, "critical", incompatibleWitness["labels"].(map[string]any)["severity"])
+	require.Contains(t, incompatibleWitness["annotations"].(map[string]any)["description"], "Continue roll-forward")
 	require.Contains(t, description, "same-PVC TiKV repair")
 	require.Contains(t, description, "no pending/down peer Regions")
 

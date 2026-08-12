@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -293,14 +294,14 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 					l.metricCli.EmitCounter("leader.election.success", 1)
 					leaderAddr, version, err := l.getLeaderAndVersion()
 					if err != nil {
-						l.metricCli.EmitCounter("leader.election.initialize.err", 1)
+						recordLeadershipInitializationError(l.metricCli, err)
 						klog.ErrorS(err, "initialize acquired leadership failed; retrying election")
 						cancel()
 						return
 					}
 					l.metricCli.EmitGauge("leader.election.initial.version", version, metrics.Tag("addr", leaderAddr))
 					if err := l.backend.InitializeLeadershipRevision(leadingCtx, version); err != nil {
-						l.metricCli.EmitCounter("leader.election.initialize.err", 1)
+						recordLeadershipInitializationError(l.metricCli, err)
 						klog.ErrorS(err, "restore acquired leadership revision failed; retrying election")
 						cancel()
 						return
@@ -359,6 +360,13 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 			return
 		case <-timer.C:
 		}
+	}
+}
+
+func recordLeadershipInitializationError(metricCli metrics.Metrics, err error) {
+	metricCli.EmitCounter("leader.election.initialize.err", 1)
+	if errors.Is(err, b.ErrTxnWitnessUnsupportedVersion) {
+		metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 1)
 	}
 }
 

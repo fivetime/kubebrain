@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
+	backend "github.com/kubewharf/kubebrain/pkg/backend"
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -104,6 +105,21 @@ func (c *skewablePassiveClock) Since(time.Time) time.Duration { return c.elapsed
 func (r *revisionRecorder) InitializeLeadershipRevision(_ context.Context, revision uint64) error {
 	r.revision.Store(revision)
 	return nil
+}
+
+func TestLeadershipInitializationMetricsClassifyUnsupportedWitness(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := metricmock.NewMockMetrics(ctrl)
+	m.EXPECT().EmitCounter("leader.election.initialize.err", 1)
+	m.EXPECT().EmitCounter("leader.election.initialize.incompatible_witness", 1)
+	recordLeadershipInitializationError(m, fmt.Errorf("wrapped: %w", backend.ErrTxnWitnessUnsupportedVersion))
+}
+
+func TestLeadershipInitializationMetricsDoNotMisclassifyTransportError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := metricmock.NewMockMetrics(ctrl)
+	m.EXPECT().EmitCounter("leader.election.initialize.err", 1)
+	recordLeadershipInitializationError(m, storage.ErrUnavailable)
 }
 
 func TestHasLeaderExpiresObservedElectionRecord(t *testing.T) {

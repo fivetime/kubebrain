@@ -48131,6 +48131,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   compatible binary/decoder 恢复后可继续初始化。当前 v1 但长度/count/digest 非法仍属于真实 corruption 并自动
   ArmCorrupt。回归分别固定 future v2 保留原 bytes/无 alarm/不可 lead，以及 current-v1 truncated seal 自动告警。
 
+- A4490 为 A4489 增加选主兼容性可观测性。leader loop 仍保留现有 `retryPeriod`，future witness 不会发布 leader；
+  现在除通用 `leader_election_initialize_err` 外，`errors.Is(ErrTxnWitnessUnsupportedVersion)` 单独累计
+  `leader_election_initialize_incompatible_witness`，TiKV transport failure 不得误计。production PrometheusRule 新增
+  critical `KubeBrainIncompatibleTransactionWitness`，任何十分钟窗口内发生一次即告警，并明确处置是继续 roll
+  forward，禁止删除 witness 或修 TiKV。单元测试固定 wrapped sentinel 分类和 transport error 排除，manifest 测试
+  固定表达式、severity、runbook 提示且确认告警引用的 metric 确实由代码发出。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
