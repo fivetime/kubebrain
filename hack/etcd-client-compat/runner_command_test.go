@@ -694,6 +694,28 @@ func TestBackendTiKVCrossNodeDegradedNetworkUsesEveryStore(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendTiKVDegradedNetworkRunsPorcupineHistories(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-degraded-network-linearizability)`)
+	require.Contains(t, script, `KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND="$command"`)
+	require.Contains(t, script, `TestClientV3RegisterHistoryIsLinearizable|TestClientV3MultiKeyTxnHistoryIsLinearizable`)
+	require.Contains(t, script, `"$self --degrade-tikv-all-cross-node"`)
+	require.NotContains(t, script, "eval ")
+
+	for _, testFile := range []string{"linearizability_test.go", "multikey_linearizability_test.go"} {
+		t.Run(testFile, func(t *testing.T) {
+			source, readErr := os.ReadFile(testFile)
+			require.NoError(t, readErr)
+			text := string(source)
+			require.Contains(t, text, `os.Getenv("KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND")`)
+			require.Contains(t, text, `faultCommand != ""`)
+			require.Contains(t, text, `require.Positive(t, failedOperations.Load()`)
+		})
+	}
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"

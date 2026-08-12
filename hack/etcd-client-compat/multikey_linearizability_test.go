@@ -133,8 +133,9 @@ func TestClientV3MultiKeyTxnHistoryIsLinearizable(t *testing.T) {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the multi-key Txn linearizability history")
 	}
 	failoverPod := linearizabilityDeletePod()
+	faultCommand := os.Getenv("KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND")
 	operationsPerClient := defaultOperationsPerClient
-	if failoverPod != "" {
+	if failoverPod != "" || faultCommand != "" {
 		operationsPerClient = 30
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -159,7 +160,14 @@ func TestClientV3MultiKeyTxnHistoryIsLinearizable(t *testing.T) {
 	setupErrCh := make(chan error, clients+1)
 	var failedOperations atomic.Int64
 	var workers sync.WaitGroup
-	if failoverPod != "" {
+	if faultCommand != "" {
+		startLinearizabilityFaultCommand(t, ctx, faultCommand, setupErrCh, &workers)
+		select {
+		case <-ctx.Done():
+			require.NoError(t, ctx.Err())
+		case <-time.After(3 * time.Second):
+		}
+	} else if failoverPod != "" {
 		startLinearizabilityPodDeletion(ctx, &clock, failoverPod, setupErrCh, &workers)
 	}
 	for clientID := 0; clientID < clients; clientID++ {
@@ -196,7 +204,7 @@ func TestClientV3MultiKeyTxnHistoryIsLinearizable(t *testing.T) {
 					ClientId: clientID, Input: input, Call: call, Output: output, Return: returned,
 				})
 				historyMu.Unlock()
-				if failoverPod != "" {
+				if failoverPod != "" || faultCommand != "" {
 					time.Sleep(10 * time.Millisecond)
 				}
 			}
@@ -208,11 +216,12 @@ func TestClientV3MultiKeyTxnHistoryIsLinearizable(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Len(t, history, clients*operationsPerClient)
-	if failoverPod == "" {
+	if failoverPod == "" && faultCommand == "" {
 		require.Zero(t, failedOperations.Load(), "baseline history must not contain failed RPCs")
 	} else {
 		require.Positive(t, failedOperations.Load(), "fault history must exercise ambiguous RPC outcomes")
-		t.Logf("recorded %d ambiguous multi-key Txn failures during pod deletion", failedOperations.Load())
+		require.Less(t, failedOperations.Load(), int64(len(history)), "fault history must retain known successful operations")
+		t.Logf("recorded %d ambiguous multi-key Txn failures during injected fault", failedOperations.Load())
 	}
 	result := porcupine.CheckOperationsTimeout(pairTxnModel, history, 10*time.Second)
 	require.Equalf(t, porcupine.Ok, result, "multi-key Txn history result: %s", result)

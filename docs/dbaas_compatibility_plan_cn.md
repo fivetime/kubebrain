@@ -46887,6 +46887,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   没有回退 A4390。本项关闭已验证强度下 TiKV 全 store 跨节点 delay/jitter/loss/rate 组合证据；独立宿主/
   AZ、conntrack/NAT、underlay、更高丢包与分钟/小时级退化继续开放。
 
+- A4392 将 A4391 的“退化窗口仍有进展”提升为不确定结果下的线性一致性证明，并继续对照 upstream
+  `tests/integration/clientv3/connectivity/network_partition_test.go` 对 Put/Txn/linearizable Get 的超时与
+  恢复契约。既有 `TestClientV3RegisterHistoryIsLinearizable` 和
+  `TestClientV3MultiKeyTxnHistoryIsLinearizable` 原先只支持删除 KubeBrain Pod；现新增显式
+  `KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND`，旧删除路径保持不变，外部命令则在 worker 放行前获得 3 秒
+  warmup。两套 Porcupine nondeterministic model 都把 timeout/Unavailable/Canceled 写解释为“可能提交或
+  未提交”，但门禁同时要求至少一个歧义结果和至少一个确定成功结果，防止无故障历史或全 unknown 历史
+  伪造证明。`tikv-cross-node-degraded-network-linearizability` 连续运行单键 Get/Put/CAS register 与双键
+  原子 read/write/CAS Txn，各自在全部三个 TiKV store 的 `250ms +/- 50ms`、`2%` loss、`20mbit`、30 秒
+  netem 下采集 150 个并发操作并检查完整实时顺序。
+  首次真实 RED 正确拒绝了两套 `failedOperations=0` 的历史：故障 goroutine 已启动，但 namespace/PID/qdisc
+  前置检查尚未完成时 worker 已跑完，说明只并发启动命令不能证明重叠。加入 warmup 后，2026-08-12
+  disposable `kubebrain-tikv-netem-lin` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/3 KubeBrain、
+  23379/23380 拓扑通过：register 历史含 8 个歧义 RPC，双键 Txn 历史含 9 个，二者 Porcupine 均为 `Ok`，
+  完整门禁 86.995 秒。三个 KubeBrain 与 TiKV 均 Ready/零重启，TiDBCluster Ready；`kb-pd-0` 的一次
+  restart 于 `00:44:37Z` 初始部署期结束，早于最终门禁。三个 TiKV namespace 最终均为 `qdisc noqueue`。
+  本项证明已验证退化强度下单键线性化和多键 Txn 原子性，不把它扩张为未执行的分钟/小时 soak、独立 AZ
+  或任意网络设备故障结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
