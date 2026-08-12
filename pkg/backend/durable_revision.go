@@ -113,6 +113,13 @@ func (b *backend) InitializeLeadershipRevision(ctx context.Context, _ uint64) er
 	if err := b.validatePersistedTxnWitnesses(ctx); err != nil && !errors.Is(err, ErrTxnWitnessCorrupt) {
 		return err
 	}
+	// Alarm metadata is part of the write-safety boundary, not merely an RPC
+	// presentation detail. Validate it before publishing this leadership term;
+	// a valid active CORRUPT alarm still permits a read-only leader, while an
+	// undecodable member set/generation cannot safely admit or disarm writes.
+	if _, err := b.CorruptAlarms(ctx); err != nil {
+		return err
+	}
 	// A same-process re-election can retain a committed watermark newer than a
 	// lagging background marker. Never move that process backwards; a cold
 	// process has current=0 and therefore starts from the durable TiKV value.

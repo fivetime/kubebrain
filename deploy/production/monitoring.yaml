@@ -305,6 +305,14 @@ spec:
           annotations:
             summary: KubeBrain binary cannot read durable transaction witnesses
             description: "A KubeBrain replica rejected leadership because TiKV contains a newer transaction-witness format. Continue roll-forward; do not delete witness metadata or repair TiKV."
+        - alert: KubeBrainInvalidCorruptAlarmMetadata
+          expr: sum(increase(leader_election_initialize_invalid_alarm_metadata{namespace="kubebrain-system"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: KubeBrain rejected leadership due to invalid alarm metadata
+            description: "A KubeBrain replica found malformed CORRUPT member/generation metadata in TiKV and refused leadership. Keep traffic fenced; do not clear or rewrite internal alarm keys. Preserve evidence and follow the corruption-repair runbook."
         - alert: KubeBrainRevisionLagHigh
           expr: max(watch_revision_lag{namespace="kubebrain-system"}) > 10000
           for: 5m

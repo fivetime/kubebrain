@@ -2951,6 +2951,9 @@ Alarm GET、写门禁和 Maintenance Snapshot 都会校验该 generation；非�
 健康。
 即使待解除的 member 不存在，DEACTIVATE 也会先校验 generation；因此空响应只代表“metadata 健康但该 owner 未激活”，
 不能把任何 `DataLoss` 当作等价 no-op 忽略。
+leader 在发布身份和 Ready 前也会校验 CORRUPT member/generation；命中
+`KubeBrainInvalidCorruptAlarmMetadata` 时实例会持续拒绝该 election term。保持业务流量隔离并保存 TiKV 证据，禁止通过
+删除或重写 `alarms/corrupt*` 恢复选主；该告警与“未来 witness 版本需继续 roll-forward”的处置不同。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

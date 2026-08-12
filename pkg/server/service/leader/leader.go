@@ -368,6 +368,9 @@ func recordLeadershipInitializationError(metricCli metrics.Metrics, err error) {
 	if errors.Is(err, b.ErrTxnWitnessUnsupportedVersion) {
 		metricCli.EmitCounter("leader.election.initialize.incompatible_witness", 1)
 	}
+	if errors.Is(err, b.ErrInvalidAlarmMetadata) {
+		metricCli.EmitCounter("leader.election.initialize.invalid_alarm_metadata", 1)
+	}
 }
 
 // IsLeader implements LeaderElection interface

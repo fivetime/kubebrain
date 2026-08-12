@@ -122,6 +122,14 @@ func TestLeadershipInitializationMetricsDoNotMisclassifyTransportError(t *testin
 	recordLeadershipInitializationError(m, storage.ErrUnavailable)
 }
 
+func TestLeadershipInitializationMetricsClassifyInvalidAlarmMetadata(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := metricmock.NewMockMetrics(ctrl)
+	m.EXPECT().EmitCounter("leader.election.initialize.err", 1)
+	m.EXPECT().EmitCounter("leader.election.initialize.invalid_alarm_metadata", 1)
+	recordLeadershipInitializationError(m, fmt.Errorf("wrapped: %w", backend.ErrInvalidAlarmMetadata))
+}
+
 func TestHasLeaderExpiresObservedElectionRecord(t *testing.T) {
 	lock := &campaignLock{
 		record: resourcelock.LeaderElectionRecord{HolderIdentity: "peer"},

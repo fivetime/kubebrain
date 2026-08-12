@@ -48176,6 +48176,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backend 表测对 invalid-length/zero/exhausted 三类代际分别增加 wrong-member 断言；direct server 固定 typed
   `ErrInvalidAlarmMetadata`，raw gRPC 回归固定 `DataLoss` 和完整错误消息。
 
+- A4496 把 CORRUPT member/generation 完整性前移到 leadership publication。A4494/A4495 虽使请求期操作 fail closed，
+  但旧初始化仍可先发布 leader，再由第一个写或 Alarm GET 才发现 TiKV alarm metadata 损坏。现在
+  `InitializeLeadershipRevision` 在 witness 扫描之后调用统一 `CorruptAlarms`：健康空集或有效 active CORRUPT 仍完成
+  初始化（后者保持只读），非法 member JSON 或 generation 则取消当前 election term，绝不设置 leader/Ready。
+  `recordLeadershipInitializationError` 新增低基数
+  `leader_election_initialize_invalid_alarm_metadata` 分类；production PrometheusRule 新增 critical
+  `KubeBrainInvalidCorruptAlarmMetadata`，runbook 明确保持流量栅栏、禁止清除/重写内部 alarm key 并保全证据。backend
+  回归分别固定 malformed generation 拒绝初始化与合法 active alarm 允许只读初始化；leader metric 和 manifest 测试固定
+  wrapped sentinel、表达式、severity 和处置文本。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

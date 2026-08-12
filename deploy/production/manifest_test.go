@@ -1619,6 +1619,14 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		incompatibleWitness["expr"])
 	require.Equal(t, "critical", incompatibleWitness["labels"].(map[string]any)["severity"])
 	require.Contains(t, incompatibleWitness["annotations"].(map[string]any)["description"], "Continue roll-forward")
+	invalidAlarm := prometheusRuleByAlert(t, groups, "KubeBrainInvalidCorruptAlarmMetadata")
+	require.Equal(t,
+		`sum(increase(leader_election_initialize_invalid_alarm_metadata{namespace="kubebrain-system"}[10m])) > 0`,
+		invalidAlarm["expr"])
+	require.Equal(t, "critical", invalidAlarm["labels"].(map[string]any)["severity"])
+	invalidAlarmDescription := invalidAlarm["annotations"].(map[string]any)["description"].(string)
+	require.Contains(t, invalidAlarmDescription, "refused leadership")
+	require.Contains(t, invalidAlarmDescription, "do not clear or rewrite internal alarm keys")
 	require.Contains(t, description, "same-PVC TiKV repair")
 	require.Contains(t, description, "no pending/down peer Regions")
 

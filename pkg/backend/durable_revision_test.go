@@ -104,6 +104,25 @@ func TestLeadershipRevisionKeepsUserRevisionsContiguous(t *testing.T) {
 	require.Equal(t, response.Header.Revision, durable)
 }
 
+func TestLeadershipRevisionRejectsMalformedCorruptAlarmGeneration(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	require.NoError(t, b.InternalPut(ctx, corruptAlarmGenerationKey, []byte("bad")))
+
+	err := b.InitializeLeadershipRevision(ctx, 0)
+	require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
+	require.ErrorContains(t, err, "corrupt alarm generation has length 3")
+}
+
+func TestLeadershipRevisionAllowsValidActiveCorruptAlarmReadOnlyState(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	require.NoError(t, b.ArmCorrupt(ctx, 44101))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{44101}, members)
+}
+
 func TestTransactionalRevisionAllocatorCommitsContinuousMarkers(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	b.persistDurableRevision(1)
