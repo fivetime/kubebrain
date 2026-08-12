@@ -245,9 +245,6 @@ child=0
 heartbeat_pid=0
 fenced=false
 cleanup() {
-  rm -rf "$capture_dir"
-  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
-  [[ -z "$managed_backup" ]] || rm -f "$managed_backup"
   if [[ "$child" -gt 0 ]] && kill -0 "$child" 2>/dev/null; then
     kill "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
@@ -256,11 +253,23 @@ cleanup() {
     kill "$heartbeat_pid" 2>/dev/null || true
     wait "$heartbeat_pid" 2>/dev/null || true
   fi
+  rm -rf "$capture_dir"
+  [[ -z "$managed_parameters" ]] || rm -f "$managed_parameters"
+  [[ -z "$managed_backup" ]] || rm -f "$managed_backup"
 }
 trap cleanup EXIT INT TERM
 
+renew_terminal_lease() {
+  run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
+    --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; destroy worker was fenced" >&2
+    return 1
+  }
+}
+
 run_phase() {
   local phase="$1" phase_rc
+  rm -f "$capture_dir/child.done"
   env "${destroy_env[@]}" ACTION="$phase" "$DESTROY_COMMAND" &
   child=$!
   (
@@ -268,7 +277,7 @@ run_phase() {
       sleep "$heartbeat_interval"
       if ! run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" \
         --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null; then
-        kill "$child" 2>/dev/null || true
+        [[ -e "$capture_dir/child.done" ]] || kill "$child" 2>/dev/null || true
         exit 75
       fi
     done
@@ -277,6 +286,7 @@ run_phase() {
   set +e
   wait "$child"
   phase_rc=$?
+  : >"$capture_dir/child.done"
   kill "$heartbeat_pid" 2>/dev/null
   wait "$heartbeat_pid"
   heartbeat_rc=$?
@@ -466,6 +476,7 @@ for phase in "${phases[@]}"; do
   if [[ "$fenced" == true ]]; then
     exit 1
   fi
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "instance destruction ${phase} exited ${phase_rc}" >/dev/null
   echo "instance destruction failed during ${phase} and was requeued" >&2
@@ -473,29 +484,34 @@ for phase in "${phases[@]}"; do
 done
 
 [[ -f "$receipt_output" ]] || {
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "destroy receipt missing" >/dev/null
   echo "instance destruction completed without its receipt" >&2
   exit 1
 }
 if ! freeze_destroy_receipt; then
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "destroy receipt invalid" >/dev/null
   echo "instance destruction produced an invalid receipt" >&2
   exit 1
 fi
 if ! validate_destroy_receipt; then
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "destroy receipt invalid" >/dev/null
   echo "instance destruction produced an invalid receipt" >&2
   exit 1
 fi
 if ! receipt_digest="$(validated_destroy_receipt_digest)"; then
+  renew_terminal_lease || exit 1
   run_operationctl --action retry --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
     --message "destroy receipt invalid" >/dev/null
   echo "instance destruction produced an invalid receipt" >&2
   exit 1
 fi
+renew_terminal_lease || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "instance destruction completed" >/dev/null
 cleanup

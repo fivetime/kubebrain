@@ -47943,6 +47943,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fencing 不再误杀已退出/PID 复用的 child；cleanup 也先回收进程再移除标记目录。正向回归固定最终 heartbeat
   严格早于 succeed，负向固定最终 fencing 后不提交任何 terminal 状态。
 
+- A4464 将最终 lease 所有权证明应用到不可逆 Destroy。旧 worker 为 prepare/quiesce/destroy/complete 每个 phase
+  单独启动 heartbeat 并在 child 返回后立即停止，随后才冻结、严格校验 destroy receipt 并提交 succeed；快速全流程
+  甚至可能没有一次续租。RED 让全部资源销毁 phase 成功后拒绝 heartbeat，旧实现仍提交成功。新实现要求 phase 失败、
+  receipt 缺失/非法的 retry 以及最终 succeed 前同步 owner+attempt heartbeat，将 lease 延长完整周期后才紧邻 terminal
+  CAS；最终续租失败时零 retry/succeed mutation。每个 child wait 后先写完成标记，后台 fencing 不向已退出/PID 复用
+  的 child 发信号，cleanup 也先回收进程再删除 marker 目录。正向回归固定最后 heartbeat 严格先于 succeed。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

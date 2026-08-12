@@ -1153,7 +1153,10 @@ ServiceAccount 的 in-cluster 配置；环境变量 `KUBECONFIG` 只能在 in-cl
 StatefulSet 均为空。`complete` 重复 absence gate 后原子发布
 `kubebrain.destroy.receipt.v1`，绑定 instance、operation ID、两个 namespace、
 TidbCluster 名、备份 digest/revision 和完成时间；同输入重试会按严格 JSON 顶层字段
-集合、类型和值复核原 receipt 后复用。
+集合、类型和值复核原 receipt 后复用。每个 phase child 返回后先写完成标记，避免 heartbeat
+fencing 误杀已退出且 PID 可能复用的进程；任一 post-phase retry 或最终 succeed 前都同步续租
+完整 lease，失败时不写 terminal 状态，成功后才紧邻提交 owner+attempt CAS。快速 phase 即使未等到
+周期 heartbeat，也必须通过这次最终所有权证明。
 
 脚本刻意不删除 namespace、TLS Secret、外部对象存储 artifact、监控规则或控制面账单
 记录：namespace 可能共享，而审计/备份数据必须按独立保留策略处理。平台只有在 receipt
