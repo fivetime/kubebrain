@@ -62,6 +62,19 @@ IFS=$'\t' read -r replicaset_name replicaset_uid pod_template_hash <<<"$(
 )"
 [[ -n "$replicaset_name" && -n "$replicaset_uid" && -n "$pod_template_hash" && "$pod_template_hash" != "null" ]] || \
   die "TiDB Operator ReplicaSet identity is incomplete"
+if ! printf '%s' "$replicasets_json" | "$JQ" -e \
+  --arg deployment "$TIDB_OPERATOR_DEPLOYMENT" --arg deploymentUID "$EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID" \
+  --arg activeUID "$replicaset_uid" '
+    [.items[]? | select(
+      ([.metadata.ownerReferences[]? | select(.controller == true and .apiVersion == "apps/v1" and
+        .kind == "Deployment" and .name == $deployment and .uid == $deploymentUID)] | length) == 1
+    )] |
+    all(.[]; .metadata.uid == $activeUID or
+      (((.spec.replicas // 0) == 0) and ((.status.replicas // 0) == 0) and
+       ((.status.readyReplicas // 0) == 0) and ((.status.availableReplicas // 0) == 0)))
+  ' >/dev/null; then
+  die "TiDB Operator ReplicaSet rollout is not quiescent"
+fi
 
 pods_json="$("$KUBECTL" "${kubectl_args[@]}" get pods -o json)" || die "failed to list TiDB Operator Pods"
 if ! printf '%s' "$pods_json" | "$JQ" -e \

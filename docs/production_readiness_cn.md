@@ -196,7 +196,8 @@ hack/production/validate-tidb-operator-ready.sh
 ```
 
 它要求 Deployment generation/副本和唯一 controller-manager container image 全部收敛，再从同一 namespace
-筛出唯一由该 Deployment UID 控制且 Ready/Available 的 ReplicaSet，最后要求其精确 Pod 数全部
+筛出唯一由该 Deployment UID 控制且 Ready/Available 的 ReplicaSet，并要求同一 Deployment 下其他历史
+ReplicaSet 的 spec/status/ready/available replicas 全部为零，拒绝刚启动或尚未清零的并行 rollout；最后要求 active RS 的精确 Pod 数全部
 Running/Ready、非终止、template hash 与 owner UID 一致，并运行批准的 image digest。tag、UID、ReplicaSet、
 Pod 或 digest 任一漂移均 fail closed；仅有 Helm release 名称或 CRD 可用不能替代该运行身份链。
 

@@ -50,6 +50,7 @@ esac
 		{name: "Pod unready", env: "FAKE_PODS_JSON=" + fakeOperatorPodsJSON("containerd://sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false), want: "runtime release mismatch"},
 		{name: "Deployment unready", env: "FAKE_DEPLOYMENT_JSON=" + fakeOperatorDeploymentJSON("uid-operator", "pingcap/tidb-operator:v1.6.5", false), want: "Deployment release mismatch"},
 		{name: "Deployment UID drift", env: "FAKE_DEPLOYMENT_JSON=" + fakeOperatorDeploymentJSON("uid-other", "pingcap/tidb-operator:v1.6.5", true), want: "Deployment release mismatch"},
+		{name: "second ReplicaSet starts rollout", env: "FAKE_REPLICASETS_JSON=" + fakeOperatorReplicaSetsDuringRolloutJSON("uid-operator", "pingcap/tidb-operator:v1.6.5"), want: "ReplicaSet rollout is not quiescent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			failedOutput, failedErr := runProductionScriptCommand(t, "validate-tidb-operator-ready.sh", append(base, tc.env))
@@ -78,6 +79,20 @@ func fakeOperatorReplicaSetsJSON(deploymentUID, image string) string {
 		"spec":     map[string]any{"replicas": 1, "template": map[string]any{"spec": map[string]any{"containers": []map[string]any{{"name": "tidb-controller-manager", "image": image}}}}},
 		"status":   map[string]any{"readyReplicas": 1, "availableReplicas": 1},
 	}}})
+}
+
+func fakeOperatorReplicaSetsDuringRolloutJSON(deploymentUID, image string) string {
+	base := map[string]any{
+		"metadata": map[string]any{"name": "tidb-controller-manager-abc", "uid": "uid-rs", "labels": map[string]any{"pod-template-hash": "abc"}, "ownerReferences": []map[string]any{{"apiVersion": "apps/v1", "kind": "Deployment", "name": "tidb-controller-manager", "uid": deploymentUID, "controller": true}}},
+		"spec":     map[string]any{"replicas": 1, "template": map[string]any{"spec": map[string]any{"containers": []map[string]any{{"name": "tidb-controller-manager", "image": image}}}}},
+		"status":   map[string]any{"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+	}
+	newReplicaSet := map[string]any{
+		"metadata": map[string]any{"name": "tidb-controller-manager-new", "uid": "uid-rs-new", "labels": map[string]any{"pod-template-hash": "new"}, "ownerReferences": []map[string]any{{"apiVersion": "apps/v1", "kind": "Deployment", "name": "tidb-controller-manager", "uid": deploymentUID, "controller": true}}},
+		"spec":     map[string]any{"replicas": 1, "template": map[string]any{"spec": map[string]any{"containers": []map[string]any{{"name": "tidb-controller-manager", "image": "pingcap/tidb-operator:v1.6.6"}}}}},
+		"status":   map[string]any{"replicas": 0, "readyReplicas": 0, "availableReplicas": 0},
+	}
+	return mustJSON(map[string]any{"items": []map[string]any{base, newReplicaSet}})
 }
 
 func fakeOperatorPodsJSON(imageID string, ready bool) string {

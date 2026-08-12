@@ -47771,6 +47771,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `operator→instance→region→latency`，Operator 失败时其余门禁零调用。该稳态身份验证是执行真实逐成员
   升级/回滚矩阵的前提，不宣称矩阵本身已经完成。
 
+- A4444 关闭 A4443 对并行 ReplicaSet 的 fail-open。旧门禁从 namespace 中挑出唯一“达到预期副本且
+  image 正确”的 active RS，却忽略同一 Deployment UID 下其他 RS；新 Operator rollout 刚把新 RS
+  `spec.replicas` 扩为 1、尚未 Ready 时，旧 RS 仍 1/1 Ready，旧门禁会只选旧 RS 并成功。RED 固定旧 RS
+  完全健康、新 v1.6.6 RS spec=1/status=0，旧实现确定性放行。新实现保留一个 active RS，但同时枚举该
+  Deployment 的全部 controller-owned RS，要求除 active UID 外每个历史 RS 的 spec/status/ready/available
+  replicas 均为零；新 rollout、未完成 scale-down 或两个 serving revision 均立即 fail closed。该稳态拒绝
+  防止升级中途发布业务，不替代随后仍需执行的真实 Operator 升级/回滚兼容矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
