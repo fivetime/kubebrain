@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -62,12 +63,21 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	tlsEnabled := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_TLS")) == "true"
 	tlsRotationCommand := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_TLS_ROTATION_COMMAND"))
 	var clientTLS *tls.Config
+	var rotatedClientTLS *tls.Config
+	var retiredCAClientTLS *tls.Config
 	var initialServerCertificate string
 	activeDownstreamStat := "http.kubebrain_downstream.downstream_cx_active"
 	if tlsEnabled {
 		clientTLS = loadExternalL4ClientTLS(t, "KUBERNETES_ENVOY_ROLLOUT")
 		activeDownstreamStat = "listener.0.0.0.0_2380.downstream_cx_active"
 		initialServerCertificate = envoyServerCertificateFingerprint(t, endpoint, clientTLS)
+		if strings.TrimSpace(os.Getenv("KUBERNETES_ENVOY_ROTATED_TLS_CA_FILE")) != "" {
+			require.NotEmpty(t, tlsRotationCommand, "rotated TLS credentials require the rotation overlap command")
+			rotatedClientTLS = loadExternalL4ClientTLS(t, "KUBERNETES_ENVOY_ROTATED")
+			retiredCAClientTLS = clientTLS.Clone()
+			retiredCAClientTLS.RootCAs = loadEnvoyCertificatePool(t,
+				strings.TrimSpace(os.Getenv("KUBERNETES_ENVOY_RETIRED_TLS_CA_FILE")))
+		}
 	} else {
 		require.Empty(t, tlsRotationCommand, "TLS rotation overlap requires the TLS passthrough profile")
 	}
@@ -242,12 +252,53 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	}
 	if tlsEnabled {
 		if tlsRotationCommand != "" {
-			rotatedServerCertificate := envoyServerCertificateFingerprint(t, endpoint, clientTLS)
+			probeTLS := clientTLS
+			if rotatedClientTLS != nil {
+				probeTLS = rotatedClientTLS
+			}
+			rotatedServerCertificate := envoyServerCertificateFingerprint(t, endpoint, probeTLS)
 			require.NotEqual(t, initialServerCertificate, rotatedServerCertificate,
 				"TLS rotation command must replace the server leaf certificate observed through Envoy")
 		}
+		if rotatedClientTLS != nil {
+			assertEnvoyKubernetesTLSClientWorks(t, endpoint, rotatedClientTLS, "/dbaas-envoy-kubernetes-rotated-ca")
+			assertEnvoyKubernetesTLSHandshakeRejected(t, endpoint, retiredCAClientTLS)
+			assertEnvoyKubernetesTLSClientWorks(t, endpoint, rotatedClientTLS, "/dbaas-envoy-kubernetes-rotated-ca-after-rejection")
+		}
 		assertEnvoyKubernetesTLSRejectsInvalidClients(t, endpoint, clientTLS, "after-rollout")
 	}
+}
+
+func loadEnvoyCertificatePool(t *testing.T, path string) *x509.CertPool {
+	t.Helper()
+	require.NotEmpty(t, path)
+	pem, err := os.ReadFile(path)
+	require.NoError(t, err)
+	pool := x509.NewCertPool()
+	require.True(t, pool.AppendCertsFromPEM(pem))
+	return pool
+}
+
+func assertEnvoyKubernetesTLSClientWorks(t *testing.T, endpoint string, clientTLS *tls.Config, key string) {
+	t.Helper()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second, TLS: clientTLS})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, client.Close()) }()
+	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = client.Put(probeCtx, key, "accepted")
+	require.NoError(t, err)
+}
+
+func assertEnvoyKubernetesTLSHandshakeRejected(t *testing.T, endpoint string, clientTLS *tls.Config) {
+	t.Helper()
+	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connection, err := (&tls.Dialer{Config: clientTLS}).DialContext(probeCtx, "tcp", endpoint)
+	if connection != nil {
+		_ = connection.Close()
+	}
+	require.Error(t, err, "a client trusting only the retired CA must reject the rotated server leaf")
 }
 
 func envoyServerCertificateFingerprint(t *testing.T, endpoint string, clientTLS *tls.Config) string {

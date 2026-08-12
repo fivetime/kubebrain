@@ -93,6 +93,11 @@ lease ID 都必须逐轮恢复。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临�
 更新及 projected volume 收敛并有界退出。返回时必须同时存在旧、新 Envoy Pod UID，全部 rollout 后从同一
 NodePort 新建的完整 mTLS 握手必须看到不同的服务端叶证书 SHA-256；否则 fail closed。该入口只接受显式可执行
 普通文件且必须与四项 TLS 输入同时使用，不通过 shell 解释任意字符串。
+若 hook 同时轮换 CA，可再原子设置五项 `TLS_ROTATED_CA_FILE`、`TLS_ROTATED_CERT_FILE`、
+`TLS_ROTATED_KEY_FILE`、`TLS_ROTATED_SERVER_NAME`、`TLS_RETIRED_CA_FILE`：全部 rollout 后仅新 CA+新 client
+必须成功，仅旧 CA 必须无法验证新服务端，拒绝探针后新凭据必须再次成功。五项不能部分设置，也不能脱离
+rotation hook。当前 Kind 门禁仍会在该组合下以 TTL=3 暴露真实租约过期，因此它是诊断入口，不是已通过的
+生产发布保证；服务端叶证书同 CA 轮换仍由 A4426 的绿色证据覆盖。
 
 设置全部四个 `TLS_CA_FILE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_SERVER_NAME` 后，同一门禁会把临时
 NodePort 切到 `2380`，通过 clientv3 mTLS 走 Envoy opaque TCP passthrough。四项必须全设且三个文件可读，否则

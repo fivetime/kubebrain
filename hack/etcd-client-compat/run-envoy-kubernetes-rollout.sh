@@ -14,6 +14,11 @@ TLS_CERT_FILE="${TLS_CERT_FILE:-}"
 TLS_KEY_FILE="${TLS_KEY_FILE:-}"
 TLS_SERVER_NAME="${TLS_SERVER_NAME:-}"
 TLS_ROTATION_COMMAND="${TLS_ROTATION_COMMAND:-}"
+TLS_ROTATED_CA_FILE="${TLS_ROTATED_CA_FILE:-}"
+TLS_ROTATED_CERT_FILE="${TLS_ROTATED_CERT_FILE:-}"
+TLS_ROTATED_KEY_FILE="${TLS_ROTATED_KEY_FILE:-}"
+TLS_ROTATED_SERVER_NAME="${TLS_ROTATED_SERVER_NAME:-}"
+TLS_RETIRED_CA_FILE="${TLS_RETIRED_CA_FILE:-}"
 SERVICE_NAME=kubebrain-envoy-rollout-gate
 
 if [[ -z "$KUBE_CONTEXT" ]]; then
@@ -47,6 +52,21 @@ if [[ -n "$TLS_ROTATION_COMMAND" ]]; then
     exit 2
   fi
   TLS_ROTATION_COMMAND="$(cd "$(dirname "$TLS_ROTATION_COMMAND")" && pwd -P)/$(basename "$TLS_ROTATION_COMMAND")"
+fi
+rotated_tls_values=("$TLS_ROTATED_CA_FILE" "$TLS_ROTATED_CERT_FILE" "$TLS_ROTATED_KEY_FILE" "$TLS_ROTATED_SERVER_NAME" "$TLS_RETIRED_CA_FILE")
+rotated_tls_nonempty=0
+for value in "${rotated_tls_values[@]}"; do
+  [[ -n "$value" ]] && ((rotated_tls_nonempty += 1))
+done
+if (( rotated_tls_nonempty != 0 && rotated_tls_nonempty != 5 )); then
+  echo "TLS_ROTATED_CA_FILE, TLS_ROTATED_CERT_FILE, TLS_ROTATED_KEY_FILE, TLS_ROTATED_SERVER_NAME, and TLS_RETIRED_CA_FILE must all be set" >&2
+  exit 2
+fi
+if (( rotated_tls_nonempty == 5 )); then
+  [[ -n "$TLS_ROTATION_COMMAND" ]] || { echo "rotated TLS inputs require TLS_ROTATION_COMMAND" >&2; exit 2; }
+  for tls_file in "$TLS_ROTATED_CA_FILE" "$TLS_ROTATED_CERT_FILE" "$TLS_ROTATED_KEY_FILE" "$TLS_RETIRED_CA_FILE"; do
+    [[ -r "$tls_file" ]] || { echo "rotated TLS files must be readable" >&2; exit 2; }
+  done
 fi
 if [[ ! "$ROLLOUT_CYCLES" =~ ^[0-9]+$ ]] || (( ROLLOUT_CYCLES < 1 || ROLLOUT_CYCLES > 10 )); then
   echo "ROLLOUT_CYCLES must be an integer in [1,10]" >&2
@@ -149,5 +169,10 @@ fi
 	  KUBERNETES_ENVOY_ROLLOUT_TLS_CERT_FILE="$TLS_CERT_FILE" \
 	  KUBERNETES_ENVOY_ROLLOUT_TLS_KEY_FILE="$TLS_KEY_FILE" \
 	  KUBERNETES_ENVOY_ROLLOUT_TLS_SERVER_NAME="$TLS_SERVER_NAME" \
+	  KUBERNETES_ENVOY_ROTATED_TLS_CA_FILE="$TLS_ROTATED_CA_FILE" \
+	  KUBERNETES_ENVOY_ROTATED_TLS_CERT_FILE="$TLS_ROTATED_CERT_FILE" \
+	  KUBERNETES_ENVOY_ROTATED_TLS_KEY_FILE="$TLS_ROTATED_KEY_FILE" \
+	  KUBERNETES_ENVOY_ROTATED_TLS_SERVER_NAME="$TLS_ROTATED_SERVER_NAME" \
+	  KUBERNETES_ENVOY_RETIRED_TLS_CA_FILE="$TLS_RETIRED_CA_FILE" \
 	  go test . -run '^TestEnvoyKubernetesRollout$' -count=1 -timeout="$TEST_TIMEOUT" -v
 )

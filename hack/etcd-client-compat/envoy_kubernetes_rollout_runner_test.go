@@ -27,6 +27,10 @@ func TestEnvoyKubernetesRolloutRunnerFailsClosed(t *testing.T) {
 		"TLS_ROTATION_COMMAND requires all TLS passthrough inputs",
 		"TLS_ROTATION_COMMAND must name an executable regular file",
 		"KUBEBRAIN_ENVOY_ROLLOUT_TLS_ROTATION_COMMAND",
+		"TLS_ROTATED_CA_FILE, TLS_ROTATED_CERT_FILE, TLS_ROTATED_KEY_FILE, TLS_ROTATED_SERVER_NAME, and TLS_RETIRED_CA_FILE must all be set",
+		"rotated TLS inputs require TLS_ROTATION_COMMAND",
+		"KUBERNETES_ENVOY_ROTATED_TLS_CA_FILE",
+		"KUBERNETES_ENVOY_RETIRED_TLS_CA_FILE",
 		"KUBERNETES_ENVOY_ROLLOUT_TLS_SERVER_NAME",
 		"kubebrain-envoy-rollout-gate",
 		"KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT",
@@ -65,6 +69,16 @@ func TestEnvoyKubernetesRolloutRunnerRejectsNonExecutableRotation(t *testing.T) 
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "TLS_ROTATION_COMMAND must name an executable regular file")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestEnvoyKubernetesRolloutRunnerRejectsPartialRotatedTLS(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-envoy-kubernetes-rollout.sh", []string{
+		"KUBE_CONTEXT=explicit-test-context", "TLS_ROTATED_CA_FILE=/missing/next-ca.crt",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output),
+		"TLS_ROTATED_CA_FILE, TLS_ROTATED_CERT_FILE, TLS_ROTATED_KEY_FILE, TLS_ROTATED_SERVER_NAME, and TLS_RETIRED_CA_FILE must all be set")
 	require.NotContains(t, string(output), "missing required command")
 }
 

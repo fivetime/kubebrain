@@ -47565,6 +47565,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   轮换叠加 Envoy rollout”的 Kind 证据缺口；
   CA trust pool 更换与 Envoy rollout 的组合、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 仍开放。
 
+- A4427 把 A4426 保留的 CA trust pool 更换与 Envoy rollout 组合缺口转成永久 fail-closed 负向门禁，但真实
+  TTL=3 结果尚未达到可关闭标准。runner 新增五项原子 rotated credential 输入：仅与显式 rotation hook 和
+  完整初始 mTLS 配置同时使用，任一缺失或文件不可读都在访问集群前失败。长期 cohort 使用 old+new roots 与
+  old client leaf；hook 将 KubeBrain server leaf 切到独立 new CA，并把 inbound client trust 更新为 old+new
+  bundle。完成后门禁以仅 new CA/new client leaf 新建 Put，随后要求仅 old CA 无法验证 new server leaf，再用
+  new credential 重试成功，避免把 endpoint outage 当成 CA 拒绝；服务端叶 SHA-256、旧/新 Envoy UID 真交叠、
+  三轮九 Pod、逐 client Watch+TTL=3 LeaseKeepAlive 等 A4426 断言全部保留。
+  2026-08-12 在 fresh `kubebrain-envoy-ca-a4427` Kind 三 zone worker、独立 3 PD/3 TiKV/3 KubeBrain 和固定
+  Envoy 1.39.0 上，首轮普通门禁以 4 个 client 覆盖三 Envoy，三 Pod 已投影 new-CA leaf 与 overlap bundle，
+  但 member 1 在第一轮 99.60 秒真实过期（最后 TTL=3，服务端 TTL=-1）。为排除 hook 每秒六次 `kubectl exec`
+  争用，后续让首个 surge 出现后暂停 Deployment、固定等待 Secret 投影并将每轮读取合并，再恢复 rollout；
+  三 client 运行跨过两轮但在第三轮 264.40 秒仍真实过期。实验性将 Envoy immediate drain-time 从 A4425 的
+  1 秒降至 0，仍在第一轮 129.61 秒过期，因此已恢复 production 1 秒设置。门禁退出后重建相同临时 NodePort，
+  old 与 new client leaf 都通过 overlap bundle 新建健康请求（分别约 1.04 秒与 25.9ms），排除动态 CA reload
+  或证书链配置错误。对照 `/root/etcd/server/etcdserver/server.go`，默认 minimum lease TTL 约为
+  `ceil(1.5 × election timeout)`（常规配置 2 秒），TTL=3 是合法兼容边界，不能用提高永久门禁 TTL 掩盖。
+  因此本项提交可重复的负向诊断能力并如实保留“CA overlap + Envoy rollout 下 TTL=3 无损迁移”为开放差距；
+  A4426 同 CA leaf rotation 绿色结论不受影响，也不外推到 CA 撤旧、云 LB 或跨 AZ 网络。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
