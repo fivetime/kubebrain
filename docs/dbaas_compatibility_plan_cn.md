@@ -46960,6 +46960,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   强度下 TiKV 数据/raft 路径退化时显式 lease ID 代际隔离与 Revoke/attached-key 原子性，不替代自然过期
   跨故障、streaming KeepAlive 长窗口、独立 AZ、conntrack/NAT/underlay failure 或分钟/小时级 soak。
 
+- A4396 将 lease 的隐式自然过期补入 TiKV 组合弱网历史，对照 upstream
+  `/root/etcd/tests/integration/clientv3/lease/lease_test.go` 的 `TestLeaseTimeToLive`、
+  `TestLeaseRenewLostQuorum` 以及 TTL 到期后 lease-not-found 契约。既有
+  `TestClientV3LeaseNaturalExpiryHistoryIsLinearizable` 的无故障路径仍运行三轮 2 秒 TTL，并要求零歧义；
+  新增外部故障路径先建立 Watch、Grant 8 秒 lease 并提交 attached Put，再启动 fail-closed netem 命令和
+  3 秒安装 warmup。故障 helper 现在返回只读完成信号，测试在 lease deadline 处断言故障命令仍在运行，
+  最后把 Watch delete frame 的到达时间作为 `leaseExpire` operation return，与并发 Get/TimeToLive 一并交给
+  generation nondeterministic model，检查 deadline 跨故障后的 lease/key 原子删除与实时顺序。
+  首次真实 RED 在 49.560 秒正确拒绝了“delete 必须在故障仍生效时提交”的过强断言：全部三个 TiKV store
+  退化时 transaction/Region 路径暂时没有提交能力，8 秒逻辑 deadline 已越过，但删除 tombstone 只能在
+  netem 清除后提交；这与 upstream 丢失 quorum 时不能要求 expiry write 成功的边界一致。门禁遂收敛为
+  “deadline 必须与故障重叠，恢复后必须产生唯一删除事件并通过 Porcupine”，而没有把恢复后提交误判成
+  数据面错误。新增 `tikv-cross-node-degraded-network-lease-expiry-linearizability` 后，2026-08-12 disposable
+  `kubebrain-tikv-netem-expiry` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/3 KubeBrain、27379/27380
+  拓扑通过；无故障三轮基线耗时 7.306 秒，最终真实门禁在三个 TiKV namespace 同时施加
+  `250ms +/- 50ms`、`2%` loss、`20mbit`、30 秒 netem，49.377 秒后确认 deadline 在故障中越过、删除在
+  恢复后提交、Watch/Range/TTL 历史 Porcupine `Ok`。client 内部重试吸收了 Range timeout，故返回级歧义
+  计数为 0，不作为本门禁成功条件。恢复后三个 KubeBrain、PD、TiKV 均 Ready，TiDBCluster Ready；三个
+  TiKV 零重启且 namespace 最终均为 `qdisc noqueue`，`kb-pd-0` 唯一一次 restart 于 `01:36:38Z` 初始
+  部署期结束，早于门禁。本项证明当前强度下 TiKV 弱网跨越自然过期 deadline 后可恢复原子删除，不替代
+  PD 同类组合弱网、多个同时过期 lease、streaming KeepAlive 竞争、独立 AZ 或分钟/小时级 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -438,12 +438,19 @@ func TestClientV3LeaseGenerationHistoryIsLinearizable(t *testing.T) {
 
 func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 	const (
-		rounds = 3
-		ttl    = 2 * time.Second
+		baselineRounds = 3
+		baselineTTL    = 2 * time.Second
 	)
 	endpoint := os.Getenv("KUBEBRAIN_ETCD_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("set KUBEBRAIN_ETCD_ENDPOINT to run the lease natural-expiry linearizability history")
+	}
+	faultCommand := os.Getenv("KUBEBRAIN_LINEARIZABILITY_FAULT_COMMAND")
+	rounds := baselineRounds
+	ttl := baselineTTL
+	if faultCommand != "" {
+		rounds = 1
+		ttl = 8 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -461,6 +468,7 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 
 	var clock atomic.Int64
 	var historyMu sync.Mutex
+	var ambiguousFailures atomic.Int64
 	history := make([]porcupine.Operation, 0, 160)
 	appendOperation := func(clientID int, input leaseInput, call int64, output leaseGenerationOutput, returned int64) {
 		historyMu.Lock()
@@ -477,6 +485,7 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 		if invokeErr != nil {
 			require.True(t, isAmbiguousRPCError(invokeErr), "unexpected %s error: %v", describeLeaseInput(input), invokeErr)
 			output.failed = true
+			ambiguousFailures.Add(1)
 		}
 		appendOperation(clientID, input, call, output, returned)
 		return started
@@ -484,9 +493,11 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 
 	var faultWorkers sync.WaitGroup
 	faultErrCh := make(chan error, 1)
-	if failoverPod := linearizabilityDeletePod(); failoverPod != "" {
+	failoverPod := linearizabilityDeletePod()
+	if failoverPod != "" {
 		startLinearizabilityPodDeletion(ctx, &clock, failoverPod, faultErrCh, &faultWorkers)
 	}
+	var externalFaultDone <-chan struct{}
 	for round := 0; round < rounds; round++ {
 		before, err := cli.Get(ctx, key)
 		require.NoError(t, err)
@@ -500,12 +511,27 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 
 		deadlineAnchor := invoke(0, leaseInput{kind: leaseGrant, ttl: int64(ttl / time.Second)})
 		invoke(1, leaseInput{kind: leasePut, value: 300 + round})
+		if faultCommand != "" {
+			externalFaultDone = startLinearizabilityFaultCommand(t, ctx, faultCommand, faultErrCh, &faultWorkers)
+			select {
+			case <-externalFaultDone:
+				t.Fatal("external fault ended before the lease-expiry overlap window")
+			case <-time.After(3 * time.Second):
+			}
+		}
 		if round%2 == 1 {
 			time.Sleep(900 * time.Millisecond)
 			deadlineAnchor = invoke(2, leaseInput{kind: leaseKeepAlive})
 		}
 		if delay := time.Until(deadlineAnchor.Add(ttl)); delay > 0 {
 			time.Sleep(delay)
+		}
+		if externalFaultDone != nil {
+			select {
+			case <-externalFaultDone:
+				t.Fatal("lease deadline did not overlap the active external fault")
+			default:
+			}
 		}
 
 		expiryCall := clock.Add(1)
@@ -546,6 +572,14 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 		}
 		watchCancel()
 		require.Positive(t, expiryReturn, "watch closed before natural lease deletion")
+		if externalFaultDone != nil {
+			select {
+			case <-externalFaultDone:
+				t.Log("natural lease deletion committed after the external fault recovered")
+			default:
+				t.Log("natural lease deletion committed while the external fault was active")
+			}
+		}
 		appendOperation(5, leaseInput{kind: leaseExpire}, expiryCall, leaseGenerationOutput{}, expiryReturn)
 		invoke(3, leaseInput{kind: leaseRead})
 		invoke(4, leaseInput{kind: leaseTimeToLive})
@@ -554,6 +588,11 @@ func TestClientV3LeaseNaturalExpiryHistoryIsLinearizable(t *testing.T) {
 	close(faultErrCh)
 	for faultErr := range faultErrCh {
 		require.NoError(t, faultErr)
+	}
+	if faultCommand == "" && failoverPod == "" {
+		require.Zero(t, ambiguousFailures.Load(), "baseline history must not contain ambiguous RPC failures")
+	} else {
+		t.Logf("recorded %d ambiguous lease natural-expiry RPC failures during injected fault", ambiguousFailures.Load())
 	}
 
 	result := porcupine.CheckOperationsTimeout(leaseGenerationModel, history, 10*time.Second)

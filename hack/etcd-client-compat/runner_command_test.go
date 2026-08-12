@@ -758,6 +758,25 @@ func TestBackendTiKVDegradedNetworkRunsPorcupineLeaseHistories(t *testing.T) {
 	require.NotContains(t, script, "eval ")
 }
 
+func TestBackendTiKVDegradedNetworkRunsPorcupineLeaseExpiryHistory(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-degraded-network-lease-expiry-linearizability)`)
+	require.Contains(t, script, `"Porcupine lease expiry history across cross-node TiKV network degradation"`)
+	require.Contains(t, script, `TestClientV3LeaseNaturalExpiryHistoryIsLinearizable`)
+	require.Contains(t, script, `"$self --degrade-tikv-all-cross-node"`)
+	require.Contains(t, script, `run_degraded_network_lease_expiry_linearizability_test`)
+	require.NotContains(t, script, "eval ")
+
+	source, readErr := os.ReadFile("lease_linearizability_test.go")
+	require.NoError(t, readErr)
+	text := string(source)
+	require.Contains(t, text, `externalFaultDone = startLinearizabilityFaultCommand`)
+	require.Contains(t, text, `lease deadline did not overlap the active external fault`)
+	require.Contains(t, text, `natural lease deletion committed after the external fault recovered`)
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"

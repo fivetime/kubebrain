@@ -253,16 +253,19 @@ func TestClientV3RegisterHistoryIsLinearizable(t *testing.T) {
 	require.Equalf(t, porcupine.Ok, result, "register history result: %s", result)
 }
 
-func startLinearizabilityFaultCommand(t *testing.T, ctx context.Context, command string, errCh chan<- error, workers *sync.WaitGroup) {
+func startLinearizabilityFaultCommand(t *testing.T, ctx context.Context, command string, errCh chan<- error, workers *sync.WaitGroup) <-chan struct{} {
 	t.Helper()
+	done := make(chan struct{})
 	workers.Add(1)
 	go func() {
 		defer workers.Done()
+		defer close(done)
 		output, err := runCompatShellCommandContext(t, ctx, command)
 		if err != nil {
 			errCh <- fmt.Errorf("linearizability fault command: %w: %s", err, output)
 		}
 	}()
+	return done
 }
 
 type ambiguousRPCError struct{ err error }
