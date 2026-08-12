@@ -316,6 +316,12 @@ func (b *batchWriteWrapper) DelCurrent(it storage.Iter) {
 	b.BatchWrite.DelCurrent(internalIter)
 }
 
+// Atomic implements storage.BatchWrite.
+func (b *batchWriteWrapper) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
+	b.counter++
+	b.BatchWrite.Atomic(fn)
+}
+
 // Commit implements storage.BatchWrite
 func (b *batchWriteWrapper) Commit(ctx context.Context) (err error) {
 	commitStart := time.Now()

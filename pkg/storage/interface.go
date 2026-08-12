@@ -204,6 +204,16 @@ type Writer interface {
 	DelCurrent(ctx context.Context, iter Iter) (err error)
 }
 
+// AtomicBatch exposes reads and writes performed inside the transaction owned
+// by BatchWrite. It is intentionally smaller than KvStorage: callers may derive
+// keys and values from data read by the same commit, but cannot open snapshots
+// or recursively commit another transaction.
+type AtomicBatch interface {
+	Get(ctx context.Context, key []byte) ([]byte, error)
+	Put(key []byte, val []byte, ttl int64) error
+	Del(key []byte) error
+}
+
 // BatchWrite should support atomic batch pack with several operations
 type BatchWrite interface {
 
@@ -226,6 +236,12 @@ type BatchWrite interface {
 
 	// DelCurrent is an ugly design to unify the cas deleting in different storage implement
 	DelCurrent(it Iter)
+
+	// Atomic runs during Commit against the same storage transaction as the
+	// statically staged operations. Returning an error aborts the whole batch.
+	// This enables transaction-local read-modify-write and dynamic key encoding.
+	// Callers must stage it after every static operation whose value it reads.
+	Atomic(func(context.Context, AtomicBatch) error)
 
 	// Commit commits batch atomically, return the first error in batch
 	// * must return ErrUncertainResult if client can not know whether data is written

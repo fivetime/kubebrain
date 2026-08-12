@@ -25,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"testing"
 	"time"
 
@@ -226,5 +227,55 @@ func RunBatchWriteContract(t *testing.T, newKV func(t *testing.T) storage.KvStor
 		mustAbsent(t, kv, "sibling") // the sibling write must NOT have applied
 		v, _ := get(t, kv, "guard")
 		require.Equal(t, []byte("g1"), v)
+	})
+
+	t.Run("Atomic_derives_writes_from_transactional_read", func(t *testing.T) {
+		kv := newScopedKV(t)
+		seed(t, kv, "counter", "40")
+		b := kv.BeginBatchWrite()
+		b.Put(key(t, "counter"), []byte("41"), 0)
+		var allocated int
+		b.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
+			current, err := txn.Get(ctx, key(t, "counter"))
+			if err != nil {
+				return err
+			}
+			allocated, err = strconv.Atoi(string(current))
+			if err != nil {
+				return err
+			}
+			allocated++
+			if err = txn.Put(key(t, "counter"), []byte(strconv.Itoa(allocated)), 0); err != nil {
+				return err
+			}
+			return txn.Put(key(t, "derived-"+strconv.Itoa(allocated)), []byte("committed"), 0)
+		})
+		require.NoError(t, b.Commit(ctx))
+		require.Equal(t, 42, allocated)
+		v, err := get(t, kv, "counter")
+		require.NoError(t, err)
+		require.Equal(t, []byte("42"), v)
+		v, err = get(t, kv, "derived-42")
+		require.NoError(t, err)
+		require.Equal(t, []byte("committed"), v)
+	})
+
+	t.Run("Atomic_callback_error_rolls_back_whole_batch", func(t *testing.T) {
+		kv := newScopedKV(t)
+		seed(t, kv, "counter", "7")
+		wantErr := errors.New("dynamic write rejected")
+		b := kv.BeginBatchWrite()
+		b.Put(key(t, "static"), []byte("must-rollback"), 0)
+		b.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
+			if err := txn.Put(key(t, "counter"), []byte("8"), 0); err != nil {
+				return err
+			}
+			return wantErr
+		})
+		require.ErrorIs(t, b.Commit(ctx), wantErr)
+		mustAbsent(t, kv, "static")
+		v, err := get(t, kv, "counter")
+		require.NoError(t, err)
+		require.Equal(t, []byte("7"), v)
 	})
 }

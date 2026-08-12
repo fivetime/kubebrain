@@ -114,6 +114,28 @@ func (b *batch) DelCurrent(it storage.Iter) {
 	})
 }
 
+type atomicBatch struct{ txn *txnkv.KVTxn }
+
+func (a atomicBatch) Get(ctx context.Context, key []byte) ([]byte, error) {
+	value, err := a.txn.Get(ctx, key)
+	if tikverr.IsErrNotFound(err) {
+		return nil, storage.ErrKeyNotFound
+	}
+	return value, err
+}
+
+func (a atomicBatch) Put(key []byte, val []byte, _ int64) error {
+	return a.txn.Set(key, val)
+}
+
+func (a atomicBatch) Del(key []byte) error { return a.txn.Delete(key) }
+
+func (b *batch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
+	b.list = append(b.list, func(ctx context.Context) error {
+		return fn(ctx, atomicBatch{txn: b.txn})
+	})
+}
+
 func (b *batch) Commit(ctx context.Context) (err error) {
 	defer func() {
 		// b.txn is nil when BeginBatchWrite's Begin() failed (e.g. PD/TSO

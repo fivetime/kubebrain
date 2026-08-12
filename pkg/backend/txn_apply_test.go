@@ -104,6 +104,8 @@ func (uncertainNoopBatch) CAS([]byte, []byte, []byte, int64)   {}
 func (uncertainNoopBatch) Put([]byte, []byte, int64)           {}
 func (uncertainNoopBatch) Del([]byte)                          {}
 func (uncertainNoopBatch) DelCurrent(storage.Iter)             {}
+func (uncertainNoopBatch) Atomic(func(context.Context, storage.AtomicBatch) error) {
+}
 func (uncertainNoopBatch) Commit(context.Context) error {
 	return storage.NewErrUncertainResult(context.DeadlineExceeded)
 }
@@ -145,6 +147,8 @@ func (transientCASBatch) CAS([]byte, []byte, []byte, int64)   {}
 func (transientCASBatch) Put([]byte, []byte, int64)           {}
 func (transientCASBatch) Del([]byte)                          {}
 func (transientCASBatch) DelCurrent(storage.Iter)             {}
+func (transientCASBatch) Atomic(func(context.Context, storage.AtomicBatch) error) {
+}
 func (transientCASBatch) Commit(ctx context.Context) error {
 	select {
 	case <-ctx.Done():

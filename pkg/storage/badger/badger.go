@@ -106,7 +106,7 @@ func (b *store) Iter(ctx context.Context, start []byte, end []byte, timestamp ui
 func (b *store) BeginBatchWrite() storage.BatchWrite {
 	batch := &batch{}
 	batch.txn = b.db.NewTransaction(true)
-	batch.list = make([]func() error, 0, 2)
+	batch.list = make([]func(context.Context) error, 0, 2)
 	return batch
 }
 

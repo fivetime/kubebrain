@@ -28,6 +28,7 @@ type batch struct {
 
 	cache   map[string]cacheVal
 	opCount int
+	atomic  []func(context.Context, storage.AtomicBatch) error
 }
 
 type cacheVal struct {
@@ -137,6 +138,35 @@ func (b *batch) DelCurrent(it storage.Iter) {
 	b.opCount++
 }
 
+func (b *batch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
+	if b.err != nil {
+		return
+	}
+	b.atomic = append(b.atomic, fn)
+}
+
+type atomicBatch struct{ batch *batch }
+
+func (a atomicBatch) Get(_ context.Context, key []byte) ([]byte, error) {
+	value := a.batch.get(key)
+	if value == nil {
+		return nil, storage.ErrKeyNotFound
+	}
+	return append([]byte(nil), value...), nil
+}
+
+func (a atomicBatch) Put(key []byte, val []byte, ttl int64) error {
+	a.batch.cache[string(key)] = cacheVal{val: append([]byte(nil), val...), ttl: ttl}
+	a.batch.opCount++
+	return nil
+}
+
+func (a atomicBatch) Del(key []byte) error {
+	a.batch.cache[string(key)] = cacheVal{isDeleted: true}
+	a.batch.opCount++
+	return nil
+}
+
 func (b *batch) get(key []byte) []byte {
 	v, ok := b.cache[string(key)]
 	if ok {
@@ -157,6 +187,11 @@ func (b *batch) Commit(ctx context.Context) error {
 
 	if b.err != nil {
 		return b.err
+	}
+	for _, fn := range b.atomic {
+		if err := fn(ctx, atomicBatch{batch: b}); err != nil {
+			return err
+		}
 	}
 
 	for k, v := range b.cache {

@@ -27,12 +27,12 @@ import (
 
 type batch struct {
 	txn  *badger.Txn
-	list []func() error
+	list []func(context.Context) error
 }
 
 func (b *batch) PutIfNotExist(key []byte, val []byte, ttl int64) {
 	idx := len(b.list)
-	f := func() error {
+	f := func(_ context.Context) error {
 		oldItem, err := b.txn.Get(key)
 		if err == nil {
 			// value exist
@@ -62,7 +62,7 @@ func (b *batch) PutIfNotExist(key []byte, val []byte, ttl int64) {
 
 func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 	idx := len(b.list)
-	f := func() error {
+	f := func(_ context.Context) error {
 		item, err := b.txn.Get(key)
 		if err != nil {
 			if err == badger.ErrKeyNotFound {
@@ -90,7 +90,7 @@ func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 }
 
 func (b *batch) Put(key []byte, val []byte, ttl int64) {
-	f := func() error {
+	f := func(_ context.Context) error {
 		if ttl != 0 {
 			entry := badger.NewEntry(key, val).WithTTL(time.Duration(ttl) * time.Second)
 			return b.txn.SetEntry(entry)
@@ -101,7 +101,7 @@ func (b *batch) Put(key []byte, val []byte, ttl int64) {
 }
 
 func (b *batch) Del(key []byte) {
-	f := func() error {
+	f := func(_ context.Context) error {
 		return b.txn.Delete(key)
 	}
 	b.list = append(b.list, f)
@@ -109,7 +109,7 @@ func (b *batch) Del(key []byte) {
 
 func (b *batch) DelCurrent(it storage.Iter) {
 	idx := len(b.list)
-	f := func() error {
+	f := func(_ context.Context) error {
 		i := it.(*iter)
 		item, err := b.txn.Get(i.Key())
 		if err != nil {
@@ -127,11 +127,37 @@ func (b *batch) DelCurrent(it storage.Iter) {
 	b.list = append(b.list, f)
 }
 
+type atomicBatch struct{ txn *badger.Txn }
+
+func (a atomicBatch) Get(_ context.Context, key []byte) ([]byte, error) {
+	item, err := a.txn.Get(key)
+	if errors.Is(err, badger.ErrKeyNotFound) {
+		return nil, storage.ErrKeyNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return item.ValueCopy(nil)
+}
+
+func (a atomicBatch) Put(key []byte, val []byte, ttl int64) error {
+	if ttl != 0 {
+		return a.txn.SetEntry(badger.NewEntry(key, val).WithTTL(time.Duration(ttl) * time.Second))
+	}
+	return a.txn.Set(key, val)
+}
+
+func (a atomicBatch) Del(key []byte) error { return a.txn.Delete(key) }
+
+func (b *batch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
+	b.list = append(b.list, func(ctx context.Context) error { return fn(ctx, atomicBatch{txn: b.txn}) })
+}
+
 func (b *batch) Commit(ctx context.Context) error {
 	// discard it anyway finally
 	defer b.txn.Discard()
 	for _, f := range b.list {
-		err := f()
+		err := f(ctx)
 		if err != nil {
 			return err
 		}

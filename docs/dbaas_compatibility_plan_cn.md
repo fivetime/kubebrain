@@ -47965,6 +47965,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   配置阶段，其中 6 个实际调用 operationctl、两个 TiKV worker进入 claim。现在 8 个脚本均在任何 operationctl
   调用前用数值比较要求正数且严格小于 lease，与三类冷物理 worker 一致；回归固定非法配置零 claim 调用。
 
+- A4467 为关闭已知 revision 跳号差异落地第一项存储基础，而不虚报差异已关闭。现有 `BatchWrite` 只能在
+  Commit 前预编码固定 key/value；TiKV transaction 内部虽能读取 durable counter，却无法把 next revision
+  反馈给同一事务中的 MVCC object/event key 编码。新 `BatchWrite.Atomic` 回调在底层提交事务中获得受限
+  `AtomicBatch`（Get/Put/Del），能读取先前 staged 值并据此动态写多个键；回调错误使静态与动态写整体回滚。
+  memkv、Badger、TiKV 和 metrics wrapper 已实现同一契约，Badger 的 operation closure 同时改为传递真实 Commit
+  context。共享 contract 固定 `40→staged 41→atomic 42`、动态 `derived-42` 与回调错误全批回滚；TiKV contract
+  仍需在配置真实 `KUBEBRAIN_TIKV_PD` 的环境运行。下一步才是将 durable revision、所有用户写/event log 和
+  uncertain resolution 迁移到该原语；迁移完成前矩阵继续保留 revision 可能跳号的可观察差异。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

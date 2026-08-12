@@ -2865,6 +2865,12 @@ hack/dev/verify.sh
 
 范围删除使用单个 `TxnApply` 提交，普通 key tombstone、lease attachment 和 watch event 全部共享一个 TiKV 事务与一个 MVCC revision；提交失败不会暴露已删除的前缀。生产环境通过 `--max-delete-range-keys=1024` 在写入前约束事务规模，超限只扫描 `limit+1` 个 key 后返回标准 `ResourceExhausted`，不分配 revision。默认 `0` 保持 etcd 不限 key 数的兼容行为。watch ring 已从“一 revision 一事件槽位”改为同一 revision 可承载多个事件，批量删除能通过 watch cache 一次返回多个同 revision DELETE 事件。
 
+storage `BatchWrite.Atomic` 提供提交事务内的动态读写：回调读取同一 batch 已 staged 的值，并可据此生成
+新的 key/value；回调错误必须使静态和动态写整体回滚。memkv、Badger、TiKV 及 metrics wrapper 使用同一
+接口和共享 contract。该原语是把全局 MVCC revision 从提交前 leader-local 预留迁移到 TiKV 事务内
+read-modify-write 的基础；在所有用户写、event log、durable revision 与 uncertain resolution 完成迁移前，
+不能据此宣称 revision 跳号差异已关闭。
+
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
 需要覆盖真实 namespace 删除和 namespace controller 清理路径时启用：
