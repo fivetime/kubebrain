@@ -47839,6 +47839,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain StatefulSet 的 generation/observed/replicas/revisions/image/UID 投影。该末尾 fence 给一次实例发布
   验证建立首尾稳态边界，不宣称是两次读取之间每一瞬间的连续监控。
 
+- A4452 修复生产 client Service 默认名称与路由身份链。生产清单一直创建 `kubebrain-client`，旧脚本却默认
+  `KUBEBRAIN_CLIENT_SERVICE=$KUBEBRAIN_STATEFULSET`，文档默认调用会查询不存在的 `kubebrain` Service；RED
+  记录 fake kubectl 调用并固定这一错误。默认值现为 `${KUBEBRAIN_STATEFULSET}-client`。另外，旧门禁仅用
+  jsonpath 比较 Service UID，既不验证 selector/port，也只按 label 枚举 EndpointSlice；两个 RED 分别让 client
+  port 漂移到 3380、让 Slice controller owner 指向旧 Service UID，旧实现均成功。新门禁从单份 Service JSON
+  验证 api/kind/name/UID、非删除、非 headless ClusterIP、精确 name/instance selector，以及唯一 TCP client port
+  到命名 targetPort `client`；每个 EndpointSlice 必须带正确 service-name label，并由同名同 UID Service 作为
+  唯一 controller owner，随后才比较 Ready Pod UID 集合。末尾还重读并比较 Service 路由投影，防止验证期间
+  改写入口。该校验绑定 Kubernetes 服务发现身份，不替代外部 LB/DNS 的独立发布证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

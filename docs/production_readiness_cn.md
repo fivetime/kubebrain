@@ -707,6 +707,7 @@ namespace 与三组各三个 Pod 名，不执行调用方提供的任意 shell c
 ```shell
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
+KUBEBRAIN_CLIENT_SERVICE=kubebrain-client \
 EXPECTED_TIDB_OPERATOR_DEPLOYMENT_UID=<immutable-operator-deployment-uid> \
 EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
 EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
@@ -811,7 +812,11 @@ txn operation/request byte/concurrent stream/inflight request 边界、请求速
 范围删除上限、watch 上限、gRPC keepalive、auth token provider/bcrypt/TTL，以及启用 TLS
 时的 connection age、client/peer 证书、CA、server name 与 client cert auth 全部匹配，随后
 要求 client Service metadata UID 与 receipt 一致，且其 EndpointSlice 的 ready/serving/non-terminating
-Pod targetRef UID 集合与当前 Pod 集合完全相同；随后
+Pod targetRef UID 集合与当前 Pod 集合完全相同；默认 client Service 名为
+`${KUBEBRAIN_STATEFULSET}-client`，与生产清单的 `kubebrain-client` 一致。Service 必须是非 headless ClusterIP、
+精确选择 KubeBrain name/instance labels，且只能暴露名为 `client`、指向容器命名端口 `client` 的期望 client
+port；每个 EndpointSlice 还必须以该 Service name/UID 作为唯一 controller owner，不能仅伪造
+`kubernetes.io/service-name` label。门禁末尾会再次比较 Service UID/type/clusterIP/selector/ports 投影；随后
 读取运行时 MemberList，要求 cluster ID 与同一 immutable storage identity 精确一致、精确成员数、唯一且非零的 member ID/name、
 每个成员的 name/peer URL 映射与 immutable initial cluster 完全相同且无重复，且每个成员的
 client URL 集合无重复并与期望完全相同；`EXPECTED_INITIAL_CLUSTER` 遵循 etcd
@@ -821,7 +826,7 @@ member name 聚合后再比对运行时拓扑；最后通过官方
 线性化 proposal。全部业务检查结束后，门禁重新读取 TidbCluster 和 KubeBrain/PD/TiKV 三套 StatefulSet：
 TidbCluster UID/generation/version/topology/cluster ID/Ready 必须仍等于起始快照，storage StatefulSet 必须再次
 满足 owner、generation、replicas、image、批准 revision 和收敛条件，KubeBrain StatefulSet 的完整状态投影也
-必须逐字段不变；从首次 controller 快照后启动的 rollout 因而不能借旧 Pod 证据通过。缺少 `EXPECTED_IMAGE`/
+必须逐字段不变，client Service 的路由投影也必须不变；从首次 controller 快照后启动的 rollout 因而不能借旧 Pod 证据通过。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_STATEFULSET_REVISION`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_TIDB_VERSION`/`EXPECTED_PD_IMAGE`/`EXPECTED_TIKV_IMAGE`/`EXPECTED_PD_IMAGE_DIGEST`/`EXPECTED_TIKV_IMAGE_DIGEST`/`EXPECTED_PD_STATEFULSET_REVISION`/`EXPECTED_TIKV_STATEFULSET_REVISION`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、入口 endpoint 含控制字符/引号/反斜杠、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/listener port/advertise-host/兼容开关/count-index/存储指标/txn/request size/stream/inflight/限流/watch/delete-range/keepalive/auth/TLS 上限或基线缺失/重复/不匹配，未期望 advertise-host 或 TLS 时出现对应 args，或 endpoint
 不健康、KubeBrain StatefulSet/client Service/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、EndpointSlice Pod 集合漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空/重复成员或任一地址

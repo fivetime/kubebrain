@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
-KUBEBRAIN_CLIENT_SERVICE="${KUBEBRAIN_CLIENT_SERVICE:-$KUBEBRAIN_STATEFULSET}"
+KUBEBRAIN_CLIENT_SERVICE="${KUBEBRAIN_CLIENT_SERVICE:-${KUBEBRAIN_STATEFULSET}-client}"
 EXPECTED_KUBEBRAIN_STATEFULSET_UID="${EXPECTED_KUBEBRAIN_STATEFULSET_UID:-}"
 EXPECTED_KUBEBRAIN_STATEFULSET_REVISION="${EXPECTED_KUBEBRAIN_STATEFULSET_REVISION:-}"
 EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID="${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID:-}"
@@ -440,17 +440,40 @@ if ! expected_pod_uids_json="$(printf '%s' "$kubebrain_pods_json" | "$JQ" -ce '[
   echo "failed to extract KubeBrain Pod resource identities" >&2
   exit 1
 fi
-actual_service_uid="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get service "$KUBEBRAIN_CLIENT_SERVICE" -o 'jsonpath={.metadata.uid}')"
-if [[ "$actual_service_uid" != "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" ]]; then
-  echo "KubeBrain client Service resource identity mismatch: expected UID ${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID}, got ${actual_service_uid:-missing}" >&2
+if ! client_service_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get service "$KUBEBRAIN_CLIENT_SERVICE" -o json)"; then
+  echo "failed to read KubeBrain client Service" >&2
   exit 1
 fi
+if ! printf '%s' "$client_service_json" | "$JQ" -e \
+  --arg name "$KUBEBRAIN_CLIENT_SERVICE" --arg uid "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" \
+  --arg workload "$KUBEBRAIN_STATEFULSET" --argjson port "$EXPECTED_PORT" '
+    .apiVersion == "v1" and .kind == "Service" and .metadata.name == $name and .metadata.uid == $uid and
+    .metadata.deletionTimestamp == null and .spec.type == "ClusterIP" and
+    ((.spec.clusterIP | type) == "string" and (.spec.clusterIP | length) > 0 and .spec.clusterIP != "None") and
+    .spec.selector == {"app.kubernetes.io/name": $workload, "app.kubernetes.io/instance": $workload} and
+    (.spec.ports | length) == 1 and
+    .spec.ports[0].name == "client" and (.spec.ports[0].protocol // "TCP") == "TCP" and
+    .spec.ports[0].port == $port and .spec.ports[0].targetPort == "client"
+  ' >/dev/null; then
+  echo "KubeBrain client Service release mismatch" >&2
+  exit 1
+fi
+client_service_fingerprint="$(printf '%s' "$client_service_json" | "$JQ" -c \
+  '{uid:.metadata.uid,type:.spec.type,clusterIP:.spec.clusterIP,selector:.spec.selector,ports:.spec.ports}')"
 if ! endpoint_slices_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get endpointslice -l "kubernetes.io/service-name=${KUBEBRAIN_CLIENT_SERVICE}" -o json)"; then
   echo "failed to list KubeBrain client Service EndpointSlices" >&2
   exit 1
 fi
-if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e --argjson expectedPodUIDs "$expected_pod_uids_json" '
+if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
+  --arg service "$KUBEBRAIN_CLIENT_SERVICE" --arg serviceUID "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" \
+  --argjson expectedPodUIDs "$expected_pod_uids_json" '
+  all(.items[]?;
+    .metadata.labels["kubernetes.io/service-name"] == $service and
+    ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
+    ([.metadata.ownerReferences[]? | select(.controller == true and .apiVersion == "v1" and
+      .kind == "Service" and .name == $service and .uid == $serviceUID)] | length) == 1
+  ) and
   ([.items[]?.endpoints[]?] | length) == ($expectedPodUIDs | length) and
   all(.items[]?.endpoints[]?;
     .conditions.ready == true and .conditions.serving == true and (.conditions.terminating // false) == false and
@@ -835,6 +858,17 @@ final_kubebrain_status="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPA
 }
 if [[ "$final_kubebrain_status" != "$kubebrain_status" ]]; then
   echo "KubeBrain StatefulSet changed during validation" >&2
+  exit 1
+fi
+
+final_client_service_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" get service "$KUBEBRAIN_CLIENT_SERVICE" -o json)" || {
+  echo "failed to fence KubeBrain client Service" >&2
+  exit 1
+}
+final_client_service_fingerprint="$(printf '%s' "$final_client_service_json" | "$JQ" -c \
+  '{uid:.metadata.uid,type:.spec.type,clusterIP:.spec.clusterIP,selector:.spec.selector,ports:.spec.ports}')"
+if [[ "$final_client_service_fingerprint" != "$client_service_fingerprint" ]]; then
+  echo "KubeBrain client Service changed during validation" >&2
   exit 1
 fi
 
