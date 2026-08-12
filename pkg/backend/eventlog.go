@@ -508,6 +508,13 @@ func (b *backend) cleanupEventLog(ctx context.Context, revision uint64) {
 		klog.ErrorS(err, "event log watermark advance failed", "revision", revision)
 		return
 	}
+	// Delete seals before their covered event rows. If seal cleanup fails, keep
+	// every event row and retry later. If the process crashes after seal deletion,
+	// the remaining rows are merely shadowed by the watermark; the inverse order
+	// could leave a seal whose deliberately compacted rows look corrupt on restart.
+	if !b.cleanupTxnWitnesses(ctx, cleanupThrough) {
+		return
+	}
 
 	deleted := 0
 	lastProgress := time.Now()

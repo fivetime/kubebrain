@@ -106,6 +106,13 @@ func (b *backend) InitializeLeadershipRevision(ctx context.Context, _ uint64) er
 	} else if err != nil {
 		return err
 	}
+	// A commit-result resolver is process-local, but every new user transaction
+	// seals its exact event-marker set in the same TiKV transaction. Validate
+	// those durable seals before this leadership term becomes writable so a
+	// crash cannot erase evidence of a partial/corrupt transaction outcome.
+	if err := b.validatePersistedTxnWitnesses(ctx); err != nil {
+		return err
+	}
 	// A same-process re-election can retain a committed watermark newer than a
 	// lagging background marker. Never move that process backwards; a cold
 	// process has current=0 and therefore starts from the durable TiKV value.

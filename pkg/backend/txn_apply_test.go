@@ -579,6 +579,7 @@ func TestTxnApplyRejectsInvalidShapesBeforeRevisionAllocation(t *testing.T) {
 	}{
 		{name: "empty user key", ops: []TxnWriteOp{{Value: []byte("value")}}},
 		{name: "empty internal key", ops: []TxnWriteOp{{Internal: true, Value: []byte("value")}}},
+		{name: "reserved transaction witness metadata", ops: []TxnWriteOp{{Internal: true, Key: append(append([]byte(nil), txnWitnessPrefix...), 'x'), Value: []byte("value")}}},
 		{name: "empty guard key", ops: validOp, guards: []TxnGuard{{Absent: true}}},
 		{name: "absent guard with revision", ops: validOp, guards: []TxnGuard{{Key: []byte("guard"), Absent: true, Revision: 1}}},
 		{name: "present guard with zero revision", ops: validOp, guards: []TxnGuard{{Key: []byte("guard")}}},

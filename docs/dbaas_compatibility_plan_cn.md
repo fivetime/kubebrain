@@ -48091,6 +48091,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   已实时读取该持久 alarm 并返回 etcd `ErrGRPCCorrupt`，Status/AlarmList/metrics 也会暴露它。新增回归注入 corrupt
   marker，要求自动告警持久化并验证 worker 可取消退出；告警写失败会计数并在后续解析轮次重试。
 
+- A4486 对照 upstream `server/embed/etcd.go` 在 client/peer traffic 前执行 initial corrupt check、以及
+  `server/etcdserver/corrupt.go` 发现不一致后触发 CORRUPT alarm 的 fail-closed 时序，关闭 KubeBrain uncertain
+  resolver 在进程重启后丢失内存 prep 的窗口。独立 TiKV 数据面没有可比较的 member-local bbolt hash，因此每笔
+  有效用户 transaction 现在与 durable
+  revision、object/index 和 ordered event markers 在同一 TiKV transaction 中写入 versioned witness seal；seal
+  保存 marker 数量及按物理 key 排序的 SHA-256 framing digest。新 leader 在公开可写前扫描 seal 并重算事件集合，
+  partial/mismatched/malformed witness 会持久化本 member 的 CORRUPT alarm；旧版本没有 seal 的 revision 不被猜测，
+  保持滚动升级兼容。启动校验使用 seal 与覆盖 event window 两次顺序扫描，避免按 revision 产生 TiKV N+1 事务；
+  mismatch 告警前重新确认 seal 仍存在，消除与上一 leader compaction 的跨 snapshot 竞态。event-log compaction 在删除 covered event rows 前先删除对应 seals；seal cleanup 失败则保留
+  event rows，避免崩溃窗口把计划内压缩误报为损坏。回归覆盖重启自动告警、marker 修复后显式 disarm 并再次初始化、
+  leadership watermark 不得屏蔽上一 term 的 seal，以及 compaction 同步清理 seal/event。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

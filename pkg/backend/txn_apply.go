@@ -152,6 +152,9 @@ func validateTxnApplyRequest(ops []TxnWriteOp, guards []TxnGuard) error {
 		}
 		seen := seenUser
 		if ops[i].Internal {
+			if bytes.HasPrefix(ops[i].Key, txnWitnessPrefix) {
+				return fmt.Errorf("%w: write %d targets reserved transaction witness metadata", ErrTxnInvalidRequest, i)
+			}
 			seen = seenInternal
 		}
 		key := string(ops[i].Key)
@@ -322,7 +325,7 @@ func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, p
 		}
 		eventSubRevision++
 	}
-	return nil
+	return b.stageTxnWitness(txn, preps, newRevision)
 }
 
 func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, newRevision uint64, retry bool, err error) {

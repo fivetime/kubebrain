@@ -2933,6 +2933,12 @@ validator 返回标准 EmptyKey/InvalidArgument，本层为内部及直接调用
 uncertain witness 出现 partial/mismatched ordered marker 时会自动持久化本 member 的 CORRUPT alarm；写入口随后返回
 etcd `ErrGRPCCorrupt`，Status/AlarmList/metrics 可见，同时 resolver 保持 pin 且不猜测提交结果。普通临时读取错误
 不会误触发 CORRUPT。
+每笔有效用户 transaction 还会在同一 TiKV 原子提交中写入持久 witness seal（event marker 数量与 framed
+SHA-256 摘要）。新 leader 在对外可写前重算并校验所有仍保留的 seals，因此进程崩溃不会随内存 resolver prep
+一起抹掉损坏证据；发现不一致会先持久化 CORRUPT，再允许只读/运维面进入服务。该校验只要求新格式明确写入的
+seal，旧版本 revision 不会因缺少 seal 被误报。compaction 必须先删除 covered seals，再删除 event rows；seal
+清理失败时本轮不得继续删除事件。修复底层 marker 后需由运维显式 AlarmDeactivate CORRUPT，随后领导权初始化会
+再次验证剩余 seals；禁止在未修复 witness 时仅解除告警恢复写流量。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
