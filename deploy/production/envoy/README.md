@@ -87,6 +87,13 @@ Ready EndpointSlice，且任何采样点都保留至少两个 Ready target。同
 client 都在同一 HTTP/2 connection 上建立独立 Watch 与 TTL=3 LeaseKeepAlive；两类 stream、各自附租约键和
 lease ID 都必须逐轮恢复。`ROLLOUT_CYCLES` 可在 `[1,10]` 调整；临时 Service 会在退出时删除。
 
+若要验证 KubeBrain 服务端叶证书热轮换与 Envoy 发布交叠，可额外设置
+`TLS_ROTATION_COMMAND=/absolute/path/to/executable`。门禁在第一轮 Deployment restart 已提交后执行该命令，
+并注入 `KUBEBRAIN_ENVOY_ROLLOUT_HOOK_CONTEXT`、`..._NAMESPACE`、`..._ENDPOINT`；命令必须自行完成 Secret
+更新及 projected volume 收敛并有界退出。返回时必须同时存在旧、新 Envoy Pod UID，全部 rollout 后从同一
+NodePort 新建的完整 mTLS 握手必须看到不同的服务端叶证书 SHA-256；否则 fail closed。该入口只接受显式可执行
+普通文件且必须与四项 TLS 输入同时使用，不通过 shell 解释任意字符串。
+
 设置全部四个 `TLS_CA_FILE`、`TLS_CERT_FILE`、`TLS_KEY_FILE`、`TLS_SERVER_NAME` 后，同一门禁会把临时
 NodePort 切到 `2380`，通过 clientv3 mTLS 走 Envoy opaque TCP passthrough。四项必须全设且三个文件可读，否则
 fail closed；测试以每个 Pod 的 `listener.0.0.0.0_2380.downstream_cx_active` 证明 cohort 覆盖三个 TLS

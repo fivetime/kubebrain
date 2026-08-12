@@ -47544,6 +47544,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `tls: certificate required` 被拒绝。本项关闭 Kind host-port→NodePort→2380 passthrough 的 TTL=3 已知缺口；
   证书轮换叠加 rollout、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 仍保持开放。
 
+- A4426 将 A28/A29 已独立验证的 KubeBrain TLS 在线轮换与 A4425 Envoy rollout 组合为同一真实重叠门禁。
+  对照 `/root/etcd/client/pkg/transport/listener.go` 的 per-handshake dynamic certificate callback 和 KubeBrain
+  `pkg/endpoint/config.go` 的 `GetCertificate`：既有 HTTP/2 Watch/Lease stream 可以继续使用握手时的旧叶证书，
+  Secret 投影后新连接必须看到新叶，Envoy 2380 opaque passthrough 不能缓存或替换该 TLS 身份。runner 新增
+  fail-closed `TLS_ROTATION_COMMAND`，只在四项 mTLS 输入完整时接受显式 executable regular file，并在第一轮
+  `rollout restart` 已提交后执行；测试注入显式 context/namespace/endpoint，但不经 shell 解释命令字符串。
+  hook 返回时必须同时观察到至少一个旧 Envoy UID 和至少一个新 UID，证明轮换不是滚动前后的串行操作；最终
+  从同一 NodePort 新建完整 CA/SAN/client-certificate 验证的 TLS handshake，其服务端叶证书 SHA-256 必须与
+  开始前不同，防止 no-op hook 假通过。原三轮九 Pod、逐 UID drain-before-delete、至少两个 Ready target、
+  每 client Watch+TTL=3 KeepAlive/附租约 key 及滚动前后非法 TLS 拒绝断言全部保留。
+  2026-08-12 在 fresh `kubebrain-envoy-rotation-a4426` Kind 集群、三个 zone worker、独立 3 PD/3 TiKV/
+  3 KubeBrain、固定 Envoy 1.39.0 上，同一 CA 的 old→new server leaf 通过 Secret 原子更新并等待三个 Pod
+  projected volume hash 收敛，KubeBrain Pod 未重启。普通门禁以 4 个旧 mTLS 双流 client 覆盖三 Envoy，
+  三轮九次替换与轮换重叠 245.99 秒通过；`GOFLAGS=-race` 以 5 个 client 覆盖三 Envoy，测试主体 249.29 秒、
+  包总计 250.398 秒通过且无数据竞争。一次 race 前置运行因 Kind kubelet Secret 投影超过一次性 hook 的 60 秒
+  等待而 RED；随后三个 Pod 均出现目标 hash，故将 disposable hook 边界增至 120 秒后重跑通过，未放宽任何
+  数据面 TTL、stream 或 rollout 断言。新增旧/新 Envoy UID 同时存在的精确断言后，又以 7 个 client 执行一轮
+  三 Pod 替换，98.11 秒通过，直接固定 rotation hook 返回点的控制面交叠证据。本项关闭“服务端叶证书在线
+  轮换叠加 Envoy rollout”的 Kind 证据缺口；
+  CA trust pool 更换与 Envoy rollout 的组合、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

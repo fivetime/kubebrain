@@ -13,6 +13,7 @@ TLS_CA_FILE="${TLS_CA_FILE:-}"
 TLS_CERT_FILE="${TLS_CERT_FILE:-}"
 TLS_KEY_FILE="${TLS_KEY_FILE:-}"
 TLS_SERVER_NAME="${TLS_SERVER_NAME:-}"
+TLS_ROTATION_COMMAND="${TLS_ROTATION_COMMAND:-}"
 SERVICE_NAME=kubebrain-envoy-rollout-gate
 
 if [[ -z "$KUBE_CONTEXT" ]]; then
@@ -35,6 +36,17 @@ if (( tls_nonempty == 4 )); then
       exit 2
     fi
   done
+fi
+if [[ -n "$TLS_ROTATION_COMMAND" ]]; then
+  if (( tls_nonempty != 4 )); then
+    echo "TLS_ROTATION_COMMAND requires all TLS passthrough inputs" >&2
+    exit 2
+  fi
+  if [[ ! -f "$TLS_ROTATION_COMMAND" || ! -x "$TLS_ROTATION_COMMAND" ]]; then
+    echo "TLS_ROTATION_COMMAND must name an executable regular file" >&2
+    exit 2
+  fi
+  TLS_ROTATION_COMMAND="$(cd "$(dirname "$TLS_ROTATION_COMMAND")" && pwd -P)/$(basename "$TLS_ROTATION_COMMAND")"
 fi
 if [[ ! "$ROLLOUT_CYCLES" =~ ^[0-9]+$ ]] || (( ROLLOUT_CYCLES < 1 || ROLLOUT_CYCLES > 10 )); then
   echo "ROLLOUT_CYCLES must be an integer in [1,10]" >&2
@@ -132,6 +144,7 @@ fi
 	  KUBEBRAIN_ENVOY_ROLLOUT_NAMESPACE="$NAMESPACE" \
 	  KUBEBRAIN_ENVOY_ROLLOUT_CYCLES="$ROLLOUT_CYCLES" \
 	  KUBEBRAIN_ENVOY_ROLLOUT_TLS="$tls_enabled" \
+	  KUBEBRAIN_ENVOY_ROLLOUT_TLS_ROTATION_COMMAND="$TLS_ROTATION_COMMAND" \
 	  KUBERNETES_ENVOY_ROLLOUT_TLS_CA_FILE="$TLS_CA_FILE" \
 	  KUBERNETES_ENVOY_ROLLOUT_TLS_CERT_FILE="$TLS_CERT_FILE" \
 	  KUBERNETES_ENVOY_ROLLOUT_TLS_KEY_FILE="$TLS_KEY_FILE" \

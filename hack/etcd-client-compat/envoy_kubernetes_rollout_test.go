@@ -2,7 +2,9 @@ package compat
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -58,11 +60,16 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 	require.GreaterOrEqual(t, rolloutCycles, 1)
 	require.LessOrEqual(t, rolloutCycles, 10)
 	tlsEnabled := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_TLS")) == "true"
+	tlsRotationCommand := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_TLS_ROTATION_COMMAND"))
 	var clientTLS *tls.Config
+	var initialServerCertificate string
 	activeDownstreamStat := "http.kubebrain_downstream.downstream_cx_active"
 	if tlsEnabled {
 		clientTLS = loadExternalL4ClientTLS(t, "KUBERNETES_ENVOY_ROLLOUT")
 		activeDownstreamStat = "listener.0.0.0.0_2380.downstream_cx_active"
+		initialServerCertificate = envoyServerCertificateFingerprint(t, endpoint, clientTLS)
+	} else {
+		require.Empty(t, tlsRotationCommand, "TLS rotation overlap requires the TLS passthrough profile")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
@@ -162,6 +169,22 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		}()
 
 		kubectl(t, contextName, namespace, "rollout", "restart", "deployment/kubebrain-envoy")
+		if cycle == 1 && tlsRotationCommand != "" {
+			command := exec.CommandContext(ctx, tlsRotationCommand)
+			command.Env = append(os.Environ(),
+				"KUBEBRAIN_ENVOY_ROLLOUT_HOOK_CONTEXT="+contextName,
+				"KUBEBRAIN_ENVOY_ROLLOUT_HOOK_NAMESPACE="+namespace,
+				"KUBEBRAIN_ENVOY_ROLLOUT_HOOK_ENDPOINT="+endpoint,
+			)
+			output, commandErr := command.CombinedOutput()
+			require.NoErrorf(t, commandErr, "TLS rotation overlap command failed: %s", strings.TrimSpace(string(output)))
+			overlapUIDs := envoyPodUIDs(t, contextName, namespace)
+			require.NotEmpty(t, intersectStrings(oldUIDs, overlapUIDs),
+				"TLS rotation command must finish while at least one old Envoy Pod remains")
+			require.Greater(t, len(overlapUIDs), len(intersectStrings(oldUIDs, overlapUIDs)),
+				"TLS rotation command must finish after at least one new Envoy Pod has appeared")
+			t.Logf("TLS rotation overlap command completed during rollout cycle 1: %s", strings.TrimSpace(string(output)))
+		}
 		kubectl(t, contextName, namespace, "rollout", "status", "deployment/kubebrain-envoy", "--timeout=150s")
 		require.Eventually(t, func() bool {
 			present := envoyPresentPodUIDsNoFail(contextName, namespace)
@@ -218,8 +241,29 @@ func TestEnvoyKubernetesRollout(t *testing.T) {
 		}
 	}
 	if tlsEnabled {
+		if tlsRotationCommand != "" {
+			rotatedServerCertificate := envoyServerCertificateFingerprint(t, endpoint, clientTLS)
+			require.NotEqual(t, initialServerCertificate, rotatedServerCertificate,
+				"TLS rotation command must replace the server leaf certificate observed through Envoy")
+		}
 		assertEnvoyKubernetesTLSRejectsInvalidClients(t, endpoint, clientTLS, "after-rollout")
 	}
+}
+
+func envoyServerCertificateFingerprint(t *testing.T, endpoint string, clientTLS *tls.Config) string {
+	t.Helper()
+	probeTLS := clientTLS.Clone()
+	probeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connection, err := (&tls.Dialer{Config: probeTLS}).DialContext(probeCtx, "tcp", endpoint)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, connection.Close()) }()
+	tlsConnection, ok := connection.(*tls.Conn)
+	require.True(t, ok)
+	certificates := tlsConnection.ConnectionState().PeerCertificates
+	require.NotEmpty(t, certificates)
+	digest := sha256.Sum256(certificates[0].Raw)
+	return hex.EncodeToString(digest[:])
 }
 
 func allEnvoyPodsHaveHealthyUpstreams(contextName, namespace string) bool {
