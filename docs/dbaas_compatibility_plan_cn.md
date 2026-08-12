@@ -47177,6 +47177,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LB/NAT/conntrack 实现矩阵；TLS passthrough、真实 L7 gRPC proxy、跨节点网络设备和平台通用 request token
   仍保持开放。
 
+- A4407 将 A4406 的独立进程 L4 证据从自动 ID Grant 对称扩展到 Revoke，避免只证明“重试创建第二条
+  lease”而没有证明已提交删除的跨副本重放。继续对照
+  `/root/etcd/server/etcdserver/apply/backend.go::LeaseRevoke` 和
+  `/root/etcd/client/v3/retry.go::retryLeaseClient.LeaseRevoke`：首个 Revoke 在 replica 0 提交后会原子删除
+  attached key 与 lease；若 response 丢失，clientv3 的 repeatable policy 会在新连接上重放相同 ID，承接
+  replica 必须返回 typed `rpctypes.ErrLeaseNotFound`，不能伪造首次成功 response，也不能重复推进 revision。
+  新增 `TestLeaseRevokeResponseLossAcrossExternalL4ProxyDifferential`：单独 PID 的 proxy 先连接 replica 0，
+  replica 2 必须在切换前观察到 TTL=-1，proxy stats 必须证明 response bytes 已被 blackhole；随后 target
+  切到 replica 1、主动断开旧连接并恢复转发，stats 还必须证明实际建立了 replica 1 新连接。最终高层
+  Revoke 返回 typed LeaseNotFound，第三副本观察到 key 缺失、TTL=-1、LeaseList 不含该 ID，且从 Put 后
+  基线只推进一次 revision。为使断连证据也不依赖测试进程推断，外部 proxy stats 新增累计
+  `droppedConnections`，测试同时断言该计数增长。
+  2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建并验证三成员 reference 工具链，在 disposable
+  `kubebrain-external-l4-revoke` 独立 3 PD/3 TiKV/3 KubeBrain 上通过。A4407 双端场景 0.33 秒，reference
+  与 KubeBrain 均记录 attempt 0 `Unavailable/EOF`、attempt 1 `NotFound/lease not found`；包含 A4401–
+  A4407 的统一 `lease-response-loss` 门禁耗时 12.710 秒。首次现场运行因直连 port-forward 误指容器 2379
+  而在成员身份 preflight 前失败，改用清单声明的 3379 后重跑通过，未产生弱化断言或绕过。至此独立 L4
+  进程已覆盖 Grant 与 Revoke 两个方向，但生产云 LB/NAT/conntrack、TLS passthrough、真实 L7 gRPC proxy、
+  跨节点网络设备和平台通用 request token 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,15 +15,130 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type externalL4ProxyResponse struct {
-	OK           bool           `json:"ok"`
-	Error        string         `json:"error"`
-	Endpoint     string         `json:"endpoint"`
-	DroppedBytes int64          `json:"droppedBytes"`
-	Dials        map[string]int `json:"dials"`
+	OK                 bool           `json:"ok"`
+	Error              string         `json:"error"`
+	Endpoint           string         `json:"endpoint"`
+	DroppedBytes       int64          `json:"droppedBytes"`
+	DroppedConnections int64          `json:"droppedConnections"`
+	Dials              map[string]int `json:"dials"`
+}
+
+// TestLeaseRevokeResponseLossAcrossExternalL4ProxyDifferential repeats the
+// cross-replica Revoke replay through a standalone proxy process. It proves
+// that the typed LeaseNotFound replay result does not depend on shared Go state
+// in the in-process tcpBridge.
+func TestLeaseRevokeResponseLossAcrossExternalL4ProxyDifferential(t *testing.T) {
+	binary := strings.TrimSpace(os.Getenv("EXTERNAL_TCP_SWITCH_PROXY_BINARY"))
+	if binary == "" {
+		t.Skip("set EXTERNAL_TCP_SWITCH_PROXY_BINARY to run the external L4 response-loss differential")
+	}
+	referenceEndpoints := splitRequiredDirectEndpoints(t, "REFERENCE_ETCD_DIRECT_ENDPOINTS")
+	kubeBrainEndpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
+	requireDistinctDirectReplicaTopology(t, referenceEndpoints)
+	requireDistinctDirectReplicaTopology(t, kubeBrainEndpoints)
+
+	want := leaseRevokeCrossReplicaReplayOutcome{
+		ResponseDiscarded:   true,
+		ConnectionDropped:   true,
+		SecondReplicaDialed: true,
+		LeaseNotFound:       true,
+		KeyDeleted:          true,
+		LeaseMissing:        true,
+		LeaseUnlisted:       true,
+		RevisionDelta:       1,
+	}
+	reference := runExternalL4LeaseRevokeResponseLossScenario(t, binary, referenceEndpoints, "etcd")
+	require.Equal(t, want, reference)
+	require.Equal(t, reference, runExternalL4LeaseRevokeResponseLossScenario(t, binary, kubeBrainEndpoints, "kubebrain"))
+}
+
+func runExternalL4LeaseRevokeResponseLossScenario(
+	t *testing.T,
+	binary string,
+	endpoints []string,
+	instance string,
+) leaseRevokeCrossReplicaReplayOutcome {
+	t.Helper()
+	proxy, endpoint := startExternalL4Proxy(t, binary, endpoints[0])
+	throughProxy, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, throughProxy.Close()) })
+	observer, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, observer.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	key := fmt.Sprintf("/dbaas-external-l4-revoke-response-loss/%s/%d", instance, time.Now().UnixNano())
+	grant, err := throughProxy.Grant(ctx, 60)
+	require.NoError(t, err)
+	_, err = throughProxy.Put(ctx, key, "value", clientv3.WithLease(grant.ID))
+	require.NoError(t, err)
+	before, err := observer.Get(ctx, key)
+	require.NoError(t, err)
+	require.Len(t, before.Kvs, 1)
+	initialStats := proxy.command(t, "stats")
+	require.Positive(t, initialStats.Dials[grpcTarget(endpoints[0])])
+
+	require.True(t, proxy.command(t, "blackhole-responses").OK)
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, revokeErr := throughProxy.Revoke(ctx, grant.ID)
+		revokeDone <- revokeErr
+	}()
+	require.Eventually(t, func() bool {
+		response, ttlErr := observer.TimeToLive(ctx, grant.ID)
+		return ttlErr == nil && response.TTL == -1
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return proxy.command(t, "stats").DroppedBytes > initialStats.DroppedBytes
+	}, 2*time.Second, 10*time.Millisecond)
+	require.True(t, proxy.command(t, "target "+grpcTarget(endpoints[1])).OK)
+	require.True(t, proxy.command(t, "drop-connections").OK)
+	require.True(t, proxy.command(t, "resume").OK)
+
+	var revokeErr error
+	select {
+	case revokeErr = <-revokeDone:
+	case <-ctx.Done():
+		require.NoError(t, ctx.Err())
+	}
+	require.Eventually(t, func() bool {
+		return proxy.command(t, "stats").Dials[grpcTarget(endpoints[1])] > 0
+	}, 5*time.Second, 10*time.Millisecond)
+	after, err := observer.Get(ctx, key)
+	require.NoError(t, err)
+	ttl, err := observer.TimeToLive(ctx, grant.ID)
+	require.NoError(t, err)
+	listed, err := observer.Leases(ctx)
+	require.NoError(t, err)
+	leaseUnlisted := true
+	for _, lease := range listed.Leases {
+		if lease.ID == grant.ID {
+			leaseUnlisted = false
+		}
+	}
+	stats := proxy.command(t, "stats")
+
+	return leaseRevokeCrossReplicaReplayOutcome{
+		ResponseDiscarded:   stats.DroppedBytes > initialStats.DroppedBytes,
+		ConnectionDropped:   stats.DroppedConnections > initialStats.DroppedConnections,
+		SecondReplicaDialed: stats.Dials[grpcTarget(endpoints[1])] > 0,
+		LeaseNotFound:       errors.Is(revokeErr, rpctypes.ErrLeaseNotFound),
+		KeyDeleted:          len(after.Kvs) == 0,
+		LeaseMissing:        ttl.TTL == -1,
+		LeaseUnlisted:       leaseUnlisted,
+		RevisionDelta:       after.Header.Revision - before.Header.Revision,
+	}
 }
 
 type externalL4Proxy struct {

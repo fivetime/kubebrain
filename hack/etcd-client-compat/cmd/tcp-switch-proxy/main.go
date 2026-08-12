@@ -14,9 +14,10 @@ import (
 )
 
 type proxy struct {
-	listener net.Listener
-	mode     atomic.Int32
-	dropped  atomic.Int64
+	listener           net.Listener
+	mode               atomic.Int32
+	dropped            atomic.Int64
+	droppedConnections atomic.Int64
 
 	mu      sync.Mutex
 	target  string
@@ -28,11 +29,12 @@ type proxy struct {
 }
 
 type response struct {
-	OK       bool           `json:"ok"`
-	Error    string         `json:"error,omitempty"`
-	Endpoint string         `json:"endpoint,omitempty"`
-	Dropped  int64          `json:"droppedBytes,omitempty"`
-	Dials    map[string]int `json:"dials,omitempty"`
+	OK                 bool           `json:"ok"`
+	Error              string         `json:"error,omitempty"`
+	Endpoint           string         `json:"endpoint,omitempty"`
+	Dropped            int64          `json:"droppedBytes,omitempty"`
+	DroppedConnections int64          `json:"droppedConnections,omitempty"`
+	Dials              map[string]int `json:"dials,omitempty"`
 }
 
 func main() {
@@ -178,6 +180,7 @@ func (p *proxy) dropConnections() {
 		connections = append(connections, connection)
 	}
 	p.mu.Unlock()
+	p.droppedConnections.Add(int64(len(connections)))
 	for _, connection := range connections {
 		_ = connection.Close()
 	}
@@ -190,7 +193,12 @@ func (p *proxy) stats() response {
 		dials[target] = count
 	}
 	p.mu.Unlock()
-	return response{OK: true, Dropped: p.dropped.Load(), Dials: dials}
+	return response{
+		OK:                 true,
+		Dropped:            p.dropped.Load(),
+		DroppedConnections: p.droppedConnections.Load(),
+		Dials:              dials,
+	}
 }
 
 func (p *proxy) close() {
