@@ -829,7 +829,9 @@ member name 聚合后再比对运行时拓扑；最后通过官方
 线性化 proposal。全部业务检查结束后，门禁重新读取 TidbCluster 和 KubeBrain/PD/TiKV 三套 StatefulSet：
 TidbCluster UID/generation/version/topology/cluster ID/Ready 必须仍等于起始快照，storage StatefulSet 必须再次
 满足 owner、generation、replicas、image、批准 revision 和收敛条件，KubeBrain StatefulSet 的完整状态投影也
-必须逐字段不变，client Service 的路由投影也必须不变；从首次 controller 快照后启动的 rollout 因而不能借旧 Pod 证据通过。缺少 `EXPECTED_IMAGE`/
+必须逐字段不变，client Service 与 EndpointSlice 的规范化路由投影也必须不变；Slice 投影包含 UID/name、
+Service label/owner、ports 以及每个 endpoint 的 conditions/targetRef/addresses，但忽略无关的 resourceVersion。
+从首次 controller/route 快照后启动的 rollout 因而不能借旧 Pod 证据通过。缺少 `EXPECTED_IMAGE`/
 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_STATEFULSET_REVISION`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_TIDB_VERSION`/`EXPECTED_PD_IMAGE`/`EXPECTED_TIKV_IMAGE`/`EXPECTED_PD_IMAGE_DIGEST`/`EXPECTED_TIKV_IMAGE_DIGEST`/`EXPECTED_PD_STATEFULSET_REVISION`/`EXPECTED_TIKV_STATEFULSET_REVISION`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、入口 endpoint 含控制字符/引号/反斜杠、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/listener port/advertise-host/兼容开关/count-index/存储指标/txn/request size/stream/inflight/限流/watch/delete-range/keepalive/auth/TLS 上限或基线缺失/重复/不匹配，未期望 advertise-host 或 TLS 时出现对应 args，或 endpoint
 不健康、KubeBrain StatefulSet/client Service/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、EndpointSlice Pod 集合漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空/重复成员或任一地址

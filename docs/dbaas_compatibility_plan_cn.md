@@ -47858,6 +47858,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   集合比较。它不再用“endpoint 数必须等于 Pod 数”的单栈假设，因此同一 Pod 在 IPv4/IPv6 Slice 各出现一次
   仍可表达，同时任何缺失、重复、异名或错误地址均 fail closed。外部 LB 到 ClusterIP 的网络路径仍需独立验证。
 
+- A4454 封闭 A4453 只读取一次 EndpointSlice 的竞态。Service 与 workload controller 已有末尾 fence，但 Slice
+  可在初始 UID/name/IP 集合验证后独立更新；旧门禁完成 MemberList/endpoint health 后不会重读，仍可能用过时
+  路由证据成功。RED 初始返回完全正确的三 Pod Slice，第二次读取仅把首地址从 `10.0.0.10` 改成
+  `10.0.0.99`，旧实现因只有一次读取确定性放行。新门禁保存忽略 resourceVersion、但包含每个 Slice
+  UID/name、service-name label、完整 owner、ports，以及排序后的 endpoint conditions/targetRef/addresses 的
+  规范化投影；全部 controller、MemberList 和线性化 endpoint 检查完成后重读 Slice 并要求投影逐字节相等。
+  该首尾 fence 拒绝验证窗口内的路由变化，不宣称提供 Kubernetes 对象的跨资源原子快照。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

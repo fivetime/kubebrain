@@ -102,6 +102,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		memberListJSON           string
 		podsJSON                 string
 		endpointSlicesJSON       string
+		finalEndpointSlicesJSON  string
 		serviceJSON              string
 		initialCluster           string
 		extraEnv                 []string
@@ -496,6 +497,17 @@ func TestValidateInstanceReady(t *testing.T) {
 				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
 			}, true, 3379, "uid-client-service", []string{"10.0.0.99", "10.0.0.11", "10.0.0.12"}),
 			wantOutput: "EndpointSlices do not match",
+		},
+		{
+			name:       "client EndpointSlice changes during validation",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			finalEndpointSlicesJSON: fakeEndpointSlicesWithRouteJSON([]string{
+				"uid-kubebrain-0", "uid-kubebrain-1", "uid-kubebrain-2",
+			}, true, 3379, "uid-client-service", []string{"10.0.0.99", "10.0.0.11", "10.0.0.12"}),
+			wantOutput: "EndpointSlices changed during validation",
 		},
 		{
 			name:       "wrong storage topology",
@@ -1128,7 +1140,11 @@ elif [[ "$*" == *"get service kubebrain-client"* && "$*" == *" -o json" ]]; then
 elif [[ "$*" == *"get service kubebrain-client"* && "$*" == *"jsonpath="* ]]; then
   printf 'uid-client-service'
 elif [[ "$*" == *"get endpointslice"* && "$*" == *"kubernetes.io/service-name=kubebrain"* ]]; then
-  printf '%s' "$FAKE_ENDPOINT_SLICES_JSON"
+  calls=0
+  [[ ! -f "$FAKE_ENDPOINT_SLICES_CALLS" ]] || calls="$(<"$FAKE_ENDPOINT_SLICES_CALLS")"
+  calls=$((calls + 1))
+  printf '%s' "$calls" >"$FAKE_ENDPOINT_SLICES_CALLS"
+  if [[ -n "$FAKE_FINAL_ENDPOINT_SLICES_JSON" && "$calls" -ge 2 ]]; then printf '%s' "$FAKE_FINAL_ENDPOINT_SLICES_JSON"; else printf '%s' "$FAKE_ENDPOINT_SLICES_JSON"; fi
 elif [[ "$*" == *"get pods"* && "$*" == *"app.kubernetes.io/name=kubebrain"* ]]; then
   printf '%s' "$FAKE_KUBEBRAIN_PODS_JSON"
 else
@@ -1264,6 +1280,8 @@ exit 1
 				"FAKE_KUBEBRAIN_ARGS=" + kubeArgs,
 				"FAKE_KUBEBRAIN_PODS_JSON=" + podsJSON,
 				"FAKE_ENDPOINT_SLICES_JSON=" + endpointSlicesJSON,
+				"FAKE_FINAL_ENDPOINT_SLICES_JSON=" + tc.finalEndpointSlicesJSON,
+				"FAKE_ENDPOINT_SLICES_CALLS=" + filepath.Join(dir, "endpoint-slices-calls"),
 				"FAKE_CLIENT_SERVICE_JSON=" + serviceJSON,
 				"FAKE_TOPOLOGY=" + topology,
 				"FAKE_TIDB_VERSION=" + tidbVersion,
@@ -1484,6 +1502,8 @@ func fakeEndpointSlicesWithRouteJSON(podUIDs []string, ready bool, port int, ser
 	}
 	encoded, err := json.Marshal(map[string]any{"items": []map[string]any{{
 		"metadata": map[string]any{
+			"name":   "kubebrain-client-slice",
+			"uid":    "uid-client-slice",
 			"labels": map[string]any{"kubernetes.io/service-name": "kubebrain-client"},
 			"ownerReferences": []map[string]any{{
 				"apiVersion": "v1", "kind": "Service", "name": "kubebrain-client", "uid": serviceUID, "controller": true,

@@ -481,6 +481,8 @@ if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
   --arg service "$KUBEBRAIN_CLIENT_SERVICE" --arg serviceUID "$EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID" \
   --argjson port "$EXPECTED_PORT" --argjson expectedPodRoutes "$expected_pod_routes_json" '
   all(.items[]?;
+    ((.metadata.name | type) == "string" and (.metadata.name | length) > 0) and
+    ((.metadata.uid | type) == "string" and (.metadata.uid | length) > 0) and
     .metadata.labels["kubernetes.io/service-name"] == $service and
     ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
     ([.metadata.ownerReferences[]? | select(.controller == true and .apiVersion == "v1" and
@@ -502,6 +504,21 @@ if ! printf '%s' "$endpoint_slices_json" | "$JQ" -e \
   echo "KubeBrain client Service EndpointSlices do not match the expected ready Pod identities" >&2
   exit 1
 fi
+endpoint_slices_fingerprint="$(printf '%s' "$endpoint_slices_json" | "$JQ" -c '
+  [.items[] | {
+    name:.metadata.name,
+    uid:.metadata.uid,
+    service:.metadata.labels["kubernetes.io/service-name"],
+    owners:([.metadata.ownerReferences[]? |
+      {apiVersion,kind,name,uid,controller:(.controller // false)}] | sort_by(.uid,.kind,.name)),
+    ports:([.ports[]? | {name,protocol:(.protocol // "TCP"),port}] | sort_by(.name,.protocol,.port)),
+    endpoints:([.endpoints[]? | {
+      addresses:([.addresses[]?] | sort),
+      conditions:{ready:(.conditions.ready // false),serving:(.conditions.serving // false),terminating:(.conditions.terminating // false)},
+      targetRef:{kind:.targetRef.kind,name:.targetRef.name,uid:.targetRef.uid}
+    }] | sort_by(.targetRef.uid,.targetRef.name,(.addresses | join(","))))
+  }] | sort_by(.uid,.name)
+')"
 
 kubebrain_args="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get statefulset "$KUBEBRAIN_STATEFULSET" \
@@ -887,6 +904,31 @@ final_client_service_fingerprint="$(printf '%s' "$final_client_service_json" | "
   '{uid:.metadata.uid,type:.spec.type,clusterIP:.spec.clusterIP,selector:.spec.selector,ports:.spec.ports}')"
 if [[ "$final_client_service_fingerprint" != "$client_service_fingerprint" ]]; then
   echo "KubeBrain client Service changed during validation" >&2
+  exit 1
+fi
+
+final_endpoint_slices_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+  get endpointslice -l "kubernetes.io/service-name=${KUBEBRAIN_CLIENT_SERVICE}" -o json)" || {
+  echo "failed to fence KubeBrain client Service EndpointSlices" >&2
+  exit 1
+}
+final_endpoint_slices_fingerprint="$(printf '%s' "$final_endpoint_slices_json" | "$JQ" -c '
+  [.items[] | {
+    name:.metadata.name,
+    uid:.metadata.uid,
+    service:.metadata.labels["kubernetes.io/service-name"],
+    owners:([.metadata.ownerReferences[]? |
+      {apiVersion,kind,name,uid,controller:(.controller // false)}] | sort_by(.uid,.kind,.name)),
+    ports:([.ports[]? | {name,protocol:(.protocol // "TCP"),port}] | sort_by(.name,.protocol,.port)),
+    endpoints:([.endpoints[]? | {
+      addresses:([.addresses[]?] | sort),
+      conditions:{ready:(.conditions.ready // false),serving:(.conditions.serving // false),terminating:(.conditions.terminating // false)},
+      targetRef:{kind:.targetRef.kind,name:.targetRef.name,uid:.targetRef.uid}
+    }] | sort_by(.targetRef.uid,.targetRef.name,(.addresses | join(","))))
+  }] | sort_by(.uid,.name)
+')"
+if [[ "$final_endpoint_slices_fingerprint" != "$endpoint_slices_fingerprint" ]]; then
+  echo "KubeBrain client Service EndpointSlices changed during validation" >&2
   exit 1
 fi
 
