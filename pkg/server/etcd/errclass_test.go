@@ -60,7 +60,9 @@ func TestErrClass(t *testing.T) {
 }
 
 func TestMapFenceErrMapsTxnWitnessCorruptionToEtcdCorrupt(t *testing.T) {
-	for _, cause := range []error{backend.ErrTxnWitnessCorrupt, backend.ErrCorruptAlarmChanged} {
+	for _, cause := range []error{
+		backend.ErrTxnWitnessCorrupt, backend.ErrCorruptAlarmChanged, backend.ErrCorruptAlarmActive,
+	} {
 		err := mapFenceErr(fmt.Errorf("corrupt alarm operation: %w", cause))
 		require.ErrorIs(t, err, rpctypes.ErrGRPCCorrupt)
 		require.Equal(t, codes.DataLoss, status.Code(err))

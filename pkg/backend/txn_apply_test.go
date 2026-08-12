@@ -29,6 +29,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	ibadger "github.com/kubewharf/kubebrain/pkg/storage/badger"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
@@ -521,6 +522,50 @@ func TestUncertainTxnCorruptWitnessArmsPersistentAlarm(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("uncertain resolver did not stop after cancellation")
+	}
+}
+
+func TestTxnApplyCommitIsFencedByConcurrentCrossReplicaCorruptActivation(t *testing.T) {
+	for _, internal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("internal=%t", internal), func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+			store, err := ibadger.NewKvStorage(ibadger.Config{Dir: t.TempDir()})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			blocking := &blockBeforeCommitStorage{
+				KvStorage: store, entered: make(chan struct{}), release: make(chan struct{}),
+			}
+			config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+			writer := NewBackend(blocking, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+			alarmer := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+			writer.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+			blocking.trigger.Store(true)
+			result := make(chan error, 1)
+			key := []byte(prefix + "/corrupt-commit-guard")
+			go func() {
+				_, _, err := writer.TxnApply(context.Background(), []TxnWriteOp{{
+					Key: key, Value: []byte("must-not-commit"), Internal: internal,
+				}}, nil)
+				result <- err
+			}()
+			<-blocking.entered
+			require.NoError(t, alarmer.ArmCorrupt(context.Background(), 4497001))
+			close(blocking.release)
+			require.ErrorIs(t, <-result, ErrCorruptAlarmActive)
+
+			storedKey := writer.coder.EncodeRevisionKey(key)
+			if internal {
+				storedKey = writer.ks.EncodeInternalKey(key)
+			}
+			_, err = store.Get(context.Background(), storedKey)
+			require.ErrorIs(t, err, storage.ErrKeyNotFound,
+				"a transaction ordered after CORRUPT activation must not commit")
+			members, err := writer.CorruptAlarms(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, []uint64{4497001}, members)
+		})
 	}
 }
 

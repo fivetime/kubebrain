@@ -48186,6 +48186,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归分别固定 malformed generation 拒绝初始化与合法 active alarm 允许只读初始化；leader metric 和 manifest 测试固定
   wrapped sentinel、表达式、severity 和处置文本。
 
+- A4497 将 CORRUPT 从请求前门检查提升为 TiKV transaction 提交栅栏。旧路径在 RPC admission 读取 alarm 后到
+  `TxnApply.Commit` 之间存在窗口：另一副本可先激活 CORRUPT，而已通过检查的 user write 或 internal-only lease/auth
+  mutation 仍随后提交；这弱于 upstream raft apply 中 alarm 与 mutation 的全序。现在 alarm 读取使用
+  `generation→member set→generation` seqlock，只有前后代际相同才返回一个稳定逻辑状态。每个有效 `TxnApply` 随后在
+  同一 TiKV transaction 内 exact-read/断言该 generation（旧集群缺失键也作为 absent predicate）；active owner 直接
+  返回新 typed `ErrCorruptAlarmActive`，提交期 generation 冲突则重试并观察最新 alarm，RPC 统一映射
+  `DataLoss/ErrGRPCCorrupt`。因此 Arm 先提交必使在途 mutation 原子回滚，mutation 先提交则 Arm 排在其后并持续封锁
+  后续写。Badger 确定性双 backend 回归在 writer storage commit 前暂停，由独立 backend 激活 alarm，分别证明 user
+  key 与 internal-only metadata 均不落盘且 alarm 保留；无须预创建 generation，保持旧 tenant 平滑迁移。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

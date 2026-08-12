@@ -2954,6 +2954,9 @@ Alarm GET、写门禁和 Maintenance Snapshot 都会校验该 generation；非�
 leader 在发布身份和 Ready 前也会校验 CORRUPT member/generation；命中
 `KubeBrainInvalidCorruptAlarmMetadata` 时实例会持续拒绝该 election term。保持业务流量隔离并保存 TiKV 证据，禁止通过
 删除或重写 `alarms/corrupt*` 恢复选主；该告警与“未来 witness 版本需继续 roll-forward”的处置不同。
+CORRUPT 激活与所有有效 `TxnApply` 在 TiKV generation 上形成提交全序：即使请求早已通过 RPC 前门，alarm 先提交也会
+让 user/internal mutation 回滚并返回 `DataLoss`。压测和故障演练应保留“在途写与跨副本 alarm activation”场景，不能
+只验证 alarm 激活后的新请求。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

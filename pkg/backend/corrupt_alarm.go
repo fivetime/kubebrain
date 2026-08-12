@@ -21,6 +21,9 @@ var (
 	// alarm while a disarm was validating durable evidence. Requiring a fresh
 	// operator request prevents that new signal from being silently consumed.
 	ErrCorruptAlarmChanged = errors.New("corrupt alarm changed during disarm")
+	// ErrCorruptAlarmActive rejects a logical mutation whose commit-time alarm
+	// snapshot contains at least one CORRUPT owner.
+	ErrCorruptAlarmActive = errors.New("corrupt alarm is active")
 )
 
 func (b *backend) ArmCorrupt(ctx context.Context, memberID uint64) error {
@@ -62,17 +65,35 @@ func (b *backend) ArmCorrupt(ctx context.Context, memberID uint64) error {
 }
 
 func (b *backend) CorruptAlarms(ctx context.Context) ([]uint64, error) {
-	members, _, _, err := b.readCorruptAlarms(ctx)
-	if err != nil {
-		return nil, err
+	members, _, _, err := b.readStableCorruptAlarmState(ctx)
+	return members, err
+}
+
+// readStableCorruptAlarmState uses the generation as a seqlock around the
+// separately-read member set. Arm/Disarm update both keys atomically and always
+// advance the generation, so equal before/after generations certify one logical
+// alarm state even though KvStorage.Get calls use separate snapshots.
+func (b *backend) readStableCorruptAlarmState(ctx context.Context) ([]uint64, []byte, bool, error) {
+	for {
+		_, beforeRaw, beforeExists, err := b.readCorruptAlarmGeneration(ctx)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		members, _, _, err := b.readCorruptAlarms(ctx)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		_, afterRaw, afterExists, err := b.readCorruptAlarmGeneration(ctx)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if beforeExists == afterExists && bytes.Equal(beforeRaw, afterRaw) {
+			return members, afterRaw, afterExists, nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, nil, false, err
+		}
 	}
-	// The generation participates in every future Arm/Disarm CAS. Treat it as
-	// part of the alarm's readable integrity envelope so health, write gates and
-	// logical snapshots cannot certify state that cannot be mutated safely.
-	if _, _, _, err = b.readCorruptAlarmGeneration(ctx); err != nil {
-		return nil, err
-	}
-	return members, nil
 }
 
 func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error) {

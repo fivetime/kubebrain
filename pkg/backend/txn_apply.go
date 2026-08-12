@@ -225,7 +225,11 @@ func atomicExpect(ctx context.Context, txn storage.AtomicBatch, key, expected []
 // writes inside one storage transaction. AtomicBatch.Get establishes the same
 // conflict dependency as legacy CAS/PutIfNotExist, while allowing object/event
 // keys to be derived from a revision allocated by that transaction.
-func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, preps []txnPrep, guardPreps []txnGuardPrep, newRevision uint64, quotaUsageRaw []byte, nextQuotaUsage int64) error {
+func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, preps []txnPrep, guardPreps []txnGuardPrep, newRevision uint64, quotaUsageRaw []byte, nextQuotaUsage int64, corruptGenerationRaw []byte, corruptGenerationExists bool) error {
+	if err := atomicExpect(ctx, txn, b.ks.EncodeInternalKey(corruptAlarmGenerationKey),
+		corruptGenerationRaw, !corruptGenerationExists); err != nil {
+		return err
+	}
 	if b.config.QuotaBackendBytes > 0 {
 		key := b.ks.EncodeInternalKey(quotaUsageKey)
 		if err := atomicExpect(ctx, txn, key, quotaUsageRaw, quotaUsageRaw == nil); err != nil {
@@ -488,10 +492,24 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 	}
 	if !hasUserWrite && hasInternalWrite {
+		members, corruptGenerationRaw, corruptGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
+		if alarmErr != nil {
+			return nil, baseRevision, false, alarmErr
+		}
+		if len(members) != 0 {
+			return nil, baseRevision, false, ErrCorruptAlarmActive
+		}
 		if cerr := b.fenceAdmit(ctx); cerr != nil {
 			return nil, baseRevision, false, cerr
 		}
 		batch := b.kv.BeginBatchWrite()
+		corruptGenerationKey := b.ks.EncodeInternalKey(corruptAlarmGenerationKey)
+		if corruptGenerationExists {
+			batch.CAS(corruptGenerationKey, corruptGenerationRaw, corruptGenerationRaw, 0)
+		} else {
+			batch.PutIfNotExist(corruptGenerationKey, []byte{0}, 0)
+			batch.Del(corruptGenerationKey)
+		}
 		guardKeys := make(map[string]struct{}, len(guards))
 		for _, gp := range guardPreps {
 			guardKeys[string(gp.key)] = struct{}{}
@@ -543,6 +561,13 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			results[i] = TxnWriteResult{Key: preps[i].op.Key, Revision: cur}
 		}
 		return results, cur, false, nil
+	}
+	members, corruptGenerationRaw, corruptGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
+	if alarmErr != nil {
+		return nil, baseRevision, false, alarmErr
+	}
+	if len(members) != 0 {
+		return nil, baseRevision, false, ErrCorruptAlarmActive
 	}
 
 	var (
@@ -650,7 +675,8 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// it creates no collector hole and must not publish an invalid event.
 	batch := b.kv.BeginBatchWrite()
 	allocated := b.stageNextDurableRevisionAfter(batch, baseRevision, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
-		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage)
+		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage,
+			corruptGenerationRaw, corruptGenerationExists)
 	})
 	cerr := b.commitUserBatch(ctx, batch)
 	newRevision = *allocated
