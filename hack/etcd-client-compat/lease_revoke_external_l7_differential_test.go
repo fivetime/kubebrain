@@ -24,6 +24,8 @@ type externalL7ProxyResponse struct {
 	Endpoint         string         `json:"endpoint"`
 	DroppedResponses int            `json:"droppedResponses"`
 	Dials            map[string]int `json:"dials"`
+	ActiveStreams    int            `json:"activeStreams"`
+	FailedStreams    int            `json:"failedStreams"`
 }
 
 type externalL7Proxy struct {

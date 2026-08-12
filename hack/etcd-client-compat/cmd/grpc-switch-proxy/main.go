@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -50,6 +51,9 @@ type proxy struct {
 	blocked          bool
 	release          chan struct{}
 	droppedResponses int
+	nextStreamID     uint64
+	streams          map[uint64]chan struct{}
+	failedStreams    int
 }
 
 type response struct {
@@ -58,6 +62,8 @@ type response struct {
 	Endpoint         string         `json:"endpoint,omitempty"`
 	DroppedResponses int            `json:"droppedResponses,omitempty"`
 	Dials            map[string]int `json:"dials,omitempty"`
+	ActiveStreams    int            `json:"activeStreams,omitempty"`
+	FailedStreams    int            `json:"failedStreams,omitempty"`
 }
 
 func main() {
@@ -73,7 +79,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	p := &proxy{listener: listener, target: strings.TrimSpace(*target), dials: make(map[string]int)}
+	p := &proxy{
+		listener: listener, target: strings.TrimSpace(*target),
+		dials: make(map[string]int), streams: make(map[uint64]chan struct{}),
+	}
 	p.server = grpc.NewServer(
 		grpc.ForceServerCodec(rawCodec{}),
 		grpc.UnknownServiceHandler(p.handleUnary),
@@ -103,6 +112,11 @@ func main() {
 			}
 		case line == "stats":
 			reply = p.stats()
+		case line == "fail-streams":
+			reply.OK = p.failStreams() > 0
+			if !reply.OK {
+				reply.Error = "no active streams"
+			}
 		case len(parts) == 2 && parts[0] == "target":
 			p.setTarget(parts[1])
 			reply.OK = true
@@ -122,6 +136,9 @@ func (p *proxy) handleUnary(_ any, stream grpc.ServerStream) error {
 	method, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
 		return status.Error(codes.Internal, "missing gRPC method")
+	}
+	if method == "/etcdserverpb.Watch/Watch" {
+		return p.handleBidiStream(method, stream)
 	}
 	var request rawFrame
 	if err := stream.RecvMsg(&request); err != nil {
@@ -150,6 +167,62 @@ func (p *proxy) handleUnary(_ any, stream grpc.ServerStream) error {
 		}
 	}
 	return stream.SendMsg(&upstreamResponse)
+}
+
+func (p *proxy) handleBidiStream(method string, downstream grpc.ServerStream) error {
+	target := p.currentTarget()
+	connection, err := grpc.NewClient(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.ForceCodec(rawCodec{})),
+	)
+	if err != nil {
+		return status.Error(codes.Unavailable, err.Error())
+	}
+	defer connection.Close()
+	p.recordDial(target)
+	upstream, err := connection.NewStream(
+		downstream.Context(),
+		&grpc.StreamDesc{ServerStreams: true, ClientStreams: true},
+		method,
+	)
+	if err != nil {
+		return err
+	}
+	streamID, fail := p.registerStream()
+	defer p.unregisterStream(streamID)
+	errors := make(chan error, 2)
+	go relayRawStream(downstream, upstream, errors)
+	go relayRawStream(upstream, downstream, errors)
+	select {
+	case <-fail:
+		return status.Error(codes.Unavailable, "external L7 proxy reset active stream")
+	case streamErr := <-errors:
+		if streamErr == io.EOF {
+			return nil
+		}
+		return streamErr
+	case <-downstream.Context().Done():
+		return downstream.Context().Err()
+	}
+}
+
+type rawReceiverSender interface {
+	RecvMsg(any) error
+	SendMsg(any) error
+}
+
+func relayRawStream(source, destination rawReceiverSender, errors chan<- error) {
+	for {
+		var frame rawFrame
+		if err := source.RecvMsg(&frame); err != nil {
+			errors <- err
+			return
+		}
+		if err := destination.SendMsg(&frame); err != nil {
+			errors <- err
+			return
+		}
+	}
 }
 
 func (p *proxy) currentTarget() string {
@@ -203,6 +276,33 @@ func (p *proxy) failBlockedResponses() bool {
 	return true
 }
 
+func (p *proxy) registerStream() (uint64, <-chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.nextStreamID++
+	fail := make(chan struct{})
+	p.streams[p.nextStreamID] = fail
+	return p.nextStreamID, fail
+}
+
+func (p *proxy) unregisterStream(id uint64) {
+	p.mu.Lock()
+	delete(p.streams, id)
+	p.mu.Unlock()
+}
+
+func (p *proxy) failStreams() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	failed := len(p.streams)
+	for id, stream := range p.streams {
+		close(stream)
+		delete(p.streams, id)
+	}
+	p.failedStreams += failed
+	return failed
+}
+
 func (p *proxy) stats() response {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -210,7 +310,10 @@ func (p *proxy) stats() response {
 	for target, count := range p.dials {
 		dials[target] = count
 	}
-	return response{OK: true, DroppedResponses: p.droppedResponses, Dials: dials}
+	return response{
+		OK: true, DroppedResponses: p.droppedResponses, Dials: dials,
+		ActiveStreams: len(p.streams), FailedStreams: p.failedStreams,
+	}
 }
 
 var _ encoding.Codec = rawCodec{}

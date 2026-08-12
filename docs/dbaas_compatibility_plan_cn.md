@@ -47235,10 +47235,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建三成员 reference，在 disposable
   `kubebrain-external-l7` 独立 3 PD/3 TiKV/3 KubeBrain 上通过。A4409 双端 0.37 秒，日志均明确 attempt 0 为
   proxy 生成的 L7 Unavailable、attempt 1 为 `NotFound/lease not found`；包含 A4401–A4409 的统一明文
-  `lease-response-loss` 门禁 12.885 秒。当前 L7 代理聚焦 unary committed-response-loss，不等同于 Envoy/
-  同一 fresh 现场以 `GOFLAGS=-race` 重跑 A4401–A4409 统一门禁 22.276 秒通过，其中 A4409 双端 2.56 秒。
-  云厂商 LB 的完整生产配置矩阵；streaming Watch/KeepAlive L7 reset、生产云 LB/NAT/conntrack、跨节点网络
+  `lease-response-loss` 门禁 12.885 秒；同一 fresh 现场以 `GOFLAGS=-race` 重跑 A4401–A4409 统一门禁
+  22.276 秒通过，其中 A4409 双端 2.56 秒。当前 L7 代理聚焦 unary committed-response-loss，不等同于
+  Envoy/云厂商 LB 的完整生产配置矩阵；streaming Watch/KeepAlive L7 reset、生产云 LB/NAT/conntrack、跨节点网络
   设备和平台通用 request token 仍保持开放。
+
+- A4410 关闭 A4409 明确保留的 streaming Watch L7 reset 缺口。上游
+  `/root/etcd/client/v3/watch.go` 将非 compact、非 future-revision、非权限错误的 Watch 断流视为可恢复错误，
+  `serveSubstream` 在交付事件后把下一次订阅 revision 推进到最后一个事件的 `ModRevision+1`；因此兼容目标不是
+  让一次 HTTP/2 stream 永不失败，而是让 clientv3 在可恢复 L7 状态后按准确 revision 重建 stream，且不丢不重。
+  `cmd/grpc-switch-proxy` 现将 `/etcdserverpb.Watch/Watch` 作为真正双向 gRPC stream 逐帧转发，维护 mutex 保护的
+  active-stream registry；控制面 `fail-streams` 只令活动 RPC 返回代理生成的 `Unavailable: external L7 proxy
+  reset active stream`，不会关闭 downstream TCP/TLS connection，并统计 reset 次数及每个 upstream target 的
+  实际 dial。新增 `TestWatchResumesAcrossExternalL7ResetDifferential`：先通过 proxy/replica 0 建立带 CreatedNotify
+  的 Watch，replica 2 写入 `before-reset` 并记录 ModRevision；随后先把 proxy target 切至 replica 1，再执行
+  L7 stream reset。测试必须观察到 replica 1 新 dial 和一个重新建立的活动 stream，replica 2 再写入
+  `after-reset` 后只能收到该事件，revision 必须恰好 +1，Watch channel 仍保持开放。若 client 重放旧 revision，
+  重复的第一个值会直接使断言失败；若跳过 revision，第二个值或连续 revision 断言会失败。
+  2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建 reference 工具链，在 disposable
+  `kubebrain-watch-l7` 独立 3 PD/3 TiKV/3 KubeBrain 上通过：A4410 双端 0.49 秒，包含 A4401–A4410 的统一
+  `lease-response-loss` 门禁 15.327 秒；同一 fresh 现场以 `GOFLAGS=-race` 重跑统一门禁 23.710 秒通过，
+  A4410 双端 2.41 秒且无数据竞争。至此 Watch 已有真实应用层 stream reset 与跨 replica 精确续订证据；
+  streaming KeepAlive L7 reset、生产 Envoy/云厂商 LB 配置矩阵、云 LB/NAT/conntrack、跨节点网络设备和平台
+  通用 request token 仍保持开放。
 
 ### P2：运维兼容和长期验证
 
