@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"sync/atomic"
 	"time"
 
@@ -122,6 +123,46 @@ func (b *backend) stageDurableRevision(batch storage.BatchWrite, revision uint64
 	value := make([]byte, 8)
 	binary.BigEndian.PutUint64(value, revision)
 	batch.Put(b.ks.EncodeInternalKey(durableRevisionKey), value, 0)
+}
+
+// stageNextDurableRevision makes the durable watermark the transaction-local
+// revision allocator. The caller's stage function must write the user mutation
+// and its event records through the supplied AtomicBatch; otherwise advancing
+// the counter alone would create the same externally visible hole this helper
+// is intended to eliminate. Callers must retry the entire freshly constructed
+// batch on ErrCASFailed.
+//
+// This helper is deliberately not wired into the legacy TSO write paths yet:
+// mixing allocators would permit both to choose the same next revision.
+func (b *backend) stageNextDurableRevision(batch storage.BatchWrite, stage func(context.Context, storage.AtomicBatch, uint64) error) *uint64 {
+	var allocated uint64
+	key := b.ks.EncodeInternalKey(durableRevisionKey)
+	batch.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
+		current, err := txn.Get(ctx, key)
+		var revision uint64
+		switch {
+		case errors.Is(err, storage.ErrKeyNotFound):
+			revision = 1
+		case err != nil:
+			return err
+		default:
+			revision, err = decodeDurableRevisionWatermark(current)
+			if err != nil {
+				return err
+			}
+		}
+		if revision >= math.MaxInt64 {
+			return ErrRevisionExhausted
+		}
+		allocated = revision + 1
+		value := make([]byte, 8)
+		binary.BigEndian.PutUint64(value, allocated)
+		if err := txn.Put(key, value, 0); err != nil {
+			return err
+		}
+		return stage(ctx, txn, allocated)
+	})
+	return &allocated
 }
 
 // persistDurableRevision monotonically advances the cluster-visible watermark.

@@ -11,13 +11,18 @@ package backend
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 func TestDurableRevisionTracksResolvedUserWrites(t *testing.T) {
@@ -104,4 +109,127 @@ func TestLeadershipRevisionKeepsUserRevisionsContiguous(t *testing.T) {
 	durable, err := b.GetDurableRevision(ctx)
 	require.NoError(t, err)
 	require.Equal(t, response.Header.Revision, durable)
+}
+
+func TestTransactionalRevisionAllocatorCommitsContinuousMarkers(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	b.persistDurableRevision(1)
+
+	const writers = 32
+	revisions := make(chan uint64, writers)
+	errCh := make(chan error, writers)
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(writer int) {
+			defer wg.Done()
+			for {
+				if err := ctx.Err(); err != nil {
+					errCh <- err
+					return
+				}
+				batch := b.kv.BeginBatchWrite()
+				allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+					marker := b.ks.EncodeInternalKey([]byte(fmt.Sprintf("revision/test/%020d", revision)))
+					return txn.Put(marker, []byte(fmt.Sprintf("writer-%d", writer)), 0)
+				})
+				err := batch.Commit(ctx)
+				if errors.Is(err, storage.ErrCASFailed) {
+					continue
+				}
+				if err != nil {
+					errCh <- err
+					return
+				}
+				revisions <- *allocated
+				return
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(revisions)
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+	got := make([]uint64, 0, writers)
+	for revision := range revisions {
+		got = append(got, revision)
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	require.Len(t, got, writers)
+	for i, revision := range got {
+		require.Equal(t, uint64(i+2), revision)
+		marker := b.ks.EncodeInternalKey([]byte(fmt.Sprintf("revision/test/%020d", revision)))
+		_, err := b.kv.Get(ctx, marker)
+		require.NoError(t, err)
+	}
+	durable, err := b.GetDurableRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(writers+1), durable)
+}
+
+func TestTransactionalRevisionAllocatorCallbackFailureDoesNotAdvance(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	b.persistDurableRevision(9)
+	wantErr := errors.New("marker encoding failed")
+	batch := b.kv.BeginBatchWrite()
+	allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+		require.Equal(t, uint64(10), revision)
+		require.NoError(t, txn.Put(b.ks.EncodeInternalKey([]byte("revision/test/rollback")), []byte("staged"), 0))
+		return wantErr
+	})
+	require.ErrorIs(t, batch.Commit(ctx), wantErr)
+	require.Equal(t, uint64(10), *allocated)
+	durable, err := b.GetDurableRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(9), durable)
+	_, err = b.kv.Get(ctx, b.ks.EncodeInternalKey([]byte("revision/test/rollback")))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
+func TestTransactionalRevisionAllocatorInitializesAndFailsClosed(t *testing.T) {
+	t.Run("missing counter starts after empty etcd revision", func(t *testing.T) {
+		b, ctx := newTxnApplyBackend(t)
+		batch := b.kv.BeginBatchWrite()
+		allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+			return txn.Put(b.ks.EncodeInternalKey([]byte("revision/test/initial")), []byte("ok"), 0)
+		})
+		require.NoError(t, batch.Commit(ctx))
+		require.Equal(t, uint64(2), *allocated)
+		durable, err := b.GetDurableRevision(ctx)
+		require.NoError(t, err)
+		require.Equal(t, uint64(2), durable)
+	})
+
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+		err  error
+	}{
+		{name: "corrupt", raw: []byte{1}, err: ErrInvalidMVCCMetadata},
+		{name: "exhausted", raw: func() []byte {
+			value := make([]byte, 8)
+			binary.BigEndian.PutUint64(value, math.MaxInt64)
+			return value
+		}(), err: ErrRevisionExhausted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			key := b.ks.EncodeInternalKey(durableRevisionKey)
+			seed := b.kv.BeginBatchWrite()
+			seed.Put(key, tc.raw, 0)
+			require.NoError(t, seed.Commit(ctx))
+			batch := b.kv.BeginBatchWrite()
+			b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+				return txn.Put(b.ks.EncodeInternalKey([]byte("revision/test/invalid")), []byte("must-not-commit"), 0)
+			})
+			require.ErrorIs(t, batch.Commit(ctx), tc.err)
+			current, err := b.kv.Get(ctx, key)
+			require.NoError(t, err)
+			require.Equal(t, tc.raw, current)
+			_, err = b.kv.Get(ctx, b.ks.EncodeInternalKey([]byte("revision/test/invalid")))
+			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+		})
+	}
 }

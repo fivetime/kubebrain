@@ -2870,6 +2870,10 @@ storage `BatchWrite.Atomic` 提供提交事务内的动态读写：回调读取�
 接口和共享 contract。该原语是把全局 MVCC revision 从提交前 leader-local 预留迁移到 TiKV 事务内
 read-modify-write 的基础；在所有用户写、event log、durable revision 与 uncertain resolution 完成迁移前，
 不能据此宣称 revision 跳号差异已关闭。
+`stageNextDurableRevision` 已在同一 Atomic 回调中读取 `revision/committed`、校验严格 8-byte 正整数及
+`MaxInt64` 上界、写入 next revision，并要求调用者把对应 mutation/event marker 一并写入该事务。counter
+缺失按 etcd 空库 revision=1 初始化，首次写分配 2；并发冲突必须用全新 batch 重试。该 helper 暂不接入旧
+TSO 写路径，因为两种 allocator 并行会分配重复 revision。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 

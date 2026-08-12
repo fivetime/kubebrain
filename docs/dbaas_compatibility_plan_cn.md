@@ -47974,6 +47974,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍需在配置真实 `KUBEBRAIN_TIKV_PD` 的环境运行。下一步才是将 durable revision、所有用户写/event log 和
   uncertain resolution 迁移到该原语；迁移完成前矩阵继续保留 revision 可能跳号的可观察差异。
 
+- A4468 在 A4467 上实现尚未接入运行时的事务内 durable revision allocator。`stageNextDurableRevision` 在同一
+  storage transaction 中读取并严格解码 `revision/committed`，缺失时以 etcd 空库 revision=1 为基线，检查
+  `MaxInt64` 后写 next counter，并让调用者用同一 `AtomicBatch` 动态编码 mutation/event marker。32 个并发 writer
+  对同一 counter 做全 batch CAS conflict retry 后必须精确得到连续 `2..33`，且每个 marker 与 counter 同时存在；
+  callback error、损坏 counter 和 exhausted counter 均整体回滚且不推进。race 连续 10 轮通过。helper 刻意未与
+  leader-local TSO 混用；下一阶段必须原子切换 Create/Update/Delete/DeleteRange/TxnApply、lease expiry/revoke
+  等全部用户 revision 写路径及 uncertain resolution，才能关闭跳号差异和启用运行时 allocator。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
