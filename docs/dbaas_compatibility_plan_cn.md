@@ -48138,6 +48138,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   forward，禁止删除 witness 或修 TiKV。单元测试固定 wrapped sentinel 分类和 transport error 排除，manifest 测试
   固定表达式、severity、runbook 提示且确认告警引用的 metric 确实由代码发出。
 
+- A4491 关闭 transaction witness 告警的人工绕过窗口。启动扫描发现损坏后仍持久化 CORRUPT 并完成只读 leader
+  初始化，但校验器现在同时返回 typed `ErrTxnWitnessCorrupt`；只有启动边界显式消费该错误。`Alarm DEACTIVATE
+  CORRUPT` 在删除 member alarm 前必须重新流式校验全部现存 seal，未修复 mismatch/malformed evidence 时拒绝删除、
+  保持写栅栏，并向 etcd 客户端返回标准 `DataLoss/ErrGRPCCorrupt`；TiKV 扫描错误和未知未来 seal 版本同样 fail
+  closed。回归先损坏双键 transaction 的一个 marker，证明重启可读但首次 disarm 失败且 alarm 保留，再恢复原
+  marker 后才允许 disarm 并再次完成 leadership 初始化。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

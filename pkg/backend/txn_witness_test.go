@@ -89,11 +89,17 @@ func TestLeadershipRestartValidatesPersistentTxnWitnessAndRecoversAfterRepair(t 
 	members, err := restarted.CorruptAlarms(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []uint64{restarted.localAlarmMemberID()}, members)
+	removed, err := restarted.DisarmCorrupt(ctx, restarted.localAlarmMemberID())
+	require.ErrorIs(t, err, ErrTxnWitnessCorrupt)
+	require.False(t, removed, "unrepaired durable evidence must keep the write fence armed")
+	members, err = restarted.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{restarted.localAlarmMemberID()}, members)
 
 	repair := store.BeginBatchWrite()
 	repair.Put(markerKey, markerValue, 0)
 	require.NoError(t, repair.Commit(ctx))
-	removed, err := restarted.DisarmCorrupt(ctx, restarted.localAlarmMemberID())
+	removed, err = restarted.DisarmCorrupt(ctx, restarted.localAlarmMemberID())
 	require.NoError(t, err)
 	require.True(t, removed)
 	require.NoError(t, restarted.InitializeLeadershipRevision(ctx, 0))
@@ -147,6 +153,25 @@ func TestLeadershipWitnessScanTransportErrorDoesNotArmCorrupt(t *testing.T) {
 	members, alarmErr := b.CorruptAlarms(context.Background())
 	require.NoError(t, alarmErr)
 	require.Empty(t, members)
+}
+
+func TestCorruptDisarmWitnessScanErrorKeepsAlarm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	ctx := context.Background()
+	b := NewBackend(witnessScanErrorStorage{KvStorage: store}, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	memberID := b.localAlarmMemberID()
+	require.NoError(t, b.ArmCorrupt(ctx, memberID))
+
+	removed, err := b.DisarmCorrupt(ctx, memberID)
+	require.ErrorIs(t, err, errWitnessScanUnavailable)
+	require.False(t, removed)
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{memberID}, members, "an unverifiable witness set must keep the write fence armed")
 }
 
 func TestLeadershipWitnessEventScanTransportErrorDoesNotArmCorrupt(t *testing.T) {
@@ -242,10 +267,17 @@ func TestLeadershipRejectsFutureWitnessVersionWithoutCorruptAlarm(t *testing.T) 
 	stored, err := b.kv.Get(ctx, witnessKey)
 	require.NoError(t, err)
 	require.Equal(t, future, stored, "an older binary must preserve opaque future witness bytes")
+	require.NoError(t, b.ArmCorrupt(ctx, b.localAlarmMemberID()))
+	removed, err := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, err, ErrTxnWitnessUnsupportedVersion)
+	require.False(t, removed, "an incompatible binary cannot validate evidence well enough to disarm")
 
 	repair := b.kv.BeginBatchWrite()
 	repair.Put(witnessKey, raw, 0)
 	require.NoError(t, repair.Commit(ctx))
+	removed, err = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.NoError(t, err)
+	require.True(t, removed)
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0), "rolling forward to a compatible decoder can lead")
 }
 

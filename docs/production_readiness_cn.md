@@ -2938,7 +2938,9 @@ SHA-256 摘要）。新 leader 在对外可写前重算并校验所有仍保留�
 一起抹掉损坏证据；发现不一致会先持久化 CORRUPT，再允许只读/运维面进入服务。该校验只要求新格式明确写入的
 seal，旧版本 revision 不会因缺少 seal 被误报。compaction 必须先删除 covered seals，再删除 event rows；seal
 清理失败时本轮不得继续删除事件。修复底层 marker 后需由运维显式 AlarmDeactivate CORRUPT，随后领导权初始化会
-再次验证剩余 seals；禁止在未修复 witness 时仅解除告警恢复写流量。
+再次验证剩余 seals；`Alarm DEACTIVATE CORRUPT` 会在持久删除告警前强制重验全部现存 seal，任一 mismatch、
+malformed seal、扫描错误或未知未来版本都会拒绝解除。禁止通过直接修改内部 alarm metadata 绕过该栅栏；应先修复
+marker/seal 根因，再由 etcd Maintenance API 解除告警恢复写流量。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

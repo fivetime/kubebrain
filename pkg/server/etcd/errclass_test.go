@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -56,4 +57,10 @@ func TestErrClass(t *testing.T) {
 		seen[got] = struct{}{}
 	}
 	require.LessOrEqual(t, len(seen), 9, "errclass must stay low-cardinality (bounded set)")
+}
+
+func TestMapFenceErrMapsTxnWitnessCorruptionToEtcdCorrupt(t *testing.T) {
+	err := mapFenceErr(fmt.Errorf("revalidate before alarm disarm: %w", backend.ErrTxnWitnessCorrupt))
+	require.ErrorIs(t, err, rpctypes.ErrGRPCCorrupt)
+	require.Equal(t, codes.DataLoss, status.Code(err))
 }

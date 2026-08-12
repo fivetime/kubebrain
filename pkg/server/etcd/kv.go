@@ -2057,6 +2057,9 @@ func (s *RPCServer) compact(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 // current leader, exactly like the not-leader gate above (FINDING #39). Other
 // errors pass through unchanged.
 func mapFenceErr(err error) error {
+	if errors.Is(err, backend.ErrTxnWitnessCorrupt) {
+		return rpctypes.ErrGRPCCorrupt
+	}
 	if errors.Is(err, backend.ErrNoSpace) {
 		return rpctypes.ErrGRPCNoSpace
 	}

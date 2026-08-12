@@ -153,9 +153,13 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 	// memory is O(events in one txn), not O(uncompacted transactions).
 	var eventReady, eventEOF bool
 	var eventRevision uint64
+	var corruptFound bool
 	for {
 		if err := witnesses.Next(ctx); err != nil {
 			if err == io.EOF {
+				if corruptFound {
+					return ErrTxnWitnessCorrupt
+				}
 				return nil
 			}
 			return err
@@ -236,6 +240,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 		if err := b.armPersistedWitnessCorrupt(ctx, revision, cause); err != nil {
 			return err
 		}
+		corruptFound = true
 	}
 }
 

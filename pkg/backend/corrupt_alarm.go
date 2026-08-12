@@ -56,6 +56,12 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 		if index == len(members) || members[index] != memberID {
 			return false, nil
 		}
+		// A restart witness is durable evidence that a transaction's event set
+		// may be incomplete. Do not let an operator reopen writes merely by
+		// clearing CORRUPT while that evidence still fails validation.
+		if err := b.validatePersistedTxnWitnesses(ctx); err != nil {
+			return false, err
+		}
 		members = append(members[:index], members[index+1:]...)
 		op := InternalCASOp{Key: corruptAlarmKey, Expected: raw, ExpectedExists: exists}
 		if len(members) == 0 {
