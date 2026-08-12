@@ -47021,6 +47021,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   client/v3 streaming KeepAlive channel 可跨 TiKV 退化恢复并保持 attached-key 所有权；不承诺故障超过 TTL
   后 channel 不关闭，也不替代 revoke/expiry 同 stream 竞争、多租户大规模 stream、独立 AZ 或长时 soak。
 
+- A4399 将 A4398 的“故障恢复后继续续租”推进到同一 stream 上的显式 Revoke 收敛，对照 upstream
+  `/root/etcd/tests/integration/clientv3/lease/lease_test.go::TestLeaseKeepAliveCloseAfterDisconnectRevoke`。
+  上游契约明确允许 Revoke 成功后继续排空调度相关的 buffered positive response，不能错误要求“返回后绝对
+  零响应”；但 channel 必须在最近一次已确认 TTL 窗口内关闭。新增
+  `TestLeaseRevokeClosesKeepAliveStreamsAcrossTiKVDegradation` 与
+  `tikv-cross-node-degraded-network-revoke-stream`：预建四条 TTL=60 lease、独立 attached key 和 high-level
+  KeepAlive channel，逐条取得首个正 TTL；全部三个跨 worker TiKV store 进入 30 秒 netem 15 秒后，同时
+  发起四个 90 秒 deadline Revoke。每个调用只由应用发起一次，允许 clientv3 内部重试；全部确认成功后排空
+  buffered response，并要求 channel 有界关闭、linearizable Range 无 key、TimeToLive=-1、LeaseList 无 ID。
+  2026-08-12 disposable `kubebrain-tikv-netem-revoke-stream` 在 1 control-plane + 3 dev-zone worker、3 PD/
+  3 TiKV/3 KubeBrain、30379/30380 拓扑通过：故障期间四个 Revoke 均多轮收到 `Unavailable/no ready`，清障后
+  自动成功；将 channel deadline 收紧为从四个 Revoke 全部确认后立即并发计时的最终门禁 40.40 秒通过。
+  三个 TiKV 与三个 KubeBrain 均 Ready、零重启，三个 TiKV namespace 最终
+  均为 `qdisc noqueue`。首次部署等待曾因宿主根分区 100%、TiKV `AlreadyFull` 保护而 RED；只清除 89GB
+  可重建 Go build cache 后释放 87GB，数据面恢复。`kb-pd-2` 和非测试目标 `kb-tidb-0` 各在初始化/磁盘压力
+  阶段重启一次，均早于故障门禁并恢复 Ready。本项固定“Revoke 已确认成功但 stream 永久续租或 attached
+  key 仍存在”不可发生；不把 buffered response 当成违约，也不替代 Revoke 响应丢失的 uncertain commit
+  reconciliation、跨进程多 endpoint client、独立 AZ 或长时 soak。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

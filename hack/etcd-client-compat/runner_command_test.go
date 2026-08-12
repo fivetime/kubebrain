@@ -808,6 +808,26 @@ func TestBackendTiKVDegradedNetworkRunsStreamingKeepAliveRecovery(t *testing.T) 
 	require.Contains(t, text, `receivePositiveKeepAlive(t, ctx, lease.ch, lease.id)`)
 }
 
+func TestBackendTiKVDegradedNetworkRunsRevokeStreamConvergence(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `tikv-cross-node-degraded-network-revoke-stream)`)
+	require.Contains(t, script, `KUBEBRAIN_TIKV_REVOKE_STREAM_FAULT_COMMAND="$command"`)
+	require.Contains(t, script, `TestLeaseRevokeClosesKeepAliveStreamsAcrossTiKVDegradation`)
+	require.Contains(t, script, `"$self --degrade-tikv-all-cross-node"`)
+	require.Contains(t, script, `run_tikv_degraded_network_revoke_stream_test`)
+	require.NotContains(t, script, "eval ")
+
+	source, readErr := os.ReadFile("tikv_lease_revoke_stream_degraded_network_test.go")
+	require.NoError(t, readErr)
+	text := string(source)
+	require.Contains(t, text, `time.After(15 * time.Second)`)
+	require.Contains(t, text, `collectLeaseRevokeWave(t, ctx, revokes, len(leases))`)
+	require.Contains(t, text, `waitForKeepAliveChannelClose`)
+	require.Contains(t, text, `require.Equal(t, int64(-1), ttl.TTL)`)
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"
