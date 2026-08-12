@@ -42,6 +42,21 @@ static_resources:
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+    - name: kubebrain-client-tls-passthrough
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 2380
+      per_connection_buffer_limit_bytes: 1048576
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: kubebrain_tls_passthrough
+                cluster: kubebrain
+                idle_timeout: 0s
+                max_connect_attempts: 3
   clusters:
     - name: kubebrain
       type: STRICT_DNS

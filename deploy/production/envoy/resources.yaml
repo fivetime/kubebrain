@@ -104,6 +104,8 @@ spec:
           ports:
             - name: client
               containerPort: 2379
+            - name: client-tls
+              containerPort: 2380
             - name: admin
               containerPort: 9901
           readinessProbe:
@@ -178,6 +180,9 @@ spec:
     - name: client
       port: 2379
       targetPort: client
+    - name: client-tls
+      port: 2380
+      targetPort: client-tls
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -202,6 +207,8 @@ spec:
       ports:
         - protocol: TCP
           port: 2379
+        - protocol: TCP
+          port: 2380
     - from:
         - namespaceSelector:
             matchLabels:

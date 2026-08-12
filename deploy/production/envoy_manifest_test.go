@@ -41,6 +41,18 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
 	require.Equal(t, "/ready", nestedString(t, container, "readinessProbe", "httpGet", "path"))
 	require.Equal(t, "/healthcheck/fail", nestedString(t, container, "lifecycle", "preStop", "httpGet", "path"))
+	ports, found, err := unstructured.NestedSlice(container.Object, "ports")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, ports, 3)
+	for index, want := range []struct {
+		name string
+		port int64
+	}{{"client", 2379}, {"client-tls", 2380}, {"admin", 9901}} {
+		port := &unstructured.Unstructured{Object: ports[index].(map[string]any)}
+		require.Equal(t, want.name, nestedString(t, port, "name"))
+		require.EqualValues(t, want.port, nestedInt64(t, port, "containerPort"))
+	}
 
 	upstream := objectByKindAndName(t, objects, "Service", "kubebrain-envoy-upstream")
 	require.Equal(t, "None", nestedString(t, upstream, "spec", "clusterIP"))
@@ -50,6 +62,10 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 	require.False(t, publishNotReady, "Envoy upstream discovery must exclude NotReady pods")
 	client := objectByKindAndName(t, objects, "Service", "kubebrain-envoy")
 	require.Equal(t, "ClusterIP", nestedString(t, client, "spec", "type"))
+	clientPorts, found, err := unstructured.NestedSlice(client.Object, "spec", "ports")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, clientPorts, 2)
 
 	for _, name := range []string{"kubebrain-envoy-ingress", "kubebrain-envoy-egress"} {
 		policy := objectByKindAndName(t, objects, "NetworkPolicy", name)
@@ -96,4 +112,28 @@ func TestOptionalEnvoyBootstrapPreservesEtcdLongStreams(t *testing.T) {
 		require.NotContains(t, text, forbidden)
 	}
 	require.Equal(t, 1, strings.Count(text, "address: kubebrain-envoy-upstream.kubebrain-system.svc.cluster.local"))
+}
+
+func TestOptionalEnvoyBootstrapPreservesEndToEndTLSIdentity(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("envoy", "bootstrap.yaml"))
+	require.NoError(t, err)
+	text := string(data)
+	for _, required := range []string{
+		"name: kubebrain-client-tls-passthrough",
+		"port_value: 2380",
+		"envoy.filters.network.tcp_proxy",
+		"stat_prefix: kubebrain_tls_passthrough",
+		"cluster: kubebrain",
+		"idle_timeout: 0s",
+		"max_connect_attempts: 3",
+	} {
+		require.Contains(t, text, required)
+	}
+	for _, forbidden := range []string{
+		"transport_socket:",
+		"tls_context:",
+		"forward_client_cert_details:",
+	} {
+		require.NotContains(t, text, forbidden, "passthrough profile must not terminate or synthesize TLS identity")
+	}
 }

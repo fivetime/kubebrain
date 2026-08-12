@@ -80,15 +80,18 @@ case "$TEST_SCOPE" in
   envoy-plaintext)
     test_pattern='^TestEnvoyPlaintextProfileDifferential$'
     ;;
+  envoy-tls-passthrough)
+    test_pattern='^TestEnvoyTLSPassthroughProfileDifferential$'
+    ;;
   *)
-    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, or envoy-plaintext" >&2
+    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, envoy-plaintext, or envoy-tls-passthrough" >&2
     exit 2
     ;;
 esac
 reference_scheme=http
 declare -a curl_tls_args=()
 declare -a etcd_tls_args=()
-if [[ "$TEST_SCOPE" == lease-revoke-tls-passthrough ]]; then
+if [[ "$TEST_SCOPE" == lease-revoke-tls-passthrough || "$TEST_SCOPE" == envoy-tls-passthrough ]]; then
   for tls_file in "$TLS_CA_FILE" "$TLS_CERT_FILE" "$TLS_KEY_FILE"; do
     if [[ -z "$tls_file" || ! -r "$tls_file" ]]; then
       echo "TLS_CA_FILE, TLS_CERT_FILE, and TLS_KEY_FILE must name readable files for TLS passthrough" >&2
@@ -105,9 +108,9 @@ if [[ "$TEST_SCOPE" == lease-revoke-tls-passthrough ]]; then
   )
   export ETCDCTL_CACERT="$TLS_CA_FILE" ETCDCTL_CERT="$TLS_CERT_FILE" ETCDCTL_KEY="$TLS_KEY_FILE"
 fi
-if [[ "$TEST_SCOPE" == envoy-plaintext ]]; then
+if [[ "$TEST_SCOPE" == envoy-plaintext || "$TEST_SCOPE" == envoy-tls-passthrough ]]; then
   if [[ -z "$ENVOY_BINARY" || ! -x "$ENVOY_BINARY" ]]; then
-    echo "ENVOY_BINARY must name an executable Envoy binary for the plaintext profile" >&2
+    echo "ENVOY_BINARY must name an executable Envoy binary for the selected Envoy profile" >&2
     exit 2
   fi
   if [[ ! -r "$ENVOY_BOOTSTRAP_TEMPLATE" ]]; then

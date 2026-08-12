@@ -2,6 +2,7 @@ package compat
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
@@ -18,7 +19,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-type envoyPlaintextOutcome struct {
+type envoyProfileOutcome struct {
 	UnaryRoundTrip       bool
 	WatchCreated         bool
 	WatchDelivered       bool
@@ -31,6 +32,8 @@ type envoyPlaintextOutcome struct {
 	UpstreamMigrated     bool
 	WatchStayedOpen      bool
 	KeepAliveStayedOpen  bool
+	ClientCertRequired   bool
+	PlaintextRejected    bool
 }
 
 func TestEnvoyPlaintextProfileDifferential(t *testing.T) {
@@ -44,30 +47,67 @@ func TestEnvoyPlaintextProfileDifferential(t *testing.T) {
 	requireDistinctDirectReplicaTopology(t, referenceEndpoints)
 	requireDistinctDirectReplicaTopology(t, kubeBrainEndpoints)
 
-	want := envoyPlaintextOutcome{
+	want := envoyProfileOutcome{
 		UnaryRoundTrip: true, WatchCreated: true, WatchDelivered: true,
 		KeepAliveInitial: true, LeaseSurvived: true, LeaseTTLPositive: true,
 		MemberListComplete: true, StatusMemberPositive: true, EnvoyUpstreamTraffic: true,
 		UpstreamMigrated: true,
 		WatchStayedOpen:  true, KeepAliveStayedOpen: true,
 	}
-	reference := runEnvoyPlaintextScenario(t, binary, bootstrap, referenceEndpoints, "etcd")
+	reference := runEnvoyProfileScenario(t, binary, bootstrap, referenceEndpoints, "etcd", nil, 2379,
+		"cluster.kubebrain.upstream_rq_total")
 	require.Equal(t, want, reference)
-	require.Equal(t, reference, runEnvoyPlaintextScenario(t, binary, bootstrap, kubeBrainEndpoints, "kubebrain"))
+	require.Equal(t, reference, runEnvoyProfileScenario(t, binary, bootstrap, kubeBrainEndpoints, "kubebrain", nil, 2379,
+		"cluster.kubebrain.upstream_rq_total"))
 }
 
-func runEnvoyPlaintextScenario(
+func TestEnvoyTLSPassthroughProfileDifferential(t *testing.T) {
+	binary := strings.TrimSpace(os.Getenv("EXTERNAL_ENVOY_BINARY"))
+	bootstrap := strings.TrimSpace(os.Getenv("ENVOY_BOOTSTRAP_TEMPLATE"))
+	if binary == "" || bootstrap == "" {
+		t.Skip("set EXTERNAL_ENVOY_BINARY and ENVOY_BOOTSTRAP_TEMPLATE to run the real Envoy TLS passthrough differential")
+	}
+	referenceTLS := loadExternalL4ClientTLS(t, "REFERENCE_ETCD")
+	kubeBrainTLS := loadExternalL4ClientTLS(t, "KUBEBRAIN")
+	referenceEndpoints := splitRequiredDirectEndpoints(t, "REFERENCE_ETCD_DIRECT_ENDPOINTS")
+	kubeBrainEndpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
+	requireDistinctDirectReplicaTopologyWithTLS(t, referenceEndpoints, referenceTLS)
+	requireDistinctDirectReplicaTopologyWithTLS(t, kubeBrainEndpoints, kubeBrainTLS)
+
+	want := envoyProfileOutcome{
+		UnaryRoundTrip: true, WatchCreated: true, WatchDelivered: true,
+		KeepAliveInitial: true, LeaseSurvived: true, LeaseTTLPositive: true,
+		MemberListComplete: true, StatusMemberPositive: true, EnvoyUpstreamTraffic: true,
+		UpstreamMigrated: true,
+		WatchStayedOpen:  true, KeepAliveStayedOpen: true,
+		ClientCertRequired: true, PlaintextRejected: true,
+	}
+	reference := runEnvoyProfileScenario(t, binary, bootstrap, referenceEndpoints, "etcd-tls", referenceTLS, 2380,
+		"cluster.kubebrain.upstream_cx_total")
+	require.Equal(t, want, reference)
+	require.Equal(t, reference, runEnvoyProfileScenario(t, binary, bootstrap, kubeBrainEndpoints, "kubebrain-tls",
+		kubeBrainTLS, 2380, "cluster.kubebrain.upstream_cx_total"))
+}
+
+func runEnvoyProfileScenario(
 	t *testing.T,
 	binary string,
 	bootstrap string,
 	endpoints []string,
 	instance string,
-) envoyPlaintextOutcome {
+	tlsConfig *tls.Config,
+	listenerTemplatePort int,
+	trafficStat string,
+) envoyProfileOutcome {
 	t.Helper()
 	clientPort := reserveLocalPort(t)
 	adminPort := reserveLocalPort(t)
 	for adminPort == clientPort {
 		adminPort = reserveLocalPort(t)
+	}
+	unusedListenerPort := reserveLocalPort(t)
+	for unusedListenerPort == clientPort || unusedListenerPort == adminPort {
+		unusedListenerPort = reserveLocalPort(t)
 	}
 	upstreamHost, upstreamPortText, err := net.SplitHostPort(endpoints[0])
 	require.NoError(t, err)
@@ -79,7 +119,14 @@ func runEnvoyPlaintextScenario(
 	config = replaceEnvoyConfigValue(t, config,
 		"address: kubebrain-envoy-upstream.kubebrain-system.svc.cluster.local", "address: "+upstreamHost)
 	config = replaceEnvoyConfigValue(t, config, "port_value: 3379", fmt.Sprintf("port_value: %d", upstreamPort))
-	config = replaceEnvoyConfigValue(t, config, "port_value: 2379", fmt.Sprintf("port_value: %d", clientPort))
+	config = replaceEnvoyConfigValue(t, config, fmt.Sprintf("port_value: %d", listenerTemplatePort),
+		fmt.Sprintf("port_value: %d", clientPort))
+	unusedTemplatePort := 2379
+	if listenerTemplatePort == unusedTemplatePort {
+		unusedTemplatePort = 2380
+	}
+	config = replaceEnvoyConfigValue(t, config, fmt.Sprintf("port_value: %d", unusedTemplatePort),
+		fmt.Sprintf("port_value: %d", unusedListenerPort))
 	config = replaceEnvoyConfigValue(t, config, "port_value: 9901", fmt.Sprintf("port_value: %d", adminPort))
 	configPath := filepath.Join(t.TempDir(), "bootstrap.yaml")
 	require.NoError(t, os.WriteFile(configPath, []byte(config), 0600))
@@ -92,10 +139,14 @@ func runEnvoyPlaintextScenario(
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancel)
 	proxyEndpoint := fmt.Sprintf("127.0.0.1:%d", clientPort)
-	client, err := clientv3.New(clientv3.Config{Endpoints: []string{proxyEndpoint}, DialTimeout: 3 * time.Second})
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{proxyEndpoint}, DialTimeout: 3 * time.Second, TLS: tlsConfig,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
-	observer, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second})
+	observer, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{endpoints[2]}, DialTimeout: 3 * time.Second, TLS: tlsConfig,
+	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, observer.Close()) })
 
@@ -148,13 +199,20 @@ func runEnvoyPlaintextScenario(
 	require.NoError(t, err)
 	status, err := client.Status(ctx, proxyEndpoint)
 	require.NoError(t, err)
-	statsResponse, err := http.Get(adminURL + "/stats?filter=cluster.kubebrain.upstream_rq_total")
+	statsResponse, err := http.Get(adminURL + "/stats?filter=" + trafficStat)
 	require.NoError(t, err)
 	statsBody, err := io.ReadAll(io.LimitReader(statsResponse.Body, 4096))
 	require.NoError(t, err)
 	require.NoError(t, statsResponse.Body.Close())
+	clientCertRequired, plaintextRejected := false, false
+	if tlsConfig != nil {
+		withoutCertificate := tlsConfig.Clone()
+		withoutCertificate.Certificates = nil
+		clientCertRequired = envoyProfileRPCRejected(t, proxyEndpoint, withoutCertificate)
+		plaintextRejected = envoyProfileRPCRejected(t, proxyEndpoint, nil)
+	}
 
-	return envoyPlaintextOutcome{
+	return envoyProfileOutcome{
 		UnaryRoundTrip:       string(unary.Kvs[0].Value) == "through-envoy",
 		WatchCreated:         created.Created,
 		WatchDelivered:       string(watchResponse.Events[0].Kv.Value) == "watched",
@@ -164,12 +222,27 @@ func runEnvoyPlaintextScenario(
 		MemberListComplete:   len(members.Members) == 3,
 		StatusMemberPositive: status.Header.MemberId > 0,
 		EnvoyUpstreamTraffic: statsResponse.StatusCode == http.StatusOK &&
-			strings.Contains(string(statsBody), "cluster.kubebrain.upstream_rq_total"),
+			strings.Contains(string(statsBody), trafficStat),
 		UpstreamMigrated: recoveredKeepAlive.TTL > 0 &&
 			string(watchResponse.Events[0].Kv.Value) == "watched",
 		WatchStayedOpen:     channelStillOpenWatch(t, watch),
 		KeepAliveStayedOpen: channelStillOpenKeepAlive(t, keepAlive, grant.ID),
+		ClientCertRequired:  clientCertRequired,
+		PlaintextRejected:   plaintextRejected,
 	}
+}
+
+func envoyProfileRPCRejected(t *testing.T, endpoint string, tlsConfig *tls.Config) bool {
+	t.Helper()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: time.Second, TLS: tlsConfig})
+	if err != nil {
+		return true
+	}
+	defer func() { require.NoError(t, client.Close()) }()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = client.Get(ctx, "/dbaas-envoy-tls/rejected-client-probe")
+	return err != nil
 }
 
 func startEnvoyProcess(t *testing.T, binary, configPath string) (*exec.Cmd, *lockedBuffer) {

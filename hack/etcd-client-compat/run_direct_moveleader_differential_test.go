@@ -32,6 +32,8 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "MultiplexedStreamsResumeAcrossExternalL7Reset")
 	require.Contains(t, string(script), "multiplexed-stream-l7-reset)")
 	require.Contains(t, string(script), "envoy-plaintext)")
+	require.Contains(t, string(script), "envoy-tls-passthrough)")
+	require.Contains(t, string(script), "TestEnvoyTLSPassthroughProfileDifferential")
 	require.Contains(t, string(script), "ENVOY_BINARY must name an executable Envoy binary")
 	require.Contains(t, string(script), "ENVOY_BOOTSTRAP_TEMPLATE must name a readable Envoy bootstrap")
 	require.Contains(t, string(script), `cd "$ROOT_DIR/hack/etcd-client-compat"`)
@@ -68,6 +70,17 @@ func TestDirectMoveLeaderDifferentialRunnerRequiresTLSFilesBeforeDependencies(t 
 		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
 		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
 		"TEST_SCOPE=lease-revoke-tls-passthrough",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "TLS_CA_FILE, TLS_CERT_FILE, and TLS_KEY_FILE must name readable files")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestDirectMoveLeaderDifferentialRunnerRequiresTLSFilesForEnvoyBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-moveleader-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+		"TEST_SCOPE=envoy-tls-passthrough",
 	})
 	require.Error(t, err)
 	require.Contains(t, string(output), "TLS_CA_FILE, TLS_CERT_FILE, and TLS_KEY_FILE must name readable files")

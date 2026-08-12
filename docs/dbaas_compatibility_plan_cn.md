@@ -47320,6 +47320,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3 KubeBrain 上最终双端 13.05 秒通过；`GOFLAGS=-race` 双端 11.93 秒通过且无数据竞争。当前 profile 明确只
   覆盖 plaintext；Envoy mTLS/SDS、云厂商 LB、跨节点/AZ、NAT/conntrack/underlay 与平台 request token 继续开放。
 
+- A4414 关闭 A4413 保留的“真实 Envoy 尚未经过 mTLS 数据面验证”缺口，但没有用 TLS termination 改写 etcd
+  身份语义。对照 upstream `/root/etcd/client/pkg/transport/listener.go` 的 `TLSInfo.ClientCertAuth`、server
+  certificate fallback client identity，以及 `/root/etcd/server/embed/config.go` 的 `--client-cert-auth`：若 Envoy
+  终止客户端 TLS，再用自身证书连接 KubeBrain，后端看到的是 Envoy CN 而不是原始客户端 CN；当前数据面也
+  不接受可伪造 header 代替原生 TLS identity。因此 production bootstrap 新增独立 `:2380`
+  `envoy.filters.network.tcp_proxy` listener，`idle_timeout=0s`，与 `:2379` plaintext gRPC L7 listener 共用同一个
+  Ready-only STRICT_DNS cluster。Service、容器端口和 ingress NetworkPolicy 同步开放 2380；Envoy 不挂载 CA、
+  certificate 或 private key，清单测试明确禁止 `transport_socket`、`tls_context` 与 forwarded-client-cert 配置。
+  这保留了 client 到 reference etcd/KubeBrain 的端到端 mTLS handshake，但 2380 本身不是 L7 method policy。
+  新增 fail-closed `TEST_SCOPE=envoy-tls-passthrough` 和
+  `TestEnvoyTLSPassthroughProfileDifferential`，沿用同一 production bootstrap 与真实 Envoy 1.39.0。除 A4413 的
+  Put/Get、CreatedNotify Watch、3 秒 LeaseKeepAlive 跨 5 秒、MemberList、Status、Envoy restart 与 upstream
+  replica 0→1 migration 外，门禁还要求无 client certificate 的 TLS 和 plaintext RPC 都被拒绝，并以
+  `cluster.kubebrain.upstream_cx_total` 证明 opaque TCP 流量实际进入 Envoy cluster。测试为 production 的两个
+  listener 都分配互异临时端口；首轮只替换 2380 时因宿主 2379 已占用而 RED。拒绝探针最初放在业务前又因
+  clientv3 多次失败握手触发单地址测试 cluster 的 outlier ejection，故移到全部成功业务断言之后，既保留
+  fail-closed 证据也不污染迁移场景。
+  2026-08-12 从 clean `/root/etcd@5cd9f4ee1380...` 重建 reference，在 disposable
+  `kubebrain-envoy-tls` 的独立 3 PD/3 TiKV 与三副本 TLS KubeBrain 上最终通过：普通双端 16.10 秒，
+  `GOFLAGS=-race` 双端 16.861 秒且无数据竞争；两端拒绝日志分别明确 `tls: certificate required` 和 plaintext
+  preface EOF。固定 Envoy binary `9aed67d.../1.39.0` 对含两个 listener 的 bootstrap validate 成功，Kustomize
+  render/client dry-run 通过。Envoy TLS termination/SDS、云厂商 LB、跨节点/AZ、NAT/conntrack/underlay 与
+  平台 request token 仍保持开放，不能由 passthrough 结论关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
