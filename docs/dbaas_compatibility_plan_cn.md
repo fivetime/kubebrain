@@ -47812,6 +47812,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 `controller-revision-hash` 继承该值。ControllerRevision 只作为 Kubernetes rollout 身份，不替代 runtime
   sha256 digest，也不宣称已完成跨版本升级/回滚矩阵。
 
+- A4449 补齐实例侧 KubeBrain StatefulSet 的 PodTemplate rollout receipt。既有门禁已逐项验证关键启动参数、
+  immutable image、StatefulSet UID、`currentRevision == updateRevision`、精确 ordinal/owner UID 和 Pod revision，
+  但未逐项解析的 env、ServiceAccount、volume 等模板字段在完全滚动后仍可能以新的自洽 revision 通过。RED 让
+  StatefulSet/Pod 全部收敛于 `kb-new`、receipt 仅批准 `kb-approved`，旧实现确定性成功。新门禁要求
+  `EXPECTED_KUBEBRAIN_STATEFULSET_REVISION` 是非空 DNS subdomain，在同一 status 快照通过收敛检查后精确比较
+  update revision，并继续要求全部 Pod 的 `controller-revision-hash` 等于该值。至此 Operator、KubeBrain、PD、
+  TiKV 四类 workload 都同时绑定 rollout identity；ControllerRevision 仍不替代 KubeBrain immutable image digest
+  或 storage runtime imageID digest。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -116,6 +116,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			wantOutput: "release gate passed",
 		},
 		{
+			name:       "KubeBrain approved revision drift",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   []string{"EXPECTED_KUBEBRAIN_STATEFULSET_REVISION=kb-approved"},
+			wantOutput: "KubeBrain StatefulSet revision mismatch",
+		},
+		{
 			name:        "wrong TiDB storage version",
 			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1120,6 +1129,7 @@ exit 1
 				"ETCDCTL=" + fakeEtcdctl,
 				"EXPECTED_IMAGE=" + tc.image,
 				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
+				"EXPECTED_KUBEBRAIN_STATEFULSET_REVISION=kb-new",
 				"EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=uid-client-service",
 				"EXPECTED_KEYSPACE=instance-a",
 				"EXPECTED_PD_ADDRS=kb-pd.storage.svc:2379",
@@ -1325,6 +1335,7 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		return []string{
 			"EXPECTED_IMAGE=registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain",
+			"EXPECTED_KUBEBRAIN_STATEFULSET_REVISION=kb-new",
 			"EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=uid-client-service",
 			"ENDPOINT=https://instance.example:2379",
 			"EXPECTED_KEYSPACE=instance-a",
@@ -1384,6 +1395,8 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		{name: "pd revision exact", key: "EXPECTED_PD_STATEFULSET_REVISION", value: "PD revision", want: "must be a DNS subdomain"},
 		{name: "tikv revision required", key: "EXPECTED_TIKV_STATEFULSET_REVISION", want: "EXPECTED_TIKV_STATEFULSET_REVISION is required"},
 		{name: "kubebrain statefulset uid required", key: "EXPECTED_KUBEBRAIN_STATEFULSET_UID", want: "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"},
+		{name: "kubebrain revision required", key: "EXPECTED_KUBEBRAIN_STATEFULSET_REVISION", want: "EXPECTED_KUBEBRAIN_STATEFULSET_REVISION is required"},
+		{name: "kubebrain revision exact", key: "EXPECTED_KUBEBRAIN_STATEFULSET_REVISION", value: "kb revision", want: "must be a DNS subdomain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output, err := runValidateInstanceReady(t, replace(baseEnv(), tc.key, tc.value))

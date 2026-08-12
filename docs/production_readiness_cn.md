@@ -712,6 +712,7 @@ EXPECTED_TIDB_OPERATOR_IMAGE=pingcap/tidb-operator:v1.6.5 \
 EXPECTED_TIDB_OPERATOR_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
 EXPECTED_TIDB_OPERATOR_POD_TEMPLATE_HASH=<approved-pod-template-hash> \
 EXPECTED_KUBEBRAIN_STATEFULSET_UID=<immutable-kubebrain-statefulset-uid> \
+EXPECTED_KUBEBRAIN_STATEFULSET_REVISION=<approved-kubebrain-controller-revision> \
 EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID=<immutable-kubebrain-client-service-uid> \
 EXPECTED_IMAGE=registry.example/kubebrain@sha256:<digest> \
 EXPECTED_KEYSPACE=instance-a \
@@ -796,7 +797,9 @@ Kubernetes rollout 身份而非加密摘要，运行二进制仍由 imageID dige
 `containerStatuses.imageID` 必须以后端 receipt 中的 `EXPECTED_PD_IMAGE_DIGEST`/
 `EXPECTED_TIKV_IMAGE_DIGEST` 结尾，防止可变 tag 指向不同字节；随后要求 KubeBrain
 StatefulSet metadata UID 与 operation receipt 中的 `EXPECTED_KUBEBRAIN_STATEFULSET_UID`
-一致，并校验 observed generation、ready/updated replicas、revision、精确 image；再要求精确的
+一致，并校验 observed generation、ready/updated replicas、revision、精确 image；已收敛 revision 还必须等于
+receipt 中的 `EXPECTED_KUBEBRAIN_STATEFULSET_REVISION`，使未被逐项解析的 env、ServiceAccount、volume 等
+PodTemplate 配置漂移也会 fail closed；再要求精确的
 ordinal Pod 集合全部为 Running/Ready、非终止、带有当前 controller revision、唯一的目标镜像，且
 controller StatefulSet name/UID 与 receipt 精确一致；随后校验 Pod template 中唯一的
 `--keyspace`、`--pd-addrs`、`--initial-cluster`、`--quota-backend-bytes`
@@ -814,7 +817,7 @@ client URL 集合无重复并与期望完全相同；`EXPECTED_INITIAL_CLUSTER` 
 member name 聚合后再比对运行时拓扑；最后通过官方
 `etcdctl endpoint health` 对 bootstrap `ENDPOINT` 和每个 advertised client URL 分别提交
 线性化 proposal。缺少 `EXPECTED_IMAGE`/
-`EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_TIDB_VERSION`/`EXPECTED_PD_IMAGE`/`EXPECTED_TIKV_IMAGE`/`EXPECTED_PD_IMAGE_DIGEST`/`EXPECTED_TIKV_IMAGE_DIGEST`/`EXPECTED_PD_STATEFULSET_REVISION`/`EXPECTED_TIKV_STATEFULSET_REVISION`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
+`EXPECTED_KUBEBRAIN_STATEFULSET_UID`/`EXPECTED_KUBEBRAIN_STATEFULSET_REVISION`/`EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID`/`EXPECTED_KEYSPACE`/`EXPECTED_PD_ADDRS`/`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID`/`EXPECTED_TIDB_VERSION`/`EXPECTED_PD_IMAGE`/`EXPECTED_TIKV_IMAGE`/`EXPECTED_PD_IMAGE_DIGEST`/`EXPECTED_TIKV_IMAGE_DIGEST`/`EXPECTED_PD_STATEFULSET_REVISION`/`EXPECTED_TIKV_STATEFULSET_REVISION`/`EXPECTED_INITIAL_CLUSTER`/`EXPECTED_QUOTA_BACKEND_BYTES`/`EXPECTED_ADVERTISE_CLIENT_URLS`/`ENDPOINT`、任一状态
 缺失、入口 endpoint 含控制字符/引号/反斜杠、旧 revision、错误拓扑、错误镜像、Pod owner/revision/Ready/终止状态漂移、quota/client URL/listener port/advertise-host/兼容开关/count-index/存储指标/txn/request size/stream/inflight/限流/watch/delete-range/keepalive/auth/TLS 上限或基线缺失/重复/不匹配，未期望 advertise-host 或 TLS 时出现对应 args，或 endpoint
 不健康、KubeBrain StatefulSet/client Service/TidbCluster UID 或 TidbCluster/MemberList cluster ID 漂移、EndpointSlice Pod 集合漂移、initial cluster 成员/peer URL 为空或重复、MemberList 缺失/重复/不完整/与声明不一致、advertised URL 列表含空/重复成员或任一地址
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，

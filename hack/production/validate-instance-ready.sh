@@ -7,6 +7,7 @@ KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_STATEFULSET="${KUBEBRAIN_STATEFULSET:-kubebrain}"
 KUBEBRAIN_CLIENT_SERVICE="${KUBEBRAIN_CLIENT_SERVICE:-$KUBEBRAIN_STATEFULSET}"
 EXPECTED_KUBEBRAIN_STATEFULSET_UID="${EXPECTED_KUBEBRAIN_STATEFULSET_UID:-}"
+EXPECTED_KUBEBRAIN_STATEFULSET_REVISION="${EXPECTED_KUBEBRAIN_STATEFULSET_REVISION:-}"
 EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID="${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID:-}"
 EXPECTED_KUBEBRAIN_REPLICAS="${EXPECTED_KUBEBRAIN_REPLICAS:-3}"
 EXPECTED_IMAGE="${EXPECTED_IMAGE:-}"
@@ -149,7 +150,7 @@ for variable in EXPECTED_PD_IMAGE_DIGEST EXPECTED_TIKV_IMAGE_DIGEST; do
     exit 2
   fi
 done
-for variable in EXPECTED_PD_STATEFULSET_REVISION EXPECTED_TIKV_STATEFULSET_REVISION; do
+for variable in EXPECTED_KUBEBRAIN_STATEFULSET_REVISION EXPECTED_PD_STATEFULSET_REVISION EXPECTED_TIKV_STATEFULSET_REVISION; do
   value="${!variable}"
   if [[ ${#value} -gt 253 ]] || ! [[ "$value" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$ ]]; then
     echo "${variable} is required and must be a DNS subdomain" >&2
@@ -391,6 +392,10 @@ if ! [[ "$generation" =~ ^[0-9]+$ &&
 fi
 if [[ "$actual_kubebrain_statefulset_uid" != "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
   echo "KubeBrain StatefulSet resource identity mismatch: expected UID ${EXPECTED_KUBEBRAIN_STATEFULSET_UID}, got ${actual_kubebrain_statefulset_uid:-missing}" >&2
+  exit 1
+fi
+if [[ "$update_revision" != "$EXPECTED_KUBEBRAIN_STATEFULSET_REVISION" ]]; then
+  echo "KubeBrain StatefulSet revision mismatch: expected ${EXPECTED_KUBEBRAIN_STATEFULSET_REVISION}, got ${update_revision:-missing}" >&2
   exit 1
 fi
 
@@ -787,4 +792,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} pd_digest=${EXPECTED_PD_IMAGE_DIGEST} pd_revision=${EXPECTED_PD_STATEFULSET_REVISION} tikv_image=${EXPECTED_TIKV_IMAGE} tikv_digest=${EXPECTED_TIKV_IMAGE_DIGEST} tikv_revision=${EXPECTED_TIKV_STATEFULSET_REVISION} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_revision=${EXPECTED_KUBEBRAIN_STATEFULSET_REVISION} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} pd_digest=${EXPECTED_PD_IMAGE_DIGEST} pd_revision=${EXPECTED_PD_STATEFULSET_REVISION} tikv_image=${EXPECTED_TIKV_IMAGE} tikv_digest=${EXPECTED_TIKV_IMAGE_DIGEST} tikv_revision=${EXPECTED_TIKV_STATEFULSET_REVISION} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
