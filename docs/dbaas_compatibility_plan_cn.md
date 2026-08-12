@@ -47040,6 +47040,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   key 仍存在”不可发生；不把 buffered response 当成违约，也不替代 Revoke 响应丢失的 uncertain commit
   reconciliation、跨进程多 endpoint client、独立 AZ 或长时 soak。
 
+- A4400 补齐 A4399 明确留下的 LeaseRevoke committed-response-loss 语义，并先纠正“响应丢失后应自动
+  返回成功”的错误假设。源码对照 `/root/etcd/client/v3/retry.go`、`lease.go` 与 server
+  `v3_server.go`/`apply/backend.go`：clientv3 虽把 Revoke 标为 repeatable，但调用 deadline 内只丢失服务端
+  响应时，客户端必须保留 `DeadlineExceeded` 的不确定结果；服务端不能为了便利把 unknown/repeated Revoke
+  改成成功，因为 upstream 仍要求 `LeaseNotFound`。新增
+  `TestLeaseRevokeResponseLossDifferentialAgainstReferenceEtcd`，以 TCP bridge 只丢弃 server→client 字节：
+  先建立 TTL=60 lease、attached key 与 high-level KeepAlive，再执行 750ms Revoke。官方 etcd 与 KubeBrain
+  均精确表现为 RPC timeout，但 direct linearizable Range 已无 key、TTL=-1、LeaseList 无 ID、删除只推进一个
+  user revision，恢复连接后 KeepAlive channel 在最近正 TTL 窗口内关闭。首轮把关闭窗口误设 5 秒，reference
+  etcd 先 RED；按 upstream `TestLeaseKeepAliveCloseAfterDisconnectRevoke` 修正为最近正 TTL 后，2026-08-12
+  reference `/root/etcd/bin/etcd` 与 disposable `kubebrain-revoke-response-loss`（独立 3 PD/3 TiKV、单
+  KubeBrain、31379/31380）首个双端门禁 40.64 秒通过。随后增加 connection-RST replay 变体：bridge 确认
+  首个响应字节已丢弃后关闭连接，clientv3 第 0 次调用得到 `Unavailable/EOF` 并按 repeatable policy 自动
+  重放，第 1 次在官方与 KubeBrain 两端都得到 typed `LeaseNotFound`；attached key 仍只删除一次、revision
+  仍只增加 1，包含两种响应丢失模式的最终门禁 43.38 秒通过。该结果与 KubeBrain 已有 TiKV transaction uncertain-result
+  metadata reconciliation 互补：内部提交响应丢失可由原子 lease metadata 缺失确认成功；外层 gRPC 响应丢失
+  仍忠实暴露 ambiguity，由 TTL/Range/List 对账，不伪造成功。尚未覆盖多 endpoint 跨副本响应丢失、同 ID
+  快速 regrant 与旧请求 replay 竞争，或业务层通用幂等 request token。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
