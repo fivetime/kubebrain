@@ -716,6 +716,17 @@ func TestBackendTiKVDegradedNetworkRunsPorcupineHistories(t *testing.T) {
 	}
 }
 
+func TestBackendPDDegradedNetworkRunsPorcupineHistories(t *testing.T) {
+	data, err := os.ReadFile("../dev/backend-quorum-fault-smoke.sh")
+	require.NoError(t, err)
+	script := string(data)
+	require.Contains(t, script, `pd-cross-node-degraded-network-linearizability)`)
+	require.Contains(t, script, `"Porcupine histories across cross-node PD network degradation"`)
+	require.Contains(t, script, `"$self --degrade-pd-all-cross-node"`)
+	require.Contains(t, script, `run_degraded_network_linearizability_test`)
+	require.NotContains(t, script, "eval ")
+}
+
 func TestReferenceEtcdProvenanceVerifierFailsClosed(t *testing.T) {
 	tempDir := t.TempDir()
 	binary := tempDir + "/etcd"

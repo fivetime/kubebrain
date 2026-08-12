@@ -46906,6 +46906,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本项证明已验证退化强度下单键线性化和多键 Txn 原子性，不把它扩张为未执行的分钟/小时 soak、独立 AZ
   或任意网络设备故障结论。
 
+- A4393 将 A4392 的不确定结果线性一致性门禁对称补齐到 PD/TSO control path，继续对照 upstream
+  `tests/integration/clientv3/connectivity/network_partition_test.go` 的 Put/Txn/linearizable Get 契约。
+  新增 `pd-cross-node-degraded-network-linearizability`，复用同一 fail-closed 外部故障命令和 Porcupine
+  nondeterministic model：单键 Get/Put/CAS register 与双键原子 read/write/CAS Txn 各采集 5 client ×
+  30 operation，即 150 个带完整调用/返回时间的并发操作；全部三个 PD namespace 同时承受
+  `250ms +/- 50ms`、`2%` loss、`20mbit`、30 秒 netem。每套历史仍必须同时含至少一个确定成功与一个
+  timeout/Unavailable/Canceled 歧义结果，并由 Porcupine 判为 `Ok`，因此既不会用纯成功历史绕开故障，
+  也不会用全 unknown 历史冒充证明。
+  2026-08-12 disposable `kubebrain-pd-netem-lin` 在 1 control-plane + 3 dev-zone worker、3 PD/3 TiKV/
+  3 KubeBrain、24379/24380 拓扑通过：register 历史 37.59 秒、含 2 个歧义 RPC，双键 Txn 历史
+  34.62 秒、含 2 个歧义 RPC，二者 Porcupine 均为 `Ok`，测试包总耗时 72.226 秒。恢复后三个
+  KubeBrain、PD、TiKV 均 Ready，TiDBCluster Ready；`kb-pd-2` 唯一一次 restart 于 `00:59:01Z`
+  初始部署期结束，早于本轮门禁，三个 PD namespace 最终均为 `qdisc noqueue`。本项证明已验证退化
+  强度下 PD/TSO 路径受扰时单键线性化与多键 Txn 原子性；独立宿主/AZ、conntrack/NAT、underlay failure
+  以及分钟/小时级 soak 仍未执行并继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
