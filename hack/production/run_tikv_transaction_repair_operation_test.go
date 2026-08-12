@@ -26,6 +26,8 @@ if [[ "$*" == *"--action claim"* ]]; then
   printf '{"namespace":"%s","name":"tikv-repair-1bb5a469de669cd3422d","operation_id":"tikv-repair-1bb5a469de669cd3422d","requested_by":"%s","instance":"%s","type":"%s","parameters_sha256":"%s","parameters_secret":"tikv-repair-1bb5a469de669cd3422d-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' \
     "${CLAIM_NAMESPACE:-kubebrain-operations}" "${CLAIM_REQUESTER:-alertmanager:transaction-path-policy}" \
     "${CLAIM_INSTANCE:-kubebrain}" "${CLAIM_TYPE:-TiKVTransactionRepair}" "$EXPECTED_DIGEST" "${CLAIM_OWNER:-$WORKER_ID}"
+elif [[ "$*" == *"--action heartbeat"* ]]; then
+  [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
 fi
 `), 0o755))
 	repair := filepath.Join(tempDir, "repair")
@@ -57,6 +59,9 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	require.Contains(t, operationCalls, "--type TiKVTransactionRepair")
 	require.Contains(t, operationCalls, "--action succeed")
 	require.Contains(t, operationCalls, "--receipt-sha256")
+	lastHeartbeat := strings.LastIndex(operationCalls, "--action heartbeat")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, strings.LastIndex(operationCalls, "--action succeed"), lastHeartbeat)
 	require.NotContains(t, operationCalls, "--action retry")
 	repairData, err := os.ReadFile(repairLog)
 	require.NoError(t, err)
@@ -101,6 +106,21 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786250000,"forma
 	require.NoError(t, err)
 	require.Contains(t, string(failureOperationData), "--action fail")
 	require.NotContains(t, string(failureOperationData), "--action retry")
+
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	heartbeatOutput, heartbeatErr := runProductionScriptCommand(t, "run-tikv-transaction-repair-operation.sh", []string{
+		"WORKER_ID=worker-fenced", "PARAMETERS_INPUT=" + parameters,
+		"OPERATIONCTL=" + operationctl, "REPAIR_COMMAND=" + repair, "WORK_DIR=" + tempDir,
+		"HEARTBEAT_INTERVAL_SECONDS=10", "EXPECTED_DIGEST=" + digest,
+		"OPERATION_LOG=" + operationLog, "REPAIR_LOG=" + repairLog,
+		"FAKE_REPAIRED_TIKV_PODS=1", "FAIL_HEARTBEAT=true",
+	})
+	require.Error(t, heartbeatErr, string(heartbeatOutput))
+	require.Contains(t, string(heartbeatOutput), "final heartbeat failed; repair worker was fenced")
+	heartbeatOperations, err := os.ReadFile(operationLog)
+	require.NoError(t, err)
+	require.NotContains(t, string(heartbeatOperations), "--action succeed")
+	require.NotContains(t, string(heartbeatOperations), "--action fail")
 
 	driftedBytes := []byte(strings.Replace(string(parameterBytes),
 		`"alert_occurrence_id":"1bb5a469de669cd3422d"`,

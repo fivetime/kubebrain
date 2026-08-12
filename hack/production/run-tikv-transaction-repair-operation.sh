@@ -64,6 +64,25 @@ cleanup() {
   rm -rf -- "$capture_dir"
 }
 trap cleanup EXIT INT TERM
+finalize_heartbeat() {
+  local heartbeat_rc=0
+  if [[ "$heartbeat_pid" -ne 0 ]]; then
+    kill "$heartbeat_pid" 2>/dev/null || true
+    set +e
+    wait "$heartbeat_pid"
+    heartbeat_rc=$?
+    set -e
+    heartbeat_pid=0
+    if [[ "$heartbeat_rc" == 75 ]]; then
+      echo "operation heartbeat failed; repair worker was fenced" >&2
+      return 1
+    fi
+  fi
+  run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
+    echo "final heartbeat failed; repair worker was fenced" >&2
+    return 1
+  }
+}
 if [[ -z "$PARAMETERS_INPUT" ]]; then
   PARAMETERS_INPUT="$capture_dir/parameters.input.json"
   run_operationctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"
@@ -187,7 +206,7 @@ if [[ ! -e "$receipt_output" ]]; then
     while true; do
       sleep "$heartbeat_interval"
       run_operationctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || {
-        kill "$child" 2>/dev/null || true
+        [[ -e "$capture_dir/child.done" ]] || kill "$child" 2>/dev/null || true
         exit 75
       }
     done
@@ -196,17 +215,11 @@ if [[ ! -e "$receipt_output" ]]; then
   set +e
   wait "$child"
   repair_rc=$?
-  kill "$heartbeat_pid" 2>/dev/null
-  wait "$heartbeat_pid"
-  heartbeat_rc=$?
   set -e
+  : >"$capture_dir/child.done"
   child=0
-  heartbeat_pid=0
-  if [[ "$heartbeat_rc" == 75 ]]; then
-    echo "operation heartbeat failed; repair worker was fenced" >&2
-    exit 1
-  fi
   if [[ "$repair_rc" -ne 0 ]]; then
+    finalize_heartbeat || exit 1
     run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "TiKV ${repair_flow} repair exited ${repair_rc}; a new approved operation is required" >/dev/null
     exit 1
   fi
@@ -239,10 +252,12 @@ else
   fi
 fi
 [[ "$receipt_valid" == "true" ]] || {
+  finalize_heartbeat || exit 1
   run_operationctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "repair receipt invalid; a new approved operation is required" >/dev/null
   exit 1
 }
 receipt_digest="$(file_sha256 "$receipt_output")"
 [[ "$receipt_digest" =~ ^[a-f0-9]{64}$ ]] || die "repair receipt digest is invalid"
+finalize_heartbeat || exit 1
 run_operationctl --action succeed --name "$name" --owner "$WORKER_ID" --attempt "$attempt" \
   --receipt-sha256 "$receipt_digest" --message "TiKV ${repair_flow} repair completed" >/dev/null

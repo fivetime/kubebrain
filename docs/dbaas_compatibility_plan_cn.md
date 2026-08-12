@@ -47903,6 +47903,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   续租成功后才紧邻执行 terminal CAS。正向回归固定 operation log 中最后一次 heartbeat 严格先于 succeed，
   且 succeed 的 300ms 窗口内不再有并发 heartbeat；负向回归固定最终续租失败时零 terminal mutation。
 
+- A4459 将 A4458 的 terminal heartbeat handoff 扩展到 TiKV transaction repair/recovery durable worker。
+  两个旧 worker 都在破坏性子进程退出后立即停止 heartbeat，随后才校验持久 receipt 并提交终态；该窗口既可能
+  超过 lease，也没有在 terminal CAS 前证明 owner+attempt 仍 authoritative。两个 RED 让底层原语成功且后台
+  周期长于执行时间，再使最终 heartbeat 失败；旧实现没有最终续租，仍会走向 `succeed`。现在 child 完成后写
+  本地完成标记，后台续租继续覆盖 receipt 校验且 fencing 不再误杀已退出、PID 可能复用的 child；所有 post-child
+  `fail/succeed` 前统一停止并回收后台循环、拒绝已观察到的 75，再同步续租完整 lease。最终续租失败时不写
+  Succeeded 或 Failed，成功时 operation log 固定最后一次 heartbeat 严格早于 terminal succeed。已有 durable
+  receipt 的接管路径也执行同一最终所有权证明，因此不会以陈旧 claim 提交终态。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

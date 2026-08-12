@@ -27,6 +27,8 @@ if [[ "$*" == *"--action claim"* ]]; then
   printf '{"namespace":"%s","name":"tikv-recovery-dbea00c4a1e7fae49690","operation_id":"tikv-recovery-dbea00c4a1e7fae49690","requested_by":"%s","instance":"kubebrain","type":"%s","parameters_sha256":"%s","parameters_secret":"tikv-recovery-dbea00c4a1e7fae49690-parameters","parameters_key":"parameters.json","owner":"%s","attempt":2}\n' \
     "${CLAIM_NAMESPACE:-kubebrain-repair-operations}" "${CLAIM_REQUESTER:-platform:tikv-repair-recovery}" \
     "${CLAIM_TYPE:-TiKVTransactionRecovery}" "$EXPECTED_DIGEST" "${CLAIM_OWNER:-$WORKER_ID}"
+elif [[ "$*" == *"--action heartbeat"* ]]; then
+  [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
 fi
 `), 0o755))
 	recovery := filepath.Join(dir, "recovery")
@@ -51,6 +53,9 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786380000,"forma
 	require.Contains(t, string(operationData), "--type TiKVTransactionRecovery")
 	require.Contains(t, string(operationData), "--action succeed")
 	require.Contains(t, string(operationData), "--receipt-sha256")
+	lastHeartbeat := strings.LastIndex(string(operationData), "--action heartbeat")
+	require.GreaterOrEqual(t, lastHeartbeat, 0)
+	require.Greater(t, strings.LastIndex(string(operationData), "--action succeed"), lastHeartbeat)
 	recoveryData, err := os.ReadFile(recoveryLog)
 	require.NoError(t, err)
 	recoveryEnv := string(recoveryData)
@@ -78,6 +83,16 @@ printf '{"attempt_id":"%s","cluster_id":%s,"completed_at_unix":1786380000,"forma
 	require.NoError(t, err)
 	require.Contains(t, string(failureOperations), "--action fail")
 	require.NotContains(t, string(failureOperations), "--action retry")
+
+	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
+	heartbeatOutput, heartbeatErr := runProductionScriptCommand(t, "run-tikv-transaction-recovery-operation.sh", append(baseEnv,
+		"WORKER_ID=worker-fenced", "FAKE_RECOVERY_FAIL=false", "FAIL_HEARTBEAT=true", "HEARTBEAT_INTERVAL_SECONDS=10"))
+	require.Error(t, heartbeatErr, string(heartbeatOutput))
+	require.Contains(t, string(heartbeatOutput), "final heartbeat failed; recovery worker was fenced")
+	heartbeatOperations, err := os.ReadFile(operationLog)
+	require.NoError(t, err)
+	require.NotContains(t, string(heartbeatOperations), "--action succeed")
+	require.NotContains(t, string(heartbeatOperations), "--action fail")
 
 	extraBytes := []byte(strings.TrimSuffix(string(parameterBytes), "}") + `,"unreviewed":true}`)
 	require.NoError(t, os.WriteFile(parameters, extraBytes, 0o600))

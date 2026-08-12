@@ -337,7 +337,8 @@ ConfigMap 默认写入 TiKV namespace；Operation executor 显式设置
 `run-tikv-transaction-repair-operation.sh`：领取带 lease 的任务、从隔离 queue 的 immutable Secret 获取并冻结
 参数、校验 SHA-256、在修复期间持续 heartbeat，丢失 lease 会终止子进程。wrapper 从 operation ID
 和 attempt 派生不可复用 repair attempt ID，校验严格 JSON receipt 后才向 Operation 写入
-Succeeded 与 receipt SHA-256。参数下载/哈希竞态可安全 requeue；破坏性执行或 receipt 验证失败
+Succeeded 与 receipt SHA-256。heartbeat 继续覆盖 receipt 校验；终态前先回收后台循环并拒绝已观察到的
+fencing，再同步续租一个完整 lease，成功后才紧邻提交 owner+attempt CAS。参数下载/哈希竞态可安全 requeue；破坏性执行或 receipt 验证失败
 会把 Operation 终止为 Failed，必须提交新的审批 Operation，不能在同一不可复用 repair attempt
 上自动重试。repair attempt ID 和持久 receipt
 路径只由不可变 operation ID 派生，不随 worker claim attempt 改变，因此 worker 在修复完成、提交
@@ -428,7 +429,8 @@ AdmissionPolicy 把 requester 身份限制为该 Operation/Secret 的固定名�
 runner 再校验参数 SHA-256、严格 11 字段 schema、claim namespace/type/requester/owner、Secret/key、
 instance，并用 `request_id + StatefulSet UID + TidbCluster UID + cluster ID` 重算 Operation 名。
 原语成功时原子发布 receipt，固定 request/attempt ID、两个 UID、cluster ID、3 Ready、双次 storage
-health 与 transaction verified。worker 若在成功后、提交 Operation 终态前崩溃，接管者只复验同一
+health 与 transaction verified。worker 的 heartbeat 覆盖 receipt 复验，并在 terminal CAS 前完成与 repair
+相同的后台回收、fencing 检查和最终同步续租。worker 若在成功后、提交 Operation 终态前崩溃，接管者只复验同一
 receipt 并提交 Succeeded，不会再次 scale；原语失败或 receipt 不合法则 Operation 终止为 Failed，
 必须创建新的外部请求和审批。
 
