@@ -47720,6 +47720,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功 receipt 同时输出三项 storage release identity。这阻止未完成或非预期 storage rollout 被发布为
   健康，但不把单版本稳态校验宣称为跨版本兼容矩阵；真实逐成员升级、回滚与故障叠加仍保持 P2 开放。
 
+- A4438 关闭 A4437 仍只绑定 storage template tag、未绑定运行字节的供应链窗口。生产 TidbCluster 使用
+  `pingcap/pd:v8.5.3`/`pingcap/tikv:v8.5.3` tag；即使 CR version、StatefulSet template 和 revision 全部
+  收敛，同一 tag 在节点缓存或 registry 漂移后仍可能运行不同 digest。RED 构造三个 Ready TiKV Pod、
+  正确 template tag，但 `containerStatuses.imageID` 为另一 sha256，旧门禁仍会成功。现在发布输入必须提供
+  两个严格的 `sha256:<64 lowercase hex>` digest；门禁按组件精确列出预期数量 Pod，要求 Running/Ready、
+  非终止、spec image 精确，并让每个 runtime imageID 以后端批准 digest 结尾。缺 Pod、未 Ready、tag 或
+  digest 混用均 fail closed，成功输出同时记录两个 digest。该稳态证明仍不替代真实逐成员升级/回滚矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -87,6 +87,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		tidbVersion              string
 		pdImage                  string
 		tikvImage                string
+		tikvImageID              string
 		healthOK                 bool
 		advertisedURLs           string
 		unreachableAdvertisedURL string
@@ -126,6 +127,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			tikvImage:  "pingcap/tikv:v8.5.2",
 			healthOK:   true,
 			wantOutput: "TidbCluster storage release mismatch",
+		},
+		{
+			name:        "TiKV runtime digest drift",
+			image:       "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:  "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:    "3\t3",
+			tikvImageID: "docker-pullable://pingcap/tikv@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+			healthOK:    true,
+			wantOutput:  "TiKV Pod runtime release mismatch",
 		},
 		{
 			name:       "tls release baseline",
@@ -898,7 +908,9 @@ func TestValidateInstanceReady(t *testing.T) {
 			require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$*" == *"get pods"* && "$*" == *"component=tikv"* ]]; then
-  printf 'kb-tikv-0\nkb-tikv-1\nkb-tikv-2\n'
+  if [[ "$*" == *" -o json" ]]; then printf '%s' "$FAKE_TIKV_PODS_JSON"; else printf 'kb-tikv-0\nkb-tikv-1\nkb-tikv-2\n'; fi
+elif [[ "$*" == *"get pods"* && "$*" == *"component=pd"* ]]; then
+  printf '%s' "$FAKE_PD_PODS_JSON"
 elif [[ "$*" == *" exec "* && "$*" == *"/tikv-ctl --host 127.0.0.1:20160 metrics"* ]]; then
   exit 0
 elif [[ "$*" == *" exec "* ]]; then
@@ -1006,6 +1018,10 @@ exit 1
 			if tikvImage == "" {
 				tikvImage = "pingcap/tikv:v8.5.3"
 			}
+			tikvImageID := tc.tikvImageID
+			if tikvImageID == "" {
+				tikvImageID = "docker-pullable://pingcap/tikv@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"ETCDCTL=" + fakeEtcdctl,
@@ -1019,6 +1035,8 @@ exit 1
 				"EXPECTED_TIDB_VERSION=v8.5.3",
 				"EXPECTED_PD_IMAGE=pingcap/pd:v8.5.3",
 				"EXPECTED_TIKV_IMAGE=pingcap/tikv:v8.5.3",
+				"EXPECTED_PD_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"EXPECTED_TIKV_IMAGE_DIGEST=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 				"EXPECTED_INITIAL_CLUSTER=" + initialCluster,
 				"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 				"EXPECTED_ADVERTISE_CLIENT_URLS=" + advertisedURLs,
@@ -1037,6 +1055,8 @@ exit 1
 				"FAKE_TIDB_VERSION=" + tidbVersion,
 				"FAKE_PD_IMAGE=" + pdImage,
 				"FAKE_TIKV_IMAGE=" + tikvImage,
+				"FAKE_PD_PODS_JSON=" + fakeStoragePodsJSON("pd", "pingcap/pd:v8.5.3", "docker-pullable://pingcap/pd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+				"FAKE_TIKV_PODS_JSON=" + fakeStoragePodsJSON("tikv", tikvImage, tikvImageID),
 				"FAKE_HEALTH_OK=" + boolString(tc.healthOK),
 				"FAKE_UNREACHABLE_ADVERTISED_URL=" + tc.unreachableAdvertisedURL,
 				"FAKE_MEMBER_LIST_JSON=" + memberListJSON,
@@ -1063,6 +1083,26 @@ exit 1
 			}
 		})
 	}
+}
+
+func fakeStoragePodsJSON(component, image, imageID string) string {
+	items := make([]map[string]any, 3)
+	for index := range items {
+		items[index] = map[string]any{
+			"metadata": map[string]any{"name": "kb-" + component + "-" + string(rune('0'+index))},
+			"spec":     map[string]any{"containers": []map[string]any{{"name": component, "image": image}}},
+			"status": map[string]any{
+				"phase":             "Running",
+				"conditions":        []map[string]any{{"type": "Ready", "status": "True"}},
+				"containerStatuses": []map[string]any{{"name": component, "ready": true, "imageID": imageID}},
+			},
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{"items": items})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func fakeKubeBrainPodsJSON(ownerUID, revision, image string, ready, terminating bool) string {
@@ -1150,6 +1190,8 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 			"EXPECTED_TIDB_VERSION=v8.5.3",
 			"EXPECTED_PD_IMAGE=pingcap/pd:v8.5.3",
 			"EXPECTED_TIKV_IMAGE=pingcap/tikv:v8.5.3",
+			"EXPECTED_PD_IMAGE_DIGEST=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			"EXPECTED_TIKV_IMAGE_DIGEST=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 			"EXPECTED_INITIAL_CLUSTER=" + fakeInitialCluster,
 			"EXPECTED_QUOTA_BACKEND_BYTES=429496729600",
 			"EXPECTED_ADVERTISE_CLIENT_URLS=https://instance.example:2379",
@@ -1189,6 +1231,9 @@ func TestValidateInstanceReadyRequiresImmutableInputs(t *testing.T) {
 		{name: "pd image required", key: "EXPECTED_PD_IMAGE", want: "EXPECTED_PD_IMAGE is required"},
 		{name: "pd image whitespace", key: "EXPECTED_PD_IMAGE", value: "pingcap/pd: v8.5.3", want: "must be an exact image reference without whitespace"},
 		{name: "tikv image required", key: "EXPECTED_TIKV_IMAGE", want: "EXPECTED_TIKV_IMAGE is required"},
+		{name: "pd digest required", key: "EXPECTED_PD_IMAGE_DIGEST", want: "EXPECTED_PD_IMAGE_DIGEST is required"},
+		{name: "pd digest exact", key: "EXPECTED_PD_IMAGE_DIGEST", value: "sha256:abcd", want: "must be sha256:<64 lowercase hex>"},
+		{name: "tikv digest required", key: "EXPECTED_TIKV_IMAGE_DIGEST", want: "EXPECTED_TIKV_IMAGE_DIGEST is required"},
 		{name: "kubebrain statefulset uid required", key: "EXPECTED_KUBEBRAIN_STATEFULSET_UID", want: "EXPECTED_KUBEBRAIN_STATEFULSET_UID is required"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

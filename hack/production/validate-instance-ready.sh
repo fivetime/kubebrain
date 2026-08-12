@@ -64,6 +64,8 @@ EXPECTED_TIDB_CLUSTER_UID="${EXPECTED_TIDB_CLUSTER_UID:-}"
 EXPECTED_TIDB_VERSION="${EXPECTED_TIDB_VERSION:-}"
 EXPECTED_PD_IMAGE="${EXPECTED_PD_IMAGE:-}"
 EXPECTED_TIKV_IMAGE="${EXPECTED_TIKV_IMAGE:-}"
+EXPECTED_PD_IMAGE_DIGEST="${EXPECTED_PD_IMAGE_DIGEST:-}"
+EXPECTED_TIKV_IMAGE_DIGEST="${EXPECTED_TIKV_IMAGE_DIGEST:-}"
 EXPECTED_PD_REPLICAS="${EXPECTED_PD_REPLICAS:-3}"
 EXPECTED_TIKV_REPLICAS="${EXPECTED_TIKV_REPLICAS:-3}"
 ENDPOINT="${ENDPOINT:-}"
@@ -132,6 +134,16 @@ for variable in EXPECTED_PD_IMAGE EXPECTED_TIKV_IMAGE; do
   fi
   if [[ "${!variable}" == *[[:space:]]* ]]; then
     echo "${variable} must be an exact image reference without whitespace" >&2
+    exit 2
+  fi
+done
+for variable in EXPECTED_PD_IMAGE_DIGEST EXPECTED_TIKV_IMAGE_DIGEST; do
+  if [[ -z "${!variable}" ]]; then
+    echo "${variable} is required" >&2
+    exit 2
+  fi
+  if ! [[ "${!variable}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+    echo "${variable} must be sha256:<64 lowercase hex>" >&2
     exit 2
   fi
 done
@@ -249,6 +261,34 @@ if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ||
   echo "TidbCluster storage release mismatch: expected version/PD/TiKV ${EXPECTED_TIDB_VERSION}/${EXPECTED_PD_IMAGE}/${EXPECTED_TIKV_IMAGE}, got ${actual_tidb_version:-missing}/${actual_pd_image:-missing}/${actual_tikv_image:-missing}" >&2
   exit 1
 fi
+
+validate_storage_runtime() {
+  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_digest="$5"
+  local pods_json selector
+  selector="app.kubernetes.io/name=tidb-cluster,app.kubernetes.io/instance=${TIDB_CLUSTER},app.kubernetes.io/component=${component}"
+  if ! pods_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get pods -l "$selector" -o json)"; then
+    echo "failed to list ${display} Pods for runtime release verification" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$pods_json" | "$JQ" -e \
+    --arg component "$component" --arg image "$expected_image" --arg digest "$expected_digest" \
+    --argjson expected "$expected_replicas" '
+      (.items | length) == $expected and
+      all(.items[];
+        .metadata.deletionTimestamp == null and .status.phase == "Running" and
+        ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and
+        ([.spec.containers[]? | select(.name == $component and .image == $image)] | length) == 1 and
+        ([.status.containerStatuses[]? |
+          select(.name == $component and .ready == true and
+            ((.imageID | type) == "string") and (.imageID | endswith($digest)))] | length) == 1)
+    ' >/dev/null; then
+    echo "${display} Pod runtime release mismatch: expected ${expected_replicas} Ready Pods with image ${expected_image} and runtime digest ${expected_digest}" >&2
+    exit 1
+  fi
+}
+
+validate_storage_runtime "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_IMAGE_DIGEST"
+validate_storage_runtime "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_IMAGE_DIGEST"
 
 kubebrain_status="$("$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get statefulset "$KUBEBRAIN_STATEFULSET" \
@@ -666,4 +706,4 @@ for advertised_url in "${advertised_client_urls[@]}"; do
   fi
 done
 
-echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} tikv_image=${EXPECTED_TIKV_IMAGE} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
+echo "KubeBrain instance release gate passed: endpoint=${ENDPOINT} image=${EXPECTED_IMAGE} kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID} kubebrain_client_service_uid=${EXPECTED_KUBEBRAIN_CLIENT_SERVICE_UID} keyspace=${EXPECTED_KEYSPACE} pd_addrs=${EXPECTED_PD_ADDRS} tidb_cluster_uid=${EXPECTED_TIDB_CLUSTER_UID} cluster_id=${EXPECTED_CLUSTER_ID} tidb_version=${EXPECTED_TIDB_VERSION} pd_image=${EXPECTED_PD_IMAGE} pd_digest=${EXPECTED_PD_IMAGE_DIGEST} tikv_image=${EXPECTED_TIKV_IMAGE} tikv_digest=${EXPECTED_TIKV_IMAGE_DIGEST} initial_cluster=${EXPECTED_INITIAL_CLUSTER} quota=${EXPECTED_QUOTA_BACKEND_BYTES} advertise_client_urls=${EXPECTED_ADVERTISE_CLIENT_URLS} replicas=${EXPECTED_KUBEBRAIN_REPLICAS} PD/TiKV=${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}"
