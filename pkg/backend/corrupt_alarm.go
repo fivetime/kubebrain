@@ -63,7 +63,16 @@ func (b *backend) ArmCorrupt(ctx context.Context, memberID uint64) error {
 
 func (b *backend) CorruptAlarms(ctx context.Context) ([]uint64, error) {
 	members, _, _, err := b.readCorruptAlarms(ctx)
-	return members, err
+	if err != nil {
+		return nil, err
+	}
+	// The generation participates in every future Arm/Disarm CAS. Treat it as
+	// part of the alarm's readable integrity envelope so health, write gates and
+	// logical snapshots cannot certify state that cannot be mutated safely.
+	if _, _, _, err = b.readCorruptAlarmGeneration(ctx); err != nil {
+		return nil, err
+	}
+	return members, nil
 }
 
 func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error) {
@@ -133,6 +142,9 @@ func (b *backend) readCorruptAlarmGeneration(ctx context.Context) (uint64, []byt
 	generation := binary.BigEndian.Uint64(raw)
 	if generation == 0 {
 		return 0, nil, false, invalidAlarmMetadataf("corrupt alarm generation is zero")
+	}
+	if generation == ^uint64(0) {
+		return 0, nil, false, invalidAlarmMetadataf("corrupt alarm generation is exhausted")
 	}
 	return generation, raw, true, nil
 }

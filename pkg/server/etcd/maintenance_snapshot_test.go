@@ -1577,6 +1577,7 @@ func TestMaintenanceSnapshotClassifiesMalformedAlarmMetadata(t *testing.T) {
 	}{
 		{name: "NOSPACE", key: []byte("quota/alarm/nospace"), raw: []byte{2}, want: "invalid NOSPACE alarm metadata length 1"},
 		{name: "CORRUPT", key: []byte("alarms/corrupt"), raw: []byte("null"), want: "corrupt alarm metadata must be a JSON array"},
+		{name: "CORRUPT generation", key: []byte("alarms/corrupt-generation"), raw: []byte("bad"), want: "corrupt alarm generation has length 3"},
 		{name: "generic", key: genericAlarmKey, raw: []byte("null"), want: "generic alarm metadata must be a JSON array"},
 	}
 	for _, test := range tests {

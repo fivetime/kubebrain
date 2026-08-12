@@ -45,17 +45,33 @@ func TestCorruptAlarmGenerationAdvancesOnIdempotentRearmAndDisarm(t *testing.T) 
 }
 
 func TestCorruptAlarmGenerationMalformedFailsClosed(t *testing.T) {
-	b, ctx := newTxnApplyBackend(t)
-	const memberID = uint64(41002)
-	require.NoError(t, b.ArmCorrupt(ctx, memberID))
-	require.NoError(t, b.InternalPut(ctx, corruptAlarmGenerationKey, []byte("bad")))
+	max := make([]byte, 8)
+	binary.BigEndian.PutUint64(max, ^uint64(0))
+	for _, test := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "invalid length", raw: []byte("bad")},
+		{name: "zero", raw: make([]byte, 8)},
+		{name: "exhausted", raw: max},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			const memberID = uint64(41002)
+			require.NoError(t, b.ArmCorrupt(ctx, memberID))
+			require.NoError(t, b.InternalPut(ctx, corruptAlarmGenerationKey, test.raw))
 
-	err := b.ArmCorrupt(ctx, memberID)
-	require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
-	removed, err := b.DisarmCorrupt(ctx, memberID)
-	require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
-	require.False(t, removed)
-	members, err := b.CorruptAlarms(ctx)
-	require.NoError(t, err)
-	require.Equal(t, []uint64{memberID}, members)
+			err := b.ArmCorrupt(ctx, memberID)
+			require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
+			removed, err := b.DisarmCorrupt(ctx, memberID)
+			require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
+			require.False(t, removed)
+			_, err = b.CorruptAlarms(ctx)
+			require.ErrorIs(t, err, ErrInvalidAlarmMetadata,
+				"alarm reads and write gates must not ignore an unusable generation")
+			members, _, _, err := b.readCorruptAlarms(ctx)
+			require.NoError(t, err)
+			require.Equal(t, []uint64{memberID}, members, "failed validation must not erase the alarm owner")
+		})
+	}
 }

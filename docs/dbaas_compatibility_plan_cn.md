@@ -48161,6 +48161,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   确定性回归共享同一 storage 但使用独立 mutex，在 disarm witness iterator 暂停期间由另一实例重申同 member，证明
   解除被拒绝且 alarm 留存；另固定 1→2→3 代际和非法 metadata 路径。
 
+- A4494 将 A4493 的 generation 纳入统一 alarm 完整性与逻辑快照边界。旧 `CorruptAlarms` 只解析 member set，导致
+  generation 已损坏时 Alarm GET、写门禁和 Maintenance Snapshot 仍可能把状态当作健康；恢复出的目标随后既不能安全
+  Arm 也不能 Disarm。现在每次 `CorruptAlarms` 同时读取并验证 generation，缺失仍表示兼容旧数据的零代，但持久零值、
+  非 8-byte 编码和 `MaxUint64` exhausted 状态统一返回 `ErrInvalidAlarmMetadata`。因此 live gRPC 由公共 interceptor
+  映射 DataLoss，snapshot metadata 收集则映射 `ErrInvalidSnapshotMetadata/FailedPrecondition`，不会输出误导性的成功
+  快照。backend 表测固定三类非法代际在 Arm、Disarm、read 均 fail closed 且 member 不被删除；snapshot 回归直接注入
+  非法 generation 并要求零响应 chunk。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

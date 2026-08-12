@@ -2946,6 +2946,9 @@ marker/seal 根因，再由 etcd Maintenance API 解除告警恢复写流量。
 多副本并发由 TiKV `alarms/corrupt-generation` 代际保护：解除扫描期间任何副本重新激活（即使 member 已存在）都会
 使本次解除返回 `DataLoss` 并保留告警。此时必须重新调查最新错误与 witness，不能盲目循环执行 alarm disarm；该
 generation 是内部安全 metadata，不得删除、归零或手工回退。
+Alarm GET、写门禁和 Maintenance Snapshot 都会校验该 generation；非法长度、持久零值或代际耗尽会作为数据完整性
+错误拒绝服务/快照。灾难恢复前必须保留并验证这一行为，不能仅因 CORRUPT member JSON 可解析就判定 alarm metadata
+健康。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 
