@@ -498,7 +498,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			guardKeys[string(b.coder.EncodeRevisionKey(g.Key))] = struct{}{}
 		}
 	}
-	newRevLive := uint64ToBytes(newRevision)
 	eventTotal := uint32(txnEffectiveUserWriteCount(preps))
 	var eventSubRevision uint32
 	for i := range preps {
@@ -519,8 +518,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			}
 			continue
 		}
-		revisionKey := b.coder.EncodeRevisionKey(p.op.Key)
-		objectKey := b.coder.EncodeObjectKey(p.op.Key, newRevision)
 		if p.migratePrev {
 			previousObjectKey := b.coder.EncodeObjectKey(p.op.Key, p.curRev)
 			_, raw, _, decodeErr := DecodeInlineValueChecked(p.prevValue)
@@ -545,14 +542,17 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			batch.Put(encoded.eventKey, encoded.eventValue, 0)
 		case p.create:
 			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
+			encoded := b.encodeCreateMutation(p.op.Key, p.op.Value, p.meta, newRevision, eventSubRevision, eventTotal)
 			if p.rvBytes == nil {
-				batch.PutIfNotExist(revisionKey, newRevLive, 0)
+				batch.PutIfNotExist(encoded.revisionKey, encoded.newRevisionValue, 0)
 			} else {
 				// recreate over a tombstone: CAS from its exact stored bytes
-				batch.CAS(revisionKey, newRevLive, p.rvBytes, 0)
+				batch.CAS(encoded.revisionKey, encoded.newRevisionValue, p.rvBytes, 0)
 			}
-			b.putTxnObject(batch, objectKey, p.op.Key, p.op.Value, p.meta, newRevision)
-			appendEventLog(b.ks, batch, newRevision, p.op.Key, proto.Event_CREATE, 0, eventSubRevision, eventTotal)
+			for _, mutation := range encoded.objectMutations {
+				batch.Put(mutation.key, mutation.value, 0)
+			}
+			batch.Put(encoded.eventKey, encoded.eventValue, 0)
 		default: // update
 			if p.meta.CreateRevision == 0 {
 				p.meta.CreateRevision = p.curRev
@@ -803,15 +803,6 @@ func (b *backend) txnConflictIsGuard(cerr error, guardKeys map[string]struct{}, 
 		return ok
 	}
 	return hadGuards
-}
-
-// putTxnObject writes the object value for a put, inlining metadata in compat
-// mode (approach A) or writing the separate etcdmeta keyspace otherwise —
-// mirroring createBatchWithMetadata / update.
-func (b *backend) putTxnObject(batch storage.BatchWrite, objectKey, key, value []byte, meta EtcdMetadata, revision uint64) {
-	for _, mutation := range b.encodeTxnObjectMutations(objectKey, key, value, meta, revision) {
-		batch.Put(mutation.key, mutation.value, 0)
-	}
 }
 
 type encodedMutation struct {

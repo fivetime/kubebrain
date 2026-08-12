@@ -48001,6 +48001,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与 delete 分支也已复用同一 encoder，并保留多键事务 `subRevision/total` 和精确 snapshot CAS bytes。该阶段
   仍不启用 allocator；剩余主要 staging 面是 TxnApply create/guards/internal ops 与 uncertain-result repair。
 
+- A4472：CREATE/recreate 的 revision index、compat/legacy object mutations 与 ordered CREATE event 已统一为
+  `encodeCreateMutation`，普通 Create 和 TxnApply create 分支共同使用；旧路径中只为立即静态 batch 生成的
+  `putTxnObject` 已删除。事务 allocator 测试覆盖缺失 index 的首次创建、从精确 tombstone bytes 重建，以及
+  live index 冲突时 durable counter 不推进且无用户 mutation 泄漏。CREATE/PUT/DELETE 的 revision-dependent
+  编码面至此全部可由 Atomic callback 动态生成；尚未切换运行时 allocator，下一步处理 Txn guards/internal
+  ops 与 uncertain-result repair 的执行模型。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

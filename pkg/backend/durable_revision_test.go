@@ -245,14 +245,20 @@ func TestTransactionalRevisionAllocatorReusesMVCCAndEventEncoders(t *testing.T) 
 	batch := b.kv.BeginBatchWrite()
 	allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
 		require.Equal(t, uint64(2), revision)
-		objectKey := b.coder.EncodeObjectKey(userKey, revision)
-		for _, mutation := range b.encodeTxnObjectMutations(objectKey, userKey, userValue, meta, revision) {
+		mutation := b.encodeCreateMutation(userKey, userValue, meta, revision, 0, 1)
+		_, err := txn.Get(ctx, mutation.revisionKey)
+		if !errors.Is(err, storage.ErrKeyNotFound) {
+			return storage.ErrCASFailed
+		}
+		if err := txn.Put(mutation.revisionKey, mutation.newRevisionValue, 0); err != nil {
+			return err
+		}
+		for _, mutation := range mutation.objectMutations {
 			if err := txn.Put(mutation.key, mutation.value, 0); err != nil {
 				return err
 			}
 		}
-		eventKey, eventValue := encodeEventLogEntry(b.ks, revision, userKey, proto.Event_CREATE, 0, 0, 1)
-		return txn.Put(eventKey, eventValue, 0)
+		return txn.Put(mutation.eventKey, mutation.eventValue, 0)
 	})
 	require.NoError(t, batch.Commit(ctx))
 	require.Equal(t, uint64(2), *allocated)
@@ -263,10 +269,64 @@ func TestTransactionalRevisionAllocatorReusesMVCCAndEventEncoders(t *testing.T) 
 	require.True(t, ok)
 	require.Equal(t, userValue, decodedValue)
 	require.Equal(t, meta, decodedMeta)
-	eventKey, wantEvent := encodeEventLogEntry(b.ks, 2, userKey, proto.Event_CREATE, 0, 0, 1)
+	want := b.encodeCreateMutation(userKey, userValue, meta, 2, 0, 1)
+	gotIndex, err := b.kv.Get(ctx, want.revisionKey)
+	require.NoError(t, err)
+	require.Equal(t, want.newRevisionValue, gotIndex)
+	eventKey, wantEvent := want.eventKey, want.eventValue
 	gotEvent, err := b.kv.Get(ctx, eventKey)
 	require.NoError(t, err)
 	require.Equal(t, wantEvent, gotEvent)
+}
+
+func TestTransactionalRevisionAllocatorCreateRecreateConflictIsAtomic(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	b.persistDurableRevision(20)
+	userKey := []byte(prefix + "/transactional-recreate/key")
+	tombstoneIndex := append(uint64ToBytes(9), 0)
+	seed := b.kv.BeginBatchWrite()
+	seed.Put(b.coder.EncodeRevisionKey(userKey), tombstoneIndex, 0)
+	require.NoError(t, seed.Commit(ctx))
+
+	batch := b.kv.BeginBatchWrite()
+	allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+		mutation := b.encodeCreateMutation(userKey, []byte("recreated"), EtcdMetadata{CreateRevision: revision, Version: 1}, revision, 0, 1)
+		current, err := txn.Get(ctx, mutation.revisionKey)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, tombstoneIndex) {
+			return storage.ErrCASFailed
+		}
+		if err := txn.Put(mutation.revisionKey, mutation.newRevisionValue, 0); err != nil {
+			return err
+		}
+		for _, object := range mutation.objectMutations {
+			if err := txn.Put(object.key, object.value, 0); err != nil {
+				return err
+			}
+		}
+		return txn.Put(mutation.eventKey, mutation.eventValue, 0)
+	})
+	require.NoError(t, batch.Commit(ctx))
+	require.Equal(t, uint64(21), *allocated)
+
+	conflict := b.kv.BeginBatchWrite()
+	b.stageNextDurableRevision(conflict, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+		mutation := b.encodeCreateMutation(userKey, []byte("must-not-write"), EtcdMetadata{CreateRevision: revision, Version: 1}, revision, 0, 1)
+		current, err := txn.Get(ctx, mutation.revisionKey)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(current, tombstoneIndex) {
+			return storage.ErrCASFailed
+		}
+		return txn.Put(mutation.revisionKey, mutation.newRevisionValue, 0)
+	})
+	require.ErrorIs(t, conflict.Commit(ctx), storage.ErrCASFailed)
+	durable, err := b.GetDurableRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint64(21), durable)
 }
 
 func TestTransactionalRevisionAllocatorReusesDeleteEncoder(t *testing.T) {

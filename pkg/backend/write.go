@@ -106,11 +106,9 @@ func (b *backend) create(ctx context.Context, key []byte, value []byte, lease in
 	if err != nil {
 		return revision, err
 	}
-	revisionKey := b.coder.EncodeRevisionKey(key)
-	objectKey := b.coder.EncodeObjectKey(key, revision)
 	// retryOldRev nil means the index key was missing at the diagnostic read:
 	// re-attempt the optimistic create; otherwise CAS over the stale tombstone.
-	err = b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, uint64ToBytes(revision), retryOldRev, revision, retryOldRev == nil, lease)
+	err = b.createBatchWithMetadata(ctx, key, value, retryOldRev, revision, retryOldRev == nil, lease)
 	return revision, err
 }
 
@@ -122,10 +120,7 @@ func (b *backend) create(ctx context.Context, key []byte, value []byte, lease in
 // round-trips.
 func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []byte, revision uint64, lease int64) (retryOldRev []byte, retriable bool, err error) {
 	revisionKey := b.coder.EncodeRevisionKey(key)
-	objectKey := b.coder.EncodeObjectKey(key, revision)
-	revisionBytes := uint64ToBytes(revision)
-
-	err = b.createBatchWithMetadata(ctx, revisionKey, objectKey, key, value, revisionBytes, nil, revision, true, lease)
+	err = b.createBatchWithMetadata(ctx, key, value, nil, revision, true, lease)
 	if err == nil {
 		return nil, false, nil
 	}
@@ -162,7 +157,7 @@ func (b *backend) createWithMetadata(ctx context.Context, key []byte, value []by
 // createBatchWithMetadata writes the revision-key and object-key with no
 // storage-level TTL (ttl=0): key expiry is the lease manager's responsibility,
 // not the backend's — see create.
-func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, objectKey, key, value, newRevisionBytes, oldRevisionBytes []byte, revision uint64, requireNotExist bool, lease int64) error {
+func (b *backend) createBatchWithMetadata(ctx context.Context, key, value, oldRevisionBytes []byte, revision uint64, requireNotExist bool, lease int64) error {
 	// Fence the write just before opening the batch: reject if leadership changed
 	// since admission so a deposed leader cannot commit at a revision the new
 	// leader's collector has already advanced past (FINDING #39).
@@ -170,19 +165,25 @@ func (b *backend) createBatchWithMetadata(ctx context.Context, revisionKey, obje
 		return err
 	}
 	batch := b.kv.BeginBatchWrite()
+	encoded := b.encodeCreateMutation(key, value, EtcdMetadata{CreateRevision: revision, Version: 1, Lease: lease}, revision, 0, 1)
 	if requireNotExist {
-		batch.PutIfNotExist(revisionKey, newRevisionBytes, 0)
+		batch.PutIfNotExist(encoded.revisionKey, encoded.newRevisionValue, 0)
 	} else {
-		batch.CAS(revisionKey, newRevisionBytes, oldRevisionBytes, 0)
+		batch.CAS(encoded.revisionKey, encoded.newRevisionValue, oldRevisionBytes, 0)
 	}
 	// Inline create_revision/version (and lease, review #9) into the value so
 	// reads need no separate metadata lookup and the etcdmeta keyspace stops
 	// growing (approach A); putTxnObject is the single writer of that convention.
-	meta := EtcdMetadata{CreateRevision: revision, Version: 1, Lease: lease}
-	b.putTxnObject(batch, objectKey, key, value, meta, revision)
-	appendEventLog(b.ks, batch, revision, key, proto.Event_CREATE, 0, 0, 1)
+	for _, mutation := range encoded.objectMutations {
+		batch.Put(mutation.key, mutation.value, 0)
+	}
+	batch.Put(encoded.eventKey, encoded.eventValue, 0)
 	b.stageDurableRevision(batch, revision)
 	return b.commitUserBatch(ctx, batch)
+}
+
+func (b *backend) encodeCreateMutation(key, value []byte, meta EtcdMetadata, revision uint64, subRevision, total uint32) encodedPutMutation {
+	return b.encodePutMutation(key, value, meta, 0, revision, proto.Event_CREATE, subRevision, total)
 }
 
 // Delete implements Backend interface

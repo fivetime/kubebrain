@@ -2886,6 +2886,10 @@ UPDATE 的 revision index、兼容 envelope/legacy metadata object mutations 与
 `encodePutMutation` 统一生成；普通 Update 和 TxnApply update 分支共同使用它，TxnApply delete 也复用带
 `subRevision/total` 的 DELETE encoder。事务 allocator 回归在 revision=12 下校验 index、对象 metadata/value
 和 event 的逐字节结果，使单键与多键写在 allocator 切换前共享协议编码。
+CREATE/recreate 现也通过 `encodeCreateMutation` 统一 revision index、对象 metadata/value 和 ordered CREATE
+event；普通 Create 与 TxnApply create 分支不再各自拼接这些记录。Atomic 回归覆盖 index 缺失创建、精确
+tombstone index 重建，以及 live-index 冲突时 counter 与用户 mutation 整体回滚。至此 CREATE/PUT/DELETE
+三类用户 mutation 的 revision-dependent 编码面均可在事务内生成。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
