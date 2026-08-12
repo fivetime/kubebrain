@@ -48021,6 +48021,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   envelope、DELETE tombstone 和 stale index 冲突，后者不得推进 counter。helper 仍未接入 retry queue，避免在
   主路径保留旧 TSO 时形成双 allocator；下一阶段需把 repair 作为 callback 注入，并与主写/collector 一次切换。
 
+- A4475 首次在运行时为 TxnApply 启用 transaction-local revision allocator。`stageNextDurableRevisionAfter` 在
+  counter 落后时把当前 committed TSO floor 与 next allocation 一起折入同一 user transaction，避免额外 bridge
+  commit 的 uncertain 窗口；确定 guard/write conflict 整体回滚且不再发布无效 revision。过渡期新增专用
+  `revisionWriteMu`，仅串行化 Create/Update/Delete/TxnApply 和 async repair；range predicate barrier 与 alarm
+  InternalCAS 保持独立，相关锁重入/并发 alarm 回归已验证。旧 repair 也在其 object/index/event batch 内同步写
+  durable watermark。新增交错回归要求动态 Txn、旧 Create、动态 Txn revision 严格连续。尚未完成单键三路径及
+  retry queue 的动态 allocator 接入，所以仍保留 TSO collector 兼容桥，不能宣称 allocator 迁移结束。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

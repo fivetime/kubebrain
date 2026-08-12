@@ -35,6 +35,8 @@ func (b *backend) Create(ctx context.Context, put *proto.CreateRequest) (resp *p
 	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
+	b.revisionWriteMu.Lock()
+	defer b.revisionWriteMu.Unlock()
 	ts := time.Now()
 	defer func() {
 		txnLog("create",
@@ -193,6 +195,8 @@ func (b *backend) Delete(ctx context.Context, r *proto.DeleteRequest) (*proto.De
 	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
+	b.revisionWriteMu.Lock()
+	defer b.revisionWriteMu.Unlock()
 	return b.deleteOnce(ctx, r, true)
 }
 
@@ -487,6 +491,8 @@ func (b *backend) Update(ctx context.Context, r *proto.UpdateRequest) (*proto.Up
 	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
+	b.revisionWriteMu.Lock()
+	defer b.revisionWriteMu.Unlock()
 	return b.updateOnce(ctx, r, true)
 }
 

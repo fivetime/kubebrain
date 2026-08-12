@@ -419,6 +419,9 @@ type backend struct {
 	// etcd transaction with a range compare takes Lock across compare+commit,
 	// preventing inserts in the compared range from becoming invisible phantoms.
 	logicalWriteMu sync.RWMutex
+	// revisionWriteMu serializes legacy TSO writers with transaction-local
+	// allocation during the cutover without changing the broader predicate lock.
+	revisionWriteMu sync.Mutex
 
 	// Background physical compaction. CompactAsync advances the logical compact
 	// watermark synchronously (so reads immediately see the compaction) and hands
@@ -617,13 +620,14 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	b.watcherHub.ringLookup = b.watchCache.FindEvents
 
 	asyncRetryConfig := retry.Config{
-		UnaryTimeout:  unaryRpcTimeout,
-		CheckInterval: checkInterval,
-		RetryInterval: retryInterval,
-		Tombstone:     tombStoneBytes,
-		WriteLocker:   b.logicalWriteMu.RLocker(),
-		Admit:         b.withCurrentLeadershipEpoch,
-		Fence:         b.fenceAdmit,
+		UnaryTimeout:       unaryRpcTimeout,
+		CheckInterval:      checkInterval,
+		RetryInterval:      retryInterval,
+		Tombstone:          tombStoneBytes,
+		DurableRevisionKey: b.ks.EncodeInternalKey(durableRevisionKey),
+		WriteLocker:        &b.revisionWriteMu,
+		Admit:              b.withCurrentLeadershipEpoch,
+		Fence:              b.fenceAdmit,
 	}
 	b.asyncFifoRetry = retry.NewAsyncFifoRetry(b.ks, b.coder, b.kv, b.metricCli, b.tso, b.getLatestInternalVal, b.notify, asyncRetryConfig)
 

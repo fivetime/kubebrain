@@ -97,6 +97,8 @@ type TxnWriteResult struct {
 func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, revision uint64, err error) {
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
+	b.revisionWriteMu.Lock()
+	defer b.revisionWriteMu.Unlock()
 	deadline := time.Now().Add(unaryRpcTimeout)
 	if callerDeadline, ok := ctx.Deadline(); ok {
 		// The etcd layer supplies its request budget (10s by default), already
@@ -573,143 +575,37 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 	}
 
-	// Phase 2: allocate the single txn revision.
-	newRevision, derr := b.deal(baseRevision)
-	if derr != nil {
-		// The revision was consumed from the TSO; publish invalid events so the
-		// collector advances past it instead of stalling forever.
-		b.notifyInvalidTxn(preps, newRevision, derr)
-		return nil, newRevision, false, derr
-	}
-	if newRevision <= baseRevision {
-		e := fmt.Errorf("cas failed, new revision is %d base revision is %d", newRevision, baseRevision)
-		b.notifyInvalidTxn(preps, newRevision, e)
-		return nil, newRevision, false, e
-	}
-
-	// Fence just before opening the batch: reject if leadership changed since the
-	// txn was admitted, filling an invalid ring slot for every dealt revision so
-	// the collector never stalls (FINDING #39).
+	// Phase 2: fence and bridge any legacy committed/failed TSO slots into the
+	// durable counter before allocating inside the user transaction. Writes are
+	// serialized during this cutover, so no legacy Deal can race this bridge.
 	if cerr := b.fenceAdmit(ctx); cerr != nil {
-		b.notifyInvalidTxn(preps, newRevision, cerr)
-		return nil, newRevision, false, cerr
-	}
-
-	// Phase 3: build one batch. Compare guards go first (lowest batch index) so a
-	// guard conflict is reported ahead of any write conflict — a changed compared
-	// key means the txn's branch may have flipped and must be re-evaluated, which
-	// takes precedence over merely re-applying a write.
-	batch := b.kv.BeginBatchWrite()
-	if b.config.QuotaBackendBytes > 0 {
-		usageKey := b.ks.EncodeInternalKey(quotaUsageKey)
-		nextUsage := encodeQuotaUsage(nextQuotaUsage)
-		if quotaUsageRaw == nil {
-			batch.PutIfNotExist(usageKey, nextUsage, 0)
-		} else {
-			batch.CAS(usageKey, nextUsage, quotaUsageRaw, 0)
-		}
+		return nil, baseRevision, false, cerr
 	}
 	guardKeys := make(map[string]struct{}, len(guards))
 	for _, gp := range guardPreps {
 		guardKeys[string(gp.key)] = struct{}{}
-		if gp.missing {
-			// Assert absence without leaving a marker. PutIfNotExist establishes a
-			// transactional read/write conflict; the following delete removes the
-			// temporary value in the same atomic batch.
-			batch.PutIfNotExist(gp.key, []byte{0}, 0)
-			batch.Del(gp.key)
-			continue
-		}
-		// A no-op CAS protects either the exact tombstone or the live revision.
-		batch.CAS(gp.key, gp.rvBytes, gp.rvBytes, 0)
 	}
 	for _, g := range guards {
 		if prepByKey[string(g.Key)] != nil {
 			guardKeys[string(b.coder.EncodeRevisionKey(g.Key))] = struct{}{}
 		}
 	}
-	eventTotal := uint32(txnEffectiveUserWriteCount(preps))
-	var eventSubRevision uint32
-	for i := range preps {
-		p := &preps[i]
-		if !p.effective {
-			continue
-		}
-		if p.op.Internal {
-			key := b.ks.EncodeInternalKey(p.op.Key)
-			switch {
-			case p.op.Delete:
-				batch.CAS(key, []byte{0}, p.rvBytes, 0)
-				batch.Del(key)
-			case p.rvBytes == nil:
-				batch.PutIfNotExist(key, p.op.Value, 0)
-			default:
-				batch.CAS(key, p.op.Value, p.rvBytes, 0)
-			}
-			continue
-		}
-		if p.migratePrev {
-			previousObjectKey := b.coder.EncodeObjectKey(p.op.Key, p.curRev)
-			_, raw, _, decodeErr := DecodeInlineValueChecked(p.prevValue)
-			if decodeErr != nil {
-				b.notifyInvalidTxn(preps, newRevision, decodeErr)
-				return nil, newRevision, false, decodeErr
-			}
-			batch.CAS(previousObjectKey, encodeValueWithMeta(raw, p.prevMeta), p.prevValue, 0)
-		}
-		// Each write stages its event-log entry on the same batch (#45), with the
-		// verb/prevRev Phase 5 publishes for it — the replay path treats a missing
-		// entry at a committed revision as a failed-CAS hole and silently skips it,
-		// so a leaked write here is a silently lost watch event (review #51).
-		switch {
-		case p.op.Delete:
-			encoded := b.encodeDeleteMutationAt(p.op.Key, p.curRev, newRevision, eventSubRevision, eventTotal)
-			// Preserve the exact pre-read bytes for the CAS. For a live value this
-			// equals encoded.expectedRevisionValue; retaining rvBytes also keeps
-			// corruption/conflict reporting tied to the transaction snapshot.
-			batch.CAS(encoded.revisionKey, encoded.newRevisionValue, p.rvBytes, 0)
-			batch.Put(encoded.objectKey, encoded.objectValue, 0)
-			batch.Put(encoded.eventKey, encoded.eventValue, 0)
-		case p.create:
-			p.meta = EtcdMetadata{CreateRevision: newRevision, Version: 1, Lease: p.op.Lease}
-			encoded := b.encodeCreateMutation(p.op.Key, p.op.Value, p.meta, newRevision, eventSubRevision, eventTotal)
-			if p.rvBytes == nil {
-				batch.PutIfNotExist(encoded.revisionKey, encoded.newRevisionValue, 0)
-			} else {
-				// recreate over a tombstone: CAS from its exact stored bytes
-				batch.CAS(encoded.revisionKey, encoded.newRevisionValue, p.rvBytes, 0)
-			}
-			for _, mutation := range encoded.objectMutations {
-				batch.Put(mutation.key, mutation.value, 0)
-			}
-			batch.Put(encoded.eventKey, encoded.eventValue, 0)
-		default: // update
-			if p.meta.CreateRevision == 0 {
-				p.meta.CreateRevision = p.curRev
-			}
-			if p.meta.Version == 0 {
-				p.meta.Version = 1
-			}
-			p.meta.Version++
-			// Rebind to this op's lease (review #9); do not inherit the prior
-			// version's lease.
-			p.meta.Lease = p.op.Lease
-			encoded := b.encodePutMutation(p.op.Key, p.op.Value, p.meta, p.curRev, newRevision, proto.Event_PUT, eventSubRevision, eventTotal)
-			batch.CAS(encoded.revisionKey, encoded.newRevisionValue, p.rvBytes, 0)
-			for _, mutation := range encoded.objectMutations {
-				batch.Put(mutation.key, mutation.value, 0)
-			}
-			batch.Put(encoded.eventKey, encoded.eventValue, 0)
-		}
-		eventSubRevision++
-	}
-	if txnHasEffectiveUserWrite(preps) {
-		b.stageDurableRevision(batch, newRevision)
-	}
 
-	// Phase 4: atomic commit.
-	if cerr := b.commitUserBatch(ctx, batch); cerr != nil {
+	// Phase 3: allocate revision and stage every guard/mutation/event/counter in
+	// one storage transaction. A definite conflict rolls back the allocation, so
+	// it creates no collector hole and must not publish an invalid event.
+	batch := b.kv.BeginBatchWrite()
+	allocated := b.stageNextDurableRevisionAfter(batch, baseRevision, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
+		if revision <= baseRevision {
+			return ErrRevisionDriftBack
+		}
+		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage)
+	})
+	cerr := b.commitUserBatch(ctx, batch)
+	newRevision = *allocated
+	if cerr != nil {
 		if errors.Is(cerr, storage.ErrUncertainResult) && txnHasEffectiveUserWrite(preps) {
+			b.tso.AdvanceDealFloor(newRevision)
 			// A multi-key txn must never enter the single-key uncertain retry
 			// queue: if the original batch committed, that queue would rewrite
 			// each key at a separate revision and expose torn transaction state.
@@ -727,7 +623,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				"revision", newRevision, "ops", len(ops))
 			return nil, newRevision, false, cerr
 		}
-		b.notifyInvalidTxn(preps, newRevision, cerr)
 		if errors.Is(cerr, storage.ErrCASFailed) {
 			// Distinguish a compare-guard conflict (the caller must re-evaluate the
 			// txn's branch) from a write-key conflict (just re-apply the writes).
@@ -741,6 +636,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		klog.ErrorS(cerr, "txn apply commit failed", "revision", newRevision, "ops", len(ops))
 		return nil, newRevision, false, cerr
 	}
+	b.tso.AdvanceDealFloor(newRevision)
 
 	// Phase 5: build results and publish one event batch at newRevision.
 	results = make([]TxnWriteResult, len(preps))

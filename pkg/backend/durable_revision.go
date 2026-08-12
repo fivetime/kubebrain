@@ -135,6 +135,13 @@ func (b *backend) stageDurableRevision(batch storage.BatchWrite, revision uint64
 // This helper is deliberately not wired into the legacy TSO write paths yet:
 // mixing allocators would permit both to choose the same next revision.
 func (b *backend) stageNextDurableRevision(batch storage.BatchWrite, stage func(context.Context, storage.AtomicBatch, uint64) error) *uint64 {
+	return b.stageNextDurableRevisionAfter(batch, 0, stage)
+}
+
+// stageNextDurableRevisionAfter atomically folds a legacy committed floor into
+// the durable counter before allocating. It is used only during the allocator
+// cutover while old TSO writers are serialized with transactional writers.
+func (b *backend) stageNextDurableRevisionAfter(batch storage.BatchWrite, floor uint64, stage func(context.Context, storage.AtomicBatch, uint64) error) *uint64 {
 	var allocated uint64
 	key := b.ks.EncodeInternalKey(durableRevisionKey)
 	batch.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
@@ -150,6 +157,9 @@ func (b *backend) stageNextDurableRevision(batch storage.BatchWrite, stage func(
 			if err != nil {
 				return err
 			}
+		}
+		if revision < floor {
+			revision = floor
 		}
 		if revision >= math.MaxInt64 {
 			return ErrRevisionExhausted

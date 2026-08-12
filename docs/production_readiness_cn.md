@@ -2898,6 +2898,13 @@ metadata 迁移和 quota usage 更新表达为同一 storage transaction 内的 
 分配新 revision、原样重写已存储 envelope/tombstone，并写 PUT/DELETE event。原样复制避免 compat value 被二次
 封装；PUT、DELETE 和 stale-index 冲突回滚均有回归。该 staging 尚未替换 retry queue 的旧 TSO 调用，必须与
 主写路径在同一切换提交中启用。
+TxnApply 已开始运行时使用 `stageNextDurableRevisionAfter`：legacy committed floor、next counter、guards、quota、
+internal metadata、用户 mutations 与 event records 在一个 storage transaction 中完成。确定 CAS/guard 冲突会
+回滚 counter，不再产生 collector hole；成功或 uncertain candidate 会同步抬高 leader-local TSO deal floor，供
+现有 collector/发布路径过渡。专用 `revisionWriteMu` 只串行化 Create/Update/Delete/TxnApply 与旧 repair，不改变
+range/hash/compact/checkpoint 的 `logicalWriteMu` 语义；quota alarm 的 revision-neutral InternalCAS 不进入该锁。
+旧 repair 同批写 durable revision，保证“动态 Txn→旧单键/repair→动态 Txn”不会复用 revision。单键三路径和
+retry allocator 尚未迁移，因此这仍是受测试保护的过渡态，不是最终无 TSO 架构。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 

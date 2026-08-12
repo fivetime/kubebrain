@@ -535,3 +535,29 @@ func TestTransactionalRevisionAllocatorStagesUncertainRepair(t *testing.T) {
 		})
 	}
 }
+
+func TestTransactionalRevisionAllocatorBridgesLegacyTSOWriters(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	base := b.GetCurrentRevision()
+
+	_, transactionalRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/allocator-bridge/txn-1"), Value: []byte("txn-1"),
+	}}, nil)
+	require.NoError(t, err)
+	require.Equal(t, base+1, transactionalRevision)
+
+	legacy, err := b.Create(ctx, &proto.CreateRequest{
+		Key: []byte(prefix + "/allocator-bridge/legacy"), Value: []byte("legacy"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, transactionalRevision+1, legacy.Header.Revision)
+
+	_, nextTransactionalRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/allocator-bridge/txn-2"), Value: []byte("txn-2"),
+	}}, nil)
+	require.NoError(t, err)
+	require.Equal(t, legacy.Header.Revision+1, nextTransactionalRevision)
+	durable, err := b.GetDurableRevision(ctx)
+	require.NoError(t, err)
+	require.Equal(t, nextTransactionalRevision, durable)
+}

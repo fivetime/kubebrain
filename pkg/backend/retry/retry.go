@@ -100,6 +100,12 @@ type Config struct {
 	// Tombstone is the tombstone
 	Tombstone []byte
 
+	// DurableRevisionKey is the physical cluster-visible revision watermark.
+	// A successful legacy repair must advance it in the same batch so a
+	// transaction-local allocator cannot reuse the repair revision during the
+	// allocator cutover.
+	DurableRevisionKey []byte
+
 	// WriteLocker participates in the backend's logical-write barrier. It keeps
 	// an uncertain-result repair from racing a range-compare transaction.
 	WriteLocker sync.Locker
@@ -310,6 +316,11 @@ func (a *asyncFifoRetryImpl) overwrite(ctx context.Context, key []byte, prevOpRe
 		verb = byte(proto.Event_DELETE)
 	}
 	batch.Put(a.ks.EncodeEventLogKey(rev, key), coder.EncodeOrderedEventLogValue(verb, eventPrevRev, 0, 1), 0)
+	if len(a.config.DurableRevisionKey) > 0 {
+		watermark := make([]byte, 8)
+		binary.BigEndian.PutUint64(watermark, rev)
+		batch.Put(a.config.DurableRevisionKey, watermark, 0)
+	}
 	err = batch.Commit(ctx)
 
 	return rev, err
