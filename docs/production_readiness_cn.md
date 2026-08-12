@@ -748,7 +748,8 @@ replicas 和 revision 全部收敛，确认 StatefulSet 已渲染固定 20160 TC
 请求 TiKV 20160 gRPC 服务，再校验期望 PD/TiKV 数量；
 TidbCluster metadata UID 和 status
 中的非零 cluster ID 必须分别与实例创建 receipt 中的 immutable
-`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致；TidbCluster `spec.version` 以及已收敛 PD/TiKV
+`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致；TidbCluster `spec.version` 必须匹配期望版本，
+已收敛的 PD/TiKV StatefulSet 本身必须各自由该 immutable TidbCluster UID 作为唯一 controller owner，且
 StatefulSet 模板中的精确容器镜像还必须分别匹配 `EXPECTED_TIDB_VERSION`、`EXPECTED_PD_IMAGE`、
 `EXPECTED_TIKV_IMAGE`，禁止在滚动升级未切齐或 base image 漂移时放行。
 每个 PD/TiKV Pod 集合还必须是目标 StatefulSet 的精确 ordinal 名称，controller owner name/UID 和

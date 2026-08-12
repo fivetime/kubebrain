@@ -255,16 +255,38 @@ actual_pd_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get stat
   -o 'jsonpath={.spec.template.spec.containers[?(@.name=="pd")].image}')"
 actual_tikv_image="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" \
   -o 'jsonpath={.spec.template.spec.containers[?(@.name=="tikv")].image}')"
-actual_pd_statefulset_uid="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-pd" -o 'jsonpath={.metadata.uid}')"
-actual_tikv_statefulset_uid="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" -o 'jsonpath={.metadata.uid}')"
-actual_pd_revision="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-pd" -o 'jsonpath={.status.updateRevision}')"
-actual_tikv_revision="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "${TIDB_CLUSTER}-tikv" -o 'jsonpath={.status.updateRevision}')"
 if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ||
   "$actual_pd_image" != "$EXPECTED_PD_IMAGE" ||
   "$actual_tikv_image" != "$EXPECTED_TIKV_IMAGE" ]]; then
   echo "TidbCluster storage release mismatch: expected version/PD/TiKV ${EXPECTED_TIDB_VERSION}/${EXPECTED_PD_IMAGE}/${EXPECTED_TIKV_IMAGE}, got ${actual_tidb_version:-missing}/${actual_pd_image:-missing}/${actual_tikv_image:-missing}" >&2
   exit 1
 fi
+
+storage_statefulset_identity() {
+  local component="$1" display="$2" statefulset object
+  statefulset="${TIDB_CLUSTER}-${component}"
+  if ! object="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "$statefulset" -o json)"; then
+    echo "failed to read ${display} StatefulSet identity" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$object" | "$JQ" -e \
+    --arg name "$statefulset" --arg tidbName "$TIDB_CLUSTER" --arg tidbUID "$EXPECTED_TIDB_CLUSTER_UID" '
+      .apiVersion == "apps/v1" and .kind == "StatefulSet" and .metadata.name == $name and
+      ((.metadata.uid | type) == "string" and (.metadata.uid | length) > 0) and
+      ((.status.updateRevision | type) == "string" and (.status.updateRevision | length) > 0) and
+      ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
+      ([.metadata.ownerReferences[]? | select(.controller == true and
+        .apiVersion == "pingcap.com/v1alpha1" and .kind == "TidbCluster" and
+        .name == $tidbName and .uid == $tidbUID)] | length) == 1
+    ' >/dev/null; then
+    echo "${display} StatefulSet owner identity mismatch: expected controller TidbCluster ${TIDB_CLUSTER}/${EXPECTED_TIDB_CLUSTER_UID}" >&2
+    exit 1
+  fi
+  printf '%s' "$object" | "$JQ" -r '[.metadata.uid,.status.updateRevision] | @tsv'
+}
+
+IFS=$'\t' read -r actual_pd_statefulset_uid actual_pd_revision <<<"$(storage_statefulset_identity "pd" "PD")"
+IFS=$'\t' read -r actual_tikv_statefulset_uid actual_tikv_revision <<<"$(storage_statefulset_identity "tikv" "TiKV")"
 
 validate_storage_runtime() {
   local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_digest="$5" owner_uid="$6" revision="$7"
@@ -291,6 +313,7 @@ validate_storage_runtime() {
       all(.items[];
         .metadata.deletionTimestamp == null and .status.phase == "Running" and
         .metadata.labels["controller-revision-hash"] == $revision and
+        ([.metadata.ownerReferences[]? | select(.controller == true)] | length) == 1 and
         ([.metadata.ownerReferences[]? | select(.controller == true and .apiVersion == "apps/v1" and
           .kind == "StatefulSet" and .name == $statefulset and .uid == $ownerUID)] | length) == 1 and
         ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1 and

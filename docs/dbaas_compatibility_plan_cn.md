@@ -47735,6 +47735,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   apps/v1 StatefulSet controller owner name/UID 与 `controller-revision-hash` 一致。它与 A4438 的运行 digest
   校验组合后，标签伪装、旧 revision、孤儿 Pod 和错误 controller 均 fail closed；真实升级矩阵仍开放。
 
+- A4440 补齐 A4439 身份链的上游 owner：此前 Pod 已绑定当前同名 StatefulSet，但该 StatefulSet 自身
+  是否仍由 receipt 中 immutable UID 的 TidbCluster 控制未校验。同名 StatefulSet 若被重建或脱离
+  Operator，新的 UID/revision 与其 Pod 会彼此自洽，旧链仍可通过。RED 保持 Pod ordinal、owner、revision、
+  tag、digest 全部正确，只把 `kb-tikv` controller owner UID 改为另一个 TidbCluster，旧门禁确定性放行。
+  新实现对 PD/TiKV StatefulSet 各取一次结构化 JSON，要求 apps/v1/名称、非空 UID/updateRevision，并要求
+  唯一 controller owner 精确为 `pingcap.com/v1alpha1` TidbCluster name/UID；随后从同一 JSON 提取 UID 与
+  revision 供 Pod 链验证。由此形成 receipt TidbCluster UID→StatefulSet UID/revision→Pod→runtime digest
+  的闭合身份链；它仍不替代逐成员升级、回滚和故障叠加矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
