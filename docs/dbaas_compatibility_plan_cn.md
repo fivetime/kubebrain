@@ -47753,6 +47753,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   template image，再从该快照提取 UID/revision 绑定 Pod。门禁中途启动 rollout 因而 fail closed；真实滚动
   升级与回滚矩阵仍需现场执行，未由这个稳态快照替代。
 
+- A4442 将 A4441 的单快照边界上移到 TidbCluster CR。旧门禁在 wait 返回后分别读取 replicas/clusterID/UID
+  与 `spec.version`，且不再复核 Ready；此间 CR 若开始更新或变为 NotReady，可把不同时刻的身份、拓扑、
+  版本拼成成功。RED 让早期 wait 返回 True，但后续同一 CR 快照的 Ready=False，旧门禁仍确定性放行。
+  新实现只读取一次结构化 TidbCluster JSON，先固定 `pingcap.com/v1alpha1`/kind/name 和字段类型，再从同一
+  快照提取 PD/TiKV replicas、clusterID、UID、version，沿用原有精确错误分类，并要求唯一 Ready=True 条件。
+  该快照的 UID 随后继续作为 A4440 StatefulSet owner 链根；wait 后 CR 漂移因而 fail closed。它仍是发布
+  稳态门禁，不替代真实 TiDB Operator 逐成员升级、回滚和故障注入矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

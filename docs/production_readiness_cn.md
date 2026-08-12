@@ -746,9 +746,9 @@ ETCDCTL_KEY=/run/secrets/client.key \
 门禁先要求 TidbCluster `Ready=True` 且 PD/TiKV StatefulSet generation、ready/updated
 replicas 和 revision 全部收敛，确认 StatefulSet 已渲染固定 20160 TCP readiness，并逐 Pod
 请求 TiKV 20160 gRPC 服务，再校验期望 PD/TiKV 数量；
-TidbCluster metadata UID 和 status
-中的非零 cluster ID 必须分别与实例创建 receipt 中的 immutable
-`EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致；TidbCluster `spec.version` 必须匹配期望版本，
+TidbCluster 的 apiVersion/kind/name、metadata UID、spec version/PD/TiKV replicas、status cluster ID 和
+唯一 `Ready=True` 条件必须从 wait 返回后的同一份 CR JSON 快照验证；UID 和非零 cluster ID 必须分别与
+实例创建 receipt 中的 immutable `EXPECTED_TIDB_CLUSTER_UID`/`EXPECTED_CLUSTER_ID` 一致，version 必须匹配期望，
 已收敛的 PD/TiKV StatefulSet 本身必须各自由该 immutable TidbCluster UID 作为唯一 controller owner，且
 StatefulSet 模板中的精确容器镜像还必须分别匹配 `EXPECTED_PD_IMAGE`、`EXPECTED_TIKV_IMAGE`；
 owner、UID、generation、observedGeneration、replica 数、current/update revision 和

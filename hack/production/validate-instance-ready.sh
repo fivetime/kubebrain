@@ -233,9 +233,23 @@ run_etcdctl() {
   "${exec_args[@]}" "$@"
 }
 
-tidb_topology="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
-  -o 'jsonpath={.spec.pd.replicas}{"\t"}{.spec.tikv.replicas}{"\t"}{.status.clusterID}{"\t"}{.metadata.uid}')"
-IFS=$'\t' read -r actual_pd_replicas actual_tikv_replicas actual_cluster_id actual_tidb_cluster_uid <<<"$tidb_topology"
+if ! tidb_cluster_json="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" -o json)"; then
+  echo "failed to read TidbCluster release snapshot" >&2
+  exit 1
+fi
+if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e --arg name "$TIDB_CLUSTER" '
+  .apiVersion == "pingcap.com/v1alpha1" and .kind == "TidbCluster" and .metadata.name == $name and
+  (.spec.pd.replicas | type) == "number" and (.spec.tikv.replicas | type) == "number" and
+  ((.status.clusterID | tostring | length) > 0) and
+  ((.metadata.uid | type) == "string" and (.metadata.uid | length) > 0) and
+  ((.spec.version | type) == "string" and (.spec.version | length) > 0)
+' >/dev/null; then
+  echo "TidbCluster release snapshot is malformed" >&2
+  exit 1
+fi
+IFS=$'\t' read -r actual_pd_replicas actual_tikv_replicas actual_cluster_id actual_tidb_cluster_uid actual_tidb_version <<<"$(
+  printf '%s' "$tidb_cluster_json" | "$JQ" -r '[.spec.pd.replicas,.spec.tikv.replicas,(.status.clusterID|tostring),.metadata.uid,.spec.version] | @tsv'
+)"
 if [[ "$actual_pd_replicas" != "$EXPECTED_PD_REPLICAS" || "$actual_tikv_replicas" != "$EXPECTED_TIKV_REPLICAS" ]]; then
   echo "TidbCluster topology mismatch: expected PD/TiKV ${EXPECTED_PD_REPLICAS}/${EXPECTED_TIKV_REPLICAS}, got ${actual_pd_replicas:-missing}/${actual_tikv_replicas:-missing}" >&2
   exit 1
@@ -249,10 +263,15 @@ if [[ "$actual_cluster_id" != "$EXPECTED_CLUSTER_ID" ]]; then
   exit 1
 fi
 
-actual_tidb_version="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get tidbcluster "$TIDB_CLUSTER" \
-  -o 'jsonpath={.spec.version}')"
 if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ]]; then
   echo "TidbCluster storage release mismatch: expected version ${EXPECTED_TIDB_VERSION}, got ${actual_tidb_version:-missing}" >&2
+  exit 1
+fi
+if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e '
+  ([.status.conditions[]? | select(.type == "Ready")] | length) == 1 and
+  ([.status.conditions[]? | select(.type == "Ready" and .status == "True")] | length) == 1
+' >/dev/null; then
+  echo "TidbCluster release snapshot mismatch: Ready=True is required after convergence wait" >&2
   exit 1
 fi
 

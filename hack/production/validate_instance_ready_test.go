@@ -92,6 +92,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		tikvOwnerUID             string
 		tikvTidbOwnerUID         string
 		tikvCurrentRevision      string
+		tidbSnapshotReady        *bool
 		healthOK                 bool
 		advertisedURLs           string
 		unreachableAdvertisedURL string
@@ -176,6 +177,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			tikvCurrentRevision: "tikv-old",
 			healthOK:            true,
 			wantOutput:          "TiKV StatefulSet release snapshot mismatch",
+		},
+		{
+			name:              "TidbCluster becomes unready after convergence wait",
+			image:             "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:        "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:          "3\t3",
+			tidbSnapshotReady: boolPointer(false),
+			healthOK:          true,
+			wantOutput:        "TidbCluster release snapshot mismatch",
 		},
 		{
 			name:       "tls release baseline",
@@ -962,6 +972,8 @@ elif [[ "$*" == *" exec "* ]]; then
   exec "$@"
 elif [[ "$*" == *"get tidbcluster"* && "$*" == *".status.conditions"* ]]; then
   printf 'True'
+elif [[ "$*" == *"get tidbcluster"* && "$*" == *" -o json" ]]; then
+  printf '%s' "$FAKE_TIDB_CLUSTER_JSON"
 elif [[ "$*" == *"get tidbcluster"* && "$*" == *".spec.version"* ]]; then
   printf '%s' "$FAKE_TIDB_VERSION"
 elif [[ "$*" == *"get statefulset kb-pd"* && "$*" == *".image}"* ]]; then
@@ -1090,6 +1102,10 @@ exit 1
 			if tikvCurrentRevision == "" {
 				tikvCurrentRevision = "tikv-new"
 			}
+			tidbSnapshotReady := true
+			if tc.tidbSnapshotReady != nil {
+				tidbSnapshotReady = *tc.tidbSnapshotReady
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"ETCDCTL=" + fakeEtcdctl,
@@ -1121,6 +1137,7 @@ exit 1
 				"FAKE_ENDPOINT_SLICES_JSON=" + endpointSlicesJSON,
 				"FAKE_TOPOLOGY=" + topology,
 				"FAKE_TIDB_VERSION=" + tidbVersion,
+				"FAKE_TIDB_CLUSTER_JSON=" + fakeTidbClusterJSON(tidbVersion, topology, tidbSnapshotReady),
 				"FAKE_PD_IMAGE=" + pdImage,
 				"FAKE_TIKV_IMAGE=" + tikvImage,
 				"FAKE_PD_STS_JSON=" + fakeStorageStatefulSetJSON("pd", "uid-pd-sts", "uid-tidb", "pd-new", "pd-new", "pingcap/pd:v8.5.3"),
@@ -1153,6 +1170,24 @@ exit 1
 			}
 		})
 	}
+}
+
+func fakeTidbClusterJSON(version, topology string, ready bool) string {
+	status := "False"
+	if ready {
+		status = "True"
+	}
+	parts := strings.Split(topology, "\t")
+	encoded, err := json.Marshal(map[string]any{
+		"apiVersion": "pingcap.com/v1alpha1", "kind": "TidbCluster",
+		"metadata": map[string]any{"name": "kb", "uid": parts[3]},
+		"spec":     map[string]any{"version": version, "pd": map[string]any{"replicas": json.Number(parts[0])}, "tikv": map[string]any{"replicas": json.Number(parts[1])}},
+		"status":   map[string]any{"clusterID": parts[2], "conditions": []map[string]any{{"type": "Ready", "status": status}}},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
 }
 
 func fakeStorageStatefulSetJSON(component, uid, tidbOwnerUID, currentRevision, updateRevision, image string) string {
@@ -1353,3 +1388,5 @@ func boolString(value bool) string {
 	}
 	return "false"
 }
+
+func boolPointer(value bool) *bool { return &value }
