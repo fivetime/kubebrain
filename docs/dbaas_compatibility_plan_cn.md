@@ -47982,6 +47982,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leader-local TSO 混用；下一阶段必须原子切换 Create/Update/Delete/DeleteRange/TxnApply、lease expiry/revoke
   等全部用户 revision 写路径及 uncertain resolution，才能关闭跳号差异和启用运行时 allocator。
 
+- A4469 消除 allocator 迁移时复制 MVCC 协议编码的风险。旧 `putTxnObject` 和 `appendEventLog` 直接接受
+  `storage.BatchWrite` 并立即 Put，无法从 `AtomicBatch` 复用；若另写动态版本，compat envelope、legacy
+  etcdmeta 或 ordered subrevision 字段很容易漂移。实现现将 object mutations 与 event-log entry 拆为纯编码
+  helper，原静态路径只负责逐项 Put。事务内 allocator 回归用这些 helper 原子写入带 lease metadata 的 revision=2
+  CREATE object 和 ordered event，再由现有 `decodeValueWithMeta` 与存储读取逐字节复核。TxnApply/event-log race
+  回归通过。该提交仍不启用新 allocator；它只把下一阶段所有写路径原子切换所需的编码面收敛为单一来源。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

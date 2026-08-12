@@ -2874,6 +2874,10 @@ read-modify-write 的基础；在所有用户写、event log、durable revision 
 `MaxInt64` 上界、写入 next revision，并要求调用者把对应 mutation/event marker 一并写入该事务。counter
 缺失按 etcd 空库 revision=1 初始化，首次写分配 2；并发冲突必须用全新 batch 重试。该 helper 暂不接入旧
 TSO 写路径，因为两种 allocator 并行会分配重复 revision。
+MVCC object 与 ordered event log 的 revision-dependent 编码已拆成纯函数：静态 `BatchWrite` 与未来的
+`AtomicBatch` 共用同一 value envelope、legacy metadata key/value 和 event key/value 生成逻辑，避免迁移时
+复制一套协议编码。动态 allocator 回归已把 revision=2 的 leased CREATE object/event 写入后交给现有 decoder
+复读，固定编码等价性。
 
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 

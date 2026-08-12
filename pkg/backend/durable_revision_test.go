@@ -233,3 +233,37 @@ func TestTransactionalRevisionAllocatorInitializesAndFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestTransactionalRevisionAllocatorReusesMVCCAndEventEncoders(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	b.persistDurableRevision(1)
+	userKey := []byte(prefix + "/transactional-encoder/key")
+	userValue := []byte("value")
+	meta := EtcdMetadata{CreateRevision: 2, Version: 1, Lease: 17}
+
+	batch := b.kv.BeginBatchWrite()
+	allocated := b.stageNextDurableRevision(batch, func(_ context.Context, txn storage.AtomicBatch, revision uint64) error {
+		require.Equal(t, uint64(2), revision)
+		objectKey := b.coder.EncodeObjectKey(userKey, revision)
+		for _, mutation := range b.encodeTxnObjectMutations(objectKey, userKey, userValue, meta, revision) {
+			if err := txn.Put(mutation.key, mutation.value, 0); err != nil {
+				return err
+			}
+		}
+		eventKey, eventValue := encodeEventLogEntry(b.ks, revision, userKey, proto.Event_CREATE, 0, 0, 1)
+		return txn.Put(eventKey, eventValue, 0)
+	})
+	require.NoError(t, batch.Commit(ctx))
+	require.Equal(t, uint64(2), *allocated)
+
+	object, err := b.kv.Get(ctx, b.coder.EncodeObjectKey(userKey, 2))
+	require.NoError(t, err)
+	decodedMeta, decodedValue, ok := decodeValueWithMeta(object)
+	require.True(t, ok)
+	require.Equal(t, userValue, decodedValue)
+	require.Equal(t, meta, decodedMeta)
+	eventKey, wantEvent := encodeEventLogEntry(b.ks, 2, userKey, proto.Event_CREATE, 0, 0, 1)
+	gotEvent, err := b.kv.Get(ctx, eventKey)
+	require.NoError(t, err)
+	require.Equal(t, wantEvent, gotEvent)
+}

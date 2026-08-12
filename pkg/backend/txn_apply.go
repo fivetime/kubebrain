@@ -803,12 +803,24 @@ func (b *backend) txnConflictIsGuard(cerr error, guardKeys map[string]struct{}, 
 // mode (approach A) or writing the separate etcdmeta keyspace otherwise —
 // mirroring createBatchWithMetadata / update.
 func (b *backend) putTxnObject(batch storage.BatchWrite, objectKey, key, value []byte, meta EtcdMetadata, revision uint64) {
-	if b.config.EnableEtcdCompatibility {
-		batch.Put(objectKey, encodeValueWithMeta(value, meta), 0)
-		return
+	for _, mutation := range b.encodeTxnObjectMutations(objectKey, key, value, meta, revision) {
+		batch.Put(mutation.key, mutation.value, 0)
 	}
-	batch.Put(objectKey, value, 0)
-	b.putEtcdMetadata(batch, key, revision, meta)
+}
+
+type encodedMutation struct {
+	key   []byte
+	value []byte
+}
+
+func (b *backend) encodeTxnObjectMutations(objectKey, key, value []byte, meta EtcdMetadata, revision uint64) []encodedMutation {
+	if b.config.EnableEtcdCompatibility {
+		return []encodedMutation{{key: objectKey, value: encodeValueWithMeta(value, meta)}}
+	}
+	return []encodedMutation{
+		{key: objectKey, value: value},
+		{key: b.coder.EncodeObjectKey(b.etcdMetadataUserKey(key), revision), value: encodeEtcdMetadata(meta)},
+	}
 }
 
 // notifyInvalidTxn fills the dealt revision's ring slot with invalid per-key
