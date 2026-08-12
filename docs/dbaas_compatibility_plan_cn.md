@@ -47522,6 +47522,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   898.511 秒，未计编译/调度已经接近 15 分钟，因此本地串行全包文档上限从 15 分钟改为 20 分钟；CI 继续
   使用四片，不减少任何顶层测试、子测试或故障场景。本项只修验证证据和预算，不改变 A4423 迁移实现。
 
+- A4425 关闭 A4422 保留的真实 Kubernetes mTLS rollout TTL=3 缺口，并修正 preStop 对 opaque TCP 长流的
+  错误摘流顺序。对照 `/root/etcd/client/v3/lease.go`：`recvKeepAlive` 把下一次发送设为响应 TTL 的三分之一、
+  把客户端 deadline 设为完整响应 TTL；`recvKeepAliveLoop` 断流后等待固定 500ms 再 `resetRecv`，而
+  `deadlineLoop` 会关闭超过 deadline 未收到响应的 channel。因此 TTL=3 只有约 3 秒无响应预算，不能在迁移
+  开始前人为停止旧连接。首先在 A4422 最终 `maxUnavailable=0/maxSurge=1`、三节点 topology spread、20 秒
+  `minReadySeconds` 与 readiness 参数不变的 fresh 现场，仅把 Envoy drain-time 从 5 秒缩到 1 秒并把永久门禁
+  从 TTL=5 收紧到 TTL=3；保留旧 `/healthcheck/fail → sleep 5 → drain` 顺序时，普通门禁 89.73 秒 RED，首轮
+  member 0 最后响应 TTL=3 后服务端 TimeToLive 已为 -1。把 drain 提前到 `/healthcheck/fail` 之后立即执行仍在
+  89.92 秒以相同方式 RED，证明缩短或提前 listener drain 都没有消除 admin fail 对既有 2380 passthrough
+  connection 的影响。
+  最终 production 不再调用 `/healthcheck/fail`：kubelet 设置 deletion timestamp 时，EndpointSlice 原生把
+  terminating Pod 标为非 Ready；hook 先等待 5 秒让新连接摘流但保持旧连接继续服务，再执行并严格校验
+  `POST /drain_listeners?graceful`，以 1 秒 immediate drain 触发迁移，最后保留进程 5 秒。清单测试固定完整
+  command 并显式禁止 `/healthcheck/fail` 回归。2026-08-12 在 fresh
+  `kubebrain-envoy-ttl3-a4425` Kind 集群的三个 zone worker、独立 3 PD/3 TiKV/3 mTLS KubeBrain 与固定
+  Envoy 1.39.0 上，普通门禁以 7 个独立 Watch+KeepAlive client 覆盖三 Pod，三轮九次替换 251.47 秒通过；
+  `GOFLAGS=-race` 以 12 个 client 覆盖三 Pod，测试主体 251.38 秒、包总计 252.472 秒通过且无数据竞争。
+  每轮三个旧 UID 均在删除前退出 Ready EndpointSlice，任一采样点至少两个 Ready target；全部 TTL=3 lease、
+  附租约 key 与 Watch 贯穿 rollout，前后 plaintext 与缺 client certificate 的连接仍分别以 EOF 和
+  `tls: certificate required` 被拒绝。本项关闭 Kind host-port→NodePort→2380 passthrough 的 TTL=3 已知缺口；
+  证书轮换叠加 rollout、云 LB、跨 AZ、NAT/conntrack、underlay 与小时级 churn 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

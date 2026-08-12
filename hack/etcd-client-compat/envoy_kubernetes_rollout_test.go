@@ -44,7 +44,7 @@ type envoyKeepAliveState struct {
 	latest envoyKeepAliveObservation
 }
 
-const envoyKubernetesRolloutLeaseTTL = int64(5)
+const envoyKubernetesRolloutLeaseTTL = int64(3)
 
 func TestEnvoyKubernetesRollout(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv("KUBEBRAIN_ENVOY_ROLLOUT_ENDPOINT"))

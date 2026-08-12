@@ -61,7 +61,7 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, []string{
 		"-c", "/etc/envoy/bootstrap.yaml", "--disable-hot-restart",
-		"--drain-time-s", "5", "--drain-strategy", "immediate", "--log-level", "info",
+		"--drain-time-s", "1", "--drain-strategy", "immediate", "--log-level", "info",
 	}, args)
 	require.Equal(t, "/ready", nestedString(t, container, "readinessProbe", "httpGet", "path"))
 	require.EqualValues(t, 1, nestedInt64(t, container, "readinessProbe", "periodSeconds"))
@@ -71,8 +71,10 @@ func TestOptionalEnvoyProfileIsHardenedAndCapacityAligned(t *testing.T) {
 	require.True(t, found)
 	require.Equal(t, []string{
 		"/usr/bin/timeout", "20", "/bin/bash", "-ec",
-		"exec 3<>/dev/tcp/127.0.0.1/9901; printf 'POST /healthcheck/fail HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&3; IFS= read -r status <&3; [[ \"$status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 5; exec 4<>/dev/tcp/127.0.0.1/9901; printf 'POST /drain_listeners?graceful HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&4; IFS= read -r drain_status <&4; [[ \"$drain_status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 5",
+		"/bin/sleep 5; exec 4<>/dev/tcp/127.0.0.1/9901; printf 'POST /drain_listeners?graceful HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\nContent-Length: 0\\r\\n\\r\\n' >&4; IFS= read -r drain_status <&4; [[ \"$drain_status\" == $'HTTP/1.1 200 OK\\r' ]]; /bin/sleep 5",
 	}, preStop)
+	require.NotContains(t, preStop[4], "/healthcheck/fail",
+		"terminating EndpointSlice state must drain new traffic without disrupting established passthrough streams")
 	ports, found, err := unstructured.NestedSlice(container.Object, "ports")
 	require.NoError(t, err)
 	require.True(t, found)
