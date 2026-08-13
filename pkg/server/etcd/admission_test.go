@@ -264,6 +264,66 @@ func TestLeadershipDrainWaitsForUnaryAndBlocksLaterCalls(t *testing.T) {
 	<-secondDone
 }
 
+func TestLeadershipDrainWaitsForForwardedUnaryAndBlocksLaterCalls(t *testing.T) {
+	rpc, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, err := rpc.requireLeaderUnary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Put_FullMethodName},
+			func(context.Context, any) (any, error) {
+				close(firstEntered)
+				<-releaseFirst
+				return nil, nil
+			})
+		require.NoError(t, err)
+	}()
+	<-firstEntered
+
+	releaseStarted := make(chan struct{})
+	allowRelease := make(chan struct{})
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		rpc.DrainLeadership(func() {
+			close(releaseStarted)
+			<-allowRelease
+		})
+	}()
+
+	select {
+	case <-releaseStarted:
+		t.Fatal("leadership release crossed an in-flight forwarded unary request")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseFirst)
+	<-firstDone
+	<-releaseStarted
+
+	secondEntered := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		_, err := rpc.requireLeaderUnary(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: etcdserverpb.KV_Put_FullMethodName},
+			func(context.Context, any) (any, error) {
+				close(secondEntered)
+				return nil, nil
+			})
+		require.NoError(t, err)
+	}()
+	select {
+	case <-secondEntered:
+		t.Fatal("new forwarded unary request crossed leadership release")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(allowRelease)
+	<-drainDone
+	<-secondDone
+}
+
 func TestLeaseRevokeUsesBoundedInflightReserve(t *testing.T) {
 	rpc, closeFn := newTestRPCServer(t)
 	defer closeFn()

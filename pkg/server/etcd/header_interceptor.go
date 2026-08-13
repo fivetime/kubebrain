@@ -190,6 +190,8 @@ func (s *RPCServer) observeClientRequest(ctx context.Context, requestType, fullM
 }
 
 func (s *RPCServer) requireLeaderUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	s.leadershipDrainBoundary.RLock()
+	defer s.leadershipDrainBoundary.RUnlock()
 	ctx = context.WithValue(ctx, peerRequestContextKey{}, true)
 	if err := validateClientAPIVersion(ctx); err != nil {
 		return nil, err
