@@ -15,6 +15,7 @@ PROBE_COMMAND_TIMEOUT="${PROBE_COMMAND_TIMEOUT:-10s}"
 PROBE_DIAL_TIMEOUT="${PROBE_DIAL_TIMEOUT:-1s}"
 PROBE_MAX_OPERATION_LATENCY="${PROBE_MAX_OPERATION_LATENCY:-5s}"
 PROBE_MAX_PD_TSO_LATENCY="${PROBE_MAX_PD_TSO_LATENCY:-1s}"
+PROBE_MAX_TIKV_REGION_LATENCY="${PROBE_MAX_TIKV_REGION_LATENCY:-1s}"
 PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
@@ -49,7 +50,8 @@ if ! [[ "$KUBEBRAIN_CLIENT_PORT" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "$PROBE_COMMAND_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
   ! [[ "$PROBE_DIAL_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
   ! [[ "$PROBE_MAX_OPERATION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_MAX_PD_TSO_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]]; then
+  ! [[ "$PROBE_MAX_PD_TSO_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
+  ! [[ "$PROBE_MAX_TIKV_REGION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]]; then
   echo "probe port, interval, and timeout values are invalid" >&2
   exit 2
 fi
@@ -118,6 +120,7 @@ kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- \
   --command-timeout="$PROBE_COMMAND_TIMEOUT" \
   --max-operation-latency="$PROBE_MAX_OPERATION_LATENCY" \
   --max-pd-tso-latency="$PROBE_MAX_PD_TSO_LATENCY" \
+  --max-tikv-region-latency="$PROBE_MAX_TIKV_REGION_LATENCY" \
   --lease-ttl="$PROBE_LEASE_TTL" \
   --pd-endpoints="$pd_endpoints" \
   --expected-up-stores=3 \
@@ -148,7 +151,7 @@ fi
 probe_log="$(kctl logs "$PROBE_POD")"
 printf '%s\n' "$probe_log"
 summary="$(grep '^PROBE_SUMMARY ' <<<"$probe_log" || true)"
-if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ lease=alive\ max_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+$ ]]; then
+if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ lease=alive\ max_latency_ms=[0-9]+\ max_tso_latency_ms=[0-9]+\ max_region_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi

@@ -5,29 +5,33 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	tikverr "github.com/tikv/client-go/v2/error"
+	"github.com/tikv/client-go/v2/txnkv"
 	pd "github.com/tikv/pd/client"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
 type config struct {
-	endpoint        string
-	prefix          string
-	iterations      int
-	interval        time.Duration
-	commandTimeout  time.Duration
-	dialTimeout     time.Duration
-	maxLatency      time.Duration
-	leaseTTL        int64
-	pdEndpoints     []string
-	expectedStores  int
-	maxHeartbeatAge time.Duration
-	maxTSOLatency   time.Duration
+	endpoint         string
+	prefix           string
+	iterations       int
+	interval         time.Duration
+	commandTimeout   time.Duration
+	dialTimeout      time.Duration
+	maxLatency       time.Duration
+	leaseTTL         int64
+	pdEndpoints      []string
+	expectedStores   int
+	maxHeartbeatAge  time.Duration
+	maxTSOLatency    time.Duration
+	maxRegionLatency time.Duration
 }
 
 func main() {
@@ -43,6 +47,7 @@ func main() {
 	flag.IntVar(&cfg.expectedStores, "expected-up-stores", 3, "exact number of Up TiKV stores")
 	flag.DurationVar(&cfg.maxHeartbeatAge, "max-store-heartbeat-age", 20*time.Second, "maximum TiKV store heartbeat age")
 	flag.DurationVar(&cfg.maxTSOLatency, "max-pd-tso-latency", time.Second, "maximum PD TSO request latency")
+	flag.DurationVar(&cfg.maxRegionLatency, "max-tikv-region-latency", time.Second, "maximum TiKV Region point-read latency")
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
@@ -63,7 +68,7 @@ func (cfg config) validate() error {
 	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 || cfg.expectedStores <= 0 {
 		return fmt.Errorf("endpoint, prefix, and positive iterations are required")
 	}
-	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency {
+	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency || cfg.maxRegionLatency <= 0 || cfg.maxRegionLatency > cfg.maxLatency {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
 	if len(cfg.pdEndpoints) == 0 {
@@ -75,6 +80,38 @@ func (cfg config) validate() error {
 		}
 	}
 	return nil
+}
+
+type tikvRegionReader interface {
+	Read(context.Context) error
+}
+
+type snapshotRegionReader struct {
+	client *txnkv.Client
+	key    []byte
+}
+
+func (r snapshotRegionReader) Read(ctx context.Context) error {
+	_, err := r.client.GetSnapshot(math.MaxUint64).Get(ctx, r.key)
+	if tikverr.IsErrNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func sampleTiKVRegion(ctx context.Context, reader tikvRegionReader, maxLatency time.Duration) (time.Duration, error) {
+	started := time.Now()
+	sampleCtx, cancel := context.WithTimeout(ctx, maxLatency)
+	err := reader.Read(sampleCtx)
+	cancel()
+	latency := time.Since(started)
+	if err != nil {
+		return latency, fmt.Errorf("TiKV Region read failed after %s: %w", latency, err)
+	}
+	if latency > maxLatency {
+		return latency, fmt.Errorf("TiKV Region read latency %s exceeds %s", latency, maxLatency)
+	}
+	return latency, nil
 }
 
 type pdTimestampClient interface {
@@ -198,6 +235,16 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("backend preflight: %w", err)
 	}
+	tikvClient, err := txnkv.NewClient(cfg.pdEndpoints)
+	if err != nil {
+		return fmt.Errorf("backend preflight: create TiKV client: %w", err)
+	}
+	defer tikvClient.Close()
+	regionReader := snapshotRegionReader{client: tikvClient, key: []byte(cfg.prefix + "tikv-region-probe")}
+	maxObservedRegionLatency, err := sampleTiKVRegion(ctx, regionReader, cfg.maxRegionLatency)
+	if err != nil {
+		return fmt.Errorf("backend preflight: %w", err)
+	}
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{cfg.endpoint},
 		DialTimeout: cfg.dialTimeout,
@@ -283,6 +330,13 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		if tsoLatency > maxObservedTSOLatency {
 			maxObservedTSOLatency = tsoLatency
 		}
+		regionLatency, regionErr := sampleTiKVRegion(ctx, regionReader, cfg.maxRegionLatency)
+		if regionErr != nil {
+			return fmt.Errorf("iteration=%d backend instability: %w", i, regionErr)
+		}
+		if regionLatency > maxObservedRegionLatency {
+			maxObservedRegionLatency = regionLatency
+		}
 		if time.Since(lastPDCheck) >= 500*time.Millisecond {
 			currentPDLeader, pdErr := readPDLeader(ctx, cfg.pdEndpoints, cfg.dialTimeout)
 			if pdErr != nil {
@@ -356,6 +410,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if ttl == nil || ttl.TTL <= 0 || len(ttl.Keys) != 1 || string(ttl.Keys[0]) != leaseKey {
 		return fmt.Errorf("final lease verification failed: response=%v", ttl)
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d lease=alive max_latency_ms=%d max_tso_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, maxLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d lease=alive max_latency_ms=%d max_tso_latency_ms=%d max_region_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, maxLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds(), maxObservedRegionLatency.Milliseconds())
 	return nil
 }
