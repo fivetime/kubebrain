@@ -49101,6 +49101,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Watch/15 秒 LeaseKeepAlive/不确定写连续性缺口；PD slow-disk/leader loss 叠加 rollout 仍应由明确的
   backend-instability 门禁失败，不得冒充零中断数据面。
 
+- A4575 关闭 A4573 在 PD slow-disk 混合故障后谨慎保留的 5 秒短租约 rollout 差距。先连续 20 个样本
+  固定 PD leader `kb-pd-0:12010354549738711059`，三个主 TiKV store 均 Ready、零 restart；随后在同一
+  `kubebrain:a4574-e92ef413` 三副本上用 `PROBE_LEASE_TTL=5` 执行完整正式 runner。三次顺序替换中的
+  connection closing/EOF 均由同 token Range 对账恢复，PD identity 全程未变，最终
+  `PROBE_SUMMARY ok=900 fail=0 total=900 watch=900 lease=alive max_latency_ms=4909`，revision
+  `kubebrain-cb85574b5 -> kubebrain-55d9f59ff7`，strict postflight 与 cleanup 通过。永久 runner 默认 lease
+  由 15 秒收紧为 5 秒，并由 fail-closed 测试固定传给镜像内官方 clientv3 探针；command timeout 仍只给
+  不确定结果对账留 10 秒边界，5 秒 Put→Watch SLA 未放宽。该项不修改 runtime binary，故不重复构建镜像。
+  TTL=3、PD leader loss/slow disk 与 rollout 叠加、跨节点/AZ 和云 LB 仍是更严格的独立矩阵，不能由 TTL=5
+  单节点 Kind 结果外推。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
