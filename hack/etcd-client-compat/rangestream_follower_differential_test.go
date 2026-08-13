@@ -86,7 +86,10 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 	}
 	require.NotNil(t, leader.conn)
 	kv := etcdserverpb.NewKVClient(leader.conn)
-	prefix := fmt.Sprintf("/dbaas-rangestream-follower/%s/%d/", instance, time.Now().UnixNano())
+	// A '$'-prefixed legal etcd key forces KubeBrain's decoded-boundary scan:
+	// '$' is also the internal MVCC separator, so encoded ordering alone cannot
+	// delimit this range. CountOnly must still avoid materializing the tenant.
+	prefix := fmt.Sprintf("$dbaas-rangestream-follower/%s/%d/", instance, time.Now().UnixNano())
 	end := []byte(clientv3.GetPrefixRangeEnd(prefix))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

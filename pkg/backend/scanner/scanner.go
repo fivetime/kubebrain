@@ -157,6 +157,17 @@ func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision 
 	return r.scan(ctx, start, end, revision, false, false, receiver)
 }
 
+// CountFiltered implements Scanner. It is the low-byte-boundary fallback for
+// CountOnly: scan the safe full encoded range, filter after decoding each user
+// key, and retain only an integer rather than a KeyValue slice.
+func (r *scanner) CountFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) (int, error) {
+	receiver := &filteredCountReceiver{start: userStart, end: userEnd}
+	if _, err := r.scan(ctx, start, end, revision, false, false, receiver); err != nil {
+		return 0, err
+	}
+	return receiver.count, nil
+}
+
 // RangeStream implements Scanner interface. keysOnly emits nil values (the
 // count-index rebuild path) so the buffered channel does not hold ~300k object
 // values at once (a failover-time memory spike); range reads that need the value

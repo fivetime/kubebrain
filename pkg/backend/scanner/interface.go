@@ -32,6 +32,11 @@ type Scanner interface {
 	// Count run scan in partitions concurrently and returns the count of user key
 	Count(ctx context.Context, start []byte, end []byte, revision uint64) (int, error)
 
+	// CountFiltered scans the encoded range but counts only decoded user keys in
+	// [userStart,userEnd). A nil userEnd means through the end of the keyspace.
+	// Unlike Range, it never retains KeyValue payloads.
+	CountFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) (int, error)
+
 	// Compact reclaims superseded versions and tombstones across all the given
 	// [start,end) border pairs. It returns the first border scan error (after the
 	// per-worker retries) so the caller can surface a failed physical GC instead

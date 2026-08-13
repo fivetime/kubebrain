@@ -15,6 +15,8 @@
 package scanner
 
 import (
+	"bytes"
+
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 )
 
@@ -71,6 +73,29 @@ func (e *emptyResultReceiver) retriable() bool {
 }
 func (e *emptyResultReceiver) merge(receiver resultReceiver) {
 	// do nothing
+}
+
+type filteredCountReceiver struct {
+	emptyResultReceiver
+	start []byte
+	end   []byte
+	count int
+}
+
+func (c *filteredCountReceiver) append(key, _ []byte, _ uint64) {
+	if bytes.Compare(key, c.start) >= 0 && (c.end == nil || bytes.Compare(key, c.end) < 0) {
+		c.count++
+	}
+}
+
+func (c *filteredCountReceiver) reset() { c.count = 0 }
+
+func (c *filteredCountReceiver) fork() resultReceiver {
+	return &filteredCountReceiver{start: c.start, end: c.end}
+}
+
+func (c *filteredCountReceiver) merge(receiver resultReceiver) {
+	c.count += receiver.(*filteredCountReceiver).count
 }
 
 type commonResultReceiver struct {

@@ -381,9 +381,13 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 	}
 	var count int
 	if decodedRange {
-		kvs, rangeErr := b.decodedUserRange(ctx, r.Key, r.End, rev)
-		err = rangeErr
-		count = len(kvs)
+		userEnd := r.End
+		if isFromKeyEnd(userEnd) {
+			userEnd = nil
+		}
+		count, err = b.scanner.CountFiltered(
+			ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), r.Key, userEnd, rev,
+		)
 	} else {
 		key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)
 		count, err = b.scanner.Count(ctx, key, rangeEnd, rev)

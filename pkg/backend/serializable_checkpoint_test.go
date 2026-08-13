@@ -16,10 +16,27 @@ import (
 	"github.com/stretchr/testify/require"
 	tikvcfg "github.com/tikv/client-go/v2/config"
 
+	backendscanner "github.com/kubewharf/kubebrain/pkg/backend/scanner"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type checkpointCountScanner struct {
+	backendscanner.Scanner
+	rangeCalled         bool
+	countFilteredCalled bool
+}
+
+func (s *checkpointCountScanner) Range(ctx context.Context, start, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error) {
+	s.rangeCalled = true
+	return s.Scanner.Range(ctx, start, end, revision, limit)
+}
+
+func (s *checkpointCountScanner) CountFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) (int, error) {
+	s.countFilteredCalled = true
+	return s.Scanner.CountFiltered(ctx, start, end, userStart, userEnd, revision)
+}
 
 type checkpointTestStorage struct {
 	storage.KvStorage
@@ -280,4 +297,32 @@ func TestSerializableCheckpointContextReadsWithoutOracleOrPartitionDiscovery(t *
 	require.Equal(t, tsoBefore, store.tsoReads)
 	require.Equal(t, partitionsBefore, store.partitions)
 	store.mu.Unlock()
+}
+
+func TestSerializableCheckpointCountLowByteBoundaryDoesNotMaterializeRange(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), timestamp: 400}
+	b := newCheckpointBackend(t, store)
+	ctx := context.Background()
+	seed := store.BeginBatchWrite()
+	for i, key := range []string{"$a", "$b", "&outside"} {
+		revision := uint64(i + 2)
+		seed.Put(b.coder.EncodeRevisionKey([]byte(key)), uint64ToBytes(revision), 0)
+		seed.Put(b.coder.EncodeObjectKey([]byte(key), revision), []byte("value"), 0)
+	}
+	require.NoError(t, seed.Commit(ctx))
+	b.SetCurrentRevision(4)
+	checkpoint, err := b.createSerializableCheckpoint(ctx)
+	require.NoError(t, err)
+
+	probe := &checkpointCountScanner{Scanner: b.scanner}
+	b.scanner = probe
+	b.countIndex = nil // force the storage fallback exercised during index rebuild/miss
+	response, err := b.Count(WithSerializableCheckpoint(ctx, checkpoint), &proto.CountRequest{
+		Key: []byte("$"), End: []byte("%"),
+	})
+	require.NoError(t, err)
+	require.Equal(t, checkpoint.Revision, response.Header.Revision)
+	require.Equal(t, uint64(2), response.Count)
+	require.True(t, probe.countFilteredCalled)
+	require.False(t, probe.rangeCalled, "CountOnly must not materialize decodedUserRange")
 }
