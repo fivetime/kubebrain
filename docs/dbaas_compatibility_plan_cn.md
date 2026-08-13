@@ -49191,6 +49191,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD identity/store heartbeat 盲区已有 TSO 与直接 TiKV RPC 两类亚秒信号；但 point-Get 只持续覆盖 probe key
   所在 Region，不等于全 Region 延迟扫描。TTL=3、跨 Region/热点/跨节点与云 LB 矩阵继续开放。
 
+- A4581 关闭 A4580 保留的单入口自愿 rollout TTL=3 缺口。首次用 A4580 按同一 900 轮正式 runner 将 lease
+  从 TTL=5 收紧到 TTL=3 后在第 58 轮真实 RED：clientv3 keepalive channel 因超过当前 TTL 未收到正响应而关闭；
+  同期 PD TSO、直接 TiKV Region 与 store heartbeat 均无异常。KubeBrain 日志显示旧 leader 已退出，但
+  client-go `ReleaseOnCancel` 的 best-effort release 没有向调用方传播失败，继任者仍等待完整 8 秒 election
+  lease；因此 drain 返回成功并不等于 durable election record 已释放。
+
+  `pkg/server/service/leader/leader.go` 现在在 campaign 完全停止后读取 durable record：若仍由本进程持有，则以
+  CAS 更新为空 holder、1 秒 lease，并持续重试到请求 deadline；若 successor 已取得记录则直接成功，且不会
+  覆盖 successor。`/drain` 在该确认失败时返回 503，RPC drain boundary 在确认期间继续阻止新请求，避免
+  preStop 把未释放误判为成功。重试失败后恢复、successor 不覆盖、仍发布 leader 拒绝，以及 HTTP 503 契约测试
+  均已覆盖；leader/server 两包连续 20 轮与 `pkg/server/...` 全量回归通过。修复提交 `cfb667d2` 的精确镜像
+  `kubebrain:a4581-cfb667d2`（内嵌 SHA `cfb667d25c55ac1919e078312dbd8f1064431161`，OCI manifest list
+  `sha256:f16132671207f048e2a12e6708f266823b2583d74ba568a54eb288ccd75d1c5a`）完成三副本正式复验：
+  `PROBE_SUMMARY ok=900 fail=0 total=900 watch=900 lease=alive max_latency_ms=3081
+  max_tso_latency_ms=6 max_region_latency_ms=20`，revision
+  `kubebrain-65f855694b -> kubebrain-c48979c89`，strict postflight 与 probe cleanup 通过，三 Pod Ready、零重启。
+  该证据关闭当前 Kind 单节点、Pod 网络、单 Service 入口的自愿 rollout TTL=3 门禁；跨 Region/热点、跨节点/AZ、
+  云 LB/NAT/conntrack 与叠加 PD/TiKV 故障仍保持独立开放矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
