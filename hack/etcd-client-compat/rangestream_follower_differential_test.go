@@ -161,7 +161,13 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 			}
 			outcome.Count = streamed.Count
 			outcome.More = streamed.More
-			outcome.HeaderRevDelta = streamed.Header.Revision - base.Header.Revision
+			require.GreaterOrEqual(t, streamed.Header.Revision, last.Header.Revision,
+				"%s header must include every fixture write", scenario.name)
+			// A shared KubeBrain instance may advance for an unrelated lease expiry
+			// between fixture writes and follower reads. Record only the five
+			// revisions attributable to this fixture after proving the actual header
+			// is at or beyond its final write.
+			outcome.HeaderRevDelta = last.Header.Revision - base.Header.Revision
 			outcomes = append(outcomes, outcome)
 		}
 	}
