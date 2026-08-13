@@ -48960,6 +48960,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   lease 集合均不变。另跑 HashKV compaction 跨副本收敛 2.523 秒通过。本轮只增强测试编排和
   记录，不改变 runtime，因此不构建 A4567 镜像。
 
+- A4568 收紧 A4567 统一三副本门禁对共享 TiKV Alarm 状态的覆盖。仓库原有
+  `TestStatusAlarmCrossEndpointVisibility`、`TestCorruptAlarmCrossEndpoint` 和
+  `TestCombinedAlarmCrossEndpointStateTransition` 分别证明跨副本 Status 可见性、CORRUPT
+  写阻断/异端解除，以及 NOSPACE+CORRUPT 联合状态转换，但此前不在统一 runner 中，日常三副本
+  通过仍会静默跳过。现在 runner 默认设置同一组三 endpoint 的 `KUBEBRAIN_MULTI_ENDPOINTS` 与
+  `KUBEBRAIN_MULTI_QUOTA_ENDPOINTS` 并强制执行三项；提供 metrics endpoint 时再叠加 A4567 指标
+  收敛，总计七项。
+
+  因新增场景会修改持久 Alarm，runner 同时像 lease 一样在测试前后对 Alarm 集合做规范化排序快照；
+  Go 测试失败不会提前跳过 postflight，只有测试前缀为空、lease 集合不变、Alarm 集合不变后才传播
+  原测试退出码，任何 cleanup 泄漏均 fail closed。fail-closed runner 测试连续 10 轮通过；在三 PD、
+  三 TiKV、三 A4566 KubeBrain 的 direct endpoint 上，七项统一门禁 7.247 秒全绿，三副本保持同
+  cluster/leader、唯一 member，收尾无 compat/direct-lease key、无新增 lease 或 Alarm。本轮仅增强
+  可重复验证编排与记录，不修改 runtime，不构建 A4568 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -126,23 +126,26 @@ assert_test_prefixes_empty() {
 }
 assert_test_prefixes_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
+baseline_alarms="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
 
-test_pattern='^(TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
+test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestStatusAlarmCrossEndpointVisibility|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
 if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
-  test_pattern='^(TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas)$'
+  test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestStatusAlarmCrossEndpointVisibility|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
 fi
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$service_endpoint" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     KUBEBRAIN_MULTI_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
+    KUBEBRAIN_MULTI_QUOTA_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     KUBEBRAIN_ALARM_METRIC_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     KUBEBRAIN_ALARM_METRICS_ENDPOINTS="$(IFS=,; echo "${kubebrain_metrics_endpoints[*]}")" \
     go test . \
       -run "$test_pattern" \
       -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
 
 assert_test_prefixes_empty postflight
 final_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
@@ -151,4 +154,15 @@ if [[ "$final_leases" != "$baseline_leases" ]]; then
   echo "before: $baseline_leases" >&2
   echo "after:  $final_leases" >&2
   exit 1
+fi
+final_alarms="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
+if [[ "$final_alarms" != "$baseline_alarms" ]]; then
+  echo "direct-replica consistency suite changed the live alarm set" >&2
+  echo "before: $baseline_alarms" >&2
+  echo "after:  $final_alarms" >&2
+  exit 1
+fi
+if [[ "$test_status" -ne 0 ]]; then
+  echo "direct-replica consistency test package failed with status $test_status" >&2
+  exit "$test_status"
 fi
