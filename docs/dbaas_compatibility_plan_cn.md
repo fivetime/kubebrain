@@ -49038,6 +49038,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单节点 Kind 的有序自愿终止；云 LB、跨节点 kube-proxy/EndpointSlice 延迟、非自愿 SIGKILL、节点故障
   与小时级 churn 仍保持开放，不能由本轮零失败外推。
 
+- A4572 将 A4571 的一次性滚动探针固化为永久、可移植的生产门禁，并修正过于激进的选主轮询。
+  `run-kubebrain-rollout-availability.sh` 在任何 mutation 前强制显式授权，读取 StatefulSet 并要求恰有三
+  个 desired/Ready 副本、单一稳定 revision、唯一预期 retry 参数及完整 localhost `/drain` preStop；
+  随后使用当前精确镜像创建独立 Kubernetes probe Pod，经 client Service ClusterIP 连续执行官方
+  `etcdctl endpoint health`，确认 start barrier 后才触发真实 StatefulSet restart。只有 rollout 成功、
+  probe Pod 以零失败退出、summary 数量精确、revision 确实变化且 postflight 镜像/drain/retry 契约均未
+  漂移才通过；trap 始终删除探针 Pod。单测覆盖未授权时零 kubectl 调用、缺 drain 时 mutation 前拒绝，
+  以及成功路径必须绑定 probe、rollout、Succeeded 和 revision 变化。
+
+  新门禁首次在 A4571 主集群以 100ms retry、750 次/100ms 间隔和 1 秒 command timeout 执行，真实
+  fail closed：仅 725/750 成功。25 次失败集中在滚动冷 cache 压力期，既有 Range deadline，也有 Alarm
+  list deadline；三个 KubeBrain 日志同时显示 election、普通健康键和 Alarm key 的 TiKV region
+  `loadRegion ... DeadlineExceeded`，一分钟后仍有续租失败。根因是每个 follower 按 100ms 轮询共享
+  TiKV election record/TSO，缩短接管的同时形成持续存储读放大；A4571 较短的 700 次手工运行虽为绿，
+  不能覆盖该稍后出现的稳态尖峰。
+
+  生产 plaintext/TLS 清单和实例发布门禁现统一改为 `--leader-retry-period=500ms`。同一 A4571 binary、
+  同一三 PD/三 TiKV/三 KubeBrain 主集群稳定升级后，未经修改的永久 runner 再次执行 750 次探针，
+  `PROBE_SUMMARY ok=750 fail=0 total=750`，并证明 StatefulSet revision
+  `kubebrain-55696b6966 -> kubebrain-7b98b48fc6`。本轮只新增门禁并调整生产参数，不改变 runtime，故不
+  构建 A4572 镜像；500ms 在本拓扑证明负载/接管平衡，不替代云规模、跨 AZ 和长时间 churn 调参矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

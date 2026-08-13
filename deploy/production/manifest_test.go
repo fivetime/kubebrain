@@ -217,7 +217,7 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--count-index-max-keys=5000000",
 		"--enable-storage-metrics=true",
 		"--quota-backend-bytes=429496729600",
-		"--leader-retry-period=100ms",
+		"--leader-retry-period=500ms",
 		"--max-txn-ops=128",
 		"--max-request-bytes=1572864",
 		"--max-concurrent-streams=4294967295",

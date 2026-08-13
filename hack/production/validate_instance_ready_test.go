@@ -20,7 +20,7 @@ func fakeKubeBrainArgs(advertisedURLs, initialCluster string) string {
 		"--keyspace=instance-a\n" +
 		"--pd-addrs=kb-pd.storage.svc:2379\n" +
 		"--quota-backend-bytes=429496729600\n" +
-		"--leader-retry-period=100ms\n" +
+		"--leader-retry-period=500ms\n" +
 		"--advertise-client-urls=" + advertisedURLs + "\n" +
 		"--initial-cluster=" + initialCluster + "\n" +
 		"--compatible-with-etcd=true\n" +

@@ -129,7 +129,7 @@ spec:
             - --quota-backend-bytes=429496729600
             # Keep deliberate lease release/acquisition inside normal client
             # retry windows during a rolling replacement.
-            - --leader-retry-period=100ms
+            - --leader-retry-period=500ms
             - --max-txn-ops=128
             - --max-request-bytes=1572864
             - --max-concurrent-streams=4294967295

@@ -130,7 +130,7 @@ spec:
             # ReleaseOnCancel clears the shared lease before this pod exits.
             # Poll quickly enough that a surviving replica can acquire that
             # deliberately released lease while client retries are still live.
-            - --leader-retry-period=100ms
+            - --leader-retry-period=500ms
             - --max-txn-ops=128
             - --max-request-bytes=1572864
             - --max-concurrent-streams=4294967295
