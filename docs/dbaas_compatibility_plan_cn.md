@@ -49329,6 +49329,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   41.964 秒通过。临时 reference、六个 reference 端口和三个 direct port-forward 均已清理。低字节普通 List/
   DeleteRange 仍可能扫描完整租户 keyspace，这是编码保序兼容的独立资源问题，未由 CountOnly receiver 关闭。
 
+- A4589 收窄 A4588 保留的低字节普通 List/DeleteRange 内存放大。旧 `decodedUserRange` 先让 scanner 把完整
+  object keyspace 的所有 live KV 构造成 slice，再在 backend 过滤用户边界；即使 `$prefix` 只匹配两个键，也会
+  暂存整个租户。提交 `6dcae5b5` 新增 `RangeFiltered` 与 partition-local `filteredResultReceiver`，在 worker 已解码
+  user key 后立即执行 start-inclusive/end-exclusive 过滤，只把实际匹配 KV 归并给 backend；List、RangeStream
+  和 DeleteRange 的预读都复用该 helper。结果仍在 backend 按用户 key 排序后应用 Limit/More：低字节触发条件
+  本身说明 raw 编码序可能不等于用户序，因此不能错误地按 raw scan 找到 `Limit+1` 后早停。当前内存从 O(租户
+  live KV) 降为 O(实际匹配 KV)；若请求本身匹配海量键，响应、RangeStream 排序或原子 DeleteRange 计划仍需
+  对应规模，磁盘扫描也仍是 O(租户 keyspace)。
+
+  checkpoint 确定性测试把 Count 与 `List Limit=1` 放在同一 `$a/$b` fixture，证明 List 返回 `$a`、`More=true`、
+  调用 `RangeFiltered` 且旧 materializing `Range` 零调用；receiver 单测固定边界、partition merge 与 retry reset，
+  聚焦连续 20 轮通过。最终设计下 `pkg/backend/...` 全树 44.380 秒、完整 `pkg/server/etcd` 169.778 秒、compat
+  模块全量均通过。follower 差分新增 `$prefix` 普通 Range，在两个 follower 上同时比较 unary 与 RangeStream 的
+  negative-latest key/value/count/header floor。首次 20 轮到第 16 轮时，整场 fixture、catch-up 和两 follower 全部
+  RPC 共用的 10 秒 context 在尾部低边界 Range 耗尽；提交 `0b4b2285` 将整个场景预算校准为仍有限的 30 秒，
+  没有放宽单个响应语义。
+
+  精确镜像 `kubebrain:a4589-6dcae5b5`（内嵌 SHA
+  `6dcae5b5427f6162c21446d4315b32da2cabed7e`，构建时间 `2026-08-13T23:35:25Z`，OCI manifest list
+  `sha256:4d41ae06eb49d5ca6e48edc382e0abfdfef5771e176bf6e28bbbbb1ef3f07cce`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启。对精确 upstream 的 follower low-boundary Range/CountOnly
+  聚焦差分连续 20/20 通过（146.936 秒，最慢单轮 12.25 秒），完整 direct-moveleader profile 43.576 秒通过；
+  临时 reference、六个 reference 端口和三个 direct port-forward 均已清理。该证据关闭低边界 read/delete
+  预读的全租户 KV 内存物化，但不关闭其全租户磁盘扫描延迟；要进一步优化需证明一种兼容 legacy/raw 编码碰撞的
+  更窄安全 scan interval 或引入迁移后的转义编码/index，不能以破坏 etcd 任意字节 key 顺序换性能。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
