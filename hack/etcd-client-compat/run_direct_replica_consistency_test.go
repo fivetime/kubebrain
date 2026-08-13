@@ -17,6 +17,20 @@ func TestDirectReplicaConsistencyRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas")
 	require.Contains(t, string(script), "TestLeaseReadAndRevokeAcrossDirectReplicas")
 	require.Contains(t, string(script), "TestWatchLocalControlResponsesAcrossDirectReplicas")
+	require.Contains(t, string(script), "TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas")
+	require.Contains(t, string(script), "direct KubeBrain replica metrics preflight failed")
+}
+
+func TestDirectReplicaConsistencyRunnerRejectsMetricsEndpointCountBeforeDependencies(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-direct-replica-consistency.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_DIRECT_ENDPOINTS=127.0.0.1:1,127.0.0.1:2,127.0.0.1:3",
+		"KUBEBRAIN_DIRECT_METRICS_ENDPOINTS=http://127.0.0.1:4,http://127.0.0.1:5",
+		"ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "KUBEBRAIN_DIRECT_METRICS_ENDPOINTS must contain exactly three non-empty")
+	require.NotContains(t, string(output), "missing required command")
 }
 
 func TestDirectReplicaConsistencyRunnerRejectsInvalidApprovalBeforeDependencies(t *testing.T) {

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBEBRAIN_DIRECT_RAW="${KUBEBRAIN_DIRECT_ENDPOINTS:-}"
+KUBEBRAIN_DIRECT_METRICS_RAW="${KUBEBRAIN_DIRECT_METRICS_ENDPOINTS:-}"
 ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY="${ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY:-false}"
 ETCDCTL_BIN="${ETCDCTL_BIN:-/root/etcd/bin/etcdctl}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-2m}"
@@ -48,6 +49,26 @@ if [[ "${kubebrain_endpoints[0]}" == "${kubebrain_endpoints[1]}" ||
   echo "KUBEBRAIN_DIRECT_ENDPOINTS must contain three distinct endpoints" >&2
   exit 2
 fi
+declare -a kubebrain_metrics_endpoints=()
+if [[ -n "$KUBEBRAIN_DIRECT_METRICS_RAW" ]]; then
+  IFS=',' read -r -a raw_metrics_endpoints <<<"$KUBEBRAIN_DIRECT_METRICS_RAW"
+  for raw_endpoint in "${raw_metrics_endpoints[@]}"; do
+    endpoint="$(trim "$raw_endpoint")"
+    if [[ -n "$endpoint" ]]; then
+      kubebrain_metrics_endpoints+=("$endpoint")
+    fi
+  done
+  if [[ "${#kubebrain_metrics_endpoints[@]}" -ne 3 ]]; then
+    echo "KUBEBRAIN_DIRECT_METRICS_ENDPOINTS must contain exactly three non-empty comma-separated endpoints" >&2
+    exit 2
+  fi
+  if [[ "${kubebrain_metrics_endpoints[0]}" == "${kubebrain_metrics_endpoints[1]}" ||
+    "${kubebrain_metrics_endpoints[0]}" == "${kubebrain_metrics_endpoints[2]}" ||
+    "${kubebrain_metrics_endpoints[1]}" == "${kubebrain_metrics_endpoints[2]}" ]]; then
+    echo "KUBEBRAIN_DIRECT_METRICS_ENDPOINTS must contain three distinct endpoints" >&2
+    exit 2
+  fi
+fi
 if [[ "$ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY" != true ]]; then
   echo "refusing mutating direct-replica consistency suite: it creates and revokes a lease and writes test keys" >&2
   echo "confirm the three direct endpoints belong to the intended cluster and set ALLOW_MUTATING_DIRECT_REPLICA_CONSISTENCY=true" >&2
@@ -56,6 +77,15 @@ fi
 
 need go
 need jq
+if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
+  need curl
+  for endpoint in "${kubebrain_metrics_endpoints[@]}"; do
+    if ! curl --fail --silent --show-error --max-time 5 -- "${endpoint%/}/metrics" >/dev/null; then
+      echo "direct KubeBrain replica metrics preflight failed: $endpoint" >&2
+      exit 1
+    fi
+  done
+fi
 if [[ ! -x "$ETCDCTL_BIN" ]]; then
   echo "etcdctl binary is not executable: $ETCDCTL_BIN" >&2
   exit 1
@@ -97,13 +127,20 @@ assert_test_prefixes_empty() {
 assert_test_prefixes_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
 
+test_pattern='^(TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
+if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
+  test_pattern='^(TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas)$'
+fi
+
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_ETCD_ENDPOINT="$service_endpoint" \
     KUBEBRAIN_DIRECT_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
     KUBEBRAIN_MULTI_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
+    KUBEBRAIN_ALARM_METRIC_ENDPOINTS="$(IFS=,; echo "${kubebrain_endpoints[*]}")" \
+    KUBEBRAIN_ALARM_METRICS_ENDPOINTS="$(IFS=,; echo "${kubebrain_metrics_endpoints[*]}")" \
     go test . \
-      -run '^(TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$' \
+      -run "$test_pattern" \
       -count=1 -timeout="$TEST_TIMEOUT" -v
 )
 

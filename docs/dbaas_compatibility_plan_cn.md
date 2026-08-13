@@ -48941,6 +48941,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零抖动、上界 exclusive 和亚 10ns 边界；cadence/filter/progress 定向回归以及 `pkg/server/etcd` 全量
   167.083 秒通过。该抖动只改变周期通知相位，不改变 on-demand RequestProgress、水位安全或事件后抑制语义。
 
+- A4567 将此前只能手工单跑的跨副本未知 Alarm 指标收敛纳入统一三副本门禁。
+  `run-direct-replica-consistency.sh` 现在接受可选的三个
+  `KUBEBRAIN_DIRECT_METRICS_ENDPOINTS`；提供后必须恰好三个非空、互异 endpoint，并逐端
+  `/metrics` 预检成功，否则在启动 Go 测试前 fail closed。runner 将同一组三个 direct gRPC
+  endpoint 传给 Alarm 测试，强制执行 activate 在全部副本指标上收敛、从另一副本 deactivate
+  后全部归零；未提供 metrics endpoint 时仍保持原三项门禁，不把该可选场景冒充为已执行。
+  fail-closed 单测覆盖 metrics 数量错误早于依赖检查，并固定 Alarm 测试与 metrics preflight
+  不得从 runner 脱落。
+
+  2026-08-13 在独立三 PD/三 TiKV 与三 KubeBrain 的 Kind 拓扑上验证 A4566 镜像
+  `ef73fb8e12121a6b8ab28df32ac7abb1149e7098`。演练前宿主 ext4 非 root 可用空间归零，TiKV
+  正确报告 `AlreadyFull`，leader lease 无法续约，三个 KubeBrain 均以 `RAFT NO LEADER`
+  fail closed；仅回收未被容器引用的 Docker/buildkit/containerd 构建缓存后，TiKV 状态自动按
+  `AlreadyFull→AlmostFull→Normal` 恢复，三个副本无需数据重建即全部 Ready。升级后三副本
+  member/cluster/leader topology 预检通过；增强后的统一 runner 3.101 秒全绿，覆盖 Alarm 指标、
+  HashKV snapshot、Lease direct read/revoke 与 Watch local control，postflight key prefix 与
+  lease 集合均不变。另跑 HashKV compaction 跨副本收敛 2.523 秒通过。本轮只增强测试编排和
+  记录，不改变 runtime，因此不构建 A4567 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
