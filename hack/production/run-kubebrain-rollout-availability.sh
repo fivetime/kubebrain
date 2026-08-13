@@ -94,26 +94,14 @@ cleanup() {
 trap cleanup EXIT
 
 endpoint="http://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
-probe_script="set -eu
-echo PROBE_STARTED
-ok=0
-fail=0
-i=1
-while [ \"\$i\" -le ${PROBE_ITERATIONS} ]; do
-  if etcdctl --command-timeout=${PROBE_COMMAND_TIMEOUT} --dial-timeout=${PROBE_DIAL_TIMEOUT} --endpoints=${endpoint} endpoint health >/tmp/health.out 2>&1; then
-    ok=\$((ok + 1))
-  else
-    fail=\$((fail + 1))
-    printf 'PROBE_FAIL iteration=%s ' \"\$i\"
-    cat /tmp/health.out
-  fi
-  i=\$((i + 1))
-  sleep ${PROBE_INTERVAL}
-done
-echo PROBE_SUMMARY ok=\$ok fail=\$fail total=\$((ok + fail))
-test \"\$fail\" -eq 0"
-
-kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- /bin/sh -c "$probe_script" >/dev/null
+kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- \
+  /usr/local/bin/kubebrain-rollout-availability-probe \
+  --endpoint="$endpoint" \
+  --prefix="/kubebrain-rollout-availability/${PROBE_POD}/" \
+  --iterations="$PROBE_ITERATIONS" \
+  --interval="${PROBE_INTERVAL}s" \
+  --command-timeout="$PROBE_COMMAND_TIMEOUT" \
+  --dial-timeout="$PROBE_DIAL_TIMEOUT" >/dev/null
 kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null
 
 started=false
@@ -139,7 +127,7 @@ fi
 probe_log="$(kctl logs "$PROBE_POD")"
 printf '%s\n' "$probe_log"
 summary="$(grep '^PROBE_SUMMARY ' <<<"$probe_log" || true)"
-if [[ "$summary" != "PROBE_SUMMARY ok=${PROBE_ITERATIONS} fail=0 total=${PROBE_ITERATIONS}" ]]; then
+if [[ "$summary" != "PROBE_SUMMARY ok=${PROBE_ITERATIONS} fail=0 total=${PROBE_ITERATIONS} watch=${PROBE_ITERATIONS} lease=alive" ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi
