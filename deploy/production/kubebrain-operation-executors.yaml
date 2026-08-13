@@ -363,6 +363,9 @@ spec:
             - {name: RECEIPT_VERIFY, value: /usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify}
             - {name: BR_BINARY, value: /usr/local/bin/br}
             - {name: TLS_DIR, value: /var/run/secrets/kubebrain-native-pitr-tls}
+            - {name: KUBE_CONTEXT, value: in-cluster}
+            - {name: KUBECTL, value: /usr/local/bin/kubectl}
+            - {name: CONTROL, value: /usr/local/bin/kubebrain-native-pitr-target-provision-control}
             - {name: ENCRYPTION_DIR, value: /var/run/secrets/kubebrain-native-pitr-encryption}
             - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
           envFrom: [{secretRef: {name: kubebrain-native-pitr-full-restore-executor-env}}]

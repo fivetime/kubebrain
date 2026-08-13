@@ -4711,4 +4711,13 @@ keyspace snapshot scan。Operation 的成功 receipt 是 qualification receipt�
 不得进入 replacement handoff。A4559 起 handoff v2、full-restore requester、runner、BR 前执行器和 durable receipt verifier
 全部强制读取 provisioning + qualification + writer evidence 及其 exact SHA；缺少任一项、旧 handoff v1、摘要/PD endpoint/
 cluster identity 漂移都必须在 BR 前失败。qualification 到 restore 的时间间隔仍须由平台保持 writer 缩容；执行器最终还会
-验证 admission fence 并重新执行 live whole-keyspace empty scan。真实 Kubernetes replacement 演练完成前生产重试继续关闭。
+通过只读 Kubernetes API 复核同一 StatefulSet UID/resourceVersion 和全零 Pod/replica 状态，再验证 admission fence 并重新执行
+live whole-keyspace empty scan。该检查不是 BR 全程 watch，平台必须持续保持缩容，fence 必须保持 held；真实 Kubernetes
+replacement 演练完成前生产重试继续关闭。
+
+启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
+不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
+
+```shell
+kubectl apply -f deploy/production/kubebrain-native-pitr-full-restore-writer-rbac.yaml
+```

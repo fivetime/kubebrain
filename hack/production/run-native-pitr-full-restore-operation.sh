@@ -7,6 +7,7 @@ OPERATIONCTL="${OPERATIONCTL:-/usr/local/bin/kubebrain-operationctl}"
 RESTORE_COMMAND="${RESTORE_COMMAND:-/usr/local/bin/kubebrain-native-pitr-full-restore}"
 RECEIPT_VERIFY="${RECEIPT_VERIFY:-/usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify}"
 BR_BINARY="${BR_BINARY:-/usr/local/bin/br}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
+KUBECTL="${KUBECTL:-/usr/local/bin/kubectl}"; CONTROL="${CONTROL:-/usr/local/bin/kubebrain-native-pitr-target-provision-control}"; KUBE_CONTEXT="${KUBE_CONTEXT:-in-cluster}"
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; TLS_DIR="${TLS_DIR:-/var/run/secrets/kubebrain-native-pitr-tls}"
 ENCRYPTION_DIR="${ENCRYPTION_DIR:-/var/run/secrets/kubebrain-native-pitr-encryption}"
 INPUT_ROOT="${INPUT_ROOT:-/var/lib/kubebrain-operation/inputs}"
@@ -95,6 +96,19 @@ if [[ "$attempt" == 2 ]]; then
 fi
 [[ ! -e "$receipt" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "unexpected pre-existing restore receipt; inspect before execution" >/dev/null; exit 1; }
 for file in ca.crt tls.crt tls.key; do [[ -f "$TLS_DIR/$file" ]] || die "native PITR TLS file $file is required"; done
+[[ -x "$KUBECTL" && -x "$CONTROL" ]] || die "kubectl and target provision control are required for live writer exclusion verification"
+context_args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context_args=(--context "$KUBE_CONTEXT")
+sts="$($KUBECTL "${context_args[@]}" -n kubebrain-system get statefulset kubebrain -o json)" || die "cannot inspect KubeBrain writer StatefulSet before restore"
+pods="$($KUBECTL "${context_args[@]}" -n kubebrain-system get pods -l app.kubernetes.io/name=kubebrain -o json)" || die "cannot inspect KubeBrain writer Pods before restore"
+$JQ -cn --argjson sts "$sts" --argjson pods "$pods" --argjson now "$(date +%s)" '
+  $sts|select(.apiVersion=="apps/v1" and .kind=="StatefulSet" and .metadata.namespace=="kubebrain-system" and .metadata.name=="kubebrain")|
+  {namespace:.metadata.namespace,statefulset:.metadata.name,statefulset_uid:.metadata.uid,resource_version:.metadata.resourceVersion,
+   desired_replicas:(.spec.replicas//0),current_replicas:(.status.currentReplicas//0),ready_replicas:(.status.readyReplicas//0),
+   observed_pod_count:($pods.items|length),observed_at_unix:$now,read_only_inspection:true}' >"$capture/writers-current.json" || die "cannot encode current KubeBrain writer state"
+"$CONTROL" --mode=verify-writer-exclusion --writer-exclusion="$target_writer_exclusion" --current-object="$capture/writers-current.json" || {
+  runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "KubeBrain writer exclusion changed after target qualification; BR was not started" >/dev/null
+  exit 1
+}
 if $JQ -e 'has("cipher_method")' "$params" >/dev/null; then
   [[ -f "$ENCRYPTION_DIR/key" && -f "$ENCRYPTION_DIR/key-id" && "$(<"$ENCRYPTION_DIR/key-id")" == "$key_id" ]] || die "native PITR restore encryption key version does not match operation parameters"
   encryption_args=(--encryption-key-id="$key_id" --encryption-key-file="$ENCRYPTION_DIR/key")

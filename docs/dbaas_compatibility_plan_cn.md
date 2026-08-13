@@ -48869,6 +48869,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   演练、qualification 到 restore 间外部 writer 控制面审计仍是发布前门禁；pre-BR live target-empty 与 admission fence 是该间隔
   内的最终数据面保护，不能替代平台对缩容状态的持续监控。
 
+- A4560 进一步关闭 qualification 发布后到 BR 启动前只依赖历史 writer evidence 的窗口。隔离 full-restore 镜像加入
+  pinned `kubectl`，executor 在 attempt 1、TLS/证据摘要校验之后且启动 restore CLI 之前，实时读取固定
+  `kubebrain-system/kubebrain` StatefulSet 与 `app.kubernetes.io/name=kubebrain` Pods，并交给同一
+  `verify-writer-exclusion` 校验：UID/resourceVersion 必须仍等于 qualification 绑定的 evidence，desired/current/ready
+  replicas 与 Pod count 必须仍为 0，观测时间只能前进。漂移会把 Operation 置为 Failed，并明确证明 BR 尚未启动。
+  新专用 Role/RoleBinding 仅允许 get 指定 StatefulSet 和 list Pods，不含 scale/update/patch/delete；full-restore Deployment
+  固定 in-cluster context 与绝对工具路径。该瞬时复核与随后 CLI 内 admission-fence 验证、live whole-keyspace empty scan
+  共同构成 pre-BR 门禁；它不是对整个 BR import 时段的 Kubernetes watch，平台仍必须保持 writer 缩容，admission fence
+  仍是 import 窗口的数据面写保护。fake executor 测试覆盖 live revision 漂移零 BR，真实 API watch/Pod 调度竞态仍需预生产演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

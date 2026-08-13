@@ -884,6 +884,11 @@ func TestNativePITRFullRestoreExecutorIsSingleWriterWithDurableWorkspace(t *test
 	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
 	require.Equal(t, "kubebrain-native-pitr-full-restore:dev", nestedString(t, container, "image"))
 	require.Contains(t, nestedStringSlice(t, container, "args")[0], "run-native-pitr-full-restore-operation.sh")
+	containerData, err := json.Marshal(container.Object)
+	require.NoError(t, err)
+	for _, expected := range []string{"KUBE_CONTEXT", "KUBECTL", "CONTROL", "kubebrain-native-pitr-target-provision-control"} {
+		require.Contains(t, string(containerData), expected)
+	}
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
 	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
 	volumes, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "volumes")
@@ -992,10 +997,30 @@ func TestNativePITRFullRestoreHasPinnedIsolatedRuntimeImage(t *testing.T) {
 		"AS native-pitr-full-restore", "COPY --from=br-v751 /br /usr/local/bin/br",
 		"COPY --from=build /src/bin/kubebrain-native-pitr-full-restore /usr/local/bin/kubebrain-native-pitr-full-restore",
 		"COPY --from=build /src/bin/kubebrain-native-pitr-full-restore-receipt-verify /usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify",
+		"COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl",
 		"COPY hack/production/run-native-pitr-full-restore-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-restore-operation.sh",
 	} {
 		require.Contains(t, text, expected)
 	}
+}
+
+func TestNativePITRFullRestoreWriterInspectorIsReadOnly(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-native-pitr-full-restore-writer-rbac.yaml")
+	require.Len(t, objects, 2)
+	role := objectByKindAndName(t, objects, "Role", "kubebrain-native-pitr-full-restore-writer-inspector")
+	data, err := json.Marshal(role.Object)
+	require.NoError(t, err)
+	text := string(data)
+	require.Contains(t, text, "statefulsets")
+	require.Contains(t, text, "pods")
+	require.Contains(t, text, "kubebrain")
+	require.NotContains(t, text, "update")
+	require.NotContains(t, text, "patch")
+	require.NotContains(t, text, "delete")
+	binding := objectByKindAndName(t, objects, "RoleBinding", "kubebrain-native-pitr-full-restore-writer-inspector")
+	bindingData, err := json.Marshal(binding.Object)
+	require.NoError(t, err)
+	require.Contains(t, string(bindingData), "kubebrain-native-pitr-full-restore-executor")
 }
 
 func TestNativePITRFullRestoreRequesterAndEncryptionAdmissionAreFailClosed(t *testing.T) {

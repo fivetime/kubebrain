@@ -134,6 +134,7 @@ COPY --from=build /src/bin/kubebrain-native-pitr-target-provision-control /usr/l
 COPY --from=build /src/bin/kubebrain-native-pitr-target-empty /usr/local/bin/kubebrain-native-pitr-target-empty
 COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker
 COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
+COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl
 COPY --from=br-v751 /br /usr/local/bin/br
 COPY hack/production/run-native-pitr-full-restore-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-restore-operation.sh
 

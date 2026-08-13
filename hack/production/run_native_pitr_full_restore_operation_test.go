@@ -40,10 +40,12 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	for _, name := range []string{"ca.crt", "tls.crt", "tls.key"} {
 		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, name), []byte("test"), 0o600))
 	}
+	kubectl, control := writeNativeRestoreWriterTools(t, dir, true)
 	base := []string{
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + operationctl, "RESTORE_COMMAND=" + restore, "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=" + br,
 		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "TLS_DIR=" + tlsDir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"KUBECTL=" + kubectl, "CONTROL=" + control,
 		"OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=1",
 	}
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", base)
@@ -186,6 +188,28 @@ func TestNativePITRFullRestoreRejectsQualificationDigestDrift(t *testing.T) {
 	require.NotContains(t, string(mustReadProductionFile(t, operationLog)), "--action succeed")
 }
 
+func TestNativePITRFullRestoreRejectsLiveWriterRevisionDriftBeforeBR(t *testing.T) {
+	dir := t.TempDir()
+	parameters, parametersSHA := writeNativeRestoreParameters(t, dir)
+	tlsDir := filepath.Join(dir, "tls")
+	require.NoError(t, os.Mkdir(tlsDir, 0o700))
+	for _, file := range []string{"ca.crt", "tls.crt", "tls.key"} {
+		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, file), []byte("test"), 0o600))
+	}
+	kubectl, control := writeNativeRestoreWriterTools(t, dir, false)
+	operationLog := filepath.Join(dir, "operation.log")
+	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + parametersSHA,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=/bin/false", "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "TLS_DIR=" + tlsDir, "OPERATION_LOG=" + operationLog, "ATTEMPT=1",
+		"KUBECTL=" + kubectl, "CONTROL=" + control,
+	})
+	require.Error(t, err, string(output))
+	operations := string(mustReadProductionFile(t, operationLog))
+	require.Contains(t, operations, "KubeBrain writer exclusion changed after target qualification; BR was not started")
+	require.NotContains(t, operations, "--action succeed")
+}
+
 func TestRunNativePITRFullRestoreOperationFailsClosedWithoutReceipt(t *testing.T) {
 	dir := t.TempDir()
 	parameters, digest := writeNativeRestoreParameters(t, dir)
@@ -235,10 +259,12 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	for _, file := range []string{"ca.crt", "tls.crt", "tls.key"} {
 		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, file), []byte("test"), 0o600))
 	}
+	kubectl, control := writeNativeRestoreWriterTools(t, dir, true)
 	base := append(os.Environ(),
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT="+parameters, "EXPECTED_DIGEST="+digest,
 		"OPERATIONCTL="+writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND="+restore, "RECEIPT_VERIFY="+writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
 		"WORK_DIR="+dir, "INPUT_ROOT="+dir, "TLS_DIR="+tlsDir, "OPERATION_LOG="+operationLog, "RESTORE_CALL_LOG="+callLog,
+		"KUBECTL="+kubectl, "CONTROL="+control,
 		"ATTEMPT=1", "HEARTBEAT_INTERVAL_SECONDS=30", "BLOCK_FINAL_HEARTBEAT=true", "DURABLE_RECEIPT="+receipt, "BLOCK_MARKER="+marker,
 	)
 	command := exec.Command("bash", "run-native-pitr-full-restore-operation.sh")
@@ -350,6 +376,25 @@ func writeNativeRestoreVerifier(t *testing.T, dir string, success bool) string {
 	}
 	require.NoError(t, os.WriteFile(path, []byte("#!/usr/bin/env sh\nexit "+exit+"\n"), 0o755))
 	return path
+}
+
+func writeNativeRestoreWriterTools(t *testing.T, dir string, success bool) (string, string) {
+	t.Helper()
+	kubectl := filepath.Join(dir, "kubectl")
+	require.NoError(t, os.WriteFile(kubectl, []byte(`#!/usr/bin/env bash
+if [[ "$*" == *"get statefulset kubebrain"* ]]; then
+  printf '%s\n' '{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"namespace":"kubebrain-system","name":"kubebrain","uid":"writer-uid","resourceVersion":"12"},"spec":{"replicas":0},"status":{"currentReplicas":0,"readyReplicas":0}}'
+else
+  printf '%s\n' '{"items":[]}'
+fi
+`), 0o755))
+	control := filepath.Join(dir, fmt.Sprintf("writer-control-%t", success))
+	exitCode := "1"
+	if success {
+		exitCode = "0"
+	}
+	require.NoError(t, os.WriteFile(control, []byte("#!/usr/bin/env sh\nexit "+exitCode+"\n"), 0o755))
+	return kubectl, control
 }
 
 func mustReadProductionFile(t *testing.T, path string) []byte {
