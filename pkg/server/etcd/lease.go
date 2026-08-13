@@ -2088,12 +2088,53 @@ func (m *leaseManager) cleanupOrphanLegacyAttachments(ctx context.Context, legac
 			continue // normal migration owns this row
 		}
 		if !indexed {
-			if !m.reconcileOrphanAttachment(ctx, key, legacyID) {
+			if !m.reconcileOrphanLegacyAttachment(ctx, key, legacyID) {
 				continue
 			}
 		}
 		_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(key)})
 	}
+}
+
+// reconcileOrphanLegacyAttachment extends orphan reconciliation to the brief
+// rolling-upgrade format where both the user value and attachment lived in user
+// MVCC. Values written before per-version lease metadata have Lease==0, so the
+// ordinary reconciliation cannot prove that the defunct lease still owns them.
+// The atomic legacy writer did, however, commit the value and attachment at the
+// same revision. That equality is a safe ownership witness: a later re-Put has a
+// different ModRevision and must not be deleted. Still older, non-atomic rows do
+// not have this witness and remain deliberately conservative.
+func (m *leaseManager) reconcileOrphanLegacyAttachment(ctx context.Context, key string, id int64) bool {
+	resp, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+	if err != nil || len(resp.Kvs) == 0 || resp.Kvs[0].Lease != 0 {
+		return m.reconcileOrphanAttachment(ctx, key, id)
+	}
+	legacy, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	if err != nil || len(legacy.Kvs) == 0 {
+		return false
+	}
+	legacyID, err := parseLeaseAttachmentRecord(key, legacy.Kvs[0].Value)
+	if err != nil || legacyID != id {
+		return false
+	}
+	if resp.Kvs[0].ModRevision != legacy.Kvs[0].ModRevision {
+		// Pre-atomic legacy data or a subsequently recreated user key. Retire the
+		// stale marker, but do not guess that the current value is lease-owned.
+		return true
+	}
+	m.leaseMu.Lock()
+	_, leaseLive := m.leases[id]
+	m.leaseMu.Unlock()
+	if leaseLive {
+		return false
+	}
+	dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
+	if err != nil || !dresp.GetSucceeded() {
+		return false
+	}
+	m.srv.metricCli.EmitCounter("lease.orphan_sweep.legacy_key_deleted", 1)
+	klog.InfoS("orphan lease sweep: deleted legacy key bound to a defunct lease", "key", key, "lease", id)
+	return true
 }
 
 // reconcileOrphanAttachment handles one attachment record whose lease is no longer

@@ -48333,6 +48333,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   legacy marker。回归覆盖无 lease/无 user key 的 orphan row，以及 old legacy owner + new internal owner，固定前者完全清理、后者
   保留新 owner 且只移除旧 source。loader 返回来源的 API 同步接入 snapshot 和全部测试调用点，不把来源泄漏进公开 snapshot schema。
 
+- A4515 修复 atomic legacy attachment 对应的 v1 业务 key 在 lease 消失后永久残留。对照 upstream
+  `/root/etcd/server/lease/lessor.go:Lessor.Revoke`：lease revoke/expiry 必须删除全部 attached item。A4514 的
+  orphan reconciliation 依赖当前 value 的 inline lease；但 `eedb5d79` 引入 per-version lease 之前写出的 v1 value
+  永远读回 `Lease=0`，旧实现因而只退休 user-MVCC attachment marker，留下本应随 lease 删除的业务 value。
+  历史实现审计确认 `eedb5d79` 到 attachment 转入 internal keyspace 的 `7168c0a4` 之间，leased value 与 attachment
+  由同一个 `TxnApply` 原子提交并共享 `ModRevision`。现增加专用 legacy orphan 对账：仅当 owner lease 已不存在、v1
+  value 与当前 legacy marker 的 ID 合法且 `ModRevision` 完全相同时，才按该 durable ownership witness 对 value 做
+  compare-delete；并发 re-Put 会使 compare 失败。更老的 `503c3970` 非原子 attachment 或后来重建的 value revision
+  不同，继续保守保留业务 key、只退休 stale marker，绝不猜测 ownership。新增
+  `lease.orphan_sweep.legacy_key_deleted` 计数区分该升级回收路径。回归同时固定同 revision 必须删除和不同 revision
+  必须保留，既有 ownerless/stale-owner A4514 用例、lease/orphan 专项与定向 race 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

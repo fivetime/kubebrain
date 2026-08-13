@@ -25,7 +25,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `count_index.rebuild.err` counter | leader 切换时索引快照重建失败次数；非零表示 CountOnly 暂时回退 TiKV 全扫。 |
 | `watch.collector.stalled` / `watch.collector.skipped_revision` counter | 事件收集器 stall/自愈跳过 —— 正常应为 0,非 0=有 writer 死在 deal↔notify 之间。 |
 | `revision.generator.aborted` counter | 已分配但没有用户事件提交的 revision 批次数；每个失败事务只计 1，进程启动即以 0 注册，series 缺失应视为抓取/版本错误。非零表示 CAS/提交/fence 失败产生了相对 etcd 连续提交序列的可观察跳号，应用按严格递增 revision 工作不受影响，但应结合 write failure 与 TiKV 指标评估是否需要连续编号重构。 |
-| `lease.orphan_sweep.{key_deleted,record_reclaimed,err}` counter | 孤儿 lease 清扫活动 —— 正常应极低。 |
+| `lease.orphan_sweep.{key_deleted,legacy_key_deleted,record_reclaimed,err}` counter | 孤儿 lease 清扫活动；`legacy_key_deleted` 表示依靠同 revision ownership witness 回收升级前 v1 leased value —— 正常均应极低。 |
 | `write.fence.reject` counter | 写栅栏拒绝(#39)—— 换主瞬间少量正常;持续高=leader 抖动。 |
 | `grpc_server_admission_inflight` gauge | 当前公开 client RPC 总并发，stream 在完整生命周期内持续占槽。 |
 | `grpc_server_admission_rejected` counter(labels: `method`,`kind`) | `--max-requests-inflight` 超限拒绝数；持续增长表示实例过载或限额过低。 |

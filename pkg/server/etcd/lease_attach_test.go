@@ -451,6 +451,62 @@ func TestReloadLeasesCleansOrphanLegacyAttachmentWithoutLease(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 }
 
+func TestReloadLeasesDeletesOrphanLegacyV1KeyWithAtomicAttachment(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID = int64(55_137)
+		key     = "/registry/events/orphan-legacy-v1-value"
+	)
+	ops := []backend.TxnWriteOp{
+		{Key: []byte(key), Value: []byte("legacy-v1-value")},
+		{Key: leaseAttachKey(key), Value: []byte(strconv.FormatInt(leaseID, 10))},
+	}
+	_, revision, _, err := server.backend.TxnApply(ctx, ops, nil, make([]bool, len(ops)))
+	require.NoError(t, err)
+	beforeValue, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+	require.NoError(t, err)
+	require.Equal(t, int64(revision), beforeValue.Kvs[0].ModRevision)
+	beforeAttachment, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Equal(t, int64(revision), beforeAttachment.Kvs[0].ModRevision,
+		"the legacy atomic writer's shared revision is the ownership witness")
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	value, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+	require.NoError(t, err)
+	require.Empty(t, value.Kvs, "an atomically attached legacy v1 value must expire with its missing lease")
+	legacy, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Empty(t, legacy.Kvs)
+}
+
+func TestReloadLeasesPreservesLegacyV1KeyWithoutAtomicRevisionWitness(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID = int64(55_138)
+		key     = "/registry/events/recreated-legacy-v1-value"
+	)
+	_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: []byte("current")})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key: leaseAttachKey(key), Value: []byte(strconv.FormatInt(leaseID, 10)),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	value, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+	require.NoError(t, err)
+	require.Len(t, value.Kvs, 1, "a non-atomic legacy marker cannot prove ownership of the current value")
+	require.Equal(t, []byte("current"), value.Kvs[0].Value)
+	legacy, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Empty(t, legacy.Kvs, "the stale marker itself is safe to retire")
+}
+
 func TestReloadLeasesCleansStaleLegacyAttachmentWithoutOverwritingInternalOwner(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
