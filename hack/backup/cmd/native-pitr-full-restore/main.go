@@ -34,7 +34,8 @@ const maxReceiptBytes = 4 << 20
 
 type options struct {
 	plan, full, artifacts, inventory, artifactRoot, admission string
-	sourceExclusive, target                                   string
+	sourceExclusive, target, targetProvisioning               string
+	targetQualification, writerExclusion                      string
 	pdAddrs, ca, cert, key, brBinary, approve                 string
 	encryptionKeyID, encryptionKeyFile                        string
 	timeout                                                   time.Duration
@@ -66,6 +67,9 @@ func main() {
 	flag.StringVar(&o.artifactRoot, "artifact-root", "", "absolute local exact-version full backup mirror")
 	flag.StringVar(&o.sourceExclusive, "source-range-exclusive", "", "exact source range-exclusive receipt bound by plan")
 	flag.StringVar(&o.target, "target-snapshot-empty", "", "exact target snapshot-empty receipt bound by plan")
+	flag.StringVar(&o.targetProvisioning, "target-provisioning", "", "exact target physical provisioning receipt")
+	flag.StringVar(&o.targetQualification, "target-qualification", "", "exact restore-safe target qualification receipt")
+	flag.StringVar(&o.writerExclusion, "target-writer-exclusion", "", "exact KubeBrain writer exclusion evidence bound by qualification")
 	flag.StringVar(&o.admission, "restore-admission", "", "exact PD-backed restore admission receipt")
 	flag.StringVar(&o.pdAddrs, "pd-addrs", "", "comma-separated target PD addresses")
 	flag.StringVar(&o.ca, "ca", "", "target CA file")
@@ -195,6 +199,33 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if !reflect.DeepEqual(addrs, target.PDAddrs) {
 		return errors.New("target PD addresses differ from plan-bound receipt")
 	}
+	provisioningBytes, err := readSmall(o.targetProvisioning)
+	if err != nil {
+		return err
+	}
+	provisioning, err := nativepitr.DecodeTargetProvisioningReceipt(bytes.NewReader(provisioningBytes))
+	if err != nil {
+		return err
+	}
+	writerBytes, err := readSmall(o.writerExclusion)
+	if err != nil {
+		return err
+	}
+	writers, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(writerBytes))
+	if err != nil {
+		return err
+	}
+	qualificationBytes, err := readSmall(o.targetQualification)
+	if err != nil {
+		return err
+	}
+	qualification, err := nativepitr.DecodeTargetQualificationReceipt(bytes.NewReader(qualificationBytes))
+	if err != nil {
+		return err
+	}
+	if err := nativepitr.VerifyTargetQualificationBinding(qualification, provisioning, target, writers, digest(provisioningBytes), digest(targetBytes), digest(writerBytes), addrs); err != nil {
+		return fmt.Errorf("target qualification: %w", err)
+	}
 	admissionBytes, err := readSmall(o.admission)
 	if err != nil {
 		return err
@@ -227,6 +258,20 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	}
 	if fresh.ClusterID != plan.Target.ClusterID || fresh.ClusterID != target.ClusterID || fresh.SnapshotTS < target.SnapshotTS || !reflect.DeepEqual(fresh.Stores, target.Stores) {
 		return errors.New("pre-write target identity differs from approved plan")
+	}
+	for _, evidence := range []struct {
+		path string
+		data []byte
+		name string
+	}{
+		{o.targetProvisioning, provisioningBytes, "target provisioning"},
+		{o.writerExclusion, writerBytes, "target writer exclusion"},
+		{o.targetQualification, qualificationBytes, "target qualification"},
+	} {
+		stable, err := readSmall(evidence.path)
+		if err != nil || !bytes.Equal(stable, evidence.data) {
+			return fmt.Errorf("%s evidence changed before restore", evidence.name)
+		}
 	}
 
 	resolved, err := exec.LookPath(o.brBinary)
@@ -302,7 +347,7 @@ func verifyMirror(full nativepitr.FullSnapshotReceipt, fullBytes []byte, artifac
 }
 
 func validateOptions(o options) error {
-	if o.plan == "" || o.full == "" || o.artifacts == "" || o.inventory == "" || o.artifactRoot == "" || o.sourceExclusive == "" || o.target == "" || o.admission == "" || o.pdAddrs == "" || o.brBinary == "" || o.timeout <= 0 {
+	if o.plan == "" || o.full == "" || o.artifacts == "" || o.inventory == "" || o.artifactRoot == "" || o.sourceExclusive == "" || o.target == "" || o.targetProvisioning == "" || o.targetQualification == "" || o.writerExclusion == "" || o.admission == "" || o.pdAddrs == "" || o.brBinary == "" || o.timeout <= 0 {
 		return errors.New("all receipt, artifact, target, BR, and positive timeout options are required")
 	}
 	if !filepath.IsAbs(o.artifactRoot) || filepath.Clean(o.artifactRoot) != o.artifactRoot {

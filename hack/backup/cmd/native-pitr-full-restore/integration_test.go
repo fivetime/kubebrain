@@ -2548,7 +2548,23 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	targetEvidence, err := nativepitr.InspectLiveTargetSnapshotEmpty(ctx, targetAddrs, "", "", "", time.Now().Unix())
 	require.NoError(t, err)
 	targetPath := filepath.Join(t.TempDir(), "target.json")
-	canonicalFile(t, targetPath, targetEvidence)
+	targetBytes := canonicalFile(t, targetPath, targetEvidence)
+	provisioning := nativepitr.TargetProvisioningReceipt{Format: nativepitr.TargetProvisioningReceiptFormat, Namespace: "tidb-cluster", TidbCluster: "kb", TidbClusterUID: "integration-target-uid", ClusterID: targetEvidence.ClusterID, PDReplicas: len(targetEvidence.PDAddrs), TiKVReplicas: len(targetEvidence.Stores), Ready: true, ObservedAtUnix: targetEvidence.CheckedAtUnix - 2, ReadOnlyInspection: true}
+	for i := range targetEvidence.PDAddrs {
+		provisioning.Volumes = append(provisioning.Volumes, nativepitr.TargetVolumeIdentity{Component: "pd", PVCName: fmt.Sprintf("pd-kb-pd-%d", i), PVCUID: fmt.Sprintf("integration-pd-pvc-%d", i), PVName: fmt.Sprintf("integration-pd-pv-%d", i), PVUID: fmt.Sprintf("integration-pd-pvuid-%d", i), CSIDriver: "integration.csi", VolumeHandle: fmt.Sprintf("integration-pd-volume-%d", i)})
+	}
+	for i := range targetEvidence.Stores {
+		provisioning.Volumes = append(provisioning.Volumes, nativepitr.TargetVolumeIdentity{Component: "tikv", PVCName: fmt.Sprintf("tikv-kb-tikv-%d", i), PVCUID: fmt.Sprintf("integration-tikv-pvc-%d", i), PVName: fmt.Sprintf("integration-tikv-pv-%d", i), PVUID: fmt.Sprintf("integration-tikv-pvuid-%d", i), CSIDriver: "integration.csi", VolumeHandle: fmt.Sprintf("integration-tikv-volume-%d", i)})
+	}
+	provisioningPath := filepath.Join(t.TempDir(), "provisioning.json")
+	provisioningBytes := canonicalFile(t, provisioningPath, provisioning)
+	writers := nativepitr.TargetWriterExclusionEvidence{Namespace: "kubebrain-system", StatefulSet: "kubebrain", StatefulSetUID: "integration-writer-uid", ResourceVersion: "1", ObservedAtUnix: targetEvidence.CheckedAtUnix - 1, ReadOnlyInspection: true}
+	writersPath := filepath.Join(t.TempDir(), "writers.json")
+	writerBytes := canonicalFile(t, writersPath, writers)
+	qualification, err := nativepitr.BuildTargetQualificationReceipt(provisioning, targetEvidence, writers, digest(provisioningBytes), digest(targetBytes), digest(writerBytes), targetEvidence.PDAddrs, targetEvidence.CheckedAtUnix)
+	require.NoError(t, err)
+	qualificationPath := filepath.Join(t.TempDir(), "qualification.json")
+	canonicalFile(t, qualificationPath, qualification)
 
 	var logPath string
 	if !withLogs {
@@ -2611,7 +2627,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, readErr)
 		require.NotEqual(t, encryptionKey, wrongKey, "wrong-key drill key bytes must differ")
 		var rejectedReceipt strings.Builder
-		wrongErr := execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: wrongKeyFile, approve: digest(planBytes), timeout: 3 * time.Minute}, commandRunner(osRunner{}), nativepitr.InspectLiveTargetSnapshotEmpty, &rejectedReceipt, os.Stderr, time.Now)
+		wrongErr := execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, targetProvisioning: provisioningPath, targetQualification: qualificationPath, writerExclusion: writersPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: wrongKeyFile, approve: digest(planBytes), timeout: 3 * time.Minute}, commandRunner(osRunner{}), nativepitr.InspectLiveTargetSnapshotEmpty, &rejectedReceipt, os.Stderr, time.Now)
 		require.Error(t, wrongErr, "BR restore with wrong key must fail")
 		require.ErrorContains(t, wrongErr, "reverify local full mirror")
 		require.Empty(t, rejectedReceipt.String(), "wrong-key restore must not issue success evidence")
@@ -2624,7 +2640,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.Equal(t, targetEvidence.ClusterID, afterWrongKey.ClusterID)
 		require.Equal(t, targetEvidence.Stores, afterWrongKey.Stores)
 	}
-	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: encryptionKeyFile, approve: digest(planBytes), timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
+	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, targetProvisioning: provisioningPath, targetQualification: qualificationPath, writerExclusion: writersPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: encryptionKeyFile, approve: digest(planBytes), timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
@@ -2636,6 +2652,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NotEmpty(t, verifier, "real restore drill requires the durable receipt verifier")
 	verifyArgs := []string{"--receipt=" + receiptPath, "--plan=" + planPath, "--full-artifacts=" + artifactPath,
 		"--source-range-exclusive=" + sourcePath, "--target-snapshot-empty=" + targetPath,
+		"--target-provisioning=" + provisioningPath, "--target-qualification=" + qualificationPath, "--target-writer-exclusion=" + writersPath,
 		"--restore-admission=" + admissionPath, "--approve-plan-sha256=" + digest(planBytes), "--encryption=" + encryption.Method}
 	if encryption.KeyID != "" {
 		verifyArgs = append(verifyArgs, "--encryption-key-id="+encryption.KeyID)

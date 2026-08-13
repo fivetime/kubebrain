@@ -16,6 +16,7 @@ import (
 
 type options struct {
 	receipt, plan, artifacts, sourceExclusive, target, admission, targetReplacement, targetProvisioning string
+	targetQualification, writerExclusion                                                                string
 	oldTarget, oldProvisioning, oldRetirement, oldAdmission                                             string
 	approve, encryption, keyID                                                                          string
 }
@@ -29,7 +30,9 @@ func main() {
 	flag.StringVar(&o.target, "target-snapshot-empty", "", "exact pre-write target-empty receipt")
 	flag.StringVar(&o.admission, "restore-admission", "", "exact restore admission receipt")
 	flag.StringVar(&o.targetReplacement, "target-replacement-handoff", "", "optional receipt-less failure to replacement-target lineage handoff")
-	flag.StringVar(&o.targetProvisioning, "target-provisioning", "", "replacement target physical provisioning receipt")
+	flag.StringVar(&o.targetProvisioning, "target-provisioning", "", "target physical provisioning receipt bound by qualification")
+	flag.StringVar(&o.targetQualification, "target-qualification", "", "restore-safe target qualification receipt")
+	flag.StringVar(&o.writerExclusion, "target-writer-exclusion", "", "KubeBrain writer exclusion evidence bound by qualification")
 	flag.StringVar(&o.oldTarget, "old-target-snapshot-empty", "", "old target-empty receipt")
 	flag.StringVar(&o.oldProvisioning, "old-target-provisioning", "", "old target physical provisioning receipt")
 	flag.StringVar(&o.oldRetirement, "old-target-retirement", "", "old target retirement receipt")
@@ -90,8 +93,8 @@ func verify(o options) error {
 	if err != nil {
 		return err
 	}
-	if o.targetProvisioning == "" {
-		return errors.New("target provisioning receipt is required")
+	if o.targetProvisioning == "" || o.targetQualification == "" || o.writerExclusion == "" {
+		return errors.New("target provisioning, qualification, and writer exclusion receipts are required")
 	}
 	provisioningBytes, err := readBounded(o.targetProvisioning)
 	if err != nil {
@@ -102,6 +105,25 @@ func verify(o options) error {
 		return err
 	}
 	if err := nativepitr.VerifyTargetProvisioningBinding(provisioning, target); err != nil {
+		return err
+	}
+	writerBytes, err := readBounded(o.writerExclusion)
+	if err != nil {
+		return err
+	}
+	writers, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(writerBytes))
+	if err != nil {
+		return err
+	}
+	qualificationBytes, err := readBounded(o.targetQualification)
+	if err != nil {
+		return err
+	}
+	qualification, err := nativepitr.DecodeTargetQualificationReceipt(bytes.NewReader(qualificationBytes))
+	if err != nil {
+		return err
+	}
+	if err := nativepitr.VerifyTargetQualificationBinding(qualification, provisioning, target, writers, digest(provisioningBytes), digest(targetBytes), digest(writerBytes), target.PDAddrs); err != nil {
 		return err
 	}
 	admissionBytes, err := readBounded(o.admission)
@@ -169,7 +191,7 @@ func verify(o options) error {
 	if err != nil {
 		return err
 	}
-	return nativepitr.VerifyTargetReplacementHandoffBinding(handoff, plan, oldTarget, target, oldProvisioning, provisioning, oldRetirement, oldAdmission, digest(oldTargetBytes), digest(oldProvisioningBytes), digest(provisioningBytes), digest(oldRetirementBytes), digest(oldAdmissionBytes), binding)
+	return nativepitr.VerifyTargetReplacementHandoffBinding(handoff, plan, oldTarget, target, oldProvisioning, provisioning, qualification, writers, oldRetirement, oldAdmission, digest(oldTargetBytes), digest(oldProvisioningBytes), digest(provisioningBytes), digest(qualificationBytes), digest(writerBytes), digest(oldRetirementBytes), digest(oldAdmissionBytes), binding)
 }
 
 func readBounded(path string) ([]byte, error) {

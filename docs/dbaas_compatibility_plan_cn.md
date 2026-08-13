@@ -48858,6 +48858,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   scale/revision 漂移均 fail closed。backup 全套、定向 production、manifest/vet 与镜像仍需在提交门禁完成；后续还须把
   qualification+writer evidence 变成 replacement handoff/full-restore verifier 的强制输入，当前不得把本项单独视为完整重试授权。
 
+- A4559 将 A4558 的资格证明接入不可绕过的恢复链路。`target-replacement-handoff` 升级为 v2，除新旧 plan、target、
+  provisioning 和 retirement 外，必须严格解码 replacement qualification 与 writer-exclusion evidence，复算两份 SHA，
+  并调用同一 binding verifier 证明 qualification 精确属于新 provisioning、新 target-empty 和批准的排序 PD endpoints；
+  handoff 自身记录 qualification/writer SHA，旧 v1 或缺字段 receipt 不再被接受。所有 `NativePITRFullRestore`（不只 replacement）
+  的 immutable parameters 现在强制携带 provisioning、qualification、writer evidence 三件套及各自 SHA；requester 和 runner
+  拒绝未知/缺失字段，attempt 1/2 均先复算。full-restore CLI 在调用 BR 前严格验证三件套，并在 live admission fence 与
+  target-empty 重扫后再次逐字节检查证据未变化；durable receipt 首次发布及 attempt 2 reconcile 使用的独立 verifier 也执行
+  相同绑定。因此不能通过省略 handoff 或只提交 Ready/provisioning receipt 绕过 qualification。真实 Kubernetes replacement
+  演练、qualification 到 restore 间外部 writer 控制面审计仍是发布前门禁；pre-BR live target-empty 与 admission fence 是该间隔
+  内的最终数据面保护，不能替代平台对缩容状态的持续监控。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

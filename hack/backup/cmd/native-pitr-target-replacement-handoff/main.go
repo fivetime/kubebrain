@@ -20,7 +20,7 @@ import (
 )
 
 type options struct {
-	failedAudit, failedParameters, oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, oldRetirement, oldAdmission, newAdmission, output string
+	failedAudit, failedParameters, oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, qualification, writerExclusion, oldRetirement, oldAdmission, newAdmission, output string
 }
 
 func main() {
@@ -33,6 +33,8 @@ func main() {
 	flag.StringVar(&o.newTarget, "new-target-snapshot-empty", "", "replacement target-empty receipt")
 	flag.StringVar(&o.oldProvisioning, "old-target-provisioning", "", "old target physical provisioning receipt")
 	flag.StringVar(&o.newProvisioning, "new-target-provisioning", "", "replacement target physical provisioning receipt")
+	flag.StringVar(&o.qualification, "new-target-qualification", "", "replacement target qualification receipt")
+	flag.StringVar(&o.writerExclusion, "target-writer-exclusion", "", "writer exclusion evidence bound by target qualification")
 	flag.StringVar(&o.oldRetirement, "old-target-retirement", "", "old target released/detached/unreachable receipt")
 	flag.StringVar(&o.oldAdmission, "old-restore-admission", "", "restore admission held by the failed operation")
 	flag.StringVar(&o.newAdmission, "new-restore-admission", "", "replacement target admission receipt")
@@ -45,7 +47,7 @@ func main() {
 }
 
 func run(o options, now int64) error {
-	for _, value := range []string{o.failedAudit, o.failedParameters, o.oldPlan, o.newPlan, o.oldTarget, o.newTarget, o.oldProvisioning, o.newProvisioning, o.oldRetirement, o.oldAdmission, o.newAdmission, o.output} {
+	for _, value := range []string{o.failedAudit, o.failedParameters, o.oldPlan, o.newPlan, o.oldTarget, o.newTarget, o.oldProvisioning, o.newProvisioning, o.qualification, o.writerExclusion, o.oldRetirement, o.oldAdmission, o.newAdmission, o.output} {
 		if value == "" {
 			return errors.New("all target replacement evidence paths and output are required")
 		}
@@ -75,6 +77,22 @@ func run(o options, now int64) error {
 	if err != nil {
 		return err
 	}
+	qualificationBytes, err := readBounded(o.qualification)
+	if err != nil {
+		return err
+	}
+	qualification, err := nativepitr.DecodeTargetQualificationReceipt(bytes.NewReader(qualificationBytes))
+	if err != nil {
+		return err
+	}
+	writerBytes, err := readBounded(o.writerExclusion)
+	if err != nil {
+		return err
+	}
+	writers, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(writerBytes))
+	if err != nil {
+		return err
+	}
 	oldRetirementBytes, err := readBounded(o.oldRetirement)
 	if err != nil {
 		return err
@@ -99,10 +117,11 @@ func run(o options, now int64) error {
 	if err != nil {
 		return err
 	}
-	handoff, err := nativepitr.BuildTargetReplacementHandoff(oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, oldRetirement, oldAdmission, admission, nativepitr.TargetReplacementInputs{
+	handoff, err := nativepitr.BuildTargetReplacementHandoff(oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, qualification, writers, oldRetirement, oldAdmission, admission, nativepitr.TargetReplacementInputs{
 		FailedOperation: nativepitr.FailedRestoreOperationEvidence{AuditArtifactSHA256: digest(auditBytes), OperationName: audit.Name, ParametersSHA256: audit.ParametersSHA256, Attempt: audit.Attempt, MaxAttempts: audit.MaxAttempts},
 		OldPlanSHA256:   digest(oldPlanBytes), NewPlanSHA256: digest(newPlanBytes), OldTargetReceiptSHA256: digest(oldTargetBytes), NewTargetReceiptSHA256: digest(newTargetBytes),
 		OldTargetProvisioningSHA256: digest(oldProvisioningBytes), NewTargetProvisioningSHA256: digest(newProvisioningBytes),
+		NewTargetQualificationSHA256: digest(qualificationBytes), WriterExclusionSHA256: digest(writerBytes),
 		OldTargetRetirementSHA256: digest(oldRetirementBytes),
 		OldRestoreAdmissionSHA256: digest(oldAdmissionBytes),
 		NewRestoreAdmissionSHA256: digest(admissionBytes), SourceExclusiveSHA256: newPlan.Source.RangeExclusiveReceiptSHA256, FullArtifactSHA256: newPlan.Full.ArtifactReceiptSHA256, CreatedAtUnix: now,

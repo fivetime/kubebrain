@@ -40,7 +40,7 @@ func TestWriteExclusiveDoesNotOverwrite(t *testing.T) {
 
 func nativeTargetReplacementForWriteTest() nativepitr.TargetReplacementHandoff {
 	digest := strings.Repeat("a", 64)
-	return nativepitr.TargetReplacementHandoff{Format: nativepitr.TargetReplacementHandoffFormat, FailedOperationAuditSHA256: digest, FailedOperationName: "native-pitr-restore-" + strings.Repeat("a", 20), FailedOperationParametersSHA: digest, OldPlanSHA256: digest, NewPlanSHA256: digest, OldTargetReceiptSHA256: digest, NewTargetReceiptSHA256: digest, OldTargetProvisioningSHA256: digest, NewTargetProvisioningSHA256: digest, OldTargetRetirementSHA256: digest, NewRestoreAdmissionSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: digest, OldTargetClusterID: 1, NewTargetClusterID: 2, ReplacementTargetEmpty: true, AdmissionFenceReacquired: true, CreatedAtUnix: 1}
+	return nativepitr.TargetReplacementHandoff{Format: nativepitr.TargetReplacementHandoffFormat, FailedOperationAuditSHA256: digest, FailedOperationName: "native-pitr-restore-" + strings.Repeat("a", 20), FailedOperationParametersSHA: digest, OldPlanSHA256: digest, NewPlanSHA256: digest, OldTargetReceiptSHA256: digest, NewTargetReceiptSHA256: digest, OldTargetProvisioningSHA256: digest, NewTargetProvisioningSHA256: digest, NewTargetQualificationSHA256: digest, WriterExclusionSHA256: digest, OldTargetRetirementSHA256: digest, NewRestoreAdmissionSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: digest, OldTargetClusterID: 1, NewTargetClusterID: 2, ReplacementTargetEmpty: true, AdmissionFenceReacquired: true, CreatedAtUnix: 1}
 }
 
 func mustStat(t *testing.T, path string) os.FileInfo {

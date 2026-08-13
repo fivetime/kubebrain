@@ -4708,5 +4708,7 @@ replacement provisioning 前必须由外部受控流程将 `kubebrain-system/kub
 权限，只会检查 StatefulSet desired/current/ready replicas 和匹配 Pod count 均为 0。新 TiKV/PD Ready 后，执行器用 mTLS
 逐个连接稳定 PD Pod DNS，确认 live cluster ID/Up stores，并在同一 writer-exclusion resourceVersion 下执行全 transactional
 keyspace snapshot scan。Operation 的成功 receipt 是 qualification receipt；仅有 TidbCluster Ready 或 provisioning receipt
-不得进入 replacement handoff。qualification 尚未成为 handoff/full-restore verifier 的强制参数之前，生产 replacement 重试
-继续保持关闭。
+不得进入 replacement handoff。A4559 起 handoff v2、full-restore requester、runner、BR 前执行器和 durable receipt verifier
+全部强制读取 provisioning + qualification + writer evidence 及其 exact SHA；缺少任一项、旧 handoff v1、摘要/PD endpoint/
+cluster identity 漂移都必须在 BR 前失败。qualification 到 restore 的时间间隔仍须由平台保持 writer 缩容；执行器最终还会
+验证 admission fence 并重新执行 live whole-keyspace empty scan。真实 Kubernetes replacement 演练完成前生产重试继续关闭。

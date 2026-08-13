@@ -24,7 +24,7 @@ func TestBuildBRArgsUsesPlanBoundAES256KeyFile(t *testing.T) {
 	require.NotContains(t, args, identity.KeyID, "the non-secret version ID is evidence, not a BR key argument")
 }
 func TestValidateOptionsFailsClosed(t *testing.T) {
-	good := options{plan: "p", full: "f", artifacts: "a", inventory: "i", artifactRoot: "/mirror", sourceExclusive: "s", target: "t", admission: "d", pdAddrs: "pd:2379", brBinary: "br", timeout: time.Second}
+	good := options{plan: "p", full: "f", artifacts: "a", inventory: "i", artifactRoot: "/mirror", sourceExclusive: "s", target: "t", targetProvisioning: "tp", targetQualification: "tq", writerExclusion: "we", admission: "d", pdAddrs: "pd:2379", brBinary: "br", timeout: time.Second}
 	require.NoError(t, validateOptions(good))
 	bad := good
 	bad.artifactRoot = "relative"
