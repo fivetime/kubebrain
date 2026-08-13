@@ -253,6 +253,7 @@ for port in 42379 43379; do
     sleep 1
   done
 done
+echo "native PITR topology converged: source/target each have ${topology_size} Up TiKV stores and every Region has ${topology_size} peers with zero pending peers" >&2
 
 docker create --name "$br_container" pingcap/br:v7.5.1 >/dev/null
 docker cp "$br_container:/br" "$drill_tmp/br"

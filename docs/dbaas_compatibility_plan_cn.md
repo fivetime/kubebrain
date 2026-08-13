@@ -48660,6 +48660,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   全绿。该证据关闭固定版本单副本错误 key 的 visible-write 风险，但不证明历史 MVCC/raw key 完全无变化，
   也不替代三副本故障注入、KMS promotion/撤权或 restore-side durable Operation。
 
+- A4543 将 A4541/A4542 的 AES 正向与错误 key 写前安全证据从单副本提升到对称三副本。2026-08-13
+  运行 `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL=true hack/backup/run-native-pitr-full-restore-integration.sh`；脚本在开始测试前分别要求 source/target
+  PD 观察到精确 3 个 Up TiKV store，并逐 Region 验证 3 peers、零 pending peer，现还输出显式 topology
+  convergence 标记以便 CI 日志审计。固定 BR wrong-key restore 在三副本 target 仍以
+  `wrong aes cipher`、`total-ranges=0` 失败，之后 whole transactional keyspace 新快照仍为空；正确 key 随后
+  恢复 530 KV/107.1 kB，并通过最终 etcd KV/lease 语义门禁。该项证明 fully replicated 无故障基线，不等于
+  加密恢复期间的 member/store/PD 故障注入、跨 AZ 网络分区、historical MVCC/raw absence、KMS 生命周期或
+  restore-side durable Operation。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

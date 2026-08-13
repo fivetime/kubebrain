@@ -2134,6 +2134,11 @@ hack/backup/run-native-pitr-full-restore-integration.sh
 committed key，最后才用正确 key 完成正向恢复。2026-08-13 单副本独立 source/target 实测通过；该结果不证明
 historical MVCC/raw key absence，也不能替代三副本、跨 AZ 或生产 KMS 撤权演练。
 
+三副本加密正负基线使用相同命令并增加 `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3`。脚本只有在 source/target
+各有精确 3 个 Up store、所有 Region 均为 3 peers 且零 pending peer 后才输出 `native PITR topology converged`
+并进入演练。2026-08-13 该组合已通过 wrong-key 零 restore range/失败后全目标空扫描、正确 key 恢复和最终
+KV/lease 语义门禁；它是无故障 fully replicated baseline，不是恢复期间故障或跨 AZ 分区证明。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。
