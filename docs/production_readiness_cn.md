@@ -2176,6 +2176,14 @@ target。固定 BR v7.5.1 没有 transactional restore checkpoint 参数，因�
 中途 import 自动 resume。A4549 已补 executor Deployment/镜像、requester admission 和进程级 worker-kill；
 真实 Kubernetes Pod/PVC 演练仍开放。
 
+receipt 发布前失败后禁止在原 target 原地再跑 BR。生命周期控制面必须销毁或隔离旧 target，并 provision 出不同
+PD cluster ID 的全新空 TiKV/PD 集群；因为生产 TidbCluster 使用 Retain PV 策略，这一步不能由无删除权限的 restore
+executor 假装完成。新 operation 前先生成 target replacement handoff：它必须绑定 exhausted receipt-less failed
+operation 的 canonical audit + exact parameters/old approved plan，并证明新 plan 除 target 外与旧 plan 的 source、
+witness、capture、full/log、restore TSO、encryption 完全相同，同时绑定新 target-empty 和新 admission。handoff path
+及 SHA 进入 immutable parameters，attempt 1/2 均复算且由 receipt verifier 再交叉验证。当前已完成协议、镜像和
+进程级正/负向测试；真实 Kubernetes provision/delete/PVC replacement 编排仍由平台生命周期控制面补齐。
+
 上述执行面现已有独立 pinned restore image 和 replicas=0、`Recreate` 的单 writer Deployment；workspace PVC
 同时承载固定在 `/var/lib/kubebrain-operation/inputs/` 的 evidence/artifact 和不可覆盖 receipt。专用 requester
 RBAC/CEL admission 固定 `NativePITRFullRestore`、platform requester、digest-bound immutable parameters 与

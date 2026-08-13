@@ -15,8 +15,8 @@ import (
 )
 
 type options struct {
-	receipt, plan, artifacts, sourceExclusive, target, admission string
-	approve, encryption, keyID                                   string
+	receipt, plan, artifacts, sourceExclusive, target, admission, targetReplacement string
+	approve, encryption, keyID                                                      string
 }
 
 func main() {
@@ -27,6 +27,7 @@ func main() {
 	flag.StringVar(&o.sourceExclusive, "source-range-exclusive", "", "exact source range-exclusive receipt")
 	flag.StringVar(&o.target, "target-snapshot-empty", "", "exact pre-write target-empty receipt")
 	flag.StringVar(&o.admission, "restore-admission", "", "exact restore admission receipt")
+	flag.StringVar(&o.targetReplacement, "target-replacement-handoff", "", "optional receipt-less failure to replacement-target lineage handoff")
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "operation-approved exact plan digest")
 	flag.StringVar(&o.encryption, "encryption", nativepitr.CipherMethodPlaintext, "expected artifact cipher method")
 	flag.StringVar(&o.keyID, "encryption-key-id", "", "expected immutable encryption key version")
@@ -95,10 +96,25 @@ func verify(o options) error {
 	if o.approve != planSHA {
 		return errors.New("approve-plan-sha256 does not match the exact plan")
 	}
-	return nativepitr.VerifyFullRestoreOperationBinding(receipt, plan, artifacts, source, target, admission, nativepitr.FullRestoreOperationBinding{
+	binding := nativepitr.FullRestoreOperationBinding{
 		PlanSHA256: planSHA, SourceExclusiveSHA256: digest(sourceBytes), FullArtifactSHA256: digest(artifactsBytes),
 		TargetSnapshotSHA256: digest(targetBytes), RestoreAdmissionSHA256: digest(admissionBytes), Encryption: o.encryption, EncryptionKeyID: o.keyID,
-	})
+	}
+	if err := nativepitr.VerifyFullRestoreOperationBinding(receipt, plan, artifacts, source, target, admission, binding); err != nil {
+		return err
+	}
+	if o.targetReplacement == "" {
+		return nil
+	}
+	handoffBytes, err := readBounded(o.targetReplacement)
+	if err != nil {
+		return err
+	}
+	handoff, err := nativepitr.DecodeTargetReplacementHandoff(bytes.NewReader(handoffBytes))
+	if err != nil {
+		return err
+	}
+	return nativepitr.VerifyTargetReplacementHandoffBinding(handoff, plan, binding)
 }
 
 func readBounded(path string) ([]byte, error) {

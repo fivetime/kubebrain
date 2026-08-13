@@ -9,6 +9,7 @@ RECEIPT_VERIFY="${RECEIPT_VERIFY:-/usr/local/bin/kubebrain-native-pitr-full-rest
 BR_BINARY="${BR_BINARY:-/usr/local/bin/br}"; PARAMETERS_INPUT="${PARAMETERS_INPUT:-}"
 WORK_DIR="${WORK_DIR:-/var/lib/kubebrain-operation}"; TLS_DIR="${TLS_DIR:-/var/run/secrets/kubebrain-native-pitr-tls}"
 ENCRYPTION_DIR="${ENCRYPTION_DIR:-/var/run/secrets/kubebrain-native-pitr-encryption}"
+INPUT_ROOT="${INPUT_ROOT:-/var/lib/kubebrain-operation/inputs}"
 JQ="${JQ:-jq}"
 die() { echo "$*" >&2; exit 2; }
 [[ "$WORKER_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ && "$LEASE_SECONDS" =~ ^[1-9][0-9]*$ ]] || die "worker identity or lease is invalid"
@@ -17,6 +18,7 @@ if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LE
   awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -x "$RECEIPT_VERIFY" && -x "$BR_BINARY" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
+[[ "$INPUT_ROOT" == /* && "$INPUT_ROOT" != *".."* ]] || die "INPUT_ROOT must be an absolute traversal-free directory"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 sha() { sha256sum "$1" | cut -d ' ' -f1; }
 
@@ -35,12 +37,15 @@ trap cleanup EXIT INT TERM
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
 [[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR restore parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
-$JQ -e '(keys==["admission","approve_plan_sha256","artifact_root","full_artifacts","full_snapshot","pd_addrs","plan","remote_inventory","source_range_exclusive","target_snapshot_empty"] or
-  keys==["admission","approve_plan_sha256","artifact_root","cipher_method","encryption_key_id","full_artifacts","full_snapshot","pd_addrs","plan","remote_inventory","source_range_exclusive","target_snapshot_empty"]) and
+$JQ -e --arg input_root "$INPUT_ROOT" '(has("admission") and has("approve_plan_sha256") and has("artifact_root") and has("full_artifacts") and has("full_snapshot") and has("pd_addrs") and has("plan") and has("remote_inventory") and has("source_range_exclusive") and has("target_snapshot_empty")) and
+  ((keys-["admission","approve_plan_sha256","artifact_root","cipher_method","encryption_key_id","full_artifacts","full_snapshot","pd_addrs","plan","remote_inventory","source_range_exclusive","target_replacement_handoff","target_replacement_handoff_sha256","target_snapshot_empty"]|length)==0) and
+  (has("cipher_method")==has("encryption_key_id")) and
+  (has("target_replacement_handoff")==has("target_replacement_handoff_sha256")) and
   (.approve_plan_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
   (.pd_addrs|type=="array" and length>0 and length<=32 and all(.[]; type=="string" and length>0 and (contains(",")|not))) and
-  ([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] | all(.[]; type=="string" and startswith("/var/lib/kubebrain-operation/inputs/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and
-  ((has("cipher_method")|not) or (.cipher_method=="aes256-ctr" and (.encryption_key_id|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$"))))' "$params" >/dev/null || die "native PITR restore parameter schema is invalid"
+  (([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] + (if has("target_replacement_handoff") then [.target_replacement_handoff] else [] end)) | all(.[]; type=="string" and startswith($input_root+"/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and
+  ((has("cipher_method")|not) or (.cipher_method=="aes256-ctr" and (.encryption_key_id|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$")))) and
+  ((has("target_replacement_handoff_sha256")|not) or (.target_replacement_handoff_sha256|type=="string" and test("^[a-f0-9]{64}$")))' "$params" >/dev/null || die "native PITR restore parameter schema is invalid"
 encryption_args=()
 if $JQ -e 'has("cipher_method")' "$params" >/dev/null; then
   key_id="$($JQ -r .encryption_key_id "$params")"
@@ -53,6 +58,11 @@ if $JQ -e 'has("cipher_method")' "$params" >/dev/null; then
   verify_args+=(--encryption=aes256-ctr --encryption-key-id="$key_id")
 else
   verify_args+=(--encryption=plaintext)
+fi
+if $JQ -e 'has("target_replacement_handoff")' "$params" >/dev/null; then
+  replacement_handoff="$($JQ -r .target_replacement_handoff "$params")"
+  [[ "$(sha "$replacement_handoff")" == "$($JQ -r .target_replacement_handoff_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "target replacement handoff digest mismatch" >/dev/null; exit 1; }
+  verify_args+=(--target-replacement-handoff="$replacement_handoff")
 fi
 if [[ "$attempt" == 2 ]]; then
   if [[ -s "$receipt" ]] && "$RECEIPT_VERIFY" --receipt="$receipt" "${verify_args[@]}"; then

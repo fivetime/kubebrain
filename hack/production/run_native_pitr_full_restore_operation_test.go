@@ -78,6 +78,53 @@ func TestRunNativePITRFullRestoreOperationReconcilesReceiptWithoutBR(t *testing.
 	require.NoFileExists(t, restoreLog)
 }
 
+func TestNativePITRReplacementRestorePassesHandoffToVerifier(t *testing.T) {
+	dir := t.TempDir()
+	parameters := filepath.Join(dir, "parameters.json")
+	handoff := filepath.Join(dir, "replacement.json")
+	handoffBytes := []byte("replacement\n")
+	require.NoError(t, os.WriteFile(handoff, handoffBytes, 0o600))
+	handoffSHA := fmt.Sprintf("%x", sha256.Sum256(handoffBytes))
+	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_replacement_handoff":"%[2]s","target_replacement_handoff_sha256":"%[3]s","target_snapshot_empty":"%[1]s/t"}`, dir, handoff, handoffSHA))
+	require.NoError(t, os.WriteFile(parameters, data, 0o600))
+	digest := fmt.Sprintf("%x", sha256.Sum256(data))
+	name := "native-pitr-restore-" + digest[:20]
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".native-pitr-full-restore.json"), []byte("durable\n"), 0o600))
+	verifyLog := filepath.Join(dir, "verify.log")
+	verifier := filepath.Join(dir, "verifier")
+	require.NoError(t, os.WriteFile(verifier, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >\"$VERIFY_LOG\"\n"), 0o755))
+	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + verifier, "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + filepath.Join(dir, "operation.log"), "VERIFY_LOG=" + verifyLog, "ATTEMPT=2",
+	})
+	require.NoError(t, err, string(output))
+	require.Contains(t, string(mustReadProductionFile(t, verifyLog)), "--target-replacement-handoff="+handoff)
+}
+
+func TestNativePITRReplacementRestoreRejectsHandoffDigestDrift(t *testing.T) {
+	dir := t.TempDir()
+	handoff := filepath.Join(dir, "replacement.json")
+	require.NoError(t, os.WriteFile(handoff, []byte("replacement\n"), 0o600))
+	approvedHandoffSHA := fmt.Sprintf("%x", sha256.Sum256([]byte("replacement\n")))
+	parameters := filepath.Join(dir, "parameters.json")
+	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_replacement_handoff":"%[2]s","target_replacement_handoff_sha256":"%[3]s","target_snapshot_empty":"%[1]s/t"}`, dir, handoff, approvedHandoffSHA))
+	require.NoError(t, os.WriteFile(parameters, data, 0o600))
+	parametersSHA := fmt.Sprintf("%x", sha256.Sum256(data))
+	name := "native-pitr-restore-" + parametersSHA[:20]
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".native-pitr-full-restore.json"), []byte("durable\n"), 0o600))
+	require.NoError(t, os.WriteFile(handoff, []byte("drifted\n"), 0o600))
+	operationLog := filepath.Join(dir, "operation.log")
+	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + parametersSHA,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=/bin/false", "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(mustReadProductionFile(t, operationLog)), "target replacement handoff digest mismatch")
+	require.NotContains(t, string(mustReadProductionFile(t, operationLog)), "--action succeed")
+}
+
 func TestRunNativePITRFullRestoreOperationFailsClosedWithoutReceipt(t *testing.T) {
 	dir := t.TempDir()
 	parameters, digest := writeNativeRestoreParameters(t, dir)
@@ -100,7 +147,7 @@ func TestRequestNativePITRFullRestoreIsApprovalBoundAndNonReentrant(t *testing.T
 	for _, expected := range []string{
 		"--type NativePITRFullRestore", "--requested-by platform:native-pitr-full-restore",
 		"--max-attempts 2", "native-pitr-restore-${parameters_sha:0:20}",
-		"/var/lib/kubebrain-operation/inputs/", ".immutable=true",
+		"/var/lib/kubebrain-operation/inputs/", ".immutable=true", "target_replacement_handoff_sha256",
 	} {
 		require.Contains(t, text, expected)
 	}

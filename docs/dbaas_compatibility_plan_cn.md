@@ -48767,6 +48767,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restore executor 加入后仍将 worker RoleBinding subject 数硬编码为 12 的陈旧断言（实际 13）。前述 cutover
   超时与本项 verifier 路径无关，不能据此宣称 production 全套通过。
 
+- A4552 为 receipt 发布前崩溃后的 replacement target 建立 fail-closed 血缘协议。仓库内 TidbCluster 使用
+  `pvReclaimPolicy: Retain`，restore executor 也没有删除 TidbCluster/PVC/PV 的权限；因此本项没有把删 Pod/PVC
+  冒充安全重建，旧集群销毁和新 PD/TiKV cluster provisioning 仍属于外部生命周期控制面。新增
+  `native-pitr-target-replacement-handoff`，只接受终态 Failed、attempt/maxAttempts=2/2、无 receipt、平台 requester、
+  已审批的 `NativePITRFullRestore` canonical audit artifact；同时复算失败 operation exact parameters SHA，并证明
+  其中 approved plan SHA 就是旧 plan。新旧 plan 必须保持 source、witness、capture、full/log artifacts、restore TSO、
+  encryption identity 全部不变，只允许 target 换成不同 cluster ID；旧/新 target-empty receipt 都须严格有效，新
+  admission 必须绑定新 plan/cluster/keyspace。handoff 0600 O_EXCL 发布，包含失败 audit、旧/新 plan、旧/新 target、
+  admission、source-exclusive/full-artifact SHA；发布使用同目录 fsync 后的 hard-link，不覆盖已有 receipt。新 restore immutable parameters 必须同时携带 handoff path 和 SHA；
+  runner 在 attempt 1/2 先复算，verifier 再绑定新 plan/target/admission/source/artifact，漂移即 Failed 且不进 BR。
+  backup 全套、定向 production、vet、接受/篡改负向测试均通过；restore 镜像实构建并确认包含 handoff CLI 与 pinned
+  BR v7.5.1 commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`。尚未完成真实 Kubernetes 中旧
+  TidbCluster/PVC 生命周期控制面到全新 cluster 的端到端 replacement 演练，也未实现自动 provisioner。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
