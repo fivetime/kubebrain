@@ -48310,6 +48310,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leader 重试，同时 canonical attachments 仍按当前权威 owner 生成，不会把旧 inline owner 重新绑定。回归在 canonical 写成功后
   注入 attachment cleanup leadership fence，证明首次保留两类 legacy rows，第二次 ReloadLeases 自动清理干净。
 
+- A4512 补齐 A4511 retained cleanup metadata 的完整性校验。loader 原有 fail-closed 规则会拒绝两个 legacy lease 在没有
+  可解析权威 attachment 时声称同一 key；但 canonical internal record 覆盖 `Keys` 后，A4511 虽把旧 keys 保存到仅内存
+  `LegacyKeys`，冲突检查仍只遍历 canonical `Keys`，使部分迁移状态静默绕过同一规则。现在校验优先使用 retained legacy keys，
+  canonical TTL/remaining-TTL 仍获胜，但 cleanup marker 不会隐藏冲突 owner。回归为两个冲突 legacy meta 分别预置 canonical
+  internal meta，固定 reload 仍返回 typed invalid lease metadata 和稳定 owner 排序。并发审计同时确认 cleanup 前
+  `leaseReady=false` 阻止本 leader 新写，跨 leader ABA 由 storage ownership fence 在提交期关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

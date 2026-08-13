@@ -1672,7 +1672,11 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	}
 	legacyOwners := make(map[string]int64)
 	for _, record := range records {
-		for _, key := range record.Keys {
+		legacyKeys := record.Keys
+		if len(record.LegacyKeys) != 0 {
+			legacyKeys = record.LegacyKeys
+		}
+		for _, key := range legacyKeys {
 			previous, duplicate := legacyOwners[key]
 			if !duplicate || previous == record.ID {
 				legacyOwners[key] = record.ID

@@ -1645,6 +1645,26 @@ func TestLoadLeaseRecordsRejectsAmbiguousLegacyKeyOwners(t *testing.T) {
 	require.EqualError(t, err, `legacy lease key "/lease/ambiguous-legacy-owner" has conflicting owners 73100 and 73101`)
 }
 
+func TestLoadLeaseRecordsRejectsAmbiguousRetainedLegacyOwners(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const key = "/lease/ambiguous-retained-legacy-owner"
+	for _, id := range []int64{73_102, 73_103} {
+		legacy, err := json.Marshal(leaseRecord{ID: id, TTL: 30, Keys: []string{key}})
+		require.NoError(t, err)
+		_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(id), Value: legacy})
+		require.NoError(t, err)
+		canonical, err := json.Marshal(leaseRecord{ID: id, TTL: 60})
+		require.NoError(t, err)
+		require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(id), canonical))
+	}
+
+	_, _, err := server.loadLeaseRecords(ctx)
+	require.ErrorIs(t, err, errInvalidLeaseMetadata)
+	require.EqualError(t, err, `legacy lease key "/lease/ambiguous-retained-legacy-owner" has conflicting owners 73102 and 73103`)
+}
+
 func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 	tests := []struct {
 		name  string
