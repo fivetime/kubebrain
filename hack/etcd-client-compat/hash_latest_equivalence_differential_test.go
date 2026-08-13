@@ -85,7 +85,16 @@ func readStableHashPair(t *testing.T, ctx context.Context, client etcdserverpb.M
 		require.NoError(t, err)
 		after, err := client.Hash(ctx, &etcdserverpb.HashRequest{})
 		require.NoError(t, err)
-		if before.GetHeader().GetRevision() != after.GetHeader().GetRevision() {
+		// Hash covers physical backend state, including lease and other internal
+		// metadata that deliberately does not advance the public MVCC revision.
+		// A shared KubeBrain differential target can therefore change Hash while
+		// the two headers retain the same revision (for example when a detached
+		// lease from an earlier test expires). Only classify a sample as stable
+		// when both the public revision and the physical checksum are unchanged.
+		// Persistent churn still exhausts this bounded retry loop and fails the
+		// structural assertions below.
+		if before.GetHeader().GetRevision() != after.GetHeader().GetRevision() ||
+			before.GetHash() != after.GetHash() {
 			continue
 		}
 		beforeHeader, latestHeader, afterHeader := before.GetHeader(), latest.GetHeader(), after.GetHeader()
