@@ -15,15 +15,17 @@ import (
 )
 
 type config struct {
-	endpoint       string
-	prefix         string
-	iterations     int
-	interval       time.Duration
-	commandTimeout time.Duration
-	dialTimeout    time.Duration
-	maxLatency     time.Duration
-	leaseTTL       int64
-	pdEndpoints    []string
+	endpoint        string
+	prefix          string
+	iterations      int
+	interval        time.Duration
+	commandTimeout  time.Duration
+	dialTimeout     time.Duration
+	maxLatency      time.Duration
+	leaseTTL        int64
+	pdEndpoints     []string
+	expectedStores  int
+	maxHeartbeatAge time.Duration
 }
 
 func main() {
@@ -36,6 +38,8 @@ func main() {
 	flag.DurationVar(&cfg.dialTimeout, "dial-timeout", time.Second, "client dial timeout")
 	flag.DurationVar(&cfg.maxLatency, "max-operation-latency", 5*time.Second, "maximum Put-to-Watch latency")
 	flag.Int64Var(&cfg.leaseTTL, "lease-ttl", 15, "lease TTL in seconds")
+	flag.IntVar(&cfg.expectedStores, "expected-up-stores", 3, "exact number of Up TiKV stores")
+	flag.DurationVar(&cfg.maxHeartbeatAge, "max-store-heartbeat-age", 20*time.Second, "maximum TiKV store heartbeat age")
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
@@ -53,10 +57,10 @@ func main() {
 }
 
 func (cfg config) validate() error {
-	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 {
+	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 || cfg.expectedStores <= 0 {
 		return fmt.Errorf("endpoint, prefix, and positive iterations are required")
 	}
-	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout {
+	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxHeartbeatAge <= 0 {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
 	if len(cfg.pdEndpoints) == 0 {
@@ -68,6 +72,56 @@ func (cfg config) validate() error {
 		}
 	}
 	return nil
+}
+
+type pdStoresResponse struct {
+	Count  int `json:"count"`
+	Stores []struct {
+		Store struct {
+			ID        uint64 `json:"id"`
+			Address   string `json:"address"`
+			StateName string `json:"state_name"`
+		} `json:"store"`
+		Status struct {
+			LastHeartbeat string `json:"last_heartbeat_ts"`
+		} `json:"status"`
+	} `json:"stores"`
+}
+
+func verifyPDStores(ctx context.Context, endpoints []string, timeout, maxAge time.Duration, expected int) error {
+	client := &http.Client{Timeout: timeout}
+	var lastErr error
+	for _, endpoint := range endpoints {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/pd/api/v1/stores", nil)
+		if err != nil {
+			return err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var stores pdStoresResponse
+		decodeErr := json.NewDecoder(response.Body).Decode(&stores)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK || decodeErr != nil {
+			lastErr = fmt.Errorf("endpoint %s returned status=%d decode=%v", endpoint, response.StatusCode, decodeErr)
+			continue
+		}
+		if stores.Count != expected || len(stores.Stores) != expected {
+			return fmt.Errorf("expected %d stores, PD reports count=%d entries=%d", expected, stores.Count, len(stores.Stores))
+		}
+		now := time.Now()
+		for _, store := range stores.Stores {
+			heartbeat, parseErr := time.Parse(time.RFC3339Nano, store.Status.LastHeartbeat)
+			age := now.Sub(heartbeat)
+			if store.Store.ID == 0 || store.Store.Address == "" || store.Store.StateName != "Up" || parseErr != nil || age < 0 || age > maxAge {
+				return fmt.Errorf("TiKV store unhealthy: id=%d address=%q state=%q heartbeat=%q age=%s parse=%v", store.Store.ID, store.Store.Address, store.Store.StateName, store.Status.LastHeartbeat, age, parseErr)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("read PD stores: %w", lastErr)
 }
 
 type pdLeader struct {
@@ -103,6 +157,9 @@ func readPDLeader(ctx context.Context, endpoints []string, timeout time.Duration
 func run(ctx context.Context, cfg config) (retErr error) {
 	initialPDLeader, err := readPDLeader(ctx, cfg.pdEndpoints, cfg.dialTimeout)
 	if err != nil {
+		return fmt.Errorf("backend preflight: %w", err)
+	}
+	if err := verifyPDStores(ctx, cfg.pdEndpoints, cfg.dialTimeout, cfg.maxHeartbeatAge, cfg.expectedStores); err != nil {
 		return fmt.Errorf("backend preflight: %w", err)
 	}
 	client, err := clientv3.New(clientv3.Config{
@@ -190,6 +247,9 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			}
 			if currentPDLeader != initialPDLeader {
 				return fmt.Errorf("iteration=%d backend instability: PD leader changed from %+v to %+v", i, initialPDLeader, currentPDLeader)
+			}
+			if pdErr := verifyPDStores(ctx, cfg.pdEndpoints, cfg.dialTimeout, cfg.maxHeartbeatAge, cfg.expectedStores); pdErr != nil {
+				return fmt.Errorf("iteration=%d backend instability: %w", i, pdErr)
 			}
 			lastPDCheck = time.Now()
 		}

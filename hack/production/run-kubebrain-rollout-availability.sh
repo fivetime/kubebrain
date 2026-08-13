@@ -117,6 +117,8 @@ kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- \
   --max-operation-latency="$PROBE_MAX_OPERATION_LATENCY" \
   --lease-ttl="$PROBE_LEASE_TTL" \
   --pd-endpoints="$pd_endpoints" \
+  --expected-up-stores=3 \
+  --max-store-heartbeat-age=20s \
   --dial-timeout="$PROBE_DIAL_TIMEOUT" >/dev/null
 kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null
 

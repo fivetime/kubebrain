@@ -49122,6 +49122,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 TiKV/PD 或同时固定 store/TSO latency 门禁，且仍须保持 5 秒 Put→Watch SLA，不能靠提高 TTL/timeout
   消除后端 stall。
 
+- A4577 补强 A4576 暴露的“PD identity 稳定不等于 TiKV data path 稳定”证据边界。rollout 探针除每
+  500ms 固定 PD leader 外，现在同时读取 `/pd/api/v1/stores`，要求恰好三个 store、每个 ID/address
+  非空、状态为 `Up`，且 RFC3339Nano heartbeat 不得未来漂移或陈旧超过 20 秒；任一条件失败统一标记
+  `backend instability`，不会误报成 KubeBrain handoff SLA。runner 强制传入 exact store count/heartbeat
+  age，测试固定参数不可脱落；PD endpoint fallback、健康 exact set 和 stale heartbeat 负向单测连续 10 轮
+  通过。真实三 PD/三 TiKV 上经两个只读 port-forward 执行 30 轮官方 clientv3 冒烟，Watch/TTL=5 lease/
+  attached key 全绿、最大延迟 86ms，测试 prefix 和 lease 已清理。该 gate 能识别 store down 或持续 heartbeat
+  stall，但小于 20 秒的瞬时 TiKV RPC/TSO latency 仍需独立时延信号；TTL=3 结论继续保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
