@@ -2472,6 +2472,7 @@ func TestLeaseKeepAliveRejectsStaleOrChangedEpochWhileWaitingForRenewal(t *testi
 					return epoch.Load(), fresh.Load()
 				},
 			}
+			server.leaseReadyEpoch.Store(1)
 			server.leaseMu.Lock()
 			before := server.leases[leaseID].deadline
 			server.leaseMu.Unlock()

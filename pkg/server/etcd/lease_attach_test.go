@@ -1514,6 +1514,31 @@ func TestReloadLeasesRejectsFollower(t *testing.T) {
 	requireLeaseAttachStatusError(t, err, codes.Unavailable, "etcdserver: leadership lost during lease reload")
 }
 
+func TestPublishedLeaseSnapshotRejectedAcrossLeadershipEpoch(t *testing.T) {
+	server, _, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+	}
+	server.leaseReadyEpoch.Store(1)
+	server.leaseReady.Store(true)
+	require.NoError(t, server.requireLeaseReady())
+	require.NoError(t, server.requireLeaseLeader("lease leases"))
+
+	// Model the irreducible check-to-publication race: ReloadLeases checked term
+	// 1, published that snapshot, and the election advanced immediately after the
+	// check. The boolean remains true, but no term-2 request may consume term 1's
+	// in-memory lease state.
+	epoch.Store(2)
+	requireLeaseAttachStatusError(t, server.requireLeaseReady(), codes.Unavailable,
+		"etcdserver: lease state is reloading")
+	requireLeaseAttachStatusError(t, server.requireLeaseLeader("lease leases"), codes.Unavailable,
+		"etcdserver: lease state is reloading")
+}
+
 func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) {
 	server, b, cleanup := newLeaseTestServer(t)
 	defer cleanup()
@@ -1529,6 +1554,7 @@ func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) 
 		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
 	}
 	server.peers = peers
+	server.leaseReadyEpoch.Store(1)
 	b.SetLeadershipFence(peers.EpochAndLeadingFresh)
 	_, err := server.LeaseGrant(backend.WithLeadershipEpoch(ctx, 1),
 		&etcdserverpb.LeaseGrantRequest{TTL: 300, ID: oldLease})
@@ -1595,6 +1621,7 @@ func TestUncertainLeaseReconcileRejectsInvalidDurableAttachments(t *testing.T) {
 				epochFn:    func() (uint64, bool) { return epoch.Load(), true },
 			}
 			server.peers = peers
+			server.leaseReadyEpoch.Store(1)
 			b.SetLeadershipFence(peers.EpochAndLeadingFresh)
 			_, err := server.LeaseGrant(backend.WithLeadershipEpoch(ctx, 1),
 				&etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})

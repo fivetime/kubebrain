@@ -48398,6 +48398,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   ready，successor epoch 重跑后才允许 seal/ready。由此 A4518 的 irreversible format fence 与 lease primary publication
   共享同一 leadership term，而不只依赖 storage write 自身碰巧失败。
 
+- A4521 关闭 A4520 终点复核与内存状态发布之间仍不可原子化的 check-to-use 窗口。upstream lessor 的
+  `Promote`/`Demote` 状态天然属于单次 primary 任期；KubeBrain 原先却只发布 `leaseReady` 布尔值：若 epoch 在终点复核
+  返回后立刻推进，旧 term 的 snapshot 仍可能被新 term 的 `LeaseTimeToLive`、`LeaseLeases` 或 lease-backed KV 写路径接受。
+  现新增 `leaseReadyEpoch`，constructor/Reload 发布时先写 snapshot epoch 再打开 ready，Prepare/Stop/失败清理则先关闭 ready
+  并清零 epoch；`requireLeaseReady` 与 `requireLeaseLeader` 每次都把当前 fresh leadership epoch 与已发布 snapshot epoch 做精确
+  比较。由此 election 与 ready publish 无需共享锁，任意夹缝换主也只能得到标准 `Unavailable: lease state is reloading`，不能消费
+  跨任期内存状态。orphan sweeper 同样捕获启动 epoch，tick 发现 freshness 丢失或 epoch 变化即退出，不再把旧 goroutine 重新
+  stamp 成 successor token；注册项按 channel identity 清理，避免退出的旧实例抹掉已替换的新实例，并允许新 term 立即接管。
+  新增确定性回归直接模拟“term 1 已发布、布尔值仍 true、当前已为 term 2”，固定 ready/leader 两条门禁均拒绝；另以 1ms
+  sweeper 验证旧实例自行退役且 term 2 可重新启动。`pkg/server/etcd` 全量、backend 全量、相关用例 race `-count=10` 与
+  `go vet ./pkg/server/etcd/...` 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

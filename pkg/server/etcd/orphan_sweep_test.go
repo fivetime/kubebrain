@@ -175,7 +175,8 @@ func TestOrphanLeaseSweeperCancelsInFlightScanWithLeadership(t *testing.T) {
 	server.leaseManager.orphanSweepInterval = time.Millisecond
 
 	leaderCtx, stopLeading := context.WithCancel(context.Background())
-	server.leaseManager.startOrphanSweeper(leaderCtx)
+	epoch, _ := server.peers.EpochAndLeadingFresh()
+	server.leaseManager.startOrphanSweeper(leaderCtx, epoch)
 	<-blocking.entered
 	stopLeading()
 	<-blocking.canceled
@@ -183,6 +184,32 @@ func TestOrphanLeaseSweeperCancelsInFlightScanWithLeadership(t *testing.T) {
 	// canceled. stopOrphanSweeper must therefore complete without releasing any
 	// separate test gate.
 	server.leaseManager.stopOrphanSweeper()
+}
+
+func TestOrphanLeaseSweeperStopsAcrossLeadershipEpoch(t *testing.T) {
+	server, _, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+	}
+	server.leaseManager.orphanSweepInterval = time.Millisecond
+	server.leaseManager.startOrphanSweeper(context.Background(), 1)
+
+	epoch.Store(2)
+	require.Eventually(t, func() bool {
+		server.leaseMu.Lock()
+		defer server.leaseMu.Unlock()
+		return server.orphanSweepStop == nil && server.orphanSweepEpoch == 0
+	}, time.Second, time.Millisecond, "the old-term sweeper must retire instead of adopting term 2")
+
+	server.leaseManager.startOrphanSweeper(context.Background(), 2)
+	server.leaseMu.Lock()
+	require.NotNil(t, server.orphanSweepStop)
+	require.Equal(t, uint64(2), server.orphanSweepEpoch)
+	server.leaseMu.Unlock()
 }
 
 func TestOrphanLeaseSweepFencesDetachAcrossLeadershipEpoch(t *testing.T) {

@@ -75,6 +75,7 @@ type leaseManager struct {
 	// goroutine is running; closed (and niled) when leadership is lost. Guarded by
 	// leaseMu.
 	orphanSweepStop     chan struct{}
+	orphanSweepEpoch    uint64
 	orphanSweepInterval time.Duration
 	// leasePromotionExtension protects recovered leases from losing lifetime
 	// during the leader-election window. Configured before Campaign starts.
@@ -87,7 +88,8 @@ type leaseManager struct {
 	leasedKeyCount int64
 	// leaseReady is false while a newly elected leader reloads the durable lease
 	// snapshot. The stale follower map cannot answer definitive lease lookups.
-	leaseReady atomic.Bool
+	leaseReady      atomic.Bool
+	leaseReadyEpoch atomic.Uint64
 
 	workerCtx    context.Context
 	workerCancel context.CancelFunc
@@ -110,7 +112,14 @@ func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 		workerCtx:           workerCtx,
 		workerCancel:        workerCancel,
 	}
-	// Standalone/test servers do not run election callbacks.
+	// Standalone/test servers do not run election callbacks. Bind their initial
+	// snapshot to the epoch visible while the manager is constructed, just as a
+	// leadership reload binds the replacement snapshot below.
+	var epoch uint64
+	if srv != nil {
+		epoch, _ = srv.peers.EpochAndLeadingFresh()
+	}
+	manager.leaseReadyEpoch.Store(epoch)
 	manager.leaseReady.Store(true)
 	return manager
 }

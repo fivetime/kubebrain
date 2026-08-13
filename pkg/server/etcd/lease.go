@@ -1523,15 +1523,20 @@ func leaseNotFound(id int64) error {
 }
 
 func (m *leaseManager) requireLeaseReady() error {
-	if m.leaseReady.Load() {
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if leadingFresh && m.leaseReady.Load() && m.leaseReadyEpoch.Load() == epoch {
 		return nil
 	}
 	return status.Error(codes.Unavailable, "etcdserver: lease state is reloading")
 }
 
 func (m *leaseManager) requireLeaseLeader(op string) error {
-	if _, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); leadingFresh {
-		return m.requireLeaseReady()
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if leadingFresh {
+		if m.leaseReady.Load() && m.leaseReadyEpoch.Load() == epoch {
+			return nil
+		}
+		return status.Error(codes.Unavailable, "etcdserver: lease state is reloading")
 	}
 	return m.leaseLeaderUnavailable(op)
 }
@@ -1587,7 +1592,8 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	}
 	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
 	// never (re)armed because their attachment outlived its lease meta record.
-	m.startOrphanSweeper(ctx)
+	m.startOrphanSweeper(ctx, epoch)
+	m.leaseReadyEpoch.Store(epoch)
 	m.leaseReady.Store(true)
 	return nil
 }
@@ -2040,10 +2046,12 @@ func (m *leaseManager) StopLeases() {
 // completely installed.
 func (m *leaseManager) PrepareLeaseReload() {
 	m.leaseReady.Store(false)
+	m.leaseReadyEpoch.Store(0)
 }
 
 func (m *leaseManager) stopLeases() {
 	m.leaseReady.Store(false)
+	m.leaseReadyEpoch.Store(0)
 	m.leaseCheckpointMu.Lock()
 	defer m.leaseCheckpointMu.Unlock()
 	m.clearLeaseStateHoldingCheckpointLock()
@@ -2055,6 +2063,7 @@ func (m *leaseManager) stopLeases() {
 // acquire the same mutex.
 func (m *leaseManager) clearLeaseStateHoldingCheckpointLock() {
 	m.leaseReady.Store(false)
+	m.leaseReadyEpoch.Store(0)
 	// Stop the sweeper first (it acquires leaseMu itself, so must run outside the
 	// lock below).
 	m.stopOrphanSweeper()
@@ -2082,25 +2091,41 @@ const orphanLeaseSweepInterval = 10 * time.Minute
 // startOrphanSweeper launches the leader-side orphaned-leased-key sweeper if it is
 // not already running. Called on leadership acquisition (after ReloadLeases has
 // rebuilt lease state).
-func (m *leaseManager) startOrphanSweeper(ctx context.Context) {
+func (m *leaseManager) startOrphanSweeper(ctx context.Context, epoch uint64) {
 	m.leaseMu.Lock()
 	if m.orphanSweepStop != nil {
-		m.leaseMu.Unlock()
-		return
+		if m.orphanSweepEpoch == epoch {
+			m.leaseMu.Unlock()
+			return
+		}
+		close(m.orphanSweepStop)
 	}
 	stop := make(chan struct{})
 	m.orphanSweepStop = stop
+	m.orphanSweepEpoch = epoch
 	interval := m.orphanSweepInterval
 	m.leaseMu.Unlock()
 	m.startWorker(func(workerCtx context.Context) {
+		defer m.finishOrphanSweeper(stop)
 		merged, cancel := context.WithCancel(ctx)
 		stopWorker := context.AfterFunc(workerCtx, cancel)
 		defer func() {
 			stopWorker()
 			cancel()
 		}()
-		m.runOrphanSweeper(merged, stop, interval)
+		m.runOrphanSweeper(merged, stop, interval, epoch)
 	})
+}
+
+// finishOrphanSweeper retires only the generation represented by stop. A new
+// leadership reload may already have replaced it with another channel.
+func (m *leaseManager) finishOrphanSweeper(stop chan struct{}) {
+	m.leaseMu.Lock()
+	if m.orphanSweepStop == stop {
+		m.orphanSweepStop = nil
+		m.orphanSweepEpoch = 0
+	}
+	m.leaseMu.Unlock()
 }
 
 // stopOrphanSweeper signals the sweeper goroutine to exit (idempotent).
@@ -2109,11 +2134,12 @@ func (m *leaseManager) stopOrphanSweeper() {
 	if m.orphanSweepStop != nil {
 		close(m.orphanSweepStop)
 		m.orphanSweepStop = nil
+		m.orphanSweepEpoch = 0
 	}
 	m.leaseMu.Unlock()
 }
 
-func (m *leaseManager) runOrphanSweeper(ctx context.Context, stop chan struct{}, interval time.Duration) {
+func (m *leaseManager) runOrphanSweeper(ctx context.Context, stop chan struct{}, interval time.Duration, expectedEpoch uint64) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -2127,8 +2153,8 @@ func (m *leaseManager) runOrphanSweeper(ctx context.Context, stop chan struct{},
 				return
 			}
 			epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
-			if !leadingFresh {
-				continue
+			if !leadingFresh || epoch != expectedEpoch {
+				return
 			}
 			m.sweepOrphanLeasedKeys(backend.WithLeadershipEpoch(ctx, epoch))
 		}
