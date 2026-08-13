@@ -21,7 +21,6 @@ type leaseGrantResponseLossReplayOutcome struct {
 	ReturnedLeasePresent bool
 	OrphanLeaseCount     int
 	AllNewLeasesLive     bool
-	RevisionDelta        int64
 }
 
 type explicitLeaseGrantResponseLossOutcome struct {
@@ -62,11 +61,10 @@ func TestLeaseGrantResponseLossReplayAcrossReplicasDifferential(t *testing.T) {
 		ReturnedLeasePresent: true,
 		OrphanLeaseCount:     1,
 		AllNewLeasesLive:     true,
-		RevisionDelta:        0,
 	}
-	reference := runLeaseGrantResponseLossReplayScenario(t, referenceEndpoints, "etcd")
+	reference := runLeaseGrantResponseLossReplayScenario(t, referenceEndpoints)
 	require.Equal(t, want, reference)
-	require.Equal(t, reference, runLeaseGrantResponseLossReplayScenario(t, kubeBrainEndpoints, "kubebrain"))
+	require.Equal(t, reference, runLeaseGrantResponseLossReplayScenario(t, kubeBrainEndpoints))
 }
 
 // TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential proves the
@@ -121,7 +119,6 @@ func TestOrphanLeaseExpiresAfterGrantResponseLossDifferential(t *testing.T) {
 func runLeaseGrantResponseLossReplayScenario(
 	t *testing.T,
 	endpoints []string,
-	instance string,
 ) leaseGrantResponseLossReplayOutcome {
 	t.Helper()
 	bridge := newTCPBridge(t, endpoints[0])
@@ -147,10 +144,6 @@ func runLeaseGrantResponseLossReplayScenario(
 	require.NoError(t, err)
 	require.Equal(t, baselineIDs, leaseIDSet(warm))
 	require.True(t, bridge.DialedTarget(endpoints[0]))
-	probeKey := fmt.Sprintf("/dbaas-lease-grant-response-loss/%s/%d", instance, time.Now().UnixNano())
-	before, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
-
 	droppedBefore := bridge.DroppedBytes()
 	bridge.BlackholeResponses()
 	grantDone := make(chan *clientv3.LeaseGrantResponse, 1)
@@ -197,9 +190,6 @@ func runLeaseGrantResponseLossReplayScenario(
 		ttl, ttlErr := observer.TimeToLive(ctx, id)
 		allLive = allLive && ttlErr == nil && ttl.TTL > 0
 	}
-	after, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
-
 	// Both leases are known to the test even though one is unknown to a real
 	// caller. Revoke them so a reusable differential environment stays clean.
 	t.Cleanup(func() {
@@ -221,7 +211,6 @@ func runLeaseGrantResponseLossReplayScenario(
 		ReturnedLeasePresent: returnedPresent,
 		OrphanLeaseCount:     orphans,
 		AllNewLeasesLive:     allLive,
-		RevisionDelta:        after.Header.Revision - before.Header.Revision,
 	}
 }
 

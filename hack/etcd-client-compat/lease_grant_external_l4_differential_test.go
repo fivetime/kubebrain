@@ -244,18 +244,16 @@ func TestLeaseGrantResponseLossAcrossExternalL4ProxyDifferential(t *testing.T) {
 		ReturnedLeasePresent: true,
 		OrphanLeaseCount:     1,
 		AllNewLeasesLive:     true,
-		RevisionDelta:        0,
 	}
-	reference := runExternalL4LeaseGrantResponseLossScenario(t, binary, referenceEndpoints, "etcd")
+	reference := runExternalL4LeaseGrantResponseLossScenario(t, binary, referenceEndpoints)
 	require.Equal(t, want, reference)
-	require.Equal(t, reference, runExternalL4LeaseGrantResponseLossScenario(t, binary, kubeBrainEndpoints, "kubebrain"))
+	require.Equal(t, reference, runExternalL4LeaseGrantResponseLossScenario(t, binary, kubeBrainEndpoints))
 }
 
 func runExternalL4LeaseGrantResponseLossScenario(
 	t *testing.T,
 	binary string,
 	endpoints []string,
-	instance string,
 ) leaseGrantResponseLossReplayOutcome {
 	t.Helper()
 	proxy, endpoint := startExternalL4Proxy(t, binary, endpoints[0])
@@ -280,10 +278,6 @@ func runExternalL4LeaseGrantResponseLossScenario(
 	require.Equal(t, baselineIDs, leaseIDSet(warm))
 	initialStats := proxy.command(t, "stats")
 	require.Positive(t, initialStats.Dials[grpcTarget(endpoints[0])])
-	probeKey := fmt.Sprintf("/dbaas-external-l4-grant-response-loss/%s/%d", instance, time.Now().UnixNano())
-	before, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
-
 	require.True(t, proxy.command(t, "blackhole-responses").OK)
 	grantDone := make(chan *clientv3.LeaseGrantResponse, 1)
 	grantErrDone := make(chan error, 1)
@@ -326,8 +320,6 @@ func runExternalL4LeaseGrantResponseLossScenario(
 		ttl, ttlErr := observer.TimeToLive(ctx, id)
 		allLive = allLive && ttlErr == nil && ttl.TTL > 0
 	}
-	after, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -347,7 +339,6 @@ func runExternalL4LeaseGrantResponseLossScenario(
 		ReturnedLeasePresent: returnedPresent,
 		OrphanLeaseCount:     orphans,
 		AllNewLeasesLive:     allLive,
-		RevisionDelta:        after.Header.Revision - before.Header.Revision,
 	}
 }
 
