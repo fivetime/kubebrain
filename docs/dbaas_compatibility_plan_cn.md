@@ -49273,22 +49273,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两个 follower 上逐项比较 raw unary 与 RangeStream，并与固定 upstream 三成员结果对齐；首轮完整 profile
   38.289 秒通过，但新增 `rangestream-follower` 聚焦 scope 连续 20 轮时第 5 轮稳定捕获 CountOnly RED：
   KubeBrain 返回正确 Count=2，却给出相对 fixture base 为 -1 的旧 header，而 upstream 始终为 +3。代码审计
-  证明风险不止 header：follower 请求虽已绑定受 GC safepoint 保护的 TiKV checkpoint，CountOnly 独立快路径
-  仍查询 leader-owned global-latest count index；checkpoint 后若有并发写，Count 本身也可能来自错误快照。
+  后确认 count index 本身按 context 解析出的 checkpoint revision 查询，因此 Count=2 确实来自正确历史快照；
+  偏差仅在 shim 的 index-hit 响应错误地用进程本地 current revision 填 header，导致 count/header 不属于同一快照。
 
-  提交 `967cd3ef` 使带 serializable checkpoint 的 CountOnly 绕过全局 count index，清除 Limit 后直接扫描同一
-  pinned TiKV snapshot；这既让 header 来自 checkpoint，也保持 etcd CountOnly 忽略 Limit、返回完整匹配数的
-  合同。确定性单测用伪 index 返回错误 Count/header，证明 `revision=0/-1/MinInt64` 三种 latest 表达都不会再
-  调用它，并连续 20 轮通过；完整 `pkg/server/etcd` 回归 176.014 秒通过。提交 `7d07735b` 将 CountOnly、
+  提交 `967cd3ef` 先以保守方式让带 serializable checkpoint 的 CountOnly 清除 Limit 后直接 List 同一 pinned
+  TiKV snapshot；这恢复了正确 header/count，并保持 etcd CountOnly 忽略 Limit、返回完整匹配数的合同，但会
+  为超大 prefix 物化所有 KV。确定性单测覆盖 `revision=0/-1/MinInt64` 三种 latest 表达并连续 20 轮通过；完整
+  `pkg/server/etcd` 回归 176.014 秒通过。提交 `7d07735b` 将 CountOnly、
   KeysOnly、Limit/More 形态和独立聚焦 scope 固化为永久门禁，runner fail-closed 契约连续 20 轮通过。
 
   精确镜像 `kubebrain:a4586-7d07735b`（内嵌 SHA
   `7d07735b8f7493f652b0d8ae9480be15d6691414`，构建时间 `2026-08-13T22:35:15Z`，OCI manifest list
   `sha256:56fa39d2612bfe44fe6e402137f4e37867b4b5bd4d8e492bc0dcac83077422f8`，运行用户
   `65532:65532`）滚动到三副本后，聚焦 differential 连续 20/20 通过（39.890 秒），完整 direct-moveleader
-  profile 39.581 秒通过，三个 Pod 均保持 Ready、零重启。该证据关闭当前 checkpoint 下 follower CountOnly
-  使用非同快照 count index 的语义缺口；超大 prefix 的 checkpoint 全扫描成本仍需单独压测和资源门禁，不能
-  用错误的 global-latest index 换取性能。
+  profile 39.581 秒通过，三个 Pod 均保持 Ready、零重启。该证据先关闭 checkpoint CountOnly 的公开语义缺口，
+  但 A4586 的 List workaround 仍留下不必要的超大 prefix 内存放大。
+
+- A4587 修正 A4586 对根因与性能路径的过度判断。提交 `5d6b2d02` 让带 serializable checkpoint 的 shim 直接
+  委托底层 `Count`：index hit 继续按 checkpoint revision O(1) 返回；index miss 则由 timestamp-aware scanner
+  使用 empty result receiver 计数，不物化 KV；两条路径都从底层响应取得 checkpoint header。RPC 层保持统一
+  调用 `Count`，不再把 CountOnly 改写成 List。测试同时证明 checkpoint context 完整透传、不会调用 List、
+  不会走 shim 本地 index 响应，并将原有 Prometheus 测试夹具换成可重入 recorder；聚焦单测连续 20 轮、
+  完整 `pkg/server/etcd` 回归 175.719 秒、compat 模块全量 6.366 秒均通过。
+
+  精确镜像 `kubebrain:a4587-5d6b2d02`（内嵌 SHA
+  `5d6b2d026600abc2d8969fc5289c837fc39ef382`，构建时间 `2026-08-13T22:52:29Z`，OCI manifest list
+  `sha256:61b99db8b7f06b9b2a336bdc3c72da9b99ae359fb12363d0c142bc6d13f39080`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启。对精确 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 `rangestream-follower` 聚焦差分连续
+  20/20 通过（41.502 秒），完整 direct-moveleader profile 39.268 秒通过；临时 reference、六个 reference
+  端口和三个 direct port-forward 均已清理。该证据关闭当前单节点 Kind、独立 TiKV/PD 下 follower checkpoint
+  CountOnly 的 count/header 一致性与 List 物化回退；超大 prefix 实际资源曲线仍需独立规模压测。
 
 ### P2：运维兼容和长期验证
 
