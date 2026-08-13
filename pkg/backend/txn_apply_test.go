@@ -605,6 +605,85 @@ func TestTxnApplyBeforeConcurrentCrossReplicaCorruptActivationRemainsCommitted(t
 	require.ErrorIs(t, err, ErrCorruptAlarmActive)
 }
 
+func TestOrphanIndexHealIsFencedByConcurrentCrossReplicaCorruptActivation(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store, err := ibadger.NewKvStorage(ibadger.Config{Dir: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	blocking := &blockBeforeCommitStorage{
+		KvStorage: store, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	writer := NewBackend(blocking, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	alarmer := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	writer.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	key := []byte(prefix + "/corrupt-orphan-heal")
+	_, _, err = writer.TxnApply(context.Background(), []TxnWriteOp{{Key: key, Value: []byte("live")}}, nil)
+	require.NoError(t, err)
+	revisionKey := writer.coder.EncodeRevisionKey(key)
+	require.NoError(t, store.Del(context.Background(), revisionKey))
+
+	blocking.trigger.Store(true)
+	type healResult struct {
+		healed bool
+		err    error
+	}
+	result := make(chan healResult, 1)
+	go func() {
+		healed, healErr := writer.healOrphanIndex(context.Background(), key)
+		result <- healResult{healed: healed, err: healErr}
+	}()
+	<-blocking.entered
+	require.NoError(t, alarmer.ArmCorrupt(context.Background(), 4502001))
+	close(blocking.release)
+	got := <-result
+	require.False(t, got.healed)
+	require.ErrorIs(t, got.err, ErrCorruptAlarmActive)
+	_, err = store.Get(context.Background(), revisionKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound,
+		"an orphan repair ordered after CORRUPT activation must not commit")
+}
+
+func TestOrphanIndexHealBeforeConcurrentCorruptActivationRemainsCommitted(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store, err := ibadger.NewKvStorage(ibadger.Config{Dir: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	blockingAlarm := &blockBeforeCommitStorage{
+		KvStorage: store, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	writer := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	alarmer := NewBackend(blockingAlarm, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	writer.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	key := []byte(prefix + "/corrupt-orphan-heal-first")
+	_, _, err = writer.TxnApply(context.Background(), []TxnWriteOp{{Key: key, Value: []byte("live")}}, nil)
+	require.NoError(t, err)
+	revisionKey := writer.coder.EncodeRevisionKey(key)
+	require.NoError(t, store.Del(context.Background(), revisionKey))
+
+	blockingAlarm.trigger.Store(true)
+	alarmResult := make(chan error, 1)
+	go func() { alarmResult <- alarmer.ArmCorrupt(context.Background(), 4502002) }()
+	<-blockingAlarm.entered
+	healed, err := writer.healOrphanIndex(context.Background(), key)
+	require.NoError(t, err)
+	require.True(t, healed)
+	close(blockingAlarm.release)
+	require.NoError(t, <-alarmResult)
+
+	raw, err := store.Get(context.Background(), revisionKey)
+	require.NoError(t, err)
+	require.NotEmpty(t, raw, "an orphan repair ordered before CORRUPT activation must remain committed")
+	members, err := writer.CorruptAlarms(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []uint64{4502002}, members)
+}
+
 func TestTxnApplyCorruptCommitGuardDistributesAcrossShards(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	start := b.corruptAlarmFenceShard.Load()

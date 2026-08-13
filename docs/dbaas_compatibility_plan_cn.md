@@ -48232,6 +48232,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持历史零起点，且不改变任何持久键、fence version 或 alarm 线性化协议。回归固定空身份兼容、同身份确定性、三个典型
   副本身份的不同起点和合法范围，并把 512 笔轮转断言改为相对身份起点计数，防止优化重新引入 shard `00` 启动热点。
 
+- A4502 把旧数据 orphan revision-index 自愈纳入 CORRUPT 提交全序。该修复是 revision-neutral，不产生用户 revision 或
+  watch event，但会重建决定后续 Update/Delete CAS 的一致性索引；旧实现直接提交 TiKV batch，只受 leadership/restoration
+  fence 保护。另一副本若在自愈读取之后先激活 CORRUPT，修复仍可在告警之后落盘，绕过 upstream corrupt applier 对 KV
+  路径的冻结边界。现在 `healOrphanIndex` 在 logical-write barrier 内执行 admission，读取稳定 generation/member 状态，选择
+  A4499 mutation shard，并把 shard no-op CAS 与 revision-index `PutIfNotExist` 放入同一 transaction；冲突后重读 alarm，active
+  返回 `ErrCorruptAlarmActive`，无 owner 的 generation 变化返回 `ErrCorruptAlarmChanged`，真正的并发自愈仍保持幂等成功；
+  Update/Delete 自愈调用方不再把这三类 alarm/metadata 错误吞成普通 compare miss，而是交给 gRPC 层映射 `ErrGRPCCorrupt`。
+  Badger 双 backend 回归确定性固定两个提交顺序：Alarm 先提交时索引保持缺失且修复报 CORRUPT；修复先提交时索引保留，
+  Alarm 随后正常生效。既有 orphan Update/Delete 自愈回归继续通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

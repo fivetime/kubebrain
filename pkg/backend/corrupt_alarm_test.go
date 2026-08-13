@@ -16,6 +16,7 @@ package backend
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -23,6 +24,14 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+func TestIsCorruptAlarmFenceError(t *testing.T) {
+	for _, err := range []error{ErrCorruptAlarmActive, ErrCorruptAlarmChanged, ErrInvalidAlarmMetadata} {
+		require.True(t, isCorruptAlarmFenceError(fmt.Errorf("wrapped: %w", err)))
+	}
+	require.False(t, isCorruptAlarmFenceError(errors.New("transient orphan repair failure")))
+	require.False(t, isCorruptAlarmFenceError(nil))
+}
 
 func TestCorruptAlarmFenceShardOffsetIsStableAndIdentityScoped(t *testing.T) {
 	require.Zero(t, corruptAlarmFenceShardOffset(""))

@@ -168,3 +168,8 @@ func (b *backend) ValidateCorruptAlarmMetadata(ctx context.Context) error {
 
 // Keep the storage sentinel check local so the fence helper remains readable.
 func errorsIsKeyNotFound(err error) bool { return errors.Is(err, storage.ErrKeyNotFound) }
+
+func isCorruptAlarmFenceError(err error) bool {
+	return errors.Is(err, ErrCorruptAlarmActive) || errors.Is(err, ErrCorruptAlarmChanged) ||
+		errors.Is(err, ErrInvalidAlarmMetadata)
+}

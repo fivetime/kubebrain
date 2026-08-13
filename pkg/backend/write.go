@@ -15,6 +15,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"time"
 
@@ -98,6 +99,11 @@ func (b *backend) encodeDeleteMutationAt(key []byte, expectedRevision, newRevisi
 // healOrphanIndex repairs a live object whose revision index is missing. It is
 // revision-neutral: no user revision or watch event is created.
 func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error) {
+	unlock := b.lockLogicalWrite(ctx)
+	defer unlock()
+	if err := b.fenceAdmit(ctx); err != nil {
+		return false, err
+	}
 	_, modRevision, err := b.get(ctx, key, 0)
 	if err != nil {
 		return false, nil
@@ -108,10 +114,32 @@ func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error)
 	} else if !errors.Is(getErr, storage.ErrKeyNotFound) {
 		return false, getErr
 	}
+	members, corruptGenerationRaw, corruptGenerationExists, err := b.readStableCorruptAlarmState(ctx)
+	if err != nil {
+		return false, err
+	}
+	if len(members) != 0 {
+		return false, ErrCorruptAlarmActive
+	}
+	corruptGuard, err := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
+	if err != nil {
+		return false, err
+	}
 	batch := b.kv.BeginBatchWrite()
 	batch.PutIfNotExist(revisionKey, uint64ToBytes(modRevision), 0)
+	stageCorruptAlarmCommitGuard(batch, b.ks.EncodeInternalKey(corruptGuard.key), corruptGuard)
 	if commitErr := batch.Commit(ctx); commitErr != nil {
 		if errors.Is(commitErr, storage.ErrCASFailed) {
+			currentMembers, currentGenerationRaw, currentGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
+			if alarmErr != nil {
+				return false, alarmErr
+			}
+			if len(currentMembers) != 0 {
+				return false, ErrCorruptAlarmActive
+			}
+			if currentGenerationExists != corruptGenerationExists || !bytes.Equal(currentGenerationRaw, corruptGenerationRaw) {
+				return false, ErrCorruptAlarmChanged
+			}
 			return true, nil
 		}
 		return false, commitErr

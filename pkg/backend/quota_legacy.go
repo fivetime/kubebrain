@@ -57,6 +57,8 @@ func (b *backend) transactionalUpdateOnce(ctx context.Context, request *proto.Up
 		if allowHeal {
 			if healed, healErr := b.healOrphanIndex(ctx, key); healErr == nil && healed {
 				return b.transactionalUpdateOnce(ctx, request, false)
+			} else if isCorruptAlarmFenceError(healErr) {
+				return nil, healErr
 			}
 		}
 		response := &proto.UpdateResponse{
@@ -94,6 +96,8 @@ func (b *backend) transactionalDeleteOnce(ctx context.Context, request *proto.De
 		if allowHeal {
 			if healed, healErr := b.healOrphanIndex(ctx, request.Key); healErr == nil && healed {
 				return b.transactionalDeleteOnce(ctx, request, false)
+			} else if isCorruptAlarmFenceError(healErr) {
+				return nil, healErr
 			}
 		}
 		response := &proto.DeleteResponse{
@@ -112,6 +116,8 @@ func (b *backend) transactionalDeleteOnce(ctx context.Context, request *proto.De
 	if allowHeal && (len(results) != 1 || !results[0].Deleted) {
 		if healed, healErr := b.healOrphanIndex(ctx, request.Key); healErr == nil && healed {
 			return b.transactionalDeleteOnce(ctx, request, false)
+		} else if isCorruptAlarmFenceError(healErr) {
+			return nil, healErr
 		}
 	}
 	b.waitCommittedRevision(ctx, revision)
