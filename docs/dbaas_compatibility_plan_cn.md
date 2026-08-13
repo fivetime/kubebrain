@@ -49225,6 +49225,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   独立 quota/auth/compaction 实例、三副本 direct endpoint 或外部 Envoy/L4/L7 的测试仍按各自显式前置条件
   SKIP，不能由本轮结论外推关闭。
 
+- A4583 补跑 A4582 因缺少 metrics/direct endpoint 输入而跳过、但当前三副本现场实际具备前置条件的 Alarm
+  门禁。unknown alarm 的 `etcd_debugging_server_alarms{server_id,alarm_type}` 在真实 upstream 与 KubeBrain
+  activate/get/deactivate 增量连续 10/10 一致；从任一副本写入并从另一副本解除后，三个独立 metrics endpoint
+  的 gauge 收敛连续 10/10 通过。`Status.Errors` 跨三个 direct endpoint 一致以及 NOSPACE 从第三副本解除后恢复
+  写入也连续 10/10 通过，证明状态与观测均来自共享 durable 数据，而非接收请求进程的本地孤岛。
+
+  审计同时发现正式 `run-direct-replica-consistency.sh` 已有 `TestQuotaAlarmCrossEndpointDisarm`，但 test pattern
+  没有执行它；手工绿色不能替代永久发布门禁。提交 `7dacec4c` 将该测试纳入有/无 metrics 两条 runner 路径，
+  脚本契约连续 20 轮通过。修复后的正式 runner 实际执行 unknown-alarm metrics、combined/corrupt/quota/status
+  alarm、HashKV snapshot、lease read/revoke 与三个 endpoint 的 Watch control 全部通过，并由 strict postflight
+  确认测试前缀为空、lease/alarm 集合与基线一致。该证据覆盖当前单节点 Kind 上三个独立 KubeBrain Pod；跨节点/AZ
+  网络分区、Prometheus scrape 延迟及真实 quota 容量耗尽仍是独立矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
