@@ -55,6 +55,7 @@ func TestHandlerAuthenticatesHighRiskExecutorTypes(t *testing.T) {
 	}{
 		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
 		{serviceAccount: "kubebrain-native-pitr-full-backup-executor", operationType: "NativePITRFullBackup"},
+		{serviceAccount: "kubebrain-native-pitr-full-restore-executor", operationType: "NativePITRFullRestore"},
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},
@@ -83,6 +84,7 @@ func TestHandlerReturnsHighRiskParametersThroughTypeBoundBrokerIdentity(t *testi
 	}{
 		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
 		{serviceAccount: "kubebrain-native-pitr-full-backup-executor", operationType: "NativePITRFullBackup"},
+		{serviceAccount: "kubebrain-native-pitr-full-restore-executor", operationType: "NativePITRFullRestore"},
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},
@@ -533,7 +535,7 @@ func claimedOperationWithType(
 	})
 	require.NoError(t, err)
 	if operationType == "TiKVTransactionRepair" || operationType == "TiKVTransactionRecovery" ||
-		operationType == "ColdPhysicalSnapshot" || operationType == "ColdPhysicalRestore" || operationType == "LegacySnapshotHistoryRemediation" {
+		operationType == "NativePITRFullRestore" || operationType == "ColdPhysicalSnapshot" || operationType == "ColdPhysicalRestore" || operationType == "LegacySnapshotHistoryRemediation" {
 		_, err = queue.Approve(
 			context.Background(), operationName, operationaudit.ApproverUsername, "change-test-1",
 		)

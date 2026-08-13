@@ -242,6 +242,7 @@ spec:
                 values:
                   - kubebrain-backup-executor
                   - kubebrain-native-pitr-full-backup-executor
+                  - kubebrain-native-pitr-full-restore-executor
                   - kubebrain-backup-deletion-executor
                   - kubebrain-cold-physical-snapshot-executor
                   - kubebrain-cold-physical-restore-executor

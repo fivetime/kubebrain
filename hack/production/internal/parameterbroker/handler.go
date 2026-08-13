@@ -27,6 +27,7 @@ const maxTokenBytes = 16 << 10
 var serviceAccountTypes = map[string]string{
 	"kubebrain-backup-executor":                      "Backup",
 	"kubebrain-native-pitr-full-backup-executor":     "NativePITRFullBackup",
+	"kubebrain-native-pitr-full-restore-executor":    "NativePITRFullRestore",
 	"kubebrain-backup-deletion-executor":             "BackupDeletion",
 	"kubebrain-cold-physical-snapshot-executor":      "ColdPhysicalSnapshot",
 	"kubebrain-cold-physical-restore-executor":       "ColdPhysicalRestore",

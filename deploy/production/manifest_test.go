@@ -524,6 +524,7 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.True(t, found)
 	require.Contains(t, operationTypes, "BackupDeletion")
 	require.Contains(t, operationTypes, "NativePITRFullBackup")
+	require.Contains(t, operationTypes, "NativePITRFullRestore")
 	require.Contains(t, operationTypes, "LegacySnapshotHistoryRemediation")
 	tenantType := nestedString(
 		t, version, "schema", "openAPIV3Schema", "properties", "spec",
@@ -1023,6 +1024,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 	require.ElementsMatch(t, []any{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-native-pitr-full-backup-executor",
+		"kubebrain-native-pitr-full-restore-executor",
 		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",

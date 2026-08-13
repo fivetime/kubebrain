@@ -17,6 +17,14 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: kubebrain-native-pitr-full-restore-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-native-pitr-full-restore-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
   name: kubebrain-backup-deletion-executor
   namespace: kubebrain-operations
   labels: {app.kubernetes.io/name: kubebrain-backup-deletion-executor, app.kubernetes.io/part-of: kubebrain}

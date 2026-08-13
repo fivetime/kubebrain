@@ -2168,6 +2168,13 @@ EXIT trap 删除链。2026-08-13 三副本 AES 实测于恢复后 12.538 秒完�
 iptables 规则均通过。该证据只覆盖同机 host-network 短时 TCP DROP，不代表跨节点/AZ 双向分区、长时间 soak、
 PD member replacement 或 worker crash/reconcile。
 
+native PITR full restore 的 durable Operation 起点是 `NativePITRFullRestore`。它必须带平台 immutable approval，
+parameter Secret 绑定 exact plan、artifact receipts/local mirror、source/target/admission receipts、目标 PD 与 plan
+SHA；生产 runner 先发布 0600 不可覆盖 receipt 再提交 operation 成功。`maxAttempts=2` 只允许第二 claim 在已有
+durable receipt 时收敛 status，禁止再次调用 BR；没有 receipt 时终态失败、保持 admission fence，并要求重建
+target。固定 BR v7.5.1 没有 transactional restore checkpoint 参数，因此不得把该 fail-closed 协议描述成
+中途 import 自动 resume。完整 executor Deployment/镜像、requester admission 和真实 worker-kill 演练仍开放。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。

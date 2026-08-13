@@ -48716,6 +48716,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   DROP 的短时可恢复分区，不等于跨节点/AZ 双向 partition、连接级 REJECT/reset、长时间 soak、PD member
   replacement、KMS 撤权或 durable restore worker crash/reconcile。
 
+- A4548 开始关闭 A4547 保留的 restore-side durable Operation 缺口，但不把固定 BR v7.5.1 没有提供的
+  transactional restore checkpoint/resume 伪造成可重入执行。新增高风险、必须平台审批的
+  `NativePITRFullRestore` operation type、专用 executor broker identity/RBAC/status admission、canonical immutable
+  parameter request CLI，以及 `run-native-pitr-full-restore-operation.sh`。runner 将完整 plan/full/artifact/inventory/
+  source-exclusive/target-empty/admission 输入与 approval digest 绑定到 operation parameter SHA，执行成功后先以
+  0600 hard-link 不可覆盖地发布 full-restore receipt，再提交 receipt SHA 和 Succeeded。Operation 固定
+  `maxAttempts=2`：若 worker 在 durable receipt 已发布、status 尚未提交的窄窗崩溃，第二 claim 只复算该 receipt
+  SHA 并收敛 Succeeded，明确不调用 BR；若首轮 lease 过期且没有 receipt，第二 claim 直接 Failed，要求保持
+  admission fence closed 并重建 target，绝不在可能部分 import 的目标上自动二次执行。单元/脚本测试覆盖首次
+  发布、receipt-only reconcile、无 receipt fail-closed、审批/类型绑定、broker 身份与 CRD schema。该项建立
+  durable 控制面与不重复写安全边界；尚未部署完整 restore executor Deployment/镜像/Secret admission，也尚未
+  用真实 Kubernetes worker kill 演练 receipt 前后两个 crash 窗口，更不等于自动重建目标后的恢复成功。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -101,6 +101,7 @@ spec:
                   enum:
                     - Backup
                     - NativePITRFullBackup
+                    - NativePITRFullRestore
                     - BackupDeletion
                     - ColdPhysicalSnapshot
                     - ColdPhysicalRestore

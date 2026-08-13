@@ -1846,7 +1846,7 @@ func TestQueueRequeueConsumesAttemptAndFiltersType(t *testing.T) {
 
 func TestQueueRequiresApprovalForHighRiskOperations(t *testing.T) {
 	for _, operationType := range []string{
-		"RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation",
+		"NativePITRFullRestore", "RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation",
 	} {
 		t.Run(operationType, func(t *testing.T) {
 			queue := newFakeQueue()
