@@ -210,6 +210,14 @@ func TestQueueRejectsMalformedClaimCandidatesBeforeLease(t *testing.T) {
 			want: "audit finalizer",
 		},
 		{
+			name: "injected extra finalizer",
+			mutate: func(t *testing.T, object *unstructured.Unstructured) {
+				t.Helper()
+				object.SetFinalizers([]string{operationaudit.Finalizer, "example.com/hold"})
+			},
+			want: "sole audit finalizer",
+		},
+		{
 			name: "invalid digest",
 			mutate: func(t *testing.T, object *unstructured.Unstructured) {
 				t.Helper()
@@ -1268,7 +1276,24 @@ func TestSubmitRejectsCommittedObjectWithoutAuditFinalizer(t *testing.T) {
 
 	created, err := queue.Submit(context.Background(), "backup-1", validSpec())
 	require.Nil(t, created)
-	require.ErrorContains(t, err, "missing the audit finalizer")
+	require.ErrorContains(t, err, "sole audit finalizer")
+}
+
+func TestSubmitRejectsCommittedObjectWithInjectedFinalizer(t *testing.T) {
+	client := fakeQueueClient()
+	queue := New(client, "test")
+	client.PrependReactor("create", Resource.Resource, func(
+		action clientgotesting.Action,
+	) (bool, runtime.Object, error) {
+		object := action.(clientgotesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		object.SetFinalizers([]string{operationaudit.Finalizer, "example.com/hold"})
+		require.NoError(t, client.Tracker().Create(Resource, object, "test"))
+		return true, nil, errors.New("submit response lost after commit")
+	})
+
+	created, err := queue.Submit(context.Background(), "backup-1", validSpec())
+	require.Nil(t, created)
+	require.ErrorContains(t, err, "sole audit finalizer")
 }
 
 func TestSubmitRejectsCommittedObjectWithTypeMetadataDrift(t *testing.T) {

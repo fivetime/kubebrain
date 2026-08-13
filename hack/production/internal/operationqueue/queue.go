@@ -215,8 +215,8 @@ func (q *Queue) Submit(ctx context.Context, name string, spec Spec) (*unstructur
 	if !specMatches(existing, spec) {
 		return nil, errors.New("existing operation has a different immutable spec")
 	}
-	if !containsString(existing.GetFinalizers(), operationaudit.Finalizer) {
-		return nil, errors.New("existing operation is missing the audit finalizer")
+	if !hasSoleAuditFinalizer(existing) {
+		return nil, errors.New("existing operation does not have the sole audit finalizer")
 	}
 	return existing, nil
 }
@@ -1150,13 +1150,9 @@ func (q *Queue) Delete(ctx context.Context, name string, uid types.UID) error {
 	return err
 }
 
-func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
+func hasSoleAuditFinalizer(object *unstructured.Unstructured) bool {
+	finalizers := object.GetFinalizers()
+	return len(finalizers) == 1 && finalizers[0] == operationaudit.Finalizer
 }
 
 func (q *Queue) requireWorker(object *unstructured.Unstructured, owner string, attempt int64) error {
@@ -1261,9 +1257,10 @@ func validateStoredOperation(name string, object *unstructured.Unstructured) err
 		return err
 	}
 	phase, _, _ := unstructured.NestedString(object.Object, "status", "phase")
-	if phase != PhaseSucceeded && phase != PhaseFailed &&
-		!containsString(object.GetFinalizers(), operationaudit.Finalizer) {
-		return invalidSpecError("operation is missing the audit finalizer")
+	terminal := phase == PhaseSucceeded || phase == PhaseFailed
+	if (!terminal && !hasSoleAuditFinalizer(object)) ||
+		(terminal && len(object.GetFinalizers()) != 0 && !hasSoleAuditFinalizer(object)) {
+		return invalidSpecError("operation does not have the sole audit finalizer")
 	}
 	return nil
 }

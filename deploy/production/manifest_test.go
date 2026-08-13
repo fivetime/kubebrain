@@ -1027,6 +1027,7 @@ func TestNativePITRFullBackupRequesterAdmissionIsFailClosed(t *testing.T) {
 		"NativePITRFullBackup", "kubebrain-native-pitr-full-backup-requester",
 		`parametersSHA256.substring(0, 20)`, "platform:native-pitr-full-backup",
 		"maxAttempts == 1", `parametersSecretRef.name == object.metadata.name + "-parameters"`,
+		`size(object.metadata.finalizers) == 1`, `dbaas.kubebrain.io/operation-audit`,
 	} {
 		require.Contains(t, operationText, expected)
 	}
@@ -1404,8 +1405,17 @@ func TestOperationSubmitterApproverAndAuditAdmissionFenceHighRiskChanges(t *test
 		expressionsByMessage[validation["message"].(string)] = validation["expression"].(string)
 	}
 	require.Contains(t,
-		expressionsByMessage["new operations require the audit archive finalizer"],
+		expressionsByMessage["operations may only use the audit archive finalizer"],
 		`"dbaas.kubebrain.io/operation-audit"`)
+	require.Contains(t,
+		expressionsByMessage["operations may only use the audit archive finalizer"],
+		`size(object.metadata.finalizers) == 1`)
+	require.Contains(t,
+		expressionsByMessage["operations may only use the audit archive finalizer"],
+		`request.operation != "UPDATE"`)
+	require.Contains(t,
+		expressionsByMessage["operations may only use the audit archive finalizer"],
+		`object.metadata.finalizers.all(f, f == "dbaas.kubebrain.io/operation-audit")`)
 	require.Contains(t,
 		expressionsByMessage["operations cannot be created pre-approved"],
 		`"dbaas.kubebrain.io/approved-by"`)

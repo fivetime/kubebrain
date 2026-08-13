@@ -20,8 +20,8 @@ spec:
           - kubebrainoperations
         scope: Namespaced
   validations:
-    - expression: 'request.operation != "CREATE" || (has(object.metadata.finalizers) && object.metadata.finalizers.exists(f, f == "dbaas.kubebrain.io/operation-audit"))'
-      message: new operations require the audit archive finalizer
+    - expression: '(request.operation != "CREATE" || (has(object.metadata.finalizers) && size(object.metadata.finalizers) == 1 && object.metadata.finalizers[0] == "dbaas.kubebrain.io/operation-audit")) && (request.operation != "UPDATE" || !has(object.metadata.finalizers) || (size(object.metadata.finalizers) <= 1 && object.metadata.finalizers.all(f, f == "dbaas.kubebrain.io/operation-audit")))'
+      message: operations may only use the audit archive finalizer
     - expression: 'request.operation != "CREATE" || !has(object.metadata.annotations) || (!("dbaas.kubebrain.io/approved-by" in object.metadata.annotations) && !("dbaas.kubebrain.io/approval-id" in object.metadata.annotations))'
       message: operations cannot be created pre-approved
     - expression: 'request.operation != "CREATE" || !has(object.metadata.annotations) || (!("dbaas.kubebrain.io/audit-receipt-sha256" in object.metadata.annotations) && !("dbaas.kubebrain.io/audit-artifact-sha256" in object.metadata.annotations) && !("dbaas.kubebrain.io/audit-version-id" in object.metadata.annotations))'

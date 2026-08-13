@@ -2040,7 +2040,10 @@ prefix。相同语义的 JSON（空白、对象 key 或 PD endpoint 顺序不同
 
 Admission 同时拦截其他身份创建该 type、requester 创建其他 type、名称与摘要前缀不一致、可变/多 key
 Secret、错误 namespace/requester/instance/maxAttempts 或未绑定 Secret 的请求。requester RBAC 没有 list/watch、
-update/patch/delete 或 status 权限；它不能修改已提交参数、批准请求或伪造执行结果。
+update/patch/delete 或 status 权限；它不能修改已提交参数、批准请求或伪造执行结果。operation 在创建和执行期间
+只能携带唯一的 `dbaas.kubebrain.io/operation-audit` finalizer；全局 audit admission 拒绝 CREATE/UPDATE 注入
+任何额外 finalizer，queue 在 submit reconcile 和 claim 时再次 fail closed。只有 archiver 写入 terminal archive
+三项证据后才能移除该 finalizer，避免外部 finalizer 让已归档 operation 永久滞留。
 
 开始 BR 前的参数摘要漂移会 requeue；BR 一旦启动，任何非零退出都 terminal fail 并要求先核查 immutable
 prefix，禁止自动重试不确定的部分写入。成功 attestation 已存在、最终心跳失去 fencing 或 receipt status

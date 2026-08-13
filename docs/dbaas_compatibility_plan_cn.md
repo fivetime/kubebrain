@@ -48600,6 +48600,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   输入重试、不可变 Secret 复用、内容漂移、危险 S3/额外字段/非法 timestamp/重复 endpoint 拒绝，runbook 不再
   暴露容易出错的手工双写流程。该 producer 随默认受审运维镜像交付，并必须使用 A4536 专属 requester 上下文。
 
+- A4538 关闭 operation audit admission 只要求“包含”归档 finalizer、允许 requester 或后续 metadata updater
+  同时注入任意外部 finalizer 的持久资源滞留缺口。此类 operation 会被旧 queue 当作合法对象领取并执行；archiver
+  即使成功落盘证据并移除 audit finalizer，未知 finalizer 仍会永久阻止删除。全局 admission 现要求 CREATE 精确
+  携带唯一 `dbaas.kubebrain.io/operation-audit`，UPDATE 只允许保持该唯一值或由既有 terminal archive evidence
+  门禁删除为零；native PITR 专属 admission 同步固定同一 invariant。queue 的 failed-create reconcile、claim 和
+  stored-object 校验也改为要求非 terminal operation 只有该 finalizer，terminal object 只允许归档前的唯一值或
+  归档后的空列表，避免只依赖集群 policy。RED 覆盖额外 `example.com/hold` 曾可被 reconcile/claim 接受；清单
+  契约覆盖 CREATE 精确集合、UPDATE 禁止未知 finalizer 和 native requester 双重门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
