@@ -110,6 +110,29 @@ func TestLegacySnapshotRemediationRequesterCanOnlySubmitImmutableEvidence(t *tes
 	}
 }
 
+func TestNativePITRFullBackupRequesterCanOnlyCreateBoundOperationAndSecret(t *testing.T) {
+	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-native-pitr-full-backup-requester-rbac.yaml")
+	documents := decodeRBACManifest(t, path)
+	require.Len(t, documents, 3)
+	require.Equal(t, "kubebrain-native-pitr-full-backup-requester", documents[0].Metadata.Name)
+	require.NotNil(t, documents[0].Automount)
+	require.False(t, *documents[0].Automount)
+	require.Equal(t, []rbacRule{
+		{APIGroups: []string{"dbaas.kubebrain.io"}, Resources: []string{"kubebrainoperations"}, Verbs: []string{"create", "get"}},
+		{APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"create", "get"}},
+	}, documents[1].Rules)
+	for _, rule := range documents[1].Rules {
+		require.NotContains(t, rule.Resources, "kubebrainoperations/status")
+		for _, forbidden := range []string{"update", "patch", "delete", "list", "watch"} {
+			require.NotContains(t, rule.Verbs, forbidden)
+		}
+	}
+	require.Equal(t, rbacParty{
+		Kind: "ServiceAccount", Name: "kubebrain-native-pitr-full-backup-requester",
+		Namespace: "kubebrain-operations",
+	}, documents[2].Subjects[0])
+}
+
 func TestOperationAPIRBACCanOnlySubmitAndReadOperations(t *testing.T) {
 	path := filepath.Join("..", "..", "deploy", "production", "kubebrain-operation-api.yaml")
 	documents := decodeRBACManifest(t, path)

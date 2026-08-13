@@ -1017,6 +1017,33 @@ func TestLegacySnapshotRemediationRequesterAdmissionIsFailClosed(t *testing.T) {
 	require.Contains(t, parameterText, `size(object.data) == 1`)
 }
 
+func TestNativePITRFullBackupRequesterAdmissionIsFailClosed(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-native-pitr-full-backup-requester-admission.yaml")
+	require.Len(t, objects, 4)
+	operation := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-native-pitr-full-backup-request-operation")
+	require.Equal(t, "Fail", nestedString(t, operation, "spec", "failurePolicy"))
+	operationText := fmt.Sprint(operation.Object)
+	for _, expected := range []string{
+		"NativePITRFullBackup", "kubebrain-native-pitr-full-backup-requester",
+		`parametersSHA256.substring(0, 20)`, "platform:native-pitr-full-backup",
+		"maxAttempts == 1", `parametersSecretRef.name == object.metadata.name + "-parameters"`,
+	} {
+		require.Contains(t, operationText, expected)
+	}
+	parameters := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-native-pitr-full-backup-request-parameters")
+	parameterText := fmt.Sprint(parameters.Object)
+	require.Contains(t, parameterText, "object.immutable == true")
+	require.Contains(t, parameterText, `size(object.data) == 1`)
+	require.Contains(t, parameterText, `"parameters.json" in object.data`)
+	for _, name := range []string{
+		"kubebrain-native-pitr-full-backup-request-operation",
+		"kubebrain-native-pitr-full-backup-request-parameters",
+	} {
+		binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", name)
+		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
+	}
+}
+
 func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-worker-admission.yaml")
 	policy := objectByKindAndName(

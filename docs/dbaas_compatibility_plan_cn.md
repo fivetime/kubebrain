@@ -48579,6 +48579,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   发布仍必须把示例 `:dev` 替换成最终 multi-arch digest，并预置环境相关 PVC/TLS/对象存储 Secret；这些
   明示部署输入不再被误写为尚无持久化 operation 状态机。
 
+- A4536 关闭 A4535 executor 要求 `<operation>-parameters`、而通用 OIDC operation API 只允许 tenant 前缀
+  Secret，导致没有合法提交入口的断点。新增专属 native PITR full backup requester ServiceAccount；其
+  namespaced RBAC 仅可 create/get operation 与 Secret，没有 list/watch、更新、删除、审批或 status 权限。
+  两组 fail-closed ValidatingAdmissionPolicy 在授权凭据前部署：该 type 只能由专属 requester 创建，requester
+  也只能创建固定 namespace/instance/type/requestedBy/maxAttempts=1 的 operation；名称必须等于参数 SHA-256
+  前 20 位派生的 `native-pitr-full-<digest>`，并精确引用同名 `-parameters` Secret。Secret 必须 immutable、
+  Opaque、只含 `parameters.json`。runner 同步校验 requester、instance、名称/摘要与 Secret/key 绑定，避免只
+  依赖 admission。清单与行为回归覆盖 RBAC 最小权限、policy scope/binding、成功链、伪造名称拒绝、额外参数
+  拒绝、fencing 及执行后 terminal failure；runbook 给出 exact Secret/operation 提交命令。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

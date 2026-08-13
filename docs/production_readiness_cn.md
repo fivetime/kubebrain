@@ -2015,6 +2015,40 @@ executor 身份更新它。参数 Secret 必须名为 `<operation-name>-paramete
 {"backup_ts":"468294813545660418","pd_addrs":["pd-0:2379","pd-1:2379","pd-2:2379"],"storage_prefix":"s3://immutable-bucket/instance/run-id/full"}
 ```
 
+必须先应用 requester admission，再授予 requester 凭据：
+
+```shell
+kubectl apply -f deploy/production/kubebrain-native-pitr-full-backup-requester-admission.yaml
+kubectl apply -f deploy/production/kubebrain-native-pitr-full-backup-requester-rbac.yaml
+```
+
+以该专属 ServiceAccount 的认证上下文创建请求；operation 名称精确取参数文件 SHA-256 前 20 位，Secret
+必须为 immutable 且只能包含一个 data key。以下命令中的参数文件字节必须与计算摘要的文件完全相同：
+
+```shell
+PARAMETERS_SHA256="$(sha256sum parameters.json | cut -d ' ' -f1)"
+OPERATION_NAME="native-pitr-full-${PARAMETERS_SHA256:0:20}"
+PARAMETERS_B64="$(base64 -w0 parameters.json)"
+kubectl create -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata: {name: ${OPERATION_NAME}-parameters, namespace: kubebrain-operations}
+type: Opaque
+immutable: true
+data: {parameters.json: ${PARAMETERS_B64}}
+EOF
+kubebrain-operationctl --action submit --namespace kubebrain-operations \
+  --name "$OPERATION_NAME" --operation-id "$OPERATION_NAME" \
+  --instance kubebrain --type NativePITRFullBackup \
+  --requested-by platform:native-pitr-full-backup --max-attempts 1 \
+  --parameters-sha256 "$PARAMETERS_SHA256" \
+  --parameters-secret "${OPERATION_NAME}-parameters" --parameters-key parameters.json
+```
+
+Admission 同时拦截其他身份创建该 type、requester 创建其他 type、名称与摘要前缀不一致、可变/多 key
+Secret、错误 namespace/requester/instance/maxAttempts 或未绑定 Secret 的请求。requester RBAC 没有 list/watch、
+update/patch/delete 或 status 权限；它不能修改已提交参数、批准请求或伪造执行结果。
+
 开始 BR 前的参数摘要漂移会 requeue；BR 一旦启动，任何非零退出都 terminal fail 并要求先核查 immutable
 prefix，禁止自动重试不确定的部分写入。成功 attestation 已存在、最终心跳失去 fencing 或 receipt status
 提交失败时同样不得由新 operation 覆盖证据。镜像入口点也可在隔离演练中直接运行：

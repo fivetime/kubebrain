@@ -24,7 +24,8 @@ func TestRunNativePITRFullBackupOperation(t *testing.T) {
 set -euo pipefail
 printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
-  printf '{"namespace":"kubebrain-operations","name":"native-pitr-full-1","operation_id":"native-pitr-full-1","instance":"kubebrain","type":"NativePITRFullBackup","parameters_sha256":"%s","parameters_secret":"native-pitr-full-1-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1}\n' "$EXPECTED_DIGEST" "$WORKER_ID"
+  short="${CLAIM_SHORT:-${EXPECTED_DIGEST:0:20}}"
+  printf '{"namespace":"kubebrain-operations","name":"native-pitr-full-%s","operation_id":"native-pitr-full-%s","instance":"kubebrain","type":"NativePITRFullBackup","requested_by":"platform:native-pitr-full-backup","parameters_sha256":"%s","parameters_secret":"native-pitr-full-%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":1}\n' "$short" "$short" "$EXPECTED_DIGEST" "$short" "$WORKER_ID"
 elif [[ "$*" == *"--action heartbeat"* ]]; then
   [[ "${FAIL_HEARTBEAT:-false}" != true ]] || exit 1
 fi
@@ -64,9 +65,16 @@ printf '{"format":"kubebrain.native-pitr-full-backup-attestation.v2"}\n' >"$outp
 	require.Contains(t, string(args), "--pd-addrs=pd-1:2379,pd-0:2379")
 	require.Contains(t, string(args), "--backup-ts=468294813545660418")
 	require.Contains(t, string(args), "--storage-prefix=s3://immutable/instance/run/full")
-	require.FileExists(t, filepath.Join(dir, "native-pitr-full-1.native-pitr-full-backup-attestation.json"))
+	operationName := "native-pitr-full-" + digest[:20]
+	require.FileExists(t, filepath.Join(dir, operationName+".native-pitr-full-backup-attestation.json"))
 
-	require.NoError(t, os.Remove(filepath.Join(dir, "native-pitr-full-1.native-pitr-full-backup-attestation.json")))
+	require.NoError(t, os.Remove(filepath.Join(dir, operationName+".native-pitr-full-backup-attestation.json")))
+	require.NoError(t, os.Remove(backupLog))
+	identityOutput, identityErr := runProductionScriptCommand(t, "run-native-pitr-full-backup-operation.sh", append(base,
+		"CLAIM_SHORT=00000000000000000000"))
+	require.Error(t, identityErr)
+	require.Contains(t, string(identityOutput), "operation name does not bind the parameter digest")
+	require.NoFileExists(t, backupLog)
 	require.NoError(t, os.WriteFile(operationLog, nil, 0o600))
 	fencedOutput, fencedErr := runProductionScriptCommand(t, "run-native-pitr-full-backup-operation.sh", append(base, "FAIL_HEARTBEAT=true"))
 	require.Error(t, fencedErr)
@@ -84,7 +92,7 @@ func TestRunNativePITRFullBackupOperationRejectsParameterDrift(t *testing.T) {
 	digest := fmt.Sprintf("%x", sha256.Sum256(parameterBytes))
 	operationctl := filepath.Join(dir, "operationctl")
 	require.NoError(t, os.WriteFile(operationctl, []byte(`#!/usr/bin/env bash
-if [[ "$*" == *"--action claim"* ]]; then printf '{"namespace":"kubebrain-operations","name":"native-pitr-full-1","operation_id":"native-pitr-full-1","instance":"kubebrain","type":"NativePITRFullBackup","parameters_sha256":"%s","parameters_secret":"native-pitr-full-1-parameters","parameters_key":"parameters.json","owner":"worker-1","attempt":1}\n' "$EXPECTED_DIGEST"; fi
+if [[ "$*" == *"--action claim"* ]]; then short="${EXPECTED_DIGEST:0:20}"; printf '{"namespace":"kubebrain-operations","name":"native-pitr-full-%s","operation_id":"native-pitr-full-%s","instance":"kubebrain","type":"NativePITRFullBackup","requested_by":"platform:native-pitr-full-backup","parameters_sha256":"%s","parameters_secret":"native-pitr-full-%s-parameters","parameters_key":"parameters.json","owner":"worker-1","attempt":1}\n' "$short" "$short" "$EXPECTED_DIGEST" "$short"; fi
 `), 0o755))
 	backup := filepath.Join(dir, "backup")
 	require.NoError(t, os.WriteFile(backup, []byte("#!/usr/bin/env sh\nprintf called >\"$BACKUP_LOG\"\n"), 0o755))
@@ -111,7 +119,7 @@ func TestRunNativePITRFullBackupOperationFailsTerminalAfterExecutionStarts(t *te
 	operationctl := filepath.Join(dir, "operationctl")
 	require.NoError(t, os.WriteFile(operationctl, []byte(`#!/usr/bin/env bash
 printf '%s\n' "$*" >>"$OPERATION_LOG"
-if [[ "$*" == *"--action claim"* ]]; then printf '{"namespace":"kubebrain-operations","name":"native-pitr-full-1","operation_id":"native-pitr-full-1","instance":"kubebrain","type":"NativePITRFullBackup","parameters_sha256":"%s","parameters_secret":"native-pitr-full-1-parameters","parameters_key":"parameters.json","owner":"worker-1","attempt":1}\n' "$EXPECTED_DIGEST"; fi
+if [[ "$*" == *"--action claim"* ]]; then short="${EXPECTED_DIGEST:0:20}"; printf '{"namespace":"kubebrain-operations","name":"native-pitr-full-%s","operation_id":"native-pitr-full-%s","instance":"kubebrain","type":"NativePITRFullBackup","requested_by":"platform:native-pitr-full-backup","parameters_sha256":"%s","parameters_secret":"native-pitr-full-%s-parameters","parameters_key":"parameters.json","owner":"worker-1","attempt":1}\n' "$short" "$short" "$EXPECTED_DIGEST" "$short"; fi
 `), 0o755))
 	backup := filepath.Join(dir, "backup")
 	require.NoError(t, os.WriteFile(backup, []byte("#!/usr/bin/env sh\nexit 9\n"), 0o755))

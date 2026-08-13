@@ -19,11 +19,13 @@ runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
 sha() { sha256sum "$1" | cut -d ' ' -f1; }
 
 claim="$(runctl --action claim --owner "$WORKER_ID" --type NativePITRFullBackup --lease "${LEASE_SECONDS}s")"
-identity="$($JQ -er '[.namespace,.name,.operation_id,.instance,.type,.owner,.parameters_secret,.parameters_key,(.attempt|tostring),.parameters_sha256]|@tsv' <<<"$claim")" || die "native PITR claim is incomplete"
-IFS=$'\t' read -r namespace name operation_id instance type owner secret key attempt expected_sha <<<"$identity"
-[[ "$namespace" == "$OPERATION_NAMESPACE" && "$operation_id" == "$name" && "$type" == NativePITRFullBackup &&
+identity="$($JQ -er '[.namespace,.name,.operation_id,.instance,.type,.requested_by,.owner,.parameters_secret,.parameters_key,(.attempt|tostring),.parameters_sha256]|@tsv' <<<"$claim")" || die "native PITR claim is incomplete"
+IFS=$'\t' read -r namespace name operation_id instance type requester owner secret key attempt expected_sha <<<"$identity"
+[[ "$namespace" == "$OPERATION_NAMESPACE" && "$name" =~ ^native-pitr-full-[a-f0-9]{20}$ && "$operation_id" == "$name" &&
+  "$instance" == kubebrain && "$type" == NativePITRFullBackup && "$requester" == platform:native-pitr-full-backup &&
   "$owner" == "$WORKER_ID" && "$secret" == "${name}-parameters" && "$key" == parameters.json &&
   "$attempt" =~ ^[1-9][0-9]*$ && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "native PITR claim identity is invalid"
+[[ "$name" == "native-pitr-full-${expected_sha:0:20}" ]] || die "native PITR operation name does not bind the parameter digest"
 
 capture="$(mktemp -d "$WORK_DIR/native-pitr-full.XXXXXX")"; child=0; heartbeat=0
 cleanup() { [[ $child == 0 ]] || kill "$child" 2>/dev/null || true; [[ $heartbeat == 0 ]] || kill "$heartbeat" 2>/dev/null || true; rm -rf -- "$capture"; }
