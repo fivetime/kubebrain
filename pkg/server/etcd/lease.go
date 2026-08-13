@@ -29,6 +29,7 @@ import (
 
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -48,6 +49,8 @@ import (
 // so a leases/ prefix scan never picks up attachment records.
 var leaseStoragePrefix = []byte("\x00kubebrain/leases/")
 var leaseAttachPrefix = []byte("\x00kubebrain/leasekeys/")
+var leaseLegacyMigrationSealKey = []byte("\x00kubebrain/lease-legacy-migration-seal")
+var leaseLegacyMigrationSealValue = []byte("v1")
 
 var errLeaseDemotedDuringRenew = errors.New("lease manager demoted during renew")
 
@@ -1573,6 +1576,10 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	// monolithic key-list is not carried forward. One-time, idempotent.
 	m.migrateLegacyLeases(ctx, legacy)
 	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
+	if err := m.sealLegacyLeaseMigrationIfClean(ctx); err != nil {
+		m.srv.metricCli.EmitCounter("lease.legacy_migration_seal.err", 1)
+		klog.ErrorS(err, "lease reload: seal legacy migration failed")
+	}
 	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
 	// never (re)armed because their attachment outlived its lease meta record.
 	m.startOrphanSweeper(ctx)
@@ -1587,19 +1594,27 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	resp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
-		Key:      leaseStoragePrefix,
-		RangeEnd: prefixEnd(leaseStoragePrefix),
-		Revision: latestRestoreRevision,
-	})
+	readLegacy, err := m.shouldReadLegacyLeaseStorage(ctx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	var legacyMetaKVs []*mvccpb.KeyValue
+	if readLegacy {
+		resp, listErr := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
+			Key:      leaseStoragePrefix,
+			RangeEnd: prefixEnd(leaseStoragePrefix),
+			Revision: latestRestoreRevision,
+		})
+		if listErr != nil {
+			return nil, nil, nil, listErr
+		}
+		legacyMetaKVs = resp.Kvs
+	}
 	// Read the legacy user-MVCC keyspace during rolling upgrades. A new internal
 	// record wins when both layouts contain the same lease ID.
-	recordByID := make(map[int64]leaseRecord, len(resp.Kvs)+len(internalRecords))
-	legacyRecordByID := make(map[int64]leaseRecord, len(resp.Kvs))
-	for _, kv := range resp.Kvs {
+	recordByID := make(map[int64]leaseRecord, len(legacyMetaKVs)+len(internalRecords))
+	legacyRecordByID := make(map[int64]leaseRecord, len(legacyMetaKVs))
+	for _, kv := range legacyMetaKVs {
 		keyID, keyErr := leaseMetadataStorageID(kv.Key)
 		if keyErr != nil {
 			return nil, nil, nil, keyErr
@@ -1643,18 +1658,22 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 		records = append(records, record)
 	}
 
-	aresp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
-		Key:      leaseAttachPrefix,
-		RangeEnd: prefixEnd(leaseAttachPrefix),
-		Revision: latestRestoreRevision,
-	})
-	if err != nil {
-		return nil, nil, nil, err
+	var legacyAttachmentKVs []*mvccpb.KeyValue
+	if readLegacy {
+		aresp, listErr := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
+			Key:      leaseAttachPrefix,
+			RangeEnd: prefixEnd(leaseAttachPrefix),
+			Revision: latestRestoreRevision,
+		})
+		if listErr != nil {
+			return nil, nil, nil, listErr
+		}
+		legacyAttachmentKVs = aresp.Kvs
 	}
-	attachments := make(map[string]int64, len(aresp.Kvs))
-	legacyAttachments := make(map[string]int64, len(aresp.Kvs))
+	attachments := make(map[string]int64, len(legacyAttachmentKVs))
+	legacyAttachments := make(map[string]int64, len(legacyAttachmentKVs))
 	legacyAttachmentKeys := make(map[int64][]string)
-	for _, kv := range aresp.Kvs {
+	for _, kv := range legacyAttachmentKVs {
 		userKey := string(kv.Key[len(leaseAttachPrefix):])
 		id, perr := parseLeaseAttachmentRecord(userKey, kv.Value)
 		if perr != nil {
@@ -1705,6 +1724,44 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 		}
 	}
 	return records, attachments, legacyAttachments, nil
+}
+
+func (m *leaseManager) shouldReadLegacyLeaseStorage(ctx context.Context) (bool, error) {
+	value, err := m.srv.backend.InternalGet(ctx, leaseLegacyMigrationSealKey)
+	switch {
+	case errors.Is(err, storage.ErrKeyNotFound):
+		return true, nil
+	case err != nil:
+		return false, err
+	case !bytes.Equal(value, leaseLegacyMigrationSealValue):
+		return false, markInvalidLeaseMetadata(fmt.Errorf("legacy lease migration seal has invalid value %q", value))
+	default:
+		return false, nil
+	}
+}
+
+// sealLegacyLeaseMigrationIfClean permanently retires the old user-MVCC
+// metadata interpretation after every source row has been removed. Once sealed,
+// byte keys under the former prefixes are ordinary etcd user keys again. The
+// caller excludes online lease writes (or is still in pre-ready ReloadLeases),
+// so an old source cannot appear between the empty scans and the seal write.
+func (m *leaseManager) sealLegacyLeaseMigrationIfClean(ctx context.Context) error {
+	readLegacy, err := m.shouldReadLegacyLeaseStorage(ctx)
+	if err != nil || !readLegacy {
+		return err
+	}
+	for _, prefix := range [][]byte{leaseStoragePrefix, leaseAttachPrefix} {
+		resp, listErr := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
+			Key: prefix, RangeEnd: prefixEnd(prefix), Limit: 1, Revision: latestRestoreRevision,
+		})
+		if listErr != nil {
+			return listErr
+		}
+		if len(resp.Kvs) != 0 {
+			return nil
+		}
+	}
+	return m.srv.backend.InternalPutCorruptGuarded(ctx, leaseLegacyMigrationSealKey, leaseLegacyMigrationSealValue)
 }
 
 func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
@@ -2099,6 +2156,12 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 		m.reconcileOrphanAttachment(backend.WithLeadershipEpoch(ctx, epoch), key, id)
 	}
 	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
+	m.leaseWriteMu.Lock()
+	if err := m.sealLegacyLeaseMigrationIfClean(ctx); err != nil {
+		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
+		klog.ErrorS(err, "orphan lease sweep: seal legacy migration failed")
+	}
+	m.leaseWriteMu.Unlock()
 }
 
 func (m *leaseManager) cleanupOrphanLegacyAttachments(ctx context.Context, legacyAttachments map[string]int64) {

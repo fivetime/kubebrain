@@ -393,6 +393,9 @@ func TestLegacyLeaseMigrationRetriesCleanupAfterCanonicalMetadataWins(t *testing
 	legacyAttachment, err := original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
 	require.NoError(t, err)
 	require.Len(t, legacyAttachment.Kvs, 1)
+	_, err = original.InternalGet(ctx, leaseLegacyMigrationSealKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound,
+		"incomplete cleanup must keep legacy source interpretation enabled")
 	server.leaseMu.Lock()
 	deadlineBeforeRetry := server.leases[leaseID].deadline
 	server.leaseMu.Unlock()
@@ -410,6 +413,9 @@ func TestLegacyLeaseMigrationRetriesCleanupAfterCanonicalMetadataWins(t *testing
 	legacyAttachment, err = original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
 	require.NoError(t, err)
 	require.Empty(t, legacyAttachment.Kvs, "the periodic sweep must retry attachment cleanup")
+	seal, err := original.InternalGet(ctx, leaseLegacyMigrationSealKey)
+	require.NoError(t, err)
+	require.Equal(t, leaseLegacyMigrationSealValue, seal)
 }
 
 func TestLegacyLeaseMigrationRetryCannotOverwriteConcurrentRebind(t *testing.T) {
@@ -490,6 +496,47 @@ func TestLegacyLeaseMigrationRetryCannotOverwriteConcurrentRebind(t *testing.T) 
 	require.Len(t, value.Kvs, 1)
 	require.Equal(t, []byte("new-value"), value.Kvs[0].Value)
 	require.Equal(t, newLease, value.Kvs[0].Lease)
+}
+
+func TestLegacyMigrationSealRestoresFormerPrefixesToUserKeyspace(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.ReloadLeases(ctx))
+	seal, err := server.backend.InternalGet(ctx, leaseLegacyMigrationSealKey)
+	require.NoError(t, err)
+	require.Equal(t, leaseLegacyMigrationSealValue, seal)
+
+	userRows := map[string][]byte{
+		string(leaseStorageKey(81_001)):              []byte("ordinary-not-json"),
+		string(leaseAttachKey("/ordinary-user-key")): []byte("ordinary-not-an-id"),
+	}
+	for key, value := range userRows {
+		_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: []byte(key), Value: value})
+		require.NoError(t, err)
+	}
+	require.NoError(t, server.ReloadLeases(ctx),
+		"sealed former metadata prefixes must not be parsed as lease state")
+	for key, want := range userRows {
+		response, getErr := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+		require.NoError(t, getErr)
+		require.Len(t, response.Kvs, 1)
+		require.Equal(t, want, response.Kvs[0].Value)
+	}
+	before := server.backend.GetCurrentRevision()
+	server.sweepOrphanLeasedKeys(ctx)
+	require.Equal(t, before, server.backend.GetCurrentRevision(),
+		"a completed migration seal must make later sweeps revision-neutral")
+}
+
+func TestLegacyMigrationSealRejectsUnknownFormat(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	require.NoError(t, server.backend.InternalPut(ctx, leaseLegacyMigrationSealKey, []byte("v2")))
+	_, _, _, err := server.loadLeaseRecords(ctx)
+	require.ErrorIs(t, err, errInvalidLeaseMetadata)
+	require.ErrorContains(t, err, `legacy lease migration seal has invalid value "v2"`)
 }
 
 func TestLegacyLeaseMigrationCleansStrandedAttachmentWithoutLegacyMeta(t *testing.T) {

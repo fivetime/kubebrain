@@ -48363,6 +48363,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   migration 完成前不得到达提交，释放后必须成功，最终 user value 与 internal attachment 都精确指向新 lease。Reload 初始
   migration 仍沿原 `leaseReady=false` 路径，不额外嵌套该锁；周期 retry 是低频升级清理，允许为 correctness 暂时排空在线写。
 
+- A4518 恢复 legacy metadata 前缀与通用 etcd user keyspace 的隔离。对照 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go`，KV/Txn 只拒绝空 key，并不保留 `\x00kubebrain/leases/` 或
+  `\x00kubebrain/leasekeys/`；KubeBrain 为滚动升级永久扫描这两个 user-MVCC 前缀，会把租户合法 byte key 解析成
+  lease JSON/ID，畸形碰撞可在换主时阻断 Ready，精心构造的碰撞甚至可伪造绑定。新增 internal、revision-neutral 的
+  `lease-legacy-migration-seal=v1`：Reload 或周期 sweep 只有在排除在线 lease writes 且确认两个 legacy prefix 均无当前
+  row 后才写 seal；任一 cleanup source/失败 marker 尚存就绝不 seal。合法 seal 存在后 loader 完全跳过两次 user-MVCC
+  legacy scan，旧前缀重新成为普通 etcd user keys；未知 seal version 按 invalid lease metadata fail closed，避免未来格式被
+  旧 binary 静默误读。seal 写失败只累计 `lease.legacy_migration_seal.err` 并继续兼容扫描，不阻断 active CORRUPT 下的只读
+  leadership。回归固定 transient cleanup 期间 seal 缺失、周期自愈后 v1 seal 出现；随后在两个旧前缀写入故意不可解析的
+  普通 user values，第二次 Reload 必须成功且 bytes 原样保留。当前支持滚动窗口内 binary 已使用 internal lease layout；更老
+  user-MVCC writer 不得在 seal 后降级重新成为 leader，符合既有 witness/schema roll-forward fence 边界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
