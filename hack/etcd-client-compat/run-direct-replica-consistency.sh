@@ -128,9 +128,9 @@ assert_test_prefixes_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
 baseline_alarms="$("$ETCDCTL_BIN" --endpoints="$service_endpoint" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
 
-test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestStatusAlarmCrossEndpointVisibility|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
+test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
 if [[ "${#kubebrain_metrics_endpoints[@]}" -gt 0 ]]; then
-  test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestStatusAlarmCrossEndpointVisibility|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
+  test_pattern='^(TestCombinedAlarmCrossEndpointStateTransition|TestCorruptAlarmCrossEndpoint|TestHashKVSnapshotIsConsistentAcrossKubeBrainReplicas|TestLeaseReadAndRevokeAcrossDirectReplicas|TestQuotaAlarmCrossEndpointDisarm|TestStatusAlarmCrossEndpointVisibility|TestUnknownAlarmMetricConvergesAcrossKubeBrainReplicas|TestWatchLocalControlResponsesAcrossDirectReplicas)$'
 fi
 
 test_status=0
