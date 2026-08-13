@@ -36,6 +36,7 @@ type options struct {
 	plan, full, artifacts, inventory, artifactRoot, admission string
 	sourceExclusive, target                                   string
 	pdAddrs, ca, cert, key, brBinary, approve                 string
+	encryptionKeyID, encryptionKeyFile                        string
 	timeout                                                   time.Duration
 }
 
@@ -58,9 +59,9 @@ func (osRunner) Run(ctx context.Context, name string, args []string, stdout, std
 func main() {
 	pingcaplog.SetLevel(zapcore.ErrorLevel)
 	var o options
-	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v12 receipt")
+	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan receipt")
 	flag.StringVar(&o.full, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
-	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v4 receipt")
+	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts receipt")
 	flag.StringVar(&o.inventory, "remote-inventory", "", "exact native-pitr-object-inventory.v1 receipt")
 	flag.StringVar(&o.artifactRoot, "artifact-root", "", "absolute local exact-version full backup mirror")
 	flag.StringVar(&o.sourceExclusive, "source-range-exclusive", "", "exact source range-exclusive receipt bound by plan")
@@ -71,6 +72,8 @@ func main() {
 	flag.StringVar(&o.cert, "cert", "", "target client certificate")
 	flag.StringVar(&o.key, "key", "", "target client private key")
 	flag.StringVar(&o.brBinary, "br-binary", "br", "BR v7.5.1 executable")
+	flag.StringVar(&o.encryptionKeyID, "encryption-key-id", "", "immutable non-secret key version ID required by encrypted artifacts")
+	flag.StringVar(&o.encryptionKeyFile, "encryption-key-file", "", "file containing the exact AES-256 key required by encrypted artifacts")
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "full restore deadline")
 	flag.Parse()
@@ -133,6 +136,38 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	artifact, err := nativepitr.DecodeArtifactReceipt(bytes.NewReader(artifactBytes))
 	if err != nil {
 		return err
+	}
+	planMethod := plan.Full.Encryption
+	if planMethod == "" {
+		planMethod = nativepitr.CipherMethodPlaintext
+	}
+	if planMethod != artifact.Encryption || plan.Full.EncryptionKeyID != artifact.EncryptionKeyID {
+		return errors.New("restore plan encryption identity differs from full artifacts")
+	}
+	encryption := nativepitr.EncryptionIdentity{Method: artifact.Encryption, KeyID: artifact.EncryptionKeyID}
+	if err := encryption.Validate(); err != nil {
+		return err
+	}
+	var encryptionKey []byte
+	runtimeEncryptionKeyFile := ""
+	if encryption.Method == nativepitr.CipherMethodPlaintext {
+		if o.encryptionKeyID != "" || o.encryptionKeyFile != "" {
+			return errors.New("plaintext restore must not receive encryption key inputs")
+		}
+	} else {
+		if o.encryptionKeyID != encryption.KeyID {
+			return errors.New("encryption-key-id must equal the plan-bound immutable key version ID")
+		}
+		encryptionKey, err = nativepitr.ReadAES256KeyFile(o.encryptionKeyFile)
+		if err != nil {
+			return err
+		}
+		var cleanup func()
+		runtimeEncryptionKeyFile, cleanup, err = nativepitr.StageAES256KeyFile(encryptionKey)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
 	}
 	inventory, inventoryBytes, err := pitrinventory.ReadCanonical(o.inventory)
 	if err != nil {
@@ -215,8 +250,14 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if admission.AcquiredAtUnix > started {
 		return errors.New("restore admission was acquired after BR start")
 	}
-	if err := runner.Run(ctx, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key), logs, logs); err != nil {
+	if err := runner.Run(ctx, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key, encryption, runtimeEncryptionKeyFile), logs, logs); err != nil {
 		return fmt.Errorf("BR transactional full restore failed: %w", err)
+	}
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		current, err := nativepitr.ReadAES256KeyFile(o.encryptionKeyFile)
+		if err != nil || !bytes.Equal(current, encryptionKey) {
+			return errors.New("encryption key changed during BR restore")
+		}
 	}
 	if err := admissionfence.Verify(ctx, admissionClient, plan.Source.Keyspace, admissionToken); err != nil {
 		return fmt.Errorf("post-BR restore admission: %w", err)
@@ -236,7 +277,7 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if err := admissionfence.Verify(ctx, admissionClient, plan.Source.Keyspace, admissionToken); err != nil {
 		return fmt.Errorf("final restore admission: %w", err)
 	}
-	receipt := nativepitr.FullRestoreExecutionReceipt{Format: nativepitr.FullRestoreExecutionFormat, PlanSHA256: planSHA, SourceExclusiveSHA256: digest(sourceBytes), FullArtifactSHA256: digest(artifactBytes), ArtifactManifestSHA256: artifact.ManifestSHA256, RestoreAdmissionSHA256: digest(admissionBytes), PreWriteTarget: fresh, BRVersion: version, BRBinarySHA256: brSHA, StartedAtUnix: started, CompletedAtUnix: now().Unix(), WholeClusterTxnImport: true, SourceVisibleRangeExclusive: true, TargetWriteFenceProven: true, FullImportAdmissionProven: true, FullSnapshotRestored: true}
+	receipt := nativepitr.FullRestoreExecutionReceipt{Format: nativepitr.FullRestoreExecutionFormat, PlanSHA256: planSHA, SourceExclusiveSHA256: digest(sourceBytes), FullArtifactSHA256: digest(artifactBytes), ArtifactManifestSHA256: artifact.ManifestSHA256, RestoreAdmissionSHA256: digest(admissionBytes), PreWriteTarget: fresh, BRVersion: version, BRBinarySHA256: brSHA, Encryption: encryption.Method, EncryptionKeyID: encryption.KeyID, StartedAtUnix: started, CompletedAtUnix: now().Unix(), WholeClusterTxnImport: true, SourceVisibleRangeExclusive: true, TargetWriteFenceProven: true, FullImportAdmissionProven: true, FullSnapshotRestored: true}
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
@@ -325,8 +366,12 @@ func parseAddrs(raw string) ([]string, error) {
 func pinnedBR(v string) bool {
 	return nativepitr.PinnedBRVersion(v)
 }
-func buildBRArgs(addrs []string, root, ca, cert, key string) []string {
+func buildBRArgs(addrs []string, root, ca, cert, key string, encryption nativepitr.EncryptionIdentity, encryptionKeyFile string) []string {
 	args := []string{"restore", "txn", "--pd", strings.Join(addrs, ","), "--storage", "local://" + root, "--send-credentials-to-tikv=false", "--check-requirements=true", "--checksum=false", "--log-file", "/dev/stderr"}
+	args = append(args, "--crypter.method="+encryption.Method)
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		args = append(args, "--crypter.key-file="+encryptionKeyFile)
+	}
 	if ca != "" {
 		args = append(args, "--ca", ca)
 	}

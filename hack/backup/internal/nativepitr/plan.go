@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	PreflightFormat = "kubebrain.native-pitr-preflight.v1"
-	PlanFormat      = "kubebrain.native-pitr-restore-plan.v12"
+	PreflightFormat  = "kubebrain.native-pitr-preflight.v1"
+	PlanFormat       = "kubebrain.native-pitr-restore-plan.v13"
+	legacyPlanFormat = "kubebrain.native-pitr-restore-plan.v12"
 )
 
 var (
@@ -78,6 +79,8 @@ type FullSnapshot struct {
 	MinRetainUntilUnix    int64  `json:"min_retain_until_unix"`
 	InventoryCheckedAt    int64  `json:"inventory_checked_at_unix"`
 	RemoteExact           bool   `json:"remote_exact_versions_verified"`
+	Encryption            string `json:"encryption"`
+	EncryptionKeyID       string `json:"encryption_key_id,omitempty"`
 }
 
 type LogWindow struct {
@@ -258,7 +261,7 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 		Source:        Source{ClusterID: task.ClusterID, Keyspace: task.Keyspace, StartKeyHex: task.StartKeyHex, EndKeyHex: task.EndKeyHex, TaskName: task.TaskName, RangeExclusiveReceiptSHA256: in.SourceExclusiveSHA256, ExclusiveSnapshotTS: sourceExclusive.SnapshotTS, OutsideVisibleKeyCount: sourceExclusive.OutsideVisibleKeyCount, HistoricalMVCCAbsenceProven: sourceExclusive.HistoricalMVCCAbsenceProven, PDAddressCount: len(sourceExclusive.PDAddrs)},
 		SourceWitness: SourceWitness{Format: in.Witness.Format, FileSHA256: in.WitnessFileSHA256, ContentSHA256: in.Witness.SHA256, Prefix: in.Witness.Prefix, Revision: in.Witness.Revision, CreatedAtUnix: in.Witness.CreatedAtUnix, Records: in.Witness.Records, Leases: in.Witness.Leases},
 		SourceCapture: SourceCapture{ReceiptSHA256: in.SourceCaptureSHA256, TaskCreateSHA256: in.SourceCapture.TaskCreateSHA256, OperationID: in.SourceCapture.OperationID, CaptureTS: in.SourceCapture.CaptureTS, FenceSnapshotTS: in.SourceCapture.FenceSnapshotTS, ContinuousWriterExclusion: in.SourceCapture.ContinuousSourceExclusion},
-		Full:          FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified},
+		Full:          FullSnapshot{BackupTS: full.BackupTS, BackupMetaSHA256: full.BackupMetaSHA256, StoragePrefix: full.StoragePrefix, Mode: "br-txn", ReceiptSHA256: in.FullSnapshotSHA256, ArtifactReceiptSHA256: in.ArtifactReceiptSHA256, ArtifactManifestSHA: artifacts.ManifestSHA256, ArtifactObjectCount: artifacts.ObjectCount, ArtifactTotalBytes: artifacts.TotalBytes, RemoteInventorySHA256: artifacts.RemoteInventorySHA256, ObjectStoreID: artifacts.ObjectStoreID, Bucket: artifacts.Bucket, ObjectPrefix: artifacts.ObjectPrefix, MinRetainUntilUnix: artifacts.MinRetainUntilUnix, InventoryCheckedAt: artifacts.InventoryCheckedAtUnix, RemoteExact: artifacts.RemoteVersionsVerified, Encryption: artifacts.Encryption, EncryptionKeyID: artifacts.EncryptionKeyID},
 		Log:           LogWindow{StartTS: task.StartTS, TaskCommittedAtTS: task.CommittedAtTS, GlobalCheckpointTS: ready.GlobalCheckpointTS, AdvancerOwner: ready.AdvancerOwner, StoragePrefix: task.LogStoragePrefix, StorageSHA256: task.LogStorageSHA256, ReadyReceiptSHA256: in.TaskReadySHA256, ArtifactReceiptSHA: in.LogArtifactSHA256, ArtifactManifest: logs.ManifestSHA256, ArtifactObjects: logs.ObjectCount, ArtifactSegments: logs.VerifiedSegmentCount, ArtifactTotalBytes: logs.TotalBytes, MetadataResolvedTS: logs.MetadataMaxResolvedTS, RemoteInventorySHA: logs.RemoteInventorySHA256, ObjectStoreID: logs.ObjectStoreID, Bucket: logs.Bucket, ObjectPrefix: logs.ObjectPrefix, ArtifactMetadata: logs.MetadataCount, ArtifactData: logs.DataObjectCount, ArtifactControl: logs.ControlObjectCount, RemoteExact: logs.RemoteVersionsVerified, MinRetainUntilUnix: logs.MinRetainUntilUnix, InventoryCheckedAt: logs.InventoryCheckedAtUnix},
 		Target: Target{
 			ClusterID: target.ClusterID, SnapshotEmptyReceiptSHA256: in.TargetReceiptSHA256,
@@ -277,7 +280,7 @@ func BuildFromReceipts(task TaskCreateReceipt, full FullSnapshotReceipt, artifac
 }
 
 func (p Plan) Validate() error {
-	if p.Format != PlanFormat {
+	if p.Format != PlanFormat && p.Format != legacyPlanFormat {
 		return fmt.Errorf("unsupported plan format %q", p.Format)
 	}
 	if p.Source.ClusterID == 0 || p.Target.ClusterID == 0 {
@@ -330,6 +333,13 @@ func (p Plan) Validate() error {
 	}
 	if p.Full.Mode != "br-txn" {
 		return errors.New("full snapshot mode must be br-txn")
+	}
+	encryption := EncryptionIdentity{Method: p.Full.Encryption, KeyID: p.Full.EncryptionKeyID}
+	if p.Format == legacyPlanFormat && encryption.Method == "" {
+		encryption.Method = CipherMethodPlaintext
+	}
+	if err := encryption.Validate(); err != nil || (p.Format == legacyPlanFormat && encryption.Method != CipherMethodPlaintext) {
+		return errors.New("invalid full snapshot encryption identity")
 	}
 	if !sha256RE.MatchString(p.Full.BackupMetaSHA256) {
 		return errors.New("invalid backupmeta SHA-256")

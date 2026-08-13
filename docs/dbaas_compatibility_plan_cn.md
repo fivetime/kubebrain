@@ -48609,6 +48609,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   归档后的空列表，避免只依赖集群 policy。RED 覆盖额外 `example.com/hold` 曾可被 reconcile/claim 接受；清单
   契约覆盖 CREATE 精确集合、UPDATE 禁止未知 finalizer 和 native requester 双重门禁。
 
+- A4539 开始关闭 native PITR 只支持 plaintext 的加密备份缺口，并先交付不可被密钥泄漏破坏的完整执行/证据
+  原语。对照固定 BR v7.5.1 `task/common.go`：key-file 是可带单个尾换行的 hex，`aes256-ctr` 必须解码为 32
+  bytes，backup 与 restore 都支持 `--crypter.key-file`。producer 新增 AES-256-CTR 模式，要求独立的 immutable
+  external key version ID 和 64 位小写 hex key-file；BR 前后比较 process-local raw key bytes，禁止 key path、
+  material 或 digest 进入长期 evidence；BR 只消费进程从已校验 bytes 创建的 0600 私有临时快照，不直接打开可变
+  来源路径，结束后删除快照并复核外部文件。attestation v3、full artifacts v5、restore plan v13 与 full restore v3
+  逐层绑定 cipher method + key version ID；artifact 不再硬编码 plaintext，restore 只有在 ID 与 plan 一致、key-file
+  通过同一校验并由 BR 成功解密 import 后才签发 receipt。下游 handoff/replay/semantic 同步拒绝 plan/restore
+  encryption identity 漂移，旧 v2/v4/v12/v2 plaintext receipt 保持只读兼容。单元回归覆盖加密 argv、key material
+  不落证据、key 文件执行中变化、artifact/plan 绑定及 restore argv。本项仍不冒充生产密钥托管闭环：durable
+  Operation 参数、只读 Secret volume、key version 生命周期/恢复授权和真实加密 TiKV 演练尚未接线，下一项继续。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

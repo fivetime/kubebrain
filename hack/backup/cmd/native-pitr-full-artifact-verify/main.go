@@ -21,7 +21,7 @@ const maxReceiptBytes = 4 << 20
 
 func main() {
 	fullSnapshot := flag.String("full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
-	backupAttestation := flag.String("full-backup-attestation", "", "exact native-pitr-full-backup-attestation.v2 receipt")
+	backupAttestation := flag.String("full-backup-attestation", "", "exact native-pitr-full-backup-attestation receipt")
 	artifactRoot := flag.String("artifact-root", "", "exact local mirror root containing backupmeta and all referenced objects")
 	remoteInventory := flag.String("remote-inventory", "", "canonical native-pitr-object-inventory.v1 receipt")
 	flag.Parse()

@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const FullRestoreExecutionFormat = "kubebrain.native-pitr-full-restore.v2"
+const (
+	FullRestoreExecutionFormat       = "kubebrain.native-pitr-full-restore.v3"
+	legacyFullRestoreExecutionFormat = "kubebrain.native-pitr-full-restore.v2"
+)
 
 // FullRestoreExecutionReceipt records only BR's transactional full-snapshot
 // import. It deliberately cannot represent completed log replay or PITR.
@@ -22,6 +25,8 @@ type FullRestoreExecutionReceipt struct {
 	PreWriteTarget               TargetSnapshotEmptyReceipt `json:"pre_write_target"`
 	BRVersion                    string                     `json:"br_version"`
 	BRBinarySHA256               string                     `json:"br_binary_sha256"`
+	Encryption                   string                     `json:"encryption"`
+	EncryptionKeyID              string                     `json:"encryption_key_id,omitempty"`
 	StartedAtUnix                int64                      `json:"started_at_unix"`
 	CompletedAtUnix              int64                      `json:"completed_at_unix"`
 	WholeClusterTxnImport        bool                       `json:"whole_cluster_txn_import"`
@@ -35,8 +40,15 @@ type FullRestoreExecutionReceipt struct {
 }
 
 func (r FullRestoreExecutionReceipt) Validate() error {
-	if r.Format != FullRestoreExecutionFormat || !r.WholeClusterTxnImport || !r.SourceVisibleRangeExclusive || !r.FullSnapshotRestored || !r.TargetWriteFenceProven || !r.FullImportAdmissionProven || r.LogReplayCompleted || r.PostRestoreSemanticValidated || r.PITRComplete {
-		return errors.New("receipt is not an admission-fenced full-only native restore v2")
+	if (r.Format != FullRestoreExecutionFormat && r.Format != legacyFullRestoreExecutionFormat) || !r.WholeClusterTxnImport || !r.SourceVisibleRangeExclusive || !r.FullSnapshotRestored || !r.TargetWriteFenceProven || !r.FullImportAdmissionProven || r.LogReplayCompleted || r.PostRestoreSemanticValidated || r.PITRComplete {
+		return errors.New("receipt is not an admission-fenced full-only native restore")
+	}
+	encryption := EncryptionIdentity{Method: r.Encryption, KeyID: r.EncryptionKeyID}
+	if r.Format == legacyFullRestoreExecutionFormat && encryption.Method == "" {
+		encryption.Method = CipherMethodPlaintext
+	}
+	if err := encryption.Validate(); err != nil || (r.Format == legacyFullRestoreExecutionFormat && encryption.Method != CipherMethodPlaintext) {
+		return errors.New("full restore receipt has invalid encryption identity")
 	}
 	for _, value := range []string{r.PlanSHA256, r.SourceExclusiveSHA256, r.FullArtifactSHA256, r.ArtifactManifestSHA256, r.RestoreAdmissionSHA256, r.BRBinarySHA256} {
 		if !sha256RE.MatchString(value) {

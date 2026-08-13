@@ -75,7 +75,7 @@ func BuildFullSemanticVerification(plan Plan, full FullSnapshotReceipt, restore 
 	if plan.Full.ReceiptSHA256 != in.FullSnapshotSHA256 || plan.Full.BackupTS != full.BackupTS || plan.Source.ClusterID != full.ClusterID || plan.Source.Keyspace != full.Keyspace || plan.RestoreTS != full.BackupTS {
 		return FullSemanticVerificationReceipt{}, errors.New("semantic verification full snapshot does not match plan")
 	}
-	if restore.PlanSHA256 != in.PlanSHA256 || restore.PreWriteTarget.ClusterID != plan.Target.ClusterID || restore.FullArtifactSHA256 != plan.Full.ArtifactReceiptSHA256 || restore.ArtifactManifestSHA256 != plan.Full.ArtifactManifestSHA {
+	if restore.PlanSHA256 != in.PlanSHA256 || !planRestoreEncryptionMatches(plan, restore) || restore.PreWriteTarget.ClusterID != plan.Target.ClusterID || restore.FullArtifactSHA256 != plan.Full.ArtifactReceiptSHA256 || restore.ArtifactManifestSHA256 != plan.Full.ArtifactManifestSHA {
 		return FullSemanticVerificationReceipt{}, errors.New("semantic verification restore receipt does not match plan")
 	}
 	if witness.Format != backupfile.Format || witness.Prefix != "/" || witness.Revision <= 0 || witness.Records < 0 || witness.Leases < 0 || !sha256RE.MatchString(witness.SHA256) || witness.CreatedAtUnix <= 0 {

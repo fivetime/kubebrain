@@ -60,6 +60,32 @@ func artifactAttestationSHA(t *testing.T, full FullSnapshotReceipt) string {
 	return sha
 }
 
+func encryptedArtifactAttestation(t *testing.T, full FullSnapshotReceipt) FullBackupAttestation {
+	t.Helper()
+	identity := EncryptionIdentity{Method: CipherMethodAES256CTR, KeyID: "kms/prod/backup/versions/7"}
+	r, err := BuildFullBackupAttestationWithEncryption(pinnedBRVersionText, digest, digest, full.StoragePrefix, full.BackupTS, identity,
+		[]string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=" + fmt.Sprint(full.BackupTS), "--crypter.method=aes256-ctr", "--crypter.key-id=" + identity.KeyID}, 2_000_000_000)
+	require.NoError(t, err)
+	return r
+}
+
+func TestVerifyFullArtifactsCarriesEncryptedBackupIdentity(t *testing.T) {
+	full, root, fullDigest := artifactFixture(t, false)
+	inventory := inventoryForMirror(t, full.StoragePrefix, root)
+	attestation := encryptedArtifactAttestation(t, full)
+	attestationSHA, err := FullBackupAttestationSHA256(attestation)
+	require.NoError(t, err)
+	receipt, err := VerifyFullArtifacts(full, fullDigest, attestation, attestationSHA, inventory, digest, root)
+	require.NoError(t, err)
+	require.Equal(t, ArtifactReceiptFormat, receipt.Format)
+	require.Equal(t, CipherMethodAES256CTR, receipt.Encryption)
+	require.Equal(t, "kms/prod/backup/versions/7", receipt.EncryptionKeyID)
+	require.NoError(t, receipt.Validate())
+	bad := receipt
+	bad.EncryptionKeyID = "kms/prod/backup/versions/8"
+	require.ErrorContains(t, bad.Validate(), "attestation")
+}
+
 func TestVerifyFullArtifactsLegacyAndRecursiveIndex(t *testing.T) {
 	for _, indexed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "recursive index"}[indexed], func(t *testing.T) {

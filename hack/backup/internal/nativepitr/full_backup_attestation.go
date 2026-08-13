@@ -11,11 +11,14 @@ import (
 	"strings"
 )
 
-const FullBackupAttestationFormat = "kubebrain.native-pitr-full-backup-attestation.v2"
+const (
+	FullBackupAttestationFormat       = "kubebrain.native-pitr-full-backup-attestation.v3"
+	legacyFullBackupAttestationFormat = "kubebrain.native-pitr-full-backup-attestation.v2"
+)
 const maxBRVersionBytes = 16 << 10
 
 // FullBackupAttestation is emitted by the executor that actually ran BR. It
-// binds a successful, explicitly plaintext invocation to the exact binary and
+// binds a successful explicit plaintext or AES-256-CTR invocation to the exact binary and
 // storage identity consumed by the later full-snapshot receipt. Exact
 // backupmeta identity is independently bound by the artifact verifier. This
 // receipt intentionally records no key material or credential-bearing URL.
@@ -29,15 +32,24 @@ type FullBackupAttestation struct {
 	StoragePrefix       string   `json:"storage_prefix"`
 	BackupTS            uint64   `json:"backup_ts"`
 	CipherMethod        string   `json:"cipher_method"`
+	EncryptionKeyID     string   `json:"encryption_key_id,omitempty"`
 	CompletedAtUnix     int64    `json:"completed_at_unix"`
 	ExitSuccessful      bool     `json:"exit_successful"`
 }
 
 func BuildFullBackupAttestation(brVersion, brBinarySHA, pdAddressesSHA, storagePrefix string, backupTS uint64, args []string, completedAt int64) (FullBackupAttestation, error) {
+	return BuildFullBackupAttestationWithEncryption(
+		brVersion, brBinarySHA, pdAddressesSHA, storagePrefix, backupTS,
+		EncryptionIdentity{Method: CipherMethodPlaintext}, args, completedAt,
+	)
+}
+
+func BuildFullBackupAttestationWithEncryption(brVersion, brBinarySHA, pdAddressesSHA, storagePrefix string, backupTS uint64, encryption EncryptionIdentity, args []string, completedAt int64) (FullBackupAttestation, error) {
 	r := FullBackupAttestation{
 		Format: FullBackupAttestationFormat, BRVersion: brVersion, BRBinarySHA256: brBinarySHA,
 		CanonicalArgs: append([]string(nil), args...), PDAddressesSHA256: pdAddressesSHA,
-		StoragePrefix: storagePrefix, BackupTS: backupTS, CipherMethod: "plaintext",
+		StoragePrefix: storagePrefix, BackupTS: backupTS, CipherMethod: encryption.Method,
+		EncryptionKeyID: encryption.KeyID,
 		CompletedAtUnix: completedAt, ExitSuccessful: true,
 	}
 	r.CanonicalArgsSHA256 = digestStringSlice(r.CanonicalArgs)
@@ -45,8 +57,12 @@ func BuildFullBackupAttestation(brVersion, brBinarySHA, pdAddressesSHA, storageP
 }
 
 func (r FullBackupAttestation) Validate() error {
-	if r.Format != FullBackupAttestationFormat || len(r.BRVersion) > maxBRVersionBytes || strings.ContainsRune(r.BRVersion, '\x00') || !PinnedBRVersion(r.BRVersion) || !r.ExitSuccessful || r.CompletedAtUnix <= 0 || r.BackupTS == 0 || r.CipherMethod != "plaintext" {
+	if (r.Format != FullBackupAttestationFormat && r.Format != legacyFullBackupAttestationFormat) || len(r.BRVersion) > maxBRVersionBytes || strings.ContainsRune(r.BRVersion, '\x00') || !PinnedBRVersion(r.BRVersion) || !r.ExitSuccessful || r.CompletedAtUnix <= 0 || r.BackupTS == 0 {
 		return errors.New("native PITR full-backup attestation is incomplete")
+	}
+	encryption := EncryptionIdentity{Method: r.CipherMethod, KeyID: r.EncryptionKeyID}
+	if err := encryption.Validate(); err != nil || (r.Format == legacyFullBackupAttestationFormat && encryption.Method != CipherMethodPlaintext) {
+		return errors.New("native PITR full-backup attestation has invalid encryption identity")
 	}
 	for _, value := range []string{r.BRBinarySHA256, r.CanonicalArgsSHA256, r.PDAddressesSHA256} {
 		if !sha256RE.MatchString(value) {
@@ -62,7 +78,10 @@ func (r FullBackupAttestation) Validate() error {
 	want := []string{
 		"backup", "txn", "--storage=" + r.StoragePrefix,
 		"--backupts=" + strconv.FormatUint(r.BackupTS, 10),
-		"--crypter.method=plaintext",
+		"--crypter.method=" + encryption.Method,
+	}
+	if encryption.Method == CipherMethodAES256CTR {
+		want = append(want, "--crypter.key-id="+encryption.KeyID)
 	}
 	if len(r.CanonicalArgs) != len(want) {
 		return errors.New("native PITR full-backup arguments are not the canonical credential-free projection")

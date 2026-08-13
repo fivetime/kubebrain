@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,59 @@ func TestExecuteRunsCanonicalPlaintextBackupAndAttestsSuccess(t *testing.T) {
 	require.Equal(t, int64(2_000_000_000), receipt.CompletedAtUnix)
 	require.True(t, receipt.ExitSuccessful)
 	require.Equal(t, pinnedBRVersion, receipt.BRVersion)
+}
+
+func TestExecuteRunsAES256BackupWithoutAttestingKeyMaterial(t *testing.T) {
+	dir := t.TempDir()
+	br := filepath.Join(dir, "br")
+	require.NoError(t, os.WriteFile(br, []byte("pinned-br-binary"), 0o700))
+	keyFile := filepath.Join(dir, "encryption.key")
+	keyHex := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	require.NoError(t, os.WriteFile(keyFile, []byte(keyHex+"\n"), 0o400))
+	output := filepath.Join(dir, "attestation.json")
+	runner := &fakeRunner{}
+	o := options{
+		brBinary: br, pdAddrs: "pd:2379", storage: "s3://bucket/immutable/full-a",
+		backupTS: 120, output: output, timeout: time.Minute,
+		cipherMethod:    nativepitr.CipherMethodAES256CTR,
+		encryptionKeyID: "kms/prod/backup-key/versions/7", encryptionKeyFile: keyFile,
+	}
+	require.NoError(t, execute(context.Background(), o, runner, &bytes.Buffer{}, func() time.Time { return time.Unix(2_000_000_000, 0) }))
+	require.Contains(t, runner.args, "--crypter.method=aes256-ctr")
+	var runtimeKeyFile string
+	for _, arg := range runner.args {
+		if strings.HasPrefix(arg, "--crypter.key-file=") {
+			runtimeKeyFile = strings.TrimPrefix(arg, "--crypter.key-file=")
+		}
+	}
+	require.NotEmpty(t, runtimeKeyFile)
+	require.NotEqual(t, keyFile, runtimeKeyFile, "BR must consume a private key snapshot, not the mutable source path")
+	require.NoFileExists(t, runtimeKeyFile, "the private key snapshot must be removed after execution")
+	body, err := os.ReadFile(output)
+	require.NoError(t, err)
+	require.NotContains(t, string(body), keyFile)
+	require.NotContains(t, string(body), keyHex)
+	receipt, err := nativepitr.DecodeFullBackupAttestation(bytes.NewReader(body))
+	require.NoError(t, err)
+	require.Equal(t, nativepitr.CipherMethodAES256CTR, receipt.CipherMethod)
+	require.Equal(t, "kms/prod/backup-key/versions/7", receipt.EncryptionKeyID)
+}
+
+func TestExecuteRejectsChangedAES256KeyAfterBackup(t *testing.T) {
+	dir := t.TempDir()
+	br := filepath.Join(dir, "br")
+	require.NoError(t, os.WriteFile(br, []byte("br"), 0o700))
+	keyFile := filepath.Join(dir, "encryption.key")
+	require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("a", 64)), 0o400))
+	output := filepath.Join(dir, "attestation.json")
+	runner := &fakeRunner{hook: func() {
+		require.NoError(t, os.Chmod(keyFile, 0o600))
+		require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("b", 64)), 0o400))
+	}}
+	o := options{brBinary: br, pdAddrs: "pd:2379", storage: "s3://bucket/full", backupTS: 120, output: output, timeout: time.Minute,
+		cipherMethod: nativepitr.CipherMethodAES256CTR, encryptionKeyID: "key-version-7", encryptionKeyFile: keyFile}
+	require.ErrorContains(t, execute(context.Background(), o, runner, io.Discard, time.Now), "encryption key changed")
+	require.NoFileExists(t, output)
 }
 
 func TestExecuteNeverAttestsFailedBackup(t *testing.T) {

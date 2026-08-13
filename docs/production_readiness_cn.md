@@ -2059,8 +2059,27 @@ prefix，禁止自动重试不确定的部分写入。成功 attestation 已存�
   --attestation-output=/evidence/native-pitr-full-backup-attestation.json
 ```
 
+仓库内 backup/restore 原语还支持固定 BR v7.5.1 的 `aes256-ctr`。加密模式必须同时提供不可变、非秘密的
+external key version ID 和绝对 key-file；key-file 只允许 64 个小写十六进制字符（BR 解码后 32 bytes）。
+producer/restore 先校验并捕获 raw key、为 BR 创建 0600 私有临时快照，执行后删除快照并再次读取外部版本文件
+确认未漂移；BR 从不直接消费可变来源路径。路径、内容及 key digest 均不进入
+attestation/artifact/plan/restore receipt，长期证据只携带 method 与 key version ID。加密调用形状为：
+
+```shell
+/usr/local/bin/kubebrain-native-pitr-full-backup \
+  ... \
+  --crypter-method=aes256-ctr \
+  --encryption-key-id=kms/prod/kubebrain-backup/versions/7 \
+  --encryption-key-file=/run/secrets/kubebrain-backup/key
+```
+
+恢复时 `--encryption-key-id` 必须精确等于 plan/artifact 绑定值，并把相同版本的 key-file 传给
+`native-pitr-full-restore`；BR 成功解密 import 后，restore v3 才记录相同 identity。当前 operation runner/Secret
+volume 尚未接入这两个输入，生产 durable executor 仍只允许 plaintext；在下一接线项完成前不得通过 executor env
+内联密钥或手改参数 Secret 绕过这一限制。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
-`backup txn`、`--checksum=false` 和显式 plaintext crypter；打开并复算 BR executable
+`backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。
 只有 child 成功退出才以 0600 权限、不可覆盖方式原子发布 attestation。
 PD 地址会校验、排序并摘要；S3 URL 禁止 userinfo/query/fragment，TLS 三件套必须同时提供且只传给 BR，
@@ -2100,7 +2119,7 @@ receipt 仍诚实保留 `object_existence_checked=false`，因为该 receipt 本
 一次对象列表观测冒充完整性证明。
 
 执行 BR 的受审 operation executor 必须在 `Wait` 得到成功退出后、签发 full snapshot receipt 前原子写出
-`kubebrain.native-pitr-full-backup-attestation.v2`。该证据绑定实际 BR executable 的 SHA-256、规范化且
+`kubebrain.native-pitr-full-backup-attestation.v3`。该证据绑定实际 BR executable 的 SHA-256、规范化且
 去凭据的安全参数投影（`backup txn`、相同 immutable storage prefix、精确 BackupTS 和显式
 `--crypter.method=plaintext`）、PD 地址集合摘要与完成时间；不得由后续
 artifact verifier 根据 `cipher_iv` 猜测加密模式，也不得把人工补写的 JSON 当作执行证据。PD 地址、TLS 参数
@@ -2123,7 +2142,7 @@ go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
 
 该命令递归遍历 BR legacy `BackupMeta.files` 和 v2 `FileIndex`/`MetaFile` 树，流式复算每个 SST 与
 meta-index 的大小和 SHA-256，并拒绝缺失、额外、重复、越界路径、符号链接及非普通文件。输出
-`kubebrain.native-pitr-full-artifacts.v4`，先要求 attestation 的 canonical JSON SHA-256 可从嵌入对象
+`kubebrain.native-pitr-full-artifacts.v5`，先要求 attestation 的 canonical JSON SHA-256 可从嵌入对象
 独立重算，并与相同 storage prefix、BackupTS 和 backupmeta 精确相等；随后要求本地对象集合、大小和 SHA-256 与分页穷尽的远端
 exact-version inventory 完全相等，再绑定 exact full-snapshot receipt、排序后的 BR 对象清单、总字节、
 manifest digest、Object Lock 最小保留期和 inventory 检查时间。当前只接受由实际 executor 明示并证明的
@@ -2235,7 +2254,7 @@ go run ./hack/backup/cmd/native-pitr-restore-plan \
   --source-capture=/evidence/native-pitr-source-capture.json
 ```
 
-输出 `kubebrain.native-pitr-restore-plan.v12`。restore TSO 只能来自 exact source-capture receipt，命令不再
+输出 `kubebrain.native-pitr-restore-plan.v13`。restore TSO 只能来自 exact source-capture receipt，命令不再
 接受自由填写的 `--restore-ts`。source cluster/range、task start/commit、full backup TSO、
 exact full/artifact receipt digest、递归产物 manifest、backupmeta digest/full storage prefix、log storage URI/backend digest、global checkpoint 和 advancer
 owner，以及 exact ready/log-artifact receipt digest、日志对象 manifest/字节数/分片数全部来自严格 receipt，命令不再
@@ -2289,7 +2308,7 @@ SHA-256 也必须一致。调用参数刻意不传无效的 start/end，而是�
 Up store identity 与 plan-bound receipt 一致。运行 full executor 前必须先执行
 `native-pitr-admission-fence --action=acquire`，其 receipt 绑定 exact plan、target PD cluster ID、keyspace
 和 operation ID，并证明 PD metadata gate 已关闭且 active session 为零。成功输出
-`kubebrain.native-pitr-full-restore.v2`，固定记录
+`kubebrain.native-pitr-full-restore.v3`，固定记录
 `whole_cluster_txn_import=true`、`source_visible_range_exclusive=true`、`full_snapshot_restored=true`，同时
 记录 `full_import_admission_proven=true`、`target_write_fence_proven=true`，并固定
 `log_replay_completed=false`、`post_restore_semantic_validated=false`、`pitr_complete=false`。执行器在 BR

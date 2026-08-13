@@ -134,6 +134,9 @@ func BuildLogReplayExecution(plan Plan, restore FullRestoreExecutionReceipt, man
 	if err := handoff.Validate(); err != nil {
 		return LogReplayExecutionReceipt{}, err
 	}
+	if !planRestoreEncryptionMatches(plan, restore) {
+		return LogReplayExecutionReceipt{}, errors.New("log replay encryption identity does not match restore plan")
+	}
 	if plan.RestoreTS <= plan.Full.BackupTS || restore.PlanSHA256 != in.PlanSHA256 || !restore.TargetWriteFenceProven || fence.PlanSHA256 != in.PlanSHA256 || fence.TargetClusterID != plan.Target.ClusterID || fence.Keyspace != plan.Source.Keyspace || handoff.PlanSHA256 != in.PlanSHA256 || handoff.FullRestoreReceiptSHA256 != in.FullRestoreReceiptSHA256 || handoff.RestorationFenceReceiptSHA256 != fenceSHA || in.LogArtifactReceiptSHA256 != manifest.LogArtifactReceiptSHA256 || in.LastCommitTS != manifest.LastCommitTS || manifest.LogArtifactReceiptSHA256 != plan.Log.ArtifactReceiptSHA || manifest.ArtifactManifestSHA256 != plan.Log.ArtifactManifest || manifest.Keyspace != plan.Source.Keyspace || manifest.StartExclusiveTS != plan.Full.BackupTS || manifest.RestoreTS != plan.RestoreTS || !sha256RE.MatchString(fenceSHA) || !sha256RE.MatchString(handoffSHA) || in.RestorationFenceReceiptSHA256 != fenceSHA || in.AdmissionHandoffReceiptSHA256 != handoffSHA || fence.VerifiedAtUnix > in.StartedAtUnix || handoff.ReleasedAtUnix > in.StartedAtUnix {
 		return LogReplayExecutionReceipt{}, errors.New("log replay evidence does not match restore plan")
 	}

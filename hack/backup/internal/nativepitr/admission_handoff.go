@@ -45,7 +45,7 @@ func BuildAdmissionHandoff(plan Plan, planSHA string, admission RestoreAdmission
 	}
 	if admission.PlanSHA256 != planSHA || admission.TargetClusterID != plan.Target.ClusterID || admission.Keyspace != plan.Source.Keyspace || admission.OperationID != fence.OperationID ||
 		admission.AcquiredAtUnix > full.StartedAtUnix ||
-		full.PlanSHA256 != planSHA || full.RestoreAdmissionSHA256 != admissionSHA || full.PreWriteTarget.ClusterID != plan.Target.ClusterID || !full.FullImportAdmissionProven || !full.TargetWriteFenceProven ||
+		full.PlanSHA256 != planSHA || full.RestoreAdmissionSHA256 != admissionSHA || full.PreWriteTarget.ClusterID != plan.Target.ClusterID || !planRestoreEncryptionMatches(plan, full) || !full.FullImportAdmissionProven || !full.TargetWriteFenceProven ||
 		fence.PlanSHA256 != planSHA || fence.TargetClusterID != plan.Target.ClusterID || fence.Keyspace != plan.Source.Keyspace || fence.VerifiedAtUnix < full.CompletedAtUnix || releasedAt < fence.VerifiedAtUnix {
 		return AdmissionHandoffReceipt{}, errors.New("admission handoff evidence does not form a continuous restore chain")
 	}

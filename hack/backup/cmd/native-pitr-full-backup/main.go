@@ -27,6 +27,7 @@ import (
 
 type options struct {
 	brBinary, pdAddrs, storage, ca, cert, key, output string
+	cipherMethod, encryptionKeyID, encryptionKeyFile  string
 	backupTS                                          uint64
 	timeout                                           time.Duration
 }
@@ -83,6 +84,9 @@ func main() {
 	flag.StringVar(&o.cert, "cert", "", "source client certificate")
 	flag.StringVar(&o.key, "key", "", "source client private key")
 	flag.StringVar(&o.output, "attestation-output", "", "new full-backup attestation output file")
+	flag.StringVar(&o.cipherMethod, "crypter-method", nativepitr.CipherMethodPlaintext, "plaintext or aes256-ctr")
+	flag.StringVar(&o.encryptionKeyID, "encryption-key-id", "", "immutable non-secret encryption key version ID")
+	flag.StringVar(&o.encryptionKeyFile, "encryption-key-file", "", "file containing the 64-character hexadecimal AES-256 key")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "BR backup deadline")
 	flag.Parse()
 	if err := execute(context.Background(), o, osRunner{}, os.Stderr, time.Now); err != nil {
@@ -101,6 +105,32 @@ func execute(parent context.Context, o options, runner commandRunner, logs io.Wr
 	if _, err := os.Lstat(o.output); err == nil || !errors.Is(err, os.ErrNotExist) {
 		return errors.New("attestation-output must not already exist")
 	}
+	if o.cipherMethod == "" {
+		o.cipherMethod = nativepitr.CipherMethodPlaintext
+	}
+	encryption := nativepitr.EncryptionIdentity{Method: o.cipherMethod, KeyID: o.encryptionKeyID}
+	if err := encryption.Validate(); err != nil {
+		return err
+	}
+	var encryptionKey []byte
+	runtimeEncryptionKeyFile := ""
+	if encryption.Method == nativepitr.CipherMethodPlaintext {
+		if o.encryptionKeyFile != "" {
+			return errors.New("plaintext backup must not receive an encryption key file")
+		}
+	} else {
+		var err error
+		encryptionKey, err = nativepitr.ReadAES256KeyFile(o.encryptionKeyFile)
+		if err != nil {
+			return err
+		}
+		var cleanup func()
+		runtimeEncryptionKeyFile, cleanup, err = nativepitr.StageAES256KeyFile(encryptionKey)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+	}
 	addrs, pdSHA, err := canonicalPDAddresses(o.pdAddrs)
 	if err != nil {
 		return err
@@ -118,11 +148,18 @@ func execute(parent context.Context, o options, runner commandRunner, logs io.Wr
 		return fmt.Errorf("BR must be exact v7.5.1 build, got %q", versionBytes)
 	}
 	brVersion := string(versionBytes)
-	canonicalArgs := []string{"backup", "txn", "--storage=" + o.storage, "--backupts=" + strconv.FormatUint(o.backupTS, 10), "--crypter.method=plaintext"}
-	if _, err := nativepitr.BuildFullBackupAttestation(brVersion, brSHA, pdSHA, o.storage, o.backupTS, canonicalArgs, 1); err != nil {
+	canonicalArgs := []string{"backup", "txn", "--storage=" + o.storage, "--backupts=" + strconv.FormatUint(o.backupTS, 10), "--crypter.method=" + encryption.Method}
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		canonicalArgs = append(canonicalArgs, "--crypter.key-id="+encryption.KeyID)
+	}
+	if _, err := nativepitr.BuildFullBackupAttestationWithEncryption(brVersion, brSHA, pdSHA, o.storage, o.backupTS, encryption, canonicalArgs, 1); err != nil {
 		return err
 	}
-	args := []string{"backup", "txn", "--pd=" + strings.Join(addrs, ","), "--storage=" + o.storage, "--backupts=" + strconv.FormatUint(o.backupTS, 10), "--checksum=false", "--crypter.method=plaintext", "--log-file=/dev/stderr"}
+	args := []string{"backup", "txn", "--pd=" + strings.Join(addrs, ","), "--storage=" + o.storage, "--backupts=" + strconv.FormatUint(o.backupTS, 10), "--checksum=false", "--crypter.method=" + encryption.Method}
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		args = append(args, "--crypter.key-file="+runtimeEncryptionKeyFile)
+	}
+	args = append(args, "--log-file=/dev/stderr")
 	if o.ca != "" {
 		for _, path := range []string{o.ca, o.cert, o.key} {
 			if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
@@ -136,7 +173,13 @@ func execute(parent context.Context, o options, runner commandRunner, logs io.Wr
 	if err := runner.Run(ctx, brFile, resolvedBR, args, logs, logs); err != nil {
 		return fmt.Errorf("BR transactional full backup failed: %w", err)
 	}
-	receipt, err := nativepitr.BuildFullBackupAttestation(brVersion, brSHA, pdSHA, o.storage, o.backupTS, canonicalArgs, now().UTC().Unix())
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		current, err := nativepitr.ReadAES256KeyFile(o.encryptionKeyFile)
+		if err != nil || !bytes.Equal(current, encryptionKey) {
+			return errors.New("encryption key changed during BR backup")
+		}
+	}
+	receipt, err := nativepitr.BuildFullBackupAttestationWithEncryption(brVersion, brSHA, pdSHA, o.storage, o.backupTS, encryption, canonicalArgs, now().UTC().Unix())
 	if err != nil {
 		return err
 	}

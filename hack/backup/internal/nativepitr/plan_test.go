@@ -119,6 +119,15 @@ func TestDecodePlanIsStrict(t *testing.T) {
 	require.ErrorContains(t, err, "trailing")
 }
 
+func TestPlanBindsFullBackupEncryptionIdentity(t *testing.T) {
+	plan := validReceiptPlan(t)
+	plan.Full.Encryption = CipherMethodAES256CTR
+	plan.Full.EncryptionKeyID = "kms/prod/backup/versions/7"
+	require.NoError(t, plan.Validate())
+	plan.Full.EncryptionKeyID = ""
+	require.ErrorContains(t, plan.Validate(), "encryption identity")
+}
+
 func TestBuildFromReceiptsEliminatesFreeFormSourceEvidence(t *testing.T) {
 	task, _ := readyTask(t)
 	full, err := BuildFullSnapshot(task, digest, "s3://bucket/immutable/full-1", fullMeta(t, task))
