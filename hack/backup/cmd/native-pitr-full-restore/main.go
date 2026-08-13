@@ -173,7 +173,7 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if err != nil {
 		return err
 	}
-	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot); err != nil {
+	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot, encryptionKey); err != nil {
 		return err
 	}
 
@@ -262,7 +262,7 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if err := admissionfence.Verify(ctx, admissionClient, plan.Source.Keyspace, admissionToken); err != nil {
 		return fmt.Errorf("post-BR restore admission: %w", err)
 	}
-	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot); err != nil {
+	if err := verifyMirror(full, fullBytes, artifact, inventory, inventoryBytes, o.artifactRoot, encryptionKey); err != nil {
 		return errors.New("local full mirror changed during restore")
 	}
 	postBRHash, err := fileDigest(resolved)
@@ -290,8 +290,8 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	return err
 }
 
-func verifyMirror(full nativepitr.FullSnapshotReceipt, fullBytes []byte, artifact nativepitr.ArtifactReceipt, inventory pitrinventory.Receipt, inventoryBytes []byte, root string) error {
-	got, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), artifact.BackupAttestation, artifact.BackupAttestationSHA256, inventory, digest(inventoryBytes), root)
+func verifyMirror(full nativepitr.FullSnapshotReceipt, fullBytes []byte, artifact nativepitr.ArtifactReceipt, inventory pitrinventory.Receipt, inventoryBytes []byte, root string, encryptionKey []byte) error {
+	got, err := nativepitr.VerifyFullArtifactsWithEncryption(full, digest(fullBytes), artifact.BackupAttestation, artifact.BackupAttestationSHA256, inventory, digest(inventoryBytes), root, encryptionKey)
 	if err != nil {
 		return fmt.Errorf("reverify local full mirror: %w", err)
 	}

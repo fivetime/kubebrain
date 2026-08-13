@@ -71,11 +71,21 @@ func encryptedArtifactAttestation(t *testing.T, full FullSnapshotReceipt) FullBa
 
 func TestVerifyFullArtifactsCarriesEncryptedBackupIdentity(t *testing.T) {
 	full, root, fullDigest := artifactFixture(t, false)
+	key := []byte("0123456789abcdef0123456789abcdef")
+	iv := []byte("0123456789abcdef")
+	plainMeta, err := os.ReadFile(filepath.Join(root, "backupmeta"))
+	require.NoError(t, err)
+	encryptedMeta := encryptTestBRContent(t, plainMeta, key, iv, true)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "backupmeta"), encryptedMeta, 0o600))
+	task, _ := readyTask(t)
+	identity := EncryptionIdentity{Method: CipherMethodAES256CTR, KeyID: "kms/prod/backup/versions/7"}
+	full, err = BuildFullSnapshotWithEncryption(task, digest, full.StoragePrefix, encryptedMeta, identity, key)
+	require.NoError(t, err)
 	inventory := inventoryForMirror(t, full.StoragePrefix, root)
 	attestation := encryptedArtifactAttestation(t, full)
 	attestationSHA, err := FullBackupAttestationSHA256(attestation)
 	require.NoError(t, err)
-	receipt, err := VerifyFullArtifacts(full, fullDigest, attestation, attestationSHA, inventory, digest, root)
+	receipt, err := VerifyFullArtifactsWithEncryption(full, fullDigest, attestation, attestationSHA, inventory, digest, root, key)
 	require.NoError(t, err)
 	require.Equal(t, ArtifactReceiptFormat, receipt.Format)
 	require.Equal(t, CipherMethodAES256CTR, receipt.Encryption)

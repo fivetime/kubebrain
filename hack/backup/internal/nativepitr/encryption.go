@@ -2,6 +2,8 @@ package nativepitr
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 )
+
+const brCrypterIVBytes = aes.BlockSize
 
 const (
 	CipherMethodPlaintext = "plaintext"
@@ -100,6 +104,40 @@ func (e EncryptionIdentity) Validate() error {
 		return errors.New("unsupported native PITR backup cipher method")
 	}
 	return nil
+}
+
+// decryptBRContent implements BR v7.5.1's AES-CTR artifact format. Top-level
+// backupmeta prefixes its random 16-byte IV; recursive meta-index objects carry
+// the IV in their parent backuppb.File entry instead.
+func decryptBRContent(content []byte, encryption EncryptionIdentity, key, iv []byte, prefixedIV bool) ([]byte, error) {
+	if err := encryption.Validate(); err != nil {
+		return nil, err
+	}
+	if encryption.Method == CipherMethodPlaintext {
+		if len(key) != 0 || prefixedIV {
+			return nil, errors.New("plaintext BR content must not use an encryption key or prefixed IV")
+		}
+		return content, nil
+	}
+	if len(key) != 32 {
+		return nil, errors.New("AES-256 BR content requires exactly 32 key bytes")
+	}
+	if prefixedIV {
+		if len(content) <= brCrypterIVBytes {
+			return nil, errors.New("encrypted backupmeta is missing its prefixed IV or ciphertext")
+		}
+		iv, content = content[:brCrypterIVBytes], content[brCrypterIVBytes:]
+	}
+	if len(iv) != brCrypterIVBytes {
+		return nil, errors.New("encrypted BR content requires a 16-byte IV")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	plaintext := make([]byte, len(content))
+	cipher.NewCTR(block, iv).XORKeyStream(plaintext, content)
+	return plaintext, nil
 }
 
 func planRestoreEncryptionMatches(plan Plan, restore FullRestoreExecutionReceipt) bool {

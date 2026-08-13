@@ -10,6 +10,11 @@ if [[ "$topology_size" != 1 && "$topology_size" != 3 ]]; then
 fi
 fault_injection=${KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION:-none}
 test_name=${KUBEBRAIN_NATIVE_PITR_TEST:-TestNativeFullRestoreRealBR}
+encryption=${KUBEBRAIN_NATIVE_PITR_ENCRYPTION:-plaintext}
+if [[ "$encryption" != plaintext && "$encryption" != aes256-ctr ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_ENCRYPTION must be plaintext or aes256-ctr" >&2
+  exit 2
+fi
 objectstore_integration=false
 case "$test_name" in
   TestCanceledPutObjectLeavesNoRemoteArtifact|TestCommittedPutObjectResponseLossReconcilesRealS3|TestConditionalUploadRefusesConflictingRealS3Object|TestConditionalUploadRejectsMatchingMetadataCorruptRealS3Body|TestConditionalUploadRejectsInsufficientRealS3Retention|TestRestartRecoversReceiptAfterRealS3Commit)
@@ -46,6 +51,18 @@ if [[ "$fault_injection" == target-store-reserve-enospc-recover ]]; then
 fi
 mkdir -p "$shared_dir"
 chmod 0777 "$shared_dir"
+encryption_env=()
+if [[ "$encryption" == aes256-ctr ]]; then
+  encryption_key_file="$drill_tmp/aes256-ctr.key"
+  # A disposable deterministic drill key; durable evidence records only its
+  # immutable non-secret version identity, never these key bytes or this path.
+  printf '%s\n' '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' >"$encryption_key_file"
+  chmod 0600 "$encryption_key_file"
+  encryption_env=(
+    KUBEBRAIN_NATIVE_PITR_ENCRYPTION_KEY_FILE="$encryption_key_file"
+    KUBEBRAIN_NATIVE_PITR_ENCRYPTION_KEY_ID=integration/aes256-ctr/versions/1
+  )
+fi
 
 names=()
 mounted_dirs=()
@@ -396,7 +413,7 @@ elif [[ "$objectstore_integration" == true ]]; then
     docker logs "$minio_container" >&2 || true
     exit 1
   fi
-elif ! env "${log_env[@]}" "${fault_env[@]}" \
+elif ! env "${log_env[@]}" "${fault_env[@]}" "${encryption_env[@]}" \
   TMPDIR="$shared_dir" \
   KUBEBRAIN_NATIVE_PITR_SOURCE_PD="$source_pd_csv" \
   KUBEBRAIN_NATIVE_PITR_TARGET_PD="$target_pd_csv" \

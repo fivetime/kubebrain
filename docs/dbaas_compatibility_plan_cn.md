@@ -48633,6 +48633,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   管理员以文件创建 immutable Secret 的顺序。restore-side durable Operation、版本 promotion 自动化和真实加密
   TiKV backup/restore 演练仍是下一阶段，不能据此声称完整密钥生命周期闭环。
 
+- A4541 完成固定 BR/TiKV/PD v7.5.1 的真实 AES-256-CTR full backup/restore 演练，并修复演练暴露的
+  密文元数据缺口。BR 实际把顶层 `backupmeta` 写成 `16-byte random IV + AES-CTR ciphertext`，递归
+  meta-index 则把 IV 放在父 `backuppb.File.cipher_iv`；旧 verifier 直接按 protobuf 解码，因此真实加密备份
+  会以 `illegal wireType` 失败。native 核心现只在内存中用 plan/attestation 对应的 32-byte key 解密并解析
+  权威 inventory，receipt 的 size/SHA-256 仍严格绑定对象存储中的密文字节；错误 key、缺 IV、key version
+  mismatch 均 fail closed。restore executor 的 BR 前后 exact-mirror 复验也使用同一进程内 key，正式
+  `native-pitr-full-snapshot-receipt` 与 `native-pitr-full-artifact-verify` CLI 同步要求显式 method/key ID/key-file，
+  不再只有集成测试能处理密文。2026-08-13 运行
+  `KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr hack/backup/run-native-pitr-full-restore-integration.sh`
+  在相互独立的单 PD/单 TiKV source/target 上通过：BR backup/restore 均为固定 commit
+  `7d16cc79e81bbf573124df3fd9351c26963f3e70`，恢复 530 KV/107.1 kB，artifact、plan、restore receipt
+  逐层绑定 `aes256-ctr` 与 `integration/aes256-ctr/versions/1`，最终 etcd KV/lease 语义验收通过。该证据只
+  证明 disposable 单副本 happy path；错误密钥的真实独立目标破坏性演练、三副本故障注入、key version
+  promotion/KMS 授权和 restore-side durable Operation 仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

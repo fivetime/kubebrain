@@ -77,6 +77,8 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	require.Contains(t, plan, "A4538 关闭 operation audit admission 只要求“包含”归档 finalizer")
 	require.Contains(t, plan, "A4539 开始关闭 native PITR 只支持 plaintext 的加密备份缺口")
 	require.Contains(t, plan, "A4540 关闭 A4539 的 durable `NativePITRFullBackup` Operation")
+	require.Contains(t, plan, "A4541 完成固定 BR/TiKV/PD v7.5.1 的真实 AES-256-CTR")
+	require.Contains(t, plan, "错误密钥的真实独立目标破坏性演练")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

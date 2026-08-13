@@ -52,12 +52,19 @@ func TestRunVerifiesExactMirror(t *testing.T) {
 	inventoryPath := filepath.Join(dir, "inventory.json")
 	require.NoError(t, os.WriteFile(inventoryPath, inventoryBytes, 0o600))
 	var out bytes.Buffer
-	require.NoError(t, run(fullPath, attestationPath, inventoryPath, root, &out))
+	require.NoError(t, run(fullPath, attestationPath, inventoryPath, root, "", "", &out))
 	var receipt nativepitr.ArtifactReceipt
 	require.NoError(t, json.Unmarshal(out.Bytes(), &receipt))
 	require.Equal(t, 2, receipt.ObjectCount)
+
+	encryptedAttestation, err := nativepitr.BuildFullBackupAttestationWithEncryption("Release Version: v7.5.1\nGit Commit Hash: 7d16cc79e81bbf573124df3fd9351c26963f3e70\n", testDigest, testDigest, full.StoragePrefix, full.BackupTS, nativepitr.EncryptionIdentity{Method: nativepitr.CipherMethodAES256CTR, KeyID: "kms/test/versions/1"}, []string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=120", "--crypter.method=aes256-ctr", "--crypter.key-id=kms/test/versions/1"}, 2_000_000_000)
+	require.NoError(t, err)
+	encryptedBytes, err := json.Marshal(encryptedAttestation)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(attestationPath, encryptedBytes, 0o600))
+	require.ErrorContains(t, run(fullPath, attestationPath, inventoryPath, root, "kms/test/versions/2", filepath.Join(dir, "missing-key"), &bytes.Buffer{}), "attestation-bound")
 }
 
 func TestRunRequiresRemoteInventory(t *testing.T) {
-	require.ErrorContains(t, run("", "", "", "", &bytes.Buffer{}), "required")
+	require.ErrorContains(t, run("", "", "", "", "", "", &bytes.Buffer{}), "required")
 }

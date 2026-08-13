@@ -24,14 +24,16 @@ func main() {
 	backupAttestation := flag.String("full-backup-attestation", "", "exact native-pitr-full-backup-attestation receipt")
 	artifactRoot := flag.String("artifact-root", "", "exact local mirror root containing backupmeta and all referenced objects")
 	remoteInventory := flag.String("remote-inventory", "", "canonical native-pitr-object-inventory.v1 receipt")
+	encryptionKeyID := flag.String("encryption-key-id", "", "immutable non-secret key version ID required by encrypted attestation")
+	encryptionKeyFile := flag.String("encryption-key-file", "", "exact AES-256 key file required to inspect encrypted metadata")
 	flag.Parse()
-	if err := run(*fullSnapshot, *backupAttestation, *remoteInventory, *artifactRoot, os.Stdout); err != nil {
+	if err := run(*fullSnapshot, *backupAttestation, *remoteInventory, *artifactRoot, *encryptionKeyID, *encryptionKeyFile, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR full artifact verify:", err)
 		os.Exit(1)
 	}
 }
 
-func run(fullSnapshotPath, backupAttestationPath, remoteInventoryPath, artifactRoot string, out io.Writer) error {
+func run(fullSnapshotPath, backupAttestationPath, remoteInventoryPath, artifactRoot, encryptionKeyID, encryptionKeyFile string, out io.Writer) error {
 	if fullSnapshotPath == "" || backupAttestationPath == "" || remoteInventoryPath == "" || artifactRoot == "" {
 		return errors.New("full-snapshot, full-backup-attestation, remote-inventory, and artifact-root are required")
 	}
@@ -51,6 +53,18 @@ func run(fullSnapshotPath, backupAttestationPath, remoteInventoryPath, artifactR
 	if err != nil {
 		return err
 	}
+	var encryptionKey []byte
+	if attestation.CipherMethod == nativepitr.CipherMethodAES256CTR {
+		if encryptionKeyID != attestation.EncryptionKeyID {
+			return errors.New("encryption-key-id must equal the attestation-bound immutable key version ID")
+		}
+		encryptionKey, err = nativepitr.ReadAES256KeyFile(encryptionKeyFile)
+		if err != nil {
+			return err
+		}
+	} else if encryptionKeyID != "" || encryptionKeyFile != "" {
+		return errors.New("plaintext artifacts must not receive encryption key inputs")
+	}
 	inventory, inventoryBytes, err := pitrinventory.ReadCanonical(remoteInventoryPath)
 	if err != nil {
 		return err
@@ -61,7 +75,7 @@ func run(fullSnapshotPath, backupAttestationPath, remoteInventoryPath, artifactR
 		return err
 	}
 	inventoryDigest := sha256.Sum256(inventoryBytes)
-	receipt, err := nativepitr.VerifyFullArtifacts(full, hex.EncodeToString(digest[:]), attestation, attestationDigest, inventory, hex.EncodeToString(inventoryDigest[:]), artifactRoot)
+	receipt, err := nativepitr.VerifyFullArtifactsWithEncryption(full, hex.EncodeToString(digest[:]), attestation, attestationDigest, inventory, hex.EncodeToString(inventoryDigest[:]), artifactRoot, encryptionKey)
 	if err != nil {
 		return err
 	}

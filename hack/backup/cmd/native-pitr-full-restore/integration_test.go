@@ -2211,6 +2211,16 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	if sourceCaptureCommand == "" {
 		t.Skip("set KUBEBRAIN_NATIVE_PITR_SOURCE_CAPTURE")
 	}
+	encryption := nativepitr.EncryptionIdentity{Method: nativepitr.CipherMethodPlaintext}
+	encryptionKeyFile := os.Getenv("KUBEBRAIN_NATIVE_PITR_ENCRYPTION_KEY_FILE")
+	if encryptionKeyFile != "" {
+		encryption = nativepitr.EncryptionIdentity{Method: nativepitr.CipherMethodAES256CTR, KeyID: os.Getenv("KUBEBRAIN_NATIVE_PITR_ENCRYPTION_KEY_ID")}
+	}
+	require.NoError(t, encryption.Validate())
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		_, err := nativepitr.ReadAES256KeyFile(encryptionKeyFile)
+		require.NoError(t, err)
+	}
 	if withLogs && (preflight == "" || taskCreate == "" || mc == "" || fenceCommand == "" || replayCommand == "" || semanticCommand == "" || s3Endpoint == "" || s3Bucket == "" || s3Prefix == "") {
 		t.Skip("set native PITR preflight/task-create/mc and S3 integration variables")
 	}
@@ -2288,7 +2298,11 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 
 	artifactRoot := filepath.Join(root, "br")
 	require.NoError(t, os.Mkdir(artifactRoot, 0o700))
-	backup := exec.CommandContext(ctx, br, "backup", "txn", "--pd", strings.Join(sourceAddrs, ","), "--storage", "local://"+artifactRoot, "--backupts", fmt.Sprint(backupTS), "--checksum=false", "--crypter.method=plaintext", "--log-file", "/dev/stderr")
+	backupArgs := []string{"backup", "txn", "--pd", strings.Join(sourceAddrs, ","), "--storage", "local://" + artifactRoot, "--backupts", fmt.Sprint(backupTS), "--checksum=false", "--crypter.method=" + encryption.Method, "--log-file", "/dev/stderr"}
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		backupArgs = append(backupArgs, "--crypter.key-file="+encryptionKeyFile)
+	}
+	backup := exec.CommandContext(ctx, br, backupArgs...)
 	backup.Stdout, backup.Stderr = os.Stderr, os.Stderr
 	require.NoError(t, backup.Run())
 	if withLogs {
@@ -2368,18 +2382,30 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, err)
 	}
 	require.NoError(t, sourceKV.Close())
-	full, err := nativepitr.BuildFullSnapshot(task, digest(taskBytes), "s3://integration/full/snapshot", mustRead(t, filepath.Join(artifactRoot, "backupmeta")))
+	encryptionKey, err := func() ([]byte, error) {
+		if encryption.Method == nativepitr.CipherMethodPlaintext {
+			return nil, nil
+		}
+		return nativepitr.ReadAES256KeyFile(encryptionKeyFile)
+	}()
+	require.NoError(t, err)
+	full, err := nativepitr.BuildFullSnapshotWithEncryption(task, digest(taskBytes), "s3://integration/full/snapshot", mustRead(t, filepath.Join(artifactRoot, "backupmeta")), encryption, encryptionKey)
 	require.NoError(t, err)
 	fullPath := filepath.Join(t.TempDir(), "full.json")
 	fullBytes := canonicalFile(t, fullPath, full)
 	backupBRVersion, err := exec.CommandContext(ctx, br, "--version").CombinedOutput()
 	require.NoError(t, err)
-	attestation, err := nativepitr.BuildFullBackupAttestation(
+	canonicalBackupArgs := []string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=" + fmt.Sprint(full.BackupTS), "--crypter.method=" + encryption.Method}
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		canonicalBackupArgs = append(canonicalBackupArgs, "--crypter.key-id="+encryption.KeyID)
+	}
+	attestation, err := nativepitr.BuildFullBackupAttestationWithEncryption(
 		string(backupBRVersion), digest(mustRead(t, br)), digest([]byte(strings.Join(sourceAddrs, ","))), full.StoragePrefix,
-		full.BackupTS,
-		[]string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=" + fmt.Sprint(full.BackupTS), "--crypter.method=plaintext"},
+		full.BackupTS, encryption, canonicalBackupArgs,
 		time.Now().UTC().Unix(),
 	)
+	require.NoError(t, err)
+	attestationSHA, err := nativepitr.FullBackupAttestationSHA256(attestation)
 	require.NoError(t, err)
 	sourceCaptureBytes := runReceiptOutput(t, ctx, sourceCaptureCommand, "--action=finalize", "--task-create="+sourceTaskPath, "--capture-fence="+sourceCaptureFencePath, "--full-snapshot="+fullPath, "--source-pd-addrs="+sourcePD, "--timeout=1m")
 	sourceCapture, decodeErr := nativepitr.DecodeSourceCaptureReceipt(bytes.NewReader(sourceCaptureBytes))
@@ -2392,8 +2418,10 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	inventory := inventoryForRoot(t, artifactRoot, "integration", "full/snapshot")
 	inventoryPath := filepath.Join(t.TempDir(), "inventory.json")
 	inventoryBytes := canonicalFile(t, inventoryPath, inventory)
-	artifact, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), attestation, digest(canonicalJSON(t, attestation)), inventory, digest(inventoryBytes), artifactRoot)
+	artifact, err := nativepitr.VerifyFullArtifactsWithEncryption(full, digest(fullBytes), attestation, attestationSHA, inventory, digest(inventoryBytes), artifactRoot, encryptionKey)
 	require.NoError(t, err)
+	require.Equal(t, encryption.Method, artifact.Encryption)
+	require.Equal(t, encryption.KeyID, artifact.EncryptionKeyID)
 	artifactPath := filepath.Join(t.TempDir(), "artifact.json")
 	canonicalFile(t, artifactPath, artifact)
 
@@ -2430,6 +2458,8 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	planBytes := runReceiptOutput(t, ctx, restorePlanCommand, "--task-create="+taskPath, "--full-snapshot="+fullPath, "--full-artifacts="+artifactPath, "--task-ready="+readyPath, "--log-artifacts="+logPath, "--source-range-exclusive="+sourcePath, "--target-snapshot-empty="+targetPath, "--source-witness="+witnessPath, "--source-capture="+sourceCapturePath)
 	plan, err := nativepitr.DecodePlan(bytes.NewReader(planBytes))
 	require.NoError(t, err)
+	require.Equal(t, encryption.Method, plan.Full.Encryption)
+	require.Equal(t, encryption.KeyID, plan.Full.EncryptionKeyID)
 	planPath := filepath.Join(t.TempDir(), "plan.json")
 	require.NoError(t, os.WriteFile(planPath, planBytes, 0o600))
 	admissionBytes := runReceiptOutput(t, ctx, admissionCommand, "--action=acquire", "--plan="+planPath, "--operation-id=restore-integration", "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
@@ -2446,10 +2476,12 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		importFault = &brFaultRunner{commandRunner: runner, ctx: ctx, raw: os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"), recoveryDelay: 10 * time.Second}
 		runner = importFault
 	}
-	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, approve: digest(planBytes), timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
+	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: encryptionKeyFile, approve: digest(planBytes), timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)
+	require.Equal(t, encryption.Method, restore.Encryption)
+	require.Equal(t, encryption.KeyID, restore.EncryptionKeyID)
 	targetFaultInjected := false
 	if importFault != nil {
 		require.True(t, importFault.faultInjected(), "target fault was not injected during BR import")

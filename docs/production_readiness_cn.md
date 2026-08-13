@@ -2101,6 +2101,26 @@ attestation/artifact/plan/restore receipt，长期证据只携带 method 与 key
 parameter broker、operation status、日志或 env。restore-side durable Operation 尚未交付，恢复继续使用受审隔离
 命令和 plan approval，不能把 backup executor 接线冒充完整自动恢复编排。
 
+加密 `backupmeta` 不能直接交给明文 receipt/verifier。生成 full snapshot receipt 和核验 exact mirror 时必须
+把同一不可变版本身份及 key-file 显式传入；两个命令只在内存中解密元数据，收据摘要仍覆盖存储密文：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-full-snapshot-receipt \
+  --task-create="$TASK_CREATE" --backupmeta="$BACKUPMETA" \
+  --storage-prefix="$FULL_PREFIX" --crypter-method=aes256-ctr \
+  --encryption-key-id="$ENCRYPTION_KEY_ID" --encryption-key-file="$ENCRYPTION_KEY_FILE"
+
+go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
+  --full-snapshot="$FULL_SNAPSHOT" --full-backup-attestation="$ATTESTATION" \
+  --remote-inventory="$REMOTE_INVENTORY" --artifact-root="$ARTIFACT_ROOT" \
+  --encryption-key-id="$ENCRYPTION_KEY_ID" --encryption-key-file="$ENCRYPTION_KEY_FILE"
+```
+
+仓库的 disposable 实测入口为
+`KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr hack/backup/run-native-pitr-full-restore-integration.sh`。
+2026-08-13 已在独立单 PD/单 TiKV source/target 上完成密文 backupmeta 验证、BR 解密恢复和最终 etcd
+KV/lease 语义验收。该记录不是三副本、跨 AZ、错误 key 独立目标或生产 KMS promotion 证明。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。

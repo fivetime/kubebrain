@@ -62,6 +62,13 @@ type ArtifactReceipt struct {
 }
 
 func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256 string, attestation FullBackupAttestation, attestationSHA string, inventory pitrinventory.Receipt, inventorySHA, root string) (ArtifactReceipt, error) {
+	return VerifyFullArtifactsWithEncryption(full, fullReceiptSHA256, attestation, attestationSHA, inventory, inventorySHA, root, nil)
+}
+
+// VerifyFullArtifactsWithEncryption decrypts metadata only for inventory
+// interpretation. Digests, sizes, and exact-mirror evidence remain over the
+// encrypted bytes stored by BR.
+func VerifyFullArtifactsWithEncryption(full FullSnapshotReceipt, fullReceiptSHA256 string, attestation FullBackupAttestation, attestationSHA string, inventory pitrinventory.Receipt, inventorySHA, root string, encryptionKey []byte) (ArtifactReceipt, error) {
 	if err := validateFullSnapshotReceipt(full); err != nil {
 		return ArtifactReceipt{}, err
 	}
@@ -111,8 +118,13 @@ func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256 string, att
 	if int64(len(backupMetaBytes)) != full.BackupMetaBytes || hex.EncodeToString(backupMetaDigest[:]) != full.BackupMetaSHA256 {
 		return ArtifactReceipt{}, errors.New("local backupmeta does not match full-snapshot receipt")
 	}
+	encryption := EncryptionIdentity{Method: attestation.CipherMethod, KeyID: attestation.EncryptionKeyID}
+	plaintextMeta, err := decryptBRContent(backupMetaBytes, encryption, encryptionKey, nil, encryption.Method != CipherMethodPlaintext)
+	if err != nil {
+		return ArtifactReceipt{}, fmt.Errorf("decrypt local backupmeta: %w", err)
+	}
 	var meta backuppb.BackupMeta
-	if err := meta.Unmarshal(backupMetaBytes); err != nil {
+	if err := meta.Unmarshal(plaintextMeta); err != nil {
 		return ArtifactReceipt{}, fmt.Errorf("decode local backupmeta: %w", err)
 	}
 	if meta.ClusterId != full.ClusterID || meta.EndVersion != full.BackupTS || meta.StartVersion != 0 || !meta.IsTxnKv || meta.IsRawKv {
@@ -124,7 +136,7 @@ func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256 string, att
 			return ArtifactReceipt{}, err
 		}
 	}
-	if err := walkMetaIndex(root, meta.FileIndex, expected); err != nil {
+	if err := walkMetaIndex(root, meta.FileIndex, expected, encryption, encryptionKey); err != nil {
 		return ArtifactReceipt{}, err
 	}
 	if len(expected) == 0 {
@@ -245,7 +257,7 @@ func (r ArtifactReceipt) Validate() error {
 	return nil
 }
 
-func walkMetaIndex(root string, index *backuppb.MetaFile, expected map[string]*backuppb.File) error {
+func walkMetaIndex(root string, index *backuppb.MetaFile, expected map[string]*backuppb.File, encryption EncryptionIdentity, encryptionKey []byte) error {
 	if index == nil {
 		return nil
 	}
@@ -266,11 +278,15 @@ func walkMetaIndex(root string, index *backuppb.MetaFile, expected map[string]*b
 		if err := verifyFileBytes(content, node); err != nil {
 			return fmt.Errorf("verify meta index %q: %w", node.Name, err)
 		}
+		plaintext, err := decryptBRContent(content, encryption, encryptionKey, node.CipherIv, false)
+		if err != nil {
+			return fmt.Errorf("decrypt meta index %q: %w", node.Name, err)
+		}
 		var child backuppb.MetaFile
-		if err := child.Unmarshal(content); err != nil {
+		if err := child.Unmarshal(plaintext); err != nil {
 			return fmt.Errorf("decode meta index %q: %w", node.Name, err)
 		}
-		if err := walkMetaIndex(root, &child, expected); err != nil {
+		if err := walkMetaIndex(root, &child, expected, encryption, encryptionKey); err != nil {
 			return err
 		}
 	}

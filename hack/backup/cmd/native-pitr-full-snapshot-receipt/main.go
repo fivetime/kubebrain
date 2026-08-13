@@ -25,14 +25,17 @@ func main() {
 	taskCreate := flag.String("task-create", "", "exact native-pitr-task-create.v4 receipt")
 	backupMeta := flag.String("backupmeta", "", "downloaded BR txn backupmeta protobuf")
 	storagePrefix := flag.String("storage-prefix", "", "immutable s3:// bucket/prefix containing backupmeta and SSTs")
+	cipherMethod := flag.String("crypter-method", nativepitr.CipherMethodPlaintext, "plaintext or aes256-ctr")
+	encryptionKeyID := flag.String("encryption-key-id", "", "immutable non-secret key version ID for encrypted backupmeta")
+	encryptionKeyFile := flag.String("encryption-key-file", "", "exact AES-256 key file for encrypted backupmeta")
 	flag.Parse()
-	if err := run(*taskCreate, *backupMeta, *storagePrefix, os.Stdout); err != nil {
+	if err := run(*taskCreate, *backupMeta, *storagePrefix, *cipherMethod, *encryptionKeyID, *encryptionKeyFile, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR full snapshot receipt:", err)
 		os.Exit(1)
 	}
 }
 
-func run(taskCreatePath, backupMetaPath, storagePrefix string, out io.Writer) error {
+func run(taskCreatePath, backupMetaPath, storagePrefix, cipherMethod, encryptionKeyID, encryptionKeyFile string, out io.Writer) error {
 	if taskCreatePath == "" || backupMetaPath == "" || storagePrefix == "" {
 		return errors.New("task-create, backupmeta, and storage-prefix are required")
 	}
@@ -49,7 +52,20 @@ func run(taskCreatePath, backupMetaPath, storagePrefix string, out io.Writer) er
 		return err
 	}
 	taskDigest := sha256.Sum256(taskBytes)
-	receipt, err := nativepitr.BuildFullSnapshot(task, hex.EncodeToString(taskDigest[:]), storagePrefix, metaBytes)
+	encryption := nativepitr.EncryptionIdentity{Method: cipherMethod, KeyID: encryptionKeyID}
+	if err := encryption.Validate(); err != nil {
+		return err
+	}
+	var encryptionKey []byte
+	if encryption.Method == nativepitr.CipherMethodAES256CTR {
+		encryptionKey, err = nativepitr.ReadAES256KeyFile(encryptionKeyFile)
+		if err != nil {
+			return err
+		}
+	} else if encryptionKeyFile != "" {
+		return errors.New("plaintext backupmeta must not receive an encryption key file")
+	}
+	receipt, err := nativepitr.BuildFullSnapshotWithEncryption(task, hex.EncodeToString(taskDigest[:]), storagePrefix, metaBytes, encryption, encryptionKey)
 	if err != nil {
 		return err
 	}

@@ -1,6 +1,8 @@
 package nativepitr
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,6 +12,18 @@ import (
 	backuppb "github.com/pingcap/kvproto/pkg/brpb"
 	"github.com/stretchr/testify/require"
 )
+
+func encryptTestBRContent(t *testing.T, plaintext, key, iv []byte, prefixIV bool) []byte {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	require.NoError(t, err)
+	ciphertext := make([]byte, len(plaintext))
+	cipher.NewCTR(block, iv).XORKeyStream(ciphertext, plaintext)
+	if prefixIV {
+		return append(append([]byte(nil), iv...), ciphertext...)
+	}
+	return ciphertext
+}
 
 func fullMeta(t *testing.T, task TaskCreateReceipt) []byte {
 	t.Helper()
@@ -31,6 +45,24 @@ func TestBuildFullSnapshotUsesBackupMetaAuthority(t *testing.T) {
 	require.Equal(t, "whole-cluster", receipt.Scope)
 	require.False(t, receipt.ObjectExistenceChecked)
 	require.True(t, receipt.HasFileIndex)
+}
+
+func TestBuildFullSnapshotDecryptsAES256CTRMetadataButDigestsCiphertext(t *testing.T) {
+	task, _ := readyTask(t)
+	key := []byte("0123456789abcdef0123456789abcdef")
+	iv := []byte("0123456789abcdef")
+	encrypted := encryptTestBRContent(t, fullMeta(t, task), key, iv, true)
+	identity := EncryptionIdentity{Method: CipherMethodAES256CTR, KeyID: "kms/test/versions/1"}
+
+	receipt, err := BuildFullSnapshotWithEncryption(task, digest, "s3://bucket/immutable/full-1", encrypted, identity, key)
+	require.NoError(t, err)
+	wantDigest := sha256.Sum256(encrypted)
+	require.Equal(t, hex.EncodeToString(wantDigest[:]), receipt.BackupMetaSHA256)
+	require.Equal(t, int64(len(encrypted)), receipt.BackupMetaBytes)
+
+	wrongKey := []byte("abcdef0123456789abcdef0123456789")
+	_, err = BuildFullSnapshotWithEncryption(task, digest, "s3://bucket/immutable/full-1", encrypted, identity, wrongKey)
+	require.ErrorContains(t, err, "decode backupmeta")
 }
 
 func TestBuildFullSnapshotAcceptsBRTransactionalEmptyIndexes(t *testing.T) {

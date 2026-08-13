@@ -44,6 +44,13 @@ type FullSnapshotReceipt struct {
 }
 
 func BuildFullSnapshot(task TaskCreateReceipt, taskCreateSHA256, storagePrefix string, backupMetaBytes []byte) (FullSnapshotReceipt, error) {
+	return BuildFullSnapshotWithEncryption(task, taskCreateSHA256, storagePrefix, backupMetaBytes, EncryptionIdentity{Method: CipherMethodPlaintext}, nil)
+}
+
+// BuildFullSnapshotWithEncryption validates metadata after decrypting it in
+// memory, while binding the receipt digest and byte count to the immutable
+// encrypted object exactly as stored.
+func BuildFullSnapshotWithEncryption(task TaskCreateReceipt, taskCreateSHA256, storagePrefix string, backupMetaBytes []byte, encryption EncryptionIdentity, encryptionKey []byte) (FullSnapshotReceipt, error) {
 	if err := validateTaskCreateReceipt(task); err != nil {
 		return FullSnapshotReceipt{}, err
 	}
@@ -56,8 +63,12 @@ func BuildFullSnapshot(task TaskCreateReceipt, taskCreateSHA256, storagePrefix s
 	if len(backupMetaBytes) == 0 {
 		return FullSnapshotReceipt{}, errors.New("backupmeta is empty")
 	}
+	plaintextMeta, err := decryptBRContent(backupMetaBytes, encryption, encryptionKey, nil, encryption.Method != CipherMethodPlaintext)
+	if err != nil {
+		return FullSnapshotReceipt{}, fmt.Errorf("decrypt backupmeta: %w", err)
+	}
 	var meta backuppb.BackupMeta
-	if err := meta.Unmarshal(backupMetaBytes); err != nil {
+	if err := meta.Unmarshal(plaintextMeta); err != nil {
 		return FullSnapshotReceipt{}, fmt.Errorf("decode backupmeta protobuf: %w", err)
 	}
 	if meta.ClusterId == 0 || meta.ClusterId != task.ClusterID {
