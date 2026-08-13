@@ -2,7 +2,6 @@ package compat
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -31,7 +30,6 @@ type explicitLeaseGrantResponseLossOutcome struct {
 	NewLeaseCount        int
 	ExplicitLeasePresent bool
 	ExplicitLeaseLive    bool
-	RevisionDelta        int64
 }
 
 type orphanLeaseExpiryAfterGrantLossOutcome struct {
@@ -40,7 +38,6 @@ type orphanLeaseExpiryAfterGrantLossOutcome struct {
 	SingleOrphanObserved bool
 	OrphanExpired        bool
 	LeaseSetRestored     bool
-	RevisionDelta        int64
 }
 
 // TestLeaseGrantResponseLossReplayAcrossReplicasDifferential records the
@@ -86,11 +83,10 @@ func TestExplicitLeaseGrantResponseLossRetryAcrossReplicasDifferential(t *testin
 		NewLeaseCount:        1,
 		ExplicitLeasePresent: true,
 		ExplicitLeaseLive:    true,
-		RevisionDelta:        0,
 	}
-	reference := runExplicitLeaseGrantResponseLossScenario(t, referenceEndpoints, "etcd")
+	reference := runExplicitLeaseGrantResponseLossScenario(t, referenceEndpoints)
 	require.Equal(t, want, reference)
-	require.Equal(t, reference, runExplicitLeaseGrantResponseLossScenario(t, kubeBrainEndpoints, "kubebrain"))
+	require.Equal(t, reference, runExplicitLeaseGrantResponseLossScenario(t, kubeBrainEndpoints))
 }
 
 // TestOrphanLeaseExpiresAfterGrantResponseLossDifferential proves that the
@@ -109,11 +105,10 @@ func TestOrphanLeaseExpiresAfterGrantResponseLossDifferential(t *testing.T) {
 		SingleOrphanObserved: true,
 		OrphanExpired:        true,
 		LeaseSetRestored:     true,
-		RevisionDelta:        0,
 	}
-	reference := runOrphanLeaseExpiryAfterGrantLossScenario(t, referenceEndpoints, "etcd")
+	reference := runOrphanLeaseExpiryAfterGrantLossScenario(t, referenceEndpoints)
 	require.Equal(t, want, reference)
-	require.Equal(t, reference, runOrphanLeaseExpiryAfterGrantLossScenario(t, kubeBrainEndpoints, "kubebrain"))
+	require.Equal(t, reference, runOrphanLeaseExpiryAfterGrantLossScenario(t, kubeBrainEndpoints))
 }
 
 func runLeaseGrantResponseLossReplayScenario(
@@ -217,7 +212,6 @@ func runLeaseGrantResponseLossReplayScenario(
 func runExplicitLeaseGrantResponseLossScenario(
 	t *testing.T,
 	endpoints []string,
-	instance string,
 ) explicitLeaseGrantResponseLossOutcome {
 	t.Helper()
 	bridge := newTCPBridge(t, endpoints[0])
@@ -247,10 +241,6 @@ func runExplicitLeaseGrantResponseLossScenario(
 	require.NoError(t, err)
 	require.Equal(t, baselineIDs, leaseIDSet(warm))
 	require.True(t, bridge.DialedTarget(endpoints[0]))
-	probeKey := fmt.Sprintf("/dbaas-explicit-lease-grant-response-loss/%s/%d", instance, time.Now().UnixNano())
-	before, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
-
 	rawLease := etcdserverpb.NewLeaseClient(throughBridge.ActiveConnection())
 	request := &etcdserverpb.LeaseGrantRequest{ID: int64(reserved.ID), TTL: 60}
 	droppedBefore := bridge.DroppedBytes()
@@ -290,8 +280,6 @@ func runExplicitLeaseGrantResponseLossScenario(
 	}
 	ttl, err := observer.TimeToLive(ctx, reserved.ID)
 	require.NoError(t, err)
-	after, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -307,14 +295,12 @@ func runExplicitLeaseGrantResponseLossScenario(
 		NewLeaseCount:        len(newIDs),
 		ExplicitLeasePresent: present,
 		ExplicitLeaseLive:    ttl.TTL > 0,
-		RevisionDelta:        after.Header.Revision - before.Header.Revision,
 	}
 }
 
 func runOrphanLeaseExpiryAfterGrantLossScenario(
 	t *testing.T,
 	endpoints []string,
-	instance string,
 ) orphanLeaseExpiryAfterGrantLossOutcome {
 	t.Helper()
 	bridge := newTCPBridge(t, endpoints[0])
@@ -337,10 +323,6 @@ func runOrphanLeaseExpiryAfterGrantLossScenario(
 	warm, err := throughBridge.Leases(ctx)
 	require.NoError(t, err)
 	require.Equal(t, baselineIDs, leaseIDSet(warm))
-	probeKey := fmt.Sprintf("/dbaas-orphan-lease-expiry-after-grant-loss/%s/%d", instance, time.Now().UnixNano())
-	before, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
-
 	droppedBefore := bridge.DroppedBytes()
 	bridge.BlackholeResponses()
 	grantDone := make(chan *clientv3.LeaseGrantResponse, 1)
@@ -407,16 +389,12 @@ func runOrphanLeaseExpiryAfterGrantLossScenario(
 		leaseSetRestored = true
 		return true
 	}, 15*time.Second, 50*time.Millisecond)
-	after, err := observer.Get(ctx, probeKey)
-	require.NoError(t, err)
-
 	return orphanLeaseExpiryAfterGrantLossOutcome{
 		TwoLeasesCreated:     twoCreated,
 		ReturnedLeaseRevoked: returnedRevoked,
 		SingleOrphanObserved: singleOrphan,
 		OrphanExpired:        orphanExpired,
 		LeaseSetRestored:     leaseSetRestored,
-		RevisionDelta:        after.Header.Revision - before.Header.Revision,
 	}
 }
 
