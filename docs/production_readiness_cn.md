@@ -1942,7 +1942,7 @@ TiDB Operator 的 BR full/PITR 不能用于 KubeBrain 数据恢复。真实 S3 f
 独立 PD/TiKV Restore CR 都成功时，备份前已提交的 KubeBrain key 仍未出现在目标集群；
 任务 `Complete` 只证明 TiDB 管理范围恢复成功。BR raw 每次只处理一个 CF 且仍为实验
 功能，不能提供已经验证的 transactional KV 跨 CF 一致快照。因此控制面必须拒绝
-`br-full`、`br-pitr` 和 `br-raw`，并保留物理 PITR 为显式未完成项。
+`br-full`、`br-pitr` 和 `br-raw`；这些 TiDB 管理路径不能冒充下述 KubeBrain native PITR 链。
 
 这里的结论只否定 TiDB BR/Operator 的现成编排，并不表示 TiKV 缺少底层原语。源码审计确认：
 TiKV `BackupRequest` 在 transactional 模式直接接受任意 `start_key`/`end_key` 和
@@ -1968,11 +1968,12 @@ go run ./hack/backup/cmd/native-pitr-preflight \
 PD/TiKV v7.5.1 单 store 集群实际通过该预检；命名 keyspace 的输出范围为一个连续且 tenant
 隔离的区间。
 
-仍需实现和验证的生产闭环包括：持久 operation 对 task/advancer 的长期监管、源集群确为单租户
-独立集群的可审计 witness、将 transactional SST 与 log 恢复到空白独立集群的自有 restore 编排，
-以及在指定时间点完成
-逐 key/value、revision、lease 和 watch 语义验证。在这些项目全部通过前，native PITR 仍为
-实验性未完成能力，预检 receipt 不能作为备份或恢复 receipt 使用。
+受支持的受限 native PITR 链已完成功能闭环：后文记录的 task/advancer+safepoint 生命周期、不可变
+full/log artifact manifest、独立空白集群 transactional full restore、plan-bound log replay、连续 writer
+exclusion、fence handoff 和指定时间点 key/value/revision/lease/Watch 语义验收均已由 exact receipt 链绑定，
+日志路径最终只在全部门禁通过后输出 `pitr_complete=true`。该结论严格限于 pinned BR/TiKV v7.5.1、独立
+PD/TiKV source/target、所有 KubeBrain writer 遵守 admission/restoration fence 的当前实现；跨版本矩阵、
+跨 AZ、生产规模与数天 soak 仍是发布验证项。单独的 preflight receipt 仍不是备份或恢复成功证据。
 
 对官方 TiDB/BR v7.5.1 tag `7d16cc79e81bbf573124df3fd9351c26963f3e70` 的进一步审计固定了
 编排顺序。`streamhelper.MetaDataClient.PutTask` 用一条 etcd transaction 原子写 task 与全部
@@ -3490,7 +3491,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 
 ## 仍需补齐或确认
 
-- **在线 `Maintenance.Snapshot` 已实现，但物理 PITR 仍是明确缺口。** RPC 在固定 revision
+- **在线 `Maintenance.Snapshot` 与 native PITR 是两条不同的恢复链。** RPC 在固定 revision
   流式生成可由官方 etcdutl 恢复的 etcd backend，适合 etcd 语义迁移/恢复；它不是独立
   PD/TiKV 集群的物理制品。真实 A143 演练已证明 TiDB BR
   full/PITR 不包含 KubeBrain transactional keys，BR raw 也不能提供跨 CF 一致快照，因此
@@ -3505,30 +3506,25 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   从底层 snapshot/restore/remediation 命令启动一直覆盖 receipt 验证和摘要计算；terminal `succeed/fail` 前
   worker 停止并回收后台进程、拒绝已观察到的 fencing 退出，再同步续租一个完整 lease，只有成功才立即提交
   owner+attempt CAS。child 完成后写入本地完成标记，后续 heartbeat 故障不会向已退出、可能被复用的 child PID 发信号。
-  仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练，日志型 PITR 继续未完成。
+  冷 CSI 路径仍需在真实 CSI 环境实际完成多 PVC 全停机快照及隔离恢复演练；它不决定 native PITR 状态。
   TiKV 源码审计及隔离 v7.5.1 运行验证已经证明 arbitrary transactional range 的 full/log
   backup 原语存在；`native-pitr-preflight` 可只读验证 tenant 范围、PD task ownership 与每个 Up
   store 的 log-backup 服务，create/ready/delete receipt 已约束 task/safepoint 生命周期，full/log
   artifact receipt 已绑定不可变远端 exact versions；目标侧 snapshot-empty receipt 也已消除计划中的
-  自由 target ID/emptiness digest。full-only executor 现可在 exact plan 审批、source range-exclusive、
-  fresh target-empty 与 local mirror 双重复验后运行 pinned BR whole-cluster txn import，但 receipt 明确
-  不宣称 writer fence、日志回放、PITR 或语义验真。2026-08-11 的独立双集群真实演练已证明 full-only
-  路径能恢复租约/普通键并通过历史/current/lease/Watch 语义及 target TiKV 物理绑定；但当前 full receipt
-  尚未绑定 BR backup invocation 的
-  `cipher_info`/crypter 参数，而 `CipherIv` 在官方 plaintext 模式也存在，故生产还需增加独立的加密模式
-  attestation，不能只凭 backupmeta 声称 plaintext。full-only 恢复后的独立语义门禁现已实现严格
-  receipt/PD cluster ID/witness 摘要链、历史/current/lease 精确比较与真实 Watch 写删探针，并已完成
-  双集群真实演练；但备份前 witness 尚未由 plan 原子绑定。range-aware log materializer/executor 现已
-  实现 default/write CF 解析、tenant/TSO 过滤、原始 mutation 分组及原子 checkpoint 续跑，并已通过真实
-  官方 stream 双集群演练及 log 后 witness 语义验证；独立的 post-log semantic receipt、所有 writer 遵守的
-  首写前原子 fence 与 fence/plan/receipt 绑定仍未完成，因此不能改变本项“未完成”的结论。
+  自由 target ID/emptiness digest。后续 A4315-A4328 已继续完成 pinned BR whole-cluster transactional
+  full import、range-aware log materialization/replay、source capture、admission/restoration writer fence、
+  两阶段 handoff 与 post-log semantic receipt。独立双集群和对称三副本 source/target 均完成 full-only 与
+  stream-log 演练，并覆盖单成员 pause、冷启动、PD/TiKV ENOSPC 等故障。日志链只有 exact plan、artifact、
+  replay、handoff、witness 与 live target 物理绑定全部通过才签发 `pitr_complete=true`；full-only receipt
+  继续诚实保持 false。生产仍须补齐更广版本、跨 AZ、规模/时长和备份加密模式 attestation 门禁，不能把
+  这些验证项反向写成核心恢复状态机尚未实现。
   对 TiDB/BR v7.5.1（tag commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`）的 restore 源码审计还确认：
   `br restore txn` 能直接导入 transactional BackupMeta 的 SST，适合 KubeBrain arbitrary range 的 full
   阶段；但 `br restore point` 不能直接复用为 KubeBrain 日志恢复器。其 `RunStreamRestore` 会创建 TiDB
   domain、恢复 DDL/meta、构造 upstream/downstream table-ID rewrite rules，再用这些规则筛选和重写 DML
-  文件，而 KubeBrain 日志是非 TiDB table schema 管理的任意事务键范围。后续执行器必须把 full-only
-  `restore txn` 与 range-aware log replay 分阶段实现；在后者真实完成前，禁止用官方 point restore 的
-  成功退出或只完成 full restore 来声称 PITR 已完成。
+  文件，而 KubeBrain 日志是非 TiDB table schema 管理的任意事务键范围。因此当前受支持链明确使用
+  full-only `restore txn` 加 KubeBrain range-aware log replay；禁止用官方 point restore 的成功退出或只
+  完成 full restore 来声称 PITR 已完成。
 - **升级前已成为历史的 lease provenance 缺失只能通过显式丢弃旧 MVCC 历史缓解。** 旧 raw/v1
   current value 会在升级后的第一次 Put/Delete 的同一事务中按锁定 attachment 原位升级为 v2/v3，
   不增加 revision 或 Watch 事件，因此不会再制造新的含糊历史；但升级前已经 retained 的历史版本没有

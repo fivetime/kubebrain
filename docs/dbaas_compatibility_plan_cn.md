@@ -48522,12 +48522,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   backend 全量（44.209s）、`pkg/server/etcd` 全量（168.039s）、checkpoint 专项 race 5 轮、backend/server
   vet 与 production manifest 全量均通过。
 
+- A4531 对账 native PITR 当前实现与发布文档，修复同一仓库同时声明“功能未闭环”和
+  `pitr_complete=true` 的状态冲突。A4315-A4328 及后续真实门禁已经完成 task/advancer+safepoint 生命周期、
+  immutable full/log artifact、独立 target transactional restore、range-aware replay、source capture、连续
+  writer exclusion、两阶段 fence handoff 和指定时间点 key/value/revision/lease/Watch 语义验收；双集群与
+  对称三副本 full-only/stream-log、成员 pause、冷启动和 PD/TiKV ENOSPC 均有现场记录。因此当前状态改为
+  “pinned BR/TiKV v7.5.1 的受支持受限功能闭环”，日志路径仍只有 exact receipt 与最终语义门禁全部通过才
+  签发 `pitr_complete=true`，full-only 保持 false。TiDB Operator BR full/PITR/raw 继续禁止冒充该链；cold
+  CSI 多 PVC 恢复仍是独立未完成演练。开放项收敛为更广版本、跨 AZ、生产规模、长 soak 与备份加密模式
+  attestation，而不再错误声称核心状态机尚未实现。新增文档契约同时锁定完成面、限制面和 TiDB 替代禁令，
+  连续 10 轮通过；`internal/nativepitr`（0.246s）、semantic verifier（0.107s）、full-restore command
+  （0.080s）全量与相关 vet 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
    并把表纳入发布说明。
-2. 设计受支持的 transactional TiKV 物理快照/PITR；继续逻辑恢复演练、滚动升级、
-   跨可用区故障、磁盘满和长时间 soak。不得用 TiDB BR full/PITR 的成功状态关闭该缺口。
+2. transactional TiKV native PITR 的 pinned v7.5.1 受限链已完成功能闭环；继续扩大版本矩阵、
+   跨可用区故障、生产规模和长时间 soak，并完成独立的备份加密模式 attestation。不得用 TiDB BR
+   full/PITR 的成功状态替代 KubeBrain exact receipt 与最终语义门禁。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
    显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写
    结果的 KubeBrain Leader/TiKV/PD 故障历史；批量 lease renewal 隔离模型与小时级

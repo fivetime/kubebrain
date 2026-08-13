@@ -23,13 +23,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDBaaSCompatibilityPlanKeepsPhysicalRestorePITRIncomplete(t *testing.T) {
+func TestDBaaSCompatibilityPlanKeepsColdCSIIncompleteAndRejectsTiDBPITRSubstitution(t *testing.T) {
 	plan := readDBaaSCompatibilityPlan(t)
 
-	require.Contains(t, plan, "物理 full snapshot 和日志型 PITR 均未完成")
-	require.Contains(t, plan, "仍不替代真实 CSI 隔离恢复演练，也不关闭 PITR 缺口")
-	require.Contains(t, plan, "仍不关闭真实 CSI 隔离恢复或 PITR 缺口")
-	require.Contains(t, plan, "不得用 TiDB BR full/PITR 的成功状态关闭该缺口")
+	require.Contains(t, plan, "cold CSI")
+	require.Contains(t, plan, "CSI 多 PVC 恢复仍是独立未完成演练")
+	require.Contains(t, plan, "pinned v7.5.1 受限链已完成功能闭环")
+	require.Contains(t, plan, "不得用 TiDB BR")
+	require.Contains(t, plan, "替代 KubeBrain exact receipt 与最终语义门禁")
 }
 
 func TestDBaaSCompatibilityMatrixDescribesBoundedPDIsolationReads(t *testing.T) {
@@ -41,13 +42,28 @@ func TestDBaaSCompatibilityMatrixDescribesBoundedPDIsolationReads(t *testing.T) 
 	require.NotContains(t, plan, "serializable Range 不具备 upstream 本地 applied backend 的隔离成员可读性")
 }
 
+func TestDBaaSReadinessDescribesRestrictedNativePITRAsFunctionallyClosed(t *testing.T) {
+	readiness := readRepoDocument(t, "docs", "production_readiness_cn.md")
+	audit := readRepoDocument(t, "docs", "audit_remediation_todo_cn.md")
+
+	require.Contains(t, readiness, "受支持的受限 native PITR 链已完成功能闭环")
+	require.Contains(t, readiness, "`pitr_complete=true`")
+	require.NotContains(t, readiness, "仍需实现和验证的生产闭环包括")
+	require.Contains(t, audit, "native PITR 功能闭环已完成，剩余为生产规模化验证")
+	require.NotContains(t, audit, "task/safepoint 生命周期、full+log manifest、transactional restore 及指定时间点语义验收尚未闭环")
+}
+
 func readDBaaSCompatibilityPlan(t *testing.T) string {
+	return readRepoDocument(t, "docs", "dbaas_compatibility_plan_cn.md")
+}
+
+func readRepoDocument(t *testing.T, path ...string) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 
 	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", ".."))
-	planPath := filepath.Join(repoRoot, "docs", "dbaas_compatibility_plan_cn.md")
+	planPath := filepath.Join(append([]string{repoRoot}, path...)...)
 	data, err := os.ReadFile(planPath)
 	require.NoError(t, err)
 	return string(data)
