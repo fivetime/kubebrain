@@ -57,6 +57,7 @@ func TestHandlerAuthenticatesHighRiskExecutorTypes(t *testing.T) {
 		{serviceAccount: "kubebrain-native-pitr-full-backup-executor", operationType: "NativePITRFullBackup"},
 		{serviceAccount: "kubebrain-native-pitr-full-restore-executor", operationType: "NativePITRFullRestore"},
 		{serviceAccount: "kubebrain-native-pitr-target-retirement-executor", operationType: "NativePITRTargetRetirement"},
+		{serviceAccount: "kubebrain-native-pitr-target-provisioning-executor", operationType: "NativePITRTargetProvisioning"},
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},

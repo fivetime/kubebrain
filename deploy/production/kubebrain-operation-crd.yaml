@@ -103,6 +103,7 @@ spec:
                     - NativePITRFullBackup
                     - NativePITRFullRestore
                     - NativePITRTargetRetirement
+                    - NativePITRTargetProvisioning
                     - BackupDeletion
                     - ColdPhysicalSnapshot
                     - ColdPhysicalRestore

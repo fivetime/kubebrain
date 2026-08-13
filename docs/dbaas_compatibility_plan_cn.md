@@ -48820,6 +48820,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   必选 schema、broker/type/RBAC/admission manifests。旧 failed restore 未在 parameters 中绑定 provisioning 的，按设计
   不获自动退役资格；真实 Kubernetes controller finalizer、Retain PV/provider cleanup 与同名重新 provision 演练仍开放。
 
+- A4556 把退役后的 replacement TiKV/PD provisioning 收进 fail-closed、受审批的数据面生命周期。新增严格
+  `target-provision-authorization.v1`：逐 SHA 绑定 A4555 retirement、旧 provisioning 与 exact TidbCluster JSON；manifest
+  只允许 PD/TiKV、强制 `pvReclaimPolicy: Retain`、正 replica/storage request、固定 ownership labels 和唯一 operation
+  manifest nonce annotation（与摘要生成的 Operation ID 分离，避免循环依赖），禁止 TiDB/TiFlash/TiCDC/pump/binlog/DM、initializer/bootstrap 和 paused。executor 先确认同名
+  TidbCluster 与同 instance PVC 均不存在，再执行 API Server dry-run/create；真实 create 响应必须与 dry-run 的 admission 后
+  labels/annotations/spec canonical digest 完全相同，随即以 O_EXCL+fsync 发布 creation receipt，记录新 UID/resourceVersion。
+  receipt 发布前崩溃属于无法区分“未创建/已创建”的窗口，第二 claim 明确 Failed 并要求人工检查；receipt 已发布时只允许
+  get 当前对象并复核 exact UID、authorization 和 admission digest，不会再次 create。Ready 后复用 A4553 inspector，最终
+  verifier 要求新 cluster ID、TidbCluster UID、全部 PVC UID/PV UID/CSI driver+handle 与退役目标不相交，且 topology 与授权
+  一致。`NativePITRTargetProvisioning` 使用 immutable digest-bound Secret、独立 requester/executor、maxAttempts=2、独立审批；
+  namespace RBAC 只有 TidbCluster get/create/watch 与 PVC get/list，cluster scope 只有 PV get，没有 delete/update/patch。
+  当前 fake API 顺序测试覆盖 dry-run→create→durable receipt→Ready→inspection，另覆盖无 receipt 同名碰撞和第二 claim 歧义
+  fail closed；Go、queue/broker/audit、admission/RBAC manifest 测试通过。仍需在真实 TiDB Operator、CSI provisioner 和多可用区
+  集群演练 defaulting/finalizer/调度/卷供应，并证明 provider 不会用不同 volumeHandle 指向同一底层快照或克隆。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

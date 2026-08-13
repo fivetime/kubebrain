@@ -4694,3 +4694,11 @@ TiKV 显式 snapshot TSO 的 point/batch 读取能力并通过真实集群历史
 - 恢复记录数与导出记录数一致。
 - 隔离前缀下对象可 list/get。
 - apiserver 真实恢复前必须有停写窗口，且不能依赖该逻辑备份保留原始 revision、lease 或 watch 历史。
+
+原生 PITR 失败目标完成 `NativePITRTargetRetirement` 后，不允许直接手工复用同名 PVC。使用专用 requester 创建并审批
+`NativePITRTargetProvisioning`，其 immutable parameters 只包含 retirement、旧 provisioning 和 replacement TidbCluster
+manifest 的 workspace path+SHA。执行器在创建前检查同名 TidbCluster/PVC 碰撞，要求 server-side dry-run 与真实 create 的
+admission 后规范身份一致，并在等待 Ready 前持久化新 UID creation receipt。若 create 后、receipt 前崩溃，自动重试会按
+设计停止，值班人员必须先确认 API 对象与卷状态；不得删除同名对象后盲目重试。成功 receipt 还必须证明新旧 cluster ID、
+TidbCluster UID、PVC/PV UID 和 CSI volume identity 全部不相交。该门禁不能证明 CSI provider 的两个不同 handle 没有共享
+底层克隆，生产启用前仍需 provider 级审计和真实集群演练。

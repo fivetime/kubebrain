@@ -244,6 +244,7 @@ spec:
                   - kubebrain-native-pitr-full-backup-executor
                   - kubebrain-native-pitr-full-restore-executor
                   - kubebrain-native-pitr-target-retirement-executor
+                  - kubebrain-native-pitr-target-provisioning-executor
                   - kubebrain-backup-deletion-executor
                   - kubebrain-cold-physical-snapshot-executor
                   - kubebrain-cold-physical-restore-executor
