@@ -114,7 +114,8 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
 		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: []byte(prefix), RangeEnd: end})
-		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: []byte(lowPrefix), RangeEnd: lowEnd})
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: []byte(lowPrefix + "a")})
+		_, _ = kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: []byte(lowPrefix + "b")})
 	})
 
 	for _, follower := range replicas {
