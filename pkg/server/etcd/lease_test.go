@@ -142,12 +142,21 @@ type rejectedGuardedLeaseMetadataBackend struct {
 	err error
 }
 
+type rejectedLeaseMetadataCASBackend struct {
+	BackendShim
+	err error
+}
+
 func (b *corruptGuardedLeaseMetadataBackend) InternalPutCorruptGuarded(context.Context, []byte, []byte) error {
 	b.called = true
 	return backend.ErrCorruptAlarmActive
 }
 
 func (b *rejectedGuardedLeaseMetadataBackend) InternalPutCorruptGuarded(context.Context, []byte, []byte) error {
+	return b.err
+}
+
+func (b *rejectedLeaseMetadataCASBackend) InternalCAS(context.Context, []backend.InternalCASOp) error {
 	return b.err
 }
 
@@ -633,6 +642,31 @@ func TestLeaseMetadataReadbackCannotHideDefiniteWriteFence(t *testing.T) {
 			err = server.persistMigratedLeaseMeta(ctx, leaseID, 300, 200)
 			require.ErrorIs(t, err, fenceErr,
 				"identical bytes from an earlier term must not hide a definite write fence")
+		})
+	}
+}
+
+func TestLeaseCheckpointReadbackCannotHideDefiniteCASRejection(t *testing.T) {
+	for index, rejectErr := range []error{
+		backend.ErrLeadershipFenced,
+		backend.ErrRestorationFenced,
+		backend.ErrInternalWriteGuardConflict,
+	} {
+		t.Run(rejectErr.Error(), func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			leaseID := int64(4508001 + index)
+			// Pre-existing updated bytes could belong to an earlier checkpoint or
+			// another safety epoch; they do not prove this rejected CAS committed.
+			updated, err := json.Marshal(leaseRecord{ID: leaseID, TTL: 300})
+			require.NoError(t, err)
+			require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), updated))
+			server.backend = &rejectedLeaseMetadataCASBackend{BackendShim: server.backend, err: rejectErr}
+
+			err = server.persistLeaseCheckpointCAS(ctx, leaseID, 300, 200, 0)
+			require.ErrorIs(t, err, rejectErr,
+				"identical bytes must not hide a definite checkpoint CAS rejection")
 		})
 	}
 }

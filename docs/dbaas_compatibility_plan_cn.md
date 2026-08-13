@@ -48289,6 +48289,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   直接保留，只有非确定错误才允许通过精确 readback 证明可能已提交。表驱动回归预置相同 metadata，并对两个 safety fence
   分别固定不得被 readback 隐藏；既有 committed-then-canceled checkpoint 对账继续通过。
 
+- A4509 收紧 Renew 清除 remaining-TTL checkpoint 的 CAS 对账。该路径原来只把 `storage.ErrCASFailed` 视为确定结果；
+  leadership/restoration fence 或 auth internal-write guard 明确拒绝后，若目标 `RemainingTTL=0` bytes 已由早期 checkpoint、
+  另一副本或另一安全任期写入，精确 readback 会错误声称本次 CAS 成功。现在 lease metadata Put/CAS 共用统一的确定拒绝分类，
+  CORRUPT active/changed/invalid、leadership/restoration fence 和 internal auth guard conflict 均原样返回，不能被相同值覆盖；
+  只有可能丢失 commit response 的错误继续对账。表驱动回归固定三种 CAS 拒绝在预存相同 updated bytes 时仍保持原 sentinel。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

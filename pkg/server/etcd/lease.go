@@ -2201,11 +2201,7 @@ func (m *leaseManager) persistLeaseRecord(ctx context.Context, key, data []byte,
 	// or commit-order outcomes, not lost commit responses. A pre-existing
 	// identical record must not turn the rejected operation into success (legacy
 	// migration could otherwise retire its source from the wrong safety epoch).
-	if errors.Is(err, backend.ErrCorruptAlarmActive) ||
-		errors.Is(err, backend.ErrCorruptAlarmChanged) ||
-		errors.Is(err, backend.ErrInvalidAlarmMetadata) ||
-		errors.Is(err, backend.ErrLeadershipFenced) ||
-		errors.Is(err, backend.ErrRestorationFenced) {
+	if isDefiniteLeaseMetadataWriteRejection(err) {
 		return err
 	}
 
@@ -2254,6 +2250,9 @@ func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, f
 	if err == nil || errors.Is(err, storage.ErrCASFailed) {
 		return err
 	}
+	if isDefiniteLeaseMetadataWriteRejection(err) {
+		return err
+	}
 
 	// As with InternalPut above, a lost commit response is ambiguous. Exact
 	// readback proves success; a concurrent Revoke leaves the key absent and is
@@ -2270,6 +2269,15 @@ func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, f
 		return errors.Join(err, fmt.Errorf("inspect lease metadata after failed CAS: %w", getErr))
 	}
 	return errors.Join(err, errors.New("lease metadata differs after failed CAS"))
+}
+
+func isDefiniteLeaseMetadataWriteRejection(err error) bool {
+	return errors.Is(err, backend.ErrCorruptAlarmActive) ||
+		errors.Is(err, backend.ErrCorruptAlarmChanged) ||
+		errors.Is(err, backend.ErrInvalidAlarmMetadata) ||
+		errors.Is(err, backend.ErrLeadershipFenced) ||
+		errors.Is(err, backend.ErrRestorationFenced) ||
+		errors.Is(err, backend.ErrInternalWriteGuardConflict)
 }
 
 // attachKeyToStorage records that userKey is attached to lease id as a single
