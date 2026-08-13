@@ -39,6 +39,18 @@ require_positive_integer KUBEBRAIN_QUOTA_BYTES
 require_positive_integer KUBEBRAIN_FILL_BYTES
 require_positive_integer REFERENCE_QUOTA_BYTES
 require_positive_integer REFERENCE_FILL_BYTES
+if ((KUBEBRAIN_FILL_BYTES <= KUBEBRAIN_QUOTA_BYTES)); then
+  echo "KUBEBRAIN_FILL_BYTES must exceed KUBEBRAIN_QUOTA_BYTES to trigger automatic NOSPACE" >&2
+  exit 2
+fi
+if ((REFERENCE_FILL_BYTES <= REFERENCE_QUOTA_BYTES)); then
+  echo "REFERENCE_FILL_BYTES must exceed REFERENCE_QUOTA_BYTES to trigger automatic NOSPACE" >&2
+  exit 2
+fi
+if ((KUBEBRAIN_FILL_BYTES > 1500000 || REFERENCE_FILL_BYTES > 1500000)); then
+  echo "automatic-quota fill bytes must not exceed 1500000; larger payloads hit the default request-size limit before quota admission" >&2
+  exit 2
+fi
 if [[ -z "$KUBEBRAIN_QUOTA_ENDPOINT" ]]; then
   echo "set KUBEBRAIN_AUTOMATIC_QUOTA_ENDPOINT to a pristine disposable low-quota KubeBrain endpoint" >&2
   exit 1

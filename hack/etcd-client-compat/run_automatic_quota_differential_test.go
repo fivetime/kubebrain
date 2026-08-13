@@ -38,6 +38,27 @@ func TestAutomaticQuotaDifferentialRunnerRejectsInvalidQuotaBeforeDependencies(t
 	require.NotContains(t, string(output), "missing required command")
 }
 
+func TestAutomaticQuotaDifferentialRunnerRejectsFillThatCannotExerciseQuota(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-automatic-quota-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_AUTOMATIC_QUOTA_BYTES=1024",
+		"KUBEBRAIN_AUTOMATIC_QUOTA_FILL_BYTES=1024",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "KUBEBRAIN_FILL_BYTES must exceed KUBEBRAIN_QUOTA_BYTES")
+	require.NotContains(t, string(output), "missing required command")
+}
+
+func TestAutomaticQuotaDifferentialRunnerRejectsFillAboveRequestBoundary(t *testing.T) {
+	output, err := runCompatScriptCommand(t, "run-automatic-quota-differential.sh", []string{
+		"PATH=" + t.TempDir() + ":/usr/bin:/bin",
+		"KUBEBRAIN_AUTOMATIC_QUOTA_FILL_BYTES=1500001",
+	})
+	require.Error(t, err)
+	require.Contains(t, string(output), "fill bytes must not exceed 1500000")
+	require.NotContains(t, string(output), "missing required command")
+}
+
 func TestAutomaticQuotaDifferentialRunnerRequiresDisposableEndpoint(t *testing.T) {
 	output, err := runCompatScriptCommand(t, "run-automatic-quota-differential.sh", []string{
 		"PATH=" + t.TempDir() + ":/usr/bin:/bin",

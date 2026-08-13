@@ -48920,6 +48920,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   future watcher 自身提前响应。修正后的 Alarm/Snapshot 差分及 Watch 场景连续三轮通过；完整差分首次运行
   除上述已确认的 watch 夹具误判外全部适用项通过。
 
+- A4565 在 A4564 提交后重新构建 disposable Badger 实例，对 clean
+  `/root/etcd@5cd9f4ee1` 重跑完整 official client 差分，311.616 秒内所有适用用例通过；需要独立 auth、
+  quota、多副本或外部 proxy 拓扑的用例继续按显式前置条件 Skip，不将未执行冒充成功。另向 runner 提供
+  KubeBrain info endpoint 后，未知 Alarm 的 `etcd_debugging_server_alarms{server_id,alarm_type}`
+  activate/get/deactivate 指标增量与 upstream 一致。专用 1 MiB quota 的参考/KubeBrain 实例又验证自动
+  NOSPACE 全生命周期：超限 Put 原子拒绝且 key 不可见、Alarm 归属本 member、读和删除仍允许、LeaseGrant
+  被拒绝、Alarm 在删除/physical compact/Defragment 后保持 sticky、显式 disarm 后恢复写入。现场先用
+  2 MiB fill 时命中了 client 默认发送上限而未到 quota admission，暴露门禁参数盲区；现在 Go 场景与
+  `run-automatic-quota-differential.sh` 均要求 fill 严格大于各自 quota 且不超过 1,500,000 字节，在任何
+  endpoint/dependency 操作前拒绝无效配置，避免把 request-size 失败误报成 quota 差距。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

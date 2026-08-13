@@ -34,6 +34,11 @@ type automaticQuotaOutcome struct {
 	RecoveryPutSucceeded      bool
 }
 
+// Keep the synthetic value below etcd's default max-request-bytes after
+// protobuf framing. The scenario is meant to exercise quota admission, not the
+// earlier client/transport request-size boundary.
+const automaticQuotaMaxFillBytes = 1_500_000
+
 func TestAutomaticQuotaAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 	referenceEndpoint := os.Getenv("REFERENCE_AUTOMATIC_QUOTA_ENDPOINT")
 	kubeBrainEndpoint := os.Getenv("KUBEBRAIN_AUTOMATIC_QUOTA_ENDPOINT")
@@ -44,6 +49,14 @@ func TestAutomaticQuotaAlarmDifferentialAgainstReferenceEtcd(t *testing.T) {
 	kubeBrainQuota := requiredPositiveInt64Env(t, "KUBEBRAIN_AUTOMATIC_QUOTA_BYTES")
 	referenceFill := requiredPositiveIntEnv(t, "REFERENCE_AUTOMATIC_QUOTA_FILL_BYTES")
 	kubeBrainFill := requiredPositiveIntEnv(t, "KUBEBRAIN_AUTOMATIC_QUOTA_FILL_BYTES")
+	require.Greater(t, int64(referenceFill), referenceQuota,
+		"reference fill must exceed quota to exercise automatic NOSPACE")
+	require.Greater(t, int64(kubeBrainFill), kubeBrainQuota,
+		"KubeBrain fill must exceed quota to exercise automatic NOSPACE")
+	require.LessOrEqual(t, referenceFill, automaticQuotaMaxFillBytes,
+		"reference fill must stay below the default request-size boundary")
+	require.LessOrEqual(t, kubeBrainFill, automaticQuotaMaxFillBytes,
+		"KubeBrain fill must stay below the default request-size boundary")
 
 	want := runAutomaticQuotaScenario(t, referenceEndpoint, "reference", referenceQuota, referenceFill)
 	require.Equal(t, automaticQuotaOutcome{
