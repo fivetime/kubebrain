@@ -611,6 +611,24 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 			message: "RangeStream does not support revision filters",
 		},
 		{
+			name:    "maxModRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MaxModRevision: 5},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
+			name:    "minCreateRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinCreateRevision: 5},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
+			name:    "maxCreateRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MaxCreateRevision: 5},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
 			name:    "sortOrder",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY},
 			notErr:  rpctypes.ErrGRPCInvalidSortOption,
@@ -675,6 +693,7 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 		}},
 		{name: "limit", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3}},
 		{name: "explicit ascending key", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_ASCEND, SortTarget: etcdserverpb.RangeRequest_KEY}},
+		{name: "none ignores non-key target", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_NONE, SortTarget: etcdserverpb.RangeRequest_VALUE}},
 		{name: "keys only", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), KeysOnly: true}},
 	}
 	for _, tt := range tests {

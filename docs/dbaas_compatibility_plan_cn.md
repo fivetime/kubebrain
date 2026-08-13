@@ -48897,6 +48897,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   failure 触发 context cancellation，以及正常周期验证后无泄漏退出；backup/production/manifest/vet 与镜像门禁在提交时复核。
   clientv3 cancellation 只能尽快终止 BR，不能回滚故障发生前已导入的数据，因此任何 monitor failure 仍必须退役并重建 target。
 
+- A4563 回到 `/root/etcd@5cd9f4ee1` 的 `v3rpc.checkRangeStreamRequest`、
+  `txn.IsDefaultOrdering` 与 `txn.HasRevisionFilters`，补齐 RangeStream admission 的永久差分盲区。既有测试只覆盖
+  `MinModRevision`，现同时固定 `MaxModRevision`、`MinCreateRevision`、`MaxCreateRevision` 均在任何 backend read
+  前返回 exact `Unimplemented: RangeStream does not support revision filters`；还固定上游容易误实现的特殊规则：
+  `SortOrder=NONE` 时忽略非 KEY `SortTarget`，仍按自然 key 升序成功服务，只有显式非默认 order 才拒绝。服务端
+  确定性测试同时将四个 filter 纳入拒绝矩阵，并把 `NONE+VALUE target` 与 unary Range 做完整 response 等价比较。
+  2026-08-13 使用 clean `/root/etcd/bin/etcd`（3.8.0-alpha.0，Git SHA `5cd9f4ee1`）和当前工作树构建的
+  独立 badger KubeBrain，真实 raw gRPC 双端差分通过。审计确认当前 runtime 已与上游一致，本轮不放宽
+  RangeStream 能力，也不把上游明确 Unimplemented 的排序/filter 伪报为兼容缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
