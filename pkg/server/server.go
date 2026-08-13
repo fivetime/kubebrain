@@ -107,12 +107,15 @@ type server struct {
 	observedLeader   string
 	closeOnce        sync.Once
 	drainOnce        sync.Once
+	drainErr         error
 	closeErr         error
 }
 
 func (s *server) Close() error {
 	s.closeOnce.Do(func() {
-		s.Drain()
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = s.Drain(drainCtx)
+		drainCancel()
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -141,7 +144,7 @@ func (s *server) Close() error {
 	return s.closeErr
 }
 
-func (s *server) Drain() {
+func (s *server) Drain(ctx context.Context) error {
 	s.drainOnce.Do(func() {
 		release := func() {
 			if s.campaignCancel != nil {
@@ -150,6 +153,11 @@ func (s *server) Drain() {
 			if s.campaignDone != nil {
 				<-s.campaignDone
 			}
+			if releaser, ok := s.leaderElection.(interface {
+				EnsureVoluntaryRelease(context.Context) error
+			}); ok {
+				s.drainErr = releaser.EnsureVoluntaryRelease(ctx)
+			}
 		}
 		if s.etcdServer != nil {
 			s.etcdServer.DrainLeadership(release)
@@ -157,6 +165,7 @@ func (s *server) Drain() {
 		}
 		release()
 	})
+	return s.drainErr
 }
 
 // NewServer returns the server
@@ -866,7 +875,10 @@ func (s *server) httpDrainHandler(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "drain is available only from localhost", http.StatusForbidden)
 		return
 	}
-	s.Drain()
+	if err := s.Drain(req.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("{\"drained\":true}\n"))

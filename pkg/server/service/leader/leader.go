@@ -26,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/klog/v2"
@@ -70,6 +71,49 @@ type LeaderElection interface {
 
 	// GetElectionInfo get info of election
 	GetElectionInfo() (ElectionInfo, error)
+}
+
+// EnsureVoluntaryRelease verifies that this process no longer owns the durable
+// election record after Campaign has stopped. client-go's ReleaseOnCancel is
+// best-effort and does not return its failure to Campaign; a failed release
+// otherwise leaves successors waiting the full lease duration.
+func (l *leaderElection) EnsureVoluntaryRelease(ctx context.Context) error {
+	if l.IsLeader() {
+		return errors.New("cannot ensure voluntary release while leadership is still published")
+	}
+	for {
+		record, raw, err := l.resourceLock.Get(ctx)
+		if err == nil && record != nil {
+			l.observeLeadershipRecordRaw(*record, raw)
+			if record.HolderIdentity != l.resourceLock.Identity() {
+				return nil
+			}
+			now := metav1.NewTime(time.Now())
+			released := resourcelock.LeaderElectionRecord{
+				LeaderTransitions:    record.LeaderTransitions,
+				LeaseDurationSeconds: 1,
+				RenewTime:            now,
+				AcquireTime:          now,
+			}
+			err = l.resourceLock.Update(ctx, released)
+			if err == nil {
+				l.observeLeadershipRecord(released)
+				return nil
+			}
+		}
+		if ctx.Err() != nil {
+			return fmt.Errorf("ensure voluntary leadership release: %w", ctx.Err())
+		}
+		timer := time.NewTimer(l.retryPeriod)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("ensure voluntary leadership release: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 // ElectionInfo is the response for http election service

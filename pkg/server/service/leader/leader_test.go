@@ -115,6 +115,46 @@ func TestLeadershipInitializationMetricsClassifyUnsupportedWitness(t *testing.T)
 	recordLeadershipInitializationError(m, fmt.Errorf("wrapped: %w", backend.ErrTxnWitnessUnsupportedVersion))
 }
 
+func TestEnsureVoluntaryReleaseRetriesBestEffortReleaseFailure(t *testing.T) {
+	lock := &campaignLock{record: resourcelock.LeaderElectionRecord{
+		HolderIdentity: "campaign-retry", LeaderTransitions: 7, LeaseDurationSeconds: 8,
+	}}
+	lock.set(lock.record)
+	lock.failUpdates.Store(true)
+	election := &leaderElection{resourceLock: lock, retryPeriod: time.Millisecond}
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		lock.failUpdates.Store(false)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, election.EnsureVoluntaryRelease(ctx))
+	record, _, err := lock.Get(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, record.HolderIdentity)
+	require.Equal(t, 7, record.LeaderTransitions)
+	require.Equal(t, 1, record.LeaseDurationSeconds)
+}
+
+func TestEnsureVoluntaryReleaseDoesNotOverwriteSuccessor(t *testing.T) {
+	lock := &campaignLock{record: resourcelock.LeaderElectionRecord{
+		HolderIdentity: "successor", LeaderTransitions: 8, LeaseDurationSeconds: 8,
+	}}
+	lock.set(lock.record)
+	election := &leaderElection{resourceLock: lock, retryPeriod: time.Millisecond}
+	require.NoError(t, election.EnsureVoluntaryRelease(context.Background()))
+	record, _, err := lock.Get(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "successor", record.HolderIdentity)
+}
+
+func TestEnsureVoluntaryReleaseRejectsPublishedLeader(t *testing.T) {
+	election := &leaderElection{}
+	atomic.StoreInt32(&election.leader, 1)
+	require.ErrorContains(t, election.EnsureVoluntaryRelease(context.Background()), "still published")
+}
+
 func TestLeadershipInitializationMetricsDoNotMisclassifyTransportError(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := metricmock.NewMockMetrics(ctrl)

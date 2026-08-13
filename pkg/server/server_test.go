@@ -71,6 +71,12 @@ func (coldTermLeaderElection) LeadershipTerm(context.Context) (uint64, error) {
 	return 0, errors.New("transient shared election read")
 }
 
+type releaseFailingLeaderElection struct{ alwaysLeaderElection }
+
+func (releaseFailingLeaderElection) EnsureVoluntaryRelease(context.Context) error {
+	return errors.New("durable release failed")
+}
+
 type healthStorage struct {
 	storage.KvStorage
 	fail bool
@@ -748,6 +754,19 @@ func TestInfoDrainIsPostOnlyAndLocalhostOnly(t *testing.T) {
 	default:
 		t.Fatal("drain did not cancel the campaign context")
 	}
+}
+
+func TestInfoDrainFailsWhenDurableReleaseCannotBeConfirmed(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	s := &server{campaignDone: done, leaderElection: releaseFailingLeaderElection{}}
+	handler := s.GetInfoHttpHandlers()["/drain"]
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/drain", nil)
+	request.RemoteAddr = "127.0.0.1:1234"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "durable release failed")
 }
 
 func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
