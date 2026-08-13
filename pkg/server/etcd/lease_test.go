@@ -1810,7 +1810,9 @@ func TestLoadLeaseRecordsKeepsInternalOverrideForMatchingLegacyIdentity(t *testi
 
 	records, _, err := server.loadLeaseRecords(ctx)
 	require.NoError(t, err)
-	require.Equal(t, []leaseRecord{{ID: id, TTL: 60}}, records)
+	require.Equal(t, []leaseRecord{{
+		ID: id, TTL: 60, LegacyStorage: true, LegacyKeys: []string{"legacy-key"},
+	}}, records, "canonical values win while legacy cleanup metadata remains retryable")
 }
 
 func leaseRecordWithUnknownField(t *testing.T, id int64) []byte {

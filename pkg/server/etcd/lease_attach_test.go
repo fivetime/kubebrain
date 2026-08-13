@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -43,6 +44,20 @@ type blockingLegacyMigrationBackend struct {
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+type failLegacyAttachmentCleanupBackend struct {
+	BackendShim
+	target []byte
+	failed bool
+}
+
+func (b *failLegacyAttachmentCleanupBackend) DeleteRange(ctx context.Context, request *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error) {
+	if !b.failed && bytes.Equal(request.Key, b.target) {
+		b.failed = true
+		return nil, backend.ErrLeadershipFenced
+	}
+	return b.BackendShim.DeleteRange(ctx, request)
 }
 
 type staleUncertainAttachmentReadBackend struct {
@@ -343,6 +358,50 @@ func TestLegacyLeaseMigrationPreservesAuthoritativeAttachmentOwner(t *testing.T)
 	currentTTL, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: newLeaseID, Keys: true})
 	require.NoError(t, err)
 	require.Equal(t, [][]byte{[]byte(key)}, currentTTL.Keys)
+}
+
+func TestLegacyLeaseMigrationRetriesCleanupAfterCanonicalMetadataWins(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID = int64(55_132)
+		key     = "/registry/events/legacy-cleanup-retry"
+	)
+	legacy, err := jsonMarshalLeaseRecord(leaseID, 200, []string{key})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(leaseID), Value: legacy})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key: leaseAttachKey(key), Value: []byte(strconv.FormatInt(leaseID, 10)),
+	})
+	require.NoError(t, err)
+
+	original := server.backend
+	failing := &failLegacyAttachmentCleanupBackend{
+		BackendShim: original,
+		target:      leaseAttachKey(key),
+	}
+	server.backend = failing
+	require.NoError(t, server.ReloadLeases(ctx))
+	require.True(t, failing.failed)
+	_, err = original.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err, "the first pass must already persist canonical metadata")
+	legacyMeta, err := original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
+	require.NoError(t, err)
+	require.Len(t, legacyMeta.Kvs, 1, "failed cleanup must retain the durable retry marker")
+	legacyAttachment, err := original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Len(t, legacyAttachment.Kvs, 1)
+
+	server.backend = original
+	require.NoError(t, server.ReloadLeases(ctx))
+	legacyMeta, err = original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
+	require.NoError(t, err)
+	require.Empty(t, legacyMeta.Kvs, "the next leadership pass must retire the retained marker")
+	legacyAttachment, err = original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Empty(t, legacyAttachment.Kvs, "the next leadership pass must retry attachment cleanup")
 }
 
 func jsonMarshalLeaseRecord(id, ttl int64, keys []string) ([]byte, error) {

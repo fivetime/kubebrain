@@ -2969,6 +2969,9 @@ Renew 清除 remaining-TTL 的 CAS 还必须保留 internal auth guard conflict�
 相同 `RemainingTTL=0` 覆盖。
 实现上不维护可能遗漏新 sentinel 的拒绝列表：只有存储层按 `BatchWrite.Commit` 契约返回 `ErrUncertainResult` 时才允许
 exact readback 对账；普通 context、validation、CAS 和 fence 错误全部按确定失败处理。
+滚动升级的 legacy lease 清理以旧 monolithic meta 作为持久 retry marker：必须先删除其列出的 legacy attachment rows，最后才
+删除 meta；即使 internal canonical record 已存在，reload 也要保留旧 row 的 cleanup keys。不得反转该顺序，否则中途 fence
+会留下下一任 leader 无法发现的 user-MVCC metadata 和无意义 watch history。
 提交栅栏依赖 256 个 `alarms/corrupt-fence/<hex>` mutation shard，而不是 TiKV 的普通 snapshot read-set；禁止减少为
 单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
 会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在

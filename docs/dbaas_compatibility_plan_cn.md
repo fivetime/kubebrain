@@ -48302,6 +48302,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   返回标准 uncertain wrapper；新增 CAS committed-uncertain 正例证明 readback 仍确认成功，原有不同值/读失败反例继续保留
   uncertain 根因。该规则把兼容安全性建立在存储接口契约上，而不是服务层枚举具体后端错误。
 
+- A4511 修复 legacy lease migration cleanup 的持久重试闭环。旧流程写好 internal canonical metadata 后先删除 monolithic
+  legacy meta、再逐条删除 user-MVCC attachment；任一 attachment cleanup 被 leadership/restoration/CORRUPT fence 或存储错误
+  拒绝后，下一次 reload 会让 canonical record 覆盖 legacy record，残留 source 不再被识别为待迁移，成为永久 MVCC/watch
+  垃圾。现在 loader 即使 canonical record 获胜也保留同 ID legacy row 的仅内存 cleanup keys/marker；migration 先幂等删除
+  全部 legacy attachment rows，全部成功后才删除 monolithic meta。meta 因而是 durable retry marker，任一步失败都能在下一任
+  leader 重试，同时 canonical attachments 仍按当前权威 owner 生成，不会把旧 inline owner 重新绑定。回归在 canonical 写成功后
+  注入 attachment cleanup leadership fence，证明首次保留两类 legacy rows，第二次 ReloadLeases 自动清理干净。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

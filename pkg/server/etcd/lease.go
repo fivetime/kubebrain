@@ -105,6 +105,13 @@ type leaseRecord struct {
 	DeadlineUnixNano int64    `json:"deadlineUnixNano,omitempty"`
 	Keys             []string `json:"keys,omitempty"`
 	LegacyStorage    bool     `json:"-"`
+	LegacyKeys       []string `json:"-"`
+}
+
+type legacyLeaseMigration struct {
+	id          int64
+	attachKeys  []string
+	cleanupKeys []string
 }
 
 func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
@@ -1589,6 +1596,7 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	// Read the legacy user-MVCC keyspace during rolling upgrades. A new internal
 	// record wins when both layouts contain the same lease ID.
 	recordByID := make(map[int64]leaseRecord, len(resp.Kvs)+len(internalRecords))
+	legacyRecordByID := make(map[int64]leaseRecord, len(resp.Kvs))
 	for _, kv := range resp.Kvs {
 		keyID, keyErr := leaseMetadataStorageID(kv.Key)
 		if keyErr != nil {
@@ -1604,6 +1612,8 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 			))
 		}
 		record.LegacyStorage = true
+		record.LegacyKeys = append([]string(nil), record.Keys...)
+		legacyRecordByID[record.ID] = record
 		recordByID[record.ID] = record
 	}
 	for key, value := range internalRecords {
@@ -1619,6 +1629,10 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
 				"lease metadata key id %d disagrees with payload id %d", keyID, record.ID,
 			))
+		}
+		if legacy, exists := legacyRecordByID[record.ID]; exists {
+			record.LegacyStorage = true
+			record.LegacyKeys = append([]string(nil), legacy.Keys...)
 		}
 		recordByID[record.ID] = record
 	}
@@ -1700,27 +1714,23 @@ func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
 // migrateLegacyLeases rewrites pre-#17 leases (meta records that still carried an
 // inline key list) into the new format: one attachment record per currently-bound
 // key plus a keyless meta record. Idempotent; only runs on the leader.
-func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
-	for _, id := range ids {
+func (m *leaseManager) migrateLegacyLeases(ctx context.Context, migrations []legacyLeaseMigration) {
+	for _, migration := range migrations {
+		id := migration.id
 		m.leaseMu.Lock()
 		st, ok := m.leases[id]
-		var keys []string
 		var ttl int64
 		var remainingTTL int64
 		if ok {
 			ttl = st.ttl
 			remainingTTL = st.remainingTTL
-			keys = make([]string, 0, len(st.keys))
-			for k := range st.keys {
-				keys = append(keys, k)
-			}
 		}
 		m.leaseMu.Unlock()
 		if !ok {
 			continue
 		}
 		complete := true
-		for _, k := range keys {
+		for _, k := range migration.attachKeys {
 			if err := m.attachKeyToStorage(ctx, id, k); err != nil {
 				complete = false
 				break
@@ -1729,12 +1739,19 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 		if !complete || m.persistMigratedLeaseMeta(ctx, id, ttl, remainingTTL) != nil {
 			continue
 		}
-		// Retire the legacy user-MVCC record only after the internal replacement
-		// and every attachment are durable. This prevents a revoked lease from
-		// being resurrected by the compatibility reader on the next leadership.
-		_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseStorageKey(id)})
-		for _, k := range keys {
-			_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(k)})
+		// Keep the monolithic legacy lease row as a durable retry marker until all
+		// legacy attachment rows are retired. If any cleanup is fenced or fails,
+		// the next leadership reload rediscovers the source even though canonical
+		// internal metadata already exists.
+		cleanupComplete := true
+		for _, k := range migration.cleanupKeys {
+			if _, err := m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(k)}); err != nil {
+				cleanupComplete = false
+				break
+			}
+		}
+		if cleanupComplete {
+			_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseStorageKey(id)})
 		}
 	}
 }
@@ -1746,7 +1763,7 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 // inline key list (a pre-#17 record) is included in the returned slice so the
 // leader can migrate it to the new per-key format. Safe on both first restore
 // (empty maps) and leadership reload.
-func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[string]int64) (legacy []int64) {
+func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[string]int64) (legacy []legacyLeaseMigration) {
 	now := time.Now()
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
@@ -1796,9 +1813,6 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 			st.keys[key] = struct{}{}
 			m.keyLeaseIndex[key] = st.id
 		}
-		if record.LegacyStorage || len(record.Keys) > 0 {
-			legacy = append(legacy, record.ID)
-		}
 		m.leases[st.id] = st
 	}
 	// Per-key attachment records (#17). Attachments for a lease that no longer has
@@ -1815,6 +1829,24 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		}
 		st.keys[key] = struct{}{}
 		m.keyLeaseIndex[key] = id
+	}
+	for _, record := range records {
+		if !record.LegacyStorage && len(record.Keys) == 0 {
+			continue
+		}
+		st := m.leases[record.ID]
+		migration := legacyLeaseMigration{id: record.ID}
+		if st != nil {
+			migration.attachKeys = make([]string, 0, len(st.keys))
+			for key := range st.keys {
+				migration.attachKeys = append(migration.attachKeys, key)
+			}
+		}
+		migration.cleanupKeys = append([]string(nil), record.LegacyKeys...)
+		if len(migration.cleanupKeys) == 0 {
+			migration.cleanupKeys = append(migration.cleanupKeys, record.Keys...)
+		}
+		legacy = append(legacy, migration)
 	}
 	// Match etcd lessor.Promote: a large recovered lease set commonly has the
 	// same reconstructed deadline. Spread that pile-up before arming timers so a
