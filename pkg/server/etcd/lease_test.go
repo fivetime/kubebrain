@@ -137,9 +137,18 @@ type corruptGuardedLeaseMetadataBackend struct {
 	called bool
 }
 
+type rejectedGuardedLeaseMetadataBackend struct {
+	BackendShim
+	err error
+}
+
 func (b *corruptGuardedLeaseMetadataBackend) InternalPutCorruptGuarded(context.Context, []byte, []byte) error {
 	b.called = true
 	return backend.ErrCorruptAlarmActive
+}
+
+func (b *rejectedGuardedLeaseMetadataBackend) InternalPutCorruptGuarded(context.Context, []byte, []byte) error {
+	return b.err
 }
 
 func (b *rejectedLeaseMetadataBackend) InternalPut(context.Context, []byte, []byte) error {
@@ -607,6 +616,25 @@ func TestLegacyLeaseMigrationMetadataStopsWhileCorruptAlarmIsActive(t *testing.T
 	var checkpoint leaseRecord
 	require.NoError(t, json.Unmarshal(stored, &checkpoint))
 	require.Equal(t, int64(199), checkpoint.RemainingTTL)
+}
+
+func TestLeaseMetadataReadbackCannotHideDefiniteWriteFence(t *testing.T) {
+	for index, fenceErr := range []error{backend.ErrLeadershipFenced, backend.ErrRestorationFenced} {
+		t.Run(fenceErr.Error(), func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx := context.Background()
+			leaseID := int64(4507001 + index)
+			canonical, err := json.Marshal(leaseRecord{ID: leaseID, TTL: 300, RemainingTTL: 200})
+			require.NoError(t, err)
+			require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), canonical))
+			server.backend = &rejectedGuardedLeaseMetadataBackend{BackendShim: server.backend, err: fenceErr}
+
+			err = server.persistMigratedLeaseMeta(ctx, leaseID, 300, 200)
+			require.ErrorIs(t, err, fenceErr,
+				"identical bytes from an earlier term must not hide a definite write fence")
+		})
+	}
 }
 
 func TestCommittedUncertainLeaseRevokeForgetsInMemoryLease(t *testing.T) {

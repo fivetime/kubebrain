@@ -48283,6 +48283,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   commit response 的其他错误保留既有精确 readback 对账。回归预置完全相同的 canonical record 后激活 CORRUPT，固定 guarded
   migration 仍返回 `ErrCorruptAlarmActive`；同时证明不受 corrupt wrapper 覆盖的 LeaseCheckpoint 仍可更新 TTL。
 
+- A4508 将 A4507 的判定扩展到 leadership/restoration safety epoch。guarded migration 若在旧 leader 任期或目标恢复隔离期被
+  明确拒绝，目标 canonical record 可能由更早操作或新 leader 以完全相同 bytes 写好；旧通用 readback 会据此返回成功，使
+  stale migration 继续删除 legacy source。现在 `ErrLeadershipFenced` 与 `ErrRestorationFenced` 和三类 CORRUPT fence 一样
+  直接保留，只有非确定错误才允许通过精确 readback 证明可能已提交。表驱动回归预置相同 metadata，并对两个 safety fence
+  分别固定不得被 readback 隐藏；既有 committed-then-canceled checkpoint 对账继续通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

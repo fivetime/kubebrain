@@ -2964,6 +2964,7 @@ CORRUPT 激活与所有有效 `TxnApply` 在 TiKV generation 上形成提交全�
 的 attachment 本来就和用户 mutation 位于同一 `TxnApply`，因此无需第二次独立修复。周期性 LeaseCheckpoint 对应
 upstream 内部 maintenance 请求，仍允许在 CORRUPT 下更新剩余 TTL，不应和迁移/清理型派生写混为一谈。受保护写返回
 active/changed/invalid-metadata 时属于确定栅栏结果，即使目标 key 先前已有相同 bytes 也不得用 readback 将其改判为成功。
+同样规则适用于 leadership/restoration fence：相同 bytes 可能属于旧操作或后继 leader，不能证明当前 safety epoch 的写成功。
 提交栅栏依赖 256 个 `alarms/corrupt-fence/<hex>` mutation shard，而不是 TiKV 的普通 snapshot read-set；禁止减少为
 单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
 会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在

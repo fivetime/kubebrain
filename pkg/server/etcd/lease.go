@@ -2197,13 +2197,15 @@ func (m *leaseManager) persistLeaseRecord(ctx context.Context, key, data []byte,
 	if err == nil {
 		return nil
 	}
-	// CORRUPT fence failures are definite admission/commit-order outcomes, not
-	// lost commit responses. A pre-existing identical record must not turn the
-	// rejected operation into success (legacy migration would otherwise retire
-	// its source record while the alarm is active).
+	// Alarm, leadership, and restoration fence failures are definite admission
+	// or commit-order outcomes, not lost commit responses. A pre-existing
+	// identical record must not turn the rejected operation into success (legacy
+	// migration could otherwise retire its source from the wrong safety epoch).
 	if errors.Is(err, backend.ErrCorruptAlarmActive) ||
 		errors.Is(err, backend.ErrCorruptAlarmChanged) ||
-		errors.Is(err, backend.ErrInvalidAlarmMetadata) {
+		errors.Is(err, backend.ErrInvalidAlarmMetadata) ||
+		errors.Is(err, backend.ErrLeadershipFenced) ||
+		errors.Is(err, backend.ErrRestorationFenced) {
 		return err
 	}
 
