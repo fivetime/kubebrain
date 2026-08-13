@@ -48262,6 +48262,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   保持 etcd API validation precedence。回归覆盖空 ops、absent user delete、absent internal delete 在 active alarm 下均报 CORRUPT、
   不消耗 revision；prepare cancellation 故障注入改为按目标 revision key 触发，不再脆弱依赖新增 metadata Get 之前的读取次数。
 
+- A4505 封闭 A4503 LeaseGrant 失败补偿的反向绕行。Grant 初始 `leases/<id>` 已使用 guarded internal put，但持久化报错或
+  pending generation 失效后的 best-effort cleanup 仍调用裸 `InternalDelete`；若 grant record 在线性序中先提交、另一副本随后
+  激活 CORRUPT，旧 cleanup 可在 alarm 之后删除 record。现在仅供 Grant 回滚使用的 `deleteLeaseState` 改为 internal-only
+  `TxnApply` delete，复用 A4504 admission 与 A4499 mutation shard，不消耗用户 revision。若 record 已先提交而响应/领导状态随后
+  不确定，它必须作为“可能成功”的 grant 保留并由显式 lease ID/TTL 对账，而不能用告警后的补偿写伪造成确定失败；若 alarm 先
+  提交，absent delete 同样返回 CORRUPT 且不产生物理 mutation。服务层回归预置 canonical lease record、激活 alarm，固定 cleanup
+  返回 `ErrCorruptAlarmActive` 且 bytes 原样保留，disarm 后才允许删除；既有取消 grant 释放 pending reservation 测试继续通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

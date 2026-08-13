@@ -514,6 +514,33 @@ func TestLeaseGrantPersistsMetadataThroughCorruptCommitGuard(t *testing.T) {
 	require.Equal(t, int64(-1), ttl.TTL, "a rejected grant must not publish an in-memory lease")
 }
 
+func TestLeaseGrantCleanupDoesNotDeleteMetadataAfterCorruptActivation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID  int64  = 4505001
+		memberID uint64 = 4505001
+	)
+	metadata, err := json.Marshal(leaseRecord{ID: leaseID, TTL: 300})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), metadata))
+	require.NoError(t, server.backend.ArmCorrupt(ctx, memberID))
+
+	err = server.deleteLeaseState(ctx, leaseID)
+	require.ErrorIs(t, err, backend.ErrCorruptAlarmActive)
+	stored, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, metadata, stored, "grant compensation ordered after CORRUPT must not delete lease metadata")
+
+	removed, err := server.backend.DisarmCorrupt(ctx, memberID)
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.NoError(t, server.deleteLeaseState(ctx, leaseID))
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
 func TestCommittedUncertainLeaseRevokeForgetsInMemoryLease(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -2266,7 +2266,10 @@ func (m *leaseManager) detachKeyFromStorage(ctx context.Context, userKey string)
 }
 
 func (m *leaseManager) deleteLeaseState(ctx context.Context, id int64) error {
-	return m.srv.backend.InternalDelete(ctx, leaseStorageKey(id))
+	_, _, _, err := m.srv.backend.TxnApply(ctx, []backend.TxnWriteOp{{
+		Delete: true, Internal: true, Key: leaseStorageKey(id),
+	}}, nil, []bool{false})
+	return err
 }
 
 func leaseAttachKey(userKey string) []byte {
