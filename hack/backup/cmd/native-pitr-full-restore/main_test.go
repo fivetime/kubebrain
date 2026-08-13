@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +19,44 @@ func TestBuildBRArgsUsesExplicitWholeClusterTxnImport(t *testing.T) {
 	}
 }
 
+func TestRunWithAdmissionMonitorCancelsImportOnFenceLoss(t *testing.T) {
+	var checks atomic.Int64
+	runStarted := make(chan struct{})
+	err := runWithAdmissionMonitor(context.Background(), time.Millisecond, func(context.Context) error {
+		checks.Add(1)
+		return errors.New("gate missing")
+	}, func(ctx context.Context) error {
+		close(runStarted)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	require.ErrorContains(t, err, "restore admission lost during BR import")
+	require.GreaterOrEqual(t, checks.Load(), int64(1))
+	select {
+	case <-runStarted:
+	default:
+		t.Fatal("import did not start")
+	}
+}
+
+func TestRunWithAdmissionMonitorStopsAfterSuccessfulImport(t *testing.T) {
+	var checks atomic.Int64
+	checked := make(chan struct{}, 1)
+	err := runWithAdmissionMonitor(context.Background(), time.Millisecond, func(context.Context) error {
+		checks.Add(1)
+		select {
+		case checked <- struct{}{}:
+		default:
+		}
+		return nil
+	}, func(context.Context) error {
+		<-checked
+		return nil
+	})
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, checks.Load(), int64(1))
+}
+
 func TestBuildBRArgsUsesPlanBoundAES256KeyFile(t *testing.T) {
 	identity := nativepitr.EncryptionIdentity{Method: nativepitr.CipherMethodAES256CTR, KeyID: "kms/prod/backup/versions/7"}
 	args := buildBRArgs([]string{"pd:2379"}, "/verified/full", "", "", "", identity, "/run/secrets/backup/key")
@@ -24,7 +65,7 @@ func TestBuildBRArgsUsesPlanBoundAES256KeyFile(t *testing.T) {
 	require.NotContains(t, args, identity.KeyID, "the non-secret version ID is evidence, not a BR key argument")
 }
 func TestValidateOptionsFailsClosed(t *testing.T) {
-	good := options{plan: "p", full: "f", artifacts: "a", inventory: "i", artifactRoot: "/mirror", sourceExclusive: "s", target: "t", targetProvisioning: "tp", targetQualification: "tq", writerExclusion: "we", admission: "d", pdAddrs: "pd:2379", brBinary: "br", timeout: time.Second}
+	good := options{plan: "p", full: "f", artifacts: "a", inventory: "i", artifactRoot: "/mirror", sourceExclusive: "s", target: "t", targetProvisioning: "tp", targetQualification: "tq", writerExclusion: "we", admission: "d", pdAddrs: "pd:2379", brBinary: "br", admissionCheckInterval: 100 * time.Millisecond, timeout: time.Second}
 	require.NoError(t, validateOptions(good))
 	bad := good
 	bad.artifactRoot = "relative"
@@ -32,6 +73,9 @@ func TestValidateOptionsFailsClosed(t *testing.T) {
 	bad = good
 	bad.cert = "cert"
 	require.ErrorContains(t, validateOptions(bad), "together")
+	bad = good
+	bad.admissionCheckInterval = bad.timeout
+	require.ErrorContains(t, validateOptions(bad), "shorter than timeout")
 }
 func TestPinnedBRAndAddressParsing(t *testing.T) {
 	require.True(t, pinnedBR("Release Version: v7.5.1\nGit Commit Hash: 7d16cc79e81bbf573124df3fd9351c26963f3e70\nGit Branch: x"))

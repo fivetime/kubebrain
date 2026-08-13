@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
@@ -38,6 +39,7 @@ type options struct {
 	targetQualification, writerExclusion                      string
 	pdAddrs, ca, cert, key, brBinary, approve                 string
 	encryptionKeyID, encryptionKeyFile                        string
+	admissionCheckInterval                                    time.Duration
 	timeout                                                   time.Duration
 }
 
@@ -79,6 +81,7 @@ func main() {
 	flag.StringVar(&o.encryptionKeyID, "encryption-key-id", "", "immutable non-secret key version ID required by encrypted artifacts")
 	flag.StringVar(&o.encryptionKeyFile, "encryption-key-file", "", "file containing the exact AES-256 key required by encrypted artifacts")
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
+	flag.DurationVar(&o.admissionCheckInterval, "admission-check-interval", 5*time.Second, "PD-backed restore admission verification interval during BR import")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "full restore deadline")
 	flag.Parse()
 	if err := execute(context.Background(), o, osRunner{}, nativepitr.InspectLiveTargetSnapshotEmpty, os.Stdout, os.Stderr, time.Now); err != nil {
@@ -295,7 +298,12 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if admission.AcquiredAtUnix > started {
 		return errors.New("restore admission was acquired after BR start")
 	}
-	if err := runner.Run(ctx, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key, encryption, runtimeEncryptionKeyFile), logs, logs); err != nil {
+	verifyAdmission := func(checkCtx context.Context) error {
+		return admissionfence.Verify(checkCtx, admissionClient, plan.Source.Keyspace, admissionToken)
+	}
+	if err := runWithAdmissionMonitor(ctx, o.admissionCheckInterval, verifyAdmission, func(runCtx context.Context) error {
+		return runner.Run(runCtx, resolved, buildBRArgs(addrs, o.artifactRoot, o.ca, o.cert, o.key, encryption, runtimeEncryptionKeyFile), logs, logs)
+	}); err != nil {
 		return fmt.Errorf("BR transactional full restore failed: %w", err)
 	}
 	if encryption.Method == nativepitr.CipherMethodAES256CTR {
@@ -347,8 +355,11 @@ func verifyMirror(full nativepitr.FullSnapshotReceipt, fullBytes []byte, artifac
 }
 
 func validateOptions(o options) error {
-	if o.plan == "" || o.full == "" || o.artifacts == "" || o.inventory == "" || o.artifactRoot == "" || o.sourceExclusive == "" || o.target == "" || o.targetProvisioning == "" || o.targetQualification == "" || o.writerExclusion == "" || o.admission == "" || o.pdAddrs == "" || o.brBinary == "" || o.timeout <= 0 {
+	if o.plan == "" || o.full == "" || o.artifacts == "" || o.inventory == "" || o.artifactRoot == "" || o.sourceExclusive == "" || o.target == "" || o.targetProvisioning == "" || o.targetQualification == "" || o.writerExclusion == "" || o.admission == "" || o.pdAddrs == "" || o.brBinary == "" {
 		return errors.New("all receipt, artifact, target, BR, and positive timeout options are required")
+	}
+	if o.timeout <= 0 || o.admissionCheckInterval <= 0 || o.admissionCheckInterval >= o.timeout {
+		return errors.New("timeout must be positive and admission-check-interval must be positive and shorter than timeout")
 	}
 	if !filepath.IsAbs(o.artifactRoot) || filepath.Clean(o.artifactRoot) != o.artifactRoot {
 		return errors.New("artifact-root must be an absolute clean path")
@@ -357,6 +368,42 @@ func validateOptions(o options) error {
 		return errors.New("cert and key must be set together and require ca")
 	}
 	return nil
+}
+
+func runWithAdmissionMonitor(ctx context.Context, interval time.Duration, verify func(context.Context) error, run func(context.Context) error) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var finished atomic.Bool
+	monitorDone := make(chan error, 1)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				monitorDone <- nil
+				return
+			case <-ticker.C:
+				if err := verify(runCtx); err != nil {
+					if finished.Load() {
+						monitorDone <- nil
+					} else {
+						monitorDone <- fmt.Errorf("restore admission lost during BR import: %w", err)
+						cancel()
+					}
+					return
+				}
+			}
+		}
+	}()
+	runErr := run(runCtx)
+	finished.Store(true)
+	cancel()
+	monitorErr := <-monitorDone
+	if monitorErr != nil {
+		return monitorErr
+	}
+	return runErr
 }
 
 func newAdmissionClient(addrs []string, ca, cert, key string) (*clientv3.Client, error) {

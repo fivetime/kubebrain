@@ -4,6 +4,7 @@ set -euo pipefail
 WORKER_ID="${WORKER_ID:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
 LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
 WRITER_CHECK_INTERVAL_SECONDS="${WRITER_CHECK_INTERVAL_SECONDS:-5}"
+ADMISSION_CHECK_INTERVAL="${ADMISSION_CHECK_INTERVAL:-5s}"
 OPERATIONCTL="${OPERATIONCTL:-/usr/local/bin/kubebrain-operationctl}"
 RESTORE_COMMAND="${RESTORE_COMMAND:-/usr/local/bin/kubebrain-native-pitr-full-restore}"
 RECEIPT_VERIFY="${RECEIPT_VERIFY:-/usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify}"
@@ -22,6 +23,7 @@ if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LE
 [[ "$WRITER_CHECK_INTERVAL_SECONDS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
   awk -v interval="$WRITER_CHECK_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(interval > 0 && interval < lease) }' ||
   die "WRITER_CHECK_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
+[[ "$ADMISSION_CHECK_INTERVAL" =~ ^([1-9][0-9]*)(ms|s|m)$ ]] || die "ADMISSION_CHECK_INTERVAL must be a positive Go duration using ms, s, or m"
 [[ -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -x "$RECEIPT_VERIFY" && -x "$BR_BINARY" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
 [[ "$INPUT_ROOT" == /* && "$INPUT_ROOT" != *".."* ]] || die "INPUT_ROOT must be an absolute traversal-free directory"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
@@ -124,6 +126,7 @@ if $JQ -e 'has("cipher_method")' "$params" >/dev/null; then
   encryption_args=(--encryption-key-id="$key_id" --encryption-key-file="$ENCRYPTION_DIR/key")
 fi
 args=(--br-binary="$BR_BINARY" --pd-addrs="$($JQ -r '.pd_addrs|join(",")' "$params")" --approve-plan-sha256="$($JQ -r .approve_plan_sha256 "$params")"
+	--admission-check-interval="$ADMISSION_CHECK_INTERVAL"
   --plan="$($JQ -r .plan "$params")" --full-snapshot="$($JQ -r .full_snapshot "$params")" --full-artifacts="$($JQ -r .full_artifacts "$params")"
   --remote-inventory="$($JQ -r .remote_inventory "$params")" --artifact-root="$($JQ -r .artifact_root "$params")"
   --source-range-exclusive="$($JQ -r .source_range_exclusive "$params")" --target-snapshot-empty="$($JQ -r .target_snapshot_empty "$params")"

@@ -2627,7 +2627,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.NoError(t, readErr)
 		require.NotEqual(t, encryptionKey, wrongKey, "wrong-key drill key bytes must differ")
 		var rejectedReceipt strings.Builder
-		wrongErr := execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, targetProvisioning: provisioningPath, targetQualification: qualificationPath, writerExclusion: writersPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: wrongKeyFile, approve: digest(planBytes), timeout: 3 * time.Minute}, commandRunner(osRunner{}), nativepitr.InspectLiveTargetSnapshotEmpty, &rejectedReceipt, os.Stderr, time.Now)
+		wrongErr := execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, targetProvisioning: provisioningPath, targetQualification: qualificationPath, writerExclusion: writersPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: wrongKeyFile, approve: digest(planBytes), admissionCheckInterval: 5 * time.Second, timeout: 3 * time.Minute}, commandRunner(osRunner{}), nativepitr.InspectLiveTargetSnapshotEmpty, &rejectedReceipt, os.Stderr, time.Now)
 		require.Error(t, wrongErr, "BR restore with wrong key must fail")
 		require.ErrorContains(t, wrongErr, "reverify local full mirror")
 		require.Empty(t, rejectedReceipt.String(), "wrong-key restore must not issue success evidence")
@@ -2640,7 +2640,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		require.Equal(t, targetEvidence.ClusterID, afterWrongKey.ClusterID)
 		require.Equal(t, targetEvidence.Stores, afterWrongKey.Stores)
 	}
-	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, targetProvisioning: provisioningPath, targetQualification: qualificationPath, writerExclusion: writersPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: encryptionKeyFile, approve: digest(planBytes), timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
+	err = execute(ctx, options{plan: planPath, full: fullPath, artifacts: artifactPath, inventory: inventoryPath, artifactRoot: artifactRoot, sourceExclusive: sourcePath, target: targetPath, targetProvisioning: provisioningPath, targetQualification: qualificationPath, writerExclusion: writersPath, admission: admissionPath, pdAddrs: strings.Join(targetAddrs, ","), brBinary: br, encryptionKeyID: encryption.KeyID, encryptionKeyFile: encryptionKeyFile, approve: digest(planBytes), admissionCheckInterval: 5 * time.Second, timeout: 3 * time.Minute}, runner, nativepitr.InspectLiveTargetSnapshotEmpty, &receiptOut, os.Stderr, time.Now)
 	require.NoError(t, err)
 	restore, err := nativepitr.DecodeFullRestoreExecution(strings.NewReader(receiptOut.String()))
 	require.NoError(t, err)

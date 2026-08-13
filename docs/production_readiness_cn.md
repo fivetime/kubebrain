@@ -4717,6 +4717,8 @@ replacement 演练完成前生产重试继续关闭。
 
 full-restore 在 BR import 期间还会按 `WRITER_CHECK_INTERVAL_SECONDS=5` 持续复核同一 writer evidence。检查失败会终止
 restore/BR 整个进程组并要求重建 target；不得把该轮询调到不小于 Operation lease，也不得把其作为 admission fence 的替代品。
+CLI 同时以 `ADMISSION_CHECK_INTERVAL=5s` 持续验证 PD-backed admission fence；查询失败或 token/gate/session 漂移会取消 BR
+context 且不签发 receipt。取消不具备事务回滚能力，失败目标一律视为可能部分写入并走 retirement/replacement，禁止原地重试。
 
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：

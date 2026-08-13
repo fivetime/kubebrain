@@ -48888,6 +48888,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   并覆盖 process-group 清理和既有 receipt-before-status reconcile。该轮询存在不超过 interval 的检测延迟；restore admission
   fence 才是同步阻断 KubeBrain 写入口的主门禁，真实 Kubernetes 中仍需验证进程组信号、API 中断和 Pod 调度竞态。
 
+- A4562 把 PD-backed restore admission 从 BR 前后两次检查扩展为 import 全窗口的 CLI 内持续门禁。full-restore 在已验证
+  exact admission token 后，以独立 5 秒 ticker 并发调用 `admissionfence.Verify`；gate token、target cluster/keyspace、active
+  session 约束漂移或 PD 查询失败时，monitor 立即取消传给 `exec.CommandContext` 的 BR context，返回明确
+  `restore admission lost during BR import`，并且不生成 full-restore receipt。BR 正常退出时先标记 run finished、取消并等待
+  monitor 完整退出，再执行既有 post-BR 与 final fence 校验，避免 goroutine/client 生命周期竞态。CLI 要求 interval>0 且小于
+  restore timeout；Operation runner 只接受正的 `ms/s/m` Go duration，Deployment 固定 `5s`。单测覆盖 import 已启动后 fence
+  failure 触发 context cancellation，以及正常周期验证后无泄漏退出；backup/production/manifest/vet 与镜像门禁在提交时复核。
+  clientv3 cancellation 只能尽快终止 BR，不能回滚故障发生前已导入的数据，因此任何 monitor failure 仍必须退役并重建 target。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
