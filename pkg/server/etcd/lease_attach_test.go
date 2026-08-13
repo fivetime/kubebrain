@@ -412,6 +412,86 @@ func TestLegacyLeaseMigrationRetriesCleanupAfterCanonicalMetadataWins(t *testing
 	require.Empty(t, legacyAttachment.Kvs, "the periodic sweep must retry attachment cleanup")
 }
 
+func TestLegacyLeaseMigrationRetryCannotOverwriteConcurrentRebind(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		oldLease = int64(55_139)
+		newLease = int64(55_140)
+		key      = "/registry/events/legacy-retry-rebind"
+	)
+	legacy, err := jsonMarshalLeaseRecord(oldLease, 200, []string{key})
+	require.NoError(t, err)
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{Key: leaseStorageKey(oldLease), Value: legacy})
+	require.NoError(t, err)
+	newMeta, err := json.Marshal(leaseRecord{ID: newLease, TTL: 200})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(newLease), newMeta))
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key: []byte(key), Value: []byte("old-value"), Lease: oldLease,
+	})
+	require.NoError(t, err)
+
+	original := server.backend
+	failing := &failLegacyAttachmentCleanupBackend{BackendShim: original, target: leaseAttachKey(key)}
+	server.backend = failing
+	require.NoError(t, server.ReloadLeases(ctx))
+	require.True(t, failing.failed)
+
+	blocking := &blockingLegacyMigrationBackend{
+		BackendShim: original,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = blocking
+	sweepDone := make(chan struct{})
+	go func() {
+		server.sweepOrphanLeasedKeys(ctx)
+		close(sweepDone)
+	}()
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("periodic migration did not reach the attachment write")
+	}
+
+	rebindDone := make(chan error, 1)
+	rebindStarted := make(chan struct{})
+	go func() {
+		close(rebindStarted)
+		server.leaseWriteMu.RLock()
+		defer server.leaseWriteMu.RUnlock()
+		_, putErr := server.putLeasedAtomic(ctx, &etcdserverpb.PutRequest{
+			Key: []byte(key), Value: []byte("new-value"), Lease: newLease,
+		}, oldLease)
+		rebindDone <- putErr
+	}()
+	<-rebindStarted
+	select {
+	case err := <-rebindDone:
+		t.Fatalf("rebind crossed an in-flight migration snapshot: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(blocking.release)
+	select {
+	case <-sweepDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("periodic migration did not finish")
+	}
+	require.NoError(t, <-rebindDone)
+	owner, err := original.InternalGet(ctx, leaseAttachKey(key))
+	require.NoError(t, err)
+	require.Equal(t, strconv.FormatInt(newLease, 10), string(owner),
+		"the completed rebind must remain the authoritative durable owner")
+	value, err := original.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
+	require.NoError(t, err)
+	require.Len(t, value.Kvs, 1)
+	require.Equal(t, []byte("new-value"), value.Kvs[0].Value)
+	require.Equal(t, newLease, value.Kvs[0].Lease)
+}
+
 func TestLegacyLeaseMigrationCleansStrandedAttachmentWithoutLegacyMeta(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

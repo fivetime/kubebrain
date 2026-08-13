@@ -48354,6 +48354,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attachment/meta 全部退休且 live lease deadline bit-for-bit 不变。最新 upstream `5b75ac62c` 同期审计确认仅把既有
   MemberList e2e 断言迁入 `tests/common/member_test.go`，不改变 wire、排序、鉴权或 header 语义，无需 runtime 移植。
 
+- A4517 封闭 A4516 在线重试新引入的 attachment owner 覆盖竞态。原始 migration 只在 `leaseReady=false` 的换主
+  reload 中运行，先从 `st.keys` 派生 `attachKeys` 再逐个写 internal owner 是安全的；周期 sweep 复用后，服务期 Put/Txn
+  可在快照与写入之间把同一 key rebind 到新 lease，旧 migration 随后会把 durable attachment 覆盖回旧 ID，使 value 的
+  inline lease、内存 index 与 attachment 分裂。现 `retryLegacyMigrations` 从读取当前绑定、写 authoritative attachment/meta
+  到退休 legacy source 全程持有 `leaseWriteMu` 独占侧；Put/Txn 从 lease 校验到 storage commit/index publication 持有共享侧，
+  二者因而严格二选一排序。确定性竞态回归把 migration 卡在旧 owner internal put，随后启动新 lease rebind：rebind 在旧
+  migration 完成前不得到达提交，释放后必须成功，最终 user value 与 internal attachment 都精确指向新 lease。Reload 初始
+  migration 仍沿原 `leaseReady=false` 路径，不额外嵌套该锁；周期 retry 是低频升级清理，允许为 correctness 暂时排空在线写。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

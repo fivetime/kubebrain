@@ -1904,6 +1904,19 @@ func (m *leaseManager) legacyMigrationsLocked(records []leaseRecord) (legacy []l
 	return legacy
 }
 
+// retryLegacyMigrations derives and commits migration work under the exclusive
+// lease write lock. Online Put/Txn hold the shared side from binding validation
+// through storage commit and index publication, so a stale migration snapshot
+// cannot overwrite an attachment that was concurrently rebound to a new lease.
+func (m *leaseManager) retryLegacyMigrations(ctx context.Context, records []leaseRecord) {
+	m.leaseWriteMu.Lock()
+	defer m.leaseWriteMu.Unlock()
+	m.leaseMu.Lock()
+	migrations := m.legacyMigrationsLocked(records)
+	m.leaseMu.Unlock()
+	m.migrateLegacyLeases(ctx, migrations)
+}
+
 func leaseRecoveryDuration(ttl int64, extension time.Duration) time.Duration {
 	duration := time.Duration(ttl) * time.Second
 	if extension <= 0 {
@@ -2070,10 +2083,7 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
 		return
 	}
-	m.leaseMu.Lock()
-	migrations := m.legacyMigrationsLocked(records)
-	m.leaseMu.Unlock()
-	m.migrateLegacyLeases(ctx, migrations)
+	m.retryLegacyMigrations(ctx, records)
 	for key, id := range attachments {
 		m.leaseMu.Lock()
 		_, leaseLive := m.leases[id]
