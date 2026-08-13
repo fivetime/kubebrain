@@ -260,8 +260,10 @@ func TestLeaseAttachPersistsPerKeyNotWholeList(t *testing.T) {
 			value = v
 			return true
 		}, time.Second, 5*time.Millisecond)
-		require.Equal(t, strconv.FormatInt(leaseID, 10), string(value),
-			"attachment record must point at the lease id")
+		attachment, err := parseLeaseAttachmentRecordDetails(k, value)
+		require.NoError(t, err)
+		require.Equal(t, leaseID, attachment.ID, "attachment record must point at the lease id")
+		require.NotEmpty(t, attachment.Incarnation, "new grants must bind attachments to one durable incarnation")
 	}
 
 	// Failover: a fresh server recovers every binding from the attachment records.
@@ -563,7 +565,7 @@ func TestLegacyMigrationSealRejectsUnknownFormat(t *testing.T) {
 	defer closeFn()
 	ctx := context.Background()
 	require.NoError(t, server.backend.InternalPut(ctx, leaseLegacyMigrationSealKey, []byte("v2")))
-	_, _, _, err := server.loadLeaseRecords(ctx)
+	_, _, _, _, err := server.loadLeaseRecords(ctx)
 	require.ErrorIs(t, err, errInvalidLeaseMetadata)
 	require.ErrorContains(t, err, `legacy lease migration seal has invalid value "v2"`)
 }
@@ -1557,7 +1559,7 @@ func TestLoadLeaseRecordsUsesOneSnapshotAcrossMetaAndAttachments(t *testing.T) {
 		require.NoError(t, b.InternalPut(ctx, leaseAttachKey(key), []byte(strconv.FormatInt(leaseID, 10))))
 	}
 	server.backend = interleaved
-	records, attachments, _, err := server.loadLeaseRecords(ctx)
+	records, attachments, _, _, err := server.loadLeaseRecords(ctx)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	_, tornIntoSnapshot := attachments[key]
@@ -1646,11 +1648,22 @@ func TestUncertainLeaseReconcileCannotOverwriteReloadedGeneration(t *testing.T) 
 	require.NoError(t, err)
 	require.NoError(t, b.InternalPut(newCtx, leaseStorageKey(newLease), newMeta))
 	require.NoError(t, b.InternalPut(newCtx, leaseAttachKey(key), []byte(strconv.FormatInt(newLease, 10))))
-	require.NoError(t, server.ReloadLeases(ctx))
-	require.Equal(t, newLease, server.leaseIDForKey(key))
+	reloadDone := make(chan error, 1)
+	go func() { reloadDone <- server.ReloadLeases(ctx) }()
+	select {
+	case err := <-reloadDone:
+		require.NoError(t, err)
+		t.Fatal("reload published while an old-generation repair still held the binding lock")
+	case <-time.After(50 * time.Millisecond):
+	}
 
+	// Once the blocked old-term read resumes, its epoch/generation checks reject
+	// publication and release the binding lock. Reload can then atomically replace
+	// the lease snapshot and clean generation-mismatched attachments.
 	close(staleRead.release)
 	<-done
+	require.NoError(t, <-reloadDone)
+	require.Equal(t, newLease, server.leaseIDForKey(key))
 	require.Equal(t, newLease, server.leaseIDForKey(key),
 		"an old-term uncertain reconciliation must not overwrite the reloaded lease snapshot")
 }

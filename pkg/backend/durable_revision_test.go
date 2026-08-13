@@ -225,6 +225,11 @@ func TestTransactionalRevisionAllocatorInitializesAndFailsClosed(t *testing.T) {
 			binary.BigEndian.PutUint64(value, math.MaxInt64)
 			return value
 		}(), err: ErrRevisionExhausted},
+		{name: "lease-format-fence-revision-reserved", raw: func() []byte {
+			value := make([]byte, 8)
+			binary.BigEndian.PutUint64(value, math.MaxInt64-1)
+			return value
+		}(), err: ErrRevisionExhausted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, ctx := newTxnApplyBackend(t)

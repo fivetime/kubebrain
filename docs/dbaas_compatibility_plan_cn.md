@@ -48470,6 +48470,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   regrant。旧实现两种 layout 都保留 key，修复后只删除旧 key/marker，replacement lease 仍以新 TTL 存活。orphan/migration
   专项 20 轮、定向 race 10 轮（11.401s）、`pkg/server/etcd` 全量（165.972s）和 vet 均通过。
 
+- A4527 关闭 A4526 尚未覆盖的“同 ID regrant 后、周期 sweep 前立即 failover”窗口。upstream lessor 的
+  `Lease` 对象身份不会仅凭公开 ID 复用旧 item；KubeBrain 的持久 attachment 原先却只有十进制 ID，Reload 无法区分
+  `700011` 的前后两代，会把旧 key 收进 replacement lease。现每次新 Grant 生成 canonical 128-bit lowercase hex
+  incarnation，并同时持久化到 lease JSON 与 `id@incarnation` attachment；legacy 无 incarnation 记录继续按空代际读取。
+  loader 只恢复 meta/attachment incarnation 精确相等的绑定，代际不匹配的 internal 与 user-MVCC legacy marker 在
+  leader ready 前、持有 `leaseWriteMu` 独占侧时 compare-delete，旧 key 不再经历一个 10 分钟 sweep 周期的可见泄漏。
+  checkpoint、renew CAS、legacy migration 与 failover reload 全程保留 incarnation。提交路径通过独立的不可变
+  `sync.Map` 镜像读取 incarnation，避免为了编码 attachment 获取 `leaseMu`，从而保留授权 lease read 与并发 Put 的
+  “durable commit 先完成、内存 index 后发布”锁序。
+
+  新格式是明确的 roll-forward boundary：首次 incarnation Grant 先在 transaction-witness 保留的终端 revision 写入
+  version-2 format fence。旧 binary 的 version-1 decoder 会在 `InitializeLeadershipRevision`、发布 leader 身份之前返回
+  `ErrTxnWitnessUnsupportedVersion` 并退选；该保留位使公开 revision 在 `MaxInt64-1` 即报告 exhaustion，防止最终用户 txn
+  覆盖 marker。当前 binary 识别 exact marker，未知未来版本仍退选，损坏的当前 marker 才激活
+  CORRUPT。升级因此必须先让支持 A4527 的副本具备接管能力，marker 落盘后不得回滚到旧镜像或删除 witness。
+  确定性回归覆盖 internal/legacy 两种残留、同 ID regrant 后立即 Reload、旧 term uncertain reconcile 与 Reload 串行化、
+  canonical parser、旧 decoder roll-forward 和 malformed marker CORRUPT。backend 全量（44.142s）、`pkg/server/etcd`
+  全量（169.211s）、backend/server 定向 race 与 vet 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

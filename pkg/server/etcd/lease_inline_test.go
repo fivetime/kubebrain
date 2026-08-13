@@ -136,7 +136,10 @@ func TestLeasedPutWritesAttachmentAtomically(t *testing.T) {
 
 	attachValue, err := server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
 	require.NoError(t, err)
-	require.Equal(t, []byte("333003"), attachValue, "leased Put must have committed the attachment record atomically with the value")
+	attachment, err := parseLeaseAttachmentRecordDetails(string(key), attachValue)
+	require.NoError(t, err)
+	require.Equal(t, leaseID, attachment.ID, "leased Put must have committed the attachment record atomically with the value")
+	require.NotEmpty(t, attachment.Incarnation)
 
 	// A fresh leader reloads the binding from the durable attachment record.
 	reloaded := New(b, server.metricCli, testPeerService{isLeader: true})

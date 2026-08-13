@@ -3012,6 +3012,12 @@ witness seal 版本是领导权兼容栅栏：旧 binary 读取到未来版本�
 `leader_election_initialize_incompatible_witness`。出现后暂停回滚并继续 roll forward 到支持 durable seal 的镜像；
 通用 `leader_election_initialize_err` 仍覆盖 TiKV transport/startup 失败，两者不能使用同一数据修复处置流程。
 
+lease incarnation attachment 格式复用同一领导权兼容栅栏：首次写入 `id@incarnation` 前会在 witness 终端保留位落下
+`lease-incarnation-v1` marker。marker 出现后，旧镜像必须在领导权初始化阶段以 incompatible witness 退选；这是预期的
+roll-forward 信号，不是 lease 数据损坏。发布顺序必须保证至少一个支持 incarnation 的副本可接管后再允许新 Grant；
+marker 落盘后禁止回滚旧镜像、删除 terminal witness 或手工把 attachment 改回十进制 ID。若 exact marker bytes 损坏，
+当前版本会激活 CORRUPT，此时按 witness evidence 修复流程处理，不能把它误当普通版本不兼容。
+
 事务重试遵循公开请求的 context deadline：Put/DeleteRange/Txn 与 Lease Grant/Revoke 的 etcd unary 入口默认注入 10 秒，并自动取客户端更短 deadline；backend 不再用内部 1 秒预算提前截断 `TxnApply`。没有 deadline 的后台/直接调用仍保留 1 秒安全兜底，防止持久冲突形成无界重试。
 
 需要覆盖真实 namespace 删除和 namespace controller 清理路径时启用：

@@ -395,6 +395,39 @@ func TestLeadershipRejectsFutureWitnessVersionWithoutCorruptAlarm(t *testing.T) 
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0), "rolling forward to a compatible decoder can lead")
 }
 
+func TestLeaseIncarnationFormatFenceForcesOldBinaryRollForward(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	require.NoError(t, b.EnsureLeaseIncarnationFormatFence(ctx))
+	require.NoError(t, b.EnsureLeaseIncarnationFormatFence(ctx), "format fence must be idempotent")
+
+	raw, err := b.InternalGet(ctx, leaseIncarnationFormatFenceKey())
+	require.NoError(t, err)
+	require.Equal(t, leaseIncarnationFormatFenceValue, raw)
+	require.ErrorIs(t, func() error {
+		_, decodeErr := decodeTxnWitness(raw)
+		return decodeErr
+	}(), ErrTxnWitnessUnsupportedVersion,
+		"the previous decoder must withdraw before publishing leadership")
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0),
+		"the incarnation-aware decoder must recognize its format fence")
+	members, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Empty(t, members, "a supported roll-forward marker is not corruption")
+}
+
+func TestMalformedLeaseIncarnationFormatFenceArmsCorrupt(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	require.NoError(t, b.EnsureLeaseIncarnationFormatFence(ctx))
+	batch := b.kv.BeginBatchWrite()
+	batch.Put(b.ks.EncodeInternalKey(leaseIncarnationFormatFenceKey()), []byte{leaseIncarnationFenceVersion}, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, members)
+}
+
 func TestLeadershipMalformedCurrentWitnessStillArmsCorrupt(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	key := []byte(prefix + "/restart-witness/malformed-current")

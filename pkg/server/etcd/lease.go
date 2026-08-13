@@ -17,6 +17,8 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +26,7 @@ import (
 	"math"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -103,6 +106,7 @@ const minLeaseTTL = int64(2)
 // migration; new meta records carry only ID and TTL.
 type leaseRecord struct {
 	ID               int64    `json:"id"`
+	Incarnation      string   `json:"incarnation,omitempty"`
 	TTL              int64    `json:"ttl"`
 	RemainingTTL     int64    `json:"remainingTTL,omitempty"`
 	DeadlineUnixNano int64    `json:"deadlineUnixNano,omitempty"`
@@ -110,6 +114,27 @@ type leaseRecord struct {
 	LegacyStorage    bool     `json:"-"`
 	LegacyKeys       []string `json:"-"`
 	LegacyAttachKeys []string `json:"-"`
+}
+
+type leaseAttachmentRecord struct {
+	ID          int64
+	Incarnation string
+}
+
+func newLeaseIncarnation() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate lease incarnation: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func validLeaseIncarnation(value string) bool {
+	if len(value) != 32 {
+		return false
+	}
+	raw, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(raw) == value
 }
 
 type legacyLeaseMigration struct {
@@ -131,6 +156,9 @@ func decodeLeaseRecord(raw []byte) (leaseRecord, error) {
 	}
 	if record.ID == 0 {
 		return leaseRecord{}, errors.New("lease id 0 is reserved for no lease")
+	}
+	if record.Incarnation != "" && !validLeaseIncarnation(record.Incarnation) {
+		return leaseRecord{}, fmt.Errorf("lease incarnation %q is not canonical 128-bit lowercase hex", record.Incarnation)
 	}
 	if record.TTL > maxLeaseTTL {
 		return leaseRecord{}, fmt.Errorf("lease ttl %d exceeds maximum %d", record.TTL, maxLeaseTTL)
@@ -250,7 +278,20 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		id = 0
 	}
 
-	if err := m.persistLeaseMeta(ctx, id, ttl); err != nil {
+	incarnation, err := newLeaseIncarnation()
+	if err != nil {
+		m.leaseMu.Lock()
+		delete(m.pendingLeases, id)
+		m.leaseMu.Unlock()
+		return nil, err
+	}
+	if err := m.srv.backend.EnsureLeaseIncarnationFormatFence(ctx); err != nil {
+		m.leaseMu.Lock()
+		delete(m.pendingLeases, id)
+		m.leaseMu.Unlock()
+		return nil, mapFenceErr(err)
+	}
+	if err := m.persistLeaseMetaIncarnation(ctx, id, ttl, incarnation); err != nil {
 		// No Put can observe a pending lease, so there are no attached keys to
 		// revoke. Best-effort deletion resolves a commit-undetermined InternalPut
 		// before releasing the ID reservation; leadership fencing prevents an old
@@ -265,11 +306,12 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	}
 
 	st := &leaseState{
-		id:       id,
-		ttl:      ttl,
-		deadline: time.Now().Add(time.Duration(ttl) * time.Second),
-		keys:     make(map[string]struct{}),
-		revoked:  make(chan struct{}),
+		id:          id,
+		incarnation: incarnation,
+		ttl:         ttl,
+		deadline:    time.Now().Add(time.Duration(ttl) * time.Second),
+		keys:        make(map[string]struct{}),
+		revoked:     make(chan struct{}),
 	}
 	m.leaseMu.Lock()
 	pendingGeneration, stillPending := m.pendingLeases[id]
@@ -283,6 +325,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	}
 	delete(m.pendingLeases, id)
 	m.leases[id] = st
+	m.leaseIncarnations.Store(id, incarnation)
 	m.scheduleLeaseLocked(st)
 	m.scheduleLeaseCheckpointLocked(st)
 	m.leaseMu.Unlock()
@@ -707,10 +750,11 @@ func (m *leaseManager) putLeasedAtomic(ctx context.Context, put *etcdserverpb.Pu
 		PrevLeaseKnown: true, PrevLease: prevLease,
 	}}
 	if put.Lease != 0 {
+		incarnation, _ := m.leaseIncarnation(put.Lease)
 		ops = append(ops, backend.TxnWriteOp{
 			Internal: true,
 			Key:      leaseAttachKey(userKey),
-			Value:    []byte(strconv.FormatInt(put.Lease, 10)),
+			Value:    encodeLeaseAttachmentRecord(put.Lease, incarnation),
 		})
 	} else {
 		// Rebind to leaseless: drop the stale attachment in the same batch. A
@@ -769,7 +813,8 @@ func (m *leaseManager) withLeaseAttachmentOps(writes []backend.TxnWriteOp) ([]ba
 		case op.Delete && previous != 0:
 			out = append(out, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)})
 		case !op.Delete && op.Lease != 0:
-			out = append(out, backend.TxnWriteOp{Internal: true, Key: leaseAttachKey(key), Value: []byte(strconv.FormatInt(op.Lease, 10))})
+			incarnation, _ := m.leaseIncarnation(op.Lease)
+			out = append(out, backend.TxnWriteOp{Internal: true, Key: leaseAttachKey(key), Value: encodeLeaseAttachmentRecord(op.Lease, incarnation)})
 		case !op.Delete && previous != 0:
 			out = append(out, backend.TxnWriteOp{Delete: true, Internal: true, Key: leaseAttachKey(key)})
 		}
@@ -991,6 +1036,14 @@ func (m *leaseManager) leaseIDForKey(key string) int64 {
 	return m.keyLeaseIndex[key]
 }
 
+func (m *leaseManager) leaseIncarnation(id int64) (string, bool) {
+	value, ok := m.leaseIncarnations.Load(id)
+	if !ok {
+		return "", false
+	}
+	return value.(string), true
+}
+
 func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error) {
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
@@ -1117,6 +1170,7 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 	checkpointed := st.remainingTTL > 0
 	previousRemainingTTL := st.remainingTTL
 	ttl := st.ttl
+	incarnation := st.incarnation
 	m.leaseMu.Unlock()
 	if checkpointed {
 		// Match etcd lessor.Renew: clear a persisted remaining-TTL checkpoint
@@ -1128,7 +1182,7 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		// of the same lease ID.
 		unlockWrite()
 		applyStart := time.Now()
-		err := m.persistLeaseCheckpointCAS(ctx, id, ttl, previousRemainingTTL, 0)
+		err := m.persistLeaseCheckpointCASIncarnation(ctx, id, ttl, previousRemainingTTL, 0, incarnation)
 		emitEtcdLeaseCheckpointDurations(m.srv.metricCli, time.Since(applyStart), err)
 		lockWrite()
 		m.leaseMu.Lock()
@@ -1445,6 +1499,7 @@ func (m *leaseManager) forgetLease(id int64) {
 		delete(m.keyLeaseIndex, key)
 	}
 	delete(m.leases, id)
+	m.leaseIncarnations.Delete(id)
 	close(st.revoked)
 	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	m.leaseMu.Unlock()
@@ -1584,7 +1639,7 @@ func (m *leaseManager) leaseLeaderUnavailable(op string) error {
 }
 
 func (m *leaseManager) restoreLeases(ctx context.Context) error {
-	records, attachments, _, err := m.loadLeaseRecords(ctx)
+	records, attachments, _, _, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err
 	}
@@ -1606,22 +1661,29 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 		return status.Error(codes.Unavailable, "etcdserver: leadership lost during lease reload")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
-	records, attachments, legacyAttachments, err := m.loadLeaseRecords(ctx)
+	records, attachments, legacyAttachments, staleInternalAttachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err
 	}
 	m.leaseCheckpointMu.Lock()
 	defer m.leaseCheckpointMu.Unlock()
+	m.leaseWriteMu.Lock()
 	legacy := m.applyLeaseRecords(records, attachments)
 	// This node is now the leader; convert any pre-#17 monolithic records to the
 	// per-key attachment format so subsequent detaches are durable and the
 	// monolithic key-list is not carried forward. One-time, idempotent.
 	m.migrateLegacyLeases(ctx, legacy)
+	for key, id := range staleInternalAttachments {
+		m.reconcileOrphanAttachment(ctx, key, id)
+	}
 	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
 	if err := m.sealLegacyLeaseMigrationIfClean(ctx); err != nil {
 		m.srv.metricCli.EmitCounter("lease.legacy_migration_seal.err", 1)
 		klog.ErrorS(err, "lease reload: seal legacy migration failed")
 	}
+	// Release before startOrphanSweeper stops and joins the previous worker: that
+	// worker may already be waiting for this same exclusive reconciliation lock.
+	m.leaseWriteMu.Unlock()
 	currentEpoch, stillLeadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if ctx.Err() != nil || !stillLeadingFresh || currentEpoch != epoch {
 		m.clearLeaseStateHoldingCheckpointLock()
@@ -1637,22 +1699,22 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 
 // loadLeaseRecords reads the per-lease meta records and the per-key attachment
 // records from one storage snapshot.
-func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, map[string]int64, error) {
+func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, map[string]int64, map[string]int64, error) {
 	if _, pinned := storage.SnapshotTimestampFromContext(ctx); !pinned {
 		timestamp, err := m.srv.backend.GetSnapshotTimestamp(ctx)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		ctx = storage.WithSnapshotTimestamp(ctx, timestamp)
 		ctx = storage.WithSnapshotIteratorFallback(ctx)
 	}
 	internalRecords, err := m.srv.backend.InternalRange(ctx, leaseStoragePrefix)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	readLegacy, err := m.shouldReadLegacyLeaseStorage(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	var legacyMetaKVs []*mvccpb.KeyValue
 	if readLegacy {
@@ -1662,7 +1724,7 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 			Revision: latestRestoreRevision,
 		})
 		if listErr != nil {
-			return nil, nil, nil, listErr
+			return nil, nil, nil, nil, listErr
 		}
 		legacyMetaKVs = resp.Kvs
 	}
@@ -1673,14 +1735,14 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	for _, kv := range legacyMetaKVs {
 		keyID, keyErr := leaseMetadataStorageID(kv.Key)
 		if keyErr != nil {
-			return nil, nil, nil, keyErr
+			return nil, nil, nil, nil, keyErr
 		}
 		record, err := decodeLeaseRecord(kv.Value)
 		if err != nil {
-			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err))
+			return nil, nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err))
 		}
 		if record.ID != keyID {
-			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+			return nil, nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
 				"legacy lease metadata key id %d disagrees with payload id %d", keyID, record.ID,
 			))
 		}
@@ -1692,14 +1754,14 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	for key, value := range internalRecords {
 		keyID, keyErr := leaseMetadataStorageID([]byte(key))
 		if keyErr != nil {
-			return nil, nil, nil, keyErr
+			return nil, nil, nil, nil, keyErr
 		}
 		record, err := decodeLeaseRecord(value)
 		if err != nil {
-			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode lease metadata: %w", err))
+			return nil, nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode lease metadata: %w", err))
 		}
 		if record.ID != keyID {
-			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+			return nil, nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
 				"lease metadata key id %d disagrees with payload id %d", keyID, record.ID,
 			))
 		}
@@ -1722,37 +1784,47 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 			Revision: latestRestoreRevision,
 		})
 		if listErr != nil {
-			return nil, nil, nil, listErr
+			return nil, nil, nil, nil, listErr
 		}
 		legacyAttachmentKVs = aresp.Kvs
 	}
 	attachments := make(map[string]int64, len(legacyAttachmentKVs))
 	legacyAttachments := make(map[string]int64, len(legacyAttachmentKVs))
+	staleInternalAttachments := make(map[string]int64)
 	legacyAttachmentKeys := make(map[int64][]string)
 	for _, kv := range legacyAttachmentKVs {
 		userKey := string(kv.Key[len(leaseAttachPrefix):])
-		id, perr := parseLeaseAttachmentRecord(userKey, kv.Value)
+		attachment, perr := parseLeaseAttachmentRecordDetails(userKey, kv.Value)
 		if perr != nil {
-			return nil, nil, nil, perr
+			return nil, nil, nil, nil, perr
 		}
-		attachments[userKey] = id
-		legacyAttachments[userKey] = id
-		legacyAttachmentKeys[id] = append(legacyAttachmentKeys[id], userKey)
+		legacyAttachments[userKey] = attachment.ID
+		owner, ownerExists := recordByID[attachment.ID]
+		if ownerExists && owner.Incarnation != attachment.Incarnation {
+			continue
+		}
+		attachments[userKey] = attachment.ID
+		legacyAttachmentKeys[attachment.ID] = append(legacyAttachmentKeys[attachment.ID], userKey)
 	}
 	for index := range records {
 		records[index].LegacyAttachKeys = append([]string(nil), legacyAttachmentKeys[records[index].ID]...)
 	}
 	internalAttachments, err := m.srv.backend.InternalRange(ctx, leaseAttachPrefix)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	for key, value := range internalAttachments {
 		userKey := key[len(leaseAttachPrefix):]
-		id, perr := parseLeaseAttachmentRecord(userKey, value)
+		attachment, perr := parseLeaseAttachmentRecordDetails(userKey, value)
 		if perr != nil {
-			return nil, nil, nil, perr
+			return nil, nil, nil, nil, perr
 		}
-		attachments[userKey] = id
+		owner, ownerExists := recordByID[attachment.ID]
+		if ownerExists && owner.Incarnation != attachment.Incarnation {
+			staleInternalAttachments[userKey] = attachment.ID
+			continue
+		}
+		attachments[userKey] = attachment.ID
 	}
 	legacyOwners := make(map[string]int64)
 	for _, record := range records {
@@ -1773,13 +1845,13 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 				if first > second {
 					first, second = second, first
 				}
-				return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+				return nil, nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
 					"legacy lease key %q has conflicting owners %d and %d", key, first, second,
 				))
 			}
 		}
 	}
-	return records, attachments, legacyAttachments, nil
+	return records, attachments, legacyAttachments, staleInternalAttachments, nil
 }
 
 func (m *leaseManager) shouldReadLegacyLeaseStorage(ctx context.Context) (bool, error) {
@@ -1820,21 +1892,35 @@ func (m *leaseManager) sealLegacyLeaseMigrationIfClean(ctx context.Context) erro
 	return m.srv.backend.InternalPutCorruptGuarded(ctx, leaseLegacyMigrationSealKey, leaseLegacyMigrationSealValue)
 }
 
-func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
-	if userKey == "" {
-		return 0, markInvalidLeaseMetadata(errors.New("lease attachment has empty user key"))
+func encodeLeaseAttachmentRecord(id int64, incarnation string) []byte {
+	encodedID := strconv.FormatInt(id, 10)
+	if incarnation == "" {
+		return []byte(encodedID)
 	}
-	id, err := strconv.ParseInt(string(value), 10, 64)
+	return []byte(encodedID + "@" + incarnation)
+}
+
+func parseLeaseAttachmentRecordDetails(userKey string, value []byte) (leaseAttachmentRecord, error) {
+	if userKey == "" {
+		return leaseAttachmentRecord{}, markInvalidLeaseMetadata(errors.New("lease attachment has empty user key"))
+	}
+	encodedID, incarnation, found := strings.Cut(string(value), "@")
+	id, err := strconv.ParseInt(encodedID, 10, 64)
 	if err != nil {
-		return 0, markInvalidLeaseMetadata(fmt.Errorf("decode lease attachment for key %q: %w", userKey, err))
+		return leaseAttachmentRecord{}, markInvalidLeaseMetadata(fmt.Errorf("decode lease attachment for key %q: %w", userKey, err))
 	}
 	if id == 0 {
-		return 0, markInvalidLeaseMetadata(fmt.Errorf("lease attachment for key %q references reserved id 0", userKey))
+		return leaseAttachmentRecord{}, markInvalidLeaseMetadata(fmt.Errorf("lease attachment for key %q references reserved id 0", userKey))
 	}
-	if !bytes.Equal(value, []byte(strconv.FormatInt(id, 10))) {
-		return 0, markInvalidLeaseMetadata(fmt.Errorf("lease attachment for key %q has noncanonical id %q", userKey, value))
+	if encodedID != strconv.FormatInt(id, 10) || (found && !validLeaseIncarnation(incarnation)) {
+		return leaseAttachmentRecord{}, markInvalidLeaseMetadata(fmt.Errorf("lease attachment for key %q has noncanonical value %q", userKey, value))
 	}
-	return id, nil
+	return leaseAttachmentRecord{ID: id, Incarnation: incarnation}, nil
+}
+
+func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
+	record, err := parseLeaseAttachmentRecordDetails(userKey, value)
+	return record.ID, err
 }
 
 // migrateLegacyLeases rewrites pre-#17 leases (meta records that still carried an
@@ -1847,9 +1933,11 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, migrations []leg
 		st, ok := m.leases[id]
 		var ttl int64
 		var remainingTTL int64
+		var incarnation string
 		if ok {
 			ttl = st.ttl
 			remainingTTL = st.remainingTTL
+			incarnation = st.incarnation
 		}
 		m.leaseMu.Unlock()
 		if !ok {
@@ -1862,7 +1950,7 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, migrations []leg
 				break
 			}
 		}
-		if !complete || m.persistMigratedLeaseMeta(ctx, id, ttl, remainingTTL) != nil {
+		if !complete || m.persistMigratedLeaseMetaIncarnation(ctx, id, ttl, remainingTTL, incarnation) != nil {
 			continue
 		}
 		// Keep the monolithic legacy lease row as a durable retry marker until all
@@ -1903,6 +1991,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		}
 	}
 	m.leases = make(map[int64]*leaseState, len(records))
+	m.clearLeaseIncarnations()
 	m.keyLeaseIndex = make(map[string]int64)
 	for _, record := range records {
 		// Match etcd lessor.initAndRecover: old or externally restored lease
@@ -1919,6 +2008,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		}
 		st := &leaseState{
 			id:           record.ID,
+			incarnation:  record.Incarnation,
 			ttl:          grantedTTL,
 			remainingTTL: record.RemainingTTL,
 			// Mirror etcd initAndRecover + Promote->refresh: a durable remaining
@@ -1940,6 +2030,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 			m.keyLeaseIndex[key] = st.id
 		}
 		m.leases[st.id] = st
+		m.leaseIncarnations.Store(st.id, st.incarnation)
 	}
 	// Per-key attachment records (#17). Attachments for a lease that no longer has
 	// a meta record (revoked, tombstone not yet compacted) are skipped as orphans.
@@ -2111,8 +2202,16 @@ func (m *leaseManager) clearLeaseStateHoldingCheckpointLock() {
 		}
 	}
 	m.leases = make(map[int64]*leaseState)
+	m.clearLeaseIncarnations()
 	m.keyLeaseIndex = make(map[string]int64)
 	atomic.StoreInt64(&m.leasedKeyCount, 0)
+}
+
+func (m *leaseManager) clearLeaseIncarnations() {
+	m.leaseIncarnations.Range(func(key, _ any) bool {
+		m.leaseIncarnations.Delete(key)
+		return true
+	})
 }
 
 // orphanLeaseSweepInterval is how often the leader reconciles durable lease
@@ -2212,11 +2311,14 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 	m.leaseWriteMu.Lock()
 	defer m.leaseWriteMu.Unlock()
 
-	records, attachments, legacyAttachments, err := m.loadLeaseRecords(ctx)
+	records, attachments, legacyAttachments, staleInternalAttachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
 		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
 		return
+	}
+	for key, id := range staleInternalAttachments {
+		attachments[key] = id
 	}
 	m.leaseMu.Lock()
 	migrations := m.legacyMigrationsLocked(records)
@@ -2422,6 +2524,7 @@ func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Co
 	}
 	remainingTTL := int64(math.Ceil(time.Until(st.deadline).Seconds()))
 	ttl := st.ttl
+	incarnation := st.incarnation
 	if remainingTTL >= ttl {
 		m.scheduleLeaseCheckpointLocked(st)
 		m.leaseMu.Unlock()
@@ -2430,7 +2533,7 @@ func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Co
 	m.leaseMu.Unlock()
 
 	applyStart := time.Now()
-	err := m.persistLeaseCheckpoint(ctx, id, ttl, remainingTTL)
+	err := m.persistLeaseCheckpointIncarnation(ctx, id, ttl, remainingTTL, incarnation)
 	emitEtcdLeaseCheckpointDurations(m.srv.metricCli, time.Since(applyStart), err)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.checkpoint.err", 1)
@@ -2460,7 +2563,12 @@ func emitEtcdLeaseCheckpointDurations(metricCli metrics.Metrics, duration time.D
 // persistLeaseMeta writes the small per-lease meta record {id, ttl}. Attachments
 // are stored separately; remaining TTL is written only by periodic checkpoints.
 func (m *leaseManager) persistLeaseMeta(ctx context.Context, id, ttl int64) error {
-	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl})
+	incarnation, _ := m.leaseIncarnation(id)
+	return m.persistLeaseMetaIncarnation(ctx, id, ttl, incarnation)
+}
+
+func (m *leaseManager) persistLeaseMetaIncarnation(ctx context.Context, id, ttl int64, incarnation string) error {
+	data, err := json.Marshal(leaseRecord{ID: id, Incarnation: incarnation, TTL: ttl})
 	if err != nil {
 		return err
 	}
@@ -2468,7 +2576,12 @@ func (m *leaseManager) persistLeaseMeta(ctx context.Context, id, ttl int64) erro
 }
 
 func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, remainingTTL int64) error {
-	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: remainingTTL})
+	incarnation, _ := m.leaseIncarnation(id)
+	return m.persistLeaseCheckpointIncarnation(ctx, id, ttl, remainingTTL, incarnation)
+}
+
+func (m *leaseManager) persistLeaseCheckpointIncarnation(ctx context.Context, id, ttl, remainingTTL int64, incarnation string) error {
+	data, err := json.Marshal(leaseRecord{ID: id, Incarnation: incarnation, TTL: ttl, RemainingTTL: remainingTTL})
 	if err != nil {
 		return err
 	}
@@ -2476,7 +2589,12 @@ func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, rema
 }
 
 func (m *leaseManager) persistMigratedLeaseMeta(ctx context.Context, id, ttl, remainingTTL int64) error {
-	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: remainingTTL})
+	incarnation, _ := m.leaseIncarnation(id)
+	return m.persistMigratedLeaseMetaIncarnation(ctx, id, ttl, remainingTTL, incarnation)
+}
+
+func (m *leaseManager) persistMigratedLeaseMetaIncarnation(ctx context.Context, id, ttl, remainingTTL int64, incarnation string) error {
+	data, err := json.Marshal(leaseRecord{ID: id, Incarnation: incarnation, TTL: ttl, RemainingTTL: remainingTTL})
 	if err != nil {
 		return err
 	}
@@ -2527,11 +2645,16 @@ func (m *leaseManager) persistLeaseRecord(ctx context.Context, key, data []byte,
 // metadata record. It is used by Renew after dropping leaseWriteMu: a concurrent
 // Revoke may delete the record, in which case the CAS must not recreate it.
 func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, fromRemainingTTL, toRemainingTTL int64) error {
-	expected, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: fromRemainingTTL})
+	incarnation, _ := m.leaseIncarnation(id)
+	return m.persistLeaseCheckpointCASIncarnation(ctx, id, ttl, fromRemainingTTL, toRemainingTTL, incarnation)
+}
+
+func (m *leaseManager) persistLeaseCheckpointCASIncarnation(ctx context.Context, id, ttl, fromRemainingTTL, toRemainingTTL int64, incarnation string) error {
+	expected, err := json.Marshal(leaseRecord{ID: id, Incarnation: incarnation, TTL: ttl, RemainingTTL: fromRemainingTTL})
 	if err != nil {
 		return err
 	}
-	updated, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: toRemainingTTL})
+	updated, err := json.Marshal(leaseRecord{ID: id, Incarnation: incarnation, TTL: ttl, RemainingTTL: toRemainingTTL})
 	if err != nil {
 		return err
 	}
@@ -2571,7 +2694,8 @@ func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, f
 // full-key-list rewrite (#17). The record is keyed by the user key, which has at
 // most one lease, so a rebind simply overwrites it.
 func (m *leaseManager) attachKeyToStorage(ctx context.Context, id int64, userKey string) error {
-	return m.srv.backend.InternalPutCorruptGuarded(ctx, leaseAttachKey(userKey), []byte(strconv.FormatInt(id, 10)))
+	incarnation, _ := m.leaseIncarnation(id)
+	return m.srv.backend.InternalPutCorruptGuarded(ctx, leaseAttachKey(userKey), encodeLeaseAttachmentRecord(id, incarnation))
 }
 
 func (m *leaseManager) detachKeyFromStorage(ctx context.Context, userKey string) error {

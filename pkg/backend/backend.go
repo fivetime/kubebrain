@@ -100,6 +100,9 @@ type Backend interface {
 	// InternalPutCorruptGuarded writes internal metadata as an etcd operation
 	// covered by the CORRUPT applier boundary, without consuming an MVCC revision.
 	InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error
+	// EnsureLeaseIncarnationFormatFence persists the roll-forward marker for
+	// incarnation-bearing lease metadata before the first such record is written.
+	EnsureLeaseIncarnationFormatFence(ctx context.Context) error
 	InternalDelete(ctx context.Context, key []byte) error
 	// InternalCAS atomically applies service-metadata mutations guarded by their
 	// exact previous values. It does not consume user MVCC revisions or emit

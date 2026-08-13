@@ -522,7 +522,7 @@ func TestEmptyLeaseRevokeDeletesDurableMetadata(t *testing.T) {
 	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 
-	records, attachments, _, err := server.loadLeaseRecords(ctx)
+	records, attachments, _, _, err := server.loadLeaseRecords(ctx)
 	require.NoError(t, err)
 	server.applyLeaseRecords(records, attachments)
 	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
@@ -1715,7 +1715,7 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 			write: func(ctx context.Context, server *RPCServer) error {
 				return server.backend.InternalPut(ctx, leaseAttachKey("/lease/noncanonical"), []byte("01"))
 			},
-			want: `lease attachment for key "/lease/noncanonical" has noncanonical id "01"`,
+			want: `lease attachment for key "/lease/noncanonical" has noncanonical value "01"`,
 		},
 	}
 	for _, test := range tests {
@@ -1725,9 +1725,40 @@ func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 			ctx := context.Background()
 			require.NoError(t, test.write(ctx, server))
 
-			_, _, _, err := server.loadLeaseRecords(ctx)
+			_, _, _, _, err := server.loadLeaseRecords(ctx)
 			require.ErrorIs(t, err, errInvalidLeaseMetadata)
 			require.EqualError(t, err, test.want)
+		})
+	}
+}
+
+func TestLeaseAttachmentRecordIncarnationEncoding(t *testing.T) {
+	const incarnation = "0123456789abcdef0123456789abcdef"
+	tests := []struct {
+		name        string
+		value       string
+		wantID      int64
+		wantVersion string
+		wantErr     bool
+	}{
+		{name: "legacy", value: "17", wantID: 17},
+		{name: "incarnated", value: "-17@" + incarnation, wantID: -17, wantVersion: incarnation},
+		{name: "empty incarnation", value: "17@", wantErr: true},
+		{name: "short incarnation", value: "17@0123456789abcdef", wantErr: true},
+		{name: "uppercase incarnation", value: "17@0123456789ABCDEF0123456789ABCDEF", wantErr: true},
+		{name: "multiple separators", value: "17@" + incarnation + "@x", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record, err := parseLeaseAttachmentRecordDetails("/lease/incarnation", []byte(test.value))
+			if test.wantErr {
+				require.ErrorIs(t, err, errInvalidLeaseMetadata)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.wantID, record.ID)
+			require.Equal(t, test.wantVersion, record.Incarnation)
+			require.Equal(t, test.value, string(encodeLeaseAttachmentRecord(record.ID, record.Incarnation)))
 		})
 	}
 }
@@ -1741,7 +1772,7 @@ func TestLoadLeaseRecordsPreservesCanonicalNegativeLeaseIdentity(t *testing.T) {
 	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(-1), data))
 	require.NoError(t, server.backend.InternalPut(ctx, leaseAttachKey("/lease/negative"), []byte("-1")))
 
-	records, attachments, _, err := server.loadLeaseRecords(ctx)
+	records, attachments, _, _, err := server.loadLeaseRecords(ctx)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	require.Equal(t, int64(-1), records[0].ID)
@@ -1760,7 +1791,7 @@ func TestLoadLeaseRecordsRejectsAmbiguousLegacyKeyOwners(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, _, _, err := server.loadLeaseRecords(ctx)
+	_, _, _, _, err := server.loadLeaseRecords(ctx)
 	require.ErrorIs(t, err, errInvalidLeaseMetadata)
 	require.EqualError(t, err, `legacy lease key "/lease/ambiguous-legacy-owner" has conflicting owners 73100 and 73101`)
 }
@@ -1780,7 +1811,7 @@ func TestLoadLeaseRecordsRejectsAmbiguousRetainedLegacyOwners(t *testing.T) {
 		require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(id), canonical))
 	}
 
-	_, _, _, err := server.loadLeaseRecords(ctx)
+	_, _, _, _, err := server.loadLeaseRecords(ctx)
 	require.ErrorIs(t, err, errInvalidLeaseMetadata)
 	require.EqualError(t, err, `legacy lease key "/lease/ambiguous-retained-legacy-owner" has conflicting owners 73102 and 73103`)
 }
@@ -1884,7 +1915,7 @@ func TestLoadLeaseRecordsRejectsMalformedLeaseMetadata(t *testing.T) {
 			id := int64(7100 + index)
 			require.NoError(t, test.write(ctx, server, id, test.raw(t, id)))
 
-			_, _, _, err := server.loadLeaseRecords(ctx)
+			_, _, _, _, err := server.loadLeaseRecords(ctx)
 			require.ErrorIs(t, err, errInvalidLeaseMetadata)
 			require.EqualError(t, err, test.want)
 		})
@@ -1928,7 +1959,7 @@ func TestLoadLeaseRecordsRejectsMismatchedStorageIdentity(t *testing.T) {
 			ctx := context.Background()
 			require.NoError(t, test.write(ctx, server, raw))
 
-			_, _, _, err := server.loadLeaseRecords(ctx)
+			_, _, _, _, err := server.loadLeaseRecords(ctx)
 			require.ErrorIs(t, err, errInvalidLeaseMetadata)
 			require.ErrorContains(t, err, test.want)
 		})
@@ -1948,7 +1979,7 @@ func TestLoadLeaseRecordsKeepsInternalOverrideForMatchingLegacyIdentity(t *testi
 	require.NoError(t, err)
 	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(id), current))
 
-	records, _, _, err := server.loadLeaseRecords(ctx)
+	records, _, _, _, err := server.loadLeaseRecords(ctx)
 	require.NoError(t, err)
 	require.Equal(t, []leaseRecord{{
 		ID: id, TTL: 60, LegacyStorage: true, LegacyKeys: []string{"legacy-key"},
@@ -2129,7 +2160,7 @@ func TestLeaseMetaDoesNotAdvanceKVRevisionAndRestores(t *testing.T) {
 
 	restored := New(server.backend.(*backendShim).backend, server.metricCli, server.peers)
 	defer restored.stopLeases()
-	records, attachments, _, err := restored.loadLeaseRecords(ctx)
+	records, attachments, _, _, err := restored.loadLeaseRecords(ctx)
 	require.NoError(t, err)
 	require.Empty(t, attachments)
 	require.Len(t, records, 1)
@@ -2962,7 +2993,7 @@ func TestLeaseCheckpointBoundsReloadAndRenewClearsIt(t *testing.T) {
 	require.Equal(t, beforeRevision, server.backend.GetCurrentRevision(),
 		"internal lease checkpoint must not advance user MVCC")
 
-	records, attachments, _, err := server.loadLeaseRecords(ctx)
+	records, attachments, _, _, err := server.loadLeaseRecords(ctx)
 	require.NoError(t, err)
 	server.applyLeaseRecords(records, attachments)
 	restored, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})

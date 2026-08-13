@@ -106,6 +106,7 @@ type BackendShim interface {
 	GetSnapshotTimestamp(ctx context.Context) (uint64, error)
 	InternalPut(ctx context.Context, key, value []byte) error
 	InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error
+	EnsureLeaseIncarnationFormatFence(ctx context.Context) error
 	InternalDelete(ctx context.Context, key []byte) error
 	InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error
 	QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error)
@@ -267,6 +268,10 @@ func NewBackendShim(backend backend.Backend, metricCli metrics.Metrics) BackendS
 
 func (b *backendShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
 	return b.backend.InternalGet(ctx, key)
+}
+
+func (b *backendShim) EnsureLeaseIncarnationFormatFence(ctx context.Context) error {
+	return b.backend.EnsureLeaseIncarnationFormatFence(ctx)
 }
 
 func (b *backendShim) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error) {

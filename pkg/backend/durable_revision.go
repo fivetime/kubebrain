@@ -172,7 +172,10 @@ func (b *backend) stageNextDurableRevisionAfter(batch storage.BatchWrite, floor 
 		if revision < floor {
 			revision = floor
 		}
-		if revision >= math.MaxInt64 {
+		// MaxInt64 is reserved for the persistent lease-format compatibility
+		// witness. Never let the final user revision overwrite that leadership
+		// fence; the public sequence fails closed one value earlier.
+		if revision >= math.MaxInt64-1 {
 			return ErrRevisionExhausted
 		}
 		allocated = revision + 1

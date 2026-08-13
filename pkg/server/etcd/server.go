@@ -180,6 +180,7 @@ func (s *RPCServer) SetLeasePromotionExtension(extension time.Duration) {
 
 type leaseState struct {
 	id              int64
+	incarnation     string
 	ttl             int64
 	remainingTTL    int64
 	deadline        time.Time

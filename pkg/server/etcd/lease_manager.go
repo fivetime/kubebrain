@@ -69,8 +69,15 @@ type leaseManager struct {
 	// reserved, so a delayed metadata commit cannot publish across that boundary.
 	leaseGeneration uint64
 	leases          map[int64]*leaseState
-	pendingLeases   map[int64]uint64
-	keyLeaseIndex   map[string]int64
+	// leaseIncarnations mirrors the immutable incarnation of each live lease for
+	// attachment commits. It deliberately has an independent concurrency domain:
+	// an authorized lease read holds leaseMu while a concurrent Put is allowed to
+	// commit its value+attachment before waiting to publish the in-memory key
+	// index. Taking leaseMu merely to encode that attachment would invert that
+	// ordering and stall the commit.
+	leaseIncarnations sync.Map // map[int64]string
+	pendingLeases     map[int64]uint64
+	keyLeaseIndex     map[string]int64
 	// orphanSweepStop is non-nil while the leader-side orphaned-leased-key sweeper
 	// goroutine is running; closed (and niled) when leadership is lost. Guarded by
 	// leaseMu.

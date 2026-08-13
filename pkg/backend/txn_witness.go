@@ -33,6 +33,8 @@ import (
 
 var txnWitnessPrefix = []byte("txn/witness/")
 
+const leaseIncarnationFenceVersion = byte(2)
+
 // ErrTxnWitnessUnsupportedVersion means storage was written by a newer binary.
 // It fences this process from leadership without classifying healthy, opaque
 // metadata as data corruption; an operator must roll forward, not repair data.
@@ -42,6 +44,13 @@ const (
 	txnWitnessVersion = byte(1)
 	txnWitnessSize    = 1 + 4 + sha256.Size
 )
+
+var leaseIncarnationFormatFenceValue = func() []byte {
+	value := make([]byte, txnWitnessSize)
+	value[0] = leaseIncarnationFenceVersion
+	copy(value[1:], []byte("lease-incarnation-v1"))
+	return value
+}()
 
 type txnWitnessRecord struct {
 	count  uint32
@@ -53,6 +62,40 @@ func txnWitnessLogicalKey(revision uint64) []byte {
 	copy(key, txnWitnessPrefix)
 	binary.BigEndian.PutUint64(key[len(txnWitnessPrefix):], revision)
 	return key
+}
+
+func leaseIncarnationFormatFenceKey() []byte {
+	return txnWitnessLogicalKey(math.MaxInt64)
+}
+
+// EnsureLeaseIncarnationFormatFence makes the incarnation-bearing lease layout
+// an explicit roll-forward boundary. The marker occupies the reserved final
+// witness revision and uses a future witness version. A pre-incarnation binary
+// therefore withdraws during leadership initialization instead of acquiring a
+// term and looping forever on strict lease metadata decoding.
+func (b *backend) EnsureLeaseIncarnationFormatFence(ctx context.Context) error {
+	key := leaseIncarnationFormatFenceKey()
+	for attempts := 0; attempts < 2; attempts++ {
+		current, err := b.InternalGet(ctx, key)
+		switch {
+		case err == nil && bytes.Equal(current, leaseIncarnationFormatFenceValue):
+			return nil
+		case err == nil:
+			return fmt.Errorf("%w: incompatible lease incarnation format fence", ErrTxnWitnessUnsupportedVersion)
+		case !errors.Is(err, storage.ErrKeyNotFound):
+			return err
+		}
+		err = b.InternalCAS(ctx, []InternalCASOp{{
+			Key: key, ExpectedExists: false, Value: leaseIncarnationFormatFenceValue,
+		}})
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, storage.ErrCASFailed) {
+			return err
+		}
+	}
+	return fmt.Errorf("persist lease incarnation format fence: %w", storage.ErrCASFailed)
 }
 
 func encodeTxnWitness(entries []eventLogRawEntry) []byte {
@@ -169,7 +212,16 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 		logical := key[len(start)-len(txnWitnessPrefix):]
 		var revision uint64
 		var cause error
-		if len(logical) != len(txnWitnessPrefix)+8 {
+		if bytes.Equal(logical, leaseIncarnationFormatFenceKey()) {
+			revision = math.MaxInt64
+			if bytes.Equal(raw, leaseIncarnationFormatFenceValue) {
+				continue
+			}
+			if len(raw) > 0 && raw[0] > leaseIncarnationFenceVersion {
+				return fmt.Errorf("lease incarnation format fence: %w: %d", ErrTxnWitnessUnsupportedVersion, raw[0])
+			}
+			cause = fmt.Errorf("%w: invalid lease incarnation format fence", ErrTxnWitnessCorrupt)
+		} else if len(logical) != len(txnWitnessPrefix)+8 {
 			cause = fmt.Errorf("%w: malformed transaction witness key", ErrTxnWitnessCorrupt)
 		} else {
 			revision = binary.BigEndian.Uint64(logical[len(txnWitnessPrefix):])
@@ -177,7 +229,11 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 				cause = fmt.Errorf("%w: invalid transaction witness revision", ErrTxnWitnessCorrupt)
 			}
 		}
-		record, decodeErr := decodeTxnWitness(raw)
+		var record txnWitnessRecord
+		var decodeErr error
+		if cause == nil {
+			record, decodeErr = decodeTxnWitness(raw)
+		}
 		if cause == nil && errors.Is(decodeErr, ErrTxnWitnessUnsupportedVersion) {
 			return fmt.Errorf("transaction witness at revision %d: %w", revision, decodeErr)
 		}

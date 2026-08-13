@@ -208,11 +208,17 @@ func TestOrphanLeaseSweepDoesNotAdoptAttachmentAcrossSameIDRegrant(t *testing.T)
 
 			_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 3001, ID: leaseID})
 			require.NoError(t, err)
-			server.sweepOrphanLeasedKeys(ctx)
+			// Fail over before the periodic cleanup. Reload must use the durable
+			// incarnation witness and must not attach the old row to the replacement.
+			require.NoError(t, server.ReloadLeases(ctx))
+			server.leaseMu.Lock()
+			_, adopted := server.keyLeaseIndex[string(key)]
+			server.leaseMu.Unlock()
+			require.False(t, adopted)
 
 			got, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
 			require.NoError(t, err)
-			require.Empty(t, got.Kvs, "the replacement lease must not adopt an old-generation attachment")
+			require.Empty(t, got.Kvs, "reload must delete the old-generation key before admitting traffic")
 			_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
 			require.ErrorIs(t, err, storage.ErrKeyNotFound)
 			legacyRow, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(key))})
