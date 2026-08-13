@@ -49238,6 +49238,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   确认测试前缀为空、lease/alarm 集合与基线一致。该证据覆盖当前单节点 Kind 上三个独立 KubeBrain Pod；跨节点/AZ
   网络分区、Prometheus scrape 延迟及真实 quota 容量耗尽仍是独立矩阵。
 
+- A4584/A4585 建立三个 KubeBrain Pod 直连三个 upstream member 的 MoveLeader/响应丢失/长流恢复差分门禁，
+  upstream 固定为 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`。首轮用三个独立
+  KubeBrain endpoint、三个自建参考 etcd endpoint 以及可切换的 TCP/gRPC 代理执行完整 profile；LeaseGrant/
+  LeaseRevoke 不确定结果、跨副本重放、MoveLeader follower、Watch/KeepAlive 和 multiplexed stream 大部分均
+  与参考一致，但 follower 上 `Serializable=true, Revision=math.MinInt64` 的 RangeStream 返回空 latest，形成
+  可复现 RED。根因是 TiKV scanner 已按 etcd 把所有非正 revision 规范化为 latest，follower 的 GC-protected
+  checkpoint 选择却只覆盖 `revision == 0`。提交 `9a3729d5` 先将 RangeStream 改为 `revision <= 0`，并用
+  `0/-1/MinInt64` 固定 stale follower checkpoint；同时提交 `589f2f94` 把 multiplexed Watch 的断言从“两个
+  自有事件必须占据相邻全局 revision”改为严格单调，因为同一共享实例上的孤儿 lease 到期可合法插入 revision。
+
+  精确镜像 `kubebrain:a4584-589f2f94`（内嵌 SHA
+  `589f2f9457cdb62032f66e618ef501933034d0ec`，OCI manifest list
+  `sha256:a38de0dfbd07333db120ffaedcbb3e7db246ccccb935e909a8ede4548ea23315`）部署三副本后把缺口进一步定位到
+  unary Range：RangeStream 已从 checkpoint 返回最新两条 KV，但紧邻的 unary negative Range 仍从 stale
+  follower 返回旧 header/空结果。提交 `2d29a57c` 将普通 Range 的同一 checkpoint 条件也统一为
+  `revision <= 0`；聚焦测试连续 20 轮通过，完整 `pkg/server/etcd` 回归 172.601 秒通过。修复镜像
+  `kubebrain:a4585-2d29a57c`（内嵌 SHA `2d29a57c1ca3499d598b8173f491ce34a18a1b03`，构建时间
+  `2026-08-13T22:07:57Z`，OCI manifest list
+  `sha256:cea95aadec7a0fc9ca2fa7695018102adeb2d3f7906369301524fcd60db01795`，运行用户
+  `65532:65532`）滚动后三个 Pod 均 Ready、零重启。
+
+  真实复验还暴露旧 runner 在共享实例上用全局 header revision 精确等于 `0/1/3` 推断单个 lease 场景的
+  脆弱性：前序 response-loss 测试遗留的短 TTL orphan 正常到期可在后续场景中插入无关 revision。提交
+  `131cc4f1`、`46c221c0`、`a5e9e6f8` 保留响应确实丢失、第二副本确实接管、错误码、lease ID/数量/TTL、
+  attached key 删除和 lease 集合最终收敛等可归因断言，移除无法归因给当前场景的全局 revision 邻接假设；
+  compat 模块默认回归 6.294 秒通过。最终同一 A4585 三副本对完整 direct-moveleader profile 先单轮
+  38.412 秒全绿，再连续三轮 118.805 秒全绿；每轮都覆盖两个 follower 的 latest/negative/historical/
+  linearizable unary-vs-RangeStream、MoveLeader、L4/L7 committed-response-loss、跨副本 lease replay、
+  orphan expiry、Watch/KeepAlive/multiplexed stream reset。该证据关闭当前单节点 Kind、独立 TiKV/PD、三个
+  direct Pod endpoint 下的门禁；跨节点/AZ、真实云 L4/L7、网络分区以及与 PD/TiKV 故障叠加仍保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
