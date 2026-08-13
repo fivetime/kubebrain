@@ -49112,6 +49112,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TTL=3、PD leader loss/slow disk 与 rollout 叠加、跨节点/AZ 和云 LB 仍是更严格的独立矩阵，不能由 TTL=5
   单节点 Kind 结果外推。
 
+- A4576 对 A4575 保留的 TTL=3 做了首次同规格 900 轮尝试，但没有把混合基础设施故障误报为 KubeBrain
+  兼容结论。前两次 Pod 终止的 EOF 正常对账；第 563 轮在 rollout 已结束后先返回 leadership fence，随后
+  10 秒 Range 对账超时。PD leader name/member ID 全程未变，所以新 identity monitor 未触发；但同一秒
+  PD raft 明确报告 slow-disk heartbeat，三个 KubeBrain 的 TiKV client 同时报 store 1 `loadRegion`/
+  health-check deadline，TSO 延迟最高约 2.9 秒，现任 KubeBrain leader因 5 秒 renew deadline 无法续租而
+  正确自我 fence，约 0.54 秒后重新获取 lease。该结果证明仅监控 PD identity 不等于证明 TiKV data path
+  稳定，也不能据此断言 TTL=3 自愿 rollout 不兼容。TTL=3 继续开放；下一次有效验收必须使用独立资源隔离
+  的 TiKV/PD 或同时固定 store/TSO latency 门禁，且仍须保持 5 秒 Put→Watch SLA，不能靠提高 TTL/timeout
+  消除后端 stall。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
