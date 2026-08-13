@@ -88,21 +88,21 @@ type checkpointCountBackendShim struct {
 	listCalled  bool
 }
 
-func (b *checkpointCountBackendShim) Count(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+func (b *checkpointCountBackendShim) Count(ctx context.Context, _ *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 	b.countCalled = true
-	return &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 99}, nil
-}
-
-func (b *checkpointCountBackendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-	b.listCalled = true
 	checkpoint, ok := backend.SerializableCheckpointFromContext(ctx)
 	if !ok {
-		return nil, errors.New("serializable checkpoint missing from count scan")
+		return nil, errors.New("serializable checkpoint missing from CountOnly request")
 	}
-	if r.Limit != 0 {
-		return nil, fmt.Errorf("checkpoint count scan retained limit %d", r.Limit)
+	if checkpoint != b.checkpoint {
+		return nil, fmt.Errorf("CountOnly checkpoint = %+v, want %+v", checkpoint, b.checkpoint)
 	}
 	return &etcdserverpb.RangeResponse{Header: txnHeader(int64(checkpoint.Revision)), Count: 2}, nil
+}
+
+func (b *checkpointCountBackendShim) List(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.listCalled = true
+	return nil, errors.New("checkpoint CountOnly unexpectedly materialized List")
 }
 
 func (b *checkpointRangeBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
@@ -630,8 +630,8 @@ func TestFollowerSerializableLatestCountUsesProtectedCheckpointSnapshot(t *testi
 			Revision: revision, Serializable: true, CountOnly: true, Limit: 1,
 		})
 		require.NoError(t, err)
-		require.True(t, shim.listCalled, "revision %d", revision)
-		require.False(t, shim.countCalled, "revision %d", revision)
+		require.True(t, shim.countCalled, "revision %d", revision)
+		require.False(t, shim.listCalled, "revision %d", revision)
 		require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
 		require.Equal(t, int64(2), response.Count)
 		require.Empty(t, response.Kvs)

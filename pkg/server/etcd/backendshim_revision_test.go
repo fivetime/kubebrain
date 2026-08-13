@@ -16,14 +16,14 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
-	prommetrics "github.com/kubewharf/kubebrain/pkg/metrics/prometheus"
 )
 
 type rangeRevisionProbeBackend struct {
 	backend.Backend
-	getRevision   uint64
-	listRevision  uint64
-	countRevision uint64
+	getRevision        uint64
+	listRevision       uint64
+	countRevision      uint64
+	backendCountCalled bool
 }
 
 type malformedInlineValueBackend struct {
@@ -58,10 +58,19 @@ func (b *rangeRevisionProbeBackend) CountAtRevision(_ context.Context, _, _ []by
 	return 0, true
 }
 
+func (b *rangeRevisionProbeBackend) Count(ctx context.Context, _ *proto.CountRequest) (*proto.CountResponse, error) {
+	b.backendCountCalled = true
+	revision := b.GetCurrentRevision()
+	if checkpoint, ok := backend.SerializableCheckpointFromContext(ctx); ok {
+		revision = checkpoint.Revision
+	}
+	return &proto.CountResponse{Header: &proto.ResponseHeader{Revision: revision}, Count: 2}, nil
+}
+
 func (b *rangeRevisionProbeBackend) GetCurrentRevision() uint64 { return 11 }
 
 func TestBackendShimNormalizesSignedRangeRevision(t *testing.T) {
-	metricCli := prommetrics.NewMetrics()
+	metricCli := &recordingMetrics{}
 	for _, tc := range []struct {
 		name string
 		wire int64
@@ -89,6 +98,25 @@ func TestBackendShimNormalizesSignedRangeRevision(t *testing.T) {
 			require.Equal(t, tc.want, probe.countRevision, "CountOnly revision")
 		})
 	}
+}
+
+func TestBackendShimCountUsesCheckpointHeader(t *testing.T) {
+	probe := &rangeRevisionProbeBackend{}
+	shim := NewBackendShim(probe, &recordingMetrics{})
+	checkpoint := backend.SerializableCheckpoint{Revision: 29, Timestamp: 101}
+	ctx := backend.WithSerializableCheckpoint(context.Background(), checkpoint)
+
+	response, err := shim.Count(ctx, &etcdserverpb.RangeRequest{
+		Key: []byte("/checkpoint/"), RangeEnd: []byte("/checkpoint0"),
+		Revision: math.MinInt64, Serializable: true, CountOnly: true, Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+	require.Equal(t, int64(2), response.Count)
+	require.Empty(t, response.Kvs)
+	require.False(t, response.More)
+	require.True(t, probe.backendCountCalled)
+	require.Zero(t, probe.countRevision, "checkpoint count must bypass the shim's local index response")
 }
 
 func TestBackendShimGetRejectsMalformedInlineValue(t *testing.T) {

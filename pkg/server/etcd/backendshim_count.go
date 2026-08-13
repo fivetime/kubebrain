@@ -27,6 +27,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+
+	"github.com/kubewharf/kubebrain/pkg/backend"
 )
 
 // countProxyMarkerKey marks a CountOnly Range that a follower forwarded to the
@@ -195,6 +197,13 @@ func (cr *countResolver) SetCountProxy(f func(ctx context.Context, r *etcdserver
 }
 
 func (cr *countResolver) Count(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	if _, checkpoint := backend.SerializableCheckpointFromContext(ctx); checkpoint {
+		// CountAtRevision is checkpoint-aware, but its shim response historically
+		// stamped the process-local revision. Delegate to backend.Count so both an
+		// index hit and its non-materializing scanner fallback use the pinned TiKV
+		// timestamp and return the checkpoint revision in the header.
+		return cr.countPinnedSnapshot(ctx, r)
+	}
 	if r.Revision != 0 {
 		// A point-in-time count. The proto CountRequest carries no revision (so the
 		// pass-through path below always counts at the current revision), but the
@@ -247,6 +256,17 @@ func (cr *countResolver) Count(ctx context.Context, r *etcdserverpb.RangeRequest
 		End: r.RangeEnd,
 	}
 	response, err := cr.shim.backend.Count(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	return &etcdserverpb.RangeResponse{
+		Header: txnHeader(int64(response.Header.Revision)),
+		Count:  int64(response.Count),
+	}, nil
+}
+
+func (cr *countResolver) countPinnedSnapshot(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	response, err := cr.shim.backend.Count(ctx, &proto.CountRequest{Key: r.Key, End: r.RangeEnd})
 	if err != nil {
 		return nil, err
 	}
