@@ -24,7 +24,8 @@ JQ="$(resolve_executable "$JQ")" || die "JQ must be executable"
 temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
 parameters_file="$temp_dir/parameters.json"
 "$JQ" -ceS '
-  select(keys == ["backup_ts","pd_addrs","storage_prefix"]) |
+  select(keys == ["backup_ts","pd_addrs","storage_prefix"] or
+    keys == ["backup_ts","cipher_method","encryption_key_id","pd_addrs","storage_prefix"]) |
   select(.backup_ts | type == "string" and test("^[1-9][0-9]*$") and
     (length < 20 or (length == 20 and . <= "18446744073709551615"))) |
   select(.storage_prefix | type == "string" and
@@ -37,6 +38,9 @@ parameters_file="$temp_dir/parameters.json"
       test("^(\\[[^],[:space:]]+\\]|[^\\[\\]:,[:space:]]+):[1-9][0-9]{0,4}$") and
       (capture(":(?<port>[0-9]+)$").port | tonumber) <= 65535)) |
   select((.pd_addrs | unique | length) == (.pd_addrs | length)) |
+  select((has("cipher_method")|not) or
+    (.cipher_method == "aes256-ctr" and
+      (.encryption_key_id | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$")))) |
   .pd_addrs |= sort
 ' "$PARAMETERS_FILE" >"$parameters_file" || die "native PITR parameter schema is invalid"
 parameters_sha="$(sha256sum "$parameters_file" | cut -d ' ' -f1)"

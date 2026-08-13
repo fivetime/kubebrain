@@ -1,0 +1,19 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-native-pitr-full-backup-encryption}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - name: native-pitr-full-backup-encryption-secret
+      expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name == "kubebrain-native-pitr-full-backup-encryption"'
+  validations:
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 2 && "key" in object.data && "key-id" in object.data', message: native PITR encryption Secret must be immutable Opaque with only key and key-id}
+    - {expression: 'request.operation != "UPDATE" || (oldObject.immutable == true && object.data == oldObject.data)', message: native PITR encryption Secret data is immutable across updates}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-native-pitr-full-backup-encryption}
+spec: {policyName: kubebrain-native-pitr-full-backup-encryption, validationActions: [Deny]}

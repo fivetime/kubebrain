@@ -14,7 +14,7 @@ import (
 func TestRunNativePITRFullBackupOperation(t *testing.T) {
 	dir := t.TempDir()
 	parameters := filepath.Join(dir, "parameters.json")
-	parameterBytes := []byte(`{"backup_ts":"468294813545660418","pd_addrs":["pd-1:2379","pd-0:2379"],"storage_prefix":"s3://immutable/instance/run/full"}`)
+	parameterBytes := []byte(`{"backup_ts":"468294813545660418","cipher_method":"aes256-ctr","encryption_key_id":"kms/prod/backup/versions/7","pd_addrs":["pd-1:2379","pd-0:2379"],"storage_prefix":"s3://immutable/instance/run/full"}`)
 	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
 	digest := fmt.Sprintf("%x", sha256.Sum256(parameterBytes))
 	operationLog := filepath.Join(dir, "operation.log")
@@ -45,11 +45,15 @@ printf '{"format":"kubebrain.native-pitr-full-backup-attestation.v2"}\n' >"$outp
 	for _, name := range []string{"ca.crt", "tls.crt", "tls.key"} {
 		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, name), []byte("test"), 0o600))
 	}
+	encryptionDir := filepath.Join(dir, "encryption")
+	require.NoError(t, os.Mkdir(encryptionDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(encryptionDir, "key"), []byte(strings.Repeat("a", 64)), 0o400))
+	require.NoError(t, os.WriteFile(filepath.Join(encryptionDir, "key-id"), []byte("kms/prod/backup/versions/7"), 0o400))
 
 	base := []string{
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + operationctl, "BACKUP_COMMAND=" + backup, "BR_BINARY=" + br,
-		"WORK_DIR=" + dir, "TLS_DIR=" + tlsDir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"WORK_DIR=" + dir, "TLS_DIR=" + tlsDir, "ENCRYPTION_DIR=" + encryptionDir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
 		"OPERATION_LOG=" + operationLog, "BACKUP_LOG=" + backupLog,
 	}
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-backup-operation.sh", base)
@@ -65,11 +69,22 @@ printf '{"format":"kubebrain.native-pitr-full-backup-attestation.v2"}\n' >"$outp
 	require.Contains(t, string(args), "--pd-addrs=pd-1:2379,pd-0:2379")
 	require.Contains(t, string(args), "--backup-ts=468294813545660418")
 	require.Contains(t, string(args), "--storage-prefix=s3://immutable/instance/run/full")
+	require.Contains(t, string(args), "--crypter-method=aes256-ctr")
+	require.Contains(t, string(args), "--encryption-key-id=kms/prod/backup/versions/7")
+	require.Contains(t, string(args), "--encryption-key-file="+filepath.Join(encryptionDir, "key"))
 	operationName := "native-pitr-full-" + digest[:20]
 	require.FileExists(t, filepath.Join(dir, operationName+".native-pitr-full-backup-attestation.json"))
 
 	require.NoError(t, os.Remove(filepath.Join(dir, operationName+".native-pitr-full-backup-attestation.json")))
 	require.NoError(t, os.Remove(backupLog))
+	require.NoError(t, os.Chmod(filepath.Join(encryptionDir, "key-id"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(encryptionDir, "key-id"), []byte("kms/prod/backup/versions/8"), 0o400))
+	mismatchOutput, mismatchErr := runProductionScriptCommand(t, "run-native-pitr-full-backup-operation.sh", base)
+	require.Error(t, mismatchErr)
+	require.Contains(t, string(mismatchOutput), "key version does not match")
+	require.NoFileExists(t, backupLog, "a mismatched mounted key version must fail before producer execution")
+	require.NoError(t, os.Chmod(filepath.Join(encryptionDir, "key-id"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(encryptionDir, "key-id"), []byte("kms/prod/backup/versions/7"), 0o400))
 	identityOutput, identityErr := runProductionScriptCommand(t, "run-native-pitr-full-backup-operation.sh", append(base,
 		"CLAIM_SHORT=00000000000000000000"))
 	require.Error(t, identityErr)

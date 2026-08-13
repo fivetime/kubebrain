@@ -48621,13 +48621,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不落证据、key 文件执行中变化、artifact/plan 绑定及 restore argv。本项仍不冒充生产密钥托管闭环：durable
   Operation 参数、只读 Secret volume、key version 生命周期/恢复授权和真实加密 TiKV 演练尚未接线，下一项继续。
 
+- A4540 关闭 A4539 的 durable `NativePITRFullBackup` Operation 仍只能调用 plaintext producer 的接线缺口。
+  requester canonical schema 现支持原三字段 plaintext，或额外精确包含 `cipher_method=aes256-ctr` 与安全 immutable
+  `encryption_key_id` 的五字段加密形状；操作身份因此绑定 method/version，但参数 Secret 从不含 key。executor
+  新增可选、只读、0440 的固定 encryption Secret volume，Secret 只能是 immutable Opaque 且精确含 `key`/`key-id`；
+  专属 requester admission 仍阻止其创建这个固定名 Secret，密钥必须由独立管理员预置。runner 在 producer 启动前
+  要求挂载 key-id 与 operation 参数逐字相等，再显式传入 AES-256 flags/key file；不匹配、缺文件、较弱 cipher、
+  key-id 缺失或额外字段均 fail closed 且零 BR 调用。plaintext 保持不依赖 Secret。行为回归覆盖加密 canonical
+  identity、危险组合拒绝、runner argv、挂载 version mismatch 和既有 fencing/terminal failure；清单回归锁定
+  optional/readOnly volume、精确 Secret items 与 fail-closed admission。生产 runbook 增加先部署 policy、再由密钥
+  管理员以文件创建 immutable Secret 的顺序。restore-side durable Operation、版本 promotion 自动化和真实加密
+  TiKV backup/restore 演练仍是下一阶段，不能据此声称完整密钥生命周期闭环。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
    并把表纳入发布说明。
 2. transactional TiKV native PITR 的 pinned v7.5.1 受限链已完成功能闭环；继续扩大版本矩阵、
-   跨可用区故障、生产规模和长时间 soak，并完成加密备份的密钥托管与恢复能力；当前 plaintext
-   executor attestation 已是 full artifact v4 强制门禁。不得用 TiDB BR
+   跨可用区故障、生产规模和长时间 soak，并完成加密 key version promotion 与 restore-side durable 编排；当前
+   plaintext/AES-256 executor attestation 已是 full artifact v5 强制门禁。不得用 TiDB BR
    full/PITR 的成功状态替代 KubeBrain exact receipt 与最终语义门禁。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
    显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写

@@ -832,16 +832,56 @@ func TestNativePITRFullBackupExecutorUsesDedicatedPinnedToolImageAndTLS(t *testi
 	volumes, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "volumes")
 	require.NoError(t, err)
 	require.True(t, found)
-	var tls *unstructured.Unstructured
+	var tls, encryption *unstructured.Unstructured
 	for _, raw := range volumes {
 		volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
 		if nestedString(t, volume, "name") == "tls" {
 			tls = volume
 		}
+		if nestedString(t, volume, "name") == "encryption" {
+			encryption = volume
+		}
 	}
 	require.NotNil(t, tls)
 	require.Equal(t, "kubebrain-native-pitr-full-backup-tls", nestedString(t, tls, "secret", "secretName"))
 	require.EqualValues(t, 0440, nestedInt64(t, tls, "secret", "defaultMode"))
+	require.NotNil(t, encryption)
+	require.Equal(t, "kubebrain-native-pitr-full-backup-encryption", nestedString(t, encryption, "secret", "secretName"))
+	require.True(t, nestedBool(t, encryption, "secret", "optional"), "plaintext execution must not require an encryption Secret")
+	require.EqualValues(t, 0440, nestedInt64(t, encryption, "secret", "defaultMode"))
+	items, found, err := unstructured.NestedSlice(encryption.Object, "secret", "items")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, items, 2)
+	mounts, found, err := unstructured.NestedSlice(container.Object, "volumeMounts")
+	require.NoError(t, err)
+	require.True(t, found)
+	var encryptionMount *unstructured.Unstructured
+	for _, raw := range mounts {
+		mount := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		if nestedString(t, mount, "name") == "encryption" {
+			encryptionMount = mount
+		}
+	}
+	require.NotNil(t, encryptionMount)
+	require.True(t, nestedBool(t, encryptionMount, "readOnly"))
+}
+
+func TestNativePITRFullBackupEncryptionSecretIsImmutable(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-native-pitr-full-backup-encryption-admission.yaml")
+	require.Len(t, objects, 2)
+	policy := objectByKindAndName(t, objects, "ValidatingAdmissionPolicy", "kubebrain-native-pitr-full-backup-encryption")
+	require.Equal(t, "Fail", nestedString(t, policy, "spec", "failurePolicy"))
+	text := fmt.Sprint(policy.Object)
+	for _, expected := range []string{
+		"kubebrain-native-pitr-full-backup-encryption", "object.immutable == true",
+		`size(object.data) == 2`, `"key" in object.data`, `"key-id" in object.data`,
+		`oldObject.immutable == true`, `object.data == oldObject.data`,
+	} {
+		require.Contains(t, text, expected)
+	}
+	binding := objectByKindAndName(t, objects, "ValidatingAdmissionPolicyBinding", "kubebrain-native-pitr-full-backup-encryption")
+	require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
 }
 
 func TestLegacySnapshotRemediationNativeHelperIsInRuntimeImage(t *testing.T) {

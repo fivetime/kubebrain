@@ -16,6 +16,8 @@ func TestRequestNativePITRFullBackupIsCanonicalAndIdempotent(t *testing.T) {
 	require.NoError(t, os.WriteFile(parameters, []byte(`{
   "storage_prefix":"s3://immutable/instance/run/full",
   "pd_addrs":["pd-1:2379","pd-0:2379"],
+  "cipher_method":"aes256-ctr",
+  "encryption_key_id":"kms/prod/backup/versions/7",
   "backup_ts":"468294813545660418"
 }`), 0o600))
 	kubectlLog := filepath.Join(dir, "kubectl.log")
@@ -50,7 +52,7 @@ if [[ -n "${FAIL_ONCE_FILE:-}" && ! -f "$FAIL_ONCE_FILE" ]]; then touch "$FAIL_O
 	}
 	output, err := runProductionScriptCommand(t, "request-native-pitr-full-backup.sh", env)
 	require.Error(t, err, string(output), "the first queue submission simulates a Secret/operation partial failure")
-	canonical := []byte(`{"backup_ts":"468294813545660418","pd_addrs":["pd-0:2379","pd-1:2379"],"storage_prefix":"s3://immutable/instance/run/full"}` + "\n")
+	canonical := []byte(`{"backup_ts":"468294813545660418","cipher_method":"aes256-ctr","encryption_key_id":"kms/prod/backup/versions/7","pd_addrs":["pd-0:2379","pd-1:2379"],"storage_prefix":"s3://immutable/instance/run/full"}` + "\n")
 	require.Equal(t, canonical, requireReadFile(t, secretData))
 	digest := fmt.Sprintf("%x", sha256.Sum256(canonical))
 	operationName := "native-pitr-full-" + digest[:20]
@@ -71,7 +73,7 @@ if [[ -n "${FAIL_ONCE_FILE:-}" && ! -f "$FAIL_ONCE_FILE" ]]; then touch "$FAIL_O
 	require.NotContains(t, string(requireReadFile(t, kubectlLog)), "create secret generic")
 
 	// Whitespace, object-key order, and PD endpoint order do not change request identity.
-	reordered := `{"backup_ts":"468294813545660418","pd_addrs":["pd-0:2379","pd-1:2379"],"storage_prefix":"s3://immutable/instance/run/full"}`
+	reordered := `{"encryption_key_id":"kms/prod/backup/versions/7","backup_ts":"468294813545660418","pd_addrs":["pd-0:2379","pd-1:2379"],"cipher_method":"aes256-ctr","storage_prefix":"s3://immutable/instance/run/full"}`
 	require.NoError(t, os.WriteFile(parameters, []byte(reordered), 0o600))
 	require.NoError(t, os.WriteFile(kubectlLog, nil, 0o600))
 	second, secondErr := runProductionScriptCommand(t, "request-native-pitr-full-backup.sh", env)
@@ -112,6 +114,8 @@ if [[ "$*" == *" get secret "* ]]; then printf 'true\tOpaque\t%s' "$(base64 -w0 
 		`{"backup_ts":"1","pd_addrs":["pd:65536"],"storage_prefix":"s3://bucket/full"}`,
 		`{"backup_ts":"1","pd_addrs":["pd:2379"],"storage_prefix":"s3:///full"}`,
 		`{"backup_ts":"1","pd_addrs":["pd:2379"],"storage_prefix":"s3://bucket/"}`,
+		`{"backup_ts":"1","cipher_method":"aes128-ctr","encryption_key_id":"key-7","pd_addrs":["pd:2379"],"storage_prefix":"s3://bucket/full"}`,
+		`{"backup_ts":"1","cipher_method":"aes256-ctr","pd_addrs":["pd:2379"],"storage_prefix":"s3://bucket/full"}`,
 	} {
 		require.NoError(t, os.WriteFile(parameters, []byte(unsafe), 0o600))
 		unsafeOutput, unsafeErr := runProductionScriptCommand(t, "request-native-pitr-full-backup.sh", base)

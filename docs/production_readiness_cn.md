@@ -2015,12 +2015,34 @@ executor 身份更新它。参数 Secret 必须名为 `<operation-name>-paramete
 {"backup_ts":"468294813545660418","pd_addrs":["pd-0:2379","pd-1:2379","pd-2:2379"],"storage_prefix":"s3://immutable-bucket/instance/run-id/full"}
 ```
 
+加密请求使用扩展 exact schema；仍然只记录非秘密版本 ID：
+
+```json
+{"backup_ts":"468294813545660418","cipher_method":"aes256-ctr","encryption_key_id":"kms/prod/kubebrain-backup/versions/7","pd_addrs":["pd-0:2379","pd-1:2379","pd-2:2379"],"storage_prefix":"s3://immutable-bucket/instance/run-id/full"}
+```
+
 必须先应用 requester admission，再授予 requester 凭据：
 
 ```shell
 kubectl apply -f deploy/production/kubebrain-native-pitr-full-backup-requester-admission.yaml
 kubectl apply -f deploy/production/kubebrain-native-pitr-full-backup-requester-rbac.yaml
+kubectl apply -f deploy/production/kubebrain-native-pitr-full-backup-encryption-admission.yaml
 ```
+
+若启用 AES-256-CTR，密钥管理员（不是 backup requester）还必须预置固定 Secret。key 文件内容为 64 个小写
+hex 字符，key-id 文件为不可变外部版本 ID；用受控临时文件创建，避免把 key 放入 shell argv/history：
+
+```shell
+kubectl -n kubebrain-operations create secret generic \
+  kubebrain-native-pitr-full-backup-encryption \
+  --from-file=key=/secure/runtime/key \
+  --from-file=key-id=/secure/runtime/key-id \
+  --dry-run=client -o json | jq '.immutable=true' | kubectl create -f -
+```
+
+admission 要求该 Secret 为 immutable Opaque 且精确只有两个 key；executor 以可选、只读、0440 volume 挂载。
+plaintext 不要求该 Secret。当前固定 Secret 名只允许一个 active version；轮换必须在无 operation 运行时由受审
+发布动作替换该 immutable Secret，不得原地更新或复用 key-id。
 
 以该专属 ServiceAccount 的认证上下文运行受审 requester。requester 先把 exact schema 规范化为排序的
 canonical JSON（包括 PD endpoint 去重校验和排序），再以规范化字节 SHA-256 前 20 位派生 operation 名称；
@@ -2074,9 +2096,10 @@ attestation/artifact/plan/restore receipt，长期证据只携带 method 与 key
 ```
 
 恢复时 `--encryption-key-id` 必须精确等于 plan/artifact 绑定值，并把相同版本的 key-file 传给
-`native-pitr-full-restore`；BR 成功解密 import 后，restore v3 才记录相同 identity。当前 operation runner/Secret
-volume 尚未接入这两个输入，生产 durable executor 仍只允许 plaintext；在下一接线项完成前不得通过 executor env
-内联密钥或手改参数 Secret 绕过这一限制。
+`native-pitr-full-restore`；BR 成功解密 import 后，restore v3 才记录相同 identity。durable backup runner 已接入
+上述 immutable Secret volume；它先比较参数与挂载的 key-id，再把只读 key 文件交给 producer，密钥绝不进入
+parameter broker、operation status、日志或 env。restore-side durable Operation 尚未交付，恢复继续使用受审隔离
+命令和 plan approval，不能把 backup executor 接线冒充完整自动恢复编排。
 
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
