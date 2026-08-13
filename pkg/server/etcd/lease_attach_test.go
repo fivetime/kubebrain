@@ -80,7 +80,8 @@ func (b *staleUncertainAttachmentReadBackend) InternalGet(ctx context.Context, k
 }
 
 func (b *blockingLegacyMigrationBackend) InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error {
-	if len(key) >= len(leaseAttachPrefix) && string(key[:len(leaseAttachPrefix)]) == string(leaseAttachPrefix) {
+	if (len(key) >= len(leaseAttachPrefix) && string(key[:len(leaseAttachPrefix)]) == string(leaseAttachPrefix)) ||
+		bytes.Equal(key, leaseLegacyMigrationSealKey) {
 		b.once.Do(func() { close(b.entered) })
 		<-b.release
 	}
@@ -1442,7 +1443,9 @@ func TestLegacyLeaseMigrationFencedAcrossLeadershipEpoch(t *testing.T) {
 	<-blocking.entered
 	epoch.Store(2)
 	close(blocking.release)
-	require.NoError(t, <-done, "migration is best effort; the durable legacy record remains retryable")
+	requireLeaseAttachStatusError(t, <-done, codes.Unavailable, "etcdserver: leadership lost during lease reload")
+	require.False(t, server.leaseReady.Load())
+	require.Zero(t, server.leaseIDForKey(legacyKey))
 
 	_, err = b.InternalGet(ctx, leaseAttachKey(legacyKey))
 	require.ErrorIs(t, err, storage.ErrKeyNotFound, "the old term must not create an attachment")
@@ -1451,6 +1454,55 @@ func TestLegacyLeaseMigrationFencedAcrossLeadershipEpoch(t *testing.T) {
 	legacy, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
 	require.NoError(t, err)
 	require.Len(t, legacy.Kvs, 1, "the retryable legacy source must remain durable")
+}
+
+func TestLegacyMigrationSealFencedAcrossLeadershipEpoch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	metrics := mock.NewMinimalMetrics(ctrl)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{
+		Identity: "seal-fence-test-peer", EnableEtcdCompatibility: true,
+	}, metrics)
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	peers := testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return epoch.Load(), true },
+	}
+	server := New(b, metrics, peers)
+	defer func() {
+		server.stopLeases()
+		require.NoError(t, kv.Close())
+		ctrl.Finish()
+	}()
+	b.SetLeadershipFence(peers.EpochAndLeadingFresh)
+	original := server.backend
+	blocking := &blockingLegacyMigrationBackend{
+		BackendShim: original,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = blocking
+	done := make(chan error, 1)
+	go func() { done <- server.ReloadLeases(context.Background()) }()
+	select {
+	case <-blocking.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reload did not reach migration seal commit")
+	}
+	epoch.Store(2)
+	close(blocking.release)
+	requireLeaseAttachStatusError(t, <-done, codes.Unavailable, "etcdserver: leadership lost during lease reload")
+	require.False(t, server.leaseReady.Load())
+	_, err := b.InternalGet(context.Background(), leaseLegacyMigrationSealKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "a stale term must not persist the migration seal")
+
+	server.backend = original
+	require.NoError(t, server.ReloadLeases(context.Background()))
+	seal, err := b.InternalGet(context.Background(), leaseLegacyMigrationSealKey)
+	require.NoError(t, err)
+	require.Equal(t, leaseLegacyMigrationSealValue, seal)
+	require.True(t, server.leaseReady.Load())
 }
 
 func TestReloadLeasesRejectsFollower(t *testing.T) {

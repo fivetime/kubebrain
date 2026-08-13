@@ -48385,6 +48385,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   history/live delivery 与 lease reload 的组合，不再只以 backend 直调推断客户端兼容性。现场使用独立 32379/32380 和
   32381/32382 端口及临时 data-dir，结束后进程、监听和目录全部清理，未访问现有集群。
 
+- A4520 把 lease reload 的 leadership 检查从入口条件升级为发布栅栏。对照 upstream
+  `/root/etcd/server/lease/lessor.go` 的 `Promote`/`Demote` primary 生命周期：失去领导权的 lessor 不能继续发布 primary
+  状态或运行 expiry。KubeBrain 旧 `ReloadLeases` 只在入口捕获 epoch；若 load/migration/seal 中途换主，storage commit
+  会由 leadership token 正确 fence，但函数仍启动 orphan sweeper、设置 `leaseReady=true`，并保留 `applyLeaseRecords`
+  新建的 expiry/checkpoint timers。现 Reload 在 seal 后、任何 ready/sweeper 发布前同时复核 context、leading freshness 和
+  exact epoch；失配返回标准 `Unavailable: leadership lost during lease reload`。为避免持有 `leaseCheckpointMu` 时递归调用
+  `StopLeases` 自锁，抽取 `clearLeaseStateHoldingCheckpointLock`，统一停止 sweeper/timers、递增 generation、清空 lease/index
+  并保持 ready=false；普通 demotion 继续由 `stopLeases` 在取得 checkpoint 锁后复用同一原语。原 migration epoch 回归从
+  错误接受 best-effort nil 改为要求 Unavailable、空 index、无 internal replacement 且 legacy marker 保留。新增 seal 精确
+  窗口回归：在两个 legacy empty scan 后阻塞 guarded internal put、推进 epoch，再释放；旧 term 必须既不落 v1 seal也不发布
+  ready，successor epoch 重跑后才允许 seal/ready。由此 A4518 的 irreversible format fence 与 lease primary publication
+  共享同一 leadership term，而不只依赖 storage write 自身碰巧失败。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

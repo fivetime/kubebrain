@@ -1580,6 +1580,11 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 		m.srv.metricCli.EmitCounter("lease.legacy_migration_seal.err", 1)
 		klog.ErrorS(err, "lease reload: seal legacy migration failed")
 	}
+	currentEpoch, stillLeadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if ctx.Err() != nil || !stillLeadingFresh || currentEpoch != epoch {
+		m.clearLeaseStateHoldingCheckpointLock()
+		return status.Error(codes.Unavailable, "etcdserver: leadership lost during lease reload")
+	}
 	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
 	// never (re)armed because their attachment outlived its lease meta record.
 	m.startOrphanSweeper(ctx)
@@ -2041,6 +2046,15 @@ func (m *leaseManager) stopLeases() {
 	m.leaseReady.Store(false)
 	m.leaseCheckpointMu.Lock()
 	defer m.leaseCheckpointMu.Unlock()
+	m.clearLeaseStateHoldingCheckpointLock()
+}
+
+// clearLeaseStateHoldingCheckpointLock withdraws every primary-only lease
+// artifact while the caller holds leaseCheckpointMu. ReloadLeases uses it when
+// its end-of-load epoch check fails; calling stopLeases there would recursively
+// acquire the same mutex.
+func (m *leaseManager) clearLeaseStateHoldingCheckpointLock() {
+	m.leaseReady.Store(false)
 	// Stop the sweeper first (it acquires leaseMu itself, so must run outside the
 	// lock below).
 	m.stopOrphanSweeper()
