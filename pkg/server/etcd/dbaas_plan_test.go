@@ -90,6 +90,9 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	require.Contains(t, plan, "target-two-pd-quorum-loss-during-br-resume")
 	require.Contains(t, plan, "底层 BR 是否在恢复前退出")
 	require.Contains(t, plan, "不能把测试框架等待恢复的时间冒充")
+	require.Contains(t, plan, "A4547 把 A4546 的双 PD process pause 提升为加密 import 窗口内的真实 TCP 网络 quorum loss")
+	require.Contains(t, plan, "target-pd-network-quorum-loss-during-br-resume")
+	require.Contains(t, plan, "证明失败来自仍运行进程的 Raft 无多数派")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

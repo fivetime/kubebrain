@@ -48701,6 +48701,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该项只证明同一进程/地址/数据上的短时双 PD process pause 与恢复；不证明长时间 outage、网络黑洞、PD
   member 持久丢盘/替换、跨 AZ、KMS 撤权或 durable restore worker crash/reconcile。
 
+- A4547 把 A4546 的双 PD process pause 提升为加密 import 窗口内的真实 TCP 网络 quorum loss。新增
+  `target-pd-network-quorum-loss-during-br-resume` profile 和每次演练唯一的 host OUTPUT 子链：BR 出现
+  import-mode marker 后 DROP 三个 target PD peer listener 的全部出站流量，并 DROP 前两个 client listener，
+  第三个 client listener `127.0.0.1:43399` 在注入前必须独立完成 clientv3 Put，注入后保持 TCP 可达但同类
+  写探针持续重试并必须在 8 秒内观察到失败，允许 PD 在安装规则后用有界时间检测 leader/quorum 丢失；失败时
+  再次 TCP dial 必须成功，证明失败来自仍运行进程的 Raft 无多数派，而不是坏 endpoint 或全部 endpoint
+  不可达；10 秒后恢复逻辑先
+  要求探针证据成立，再 flush 子链。沿用 A4546 的底层进程时序位，BR 也必须没有在网络恢复前退出；shell
+  EXIT trap 最后删除 jump/chain，防止规则泄漏。2026-08-13 运行
+  `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-pd-network-quorum-loss-during-br-resume hack/backup/run-native-pitr-full-restore-integration.sh`；
+  双方三副本拓扑先收敛，网络恢复后 12.538 秒完成 530 KV/107.1 kB AES restore，artifact/key、admission
+  fence/handoff、etcd KV/lease 语义及退出后无 `KBPDNET` 规则全部通过。该项证明同机 host-network TCP
+  DROP 的短时可恢复分区，不等于跨节点/AZ 双向 partition、连接级 REJECT/reset、长时间 soak、PD member
+  replacement、KMS 撤权或 durable restore worker crash/reconcile。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

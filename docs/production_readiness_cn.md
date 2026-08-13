@@ -2159,6 +2159,15 @@ pause/retry，不证明持久磁盘丢失、store replacement、PD quorum loss�
 KV/lease 语义全绿。该结果只覆盖短时 process pause，不覆盖网络黑洞、长时间 outage、PD member 丢盘/替换、
 跨 AZ、KMS 撤权或 executor crash/reconcile。
 
+PD TCP network quorum loss 的更强 import-window 基线使用
+`KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-pd-network-quorum-loss-during-br-resume`。它保持三个 PD 进程运行，
+在专用 host OUTPUT 子链中 DROP 三个 peer listener 和前两个 client listener；第三个 client listener 在注入前
+必须独立 Put 成功；注入后持续探测并须在 8 秒内观察到同类嵌入式 etcd 写失败，失败时该端口仍可 TCP 连接。
+恢复逻辑要求该证据先成立再 flush 链，BR 必须只在恢复后退出，
+EXIT trap 删除链。2026-08-13 三副本 AES 实测于恢复后 12.538 秒完成 530 KV/107.1 kB，最终语义及无残留
+iptables 规则均通过。该证据只覆盖同机 host-network 短时 TCP DROP，不代表跨节点/AZ 双向分区、长时间 soak、
+PD member replacement 或 worker crash/reconcile。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。

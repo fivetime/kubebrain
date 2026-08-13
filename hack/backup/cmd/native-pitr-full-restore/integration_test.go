@@ -2049,11 +2049,17 @@ type brFaultRunner struct {
 	completedBeforeRecovery bool
 	err                     error
 	recoveryDone            chan error
+	networkFault            *pdNetworkBRFault
 }
 
 func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
 	marker := &faultMarkerWriter{dst: stderr, marker: []byte("switch to import mode at beginning"), trigger: func() error {
-		err := pauseContainers(r.ctx, r.raw)
+		var err error
+		if r.networkFault != nil {
+			err = r.networkFault.inject(r.ctx)
+		} else {
+			err = pauseContainers(r.ctx, r.raw)
+		}
 		r.mu.Lock()
 		r.injected, r.err = err == nil, err
 		if err == nil {
@@ -2065,7 +2071,12 @@ func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, std
 				case <-r.ctx.Done():
 					r.recoveryDone <- r.ctx.Err()
 				case <-timer.C:
-					recoveryErr := unpauseContainers(r.ctx, r.raw)
+					var recoveryErr error
+					if r.networkFault != nil {
+						recoveryErr = r.networkFault.recover(r.ctx)
+					} else {
+						recoveryErr = unpauseContainers(r.ctx, r.raw)
+					}
 					r.mu.Lock()
 					r.recovered = recoveryErr == nil
 					r.mu.Unlock()
@@ -2093,6 +2104,103 @@ func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, std
 		}
 	}
 	return err
+}
+
+type pdNetworkBRFault struct {
+	chain         string
+	clientPorts   []string
+	peerPorts     []string
+	probeEndpoint string
+	mu            sync.Mutex
+	confirmed     bool
+	confirmDone   chan error
+}
+
+func (f *pdNetworkBRFault) iptables(ctx context.Context, args ...string) error {
+	commandArgs := append([]string{"-w", "5"}, args...)
+	output, err := exec.CommandContext(ctx, "iptables", commandArgs...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("iptables %s: %w: %s", strings.Join(args, " "), err, output)
+	}
+	return nil
+}
+
+func (f *pdNetworkBRFault) inject(ctx context.Context) error {
+	preflightCtx, preflightCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer preflightCancel()
+	preflightClient, err := clientv3.New(clientv3.Config{Endpoints: []string{f.probeEndpoint}, DialTimeout: time.Second})
+	if err != nil {
+		return fmt.Errorf("create preflight PD probe client for %s: %w", f.probeEndpoint, err)
+	}
+	_, err = preflightClient.Put(preflightCtx, "/kubebrain-integration/native-pitr-import-network-preflight", "quorum-ready")
+	_ = preflightClient.Close()
+	if err != nil {
+		return fmt.Errorf("preflight PD probe endpoint %s with quorum: %w", f.probeEndpoint, err)
+	}
+	for _, port := range f.peerPorts {
+		if err := f.iptables(ctx, "-A", f.chain, "-p", "tcp", "--dport", port, "-m", "comment", "--comment", "kubebrain-br-pd-peer-partition", "-j", "DROP"); err != nil {
+			return err
+		}
+	}
+	for _, port := range f.clientPorts {
+		if err := f.iptables(ctx, "-A", f.chain, "-p", "tcp", "--dport", port, "-m", "comment", "--comment", "kubebrain-br-pd-client-partition", "-j", "DROP"); err != nil {
+			return err
+		}
+	}
+	f.confirmDone = make(chan error, 1)
+	go func() {
+		probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		client, clientErr := clientv3.New(clientv3.Config{Endpoints: []string{f.probeEndpoint}, DialTimeout: time.Second})
+		if clientErr != nil {
+			f.confirmDone <- fmt.Errorf("create isolated PD probe client for %s: %w", f.probeEndpoint, clientErr)
+			return
+		}
+		defer client.Close()
+		for attempt := 1; ; attempt++ {
+			attemptCtx, attemptCancel := context.WithTimeout(probeCtx, time.Second)
+			_, clientErr = client.Put(attemptCtx, "/kubebrain-integration/native-pitr-import-network-probe", strconv.Itoa(attempt))
+			attemptCancel()
+			if clientErr != nil {
+				if probeCtx.Err() != nil {
+					f.confirmDone <- errors.New("reachable PD endpoint remained writable until the peer network-isolation probe deadline")
+					return
+				}
+				break
+			}
+			if probeCtx.Err() != nil {
+				f.confirmDone <- errors.New("reachable PD endpoint remained writable for the entire peer network-isolation window")
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		connection, dialErr := net.DialTimeout("tcp", f.probeEndpoint, time.Second)
+		if dialErr != nil {
+			f.confirmDone <- fmt.Errorf("PD probe failed but endpoint %s was not TCP reachable: %w", f.probeEndpoint, dialErr)
+			return
+		}
+		_ = connection.Close()
+		f.mu.Lock()
+		f.confirmed = true
+		f.mu.Unlock()
+		f.confirmDone <- nil
+	}()
+	return nil
+}
+
+func (f *pdNetworkBRFault) recover(ctx context.Context) error {
+	confirmErr := <-f.confirmDone
+	flushErr := f.iptables(ctx, "-F", f.chain)
+	if confirmErr != nil {
+		return confirmErr
+	}
+	return flushErr
+}
+
+func (f *pdNetworkBRFault) quorumLossConfirmed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.confirmed
 }
 
 func (r *brFaultRunner) faultInjected() bool {
@@ -2482,6 +2590,19 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	if setting := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_DURING_BR"); setting != "" {
 		require.Equal(t, "true", setting, "invalid target BR fault setting")
 		importFault = &brFaultRunner{commandRunner: runner, ctx: ctx, raw: os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"), recoveryDelay: 10 * time.Second}
+		if networkSetting := os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_FAULT_DURING_BR"); networkSetting != "" {
+			require.Equal(t, "true", networkSetting, "invalid target PD network BR fault setting")
+			importFault.networkFault = &pdNetworkBRFault{
+				chain:         os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CHAIN"),
+				clientPorts:   strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_CLIENT_PORTS"), ","),
+				peerPorts:     strings.Split(os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_PEER_PORTS"), ","),
+				probeEndpoint: os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_PD_NETWORK_PROBE_ENDPOINT"),
+			}
+			require.NotEmpty(t, importFault.networkFault.chain)
+			require.Len(t, importFault.networkFault.clientPorts, 2)
+			require.Len(t, importFault.networkFault.peerPorts, 3)
+			require.NotEmpty(t, importFault.networkFault.probeEndpoint)
+		}
 		runner = importFault
 	}
 	if wrongKeyFile := os.Getenv("KUBEBRAIN_NATIVE_PITR_WRONG_ENCRYPTION_KEY_FILE"); wrongKeyFile != "" {
@@ -2516,7 +2637,15 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		if setting := os.Getenv("KUBEBRAIN_NATIVE_PITR_REQUIRE_BR_BLOCKED_UNTIL_FAULT_RECOVERY"); setting != "" {
 			require.Equal(t, "true", setting, "invalid BR blocking assertion setting")
 			require.False(t, importFault.finishedBeforeFaultRecovery(), "BR completed before the target fault recovered")
-			t.Logf("native PITR BR remained blocked until target fault recovery: %s", importFault.raw)
+			faultTarget := importFault.raw
+			if importFault.networkFault != nil {
+				faultTarget = "iptables chain " + importFault.networkFault.chain
+			}
+			t.Logf("native PITR BR remained blocked until target fault recovery: %s", faultTarget)
+		}
+		if importFault.networkFault != nil {
+			require.True(t, importFault.networkFault.quorumLossConfirmed(), "reachable target PD endpoint did not demonstrate network quorum loss")
+			t.Logf("native PITR target PD network quorum loss was confirmed through reachable endpoint %s", importFault.networkFault.probeEndpoint)
 		}
 		t.Log("native PITR target fault was injected during BR import and recovered before completion")
 	} else {
