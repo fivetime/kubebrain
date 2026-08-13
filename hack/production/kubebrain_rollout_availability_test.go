@@ -59,6 +59,7 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	require.Contains(t, log, "--command-timeout=10s")
 	require.Contains(t, log, "--max-operation-latency=5s")
 	require.Contains(t, log, "--lease-ttl=15")
+	require.Contains(t, log, "--pd-endpoints=http://pd-0:2379,http://pd-1:2379,http://pd-2:2379")
 	require.Contains(t, log, " rollout restart statefulset/kubebrain")
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
@@ -80,7 +81,7 @@ if [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
   [[ "${FAKE_BAD_PRESTOP:-false}" == true ]] && prestop='["/bin/sleep","5"]'
   jq -cn --arg revision "$revision" --argjson prestop "$prestop" '{
-    spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:"kubebrain:test",args:["--leader-retry-period=500ms"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
+    spec:{replicas:3,template:{spec:{containers:[{name:"kubebrain",image:"kubebrain:test",args:["--leader-retry-period=500ms","--pd-addrs=http://pd-0:2379,http://pd-1:2379,http://pd-2:2379"],lifecycle:{preStop:{exec:{command:$prestop}}}}]}}},
     status:{readyReplicas:3,currentRevision:$revision,updateRevision:$revision}}
   '
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then

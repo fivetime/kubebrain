@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -20,6 +23,7 @@ type config struct {
 	dialTimeout    time.Duration
 	maxLatency     time.Duration
 	leaseTTL       int64
+	pdEndpoints    []string
 }
 
 func main() {
@@ -32,7 +36,12 @@ func main() {
 	flag.DurationVar(&cfg.dialTimeout, "dial-timeout", time.Second, "client dial timeout")
 	flag.DurationVar(&cfg.maxLatency, "max-operation-latency", 5*time.Second, "maximum Put-to-Watch latency")
 	flag.Int64Var(&cfg.leaseTTL, "lease-ttl", 15, "lease TTL in seconds")
+	var pdEndpoints string
+	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
+	if pdEndpoints != "" {
+		cfg.pdEndpoints = strings.Split(pdEndpoints, ",")
+	}
 	if err := cfg.validate(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -50,10 +59,52 @@ func (cfg config) validate() error {
 	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
+	if len(cfg.pdEndpoints) == 0 {
+		return fmt.Errorf("PD endpoints are required")
+	}
+	for _, endpoint := range cfg.pdEndpoints {
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			return fmt.Errorf("PD endpoint must use http or https: %q", endpoint)
+		}
+	}
 	return nil
 }
 
+type pdLeader struct {
+	Name     string `json:"name"`
+	MemberID uint64 `json:"member_id"`
+}
+
+func readPDLeader(ctx context.Context, endpoints []string, timeout time.Duration) (pdLeader, error) {
+	client := &http.Client{Timeout: timeout}
+	var lastErr error
+	for _, endpoint := range endpoints {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(endpoint, "/")+"/pd/api/v1/leader", nil)
+		if err != nil {
+			return pdLeader{}, err
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var leader pdLeader
+		decodeErr := json.NewDecoder(response.Body).Decode(&leader)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK || decodeErr != nil || leader.Name == "" || leader.MemberID == 0 {
+			lastErr = fmt.Errorf("endpoint %s returned status=%d leader=%+v decode=%v", endpoint, response.StatusCode, leader, decodeErr)
+			continue
+		}
+		return leader, nil
+	}
+	return pdLeader{}, fmt.Errorf("read PD leader: %w", lastErr)
+}
+
 func run(ctx context.Context, cfg config) (retErr error) {
+	initialPDLeader, err := readPDLeader(ctx, cfg.pdEndpoints, cfg.dialTimeout)
+	if err != nil {
+		return fmt.Errorf("backend preflight: %w", err)
+	}
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{cfg.endpoint},
 		DialTimeout: cfg.dialTimeout,
@@ -130,7 +181,18 @@ func run(ctx context.Context, cfg config) (retErr error) {
 
 	fmt.Println("PROBE_STARTED")
 	var maxLatency time.Duration
+	lastPDCheck := time.Now()
 	for i := 1; i <= cfg.iterations; i++ {
+		if time.Since(lastPDCheck) >= 500*time.Millisecond {
+			currentPDLeader, pdErr := readPDLeader(ctx, cfg.pdEndpoints, cfg.dialTimeout)
+			if pdErr != nil {
+				return fmt.Errorf("iteration=%d backend instability: %w", i, pdErr)
+			}
+			if currentPDLeader != initialPDLeader {
+				return fmt.Errorf("iteration=%d backend instability: PD leader changed from %+v to %+v", i, initialPDLeader, currentPDLeader)
+			}
+			lastPDCheck = time.Now()
+		}
 		started := time.Now()
 		value := strconv.Itoa(i)
 		deadline := started.Add(cfg.commandTimeout)

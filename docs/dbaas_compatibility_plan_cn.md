@@ -49076,10 +49076,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
   真实复测随后依次暴露 1 秒、2 秒乃至 10 秒 Put/Range deadline，以及 5 秒 lease 在第 560 轮失活；
   15 秒 lease 下第三次交接仍有第 250 轮写在 10 秒内无法对账。NodePort 长连接也如预期在 Pod 终止时
-  出现 EOF，探针已按 etcd 不确定结果契约处理，不能把它误判为数据丢失。当前因此只提交可重复 RED、
-  安全 drain 和官方 client 门禁，不宣称长流 rollout 全绿；开放差距已收窄为新 leader 的 lease/event/
-  checkpoint 初始化关键路径约 12 秒。下一项必须缩短该路径并让默认 5 秒 max-latency/15 秒 lease 的
-  完整 runner 通过，不能靠继续提高 command timeout 或 lease TTL 关闭差距。
+  出现 EOF，探针已按 etcd 不确定结果契约处理，不能把它误判为数据丢失。后续逐层日志审计纠正了最初
+  “新 leader 初始化固有约 12 秒”的归因：同一时段 PD leader 因宿主镜像构建造成的 slow-disk heartbeat
+  超时主动退位，三个 TiKV 均报告 PD client 断连，KubeBrain 的 election/restoration-fence/checkpoint
+  region 因 `loadRegion from PD failed` 超时；因此该次 RED 是后端不稳定叠加 rollout，不能单独证明
+  KubeBrain 初始化慢。
+
+  停止构建 I/O、确认三个 PD `/health` 全绿且 leader 稳定后，同一 `017db6b2` 三副本、不放宽默认 5 秒
+  max-latency/15 秒 lease 的 host-side official client 探针完成三次顺序替换：600/600 Put 对账和 Watch
+  事件全绿、KeepAlive/attached key 存活，最大 Put→Watch 仅 579ms。为防未来再次混淆，探针现在从
+  StatefulSet 唯一 `--pd-addrs` 获取三个 endpoint，rollout 前固定 PD leader name/member ID，并在全程每
+  500ms 复读；PD API 不可达或 leader 变化明确报 `backend instability`，不再归类为 KubeBrain handoff
+  latency。镜像内完整 900 轮 runner 仍需在含该监控的新镜像上重跑后才能把本项标记为最终全绿。
 
 ### P2：运维兼容和长期验证
 
