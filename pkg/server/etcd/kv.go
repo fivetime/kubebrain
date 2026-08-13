@@ -228,7 +228,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if hasRangeRevisionFilters(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
-	if r.Serializable && r.Revision == 0 {
+	if r.Serializable && r.Revision <= 0 {
 		_, leadingFresh := s.peers.EpochAndLeadingFresh()
 		if !s.peers.IsLeader() || !leadingFresh {
 			if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {

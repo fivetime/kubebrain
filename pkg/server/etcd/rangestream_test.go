@@ -500,7 +500,7 @@ func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
 	requireReadBarrierUnavailable(t, err, syncErr.Error())
 }
 
-func TestStaleLeaderSerializableRangeStreamUsesProtectedCheckpoint(t *testing.T) {
+func TestStaleLeaderSerializableLatestRangeStreamUsesProtectedCheckpoint(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
 	checkpoint := backend.SerializableCheckpoint{
@@ -519,18 +519,24 @@ func TestStaleLeaderSerializableRangeStreamUsesProtectedCheckpoint(t *testing.T)
 		},
 	}
 
-	stream := &fakeRangeStreamServer{ctx: context.Background()}
-	err := server.RangeStream(&etcdserverpb.RangeRequest{
-		Key: []byte("/checkpoint/"), RangeEnd: []byte("/checkpoint0"), Serializable: true,
-	}, stream)
-	require.NoError(t, err)
-	require.True(t, shim.used)
-	require.NotEmpty(t, stream.sent)
-	terminal := stream.sent[len(stream.sent)-1].GetRangeResponse()
-	require.NotNil(t, terminal.Header)
-	require.Equal(t, int64(checkpoint.Revision), terminal.Header.Revision)
-	require.EqualValues(t, 1, terminal.Count)
-	require.Equal(t, []byte("checkpoint"), terminal.Kvs[0].Value)
+	for _, revision := range []int64{0, -1, math.MinInt64} {
+		t.Run(fmt.Sprintf("revision-%d", revision), func(t *testing.T) {
+			shim.used = false
+			stream := &fakeRangeStreamServer{ctx: context.Background()}
+			err := server.RangeStream(&etcdserverpb.RangeRequest{
+				Key: []byte("/checkpoint/"), RangeEnd: []byte("/checkpoint0"),
+				Revision: revision, Serializable: true,
+			}, stream)
+			require.NoError(t, err)
+			require.True(t, shim.used)
+			require.NotEmpty(t, stream.sent)
+			terminal := stream.sent[len(stream.sent)-1].GetRangeResponse()
+			require.NotNil(t, terminal.Header)
+			require.Equal(t, int64(checkpoint.Revision), terminal.Header.Revision)
+			require.EqualValues(t, 1, terminal.Count)
+			require.Equal(t, []byte("checkpoint"), terminal.Kvs[0].Value)
+		})
+	}
 }
 
 func TestHistoricalRangeStreamUsesDurableFollowerWatermark(t *testing.T) {
