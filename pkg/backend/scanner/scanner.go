@@ -1178,10 +1178,31 @@ func (r *scanner) checkCompactRace(ctx context.Context, revision uint64, compact
 func scannerGet(ctx context.Context, store storage.KvStorage, key []byte) ([]byte, error) {
 	if timestamp, ok := storage.SnapshotTimestampFromContext(ctx); ok {
 		reader, supported := storage.FindCapability[storage.SnapshotGetter](store)
-		if !supported {
+		if supported {
+			return reader.GetAt(ctx, key, timestamp)
+		}
+		if !storage.SnapshotIteratorFallbackFromContext(ctx) {
 			return nil, storage.ErrUnavailable
 		}
-		return reader.GetAt(ctx, key, timestamp)
+		// Decorators used for failure injection may preserve timestamped Iter but
+		// intentionally hide optional point-read capabilities. An exact one-row
+		// iterator is equivalent and keeps the whole range on its pinned snapshot.
+		end := append(append([]byte(nil), key...), 0)
+		it, err := store.Iter(ctx, key, end, timestamp, 1)
+		if err != nil {
+			return nil, err
+		}
+		defer it.Close()
+		if err := it.Next(ctx); err != nil {
+			if err == io.EOF {
+				return nil, storage.ErrKeyNotFound
+			}
+			return nil, err
+		}
+		if !bytes.Equal(it.Key(), key) {
+			return nil, storage.ErrKeyNotFound
+		}
+		return append([]byte(nil), it.Val()...), nil
 	}
 	return store.Get(ctx, key)
 }

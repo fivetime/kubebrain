@@ -91,6 +91,11 @@ type Backend interface {
 	// consuming user-visible MVCC revisions or emitting watch events.
 	InternalGet(ctx context.Context, key []byte) ([]byte, error)
 	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
+	// GetSnapshotTimestamp returns a fresh storage timestamp chosen while every
+	// logical/internal mutation is excluded. Reads pinned to it therefore form
+	// one cross-prefix snapshot rather than a sequence of independently current
+	// scans.
+	GetSnapshotTimestamp(ctx context.Context) (uint64, error)
 	InternalPut(ctx context.Context, key, value []byte) error
 	// InternalPutCorruptGuarded writes internal metadata as an etcd operation
 	// covered by the CORRUPT applier boundary, without consuming an MVCC revision.

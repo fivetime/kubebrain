@@ -46,6 +46,34 @@ type blockingLegacyMigrationBackend struct {
 	once    sync.Once
 }
 
+type leaseSnapshotInterleaveBackend struct {
+	BackendShim
+	once                sync.Once
+	afterMeta           func()
+	timestamps          []uint64
+	snapshotAttachments map[string][]byte
+}
+
+func (b *leaseSnapshotInterleaveBackend) InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error) {
+	timestamp, pinned := storage.SnapshotTimestampFromContext(ctx)
+	if pinned {
+		b.timestamps = append(b.timestamps, timestamp)
+	}
+	if pinned && bytes.Equal(prefix, leaseAttachPrefix) && b.snapshotAttachments != nil {
+		return b.snapshotAttachments, nil
+	}
+	values, err := b.BackendShim.InternalRange(ctx, prefix)
+	if err == nil && bytes.Equal(prefix, leaseStoragePrefix) {
+		b.once.Do(func() {
+			if pinned {
+				b.snapshotAttachments, err = b.BackendShim.InternalRange(ctx, leaseAttachPrefix)
+			}
+			b.afterMeta()
+		})
+	}
+	return values, err
+}
+
 type failLegacyAttachmentCleanupBackend struct {
 	BackendShim
 	target []byte
@@ -1512,6 +1540,36 @@ func TestReloadLeasesRejectsFollower(t *testing.T) {
 
 	err := server.ReloadLeases(context.Background())
 	requireLeaseAttachStatusError(t, err, codes.Unavailable, "etcdserver: leadership lost during lease reload")
+}
+
+func TestLoadLeaseRecordsUsesOneSnapshotAcrossMetaAndAttachments(t *testing.T) {
+	server, b, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	const leaseID int64 = 55129
+	const key = "/registry/events/lease-snapshot-interleave"
+	meta, err := jsonMarshalLeaseRecord(leaseID, 300, nil)
+	require.NoError(t, err)
+	require.NoError(t, b.InternalPut(ctx, leaseStorageKey(leaseID), meta))
+
+	interleaved := &leaseSnapshotInterleaveBackend{BackendShim: server.backend}
+	interleaved.afterMeta = func() {
+		require.NoError(t, b.InternalPut(ctx, leaseAttachKey(key), []byte(strconv.FormatInt(leaseID, 10))))
+	}
+	server.backend = interleaved
+	records, attachments, _, err := server.loadLeaseRecords(ctx)
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	_, tornIntoSnapshot := attachments[key]
+	require.False(t, tornIntoSnapshot,
+		"an attachment committed after the meta scan must not leak into its pinned snapshot")
+	require.GreaterOrEqual(t, len(interleaved.timestamps), 2)
+	for _, timestamp := range interleaved.timestamps[1:] {
+		require.Equal(t, interleaved.timestamps[0], timestamp)
+	}
+	value, err := b.InternalGet(ctx, leaseAttachKey(key))
+	require.NoError(t, err, "the interleaved attachment must really commit")
+	require.Equal(t, []byte(strconv.FormatInt(leaseID, 10)), value)
 }
 
 func TestPublishedLeaseSnapshotRejectedAcrossLeadershipEpoch(t *testing.T) {

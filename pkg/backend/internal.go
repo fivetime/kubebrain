@@ -66,6 +66,22 @@ func (b *backend) InternalRange(ctx context.Context, prefix []byte) (map[string]
 	}
 }
 
+func (b *backend) GetSnapshotTimestamp(ctx context.Context) (uint64, error) {
+	ctx, err := b.withCurrentLeadershipEpoch(ctx)
+	if err != nil {
+		return 0, err
+	}
+	owner, _ := ctx.Value(rangeTxnOwnerKey{}).(*backend)
+	if owner != b {
+		b.logicalWriteMu.Lock()
+		defer b.logicalWriteMu.Unlock()
+	}
+	if err := b.fenceAdmit(ctx); err != nil {
+		return 0, err
+	}
+	return b.kv.GetTimestampOracle(ctx)
+}
+
 func (b *backend) InternalPut(ctx context.Context, key, value []byte) error {
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()

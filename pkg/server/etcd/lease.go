@@ -1614,8 +1614,16 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 }
 
 // loadLeaseRecords reads the per-lease meta records and the per-key attachment
-// records from storage at the latest revision.
+// records from one storage snapshot.
 func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, map[string]int64, error) {
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); !pinned {
+		timestamp, err := m.srv.backend.GetSnapshotTimestamp(ctx)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		ctx = storage.WithSnapshotTimestamp(ctx, timestamp)
+		ctx = storage.WithSnapshotIteratorFallback(ctx)
+	}
 	internalRecords, err := m.srv.backend.InternalRange(ctx, leaseStoragePrefix)
 	if err != nil {
 		return nil, nil, nil, err

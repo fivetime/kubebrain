@@ -48423,6 +48423,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV mock 地址 `store1` 缺端口触发 region cache 40s timeout；唯一失败 `TestCompactDoesNotExpireKeysByEventsName` 隔离重跑
   0.720s 通过，确认与本轮 lease 代码无关。
 
+- A4523 修复 lease reload 跨前缀读取产生撕裂快照。对照 upstream
+  `/root/etcd/server/lease/lessor.go:initAndRecover` 与 `/root/etcd/server/storage/mvcc/kvstore.go:restore`：lease rows 在一个加锁的
+  BatchTx 中读取，MVCC restore 则遍历一个加锁的 ReadTx，启动恢复不会用一串彼此独立的 latest prefix scan 拼装状态；
+  KubeBrain 原先却依次读取 internal meta、legacy meta、legacy attachment 和 internal attachment 的各自最新值，并发原子
+  revoke/grant 可能让前一前缀来自提交前、后一前缀来自提交后，组装出存储中从未存在的 lease ownership。现 backend 在排除
+  logical/internal mutation 且通过 leadership/restoration admission 后取得一个 fresh TiKV TSO，`loadLeaseRecords` 将该 timestamp
+  复用于全部 internal 与 user-MVCC legacy 读取。若调用方已在 `BeginRangeTxn` 内持有独占 barrier，TSO 路径识别 context owner
+  而不递归加锁；专门测试固定 maintenance snapshot 不再自死锁。failure-injection decorator 可能隐藏可选 `SnapshotGetter`，因此
+  仅为这段短内部恢复读取显式启用等价的单行 timestamped iterator fallback；公开 serializable snapshot 缺能力时仍保持 fail-closed。
+  确定性交错回归在 meta scan 后提交新 attachment，证明它不会泄漏进既定快照，并校验每次 prefix scan 使用完全相同 TSO。
+  该用例及维护鉴权/legacy migration 连续 20 轮、backend 全量（44.236s）、`pkg/server/etcd` 全量（165.540s）、相关 race
+  10 轮和 backend/server vet 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

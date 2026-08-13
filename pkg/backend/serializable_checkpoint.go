@@ -5,12 +5,14 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -58,10 +60,28 @@ func SerializableCheckpointFromContext(ctx context.Context) (SerializableCheckpo
 func (b *backend) snapshotGet(ctx context.Context, key []byte) ([]byte, error) {
 	if timestamp, ok := storage.SnapshotTimestampFromContext(ctx); ok {
 		reader, supported := storage.FindCapability[storage.SnapshotGetter](b.kv)
-		if !supported {
+		if supported {
+			return reader.GetAt(ctx, key, timestamp)
+		}
+		if !storage.SnapshotIteratorFallbackFromContext(ctx) {
 			return nil, ErrSerializableCheckpointUnavailable
 		}
-		return reader.GetAt(ctx, key, timestamp)
+		end := append(append([]byte(nil), key...), 0)
+		it, err := b.kv.Iter(ctx, key, end, timestamp, 1)
+		if err != nil {
+			return nil, err
+		}
+		defer it.Close()
+		if err := it.Next(ctx); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, storage.ErrKeyNotFound
+			}
+			return nil, err
+		}
+		if !bytes.Equal(it.Key(), key) {
+			return nil, storage.ErrKeyNotFound
+		}
+		return append([]byte(nil), it.Val()...), nil
 	}
 	return b.kv.Get(ctx, key)
 }

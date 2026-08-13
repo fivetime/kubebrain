@@ -59,3 +59,27 @@ func TestRangeTxnBarrierBlocksExternalWrites(t *testing.T) {
 		require.FailNow(t, "external write did not resume after range transaction")
 	}
 }
+
+func TestGetSnapshotTimestampInsideRangeTxnDoesNotRelockBarrier(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	rangeCtx, unlock := b.BeginRangeTxn(ctx)
+	defer unlock()
+
+	type result struct {
+		timestamp uint64
+		err       error
+	}
+	done := make(chan result, 1)
+	go func() {
+		timestamp, err := b.GetSnapshotTimestamp(rangeCtx)
+		done <- result{timestamp: timestamp, err: err}
+	}()
+
+	select {
+	case got := <-done:
+		require.NoError(t, got.err)
+		require.NotZero(t, got.timestamp)
+	case <-time.After(time.Second):
+		require.FailNow(t, "range transaction owner recursively acquired its barrier")
+	}
+}

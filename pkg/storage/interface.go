@@ -21,6 +21,7 @@ import (
 )
 
 type snapshotTimestampContextKey struct{}
+type snapshotIteratorFallbackContextKey struct{}
 
 // WithSnapshotTimestamp pins storage reads in ctx to an already protected
 // engine snapshot. Ordinary reads continue to obtain a fresh timestamp.
@@ -31,6 +32,19 @@ func WithSnapshotTimestamp(ctx context.Context, timestamp uint64) context.Contex
 func SnapshotTimestampFromContext(ctx context.Context) (uint64, bool) {
 	timestamp, ok := ctx.Value(snapshotTimestampContextKey{}).(uint64)
 	return timestamp, ok && timestamp != 0
+}
+
+// WithSnapshotIteratorFallback permits an exact timestamped iterator when an
+// optional SnapshotGetter capability is hidden by a storage decorator. Keep
+// this scoped to short internal recovery reads; public serializable snapshots
+// intentionally fail closed when their point-read capability is unavailable.
+func WithSnapshotIteratorFallback(ctx context.Context) context.Context {
+	return context.WithValue(ctx, snapshotIteratorFallbackContextKey{}, true)
+}
+
+func SnapshotIteratorFallbackFromContext(ctx context.Context) bool {
+	enabled, _ := ctx.Value(snapshotIteratorFallbackContextKey{}).(bool)
+	return enabled
 }
 
 // ExclusiveKvStorage defines the context individual KvStorage for the background job.
