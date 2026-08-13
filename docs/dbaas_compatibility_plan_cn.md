@@ -48375,6 +48375,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   普通 user values，第二次 Reload 必须成功且 bytes 原样保留。当前支持滚动窗口内 binary 已使用 internal lease layout；更老
   user-MVCC writer 不得在 seal 后降级重新成为 leader，符合既有 witness/schema roll-forward fence 边界。
 
+- A4519 为 A4518 补齐公开 wire 与 reference oracle 证据。扩展既有
+  `hack/etcd-client-compat/binary_key_differential_test.go`，把精确
+  `\x00kubebrain/leases/81001` 和 `\x00kubebrain/leasekeys//ordinary-user-key` 加入 NUL/high-byte key 集合；
+  两个隔离的 `/root/etcd` HEAD 单节点分别作为 reference/second endpoint，完整 Range、RangeStream、Delete 与 historical
+  outcome 差分通过，证明 upstream 不保留这些前缀。KubeBrain bufconn 黑盒则通过官方 client/v3 在 v1 seal 后分别对两个
+  前缀 key 创建 Watch，执行 Put、value compare Txn update、同 leader `ReloadLeases`、Get 和 Delete；每次 Put/Txn/Delete
+  都收到精确 Watch event，reload 后 value 原样存在，最终删除数为 1。该门禁覆盖 gRPC validation、KV/Txn storage、Watch
+  history/live delivery 与 lease reload 的组合，不再只以 backend 直调推断客户端兼容性。现场使用独立 32379/32380 和
+  32381/32382 端口及临时 data-dir，结束后进程、监听和目录全部清理，未访问现有集群。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

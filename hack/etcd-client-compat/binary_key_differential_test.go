@@ -50,6 +50,8 @@ func runBinaryKeyScenario(t *testing.T, endpoint string) []binaryKeyOutcome {
 		{0x00},
 		{0x00, 0x00},
 		{0x00, 0x01},
+		[]byte("\x00kubebrain/leases/81001"),
+		[]byte("\x00kubebrain/leasekeys//ordinary-user-key"),
 		{0x7f, 0x00},
 		{0xfe},
 		{0xfe, 0x00},

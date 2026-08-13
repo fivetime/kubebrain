@@ -178,6 +178,69 @@ func TestClientLeaseReloadKeepsNewAttachmentOverLegacyOwner(t *testing.T) {
 	require.Equal(t, [][]byte{[]byte(key)}, currentTTL.Keys)
 }
 
+func TestClientLegacyLeasePrefixesRemainOrdinaryKeysAfterSeal(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	require.NoError(t, server.ReloadLeases(context.Background()))
+
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{"bufnet"}, DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	keys := []string{
+		string(leaseStorageKey(81_002)),
+		string(leaseAttachKey("/ordinary-client-key")),
+	}
+	for _, key := range keys {
+		watch := client.Watch(ctx, key)
+		put, putErr := client.Put(ctx, key, "ordinary-not-lease-metadata")
+		require.NoError(t, putErr)
+		putEvent := <-watch
+		require.NoError(t, putEvent.Err())
+		require.Len(t, putEvent.Events, 1)
+		require.Equal(t, mvccpb.PUT, putEvent.Events[0].Type)
+		require.Equal(t, []byte(key), putEvent.Events[0].Kv.Key)
+
+		txn, txnErr := client.Txn(ctx).
+			If(clientv3.Compare(clientv3.Value(key), "=", "ordinary-not-lease-metadata")).
+			Then(clientv3.OpPut(key, "updated")).Commit()
+		require.NoError(t, txnErr)
+		require.True(t, txn.Succeeded)
+		require.Equal(t, put.Header.Revision+1, txn.Header.Revision)
+		updateEvent := <-watch
+		require.NoError(t, updateEvent.Err())
+		require.Len(t, updateEvent.Events, 1)
+		require.Equal(t, []byte("updated"), updateEvent.Events[0].Kv.Value)
+
+		require.NoError(t, server.ReloadLeases(ctx))
+		get, getErr := client.Get(ctx, key)
+		require.NoError(t, getErr)
+		require.Len(t, get.Kvs, 1)
+		require.Equal(t, []byte("updated"), get.Kvs[0].Value)
+		deleted, deleteErr := client.Delete(ctx, key)
+		require.NoError(t, deleteErr)
+		require.Equal(t, int64(1), deleted.Deleted)
+		deleteEvent := <-watch
+		require.NoError(t, deleteEvent.Err())
+		require.Len(t, deleteEvent.Events, 1)
+		require.Equal(t, mvccpb.DELETE, deleteEvent.Events[0].Type)
+	}
+}
+
 func TestClientLeaseTimeToLiveRevokedLeaseReturnsMinusOne(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
