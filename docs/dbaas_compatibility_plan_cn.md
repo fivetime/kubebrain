@@ -48457,6 +48457,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   真实 epoch fence：请求在 term 1 停车，term 2 `ReloadLeases` 后放行，旧实现六项均会得到 stale-token fence，修复后全部成功。
   该矩阵 10 轮、全部 startup-wait 专项 20 轮、定向 race 10 轮、`pkg/server/etcd` 全量（169.433s）和 vet 均通过。
 
+- A4526 修复升级残留 attachment 与显式同 ID regrant 之间的 lease-generation ABA。upstream
+  `/root/etcd/server/lease/lessor.go:Revoke` 在同一 apply 中删除当前 lessor item，正常状态不会留下“meta 已消失但 item 仍在”供
+  后代同 ID lease 收养；KubeBrain 为修复旧版本非原子 detach 保留 orphan sweeper。旧 sweep 只要 `m.leases[id]` 存在就把 durable
+  attachment 当成健康：旧代 meta/index 已清除、value+attachment 残留后，客户端显式 regrant 同一 ID 会让 sweeper永久跳过旧 key；
+  下一次 reload 甚至会把它加入 replacement lease，后续 revoke/expiry 错删一个新代从未 attach 的 key。该问题不同于 A4402 必须
+  保留的“旧 Revoke wire request 在 regrant 后 apply 会撤销当前 ID”语义；这里没有重放请求，只有实现私有 cleanup marker。
+  现让一次周期 reconciliation 全程持有 `leaseWriteMu` 独占侧，并在同一代际视图内完成 snapshot load、legacy migration、orphan
+  compare-delete 和 seal。在线 Put/Txn 持有共享侧直到 attachment commit 与内存 index publication 均完成，因此锁内 `live ID +
+  unindexed key` 可被确定为旧代 orphan；只有 live lease、相同 ID index 和 attachment 三者一致才视为健康。确定性 RED 植入旧代
+  inline value，并分别植入 internal attachment 与更早的 user-MVCC legacy attachment；删除旧 meta/index 后以相同 ID/不同 TTL
+  regrant。旧实现两种 layout 都保留 key，修复后只删除旧 key/marker，replacement lease 仍以新 TTL 存活。orphan/migration
+  专项 20 轮、定向 race 10 轮（11.401s）、`pkg/server/etcd` 全量（165.972s）和 vet 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -2017,19 +2017,6 @@ func (m *leaseManager) legacyMigrationsLocked(records []leaseRecord) (legacy []l
 	return legacy
 }
 
-// retryLegacyMigrations derives and commits migration work under the exclusive
-// lease write lock. Online Put/Txn hold the shared side from binding validation
-// through storage commit and index publication, so a stale migration snapshot
-// cannot overwrite an attachment that was concurrently rebound to a new lease.
-func (m *leaseManager) retryLegacyMigrations(ctx context.Context, records []leaseRecord) {
-	m.leaseWriteMu.Lock()
-	defer m.leaseWriteMu.Unlock()
-	m.leaseMu.Lock()
-	migrations := m.legacyMigrationsLocked(records)
-	m.leaseMu.Unlock()
-	m.migrateLegacyLeases(ctx, migrations)
-}
-
 func leaseRecoveryDuration(ttl int64, extension time.Duration) time.Duration {
 	duration := time.Duration(ttl) * time.Second
 	if extension <= 0 {
@@ -2219,20 +2206,29 @@ func (m *leaseManager) runOrphanSweeper(ctx context.Context, stop chan struct{},
 // key when its lease lapses), or, when the key was rebound/removed, just reclaims
 // the stale attachment record.
 func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
+	// Freeze every current-generation binding from durable commit through index
+	// publication. This makes a stored attachment with no matching index an old
+	// orphan even when its numeric lease ID has since been granted again.
+	m.leaseWriteMu.Lock()
+	defer m.leaseWriteMu.Unlock()
+
 	records, attachments, legacyAttachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
 		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
 		return
 	}
-	m.retryLegacyMigrations(ctx, records)
+	m.leaseMu.Lock()
+	migrations := m.legacyMigrationsLocked(records)
+	m.leaseMu.Unlock()
+	m.migrateLegacyLeases(ctx, migrations)
 	for key, id := range attachments {
 		m.leaseMu.Lock()
 		_, leaseLive := m.leases[id]
-		_, indexed := m.keyLeaseIndex[key]
+		indexedID, indexed := m.keyLeaseIndex[key]
 		m.leaseMu.Unlock()
-		if leaseLive || indexed {
-			continue // healthy binding, or already tracked for expiry
+		if leaseLive && indexed && indexedID == id {
+			continue // healthy current-generation binding tracked for expiry
 		}
 		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
@@ -2241,12 +2237,10 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 		m.reconcileOrphanAttachment(backend.WithLeadershipEpoch(ctx, epoch), key, id)
 	}
 	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
-	m.leaseWriteMu.Lock()
 	if err := m.sealLegacyLeaseMigrationIfClean(ctx); err != nil {
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
 		klog.ErrorS(err, "orphan lease sweep: seal legacy migration failed")
 	}
-	m.leaseWriteMu.Unlock()
 }
 
 func (m *leaseManager) cleanupOrphanLegacyAttachments(ctx context.Context, legacyAttachments map[string]int64) {
@@ -2255,10 +2249,10 @@ func (m *leaseManager) cleanupOrphanLegacyAttachments(ctx context.Context, legac
 		_, leaseLive := m.leases[legacyID]
 		currentID, indexed := m.keyLeaseIndex[key]
 		m.leaseMu.Unlock()
-		if leaseLive || (indexed && currentID == legacyID) {
+		if leaseLive && indexed && currentID == legacyID {
 			continue // normal migration owns this row
 		}
-		if !indexed {
+		if !indexed || currentID == legacyID {
 			if !m.reconcileOrphanLegacyAttachment(ctx, key, legacyID) {
 				continue
 			}
@@ -2293,12 +2287,6 @@ func (m *leaseManager) reconcileOrphanLegacyAttachment(ctx context.Context, key 
 		// stale marker, but do not guess that the current value is lease-owned.
 		return true
 	}
-	m.leaseMu.Lock()
-	_, leaseLive := m.leases[id]
-	m.leaseMu.Unlock()
-	if leaseLive {
-		return false
-	}
 	dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
 	if err != nil || !dresp.GetSucceeded() {
 		return false
@@ -2308,11 +2296,10 @@ func (m *leaseManager) reconcileOrphanLegacyAttachment(ctx context.Context, key 
 	return true
 }
 
-// reconcileOrphanAttachment handles one attachment record whose lease is no longer
-// live. It deletes the key only when the key's authoritative per-version lease
-// (inline in the value, review #9) still names the defunct lease; otherwise it
-// merely reclaims the stale attachment record, never touching a key that was
-// rebound or recreated leaseless.
+// reconcileOrphanAttachment handles one record that the caller, while holding
+// exclusive leaseWriteMu, proved is not a healthy current-generation binding.
+// It deletes the key only when authoritative per-version metadata still names
+// this attachment; otherwise it merely reclaims the stale record.
 func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string, id int64) bool {
 	resp, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
 	if err != nil {
@@ -2330,16 +2317,10 @@ func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string
 		}
 		return false
 	}
-	// The key is live and still bound (per its inline lease) to a lease that no
-	// longer exists. Re-check under the lock that the lease was not just
-	// (re)granted, then compare-delete at the observed revision so a concurrent
-	// re-Put is not clobbered.
-	m.leaseMu.Lock()
-	_, leaseLive := m.leases[id]
-	m.leaseMu.Unlock()
-	if leaseLive {
-		return false
-	}
+	// The key is live and its inline lease matches the stale attachment. The
+	// exclusive generation/index snapshot above proves that a same-ID regrant did
+	// not attach it; compare-delete still protects against non-cooperating legacy
+	// writers and storage state changed outside the online mutation path.
 	dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
 	if err != nil {
 		return false

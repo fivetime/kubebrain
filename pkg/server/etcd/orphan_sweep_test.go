@@ -163,6 +163,69 @@ func TestOrphanLeaseSweepReclaimsStaleRecordButKeepsRebound(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrKeyNotFound, "stale attachment record must be reclaimed")
 }
 
+func TestOrphanLeaseSweepDoesNotAdoptAttachmentAcrossSameIDRegrant(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "internal"
+		if legacy {
+			name = "legacy"
+		}
+		t.Run(name, func(t *testing.T) {
+			server, _, cleanup := newLeaseTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			const leaseID int64 = 700011
+			key := []byte("/registry/events/ns/same-id-orphan-" + name)
+
+			_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 3000, ID: leaseID})
+			require.NoError(t, err)
+			_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old"), Lease: leaseID})
+			require.NoError(t, err)
+			if legacy {
+				require.NoError(t, server.backend.InternalDelete(ctx, leaseAttachKey(string(key))))
+				_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{
+					Key: leaseAttachKey(string(key)), Value: []byte("700011"),
+				})
+				require.NoError(t, err)
+			}
+
+			// Model an upgrade-era partial cleanup: old metadata/index disappeared but
+			// its user value and durable attachment survived. The public wire permits an
+			// explicit ID to be granted again; that new generation owns no keys yet.
+			server.leaseMu.Lock()
+			old := server.leases[leaseID]
+			require.NotNil(t, old)
+			if old.timer != nil {
+				old.timer.Stop()
+			}
+			if old.checkpointTimer != nil {
+				old.checkpointTimer.Stop()
+			}
+			delete(server.leases, leaseID)
+			delete(server.keyLeaseIndex, string(key))
+			atomic.StoreInt64(&server.leasedKeyCount, 0)
+			server.leaseMu.Unlock()
+			require.NoError(t, server.backend.InternalDelete(ctx, leaseStorageKey(leaseID)))
+
+			_, err = server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 3001, ID: leaseID})
+			require.NoError(t, err)
+			server.sweepOrphanLeasedKeys(ctx)
+
+			got, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Empty(t, got.Kvs, "the replacement lease must not adopt an old-generation attachment")
+			_, err = server.backend.InternalGet(ctx, leaseAttachKey(string(key)))
+			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+			legacyRow, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(string(key))})
+			require.NoError(t, err)
+			require.Empty(t, legacyRow.Kvs)
+			ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+			require.NoError(t, err)
+			require.Positive(t, ttl.TTL, "orphan cleanup must preserve the replacement lease")
+			require.Equal(t, int64(3001), ttl.GrantedTTL)
+		})
+	}
+}
+
 func TestOrphanLeaseSweeperCancelsInFlightScanWithLeadership(t *testing.T) {
 	server, _, cleanup := newLeaseTestServer(t)
 	defer cleanup()
