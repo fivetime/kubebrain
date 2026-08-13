@@ -53,7 +53,7 @@ type leaseRevokeRegrantReplayOutcome struct {
 	OriginalKeyDeleted      bool
 	ReplacementKeyDeleted   bool
 	ReplacementLeaseMissing bool
-	RevisionDelta           int64
+	RevisionAdvancedByThree bool
 }
 
 // TestLeaseRevokeResponseLossDifferentialAgainstReferenceEtcd fixes the
@@ -134,7 +134,7 @@ func TestLeaseRevokeReplayAfterSameIDRegrantDifferential(t *testing.T) {
 		OriginalKeyDeleted:      true,
 		ReplacementKeyDeleted:   true,
 		ReplacementLeaseMissing: true,
-		RevisionDelta:           3,
+		RevisionAdvancedByThree: true,
 	}
 	reference := runLeaseRevokeRegrantReplayScenario(t, referenceEndpoints, "etcd")
 	require.Equal(t, want, reference)
@@ -441,7 +441,10 @@ func runLeaseRevokeRegrantReplayScenario(
 		OriginalKeyDeleted:      !containsLeaseReplayKey(after, originalKey),
 		ReplacementKeyDeleted:   !containsLeaseReplayKey(after, replacementKey),
 		ReplacementLeaseMissing: ttl.TTL == -1,
-		RevisionDelta:           after.Header.Revision - before.Header.Revision,
+		// Revoke-original, put-replacement, and revoke-replacement each commit a
+		// revision. Revisions are cluster-global, so unrelated asynchronous lease
+		// expiry may legitimately add revisions between these operations.
+		RevisionAdvancedByThree: after.Header.Revision-before.Header.Revision >= 3,
 	}
 }
 
