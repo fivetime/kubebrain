@@ -118,9 +118,9 @@ type transientCASStorage struct {
 
 type cancelAfterFirstTxnReadStorage struct {
 	storage.KvStorage
-	enabled atomic.Bool
-	reads   atomic.Int32
-	cancel  context.CancelFunc
+	enabled    atomic.Bool
+	triggerKey atomic.Pointer[string]
+	cancel     context.CancelFunc
 }
 
 func (s *cancelAfterFirstTxnReadStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
@@ -128,7 +128,8 @@ func (s *cancelAfterFirstTxnReadStorage) Get(ctx context.Context, key []byte) ([
 		return nil, err
 	}
 	value, err := s.KvStorage.Get(ctx, key)
-	if s.enabled.Load() && s.reads.Add(1) == 1 {
+	triggerKey := s.triggerKey.Load()
+	if triggerKey != nil && string(key) == *triggerKey && s.enabled.CompareAndSwap(true, false) {
 		s.cancel()
 	}
 	return value, err
@@ -256,6 +257,8 @@ func TestTxnApplyCancellationDuringPrepareLeavesNoPartialWrites(t *testing.T) {
 
 	applyCtx, cancel := context.WithCancel(ctx)
 	wrapped.cancel = cancel
+	triggerKey := string(b.coder.EncodeRevisionKey(keyA))
+	wrapped.triggerKey.Store(&triggerKey)
 	wrapped.enabled.Store(true)
 	results, revision, err := b.TxnApply(applyCtx, []TxnWriteOp{
 		{Key: keyA, Value: []byte("a1")},
@@ -699,6 +702,27 @@ func TestTxnApplyCorruptCommitGuardDistributesAcrossShards(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, start+uint64(writes), b.corruptAlarmFenceShard.Load())
+}
+
+func TestTxnApplyNoOpRejectsActiveCorruptAlarm(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	before := b.GetCurrentRevision()
+	require.NoError(t, b.ArmCorrupt(ctx, 4504001))
+	results, revision, err := b.TxnApply(ctx, nil, nil)
+	require.ErrorIs(t, err, ErrCorruptAlarmActive)
+	require.Nil(t, results)
+	require.Equal(t, before, revision)
+
+	for _, op := range []TxnWriteOp{
+		{Delete: true, Key: []byte(prefix + "/corrupt-noop-user")},
+		{Delete: true, Internal: true, Key: []byte("corrupt-noop-internal")},
+	} {
+		results, revision, err = b.TxnApply(ctx, []TxnWriteOp{op}, nil)
+		require.ErrorIs(t, err, ErrCorruptAlarmActive)
+		require.Nil(t, results)
+		require.Equal(t, before, revision)
+	}
+	require.Equal(t, before, b.GetCurrentRevision())
 }
 
 func TestTxnApplyRejectsDuplicateKeysBeforeRevisionAllocation(t *testing.T) {

@@ -352,6 +352,13 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	preps := make([]txnPrep, 0, len(ops))
 	prepByKey := make(map[string]*txnPrep, len(ops))
 	baseRevision := b.GetCurrentRevision()
+	members, corruptGenerationRaw, corruptGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
+	if alarmErr != nil {
+		return nil, baseRevision, false, alarmErr
+	}
+	if len(members) != 0 {
+		return nil, baseRevision, false, ErrCorruptAlarmActive
+	}
 
 	// Phase 1: read each key's current revision-key state (and, for
 	// update/delete, its previous value + metadata).
@@ -508,13 +515,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 	}
 	if !hasUserWrite && hasInternalWrite {
-		members, corruptGenerationRaw, corruptGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
-		if alarmErr != nil {
-			return nil, baseRevision, false, alarmErr
-		}
-		if len(members) != 0 {
-			return nil, baseRevision, false, ErrCorruptAlarmActive
-		}
 		corruptGuard, alarmErr := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
 		if alarmErr != nil {
 			return nil, baseRevision, false, alarmErr
@@ -575,13 +575,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			results[i] = TxnWriteResult{Key: preps[i].op.Key, Revision: cur}
 		}
 		return results, cur, false, nil
-	}
-	members, corruptGenerationRaw, corruptGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
-	if alarmErr != nil {
-		return nil, baseRevision, false, alarmErr
-	}
-	if len(members) != 0 {
-		return nil, baseRevision, false, ErrCorruptAlarmActive
 	}
 	corruptGuard, alarmErr := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
 	if alarmErr != nil {

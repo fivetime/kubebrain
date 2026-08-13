@@ -48253,6 +48253,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `DataLoss/ErrGRPCCorrupt`，且不发布内存 lease。A4497 的双 backend internal-only 竞态继续证明真实提交窗口由 shard CAS
   线性化。
 
+- A4504 将 `TxnApply` 的 CORRUPT admission 从 effective-write 分支前移到任何 storage prepare 之前。旧实现仅 user write 或
+  effective internal write 才读取 alarm；空 transaction、删除不存在的 user/internal key，以及所有操作归约为 no-op 时会直接
+  成功。公开 RPC 通常先经过 `rejectCorrupt`，但 Backend 调用方和 A4503 新 guarded API 的幂等/no-op 形状仍可绕过 upstream
+  corrupt applier“Txn 一律拒绝”的边界。现在每次合法 `TxnApply` 先取得稳定 generation/member seqlock snapshot：已 active
+  立即返回 `ErrCorruptAlarmActive`；后续 effective transaction 复用同一 snapshot 生成 A4499 commit shard guard，不增加热路径
+  alarm 读取；无写 transaction 可在线性化读取之后直接返回，若 alarm 随后激活则自然排序在其前。请求结构校验仍先于 alarm，
+  保持 etcd API validation precedence。回归覆盖空 ops、absent user delete、absent internal delete 在 active alarm 下均报 CORRUPT、
+  不消耗 revision；prepare cancellation 故障注入改为按目标 revision key 触发，不再脆弱依赖新增 metadata Get 之前的读取次数。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
