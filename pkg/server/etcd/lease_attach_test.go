@@ -404,6 +404,35 @@ func TestLegacyLeaseMigrationRetriesCleanupAfterCanonicalMetadataWins(t *testing
 	require.Empty(t, legacyAttachment.Kvs, "the next leadership pass must retry attachment cleanup")
 }
 
+func TestLegacyLeaseMigrationCleansStrandedAttachmentWithoutLegacyMeta(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID = int64(55_133)
+		key     = "/registry/events/stranded-legacy-attachment"
+	)
+	canonical, err := json.Marshal(leaseRecord{ID: leaseID, TTL: 200})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), canonical))
+	_, err = server.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key: leaseAttachKey(key), Value: []byte(strconv.FormatInt(leaseID, 10)),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	attachment, err := server.backend.InternalGet(ctx, leaseAttachKey(key))
+	require.NoError(t, err)
+	require.Equal(t, []byte(strconv.FormatInt(leaseID, 10)), attachment)
+	legacyAttachment, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Empty(t, legacyAttachment.Kvs,
+		"a legacy attachment row must remain a migration marker even after the old meta was deleted")
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID, Keys: true})
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{[]byte(key)}, ttl.Keys)
+}
+
 func jsonMarshalLeaseRecord(id, ttl int64, keys []string) ([]byte, error) {
 	return json.Marshal(leaseRecord{ID: id, TTL: ttl, Keys: keys})
 }

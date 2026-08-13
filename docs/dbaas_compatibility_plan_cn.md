@@ -48317,6 +48317,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   internal meta，固定 reload 仍返回 typed invalid lease metadata 和稳定 owner 排序。并发审计同时确认 cleanup 前
   `leaseReady=false` 阻止本 leader 新写，跨 leader ABA 由 storage ownership fence 在提交期关闭。
 
+- A4513 覆盖 A4511 无法修复的更早部分迁移遗留：旧顺序可能已成功删除 monolithic meta，随后在 user-MVCC attachment
+  cleanup 中断，只留下 attachment row 与 internal canonical lease meta。此前 loader 虽用该 row 恢复绑定，但因没有 legacy
+  meta 不会生成 migration，垃圾及其 watch history 永久保留。现在 load 为每个有效 lease 保留 user-MVCC attachment 来源 keys；
+  即使没有 legacy meta，也以这些 row 自身作为 durable retry marker，先写/确认 authoritative internal attachment，再经既有
+  TxnApply/CORRUPT/leadership/restoration 栅栏删除旧 row。cleanup keys 与 inline legacy keys 去重，避免重复 tombstone。
+  回归只预置 internal canonical meta 与 legacy attachment，ReloadLeases 后固定绑定/TTL keys 不变、internal attachment 存在、
+  user-MVCC source 已退休。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

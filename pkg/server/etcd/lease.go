@@ -106,6 +106,7 @@ type leaseRecord struct {
 	Keys             []string `json:"keys,omitempty"`
 	LegacyStorage    bool     `json:"-"`
 	LegacyKeys       []string `json:"-"`
+	LegacyAttachKeys []string `json:"-"`
 }
 
 type legacyLeaseMigration struct {
@@ -1650,6 +1651,7 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 		return nil, nil, err
 	}
 	attachments := make(map[string]int64, len(aresp.Kvs))
+	legacyAttachmentKeys := make(map[int64][]string)
 	for _, kv := range aresp.Kvs {
 		userKey := string(kv.Key[len(leaseAttachPrefix):])
 		id, perr := parseLeaseAttachmentRecord(userKey, kv.Value)
@@ -1657,6 +1659,10 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 			return nil, nil, perr
 		}
 		attachments[userKey] = id
+		legacyAttachmentKeys[id] = append(legacyAttachmentKeys[id], userKey)
+	}
+	for index := range records {
+		records[index].LegacyAttachKeys = append([]string(nil), legacyAttachmentKeys[records[index].ID]...)
 	}
 	internalAttachments, err := m.srv.backend.InternalRange(ctx, leaseAttachPrefix)
 	if err != nil {
@@ -1835,7 +1841,7 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		m.keyLeaseIndex[key] = id
 	}
 	for _, record := range records {
-		if !record.LegacyStorage && len(record.Keys) == 0 {
+		if !record.LegacyStorage && len(record.Keys) == 0 && len(record.LegacyAttachKeys) == 0 {
 			continue
 		}
 		st := m.leases[record.ID]
@@ -1846,9 +1852,21 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 				migration.attachKeys = append(migration.attachKeys, key)
 			}
 		}
-		migration.cleanupKeys = append([]string(nil), record.LegacyKeys...)
-		if len(migration.cleanupKeys) == 0 {
-			migration.cleanupKeys = append(migration.cleanupKeys, record.Keys...)
+		cleanupKeys := make(map[string]struct{}, len(record.LegacyKeys)+len(record.Keys)+len(record.LegacyAttachKeys))
+		for _, key := range record.LegacyKeys {
+			cleanupKeys[key] = struct{}{}
+		}
+		if len(record.LegacyKeys) == 0 {
+			for _, key := range record.Keys {
+				cleanupKeys[key] = struct{}{}
+			}
+		}
+		for _, key := range record.LegacyAttachKeys {
+			cleanupKeys[key] = struct{}{}
+		}
+		migration.cleanupKeys = make([]string, 0, len(cleanupKeys))
+		for key := range cleanupKeys {
+			migration.cleanupKeys = append(migration.cleanupKeys, key)
 		}
 		legacy = append(legacy, migration)
 	}

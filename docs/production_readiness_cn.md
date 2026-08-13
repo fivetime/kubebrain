@@ -2974,6 +2974,8 @@ exact readback 对账；普通 context、validation、CAS 和 fence 错误全部
 会留下下一任 leader 无法发现的 user-MVCC metadata 和无意义 watch history。
 canonical record 覆盖旧值时仍必须用 retained legacy keys 执行冲突 owner 校验；仅让 canonical TTL/remaining-TTL 获胜，不得
 把“迁移完成后的权威值覆盖”误解为可以忽略尚未清理 source 的完整性。
+旧版本可能已先删除 monolithic meta、只留下 user-MVCC attachment；因此 attachment row 本身也必须作为 retry marker。只要其
+owner lease 仍有效，reload 要先确认 internal attachment，再删除 legacy row，不能要求旧 meta 同时存在才安排 cleanup。
 提交栅栏依赖 256 个 `alarms/corrupt-fence/<hex>` mutation shard，而不是 TiKV 的普通 snapshot read-set；禁止减少为
 单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
 会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在
