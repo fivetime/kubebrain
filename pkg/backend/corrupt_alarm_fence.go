@@ -17,6 +17,8 @@ package backend
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -26,6 +28,18 @@ import (
 const corruptAlarmFenceShardCount = 256
 
 var corruptAlarmFenceControlKey = []byte("alarms/corrupt-fence-version")
+
+// corruptAlarmFenceShardOffset gives each backend identity a stable place in
+// the shard ring. Successive leaders therefore do not all restart on shard 00
+// and manufacture avoidable TiKV write conflicts during rolling restarts.
+// Empty identities retain the historical zero offset for embedded callers.
+func corruptAlarmFenceShardOffset(identity string) uint64 {
+	if identity == "" {
+		return 0
+	}
+	digest := sha256.Sum256([]byte(identity))
+	return binary.BigEndian.Uint64(digest[:8]) % corruptAlarmFenceShardCount
+}
 
 func corruptAlarmFenceShardKey(shard uint64) []byte {
 	return []byte(fmt.Sprintf("alarms/corrupt-fence/%02x", shard%corruptAlarmFenceShardCount))

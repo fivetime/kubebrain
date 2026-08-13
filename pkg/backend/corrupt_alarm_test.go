@@ -16,12 +16,29 @@ package backend
 
 import (
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+func TestCorruptAlarmFenceShardOffsetIsStableAndIdentityScoped(t *testing.T) {
+	require.Zero(t, corruptAlarmFenceShardOffset(""))
+
+	identities := []string{"kubebrain-0", "kubebrain-1", "kubebrain-2"}
+	seen := make(map[uint64]string, len(identities))
+	for _, identity := range identities {
+		offset := corruptAlarmFenceShardOffset(identity)
+		require.Less(t, offset, uint64(corruptAlarmFenceShardCount))
+		require.Equal(t, offset, corruptAlarmFenceShardOffset(identity))
+		if previous, exists := seen[offset]; exists {
+			t.Fatalf("test identities %q and %q collide on corrupt fence shard %02x", previous, identity, offset)
+		}
+		seen[offset] = identity
+	}
+}
 
 func TestCorruptAlarmGenerationAdvancesOnIdempotentRearmAndDisarm(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
@@ -67,11 +84,12 @@ func TestCorruptAlarmFenceShardCorruptionFailsLeadershipValidationAndWrites(t *t
 	removed, err := b.DisarmCorrupt(ctx, 41003)
 	require.NoError(t, err)
 	require.True(t, removed)
-	require.NoError(t, b.InternalPut(ctx, corruptAlarmFenceShardKey(0), []byte("wrong")))
+	corruptShard := b.corruptAlarmFenceShard.Load() % corruptAlarmFenceShardCount
+	require.NoError(t, b.InternalPut(ctx, corruptAlarmFenceShardKey(corruptShard), []byte("wrong")))
 
 	err = b.ValidateCorruptAlarmMetadata(ctx)
 	require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
-	require.ErrorContains(t, err, "shard 00 generation mismatch")
+	require.ErrorContains(t, err, fmt.Sprintf("shard %02x generation mismatch", corruptShard))
 	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: []byte(prefix + "/bad-corrupt-fence"), Value: []byte("x")}}, nil)
 	require.ErrorIs(t, err, ErrInvalidAlarmMetadata)
 	_, err = b.kv.Get(ctx, b.coder.EncodeRevisionKey([]byte(prefix+"/bad-corrupt-fence")))

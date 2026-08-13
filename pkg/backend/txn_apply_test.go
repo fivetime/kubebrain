@@ -607,6 +607,7 @@ func TestTxnApplyBeforeConcurrentCrossReplicaCorruptActivationRemainsCommitted(t
 
 func TestTxnApplyCorruptCommitGuardDistributesAcrossShards(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
+	start := b.corruptAlarmFenceShard.Load()
 	require.NoError(t, b.ArmCorrupt(ctx, 4499002))
 	removed, err := b.DisarmCorrupt(ctx, 4499002)
 	require.NoError(t, err)
@@ -618,7 +619,7 @@ func TestTxnApplyCorruptCommitGuardDistributesAcrossShards(t *testing.T) {
 		}}, nil)
 		require.NoError(t, err)
 	}
-	require.Equal(t, uint64(writes), b.corruptAlarmFenceShard.Load())
+	require.Equal(t, start+uint64(writes), b.corruptAlarmFenceShard.Load())
 }
 
 func TestTxnApplyRejectsDuplicateKeysBeforeRevisionAllocation(t *testing.T) {

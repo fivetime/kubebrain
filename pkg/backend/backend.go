@@ -609,6 +609,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 		workerCancel:                    workerCancel,
 	}
 	b.compactCtx.Store(compactContextHolder{ctx: workerCtx})
+	b.corruptAlarmFenceShard.Store(corruptAlarmFenceShardOffset(config.Identity))
 	// User/internal batches opened through the backend carry a sharded storage
 	// ownership guard. Election itself retains the raw store so successor token
 	// rotation is not recursively fenced by the old token.

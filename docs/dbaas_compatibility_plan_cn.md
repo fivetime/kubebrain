@@ -48225,6 +48225,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   shard conflict 不会持久化 durable counter，因此重试复用候选 revision；uncertain outcome 若已提交则必在线性序中早于
   Arm，并继续由 transaction witness resolver 判定，若未提交则由既有 invalid collector slot 路径闭合，不会发布数据。
 
+- A4501 分散 CORRUPT commit guard 在 leader 轮换和滚动重启后的起始热点。A4499 的 256 路 round-robin 在单进程内
+  能均匀轮转，但每个新 backend 都从 shard `00` 起步；连续 leader 交接或同一租户的多个 backend 副本恢复流量时，会在 TiKV
+  prewrite 上制造不必要的同 shard write conflict。现在构造器以稳定 backend `Identity` 的 SHA-256 前缀映射初始
+  cursor，同一实例重启保持可预测，不同 StatefulSet identity 高概率错开，之后仍严格遍历完整 256 shard 环；空 identity
+  保持历史零起点，且不改变任何持久键、fence version 或 alarm 线性化协议。回归固定空身份兼容、同身份确定性、三个典型
+  副本身份的不同起点和合法范围，并把 512 笔轮转断言改为相对身份起点计数，防止优化重新引入 shard `00` 启动热点。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
