@@ -154,15 +154,22 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 				outcomes = append(outcomes, outcome)
 				continue
 			}
-			require.True(t, proto.Equal(unary, streamed), "%s follower RangeStream differs from unary: unary=%s stream=%s", scenario.name, unary, streamed)
+			require.GreaterOrEqual(t, unary.Header.Revision, last.Header.Revision,
+				"%s unary header must include every fixture write", scenario.name)
+			require.GreaterOrEqual(t, streamed.Header.Revision, last.Header.Revision,
+				"%s stream header must include every fixture write", scenario.name)
+			// Serializable unary and RangeStream are two independent RPCs. A shared
+			// instance may publish an unrelated revision between them, so compare the
+			// complete response after normalizing only that unconstrained field.
+			normalizedStream := proto.Clone(streamed).(*etcdserverpb.RangeResponse)
+			normalizedStream.Header.Revision = unary.Header.Revision
+			require.True(t, proto.Equal(unary, normalizedStream), "%s follower RangeStream differs from unary: unary=%s stream=%s", scenario.name, unary, streamed)
 			for _, item := range streamed.Kvs {
 				outcome.Keys = append(outcome.Keys, strings.TrimPrefix(string(item.Key), prefix))
 				outcome.Values = append(outcome.Values, string(item.Value))
 			}
 			outcome.Count = streamed.Count
 			outcome.More = streamed.More
-			require.GreaterOrEqual(t, streamed.Header.Revision, last.Header.Revision,
-				"%s header must include every fixture write", scenario.name)
 			// A shared KubeBrain instance may advance for an unrelated lease expiry
 			// between fixture writes and follower reads. Record only the five
 			// revisions attributable to this fixture after proving the actual header
