@@ -45,6 +45,7 @@ func TestRangeStreamFollowerDifferentialAgainstReferenceEtcd(t *testing.T) {
 			followerRangeStreamOutcome{Scenario: "serializable-latest", Keys: []string{"a", "b"}, Values: []string{"v2", "vb"}, Count: 2, HeaderRevDelta: 5},
 			followerRangeStreamOutcome{Scenario: "serializable-negative", Keys: []string{"a", "b"}, Values: []string{"v2", "vb"}, Count: 2, HeaderRevDelta: 5},
 			followerRangeStreamOutcome{Scenario: "serializable-negative-count-only", Count: 2, HeaderRevDelta: 5},
+			followerRangeStreamOutcome{Scenario: "serializable-negative-low-boundary", Keys: []string{"a", "b"}, Values: []string{"low-a", "low-b"}, Count: 2, HeaderRevDelta: 5},
 			followerRangeStreamOutcome{Scenario: "serializable-negative-keys-only", Keys: []string{"a", "b"}, Values: []string{"", ""}, Count: 2, HeaderRevDelta: 5},
 			followerRangeStreamOutcome{Scenario: "serializable-negative-limit", Keys: []string{"a"}, Values: []string{"v2"}, Count: 2, More: true, HeaderRevDelta: 5},
 			followerRangeStreamOutcome{Scenario: "serializable-historical", Keys: []string{"a"}, Values: []string{"v1"}, Count: 1, HeaderRevDelta: 5},
@@ -126,12 +127,14 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 	}
 
 	scenarios := []struct {
-		name string
-		req  *etcdserverpb.RangeRequest
+		name       string
+		trimPrefix string
+		req        *etcdserverpb.RangeRequest
 	}{
 		{name: "serializable-latest", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Serializable: true}},
 		{name: "serializable-negative", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: math.MinInt64, Serializable: true}},
 		{name: "serializable-negative-count-only", req: &etcdserverpb.RangeRequest{Key: []byte(lowPrefix), RangeEnd: lowEnd, Revision: math.MinInt64, Serializable: true, CountOnly: true}},
+		{name: "serializable-negative-low-boundary", trimPrefix: lowPrefix, req: &etcdserverpb.RangeRequest{Key: []byte(lowPrefix), RangeEnd: lowEnd, Revision: math.MinInt64, Serializable: true}},
 		{name: "serializable-negative-keys-only", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: math.MinInt64, Serializable: true, KeysOnly: true}},
 		{name: "serializable-negative-limit", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: math.MinInt64, Serializable: true, Limit: 1}},
 		{name: "serializable-historical", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: first.Header.Revision, Serializable: true}},
@@ -144,6 +147,10 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 		}
 		followerKV := etcdserverpb.NewKVClient(follower.conn)
 		for _, scenario := range scenarios {
+			trimPrefix := scenario.trimPrefix
+			if trimPrefix == "" {
+				trimPrefix = prefix
+			}
 			unary, unaryErr := followerKV.Range(ctx, proto.Clone(scenario.req).(*etcdserverpb.RangeRequest))
 			require.NoError(t, unaryErr, scenario.name)
 			streamed, streamErr := receiveRawRangeStream(ctx, followerKV, proto.Clone(scenario.req).(*etcdserverpb.RangeRequest))
@@ -165,7 +172,7 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 			normalizedStream.Header.Revision = unary.Header.Revision
 			require.True(t, proto.Equal(unary, normalizedStream), "%s follower RangeStream differs from unary: unary=%s stream=%s", scenario.name, unary, streamed)
 			for _, item := range streamed.Kvs {
-				outcome.Keys = append(outcome.Keys, strings.TrimPrefix(string(item.Key), prefix))
+				outcome.Keys = append(outcome.Keys, strings.TrimPrefix(string(item.Key), trimPrefix))
 				outcome.Values = append(outcome.Values, string(item.Value))
 			}
 			outcome.Count = streamed.Count

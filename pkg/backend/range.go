@@ -324,27 +324,20 @@ func (b *backend) decodedUserRange(
 	start, end []byte,
 	revision uint64,
 ) ([]*proto.KeyValue, error) {
-	kvs, err := b.scanner.Range(
-		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), revision, 0,
+	userEnd := end
+	if isFromKeyEnd(userEnd) {
+		userEnd = nil
+	}
+	kvs, err := b.scanner.RangeFiltered(
+		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), start, userEnd, revision,
 	)
 	if err != nil {
 		return nil, err
 	}
-	filtered := kvs[:0]
-	fromKey := isFromKeyEnd(end)
-	for _, kv := range kvs {
-		if bytes.Compare(kv.Key, start) < 0 {
-			continue
-		}
-		if !fromKey && bytes.Compare(kv.Key, end) >= 0 {
-			continue
-		}
-		filtered = append(filtered, kv)
-	}
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i].Key, filtered[j].Key) < 0
+	sort.Slice(kvs, func(i, j int) bool {
+		return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
 	})
-	return filtered, nil
+	return kvs, nil
 }
 
 // Count implements Backend interface

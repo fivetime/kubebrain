@@ -26,6 +26,10 @@ type Scanner interface {
 	// Range run scan in partitions concurrently
 	Range(ctx context.Context, start []byte, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error)
 
+	// RangeFiltered scans the encoded range but retains only decoded user keys in
+	// [userStart,userEnd). A nil userEnd is unbounded.
+	RangeFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) ([]*proto.KeyValue, error)
+
 	// RangeStream run scan in partitions concurrently and returns value by stream
 	RangeStream(ctx context.Context, start []byte, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse
 

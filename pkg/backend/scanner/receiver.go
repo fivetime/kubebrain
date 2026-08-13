@@ -82,6 +82,33 @@ type filteredCountReceiver struct {
 	count int
 }
 
+type filteredResultReceiver struct {
+	emptyResultReceiver
+	start  []byte
+	end    []byte
+	result []*proto.KeyValue
+}
+
+func (r *filteredResultReceiver) append(key, value []byte, revision uint64) {
+	if bytes.Compare(key, r.start) < 0 || (r.end != nil && bytes.Compare(key, r.end) >= 0) {
+		return
+	}
+	r.result = append(r.result, &proto.KeyValue{Key: key, Value: value, Revision: revision})
+}
+
+func (r *filteredResultReceiver) reset() {
+	r.result = r.result[:0]
+}
+
+func (r *filteredResultReceiver) fork() resultReceiver {
+	return &filteredResultReceiver{start: r.start, end: r.end}
+}
+
+func (r *filteredResultReceiver) merge(receiver resultReceiver) {
+	other := receiver.(*filteredResultReceiver)
+	r.result = append(r.result, other.result...)
+}
+
 func (c *filteredCountReceiver) append(key, _ []byte, _ uint64) {
 	if bytes.Compare(key, c.start) >= 0 && (c.end == nil || bytes.Compare(key, c.end) < 0) {
 		c.count++

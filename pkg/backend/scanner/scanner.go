@@ -119,6 +119,17 @@ func (r *scanner) Range(ctx context.Context, start []byte, end []byte, revision 
 	return receiver.result, nil
 }
 
+// RangeFiltered implements Scanner. It scans a safe encoded superset for user
+// boundaries that cannot be represented by one encoded interval, then filters
+// decoded keys before retaining payloads.
+func (r *scanner) RangeFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) ([]*proto.KeyValue, error) {
+	receiver := &filteredResultReceiver{start: userStart, end: userEnd}
+	if _, err := r.scan(ctx, start, end, revision, false, false, receiver); err != nil {
+		return nil, err
+	}
+	return receiver.result, nil
+}
+
 func (r *scanner) rangeWithLimit(ctx context.Context, start []byte, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error) {
 	tso, pinned := storage.SnapshotTimestampFromContext(ctx)
 	if !pinned {

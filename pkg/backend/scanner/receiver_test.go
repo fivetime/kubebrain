@@ -39,3 +39,19 @@ func TestFilteredCountReceiverBoundsResetAndMerge(t *testing.T) {
 	fromKey.append([]byte{0xff}, nil, 1)
 	require.Equal(t, 2, fromKey.count)
 }
+
+func TestFilteredResultReceiverBoundsResetAndMerge(t *testing.T) {
+	receiver := &filteredResultReceiver{start: []byte("$b"), end: []byte("%")}
+	left := receiver.fork().(*filteredResultReceiver)
+	right := receiver.fork().(*filteredResultReceiver)
+	left.append([]byte("$a"), []byte("outside"), 1)
+	left.append([]byte("$b"), []byte("one"), 2)
+	right.append([]byte("$c"), []byte("two"), 3)
+	right.append([]byte("$d"), []byte("capped"), 4)
+	receiver.merge(left)
+	receiver.merge(right)
+	require.Equal(t, []string{"$b", "$c", "$d"}, []string{string(receiver.result[0].Key), string(receiver.result[1].Key), string(receiver.result[2].Key)})
+
+	right.reset()
+	require.Empty(t, right.result)
+}

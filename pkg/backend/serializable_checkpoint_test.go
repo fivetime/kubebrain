@@ -25,6 +25,7 @@ import (
 type checkpointCountScanner struct {
 	backendscanner.Scanner
 	rangeCalled         bool
+	rangeFilteredCalled bool
 	countFilteredCalled bool
 }
 
@@ -36,6 +37,11 @@ func (s *checkpointCountScanner) Range(ctx context.Context, start, end []byte, r
 func (s *checkpointCountScanner) CountFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) (int, error) {
 	s.countFilteredCalled = true
 	return s.Scanner.CountFiltered(ctx, start, end, userStart, userEnd, revision)
+}
+
+func (s *checkpointCountScanner) RangeFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) ([]*proto.KeyValue, error) {
+	s.rangeFilteredCalled = true
+	return s.Scanner.RangeFiltered(ctx, start, end, userStart, userEnd, revision)
 }
 
 type checkpointTestStorage struct {
@@ -325,4 +331,15 @@ func TestSerializableCheckpointCountLowByteBoundaryDoesNotMaterializeRange(t *te
 	require.Equal(t, uint64(2), response.Count)
 	require.True(t, probe.countFilteredCalled)
 	require.False(t, probe.rangeCalled, "CountOnly must not materialize decodedUserRange")
+
+	listed, err := b.List(WithSerializableCheckpoint(ctx, checkpoint), &proto.RangeRequest{
+		Key: []byte("$"), End: []byte("%"), Limit: 1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, checkpoint.Revision, listed.Header.Revision)
+	require.Len(t, listed.Kvs, 1)
+	require.Equal(t, []byte("$a"), listed.Kvs[0].Key)
+	require.True(t, listed.More)
+	require.True(t, probe.rangeFilteredCalled)
+	require.False(t, probe.rangeCalled, "low-boundary List must not materialize the full tenant range")
 }
