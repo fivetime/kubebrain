@@ -49269,6 +49269,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   orphan expiry、Watch/KeepAlive/multiplexed stream reset。该证据关闭当前单节点 Kind、独立 TiKV/PD、三个
   direct Pod endpoint 下的门禁；跨节点/AZ、真实云 L4/L7、网络分区以及与 PD/TiKV 故障叠加仍保持开放。
 
+- A4586 将 A4585 的 follower negative-latest 结论扩展到 CountOnly、KeysOnly 和 Limit/More 组合。差分用例在
+  两个 follower 上逐项比较 raw unary 与 RangeStream，并与固定 upstream 三成员结果对齐；首轮完整 profile
+  38.289 秒通过，但新增 `rangestream-follower` 聚焦 scope 连续 20 轮时第 5 轮稳定捕获 CountOnly RED：
+  KubeBrain 返回正确 Count=2，却给出相对 fixture base 为 -1 的旧 header，而 upstream 始终为 +3。代码审计
+  证明风险不止 header：follower 请求虽已绑定受 GC safepoint 保护的 TiKV checkpoint，CountOnly 独立快路径
+  仍查询 leader-owned global-latest count index；checkpoint 后若有并发写，Count 本身也可能来自错误快照。
+
+  提交 `967cd3ef` 使带 serializable checkpoint 的 CountOnly 绕过全局 count index，清除 Limit 后直接扫描同一
+  pinned TiKV snapshot；这既让 header 来自 checkpoint，也保持 etcd CountOnly 忽略 Limit、返回完整匹配数的
+  合同。确定性单测用伪 index 返回错误 Count/header，证明 `revision=0/-1/MinInt64` 三种 latest 表达都不会再
+  调用它，并连续 20 轮通过；完整 `pkg/server/etcd` 回归 176.014 秒通过。提交 `7d07735b` 将 CountOnly、
+  KeysOnly、Limit/More 形态和独立聚焦 scope 固化为永久门禁，runner fail-closed 契约连续 20 轮通过。
+
+  精确镜像 `kubebrain:a4586-7d07735b`（内嵌 SHA
+  `7d07735b8f7493f652b0d8ae9480be15d6691414`，构建时间 `2026-08-13T22:35:15Z`，OCI manifest list
+  `sha256:56fa39d2612bfe44fe6e402137f4e37867b4b5bd4d8e492bc0dcac83077422f8`，运行用户
+  `65532:65532`）滚动到三副本后，聚焦 differential 连续 20/20 通过（39.890 秒），完整 direct-moveleader
+  profile 39.581 秒通过，三个 Pod 均保持 Ready、零重启。该证据关闭当前 checkpoint 下 follower CountOnly
+  使用非同快照 count index 的语义缺口；超大 prefix 的 checkpoint 全扫描成本仍需单独压测和资源门禁，不能
+  用错误的 global-latest index 换取性能。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
