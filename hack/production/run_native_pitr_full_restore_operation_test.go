@@ -85,7 +85,11 @@ func TestNativePITRReplacementRestorePassesHandoffToVerifier(t *testing.T) {
 	handoffBytes := []byte("replacement\n")
 	require.NoError(t, os.WriteFile(handoff, handoffBytes, 0o600))
 	handoffSHA := fmt.Sprintf("%x", sha256.Sum256(handoffBytes))
-	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_replacement_handoff":"%[2]s","target_replacement_handoff_sha256":"%[3]s","target_snapshot_empty":"%[1]s/t"}`, dir, handoff, handoffSHA))
+	provisioning := filepath.Join(dir, "provisioning.json")
+	provisioningBytes := []byte("provisioning\n")
+	require.NoError(t, os.WriteFile(provisioning, provisioningBytes, 0o600))
+	provisioningSHA := fmt.Sprintf("%x", sha256.Sum256(provisioningBytes))
+	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_provisioning":"%[4]s","target_provisioning_sha256":"%[5]s","target_replacement_handoff":"%[2]s","target_replacement_handoff_sha256":"%[3]s","target_snapshot_empty":"%[1]s/t"}`, dir, handoff, handoffSHA, provisioning, provisioningSHA))
 	require.NoError(t, os.WriteFile(parameters, data, 0o600))
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
 	name := "native-pitr-restore-" + digest[:20]
@@ -100,6 +104,7 @@ func TestNativePITRReplacementRestorePassesHandoffToVerifier(t *testing.T) {
 	})
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(mustReadProductionFile(t, verifyLog)), "--target-replacement-handoff="+handoff)
+	require.Contains(t, string(mustReadProductionFile(t, verifyLog)), "--target-provisioning="+provisioning)
 }
 
 func TestNativePITRReplacementRestoreRejectsHandoffDigestDrift(t *testing.T) {
@@ -107,8 +112,12 @@ func TestNativePITRReplacementRestoreRejectsHandoffDigestDrift(t *testing.T) {
 	handoff := filepath.Join(dir, "replacement.json")
 	require.NoError(t, os.WriteFile(handoff, []byte("replacement\n"), 0o600))
 	approvedHandoffSHA := fmt.Sprintf("%x", sha256.Sum256([]byte("replacement\n")))
+	provisioning := filepath.Join(dir, "provisioning.json")
+	provisioningBytes := []byte("provisioning\n")
+	require.NoError(t, os.WriteFile(provisioning, provisioningBytes, 0o600))
+	provisioningSHA := fmt.Sprintf("%x", sha256.Sum256(provisioningBytes))
 	parameters := filepath.Join(dir, "parameters.json")
-	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_replacement_handoff":"%[2]s","target_replacement_handoff_sha256":"%[3]s","target_snapshot_empty":"%[1]s/t"}`, dir, handoff, approvedHandoffSHA))
+	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_provisioning":"%[4]s","target_provisioning_sha256":"%[5]s","target_replacement_handoff":"%[2]s","target_replacement_handoff_sha256":"%[3]s","target_snapshot_empty":"%[1]s/t"}`, dir, handoff, approvedHandoffSHA, provisioning, provisioningSHA))
 	require.NoError(t, os.WriteFile(parameters, data, 0o600))
 	parametersSHA := fmt.Sprintf("%x", sha256.Sum256(data))
 	name := "native-pitr-restore-" + parametersSHA[:20]
@@ -122,6 +131,32 @@ func TestNativePITRReplacementRestoreRejectsHandoffDigestDrift(t *testing.T) {
 	})
 	require.Error(t, err, string(output))
 	require.Contains(t, string(mustReadProductionFile(t, operationLog)), "target replacement handoff digest mismatch")
+	require.NotContains(t, string(mustReadProductionFile(t, operationLog)), "--action succeed")
+}
+
+func TestNativePITRReplacementRestoreRejectsProvisioningDigestDrift(t *testing.T) {
+	dir := t.TempDir()
+	handoff, provisioning := filepath.Join(dir, "replacement.json"), filepath.Join(dir, "provisioning.json")
+	handoffBytes, provisioningBytes := []byte("replacement\n"), []byte("provisioning\n")
+	require.NoError(t, os.WriteFile(handoff, handoffBytes, 0o600))
+	require.NoError(t, os.WriteFile(provisioning, provisioningBytes, 0o600))
+	handoffSHA := fmt.Sprintf("%x", sha256.Sum256(handoffBytes))
+	provisioningSHA := fmt.Sprintf("%x", sha256.Sum256(provisioningBytes))
+	parameters := filepath.Join(dir, "parameters.json")
+	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_provisioning":"%[4]s","target_provisioning_sha256":"%[5]s","target_replacement_handoff":"%[2]s","target_replacement_handoff_sha256":"%[3]s","target_snapshot_empty":"%[1]s/t"}`, dir, handoff, handoffSHA, provisioning, provisioningSHA))
+	require.NoError(t, os.WriteFile(parameters, data, 0o600))
+	parametersSHA := fmt.Sprintf("%x", sha256.Sum256(data))
+	name := "native-pitr-restore-" + parametersSHA[:20]
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".native-pitr-full-restore.json"), []byte("durable\n"), 0o600))
+	require.NoError(t, os.WriteFile(provisioning, []byte("drifted\n"), 0o600))
+	operationLog := filepath.Join(dir, "operation.log")
+	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + parametersSHA,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=/bin/false", "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
+	})
+	require.Error(t, err, string(output))
+	require.Contains(t, string(mustReadProductionFile(t, operationLog)), "target provisioning receipt digest mismatch")
 	require.NotContains(t, string(mustReadProductionFile(t, operationLog)), "--action succeed")
 }
 
@@ -147,7 +182,7 @@ func TestRequestNativePITRFullRestoreIsApprovalBoundAndNonReentrant(t *testing.T
 	for _, expected := range []string{
 		"--type NativePITRFullRestore", "--requested-by platform:native-pitr-full-restore",
 		"--max-attempts 2", "native-pitr-restore-${parameters_sha:0:20}",
-		"/var/lib/kubebrain-operation/inputs/", ".immutable=true", "target_replacement_handoff_sha256",
+		"/var/lib/kubebrain-operation/inputs/", ".immutable=true", "target_replacement_handoff_sha256", "target_provisioning_sha256",
 	} {
 		require.Contains(t, text, expected)
 	}

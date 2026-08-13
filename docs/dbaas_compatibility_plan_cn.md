@@ -48781,6 +48781,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   BR v7.5.1 commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`。尚未完成真实 Kubernetes 中旧
   TidbCluster/PVC 生命周期控制面到全新 cluster 的端到端 replacement 演练，也未实现自动 provisioner。
 
+- A4553 将 A4552 的“新 cluster ID + target-empty”推进到物理 provisioning 身份证明。新增严格
+  `target-provisioning.v1` receipt，记录 namespace/TidbCluster name+UID、PD cluster ID、Ready 状态、PD/TiKV
+  replica 数，以及按 component/PVC name 排序的 PVC UID、PV name/UID、CSI driver+volumeHandle；拒绝 receipt
+  内重复 UID/物理卷、空白/控制字符和 topology count 漂移。只读 inspector 通过 Kubernetes API 读取 Ready
+  TidbCluster、精确 Bound PD/TiKV PVC 和每个 Bound PV，验证 claimRef namespace/name/UID 与 CSI identity 后，
+  交给 Go validator canonical 化并以 0600、fsync + hard-link 不覆盖发布。replacement handoff 现在必须同时读取
+  新旧 provisioning receipt，要求同一逻辑 namespace/name、不同 TidbCluster UID/PD cluster ID，观测早于各自
+  target-empty scan，replica 数等于 PD endpoints/TiKV stores，并证明所有 PVC UID、PV UID、CSI driver+handle
+  新旧集合完全不相交；handoff 记录两份 SHA。新 restore parameters 又精确绑定新 provisioning path+SHA，
+  attempt 1/2 在 verifier 前复算，verifier 严格解码并绑定 handoff/new plan/new target。支持 replacement 再失败后
+  继续换第三个 cluster，但 prior parameters 的四个 replacement 字段必须完整成组。Go 单元测试、fake Kubernetes/
+  CSI 正向演练、重复 volumeHandle、handoff/provisioning SHA 漂移负向测试均通过。该证据证明“没有复用已知旧卷”，
+  不证明 CSI 后端没有对不同 volumeHandle 做底层克隆/别名；真实 Kubernetes lifecycle/provisioner 演练仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

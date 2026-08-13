@@ -40,7 +40,7 @@ func TestWriteExclusiveDoesNotOverwrite(t *testing.T) {
 
 func nativeTargetReplacementForWriteTest() nativepitr.TargetReplacementHandoff {
 	digest := strings.Repeat("a", 64)
-	return nativepitr.TargetReplacementHandoff{Format: nativepitr.TargetReplacementHandoffFormat, FailedOperationAuditSHA256: digest, FailedOperationName: "native-pitr-restore-" + strings.Repeat("a", 20), FailedOperationParametersSHA: digest, OldPlanSHA256: digest, NewPlanSHA256: digest, OldTargetReceiptSHA256: digest, NewTargetReceiptSHA256: digest, NewRestoreAdmissionSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: digest, OldTargetClusterID: 1, NewTargetClusterID: 2, ReplacementTargetEmpty: true, AdmissionFenceReacquired: true, CreatedAtUnix: 1}
+	return nativepitr.TargetReplacementHandoff{Format: nativepitr.TargetReplacementHandoffFormat, FailedOperationAuditSHA256: digest, FailedOperationName: "native-pitr-restore-" + strings.Repeat("a", 20), FailedOperationParametersSHA: digest, OldPlanSHA256: digest, NewPlanSHA256: digest, OldTargetReceiptSHA256: digest, NewTargetReceiptSHA256: digest, OldTargetProvisioningSHA256: digest, NewTargetProvisioningSHA256: digest, NewRestoreAdmissionSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: digest, OldTargetClusterID: 1, NewTargetClusterID: 2, ReplacementTargetEmpty: true, AdmissionFenceReacquired: true, CreatedAtUnix: 1}
 }
 
 func mustStat(t *testing.T, path string) os.FileInfo {
@@ -55,4 +55,15 @@ func TestApprovedPlanDigestRequiresPairedEncryptionFields(t *testing.T) {
 	partial := `{"admission":"a","approve_plan_sha256":"` + digest + `","artifact_root":"r","cipher_method":"aes256-ctr","full_artifacts":"fa","full_snapshot":"fs","pd_addrs":["pd:2379"],"plan":"p","remote_inventory":"ri","source_range_exclusive":"s","target_snapshot_empty":"t"}`
 	_, err := approvedPlanDigest([]byte(partial))
 	require.ErrorContains(t, err, "schema")
+}
+
+func TestApprovedPlanDigestAcceptsOnlyCompletePriorReplacementGroup(t *testing.T) {
+	digest := strings.Repeat("a", 64)
+	base := `{"admission":"a","approve_plan_sha256":"` + digest + `","artifact_root":"r","full_artifacts":"fa","full_snapshot":"fs","pd_addrs":["pd:2379"],"plan":"p","remote_inventory":"ri","source_range_exclusive":"s","target_snapshot_empty":"t"`
+	complete := base + `,"target_provisioning":"tp","target_provisioning_sha256":"` + digest + `","target_replacement_handoff":"rh","target_replacement_handoff_sha256":"` + digest + `"}`
+	got, err := approvedPlanDigest([]byte(complete))
+	require.NoError(t, err)
+	require.Equal(t, digest, got)
+	_, err = approvedPlanDigest([]byte(base + `,"target_replacement_handoff":"rh"}`))
+	require.ErrorContains(t, err, "replacement schema")
 }

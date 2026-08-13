@@ -2184,6 +2184,13 @@ witness、capture、full/log、restore TSO、encryption 完全相同，同时绑
 及 SHA 进入 immutable parameters，attempt 1/2 均复算且由 receipt verifier 再交叉验证。当前已完成协议、镜像和
 进程级正/负向测试；真实 Kubernetes provision/delete/PVC replacement 编排仍由平台生命周期控制面补齐。
 
+replacement provisioning 不能只看新的 PD cluster ID。平台还必须在 target-empty scan 前生成只读 provisioning
+receipt，固定 TidbCluster UID 和每个 PD/TiKV PVC UID、PV UID、CSI driver+volumeHandle。handoff 必须同时验证
+新旧 receipt 的 cluster/TidbCluster UID 均改变，topology 与 target-empty endpoints/stores 一致，且 PVC/PV/CSI
+identity 集合完全不相交；新 provisioning receipt path+SHA 也进入 immutable restore parameters。当前 inspector
+只执行 Kubernetes get/list，receipt 发布为 0600 fsync hard-link；它不能证明 CSI provider 在不同 handle 背后未做
+存储别名，因此高保障环境仍需 provider-side volume lineage/attestation。
+
 上述执行面现已有独立 pinned restore image 和 replicas=0、`Recreate` 的单 writer Deployment；workspace PVC
 同时承载固定在 `/var/lib/kubebrain-operation/inputs/` 的 evidence/artifact 和不可覆盖 receipt。专用 requester
 RBAC/CEL admission 固定 `NativePITRFullRestore`、platform requester、digest-bound immutable parameters 与

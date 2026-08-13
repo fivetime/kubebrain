@@ -29,6 +29,8 @@ type TargetReplacementHandoff struct {
 	NewPlanSHA256                string `json:"new_plan_sha256"`
 	OldTargetReceiptSHA256       string `json:"old_target_snapshot_empty_receipt_sha256"`
 	NewTargetReceiptSHA256       string `json:"new_target_snapshot_empty_receipt_sha256"`
+	OldTargetProvisioningSHA256  string `json:"old_target_provisioning_receipt_sha256"`
+	NewTargetProvisioningSHA256  string `json:"new_target_provisioning_receipt_sha256"`
 	NewRestoreAdmissionSHA256    string `json:"new_restore_admission_receipt_sha256"`
 	SourceExclusiveSHA256        string `json:"source_range_exclusive_receipt_sha256"`
 	FullArtifactSHA256           string `json:"full_artifact_receipt_sha256"`
@@ -40,15 +42,16 @@ type TargetReplacementHandoff struct {
 }
 
 type TargetReplacementInputs struct {
-	FailedOperation                                  FailedRestoreOperationEvidence
-	OldPlanSHA256, NewPlanSHA256                     string
-	OldTargetReceiptSHA256, NewTargetReceiptSHA256   string
-	NewRestoreAdmissionSHA256, SourceExclusiveSHA256 string
-	FullArtifactSHA256                               string
-	CreatedAtUnix                                    int64
+	FailedOperation                                          FailedRestoreOperationEvidence
+	OldPlanSHA256, NewPlanSHA256                             string
+	OldTargetReceiptSHA256, NewTargetReceiptSHA256           string
+	OldTargetProvisioningSHA256, NewTargetProvisioningSHA256 string
+	NewRestoreAdmissionSHA256, SourceExclusiveSHA256         string
+	FullArtifactSHA256                                       string
+	CreatedAtUnix                                            int64
 }
 
-func BuildTargetReplacementHandoff(oldPlan, newPlan Plan, oldTarget, newTarget TargetSnapshotEmptyReceipt, newAdmission RestoreAdmissionReceipt, in TargetReplacementInputs) (TargetReplacementHandoff, error) {
+func BuildTargetReplacementHandoff(oldPlan, newPlan Plan, oldTarget, newTarget TargetSnapshotEmptyReceipt, oldProvisioning, newProvisioning TargetProvisioningReceipt, newAdmission RestoreAdmissionReceipt, in TargetReplacementInputs) (TargetReplacementHandoff, error) {
 	if err := oldPlan.Validate(); err != nil {
 		return TargetReplacementHandoff{}, fmt.Errorf("old plan: %w", err)
 	}
@@ -64,7 +67,10 @@ func BuildTargetReplacementHandoff(oldPlan, newPlan Plan, oldTarget, newTarget T
 	if err := newAdmission.Validate(); err != nil {
 		return TargetReplacementHandoff{}, fmt.Errorf("new admission: %w", err)
 	}
-	for _, value := range []string{in.FailedOperation.AuditArtifactSHA256, in.FailedOperation.ParametersSHA256, in.OldPlanSHA256, in.NewPlanSHA256, in.OldTargetReceiptSHA256, in.NewTargetReceiptSHA256, in.NewRestoreAdmissionSHA256, in.SourceExclusiveSHA256, in.FullArtifactSHA256} {
+	if err := VerifyReplacementProvisioning(oldProvisioning, newProvisioning, oldTarget, newTarget); err != nil {
+		return TargetReplacementHandoff{}, err
+	}
+	for _, value := range []string{in.FailedOperation.AuditArtifactSHA256, in.FailedOperation.ParametersSHA256, in.OldPlanSHA256, in.NewPlanSHA256, in.OldTargetReceiptSHA256, in.NewTargetReceiptSHA256, in.OldTargetProvisioningSHA256, in.NewTargetProvisioningSHA256, in.NewRestoreAdmissionSHA256, in.SourceExclusiveSHA256, in.FullArtifactSHA256} {
 		if !sha256RE.MatchString(value) {
 			return TargetReplacementHandoff{}, errors.New("target replacement input contains an invalid digest")
 		}
@@ -88,7 +94,8 @@ func BuildTargetReplacementHandoff(oldPlan, newPlan Plan, oldTarget, newTarget T
 		Format: TargetReplacementHandoffFormat, FailedOperationAuditSHA256: in.FailedOperation.AuditArtifactSHA256,
 		FailedOperationName: in.FailedOperation.OperationName, FailedOperationParametersSHA: in.FailedOperation.ParametersSHA256,
 		OldPlanSHA256: in.OldPlanSHA256, NewPlanSHA256: in.NewPlanSHA256, OldTargetReceiptSHA256: in.OldTargetReceiptSHA256,
-		NewTargetReceiptSHA256: in.NewTargetReceiptSHA256, NewRestoreAdmissionSHA256: in.NewRestoreAdmissionSHA256,
+		NewTargetReceiptSHA256: in.NewTargetReceiptSHA256, OldTargetProvisioningSHA256: in.OldTargetProvisioningSHA256,
+		NewTargetProvisioningSHA256: in.NewTargetProvisioningSHA256, NewRestoreAdmissionSHA256: in.NewRestoreAdmissionSHA256,
 		SourceExclusiveSHA256: in.SourceExclusiveSHA256, FullArtifactSHA256: in.FullArtifactSHA256,
 		OldTargetClusterID: oldPlan.Target.ClusterID, NewTargetClusterID: newPlan.Target.ClusterID,
 		ReplacementTargetEmpty: true, AdmissionFenceReacquired: true, CreatedAtUnix: in.CreatedAtUnix,
@@ -100,7 +107,7 @@ func (r TargetReplacementHandoff) Validate() error {
 	if r.Format != TargetReplacementHandoffFormat || r.FailedOperationName == "" || r.OldTargetClusterID == 0 || r.NewTargetClusterID == 0 || r.OldTargetClusterID == r.NewTargetClusterID || !r.ReplacementTargetEmpty || !r.AdmissionFenceReacquired || r.CreatedAtUnix <= 0 {
 		return errors.New("invalid native PITR target replacement handoff")
 	}
-	for _, value := range []string{r.FailedOperationAuditSHA256, r.FailedOperationParametersSHA, r.OldPlanSHA256, r.NewPlanSHA256, r.OldTargetReceiptSHA256, r.NewTargetReceiptSHA256, r.NewRestoreAdmissionSHA256, r.SourceExclusiveSHA256, r.FullArtifactSHA256} {
+	for _, value := range []string{r.FailedOperationAuditSHA256, r.FailedOperationParametersSHA, r.OldPlanSHA256, r.NewPlanSHA256, r.OldTargetReceiptSHA256, r.NewTargetReceiptSHA256, r.OldTargetProvisioningSHA256, r.NewTargetProvisioningSHA256, r.NewRestoreAdmissionSHA256, r.SourceExclusiveSHA256, r.FullArtifactSHA256} {
 		if !sha256RE.MatchString(value) {
 			return errors.New("target replacement handoff contains invalid digest evidence")
 		}
@@ -111,17 +118,21 @@ func (r TargetReplacementHandoff) Validate() error {
 	return nil
 }
 
-func VerifyTargetReplacementHandoffBinding(handoff TargetReplacementHandoff, plan Plan, binding FullRestoreOperationBinding) error {
+func VerifyTargetReplacementHandoffBinding(handoff TargetReplacementHandoff, plan Plan, target TargetSnapshotEmptyReceipt, newProvisioning TargetProvisioningReceipt, newProvisioningSHA256 string, binding FullRestoreOperationBinding) error {
 	checks := []struct {
 		ok    bool
 		field string
 	}{
 		{handoff.NewPlanSHA256 == binding.PlanSHA256, "replacement plan digest"},
 		{handoff.NewTargetReceiptSHA256 == binding.TargetSnapshotSHA256, "replacement target receipt digest"},
+		{handoff.NewTargetProvisioningSHA256 == newProvisioningSHA256, "replacement provisioning receipt digest"},
 		{handoff.NewRestoreAdmissionSHA256 == binding.RestoreAdmissionSHA256, "replacement admission digest"},
 		{handoff.SourceExclusiveSHA256 == binding.SourceExclusiveSHA256, "replacement source-exclusive digest"},
 		{handoff.FullArtifactSHA256 == binding.FullArtifactSHA256, "replacement artifact digest"},
 		{handoff.NewTargetClusterID == plan.Target.ClusterID, "replacement target cluster"},
+		{newProvisioning.ClusterID == plan.Target.ClusterID, "provisioning target cluster"},
+		{newProvisioning.PDReplicas == len(target.PDAddrs), "provisioning PD replicas"},
+		{newProvisioning.TiKVReplicas == len(target.Stores), "provisioning TiKV replicas"},
 	}
 	for _, check := range checks {
 		if !check.ok {

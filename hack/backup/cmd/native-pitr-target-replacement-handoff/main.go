@@ -21,7 +21,7 @@ import (
 )
 
 type options struct {
-	failedAudit, failedParameters, oldPlan, newPlan, oldTarget, newTarget, newAdmission, output string
+	failedAudit, failedParameters, oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, newAdmission, output string
 }
 
 func main() {
@@ -32,6 +32,8 @@ func main() {
 	flag.StringVar(&o.newPlan, "new-plan", "", "approved plan for the replacement target")
 	flag.StringVar(&o.oldTarget, "old-target-snapshot-empty", "", "old target-empty receipt")
 	flag.StringVar(&o.newTarget, "new-target-snapshot-empty", "", "replacement target-empty receipt")
+	flag.StringVar(&o.oldProvisioning, "old-target-provisioning", "", "old target physical provisioning receipt")
+	flag.StringVar(&o.newProvisioning, "new-target-provisioning", "", "replacement target physical provisioning receipt")
 	flag.StringVar(&o.newAdmission, "new-restore-admission", "", "replacement target admission receipt")
 	flag.StringVar(&o.output, "output", "", "new handoff receipt path")
 	flag.Parse()
@@ -42,7 +44,7 @@ func main() {
 }
 
 func run(o options, now int64) error {
-	for _, value := range []string{o.failedAudit, o.failedParameters, o.oldPlan, o.newPlan, o.oldTarget, o.newTarget, o.newAdmission, o.output} {
+	for _, value := range []string{o.failedAudit, o.failedParameters, o.oldPlan, o.newPlan, o.oldTarget, o.newTarget, o.oldProvisioning, o.newProvisioning, o.newAdmission, o.output} {
 		if value == "" {
 			return errors.New("all target replacement evidence paths and output are required")
 		}
@@ -85,6 +87,14 @@ func run(o options, now int64) error {
 	if err != nil {
 		return err
 	}
+	oldProvisioningBytes, oldProvisioning, err := decodeProvisioning(o.oldProvisioning)
+	if err != nil {
+		return err
+	}
+	newProvisioningBytes, newProvisioning, err := decodeProvisioning(o.newProvisioning)
+	if err != nil {
+		return err
+	}
 	admissionBytes, err := readBounded(o.newAdmission)
 	if err != nil {
 		return err
@@ -93,9 +103,10 @@ func run(o options, now int64) error {
 	if err != nil {
 		return err
 	}
-	handoff, err := nativepitr.BuildTargetReplacementHandoff(oldPlan, newPlan, oldTarget, newTarget, admission, nativepitr.TargetReplacementInputs{
+	handoff, err := nativepitr.BuildTargetReplacementHandoff(oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, admission, nativepitr.TargetReplacementInputs{
 		FailedOperation: nativepitr.FailedRestoreOperationEvidence{AuditArtifactSHA256: digest(auditBytes), OperationName: audit.Name, ParametersSHA256: audit.ParametersSHA256, Attempt: audit.Attempt, MaxAttempts: audit.MaxAttempts},
 		OldPlanSHA256:   digest(oldPlanBytes), NewPlanSHA256: digest(newPlanBytes), OldTargetReceiptSHA256: digest(oldTargetBytes), NewTargetReceiptSHA256: digest(newTargetBytes),
+		OldTargetProvisioningSHA256: digest(oldProvisioningBytes), NewTargetProvisioningSHA256: digest(newProvisioningBytes),
 		NewRestoreAdmissionSHA256: digest(admissionBytes), SourceExclusiveSHA256: newPlan.Source.RangeExclusiveReceiptSHA256, FullArtifactSHA256: newPlan.Full.ArtifactReceiptSHA256, CreatedAtUnix: now,
 	})
 	if err != nil {
@@ -114,21 +125,34 @@ func approvedPlanDigest(data []byte) (string, error) {
 		return "", err
 	}
 	baseKeys := []string{"admission", "approve_plan_sha256", "artifact_root", "full_artifacts", "full_snapshot", "pd_addrs", "plan", "remote_inventory", "source_range_exclusive", "target_snapshot_empty"}
-	if len(value) != len(baseKeys) && len(value) != len(baseKeys)+2 {
-		return "", errors.New("failed restore parameters have an invalid schema")
-	}
 	for _, key := range baseKeys {
 		if _, ok := value[key]; !ok {
 			return "", errors.New("failed restore parameters have an invalid schema")
 		}
 	}
-	if len(value) == len(baseKeys)+2 {
-		if _, method := value["cipher_method"]; !method {
-			return "", errors.New("failed restore parameters have an invalid encryption schema")
+	allowed := map[string]bool{}
+	for _, key := range append(baseKeys, "cipher_method", "encryption_key_id", "target_replacement_handoff", "target_replacement_handoff_sha256", "target_provisioning", "target_provisioning_sha256") {
+		allowed[key] = true
+	}
+	for key := range value {
+		if !allowed[key] {
+			return "", errors.New("failed restore parameters have an invalid schema")
 		}
-		if _, keyID := value["encryption_key_id"]; !keyID {
-			return "", errors.New("failed restore parameters have an invalid encryption schema")
+	}
+	_, cipher := value["cipher_method"]
+	_, keyID := value["encryption_key_id"]
+	if cipher != keyID {
+		return "", errors.New("failed restore parameters have an invalid encryption schema")
+	}
+	replacementKeys := []string{"target_replacement_handoff", "target_replacement_handoff_sha256", "target_provisioning", "target_provisioning_sha256"}
+	replacementCount := 0
+	for _, key := range replacementKeys {
+		if _, ok := value[key]; ok {
+			replacementCount++
 		}
+	}
+	if replacementCount != 0 && replacementCount != len(replacementKeys) {
+		return "", errors.New("failed restore parameters have an invalid replacement schema")
 	}
 	var approved string
 	if err := json.Unmarshal(value["approve_plan_sha256"], &approved); err != nil || len(approved) != 64 {
@@ -152,6 +176,15 @@ func decodeTarget(path string) ([]byte, nativepitr.TargetSnapshotEmptyReceipt, e
 		return nil, nativepitr.TargetSnapshotEmptyReceipt{}, err
 	}
 	value, err := nativepitr.DecodeTargetSnapshotEmpty(bytes.NewReader(data))
+	return data, value, err
+}
+
+func decodeProvisioning(path string) ([]byte, nativepitr.TargetProvisioningReceipt, error) {
+	data, err := readBounded(path)
+	if err != nil {
+		return nil, nativepitr.TargetProvisioningReceipt{}, err
+	}
+	value, err := nativepitr.DecodeTargetProvisioningReceipt(bytes.NewReader(data))
 	return data, value, err
 }
 
