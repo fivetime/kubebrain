@@ -49015,6 +49015,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   expiry tombstone、Txn snapshot/watch、compacted order/PrevKV 与 HashKV compaction。`pkg/server`
   全量、server/compat vet、compat 全量与 runner fail-closed 连续 10 轮通过。
 
+- A4571 修复生产 StatefulSet 删除当前 KubeBrain Leader 时的滚动可用性缺口。A4570 主集群升级探针
+  在旧 Leader Pod 删除后出现一次约一秒 `DeadlineExceeded`；改用 Kind 节点内直接访问 ClusterIP 的
+  探针排除 `kubectl port-forward` 生命周期干扰后，未排空的每次 Pod 删除都各出现一次
+  `connect: connection refused`。仅增加 `preStop sleep` 又暴露更严重的顺序问题：Pod 已从
+  EndpointSlice 摘除，但进程仍持有共享 Leader lease，其他副本继续代理到已从 headless DNS 消失的
+  旧 Leader，并返回 `get revision from leader failed ... no such host`。
+
+  现在选主使用独立 campaign context；info 端口新增只接受 localhost `POST /drain` 的排空入口，调用后
+  取消 campaign、等待 client-go `ReleaseOnCancel` 将空 holder CAS 到 TiKV，保持 public listener、peer
+  proxy 和其余后台工作存活。生产 plaintext/TLS 清单的 preStop 先以本机 curl 等待 `/drain` 成功，再
+  保留五秒 EndpointSlice/kube-proxy 收敛窗口，之后才接收 SIGTERM；同时显式使用
+  `--leader-retry-period=100ms`，发布前实例门禁拒绝缺失或漂移配置。单测固定 method/localhost 边界、
+  campaign 已取消及 JSON 成功响应，清单测试固定完整 hook 与参数。
+
+  修复提交 `86537c975a5fb69752ed7cd9cd3b9450d68de099` 构建镜像
+  `kubebrain:a4571-86537c97`（OCI manifest list
+  `sha256:7fc1b4cce65078dbe4f7eaa454c61609fa6ac89df30294d5f337896e5b048b60`），内嵌 version/SHA/build
+  time 精确校验。三副本主集群全部升级后执行一次完整 StatefulSet rolling restart，Kind 节点内
+  ClusterIP 线性健康探针 700/700 成功、零失败，三个新 Pod 均 Ready 且零 restart。随后 direct
+  gRPC/metrics 七项统一门禁 5.664 秒全绿，postflight 未留下测试 key、lease 或 Alarm。该证据覆盖
+  单节点 Kind 的有序自愿终止；云 LB、跨节点 kube-proxy/EndpointSlice 延迟、非自愿 SIGKILL、节点故障
+  与小时级 churn 仍保持开放，不能由本轮零失败外推。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
