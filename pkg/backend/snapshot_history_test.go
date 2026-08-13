@@ -17,8 +17,11 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type snapshotStorageWithoutBatchGet struct{ storage.KvStorage }
 
 func TestTxnApplyMigratesLegacyCurrentLeaseBeforeItBecomesHistory(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
@@ -398,44 +401,56 @@ func TestSnapshotHistoryStreamRejectsMalformedObjectKey(t *testing.T) {
 }
 
 func TestSnapshotHistoryStreamJoinsExactTxnSubrevisions(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	kv := imemkv.NewKvStorage()
-	defer func() { require.NoError(t, kv.Close()) }()
-	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(ctrl)).(*backend)
-	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
-	ctx := context.Background()
-	keys := [][]byte{
-		[]byte(prefix + "/snapshot-history/order/z"),
-		[]byte(prefix + "/snapshot-history/order/a"),
-		[]byte(prefix + "/snapshot-history/order/m"),
-	}
-	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
-		{Key: keys[0], Value: []byte("z")},
-		{Key: keys[1], Value: []byte("a")},
-		{Key: keys[2], Value: []byte("m")},
-	}, nil)
-	require.NoError(t, err)
-	waitCommitted(t, b, revision)
-
-	stream, err := b.SnapshotHistoryStream(ctx, revision)
-	require.NoError(t, err)
-	wanted := map[string]uint32{string(keys[0]): 0, string(keys[1]): 1, string(keys[2]): 2}
-	seen := make(map[string]uint32, len(wanted))
-	for chunk := range stream {
-		require.NoError(t, chunk.Err)
-		for _, record := range chunk.Records {
-			want, ok := wanted[string(record.Key)]
-			if !ok || record.ModRevision != revision {
-				continue
-			}
-			require.True(t, record.Ordered)
-			require.Equal(t, want, record.SubRevision)
-			require.Equal(t, uint32(3), record.TotalChanges)
-			seen[string(record.Key)] = record.SubRevision
+	for _, withoutBatchGet := range []bool{false, true} {
+		name := "batch-get"
+		if withoutBatchGet {
+			name = "plain-kv-storage"
 		}
+		t.Run(name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			kv := imemkv.NewKvStorage()
+			defer func() { require.NoError(t, kv.Close()) }()
+			var store storage.KvStorage = kv
+			if withoutBatchGet {
+				store = snapshotStorageWithoutBatchGet{KvStorage: kv}
+			}
+			b := NewBackend(store, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(ctrl)).(*backend)
+			b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+			ctx := context.Background()
+			keys := [][]byte{
+				[]byte(prefix + "/snapshot-history/order/z"),
+				[]byte(prefix + "/snapshot-history/order/a"),
+				[]byte(prefix + "/snapshot-history/order/m"),
+			}
+			_, revision, err := b.TxnApply(ctx, []TxnWriteOp{
+				{Key: keys[0], Value: []byte("z")},
+				{Key: keys[1], Value: []byte("a")},
+				{Key: keys[2], Value: []byte("m")},
+			}, nil)
+			require.NoError(t, err)
+			waitCommitted(t, b, revision)
+
+			stream, err := b.SnapshotHistoryStream(ctx, revision)
+			require.NoError(t, err)
+			wanted := map[string]uint32{string(keys[0]): 0, string(keys[1]): 1, string(keys[2]): 2}
+			seen := make(map[string]uint32, len(wanted))
+			for chunk := range stream {
+				require.NoError(t, chunk.Err)
+				for _, record := range chunk.Records {
+					want, ok := wanted[string(record.Key)]
+					if !ok || record.ModRevision != revision {
+						continue
+					}
+					require.True(t, record.Ordered)
+					require.Equal(t, want, record.SubRevision)
+					require.Equal(t, uint32(3), record.TotalChanges)
+					seen[string(record.Key)] = record.SubRevision
+				}
+			}
+			require.Len(t, seen, len(wanted))
+		})
 	}
-	require.Len(t, seen, len(wanted))
 }
 
 func TestSnapshotHistoryStreamPinsEventLogUntilConsumerStops(t *testing.T) {

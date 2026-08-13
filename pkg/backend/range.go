@@ -580,33 +580,31 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 			if len(records) == 0 {
 				return true
 			}
-			if batchGetter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
-				eventKeys := make([][]byte, len(records))
-				for i := range records {
-					eventKeys[i] = b.ks.EncodeEventLogKey(records[i].ModRevision, records[i].Key)
+			eventKeys := make([][]byte, len(records))
+			for i := range records {
+				eventKeys[i] = b.ks.EncodeEventLogKey(records[i].ModRevision, records[i].Key)
+			}
+			values, getErr := b.snapshotEventLogValues(ctx, eventKeys)
+			if getErr != nil {
+				send(SnapshotHistoryChunk{Revision: rev, Err: fmt.Errorf("load snapshot event order: %w", getErr)})
+				return false
+			}
+			for i, eventKey := range eventKeys {
+				value, found := values[string(eventKey)]
+				if !found {
+					continue
 				}
-				values, getErr := batchGetter.BatchGet(ctx, eventKeys)
-				if getErr != nil {
-					send(SnapshotHistoryChunk{Revision: rev, Err: fmt.Errorf("load snapshot event order: %w", getErr)})
-					return false
+				verb, _, subRevision, total, ordered, valid := coder.DecodeOrderedEventLogValue(value)
+				if !valid || !ordered || total == 0 || subRevision >= total {
+					continue
 				}
-				for i, eventKey := range eventKeys {
-					value, found := values[string(eventKey)]
-					if !found {
-						continue
-					}
-					verb, _, subRevision, total, ordered, valid := coder.DecodeOrderedEventLogValue(value)
-					if !valid || !ordered || total == 0 || subRevision >= total {
-						continue
-					}
-					isDelete := verb == byte(proto.Event_DELETE)
-					if isDelete != records[i].Tombstone || (!isDelete && verb != byte(proto.Event_CREATE) && verb != byte(proto.Event_PUT)) {
-						continue
-					}
-					records[i].SubRevision = subRevision
-					records[i].TotalChanges = total
-					records[i].Ordered = true
+				isDelete := verb == byte(proto.Event_DELETE)
+				if isDelete != records[i].Tombstone || (!isDelete && verb != byte(proto.Event_CREATE) && verb != byte(proto.Event_PUT)) {
+					continue
 				}
+				records[i].SubRevision = subRevision
+				records[i].TotalChanges = total
+				records[i].Ordered = true
 			}
 			chunk := SnapshotHistoryChunk{Records: records, Revision: rev}
 			records = make([]SnapshotHistoryRecord, 0, snapshotHistoryChunkRecords)
@@ -707,4 +705,26 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 		}
 	}()
 	return out, nil
+}
+
+// snapshotEventLogValues preserves transaction subrevision metadata on every
+// storage implementation. BatchGetter is an optimization, not a semantic
+// capability: silently skipping the join on Badger (or another plain
+// KvStorage) reorders same-revision writes by key in exported etcd snapshots.
+func (b *backend) snapshotEventLogValues(ctx context.Context, keys [][]byte) (map[string][]byte, error) {
+	if batchGetter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
+		return batchGetter.BatchGet(ctx, keys)
+	}
+	values := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		value, err := b.kv.Get(ctx, key)
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		values[string(key)] = value
+	}
+	return values, nil
 }

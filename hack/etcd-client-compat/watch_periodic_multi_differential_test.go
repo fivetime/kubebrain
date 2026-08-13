@@ -66,25 +66,35 @@ func runWatchPeriodicMultiScenario(t *testing.T, endpoint, instance string) watc
 		Key: []byte(prefix + "synced"), WatchId: 909, ProgressNotify: true,
 	})
 	futureCreated := create(&etcdserverpb.WatchCreateRequest{
-		Key: []byte(prefix + "future"), WatchId: 910, StartRevision: base.Header.Revision + 2, ProgressNotify: true,
+		// Keep this watcher genuinely in the future even when lease cleanup from
+		// earlier full-suite cases advances the shared endpoint concurrently.
+		Key: []byte(prefix + "future"), WatchId: 910, StartRevision: base.Header.Revision + 1_000_000, ProgressNotify: true,
 	})
 	progress := recvWatchResponse(t, stream)
 
-	type receiveResult struct {
-		response *etcdserverpb.WatchResponse
-		err      error
-	}
-	pending := make(chan receiveResult, 1)
-	go func() {
-		response, recvErr := stream.Recv()
-		pending <- receiveResult{response: response, err: recvErr}
-	}()
 	futureAbsent := false
-	select {
-	case extra := <-pending:
-		require.Failf(t, "future sibling emitted periodic progress", "response=%v error=%v", extra.response, extra.err)
-	case <-time.After(300 * time.Millisecond):
-		futureAbsent = true
+	deadline := time.After(300 * time.Millisecond)
+	for !futureAbsent {
+		type receiveResult struct {
+			response *etcdserverpb.WatchResponse
+			err      error
+		}
+		pending := make(chan receiveResult, 1)
+		go func() {
+			response, recvErr := stream.Recv()
+			pending <- receiveResult{response: response, err: recvErr}
+		}()
+		select {
+		case extra := <-pending:
+			require.NoError(t, extra.err)
+			require.NotNil(t, extra.response)
+			require.NotEqual(t, int64(910), extra.response.WatchId,
+				"future sibling emitted periodic progress: %v", extra.response)
+			require.True(t, canonicalWatchControlResponse(extra.response, false, 909),
+				"unexpected response while waiting for future sibling suppression: %v", extra.response)
+		case <-deadline:
+			futureAbsent = true
+		}
 	}
 	baseRevision := base.Header.Revision
 	return watchPeriodicMultiOutcome{

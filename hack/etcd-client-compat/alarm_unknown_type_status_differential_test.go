@@ -33,7 +33,7 @@ func TestAlarmUnknownTypeStatusDifferentialAgainstReferenceEtcd(t *testing.T) {
 	)
 	// StatusResponse.Errors uses etcd server formatting, which is deliberately
 	// distinct from the protobuf AlarmMember.String representation.
-	alarmError := fmt.Sprintf("memberID:%d  alarm:%s", memberID, alarm.String())
+	alarmError := fmt.Sprintf("memberID:%d alarm:%s", memberID, alarm.String())
 	want := []unknownAlarmStatusOutcome{
 		{Name: "active", Code: "OK", Errors: []string{alarmError}},
 		{Name: "after-wrong-member", Code: "OK", Errors: []string{alarmError}},

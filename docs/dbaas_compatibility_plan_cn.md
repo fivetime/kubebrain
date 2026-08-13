@@ -48907,6 +48907,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   独立 badger KubeBrain，真实 raw gRPC 双端差分通过。审计确认当前 runtime 已与上游一致，本轮不放宽
   RangeStream 能力，也不把上游明确 Unimplemented 的排序/filter 伪报为兼容缺口。
 
+- A4564 用同一 clean `/root/etcd@5cd9f4ee1` 对 disposable 单节点 Badger KubeBrain 执行完整
+  official client 差分，发现并修复快照中同 revision 事务操作顺序丢失：
+  `SnapshotHistoryStream` 原先只在底层暴露 `storage.BatchGetter` 时回查 ordered event log，Badger
+  这类仅实现 `KvStorage` 的后端会静默跳过 join，导致 `z,a,m` 的同事务写入在 snapshot restore 后按
+  key 排成 `a,m,z`，subrevision 与 etcd 不同。现在 BatchGet 仅作为优化；无该 capability 时逐键 Get，
+  `ErrKeyNotFound` 保持兼容降级，其他读取错误 fail closed。单测同时覆盖 BatchGetter 与 plain KvStorage，
+  raw gRPC snapshot→etcdutl restore 差分确认两端均恢复 `z,a,m`。完整差分还纠正两处夹具误报：当前
+  protobuf v2 的 upstream `AlarmMember.String()` 字段间为单空格，Status helper 与未知 alarm 测试据
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 对齐；MemberUpdate peer-URL 冲突在单成员目标明确
+  Skip；future-watch 周期进度测试使用远未来 revision，并允许已同步 watcher 的重复合法 progress，只禁止
+  future watcher 自身提前响应。修正后的 Alarm/Snapshot 差分及 Watch 场景连续三轮通过；完整差分首次运行
+  除上述已确认的 watch 夹具误判外全部适用项通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

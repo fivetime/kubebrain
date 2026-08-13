@@ -62,6 +62,9 @@ func memberUpdatePeerURLConflictOutcomeForEndpoint(t *testing.T, endpoint string
 		listResponse, err = client.MemberList(ctx, &etcdserverpb.MemberListRequest{})
 		require.NoError(t, err)
 	}
+	if len(listResponse.Members) < 2 {
+		t.Skipf("peer URL conflict requires at least two members; endpoint %s advertises %d", endpoint, len(listResponse.Members))
+	}
 	require.GreaterOrEqual(t, len(listResponse.Members), 2)
 	target, conflicting := listResponse.Members[0], listResponse.Members[1]
 	require.NotEmpty(t, conflicting.GetPeerURLs())
