@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,6 +100,10 @@ type watcher struct {
 	controlCh chan watchControlResponse
 
 	metricCli metrics.Metrics
+
+	// Upstream samples one 0-10% progress interval jitter per Watch stream so
+	// clients that reconnect together do not retain a synchronized ticker phase.
+	progressInterval time.Duration
 }
 
 func (w *watcher) responseRevision() uint64 {
@@ -227,6 +232,17 @@ func validatedWatchBatchRevision(result etcdproxy.WatchResult, sourceRevision ui
 
 func newPeriodicProgressState() periodicProgressState {
 	return periodicProgressState{eligible: true}
+}
+
+func watchProgressIntervalWithJitter(interval time.Duration, jitterN func(int64) int64) time.Duration {
+	if interval <= 0 {
+		interval = time.Second
+	}
+	jitterLimit := interval / 10
+	if jitterLimit <= 0 {
+		return interval
+	}
+	return interval + time.Duration(jitterN(int64(jitterLimit)))
 }
 
 func (s *periodicProgressState) eventSent() {
@@ -395,6 +411,15 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 		}
 
 		if r := msg.GetCreateRequest(); r != nil {
+			if r.ProgressNotify && w.progressInterval <= 0 {
+				// Sample lazily: streams that fail in transport before creating a
+				// watch must not acquire a backend dependency merely for jitter.
+				// Every progress-enabled logical watch on this stream then reuses
+				// the same upstream-compatible interval.
+				w.progressInterval = watchProgressIntervalWithJitter(
+					s.backend.WatchProgressNotifyInterval(), rand.Int64N,
+				)
+			}
 			// Authorize the wire RangeEnd before normalizing its single-zero
 			// from-key sentinel to the internal empty-slice representation. The auth
 			// interval code distinguishes {0} (open-ended range) from nil/empty
@@ -1032,9 +1057,14 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 	var progressC <-chan time.Time
 	progressState := newPeriodicProgressState()
 	if r.ProgressNotify {
-		interval := w.backend.WatchProgressNotifyInterval()
+		interval := w.progressInterval
 		if interval <= 0 {
-			interval = time.Second
+			// Keep direct-constructed watchers (tests and internal adapters) safe;
+			// production Watch streams always carry the sampled stream interval.
+			interval = w.backend.WatchProgressNotifyInterval()
+			if interval <= 0 {
+				interval = time.Second
+			}
 		}
 		progressTicker = time.NewTicker(interval)
 		defer progressTicker.Stop()

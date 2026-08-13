@@ -1118,6 +1118,33 @@ func TestPeriodicProgressSuppressesOneTickAfterEvent(t *testing.T) {
 	require.True(t, state.tick())
 }
 
+func TestWatchProgressIntervalMatchesUpstreamJitterEnvelope(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval time.Duration
+		jitter   int64
+		want     time.Duration
+		wantN    int64
+	}{
+		{name: "default interval", interval: 0, jitter: 25_000_000, want: 1025 * time.Millisecond, wantN: int64(100 * time.Millisecond)},
+		{name: "zero jitter", interval: 2 * time.Second, jitter: 0, want: 2 * time.Second, wantN: int64(200 * time.Millisecond)},
+		{name: "upper edge exclusive", interval: time.Second, jitter: int64(100*time.Millisecond - time.Nanosecond), want: 1100*time.Millisecond - time.Nanosecond, wantN: int64(100 * time.Millisecond)},
+		{name: "sub-ten-nanosecond interval", interval: 9 * time.Nanosecond, want: 9 * time.Nanosecond},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			got := watchProgressIntervalWithJitter(tc.interval, func(n int64) int64 {
+				called = true
+				require.Equal(t, tc.wantN, n)
+				return tc.jitter
+			})
+			require.Equal(t, tc.want, got)
+			require.Equal(t, tc.wantN > 0, called)
+		})
+	}
+}
+
 func TestCancelCompactedWatchResponseUsesBackendCompactRevisionAndEmptyReason(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -48931,6 +48931,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `run-automatic-quota-differential.sh` 均要求 fill 严格大于各自 quota 且不超过 1,500,000 字节，在任何
   endpoint/dependency 操作前拒绝无效配置，避免把 request-size 失败误报成 quota 差距。
 
+- A4566 对照 `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 的
+  `GetProgressReportInterval`/`sendLoop`，修复大规模 Watch 重连后的周期 progress herd。upstream 为每条
+  Watch gRPC stream 采样一次 `[interval, interval+10%)` 随机 interval，同一流中所有逻辑 watcher 复用；
+  KubeBrain 原先让每个逻辑 watcher 使用完全相同的固定 ticker，批量重连会长期保持同相位并集中触发
+  marker/read/send 压力。现在 public stream 在首次创建 `ProgressNotify` watch 时惰性采样同样的 0–10%
+  抖动，并复用于该流后续 watcher；无 progress watch 或在首请求前 transport 失败的流不会为了 jitter
+  额外读取 backend。直接构造的内部/测试 watcher 保持安全零值 fallback。确定性测试固定默认 interval、
+  零抖动、上界 exclusive 和亚 10ns 边界；cadence/filter/progress 定向回归以及 `pkg/server/etcd` 全量
+  167.083 秒通过。该抖动只改变周期通知相位，不改变 on-demand RequestProgress、水位安全或事件后抑制语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
