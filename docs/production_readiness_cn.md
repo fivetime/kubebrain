@@ -2187,7 +2187,10 @@ durable receipt 不能仅凭文件非空收敛。镜像内 verifier 必须严格
 full-artifacts/manifest、target cluster/PD/store、admission 与 encryption key version；首次发布和 attempt 2 reconcile
 都必须通过。target-empty 参数与 executor 写前重扫使用不同 TSO 是正常的，但两者必须各自严格证明 whole
 transactional keyspace 空且物理目标 identity 相同。伪造或损坏 receipt 必须 Failed、保持 fence 且零二次 BR。
-2026-08-13 单副本 AES 真实链已验证 530 KV/107.1 kB；三副本 verifier 复跑因第三 TiKV 启动失败未形成新证据。
+source-exclusive 文件必须严格解码并与 plan 的 source/full snapshot/backup TSO/range evidence 逐项一致；admission
+必须属于 exact approved plan、目标 cluster 与 keyspace，初始 target-empty 文件 SHA 必须就是 plan 绑定的 receipt。
+2026-08-13 增强绑定后的单副本 AES 真实链再次验证 530 KV/107.1 kB；三副本 verifier 复跑因第三 TiKV 启动失败
+未形成新证据。
 
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable

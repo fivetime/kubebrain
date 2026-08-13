@@ -43,8 +43,11 @@ func TestFullRestoreOperationBindingRejectsDrift(t *testing.T) {
 	receipt.Encryption = plan.Full.Encryption
 	receipt.EncryptionKeyID = plan.Full.EncryptionKeyID
 	artifacts := ArtifactReceipt{ManifestSHA256: plan.Full.ArtifactManifestSHA}
-	binding := FullRestoreOperationBinding{PlanSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: plan.Full.ArtifactReceiptSHA256, RestoreAdmissionSHA256: digest, Encryption: plan.Full.Encryption, EncryptionKeyID: plan.Full.EncryptionKeyID}
-	require.NoError(t, VerifyFullRestoreOperationBinding(receipt, plan, artifacts, target, binding))
+	source := validSourceExclusive(t)
+	admission, _, err := BuildRestoreAdmissionReceipt(plan, digest, "restore-1", 9, false)
+	require.NoError(t, err)
+	binding := FullRestoreOperationBinding{PlanSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: plan.Full.ArtifactReceiptSHA256, TargetSnapshotSHA256: plan.Target.SnapshotEmptyReceiptSHA256, RestoreAdmissionSHA256: digest, Encryption: plan.Full.Encryption, EncryptionKeyID: plan.Full.EncryptionKeyID}
+	require.NoError(t, VerifyFullRestoreOperationBinding(receipt, plan, artifacts, source, target, admission, binding))
 
 	for _, edit := range []func(*FullRestoreExecutionReceipt){
 		func(r *FullRestoreExecutionReceipt) { r.PlanSHA256 = strings.Repeat("f", 64) },
@@ -60,6 +63,16 @@ func TestFullRestoreOperationBindingRejectsDrift(t *testing.T) {
 		drifted.PreWriteTarget.PDAddrs = append([]string(nil), receipt.PreWriteTarget.PDAddrs...)
 		drifted.PreWriteTarget.Stores = append([]TargetStore(nil), receipt.PreWriteTarget.Stores...)
 		edit(&drifted)
-		require.ErrorContains(t, VerifyFullRestoreOperationBinding(drifted, plan, artifacts, target, binding), "does not match")
+		require.ErrorContains(t, VerifyFullRestoreOperationBinding(drifted, plan, artifacts, source, target, admission, binding), "does not match")
 	}
+
+	driftedSource := source
+	driftedSource.ClusterID++
+	require.ErrorContains(t, VerifyFullRestoreOperationBinding(receipt, plan, artifacts, driftedSource, target, admission, binding), "source-exclusive cluster")
+	driftedAdmission := admission
+	driftedAdmission.TargetClusterID++
+	require.ErrorContains(t, VerifyFullRestoreOperationBinding(receipt, plan, artifacts, source, target, driftedAdmission, binding), "admission target cluster")
+	driftedBinding := binding
+	driftedBinding.TargetSnapshotSHA256 = strings.Repeat("f", 64)
+	require.ErrorContains(t, VerifyFullRestoreOperationBinding(receipt, plan, artifacts, source, target, admission, driftedBinding), "plan target-empty receipt")
 }

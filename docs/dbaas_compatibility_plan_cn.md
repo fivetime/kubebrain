@@ -48756,6 +48756,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两次均在演练开始前因第三 target TiKV status `21182` 未监听而退出，因此本项不新增三副本 verifier 证据；
   A4543–A4547 的三副本加密/故障证据不受影响。该项仍不解决 receipt 发布前 import crash 的 target rebuild。
 
+- A4551 封闭 A4550 verifier 的跨文件语义绑定缺口。`source-range-exclusive` 不再仅作为不透明字节取 SHA，
+  而是严格解码并逐项绑定 plan 的 source cluster/keyspace/range/full-snapshot receipt/backup TSO、可见范围外
+  key 计数、MVCC 声明和 PD endpoint 数；restore admission 进一步绑定 approved plan SHA、目标 cluster 与
+  keyspace。初始 target-empty 文件自身 SHA 也必须等于 plan 中的 exact receipt SHA，执行前重扫仍只要求与其
+  物理 target cluster/排序 PD/store identity 一致，不错误绑定不同扫描时刻的 TSO。负向单测覆盖 source cluster、
+  admission target 和 target receipt SHA 漂移；restore Operation 的 SIGKILL/伪造 receipt 定向套件与 vet 通过。
+  2026-08-13 单副本独立 source/target AES-256-CTR 实链再次恢复 530 KV/107.1 kB，并由增强后的 verifier 接受
+  真实证据链。全量 `hack/production` 基线另暴露 restore-cutover heartbeat fencing 测试超过 10 分钟；同时修正
+  restore executor 加入后仍将 worker RoleBinding subject 数硬编码为 12 的陈旧断言（实际 13）。前述 cutover
+  超时与本项 verifier 路径无关，不能据此宣称 production 全套通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

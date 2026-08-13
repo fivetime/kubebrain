@@ -71,6 +71,10 @@ func verify(o options) error {
 	if err != nil {
 		return err
 	}
+	source, err := nativepitr.DecodeSourceRangeExclusive(bytes.NewReader(sourceBytes))
+	if err != nil {
+		return err
+	}
 	targetBytes, err := readBounded(o.target)
 	if err != nil {
 		return err
@@ -83,16 +87,17 @@ func verify(o options) error {
 	if err != nil {
 		return err
 	}
-	if _, err := nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes)); err != nil {
+	admission, err := nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(admissionBytes))
+	if err != nil {
 		return err
 	}
 	planSHA := digest(planBytes)
 	if o.approve != planSHA {
 		return errors.New("approve-plan-sha256 does not match the exact plan")
 	}
-	return nativepitr.VerifyFullRestoreOperationBinding(receipt, plan, artifacts, target, nativepitr.FullRestoreOperationBinding{
+	return nativepitr.VerifyFullRestoreOperationBinding(receipt, plan, artifacts, source, target, admission, nativepitr.FullRestoreOperationBinding{
 		PlanSHA256: planSHA, SourceExclusiveSHA256: digest(sourceBytes), FullArtifactSHA256: digest(artifactsBytes),
-		RestoreAdmissionSHA256: digest(admissionBytes), Encryption: o.encryption, EncryptionKeyID: o.keyID,
+		TargetSnapshotSHA256: digest(targetBytes), RestoreAdmissionSHA256: digest(admissionBytes), Encryption: o.encryption, EncryptionKeyID: o.keyID,
 	})
 }
 

@@ -40,11 +40,11 @@ type FullRestoreExecutionReceipt struct {
 }
 
 type FullRestoreOperationBinding struct {
-	PlanSHA256, SourceExclusiveSHA256, FullArtifactSHA256, RestoreAdmissionSHA256 string
-	Encryption, EncryptionKeyID                                                   string
+	PlanSHA256, SourceExclusiveSHA256, FullArtifactSHA256, TargetSnapshotSHA256, RestoreAdmissionSHA256 string
+	Encryption, EncryptionKeyID                                                                         string
 }
 
-func VerifyFullRestoreOperationBinding(receipt FullRestoreExecutionReceipt, plan Plan, artifacts ArtifactReceipt, target TargetSnapshotEmptyReceipt, binding FullRestoreOperationBinding) error {
+func VerifyFullRestoreOperationBinding(receipt FullRestoreExecutionReceipt, plan Plan, artifacts ArtifactReceipt, source SourceRangeExclusiveReceipt, target TargetSnapshotEmptyReceipt, admission RestoreAdmissionReceipt, binding FullRestoreOperationBinding) error {
 	checks := []struct {
 		ok    bool
 		field string
@@ -54,12 +54,25 @@ func VerifyFullRestoreOperationBinding(receipt FullRestoreExecutionReceipt, plan
 		{receipt.FullArtifactSHA256 == binding.FullArtifactSHA256, "artifact receipt digest"},
 		{receipt.RestoreAdmissionSHA256 == binding.RestoreAdmissionSHA256, "admission digest"},
 		{receipt.ArtifactManifestSHA256 == artifacts.ManifestSHA256, "artifact manifest digest"},
+		{plan.Source.RangeExclusiveReceiptSHA256 == binding.SourceExclusiveSHA256, "plan source-exclusive receipt"},
+		{source.FullSnapshotReceiptSHA256 == plan.Full.ReceiptSHA256, "source-exclusive full snapshot"},
+		{source.ClusterID == plan.Source.ClusterID, "source-exclusive cluster"},
+		{source.Keyspace == plan.Source.Keyspace, "source-exclusive keyspace"},
+		{source.StartKeyHex == plan.Source.StartKeyHex && source.EndKeyHex == plan.Source.EndKeyHex, "source-exclusive range"},
+		{source.SnapshotTS == plan.Source.ExclusiveSnapshotTS, "source-exclusive snapshot TSO"},
+		{source.OutsideVisibleKeyCount == plan.Source.OutsideVisibleKeyCount, "source-exclusive visible key count"},
+		{source.HistoricalMVCCAbsenceProven == plan.Source.HistoricalMVCCAbsenceProven, "source-exclusive MVCC evidence"},
+		{len(source.PDAddrs) == plan.Source.PDAddressCount, "source-exclusive PD endpoint count"},
+		{plan.Target.SnapshotEmptyReceiptSHA256 == binding.TargetSnapshotSHA256, "plan target-empty receipt"},
 		{receipt.PreWriteTarget.ClusterID == target.ClusterID, "target cluster"},
 		{equalStrings(receipt.PreWriteTarget.PDAddrs, target.PDAddrs), "target PD endpoints"},
 		{equalTargetStores(receipt.PreWriteTarget.Stores, target.Stores), "target stores"},
 		{plan.Full.ArtifactReceiptSHA256 == receipt.FullArtifactSHA256, "plan artifact receipt"},
 		{plan.Full.ArtifactManifestSHA == receipt.ArtifactManifestSHA256, "plan artifact manifest"},
 		{plan.Target.ClusterID == receipt.PreWriteTarget.ClusterID, "plan target cluster"},
+		{admission.PlanSHA256 == binding.PlanSHA256, "admission plan digest"},
+		{admission.TargetClusterID == plan.Target.ClusterID, "admission target cluster"},
+		{admission.Keyspace == plan.Source.Keyspace, "admission keyspace"},
 		{receipt.Encryption == binding.Encryption, "receipt encryption method"},
 		{receipt.EncryptionKeyID == binding.EncryptionKeyID, "receipt encryption key ID"},
 		{plan.Full.Encryption == binding.Encryption, "plan encryption method"},
