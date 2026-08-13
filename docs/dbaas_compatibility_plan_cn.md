@@ -48835,6 +48835,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail closed；Go、queue/broker/audit、admission/RBAC manifest 测试通过。仍需在真实 TiDB Operator、CSI provisioner 和多可用区
   集群演练 defaulting/finalizer/调度/卷供应，并证明 provider 不会用不同 volumeHandle 指向同一底层快照或克隆。
 
+- A4557 消除 A4556 的 create 成功、creation receipt 尚未落盘歧义。server-side dry-run 现在先发布独立、O_EXCL+fsync
+  的 `target-provision-dry-run.v1` receipt，摘要绑定 authorization、manifest、namespace/name 和 admission 后
+  labels/annotations/spec；只有该 durable receipt 验证通过才允许真实 create。creation receipt 再绑定 dry-run receipt SHA
+  和同一 admitted identity。若进程在 create 后崩溃，第二 claim 读取现存 TidbCluster，要求 namespace/name、全规范摘要、
+  manifest nonce 都与 durable dry-run 完全一致且 UID 不等于退役 UID，随后仅重建本地 creation receipt，不重复 create；若
+  崩溃发生在 dry-run receipt 后、create 前，则确认同名对象/PVC 仍不存在后安全执行一次 create。没有 durable dry-run 的
+  同名对象继续 fail closed。新增目标 CREATE admission：凡携带 native PITR provisioning annotation，或由 provisioning SA
+  发起的 TidbCluster，只允许 dedicated executor、固定 `tidb-cluster/kb`、Retain、PD/TiKV-only 正 topology/storage，禁止
+  paused/initializer/bootstrap 和所有 SQL/复制组件。fake API 测试覆盖两个崩溃边界、零重复 create、摘要漂移拒绝；真实 API
+  Server/webhook/Operator 重启与 CSI 异步 PVC 创建竞态仍需预生产演练。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

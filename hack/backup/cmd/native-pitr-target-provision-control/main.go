@@ -15,13 +15,13 @@ import (
 )
 
 type options struct {
-	mode, retirement, oldProvisioning, newProvisioning, manifest                       string
-	authorization, dryRunObject, createdObject, currentObject, output, authorizationID string
+	mode, retirement, oldProvisioning, newProvisioning, manifest                                      string
+	authorization, dryRunObject, dryRunReceipt, createdObject, currentObject, output, authorizationID string
 }
 
 func main() {
 	var o options
-	flag.StringVar(&o.mode, "mode", "", "authorize, verify-authorization, record-creation, verify-current, or verify-completion")
+	flag.StringVar(&o.mode, "mode", "", "authorize, verify-authorization, record-dry-run, record-creation, verify-current, or verify-completion")
 	flag.StringVar(&o.retirement, "retirement", "", "old target retirement receipt")
 	flag.StringVar(&o.oldProvisioning, "old-target-provisioning", "", "old target provisioning receipt")
 	flag.StringVar(&o.newProvisioning, "new-target-provisioning", "", "new target provisioning receipt")
@@ -29,6 +29,7 @@ func main() {
 	flag.StringVar(&o.authorization, "authorization", "", "target provision authorization")
 	flag.StringVar(&o.createdObject, "created-object", "", "creation receipt or Kubernetes create response")
 	flag.StringVar(&o.dryRunObject, "dry-run-object", "", "Kubernetes server-side dry-run response")
+	flag.StringVar(&o.dryRunReceipt, "dry-run-receipt", "", "durable server-side dry-run receipt")
 	flag.StringVar(&o.currentObject, "current-object", "", "current Kubernetes object")
 	flag.StringVar(&o.authorizationID, "authorization-id", "", "operation-scoped authorization ID")
 	flag.StringVar(&o.output, "output", "", "exclusive durable output")
@@ -47,6 +48,10 @@ func run(o options, now int64) error {
 		return verifyAuthorization(o)
 	case "record-creation":
 		return recordCreation(o, now)
+	case "record-dry-run":
+		return recordDryRun(o, now)
+	case "verify-dry-run":
+		return verifyDryRun(o)
 	case "verify-current":
 		return verifyCurrent(o)
 	case "verify-completion":
@@ -54,6 +59,60 @@ func run(o options, now int64) error {
 	default:
 		return errors.New("invalid mode")
 	}
+}
+
+func verifyDryRun(o options) error {
+	if o.authorization == "" || o.dryRunReceipt == "" {
+		return errors.New("authorization and server dry-run receipt are required")
+	}
+	authBytes, err := read(o.authorization)
+	if err != nil {
+		return err
+	}
+	a, err := nativepitr.DecodeTargetProvisionAuthorization(bytes.NewReader(authBytes))
+	if err != nil {
+		return err
+	}
+	dryRunBytes, err := read(o.dryRunReceipt)
+	if err != nil {
+		return err
+	}
+	dryRun, err := nativepitr.DecodeTargetProvisionDryRunReceipt(bytes.NewReader(dryRunBytes))
+	if err != nil {
+		return err
+	}
+	return nativepitr.VerifyTargetProvisionDryRunReceipt(a, dryRun, digest(authBytes))
+}
+
+func recordDryRun(o options, now int64) error {
+	if o.authorization == "" || o.dryRunObject == "" || o.output == "" {
+		return errors.New("authorization, server dry-run object, and output are required")
+	}
+	authBytes, err := read(o.authorization)
+	if err != nil {
+		return err
+	}
+	a, err := nativepitr.DecodeTargetProvisionAuthorization(bytes.NewReader(authBytes))
+	if err != nil {
+		return err
+	}
+	objectBytes, err := read(o.dryRunObject)
+	if err != nil {
+		return err
+	}
+	object, err := nativepitr.DecodeAdmittedTidbCluster(bytes.NewReader(objectBytes))
+	if err != nil {
+		return err
+	}
+	r, err := nativepitr.BuildTargetProvisionDryRunReceipt(a, digest(authBytes), object, now)
+	if err != nil {
+		return err
+	}
+	_, data, err := nativepitr.DigestCanonicalJSON(r)
+	if err != nil {
+		return err
+	}
+	return writeExclusive(o.output, data)
 }
 
 func verifyAuthorization(o options) error {
@@ -142,8 +201,8 @@ func authorize(o options, now int64) error {
 }
 
 func recordCreation(o options, now int64) error {
-	if o.authorization == "" || o.dryRunObject == "" || o.createdObject == "" || o.output == "" {
-		return errors.New("authorization, server dry-run object, created object, and output are required")
+	if o.authorization == "" || o.dryRunReceipt == "" || o.createdObject == "" || o.output == "" {
+		return errors.New("authorization, server dry-run receipt, created object, and output are required")
 	}
 	authBytes, err := read(o.authorization)
 	if err != nil {
@@ -161,11 +220,11 @@ func recordCreation(o options, now int64) error {
 	if err != nil {
 		return err
 	}
-	dryRunBytes, err := read(o.dryRunObject)
+	dryRunBytes, err := read(o.dryRunReceipt)
 	if err != nil {
 		return err
 	}
-	dryRunObject, err := nativepitr.DecodeAdmittedTidbCluster(bytes.NewReader(dryRunBytes))
+	dryRun, err := nativepitr.DecodeTargetProvisionDryRunReceipt(bytes.NewReader(dryRunBytes))
 	if err != nil {
 		return err
 	}
@@ -176,21 +235,17 @@ func recordCreation(o options, now int64) error {
 	if err != nil {
 		return err
 	}
-	dryRunIdentitySHA, err := nativepitr.AdmittedTidbClusterIdentitySHA256(dryRunObject)
-	if err != nil {
-		return err
-	}
-	if identitySHA != dryRunIdentitySHA {
+	if identitySHA != dryRun.AdmittedIdentitySHA256 {
 		return errors.New("created TidbCluster differs from its exact server dry-run admission")
 	}
 	r := nativepitr.TargetProvisionCreationReceipt{
 		Format: nativepitr.TargetProvisionCreationFormat, AuthorizationSHA256: digest(authBytes),
-		ManifestSHA256: a.ManifestSHA256, Namespace: object.Metadata.Namespace,
+		ManifestSHA256: a.ManifestSHA256, DryRunReceiptSHA256: digest(dryRunBytes), Namespace: object.Metadata.Namespace,
 		TidbCluster: object.Metadata.Name, TidbClusterUID: object.Metadata.UID,
 		ResourceVersion: object.Metadata.ResourceVersion, AdmittedIdentitySHA256: identitySHA,
 		CreatedAtUnix: now, ServerDryRunPassed: true,
 	}
-	r, err = nativepitr.BuildTargetProvisionCreationReceipt(a, digest(authBytes), r)
+	r, err = nativepitr.BuildTargetProvisionCreationReceipt(a, dryRun, digest(authBytes), digest(dryRunBytes), r)
 	if err != nil {
 		return err
 	}

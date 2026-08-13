@@ -37,7 +37,7 @@ printf receipt >"$PROVISIONING_OUTPUT"; printf auth >"$AUTHORIZATION_OUTPUT"; pr
 	require.Contains(t, string(mustReadProductionFile(t, filepath.Join(dir, "log"))), "--action succeed")
 }
 
-func TestNativePITRTargetProvisioningSecondAttemptFailsWithoutCreationReceipt(t *testing.T) {
+func TestNativePITRTargetProvisioningSecondAttemptDelegatesDurableDryRunRecovery(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"retirement.json", "old.json", "manifest.json"} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(name), 0o600))
@@ -51,8 +51,13 @@ func TestNativePITRTargetProvisioningSecondAttemptFailsWithoutCreationReceipt(t 
 	writeExecutable(t, operationctl, fmt.Sprintf(`#!/usr/bin/env bash
 if [[ "$*" == *"--action claim"* ]];then printf '%%s\n' '{"name":"native-pitr-provision-%s","operation_id":"native-pitr-provision-%s","instance":"kubebrain","type":"NativePITRTargetProvisioning","requested_by":"platform:native-pitr-target-provisioning","attempt":2,"parameters_sha256":"%s"}';fi
 `, digest[:20], digest[:20], digest))
-	_, err := runProductionScriptCommand(t, "run-native-pitr-target-provisioning-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "PROVISION=/bin/false"})
-	require.Error(t, err)
+	provision := filepath.Join(dir, "provision")
+	writeExecutable(t, provision, `#!/usr/bin/env bash
+set -euo pipefail
+printf receipt >"$PROVISIONING_OUTPUT"; printf creation >"$CREATION_OUTPUT"; printf dry-run >"$DRY_RUN_OUTPUT"
+`)
+	_, err := runProductionScriptCommand(t, "run-native-pitr-target-provisioning-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "PROVISION=" + provision})
+	require.NoError(t, err)
 }
 
 func TestRequestNativePITRTargetProvisioningIsApprovalBound(t *testing.T) {

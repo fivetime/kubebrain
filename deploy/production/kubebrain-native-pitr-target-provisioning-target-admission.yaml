@@ -1,0 +1,36 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-native-pitr-target-provisioning-create}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [pingcap.com], apiVersions: [v1alpha1], operations: [CREATE], resources: [tidbclusters], scope: Namespaced}
+  matchConditions:
+    - name: native-pitr-target-provisioning-scope
+      expression: |
+        request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-provisioning-executor" ||
+        (has(object.metadata.annotations) && "dbaas.kubebrain.io/native-pitr-provision-authorization" in object.metadata.annotations)
+  validations:
+    - expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-provisioning-executor"'
+      message: native PITR replacement targets require the dedicated provisioning executor
+    - expression: 'object.metadata.namespace == "tidb-cluster" && object.metadata.name == "kb"'
+      message: native PITR replacement target identity is fixed
+    - expression: |
+        has(object.metadata.labels) && object.metadata.labels["app.kubernetes.io/name"] == "tidb-cluster" &&
+        object.metadata.labels["app.kubernetes.io/instance"] == object.metadata.name &&
+        has(object.metadata.annotations) &&
+        object.metadata.annotations["dbaas.kubebrain.io/native-pitr-provision-authorization"].matches("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+      message: native PITR replacement target ownership and authorization nonce are required
+    - expression: |
+        object.spec.pvReclaimPolicy == "Retain" && object.spec.pd.replicas > 0 && object.spec.tikv.replicas > 0 &&
+        object.spec.pd.requests.storage != "" && object.spec.tikv.requests.storage != "" &&
+        !has(object.spec.paused) && !has(object.spec.initializer) && !has(object.spec.bootstrapSQLConfigMapName) &&
+        !has(object.spec.tidb) && !has(object.spec.tiflash) && !has(object.spec.ticdc) && !has(object.spec.pump) &&
+        !has(object.spec.binlog) && !has(object.spec.dm)
+      message: native PITR replacement target is restricted to retained PD and TiKV storage
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-native-pitr-target-provisioning-create}
+spec: {policyName: kubebrain-native-pitr-target-provisioning-create, validationActions: [Deny]}

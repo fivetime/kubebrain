@@ -11,6 +11,7 @@ import (
 )
 
 const TargetProvisionAuthorizationFormat = "kubebrain.native-pitr-target-provision-authorization.v1"
+const TargetProvisionDryRunFormat = "kubebrain.native-pitr-target-provision-dry-run.v1"
 const TargetProvisionCreationFormat = "kubebrain.native-pitr-target-provision-creation.v1"
 
 type ReplacementTidbClusterManifest struct {
@@ -45,12 +46,24 @@ type TargetProvisionCreationReceipt struct {
 	Format                 string `json:"format"`
 	AuthorizationSHA256    string `json:"authorization_sha256"`
 	ManifestSHA256         string `json:"manifest_sha256"`
+	DryRunReceiptSHA256    string `json:"dry_run_receipt_sha256"`
 	Namespace              string `json:"namespace"`
 	TidbCluster            string `json:"tidb_cluster"`
 	TidbClusterUID         string `json:"tidb_cluster_uid"`
 	ResourceVersion        string `json:"resource_version"`
 	AdmittedIdentitySHA256 string `json:"admitted_identity_sha256"`
 	CreatedAtUnix          int64  `json:"created_at_unix"`
+	ServerDryRunPassed     bool   `json:"server_dry_run_passed"`
+}
+
+type TargetProvisionDryRunReceipt struct {
+	Format                 string `json:"format"`
+	AuthorizationSHA256    string `json:"authorization_sha256"`
+	ManifestSHA256         string `json:"manifest_sha256"`
+	Namespace              string `json:"namespace"`
+	TidbCluster            string `json:"tidb_cluster"`
+	AdmittedIdentitySHA256 string `json:"admitted_identity_sha256"`
+	DryRunAtUnix           int64  `json:"dry_run_at_unix"`
 	ServerDryRunPassed     bool   `json:"server_dry_run_passed"`
 }
 
@@ -155,8 +168,15 @@ func (a TargetProvisionAuthorization) Validate() error {
 	return nil
 }
 func (r TargetProvisionCreationReceipt) Validate() error {
-	if r.Format != TargetProvisionCreationFormat || !sha256RE.MatchString(r.AuthorizationSHA256) || !sha256RE.MatchString(r.ManifestSHA256) || !sha256RE.MatchString(r.AdmittedIdentitySHA256) || !dnsLabel.MatchString(r.Namespace) || !dnsLabel.MatchString(r.TidbCluster) || !kubernetesUIDRE.MatchString(r.TidbClusterUID) || r.ResourceVersion == "" || r.CreatedAtUnix <= 0 || !r.ServerDryRunPassed {
+	if r.Format != TargetProvisionCreationFormat || !sha256RE.MatchString(r.AuthorizationSHA256) || !sha256RE.MatchString(r.ManifestSHA256) || !sha256RE.MatchString(r.DryRunReceiptSHA256) || !sha256RE.MatchString(r.AdmittedIdentitySHA256) || !dnsLabel.MatchString(r.Namespace) || !dnsLabel.MatchString(r.TidbCluster) || !kubernetesUIDRE.MatchString(r.TidbClusterUID) || r.ResourceVersion == "" || r.CreatedAtUnix <= 0 || !r.ServerDryRunPassed {
 		return errors.New("invalid target provision creation receipt")
+	}
+	return nil
+}
+
+func (r TargetProvisionDryRunReceipt) Validate() error {
+	if r.Format != TargetProvisionDryRunFormat || !sha256RE.MatchString(r.AuthorizationSHA256) || !sha256RE.MatchString(r.ManifestSHA256) || !dnsLabel.MatchString(r.Namespace) || !dnsLabel.MatchString(r.TidbCluster) || !sha256RE.MatchString(r.AdmittedIdentitySHA256) || r.DryRunAtUnix <= 0 || !r.ServerDryRunPassed {
+		return errors.New("invalid target provision server dry-run receipt")
 	}
 	return nil
 }
@@ -196,6 +216,34 @@ func AdmittedTidbClusterIdentitySHA256(object AdmittedTidbCluster) (string, erro
 	return digest, err
 }
 
+func BuildTargetProvisionDryRunReceipt(a TargetProvisionAuthorization, authorizationSHA string, object AdmittedTidbCluster, at int64) (TargetProvisionDryRunReceipt, error) {
+	if err := a.Validate(); err != nil {
+		return TargetProvisionDryRunReceipt{}, err
+	}
+	digest, err := AdmittedTidbClusterIdentitySHA256(object)
+	if err != nil {
+		return TargetProvisionDryRunReceipt{}, err
+	}
+	r := TargetProvisionDryRunReceipt{Format: TargetProvisionDryRunFormat, AuthorizationSHA256: authorizationSHA, ManifestSHA256: a.ManifestSHA256, Namespace: object.Metadata.Namespace, TidbCluster: object.Metadata.Name, AdmittedIdentitySHA256: digest, DryRunAtUnix: at, ServerDryRunPassed: true}
+	if r.AuthorizationSHA256 != authorizationSHA || object.Metadata.Namespace != a.Namespace || object.Metadata.Name != a.TidbCluster || object.Metadata.Annotations["dbaas.kubebrain.io/native-pitr-provision-authorization"] != a.ManifestAuthorizationID || at < a.AuthorizedAtUnix {
+		return TargetProvisionDryRunReceipt{}, errors.New("server dry-run does not bind the exact target provision authorization")
+	}
+	return r, r.Validate()
+}
+
+func VerifyTargetProvisionDryRunReceipt(a TargetProvisionAuthorization, dryRun TargetProvisionDryRunReceipt, authorizationSHA string) error {
+	if err := a.Validate(); err != nil {
+		return err
+	}
+	if err := dryRun.Validate(); err != nil {
+		return err
+	}
+	if dryRun.AuthorizationSHA256 != authorizationSHA || dryRun.ManifestSHA256 != a.ManifestSHA256 || dryRun.Namespace != a.Namespace || dryRun.TidbCluster != a.TidbCluster || dryRun.DryRunAtUnix < a.AuthorizedAtUnix {
+		return errors.New("target provision dry-run receipt does not bind the exact authorization")
+	}
+	return nil
+}
+
 func VerifyCurrentTargetProvisioningObject(a TargetProvisionAuthorization, creation TargetProvisionCreationReceipt, object AdmittedTidbCluster, authorizationSHA string) error {
 	if err := a.Validate(); err != nil {
 		return err
@@ -212,11 +260,14 @@ func VerifyCurrentTargetProvisioningObject(a TargetProvisionAuthorization, creat
 	}
 	return nil
 }
-func BuildTargetProvisionCreationReceipt(a TargetProvisionAuthorization, authorizationSHA string, r TargetProvisionCreationReceipt) (TargetProvisionCreationReceipt, error) {
+func BuildTargetProvisionCreationReceipt(a TargetProvisionAuthorization, dryRun TargetProvisionDryRunReceipt, authorizationSHA, dryRunSHA string, r TargetProvisionCreationReceipt) (TargetProvisionCreationReceipt, error) {
 	if err := a.Validate(); err != nil {
 		return r, err
 	}
-	if r.AuthorizationSHA256 != authorizationSHA || r.ManifestSHA256 != a.ManifestSHA256 || r.Namespace != a.Namespace || r.TidbCluster != a.TidbCluster || r.TidbClusterUID == a.OldTidbClusterUID || r.CreatedAtUnix < a.AuthorizedAtUnix {
+	if err := VerifyTargetProvisionDryRunReceipt(a, dryRun, authorizationSHA); err != nil {
+		return r, err
+	}
+	if r.AuthorizationSHA256 != authorizationSHA || r.ManifestSHA256 != a.ManifestSHA256 || r.DryRunReceiptSHA256 != dryRunSHA || r.AdmittedIdentitySHA256 != dryRun.AdmittedIdentitySHA256 || r.Namespace != a.Namespace || r.TidbCluster != a.TidbCluster || r.TidbClusterUID == a.OldTidbClusterUID || r.CreatedAtUnix < dryRun.DryRunAtUnix || !sha256RE.MatchString(dryRunSHA) {
 		return r, errors.New("target provision creation does not bind the exact authorization or distinct UID")
 	}
 	return r, r.Validate()
@@ -271,6 +322,18 @@ func DecodeTargetProvisionCreationReceipt(reader io.Reader) (TargetProvisionCrea
 	}
 	if err := requireEOF(dec); err != nil {
 		return r, errors.New("target provision creation receipt contains trailing JSON")
+	}
+	return r, r.Validate()
+}
+func DecodeTargetProvisionDryRunReceipt(reader io.Reader) (TargetProvisionDryRunReceipt, error) {
+	var r TargetProvisionDryRunReceipt
+	dec := json.NewDecoder(reader)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&r); err != nil {
+		return r, err
+	}
+	if err := requireEOF(dec); err != nil {
+		return r, errors.New("target provision dry-run receipt contains trailing JSON")
 	}
 	return r, r.Validate()
 }

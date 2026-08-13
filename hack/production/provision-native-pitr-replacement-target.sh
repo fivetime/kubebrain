@@ -2,11 +2,11 @@
 set -euo pipefail
 
 RETIREMENT="${RETIREMENT:-}"; OLD_PROVISIONING="${OLD_PROVISIONING:-}"; MANIFEST="${MANIFEST:-}"; AUTHORIZATION_ID="${AUTHORIZATION_ID:-}"
-AUTHORIZATION_OUTPUT="${AUTHORIZATION_OUTPUT:-}"; CREATION_OUTPUT="${CREATION_OUTPUT:-}"; PROVISIONING_OUTPUT="${PROVISIONING_OUTPUT:-}"
+AUTHORIZATION_OUTPUT="${AUTHORIZATION_OUTPUT:-}"; DRY_RUN_OUTPUT="${DRY_RUN_OUTPUT:-}"; CREATION_OUTPUT="${CREATION_OUTPUT:-}"; PROVISIONING_OUTPUT="${PROVISIONING_OUTPUT:-}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-}"; KUBECTL="${KUBECTL:-kubectl}"; JQ="${JQ:-jq}"; CONTROL="${CONTROL:-kubebrain-native-pitr-target-provision-control}"
 INSPECT="${INSPECT:-/opt/kubebrain/hack/production/inspect-native-pitr-target-provisioning.sh}"; WAIT_TIMEOUT="${WAIT_TIMEOUT:-20m}"
 die(){ echo "$*" >&2; exit 1; }; resolve(){ [[ "$1" == */* ]]&&{ [[ -x "$1" ]]&&printf %s "$1"; }||command -v "$1"; }
-for value in "$RETIREMENT" "$OLD_PROVISIONING" "$MANIFEST" "$AUTHORIZATION_ID" "$AUTHORIZATION_OUTPUT" "$CREATION_OUTPUT" "$PROVISIONING_OUTPUT" "$KUBE_CONTEXT";do [[ -n "$value" ]]||die "all replacement target evidence, outputs, authorization ID, and KUBE_CONTEXT are required";done
+for value in "$RETIREMENT" "$OLD_PROVISIONING" "$MANIFEST" "$AUTHORIZATION_ID" "$AUTHORIZATION_OUTPUT" "$DRY_RUN_OUTPUT" "$CREATION_OUTPUT" "$PROVISIONING_OUTPUT" "$KUBE_CONTEXT";do [[ -n "$value" ]]||die "all replacement target evidence, outputs, authorization ID, and KUBE_CONTEXT are required";done
 KUBECTL="$(resolve "$KUBECTL")"||die "kubectl is unavailable"
 JQ="$(resolve "$JQ")"||die "jq is unavailable"
 CONTROL="$(resolve "$CONTROL")"||die "target provision control is unavailable"
@@ -22,11 +22,20 @@ if [[ -e "$CREATION_OUTPUT" ]];then
   printf '%s\n' "$current" >"$temp/current.json"
   "$CONTROL" --mode=verify-current --authorization="$AUTHORIZATION_OUTPUT" --created-object="$CREATION_OUTPUT" --current-object="$temp/current.json"||die "replacement TidbCluster identity drifted after creation"
 else
-  [[ -z "$current" ]]||die "replacement TidbCluster name exists without a durable creation receipt"
-  pvc_count="$(kctl -n "$namespace" get pvc -l "app.kubernetes.io/instance=$cluster" -o json|"$JQ" -er '.items|length')"||die "cannot inspect replacement PVC collision";[[ "$pvc_count" == 0 ]]||die "replacement target has pre-existing PVC names"
-  kctl create --dry-run=server -f "$MANIFEST" -o json >"$temp/dry-run.json"||die "replacement TidbCluster server dry-run failed"
-  kctl create -f "$MANIFEST" -o json >"$temp/created.json"||die "replacement TidbCluster create failed"
-  "$CONTROL" --mode=record-creation --authorization="$AUTHORIZATION_OUTPUT" --dry-run-object="$temp/dry-run.json" --created-object="$temp/created.json" --output="$CREATION_OUTPUT"
+  if [[ ! -e "$DRY_RUN_OUTPUT" ]];then
+    [[ -z "$current" ]]||die "replacement TidbCluster exists without durable dry-run evidence"
+    pvc_count="$(kctl -n "$namespace" get pvc -l "app.kubernetes.io/instance=$cluster" -o json|"$JQ" -er '.items|length')"||die "cannot inspect replacement PVC collision";[[ "$pvc_count" == 0 ]]||die "replacement target has pre-existing PVC names"
+    kctl create --dry-run=server -f "$MANIFEST" -o json >"$temp/dry-run.json"||die "replacement TidbCluster server dry-run failed"
+    "$CONTROL" --mode=record-dry-run --authorization="$AUTHORIZATION_OUTPUT" --dry-run-object="$temp/dry-run.json" --output="$DRY_RUN_OUTPUT"
+  fi
+  "$CONTROL" --mode=verify-dry-run --authorization="$AUTHORIZATION_OUTPUT" --dry-run-receipt="$DRY_RUN_OUTPUT"||die "durable server dry-run evidence drifted"
+  if [[ -n "$current" ]];then
+    printf '%s\n' "$current" >"$temp/created.json"
+  else
+    pvc_count="$(kctl -n "$namespace" get pvc -l "app.kubernetes.io/instance=$cluster" -o json|"$JQ" -er '.items|length')"||die "cannot inspect replacement PVC collision";[[ "$pvc_count" == 0 ]]||die "replacement target has pre-existing PVC names"
+    kctl create -f "$MANIFEST" -o json >"$temp/created.json"||die "replacement TidbCluster create failed"
+  fi
+  "$CONTROL" --mode=record-creation --authorization="$AUTHORIZATION_OUTPUT" --dry-run-receipt="$DRY_RUN_OUTPUT" --created-object="$temp/created.json" --output="$CREATION_OUTPUT"
 fi
 kctl -n "$namespace" wait --for=condition=Ready "tidbcluster/$cluster" --timeout="$WAIT_TIMEOUT" >/dev/null||die "replacement TidbCluster did not become Ready"
 if [[ ! -e "$PROVISIONING_OUTPUT" ]];then KUBE_CONTEXT="$KUBE_CONTEXT" TIDB_NAMESPACE="$namespace" TIDB_CLUSTER="$cluster" OUTPUT="$PROVISIONING_OUTPUT" KUBECTL="$KUBECTL" "$INSPECT";fi
