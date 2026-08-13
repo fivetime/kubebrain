@@ -73,6 +73,7 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	require.Contains(t, plan, "A4535 关闭 A4534 明确保留的 native PITR full backup 控制面编排缺口")
 	require.Contains(t, plan, "共同支持 `NativePITRFullBackup`")
 	require.Contains(t, plan, "A4536 关闭 A4535 executor 要求 `<operation>-parameters`")
+	require.Contains(t, plan, "A4537 关闭 A4536 仍要求操作者手工计算摘要")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

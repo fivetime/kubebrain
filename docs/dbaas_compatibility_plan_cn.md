@@ -48589,6 +48589,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   依赖 admission。清单与行为回归覆盖 RBAC 最小权限、policy scope/binding、成功链、伪造名称拒绝、额外参数
   拒绝、fencing 及执行后 terminal failure；runbook 给出 exact Secret/operation 提交命令。
 
+- A4537 关闭 A4536 仍要求操作者手工计算摘要并分别创建 Secret/operation、在格式差异、部分失败或重试时
+  容易产生不可恢复双写漂移的提交缺口。新增受审 `request-native-pitr-full-backup.sh` producer：只接受 exact
+  `backup_ts`/`pd_addrs`/`storage_prefix` schema，拒绝越界 TSO/端口、重复 PD endpoint、空 bucket/prefix 及带
+  凭据/query/fragment 的 S3 prefix，
+  排序对象 key 与 endpoint 后生成 canonical JSON，并以其 SHA-256 唯一派生 Secret/operation 身份。producer
+  创建 immutable Opaque 单 key Secret；重试时只复用类型、immutable 属性和内容摘要均完全一致的 Secret，任何
+  漂移均在 operation 提交前 fail closed。Secret 已创建而 queue submit 失败的孤儿状态可由同参数重跑恢复；
+  queue 对同名 fixed spec 幂等 reconcile，因此不会产生第二个备份身份。行为回归覆盖 canonical identity、等价
+  输入重试、不可变 Secret 复用、内容漂移、危险 S3/额外字段/非法 timestamp/重复 endpoint 拒绝，runbook 不再
+  暴露容易出错的手工双写流程。该 producer 随默认受审运维镜像交付，并必须使用 A4536 专属 requester 上下文。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

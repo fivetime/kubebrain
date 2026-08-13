@@ -2022,28 +2022,21 @@ kubectl apply -f deploy/production/kubebrain-native-pitr-full-backup-requester-a
 kubectl apply -f deploy/production/kubebrain-native-pitr-full-backup-requester-rbac.yaml
 ```
 
-以该专属 ServiceAccount 的认证上下文创建请求；operation 名称精确取参数文件 SHA-256 前 20 位，Secret
-必须为 immutable 且只能包含一个 data key。以下命令中的参数文件字节必须与计算摘要的文件完全相同：
+以该专属 ServiceAccount 的认证上下文运行受审 requester。requester 先把 exact schema 规范化为排序的
+canonical JSON（包括 PD endpoint 去重校验和排序），再以规范化字节 SHA-256 前 20 位派生 operation 名称；
+Secret 必须为 immutable 且只能包含一个 data key：
 
 ```shell
-PARAMETERS_SHA256="$(sha256sum parameters.json | cut -d ' ' -f1)"
-OPERATION_NAME="native-pitr-full-${PARAMETERS_SHA256:0:20}"
-PARAMETERS_B64="$(base64 -w0 parameters.json)"
-kubectl create -f - <<EOF
-apiVersion: v1
-kind: Secret
-metadata: {name: ${OPERATION_NAME}-parameters, namespace: kubebrain-operations}
-type: Opaque
-immutable: true
-data: {parameters.json: ${PARAMETERS_B64}}
-EOF
-kubebrain-operationctl --action submit --namespace kubebrain-operations \
-  --name "$OPERATION_NAME" --operation-id "$OPERATION_NAME" \
-  --instance kubebrain --type NativePITRFullBackup \
-  --requested-by platform:native-pitr-full-backup --max-attempts 1 \
-  --parameters-sha256 "$PARAMETERS_SHA256" \
-  --parameters-secret "${OPERATION_NAME}-parameters" --parameters-key parameters.json
+PARAMETERS_FILE=parameters.json \
+KUBE_CONTEXT=native-pitr-full-backup-requester \
+/opt/kubebrain/hack/production/request-native-pitr-full-backup.sh
 ```
+
+脚本只接受固定 namespace/type/requester/instance/maxAttempts，禁止带 userinfo、query 或 fragment 的 S3
+prefix。相同语义的 JSON（空白、对象 key 或 PD endpoint 顺序不同）映射到同一 operation；重复提交会先验证
+已有 Secret 仍为相同摘要的 immutable Opaque 单 key，再让 operation queue 对固定 spec 做幂等 reconcile。
+若首次在 Secret 创建后提交 operation 失败，重跑可安全续提；若同名 Secret 内容、类型或 immutable 属性漂移，
+则在调用 operationctl 前 fail closed。并发首次创建发生冲突时不覆盖 Secret，由调用方重跑进入上述验证路径。
 
 Admission 同时拦截其他身份创建该 type、requester 创建其他 type、名称与摘要前缀不一致、可变/多 key
 Secret、错误 namespace/requester/instance/maxAttempts 或未绑定 Secret 的请求。requester RBAC 没有 list/watch、
