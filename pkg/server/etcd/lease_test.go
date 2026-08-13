@@ -21,6 +21,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -539,6 +540,65 @@ func TestLeaseGrantCleanupDoesNotDeleteMetadataAfterCorruptActivation(t *testing
 	require.NoError(t, server.deleteLeaseState(ctx, leaseID))
 	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
+func TestLeaseAttachmentRepairStopsWhileCorruptAlarmIsActive(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		key      = "/registry/events/ns/corrupt-attachment"
+		oldLease = int64(4506001)
+		newLease = int64(4506002)
+		memberID = uint64(4506001)
+	)
+	attachmentKey := leaseAttachKey(key)
+	require.NoError(t, server.backend.InternalPut(ctx, attachmentKey, []byte(strconv.FormatInt(oldLease, 10))))
+	require.NoError(t, server.backend.ArmCorrupt(ctx, memberID))
+
+	err := server.attachKeyToStorage(ctx, newLease, key)
+	require.ErrorIs(t, err, backend.ErrCorruptAlarmActive)
+	stored, err := server.backend.InternalGet(ctx, attachmentKey)
+	require.NoError(t, err)
+	require.Equal(t, []byte(strconv.FormatInt(oldLease, 10)), stored,
+		"repair ordered after CORRUPT must not rebind the attachment")
+
+	err = server.detachKeyFromStorage(ctx, key)
+	require.ErrorIs(t, err, backend.ErrCorruptAlarmActive)
+	stored, err = server.backend.InternalGet(ctx, attachmentKey)
+	require.NoError(t, err)
+	require.Equal(t, []byte(strconv.FormatInt(oldLease, 10)), stored,
+		"repair ordered after CORRUPT must not remove the attachment")
+
+	removed, err := server.backend.DisarmCorrupt(ctx, memberID)
+	require.NoError(t, err)
+	require.True(t, removed)
+	require.NoError(t, server.attachKeyToStorage(ctx, newLease, key))
+	require.NoError(t, server.detachKeyFromStorage(ctx, key))
+	_, err = server.backend.InternalGet(ctx, attachmentKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
+func TestLegacyLeaseMigrationMetadataStopsWhileCorruptAlarmIsActive(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		leaseID  = int64(4506003)
+		memberID = uint64(4506003)
+	)
+	require.NoError(t, server.backend.ArmCorrupt(ctx, memberID))
+
+	err := server.persistMigratedLeaseMeta(ctx, leaseID, 300, 200)
+	require.ErrorIs(t, err, backend.ErrCorruptAlarmActive)
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+
+	// LeaseCheckpoint is an upstream internal maintenance request, not a
+	// derived migration repair, and remains admissible while CORRUPT is active.
+	require.NoError(t, server.persistLeaseCheckpoint(ctx, leaseID, 300, 200))
+	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
 }
 
 func TestCommittedUncertainLeaseRevokeForgetsInMemoryLease(t *testing.T) {

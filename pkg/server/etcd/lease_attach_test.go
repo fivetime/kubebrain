@@ -64,12 +64,12 @@ func (b *staleUncertainAttachmentReadBackend) InternalGet(ctx context.Context, k
 	return value, err
 }
 
-func (b *blockingLegacyMigrationBackend) InternalPut(ctx context.Context, key, value []byte) error {
+func (b *blockingLegacyMigrationBackend) InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error {
 	if len(key) >= len(leaseAttachPrefix) && string(key[:len(leaseAttachPrefix)]) == string(leaseAttachPrefix) {
 		b.once.Do(func() { close(b.entered) })
 		<-b.release
 	}
-	return b.BackendShim.InternalPut(ctx, key, value)
+	return b.BackendShim.InternalPutCorruptGuarded(ctx, key, value)
 }
 
 var errFakeDelete = errors.New("injected delete failure")

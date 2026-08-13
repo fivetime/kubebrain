@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -49,12 +50,15 @@ type blockingOrphanDetachBackend struct {
 	once    sync.Once
 }
 
-func (b *blockingOrphanDetachBackend) InternalDelete(ctx context.Context, key []byte) error {
-	if string(key) == string(leaseAttachKey("/registry/events/ns/stale-fenced")) {
-		b.once.Do(func() { close(b.entered) })
-		<-b.release
+func (b *blockingOrphanDetachBackend) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prevKV []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	for _, op := range ops {
+		if op.Delete && op.Internal && string(op.Key) == string(leaseAttachKey("/registry/events/ns/stale-fenced")) {
+			b.once.Do(func() { close(b.entered) })
+			<-b.release
+			break
+		}
 	}
-	return b.BackendShim.InternalDelete(ctx, key)
+	return b.BackendShim.TxnApply(ctx, ops, guards, prevKV)
 }
 
 // TestOrphanLeaseSweepReconciles pins the borrowed-from-kine safety net: a leased

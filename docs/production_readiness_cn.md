@@ -2959,6 +2959,10 @@ CORRUPT 激活与所有有效 `TxnApply` 在 TiKV generation 上形成提交全�
 只验证 alarm 激活后的新请求。
 同一提交栅栏也覆盖 logical Compaction watermark；故障演练须确认跨副本 Arm 先提交时 compact revision 不前移，不能
 只观察物理 GC 是否运行。auth 管理和 alarm maintenance 依 upstream 语义仍可在 CORRUPT 下执行，不应误接入该写栅栏。
+租约派生修复同样遵守该边界：legacy lease 迁移生成的 canonical metadata、独立 attachment 补写，以及 orphan sweep
+删除 attachment 都通过 CORRUPT 提交栅栏；告警先提交时不得在损坏证据之后继续改变这些内部绑定。正常 Put/Txn/Delete
+的 attachment 本来就和用户 mutation 位于同一 `TxnApply`，因此无需第二次独立修复。周期性 LeaseCheckpoint 对应
+upstream 内部 maintenance 请求，仍允许在 CORRUPT 下更新剩余 TTL，不应和迁移/清理型派生写混为一谈。
 提交栅栏依赖 256 个 `alarms/corrupt-fence/<hex>` mutation shard，而不是 TiKV 的普通 snapshot read-set；禁止减少为
 单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
 会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在

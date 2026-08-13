@@ -1726,7 +1726,7 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, ids []int64) {
 				break
 			}
 		}
-		if !complete || m.persistLeaseCheckpoint(ctx, id, ttl, remainingTTL) != nil {
+		if !complete || m.persistMigratedLeaseMeta(ctx, id, ttl, remainingTTL) != nil {
 			continue
 		}
 		// Retire the legacy user-MVCC record only after the internal replacement
@@ -2179,6 +2179,14 @@ func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, rema
 	return m.persistLeaseRecord(ctx, leaseStorageKey(id), data, false)
 }
 
+func (m *leaseManager) persistMigratedLeaseMeta(ctx context.Context, id, ttl, remainingTTL int64) error {
+	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl, RemainingTTL: remainingTTL})
+	if err != nil {
+		return err
+	}
+	return m.persistLeaseRecord(ctx, leaseStorageKey(id), data, true)
+}
+
 func (m *leaseManager) persistLeaseRecord(ctx context.Context, key, data []byte, corruptGuarded bool) error {
 	var err error
 	if corruptGuarded {
@@ -2258,11 +2266,14 @@ func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, f
 // full-key-list rewrite (#17). The record is keyed by the user key, which has at
 // most one lease, so a rebind simply overwrites it.
 func (m *leaseManager) attachKeyToStorage(ctx context.Context, id int64, userKey string) error {
-	return m.srv.backend.InternalPut(ctx, leaseAttachKey(userKey), []byte(strconv.FormatInt(id, 10)))
+	return m.srv.backend.InternalPutCorruptGuarded(ctx, leaseAttachKey(userKey), []byte(strconv.FormatInt(id, 10)))
 }
 
 func (m *leaseManager) detachKeyFromStorage(ctx context.Context, userKey string) error {
-	return m.srv.backend.InternalDelete(ctx, leaseAttachKey(userKey))
+	_, _, _, err := m.srv.backend.TxnApply(ctx, []backend.TxnWriteOp{{
+		Delete: true, Internal: true, Key: leaseAttachKey(userKey),
+	}}, nil, []bool{false})
+	return err
 }
 
 func (m *leaseManager) deleteLeaseState(ctx context.Context, id int64) error {
