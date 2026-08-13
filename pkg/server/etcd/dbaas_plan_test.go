@@ -24,6 +24,25 @@ import (
 )
 
 func TestDBaaSCompatibilityPlanKeepsPhysicalRestorePITRIncomplete(t *testing.T) {
+	plan := readDBaaSCompatibilityPlan(t)
+
+	require.Contains(t, plan, "物理 full snapshot 和日志型 PITR 均未完成")
+	require.Contains(t, plan, "仍不替代真实 CSI 隔离恢复演练，也不关闭 PITR 缺口")
+	require.Contains(t, plan, "仍不关闭真实 CSI 隔离恢复或 PITR 缺口")
+	require.Contains(t, plan, "不得用 TiDB BR full/PITR 的成功状态关闭该缺口")
+}
+
+func TestDBaaSCompatibilityMatrixDescribesBoundedPDIsolationReads(t *testing.T) {
+	plan := readDBaaSCompatibilityPlan(t)
+
+	require.Contains(t, plan, "受 GC safepoint 保护的 serializable checkpoint")
+	require.Contains(t, plan, "Range、read-only Txn 与 RangeStream")
+	require.Contains(t, plan, "Region merge、store replacement/address change")
+	require.NotContains(t, plan, "serializable Range 不具备 upstream 本地 applied backend 的隔离成员可读性")
+}
+
+func readDBaaSCompatibilityPlan(t *testing.T) string {
+	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 
@@ -31,10 +50,5 @@ func TestDBaaSCompatibilityPlanKeepsPhysicalRestorePITRIncomplete(t *testing.T) 
 	planPath := filepath.Join(repoRoot, "docs", "dbaas_compatibility_plan_cn.md")
 	data, err := os.ReadFile(planPath)
 	require.NoError(t, err)
-	plan := string(data)
-
-	require.Contains(t, plan, "物理 full snapshot 和日志型 PITR 均未完成")
-	require.Contains(t, plan, "仍不替代真实 CSI 隔离恢复演练，也不关闭 PITR 缺口")
-	require.Contains(t, plan, "仍不关闭真实 CSI 隔离恢复或 PITR 缺口")
-	require.Contains(t, plan, "不得用 TiDB BR full/PITR 的成功状态关闭该缺口")
+	return string(data)
 }

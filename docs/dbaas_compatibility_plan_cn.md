@@ -31,8 +31,8 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；A4357 证明单个 KubeBrain 与健康 PD 隔离时，TiKV transactional Range 仍需 PD TSO，故 serializable Range 不具备 upstream 本地 applied backend 的隔离成员可读性，该架构差距保持开放 |
-| KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；当前无已知语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer 和单 store 故障；Region merge、store replacement/address change 等需要新 PD directory 的 topology 变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
+| KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
 | Watch | create/cancel/progress/history/prevKV/slow-consumer catch-up | 兼容核心语义；后端溢出无缝追赶，控制响应不阻塞接收循环 | P1：继续数天级断线/慢消费者 soak |
@@ -48501,6 +48501,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确等于旧 candidate、无空洞且旧双键均不存在。旧 `revision.generator.aborted` 已无生产 producer，相关零基线指标与
   两条告警删除，避免继续把不存在的兼容差距当作生产风险。backend 全量（45.304s）、`pkg/server/etcd` 全量
   （167.619s）、关键 uncertain/range-barrier race 5 轮、backend/server vet 与 production manifest 回归均通过。
+
+- A4529 修正顶部 DBaaS 能力矩阵仍停留在 A4357 的陈旧结论。A4357 最初证明 TiKV latest read 不能在 PD
+  隔离后临时取得 TSO；A4359-A4371 随后已实现并以真实三 PD/多 TiKV 故障门禁验证受 service GC safepoint
+  保护的 checkpoint：Range、read-only serializable Txn 与 RangeStream 在 150 秒本地安全窗内共享固定
+  revision/TSO，覆盖 cold Region cache、split、已知 peer leader transfer 与单 store failover。矩阵现在明确
+  区分该已完成能力和仍开放的 topology directory 边界：merge、store replacement/address change、无法续租
+  或超过安全窗继续 fail closed。新增文档契约回归要求矩阵同时保留完成面与风险边界，并禁止旧“不具备隔离
+  成员可读性”绝对表述重新出现；该回归连续 10 轮通过。
 
 ### P2：运维兼容和长期验证
 
