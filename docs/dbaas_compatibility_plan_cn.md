@@ -49131,6 +49131,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   attached key 全绿、最大延迟 86ms，测试 prefix 和 lease 已清理。该 gate 能识别 store down 或持续 heartbeat
   stall，但小于 20 秒的瞬时 TiKV RPC/TSO latency 仍需独立时延信号；TTL=3 结论继续保持开放。
 
+- A4578 修复 A4577 精确镜像正式门禁暴露的 forwarded unary drain 缺口。首轮使用
+  `kubebrain:a4577-f00c63af`（OCI manifest list
+  `sha256:58564221ce692fad82d898176ab05407b921f0cdc767e24e72f1a2a92e3a6ee7`）时，第 59 轮先由
+  `DeleteRange` 返回 `leadership changed during commit`，随后不确定 Put 的 Range 对账耗尽 5 秒 SLA，
+  `PROBE_FAIL ... Put-to-Watch latency 5.184527396s exceeds 5s`。同一探针全程没有报告 PD leader 或三个
+  TiKV store 的 backend instability。代码审计确认公共 client listener 的 unary 已持有
+  `leadershipDrainBoundary` 读锁，但 follower 转发至 leader peer listener 的同一写请求只经过
+  `requireLeaderUnary`，未进入该边界；因此 `/drain` 仍可能在 forwarded commit 中途释放 leadership。
+  现在 peer unary 拦截器也持有同一读锁，长寿命 Watch/KeepAlive stream 仍不参与 drain；确定性测试分别证明
+  已进入的 forwarded unary 会推迟 release、release 又会阻止后续 forwarded unary 穿越，并连续 20 轮通过，
+  完整 `pkg/server/etcd` 回归重跑通过。
+
+  修复镜像 `kubebrain:a4578-d8654bd2`（内嵌 SHA
+  `d8654bd264f2931b9b5bdadb9ac7496675628abc`，OCI manifest list
+  `sha256:bcf80f8a89ff3b339c50b11383e649ffc44805fc13713d6ec8ffc150aae28264`）在固定 PD leader
+  `kb-pd-0:12010354549738711059`、三个 store 均 `Up` 且 heartbeat 新鲜后部署三副本，并执行同一
+  900 轮、TTL=5、5 秒 Put→Watch SLA 正式 runner。一次 Pod 终止 EOF 经同 token 对账/重试恢复，最终
+  `PROBE_SUMMARY ok=900 fail=0 total=900 watch=900 lease=alive max_latency_ms=996`，revision
+  `kubebrain-67d95c95c5 -> kubebrain-8674d45b8f`，strict postflight 与 probe cleanup 通过。该证据封闭
+  public 与 forwarded unary 两条入口的自愿 rollout drain 竞态；TTL=3、短于 store heartbeat 门限的
+  TiKV/TSO stall、跨节点/AZ 和云 LB 仍保持为独立开放矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
