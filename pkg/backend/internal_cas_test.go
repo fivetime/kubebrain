@@ -51,3 +51,29 @@ func TestInternalCASAtomicAndRevisionNeutral(t *testing.T) {
 	require.ErrorIs(t, err, storage.ErrKeyNotFound)
 	require.Equal(t, revision, b.GetCurrentRevision())
 }
+
+func TestInternalPutCorruptGuardedIsRevisionNeutralAndRejectsActiveAlarm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+	b := NewBackend(kv, Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	revision := uint64(time.Now().UnixNano())
+	b.SetCurrentRevision(revision)
+	ctx := context.Background()
+	key := []byte("leases/4503001")
+
+	require.NoError(t, b.ArmCorrupt(ctx, 4503001))
+	require.ErrorIs(t, b.InternalPutCorruptGuarded(ctx, key, []byte("lease")), ErrCorruptAlarmActive)
+	_, err := b.InternalGet(ctx, key)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	removed, err := b.DisarmCorrupt(ctx, 4503001)
+	require.NoError(t, err)
+	require.True(t, removed)
+
+	require.NoError(t, b.InternalPutCorruptGuarded(ctx, key, []byte("lease")))
+	value, err := b.InternalGet(ctx, key)
+	require.NoError(t, err)
+	require.Equal(t, []byte("lease"), value)
+	require.Equal(t, revision, b.GetCurrentRevision(), "guarded internal metadata must not consume a user revision")
+}

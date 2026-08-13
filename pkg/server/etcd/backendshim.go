@@ -104,6 +104,7 @@ type BackendShim interface {
 	InternalGet(ctx context.Context, key []byte) ([]byte, error)
 	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
 	InternalPut(ctx context.Context, key, value []byte) error
+	InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error
 	InternalDelete(ctx context.Context, key []byte) error
 	InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error
 	QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error)
@@ -325,6 +326,10 @@ func (b *backendShim) InternalRange(ctx context.Context, prefix []byte) (map[str
 
 func (b *backendShim) InternalPut(ctx context.Context, key, value []byte) error {
 	return b.backend.InternalPut(ctx, key, value)
+}
+
+func (b *backendShim) InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error {
+	return b.backend.InternalPutCorruptGuarded(ctx, key, value)
 }
 
 func (b *backendShim) InternalDelete(ctx context.Context, key []byte) error {

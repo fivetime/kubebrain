@@ -92,6 +92,9 @@ type Backend interface {
 	InternalGet(ctx context.Context, key []byte) ([]byte, error)
 	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
 	InternalPut(ctx context.Context, key, value []byte) error
+	// InternalPutCorruptGuarded writes internal metadata as an etcd operation
+	// covered by the CORRUPT applier boundary, without consuming an MVCC revision.
+	InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error
 	InternalDelete(ctx context.Context, key []byte) error
 	// InternalCAS atomically applies service-metadata mutations guarded by their
 	// exact previous values. It does not consume user MVCC revisions or emit

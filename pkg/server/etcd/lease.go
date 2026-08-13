@@ -2164,7 +2164,11 @@ func emitEtcdLeaseCheckpointDurations(metricCli metrics.Metrics, duration time.D
 // persistLeaseMeta writes the small per-lease meta record {id, ttl}. Attachments
 // are stored separately; remaining TTL is written only by periodic checkpoints.
 func (m *leaseManager) persistLeaseMeta(ctx context.Context, id, ttl int64) error {
-	return m.persistLeaseCheckpoint(ctx, id, ttl, 0)
+	data, err := json.Marshal(leaseRecord{ID: id, TTL: ttl})
+	if err != nil {
+		return err
+	}
+	return m.persistLeaseRecord(ctx, leaseStorageKey(id), data, true)
 }
 
 func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, remainingTTL int64) error {
@@ -2172,8 +2176,17 @@ func (m *leaseManager) persistLeaseCheckpoint(ctx context.Context, id, ttl, rema
 	if err != nil {
 		return err
 	}
-	key := leaseStorageKey(id)
-	if err = m.srv.backend.InternalPut(ctx, key, data); err == nil {
+	return m.persistLeaseRecord(ctx, leaseStorageKey(id), data, false)
+}
+
+func (m *leaseManager) persistLeaseRecord(ctx context.Context, key, data []byte, corruptGuarded bool) error {
+	var err error
+	if corruptGuarded {
+		err = m.srv.backend.InternalPutCorruptGuarded(ctx, key, data)
+	} else {
+		err = m.srv.backend.InternalPut(ctx, key, data)
+	}
+	if err == nil {
 		return nil
 	}
 

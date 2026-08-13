@@ -131,6 +131,16 @@ type rejectedLeaseMetadataBackend struct {
 	err error
 }
 
+type corruptGuardedLeaseMetadataBackend struct {
+	BackendShim
+	called bool
+}
+
+func (b *corruptGuardedLeaseMetadataBackend) InternalPutCorruptGuarded(context.Context, []byte, []byte) error {
+	b.called = true
+	return backend.ErrCorruptAlarmActive
+}
+
 func (b *rejectedLeaseMetadataBackend) InternalPut(context.Context, []byte, []byte) error {
 	return b.err
 }
@@ -196,6 +206,18 @@ func (b *blockingLeaseMetaBackend) InternalPut(ctx context.Context, key, value [
 		}
 	}
 	return b.BackendShim.InternalPut(ctx, key, value)
+}
+
+func (b *blockingLeaseMetaBackend) InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error {
+	if string(key) == string(leaseStorageKey(5201)) {
+		b.once.Do(func() { close(b.entered) })
+		select {
+		case <-b.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return b.BackendShim.InternalPutCorruptGuarded(ctx, key, value)
 }
 
 func (b *blockingLeaseCheckpointBackend) block(ctx context.Context, key []byte) error {
@@ -472,6 +494,24 @@ func TestEmptyLeaseRevokeDeletesDurableMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), ttl.TTL,
 		"an empty revoked lease must not resurrect after leader reload")
+}
+
+func TestLeaseGrantPersistsMetadataThroughCorruptCommitGuard(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 4503001
+	guarded := &corruptGuardedLeaseMetadataBackend{BackendShim: server.backend}
+	server.backend = guarded
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: leaseID})
+	requireDirectLeaseError(t, err, rpctypes.ErrGRPCCorrupt, codes.DataLoss, "etcdserver: corrupt cluster")
+	require.True(t, guarded.called)
+	_, err = guarded.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: leaseID})
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), ttl.TTL, "a rejected grant must not publish an in-memory lease")
 }
 
 func TestCommittedUncertainLeaseRevokeForgetsInMemoryLease(t *testing.T) {

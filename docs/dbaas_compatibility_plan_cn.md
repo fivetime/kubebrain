@@ -48242,6 +48242,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Badger 双 backend 回归确定性固定两个提交顺序：Alarm 先提交时索引保持缺失且修复报 CORRUPT；修复先提交时索引保留，
   Alarm 随后正常生效。既有 orphan Update/Delete 自愈回归继续通过。
 
+- A4503 关闭 LeaseGrant metadata 绕过 CORRUPT 提交栅栏的窗口。对照 upstream
+  `server/etcdserver/apply/corrupt.go`，CORRUPT applier 明确拒绝 `LeaseGrant`/`LeaseRevoke`；KubeBrain Revoke 已把 lease
+  record、attachments 和用户键放入 A4497 `TxnApply`，但 Grant 在前门 `rejectCorrupt` 后仍以独立 `InternalPut` 写
+  `leases/<id>`。另一副本可先激活 alarm，旧 Grant 随后提交并发布内存 lease。现在 Backend 暴露语义明确的
+  `InternalPutCorruptGuarded`，复用 internal-only `TxnApply`：不消耗用户 MVCC revision，却把 lease record 与 A4499 shard
+  mutation 放入同一 TiKV transaction；Grant 专用初始 metadata 走该入口，周期性 `LeaseCheckpoint` 仍按 upstream 未被
+  corrupt wrapper 覆盖的内部维护语义继续执行。backend 回归固定 active alarm 拒绝且无 metadata、disarm 后成功且 revision
+  不变；服务层替身让普通 InternalPut 可用但 guarded put 返回 CORRUPT，证明 LeaseGrant 必须走 guarded 接线、返回标准
+  `DataLoss/ErrGRPCCorrupt`，且不发布内存 lease。A4497 的双 backend internal-only 竞态继续证明真实提交窗口由 shard CAS
+  线性化。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -77,6 +77,11 @@ func (b *backend) InternalPut(ctx context.Context, key, value []byte) error {
 	return batch.Commit(ctx)
 }
 
+func (b *backend) InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error {
+	_, _, err := b.TxnApply(ctx, []TxnWriteOp{{Internal: true, Key: key, Value: value}}, nil)
+	return err
+}
+
 func (b *backend) InternalDelete(ctx context.Context, key []byte) error {
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
