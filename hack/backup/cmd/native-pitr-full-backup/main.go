@@ -1,0 +1,230 @@
+// Command native-pitr-full-backup runs the supported BR transactional full
+// backup shape and emits its execution attestation only after a successful
+// child exit and a stable executable digest check.
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
+)
+
+type options struct {
+	brBinary, pdAddrs, storage, ca, cert, key, output string
+	backupTS                                          uint64
+	timeout                                           time.Duration
+}
+
+type commandRunner interface {
+	Output(context.Context, *os.File, string, ...string) ([]byte, error)
+	Run(context.Context, *os.File, string, []string, io.Writer, io.Writer) error
+}
+
+type osRunner struct{}
+
+func (osRunner) Output(ctx context.Context, executable *os.File, displayName string, args ...string) ([]byte, error) {
+	cmd := commandForOpenExecutable(ctx, executable, displayName, args...)
+	output := limitedOutput{remaining: 16 << 10}
+	cmd.Stdout, cmd.Stderr = &output, &output
+	err := cmd.Run()
+	return output.Bytes(), err
+}
+
+type limitedOutput struct {
+	bytes.Buffer
+	remaining int
+}
+
+func (w *limitedOutput) Write(p []byte) (int, error) {
+	if len(p) > w.remaining {
+		return 0, errors.New("BR version output exceeds 16 KiB")
+	}
+	w.remaining -= len(p)
+	return w.Buffer.Write(p)
+}
+
+func (osRunner) Run(ctx context.Context, executable *os.File, displayName string, args []string, stdout, stderr io.Writer) error {
+	cmd := commandForOpenExecutable(ctx, executable, displayName, args...)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	return cmd.Run()
+}
+
+func commandForOpenExecutable(ctx context.Context, executable *os.File, displayName string, args ...string) *exec.Cmd {
+	// Execute the already-open inode that was hashed. Linux resolves this procfs
+	// path before applying close-on-exec, eliminating pathname replacement races.
+	cmd := exec.CommandContext(ctx, "/proc/self/fd/"+strconv.FormatUint(uint64(executable.Fd()), 10), args...)
+	cmd.Args[0] = displayName
+	return cmd
+}
+
+func main() {
+	var o options
+	flag.StringVar(&o.brBinary, "br-binary", "br", "BR v7.5.1 executable")
+	flag.StringVar(&o.pdAddrs, "pd-addrs", "", "comma-separated source PD host:port addresses")
+	flag.StringVar(&o.storage, "storage-prefix", "", "immutable credential-free s3:// backup prefix")
+	flag.Uint64Var(&o.backupTS, "backup-ts", 0, "exact PD TSO to back up")
+	flag.StringVar(&o.ca, "ca", "", "source CA file")
+	flag.StringVar(&o.cert, "cert", "", "source client certificate")
+	flag.StringVar(&o.key, "key", "", "source client private key")
+	flag.StringVar(&o.output, "attestation-output", "", "new full-backup attestation output file")
+	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "BR backup deadline")
+	flag.Parse()
+	if err := execute(context.Background(), o, osRunner{}, os.Stderr, time.Now); err != nil {
+		fmt.Fprintln(os.Stderr, "native PITR full backup:", err)
+		os.Exit(1)
+	}
+}
+
+func execute(parent context.Context, o options, runner commandRunner, logs io.Writer, now func() time.Time) error {
+	if o.backupTS == 0 || o.output == "" || o.timeout <= 0 || o.timeout > 24*time.Hour {
+		return errors.New("backup-ts, attestation-output, and a positive timeout no greater than 24h are required")
+	}
+	if !filepath.IsAbs(o.output) {
+		return errors.New("attestation-output must be absolute")
+	}
+	if _, err := os.Lstat(o.output); err == nil || !errors.Is(err, os.ErrNotExist) {
+		return errors.New("attestation-output must not already exist")
+	}
+	addrs, pdSHA, err := canonicalPDAddresses(o.pdAddrs)
+	if err != nil {
+		return err
+	}
+	if (o.ca == "") != (o.cert == "") || (o.ca == "") != (o.key == "") {
+		return errors.New("ca, cert, and key must be supplied together")
+	}
+	brFile, resolvedBR, brSHA, err := openExecutable(o.brBinary)
+	if err != nil {
+		return err
+	}
+	defer brFile.Close()
+	versionBytes, err := runner.Output(parent, brFile, resolvedBR, "--version")
+	if err != nil || !nativepitr.PinnedBRVersion(string(versionBytes)) {
+		return fmt.Errorf("BR must be exact v7.5.1 build, got %q", versionBytes)
+	}
+	brVersion := string(versionBytes)
+	canonicalArgs := []string{"backup", "txn", "--storage=" + o.storage, "--backupts=" + strconv.FormatUint(o.backupTS, 10), "--crypter.method=plaintext"}
+	if _, err := nativepitr.BuildFullBackupAttestation(brVersion, brSHA, pdSHA, o.storage, o.backupTS, canonicalArgs, 1); err != nil {
+		return err
+	}
+	args := []string{"backup", "txn", "--pd=" + strings.Join(addrs, ","), "--storage=" + o.storage, "--backupts=" + strconv.FormatUint(o.backupTS, 10), "--checksum=false", "--crypter.method=plaintext", "--log-file=/dev/stderr"}
+	if o.ca != "" {
+		for _, path := range []string{o.ca, o.cert, o.key} {
+			if !filepath.IsAbs(path) || strings.ContainsAny(path, "\x00\r\n") {
+				return errors.New("TLS credential paths must be absolute and single-line")
+			}
+		}
+		args = append(args, "--ca="+o.ca, "--cert="+o.cert, "--key="+o.key)
+	}
+	ctx, cancel := context.WithTimeout(parent, o.timeout)
+	defer cancel()
+	if err := runner.Run(ctx, brFile, resolvedBR, args, logs, logs); err != nil {
+		return fmt.Errorf("BR transactional full backup failed: %w", err)
+	}
+	receipt, err := nativepitr.BuildFullBackupAttestation(brVersion, brSHA, pdSHA, o.storage, o.backupTS, canonicalArgs, now().UTC().Unix())
+	if err != nil {
+		return err
+	}
+	return writeReceiptAtomic(o.output, receipt)
+}
+
+func canonicalPDAddresses(raw string) ([]string, string, error) {
+	parts := strings.Split(raw, ",")
+	if raw == "" || len(parts) == 0 {
+		return nil, "", errors.New("pd-addrs is required")
+	}
+	seen := make(map[string]bool, len(parts))
+	for _, addr := range parts {
+		host, portText, err := net.SplitHostPort(addr)
+		port, portErr := strconv.Atoi(portText)
+		if err != nil || portErr != nil || host == "" || port < 1 || port > 65535 || strings.ContainsAny(addr, "\x00\r\n") || seen[addr] {
+			return nil, "", errors.New("pd-addrs must contain unique host:port addresses")
+		}
+		seen[addr] = true
+	}
+	addrs := append([]string(nil), parts...)
+	sort.Strings(addrs)
+	encoded, _ := json.Marshal(addrs)
+	digest := sha256.Sum256(encoded)
+	return addrs, hex.EncodeToString(digest[:]), nil
+}
+
+func openExecutable(name string) (*os.File, string, string, error) {
+	resolved, err := exec.LookPath(name)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("resolve BR executable: %w", err)
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return nil, "", "", err
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("open BR executable: %w", err)
+	}
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		f.Close()
+		return nil, "", "", errors.New("BR executable must be a regular file")
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		f.Close()
+		return nil, "", "", fmt.Errorf("hash BR executable: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		f.Close()
+		return nil, "", "", fmt.Errorf("rewind BR executable: %w", err)
+	}
+	return f, resolved, hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func writeReceiptAtomic(path string, receipt nativepitr.FullBackupAttestation) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".native-pitr-full-backup-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	encoded, err := json.Marshal(receipt)
+	if err == nil {
+		encoded = append(encoded, '\n')
+		_, err = tmp.Write(encoded)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, path); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return errors.New("attestation-output appeared during backup")
+		}
+		return fmt.Errorf("publish full-backup attestation: %w", err)
+	}
+	return nil
+}

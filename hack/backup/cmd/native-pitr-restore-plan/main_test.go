@@ -33,7 +33,7 @@ func TestRunWritesPlanFromExactReceipts(t *testing.T) {
 	objectBytes, err := json.Marshal(objects)
 	require.NoError(t, err)
 	manifestDigest := sha256.Sum256(objectBytes)
-	attestation, err := nativepitr.BuildFullBackupAttestation(testDigest, testDigest, full.StoragePrefix, full.BackupMetaSHA256, full.BackupTS, []string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=120", "--crypter.method=plaintext"}, 2_000_000_000)
+	attestation, err := nativepitr.BuildFullBackupAttestation("Release Version: v7.5.1\nGit Commit Hash: 7d16cc79e81bbf573124df3fd9351c26963f3e70\n", testDigest, testDigest, full.StoragePrefix, full.BackupTS, []string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=120", "--crypter.method=plaintext"}, 2_000_000_000)
 	require.NoError(t, err)
 	attestationSHA, err := nativepitr.FullBackupAttestationSHA256(attestation)
 	require.NoError(t, err)

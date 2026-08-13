@@ -11,14 +11,17 @@ import (
 	"strings"
 )
 
-const FullBackupAttestationFormat = "kubebrain.native-pitr-full-backup-attestation.v1"
+const FullBackupAttestationFormat = "kubebrain.native-pitr-full-backup-attestation.v2"
+const maxBRVersionBytes = 16 << 10
 
 // FullBackupAttestation is emitted by the executor that actually ran BR. It
 // binds a successful, explicitly plaintext invocation to the exact binary and
-// backupmeta consumed by the later full-snapshot receipt. It intentionally
-// records no key material or credential-bearing storage URL.
+// storage identity consumed by the later full-snapshot receipt. Exact
+// backupmeta identity is independently bound by the artifact verifier. This
+// receipt intentionally records no key material or credential-bearing URL.
 type FullBackupAttestation struct {
 	Format              string   `json:"format"`
+	BRVersion           string   `json:"br_version"`
 	BRBinarySHA256      string   `json:"br_binary_sha256"`
 	CanonicalArgs       []string `json:"canonical_args"`
 	CanonicalArgsSHA256 string   `json:"canonical_args_sha256"`
@@ -26,27 +29,26 @@ type FullBackupAttestation struct {
 	StoragePrefix       string   `json:"storage_prefix"`
 	BackupTS            uint64   `json:"backup_ts"`
 	CipherMethod        string   `json:"cipher_method"`
-	BackupMetaSHA256    string   `json:"backupmeta_sha256"`
 	CompletedAtUnix     int64    `json:"completed_at_unix"`
 	ExitSuccessful      bool     `json:"exit_successful"`
 }
 
-func BuildFullBackupAttestation(brBinarySHA, pdAddressesSHA, storagePrefix, backupMetaSHA string, backupTS uint64, args []string, completedAt int64) (FullBackupAttestation, error) {
+func BuildFullBackupAttestation(brVersion, brBinarySHA, pdAddressesSHA, storagePrefix string, backupTS uint64, args []string, completedAt int64) (FullBackupAttestation, error) {
 	r := FullBackupAttestation{
-		Format: FullBackupAttestationFormat, BRBinarySHA256: brBinarySHA,
+		Format: FullBackupAttestationFormat, BRVersion: brVersion, BRBinarySHA256: brBinarySHA,
 		CanonicalArgs: append([]string(nil), args...), PDAddressesSHA256: pdAddressesSHA,
 		StoragePrefix: storagePrefix, BackupTS: backupTS, CipherMethod: "plaintext",
-		BackupMetaSHA256: backupMetaSHA, CompletedAtUnix: completedAt, ExitSuccessful: true,
+		CompletedAtUnix: completedAt, ExitSuccessful: true,
 	}
 	r.CanonicalArgsSHA256 = digestStringSlice(r.CanonicalArgs)
 	return r, r.Validate()
 }
 
 func (r FullBackupAttestation) Validate() error {
-	if r.Format != FullBackupAttestationFormat || !r.ExitSuccessful || r.CompletedAtUnix <= 0 || r.BackupTS == 0 || r.CipherMethod != "plaintext" {
+	if r.Format != FullBackupAttestationFormat || len(r.BRVersion) > maxBRVersionBytes || strings.ContainsRune(r.BRVersion, '\x00') || !PinnedBRVersion(r.BRVersion) || !r.ExitSuccessful || r.CompletedAtUnix <= 0 || r.BackupTS == 0 || r.CipherMethod != "plaintext" {
 		return errors.New("native PITR full-backup attestation is incomplete")
 	}
-	for _, value := range []string{r.BRBinarySHA256, r.CanonicalArgsSHA256, r.PDAddressesSHA256, r.BackupMetaSHA256} {
+	for _, value := range []string{r.BRBinarySHA256, r.CanonicalArgsSHA256, r.PDAddressesSHA256} {
 		if !sha256RE.MatchString(value) {
 			return errors.New("native PITR full-backup attestation has invalid digest evidence")
 		}
@@ -71,6 +73,10 @@ func (r FullBackupAttestation) Validate() error {
 		}
 	}
 	return nil
+}
+
+func PinnedBRVersion(version string) bool {
+	return strings.Contains(version, "Release Version: v7.5.1\n") && strings.Contains(version, "Git Commit Hash: 7d16cc79e81bbf573124df3fd9351c26963f3e70\n")
 }
 
 // FullBackupAttestationSHA256 returns the digest of the canonical JSON form

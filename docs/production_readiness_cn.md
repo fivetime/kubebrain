@@ -1989,7 +1989,26 @@ rewrite rules，`RestoreKVFiles` 会跳过所有没有对应 table rule 的日�
 范围不是 TiDB table key。自有 restore 必须复用底层 `ApplyKVFile`/ImportSST 能力并为整个
 KubeBrain range 使用 identity rewrite，同时证明不会处理范围外文件。
 
-完成 BR transactional full backup 并从相同 immutable prefix 下载原始 `backupmeta` 后，先生成
+full backup 不得由 runbook 直接调用 `br` 后再人工补证据；受审 executor 必须运行：
+
+```shell
+go run ./hack/backup/cmd/native-pitr-full-backup \
+  --br-binary=/opt/br-v7.5.1/br \
+  --pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379 \
+  --storage-prefix=s3://immutable-bucket/instance/run-id/full \
+  --backup-ts="$BACKUP_TS" \
+  --ca=/tls/ca.crt --cert=/tls/tls.crt --key=/tls/tls.key \
+  --attestation-output=/evidence/native-pitr-full-backup-attestation.json
+```
+
+该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
+`backup txn`、`--checksum=false` 和显式 plaintext crypter；打开并复算 BR executable
+后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。
+只有 child 成功退出才以 0600 权限、不可覆盖方式原子发布 attestation。
+PD 地址会校验、排序并摘要；S3 URL 禁止 userinfo/query/fragment，TLS 三件套必须同时提供且只传给 BR，
+不会进入 receipt。失败、超时或输出路径已存在均不签发文件。
+
+完成该 transactional full backup 并从相同 immutable prefix 下载原始 `backupmeta` 后，先生成
 full snapshot receipt：
 
 ```shell
@@ -2023,12 +2042,13 @@ receipt 仍诚实保留 `object_existence_checked=false`，因为该 receipt 本
 一次对象列表观测冒充完整性证明。
 
 执行 BR 的受审 operation executor 必须在 `Wait` 得到成功退出后、签发 full snapshot receipt 前原子写出
-`kubebrain.native-pitr-full-backup-attestation.v1`。该证据绑定实际 BR executable 的 SHA-256、规范化且
+`kubebrain.native-pitr-full-backup-attestation.v2`。该证据绑定实际 BR executable 的 SHA-256、规范化且
 去凭据的安全参数投影（`backup txn`、相同 immutable storage prefix、精确 BackupTS 和显式
-`--crypter.method=plaintext`）、PD 地址集合摘要、精确 `backupmeta` SHA-256 与完成时间；不得由后续
+`--crypter.method=plaintext`）、PD 地址集合摘要与完成时间；不得由后续
 artifact verifier 根据 `cipher_iv` 猜测加密模式，也不得把人工补写的 JSON 当作执行证据。PD 地址、TLS 参数
 与对象存储凭据不进入明文参数投影；前者单独摘要，后两者由 operation audit/fencing 记录约束。executor 必须
-保留该文件为 operation 输出，失败退出、隐式 crypter 默认值、AES 模式、key 参数、带凭据 URL 或任一摘要漂移
+保留该文件为 operation 输出；精确 `backupmeta` 摘要由 full snapshot/artifact receipt 独立计算并与相同
+storage/BackupTS 串联，避免要求 executor 再次下载远端对象。失败退出、隐式 crypter 默认值、AES 模式、key 参数、带凭据 URL 或任一摘要漂移
 均不能生成可接受证据。
 
 先对 immutable full prefix 运行与下文 log 相同的 `ACTION=pitr-inventory`，将
@@ -2045,7 +2065,7 @@ go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
 
 该命令递归遍历 BR legacy `BackupMeta.files` 和 v2 `FileIndex`/`MetaFile` 树，流式复算每个 SST 与
 meta-index 的大小和 SHA-256，并拒绝缺失、额外、重复、越界路径、符号链接及非普通文件。输出
-`kubebrain.native-pitr-full-artifacts.v3`，先要求 attestation 的 canonical JSON SHA-256 可从嵌入对象
+`kubebrain.native-pitr-full-artifacts.v4`，先要求 attestation 的 canonical JSON SHA-256 可从嵌入对象
 独立重算，并与相同 storage prefix、BackupTS 和 backupmeta 精确相等；随后要求本地对象集合、大小和 SHA-256 与分页穷尽的远端
 exact-version inventory 完全相等，再绑定 exact full-snapshot receipt、排序后的 BR 对象清单、总字节、
 manifest digest、Object Lock 最小保留期和 inventory 检查时间。当前只接受由实际 executor 明示并证明的

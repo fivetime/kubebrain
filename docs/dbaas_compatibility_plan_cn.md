@@ -48544,13 +48544,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均 fail closed。真实 full-restore 集成 BR 调用同步改为显式 plaintext。该门禁证明当前受支持的明文链，
   不冒充尚未实现的加密备份密钥托管与恢复能力。
 
+- A4533 补齐 A4532 只有 attestation schema/consumer、没有仓库内可信 producer 的运维缺口，并修正
+  execution evidence 不应负责重新下载远端 `backupmeta` 的职责混淆。新增
+  `native-pitr-full-backup`：同一进程校验并排序 PD 地址，禁止含凭据/query/fragment 的 S3 URL，固定调用
+  `br backup txn`、精确 TSO、`--checksum=false` 和显式 plaintext crypter；TLS 三件套必须同时提供且不写入
+  receipt。命令通过同一 inode 的 `--version` 固定 v7.5.1 release/commit，打开并复算 BR executable 后直接通过相同 open inode 执行，消除路径 swap/back 的
+  TOCTOU；失败、超时或已存在输出均不签发，成功则以 0600 临时文件 fsync 后通过 exclusive hard-link 原子发布。execution
+  attestation 升级 v2，只绑定实际调用身份；`backupmeta` 仍由独立 full snapshot/artifact verifier 从 exact
+  remote-version mirror 复算并通过相同 storage/BackupTS 串联，避免伪造 executor 已读取远端对象。
+  full artifact receipt 相应升级 v4。该 producer 关闭人工补写 JSON 的路径，但加密备份密钥托管/恢复能力
+  仍不在支持范围。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
    并把表纳入发布说明。
 2. transactional TiKV native PITR 的 pinned v7.5.1 受限链已完成功能闭环；继续扩大版本矩阵、
    跨可用区故障、生产规模和长时间 soak，并完成加密备份的密钥托管与恢复能力；当前 plaintext
-   executor attestation 已是 full artifact v3 强制门禁。不得用 TiDB BR
+   executor attestation 已是 full artifact v4 强制门禁。不得用 TiDB BR
    full/PITR 的成功状态替代 KubeBrain exact receipt 与最终语义门禁。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
    显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写

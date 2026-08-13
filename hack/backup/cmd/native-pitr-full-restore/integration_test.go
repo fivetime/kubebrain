@@ -2372,9 +2372,11 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	fullPath := filepath.Join(t.TempDir(), "full.json")
 	fullBytes := canonicalFile(t, fullPath, full)
+	backupBRVersion, err := exec.CommandContext(ctx, br, "--version").CombinedOutput()
+	require.NoError(t, err)
 	attestation, err := nativepitr.BuildFullBackupAttestation(
-		digest(mustRead(t, br)), digest([]byte(strings.Join(sourceAddrs, ","))), full.StoragePrefix,
-		full.BackupMetaSHA256, full.BackupTS,
+		string(backupBRVersion), digest(mustRead(t, br)), digest([]byte(strings.Join(sourceAddrs, ","))), full.StoragePrefix,
+		full.BackupTS,
 		[]string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=" + fmt.Sprint(full.BackupTS), "--crypter.method=plaintext"},
 		time.Now().UTC().Unix(),
 	)

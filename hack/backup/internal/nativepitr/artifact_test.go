@@ -47,7 +47,7 @@ func artifactFixture(t *testing.T, indexed bool) (FullSnapshotReceipt, string, s
 
 func artifactAttestation(t *testing.T, full FullSnapshotReceipt) FullBackupAttestation {
 	t.Helper()
-	r, err := BuildFullBackupAttestation(digest, digest, full.StoragePrefix, full.BackupMetaSHA256, full.BackupTS,
+	r, err := BuildFullBackupAttestation(pinnedBRVersionText, digest, digest, full.StoragePrefix, full.BackupTS,
 		[]string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=" + fmt.Sprint(full.BackupTS), "--crypter.method=plaintext"}, 2_000_000_000)
 	require.NoError(t, err)
 	return r

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	ArtifactReceiptFormat = "kubebrain.native-pitr-full-artifacts.v3"
+	ArtifactReceiptFormat = "kubebrain.native-pitr-full-artifacts.v4"
 	maxMetaIndexBytes     = int64(64 << 20)
 )
 
@@ -70,7 +70,7 @@ func VerifyFullArtifacts(full FullSnapshotReceipt, fullReceiptSHA256 string, att
 		return ArtifactReceipt{}, err
 	}
 	canonicalAttestationSHA, err := FullBackupAttestationSHA256(attestation)
-	if err != nil || attestationSHA != canonicalAttestationSHA || attestation.StoragePrefix != full.StoragePrefix || attestation.BackupTS != full.BackupTS || attestation.BackupMetaSHA256 != full.BackupMetaSHA256 {
+	if err != nil || attestationSHA != canonicalAttestationSHA || attestation.StoragePrefix != full.StoragePrefix || attestation.BackupTS != full.BackupTS {
 		return ArtifactReceipt{}, errors.New("full-backup attestation does not bind the full snapshot")
 	}
 	if root == "" {
@@ -184,7 +184,7 @@ func DecodeArtifactReceipt(r io.Reader) (ArtifactReceipt, error) {
 
 func (r ArtifactReceipt) Validate() error {
 	if r.Format != ArtifactReceiptFormat || r.ClusterID == 0 || !r.ExactMirror || !r.RemoteVersionsVerified || !r.AllObjectsVerified || r.Encryption != "plaintext" {
-		return errors.New("input is not a successful native PITR full-artifacts v3 receipt")
+		return errors.New("input is not a successful native PITR full-artifacts v4 receipt")
 	}
 	if !dnsLabel.MatchString(r.TaskName) || r.Keyspace == "" || r.BackupTS == 0 || r.ObjectCount != len(r.Objects) || r.ObjectCount < 2 || r.TotalBytes == 0 {
 		return errors.New("artifact receipt has invalid identity or inventory totals")
@@ -193,7 +193,7 @@ func (r ArtifactReceipt) Validate() error {
 		return errors.New("artifact receipt has invalid digest evidence")
 	}
 	attestationSHA, attestationErr := FullBackupAttestationSHA256(r.BackupAttestation)
-	if attestationErr != nil || attestationSHA != r.BackupAttestationSHA256 || r.BackupAttestation.BRBinarySHA256 != r.BRBinarySHA256 || r.BackupAttestation.BackupMetaSHA256 != r.BackupMetaSHA256 || r.BackupAttestation.StoragePrefix != r.StoragePrefix || r.BackupAttestation.BackupTS != r.BackupTS {
+	if attestationErr != nil || attestationSHA != r.BackupAttestationSHA256 || r.BackupAttestation.BRBinarySHA256 != r.BRBinarySHA256 || r.BackupAttestation.StoragePrefix != r.StoragePrefix || r.BackupAttestation.BackupTS != r.BackupTS {
 		return errors.New("artifact receipt has invalid full-backup attestation")
 	}
 	if err := validateS3Prefix(r.StoragePrefix); err != nil {

@@ -60,7 +60,7 @@ func main() {
 	var o options
 	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v12 receipt")
 	flag.StringVar(&o.full, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
-	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v3 receipt")
+	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v4 receipt")
 	flag.StringVar(&o.inventory, "remote-inventory", "", "exact native-pitr-object-inventory.v1 receipt")
 	flag.StringVar(&o.artifactRoot, "artifact-root", "", "absolute local exact-version full backup mirror")
 	flag.StringVar(&o.sourceExclusive, "source-range-exclusive", "", "exact source range-exclusive receipt bound by plan")
@@ -323,7 +323,7 @@ func parseAddrs(raw string) ([]string, error) {
 	return out, nil
 }
 func pinnedBR(v string) bool {
-	return strings.Contains(v, "Release Version: v7.5.1\n") && strings.Contains(v, "Git Commit Hash: 7d16cc79e81bbf573124df3fd9351c26963f3e70\n")
+	return nativepitr.PinnedBRVersion(v)
 }
 func buildBRArgs(addrs []string, root, ca, cert, key string) []string {
 	args := []string{"restore", "txn", "--pd", strings.Join(addrs, ","), "--storage", "local://" + root, "--send-credentials-to-tikv=false", "--check-requirements=true", "--checksum=false", "--log-file", "/dev/stderr"}
