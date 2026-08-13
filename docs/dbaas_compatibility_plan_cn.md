@@ -48993,6 +48993,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   authenticated `endpoint health --cluster` 也通过；前一次容器内 URL 的失败被确认为测试拓扑
   配置错误而非协议差距。本轮不修改 runtime，不构建 A4569 镜像。
 
+- A4570 在独立三副本 serving fixture 上重跑完整 replica-restart revision 门禁，发现并修复
+  “Pod 已 Ready、首个成功 RPC 仍可能无法生成 header term”的冷启动窗口。旧 `/ready` 只验证
+  leader/proxy serving 与线性读；新副本尚未观察共享 election record 时
+  `CurrentLeadershipTerm()==0`，首个 unary response 才读取 TiKV leadership lock。连续全量替换中，
+  `TestPriorCompactedTxnPrevKVRecoversAcrossAllReplicaReplacements` 因随机 restoration-fence shard 的
+  PD region cache 暂不可用，真实返回 `Unavailable: read leadership term ... loadRegion from PD failed`，
+  证明 endpoint reachability 和普通 Range 探针不足以承诺 etcd response header 可用。
+
+  现在非 serializable readiness 在 term cache 为零时调用 `LeadershipTerm`，只有共享 record 成功读取
+  并进入单调 cache 后才发布 Ready；cache 非零时保持原零额外 I/O 路径。serializable health 不承诺
+  leader term，继续可在该故障下服务。确定性单测固定 health server 已 SERVING、数据读成功但 term
+  读取失败时 `/ready` 必须 503，同时 `?serializable=true` 保持健康。restart runner 也补齐失败后仍执行
+  postflight，并同时快照 key prefix、lease 与 Alarm 集合，cleanup 泄漏优先 fail closed，再传播 Go
+  测试退出码。
+
+  修复镜像 `kubebrain:a4570-af321bcf`（SHA
+  `af321bcf9420a55fd7854a4c2d38ec07ef3f49db`）部署到全新 `a4570-idle-restart` keyspace 的三
+  KubeBrain/三 PD/三 TiKV fixture。完整 14 项 KubeBrain 全副本替换与 clean upstream restart oracle
+  85.921 秒全绿，显式 `A4570_RESTART_RUNNER_EXIT=0`；覆盖 idle/latest-compaction revision、lease
+  expiry tombstone、Txn snapshot/watch、compacted order/PrevKV 与 HashKV compaction。`pkg/server`
+  全量、server/compat vet、compat 全量与 runner fail-closed 连续 10 轮通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
