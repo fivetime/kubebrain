@@ -54,7 +54,7 @@ func (r TargetProvisioningReceipt) Validate() error {
 		} else {
 			return errors.New("target provisioning volume has invalid component")
 		}
-		if len(volume.PVCName) > 253 || len(volume.PVName) > 253 || !kubernetesSubdomainRE.MatchString(volume.PVCName) || !kubernetesSubdomainRE.MatchString(volume.PVName) || !kubernetesUIDRE.MatchString(volume.PVCUID) || !kubernetesUIDRE.MatchString(volume.PVUID) || !validProvisioningIdentity(volume.CSIDriver) || !validProvisioningIdentity(volume.VolumeHandle) {
+		if !validTargetVolumeIdentity(volume) {
 			return errors.New("target provisioning volume identity is incomplete")
 		}
 		order := volume.Component + "\x00" + volume.PVCName
@@ -72,6 +72,10 @@ func (r TargetProvisioningReceipt) Validate() error {
 		return errors.New("target provisioning replica and volume counts differ")
 	}
 	return nil
+}
+
+func validTargetVolumeIdentity(volume TargetVolumeIdentity) bool {
+	return (volume.Component == "pd" || volume.Component == "tikv") && len(volume.PVCName) <= 253 && len(volume.PVName) <= 253 && kubernetesSubdomainRE.MatchString(volume.PVCName) && kubernetesSubdomainRE.MatchString(volume.PVName) && kubernetesUIDRE.MatchString(volume.PVCUID) && kubernetesUIDRE.MatchString(volume.PVUID) && validProvisioningIdentity(volume.CSIDriver) && validProvisioningIdentity(volume.VolumeHandle)
 }
 
 func validProvisioningIdentity(value string) bool {

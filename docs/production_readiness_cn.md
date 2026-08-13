@@ -2191,6 +2191,16 @@ identity 集合完全不相交；新 provisioning receipt path+SHA 也进入 imm
 只执行 Kubernetes get/list，receipt 发布为 0600 fsync hard-link；它不能证明 CSI provider 在不同 handle 背后未做
 存储别名，因此高保障环境仍需 provider-side volume lineage/attestation。
 
+replacement handoff 还必须证明旧 target 已退役，不能把“创建了新集群”当成旧写路径已经消失。平台在删除或隔离
+旧 TidbCluster 后运行只读 retirement inspector：旧 TidbCluster UID 和全部旧 PVC UID 必须不存在；每个旧 PV UID
+必须处于 Released/Failed 且无 VolumeAttachment，或已经不存在；旧 target receipt 中所有 PD endpoint 必须从 inspector
+所在网络域连续至少三轮、间隔至少一秒不可连接。`target-retirement.v1` 同时摘要绑定旧 provisioning 与旧 restore
+admission receipt，要求原 gate receipt 为 held 且 active sessions 为零；handoff、immutable restore parameters、runner
+与最终 receipt verifier 全链绑定 retirement/admission path+SHA。该 TCP 观测只证明 inspector 网络域到已知旧 endpoint
+不可达，不证明其他网络域隔离，也不能排除 DNS/LB/provider alias 或已改址的旧进程；生产生命周期控制面仍需结合
+网络策略、provider 删除审计和真实 Kubernetes 演练。若新旧 TidbCluster 复用同一逻辑名称和 Service DNS，必须在
+删除旧目标、创建新目标之前的隔离窗口生成 retirement receipt；新 PD 已接管旧 DNS 后再探测会按设计 fail closed。
+
 上述执行面现已有独立 pinned restore image 和 replicas=0、`Recreate` 的单 writer Deployment；workspace PVC
 同时承载固定在 `/var/lib/kubebrain-operation/inputs/` 的 evidence/artifact 和不可覆盖 receipt。专用 requester
 RBAC/CEL admission 固定 `NativePITRFullRestore`、platform requester、digest-bound immutable parameters 与

@@ -40,7 +40,7 @@ func TestWriteExclusiveDoesNotOverwrite(t *testing.T) {
 
 func nativeTargetReplacementForWriteTest() nativepitr.TargetReplacementHandoff {
 	digest := strings.Repeat("a", 64)
-	return nativepitr.TargetReplacementHandoff{Format: nativepitr.TargetReplacementHandoffFormat, FailedOperationAuditSHA256: digest, FailedOperationName: "native-pitr-restore-" + strings.Repeat("a", 20), FailedOperationParametersSHA: digest, OldPlanSHA256: digest, NewPlanSHA256: digest, OldTargetReceiptSHA256: digest, NewTargetReceiptSHA256: digest, OldTargetProvisioningSHA256: digest, NewTargetProvisioningSHA256: digest, NewRestoreAdmissionSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: digest, OldTargetClusterID: 1, NewTargetClusterID: 2, ReplacementTargetEmpty: true, AdmissionFenceReacquired: true, CreatedAtUnix: 1}
+	return nativepitr.TargetReplacementHandoff{Format: nativepitr.TargetReplacementHandoffFormat, FailedOperationAuditSHA256: digest, FailedOperationName: "native-pitr-restore-" + strings.Repeat("a", 20), FailedOperationParametersSHA: digest, OldPlanSHA256: digest, NewPlanSHA256: digest, OldTargetReceiptSHA256: digest, NewTargetReceiptSHA256: digest, OldTargetProvisioningSHA256: digest, NewTargetProvisioningSHA256: digest, OldTargetRetirementSHA256: digest, NewRestoreAdmissionSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: digest, OldTargetClusterID: 1, NewTargetClusterID: 2, ReplacementTargetEmpty: true, AdmissionFenceReacquired: true, CreatedAtUnix: 1}
 }
 
 func mustStat(t *testing.T, path string) os.FileInfo {
@@ -66,4 +66,9 @@ func TestApprovedPlanDigestAcceptsOnlyCompletePriorReplacementGroup(t *testing.T
 	require.Equal(t, digest, got)
 	_, err = approvedPlanDigest([]byte(base + `,"target_replacement_handoff":"rh"}`))
 	require.ErrorContains(t, err, "replacement schema")
+	full := strings.TrimSuffix(complete, "}") + `,"old_restore_admission":"oa","old_restore_admission_sha256":"` + digest + `","old_target_provisioning":"op","old_target_provisioning_sha256":"` + digest + `","old_target_retirement":"or","old_target_retirement_sha256":"` + digest + `","old_target_snapshot_empty":"ot","old_target_snapshot_empty_sha256":"` + digest + `"}`
+	_, err = approvedPlanDigest([]byte(full))
+	require.NoError(t, err)
+	_, err = approvedPlanDigest([]byte(strings.TrimSuffix(complete, "}") + `,"old_target_retirement":"or"}`))
+	require.ErrorContains(t, err, "retirement schema")
 }

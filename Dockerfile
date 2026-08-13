@@ -78,6 +78,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-full-restore-receipt-verify ./hack/backup/cmd/native-pitr-full-restore-receipt-verify \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-replacement-handoff ./hack/backup/cmd/native-pitr-target-replacement-handoff \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-provisioning-receipt ./hack/backup/cmd/native-pitr-target-provisioning-receipt \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-target-retirement-receipt ./hack/backup/cmd/native-pitr-target-retirement-receipt \
     && go build -trimpath -o /src/bin/kubebrain-etcd-audit-probe ./hack/production/cmd/etcd-audit-probe \
     && go build -trimpath -o /src/bin/kubebrain-uid-delete ./hack/production/cmd/uid-delete \
     && cd /src/hack/backup/objectstore \
@@ -124,6 +125,7 @@ COPY --from=build /src/bin/kubebrain-native-pitr-full-restore /usr/local/bin/kub
 COPY --from=build /src/bin/kubebrain-native-pitr-full-restore-receipt-verify /usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify
 COPY --from=build /src/bin/kubebrain-native-pitr-target-replacement-handoff /usr/local/bin/kubebrain-native-pitr-target-replacement-handoff
 COPY --from=build /src/bin/kubebrain-native-pitr-target-provisioning-receipt /usr/local/bin/kubebrain-native-pitr-target-provisioning-receipt
+COPY --from=build /src/bin/kubebrain-native-pitr-target-retirement-receipt /usr/local/bin/kubebrain-native-pitr-target-retirement-receipt
 COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker
 COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
 COPY --from=br-v751 /br /usr/local/bin/br
@@ -175,6 +177,7 @@ COPY --from=build /src/bin/kubebrain-cold-restore-render /usr/local/bin/kubebrai
 COPY --from=build /src/bin/kubebrain-legacy-snapshot-remediation /usr/local/bin/kubebrain-legacy-snapshot-remediation
 COPY --from=build /src/bin/kubebrain-native-pitr-target-replacement-handoff /usr/local/bin/kubebrain-native-pitr-target-replacement-handoff
 COPY --from=build /src/bin/kubebrain-native-pitr-target-provisioning-receipt /usr/local/bin/kubebrain-native-pitr-target-provisioning-receipt
+COPY --from=build /src/bin/kubebrain-native-pitr-target-retirement-receipt /usr/local/bin/kubebrain-native-pitr-target-retirement-receipt
 COPY --from=build /src/bin/kubebrain-storage-capacity-verify /usr/local/bin/kubebrain-storage-capacity-verify
 COPY --from=build /src/bin/kubebrain-logical-verify /usr/local/bin/kubebrain-logical-verify
 COPY --from=build /src/bin/kubebrain-logical-etcd-snapshot /usr/local/bin/kubebrain-logical-etcd-snapshot

@@ -48795,6 +48795,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CSI 正向演练、重复 volumeHandle、handoff/provisioning SHA 漂移负向测试均通过。该证据证明“没有复用已知旧卷”，
   不证明 CSI 后端没有对不同 volumeHandle 做底层克隆/别名；真实 Kubernetes lifecycle/provisioner 演练仍开放。
 
+- A4554 补上 replacement 前旧目标退役证明。新增严格 `target-retirement.v1` receipt 和只读 Kubernetes/CSI/网络
+  inspector：旧 TidbCluster UID、全部旧 PVC UID 必须不存在；旧 PV UID 必须为 Released/Failed 且零
+  VolumeAttachment，或 PV UID 已不存在；旧 target receipt 的全部 PD endpoint 必须连续至少三轮、正间隔不可连接。
+  receipt 精确摘要绑定旧 provisioning 与旧 restore admission，后者必须仍声明 gate held、active sessions=0，并与旧
+  cluster ID 相同。validator 重新严格解码全部旧证据后以 0600、fsync+hard-link 不覆盖发布。replacement handoff
+  及其 verifier、immutable restore parameters、attempt 1/2 runner 和最终 full-restore receipt verifier 均加入旧
+  retirement/admission path+SHA，拒绝跨 operation 拼接。fake Kubernetes/CSI 测试覆盖 Released PV、已删除 PV、旧
+  TidbCluster/PVC/VolumeAttachment 仍存在和旧 PD endpoint 可达；backup、定向 production 与 vet 通过。该证据的
+  TCP 不可达范围仅限 inspector 所在网络域，历史 admission receipt 也不是对外部控制面当前状态的独立查询；真实
+  集群仍需 provider 删除审计、网络隔离证明和 lifecycle/provisioner 端到端演练。
+  同名 replacement 会复用 Service DNS，因此 retirement inspector 必须在旧目标删除后、新目标创建前执行；若 DNS
+  已指向新 PD，旧 endpoint 可达门禁会按设计拒绝，不能把新 PD 的可达性误写成旧目标已退役。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -21,7 +21,7 @@ import (
 )
 
 type options struct {
-	failedAudit, failedParameters, oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, newAdmission, output string
+	failedAudit, failedParameters, oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, oldRetirement, oldAdmission, newAdmission, output string
 }
 
 func main() {
@@ -34,6 +34,8 @@ func main() {
 	flag.StringVar(&o.newTarget, "new-target-snapshot-empty", "", "replacement target-empty receipt")
 	flag.StringVar(&o.oldProvisioning, "old-target-provisioning", "", "old target physical provisioning receipt")
 	flag.StringVar(&o.newProvisioning, "new-target-provisioning", "", "replacement target physical provisioning receipt")
+	flag.StringVar(&o.oldRetirement, "old-target-retirement", "", "old target released/detached/unreachable receipt")
+	flag.StringVar(&o.oldAdmission, "old-restore-admission", "", "restore admission held by the failed operation")
 	flag.StringVar(&o.newAdmission, "new-restore-admission", "", "replacement target admission receipt")
 	flag.StringVar(&o.output, "output", "", "new handoff receipt path")
 	flag.Parse()
@@ -44,7 +46,7 @@ func main() {
 }
 
 func run(o options, now int64) error {
-	for _, value := range []string{o.failedAudit, o.failedParameters, o.oldPlan, o.newPlan, o.oldTarget, o.newTarget, o.oldProvisioning, o.newProvisioning, o.newAdmission, o.output} {
+	for _, value := range []string{o.failedAudit, o.failedParameters, o.oldPlan, o.newPlan, o.oldTarget, o.newTarget, o.oldProvisioning, o.newProvisioning, o.oldRetirement, o.oldAdmission, o.newAdmission, o.output} {
 		if value == "" {
 			return errors.New("all target replacement evidence paths and output are required")
 		}
@@ -95,6 +97,22 @@ func run(o options, now int64) error {
 	if err != nil {
 		return err
 	}
+	oldRetirementBytes, err := readBounded(o.oldRetirement)
+	if err != nil {
+		return err
+	}
+	oldRetirement, err := nativepitr.DecodeTargetRetirementReceipt(bytes.NewReader(oldRetirementBytes))
+	if err != nil {
+		return err
+	}
+	oldAdmissionBytes, err := readBounded(o.oldAdmission)
+	if err != nil {
+		return err
+	}
+	oldAdmission, err := nativepitr.DecodeRestoreAdmissionReceipt(bytes.NewReader(oldAdmissionBytes))
+	if err != nil {
+		return err
+	}
 	admissionBytes, err := readBounded(o.newAdmission)
 	if err != nil {
 		return err
@@ -103,10 +121,12 @@ func run(o options, now int64) error {
 	if err != nil {
 		return err
 	}
-	handoff, err := nativepitr.BuildTargetReplacementHandoff(oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, admission, nativepitr.TargetReplacementInputs{
+	handoff, err := nativepitr.BuildTargetReplacementHandoff(oldPlan, newPlan, oldTarget, newTarget, oldProvisioning, newProvisioning, oldRetirement, oldAdmission, admission, nativepitr.TargetReplacementInputs{
 		FailedOperation: nativepitr.FailedRestoreOperationEvidence{AuditArtifactSHA256: digest(auditBytes), OperationName: audit.Name, ParametersSHA256: audit.ParametersSHA256, Attempt: audit.Attempt, MaxAttempts: audit.MaxAttempts},
 		OldPlanSHA256:   digest(oldPlanBytes), NewPlanSHA256: digest(newPlanBytes), OldTargetReceiptSHA256: digest(oldTargetBytes), NewTargetReceiptSHA256: digest(newTargetBytes),
 		OldTargetProvisioningSHA256: digest(oldProvisioningBytes), NewTargetProvisioningSHA256: digest(newProvisioningBytes),
+		OldTargetRetirementSHA256: digest(oldRetirementBytes),
+		OldRestoreAdmissionSHA256: digest(oldAdmissionBytes),
 		NewRestoreAdmissionSHA256: digest(admissionBytes), SourceExclusiveSHA256: newPlan.Source.RangeExclusiveReceiptSHA256, FullArtifactSHA256: newPlan.Full.ArtifactReceiptSHA256, CreatedAtUnix: now,
 	})
 	if err != nil {
@@ -131,7 +151,7 @@ func approvedPlanDigest(data []byte) (string, error) {
 		}
 	}
 	allowed := map[string]bool{}
-	for _, key := range append(baseKeys, "cipher_method", "encryption_key_id", "target_replacement_handoff", "target_replacement_handoff_sha256", "target_provisioning", "target_provisioning_sha256") {
+	for _, key := range append(baseKeys, "cipher_method", "encryption_key_id", "target_replacement_handoff", "target_replacement_handoff_sha256", "target_provisioning", "target_provisioning_sha256", "old_target_snapshot_empty", "old_target_snapshot_empty_sha256", "old_target_provisioning", "old_target_provisioning_sha256", "old_target_retirement", "old_target_retirement_sha256", "old_restore_admission", "old_restore_admission_sha256") {
 		allowed[key] = true
 	}
 	for key := range value {
@@ -153,6 +173,16 @@ func approvedPlanDigest(data []byte) (string, error) {
 	}
 	if replacementCount != 0 && replacementCount != len(replacementKeys) {
 		return "", errors.New("failed restore parameters have an invalid replacement schema")
+	}
+	retirementKeys := []string{"old_target_snapshot_empty", "old_target_snapshot_empty_sha256", "old_target_provisioning", "old_target_provisioning_sha256", "old_target_retirement", "old_target_retirement_sha256", "old_restore_admission", "old_restore_admission_sha256"}
+	retirementCount := 0
+	for _, key := range retirementKeys {
+		if _, ok := value[key]; ok {
+			retirementCount++
+		}
+	}
+	if retirementCount != 0 && (retirementCount != len(retirementKeys) || replacementCount != len(replacementKeys)) {
+		return "", errors.New("failed restore parameters have an invalid retirement schema")
 	}
 	var approved string
 	if err := json.Unmarshal(value["approve_plan_sha256"], &approved); err != nil || len(approved) != 64 {
