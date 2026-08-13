@@ -2119,7 +2119,20 @@ go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
 仓库的 disposable 实测入口为
 `KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr hack/backup/run-native-pitr-full-restore-integration.sh`。
 2026-08-13 已在独立单 PD/单 TiKV source/target 上完成密文 backupmeta 验证、BR 解密恢复和最终 etcd
-KV/lease 语义验收。该记录不是三副本、跨 AZ、错误 key 独立目标或生产 KMS promotion 证明。
+KV/lease 语义验收。该正向记录不是三副本、跨 AZ 或生产 KMS promotion 证明；错误 key 负测见下项。
+
+错误 key 写前安全负测使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr \
+KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL=true \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+该模式先要求完整 executor 在本地密文复验拒绝同 ID/错误 bytes 且零 receipt，再直接运行固定 BR 并要求
+`wrong aes cipher`/零 restore range，随后重新扫描同一目标的整个 transactional keyspace 仍无 visible
+committed key，最后才用正确 key 完成正向恢复。2026-08-13 单副本独立 source/target 实测通过；该结果不证明
+historical MVCC/raw key absence，也不能替代三副本、跨 AZ 或生产 KMS 撤权演练。
 
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable

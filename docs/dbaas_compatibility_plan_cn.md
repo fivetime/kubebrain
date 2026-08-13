@@ -48645,8 +48645,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   在相互独立的单 PD/单 TiKV source/target 上通过：BR backup/restore 均为固定 commit
   `7d16cc79e81bbf573124df3fd9351c26963f3e70`，恢复 530 KV/107.1 kB，artifact、plan、restore receipt
   逐层绑定 `aes256-ctr` 与 `integration/aes256-ctr/versions/1`，最终 etcd KV/lease 语义验收通过。该证据只
-  证明 disposable 单副本 happy path；错误密钥的真实独立目标破坏性演练、三副本故障注入、key version
+  证明 disposable 单副本 happy path；错误密钥的真实目标行为留给 A4542，三副本故障注入、key version
   promotion/KMS 授权和 restore-side durable Operation 仍保持开放。
+
+- A4542 关闭 A4541 保留的“错误密钥只有合成失败、未证明真实目标写前安全”缺口。disposable 演练新增
+  `KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL=true`，只允许与 `aes256-ctr` 组合，并生成相同合法 key ID、不同
+  32-byte key material。第一层通过完整 restore executor 证明错误 key 在本地密文 exact-mirror 复验即被拒绝、
+  不启动 BR 且不签发 receipt；第二层绕过该保护直接调用同一固定 BR v7.5.1，现场得到
+  `parse backupmeta failed because of wrong aes cipher` 与 `total-ranges=0`。失败后重新连接目标 PD/TiKV，对整个
+  transactional keyspace 取得新 TSO 并 key-only RC scan，证明同一 cluster/store identity 下仍为零 visible
+  committed key；之后才在同一目标用正确 key 完成 530 KV/107.1 kB restore 和最终 etcd KV/lease 语义验收。
+  2026-08-13 的组合命令
+  `KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL=true hack/backup/run-native-pitr-full-restore-integration.sh`
+  全绿。该证据关闭固定版本单副本错误 key 的 visible-write 风险，但不证明历史 MVCC/raw key 完全无变化，
+  也不替代三副本故障注入、KMS promotion/撤权或 restore-side durable Operation。
 
 ### P2：运维兼容和长期验证
 

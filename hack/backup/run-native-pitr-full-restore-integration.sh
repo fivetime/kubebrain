@@ -15,6 +15,15 @@ if [[ "$encryption" != plaintext && "$encryption" != aes256-ctr ]]; then
   echo "KUBEBRAIN_NATIVE_PITR_ENCRYPTION must be plaintext or aes256-ctr" >&2
   exit 2
 fi
+wrong_key_drill=${KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL:-false}
+if [[ "$wrong_key_drill" != true && "$wrong_key_drill" != false ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL must be true or false" >&2
+  exit 2
+fi
+if [[ "$wrong_key_drill" == true && "$encryption" != aes256-ctr ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_WRONG_KEY_DRILL=true requires KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr" >&2
+  exit 2
+fi
 objectstore_integration=false
 case "$test_name" in
   TestCanceledPutObjectLeavesNoRemoteArtifact|TestCommittedPutObjectResponseLossReconcilesRealS3|TestConditionalUploadRefusesConflictingRealS3Object|TestConditionalUploadRejectsMatchingMetadataCorruptRealS3Body|TestConditionalUploadRejectsInsufficientRealS3Retention|TestRestartRecoversReceiptAfterRealS3Commit)
@@ -58,10 +67,16 @@ if [[ "$encryption" == aes256-ctr ]]; then
   # immutable non-secret version identity, never these key bytes or this path.
   printf '%s\n' '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' >"$encryption_key_file"
   chmod 0600 "$encryption_key_file"
-  encryption_env=(
+  wrong_encryption_key_file="$drill_tmp/aes256-ctr-wrong.key"
+  printf '%s\n' 'f0e0d0c0b0a090807060504030201000ffeeddccbbaa99887766554433221100' >"$wrong_encryption_key_file"
+  chmod 0600 "$wrong_encryption_key_file"
+	encryption_env=(
     KUBEBRAIN_NATIVE_PITR_ENCRYPTION_KEY_FILE="$encryption_key_file"
     KUBEBRAIN_NATIVE_PITR_ENCRYPTION_KEY_ID=integration/aes256-ctr/versions/1
   )
+  if [[ "$wrong_key_drill" == true ]]; then
+    encryption_env+=(KUBEBRAIN_NATIVE_PITR_WRONG_ENCRYPTION_KEY_FILE="$wrong_encryption_key_file")
+  fi
 fi
 
 names=()
