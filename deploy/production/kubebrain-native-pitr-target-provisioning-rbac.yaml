@@ -22,3 +22,16 @@ kind: ClusterRoleBinding
 metadata: {name: kubebrain-native-pitr-target-provisioning-inspector}
 subjects: [{kind: ServiceAccount, name: kubebrain-native-pitr-target-provisioning-executor, namespace: kubebrain-operations}]
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kubebrain-native-pitr-target-provisioning-inspector}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: kubebrain-native-pitr-target-provisioning-writer-inspector, namespace: kubebrain-system}
+rules:
+  - {apiGroups: [apps], resources: [statefulsets], resourceNames: [kubebrain], verbs: [get]}
+  - {apiGroups: [""], resources: [pods], verbs: [list]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: kubebrain-native-pitr-target-provisioning-writer-inspector, namespace: kubebrain-system}
+subjects: [{kind: ServiceAccount, name: kubebrain-native-pitr-target-provisioning-executor, namespace: kubebrain-operations}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: kubebrain-native-pitr-target-provisioning-writer-inspector}

@@ -57,3 +57,37 @@ func TestDurableDryRunRejectsDriftedRecoveryObject(t *testing.T) {
 	require.ErrorContains(t, run(options{mode: "record-creation", authorization: authPath, dryRunReceipt: dryReceipt, createdObject: createdObject, output: creation}, 12), "differs")
 	require.NoFileExists(t, creation)
 }
+
+func TestQualifyTargetBindsExactWriterEvidence(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, value any) string {
+		t.Helper()
+		_, data, err := nativepitr.DigestCanonicalJSON(value)
+		require.NoError(t, err)
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+		return path
+	}
+	provisioning := nativepitr.TargetProvisioningReceipt{
+		Format: nativepitr.TargetProvisioningReceiptFormat, Namespace: "tidb-cluster", TidbCluster: "kb", TidbClusterUID: "new-uid",
+		ClusterID: 42, PDReplicas: 1, TiKVReplicas: 1, Ready: true, ObservedAtUnix: 10, ReadOnlyInspection: true,
+		Volumes: []nativepitr.TargetVolumeIdentity{
+			{Component: "pd", PVCName: "pd-kb-pd-0", PVCUID: "pvc-pd", PVName: "pv-pd", PVUID: "pvuid-pd", CSIDriver: "csi.example", VolumeHandle: "pd-volume"},
+			{Component: "tikv", PVCName: "tikv-kb-tikv-0", PVCUID: "pvc-tikv", PVName: "pv-tikv", PVUID: "pvuid-tikv", CSIDriver: "csi.example", VolumeHandle: "tikv-volume"},
+		},
+	}
+	pdAddr := "kb-pd-0.kb-pd-peer.tidb-cluster.svc:2379"
+	target := nativepitr.TargetSnapshotEmptyReceipt{Format: nativepitr.TargetSnapshotEmptyFormat, ClusterID: 42, PDAddrs: []string{pdAddr}, Stores: []nativepitr.TargetStore{{ID: 1, Address: "kb-tikv-0:20160"}}, SnapshotTS: 100, ScanScope: nativepitr.WholeTransactionalKeyspace, CheckedAtUnix: 11, ReadOnly: true}
+	writers := nativepitr.TargetWriterExclusionEvidence{Namespace: "kubebrain-system", StatefulSet: "kubebrain", StatefulSetUID: "writer-uid", ResourceVersion: "12", ObservedAtUnix: 11, ReadOnlyInspection: true}
+	provisioningPath := write("provisioning.json", provisioning)
+	targetPath := write("target.json", target)
+	writersPath := write("writers.json", writers)
+	qualificationPath := filepath.Join(dir, "qualification.json")
+	opts := options{mode: "qualify-target", newProvisioning: provisioningPath, targetEmpty: targetPath, writerExclusion: writersPath, expectedPDAddrs: pdAddr, output: qualificationPath}
+	require.NoError(t, run(opts, 12))
+	opts.mode, opts.createdObject, opts.output = "verify-qualification", qualificationPath, ""
+	require.NoError(t, run(opts, 13))
+	writers.ResourceVersion = "13"
+	opts.writerExclusion = write("writers-drifted.json", writers)
+	require.ErrorContains(t, run(opts, 13), "exact source evidence")
+}

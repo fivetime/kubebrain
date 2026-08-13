@@ -4703,3 +4703,10 @@ admission 后规范身份一致。server dry-run receipt 必须先于真实 crea
 缺少 dry-run receipt、摘要漂移或同名 PVC 碰撞时仍须停止并人工核查，不得删除同名对象后盲目重试。成功 receipt 还必须证明新旧 cluster ID、
 TidbCluster UID、PVC/PV UID 和 CSI volume identity 全部不相交。该门禁不能证明 CSI provider 的两个不同 handle 没有共享
 底层克隆，生产启用前仍需 provider 级审计和真实集群演练。
+
+replacement provisioning 前必须由外部受控流程将 `kubebrain-system/kubebrain` 缩容到 0；provisioning executor 没有缩容
+权限，只会检查 StatefulSet desired/current/ready replicas 和匹配 Pod count 均为 0。新 TiKV/PD Ready 后，执行器用 mTLS
+逐个连接稳定 PD Pod DNS，确认 live cluster ID/Up stores，并在同一 writer-exclusion resourceVersion 下执行全 transactional
+keyspace snapshot scan。Operation 的成功 receipt 是 qualification receipt；仅有 TidbCluster Ready 或 provisioning receipt
+不得进入 replacement handoff。qualification 尚未成为 handoff/full-restore verifier 的强制参数之前，生产 replacement 重试
+继续保持关闭。

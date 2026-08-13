@@ -9,14 +9,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
 )
 
 type options struct {
-	mode, retirement, oldProvisioning, newProvisioning, manifest                                      string
+	mode, retirement, oldProvisioning, newProvisioning, manifest, targetEmpty                         string
 	authorization, dryRunObject, dryRunReceipt, createdObject, currentObject, output, authorizationID string
+	targetEmptyOutput, expectedPDAddrs                                                                string
+	writerExclusion                                                                                   string
 }
 
 func main() {
@@ -25,6 +29,10 @@ func main() {
 	flag.StringVar(&o.retirement, "retirement", "", "old target retirement receipt")
 	flag.StringVar(&o.oldProvisioning, "old-target-provisioning", "", "old target provisioning receipt")
 	flag.StringVar(&o.newProvisioning, "new-target-provisioning", "", "new target provisioning receipt")
+	flag.StringVar(&o.targetEmpty, "target-empty", "", "live target snapshot-empty receipt or candidate")
+	flag.StringVar(&o.targetEmptyOutput, "target-empty-output", "", "optional exclusive durable target-empty output")
+	flag.StringVar(&o.expectedPDAddrs, "expected-pd-addrs", "", "comma-separated exact replacement PD endpoints")
+	flag.StringVar(&o.writerExclusion, "writer-exclusion", "", "live KubeBrain writer exclusion evidence")
 	flag.StringVar(&o.manifest, "manifest", "", "exact replacement TidbCluster JSON manifest")
 	flag.StringVar(&o.authorization, "authorization", "", "target provision authorization")
 	flag.StringVar(&o.createdObject, "created-object", "", "creation receipt or Kubernetes create response")
@@ -56,9 +64,171 @@ func run(o options, now int64) error {
 		return verifyCurrent(o)
 	case "verify-completion":
 		return verifyCompletion(o)
+	case "qualify-target":
+		return qualifyTarget(o, now)
+	case "verify-qualification":
+		return verifyQualification(o)
+	case "record-writer-exclusion":
+		return recordWriterExclusion(o)
+	case "verify-writer-exclusion":
+		return verifyWriterExclusion(o)
 	default:
 		return errors.New("invalid mode")
 	}
+}
+
+func recordWriterExclusion(o options) error {
+	if o.writerExclusion == "" || o.output == "" {
+		return errors.New("writer exclusion candidate and output are required")
+	}
+	data, err := read(o.writerExclusion)
+	if err != nil {
+		return err
+	}
+	e, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	_, canonical, err := nativepitr.DigestCanonicalJSON(e)
+	if err != nil {
+		return err
+	}
+	return writeExclusive(o.output, canonical)
+}
+
+func verifyWriterExclusion(o options) error {
+	if o.writerExclusion == "" || o.currentObject == "" {
+		return errors.New("recorded and current writer exclusion evidence are required")
+	}
+	recordedBytes, err := read(o.writerExclusion)
+	if err != nil {
+		return err
+	}
+	recorded, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(recordedBytes))
+	if err != nil {
+		return err
+	}
+	currentBytes, err := read(o.currentObject)
+	if err != nil {
+		return err
+	}
+	current, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(currentBytes))
+	if err != nil {
+		return err
+	}
+	return nativepitr.VerifyTargetWriterExclusionContinuity(recorded, current)
+}
+
+func qualifyTarget(o options, now int64) error {
+	if o.newProvisioning == "" || o.targetEmpty == "" || o.writerExclusion == "" || o.expectedPDAddrs == "" || o.output == "" {
+		return errors.New("new provisioning, target-empty, exact PD endpoints, and qualification output are required")
+	}
+	provisioningBytes, err := read(o.newProvisioning)
+	if err != nil {
+		return err
+	}
+	provisioning, err := nativepitr.DecodeTargetProvisioningReceipt(bytes.NewReader(provisioningBytes))
+	if err != nil {
+		return err
+	}
+	targetBytes, err := read(o.targetEmpty)
+	if err != nil {
+		return err
+	}
+	target, err := nativepitr.DecodeTargetSnapshotEmpty(bytes.NewReader(targetBytes))
+	if err != nil {
+		return err
+	}
+	writerBytes, err := read(o.writerExclusion)
+	if err != nil {
+		return err
+	}
+	writers, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(writerBytes))
+	if err != nil {
+		return err
+	}
+	if o.targetEmptyOutput != "" {
+		_, canonical, err := nativepitr.DigestCanonicalJSON(target)
+		if err != nil {
+			return err
+		}
+		if err := writeExclusive(o.targetEmptyOutput, canonical); err != nil {
+			return err
+		}
+		targetBytes = canonical
+	}
+	expected, err := parsePDAddrs(o.expectedPDAddrs)
+	if err != nil {
+		return err
+	}
+	r, err := nativepitr.BuildTargetQualificationReceipt(provisioning, target, writers, digest(provisioningBytes), digest(targetBytes), digest(writerBytes), expected, now)
+	if err != nil {
+		return err
+	}
+	_, data, err := nativepitr.DigestCanonicalJSON(r)
+	if err != nil {
+		return err
+	}
+	return writeExclusive(o.output, data)
+}
+
+func verifyQualification(o options) error {
+	if o.newProvisioning == "" || o.targetEmpty == "" || o.writerExclusion == "" || o.expectedPDAddrs == "" || o.createdObject == "" {
+		return errors.New("new provisioning, target-empty, exact PD endpoints, and qualification receipt are required")
+	}
+	provisioningBytes, err := read(o.newProvisioning)
+	if err != nil {
+		return err
+	}
+	provisioning, err := nativepitr.DecodeTargetProvisioningReceipt(bytes.NewReader(provisioningBytes))
+	if err != nil {
+		return err
+	}
+	targetBytes, err := read(o.targetEmpty)
+	if err != nil {
+		return err
+	}
+	target, err := nativepitr.DecodeTargetSnapshotEmpty(bytes.NewReader(targetBytes))
+	if err != nil {
+		return err
+	}
+	writerBytes, err := read(o.writerExclusion)
+	if err != nil {
+		return err
+	}
+	writers, err := nativepitr.DecodeTargetWriterExclusionEvidence(bytes.NewReader(writerBytes))
+	if err != nil {
+		return err
+	}
+	qualificationBytes, err := read(o.createdObject)
+	if err != nil {
+		return err
+	}
+	qualification, err := nativepitr.DecodeTargetQualificationReceipt(bytes.NewReader(qualificationBytes))
+	if err != nil {
+		return err
+	}
+	expected, err := parsePDAddrs(o.expectedPDAddrs)
+	if err != nil {
+		return err
+	}
+	return nativepitr.VerifyTargetQualificationBinding(qualification, provisioning, target, writers, digest(provisioningBytes), digest(targetBytes), digest(writerBytes), expected)
+}
+
+func parsePDAddrs(value string) ([]string, error) {
+	parts := strings.Split(value, ",")
+	for _, part := range parts {
+		if part == "" || strings.TrimSpace(part) != part {
+			return nil, errors.New("invalid expected PD endpoints")
+		}
+	}
+	sort.Strings(parts)
+	for i := 1; i < len(parts); i++ {
+		if parts[i] == parts[i-1] {
+			return nil, errors.New("duplicate expected PD endpoint")
+		}
+	}
+	return parts, nil
 }
 
 func verifyDryRun(o options) error {

@@ -48846,6 +48846,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   paused/initializer/bootstrap 和所有 SQL/复制组件。fake API 测试覆盖两个崩溃边界、零重复 create、摘要漂移拒绝；真实 API
   Server/webhook/Operator 重启与 CSI 异步 PVC 创建竞态仍需预生产演练。
 
+- A4558 不再把 TidbCluster Ready、Bound PVC 或新 cluster ID 当作可恢复目标。`NativePITRTargetProvisioning` 在物理
+  provisioning 验证后，按 replica 派生每个 `kb-pd-N.kb-pd-peer.tidb-cluster.svc:2379`，使用 pinned mTLS secret 运行
+  `native-pitr-target-empty` 的 live PD cluster ID、Up TiKV stores、snapshot TSO 和全 transactional keyspace first-key scan。
+  新 `target-qualification.v1` 同时摘要绑定 provisioning、target-empty、TidbCluster UID/cluster ID/PD endpoints，并要求
+  visible committed keys=0。为关闭同名 PD Service 切到新集群后旧 KubeBrain 自动重连写入的竞态，executor 在创建前、
+  empty scan 前后只读检查 `kubebrain-system/kubebrain`：desired/current/ready replicas 和匹配 Pod count 必须持续为 0，
+  StatefulSet UID/resourceVersion 不得变化；writer evidence O_EXCL+fsync 发布，其 SHA、观察时间与 UID/resourceVersion 写入 qualification。执行器 RBAC 只能 get
+  指定 StatefulSet/list Pod，不能 scale/update/delete。Operation 成功 receipt 现在是 qualification SHA，而非仅 Ready
+  provisioning SHA；target-empty/qualification 中间崩溃可用 durable 文件收敛，污染目标、PD endpoint 漂移、writer
+  scale/revision 漂移均 fail closed。backup 全套、定向 production、manifest/vet 与镜像仍需在提交门禁完成；后续还须把
+  qualification+writer evidence 变成 replacement handoff/full-restore verifier 的强制输入，当前不得把本项单独视为完整重试授权。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

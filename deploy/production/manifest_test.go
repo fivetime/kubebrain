@@ -936,8 +936,13 @@ func TestNativePITRTargetProvisioningExecutorCreatesButCannotDeleteTargets(t *te
 	require.Equal(t, "kubebrain-native-pitr-target-provisioning-executor", nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
 	containers, _, _ := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "containers")
 	require.Contains(t, containers[0].(map[string]any)["args"].([]any)[0], "run-native-pitr-target-provisioning-operation.sh")
+	deploymentData, err := json.Marshal(deployment.Object)
+	require.NoError(t, err)
+	require.Contains(t, string(deploymentData), "kubebrain-native-pitr-full-restore-tls")
+	require.Contains(t, string(deploymentData), "TLS_DIR")
 
 	rbac := decodeManifest(t, "kubebrain-native-pitr-target-provisioning-rbac.yaml")
+	require.Len(t, rbac, 6)
 	role := objectByKindAndName(t, rbac, "Role", "kubebrain-native-pitr-target-provisioning-executor")
 	data, err := json.Marshal(role.Object)
 	require.NoError(t, err)
@@ -953,6 +958,11 @@ func TestNativePITRTargetProvisioningExecutorCreatesButCannotDeleteTargets(t *te
 	require.NoError(t, err)
 	require.Contains(t, string(clusterData), "persistentvolumes")
 	require.NotContains(t, string(clusterData), "delete")
+	allRBAC, err := json.Marshal(rbac)
+	require.NoError(t, err)
+	require.Contains(t, string(allRBAC), "kubebrain-native-pitr-target-provisioning-writer-inspector")
+	require.Contains(t, string(allRBAC), "statefulsets")
+	require.NotContains(t, string(allRBAC), "\"update\"")
 	require.Len(t, decodeManifest(t, "kubebrain-native-pitr-target-provisioning-requester-admission.yaml"), 4)
 	targetAdmission := decodeManifest(t, "kubebrain-native-pitr-target-provisioning-target-admission.yaml")
 	require.Len(t, targetAdmission, 2)
@@ -966,6 +976,10 @@ func TestNativePITRTargetProvisioningExecutorCreatesButCannotDeleteTargets(t *te
 	require.NoError(t, err)
 	require.NotContains(t, string(requestBytes), "update")
 	require.NotContains(t, string(requestBytes), "delete")
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	require.Contains(t, string(dockerfile), "go build -trimpath -o /src/bin/kubebrain-native-pitr-target-empty ./hack/backup/cmd/native-pitr-target-empty")
+	require.Contains(t, string(dockerfile), "COPY --from=build /src/bin/kubebrain-native-pitr-target-empty /usr/local/bin/kubebrain-native-pitr-target-empty")
 }
 
 func TestNativePITRFullRestoreHasPinnedIsolatedRuntimeImage(t *testing.T) {

@@ -30,7 +30,7 @@ if [[ "$*" == *"--action claim"* ]];then printf '%%s\n' '{"name":"native-pitr-pr
 	provision := filepath.Join(dir, "provision")
 	writeExecutable(t, provision, `#!/usr/bin/env bash
 set -euo pipefail
-printf receipt >"$PROVISIONING_OUTPUT"; printf auth >"$AUTHORIZATION_OUTPUT"; printf creation >"$CREATION_OUTPUT"
+printf provisioning >"$PROVISIONING_OUTPUT"; printf qualification >"$QUALIFICATION_OUTPUT"; printf target >"$TARGET_EMPTY_OUTPUT"; printf auth >"$AUTHORIZATION_OUTPUT"; printf creation >"$CREATION_OUTPUT"
 `)
 	_, err := runProductionScriptCommand(t, "run-native-pitr-target-provisioning-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "PROVISION=" + provision})
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ if [[ "$*" == *"--action claim"* ]];then printf '%%s\n' '{"name":"native-pitr-pr
 	provision := filepath.Join(dir, "provision")
 	writeExecutable(t, provision, `#!/usr/bin/env bash
 set -euo pipefail
-printf receipt >"$PROVISIONING_OUTPUT"; printf creation >"$CREATION_OUTPUT"; printf dry-run >"$DRY_RUN_OUTPUT"
+printf provisioning >"$PROVISIONING_OUTPUT"; printf qualification >"$QUALIFICATION_OUTPUT"; printf target >"$TARGET_EMPTY_OUTPUT"; printf creation >"$CREATION_OUTPUT"; printf dry-run >"$DRY_RUN_OUTPUT"
 `)
 	_, err := runProductionScriptCommand(t, "run-native-pitr-target-provisioning-operation.sh", []string{"WORKER_ID=worker", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest, "INPUT_ROOT=" + dir, "WORK_DIR=" + dir, "OPERATIONCTL=" + operationctl, "PROVISION=" + provision})
 	require.NoError(t, err)
