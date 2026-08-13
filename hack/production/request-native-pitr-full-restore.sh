@@ -15,19 +15,18 @@ JQ="$(resolve_executable "$JQ")" || die "JQ must be executable"
 temp_dir="$(mktemp -d)"; trap 'rm -rf -- "$temp_dir"' EXIT
 parameters_file="$temp_dir/parameters.json"
 "$JQ" -ceS '
-  select(has("admission") and has("approve_plan_sha256") and has("artifact_root") and has("full_artifacts") and has("full_snapshot") and has("pd_addrs") and has("plan") and has("remote_inventory") and has("source_range_exclusive") and has("target_snapshot_empty")) |
+  select(has("admission") and has("approve_plan_sha256") and has("artifact_root") and has("full_artifacts") and has("full_snapshot") and has("pd_addrs") and has("plan") and has("remote_inventory") and has("source_range_exclusive") and has("target_provisioning") and has("target_provisioning_sha256") and has("target_snapshot_empty")) |
   select((keys-["admission","approve_plan_sha256","artifact_root","cipher_method","encryption_key_id","full_artifacts","full_snapshot","old_restore_admission","old_restore_admission_sha256","old_target_provisioning","old_target_provisioning_sha256","old_target_retirement","old_target_retirement_sha256","old_target_snapshot_empty","old_target_snapshot_empty_sha256","pd_addrs","plan","remote_inventory","source_range_exclusive","target_provisioning","target_provisioning_sha256","target_replacement_handoff","target_replacement_handoff_sha256","target_snapshot_empty"]|length)==0) |
   select(has("cipher_method")==has("encryption_key_id")) |
   select(has("target_replacement_handoff")==has("target_replacement_handoff_sha256")) |
-  select(has("target_replacement_handoff")==has("target_provisioning") and has("target_replacement_handoff")==has("target_provisioning_sha256")) |
   select(has("target_replacement_handoff")==has("old_target_snapshot_empty") and has("target_replacement_handoff")==has("old_target_snapshot_empty_sha256") and has("target_replacement_handoff")==has("old_target_provisioning") and has("target_replacement_handoff")==has("old_target_provisioning_sha256") and has("target_replacement_handoff")==has("old_target_retirement") and has("target_replacement_handoff")==has("old_target_retirement_sha256") and has("target_replacement_handoff")==has("old_restore_admission") and has("target_replacement_handoff")==has("old_restore_admission_sha256")) |
   select(.approve_plan_sha256|type=="string" and test("^[a-f0-9]{64}$")) |
   select(.pd_addrs|type=="array" and length>0 and length<=32 and all(.[]; type=="string" and test("^(\\[[^],[:space:]]+\\]|[^\\[\\]:,[:space:]]+):[1-9][0-9]{0,4}$"))) |
   select((.pd_addrs|unique|length)==(.pd_addrs|length)) |
-  select(([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] + (if has("target_replacement_handoff") then [.target_replacement_handoff,.target_provisioning,.old_target_snapshot_empty,.old_target_provisioning,.old_target_retirement,.old_restore_admission] else [] end)) | all(.[]; type=="string" and startswith("/var/lib/kubebrain-operation/inputs/") and length<=4096 and index("\u0000")==null and (contains("/../")|not) and (endswith("/..")|not))) |
+  select(([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.target_provisioning,.admission] + (if has("target_replacement_handoff") then [.target_replacement_handoff,.old_target_snapshot_empty,.old_target_provisioning,.old_target_retirement,.old_restore_admission] else [] end)) | all(.[]; type=="string" and startswith("/var/lib/kubebrain-operation/inputs/") and length<=4096 and index("\u0000")==null and (contains("/../")|not) and (endswith("/..")|not))) |
   select((has("cipher_method")|not) or (.cipher_method=="aes256-ctr" and (.encryption_key_id|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$")))) |
   select((has("target_replacement_handoff_sha256")|not) or (.target_replacement_handoff_sha256|type=="string" and test("^[a-f0-9]{64}$"))) |
-  select((has("target_provisioning_sha256")|not) or (.target_provisioning_sha256|type=="string" and test("^[a-f0-9]{64}$"))) |
+  select(.target_provisioning_sha256|type=="string" and test("^[a-f0-9]{64}$")) |
   select((has("old_target_snapshot_empty_sha256")|not) or (.old_target_snapshot_empty_sha256|type=="string" and test("^[a-f0-9]{64}$"))) |
   select((has("old_target_provisioning_sha256")|not) or (.old_target_provisioning_sha256|type=="string" and test("^[a-f0-9]{64}$"))) |
   select((has("old_target_retirement_sha256")|not) or (.old_target_retirement_sha256|type=="string" and test("^[a-f0-9]{64}$"))) |

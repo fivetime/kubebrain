@@ -11,13 +11,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/backup/cmd/internal/failedrestore"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
-	"github.com/kubewharf/kubebrain/hack/production/operationaudit"
 )
 
 type options struct {
@@ -51,32 +50,11 @@ func run(o options, now int64) error {
 			return errors.New("all target replacement evidence paths and output are required")
 		}
 	}
-	auditStatus, auditBytes, err := operationaudit.InspectBytes(o.failedAudit)
+	failed, err := failedrestore.Load(o.failedAudit, o.failedParameters, o.oldPlan)
 	if err != nil {
 		return err
 	}
-	audit := auditStatus.Artifact
-	if audit.Namespace != "kubebrain-operations" || audit.Name != audit.OperationID || audit.Instance != "kubebrain" || audit.Type != "NativePITRFullRestore" || audit.Phase != "Failed" || audit.RequestedBy != "platform:native-pitr-full-restore" || audit.Attempt != 2 || audit.MaxAttempts != 2 || audit.ReceiptSHA256 != "" {
-		return errors.New("operation audit is not an exhausted receipt-less native PITR full restore")
-	}
-	parameters, err := readBounded(o.failedParameters)
-	if err != nil {
-		return err
-	}
-	if digest(parameters) != audit.ParametersSHA256 {
-		return errors.New("failed operation parameters do not match its audit artifact")
-	}
-	approvedOldPlan, err := approvedPlanDigest(parameters)
-	if err != nil {
-		return err
-	}
-	oldPlanBytes, oldPlan, err := decodePlan(o.oldPlan)
-	if err != nil {
-		return err
-	}
-	if digest(oldPlanBytes) != approvedOldPlan {
-		return errors.New("failed operation parameters do not approve the supplied old plan")
-	}
+	audit, auditBytes, oldPlanBytes, oldPlan := failed.Audit, failed.AuditBytes, failed.PlanBytes, failed.Plan
 	newPlanBytes, newPlan, err := decodePlan(o.newPlan)
 	if err != nil {
 		return err
@@ -136,59 +114,7 @@ func run(o options, now int64) error {
 }
 
 func approvedPlanDigest(data []byte) (string, error) {
-	var value map[string]json.RawMessage
-	dec := json.NewDecoder(bytes.NewReader(data))
-	if err := dec.Decode(&value); err != nil {
-		return "", fmt.Errorf("decode failed restore parameters: %w", err)
-	}
-	if err := ensureEOF(dec); err != nil {
-		return "", err
-	}
-	baseKeys := []string{"admission", "approve_plan_sha256", "artifact_root", "full_artifacts", "full_snapshot", "pd_addrs", "plan", "remote_inventory", "source_range_exclusive", "target_snapshot_empty"}
-	for _, key := range baseKeys {
-		if _, ok := value[key]; !ok {
-			return "", errors.New("failed restore parameters have an invalid schema")
-		}
-	}
-	allowed := map[string]bool{}
-	for _, key := range append(baseKeys, "cipher_method", "encryption_key_id", "target_replacement_handoff", "target_replacement_handoff_sha256", "target_provisioning", "target_provisioning_sha256", "old_target_snapshot_empty", "old_target_snapshot_empty_sha256", "old_target_provisioning", "old_target_provisioning_sha256", "old_target_retirement", "old_target_retirement_sha256", "old_restore_admission", "old_restore_admission_sha256") {
-		allowed[key] = true
-	}
-	for key := range value {
-		if !allowed[key] {
-			return "", errors.New("failed restore parameters have an invalid schema")
-		}
-	}
-	_, cipher := value["cipher_method"]
-	_, keyID := value["encryption_key_id"]
-	if cipher != keyID {
-		return "", errors.New("failed restore parameters have an invalid encryption schema")
-	}
-	replacementKeys := []string{"target_replacement_handoff", "target_replacement_handoff_sha256", "target_provisioning", "target_provisioning_sha256"}
-	replacementCount := 0
-	for _, key := range replacementKeys {
-		if _, ok := value[key]; ok {
-			replacementCount++
-		}
-	}
-	if replacementCount != 0 && replacementCount != len(replacementKeys) {
-		return "", errors.New("failed restore parameters have an invalid replacement schema")
-	}
-	retirementKeys := []string{"old_target_snapshot_empty", "old_target_snapshot_empty_sha256", "old_target_provisioning", "old_target_provisioning_sha256", "old_target_retirement", "old_target_retirement_sha256", "old_restore_admission", "old_restore_admission_sha256"}
-	retirementCount := 0
-	for _, key := range retirementKeys {
-		if _, ok := value[key]; ok {
-			retirementCount++
-		}
-	}
-	if retirementCount != 0 && (retirementCount != len(retirementKeys) || replacementCount != len(replacementKeys)) {
-		return "", errors.New("failed restore parameters have an invalid retirement schema")
-	}
-	var approved string
-	if err := json.Unmarshal(value["approve_plan_sha256"], &approved); err != nil || len(approved) != 64 {
-		return "", errors.New("failed restore parameters contain no approved plan digest")
-	}
-	return approved, nil
+	return failedrestore.ApprovedPlanDigest(data)
 }
 
 func decodePlan(path string) ([]byte, nativepitr.Plan, error) {
@@ -273,15 +199,4 @@ func writeExclusive(path string, value nativepitr.TargetReplacementHandoff) erro
 func digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func ensureEOF(dec *json.Decoder) error {
-	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("failed restore parameters contain trailing JSON")
-		}
-		return err
-	}
-	return nil
 }

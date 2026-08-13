@@ -17,7 +17,10 @@ import (
 func TestRunNativePITRFullRestoreOperationPublishesDurableReceipt(t *testing.T) {
 	dir := t.TempDir()
 	parameters := filepath.Join(dir, "parameters.json")
-	parameterBytes := []byte(`{"admission":"/var/lib/kubebrain-operation/inputs/admission.json","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"/var/lib/kubebrain-operation/inputs/artifact","full_artifacts":"/var/lib/kubebrain-operation/inputs/artifacts.json","full_snapshot":"/var/lib/kubebrain-operation/inputs/full.json","pd_addrs":["pd-1:2379","pd-0:2379"],"plan":"/var/lib/kubebrain-operation/inputs/plan.json","remote_inventory":"/var/lib/kubebrain-operation/inputs/inventory.json","source_range_exclusive":"/var/lib/kubebrain-operation/inputs/source.json","target_snapshot_empty":"/var/lib/kubebrain-operation/inputs/target.json"}`)
+	provisioning := filepath.Join(dir, "provisioning.json")
+	provisioningBytes := []byte("provisioning\n")
+	require.NoError(t, os.WriteFile(provisioning, provisioningBytes, 0o600))
+	parameterBytes := []byte(fmt.Sprintf(`{"admission":"%[1]s/admission.json","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/artifact","full_artifacts":"%[1]s/artifacts.json","full_snapshot":"%[1]s/full.json","pd_addrs":["pd-1:2379","pd-0:2379"],"plan":"%[1]s/plan.json","remote_inventory":"%[1]s/inventory.json","source_range_exclusive":"%[1]s/source.json","target_provisioning":"%[2]s","target_provisioning_sha256":"%[3]x","target_snapshot_empty":"%[1]s/target.json"}`, dir, provisioning, sha256.Sum256(provisioningBytes)))
 	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
 	digest := fmt.Sprintf("%x", sha256.Sum256(parameterBytes))
 	operationLog := filepath.Join(dir, "operation.log")
@@ -39,7 +42,7 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	base := []string{
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + operationctl, "RESTORE_COMMAND=" + restore, "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=" + br,
-		"WORK_DIR=" + dir, "TLS_DIR=" + tlsDir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "TLS_DIR=" + tlsDir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
 		"OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=1",
 	}
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", base)
@@ -51,7 +54,7 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	args := string(mustReadProductionFile(t, restoreLog))
 	require.Contains(t, args, "--pd-addrs=pd-1:2379,pd-0:2379")
 	require.Contains(t, args, "--approve-plan-sha256="+strings.Repeat("a", 64))
-	require.Contains(t, args, "--restore-admission=/var/lib/kubebrain-operation/inputs/admission.json")
+	require.Contains(t, args, "--restore-admission="+filepath.Join(dir, "admission.json"))
 	name := "native-pitr-restore-" + digest[:20]
 	receipt := filepath.Join(dir, name+".native-pitr-full-restore.json")
 	require.FileExists(t, receipt)
@@ -70,7 +73,7 @@ func TestRunNativePITRFullRestoreOperationReconcilesReceiptWithoutBR(t *testing.
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
 		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
-		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=2",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=2",
 	})
 	require.NoError(t, err, string(output))
 	operations := string(mustReadProductionFile(t, operationLog))
@@ -171,7 +174,7 @@ func TestRunNativePITRFullRestoreOperationFailsClosedWithoutReceipt(t *testing.T
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
 		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
-		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
 	})
 	require.Error(t, err, string(output))
 	operations := string(mustReadProductionFile(t, operationLog))
@@ -215,7 +218,7 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	base := append(os.Environ(),
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT="+parameters, "EXPECTED_DIGEST="+digest,
 		"OPERATIONCTL="+writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND="+restore, "RECEIPT_VERIFY="+writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
-		"WORK_DIR="+dir, "TLS_DIR="+tlsDir, "OPERATION_LOG="+operationLog, "RESTORE_CALL_LOG="+callLog,
+		"WORK_DIR="+dir, "INPUT_ROOT="+dir, "TLS_DIR="+tlsDir, "OPERATION_LOG="+operationLog, "RESTORE_CALL_LOG="+callLog,
 		"ATTEMPT=1", "HEARTBEAT_INTERVAL_SECONDS=30", "BLOCK_FINAL_HEARTBEAT=true", "DURABLE_RECEIPT="+receipt, "BLOCK_MARKER="+marker,
 	)
 	command := exec.Command("bash", "run-native-pitr-full-restore-operation.sh")
@@ -233,7 +236,7 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
 		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=" + restore, "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
-		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_CALL_LOG=" + callLog, "ATTEMPT=2",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_CALL_LOG=" + callLog, "ATTEMPT=2",
 	})
 	require.NoError(t, err, string(output))
 	require.Equal(t, "restore\n", string(mustReadProductionFile(t, callLog)), "attempt 2 must not execute BR-backed restore again")
@@ -249,7 +252,7 @@ func TestNativePITRFullRestoreRejectsInvalidDurableReceiptWithoutSecondBR(t *tes
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
 		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
 		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, false), "BR_BINARY=/bin/true",
-		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
 	})
 	require.Error(t, err, string(output))
 	operations := string(mustReadProductionFile(t, operationLog))
@@ -260,7 +263,10 @@ func TestNativePITRFullRestoreRejectsInvalidDurableReceiptWithoutSecondBR(t *tes
 func writeNativeRestoreParameters(t *testing.T, dir string) (string, string) {
 	t.Helper()
 	path := filepath.Join(dir, "parameters.json")
-	data := []byte(`{"admission":"/var/lib/kubebrain-operation/inputs/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"/var/lib/kubebrain-operation/inputs/root","full_artifacts":"/var/lib/kubebrain-operation/inputs/fa","full_snapshot":"/var/lib/kubebrain-operation/inputs/fs","pd_addrs":["pd:2379"],"plan":"/var/lib/kubebrain-operation/inputs/p","remote_inventory":"/var/lib/kubebrain-operation/inputs/ri","source_range_exclusive":"/var/lib/kubebrain-operation/inputs/s","target_snapshot_empty":"/var/lib/kubebrain-operation/inputs/t"}`)
+	provisioning := filepath.Join(dir, "provisioning.json")
+	provisioningBytes := []byte("provisioning\n")
+	require.NoError(t, os.WriteFile(provisioning, provisioningBytes, 0o600))
+	data := []byte(fmt.Sprintf(`{"admission":"%[1]s/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"%[1]s/root","full_artifacts":"%[1]s/fa","full_snapshot":"%[1]s/fs","pd_addrs":["pd:2379"],"plan":"%[1]s/p","remote_inventory":"%[1]s/ri","source_range_exclusive":"%[1]s/s","target_provisioning":"%[2]s","target_provisioning_sha256":"%[3]x","target_snapshot_empty":"%[1]s/t"}`, dir, provisioning, sha256.Sum256(provisioningBytes)))
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 	return path, fmt.Sprintf("%x", sha256.Sum256(data))
 }

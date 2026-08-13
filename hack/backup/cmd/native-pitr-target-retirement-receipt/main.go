@@ -22,15 +22,16 @@ func main() {
 	target := flag.String("old-target-snapshot-empty", "", "old target empty-snapshot receipt")
 	admission := flag.String("old-restore-admission", "", "old restore admission receipt")
 	output := flag.String("output", "", "new durable receipt path")
+	verifyOnly := flag.Bool("verify-only", false, "verify the input and lineage without publishing")
 	flag.Parse()
-	if err := run(*input, *provisioning, *target, *admission, *output); err != nil {
+	if err := run(*input, *provisioning, *target, *admission, *output, *verifyOnly); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR target retirement receipt:", err)
 		os.Exit(1)
 	}
 }
 
-func run(input, provisioningPath, targetPath, admissionPath, output string) error {
-	if input == "" || provisioningPath == "" || targetPath == "" || admissionPath == "" || output == "" {
+func run(input, provisioningPath, targetPath, admissionPath, output string, verifyOnly bool) error {
+	if input == "" || provisioningPath == "" || targetPath == "" || admissionPath == "" || (!verifyOnly && output == "") || (verifyOnly && output != "") {
 		return errors.New("input, old target evidence, and output are required")
 	}
 	candidateData, err := readBounded(input)
@@ -67,6 +68,9 @@ func run(input, provisioningPath, targetPath, admissionPath, output string) erro
 	}
 	if err := nativepitr.VerifyTargetRetirementBinding(receipt, provisioning, digest(provisioningData), target, admission, digest(admissionData)); err != nil {
 		return err
+	}
+	if verifyOnly {
+		return nil
 	}
 	canonical, err := json.Marshal(receipt)
 	if err != nil {

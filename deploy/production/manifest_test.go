@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -693,7 +694,9 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 			"kubebrain-destroy-executor-workspace",
 		},
 	}
-	require.Len(t, objects, len(expected)*2)
+	// Native PITR restore and target-retirement executors are independently
+	// tested Recreate single-writer deployments and are not rolling templates.
+	require.Len(t, objects, len(expected)*2+4)
 	for name, want := range expected {
 		account := objectByKindAndName(t, objects, "ServiceAccount", name)
 		require.False(t, nestedBool(t, account, "automountServiceAccountToken"))
@@ -892,6 +895,39 @@ func TestNativePITRFullRestoreExecutorIsSingleWriterWithDurableWorkspace(t *test
 	require.Contains(t, text, "kubebrain-native-pitr-full-restore-encryption")
 }
 
+func TestNativePITRTargetRetirementExecutorIsSingleWriterAndMinimallyPrivileged(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-executors.yaml")
+	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-native-pitr-target-retirement-executor")
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
+	require.Equal(t, "Recreate", nestedString(t, deployment, "spec", "strategy", "type"))
+	require.Equal(t, "kubebrain-native-pitr-target-retirement-executor", nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
+	containers, _, _ := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "containers")
+	container := containers[0].(map[string]any)
+	require.Contains(t, container["args"].([]any)[0], "run-native-pitr-target-retirement-operation.sh")
+
+	rbac := decodeManifest(t, "kubebrain-native-pitr-target-retirement-rbac.yaml")
+	role := objectByKindAndName(t, rbac, "Role", "kubebrain-native-pitr-target-retirement-executor")
+	data, err := json.Marshal(role.Object)
+	require.NoError(t, err)
+	text := string(data)
+	require.Contains(t, text, "tidbclusters")
+	require.Contains(t, text, "persistentvolumeclaims")
+	require.NotContains(t, text, "persistentvolumes\",\"verbs\":[\"delete")
+	require.NotContains(t, text, "statefulsets")
+	clusterRole := objectByKindAndName(t, rbac, "ClusterRole", "kubebrain-native-pitr-target-retirement-inspector")
+	clusterData, err := json.Marshal(clusterRole.Object)
+	require.NoError(t, err)
+	require.NotContains(t, string(clusterData), "delete")
+	requestAdmission := decodeManifest(t, "kubebrain-native-pitr-target-retirement-requester-admission.yaml")
+	require.Len(t, requestAdmission, 4)
+	requestRBAC := decodeManifest(t, "kubebrain-native-pitr-target-retirement-requester-rbac.yaml")
+	requestRole := objectByKindAndName(t, requestRBAC, "Role", "kubebrain-native-pitr-target-retirement-requester")
+	requestBytes, err := json.Marshal(requestRole.Object)
+	require.NoError(t, err)
+	require.NotContains(t, string(requestBytes), "update")
+	require.NotContains(t, string(requestBytes), "delete")
+}
+
 func TestNativePITRFullRestoreHasPinnedIsolatedRuntimeImage(t *testing.T) {
 	data, err := os.ReadFile("../../Dockerfile")
 	require.NoError(t, err)
@@ -1085,6 +1121,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
 		"kubebrain-native-pitr-full-backup-executor",
 		"kubebrain-native-pitr-full-restore-executor",
+		"kubebrain-native-pitr-target-retirement-executor",
 		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",

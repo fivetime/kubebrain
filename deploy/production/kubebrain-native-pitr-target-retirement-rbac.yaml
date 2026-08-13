@@ -1,0 +1,25 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: kubebrain-native-pitr-target-retirement-executor, namespace: tidb-cluster}
+rules:
+  - {apiGroups: [pingcap.com], resources: [tidbclusters], verbs: [get, delete]}
+  - {apiGroups: [""], resources: [persistentvolumeclaims], verbs: [get, delete]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: kubebrain-native-pitr-target-retirement-executor, namespace: tidb-cluster}
+subjects: [{kind: ServiceAccount, name: kubebrain-native-pitr-target-retirement-executor, namespace: kubebrain-operations}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: kubebrain-native-pitr-target-retirement-executor}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: kubebrain-native-pitr-target-retirement-inspector}
+rules:
+  - {apiGroups: [""], resources: [persistentvolumes], verbs: [get]}
+  - {apiGroups: [storage.k8s.io], resources: [volumeattachments], verbs: [list]}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: kubebrain-native-pitr-target-retirement-inspector}
+subjects: [{kind: ServiceAccount, name: kubebrain-native-pitr-target-retirement-executor, namespace: kubebrain-operations}]
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: kubebrain-native-pitr-target-retirement-inspector}

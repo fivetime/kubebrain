@@ -12,7 +12,7 @@ import (
 
 func TestApprovedPlanDigestRejectsUnknownAndPartialParameters(t *testing.T) {
 	digest := strings.Repeat("a", 64)
-	valid := `{"admission":"a","approve_plan_sha256":"` + digest + `","artifact_root":"r","full_artifacts":"fa","full_snapshot":"fs","pd_addrs":["pd:2379"],"plan":"p","remote_inventory":"ri","source_range_exclusive":"s","target_snapshot_empty":"t"}`
+	valid := `{"admission":"a","approve_plan_sha256":"` + digest + `","artifact_root":"r","full_artifacts":"fa","full_snapshot":"fs","pd_addrs":["pd:2379"],"plan":"p","remote_inventory":"ri","source_range_exclusive":"s","target_provisioning":"tp","target_provisioning_sha256":"` + digest + `","target_snapshot_empty":"t"}`
 	got, err := approvedPlanDigest([]byte(valid))
 	require.NoError(t, err)
 	require.Equal(t, digest, got)
@@ -59,8 +59,8 @@ func TestApprovedPlanDigestRequiresPairedEncryptionFields(t *testing.T) {
 
 func TestApprovedPlanDigestAcceptsOnlyCompletePriorReplacementGroup(t *testing.T) {
 	digest := strings.Repeat("a", 64)
-	base := `{"admission":"a","approve_plan_sha256":"` + digest + `","artifact_root":"r","full_artifacts":"fa","full_snapshot":"fs","pd_addrs":["pd:2379"],"plan":"p","remote_inventory":"ri","source_range_exclusive":"s","target_snapshot_empty":"t"`
-	complete := base + `,"target_provisioning":"tp","target_provisioning_sha256":"` + digest + `","target_replacement_handoff":"rh","target_replacement_handoff_sha256":"` + digest + `"}`
+	base := `{"admission":"a","approve_plan_sha256":"` + digest + `","artifact_root":"r","full_artifacts":"fa","full_snapshot":"fs","pd_addrs":["pd:2379"],"plan":"p","remote_inventory":"ri","source_range_exclusive":"s","target_provisioning":"tp","target_provisioning_sha256":"` + digest + `","target_snapshot_empty":"t"`
+	complete := base + `,"target_replacement_handoff":"rh","target_replacement_handoff_sha256":"` + digest + `"}`
 	got, err := approvedPlanDigest([]byte(complete))
 	require.NoError(t, err)
 	require.Equal(t, digest, got)

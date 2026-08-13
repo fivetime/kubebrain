@@ -37,18 +37,17 @@ trap cleanup EXIT INT TERM
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
 [[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR restore parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
-$JQ -e --arg input_root "$INPUT_ROOT" '(has("admission") and has("approve_plan_sha256") and has("artifact_root") and has("full_artifacts") and has("full_snapshot") and has("pd_addrs") and has("plan") and has("remote_inventory") and has("source_range_exclusive") and has("target_snapshot_empty")) and
+$JQ -e --arg input_root "$INPUT_ROOT" '(has("admission") and has("approve_plan_sha256") and has("artifact_root") and has("full_artifacts") and has("full_snapshot") and has("pd_addrs") and has("plan") and has("remote_inventory") and has("source_range_exclusive") and has("target_provisioning") and has("target_provisioning_sha256") and has("target_snapshot_empty")) and
   ((keys-["admission","approve_plan_sha256","artifact_root","cipher_method","encryption_key_id","full_artifacts","full_snapshot","old_restore_admission","old_restore_admission_sha256","old_target_provisioning","old_target_provisioning_sha256","old_target_retirement","old_target_retirement_sha256","old_target_snapshot_empty","old_target_snapshot_empty_sha256","pd_addrs","plan","remote_inventory","source_range_exclusive","target_provisioning","target_provisioning_sha256","target_replacement_handoff","target_replacement_handoff_sha256","target_snapshot_empty"]|length)==0) and
   (has("cipher_method")==has("encryption_key_id")) and
   (has("target_replacement_handoff")==has("target_replacement_handoff_sha256")) and
-  (has("target_replacement_handoff")==has("target_provisioning") and has("target_replacement_handoff")==has("target_provisioning_sha256")) and
   (has("target_replacement_handoff")==has("old_target_snapshot_empty") and has("target_replacement_handoff")==has("old_target_snapshot_empty_sha256") and has("target_replacement_handoff")==has("old_target_provisioning") and has("target_replacement_handoff")==has("old_target_provisioning_sha256") and has("target_replacement_handoff")==has("old_target_retirement") and has("target_replacement_handoff")==has("old_target_retirement_sha256") and has("target_replacement_handoff")==has("old_restore_admission") and has("target_replacement_handoff")==has("old_restore_admission_sha256")) and
   (.approve_plan_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
   (.pd_addrs|type=="array" and length>0 and length<=32 and all(.[]; type=="string" and length>0 and (contains(",")|not))) and
-  (([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] + (if has("target_replacement_handoff") then [.target_replacement_handoff,.target_provisioning,.old_target_snapshot_empty,.old_target_provisioning,.old_target_retirement,.old_restore_admission] else [] end)) | all(.[]; type=="string" and startswith($input_root+"/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and
+  (([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.target_provisioning,.admission] + (if has("target_replacement_handoff") then [.target_replacement_handoff,.old_target_snapshot_empty,.old_target_provisioning,.old_target_retirement,.old_restore_admission] else [] end)) | all(.[]; type=="string" and startswith($input_root+"/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and
   ((has("cipher_method")|not) or (.cipher_method=="aes256-ctr" and (.encryption_key_id|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$")))) and
   ((has("target_replacement_handoff_sha256")|not) or (.target_replacement_handoff_sha256|type=="string" and test("^[a-f0-9]{64}$"))) and
-  ((has("target_provisioning_sha256")|not) or (.target_provisioning_sha256|type=="string" and test("^[a-f0-9]{64}$"))) and
+  (.target_provisioning_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
   ((has("old_target_snapshot_empty_sha256")|not) or (.old_target_snapshot_empty_sha256|type=="string" and test("^[a-f0-9]{64}$"))) and
   ((has("old_target_provisioning_sha256")|not) or (.old_target_provisioning_sha256|type=="string" and test("^[a-f0-9]{64}$"))) and
   ((has("old_target_retirement_sha256")|not) or (.old_target_retirement_sha256|type=="string" and test("^[a-f0-9]{64}$"))) and
@@ -61,6 +60,9 @@ receipt="$WORK_DIR/${name}.native-pitr-full-restore.json"
 verify_args=(--plan="$($JQ -r .plan "$params")" --full-artifacts="$($JQ -r .full_artifacts "$params")"
   --source-range-exclusive="$($JQ -r .source_range_exclusive "$params")" --target-snapshot-empty="$($JQ -r .target_snapshot_empty "$params")"
   --restore-admission="$($JQ -r .admission "$params")" --approve-plan-sha256="$($JQ -r .approve_plan_sha256 "$params")")
+target_provisioning="$($JQ -r .target_provisioning "$params")"
+[[ "$(sha "$target_provisioning")" == "$($JQ -r .target_provisioning_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "target provisioning receipt digest mismatch" >/dev/null; exit 1; }
+verify_args+=(--target-provisioning="$target_provisioning")
 if $JQ -e 'has("cipher_method")' "$params" >/dev/null; then
   verify_args+=(--encryption=aes256-ctr --encryption-key-id="$key_id")
 else
@@ -69,15 +71,13 @@ fi
 if $JQ -e 'has("target_replacement_handoff")' "$params" >/dev/null; then
   replacement_handoff="$($JQ -r .target_replacement_handoff "$params")"
   [[ "$(sha "$replacement_handoff")" == "$($JQ -r .target_replacement_handoff_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "target replacement handoff digest mismatch" >/dev/null; exit 1; }
-  target_provisioning="$($JQ -r .target_provisioning "$params")"
-  [[ "$(sha "$target_provisioning")" == "$($JQ -r .target_provisioning_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "target provisioning receipt digest mismatch" >/dev/null; exit 1; }
   old_target="$($JQ -r .old_target_snapshot_empty "$params")"; old_provisioning="$($JQ -r .old_target_provisioning "$params")"; old_retirement="$($JQ -r .old_target_retirement "$params")"
   [[ "$(sha "$old_target")" == "$($JQ -r .old_target_snapshot_empty_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "old target-empty receipt digest mismatch" >/dev/null; exit 1; }
   [[ "$(sha "$old_provisioning")" == "$($JQ -r .old_target_provisioning_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "old target provisioning receipt digest mismatch" >/dev/null; exit 1; }
   [[ "$(sha "$old_retirement")" == "$($JQ -r .old_target_retirement_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "old target retirement receipt digest mismatch" >/dev/null; exit 1; }
   old_admission="$($JQ -r .old_restore_admission "$params")"
   [[ "$(sha "$old_admission")" == "$($JQ -r .old_restore_admission_sha256 "$params")" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "old restore admission receipt digest mismatch" >/dev/null; exit 1; }
-  verify_args+=(--target-replacement-handoff="$replacement_handoff" --target-provisioning="$target_provisioning" --old-target-snapshot-empty="$old_target" --old-target-provisioning="$old_provisioning" --old-target-retirement="$old_retirement" --old-restore-admission="$old_admission")
+  verify_args+=(--target-replacement-handoff="$replacement_handoff" --old-target-snapshot-empty="$old_target" --old-target-provisioning="$old_provisioning" --old-target-retirement="$old_retirement" --old-restore-admission="$old_admission")
 fi
 if [[ "$attempt" == 2 ]]; then
   if [[ -s "$receipt" ]] && "$RECEIPT_VERIFY" --receipt="$receipt" "${verify_args[@]}"; then

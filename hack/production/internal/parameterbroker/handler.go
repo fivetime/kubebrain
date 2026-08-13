@@ -25,19 +25,20 @@ import (
 const maxTokenBytes = 16 << 10
 
 var serviceAccountTypes = map[string]string{
-	"kubebrain-backup-executor":                      "Backup",
-	"kubebrain-native-pitr-full-backup-executor":     "NativePITRFullBackup",
-	"kubebrain-native-pitr-full-restore-executor":    "NativePITRFullRestore",
-	"kubebrain-backup-deletion-executor":             "BackupDeletion",
-	"kubebrain-cold-physical-snapshot-executor":      "ColdPhysicalSnapshot",
-	"kubebrain-cold-physical-restore-executor":       "ColdPhysicalRestore",
-	"kubebrain-legacy-snapshot-remediation-executor": "LegacySnapshotHistoryRemediation",
-	"kubebrain-restore-cutover-executor":             "RestoreCutover",
-	"kubebrain-post-restore-audit-executor":          "PostRestoreAudit",
-	"kubebrain-certificate-rotation-executor":        "CertificateRotation",
-	"kubebrain-tikv-transaction-repair-executor":     "TiKVTransactionRepair",
-	"kubebrain-tikv-transaction-recovery-executor":   "TiKVTransactionRecovery",
-	"kubebrain-destroy-executor":                     "Destroy",
+	"kubebrain-backup-executor":                        "Backup",
+	"kubebrain-native-pitr-full-backup-executor":       "NativePITRFullBackup",
+	"kubebrain-native-pitr-full-restore-executor":      "NativePITRFullRestore",
+	"kubebrain-native-pitr-target-retirement-executor": "NativePITRTargetRetirement",
+	"kubebrain-backup-deletion-executor":               "BackupDeletion",
+	"kubebrain-cold-physical-snapshot-executor":        "ColdPhysicalSnapshot",
+	"kubebrain-cold-physical-restore-executor":         "ColdPhysicalRestore",
+	"kubebrain-legacy-snapshot-remediation-executor":   "LegacySnapshotHistoryRemediation",
+	"kubebrain-restore-cutover-executor":               "RestoreCutover",
+	"kubebrain-post-restore-audit-executor":            "PostRestoreAudit",
+	"kubebrain-certificate-rotation-executor":          "CertificateRotation",
+	"kubebrain-tikv-transaction-repair-executor":       "TiKVTransactionRepair",
+	"kubebrain-tikv-transaction-recovery-executor":     "TiKVTransactionRecovery",
+	"kubebrain-destroy-executor":                       "Destroy",
 }
 
 type Handler struct {

@@ -46,3 +46,12 @@ func TestReplacementProvisioningRejectsOldStorageReuse(t *testing.T) {
 		require.Error(t, VerifyReplacementProvisioning(oldReceipt, newReceipt, oldTarget, newTarget))
 	}
 }
+
+func TestTargetProvisioningBindingRequiresExactTopology(t *testing.T) {
+	target := validTarget()
+	target.CheckedAtUnix = 11
+	receipt := provisioningReceipt(target.ClusterID, "target")
+	require.NoError(t, VerifyTargetProvisioningBinding(receipt, target))
+	receipt.PDReplicas++
+	require.Error(t, VerifyTargetProvisioningBinding(receipt, target))
+}

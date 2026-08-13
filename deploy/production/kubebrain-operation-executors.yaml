@@ -25,6 +25,14 @@ automountServiceAccountToken: false
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: kubebrain-native-pitr-target-retirement-executor
+  namespace: kubebrain-operations
+  labels: {app.kubernetes.io/name: kubebrain-native-pitr-target-retirement-executor, app.kubernetes.io/part-of: kubebrain}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
   name: kubebrain-backup-deletion-executor
   namespace: kubebrain-operations
   labels: {app.kubernetes.io/name: kubebrain-backup-deletion-executor, app.kubernetes.io/part-of: kubebrain}
@@ -364,6 +372,53 @@ spec:
         - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         - {name: tls, secret: {secretName: kubebrain-native-pitr-full-restore-tls, defaultMode: 0440}}
         - {name: encryption, secret: {secretName: kubebrain-native-pitr-full-restore-encryption, defaultMode: 0440, optional: true, items: [{key: key, path: key}, {key: key-id, path: key-id}]}}
+        - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
+        - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubebrain-native-pitr-target-retirement-executor
+  namespace: kubebrain-operations
+  labels: &nativePITRTargetRetirementLabels {app.kubernetes.io/name: kubebrain-native-pitr-target-retirement-executor, app.kubernetes.io/part-of: kubebrain}
+spec:
+  replicas: 0
+  strategy: {type: Recreate}
+  selector: {matchLabels: *nativePITRTargetRetirementLabels}
+  template:
+    metadata: {labels: *nativePITRTargetRetirementLabels}
+    spec:
+      serviceAccountName: kubebrain-native-pitr-target-retirement-executor
+      automountServiceAccountToken: true
+      securityContext: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, fsGroup: 65532, fsGroupChangePolicy: OnRootMismatch, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: executor
+          image: kubebrain:dev
+          imagePullPolicy: IfNotPresent
+          command: [/usr/local/bin/kubebrain-operation-worker]
+          args: [--executable=/opt/kubebrain/hack/production/run-native-pitr-target-retirement-operation.sh, --idle-delay=10s, --failure-delay=15s]
+          env:
+            - {name: WORKER_ID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
+            - {name: OPERATIONCTL, value: /usr/local/bin/kubebrain-operationctl}
+            - {name: OPERATION_NAMESPACE, value: kubebrain-operations}
+            - {name: OPERATION_NAMESPACE_INVENTORY_CONFIGMAP, value: kubebrain-backup-scheduler-inventory}
+            - {name: OPERATION_NAMESPACE_INVENTORY_NAMESPACE, value: kubebrain-operations}
+            - {name: OPERATION_NAMESPACE_INVENTORY_KEY, value: namespaces.json}
+            - {name: OPERATION_PARAMETERS_ENDPOINT, value: "https://kubebrain-operation-parameter-broker.kubebrain-operations.svc"}
+            - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
+            - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
+            - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
+            - {name: KUBE_CONTEXT, value: in-cluster}
+          resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {cpu: "1", memory: 512Mi}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          volumeMounts:
+            - {name: workspace, mountPath: /var/lib/kubebrain-operation}
+            - {name: tmp, mountPath: /tmp}
+            - {name: parameter-token, mountPath: /var/run/secrets/kubebrain-parameter, readOnly: true}
+            - {name: parameter-ca, mountPath: /var/run/secrets/kubebrain-parameter-ca, readOnly: true}
+      volumes:
+        - {name: workspace, persistentVolumeClaim: {claimName: kubebrain-native-pitr-full-restore-executor-workspace}}
+        - {name: tmp, emptyDir: {sizeLimit: 64Mi}}
         - {name: parameter-token, projected: {defaultMode: 0440, sources: [{serviceAccountToken: {path: token, audience: kubebrain-operation-parameters, expirationSeconds: 3600}}]}}
         - {name: parameter-ca, configMap: {name: kubebrain-operation-parameter-broker-ca, items: [{key: ca.crt, path: ca.crt}]}}
 ---

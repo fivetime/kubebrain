@@ -112,6 +112,15 @@ func VerifyReplacementProvisioning(oldReceipt, newReceipt TargetProvisioningRece
 	return nil
 }
 
+func VerifyTargetProvisioningBinding(receipt TargetProvisioningReceipt, target TargetSnapshotEmptyReceipt) error {
+	if err := receipt.Validate(); err != nil { return err }
+	if err := target.Validate(); err != nil { return err }
+	if receipt.ClusterID != target.ClusterID || receipt.ObservedAtUnix > target.CheckedAtUnix || receipt.PDReplicas != len(target.PDAddrs) || receipt.TiKVReplicas != len(target.Stores) {
+		return errors.New("target provisioning does not bind the exact target-empty topology")
+	}
+	return nil
+}
+
 func DecodeTargetProvisioningReceipt(reader io.Reader) (TargetProvisioningReceipt, error) {
 	var receipt TargetProvisioningReceipt
 	dec := json.NewDecoder(reader)

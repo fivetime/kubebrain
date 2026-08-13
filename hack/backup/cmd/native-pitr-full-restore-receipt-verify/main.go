@@ -90,6 +90,20 @@ func verify(o options) error {
 	if err != nil {
 		return err
 	}
+	if o.targetProvisioning == "" {
+		return errors.New("target provisioning receipt is required")
+	}
+	provisioningBytes, err := readBounded(o.targetProvisioning)
+	if err != nil {
+		return err
+	}
+	provisioning, err := nativepitr.DecodeTargetProvisioningReceipt(bytes.NewReader(provisioningBytes))
+	if err != nil {
+		return err
+	}
+	if err := nativepitr.VerifyTargetProvisioningBinding(provisioning, target); err != nil {
+		return err
+	}
 	admissionBytes, err := readBounded(o.admission)
 	if err != nil {
 		return err
@@ -109,10 +123,10 @@ func verify(o options) error {
 	if err := nativepitr.VerifyFullRestoreOperationBinding(receipt, plan, artifacts, source, target, admission, binding); err != nil {
 		return err
 	}
-	if o.targetReplacement == "" && o.targetProvisioning == "" && o.oldTarget == "" && o.oldProvisioning == "" && o.oldRetirement == "" && o.oldAdmission == "" {
+	if o.targetReplacement == "" && o.oldTarget == "" && o.oldProvisioning == "" && o.oldRetirement == "" && o.oldAdmission == "" {
 		return nil
 	}
-	if o.targetReplacement == "" || o.targetProvisioning == "" || o.oldTarget == "" || o.oldProvisioning == "" || o.oldRetirement == "" || o.oldAdmission == "" {
+	if o.targetReplacement == "" || o.oldTarget == "" || o.oldProvisioning == "" || o.oldRetirement == "" || o.oldAdmission == "" {
 		return errors.New("target replacement handoff, old target/provisioning/retirement/admission, and new provisioning receipts must be supplied together")
 	}
 	handoffBytes, err := readBounded(o.targetReplacement)
@@ -120,14 +134,6 @@ func verify(o options) error {
 		return err
 	}
 	handoff, err := nativepitr.DecodeTargetReplacementHandoff(bytes.NewReader(handoffBytes))
-	if err != nil {
-		return err
-	}
-	provisioningBytes, err := readBounded(o.targetProvisioning)
-	if err != nil {
-		return err
-	}
-	provisioning, err := nativepitr.DecodeTargetProvisioningReceipt(bytes.NewReader(provisioningBytes))
 	if err != nil {
 		return err
 	}

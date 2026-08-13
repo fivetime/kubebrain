@@ -2201,6 +2201,14 @@ admission receipt，要求原 gate receipt 为 held 且 active sessions 为零�
 网络策略、provider 删除审计和真实 Kubernetes 演练。若新旧 TidbCluster 复用同一逻辑名称和 Service DNS，必须在
 删除旧目标、创建新目标之前的隔离窗口生成 retirement receipt；新 PD 已接管旧 DNS 后再探测会按设计 fail closed。
 
+自动执行该隔离窗口使用审批型 `NativePITRTargetRetirement` Operation。request parameters 必须摘要绑定 exhausted、
+receipt-less 的第二次失败 restore audit、其 exact parameters/approved plan，以及该次恢复必选的 target provisioning、
+target-empty 和 admission receipt。authorization validator 先证明这些证据属于同一 plan/keyspace/PD cluster 和 PVC/CSI
+拓扑；executor 才能用 Kubernetes UID precondition 删除 exact TidbCluster 与 PVC。它没有 KubeBrain StatefulSet、PV 或
+VolumeAttachment 删除权限；Retain PV 只读检查后交由 provider 生命周期处理。attempt 2 只能验证共享 workspace 上已有
+retirement receipt 并收敛，不能再次删除。旧 restore parameters 未携带 provisioning receipt 时不满足自动删除资格，
+必须人工核验，不能为兼容旧操作降低证据门槛。
+
 上述执行面现已有独立 pinned restore image 和 replicas=0、`Recreate` 的单 writer Deployment；workspace PVC
 同时承载固定在 `/var/lib/kubebrain-operation/inputs/` 的 evidence/artifact 和不可覆盖 receipt。专用 requester
 RBAC/CEL admission 固定 `NativePITRFullRestore`、platform requester、digest-bound immutable parameters 与

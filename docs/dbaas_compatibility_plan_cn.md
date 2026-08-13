@@ -48808,6 +48808,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同名 replacement 会复用 Service DNS，因此 retirement inspector 必须在旧目标删除后、新目标创建前执行；若 DNS
   已指向新 PD，旧 endpoint 可达门禁会按设计拒绝，不能把新 PD 的可达性误写成旧目标已退役。
 
+- A4555 把 A4554 的只读证明接入受审批生命周期 Operation。所有新 `NativePITRFullRestore` 参数现在强制携带 exact
+  target provisioning path+SHA，runner 在 BR 前复算，最终 receipt verifier 严格绑定 provisioning cluster/topology/
+  observation time 与 target-empty；这使失败操作的物理目标成为原审批的一部分。新增共享 failed-restore evidence
+  parser，统一校验 canonical audit 为 Failed、attempt/maxAttempts=2/2、无 receipt、平台 requester、exact parameters
+  SHA 和 approved plan。`NativePITRTargetRetirement` authorization 再绑定 old plan/target/provisioning/admission 后，
+  executor 只按 TidbCluster UID 与每个 PVC UID precondition 删除；RBAC 不允许删除 PV、VolumeAttachment 或 KubeBrain
+  StatefulSet，PV/attachment 仅只读。删除完成后运行 A4554 inspector 并发布 durable receipt，第二 claim 只能验证/
+  收敛已有 receipt。requester Secret immutable、operation identity digest-bound、maxAttempts=2 且要求独立 approver。
+  单测覆盖 exact UID 删除、名称被 replacement UID 接管时 fail closed、receipt reconcile 零二次删除、provisioning
+  必选 schema、broker/type/RBAC/admission manifests。旧 failed restore 未在 parameters 中绑定 provisioning 的，按设计
+  不获自动退役资格；真实 Kubernetes controller finalizer、Retain PV/provider cleanup 与同名重新 provision 演练仍开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

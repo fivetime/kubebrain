@@ -1,0 +1,34 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-native-pitr-target-retirement-request-operation}
+spec:
+  failurePolicy: Fail
+  matchConstraints: {resourceRules: [{apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}]}
+  matchConditions: [{name: retirement-scope, expression: 'object.spec.type == "NativePITRTargetRetirement" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-requester"'}]
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-requester"', message: target retirement requires its dedicated requester}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-retire-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: target retirement identity is digest-bound}
+    - {expression: 'object.spec.type == "NativePITRTargetRetirement" && object.spec.requestedBy == "platform:native-pitr-target-retirement" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2', message: target retirement operation shape is fixed}
+    - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$") && object.metadata.name.endsWith(object.spec.parametersSHA256.substring(0,20))', message: target retirement parameters are digest-bound}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-native-pitr-target-retirement-request-operation}
+spec: {policyName: kubebrain-native-pitr-target-retirement-request-operation, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-native-pitr-target-retirement-request-parameters}
+spec:
+  failurePolicy: Fail
+  matchConstraints: {resourceRules: [{apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}]}
+  matchConditions: [{name: retirement-parameter-scope, expression: '(object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-retire-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-requester"'}]
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-requester"', message: target retirement parameter Secrets require the dedicated requester}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-retire-[a-f0-9]{20}-parameters$")', message: target retirement parameter Secret identity is fixed}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: target retirement parameters must be one immutable payload}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-native-pitr-target-retirement-request-parameters}
+spec: {policyName: kubebrain-native-pitr-target-retirement-request-parameters, validationActions: [Deny]}

@@ -22,6 +22,8 @@ spec:
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-backup-executor") ||
         (object.spec.type == "NativePITRFullRestore" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-executor") ||
+        (object.spec.type == "NativePITRTargetRetirement" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-target-retirement-executor") ||
         (object.spec.type == "BackupDeletion" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-deletion-executor") ||
         (object.spec.type == "ColdPhysicalSnapshot" &&
