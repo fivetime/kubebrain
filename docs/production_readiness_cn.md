@@ -2963,6 +2963,9 @@ CORRUPT 激活与所有有效 `TxnApply` 在 TiKV generation 上形成提交全�
 单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
 会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在
 shard 上分散。
+验收应同时覆盖两种确定顺序：Alarm 先提交时在途 mutation 回滚；mutation 先提交时该 revision 保留、Alarm 随后封锁
+新写。只验证第一种会掩盖过度拒绝或已提交结果丢失。持续压测还应观察 256 shard 的写分布，避免 cursor/包装层回归为
+固定 shard。
 
 发布前在三 PD/三 TiKV、三独立 kind node 的真实拓扑执行 transaction witness 重启门禁：
 

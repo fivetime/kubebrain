@@ -569,6 +569,58 @@ func TestTxnApplyCommitIsFencedByConcurrentCrossReplicaCorruptActivation(t *test
 	}
 }
 
+func TestTxnApplyBeforeConcurrentCrossReplicaCorruptActivationRemainsCommitted(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	store, err := ibadger.NewKvStorage(ibadger.Config{Dir: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	blockingAlarm := &blockBeforeCommitStorage{
+		KvStorage: store, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	config := Config{Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}
+	writer := NewBackend(store, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	alarmer := NewBackend(blockingAlarm, config, mock.NewMinimalMetrics(ctrl)).(*backend)
+	writer.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	blockingAlarm.trigger.Store(true)
+	alarmResult := make(chan error, 1)
+	go func() { alarmResult <- alarmer.ArmCorrupt(context.Background(), 4499001) }()
+	<-blockingAlarm.entered
+	committedKey := []byte(prefix + "/corrupt-order/write-first")
+	_, revision, err := writer.TxnApply(context.Background(), []TxnWriteOp{{
+		Key: committedKey, Value: []byte("committed-before-alarm"),
+	}}, nil)
+	require.NoError(t, err)
+	require.NotZero(t, revision)
+	close(blockingAlarm.release)
+	require.NoError(t, <-alarmResult)
+
+	value, gotRevision := liveValue(t, writer, context.Background(), committedKey)
+	require.Equal(t, "committed-before-alarm", value)
+	require.Equal(t, revision, gotRevision)
+	_, _, err = writer.TxnApply(context.Background(), []TxnWriteOp{{
+		Key: []byte(prefix + "/corrupt-order/after"), Value: []byte("blocked"),
+	}}, nil)
+	require.ErrorIs(t, err, ErrCorruptAlarmActive)
+}
+
+func TestTxnApplyCorruptCommitGuardDistributesAcrossShards(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	require.NoError(t, b.ArmCorrupt(ctx, 4499002))
+	removed, err := b.DisarmCorrupt(ctx, 4499002)
+	require.NoError(t, err)
+	require.True(t, removed)
+	const writes = corruptAlarmFenceShardCount * 2
+	for i := 0; i < writes; i++ {
+		_, _, err = b.TxnApply(ctx, []TxnWriteOp{{
+			Key: []byte(fmt.Sprintf("%s/corrupt-shard-distribution/%03d", prefix, i)), Value: []byte("v"),
+		}}, nil)
+		require.NoError(t, err)
+	}
+	require.Equal(t, uint64(writes), b.corruptAlarmFenceShard.Load())
+}
+
 func TestTxnApplyRejectsDuplicateKeysBeforeRevisionAllocation(t *testing.T) {
 	for _, tc := range []struct {
 		name string

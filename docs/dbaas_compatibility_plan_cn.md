@@ -48217,6 +48217,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   非法均 fail closed。回归固定 1→2 generation 时 256 shard 全部一致、existing generation 7→8 平滑迁移、单 shard
   腐化拒绝 leadership/write，以及 snapshot 对 partial fence/version 损坏零输出。
 
+- A4500 固定 A4499 全序的反向分支和分片轮转。已有竞态只证明 Arm 先提交时 writer/compactor 回滚；新增双 backend
+  确定性回归反向暂停 Alarm transaction，在其 pre-commit 窗口让 user transaction 先完成，随后释放 Alarm：原 key、
+  value 和 revision 必须保留，Alarm 持久生效且下一笔 TxnApply 返回 `ErrCorruptAlarmActive`。这证明共同 mutation shard
+  给出的不是“一律丢弃并发写”，而是符合 storage commit order 的二选一线性化。另连续执行 512 笔有效 transaction，
+  断言 backend shard cursor 精确前进 512，覆盖两轮 256 shard，防止未来重构退化成固定 shard 的全局热点。definite
+  shard conflict 不会持久化 durable counter，因此重试复用候选 revision；uncertain outcome 若已提交则必在线性序中早于
+  Arm，并继续由 transaction witness resolver 判定，若未提交则由既有 invalid collector slot 路径闭合，不会发布数据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
