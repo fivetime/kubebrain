@@ -368,6 +368,8 @@ func priorityAdmissionReserve(limit uint32) uint32 {
 }
 
 func (s *RPCServer) admitUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	s.leadershipDrainBoundary.RLock()
+	defer s.leadershipDrainBoundary.RUnlock()
 	if err := s.observeClientRequest(ctx, "unary", info.FullMethod); err != nil {
 		return nil, err
 	}

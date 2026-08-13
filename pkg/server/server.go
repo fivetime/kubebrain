@@ -143,12 +143,19 @@ func (s *server) Close() error {
 
 func (s *server) Drain() {
 	s.drainOnce.Do(func() {
-		if s.campaignCancel != nil {
-			s.campaignCancel()
+		release := func() {
+			if s.campaignCancel != nil {
+				s.campaignCancel()
+			}
+			if s.campaignDone != nil {
+				<-s.campaignDone
+			}
 		}
-		if s.campaignDone != nil {
-			<-s.campaignDone
+		if s.etcdServer != nil {
+			s.etcdServer.DrainLeadership(release)
+			return
 		}
+		release()
 	})
 }
 

@@ -112,6 +112,11 @@ type RPCServer struct {
 	// calls on the public listener. AuthEnable drains already-admitted calls
 	// before committing, then new calls observe enabled auth and fail closed.
 	nativeAuthBoundary sync.RWMutex
+	// leadershipDrainBoundary prevents a voluntary leader release from cutting
+	// across an already-admitted unary RPC. DrainLeadership takes the write side,
+	// waits for those calls to return, releases the campaign lease, then lets new
+	// calls route through the newly observed leader.
+	leadershipDrainBoundary sync.RWMutex
 
 	concurrencyClient *clientv3.Client
 
@@ -125,6 +130,17 @@ type RPCServer struct {
 // of a client certificate already verified by the gRPC TLS transport.
 func (s *RPCServer) SetClientCertAuth(enabled bool) {
 	s.clientCertAuth = enabled
+}
+
+// DrainLeadership runs release only after every admitted unary client RPC has
+// completed and holds later unary calls until the release is visible locally.
+// Long-lived Watch and KeepAlive streams deliberately remain connected; their
+// individual writes still pass through unary forwarding or their own epoch
+// fences and must not prevent a rollout from draining forever.
+func (s *RPCServer) DrainLeadership(release func()) {
+	s.leadershipDrainBoundary.Lock()
+	defer s.leadershipDrainBoundary.Unlock()
+	release()
 }
 
 // SetMaxRequestsInFlight sets the process-wide public client RPC limit. A
