@@ -426,6 +426,26 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		if err := m.requireLeaseReady(); err != nil {
 			return err
 		}
+		// waitLeaderReady may span a complete demotion and re-election of this
+		// same ingress replica. The already-received stream message has not been
+		// applied yet, so admit it under the ready snapshot's current epoch rather
+		// than carrying the pre-wait token into the successor term and self-proxying.
+		epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
+			if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
+				return authErr
+			}
+			if !m.srv.peers.EtcdProxyEnabled() {
+				return m.leaseLeaderUnavailable("lease keepalive")
+			}
+			if err := forward(); err != nil {
+				return err
+			}
+			continue
+		}
+		if !m.leaseReady.Load() || m.leaseReadyEpoch.Load() != epoch {
+			return status.Error(codes.Unavailable, "etcdserver: lease state is reloading")
+		}
 
 		renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
 		ttl, err := m.refreshLeaseAuthorized(renewCtx, caller, req.ID, epoch)

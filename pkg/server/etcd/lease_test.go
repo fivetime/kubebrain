@@ -1129,6 +1129,54 @@ func TestLeaseKeepAliveCapturesRevisionBeforeRenewal(t *testing.T) {
 	require.Equal(t, int64(30), stream.sent[0].TTL)
 }
 
+func TestLeaseKeepAliveRecapturesEpochAfterLeaderStartupWait(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const leaseID int64 = 10005
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+
+	var epoch atomic.Uint64
+	epoch.Store(1)
+	var forwarded atomic.Int64
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn: func() (uint64, bool) {
+			return epoch.Load(), true
+		},
+		leaseKeepAliveFn: func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+			forwarded.Add(1)
+			return &etcdserverpb.LeaseKeepAliveResponse{ID: leaseID, TTL: 30}, nil
+		},
+	}
+	server.PrepareLeaseReload()
+	server.SetLeaderReady(false)
+	observed := make(chan struct{}, 1)
+	server.backend = observingRevisionBackend{BackendShim: server.backend, observed: observed}
+
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	select {
+	case <-observed:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not enter the old leadership epoch")
+	}
+
+	// The same ingress replica wins a successor term while this already-received
+	// stream message is parked behind startup. Once the new snapshot is ready it
+	// must renew locally under term 2, not treat term 1 as a reason to self-proxy.
+	epoch.Store(2)
+	require.NoError(t, server.ReloadLeases(context.Background()))
+	server.SetLeaderReady(true)
+
+	require.NoError(t, <-done)
+	require.Zero(t, forwarded.Load())
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, leaseID, stream.sent[0].ID)
+	require.Positive(t, stream.sent[0].TTL)
+}
+
 func TestLeaseGrantDuplicateAndTooLargeTTLMatchEtcdErrors(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

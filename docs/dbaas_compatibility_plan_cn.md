@@ -48436,6 +48436,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该用例及维护鉴权/legacy migration 连续 20 轮、backend 全量（44.236s）、`pkg/server/etcd` 全量（165.540s）、相关 race
   10 轮和 backend/server vet 均通过。
 
+- A4524 修复已建立 LeaseKeepAlive stream 跨同副本连续 leadership term 时的错误自转发。对照 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go:leaseKeepAlive`：每条已收到的消息直接调用当前 lessor 的 `LeaseRenew`，
+  demote 后返回 not-primary；KubeBrain 额外用 `waitLeaderReady` 将消息停在新 leader 的 durable startup 门禁后。旧实现却在等待
+  之前捕获 epoch：同一 ingress 若在等待期间从 term 1 demote、又赢得 term 2，reload 完成后仍用 term 1 调用 renew，必然被
+  generation/epoch fence 当成 demoted；启用 proxy 时还会尝试把消息转发给当前 leader（也就是自己），丢掉本可本地完成的续租。
+  现于 startup wait 和 ready 检查后重新读取 `EpochAndLeadingFresh`，并要求该 epoch 与已发布 `leaseReadyEpoch` 精确相等后才给
+  renew context；若等待结束时已不再 leading，则重新执行当前 attachment 授权并走正常 follower forward/unavailable 分支。
+  确定性 RED 让消息先在 term 1 捕获 response revision、停于 startup，随后同副本以 term 2 Reload 并打开门禁；修复后必须在
+  term 2 本地返回正 TTL，proxy 调用计数保持零。该回归 50 轮、KeepAlive 全专项、定向 race 20 轮、`pkg/server/etcd`
+  全量（165.785s）和 vet 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
