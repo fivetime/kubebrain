@@ -196,7 +196,8 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	// bounded startup window instead of rapidly returning Unavailable: grpc-go's
 	// finite retry policy can otherwise exhaust all attempts long before the
 	// caller's deadline during a PD recovery.
-	if err := m.srv.waitLeaderReady(ctx); err != nil {
+	epoch, err = m.srv.waitLeaderReadyEpoch(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if err := m.requireLeaseReady(); err != nil {
@@ -320,7 +321,8 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	// Revoke is a durable lease/key mutation and must not race the new leader's
 	// lease/event/checkpoint reload. Parking here also avoids consuming grpc-go's
 	// finite retry budget on a rapid stream of leadership-fence rejections.
-	if err := m.srv.waitLeaderReady(ctx); err != nil {
+	epoch, err = m.srv.waitLeaderReadyEpoch(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if err := m.requireLeaseReady(); err != nil {

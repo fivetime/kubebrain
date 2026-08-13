@@ -48447,6 +48447,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   term 2 本地返回正 TTL，proxy 调用计数保持零。该回归 50 轮、KeepAlive 全专项、定向 race 20 轮、`pkg/server/etcd`
   全量（165.785s）和 vet 均通过。
 
+- A4525 将 A4524 的任期重新 admission 扩展到全部经过 durable startup wait 的 unary mutation。upstream etcd 的
+  KV/Txn/Compact 与 Lease Grant/Revoke 在当前 Raft leader apply 序列中执行；KubeBrain 因独立 TiKV/PD 与异步 election
+  publication 额外停车等待 lease/event/checkpoint startup。Put、Txn、DeleteRange、Compact、LeaseGrant、LeaseRevoke
+  原先都在停车前捕获 leadership epoch；若同一 replica 在等待期间 term 1→demote→term 2，门禁打开后请求会带 term 1
+  token 进入 term 2 backend，最终被正确的 persistent fence 拒绝，但客户端无端丢失了一次仍可在线性化执行的 unary attempt。
+  现新增 `waitLeaderReadyEpoch`：停车结束后重新读取 fresh epoch，只有当前仍安全 leading 才返回执行 token；term 变化本身不
+  取消尚未 apply 的请求，后续 backend CAS fence 继续覆盖 admission 后再次 demote 的窗口。六分支表驱动 RED 为 backend 注册
+  真实 epoch fence：请求在 term 1 停车，term 2 `ReloadLeases` 后放行，旧实现六项均会得到 stale-token fence，修复后全部成功。
+  该矩阵 10 轮、全部 startup-wait 专项 20 轮、定向 race 10 轮、`pkg/server/etcd` 全量（169.433s）和 vet 均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

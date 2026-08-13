@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,4 +222,77 @@ func TestCompactWaitsForLeaderStartup(t *testing.T) {
 	require.NoError(t, <-done)
 	_, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{Key: []byte("/startup/compact"), Revision: 1})
 	require.ErrorContains(t, err, rpctypes.ErrCompacted.Error())
+}
+
+func TestUnaryMutationsRecaptureEpochAfterLeaderStartupWait(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prepare func(*RPCServer)
+		apply   func(*RPCServer) error
+	}{
+		{name: "put", apply: func(s *RPCServer) error {
+			_, err := s.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/epoch/put"), Value: []byte("v")})
+			return err
+		}},
+		{name: "txn", apply: func(s *RPCServer) error {
+			_, err := s.Txn(context.Background(), &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{
+				Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: []byte("/epoch/txn"), Value: []byte("v")}},
+			}}})
+			return err
+		}},
+		{name: "delete range", prepare: func(s *RPCServer) {
+			_, err := s.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/epoch/delete"), Value: []byte("v")})
+			require.NoError(t, err)
+		}, apply: func(s *RPCServer) error {
+			_, err := s.DeleteRange(context.Background(), &etcdserverpb.DeleteRangeRequest{Key: []byte("/epoch/delete")})
+			return err
+		}},
+		{name: "compact", prepare: func(s *RPCServer) {
+			for i := range 3 {
+				_, err := s.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/epoch/compact"), Value: []byte{byte('0' + i)}})
+				require.NoError(t, err)
+			}
+		}, apply: func(s *RPCServer) error {
+			_, err := s.Compact(context.Background(), &etcdserverpb.CompactionRequest{Revision: 2})
+			return err
+		}},
+		{name: "lease grant", apply: func(s *RPCServer) error {
+			_, err := s.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: 9851, TTL: 300})
+			return err
+		}},
+		{name: "lease revoke", prepare: func(s *RPCServer) {
+			_, err := s.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: 9852, TTL: 300})
+			require.NoError(t, err)
+		}, apply: func(s *RPCServer) error {
+			_, err := s.LeaseRevoke(context.Background(), &etcdserverpb.LeaseRevokeRequest{ID: 9852})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			if tc.prepare != nil {
+				tc.prepare(server)
+			}
+			var epoch atomic.Uint64
+			epoch.Store(1)
+			peers := testPeerService{epochFn: func() (uint64, bool) { return epoch.Load(), true }}
+			server.peers = peers
+			server.backend.(*backendShim).backend.SetLeadershipFence(peers.EpochAndLeadingFresh)
+			server.PrepareLeaseReload()
+			server.SetLeaderReady(false)
+
+			done := make(chan error, 1)
+			go func() { done <- tc.apply(server) }()
+			select {
+			case err := <-done:
+				t.Fatalf("mutation escaped startup gate in term 1: %v", err)
+			case <-time.After(150 * time.Millisecond):
+			}
+			epoch.Store(2)
+			require.NoError(t, server.ReloadLeases(context.Background()))
+			server.SetLeaderReady(true)
+			require.NoError(t, <-done)
+		})
+	}
 }

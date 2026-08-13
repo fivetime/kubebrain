@@ -28,7 +28,9 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"k8s.io/klog/v2"
 
@@ -291,6 +293,21 @@ func (s *RPCServer) waitLeaderReady(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// waitLeaderReadyEpoch admits a mutation only after durable leader startup and
+// captures the term that actually owns the published state. A caller may have
+// entered while an earlier term was leading and remained parked across a full
+// demotion/re-election cycle, so an epoch sampled before the wait is stale.
+func (s *RPCServer) waitLeaderReadyEpoch(ctx context.Context) (uint64, error) {
+	if err := s.waitLeaderReady(ctx); err != nil {
+		return 0, err
+	}
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh {
+		return 0, status.Error(codes.Unavailable, "etcdserver: leadership changed during startup wait")
+	}
+	return epoch, nil
 }
 
 // Close stops lease timers and waits for every lease-owned background task.
