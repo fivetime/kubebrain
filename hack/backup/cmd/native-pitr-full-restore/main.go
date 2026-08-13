@@ -60,7 +60,7 @@ func main() {
 	var o options
 	flag.StringVar(&o.plan, "plan", "", "exact native-pitr-restore-plan.v12 receipt")
 	flag.StringVar(&o.full, "full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
-	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v2 receipt")
+	flag.StringVar(&o.artifacts, "full-artifacts", "", "exact native-pitr-full-artifacts.v3 receipt")
 	flag.StringVar(&o.inventory, "remote-inventory", "", "exact native-pitr-object-inventory.v1 receipt")
 	flag.StringVar(&o.artifactRoot, "artifact-root", "", "absolute local exact-version full backup mirror")
 	flag.StringVar(&o.sourceExclusive, "source-range-exclusive", "", "exact source range-exclusive receipt bound by plan")
@@ -250,7 +250,7 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 }
 
 func verifyMirror(full nativepitr.FullSnapshotReceipt, fullBytes []byte, artifact nativepitr.ArtifactReceipt, inventory pitrinventory.Receipt, inventoryBytes []byte, root string) error {
-	got, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), inventory, digest(inventoryBytes), root)
+	got, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), artifact.BackupAttestation, artifact.BackupAttestationSHA256, inventory, digest(inventoryBytes), root)
 	if err != nil {
 		return fmt.Errorf("reverify local full mirror: %w", err)
 	}

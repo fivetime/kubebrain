@@ -33,9 +33,15 @@ func TestRunVerifiesExactMirror(t *testing.T) {
 	fullBytes, err := json.Marshal(full)
 	require.NoError(t, err)
 	fullPath := filepath.Join(dir, "full.json")
+	attestation, err := nativepitr.BuildFullBackupAttestation(testDigest, testDigest, full.StoragePrefix, full.BackupMetaSHA256, full.BackupTS, []string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=120", "--crypter.method=plaintext"}, 2_000_000_000)
+	require.NoError(t, err)
+	attestationBytes, err := json.Marshal(attestation)
+	require.NoError(t, err)
+	attestationPath := filepath.Join(dir, "attestation.json")
 	root := filepath.Join(dir, "mirror")
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "1"), 0o700))
 	require.NoError(t, os.WriteFile(fullPath, fullBytes, 0o600))
+	require.NoError(t, os.WriteFile(attestationPath, attestationBytes, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "backupmeta"), metaBytes, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "1/write.sst"), content, 0o600))
 	metaDigest := sha256.Sum256(metaBytes)
@@ -46,12 +52,12 @@ func TestRunVerifiesExactMirror(t *testing.T) {
 	inventoryPath := filepath.Join(dir, "inventory.json")
 	require.NoError(t, os.WriteFile(inventoryPath, inventoryBytes, 0o600))
 	var out bytes.Buffer
-	require.NoError(t, run(fullPath, inventoryPath, root, &out))
+	require.NoError(t, run(fullPath, attestationPath, inventoryPath, root, &out))
 	var receipt nativepitr.ArtifactReceipt
 	require.NoError(t, json.Unmarshal(out.Bytes(), &receipt))
 	require.Equal(t, 2, receipt.ObjectCount)
 }
 
 func TestRunRequiresRemoteInventory(t *testing.T) {
-	require.ErrorContains(t, run("", "", "", &bytes.Buffer{}), "required")
+	require.ErrorContains(t, run("", "", "", "", &bytes.Buffer{}), "required")
 }

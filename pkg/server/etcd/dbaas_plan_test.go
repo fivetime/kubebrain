@@ -53,6 +53,22 @@ func TestDBaaSReadinessDescribesRestrictedNativePITRAsFunctionallyClosed(t *test
 	require.NotContains(t, audit, "task/safepoint 生命周期、full+log manifest、transactional restore 及指定时间点语义验收尚未闭环")
 }
 
+func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
+	readiness := readRepoDocument(t, "docs", "production_readiness_cn.md")
+	plan := readDBaaSCompatibilityPlan(t)
+
+	for _, evidence := range []string{
+		"kubebrain.native-pitr-full-backup-attestation.v1",
+		"--crypter.method=plaintext",
+		"kubebrain.native-pitr-full-artifacts.v3",
+		"不能再用 `backupmeta.cipher_iv` 推断加密状态",
+	} {
+		require.Contains(t, readiness, evidence)
+	}
+	require.Contains(t, plan, "A4532 关闭 native PITR full backup")
+	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
+}
+
 func readDBaaSCompatibilityPlan(t *testing.T) string {
 	return readRepoDocument(t, "docs", "dbaas_compatibility_plan_cn.md")
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,12 +45,27 @@ func artifactFixture(t *testing.T, indexed bool) (FullSnapshotReceipt, string, s
 	return full, root, digest
 }
 
+func artifactAttestation(t *testing.T, full FullSnapshotReceipt) FullBackupAttestation {
+	t.Helper()
+	r, err := BuildFullBackupAttestation(digest, digest, full.StoragePrefix, full.BackupMetaSHA256, full.BackupTS,
+		[]string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=" + fmt.Sprint(full.BackupTS), "--crypter.method=plaintext"}, 2_000_000_000)
+	require.NoError(t, err)
+	return r
+}
+
+func artifactAttestationSHA(t *testing.T, full FullSnapshotReceipt) string {
+	t.Helper()
+	sha, err := FullBackupAttestationSHA256(artifactAttestation(t, full))
+	require.NoError(t, err)
+	return sha
+}
+
 func TestVerifyFullArtifactsLegacyAndRecursiveIndex(t *testing.T) {
 	for _, indexed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "recursive index"}[indexed], func(t *testing.T) {
 			full, root, fullDigest := artifactFixture(t, indexed)
 			inventory := inventoryForMirror(t, full.StoragePrefix, root)
-			receipt, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
+			receipt, err := VerifyFullArtifacts(full, fullDigest, artifactAttestation(t, full), artifactAttestationSHA(t, full), inventory, digest, root)
 			require.NoError(t, err)
 			require.True(t, receipt.AllObjectsVerified)
 			wantCount := 2
@@ -83,7 +99,7 @@ func TestVerifyFullArtifactsFailsClosed(t *testing.T) {
 			full, root, fullDigest := artifactFixture(t, false)
 			inventory := inventoryForMirror(t, full.StoragePrefix, root)
 			tt.edit(t, root)
-			_, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
+			_, err := VerifyFullArtifacts(full, fullDigest, artifactAttestation(t, full), artifactAttestationSHA(t, full), inventory, digest, root)
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
@@ -101,7 +117,7 @@ func TestVerifyFullArtifactsRejectsUnsafeMetadata(t *testing.T) {
 		root := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(root, "backupmeta"), metaBytes, 0o600))
 		inventory := inventoryForMirror(t, full.StoragePrefix, root)
-		_, err = VerifyFullArtifacts(full, digest, inventory, digest, root)
+		_, err = VerifyFullArtifacts(full, digest, artifactAttestation(t, full), artifactAttestationSHA(t, full), inventory, digest, root)
 		require.Error(t, err)
 	}
 }
@@ -110,14 +126,21 @@ func TestVerifyFullArtifactsRejectsRemoteVersionMismatch(t *testing.T) {
 	full, root, fullDigest := artifactFixture(t, false)
 	inventory := inventoryForMirror(t, full.StoragePrefix, root)
 	inventory.Entries[0].SHA256 = strings.Repeat("f", 64)
-	_, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
+	_, err := VerifyFullArtifacts(full, fullDigest, artifactAttestation(t, full), artifactAttestationSHA(t, full), inventory, digest, root)
 	require.ErrorContains(t, err, "remote inventory object")
+}
+
+func TestVerifyFullArtifactsRejectsAttestationDigestDrift(t *testing.T) {
+	full, root, fullDigest := artifactFixture(t, false)
+	inventory := inventoryForMirror(t, full.StoragePrefix, root)
+	_, err := VerifyFullArtifacts(full, fullDigest, artifactAttestation(t, full), digest, inventory, digest, root)
+	require.ErrorContains(t, err, "attestation does not bind")
 }
 
 func TestDecodeArtifactReceiptIsStrict(t *testing.T) {
 	full, root, fullDigest := artifactFixture(t, false)
 	inventory := inventoryForMirror(t, full.StoragePrefix, root)
-	receipt, err := VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
+	receipt, err := VerifyFullArtifacts(full, fullDigest, artifactAttestation(t, full), artifactAttestationSHA(t, full), inventory, digest, root)
 	require.NoError(t, err)
 	b, err := json.Marshal(receipt)
 	require.NoError(t, err)
@@ -132,7 +155,15 @@ func TestDecodeArtifactReceiptIsStrict(t *testing.T) {
 	_, err = DecodeArtifactReceipt(strings.NewReader(string(b)))
 	require.ErrorContains(t, err, "manifest digest")
 
-	receipt, err = VerifyFullArtifacts(full, fullDigest, inventory, digest, root)
+	receipt, err = VerifyFullArtifacts(full, fullDigest, artifactAttestation(t, full), artifactAttestationSHA(t, full), inventory, digest, root)
+	require.NoError(t, err)
+	receipt.BackupAttestation.CompletedAtUnix++
+	b, err = json.Marshal(receipt)
+	require.NoError(t, err)
+	_, err = DecodeArtifactReceipt(strings.NewReader(string(b)))
+	require.ErrorContains(t, err, "invalid full-backup attestation")
+
+	receipt, err = VerifyFullArtifacts(full, fullDigest, artifactAttestation(t, full), artifactAttestationSHA(t, full), inventory, digest, root)
 	require.NoError(t, err)
 	receipt.Objects[0], receipt.Objects[1] = receipt.Objects[1], receipt.Objects[0]
 	b, err = json.Marshal(receipt)

@@ -48534,12 +48534,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   连续 10 轮通过；`internal/nativepitr`（0.246s）、semantic verifier（0.107s）、full-restore command
   （0.080s）全量与相关 vet 均通过。
 
+- A4532 关闭 native PITR full backup 仅凭产物结构声称 plaintext 的证据缺口。TiKV/BR v7.5.1
+  的 plaintext backupmeta 也可能包含随机 `cipher_iv`，因此产物 IV 不能证明 executor 使用的 crypter
+  模式。现新增 `kubebrain.native-pitr-full-backup-attestation.v1`：受审 BR executor 成功退出后必须绑定
+  executable SHA-256、PD 地址集合摘要、immutable storage prefix、BackupTS、精确 backupmeta SHA-256、
+  完成时间，以及只含 `backup txn`/storage/TS/显式 `--crypter.method=plaintext` 的去凭据 canonical 参数
+  投影。full artifact receipt 升级 v3，强制嵌入该 attestation，并独立重算 canonical JSON SHA-256；
+  AES 模式、key 参数、credential-bearing URL、隐式默认模式、失败退出、参数/文件摘要漂移或 receipt 替换
+  均 fail closed。真实 full-restore 集成 BR 调用同步改为显式 plaintext。该门禁证明当前受支持的明文链，
+  不冒充尚未实现的加密备份密钥托管与恢复能力。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
    并把表纳入发布说明。
 2. transactional TiKV native PITR 的 pinned v7.5.1 受限链已完成功能闭环；继续扩大版本矩阵、
-   跨可用区故障、生产规模和长时间 soak，并完成独立的备份加密模式 attestation。不得用 TiDB BR
+   跨可用区故障、生产规模和长时间 soak，并完成加密备份的密钥托管与恢复能力；当前 plaintext
+   executor attestation 已是 full artifact v3 强制门禁。不得用 TiDB BR
    full/PITR 的成功状态替代 KubeBrain exact receipt 与最终语义门禁。
 3. Porcupine 已覆盖无故障 Get/Put/CAS、多键 Txn 原子性、lease lifecycle、
    显式 ID revoke/regrant 代际隔离、watch-backed 自然过期，以及可表达不确定写

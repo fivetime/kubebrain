@@ -2022,6 +2022,15 @@ source cluster、create 文件 digest 和 backupmeta SHA-256。该实验实际�
 receipt 仍诚实保留 `object_existence_checked=false`，因为该 receipt 本身只解析 `backupmeta`，不把
 一次对象列表观测冒充完整性证明。
 
+执行 BR 的受审 operation executor 必须在 `Wait` 得到成功退出后、签发 full snapshot receipt 前原子写出
+`kubebrain.native-pitr-full-backup-attestation.v1`。该证据绑定实际 BR executable 的 SHA-256、规范化且
+去凭据的安全参数投影（`backup txn`、相同 immutable storage prefix、精确 BackupTS 和显式
+`--crypter.method=plaintext`）、PD 地址集合摘要、精确 `backupmeta` SHA-256 与完成时间；不得由后续
+artifact verifier 根据 `cipher_iv` 猜测加密模式，也不得把人工补写的 JSON 当作执行证据。PD 地址、TLS 参数
+与对象存储凭据不进入明文参数投影；前者单独摘要，后两者由 operation audit/fencing 记录约束。executor 必须
+保留该文件为 operation 输出，失败退出、隐式 crypter 默认值、AES 模式、key 参数、带凭据 URL 或任一摘要漂移
+均不能生成可接受证据。
+
 先对 immutable full prefix 运行与下文 log 相同的 `ACTION=pitr-inventory`，将
 `INVENTORY_PREFIX` 指向 full prefix，并把 canonical receipt 写到
 `/evidence/native-pitr-full-remote-inventory.json`。再按 receipt 的 exact key/version 下载完整镜像并运行：
@@ -2029,16 +2038,18 @@ receipt 仍诚实保留 `object_existence_checked=false`，因为该 receipt 本
 ```shell
 go run ./hack/backup/cmd/native-pitr-full-artifact-verify \
   --full-snapshot=/evidence/native-pitr-full-snapshot.json \
+  --full-backup-attestation=/evidence/native-pitr-full-backup-attestation.json \
   --remote-inventory=/evidence/native-pitr-full-remote-inventory.json \
   --artifact-root=/evidence/full-mirror
 ```
 
 该命令递归遍历 BR legacy `BackupMeta.files` 和 v2 `FileIndex`/`MetaFile` 树，流式复算每个 SST 与
 meta-index 的大小和 SHA-256，并拒绝缺失、额外、重复、越界路径、符号链接及非普通文件。输出
-`kubebrain.native-pitr-full-artifacts.v2`，先要求本地对象集合、大小和 SHA-256 与分页穷尽的远端
+`kubebrain.native-pitr-full-artifacts.v3`，先要求 attestation 的 canonical JSON SHA-256 可从嵌入对象
+独立重算，并与相同 storage prefix、BackupTS 和 backupmeta 精确相等；随后要求本地对象集合、大小和 SHA-256 与分页穷尽的远端
 exact-version inventory 完全相等，再绑定 exact full-snapshot receipt、排序后的 BR 对象清单、总字节、
-manifest digest、Object Lock 最小保留期和 inventory 检查时间。当前只接受 plaintext BR 产物；遇到
-`cipher_iv` 会 fail closed，直到恢复链能够安全绑定 crypter key。
+manifest digest、Object Lock 最小保留期和 inventory 检查时间。当前只接受由实际 executor 明示并证明的
+plaintext BR 调用；不能再用 `backupmeta.cipher_iv` 推断加密状态（v7.5.1 即使 plaintext 也可能写随机 IV）。
 2026-08-10 另在隔离 MinIO Object Lock 环境以 `backupmeta`/`1/write.sst` 布局实际验证 full-prefix
 inventory 层：一页穷尽两个独立 version、总计 21,447 字节并通过 COMPLIANCE retention 与流式
 SHA-256；测试内容只用于验证远端对象链，不宣称是可恢复 BR SST。隔离容器、网络和 receipt 已清理。
@@ -3516,7 +3527,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   两阶段 handoff 与 post-log semantic receipt。独立双集群和对称三副本 source/target 均完成 full-only 与
   stream-log 演练，并覆盖单成员 pause、冷启动、PD/TiKV ENOSPC 等故障。日志链只有 exact plan、artifact、
   replay、handoff、witness 与 live target 物理绑定全部通过才签发 `pitr_complete=true`；full-only receipt
-  继续诚实保持 false。生产仍须补齐更广版本、跨 AZ、规模/时长和备份加密模式 attestation 门禁，不能把
+  继续诚实保持 false。生产仍须补齐更广版本、跨 AZ、规模/时长和加密备份密钥托管/恢复能力；plaintext
+  模式的 executor attestation 已成为 full artifact v3 的强制门禁，不能把
   这些验证项反向写成核心恢复状态机尚未实现。
   对 TiDB/BR v7.5.1（tag commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`）的 restore 源码审计还确认：
   `br restore txn` 能直接导入 transactional BackupMeta 的 SST，适合 KubeBrain arbitrary range 的 full

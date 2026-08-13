@@ -21,18 +21,19 @@ const maxReceiptBytes = 4 << 20
 
 func main() {
 	fullSnapshot := flag.String("full-snapshot", "", "exact native-pitr-full-snapshot.v3 receipt")
+	backupAttestation := flag.String("full-backup-attestation", "", "exact native-pitr-full-backup-attestation.v1 receipt")
 	artifactRoot := flag.String("artifact-root", "", "exact local mirror root containing backupmeta and all referenced objects")
 	remoteInventory := flag.String("remote-inventory", "", "canonical native-pitr-object-inventory.v1 receipt")
 	flag.Parse()
-	if err := run(*fullSnapshot, *remoteInventory, *artifactRoot, os.Stdout); err != nil {
+	if err := run(*fullSnapshot, *backupAttestation, *remoteInventory, *artifactRoot, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR full artifact verify:", err)
 		os.Exit(1)
 	}
 }
 
-func run(fullSnapshotPath, remoteInventoryPath, artifactRoot string, out io.Writer) error {
-	if fullSnapshotPath == "" || remoteInventoryPath == "" || artifactRoot == "" {
-		return errors.New("full-snapshot, remote-inventory, and artifact-root are required")
+func run(fullSnapshotPath, backupAttestationPath, remoteInventoryPath, artifactRoot string, out io.Writer) error {
+	if fullSnapshotPath == "" || backupAttestationPath == "" || remoteInventoryPath == "" || artifactRoot == "" {
+		return errors.New("full-snapshot, full-backup-attestation, remote-inventory, and artifact-root are required")
 	}
 	b, err := readReceipt(fullSnapshotPath)
 	if err != nil {
@@ -42,13 +43,25 @@ func run(fullSnapshotPath, remoteInventoryPath, artifactRoot string, out io.Writ
 	if err != nil {
 		return err
 	}
+	attestationBytes, err := readReceipt(backupAttestationPath)
+	if err != nil {
+		return err
+	}
+	attestation, err := nativepitr.DecodeFullBackupAttestation(bytes.NewReader(attestationBytes))
+	if err != nil {
+		return err
+	}
 	inventory, inventoryBytes, err := pitrinventory.ReadCanonical(remoteInventoryPath)
 	if err != nil {
 		return err
 	}
 	digest := sha256.Sum256(b)
+	attestationDigest, err := nativepitr.FullBackupAttestationSHA256(attestation)
+	if err != nil {
+		return err
+	}
 	inventoryDigest := sha256.Sum256(inventoryBytes)
-	receipt, err := nativepitr.VerifyFullArtifacts(full, hex.EncodeToString(digest[:]), inventory, hex.EncodeToString(inventoryDigest[:]), artifactRoot)
+	receipt, err := nativepitr.VerifyFullArtifacts(full, hex.EncodeToString(digest[:]), attestation, attestationDigest, inventory, hex.EncodeToString(inventoryDigest[:]), artifactRoot)
 	if err != nil {
 		return err
 	}

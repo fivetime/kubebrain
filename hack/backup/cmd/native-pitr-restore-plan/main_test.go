@@ -33,7 +33,11 @@ func TestRunWritesPlanFromExactReceipts(t *testing.T) {
 	objectBytes, err := json.Marshal(objects)
 	require.NoError(t, err)
 	manifestDigest := sha256.Sum256(objectBytes)
-	artifacts := nativepitr.ArtifactReceipt{Format: nativepitr.ArtifactReceiptFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", BackupTS: 120, StoragePrefix: full.StoragePrefix, FullReceiptSHA256: hex.EncodeToString(fullDigest[:]), BackupMetaSHA256: testDigest, RemoteInventorySHA256: testDigest, ObjectStoreID: "store-a", Bucket: "bucket", ObjectPrefix: "immutable/full-a", MinRetainUntilUnix: 2_050_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: objects, ObjectCount: 2, TotalBytes: 110, ManifestSHA256: hex.EncodeToString(manifestDigest[:]), ExactMirror: true, RemoteVersionsVerified: true, Encryption: "plaintext", AllObjectsVerified: true}
+	attestation, err := nativepitr.BuildFullBackupAttestation(testDigest, testDigest, full.StoragePrefix, full.BackupMetaSHA256, full.BackupTS, []string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=120", "--crypter.method=plaintext"}, 2_000_000_000)
+	require.NoError(t, err)
+	attestationSHA, err := nativepitr.FullBackupAttestationSHA256(attestation)
+	require.NoError(t, err)
+	artifacts := nativepitr.ArtifactReceipt{Format: nativepitr.ArtifactReceiptFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", BackupTS: 120, StoragePrefix: full.StoragePrefix, FullReceiptSHA256: hex.EncodeToString(fullDigest[:]), BackupMetaSHA256: testDigest, RemoteInventorySHA256: testDigest, ObjectStoreID: "store-a", Bucket: "bucket", ObjectPrefix: "immutable/full-a", MinRetainUntilUnix: 2_050_000_000, InventoryCheckedAtUnix: 2_000_000_000, Objects: objects, ObjectCount: 2, TotalBytes: 110, ManifestSHA256: hex.EncodeToString(manifestDigest[:]), ExactMirror: true, RemoteVersionsVerified: true, Encryption: "plaintext", BackupAttestationSHA256: attestationSHA, BRBinarySHA256: attestation.BRBinarySHA256, BackupAttestation: attestation, AllObjectsVerified: true}
 	ready := nativepitr.TaskReadyReceipt{Format: nativepitr.TaskReadyFormat, ClusterID: 11, Keyspace: "tenant-a", TaskName: "task-a", StartTS: 100, CommittedAtTS: 110, EndTS: 1000, GlobalCheckpointTS: 200, AdvancerOwner: "owner-1", PreflightSHA256: testDigest, BootstrapSafePointID: task.BootstrapSafePointID, BootstrapReleased: true, MetadataSnapshotValid: true}
 	readyBytes, err := json.Marshal(ready)
 	require.NoError(t, err)

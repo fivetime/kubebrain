@@ -2288,7 +2288,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 
 	artifactRoot := filepath.Join(root, "br")
 	require.NoError(t, os.Mkdir(artifactRoot, 0o700))
-	backup := exec.CommandContext(ctx, br, "backup", "txn", "--pd", strings.Join(sourceAddrs, ","), "--storage", "local://"+artifactRoot, "--backupts", fmt.Sprint(backupTS), "--checksum=false", "--log-file", "/dev/stderr")
+	backup := exec.CommandContext(ctx, br, "backup", "txn", "--pd", strings.Join(sourceAddrs, ","), "--storage", "local://"+artifactRoot, "--backupts", fmt.Sprint(backupTS), "--checksum=false", "--crypter.method=plaintext", "--log-file", "/dev/stderr")
 	backup.Stdout, backup.Stderr = os.Stderr, os.Stderr
 	require.NoError(t, backup.Run())
 	if withLogs {
@@ -2372,6 +2372,13 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	fullPath := filepath.Join(t.TempDir(), "full.json")
 	fullBytes := canonicalFile(t, fullPath, full)
+	attestation, err := nativepitr.BuildFullBackupAttestation(
+		digest(mustRead(t, br)), digest([]byte(strings.Join(sourceAddrs, ","))), full.StoragePrefix,
+		full.BackupMetaSHA256, full.BackupTS,
+		[]string{"backup", "txn", "--storage=" + full.StoragePrefix, "--backupts=" + fmt.Sprint(full.BackupTS), "--crypter.method=plaintext"},
+		time.Now().UTC().Unix(),
+	)
+	require.NoError(t, err)
 	sourceCaptureBytes := runReceiptOutput(t, ctx, sourceCaptureCommand, "--action=finalize", "--task-create="+sourceTaskPath, "--capture-fence="+sourceCaptureFencePath, "--full-snapshot="+fullPath, "--source-pd-addrs="+sourcePD, "--timeout=1m")
 	sourceCapture, decodeErr := nativepitr.DecodeSourceCaptureReceipt(bytes.NewReader(sourceCaptureBytes))
 	require.NoError(t, decodeErr)
@@ -2383,7 +2390,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	inventory := inventoryForRoot(t, artifactRoot, "integration", "full/snapshot")
 	inventoryPath := filepath.Join(t.TempDir(), "inventory.json")
 	inventoryBytes := canonicalFile(t, inventoryPath, inventory)
-	artifact, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), inventory, digest(inventoryBytes), artifactRoot)
+	artifact, err := nativepitr.VerifyFullArtifacts(full, digest(fullBytes), attestation, digest(canonicalJSON(t, attestation)), inventory, digest(inventoryBytes), artifactRoot)
 	require.NoError(t, err)
 	artifactPath := filepath.Join(t.TempDir(), "artifact.json")
 	canonicalFile(t, artifactPath, artifact)
