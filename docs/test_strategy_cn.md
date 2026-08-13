@@ -65,7 +65,7 @@ hack/production/test-shard.sh 0 4 # shard index 为 0..3
 分片不是手工维护的测试前缀 allowlist。脚本读取 `go test -list '^Test'`，以完整顶层测试名的
 SHA-256 对 shard 总数取模；新增或改名测试会自动且只进入一个 shard。`--verify` 要求发现至少一个
 测试、每片非空并报告精确计数，仓库测试还固定 workflow 必须排除单包全量执行并配置 0–3 四片。
-本地仍可用 `go test ./hack/production -count=1 -timeout=20m` 做串行总门禁；281 个顶层测试的四片测试时间
+本地仍可用 `go test ./hack/production -count=1 -timeout=20m` 做串行总门禁；325 个顶层测试的四片测试时间
 合计已接近 15 分钟，15 分钟不再为编译和进程调度保留可靠余量。分片只缩短 wall time，
 不减少断言、子测试或故障场景。
 

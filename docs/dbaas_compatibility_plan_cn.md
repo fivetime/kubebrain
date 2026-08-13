@@ -49059,6 +49059,10 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `PROBE_SUMMARY ok=750 fail=0 total=750`，并证明 StatefulSet revision
   `kubebrain-55696b6966 -> kubebrain-7b98b48fc6`。本轮只新增门禁并调整生产参数，不改变 runtime，故不
   构建 A4572 镜像；500ms 在本拓扑证明负载/接管平衡，不替代云规模、跨 AZ 和长时间 churn 调参矩阵。
+  新增 focused race、production/deploy vet 与 shellcheck 均通过；production 权威四片枚举 325 个顶层
+  测试（72/92/80/81），分别 163.212s、270.668s、185.426s、517.551s 全绿。裸 `go test` 使用默认
+  10 分钟曾在最后执行的 restore-cutover 子测试上触发包级闹钟；该子测试单跑连续 10 轮均约 0.4 秒，
+  证明不是挂死。验证必须遵循仓库四片 15 分钟入口，或串行显式 `-timeout=20m`。
 
 ### P2：运维兼容和长期验证
 
