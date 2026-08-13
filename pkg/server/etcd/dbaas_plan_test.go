@@ -97,6 +97,9 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	require.Contains(t, plan, "NativePITRFullRestore")
 	require.Contains(t, plan, "第二 claim 只复算该 receipt")
 	require.Contains(t, plan, "绝不在可能部分 import 的目标上自动二次执行")
+	require.Contains(t, plan, "A4549 补齐 A4548 留下的可部署执行面和 receipt-after-crash 证据")
+	require.Contains(t, plan, "restore 调用日志精确只有一次")
+	require.Contains(t, plan, "receipt-before-publish 窗口仍")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

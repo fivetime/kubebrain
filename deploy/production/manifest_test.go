@@ -868,6 +868,64 @@ func TestNativePITRFullBackupExecutorUsesDedicatedPinnedToolImageAndTLS(t *testi
 	require.True(t, nestedBool(t, encryptionMount, "readOnly"))
 }
 
+func TestNativePITRFullRestoreExecutorIsSingleWriterWithDurableWorkspace(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-executors.yaml")
+	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-native-pitr-full-restore-executor")
+	require.EqualValues(t, 0, nestedInt64(t, deployment, "spec", "replicas"))
+	require.Equal(t, "Recreate", nestedString(t, deployment, "spec", "strategy", "type"))
+	require.Equal(t, "kubebrain-native-pitr-full-restore-executor", nestedString(t, deployment, "spec", "template", "spec", "serviceAccountName"))
+	containers, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "containers")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	require.Equal(t, "kubebrain-native-pitr-full-restore:dev", nestedString(t, container, "image"))
+	require.Contains(t, nestedStringSlice(t, container, "args")[0], "run-native-pitr-full-restore-operation.sh")
+	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))
+	require.True(t, nestedBool(t, container, "securityContext", "readOnlyRootFilesystem"))
+	volumes, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "volumes")
+	require.NoError(t, err)
+	require.True(t, found)
+	text := fmt.Sprint(volumes)
+	require.Contains(t, text, "kubebrain-native-pitr-full-restore-executor-workspace")
+	require.Contains(t, text, "kubebrain-native-pitr-full-restore-tls")
+	require.Contains(t, text, "kubebrain-native-pitr-full-restore-encryption")
+}
+
+func TestNativePITRFullRestoreHasPinnedIsolatedRuntimeImage(t *testing.T) {
+	data, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	text := string(data)
+	for _, expected := range []string{
+		"go build -trimpath -o /src/bin/kubebrain-native-pitr-full-restore ./hack/backup/cmd/native-pitr-full-restore",
+		"AS native-pitr-full-restore", "COPY --from=br-v751 /br /usr/local/bin/br",
+		"COPY --from=build /src/bin/kubebrain-native-pitr-full-restore /usr/local/bin/kubebrain-native-pitr-full-restore",
+		"COPY hack/production/run-native-pitr-full-restore-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-restore-operation.sh",
+	} {
+		require.Contains(t, text, expected)
+	}
+}
+
+func TestNativePITRFullRestoreRequesterAndEncryptionAdmissionAreFailClosed(t *testing.T) {
+	requestObjects := decodeManifest(t, "kubebrain-native-pitr-full-restore-requester-admission.yaml")
+	require.Len(t, requestObjects, 4)
+	requestData, err := os.ReadFile("kubebrain-native-pitr-full-restore-requester-admission.yaml")
+	require.NoError(t, err)
+	text := string(requestData)
+	for _, expected := range []string{"NativePITRFullRestore", "kubebrain-native-pitr-full-restore-requester", "maxAttempts == 2", "parameters.json", "object.immutable == true"} {
+		require.Contains(t, text, expected)
+	}
+	for _, name := range []string{"kubebrain-native-pitr-full-restore-request-operation", "kubebrain-native-pitr-full-restore-request-parameters"} {
+		binding := objectByKindAndName(t, requestObjects, "ValidatingAdmissionPolicyBinding", name)
+		require.Equal(t, []string{"Deny"}, nestedStringSlice(t, binding, "spec", "validationActions"))
+	}
+	encryption := decodeManifest(t, "kubebrain-native-pitr-full-restore-encryption-admission.yaml")
+	require.Len(t, encryption, 2)
+	encryptionData, err := os.ReadFile("kubebrain-native-pitr-full-restore-encryption-admission.yaml")
+	require.NoError(t, err)
+	require.Contains(t, string(encryptionData), "object.data == oldObject.data")
+}
+
 func TestNativePITRFullBackupEncryptionSecretIsImmutable(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-native-pitr-full-backup-encryption-admission.yaml")
 	require.Len(t, objects, 2)

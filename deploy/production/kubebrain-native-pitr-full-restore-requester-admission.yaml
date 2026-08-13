@@ -1,0 +1,42 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-native-pitr-full-restore-request-operation}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [dbaas.kubebrain.io], apiVersions: [v1alpha1], operations: [CREATE], resources: [kubebrainoperations], scope: Namespaced}
+  matchConditions:
+    - name: native-pitr-full-restore-scope
+      expression: 'object.spec.type == "NativePITRFullRestore" || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-requester"', message: native PITR full restore operations require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-restore-[a-f0-9]{20}$") && object.spec.operationID == object.metadata.name', message: native PITR full restore operation identity is digest-bound}
+    - {expression: 'object.spec.type == "NativePITRFullRestore" && object.spec.requestedBy == "platform:native-pitr-full-restore" && object.spec.instance == "kubebrain" && object.spec.maxAttempts == 2', message: native PITR full restore operation shape is fixed}
+    - {expression: 'object.spec.parametersSecretRef.name == object.metadata.name + "-parameters" && object.spec.parametersSecretRef.key == "parameters.json" && object.spec.parametersSHA256.matches("^[a-f0-9]{64}$") && object.metadata.name.endsWith(object.spec.parametersSHA256.substring(0,20))', message: native PITR full restore parameters are digest-bound}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-native-pitr-full-restore-request-operation}
+spec: {policyName: kubebrain-native-pitr-full-restore-request-operation, validationActions: [Deny]}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata: {name: kubebrain-native-pitr-full-restore-request-parameters}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - {apiGroups: [""], apiVersions: [v1], operations: [CREATE], resources: [secrets], scope: Namespaced}
+  matchConditions:
+    - name: native-pitr-full-restore-parameter-scope
+      expression: '(object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-restore-[a-f0-9]{20}-parameters$")) || request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-requester"'
+  validations:
+    - {expression: 'request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-restore-requester"', message: native PITR full restore parameter Secrets require the dedicated requester identity}
+    - {expression: 'object.metadata.namespace == "kubebrain-operations" && object.metadata.name.matches("^native-pitr-restore-[a-f0-9]{20}-parameters$")', message: native PITR full restore parameter Secret identity is fixed}
+    - {expression: 'object.immutable == true && object.type == "Opaque" && size(object.data) == 1 && "parameters.json" in object.data', message: native PITR full restore parameters must be one immutable opaque payload}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata: {name: kubebrain-native-pitr-full-restore-request-parameters}
+spec: {policyName: kubebrain-native-pitr-full-restore-request-parameters, validationActions: [Deny]}

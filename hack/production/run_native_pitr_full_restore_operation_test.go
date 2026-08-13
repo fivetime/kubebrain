@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +17,7 @@ import (
 func TestRunNativePITRFullRestoreOperationPublishesDurableReceipt(t *testing.T) {
 	dir := t.TempDir()
 	parameters := filepath.Join(dir, "parameters.json")
-	parameterBytes := []byte(`{"admission":"/input/admission.json","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"/input/artifact","full_artifacts":"/input/artifacts.json","full_snapshot":"/input/full.json","pd_addrs":["pd-1:2379","pd-0:2379"],"plan":"/input/plan.json","remote_inventory":"/input/inventory.json","source_range_exclusive":"/input/source.json","target_snapshot_empty":"/input/target.json"}`)
+	parameterBytes := []byte(`{"admission":"/var/lib/kubebrain-operation/inputs/admission.json","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"/var/lib/kubebrain-operation/inputs/artifact","full_artifacts":"/var/lib/kubebrain-operation/inputs/artifacts.json","full_snapshot":"/var/lib/kubebrain-operation/inputs/full.json","pd_addrs":["pd-1:2379","pd-0:2379"],"plan":"/var/lib/kubebrain-operation/inputs/plan.json","remote_inventory":"/var/lib/kubebrain-operation/inputs/inventory.json","source_range_exclusive":"/var/lib/kubebrain-operation/inputs/source.json","target_snapshot_empty":"/var/lib/kubebrain-operation/inputs/target.json"}`)
 	require.NoError(t, os.WriteFile(parameters, parameterBytes, 0o600))
 	digest := fmt.Sprintf("%x", sha256.Sum256(parameterBytes))
 	operationLog := filepath.Join(dir, "operation.log")
@@ -48,7 +51,7 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	args := string(mustReadProductionFile(t, restoreLog))
 	require.Contains(t, args, "--pd-addrs=pd-1:2379,pd-0:2379")
 	require.Contains(t, args, "--approve-plan-sha256="+strings.Repeat("a", 64))
-	require.Contains(t, args, "--restore-admission=/input/admission.json")
+	require.Contains(t, args, "--restore-admission=/var/lib/kubebrain-operation/inputs/admission.json")
 	name := "native-pitr-restore-" + digest[:20]
 	receipt := filepath.Join(dir, name+".native-pitr-full-restore.json")
 	require.FileExists(t, receipt)
@@ -90,10 +93,70 @@ func TestRunNativePITRFullRestoreOperationFailsClosedWithoutReceipt(t *testing.T
 	require.Contains(t, operations, "keep admission fence closed and rebuild the target")
 }
 
+func TestRequestNativePITRFullRestoreIsApprovalBoundAndNonReentrant(t *testing.T) {
+	data, err := os.ReadFile("request-native-pitr-full-restore.sh")
+	require.NoError(t, err)
+	text := string(data)
+	for _, expected := range []string{
+		"--type NativePITRFullRestore", "--requested-by platform:native-pitr-full-restore",
+		"--max-attempts 2", "native-pitr-restore-${parameters_sha:0:20}",
+		"/var/lib/kubebrain-operation/inputs/", ".immutable=true",
+	} {
+		require.Contains(t, text, expected)
+	}
+	require.NotContains(t, text, "--approve", "approval belongs to immutable Operation metadata, not a self-approved requester flag")
+}
+
+func TestNativePITRFullRestoreWorkerCrashAfterReceiptReconcilesWithoutSecondBR(t *testing.T) {
+	dir := t.TempDir()
+	parameters, digest := writeNativeRestoreParameters(t, dir)
+	name := "native-pitr-restore-" + digest[:20]
+	receipt := filepath.Join(dir, name+".native-pitr-full-restore.json")
+	marker := filepath.Join(dir, "final-heartbeat.blocked")
+	callLog := filepath.Join(dir, "restore-calls.log")
+	operationLog := filepath.Join(dir, "operation.log")
+	restore := filepath.Join(dir, "restore")
+	require.NoError(t, os.WriteFile(restore, []byte(`#!/usr/bin/env bash
+printf 'restore\n' >>"$RESTORE_CALL_LOG"
+printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
+`), 0o755))
+	tlsDir := filepath.Join(dir, "tls")
+	require.NoError(t, os.Mkdir(tlsDir, 0o700))
+	for _, file := range []string{"ca.crt", "tls.crt", "tls.key"} {
+		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, file), []byte("test"), 0o600))
+	}
+	base := append(os.Environ(),
+		"WORKER_ID=worker-1", "PARAMETERS_INPUT="+parameters, "EXPECTED_DIGEST="+digest,
+		"OPERATIONCTL="+writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND="+restore, "BR_BINARY=/bin/true",
+		"WORK_DIR="+dir, "TLS_DIR="+tlsDir, "OPERATION_LOG="+operationLog, "RESTORE_CALL_LOG="+callLog,
+		"ATTEMPT=1", "HEARTBEAT_INTERVAL_SECONDS=30", "BLOCK_FINAL_HEARTBEAT=true", "DURABLE_RECEIPT="+receipt, "BLOCK_MARKER="+marker,
+	)
+	command := exec.Command("bash", "run-native-pitr-full-restore-operation.sh")
+	command.Env = base
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, command.Start())
+	require.Eventually(t, func() bool {
+		_, receiptErr := os.Stat(receipt)
+		_, markerErr := os.Stat(marker)
+		return receiptErr == nil && markerErr == nil
+	}, 5*time.Second, 20*time.Millisecond, "worker did not reach the receipt-before-status crash window")
+	require.NoError(t, syscall.Kill(-command.Process.Pid, syscall.SIGKILL))
+	_ = command.Wait()
+
+	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=" + restore, "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_CALL_LOG=" + callLog, "ATTEMPT=2",
+	})
+	require.NoError(t, err, string(output))
+	require.Equal(t, "restore\n", string(mustReadProductionFile(t, callLog)), "attempt 2 must not execute BR-backed restore again")
+	require.Contains(t, string(mustReadProductionFile(t, operationLog)), "reconciled durable native PITR full restore receipt without re-executing BR")
+}
+
 func writeNativeRestoreParameters(t *testing.T, dir string) (string, string) {
 	t.Helper()
 	path := filepath.Join(dir, "parameters.json")
-	data := []byte(`{"admission":"/i/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"/i/root","full_artifacts":"/i/fa","full_snapshot":"/i/fs","pd_addrs":["pd:2379"],"plan":"/i/p","remote_inventory":"/i/ri","source_range_exclusive":"/i/s","target_snapshot_empty":"/i/t"}`)
+	data := []byte(`{"admission":"/var/lib/kubebrain-operation/inputs/a","approve_plan_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","artifact_root":"/var/lib/kubebrain-operation/inputs/root","full_artifacts":"/var/lib/kubebrain-operation/inputs/fa","full_snapshot":"/var/lib/kubebrain-operation/inputs/fs","pd_addrs":["pd:2379"],"plan":"/var/lib/kubebrain-operation/inputs/p","remote_inventory":"/var/lib/kubebrain-operation/inputs/ri","source_range_exclusive":"/var/lib/kubebrain-operation/inputs/s","target_snapshot_empty":"/var/lib/kubebrain-operation/inputs/t"}`)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 	return path, fmt.Sprintf("%x", sha256.Sum256(data))
 }
@@ -107,6 +170,9 @@ printf '%s\n' "$*" >>"$OPERATION_LOG"
 if [[ "$*" == *"--action claim"* ]]; then
   short="${EXPECTED_DIGEST:0:20}"
   printf '{"namespace":"kubebrain-operations","name":"native-pitr-restore-%s","operation_id":"native-pitr-restore-%s","instance":"kubebrain","type":"NativePITRFullRestore","requested_by":"platform:native-pitr-full-restore","parameters_sha256":"%s","parameters_secret":"native-pitr-restore-%s-parameters","parameters_key":"parameters.json","owner":"%s","attempt":%s}\n' "$short" "$short" "$EXPECTED_DIGEST" "$short" "$WORKER_ID" "$ATTEMPT"
+elif [[ "$*" == *"--action heartbeat"* && "${BLOCK_FINAL_HEARTBEAT:-false}" == true && -s "${DURABLE_RECEIPT:-/nonexistent}" ]]; then
+  : >"$BLOCK_MARKER"
+  sleep 30
 fi
 `), 0o755))
 	return path

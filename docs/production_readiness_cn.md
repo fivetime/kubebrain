@@ -2173,7 +2173,15 @@ parameter Secret 绑定 exact plan、artifact receipts/local mirror、source/tar
 SHA；生产 runner 先发布 0600 不可覆盖 receipt 再提交 operation 成功。`maxAttempts=2` 只允许第二 claim 在已有
 durable receipt 时收敛 status，禁止再次调用 BR；没有 receipt 时终态失败、保持 admission fence，并要求重建
 target。固定 BR v7.5.1 没有 transactional restore checkpoint 参数，因此不得把该 fail-closed 协议描述成
-中途 import 自动 resume。完整 executor Deployment/镜像、requester admission 和真实 worker-kill 演练仍开放。
+中途 import 自动 resume。A4549 已补 executor Deployment/镜像、requester admission 和进程级 worker-kill；
+真实 Kubernetes Pod/PVC 演练仍开放。
+
+上述执行面现已有独立 pinned restore image 和 replicas=0、`Recreate` 的单 writer Deployment；workspace PVC
+同时承载固定在 `/var/lib/kubebrain-operation/inputs/` 的 evidence/artifact 和不可覆盖 receipt。专用 requester
+RBAC/CEL admission 固定 `NativePITRFullRestore`、platform requester、digest-bound immutable parameters 与
+`maxAttempts=2`，TLS 与 AES key 使用独立 Secret。进程级 `SIGKILL` 演练已证明 receipt 发布后、status 提交前
+崩溃时，新 worker 只收敛 receipt 且 BR-backed restore 总调用一次；真实 Kubernetes Pod/PVC delete 演练仍需
+在预生产集群完成。receipt 发布前崩溃仍必须 fail closed 并重建 target，不得原地重试。
 
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable

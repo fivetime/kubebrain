@@ -48726,8 +48726,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   SHA 并收敛 Succeeded，明确不调用 BR；若首轮 lease 过期且没有 receipt，第二 claim 直接 Failed，要求保持
   admission fence closed 并重建 target，绝不在可能部分 import 的目标上自动二次执行。单元/脚本测试覆盖首次
   发布、receipt-only reconcile、无 receipt fail-closed、审批/类型绑定、broker 身份与 CRD schema。该项建立
-  durable 控制面与不重复写安全边界；尚未部署完整 restore executor Deployment/镜像/Secret admission，也尚未
-  用真实 Kubernetes worker kill 演练 receipt 前后两个 crash 窗口，更不等于自动重建目标后的恢复成功。
+  durable 控制面与不重复写安全边界；A4549 再补部署物与 receipt-after-publish crash 窗口，但真实 Kubernetes
+  worker/PVC 演练、receipt-before-publish 自动 target rebuild 仍未完成。
+
+- A4549 补齐 A4548 留下的可部署执行面和 receipt-after-crash 证据。新增独立
+  `native-pitr-full-restore` Docker stage，实构建后容器内 BR 精确报告 v7.5.1/commit
+  `7d16cc79e81bbf573124df3fd9351c26963f3e70`，并包含 full-restore、operation-worker、operationctl 与 runner；
+  新 Deployment 使用专用 ServiceAccount、`Recreate` 单 writer、replicas=0 opt-in、持久 workspace PVC、只读根、
+  drop ALL capabilities、独立 TLS/可选 immutable encryption Secret 和 broker projected token。新增专用 requester
+  RBAC 与 fail-closed CEL admission，固定 digest-bound 名称/immutable single-key parameters、type/requester/
+  instance/maxAttempts=2；runner/requester 又将所有 artifact/evidence 路径限制在 PVC 的
+  `/var/lib/kubebrain-operation/inputs/`，拒绝 `..` 穿越。真实进程级测试让 attempt 1 完成 restore producer、以
+  hard-link 发布 durable receipt 后阻塞在 final heartbeat，随后对整个 worker process group 发 `SIGKILL`；新
+  worker attempt 2 从同一 workspace receipt 收敛 Succeeded，restore 调用日志精确只有一次。该项证明
+  receipt-before-status 窄窗的 crash reconcile，不证明 BR import 中途崩溃可续跑；receipt-before-publish 窗口仍
+  按 A4548 fail closed、保持 admission fence 并要求重建 target。尚未在真实 Kubernetes API/PVC 上删除 Pod，
+  也未自动完成 target rebuild 后的新 operation。
 
 ### P2：运维兼容和长期验证
 

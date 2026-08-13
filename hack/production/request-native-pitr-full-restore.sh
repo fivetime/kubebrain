@@ -20,7 +20,7 @@ parameters_file="$temp_dir/parameters.json"
   select(.approve_plan_sha256|type=="string" and test("^[a-f0-9]{64}$")) |
   select(.pd_addrs|type=="array" and length>0 and length<=32 and all(.[]; type=="string" and test("^(\\[[^],[:space:]]+\\]|[^\\[\\]:,[:space:]]+):[1-9][0-9]{0,4}$"))) |
   select((.pd_addrs|unique|length)==(.pd_addrs|length)) |
-  select([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] | all(.[]; type=="string" and startswith("/") and length<=4096 and index("\u0000")==null)) |
+  select([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] | all(.[]; type=="string" and startswith("/var/lib/kubebrain-operation/inputs/") and length<=4096 and index("\u0000")==null and (contains("/../")|not) and (endswith("/..")|not))) |
   select((has("cipher_method")|not) or (.cipher_method=="aes256-ctr" and (.encryption_key_id|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$")))) |
   .pd_addrs |= sort
 ' "$PARAMETERS_FILE" >"$parameters_file" || die "native PITR restore parameter schema is invalid"

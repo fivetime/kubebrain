@@ -50,7 +50,7 @@ $JQ -e '(keys==["admission","approve_plan_sha256","artifact_root","full_artifact
   keys==["admission","approve_plan_sha256","artifact_root","cipher_method","encryption_key_id","full_artifacts","full_snapshot","pd_addrs","plan","remote_inventory","source_range_exclusive","target_snapshot_empty"]) and
   (.approve_plan_sha256|type=="string" and test("^[a-f0-9]{64}$")) and
   (.pd_addrs|type=="array" and length>0 and length<=32 and all(.[]; type=="string" and length>0 and (contains(",")|not))) and
-  ([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] | all(.[]; type=="string" and startswith("/") and length<=4096)) and
+  ([.plan,.full_snapshot,.full_artifacts,.remote_inventory,.artifact_root,.source_range_exclusive,.target_snapshot_empty,.admission] | all(.[]; type=="string" and startswith("/var/lib/kubebrain-operation/inputs/") and length<=4096 and (contains("/../")|not) and (endswith("/..")|not))) and
   ((has("cipher_method")|not) or (.cipher_method=="aes256-ctr" and (.encryption_key_id|type=="string" and test("^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,254}$"))))' "$params" >/dev/null || die "native PITR restore parameter schema is invalid"
 for file in ca.crt tls.crt tls.key; do [[ -f "$TLS_DIR/$file" ]] || die "native PITR TLS file $file is required"; done
 encryption_args=()
