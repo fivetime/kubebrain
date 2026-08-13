@@ -49305,6 +49305,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   端口和三个 direct port-forward 均已清理。该证据关闭当前单节点 Kind、独立 TiKV/PD 下 follower checkpoint
   CountOnly 的 count/header 一致性与 List 物化回退；超大 prefix 实际资源曲线仍需独立规模压测。
 
+- A4588 继续审计 A4587 的 scanner fallback，发现其“不物化”结论只覆盖编码边界可直接 seek 的普通 key。
+  合法 etcd key 若以内部 MVCC 分隔符 `$` 或更低字节开头，`requiresDecodedUserRange` 为保持用户字节序会安全地
+  扫描完整 object keyspace；旧 Count fallback 随后调用 `decodedUserRange`，把所有命中 KV 物化成 slice 后才取
+  `len`。提交 `e949e990` 新增 partition-local `filteredCountReceiver`：worker 仍按 snapshot 解码 live user key，
+  receiver 只做 `[userStart,userEnd)` 比较和整数累加，retry 时清零、成功后按 partition merge，不保存 key/value。
+  backend 的 decoded-boundary Count 改用该路径，普通边界仍使用原有窄范围 `scanner.Count`，index hit 不受影响。
+
+  确定性 checkpoint 测试用 `$a/$b` 与 index miss 强制命中该分支，证明 header/count 正确、`CountFiltered` 被调用且
+  materializing `Range` 零调用，连续 20 轮通过；receiver 另覆盖 start-inclusive/end-exclusive、from-key 无上界、
+  retry reset 与 partition merge。`pkg/backend/...` 全树通过，完整 `pkg/server/etcd` 173.270 秒通过，compat
+  模块 6.263 秒通过。差分 fixture 只让 CountOnly 使用 `$` prefix；普通 Range 仍用窄 prefix，避免把另一条已知
+  decoded-boundary List 全租户扫描混入本项。提交 `3ca10efb`、`11bbef63` 分别固定该隔离和精确 point-delete
+  cleanup，防止低边界 DeleteRange 自身扩大扫描或静默泄漏。
+
+  精确镜像 `kubebrain:a4588-e949e990`（内嵌 SHA
+  `e949e99029475d3203427bf0825d803b407a7ad1`，构建时间 `2026-08-13T23:09:01Z`，OCI manifest list
+  `sha256:af70490354310202baba6d560b065af63dc02d6d116f64c8141db7c5fb42f513`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启。对精确 upstream 的低边界 follower CountOnly 聚焦差分
+  20/20 通过（79.757 秒）；首次完整 profile 还捕获共享实例上 orphan lease expiry 可在 fixture 写后或 unary 与
+  RangeStream 两个独立 RPC 之间合法推进 revision。提交 `9bf0c8fc`、`c7fabebb` 改为分别证明两个响应 header
+  均不低于 fixture 最终写，再仅归一化不可归因的 revision 字段比较其余完整响应；最终 direct-moveleader profile
+  41.964 秒通过。临时 reference、六个 reference 端口和三个 direct port-forward 均已清理。低字节普通 List/
+  DeleteRange 仍可能扫描完整租户 keyspace，这是编码保序兼容的独立资源问题，未由 CountOnly receiver 关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
