@@ -49153,6 +49153,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   public 与 forwarded unary 两条入口的自愿 rollout drain 竞态；TTL=3、短于 store heartbeat 门限的
   TiKV/TSO stall、跨节点/AZ 和云 LB 仍保持为独立开放矩阵。
 
+- A4579 将 A4577/A4578 仍缺失的短时 PD TSO 信号纳入 rollout oracle。镜像内探针现在使用仓库已固定版本的
+  官方 PD client 建立真实 TSO stream；preflight 必须取得合法 physical/logical timestamp，此后每轮业务写前
+  再采样一次，默认单次上限 1 秒。失败、非法 timestamp 或超时均明确归类为 `backend instability`，而
+  Put→Watch 仍保持独立 5 秒 SLA；最终 summary 同时给出最大 TSO latency。runner 固定传入该门限并严格校验
+  新 summary，防止发布入口静默脱落。正常、超时、PD error、非法 timestamp 与配置 cap 单测连续 20 轮通过，
+  runner 契约测试连续 10 轮通过；`hack/production` 整包回归在无关的 restore cutover `verify` 外部脚本等待中
+  达到既有 10 分钟包级 timeout，没有本项断言失败，故没有把该环境性超时误记为绿色。
+
+  主机 port-forward 冒烟按预期 fail closed：PD client 发现集群 advertised peer 后切换到 Kubernetes 内部 DNS，
+  主机无法解析；随后改用生产一致的 Pod 网络。精确镜像 `kubebrain:a4579-a9ce509d`（内嵌 SHA
+  `a9ce509d67494ce33e946cb364c6fac2191829c6`，OCI manifest list
+  `sha256:04daf9d5d00596da0c10f7b32074b14379b31058621a0387d4e9475f8aab28a1`）先完成 100 轮冒烟：
+  `ok=100 watch=100 lease=alive max_latency_ms=234 max_tso_latency_ms=1`。固定 PD leader
+  `kb-pd-0:12010354549738711059` 且三个 store 连续 30 个样本均 `Up`/heartbeat 新鲜后，三副本正式 runner
+  最终 `PROBE_SUMMARY ok=900 fail=0 total=900 watch=900 lease=alive max_latency_ms=2778
+  max_tso_latency_ms=6`，revision `kubebrain-897955c87 -> kubebrain-75bb4469c6`；connection closing、
+  `proxy is not ready after 2s` 与 EOF 均经同 token 对账/重试恢复，strict postflight 和 probe cleanup 通过。
+  该门禁可直接识别此前 A4576 约 2.9 秒的 TSO stall，但尚未直接采样 TiKV Region RPC latency；store heartbeat、
+  TSO 与业务 oracle 三者必须联合解读，TTL=3 和独立 TiKV RPC 延迟信号继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
