@@ -95,7 +95,10 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 	// the tenant's KeyValues.
 	lowPrefix := fmt.Sprintf("$dbaas-rangestream-follower/%s/%d/", instance, time.Now().UnixNano())
 	lowEnd := []byte(clientv3.GetPrefixRangeEnd(lowPrefix))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// One context covers fixture writes, follower catch-up, and every unary/stream
+	// pair on both followers. Low-byte ranges deliberately scan an encoded
+	// superset, so keep a bounded but realistic whole-scenario budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	base, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end})
 	require.NoError(t, err)
