@@ -48975,6 +48975,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cluster/leader、唯一 member，收尾无 compat/direct-lease key、无新增 lease 或 Alarm。本轮仅增强
   可重复验证编排与记录，不修改 runtime，不构建 A4568 镜像。
 
+- A4569 对照 `/root/etcd@5cd9f4ee1` 的安全修复 `7cf71ec9e` 与
+  `tests/e2e/watch_test.go:TestWatchWithLowPermissionUser`，补齐 Auth 完整差分对 from-key
+  Watch 权限边界的官方 oracle。KubeBrain 已由 `7edde075` 在授权前保留 wire
+  `RangeEnd={0}`，避免先归一化为空切片后把 `[key,+inf)` 错判为精确单键；但此前只有服务端和
+  本地 client 测试，没有 clean upstream 双端黑盒证据。现在 auth differential 创建只拥有
+  `/auth-exact/key` 精确 READ 的独立用户，调用 `Watch(key, WithFromKey, WithCreatedNotify)` 必须
+  返回 canceled，错误文本精确为 `rpc error: code = PermissionDenied desc = etcdserver: permission denied`，
+  随后 watch channel 必须关闭；root 再写 `/auth-exact/key-sibling`，不得收到任何事件。
+
+  官方 client 的 `WatchResponse.Err()` 在该路径返回保留完整 gRPC 文本的普通 error，因而经
+  `status.Code` 观察为 `Unknown` 而不是 `PermissionDenied`；夹具据真实 upstream oracle 固定
+  code+文本，不用错误的 status 解码掩盖行为。2026-08-13 使用 clean
+  `/root/etcd/bin/etcd`（SHA `5cd9f4ee1`）和独立三 PD/三 TiKV 上的 disposable
+  `a4569-auth-from-key-5` KubeBrain keyspace，完整 destructive Auth differential 19.97 秒通过，
+  显式 `RUNNER_EXIT=0`。一次性实例的 advertised client URL 指向宿主 direct 端口，既有
+  authenticated `endpoint health --cluster` 也通过；前一次容器内 URL 的失败被确认为测试拓扑
+  配置错误而非协议差距。本轮不修改 runtime，不构建 A4569 镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

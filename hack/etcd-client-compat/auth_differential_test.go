@@ -110,6 +110,10 @@ type authDifferentialOutcome struct {
 	ExistingWatchAfterEnable  bool
 	NewWatchAfterEnableCancel bool
 	NewWatchAfterEnable       string
+	FromKeyWatchCanceled      bool
+	FromKeyWatchError         authErrorOutcome
+	FromKeyWatchChannelClosed bool
+	FromKeyWatchSiblingLeak   bool
 	WatchStreamFirstCreated   bool
 	WatchCreateAfterRevoke    string
 	ExistingWatchAfterRevoke  bool
@@ -333,9 +337,13 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	require.NoError(t, err)
 	_, err = bootstrap.UserAdd(ctx, "writer", "writer-secret")
 	require.NoError(t, err)
+	_, err = bootstrap.UserAdd(ctx, "exact-reader", "exact-secret")
+	require.NoError(t, err)
 	_, err = bootstrap.RoleAdd(ctx, "allowed")
 	require.NoError(t, err)
 	_, err = bootstrap.RoleAdd(ctx, "write-only")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleAdd(ctx, "exact-key")
 	require.NoError(t, err)
 	_, err = bootstrap.RoleGrantPermission(
 		ctx,
@@ -364,6 +372,16 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	)
 	require.NoError(t, err)
 	_, err = bootstrap.UserGrantRole(ctx, "writer", "write-only")
+	require.NoError(t, err)
+	_, err = bootstrap.RoleGrantPermission(
+		ctx,
+		"exact-key",
+		"/auth-exact/key",
+		"",
+		clientv3.PermissionType(clientv3.PermRead),
+	)
+	require.NoError(t, err)
+	_, err = bootstrap.UserGrantRole(ctx, "exact-reader", "exact-key")
 	require.NoError(t, err)
 	_, implicitRootRoleErr := bootstrap.RoleGet(ctx, "root")
 	_, err = bootstrap.AuthEnable(ctx)
@@ -395,6 +413,36 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 	root := authClient(t, endpoint, "root", "root-secret")
 	alice := authClient(t, endpoint, "alice", "alice-secret")
 	writer := authClient(t, endpoint, "writer", "writer-secret")
+	exactReader := authClient(t, endpoint, "exact-reader", "exact-secret")
+	fromKeyWatchCtx, cancelFromKeyWatch := context.WithCancel(ctx)
+	fromKeyWatch := exactReader.Watch(
+		fromKeyWatchCtx, "/auth-exact/key", clientv3.WithFromKey(), clientv3.WithCreatedNotify(),
+	)
+	var fromKeyWatchResponse clientv3.WatchResponse
+	select {
+	case response, ok := <-fromKeyWatch:
+		require.True(t, ok, "from-key watch closed before returning its authorization result")
+		fromKeyWatchResponse = response
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for from-key watch authorization result")
+	}
+	_, err = root.Put(ctx, "/auth-exact/key-sibling", "must-not-leak")
+	require.NoError(t, err)
+	fromKeyWatchChannelClosed := false
+	fromKeyWatchSiblingLeak := false
+	select {
+	case response, ok := <-fromKeyWatch:
+		fromKeyWatchChannelClosed = !ok
+		if ok {
+			for _, event := range response.Events {
+				if string(event.Kv.Key) == "/auth-exact/key-sibling" {
+					fromKeyWatchSiblingLeak = true
+				}
+			}
+		}
+	case <-time.After(3 * time.Second):
+	}
+	cancelFromKeyWatch()
 	transitionAuthRangeStream, err := etcdserverpb.NewKVClient(alice.ActiveConnection()).RangeStream(
 		ctx,
 		&etcdserverpb.RangeRequest{
@@ -988,6 +1036,10 @@ func collectAuthDifferentialOutcome(t *testing.T, endpoint string) authDifferent
 		ExistingWatchAfterEnable:  existingWatchAfterEnable,
 		NewWatchAfterEnableCancel: newWatchAfterEnableCancel,
 		NewWatchAfterEnable:       newWatchAfterEnable,
+		FromKeyWatchCanceled:      fromKeyWatchResponse.Canceled,
+		FromKeyWatchError:         authError(fromKeyWatchResponse.Err()),
+		FromKeyWatchChannelClosed: fromKeyWatchChannelClosed,
+		FromKeyWatchSiblingLeak:   fromKeyWatchSiblingLeak,
 		WatchStreamFirstCreated:   watchStreamFirstCreated,
 		WatchCreateAfterRevoke:    watchCreateAfterRevoke.CancelReason,
 		ExistingWatchAfterRevoke:  existingWatchAfterRevokeOK,
@@ -1090,6 +1142,11 @@ func TestAuthDifferentialAgainstEtcd(t *testing.T) {
 	require.True(t, reference.ExistingWatchAfterEnable)
 	require.True(t, reference.NewWatchAfterEnableCancel)
 	require.Equal(t, rpctypes.ErrGRPCUserEmpty.Error(), reference.NewWatchAfterEnable)
+	require.True(t, reference.FromKeyWatchCanceled)
+	require.Equal(t, codes.Unknown, reference.FromKeyWatchError.Code)
+	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), reference.FromKeyWatchError.Message)
+	require.True(t, reference.FromKeyWatchChannelClosed)
+	require.False(t, reference.FromKeyWatchSiblingLeak)
 	require.True(t, reference.WatchStreamFirstCreated)
 	require.Equal(t, rpctypes.ErrGRPCPermissionDenied.Error(), reference.WatchCreateAfterRevoke)
 	require.True(t, reference.ExistingWatchAfterRevoke)
