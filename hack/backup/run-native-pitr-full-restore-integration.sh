@@ -30,8 +30,8 @@ case "$test_name" in
     objectstore_integration=true
     ;;
 esac
-if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-two-store-quorum-loss-during-br-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-store-reserve-enospc-recover && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-two-pd-enospc-resume && "$fault_injection" != target-pd-network-quorum-loss-resume && "$fault_injection" != target-kubebrain-pd-network-isolation-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
-  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-two-store-quorum-loss-during-br-resume, target-store-enospc-resume, target-store-reserve-enospc-recover, target-two-store-enospc-resume, target-pd-leader-enospc-resume, target-two-pd-enospc-resume, target-pd-network-quorum-loss-resume, target-kubebrain-pd-network-isolation-resume, or target-pd-leader-store-enospc-resume" >&2
+if [[ "$fault_injection" != none && "$fault_injection" != member-pause-store-resume && "$fault_injection" != preferred-member-pause-store-resume && "$fault_injection" != leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-resume && "$fault_injection" != target-leader-member-pause-store-during-br-resume && "$fault_injection" != target-two-store-quorum-loss-resume && "$fault_injection" != target-two-store-quorum-loss-during-br-resume && "$fault_injection" != target-two-pd-quorum-loss-during-br-resume && "$fault_injection" != target-store-enospc-resume && "$fault_injection" != target-store-reserve-enospc-recover && "$fault_injection" != target-two-store-enospc-resume && "$fault_injection" != target-pd-leader-enospc-resume && "$fault_injection" != target-two-pd-enospc-resume && "$fault_injection" != target-pd-network-quorum-loss-resume && "$fault_injection" != target-kubebrain-pd-network-isolation-resume && "$fault_injection" != target-pd-leader-store-enospc-resume ]]; then
+  echo "KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION must be none, member-pause-store-resume, preferred-member-pause-store-resume, leader-member-pause-store-resume, target-leader-member-pause-store-resume, target-leader-member-pause-store-during-br-resume, target-two-store-quorum-loss-resume, target-two-store-quorum-loss-during-br-resume, target-two-pd-quorum-loss-during-br-resume, target-store-enospc-resume, target-store-reserve-enospc-recover, target-two-store-enospc-resume, target-pd-leader-enospc-resume, target-two-pd-enospc-resume, target-pd-network-quorum-loss-resume, target-kubebrain-pd-network-isolation-resume, or target-pd-leader-store-enospc-resume" >&2
   exit 2
 fi
 if [[ "$fault_injection" != none && "$topology_size" != 3 ]]; then
@@ -265,7 +265,13 @@ go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pit
 
 log_env=()
 fault_env=()
-if [[ "$fault_injection" == target-two-store-quorum-loss-resume || "$fault_injection" == target-two-store-quorum-loss-during-br-resume ]]; then
+if [[ "$fault_injection" == target-two-pd-quorum-loss-during-br-resume ]]; then
+  fault_env=(
+    KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS="${target_pd_names[0]},${target_pd_names[1]}"
+    KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_DURING_BR=true
+    KUBEBRAIN_NATIVE_PITR_REQUIRE_BR_BLOCKED_UNTIL_FAULT_RECOVERY=true
+  )
+elif [[ "$fault_injection" == target-two-store-quorum-loss-resume || "$fault_injection" == target-two-store-quorum-loss-during-br-resume ]]; then
   fault_env=(
     KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_LOSS_CONTAINERS="${target_tikv_names[0]},${target_tikv_names[1]}"
     KUBEBRAIN_NATIVE_PITR_TARGET_QUORUM_RECOVERY_ADDRESSES=127.0.0.1:21180,127.0.0.1:21181

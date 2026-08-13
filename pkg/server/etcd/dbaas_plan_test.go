@@ -86,6 +86,10 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	require.Contains(t, plan, "不证明双 store quorum loss")
 	require.Contains(t, plan, "A4545 继续关闭 A4544 保留的加密 import 窗口 store quorum loss 缺口")
 	require.Contains(t, plan, "target-two-store-quorum-loss-during-br-resume")
+	require.Contains(t, plan, "A4546 关闭 A4545 明确保留的加密 import 窗口 PD quorum loss 缺口")
+	require.Contains(t, plan, "target-two-pd-quorum-loss-during-br-resume")
+	require.Contains(t, plan, "底层 BR 是否在恢复前退出")
+	require.Contains(t, plan, "不能把测试框架等待恢复的时间冒充")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

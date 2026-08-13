@@ -2040,14 +2040,15 @@ func injectContainerLoss(t *testing.T, ctx context.Context, raw string) bool {
 
 type brFaultRunner struct {
 	commandRunner
-	ctx           context.Context
-	raw           string
-	recoveryDelay time.Duration
-	mu            sync.Mutex
-	injected      bool
-	recovered     bool
-	err           error
-	recoveryDone  chan error
+	ctx                     context.Context
+	raw                     string
+	recoveryDelay           time.Duration
+	mu                      sync.Mutex
+	injected                bool
+	recovered               bool
+	completedBeforeRecovery bool
+	err                     error
+	recoveryDone            chan error
 }
 
 func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, stdout, stderr io.Writer) error {
@@ -2077,6 +2078,7 @@ func (r *brFaultRunner) Run(ctx context.Context, name string, args []string, std
 	}}
 	err := r.commandRunner.Run(ctx, name, args, stdout, marker)
 	r.mu.Lock()
+	r.completedBeforeRecovery = r.injected && !r.recovered
 	injectionErr, injected, recoveryDone := r.err, r.injected, r.recoveryDone
 	r.mu.Unlock()
 	if injectionErr != nil {
@@ -2103,6 +2105,12 @@ func (r *brFaultRunner) faultRecovered() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.recovered
+}
+
+func (r *brFaultRunner) finishedBeforeFaultRecovery() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.completedBeforeRecovery
 }
 
 type faultMarkerWriter struct {
@@ -2505,6 +2513,11 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	if importFault != nil {
 		require.True(t, importFault.faultInjected(), "target fault was not injected during BR import")
 		require.True(t, importFault.faultRecovered(), "target fault was not recovered during BR import")
+		if setting := os.Getenv("KUBEBRAIN_NATIVE_PITR_REQUIRE_BR_BLOCKED_UNTIL_FAULT_RECOVERY"); setting != "" {
+			require.Equal(t, "true", setting, "invalid BR blocking assertion setting")
+			require.False(t, importFault.finishedBeforeFaultRecovery(), "BR completed before the target fault recovered")
+			t.Logf("native PITR BR remained blocked until target fault recovery: %s", importFault.raw)
+		}
 		t.Log("native PITR target fault was injected during BR import and recovered before completion")
 	} else {
 		targetFaultInjected = injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"))

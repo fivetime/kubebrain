@@ -48689,6 +48689,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   artifact/key 复验、admission fence/handoff 与 etcd KV/lease 语义全绿。该项证明 transient process pause 后
   可恢复重试，不证明两个 store 持久丢盘/重建、PD quorum loss、ENOSPC、网络黑洞、跨 AZ 或 worker crash。
 
+- A4546 关闭 A4545 明确保留的加密 import 窗口 PD quorum loss 缺口。新增
+  `target-two-pd-quorum-loss-during-br-resume` profile：只在固定 BR 输出 import-mode marker 后同时 pause
+  三成员 target PD 的成员 0/1，并由逐容器 Docker paused-state 检查证明故障已生效；10 秒后 unpause。注入器
+  现额外记录底层 BR 是否在恢复前退出，新 profile 强制其为 false，因而不能把测试框架等待恢复的时间冒充
+  BR retry 证据。2026-08-13 运行
+  `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-two-pd-quorum-loss-during-br-resume hack/backup/run-native-pitr-full-restore-integration.sh`；
+  前置门禁证明 source/target 各 3 Up stores、全 Region 3 peers/零 pending。BR 在 import marker 后很快显示
+  data progress 100%，但没有在 PD 多数派不可用时发布成功；两个 PD 恢复后完成 PD 收尾，12.373 秒给出
+  530 KV/107.1 kB 成功摘要，随后 artifact/key 复验、admission fence/handoff 与 etcd KV/lease 语义全绿。
+  该项只证明同一进程/地址/数据上的短时双 PD process pause 与恢复；不证明长时间 outage、网络黑洞、PD
+  member 持久丢盘/替换、跨 AZ、KMS 撤权或 durable restore worker crash/reconcile。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
