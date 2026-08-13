@@ -70,7 +70,7 @@ func (s *RPCServer) rangeWithAfterRead(
 	// followers without a complete/valid checkpoint also retain the ordinary
 	// TiKV path and fail closed if PD is unavailable.
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if r.Serializable && r.Revision == 0 && (!s.peers.IsLeader() || !leadingFresh) {
+	if r.Serializable && r.Revision <= 0 && (!s.peers.IsLeader() || !leadingFresh) {
 		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
 			ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
 			s.metricCli.EmitCounter("read.serializable.checkpoint", 1)

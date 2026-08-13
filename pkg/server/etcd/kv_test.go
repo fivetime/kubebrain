@@ -567,13 +567,16 @@ func TestFollowerSerializableLatestRangeUsesProtectedCheckpoint(t *testing.T) {
 	base.tokens.snapshots = newAuthSnapshotCache(shim)
 	base.peers = testPeerService{isLeader: false}
 
-	response, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
-		Key: []byte("/checkpoint"), Serializable: true,
-	})
-	require.NoError(t, err)
-	require.True(t, shim.used)
-	require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
-	require.Equal(t, []byte("checkpoint"), response.Kvs[0].Value)
+	for _, revision := range []int64{0, -1, math.MinInt64} {
+		shim.used = false
+		response, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
+			Key: []byte("/checkpoint"), Revision: revision, Serializable: true,
+		})
+		require.NoError(t, err)
+		require.True(t, shim.used, "revision %d", revision)
+		require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+		require.Equal(t, []byte("checkpoint"), response.Kvs[0].Value)
+	}
 
 	empty, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
 		Key: []byte("z"), RangeEnd: []byte("a"), Serializable: true,
