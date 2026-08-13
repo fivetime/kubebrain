@@ -1552,6 +1552,78 @@ func TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload(t *testing.T) {
 		"automatic IDs wrap within the positive int64 range and skip zero")
 }
 
+func TestStaleLeaseTimerCallbacksCannotAdoptReloadedGeneration(t *testing.T) {
+	server, b, cleanup := newLeaseTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	const leaseID int64 = 100031
+	var leadershipEpoch atomic.Uint64
+	leadershipEpoch.Store(1)
+	server.peers = testPeerService{
+		isLeaderFn: func() bool { return true },
+		epochFn:    func() (uint64, bool) { return leadershipEpoch.Load(), true },
+	}
+
+	server.leaseMu.Lock()
+	oldGeneration := server.leaseGeneration
+	server.leaseGeneration++
+	newGeneration := server.leaseGeneration
+	st := &leaseState{
+		id:       leaseID,
+		ttl:      300,
+		deadline: time.Now().Add(-time.Second),
+		keys:     make(map[string]struct{}),
+		revoked:  make(chan struct{}),
+	}
+	server.leases[leaseID] = st
+	server.leaseMu.Unlock()
+	meta, err := jsonMarshalLeaseRecord(leaseID, 300, nil)
+	require.NoError(t, err)
+	require.NoError(t, b.InternalPut(ctx, leaseStorageKey(leaseID), meta))
+
+	// A callback may already be queued when applyLeaseRecords stops its timer.
+	// It belongs to oldGeneration and must not revoke a same-ID lease loaded into
+	// the successor snapshot.
+	epoch, _ := server.peers.EpochAndLeadingFresh()
+	server.expireLeaseGenerationWithContext(ctx, leaseID, oldGeneration, epoch)
+	server.leaseMu.Lock()
+	require.Same(t, st, server.leases[leaseID])
+	require.Equal(t, newGeneration, server.leaseGeneration)
+	st.deadline = time.Now().Add(100 * time.Second)
+	server.leaseMu.Unlock()
+	stored, err := b.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, meta, stored)
+
+	// The same generation fence applies to queued checkpoint callbacks: they may
+	// neither overwrite durable remaining TTL nor publish it into the new object.
+	server.checkpointLeaseGenerationWithContext(ctx, leaseID, oldGeneration, epoch)
+	server.leaseMu.Lock()
+	require.Zero(t, st.remainingTTL)
+	require.Same(t, st, server.leases[leaseID])
+	server.leaseMu.Unlock()
+	stored, err = b.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, meta, stored)
+
+	// Generation and leadership epoch are independent fences. Even before the
+	// successor has replaced the map, an old-term callback must not adopt the new
+	// epoch token and mutate the still-current object.
+	server.leaseMu.Lock()
+	st.deadline = time.Now().Add(-time.Second)
+	server.leaseMu.Unlock()
+	leadershipEpoch.Store(2)
+	server.expireLeaseGenerationWithContext(ctx, leaseID, newGeneration, epoch)
+	server.checkpointLeaseGenerationWithContext(ctx, leaseID, newGeneration, epoch)
+	server.leaseMu.Lock()
+	require.Same(t, st, server.leases[leaseID])
+	require.Zero(t, st.remainingTTL)
+	server.leaseMu.Unlock()
+	stored, err = b.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, meta, stored)
+}
+
 func TestLoadLeaseRecordsRejectsInvalidAttachmentMetadata(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -1305,6 +1305,14 @@ func (m *leaseManager) expireLease(id int64) {
 }
 
 func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int64) {
+	m.leaseMu.Lock()
+	generation := m.leaseGeneration
+	m.leaseMu.Unlock()
+	epoch, _ := m.srv.peers.EpochAndLeadingFresh()
+	m.expireLeaseGenerationWithContext(workerCtx, id, generation, epoch)
+}
+
+func (m *leaseManager) expireLeaseGenerationWithContext(workerCtx context.Context, id int64, generation, expectedEpoch uint64) {
 	m.leaseWriteMu.Lock()
 	defer m.leaseWriteMu.Unlock()
 	m.leaseTeardowns.Add(1)
@@ -1314,6 +1322,10 @@ func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int6
 	// Recheck under the same operation lock used by refreshLease so a stale
 	// callback never revokes a lease whose keepalive moved the deadline forward.
 	m.leaseMu.Lock()
+	if m.leaseGeneration != generation {
+		m.leaseMu.Unlock()
+		return
+	}
 	st, ok := m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
@@ -1327,8 +1339,8 @@ func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int6
 	m.leaseMu.Unlock()
 
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
-	if !leadingFresh {
-		m.retryLeaseExpiry(id)
+	if !leadingFresh || epoch != expectedEpoch {
+		m.retryLeaseExpiry(id, generation)
 		return
 	}
 	// Upstream expired leases are revoked through EtcdServer.LeaseRevoke, so the
@@ -1337,7 +1349,7 @@ func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int6
 	// expiry retry remove it after the alarm is explicitly disarmed.
 	if err := m.srv.rejectCorrupt(workerCtx); err != nil {
 		m.srv.metricCli.EmitCounter("lease.expire.corrupt_deferred", 1, errClassTag(err))
-		m.retryLeaseExpiry(id)
+		m.retryLeaseExpiry(id, generation)
 		return
 	}
 
@@ -1352,7 +1364,7 @@ func (m *leaseManager) expireLeaseWithContext(workerCtx context.Context, id int6
 	if _, err := m.deleteLeasedKeysAtomic(ctx, id, keys); err != nil {
 		m.srv.metricCli.EmitCounter("lease.expire.delete.err", 1)
 		klog.ErrorS(err, "lease expiry: atomic delete of bound keys failed; keeping lease for retry", "lease", id, "keys", len(keys))
-		m.retryLeaseExpiry(id)
+		m.retryLeaseExpiry(id, generation)
 		return
 	}
 	// Every bound key is gone; now drop the lease record and attachment records.
@@ -1381,9 +1393,12 @@ func (m *leaseManager) leaseKeysSnapshot(id int64) ([]string, bool) {
 	return keys, true
 }
 
-func (m *leaseManager) retryLeaseExpiry(id int64) {
+func (m *leaseManager) retryLeaseExpiry(id int64, generation uint64) {
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
+	if m.leaseGeneration != generation {
+		return
+	}
 	st, ok := m.leases[id]
 	if !ok || st.timer == nil {
 		return
@@ -2314,9 +2329,11 @@ func (m *leaseManager) scheduleLeaseLocked(st *leaseState) {
 		duration = 0
 	}
 	if st.timer == nil {
+		generation := m.leaseGeneration
+		epoch, _ := m.srv.peers.EpochAndLeadingFresh()
 		st.timer = time.AfterFunc(duration, func() {
 			m.startWorker(func(ctx context.Context) {
-				m.expireLeaseWithContext(ctx, st.id)
+				m.expireLeaseGenerationWithContext(ctx, st.id, generation, epoch)
 			})
 		})
 		return
@@ -2332,9 +2349,11 @@ func (m *leaseManager) scheduleLeaseCheckpointLocked(st *leaseState) {
 		return
 	}
 	if st.checkpointTimer == nil {
+		generation := m.leaseGeneration
+		epoch, _ := m.srv.peers.EpochAndLeadingFresh()
 		st.checkpointTimer = time.AfterFunc(leaseCheckpointInterval, func() {
 			m.startWorker(func(ctx context.Context) {
-				m.checkpointLeaseWithContext(ctx, st.id)
+				m.checkpointLeaseGenerationWithContext(ctx, st.id, generation, epoch)
 			})
 		})
 		return
@@ -2342,9 +2361,12 @@ func (m *leaseManager) scheduleLeaseCheckpointLocked(st *leaseState) {
 	st.checkpointTimer.Reset(leaseCheckpointInterval)
 }
 
-func (m *leaseManager) retryLeaseCheckpoint(id int64) {
+func (m *leaseManager) retryLeaseCheckpoint(id int64, generation uint64) {
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
+	if m.leaseGeneration != generation {
+		return
+	}
 	st := m.leases[id]
 	if st == nil || st.checkpointTimer == nil {
 		return
@@ -2357,9 +2379,17 @@ func (m *leaseManager) checkpointLease(id int64) {
 }
 
 func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id int64) {
+	m.leaseMu.Lock()
+	generation := m.leaseGeneration
+	m.leaseMu.Unlock()
+	epoch, _ := m.srv.peers.EpochAndLeadingFresh()
+	m.checkpointLeaseGenerationWithContext(workerCtx, id, generation, epoch)
+}
+
+func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Context, id int64, generation, expectedEpoch uint64) {
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
-	if !leadingFresh {
-		m.retryLeaseCheckpoint(id)
+	if !leadingFresh || epoch != expectedEpoch {
+		m.retryLeaseCheckpoint(id, generation)
 		return
 	}
 	ctx := backend.WithLeadershipEpoch(workerCtx, epoch)
@@ -2370,6 +2400,10 @@ func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id 
 	defer m.leaseWriteMu.RUnlock()
 
 	m.leaseMu.Lock()
+	if m.leaseGeneration != generation {
+		m.leaseMu.Unlock()
+		return
+	}
 	st := m.leases[id]
 	if st == nil || !st.deadline.After(time.Now()) {
 		m.leaseMu.Unlock()
@@ -2390,12 +2424,17 @@ func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id 
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.checkpoint.err", 1)
 		klog.ErrorS(err, "lease checkpoint: failed to persist remaining TTL", "lease", id, "remainingTTL", remainingTTL)
-		m.retryLeaseCheckpoint(id)
+		m.retryLeaseCheckpoint(id, generation)
 		return
 	}
 
 	m.leaseMu.Lock()
-	if st = m.leases[id]; st != nil {
+	if m.leaseGeneration == generation {
+		st = m.leases[id]
+	} else {
+		st = nil
+	}
+	if st != nil {
 		st.remainingTTL = remainingTTL
 		m.scheduleLeaseCheckpointLocked(st)
 	}

@@ -48410,6 +48410,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   sweeper 验证旧实例自行退役且 term 2 可重新启动。`pkg/server/etcd` 全量、backend 全量、相关用例 race `-count=10` 与
   `go vet ./pkg/server/etcd/...` 均通过。
 
+- A4522 把 expiry/checkpoint timer 从“按 lease ID 查当前 map”升级为任期对象回调。对照 upstream
+  `/root/etcd/server/lease/lessor.go`：`Promote` 为当前 primary 重建 expiry notifier/checkpoint heap，`Demote` 将 lease deadline
+  置为 forever 并清空两个 queue；旧 primary 的 queue item 不会在 successor primary 上重新取得执行资格。KubeBrain 使用
+  `time.AfterFunc`，而 `Timer.Stop` 无法撤回已经开始或已排队的 closure；旧 closure 原先只捕获 ID，执行时重新读取
+  `m.leases[id]` 并重新取得当前 epoch，因此可能把 reload 后同 ID 的 successor lease 当成自己的对象，重置新 timer、写入
+  remaining-TTL checkpoint，最坏还会触发 revoke。现 timer 创建时同时捕获 `leaseGeneration` 与 leadership epoch；expiry 和
+  checkpoint 在读取 lease、重试 timer、持久化以及成功后更新内存前均验证 generation，且开始执行时要求当前 fresh epoch 与
+  captured epoch 精确相等。公共测试 helper 仍从调用时 snapshot 导出 token，生产 timer 不会借用后来 epoch。确定性回归覆盖
+  两条独立窗口：map 已换 generation 时旧 closure 不得接触同 ID 新对象；map 尚未换但 epoch 已推进时旧 closure也不得采用
+  successor storage token。该回归 100 轮、相关 race 10 轮、`pkg/server/etcd` 全量（169.206s）和 vet 通过。backend 全量曾因
+  TiKV mock 地址 `store1` 缺端口触发 region cache 40s timeout；唯一失败 `TestCompactDoesNotExpireKeysByEventsName` 隔离重跑
+  0.720s 通过，确认与本轮 lease 代码无关。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
