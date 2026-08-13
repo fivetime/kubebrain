@@ -48325,6 +48325,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回归只预置 internal canonical meta 与 legacy attachment，ReloadLeases 后固定绑定/TTL keys 不变、internal attachment 存在、
   user-MVCC source 已退休。
 
+- A4514 补齐 legacy attachment-only 状态的 owner 分歧与 orphan 清理。A4513 只为仍有有效 owner meta 的 row 生成 migration；
+  指向已不存在 lease 的 user-MVCC attachment 没有 record，仍不会被迁移，而 orphan sweeper 只看到 internal/final owner map，
+  也无法可靠区分被新 internal owner 覆盖的旧 source。`loadLeaseRecords` 现显式返回 legacy source map；ReloadLeases 和周期
+  sweeper 分别消费。若 final internal owner 不同，直接通过受栅栏 DeleteRange 退休 stale legacy row，不改 internal binding；
+  若 owner 已消失且 key 未被新 lease 索引，先复用 per-version lease compare-delete/rebound 检查，只有 reconciliation 成功才删除
+  legacy marker。回归覆盖无 lease/无 user key 的 orphan row，以及 old legacy owner + new internal owner，固定前者完全清理、后者
+  保留新 owner 且只移除旧 source。loader 返回来源的 API 同步接入 snapshot 和全部测试调用点，不把来源泄漏进公开 snapshot schema。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

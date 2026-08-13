@@ -433,6 +433,53 @@ func TestLegacyLeaseMigrationCleansStrandedAttachmentWithoutLegacyMeta(t *testin
 	require.Equal(t, [][]byte{[]byte(key)}, ttl.Keys)
 }
 
+func TestReloadLeasesCleansOrphanLegacyAttachmentWithoutLease(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const key = "/registry/events/orphan-legacy-attachment"
+	_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key: leaseAttachKey(key), Value: []byte("55134"),
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	legacy, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Empty(t, legacy.Kvs, "an ownerless legacy attachment must be retired during reload")
+	_, err = server.backend.InternalGet(ctx, leaseAttachKey(key))
+	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+}
+
+func TestReloadLeasesCleansStaleLegacyAttachmentWithoutOverwritingInternalOwner(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const (
+		oldLease = int64(55_135)
+		newLease = int64(55_136)
+		key      = "/registry/events/stale-legacy-attachment-owner"
+	)
+	for _, id := range []int64{oldLease, newLease} {
+		meta, err := json.Marshal(leaseRecord{ID: id, TTL: 200})
+		require.NoError(t, err)
+		require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(id), meta))
+	}
+	_, err := server.backend.Put(ctx, &etcdserverpb.PutRequest{
+		Key: leaseAttachKey(key), Value: []byte(strconv.FormatInt(oldLease, 10)),
+	})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseAttachKey(key), []byte(strconv.FormatInt(newLease, 10))))
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	owner, err := server.backend.InternalGet(ctx, leaseAttachKey(key))
+	require.NoError(t, err)
+	require.Equal(t, []byte(strconv.FormatInt(newLease, 10)), owner)
+	legacy, err := server.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
+	require.NoError(t, err)
+	require.Empty(t, legacy.Kvs)
+}
+
 func jsonMarshalLeaseRecord(id, ttl int64, keys []string) ([]byte, error) {
 	return json.Marshal(leaseRecord{ID: id, TTL: ttl, Keys: keys})
 }

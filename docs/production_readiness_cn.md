@@ -2976,6 +2976,8 @@ canonical record 覆盖旧值时仍必须用 retained legacy keys 执行冲突 o
 把“迁移完成后的权威值覆盖”误解为可以忽略尚未清理 source 的完整性。
 旧版本可能已先删除 monolithic meta、只留下 user-MVCC attachment；因此 attachment row 本身也必须作为 retry marker。只要其
 owner lease 仍有效，reload 要先确认 internal attachment，再删除 legacy row，不能要求旧 meta 同时存在才安排 cleanup。
+legacy source owner 已不存在时，必须先按 user value 的 per-version lease 做 compare-delete/rebound 判断，成功后才删除 retry marker；
+若同 key 已有不同 internal owner，则只退休 stale legacy row，不得重写或 detach 新 owner。
 提交栅栏依赖 256 个 `alarms/corrupt-fence/<hex>` mutation shard，而不是 TiKV 的普通 snapshot read-set；禁止减少为
 单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
 会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在

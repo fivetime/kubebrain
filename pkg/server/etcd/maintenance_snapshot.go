@@ -302,7 +302,7 @@ func (s *RPCServer) snapshotMetadata(ctx context.Context, revision int64) (produ
 		state.Auth.Roles = append(state.Auth.Roles, auth.Roles[name])
 	}
 
-	leaseRecords, leaseAttachments, err := s.loadLeaseRecords(ctx)
+	leaseRecords, leaseAttachments, _, err := s.loadLeaseRecords(ctx)
 	if err != nil {
 		if errors.Is(err, errInvalidLeaseMetadata) {
 			return production.State{}, nil, nil, fmt.Errorf("%w: %v", production.ErrInvalidSnapshotMetadata, err)

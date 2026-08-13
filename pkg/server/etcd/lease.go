@@ -1539,7 +1539,7 @@ func (m *leaseManager) leaseLeaderUnavailable(op string) error {
 }
 
 func (m *leaseManager) restoreLeases(ctx context.Context) error {
-	records, attachments, err := m.loadLeaseRecords(ctx)
+	records, attachments, _, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err
 	}
@@ -1561,7 +1561,7 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 		return status.Error(codes.Unavailable, "etcdserver: leadership lost during lease reload")
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
-	records, attachments, err := m.loadLeaseRecords(ctx)
+	records, attachments, legacyAttachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err
 	}
@@ -1572,6 +1572,7 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 	// per-key attachment format so subsequent detaches are durable and the
 	// monolithic key-list is not carried forward. One-time, idempotent.
 	m.migrateLegacyLeases(ctx, legacy)
+	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
 	// Start the safety-net sweeper that reclaims leased keys whose expiry timer was
 	// never (re)armed because their attachment outlived its lease meta record.
 	m.startOrphanSweeper(ctx)
@@ -1581,10 +1582,10 @@ func (m *leaseManager) ReloadLeases(ctx context.Context) error {
 
 // loadLeaseRecords reads the per-lease meta records and the per-key attachment
 // records from storage at the latest revision.
-func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, error) {
+func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map[string]int64, map[string]int64, error) {
 	internalRecords, err := m.srv.backend.InternalRange(ctx, leaseStoragePrefix)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	resp, err := m.srv.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      leaseStoragePrefix,
@@ -1592,7 +1593,7 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 		Revision: latestRestoreRevision,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	// Read the legacy user-MVCC keyspace during rolling upgrades. A new internal
 	// record wins when both layouts contain the same lease ID.
@@ -1601,14 +1602,14 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	for _, kv := range resp.Kvs {
 		keyID, keyErr := leaseMetadataStorageID(kv.Key)
 		if keyErr != nil {
-			return nil, nil, keyErr
+			return nil, nil, nil, keyErr
 		}
 		record, err := decodeLeaseRecord(kv.Value)
 		if err != nil {
-			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err))
+			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode legacy lease metadata for key %q: %w", string(kv.Key), err))
 		}
 		if record.ID != keyID {
-			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
 				"legacy lease metadata key id %d disagrees with payload id %d", keyID, record.ID,
 			))
 		}
@@ -1620,14 +1621,14 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	for key, value := range internalRecords {
 		keyID, keyErr := leaseMetadataStorageID([]byte(key))
 		if keyErr != nil {
-			return nil, nil, keyErr
+			return nil, nil, nil, keyErr
 		}
 		record, err := decodeLeaseRecord(value)
 		if err != nil {
-			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode lease metadata: %w", err))
+			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf("decode lease metadata: %w", err))
 		}
 		if record.ID != keyID {
-			return nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+			return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
 				"lease metadata key id %d disagrees with payload id %d", keyID, record.ID,
 			))
 		}
@@ -1648,17 +1649,19 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 		Revision: latestRestoreRevision,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	attachments := make(map[string]int64, len(aresp.Kvs))
+	legacyAttachments := make(map[string]int64, len(aresp.Kvs))
 	legacyAttachmentKeys := make(map[int64][]string)
 	for _, kv := range aresp.Kvs {
 		userKey := string(kv.Key[len(leaseAttachPrefix):])
 		id, perr := parseLeaseAttachmentRecord(userKey, kv.Value)
 		if perr != nil {
-			return nil, nil, perr
+			return nil, nil, nil, perr
 		}
 		attachments[userKey] = id
+		legacyAttachments[userKey] = id
 		legacyAttachmentKeys[id] = append(legacyAttachmentKeys[id], userKey)
 	}
 	for index := range records {
@@ -1666,13 +1669,13 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 	}
 	internalAttachments, err := m.srv.backend.InternalRange(ctx, leaseAttachPrefix)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	for key, value := range internalAttachments {
 		userKey := key[len(leaseAttachPrefix):]
 		id, perr := parseLeaseAttachmentRecord(userKey, value)
 		if perr != nil {
-			return nil, nil, perr
+			return nil, nil, nil, perr
 		}
 		attachments[userKey] = id
 	}
@@ -1695,13 +1698,13 @@ func (m *leaseManager) loadLeaseRecords(ctx context.Context) ([]leaseRecord, map
 				if first > second {
 					first, second = second, first
 				}
-				return nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
+				return nil, nil, nil, markInvalidLeaseMetadata(fmt.Errorf(
 					"legacy lease key %q has conflicting owners %d and %d", key, first, second,
 				))
 			}
 		}
 	}
-	return records, attachments, nil
+	return records, attachments, legacyAttachments, nil
 }
 
 func parseLeaseAttachmentRecord(userKey string, value []byte) (int64, error) {
@@ -2052,7 +2055,7 @@ func (m *leaseManager) runOrphanSweeper(ctx context.Context, stop chan struct{},
 // key when its lease lapses), or, when the key was rebound/removed, just reclaims
 // the stale attachment record.
 func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
-	_, attachments, err := m.loadLeaseRecords(ctx)
+	_, attachments, legacyAttachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
 		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
@@ -2072,6 +2075,25 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 		}
 		m.reconcileOrphanAttachment(backend.WithLeadershipEpoch(ctx, epoch), key, id)
 	}
+	m.cleanupOrphanLegacyAttachments(ctx, legacyAttachments)
+}
+
+func (m *leaseManager) cleanupOrphanLegacyAttachments(ctx context.Context, legacyAttachments map[string]int64) {
+	for key, legacyID := range legacyAttachments {
+		m.leaseMu.Lock()
+		_, leaseLive := m.leases[legacyID]
+		currentID, indexed := m.keyLeaseIndex[key]
+		m.leaseMu.Unlock()
+		if leaseLive || (indexed && currentID == legacyID) {
+			continue // normal migration owns this row
+		}
+		if !indexed {
+			if !m.reconcileOrphanAttachment(ctx, key, legacyID) {
+				continue
+			}
+		}
+		_, _ = m.srv.backend.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: leaseAttachKey(key)})
+	}
 }
 
 // reconcileOrphanAttachment handles one attachment record whose lease is no longer
@@ -2079,10 +2101,10 @@ func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
 // (inline in the value, review #9) still names the defunct lease; otherwise it
 // merely reclaims the stale attachment record, never touching a key that was
 // rebound or recreated leaseless.
-func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string, id int64) {
+func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string, id int64) bool {
 	resp, err := m.srv.backend.Get(ctx, &etcdserverpb.RangeRequest{Key: []byte(key)})
 	if err != nil {
-		return
+		return false
 	}
 	if len(resp.Kvs) == 0 || resp.Kvs[0].Lease != id {
 		// Key already gone, or rebound/recreated to a different (or no) lease: the
@@ -2092,8 +2114,9 @@ func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string
 		// cleaned.)
 		if err := m.detachKeyFromStorage(ctx, key); err == nil {
 			m.srv.metricCli.EmitCounter("lease.orphan_sweep.record_reclaimed", 1)
+			return true
 		}
-		return
+		return false
 	}
 	// The key is live and still bound (per its inline lease) to a lease that no
 	// longer exists. Re-check under the lock that the lease was not just
@@ -2103,17 +2126,19 @@ func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string
 	_, leaseLive := m.leases[id]
 	m.leaseMu.Unlock()
 	if leaseLive {
-		return
+		return false
 	}
 	dresp, err := m.srv.backend.Delete(ctx, []byte(key), resp.Kvs[0].ModRevision, false)
 	if err != nil {
-		return
+		return false
 	}
 	if dresp.GetSucceeded() {
 		_ = m.detachKeyFromStorage(ctx, key)
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.key_deleted", 1)
 		klog.InfoS("orphan lease sweep: deleted key bound to a defunct lease", "key", key, "lease", id)
+		return true
 	}
+	return false
 }
 
 func (m *leaseManager) scheduleLeaseLocked(st *leaseState) {
