@@ -2197,6 +2197,15 @@ func (m *leaseManager) persistLeaseRecord(ctx context.Context, key, data []byte,
 	if err == nil {
 		return nil
 	}
+	// CORRUPT fence failures are definite admission/commit-order outcomes, not
+	// lost commit responses. A pre-existing identical record must not turn the
+	// rejected operation into success (legacy migration would otherwise retire
+	// its source record while the alarm is active).
+	if errors.Is(err, backend.ErrCorruptAlarmActive) ||
+		errors.Is(err, backend.ErrCorruptAlarmChanged) ||
+		errors.Is(err, backend.ErrInvalidAlarmMetadata) {
+		return err
+	}
 
 	// A TiKV commit can succeed even when its response is lost to cancellation
 	// or a transport failure. Treating that as definitely uncommitted is unsafe:

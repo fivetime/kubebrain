@@ -587,18 +587,26 @@ func TestLegacyLeaseMigrationMetadataStopsWhileCorruptAlarmIsActive(t *testing.T
 		leaseID  = int64(4506003)
 		memberID = uint64(4506003)
 	)
+	canonical, err := json.Marshal(leaseRecord{ID: leaseID, TTL: 300, RemainingTTL: 200})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), canonical))
 	require.NoError(t, server.backend.ArmCorrupt(ctx, memberID))
 
-	err := server.persistMigratedLeaseMeta(ctx, leaseID, 300, 200)
+	err = server.persistMigratedLeaseMeta(ctx, leaseID, 300, 200)
 	require.ErrorIs(t, err, backend.ErrCorruptAlarmActive)
-	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
-	require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	stored, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	require.Equal(t, canonical, stored,
+		"an identical pre-existing record must not disguise a definite CORRUPT rejection as success")
 
 	// LeaseCheckpoint is an upstream internal maintenance request, not a
 	// derived migration repair, and remains admissible while CORRUPT is active.
-	require.NoError(t, server.persistLeaseCheckpoint(ctx, leaseID, 300, 200))
-	_, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, server.persistLeaseCheckpoint(ctx, leaseID, 300, 199))
+	stored, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
 	require.NoError(t, err)
+	var checkpoint leaseRecord
+	require.NoError(t, json.Unmarshal(stored, &checkpoint))
+	require.Equal(t, int64(199), checkpoint.RemainingTTL)
 }
 
 func TestCommittedUncertainLeaseRevokeForgetsInMemoryLease(t *testing.T) {

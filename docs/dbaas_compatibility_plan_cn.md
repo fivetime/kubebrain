@@ -48270,6 +48270,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   提交，absent delete 同样返回 CORRUPT 且不产生物理 mutation。服务层回归预置 canonical lease record、激活 alarm，固定 cleanup
   返回 `ErrCorruptAlarmActive` 且 bytes 原样保留，disarm 后才允许删除；既有取消 grant 释放 pending reservation 测试继续通过。
 
+- A4506 将其余租约派生修复纳入同一 CORRUPT 提交全序。正常 Put/Txn/Delete 的 attachment 已与用户 mutation 位于同一
+  `TxnApply`；剩余 legacy migration attachment 补写改走 guarded internal put，orphan sweep/防御性 detach 改走
+  internal-only `TxnApply` delete，legacy canonical lease metadata 也不再复用允许告警下运行的 LeaseCheckpoint 裸写。
+  周期性 LeaseCheckpoint 保持 upstream 内部 maintenance 语义，不误接入 corrupt applier。并发 leadership epoch 测试替身
+  同步拦截新 guarded/TxnApply 接口；回归固定 active alarm 下 attachment 不得重绑或删除、migration metadata 不得创建，
+  disarm 后恢复。租约专项、backend/server 完整测试、定向 race 和 vet 均通过。
+
+- A4507 修正 guarded lease metadata 的确定错误被“不确定提交对账”吞掉。`persistLeaseRecord` 原来对任何写错误都读取目标 key；
+  若 migration 的 canonical bytes 在 alarm 前已经存在，`InternalPutCorruptGuarded` 明确返回 active/changed/invalid metadata 后，
+  相同 readback 仍会被误判为本次写成功，使迁移继续退休 legacy source。现在三类 CORRUPT fence 错误直接返回，只有可能丢失
+  commit response 的其他错误保留既有精确 readback 对账。回归预置完全相同的 canonical record 后激活 CORRUPT，固定 guarded
+  migration 仍返回 `ErrCorruptAlarmActive`；同时证明不受 corrupt wrapper 覆盖的 LeaseCheckpoint 仍可更新 TTL。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
