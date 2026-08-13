@@ -39,11 +39,14 @@ func TestRangeStreamFollowerDifferentialAgainstReferenceEtcd(t *testing.T) {
 	kubeBrainEndpoints := splitRequiredDirectEndpoints(t, "KUBEBRAIN_DIRECT_ENDPOINTS")
 
 	reference := followerRangeStreamOutcomes(t, referenceEndpoints, "reference")
-	want := make([]followerRangeStreamOutcome, 0, 8)
+	want := make([]followerRangeStreamOutcome, 0, 14)
 	for range 2 {
 		want = append(want,
 			followerRangeStreamOutcome{Scenario: "serializable-latest", Keys: []string{"a", "b"}, Values: []string{"v2", "vb"}, Count: 2, HeaderRevDelta: 3},
 			followerRangeStreamOutcome{Scenario: "serializable-negative", Keys: []string{"a", "b"}, Values: []string{"v2", "vb"}, Count: 2, HeaderRevDelta: 3},
+			followerRangeStreamOutcome{Scenario: "serializable-negative-count-only", Count: 2, HeaderRevDelta: 3},
+			followerRangeStreamOutcome{Scenario: "serializable-negative-keys-only", Keys: []string{"a", "b"}, Values: []string{"", ""}, Count: 2, HeaderRevDelta: 3},
+			followerRangeStreamOutcome{Scenario: "serializable-negative-limit", Keys: []string{"a"}, Values: []string{"v2"}, Count: 2, More: true, HeaderRevDelta: 3},
 			followerRangeStreamOutcome{Scenario: "serializable-historical", Keys: []string{"a"}, Values: []string{"v1"}, Count: 1, HeaderRevDelta: 3},
 			followerRangeStreamOutcome{Scenario: "linearizable-latest", Keys: []string{"a", "b"}, Values: []string{"v2", "vb"}, Count: 2, HeaderRevDelta: 3},
 		)
@@ -116,6 +119,9 @@ func followerRangeStreamOutcomes(t *testing.T, endpoints []string, instance stri
 	}{
 		{name: "serializable-latest", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Serializable: true}},
 		{name: "serializable-negative", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: math.MinInt64, Serializable: true}},
+		{name: "serializable-negative-count-only", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: math.MinInt64, Serializable: true, CountOnly: true}},
+		{name: "serializable-negative-keys-only", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: math.MinInt64, Serializable: true, KeysOnly: true}},
+		{name: "serializable-negative-limit", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: math.MinInt64, Serializable: true, Limit: 1}},
 		{name: "serializable-historical", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end, Revision: first.Header.Revision, Serializable: true}},
 		{name: "linearizable-latest", req: &etcdserverpb.RangeRequest{Key: []byte(prefix), RangeEnd: end}},
 	}

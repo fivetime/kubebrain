@@ -77,6 +77,9 @@ case "$TEST_SCOPE" in
   multiplexed-stream-l7-reset)
     test_pattern='^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
     ;;
+  rangestream-follower)
+    test_pattern='^TestRangeStreamFollowerDifferentialAgainstReferenceEtcd$'
+    ;;
   envoy-plaintext)
     test_pattern='^TestEnvoyPlaintextProfileDifferential$'
     ;;
@@ -87,7 +90,7 @@ case "$TEST_SCOPE" in
     test_pattern='^TestEnvoyReplicaDrainDifferential$'
     ;;
   *)
-    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, envoy-plaintext, envoy-tls-passthrough, or envoy-replica-drain" >&2
+    echo "TEST_SCOPE must be all, lease-response-loss, lease-revoke-cross-replica, lease-revoke-tls-passthrough, multiplexed-stream-l7-reset, rangestream-follower, envoy-plaintext, envoy-tls-passthrough, or envoy-replica-drain" >&2
     exit 2
     ;;
 esac
