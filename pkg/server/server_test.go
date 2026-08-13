@@ -64,6 +64,13 @@ type staleLeaderElection struct{ alwaysLeaderElection }
 
 func (staleLeaderElection) EpochAndLeadingFresh() (uint64, bool) { return 1, false }
 
+type coldTermLeaderElection struct{ alwaysLeaderElection }
+
+func (coldTermLeaderElection) CurrentLeadershipTerm() uint64 { return 0 }
+func (coldTermLeaderElection) LeadershipTerm(context.Context) (uint64, error) {
+	return 0, errors.New("transient shared election read")
+}
+
 type healthStorage struct {
 	storage.KvStorage
 	fail bool
@@ -686,6 +693,29 @@ func TestLeaderReadinessWaitsForDurableStartup(t *testing.T) {
 
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
 	require.False(t, s.leaderServing(), "leadership loss must withdraw readiness")
+}
+
+func TestLeaderReadinessWaitsForSharedLeadershipTerm(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	m := mock.NewMinimalMetrics(ctrl)
+	b := backend.NewBackend(imemkv.NewKvStorage(), backend.Config{Prefix: "/registry", Identity: "test"}, m)
+	defer func() { require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	s := &server{
+		healthServer:   health.NewServer(),
+		leaderElection: coldTermLeaderElection{},
+		backend:        b,
+	}
+	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+
+	recorder := httptest.NewRecorder()
+	s.httpReadyHandler(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "leadership term is not ready")
+
+	recorder = httptest.NewRecorder()
+	s.httpHealthHandler(recorder, httptest.NewRequest(http.MethodGet, "/health?serializable=true", nil))
+	require.Equal(t, http.StatusOK, recorder.Code,
+		"serializable health does not promise a response header leadership term")
 }
 
 func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {

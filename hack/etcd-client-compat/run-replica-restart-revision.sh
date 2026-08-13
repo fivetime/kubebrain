@@ -120,7 +120,9 @@ assert_compat_prefix_empty() {
 }
 assert_compat_prefix_empty preflight
 baseline_leases="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
+baseline_alarms="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
 
+test_status=0
 (
   cd "$ROOT_DIR/hack/etcd-client-compat"
   KUBEBRAIN_IDLE_RESTART_ENDPOINT="$KUBEBRAIN_RESTART_ENDPOINT" \
@@ -135,11 +137,20 @@ baseline_leases="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" leas
     go test . \
       -run "$TEST_PATTERN" \
       -count=1 -timeout="$TEST_TIMEOUT" -v
-)
+) || test_status=$?
 
 assert_compat_prefix_empty postflight
 final_leases="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" lease list -w json | jq -c '(.leases // []) | map(.ID // .id) | sort')"
 if [[ "$final_leases" != "$baseline_leases" ]]; then
   echo "replica-restart suite changed the live lease set" >&2
   exit 1
+fi
+final_alarms="$("$ETCDCTL_BIN" --endpoints="$KUBEBRAIN_RESTART_ENDPOINT" alarm list -w json | jq -c '(.alarms // []) | map([(.memberID // .member_id // 0), (.alarm // 0)]) | sort')"
+if [[ "$final_alarms" != "$baseline_alarms" ]]; then
+  echo "replica-restart suite changed the live alarm set" >&2
+  exit 1
+fi
+if [[ "$test_status" -ne 0 ]]; then
+  echo "replica-restart test package failed with status $test_status" >&2
+  exit "$test_status"
 fi

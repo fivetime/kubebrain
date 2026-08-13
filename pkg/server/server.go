@@ -903,6 +903,17 @@ func (s *server) readHealthCheck(ctx context.Context, serializable bool) error {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
 	defer cancel()
+	// Every successful public unary response must carry a positive leadership
+	// term. A cold serving replica may have a ready proxy/data path before it has
+	// observed the shared election record; admitting it then makes the first
+	// request perform that TiKV read and surface transient PD region-cache errors.
+	// Warm the term as part of non-serializable readiness, then reuse the cached
+	// monotonic value on the request path.
+	if !serializable && s.leaderElection != nil && s.leaderElection.CurrentLeadershipTerm() == 0 {
+		if _, err := s.leaderElection.LeadershipTerm(checkCtx); err != nil {
+			return fmt.Errorf("leadership term is not ready: %w", err)
+		}
+	}
 	if !serializable && s.brainServer != nil {
 		_, err := s.brainServer.Get(checkCtx, &proto.GetRequest{Key: []byte{0}})
 		return err
