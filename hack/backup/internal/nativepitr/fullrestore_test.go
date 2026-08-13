@@ -29,3 +29,37 @@ func TestDecodeFullRestoreReceiptIsStrict(t *testing.T) {
 	_, err = DecodeFullRestoreExecution(strings.NewReader(string(b) + `{}`))
 	require.ErrorContains(t, err, "trailing")
 }
+
+func TestFullRestoreOperationBindingRejectsDrift(t *testing.T) {
+	plan := validReceiptPlan(t)
+	target := validTarget()
+	receipt := validFullRestoreExecution()
+	receipt.PlanSHA256 = digest
+	receipt.SourceExclusiveSHA256 = digest
+	receipt.FullArtifactSHA256 = plan.Full.ArtifactReceiptSHA256
+	receipt.ArtifactManifestSHA256 = plan.Full.ArtifactManifestSHA
+	receipt.RestoreAdmissionSHA256 = digest
+	receipt.PreWriteTarget = target
+	receipt.Encryption = plan.Full.Encryption
+	receipt.EncryptionKeyID = plan.Full.EncryptionKeyID
+	artifacts := ArtifactReceipt{ManifestSHA256: plan.Full.ArtifactManifestSHA}
+	binding := FullRestoreOperationBinding{PlanSHA256: digest, SourceExclusiveSHA256: digest, FullArtifactSHA256: plan.Full.ArtifactReceiptSHA256, RestoreAdmissionSHA256: digest, Encryption: plan.Full.Encryption, EncryptionKeyID: plan.Full.EncryptionKeyID}
+	require.NoError(t, VerifyFullRestoreOperationBinding(receipt, plan, artifacts, target, binding))
+
+	for _, edit := range []func(*FullRestoreExecutionReceipt){
+		func(r *FullRestoreExecutionReceipt) { r.PlanSHA256 = strings.Repeat("f", 64) },
+		func(r *FullRestoreExecutionReceipt) { r.RestoreAdmissionSHA256 = strings.Repeat("f", 64) },
+		func(r *FullRestoreExecutionReceipt) { r.PreWriteTarget.ClusterID++ },
+		func(r *FullRestoreExecutionReceipt) { r.PreWriteTarget.Stores[0].Address = "other:20160" },
+		func(r *FullRestoreExecutionReceipt) {
+			r.Encryption = CipherMethodAES256CTR
+			r.EncryptionKeyID = "other/key"
+		},
+	} {
+		drifted := receipt
+		drifted.PreWriteTarget.PDAddrs = append([]string(nil), receipt.PreWriteTarget.PDAddrs...)
+		drifted.PreWriteTarget.Stores = append([]TargetStore(nil), receipt.PreWriteTarget.Stores...)
+		edit(&drifted)
+		require.ErrorContains(t, VerifyFullRestoreOperationBinding(drifted, plan, artifacts, target, binding), "does not match")
+	}
+}

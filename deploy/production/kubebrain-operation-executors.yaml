@@ -344,6 +344,7 @@ spec:
             - {name: OPERATION_PARAMETERS_TOKEN_FILE, value: /var/run/secrets/kubebrain-parameter/token}
             - {name: OPERATION_PARAMETERS_CA_FILE, value: /var/run/secrets/kubebrain-parameter-ca/ca.crt}
             - {name: RESTORE_COMMAND, value: /usr/local/bin/kubebrain-native-pitr-full-restore}
+            - {name: RECEIPT_VERIFY, value: /usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify}
             - {name: BR_BINARY, value: /usr/local/bin/br}
             - {name: TLS_DIR, value: /var/run/secrets/kubebrain-native-pitr-tls}
             - {name: ENCRYPTION_DIR, value: /var/run/secrets/kubebrain-native-pitr-encryption}

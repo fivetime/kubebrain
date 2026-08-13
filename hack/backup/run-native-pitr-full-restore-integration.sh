@@ -262,6 +262,7 @@ go build -o "$drill_tmp/kubebrain" ./cmd
 go build -o "$drill_tmp/native-pitr-admission-fence" ./hack/backup/cmd/native-pitr-admission-fence
 go build -o "$drill_tmp/native-pitr-restore-plan" ./hack/backup/cmd/native-pitr-restore-plan
 go build -o "$drill_tmp/native-pitr-source-capture" ./hack/backup/cmd/native-pitr-source-capture
+go build -o "$drill_tmp/native-pitr-full-restore-receipt-verify" ./hack/backup/cmd/native-pitr-full-restore-receipt-verify
 
 log_env=()
 fault_env=()
@@ -461,6 +462,7 @@ elif ! env "${log_env[@]}" "${fault_env[@]}" "${encryption_env[@]}" \
   KUBEBRAIN_NATIVE_PITR_ADMISSION="$drill_tmp/native-pitr-admission-fence" \
   KUBEBRAIN_NATIVE_PITR_RESTORE_PLAN="$drill_tmp/native-pitr-restore-plan" \
   KUBEBRAIN_NATIVE_PITR_SOURCE_CAPTURE="$drill_tmp/native-pitr-source-capture" \
+  KUBEBRAIN_NATIVE_PITR_RESTORE_RECEIPT_VERIFY="$drill_tmp/native-pitr-full-restore-receipt-verify" \
   go test -count=1 -run "^${test_name}$" -v ./hack/backup/cmd/native-pitr-full-restore; then
   echo "source TiKV log follows" >&2
   docker logs "${source_tikv_names[0]}" >&2 || true

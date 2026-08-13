@@ -39,6 +39,64 @@ type FullRestoreExecutionReceipt struct {
 	PITRComplete                 bool                       `json:"pitr_complete"`
 }
 
+type FullRestoreOperationBinding struct {
+	PlanSHA256, SourceExclusiveSHA256, FullArtifactSHA256, RestoreAdmissionSHA256 string
+	Encryption, EncryptionKeyID                                                   string
+}
+
+func VerifyFullRestoreOperationBinding(receipt FullRestoreExecutionReceipt, plan Plan, artifacts ArtifactReceipt, target TargetSnapshotEmptyReceipt, binding FullRestoreOperationBinding) error {
+	checks := []struct {
+		ok    bool
+		field string
+	}{
+		{receipt.PlanSHA256 == binding.PlanSHA256, "plan digest"},
+		{receipt.SourceExclusiveSHA256 == binding.SourceExclusiveSHA256, "source-exclusive digest"},
+		{receipt.FullArtifactSHA256 == binding.FullArtifactSHA256, "artifact receipt digest"},
+		{receipt.RestoreAdmissionSHA256 == binding.RestoreAdmissionSHA256, "admission digest"},
+		{receipt.ArtifactManifestSHA256 == artifacts.ManifestSHA256, "artifact manifest digest"},
+		{receipt.PreWriteTarget.ClusterID == target.ClusterID, "target cluster"},
+		{equalStrings(receipt.PreWriteTarget.PDAddrs, target.PDAddrs), "target PD endpoints"},
+		{equalTargetStores(receipt.PreWriteTarget.Stores, target.Stores), "target stores"},
+		{plan.Full.ArtifactReceiptSHA256 == receipt.FullArtifactSHA256, "plan artifact receipt"},
+		{plan.Full.ArtifactManifestSHA == receipt.ArtifactManifestSHA256, "plan artifact manifest"},
+		{plan.Target.ClusterID == receipt.PreWriteTarget.ClusterID, "plan target cluster"},
+		{receipt.Encryption == binding.Encryption, "receipt encryption method"},
+		{receipt.EncryptionKeyID == binding.EncryptionKeyID, "receipt encryption key ID"},
+		{plan.Full.Encryption == binding.Encryption, "plan encryption method"},
+		{plan.Full.EncryptionKeyID == binding.EncryptionKeyID, "plan encryption key ID"},
+	}
+	for _, check := range checks {
+		if !check.ok {
+			return fmt.Errorf("durable restore receipt does not match the approved operation evidence: %s", check.field)
+		}
+	}
+	return nil
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalTargetStores(left, right []TargetStore) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (r FullRestoreExecutionReceipt) Validate() error {
 	if (r.Format != FullRestoreExecutionFormat && r.Format != legacyFullRestoreExecutionFormat) || !r.WholeClusterTxnImport || !r.SourceVisibleRangeExclusive || !r.FullSnapshotRestored || !r.TargetWriteFenceProven || !r.FullImportAdmissionProven || r.LogReplayCompleted || r.PostRestoreSemanticValidated || r.PITRComplete {
 		return errors.New("receipt is not an admission-fenced full-only native restore")

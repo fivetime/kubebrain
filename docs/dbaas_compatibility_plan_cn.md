@@ -48743,6 +48743,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   按 A4548 fail closed、保持 admission fence 并要求重建 target。尚未在真实 Kubernetes API/PVC 上删除 Pod，
   也未自动完成 target rebuild 后的新 operation。
 
+- A4550 修复 A4549 crash reconcile 对 PVC 上任意“非空 receipt”直接信任的缺口。新增镜像内独立
+  `native-pitr-full-restore-receipt-verify`：先严格解码 receipt、plan、full-artifacts、target-empty 与 admission，
+  再绑定 approved plan SHA、source-exclusive/artifact/admission 文件 SHA、artifact manifest、target cluster/
+  排序 PD endpoints/store identity，以及 plaintext 或 AES key version；初始 target-empty 与 executor 写前重扫
+  各自严格证明 whole transactional keyspace 空，但因后者必然取得新 TSO，不错误要求 snapshot TSO/checked-time
+  相等。attempt 1 必须在 hard-link 发布前通过 verifier；attempt 2 必须先重新取得并摘要验证 immutable operation
+  parameters，再验证 durable receipt，只有通过才收敛 Succeeded，损坏/伪造 receipt 终态 Failed 且不调用 BR。
+  测试覆盖 plan/admission/target store/encryption 漂移和 forged PVC receipt；A4549 的 process-group `SIGKILL`
+  演练升级后仍证明第二 worker 只验证/收敛、restore 总调用一次。2026-08-13 单副本独立 source/target AES 实链
+  恢复 530 KV/107.1 kB，并由同一 verifier 接受真实 plan/artifact/source/target/admission/BR receipt。三副本复跑
+  两次均在演练开始前因第三 target TiKV status `21182` 未监听而退出，因此本项不新增三副本 verifier 证据；
+  A4543–A4547 的三副本加密/故障证据不受影响。该项仍不解决 receipt 发布前 import crash 的 target rebuild。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

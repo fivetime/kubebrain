@@ -2630,6 +2630,20 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, err)
 	require.Equal(t, encryption.Method, restore.Encryption)
 	require.Equal(t, encryption.KeyID, restore.EncryptionKeyID)
+	receiptPath := filepath.Join(t.TempDir(), "full-restore.json")
+	require.NoError(t, os.WriteFile(receiptPath, []byte(receiptOut.String()), 0o600))
+	verifier := os.Getenv("KUBEBRAIN_NATIVE_PITR_RESTORE_RECEIPT_VERIFY")
+	require.NotEmpty(t, verifier, "real restore drill requires the durable receipt verifier")
+	verifyArgs := []string{"--receipt=" + receiptPath, "--plan=" + planPath, "--full-artifacts=" + artifactPath,
+		"--source-range-exclusive=" + sourcePath, "--target-snapshot-empty=" + targetPath,
+		"--restore-admission=" + admissionPath, "--approve-plan-sha256=" + digest(planBytes), "--encryption=" + encryption.Method}
+	if encryption.KeyID != "" {
+		verifyArgs = append(verifyArgs, "--encryption-key-id="+encryption.KeyID)
+	}
+	verifyCommand := exec.CommandContext(ctx, verifier, verifyArgs...)
+	verifyCommand.Stdout, verifyCommand.Stderr = os.Stderr, os.Stderr
+	require.NoError(t, verifyCommand.Run(), "real restore receipt must remain operation-bound after BR completion")
+	t.Log("native PITR durable restore receipt verifier accepted the real operation evidence chain")
 	targetFaultInjected := false
 	if importFault != nil {
 		require.True(t, importFault.faultInjected(), "target fault was not injected during BR import")

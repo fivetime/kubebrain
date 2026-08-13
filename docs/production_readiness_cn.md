@@ -2183,6 +2183,12 @@ RBAC/CEL admission 固定 `NativePITRFullRestore`、platform requester、digest-
 崩溃时，新 worker 只收敛 receipt 且 BR-backed restore 总调用一次；真实 Kubernetes Pod/PVC delete 演练仍需
 在预生产集群完成。receipt 发布前崩溃仍必须 fail closed 并重建 target，不得原地重试。
 
+durable receipt 不能仅凭文件非空收敛。镜像内 verifier 必须严格解码并绑定 approved plan、source-exclusive、
+full-artifacts/manifest、target cluster/PD/store、admission 与 encryption key version；首次发布和 attempt 2 reconcile
+都必须通过。target-empty 参数与 executor 写前重扫使用不同 TSO 是正常的，但两者必须各自严格证明 whole
+transactional keyspace 空且物理目标 identity 相同。伪造或损坏 receipt 必须 Failed、保持 fence 且零二次 BR。
+2026-08-13 单副本 AES 真实链已验证 530 KV/107.1 kB；三副本 verifier 复跑因第三 TiKV 启动失败未形成新证据。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。

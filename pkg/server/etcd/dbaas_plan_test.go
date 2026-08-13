@@ -100,6 +100,10 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	require.Contains(t, plan, "A4549 补齐 A4548 留下的可部署执行面和 receipt-after-crash 证据")
 	require.Contains(t, plan, "restore 调用日志精确只有一次")
 	require.Contains(t, plan, "receipt-before-publish 窗口仍")
+	require.Contains(t, plan, "A4550 修复 A4549 crash reconcile 对 PVC 上任意“非空 receipt”直接信任的缺口")
+	require.Contains(t, plan, "native-pitr-full-restore-receipt-verify")
+	require.Contains(t, plan, "不错误要求 snapshot TSO/checked-time")
+	require.Contains(t, plan, "损坏/伪造 receipt 终态 Failed 且不调用 BR")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

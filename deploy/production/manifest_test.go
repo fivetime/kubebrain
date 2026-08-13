@@ -898,8 +898,10 @@ func TestNativePITRFullRestoreHasPinnedIsolatedRuntimeImage(t *testing.T) {
 	text := string(data)
 	for _, expected := range []string{
 		"go build -trimpath -o /src/bin/kubebrain-native-pitr-full-restore ./hack/backup/cmd/native-pitr-full-restore",
+		"go build -trimpath -o /src/bin/kubebrain-native-pitr-full-restore-receipt-verify ./hack/backup/cmd/native-pitr-full-restore-receipt-verify",
 		"AS native-pitr-full-restore", "COPY --from=br-v751 /br /usr/local/bin/br",
 		"COPY --from=build /src/bin/kubebrain-native-pitr-full-restore /usr/local/bin/kubebrain-native-pitr-full-restore",
+		"COPY --from=build /src/bin/kubebrain-native-pitr-full-restore-receipt-verify /usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify",
 		"COPY hack/production/run-native-pitr-full-restore-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-restore-operation.sh",
 	} {
 		require.Contains(t, text, expected)

@@ -38,7 +38,7 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	}
 	base := []string{
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
-		"OPERATIONCTL=" + operationctl, "RESTORE_COMMAND=" + restore, "BR_BINARY=" + br,
+		"OPERATIONCTL=" + operationctl, "RESTORE_COMMAND=" + restore, "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=" + br,
 		"WORK_DIR=" + dir, "TLS_DIR=" + tlsDir, "HEARTBEAT_INTERVAL_SECONDS=0.1",
 		"OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=1",
 	}
@@ -69,12 +69,12 @@ func TestRunNativePITRFullRestoreOperationReconcilesReceiptWithoutBR(t *testing.
 	restoreLog := filepath.Join(dir, "restore.log")
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
 		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
-		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "BR_BINARY=/bin/true",
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
 		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_LOG=" + restoreLog, "ATTEMPT=2",
 	})
 	require.NoError(t, err, string(output))
 	operations := string(mustReadProductionFile(t, operationLog))
-	require.Contains(t, operations, "reconciled durable native PITR full restore receipt without re-executing BR")
+	require.Contains(t, operations, "reconciled verified durable native PITR full restore receipt without re-executing BR")
 	require.NoFileExists(t, restoreLog)
 }
 
@@ -84,12 +84,12 @@ func TestRunNativePITRFullRestoreOperationFailsClosedWithoutReceipt(t *testing.T
 	operationLog := filepath.Join(dir, "operation.log")
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
 		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
-		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "BR_BINARY=/bin/true",
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
 		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
 	})
 	require.Error(t, err, string(output))
 	operations := string(mustReadProductionFile(t, operationLog))
-	require.Contains(t, operations, "previous restore attempt expired without a durable receipt")
+	require.Contains(t, operations, "previous restore attempt expired without a valid durable receipt")
 	require.Contains(t, operations, "keep admission fence closed and rebuild the target")
 }
 
@@ -127,7 +127,7 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 	}
 	base := append(os.Environ(),
 		"WORKER_ID=worker-1", "PARAMETERS_INPUT="+parameters, "EXPECTED_DIGEST="+digest,
-		"OPERATIONCTL="+writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND="+restore, "BR_BINARY=/bin/true",
+		"OPERATIONCTL="+writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND="+restore, "RECEIPT_VERIFY="+writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
 		"WORK_DIR="+dir, "TLS_DIR="+tlsDir, "OPERATION_LOG="+operationLog, "RESTORE_CALL_LOG="+callLog,
 		"ATTEMPT=1", "HEARTBEAT_INTERVAL_SECONDS=30", "BLOCK_FINAL_HEARTBEAT=true", "DURABLE_RECEIPT="+receipt, "BLOCK_MARKER="+marker,
 	)
@@ -145,12 +145,29 @@ printf '{"format":"kubebrain.native-pitr-full-restore.v3"}\n'
 
 	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
 		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
-		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=" + restore, "BR_BINARY=/bin/true",
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=" + restore, "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, true), "BR_BINARY=/bin/true",
 		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "RESTORE_CALL_LOG=" + callLog, "ATTEMPT=2",
 	})
 	require.NoError(t, err, string(output))
 	require.Equal(t, "restore\n", string(mustReadProductionFile(t, callLog)), "attempt 2 must not execute BR-backed restore again")
-	require.Contains(t, string(mustReadProductionFile(t, operationLog)), "reconciled durable native PITR full restore receipt without re-executing BR")
+	require.Contains(t, string(mustReadProductionFile(t, operationLog)), "reconciled verified durable native PITR full restore receipt without re-executing BR")
+}
+
+func TestNativePITRFullRestoreRejectsInvalidDurableReceiptWithoutSecondBR(t *testing.T) {
+	dir := t.TempDir()
+	parameters, digest := writeNativeRestoreParameters(t, dir)
+	name := "native-pitr-restore-" + digest[:20]
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".native-pitr-full-restore.json"), []byte("forged\n"), 0o600))
+	operationLog := filepath.Join(dir, "operation.log")
+	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-2", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + digest,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=/bin/false", "RECEIPT_VERIFY=" + writeNativeRestoreVerifier(t, dir, false), "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "OPERATION_LOG=" + operationLog, "ATTEMPT=2",
+	})
+	require.Error(t, err, string(output))
+	operations := string(mustReadProductionFile(t, operationLog))
+	require.Contains(t, operations, "without a valid durable receipt")
+	require.NotContains(t, operations, "--action succeed")
 }
 
 func writeNativeRestoreParameters(t *testing.T, dir string) (string, string) {
@@ -175,6 +192,17 @@ elif [[ "$*" == *"--action heartbeat"* && "${BLOCK_FINAL_HEARTBEAT:-false}" == t
   sleep 30
 fi
 `), 0o755))
+	return path
+}
+
+func writeNativeRestoreVerifier(t *testing.T, dir string, success bool) string {
+	t.Helper()
+	path := filepath.Join(dir, fmt.Sprintf("receipt-verify-%t", success))
+	exit := "1"
+	if success {
+		exit = "0"
+	}
+	require.NoError(t, os.WriteFile(path, []byte("#!/usr/bin/env sh\nexit "+exit+"\n"), 0o755))
 	return path
 }
 
