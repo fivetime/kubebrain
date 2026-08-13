@@ -442,6 +442,11 @@ type backend struct {
 	// revisionWriteMu serializes transaction planning, atomic revision allocation,
 	// and ordered event publication without changing the broader predicate lock.
 	revisionWriteMu sync.Mutex
+	// revisionPending is non-nil while an uncertain transaction owns the next
+	// candidate revision. Later writers wait for its durable outcome: committed
+	// candidates are published, definitely uncommitted candidates are reused.
+	revisionPendingMu sync.Mutex
+	revisionPending   chan struct{}
 
 	// Background physical compaction. CompactAsync advances the logical compact
 	// watermark synchronously (so reads immediately see the compaction) and hands
@@ -576,7 +581,6 @@ const minWatchProgressNotifyInterval = 100 * time.Millisecond
 func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) Backend {
 	config.complete()
 	initEtcdMVCCCompactionMetrics(metricCli)
-	initRevisionMetrics(metricCli)
 	ks, ksErr := coder.NewKeyspace(config.Keyspace)
 	if ksErr != nil {
 		// Validated at flag parsing; reaching here is a programming error, and
@@ -656,12 +660,6 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	b.startWorker(b.emitCountIndexMetrics)
 
 	return b
-}
-
-func initRevisionMetrics(metricCli metrics.Metrics) {
-	// Register the counter even while it is zero. A missing series must mean a
-	// scrape/deployment problem, not be ambiguous with a contiguous revision run.
-	_ = metricCli.EmitCounter("revision.generator.aborted", 0)
 }
 
 func (b *backend) startWorker(run func(context.Context)) bool {
@@ -805,7 +803,6 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 				break
 			}
 			stall.reset()
-			b.observeCollectedRevision(watchEvents)
 			b.metricCli.EmitGauge("watch.set.current.revision", nextRevision)
 			validRevision := false
 			for _, watchEvent := range watchEvents {

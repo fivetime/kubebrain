@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -50,8 +51,6 @@ var ErrTxnInvalidRequest = errors.New("invalid txn apply request")
 // shape. The resolver must not guess an outcome and must arm CORRUPT so public
 // mutations fail closed until an operator repairs and disarms the member.
 var ErrTxnWitnessCorrupt = errors.New("txn durable witness is corrupt")
-
-var errTxnResolvedNotCommitted = errors.New("uncertain txn resolved as not committed")
 
 // TxnWriteOp is one write in a transaction: a Put (Delete=false) or a
 // single-key Delete. Value is the raw (un-enveloped) put value.
@@ -115,10 +114,22 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 	if err := validateTxnApplyRequest(ops, guards); err != nil {
 		return nil, 0, err
 	}
+	if err := b.waitPendingRevision(ctx); err != nil {
+		return nil, 0, err
+	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
 	b.revisionWriteMu.Lock()
 	defer b.revisionWriteMu.Unlock()
+	// Another writer may have installed an uncertain revision after the first
+	// check while we waited for either lock. Recheck while serialized. Keeping
+	// the shared logical lock here is safe: the resolver only needs that same
+	// shared side if it must arm CORRUPT. Acquiring the logical barrier before
+	// revisionWriteMu is also required so a range-transaction owner can write
+	// while an external writer is blocked at the barrier.
+	if err := b.waitPendingRevision(ctx); err != nil {
+		return nil, 0, err
+	}
 	deadline := time.Now().Add(unaryRpcTimeout)
 	if callerDeadline, ok := ctx.Deadline(); ok {
 		// The etcd layer supplies its request budget (10s by default), already
@@ -698,19 +709,21 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			if newRevision == 0 {
 				return nil, 0, false, cerr
 			}
-			b.tso.AdvanceDealFloor(newRevision)
 			// A multi-key txn must never enter the single-key uncertain retry
 			// queue: if the original batch committed, that queue would rewrite
 			// each key at a separate revision and expose torn transaction state.
 			// Event-log records were staged in the same atomic batch, so resolve
 			// the whole outcome from those durable markers and publish once.
+			finishPending := b.beginPendingRevision()
 			b.uncertainTxnPins.pin(newRevision)
 			started := b.startWorker(func(ctx context.Context) {
+				defer finishPending()
 				defer b.uncertainTxnPins.unpin(newRevision)
 				b.resolveUncertainTxn(ctx, preps, newRevision)
 			})
 			if !started {
 				b.uncertainTxnPins.unpin(newRevision)
+				finishPending()
 			}
 			klog.ErrorS(cerr, "txn apply commit result uncertain; resolving as one transaction",
 				"revision", newRevision, "ops", len(ops))
@@ -849,14 +862,16 @@ func (b *backend) resolveUncertainTxn(workerCtx context.Context, preps []txnPrep
 		}
 		if committed {
 			klog.InfoS("resolved uncertain txn as committed", "revision", revision)
+			b.tso.AdvanceDealFloor(revision)
 			b.notifyBatch(b.txnWatchEvents(preps, revision))
 			b.metricCli.EmitCounter("txn.uncertain.resolve.committed", 1)
 			return
 		}
-		// Use a definite marker so the collector advances without feeding these
-		// events into the single-key repair queue.
+		// The allocator counter and every user/event mutation were in the same
+		// transaction, so an all-absent marker result proves this candidate never
+		// existed. Do not advance the local floor or publish an invalid ring slot;
+		// the next writer may safely reuse the exact revision.
 		klog.InfoS("resolved uncertain txn as not committed", "revision", revision)
-		b.notifyInvalidTxn(preps, revision, errTxnResolvedNotCommitted)
 		b.metricCli.EmitCounter("txn.uncertain.resolve.not_committed", 1)
 		return
 	}
@@ -967,29 +982,39 @@ func (b *backend) encodeTxnObjectMutations(objectKey, key, value []byte, meta Et
 	}
 }
 
-// notifyInvalidTxn fills a transaction revision's ring slot with invalid
-// per-key placeholders after the durable resolver proves the batch did not
-// commit. The collector can then advance without publishing watch events.
-func (b *backend) notifyInvalidTxn(preps []txnPrep, newRevision uint64, cause error) {
-	invalid := make([]*common.WatchEvent, 0, len(preps))
-	for i := range preps {
-		p := &preps[i]
-		if !p.effective || p.op.Internal {
-			continue
-		}
-		verb := proto.Event_PUT
-		if p.op.Delete {
-			verb = proto.Event_DELETE
-		}
-		invalid = append(invalid, &common.WatchEvent{
-			Revision:     newRevision,
-			PrevRevision: p.curRev,
-			Valid:        false,
-			ResourceVerb: verb,
-			Key:          p.op.Key,
-			Value:        p.op.Value,
-			Err:          cause,
+func (b *backend) waitPendingRevision(ctx context.Context) error {
+	b.revisionPendingMu.Lock()
+	pending := b.revisionPending
+	b.revisionPendingMu.Unlock()
+	if pending == nil {
+		return nil
+	}
+	select {
+	case <-pending:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (b *backend) beginPendingRevision() func() {
+	b.revisionPendingMu.Lock()
+	if b.revisionPending != nil {
+		b.revisionPendingMu.Unlock()
+		panic("multiple pending revision reservations")
+	}
+	pending := make(chan struct{})
+	b.revisionPending = pending
+	b.revisionPendingMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			b.revisionPendingMu.Lock()
+			if b.revisionPending == pending {
+				b.revisionPending = nil
+				close(pending)
+			}
+			b.revisionPendingMu.Unlock()
 		})
 	}
-	b.notifyBatch(invalid)
 }

@@ -321,22 +321,6 @@ spec:
           annotations:
             summary: KubeBrain watch revision lag is high
             description: "KubeBrain max watch revision lag is {{ $value }} revisions."
-        - alert: KubeBrainAbortedRevisionMetricMissing
-          expr: count(revision_generator_aborted{namespace="kubebrain-system"}) != 3
-          for: 5m
-          labels:
-            severity: warning
-          annotations:
-            summary: KubeBrain aborted-revision telemetry is incomplete
-            description: "Expected revision_generator_aborted from all 3 KubeBrain replicas; found {{ $value }}. Check rollout version and metrics scraping before assessing revision continuity."
-        - alert: KubeBrainAbortedRevisions
-          expr: sum(increase(revision_generator_aborted{namespace="kubebrain-system"}[10m])) > 0
-          for: 0m
-          labels:
-            severity: warning
-          annotations:
-            summary: KubeBrain allocated revisions without committed user events
-            description: "KubeBrain observed {{ $value }} aborted revisions in 10 minutes. Correlate with write failures, leader fencing, and TiKV transaction conflicts."
         - alert: KubeBrainGrpcLatencyHigh
           expr: histogram_quantile(0.99, sum by (le, grpc_method) (rate(grpc_server_handling_seconds_bucket{namespace="kubebrain-system"}[5m]))) > 1
           for: 10m

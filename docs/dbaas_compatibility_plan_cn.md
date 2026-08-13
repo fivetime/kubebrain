@@ -455,12 +455,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   覆盖 logical compaction 成功 header、`revision == compactRev` 边界快照仍可读、
   `revision < compactRev` 返回 ErrCompacted、重复/更旧 compact 返回同一错误、未来
   revision 返回 ErrFutureRev，以及当前值不受影响。真实 TiKV 与 etcd 3.7 连续
-  10 轮结果一致。差分不再要求 revision 连续 `+1`：etcd 只为成功提交的写事务
-  分配提交序号；KubeBrain 的 leader-local TSO 虽按 `+1` 分配，但并发写会在存储
-  提交前预留 revision，失败、CAS 冲突和 uncertain retry 可留下无事件的跳号。
-  revision 仍全局唯一且严格递增。这是通用 DBaaS 的已知可观察差异，后续需用
-  真实客户端兼容矩阵判断是否必须重构为提交时连续编号，不能在语义测试里误报
-  或掩盖。
+  10 轮结果一致。此处最初记录的失败写 revision 跳号已由 A4467-A4481 的事务内
+  durable allocator 和 A4528 的 uncertain reservation 闭合：确定失败与 CAS 冲突
+  整批回滚，commit outcome 未决时后续 allocator 等待 durable marker 判定，已提交
+  才发布该 revision，明确未提交则精确复用候选编号。有效用户写因此与 etcd 一样
+  按提交序列连续 `+1`；历史差异记录保留在对应 A 章节，不再是当前兼容缺口。
 - **Compact 管理权限（2026-07-16）**：对照
   `/root/etcd/server/etcdserver/api/v3rpc/key.go` 的 `AuthAdmin.isPermitted`，
   Compact 在 Auth enabled 时改为仅 root 可执行。匿名请求返回 `ErrUserEmpty`，
@@ -511,7 +510,8 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   持有 Mutex+Election 后删除当前 Leader，约 6.25 秒恢复；原 session 未关闭、
   Mutex ownership 和 Election leader 值均保持，随后正常 Resign/Unlock。由此确认
   官方 concurrency 中使用 `header.revision+1` 表示 watch 下界，不要求每个中间
-  revision 都实际存在；KubeBrain 的失败预分配跳号未破坏这些 recipe。
+  revision 都实际存在；当时的失败预分配跳号差异已由 A4467-A4481/A4528 关闭，
+  recipes 继续作为 `header.revision+1` watch 下界的回归门禁。
 - **Concurrency A35 orphan session 自然过期（2026-07-16）**：新增
   `TestConcurrencyOrphanedSessionExpiresAndHandsOff`，同一 TTL=2s owner session 同时
   持有 Mutex 与 Election，`Session.Orphan` 只停 keepalive、不主动 Revoke；确认
@@ -48488,6 +48488,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   确定性回归覆盖 internal/legacy 两种残留、同 ID regrant 后立即 Reload、旧 term uncertain reconcile 与 Reload 串行化、
   canonical parser、旧 decoder roll-forward 和 malformed marker CORRUPT。backend 全量（44.142s）、`pkg/server/etcd`
   全量（169.211s）、backend/server 定向 race 与 vet 均通过。
+
+- A4528 关闭事务内 allocator 最后一个可观察 revision 跳号窗口。A4475 已把 durable counter、用户 mutation 与
+  ordered event 放进同一 storage transaction，确定 CAS/fence/commit 失败不会消耗编号；但 `ErrUncertainResult`
+  仍先把候选推进到本地 TSO，再由后台为“明确未提交”发布 invalid slot，导致一个从未落盘的 candidate 永久跳过。
+  现 uncertain candidate 注册为单一 pending revision reservation：后续普通写和 range-predicate Txn 在取得逻辑
+  barrier 前等待 durable marker 判定。全量 marker 表示原 transaction 已提交，resolver 才推进 TSO 并发布整批事件；
+  全部缺失证明 counter/object/event 原子 transaction 未提交，不再生成 invalid slot，下一笔写精确复用 candidate；
+  partial/mismatch 继续持有 reservation、compaction pin 并激活 CORRUPT，绝不猜测或复用。range barrier 在等待前后
+  双重检查 pending 状态，避免它持有 exclusive logical lock 阻塞 resolver 的 alarm mutation。确定性事务 fault wrapper 在
+  allocator callback 已运行但整批被丢弃后暂停 marker read，证明后续普通 Txn 和 range Txn 都保持阻塞，释放后 revision
+  精确等于旧 candidate、无空洞且旧双键均不存在。旧 `revision.generator.aborted` 已无生产 producer，相关零基线指标与
+  两条告警删除，避免继续把不存在的兼容差距当作生产风险。backend 全量（45.304s）、`pkg/server/etcd` 全量
+  （167.619s）、关键 uncertain/range-barrier race 5 轮、backend/server vet 与 production manifest 回归均通过。
 
 ### P2：运维兼容和长期验证
 

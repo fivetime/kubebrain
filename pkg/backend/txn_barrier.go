@@ -21,8 +21,25 @@ type rangeTxnOwnerKey struct{}
 // BeginRangeTxn implements Backend. The ownership marker lets writes issued by
 // this transaction reuse the exclusive lock instead of trying to RLock it.
 func (b *backend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
-	b.logicalWriteMu.Lock()
-	return b.withLogicalWriteOwnership(ctx), b.logicalWriteMu.Unlock
+	for {
+		if err := b.waitPendingRevision(ctx); err != nil {
+			failed, cancel := context.WithCancelCause(ctx)
+			cancel(err)
+			return failed, func() {}
+		}
+		b.logicalWriteMu.Lock()
+		// A normal Txn may have registered an uncertain revision while this
+		// exclusive range transaction waited for its readers to drain. Recheck
+		// after acquisition; never carry the range barrier into a wait whose
+		// resolver may need a shared logical lock to arm CORRUPT.
+		b.revisionPendingMu.Lock()
+		pending := b.revisionPending
+		b.revisionPendingMu.Unlock()
+		if pending == nil {
+			return b.withLogicalWriteOwnership(ctx), b.logicalWriteMu.Unlock
+		}
+		b.logicalWriteMu.Unlock()
+	}
 }
 
 func (b *backend) withLogicalWriteOwnership(ctx context.Context) context.Context {

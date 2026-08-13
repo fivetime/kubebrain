@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -88,26 +89,64 @@ func (b *commitThenUncertainBatch) Commit(ctx context.Context) error {
 
 type uncommittedUncertainStorage struct {
 	storage.KvStorage
-	trigger atomic.Bool
+	trigger      atomic.Bool
+	blockReads   atomic.Bool
+	readBlocked  chan struct{}
+	releaseReads chan struct{}
+	blockedOnce  sync.Once
 }
 
 func (s *uncommittedUncertainStorage) BeginBatchWrite() storage.BatchWrite {
 	if s.trigger.CompareAndSwap(true, false) {
-		return uncertainNoopBatch{}
+		return &uncertainNoopBatch{storage: s}
 	}
 	return s.KvStorage.BeginBatchWrite()
 }
 
-type uncertainNoopBatch struct{}
-
-func (uncertainNoopBatch) PutIfNotExist([]byte, []byte, int64) {}
-func (uncertainNoopBatch) CAS([]byte, []byte, []byte, int64)   {}
-func (uncertainNoopBatch) Put([]byte, []byte, int64)           {}
-func (uncertainNoopBatch) Del([]byte)                          {}
-func (uncertainNoopBatch) DelCurrent(storage.Iter)             {}
-func (uncertainNoopBatch) Atomic(func(context.Context, storage.AtomicBatch) error) {
+func (s *uncommittedUncertainStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.blockReads.Load() && s.releaseReads != nil {
+		s.blockedOnce.Do(func() { close(s.readBlocked) })
+		select {
+		case <-s.releaseReads:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.KvStorage.Get(ctx, key)
 }
-func (uncertainNoopBatch) Commit(context.Context) error {
+
+type uncertainNoopBatch struct {
+	storage *uncommittedUncertainStorage
+	atomic  func(context.Context, storage.AtomicBatch) error
+}
+
+func (*uncertainNoopBatch) PutIfNotExist([]byte, []byte, int64) {}
+func (*uncertainNoopBatch) CAS([]byte, []byte, []byte, int64)   {}
+func (*uncertainNoopBatch) Put([]byte, []byte, int64)           {}
+func (*uncertainNoopBatch) Del([]byte)                          {}
+func (*uncertainNoopBatch) DelCurrent(storage.Iter)             {}
+
+func (b *uncertainNoopBatch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
+	b.atomic = fn
+}
+
+func (b *uncertainNoopBatch) Commit(ctx context.Context) error {
+	if b.atomic != nil {
+		discard := errors.New("discard staged uncertain transaction")
+		scratch := b.storage.KvStorage.BeginBatchWrite()
+		scratch.Atomic(func(callbackCtx context.Context, txn storage.AtomicBatch) error {
+			if err := b.atomic(callbackCtx, txn); err != nil {
+				return err
+			}
+			return discard
+		})
+		if err := scratch.Commit(ctx); !errors.Is(err, discard) {
+			return err
+		}
+	}
+	if b.storage.releaseReads != nil {
+		b.storage.blockReads.Store(true)
+	}
 	return storage.NewErrUncertainResult(context.DeadlineExceeded)
 }
 
@@ -420,13 +459,15 @@ func TestTxnApplyUncertainResultPinsCompactionUntilResolved(t *testing.T) {
 		"resolved transactions must no longer constrain compaction")
 }
 
-func TestTxnApplyUncommittedUncertainResultSkipsAsOneTransaction(t *testing.T) {
+func TestTxnApplyUncommittedUncertainResultReusesReservedRevision(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	metrics := mock.NewMinimalMetrics(ctrl)
 	mem := imemkv.NewKvStorage()
 	defer func() { require.NoError(t, mem.Close()) }()
-	store := &uncommittedUncertainStorage{KvStorage: mem}
+	store := &uncommittedUncertainStorage{
+		KvStorage: mem, readBlocked: make(chan struct{}), releaseReads: make(chan struct{}),
+	}
 	b := NewBackend(store, Config{
 		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
 	}, metrics).(*backend)
@@ -441,9 +482,37 @@ func TestTxnApplyUncommittedUncertainResultSkipsAsOneTransaction(t *testing.T) {
 		{Key: right, Value: []byte("right")},
 	}, nil)
 	require.ErrorIs(t, err, storage.ErrUncertainResult)
-	require.Eventually(t, func() bool {
-		return b.GetCurrentRevision() >= revision
-	}, time.Second, time.Millisecond, "whole-txn resolver did not skip the uncommitted revision")
+	require.NotZero(t, revision, "fault must run the allocator callback before losing the commit outcome")
+	select {
+	case <-store.readBlocked:
+	case <-time.After(time.Second):
+		t.Fatal("uncertain transaction resolver did not inspect durable markers")
+	}
+	require.Equal(t, revision-1, b.GetCurrentRevision(),
+		"an unresolved candidate must not advance the public revision")
+
+	nextKey := []byte(prefix + "/txn-uncertain-not-committed/next")
+	type nextResult struct {
+		revision uint64
+		err      error
+	}
+	nextDone := make(chan nextResult, 1)
+	go func() {
+		_, nextRevision, nextErr := b.TxnApply(ctx, []TxnWriteOp{{Key: nextKey, Value: []byte("next")}}, nil)
+		nextDone <- nextResult{revision: nextRevision, err: nextErr}
+	}()
+	select {
+	case result := <-nextDone:
+		require.NoError(t, result.err)
+		t.Fatal("a later writer reused the candidate before its outcome was resolved")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(store.releaseReads)
+	result := <-nextDone
+	require.NoError(t, result.err)
+	require.Equal(t, revision, result.revision,
+		"a definitely uncommitted candidate must be reused without a public gap")
+	require.Equal(t, revision, b.GetCurrentRevision())
 	leftValue, leftRevision := liveValue(t, b, ctx, left)
 	rightValue, rightRevision := liveValue(t, b, ctx, right)
 	require.Empty(t, leftValue)
@@ -451,11 +520,64 @@ func TestTxnApplyUncommittedUncertainResultSkipsAsOneTransaction(t *testing.T) {
 	require.Zero(t, leftRevision)
 	require.Zero(t, rightRevision)
 
+	nextValue, nextRevision := liveValue(t, b, ctx, nextKey)
+	require.Equal(t, "next", nextValue)
+	require.Equal(t, revision, nextRevision)
 	time.Sleep(100 * time.Millisecond)
 	_, leftRevision = liveValue(t, b, ctx, left)
 	_, rightRevision = liveValue(t, b, ctx, right)
 	require.Zero(t, leftRevision)
 	require.Zero(t, rightRevision)
+}
+
+func TestRangeTxnWaitsForUncertainRevisionBeforeTakingPredicateBarrier(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	storeBase := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, storeBase.Close()) }()
+	store := &uncommittedUncertainStorage{
+		KvStorage: storeBase, readBlocked: make(chan struct{}), releaseReads: make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	store.trigger.Store(true)
+	_, candidate, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/pending-range/uncertain"), Value: []byte("uncertain"),
+	}}, nil)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.NotZero(t, candidate)
+	select {
+	case <-store.readBlocked:
+	case <-time.After(time.Second):
+		t.Fatal("uncertain resolver did not enter marker inspection")
+	}
+
+	type rangeResult struct {
+		revision uint64
+		err      error
+	}
+	rangeDone := make(chan rangeResult, 1)
+	go func() {
+		rangeCtx, unlock := b.BeginRangeTxn(ctx)
+		defer unlock()
+		_, revision, applyErr := b.TxnApply(rangeCtx, []TxnWriteOp{{
+			Key: []byte(prefix + "/pending-range/committed"), Value: []byte("committed"),
+		}}, nil)
+		rangeDone <- rangeResult{revision: revision, err: applyErr}
+	}()
+	select {
+	case result := <-rangeDone:
+		require.NoError(t, result.err)
+		t.Fatal("range transaction crossed an unresolved revision reservation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(store.releaseReads)
+	result := <-rangeDone
+	require.NoError(t, result.err)
+	require.Equal(t, candidate, result.revision)
 }
 
 func TestTxnCommitRecordedValidatesExactOrderedMarkers(t *testing.T) {

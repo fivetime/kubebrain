@@ -2867,13 +2867,12 @@ hack/dev/verify.sh
 
 storage `BatchWrite.Atomic` 提供提交事务内的动态读写：回调读取同一 batch 已 staged 的值，并可据此生成
 新的 key/value；回调错误必须使静态和动态写整体回滚。memkv、Badger、TiKV 及 metrics wrapper 使用同一
-接口和共享 contract。该原语是把全局 MVCC revision 从提交前 leader-local 预留迁移到 TiKV 事务内
-read-modify-write 的基础；在所有用户写、event log、durable revision 与 uncertain resolution 完成迁移前，
-不能据此宣称 revision 跳号差异已关闭。
-`stageNextDurableRevision` 已在同一 Atomic 回调中读取 `revision/committed`、校验严格 8-byte 正整数及
-`MaxInt64` 上界、写入 next revision，并要求调用者把对应 mutation/event marker 一并写入该事务。counter
-缺失按 etcd 空库 revision=1 初始化，首次写分配 2；并发冲突必须用全新 batch 重试。该 helper 暂不接入旧
-TSO 写路径，因为两种 allocator 并行会分配重复 revision。
+接口和共享 contract。A4467-A4481 已把全部用户写、event log 与 durable revision 迁入该事务内 allocator；
+A4528 又让 uncertain candidate 在 marker 判定期间阻塞后续 allocator，已提交才发布、明确未提交则复用。
+因此确定失败、CAS 冲突和未提交的 uncertain result 均不再产生公开 revision 跳号。
+`stageNextDurableRevisionAfter` 在同一 Atomic 回调中读取 `revision/committed`、校验严格 8-byte 正整数及
+保留终端 format-fence 后的上界、写入 next revision，并要求调用者把 mutation/event marker 一并写入同一事务。
+counter 缺失按 etcd 空库 revision=1 初始化，首次写分配 2；并发冲突必须用全新 batch 重试。
 MVCC object 与 ordered event log 的 revision-dependent 编码已拆成纯函数：静态 `BatchWrite` 与未来的
 `AtomicBatch` 共用同一 value envelope、legacy metadata key/value 和 event key/value 生成逻辑，避免迁移时
 复制一套协议编码。动态 allocator 回归已把 revision=2 的 leased CREATE object/event 写入后交给现有 decoder
@@ -3604,7 +3603,6 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - gRPC 非 OK 响应、写失败、watch 后端错误、watch buffer overflow。
 - leader election 短时间频繁丢失。
 - watch revision lag 过高。
-- `revision_generator_aborted` 三副本指标缺失，或 10 分钟内出现已分配但未提交的 revision。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。

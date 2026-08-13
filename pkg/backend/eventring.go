@@ -102,27 +102,6 @@ func (b *backend) notifyBatch(events []*common.WatchEvent) {
 	b.signalWrite()
 }
 
-func abortedRevision(events []*common.WatchEvent) bool {
-	if len(events) == 0 {
-		return false
-	}
-	for _, event := range events {
-		if event.Valid {
-			return false
-		}
-	}
-	return true
-}
-
-func (b *backend) observeCollectedRevision(events []*common.WatchEvent) {
-	if abortedRevision(events) {
-		// The collector takes each revision slot once, after every producer notify
-		// for that revision has coalesced. Count here rather than in notifyBatch so
-		// duplicate producer notifications cannot overcount one public gap.
-		b.metricCli.EmitCounter("revision.generator.aborted", 1)
-	}
-}
-
 func (b *backend) handleWatchEventOverflow(revision uint64) {
 	// Exclusive against appends so the wipe + revision jump + watcher close is
 	// atomic: no writer can append into a slot mid-reset (which would either be

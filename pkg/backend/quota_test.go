@@ -1145,8 +1145,12 @@ func TestQuotaUsageRollsBackAtomicallyWithUncommittedUncertainUserTransaction(t 
 	}, nil)
 	require.ErrorIs(t, err, storage.ErrUncertainResult)
 	require.Eventually(t, func() bool {
-		return b.GetCurrentRevision() >= revision
-	}, 2*time.Second, time.Millisecond)
+		b.revisionPendingMu.Lock()
+		defer b.revisionPendingMu.Unlock()
+		return b.revisionPending == nil
+	}, 2*time.Second, time.Millisecond, "uncommitted transaction outcome was not resolved")
+	require.Equal(t, revision-1, b.GetCurrentRevision(),
+		"uncommitted quota transaction must leave its candidate reusable")
 
 	usage, quota, alarm, err := b.QuotaStatus(ctx)
 	require.NoError(t, err)
