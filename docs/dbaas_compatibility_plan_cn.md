@@ -48679,6 +48679,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KV/lease 语义门禁全绿。该项证明一个 PD leader + 一个 store 的可恢复暂停，不证明双 store quorum loss、
   PD quorum loss、ENOSPC、网络分区、跨 AZ、KMS 撤权或 durable restore worker crash/reconcile。
 
+- A4545 继续关闭 A4544 保留的加密 import 窗口 store quorum loss 缺口。新增独立
+  `target-two-store-quorum-loss-during-br-resume` profile；与旧 `target-two-store-quorum-loss-resume`
+  的 BR 成功后故障不同，新 profile 在固定 BR import-mode marker 后同时 pause target TiKV store 0/1，令
+  三副本 Region 暂时只剩一个可用 peer，10 秒后才 unpause 两者。2026-08-13 运行
+  `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-two-store-quorum-loss-during-br-resume hack/backup/run-native-pitr-full-restore-integration.sh`；
+  前置 topology convergence 仍证明双方 3 Up stores、全 Region 3 peers/零 pending，BR 未在 quorum loss
+  窗口错误完成，恢复后于 10.348 秒完成 530 KV/107.1 kB import，测试显式证明 injected/recovered，最终
+  artifact/key 复验、admission fence/handoff 与 etcd KV/lease 语义全绿。该项证明 transient process pause 后
+  可恢复重试，不证明两个 store 持久丢盘/重建、PD quorum loss、ENOSPC、网络黑洞、跨 AZ 或 worker crash。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

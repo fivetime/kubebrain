@@ -2145,6 +2145,12 @@ KV/lease 语义门禁；它是无故障 fully replicated baseline，不是恢复
 测试显式观察 injected/recovered。2026-08-13 实测加密 restore 在 12.322 秒后完成 530 KV 且最终语义全绿；
 该结果只覆盖单 PD leader+单 store 暂停，不覆盖 quorum loss、ENOSPC、网络分区或 worker crash。
 
+双 store quorum loss 的 import-window 基线使用
+`KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-two-store-quorum-loss-during-br-resume`；它不同于 BR 后注入的
+旧 profile，会在 import marker 后同时暂停两个 target TiKV，10 秒后恢复。2026-08-13 三副本 AES 实测中，
+BR 在 quorum loss 期间未错误成功，恢复后 10.348 秒完成 530 KV 且最终语义全绿。该结果只证明 transient
+pause/retry，不证明持久磁盘丢失、store replacement、PD quorum loss、网络黑洞或 executor 重启。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。
