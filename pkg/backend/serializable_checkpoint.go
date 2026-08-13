@@ -15,12 +15,21 @@ import (
 	"io"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 var ErrSerializableCheckpointUnavailable = errors.New("serializable checkpoint unavailable")
 
 var serializableCheckpointKey = []byte("revision/serializable-checkpoint")
+
+func initSerializableCheckpointMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitGauge("serializable.checkpoint.available", int64(0))
+	_ = metricCli.EmitGauge("serializable.checkpoint.remaining_seconds", int64(0))
+}
 
 const (
 	serializableCheckpointFormat  = uint64(1)
@@ -291,6 +300,7 @@ func (b *backend) runSerializableCheckpoint(workerCtx context.Context) {
 }
 
 func (b *backend) refreshSerializableCheckpoint(ctx context.Context) {
+	defer b.emitSerializableCheckpointMetrics(time.Now())
 	ctx, cancel := context.WithTimeout(ctx, unaryRpcTimeout)
 	defer cancel()
 	var c SerializableCheckpoint
@@ -306,4 +316,17 @@ func (b *backend) refreshSerializableCheckpoint(ctx context.Context) {
 	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) && !errors.Is(err, ErrSerializableCheckpointUnavailable) {
 		b.metricCli.EmitCounter("serializable.checkpoint.refresh_err", 1)
 	}
+}
+
+func (b *backend) emitSerializableCheckpointMetrics(now time.Time) {
+	if b.metricCli == nil {
+		return
+	}
+	available, remaining := int64(0), int64(0)
+	if checkpoint := b.serializableCheckpoint.Load(); checkpoint != nil && now.Before(checkpoint.ValidUntil) {
+		available = 1
+		remaining = int64(checkpoint.ValidUntil.Sub(now) / time.Second)
+	}
+	_ = b.metricCli.EmitGauge("serializable.checkpoint.available", available)
+	_ = b.metricCli.EmitGauge("serializable.checkpoint.remaining_seconds", remaining)
 }

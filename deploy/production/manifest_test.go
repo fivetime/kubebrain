@@ -1641,6 +1641,22 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 		rebuildRule["expr"])
 	require.Equal(t, "0m", rebuildRule["for"])
 
+	checkpointRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointUnavailable")
+	require.Equal(t,
+		`count(serializable_checkpoint_available{namespace="kubebrain-system"}) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"}) < 1 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"}) < 60`,
+		checkpointRule["expr"])
+	require.Equal(t, "30s", checkpointRule["for"])
+	require.Equal(t, "warning", checkpointRule["labels"].(map[string]any)["severity"])
+	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "PD-isolated serializable")
+	require.Contains(t, checkpointRule["annotations"].(map[string]any)["description"], "less than 60 seconds")
+
+	checkpointRefreshRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointRefreshFailures")
+	require.Equal(t,
+		`sum(increase(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}[10m])) > 0`,
+		checkpointRefreshRule["expr"])
+	require.Equal(t, "0m", checkpointRefreshRule["for"])
+	require.Equal(t, "warning", checkpointRefreshRule["labels"].(map[string]any)["severity"])
+
 	quotaRules := map[string]struct {
 		expr     string
 		forValue string

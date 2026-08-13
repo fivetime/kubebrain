@@ -48510,6 +48510,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   或超过安全窗继续 fail closed。新增文档契约回归要求矩阵同时保留完成面与风险边界，并禁止旧“不具备隔离
   成员可读性”绝对表述重新出现；该回归连续 10 轮通过。
 
+- A4530 为 A4359-A4371 的有界 PD 隔离读能力补齐逐副本生产可观测性。此前 backend 只有
+  `serializable.checkpoint.refresh_err` counter，既没有启动时零基线，也无法从指标判断当前 checkpoint
+  是否仍在 150 秒本地安全窗内；平台因而可能在某副本已失去隔离读能力后仍把矩阵能力当作可用。现每个
+  backend 启动即注册 `serializable.checkpoint.available=0` 与 `remaining_seconds=0`，每轮 create/load、
+  service safepoint protect 和 Region warmup 后按内存中实际 `ValidUntil` 发布状态。一次 refresh failure
+  不会错误撤销仍受保护的旧 checkpoint，而 remaining 会持续递减并在到期时把 available 置零。生产规则
+  要求三副本 series 完整、`min(available)=1` 且剩余安全窗不低于 60 秒，持续 30 秒不满足告警；refresh
+  error 10 分钟增量非零立即 warning。确定性单元回归固定初始化、90 秒可用窗和过期转换，production manifest 回归固定 PromQL、持续
+  时间、severity 与 PD-isolated serializable 处置说明；观测与 readiness 文档同步记录正常值和排障顺序。
+  backend 全量（44.209s）、`pkg/server/etcd` 全量（168.039s）、checkpoint 专项 race 5 轮、backend/server
+  vet 与 production manifest 全量均通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

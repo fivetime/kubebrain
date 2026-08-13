@@ -3603,6 +3603,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 - gRPC 非 OK 响应、写失败、watch 后端错误、watch buffer overflow。
 - leader election 短时间频繁丢失。
 - watch revision lag 过高。
+- 任一副本的 serializable checkpoint 缺失/过期，或 10 分钟内发生 checkpoint refresh failure。
 - gRPC p99 延迟超过 1 秒。
 
 这些阈值是预生产起点，不应直接作为最终生产阈值。正式上线前应基于真实对象规模、apiserver QPS、watch 数量和 TiKV 延迟重新校准。

@@ -196,6 +196,26 @@ func TestSerializableCheckpointUsableWindowExpiresBeforeDefaultRegionCacheTTL(t 
 		"a protected checkpoint must fail closed before an idle warmed Region can be evicted")
 }
 
+func TestSerializableCheckpointMetricsExposePerReplicaUsableWindow(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	initSerializableCheckpointMetrics(recorder)
+	b := &backend{metricCli: recorder}
+	now := time.Unix(1_700_000_000, 0)
+	b.serializableCheckpoint.Store(&SerializableCheckpoint{ValidUntil: now.Add(90 * time.Second)})
+
+	b.emitSerializableCheckpointMetrics(now)
+	b.emitSerializableCheckpointMetrics(now.Add(91 * time.Second))
+
+	require.Equal(t, []compactMetricRecord{
+		{kind: "gauge", name: "serializable.checkpoint.available", value: int64(0)},
+		{kind: "gauge", name: "serializable.checkpoint.remaining_seconds", value: int64(0)},
+		{kind: "gauge", name: "serializable.checkpoint.available", value: int64(1)},
+		{kind: "gauge", name: "serializable.checkpoint.remaining_seconds", value: int64(90)},
+		{kind: "gauge", name: "serializable.checkpoint.available", value: int64(0)},
+		{kind: "gauge", name: "serializable.checkpoint.remaining_seconds", value: int64(0)},
+	}, recorder.records)
+}
+
 func TestSerializableCheckpointCodecRejectsUnsafeMetadata(t *testing.T) {
 	_, err := decodeSerializableCheckpoint(nil)
 	require.Error(t, err)

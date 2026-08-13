@@ -24,6 +24,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `count_index.keys` / `count_index.overflowed` gauge | leader 活跃 key 数与索引是否超过 `--count-index-max-keys`；overflow 后正确回退 TiKV 全扫，但 List/count 延迟会明显恶化。followers 的 keys=0 是正常值。 |
 | `count_index.rebuild.err` counter | leader 切换时索引快照重建失败次数；非零表示 CountOnly 暂时回退 TiKV 全扫。 |
 | `watch.collector.stalled` / `watch.collector.skipped_revision` counter | 事件收集器 stall/自愈跳过 —— 正常应为 0,非 0=有 writer 死在 deal↔notify 之间。 |
+| `serializable.checkpoint.available` / `serializable.checkpoint.remaining_seconds` gauge；`serializable.checkpoint.refresh_err` counter | 每副本受 PD service GC safepoint 保护的离线 serializable checkpoint 是否可用及本地安全窗剩余秒数；available 应恒为 1，remaining 默认每秒回到约 150。refresh error 非零或 remaining 持续降至 0 表示该副本将在 PD 隔离时对 Range/read-only Txn/RangeStream fail closed。 |
 | `lease.orphan_sweep.{key_deleted,legacy_key_deleted,record_reclaimed,err}` counter | 孤儿 lease 清扫活动；`legacy_key_deleted` 表示依靠同 revision ownership witness 回收升级前 v1 leased value —— 正常均应极低。 |
 | `lease.legacy_migration_seal.err` counter | legacy user-MVCC lease source 已清空但 internal migration seal 写入失败次数；非零时 loader 仍保持兼容扫描，需检查 leadership/CORRUPT/TiKV fence。 |
 | `write.fence.reject` counter | 写栅栏拒绝(#39)—— 换主瞬间少量正常;持续高=leader 抖动。 |
@@ -84,6 +85,7 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 - **范围删除超限**:`rate(delete_range_admission_rejected[5m]) > 0`。确认调用方是否误用了无界前缀删除；确需调大时先按 key/value 大小在独立 TiKV 上验证事务大小和 p99。
 - **logical watch admission 饱和**:`watch_admission_active` 长期贴近 `--max-watches` 且 `rate(watch_admission_rejected[5m]) > 0`。先排查客户端重复建立/未取消 Watch，再扩容或按内存与事件延迟压测调整限额。
 - **watch-cache 冻结**:apiserver 侧 `Too large resource version` / `Unable to sync caches`(进度通知已修,应为 0);KubeBrain 侧 `watch.collector.stalled` > 0。
+- **离线 serializable checkpoint 不可用/即将过期**：series 非三副本完整、`min(serializable_checkpoint_available) < 1`，或 `min(serializable_checkpoint_remaining_seconds) < 60` 持续 30s；结合 `increase(serializable_checkpoint_refresh_err[10m])` 判断是 PD safepoint、Region warmup、metadata 还是刷新链路失败。正常 PD quorum 下最新读仍可工作，但该副本已失去或将在一分钟内失去有界 PD 隔离读能力。
 - **watch send loop 拥塞**:`histogram_quantile(0.99, rate(etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds_bucket[5m]))` 或 control/progress send-loop p99 持续升高。若这些指标高而 TiKV/collector 正常，优先查 gRPC 流控、客户端消费速度和 apiserver watch cache 初始化并发。
 - **版本膨胀**:`count_index.keys` 长期单调上涨且无压缩回落 → 检查 apiserver 压缩循环是否正常(KubeBrain 自身不自动压缩)。
 - **count index 退化**:`max(count_index_overflowed) > 0` 持续 1m，或

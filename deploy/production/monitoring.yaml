@@ -345,6 +345,22 @@ spec:
           annotations:
             summary: KubeBrain count index rebuild failed
             description: "A leader count-index rebuild failed in the last 10 minutes; CountOnly requests may be falling back to TiKV scans."
+        - alert: KubeBrainSerializableCheckpointUnavailable
+          expr: count(serializable_checkpoint_available{namespace="kubebrain-system"}) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"}) < 1 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"}) < 60
+          for: 30s
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain serializable checkpoint is unavailable
+            description: "At least one KubeBrain replica lacks a GC-protected checkpoint or has less than 60 seconds left in its local safety window, so bounded PD-isolated serializable Range, read-only Txn, and RangeStream service is unavailable or at risk. Check PD service GC safepoints, Region warmup, and checkpoint refresh errors."
+        - alert: KubeBrainSerializableCheckpointRefreshFailures
+          expr: sum(increase(serializable_checkpoint_refresh_err{namespace="kubebrain-system"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: KubeBrain serializable checkpoint refresh failed
+            description: "KubeBrain failed to create, load, protect, or warm a serializable checkpoint. Existing snapshots remain usable only until serializable_checkpoint_remaining_seconds reaches zero."
         - alert: KubeBrainQuotaNoSpace
           expr: max(quota_nospace{namespace="kubebrain-system"}) > 0
           for: 0m
