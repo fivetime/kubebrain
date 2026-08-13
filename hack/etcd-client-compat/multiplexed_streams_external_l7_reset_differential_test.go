@@ -19,7 +19,7 @@ type multiplexedStreamsExternalL7ResetOutcome struct {
 	SecondTargetTwoDials   bool
 	WatchFirstValue        string
 	WatchSecondValue       string
-	WatchRevisionDelta     int64
+	WatchRevisionAdvanced  bool
 	KeepAliveInitial       bool
 	KeepAliveRecovered     bool
 	LeaseSurvived          bool
@@ -46,7 +46,7 @@ func TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential(t *testing.T)
 	want := multiplexedStreamsExternalL7ResetOutcome{
 		WatchCreated: true, SameDownstreamPeer: true, TwoStreamsFailed: true,
 		SecondTargetTwoDials: true, WatchFirstValue: "before-reset",
-		WatchSecondValue: "after-reset", WatchRevisionDelta: 1,
+		WatchSecondValue: "after-reset", WatchRevisionAdvanced: true,
 		KeepAliveInitial: true, KeepAliveRecovered: true, LeaseSurvived: true,
 		LeaseValue: "kept-alive", LeaseTTLPositive: true, LeaseKeyRevisionStable: true,
 		WatchStayedOpen: true, KeepAliveStayedOpen: true,
@@ -138,11 +138,15 @@ func runMultiplexedStreamsExternalL7ResetScenario(
 		SecondTargetTwoDials: resetStats.Dials[grpcTarget(endpoints[1])] >= 2,
 		WatchFirstValue:      string(before.Events[0].Kv.Value),
 		WatchSecondValue:     string(after.Events[0].Kv.Value),
-		WatchRevisionDelta:   after.Events[0].Kv.ModRevision - before.Events[0].Kv.ModRevision,
-		KeepAliveInitial:     initialKeepAlive.TTL > 0,
-		KeepAliveRecovered:   recoveredKeepAlive.ID == grant.ID && recoveredKeepAlive.TTL > 0,
-		LeaseSurvived:        time.Since(initialTime) > 3*time.Second,
-		LeaseValue:           string(leaseGet.Kvs[0].Value), LeaseTTLPositive: ttl.TTL > 0,
+		// Revisions are global. Earlier response-loss scenarios can leave an
+		// orphan lease whose asynchronous expiry legitimately commits between
+		// these two writes, so same-key Watch recovery promises monotonicity, not
+		// adjacency in an otherwise shared keyspace.
+		WatchRevisionAdvanced: after.Events[0].Kv.ModRevision > before.Events[0].Kv.ModRevision,
+		KeepAliveInitial:      initialKeepAlive.TTL > 0,
+		KeepAliveRecovered:    recoveredKeepAlive.ID == grant.ID && recoveredKeepAlive.TTL > 0,
+		LeaseSurvived:         time.Since(initialTime) > 3*time.Second,
+		LeaseValue:            string(leaseGet.Kvs[0].Value), LeaseTTLPositive: ttl.TTL > 0,
 		LeaseKeyRevisionStable: leaseGet.Kvs[0].ModRevision == leasePut.Header.Revision,
 		WatchStayedOpen:        watchOpen, KeepAliveStayedOpen: keepAliveOpen,
 	}
