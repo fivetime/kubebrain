@@ -18,6 +18,8 @@ type config struct {
 	interval       time.Duration
 	commandTimeout time.Duration
 	dialTimeout    time.Duration
+	maxLatency     time.Duration
+	leaseTTL       int64
 }
 
 func main() {
@@ -28,6 +30,8 @@ func main() {
 	flag.DurationVar(&cfg.interval, "interval", 100*time.Millisecond, "interval between probes")
 	flag.DurationVar(&cfg.commandTimeout, "command-timeout", time.Second, "per-operation timeout")
 	flag.DurationVar(&cfg.dialTimeout, "dial-timeout", time.Second, "client dial timeout")
+	flag.DurationVar(&cfg.maxLatency, "max-operation-latency", 5*time.Second, "maximum Put-to-Watch latency")
+	flag.Int64Var(&cfg.leaseTTL, "lease-ttl", 15, "lease TTL in seconds")
 	flag.Parse()
 	if err := cfg.validate(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -40,10 +44,10 @@ func main() {
 }
 
 func (cfg config) validate() error {
-	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 {
+	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 {
 		return fmt.Errorf("endpoint, prefix, and positive iterations are required")
 	}
-	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 {
+	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
 	return nil
@@ -69,7 +73,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	leaseCtx, stopLease := context.WithCancel(ctx)
 	defer stopLease()
 	opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
-	lease, err := client.Grant(opCtx, 5)
+	lease, err := client.Grant(opCtx, cfg.leaseTTL)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("grant lease: %w", err)
@@ -125,13 +129,28 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	}
 
 	fmt.Println("PROBE_STARTED")
+	var maxLatency time.Duration
 	for i := 1; i <= cfg.iterations; i++ {
+		started := time.Now()
 		value := strconv.Itoa(i)
-		opCtx, cancel = context.WithTimeout(ctx, cfg.commandTimeout)
-		_, putErr := client.Put(opCtx, watchKey, value)
-		cancel()
-		if putErr != nil {
-			return fmt.Errorf("iteration=%d put: %w", i, putErr)
+		deadline := started.Add(cfg.commandTimeout)
+		for {
+			opCtx, cancel = context.WithDeadline(ctx, deadline)
+			_, putErr := client.Put(opCtx, watchKey, value)
+			cancel()
+			if putErr == nil {
+				break
+			}
+			opCtx, cancel = context.WithDeadline(ctx, deadline)
+			observed, getErr := client.Get(opCtx, watchKey)
+			cancel()
+			if getErr == nil && len(observed.Kvs) == 1 && string(observed.Kvs[0].Value) == value {
+				break
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("iteration=%d put unresolved before deadline: put=%v get=%v", i, putErr, getErr)
+			}
+			time.Sleep(50 * time.Millisecond)
 		}
 
 		select {
@@ -144,6 +163,13 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			}
 		case <-time.After(cfg.commandTimeout):
 			return fmt.Errorf("iteration=%d watch timed out", i)
+		}
+		latency := time.Since(started)
+		if latency > maxLatency {
+			maxLatency = latency
+		}
+		if latency > cfg.maxLatency {
+			return fmt.Errorf("iteration=%d Put-to-Watch latency %s exceeds %s", i, latency, cfg.maxLatency)
 		}
 
 		select {
@@ -165,6 +191,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if ttl == nil || ttl.TTL <= 0 || len(ttl.Keys) != 1 || string(ttl.Keys[0]) != leaseKey {
 		return fmt.Errorf("final lease verification failed: response=%v", ttl)
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d lease=alive\n", cfg.iterations, cfg.iterations, cfg.iterations)
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d lease=alive max_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, maxLatency.Milliseconds())
 	return nil
 }

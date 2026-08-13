@@ -49064,6 +49064,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   10 分钟曾在最后执行的 restore-cutover 子测试上触发包级闹钟；该子测试单跑连续 10 轮均约 0.4 秒，
   证明不是挂死。验证必须遵循仓库四片 15 分钟入口，或串行显式 `-timeout=20m`。
 
+- A4573 开始把 A4572 仅覆盖短连接 `endpoint health` 的门禁推进到官方 clientv3 长流和不确定写契约。
+  新镜像内探针在一个 client 生命周期内持续 Watch、单调 token Put、LeaseKeepAlive 与最终 attached-key
+  TTL 对账；Put 遇到 EOF/DeadlineExceeded 时先 Range 判定是否已提交，未提交才用同一 token 重试，Watch
+  仍要求每轮恰好一个按序事件。runner 固定唯一 prefix、15 秒 lease、Put→Watch 最大延迟和严格 summary，
+  cleanup 必须 revoke lease、删除并复读确认 prefix 为空。该门禁首次在三 PD/三 TiKV/三 KubeBrain 上把
+  A4572 的 900 次一元全绿结论推翻：旧实现第 78 轮返回
+  `Unavailable: leadership changed during commit`。服务端现以 RW 边界让 `/drain` 等待已接纳一元 RPC
+  完成后才释放 campaign lease，并阻止新一元 RPC 穿过该临界区；确定性并发测试连续 10 轮及
+  `pkg/server/...` 全量 178.892 秒通过，fence 错误不再出现。
+
+  真实复测随后依次暴露 1 秒、2 秒乃至 10 秒 Put/Range deadline，以及 5 秒 lease 在第 560 轮失活；
+  15 秒 lease 下第三次交接仍有第 250 轮写在 10 秒内无法对账。NodePort 长连接也如预期在 Pod 终止时
+  出现 EOF，探针已按 etcd 不确定结果契约处理，不能把它误判为数据丢失。当前因此只提交可重复 RED、
+  安全 drain 和官方 client 门禁，不宣称长流 rollout 全绿；开放差距已收窄为新 leader 的 lease/event/
+  checkpoint 初始化关键路径约 12 秒。下一项必须缩短该路径并让默认 5 秒 max-latency/15 秒 lease 的
+  完整 runner 通过，不能靠继续提高 command timeout 或 lease TTL 关闭差距。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

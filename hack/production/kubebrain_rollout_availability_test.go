@@ -51,12 +51,14 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
 	require.Contains(t, log, "/usr/local/bin/kubebrain-rollout-availability-probe")
-	require.Contains(t, log, "--command-timeout=2s")
+	require.Contains(t, log, "--command-timeout=10s")
+	require.Contains(t, log, "--max-operation-latency=5s")
+	require.Contains(t, log, "--lease-ttl=15")
 	require.Contains(t, log, " rollout restart statefulset/kubebrain")
 	require.Contains(t, log, " wait --for=jsonpath={.status.phase}=Succeeded")
 	require.Contains(t, log, " delete pod kubebrain-rollout-availability-probe")
@@ -86,7 +88,7 @@ elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe "* ]]; then
 elif [[ " $* " == *" rollout restart statefulset/kubebrain "* ]]; then
   : >"$FAKE_KUBECTL_STATE"
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  printf '%s\n' PROBE_STARTED 'PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive'
+  printf '%s\n' PROBE_STARTED 'PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 lease=alive max_latency_ms=123'
 fi
 `
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))

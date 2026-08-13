@@ -11,8 +11,10 @@ EXPECTED_REPLICAS="${EXPECTED_REPLICAS:-3}"
 EXPECTED_LEADER_RETRY_PERIOD="${EXPECTED_LEADER_RETRY_PERIOD:-500ms}"
 PROBE_ITERATIONS="${PROBE_ITERATIONS:-900}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-0.1}"
-PROBE_COMMAND_TIMEOUT="${PROBE_COMMAND_TIMEOUT:-2s}"
+PROBE_COMMAND_TIMEOUT="${PROBE_COMMAND_TIMEOUT:-10s}"
 PROBE_DIAL_TIMEOUT="${PROBE_DIAL_TIMEOUT:-1s}"
+PROBE_MAX_OPERATION_LATENCY="${PROBE_MAX_OPERATION_LATENCY:-5s}"
+PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-15}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-180s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
@@ -31,7 +33,7 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "missing required command: jq" >&2
   exit 1
 fi
-for value in "$EXPECTED_REPLICAS" "$PROBE_ITERATIONS"; do
+for value in "$EXPECTED_REPLICAS" "$PROBE_ITERATIONS" "$PROBE_LEASE_TTL"; do
   if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
     echo "replica and probe iteration values must be positive integers" >&2
     exit 2
@@ -44,7 +46,8 @@ fi
 if ! [[ "$KUBEBRAIN_CLIENT_PORT" =~ ^[1-9][0-9]*$ ]] ||
   ! [[ "$PROBE_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
   ! [[ "$PROBE_COMMAND_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
-  ! [[ "$PROBE_DIAL_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]]; then
+  ! [[ "$PROBE_DIAL_TIMEOUT" =~ ^[1-9][0-9]*(ms|s|m)$ ]] ||
+  ! [[ "$PROBE_MAX_OPERATION_LATENCY" =~ ^[1-9][0-9]*(ms|s|m)$ ]]; then
   echo "probe port, interval, and timeout values are invalid" >&2
   exit 2
 fi
@@ -101,6 +104,8 @@ kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- \
   --iterations="$PROBE_ITERATIONS" \
   --interval="${PROBE_INTERVAL}s" \
   --command-timeout="$PROBE_COMMAND_TIMEOUT" \
+  --max-operation-latency="$PROBE_MAX_OPERATION_LATENCY" \
+  --lease-ttl="$PROBE_LEASE_TTL" \
   --dial-timeout="$PROBE_DIAL_TIMEOUT" >/dev/null
 kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null
 
@@ -127,7 +132,7 @@ fi
 probe_log="$(kctl logs "$PROBE_POD")"
 printf '%s\n' "$probe_log"
 summary="$(grep '^PROBE_SUMMARY ' <<<"$probe_log" || true)"
-if [[ "$summary" != "PROBE_SUMMARY ok=${PROBE_ITERATIONS} fail=0 total=${PROBE_ITERATIONS} watch=${PROBE_ITERATIONS} lease=alive" ]]; then
+if ! [[ "$summary" =~ ^PROBE_SUMMARY\ ok=${PROBE_ITERATIONS}\ fail=0\ total=${PROBE_ITERATIONS}\ watch=${PROBE_ITERATIONS}\ lease=alive\ max_latency_ms=[0-9]+$ ]]; then
   echo "availability probe summary mismatch" >&2
   exit 1
 fi
