@@ -48295,6 +48295,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CORRUPT active/changed/invalid、leadership/restoration fence 和 internal auth guard conflict 均原样返回，不能被相同值覆盖；
   只有可能丢失 commit response 的错误继续对账。表驱动回归固定三种 CAS 拒绝在预存相同 updated bytes 时仍保持原 sentinel。
 
+- A4510 将 A4507-A4509 的排除式错误列表收敛为 storage contract 的正向 uncertain 判定。`BatchWrite.Commit` 接口明确要求
+  无法判断是否落盘时返回 `storage.ErrUncertainResult`，TiKV 也只为 undetermined commit/TxnLockNotFound 包装该 sentinel；
+  因此 lease metadata Put/CAS 现在仅对该类型执行 exact readback，任何当前或未来新增的普通 validation/admission/fence error
+  默认保持确定失败，不会因漏加列表而被相同 bytes 吞掉。测试替身不再用裸 `context.Canceled` 伪装丢响应，而是在先提交后
+  返回标准 uncertain wrapper；新增 CAS committed-uncertain 正例证明 readback 仍确认成功，原有不同值/读失败反例继续保留
+  uncertain 根因。该规则把兼容安全性建立在存储接口契约上，而不是服务层枚举具体后端错误。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

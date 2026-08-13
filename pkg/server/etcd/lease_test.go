@@ -122,9 +122,9 @@ func (b *committedCheckpointErrorBackend) InternalPut(ctx context.Context, key, 
 	b.failed = true
 	if b.cancel != nil {
 		b.cancel()
-		return ctx.Err()
+		return storage.NewErrUncertainResult(ctx.Err())
 	}
-	return errors.New("lease checkpoint response lost after commit")
+	return storage.NewErrUncertainResult(errors.New("lease checkpoint response lost after commit"))
 }
 
 type rejectedLeaseMetadataBackend struct {
@@ -147,6 +147,11 @@ type rejectedLeaseMetadataCASBackend struct {
 	err error
 }
 
+type committedUncertainLeaseMetadataCASBackend struct {
+	BackendShim
+	failed bool
+}
+
 func (b *corruptGuardedLeaseMetadataBackend) InternalPutCorruptGuarded(context.Context, []byte, []byte) error {
 	b.called = true
 	return backend.ErrCorruptAlarmActive
@@ -158,6 +163,17 @@ func (b *rejectedGuardedLeaseMetadataBackend) InternalPutCorruptGuarded(context.
 
 func (b *rejectedLeaseMetadataCASBackend) InternalCAS(context.Context, []backend.InternalCASOp) error {
 	return b.err
+}
+
+func (b *committedUncertainLeaseMetadataCASBackend) InternalCAS(ctx context.Context, ops []backend.InternalCASOp) error {
+	if err := b.BackendShim.InternalCAS(ctx, ops); err != nil {
+		return err
+	}
+	if b.failed {
+		return nil
+	}
+	b.failed = true
+	return storage.NewErrUncertainResult(context.DeadlineExceeded)
 }
 
 func (b *rejectedLeaseMetadataBackend) InternalPut(context.Context, []byte, []byte) error {
@@ -3075,6 +3091,7 @@ func TestLeaseRenewClearsCommittedCheckpointAfterLostWriteResponse(t *testing.T)
 
 func TestLeaseMetadataFailedWriteRequiresExactReadback(t *testing.T) {
 	writeErr := errors.New("lease metadata write rejected")
+	uncertainWriteErr := storage.NewErrUncertainResult(writeErr)
 	readErr := errors.New("lease metadata read rejected")
 	tests := []struct {
 		name    string
@@ -3085,20 +3102,20 @@ func TestLeaseMetadataFailedWriteRequiresExactReadback(t *testing.T) {
 		{
 			name: "different_readback",
 			wrap: func(base BackendShim) BackendShim {
-				return &rejectedLeaseMetadataBackend{BackendShim: base, err: writeErr}
+				return &rejectedLeaseMetadataBackend{BackendShim: base, err: uncertainWriteErr}
 			},
-			want:    "lease metadata write rejected\nlease metadata differs after failed write",
+			want:    "uncertain error: lease metadata write rejected\nlease metadata differs after failed write",
 			wantErr: writeErr,
 		},
 		{
 			name: "readback_error",
 			wrap: func(base BackendShim) BackendShim {
 				return &failedLeaseMetadataReadbackBackend{
-					rejectedLeaseMetadataBackend: rejectedLeaseMetadataBackend{BackendShim: base, err: writeErr},
+					rejectedLeaseMetadataBackend: rejectedLeaseMetadataBackend{BackendShim: base, err: uncertainWriteErr},
 					readErr:                      readErr,
 				}
 			},
-			want:    "lease metadata write rejected\ninspect lease metadata after failed write: lease metadata read rejected",
+			want:    "uncertain error: lease metadata write rejected\ninspect lease metadata after failed write: lease metadata read rejected",
 			wantErr: readErr,
 		},
 	}
@@ -3118,6 +3135,26 @@ func TestLeaseMetadataFailedWriteRequiresExactReadback(t *testing.T) {
 			require.EqualError(t, err, test.want)
 		})
 	}
+}
+
+func TestLeaseCheckpointCASReconcilesOnlyExplicitUncertainCommit(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 4509001
+	expected, err := json.Marshal(leaseRecord{ID: leaseID, TTL: 300, RemainingTTL: 200})
+	require.NoError(t, err)
+	require.NoError(t, server.backend.InternalPut(ctx, leaseStorageKey(leaseID), expected))
+	uncertain := &committedUncertainLeaseMetadataCASBackend{BackendShim: server.backend}
+	server.backend = uncertain
+
+	require.NoError(t, server.persistLeaseCheckpointCAS(ctx, leaseID, 300, 200, 0))
+	require.True(t, uncertain.failed)
+	stored, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	var record leaseRecord
+	require.NoError(t, json.Unmarshal(stored, &record))
+	require.Zero(t, record.RemainingTTL)
 }
 
 func TestSpreadLeaseExpiriesMatchesEtcdPromotionRate(t *testing.T) {

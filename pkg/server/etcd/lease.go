@@ -2197,11 +2197,10 @@ func (m *leaseManager) persistLeaseRecord(ctx context.Context, key, data []byte,
 	if err == nil {
 		return nil
 	}
-	// Alarm, leadership, and restoration fence failures are definite admission
-	// or commit-order outcomes, not lost commit responses. A pre-existing
-	// identical record must not turn the rejected operation into success (legacy
-	// migration could otherwise retire its source from the wrong safety epoch).
-	if isDefiniteLeaseMetadataWriteRejection(err) {
+	// Storage commits explicitly classify an outcome that may have landed as
+	// ErrUncertainResult. Definite admission, validation, CAS, and safety-fence
+	// failures must never be overwritten by a coincidentally identical record.
+	if !errors.Is(err, storage.ErrUncertainResult) {
 		return err
 	}
 
@@ -2250,7 +2249,7 @@ func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, f
 	if err == nil || errors.Is(err, storage.ErrCASFailed) {
 		return err
 	}
-	if isDefiniteLeaseMetadataWriteRejection(err) {
+	if !errors.Is(err, storage.ErrUncertainResult) {
 		return err
 	}
 
@@ -2269,15 +2268,6 @@ func (m *leaseManager) persistLeaseCheckpointCAS(ctx context.Context, id, ttl, f
 		return errors.Join(err, fmt.Errorf("inspect lease metadata after failed CAS: %w", getErr))
 	}
 	return errors.Join(err, errors.New("lease metadata differs after failed CAS"))
-}
-
-func isDefiniteLeaseMetadataWriteRejection(err error) bool {
-	return errors.Is(err, backend.ErrCorruptAlarmActive) ||
-		errors.Is(err, backend.ErrCorruptAlarmChanged) ||
-		errors.Is(err, backend.ErrInvalidAlarmMetadata) ||
-		errors.Is(err, backend.ErrLeadershipFenced) ||
-		errors.Is(err, backend.ErrRestorationFenced) ||
-		errors.Is(err, backend.ErrInternalWriteGuardConflict)
 }
 
 // attachKeyToStorage records that userKey is attached to lease id as a single

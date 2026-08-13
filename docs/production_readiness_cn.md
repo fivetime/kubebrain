@@ -2967,6 +2967,8 @@ active/changed/invalid-metadata 时属于确定栅栏结果，即使目标 key �
 同样规则适用于 leadership/restoration fence：相同 bytes 可能属于旧操作或后继 leader，不能证明当前 safety epoch 的写成功。
 Renew 清除 remaining-TTL 的 CAS 还必须保留 internal auth guard conflict；该冲突表示授权快照已经变化，也不能由另一操作写入的
 相同 `RemainingTTL=0` 覆盖。
+实现上不维护可能遗漏新 sentinel 的拒绝列表：只有存储层按 `BatchWrite.Commit` 契约返回 `ErrUncertainResult` 时才允许
+exact readback 对账；普通 context、validation、CAS 和 fence 错误全部按确定失败处理。
 提交栅栏依赖 256 个 `alarms/corrupt-fence/<hex>` mutation shard，而不是 TiKV 的普通 snapshot read-set；禁止减少为
 单 key（会形成全局写热点）或只读 generation（TiKV optimistic prewrite 不校验任意读取集）。升级后第一次 Arm/Disarm
 会从旧 generation 原子创建全部 shard；发布前应关注该罕见 transaction 的 TiKV 大事务延迟，并确认随后正常写负载在
