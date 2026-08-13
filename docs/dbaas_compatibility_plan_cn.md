@@ -48879,6 +48879,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   共同构成 pre-BR 门禁；它不是对整个 BR import 时段的 Kubernetes watch，平台仍必须保持 writer 缩容，admission fence
   仍是 import 窗口的数据面写保护。fake executor 测试覆盖 live revision 漂移零 BR，真实 API watch/Pod 调度竞态仍需预生产演练。
 
+- A4561 将 A4560 的一次性检查扩展为整个 restore/BR import 生命周期的 fail-closed monitor。attempt 1 在独立 restore
+  process group 启动后，每 5 秒重新读取 StatefulSet/Pods 并用 exact qualification writer evidence 校验；API 失败、UID/
+  resourceVersion 变化、任一 replica 或 Pod 出现都会写入本地 loss marker、终止整个 restore process group（包括其 BR 子进程），
+  将 Operation 置为 Failed，并要求重建目标。heartbeat fencing 与 EXIT cleanup 同样按独立 process group 终止，避免只杀
+  Go/shell 父进程后留下孤儿 BR。interval 必须为正且小于 lease，Deployment 固定为 5 秒；完成 child 后 monitor group 会
+  立即清理，不等待 sleep 周期。测试让 pre-BR 首次检查通过、import 已启动后第二次检查失败，验证无成功 receipt/status，
+  并覆盖 process-group 清理和既有 receipt-before-status reconcile。该轮询存在不超过 interval 的检测延迟；restore admission
+  fence 才是同步阻断 KubeBrain 写入口的主门禁，真实 Kubernetes 中仍需验证进程组信号、API 中断和 Pod 调度竞态。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

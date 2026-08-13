@@ -366,6 +366,7 @@ spec:
             - {name: KUBE_CONTEXT, value: in-cluster}
             - {name: KUBECTL, value: /usr/local/bin/kubectl}
             - {name: CONTROL, value: /usr/local/bin/kubebrain-native-pitr-target-provision-control}
+            - {name: WRITER_CHECK_INTERVAL_SECONDS, value: "5"}
             - {name: ENCRYPTION_DIR, value: /var/run/secrets/kubebrain-native-pitr-encryption}
             - {name: WORK_DIR, value: /var/lib/kubebrain-operation}
           envFrom: [{secretRef: {name: kubebrain-native-pitr-full-restore-executor-env}}]

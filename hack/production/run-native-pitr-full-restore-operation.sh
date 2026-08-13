@@ -3,6 +3,7 @@ set -euo pipefail
 
 WORKER_ID="${WORKER_ID:-}"; OPERATION_NAMESPACE="${OPERATION_NAMESPACE:-kubebrain-operations}"
 LEASE_SECONDS="${LEASE_SECONDS:-120}"; HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-}"
+WRITER_CHECK_INTERVAL_SECONDS="${WRITER_CHECK_INTERVAL_SECONDS:-5}"
 OPERATIONCTL="${OPERATIONCTL:-/usr/local/bin/kubebrain-operationctl}"
 RESTORE_COMMAND="${RESTORE_COMMAND:-/usr/local/bin/kubebrain-native-pitr-full-restore}"
 RECEIPT_VERIFY="${RECEIPT_VERIFY:-/usr/local/bin/kubebrain-native-pitr-full-restore-receipt-verify}"
@@ -18,6 +19,9 @@ if [[ -z "$HEARTBEAT_INTERVAL_SECONDS" ]]; then HEARTBEAT_INTERVAL_SECONDS=$((LE
 [[ "$HEARTBEAT_INTERVAL_SECONDS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
   awk -v heartbeat="$HEARTBEAT_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(heartbeat > 0 && heartbeat < lease) }' ||
   die "HEARTBEAT_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
+[[ "$WRITER_CHECK_INTERVAL_SECONDS" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]] &&
+  awk -v interval="$WRITER_CHECK_INTERVAL_SECONDS" -v lease="$LEASE_SECONDS" 'BEGIN { exit !(interval > 0 && interval < lease) }' ||
+  die "WRITER_CHECK_INTERVAL_SECONDS must be positive and less than LEASE_SECONDS"
 [[ -x "$OPERATIONCTL" && -x "$RESTORE_COMMAND" && -x "$RECEIPT_VERIFY" && -x "$BR_BINARY" && -d "$WORK_DIR" ]] || die "operation tools and WORK_DIR are required"
 [[ "$INPUT_ROOT" == /* && "$INPUT_ROOT" != *".."* ]] || die "INPUT_ROOT must be an absolute traversal-free directory"
 runctl() { "$OPERATIONCTL" --namespace "$OPERATION_NAMESPACE" "$@"; }
@@ -32,8 +36,10 @@ IFS=$'\t' read -r namespace name operation_id instance type requester owner secr
   "$attempt" =~ ^[12]$ && "$expected_sha" =~ ^[a-f0-9]{64}$ ]] || die "native PITR restore claim identity is invalid"
 [[ "$name" == "native-pitr-restore-${expected_sha:0:20}" ]] || die "native PITR restore operation name does not bind the parameter digest"
 
-capture="$(mktemp -d "$WORK_DIR/native-pitr-restore.XXXXXX")"; child=0; heartbeat=0
-cleanup() { [[ $child == 0 ]] || kill "$child" 2>/dev/null || true; [[ $heartbeat == 0 ]] || kill "$heartbeat" 2>/dev/null || true; rm -rf -- "$capture"; }
+capture="$(mktemp -d "$WORK_DIR/native-pitr-restore.XXXXXX")"; child=0; heartbeat=0; writer_monitor=0
+kill_restore_group() { [[ $child == 0 ]] || kill -- "-$child" 2>/dev/null || kill "$child" 2>/dev/null || true; }
+kill_background_group() { local pid="$1"; [[ $pid == 0 ]] || kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true; }
+cleanup() { kill_restore_group; kill_background_group "$heartbeat"; kill_background_group "$writer_monitor"; rm -rf -- "$capture"; }
 trap cleanup EXIT INT TERM
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
 [[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR restore parameters digest mismatch" >/dev/null; exit 1; }
@@ -98,13 +104,17 @@ fi
 for file in ca.crt tls.crt tls.key; do [[ -f "$TLS_DIR/$file" ]] || die "native PITR TLS file $file is required"; done
 [[ -x "$KUBECTL" && -x "$CONTROL" ]] || die "kubectl and target provision control are required for live writer exclusion verification"
 context_args=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context_args=(--context "$KUBE_CONTEXT")
-sts="$($KUBECTL "${context_args[@]}" -n kubebrain-system get statefulset kubebrain -o json)" || die "cannot inspect KubeBrain writer StatefulSet before restore"
-pods="$($KUBECTL "${context_args[@]}" -n kubebrain-system get pods -l app.kubernetes.io/name=kubebrain -o json)" || die "cannot inspect KubeBrain writer Pods before restore"
-$JQ -cn --argjson sts "$sts" --argjson pods "$pods" --argjson now "$(date +%s)" '
-  $sts|select(.apiVersion=="apps/v1" and .kind=="StatefulSet" and .metadata.namespace=="kubebrain-system" and .metadata.name=="kubebrain")|
-  {namespace:.metadata.namespace,statefulset:.metadata.name,statefulset_uid:.metadata.uid,resource_version:.metadata.resourceVersion,
-   desired_replicas:(.spec.replicas//0),current_replicas:(.status.currentReplicas//0),ready_replicas:(.status.readyReplicas//0),
-   observed_pod_count:($pods.items|length),observed_at_unix:$now,read_only_inspection:true}' >"$capture/writers-current.json" || die "cannot encode current KubeBrain writer state"
+capture_writer_state() {
+  local output="$1" sts pods
+  sts="$($KUBECTL "${context_args[@]}" -n kubebrain-system get statefulset kubebrain -o json)" || return 1
+  pods="$($KUBECTL "${context_args[@]}" -n kubebrain-system get pods -l app.kubernetes.io/name=kubebrain -o json)" || return 1
+  $JQ -cn --argjson sts "$sts" --argjson pods "$pods" --argjson now "$(date +%s)" '
+    $sts|select(.apiVersion=="apps/v1" and .kind=="StatefulSet" and .metadata.namespace=="kubebrain-system" and .metadata.name=="kubebrain")|
+    {namespace:.metadata.namespace,statefulset:.metadata.name,statefulset_uid:.metadata.uid,resource_version:.metadata.resourceVersion,
+     desired_replicas:(.spec.replicas//0),current_replicas:(.status.currentReplicas//0),ready_replicas:(.status.readyReplicas//0),
+     observed_pod_count:($pods.items|length),observed_at_unix:$now,read_only_inspection:true}' >"$output"
+}
+capture_writer_state "$capture/writers-current.json" || die "cannot inspect KubeBrain writer state before restore"
 "$CONTROL" --mode=verify-writer-exclusion --writer-exclusion="$target_writer_exclusion" --current-object="$capture/writers-current.json" || {
   runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "KubeBrain writer exclusion changed after target qualification; BR was not started" >/dev/null
   exit 1
@@ -120,11 +130,24 @@ args=(--br-binary="$BR_BINARY" --pd-addrs="$($JQ -r '.pd_addrs|join(",")' "$para
   --target-provisioning="$target_provisioning" --target-qualification="$target_qualification" --target-writer-exclusion="$target_writer_exclusion"
   --restore-admission="$($JQ -r .admission "$params")" --ca="$TLS_DIR/ca.crt" --cert="$TLS_DIR/tls.crt" --key="$TLS_DIR/tls.key" "${encryption_args[@]}")
 
+set -m
 "$RESTORE_COMMAND" "${args[@]}" >"$capture/receipt.json" 2>"$capture/restore.log" & child=$!
-( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
+( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill_restore_group; exit 75; }; done ) & heartbeat=$!
+( sequence=0; while sleep "$WRITER_CHECK_INTERVAL_SECONDS"; do
+    [[ ! -e "$capture/child.done" ]] || exit 0
+    sequence=$((sequence+1)); current="$capture/writers-monitor-${sequence}.json"
+    capture_writer_state "$current" && "$CONTROL" --mode=verify-writer-exclusion --writer-exclusion="$target_writer_exclusion" --current-object="$current" || {
+      : >"$capture/writer-exclusion-lost"
+      kill_restore_group
+      exit 76
+    }
+  done ) & writer_monitor=$!
+set +m
 set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
-kill "$heartbeat" 2>/dev/null || true; set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
+kill_background_group "$heartbeat"; set +e; wait "$heartbeat"; hrc=$?; set -e; heartbeat=0
+kill_background_group "$writer_monitor"; set +e; wait "$writer_monitor"; wrc=$?; set -e; writer_monitor=0
 [[ $hrc != 75 ]] || { echo "operation heartbeat failed; native PITR restore worker was fenced" >&2; exit 1; }
+[[ ! -e "$capture/writer-exclusion-lost" && $wrc != 76 ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "KubeBrain writer exclusion changed during native PITR import; restore was terminated and the target must be rebuilt" >/dev/null; exit 1; }
 [[ $rc == 0 && -s "$capture/receipt.json" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR full restore exited ${rc}; keep admission fence closed and rebuild target before retry" >/dev/null; exit 1; }
 "$RECEIPT_VERIFY" --receipt="$capture/receipt.json" "${verify_args[@]}" || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "native PITR full restore produced an invalid operation-bound receipt; keep admission fence closed" >/dev/null; exit 1; }
 chmod 600 "$capture/receipt.json"; ln "$capture/receipt.json" "$receipt" || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "cannot publish durable restore receipt without overwrite" >/dev/null; exit 1; }

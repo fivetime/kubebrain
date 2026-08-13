@@ -4715,6 +4715,9 @@ cluster identity 漂移都必须在 BR 前失败。qualification 到 restore 的
 live whole-keyspace empty scan。该检查不是 BR 全程 watch，平台必须持续保持缩容，fence 必须保持 held；真实 Kubernetes
 replacement 演练完成前生产重试继续关闭。
 
+full-restore 在 BR import 期间还会按 `WRITER_CHECK_INTERVAL_SECONDS=5` 持续复核同一 writer evidence。检查失败会终止
+restore/BR 整个进程组并要求重建 target；不得把该轮询调到不小于 Operation lease，也不得把其作为 admission fence 的替代品。
+
 启用 full-restore executor 前还必须先应用只读 writer inspector 权限；缺少该清单时执行器应因 API 查询被拒绝而停止，
 不得放宽检查或为 ServiceAccount 授予通用 workload 写权限：
 

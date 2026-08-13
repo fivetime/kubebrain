@@ -886,7 +886,7 @@ func TestNativePITRFullRestoreExecutorIsSingleWriterWithDurableWorkspace(t *test
 	require.Contains(t, nestedStringSlice(t, container, "args")[0], "run-native-pitr-full-restore-operation.sh")
 	containerData, err := json.Marshal(container.Object)
 	require.NoError(t, err)
-	for _, expected := range []string{"KUBE_CONTEXT", "KUBECTL", "CONTROL", "kubebrain-native-pitr-target-provision-control"} {
+	for _, expected := range []string{"KUBE_CONTEXT", "KUBECTL", "CONTROL", "WRITER_CHECK_INTERVAL_SECONDS", "kubebrain-native-pitr-target-provision-control"} {
 		require.Contains(t, string(containerData), expected)
 	}
 	require.False(t, nestedBool(t, container, "securityContext", "allowPrivilegeEscalation"))

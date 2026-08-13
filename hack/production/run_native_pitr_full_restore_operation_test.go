@@ -210,6 +210,40 @@ func TestNativePITRFullRestoreRejectsLiveWriterRevisionDriftBeforeBR(t *testing.
 	require.NotContains(t, operations, "--action succeed")
 }
 
+func TestNativePITRFullRestoreTerminatesImportWhenWriterExclusionDrifts(t *testing.T) {
+	dir := t.TempDir()
+	parameters, parametersSHA := writeNativeRestoreParameters(t, dir)
+	tlsDir := filepath.Join(dir, "tls")
+	require.NoError(t, os.Mkdir(tlsDir, 0o700))
+	for _, file := range []string{"ca.crt", "tls.crt", "tls.key"} {
+		require.NoError(t, os.WriteFile(filepath.Join(tlsDir, file), []byte("test"), 0o600))
+	}
+	kubectl, _ := writeNativeRestoreWriterTools(t, dir, true)
+	control := filepath.Join(dir, "writer-control-drift")
+	require.NoError(t, os.WriteFile(control, []byte(`#!/usr/bin/env bash
+count=0; [[ ! -f "$CONTROL_COUNT" ]] || count="$(cat "$CONTROL_COUNT")"
+count=$((count+1)); printf '%s' "$count" >"$CONTROL_COUNT"
+[[ "$count" == 1 ]]
+`), 0o755))
+	restoreMarker := filepath.Join(dir, "restore-started")
+	restore := filepath.Join(dir, "restore-long")
+	require.NoError(t, os.WriteFile(restore, []byte("#!/usr/bin/env bash\n: >\"$RESTORE_MARKER\"\nsleep 30\n"), 0o755))
+	operationLog := filepath.Join(dir, "operation.log")
+	output, err := runProductionScriptCommand(t, "run-native-pitr-full-restore-operation.sh", []string{
+		"WORKER_ID=worker-1", "PARAMETERS_INPUT=" + parameters, "EXPECTED_DIGEST=" + parametersSHA,
+		"OPERATIONCTL=" + writeNativeRestoreOperationctl(t, dir), "RESTORE_COMMAND=" + restore, "RECEIPT_VERIFY=/bin/false", "BR_BINARY=/bin/true",
+		"WORK_DIR=" + dir, "INPUT_ROOT=" + dir, "TLS_DIR=" + tlsDir, "OPERATION_LOG=" + operationLog, "ATTEMPT=1",
+		"KUBECTL=" + kubectl, "CONTROL=" + control, "CONTROL_COUNT=" + filepath.Join(dir, "control-count"),
+		"RESTORE_MARKER=" + restoreMarker, "WRITER_CHECK_INTERVAL_SECONDS=0.1", "HEARTBEAT_INTERVAL_SECONDS=10",
+	})
+	require.Error(t, err, string(output))
+	require.FileExists(t, restoreMarker, "restore must start before the monitor detects drift")
+	operations := string(mustReadProductionFile(t, operationLog))
+	require.Contains(t, operations, "writer exclusion changed during native PITR import")
+	require.Contains(t, operations, "target must be rebuilt")
+	require.NotContains(t, operations, "--action succeed")
+}
+
 func TestRunNativePITRFullRestoreOperationFailsClosedWithoutReceipt(t *testing.T) {
 	dir := t.TempDir()
 	parameters, digest := writeNativeRestoreParameters(t, dir)
