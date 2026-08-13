@@ -82,6 +82,29 @@ type checkpointRangeBackendShim struct {
 	used       bool
 }
 
+type checkpointCountBackendShim struct {
+	*checkpointRangeBackendShim
+	countCalled bool
+	listCalled  bool
+}
+
+func (b *checkpointCountBackendShim) Count(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.countCalled = true
+	return &etcdserverpb.RangeResponse{Header: txnHeader(1), Count: 99}, nil
+}
+
+func (b *checkpointCountBackendShim) List(ctx context.Context, r *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.listCalled = true
+	checkpoint, ok := backend.SerializableCheckpointFromContext(ctx)
+	if !ok {
+		return nil, errors.New("serializable checkpoint missing from count scan")
+	}
+	if r.Limit != 0 {
+		return nil, fmt.Errorf("checkpoint count scan retained limit %d", r.Limit)
+	}
+	return &etcdserverpb.RangeResponse{Header: txnHeader(int64(checkpoint.Revision)), Count: 2}, nil
+}
+
 func (b *checkpointRangeBackendShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
 	return b.checkpoint, nil
 }
@@ -584,6 +607,36 @@ func TestFollowerSerializableLatestRangeUsesProtectedCheckpoint(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(checkpoint.Revision), empty.Header.Revision)
 	require.Empty(t, empty.Kvs)
+}
+
+func TestFollowerSerializableLatestCountUsesProtectedCheckpointSnapshot(t *testing.T) {
+	base, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	checkpoint := backend.SerializableCheckpoint{
+		Revision: 29, Timestamp: 101, CompactRevision: 7, ValidUntil: time.Now().Add(time.Minute),
+	}
+	shim := &checkpointCountBackendShim{checkpointRangeBackendShim: &checkpointRangeBackendShim{
+		BackendShim: base.backend, checkpoint: checkpoint,
+	}}
+	base.backend = shim
+	base.tokens.snapshots = newAuthSnapshotCache(shim)
+	base.peers = testPeerService{isLeader: false}
+
+	for _, revision := range []int64{0, -1, math.MinInt64} {
+		shim.countCalled = false
+		shim.listCalled = false
+		response, err := base.Range(context.Background(), &etcdserverpb.RangeRequest{
+			Key: []byte("/checkpoint/"), RangeEnd: []byte("/checkpoint0"),
+			Revision: revision, Serializable: true, CountOnly: true, Limit: 1,
+		})
+		require.NoError(t, err)
+		require.True(t, shim.listCalled, "revision %d", revision)
+		require.False(t, shim.countCalled, "revision %d", revision)
+		require.Equal(t, int64(checkpoint.Revision), response.Header.Revision)
+		require.Equal(t, int64(2), response.Count)
+		require.Empty(t, response.Kvs)
+		require.False(t, response.More)
+	}
 }
 
 func TestStaleLeaderSerializableReadonlyTxnUsesProtectedCheckpoint(t *testing.T) {

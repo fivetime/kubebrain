@@ -176,7 +176,16 @@ func (s *RPCServer) rangeWithAfterRead(
 		// inside Count to a revision-honoring range read, so the count reflects that
 		// revision, not the current one.
 		methodTag = metrics.Tag("method", "count")
-		response, err = s.backend.Count(ctx, r)
+		if _, checkpoint := backend.SerializableCheckpointFromContext(ctx); checkpoint {
+			// The leader-owned count index represents global latest state, not the
+			// follower's protected checkpoint. Scan the pinned TiKV snapshot and
+			// clear Limit because etcd CountOnly reports the full matching count.
+			checkpointRequest := proto.Clone(r).(*etcdserverpb.RangeRequest)
+			checkpointRequest.Limit = 0
+			response, err = s.backend.List(ctx, checkpointRequest)
+		} else {
+			response, err = s.backend.Count(ctx, r)
+		}
 	} else {
 		methodTag = metrics.Tag("method", "range")
 		response, err = s.backend.List(ctx, r)
