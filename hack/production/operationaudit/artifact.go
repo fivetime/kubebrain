@@ -148,7 +148,7 @@ func (a Artifact) Validate() error {
 }
 
 func validOperationType(value string) bool {
-	return value == "Backup" || value == "BackupDeletion" || value == "ColdPhysicalSnapshot" || value == "ColdPhysicalRestore" || value == "LegacySnapshotHistoryRemediation" || value == "RestoreCutover" ||
+	return value == "Backup" || value == "NativePITRFullBackup" || value == "BackupDeletion" || value == "ColdPhysicalSnapshot" || value == "ColdPhysicalRestore" || value == "LegacySnapshotHistoryRemediation" || value == "RestoreCutover" ||
 		value == "PostRestoreAudit" || value == "CertificateRotation" || value == "TiKVTransactionRepair" ||
 		value == "TiKVTransactionRecovery" || value == "Destroy"
 }

@@ -48566,6 +48566,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   multi-arch digest 并由 Job 直接运行镜像入口点；`KubeBrainOperation` 持久化调度、参数注入与状态转换
   尚未接入该 Job，继续作为控制面开放项，不把独立工具镜像冒充完整编排闭环。
 
+- A4535 关闭 A4534 明确保留的 native PITR full backup 控制面编排缺口。`KubeBrainOperation` CRD、
+  queue validator、type-bound parameter broker、status admission、worker RBAC/NetworkPolicy 与 executor
+  清单现共同支持 `NativePITRFullBackup`。独立工具镜像除 producer/BR 外新增最小 bash/coreutils/jq、
+  operation worker/ctl 和受审 runner；默认数据面镜像沿用已有 worker/ctl/runner 工具链，但仍不包含
+  BR 与 native producer。runner 领取持久化 operation 后
+  校验 claim/Secret 绑定与参数文件 SHA-256，只接受 exact `backup_ts`、非空 PD 地址数组和 S3 prefix，
+  使用固定挂载的 TLS 三件套及凭据 Secret 调用同镜像 producer，持续续租并只在最终 heartbeat 成功后把
+  attestation digest 提交为 terminal receipt。执行前摘要漂移可 requeue；BR 启动后的非零退出可能已产生
+  部分 immutable 对象，必须 terminal fail 并人工核查，绝不自动重试。回归覆盖成功心跳/receipt、额外参数
+  拒绝、执行后失败不可 retry、专属镜像/ServiceAccount/TLS/PVC、broker identity 与 admission/RBAC 绑定。
+  发布仍必须把示例 `:dev` 替换成最终 multi-arch digest，并预置环境相关 PVC/TLS/对象存储 Secret；这些
+  明示部署输入不再被误写为尚无持久化 operation 状态机。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

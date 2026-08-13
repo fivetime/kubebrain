@@ -206,9 +206,10 @@ func TestOperationWorkerRBACCanFenceWithLeasesButCannotCreateOperations(t *testi
 
 	binding := documents[3]
 	require.Equal(t, "RoleBinding", binding.Kind)
-	require.Len(t, binding.Subjects, 11)
+	require.Len(t, binding.Subjects, 12)
 	for _, name := range []string{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
+		"kubebrain-native-pitr-full-backup-executor",
 		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-legacy-snapshot-remediation-executor",

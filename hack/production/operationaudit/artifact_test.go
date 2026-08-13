@@ -504,6 +504,12 @@ func TestOperationAuditAcceptsBackupDeletion(t *testing.T) {
 	require.NoError(t, artifact.Validate())
 }
 
+func TestOperationAuditAcceptsNativePITRFullBackupWithoutApproval(t *testing.T) {
+	artifact := terminalArtifact()
+	artifact.Type = "NativePITRFullBackup"
+	require.NoError(t, artifact.Validate())
+}
+
 func TestOperationAuditRequiresApprovalForHighRiskTypes(t *testing.T) {
 	for _, operationType := range []string{
 		"RestoreCutover", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation",

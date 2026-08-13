@@ -540,7 +540,7 @@ func requiresApproval(operationType string) bool {
 
 func isSupportedOperationType(operationType string) bool {
 	switch operationType {
-	case "Backup", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "PostRestoreAudit", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy":
+	case "Backup", "NativePITRFullBackup", "BackupDeletion", "ColdPhysicalSnapshot", "ColdPhysicalRestore", "LegacySnapshotHistoryRemediation", "RestoreCutover", "PostRestoreAudit", "CertificateRotation", "TiKVTransactionRepair", "TiKVTransactionRecovery", "Destroy":
 		return true
 	default:
 		return false

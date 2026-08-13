@@ -1855,6 +1855,20 @@ func TestQueueRequiresApprovalForHighRiskOperations(t *testing.T) {
 	}
 }
 
+func TestQueueClaimsNativePITRFullBackupWithoutDestructiveApproval(t *testing.T) {
+	queue := newFakeQueue()
+	spec := validSpec()
+	spec.Type = "NativePITRFullBackup"
+	spec.OperationID = "native-pitr-full-1"
+	_, err := queue.Submit(context.Background(), spec.OperationID, spec)
+	require.NoError(t, err)
+
+	claim, err := queue.Claim(context.Background(), "native-pitr-worker", spec.Type, time.Minute)
+	require.NoError(t, err)
+	require.Equal(t, spec.OperationID, claim.OperationID)
+	require.Equal(t, spec.Type, claim.Type)
+}
+
 func TestQueueDoesNotTreatForgedApprovalAsApproved(t *testing.T) {
 	queue := newFakeQueue()
 	ctx := context.Background()

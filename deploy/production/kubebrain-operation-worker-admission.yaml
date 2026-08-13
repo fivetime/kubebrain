@@ -18,6 +18,8 @@ spec:
     - expression: |
         (object.spec.type == "Backup" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-executor") ||
+        (object.spec.type == "NativePITRFullBackup" &&
+          request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-native-pitr-full-backup-executor") ||
         (object.spec.type == "BackupDeletion" &&
           request.userInfo.username == "system:serviceaccount:kubebrain-operations:kubebrain-backup-deletion-executor") ||
         (object.spec.type == "ColdPhysicalSnapshot" &&

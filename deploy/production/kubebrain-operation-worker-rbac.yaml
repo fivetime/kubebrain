@@ -73,6 +73,9 @@ subjects:
     name: kubebrain-backup-executor
     namespace: kubebrain-operations
   - kind: ServiceAccount
+    name: kubebrain-native-pitr-full-backup-executor
+    namespace: kubebrain-operations
+  - kind: ServiceAccount
     name: kubebrain-backup-deletion-executor
     namespace: kubebrain-operations
   - kind: ServiceAccount

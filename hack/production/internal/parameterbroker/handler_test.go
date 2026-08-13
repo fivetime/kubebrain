@@ -54,6 +54,7 @@ func TestHandlerAuthenticatesHighRiskExecutorTypes(t *testing.T) {
 		operationType  string
 	}{
 		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
+		{serviceAccount: "kubebrain-native-pitr-full-backup-executor", operationType: "NativePITRFullBackup"},
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},
@@ -81,6 +82,7 @@ func TestHandlerReturnsHighRiskParametersThroughTypeBoundBrokerIdentity(t *testi
 		operationType  string
 	}{
 		{serviceAccount: "kubebrain-tikv-transaction-repair-executor", operationType: "TiKVTransactionRepair"},
+		{serviceAccount: "kubebrain-native-pitr-full-backup-executor", operationType: "NativePITRFullBackup"},
 		{serviceAccount: "kubebrain-tikv-transaction-recovery-executor", operationType: "TiKVTransactionRecovery"},
 		{serviceAccount: "kubebrain-cold-physical-snapshot-executor", operationType: "ColdPhysicalSnapshot"},
 		{serviceAccount: "kubebrain-cold-physical-restore-executor", operationType: "ColdPhysicalRestore"},

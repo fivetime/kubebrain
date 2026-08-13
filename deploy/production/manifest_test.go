@@ -523,6 +523,7 @@ func TestOperationCRDAndWorkerRBACFencePersistentTasks(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 	require.Contains(t, operationTypes, "BackupDeletion")
+	require.Contains(t, operationTypes, "NativePITRFullBackup")
 	require.Contains(t, operationTypes, "LegacySnapshotHistoryRemediation")
 	tenantType := nestedString(
 		t, version, "schema", "openAPIV3Schema", "properties", "spec",
@@ -645,6 +646,10 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 		"kubebrain-backup-executor": {
 			"run-backup-operation.sh", "kubebrain-backup-executor-env",
 			"kubebrain-backup-executor-workspace",
+		},
+		"kubebrain-native-pitr-full-backup-executor": {
+			"run-native-pitr-full-backup-operation.sh", "kubebrain-native-pitr-full-backup-executor-env",
+			"kubebrain-native-pitr-full-backup-executor-workspace",
 		},
 		"kubebrain-backup-deletion-executor": {
 			"run-backup-deletion-operation.sh", "kubebrain-backup-deletion-executor-env",
@@ -807,6 +812,38 @@ func TestOperationExecutorsAreTypeIsolatedFailClosedTemplates(t *testing.T) {
 	}
 }
 
+func TestNativePITRFullBackupExecutorUsesDedicatedPinnedToolImageAndTLS(t *testing.T) {
+	objects := decodeManifest(t, "kubebrain-operation-executors.yaml")
+	deployment := objectByKindAndName(t, objects, "Deployment", "kubebrain-native-pitr-full-backup-executor")
+	containers, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "containers")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, containers, 1)
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	require.Equal(t, "kubebrain-native-pitr-full-backup:dev", nestedString(t, container, "image"))
+	require.Equal(t, []string{"/usr/local/bin/kubebrain-operation-worker"}, nestedStringSlice(t, container, "command"))
+	require.Contains(t, nestedStringSlice(t, container, "args")[0], "run-native-pitr-full-backup-operation.sh")
+	envFrom, found, err := unstructured.NestedSlice(container.Object, "envFrom")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, "kubebrain-native-pitr-full-backup-executor-env",
+		nestedString(t, &unstructured.Unstructured{Object: envFrom[0].(map[string]any)}, "secretRef", "name"))
+
+	volumes, found, err := unstructured.NestedSlice(deployment.Object, "spec", "template", "spec", "volumes")
+	require.NoError(t, err)
+	require.True(t, found)
+	var tls *unstructured.Unstructured
+	for _, raw := range volumes {
+		volume := &unstructured.Unstructured{Object: raw.(map[string]any)}
+		if nestedString(t, volume, "name") == "tls" {
+			tls = volume
+		}
+	}
+	require.NotNil(t, tls)
+	require.Equal(t, "kubebrain-native-pitr-full-backup-tls", nestedString(t, tls, "secret", "secretName"))
+	require.EqualValues(t, 0440, nestedInt64(t, tls, "secret", "defaultMode"))
+}
+
 func TestLegacySnapshotRemediationNativeHelperIsInRuntimeImage(t *testing.T) {
 	dockerfile, err := os.ReadFile("../../Dockerfile")
 	require.NoError(t, err)
@@ -832,6 +869,9 @@ func TestNativePITRFullBackupHasPinnedIsolatedRuntimeImage(t *testing.T) {
 	require.Contains(t, text,
 		"COPY --from=build /src/bin/kubebrain-native-pitr-full-backup /usr/local/bin/kubebrain-native-pitr-full-backup")
 	require.Contains(t, text, "COPY --from=br-v751 /br /usr/local/bin/br")
+	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker")
+	require.Contains(t, text, "COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl")
+	require.Contains(t, text, "COPY hack/production/run-native-pitr-full-backup-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-backup-operation.sh")
 	require.Contains(t, text, "USER 65532:65532\nENTRYPOINT [\"/usr/local/bin/kubebrain-native-pitr-full-backup\"]")
 
 	backupTarget := strings.Index(text, " AS native-pitr-full-backup")
@@ -942,6 +982,7 @@ func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *tes
 	values := expressions[0].(map[string]any)["values"].([]any)
 	require.ElementsMatch(t, []any{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
+		"kubebrain-native-pitr-full-backup-executor",
 		"kubebrain-cold-physical-snapshot-executor",
 		"kubebrain-cold-physical-restore-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
@@ -989,6 +1030,7 @@ func TestOperationWorkerAdmissionBindsStatusUpdatesToExecutorType(t *testing.T) 
 	expression := validations[0].(map[string]any)["expression"].(string)
 	for _, name := range []string{
 		"kubebrain-backup-executor", "kubebrain-backup-deletion-executor",
+		"kubebrain-native-pitr-full-backup-executor",
 		"kubebrain-restore-cutover-executor", "kubebrain-post-restore-audit-executor",
 		"kubebrain-certificate-rotation-executor", "kubebrain-tikv-transaction-repair-executor",
 		"kubebrain-tikv-transaction-recovery-executor", "kubebrain-destroy-executor",

@@ -241,6 +241,7 @@ spec:
                 operator: In
                 values:
                   - kubebrain-backup-executor
+                  - kubebrain-native-pitr-full-backup-executor
                   - kubebrain-backup-deletion-executor
                   - kubebrain-cold-physical-snapshot-executor
                   - kubebrain-cold-physical-restore-executor

@@ -2003,9 +2003,21 @@ docker build --target native-pitr-full-backup \
 
 该独立 target 固定 BR v7.5.1 的 multi-arch manifest digest 和 Alpine/gcompat 版本，以
 UID/GID 65532 运行；默认 KubeBrain 镜像仍保持为 Dockerfile 最终 target，且不携带约 218 MiB 的 BR。
-生产 Job 必须按最终 image digest 引用该工具镜像，并将 evidence、TLS 与对象存储凭据分别挂载；当前
-仓库尚未把该 Job 的持久化调度/状态转换接入 `KubeBrainOperation`，因此不得把手工启动 Job 冒充完整控制面编排。
-镜像入口点直接运行：
+生产发布必须把 `kubebrain-operation-executors.yaml` 中的
+`kubebrain-native-pitr-full-backup:dev` 替换为该最终 image digest，并将 workspace PVC、
+`kubebrain-native-pitr-full-backup-tls`（`ca.crt`/`tls.crt`/`tls.key`）及只含对象存储凭据的
+`kubebrain-native-pitr-full-backup-executor-env` Secret 预置后，才可把 executor replicas 从 0 扩容。
+该 executor 通过专属 ServiceAccount 领取 `NativePITRFullBackup` operation、续租心跳、从 type-bound
+parameter broker 取得精确摘要参数并把 attestation SHA-256 写入 terminal status；状态 admission 禁止其他
+executor 身份更新它。参数 Secret 必须名为 `<operation-name>-parameters`、key 为 `parameters.json`，内容只允许：
+
+```json
+{"backup_ts":"468294813545660418","pd_addrs":["pd-0:2379","pd-1:2379","pd-2:2379"],"storage_prefix":"s3://immutable-bucket/instance/run-id/full"}
+```
+
+开始 BR 前的参数摘要漂移会 requeue；BR 一旦启动，任何非零退出都 terminal fail 并要求先核查 immutable
+prefix，禁止自动重试不确定的部分写入。成功 attestation 已存在、最终心跳失去 fencing 或 receipt status
+提交失败时同样不得由新 operation 覆盖证据。镜像入口点也可在隔离演练中直接运行：
 
 ```shell
 /usr/local/bin/kubebrain-native-pitr-full-backup \

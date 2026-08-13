@@ -88,13 +88,19 @@ FROM pingcap/br:v7.5.1@sha256:7815531bc337a56845efc3dceb9fe75778d387d76927994df7
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS native-pitr-full-backup
 
 RUN apk add --no-cache \
+      bash=5.3.3-r1 \
       ca-certificates=20260611-r0 \
+      coreutils=9.8-r1 \
       gcompat=1.1.0-r4 \
+      jq=1.8.1-r0 \
     && addgroup -S -g 65532 kubebrain \
     && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 65532 -G kubebrain kubebrain
 
 COPY --from=build /src/bin/kubebrain-native-pitr-full-backup /usr/local/bin/kubebrain-native-pitr-full-backup
+COPY --from=build /src/bin/kubebrain-operation-worker /usr/local/bin/kubebrain-operation-worker
+COPY --from=build /src/bin/kubebrain-operationctl /usr/local/bin/kubebrain-operationctl
 COPY --from=br-v751 /br /usr/local/bin/br
+COPY hack/production/run-native-pitr-full-backup-operation.sh /opt/kubebrain/hack/production/run-native-pitr-full-backup-operation.sh
 
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/kubebrain-native-pitr-full-backup"]
