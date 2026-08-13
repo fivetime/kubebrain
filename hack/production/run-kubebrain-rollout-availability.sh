@@ -72,6 +72,15 @@ update_revision="$(jq -r '.status.updateRevision // ""' <<<"$statefulset_json")"
 image="$(jq -r '.spec.template.spec.containers[] | select(.name == "kubebrain") | .image' <<<"$statefulset_json")"
 retry_count="$(jq --arg expected "--leader-retry-period=${EXPECTED_LEADER_RETRY_PERIOD}" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(. == $expected)] | length' <<<"$statefulset_json")"
 pd_addrs="$(jq -r '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[] | select(startswith("--pd-addrs=")) | sub("^--pd-addrs="; "")] | if length == 1 then .[0] else "" end' <<<"$statefulset_json")"
+pd_endpoints=""
+IFS=',' read -r -a pd_addr_items <<<"$pd_addrs"
+for pd_addr in "${pd_addr_items[@]}"; do
+  [[ -n "$pd_addr" ]] || continue
+  if [[ "$pd_addr" != http://* && "$pd_addr" != https://* ]]; then
+    pd_addr="http://${pd_addr}"
+  fi
+  pd_endpoints="${pd_endpoints:+${pd_endpoints},}${pd_addr}"
+done
 prestop="$(jq -c '.spec.template.spec.containers[] | select(.name == "kubebrain") | .lifecycle.preStop.exec.command // []' <<<"$statefulset_json")"
 expected_prestop='["/bin/sh","-c","curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"]'
 
@@ -83,7 +92,7 @@ if [[ -z "$current_revision" || "$current_revision" != "$update_revision" ]]; th
   echo "KubeBrain StatefulSet is not at one stable revision" >&2
   exit 1
 fi
-if [[ -z "$image" || -z "$pd_addrs" || "$retry_count" != 1 || "$prestop" != "$expected_prestop" ]]; then
+if [[ -z "$image" || -z "$pd_endpoints" || "$retry_count" != 1 || "$prestop" != "$expected_prestop" ]]; then
   echo "KubeBrain rollout drain contract mismatch (image/retry/preStop)" >&2
   exit 1
 fi
@@ -107,7 +116,7 @@ kctl run "$PROBE_POD" --image="$image" --restart=Never --command -- \
   --command-timeout="$PROBE_COMMAND_TIMEOUT" \
   --max-operation-latency="$PROBE_MAX_OPERATION_LATENCY" \
   --lease-ttl="$PROBE_LEASE_TTL" \
-  --pd-endpoints="$pd_addrs" \
+  --pd-endpoints="$pd_endpoints" \
   --dial-timeout="$PROBE_DIAL_TIMEOUT" >/dev/null
 kctl wait --for=condition=Ready "pod/$PROBE_POD" --timeout="$PROBE_READY_TIMEOUT" >/dev/null
 

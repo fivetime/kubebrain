@@ -49087,7 +49087,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   事件全绿、KeepAlive/attached key 存活，最大 Put→Watch 仅 579ms。为防未来再次混淆，探针现在从
   StatefulSet 唯一 `--pd-addrs` 获取三个 endpoint，rollout 前固定 PD leader name/member ID，并在全程每
   500ms 复读；PD API 不可达或 leader 变化明确报 `backend instability`，不再归类为 KubeBrain handoff
-  latency。镜像内完整 900 轮 runner 仍需在含该监控的新镜像上重跑后才能把本项标记为最终全绿。
+  latency。runner 在边界把 TiKV client 合法的裸 `host:port` PD 地址规范化为 HTTP URL，同时保持生产
+  `--pd-addrs` 原值不变。
+
+  最终镜像 `kubebrain:a4574-e92ef413`（内嵌 SHA
+  `e92ef4137086c49b7831e547c74ba1a6507971aa`，OCI manifest list
+  `sha256:9e7ecbc46bfb9dcf9972997c5ddb87bec4cae76c7e9f9ac25d6d3fe8f407a0ab`）构建后，先连续 60 个
+  样本确认三个 PD `/health` 全绿且 leader 固定为 `kb-pd-0:12010354549738711059`，再部署三副本并执行
+  使用镜像内探针的正式 runner。三次 StatefulSet 顺序替换期间两个已连接 Pod 终止各产生一次预期 EOF，均经 Range
+  对账/同 token 重试恢复；`PROBE_SUMMARY ok=900 fail=0 total=900 watch=900 lease=alive
+  max_latency_ms=3670`，revision `kubebrain-75fd8b9846 -> kubebrain-cb85574b5`，PD identity 全程未漂移，
+  strict postflight 和 probe cleanup 通过。该证据关闭稳定独立 TiKV/PD 下 KubeBrain 自身 rollout 的
+  Watch/15 秒 LeaseKeepAlive/不确定写连续性缺口；PD slow-disk/leader loss 叠加 rollout 仍应由明确的
+  backend-instability 门禁失败，不得冒充零中断数据面。
 
 ### P2：运维兼容和长期验证
 
