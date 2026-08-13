@@ -2505,6 +2505,7 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	if importFault != nil {
 		require.True(t, importFault.faultInjected(), "target fault was not injected during BR import")
 		require.True(t, importFault.faultRecovered(), "target fault was not recovered during BR import")
+		t.Log("native PITR target fault was injected during BR import and recovered before completion")
 	} else {
 		targetFaultInjected = injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"))
 	}

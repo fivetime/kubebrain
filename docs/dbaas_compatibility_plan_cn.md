@@ -48669,6 +48669,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   加密恢复期间的 member/store/PD 故障注入、跨 AZ 网络分区、historical MVCC/raw absence、KMS 生命周期或
   restore-side durable Operation。
 
+- A4544 关闭 A4543 明确保留的“加密恢复只证明 fully replicated 无故障基线”缺口之一。2026-08-13 在
+  同样先验证双方 3 Up stores、全 Region 3 peers/零 pending peer 的拓扑上运行
+  `KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 KUBEBRAIN_NATIVE_PITR_ENCRYPTION=aes256-ctr KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-leader-member-pause-store-during-br-resume hack/backup/run-native-pitr-full-restore-integration.sh`。
+  profile 从目标 PD 实时 leader API 选中 `tgt-pd-0`，只在固定 BR 输出 import-mode marker 后同时 pause 该
+  leader 与一个 target TiKV store，10 秒后 unpause 并逐容器证明恢复；测试现显式记录 injected/recovered，
+  防止只从成功结果推断故障发生。AES restore 在故障窗内保持 admission fence，最终 12.322 秒完成
+  530 KV/107.1 kB import（无故障约 0.15 秒），随后 artifact/key 不漂移复验、fence handoff 和 etcd
+  KV/lease 语义门禁全绿。该项证明一个 PD leader + 一个 store 的可恢复暂停，不证明双 store quorum loss、
+  PD quorum loss、ENOSPC、网络分区、跨 AZ、KMS 撤权或 durable restore worker crash/reconcile。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

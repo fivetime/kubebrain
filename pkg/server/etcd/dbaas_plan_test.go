@@ -82,6 +82,8 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	require.Contains(t, plan, "不证明历史 MVCC/raw key 完全无变化")
 	require.Contains(t, plan, "A4543 将 A4541/A4542 的 AES 正向与错误 key 写前安全证据从单副本提升到对称三副本")
 	require.Contains(t, plan, "fully replicated 无故障基线")
+	require.Contains(t, plan, "A4544 关闭 A4543 明确保留的“加密恢复只证明 fully replicated 无故障基线”")
+	require.Contains(t, plan, "不证明双 store quorum loss")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

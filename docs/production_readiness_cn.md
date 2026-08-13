@@ -2139,6 +2139,12 @@ historical MVCC/raw key absence，也不能替代三副本、跨 AZ 或生产 KM
 并进入演练。2026-08-13 该组合已通过 wrong-key 零 restore range/失败后全目标空扫描、正确 key 恢复和最终
 KV/lease 语义门禁；它是无故障 fully replicated baseline，不是恢复期间故障或跨 AZ 分区证明。
 
+恢复期间的三副本 AES 可恢复故障基线使用
+`KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-leader-member-pause-store-during-br-resume`。profile 动态选择
+目标 live PD leader，在 BR import-mode marker 后同时暂停该 leader 与一个 TiKV store，10 秒后恢复，并要求
+测试显式观察 injected/recovered。2026-08-13 实测加密 restore 在 12.322 秒后完成 530 KV 且最终语义全绿；
+该结果只覆盖单 PD leader+单 store 暂停，不覆盖 quorum loss、ENOSPC、网络分区或 worker crash。
+
 该命令先通过同一 inode 的 `--version` 要求 exact v7.5.1 release 与固定 Git commit，再固定执行
 `backup txn`、`--checksum=false` 和显式 receipt-bound crypter；打开并复算 BR executable
 后直接通过同一 open inode 执行，路径在运行前后被替换也不能改变内核实际执行且被 receipt 摘要的字节。
