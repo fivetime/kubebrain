@@ -85,6 +85,8 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Len(t, containers, 1)
 			container := containers[0].(map[string]any)
 			containerObject := &unstructured.Unstructured{Object: container}
+			require.Equal(t, []string{"/bin/sh", "-c", "curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5"}, nestedStringSlice(t, containerObject,
+				"lifecycle", "preStop", "exec", "command"))
 			require.False(t, nestedBool(t, containerObject, "securityContext", "allowPrivilegeEscalation"))
 			require.True(t, nestedBool(t, containerObject, "securityContext", "readOnlyRootFilesystem"))
 			dropped, found, err := unstructured.NestedStringSlice(container, "securityContext", "capabilities", "drop")
@@ -215,6 +217,7 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--count-index-max-keys=5000000",
 		"--enable-storage-metrics=true",
 		"--quota-backend-bytes=429496729600",
+		"--leader-retry-period=100ms",
 		"--max-txn-ops=128",
 		"--max-request-bytes=1572864",
 		"--max-concurrent-streams=4294967295",

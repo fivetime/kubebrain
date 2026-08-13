@@ -16,6 +16,7 @@ EXPECTED_PD_ADDRS="${EXPECTED_PD_ADDRS:-}"
 EXPECTED_CLUSTER_ID="${EXPECTED_CLUSTER_ID:-}"
 EXPECTED_INITIAL_CLUSTER="${EXPECTED_INITIAL_CLUSTER:-}"
 EXPECTED_QUOTA_BACKEND_BYTES="${EXPECTED_QUOTA_BACKEND_BYTES:-}"
+EXPECTED_LEADER_RETRY_PERIOD="${EXPECTED_LEADER_RETRY_PERIOD:-100ms}"
 EXPECTED_ADVERTISE_CLIENT_URLS="${EXPECTED_ADVERTISE_CLIENT_URLS:-}"
 EXPECTED_PORT="${EXPECTED_PORT:-3379}"
 EXPECTED_PEER_PORT="${EXPECTED_PEER_PORT:-3380}"
@@ -177,7 +178,7 @@ for variable in EXPECTED_PORT EXPECTED_PEER_PORT EXPECTED_INFO_PORT EXPECTED_COU
     exit 2
   fi
 done
-for variable in EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT EXPECTED_AUTH_TOKEN; do
+for variable in EXPECTED_LEADER_RETRY_PERIOD EXPECTED_GRPC_KEEPALIVE_MIN_TIME EXPECTED_GRPC_KEEPALIVE_INTERVAL EXPECTED_GRPC_KEEPALIVE_TIMEOUT EXPECTED_AUTH_TOKEN; do
   value="${!variable}"
   if [[ -z "$value" ]]; then
     echo "${variable} must be non-empty" >&2
@@ -725,6 +726,7 @@ fi
 check_exact_kubebrain_arg "port" "$EXPECTED_PORT" "client listener port"
 check_exact_kubebrain_arg "peer-port" "$EXPECTED_PEER_PORT" "peer listener port"
 check_exact_kubebrain_arg "info-port" "$EXPECTED_INFO_PORT" "info listener port"
+check_exact_kubebrain_arg "leader-retry-period" "$EXPECTED_LEADER_RETRY_PERIOD" "leader election retry period"
 check_optional_kubebrain_arg "advertise-host" "$EXPECTED_ADVERTISE_HOST" "advertise host"
 check_exact_kubebrain_arg "max-request-rate" "$EXPECTED_MAX_REQUEST_RATE" "max request rate"
 check_exact_kubebrain_arg "request-rate-burst" "$EXPECTED_REQUEST_RATE_BURST" "request rate burst"

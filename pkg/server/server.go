@@ -20,6 +20,7 @@ import (
 	"errors"
 	"expvar"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -97,6 +98,7 @@ type server struct {
 	config Config
 
 	cancel           context.CancelFunc
+	campaignCancel   context.CancelFunc
 	campaignDone     chan struct{}
 	quotaMetricsDone chan struct{}
 	alarmMetricsDone chan struct{}
@@ -104,11 +106,13 @@ type server struct {
 	stateMetricsDone chan struct{}
 	observedLeader   string
 	closeOnce        sync.Once
+	drainOnce        sync.Once
 	closeErr         error
 }
 
 func (s *server) Close() error {
 	s.closeOnce.Do(func() {
+		s.Drain()
 		if s.cancel != nil {
 			s.cancel()
 		}
@@ -137,9 +141,21 @@ func (s *server) Close() error {
 	return s.closeErr
 }
 
+func (s *server) Drain() {
+	s.drainOnce.Do(func() {
+		if s.campaignCancel != nil {
+			s.campaignCancel()
+		}
+		if s.campaignDone != nil {
+			<-s.campaignDone
+		}
+	})
+}
+
 // NewServer returns the server
 func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
 	runCtx, cancel := context.WithCancel(ctx)
+	campaignCtx, campaignCancel := context.WithCancel(runCtx)
 	s := &server{
 		healthServer:       health.NewServer(),
 		clientHealthServer: health.NewServer(),
@@ -147,6 +163,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		backend:            backend,
 		config:             config,
 		cancel:             cancel,
+		campaignCancel:     campaignCancel,
 		campaignDone:       make(chan struct{}),
 		quotaMetricsDone:   make(chan struct{}),
 		alarmMetricsDone:   make(chan struct{}),
@@ -193,7 +210,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	s.initLegacyHealthMetrics()
 	go func() {
 		defer close(s.campaignDone)
-		peerService.Campaign(runCtx)
+		peerService.Campaign(campaignCtx)
 	}()
 	go func() {
 		defer close(s.quotaMetricsDone)
@@ -633,6 +650,7 @@ func (s *server) GetInfoHttpHandlers() map[string]http.Handler {
 		"/ready":    http.HandlerFunc(s.httpReadyHandler),
 		"/status":   http.HandlerFunc(s.revisionHandler),
 		"/election": http.HandlerFunc(s.electionHandler),
+		"/drain":    http.HandlerFunc(s.httpDrainHandler),
 		// kubeadm 1.37's ExternalEtcd.HTTPEndpoints lets users point etcd HTTP
 		// probes at a separate port from gRPC; its preflight GETs /version there
 		// and treats a 404 as a fatal parse error. Serve it on the info port too
@@ -828,6 +846,23 @@ func (s *server) httpPingHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	s.writeHealthy(w)
+}
+
+func (s *server) httpDrainHandler(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	host, _, err := net.SplitHostPort(req.RemoteAddr)
+	if err != nil || !net.ParseIP(host).IsLoopback() {
+		http.Error(w, "drain is available only from localhost", http.StatusForbidden)
+		return
+	}
+	s.Drain()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{\"drained\":true}\n"))
 }
 
 func (s *server) writeHealthy(w http.ResponseWriter) {

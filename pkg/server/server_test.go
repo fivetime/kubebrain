@@ -718,6 +718,38 @@ func TestLeaderReadinessWaitsForSharedLeadershipTerm(t *testing.T) {
 		"serializable health does not promise a response header leadership term")
 }
 
+func TestInfoDrainIsPostOnlyAndLocalhostOnly(t *testing.T) {
+	campaignCtx, campaignCancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	close(done)
+	s := &server{campaignCancel: campaignCancel, campaignDone: done}
+	handler := s.GetInfoHttpHandlers()["/drain"]
+
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/drain", nil)
+	request.RemoteAddr = "127.0.0.1:1234"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusMethodNotAllowed, recorder.Code)
+
+	request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/drain", nil)
+	request.RemoteAddr = "192.0.2.1:1234"
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+
+	request = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/drain", nil)
+	request.RemoteAddr = "[::1]:1234"
+	recorder = httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.JSONEq(t, `{"drained":true}`, recorder.Body.String())
+	select {
+	case <-campaignCtx.Done():
+	default:
+		t.Fatal("drain did not cancel the campaign context")
+	}
+}
+
 func TestHTTPHealthChecksLeaderAndBackend(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	m := mock.NewMinimalMetrics(ctrl)

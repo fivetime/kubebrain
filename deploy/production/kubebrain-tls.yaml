@@ -97,6 +97,15 @@ spec:
             capabilities:
               drop:
                 - ALL
+          lifecycle:
+            # Release leadership before SIGTERM, then let EndpointSlice and
+            # kube-proxy drain the terminating endpoint.
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - curl --fail --silent --show-error --max-time 10 --request POST http://127.0.0.1:8080/drain && sleep 5
           resources:
             requests:
               cpu: 500m
@@ -118,6 +127,9 @@ spec:
             - --count-index-max-keys=5000000
             - --enable-storage-metrics=true
             - --quota-backend-bytes=429496729600
+            # Keep deliberate lease release/acquisition inside normal client
+            # retry windows during a rolling replacement.
+            - --leader-retry-period=100ms
             - --max-txn-ops=128
             - --max-request-bytes=1572864
             - --max-concurrent-streams=4294967295
