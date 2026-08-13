@@ -393,15 +393,23 @@ func TestLegacyLeaseMigrationRetriesCleanupAfterCanonicalMetadataWins(t *testing
 	legacyAttachment, err := original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
 	require.NoError(t, err)
 	require.Len(t, legacyAttachment.Kvs, 1)
+	server.leaseMu.Lock()
+	deadlineBeforeRetry := server.leases[leaseID].deadline
+	server.leaseMu.Unlock()
 
 	server.backend = original
-	require.NoError(t, server.ReloadLeases(ctx))
+	server.sweepOrphanLeasedKeys(ctx)
+	server.leaseMu.Lock()
+	deadlineAfterRetry := server.leases[leaseID].deadline
+	server.leaseMu.Unlock()
+	require.Equal(t, deadlineBeforeRetry, deadlineAfterRetry,
+		"retrying migration cleanup must not reapply records or extend the live lease")
 	legacyMeta, err = original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseStorageKey(leaseID)})
 	require.NoError(t, err)
-	require.Empty(t, legacyMeta.Kvs, "the next leadership pass must retire the retained marker")
+	require.Empty(t, legacyMeta.Kvs, "the periodic sweep must retire the retained marker without another leadership change")
 	legacyAttachment, err = original.Get(ctx, &etcdserverpb.RangeRequest{Key: leaseAttachKey(key)})
 	require.NoError(t, err)
-	require.Empty(t, legacyAttachment.Kvs, "the next leadership pass must retry attachment cleanup")
+	require.Empty(t, legacyAttachment.Kvs, "the periodic sweep must retry attachment cleanup")
 }
 
 func TestLegacyLeaseMigrationCleansStrandedAttachmentWithoutLegacyMeta(t *testing.T) {

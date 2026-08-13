@@ -48345,6 +48345,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `lease.orphan_sweep.legacy_key_deleted` 计数区分该升级回收路径。回归同时固定同 revision 必须删除和不同 revision
   必须保留，既有 ownerless/stale-owner A4514 用例、lease/orphan 专项与定向 race 均通过。
 
+- A4516 让 retained legacy migration marker 在稳定 leader 任期内真正具备持续重试。A4511 保证 cleanup 失败时保留
+  monolithic meta marker，但旧代码只在 `ReloadLeases` 调用 `migrateLegacyLeases`；若 transient leadership/storage fence
+  后不再换主，user-MVCC attachment/meta 会在长期 leader 上永久残留。现从 `applyLeaseRecords` 提取只读当前内存绑定的
+  `legacyMigrationsLocked`，周期 orphan sweep 每次 load 后都重新派生并执行 migration，再处理普通 orphan。该路径不重新
+  apply records、不停止 timer、不重建 deadline，避免 cleanup retry 变成隐式续租。确定性回归第一次注入 attachment cleanup
+  leadership fence，确认 canonical internal meta 已提交且两类 legacy marker 保留；恢复 backend 后只调用一次 sweep，要求
+  attachment/meta 全部退休且 live lease deadline bit-for-bit 不变。最新 upstream `5b75ac62c` 同期审计确认仅把既有
+  MemberList e2e 断言迁入 `tests/common/member_test.go`，不改变 wire、排序、鉴权或 header 语义，无需 runtime 移植。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -1843,6 +1843,34 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		st.keys[key] = struct{}{}
 		m.keyLeaseIndex[key] = id
 	}
+	legacy = m.legacyMigrationsLocked(records)
+	// Match etcd lessor.Promote: a large recovered lease set commonly has the
+	// same reconstructed deadline. Spread that pile-up before arming timers so a
+	// leader change cannot trigger an unbounded burst of revoke transactions.
+	restored := make([]*leaseState, 0, len(m.leases))
+	for _, st := range m.leases {
+		restored = append(restored, st)
+	}
+	spreadLeaseExpiries(restored, defaultLeaseRevokeRate)
+
+	// Schedule timers once all keys are attached and promotion spreading is
+	// complete.
+	for _, st := range restored {
+		m.scheduleLeaseLocked(st)
+		m.scheduleLeaseCheckpointLocked(st)
+		if !st.deadline.After(now) {
+			st.timer.Reset(0)
+		}
+	}
+	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
+	return legacy
+}
+
+// legacyMigrationsLocked derives retry work from durable source markers and the
+// current authoritative in-memory bindings. The caller holds leaseMu. Keeping
+// this separate from applyLeaseRecords lets the periodic orphan sweep retry a
+// transiently failed rolling-upgrade cleanup without resetting lease deadlines.
+func (m *leaseManager) legacyMigrationsLocked(records []leaseRecord) (legacy []legacyLeaseMigration) {
 	for _, record := range records {
 		if !record.LegacyStorage && len(record.Keys) == 0 && len(record.LegacyAttachKeys) == 0 {
 			continue
@@ -1873,25 +1901,6 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		}
 		legacy = append(legacy, migration)
 	}
-	// Match etcd lessor.Promote: a large recovered lease set commonly has the
-	// same reconstructed deadline. Spread that pile-up before arming timers so a
-	// leader change cannot trigger an unbounded burst of revoke transactions.
-	restored := make([]*leaseState, 0, len(m.leases))
-	for _, st := range m.leases {
-		restored = append(restored, st)
-	}
-	spreadLeaseExpiries(restored, defaultLeaseRevokeRate)
-
-	// Schedule timers once all keys are attached and promotion spreading is
-	// complete.
-	for _, st := range restored {
-		m.scheduleLeaseLocked(st)
-		m.scheduleLeaseCheckpointLocked(st)
-		if !st.deadline.After(now) {
-			st.timer.Reset(0)
-		}
-	}
-	atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
 	return legacy
 }
 
@@ -2055,12 +2064,16 @@ func (m *leaseManager) runOrphanSweeper(ctx context.Context, stop chan struct{},
 // key when its lease lapses), or, when the key was rebound/removed, just reclaims
 // the stale attachment record.
 func (m *leaseManager) sweepOrphanLeasedKeys(ctx context.Context) {
-	_, attachments, legacyAttachments, err := m.loadLeaseRecords(ctx)
+	records, attachments, legacyAttachments, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.err", 1)
 		klog.ErrorS(err, "orphan lease sweep: load attachment records failed")
 		return
 	}
+	m.leaseMu.Lock()
+	migrations := m.legacyMigrationsLocked(records)
+	m.leaseMu.Unlock()
+	m.migrateLegacyLeases(ctx, migrations)
 	for key, id := range attachments {
 		m.leaseMu.Lock()
 		_, leaseLive := m.leases[id]
