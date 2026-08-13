@@ -49173,6 +49173,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该门禁可直接识别此前 A4576 约 2.9 秒的 TSO stall，但尚未直接采样 TiKV Region RPC latency；store heartbeat、
   TSO 与业务 oracle 三者必须联合解读，TTL=3 和独立 TiKV RPC 延迟信号继续开放。
 
+- A4580 补齐 A4579 保留的直接 TiKV Region RPC 延迟信号。探针另建一个官方 `txnkv.Client`，每轮使用
+  `GetSnapshot(math.MaxUint64).Get` 对专属原始 probe key 发起只读 point-Get；键不存在返回 `ErrNotExist` 仍表示
+  Region RPC 已完整返回，不创建事务、不写 key，也不推进 safepoint。默认单次 Region 上限 1 秒，超时或错误均
+  标记 `backend instability`，并与 PD TSO、KubeBrain Put→Watch 三个时延维度分别汇总。正常、超时、Region
+  error 与配置 cap 单测连续 20 轮通过，runner 参数/summary 契约连续 10 轮通过。
+
+  精确镜像 `kubebrain:a4580-21abfd3d`（内嵌 SHA
+  `21abfd3df607b8da8e0a600f8a0f400b88eeb048`，OCI manifest list
+  `sha256:7ace8c6206909f49a6cd147e92c9cab6c28049194d7f6caeef208ce2b2ce1a56`）在 Pod 网络内先完成
+  100 轮冒烟：`ok=100 watch=100 lease=alive max_latency_ms=357 max_tso_latency_ms=1
+  max_region_latency_ms=10`。随后固定 PD leader `kb-pd-0:12010354549738711059` 且三个 store 连续 30 个
+  样本均 `Up`/heartbeat 新鲜，部署三副本并执行正式 runner；两个 Pod 终止 EOF 均经同 token 对账恢复，最终
+  `PROBE_SUMMARY ok=900 fail=0 total=900 watch=900 lease=alive max_latency_ms=1367
+  max_tso_latency_ms=9 max_region_latency_ms=24`，revision
+  `kubebrain-86cfd55665 -> kubebrain-7745db6d4f`，strict postflight 与 probe cleanup 通过。至此 A4576 的
+  PD identity/store heartbeat 盲区已有 TSO 与直接 TiKV RPC 两类亚秒信号；但 point-Get 只持续覆盖 probe key
+  所在 Region，不等于全 Region 延迟扫描。TTL=3、跨 Region/热点/跨节点与云 LB 矩阵继续开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
