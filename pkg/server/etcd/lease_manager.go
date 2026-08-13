@@ -123,7 +123,7 @@ func newLeaseManager(srv *RPCServer, initialID int64) *leaseManager {
 	// snapshot to the epoch visible while the manager is constructed, just as a
 	// leadership reload binds the replacement snapshot below.
 	var epoch uint64
-	if srv != nil {
+	if srv != nil && srv.peers != nil {
 		epoch, _ = srv.peers.EpochAndLeadingFresh()
 	}
 	manager.leaseReadyEpoch.Store(epoch)

@@ -36,22 +36,32 @@ func TestDockerfilePinsEveryExplicitRuntimePackage(t *testing.T) {
 	require.NoError(t, err)
 	content := string(dockerfile)
 
-	start := strings.Index(content, "RUN apk add --no-cache")
-	require.NotEqual(t, -1, start)
-	end := strings.Index(content[start:], "&& addgroup")
-	require.NotEqual(t, -1, end)
-	install := strings.ReplaceAll(content[start:start+end], "\\", "")
-
-	expected := []string{
-		"bash=5.3.3-r1",
-		"ca-certificates=20260611-r0",
-		"coreutils=9.8-r1",
-		"curl=8.20.0-r0",
-		"etcd-ctl=3.6.10-r1",
-		"jq=1.8.1-r0",
-		"openssl=3.5.7-r0",
+	var installs [][]string
+	for searchFrom := 0; ; {
+		relativeStart := strings.Index(content[searchFrom:], "RUN apk add --no-cache")
+		if relativeStart == -1 {
+			break
+		}
+		start := searchFrom + relativeStart
+		end := strings.Index(content[start:], "&& addgroup")
+		require.NotEqual(t, -1, end)
+		install := strings.ReplaceAll(content[start:start+end], "\\", "")
+		installs = append(installs, strings.Fields(install)[4:])
+		searchFrom = start + end
 	}
-	require.Equal(t, append([]string{"RUN", "apk", "add", "--no-cache"}, expected...), strings.Fields(install),
+
+	require.Equal(t, [][]string{
+		{"ca-certificates=20260611-r0", "gcompat=1.1.0-r4"},
+		{
+			"bash=5.3.3-r1",
+			"ca-certificates=20260611-r0",
+			"coreutils=9.8-r1",
+			"curl=8.20.0-r0",
+			"etcd-ctl=3.6.10-r1",
+			"jq=1.8.1-r0",
+			"openssl=3.5.7-r0",
+		},
+	}, installs,
 		"runtime package additions and upgrades must pin exact versions")
 }
 

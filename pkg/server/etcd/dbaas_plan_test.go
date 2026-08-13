@@ -58,7 +58,8 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	plan := readDBaaSCompatibilityPlan(t)
 
 	for _, evidence := range []string{
-		"go run ./hack/backup/cmd/native-pitr-full-backup",
+		"docker build --target native-pitr-full-backup",
+		"/usr/local/bin/kubebrain-native-pitr-full-backup",
 		"kubebrain.native-pitr-full-backup-attestation.v2",
 		"--crypter.method=plaintext",
 		"kubebrain.native-pitr-full-artifacts.v4",
@@ -68,6 +69,8 @@ func TestDBaaSReadinessRequiresFullBackupEncryptionAttestation(t *testing.T) {
 	}
 	require.Contains(t, plan, "A4532 关闭 native PITR full backup")
 	require.Contains(t, plan, "A4533 补齐 A4532 只有 attestation schema/consumer")
+	require.Contains(t, plan, "A4534 补齐 A4533 的可信 producer 仍只能通过源码 `go run`")
+	require.Contains(t, plan, "`KubeBrainOperation` 持久化调度、参数注入与状态转换")
 	require.Contains(t, plan, "不冒充尚未实现的加密备份密钥托管与恢复能力")
 }
 

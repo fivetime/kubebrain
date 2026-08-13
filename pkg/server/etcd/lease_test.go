@@ -1600,6 +1600,15 @@ func TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload(t *testing.T) {
 		"automatic IDs wrap within the positive int64 range and skip zero")
 }
 
+func TestLeaseManagerInitializesWithoutPeerService(t *testing.T) {
+	manager := newLeaseManager(&RPCServer{}, 42)
+	t.Cleanup(manager.close)
+
+	require.Equal(t, int64(42), manager.leaseID)
+	require.True(t, manager.leaseReady.Load())
+	require.Zero(t, manager.leaseReadyEpoch.Load())
+}
+
 func TestStaleLeaseTimerCallbacksCannotAdoptReloadedGeneration(t *testing.T) {
 	server, b, cleanup := newLeaseTestServer(t)
 	defer cleanup()

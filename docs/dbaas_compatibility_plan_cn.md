@@ -48555,6 +48555,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   full artifact receipt 相应升级 v4。该 producer 关闭人工补写 JSON 的路径，但加密备份密钥托管/恢复能力
   仍不在支持范围。
 
+- A4534 补齐 A4533 的可信 producer 仍只能通过源码 `go run`、没有可发布运行环境的交付缺口。生产
+  Dockerfile 新增显式 `native-pitr-full-backup` target，从 `pingcap/br:v7.5.1` 的固定 multi-arch
+  manifest digest 复制 `/br`，并固定 Alpine 3.23、CA 与 gcompat 版本；同一受审源码编译的 producer
+  与 BR 一起以 UID/GID 65532 运行。该 target 与默认数据面最终 stage 隔离，避免给所有 KubeBrain/
+  operation pod 增加约 218 MiB BR。生产契约回归锁定源码 build、BR digest、兼容层、COPY、入口点、
+  non-root 身份及默认 stage 不含 BR/producer。实际 amd64 image 构建成功，容器配置为
+  `65532:65532`，容器内 BR 报告 release v7.5.1 与 commit
+  `7d16cc79e81bbf573124df3fd9351c26963f3e70`，shell 实测 UID/GID 均为 65532。runbook 改为要求发布
+  multi-arch digest 并由 Job 直接运行镜像入口点；`KubeBrainOperation` 持久化调度、参数注入与状态转换
+  尚未接入该 Job，继续作为控制面开放项，不把独立工具镜像冒充完整编排闭环。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

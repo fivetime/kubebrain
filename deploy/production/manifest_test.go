@@ -817,6 +817,34 @@ func TestLegacySnapshotRemediationNativeHelperIsInRuntimeImage(t *testing.T) {
 	require.NotContains(t, text, "COPY --from=build /src/bin/etcdutl")
 }
 
+func TestNativePITRFullBackupHasPinnedIsolatedRuntimeImage(t *testing.T) {
+	dockerfile, err := os.ReadFile("../../Dockerfile")
+	require.NoError(t, err)
+	text := string(dockerfile)
+
+	require.Contains(t, text,
+		"go build -trimpath -o /src/bin/kubebrain-native-pitr-full-backup ./hack/backup/cmd/native-pitr-full-backup")
+	require.Contains(t, text,
+		"FROM pingcap/br:v7.5.1@sha256:7815531bc337a56845efc3dceb9fe75778d387d76927994df736b6e23a98f768 AS br-v751")
+	require.Contains(t, text,
+		"FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS native-pitr-full-backup")
+	require.Contains(t, text, "gcompat=1.1.0-r4")
+	require.Contains(t, text,
+		"COPY --from=build /src/bin/kubebrain-native-pitr-full-backup /usr/local/bin/kubebrain-native-pitr-full-backup")
+	require.Contains(t, text, "COPY --from=br-v751 /br /usr/local/bin/br")
+	require.Contains(t, text, "USER 65532:65532\nENTRYPOINT [\"/usr/local/bin/kubebrain-native-pitr-full-backup\"]")
+
+	backupTarget := strings.Index(text, " AS native-pitr-full-backup")
+	defaultRuntime := strings.LastIndex(text,
+		"FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40\n")
+	require.NotEqual(t, -1, backupTarget)
+	require.Greater(t, defaultRuntime, backupTarget,
+		"the default data-plane image must remain the final build target")
+	defaultStage := text[defaultRuntime:]
+	require.NotContains(t, defaultStage, "COPY --from=br-v751")
+	require.NotContains(t, defaultStage, "/src/bin/kubebrain-native-pitr-full-backup")
+}
+
 func TestOperationParameterBrokerOwnsAllExecutorParameterSecretPermission(t *testing.T) {
 	objects := decodeManifest(t, "kubebrain-operation-parameter-broker.yaml")
 	deployment := objectByKindAndName(

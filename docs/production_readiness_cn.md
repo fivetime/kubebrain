@@ -1989,11 +1989,27 @@ rewrite rules，`RestoreKVFiles` 会跳过所有没有对应 table rule 的日�
 范围不是 TiDB table key。自有 restore 必须复用底层 `ApplyKVFile`/ImportSST 能力并为整个
 KubeBrain range 使用 identity rewrite，同时证明不会处理范围外文件。
 
-full backup 不得由 runbook 直接调用 `br` 后再人工补证据；受审 executor 必须运行：
+full backup 不得由 runbook 直接调用 `br` 后再人工补证据；受审 executor 必须运行。发布流水线必须从与
+默认数据面镜像相同的受审源码 revision 显式构建独立工具镜像，并记录最终 multi-arch image digest；
+不得把浮动 `pingcap/br` 镜像或宿主机上的 `br` 注入 Job：
 
 ```shell
-go run ./hack/backup/cmd/native-pitr-full-backup \
-  --br-binary=/opt/br-v7.5.1/br \
+docker build --target native-pitr-full-backup \
+  --build-arg KUBEBRAIN_VERSION="$KUBEBRAIN_VERSION" \
+  --build-arg KUBEBRAIN_GIT_SHA="$KUBEBRAIN_GIT_SHA" \
+  --build-arg KUBEBRAIN_BUILD_DATE="$KUBEBRAIN_BUILD_DATE" \
+  -t "$NATIVE_PITR_FULL_BACKUP_IMAGE" .
+```
+
+该独立 target 固定 BR v7.5.1 的 multi-arch manifest digest 和 Alpine/gcompat 版本，以
+UID/GID 65532 运行；默认 KubeBrain 镜像仍保持为 Dockerfile 最终 target，且不携带约 218 MiB 的 BR。
+生产 Job 必须按最终 image digest 引用该工具镜像，并将 evidence、TLS 与对象存储凭据分别挂载；当前
+仓库尚未把该 Job 的持久化调度/状态转换接入 `KubeBrainOperation`，因此不得把手工启动 Job 冒充完整控制面编排。
+镜像入口点直接运行：
+
+```shell
+/usr/local/bin/kubebrain-native-pitr-full-backup \
+  --br-binary=/usr/local/bin/br \
   --pd-addrs=pd-0:2379,pd-1:2379,pd-2:2379 \
   --storage-prefix=s3://immutable-bucket/instance/run-id/full \
   --backup-ts="$BACKUP_TS" \

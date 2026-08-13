@@ -73,10 +73,31 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-storage-capacity-verify ./hack/backup/cmd/storage-capacity-verify \
     && go build -trimpath -o /src/bin/kubebrain-logical-verify ./hack/backup/cmd/logical-verify \
     && go build -trimpath -o /src/bin/kubebrain-logical-etcd-snapshot ./hack/backup/cmd/logical-etcd-snapshot \
+    && go build -trimpath -o /src/bin/kubebrain-native-pitr-full-backup ./hack/backup/cmd/native-pitr-full-backup \
     && go build -trimpath -o /src/bin/kubebrain-etcd-audit-probe ./hack/production/cmd/etcd-audit-probe \
     && go build -trimpath -o /src/bin/kubebrain-uid-delete ./hack/production/cmd/uid-delete \
     && cd /src/hack/backup/objectstore \
     && go build -trimpath -o /src/bin/kubebrain-logical-object ./cmd/logical-object
+
+FROM pingcap/br:v7.5.1@sha256:7815531bc337a56845efc3dceb9fe75778d387d76927994df736b6e23a98f768 AS br-v751
+
+# Build this target explicitly for the native PITR full-backup Job. Keeping BR
+# out of the default data-plane image avoids adding its ~218 MiB toolchain to
+# every KubeBrain/operation pod while still pinning both supported arches to
+# the exact upstream manifest list audited by the receipt contract.
+FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40 AS native-pitr-full-backup
+
+RUN apk add --no-cache \
+      ca-certificates=20260611-r0 \
+      gcompat=1.1.0-r4 \
+    && addgroup -S -g 65532 kubebrain \
+    && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 65532 -G kubebrain kubebrain
+
+COPY --from=build /src/bin/kubebrain-native-pitr-full-backup /usr/local/bin/kubebrain-native-pitr-full-backup
+COPY --from=br-v751 /br /usr/local/bin/br
+
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/kubebrain-native-pitr-full-backup"]
 
 FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40
 
