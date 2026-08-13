@@ -49210,6 +49210,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该证据关闭当前 Kind 单节点、Pod 网络、单 Service 入口的自愿 rollout TTL=3 门禁；跨 Region/热点、跨节点/AZ、
   云 LB/NAT/conntrack 与叠加 PD/TiKV 故障仍保持独立开放矩阵。
 
+- A4582 在当前精确 upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 上重新执行默认可运行的
+  完整 differential suite，并修复共享实例下物理 Hash 稳定窗口的假 RED。首轮 766.320 秒中除
+  `TestHashLatestEquivalenceDifferentialAgainstReferenceEtcd` 外全部执行项通过；该用例失败发生在显式 lease
+  Grant 前的 `Hash -> HashKV -> Hash` 采样内部：两个 Hash header revision 相同但 checksum 不同。隔离重跑
+  10/10 通过，证明不是 KubeBrain 漏算 lease；根因是 backend `Hash` 按 upstream 合同覆盖不推进公开 MVCC
+  revision 的 lease/内部元数据，而旧门禁只用 header revision 判断窗口稳定，前序测试的 detached lease 到期即可
+  在“相同 revision”下合法改变物理 Hash。
+
+  提交 `b74d7819` 将稳定样本收紧为 header revision 与前后物理 Hash 必须同时相等；遇到内部 churn 会继续有界
+  重试，连续 10 次不稳定仍返回零值并使结构断言失败，因此没有放宽 Hash/HashKV 合同。修复后聚焦差分连续
+  20/20 通过，compat 模块默认回归通过；再执行完整 suite 最终 `PASS`，耗时 745.336 秒。覆盖了当前默认具备
+  前置条件的 KV、Txn、Watch、Lease、Maintenance、HTTP gateway、concurrency recipes 与 RangeStream；要求
+  独立 quota/auth/compaction 实例、三副本 direct endpoint 或外部 Envoy/L4/L7 的测试仍按各自显式前置条件
+  SKIP，不能由本轮结论外推关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
