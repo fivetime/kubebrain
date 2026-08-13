@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	pd "github.com/tikv/pd/client"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -26,6 +27,7 @@ type config struct {
 	pdEndpoints     []string
 	expectedStores  int
 	maxHeartbeatAge time.Duration
+	maxTSOLatency   time.Duration
 }
 
 func main() {
@@ -40,6 +42,7 @@ func main() {
 	flag.Int64Var(&cfg.leaseTTL, "lease-ttl", 15, "lease TTL in seconds")
 	flag.IntVar(&cfg.expectedStores, "expected-up-stores", 3, "exact number of Up TiKV stores")
 	flag.DurationVar(&cfg.maxHeartbeatAge, "max-store-heartbeat-age", 20*time.Second, "maximum TiKV store heartbeat age")
+	flag.DurationVar(&cfg.maxTSOLatency, "max-pd-tso-latency", time.Second, "maximum PD TSO request latency")
 	var pdEndpoints string
 	flag.StringVar(&pdEndpoints, "pd-endpoints", "", "comma-separated PD HTTP endpoints")
 	flag.Parse()
@@ -60,7 +63,7 @@ func (cfg config) validate() error {
 	if cfg.endpoint == "" || cfg.prefix == "" || cfg.iterations <= 0 || cfg.leaseTTL <= 0 || cfg.expectedStores <= 0 {
 		return fmt.Errorf("endpoint, prefix, and positive iterations are required")
 	}
-	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxHeartbeatAge <= 0 {
+	if cfg.interval <= 0 || cfg.commandTimeout <= 0 || cfg.dialTimeout <= 0 || cfg.maxLatency <= 0 || cfg.maxLatency > cfg.commandTimeout || cfg.maxHeartbeatAge <= 0 || cfg.maxTSOLatency <= 0 || cfg.maxTSOLatency > cfg.maxLatency {
 		return fmt.Errorf("interval and timeouts must be positive")
 	}
 	if len(cfg.pdEndpoints) == 0 {
@@ -72,6 +75,28 @@ func (cfg config) validate() error {
 		}
 	}
 	return nil
+}
+
+type pdTimestampClient interface {
+	GetTS(context.Context) (int64, int64, error)
+}
+
+func samplePDTimestamp(ctx context.Context, client pdTimestampClient, maxLatency time.Duration) (time.Duration, error) {
+	started := time.Now()
+	sampleCtx, cancel := context.WithTimeout(ctx, maxLatency)
+	physical, logical, err := client.GetTS(sampleCtx)
+	cancel()
+	latency := time.Since(started)
+	if err != nil {
+		return latency, fmt.Errorf("PD TSO request failed after %s: %w", latency, err)
+	}
+	if physical <= 0 || logical < 0 {
+		return latency, fmt.Errorf("PD TSO returned invalid timestamp physical=%d logical=%d", physical, logical)
+	}
+	if latency > maxLatency {
+		return latency, fmt.Errorf("PD TSO latency %s exceeds %s", latency, maxLatency)
+	}
+	return latency, nil
 }
 
 type pdStoresResponse struct {
@@ -162,6 +187,17 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if err := verifyPDStores(ctx, cfg.pdEndpoints, cfg.dialTimeout, cfg.maxHeartbeatAge, cfg.expectedStores); err != nil {
 		return fmt.Errorf("backend preflight: %w", err)
 	}
+	pdClientCtx, stopPDClient := context.WithCancel(ctx)
+	defer stopPDClient()
+	pdClient, err := pd.NewClientWithContext(pdClientCtx, cfg.pdEndpoints, pd.SecurityOption{})
+	if err != nil {
+		return fmt.Errorf("backend preflight: create PD client: %w", err)
+	}
+	defer pdClient.Close()
+	maxObservedTSOLatency, err := samplePDTimestamp(ctx, pdClient, cfg.maxTSOLatency)
+	if err != nil {
+		return fmt.Errorf("backend preflight: %w", err)
+	}
 	client, err := clientv3.New(clientv3.Config{
 		Endpoints:   []string{cfg.endpoint},
 		DialTimeout: cfg.dialTimeout,
@@ -240,6 +276,13 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	var maxLatency time.Duration
 	lastPDCheck := time.Now()
 	for i := 1; i <= cfg.iterations; i++ {
+		tsoLatency, tsoErr := samplePDTimestamp(ctx, pdClient, cfg.maxTSOLatency)
+		if tsoErr != nil {
+			return fmt.Errorf("iteration=%d backend instability: %w", i, tsoErr)
+		}
+		if tsoLatency > maxObservedTSOLatency {
+			maxObservedTSOLatency = tsoLatency
+		}
 		if time.Since(lastPDCheck) >= 500*time.Millisecond {
 			currentPDLeader, pdErr := readPDLeader(ctx, cfg.pdEndpoints, cfg.dialTimeout)
 			if pdErr != nil {
@@ -313,6 +356,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	if ttl == nil || ttl.TTL <= 0 || len(ttl.Keys) != 1 || string(ttl.Keys[0]) != leaseKey {
 		return fmt.Errorf("final lease verification failed: response=%v", ttl)
 	}
-	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d lease=alive max_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, maxLatency.Milliseconds())
+	fmt.Printf("PROBE_SUMMARY ok=%d fail=0 total=%d watch=%d lease=alive max_latency_ms=%d max_tso_latency_ms=%d\n", cfg.iterations, cfg.iterations, cfg.iterations, maxLatency.Milliseconds(), maxObservedTSOLatency.Milliseconds())
 	return nil
 }
