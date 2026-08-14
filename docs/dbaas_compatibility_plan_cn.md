@@ -51156,6 +51156,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain/PD/TiKV 各 3/3 Ready 且零重启。结论是 plaintext profile 已有重复 GREEN；replica drain 有 12/13 GREEN 但保留
   一次未稳定复现的 KeepAlive close，不宣称 soak 全绿。TLS passthrough 与外部 L4 仍待独立证据。
 
+- A4657 建立独立三副本 mTLS KubeBrain 数据面 `a4657-tls`，使用 A4653 精确镜像
+  `kubebrain:a4653-b753f0d7`、独立 TiKV keyspace `a4657-tls-passthrough`、client/peer 双向证书认证和三个直连
+  NodePort（30089/30090/30091）。证书由仓库测试 CA 签发，服务端 SAN 同时覆盖 `kubernetes`、`127.0.0.1` 和 Kind
+  node `172.18.0.3`；Secret 保持 0440，首次因未设置非 root `fsGroup` 而启动失败后，夹具补齐与生产一致的
+  uid/gid/fsGroup 65532 并滚动到 3/3 Ready，没有通过放宽证书权限绕过问题。使用从官方
+  `envoyproxy/envoy:v1.39.0` 镜像提取的 RELEASE/BoringSSL 二进制和生产
+  `deploy/production/envoy/bootstrap.yaml`，真实 Envoy TLS passthrough profile 先单轮通过，再经 NodePort 避开
+  `kubectl port-forward` 在故意发送坏握手时自身退出的夹具噪声，连续 3 轮全部通过（48.427 秒）。每轮均覆盖认证客户端
+  KV、MemberList/Status、Watch、LeaseKeepAlive、Envoy restart/upstream switch，并确认缺少 client cert 与 plaintext
+  请求均 fail closed；日志中的 `tls: certificate required`、EOF/reset 是这些负向断言的预期证据。
+
+  同一 mTLS 数据面再通过仓库外部 TCP switch proxy 执行 L4 TLS passthrough 下 LeaseRevoke 响应丢失，连续 3 轮全部
+  通过（1.397 秒）：reference 与 KubeBrain 均在首个 Revoke 已提交但响应被丢弃后，以 `Unavailable/EOF` 触发 clientv3
+  重试，并返回 `etcdserver: requested lease not found`，没有重复副作用。证书 Secret 滚动重启窗口在 22:43:02 出现一次
+  PD/TiKV timeout 和 Leader 丢失，22:43:04 同进程重新选主；随后所有差分与健康检查通过。终态逐个 NodePort 得到三个
+  不同 member ID（1279320304/848842929/2985394290）、同一 cluster/leader，三者 Raft index/applied index 均为 27；
+  AlarmList 为空、lease 为 0，三个 KubeBrain、三个 PD、三个 TiKV 均 Ready 且零重启。本轮显式删除 TLS profile 遗留的
+  10 个 `/dbaas-envoy-plaintext/kubebrain-tls/` 测试键并复查 keyspace 为空。结论是 A4656 留下的真实 Envoy TLS 与外部
+  L4 证据空白已关闭；本轮没有修改生产实现或测试断言。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
