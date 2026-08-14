@@ -1050,9 +1050,11 @@ func (b *backend) SnapshotStream(ctx context.Context, rev uint64) (<-chan *proto
 	if rev == 0 {
 		rev = curRev
 	}
-	return b.scanner.RangeStream(
-		ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), rev, false,
-	), nil
+	scanCtx, cancel := context.WithCancel(ctx)
+	stream := b.scanner.RangeStream(
+		scanCtx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), rev, false,
+	)
+	return b.validatedRangeStream(scanCtx, cancel, stream, rev), nil
 }
 
 const (
@@ -1209,6 +1211,18 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 				LeaseKnown:  bytes.Equal(stored, tombStoneBytes),
 			}
 			if !record.Tombstone {
+				if b.config.EnableEtcdCompatibility {
+					validationErr := b.validateEventObjectValue(ctx, userKey, modRevision, stored)
+					if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+						validationErr = b.persistWitnessedObjectCorruption(
+							ctx, userKey, modRevision, append([]byte(nil), rawKey...), stored, validationErr,
+						)
+					}
+					if validationErr != nil {
+						send(SnapshotHistoryChunk{Revision: rev, Err: validationErr})
+						return
+					}
+				}
 				meta, rawValue, inlined, decodeErr := DecodeInlineValueChecked(stored)
 				if decodeErr != nil {
 					send(SnapshotHistoryChunk{Revision: rev, Err: decodeErr})

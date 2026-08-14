@@ -657,6 +657,101 @@ func TestRangeStreamArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
 	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
 }
 
+func TestSnapshotStreamsArmCorruptForWitnessedInvalidObjectValue(t *testing.T) {
+	tests := []struct {
+		name string
+		read func(context.Context, *backend, uint64) (int, error)
+	}{
+		{
+			name: "current-snapshot",
+			read: func(ctx context.Context, b *backend, revision uint64) (int, error) {
+				stream, err := b.SnapshotStream(ctx, revision)
+				if err != nil {
+					return 0, err
+				}
+				count := 0
+				for chunk := range stream {
+					count += len(chunk.GetRangeResponse().GetKvs())
+					if chunk.GetErr() != "" {
+						decoded, ok := streamerror.Decode(chunk.GetErr())
+						if !ok {
+							return count, fmt.Errorf("decode snapshot stream error %q", chunk.GetErr())
+						}
+						return count, decoded
+					}
+				}
+				return count, nil
+			},
+		},
+		{
+			name: "history-snapshot",
+			read: func(ctx context.Context, b *backend, revision uint64) (int, error) {
+				stream, err := b.SnapshotHistoryStream(ctx, revision)
+				if err != nil {
+					return 0, err
+				}
+				count := 0
+				for chunk := range stream {
+					count += len(chunk.Records)
+					if chunk.Err != nil {
+						return count, chunk.Err
+					}
+				}
+				return count, nil
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			m := mock.NewMinimalMetrics(ctrl)
+			kv := imemkv.NewKvStorage()
+			defer func() { require.NoError(t, kv.Close()) }()
+
+			pfx := fmt.Sprintf("/kubebrain/%s_corrupt_object/%d", test.name, time.Now().UnixNano())
+			b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+			b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+			ctx := context.Background()
+			require.NoError(t, b.EnsureEventLogStart(ctx))
+			key := path.Join(pfx, "key")
+			created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+			require.NoError(t, err)
+			waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+
+			objectKey := b.coder.EncodeObjectKey([]byte(key), created.Header.Revision)
+			objectValue, err := kv.Get(ctx, objectKey)
+			require.NoError(t, err)
+			corrupt := kv.BeginBatchWrite()
+			corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
+			require.NoError(t, corrupt.Commit(ctx))
+
+			count, err := test.read(ctx, b, created.Header.Revision)
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.Zero(t, count, "a corrupt object must not enter a snapshot artifact")
+			alarms, alarmErr := b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+			_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
+			require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+			removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+			require.False(t, removed)
+
+			repair := kv.BeginBatchWrite()
+			repair.Put(objectKey, objectValue, 0)
+			require.NoError(t, repair.Commit(ctx))
+			removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.NoError(t, disarmErr)
+			require.True(t, removed)
+			count, err = test.read(ctx, b, created.Header.Revision)
+			require.NoError(t, err)
+			require.Equal(t, 1, count)
+		})
+	}
+}
+
 func TestEventLogMissingObjectAfterCompactAdvanceDoesNotArmCorrupt(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
