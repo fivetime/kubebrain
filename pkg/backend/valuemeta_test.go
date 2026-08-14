@@ -173,6 +173,7 @@ func TestValidateEtcdMetadataAtRevisionRejectsImpossibleLifecycle(t *testing.T) 
 	}{
 		{name: "zero mod revision", meta: EtcdMetadata{CreateRevision: 1, Version: 1}, want: "mod revision is zero"},
 		{name: "future create revision", meta: EtcdMetadata{CreateRevision: 6, Version: 1}, modRevision: 5, want: "create revision 6 exceeds mod revision 5"},
+		{name: "version one after create", meta: EtcdMetadata{CreateRevision: 3, Version: 1}, modRevision: 5, want: "version 1 create revision 3 differs from mod revision 5"},
 		{name: "impossible version", meta: EtcdMetadata{CreateRevision: 3, Version: 4}, modRevision: 5, want: "version 4 exceeds maximum 3"},
 	}
 	for _, test := range tests {

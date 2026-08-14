@@ -216,6 +216,7 @@ func TestGetEtcdMetadataRejectsImpossibleExactInlineLifecycle(t *testing.T) {
 		want string
 	}{
 		{name: "future create revision", meta: EtcdMetadata{CreateRevision: 43, Version: 1}, want: "create revision 43 exceeds mod revision 42"},
+		{name: "version one after create", meta: EtcdMetadata{CreateRevision: 40, Version: 1}, want: "version 1 create revision 40 differs from mod revision 42"},
 		{name: "impossible version", meta: EtcdMetadata{CreateRevision: 40, Version: 4}, want: "version 4 exceeds maximum 3"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

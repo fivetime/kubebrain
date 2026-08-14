@@ -123,12 +123,16 @@ func TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing(t *testing.T) {
 	shim := NewBackendShim(b, m).(*backendShim)
 	ctx := context.Background()
 
-	// Create a key to obtain a real inline-metadata (enveloped) value whose
-	// create_revision is its creation revision.
+	// Create and update a key to obtain a real version-2 inline envelope whose
+	// create_revision remains its creation revision.
 	seedKey := []byte("/registry/seed")
 	cr, err := b.Create(ctx, &proto.CreateRequest{Key: seedKey, Value: []byte("v")})
 	require.NoError(t, err)
 	createRev := int64(cr.Header.Revision)
+	updated, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: seedKey, Value: []byte("v2"), Revision: cr.Header.Revision,
+	}})
+	require.NoError(t, err)
 	getResp, err := b.Get(ctx, &proto.GetRequest{Key: seedKey})
 	require.NoError(t, err)
 	require.NotNil(t, getResp.Kv)
@@ -138,7 +142,7 @@ func TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing(t *testing.T) {
 	// Build a PUT (update) event for a key with NO previous version, so
 	// cachedPreviousEtcdKv returns nil, at a mod revision distinct from the inline
 	// create revision.
-	modRev := createRev + 1000
+	modRev := int64(updated.Header.Revision) + 1000
 	ev, err := shim.watchEventToEtcdEvent(ctx, &proto.Event{
 		Type:     proto.Event_PUT,
 		Revision: uint64(modRev),

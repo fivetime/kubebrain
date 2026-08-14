@@ -313,6 +313,10 @@ func ValidateEtcdMetadataAtRevision(meta EtcdMetadata, modRevision uint64, sourc
 		return fmt.Errorf("%w: %s create revision %d exceeds mod revision %d",
 			ErrInvalidMVCCMetadata, source, meta.CreateRevision, modRevision)
 	}
+	if meta.Version == 1 && meta.CreateRevision != modRevision {
+		return fmt.Errorf("%w: %s version 1 create revision %d differs from mod revision %d",
+			ErrInvalidMVCCMetadata, source, meta.CreateRevision, modRevision)
+	}
 	maximumVersion := modRevision - meta.CreateRevision + 1
 	if meta.Version > maximumVersion {
 		return fmt.Errorf("%w: %s version %d exceeds maximum %d at mod revision %d",
