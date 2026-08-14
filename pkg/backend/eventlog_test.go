@@ -339,7 +339,7 @@ func TestEventLogWatermarkGates(t *testing.T) {
 	require.False(t, served, "an incomplete ordered revision must fall back")
 }
 
-func TestEventLogReplayFallsBackForInvalidOrderedVerb(t *testing.T) {
+func TestEventLogReplayRejectsInvalidOrderedVerbInTrustedWindow(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	m := mock.NewMinimalMetrics(ctrl)
@@ -355,7 +355,6 @@ func TestEventLogReplayFallsBackForInvalidOrderedVerb(t *testing.T) {
 	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
 	require.NoError(t, err)
 	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
-	require.NoError(t, b.EnsureEventLogStart(ctx))
 
 	batch := kv.BeginBatchWrite()
 	batch.CAS(
@@ -366,15 +365,19 @@ func TestEventLogReplayFallsBackForInvalidOrderedVerb(t *testing.T) {
 	require.NoError(t, batch.Commit(ctx))
 
 	events, served, err := b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "unsupported verb")
 	require.False(t, served)
 	require.Empty(t, events)
 
-	recovered, err := b.historyWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision, created.Header.Revision)
+	// Once a leadership watermark explicitly makes this revision untrusted,
+	// the same malformed legacy window may use the object-scan compatibility
+	// fallback; it must not be mislabeled as trusted corruption.
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	events, served, err = b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
 	require.NoError(t, err)
-	require.Len(t, recovered, 1)
-	require.Equal(t, proto.Event_CREATE, recovered[0].Type)
-	require.Equal(t, []byte(key), recovered[0].Kv.Key)
+	require.False(t, served)
+	require.Empty(t, events)
 }
 
 func TestValidateEventLogEntries(t *testing.T) {

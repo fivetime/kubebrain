@@ -197,6 +197,19 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	if touchesUntrustedWindow && fromRevision != toRevision {
 		return nil, false, nil
 	}
+	trustedCorruption := func(cause error, detail string) ([]*proto.Event, bool, error) {
+		if touchesUntrustedWindow {
+			return nil, false, nil
+		}
+		// cleanupEventLog publishes its watermark before deleting entries. If
+		// cleanup crossed this window while the iterator was open, the object
+		// scan is now the authoritative fallback rather than evidence of
+		// corruption. Re-read storage on the exceptional path to distinguish it.
+		if refreshed, present := b.refreshEventLogStart(ctx); !present || fromRevision <= refreshed {
+			return nil, false, nil
+		}
+		return nil, false, invalidMVCCMetadataError(cause, "%s in trusted event log window [%d,%d]", detail, fromRevision, toRevision)
+	}
 	ts := time.Now()
 	iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(fromRevision), b.ks.EventLogRangeEnd(toRevision), 0, 0)
 	if err != nil {
@@ -219,14 +232,15 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 			// distrust the whole window and fall back (same posture as a missing
 			// referenced object version below).
 			b.metricCli.EmitCounter("watch.event_log.malformed", 1)
-			klog.ErrorS(derr, "event log entry key not decodable; falling back to scan", "from", fromRevision, "to", toRevision)
-			return nil, false, nil
+			klog.ErrorS(derr, "event log entry key not decodable", "from", fromRevision, "to", toRevision)
+			return trustedCorruption(derr, "undecodable entry key")
 		}
 		verbByte, prevRev, subRevision, total, ordered, vok := coder.DecodeOrderedEventLogValue(iter.Val())
 		if !vok {
 			b.metricCli.EmitCounter("watch.event_log.malformed", 1)
-			klog.ErrorS(nil, "event log entry value not decodable; falling back to scan", "rev", rev, "from", fromRevision, "to", toRevision)
-			return nil, false, nil
+			decodeErr := fmt.Errorf("event log entry at revision %d has undecodable value", rev)
+			klog.ErrorS(decodeErr, "event log entry value not decodable", "rev", rev, "from", fromRevision, "to", toRevision)
+			return trustedCorruption(decodeErr, "undecodable entry value")
 		}
 		entries = append(entries, eventLogPending{verb: proto.Event_EventType(verbByte), rev: rev, prevRev: prevRev,
 			userKey: append([]byte(nil), userKey...), sub: subRevision, total: total, ordered: ordered})
@@ -246,8 +260,8 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	})
 	if validationErr := validateEventLogEntries(entries); validationErr != nil {
 		b.metricCli.EmitCounter("watch.event_log.malformed", 1)
-		klog.ErrorS(validationErr, "event log entries are inconsistent; falling back to scan", "from", fromRevision, "to", toRevision)
-		return nil, false, nil
+		klog.ErrorS(validationErr, "event log entries are inconsistent", "from", fromRevision, "to", toRevision)
+		return trustedCorruption(validationErr, "inconsistent entries")
 	}
 	selfContained := exactRevisionEntriesComplete(entries, fromRevision, toRevision)
 	if touchesUntrustedWindow && !selfContained {
