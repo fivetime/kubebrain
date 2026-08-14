@@ -25,6 +25,8 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -450,6 +452,19 @@ func TestLeadershipRestartArmsCorruptForWitnessedIndexTargetObject(t *testing.T)
 		require.NoError(t, repair.Commit(ctx))
 		requireWitnessCorruptDisarm(t, b, ctx)
 	})
+}
+
+func TestWitnessIndexValidationRefreshesDurableWatermarkAfterIndexRead(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/restart-witness/index-target/concurrent-durable")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+
+	evidence, err := b.validateTxnRevisionIndexes(ctx, []txnRevisionIndexExpectation{{
+		userKey: key, revision: revision, verb: proto.Event_CREATE,
+	}}, revision-1)
+	require.NoError(t, err, "an index committed atomically with a newer durable watermark is not future corruption")
+	require.Nil(t, evidence)
 }
 
 func TestLeadershipIndexTargetRepairBeforeAlarmDoesNotArmCorrupt(t *testing.T) {

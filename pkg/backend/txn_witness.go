@@ -139,10 +139,11 @@ type txnRevisionIndexExpectation struct {
 }
 
 type txnRevisionIndexCorruption struct {
-	key      []byte
-	expected []byte
-	missing  bool
-	revision uint64
+	key            []byte
+	expected       []byte
+	missing        bool
+	revision       uint64
+	futureRevision uint64
 }
 
 const txnRevisionIndexValidationBatch = 512
@@ -622,8 +623,23 @@ func (b *backend) validateTxnRevisionIndexes(
 		}
 		wantTombstone := expectation.verb == proto.Event_DELETE
 		if currentRevision > durableRevision {
+			// The validator reads the durable watermark before the index batch.
+			// A normal transaction may commit between those reads; its index and
+			// durable watermark are atomic, but the older watermark snapshot is
+			// not. Re-read the authoritative marker after observing the index so
+			// only a revision that is still future can become corruption evidence.
+			refreshedDurable, durableErr := b.GetDurableRevision(ctx)
+			if durableErr != nil {
+				return nil, durableErr
+			}
+			if refreshedDurable > durableRevision {
+				durableRevision = refreshedDurable
+			}
+		}
+		if currentRevision > durableRevision {
 			evidence := &txnRevisionIndexCorruption{
 				key: indexKey, expected: append([]byte(nil), raw...), revision: expectation.revision,
+				futureRevision: currentRevision,
 			}
 			return evidence, fmt.Errorf(
 				"%w: current revision index for key %q is %d above durable revision %d",
@@ -689,6 +705,15 @@ func (b *backend) validateTxnRevisionIndexes(
 func (b *backend) txnRevisionIndexCorruptionStillPresent(
 	ctx context.Context, evidence *txnRevisionIndexCorruption,
 ) (bool, error) {
+	if evidence.futureRevision != 0 {
+		durableRevision, err := b.GetDurableRevision(ctx)
+		if err != nil {
+			return false, err
+		}
+		if durableRevision >= evidence.futureRevision {
+			return false, nil
+		}
+	}
 	current, err := b.kv.Get(ctx, evidence.key)
 	if errors.Is(err, storage.ErrKeyNotFound) {
 		return evidence.missing, nil
