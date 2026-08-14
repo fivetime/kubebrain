@@ -69,6 +69,7 @@ type checkpointTestStorage struct {
 	partitions      int
 	partitionStarts [][]byte
 	warmerCalls     int
+	batchTimestamps []uint64
 }
 
 func (s *checkpointTestStorage) GetTimestampOracle(context.Context) (uint64, error) {
@@ -109,7 +110,10 @@ func (s *checkpointTestStorage) GetAt(ctx context.Context, key []byte, _ uint64)
 	return s.KvStorage.Get(ctx, key)
 }
 
-func (s *checkpointTestStorage) BatchGetAt(ctx context.Context, keys [][]byte, _ uint64) (map[string][]byte, error) {
+func (s *checkpointTestStorage) BatchGetAt(ctx context.Context, keys [][]byte, timestamp uint64) (map[string][]byte, error) {
+	s.mu.Lock()
+	s.batchTimestamps = append(s.batchTimestamps, timestamp)
+	s.mu.Unlock()
 	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
 }
 
@@ -352,4 +356,40 @@ func TestSerializableCheckpointCountLowByteBoundaryDoesNotMaterializeRange(t *te
 	require.True(t, listed.More)
 	require.True(t, probe.rangeFilteredCalled)
 	require.False(t, probe.rangeCalled, "low-boundary List must not materialize the full tenant range")
+}
+
+func TestSerializableCheckpointBatchesEscapedAncestorsWithoutOracleOrPartitionDiscovery(t *testing.T) {
+	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), timestamp: 500}
+	b := newCheckpointBackend(t, store)
+	ctx := context.Background()
+	lower := []byte("$checkpoint-batch")
+	end := append(append([]byte(nil), lower...), make([]byte, 17)...)
+	seed := store.BeginBatchWrite()
+	for index := 0; index < 17; index++ {
+		key := append(append([]byte(nil), lower...), make([]byte, index)...)
+		revision := uint64(index + 2)
+		seed.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(revision), 0)
+		seed.Put(b.coder.EncodeObjectKey(key, revision), []byte{byte(index)}, 0)
+	}
+	require.NoError(t, seed.Commit(ctx))
+	b.SetCurrentRevision(18)
+	checkpoint, err := b.createSerializableCheckpoint(ctx)
+	require.NoError(t, err)
+	store.mu.Lock()
+	tsoBefore, partitionsBefore := store.tsoReads, store.partitions
+	store.batchTimestamps = nil
+	store.mu.Unlock()
+
+	listed, err := b.List(WithSerializableCheckpoint(ctx, checkpoint), &proto.RangeRequest{Key: lower, End: end})
+	require.NoError(t, err)
+	require.Equal(t, checkpoint.Revision, listed.Header.Revision)
+	require.Len(t, listed.Kvs, 17)
+	for index, kv := range listed.Kvs {
+		require.Equal(t, []byte{byte(index)}, kv.Value)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Equal(t, tsoBefore, store.tsoReads)
+	require.Equal(t, partitionsBefore, store.partitions)
+	require.Equal(t, []uint64{checkpoint.Timestamp, checkpoint.Timestamp}, store.batchTimestamps)
 }

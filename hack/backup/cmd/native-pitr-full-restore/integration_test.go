@@ -990,6 +990,17 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NoError(t, err)
 	streamSecondPut, err := client.Put(ctx, "stream/two", "stream-value-two")
 	require.NoError(t, err)
+	batchLower := "$checkpoint-batch"
+	batchEnd := batchLower + strings.Repeat("\x00", 17)
+	batchExpected := make(map[string]string, 17)
+	var batchLastPut *clientv3.PutResponse
+	for index := 0; index < 17; index++ {
+		key := batchLower + strings.Repeat("\x00", index)
+		value := fmt.Sprintf("batch-value-%02d", index)
+		batchExpected[key] = value
+		batchLastPut, err = client.Put(ctx, key, value)
+		require.NoError(t, err)
+	}
 	// The checkpoint worker publishes at one-second cadence. Confirm the write
 	// has had a full publication window before cutting the process off from PD;
 	// an outage racing that asynchronous window is intentionally fail-closed.
@@ -1043,6 +1054,17 @@ func TestNativeKubeBrainPDNetworkIsolationRealCluster(t *testing.T) {
 	require.Len(t, serializable.Kvs, 1)
 	require.Equal(t, []byte("durable-before-pd-isolation"), serializable.Kvs[0].Value)
 	require.GreaterOrEqual(t, serializable.Header.Revision, beforePut.Header.Revision)
+	serializableBatchCtx, serializableBatchCancel := context.WithTimeout(ctx, 3*time.Second)
+	serializableBatch, err := client.Get(
+		serializableBatchCtx, batchLower, clientv3.WithRange(batchEnd), clientv3.WithSerializable(),
+	)
+	serializableBatchCancel()
+	require.NoError(t, err, "the protected checkpoint must batch escaped ancestor rows without PD")
+	require.Len(t, serializableBatch.Kvs, len(batchExpected))
+	for _, kv := range serializableBatch.Kvs {
+		require.Equal(t, batchExpected[string(kv.Key)], string(kv.Value))
+	}
+	require.GreaterOrEqual(t, serializableBatch.Header.Revision, batchLastPut.Header.Revision)
 	serializableTxnCtx, serializableTxnCancel := context.WithTimeout(ctx, 3*time.Second)
 	serializableTxn, err := client.Txn(serializableTxnCtx).
 		If(clientv3.Compare(clientv3.Value("before"), "=", "durable-before-pd-isolation")).
