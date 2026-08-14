@@ -648,6 +648,8 @@ func authGRPCError(err error) error {
 		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, storage.ErrUnavailable):
 		return status.Error(codes.Unavailable, err.Error())
+	case errors.Is(err, storage.ErrKeyTooLarge):
+		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, storage.ErrUncertainResult):
 		// The storage commit may already be durable. Return etcd's timeout
 		// contract so clients treat it as a retryable, outcome-unknown write;

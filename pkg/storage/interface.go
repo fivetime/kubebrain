@@ -305,6 +305,7 @@ var (
 	ErrCASFailed     = fmt.Errorf("cas failed")
 	ErrUnexpectedRet = fmt.Errorf("unexpected return")
 	ErrUnavailable   = fmt.Errorf("unavailable")
+	ErrKeyTooLarge   = fmt.Errorf("storage key too large")
 )
 
 // Partition indicates the boarder of an ordered key region `[Start, End)`

@@ -57,6 +57,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{fmt.Errorf("%w: decode quota usage", backend.ErrInvalidQuotaMetadata), codes.DataLoss},
 		{fmt.Errorf("%w: decode legacy value metadata", backend.ErrInvalidMVCCMetadata), codes.DataLoss},
 		{errAuthRevisionExhausted, codes.ResourceExhausted},
+		{fmt.Errorf("tikv mutation: %w", storage.ErrKeyTooLarge), codes.ResourceExhausted},
 		{backend.ErrQuotaUninitialized, codes.Unavailable},
 	}
 	for _, test := range tests {
