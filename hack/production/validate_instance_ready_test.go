@@ -96,6 +96,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		tikvTidbOwnerUID         string
 		tikvMaxKeySize           string
 		tikvCurrentRevision      string
+		pdSTSJSON                string
 		finalTikvSTSJSON         string
 		tidbSnapshotReady        *bool
 		healthOK                 bool
@@ -240,6 +241,24 @@ func TestValidateInstanceReady(t *testing.T) {
 			tidbSnapshotReady: boolPointer(false),
 			healthOK:          true,
 			wantOutput:        "TidbCluster release snapshot mismatch",
+		},
+		{
+			name:       "TidbCluster compute resource drift",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			extraEnv:   []string{"EXPECTED_PD_CPU_REQUEST=1500m"},
+			wantOutput: "TidbCluster compute resource contract mismatch",
+		},
+		{
+			name:       "rendered PD compute resource drift",
+			image:      "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus: "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:   "3\t3",
+			healthOK:   true,
+			pdSTSJSON:  fakeStorageStatefulSetJSONWithResources("pd", "uid-pd-sts", "uid-tidb", "pd-new", "pd-new", "pingcap/pd:v8.5.3", "500m", "2Gi", "2", "4Gi"),
+			wantOutput: "PD StatefulSet compute resource mismatch",
 		},
 		{
 			name:       "tls release baseline",
@@ -1279,6 +1298,10 @@ exit 1
 			if tikvCurrentRevision == "" {
 				tikvCurrentRevision = "tikv-new"
 			}
+			pdSTSJSON := tc.pdSTSJSON
+			if pdSTSJSON == "" {
+				pdSTSJSON = fakeStorageStatefulSetJSON("pd", "uid-pd-sts", "uid-tidb", "pd-new", "pd-new", "pingcap/pd:v8.5.3")
+			}
 			tidbSnapshotReady := true
 			if tc.tidbSnapshotReady != nil {
 				tidbSnapshotReady = *tc.tidbSnapshotReady
@@ -1330,7 +1353,7 @@ exit 1
 				"FAKE_TIDB_CLUSTER_JSON=" + fakeTidbClusterJSON(tidbVersion, topology, tidbSnapshotReady, tikvMaxKeySize),
 				"FAKE_PD_IMAGE=" + pdImage,
 				"FAKE_TIKV_IMAGE=" + tikvImage,
-				"FAKE_PD_STS_JSON=" + fakeStorageStatefulSetJSON("pd", "uid-pd-sts", "uid-tidb", "pd-new", "pd-new", "pingcap/pd:v8.5.3"),
+				"FAKE_PD_STS_JSON=" + pdSTSJSON,
 				"FAKE_TIKV_STS_JSON=" + fakeStorageStatefulSetJSON("tikv", "uid-tikv-sts", tikvTidbOwnerUID, tikvCurrentRevision, "tikv-new", tikvImage),
 				"FAKE_FINAL_TIKV_STS_JSON=" + tc.finalTikvSTSJSON,
 				"FAKE_TIKV_STS_CALLS=" + filepath.Join(dir, "tikv-sts-calls"),
@@ -1380,10 +1403,16 @@ func fakeTidbClusterJSON(version, topology string, ready bool, tikvMaxKeySize st
 		"metadata": map[string]any{"name": "kb", "uid": parts[3], "generation": 8},
 		"spec": map[string]any{
 			"version": version,
-			"pd":      map[string]any{"replicas": json.Number(parts[0])},
+			"pd": map[string]any{
+				"replicas": json.Number(parts[0]),
+				"requests": map[string]any{"cpu": "1", "memory": "2Gi"},
+				"limits":   map[string]any{"cpu": "2", "memory": "4Gi"},
+			},
 			"tikv": map[string]any{
 				"replicas": json.Number(parts[1]),
 				"config":   "[storage]\nmax-key-size = " + tikvMaxKeySize + "\n",
+				"requests": map[string]any{"cpu": "4", "memory": "8Gi"},
+				"limits":   map[string]any{"cpu": "8", "memory": "16Gi"},
 			},
 		},
 		"status": map[string]any{"clusterID": parts[2], "conditions": []map[string]any{{"type": "Ready", "status": status}}},
@@ -1395,6 +1424,13 @@ func fakeTidbClusterJSON(version, topology string, ready bool, tikvMaxKeySize st
 }
 
 func fakeStorageStatefulSetJSON(component, uid, tidbOwnerUID, currentRevision, updateRevision, image string) string {
+	if component == "pd" {
+		return fakeStorageStatefulSetJSONWithResources(component, uid, tidbOwnerUID, currentRevision, updateRevision, image, "1", "2Gi", "2", "4Gi")
+	}
+	return fakeStorageStatefulSetJSONWithResources(component, uid, tidbOwnerUID, currentRevision, updateRevision, image, "4", "8Gi", "8", "16Gi")
+}
+
+func fakeStorageStatefulSetJSONWithResources(component, uid, tidbOwnerUID, currentRevision, updateRevision, image, cpuRequest, memoryRequest, cpuLimit, memoryLimit string) string {
 	encoded, err := json.Marshal(map[string]any{
 		"apiVersion": "apps/v1",
 		"kind":       "StatefulSet",
@@ -1408,7 +1444,13 @@ func fakeStorageStatefulSetJSON(component, uid, tidbOwnerUID, currentRevision, u
 		},
 		"spec": map[string]any{
 			"replicas": 3,
-			"template": map[string]any{"spec": map[string]any{"containers": []map[string]any{{"name": component, "image": image}}}},
+			"template": map[string]any{"spec": map[string]any{"containers": []map[string]any{{
+				"name": component, "image": image,
+				"resources": map[string]any{
+					"requests": map[string]any{"cpu": cpuRequest, "memory": memoryRequest},
+					"limits":   map[string]any{"cpu": cpuLimit, "memory": memoryLimit},
+				},
+			}}}},
 		},
 		"status": map[string]any{"observedGeneration": 8, "readyReplicas": 3, "updatedReplicas": 3, "currentRevision": currentRevision, "updateRevision": updateRevision},
 	})

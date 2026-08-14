@@ -72,6 +72,14 @@ EXPECTED_PD_STATEFULSET_REVISION="${EXPECTED_PD_STATEFULSET_REVISION:-}"
 EXPECTED_TIKV_STATEFULSET_REVISION="${EXPECTED_TIKV_STATEFULSET_REVISION:-}"
 EXPECTED_PD_REPLICAS="${EXPECTED_PD_REPLICAS:-3}"
 EXPECTED_TIKV_REPLICAS="${EXPECTED_TIKV_REPLICAS:-3}"
+EXPECTED_PD_CPU_REQUEST="${EXPECTED_PD_CPU_REQUEST:-1}"
+EXPECTED_PD_MEMORY_REQUEST="${EXPECTED_PD_MEMORY_REQUEST:-2Gi}"
+EXPECTED_PD_CPU_LIMIT="${EXPECTED_PD_CPU_LIMIT:-2}"
+EXPECTED_PD_MEMORY_LIMIT="${EXPECTED_PD_MEMORY_LIMIT:-4Gi}"
+EXPECTED_TIKV_CPU_REQUEST="${EXPECTED_TIKV_CPU_REQUEST:-4}"
+EXPECTED_TIKV_MEMORY_REQUEST="${EXPECTED_TIKV_MEMORY_REQUEST:-8Gi}"
+EXPECTED_TIKV_CPU_LIMIT="${EXPECTED_TIKV_CPU_LIMIT:-8}"
+EXPECTED_TIKV_MEMORY_LIMIT="${EXPECTED_TIKV_MEMORY_LIMIT:-16Gi}"
 EXPECTED_TIKV_MAX_KEY_SIZE="${EXPECTED_TIKV_MAX_KEY_SIZE:-2621440}"
 ENDPOINT="${ENDPOINT:-}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
@@ -221,6 +229,12 @@ for variable in EXPECTED_KUBEBRAIN_REPLICAS EXPECTED_PD_REPLICAS EXPECTED_TIKV_R
     exit 2
   fi
 done
+for variable in EXPECTED_PD_CPU_REQUEST EXPECTED_PD_MEMORY_REQUEST EXPECTED_PD_CPU_LIMIT EXPECTED_PD_MEMORY_LIMIT EXPECTED_TIKV_CPU_REQUEST EXPECTED_TIKV_MEMORY_REQUEST EXPECTED_TIKV_CPU_LIMIT EXPECTED_TIKV_MEMORY_LIMIT; do
+  if [[ -z "${!variable}" || "${!variable}" == *[[:space:]]* ]]; then
+    echo "${variable} must be a non-empty Kubernetes quantity without whitespace" >&2
+    exit 2
+  fi
+done
 
 KUBE_CONTEXT="$KUBE_CONTEXT" \
 NAMESPACE="$TIDB_NAMESPACE" \
@@ -287,6 +301,23 @@ if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ]]; then
   echo "TidbCluster storage release mismatch: expected version ${EXPECTED_TIDB_VERSION}, got ${actual_tidb_version:-missing}" >&2
   exit 1
 fi
+if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e \
+  --arg pdCPURequest "$EXPECTED_PD_CPU_REQUEST" --arg pdMemoryRequest "$EXPECTED_PD_MEMORY_REQUEST" \
+  --arg pdCPULimit "$EXPECTED_PD_CPU_LIMIT" --arg pdMemoryLimit "$EXPECTED_PD_MEMORY_LIMIT" \
+  --arg tikvCPURequest "$EXPECTED_TIKV_CPU_REQUEST" --arg tikvMemoryRequest "$EXPECTED_TIKV_MEMORY_REQUEST" \
+  --arg tikvCPULimit "$EXPECTED_TIKV_CPU_LIMIT" --arg tikvMemoryLimit "$EXPECTED_TIKV_MEMORY_LIMIT" '
+    (.spec.pd.requests.cpu | tostring) == $pdCPURequest and
+    (.spec.pd.requests.memory | tostring) == $pdMemoryRequest and
+    (.spec.pd.limits.cpu | tostring) == $pdCPULimit and
+    (.spec.pd.limits.memory | tostring) == $pdMemoryLimit and
+    (.spec.tikv.requests.cpu | tostring) == $tikvCPURequest and
+    (.spec.tikv.requests.memory | tostring) == $tikvMemoryRequest and
+    (.spec.tikv.limits.cpu | tostring) == $tikvCPULimit and
+    (.spec.tikv.limits.memory | tostring) == $tikvMemoryLimit
+  ' >/dev/null; then
+  echo "TidbCluster compute resource contract mismatch" >&2
+  exit 1
+fi
 if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e --arg size "$EXPECTED_TIKV_MAX_KEY_SIZE" '
   (.spec.tikv.config | type) == "string" and
   ([.spec.tikv.config | scan("(?m)^[[:space:]]*max-key-size[[:space:]]*=[[:space:]]*" + $size + "[[:space:]]*$")] | length) == 1
@@ -303,7 +334,9 @@ if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e '
 fi
 
 storage_statefulset_identity() {
-  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_revision="$5" statefulset object actual_revision
+  local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_revision="$5"
+  local expected_cpu_request="$6" expected_memory_request="$7" expected_cpu_limit="$8" expected_memory_limit="$9"
+  local statefulset object actual_revision
   statefulset="${TIDB_CLUSTER}-${component}"
   if ! object="$("$KUBECTL" "${kubectl_args[@]}" -n "$TIDB_NAMESPACE" get statefulset "$statefulset" -o json)"; then
     echo "failed to read ${display} StatefulSet identity" >&2
@@ -320,6 +353,19 @@ storage_statefulset_identity() {
         .name == $tidbName and .uid == $tidbUID)] | length) == 1
     ' >/dev/null; then
     echo "${display} StatefulSet owner identity mismatch: expected controller TidbCluster ${TIDB_CLUSTER}/${EXPECTED_TIDB_CLUSTER_UID}" >&2
+    exit 1
+  fi
+  if ! printf '%s' "$object" | "$JQ" -e \
+    --arg component "$component" --arg cpuRequest "$expected_cpu_request" --arg memoryRequest "$expected_memory_request" \
+    --arg cpuLimit "$expected_cpu_limit" --arg memoryLimit "$expected_memory_limit" '
+      ([.spec.template.spec.containers[]? | select(.name == $component)] | length) == 1 and
+      ([.spec.template.spec.containers[]? | select(.name == $component) |
+        select((.resources.requests.cpu | tostring) == $cpuRequest and
+          (.resources.requests.memory | tostring) == $memoryRequest and
+          (.resources.limits.cpu | tostring) == $cpuLimit and
+          (.resources.limits.memory | tostring) == $memoryLimit)] | length) == 1
+    ' >/dev/null; then
+    echo "${display} StatefulSet compute resource mismatch" >&2
     exit 1
   fi
   if ! printf '%s' "$object" | "$JQ" -e \
@@ -344,8 +390,8 @@ storage_statefulset_identity() {
   printf '%s' "$object" | "$JQ" -r '[.metadata.uid,.status.updateRevision] | @tsv'
 }
 
-IFS=$'\t' read -r actual_pd_statefulset_uid actual_pd_revision <<<"$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_STATEFULSET_REVISION")"
-IFS=$'\t' read -r actual_tikv_statefulset_uid actual_tikv_revision <<<"$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_STATEFULSET_REVISION")"
+IFS=$'\t' read -r actual_pd_statefulset_uid actual_pd_revision <<<"$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_STATEFULSET_REVISION" "$EXPECTED_PD_CPU_REQUEST" "$EXPECTED_PD_MEMORY_REQUEST" "$EXPECTED_PD_CPU_LIMIT" "$EXPECTED_PD_MEMORY_LIMIT")"
+IFS=$'\t' read -r actual_tikv_statefulset_uid actual_tikv_revision <<<"$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_STATEFULSET_REVISION" "$EXPECTED_TIKV_CPU_REQUEST" "$EXPECTED_TIKV_MEMORY_REQUEST" "$EXPECTED_TIKV_CPU_LIMIT" "$EXPECTED_TIKV_MEMORY_LIMIT")"
 
 validate_storage_runtime() {
   local component="$1" display="$2" expected_replicas="$3" expected_image="$4" expected_digest="$5" owner_uid="$6" revision="$7"
@@ -916,8 +962,8 @@ if ! printf '%s' "$final_tidb_cluster_json" | "$JQ" -e \
   exit 1
 fi
 
-final_pd_identity="$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_STATEFULSET_REVISION")"
-final_tikv_identity="$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_STATEFULSET_REVISION")"
+final_pd_identity="$(storage_statefulset_identity "pd" "PD" "$EXPECTED_PD_REPLICAS" "$EXPECTED_PD_IMAGE" "$EXPECTED_PD_STATEFULSET_REVISION" "$EXPECTED_PD_CPU_REQUEST" "$EXPECTED_PD_MEMORY_REQUEST" "$EXPECTED_PD_CPU_LIMIT" "$EXPECTED_PD_MEMORY_LIMIT")"
+final_tikv_identity="$(storage_statefulset_identity "tikv" "TiKV" "$EXPECTED_TIKV_REPLICAS" "$EXPECTED_TIKV_IMAGE" "$EXPECTED_TIKV_STATEFULSET_REVISION" "$EXPECTED_TIKV_CPU_REQUEST" "$EXPECTED_TIKV_MEMORY_REQUEST" "$EXPECTED_TIKV_CPU_LIMIT" "$EXPECTED_TIKV_MEMORY_LIMIT")"
 if [[ "$final_pd_identity" != "${actual_pd_statefulset_uid}"$'\t'"${actual_pd_revision}" ||
       "$final_tikv_identity" != "${actual_tikv_statefulset_uid}"$'\t'"${actual_tikv_revision}" ]]; then
   echo "PD/TiKV StatefulSet identity changed during validation" >&2

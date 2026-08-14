@@ -51212,6 +51212,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   member 同一 Leader 且 Raft index/applied index 均为 33，KubeBrain/PD/TiKV 各 3/3 Ready、零重启。主
   `kubebrain` StatefulSet 未被本轮镜像滚动影响。
 
+- A4660 收紧独立 PD/TiKV 的生产资源隔离门禁。`deploy/production/tidb-cluster.yaml` 已声明 PD
+  requests `1 CPU/2Gi`、limits `2 CPU/4Gi`，TiKV requests `4 CPU/8Gi`、limits
+  `8 CPU/16Gi`，但旧 `validate-instance-ready.sh` 只固定副本、版本、镜像、owner、revision 和
+  TiKV key size；TidbCluster 的 compute resources 被人工删除，或 TiDB Operator 没有把它们下发到
+  StatefulSet 时，发布仍可误判为可用。现在发布门禁同时精确校验 TidbCluster spec 与 PD/TiKV
+  StatefulSet component container 的四项 CPU/内存 requests/limits，并在首次检查和末尾 identity
+  fence 都复查渲染结果。预期值可由 `EXPECTED_{PD,TIKV}_{CPU,MEMORY}_{REQUEST,LIMIT}` 显式覆盖，
+  默认值与生产清单一致；缺失或漂移均 fail closed。
+
+  最小负向回归分别注入 TidbCluster PD CPU request 漂移和已渲染 PD StatefulSet CPU request
+  漂移，证明声明层与执行层任一失配都会阻止发布；既有完整 instance-ready 门禁保持通过。当前 Kind
+  开发集群的 PD/TiKV StatefulSet 为 `resources: {}`，因此它被明确识别为非生产资源隔离形态，不能用
+  该单节点开发夹具的短 TTL 稳定性替代生产发布结论，也没有把 3×TiKV 的生产资源请求强行部署到容量
+  不足的单节点 Kind。该门禁封闭的是 A4658 观察到的共享节点 backend stall 的配置放行缺口；它不能
+  保证节点永不故障，仍需 storage latency SLO、跨节点调度、PDB 与真实故障注入共同证明可用性。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
