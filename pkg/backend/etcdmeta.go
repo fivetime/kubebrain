@@ -60,9 +60,103 @@ func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision u
 	// Legacy fallback: the separate etcdmeta keyspace (data written before A).
 	meta, err := b.getEtcdMetadata(ctx, key, modRevision)
 	if errors.Is(err, storage.ErrKeyNotFound) {
+		if recovered, proven, recoverErr := b.recoverRetainedEtcdMetadata(ctx, key, modRevision); recoverErr != nil {
+			return EtcdMetadata{}, recoverErr
+		} else if proven {
+			return recovered, nil
+		}
 		return EtcdMetadata{CreateRevision: modRevision, Version: 1}, nil
 	}
 	return meta, err
+}
+
+// recoverRetainedEtcdMetadata reconstructs pre-metadata create/version fields
+// when the retained object family proves a complete generation. Compaction may
+// leave only an arbitrary live anchor, whose original version is unknowable;
+// that case returns proven=false instead of manufacturing precision. A visible
+// tombstone, an inline envelope, or a first live version strictly newer than the
+// fixed compact watermark establishes an authoritative generation boundary.
+func (b *backend) recoverRetainedEtcdMetadata(
+	ctx context.Context, key []byte, modRevision uint64,
+) (EtcdMetadata, bool, error) {
+	compactRevision, err := b.loadCompactRevision(ctx)
+	if err != nil {
+		return EtcdMetadata{}, false, err
+	}
+	if modRevision == math.MaxUint64 {
+		return EtcdMetadata{}, false, nil
+	}
+	endRevision := modRevision + 1
+	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	iter, err := b.kv.Iter(
+		ctx,
+		b.coder.EncodeObjectKey(key, 0),
+		b.coder.EncodeObjectKey(key, endRevision),
+		timestamp, 0,
+	)
+	if err != nil {
+		return EtcdMetadata{}, false, err
+	}
+	defer iter.Close()
+
+	var current EtcdMetadata
+	anchored := false
+	afterTombstone := false
+	unknownLiveGeneration := false
+	for {
+		if err := iter.Next(ctx); err != nil {
+			if errors.Is(err, io.EOF) {
+				return EtcdMetadata{}, false, nil
+			}
+			return EtcdMetadata{}, false, err
+		}
+		userKey, revision, decodeErr := b.coder.Decode(iter.Key())
+		if decodeErr != nil {
+			return EtcdMetadata{}, false, invalidMVCCMetadataError(decodeErr, "decode retained metadata recovery object key")
+		}
+		if revision == 0 || revision > modRevision || !bytes.Equal(userKey, key) {
+			continue
+		}
+		stored := iter.Val()
+		if bytes.Equal(stored, tombStoneBytes) {
+			anchored = false
+			afterTombstone = true
+			unknownLiveGeneration = false
+			continue
+		}
+		inline, _, inlined, inlineErr := DecodeInlineValueChecked(stored)
+		if inlineErr != nil {
+			return EtcdMetadata{}, false, inlineErr
+		}
+		switch {
+		case inlined:
+			if anchored && (inline.CreateRevision != current.CreateRevision || inline.Version != current.Version+1) {
+				return EtcdMetadata{}, false, invalidMVCCMetadataError(
+					fmt.Errorf("retained inline metadata discontinuity at revision %d", revision),
+					"recover metadata for key %q", key,
+				)
+			}
+			current = inline
+			anchored = true
+			afterTombstone = false
+			unknownLiveGeneration = false
+		case anchored:
+			current.Version++
+		case afterTombstone || (revision > compactRevision && !unknownLiveGeneration):
+			current = EtcdMetadata{CreateRevision: revision, Version: 1}
+			anchored = true
+			afterTombstone = false
+			unknownLiveGeneration = false
+		default:
+			unknownLiveGeneration = true
+		}
+		if revision == modRevision {
+			if !anchored {
+				return EtcdMetadata{}, false, nil
+			}
+			return current, true, nil
+		}
+	}
 }
 
 func (b *backend) getEtcdMetadata(ctx context.Context, key []byte, revision uint64) (EtcdMetadata, error) {
@@ -71,7 +165,8 @@ func (b *backend) getEtcdMetadata(ctx context.Context, key []byte, revision uint
 	// delimiter. A metadata key for an arbitrary-byte extension of key can sort
 	// inside this reverse interval, so decode each row and skip foreign keys
 	// instead of trusting the first physical result.
-	iter, err := b.kv.Iter(ctx, b.coder.EncodeObjectKey(metaKey, revision), b.coder.EncodeObjectKey(metaKey, 0), 0, 0)
+	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	iter, err := b.kv.Iter(ctx, b.coder.EncodeObjectKey(metaKey, revision), b.coder.EncodeObjectKey(metaKey, 0), timestamp, 0)
 	if err != nil {
 		return EtcdMetadata{}, err
 	}
