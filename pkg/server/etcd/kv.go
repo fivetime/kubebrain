@@ -676,6 +676,27 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		}
 	}()
 	ctx = withAuthWriteGuard(ctx, caller)
+	// A serializable read-only Txn can arrive at a follower whose local
+	// checkpoint/durable watermark predates a revision already acknowledged by
+	// the leader. Treating that requested history as globally future is wrong:
+	// the ordinary Range path forwards the same shape to the leader. Do the same
+	// after authorizing the complete Txn locally. Inspect both branches
+	// conservatively; forwarding an unselected newer branch only trades a local
+	// stale read for the leader's authoritative evaluation and cannot change the
+	// selected etcd semantics.
+	if readOnly && txnIsSerializable(txn) && !s.peers.IsLeader() && s.peers.EtcdProxyEnabled() {
+		requested := txnMaxHistoricalRevision(txn)
+		if requested > 0 && !s.followerTxnCoversRevision(ctx, requested) {
+			s.metricCli.EmitCounter("read.follower.historical_txn_proxy", 1)
+			proxyCtx, err := s.forwardAuthToken(ctx, caller)
+			if err != nil {
+				return nil, err
+			}
+			response, err := s.peers.Txn(proxyCtx, txn)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
+		}
+	}
 
 	deadline, ok := ctx.Deadline()
 	if ok && startTime.Sub(deadline) >= 0 {
@@ -835,6 +856,33 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		}
 	}
 	return response, mapFenceErr(err)
+}
+
+func txnMaxHistoricalRevision(txn *etcdserverpb.TxnRequest) uint64 {
+	if txn == nil {
+		return 0
+	}
+	var maximum uint64
+	for _, branches := range [][]*etcdserverpb.RequestOp{txn.Success, txn.Failure} {
+		for _, op := range branches {
+			if r := op.GetRequestRange(); r != nil && r.Revision > 0 && uint64(r.Revision) > maximum {
+				maximum = uint64(r.Revision)
+			}
+			if nested := op.GetRequestTxn(); nested != nil {
+				if revision := txnMaxHistoricalRevision(nested); revision > maximum {
+					maximum = revision
+				}
+			}
+		}
+	}
+	return maximum
+}
+
+func (s *RPCServer) followerTxnCoversRevision(ctx context.Context, requested uint64) bool {
+	if checkpoint, ok := backend.SerializableCheckpointFromContext(ctx); ok {
+		return requested <= checkpoint.Revision
+	}
+	return s.followerHasDurableRevision(ctx, requested)
 }
 
 func txnContainsPut(txn *etcdserverpb.TxnRequest) bool {

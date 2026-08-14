@@ -230,6 +230,19 @@ type staleCurrentRevisionShim struct {
 
 func (s staleCurrentRevisionShim) GetCurrentRevision() uint64 { return s.current }
 
+type laggingDurableRevisionShim struct {
+	BackendShim
+	durable uint64
+}
+
+func (s laggingDurableRevisionShim) GetSerializableCheckpoint() (backend.SerializableCheckpoint, error) {
+	return backend.SerializableCheckpoint{}, backend.ErrSerializableCheckpointUnavailable
+}
+
+func (s laggingDurableRevisionShim) GetDurableRevision(context.Context) (uint64, error) {
+	return s.durable, nil
+}
+
 func TestSerializableReadonlyTxnUsesOneDurableFollowerSnapshot(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -277,6 +290,49 @@ func TestSerializableReadonlyTxnUsesOneDurableFollowerSnapshot(t *testing.T) {
 	require.Equal(t, resp.Header.Revision, rangeResp.Header.Revision)
 	require.Less(t, second.Header.Revision, rangeResp.Kvs[0].ModRevision)
 	require.Equal(t, []byte("visible"), rangeResp.Kvs[0].Value)
+}
+
+func TestSerializableHistoricalTxnProxiesWhenFollowerCheckpointLags(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	key := []byte("/registry/serializable-txn/historical-proxy")
+	written, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("acknowledged")})
+	require.NoError(t, err)
+	require.Greater(t, written.Header.Revision, int64(1))
+
+	server.backend = laggingDurableRevisionShim{
+		BackendShim: server.backend,
+		durable:     uint64(written.Header.Revision - 1),
+	}
+	request := &etcdserverpb.TxnRequest{
+		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
+			RequestRange: &etcdserverpb.RangeRequest{
+				Key: key, Revision: written.Header.Revision, Serializable: true,
+			},
+		}}},
+	}
+	forwarded := 0
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			t.Fatal("serializable historical txn must not establish a linearizable barrier")
+			return nil
+		},
+		txnFn: func(_ context.Context, got *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+			forwarded++
+			require.Equal(t, request, got)
+			return &etcdserverpb.TxnResponse{
+				Header:    txnHeader(written.Header.Revision),
+				Succeeded: true,
+			}, nil
+		},
+	}
+
+	response, err := server.Txn(ctx, request)
+	require.NoError(t, err)
+	require.Equal(t, 1, forwarded)
+	require.Equal(t, written.Header.Revision, response.Header.Revision)
 }
 
 func TestReadonlyTxnWithNonSerializableRangeExecutesLocallyAfterBarrier(t *testing.T) {
