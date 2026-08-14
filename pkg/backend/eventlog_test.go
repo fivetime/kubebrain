@@ -337,6 +337,9 @@ func TestEventLogWatermarkGates(t *testing.T) {
 	_, served, err = b.eventLogWatchEvents(ctx, pfx, c2.Header.Revision, c2.Header.Revision)
 	require.NoError(t, err)
 	require.False(t, served, "an incomplete ordered revision must fall back")
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms, "a revision at the cleanup/leadership watermark is untrusted, not corruption")
 }
 
 func TestEventLogReplayRejectsInvalidOrderedVerbInTrustedWindow(t *testing.T) {
@@ -369,6 +372,9 @@ func TestEventLogReplayRejectsInvalidOrderedVerbInTrustedWindow(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported verb")
 	require.False(t, served)
 	require.Empty(t, events)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
 
 	// Once a leadership watermark explicitly makes this revision untrusted,
 	// the same malformed legacy window may use the object-scan compatibility
@@ -406,6 +412,9 @@ func TestEventLogReplayRejectsMissingReferencedObjectInTrustedWindow(t *testing.
 	require.ErrorContains(t, err, "referenced object version is missing")
 	require.False(t, served)
 	require.Empty(t, events)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms, "object loss has no durable disarm verifier and must not activate CORRUPT yet")
 
 	require.NoError(t, b.EnsureEventLogStart(ctx))
 	events, served, err = b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
@@ -443,6 +452,15 @@ func TestEventLogReplayRejectsMissingEntryCoveredByTxnWitness(t *testing.T) {
 	require.ErrorContains(t, err, "transaction witness mismatch")
 	require.False(t, served)
 	require.Empty(t, events)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms,
+		"a trusted durable witness mismatch must persist CORRUPT, not remain a request-local error")
+	_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
+	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+	removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+	require.False(t, removed, "unrepaired durable witness evidence must keep writes fenced")
 
 	require.NoError(t, b.EnsureEventLogStart(ctx))
 	events, served, err = b.eventLogWatchEvents(ctx, pfx, first.Header.Revision, second.Header.Revision)
