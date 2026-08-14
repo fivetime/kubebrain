@@ -50970,6 +50970,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   精确三成员、AlarmList 为空，`/a4648/` Count 0，revision/index/applied index 均为 `468126003565884176`、term 725；
   主 PD `kb-pd-0..2` 与 TiKV `kb-tikv-0..2` 均 Ready、零重启，历史 restore Pod 未混入该计数。
 
+- A4649 在固定上游基线
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 上运行核心 differential。该次运行使用独立
+  `a379-full-differential` keyspace 并显式允许破坏性 Compact；Auth/JWT、automatic quota、真实
+  Envoy 和独立 metrics profile 因没有隔离 endpoint 而跳过，因此不宣称 full differential。套件在
+  `TestHashLatestEquivalenceDifferentialAgainstReferenceEtcd` 前后的并发写入中暴露持久误报：成员
+  `4034353177` 把物理 index revision `468126003565884903` 与稍早读取的 durable revision
+  `468126003565884902` 拼成不可能状态并 ArmCorrupt；这两个字段实际由同一 TiKV 事务提交，只是验证器跨事务时刻读取。
+
+  生产提交 `e349e34e7545f03631186437c803f707256a241d` 只在发现 future index 的异常慢路径重新读取 durable
+  watermark，并在真正写告警前再次确认 index 与 durable 仍矛盾；正常路径不增加 I/O，持久 future-index 损坏测试仍会告警。
+  定向 race 连续 20 轮 11.249 秒、完整 backend 78.605 秒及 backend vet 通过。标准 `alarm disarm` 重新执行完整 durable
+  proof 后才解除该误报；镜像 `kubebrain:a4649-e349e34e`（OCI manifest list
+  `sha256:7dc1ec921dddaf8d63edafb0e70e0642d7334893ae99d39571ca91e8ca857268`，UTC
+  `2026-08-14T19:33:22Z`）滚动三副本成功。复跑核心 differential 时先前的
+  `TestHashDifferential`、`MaintenanceHashHeaderEnvelope`、`HashLatestEquivalence` 与 `HashKV` 均通过且 AlarmList
+  保持为空；套件随后保留首个独立差异：`DowngradeValidate` 成功响应 Header 与紧邻 Status 不一致，进入后续修复。
+
+- A4650 修复 A4649 复跑同时发现的真实运行态故障。旧 Leader 失去租约后仍保留 Leader collector 的 count-index 树；新
+  Leader 删除并压缩 `\x00` 后，旧树仍宣称 revision `468126003565884961` 的 key 存活并把 ready watermark 推到
+  `...972`，而共享 TiKV 的 latest revision-index 已删除。结果 follower 的 kubelet 健康读每 5 秒返回 request-local
+  DataLoss；这不是 A4649 告警的原因，但会持续使 Pod NotReady。count index 是易失加速结构，不能在失去 Leader 所有权后继续
+  充当损坏证据。
+
+  生产提交 `d0a32617521e0bdac013373bad783c05e4a0b7ea` 在 leadership loss 时原子 Invalidate count index，清空
+  base/ready generation，使 follower Count 安全回退到 TiKV 或按需重建；同时仅在 count-index 矛盾慢路径读取 durable
+  revision，若共享存储已有更新则放弃陈旧期望。物理 index 自身 malformed 仍无条件进入 durable witness 校验，真实
+  missing/stale/tombstone index/object 损坏仍能 ArmCorrupt。合法 follower 删除序列与真实损坏定向回归连续 10 轮通过；完整
+  countindex、backend、server/etcd、其余 server service 包和 backend/server vet 全部通过（backend 82.266 秒，
+  server/etcd 218.245 秒）。
+
+  可追溯镜像 `kubebrain:a4650-d0a32617` 内嵌完整 SHA、版本 `a4650`、Go 1.26.5、TiKV storage、linux/amd64、UTC
+  build time `2026-08-14T19:52:19Z`；本地 OCI manifest list 为
+  `sha256:9148fac5d672ccccd6586dea767f4172795cb207dce8dcb38cfdcc608211ed72`，kind 三副本 runtime imageID 均为
+  `sha256:9148baa71c5f6646b11828b1533cdd51b45540f7b061320301b6c4137c717cf8`。顺序滚动后 KubeBrain 三副本
+  Ready/零重启、AlarmList 为空；覆盖四个旧故障周期的 20 秒窗口内三个 Pod 均无 `\x00` revision-index/DataLoss 或
+  CORRUPT 日志。主 `kb-pd-0..2`、`kb-tikv-0..2` 均 Ready/零重启，历史 restore Pod 未混入验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
