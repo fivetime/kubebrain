@@ -82,6 +82,11 @@ jobs:
       - name: Version info
         run: hack/dev/version-info.sh
 
+      - name: Verify etcd-sized TiKV key transport
+        run: |
+          KUBE_CONTEXT="kind-${CLUSTER_NAME}" \
+            hack/dev/tikv-large-key-smoke.sh
+
       - name: Real consumer verification
         run: |
           sed -i '/^replace (/,$d' hack/etcd-client-compat/go.mod
