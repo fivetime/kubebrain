@@ -1293,7 +1293,10 @@ func TestLeaseGrantQuotaPreflightRejectsBeforeAutomaticIDLikeEtcd(t *testing.T) 
 		"upstream quotaLeaseServer rejects an unavailable request before EtcdServer allocates an automatic ID")
 	alarms, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
 	require.NoError(t, err)
-	require.Equal(t, []*etcdserverpb.AlarmMember{{Alarm: etcdserverpb.AlarmType_NOSPACE}}, alarms.Alarms)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{
+		MemberID: server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity()),
+		Alarm:    etcdserverpb.AlarmType_NOSPACE,
+	}}, alarms.Alarms)
 }
 
 func TestLeaseGrantAutomaticIDRewritesBeforeCorruptLikeEtcd(t *testing.T) {

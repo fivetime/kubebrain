@@ -471,6 +471,22 @@ func TestQuotaRPCConfiguredCeilingPreflightsPutAndTxnLikeEtcd(t *testing.T) {
 	require.Len(t, read.Responses[0].GetResponseRange().Kvs, 1)
 }
 
+func TestQuotaRPCOversizedPutArmsReceivingMemberBeforeApply(t *testing.T) {
+	server := newQuotaRPCServer(t, 100)
+	ctx := context.Background()
+	localID := server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity())
+
+	_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("large"), Value: make([]byte, 100)})
+	requireQuotaNoSpaceError(t, err)
+
+	alarms, err := server.Alarm(ctx, &etcdserverpb.AlarmRequest{Action: etcdserverpb.AlarmRequest_GET})
+	require.NoError(t, err)
+	require.Equal(t, []*etcdserverpb.AlarmMember{{MemberID: localID, Alarm: etcdserverpb.AlarmType_NOSPACE}}, alarms.Alarms)
+	read, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("large")})
+	require.NoError(t, err)
+	require.Empty(t, read.Kvs)
+}
+
 func TestQuotaRPCConfiguredCeilingPrecedesCorruptWriteApplierLikeEtcd(t *testing.T) {
 	server := newQuotaRPCServer(t, 6)
 	ctx := context.Background()

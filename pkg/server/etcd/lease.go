@@ -193,7 +193,10 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	// than bbolt file overhead; reaching that logical ceiling is the equivalent
 	// preflight boundary. A manually armed NOSPACE alarm remains an apply-time
 	// cap below, matching applierV3Capped instead of this outer quota layer.
-	if m.srv.configuredQuotaExhausted(ctx) {
+	// Lease records are outside KubeBrain's logical user key/value accounting,
+	// so they add no estimated growth here. An already exhausted configured
+	// quota is still rejected at the same outer admission boundary as etcd.
+	if m.srv.configuredQuotaUnavailable(ctx, 0) {
 		return nil, rpctypes.ErrGRPCNoSpace
 	}
 	explicitID := req.ID != 0

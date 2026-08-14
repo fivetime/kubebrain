@@ -595,7 +595,7 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 	emitEtcdMVCCTxnCounter(s.metricCli, 1)
 	startTime := time.Now()
 
-	if txnContainsPut(txn) && s.configuredQuotaExhausted(ctx) {
+	if cost := quotaTxnCost(txn); txnContainsPut(txn) && s.configuredQuotaUnavailable(ctx, cost) {
 		return nil, rpctypes.ErrGRPCNoSpace
 	}
 	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
@@ -900,22 +900,53 @@ func txnContainsPut(txn *etcdserverpb.TxnRequest) bool {
 	return false
 }
 
-// configuredQuotaExhausted implements the storage-independent part of
-// upstream's outer quota server: once the configured logical capacity has
-// already been consumed, mutating requests are rejected before protocol
-// validation, auth, automatic ID allocation, or leader routing. A manually
-// armed NOSPACE alarm is intentionally excluded; it remains an apply-time cap.
-func (s *RPCServer) configuredQuotaExhausted(ctx context.Context) bool {
+// configuredQuotaUnavailable implements the storage-independent part of
+// upstream's outer quota server. requestCost is the maximum logical user-byte
+// growth of the request (the larger txn branch); exact overwrite/delete deltas
+// remain an atomic backend decision. Requests which cannot fit are rejected
+// before protocol validation, auth, automatic ID allocation, or leader routing.
+// A manually armed NOSPACE alarm remains an apply-time cap.
+func (s *RPCServer) configuredQuotaUnavailable(ctx context.Context, requestCost int64) bool {
 	usage, quota, _, err := s.backend.QuotaStatus(ctx)
-	if err != nil || quota <= 0 || usage < quota {
+	if err != nil || quota <= 0 || (usage < quota && requestCost <= quota-usage) {
 		return false
 	}
-	if s.peers.IsLeader() {
-		// Upstream quotaAlarmer also returns NoSpace even if alarm activation
-		// fails, so preserve the primary request error here.
-		_, _ = s.backend.ArmNoSpace(ctx, 0)
-	}
+	// Match upstream quotaAlarmer at the RPC boundary: the member which accepted
+	// the client request owns the alarm, even when it subsequently proxies the
+	// write to the leader. Preserve NoSpace if alarm persistence itself fails.
+	memberID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
+	_, _ = s.backend.ArmNoSpace(ctx, memberID)
 	return true
+}
+
+func quotaPutCost(r *etcdserverpb.PutRequest) int64 {
+	if r == nil {
+		return 0
+	}
+	return int64(len(r.GetKey())) + int64(len(r.GetValue()))
+}
+
+func quotaTxnCost(r *etcdserverpb.TxnRequest) int64 {
+	if r == nil {
+		return 0
+	}
+	branchCost := func(ops []*etcdserverpb.RequestOp) int64 {
+		var cost int64
+		for _, op := range ops {
+			switch {
+			case op.GetRequestPut() != nil:
+				cost += quotaPutCost(op.GetRequestPut())
+			case op.GetRequestTxn() != nil:
+				cost += quotaTxnCost(op.GetRequestTxn())
+			}
+		}
+		return cost
+	}
+	success, failure := branchCost(r.GetSuccess()), branchCost(r.GetFailure())
+	if failure > success {
+		return failure
+	}
+	return success
 }
 
 // Match upstream txn.IsTxnReadonly/IsTxnSerializable: nested transactions and
@@ -1323,7 +1354,7 @@ func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int
 func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etcdserverpb.PutResponse, retErr error) {
 	emitEtcdMVCCPutCounter(s.metricCli, 1)
 	startTime := time.Now()
-	if s.configuredQuotaExhausted(ctx) {
+	if s.configuredQuotaUnavailable(ctx, quotaPutCost(r)) {
 		return nil, rpctypes.ErrGRPCNoSpace
 	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)

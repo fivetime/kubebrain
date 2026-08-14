@@ -51069,6 +51069,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList 为空，该用例随后单独复跑 51.259 秒通过。故当前证据是“已清除 serializable oracle 误报并恢复定向 GREEN”，
   仍不把这轮写成核心 suite 完整 GREEN，也没有为测试结果发布新生产镜像；线上仍为 A4652。
 
+- A4653 补齐此前因缺少隔离 endpoint 而跳过的 automatic quota 专项，并修复由此发现的真实数据面差异。固定上游
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/quota.go::quotaAlarmer.check`
+  会在接收客户端 RPC 的成员上先估算请求成本，以该成员的 `MemberID` 激活 NOSPACE，再进入后续 apply。KubeBrain
+  原先只有“当前 logical usage 已满”的 RPC 预检；首次 oversized Put 会进入 Leader backend 的精确 delta 检查并由
+  Leader identity 激活告警。因此经负载均衡入口连接到 follower 时，Put 正确返回 ResourceExhausted、被拒 key 也不落库，
+  但 Alarm owner 错误地是 Leader，而不是同一 client connection 的 Status member。隔离三副本 RED 明确复现为 Status
+  member `3258172462`、Alarm member `1065526444`。
+
+  生产修复把 Put 与递归 Txn 两个 branch 的最大用户 key+value 增长估算放到 RPC admission，并用接收副本对外暴露的
+  static/fallback member ID 持久激活 alarm；覆盖写所需旧值、实际 branch 和精确 delta 仍由 Leader backend 原子判定。
+  这没有把 bbolt 的 256 B KV overhead 混入 KubeBrain 已公开的 tenant logical-user-bytes 口径，lease metadata 也不虚增
+  logical usage；已耗尽 quota 的 LeaseGrant 预检与 sticky NOSPACE apply cap 保持不变。新增 direct 回归固定 oversized Put
+  在 apply 前失败、key 不落库且 owner 等于 receiving member，并修正既有 LeaseGrant 回归不再接受零 owner。
+
+  `TestQuotaRPC*|TestLeaseGrantQuota*` 定向包测试 0.311 秒通过，完整 backend 包 85.728 秒通过。使用独立 TiKV keyspace
+  `a4653-quota-owner-fix`、3 KubeBrain/3 PD/3 TiKV 和 1024 B quota 的 automatic-quota official client 差分从修复前
+  “10 秒内找不到 Status member 对应的 NOSPACE”转为 0.557 秒完整通过，覆盖 oversized Put typed error/不落库、正确 owner、
+  Range/Delete、LeaseGrant、sticky alarm、Compact/Defragment、disarm 和恢复 Put。隔离镜像
+  `kubebrain:a4653-quota` 的本地 manifest list 为
+  `sha256:0e2b6ec364346c79244fa7375b69ebc22f915fb5c627d85bf478280e39e7ce91`；三个临时 Pod runtime imageID 均为
+  `sha256:e31531c4d1c83436b0646c4a76303ab1f5c097b7d1fe6d389190b9bf49934157`、Ready 且零重启。该镜像基于提交前工作树，主
+  `kubebrain` StatefulSet 仍保持 A4652，不能把隔离验证误写成主环境已发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
