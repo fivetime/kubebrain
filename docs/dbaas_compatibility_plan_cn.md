@@ -50876,6 +50876,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启；历史 restore Pod 未混入该计数。该证据证明本次观测窗口内连续 handoff 已消除 A4644 的重复启动故障，
   不把两轮本地 kind 验证外推为任意网络分区或 PD 超时下的长期可靠性结论。
 
+- A4646 把 A4644 的领导任期内 revision-index 热校验从最新 point Get 扩展到最新 unary Range/List。继续对标精确
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/index.go::treeIndex.Range` 与
+  `server/storage/mvcc/kvstore_txn.go::storeTxnCommon.rangeKeys`：etcd 在同一只读事务里由内存 MVCC index 选择范围内
+  每个 live key 的 exact modified revision，再按这些 revision 取对象；KubeBrain 旧 List 直接扫描 object rows，只验证
+  已返回对象的 value metadata，因此同一个 stale/missing/malformed revision index 会在 point Get 上 DataLoss/ArmCorrupt，
+  却可能在 Range 中继续返回旧值，最新 object 缺失或被改成 tombstone 时还可能静默漏键。
+
+  生产提交 `6d30cc3bd33e094e722a4acb3298a20088bc268f` 为 count index 增加原子
+  `LatestRangeIfReady`：在同一 RLock/同一 ready generation 中按 user-key 顺序采样 live key、exact latest revision、
+  ready watermark 与分页 `more`，返回前复制 key。最新 List 在物理扫描前获取该期望页，扫描后按 512 键有界 BatchGet
+  revision-index；既核对每个返回 key/revision/index，也核对每个预期 live key 没有从物理结果中消失。有限 Limit 只把
+  期望页最后一键之前视为 authoritative，避免把 scanner 的合法 lookahead 误报为额外键；低字节边界走 decoded-range
+  且在对象扫描前失败的 invalid metadata 也进入相同冷验证。物理 index revision 高于采样 ready watermark 时仅对该键
+  降级，允许并发/新 leader 写；historical Range、pinned follower serializable checkpoint、count index loading/overflow/
+  未就绪继续走原路径。与 A4644 相同，易失 range expectation 只触发诊断，只有完整持久 transaction witness 独立证明
+  index/object 矛盾后才能 ArmCorrupt；无 witness 只返回 request-local DataLoss。
+
+  确定性测试覆盖 stale/missing/malformed/tombstone index、missing/tombstone object、decoded-range 早失败、无 witness
+  不告警、物理 revision 高于 ready、historical/pinned 跳过，以及 `Limit=1` authoritative page。countindex 与 backend
+  定向 race 10 轮分别 1.181 秒和 7.889 秒；完整 backend 78.597 秒、完整 server/etcd 197.634 秒及 backend/server vet
+  全部通过。首次镜像命令因传入 8 位缩写 SHA 被现有 40 位 metadata 门禁拒绝，随后保持门禁并使用完整 SHA 构建；
+  没有把可追溯性检查改弱。
+
+  可追溯镜像 `kubebrain:a4646-6d30cc3b` 内嵌完整 SHA、版本 `a4646`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T18:37:24Z`；本地 OCI manifest list 为
+  `sha256:e7edf3ab0e4062e5ef0d30054e3e8307ec5f5df06c5f178701553ada44d0b2dd`，kind 三副本 runtime imageID 均为
+  `sha256:91d905804fa6ab64ab4f2b2d95dbb943e8855b6eecc253cbd3363a276ad1218c`。真实 TiKV 先证明单笔 520-op Txn 按
+  etcd admission 以 `too many operations` 拒绝且 revision/前缀不变，再用 5 笔各 104-op Txn 在 revision
+  `468126003565884165` 至 `...169` 写入 520 键。A4646 滚动后完整 Range 精确 520，首尾 `/a4646/000`、
+  `/a4646/519` 的 mod revision 分别为 `...165`、`...169`；`Limit=512` 返回 512 且 `more=true`，第二页精确
+  `/a4646/512..519` 八键，实际跨越 512+8 两个 index batch。同镜像重启后仍精确 520；单次 DeleteRange 在
+  revision `...170` 删除 520，再次重启后前缀为零。终态 revision/raft index/applied index 均为 `...170`、term 713，
+  三成员、health、AlarmList 正常，KubeBrain 三副本 Ready/零重启，主 PD 3/3 与 TiKV 3/3 Ready/零重启，日志无
+  corruption/invalid metadata/revision-index/target-object/panic/fatal/admission handoff 错误。共享 TiKV 未注入损坏；
+  破坏/告警闭环由隔离存储测试证明。该切片覆盖 etcd unary Range/List（含 Txn 内复用 List 的路径）；自定义
+  RangeStream 的分段期望与跨页 generation 校验仍需独立推进，不以 unary 结果冒充 stream 已覆盖。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
