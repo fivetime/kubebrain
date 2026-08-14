@@ -119,6 +119,11 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 	}
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()
+	// TxnApply owns the shared side of logicalWriteMu for its complete read/CAS
+	// attempt. A witnessed corrupt previous object may arm CORRUPT from this
+	// section; mark ownership so InternalCAS does not recursively RLock behind a
+	// waiting exclusive range transaction.
+	ctx = b.withLogicalWriteOwnership(ctx)
 	b.revisionWriteMu.Lock()
 	defer b.revisionWriteMu.Unlock()
 	// Another writer may have installed an uncertain revision after the first
@@ -418,6 +423,17 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				if verr != nil {
 					return nil, 0, false, verr
 				}
+				if b.config.EnableEtcdCompatibility {
+					validationErr := b.validateEventObjectValue(ctx, op.Key, p.curRev, val)
+					if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+						validationErr = b.persistWitnessedObjectCorruption(
+							ctx, op.Key, p.curRev, b.coder.EncodeObjectKey(op.Key, p.curRev), val, validationErr,
+						)
+					}
+					if validationErr != nil {
+						return nil, 0, false, validationErr
+					}
+				}
 				p.prevValue = val
 				if b.config.EnableEtcdCompatibility && op.PrevLeaseKnown && !InlineValueLeaseKnown(val) {
 					meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
@@ -443,6 +459,17 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				val, _, verr := b.getInternalVal(ctx, op.Key, p.curRev)
 				if verr != nil {
 					return nil, 0, false, verr
+				}
+				if b.config.EnableEtcdCompatibility {
+					validationErr := b.validateEventObjectValue(ctx, op.Key, p.curRev, val)
+					if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+						validationErr = b.persistWitnessedObjectCorruption(
+							ctx, op.Key, p.curRev, b.coder.EncodeObjectKey(op.Key, p.curRev), val, validationErr,
+						)
+					}
+					if validationErr != nil {
+						return nil, 0, false, validationErr
+					}
 				}
 				p.prevValue = val
 				meta, _, ok, decodeErr := DecodeInlineValueChecked(val)

@@ -15,6 +15,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -40,6 +41,7 @@ type commitThenUncertainStorage struct {
 	failReadsAfterUncertain int32
 	remainingReadFailures   atomic.Int32
 	blockReads              atomic.Bool
+	blockReadKey            []byte
 	readBlocked             chan struct{}
 	releaseReads            chan struct{}
 	readBlockedOnce         sync.Once
@@ -50,7 +52,8 @@ func (s *commitThenUncertainStorage) BeginBatchWrite() storage.BatchWrite {
 }
 
 func (s *commitThenUncertainStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
-	if s.blockReads.Load() && s.releaseReads != nil {
+	if s.blockReads.Load() && s.releaseReads != nil &&
+		(len(s.blockReadKey) == 0 || bytes.Equal(key, s.blockReadKey)) {
 		s.readBlockedOnce.Do(func() { close(s.readBlocked) })
 		select {
 		case <-s.releaseReads:
@@ -845,6 +848,121 @@ func TestTxnApplyNoOpRejectsActiveCorruptAlarm(t *testing.T) {
 		require.Equal(t, before, revision)
 	}
 	require.Equal(t, before, b.GetCurrentRevision())
+}
+
+func TestTxnApplyArmsCorruptForWitnessedPreviousObject(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		op   func([]byte) TxnWriteOp
+	}{
+		{name: "update", op: func(key []byte) TxnWriteOp { return TxnWriteOp{Key: key, Value: []byte("v2")} }},
+		{name: "delete", op: func(key []byte) TxnWriteOp { return TxnWriteOp{Key: key, Delete: true} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			key := []byte(prefix + "/txn-previous-corrupt/" + test.name)
+			created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v1")})
+			require.NoError(t, err)
+			waitCommitted(t, b, created.Header.Revision)
+			before := b.GetCurrentRevision()
+
+			objectKey := b.coder.EncodeObjectKey(key, created.Header.Revision)
+			objectValue, err := b.kv.Get(ctx, objectKey)
+			require.NoError(t, err)
+			corrupt := b.kv.BeginBatchWrite()
+			corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
+			require.NoError(t, corrupt.Commit(ctx))
+
+			results, revision, err := b.TxnApply(ctx, []TxnWriteOp{test.op(key)}, nil)
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.Nil(t, results)
+			require.Zero(t, revision)
+			require.Equal(t, before, b.GetCurrentRevision(), "corruption must fail before revision allocation")
+			alarms, alarmErr := b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+			_, _, writeErr := b.TxnApply(ctx, []TxnWriteOp{{Key: []byte(prefix + "/txn-blocked"), Value: []byte("blocked")}}, nil)
+			require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+			removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+			require.False(t, removed)
+
+			repair := b.kv.BeginBatchWrite()
+			repair.Put(objectKey, objectValue, 0)
+			require.NoError(t, repair.Commit(ctx))
+			removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.NoError(t, disarmErr)
+			require.True(t, removed)
+			results, revision, err = b.TxnApply(ctx, []TxnWriteOp{test.op(key)}, nil)
+			require.NoError(t, err)
+			require.Len(t, results, 1)
+			require.Greater(t, revision, before)
+		})
+	}
+}
+
+func TestTxnApplyWitnessedCorruptionDoesNotDeadlockBehindRangeWriter(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	raw := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, raw.Close()) }()
+	blocked := &commitThenUncertainStorage{
+		KvStorage: raw, readBlocked: make(chan struct{}), releaseReads: make(chan struct{}),
+	}
+	b := NewBackend(blocked, Config{
+		Prefix: prefix + "/txn-corrupt-lock", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/txn-corrupt-lock/key")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+	corrupt := raw.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	blocked.blockReadKey = b.coder.EncodeRevisionKey(key)
+	blocked.blockReads.Store(true)
+	txnDone := make(chan error, 1)
+	go func() {
+		_, _, applyErr := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("v2")}}, nil)
+		txnDone <- applyErr
+	}()
+	select {
+	case <-blocked.readBlocked:
+	case <-time.After(time.Second):
+		t.Fatal("TxnApply did not block after acquiring its shared logical lock")
+	}
+
+	rangeAcquired := make(chan func(), 1)
+	go func() {
+		_, unlock := b.BeginRangeTxn(ctx)
+		rangeAcquired <- unlock
+	}()
+	select {
+	case unlock := <-rangeAcquired:
+		unlock()
+		t.Fatal("exclusive range transaction acquired while TxnApply still held the shared lock")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(blocked.releaseReads)
+
+	select {
+	case applyErr := <-txnDone:
+		require.ErrorIs(t, applyErr, ErrInvalidMVCCMetadata)
+	case <-time.After(2 * time.Second):
+		t.Fatal("witness alarm deadlocked on a recursive logical RLock behind the queued writer")
+	}
+	select {
+	case unlock := <-rangeAcquired:
+		unlock()
+	case <-time.After(time.Second):
+		t.Fatal("range transaction did not acquire after corrupt TxnApply released its shared lock")
+	}
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
 }
 
 func TestTxnApplyRejectsDuplicateKeysBeforeRevisionAllocation(t *testing.T) {
