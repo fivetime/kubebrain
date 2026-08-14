@@ -51024,6 +51024,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该核心套件仍不等于 full differential（专项 endpoints 继续跳过），并在 135.593 秒处发现下一首个差异：Maintenance
   `Hash` 的两次无用户写调用不稳定，而 Hash Header envelope、HashLatestEquivalence、HashKV 均通过，进入后续修复。
 
+- A4652 修复 A4651 核心 differential 暴露的 Maintenance Hash 无写不稳定。精确上游
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore.go::store.hash` 调用
+  backend Hash 时传入 `schema.DefaultIgnores`，明确排除会由后台自行变化的 term、consistent-index 与 storage-version。
+  KubeBrain 原先哈希整个 tenant encoded keyspace，包括 Leader 的 `revision/serializable-checkpoint`；该 worker 即使没有用户
+  mutation，也会在相同 revision 下刷新 TiKV timestamp。运行时间线证明物理 compaction/event-log 清理已于 `20:10:36`
+  完成，而 checkpoint worker 在 Hash 前后独立重试/刷新，因此两次 Hash 的 Header revision 相同但 checksum 改变。
+
+  生产提交 `81b29d01e302b46281601a0ce5fd96440a38be57` 仅把 serializable-checkpoint row 作为 KubeBrain 对应的
+  etcd 后台 bookkeeping 从 Hash 域排除；普通内部 metadata、lease、auth、alarm、MVCC 物理行仍参与，Hash 没有被缩成
+  HashKV。定向 Backend Hash 回归连续 20 轮 0.801 秒，完整 backend 78.647 秒及 backend vet 通过。可追溯镜像
+  `kubebrain:a4652-81b29d01` 的 OCI manifest list 为
+  `sha256:7fd1dd51f3a1799ec5d875b4d97b183cd03e90f46ae5c33ae161be5a29f75c6f`，版本/SHA/UTC build time
+  `a4652`/上述完整 SHA/`2026-08-14T20:16:11Z`，三副本 runtime imageID 均为
+  `sha256:3b048db580df9ba0ace1e88907154bee5a287c18452a99771de7876dd8af6b7e`。滚动后三副本 Ready/零重启、
+  AlarmList 为空，主 PD/TiKV 3/3+3/3 Ready/零重启。
+
+  相同核心 differential 在 Compact/checkpoint 前序负载下，Hash、Hash Header envelope、HashLatestEquivalence、HashKV 与
+  HashKV revision boundary 全部转绿，并继续通过 gateway、lease、leasing、mirror、member、naming、put 等路径；运行到
+  548.538 秒后在 Generated Range 找到下一首个差异：两个 range-option 组合错误返回历史 Header revision `2`（上游
+  current `9`），Count 分别为 `0/1`（上游 `1/5`）。该结果初步指向 create/mod revision filter 被错误当成 historical
+  snapshot revision，进入下一生产修复。Auth/JWT、automatic quota、真实 Envoy、外部 L4/L7 reset、三 direct replica 等
+  专项 endpoint 仍跳过，所以不宣称 full differential。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
