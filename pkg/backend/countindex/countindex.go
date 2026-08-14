@@ -458,6 +458,49 @@ func (t *TreeIndex) KeysPageBytesIfReady(start, end, after []byte, rev uint64, l
 	return t.keysPageIfReady(start, end, after, rev, limit, maxBytes, generation)
 }
 
+// StatesPageIfReady is the revision-bearing counterpart of KeysPageIfReady.
+// It is used by a range stream to bind every emitted logical key to the exact
+// modified revision selected by one count-index generation. after is exclusive;
+// a generation mismatch, rebuild/loading state, overflow, or unavailable
+// revision returns ok=false so the caller terminates instead of splicing pages.
+func (t *TreeIndex) StatesPageIfReady(start, end, after []byte, rev uint64, limit int, generation uint64) (states []LatestState, nextGeneration uint64, more bool, ok bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if limit <= 0 || t.overflowed || t.loading || t.baseRev == 0 ||
+		rev < t.baseRev || rev > t.readyRev || (generation != 0 && generation != t.pageGen) {
+		return nil, 0, false, false
+	}
+	nextGeneration = t.pageGen
+	seek := start
+	if len(after) != 0 && bytes.Compare(after, seek) >= 0 {
+		seek = after
+	}
+	t.tree.AscendGreaterOrEqual(&keyItem{key: seek}, func(it btree.Item) bool {
+		ki := it.(*keyItem)
+		if len(after) != 0 && bytes.Compare(ki.key, after) <= 0 {
+			return true
+		}
+		if len(end) != 0 && bytes.Compare(ki.key, end) >= 0 {
+			return false
+		}
+		latest := sort.Search(len(ki.revs), func(i int) bool {
+			return ki.revs[i].revision > rev
+		}) - 1
+		if latest < 0 || ki.revs[latest].tombstone {
+			return true
+		}
+		if len(states) == limit {
+			more = true
+			return false
+		}
+		states = append(states, LatestState{
+			Key: append([]byte(nil), ki.key...), Revision: ki.revs[latest].revision,
+		})
+		return true
+	})
+	return states, nextGeneration, more, true
+}
+
 func (t *TreeIndex) keysPageIfReady(start, end, after []byte, rev uint64, limit, maxBytes int, generation uint64) (keys [][]byte, nextGeneration uint64, more bool, ok bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

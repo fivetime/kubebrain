@@ -317,6 +317,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 		// write between those two observations could then leak newer KVs under
 		// an older response header.
 		backendRevision = streamHeaderRevision
+		ctx = backend.WithLatestRangeStream(ctx)
 	}
 	ch, err := s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
 	if err != nil {

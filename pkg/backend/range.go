@@ -1072,6 +1072,22 @@ func (b *backend) ListByStream(ctx context.Context, startKey, endKey []byte, rev
 	return stream, nil
 }
 
+type latestRangeStreamContextKey struct{}
+
+// WithLatestRangeStream records that a server pinned an original revision=0
+// request to an explicit start revision before crossing the Backend interface.
+// Without this marker the backend cannot distinguish that safe pin from a true
+// historical request and would incorrectly skip latest-only integrity checks.
+func WithLatestRangeStream(ctx context.Context) context.Context {
+	return context.WithValue(ctx, latestRangeStreamContextKey{}, true)
+}
+
+// LatestRangeStreamFromContext reports whether WithLatestRangeStream marked ctx.
+func LatestRangeStreamFromContext(ctx context.Context) bool {
+	latest, _ := ctx.Value(latestRangeStreamContextKey{}).(bool)
+	return latest
+}
+
 // RangeStream implements Backend interface: user-key range streaming for the
 // etcd 3.7 KV.RangeStream RPC. It encodes the user range into the object
 // keyspace (symmetric with List) — the scanner works on encoded object keys, so
@@ -1082,6 +1098,8 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	if err != nil {
 		return nil, err
 	}
+	_, callerPinned := storage.SnapshotTimestampFromContext(ctx)
+	latest := rev == 0 || LatestRangeStreamFromContext(ctx)
 	if rev == 0 {
 		rev = curRev
 	}
@@ -1117,7 +1135,8 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 		klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
 		stream = b.scanner.RangeStream(scanCtx, key, rangeEnd, rev, false)
 	}
-	return b.validatedRangeStream(scanCtx, cancel, stream, rev), nil
+	indexExpectation := b.newLatestRangeStreamExpectation(userStart, userEnd, rev, latest && !callerPinned)
+	return b.validatedRangeStream(scanCtx, cancel, stream, rev, indexExpectation), nil
 }
 
 // validatedRangeStream validates each bounded data chunk before it becomes
@@ -1129,6 +1148,7 @@ func (b *backend) validatedRangeStream(
 	cancel context.CancelFunc,
 	input <-chan *proto.StreamRangeResponse,
 	revision uint64,
+	indexExpectation *latestRangeStreamExpectation,
 ) <-chan *proto.StreamRangeResponse {
 	output := make(chan *proto.StreamRangeResponse)
 	go func() {
@@ -1143,7 +1163,24 @@ func (b *backend) validatedRangeStream(
 					return
 				}
 				if chunk != nil && chunk.RangeResponse != nil && chunk.RangeResponse.More {
+					if indexExpectation != nil {
+						if err := indexExpectation.validate(ctx, chunk.RangeResponse.Kvs); err != nil {
+							select {
+							case output <- rangeStreamErrorEnd(revision, err):
+							case <-ctx.Done():
+							}
+							return
+						}
+					}
 					if err := b.validateRangeObjectValues(ctx, chunk.RangeResponse.Kvs); err != nil {
+						select {
+						case output <- rangeStreamErrorEnd(revision, err):
+						case <-ctx.Done():
+						}
+						return
+					}
+				} else if chunk != nil && chunk.RangeResponse != nil && chunk.Err == "" && indexExpectation != nil {
+					if err := indexExpectation.finish(ctx); err != nil {
 						select {
 						case output <- rangeStreamErrorEnd(revision, err):
 						case <-ctx.Done():
@@ -1160,6 +1197,129 @@ func (b *backend) validatedRangeStream(
 		}
 	}()
 	return output
+}
+
+const latestRangeStreamIndexPage = 300
+
+// latestRangeStreamExpectation is a bounded cursor over one count-index
+// generation at the stream's pinned logical revision. It lets each physical
+// chunk be checked before emission without materializing the complete range.
+// Prior chunks cannot be withdrawn if a later chunk fails, so corruption is
+// carried by the existing terminal stream error and consumers must discard the
+// partial response, matching all other RangeStream terminal failures.
+type latestRangeStreamExpectation struct {
+	backend    *backend
+	start      []byte
+	end        []byte
+	revision   uint64
+	generation uint64
+	pending    []countindex.LatestState
+	after      []byte
+	more       bool
+}
+
+func (b *backend) newLatestRangeStreamExpectation(
+	start, end []byte, revision uint64, latest bool,
+) *latestRangeStreamExpectation {
+	if !latest || b.countIndex == nil {
+		return nil
+	}
+	if isFromKeyEnd(end) {
+		end = nil
+	}
+	states, generation, more, ready := b.countIndex.StatesPageIfReady(
+		start, end, nil, revision, latestRangeStreamIndexPage, 0,
+	)
+	if !ready {
+		b.metricCli.EmitCounter("backend.range_stream.latest_index_miss", 1)
+		return nil
+	}
+	expectation := &latestRangeStreamExpectation{
+		backend: b, start: append([]byte(nil), start...), end: append([]byte(nil), end...),
+		revision: revision, generation: generation, pending: states, more: more,
+	}
+	if len(states) != 0 {
+		expectation.after = append([]byte(nil), states[len(states)-1].Key...)
+	}
+	b.metricCli.EmitCounter("backend.range_stream.latest_index_hit", 1)
+	return expectation
+}
+
+func (e *latestRangeStreamExpectation) loadMore() error {
+	if !e.more {
+		return nil
+	}
+	states, generation, more, ready := e.backend.countIndex.StatesPageIfReady(
+		e.start, e.end, e.after, e.revision, latestRangeStreamIndexPage, e.generation,
+	)
+	if !ready || generation != e.generation {
+		return fmt.Errorf("latest range ordering index changed during stream at revision %d", e.revision)
+	}
+	if len(states) == 0 && more {
+		return fmt.Errorf("latest range ordering index made no progress at revision %d", e.revision)
+	}
+	e.pending = append(e.pending, states...)
+	e.more = more
+	if len(states) != 0 {
+		e.after = append(e.after[:0], states[len(states)-1].Key...)
+	}
+	return nil
+}
+
+func (e *latestRangeStreamExpectation) ensure(n int) error {
+	for len(e.pending) < n && e.more {
+		if err := e.loadMore(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *latestRangeStreamExpectation) validate(ctx context.Context, kvs []*proto.KeyValue) error {
+	if err := e.ensure(len(kvs)); err != nil {
+		return err
+	}
+	if len(e.pending) < len(kvs) {
+		cause := invalidMVCCMetadataError(nil,
+			"latest range stream returned %d unexpected keys after its ordering index ended at revision %d",
+			len(kvs)-len(e.pending), e.revision)
+		return e.backend.persistWitnessedRevisionIndexCorruption(ctx, cause)
+	}
+	expected := e.pending[:len(kvs)]
+	for i, kv := range kvs {
+		if kv == nil || !bytes.Equal(kv.Key, expected[i].Key) || kv.Revision != expected[i].Revision {
+			var actualKey []byte
+			var actualRevision uint64
+			if kv != nil {
+				actualKey, actualRevision = kv.Key, kv.Revision
+			}
+			cause := invalidMVCCMetadataError(nil,
+				"latest range stream expected key %q revision %d but received key %q revision %d",
+				expected[i].Key, expected[i].Revision, actualKey, actualRevision)
+			return e.backend.persistWitnessedRevisionIndexCorruption(ctx, cause)
+		}
+	}
+	if err := e.backend.validateLatestRangeIndexes(ctx, kvs, latestRangeExpectation{
+		states: expected, readyRevision: e.revision, ready: true,
+	}); err != nil {
+		return err
+	}
+	e.pending = e.pending[len(kvs):]
+	return nil
+}
+
+func (e *latestRangeStreamExpectation) finish(ctx context.Context) error {
+	if err := e.ensure(1); err != nil {
+		return err
+	}
+	if len(e.pending) == 0 {
+		return nil
+	}
+	state := e.pending[0]
+	cause := invalidMVCCMetadataError(nil,
+		"latest range stream ended before expected live key %q revision %d at stream revision %d",
+		state.Key, state.Revision, e.revision)
+	return e.backend.persistWitnessedRevisionIndexCorruption(ctx, cause)
 }
 
 func rangeStreamErrorEnd(revision uint64, err error) *proto.StreamRangeResponse {
@@ -1287,7 +1447,7 @@ func (b *backend) SnapshotStream(ctx context.Context, rev uint64) (<-chan *proto
 	stream := b.scanner.RangeStream(
 		scanCtx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), rev, false,
 	)
-	return b.validatedRangeStream(scanCtx, cancel, stream, rev), nil
+	return b.validatedRangeStream(scanCtx, cancel, stream, rev, nil), nil
 }
 
 const (

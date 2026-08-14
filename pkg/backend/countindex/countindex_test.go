@@ -544,6 +544,40 @@ func TestKeysPageIfReadyOrdersLiveHistoricalKeysAndFencesTreeChanges(t *testing.
 	require.False(t, ok, "compaction must invalidate an in-flight page generation")
 }
 
+func TestStatesPageIfReadyCarriesExactRevisionsAndFencesGeneration(t *testing.T) {
+	idx := New(0)
+	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		emit([]byte("a"), 7, false)
+		emit([]byte("b"), 8, false)
+		emit([]byte("c"), 9, true)
+		return nil
+	})
+	idx.Apply([]byte("a"), 11, false)
+	idx.Apply([]byte("d"), 12, false)
+
+	page1, generation, more, ok := idx.StatesPageIfReady([]byte("a"), []byte("z"), nil, 12, 2, 0)
+	require.True(t, ok)
+	require.True(t, more)
+	require.Equal(t, []LatestState{
+		{Key: []byte("a"), Revision: 11},
+		{Key: []byte("b"), Revision: 8},
+	}, page1)
+	page2, sameGeneration, more, ok := idx.StatesPageIfReady(
+		[]byte("a"), []byte("z"), page1[len(page1)-1].Key, 12, 2, generation,
+	)
+	require.True(t, ok)
+	require.False(t, more)
+	require.Equal(t, generation, sameGeneration)
+	require.Equal(t, []LatestState{{Key: []byte("d"), Revision: 12}}, page2)
+
+	idx.Reset(func() uint64 { return 12 }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+		emit([]byte("a"), 11, false)
+		return nil
+	})
+	_, _, _, ok = idx.StatesPageIfReady([]byte("a"), []byte("z"), page1[1].Key, 12, 2, generation)
+	require.False(t, ok, "reset must invalidate an in-flight state page generation")
+}
+
 func TestKeysPageBytesIfReadyBoundsCopiedKeysAndAdvancesPastOversizedKey(t *testing.T) {
 	idx := New(0)
 	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {

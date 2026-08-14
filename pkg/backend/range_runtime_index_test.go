@@ -26,6 +26,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -265,6 +266,148 @@ func TestLatestListLimitValidatesOnlyAuthoritativeExpectationPage(t *testing.T) 
 	require.Len(t, resp.GetKvs(), 1)
 	require.Equal(t, []byte("range-a"), resp.GetKvs()[0].GetKey())
 	require.True(t, resp.GetMore())
+}
+
+func collectRuntimeIndexStream(t *testing.T, stream <-chan *proto.StreamRangeResponse) ([]*proto.KeyValue, error) {
+	t.Helper()
+	var kvs []*proto.KeyValue
+	var terminal error
+	for chunk := range stream {
+		kvs = append(kvs, chunk.GetRangeResponse().GetKvs()...)
+		if chunk.GetErr() != "" {
+			decoded, ok := streamerror.Decode(chunk.GetErr())
+			require.True(t, ok)
+			terminal = decoded
+		}
+	}
+	return kvs, terminal
+}
+
+func TestLatestRangeStreamArmsCorruptBeforeExposingSplitChunk(t *testing.T) {
+	for _, target := range []string{
+		"index-stale", "index-missing", "index-malformed", "index-tombstone", "object-missing", "object-tombstone",
+	} {
+		t.Run(target, func(t *testing.T) {
+			b, store, ctx, key := newRuntimeIndexBackend(t)
+			createRevision, updateRevision := applyRuntimeIndexVersions(t, b, ctx, key)
+			corrupt := store.BeginBatchWrite()
+			switch target {
+			case "index-stale":
+				corrupt.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(createRevision), 0)
+			case "index-missing":
+				corrupt.Del(b.coder.EncodeRevisionKey(key))
+			case "index-malformed":
+				corrupt.Put(b.coder.EncodeRevisionKey(key), []byte{1}, 0)
+			case "index-tombstone":
+				corrupt.Put(b.coder.EncodeRevisionKey(key), append(uint64ToBytes(updateRevision), 0), 0)
+			case "object-missing":
+				corrupt.Del(b.coder.EncodeObjectKey(key, updateRevision))
+			case "object-tombstone":
+				corrupt.Put(b.coder.EncodeObjectKey(key, updateRevision), tombStoneBytes, 0)
+			}
+			require.NoError(t, corrupt.Commit(ctx))
+
+			stream, err := b.RangeStream(ctx, key, runtimeIndexRangeEnd(key), 0)
+			require.NoError(t, err)
+			kvs, terminal := collectRuntimeIndexStream(t, stream)
+			require.Empty(t, kvs, "the contradictory first chunk must not become visible")
+			require.ErrorIs(t, terminal, ErrInvalidMVCCMetadata)
+			alarms, alarmErr := b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+		})
+	}
+}
+
+func TestLatestDecodedRangeStreamRejectsStaleIndexSelectedObject(t *testing.T) {
+	b, store, ctx, _ := newRuntimeIndexBackend(t)
+	key := []byte("/runtime-index-stream-key")
+	createRevision, _ := applyRuntimeIndexVersions(t, b, ctx, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(createRevision), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	stream, err := b.RangeStream(ctx, key, append(append([]byte(nil), key...), 0), 0)
+	require.NoError(t, err)
+	kvs, terminal := collectRuntimeIndexStream(t, stream)
+	require.Empty(t, kvs)
+	require.ErrorIs(t, terminal, ErrInvalidMVCCMetadata)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+}
+
+func TestHistoricalRangeStreamDoesNotUseLatestIndexExpectation(t *testing.T) {
+	b, store, ctx, key := newRuntimeIndexBackend(t)
+	createRevision, _ := applyRuntimeIndexVersions(t, b, ctx, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(createRevision), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	stream, err := b.RangeStream(ctx, key, runtimeIndexRangeEnd(key), createRevision)
+	require.NoError(t, err)
+	kvs, terminal := collectRuntimeIndexStream(t, stream)
+	require.NoError(t, terminal)
+	require.Len(t, kvs, 1)
+	require.Equal(t, createRevision, kvs[0].GetRevision())
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms)
+}
+
+func TestPinnedLatestRangeStreamMarkerRetainsRuntimeIndexValidation(t *testing.T) {
+	b, store, ctx, key := newRuntimeIndexBackend(t)
+	createRevision, updateRevision := applyRuntimeIndexVersions(t, b, ctx, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(createRevision), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	stream, err := b.RangeStream(
+		WithLatestRangeStream(ctx), key, runtimeIndexRangeEnd(key), updateRevision,
+	)
+	require.NoError(t, err)
+	kvs, terminal := collectRuntimeIndexStream(t, stream)
+	require.Empty(t, kvs)
+	require.ErrorIs(t, terminal, ErrInvalidMVCCMetadata)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+}
+
+func TestLatestRangeStreamExpectationFencesResetBetweenPages(t *testing.T) {
+	b, _, ctx, _ := newRuntimeIndexBackend(t)
+	ops := make([]TxnWriteOp, 301)
+	keys := make([][]byte, len(ops))
+	for i := range ops {
+		keys[i] = []byte(fmt.Sprintf("stream-page-%03d", i))
+		ops[i] = TxnWriteOp{Key: keys[i], Value: []byte("value")}
+	}
+	_, revision, err := b.TxnApply(ctx, ops, nil)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= revision }, 5*time.Second, 2*time.Millisecond)
+	require.NoError(t, b.RebuildCountIndex(ctx))
+
+	expectation := b.newLatestRangeStreamExpectation([]byte("stream-page-"), []byte("stream-page."), revision, true)
+	require.NotNil(t, expectation)
+	require.Len(t, expectation.pending, latestRangeStreamIndexPage)
+	require.True(t, expectation.more)
+	firstPage := make([]*proto.KeyValue, latestRangeStreamIndexPage)
+	for i := range firstPage {
+		firstPage[i] = &proto.KeyValue{Key: keys[i], Revision: revision}
+	}
+	require.NoError(t, expectation.validate(ctx, firstPage))
+
+	b.countIndex.Reset(func() uint64 { return revision }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+		for _, key := range keys {
+			emit(key, revision, false)
+		}
+		return nil
+	})
+	err = expectation.validate(ctx, []*proto.KeyValue{{Key: keys[300], Revision: revision}})
+	require.ErrorContains(t, err, "ordering index changed during stream")
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms, "a generation change is a retryable stream failure, not corruption evidence")
 }
 
 func TestLatestGetUnwitnessedIndexContradictionDoesNotArm(t *testing.T) {

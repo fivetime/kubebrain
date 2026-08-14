@@ -77,6 +77,7 @@ type prematureRangeStreamBackendShim struct {
 type revisionRecordingRangeStreamBackendShim struct {
 	BackendShim
 	revision uint64
+	latest   bool
 }
 
 type writeBeforeRangeStreamBackendShim struct {
@@ -131,6 +132,7 @@ func (b *revisionRecordingRangeStreamBackendShim) RangeStreamChan(
 	ctx context.Context, start, end []byte, revision uint64,
 ) (<-chan rangeStreamChunk, error) {
 	b.revision = revision
+	b.latest = backend.LatestRangeStreamFromContext(ctx)
 	return b.BackendShim.RangeStreamChan(ctx, start, end, revision)
 }
 
@@ -269,7 +271,9 @@ func TestRangeStreamNormalizesNegativeRevisionBeforeBackend(t *testing.T) {
 				Key: []byte("/negative-revision/"), RangeEnd: []byte("/negative-revision0"), Revision: tc.wire,
 			}, stream))
 			require.Equal(t, tc.want, recorder.revision,
-				"etcd revision <= 0 means latest; the backend must receive its revision 0 sentinel without unsigned wrap")
+				"etcd revision <= 0 means latest; the backend must receive the pinned start revision without unsigned wrap")
+			require.Equal(t, tc.wire <= 0, recorder.latest,
+				"the backend must retain whether the explicit revision came from an original latest request")
 		})
 	}
 }
