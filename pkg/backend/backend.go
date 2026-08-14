@@ -399,6 +399,10 @@ type backend struct {
 	// countIndex, when enabled, gives exact live-key counts at a revision
 	// without scanning storage (approach A-index). nil when disabled.
 	countIndex *countindex.TreeIndex
+	// countIndexSyncMu serializes leader rebuilds and follower lazy catch-up. A
+	// cold follower can receive many decoded RangeStreams at once; without this
+	// gate every request would launch the same whole-keyspace bootstrap scan.
+	countIndexSyncMu sync.Mutex
 
 	// historyScanSem bounds the number of concurrent watch-history fallback
 	// scans. After a cache reset (e.g. leader change) every reconnecting watcher
@@ -549,8 +553,10 @@ type Config struct {
 	// (defaultHistoryScanRevBucket); 1 => only exact-revision reconnects share.
 	HistoryScanRevBucket uint64
 
-	// EnableCountIndex maintains an in-memory versioned key index on the leader
-	// for exact O(range) counts (approach A-index). Requires EnableEtcdCompatibility.
+	// EnableCountIndex maintains an in-memory versioned key index eagerly on the
+	// leader and lazily on followers that serve decoded RangeStream pagination,
+	// for exact O(range) counts and user-key ordering (approach A-index).
+	// Requires EnableEtcdCompatibility.
 	EnableCountIndex bool
 
 	// AutoCompactionRetention, when > 0, enables the leader-side safety-net

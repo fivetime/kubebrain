@@ -720,6 +720,13 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 		return nil, err
 	}
 	if decodedRange {
+		ctx, err = b.withRangeSnapshotTimestamp(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if _, ensureErr := b.ensureCountIndexAtRevision(ctx, rev); ensureErr != nil {
+			return nil, ensureErr
+		}
 		if stream, served, streamErr := b.decodedUserRangeStreamFromCountIndex(ctx, userStart, userEnd, rev); served || streamErr != nil {
 			return stream, streamErr
 		}

@@ -28,12 +28,14 @@ type checkpointCountScanner struct {
 	rangeCalled         bool
 	rangeFilteredCalled bool
 	rangeStreamCalled   bool
+	rangeStreamCalls    int
 	countFilteredCalled bool
 }
 
 func (s *checkpointCountScanner) RangeStream(ctx context.Context, start, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse {
 	s.mu.Lock()
 	s.rangeStreamCalled = true
+	s.rangeStreamCalls++
 	s.mu.Unlock()
 	return s.Scanner.RangeStream(ctx, start, end, revision, keysOnly)
 }

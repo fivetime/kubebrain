@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Package countindex is an in-memory, key-sorted, versioned index (etcd
-// treeIndex-style) maintained on the leader. It answers the exact number of
+// treeIndex-style) maintained eagerly on the leader and caught up lazily on a
+// follower when a decoded RangeStream needs ordered pagination. It answers the exact number of
 // live keys in a range at any (non-compacted) revision without scanning
 // storage. The first count at a revision uses O(range) traversal; repeated
 // counts at that pinned revision use a lazily built live-key rank snapshot and

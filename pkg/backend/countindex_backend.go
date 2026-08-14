@@ -17,9 +17,17 @@ package backend
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"sort"
 	"time"
 
 	"k8s.io/klog/v2"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 // CountAtRevision returns the exact live-key count of [key,end) at revision rev
@@ -70,21 +78,27 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 	if b.countIndex == nil {
 		return nil
 	}
+	b.countIndexSyncMu.Lock()
+	defer b.countIndexSyncMu.Unlock()
+	return b.rebuildCountIndexLocked(ctx, 0)
+}
+
+func (b *backend) rebuildCountIndexLocked(ctx context.Context, requestedRevision uint64) error {
 	// Retry with a freshly captured baseRev: a compaction can still slip between
 	// Reset's snapshot-revision capture and the scan's watermark check.
 	var lastErr error
 	for attempt := 1; ; attempt++ {
-		if lastErr = b.rebuildCountIndexOnce(ctx); lastErr == nil {
+		if lastErr = b.rebuildCountIndexOnce(ctx, requestedRevision); lastErr == nil {
 			return nil
 		}
-		if attempt >= 3 || ctx.Err() != nil {
+		if requestedRevision != 0 || attempt >= 3 || ctx.Err() != nil {
 			return lastErr
 		}
 		klog.ErrorS(lastErr, "rebuild count index failed, retrying with a fresh snapshot revision", "attempt", attempt)
 	}
 }
 
-func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
+func (b *backend) rebuildCountIndexOnce(ctx context.Context, requestedRevision uint64) error {
 	ts := time.Now()
 	// Floor the snapshot revision at the compact watermark+1: a just-promoted
 	// leader whose committed revision has not yet caught up could otherwise capture
@@ -101,6 +115,9 @@ func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 		klog.ErrorS(cerr, "rebuild count index: read compact revision failed")
 		return cerr
 	}
+	if requestedRevision != 0 && requestedRevision <= compactRev {
+		return fmt.Errorf("count index snapshot revision %d is compacted at %d", requestedRevision, compactRev)
+	}
 	// baseRev is captured inside Reset under its install lock; the load then scans
 	// storage at exactly baseRev. Reset loads without holding the index lock for
 	// the whole scan, so the collector keeps advancing the committed revision
@@ -109,7 +126,10 @@ func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 	var loadErr error // Reset swallows the load error (it just disables the index); capture it for the retry loop
 	b.countIndex.Reset(
 		func() uint64 {
-			r := b.tso.GetRevision()
+			r := requestedRevision
+			if r == 0 {
+				r = b.tso.GetRevision()
+			}
 			if compactRev+1 > r {
 				r = compactRev + 1
 			}
@@ -154,4 +174,122 @@ func (b *backend) rebuildCountIndexOnce(ctx context.Context) error {
 		"ready", b.countIndex.Ready(rev), "latency", time.Since(ts))
 	b.metricCli.EmitGauge("count_index.keys", b.countIndex.Len())
 	return nil
+}
+
+// ensureCountIndexAtRevision makes the ordered index authoritative at revision
+// on replicas that do not run the leader's in-memory event collector. A cold
+// follower bootstraps once from the bounded storage RangeStream; subsequent
+// reads replay only durable event-log metadata. Untrusted/cleaned log windows
+// force another bounded rebuild rather than advancing Ready across a hole.
+func (b *backend) ensureCountIndexAtRevision(ctx context.Context, revision uint64) (bool, error) {
+	if b.countIndex == nil || revision == 0 || b.countIndex.Overflowed() {
+		return false, nil
+	}
+	if b.countIndex.Ready(revision) {
+		return true, nil
+	}
+	b.countIndexSyncMu.Lock()
+	defer b.countIndexSyncMu.Unlock()
+	if b.countIndex.Overflowed() {
+		return false, nil
+	}
+	if b.countIndex.Ready(revision) {
+		return true, nil
+	}
+	base := b.countIndex.BaseRev()
+	if base != 0 && revision < base {
+		return false, nil
+	}
+	if base != 0 && b.countIndex.ReadyRev() < revision {
+		served, err := b.syncCountIndexFromEventLog(ctx, b.countIndex.ReadyRev()+1, revision)
+		if err != nil {
+			return false, err
+		}
+		if served && b.countIndex.Ready(revision) {
+			b.metricCli.EmitCounter("count_index.lazy_replay", 1)
+			return true, nil
+		}
+	}
+	if err := b.rebuildCountIndexLocked(ctx, revision); err != nil {
+		return false, err
+	}
+	ready := b.countIndex.Ready(revision)
+	if ready {
+		b.metricCli.EmitCounter("count_index.lazy_rebuild", 1)
+	}
+	return ready, nil
+}
+
+// syncCountIndexFromEventLog streams complete transaction groups in
+// [fromRevision,toRevision]. It retains at most one transaction's metadata;
+// values are unnecessary because TreeIndex only needs key/revision/tombstone.
+func (b *backend) syncCountIndexFromEventLog(ctx context.Context, fromRevision, toRevision uint64) (bool, error) {
+	if fromRevision > toRevision {
+		b.countIndex.SetReadyRev(toRevision)
+		return true, nil
+	}
+	start, ok := b.getEventLogStart(ctx)
+	if !ok || fromRevision <= start {
+		return false, nil
+	}
+	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(fromRevision), b.ks.EventLogRangeEnd(toRevision), timestamp, 0)
+	if err != nil {
+		return false, err
+	}
+	defer iter.Close()
+	var group []eventLogPending
+	flush := func() (bool, error) {
+		if len(group) == 0 {
+			return true, nil
+		}
+		if group[0].ordered {
+			sort.Slice(group, func(i, j int) bool { return group[i].sub < group[j].sub })
+		}
+		if err := validateEventLogEntries(group); err != nil {
+			return false, nil
+		}
+		for _, entry := range group {
+			b.countIndex.Apply(entry.userKey, entry.rev, entry.verb == proto.Event_DELETE)
+		}
+		group = group[:0]
+		return true, nil
+	}
+	for {
+		if err := iter.Next(ctx); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return false, err
+		}
+		revision, userKey, decodeErr := b.ks.DecodeEventLogKey(iter.Key())
+		if decodeErr != nil {
+			return false, nil
+		}
+		verb, prevRev, sub, total, ordered, valid := coder.DecodeOrderedEventLogValue(iter.Val())
+		if !valid {
+			return false, nil
+		}
+		if len(group) != 0 && group[0].rev != revision {
+			served, flushErr := flush()
+			if flushErr != nil || !served {
+				return served, flushErr
+			}
+		}
+		group = append(group, eventLogPending{
+			verb: proto.Event_EventType(verb), rev: revision, prevRev: prevRev,
+			userKey: append([]byte(nil), userKey...), sub: sub, total: total, ordered: ordered,
+		})
+	}
+	if served, flushErr := flush(); flushErr != nil || !served {
+		return served, flushErr
+	}
+	// cleanupEventLog advances the watermark before deleting entries. Re-read
+	// storage after the iterator: if it crossed our window, the scan may have
+	// observed only a suffix and the partially applied index must be rebuilt.
+	if refreshed, ok := b.refreshEventLogStart(ctx); !ok || fromRevision <= refreshed {
+		return false, nil
+	}
+	b.countIndex.SetReadyRev(toRevision)
+	return true, nil
 }

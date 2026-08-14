@@ -287,3 +287,114 @@ func TestDecodedRangeStreamUsesOrderedIndexWithoutMaterializingRange(t *testing.
 	require.NotZero(t, store.batchTimestamps[0])
 	store.mu.Unlock()
 }
+
+func TestColdFollowerDecodedRangeStreamRebuildsOnceThenReplaysEventLog(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
+	b := NewBackend(store, Config{
+		Prefix: "/kubebrain/range-stream-follower-index", Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, EnableCountIndex: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	ctx := context.Background()
+	seedPut := func(key, value []byte, revision uint64) {
+		mutation := b.encodeCreateMutation(
+			key, value, EtcdMetadata{CreateRevision: revision, Version: 1}, revision, 0, 1,
+		)
+		batch := rawStore.BeginBatchWrite()
+		batch.Put(mutation.revisionKey, mutation.newRevisionValue, 0)
+		for _, objectMutation := range mutation.objectMutations {
+			batch.Put(objectMutation.key, objectMutation.value, 0)
+		}
+		require.NoError(t, batch.Commit(ctx))
+	}
+	initial := []struct {
+		key   []byte
+		value byte
+	}{
+		{[]byte("a"), 0}, {[]byte("a\x00"), 1}, {[]byte("a$"), 2}, {[]byte("a/x"), 3},
+	}
+	for index, item := range initial {
+		seedPut(item.key, []byte{item.value}, uint64(index+2))
+	}
+	b.SetCurrentRevision(5)
+	require.NoError(t, b.advanceEventLogStartStorage(ctx, 5))
+	tracked := &checkpointCountScanner{Scanner: b.scanner}
+	b.scanner = tracked
+
+	collect := func(revision uint64) []*proto.KeyValue {
+		stream, err := b.RangeStream(ctx, []byte("a"), []byte("b"), revision)
+		require.NoError(t, err)
+		var result []*proto.KeyValue
+		for response := range stream {
+			require.Empty(t, response.Err)
+			result = append(result, response.RangeResponse.Kvs...)
+		}
+		return result
+	}
+	bootstrapResults := make([][]*proto.KeyValue, 8)
+	var bootstrap sync.WaitGroup
+	for index := range bootstrapResults {
+		bootstrap.Add(1)
+		go func(index int) {
+			defer bootstrap.Done()
+			bootstrapResults[index] = collect(5)
+		}(index)
+	}
+	bootstrap.Wait()
+	first := bootstrapResults[0]
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00"), []byte("a$"), []byte("a/x")}, [][]byte{
+		first[0].Key, first[1].Key, first[2].Key, first[3].Key,
+	})
+	for _, result := range bootstrapResults[1:] {
+		require.Equal(t, first, result)
+	}
+	require.True(t, b.countIndex.Ready(5))
+	tracked.mu.Lock()
+	require.Equal(t, 1, tracked.rangeStreamCalls, "a cold follower must perform one bounded bootstrap scan")
+	tracked.mu.Unlock()
+
+	created := b.encodeCreateMutation(
+		[]byte("a!"), []byte{4}, EtcdMetadata{CreateRevision: 6, Version: 1}, 6, 0, 1,
+	)
+	createBatch := rawStore.BeginBatchWrite()
+	createBatch.Put(created.revisionKey, created.newRevisionValue, 0)
+	for _, objectMutation := range created.objectMutations {
+		createBatch.Put(objectMutation.key, objectMutation.value, 0)
+	}
+	createBatch.Put(created.eventKey, created.eventValue, 0)
+	require.NoError(t, createBatch.Commit(ctx))
+	deleted := b.encodeDeleteMutation([]byte("a$"), 4, 7)
+	deleteBatch := rawStore.BeginBatchWrite()
+	deleteBatch.Put(deleted.revisionKey, deleted.newRevisionValue, 0)
+	deleteBatch.Put(deleted.objectKey, deleted.objectValue, 0)
+	deleteBatch.Put(deleted.eventKey, deleted.eventValue, 0)
+	require.NoError(t, deleteBatch.Commit(ctx))
+	b.SetCurrentRevision(7)
+
+	second := collect(7)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00"), []byte("a!"), []byte("a/x")}, [][]byte{
+		second[0].Key, second[1].Key, second[2].Key, second[3].Key,
+	})
+	require.True(t, b.countIndex.Ready(7))
+	tracked.mu.Lock()
+	require.Equal(t, 1, tracked.rangeStreamCalls,
+		"a trusted event-log delta must catch the follower up without another whole-keyspace scan")
+	tracked.mu.Unlock()
+
+	// Simulate a new term whose writer cannot vouch for the previous log window:
+	// the watermark advances across revision 8 and that revision has no event-log
+	// row. The follower must rebuild instead of advancing Ready over the hole.
+	seedPut([]byte("a#"), []byte{5}, 8)
+	b.SetCurrentRevision(8)
+	require.NoError(t, b.advanceEventLogStartStorage(ctx, 8))
+	third := collect(8)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00"), []byte("a!"), []byte("a#"), []byte("a/x")}, [][]byte{
+		third[0].Key, third[1].Key, third[2].Key, third[3].Key, third[4].Key,
+	})
+	tracked.mu.Lock()
+	require.Equal(t, 2, tracked.rangeStreamCalls,
+		"an untrusted event-log window must force one fresh bounded rebuild")
+	tracked.mu.Unlock()
+}
