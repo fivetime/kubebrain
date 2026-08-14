@@ -363,6 +363,23 @@ func TestStatusRestoresColdRaftEnvelopeFromDurableRevision(t *testing.T) {
 	require.Equal(t, response.GetRaftIndex(), response.GetRaftAppliedIndex())
 }
 
+func TestStatusRefreshesLaggingFollowerRevisionFromDurableWatermark(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.backend = &coldStatusRevisionBackendShim{
+		BackendShim: server.backend,
+		current:     100,
+		durable:     200,
+	}
+
+	response, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.Equal(t, int64(200), response.GetHeader().GetRevision())
+	require.Equal(t, uint64(200), response.GetRaftIndex())
+	require.Equal(t, uint64(200), response.GetRaftAppliedIndex())
+	require.Equal(t, uint64(200), server.backend.GetCurrentRevision())
+}
+
 func TestAlarmMutationRestoresColdHeaderFromDurableRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

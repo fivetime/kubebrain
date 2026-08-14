@@ -36,6 +36,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 // Version is the single source of truth for the etcd version KubeBrain claims,
@@ -297,7 +298,7 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 	// revision before exposing the synthetic Raft indexes. Sampling the raw local
 	// cache here used to capture zero; QuotaStatus recovered the cache later, so
 	// the same response had a durable Header.Revision but zero Raft{,Applied}Index.
-	revision, err := safeBackendRevision(ctx, s.backend)
+	revision, err := s.freshMaintenanceRevision(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -372,6 +373,32 @@ func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (
 		resp.Errors = append(resp.Errors, alarmStatusError(alarm))
 	}
 	return resp, nil
+}
+
+// freshMaintenanceRevision reports the shared TiKV commit watermark rather
+// than a follower's process-local cache. Unlike a linearizable KV read this
+// does not require leader routing: every user mutation advances the durable
+// revision in the same TiKV transaction. Status is commonly followed by a
+// maintenance call that does establish a read barrier (for example downgrade
+// validation); sampling durable state here keeps their response headers from
+// describing two revisions solely because the first request hit a follower.
+func (s *RPCServer) freshMaintenanceRevision(ctx context.Context) (uint64, error) {
+	revision, err := safeBackendRevision(ctx, s.backend)
+	if err != nil {
+		return 0, err
+	}
+	durableRevision, err := s.backend.GetDurableRevision(ctx)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return revision, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if durableRevision > revision {
+		revision = durableRevision
+		s.backend.SetCurrentRevision(revision)
+	}
+	return revision, nil
 }
 
 func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
