@@ -227,3 +227,20 @@ func TestHistoryScanDollarExtensionDoesNotSplitDeletePrevKV(t *testing.T) {
 		})
 	}
 }
+
+func TestHistoryScanRejectsDeleteWithoutRetainedPreviousValue(t *testing.T) {
+	s, closeSuite := newTestSuites(t, memKvStorage)
+	defer closeSuite()
+	b := s.backend.(*backend)
+	key := []byte("/registry/items/orphan-delete")
+	const deleteRevision = uint64(7)
+
+	batch := s.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(key, deleteRevision), tombStoneBytes, 0)
+	require.NoError(t, batch.Commit(s.ctx))
+
+	events, err := b.scanHistoryEvents(s.ctx, string(key), deleteRevision, deleteRevision)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "DELETE event at revision 7 has no retained previous value")
+	require.Nil(t, events)
+}

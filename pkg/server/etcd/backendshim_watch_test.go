@@ -230,3 +230,30 @@ func TestWatchDeleteEventKeepsGenerationMetadataOnlyInPrevKV(t *testing.T) {
 	require.Equal(t, int64(123), event.PrevKv.Lease)
 	require.Equal(t, []byte("old"), event.PrevKv.Value)
 }
+
+func TestWatchDeleteEventRejectsInvalidRevisionProvenance(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+
+	for _, test := range []struct {
+		name          string
+		eventRevision uint64
+		prevRevision  uint64
+		want          string
+	}{
+		{name: "zero deletion", prevRevision: 7, want: "zero deletion revision"},
+		{name: "zero previous", eventRevision: 8, want: "zero previous-value revision"},
+		{name: "same revision", eventRevision: 8, prevRevision: 8, want: "revision 8 does not follow previous-value revision 8"},
+		{name: "previous from future", eventRevision: 8, prevRevision: 9, want: "revision 8 does not follow previous-value revision 9"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			event, err := shim.watchEventToEtcdEvent(context.Background(), &proto.Event{
+				Type: proto.Event_DELETE, Revision: test.eventRevision,
+				Kv: &proto.KeyValue{Key: []byte("/watch/invalid-delete"), Value: []byte("old"), Revision: test.prevRevision},
+			})
+			require.ErrorContains(t, err, test.want)
+			require.Nil(t, event)
+		})
+	}
+}

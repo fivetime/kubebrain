@@ -410,8 +410,16 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 				event.Kv.Value = prev.val
 				event.Kv.Revision = prev.rev
 			} else {
-				event.Kv.Value = nil
-				event.Kv.Revision = rev
+				// A retained DELETE newer than the compact watermark must retain
+				// the generation's preceding live row. Manufacturing a nil value at
+				// the tombstone revision makes the etcd translator expose a fake
+				// version-1 PrevKV whose ModRevision equals the deletion revision;
+				// it also evades the later compacted-PrevKV filter. Fail closed on
+				// this impossible MVCC family instead.
+				return nil, invalidMVCCMetadataError(
+					fmt.Errorf("DELETE event at revision %d has no retained previous value", rev),
+					"replay history for key %q", key,
+				)
 			}
 			delete(previous, keyID)
 		} else {

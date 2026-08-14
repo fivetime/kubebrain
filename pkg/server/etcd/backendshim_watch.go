@@ -137,6 +137,18 @@ func validateBackendWatchEvent(e *proto.Event) error {
 	case proto.Event_DELETE:
 		// DELETE intentionally differs: Event.Revision is the deletion revision,
 		// while Kv.Revision identifies the deleted previous value used for PrevKv.
+		// Both must be explicit and the previous value must strictly precede its
+		// tombstone; equality is the old "missing previous value" sentinel that
+		// would otherwise be translated into a fabricated version-1 PrevKV.
+		if e.Revision == 0 {
+			return fmt.Errorf("DELETE event has zero deletion revision")
+		}
+		if e.Kv.Revision == 0 {
+			return fmt.Errorf("DELETE event has zero previous-value revision")
+		}
+		if e.Kv.Revision >= e.Revision {
+			return fmt.Errorf("DELETE event revision %d does not follow previous-value revision %d", e.Revision, e.Kv.Revision)
+		}
 		return nil
 	default:
 		return fmt.Errorf("unsupported watch event type %s", e.Type)
