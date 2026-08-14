@@ -449,12 +449,15 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		}
 		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
-			if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
-				return authErr
-			}
 			if !m.srv.peers.EtcdProxyEnabled() {
 				return m.leaseLeaderUnavailable("lease keepalive")
 			}
+			// Unlike an etcd raft follower, this replica's in-memory lessor is a
+			// disposable constructor snapshot and does not receive attachment
+			// applies. It can validate the token, but authorizing its stale key set
+			// would create false denials after the leader detaches or rebinds keys.
+			// The forwarded leader receives this verified identity and performs the
+			// normal current-snapshot authorization in refreshLeaseAuthorized.
 			if err := forward(); err != nil {
 				return err
 			}
@@ -477,9 +480,6 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		// than carrying the pre-wait token into the successor term and self-proxying.
 		epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
-			if authErr = m.authorizeLeaseKeys(stream.Context(), caller, m.keysForLease(req.ID), authpb.WRITE); authErr != nil {
-				return authErr
-			}
 			if !m.srv.peers.EtcdProxyEnabled() {
 				return m.leaseLeaderUnavailable("lease keepalive")
 			}

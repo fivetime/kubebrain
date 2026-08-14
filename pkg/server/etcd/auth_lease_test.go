@@ -783,6 +783,82 @@ func TestAuthLeaseKeepAliveRequiresWritePermissionOnEveryRequest(t *testing.T) {
 	}))
 }
 
+func TestAuthFollowerKeepAliveDefersStaleAttachmentAuthorizationToLeader(t *testing.T) {
+	leader, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	plain := context.Background()
+
+	lease, err := leader.LeaseGrant(plain, &etcdserverpb.LeaseGrantRequest{TTL: 60, ID: 10_740_001})
+	require.NoError(t, err)
+	_, err = leader.Put(plain, &etcdserverpb.PutRequest{
+		Key: []byte("/denied/stale"), Value: []byte("old"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+	aliceCtx := setupAuthKVUser(t, leader)
+
+	var forwarded atomic.Bool
+	follower := New(leader.backend.(*backendShim).backend, leader.metricCli, testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		leaseKeepAliveFn: func(forwardCtx context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+			forwarded.Store(true)
+			outgoing, ok := metadata.FromOutgoingContext(forwardCtx)
+			if !ok {
+				return nil, errors.New("forwarded keepalive has no outgoing metadata")
+			}
+			leaderCtx := metadata.NewIncomingContext(context.Background(), outgoing)
+			leaderStream := &fakeLeaseKeepAliveServer{
+				ctx: leaderCtx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: req.ID}},
+			}
+			if keepAliveErr := leader.LeaseKeepAlive(leaderStream); keepAliveErr != nil {
+				return nil, keepAliveErr
+			}
+			if len(leaderStream.sent) != 1 {
+				return nil, errors.New("leader keepalive did not produce exactly one response")
+			}
+			return leaderStream.sent[0], nil
+		},
+	})
+	defer follower.stopLeases()
+	require.Equal(t, []string{"/denied/stale"}, follower.keysForLease(lease.ID),
+		"the follower fixture must retain the pre-mutation attachment snapshot")
+
+	rootToken, err := leader.tokens.authenticate(plain, "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(plain, metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken))
+	_, err = leader.Put(rootCtx, &etcdserverpb.PutRequest{Key: []byte("/denied/stale"), Value: []byte("detached")})
+	require.NoError(t, err)
+	_, err = leader.Put(aliceCtx, &etcdserverpb.PutRequest{
+		Key: []byte("/allowed/current"), Value: []byte("new"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"/allowed/current"}, leader.keysForLease(lease.ID))
+	require.Equal(t, []string{"/denied/stale"}, follower.keysForLease(lease.ID),
+		"follower lease indexes are disposable snapshots, not replicated lessors")
+
+	stream := &fakeLeaseKeepAliveServer{
+		ctx: aliceCtx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: lease.ID}},
+	}
+	require.NoError(t, follower.LeaseKeepAlive(stream))
+	require.True(t, forwarded.Load(), "the authoritative leader must perform current attachment authorization")
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, lease.ID, stream.sent[0].ID)
+	require.Positive(t, stream.sent[0].TTL)
+
+	_, err = leader.Put(rootCtx, &etcdserverpb.PutRequest{
+		Key: []byte("/denied/current"), Value: []byte("protected"), Lease: lease.ID,
+	})
+	require.NoError(t, err)
+	forwarded.Store(false)
+	denied := &fakeLeaseKeepAliveServer{
+		ctx: aliceCtx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: lease.ID}},
+	}
+	requireAuthLeaseError(t, follower.LeaseKeepAlive(denied), rpctypes.ErrPermissionDenied, codes.Unknown,
+		"etcdserver: permission denied")
+	require.True(t, forwarded.Load(), "current protected attachments must be rejected by the leader")
+	require.Empty(t, denied.sent)
+}
+
 func TestAuthLeaseKeepAliveMissingLeaseErrorPriorityAndStreamSurvivalMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
