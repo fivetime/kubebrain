@@ -51102,6 +51102,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `a4653-quota-direct-final` keyspace 后，精确提交镜像的 automatic-quota differential 0.584 秒完整通过。共享负载均衡入口
   仍可用于普通 client failover，但其跨连接 member affinity 属于网关契约，不伪装成 etcd 单成员 endpoint 语义。
 
+  同一精确镜像随后切换到无 quota 的全新 `a4653-direct-consistency` keyspace，为三个 Pod 分别暴露独立 client/metrics
+  endpoint。`run-direct-replica-consistency.sh` 5.538 秒完整通过：未知 alarm metrics 三副本收敛、NOSPACE+CORRUPT
+  跨 endpoint 状态机、HashKV snapshot 一致性、跨副本 lease read/revoke、quota alarm disarm、Status alarm 可见性，以及
+  三个副本各自的 watch create/cancel/progress 控制响应均通过；脚本 postflight 同时确认测试 prefix、lease 集合和 alarm 集合
+  回到基线。该项关闭 A4652 核心运行中“缺少三 direct replica endpoint”的证据空白，但不替代尚未执行的真实 Envoy、外部
+  L4/L7 reset 和独立 metrics profile。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
