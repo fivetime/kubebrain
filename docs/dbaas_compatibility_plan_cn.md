@@ -50913,6 +50913,63 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   破坏/告警闭环由隔离存储测试证明。该切片覆盖 etcd unary Range/List（含 Txn 内复用 List 的路径）；自定义
   RangeStream 的分段期望与跨页 generation 校验仍需独立推进，不以 unary 结果冒充 stream 已覆盖。
 
+- A4647 把 A4646 的最新 unary Range 完整性校验扩展到 etcd 3.7 `KV.RangeStream`。继续对标精确基线
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/index.go::treeIndex.Range` 与
+  `server/storage/mvcc/kvstore_txn.go::storeTxnCommon.rangeKeys`：一个 stream 必须在单一 revision 上按 key 顺序遍历，
+  index 选出的 exact modified revision 必须与对象行对应；已经发送的前置 chunk 无法撤回，所以终止错误要求消费方丢弃
+  整条不完整 stream。
+
+  生产提交 `b418e073f6c7468f2645a72d94f6c3f176b9b5f2` 为 count index 增加按固定 revision/generation 分页的
+  `StatesPageIfReady`，并通过 server 在把客户端 `revision=0` 固定成 stream header revision 后附加
+  `WithLatestRangeStream` 标记。backend 对最新 stream 延迟获取每页 300 个 exact key/revision 期望，每个输出 chunk
+  发送前核对顺序、revision 与 A4646 的物理 revision-index/target-object 证据，末尾再拒绝静默缺失的预期 live key。
+  Reset/Compact 引起 generation 改变时终止本次 stream，但易失 index 代际本身不建立 CORRUPT；仍只有完整 durable
+  transaction witness 能拉起持久告警。historical stream、外部 follower checkpoint、loading/overflow 明确跳过热校验，
+  backend 自己为最新 stream 固定的内部 snapshot 则仍校验。
+
+  实现过程中一个失败测试捕获了真实生产错误：代码曾在 marker 已设置且 revision 已固定时再次采样最新 revision，导致
+  stream 启动前并发写入的 late key 泄漏进旧 header snapshot。修正为仅当 backend 收到 `rev==0` 时内部采样；marker 只
+  控制是否启用最新校验。最终定向 race 10 轮分别通过（countindex 1.216 秒、backend 10.225 秒、server 15.530 秒），
+  完整 backend 78.783 秒、完整 server/etcd 175.565 秒及 backend/server vet 全部通过。回归覆盖 stale/missing/
+  malformed/tombstone index、missing/tombstone object、decoded stale object、historical/外部 pinned 跳过，以及
+  300/301 页边界之间确定性 Reset。
+
+  可追溯镜像 `kubebrain:a4647-b418e073` 内嵌上述完整 SHA、版本 `a4647`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T18:59:59Z`；本地 OCI manifest list 为
+  `sha256:e3808d2cac18f1dfa21df87af4b2bb728a4eac6b95fca505dbc76aa42a19d0dd`，kind 三副本 runtime imageID 均为
+  `sha256:bb66efbf5f46dd41b4e49e9d1e8bcfc4b5c993c6b07172d69651412d9c2767cb`。真实 TiKV 用 5 笔各 104-op
+  Txn 在 revision `468126003565884171` 至 `...175` 写入 520 键；直接调用 NodePort gRPC RangeStream，latest 在
+  2 个 wire chunk 中精确返回 520 键、Count 520、首尾 `/a4647/000..519`，historical revision `...171` 精确返回
+  104 键、Count 104。一次同镜像重启后 latest 结果不变；DeleteRange 在 `...176` 删除全部 520 键，第二次重启后
+  前缀为零。最终 endpoint health、三成员和 AlarmList 正常，revision/index/applied index 均为 `...176`、term 720，
+  KubeBrain 三副本及主 PD/TiKV 均 Ready、零重启。
+
+  第二次重启期间共享 kind 主 PD leader `kb-pd-1` 在 `19:08:00.910Z` 记录约 4.3 秒 raft heartbeat slow-disk，leader
+  lease 过期并重新选举，到 `19:08:03.988Z` 恢复 ready；PD Pod 没有重启，但 KubeBrain 三副本曾同时 readiness 失败，
+  随后完整收敛。这是共享本机资源争用的外部运行事件，不归因于 RangeStream，也不把终态健康表述为滚动期间零下陷。
+  收尾还发现 follower 每约 4 秒向 leader 转发一次空 key `KV.Range` 并收到 `InvalidArgument: key is not provided`；
+  定位为 MVCC keys 指标刷新边界编码，而非 stream 数据损坏，进入 A4648 独立修复。
+
+- A4648 修复 A4647 运行审计发现的周期性空 key Range。精确 etcd 基线的
+  `/root/etcd/api/etcdserverpb/rpc.proto::RangeRequest` 明确规定完整键空间编码为 `key='\0', range_end='\0'`，其
+  integration v3 gRPC 用例也使用 `{0},{0}`。KubeBrain 的 `RefreshMVCCKeysMetric` 原先把范围写成 `nil,{0}`：leader
+  本地 count index 可直接消费，因此没有表面错误；follower 的 index 未就绪时该请求经 count proxy 变成公开 KV.Range，
+  随即被标准空 key 校验拒绝并持续污染运行日志。
+
+  生产提交 `2655ba68307c911c91ab0b57e4f68e4d298fd87f` 把该内部完整键空间查询改为标准 `{0},{0}`，不改变用户
+  Range/Count 路径，也不引入 O(keyspace) 指标扫描；本地 index miss 时仍只尝试 leader count index，拒绝后记录 refresh
+  miss。针对性 race 连续 20 轮 2.287 秒、完整 server/etcd 176.510 秒及 server vet 全部通过。
+
+  镜像 `kubebrain:a4648-2655ba68` 内嵌上述完整 SHA、版本 `a4648`、Go 1.26.5、TiKV storage、linux/amd64、UTC
+  build time `2026-08-14T19:17:13Z`；本地 OCI manifest list 为
+  `sha256:39e8a15df18ed0011a4d49a68d8efff6af5809956b342a9d53b743b79ba1a2cf`，kind 导入后三个 Pod runtime
+  imageID 均为 `sha256:a9c3b397ed12bf10b62cdcb9938e043ea82148537225a9f9084ec061380542db`。StatefulSet 顺序滚动一次
+  收敛，三副本 Ready/零重启；稳定窗口内三个新容器的完整日志均不再出现 `key is not provided`。启动期 follower 曾在
+  leader health 尚未 SERVING 时记录短暂连接未就绪，并在 leader count index rebuild 窗口收到预期的
+  `count index not ready` 快速拒绝；稳定后均消失，未误记为全程无告警。最终 NodePort health 可提交 proposal，MemberList
+  精确三成员、AlarmList 为空，`/a4648/` Count 0，revision/index/applied index 均为 `468126003565884176`、term 725；
+  主 PD `kb-pd-0..2` 与 TiKV `kb-tikv-0..2` 均 Ready、零重启，历史 restore Pod 未混入该计数。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
