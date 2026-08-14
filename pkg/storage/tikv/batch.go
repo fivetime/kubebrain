@@ -18,7 +18,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -33,24 +32,23 @@ type batch struct {
 	list []func(ctx context.Context) error
 }
 
-// client-go v2.0.7 and current upstream store transaction-memdb key lengths in
-// uint16 fields. Passing a longer key does not fail: the length wraps and the
-// transaction can commit a truncated physical key. Reject it before any txn
-// operation so a caller gets a definite failure instead of durable corruption.
-const maxClientGoMemDBKeyBytes = math.MaxUint16
+// The managed TiKV manifests set storage.max-key-size to 2MiB. KubeBrain's
+// patched client-go uses uint32 transaction-memdb key lengths; keep an adapter
+// fence at the managed storage contract so drift still fails before commit.
+const maxTiKVPhysicalKeyBytes = 2 << 20
 
-func validateClientGoMemDBKey(key []byte) error {
-	if len(key) <= maxClientGoMemDBKeyBytes {
+func validateTiKVPhysicalKey(key []byte) error {
+	if len(key) <= maxTiKVPhysicalKeyBytes {
 		return nil
 	}
-	return fmt.Errorf("%w: physical key is %d bytes; client-go transaction limit is %d",
-		storage.ErrKeyTooLarge, len(key), maxClientGoMemDBKeyBytes)
+	return fmt.Errorf("%w: physical key is %d bytes; managed TiKV limit is %d",
+		storage.ErrKeyTooLarge, len(key), maxTiKVPhysicalKeyBytes)
 }
 
 func (b *batch) PutIfNotExist(key []byte, val []byte, ttl int64) {
 	idx := len(b.list)
 	b.list = append(b.list, func(ctx context.Context) error {
-		if err := validateClientGoMemDBKey(key); err != nil {
+		if err := validateTiKVPhysicalKey(key); err != nil {
 			return err
 		}
 		oldVal, err := b.txn.Get(ctx, key)
@@ -70,7 +68,7 @@ func (b *batch) PutIfNotExist(key []byte, val []byte, ttl int64) {
 func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 	idx := len(b.list)
 	b.list = append(b.list, func(ctx context.Context) error {
-		if err := validateClientGoMemDBKey(key); err != nil {
+		if err := validateTiKVPhysicalKey(key); err != nil {
 			return err
 		}
 		val, err := b.txn.Get(ctx, key)
@@ -99,7 +97,7 @@ func (b *batch) CAS(key []byte, newVal []byte, oldVal []byte, ttl int64) {
 
 func (b *batch) Put(key []byte, val []byte, ttl int64) {
 	b.list = append(b.list, func(ctx context.Context) error {
-		if err := validateClientGoMemDBKey(key); err != nil {
+		if err := validateTiKVPhysicalKey(key); err != nil {
 			return err
 		}
 		err := b.txn.Set(key, val)
@@ -112,7 +110,7 @@ func (b *batch) Put(key []byte, val []byte, ttl int64) {
 
 func (b *batch) Del(key []byte) {
 	b.list = append(b.list, func(ctx context.Context) error {
-		if err := validateClientGoMemDBKey(key); err != nil {
+		if err := validateTiKVPhysicalKey(key); err != nil {
 			return err
 		}
 		err := b.txn.Delete(key)
@@ -153,14 +151,14 @@ func (a atomicBatch) Get(ctx context.Context, key []byte) ([]byte, error) {
 }
 
 func (a atomicBatch) Put(key []byte, val []byte, _ int64) error {
-	if err := validateClientGoMemDBKey(key); err != nil {
+	if err := validateTiKVPhysicalKey(key); err != nil {
 		return err
 	}
 	return a.txn.Set(key, val)
 }
 
 func (a atomicBatch) Del(key []byte) error {
-	if err := validateClientGoMemDBKey(key); err != nil {
+	if err := validateTiKVPhysicalKey(key); err != nil {
 		return err
 	}
 	return a.txn.Delete(key)

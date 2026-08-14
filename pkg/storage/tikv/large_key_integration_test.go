@@ -25,14 +25,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
-// TestOversizedKeyRejectedWithoutTruncationTiKV proves the adapter fences the
-// client-go uint16 transaction-memdb key limit on an actual TiKV transaction.
-// Without the fence Commit succeeds but persists only len(key) mod 65536 bytes.
-func TestOversizedKeyRejectedWithoutTruncationTiKV(t *testing.T) {
+// TestLargeKeyRoundTripTiKV proves KubeBrain's patched client-go transports an
+// etcd-sized physical key through an actual TiKV Put/Get/Iter byte-for-byte.
+// Stock client-go v2.0.7 commits only len(key) mod 65536 bytes here.
+func TestLargeKeyRoundTripTiKV(t *testing.T) {
 	pd := os.Getenv("KUBEBRAIN_TIKV_PD")
 	if pd == "" {
 		t.Skip("set KUBEBRAIN_TIKV_PD=<pd-addrs> to run the TiKV large-key transport test")
@@ -76,11 +74,17 @@ func TestOversizedKeyRejectedWithoutTruncationTiKV(t *testing.T) {
 	value := []byte("large-key-round-trip")
 	batch := kv.BeginBatchWrite()
 	batch.Put(key, value, 0)
-	err = batch.Commit(ctx)
-	require.ErrorIs(t, err, storage.ErrKeyTooLarge)
+	require.NoError(t, batch.Commit(ctx))
 
-	it, err := kv.Iter(ctx, prefix, append(append([]byte(nil), prefix...), 0xff), 0, 0)
+	got, err := kv.Get(ctx, key)
 	require.NoError(t, err)
-	require.Equal(t, io.EOF, it.Next(ctx), "rejected write must not leave a truncated physical key")
+	require.Equal(t, value, got)
+
+	it, err := kv.Iter(ctx, key, append(append([]byte(nil), key...), 0), 0, 0)
+	require.NoError(t, err)
+	require.NoError(t, it.Next(ctx))
+	require.Equal(t, key, it.Key())
+	require.Equal(t, value, it.Val())
+	require.Equal(t, io.EOF, it.Next(ctx))
 	require.NoError(t, it.Close())
 }

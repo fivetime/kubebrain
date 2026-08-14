@@ -66,14 +66,14 @@ func TestUncertainCommitErrorClassifiesStaleCommand(t *testing.T) {
 	require.True(t, isUncertainCommitError(fmt.Errorf("commit primary key: %w", tikverr.ErrTiKVStaleCommand)))
 }
 
-func TestBatchRejectsKeyBeyondClientGoMemDBUint16Limit(t *testing.T) {
-	key := make([]byte, maxClientGoMemDBKeyBytes+1)
+func TestBatchRejectsKeyBeyondManagedTiKVLimit(t *testing.T) {
+	key := make([]byte, maxTiKVPhysicalKeyBytes+1)
 	b := &batch{}
 	b.Put(key, []byte("must-not-be-truncated"), 0)
 	err := b.Commit(context.Background())
 	require.ErrorIs(t, err, storage.ErrKeyTooLarge)
-	require.ErrorContains(t, err, "65536 bytes")
-	require.ErrorContains(t, err, "limit is 65535")
+	require.ErrorContains(t, err, "2097153 bytes")
+	require.ErrorContains(t, err, "limit is 2097152")
 
-	require.NoError(t, validateClientGoMemDBKey(key[:maxClientGoMemDBKeyBytes]))
+	require.NoError(t, validateTiKVPhysicalKey(key[:maxTiKVPhysicalKeyBytes]))
 }
