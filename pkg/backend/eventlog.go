@@ -263,6 +263,13 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		klog.ErrorS(validationErr, "event log entries are inconsistent", "from", fromRevision, "to", toRevision)
 		return trustedCorruption(validationErr, "inconsistent entries")
 	}
+	if !touchesUntrustedWindow {
+		if witnessErr := b.validateEventLogWindowWitnesses(ctx, entries, fromRevision, toRevision); witnessErr != nil {
+			b.metricCli.EmitCounter("watch.event_log.witness_mismatch", 1)
+			klog.ErrorS(witnessErr, "event log transaction witness mismatch", "from", fromRevision, "to", toRevision)
+			return trustedCorruption(witnessErr, "transaction witness mismatch")
+		}
+	}
 	selfContained := exactRevisionEntriesComplete(entries, fromRevision, toRevision)
 	if touchesUntrustedWindow && !selfContained {
 		return nil, false, nil

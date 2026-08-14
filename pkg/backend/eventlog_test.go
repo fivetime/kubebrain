@@ -414,6 +414,43 @@ func TestEventLogReplayRejectsMissingReferencedObjectInTrustedWindow(t *testing.
 	require.Empty(t, events)
 }
 
+func TestEventLogReplayRejectsMissingEntryCoveredByTxnWitness(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/elog_missing_entry/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	firstKey := path.Join(pfx, "first")
+	first, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(firstKey), Value: []byte("first")})
+	require.NoError(t, err)
+	secondKey := path.Join(pfx, "second")
+	second, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(secondKey), Value: []byte("second")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, second.Header.Revision)
+
+	batch := kv.BeginBatchWrite()
+	batch.Del(b.ks.EncodeEventLogKey(first.Header.Revision, []byte(firstKey)))
+	require.NoError(t, batch.Commit(ctx))
+
+	events, served, err := b.eventLogWatchEvents(ctx, pfx, first.Header.Revision, second.Header.Revision)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "transaction witness mismatch")
+	require.False(t, served)
+	require.Empty(t, events)
+
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	events, served, err = b.eventLogWatchEvents(ctx, pfx, first.Header.Revision, second.Header.Revision)
+	require.NoError(t, err)
+	require.False(t, served)
+	require.Empty(t, events)
+}
+
 func TestValidateEventLogEntries(t *testing.T) {
 	create := func(rev uint64, key string, ordered bool, sub, total uint32) eventLogPending {
 		return eventLogPending{verb: proto.Event_CREATE, rev: rev, userKey: []byte(key), ordered: ordered, sub: sub, total: total}

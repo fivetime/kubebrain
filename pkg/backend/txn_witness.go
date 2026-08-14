@@ -175,6 +175,73 @@ func eventMarkerIdentity(p *txnPrep) (verb proto.Event_EventType, previousRevisi
 	return verb, previousRevision
 }
 
+// validateEventLogWindowWitnesses proves that every user revision in a trusted
+// replay window has exactly the event-marker set sealed by its committing TiKV
+// transaction. Per-entry total fields detect a partial multi-key revision, but
+// cannot detect an entire missing single-key revision; the durable witnesses
+// close that gap and also bind the marker bytes, including operation order.
+func (b *backend) validateEventLogWindowWitnesses(
+	ctx context.Context, entries []eventLogPending, fromRevision, toRevision uint64,
+) error {
+	if fromRevision == 0 || toRevision < fromRevision {
+		return fmt.Errorf("invalid transaction witness window [%d,%d]", fromRevision, toRevision)
+	}
+	byRevision := make(map[uint64][]eventLogRawEntry)
+	for i := range entries {
+		entry := entries[i]
+		key, value := encodeEventLogEntry(
+			b.ks, entry.rev, entry.userKey, entry.verb, entry.prevRev, entry.sub, entry.total,
+		)
+		byRevision[entry.rev] = append(byRevision[entry.rev], eventLogRawEntry{key: key, value: value})
+	}
+
+	base := b.ks.EncodeInternalKey(txnWitnessPrefix)
+	start := b.ks.EncodeInternalKey(txnWitnessLogicalKey(fromRevision))
+	end := rawPrefixEnd(b.ks.EncodeInternalKey(txnWitnessLogicalKey(toRevision)))
+	iter, err := b.kv.Iter(ctx, start, end, 0, 0)
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	next := fromRevision
+	for {
+		if err := iter.Next(ctx); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		key := iter.Key()
+		if len(key) != len(base)+8 || !bytes.HasPrefix(key, base) {
+			return fmt.Errorf("transaction witness window contains malformed key")
+		}
+		revision := binary.BigEndian.Uint64(key[len(base):])
+		if revision != next {
+			return fmt.Errorf("transaction witness mismatch: missing witness for revision %d before revision %d", next, revision)
+		}
+		record, decodeErr := decodeTxnWitness(iter.Val())
+		if decodeErr != nil {
+			return fmt.Errorf("transaction witness mismatch at revision %d: %w", revision, decodeErr)
+		}
+		encoded := encodeTxnWitness(byRevision[revision])
+		if len(byRevision[revision]) == 0 || !bytes.Equal(encoded, iter.Val()) {
+			return fmt.Errorf(
+				"transaction witness mismatch at revision %d: found %d events, expected %d",
+				revision, len(byRevision[revision]), record.count,
+			)
+		}
+		delete(byRevision, revision)
+		next++
+	}
+	if next <= toRevision {
+		return fmt.Errorf("transaction witness mismatch: missing witness for revision %d", next)
+	}
+	if len(byRevision) != 0 {
+		return fmt.Errorf("transaction witness mismatch: event revision has no witness")
+	}
+	return nil
+}
+
 // validatePersistedTxnWitnesses verifies only revisions explicitly sealed by
 // this binary. Legacy revisions have no seal and remain upgrade-compatible.
 func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
