@@ -66,25 +66,28 @@ func TestLargeKeyRoundTripTiKV(t *testing.T) {
 	deletePrefix()
 	t.Cleanup(deletePrefix)
 
-	key := append(append([]byte(nil), prefix...), bytes.Repeat([]byte{'z'}, 600<<10)...)
-	key = append(key, '$')
-	var revision [8]byte
-	binary.BigEndian.PutUint64(revision[:], uint64(time.Now().UnixNano()))
-	key = append(key, revision[:]...)
-	value := []byte("large-key-round-trip")
-	batch := kv.BeginBatchWrite()
-	batch.Put(key, value, 0)
-	require.NoError(t, batch.Commit(ctx))
+	maxPayloadBytes := maxTiKVPhysicalKeyBytes - len(prefix) - 1 - 8
+	for _, payloadBytes := range []int{600 << 10, maxPayloadBytes} {
+		key := append(append([]byte(nil), prefix...), bytes.Repeat([]byte{'z'}, payloadBytes)...)
+		key = append(key, '$')
+		var revision [8]byte
+		binary.BigEndian.PutUint64(revision[:], uint64(time.Now().UnixNano()))
+		key = append(key, revision[:]...)
+		value := []byte("large-key-round-trip")
+		batch := kv.BeginBatchWrite()
+		batch.Put(key, value, 0)
+		require.NoError(t, batch.Commit(ctx), payloadBytes)
 
-	got, err := kv.Get(ctx, key)
-	require.NoError(t, err)
-	require.Equal(t, value, got)
+		got, getErr := kv.Get(ctx, key)
+		require.NoError(t, getErr, payloadBytes)
+		require.Equal(t, value, got, payloadBytes)
 
-	it, err := kv.Iter(ctx, key, append(append([]byte(nil), key...), 0), 0, 0)
-	require.NoError(t, err)
-	require.NoError(t, it.Next(ctx))
-	require.Equal(t, key, it.Key())
-	require.Equal(t, value, it.Val())
-	require.Equal(t, io.EOF, it.Next(ctx))
-	require.NoError(t, it.Close())
+		it, iterErr := kv.Iter(ctx, key, append(append([]byte(nil), key...), 0), 0, 0)
+		require.NoError(t, iterErr, payloadBytes)
+		require.NoError(t, it.Next(ctx), payloadBytes)
+		require.Equal(t, key, it.Key(), payloadBytes)
+		require.Equal(t, value, it.Val(), payloadBytes)
+		require.Equal(t, io.EOF, it.Next(ctx), payloadBytes)
+		require.NoError(t, it.Close(), payloadBytes)
+	}
 }

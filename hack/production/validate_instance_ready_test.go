@@ -1285,7 +1285,7 @@ exit 1
 			}
 			tikvMaxKeySize := tc.tikvMaxKeySize
 			if tikvMaxKeySize == "" {
-				tikvMaxKeySize = "2097152"
+				tikvMaxKeySize = "2621440"
 			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,

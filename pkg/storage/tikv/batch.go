@@ -32,9 +32,11 @@ type batch struct {
 	list []func(ctx context.Context) error
 }
 
-// The managed TiKV manifests set storage.max-key-size to 2MiB. KubeBrain's
-// patched client-go uses uint32 transaction-memdb key lengths; keep an adapter
-// fence at the managed storage contract so drift still fails before commit.
+// KubeBrain accepts at most 2MiB raw physical keys. The managed TiKV manifests
+// set storage.max-key-size to 2.5MiB because TiKV checks the memcomparable
+// encoding, which expands arbitrary bytes by about 12.5%. KubeBrain's patched
+// client-go uses uint32 transaction-memdb key lengths; keep the adapter fence
+// on the raw-key contract so drift still fails before commit.
 const maxTiKVPhysicalKeyBytes = 2 << 20
 
 func validateTiKVPhysicalKey(key []byte) error {

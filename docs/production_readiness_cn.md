@@ -113,8 +113,10 @@ series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值�
 ### etcd 大 Key 的 TiKV 合同
 
 KubeBrain 继续把原始 user key 嵌入 revision、object 和 event 物理 Key，因此专用 TiKV
-集群必须显式配置 `[storage] max-key-size = 2097152`。该 2 MiB 上限覆盖 KubeBrain
-约 1.5 MiB 的公开请求预算及物理编码开销；缺失或更小的值必须让实例 readiness
+集群必须显式配置 `[storage] max-key-size = 2621440`。TiKV 在比较该上限前会把原始 Key
+转换为约膨胀 12.5% 的 memcomparable 编码，因此 2.5 MiB server limit 用来完整覆盖
+KubeBrain 的 2 MiB 原始物理 Key 合同；后者又覆盖约 1.5 MiB 的公开请求预算及物理
+编码开销。缺失或更小的值必须让实例 readiness
 fail closed，不能依赖 TiKV 默认值。超过该托管合同的物理 Key 会在客户端提交前返回
 `ResourceExhausted`，不得截断、哈希替换或以成功响应丢失数据。
 

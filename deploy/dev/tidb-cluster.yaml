@@ -32,7 +32,7 @@ spec:
     # isolated CSI volume and must fail the production storage-safety gate.
     config: |
       [storage]
-      max-key-size = 2097152
+      max-key-size = 2621440
       reserve-space = "0MiB"
       [raftstore]
       reserve-raft-space = "0MiB"

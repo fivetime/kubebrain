@@ -2325,7 +2325,7 @@ func TestProductionTiDBClusterProvidesDurableHAStorage(t *testing.T) {
 	require.Equal(t, "RollingUpdate", nestedString(t, cluster, "spec", "configUpdateStrategy"))
 	tikvConfig := nestedString(t, cluster, "spec", "tikv", "config")
 	require.Contains(t, tikvConfig, "[storage]")
-	require.Contains(t, tikvConfig, "max-key-size = 2097152",
+	require.Contains(t, tikvConfig, "max-key-size = 2621440",
 		"the managed TiKV key limit must cover etcd's 1.5MiB request envelope plus physical-key overhead")
 
 	for _, component := range []struct {

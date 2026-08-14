@@ -97,7 +97,7 @@ spec:
     # storage limit is not compatible with that API contract.
     config: |
       [storage]
-      max-key-size = 2097152
+      max-key-size = 2621440
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
