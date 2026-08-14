@@ -50406,6 +50406,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884101`、term 665。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/transaction witness mismatch。
 
+- A4633 补齐 A4632 明确保留的 event→object 引用缺失持久告警与安全解除链。可信 event entry 的 CREATE/PUT
+  引用本 revision object，DELETE 引用 `prevRevision` object；A4630 已令缺失引用返回 DataLoss，但 A4632 因
+  `validatePersistedTxnWitnesses` 只复验 event hash，不能阻止 operator 在 object 仍缺失时解除 CORRUPT，故没有为
+  此类故障拉警。对照 upstream `server/etcdserver/corrupt.go` 与 corrupt applier 的共享持久告警原则，生产提交
+  `5defc8a1` 将仍受支持的缺 object 纳入同一写隔离状态。
+
+  在线 trusted-corruption 路径在持久告警前除 event-log watermark 外，再读取 durable compact watermark：历史
+  Watch 可能在 create-time compact 检查后与另一副本的 compaction 交错，物理 GC 已删除旧 object、event-log
+  cleanup 尚未推进时，若 `fromRevision < compactRevision` 只 fallback，不把正常 GC 误报为 CORRUPT。Disarm
+  则以 object-aware 模式运行 witness/event merge：先验证 count+SHA-256，再解码每个 sealed event 的精确 value
+  revision，以 BatchGet 去重验证所有尚未 compact 的引用；发现缺失后再次刷新 compact watermark并确认 witness
+  仍存在，只有仍受支持的 durable evidence 才保持 `ErrTxnWitnessCorrupt`。选主启动仍使用原 O(event log) 顺序
+  hash merge，不增加逐 transaction object read；额外 object I/O 只发生在罕见的 operator Disarm 路径。
+
+  确定性 RED 删除可信 CREATE 的精确 object，旧实现仅 DataLoss 且 AlarmList 为空；修复后持久 CORRUPT、后续
+  Create 被 `ErrCorruptAlarmActive` 拒绝、未修复时 Disarm 失败，恢复原 object bytes 后 Disarm 成功且同一历史
+  Watch 再次正确回放。独立竞态门禁先删旧 object、再推进 durable compact watermark、保留滞后的 event-log
+  watermark，证明只 fallback 且不拉警。focused 20 轮 17.747 秒、race 10 轮 12.019 秒、backend/server vet、
+  完整 backend 75.592 秒及完整 `pkg/server/etcd` 176.997 秒通过。
+
+  真实 TiKV 正向验证在 revision `468126003565884102` CREATE `z=z1`、revision `...103` UPDATE `z=z2`，随后
+  physical compact 精确到 `...103`；从该 compact boundary 启动历史 Watch 仍返回 update event，revision
+  `...104` 的 `b=b1` 继续按序到达，AlarmList 保持为空。该 boundary update 的 PrevKV 为空与 upstream
+  `server/etcdserver/api/v3rpc/watch.go` 一致：发送时以 `event.ModRevision-1` 懒 Range，compaction 已达到 event
+  revision 时旧值不保证存在；upstream robustness validator 也明确允许 compaction 后非 CREATE 的 PrevKV 为 nil。
+  清理两键后最终 revision 为 `468126003565884105`。
+
+  可追溯镜像 `kubebrain:a4633-5defc8a1` 内嵌完整 SHA
+  `5defc8a1dffe749ee2a75985f6690da4ff6c0b91`、版本 `a4633`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T14:23:58Z`；本地 OCI manifest list 为
+  `sha256:19217717bf47e5e532ec124893bc5038bd896e7ccdba484bb405c7e30a6f68d5`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:8d2d41b8bc6cf12eeab066bbdf56f51d2b4b4d41f0ae4a8d104ee2342473eb63`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884105`、term 667。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/missing object/transaction witness mismatch。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
