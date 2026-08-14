@@ -398,3 +398,84 @@ func TestColdFollowerDecodedRangeStreamRebuildsOnceThenReplaysEventLog(t *testin
 		"an untrusted event-log window must force one fresh bounded rebuild")
 	tracked.mu.Unlock()
 }
+
+func TestDecodedHistoricalRangeStreamExtendsOrderingIndexBackToRequestedRevision(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
+	b := NewBackend(store, Config{
+		Prefix: "/kubebrain/range-stream-historical-index", Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, EnableCountIndex: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	ctx := context.Background()
+	commitCreate := func(key string, value byte, revision uint64) {
+		mutation := b.encodeCreateMutation(
+			[]byte(key), []byte{value}, EtcdMetadata{CreateRevision: revision, Version: 1}, revision, 0, 1,
+		)
+		batch := rawStore.BeginBatchWrite()
+		batch.Put(mutation.revisionKey, mutation.newRevisionValue, 0)
+		for _, objectMutation := range mutation.objectMutations {
+			batch.Put(objectMutation.key, objectMutation.value, 0)
+		}
+		batch.Put(mutation.eventKey, mutation.eventValue, 0)
+		require.NoError(t, batch.Commit(ctx))
+	}
+	commitCreate("a", 0, 2)
+	commitCreate("a\x00", 1, 3)
+	commitCreate("a$", 2, 4)
+	commitCreate("a!", 3, 5)
+	deleted := b.encodeDeleteMutation([]byte("a$"), 4, 6)
+	deleteBatch := rawStore.BeginBatchWrite()
+	deleteBatch.Put(deleted.revisionKey, deleted.newRevisionValue, 0)
+	deleteBatch.Put(deleted.objectKey, deleted.objectValue, 0)
+	deleteBatch.Put(deleted.eventKey, deleted.eventValue, 0)
+	require.NoError(t, deleteBatch.Commit(ctx))
+	commitCreate("a#", 4, 7)
+	require.NoError(t, b.advanceEventLogStartStorage(ctx, 1))
+	b.SetCurrentRevision(7)
+
+	tracked := &checkpointCountScanner{Scanner: b.scanner}
+	b.scanner = tracked
+	require.NoError(t, b.RebuildCountIndex(ctx))
+	require.EqualValues(t, 7, b.countIndex.BaseRev())
+
+	collect := func(revision uint64) []*proto.KeyValue {
+		stream, err := b.RangeStream(ctx, []byte("a"), []byte("b"), revision)
+		require.NoError(t, err)
+		var result []*proto.KeyValue
+		for response := range stream {
+			require.Empty(t, response.Err)
+			result = append(result, response.RangeResponse.Kvs...)
+		}
+		return result
+	}
+	historical := collect(4)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00"), []byte("a$")}, [][]byte{
+		historical[0].Key, historical[1].Key, historical[2].Key,
+	})
+	require.EqualValues(t, 4, b.countIndex.BaseRev(),
+		"the durable ordering index must extend backwards instead of materializing the result")
+	require.True(t, b.countIndex.Ready(7), "the historical rebuild must replay through the prior ready watermark")
+	latest := collect(7)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00"), []byte("a!"), []byte("a#")}, [][]byte{
+		latest[0].Key, latest[1].Key, latest[2].Key, latest[3].Key,
+	})
+	tracked.mu.Lock()
+	require.Equal(t, 2, tracked.rangeStreamCalls,
+		"one current rebuild plus one historical snapshot scan; the later current stream must reuse the extended index")
+	require.False(t, tracked.rangeFilteredCalled, "historical decoded streaming must not materialize RangeFiltered")
+	tracked.mu.Unlock()
+
+	// Once cleanup has crossed the required replay window, semantic fallback is
+	// still necessary. The preflight must preserve the useful current index
+	// instead of replacing it with a historical tree that cannot be completed.
+	require.NoError(t, b.RebuildCountIndex(ctx))
+	require.NoError(t, b.advanceEventLogStartStorage(ctx, 4))
+	tooOld := collect(3)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00")}, [][]byte{tooOld[0].Key, tooOld[1].Key})
+	require.EqualValues(t, 7, b.countIndex.BaseRev(), "an untrusted historical window must not discard the current index")
+	tracked.mu.Lock()
+	require.True(t, tracked.rangeFilteredCalled, "an unverifiable old window must retain the exact decoded fallback")
+	tracked.mu.Unlock()
+}

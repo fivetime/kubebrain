@@ -240,13 +240,32 @@ func (t *TreeIndex) applyLocked(key []byte, rev uint64, tombstone bool) {
 // false) so counts fall back to a scan rather than serving a silent undercount
 // from a half-loaded tree.
 func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error) {
+	t.reset(currentRev(), true, func(baseRev, _ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		return load(baseRev, emit)
+	})
+}
+
+// ResetHistorical replaces the tree with an exact historical snapshot and lets
+// load replay the durable gap through catchUpRev before the tree becomes ready.
+// Unlike Reset, baseRev is intentionally not floored at the discarded tree's
+// ready watermark. Events applied after installation merge into the loading
+// tree; catchUpRev captures every event applied before installation, so the
+// loader can close the only possible gap.
+func (t *TreeIndex) ResetHistorical(baseRev uint64, load func(baseRev, catchUpRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error) {
+	t.reset(baseRev, false, load)
+}
+
+func (t *TreeIndex) reset(baseRev uint64, floorAtReady bool, load func(baseRev, catchUpRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error) {
 	t.mu.Lock()
 	t.gen++
 	t.pageGen++
 	myGen := t.gen
-	baseRev := currentRev()
-	if t.readyRev > baseRev {
+	catchUpRev := t.readyRev
+	if floorAtReady && catchUpRev > baseRev {
 		baseRev = t.readyRev
+	}
+	if catchUpRev < baseRev {
+		catchUpRev = baseRev
 	}
 	t.tree = btree.New(32)
 	t.clearRankLocked()
@@ -258,7 +277,7 @@ func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, em
 	}
 	t.mu.Unlock()
 
-	err := load(baseRev, func(key []byte, rev uint64, tombstone bool) {
+	err := load(baseRev, catchUpRev, func(key []byte, rev uint64, tombstone bool) {
 		t.mu.Lock()
 		if t.gen == myGen && !t.overflowed {
 			t.applyLocked(key, rev, tombstone)

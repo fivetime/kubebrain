@@ -353,6 +353,49 @@ func TestResetFloorsBaseRevAtReadyRev(t *testing.T) {
 	require.EqualValues(t, 1, idx.Count([]byte("a"), []byte("z"), 100), "the applied event must not be lost")
 }
 
+// TestResetHistoricalReplaysInstallGap pins the historical rebuild primitive:
+// it deliberately moves baseRev backwards, remains unavailable until the
+// caller has replayed the old base-to-ready gap, and merges collector events
+// that arrive after the fresh tree is installed.
+func TestResetHistoricalReplaysInstallGap(t *testing.T) {
+	idx := New(0)
+	idx.Reset(func() uint64 { return 100 }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		emit([]byte("a"), 100, false)
+		return nil
+	})
+	idx.Apply([]byte("b"), 105, false)
+
+	loadStarted := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		idx.ResetHistorical(90, func(baseRev, catchUpRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+			require.EqualValues(t, 90, baseRev)
+			require.EqualValues(t, 105, catchUpRev,
+				"the loader must close every revision already claimed by the discarded tree")
+			emit([]byte("a"), 90, false) // exact historical snapshot
+			close(loadStarted)
+			<-release
+			emit([]byte("a"), 102, true)  // durable gap replay
+			emit([]byte("b"), 105, false) // idempotent with prior/current state
+			return nil
+		})
+		close(done)
+	}()
+	<-loadStarted
+	require.False(t, idx.Ready(90), "a partially replayed historical tree must never be served")
+	idx.Apply([]byte("c"), 106, false) // collector event after tree installation
+	close(release)
+	<-done
+
+	require.EqualValues(t, 90, idx.BaseRev())
+	require.True(t, idx.Ready(106))
+	require.EqualValues(t, 1, idx.Count([]byte("a"), []byte("z"), 90))
+	require.Zero(t, idx.Count([]byte("a"), []byte("z"), 104))
+	require.EqualValues(t, 1, idx.Count([]byte("a"), []byte("z"), 105))
+	require.EqualValues(t, 2, idx.Count([]byte("a"), []byte("z"), 106))
+}
+
 func TestKeysPageIfReadyOrdersLiveHistoricalKeysAndFencesTreeChanges(t *testing.T) {
 	idx := New(0)
 	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {

@@ -198,7 +198,14 @@ func (b *backend) ensureCountIndexAtRevision(ctx context.Context, revision uint6
 	}
 	base := b.countIndex.BaseRev()
 	if base != 0 && revision < base {
-		return false, nil
+		served, err := b.rebuildHistoricalCountIndexLocked(ctx, revision)
+		if err != nil {
+			return false, err
+		}
+		if served {
+			b.metricCli.EmitCounter("count_index.lazy_historical_rebuild", 1)
+		}
+		return served, nil
 	}
 	if base != 0 && b.countIndex.ReadyRev() < revision {
 		served, err := b.syncCountIndexFromEventLog(ctx, b.countIndex.ReadyRev()+1, revision)
@@ -220,12 +227,86 @@ func (b *backend) ensureCountIndexAtRevision(ctx context.Context, revision uint6
 	return ready, nil
 }
 
+var errCountIndexEventLogUntrusted = errors.New("count index event-log window is not trustworthy")
+
+// rebuildHistoricalCountIndexLocked extends an already-current index backwards
+// to requestedRevision. ResetHistorical captures the discarded tree's ReadyRev
+// under the install lock; the loader first scans the exact requested snapshot,
+// then replays every durable event through that captured watermark. Collector
+// events arriving after installation merge directly into the loading tree.
+func (b *backend) rebuildHistoricalCountIndexLocked(ctx context.Context, requestedRevision uint64) (bool, error) {
+	compactRev, err := b.GetCompactRevisionFresh(ctx)
+	if err != nil {
+		return false, err
+	}
+	if requestedRevision <= compactRev {
+		return false, fmt.Errorf("count index snapshot revision %d is compacted at %d", requestedRevision, compactRev)
+	}
+	// Avoid discarding a useful current tree when cleanup has already made the
+	// required forward-replay window unverifiable. Cleanup can still race after
+	// this check; the replay's post-read watermark gate catches that case and
+	// disables the partially rebuilt tree.
+	if start, ok := b.getEventLogStart(ctx); !ok || requestedRevision < start {
+		return false, nil
+	}
+	started := time.Now()
+	var loadErr error
+	b.countIndex.ResetHistorical(requestedRevision, func(baseRev, catchUpRev uint64, emit func(key []byte, revision uint64, tombstone bool)) error {
+		stream := b.scanner.RangeStream(ctx, b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), baseRev, true)
+		for response := range stream {
+			if response.Err != "" {
+				loadErr = errors.New(response.Err)
+				return loadErr
+			}
+			for _, kv := range response.RangeResponse.Kvs {
+				emit(kv.Key, kv.Revision, false)
+			}
+		}
+		if catchUpRev > baseRev {
+			served, replayErr := b.replayCountIndexEventLog(ctx, baseRev+1, catchUpRev, func(entry eventLogPending) {
+				emit(entry.userKey, entry.rev, entry.verb == proto.Event_DELETE)
+			})
+			if replayErr != nil {
+				loadErr = replayErr
+				return loadErr
+			}
+			if !served {
+				loadErr = errCountIndexEventLogUntrusted
+				return loadErr
+			}
+		}
+		return nil
+	})
+	if errors.Is(loadErr, errCountIndexEventLogUntrusted) {
+		return false, nil
+	}
+	if loadErr != nil {
+		return false, loadErr
+	}
+	ready := b.countIndex.Ready(requestedRevision)
+	if ready {
+		klog.InfoS("count index extended to historical revision", "rev", requestedRevision,
+			"readyRev", b.countIndex.ReadyRev(), "keys", b.countIndex.Len(), "latency", time.Since(started))
+	}
+	return ready, nil
+}
+
 // syncCountIndexFromEventLog streams complete transaction groups in
 // [fromRevision,toRevision]. It retains at most one transaction's metadata;
 // values are unnecessary because TreeIndex only needs key/revision/tombstone.
 func (b *backend) syncCountIndexFromEventLog(ctx context.Context, fromRevision, toRevision uint64) (bool, error) {
+	served, err := b.replayCountIndexEventLog(ctx, fromRevision, toRevision, func(entry eventLogPending) {
+		b.countIndex.Apply(entry.userKey, entry.rev, entry.verb == proto.Event_DELETE)
+	})
+	if err != nil || !served {
+		return served, err
+	}
+	b.countIndex.SetReadyRev(toRevision)
+	return true, nil
+}
+
+func (b *backend) replayCountIndexEventLog(ctx context.Context, fromRevision, toRevision uint64, apply func(eventLogPending)) (bool, error) {
 	if fromRevision > toRevision {
-		b.countIndex.SetReadyRev(toRevision)
 		return true, nil
 	}
 	start, ok := b.getEventLogStart(ctx)
@@ -250,7 +331,7 @@ func (b *backend) syncCountIndexFromEventLog(ctx context.Context, fromRevision, 
 			return false, nil
 		}
 		for _, entry := range group {
-			b.countIndex.Apply(entry.userKey, entry.rev, entry.verb == proto.Event_DELETE)
+			apply(entry)
 		}
 		group = group[:0]
 		return true, nil
@@ -290,6 +371,5 @@ func (b *backend) syncCountIndexFromEventLog(ctx context.Context, fromRevision, 
 	if refreshed, ok := b.refreshEventLogStart(ctx); !ok || fromRevision <= refreshed {
 		return false, nil
 	}
-	b.countIndex.SetReadyRev(toRevision)
 	return true, nil
 }
