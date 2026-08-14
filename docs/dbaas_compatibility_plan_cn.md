@@ -50050,6 +50050,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   后一 key，固定最终错误为 `ErrInvalidMVCCLifecycle` 且不含 legacy sentinel；纯 legacy remediation 边界
   回归继续通过。该占位值不会离开私有临时文件，也不会被 gRPC Snapshot 或修复制品发布。
 
+- A4620 将 A4618/A4619 的生产实现滚动到主三副本数据面。可追溯镜像
+  `kubebrain:a4619-9c83ebfa` 内嵌完整 SHA
+  `9c83ebfa6427c4db0fe017dca16b0b5246001c28`、版本 `a4619`、Go 1.26.5、TiKV storage 与 UTC
+  build time `2026-08-14T09:54:57Z`，运行用户为 `65532:65532`；本地 OCI manifest list 为
+  `sha256:84629f5166f2d77af2022fbc13fc5af4f34319deea5c0bd74b32a06da0546d34`，kind 导入后三个
+  Pod 的 runtime imageID 均为
+  `sha256:9edeb699ad75e703c7d54b61dab996f9e29377a24e62f652f46d8f2f371177fc`。首次构建曾在读取
+  权威 `git rev-parse HEAD` 前传入错误的完整 SHA；该 build 在编译阶段立即取消、没有生成 tag 或部署，随后
+  才以上述权威 SHA 重建，不能把取消的中间层当作制品来源。
+
+  `kind-kubebrain-dbaas` 的 `kubebrain-dev/kubebrain` 从 `a4614-f46e53b0` 顺序滚动完成，三个 Pod
+  均 Ready、零重启且 imageID 一致；NodePort health 可提交 proposal，AlarmList 为空，Status revision/index/
+  applied index 均为 `468126003565884058`、term 637。NodePort 此次命中 follower，官方 etcdctl 仍经完整
+  proxy 下载 181 MB 在线 Snapshot；固定 `/root/etcd/bin/etcdutl` 3.8.0-alpha 识别输出 version 3.7.0、
+  revision `468126003565884058`、192 keys、logical size 168189952 bytes，下载文件 mode 0600，主机临时
+  目录和三个 Pod 的 `.kubebrain-maintenance-snapshot-*.db` 命名文件最终均为零。滚动后 15 分钟日志无
+  panic/fatal/snapshot failure/corrupt；主 PD 3/3、TiKV 3/3 Ready 且零重启，历史 restore Pod 的既有重启
+  不计入主数据面结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
