@@ -117,7 +117,11 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 		}
 		if requestedRevision == 0 {
 			if validationErr := validateMissingLatestRevisionIndex(key, latestExpectation); validationErr != nil {
-				return nil, 0, b.persistWitnessedRevisionIndexCorruption(ctx, validationErr)
+				if validationErr = b.persistCurrentCountIndexCorruption(
+					ctx, latestExpectation.readyRevision, validationErr,
+				); validationErr != nil {
+					return nil, 0, validationErr
+				}
 			}
 		}
 		// Pre-#31 compaction/retry races could leave an object whose revision
@@ -138,7 +142,11 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 				key, currentRevision, currentTombstone, latestExpectation,
 			)
 			if err != nil {
-				return nil, 0, b.persistWitnessedRevisionIndexCorruption(ctx, err)
+				if err = b.persistCurrentCountIndexCorruption(
+					ctx, latestExpectation.readyRevision, err,
+				); err != nil {
+					return nil, 0, err
+				}
 			}
 		}
 
@@ -230,6 +238,28 @@ func validateMissingLatestRevisionIndex(key []byte, expectation latestIndexExpec
 	return invalidMVCCMetadataError(nil,
 		"latest revision index for key %q is missing; count index expects revision %d tombstone=%t at ready revision %d",
 		key, expectation.revision, expectation.tombstone, expectation.readyRevision)
+}
+
+// persistCurrentCountIndexCorruption only promotes an in-memory count-index
+// contradiction when that snapshot still covers the durable user watermark.
+// Followers do not continuously apply the leader's collector stream: a newer
+// put/delete can therefore change (or remove) the physical revision index while
+// their otherwise-ready tree still describes an older revision. The durable
+// watermark is read only on this exceptional path, keeping normal reads free of
+// extra storage I/O.
+func (b *backend) persistCurrentCountIndexCorruption(
+	ctx context.Context, readyRevision uint64, cause error,
+) error {
+	durableRevision, err := b.GetDurableRevision(ctx)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		durableRevision = 1
+	} else if err != nil {
+		return err
+	}
+	if durableRevision > readyRevision {
+		return nil
+	}
+	return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
 }
 
 // validateLatestRevisionIndex cross-checks a physical point-read index against
@@ -437,7 +467,7 @@ func (b *backend) validateLatestRangeIndexes(
 				cause := invalidMVCCMetadataError(storage.ErrKeyNotFound,
 					"latest range revision index for key %q is missing at count-index ready revision %d",
 					key, expectation.readyRevision)
-				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+				return b.persistCurrentCountIndexCorruption(ctx, expectation.readyRevision, cause)
 			}
 			physicalRevision, tombstone, parseErr := coder.ParseRevision(value)
 			if parseErr != nil {
@@ -451,13 +481,13 @@ func (b *backend) validateLatestRangeIndexes(
 				cause := invalidMVCCMetadataError(nil,
 					"latest range returned key %q revision %d whose live revision index %d is absent from count index ready at %d",
 					key, returnedKV.GetRevision(), physicalRevision, expectation.readyRevision)
-				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+				return b.persistCurrentCountIndexCorruption(ctx, expectation.readyRevision, cause)
 			}
 			if physicalRevision != state.Revision || tombstone {
 				cause := invalidMVCCMetadataError(nil,
 					"latest range revision index for key %q is revision %d tombstone=%t; count index expects live revision %d at ready revision %d",
 					key, physicalRevision, tombstone, state.Revision, expectation.readyRevision)
-				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+				return b.persistCurrentCountIndexCorruption(ctx, expectation.readyRevision, cause)
 			}
 			if returnedKV == nil || returnedKV.Revision != state.Revision {
 				actualRevision := uint64(0)
@@ -467,7 +497,7 @@ func (b *backend) validateLatestRangeIndexes(
 				cause := invalidMVCCMetadataError(nil,
 					"latest range object for key %q is missing or at revision %d; revision index expects live revision %d",
 					key, actualRevision, state.Revision)
-				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+				return b.persistCurrentCountIndexCorruption(ctx, expectation.readyRevision, cause)
 			}
 		}
 	}

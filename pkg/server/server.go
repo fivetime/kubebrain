@@ -580,6 +580,7 @@ func (s *server) onStoppedLeading() {
 	// immediately when this term ends so an RPC that was opened on this former
 	// leader can resume through the proxy instead of remaining open and silent.
 	s.backend.CloseWatchers()
+	s.backend.InvalidateCountIndex()
 	// On losing leadership, stop the lease expiry timers and drop the now
 	// non-authoritative lease snapshot; the leader owns lease expiry and the new
 	// leader has advanced this state. Re-acquiring leadership reloads it (#57).

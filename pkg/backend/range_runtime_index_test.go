@@ -435,6 +435,44 @@ func TestLatestRevisionIndexNewerThanReadySnapshotIsNotRejected(t *testing.T) {
 	require.False(t, verified, "a newer leader's physical write must bypass a stale local expectation")
 }
 
+func TestLatestReadsIgnoreCountIndexContradictionBehindDurableRevision(t *testing.T) {
+	for _, read := range []string{"get", "list"} {
+		t.Run(read, func(t *testing.T) {
+			b, store, ctx, key := newRuntimeIndexBackend(t)
+			_, readyRevision := applyRuntimeIndexVersions(t, b, ctx, key)
+			_, deleteRevision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Delete: true}}, nil)
+			require.NoError(t, err)
+			require.Greater(t, deleteRevision, readyRevision)
+
+			// Model a follower whose collector snapshot still says the key was
+			// live while the shared TiKV state has already committed and cleaned
+			// the newer delete's latest-index row.
+			b.countIndex.Invalidate()
+			b.countIndex.Reset(func() uint64 { return readyRevision }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+				emit(key, readyRevision, false)
+				return nil
+			})
+			cleanup := store.BeginBatchWrite()
+			cleanup.Del(b.coder.EncodeRevisionKey(key))
+			require.NoError(t, cleanup.Commit(ctx))
+
+			switch read {
+			case "get":
+				resp, getErr := b.Get(ctx, &proto.GetRequest{Key: key})
+				require.NoError(t, getErr)
+				require.Nil(t, resp.GetKv())
+			case "list":
+				resp, listErr := b.List(ctx, &proto.RangeRequest{Key: key, End: runtimeIndexRangeEnd(key)})
+				require.NoError(t, listErr)
+				require.Empty(t, resp.GetKvs())
+			}
+			alarms, alarmErr := b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Empty(t, alarms)
+		})
+	}
+}
+
 func TestPinnedSnapshotDoesNotUseRuntimeLatestIndexExpectation(t *testing.T) {
 	b, _, ctx, key := newRuntimeIndexBackend(t)
 	applyRuntimeIndexVersions(t, b, ctx, key)

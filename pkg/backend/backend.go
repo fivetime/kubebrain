@@ -208,6 +208,8 @@ type Backend interface {
 
 	// RebuildCountIndex rebuilds the count index; call on leadership acquisition.
 	RebuildCountIndex(ctx context.Context) error
+	// InvalidateCountIndex retires the leader-owned snapshot on leadership loss.
+	InvalidateCountIndex()
 
 	// EnsureEventLogStart initializes the event-log completeness watermark;
 	// call on leadership acquisition (#45).

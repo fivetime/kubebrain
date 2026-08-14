@@ -255,6 +255,23 @@ func TestLatestIfReadyDisabledWhileResetLoads(t *testing.T) {
 	require.Equal(t, uint64(20), readyRevision)
 }
 
+func TestInvalidateRetiresLeaderSnapshot(t *testing.T) {
+	idx := New(0)
+	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+		emit(k("/a"), 10, false)
+		return nil
+	})
+	require.True(t, idx.Ready(10))
+	require.Equal(t, 1, idx.Count(k("/"), k("0"), 10))
+
+	idx.Invalidate()
+	require.False(t, idx.Ready(10))
+	require.Zero(t, idx.BaseRev())
+	require.Zero(t, idx.ReadyRev())
+	_, _, _, _, ready := idx.LatestIfReady(k("/a"))
+	require.False(t, ready)
+}
+
 func TestLatestRangeIfReadySamplesOrderedLiveStates(t *testing.T) {
 	idx := New(0)
 	_, _, _, ready := idx.LatestRangeIfReady(k("/a"), k("/z"), 0)

@@ -83,6 +83,14 @@ func (b *backend) RebuildCountIndex(ctx context.Context) error {
 	return b.rebuildCountIndexLocked(ctx, 0)
 }
 
+// InvalidateCountIndex prevents a former leader from treating its last
+// collector snapshot as current after another member starts committing writes.
+func (b *backend) InvalidateCountIndex() {
+	if b.countIndex != nil {
+		b.countIndex.Invalidate()
+	}
+}
+
 func (b *backend) rebuildCountIndexLocked(ctx context.Context, requestedRevision uint64) error {
 	// Retry with a freshly captured baseRev: a compaction can still slip between
 	// Reset's snapshot-revision capture and the scan's watermark check.

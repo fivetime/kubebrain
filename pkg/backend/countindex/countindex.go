@@ -335,6 +335,22 @@ func (t *TreeIndex) ReadyRev() uint64 {
 	return t.readyRev
 }
 
+// Invalidate retires a leader-owned snapshot. A former leader must not keep
+// serving or validating against a tree whose collector no longer receives the
+// new leader's writes. Counts safely fall back to storage until a later rebuild.
+func (t *TreeIndex) Invalidate() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.tree = btree.New(32)
+	t.baseRev = 0
+	t.readyRev = 0
+	t.loading = false
+	t.overflowed = false
+	t.gen++
+	t.pageGen++
+	t.clearRankLocked()
+}
+
 // LatestIfReady returns the key's latest indexed state at the tree's current
 // ready revision. The state and ready revision are sampled under one read lock,
 // so a concurrent Reset/Apply cannot splice an expectation from two generations.
