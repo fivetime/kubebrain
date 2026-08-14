@@ -50684,6 +50684,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884141`、term 684。主 PD 3/3、TiKV 3/3 Running 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/txn-apply failure。
 
+- A4641 补齐 quota usage 冷启动重建对 witnessed object 的完整性隔离。对标
+  `/root/etcd/server/storage/quota.go::BackendQuota`、
+  `/root/etcd/server/etcdserver/api/v3rpc/quota.go::newBackendQuota` 与
+  `/root/etcd/server/etcdserver/apply/quota.go::newQuotaApplierV3`：upstream 以本地 bbolt backend physical size 作为
+  quota/NOSPACE 写准入依据；KubeBrain 的用户状态位于独立共享 TiKV，因而在 leader 准入阶段通过
+  `EnsureQuotaInitialized` 扫描固定 revision 的当前逻辑对象，重建可原子维护的 key+value usage checkpoint。旧扫描会
+  直接解析 inline envelope 计算 logical bytes，遇到损坏只返回 DataLoss 并反复阻塞 leader startup，未把已有完整
+  transaction witness 的对象转换成 durable CORRUPT 写隔离。
+
+  生产提交 `2e5a8a7a` 在每个 quota scan chunk 计入 usage 之前复用 A4636 的
+  `validateRangeObjectValues`：以 scanner 携带的 exact user key、mod revision、stored value 和推导出的 object key
+  闭合 event set/witness/object/compact-race 证据，证据成立时先持久 ArmCorrupt，再终止重建；损坏对象不会进入 clean
+  quota checkpoint。初始化已持有 `logicalWriteMu` 独占锁并标记 logical ownership，因此 alarm InternalCAS 不会重入
+  锁；legacy/unsealed 对象仍只返回请求级 DataLoss，不创建无法证明修复完成的告警。
+
+  确定性正向回归创建 witnessed object、删除 quota checkpoint 后破坏 inline envelope，证明初始化返回
+  `ErrInvalidMVCCMetadata`、QuotaStatus 保持 `ErrQuotaUninitialized`、AlarmList 出现本 member、未修复 Disarm 返回
+  `ErrTxnWitnessCorrupt`；恢复 exact bytes 后可解除并重建出精确 key+value usage。独立负向门禁删除 witness 后注入同一
+  损坏，仍返回 DataLoss 但不拉警。两项 focused 20 轮 0.766 秒、race 10 轮 2.718 秒，更宽
+  quota/witness/alarm/range 回归 5 轮 22.208 秒，完整 backend 77.654 秒、相关 server 三轮及 backend/server vet
+  全部通过。
+
+  真实 TiKV 正向验证从 dbSize/dbSizeInUse `12,303,670` 开始：CREATE 20-byte key + 16-byte value 后精确增加 36，
+  UPDATE 为 3-byte value 后精确减少 13，DELETE 后回到 baseline；对应 revision 为
+  `468126003565884142`/`...143`/`...144`，Get 与 DELETE PrevKV 保留 create=`...142`、mod=`...143`、version 2。
+  最终 `/a4641/` 零残留、AlarmList 为空，revision/index/applied index 均为 `...144`、term 687。共享 TiKV 未删除
+  内部 checkpoint 或注入损坏，强制 rebuild 的破坏/修复闭环由隔离存储测试证明。
+
+  可追溯镜像 `kubebrain:a4641-2e5a8a7a` 内嵌完整 SHA
+  `2e5a8a7a62f48f3e4c600c8cc93b9786d0e5cba7`、版本 `a4641`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T16:28:04Z`；本地 OCI manifest list 为
+  `sha256:81e5c6d978e50b7806c3a6ad770e24c38128d14651b56fcbf4ebbfd6c98641ed`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:1f278e10715adc0ef806d62b27f5eae0d844b39ee1538cad8813e40bc732cc34`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、`/version` 为 etcdserver 3.7.0；
+  主 PD 3/3、TiKV 3/3 Ready 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/
+  witnessed-object/quota-initialization failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
