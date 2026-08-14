@@ -35,7 +35,7 @@ import (
 
 const (
 	decodedRangeSpillRunKeys  = 300
-	decodedRangeSpillRunBytes = 1536 * 1024
+	decodedRangeSpillRunBytes = decodedRangeStreamIndexBytes
 	decodedRangeSpillMergeFan = 16
 )
 

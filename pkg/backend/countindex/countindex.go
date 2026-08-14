@@ -375,6 +375,20 @@ func (t *TreeIndex) CountIfReady(start, end []byte, rev uint64) (int, bool) {
 // appended between pages but cannot change liveAt(rev); Reset/Compact are
 // fenced by pageGen.
 func (t *TreeIndex) KeysPageIfReady(start, end, after []byte, rev uint64, limit int, generation uint64) (keys [][]byte, nextGeneration uint64, more bool, ok bool) {
+	return t.keysPageIfReady(start, end, after, rev, limit, 0, generation)
+}
+
+// KeysPageBytesIfReady additionally bounds the sum of copied user-key bytes.
+// The first live key is always admitted even when it alone exceeds maxBytes so
+// callers can make progress with a legal oversized key.
+func (t *TreeIndex) KeysPageBytesIfReady(start, end, after []byte, rev uint64, limit, maxBytes int, generation uint64) (keys [][]byte, nextGeneration uint64, more bool, ok bool) {
+	if maxBytes <= 0 {
+		return nil, 0, false, false
+	}
+	return t.keysPageIfReady(start, end, after, rev, limit, maxBytes, generation)
+}
+
+func (t *TreeIndex) keysPageIfReady(start, end, after []byte, rev uint64, limit, maxBytes int, generation uint64) (keys [][]byte, nextGeneration uint64, more bool, ok bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	if limit <= 0 || t.overflowed || t.loading || t.baseRev == 0 ||
@@ -382,6 +396,7 @@ func (t *TreeIndex) KeysPageIfReady(start, end, after []byte, rev uint64, limit 
 		return nil, 0, false, false
 	}
 	nextGeneration = t.pageGen
+	keyBytes := 0
 	seek := start
 	if len(after) != 0 && bytes.Compare(after, seek) >= 0 {
 		seek = after
@@ -397,11 +412,12 @@ func (t *TreeIndex) KeysPageIfReady(start, end, after []byte, rev uint64, limit 
 		if !ki.liveAt(rev) {
 			return true
 		}
-		if len(keys) == limit {
+		if len(keys) == limit || (maxBytes > 0 && len(keys) != 0 && keyBytes+len(ki.key) > maxBytes) {
 			more = true
 			return false
 		}
 		keys = append(keys, append([]byte(nil), ki.key...))
+		keyBytes += len(ki.key)
 		return true
 	})
 	return keys, nextGeneration, more, true

@@ -836,7 +836,10 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	return b.scanner.RangeStream(ctx, key, rangeEnd, rev, false), nil
 }
 
-const decodedRangeStreamIndexPage = 300
+const (
+	decodedRangeStreamIndexPage  = 300
+	decodedRangeStreamIndexBytes = 1536 * 1024
+)
 
 // decodedUserRangeStreamFromCountIndex uses the leader's complete, versioned,
 // user-key-sorted count index as an ordering directory. It pages only logical
@@ -861,8 +864,8 @@ func (b *backend) decodedUserRangeStreamFromCountIndex(
 	if isFromKeyEnd(end) {
 		end = nil
 	}
-	firstKeys, generation, more, ready := b.countIndex.KeysPageIfReady(
-		userStart, end, nil, revision, decodedRangeStreamIndexPage, 0,
+	firstKeys, generation, more, ready := b.countIndex.KeysPageBytesIfReady(
+		userStart, end, nil, revision, decodedRangeStreamIndexPage, decodedRangeStreamIndexBytes, 0,
 	)
 	if !ready {
 		b.metricCli.EmitCounter("backend.range_stream.decoded_index_miss", 1)
@@ -921,8 +924,8 @@ func (b *backend) decodedUserRangeStreamFromCountIndex(
 			}
 			after := keys[len(keys)-1]
 			var ready bool
-			keys, _, more, ready = b.countIndex.KeysPageIfReady(
-				userStart, end, after, revision, decodedRangeStreamIndexPage, generation,
+			keys, _, more, ready = b.countIndex.KeysPageBytesIfReady(
+				userStart, end, after, revision, decodedRangeStreamIndexPage, decodedRangeStreamIndexBytes, generation,
 			)
 			if !ready {
 				fail(fmt.Errorf("decoded range ordering index changed during stream at revision %d", revision))

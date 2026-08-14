@@ -309,6 +309,9 @@ func TestDecodedRangeStreamUsesOrderedIndexWithoutMaterializingRange(t *testing.
 	for index := 0; index < decodedRangeStreamIndexPage; index++ {
 		keys = append(keys, []byte(fmt.Sprintf("a/%03d", index)))
 	}
+	for index := 0; index < 3; index++ {
+		keys = append(keys, append([]byte(fmt.Sprintf("a/y%d/", index)), bytes.Repeat([]byte{'z'}, 600<<10)...))
+	}
 	keys = append(keys, []byte("b"))
 	revisions := make([]uint64, len(keys))
 	seed := rawStore.BeginBatchWrite()
@@ -365,13 +368,18 @@ func TestDecodedRangeStreamUsesOrderedIndexWithoutMaterializingRange(t *testing.
 	require.Len(t, store.batchKeys[0], decodedRangeStreamIndexPage, "revision metadata remains one lightweight directory-page batch")
 	for _, batch := range store.batchKeys {
 		objectBatch := false
+		decodedBytes := 0
 		for _, key := range batch {
-			_, revision, decodeErr := b.coder.Decode(key)
+			userKey, revision, decodeErr := b.coder.Decode(key)
 			require.NoError(t, decodeErr)
 			objectBatch = objectBatch || revision != 0
+			decodedBytes += len(userKey)
 		}
 		if objectBatch {
 			require.LessOrEqual(t, len(batch), 16, "object-value BatchGet must be bounded independently of key page size")
+		} else {
+			require.LessOrEqual(t, decodedBytes, decodedRangeStreamIndexBytes,
+				"ordering-index pages must have a byte bound independent of key count")
 		}
 	}
 	require.NotZero(t, store.batchTimestamps[0])

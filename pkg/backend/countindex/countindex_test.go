@@ -427,3 +427,31 @@ func TestKeysPageIfReadyOrdersLiveHistoricalKeysAndFencesTreeChanges(t *testing.
 	_, _, _, ok = idx.KeysPageIfReady([]byte("a"), []byte("z"), page1[len(page1)-1], 12, 2, generation)
 	require.False(t, ok, "compaction must invalidate an in-flight page generation")
 }
+
+func TestKeysPageBytesIfReadyBoundsCopiedKeysAndAdvancesPastOversizedKey(t *testing.T) {
+	idx := New(0)
+	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		for _, key := range [][]byte{[]byte("aaaaaaaaaaaa"), []byte("bbbbbb"), []byte("cccccc")} {
+			emit(key, 10, false)
+		}
+		return nil
+	})
+
+	page1, generation, more, ok := idx.KeysPageBytesIfReady(nil, nil, nil, 10, 300, 10, 0)
+	require.True(t, ok)
+	require.True(t, more)
+	require.Equal(t, [][]byte{[]byte("aaaaaaaaaaaa")}, page1,
+		"one legal key larger than the page byte budget must still make progress")
+	page2, sameGeneration, more, ok := idx.KeysPageBytesIfReady(nil, nil, page1[0], 10, 300, 10, generation)
+	require.True(t, ok)
+	require.True(t, more)
+	require.Equal(t, generation, sameGeneration)
+	require.Equal(t, [][]byte{[]byte("bbbbbb")}, page2)
+	page3, _, more, ok := idx.KeysPageBytesIfReady(nil, nil, page2[0], 10, 300, 10, generation)
+	require.True(t, ok)
+	require.False(t, more)
+	require.Equal(t, [][]byte{[]byte("cccccc")}, page3)
+
+	_, _, _, ok = idx.KeysPageBytesIfReady(nil, nil, nil, 10, 300, 0, 0)
+	require.False(t, ok)
+}
