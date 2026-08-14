@@ -21,7 +21,8 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 | `etcd_server_request_duration_seconds` histogram(labels: `type`,`success`) | etcd upstream 兼容的请求端到端耗时，覆盖 KV、Compact、LeaseGrant/Revoke、内部 LeaseCheckpoint、Alarm、Authenticate 与 Auth 管理类型；用于复用 etcd dashboard/runbook，并按 `success=false` 定位失败请求延迟。 |
 | `storage_batch_count`(op=`write_batch`)histogram | 存储层批量写延迟(TiKV TSO+raft)。 |
 | `leader_revision` gauge | 当前 leader 的 revision(是否推进)。leader 身份见 info 端口 `/election`。 |
-| `count_index.keys` / `count_index.overflowed` gauge | leader 活跃 key 数与索引是否超过 `--count-index-max-keys`；overflow 后正确回退 TiKV 全扫，但 List/count 延迟会明显恶化。followers 的 keys=0 是正常值。 |
+| `count_index.keys` / `count_index.overflowed` gauge | leader 活跃 key 数与索引是否超过 `--count-index-max-keys`；overflow 后 List/count 回退 TiKV 全扫，decoded-boundary RangeStream 改走本地有界外排，延迟均会明显恶化。followers 的 keys=0 是正常值。 |
+| `backend.range_stream.decoded_spill` counter；`backend.range_stream.decoded_spill_{bytes,keys}` gauge；`backend.range_stream.decoded_spill_latency_seconds` histogram | decoded-boundary RangeStream 无法使用内存排序 index 时的外排次数、最近一次最终有序 run 大小/观察键数和端到端外排耗时。正常应接近 0；持续增长先检查 count-index overflow/rebuild 和 `TMPDIR` emptyDir 容量。每副本只允许一个外排，等待会计入 RPC 延迟。 |
 | `count_index.rebuild.err` counter | leader 切换时索引快照重建失败次数；非零表示 CountOnly 暂时回退 TiKV 全扫。 |
 | `watch.collector.stalled` / `watch.collector.skipped_revision` counter | 事件收集器 stall/自愈跳过 —— 正常应为 0,非 0=有 writer 死在 deal↔notify 之间。 |
 | `serializable.checkpoint.available` / `serializable.checkpoint.remaining_seconds` gauge；`serializable.checkpoint.refresh_err` counter | 每副本受 PD service GC safepoint 保护的离线 serializable checkpoint 是否可用及本地安全窗剩余秒数；available 应恒为 1，remaining 默认每秒回到约 150。refresh error 非零或 remaining 持续降至 0 表示该副本将在 PD 隔离时对 Range/read-only Txn/RangeStream fail closed。 |

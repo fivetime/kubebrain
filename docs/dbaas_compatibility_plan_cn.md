@@ -49638,10 +49638,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   首轮仅 multiplexed L7 reset 出现一次瞬态失败；该场景立即单独通过（11.42 秒），无代码变更后的完整重跑
   13/13 通过（39.492 秒），RangeStream follower 2.02 秒。
 
-  本项将历史有界流式能力扩展到 event log 仍可证明完整的 revision。requested revision 已落到 cleanup watermark
-  之前时仍必须 materialize fallback，因为现有 durable metadata 已不足以重建从该历史点到 current 的完整 key
-  history；count-index overflow 也继续 fallback。二者是当前 decoded-boundary RangeStream 尚存的资源边界，
-  不能用本项结果宣称任意未 compacted 旧 revision 都已 O(chunk)。
+  本项将内存 index 的历史有界流式能力扩展到 event log 仍可证明完整的 revision。requested revision 已落到
+  cleanup watermark 之前、或 count-index overflow 时，A4602 当时仍 materialize fallback；该剩余内存边界由
+  后续 A4603 的 key-only 外排路径关闭。
+
+- A4603 关闭 decoded-boundary RangeStream 最后的全量 KV 内存物化分支。提交 `2f7ddd27` 在 count index
+  overflow、disabled、旧历史窗口不可证明或 rebuild 未就绪时，对同一 pinned TiKV TSO 做一次 keys-only
+  partition stream；按 300 键或 1.5MiB（先到者）生成本地有序 run，再以固定 16 路 fan-in 做多轮归并和全局
+  去重。最终 run 每次只取至多 300 个 user key，通过 A4596 的 revision/object 两阶段 BatchGet（历史情形仍走
+  16 路精确 reader）取值并输出，因此内存、打开文件数与返回 key 总数无关；所有 value 始终留在 TiKV，临时
+  文件在成功、错误和 cancel 后统一删除。每副本 semaphore 只允许一个 spill，避免 overflow 请求群同时放大
+  TiKV 全扫和本地磁盘。该设计不改变 legacy object schema，也没有引入混合版本 writer 无法维护的新持久索引。
+
+  TDD 先以 `count-index-max-keys=2` 和 303 个 binary/祖先键证明旧实现没有 keys-only stream、仍调用
+  `RangeFiltered` 物化；第一版 bbolt 原型又被新增 40KiB 合法 key 测试准确拒绝为 `key too large`，因此没有把
+  bbolt 的约 32KiB key 限制带进 etcd API。最终 length-prefixed raw-key run 支持长 key，并以超过
+  `16*300` 键、逆序输入、跨 run 重复和 cancel fixture 真实覆盖第二轮归并、去重与残留目录清理。聚焦普通
+  20 轮 1.480 秒、race 20 轮 13.697 秒通过，`go vet ./pkg/backend/...`、`pkg/backend/...` 全树（主包
+  74.868 秒）、完整 `pkg/server/etcd` 172.662 秒、compat 模块 6.162 秒、`cmd/option` 0.101 秒通过。
+
+  精确镜像 `kubebrain:a4603-2f7ddd27`（内嵌 SHA
+  `2f7ddd2711f8eca6b27d2b16aa9f8fc37608b075`，构建时间 `2026-08-14T03:54:07Z`，OCI manifest list
+  `sha256:367557d969e56510e7a4cf6c66fcf30abca79c9954bb534ebbcd896cdda23ec5`，运行用户
+  `65532:65532`）滚动到独立 TiKV/PD 三副本后，把现场 cap 暂降为 2，确认目标 follower member ID 与 leader
+  不同且 `count_index_overflowed=1`。303-key current+historical upstream fixture 的首次主断言已完成，但其 5 秒
+  cleanup DeleteRange 在低 cap 下超时；提交 `a6ab7bbb` 只把该大 fixture 清理预算提高到 30 秒，随后完整差分
+  22.82 秒通过。指标在成功轮从 `decoded_spill=2` 增至 4，两个 stream 均观察 303 keys，最终 run 41,805
+  bytes，总外排耗时累计 0.253 秒且无临时目录残留。保持 cap=2 的完整 direct-moveleader profile 13/13
+  通过（40.596 秒），RangeStream follower 3.12 秒；三个测试前缀均为 0。现场最后恢复 cap=5,000,000 并再次
+  滚动，三副本 Ready、零重启。
+
+  本项关闭的是进程内 O(result KVs) 内存风险，不把 overflow 伪装成快路径：spill 仍需 O(匹配 key bytes) 的
+  `TMPDIR` 空间、一次完整 keys-only scan，并在首个响应前完成外排；临时盘耗尽会以请求错误安全失败。生产清单
+  已把 `TMPDIR=/var/lib/kubebrain-snapshot` 指向 512Gi 限额 emptyDir，但持续 spill 仍应通过上述指标告警并调整
+  内存 tier/count-index cap。若要消除该磁盘与首包延迟，后续仍需带混合版本发布协议的 durable order index；
+  不能仅在新 binary 写路径旁挂目录而忽略旧 writer 和回填发布水位。
 
 ### P2：运维兼容和长期验证
 
