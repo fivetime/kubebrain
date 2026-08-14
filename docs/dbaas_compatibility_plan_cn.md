@@ -50004,6 +50004,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   3/3 Ready、AlarmList 为空。所有一次性 Pod/Service 和本地隧道已删除。本轮同样
   没有修改测试或生产实现：专用范围内没有出现可稳定复现的兼容性差异。
 
+- A4617 将验证扩展到响应丢失、流重置和全 KubeBrain 副本替换。独立三副本
+  keyspace `a4624-direct-faults` 与三节点参考 etcd 的 direct fault suite 全部通过
+  （37.692 秒）：13 组用例覆盖 LeaseGrant/LeaseRevoke 已提交响应丢失、跨 ingress
+  replay、显式 ID 重试、same-ID regrant 代际隔离、orphan lease 自然过期、L4/L7 proxy
+  reset、keepalive/watch/multiplexed stream 恢复、follower `RangeStream` 与 `MoveLeader` 平台契约。
+
+  另从当前生产 StatefulSet 模板克隆无 PVC、独立 keyspace `a4625-restart-revision`
+  的三副本一次性拓扑。replica-restart suite 同时替换三个 Pod，14 组 KubeBrain/
+  参考对照用例全部通过（120.787 秒）：空闲重启和 latest-compaction 重启不推进
+  公开 revision，lease 自然过期、Txn snapshot/watch、compacted watch 顺序、历史 PrevKV
+  和 `HashKV` compact snapshot 均在全副本替换后恢复。同一拓扑的 cold-header suite
+  再替换 Pod-0，Alarm mutation/AuthStatus 在尚未处理其他用户请求的冷副本上返回
+  与参考 etcd 一致的 header，4 项全部通过（29.874 秒）。
+
+  一次性 StatefulSet 初次克隆曾把 namespace 字符串过度替换，headless Service 也曾保留
+  `kubectl create service` 自动 selector；两者都在任何差分请求发出前由 DNS/EndpointSlice
+  证据定位并修正，不计作 KubeBrain 语义失败。runner postflight 确认测试前缀、lease
+  和 alarm 集合恢复；一次性 StatefulSet/Pod/Service 已全部删除。主数据面最终
+  3/3 Ready、endpoint health 可提交 proposal、AlarmList 为空。本轮没有修改测试或
+  生产实现：故障恢复范围内没有出现可稳定复现的新兼容性差异。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
