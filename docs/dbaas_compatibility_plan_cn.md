@@ -49973,6 +49973,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三 Pod lease restore/reload/checkpoint/expiry failure、panic、fatal、corrupt 扫描均为空。主 PD 3/3 与
   TiKV 3/3 保持 Ready、零重启；历史 restore Pod 的既有重启数不计入主数据面结论。
 
+- A4615 在不增加兼容性实现的前提下，对当前生产镜像
+  `kubebrain:a4614-f46e53b0` 执行了三组被默认 runner 分开的真实 TiKV/PD 差分门禁。
+  独立 keyspace `a4616-full-differential` 的统一默认套件全部通过，耗时
+  745.656 秒；独立 HS256 JWT keyspace 对齐固定参考
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 全部通过，耗时
+  8.346 秒；独立 simple-token Auth/RBAC keyspace 的管理 API、区间权限、Txn/Watch/
+  Lease、streaming maintenance 和认证 `endpoint health --cluster` 全部通过，耗时
+  23.037 秒。首次 Auth 运行只在末尾 cluster health 失败，根因是一次性 Pod 广告了
+  宿主机无法解析的集群内短名；用预先固定的 NodePort 和
+  `--advertise-client-urls` 在全新 keyspace 重跑后通过，因此不误判为生产鉴权缺陷。
+  所有一次性 Pod/Service/ConfigMap 已删除，主数据面未改动。本轮没有发现
+  可稳定复现的新生产语义差异，因此没有为了产生代码变更而修改服务实现或测试。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

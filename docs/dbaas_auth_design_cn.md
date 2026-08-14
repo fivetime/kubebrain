@@ -71,7 +71,10 @@ username, authRevision, issuedAt, expiresAt, keyVersion, nonce
 
 签名密钥存 internal KV，KubeBrain Pod 只在内存持明文。AuthDisable、密码修改、用户
 删除、角色/权限变更都会推进 auth revision；旧 revision token 因此整体失效。
-后续可增加 JWT 公私钥模式，但不能改变权限 revision 的失效语义。
+JWT 公私钥模式已实现：支持 RSA/RSASSA-PSS、ECDSA、Ed25519 和 HMAC，
+可用公钥启动 verify-only 节点；签名算法、PEM 密钥匹配、TTL 与过期校验对齐
+etcd。所有 provider 仍使用同一 auth revision 失效语义，不允许非对称模式绕过
+权限变更后的旧 token 拒绝。
 
 ## 数据面接入
 

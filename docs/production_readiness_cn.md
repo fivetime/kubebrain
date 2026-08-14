@@ -4704,10 +4704,14 @@ TiKV/PD 环境完成 34 条 `/registry` 全前缀隔离恢复、逐值核验和�
 证明当时的数据路径规模，但旧文件本身不满足 v1 完整性契约，升级后必须重新导出。
 专用 verify-content smoke 仍确认恢复结果 value 被篡改时 `logical-verify` 会失败。
 
-PD 隔离下的 serializable Range 尚未达到 upstream etcd 成员本地 applied-read 可用性。A4358 已提供
-TiKV 显式 snapshot TSO 的 point/batch 读取能力并通过真实集群历史视图测试，但生产路径仍不得启用：
-在 revision/auth/compact 一致 checkpoint 和对应 GC service safepoint 完成、并通过真实 packet-isolation
-与重启门禁前，PD/TSO 不可达时该请求仍按不可用处理，不能退化成未受 GC 保护或鉴权状态不匹配的读。
+PD 隔离下的 serializable latest 读已由 A4359–A4371 关闭原 A4357 差距：每个
+KubeBrain 副本使用与 revision、auth revision 和 compact watermark 一致的 TiKV snapshot
+TSO，先注册 PD service GC safepoint 并预热所有已知租户 Region，再在本地安全窗内为
+`Range`、read-only `Txn` 和 `RangeStream` 提供固定快照。真实 PD packet isolation、
+cold Region cache、Region split、leader transfer 和单 TiKV store 故障门禁已通过。
+该能力是有界的：默认可用窗约 150 秒；checkpoint 未发布、已过期、safepoint
+续租失败，或 Region merge/store replacement/address change 需要新 PD directory 时继续
+fail closed，不伪造未受 GC 保护或鉴权状态不匹配的读。
 
 恢复后至少验证：
 
