@@ -49809,6 +49809,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   integration workflow 的 dev stack 启动后、消费端验证前。以后 client-go fork、Docker context 或
   TiKV key limit 任何一层回退都会直接阻断 integration，而不再依赖人工记得设置 opt-in 环境变量。
 
+- A4609 把大 Key 验证推进到 etcd 默认请求预算附近，并修正 A4607 对 TiKV 配置值过于乐观的结论。
+  提交 `1ae82727` 新增 1,500 KiB user Key 差分：同一显式 lease 下执行两次 Put，第二次要求
+  `PrevKv`，`PrevKv=true` Watch 必须依次返回 create、update 和 LeaseRevoke 触发的 delete event，
+  最终 Range 为空；固定 upstream 与在线 KubeBrain 在生产配置滚动后连续 3/3 通过（2.82、2.34、
+  2.17 秒）。该 fixture 单次 KubeBrain mutation 会同时写 object、revision/event 与 lease attachment，
+  因而不仅覆盖请求接收，也覆盖大 Key 在完整 MVCC/Watch/Lease 写放大链路中的实际提交。
+
+  随后把真实 TiKV transport gate 从 600 KiB 扩到 KubeBrain 合同允许的精确 2 MiB 原始物理 Key。
+  在 TiKV `storage.max-key-size=2097152` 下首先得到确定性 RED：约 1.9 MiB payload 组成的物理 Key 被
+  TiKV 报为 `KeyTooLarge { size: 2188836, limit: 2097152 }`。根因是 TiKV 对 memcomparable 编码后的
+  Key 长度执行限制，编码约有 12.5% 膨胀；因此服务端 2 MiB 配置不能兑现 KubeBrain 2 MiB 原始物理
+  Key 合同。提交 `eff79cb5` 将 dev/production TiKV 配置和 readiness 期望提高为 2,621,440（2.5 MiB），
+  同时保持 KubeBrain `maxTiKVPhysicalKeyBytes=2 MiB` 的 fail-closed 门禁不变，并让 integration gate
+  精确构造含 prefix、分隔符和 revision suffix 后总长为 2 MiB 的物理 Key。
+
+  真实独立 TiKV/PD 集群已滚动至统一 TiKV revision `kb-tikv-745b844978`，三个主 TiKV Pod 的渲染
+  配置均为 `max-key-size=2621440`、Ready 且零重启；600 KiB 与精确 2 MiB 的 Put/Get/Iter gate 同轮
+  0.92 秒通过。KubeBrain 三副本同样 Ready、零重启，endpoint health 可提交 proposal、AlarmList 为空。
+  这里的 2.5 MiB 是当前 TiKV 编码余量，不是向 etcd 客户端放宽请求或 KubeBrain 原始物理 Key 合同；
+  若未来调整 schema、编码或上限，仍必须以精确边界的真实 TiKV round-trip 重新证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
