@@ -51176,6 +51176,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   10 个 `/dbaas-envoy-plaintext/kubebrain-tls/` 测试键并复查 keyspace 为空。结论是 A4656 留下的真实 Envoy TLS 与外部
   L4 证据空白已关闭；本轮没有修改生产实现或测试断言。
 
+- A4658 修复一个独立的短租约生产隔离缺口。此前全局 `leaseCheckpointMu` 不仅防止同一 lease 的周期
+  remaining-TTL checkpoint 与 KeepAlive clear 乱序，还让一次慢 TiKV checkpoint CAS 阻塞所有无关 lease 的
+  KeepAlive；这与 upstream `lessor.Renew` 按 lease 更新 deadline 的隔离边界不符。提交 `f6590109` 将其改为全局
+  reload/withdraw RW 栅栏加固定 256 路 lease-ID 条带锁：同一 lease 的 checkpoint/clear 仍严格串行，ReloadLeases
+  和 stop 仍排空全部转换，但无关 lease 可并发续期，锁内存不随租约数增长。新增最小并发回归只固定上述不变量，
+  不改变任何差分 oracle；普通相关测试 20 轮、新路径 race 50 轮、Lease/Checkpoint 集合 52.957 秒、完整
+  `pkg/server/etcd` 189.910 秒和 vet 均通过。
+
+  精确镜像 `kubebrain:a4658-f6590109` 内嵌完整 SHA
+  `f659010937c38f077c4baa40f8c0262511921850`，OCI manifest list
+  `sha256:4d28787dec36b75af2aa9e4983d8cf23cc360852a4810db7e7855324802d7f2d`。滚动至隔离 mTLS 三副本后，
+  TTL=620 lease 在真实 5 分钟周期写入 remaining TTL，随后该 checkpointed lease clear 与新 TTL=3 lease
+  KeepAlive 并发成功；长 lease 恢复 TTL=620、短 lease 返回 TTL=3，两个 LeaseCheckpoint TiKV 写累计
+  23.282125ms，最终两 lease 均 revoke、列表为 0。该实验准备故障注入时，未加任何规则的基线 TTL=3 lease
+  已在 23:07:37 过期；同窗三个 KubeBrain 均对 TiKV store 1 报 context deadline，PD heartbeat 慢约 1.46 秒、
+  TSO 停顿 3.27 秒、PD KV 请求耗时 2.95--3.25 秒。因此没有继续人为阻断并伪称故障门禁通过：本项证明正常
+  TiKV 延迟下的真实 checkpoint 分支和确定性锁隔离，PD/TiKV 整体 stall 前请求尚未到达 leader 的 TTL=3
+  生存边界仍依赖 A4577--A4580 的 backend latency 发布门禁与资源隔离，不允许过期后复活。
+
+- A4659 在 A4658 的 race 放大中修复 KeepAlive epoch 路由竞态。原顺序在 `waitLeaderReady` 后先检查本地
+  `leaseReady`，再复查领导权；成员已 demote 或 epoch 已切换而新 lease snapshot 尚未发布时，会错误泄漏
+  `etcdserver: lease state is reloading`，阻止 proxy-capable ingress 把尚未 apply 的消息转发当前 Leader。提交
+  `bec154ac` 保存 admission epoch，等待后先复查 leadership；若同 Pod 新 epoch 的 ReloadLeases 已发布匹配
+  `leaseReadyEpoch`，就在新 epoch 本地续期，否则转发或返回 etcd 风格 leader-unavailable。测试预期没有调整：
+  A4658 在原 proxy 测试 race 100 轮中复现 2 次旧错误，父提交同规格 100/100 通过；生产顺序修复后，
+  demote、successor-ready、successor-not-ready 三类原有测试联合 race 100/100 通过（118.658 秒），完整服务端
+  177.252 秒及 vet 通过。
+
+  精确镜像 `kubebrain:a4659-bec154ac` 内嵌 SHA
+  `bec154ac4c9df685f227ca22463d2f717dd70d54`，OCI manifest list
+  `sha256:03d885644b76521f891ab65de0cc4cd6f4f2e8d311ad06ab00b55e2764d66aed`；隔离 mTLS 三副本滚动后真实
+  Envoy TLS passthrough profile 16.155 秒通过，覆盖 KV、Watch、LeaseKeepAlive、upstream switch 及缺证书/
+  plaintext fail closed。终态显式删除 2 个 profile 键，keyspace 为空、lease 为 0、AlarmList 为空；三个不同
+  member 同一 Leader 且 Raft index/applied index 均为 33，KubeBrain/PD/TiKV 各 3/3 Ready、零重启。主
+  `kubebrain` StatefulSet 未被本轮镜像滚动影响。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
