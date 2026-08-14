@@ -49986,6 +49986,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   所有一次性 Pod/Service/ConfigMap 已删除，主数据面未改动。本轮没有发现
   可稳定复现的新生产语义差异，因此没有为了产生代码变更而修改服务实现或测试。
 
+- A4616 继续在真实独立 TiKV/PD 上执行默认套件未包含的专用门禁。
+  低配额独立 keyspace 与固定参考 etcd 的 automatic NOSPACE 差分全部通过
+  （0.540 秒），覆盖 Put/LeaseGrant 拒绝、sticky alarm、disarm 及删除/physical compact
+  后恢复；三个一次性 KubeBrain ingress 共享同一 keyspace 的 alarm owner 读取、
+  错误 owner disarm 不生效和第三 ingress 正确 disarm 通过（0.269 秒）。
+
+  `RangeStream` 超大单 KV 在 8 MiB 请求上限下的写入/流式读取通过（4.456 秒），
+  同一 TiKV keyspace 重启为默认 1.5 MiB 上限后仍可按 upstream “单 KV 不拆分”契约
+  读取存量超大值（3.663 秒）。已发送 partial response 后并发 compact 的服务端流和
+  官方 client 合并流均与参考端一致返回 `ErrCompacted`，两项共 15.593 秒。
+
+  最后通过三个本地 port-forward 直连主集群每个 Pod，执行 combined NOSPACE/
+  CORRUPT alarm、同 snapshot `HashKV`、跨 ingress lease read/revoke、quota disarm、Status alarm
+  可见性和 Watch local control response 七组三副本一致性门禁，全部通过（20.354 秒）。
+  runner 前后的固定测试前缀、lease 集合和 alarm 集合均一致；主集群最终
+  3/3 Ready、AlarmList 为空。所有一次性 Pod/Service 和本地隧道已删除。本轮同样
+  没有修改测试或生产实现：专用范围内没有出现可稳定复现的兼容性差异。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
