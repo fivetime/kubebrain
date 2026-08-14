@@ -196,6 +196,65 @@ func TestResetBulkLoad(t *testing.T) {
 	require.Equal(t, uint64(101), idx.ReadyRev())
 }
 
+func TestLatestIfReadySamplesExactState(t *testing.T) {
+	idx := New(0)
+	_, _, _, _, ready := idx.LatestIfReady(k("/a"))
+	require.False(t, ready)
+
+	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+		emit(k("/a"), 8, false)
+		emit(k("/gone"), 9, true)
+		return nil
+	})
+
+	revision, tombstone, found, readyRevision, ready := idx.LatestIfReady(k("/a"))
+	require.True(t, ready)
+	require.True(t, found)
+	require.Equal(t, uint64(8), revision)
+	require.False(t, tombstone)
+	require.Equal(t, uint64(10), readyRevision)
+
+	revision, tombstone, found, readyRevision, ready = idx.LatestIfReady(k("/gone"))
+	require.True(t, ready)
+	require.True(t, found)
+	require.Equal(t, uint64(9), revision)
+	require.True(t, tombstone)
+	require.Equal(t, uint64(10), readyRevision)
+
+	revision, tombstone, found, readyRevision, ready = idx.LatestIfReady(k("/absent"))
+	require.True(t, ready)
+	require.False(t, found)
+	require.Zero(t, revision)
+	require.False(t, tombstone)
+	require.Equal(t, uint64(10), readyRevision)
+}
+
+func TestLatestIfReadyDisabledWhileResetLoads(t *testing.T) {
+	idx := New(0)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		idx.Reset(func() uint64 { return 20 }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+			close(started)
+			<-release
+			emit(k("/a"), 20, false)
+			return nil
+		})
+		close(done)
+	}()
+	<-started
+	_, _, _, readyRevision, ready := idx.LatestIfReady(k("/a"))
+	require.False(t, ready)
+	require.Equal(t, uint64(20), readyRevision)
+	close(release)
+	<-done
+	_, _, found, readyRevision, ready := idx.LatestIfReady(k("/a"))
+	require.True(t, ready)
+	require.True(t, found)
+	require.Equal(t, uint64(20), readyRevision)
+}
+
 // TestCountMatchesBruteForce cross-checks the index against a naive recompute
 // over a randomized-ish workload.
 func TestCountMatchesBruteForce(t *testing.T) {

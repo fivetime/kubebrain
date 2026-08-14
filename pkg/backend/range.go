@@ -108,18 +108,37 @@ func (b *backend) get(ctx context.Context, key []byte, revision uint64) (val []b
 
 func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint64) (val []byte, modRevision uint64, err error) {
 	requestedRevision := revision
+	latestExpectation := b.sampleLatestIndexExpectation(ctx, key, requestedRevision == 0)
 	revisionValue, err := b.snapshotGet(ctx, b.coder.EncodeRevisionKey(key))
 	if err != nil {
 		if !errors.Is(err, storage.ErrKeyNotFound) {
 			return nil, 0, err
 		}
+		if requestedRevision == 0 {
+			if validationErr := validateMissingLatestRevisionIndex(key, latestExpectation); validationErr != nil {
+				return nil, 0, b.persistWitnessedRevisionIndexCorruption(ctx, validationErr)
+			}
+		}
 		// Pre-#31 compaction/retry races could leave an object whose revision
 		// index is missing. Preserve the read-visible orphan recovery contract by
 		// falling through to the decoded legacy scan below.
 	} else {
-		currentRevision, _, parseErr := coder.ParseRevision(revisionValue)
+		currentRevision, currentTombstone, parseErr := coder.ParseRevision(revisionValue)
 		if parseErr != nil {
-			return nil, 0, invalidMVCCMetadataError(parseErr, "decode revision index for key %q", key)
+			cause := invalidMVCCMetadataError(parseErr, "decode revision index for key %q", key)
+			if requestedRevision == 0 {
+				return nil, 0, b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+			}
+			return nil, 0, cause
+		}
+		latestIndexVerified := false
+		if requestedRevision == 0 {
+			latestIndexVerified, err = validateLatestRevisionIndex(
+				key, currentRevision, currentTombstone, latestExpectation,
+			)
+			if err != nil {
+				return nil, 0, b.persistWitnessedRevisionIndexCorruption(ctx, err)
+			}
 		}
 
 		// The revision index gives exact point reads a collision-free fast path.
@@ -129,7 +148,18 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 		if requestedRevision == 0 || requestedRevision >= currentRevision {
 			val, getErr := b.snapshotGet(ctx, b.coder.EncodeObjectKey(key, currentRevision))
 			if getErr != nil {
+				if latestIndexVerified && errors.Is(getErr, storage.ErrKeyNotFound) {
+					cause := invalidMVCCMetadataError(getErr,
+						"latest revision index for key %q references missing object revision %d", key, currentRevision)
+					return nil, 0, b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+				}
 				return nil, 0, getErr
+			}
+			if latestIndexVerified && bytes.Equal(val, tombStoneBytes) != currentTombstone {
+				cause := invalidMVCCMetadataError(nil,
+					"latest revision index for key %q has tombstone=%t but object revision %d has tombstone=%t",
+					key, currentTombstone, currentRevision, bytes.Equal(val, tombStoneBytes))
+				return nil, 0, b.persistWitnessedRevisionIndexCorruption(ctx, cause)
 			}
 			return val, currentRevision, nil
 		}
@@ -168,6 +198,66 @@ func (b *backend) getInternalVal(ctx context.Context, key []byte, revision uint6
 		}
 		return iter.Val(), candidateRevision, nil
 	}
+}
+
+type latestIndexExpectation struct {
+	revision      uint64
+	readyRevision uint64
+	tombstone     bool
+	found         bool
+	ready         bool
+}
+
+func (b *backend) sampleLatestIndexExpectation(ctx context.Context, key []byte, requested bool) latestIndexExpectation {
+	if !requested || b.countIndex == nil {
+		return latestIndexExpectation{}
+	}
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); pinned {
+		return latestIndexExpectation{}
+	}
+	revision, tombstone, found, readyRevision, ready := b.countIndex.LatestIfReady(key)
+	return latestIndexExpectation{
+		revision: revision, tombstone: tombstone, found: found,
+		readyRevision: readyRevision, ready: ready,
+	}
+}
+
+func validateMissingLatestRevisionIndex(key []byte, expectation latestIndexExpectation) error {
+	if !expectation.ready || !expectation.found {
+		return nil
+	}
+	return invalidMVCCMetadataError(nil,
+		"latest revision index for key %q is missing; count index expects revision %d tombstone=%t at ready revision %d",
+		key, expectation.revision, expectation.tombstone, expectation.readyRevision)
+}
+
+// validateLatestRevisionIndex cross-checks a physical point-read index against
+// the complete in-memory leader snapshot. The snapshot is advisory unless it
+// is ready, and a physical revision above its ready watermark can be a valid
+// write from a newer leader, so that case deliberately falls back to storage.
+// A true result means the indexed target object may also be checked exactly.
+func validateLatestRevisionIndex(
+	key []byte, revision uint64, tombstone bool, expectation latestIndexExpectation,
+) (bool, error) {
+	if !expectation.ready || revision > expectation.readyRevision {
+		return false, nil
+	}
+	if !expectation.found {
+		// A retained tombstone can legitimately predate the rebuilt live snapshot.
+		// A live physical index cannot: the ready snapshot is complete at readyRev.
+		if tombstone {
+			return false, nil
+		}
+		return false, invalidMVCCMetadataError(nil,
+			"latest live revision index for key %q at revision %d is absent from count index ready at %d",
+			key, revision, expectation.readyRevision)
+	}
+	if revision != expectation.revision || tombstone != expectation.tombstone {
+		return false, invalidMVCCMetadataError(nil,
+			"latest revision index for key %q is revision %d tombstone=%t; count index expects revision %d tombstone=%t at ready revision %d",
+			key, revision, tombstone, expectation.revision, expectation.tombstone, expectation.readyRevision)
+	}
+	return true, nil
 }
 
 // List implements Backend interface

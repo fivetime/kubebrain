@@ -801,6 +801,29 @@ func (b *backend) persistWitnessedObjectCorruption(
 	return cause
 }
 
+// persistWitnessedRevisionIndexCorruption upgrades a request-local point-read
+// failure to a durable write fence only after the cold transaction-witness
+// validator independently proves the physical index/object contradiction.
+// The count index is intentionally never sufficient evidence for an alarm.
+func (b *backend) persistWitnessedRevisionIndexCorruption(ctx context.Context, cause error) error {
+	if !errors.Is(cause, ErrInvalidMVCCMetadata) {
+		return cause
+	}
+	alarmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
+	defer cancel()
+	validationErr := b.validatePersistedTxnWitnesses(alarmCtx, false)
+	switch {
+	case validationErr == nil:
+		return cause
+	case errors.Is(validationErr, ErrTxnWitnessCorrupt):
+		b.metricCli.EmitCounter("read.revision_index.corrupt_alarm_armed", 1)
+		return cause
+	default:
+		b.metricCli.EmitCounter("read.revision_index.corrupt_alarm_failed", 1)
+		return errors.Join(cause, fmt.Errorf("validate persisted transaction witnesses: %w", validationErr))
+	}
+}
+
 func (b *backend) armPersistedWitnessCorrupt(ctx context.Context, revision uint64, cause error) error {
 	if err := b.ArmCorrupt(ctx, b.localAlarmMemberID()); err != nil {
 		return fmt.Errorf("persist CORRUPT alarm for transaction witness revision %d: %w", revision, err)

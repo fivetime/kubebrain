@@ -328,6 +328,32 @@ func (t *TreeIndex) ReadyRev() uint64 {
 	return t.readyRev
 }
 
+// LatestIfReady returns the key's latest indexed state at the tree's current
+// ready revision. The state and ready revision are sampled under one read lock,
+// so a concurrent Reset/Apply cannot splice an expectation from two generations.
+// found=false with ready=true is authoritative absence at readyRev.
+func (t *TreeIndex) LatestIfReady(key []byte) (revision uint64, tombstone, found bool, readyRev uint64, ready bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.overflowed || t.loading || t.baseRev == 0 || t.readyRev < t.baseRev {
+		return 0, false, false, t.readyRev, false
+	}
+	readyRev = t.readyRev
+	item := t.tree.Get(&keyItem{key: key})
+	if item == nil {
+		return 0, false, false, readyRev, true
+	}
+	revisions := item.(*keyItem).revs
+	latest := sort.Search(len(revisions), func(i int) bool {
+		return revisions[i].revision > readyRev
+	}) - 1
+	if latest < 0 {
+		return 0, false, false, readyRev, true
+	}
+	entry := revisions[latest]
+	return entry.revision, entry.tombstone, true, readyRev, true
+}
+
 func (t *TreeIndex) Len() int {
 	t.mu.RLock()
 	defer t.mu.RUnlock()

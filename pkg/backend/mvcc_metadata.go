@@ -26,5 +26,8 @@ import (
 var ErrInvalidMVCCMetadata = coder.ErrInvalidMVCCMetadata
 
 func invalidMVCCMetadataError(err error, format string, args ...any) error {
+	if err == nil {
+		return coder.MarkInvalidMVCCMetadata(fmt.Errorf(format, args...))
+	}
 	return coder.MarkInvalidMVCCMetadata(fmt.Errorf("%s: %w", fmt.Sprintf(format, args...), err))
 }
