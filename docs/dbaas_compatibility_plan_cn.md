@@ -49913,6 +49913,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   restore/reload/expiry/checkpoint failure、panic、fatal、corrupt 匹配均为零，首次滚动的 follower
   restore fence 错误已被真实运行关闭。
 
+- A4613 关闭 authenticated LeaseKeepAlive 经 follower 转发时由永久陈旧 attachment snapshot 造成的
+  false denial。固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/v3_server.go::LeaseRenew`
+  也会在 follower 转发前调用 `checkLeaseRenew`，但该节点的 lessor 通过 Raft apply 持续接收 grant、attach、
+  detach，与 KubeBrain A4612 明确建立的 disposable constructor snapshot 不同；因此不能只复制调用位置而忽略
+  状态复制模型。KubeBrain follower 此前会先按旧 key 集合做 WRITE 授权，再把 token 转发给 leader：如果 leader
+  已解绑 Alice 无权访问的旧 key、并把 lease 改绑到 Alice 可写的新 key，合法 keepalive 仍会在 ingress follower
+  被提前拒绝，权威 leader 完全收不到请求。
+
+  确定性共享-backend 双 RPCServer RED 先让 follower 恢复 `/denied/stale`，随后 leader 将同一 lease 改绑为
+  `/allowed/current`；旧实现返回 `etcdserver: permission denied` 且 proxy callback 未进入。生产提交
+  `8971acfa` 保留 follower 对 token 的完整验证与原 token 转发，但不再把陈旧 lessor 当作最终授权源；leader
+  收到身份后仍在 `refreshLeaseAuthorized` 内按当前 attachment、当前 auth revision 逐请求检查。正例要求上述
+  stale key 不再阻断、leader 返回正 TTL；安全反例再由 root 添加当前 `/denied/current`，必须确认请求已到
+  leader 后仍返回 PermissionDenied，证明没有绕过真实权限。
+
+  keepalive/auth/并发 attachment 组合连续 20 轮通过，focused race 10 轮通过，完整
+  `pkg/server/etcd` 191.679 秒及 vet 通过。镜像 `kubebrain:a4613-8971acfa` 内嵌 SHA
+  `8971acfad347e83b1adefbbe9d459ae9262e3977`，本地 OCI digest
+  `sha256:e5d31d819e8b70e1c129bf601f8f93e26b25121403e1c4e6162995f594148343`。独立 TiKV/PD 三副本
+  滚动期间，同一个 TTL=60 LeaseKeepAlive stream 在多次 leader 切换前后持续返回 TTL=60；滚动结束后
+  remaining TTL=32 且绑定键仍存在。最终 KubeBrain 3/3 Ready、零重启、运行 SHA 一致，三个 endpoint
+  health 均可提交 proposal，AlarmList 为空，三 Pod 启动日志的 lease restore/reload/checkpoint/expiry failure、
+  panic、fatal、corrupt 匹配均为零；在线 lease/key fixture 已 revoke 清理。为避免影响共享验证集群的其他
+  客户端，本轮没有临时启用全局 auth；特定 stale-authority 场景由上述共享 backend 双实例回归长期固定。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
