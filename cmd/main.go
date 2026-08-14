@@ -55,7 +55,10 @@ func main() {
 }
 
 const (
-	gracefulExitTimeout = 3 * time.Second
+	// Endpoint/backend drain and the PD admission lease revoke run in parallel.
+	// Keep the process alive beyond admission's five-second close budget so a
+	// replacement StatefulSet Pod cannot collide with the old identity lease.
+	gracefulExitTimeout = 15 * time.Second
 )
 
 func forceExitWhileGracefulExitTimeout(ctx context.Context) {

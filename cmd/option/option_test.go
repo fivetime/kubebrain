@@ -15,15 +15,51 @@
 package option
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
 )
+
+type countingProcessAdmission struct {
+	closes atomic.Int32
+	closed chan struct{}
+}
+
+func (*countingProcessAdmission) Fresh() bool { return true }
+func (a *countingProcessAdmission) Close() error {
+	if a.closes.Add(1) == 1 {
+		close(a.closed)
+	}
+	return nil
+}
+
+func TestProcessAdmissionClosesImmediatelyOnShutdownExactlyOnce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	admission := &countingProcessAdmission{closed: make(chan struct{})}
+	cleanup := closeProcessAdmissionOnContext(ctx, admission)
+	cancel()
+	select {
+	case <-admission.closed:
+	case <-time.After(time.Second):
+		t.Fatal("admission session was not closed when shutdown started")
+	}
+	cleanup()
+	require.Equal(t, int32(1), admission.closes.Load())
+}
+
+func TestProcessAdmissionClosesOnNonCanceledRunExit(t *testing.T) {
+	admission := &countingProcessAdmission{closed: make(chan struct{})}
+	cleanup := closeProcessAdmissionOnContext(context.Background(), admission)
+	cleanup()
+	require.Equal(t, int32(1), admission.closes.Load())
+}
 
 func TestTLSFlagsBindToExpectedSecurityConfigFields(t *testing.T) {
 	o := NewOptions()

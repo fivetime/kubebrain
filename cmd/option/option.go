@@ -21,6 +21,7 @@ import (
 	"net"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -85,6 +86,38 @@ type KubeBrainOption struct {
 type processAdmission interface {
 	Fresh() bool
 	Close() error
+}
+
+// closeProcessAdmissionOnContext releases the leased process identity as soon
+// as shutdown starts, in parallel with the endpoint/backend drain. Waiting for
+// Run's outer defer is too late: backend shutdown can consume the process grace
+// period and leave the old identity leased while a replacement Pod starts.
+// The returned function joins the watcher and makes Close exactly-once on every
+// normal/error exit, including exits whose parent context was not canceled.
+func closeProcessAdmissionOnContext(ctx context.Context, admission processAdmission) func() {
+	var once sync.Once
+	closeAdmission := func() {
+		once.Do(func() {
+			if err := admission.Close(); err != nil {
+				klog.ErrorS(err, "close PD restore admission session")
+			}
+		})
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		select {
+		case <-ctx.Done():
+			closeAdmission()
+		case <-stop:
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+		closeAdmission()
+	}
 }
 
 func NewOptions() *KubeBrainOption {
@@ -427,7 +460,7 @@ func (o *KubeBrainOption) Run(ctx context.Context) error {
 		return err
 	}
 	if admission != nil {
-		defer admission.Close()
+		defer closeProcessAdmissionOnContext(ctx, admission)()
 		o.epsConf.AdmissionFresh = admission.Fresh
 	}
 
