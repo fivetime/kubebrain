@@ -50760,6 +50760,48 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witness mismatch/
   revision-index/alarm/leadership-initialization failure。共享 TiKV 未注入损坏，破坏/修复闭环由隔离存储测试证明。
 
+- A4643 关闭 A4642 保留的 revision index target-object 关联缺口。A4642 已拒绝 index 落后 witnessed event、编码
+  畸形、缺失和同 revision live/tombstone 标志冲突，但一个编码合法且向前漂移的 index 仍可能指向本 key 不存在的
+  object；只检查 `currentRevision >= witnessedRevision` 会放过它，point Get 随后把 storage `ErrKeyNotFound` 表现成键
+  不存在。继续对标 `/root/etcd/server/storage/mvcc/index.go::treeIndex.Get` 返回的 modified revision 必须对应 MVCC
+  backend row，以及 `/root/etcd/server/embed/etcd.go`、
+  `/root/etcd/server/etcdserver/corrupt.go::corruptionChecker.InitialCheck` 在服务流量前完成完整性检查的边界。
+
+  生产提交 `daa78a9f` 把 A4642 的每个 512-event 批次扩展成两阶段 region-aware BatchGet：第一阶段读取并解析 current
+  revision indexes，同时要求 index 不超过 durable user revision；第二阶段按解析出的 exact `(user key,current revision)`
+  批量读取 target objects，要求 object 存在，且 index tombstone flag 与 exact object 是否为 tombstone marker 完全一致。
+  因而既能发现“全局合法 revision、但本 key 没有对应 object”，也能拒绝伪造 object 后仍高于 durable watermark 的
+  future index，以及 live-index/tombstone-object、tombstone-index/live-object 两种分裂状态。
+
+  target object key 的 missing 状态或 exact bytes 与 seal、fresh compact watermark 一同作为告警前二次证据；运维在
+  ArmCorrupt 前已恢复 object 时不遗留陈旧告警。active CORRUPT 会阻止 compact watermark 推进，所以告警建立后 seal
+  不会在修复前被正常 GC，Disarm 可重新执行相同两阶段证明。两阶段仍严格按 512 events 分块：600 笔单键 transaction
+  和单笔 600-op backend transaction 均精确使用 4 次 BatchGet（两个 chunk × index/object 两 phase），不退化成
+  per-key/per-witness N+1。
+
+  确定性回归覆盖 index 指向另一键已推进的合法 durable revision但本 key target 缺失、index 高于 durable 且伪造
+  target object、live index 指向 tombstone、DELETE tombstone index 指向 live object；全部在 leadership 初始化时持久
+  CORRUPT、未修复 Disarm 返回 `ErrTxnWitnessCorrupt`，恢复 exact index/object 后可解除。独立 object repair-before-alarm
+  竞态证明最终 exact-object 复核会抑制陈旧告警；A4642 的 index repair、compaction cleanup window 和批量边界继续
+  回归。最终 focused 20 轮 4.250 秒、race 10 轮 13.117 秒，更宽 leadership/witness/corrupt/compact/Txn 五轮
+  81.935 秒，完整 backend 79.028 秒、相关 server 三轮及 backend/server vet 全部通过。
+
+  真实 TiKV 验证先由 A4642 以 5 笔各 104-op Txn 在 revision `468126003565884151` 至 `...155` 写入 520 个 live
+  target objects。滚动 A4643 后三副本均通过旧 seal→index→live-object 两阶段校验，Range 精确返回 520 键，首尾
+  create/mod 分别为 `...151`/`...155`、version 1，AlarmList 为空。随后单次 DeleteRange 在 revision `...156`
+  删除 520 键并形成 520-event tombstone transaction；同镜像顺序重启后三副本均通过跨 512 边界的
+  index→tombstone-object 校验。最终 `/a4643/` 零残留、MemberList 三成员、health 可提交 proposal，
+  revision/index/applied index 均为 `...156`、term 696。
+
+  可追溯镜像 `kubebrain:a4643-daa78a9f` 内嵌完整 SHA
+  `daa78a9f62cc3d78d9e1e3c5e5a3f60a7a34492e`、版本 `a4643`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T17:10:09Z`；本地 OCI manifest list 为
+  `sha256:def78777a09868adfba8422e43a4dbcf616671fbc06199c4f16a5762a5c9dd36`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:dcb5e5deae8f10870933f24f5fe1068a37f2733fb8ad4bb74a04f75e067156b4`。
+  主 StatefulSet 在升级与 DELETE 后同镜像重启两轮均完整收敛，终态三副本 Ready、零重启；主 PD 3/3、TiKV 3/3
+  Ready 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witness mismatch/
+  revision-index/target-object/alarm/leadership-initialization failure。共享 TiKV 未注入损坏，破坏/修复闭环由隔离测试证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
