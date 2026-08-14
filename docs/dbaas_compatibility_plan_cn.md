@@ -50802,6 +50802,53 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witness mismatch/
   revision-index/target-object/alarm/leadership-initialization failure。共享 TiKV 未注入损坏，破坏/修复闭环由隔离测试证明。
 
+- A4644 把 A4642/A4643 的 revision-index 完整性边界从“领导初始化与 CORRUPT Disarm”推进到领导任期内的最新
+  point Get。继续对标精确基线
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/index.go::treeIndex.Get`：etcd
+  在同一内存 MVCC index 中选择 key 的 exact modified revision；也延续
+  `server/etcdserver/corrupt.go::corruptionChecker.InitialCheck` 在暴露流量前 fail closed 的原则。KubeBrain 旧路径在
+  启动校验后若 TiKV current revision index 被改成合法但陈旧 revision，会继续读取旧 object；index 或 target object
+  整行丢失时还可能被表现成普通 missing key，直到下一次领导切换才发现。
+
+  生产提交 `ec714582` 为 count index 增加在同一 RLock 下采样 exact latest state 与 ready watermark 的接口，并在最新
+  point Get 读取物理 index 前先采样完整期望。正常路径只增加一次 O(log N) 内存读取；只有物理 index 与已就绪期望矛盾
+  时才运行 A4642/A4643 的持久 transaction-witness validator。因而易失 count index 永远不能单独 ArmCorrupt：完整 seal、
+  event、durable revision、current index 与 exact target object 冷验证独立证明损坏后才建立持久写栅栏，未见证历史只返回
+  request-local DataLoss。运行期覆盖 stale、missing、malformed、live/tombstone index flag 与 target object marker 分裂；
+  未修复 Disarm 继续返回 `ErrTxnWitnessCorrupt`，恢复 exact bytes 后才能解除并恢复点读。
+
+  并发边界采用“先采样内存期望、后读 TiKV”：物理 revision 高于采样 ready watermark 时视为可能来自较新 leader 的合法写
+  并降级到原存储路径，避免把跨领导新提交误报为损坏。count index 未就绪、正在 Reset、overflow 或关闭时同样降级；携带
+  TiKV snapshot timestamp 的 follower serializable checkpoint 与当前 count snapshot 不同代，明确跳过运行期交叉校验；
+  historical revision Get 语义不变。通用 MVCC 错误构造器同时修复 nil cause 产生 `%!w(<nil>)` 的诊断污染。
+
+  确定性回归覆盖 exact live/tombstone/authoritative-absence 采样、Reset loading 禁用、stale/missing/malformed index、missing/
+  tombstone target、无 witness 不告警、物理 revision 高于 ready watermark、historical Get 与 pinned checkpoint。focused race
+  10 轮分别通过（countindex 1.152 秒、backend 7.903 秒），完整 backend 78.007 秒、backend/server vet 通过。server 全套
+  三轮在显式 30 分钟 package timeout 下通过；最终单轮曾由既有 auth client 重试时序得到一次 DeadlineExceeded，目标
+  `TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken` 隔离 10 轮 27.005 秒全通过，资源空闲后最终 server 全套复跑
+  通过。该 flaky 与本次 backend/count-index 路径无交集，但未被隐藏为全绿首跑。
+
+  真实 TiKV 验证先由 A4643 用 5 笔各 104-op 原子 Txn 在 revision `468126003565884159` 至 `...163` 写入 520 键；
+  A4644 滚动后旧 seal 与 live objects 完整通过领导校验，前缀精确 520，首尾 create/mod 分别为 `...159`/`...163`、
+  version 1，最新 point Get 进入新的 index/object 热校验且 AlarmList 为空。随后单次 DeleteRange 在 revision `...164`
+  删除全部 520 键；同镜像顺序重启后 `/a4644/` 零残留、MemberList 三成员、health 可提交 proposal，revision/index/
+  applied index 均为 `...164`、term 701。主 PD 3/3、TiKV 3/3 Ready 且零重启，日志无 panic/fatal/snapshot failure/
+  corrupt/invalid MVCC metadata/witness mismatch/revision-index/target-object/alarm/leadership-initialization failure。
+
+  重启验证同时暴露一个独立 shutdown/admission handoff 缺口：`kubebrain-0` 新 Pod 前两次启动因旧 identity 的 PD restore
+  admission lease 尚未撤销而以 exit 1 返回
+  `restore admission is closed or this process identity is already active`，第三次成功并保持 Ready；另两副本零重启。
+  根因是进程 SIGTERM 后 3 秒强制退出窗口短于 admission Close 自身 5 秒预算，且 admission defer 位于 endpoint/backend
+  关闭之后。这里不把最终状态误记为“三副本零重启”，也不通过删除 Pod 清洗计数；该 rollout 可靠性差距进入下一切片。
+
+  可追溯镜像 `kubebrain:a4644-ec714582` 内嵌完整 SHA
+  `ec714582f6303d5f3aea151688ee90826b92c43f`、版本 `a4644`、Go 1.26.5、TiKV storage、linux/amd64、UTC build time
+  `2026-08-14T17:55:30Z`；本地 OCI manifest list 为
+  `sha256:d22eff8da74705f4255d7943d4e3d9fcabd7a11bd3e54516493ce9bd7415d2bc`，kind 导入后三个 Pod 的 runtime
+  imageID 均为 `sha256:3b276b86a6edba34c5ce844b80cfc2ebb0938ce2006fe62532620bbe3cf09527`。共享 TiKV 未注入损坏，
+  运行期破坏/修复与 Disarm 闭环由隔离存储测试证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
