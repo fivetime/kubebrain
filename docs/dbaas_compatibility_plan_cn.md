@@ -50442,6 +50442,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884105`、term 667。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/missing object/transaction witness mismatch。
 
+- A4634 补齐 A4633 只证明 referenced object key 存在、未证明其 value 可解释的缺口。KubeBrain event-log replay
+  原样返回 stored bytes，直到 `pkg/server/etcd/backendshim_watch.go` 的 `kvToEtcdKv` 才调用
+  `DecodeInlineValueChecked`；因此对象存在但 envelope 截断、版本未知或 create/version lifecycle 非法时，错误只在
+  单个 server translator 请求中暴露，backend 无法把它纳入 A4632/A4633 的持久 CORRUPT 与安全 Disarm 链。对照
+  upstream Watch 在 `server/etcdserver/api/v3rpc/watch.go` 组装事件时要求可读取对应历史 KV，以及 CORRUPT applier
+  对已确认存储损坏的共享隔离原则，生产提交 `299330b1` 将 value 语义证明下沉到 backend trusted replay。
+
+  新 `validateEventObjectValue` 对现代 v1/v2/v3 envelope 执行 checked decode 与
+  `ValidateEtcdMetadataAtRevision`，不增加存储读取；legacy raw value 复用现有 exact-revision etcdmeta/recovery 路径，
+  保持升级兼容。event-log BatchGet 完成后、构造 proto Event 前验证每个去重引用；只有
+  `ErrInvalidMVCCMetadata` 进入 durable compact/event watermark 二次门禁并拉起 CORRUPT，普通 TiKV/metadata
+  transport error 直接返回且不误报。object-aware Disarm 对同一批已存在 object bytes 执行完全相同的语义验证；
+  若期间 compact 已越过 transaction revision，则刷新 watermark 后忽略已不再受支持的历史证据。
+
+  确定性 RED 把可信 CREATE 的 object value 改为截断 v3 envelope、保留 event 与 witness：旧 backend replay
+  返回成功且 AlarmList 为空；修复后在 backend 返回 `ErrInvalidMVCCMetadata`、持久 CORRUPT、拒绝后续 Create，
+  未修复 Disarm 返回 `ErrTxnWitnessCorrupt`；恢复原 bytes 后方可解除并重新正确回放。EventLog/TxnWitness/
+  CorruptAlarm 宽回归 20 轮 50.237 秒、focused race 10 轮 14.851 秒、backend/server vet、完整 backend
+  75.829 秒及完整 `pkg/server/etcd` 181.794 秒通过。
+
+  真实 TiKV 正向验证以 sentinel revision `468126003565884106` 定位：revision `...107` CREATE `k=v1`
+  （create/mod=`...107`、version 1），revision `...108` UPDATE `k=v2`（version 2、PrevKV=v1），revision
+  `...109` DELETE（PrevKV=v2）；三批 Watch 事件的值与生命周期字段均正确，新 value validator 未误拒合法 envelope，
+  AlarmList 为空。清理 sentinel 后最终 revision 为 `468126003565884110`。
+
+  可追溯镜像 `kubebrain:a4634-299330b1` 内嵌完整 SHA
+  `299330b13dab24ec38db340167e30919e7686edd`、版本 `a4634`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T14:40:48Z`；本地 OCI manifest list 为
+  `sha256:d3a289dc8199e741a656f980e04b59bb94fd890cd9cf00ffa4b94957d8281a32`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:dbd4d19dd87c85282e3ee604cf2204518d0159b6826e6744ff905100a867e77b`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884110`、term 669。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/invalid referenced object/witness mismatch。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
