@@ -50131,6 +50131,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `468126003565884064`、term 642。主 PD 3/3、TiKV 3/3 Ready 且零重启；滚动日志无
   panic/fatal/snapshot failure/corrupt/invalid MVCC metadata，历史 restore Pod 不计入主数据面结论。
 
+- A4623 继续关闭 A4622 相邻的 inline metadata 非精确关联风险。公共 `GetEtcdMetadata` 先通过历史对象
+  lookup 查 inline envelope，但此前丢弃了该 lookup 实际返回的 revision；请求 revision 5 而只存在
+  revision 2 inline 行时，会在 exact legacy/recovery 之前直接借用 `{CreateRevision:2, Version:1}`。
+  固定 upstream `server/storage/mvcc/kvstore_txn.go` 的每值版本契约要求 metadata 与对象 revision 一一对应。
+  生产提交 `514962d1` 因此保留历史 lookup 返回的 `storedRevision`，仅在它等于请求 `modRevision` 时接受
+  inline metadata；predecessor 命中继续进入 exact legacy row 与 retained-history 路径，无法证明目标版本时
+  沿用既有保守 `{CreateRevision:modRevision, Version:1}`，不制造 predecessor 精度。
+
+  新确定性回归固定 revision 2 inline、请求 revision 5 的旧失败形状，并要求结果为 `{5,1}`；相关 metadata
+  recovery focused 连续 20 轮、race 连续 10 轮、完整 backend（75.679 秒）与完整 `pkg/server/etcd`
+  （173.811 秒）通过。真实 TiKV 验证在唯一命名 keyspace 注入同一物理形状，经主三节点 PD/TiKV 的公共
+  `GetEtcdMetadata` 路径得到 `{5,1}`；旧实现会得到 `{2,1}`。临时非 root Pod、静态测试二进制和验证扩展
+  均已清理。
+
+  可追溯镜像 `kubebrain:a4623-514962d1` 内嵌完整 SHA
+  `514962d1e9bc8800bc83260379968a10b2dbb326`、版本 `a4623`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T11:07:09Z`，运行用户 `65532:65532`；本地 OCI manifest list 为
+  `sha256:efe70799bb10120071d3ab4fbbf6f7767541f26eb16298b579971478a4bfdf38`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:e674d3c3116adc51993f0f80a5b3ee633f366495d0ce4ec2d3dcec42e485beff`。
+  主 StatefulSet 顺序滚动完成，三副本 Ready、零重启；NodePort 两次 Put、Get 与带 `prev_kv` Delete 保持
+  stable create revision/version 2 契约。MemberList 为三个成员，health 可提交 proposal，AlarmList 为空；
+  最终 revision/index/applied index 均为 `468126003565884067`、term 645。主 PD 3/3、TiKV 3/3 Ready 且
+  零重启，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
