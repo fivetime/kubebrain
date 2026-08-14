@@ -50069,6 +50069,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   panic/fatal/snapshot failure/corrupt；主 PD 3/3、TiKV 3/3 Ready 且零重启，历史 restore Pod 的既有重启
   不计入主数据面结论。
 
+- A4621 修复 pre-metadata 对象历史即使完整保留也一律伪装为
+  `CreateRevision=ModRevision, Version=1` 的升级兼容缺口。对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go`
+  的 per-generation create revision/version，以及 `key_index.go::keep` 的 compact anchor 语义：后端现在只在
+  retained object family 能证明完整 generation 时恢复精确 metadata。未压缩的首个 live 版本、可见
+  tombstone 后的重建或可信 inline envelope 可建立锚点；compact watermark 之前只有未知 live anchor 时不
+  猜测原始代数，继续使用保守 fallback。inline metadata 不连续、保留值 envelope 损坏和物理 key 解码失败
+  均按 MVCC corruption 返回，不能用“恢复”掩盖。旧 `$` 分隔格式仍逐行 decode 后比较任意字节 user key，
+  防止 extension family 混入计数；legacy separate metadata 和恢复 iterator 都继承 serializable checkpoint
+  的同一 TiKV snapshot timestamp，避免把未来 metadata 拼接到旧对象视图。
+
+  生产提交 `83679853` 的 focused recovery/checkpoint 回归、完整 `go test ./pkg/backend -count=1`
+  （74.665 秒）全部通过；`go test ./... -count=1` 除 `hack/production` 在累计 10 分钟 suite timeout 外其余包
+  全部通过，超时时正在运行的 `TestRestoreCutoverOperationStopsWhenHeartbeatIsFenced` 当时只执行 3 秒，
+  单独以 2 分钟预算重跑 3.501 秒通过，因此记录为整包时间预算而非本次断言回归。真实 TiKV 验证把静态
+  backend test binary 放进同一 kind 集群的临时非 root Pod，经集群 DNS 连接主三节点 PD/TiKV；在唯一命名
+  keyspace 写入 revision 2/4/7 的 raw legacy generation，实际 TiKV iterator 恢复
+  `CreateRevision=2, Version=3`，同时 legacy lease provenance 事务门禁通过。验证 keyspace 随测试 cleanup
+  删除，临时 Pod、二进制和本地 port-forward 均已清理。
+
+  可追溯镜像 `kubebrain:a4621-83679853` 内嵌完整 SHA
+  `836798535838044afddc99b162c8085b24a84190`、版本 `a4621`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T10:24:43Z`，运行用户 `65532:65532`；本地 OCI manifest list 为
+  `sha256:e46660f1294a178d1acb0cb0df353978560b95d9a656e2f023c781c31dab3b1e`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:d03d82abb68d58ca5879935813aeb255d06a73efce88de6087e5d6d33f9ad101`。
+  主 StatefulSet 顺序滚动完成，三副本 Ready、零重启。NodePort 连续 Put/Get/Delete 验证同键第二次写入
+  `version=2` 且 create revision 保持首次写入，Delete `prev_kv` 完整一致；MemberList 返回三个成员，health
+  可提交 proposal，AlarmList 为空。最终 Status revision/index/applied index 均为
+  `468126003565884061`、term 640；主 PD 3/3、TiKV 3/3 Ready 且零重启，滚动日志无
+  panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

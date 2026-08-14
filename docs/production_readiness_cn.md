@@ -3870,7 +3870,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   staged commit、写前全分支校验及后端冲突重试；当前差分矩阵无已知原子性差异，仍需
   继续扩大生成式嵌套输入和多点故障 soak。
 - 多副本下 `Compact` 后旧 revision 立即读的可见性已通过 leader 转发、不足额 compact 可重试错误、`Compact` 返回前可见性等待，以及历史 revision `Range` 转发 leader 做初步加固；本地 smoke、默认 compact soak、默认 compact fault smoke，以及 **3 副本 TiKV+PD 上的负载中混沌 + 单节点/多节点满载 soak** 已通过；仍需**数天级**长时间并发 compact/list/watch 压测确认长周期行为。
-- 对已有历史数据，若写入发生在 metadata 机制引入前，`CreateRevision/Version` 会回退为 `CreateRevision=ModRevision, Version=1`；生产迁移前需要用真实数据集验证是否存在旧数据兼容影响。
+- 对 metadata 机制引入前的已有历史数据，若当前保留的对象版本能证明完整 generation（未压缩的首个 live
+  版本、可见 tombstone 后的重建，或可信 inline metadata 锚点），KubeBrain 会按该 key 的实际写入次数恢复
+  `CreateRevision/Version`；若压缩只留下来源不明的 live anchor，则原始 create/version 在信息论上不可恢复，
+  仍保守回退为 `CreateRevision=ModRevision, Version=1`。生产迁移前需要用真实数据集统计两类历史，不能把
+  可证明恢复外推为所有旧数据均已精确迁移。
 - TLS、认证、授权、证书轮换需要按生产环境补齐。
 - 需要为 TiKV/PD 与 KubeBrain 建立监控告警，包括请求错误率、延迟、leader 切换、watch 关闭、lease 数量、TiKV/PD 健康和磁盘容量。
 
