@@ -24,33 +24,52 @@ import (
 
 type checkpointCountScanner struct {
 	backendscanner.Scanner
+	mu                  sync.Mutex
 	rangeCalled         bool
 	rangeFilteredCalled bool
+	rangeStreamCalled   bool
 	countFilteredCalled bool
 }
 
+func (s *checkpointCountScanner) RangeStream(ctx context.Context, start, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse {
+	s.mu.Lock()
+	s.rangeStreamCalled = true
+	s.mu.Unlock()
+	return s.Scanner.RangeStream(ctx, start, end, revision, keysOnly)
+}
+
 func (s *checkpointCountScanner) Range(ctx context.Context, start, end []byte, revision uint64, limit int64) ([]*proto.KeyValue, error) {
+	s.mu.Lock()
 	s.rangeCalled = true
+	s.mu.Unlock()
 	return s.Scanner.Range(ctx, start, end, revision, limit)
 }
 
 func (s *checkpointCountScanner) CountFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) (int, error) {
+	s.mu.Lock()
 	s.countFilteredCalled = true
+	s.mu.Unlock()
 	return s.Scanner.CountFiltered(ctx, start, end, userStart, userEnd, revision)
 }
 
 func (s *checkpointCountScanner) CountFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) (int, error) {
+	s.mu.Lock()
 	s.countFilteredCalled = true
+	s.mu.Unlock()
 	return s.Scanner.CountFilteredExcluding(ctx, start, end, userStart, userEnd, excluded, revision)
 }
 
 func (s *checkpointCountScanner) RangeFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) ([]*proto.KeyValue, error) {
+	s.mu.Lock()
 	s.rangeFilteredCalled = true
+	s.mu.Unlock()
 	return s.Scanner.RangeFiltered(ctx, start, end, userStart, userEnd, revision)
 }
 
 func (s *checkpointCountScanner) RangeFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error) {
+	s.mu.Lock()
 	s.rangeFilteredCalled = true
+	s.mu.Unlock()
 	return s.Scanner.RangeFilteredExcluding(ctx, start, end, userStart, userEnd, excluded, revision)
 }
 

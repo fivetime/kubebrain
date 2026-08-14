@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -211,4 +212,78 @@ func TestDecodedRangeReconcilesAncestorWhoseTombstoneIsPastRawEnd(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, [][]byte{ancestor}, [][]byte{historical.Kvs[0].Key})
 	store.requireOneSnapshot(t)
+}
+
+func TestDecodedRangeStreamUsesOrderedIndexWithoutMaterializingRange(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
+	b := NewBackend(store, Config{
+		Prefix: "/kubebrain/range-stream-index", Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, EnableCountIndex: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	ctx := context.Background()
+	keys := [][]byte{[]byte("a"), []byte("a\x00"), []byte("a$")}
+	for index := 0; index < decodedRangeStreamIndexPage; index++ {
+		keys = append(keys, []byte(fmt.Sprintf("a/%03d", index)))
+	}
+	keys = append(keys, []byte("b"))
+	revisions := make([]uint64, len(keys))
+	seed := rawStore.BeginBatchWrite()
+	for index, key := range keys {
+		revisions[index] = uint64(index + 2)
+		mutation := b.encodeCreateMutation(
+			key, []byte{byte(index)}, EtcdMetadata{CreateRevision: revisions[index], Version: 1}, revisions[index], 0, 1,
+		)
+		seed.Put(mutation.revisionKey, mutation.newRevisionValue, 0)
+		for _, objectMutation := range mutation.objectMutations {
+			seed.Put(objectMutation.key, objectMutation.value, 0)
+		}
+	}
+	require.NoError(t, seed.Commit(ctx))
+	current := revisions[len(revisions)-1]
+	b.SetCurrentRevision(current)
+	b.countIndex.Reset(func() uint64 { return current }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		for index, key := range keys {
+			emit(key, revisions[index], false)
+		}
+		return nil
+	})
+
+	tracked := &checkpointCountScanner{Scanner: b.scanner}
+	b.scanner = tracked
+	store.resetTrace()
+	stream, err := b.RangeStream(ctx, []byte("a"), []byte("b"), current)
+	require.NoError(t, err)
+	var got []*proto.KeyValue
+	var terminal int
+	for response := range stream {
+		require.Empty(t, response.Err)
+		got = append(got, response.RangeResponse.Kvs...)
+		if len(response.RangeResponse.Kvs) == 0 {
+			terminal++
+		}
+	}
+	require.Len(t, got, len(keys)-1)
+	for index := range got {
+		require.Equal(t, keys[index], got[index].Key)
+	}
+	require.Equal(t, [][]byte{{0}, {1}, {2}}, [][]byte{
+		StripInlineValue(got[0].Value), StripInlineValue(got[1].Value), StripInlineValue(got[2].Value),
+	})
+	require.Equal(t, 1, terminal)
+	require.True(t, tracked.rangeCalled, "decoded-boundary detection should still run its bounded extension probes")
+	require.False(t, tracked.rangeFilteredCalled, "ordered-index RangeStream must not materialize RangeFiltered")
+	require.False(t, tracked.rangeStreamCalled, "ordered-index RangeStream resolves bounded key pages directly")
+	store.mu.Lock()
+	require.Len(t, store.batchKeys, 4, "303 logical keys must use two bounded revision/object page pairs")
+	require.Equal(t, []int{300, 300, 3, 3}, []int{
+		len(store.batchKeys[0]), len(store.batchKeys[1]), len(store.batchKeys[2]), len(store.batchKeys[3]),
+	})
+	require.Equal(t, store.batchTimestamps[0], store.batchTimestamps[1])
+	require.Equal(t, store.batchTimestamps[0], store.batchTimestamps[2])
+	require.Equal(t, store.batchTimestamps[0], store.batchTimestamps[3])
+	require.NotZero(t, store.batchTimestamps[0])
+	store.mu.Unlock()
 }

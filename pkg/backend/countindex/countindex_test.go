@@ -173,6 +173,12 @@ func TestCompactPrunesAndKeepsCounts(t *testing.T) {
 	require.Equal(t, 0, idx.Count(k("/gone"), k("/gone0"), 7))
 }
 
+func TestCompactPreservesFutureOnlyTombstoneDuringRebuild(t *testing.T) {
+	revs := []revEntry{{revision: 105, tombstone: true}}
+	require.Equal(t, revs, pruneRevs(revs, 50),
+		"a compaction older than every entry must not discard a future tombstone")
+}
+
 func TestResetBulkLoad(t *testing.T) {
 	idx := New(0)
 	idx.Apply(k("/stale"), 1, false) // will be discarded by reset
@@ -290,6 +296,7 @@ func TestResetNonBlockingConcurrentApply(t *testing.T) {
 	require.False(t, idx.Ready(100), "must not be ready while loading")
 	idx.Apply([]byte("b"), 105, true)  // b deleted at 105 (arrives BEFORE its snapshot emit)
 	idx.Apply([]byte("d"), 106, false) // d created at 106 (never in the snapshot)
+	idx.Compact(50)                    // must fence page cursors without invalidating this rebuild
 	require.False(t, idx.Ready(106), "still loading")
 
 	close(release)
@@ -344,4 +351,36 @@ func TestResetFloorsBaseRevAtReadyRev(t *testing.T) {
 	require.EqualValues(t, 100, loadedAt, "baseRev must be floored at readyRev, not the lagging committed rev")
 	require.True(t, idx.Ready(100))
 	require.EqualValues(t, 1, idx.Count([]byte("a"), []byte("z"), 100), "the applied event must not be lost")
+}
+
+func TestKeysPageIfReadyOrdersLiveHistoricalKeysAndFencesTreeChanges(t *testing.T) {
+	idx := New(0)
+	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		for _, key := range [][]byte{[]byte("a\x00"), []byte("a"), []byte("a$"), []byte("b"), []byte("z")} {
+			emit(key, 10, false)
+		}
+		return nil
+	})
+	idx.Apply([]byte("a$"), 11, true)
+	idx.Apply([]byte("c"), 12, false)
+
+	page1, generation, more, ok := idx.KeysPageIfReady([]byte("a"), []byte("z"), nil, 12, 2, 0)
+	require.True(t, ok)
+	require.True(t, more)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00")}, page1)
+	page2, sameGeneration, more, ok := idx.KeysPageIfReady([]byte("a"), []byte("z"), page1[len(page1)-1], 12, 2, generation)
+	require.True(t, ok)
+	require.False(t, more)
+	require.Equal(t, generation, sameGeneration)
+	require.Equal(t, [][]byte{[]byte("b"), []byte("c")}, page2)
+
+	// At the older revision, the later tombstone/create do not affect the view.
+	historical, _, historicalMore, ok := idx.KeysPageIfReady([]byte("a"), []byte("z"), nil, 10, 8, 0)
+	require.True(t, ok)
+	require.False(t, historicalMore)
+	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00"), []byte("a$"), []byte("b")}, historical)
+
+	idx.Compact(10)
+	_, _, _, ok = idx.KeysPageIfReady([]byte("a"), []byte("z"), page1[len(page1)-1], 12, 2, generation)
+	require.False(t, ok, "compaction must invalidate an in-flight page generation")
 }

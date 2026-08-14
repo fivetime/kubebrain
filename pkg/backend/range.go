@@ -30,6 +30,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -719,6 +720,9 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 		return nil, err
 	}
 	if decodedRange {
+		if stream, served, streamErr := b.decodedUserRangeStreamFromCountIndex(ctx, userStart, userEnd, rev); served || streamErr != nil {
+			return stream, streamErr
+		}
 		kvs, rangeErr := b.decodedUserRange(ctx, userStart, userEnd, rev)
 		if rangeErr != nil {
 			return nil, rangeErr
@@ -755,6 +759,99 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	rangeEnd := b.rangeEndKey(userEnd)
 	klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
 	return b.scanner.RangeStream(ctx, key, rangeEnd, rev, false), nil
+}
+
+const decodedRangeStreamIndexPage = 300
+
+// decodedUserRangeStreamFromCountIndex uses the leader's complete, versioned,
+// user-key-sorted count index as an ordering directory. It pages only logical
+// keys, then resolves each bounded page against one pinned TiKV snapshot. This
+// avoids materializing an arbitrarily large decoded-boundary range merely to
+// repair the legacy object encoding's non-order-preserving '$' delimiter.
+//
+// The index is deliberately only a fast path: a follower, rebuilding/overflowed
+// index, or revision older than its complete base returns served=false and the
+// caller retains the existing decoded scan+sort fallback. A tree generation
+// change after streaming starts is terminal; splicing pages from two rebuilds
+// could skip or duplicate keys, so the client must relist.
+func (b *backend) decodedUserRangeStreamFromCountIndex(
+	ctx context.Context,
+	userStart, userEnd []byte,
+	revision uint64,
+) (<-chan *proto.StreamRangeResponse, bool, error) {
+	if b.countIndex == nil {
+		return nil, false, nil
+	}
+	end := userEnd
+	if isFromKeyEnd(end) {
+		end = nil
+	}
+	firstKeys, generation, more, ready := b.countIndex.KeysPageIfReady(
+		userStart, end, nil, revision, decodedRangeStreamIndexPage, 0,
+	)
+	if !ready {
+		b.metricCli.EmitCounter("backend.range_stream.decoded_index_miss", 1)
+		return nil, false, nil
+	}
+	pinnedCtx, err := b.withRangeSnapshotTimestamp(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	b.metricCli.EmitCounter("backend.range_stream.decoded_index_hit", 1)
+	stream := make(chan *proto.StreamRangeResponse, 8)
+	go func() {
+		defer close(stream)
+		send := func(response *proto.StreamRangeResponse) bool {
+			select {
+			case stream <- response:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		fail := func(streamErr error) {
+			send(&proto.StreamRangeResponse{
+				RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)},
+				Err:           streamerror.Encode(streamErr),
+			})
+		}
+
+		keys := firstKeys
+		for {
+			kvs, readErr := b.readDecodedRangeExactKeys(pinnedCtx, keys, revision)
+			if readErr != nil {
+				fail(readErr)
+				return
+			}
+			page := make([]*proto.KeyValue, 0, len(kvs))
+			for index, kv := range kvs {
+				if kv == nil {
+					fail(fmt.Errorf("decoded range index key %q is not live at revision %d", keys[index], revision))
+					return
+				}
+				page = append(page, kv)
+			}
+			if len(page) != 0 && !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{
+				Header: responseHeader(revision), Kvs: page, More: true,
+			}}) {
+				return
+			}
+			if !more {
+				send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)}})
+				return
+			}
+			after := keys[len(keys)-1]
+			var ready bool
+			keys, _, more, ready = b.countIndex.KeysPageIfReady(
+				userStart, end, after, revision, decodedRangeStreamIndexPage, generation,
+			)
+			if !ready {
+				fail(fmt.Errorf("decoded range ordering index changed during stream at revision %d", revision))
+				return
+			}
+		}
+	}()
+	return stream, true, nil
 }
 
 // SnapshotStream scans the complete physical object keyspace. Snapshot output

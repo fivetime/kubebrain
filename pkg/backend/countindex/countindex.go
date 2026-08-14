@@ -58,14 +58,16 @@ func (k *keyItem) liveAt(rev uint64) bool {
 // are compacted: keep the newest entry <= compactRev (it defines the state at
 // compactRev) plus everything after it.
 func pruneRevs(revs []revEntry, compactRev uint64) []revEntry {
-	keepFrom := 0
-	for i := range revs {
-		if revs[i].revision <= compactRev {
-			keepFrom = i
-		} else {
-			break
-		}
+	firstFuture := sort.Search(len(revs), func(i int) bool {
+		return revs[i].revision > compactRev
+	})
+	if firstFuture == 0 {
+		// Every entry is newer than the watermark. In particular, do not drop a
+		// future-only tombstone: a concurrent non-blocking rebuild may install its
+		// older live baseline later, and losing the tombstone would resurrect it.
+		return revs
 	}
+	keepFrom := firstFuture - 1
 	// If the kept baseline is a tombstone and nothing newer exists, the key is
 	// dead as of compactRev and can be dropped entirely.
 	if keepFrom == len(revs)-1 && revs[keepFrom].tombstone {
@@ -100,6 +102,10 @@ type TreeIndex struct {
 	// under the newer rebuild (review #51). Every Reset captures its own gen;
 	// emits and completion from an older gen are dropped.
 	gen uint64
+	// pageGen fences ordered page cursors. Reset and Compact invalidate a cursor,
+	// but Compact must not change gen: doing so during a Reset load would make
+	// that rebuild discard its own completion and leave loading=true forever.
+	pageGen uint64
 	// loading is true while Reset is bulk-loading a snapshot. Reset does NOT hold
 	// the lock for the whole (minutes-long at scale) load — it loads with per-key
 	// locking so the ordered collector can keep applying live events between keys
@@ -235,6 +241,7 @@ func (t *TreeIndex) applyLocked(key []byte, rev uint64, tombstone bool) {
 func (t *TreeIndex) Reset(currentRev func() uint64, load func(baseRev uint64, emit func(key []byte, rev uint64, tombstone bool)) error) {
 	t.mu.Lock()
 	t.gen++
+	t.pageGen++
 	myGen := t.gen
 	baseRev := currentRev()
 	if t.readyRev > baseRev {
@@ -337,6 +344,49 @@ func (t *TreeIndex) CountIfReady(start, end []byte, rev uint64) (int, bool) {
 	return t.countLocked(start, end, rev), true
 }
 
+// KeysPageIfReady returns at most limit live user keys in [start,end), ordered
+// lexicographically, and a generation token for the next page. after is an
+// exclusive cursor; pass nil for the first page. A non-zero generation must
+// still match the installed tree, otherwise the caller must abandon the stream
+// and retry from a fresh snapshot rather than splice pages from two rebuilds.
+//
+// Keys are copied while the read lock is held so callers can perform TiKV reads
+// without blocking the ordered event collector. Events newer than rev may be
+// appended between pages but cannot change liveAt(rev); Reset/Compact are
+// fenced by pageGen.
+func (t *TreeIndex) KeysPageIfReady(start, end, after []byte, rev uint64, limit int, generation uint64) (keys [][]byte, nextGeneration uint64, more bool, ok bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if limit <= 0 || t.overflowed || t.loading || t.baseRev == 0 ||
+		rev < t.baseRev || rev > t.readyRev || (generation != 0 && generation != t.pageGen) {
+		return nil, 0, false, false
+	}
+	nextGeneration = t.pageGen
+	seek := start
+	if len(after) != 0 && bytes.Compare(after, seek) >= 0 {
+		seek = after
+	}
+	t.tree.AscendGreaterOrEqual(&keyItem{key: seek}, func(it btree.Item) bool {
+		ki := it.(*keyItem)
+		if len(after) != 0 && bytes.Compare(ki.key, after) <= 0 {
+			return true
+		}
+		if len(end) != 0 && bytes.Compare(ki.key, end) >= 0 {
+			return false
+		}
+		if !ki.liveAt(rev) {
+			return true
+		}
+		if len(keys) == limit {
+			more = true
+			return false
+		}
+		keys = append(keys, append([]byte(nil), ki.key...))
+		return true
+	})
+	return keys, nextGeneration, more, true
+}
+
 func (t *TreeIndex) countLocked(start, end []byte, rev uint64) int {
 	t.rankMu.Lock()
 	if t.rank.valid && t.rank.revision == rev {
@@ -402,6 +452,10 @@ func (t *TreeIndex) countRangeLocked(start, end []byte, rev uint64) int {
 func (t *TreeIndex) Compact(compactRev uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	// A paged reader at a now-compacted revision must not silently continue
+	// against the pruned tree. Invalidate its generation; the RangeStream layer
+	// will surface compaction/retry rather than returning an incomplete list.
+	t.pageGen++
 	t.clearRankLocked()
 	var dead []*keyItem
 	t.tree.Ascend(func(it btree.Item) bool {
