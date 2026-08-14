@@ -50100,6 +50100,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `468126003565884061`、term 640；主 PD 3/3、TiKV 3/3 Ready 且零重启，滚动日志无
   panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
 
+- A4622 修复 legacy separate metadata 缺行时错误借用前一 revision 元数据的升级兼容缺口。对照固定
+  upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go`：
+  etcd 的每个值版本都携带自身 create revision/version，不能把最近 predecessor 当成目标版本。旧
+  `getEtcdMetadata` 反向扫描 `<= target revision`，因此 revision 5 没有 metadata row、revision 2 有
+  `{CreateRevision:2, Version:1}` 时，会静默把 revision 5 也报告为 version 1，并绕过 A4621 的历史恢复。
+  生产提交 `6e4c1311` 改为 collision-free 物理 key 的 exact snapshot Get；精确行缺失后才进入 retained
+  history recovery。恢复过程在同一 pinned TiKV timestamp 一次加载该对象的 legacy metadata family，
+  将精确 legacy row 与 inline envelope 同等作为权威 generation anchor；两者在同 revision 冲突或版本
+  不连续时按 `ErrInvalidMVCCMetadata` fail closed，不拼接不一致视图。
+
+  新回归固定证明 requested revision 缺行时 exact helper 返回 `ErrKeyNotFound`、公共读取路径不会借用
+  predecessor，而会从 revision 2/5 的完整保留历史恢复 `{CreateRevision:2, Version:2}`；metadata point
+  read 与两条 recovery iterator 的 snapshot timestamp 也有确定性断言。完整
+  `go test ./pkg/backend -count=1`（74.961 秒）、snapshot-history focused tests，以及
+  `go test ./pkg/server/etcd ./pkg/etcdsnapshot -count=1`（169.646 秒、0.109 秒）通过。真实 TiKV 验证把
+  静态 backend test binary 放入同一 kind 集群的临时非 root Pod，经
+  `kb-pd.tidb-cluster.svc:2379` 连接主三节点 PD/TiKV；实际注入 revision 2 的 legacy row/metadata 与
+  revision 5 的无 metadata raw value，公共运行路径精确恢复 version 2。唯一命名 keyspace、临时 Pod 和
+  二进制均已清理。
+
+  可追溯镜像 `kubebrain:a4622-6e4c1311` 内嵌完整 SHA
+  `6e4c1311ca07e531a84747514e10e6d59953c8b7`、版本 `a4622`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T10:50:53Z`，运行用户 `65532:65532`；本地 OCI manifest list 为
+  `sha256:550fa81b7ee641f3991caaf4b63ea391dcfa2a598757ba4d0ea15573515f3424`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:d6747bfca2bf36da4755d6d2264197bbd70017df31d068abf77204822fe4fcfe`。
+  主 StatefulSet 顺序滚动完成，三副本 Ready、零重启；NodePort 第二次 Put 返回首次值和稳定
+  create revision，随后 Get 为 version 2，Delete 返回精确 version 2 `prev_kv`。MemberList 为三个成员，
+  health 可提交 proposal，AlarmList 为空；最终 revision/index/applied index 均为
+  `468126003565884064`、term 642。主 PD 3/3、TiKV 3/3 Ready 且零重启；滚动日志无
+  panic/fatal/snapshot failure/corrupt/invalid MVCC metadata，历史 restore Pod 不计入主数据面结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
