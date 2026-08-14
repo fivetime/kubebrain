@@ -41,12 +41,21 @@ func (b *backend) Hash(ctx context.Context) (BackendHashResult, error) {
 	// KubeBrain has one tenant-scoped encoded storage domain, so use a stable
 	// domain separator rather than pretending its TiKV layout is a bbolt file.
 	_, _ = h.Write([]byte("kubebrain-backend"))
+	checkpointKey := b.ks.EncodeInternalKey(serializableCheckpointKey)
 	for {
 		if err = it.Next(ctx); err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			return BackendHashResult{}, err
+		}
+		// Match etcd schema.DefaultIgnores' treatment of backend bookkeeping
+		// (term, consistent-index and storage-version). This checkpoint's TiKV
+		// timestamp is refreshed by a background worker even when no user or
+		// service state changes; hashing it makes two adjacent Maintenance Hash
+		// calls disagree at the same public revision.
+		if bytes.Equal(it.Key(), checkpointKey) {
+			continue
 		}
 		_, _ = h.Write(it.Key())
 		_, _ = h.Write(it.Val())

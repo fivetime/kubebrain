@@ -211,6 +211,23 @@ func TestBackendHashIncludesInternalStateExcludedFromHashKV(t *testing.T) {
 	require.Equal(t, logicalBefore, logicalAfter, "HashKV must exclude internal metadata")
 }
 
+func TestBackendHashIgnoresSerializableCheckpointRefresh(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(prefix + "/hash/checkpoint"), Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	require.NoError(t, b.InternalPut(ctx, serializableCheckpointKey, []byte("checkpoint-one")))
+	before, err := b.Hash(ctx)
+	require.NoError(t, err)
+	require.NoError(t, b.InternalPut(ctx, serializableCheckpointKey, []byte("checkpoint-two")))
+	after, err := b.Hash(ctx)
+	require.NoError(t, err)
+
+	require.Equal(t, before, after,
+		"background serializable-checkpoint timestamps are etcd-style ignored bookkeeping")
+}
+
 func TestBackendHashHonorsCancellation(t *testing.T) {
 	b, _ := newTxnApplyBackend(t)
 	ctx, cancel := context.WithCancel(context.Background())
