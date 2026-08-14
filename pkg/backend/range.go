@@ -355,11 +355,99 @@ func (b *backend) decodedUserRange(
 	return kvs, nil
 }
 
-// readDecodedRangeExactKeys reconciles the bounded escaped-ancestor set with a
-// small amount of parallelism. TiKV point/history reads otherwise serialize up
-// to 128 network round trips. All workers inherit the caller's pinned snapshot;
-// output slots preserve input order and a missing/tombstoned key stays nil.
+// readDecodedRangeExactKeys reconciles the bounded escaped-ancestor set at the
+// caller's pinned snapshot. TiKV can resolve the common latest/current case in
+// two region-aware batches (revision indexes, then object rows); historical and
+// legacy orphan rows fall back to bounded parallel exact reads.
 func (b *backend) readDecodedRangeExactKeys(ctx context.Context, keys [][]byte, revision uint64) ([]*proto.KeyValue, error) {
+	if len(keys) == 0 {
+		return []*proto.KeyValue{}, nil
+	}
+	timestamp, pinned := storage.SnapshotTimestampFromContext(ctx)
+	reader, batchSupported := storage.FindCapability[storage.SnapshotGetter](b.kv)
+	if pinned && batchSupported {
+		return b.readDecodedRangeExactKeysBatched(ctx, reader, timestamp, keys, revision)
+	}
+	return b.readDecodedRangeExactKeysParallel(ctx, keys, revision)
+}
+
+func (b *backend) readDecodedRangeExactKeysBatched(
+	ctx context.Context,
+	reader storage.SnapshotGetter,
+	timestamp uint64,
+	keys [][]byte,
+	revision uint64,
+) ([]*proto.KeyValue, error) {
+	result := make([]*proto.KeyValue, len(keys))
+	revisionKeys := make([][]byte, len(keys))
+	for index, key := range keys {
+		revisionKeys[index] = b.coder.EncodeRevisionKey(key)
+	}
+	revisionValues, err := reader.BatchGetAt(ctx, revisionKeys, timestamp)
+	if err != nil {
+		return nil, err
+	}
+
+	objectKeys := make([][]byte, 0, len(keys))
+	objectIndexes := make([]int, 0, len(keys))
+	objectRevisions := make([]uint64, 0, len(keys))
+	fallbackIndexes := make([]int, 0, len(keys))
+	for index, revisionKey := range revisionKeys {
+		revisionValue, found := revisionValues[string(revisionKey)]
+		if !found {
+			// Preserve pre-#31 orphan recovery, which scans decoded legacy rows.
+			fallbackIndexes = append(fallbackIndexes, index)
+			continue
+		}
+		currentRevision, _, parseErr := coder.ParseRevision(revisionValue)
+		if parseErr != nil {
+			return nil, invalidMVCCMetadataError(parseErr, "decode revision index for key %q", keys[index])
+		}
+		if revision != 0 && revision < currentRevision {
+			fallbackIndexes = append(fallbackIndexes, index)
+			continue
+		}
+		objectKeys = append(objectKeys, b.coder.EncodeObjectKey(keys[index], currentRevision))
+		objectIndexes = append(objectIndexes, index)
+		objectRevisions = append(objectRevisions, currentRevision)
+	}
+
+	objectValues := map[string][]byte{}
+	if len(objectKeys) != 0 {
+		objectValues, err = reader.BatchGetAt(ctx, objectKeys, timestamp)
+		if err != nil {
+			return nil, err
+		}
+	}
+	for objectIndex, objectKey := range objectKeys {
+		value, found := objectValues[string(objectKey)]
+		if !found || bytes.Equal(value, tombStoneBytes) {
+			continue
+		}
+		index := objectIndexes[objectIndex]
+		result[index] = &proto.KeyValue{Key: keys[index], Value: value, Revision: objectRevisions[objectIndex]}
+	}
+
+	if len(fallbackIndexes) == 0 {
+		return result, nil
+	}
+	fallbackKeys := make([][]byte, len(fallbackIndexes))
+	for index, resultIndex := range fallbackIndexes {
+		fallbackKeys[index] = keys[resultIndex]
+	}
+	fallback, err := b.readDecodedRangeExactKeysParallel(ctx, fallbackKeys, revision)
+	if err != nil {
+		return nil, err
+	}
+	for index, resultIndex := range fallbackIndexes {
+		result[resultIndex] = fallback[index]
+	}
+	return result, nil
+}
+
+// readDecodedRangeExactKeysParallel bounds stores without snapshot batch-get,
+// historical lookups, and legacy orphan recovery to a small worker fan-out.
+func (b *backend) readDecodedRangeExactKeysParallel(ctx context.Context, keys [][]byte, revision uint64) ([]*proto.KeyValue, error) {
 	result := make([]*proto.KeyValue, len(keys))
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(maxDecodedRangeExactReadWorkers)
