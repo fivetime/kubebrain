@@ -50510,6 +50510,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884113`、term 672。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/corrupt-alarm failure。
 
+- A4636 将 A4635 的 exact witnessed-object read fence 扩展到 unary List 与 RangeStream。对标
+  `/root/etcd/server/storage/mvcc/kvstore_txn.go::rangeKeys` 的范围对象读取，以及
+  `/root/etcd/server/etcdserver/v3_server.go::rangeStream` 的逐块发送契约；此前 KubeBrain scanner 会把 stored
+  value 原样交给 etcd shim，转换时虽能返回 DataLoss，却丢失了 backend 所需的 exact object key/revision，因此
+  无法持久拉起 CORRUPT。生产提交 `2aaadfeb` 在 backend 层新增统一 `validateRangeObjectValues`，继续复用 A4635
+  的完整 event set + witness SHA-256 + object bytes + compact/repair race 双重再检查，不把无 witness 或已压缩历史
+  误标成可解除告警。
+
+  List 只校验经过 Limit/More 截断后本次实际可见的 KV，不因隐藏的 lookahead 项提前改变分页行为。RangeStream
+  则统一包装普通 scanner、decoded count-index 和 spill 三条生产路径，在每个 bounded data chunk 交付前完成整块
+  校验；包含损坏对象的 chunk 不会部分可见，错误沿既有 `StreamRangeResponse.Err` 终止帧传播。wrapper 使用私有
+  cancelable scan context，失败或消费结束都会释放分区 worker、snapshot 和 TiKV iterator，保持正常 header-only
+  最终帧、背压与客户端取消契约。
+
+  确定性测试分别损坏一个具有完整 witness 的 List/RangeStream 对象 value：两条路径均返回
+  `ErrInvalidMVCCMetadata`，AlarmList 出现本 member，后续写被 `ErrCorruptAlarmActive` 拒绝；List 还证明未修复
+  Disarm 失败，恢复 exact bytes 后解除并正常读取，RangeStream 证明损坏所在 chunk 零 KV 外泄。Get/List/
+  RangeStream focused 20 轮及更宽 EventLog/Witness 回归通过，List/RangeStream race 5 轮通过，backend/server vet、
+  完整 backend 76.682 秒，以及 `pkg/server/etcd` Range/RangeStream/DataLoss/Corrupt 相关回归 88.515 秒通过。
+
+  真实 TiKV 正向验证使用官方 client/v3 `GetStream` 写入 9 个 320 KiB value，完整与 Limit=8 两种请求均跨多个
+  chunk 且 wire chunk 不超过 1.5 MiB，2.025 秒通过。独立 unary fixture 在 revision
+  `468126003565884124` CREATE `a=v1`、`...125` CREATE `b=vb`、`...126` UPDATE `a=v2`；current List
+  返回两键且 a 的 create/mod/version=`...124`/`...126`/2，revision `...125` 的 historical List 返回
+  `a=v1` 与 `b=vb` 及正确生命周期字段。删除 2 键后最终 revision `468126003565884127`，`/a4636/` 零残留。
+  共享 TiKV 环境只做正向读取，未为验证故意破坏底层对象；损坏与修复闭环由隔离存储测试证明。
+
+  可追溯镜像 `kubebrain:a4636-2aaadfeb` 内嵌完整 SHA
+  `2aaadfebd212febb6493afc1c7d829e08e6b4f6f`、版本 `a4636`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T15:30:00Z`；本地 OCI manifest list 为
+  `sha256:07bffda8839e7b8de965ea6bfed073501a3f35c3695899a7d43ed97d9315cd91`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:db4a8078a44fe09c32950d5b277d6b8a4e1c3e269a788ebc9279c6ef23351032`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884127`、term 674。主 PD 3/3、TiKV 3/3 Running 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/corrupt-alarm failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
