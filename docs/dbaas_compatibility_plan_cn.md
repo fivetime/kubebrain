@@ -50613,6 +50613,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884134`、term 677。主 PD 3/3、TiKV 3/3 Running 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/hashkv failure。
 
+- A4639 补齐可信 event-log 之外的 Watch object-scan fallback 值隔离。对标
+  `/root/etcd/server/storage/mvcc/watchable_store.go::syncWatchers` 的 unsynced watcher 历史恢复，以及
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go` 在请求 PrevKV 时读取前一 revision 的契约。A4627-A4634 已保证
+  trusted event-log replay 的 object 引用和值可解释，但 leadership watermark、legacy window 或共享 history scan
+  仍会回退 `scanHistoryEvents`；旧路径对直接 CREATE/PUT 只返回 checked-decode 错误，对 DELETE 引用的窗口前 live
+  row 更要到 shim 才解码，两者都丢失 exact raw object key，无法持久建立 CORRUPT 写隔离。
+
+  生产提交 `4d2b00e3` 让 fallback scanner 为 `previousValue` 同时保留 value、revision 和 exact object key。窗口内
+  非 tombstone event 在分类 CREATE/PUT 前复用 A4635 witness validator；DELETE 只在实际采用 preceding live row
+  作为 PrevKV 时校验并尝试持久告警。窗口外且最终未被引用的历史行不提前校验，避免让一个与本次 Watch 结果无关的
+  legacy/compacted row 终止流或误告警。所有 alarm 仍需通过 event set SHA-256、witness、object bytes 与最终
+  compact/repair-race 再检查，无 witness 时保持请求级 DataLoss。
+
+  两条确定性回归分别破坏 fallback 直接输出的 witnessed live event，以及 DELETE 在窗口前读取的 witnessed PrevKV：
+  两条扫描均返回 `ErrInvalidMVCCMetadata` 且零 event 外泄，持久 CORRUPT、拒绝写、未修复 Disarm 失败；恢复 exact
+  bytes 后解除并各自重新输出一条正确事件。focused 20 轮 9.022 秒、race 10 轮 7.212 秒，更宽
+  Watch/History/EventLog/Witness 5 轮 36.286 秒，server Watch 3 轮 87.639 秒、backend/server vet 及完整 backend
+  77.706 秒通过。
+
+  真实 TiKV 正向验证 revision `468126003565884135` CREATE `k=v1`、`...136` UPDATE `k=v2`、`...137`
+  DELETE 后，以同一精确镜像重启三副本使 cache 冷启动。新 leader 日志确认 event-log trust start 推进到 `...137`；
+  从 revision `...135` 发起带 PrevKV 的历史 Watch 时，日志明确记录 `watch history fallback ... events=3`，返回
+  CREATE v1（create/mod/version=`...135`/`...135`/1）、UPDATE v2（PrevKV=v1，version 2）和 DELETE
+  （mod=`...137`、PrevKV=v2/mod=`...136`/version 2）。键已由 DELETE 清理，`/a4639/` 当前零残留，最终 revision
+  `468126003565884137`；共享 TiKV 未注入损坏，破坏/修复由隔离测试证明。
+
+  可追溯镜像 `kubebrain:a4639-4d2b00e3` 内嵌完整 SHA
+  `4d2b00e303cba4610105870a645950597dd13380`、版本 `a4639`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T15:53:57Z`；本地 OCI manifest list 为
+  `sha256:b581fe529125a7afcd7b0288184200088702cab343ecc07d3518c08f2840d861`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:8fd23c7308951bef1b53759fd47ceb0b9c864bb5ebe504ca73f1691d020798a1`。
+  主 StatefulSet 在验证前后两次顺序滚动均完成，终态三副本 Ready、零重启；MemberList 三成员、health 可提交
+  proposal、AlarmList 为空，最终 revision/index/applied index 均为 `468126003565884137`、term 681。主 PD 3/3、
+  TiKV 3/3 Running 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/watch failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
