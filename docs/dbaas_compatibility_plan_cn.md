@@ -50546,6 +50546,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884127`、term 674。主 PD 3/3、TiKV 3/3 Running 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/corrupt-alarm failure。
 
+- A4637 将 A4636 的 witnessed-object read fence 延伸到作为恢复信任根的两条快照源路径。对标
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::Snapshot` 从 backend 一致快照直接流出物理数据库的边界；
+  KubeBrain 不能只让一次 snapshot RPC 因 checked-decode 返回 DataLoss 后继续接受写，否则后续备份仍可能反复读取
+  同一份已由 durable transaction witness 证明损坏的对象。生产提交 `d9d3d0e6` 同时覆盖当前态
+  `SnapshotStream` 与保留所有版本的 `SnapshotHistoryStream`，不以一条路径的成功外推另一条。
+
+  当前态路径复用 A4636 的 chunk-before-visible validator 与私有 cancelable scan context，损坏 chunk 不进入快照且
+  立即释放 scanner worker/iterator。历史路径在把每条非 tombstone stored value 解码成 snapshot record 之前，使用
+  exact raw object key、user key、mod revision 与 stored bytes 复验 A4635 的完整 event set/witness/compact/repair-race
+  证据；只有证据闭合才持久 ArmCorrupt，legacy/unsealed 或已 compact history 仍只返回请求级 DataLoss。tombstone
+  不伪装成 CREATE/PUT witness 覆盖对象，继续由既有 DELETE/event-history 完整性路径处理。
+
+  两条确定性回归各自创建 witnessed object 后破坏 inline envelope：当前与历史快照都返回
+  `ErrInvalidMVCCMetadata` 且零 KV/record 外泄，AlarmList 出现本 member，后续写被拒绝，未修复 Disarm 返回
+  `ErrTxnWitnessCorrupt`；恢复 exact bytes 后解除并重新导出一条正确记录。focused 10 轮 7.770 秒、race 5 轮
+  4.887 秒、maintenance Snapshot 回归 3 轮 6.517 秒、backend/server vet 及完整 backend 77.021 秒通过。
+
+  真实 TiKV 正向验证在 revision `468126003565884128` CREATE `a=v1`、`...129` CREATE `b=vb`、`...130`
+  UPDATE `a=v2` 后调用公开 `etcdctl snapshot save`。Maintenance Snapshot 固定 revision `...130`，生成 4.1 MiB
+  artifact，snapshot status 校验 hash `4221460133`、237 keys、total size 3,395,584 bytes；同 revision unary Range
+  返回两键及正确 create/mod/version。删除 2 键后最终 revision `468126003565884131`、`/a4637/` 零残留；单个
+  `/tmp/kb-a4637-snapshot.yAkVI3.db` 验证产物已精确删除。共享 TiKV 未注入损坏，破坏/修复由隔离测试证明。
+
+  可追溯镜像 `kubebrain:a4637-d9d3d0e6` 内嵌完整 SHA
+  `d9d3d0e689dfa7b17b841e69488362d00757ec68`、版本 `a4637`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T15:27:19Z`；本地 OCI manifest list 为
+  `sha256:c75d5dd109195b0f283f3d83e677d51448bbc561ae44bf42c2c0a6ac3988fbe6`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:cc85efad69463314cfa197738e65b4d94e5e1be22c368fb174bdbca2f1ac2ddb`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884131`、term 676。主 PD 3/3、TiKV 3/3 Running 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/corrupt-alarm failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
