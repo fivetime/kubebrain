@@ -49830,6 +49830,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   这里的 2.5 MiB 是当前 TiKV 编码余量，不是向 etcd 客户端放宽请求或 KubeBrain 原始物理 Key 合同；
   若未来调整 schema、编码或上限，仍必须以精确边界的真实 TiKV round-trip 重新证明。
 
+- A4610 关闭三副本 follower 将已确认历史 Txn 误报为 future revision 的 HA 差距。重新运行永久
+  generated Txn Range 矩阵时，固定 upstream 的首个合法 case（serializable read-only Txn，读取本轮
+  已确认写入的显式历史 revision，Value DESC、Limit=1、KeysOnly 与 create-revision filter）成功，
+  旧在线 KubeBrain 经 NodePort 命中 follower 后却返回
+  `OutOfRange: etcdserver: mvcc: required revision is a future revision`；紧邻 nested case 又成功。
+  fixture 对两实例分别建立 revision ordinal，并非把 reference 绝对 revision 传给 KubeBrain。根因是
+  read-only Txn 以请求所在副本的 serializable checkpoint 或异步 durable watermark 作为当前 revision；
+  follower 尚未覆盖 leader 已 acknowledged revision 时直接执行 revision validation。普通 Range 已在
+  同一条件下代理 leader，Txn 此前遗漏了对应路由。
+
+  生产提交 `c6ec5af1` 在完整本地 Txn 授权后，递归检查 success/failure 与 nested Txn 中最大的显式
+  historical Range revision：本请求固定 checkpoint 已覆盖时继续本地读；无 checkpoint 时复用 durable
+  watermark 判定并提升安全的本地 current cache；未覆盖且 proxy 可用时携带已验证身份转发 leader、观察
+  返回 revision，并计数 `read_follower_historical_txn_proxy`。检查两分支是保守可用性选择：未选分支较新
+  只会促使权威 leader 重新求值，不会改变分支或提交写入；linearizable、write Txn 和 proxy-disabled
+  fail-closed 路径不变。确定性单测让 checkpoint unavailable、durable 恰落后一 revision，连续 20 轮要求
+  无 read barrier、恰好一次 Txn proxy；focused race 10 轮、完整 `pkg/server/etcd` 与 vet 通过。
+  提交 `c96c08cc` 同时把 184-case 差分从整片比较改为逐 spec/nested 定位，避免后续 RED 被巨型 diff 隐藏。
+
+  精确镜像 `kubebrain:a4610-c96c08cc`（内嵌 SHA
+  `c96c08cc19b18b87ddbe6266a6cc3d6454dc6d0c`，构建时间 `2026-08-14T06:31:05Z`，本地 OCI digest
+  `sha256:9ec8986bb36dc9db4059c50e008fdd6875e1a1d765e5dd4a56383d231869268b`，运行用户
+  `65532:65532`）已滚动到独立 TiKV/PD 三副本数据面，KubeBrain 3/3 Ready、零重启。原 184-case
+  upstream/current 差分连续 3/3 通过（3.79、2.57、2.58 秒），范围 Delete、generated Txn Delete、
+  Compare+Delete 和 staged Txn Range 组合 39.556 秒通过；`kubebrain-0` 现场 counter=7，证明请求实际
+  进入新 follower proxy 分支而非偶然全部命中 leader。三个 checkpoint available=1，endpoint health
+  可提交 proposal，AlarmList 为空。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
