@@ -51007,6 +51007,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready/零重启、AlarmList 为空；覆盖四个旧故障周期的 20 秒窗口内三个 Pod 均无 `\x00` revision-index/DataLoss 或
   CORRUPT 日志。主 `kb-pd-0..2`、`kb-tikv-0..2` 均 Ready/零重启，历史 restore Pod 未混入验证。
 
+- A4651 修复 A4649/A4650 核心 differential 的首个剩余差异。精确上游路径
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/maintenance.go::Downgrade`
+  在业务响应完成后统一填充当前 Header；KubeBrain 的 Follower Status 原先只读取非零进程缓存，而紧邻的
+  DowngradeValidate 会先做 SyncReadRevision。前序测试刚由 Leader 写入时，同一 Follower 连接因此先返回旧 Status
+  revision、再返回新 Downgrade revision，`HeaderMatchesStatus=false`；cluster/member/term 本身没有漂移。
+
+  生产提交 `e9f9b2e3c0ac7083630713aec242f3bec4714e61` 使 Status 读取与用户 mutation 同一 TiKV 事务提交的 durable
+  watermark，并与本地 watermark 取较大值；这是共享 TiKV 快照读，不增加 Leader 路由，也不允许 revision 回退。模拟
+  `current=100/durable=200` 的 follower 回归及既有 Status/Downgrade/Header 用例连续 10 轮通过，完整 server/etcd
+  195.620 秒和 vet 通过。镜像 `kubebrain:a4651-e9f9b2e3` 的 OCI manifest list 为
+  `sha256:adfa84f9e6cea1a382be80f518b487419d93c557440f91a4fdc6d830149a3833`，版本/SHA/UTC build time
+  `a4651`/上述完整 SHA/`2026-08-14T20:05:07Z`，三副本 runtime imageID 均为
+  `sha256:206f493cd11db5965a0bc6f35f3d266b50fcbef70884a8e7bb3d07332b5772d8`。滚动后三副本 Ready/零重启、
+  AlarmList 为空；在相同 Alarm/Compact/RangeStream/Delete 前序写负载后，`DowngradeValidateSuccess` 已转绿。
+  该核心套件仍不等于 full differential（专项 endpoints 继续跳过），并在 135.593 秒处发现下一首个差异：Maintenance
+  `Hash` 的两次无用户写调用不稳定，而 Hash Header envelope、HashLatestEquivalence、HashKV 均通过，进入后续修复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
