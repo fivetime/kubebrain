@@ -357,6 +357,20 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 			true,
 		)
 	}
+	for i := range entries {
+		e := entries[i]
+		valueRevision := valueRevOf(e)
+		stored := vals[string(b.coder.EncodeObjectKey(e.userKey, valueRevision))]
+		if validationErr := b.validateEventObjectValue(ctx, e.userKey, valueRevision, stored); validationErr != nil {
+			if !errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+				return nil, false, validationErr
+			}
+			b.metricCli.EmitCounter("watch.event_log.invalid_object", 1)
+			klog.ErrorS(validationErr, "event log referenced object value is invalid",
+				"rev", e.rev, "valueRev", valueRevision, "from", fromRevision, "to", toRevision)
+			return trustedCorruption(validationErr, "invalid referenced object value", true)
+		}
+	}
 	events = make([]*proto.Event, len(entries))
 	for i := range entries {
 		e := entries[i]
@@ -380,6 +394,22 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	klog.V(2).InfoS("watch history served from event log", "prefix", prefix,
 		"from", fromRevision, "to", toRevision, "events", len(events), "latency", time.Since(ts))
 	return events, true, nil
+}
+
+// validateEventObjectValue proves that a referenced object can be interpreted
+// with the same MVCC metadata rules as the etcd watch translator. Modern
+// envelopes validate without another storage read; legacy raw values retain
+// their exact-revision etcdmeta/recovery compatibility path.
+func (b *backend) validateEventObjectValue(ctx context.Context, userKey []byte, revision uint64, stored []byte) error {
+	meta, _, inlined, err := DecodeInlineValueChecked(stored)
+	if err != nil {
+		return err
+	}
+	if inlined {
+		return ValidateEtcdMetadataAtRevision(meta, revision, "event object inline value metadata")
+	}
+	_, err = b.GetEtcdMetadata(ctx, userKey, revision)
+	return err
 }
 
 func validateEventLogEntries(entries []eventLogPending) error {

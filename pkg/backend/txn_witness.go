@@ -335,6 +335,8 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 			var referenceErr error
 			objectKeys := make([][]byte, 0, record.count)
 			seenObjects := make(map[string]struct{}, record.count)
+			objectRevisions := make(map[string]uint64, record.count)
+			objectUserKeys := make(map[string][]byte, record.count)
 			for !eventEOF {
 				if !eventReady {
 					if nextErr := events.Next(ctx); nextErr != nil {
@@ -375,7 +377,10 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 					if referenceErr == nil {
 						objectKey := b.coder.EncodeObjectKey(eventUserKey, valueRevision)
 						if _, duplicate := seenObjects[string(objectKey)]; !duplicate {
-							seenObjects[string(objectKey)] = struct{}{}
+							objectID := string(objectKey)
+							seenObjects[objectID] = struct{}{}
+							objectRevisions[objectID] = valueRevision
+							objectUserKeys[objectID] = append([]byte(nil), eventUserKey...)
 							objectKeys = append(objectKeys, objectKey)
 						}
 					}
@@ -390,7 +395,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 				cause = fmt.Errorf("%w: persisted witness object reference at revision %d: %v",
 					ErrTxnWitnessCorrupt, revision, referenceErr)
 			} else if verifyObjects && revision >= compactRevision {
-				_, incomplete, loadErr := b.loadEventValues(ctx, objectKeys)
+				values, incomplete, loadErr := b.loadEventValues(ctx, objectKeys)
 				if loadErr != nil {
 					return loadErr
 				}
@@ -405,6 +410,29 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 					if revision >= compactRevision {
 						cause = fmt.Errorf("%w: persisted witness at revision %d references a missing object version",
 							ErrTxnWitnessCorrupt, revision)
+					}
+				} else {
+					for _, objectKey := range objectKeys {
+						objectID := string(objectKey)
+						validationErr := b.validateEventObjectValue(
+							ctx, objectUserKeys[objectID], objectRevisions[objectID], values[objectID],
+						)
+						if validationErr == nil {
+							continue
+						}
+						if !errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+							return validationErr
+						}
+						refreshed, refreshErr := b.GetCompactRevisionFresh(ctx)
+						if refreshErr != nil {
+							return refreshErr
+						}
+						compactRevision = max(compactRevision, refreshed)
+						if revision >= compactRevision {
+							cause = fmt.Errorf("%w: persisted witness at revision %d references an invalid object value: %v",
+								ErrTxnWitnessCorrupt, revision, validationErr)
+						}
+						break
 					}
 				}
 			}
