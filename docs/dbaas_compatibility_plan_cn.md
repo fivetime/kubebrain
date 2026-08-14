@@ -50318,6 +50318,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884083`、term 657。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/trusted-event-log inconsistency。
 
+- A4630 补齐 A4629 尚未覆盖的可信 event log→object 引用完整性。event log 的 CREATE/PUT 引用本 revision
+  object，DELETE 引用 `prevRev` object；原 `loadEventValues` 发现任一引用缺失时仍无条件返回
+  `served=false`，随后 object-family scan 可能丢失 ordered Txn 的 subrevision 顺序，且把可信日志/对象非原子
+  漂移伪装成兼容降级。生产提交 `9afea3ca` 让 incomplete BatchGet/per-key Get 复用 A4629 的双 watermark
+  判定：窗口前后都可信时返回 `ErrInvalidMVCCMetadata`，并发 cleanup 已推进 watermark 或旧窗口不可信时才
+  fallback。确定性 RED 在可信 ordered CREATE 保留 event entry、删除其精确 object version；旧实现无错误
+  降级，修复后 fail closed；再显式推进 watermark 后同一输入保持旧窗口 fallback。
+
+  event-object focused 连续 20 轮 21.618 秒、race 10 轮 11.511 秒、backend vet、完整 backend 74.948 秒及
+  完整 `pkg/server/etcd` 177.724 秒通过。真实 TiKV 正向验证在 revision `468126003565884084` CREATE k1，
+  revision `...085` 同 Txn UPDATE k1 + CREATE k2，revision `...086` 同 Txn DELETE k1 + UPDATE k2；从 `...084`
+  历史 Watch 一次返回五个有序事件，CREATE/UPDATE value、两次 PUT PrevKV 与 DELETE PrevKV 均携带精确
+  create/mod revision、version 和原值。清理剩余 k2 后最终 revision 为 `468126003565884087`。
+
+  可追溯镜像 `kubebrain:a4630-9afea3ca` 内嵌完整 SHA
+  `9afea3cacb5bbd39080ee354e4ea0e98fbf96af8`、版本 `a4630`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T13:25:18Z`；本地 OCI manifest list 为
+  `sha256:7b9bd7e18c85fdde20e0409c7d9d00fcc8a740a3d0d537ef7a41ea7118a75be7`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:d0e963aa84c1dfd04eadacea7971d8ca59cc7897da64ec01bc7d52322e62c0cd`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884087`、term 659。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/missing referenced event object。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
