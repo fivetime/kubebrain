@@ -50398,12 +50398,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `468126003565884101`，AlarmList 为空。
 
   可追溯镜像 `kubebrain:a4632-9ea76877` 内嵌完整 SHA
-  `9ea76877bcf24ef710a49cae0dd34a2c72487797`、版本 `a4632`、Go 1.26.5、TiKV storage、UTC build time
-  `2026-08-14T13:57:00Z`；本地 OCI manifest list 为
-  `sha256:6b1fc2d35abbfec6eca8bb66345c0d2466cd85958413d5acc1a6563099cf221d`，kind 导入后三个 Pod 的
-  runtime imageID 均为 `sha256:c4d7affb05d74e197744d4be29eb7e89a6d62b8621e9f3615e97a54ce5867df7`。
+  `9ea76877db9136d75092e525f7c3f1dad6811da7`、版本 `a4632`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T14:06:29Z`；本地 OCI manifest list 为
+  `sha256:4edd122f55305796f770be5aa4137d38be728afdfa5db540206381cd114b320f`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:cba9146244fa26548592bffb2c7fa645bd8d86f7832ce38498e1d5cbaaa633d1`。
   主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
-  revision/index/applied index 均为 `468126003565884101`、term 663。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  revision/index/applied index 均为 `468126003565884101`、term 665。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/transaction witness mismatch。
 
 ### P2：运维兼容和长期验证
