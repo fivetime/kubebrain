@@ -595,7 +595,7 @@ func TestRefreshMVCCKeysMetricUsesCountIndexOnly(t *testing.T) {
 
 	require.True(t, server.RefreshMVCCKeysMetric(context.Background()))
 
-	require.Equal(t, []byte(nil), backend.key)
+	require.Equal(t, []byte{0}, backend.key)
 	require.Equal(t, []byte{0}, backend.end)
 	require.Zero(t, backend.rev)
 	require.Equal(t, []recordedGauge{

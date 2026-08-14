@@ -20,7 +20,10 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
-var allKeysRangeEnd = []byte{0}
+// etcd encodes the complete user-key range as [0x00, 0x00). The start must
+// not be nil: a follower whose local count index is unavailable forwards this
+// count as a KV.Range to the leader, and the etcd API rejects an empty key.
+var allKeysRangeBoundary = []byte{0}
 
 func initEtcdMVCCKeysGauge(metricCli metrics.Metrics) {
 	emitEtcdMVCCKeysGauge(metricCli, 0)
@@ -40,7 +43,7 @@ func (s *RPCServer) RefreshMVCCKeysMetric(ctx context.Context) bool {
 	if s == nil || s.backend == nil {
 		return false
 	}
-	count, served := s.backend.CountAtRevision(ctx, nil, allKeysRangeEnd, 0)
+	count, served := s.backend.CountAtRevision(ctx, allKeysRangeBoundary, allKeysRangeBoundary, 0)
 	if !served {
 		if s.metricCli != nil {
 			_ = s.metricCli.EmitCounter("mvcc.keys_total.refresh.miss", 1)
