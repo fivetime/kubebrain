@@ -50264,6 +50264,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空，最终 revision/index/applied index 均为 `468126003565884079`、term 653。主 PD 3/3、TiKV 3/3 Ready
   且零重启，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/revision disagreement。
 
+- A4628 修复历史 DELETE Watch 在前一 live row 丢失时伪造 PrevKV 的完整性缺口。KubeBrain 历史扫描原在
+  tombstone 找不到同 key 前值时，把 nil value 与 tombstone revision 填回 `Event.Kv`；转换层随后把它解释为
+  `CreateRevision=ModRevision, Version=1` 的真实对象，生成 PrevKV revision 等于删除 revision 的不可能状态，
+  且会绕过按 PrevKV revision 执行的 compacted-PrevKV 过滤。对照 upstream
+  `server/storage/mvcc/watchable_store_txn.go` 的 DELETE event 与前值生命周期：被删版本必须严格早于 tombstone；
+  若 watch start 已 compact，调用应在历史扫描前返回 compacted，而非合成前值。
+
+  生产提交 `a70bb72d` 在 backend 单次历史 family 扫描中把“窗口内 tombstone 无 retained previous row”分类为
+  `ErrInvalidMVCCMetadata`；共享 Watch 转换入口同时要求 DELETE deletion revision 和 previous-value revision 均
+  非零，且 `previous < deletion`，覆盖历史与其他 producer。确定性 RED 证明旧 backend 对孤立 revision-7
+  tombstone 返回成功事件，转换层也接受零、相等及倒序 revision；修复后 backend focused 20 轮 27.398 秒、
+  server focused 20 轮 122.765 秒，backend/server race 10 轮分别 3.593/62.523 秒，双包 vet 和完整 backend
+  75.178 秒通过。完整 server 首轮在海量日志下以非零退出且失败断言被输出截断；随后一次过滤式完整重跑
+  未产生失败断言，另一次 JSON 事件级完整重跑 exit 0。该首次非确定性失败保留在记录中，不据此声称全套
+  稳定性问题已关闭。
+
+  真实 TiKV 正向验证创建 revision `468126003565884080` 的键并 compact 到该 revision，随后在 revision
+  `468126003565884081` 删除；从删除 revision 启动历史 Watch 成功返回 DELETE tombstone revision `...081`，
+  PrevKV 保留 create/mod revision `...080`、version 1 与原值，证明合法 compact→delete family 未被新门禁误拒。
+  验证键已删除。可追溯镜像 `kubebrain:a4628-a70bb72d` 内嵌完整 SHA
+  `a70bb72dbff997a315da40f5647e767403de4817`、版本 `a4628`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T12:55:29Z`；本地 OCI manifest list 为
+  `sha256:42fb33c2eed1b50db0ba1f386de66a8123278660489195bf4facea19a003048f`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:3778e7ac1b49186ca28806135d5576fb917a928490b526fbb3a451b600fe4541`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884081`、term 655。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/orphan DELETE revision 错误。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
