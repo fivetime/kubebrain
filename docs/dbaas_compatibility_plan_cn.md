@@ -50721,6 +50721,45 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   主 PD 3/3、TiKV 3/3 Ready 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/
   witnessed-object/quota-initialization failure。
 
+- A4642 补齐 transaction witness 对 current revision index 的启动与解除告警校验。对标
+  `/root/etcd/server/storage/mvcc/index.go::treeIndex.Get/Put/Tombstone` 以权威 MVCC index 选择对象 revision，及
+  `/root/etcd/server/embed/etcd.go` 在 peer/client traffic 前调用
+  `/root/etcd/server/etcdserver/corrupt.go::corruptionChecker.InitialCheck` 的 fail-closed 时序。KubeBrain 的 v1
+  transaction seal 已证明某 revision 的完整 ordered event set 与 object/index 在同一 TiKV transaction 提交，但旧
+  leadership/disarm validator 只重算 event digest；若 current revision index 被改成编码合法却陈旧的旧 revision，普通
+  point read 会选择旧 object，且仅靠 `ParseRevision` 无法识别这种语义回退。
+
+  生产提交 `9d277a88` 不升级 witness wire format：sealed event 本身已证明该 key 的 mutation 确实提交，所以 current
+  index revision 必须不小于每条尚未 compact 的 witnessed event；二者相等时 CREATE/PUT 必须是 live index，DELETE
+  必须是 tombstone index。校验同时拒绝 index 缺失和畸形编码，并同时运行于 leader Ready 前的
+  `InitializeLeadershipRevision` 与 CORRUPT `Disarm`，因此损坏会持久 ArmCorrupt、未修复不能解除，恢复 exact index
+  后才能重新开放写。告警线性化前重新确认 exact seal、fresh compact watermark 和 exact 损坏 index bytes；并发修复
+  已改变 index 时不遗留陈旧告警，physical GC 已推进 watermark、但 seal/event cleanup 尚未完成的窗口不误报。
+
+  为避免把 A4488 的顺序 witness/event merge 退化为按 transaction N+1 读取，index expectations 跨 transaction 且在
+  单个超大 transaction 内都严格按 512 event 分块，使用 TiKV region-aware BatchGet；内存保持有界。600 笔单键
+  transaction 与单笔 600-op backend transaction 均精确只触发 2 次 BatchGet。确定性损坏回归覆盖合法但陈旧 index、
+  同 revision live/tombstone 冲突、missing、1-byte malformed；每项都持久告警、拒绝未修复 Disarm，恢复后可解除。
+  独立门禁覆盖 repair-before-alarm 竞态和 compact cleanup window。最终 focused 20 轮 4.506 秒、race 10 轮
+  13.081 秒，更宽 leadership/witness/corrupt/compact/Txn 5 轮 82.515 秒，完整 backend 78.058 秒、相关 server 三轮
+  及 backend/server vet 全部通过。
+
+  真实 TiKV 升级验证先在 A4641 上尝试 520-op Txn，公开 API 按 etcd 128-op 上限在写前正确拒绝且 revision 不变；随后
+  以 5 笔各 104-op 原子 CREATE 在 revision `468126003565884145` 至 `...149` 写入 520 键。滚动到 A4642 后三副本
+  均通过旧 v1 seal/index leadership 校验，Range 精确返回 520 键，首键 create/mod=`...145`、末键=`...149`，均
+  version 1。再以单次公开 DeleteRange 在 revision `...150` 删除全部 520 键；该请求在 backend 形成一笔 520-event
+  transaction，顺序重启同一镜像后三副本均通过跨 512 边界的 DELETE/tombstone index 校验。最终 `/a4642/` 零残留、
+  AlarmList 为空、MemberList 三成员、health 可提交 proposal，revision/index/applied index 均为 `...150`、term 692。
+
+  可追溯镜像 `kubebrain:a4642-9d277a88` 内嵌完整 SHA
+  `9d277a887685fed20fc5da205d5c476d21749de4`、版本 `a4642`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T16:53:16Z`；本地 OCI manifest list 为
+  `sha256:1646f0f09cd0c5cc382aeec7cf6cfc6ed507e827ba6e49537273f9e215239ab2`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:1142288ce383ad76942bb3c9d36fe91dd9ed864d44cfedd1b7cbf38a2bf3b8b8`。
+  主 StatefulSet 在升级和 DELETE 后同镜像重启两轮均完整收敛，终态三副本 Ready、零重启；主 PD 3/3、TiKV 3/3
+  Ready 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witness mismatch/
+  revision-index/alarm/leadership-initialization failure。共享 TiKV 未注入损坏，破坏/修复闭环由隔离存储测试证明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
