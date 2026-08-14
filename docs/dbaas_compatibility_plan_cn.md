@@ -51043,9 +51043,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   相同核心 differential 在 Compact/checkpoint 前序负载下，Hash、Hash Header envelope、HashLatestEquivalence、HashKV 与
   HashKV revision boundary 全部转绿，并继续通过 gateway、lease、leasing、mirror、member、naming、put 等路径；运行到
   548.538 秒后在 Generated Range 找到下一首个差异：两个 range-option 组合错误返回历史 Header revision `2`（上游
-  current `9`），Count 分别为 `0/1`（上游 `1/5`）。该结果初步指向 create/mod revision filter 被错误当成 historical
-  snapshot revision，进入下一生产修复。Auth/JWT、automatic quota、真实 Envoy、外部 L4/L7 reset、三 direct replica 等
-  专项 endpoint 仍跳过，所以不宣称 full differential。
+  current `9`），Count 分别为 `0/1`（上游 `1/5`）。后续精确诊断推翻了“create/mod filter 生产错误”的初步判断：这些
+  case 都是 `Revision=0, Serializable=true`，NodePort 连接固定到 follower 后可合法返回其 applied/checkpoint revision；单节点
+  reference 则必然返回 current。强制生产路径转发 Leader 会违反 etcd serializable availability 语义，因此未作该修改。
+  Auth/JWT、automatic quota、真实 Envoy、外部 L4/L7 reset、三 direct replica 等专项 endpoint 仍跳过，所以不宣称 full
+  differential。
+
+- A4652 后续差分 oracle 审计在不修改生产代码的前提下修正上述误报。精确上游
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/txn/txn.go::IsTxnSerializable`
+  证明只有 Compare、两个 branch 都为空的 read-only Txn 也因 vacuous truth 被视为 serializable；官方 client/v3
+  `naming/endpoints/endpoints_impl.go::NewWatchChannel` 的初始 Get 同样显式带 `WithSerializable()`。因此“刚由 Leader 写入后，
+  同一 follower 必须 read-your-write”不是 etcd 契约。
+
+  测试提交 `ae0a697d` 让 92-case Generated Range 对 latest serializable 响应按 KubeBrain 实际声明的 Header revision 回放
+  reference，包含 checkpoint 早于本场景首笔 seed 的逻辑 revision `0`；定向差分 2.977 秒通过。提交 `c78bf14f` 为那些
+  本意就是比较精确当前结果的 SerializableRead、compare-only Txn、Generated Txn Range 和 Naming 场景增加显式 checkpoint
+  收敛门槛，四条定向差分合计 19.164 秒通过。提交 `e8369896` 补齐 Naming 各 serializable List/初始 watch snapshot 与
+  Generated RangeStream，并把自然过期 lease 从 3 秒延长到 8 秒，为多副本 checkpoint 留出预算；Naming 25.692 秒、
+  Generated RangeStream 1.63 秒定向通过。
+
+  第一次后续核心运行 777.843 秒完整执行到结尾，除上述四处错误的 current/read-your-write 假设外其余核心路径通过；第二次
+  运行发现并补齐 Naming 前半段 List 与 Generated RangeStream 的同类遗漏。第三次运行中这些位置均已越过，但高并发
+  `TestLeasingPutGetDeleteConcurrencyDifferentialAgainstReferenceEtcd` 期间 TiKV client 一度报告
+  `loadRegion from PD failed`/deadline exceeded，导致运行非零；终态 KubeBrain 3/3、主 PD 3/3、主 TiKV 3/3 Ready 且零重启、
+  AlarmList 为空，该用例随后单独复跑 51.259 秒通过。故当前证据是“已清除 serializable oracle 误报并恢复定向 GREEN”，
+  仍不把这轮写成核心 suite 完整 GREEN，也没有为测试结果发布新生产镜像；线上仍为 A4652。
 
 ### P2：运维兼容和长期验证
 
