@@ -49398,6 +49398,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RangeStream follower 场景 1.90 秒。该项关闭可由最大合法编码证明安全的 end-ancestor 过度回退；
   `a\x00...`、部分 `a$...` 等存在真实逸出 witness 的范围仍保守全扫描，后续优化仍需多区间读取或编码迁移。
 
+- A4592 关闭 A4591 保留的真实逸出范围全租户扫描。提交 `158ddfa4` 将 decoded range 计划改为
+  `{magic}+start` 到 `{magic}+end` 的窄主区间，加一个最多 `len(end)` 项的危险 proper-prefix 集合。
+  scanner 在 decoded receiver 内排除这些祖先，backend 再用同一 requested revision 与同一 pinned TiKV
+  snapshot 对每个祖先做 collision-free 精确点读并合并；CountFiltered 同样先排除、再只为实际 live 的
+  精确点读加一。这样 `[a,a\x00z)`、`[a,a$z)` 不再扫描完整 object keyspace，而 from-key 和无危险祖先
+  范围仍保持原窄路径。
+
+  排除后精确点读是正确性所必需：若祖先旧 live version 落在 raw end 之前、较新 tombstone 落在其后，
+  单纯扫描主区间会复活旧值。新增确定性测试专门构造 revision 首字节从 `0x79` 跨到 `0x7b`、raw end 为
+  `a$z` 的情形，证明 latest List 仅返回 child、Count=1，而 tombstone 前 historical revision 仍返回祖先；
+  receiver 测试固定排除集合在 partition fork/merge 中传递。短 key/多 revision 穷举与聚焦测试连续 20 轮
+  通过（6.614 秒），scanner 全量连续 20 轮 5.599 秒，`pkg/backend/...` 全树 44.691 秒、完整
+  `pkg/server/etcd` 169.446 秒、compat 模块 6.244 秒均通过。
+
+  提交 `81845aca` 把含 NUL 的真实逸出范围加入官方 raw API 差分，同时比较 unary Range 与 RangeStream；
+  对 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 和真实 TiKV-backed KubeBrain 连续
+  10/10 通过（13.606 秒）。精确镜像 `kubebrain:a4592-158ddfa4`（内嵌 SHA
+  `158ddfa41d03c4a2a5bd59bdab849a8be8b31d01`，构建时间 `2026-08-14T00:32:44Z`，OCI manifest list
+  `sha256:c2473d3d94cc7ce542701531cd8ef5f19d35cfe537cb13778a7aae4ee7bcb032`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启；完整 direct-moveleader profile 39.075 秒通过，
+  RangeStream follower 场景 1.67 秒。该项关闭当前 legacy 编码下已知 decoded-boundary 全租户磁盘扫描；
+  复杂度变为 O(实际 raw interval + `len(end)` 次点读)，并保留 decoded user-range 过滤作为最终语义门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
