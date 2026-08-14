@@ -50341,6 +50341,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884087`、term 659。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/missing referenced event object。
 
+- A4631 修复“整条 event entry 已丢失”无法由 A4629/A4630 的逐条校验发现的缺口。对照 upstream
+  `server/storage/mvcc/watchable_store_txn.go`，一个 transaction revision 的完整事件集合及其 change 顺序共同
+  构成 Watch 结果；仅校验仍存在 entry 的 `subRevision/total` 和 object 引用，无法证明没有整条 entry、甚至整个
+  revision 被删除。现有写路径已在同一 TiKV transaction 中写入 `txn/witness/<revision>`，内容是该 revision 的
+  精确事件数及 canonical event entries 的 SHA-256；生产提交 `10b383f3` 将该 witness 用于在线历史回放校验。
+
+  对可信窗口，reader 在 prefix 过滤前重建完整 revision event set，并以有界 witness range read 校验 revision
+  连续性、witness 编码、事件数和摘要；因此可发现单条/整 revision 丢失，同时不改变原 Txn 操作顺序。witness
+  不匹配复用双 watermark 判定：异常后重读 durable watermark，并发 cleanup 已越过窗口时仍兼容 fallback，窗口
+  持续可信时才返回 `ErrInvalidMVCCMetadata`。代价是每次可信历史回放额外一次有界 witness 范围读取；这是以明确
+  I/O 换取完整性证明，后续优化不得绕过校验。确定性 RED 删除双 revision 输入中的首条 event、保留 witness 与
+  object：旧实现静默只返回第二条，修复后 fail closed；推进 watermark 后仍可 fallback。event/witness/history
+  focused 20 轮 21.911 秒、race 10 轮 12.032 秒、backend vet、完整 backend 75.378 秒及完整
+  `pkg/server/etcd` 175.793 秒通过。
+
+  真实 TiKV 正向验证在 revision `468126003565884088` 同 Txn 依次 CREATE `z`、`a`，revision `...089` 同 Txn
+  UPDATE `z`、DELETE `a`，revision `...090` CREATE `b`；从 `...088` 启动带 PrevKV 的历史 prefix Watch 精确
+  返回 `z CREATE, a CREATE, z PUT, a DELETE, b CREATE`，共享 revision、值与两个 PrevKV 均正确，证明完整
+  三 revision witness 窗口通过校验且没有退化为 key 排序。清理验证键后最终 revision 为
+  `468126003565884091`。
+
+  可追溯镜像 `kubebrain:a4631-10b383f3` 内嵌完整 SHA
+  `10b383f3b7be3bb70b7e47da46a63ce3fc26866b`、版本 `a4631`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T13:41:21Z`；本地 OCI manifest list 为
+  `sha256:200b1dfec582072da005813c82838e3259a92c9a25136e19047b5e16dd568127`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:ddf66bdcce91fe31f150789684ffd0ae8be47949732cc8c92cfb65a2e2545ef0`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884091`、term 661。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/transaction witness mismatch。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
