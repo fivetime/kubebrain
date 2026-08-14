@@ -50476,6 +50476,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884110`、term 669。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/invalid referenced object/witness mismatch。
 
+- A4635 将 A4634 的 witnessed-object value 安全隔离扩展到普通 point Get。此前 backend `Get` 返回 stored bytes，
+  只有 etcd shim 转换 RangeResponse 时 checked-decode；因此当前或历史精确对象的 envelope 损坏会让该 RPC 返回
+  DataLoss，却不会持久拉起 CORRUPT，其他写仍继续。不能在统一 gRPC interceptor 中把所有
+  `ErrInvalidMVCCMetadata` 一律转成 alarm：legacy、revision-index、auth/lease 等错误尚无同一种 Disarm repair
+  verifier，这会产生无法证明解除安全性的告警。生产提交 `96c5af57` 因而只覆盖具有 exact durable evidence 的
+  etcd-compatible point Get，不用较宽但不可证明的自动拉警替代正确性。
+
+  `persistWitnessedObjectCorruption` 在拉警前依次证明：revision 尚未被 durable compact watermark 越过；同 revision
+  witness 存在且可解码；该 revision 的完整 raw event set 重算 count+SHA-256 与 witness 完全一致；目标 user key
+  具有合法 CREATE/PUT entry；精确 object bytes 在诊断期间未被并发修复；最终 compact watermark 与 witness 原值
+  再检查仍成立。只有全部成立才使用脱离请求取消、但限制为一秒的 context 持久 `ArmCorrupt(localMemberID)`；
+  否则保留原 DataLoss 而不创建无解除证据的告警。A4634 object-aware Disarm 会复验同一 object value，故修复前
+  保持写 fence、恢复 exact bytes 后才能解除。
+
+  确定性 RED 损坏 witnessed current object：旧 Get 成功返回损坏 bytes；修复后 Get 返回
+  `ErrInvalidMVCCMetadata`、AlarmList 出现本 member、后续 Create 被 `ErrCorruptAlarmActive` 拒绝，未修复 Disarm
+  返回 `ErrTxnWitnessCorrupt`，恢复后解除并重新读取成功。独立负向门禁先删 witness 再损坏同一对象，证明仍返回
+  DataLoss 但不误拉无法复验的 CORRUPT。有/无 witness focused 20 轮 8.870 秒、race 10 轮 6.549 秒，更宽
+  Get/EventLog/Witness 10 轮 42.684 秒，backend/server vet、完整 backend 76.137 秒及完整
+  `pkg/server/etcd` 182.688 秒通过。List/RangeStream 的逐对象持久告警仍是后续独立工作，不用 point Get 结果外推。
+
+  真实 TiKV 正向验证 revision `468126003565884111` CREATE `k=v1`、revision `...112` UPDATE `k=v2`；当前
+  point Get 返回 v2、create `...111`、mod `...112`、version 2，指定 revision `...111` 的历史 Get 返回 v1、
+  create/mod `...111`、version 1，AlarmList 为空。清理验证键后最终 revision 为 `468126003565884113`。
+
+  可追溯镜像 `kubebrain:a4635-96c5af57` 内嵌完整 SHA
+  `96c5af57352373d96ff7f74d05ffa869069fe56e`、版本 `a4635`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T14:58:36Z`；本地 OCI manifest list 为
+  `sha256:659b3ab5eb710903b21e69ed753977bcb27463985fa25ac41ad06c84c08b02c2`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:7abd09dd18285f92cad09bc5a0ee25df8402451e74367e40942839b9d485d0f7`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884113`、term 672。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/corrupt-alarm failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
