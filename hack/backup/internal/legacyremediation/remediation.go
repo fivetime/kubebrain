@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ const LegacyDiagnostic = "snapshot cannot determine lease for retained legacy ve
 
 var positiveDecimal = regexp.MustCompile(`^[1-9][0-9]*$`)
 
+var compactRevisionDiagnostic = regexp.MustCompile(`minimum physical compact revision ([1-9][0-9]*)`)
+
 type Config struct {
 	Action, Endpoint, Output            string
 	ExpectedClusterID, ExpectedRevision string
@@ -34,7 +37,7 @@ type Config struct {
 }
 
 type Result struct {
-	ClusterID, Revision, SnapshotStatus string
+	ClusterID, Revision, CompactRevision, SnapshotStatus string
 }
 
 type etcdClient interface {
@@ -138,8 +141,18 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	if !strings.Contains(err.Error(), LegacyDiagnostic) {
 		return result, 1, fmt.Errorf("refusing legacy-history remediation: Snapshot failed for a different reason: %w", err)
 	}
+	match := compactRevisionDiagnostic.FindStringSubmatch(err.Error())
+	if len(match) != 2 {
+		return result, 1, errors.New("refusing legacy-history remediation: Snapshot diagnostic has no safe compact revision")
+	}
+	result.CompactRevision = match[1]
+	compactRevision, parseErr := strconv.ParseInt(result.CompactRevision, 10, 64)
+	if parseErr != nil || compactRevision <= 0 || compactRevision > status.Header.Revision {
+		return result, 1, errors.New("refusing legacy-history remediation: Snapshot returned an invalid compact revision")
+	}
 	result.SnapshotStatus = "legacy_lease_history_ambiguous"
 	fmt.Fprintln(out, "snapshot_status="+result.SnapshotStatus)
+	fmt.Fprintln(out, "minimum_compact_revision="+result.CompactRevision)
 	if c.Action == "diagnose" {
 		return result, 3, nil
 	}
@@ -159,7 +172,7 @@ func runWithClient(ctx context.Context, c Config, out io.Writer, cli etcdClient)
 	if info, statErr := os.Stat(parent); statErr != nil || !info.IsDir() {
 		return result, 2, errors.New("OUTPUT parent directory does not exist")
 	}
-	revision := status.Header.Revision
+	revision := compactRevision
 	if _, err = cli.Compact(ctx, revision, clientv3.WithCompactPhysical()); err != nil {
 		return result, 1, fmt.Errorf("physical compact: %w", err)
 	}

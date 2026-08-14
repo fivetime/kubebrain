@@ -21,12 +21,15 @@ set -e
 if [[ $rc != 3 ]]; then cat "$temp/diagnosis.err" >&2; die "read-only diagnosis did not prove ambiguous legacy lease history (exit=$rc)"; fi
 cluster_id="$(sed -n 's/^cluster_id=//p' "$temp/diagnosis")"
 revision="$(sed -n 's/^revision=//p' "$temp/diagnosis")"
+compact_revision="$(sed -n 's/^minimum_compact_revision=//p' "$temp/diagnosis")"
 status="$(sed -n 's/^snapshot_status=//p' "$temp/diagnosis")"
-[[ "$cluster_id" =~ ^[1-9][0-9]*$ && "$revision" =~ ^[1-9][0-9]*$ && "$status" == legacy_lease_history_ambiguous ]] || die "diagnosis identity is incomplete"
-hash="$(printf '%s\n%s\n%s\n%s\n' "$REQUEST_ID" "$ENDPOINT" "$cluster_id" "$revision" | sha256sum | cut -c1-20)"
+[[ "$cluster_id" =~ ^[1-9][0-9]*$ && "$revision" =~ ^[1-9][0-9]*$ && "$compact_revision" =~ ^[1-9][0-9]*$ &&
+  "$status" == legacy_lease_history_ambiguous ]] || die "diagnosis identity is incomplete"
+hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$REQUEST_ID" "$ENDPOINT" "$cluster_id" "$revision" "$compact_revision" | sha256sum | cut -c1-20)"
 name="legacy-snapshot-remediation-${hash}"; secret="${name}-parameters"; params="$temp/parameters.json"
 $JQ -cnS --arg request_id "$REQUEST_ID" --arg endpoint "$ENDPOINT" --arg cluster_id "$cluster_id" --arg revision "$revision" \
-  '{request_id:$request_id,endpoint:$endpoint,cluster_id:$cluster_id,revision:$revision}' >"$params"
+  --arg compact_revision "$compact_revision" \
+  '{request_id:$request_id,endpoint:$endpoint,cluster_id:$cluster_id,revision:$revision,compact_revision:$compact_revision}' >"$params"
 sha="$(sha256sum "$params" | cut -d ' ' -f1)"; context=(); [[ "$KUBE_CONTEXT" == in-cluster ]] || context=(--context "$KUBE_CONTEXT")
 if existing="$($KUBECTL "${context[@]}" -n "$OPERATION_NAMESPACE" get secret "$secret" -o 'jsonpath={.immutable}{"\t"}{.data.parameters\.json}' 2>/dev/null)"; then
   [[ "${existing%%$'\t'*}" == true && "$(printf '%s' "${existing#*$'\t'}" | base64 -d | sha256sum | cut -d ' ' -f1)" == "$sha" ]] || die "existing immutable parameter Secret drifted"
@@ -37,4 +40,4 @@ fi
 ctl=(--namespace "$OPERATION_NAMESPACE"); [[ "$KUBE_CONTEXT" == in-cluster ]] || ctl+=(--context "$KUBE_CONTEXT")
 $OPERATIONCTL "${ctl[@]}" --action submit --name "$name" --operation-id "$name" --requested-by platform:legacy-snapshot-remediation \
   --instance "$INSTANCE" --type LegacySnapshotHistoryRemediation --parameters-sha256 "$sha" --parameters-secret "$secret" --parameters-key parameters.json --max-attempts 1 >/dev/null
-echo "created or verified unapproved Pending LegacySnapshotHistoryRemediation ${OPERATION_NAMESPACE}/${name} at revision ${revision}"
+echo "created or verified unapproved Pending LegacySnapshotHistoryRemediation ${OPERATION_NAMESPACE}/${name} at revision ${revision}, minimum compact revision ${compact_revision}"

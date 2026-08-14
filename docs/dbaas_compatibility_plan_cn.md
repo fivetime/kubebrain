@@ -41,7 +41,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 | Cluster | MemberList | 兼容（需配置） | DBaaS 通过 `--initial-cluster` 注入完整 KubeBrain peer 身份，并用 `--advertise-client-urls` 独立发布所有 clientv3 Sync/AutoSync 调用方可达且匹配 TLS SAN 的 client endpoint；peer `/members` 返回同一成员快照的 etcd peer JSON；未配置静态成员时仅返回本机与 leader 的降级视图 |
 | Cluster | add/remove/update/promote | 平台替代 | 由 DBaaS 控制面扩缩 KubeBrain、PD、TiKV；RPC 保持明确 Unimplemented；peer `/members/promote/{id}` 返回 501 和同一平台替代说明 |
 | Maintenance | Status | 兼容核心语义 | 返回真实服务身份、版本、leader/revision/共享选主 term；配置 quota 时报告租户最新逻辑 key+value 字节，未配置时使用兼容 sentinel；TiKV 物理容量转到实例指标 |
-| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，物理 Compact 清除后恢复可用 |
+| Maintenance | Snapshot | 部分兼容（历史恢复核心语义） | root 可通过官方 clientv3/etcdctl 在线下载带 SHA-256 的 3.7 bbolt snapshot；保留 retained KV versions/tombstones、每版本 lease、精确 txn subrevision/op 次序、真实 compact watermark、当前 lease、auth 用户/角色/修订与 alarm，并可由官方 etcdutl restore 后按历史 revision Range/Watch，不向合法全键 Watch 泄漏 revision marker；固定 storage snapshot 以有界 chunk 增量写 bbolt，建立后不阻塞后续写，follower 将完整流代理到 mutation leader 捕获；新 unleased 版本用等长 v3 envelope 明确记录 lease=0，旧 raw/v1 current 行在下一次 Put/Delete 前会按锁定 attachment 原位升级为 v2/v3，不增加 revision/Watch 事件，从而不再制造新的含糊历史；含 lease 不可判定的旧历史版本时 snapshot 明确失败，并报告覆盖所有含糊版本后继锚点的最小 physical Compact revision，修复 Operation 冻结并执行该边界而非当前 revision，清除后恢复可用 |
 | Maintenance | Defragment | 平台替代 | TiKV GC/compaction 管理，不执行 bbolt 碎片整理 |
 | Maintenance | Alarm/DbSize | 兼容 NOSPACE/CORRUPT 核心语义 | keyspace 级逻辑容量原子计量、sticky NOSPACE、持久 member 集合及跨 endpoint mutation 已支持；NOSPACE 阻断增长写与 LeaseGrant，但允许 LeaseRevoke、自然过期和既有 lease KeepAlive，以保留空间自愈路径；CORRUPT 使用 TiKV 内部元数据持久 member 集合，允许 Range 及空/线性/串行只读 Txn 诊断，阻断 Put/Delete/任一分支含写的 Txn/Compact/LeaseGrant/Revoke，并推迟自然租约过期直至 disarm；未过期 lease 仍可 KeepAlive，已过期 KeepAlive 等待 revoke 并在 disarm 后返回 TTL=0；双告警并存时 CORRUPT 优先，逐项解除后 NOSPACE 独立延续；3 KubeBrain、3 PD、3 TiKV 全成员顺序重启后告警、写门禁和 health/readyz 状态仍持续；bbolt fragmentation 仍为平台边界 |
 | Maintenance | Hash/HashKV | 兼容核心语义 | 对指定 revision 的租户 MVCC 实际内容做稳定摘要；成员本地诊断不依赖 KubeBrain leader；peer `/members/hashkv` 支持 etcd corruption checker 的 JSON/cluster-ID/error 语义；数值不与 bbolt 内部编码比较 |
@@ -50024,6 +50024,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 alarm 集合恢复；一次性 StatefulSet/Pod/Service 已全部删除。主数据面最终
   3/3 Ready、endpoint health 可提交 proposal、AlarmList 为空。本轮没有修改测试或
   生产实现：故障恢复范围内没有出现可稳定复现的新兼容性差异。
+
+- A4618 收窄升级遗留 Snapshot 修复的不可逆数据范围。此前服务端在遇到第一个
+  `LeaseKnown=false` 的历史 raw/v1 行后立即失败，break-glass 脚本和持久
+  `LegacySnapshotHistoryRemediation` 只能 physical compact 到诊断时的当前 revision，可能无谓
+  删除含糊版本之后仍可恢复的 MVCC 历史。现在 Snapshot 在同一固定 TiKV 历史流中继续扫描但停止
+  构建私有制品，按每个含糊版本的直接后继 revision 求最大值并返回
+  `minimum physical compact revision`；不能找到后继则按 history stream protocol corruption
+  fail closed。选择后继而非含糊 revision 是因为 etcd physical compact 会保留 compact 点的每 key
+  历史锚点。
+
+  shell 与预编译 clientv3 修复器都要求并校验该正整数边界，当前 cluster ID/revision 仍用于防止
+  审批后身份漂移，实际 Compact 只执行最小边界。requester 将该边界写入 immutable 参数并纳入
+  Operation identity；executor 同时核对工具输出，receipt 记录真实 compact revision，不再把当前
+  revision 误记为已删除边界。定向服务端、Go 修复器与 production Operation 回归全部通过。此项
+  减少必要 remediation 的历史损失，但不会伪造永久缺失的 lease provenance，Snapshot 矩阵仍保持
+  “部分兼容”。
 
 ### P2：运维兼容和长期验证
 

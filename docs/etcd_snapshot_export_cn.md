@@ -13,7 +13,10 @@ etcdutl snapshot restore snapshot.db --data-dir restored.etcd
 在线快照保留 KV MVCC history、真实 compact watermark、当前 lease、auth 用户/角色/修订和
 alarm。旧的非内联数据布局没有逐历史版本 lease 字段，因此只能由固定在同一线性化点的
 durable key→lease attachment 精确恢复当前版本；仍保留且无法判定 lease 的旧历史版本会让
-snapshot fail closed，物理 Compact 清除这些含糊版本后才恢复可用，禁止伪造 lease=0。
+snapshot fail closed，且诊断会扫描完整固定历史，报告能清除全部含糊版本的最小 physical Compact
+revision。该边界取每个含糊版本的直接后继版本再求最大值，因为 compact 点自身会作为历史锚点保留；
+修复器不会再一律 compact 到当前 revision。物理 Compact 清除这些含糊版本后才恢复可用，禁止伪造
+lease=0。
 lease 的倒计时按官方 etcd 的持久 checkpoint 语义恢复，而不是逐秒保存抓取瞬间的实时 TTL；
 auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的用户凭据重新认证。输出仍不
 替代 TiKV 物理 PITR。

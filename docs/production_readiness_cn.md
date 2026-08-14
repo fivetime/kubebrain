@@ -3816,8 +3816,11 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
     hack/backup/remediate-legacy-snapshot-history.sh
   ```
 
-  若业务明确接受所有 `revision <= EXPECTED_REVISION` 的历史读和 watch 永久不可用，应先记录诊断
-  输出并走变更审批，再用完全相同的单 endpoint、cluster ID 和 revision 执行：
+  诊断会输出当前 `revision` 和 `minimum_compact_revision`：后者是每个含糊版本的直接后继
+  revision 的最大值，也是能够移除全部含糊锚点的最小 physical compact 边界。若业务明确接受所有
+  `revision <= minimum_compact_revision` 的历史读和 watch 永久不可用，应先记录诊断输出并走变更
+  审批，再用完全相同的单 endpoint、cluster ID 和当前 revision 执行；工具会重新诊断并只使用该最小
+  边界，不再一律压缩到 `EXPECTED_REVISION`：
 
   ```shell
   ACTION=compact \
@@ -3833,7 +3836,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
     hack/backup/remediate-legacy-snapshot-history.sh
   ```
 
-  工具只在预检精确命中 legacy lease diagnostic 时调用同步 `compact --physical`，其他 Snapshot
+  工具只在预检精确命中包含最小安全边界的 legacy lease diagnostic 时调用同步 `compact --physical`，其他 Snapshot
   失败和已健康实例均拒绝 mutation；压缩提交后才下载新制品，并通过官方 `etcdutl snapshot status`
   才原子发布 `OUTPUT`。上述直调只用于 break-glass；生产默认入口是持久审批 Operation：
 
@@ -3850,7 +3853,8 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
 
   requester 只运行原生只读诊断并创建 immutable parameter Secret 和未审批 Pending
   `LegacySnapshotHistoryRemediation(maxAttempts=1)`；专用 approver 核对冻结的 endpoint、cluster ID、
-  revision 和外部变更单后才能批准。专用 executor 默认 0 副本，使用预编译 clientv3 helper，持续
+  当前 revision、最小 compact revision 和外部变更单后才能批准。operation identity、immutable 参数、
+  executor 实际输出与最终 receipt 都绑定该 compact 边界。专用 executor 默认 0 副本，使用预编译 clientv3 helper，持续
   heartbeat；失败直接终止且明确提示 compaction 可能已提交，禁止自动重试。成功制品和 receipt 位于
   专用 RWX workspace。executor env Secret 只挂 TLS/root etcd 凭据，不得把凭据写入 Operation 参数。
   该操作不可回滚且不能修复 corruption，也不等价于 TiKV/PD 物理 PITR。

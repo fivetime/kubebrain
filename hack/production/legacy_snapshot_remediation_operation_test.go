@@ -14,7 +14,7 @@ import (
 func TestRequestLegacySnapshotRemediationCreatesOnlyUnapprovedPendingOperation(t *testing.T) {
 	dir := t.TempDir()
 	diagnose := writeLegacyExecutable(t, dir, "diagnose", `#!/usr/bin/env bash
-printf 'cluster_id=18446744073709551615\nrevision=41\nendpoint=%s\nsnapshot_status=legacy_lease_history_ambiguous\n' "$ENDPOINT"
+printf 'cluster_id=18446744073709551615\nrevision=41\nendpoint=%s\nsnapshot_status=legacy_lease_history_ambiguous\nminimum_compact_revision=3\n' "$ENDPOINT"
 exit 3
 `)
 	kubectl := writeLegacyExecutable(t, dir, "kubectl", `#!/usr/bin/env bash
@@ -55,11 +55,11 @@ func TestRequestLegacySnapshotRemediationRejectsHealthySnapshotBeforeKubernetes(
 
 func TestRunLegacySnapshotRemediationOperationBindsAndPublishesReceipt(t *testing.T) {
 	dir := t.TempDir()
-	params := []byte(`{"cluster_id":"7301","endpoint":"https://kubebrain:2379","request_id":"change-4312","revision":"41"}` + "\n")
+	params := []byte(`{"cluster_id":"7301","compact_revision":"3","endpoint":"https://kubebrain:2379","request_id":"change-4312","revision":"41"}` + "\n")
 	paramsPath := filepath.Join(dir, "parameters.json")
 	require.NoError(t, os.WriteFile(paramsPath, params, 0o600))
 	digest := fmt.Sprintf("%x", sha256.Sum256(params))
-	identityDigest := sha256.Sum256([]byte("change-4312\nhttps://kubebrain:2379\n7301\n41\n"))
+	identityDigest := sha256.Sum256([]byte("change-4312\nhttps://kubebrain:2379\n7301\n41\n3\n"))
 	name := "legacy-snapshot-remediation-" + fmt.Sprintf("%x", identityDigest)[:20]
 	operationLog := filepath.Join(dir, "operation.log")
 	operationctl := writeLegacyExecutable(t, dir, "operationctl", `#!/usr/bin/env bash
@@ -71,6 +71,7 @@ esac
 	remediation := writeLegacyExecutable(t, dir, "remediation", `#!/usr/bin/env bash
 [[ "$ACTION" == compact && "$ENDPOINT" == "$CONFIRM_ENDPOINT" && "$EXPECTED_CLUSTER_ID" == 7301 && "$EXPECTED_REVISION" == 41 && "$ALLOW_IRREVERSIBLE_LEGACY_HISTORY_COMPACTION" == true ]]
 printf 'validated snapshot\n' >"$OUTPUT"
+printf 'compacted_revision=3\n'
 `)
 	_ = writeLegacyExecutable(t, dir, "sleep", "#!/usr/bin/env bash\nexit 0")
 	out, err := runProductionScriptCommand(t, "run-legacy-snapshot-remediation-operation.sh", []string{
@@ -85,7 +86,7 @@ printf 'validated snapshot\n' >"$OUTPUT"
 	require.NotContains(t, operations, "--action fail")
 	receipt := string(requireFile(t, filepath.Join(dir, name+".receipt.json")))
 	require.Contains(t, receipt, `"format":"kubebrain.legacy-snapshot-remediation.v1"`)
-	require.Contains(t, receipt, `"compacted_revision":"41"`)
+	require.Contains(t, receipt, `"compacted_revision":"3"`)
 	require.FileExists(t, filepath.Join(dir, name+".snapshot.db"))
 }
 

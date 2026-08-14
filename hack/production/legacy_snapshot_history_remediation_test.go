@@ -29,7 +29,7 @@ case "$*" in
         healthy) printf 'already healthy\n' >"$output" ;;
         other) echo 'rpc error: code = Unavailable desc = etcdserver: no leader' >&2; exit 1 ;;
         ambiguous)
-          echo 'rpc error: code = FailedPrecondition desc = snapshot cannot determine lease for retained legacy version: key "/old" revision 2' >&2
+          echo 'rpc error: code = FailedPrecondition desc = snapshot cannot determine lease for retained legacy version: key "/old"; minimum physical compact revision 3' >&2
           exit 1
           ;;
         *) exit 9 ;;
@@ -139,10 +139,10 @@ func TestLegacySnapshotHistoryRemediationCompactsAndPublishesValidatedSnapshot(t
 		"OUTPUT=" + output,
 	})
 	require.NoError(t, err, string(out))
-	require.Equal(t, "compact:41\nsnapshot\nstatus\n", string(requireFile(t, filepath.Join(state, "calls"))))
+	require.Equal(t, "compact:3\nsnapshot\nstatus\n", string(requireFile(t, filepath.Join(state, "calls"))))
 	require.Equal(t, "valid snapshot\n", string(requireFile(t, output)))
 	require.Contains(t, string(out), "snapshot_status=remediated")
-	require.Contains(t, string(out), "compacted_revision=41")
+	require.Contains(t, string(out), "compacted_revision=3")
 }
 
 func requireFile(t *testing.T, path string) []byte {

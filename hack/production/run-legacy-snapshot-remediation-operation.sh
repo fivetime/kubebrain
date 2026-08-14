@@ -40,9 +40,9 @@ finalize_heartbeat() {
 if [[ -z "$PARAMETERS_INPUT" ]]; then PARAMETERS_INPUT="$capture/input.json"; runctl --action parameters --name "$name" --owner "$WORKER_ID" --attempt "$attempt" >"$PARAMETERS_INPUT"; fi
 [[ -f "$PARAMETERS_INPUT" && "$(sha "$PARAMETERS_INPUT")" == "$expected_sha" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation parameters digest mismatch" >/dev/null; exit 1; }
 params="$capture/parameters.json"; cp -- "$PARAMETERS_INPUT" "$params"; chmod 600 "$params"
-$JQ -e 'keys==["cluster_id","endpoint","request_id","revision"] and (.cluster_id|test("^[1-9][0-9]*$")) and (.revision|test("^[1-9][0-9]*$")) and (.endpoint|type=="string" and length>0) and (.request_id|test("^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$"))' "$params" >/dev/null || die "remediation parameter schema is invalid"
-request_id="$($JQ -r .request_id "$params")"; endpoint="$($JQ -r .endpoint "$params")"; cluster_id="$($JQ -r .cluster_id "$params")"; revision="$($JQ -r .revision "$params")"
-request_hash="$(printf '%s\n%s\n%s\n%s\n' "$request_id" "$endpoint" "$cluster_id" "$revision" | sha256sum | cut -c1-20)"
+$JQ -e 'keys==["cluster_id","compact_revision","endpoint","request_id","revision"] and (.cluster_id|test("^[1-9][0-9]*$")) and (.revision|test("^[1-9][0-9]*$")) and (.compact_revision|test("^[1-9][0-9]*$")) and (.endpoint|type=="string" and length>0) and (.request_id|test("^[a-z0-9]([-a-z0-9.]{0,126}[a-z0-9])?$"))' "$params" >/dev/null || die "remediation parameter schema is invalid"
+request_id="$($JQ -r .request_id "$params")"; endpoint="$($JQ -r .endpoint "$params")"; cluster_id="$($JQ -r .cluster_id "$params")"; revision="$($JQ -r .revision "$params")"; compact_revision="$($JQ -r .compact_revision "$params")"
+request_hash="$(printf '%s\n%s\n%s\n%s\n%s\n' "$request_id" "$endpoint" "$cluster_id" "$revision" "$compact_revision" | sha256sum | cut -c1-20)"
 [[ "$name" == "legacy-snapshot-remediation-${request_hash}" ]] || die "remediation parameters do not bind the operation identity"
 artifact="$WORK_DIR/${name}.snapshot.db"; receipt="$WORK_DIR/${name}.receipt.json"
 [[ ! -e "$artifact" && ! -e "$receipt" ]] || { runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation left an artifact or receipt; inspect before a new approved operation" >/dev/null; exit 1; }
@@ -52,8 +52,10 @@ env ACTION=compact ENDPOINT="$endpoint" CONFIRM_ENDPOINT="$endpoint" EXPECTED_CL
 ( while sleep "$HEARTBEAT_INTERVAL_SECONDS"; do runctl --action heartbeat --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --lease "${LEASE_SECONDS}s" >/dev/null || { [[ -e "$capture/child.done" ]] || kill "$child" 2>/dev/null || true; exit 75; }; done ) & heartbeat=$!
 set +e; wait "$child"; rc=$?; set -e; : >"$capture/child.done"; child=0
 [[ $rc == 0 && -s "$artifact" ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy snapshot remediation exited ${rc}; compaction may already be committed, inspect before any new operation" >/dev/null; exit 1; }
+actual_compact_revision="$(sed -n 's/^compacted_revision=//p' "$capture/remediation.log")"
+[[ "$actual_compact_revision" == "$compact_revision" ]] || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation compact revision did not match approved boundary" >/dev/null; exit 1; }
 artifact_sha="$(sha "$artifact")"; bytes="$(wc -c <"$artifact" | tr -d ' ')"; now="$(date +%s)"; temp_receipt="$capture/receipt.json"
-$JQ -cnS --arg operation_id "$name" --arg request_id "$request_id" --arg endpoint "$endpoint" --arg cluster_id "$cluster_id" --arg revision "$revision" \
+$JQ -cnS --arg operation_id "$name" --arg request_id "$request_id" --arg endpoint "$endpoint" --arg cluster_id "$cluster_id" --arg revision "$compact_revision" \
   --arg artifact "$artifact" --arg artifact_sha256 "$artifact_sha" --argjson bytes "$bytes" --argjson completed_at_unix "$now" \
   '{format:"kubebrain.legacy-snapshot-remediation.v1",operation_id:$operation_id,request_id:$request_id,endpoint:$endpoint,cluster_id:$cluster_id,compacted_revision:$revision,artifact:{path:$artifact,sha256:$artifact_sha256,bytes:$bytes},completed_at_unix:$completed_at_unix}' >"$temp_receipt"
 ln "$temp_receipt" "$receipt" || { finalize_heartbeat || exit 1; runctl --action fail --name "$name" --owner "$WORKER_ID" --attempt "$attempt" --message "legacy remediation receipt publication failed; inspect committed artifact" >/dev/null; exit 1; }

@@ -4,6 +4,7 @@
 package etcd
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -173,6 +174,16 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 	}()
 
 	sawTerminal := false
+	// A legacy version without inline lease provenance cannot be exported. Keep
+	// scanning after the first such row so the diagnostic can report the least
+	// destructive physical-compaction boundary that removes every ambiguous
+	// version. Compaction retains the last version at or below its target, so the
+	// required boundary is the ambiguous row's immediate successor, not the
+	// ambiguous revision itself.
+	var firstAmbiguousKey []byte
+	var pendingAmbiguousKey []byte
+	var pendingAmbiguousRevision uint64
+	var requiredCompactRevision uint64
 	consume := func(chunk backend.SnapshotHistoryChunk) error {
 		// The object iterator is a fixed TiKV snapshot, but ordered-event and
 		// legacy metadata joins are streamed through independent reads protected
@@ -202,6 +213,10 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 		}
 		records := make([]production.Record, 0, len(chunk.Records))
 		for _, record := range chunk.Records {
+			if pendingAmbiguousRevision != 0 && bytes.Equal(record.Key, pendingAmbiguousKey) {
+				requiredCompactRevision = max(requiredCompactRevision, record.ModRevision)
+				pendingAmbiguousRevision = 0
+			}
 			// Legacy raw/v1 values did not persist lease IDs per MVCC version.
 			// The pinned attachment map below can recover the current version,
 			// but after a rebind it contains no evidence about an older version's
@@ -210,7 +225,18 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 			// Once compaction physically removes the ambiguous retained version,
 			// snapshots become available again; every v2 version is LeaseKnown.
 			if !record.Current && !record.Tombstone && !record.LeaseKnown {
-				return fmt.Errorf("%w: key %q revision %d", errSnapshotHistoricalLeaseUnknown, record.Key, record.ModRevision)
+				if firstAmbiguousKey == nil {
+					firstAmbiguousKey = append([]byte(nil), record.Key...)
+				}
+				pendingAmbiguousKey = append(pendingAmbiguousKey[:0], record.Key...)
+				pendingAmbiguousRevision = record.ModRevision
+				continue
+			}
+			if firstAmbiguousKey != nil {
+				// Once provenance is known to be incomplete, the private builder
+				// cannot produce an artifact. Continue only to calculate the safe
+				// remediation boundary; do not feed it a history with omitted rows.
+				continue
 			}
 			if record.Current {
 				// Legacy rows do not carry a per-version lease. Reconcile them
@@ -265,6 +291,18 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 						return err
 					}
 					return snapshotHistoryStreamProtocolErrorf("range stream ended without a terminal revision")
+				}
+				if firstAmbiguousKey != nil {
+					if pendingAmbiguousRevision != 0 || requiredCompactRevision == 0 {
+						return snapshotHistoryStreamProtocolErrorf(
+							"legacy historical row %q revision %d has no successor",
+							pendingAmbiguousKey, pendingAmbiguousRevision,
+						)
+					}
+					return fmt.Errorf(
+						"%w: key %q; minimum physical compact revision %d",
+						errSnapshotHistoricalLeaseUnknown, firstAmbiguousKey, requiredCompactRevision,
+					)
 				}
 				if err = builder.Finish(); err != nil {
 					return fmt.Errorf("finish etcd snapshot backend: %w", err)

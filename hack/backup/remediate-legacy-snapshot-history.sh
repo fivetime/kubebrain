@@ -7,9 +7,9 @@ Usage: hack/backup/remediate-legacy-snapshot-history.sh
 
 Diagnoses the upgrade-era retained-history condition that makes Maintenance
 Snapshot fail because an old raw/v1 value did not persist its per-version lease.
-The default action is read-only. ACTION=compact irreversibly removes all MVCC
-history through the confirmed current revision, then creates and validates a
-snapshot.
+The default action is read-only. ACTION=compact irreversibly removes only the
+MVCC history through the minimum safe revision reported by Snapshot, then
+creates and validates a snapshot.
 
 Environment:
   ACTION              diagnose (default) or compact
@@ -104,9 +104,21 @@ if ! grep -Fq "snapshot cannot determine lease for retained legacy version" "$pr
   exit 1
 fi
 echo "snapshot_status=legacy_lease_history_ambiguous"
+probe_diagnostic="$(<"$probe_log")"
+if [[ ! "$probe_diagnostic" =~ minimum\ physical\ compact\ revision\ ([1-9][0-9]*) ]]; then
+  cat "$probe_log" >&2
+  echo "refusing legacy-history remediation: Snapshot diagnostic has no safe compact revision" >&2
+  exit 1
+fi
+compact_revision="${BASH_REMATCH[1]}"
+if (( compact_revision > revision )); then
+  echo "refusing legacy-history remediation: Snapshot returned an invalid compact revision" >&2
+  exit 1
+fi
+echo "minimum_compact_revision=$compact_revision"
 
 if [[ "$ACTION" == diagnose ]]; then
-  echo "No data was changed. To discard history through revision $revision, review the warning and rerun with ACTION=compact and all confirmation fields."
+  echo "No data was changed. To discard history through revision $compact_revision, review the warning and rerun with ACTION=compact and all confirmation fields."
   exit 3
 fi
 
@@ -142,7 +154,7 @@ fi
 
 # Physical=true is essential: advancing only the logical watermark leaves the
 # ambiguous raw/v1 row present until asynchronous GC and cannot unblock Snapshot.
-"$ETCDCTL_BIN" --endpoints="$ENDPOINT" compact "$revision" --physical
+"$ETCDCTL_BIN" --endpoints="$ENDPOINT" compact "$compact_revision" --physical
 
 candidate="$(mktemp "$output_dir/.kubebrain-post-remediation.XXXXXX.db")"
 candidate_published=false
@@ -160,5 +172,5 @@ fi
 rm -f "$candidate"
 candidate_published=true
 echo "snapshot_status=remediated"
-echo "compacted_revision=$revision"
+echo "compacted_revision=$compact_revision"
 echo "snapshot_output=$OUTPUT"

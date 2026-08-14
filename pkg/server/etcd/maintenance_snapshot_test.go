@@ -1347,9 +1347,13 @@ func TestMaintenanceSnapshotRejectsUnknownHistoricalLegacyLease(t *testing.T) {
 	require.NoError(t, err)
 	current, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("unleased-v2")})
 	require.NoError(t, err)
+	later, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/snapshot/later-current"), Value: []byte("keep")})
+	require.NoError(t, err)
+	require.Greater(t, later.Header.Revision, current.Header.Revision)
 
 	err = server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "snapshot.db"))
 	require.ErrorContains(t, err, "snapshot cannot determine lease for retained legacy version")
+	require.ErrorContains(t, err, fmt.Sprintf("minimum physical compact revision %d", current.Header.Revision))
 
 	// The limitation is bounded by retained history, not by the lifetime of the
 	// database. Once a physical compaction removes the ambiguous old version,

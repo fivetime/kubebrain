@@ -44,7 +44,7 @@ func (f *fakeEtcdClient) Status(context.Context, string) (*clientv3.StatusRespon
 }
 func (f *fakeEtcdClient) Snapshot(context.Context) (io.ReadCloser, error) {
 	if !f.compacted {
-		return nil, errors.New(LegacyDiagnostic + `: key "/old" revision 2`)
+		return nil, errors.New(LegacyDiagnostic + `: key "/old"; minimum physical compact revision 3`)
 	}
 	return io.NopCloser(bytes.NewReader(f.snapshotBytes)), nil
 }
@@ -64,7 +64,8 @@ func TestRunCompactsOnlyAfterExactIdentityConfirmationAndPublishes(t *testing.T)
 	result, code, err := runWithClient(context.Background(), config, &log, client)
 	require.NoError(t, err)
 	require.Zero(t, code)
-	require.Equal(t, int64(41), client.compactRev)
+	require.Equal(t, int64(3), client.compactRev)
+	require.Equal(t, "3", result.CompactRevision)
 	require.Equal(t, "remediated", result.SnapshotStatus)
 	require.Equal(t, artifact, requireFileBytes(t, output))
 	require.Contains(t, log.String(), "snapshot_status=remediated")
