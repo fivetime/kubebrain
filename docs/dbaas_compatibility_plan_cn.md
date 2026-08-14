@@ -49858,6 +49858,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   进入新 follower proxy 分支而非偶然全部命中 leader。三个 checkpoint available=1，endpoint health
   可提交 proposal，AlarmList 为空。
 
+- A4611 对 A4610 邻接的 follower RangeStream 路由做三成员 upstream 复核，没有为制造提交而修改
+  生产 handler。单节点 reference 下，RangeStream common shapes、并发写 pinning 与 64-case generated
+  current/historical/limit/KeysOnly/CountOnly/serializable 矩阵连续 3/3 通过（总计 12.721 秒）。源码对照
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::checkRangeStreamRequest` 还确认 custom sort 与四类 revision
+  filter 的 `Unimplemented` 是 upstream 明确契约，不是 KubeBrain 遗漏。
+
+  随后使用 `run-direct-moveleader-differential.sh` 启动三个独立 reference member；runner 在启动前分别
+  校验 etcd 与 etcdctl provenance 为
+  `5cd9f4ee13801e18825d661e5005ae599460bc3a`，并要求 reference/current 两边都呈现同一 cluster ID、
+  三个唯一 member ID、唯一且在集合内的 leader。三个 KubeBrain Pod 通过独立本地转发直连，不经过
+  NodePort。`RangeStreamFollower` 和 decoded-boundary large-value RangeStream 各连续 3/3 通过，总计
+  37.306 秒；因此 follower 的 current/historical header、chunk/terminal envelope、large-value 边界与
+  upstream 一致，不能用单节点结果外推的证据缺口已补齐。runner 成功后清理三个 reference 数据目录与
+  进程，本轮继续使用 `kubebrain:a4610-c96c08cc`，无需重建相同二进制。
+
+  同轮 compare-only Txn 矩阵经共享 NodePort 立即跟随写入时出现一次预期陈旧读：连接固定到 follower，
+  写由 leader 转发确认，但 fully-serializable、无 mutation 的 Compare Txn 可读取约一秒前 checkpoint，
+  因而把新 key 视为不存在。该请求按 upstream `IsTxnSerializable` 定义允许读取 follower applied state，
+  不能拿单成员 reference 的即时新鲜结果要求线性化。直连当前 KubeBrain leader 后完整 Value/Version/
+  Create/Mod/Lease point+range Compare 矩阵连续 3/3 通过（1.90、1.95、1.82 秒）；nested/range compare、
+  validation/error ordering、IgnoreLease、interval 与 generated Put 也全部通过。需要 read-your-writes 的
+  客户端必须使用默认 non-serializable Range/Txn 或显式线性屏障，不得把 A4610 的“已指定且被误判为
+  future 的历史 revision”修复扩大成所有 serializable latest 读强制代理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
