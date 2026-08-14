@@ -1648,6 +1648,17 @@ func (m *leaseManager) leaseLeaderUnavailable(op string) error {
 }
 
 func (m *leaseManager) restoreLeases(ctx context.Context) error {
+	// Constructor recovery runs before this replica participates in election.
+	// Pin both metadata prefixes to one TiKV TSO snapshot without pretending the
+	// replica is leader. This state is disposable and never activates primary
+	// workers; ReloadLeases rereads it through the fenced snapshot path on
+	// promotion.
+	timestamp, err := m.srv.backend.GetFollowerSnapshotTimestamp(ctx)
+	if err != nil {
+		return err
+	}
+	ctx = storage.WithSnapshotTimestamp(ctx, timestamp)
+	ctx = storage.WithSnapshotIteratorFallback(ctx)
 	records, attachments, _, _, err := m.loadLeaseRecords(ctx)
 	if err != nil {
 		return err

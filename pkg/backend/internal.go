@@ -82,6 +82,10 @@ func (b *backend) GetSnapshotTimestamp(ctx context.Context) (uint64, error) {
 	return b.kv.GetTimestampOracle(ctx)
 }
 
+func (b *backend) GetFollowerSnapshotTimestamp(ctx context.Context) (uint64, error) {
+	return b.kv.GetTimestampOracle(ctx)
+}
+
 func (b *backend) InternalPut(ctx context.Context, key, value []byte) error {
 	unlock := b.lockLogicalWrite(ctx)
 	defer unlock()

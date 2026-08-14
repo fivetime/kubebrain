@@ -103,6 +103,20 @@ func TestFenceAdmitRejectsWhenNotLeadingFresh(t *testing.T) {
 	ast.ErrorIs(b.fenceAdmit(ctx), ErrLeadershipFenced)
 }
 
+func TestFollowerSnapshotTimestampDoesNotRequireLeadership(t *testing.T) {
+	b, _, closer := newFenceTestBackend(t)
+	defer closer()
+	b.SetLeadershipFence(func() (uint64, bool) { return 7, false })
+
+	_, err := b.GetSnapshotTimestamp(context.Background())
+	require.ErrorIs(t, err, ErrLeadershipFenced,
+		"the authoritative snapshot path must remain fenced")
+	timestamp, err := b.GetFollowerSnapshotTimestamp(context.Background())
+	require.NoError(t, err)
+	require.NotZero(t, timestamp,
+		"disposable follower recovery must still pin all prefixes to one TSO snapshot")
+}
+
 // TestFenceAdmitPassesWhenEpochMatches verifies the happy path: the admit-time
 // epoch still matches and the node is still leading, so the write is admitted.
 func TestFenceAdmitPassesWhenEpochMatches(t *testing.T) {

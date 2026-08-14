@@ -104,6 +104,7 @@ type BackendShim interface {
 	InternalGet(ctx context.Context, key []byte) ([]byte, error)
 	InternalRange(ctx context.Context, prefix []byte) (map[string][]byte, error)
 	GetSnapshotTimestamp(ctx context.Context) (uint64, error)
+	GetFollowerSnapshotTimestamp(ctx context.Context) (uint64, error)
 	InternalPut(ctx context.Context, key, value []byte) error
 	InternalPutCorruptGuarded(ctx context.Context, key, value []byte) error
 	EnsureLeaseIncarnationFormatFence(ctx context.Context) error
@@ -332,6 +333,10 @@ func (b *backendShim) InternalRange(ctx context.Context, prefix []byte) (map[str
 
 func (b *backendShim) GetSnapshotTimestamp(ctx context.Context) (uint64, error) {
 	return b.backend.GetSnapshotTimestamp(ctx)
+}
+
+func (b *backendShim) GetFollowerSnapshotTimestamp(ctx context.Context) (uint64, error) {
+	return b.backend.GetFollowerSnapshotTimestamp(ctx)
 }
 
 func (b *backendShim) InternalPut(ctx context.Context, key, value []byte) error {

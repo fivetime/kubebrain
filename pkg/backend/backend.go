@@ -96,6 +96,11 @@ type Backend interface {
 	// one cross-prefix snapshot rather than a sequence of independently current
 	// scans.
 	GetSnapshotTimestamp(ctx context.Context) (uint64, error)
+	// GetFollowerSnapshotTimestamp returns a TiKV snapshot timestamp without
+	// requiring local leadership or excluding writes. It is only for rebuilding
+	// disposable follower-side indexes: promotion must discard that snapshot and
+	// call GetSnapshotTimestamp again under the leadership fence.
+	GetFollowerSnapshotTimestamp(ctx context.Context) (uint64, error)
 	InternalPut(ctx context.Context, key, value []byte) error
 	// InternalPutCorruptGuarded writes internal metadata as an etcd operation
 	// covered by the CORRUPT applier boundary, without consuming an MVCC revision.
