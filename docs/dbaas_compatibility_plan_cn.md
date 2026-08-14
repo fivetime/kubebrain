@@ -50239,6 +50239,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884076`、term 651。主 PD 3/3、TiKV 3/3 Ready 且零重启；
   restore 验证 Pod 不计入主集群副本，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
 
+- A4627 修复 Watch PUT/CREATE 的双 revision 完整性缺口。对照固定 upstream
+  `server/storage/mvcc/watchable_store_txn.go`：write transaction 生成事件时直接把 transaction revision 写入
+  `Event.Kv.ModRevision`；KubeBrain 的 backend event 同时携带 `Event.Revision` 与 `Event.Kv.Revision`。原转换
+  先按 `Kv.Revision` 校验 inline lifecycle，随后无条件用 `Event.Revision` 覆盖公开 ModRevision；损坏输入若
+  两者不同，就能在校验后产生另一套未经验证的生命周期。生产提交 `c4036d4f` 在共享 Watch 入口要求
+  CREATE/PUT 的 key revision 非零，且两个非零 revision 必须相等；legacy producer 省略 Event.Revision 时仍
+  允许从 Kv.Revision fallback。DELETE 不套用该等式，因为它有意用 Event.Revision 表达删除 revision、用
+  Kv.Revision 定位被删 PrevKV。
+
+  确定性 RED 证明旧实现接受 revision 9/event + revision 8/KV 的 CREATE 与 PUT，以及零 key revision；修复后
+  focused 连续 20 轮 244.020 秒、race 10 轮 9.377 秒、`go vet ./pkg/server/etcd` 与完整
+  `pkg/server/etcd` 179.690 秒通过。真实 TiKV 正向 Watch 在唯一 key 上观察 CREATE、PUT、DELETE 连续 revision
+  `468126003565884077/078/079`：CREATE/PUT 的公开 ModRevision 与响应 revision 相等，PUT PrevKV 为 version 1，
+  DELETE tombstone 只携带删除 revision 且 PrevKV 为 version 2。损坏事件是内部负向注入，未声称由健康 TiKV
+  自然产生；现场验证证明新门禁不误拒绝合法 TiKV event stream，验证键已删除。
+
+  可追溯镜像 `kubebrain:a4627-c4036d4f` 内嵌完整 SHA
+  `c4036d4f6f5dc7d0a92953b8049a574d6fb1bfb1`、版本 `a4627`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T12:28:42Z`；本地 OCI manifest list 为
+  `sha256:6cc7eeb796d5afa6c45a77d296f6c71b5aeb39f0a4de297bb267743579a555ca`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:9015ac7464c92561888cd5be960c0f7b52298144023c53835e7aa1ee7a59f0a9`。
+  主 StatefulSet 顺序滚动完成，三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList
+  为空，最终 revision/index/applied index 均为 `468126003565884079`、term 653。主 PD 3/3、TiKV 3/3 Ready
+  且零重启，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/revision disagreement。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
