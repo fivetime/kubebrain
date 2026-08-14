@@ -110,6 +110,23 @@ series 各恰好三份，并比较所有副本的 NOSPACE 与 backend quota 值�
 
 ## TiKV/PD 升级完成门槛
 
+### etcd 大 Key 的 TiKV 合同
+
+KubeBrain 继续把原始 user key 嵌入 revision、object 和 event 物理 Key，因此专用 TiKV
+集群必须显式配置 `[storage] max-key-size = 2097152`。该 2 MiB 上限覆盖 KubeBrain
+约 1.5 MiB 的公开请求预算及物理编码开销；缺失或更小的值必须让实例 readiness
+fail closed，不能依赖 TiKV 默认值。超过该托管合同的物理 Key 会在客户端提交前返回
+`ResourceExhausted`，不得截断、哈希替换或以成功响应丢失数据。
+
+生产构建使用仓库内 `third_party/tikv-client-go` 替换 upstream v2.0.7，并仅把事务
+memdb 的 Key 长度从 `uint16` 扩为 `uint32`。未打补丁的 client-go 会让超过 65535
+字节的 Key 在 memdb arena 中按模 65536 截断，即使 TiKV 已放宽 server limit 也可能
+返回 Commit 成功并持久化错误物理 Key。升级该 fork 时必须重新审计上游对应字段、重跑
+独立 module 的 build/vet/test 与 govulncheck、构建生产镜像，并在真实 TiKV 上完成至少
+一个 600 KiB 物理 Key 的 Put/Get/Iter 字节级 round-trip；仅有 mock 或 KubeBrain RPC
+测试不能证明 transport 安全。若未来 upstream 正式修复，应以等价真实门禁替换本地
+patch，不能同时保留两套分叉实现。
+
 TiDB Operator 通过 StatefulSet `rollingUpdate.partition` 逐成员协调 PD、TiKV 升级。
 `kubectl rollout status` 在只更新一个成员时也可能输出
 `partitioned roll out complete`，不能作为 DBaaS 控制面宣告升级完成的依据。发布或
@@ -573,9 +590,10 @@ manifest 前，应从每个 build stage/final image 提取全部可执行文件�
 再合并 manifest list。
 
 CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.5；Dockerfile 同时固定
-精确 patch tag 和不可变 digest。根模块及 objectstore、etcd-client-compat、bigstream、loadgen
-四个独立模块都必须声明 `toolchain go1.26.5`，让 `GOTOOLCHAIN=auto` 的本地 build/test/scan 也不能
-静默退回存在已知标准库漏洞的 1.26.0。CI 使用固定 `govulncheck` 版本扫描全部五个模块的可达漏洞，
+精确 patch tag 和不可变 digest。根模块及 objectstore、etcd-client-compat、bigstream、loadgen、
+third_party/tikv-client-go 五个独立模块都必须声明 `toolchain go1.26.5`，让
+`GOTOOLCHAIN=auto` 的本地 build/test/scan 也不能静默退回存在已知标准库漏洞的 1.26.0。
+CI 使用固定 `govulncheck` 版本扫描全部六个模块的可达漏洞，
 使用固定 `staticcheck` 版本扫描生产模块，并使用固定 tag+digest 的
 ShellCheck 镜像检查全部 Git 跟踪 shell 脚本的 warning/error；任一命中均阻止发布。CI 构建 TiKV 和
 Badger image 时必须显式传入 `TARGETARCH=amd64` 及上述三项 metadata，并回读 OCI

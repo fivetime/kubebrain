@@ -49757,6 +49757,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `65532:65532`）已滚动到独立 TiKV/PD 三副本，全部 Ready、零重启，cap 保持 5,000,000。compat 前缀为
   0，临时 reference 数据已移入可恢复的用户 Trash，未留下 reference 监听端口。
 
+- A4607 关闭 A4606 暂记的 etcd-sized key 阻断，并修正当时“必须先引入间接 key schema”的推断。
+  真实链路有两个独立限制：TiKV v8.5.3 默认 `storage.max-key-size=8192` 会明确拒绝大物理 Key；把它
+  提高到 2 MiB 后，stock `github.com/tikv/client-go/v2@v2.0.7` 的 transaction memdb 又因
+  `memdbNode.klen uint16` 在 arena 写入时发生模 65536 截断。后者的确定性 RED 是 600 KiB 物理 Key
+  Commit 返回成功、精确 Get 返回 NotFound、iterator 却发现约 24 KiB 且以 payload 中段结尾的错误 Key。
+  2026-08-14 审计 client-go master 仍保留同类 `uint16` 长度，因此单纯升级依赖不能消除风险。
+
+  提交 `368f656c` 把 dev/production TidbCluster 的 TiKV `max-key-size` 固定为 2,097,152，并让生产
+  readiness 逐 Pod 校验渲染配置；现场三个 TiKV Pod 已滚动到同一 revision，配置和日志均确认生效。
+  提交 `f518c4b9` 先在所有 TiKV atomic mutation 入口加入 fail-closed Key 大小门禁并把错误映射为
+  `ResourceExhausted`，防止旧 client 静默损坏。提交 `8a6171e4` 随后以本地 module replace 固定
+  client-go v2.0.7 fork，把 RBT memdb 的 `klen` 与 arena header 扩为 `uint32`，并把门禁提升到托管
+  2 MiB 物理合同；真实 TiKV 上 600 KiB 物理 Key 的 Put/Get/Iter 已逐字节通过。该方案在公开请求
+  仍受约 1.5 MiB 限制时保留现有 MVCC 排序、Watch、Lease、Txn、snapshot 编码，不需要为当前支持窗口
+  引入 mixed-version 间接 schema；超过 2 MiB 的未来合同仍需重新设计或提高并验证整条 TiKV/Raft/gRPC
+  链路，不能由本项外推。
+
+  生产镜像首次构建还暴露 root module replace 在 `go mod download` 前不可见；`d246c9a6` 让 Dockerfile
+  先复制 fork 的 go.mod/go.sum。可追溯镜像 `kubebrain:a4607-d246c9a6` 内嵌完整 SHA
+  `d246c9a62352252a751b2fbe7c2210b04638c20e`，OCI manifest list
+  `sha256:517d7ef6720ba31bb31f23db3c71923d22c35b453edc0e872ec30ff76983df21`，运行用户
+  `65532:65532`；滚动与随后完整重启后 KubeBrain 三副本均 Ready、零重启。旧 client 复现实验留下的
+  35 个带固定测试前缀的截断物理 Key 及其 20 个 witness 经只读 inventory、严格长度/尾部/revision
+  断言后一次原子清理；两个 sticky CORRUPT alarm 解除后完整重启没有重新激活，三个 endpoint health
+  均可提交 proposal。
+
+  提交 `16caebdb` 将永久差分 fixture 从临时的 220×7 KiB 恢复为 3×600 KiB。对固定
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 与上述在线 KubeBrain，真实 Put、首键 update、
+  current/historical RangeStream、完整 key/value SHA-256、Count/More 和 DeleteRange cleanup 同轮
+  4.25 秒通过。CI 同时把本地 fork 纳入独立 build/vet/test 和 govulncheck；维护风险与真实 TiKV
+  round-trip 升级门禁已写入生产手册。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
