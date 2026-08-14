@@ -49355,6 +49355,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   预读的全租户 KV 内存物化，但不关闭其全租户磁盘扫描延迟；要进一步优化需证明一种兼容 legacy/raw 编码碰撞的
   更窄安全 scan interval 或引入迁移后的转义编码/index，不能以破坏 etcd 任意字节 key 顺序换性能。
 
+- A4590 为 A4589 的 decoded-boundary 路径加入经证明的窄 raw scan interval。提交 `4e043086` 以
+  `{magic}+start` 作为 inclusive lower bound：任何匹配 user key 的 legacy object 编码都必然不小于该前缀；
+  对普通有界范围，仅当 `end` 的所有 proper prefix 都不落入 `[start,end)` 时，才以 `{magic}+end` 作为
+  exclusive upper bound。这个限制不可省略，例如 `[a,a\x00z)` 包含 user key `a`，而其后接 `$revision`
+  的编码可能排在 raw upper bound 之后；此类 end-ancestor 形态继续保守扫描完整 object keyspace。
+  from-key 请求则从安全 lower bound 扫到 object keyspace 末端。`RangeFiltered` 与 `CountFiltered` 共用该
+  边界选择，因此普通 List、RangeStream、DeleteRange 预读和 CountOnly 同时减少 TiKV 读取量，worker 内
+  的 decoded user-range 过滤仍作为最终正确性门禁。
+
+  新增穷举模型遍历字节表 `{0,'#','$','%','a',0xff}`、长度 0--2 的短 key 与包含分隔符高字节碰撞的四种
+  revision，对每个 `start < end` 证明所有语义匹配 key 的编码都未逸出计算区间；另固定 `$prefix` 走窄区间、
+  `[a,a\x00z)` 走完整回退。聚焦模型连续 20 轮约 30 万次断言在 7.572 秒通过，`pkg/backend/...` 全树
+  44.480 秒、完整 `pkg/server/etcd` 170.787 秒、compat 模块均通过。
+
+  精确镜像 `kubebrain:a4590-4e043086`（内嵌 SHA
+  `4e043086694bdf7c1179ad8e401a0440641ce705`，构建时间 `2026-08-13T23:54:01Z`，OCI manifest list
+  `sha256:c177e323d9537e4cdb11850bc99a1060b7b6e824aa19c8d39da1a4023d2b2669`，运行用户
+  `65532:65532`）滚动到三副本。对精确 upstream 的 follower low-boundary Range/CountOnly 聚焦差分连续
+  20/20 通过（40.131 秒，单轮约 1.95--2.15 秒），相较 A4589 的 146.936 秒和最慢 12.25 秒，证明实际
+  TiKV scan 已被收窄；完整 direct-moveleader profile 39.393 秒通过，其中 RangeStream follower 场景
+  2.04 秒。该证据关闭 `$prefix` 等可安全表示范围的全租户磁盘扫描；end ancestor 落在请求范围内的异常形态
+  仍保留完整扫描，若要关闭需多区间扫描、辅助索引或编码迁移，不能把当前证明外推为所有低字节范围均已优化。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
