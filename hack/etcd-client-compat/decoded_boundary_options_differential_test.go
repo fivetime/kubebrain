@@ -31,6 +31,13 @@ type decodedBoundaryLargeValueProjection struct {
 	More   bool
 }
 
+type decodedBoundaryLargeKeyProjection struct {
+	KeyHashes   [][sha256.Size]byte
+	ValueHashes [][sha256.Size]byte
+	Count       int64
+	More        bool
+}
+
 func TestDecodedBoundaryRangeOptionsDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -63,6 +70,75 @@ func TestDecodedBoundaryLargeValueRangeStreamDifferentialAgainstReferenceEtcd(t 
 	lower := []byte("$" + testPrefix(t) + "/decoded-large-values")
 	referenceOutcome := runDecodedBoundaryLargeValueStreamScenario(t, reference, lower)
 	require.Equal(t, referenceOutcome, runDecodedBoundaryLargeValueStreamScenario(t, candidate, lower))
+}
+
+func TestDecodedBoundaryLargeKeyRangeStreamDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run decoded-boundary large-key stream differential tests")
+	}
+	lower := []byte("$" + testPrefix(t) + "/decoded-large-keys/")
+	referenceOutcome := runDecodedBoundaryLargeKeyStreamScenario(t, reference, lower)
+	require.Equal(t, referenceOutcome, runDecodedBoundaryLargeKeyStreamScenario(t, compatEndpoint(t), lower))
+}
+
+func runDecodedBoundaryLargeKeyStreamScenario(
+	t *testing.T, endpoint string, lower []byte,
+) map[string]decodedBoundaryLargeKeyProjection {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	end := append(append([]byte(nil), lower...), 0xff)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_, cleanupErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: lower, RangeEnd: end})
+		require.NoError(t, cleanupErr)
+	})
+
+	keys := make([][]byte, 3)
+	var historicalRevision int64
+	for index := range keys {
+		keys[index] = append(append(append([]byte(nil), lower...), byte(index+1)), bytes.Repeat([]byte{'z'}, 600<<10)...)
+		response, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{
+			Key: keys[index], Value: []byte(fmt.Sprintf("value-%d", index)),
+		})
+		require.NoError(t, putErr)
+		historicalRevision = response.Header.Revision
+	}
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keys[0], Value: []byte("current")})
+	require.NoError(t, err)
+
+	collect := func(revision int64) decodedBoundaryLargeKeyProjection {
+		stream, streamErr := kv.RangeStream(ctx, &etcdserverpb.RangeRequest{Key: lower, RangeEnd: end, Revision: revision})
+		require.NoError(t, streamErr)
+		projection := decodedBoundaryLargeKeyProjection{}
+		for {
+			response, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				break
+			}
+			require.NoError(t, recvErr)
+			rangeResponse := response.GetRangeResponse()
+			projection.Count = rangeResponse.Count
+			projection.More = rangeResponse.More
+			for _, item := range rangeResponse.Kvs {
+				projection.KeyHashes = append(projection.KeyHashes, sha256.Sum256(item.Key))
+				projection.ValueHashes = append(projection.ValueHashes, sha256.Sum256(item.Value))
+			}
+		}
+		require.Len(t, projection.KeyHashes, len(keys))
+		return projection
+	}
+	return map[string]decodedBoundaryLargeKeyProjection{
+		"current":    collect(0),
+		"historical": collect(historicalRevision),
+	}
 }
 
 func decodedBoundaryDirectFollower(t *testing.T, endpoints []string) string {
