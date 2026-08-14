@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -102,18 +101,12 @@ func runDecodedBoundaryLargeKeyStreamScenario(
 		require.NoError(t, cleanupErr)
 	})
 
-	// TiKV v7.5 limits physical keys to 8KiB. Use enough 7KiB user keys to
-	// exceed the 1.5MiB ordering-page budget without conflating this pagination
-	// test with the separately tracked etcd-vs-TiKV oversized-key schema gap.
-	keys := make([][]byte, 220)
+	// Three etcd-sized keys exceed the ordering page's byte budget while still
+	// fitting the managed TiKV 2MiB physical-key contract.
+	keys := make([][]byte, 3)
 	var historicalRevision int64
 	for index := range keys {
-		keys[index] = make([]byte, 7<<10)
-		copy(keys[index], lower)
-		binary.BigEndian.PutUint16(keys[index][len(lower):], uint16(index+1))
-		for offset := len(lower) + 2; offset < len(keys[index]); offset++ {
-			keys[index][offset] = 'z'
-		}
+		keys[index] = append(append(append([]byte(nil), lower...), byte(index+1)), bytes.Repeat([]byte{'z'}, 600<<10)...)
 		response, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{
 			Key: keys[index], Value: []byte(fmt.Sprintf("value-%d", index)),
 		})
