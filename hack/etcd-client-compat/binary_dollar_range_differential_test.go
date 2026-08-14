@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
@@ -26,6 +27,7 @@ type dollarKeyRangeOutcome struct {
 	EscapedCount    int64
 	EscapedStream   int64
 	ParallelCount   int64
+	ParallelOnly    int64
 	ParallelStream  int64
 	BoundedCount    int64
 	BoundedStream   int64
@@ -226,7 +228,7 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: escapedChild, Value: []byte("escaped-child")})
 	require.NoError(t, err)
 	for index, key := range parallelKeys {
-		_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte{byte(index)}})
+		_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: bytes.Repeat([]byte{byte(index + 1)}, 64<<10)})
 		require.NoError(t, err)
 	}
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: boundedLower, Value: []byte("bounded")})
@@ -288,6 +290,12 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 	parallelResponse, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: parallelLower, RangeEnd: parallelEnd})
 	require.NoError(t, err)
 	require.Len(t, parallelResponse.Kvs, len(parallelKeys))
+	parallelCountOnly, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+		Key: parallelLower, RangeEnd: parallelEnd, CountOnly: true,
+	})
+	require.NoError(t, err)
+	require.EqualValues(t, len(parallelKeys), parallelCountOnly.Count)
+	require.Empty(t, parallelCountOnly.Kvs)
 	parallelStreamResponse, err := kv.RangeStream(ctx,
 		&etcdserverpb.RangeRequest{Key: parallelLower, RangeEnd: parallelEnd})
 	require.NoError(t, err)
@@ -321,7 +329,7 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 		StreamCount: streamCount, AncestorCount: ancestorResponse.Count,
 		AncestorStream: ancestorStream, EscapedCount: escapedResponse.Count,
 		EscapedStream: escapedStream, BoundedCount: boundedResponse.Count,
-		ParallelCount: parallelResponse.Count, ParallelStream: parallelStream,
+		ParallelCount: parallelResponse.Count, ParallelOnly: parallelCountOnly.Count, ParallelStream: parallelStream,
 		BoundedStream: boundedStream,
 	}
 }
