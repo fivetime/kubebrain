@@ -1395,6 +1395,37 @@ func TestMaintenanceSnapshotClassifiesInvalidRetainedMVCCLifecycle(t *testing.T)
 	require.Empty(t, stream.responses)
 }
 
+type ambiguousThenInvalidLifecycleSnapshotBackend struct {
+	BackendShim
+}
+
+func (b *ambiguousThenInvalidLifecycleSnapshotBackend) GetCurrentRevision() uint64 { return 5 }
+
+func (b *ambiguousThenInvalidLifecycleSnapshotBackend) SnapshotHistoryStreamChan(
+	_ context.Context, revision uint64,
+) (<-chan backend.SnapshotHistoryChunk, error) {
+	chunks := make(chan backend.SnapshotHistoryChunk, 2)
+	chunks <- backend.SnapshotHistoryChunk{Revision: revision, Records: []backend.SnapshotHistoryRecord{
+		{Key: []byte("ambiguous"), Value: []byte("old"), CreateRevision: 2, ModRevision: 2, Version: 1},
+		{Key: []byte("ambiguous"), Value: []byte("current"), CreateRevision: 2, ModRevision: 3, Version: 2, LeaseKnown: true, Current: true},
+		{Key: []byte("invalid-lifecycle"), Value: []byte("v1"), CreateRevision: 4, ModRevision: 4, Version: 1, LeaseKnown: true},
+		{Key: []byte("invalid-lifecycle"), Value: []byte("v2"), CreateRevision: 5, ModRevision: 5, Version: 1, LeaseKnown: true, Current: true},
+	}}
+	chunks <- backend.SnapshotHistoryChunk{Revision: revision, Done: true}
+	close(chunks)
+	return chunks, nil
+}
+
+func TestMaintenanceSnapshotDoesNotLetLegacyRemediationMaskCorruptHistory(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.backend = &ambiguousThenInvalidLifecycleSnapshotBackend{BackendShim: server.backend}
+
+	err := server.buildSnapshot(context.Background(), filepath.Join(t.TempDir(), "snapshot.db"))
+	require.ErrorIs(t, err, etcdsnapshot.ErrInvalidMVCCLifecycle)
+	require.NotErrorIs(t, err, errSnapshotHistoricalLeaseUnknown)
+}
+
 type incompleteOrderedHistorySnapshotBackend struct {
 	BackendShim
 }

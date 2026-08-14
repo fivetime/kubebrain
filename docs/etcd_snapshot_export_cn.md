@@ -16,7 +16,9 @@ durable key→lease attachment 精确恢复当前版本；仍保留且无法判�
 snapshot fail closed，且诊断会扫描完整固定历史，报告能清除全部含糊版本的最小 physical Compact
 revision。该边界取每个含糊版本的直接后继版本再求最大值，因为 compact 点自身会作为历史锚点保留；
 修复器不会再一律 compact 到当前 revision。物理 Compact 清除这些含糊版本后才恢复可用，禁止伪造
-lease=0。
+lease=0。为了防止该诊断掩盖同一 retained history 后部的 corruption，服务端只在私有、永不发布的
+builder 中以 lease=0 占位，仍完整执行 MVCC lifecycle、transaction ordering 和 metadata 校验；任何其他
+结构错误优先返回，修复器因此不会对同时损坏的数据执行不可逆 compact。
 lease 的倒计时按官方 etcd 的持久 checkpoint 语义恢复，而不是逐秒保存抓取瞬间的实时 TTL；
 auth token 会像官方 etcd 重启后一样失效，客户端必须用保留的用户凭据重新认证。输出仍不
 替代 TiKV 物理 PITR。

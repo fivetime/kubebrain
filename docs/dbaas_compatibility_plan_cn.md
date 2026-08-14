@@ -50041,6 +50041,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   减少必要 remediation 的历史损失，但不会伪造永久缺失的 lease provenance，Snapshot 矩阵仍保持
   “部分兼容”。
 
+- A4619 修复 A4618 继续全流扫描但停止 builder 校验可能掩盖后部 corruption 的安全缺口。若 retained
+  history 同时含旧 lease provenance 歧义和更靠后的 MVCC lifecycle/transaction ordering/metadata 损坏，
+  只返回 legacy diagnostic 会让修复 Operation 先执行不可逆 compact，之后才发现它根本不是单纯的升级
+  遗留问题。现在未知历史 lease 只在私有且永不发布的 bbolt builder 中以 0 占位，所有记录仍进入同一
+  `Append/Finish` 完整验证；非 lease 结构错误优先返回，只有其余历史全部自洽时才发布带最小 compact
+  revision 的 legacy `FailedPrecondition`。确定性回归把歧义行放在合法 generation、把非法 lifecycle 放在
+  后一 key，固定最终错误为 `ErrInvalidMVCCLifecycle` 且不含 legacy sentinel；纯 legacy remediation 边界
+  回归继续通过。该占位值不会离开私有临时文件，也不会被 gRPC Snapshot 或修复制品发布。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

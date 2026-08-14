@@ -230,13 +230,11 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 				}
 				pendingAmbiguousKey = append(pendingAmbiguousKey[:0], record.Key...)
 				pendingAmbiguousRevision = record.ModRevision
-				continue
-			}
-			if firstAmbiguousKey != nil {
-				// Once provenance is known to be incomplete, the private builder
-				// cannot produce an artifact. Continue only to calculate the safe
-				// remediation boundary; do not feed it a history with omitted rows.
-				continue
+				// Use lease=0 only inside this private artifact so the builder can
+				// continue validating lifecycle, transaction ordering, and metadata.
+				// The artifact is never published: after Finish succeeds below, the
+				// authoritative legacy-provenance error is still returned.
+				record.Lease = 0
 			}
 			if record.Current {
 				// Legacy rows do not carry a per-version lease. Reconcile them
@@ -298,6 +296,9 @@ func (s *RPCServer) buildSnapshotOnce(ctx context.Context, path string) (retErr 
 							"legacy historical row %q revision %d has no successor",
 							pendingAmbiguousKey, pendingAmbiguousRevision,
 						)
+					}
+					if err = builder.Finish(); err != nil {
+						return fmt.Errorf("validate non-lease etcd snapshot history: %w", err)
 					}
 					return fmt.Errorf(
 						"%w: key %q; minimum physical compact revision %d",

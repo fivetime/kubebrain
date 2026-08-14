@@ -3836,7 +3836,9 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
     hack/backup/remediate-legacy-snapshot-history.sh
   ```
 
-  工具只在预检精确命中包含最小安全边界的 legacy lease diagnostic 时调用同步 `compact --physical`，其他 Snapshot
+  工具只在预检精确命中包含最小安全边界的 legacy lease diagnostic 时调用同步 `compact --physical`。服务端即使
+  已发现 legacy 行，也会先用不可发布的占位 lease 完整跑完其余 MVCC/order/metadata 校验；后部 corruption
+  优先返回，不能被 legacy remediation 掩盖。其他 Snapshot
   失败和已健康实例均拒绝 mutation；压缩提交后才下载新制品，并通过官方 `etcdutl snapshot status`
   才原子发布 `OUTPUT`。上述直调只用于 break-glass；生产默认入口是持久审批 Operation：
 
