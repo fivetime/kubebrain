@@ -2643,6 +2643,42 @@ func TestLeaseKeepAliveRejectsDemotionWhileWaitingForRenewal(t *testing.T) {
 	require.Empty(t, stream.sent)
 }
 
+func TestLeaseCheckpointLockDoesNotSerializeUnrelatedLeases(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	unlockFirst := server.leaseManager.lockLeaseCheckpoint(7003)
+	differentLease := make(chan struct{})
+	go func() {
+		unlock := server.leaseManager.lockLeaseCheckpoint(7004)
+		close(differentLease)
+		unlock()
+	}()
+	select {
+	case <-differentLease:
+	case <-time.After(time.Second):
+		t.Fatal("an unrelated lease was serialized behind the held checkpoint lock")
+	}
+
+	sameLease := make(chan struct{})
+	go func() {
+		unlock := server.leaseManager.lockLeaseCheckpoint(7003)
+		close(sameLease)
+		unlock()
+	}()
+	select {
+	case <-sameLease:
+		t.Fatal("the same lease entered two checkpoint transitions concurrently")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockFirst()
+	select {
+	case <-sameLease:
+	case <-time.After(time.Second):
+		t.Fatal("the same lease did not resume after its checkpoint transition completed")
+	}
+}
+
 func TestLeaseKeepAliveRejectsStaleOrChangedEpochWhileWaitingForRenewal(t *testing.T) {
 	tests := []struct {
 		name      string

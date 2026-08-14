@@ -1056,11 +1056,11 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 }
 
 func (m *leaseManager) refreshLeaseUnrestricted(ctx context.Context, id int64, epoch uint64) (int64, error) {
-	m.leaseCheckpointMu.Lock()
+	unlockCheckpoint := m.lockLeaseCheckpoint(id)
 	writeLocked := m.leaseWriteMu.TryRLock()
 	if !writeLocked && m.leaseTeardowns.Load() != 0 {
 		if ttl, renewed := m.refreshUncheckpointedLeaseDuringUnrelatedTeardown(id, epoch); renewed {
-			m.leaseCheckpointMu.Unlock()
+			unlockCheckpoint()
 			return ttl, nil
 		}
 	}
@@ -1075,13 +1075,28 @@ func (m *leaseManager) refreshLeaseUnrestricted(ctx context.Context, id int64, e
 	// successful renewal prevents expiry from observing the old deadline.
 	return m.refreshLeaseHoldingLocks(ctx, id, epoch, m.leaseWriteMu.RUnlock, m.leaseWriteMu.RLock, nil, func() {
 		m.leaseWriteMu.RUnlock()
-		m.leaseCheckpointMu.Unlock()
+		unlockCheckpoint()
 	})
+}
+
+// lockLeaseCheckpoint serializes persisted remaining-TTL transitions for one
+// lease while allowing unrelated leases to renew concurrently. Stripes keep the
+// lock set bounded; collisions only reduce concurrency and never correctness.
+// The barrier's read side also prevents reload/withdrawal from replacing the
+// complete in-memory lease generation while a transition is in flight.
+func (m *leaseManager) lockLeaseCheckpoint(id int64) func() {
+	m.leaseCheckpointMu.RLock()
+	stripe := &m.leaseCheckpointLocks[uint64(id)%uint64(len(m.leaseCheckpointLocks))]
+	stripe.Lock()
+	return func() {
+		stripe.Unlock()
+		m.leaseCheckpointMu.RUnlock()
+	}
 }
 
 // refreshUncheckpointedLeaseDuringUnrelatedTeardown is the narrow fast path
 // corresponding to etcd lessor.Renew's in-memory l.refresh(0). The caller holds
-// leaseCheckpointMu and has proved that the exclusive global writer is a lease
+// this lease's checkpoint stripe and has proved that the exclusive global writer is a lease
 // teardown. A teardown of this same lease can only reach backend I/O after its
 // deadline has expired (natural expiry) or may linearize after this concurrent
 // renew (explicit revoke); teardown of another lease cannot affect this state.
@@ -1110,23 +1125,23 @@ func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authC
 	// binding publication. Hold the exclusive side while checking every current
 	// key and refreshing the deadline, so a protected attachment cannot commit
 	// between authorization and renewal.
-	m.leaseCheckpointMu.Lock()
+	unlockCheckpoint := m.lockLeaseCheckpoint(id)
 	m.leaseWriteMu.Lock()
 	if err := m.authorizeLeaseKeys(ctx, caller, m.keysForLease(id), authpb.WRITE); err != nil {
 		m.leaseWriteMu.Unlock()
-		m.leaseCheckpointMu.Unlock()
+		unlockCheckpoint()
 		return 0, err
 	}
 	return m.refreshLeaseHoldingLocks(ctx, id, epoch, m.leaseWriteMu.Unlock, m.leaseWriteMu.Lock, func() error {
 		return m.authorizeLeaseKeys(ctx, caller, m.keysForLease(id), authpb.WRITE)
 	}, func() {
 		m.leaseWriteMu.Unlock()
-		m.leaseCheckpointMu.Unlock()
+		unlockCheckpoint()
 	})
 }
 
 // refreshLeaseHoldingLocks renews a lease while the caller holds
-// leaseCheckpointMu and either side of leaseWriteMu. A checkpoint clear drops
+// its checkpoint stripe and either side of leaseWriteMu. A checkpoint clear drops
 // only leaseWriteMu while its guarded CAS is in flight so Revoke is never
 // blocked on a slow metadata write; lockWrite reacquires the same lock mode and
 // unlock releases both locks.
@@ -2222,7 +2237,7 @@ func (m *leaseManager) stopLeases() {
 }
 
 // clearLeaseStateHoldingCheckpointLock withdraws every primary-only lease
-// artifact while the caller holds leaseCheckpointMu. ReloadLeases uses it when
+// artifact while the caller holds leaseCheckpointMu exclusively. ReloadLeases uses it when
 // its end-of-load epoch check fails; calling stopLeases there would recursively
 // acquire the same mutex.
 func (m *leaseManager) clearLeaseStateHoldingCheckpointLock() {
@@ -2548,8 +2563,8 @@ func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Co
 	}
 	ctx := backend.WithLeadershipEpoch(workerCtx, epoch)
 
-	m.leaseCheckpointMu.Lock()
-	defer m.leaseCheckpointMu.Unlock()
+	unlockCheckpoint := m.lockLeaseCheckpoint(id)
+	defer unlockCheckpoint()
 	m.leaseWriteMu.RLock()
 	defer m.leaseWriteMu.RUnlock()
 

@@ -59,12 +59,15 @@ type leaseManager struct {
 	// its in-memory deadline without waiting for slow TiKV I/O, while preserving
 	// the global fence for reload, index repair, and ordinary KV mutations.
 	leaseTeardowns atomic.Int64
-	// leaseCheckpointMu orders periodic remaining-TTL persistence against the
-	// renewal that clears a checkpoint. Both may otherwise run under the shared
-	// leaseWriteMu and commit stale metadata out of order.
-	leaseCheckpointMu sync.Mutex
-	leaseMu           sync.Mutex
-	leaseID           int64
+	// leaseCheckpointMu excludes leadership reload/withdrawal from every
+	// in-flight checkpoint transition. Ordinary renew/checkpoint work holds its
+	// read side and is serialized only with the same lease by a bounded stripe
+	// below; a slow TiKV checkpoint for one lease must not starve unrelated
+	// short-TTL keepalives.
+	leaseCheckpointMu    sync.RWMutex
+	leaseCheckpointLocks [256]sync.Mutex
+	leaseMu              sync.Mutex
+	leaseID              int64
 	// automaticLeaseIDs uses etcd's member/time/counter layout once the static
 	// DBaaS member set is installed. Keeping the generator in an atomic pointer
 	// makes the configuration boundary explicit and lets direct/single-node
