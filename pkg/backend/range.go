@@ -65,6 +65,16 @@ func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.Get
 	if modRev > curRev {
 		curRev = modRev
 	}
+	if b.config.EnableEtcdCompatibility {
+		if validationErr := b.validateEventObjectValue(ctx, r.Key, modRev, val); validationErr != nil {
+			if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+				validationErr = b.persistWitnessedObjectCorruption(
+					ctx, r.Key, modRev, b.coder.EncodeObjectKey(r.Key, modRev), val, validationErr,
+				)
+			}
+			return nil, validationErr
+		}
+	}
 
 	resp = &proto.GetResponse{
 		Header: responseHeader(curRev),

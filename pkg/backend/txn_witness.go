@@ -468,6 +468,94 @@ func (b *backend) txnWitnessStillPresent(ctx context.Context, key, expected []by
 	return true, nil
 }
 
+// persistWitnessedObjectCorruption turns a point-read metadata failure into a
+// durable safety transition only when the exact object is covered by a complete
+// transaction witness. Legacy/unsealed and already-compacted revisions still
+// return DataLoss, but cannot create an alarm that Disarm is unable to prove.
+func (b *backend) persistWitnessedObjectCorruption(
+	ctx context.Context, userKey []byte, revision uint64, objectKey, expectedValue []byte, cause error,
+) error {
+	if revision == 0 || !errors.Is(cause, ErrInvalidMVCCMetadata) {
+		return cause
+	}
+	compactRevision, err := b.GetCompactRevisionFresh(ctx)
+	if err != nil || (compactRevision > 0 && revision < compactRevision) {
+		return cause
+	}
+
+	witnessKey := b.ks.EncodeInternalKey(txnWitnessLogicalKey(revision))
+	witnessRaw, err := b.kv.Get(ctx, witnessKey)
+	if err != nil {
+		return cause
+	}
+	if _, err := decodeTxnWitness(witnessRaw); err != nil {
+		return cause
+	}
+	iter, err := b.kv.Iter(ctx, b.ks.EventLogRangeStart(revision), b.ks.EventLogRangeEnd(revision), 0, 0)
+	if err != nil {
+		return cause
+	}
+	var rawEntries []eventLogRawEntry
+	targetCovered := false
+	for {
+		nextErr := iter.Next(ctx)
+		if nextErr != nil {
+			_ = iter.Close()
+			if nextErr != io.EOF {
+				return cause
+			}
+			break
+		}
+		entryKey := append([]byte(nil), iter.Key()...)
+		entryValue := append([]byte(nil), iter.Val()...)
+		entryRevision, entryUserKey, decodeErr := b.ks.DecodeEventLogKey(entryKey)
+		if decodeErr != nil || entryRevision != revision {
+			_ = iter.Close()
+			return cause
+		}
+		verbByte, previousRevision, _, _, _, ok := coder.DecodeOrderedEventLogValue(entryValue)
+		verb := proto.Event_EventType(verbByte)
+		if !ok || (verb != proto.Event_CREATE && verb != proto.Event_PUT) {
+			if bytes.Equal(entryUserKey, userKey) {
+				_ = iter.Close()
+				return cause
+			}
+		} else if bytes.Equal(entryUserKey, userKey) {
+			targetCovered = (verb == proto.Event_CREATE && previousRevision == 0) ||
+				(verb == proto.Event_PUT && previousRevision > 0 && previousRevision < revision)
+		}
+		rawEntries = append(rawEntries, eventLogRawEntry{key: entryKey, value: entryValue})
+	}
+	if !targetCovered || !bytes.Equal(encodeTxnWitness(rawEntries), witnessRaw) {
+		return cause
+	}
+
+	// Repair and compaction can race this diagnostic read. Reconfirm all durable
+	// evidence immediately before raising the shared write fence.
+	currentValue, err := b.kv.Get(ctx, objectKey)
+	if err != nil || !bytes.Equal(currentValue, expectedValue) {
+		return cause
+	}
+	compactRevision, err = b.GetCompactRevisionFresh(ctx)
+	if err != nil || (compactRevision > 0 && revision < compactRevision) {
+		return cause
+	}
+	present, err := b.txnWitnessStillPresent(ctx, witnessKey, witnessRaw)
+	if err != nil || !present {
+		return cause
+	}
+	alarmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unaryRpcTimeout)
+	defer cancel()
+	if alarmErr := b.ArmCorrupt(alarmCtx, b.localAlarmMemberID()); alarmErr != nil {
+		b.metricCli.EmitCounter("read.object.corrupt_alarm_failed", 1)
+		return errors.Join(cause, fmt.Errorf("persist CORRUPT alarm: %w", alarmErr))
+	}
+	b.metricCli.EmitCounter("read.object.corrupt_alarm_armed", 1)
+	klog.ErrorS(cause, "witnessed object value is corrupt; armed CORRUPT alarm",
+		"key", Key(userKey), "revision", revision, "memberID", b.localAlarmMemberID())
+	return cause
+}
+
 func (b *backend) armPersistedWitnessCorrupt(ctx context.Context, revision uint64, cause error) error {
 	if err := b.ArmCorrupt(ctx, b.localAlarmMemberID()); err != nil {
 		return fmt.Errorf("persist CORRUPT alarm for transaction witness revision %d: %w", revision, err)

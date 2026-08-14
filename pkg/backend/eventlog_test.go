@@ -487,6 +487,83 @@ func TestEventLogReplayRejectsCorruptReferencedObjectInTrustedWindow(t *testing.
 	require.Len(t, events, 1)
 }
 
+func TestGetArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/get_corrupt_object/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	key := path.Join(pfx, "key")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+
+	objectKey := b.coder.EncodeObjectKey([]byte(key), created.Header.Revision)
+	objectValue, err := kv.Get(ctx, objectKey)
+	require.NoError(t, err)
+	corrupt := kv.BeginBatchWrite()
+	corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	resp, err := b.Get(ctx, &proto.GetRequest{Key: []byte(key)})
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.Nil(t, resp)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+	_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
+	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+	removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+	require.False(t, removed)
+
+	repair := kv.BeginBatchWrite()
+	repair.Put(objectKey, objectValue, 0)
+	require.NoError(t, repair.Commit(ctx))
+	removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.NoError(t, disarmErr)
+	require.True(t, removed)
+	resp, err = b.Get(ctx, &proto.GetRequest{Key: []byte(key)})
+	require.NoError(t, err)
+	require.Equal(t, objectValue, resp.GetKv().GetValue())
+}
+
+func TestGetInvalidObjectWithoutWitnessDoesNotArmCorrupt(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/get_unwitnessed_corrupt_object/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	key := path.Join(pfx, "key")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+
+	batch := kv.BeginBatchWrite()
+	batch.Del(b.ks.EncodeInternalKey(txnWitnessLogicalKey(created.Header.Revision)))
+	batch.Put(b.coder.EncodeObjectKey([]byte(key), created.Header.Revision), []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	resp, err := b.Get(ctx, &proto.GetRequest{Key: []byte(key)})
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.Nil(t, resp)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms, "unsealed legacy/cleaned history has no durable evidence for a safe CORRUPT disarm")
+}
+
 func TestEventLogMissingObjectAfterCompactAdvanceDoesNotArmCorrupt(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
