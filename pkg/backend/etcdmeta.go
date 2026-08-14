@@ -88,6 +88,10 @@ func (b *backend) recoverRetainedEtcdMetadata(
 	}
 	endRevision := modRevision + 1
 	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
+	legacyMetadata, err := b.loadRetainedLegacyEtcdMetadata(ctx, key, endRevision, timestamp)
+	if err != nil {
+		return EtcdMetadata{}, false, err
+	}
 	iter, err := b.kv.Iter(
 		ctx,
 		b.coder.EncodeObjectKey(key, 0),
@@ -128,15 +132,29 @@ func (b *backend) recoverRetainedEtcdMetadata(
 		if inlineErr != nil {
 			return EtcdMetadata{}, false, inlineErr
 		}
+		legacy, hasLegacy := legacyMetadata[revision]
+		if inlined && hasLegacy &&
+			(inline.CreateRevision != legacy.CreateRevision || inline.Version != legacy.Version) {
+			return EtcdMetadata{}, false, invalidMVCCMetadataError(
+				fmt.Errorf("inline and legacy metadata disagree at revision %d", revision),
+				"recover metadata for key %q", key,
+			)
+		}
+		authoritative := inline
+		hasAuthoritative := inlined
+		if !hasAuthoritative && hasLegacy {
+			authoritative = legacy
+			hasAuthoritative = true
+		}
 		switch {
-		case inlined:
-			if anchored && (inline.CreateRevision != current.CreateRevision || inline.Version != current.Version+1) {
+		case hasAuthoritative:
+			if anchored && (authoritative.CreateRevision != current.CreateRevision || authoritative.Version != current.Version+1) {
 				return EtcdMetadata{}, false, invalidMVCCMetadataError(
-					fmt.Errorf("retained inline metadata discontinuity at revision %d", revision),
+					fmt.Errorf("retained metadata discontinuity at revision %d", revision),
 					"recover metadata for key %q", key,
 				)
 			}
-			current = inline
+			current = authoritative
 			anchored = true
 			afterTombstone = false
 			unknownLiveGeneration = false
@@ -159,34 +177,54 @@ func (b *backend) recoverRetainedEtcdMetadata(
 	}
 }
 
+func (b *backend) loadRetainedLegacyEtcdMetadata(
+	ctx context.Context, key []byte, endRevision, timestamp uint64,
+) (map[uint64]EtcdMetadata, error) {
+	metaKey := b.etcdMetadataUserKey(key)
+	iter, err := b.kv.Iter(
+		ctx,
+		b.coder.EncodeObjectKey(metaKey, 0),
+		b.coder.EncodeObjectKey(metaKey, endRevision),
+		timestamp, 0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer iter.Close()
+	result := make(map[uint64]EtcdMetadata)
+	for {
+		if err := iter.Next(ctx); err != nil {
+			if errors.Is(err, io.EOF) {
+				return result, nil
+			}
+			return nil, err
+		}
+		userKey, revision, decodeErr := b.coder.Decode(iter.Key())
+		if decodeErr != nil {
+			return nil, invalidMVCCMetadataError(decodeErr, "decode retained legacy metadata object key")
+		}
+		if revision == 0 || revision >= endRevision || !bytes.Equal(userKey, metaKey) {
+			continue
+		}
+		meta, decodeErr := decodeEtcdMetadata(iter.Val())
+		if decodeErr != nil {
+			return nil, decodeErr
+		}
+		result[revision] = meta
+	}
+}
+
 func (b *backend) getEtcdMetadata(ctx context.Context, key []byte, revision uint64) (EtcdMetadata, error) {
 	metaKey := b.etcdMetadataUserKey(key)
-	// The legacy metadata namespace reused the unescaped object-key '$'
-	// delimiter. A metadata key for an arbitrary-byte extension of key can sort
-	// inside this reverse interval, so decode each row and skip foreign keys
-	// instead of trusting the first physical result.
-	timestamp, _ := storage.SnapshotTimestampFromContext(ctx)
-	iter, err := b.kv.Iter(ctx, b.coder.EncodeObjectKey(metaKey, revision), b.coder.EncodeObjectKey(metaKey, 0), timestamp, 0)
+	// Every legacy metadata row describes exactly one object revision. Borrowing
+	// the nearest predecessor silently applies stale Version/CreateRevision when
+	// the target row is absent. The exact physical key is collision-free even
+	// though range scans over the old unescaped '$' namespace are not.
+	raw, err := b.snapshotGet(ctx, b.coder.EncodeObjectKey(metaKey, revision))
 	if err != nil {
 		return EtcdMetadata{}, err
 	}
-	defer iter.Close()
-	for {
-		if err := iter.Next(ctx); err != nil {
-			if err == io.EOF {
-				return EtcdMetadata{}, storage.ErrKeyNotFound
-			}
-			return EtcdMetadata{}, err
-		}
-		userKey, candidateRevision, decodeErr := b.coder.Decode(iter.Key())
-		if decodeErr != nil {
-			return EtcdMetadata{}, invalidMVCCMetadataError(decodeErr, "decode legacy etcd metadata object key")
-		}
-		if candidateRevision == 0 || !bytes.Equal(userKey, metaKey) {
-			continue
-		}
-		return decodeEtcdMetadata(iter.Val())
-	}
+	return decodeEtcdMetadata(raw)
 }
 
 func (b *backend) putEtcdMetadata(batch storage.BatchWrite, key []byte, revision uint64, meta EtcdMetadata) {

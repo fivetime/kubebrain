@@ -125,8 +125,10 @@ func TestDeleteRangeCommitConflictDoesNotStallPipeline(t *testing.T) {
 	waitCommitted(t, s.backend, after.Header.Revision)
 }
 
-// flakyIterKV injects Iter failures for keys containing failSubstr while
-// remaining > 0, delegating everything else to the wrapped storage.
+// flakyIterKV injects point/iterator read failures for keys containing
+// failSubstr while remaining > 0, delegating everything else to the wrapped
+// storage. Metadata reads use an exact point read in the current format while
+// retained-history recovery uses iterators.
 type flakyIterKV struct {
 	storage.KvStorage
 	failSubstr []byte
@@ -139,6 +141,14 @@ func (f *flakyIterKV) Iter(ctx context.Context, start []byte, end []byte, timest
 		return nil, errors.New("injected iter failure")
 	}
 	return f.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
+
+func (f *flakyIterKV) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if atomic.LoadInt32(&f.remaining) > 0 && bytes.Contains(key, f.failSubstr) {
+		atomic.AddInt32(&f.remaining, -1)
+		return nil, errors.New("injected get failure")
+	}
+	return f.KvStorage.Get(ctx, key)
 }
 
 func TestUpdateMetadataReadFailureDoesNotStallPipeline(t *testing.T) {
@@ -165,7 +175,7 @@ func TestUpdateMetadataReadFailureDoesNotStallPipeline(t *testing.T) {
 		Value:    []byte("v2"),
 		Revision: createResp.Header.Revision,
 	}})
-	require.ErrorContains(t, err, "injected iter failure")
+	require.ErrorContains(t, err, "injected get failure")
 	require.Zero(t, atomic.LoadInt32(&fkv.remaining), "injected failure was not consumed by the metadata read")
 
 	after, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(prefix + "/leak/meta/b"), Value: []byte("v")})

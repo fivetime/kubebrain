@@ -165,9 +165,12 @@ func TestLegacyEtcdMetadataDollarExtensionDoesNotShadowShorterKey(t *testing.T) 
 			b.putEtcdMetadata(batch, target, targetRevision, targetMetadata)
 			require.NoError(t, batch.Commit(s.ctx))
 
-			got, err := b.getEtcdMetadata(s.ctx, lower, requestedRevision)
+			got, err := b.getEtcdMetadata(s.ctx, lower, lowerRevision)
 			require.NoError(t, err)
 			require.Equal(t, lowerMetadata, got)
+			_, err = b.getEtcdMetadata(s.ctx, lower, requestedRevision)
+			require.ErrorIs(t, err, storage.ErrKeyNotFound,
+				"a missing exact metadata row must not borrow its predecessor")
 		})
 	}
 }
@@ -290,6 +293,24 @@ func TestGetEtcdMetadataDoesNotInventMetadataFromCompactedLiveAnchor(t *testing.
 		"an unproven compact anchor must retain the conservative legacy fallback")
 }
 
+func TestGetEtcdMetadataUsesRetainedLegacyAnchorWithoutBorrowingIt(t *testing.T) {
+	s, closeSuite := newTestSuites(t, memKvStorage)
+	defer closeSuite()
+	b := s.backend.(*backend)
+	key := []byte("/registry/items/proven-legacy-anchor")
+	batch := s.kv.BeginBatchWrite()
+	batch.Put(getCompactKey(b.config.Prefix), uint64ToBytes(3), 0)
+	batch.Put(b.coder.EncodeObjectKey(key, 2), []byte("v1"), 0)
+	b.putEtcdMetadata(batch, key, 2, EtcdMetadata{CreateRevision: 2, Version: 1})
+	batch.Put(b.coder.EncodeObjectKey(key, 5), []byte("v2"), 0)
+	require.NoError(t, batch.Commit(s.ctx))
+
+	got, err := b.GetEtcdMetadata(s.ctx, key, 5)
+	require.NoError(t, err)
+	require.Equal(t, EtcdMetadata{CreateRevision: 2, Version: 2}, got,
+		"the exact predecessor is an anchor, not the target version's metadata")
+}
+
 func TestRecoverRetainedEtcdMetadataFiltersArbitraryByteKeyAndRejectsDiscontinuity(t *testing.T) {
 	s, closeSuite := newTestSuites(t, memKvStorage)
 	defer closeSuite()
@@ -305,7 +326,7 @@ func TestRecoverRetainedEtcdMetadataFiltersArbitraryByteKeyAndRejectsDiscontinui
 	_, proven, err := b.recoverRetainedEtcdMetadata(s.ctx, key, 4)
 	require.False(t, proven)
 	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
-	require.ErrorContains(t, err, "retained inline metadata discontinuity")
+	require.ErrorContains(t, err, "retained metadata discontinuity")
 }
 
 func TestLegacyEtcdMetadataReadsUsePinnedSnapshotTimestamp(t *testing.T) {
@@ -326,7 +347,8 @@ func TestLegacyEtcdMetadataReadsUsePinnedSnapshotTimestamp(t *testing.T) {
 	got, err := b.getEtcdMetadata(ctx, key, revision)
 	require.NoError(t, err)
 	require.Equal(t, EtcdMetadata{CreateRevision: 3, Version: 2}, got)
-	require.Equal(t, []uint64{4242}, store.iterTimestamps)
+	require.Equal(t, []uint64{4242}, store.getTimestamps)
+	require.Empty(t, store.iterTimestamps)
 }
 
 func TestRecoverRetainedEtcdMetadataReadsUsePinnedSnapshotTimestamp(t *testing.T) {
@@ -349,5 +371,5 @@ func TestRecoverRetainedEtcdMetadataReadsUsePinnedSnapshotTimestamp(t *testing.T
 	require.True(t, proven)
 	require.Equal(t, EtcdMetadata{CreateRevision: 2, Version: 2}, got)
 	require.Equal(t, []uint64{4343}, store.getTimestamps)
-	require.Equal(t, []uint64{4343}, store.iterTimestamps)
+	require.Equal(t, []uint64{4343, 4343}, store.iterTimestamps)
 }
