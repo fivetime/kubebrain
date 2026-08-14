@@ -466,15 +466,13 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			}
 			continue
 		}
+		admittedEpoch := epoch
 		// Renewal is a durable lease metadata mutation. A newly elected local
 		// leader must finish reloading lease/event/checkpoint state before it
 		// serves the first request on an existing keepalive stream. Parking the
 		// message here also prevents a recovering client stream from rapidly
 		// cycling through grpc-go's finite retry budget on startup fence errors.
 		if err := m.srv.waitLeaderReady(stream.Context()); err != nil {
-			return err
-		}
-		if err := m.requireLeaseReady(); err != nil {
 			return err
 		}
 		// waitLeaderReady may span a complete demotion and re-election of this
@@ -491,7 +489,24 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			}
 			continue
 		}
+		// Check local readiness only after the post-wait routing decision. A
+		// demotion withdraws leaseReady before the stream necessarily observes the
+		// new leader; returning the local reload fence in that window would prevent
+		// a proxy-capable follower from forwarding this unapplied message.
 		if !m.leaseReady.Load() || m.leaseReadyEpoch.Load() != epoch {
+			// A successor epoch is not locally usable until ReloadLeases publishes
+			// its matching snapshot. Treat this as the old term losing leadership,
+			// so proxy-capable ingress can forward instead of leaking a local reload
+			// fence. If the epoch did not change, this is an ordinary startup reload.
+			if epoch != admittedEpoch {
+				if !m.srv.peers.EtcdProxyEnabled() {
+					return m.leaseLeaderUnavailable("lease keepalive")
+				}
+				if err := forward(); err != nil {
+					return err
+				}
+				continue
+			}
 			return status.Error(codes.Unavailable, "etcdserver: lease state is reloading")
 		}
 
