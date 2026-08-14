@@ -31,12 +31,21 @@ func TestDecodedUserRangeScanBoundsNeverExcludeMatchingEncodedKey(t *testing.T) 
 			if bytes.Compare(start, end) >= 0 {
 				continue
 			}
-			scanStart, scanEnd := b.decodedUserRangeScanBounds(start, end)
+			scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(start, end)
+			exact := make(map[string]struct{}, len(exactKeys))
+			for _, key := range exactKeys {
+				exact[string(key)] = struct{}{}
+				require.GreaterOrEqual(t, bytes.Compare(key, start), 0)
+				require.Less(t, bytes.Compare(key, end), 0)
+			}
 			for _, key := range keys {
 				if bytes.Compare(key, start) < 0 || bytes.Compare(key, end) >= 0 {
 					continue
 				}
 				for _, revision := range revisions {
+					if _, reconciled := exact[string(key)]; reconciled {
+						continue
+					}
 					encoded := b.coder.EncodeObjectKey(key, revision)
 					require.LessOrEqualf(t, bytes.Compare(scanStart, encoded), 0,
 						"start=%x end=%x key=%x revision=%x", start, end, key, revision)
@@ -52,28 +61,33 @@ func TestDecodedUserRangeScanBoundsNarrowsPrefixAndFallsBackForEndAncestor(t *te
 	b := &backend{coder: coder.DefaultKeyspace().NewCoder(), ks: coder.DefaultKeyspace()}
 	start := []byte("$prefix/")
 	end := PrefixEnd(start)
-	scanStart, scanEnd := b.decodedUserRangeScanBounds(start, end)
+	scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(start, end)
 	require.Greater(t, bytes.Compare(scanStart, b.ks.ObjectKeyspaceStart()), 0)
 	require.Less(t, bytes.Compare(scanEnd, b.ks.ObjectKeyspaceEnd()), 0)
+	require.Empty(t, exactKeys)
 
-	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte{'a', 0, 'z'})
-	require.Equal(t, b.ks.ObjectKeyspaceStart(), scanStart)
-	require.Equal(t, b.ks.ObjectKeyspaceEnd(), scanEnd)
+	scanStart, scanEnd, exactKeys = b.decodedUserRangeScanPlan([]byte("a"), []byte{'a', 0, 'z'})
+	require.Greater(t, bytes.Compare(scanStart, b.ks.ObjectKeyspaceStart()), 0)
+	require.Less(t, bytes.Compare(scanEnd, b.ks.ObjectKeyspaceEnd()), 0)
+	require.Equal(t, [][]byte{[]byte("a")}, exactKeys)
 
 	// The proper-prefix relation alone is not a reason to fall back. Every
 	// valid encoded version of "a" sorts before the next user byte 'z'.
-	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte("az"))
+	scanStart, scanEnd, exactKeys = b.decodedUserRangeScanPlan([]byte("a"), []byte("az"))
 	require.Greater(t, bytes.Compare(scanStart, b.ks.ObjectKeyspaceStart()), 0)
 	require.Less(t, bytes.Compare(scanEnd, b.ks.ObjectKeyspaceEnd()), 0)
+	require.Empty(t, exactKeys)
 
 	// When the next byte equals the legacy delimiter, the following byte can
 	// still put raw end on either side of the valid revision suffix.
-	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte{'a', '$', 'z'})
-	require.Equal(t, b.ks.ObjectKeyspaceStart(), scanStart)
-	require.Equal(t, b.ks.ObjectKeyspaceEnd(), scanEnd)
-	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte{'a', '$', 0xff})
+	scanStart, scanEnd, exactKeys = b.decodedUserRangeScanPlan([]byte("a"), []byte{'a', '$', 'z'})
 	require.Greater(t, bytes.Compare(scanStart, b.ks.ObjectKeyspaceStart()), 0)
 	require.Less(t, bytes.Compare(scanEnd, b.ks.ObjectKeyspaceEnd()), 0)
+	require.Equal(t, [][]byte{[]byte("a")}, exactKeys)
+	scanStart, scanEnd, exactKeys = b.decodedUserRangeScanPlan([]byte("a"), []byte{'a', '$', 0xff})
+	require.Greater(t, bytes.Compare(scanStart, b.ks.ObjectKeyspaceStart()), 0)
+	require.Less(t, bytes.Compare(scanEnd, b.ks.ObjectKeyspaceEnd()), 0)
+	require.Empty(t, exactKeys)
 }
 
 func exhaustiveShortKeys(alphabet []byte, maxLen int) [][]byte {

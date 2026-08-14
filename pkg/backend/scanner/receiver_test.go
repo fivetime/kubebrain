@@ -55,3 +55,22 @@ func TestFilteredResultReceiverBoundsResetAndMerge(t *testing.T) {
 	right.reset()
 	require.Empty(t, right.result)
 }
+
+func TestFilteredReceiversExcludeReconciledAncestor(t *testing.T) {
+	excluded := map[string]struct{}{"a": {}}
+	count := &filteredCountReceiver{start: []byte("a"), end: []byte{'a', 0, 'z'}, excluded: excluded}
+	result := &filteredResultReceiver{start: count.start, end: count.end, excluded: excluded}
+	for _, key := range [][]byte{[]byte("a"), {'a', 0}, {'a', 0, 'y'}} {
+		count.append(key, nil, 1)
+		result.append(key, []byte("value"), 1)
+	}
+	require.Equal(t, 2, count.count)
+	require.Equal(t, [][]byte{{'a', 0}, {'a', 0, 'y'}}, [][]byte{result.result[0].Key, result.result[1].Key})
+
+	countFork := count.fork().(*filteredCountReceiver)
+	resultFork := result.fork().(*filteredResultReceiver)
+	countFork.append([]byte("a"), nil, 1)
+	resultFork.append([]byte("a"), nil, 1)
+	require.Zero(t, countFork.count)
+	require.Empty(t, resultFork.result)
+}

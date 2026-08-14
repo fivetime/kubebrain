@@ -123,7 +123,14 @@ func (r *scanner) Range(ctx context.Context, start []byte, end []byte, revision 
 // boundaries that cannot be represented by one encoded interval, then filters
 // decoded keys before retaining payloads.
 func (r *scanner) RangeFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) ([]*proto.KeyValue, error) {
-	receiver := &filteredResultReceiver{start: userStart, end: userEnd}
+	return r.RangeFilteredExcluding(ctx, start, end, userStart, userEnd, nil, revision)
+}
+
+// RangeFilteredExcluding is RangeFiltered with a small decoded-key exclusion
+// set. The caller can reconcile those keys through collision-free point reads
+// when their legacy version runs straddle an otherwise safe raw scan bound.
+func (r *scanner) RangeFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error) {
+	receiver := &filteredResultReceiver{start: userStart, end: userEnd, excluded: keySet(excluded)}
 	if _, err := r.scan(ctx, start, end, revision, false, false, receiver); err != nil {
 		return nil, err
 	}
@@ -172,11 +179,28 @@ func (r *scanner) Count(ctx context.Context, start []byte, end []byte, revision 
 // CountOnly: scan the safe full encoded range, filter after decoding each user
 // key, and retain only an integer rather than a KeyValue slice.
 func (r *scanner) CountFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) (int, error) {
-	receiver := &filteredCountReceiver{start: userStart, end: userEnd}
+	return r.CountFilteredExcluding(ctx, start, end, userStart, userEnd, nil, revision)
+}
+
+// CountFilteredExcluding mirrors RangeFilteredExcluding without retaining
+// payloads; excluded keys are counted later from exact point reads.
+func (r *scanner) CountFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) (int, error) {
+	receiver := &filteredCountReceiver{start: userStart, end: userEnd, excluded: keySet(excluded)}
 	if _, err := r.scan(ctx, start, end, revision, false, false, receiver); err != nil {
 		return 0, err
 	}
 	return receiver.count, nil
+}
+
+func keySet(keys [][]byte) map[string]struct{} {
+	if len(keys) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		set[string(key)] = struct{}{}
+	}
+	return set
 }
 
 // RangeStream implements Scanner interface. keysOnly emits nil values (the

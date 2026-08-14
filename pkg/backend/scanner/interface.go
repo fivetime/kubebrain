@@ -29,6 +29,7 @@ type Scanner interface {
 	// RangeFiltered scans the encoded range but retains only decoded user keys in
 	// [userStart,userEnd). A nil userEnd is unbounded.
 	RangeFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) ([]*proto.KeyValue, error)
+	RangeFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error)
 
 	// RangeStream run scan in partitions concurrently and returns value by stream
 	RangeStream(ctx context.Context, start []byte, end []byte, revision uint64, keysOnly bool) chan *proto.StreamRangeResponse
@@ -40,6 +41,7 @@ type Scanner interface {
 	// [userStart,userEnd). A nil userEnd means through the end of the keyspace.
 	// Unlike Range, it never retains KeyValue payloads.
 	CountFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) (int, error)
+	CountFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) (int, error)
 
 	// Compact reclaims superseded versions and tombstones across all the given
 	// [start,end) border pairs. It returns the first border scan error (after the

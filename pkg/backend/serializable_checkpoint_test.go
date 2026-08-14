@@ -39,9 +39,19 @@ func (s *checkpointCountScanner) CountFiltered(ctx context.Context, start, end, 
 	return s.Scanner.CountFiltered(ctx, start, end, userStart, userEnd, revision)
 }
 
+func (s *checkpointCountScanner) CountFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) (int, error) {
+	s.countFilteredCalled = true
+	return s.Scanner.CountFilteredExcluding(ctx, start, end, userStart, userEnd, excluded, revision)
+}
+
 func (s *checkpointCountScanner) RangeFiltered(ctx context.Context, start, end, userStart, userEnd []byte, revision uint64) ([]*proto.KeyValue, error) {
 	s.rangeFilteredCalled = true
 	return s.Scanner.RangeFiltered(ctx, start, end, userStart, userEnd, revision)
+}
+
+func (s *checkpointCountScanner) RangeFilteredExcluding(ctx context.Context, start, end, userStart, userEnd []byte, excluded [][]byte, revision uint64) ([]*proto.KeyValue, error) {
+	s.rangeFilteredCalled = true
+	return s.Scanner.RangeFilteredExcluding(ctx, start, end, userStart, userEnd, excluded, revision)
 }
 
 type checkpointTestStorage struct {

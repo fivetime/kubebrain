@@ -77,20 +77,25 @@ func (e *emptyResultReceiver) merge(receiver resultReceiver) {
 
 type filteredCountReceiver struct {
 	emptyResultReceiver
-	start []byte
-	end   []byte
-	count int
+	start    []byte
+	end      []byte
+	count    int
+	excluded map[string]struct{}
 }
 
 type filteredResultReceiver struct {
 	emptyResultReceiver
-	start  []byte
-	end    []byte
-	result []*proto.KeyValue
+	start    []byte
+	end      []byte
+	result   []*proto.KeyValue
+	excluded map[string]struct{}
 }
 
 func (r *filteredResultReceiver) append(key, value []byte, revision uint64) {
 	if bytes.Compare(key, r.start) < 0 || (r.end != nil && bytes.Compare(key, r.end) >= 0) {
+		return
+	}
+	if _, skip := r.excluded[string(key)]; skip {
 		return
 	}
 	r.result = append(r.result, &proto.KeyValue{Key: key, Value: value, Revision: revision})
@@ -101,7 +106,7 @@ func (r *filteredResultReceiver) reset() {
 }
 
 func (r *filteredResultReceiver) fork() resultReceiver {
-	return &filteredResultReceiver{start: r.start, end: r.end}
+	return &filteredResultReceiver{start: r.start, end: r.end, excluded: r.excluded}
 }
 
 func (r *filteredResultReceiver) merge(receiver resultReceiver) {
@@ -111,6 +116,9 @@ func (r *filteredResultReceiver) merge(receiver resultReceiver) {
 
 func (c *filteredCountReceiver) append(key, _ []byte, _ uint64) {
 	if bytes.Compare(key, c.start) >= 0 && (c.end == nil || bytes.Compare(key, c.end) < 0) {
+		if _, skip := c.excluded[string(key)]; skip {
+			return
+		}
 		c.count++
 	}
 }
@@ -118,7 +126,7 @@ func (c *filteredCountReceiver) append(key, _ []byte, _ uint64) {
 func (c *filteredCountReceiver) reset() { c.count = 0 }
 
 func (c *filteredCountReceiver) fork() resultReceiver {
-	return &filteredCountReceiver{start: c.start, end: c.end}
+	return &filteredCountReceiver{start: c.start, end: c.end, excluded: c.excluded}
 }
 
 func (c *filteredCountReceiver) merge(receiver resultReceiver) {

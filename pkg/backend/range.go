@@ -328,12 +328,22 @@ func (b *backend) decodedUserRange(
 	if isFromKeyEnd(userEnd) {
 		userEnd = nil
 	}
-	scanStart, scanEnd := b.decodedUserRangeScanBounds(start, end)
-	kvs, err := b.scanner.RangeFiltered(
-		ctx, scanStart, scanEnd, start, userEnd, revision,
+	scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(start, end)
+	kvs, err := b.scanner.RangeFilteredExcluding(
+		ctx, scanStart, scanEnd, start, userEnd, exactKeys, revision,
 	)
 	if err != nil {
 		return nil, err
+	}
+	for _, key := range exactKeys {
+		value, modRevision, getErr := b.get(ctx, key, revision)
+		if errors.Is(getErr, storage.ErrKeyNotFound) {
+			continue
+		}
+		if getErr != nil {
+			return nil, getErr
+		}
+		kvs = append(kvs, &proto.KeyValue{Key: key, Value: value, Revision: modRevision})
 	}
 	sort.Slice(kvs, func(i, j int) bool {
 		return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
@@ -341,32 +351,33 @@ func (b *backend) decodedUserRange(
 	return kvs, nil
 }
 
-// decodedUserRangeScanBounds returns a raw encoded superset of [start,end).
+// decodedUserRangeScanPlan returns a narrow raw interval plus the bounded set
+// of end ancestors whose legacy version runs may cross its exclusive upper
+// bound. The scanner excludes those keys and the caller reconciles them through
+// exact revision-aware point reads, avoiding both a full-keyspace fallback and
+// resurrection of an older version whose newer tombstone lies past raw end.
+//
 // {magic}+start is always a safe inclusive lower bound: every encoded version
 // of start or an extension of start sorts after that raw prefix. {magic}+end is
-// a safe exclusive upper bound unless a proper prefix of end is itself in the
-// requested range and one of that key's valid '$'+revision encodings can sort
-// at or after raw end. Compare the maximum valid revision encoding directly:
-// the proper-prefix relation alone is insufficient (for ["a","az"), every
-// encoded version of "a" still sorts before "az"). In the exceptional case
-// retain the full-keyspace fallback and let the decoded receiver filter it.
-// Prefix ranges normally take the narrow path.
-func (b *backend) decodedUserRangeScanBounds(start, end []byte) ([]byte, []byte) {
+// the narrow exclusive upper bound; only proper prefixes whose maximum valid
+// encoding reaches that bound require point reconciliation.
+func (b *backend) decodedUserRangeScanPlan(start, end []byte) ([]byte, []byte, [][]byte) {
 	encodedStart := b.coder.EncodeObjectKey(start, 0)
 	scanStart := encodedStart[:len(encodedStart)-9]
 	if isFromKeyEnd(end) {
-		return scanStart, b.ks.ObjectKeyspaceEnd()
+		return scanStart, b.ks.ObjectKeyspaceEnd(), nil
 	}
 	encodedEnd := b.coder.EncodeObjectKey(end, 0)
 	scanEnd := encodedEnd[:len(encodedEnd)-9]
+	var exactKeys [][]byte
 	for prefixLen := 0; prefixLen < len(end); prefixLen++ {
 		prefix := end[:prefixLen]
 		if bytes.Compare(prefix, start) >= 0 &&
 			bytes.Compare(b.coder.EncodeObjectKey(prefix, math.MaxInt64), scanEnd) >= 0 {
-			return b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd()
+			exactKeys = append(exactKeys, append([]byte(nil), prefix...))
 		}
 	}
-	return scanStart, scanEnd
+	return scanStart, scanEnd, exactKeys
 }
 
 // Count implements Backend interface
@@ -407,10 +418,21 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 		if isFromKeyEnd(userEnd) {
 			userEnd = nil
 		}
-		scanStart, scanEnd := b.decodedUserRangeScanBounds(r.Key, r.End)
-		count, err = b.scanner.CountFiltered(
-			ctx, scanStart, scanEnd, r.Key, userEnd, rev,
+		scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(r.Key, r.End)
+		count, err = b.scanner.CountFilteredExcluding(
+			ctx, scanStart, scanEnd, r.Key, userEnd, exactKeys, rev,
 		)
+		if err == nil {
+			for _, key := range exactKeys {
+				_, _, getErr := b.get(ctx, key, rev)
+				if getErr == nil {
+					count++
+				} else if !errors.Is(getErr, storage.ErrKeyNotFound) {
+					err = getErr
+					break
+				}
+			}
+		}
 	} else {
 		key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)
 		count, err = b.scanner.Count(ctx, key, rangeEnd, rev)
