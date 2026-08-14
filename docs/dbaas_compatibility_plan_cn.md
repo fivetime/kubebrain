@@ -49556,6 +49556,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision、tombstone、checkpoint TSO 与跨 Region 顺序；在这些证据完成前，本项只证明 wire 语义，不声称
   decoded-boundary RangeStream 已具有普通范围的 O(chunk) 内存上界。
 
+- A4600 为 A4599 的 decoded-boundary RangeStream 增加有界 leader 快路径。提交 `2804248c` 复用已在
+  leader 完整 rebuild、按用户 key 排序且保存 revision history 的 count index：以 300 个逻辑键为一页做
+  KEY ASC 枚举，再在同一个 pinned TiKV TSO 上分别 BatchGet revision indexes 与 object rows。这样不依赖
+  legacy `{userKey}$revision` 的错误物理顺序，也不物化整个返回集合；每页内存和物理读取数量均为常数，
+  historical revision 通过 index 的 `liveAt(rev)` 与既有 exact historical reader 保持一致。
+
+  分页 token 独立记录 page generation；index Reset 或 Compact 会中止跨代分页，防止把两个逻辑视图拼接成
+  漏键/重复键。现场首次构建验证还捕获两项不能放行的问题并在同一提交修正：Compact 不再复用 rebuild
+  generation（否则 load 期间 compact 会遗留 `loading=true`），且 `pruneRevs` 在所有记录均晚于 watermark 时
+  不再删除 future-only tombstone（否则并发 rebuild 随后装入旧 live baseline 会复活删除键）。index 未就绪、
+  overflow、revision 早于完整 base 或 follower 上无权威 index 时仍走原有全量 decoded scan+sort，保证语义优先；
+  因而本项关闭 leader/ready 主路径的 O(result) 内存，不把它外推成所有副本、所有 revision 的最终关闭。
+
+  确定性测试以 303 个包含祖先、NUL 子键和 `$` 子键的逻辑键证明输出严格用户字典序，并恰好形成
+  300+3 两页、四次同 TSO batch，旧 `RangeFiltered`/raw RangeStream 均零调用；聚焦普通连续 10 轮、race
+  连续 10 轮通过。并发 Reset+Compact 与 future tombstone 回归也连续通过，最终 `pkg/backend/...` 全树
+  74.679 秒、完整 `pkg/server/etcd` 174.807 秒、compat 模块 6.108 秒通过。提交 `2e6baa63` 又在真实
+  upstream/TiKV 上写入 303 键跨页 fixture，完整比较 RangeStream keys/values/Count/More，单轮 19.51 秒通过；
+  17 祖先 option matrix 对 leader 连续 10/10 通过（17.756 秒），`decoded_index_hit=30` 精确证明每轮三条
+  backend stream 均命中新路径。
+
+  精确镜像 `kubebrain:a4600-2804248c`（内嵌 SHA
+  `2804248cc194a5bd56cf37d09e77ea4c4387e724`，构建时间 `2026-08-14T02:33:00Z`，OCI manifest list
+  `sha256:ec8fc3d2d836ea22e37f33450349944f8f5b3f3e1c36893276c2b2132ff7e947`，运行用户
+  `65532:65532`）滚动到独立 TiKV/PD 三副本后均 Ready、零重启；leader 现场 rebuild 为 179 keys、
+  `ready=true`。完整 direct-moveleader profile 39.288 秒通过，其中 RangeStream follower 场景 2.43 秒。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
