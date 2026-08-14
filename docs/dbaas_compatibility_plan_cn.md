@@ -49583,6 +49583,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `65532:65532`）滚动到独立 TiKV/PD 三副本后均 Ready、零重启；leader 现场 rebuild 为 179 keys、
   `ready=true`。完整 direct-moveleader profile 39.288 秒通过，其中 RangeStream follower 场景 2.43 秒。
 
+- A4601 将 A4600 的有界 decoded-boundary RangeStream 快路径扩展到 follower 与 index 冷启动副本。
+  upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go:69-73`
+  在单个 read transaction/revision 内解析 index 并读取 backend；KubeBrain 因此先固定逻辑 revision 与 TiKV
+  TSO，再为该 revision 建立或追赶本地 user-key order index，分页期间继续复用同一 snapshot。提交
+  `f5897a4d` 为 rebuild 和 lazy catch-up 增加单飞互斥：冷 index 以该精确 revision 做一次有界 streaming
+  rebuild；已可信的 index 只从 durable event log 逐 revision 回放 key/revision/tombstone metadata，并以
+  event-log watermark、事务内 subrevision/total 连续性及读取后的 revision gate 防止部分日志或并发推进被误报
+  为 Ready。发现缺口、不可信窗口或 watermark 已越过缺失 revision 时放弃部分结果并完整 rebuild。
+
+  确定性测试让 8 个并发冷请求竞争同一副本，证明只发生一次 bootstrap scan；随后 revision 6--7 仅靠可信
+  event log 追赶且不再扫描，再人为令 watermark 越过缺失 revision 8，证明仍只触发一次恢复性 rebuild；全部
+  结果继续覆盖 binary/NUL 边界并保持用户 KEY ASC。聚焦 race 连续 20 轮通过（2.268 秒），`pkg/backend/...`
+  全树通过（backend 主包 75.574 秒），完整 `pkg/server/etcd` 165.464 秒、`cmd/option` 0.084 秒通过。
+
+  精确镜像 `kubebrain:a4601-f5897a4d`（内嵌 SHA
+  `f5897a4d2b30a09a2e58135bd4e9080f5d645dc0`，构建时间 `2026-08-14T03:01:00Z`，OCI manifest list
+  `sha256:0a4ef4823e01c146e077cd358949821f7cdd581caa0b6b788e37b95784f81ba0`）滚动到独立 TiKV/PD
+  三副本后均 Ready、零重启。直接命中 follower 的 303-key 跨页 upstream 差分连续两轮通过（22.71、
+  22.154 秒）：首轮 `decoded_index_hit=1,count_index_lazy_rebuild=1`，第二轮 hit 增为 2、rebuild 保持 1
+  且 `count_index_lazy_replay=1`，现场证明一次冷构建后由日志增量追赶。完整 direct-moveleader profile 的
+  13 个故障恢复/跨副本场景 39.117 秒通过，其中 RangeStream follower 场景 2.41 秒。
+
+  本项关闭 follower/index-unready 在当前可信 revision 上的 O(result) 物化，但不扩大正确性声明：请求 revision
+  早于 index `BaseRev` 时仍走原有 decoded scan+sort；index 达到 `count-index-max-keys` 后也保留 fallback，避免
+  每次请求重建溢出。各副本首次 binary-boundary 请求会实际分配本地 index 内存，因此集群总实际内存可增加；
+  单副本上限未提高，且所有副本原本就必须按可成为 leader 的同一上限配置。历史 base 之前的有界流式方案仍是
+  后续资源兼容缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
