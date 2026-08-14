@@ -49949,6 +49949,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   角色和全部 Pod/Service，主 KubeBrain、PD、TiKV 三副本保持 Ready、零重启。该隔离 keyspace 避免改变共享
   生产验证 endpoint 的全局 auth 状态，确定性共享-backend RED 仍作为长期自动化回归。
 
+- A4614 修复多 KubeBrain ingress 的自动 LeaseGrant ID 只由各进程 wall-clock counter 生成、没有 member
+  namespace 的碰撞风险。对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/pkg/idutil/id.go` 与
+  `server/etcdserver/v3_server.go::LeaseGrant`：etcd generator 把稳定 member 前缀、毫秒时间和原子 counter
+  编进 ID，再 mask 为正 int64；KubeBrain 此前仅以 `time.Now().UnixNano()` 初始化本地递增值，两个从相同
+  时钟 seed 启动的副本会生成完全相同的序列。显式 ID 最终会由 leader 的 reservation 拒绝重复，但普通
+  自动 Grant 会向客户端泄漏非预期 `lease already exists`，不符合通用多 endpoint DBaaS 契约。
+
+  生产提交 `f46e53b0` 在 `SetStaticMembers` 的启动期边界按排序后的稳定 member ID 分配唯一非零 15-bit
+  ordinal，并直接复用 upstream `idutil.Generator`；静态集合缺失、含零/重复 ID 或超过正 int64 可保留的
+  32767 个前缀时不发布伪唯一配置。显式 signed lease ID、自动 ID 的正数约束、Grant 在 auth/TTL/alarm
+  前改写请求及 follower 转发顺序均未改变，也没有引入 TiKV 全局计数热点。确定性同 clock 双 member
+  门禁各生成 1024 个 ID 并要求全集不相交；member 输入顺序变化保持 ordinal 稳定。Grant/MemberList focused
+  普通连续 20 轮、race 10 轮、完整 `pkg/server/etcd` 169.699 秒和 vet 全部通过。
+
+  镜像 `kubebrain:a4614-f46e53b0` 内嵌完整 SHA
+  `f46e53b0ff519cc519189deed38affcd2f325e57`，本地 OCI digest
+  `sha256:7f2146fc1dc23fa6b5e6bc04b544b7d2c59322ad56be09f497ff53ffe5d913e2`。三副本滚动后均
+  Ready、零重启且运行导入 digest 一致；直接经每个 Pod 自身 client listener 各 Grant/revoke 20 个 TTL=300
+  lease，`kubebrain-0/1/2` 的前缀分别稳定为 3/2/1，60 个 ID 全部唯一、三个前缀齐全。最终 lease list
+  为零，三个 endpoint 同 revision/term 且唯一 leader，NodePort health 可提交 proposal、AlarmList 为空；
+  三 Pod lease restore/reload/checkpoint/expiry failure、panic、fatal、corrupt 扫描均为空。主 PD 3/3 与
+  TiKV 3/3 保持 Ready、零重启；历史 restore Pod 的既有重启数不计入主数据面结论。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
