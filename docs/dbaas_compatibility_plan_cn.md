@@ -50292,6 +50292,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884081`、term 655。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/orphan DELETE revision 错误。
 
+- A4629 修复可信 event log 损坏时静默丢失 Txn 操作顺序的缺口。对照 upstream
+  `server/storage/mvcc/watchable_store_txn.go`：同一 transaction revision 的 Watch events 按 change/subrevision
+  顺序发布。KubeBrain ordered event log 也记录 `subRevision/total`，但原 reader 遇到非法 verb、不可解码
+  key/value 或 subrevision/total 不一致时统一回退 object-family scan；该扫描只能按物理 key/revision 重建事件
+  集合，无法恢复原 Txn 操作顺序，因此可信 watermark 之后的日志损坏可能被伪装成成功但乱序的 Watch。
+
+  生产提交 `f64fcc37` 将错误路径分为两类：初始 watermark 与异常时重新读取的 durable watermark 都证明窗口
+  可信时，malformed/inconsistent event log 返回 `ErrInvalidMVCCMetadata`；若并发 cleanup 已先推进 watermark，
+  或窗口本就属于旧格式不可信区间，仍返回 `served=false` 使用兼容 scan。异常路径的二次 storage read 避免把
+  合法 watermark-publish-before-delete 清理竞态误报为损坏。确定性 RED 将可信 ordered CREATE verb 改为 255，
+  旧实现无错误降级；修复后同一 corruption 在可信窗口 fail closed，显式推进 watermark 后则仍 fallback。
+  eventlog focused 20 轮 12.939 秒、race 10 轮 8.976 秒、backend vet、完整 backend 74.939 秒及完整
+  `pkg/server/etcd` 177.347 秒通过。
+
+  真实 TiKV 正向验证在 revision `468126003565884082` 执行同一 Txn，刻意先 Put 字典序较大的 `z`、再 Put
+  `a`；从该 revision 启动历史 prefix Watch 返回顺序仍为 `z,a`，两个事件共享 revision 且均为 version 1，
+  排除退化为 key-sort scan。随后 prefix Delete 删除两键并在 revision `468126003565884083` 生效。
+  可追溯镜像 `kubebrain:a4629-f64fcc37` 内嵌完整 SHA
+  `f64fcc37f897ac396b7d5f11c087b480bc6a1a76`、版本 `a4629`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T13:11:07Z`；本地 OCI manifest list 为
+  `sha256:ed33a4bf2b2daf8be33ecdbfdc5447b523e9b9de9f9e54bf2409192257f5e601`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:b0d9c2b4a31dcabd48e6cb163cb6162a0ba43eddb9031c8d10d366a04f9b736f`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884083`、term 657。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/trusted-event-log inconsistency。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
