@@ -12,18 +12,29 @@ spec:
   pd:
     baseImage: pingcap/pd
     replicas: 3
+    # Keep the disposable integration cluster in the same compute QoS shape as
+    # production. Storage remains deliberately small and hostPath-backed below.
     requests:
+      cpu: "1"
+      memory: "2Gi"
       storage: 2Gi
+    limits:
+      cpu: "2"
+      memory: "4Gi"
     config: {}
   tikv:
     baseImage: pingcap/tikv
     replicas: 3
     requests:
+      cpu: "4"
+      memory: "8Gi"
       storage: 5Gi
     # TiDB Operator v1.6.5 maps limits.storage to tikv-server --capacity.
     # A raftstore.capacity TOML value is ineffective because the generated
     # command always supplies --capacity and the CLI value wins.
     limits:
+      cpu: "8"
+      memory: "16Gi"
       storage: 5Gi
     # Disposable local clusters often share a nearly-full development host.
     # Production must keep TiKV's reserve-space protection; this dev-only

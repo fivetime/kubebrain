@@ -51228,6 +51228,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不足的单节点 Kind。该门禁封闭的是 A4658 观察到的共享节点 backend stall 的配置放行缺口；它不能
   保证节点永不故障，仍需 storage latency SLO、跨节点调度、PDB 与真实故障注入共同证明可用性。
 
+- A4661 把 A4660 的 compute resource contract 实际下发到独立开发/集成 TiKV/PD：
+  `deploy/dev/tidb-cluster.yaml` 现在同样为 PD 声明 requests `1 CPU/2Gi`、limits
+  `2 CPU/4Gi`，为 TiKV 声明 requests `4 CPU/8Gi`、limits `8 CPU/16Gi`。当前 Kind 节点有
+  80 CPU、约 247Gi 可分配，足以承载该合同；变更经 server-side dry-run 后由 TiDB Operator
+  partitioned rolling update，PD 收敛到 revision `kb-pd-67fb66ccb`、TiKV 收敛到
+  `kb-tikv-786557fcf9`。最终六个存储 Pod 都 Ready、零重启，StatefulSet component container
+  的实际 resources 与声明逐项一致。
+
+  滚动期间每个 TiKV store 下线窗口在 KubeBrain client-go 日志产生预期的 backend timeout，最后一个
+  store 恢复后的日志窗口三副本均为 0；没有把 maintenance 窗口伪装成零错误。PD 随后连续三次确认
+  pending/down/miss/extra/learner Region 全为 0，三个 store 均为 Up；KubeBrain endpoint proposal
+  health 为 86.591ms。真实 TTL=3 lease 绑定用户 key 后连续 30 次、每秒一次 KeepAlive 均返回完整
+  TTL=3，等待结束后 key 仍携带该 lease，Revoke 后 key 消失；最终 lease list 为 0、AlarmList 为空，
+  KubeBrain/PD/TiKV 各三副本 Ready 且零重启。生产 storage safety gate 仍正确拒绝 Kind hostPath 的
+  超大共享 filesystem 与非 CSI PV；compute QoS 的改进不把开发存储冒充生产持久卷隔离，也不替代后续
+  独立故障注入下的 TTL=3 验收。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
