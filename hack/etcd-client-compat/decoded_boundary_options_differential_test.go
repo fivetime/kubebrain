@@ -53,7 +53,7 @@ func runDecodedBoundaryPagedStreamScenario(t *testing.T, endpoint string, lower 
 	t.Cleanup(cancel)
 	end := append(append([]byte(nil), lower...), 1)
 	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
 		_, cleanupErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: lower, RangeEnd: end})
 		require.NoError(t, cleanupErr)
