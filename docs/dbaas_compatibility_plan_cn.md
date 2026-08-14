@@ -49441,6 +49441,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   场景 2.80 秒。临时 reference、测试数据目录和 direct port-forward 均已清理。该项补齐 A4592 的请求级
   snapshot 原子性；不能仅以最终 decoded key 过滤正确推断多次存储读取天然属于同一快照。
 
+- A4594 为 A4592/A4593 的危险祖先计划补上对抗性资源上界。`end` 的危险 proper prefix 最多可达
+  `len(end)`；旧实现不仅可能发起同数量点读，还会复制每个递增长度 prefix 并为每个 prefix 构造完整编码，
+  累计内存与 CPU 可达 O(`len(end)^2`)，接近 1.5 MiB 请求上限时存在数据面 OOM 风险。提交 `a9577d74`
+  将“首个落入范围的 end prefix”通过一次 longest-common-prefix 计算得到；编码逸出判断化简为比较下一
+  user byte 与 `$`，仅相等时再比较最多 8 个 `MaxInt64` revision 字节，整个计划阶段严格 O(`len(end)`)。
+
+  精确祖先集合同时限制为最多 128 项、累计 key payload 64 KiB；任一预算超限就使用既有流式完整 object
+  keyspace scan + decoded receiver，而不是继续扩大内存/点读扇出。该回退保持 A4593 的单 TSO、历史版本、
+  tombstone、Count、排序和 Limit 语义，但意味着 A4592“所有 decoded-boundary 均无全租户扫描”的表述需
+  收窄为正常预算内形态；病理长边界有意以磁盘扫描换取严格内存上界。穷举模型逐项把 O(1) 风险判断与真实
+  `EncodeObjectKey(prefix, MaxInt64)` 比较，并把首 prefix 计算与 brute force 对照；另分别触发 count/byte
+  两个预算。聚焦连续 20 轮 7.924 秒、`pkg/backend/...` 44.311 秒、完整 `pkg/server/etcd` 169.316 秒、
+  compat 模块均通过。
+
+  提交 `ba10384a` 新增 130 个低字节祖先的 raw API fixture，真实触发超预算 fallback，并比较 upstream 与
+  KubeBrain 的 unary Range/RangeStream；连续 3/3 通过（6.686 秒）。精确镜像
+  `kubebrain:a4594-a9577d74`（内嵌 SHA `a9577d74d75368a75dc9dcd34f98e4256051549e`，构建时间
+  `2026-08-14T01:00:00Z`，OCI manifest list
+  `sha256:b52e89087a976003bb00b7940a21c30a643cce32d021284362eee6ad7b5cdf3b`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启；完整 direct-moveleader profile 38.570 秒通过，
+  RangeStream follower 场景 1.92 秒。临时 reference、数据目录与 port-forward 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
