@@ -40,14 +40,20 @@ func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision u
 		return EtcdMetadata{}, nil
 	}
 	// Prefer inline metadata carried in the object value (approach A).
-	stored, _, err := b.getInternalVal(ctx, key, modRevision)
+	stored, storedRevision, err := b.getInternalVal(ctx, key, modRevision)
 	if err == nil {
-		meta, _, ok, decodeErr := DecodeInlineValueChecked(stored)
-		if decodeErr != nil {
-			return EtcdMetadata{}, decodeErr
-		}
-		if ok {
-			return meta, nil
+		// Historical lookup returns the newest object at or before the requested
+		// revision. Inline metadata is authoritative only for that exact object
+		// version; accepting a predecessor here would repeat the stale legacy-row
+		// join that the exact metadata lookup below deliberately avoids.
+		if storedRevision == modRevision {
+			meta, _, ok, decodeErr := DecodeInlineValueChecked(stored)
+			if decodeErr != nil {
+				return EtcdMetadata{}, decodeErr
+			}
+			if ok {
+				return meta, nil
+			}
 		}
 	} else if !errors.Is(err, storage.ErrKeyNotFound) {
 		// A transient storage failure is NOT "no inline metadata": sliding into

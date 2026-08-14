@@ -311,6 +311,22 @@ func TestGetEtcdMetadataUsesRetainedLegacyAnchorWithoutBorrowingIt(t *testing.T)
 		"the exact predecessor is an anchor, not the target version's metadata")
 }
 
+func TestGetEtcdMetadataDoesNotBorrowPredecessorInlineMetadata(t *testing.T) {
+	s, closeSuite := newTestSuites(t, memKvStorage)
+	defer closeSuite()
+	b := s.backend.(*backend)
+	key := []byte("/registry/items/predecessor-inline")
+	batch := s.kv.BeginBatchWrite()
+	batch.Put(b.coder.EncodeObjectKey(key, 2), encodeValueWithMeta(
+		[]byte("v1"), EtcdMetadata{CreateRevision: 2, Version: 1}), 0)
+	require.NoError(t, batch.Commit(s.ctx))
+
+	got, err := b.GetEtcdMetadata(s.ctx, key, 5)
+	require.NoError(t, err)
+	require.Equal(t, EtcdMetadata{CreateRevision: 5, Version: 1}, got,
+		"inline metadata belongs only to its exact object revision")
+}
+
 func TestRecoverRetainedEtcdMetadataFiltersArbitraryByteKeyAndRejectsDiscontinuity(t *testing.T) {
 	s, closeSuite := newTestSuites(t, memKvStorage)
 	defer closeSuite()
