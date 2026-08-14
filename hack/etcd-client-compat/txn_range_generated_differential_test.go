@@ -29,8 +29,12 @@ func TestGeneratedTxnRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 	specs := generatedRangeSpecs()
 	referenceOutcomes := runGeneratedTxnRangeScenario(t, reference, "reference", specs)
-	require.Equal(t, referenceOutcomes,
-		runGeneratedTxnRangeScenario(t, compatEndpoint(t), "kubebrain", specs))
+	candidateOutcomes := runGeneratedTxnRangeScenario(t, compatEndpoint(t), "kubebrain", specs)
+	require.Len(t, candidateOutcomes, len(referenceOutcomes))
+	for index := range referenceOutcomes {
+		require.Equal(t, referenceOutcomes[index], candidateOutcomes[index],
+			"range spec %d nested=%t: %+v", index/2, index%2 == 1, specs[index/2])
+	}
 }
 
 func TestGeneratedTxnRangeMatrixCoversUnarySpecsAtTopAndNestedLevels(t *testing.T) {
