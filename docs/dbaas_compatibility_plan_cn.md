@@ -49486,6 +49486,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RangeStream follower 场景 2.51 秒；`/compat/` Count=0，临时 reference、数据目录与全部 port-forward
   均已清理。
 
+- A4596 将 A4595 的有界并发进一步收敛为 TiKV region-aware snapshot batch。upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go:69-73`
+  的 Range 在同一 read transaction/revision 内从 index 解析全部 revisions，再读取 backend rows；KubeBrain
+  的正常预算内祖先也应避免把这一逻辑拆成每键两次独立 RPC。提交 `4d37a88a` 在调用方已固定的 TiKV TSO
+  上先一次 `BatchGetAt` 读取全部 revision indexes，解析并筛出 current/latest 对象，再一次 `BatchGetAt`
+  读取对应 object rows。TiKV client 自行按 Region 分组并发，不重新取得 TSO；结果仍按输入槽位组装，墓碑和
+  缺失 object 不返回。requested revision 早于 current revision、或 revision index 缺失的 pre-#31 orphan
+  会退回 A4595 的 16 路精确历史/decoded scan，因而没有以 fast path 牺牲历史与遗留恢复语义。
+
+  确定性探针以 17 个真实兼容模式对象证明 current path 恰为两次 batch，第一批全部是 revision keys、第二批
+  全部是由解析 revision 得到的 object keys，两批与主 scanner 共用同一个非零 timestamp；同一测试随后证明
+  fallback 峰值仍严格为 16 个 `GetAt`。latest tombstone 与 historical ancestor 回读继续通过；聚焦普通测试
+  30.146 秒、race 31.377 秒，`pkg/backend/...` 全树通过（backend 主包 74.718 秒），完整
+  `pkg/server/etcd` 174.091 秒、compat 模块全套 6.017 秒通过。
+
+  精确镜像 `kubebrain:a4596-4d37a88a`（内嵌 SHA
+  `4d37a88a555e455257bb4c883ff877cecfb5034b`，构建时间 `2026-08-14T01:44:27Z`，OCI manifest list
+  `sha256:13dae2911b7e10b31cd6ef5b30b81cf4f4acba1f9650554559a6da9f5834c7ab`，运行用户
+  `65532:65532`）滚动到独立 TiKV/PD 上的三副本后均 Ready、零重启。含 17 个 NUL proper-prefix 祖先、
+  unary Range/RangeStream、历史值与 130 祖先 fallback 的 upstream raw API 差分连续 5/5 通过
+  （16.838 秒）；完整 direct-moveleader profile 38.936 秒通过，RangeStream follower 场景 2.18 秒。
+  `/compat/` Count=0，临时 reference、数据目录与全部 port-forward 均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
