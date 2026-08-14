@@ -345,22 +345,28 @@ func (b *backend) decodedUserRange(
 // {magic}+start is always a safe inclusive lower bound: every encoded version
 // of start or an extension of start sorts after that raw prefix. {magic}+end is
 // a safe exclusive upper bound unless a proper prefix of end is itself in the
-// requested range; that prefix's '$'+revision suffix can sort after raw end.
-// In that exceptional case retain the full-keyspace fallback and let the
-// decoded receiver filter it. Prefix ranges normally take the narrow path.
+// requested range and one of that key's valid '$'+revision encodings can sort
+// at or after raw end. Compare the maximum valid revision encoding directly:
+// the proper-prefix relation alone is insufficient (for ["a","az"), every
+// encoded version of "a" still sorts before "az"). In the exceptional case
+// retain the full-keyspace fallback and let the decoded receiver filter it.
+// Prefix ranges normally take the narrow path.
 func (b *backend) decodedUserRangeScanBounds(start, end []byte) ([]byte, []byte) {
 	encodedStart := b.coder.EncodeObjectKey(start, 0)
 	scanStart := encodedStart[:len(encodedStart)-9]
 	if isFromKeyEnd(end) {
 		return scanStart, b.ks.ObjectKeyspaceEnd()
 	}
+	encodedEnd := b.coder.EncodeObjectKey(end, 0)
+	scanEnd := encodedEnd[:len(encodedEnd)-9]
 	for prefixLen := 0; prefixLen < len(end); prefixLen++ {
-		if bytes.Compare(end[:prefixLen], start) >= 0 {
+		prefix := end[:prefixLen]
+		if bytes.Compare(prefix, start) >= 0 &&
+			bytes.Compare(b.coder.EncodeObjectKey(prefix, math.MaxInt64), scanEnd) >= 0 {
 			return b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd()
 		}
 	}
-	encodedEnd := b.coder.EncodeObjectKey(end, 0)
-	return scanStart, encodedEnd[:len(encodedEnd)-9]
+	return scanStart, scanEnd
 }
 
 // Count implements Backend interface

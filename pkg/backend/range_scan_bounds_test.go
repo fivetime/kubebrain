@@ -59,6 +59,21 @@ func TestDecodedUserRangeScanBoundsNarrowsPrefixAndFallsBackForEndAncestor(t *te
 	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte{'a', 0, 'z'})
 	require.Equal(t, b.ks.ObjectKeyspaceStart(), scanStart)
 	require.Equal(t, b.ks.ObjectKeyspaceEnd(), scanEnd)
+
+	// The proper-prefix relation alone is not a reason to fall back. Every
+	// valid encoded version of "a" sorts before the next user byte 'z'.
+	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte("az"))
+	require.Greater(t, bytes.Compare(scanStart, b.ks.ObjectKeyspaceStart()), 0)
+	require.Less(t, bytes.Compare(scanEnd, b.ks.ObjectKeyspaceEnd()), 0)
+
+	// When the next byte equals the legacy delimiter, the following byte can
+	// still put raw end on either side of the valid revision suffix.
+	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte{'a', '$', 'z'})
+	require.Equal(t, b.ks.ObjectKeyspaceStart(), scanStart)
+	require.Equal(t, b.ks.ObjectKeyspaceEnd(), scanEnd)
+	scanStart, scanEnd = b.decodedUserRangeScanBounds([]byte("a"), []byte{'a', '$', 0xff})
+	require.Greater(t, bytes.Compare(scanStart, b.ks.ObjectKeyspaceStart()), 0)
+	require.Less(t, bytes.Compare(scanEnd, b.ks.ObjectKeyspaceEnd()), 0)
 }
 
 func exhaustiveShortKeys(alphabet []byte, maxLen int) [][]byte {
