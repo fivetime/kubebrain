@@ -51142,6 +51142,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明不是 KeepAlive 恢复路径持久化或额外 MVCC mutation。本轮没有据此修改生产 lease 或放宽测试断言。至此外部 L7 reset
   的三类专项已有真实进程证据；真实 Envoy profile 与外部 L4/TLS passthrough 仍未在本轮执行。
 
+- A4656 从本机已缓存的官方 `envoyproxy/envoy:v1.39.0` 镜像提取 Envoy 1.39.0 RELEASE/BoringSSL 二进制，使用生产
+  `deploy/production/envoy/bootstrap.yaml` 和三个不同 member 的 reference etcd（12379/22379/32379），对
+  KubeBrain pod0/pod1/pod2 direct endpoint 执行真实 Envoy plaintext 与双实例 drain。Plaintext profile 4/4 通过，覆盖
+  KV、MemberList/Status、Watch、LeaseKeepAlive、Envoy restart 后切换上游和 Envoy upstream traffic 指标；首次
+  replica-drain 双端比较也完整通过（11.81 秒）。
+
+  扩大 replica-drain 重复验证后，实际进入数据面的 13 轮中 12 轮通过；1 轮在旧 Envoy `/healthcheck/fail` 并退出后，
+  clientv3 KeepAlive channel 在等待恢复响应时关闭。该轮 KubeBrain pod1 日志仍显示第二入口已收到并向当前 Leader 转发同一
+  lease 的后续 keepalive，随后两组独立重复共 9 轮全部通过，故当前证据不足以把单次关闭归因于稳定的服务端缺陷，也不据此
+  猜测修改 lease proxy。另有 1 轮在启动 Envoy 前因随机保留端口恰好等于模板占位端口 2380，使严格字符串替换计数为 2 而
+  fail fast；它没有进入数据面，不计入上述 13 轮。终态三个 direct endpoint 均可提交 health proposal、AlarmList 为空，
+  KubeBrain/PD/TiKV 各 3/3 Ready 且零重启。结论是 plaintext profile 已有重复 GREEN；replica drain 有 12/13 GREEN 但保留
+  一次未稳定复现的 KeepAlive close，不宣称 soak 全绿。TLS passthrough 与外部 L4 仍待独立证据。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
