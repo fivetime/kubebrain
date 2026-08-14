@@ -49528,6 +49528,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   临时容器、iptables chain、端口和数据目录均由清理门禁确认消失。本项不扩大既有 150 秒安全窗，也不把
   Region merge/store replacement 等需要新目录的变化误报为透明可用。
 
+- A4598 补齐 decoded-boundary 祖先重建与 Range 选项组合的上游差分证据。上游
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/txn/range.go:61-95`
+  会先根据排序与 revision filter 决定底层 limit，再统一过滤、排序和组装 `Count/More`；底层
+  `server/storage/mvcc/kvstore_txn.go:69-73` 则把请求固定在同一个 read transaction/revision。A4592-A4596
+  虽然证明了逸出祖先与主区间共享 snapshot 并最终统一排序，但此前真实差分只覆盖默认 Range、历史值和
+  RangeStream，没有同时证明祖先合并不会提前截断、错误计算 `More/Count`，或绕过过滤与投影。
+
+  提交中的 raw gRPC fixture 在同一个 `[$prefix,$prefix+17*NUL)` 范围写入全部 17 个 proper-prefix
+  祖先，更新首、中、末三个键并删除一个键，然后逐项比较默认 `Limit`、KEY DESC、VALUE ASC、
+  `KeysOnly`、`CountOnly`、historical revision、`MinModRevision`、`MaxModRevision` 和
+  `MinCreateRevision` 的 keys、values、`Count` 与 `More`。对 exact `/root/etcd` reference 和独立
+  TiKV/PD 上的三副本 KubeBrain 连续 10/10 通过（18.370 秒），compat 模块全套 6.121 秒通过；因此本项
+  未发现新的运行时偏差，不冒充生产修复，而是关闭 decoded-boundary 优化与 Range 选项之间的证据缺口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
