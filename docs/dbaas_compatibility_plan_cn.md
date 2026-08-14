@@ -50648,6 +50648,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   proposal、AlarmList 为空，最终 revision/index/applied index 均为 `468126003565884137`、term 681。主 PD 3/3、
   TiKV 3/3 Running 且零重启，日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/watch failure。
 
+- A4640 将 witnessed-object 隔离推进到实际构造新写的 `TxnApply` previous-object 预读。对标
+  `/root/etcd/server/etcdserver/txn/txn.go::executeTxn`、`txn/put.go::getPrevKV` 与
+  `txn/delete.go::deleteRange` 在同一 write transaction 内读取旧值再提交 Put/Delete 的边界。KubeBrain 的公共 Txn、
+  lease attach/revoke 和 staged mutation 最终汇聚 `TxnApply`；旧 UPDATE/DELETE 虽会 decode 当前 stored value，损坏时
+  只返回 DataLoss，不持久隔离，且该值正参与 version/create-revision、PrevKV、lease migration 与 delete event 构造，
+  风险高于纯诊断读取。
+
+  生产提交 `55970e8f` 在任何 durable revision 分配和 AtomicBatch staging 之前，对 effective UPDATE/DELETE 的 exact
+  current object 执行 A4635 event set/witness/object/compact-race 校验；证据闭合时先持久 ArmCorrupt，再让本事务失败，
+  因而损坏值不会派生新的 MVCC version、DELETE 或 witness。TxnApply 在完整 read/CAS attempt 中持有
+  `logicalWriteMu` 共享侧；实现将 context 标记为已持有逻辑锁，使 alarm InternalCAS 不在已有独占 waiter 后递归
+  RLock，避免“TxnApply 等二次 RLock、range transaction 等原共享锁”的环路，同时不释放原有 commit guard。
+
+  UPDATE/DELETE 两条确定性回归均证明损坏 previous object 返回 `ErrInvalidMVCCMetadata`、revision=0、当前 revision
+  不前进、持久 CORRUPT、后续 Txn 被拒绝、未修复 Disarm 失败；恢复 exact bytes 后解除并成功提交对应 mutation。
+  独立锁序测试把 storage 精确阻塞在目标 revision-index Get（此时共享锁必已取得），再排队独占 range transaction，
+  要求 witnessed alarm 先完成、共享锁释放后独占者才取得锁；普通 100 轮 3.672 秒、race 50 轮 5.249 秒通过。
+  两项闭环初始 focused 20 轮 1.620 秒、race 10 轮 3.925 秒，更宽 TxnApply/Witness/Alarm/RangeTxn 5 轮
+  22.866 秒，server transaction/lease 3 轮 298.128 秒、backend/server vet 及修正同步门禁后完整 backend
+  77.669 秒通过。
+
+  真实 TiKV 正向验证 revision `468126003565884138` CREATE `a=a1`、`...139` CREATE `b=b1`；单次 etcd Txn
+  在 revision `...140` 原子 UPDATE 为 a2/b2，两键 mod revision 同为 `...140`、version 同为 2 且各自保留原
+  create revision。下一次 Txn 在 revision `...141` 原子 DELETE 两键，两个 response 的 revision 相同，PrevKV
+  分别为 a2/b2、mod=`...140`、version 2。最终 `/a4640/` 零残留、AlarmList 为空；共享 TiKV 未注入损坏，
+  破坏/修复由隔离测试证明。
+
+  可追溯镜像 `kubebrain:a4640-55970e8f` 内嵌完整 SHA
+  `55970e8f586f1e57e30adb97a65808d462d48ed9`、版本 `a4640`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T16:15:13Z`；本地 OCI manifest list 为
+  `sha256:4d3cb8c0f18e76e43970666cf1031f740b86a4eaf992574f065aa6e901543164`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:860dc57ac931c851695abf42d0ceb5dc6d8bac0de23b2ed4c2f6306833a05bff`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884141`、term 684。主 PD 3/3、TiKV 3/3 Running 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/txn-apply failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
