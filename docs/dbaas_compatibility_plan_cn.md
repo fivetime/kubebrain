@@ -49421,6 +49421,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RangeStream follower 场景 1.67 秒。该项关闭当前 legacy 编码下已知 decoded-boundary 全租户磁盘扫描；
   复杂度变为 O(实际 raw interval + `len(end)` 次点读)，并保留 decoded user-range 过滤作为最终语义门禁。
 
+- A4593 修复 A4592 多步骤读取的 TiKV snapshot 撕裂。A4592 的主 scanner 会自行取得一个 TSO，但普通
+  非 checkpoint 请求随后执行的危险祖先精确点读没有继承该 TSO，而是各自通过普通 `Get` 读取更新状态；
+  并发 Put/Delete 因而可能让同一个 etcd Range/Count 混合扫描时与点读时两个快照。提交 `a386cc32` 在进入
+  decoded range 后先复用调用方已有 checkpoint TSO，或只取得一次新 TSO，再把它通过 context 同时传给
+  partition scanner 和所有 revision-index/object point reads；无原生 `SnapshotGetter` 的测试/兼容存储走
+  同 timestamp iterator fallback。List、RangeStream、Count 与 DeleteRange 的 List 预读均复用该路径。
+
+  确定性存储探针记录 scanner `Iter` 与祖先 revision/object `GetAt` 的 timestamp，分别对 latest List、
+  Count 和 historical List 证明每次请求内所有物理读取共享同一个非零 TSO；它同时保留 A4592 的跨 raw-end
+  tombstone 门禁，确保 latest 不复活旧祖先、historical 仍可读回。聚焦测试连续 20 轮通过（0.385 秒），
+  `pkg/backend/...` 全树 44.683 秒、完整 `pkg/server/etcd` 170.157 秒、compat 模块均通过。
+
+  精确镜像 `kubebrain:a4593-a386cc32`（内嵌 SHA
+  `a386cc3273aa910a7b56b38cfd6302eba6aa37d6`，构建时间 `2026-08-14T00:46:00Z`，OCI manifest list
+  `sha256:3ce43c9ea3c81fbf73c100faecf047fce01422edb6658a35ac45b53f035ba2a5`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启。含 NUL 逸出祖先的 upstream raw API 差分连续
+  10/10 通过（11.744 秒）；完整 direct-moveleader profile 39.087 秒通过，其中 RangeStream follower
+  场景 2.80 秒。临时 reference、测试数据目录和 direct port-forward 均已清理。该项补齐 A4592 的请求级
+  snapshot 原子性；不能仅以最终 decoded key 过滤正确推断多次存储读取天然属于同一快照。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
