@@ -49695,6 +49695,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   字节峰值仍受部署的 etcd value/request 上限影响，若未来提高上限应同步评估 16-value 窗口，而不能只依赖
   public wire response 拆分。
 
+  精确镜像 `kubebrain:a4604-e19a461f`（内嵌 SHA
+  `e19a461f87551ec626822d39e8994207f6a0df76`，构建时间 `2026-08-14T04:16:30Z`，OCI manifest list
+  `sha256:99254e78028edb7a17e69615e0eec61b016b91d9958c5ef9aa889b101be321d9`，运行用户
+  `65532:65532`）已滚动到独立 TiKV/PD 三副本，全部 Ready、零重启，容器内 version 同时确认 TiKV storage
+  与该完整 SHA。提交 `82877501` 将真实大值门禁永久加入 `rangestream-follower` profile：在 upstream 精确
+  SHA 三成员和 KubeBrain 直连 follower 上分别写入 33 个 256KiB value，更新首键后对 current 与 historical
+  RangeStream 比较完整 key 顺序、value SHA-256、Count/More；与既有 follower 场景同轮 6.190 秒通过。fixture
+  首版错误地用 `lower+0x01` 包围 `lower+"/…"`，upstream 返回空集准确令测试失败；修正为覆盖该前缀的
+  `lower+0xff` 后才取得上述绿灯，未把 fixture RED 误归因于实现。测试清理后 compat、follower 前缀均为空，
+  三个临时 port-forward 和 reference etcd 数据目录已由 runner 清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
