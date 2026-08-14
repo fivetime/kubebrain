@@ -26,6 +26,7 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	imemkv "github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -562,6 +563,98 @@ func TestGetInvalidObjectWithoutWitnessDoesNotArmCorrupt(t *testing.T) {
 	alarms, alarmErr := b.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
 	require.Empty(t, alarms, "unsealed legacy/cleaned history has no durable evidence for a safe CORRUPT disarm")
+}
+
+func TestListArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/list_corrupt_object/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	key := path.Join(pfx, "key")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+
+	objectKey := b.coder.EncodeObjectKey([]byte(key), created.Header.Revision)
+	objectValue, err := kv.Get(ctx, objectKey)
+	require.NoError(t, err)
+	corrupt := kv.BeginBatchWrite()
+	corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	start := []byte(pfx + "/")
+	resp, err := b.List(ctx, &proto.RangeRequest{Key: start, End: PrefixEnd(start)})
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.Nil(t, resp)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+	_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
+	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+	removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+	require.False(t, removed)
+
+	repair := kv.BeginBatchWrite()
+	repair.Put(objectKey, objectValue, 0)
+	require.NoError(t, repair.Commit(ctx))
+	removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.NoError(t, disarmErr)
+	require.True(t, removed)
+	resp, err = b.List(ctx, &proto.RangeRequest{Key: start, End: PrefixEnd(start)})
+	require.NoError(t, err)
+	require.Len(t, resp.Kvs, 1)
+	require.Equal(t, objectValue, resp.Kvs[0].Value)
+}
+
+func TestRangeStreamArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/range_stream_corrupt_object/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	key := path.Join(pfx, "key")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+
+	corrupt := kv.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeObjectKey([]byte(key), created.Header.Revision), []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	start := []byte(pfx + "/")
+	stream, err := b.RangeStream(ctx, start, PrefixEnd(start), 0)
+	require.NoError(t, err)
+	var dataKvs []*proto.KeyValue
+	var encodedErr string
+	for chunk := range stream {
+		dataKvs = append(dataKvs, chunk.GetRangeResponse().GetKvs()...)
+		if chunk.GetErr() != "" {
+			encodedErr = chunk.GetErr()
+		}
+	}
+	require.Empty(t, dataKvs, "a corrupt chunk must not become partially visible")
+	decodedErr, ok := streamerror.Decode(encodedErr)
+	require.True(t, ok)
+	require.ErrorIs(t, decodedErr, ErrInvalidMVCCMetadata)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+	_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
+	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
 }
 
 func TestEventLogMissingObjectAfterCompactAdvanceDoesNotArmCorrupt(t *testing.T) {

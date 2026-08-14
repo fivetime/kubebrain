@@ -234,8 +234,37 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 		resp.More = true
 		kvs = kvs[0:r.Limit]
 	}
+	if err := b.validateRangeObjectValues(ctx, kvs); err != nil {
+		return nil, err
+	}
 	resp.Kvs = kvs
 	return resp, nil
+}
+
+// validateRangeObjectValues applies the same persisted-value safety boundary
+// as point Get to the exact objects a range read is about to expose. Only a
+// metadata failure backed by the object's complete transaction witness can arm
+// CORRUPT; legacy or compacted history remains a request-local DataLoss error.
+func (b *backend) validateRangeObjectValues(ctx context.Context, kvs []*proto.KeyValue) error {
+	if !b.config.EnableEtcdCompatibility {
+		return nil
+	}
+	for _, kv := range kvs {
+		if kv == nil {
+			continue
+		}
+		validationErr := b.validateEventObjectValue(ctx, kv.Key, kv.Revision, kv.Value)
+		if validationErr == nil {
+			continue
+		}
+		if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+			validationErr = b.persistWitnessedObjectCorruption(
+				ctx, kv.Key, kv.Revision, b.coder.EncodeObjectKey(kv.Key, kv.Revision), kv.Value, validationErr,
+			)
+		}
+		return validationErr
+	}
+	return nil
 }
 
 func (b *backend) rangeStartKey(userKey []byte) []byte {
@@ -823,27 +852,91 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 	if rev == 0 {
 		rev = curRev
 	}
-	decodedRange, err := b.requiresDecodedUserRange(ctx, userStart, userEnd, rev)
+	scanCtx, cancel := context.WithCancel(ctx)
+	decodedRange, err := b.requiresDecodedUserRange(scanCtx, userStart, userEnd, rev)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
+	var stream <-chan *proto.StreamRangeResponse
 	if decodedRange {
-		ctx, err = b.withRangeSnapshotTimestamp(ctx)
+		scanCtx, err = b.withRangeSnapshotTimestamp(scanCtx)
 		if err != nil {
+			cancel()
 			return nil, err
 		}
-		if _, ensureErr := b.ensureCountIndexAtRevision(ctx, rev); ensureErr != nil {
+		if _, ensureErr := b.ensureCountIndexAtRevision(scanCtx, rev); ensureErr != nil {
+			cancel()
 			return nil, ensureErr
 		}
-		if stream, served, streamErr := b.decodedUserRangeStreamFromCountIndex(ctx, userStart, userEnd, rev); served || streamErr != nil {
-			return stream, streamErr
+		var served bool
+		stream, served, err = b.decodedUserRangeStreamFromCountIndex(scanCtx, userStart, userEnd, rev)
+		if err != nil {
+			cancel()
+			return nil, err
 		}
-		return b.decodedUserRangeStreamFromSpill(ctx, userStart, userEnd, rev), nil
+		if !served {
+			stream = b.decodedUserRangeStreamFromSpill(scanCtx, userStart, userEnd, rev)
+		}
+	} else {
+		key := b.rangeStartKey(userStart)
+		rangeEnd := b.rangeEndKey(userEnd)
+		klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
+		stream = b.scanner.RangeStream(scanCtx, key, rangeEnd, rev, false)
 	}
-	key := b.rangeStartKey(userStart)
-	rangeEnd := b.rangeEndKey(userEnd)
-	klog.V(klogLevel).InfoS("range stream", "start", Key(userStart), "end", Key(userEnd), "rev", rev)
-	return b.scanner.RangeStream(ctx, key, rangeEnd, rev, false), nil
+	return b.validatedRangeStream(scanCtx, cancel, stream, rev), nil
+}
+
+// validatedRangeStream validates each bounded data chunk before it becomes
+// visible. A failure is encoded through the existing terminal marker contract;
+// canceling the private scan context also releases partition workers and TiKV
+// iterators when a corrupt object appears before the end of a large range.
+func (b *backend) validatedRangeStream(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	input <-chan *proto.StreamRangeResponse,
+	revision uint64,
+) <-chan *proto.StreamRangeResponse {
+	output := make(chan *proto.StreamRangeResponse)
+	go func() {
+		defer close(output)
+		defer cancel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case chunk, ok := <-input:
+				if !ok {
+					return
+				}
+				if chunk != nil && chunk.RangeResponse != nil && chunk.RangeResponse.More {
+					if err := b.validateRangeObjectValues(ctx, chunk.RangeResponse.Kvs); err != nil {
+						select {
+						case output <- rangeStreamErrorEnd(revision, err):
+						case <-ctx.Done():
+						}
+						return
+					}
+				}
+				select {
+				case output <- chunk:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return output
+}
+
+func rangeStreamErrorEnd(revision uint64, err error) *proto.StreamRangeResponse {
+	return &proto.StreamRangeResponse{
+		RangeResponse: &proto.RangeResponse{
+			Header: responseHeader(revision),
+			More:   false,
+		},
+		Err: streamerror.Encode(err),
+	}
 }
 
 const (
