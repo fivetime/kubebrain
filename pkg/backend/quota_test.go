@@ -176,6 +176,69 @@ func TestLogicalQuotaTracksLatestBytesAndPersistsNoSpace(t *testing.T) {
 	require.False(t, alarm)
 }
 
+func TestQuotaInitializationArmsCorruptForWitnessedObject(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 100)
+	key := []byte(prefix + "/quota-rebuild-corrupt/witnessed")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	objectKey := b.coder.EncodeObjectKey(key, created.Header.Revision)
+	objectValue, err := b.kv.Get(ctx, objectKey)
+	require.NoError(t, err)
+	require.NoError(t, b.InternalDelete(ctx, quotaUsageKey))
+	require.NoError(t, b.InternalDelete(ctx, quotaTrackingKey))
+	corrupt := b.kv.BeginBatchWrite()
+	corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	err = b.EnsureQuotaInitialized(ctx)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	_, _, _, statusErr := b.QuotaStatus(ctx)
+	require.ErrorIs(t, statusErr, ErrQuotaUninitialized,
+		"a corrupt object must not enter a clean quota checkpoint")
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+	removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+	require.False(t, removed)
+
+	repair := b.kv.BeginBatchWrite()
+	repair.Put(objectKey, objectValue, 0)
+	require.NoError(t, repair.Commit(ctx))
+	removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.NoError(t, disarmErr)
+	require.True(t, removed)
+	require.NoError(t, b.EnsureQuotaInitialized(ctx))
+	usage, quota, noSpace, err := b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(key)+len("value")), usage)
+	require.Equal(t, int64(100), quota)
+	require.False(t, noSpace)
+}
+
+func TestQuotaInitializationInvalidObjectWithoutWitnessDoesNotArmCorrupt(t *testing.T) {
+	b, ctx := newQuotaBackend(t, 100)
+	key := []byte(prefix + "/quota-rebuild-corrupt/unwitnessed")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+	require.NoError(t, b.InternalDelete(ctx, quotaUsageKey))
+	require.NoError(t, b.InternalDelete(ctx, quotaTrackingKey))
+
+	batch := b.kv.BeginBatchWrite()
+	batch.Del(b.ks.EncodeInternalKey(txnWitnessLogicalKey(created.Header.Revision)))
+	batch.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, batch.Commit(ctx))
+
+	err = b.EnsureQuotaInitialized(ctx)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms, "unwitnessed data loss cannot create a provably repairable alarm")
+}
+
 func TestQuotaStatusEmitsEtcdCompatibleQuotaMetrics(t *testing.T) {
 	metrics := newRecordCounters()
 	kv := imemkv.NewKvStorage()

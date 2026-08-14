@@ -256,7 +256,11 @@ func (b *backend) scanQuotaUsage(ctx context.Context, revision uint64) (int64, e
 		if response.GetErr() != "" {
 			return 0, streamerror.DecodeOrPlain(response.GetErr())
 		}
-		for _, kv := range response.GetRangeResponse().GetKvs() {
+		kvs := response.GetRangeResponse().GetKvs()
+		if err := b.validateRangeObjectValues(ctx, kvs); err != nil {
+			return 0, err
+		}
+		for _, kv := range kvs {
 			keyBytes := int64(len(kv.GetKey()))
 			valueBytes, sizeErr := logicalStoredValueSize(kv.GetValue())
 			if sizeErr != nil {
