@@ -15,8 +15,10 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -409,6 +411,8 @@ func TestDecodedHistoricalRangeStreamExtendsOrderingIndexBackToRequestedRevision
 		EnableEtcdCompatibility: true, EnableCountIndex: true,
 	}, mock.NewMinimalMetrics(ctrl)).(*backend)
 	ctx := context.Background()
+	spillDir := t.TempDir()
+	t.Setenv("TMPDIR", spillDir)
 	commitCreate := func(key string, value byte, revision uint64) {
 		mutation := b.encodeCreateMutation(
 			[]byte(key), []byte{value}, EtcdMetadata{CreateRevision: revision, Version: 1}, revision, 0, 1,
@@ -476,6 +480,81 @@ func TestDecodedHistoricalRangeStreamExtendsOrderingIndexBackToRequestedRevision
 	require.Equal(t, [][]byte{[]byte("a"), []byte("a\x00")}, [][]byte{tooOld[0].Key, tooOld[1].Key})
 	require.EqualValues(t, 7, b.countIndex.BaseRev(), "an untrusted historical window must not discard the current index")
 	tracked.mu.Lock()
-	require.True(t, tracked.rangeFilteredCalled, "an unverifiable old window must retain the exact decoded fallback")
+	require.Equal(t, 4, tracked.rangeStreamCalls,
+		"an unverifiable old window must add one keys-only spill scan without rebuilding the useful current index")
+	require.False(t, tracked.rangeFilteredCalled, "an unverifiable old window must not materialize the decoded KV range")
 	tracked.mu.Unlock()
+	entries, err := os.ReadDir(spillDir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
+func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
+	b := NewBackend(store, Config{
+		Prefix: "/kubebrain/range-stream-spill", Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, EnableCountIndex: true, CountIndexMaxKeys: 2,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	ctx := context.Background()
+	keys := make([][]byte, 303)
+	keys[0] = []byte("a")
+	keys[1] = []byte("a\x00")
+	keys[2] = []byte("a$")
+	for index := 3; index < len(keys); index++ {
+		keys[index] = []byte(fmt.Sprintf("a/%03d", index))
+	}
+	keys[len(keys)-1] = append([]byte("a/"), bytes.Repeat([]byte{'z'}, 40<<10)...)
+	seed := rawStore.BeginBatchWrite()
+	for index, key := range keys {
+		revision := uint64(index + 2)
+		mutation := b.encodeCreateMutation(
+			key, []byte{byte(index)}, EtcdMetadata{CreateRevision: revision, Version: 1}, revision, 0, 1,
+		)
+		seed.Put(mutation.revisionKey, mutation.newRevisionValue, 0)
+		for _, objectMutation := range mutation.objectMutations {
+			seed.Put(objectMutation.key, objectMutation.value, 0)
+		}
+	}
+	require.NoError(t, seed.Commit(ctx))
+	b.SetCurrentRevision(304)
+	b.countIndex.Reset(func() uint64 { return 304 }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		for index, key := range keys {
+			emit(key, uint64(index+2), false)
+		}
+		return nil
+	})
+	require.True(t, b.countIndex.Overflowed())
+
+	spillDir := t.TempDir()
+	t.Setenv("TMPDIR", spillDir)
+	tracked := &checkpointCountScanner{Scanner: b.scanner}
+	b.scanner = tracked
+	store.resetTrace()
+	stream, err := b.RangeStream(ctx, []byte("a"), []byte("b"), 304)
+	require.NoError(t, err)
+	var got []*proto.KeyValue
+	for response := range stream {
+		require.Empty(t, response.Err)
+		got = append(got, response.RangeResponse.Kvs...)
+	}
+	require.Len(t, got, len(keys))
+	for index := range keys {
+		require.Equal(t, keys[index], got[index].Key)
+		require.Equal(t, []byte{byte(index)}, StripInlineValue(got[index].Value))
+	}
+	tracked.mu.Lock()
+	require.Equal(t, 1, tracked.rangeStreamCalls, "overflow fallback must perform one bounded keys-only scan")
+	require.False(t, tracked.rangeFilteredCalled, "overflow fallback must not materialize the decoded KV range")
+	tracked.mu.Unlock()
+	store.mu.Lock()
+	require.Equal(t, []int{300, 300, 3, 3}, []int{
+		len(store.batchKeys[0]), len(store.batchKeys[1]), len(store.batchKeys[2]), len(store.batchKeys[3]),
+	})
+	store.mu.Unlock()
+	entries, err := os.ReadDir(spillDir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "the per-stream spill file must be removed after terminal delivery")
 }

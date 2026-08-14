@@ -403,6 +403,10 @@ type backend struct {
 	// cold follower can receive many decoded RangeStreams at once; without this
 	// gate every request would launch the same whole-keyspace bootstrap scan.
 	countIndexSyncMu sync.Mutex
+	// decodedRangeSpillSem admits one disk-backed ordering spill per replica.
+	// Overflow is an exceptional safety path; serializing it prevents concurrent
+	// full-keyspace requests from multiplying temporary-disk and TiKV pressure.
+	decodedRangeSpillSem chan struct{}
 
 	// historyScanSem bounds the number of concurrent watch-history fallback
 	// scans. After a cache reset (e.g. leader change) every reconnecting watcher
@@ -621,6 +625,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 			progressKick:     make(chan struct{}, 1),
 		},
 		historyScanSem:                  make(chan struct{}, historyScanConcurrency),
+		decodedRangeSpillSem:            make(chan struct{}, 1),
 		historyScanGroup:                newScanGroup(),
 		commitNotify:                    newCommitNotify(),
 		durableRevisionSignal:           make(chan struct{}, 1),

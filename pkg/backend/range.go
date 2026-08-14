@@ -730,37 +730,7 @@ func (b *backend) RangeStream(ctx context.Context, userStart, userEnd []byte, re
 		if stream, served, streamErr := b.decodedUserRangeStreamFromCountIndex(ctx, userStart, userEnd, rev); served || streamErr != nil {
 			return stream, streamErr
 		}
-		kvs, rangeErr := b.decodedUserRange(ctx, userStart, userEnd, rev)
-		if rangeErr != nil {
-			return nil, rangeErr
-		}
-		stream := make(chan *proto.StreamRangeResponse)
-		go func() {
-			defer close(stream)
-			responses := make([]*proto.StreamRangeResponse, 0, 2)
-			if len(kvs) != 0 {
-				responses = append(responses, &proto.StreamRangeResponse{
-					RangeResponse: &proto.RangeResponse{
-						Header: responseHeader(rev),
-						Kvs:    kvs,
-						More:   true,
-					},
-				})
-			}
-			responses = append(responses, &proto.StreamRangeResponse{
-				RangeResponse: &proto.RangeResponse{
-					Header: responseHeader(rev),
-				},
-			})
-			for _, response := range responses {
-				select {
-				case stream <- response:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}()
-		return stream, nil
+		return b.decodedUserRangeStreamFromSpill(ctx, userStart, userEnd, rev), nil
 	}
 	key := b.rangeStartKey(userStart)
 	rangeEnd := b.rangeEndKey(userEnd)
