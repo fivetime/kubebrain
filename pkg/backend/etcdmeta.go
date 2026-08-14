@@ -52,6 +52,9 @@ func (b *backend) GetEtcdMetadata(ctx context.Context, key []byte, modRevision u
 				return EtcdMetadata{}, decodeErr
 			}
 			if ok {
+				if validationErr := ValidateEtcdMetadataAtRevision(meta, modRevision, "inline value metadata"); validationErr != nil {
+					return EtcdMetadata{}, validationErr
+				}
 				return meta, nil
 			}
 		}
@@ -138,6 +141,11 @@ func (b *backend) recoverRetainedEtcdMetadata(
 		if inlineErr != nil {
 			return EtcdMetadata{}, false, inlineErr
 		}
+		if inlined {
+			if validationErr := ValidateEtcdMetadataAtRevision(inline, revision, "retained inline value metadata"); validationErr != nil {
+				return EtcdMetadata{}, false, validationErr
+			}
+		}
 		legacy, hasLegacy := legacyMetadata[revision]
 		if inlined && hasLegacy &&
 			(inline.CreateRevision != legacy.CreateRevision || inline.Version != legacy.Version) {
@@ -216,6 +224,9 @@ func (b *backend) loadRetainedLegacyEtcdMetadata(
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
+		if validationErr := ValidateEtcdMetadataAtRevision(meta, revision, "retained legacy etcd metadata"); validationErr != nil {
+			return nil, validationErr
+		}
 		result[revision] = meta
 	}
 }
@@ -230,7 +241,14 @@ func (b *backend) getEtcdMetadata(ctx context.Context, key []byte, revision uint
 	if err != nil {
 		return EtcdMetadata{}, err
 	}
-	return decodeEtcdMetadata(raw)
+	meta, err := decodeEtcdMetadata(raw)
+	if err != nil {
+		return EtcdMetadata{}, err
+	}
+	if err := ValidateEtcdMetadataAtRevision(meta, revision, "legacy etcd metadata"); err != nil {
+		return EtcdMetadata{}, err
+	}
+	return meta, nil
 }
 
 func (b *backend) putEtcdMetadata(batch storage.BatchWrite, key []byte, revision uint64, meta EtcdMetadata) {
@@ -278,4 +296,27 @@ func validateEtcdMetadata(meta EtcdMetadata, source string) error {
 	default:
 		return nil
 	}
+}
+
+// ValidateEtcdMetadataAtRevision enforces the lifecycle facts that etcd's
+// per-value MVCC record guarantees. A key cannot be created after the object
+// version carrying the metadata, and at most one version of a key can be
+// committed at each main revision.
+func ValidateEtcdMetadataAtRevision(meta EtcdMetadata, modRevision uint64, source string) error {
+	if err := validateEtcdMetadata(meta, source); err != nil {
+		return err
+	}
+	if modRevision == 0 {
+		return fmt.Errorf("%w: %s mod revision is zero", ErrInvalidMVCCMetadata, source)
+	}
+	if meta.CreateRevision > modRevision {
+		return fmt.Errorf("%w: %s create revision %d exceeds mod revision %d",
+			ErrInvalidMVCCMetadata, source, meta.CreateRevision, modRevision)
+	}
+	maximumVersion := modRevision - meta.CreateRevision + 1
+	if meta.Version > maximumVersion {
+		return fmt.Errorf("%w: %s version %d exceeds maximum %d at mod revision %d",
+			ErrInvalidMVCCMetadata, source, meta.Version, maximumVersion, modRevision)
+	}
+	return nil
 }

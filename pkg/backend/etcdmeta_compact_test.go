@@ -209,6 +209,32 @@ func TestGetEtcdMetadataRejectsLegacyWireOverflow(t *testing.T) {
 	require.ErrorContains(t, err, "create revision 9223372036854775808 exceeds MaxInt64")
 }
 
+func TestGetEtcdMetadataRejectsImpossibleExactInlineLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		meta EtcdMetadata
+		want string
+	}{
+		{name: "future create revision", meta: EtcdMetadata{CreateRevision: 43, Version: 1}, want: "create revision 43 exceeds mod revision 42"},
+		{name: "impossible version", meta: EtcdMetadata{CreateRevision: 40, Version: 4}, want: "version 4 exceeds maximum 3"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s, closeSuite := newTestSuites(t, memKvStorage)
+			defer closeSuite()
+			b := s.backend.(*backend)
+			key := []byte("/registry/items/impossible-inline/" + test.name)
+			const revision = uint64(42)
+			batch := s.kv.BeginBatchWrite()
+			batch.Put(b.coder.EncodeObjectKey(key, revision), encodeValueWithMeta([]byte("value"), test.meta), 0)
+			require.NoError(t, batch.Commit(s.ctx))
+
+			_, err := b.GetEtcdMetadata(s.ctx, key, revision)
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+}
+
 func TestGetEtcdMetadataRecoversProvenRetainedLegacyGeneration(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -244,13 +270,13 @@ func TestGetEtcdMetadataRecoversProvenRetainedLegacyGeneration(t *testing.T) {
 		},
 		{
 			name:            "inline anchor before compact watermark",
-			compactRevision: 3,
+			compactRevision: 5,
 			key:             []byte("/registry/items/inline-anchor"),
 			rows: []struct {
 				revision uint64
 				value    []byte
-			}{{2, encodeValueWithMeta([]byte("v4"), EtcdMetadata{CreateRevision: 1, Version: 4})}, {5, []byte("v5")}},
-			modRevision: 5,
+			}{{4, encodeValueWithMeta([]byte("v4"), EtcdMetadata{CreateRevision: 1, Version: 4})}, {7, []byte("v5")}},
+			modRevision: 7,
 			want:        EtcdMetadata{CreateRevision: 1, Version: 5},
 		},
 	}
@@ -336,7 +362,7 @@ func TestRecoverRetainedEtcdMetadataFiltersArbitraryByteKeyAndRejectsDiscontinui
 	batch := s.kv.BeginBatchWrite()
 	batch.Put(b.coder.EncodeObjectKey(key, 2), []byte("v1"), 0)
 	batch.Put(b.coder.EncodeObjectKey(foreign, 3), []byte("foreign"), 0)
-	batch.Put(b.coder.EncodeObjectKey(key, 4), encodeValueWithMeta([]byte("bad"), EtcdMetadata{CreateRevision: 2, Version: 9}), 0)
+	batch.Put(b.coder.EncodeObjectKey(key, 4), encodeValueWithMeta([]byte("bad"), EtcdMetadata{CreateRevision: 2, Version: 3}), 0)
 	require.NoError(t, batch.Commit(s.ctx))
 
 	_, proven, err := b.recoverRetainedEtcdMetadata(s.ctx, key, 4)

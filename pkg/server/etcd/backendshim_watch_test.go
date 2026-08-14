@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -82,6 +83,28 @@ func TestWatchEventRejectsMalformedInlineValue(t *testing.T) {
 	})
 	require.ErrorIs(t, err, backend.ErrInvalidMVCCMetadata)
 	require.ErrorContains(t, err, "inline value metadata v2 length 4 is shorter than 28")
+	require.Nil(t, event)
+}
+
+func TestWatchEventRejectsImpossibleInlineLifecycle(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+	value := make([]byte, 20+len("value"))
+	copy(value, []byte{0, 'k', 'b', 3})
+	binary.BigEndian.PutUint64(value[4:], 8)
+	binary.BigEndian.PutUint64(value[12:], 1)
+	copy(value[20:], "value")
+
+	event, err := shim.watchEventToEtcdEvent(context.Background(), &proto.Event{
+		Type:     proto.Event_CREATE,
+		Revision: 7,
+		Kv: &proto.KeyValue{
+			Key: []byte("/watch/future-create-revision"), Value: value, Revision: 7,
+		},
+	})
+	require.ErrorIs(t, err, backend.ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "create revision 8 exceeds mod revision 7")
 	require.Nil(t, event)
 }
 

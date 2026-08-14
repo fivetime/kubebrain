@@ -163,3 +163,25 @@ func TestDecodeInlineValueCheckedRejectsInvalidMetadataFields(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEtcdMetadataAtRevisionRejectsImpossibleLifecycle(t *testing.T) {
+	tests := []struct {
+		name        string
+		meta        EtcdMetadata
+		modRevision uint64
+		want        string
+	}{
+		{name: "zero mod revision", meta: EtcdMetadata{CreateRevision: 1, Version: 1}, want: "mod revision is zero"},
+		{name: "future create revision", meta: EtcdMetadata{CreateRevision: 6, Version: 1}, modRevision: 5, want: "create revision 6 exceeds mod revision 5"},
+		{name: "impossible version", meta: EtcdMetadata{CreateRevision: 3, Version: 4}, modRevision: 5, want: "version 4 exceeds maximum 3"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateEtcdMetadataAtRevision(test.meta, test.modRevision, "test metadata")
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.ErrorContains(t, err, test.want)
+		})
+	}
+	require.NoError(t, ValidateEtcdMetadataAtRevision(
+		EtcdMetadata{CreateRevision: 3, Version: 3}, 5, "test metadata"))
+}

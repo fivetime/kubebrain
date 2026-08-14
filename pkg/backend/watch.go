@@ -427,6 +427,8 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 				if err != nil {
 					return nil, err
 				}
+			} else if validationErr := ValidateEtcdMetadataAtRevision(meta, rev, "watch inline value metadata"); validationErr != nil {
+				return nil, validationErr
 			}
 			if meta.CreateRevision == rev && meta.Version == 1 {
 				event.Type = proto.Event_CREATE

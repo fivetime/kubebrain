@@ -429,6 +429,8 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 						if verr != nil {
 							return nil, 0, false, verr
 						}
+					} else if validationErr := ValidateEtcdMetadataAtRevision(meta, p.curRev, "previous inline value metadata"); validationErr != nil {
+						return nil, 0, false, validationErr
 					}
 					meta.Lease = op.PrevLease
 					p.prevMeta, p.migratePrev = meta, true
@@ -452,6 +454,8 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 					if verr != nil {
 						return nil, 0, false, verr
 					}
+				} else if validationErr := ValidateEtcdMetadataAtRevision(meta, p.curRev, "previous inline value metadata"); validationErr != nil {
+					return nil, 0, false, validationErr
 				}
 				if b.config.EnableEtcdCompatibility && op.PrevLeaseKnown && !InlineValueLeaseKnown(val) {
 					meta.Lease = op.PrevLease

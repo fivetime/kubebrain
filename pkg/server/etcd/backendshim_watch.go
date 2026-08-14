@@ -144,6 +144,8 @@ func (wt *watchTranslator) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) (
 		if err != nil {
 			return nil, err
 		}
+	} else if validationErr := backend.ValidateEtcdMetadataAtRevision(meta, kv.Revision, "watch response inline value metadata"); validationErr != nil {
+		return nil, validationErr
 	}
 	if meta.CreateRevision == 0 {
 		meta.CreateRevision = kv.Revision

@@ -1119,6 +1119,10 @@ func (b *backend) SnapshotHistoryStream(ctx context.Context, rev uint64) (<-chan
 					}
 					rawValue = stored
 				} else {
+					if validationErr := ValidateEtcdMetadataAtRevision(meta, modRevision, "snapshot inline value metadata"); validationErr != nil {
+						send(SnapshotHistoryChunk{Revision: rev, Err: validationErr})
+						return
+					}
 					record.LeaseKnown = InlineValueLeaseKnown(stored)
 				}
 				record.Value = append([]byte(nil), rawValue...)
