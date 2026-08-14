@@ -2,6 +2,8 @@ module github.com/tikv/client-go/v2
 
 go 1.19
 
+toolchain go1.26.5
+
 require (
 	github.com/cznic/mathutil v0.0.0-20181122101859-297441e03548
 	github.com/dgryski/go-farm v0.0.0-20190423205320-6a90982ecee2

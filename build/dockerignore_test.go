@@ -52,6 +52,7 @@ func TestDockerfilePinsEveryExplicitRuntimePackage(t *testing.T) {
 
 	require.Equal(t, [][]string{
 		{"bash=5.3.3-r1", "ca-certificates=20260611-r0", "coreutils=9.8-r1", "gcompat=1.1.0-r4", "jq=1.8.1-r0"},
+		{"bash=5.3.3-r1", "ca-certificates=20260611-r0", "coreutils=9.8-r1", "gcompat=1.1.0-r4", "jq=1.8.1-r0"},
 		{
 			"bash=5.3.3-r1",
 			"ca-certificates=20260611-r0",
@@ -115,6 +116,7 @@ func TestDockerfileCachesObjectstoreDependenciesBeforeSourceCopy(t *testing.T) {
 
 	steps := []string{
 		"COPY go.mod go.sum ./",
+		"COPY third_party/tikv-client-go/go.mod third_party/tikv-client-go/go.sum ./third_party/tikv-client-go/",
 		"RUN go mod download",
 		"COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup/objectstore/",
 		"RUN cd hack/backup/objectstore && go mod download",
