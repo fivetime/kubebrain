@@ -50155,6 +50155,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终 revision/index/applied index 均为 `468126003565884067`、term 645。主 PD 3/3、TiKV 3/3 Ready 且
   零重启，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
 
+- A4624 补齐 per-value metadata 与对象 revision 的生命周期不变量。对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go::put`：
+  `CreateRevision` 必须不晚于该值的 `ModRevision`，且同一 key 每个 main revision 最多产生一个版本，所以
+  `Version <= ModRevision-CreateRevision+1`。此前 checked decoder 只拒绝零值和 int64 溢出，会把未来
+  create revision 或不可能大的 version 当成合法状态，经 Range/Watch 返回客户端，并可能在下一次 Txn
+  更新时继续传播；Snapshot 也可能把损坏状态写入可恢复制品。
+
+  生产提交 `c6e9841b` 新增 revision-aware lifecycle validator，并在 exact inline/legacy metadata、retained
+  recovery 的每个权威锚点、Txn 更新前置读取、历史 Watch、Watch response 翻译及 SnapshotHistory 全链
+  fail closed 为 `ErrInvalidMVCCMetadata`。校验失败发生在写提交前，不消费公开 revision；正常 metadata
+  快路径与 A4621–A4623 的保守 legacy recovery 不变。新回归覆盖未来 create revision、超过理论上限的
+  version、合法上界、更新不提交、Snapshot 不发布和 Watch 不返回损坏 KV。严格校验还发现两个旧测试夹具
+  自身构造了不可能版本：分别改为合法的 revision 4/version 4 compact 前锚点，以及合法但不连续的
+  revision 4/version 3，保留各自原本的 recovery/discontinuity 测试意图，不放宽生产门禁。
+
+  metadata/lifecycle focused 连续 20 轮和 race 10 轮通过，完整 backend 74.798 秒、完整
+  `pkg/server/etcd` 177.192 秒通过。真实 TiKV 验证在唯一命名 keyspace 注入 revision 42 对象但 inline
+  `CreateRevision=43`，公共 metadata read 返回 `ErrInvalidMVCCMetadata`；随后 Update 同样在提交前拒绝，
+  当前 revision 未变化。临时非 root Pod、静态二进制、测试扩展和物理 fixture 均已清理。
+
+  可追溯镜像 `kubebrain:a4624-c6e9841b` 内嵌完整 SHA
+  `c6e9841bf16fe01f7dd262fcaef415d603f0cbd6`、版本 `a4624`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T11:25:51Z`，运行用户 `65532:65532`；本地 OCI manifest list 为
+  `sha256:6b5c330f8afc7e156f3a301303706821bfb87197acc3cb559c4b7065beb146bc`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:556a056a61b77c07cb28fddc6e8a6fd7333e3226e7f7ffc70cc926ec777c4847`。
+  主 StatefulSet 顺序滚动完成，三副本 Ready、零重启；NodePort 两次 Put、Get 与 `prev_kv` Delete 保持
+  stable create revision/version 2。MemberList 为三个成员，health 可提交 proposal，AlarmList 为空；最终
+  revision/index/applied index 均为 `468126003565884070`、term 647。主 PD 3/3、TiKV 3/3 Ready 且零重启，
+  滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
