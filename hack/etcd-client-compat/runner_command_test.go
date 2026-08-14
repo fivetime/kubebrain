@@ -371,6 +371,7 @@ func TestDevStackSupportsIsolatedHostPortsAndLowDiskTestHosts(t *testing.T) {
 	tidb, err := os.ReadFile("../../deploy/dev/tidb-cluster.yaml")
 	require.NoError(t, err)
 	manifest := string(tidb)
+	require.Contains(t, manifest, `max-key-size = 2097152`)
 	require.Contains(t, manifest, `reserve-space = "0MiB"`)
 	require.Contains(t, manifest, `reserve-raft-space = "0MiB"`)
 	require.Contains(t, manifest, "limits:\n      storage: 5Gi")

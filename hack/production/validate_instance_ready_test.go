@@ -94,6 +94,7 @@ func TestValidateInstanceReady(t *testing.T) {
 		tikvPodPrefix            string
 		tikvOwnerUID             string
 		tikvTidbOwnerUID         string
+		tikvMaxKeySize           string
 		tikvCurrentRevision      string
 		finalTikvSTSJSON         string
 		tidbSnapshotReady        *bool
@@ -149,6 +150,15 @@ func TestValidateInstanceReady(t *testing.T) {
 			tidbVersion: "v8.5.2",
 			healthOK:    true,
 			wantOutput:  "TidbCluster storage release mismatch",
+		},
+		{
+			name:           "TiKV key limit cannot cover etcd API",
+			image:          "registry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			kubeStatus:     "8\t8\t3\t3\t3\tkb-new\tkb-new\tregistry/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			topology:       "3\t3",
+			tikvMaxKeySize: "8192",
+			healthOK:       true,
+			wantOutput:     "TiKV storage.max-key-size mismatch",
 		},
 		{
 			name:       "mixed TiKV storage image",
@@ -1273,6 +1283,10 @@ exit 1
 			if tc.tidbSnapshotReady != nil {
 				tidbSnapshotReady = *tc.tidbSnapshotReady
 			}
+			tikvMaxKeySize := tc.tikvMaxKeySize
+			if tikvMaxKeySize == "" {
+				tikvMaxKeySize = "2097152"
+			}
 			env := []string{
 				"KUBECTL=" + fakeKubectl,
 				"ETCDCTL=" + fakeEtcdctl,
@@ -1313,7 +1327,7 @@ exit 1
 				"FAKE_CLIENT_SERVICE_JSON=" + serviceJSON,
 				"FAKE_TOPOLOGY=" + topology,
 				"FAKE_TIDB_VERSION=" + tidbVersion,
-				"FAKE_TIDB_CLUSTER_JSON=" + fakeTidbClusterJSON(tidbVersion, topology, tidbSnapshotReady),
+				"FAKE_TIDB_CLUSTER_JSON=" + fakeTidbClusterJSON(tidbVersion, topology, tidbSnapshotReady, tikvMaxKeySize),
 				"FAKE_PD_IMAGE=" + pdImage,
 				"FAKE_TIKV_IMAGE=" + tikvImage,
 				"FAKE_PD_STS_JSON=" + fakeStorageStatefulSetJSON("pd", "uid-pd-sts", "uid-tidb", "pd-new", "pd-new", "pingcap/pd:v8.5.3"),
@@ -1355,7 +1369,7 @@ exit 1
 	}
 }
 
-func fakeTidbClusterJSON(version, topology string, ready bool) string {
+func fakeTidbClusterJSON(version, topology string, ready bool, tikvMaxKeySize string) string {
 	status := "False"
 	if ready {
 		status = "True"
@@ -1364,8 +1378,15 @@ func fakeTidbClusterJSON(version, topology string, ready bool) string {
 	encoded, err := json.Marshal(map[string]any{
 		"apiVersion": "pingcap.com/v1alpha1", "kind": "TidbCluster",
 		"metadata": map[string]any{"name": "kb", "uid": parts[3], "generation": 8},
-		"spec":     map[string]any{"version": version, "pd": map[string]any{"replicas": json.Number(parts[0])}, "tikv": map[string]any{"replicas": json.Number(parts[1])}},
-		"status":   map[string]any{"clusterID": parts[2], "conditions": []map[string]any{{"type": "Ready", "status": status}}},
+		"spec": map[string]any{
+			"version": version,
+			"pd":      map[string]any{"replicas": json.Number(parts[0])},
+			"tikv": map[string]any{
+				"replicas": json.Number(parts[1]),
+				"config":   "[storage]\nmax-key-size = " + tikvMaxKeySize + "\n",
+			},
+		},
+		"status": map[string]any{"clusterID": parts[2], "conditions": []map[string]any{{"type": "Ready", "status": status}}},
 	})
 	if err != nil {
 		panic(err)

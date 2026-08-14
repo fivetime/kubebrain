@@ -72,6 +72,7 @@ EXPECTED_PD_STATEFULSET_REVISION="${EXPECTED_PD_STATEFULSET_REVISION:-}"
 EXPECTED_TIKV_STATEFULSET_REVISION="${EXPECTED_TIKV_STATEFULSET_REVISION:-}"
 EXPECTED_PD_REPLICAS="${EXPECTED_PD_REPLICAS:-3}"
 EXPECTED_TIKV_REPLICAS="${EXPECTED_TIKV_REPLICAS:-3}"
+EXPECTED_TIKV_MAX_KEY_SIZE="${EXPECTED_TIKV_MAX_KEY_SIZE:-2097152}"
 ENDPOINT="${ENDPOINT:-}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
@@ -98,6 +99,11 @@ if [[ -z "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
 fi
 if [[ -z "$ENDPOINT" ]]; then
   echo "ENDPOINT is required" >&2
+  exit 2
+fi
+if ! [[ "$EXPECTED_TIKV_MAX_KEY_SIZE" =~ ^[1-9][0-9]*$ ]] ||
+  (( EXPECTED_TIKV_MAX_KEY_SIZE < EXPECTED_MAX_REQUEST_BYTES + 64 )); then
+  echo "EXPECTED_TIKV_MAX_KEY_SIZE must cover max-request-bytes plus physical-key overhead" >&2
   exit 2
 fi
 contains_unsafe_endpoint_char() {
@@ -279,6 +285,13 @@ fi
 
 if [[ "$actual_tidb_version" != "$EXPECTED_TIDB_VERSION" ]]; then
   echo "TidbCluster storage release mismatch: expected version ${EXPECTED_TIDB_VERSION}, got ${actual_tidb_version:-missing}" >&2
+  exit 1
+fi
+if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e --arg size "$EXPECTED_TIKV_MAX_KEY_SIZE" '
+  (.spec.tikv.config | type) == "string" and
+  ([.spec.tikv.config | scan("(?m)^[[:space:]]*max-key-size[[:space:]]*=[[:space:]]*" + $size + "[[:space:]]*$")] | length) == 1
+' >/dev/null; then
+  echo "TidbCluster TiKV storage.max-key-size mismatch: expected exactly ${EXPECTED_TIKV_MAX_KEY_SIZE}" >&2
   exit 1
 fi
 if ! printf '%s' "$tidb_cluster_json" | "$JQ" -e '

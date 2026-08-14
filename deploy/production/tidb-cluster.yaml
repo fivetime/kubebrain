@@ -92,7 +92,12 @@ spec:
                   app.kubernetes.io/instance: kb
                   app.kubernetes.io/component: tikv
               topologyKey: topology.kubernetes.io/zone
-    config: {}
+    # KubeBrain exposes etcd's 1.5MiB request envelope. User keys are embedded
+    # in revision, object, and event-log physical keys, so TiKV's default 8KiB
+    # storage limit is not compatible with that API contract.
+    config: |
+      [storage]
+      max-key-size = 2097152
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget
