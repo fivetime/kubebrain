@@ -132,6 +132,21 @@ type eventLogRawEntry struct {
 	value []byte
 }
 
+type txnRevisionIndexExpectation struct {
+	userKey  []byte
+	revision uint64
+	verb     proto.Event_EventType
+}
+
+type txnRevisionIndexCorruption struct {
+	key      []byte
+	expected []byte
+	missing  bool
+	revision uint64
+}
+
+const txnRevisionIndexValidationBatch = 512
+
 type witnessHashWriter interface {
 	Write([]byte) (int, error)
 }
@@ -249,13 +264,9 @@ func (b *backend) validateEventLogWindowWitnesses(
 // one sequential witness/event merge, while an operator asking to reopen writes
 // must also prove every uncompacted event's referenced object version exists.
 func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjects bool) error {
-	compactRevision := uint64(0)
-	if verifyObjects {
-		var err error
-		compactRevision, err = b.GetCompactRevisionFresh(ctx)
-		if err != nil {
-			return err
-		}
+	compactRevision, err := b.GetCompactRevisionFresh(ctx)
+	if err != nil {
+		return err
 	}
 	start := b.ks.EncodeInternalKey(txnWitnessPrefix)
 	witnesses, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), 0, 0)
@@ -277,9 +288,101 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 	var eventRevision uint64
 	var eventUserKey []byte
 	var corruptFound bool
+	pendingIndexes := make([]txnRevisionIndexExpectation, 0, txnRevisionIndexValidationBatch)
+	pendingSeals := make(map[uint64]struct {
+		key []byte
+		raw []byte
+	})
+	flushIndexes := func() error {
+		if len(pendingIndexes) == 0 {
+			return nil
+		}
+		for attempts := 0; len(pendingIndexes) != 0 && attempts <= len(pendingIndexes); attempts++ {
+			retained := pendingIndexes[:0]
+			for i := range pendingIndexes {
+				if pendingIndexes[i].revision >= compactRevision {
+					retained = append(retained, pendingIndexes[i])
+				}
+			}
+			pendingIndexes = retained
+			if len(pendingIndexes) == 0 {
+				clear(pendingSeals)
+				return nil
+			}
+			evidence, indexErr := b.validateTxnRevisionIndexes(ctx, pendingIndexes)
+			if indexErr == nil {
+				pendingIndexes = pendingIndexes[:0]
+				clear(pendingSeals)
+				return nil
+			}
+			if !errors.Is(indexErr, ErrTxnWitnessCorrupt) {
+				return indexErr
+			}
+			seal, ok := pendingSeals[evidence.revision]
+			if !ok {
+				return fmt.Errorf("revision-index corruption has no transaction seal at revision %d", evidence.revision)
+			}
+			present, checkErr := b.txnWitnessStillPresent(ctx, seal.key, seal.raw)
+			if checkErr != nil {
+				return checkErr
+			}
+			refreshed, refreshErr := b.GetCompactRevisionFresh(ctx)
+			if refreshErr != nil {
+				return refreshErr
+			}
+			compactRevision = max(compactRevision, refreshed)
+			if !present || evidence.revision < compactRevision {
+				filtered := pendingIndexes[:0]
+				for i := range pendingIndexes {
+					if pendingIndexes[i].revision != evidence.revision {
+						filtered = append(filtered, pendingIndexes[i])
+					}
+				}
+				pendingIndexes = filtered
+				delete(pendingSeals, evidence.revision)
+				continue
+			}
+			stillPresent, evidenceErr := b.txnRevisionIndexCorruptionStillPresent(ctx, evidence)
+			if evidenceErr != nil {
+				return evidenceErr
+			}
+			if !stillPresent {
+				continue // an operator repaired the index before the alarm linearization point
+			}
+			if err := b.armPersistedWitnessCorrupt(ctx, evidence.revision, indexErr); err != nil {
+				return err
+			}
+			corruptFound = true
+			pendingIndexes = pendingIndexes[:0]
+			clear(pendingSeals)
+			return nil
+		}
+		return fmt.Errorf("revision-index validation did not converge after concurrent repairs")
+	}
+	queueIndexes := func(expectations []txnRevisionIndexExpectation, key, raw []byte, revision uint64) error {
+		for len(expectations) != 0 {
+			space := txnRevisionIndexValidationBatch - len(pendingIndexes)
+			take := min(space, len(expectations))
+			pendingIndexes = append(pendingIndexes, expectations[:take]...)
+			pendingSeals[revision] = struct {
+				key []byte
+				raw []byte
+			}{key: key, raw: raw}
+			expectations = expectations[take:]
+			if len(pendingIndexes) == txnRevisionIndexValidationBatch {
+				if err := flushIndexes(); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
 	for {
 		if err := witnesses.Next(ctx); err != nil {
 			if err == io.EOF {
+				if flushErr := flushIndexes(); flushErr != nil {
+					return flushErr
+				}
 				if corruptFound {
 					return ErrTxnWitnessCorrupt
 				}
@@ -333,6 +436,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 			h := sha256.New()
 			var count uint32
 			var referenceErr error
+			indexExpectations := make([]txnRevisionIndexExpectation, 0, record.count)
 			objectKeys := make([][]byte, 0, record.count)
 			seenObjects := make(map[string]struct{}, record.count)
 			objectRevisions := make(map[string]uint64, record.count)
@@ -360,7 +464,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 					break
 				}
 				writeWitnessDigestEntry(h, eventLogRawEntry{key: events.Key(), value: events.Val()})
-				if verifyObjects && revision >= compactRevision && referenceErr == nil {
+				if referenceErr == nil {
 					verbByte, previousRevision, _, _, _, ok := coder.DecodeOrderedEventLogValue(events.Val())
 					valueRevision := revision
 					verb := proto.Event_EventType(verbByte)
@@ -375,6 +479,11 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 						referenceErr = fmt.Errorf("event has invalid object reference")
 					}
 					if referenceErr == nil {
+						indexExpectations = append(indexExpectations, txnRevisionIndexExpectation{
+							userKey: append([]byte(nil), eventUserKey...), revision: revision, verb: verb,
+						})
+					}
+					if verifyObjects && revision >= compactRevision && referenceErr == nil {
 						objectKey := b.coder.EncodeObjectKey(eventUserKey, valueRevision)
 						if _, duplicate := seenObjects[string(objectKey)]; !duplicate {
 							objectID := string(objectKey)
@@ -394,7 +503,8 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 			} else if referenceErr != nil {
 				cause = fmt.Errorf("%w: persisted witness object reference at revision %d: %v",
 					ErrTxnWitnessCorrupt, revision, referenceErr)
-			} else if verifyObjects && revision >= compactRevision {
+			}
+			if cause == nil && verifyObjects && revision >= compactRevision {
 				values, incomplete, loadErr := b.loadEventValues(ctx, objectKeys)
 				if loadErr != nil {
 					return loadErr
@@ -436,6 +546,11 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 					}
 				}
 			}
+			if cause == nil && revision >= compactRevision {
+				if queueErr := queueIndexes(indexExpectations, key, raw, revision); queueErr != nil {
+					return queueErr
+				}
+			}
 		}
 		if cause == nil {
 			continue
@@ -452,6 +567,68 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 		}
 		corruptFound = true
 	}
+}
+
+func (b *backend) validateTxnRevisionIndexes(
+	ctx context.Context, expectations []txnRevisionIndexExpectation,
+) (*txnRevisionIndexCorruption, error) {
+	if len(expectations) == 0 {
+		return nil, nil
+	}
+	indexKeys := make([][]byte, len(expectations))
+	for i := range expectations {
+		indexKeys[i] = b.coder.EncodeRevisionKey(expectations[i].userKey)
+	}
+	values, incomplete, err := b.loadEventValues(ctx, indexKeys)
+	if err != nil {
+		return nil, err
+	}
+	for i := range expectations {
+		expectation := expectations[i]
+		indexKey := indexKeys[i]
+		raw, found := values[string(indexKey)]
+		if !found {
+			if !incomplete {
+				return nil, fmt.Errorf("revision index batch omitted key %q", expectation.userKey)
+			}
+			evidence := &txnRevisionIndexCorruption{key: indexKey, missing: true, revision: expectation.revision}
+			return evidence, fmt.Errorf("%w: persisted witness revision %d key %q has no revision index",
+				ErrTxnWitnessCorrupt, expectation.revision, expectation.userKey)
+		}
+		currentRevision, tombstone, parseErr := coder.ParseRevision(raw)
+		if parseErr != nil {
+			evidence := &txnRevisionIndexCorruption{
+				key: indexKey, expected: append([]byte(nil), raw...), revision: expectation.revision,
+			}
+			return evidence, fmt.Errorf("%w: persisted witness revision %d key %q has invalid revision index: %v",
+				ErrTxnWitnessCorrupt, expectation.revision, expectation.userKey, parseErr)
+		}
+		wantTombstone := expectation.verb == proto.Event_DELETE
+		if currentRevision < expectation.revision ||
+			(currentRevision == expectation.revision && tombstone != wantTombstone) {
+			evidence := &txnRevisionIndexCorruption{
+				key: indexKey, expected: append([]byte(nil), raw...), revision: expectation.revision,
+			}
+			return evidence, fmt.Errorf(
+				"%w: persisted witness revision %d key %q conflicts with current revision index %d tombstone=%t",
+				ErrTxnWitnessCorrupt, expectation.revision, expectation.userKey, currentRevision, tombstone,
+			)
+		}
+	}
+	return nil, nil
+}
+
+func (b *backend) txnRevisionIndexCorruptionStillPresent(
+	ctx context.Context, evidence *txnRevisionIndexCorruption,
+) (bool, error) {
+	current, err := b.kv.Get(ctx, evidence.key)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return evidence.missing, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !evidence.missing && bytes.Equal(current, evidence.expected), nil
 }
 
 func (b *backend) txnWitnessStillPresent(ctx context.Context, key, expected []byte) (bool, error) {

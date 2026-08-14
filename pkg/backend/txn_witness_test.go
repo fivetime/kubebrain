@@ -51,6 +51,39 @@ type blockingWitnessScanStorage struct {
 	signaled atomic.Bool
 }
 
+type blockingRevisionIndexRecheckStorage struct {
+	storage.KvStorage
+	indexKey []byte
+	enabled  atomic.Bool
+	reads    atomic.Int32
+	blocked  chan struct{}
+	release  chan struct{}
+}
+
+type countingWitnessIndexBatchStorage struct {
+	storage.KvStorage
+	calls atomic.Int32
+}
+
+func (s *countingWitnessIndexBatchStorage) BatchGet(
+	ctx context.Context, keys [][]byte,
+) (map[string][]byte, error) {
+	s.calls.Add(1)
+	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
+}
+
+func (s *blockingRevisionIndexRecheckStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.enabled.Load() && string(key) == string(s.indexKey) && s.reads.Add(1) == 3 {
+		close(s.blocked)
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.KvStorage.Get(ctx, key)
+}
+
 func (w *blockingWitnessScanStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
 	if w.enabled.Load() && w.signaled.CompareAndSwap(false, true) {
 		close(w.entered)
@@ -126,6 +159,202 @@ func TestLeadershipRestartValidatesPersistentTxnWitnessAndRecoversAfterRepair(t 
 	members, err = restarted.CorruptAlarms(ctx)
 	require.NoError(t, err)
 	require.Empty(t, members, "a repaired witness remains healthy after explicit disarm")
+}
+
+func TestLeadershipRestartArmsCorruptForWitnessedRevisionIndex(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		corrupt func(*backend, []byte, uint64, uint64) []byte
+	}{
+		{
+			name: "stale valid revision",
+			corrupt: func(_ *backend, _ []byte, createRevision, _ uint64) []byte {
+				return uint64ToBytes(createRevision)
+			},
+		},
+		{
+			name: "live tombstone mismatch",
+			corrupt: func(_ *backend, _ []byte, _, updateRevision uint64) []byte {
+				return append(uint64ToBytes(updateRevision), 0)
+			},
+		},
+		{
+			name:    "missing",
+			corrupt: func(_ *backend, _ []byte, _, _ uint64) []byte { return nil },
+		},
+		{
+			name:    "malformed",
+			corrupt: func(_ *backend, _ []byte, _, _ uint64) []byte { return []byte{1} },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b, ctx := newTxnApplyBackend(t)
+			key := []byte(prefix + "/restart-witness/index/" + test.name)
+			_, createRevision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("v1")}}, nil)
+			require.NoError(t, err)
+			_, updateRevision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("v2")}}, nil)
+			require.NoError(t, err)
+			indexKey := b.coder.EncodeRevisionKey(key)
+			healthyIndex, err := b.kv.Get(ctx, indexKey)
+			require.NoError(t, err)
+
+			corrupt := b.kv.BeginBatchWrite()
+			if raw := test.corrupt(b, key, createRevision, updateRevision); raw == nil {
+				corrupt.Del(indexKey)
+			} else {
+				corrupt.Put(indexKey, raw, 0)
+			}
+			require.NoError(t, corrupt.Commit(ctx))
+
+			require.NoError(t, b.InitializeLeadershipRevision(ctx, 0),
+				"durable index corruption is converted into a persistent alarm")
+			members, alarmErr := b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Equal(t, []uint64{b.localAlarmMemberID()}, members)
+			removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+			require.False(t, removed)
+
+			repair := b.kv.BeginBatchWrite()
+			repair.Put(indexKey, healthyIndex, 0)
+			require.NoError(t, repair.Commit(ctx))
+			removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.NoError(t, disarmErr)
+			require.True(t, removed)
+			require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+			members, alarmErr = b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Empty(t, members)
+		})
+	}
+}
+
+func TestLeadershipRevisionIndexRepairBeforeAlarmDoesNotArmCorrupt(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	raw := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	store := &blockingRevisionIndexRecheckStorage{
+		KvStorage: raw, blocked: make(chan struct{}), release: make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix:   prefix + "/restart-witness/index-repair-race",
+		Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/restart-witness/index-repair-race/key")
+	_, createRevision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("v1")}}, nil)
+	require.NoError(t, err)
+	_, _, err = b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("v2")}}, nil)
+	require.NoError(t, err)
+	store.indexKey = b.coder.EncodeRevisionKey(key)
+	healthyIndex, err := raw.Get(ctx, store.indexKey)
+	require.NoError(t, err)
+	corrupt := raw.BeginBatchWrite()
+	corrupt.Put(store.indexKey, uint64ToBytes(createRevision), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+	store.enabled.Store(true)
+
+	done := make(chan error, 1)
+	go func() { done <- b.InitializeLeadershipRevision(ctx, 0) }()
+	select {
+	case <-store.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("leadership validation did not reach the final revision-index evidence check")
+	}
+	repair := raw.BeginBatchWrite()
+	repair.Put(store.indexKey, healthyIndex, 0)
+	require.NoError(t, repair.Commit(ctx))
+	close(store.release)
+	select {
+	case initErr := <-done:
+		require.NoError(t, initErr)
+	case <-time.After(time.Second):
+		t.Fatal("leadership validation did not finish after revision-index repair")
+	}
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, members, "a repaired index must not leave a stale CORRUPT alarm")
+}
+
+func TestLeadershipRevisionIndexValidationIgnoresCompactedCleanupWindow(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/restart-witness/index-compacted-window")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+	_, compactRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+		Key: []byte(prefix + "/restart-witness/index-compacted-window/advance"), Value: []byte("value"),
+	}}, nil)
+	require.NoError(t, err)
+	require.Greater(t, compactRevision, revision)
+
+	// Model the physical-GC phase after the durable watermark advances but
+	// before cleanupEventLog deletes the older seal and event marker.
+	compact := b.kv.BeginBatchWrite()
+	compact.Put(getCompactKey(b.config.Prefix), uint64ToBytes(compactRevision), 0)
+	compact.Del(b.coder.EncodeRevisionKey(key))
+	compact.Del(b.coder.EncodeObjectKey(key, revision))
+	require.NoError(t, compact.Commit(ctx))
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, members, "planned physical GC below the compact watermark is not corruption")
+}
+
+func TestLeadershipRevisionIndexValidationUsesBoundedBatchGets(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	raw := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	store := &countingWitnessIndexBatchStorage{KvStorage: raw}
+	b := NewBackend(store, Config{
+		Prefix:   prefix + "/restart-witness/index-batches",
+		Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	const transactions = txnRevisionIndexValidationBatch + 88
+	for i := 0; i < transactions; i++ {
+		_, _, err := b.TxnApply(ctx, []TxnWriteOp{{
+			Key: []byte(fmt.Sprintf("%s/restart-witness/index-batches/%04d", prefix, i)), Value: []byte("value"),
+		}}, nil)
+		require.NoError(t, err)
+	}
+	store.calls.Store(0)
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	require.Equal(t, int32(2), store.calls.Load(),
+		"leadership index validation must batch across transactions, not issue an N+1 read per witness")
+}
+
+func TestLeadershipRevisionIndexValidationBoundsSingleLargeTransactionBatch(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	raw := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	store := &countingWitnessIndexBatchStorage{KvStorage: raw}
+	b := NewBackend(store, Config{
+		Prefix:   prefix + "/restart-witness/index-large-txn",
+		Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	const operations = txnRevisionIndexValidationBatch + 88
+	ops := make([]TxnWriteOp, operations)
+	for i := range ops {
+		ops[i] = TxnWriteOp{
+			Key: []byte(fmt.Sprintf("%s/restart-witness/index-large-txn/%04d", prefix, i)), Value: []byte("value"),
+		}
+	}
+	_, _, err := b.TxnApply(ctx, ops, nil)
+	require.NoError(t, err)
+	store.calls.Store(0)
+
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	require.Equal(t, int32(2), store.calls.Load(),
+		"one large transaction must be split into bounded revision-index batches")
 }
 
 func TestLeadershipRestartStillValidatesWitnessBelowLeadershipWatermark(t *testing.T) {
