@@ -50215,6 +50215,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   proposal，AlarmList 为空；最终 revision/index/applied index 均为 `468126003565884073`、term 649。
   主 PD 3/3、TiKV 3/3 Ready 且零重启，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
 
+- A4626 修复升级期 v1 inline value 的 Lease 读取语义。v1 envelope 早于逐版本 Lease 字段，只能表达
+  “Lease 未知”；原 `kvToEtcdKv` 却把所有 inline value 都当作 Lease 已知并直接返回 0，导致仍绑定 live
+  Lease 的当前 v1 对象在 Range/Get 中丢失 Lease。相反，legacy raw fallback 又会无条件借用当前 live
+  attachment，使历史版本可能错误获得较新 Lease。固定 upstream `server/storage/mvcc/kvstore_txn.go::put`
+  的逐版本 Lease 行为后，生产提交 `3376d648` 将 v2/v3 envelope 继续视为权威；仅对 raw/v1 查询 live
+  attachment，并再次读取当前对象，只有目标 revision 确为当前 revision 时才回填 Lease。历史 raw/v1
+  保守返回 0，不伪造无法从旧格式证明的 provenance。
+
+  永久回归测试构造真实当前 v3 后投影为升级期 v1，并模拟 live attachment：当前 v1 能恢复 Lease；真实
+  Update/rebind 后，历史 v1 返回 0、当前 v1 返回新 Lease。focused 连续 20 轮 1.371 秒、race 10 轮
+  3.757 秒、`go vet ./pkg/server/etcd` 及完整 `pkg/server/etcd` 179.209 秒均通过。真实 TiKV 验证使用唯一
+  keyspace 和临时投影 wrapper：lease A=24684 的当前 v1 正确返回 A；更新绑定 lease B=24685 后，历史
+  v1 返回 0、当前 v1 返回 B。验证 keyspace、临时 Pod、二进制和测试扩展均已清理。
+
+  可追溯镜像 `kubebrain:a4626-3376d648` 内嵌完整 SHA
+  `3376d64820d3c303b3b3237daa35eededed76fde`、版本 `a4626`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T12:07:14Z`；本地 OCI manifest list 为
+  `sha256:2e6128b842e36ede0ce9b4647f748bb697033ce9d48e7f5de4cee181711b200e`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:39d8f36e03d10344cb15760378f450d8c90bbb25cdb63b3de9a3d99f7a09c630`。
+  主 StatefulSet 顺序滚动完成，三副本 Ready、零重启；NodePort 两次 Put、Get 与 `prev_kv` Delete 保持
+  stable create revision/version 2。MemberList 为三个成员，health 可提交 proposal，AlarmList 为空；最终
+  revision/index/applied index 均为 `468126003565884076`、term 651。主 PD 3/3、TiKV 3/3 Ready 且零重启；
+  restore 验证 Pod 不计入主集群副本，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
