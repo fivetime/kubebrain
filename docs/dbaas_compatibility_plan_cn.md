@@ -49378,6 +49378,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   2.04 秒。该证据关闭 `$prefix` 等可安全表示范围的全租户磁盘扫描；end ancestor 落在请求范围内的异常形态
   仍保留完整扫描，若要关闭需多区间扫描、辅助索引或编码迁移，不能把当前证明外推为所有低字节范围均已优化。
 
+- A4591 修正 A4590 对 end-ancestor 风险的过度保守判断。proper prefix 落在请求范围内并不自动意味着其
+  legacy 编码会越过 `{magic}+end`；例如 `[a,az)` 中所有合法的 `a$revision` 都排在 `az` 之前。提交
+  `6bcea96b` 对每个范围内 proper prefix 直接比较 `EncodeObjectKey(prefix, math.MaxInt64)` 与 raw end，
+  仅在最大合法 revision 编码仍可能达到或越过 upper bound 时回退完整 object keyspace。分隔符相等时也
+  按后续字节精确判断：`[a,a$z)` 必须回退，而 `[a,a$\xff)` 可以安全窄扫；decoded receiver 的最终过滤、
+  用户 key 排序、Limit/More 与 Count 语义均未改变。
+
+  原有短 key/多 revision 穷举完备性模型连续 20 轮通过（7.020 秒），新增上述安全与不安全 witness；
+  `pkg/backend/...` 全树 44.225 秒、完整 `pkg/server/etcd` 174.013 秒、compat 模块 6.242 秒均通过。
+  提交 `9f953dd8` 再把含 `$` 的 `[ancestor,ancestor+'z')` 固化到官方 raw API 黑盒差分，同时比较 unary
+  Range 与 RangeStream；对 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 和真实
+  TiKV-backed KubeBrain 连续 10/10 通过（24.741 秒）。
+
+  精确镜像 `kubebrain:a4591-6bcea96b`（内嵌 SHA
+  `6bcea96bd3ca1d15984fc2a5947815783933f8bf`，构建时间 `2026-08-14T00:15:00Z`，OCI manifest list
+  `sha256:f7b52d9f03780d500eb94d05e8e178a490c0bd2d3bf504ff52bd7d9b1212dacf`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启。完整 direct-moveleader profile 38.898 秒通过，
+  RangeStream follower 场景 1.90 秒。该项关闭可由最大合法编码证明安全的 end-ancestor 过度回退；
+  `a\x00...`、部分 `a$...` 等存在真实逸出 witness 的范围仍保守全扫描，后续优化仍需多区间读取或编码迁移。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
