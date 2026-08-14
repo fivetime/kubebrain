@@ -16,6 +16,7 @@ package backend
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -23,13 +24,71 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
 
+type rangeSnapshotTraceStorage struct {
+	storage.KvStorage
+	mu             sync.Mutex
+	iterTimestamps []uint64
+	getTimestamps  []uint64
+}
+
+func (s *rangeSnapshotTraceStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
+	s.mu.Lock()
+	s.iterTimestamps = append(s.iterTimestamps, timestamp)
+	s.mu.Unlock()
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
+
+func (s *rangeSnapshotTraceStorage) GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte, error) {
+	s.mu.Lock()
+	s.getTimestamps = append(s.getTimestamps, timestamp)
+	s.mu.Unlock()
+	return s.KvStorage.Get(ctx, key)
+}
+
+func (s *rangeSnapshotTraceStorage) BatchGetAt(ctx context.Context, keys [][]byte, _ uint64) (map[string][]byte, error) {
+	values := make(map[string][]byte, len(keys))
+	for _, key := range keys {
+		value, err := s.KvStorage.Get(ctx, key)
+		if err == storage.ErrKeyNotFound {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		values[string(key)] = value
+	}
+	return values, nil
+}
+
+func (s *rangeSnapshotTraceStorage) resetTrace() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.iterTimestamps = nil
+	s.getTimestamps = nil
+}
+
+func (s *rangeSnapshotTraceStorage) requireOneSnapshot(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	require.NotEmpty(t, s.iterTimestamps)
+	require.NotEmpty(t, s.getTimestamps)
+	timestamp := s.iterTimestamps[0]
+	require.NotZero(t, timestamp)
+	for _, observed := range append(append([]uint64(nil), s.iterTimestamps...), s.getTimestamps...) {
+		require.Equal(t, timestamp, observed)
+	}
+}
+
 func TestDecodedRangeReconcilesAncestorWhoseTombstoneIsPastRawEnd(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	store := memkv.NewKvStorage()
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
 	b := NewBackend(store, Config{
 		Prefix: "/kubebrain/range-ancestor", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
 	}, mock.NewMinimalMetrics(ctrl)).(*backend)
@@ -50,14 +109,20 @@ func TestDecodedRangeReconcilesAncestorWhoseTombstoneIsPastRawEnd(t *testing.T) 
 	require.NoError(t, err)
 	require.True(t, deleted.Succeeded)
 
+	store.resetTrace()
 	latest, err := b.List(ctx, &proto.RangeRequest{Key: ancestor, End: end})
 	require.NoError(t, err)
 	require.Equal(t, [][]byte{child}, [][]byte{latest.Kvs[0].Key})
+	store.requireOneSnapshot(t)
+	store.resetTrace()
 	count, err := b.Count(ctx, &proto.CountRequest{Key: ancestor, End: end})
 	require.NoError(t, err)
 	require.Equal(t, uint64(1), count.Count)
+	store.requireOneSnapshot(t)
 
+	store.resetTrace()
 	historical, err := b.List(ctx, &proto.RangeRequest{Key: ancestor, End: end, Revision: created.Header.Revision})
 	require.NoError(t, err)
 	require.Equal(t, [][]byte{ancestor}, [][]byte{historical.Kvs[0].Key})
+	store.requireOneSnapshot(t)
 }

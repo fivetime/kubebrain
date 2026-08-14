@@ -324,6 +324,10 @@ func (b *backend) decodedUserRange(
 	start, end []byte,
 	revision uint64,
 ) ([]*proto.KeyValue, error) {
+	ctx, err := b.withRangeSnapshotTimestamp(ctx)
+	if err != nil {
+		return nil, err
+	}
 	userEnd := end
 	if isFromKeyEnd(userEnd) {
 		userEnd = nil
@@ -349,6 +353,25 @@ func (b *backend) decodedUserRange(
 		return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
 	})
 	return kvs, nil
+}
+
+// withRangeSnapshotTimestamp binds every physical step of a decoded range to
+// one engine snapshot. A normal encoded range is one scanner transaction, but
+// an escaped end ancestor is reconciled by point reads after that scan; without
+// this pin a concurrent write can make one etcd Range response span snapshots.
+func (b *backend) withRangeSnapshotTimestamp(ctx context.Context) (context.Context, error) {
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); pinned {
+		return ctx, nil
+	}
+	timestamp, err := b.kv.GetTimestampOracle(ctx)
+	if err != nil {
+		return nil, err
+	}
+	ctx = storage.WithSnapshotTimestamp(ctx, timestamp)
+	if _, supported := storage.FindCapability[storage.SnapshotGetter](b.kv); !supported {
+		ctx = storage.WithSnapshotIteratorFallback(ctx)
+	}
+	return ctx, nil
 }
 
 // decodedUserRangeScanPlan returns a narrow raw interval plus the bounded set
@@ -414,6 +437,10 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 	}
 	var count int
 	if decodedRange {
+		ctx, err = b.withRangeSnapshotTimestamp(ctx)
+		if err != nil {
+			return nil, err
+		}
 		userEnd := r.End
 		if isFromKeyEnd(userEnd) {
 			userEnd = nil
