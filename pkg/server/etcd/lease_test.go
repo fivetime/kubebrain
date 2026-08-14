@@ -2787,6 +2787,19 @@ func TestLeaseFollowerDoesNotExpireKeys(t *testing.T) {
 		require.NoError(t, kv.Close())
 		ctrl.Finish()
 	}()
+	followerServer.leaseMu.Lock()
+	recovered := followerServer.leases[grantResp.ID]
+	var recoveredExpiryTimer, recoveredCheckpointTimer *time.Timer
+	if recovered != nil {
+		recoveredExpiryTimer = recovered.timer
+		recoveredCheckpointTimer = recovered.checkpointTimer
+	}
+	followerServer.leaseMu.Unlock()
+	require.NotNil(t, recovered)
+	require.Nil(t, recoveredExpiryTimer,
+		"initAndRecover must not arm primary-only expiry work before promotion")
+	require.Nil(t, recoveredCheckpointTimer,
+		"initAndRecover must not arm primary-only checkpoint work before promotion")
 
 	time.Sleep(1500 * time.Millisecond)
 	rangeResp, err := followerServer.Range(ctx, &etcdserverpb.RangeRequest{Key: []byte("/registry/leases/follower-expire")})
@@ -2811,7 +2824,7 @@ func TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot(t *testing.T) {
 
 	// "old leader" grants L1 and binds a key.
 	oldLeader := New(b, metrics, testPeerService{isLeader: true})
-	l1, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7001})
+	l1, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: 7001})
 	require.NoError(t, err)
 	_, err = oldLeader.Put(ctx, &etcdserverpb.PutRequest{
 		Key: []byte("/registry/leases/reload-k1"), Value: []byte("v"), Lease: l1.ID,
@@ -2827,8 +2840,15 @@ func TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot(t *testing.T) {
 		require.NoError(t, kv.Close())
 		ctrl.Finish()
 	}()
+	newLeader.leaseMu.Lock()
+	constructorExpiryTimer := newLeader.leases[l1.ID].timer
+	constructorCheckpointTimer := newLeader.leases[l1.ID].checkpointTimer
+	newLeader.leaseMu.Unlock()
+	require.Nil(t, constructorExpiryTimer,
+		"constructor recovery must wait for the leadership reload to promote leases")
+	require.Nil(t, constructorCheckpointTimer)
 
-	l2, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 300, ID: 7002})
+	l2, err := oldLeader.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: 7002})
 	require.NoError(t, err)
 
 	// Before reload the new leader does not know L2 (etcd reports TTL=-1 for an
@@ -2839,6 +2859,13 @@ func TestReloadLeasesAdoptsLeasesGrantedAfterSnapshot(t *testing.T) {
 
 	// Simulate leadership acquisition.
 	require.NoError(t, newLeader.ReloadLeases(ctx))
+	newLeader.leaseMu.Lock()
+	promotedExpiryTimer := newLeader.leases[l1.ID].timer
+	promotedCheckpointTimer := newLeader.leases[l1.ID].checkpointTimer
+	newLeader.leaseMu.Unlock()
+	require.NotNil(t, promotedExpiryTimer,
+		"leadership reload must arm expiry work for the primary")
+	require.NotNil(t, promotedCheckpointTimer)
 
 	// After reload both leases are known with healthy TTLs.
 	ttl1, err := newLeader.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: l1.ID})
@@ -2879,6 +2906,75 @@ func TestLeaseSnapshotIsUnavailableUntilReloadCompletes(t *testing.T) {
 		Key: []byte("/registry/leases/reloading"), Value: []byte("value"), Lease: lease.ID,
 	})
 	require.NoError(t, err)
+}
+
+func TestLeaseExpiryWaitsForCurrentEpochReload(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 7103
+	key := []byte("/registry/leases/pre-ready-expiry")
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: leaseID})
+	require.NoError(t, err)
+	_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("must-survive"), Lease: leaseID})
+	require.NoError(t, err)
+
+	server.PrepareLeaseReload()
+	server.leaseMu.Lock()
+	server.leases[leaseID].deadline = time.Now().Add(-time.Second)
+	server.leaseMu.Unlock()
+	server.expireLease(leaseID)
+
+	beforeReady, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, beforeReady.Kvs, 1,
+		"a queued expiry callback must not mutate storage before ReloadLeases")
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	server.leaseMu.Lock()
+	server.leases[leaseID].deadline = time.Now().Add(-time.Second)
+	server.leaseMu.Unlock()
+	server.expireLease(leaseID)
+
+	afterReady, err := server.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, afterReady.Kvs, "the current ready epoch must still expire the lease")
+}
+
+func TestLeaseCheckpointWaitsForCurrentEpochReload(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	const leaseID int64 = 7104
+
+	_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 600, ID: leaseID})
+	require.NoError(t, err)
+	server.PrepareLeaseReload()
+	server.leaseMu.Lock()
+	server.leases[leaseID].deadline = time.Now().Add(240 * time.Second)
+	server.leaseMu.Unlock()
+	server.checkpointLease(leaseID)
+
+	data, err := server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	var beforeReady leaseRecord
+	require.NoError(t, json.Unmarshal(data, &beforeReady))
+	require.Zero(t, beforeReady.RemainingTTL,
+		"a queued checkpoint callback must not persist before ReloadLeases")
+
+	require.NoError(t, server.ReloadLeases(ctx))
+	server.leaseMu.Lock()
+	server.leases[leaseID].deadline = time.Now().Add(240 * time.Second)
+	server.leaseMu.Unlock()
+	server.checkpointLease(leaseID)
+
+	data, err = server.backend.InternalGet(ctx, leaseStorageKey(leaseID))
+	require.NoError(t, err)
+	var afterReady leaseRecord
+	require.NoError(t, json.Unmarshal(data, &afterReady))
+	require.InDelta(t, 240, afterReady.RemainingTTL, 1,
+		"the current ready epoch must still persist lease checkpoints")
 }
 
 // TestKeepAliveDoesNotWriteStorage pins the write-amplification fix: a

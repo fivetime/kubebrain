@@ -1419,6 +1419,15 @@ func (m *leaseManager) expireLeaseGenerationWithContext(workerCtx context.Contex
 		m.retryLeaseExpiry(id, generation)
 		return
 	}
+	// A callback may already be queued when leadership preparation withdraws the
+	// old snapshot. Election ownership alone is not enough: acting before the
+	// authoritative ReloadLeases for this term can revoke a lease that the
+	// previous leader renewed after the snapshot. Keep retrying until the exact
+	// epoch has published its fully reloaded lease state.
+	if !m.leaseReady.Load() || m.leaseReadyEpoch.Load() != epoch {
+		m.retryLeaseExpiry(id, generation)
+		return
+	}
 	// Upstream expired leases are revoked through EtcdServer.LeaseRevoke, so the
 	// CORRUPT applier defers both user-key deletion and lease metadata removal.
 	// Keep the same boundary here: retaining the complete lease lets the normal
@@ -1645,7 +1654,12 @@ func (m *leaseManager) restoreLeases(ctx context.Context) error {
 	}
 	// Load into memory only; migration writes happen on leadership (ReloadLeases),
 	// since restore runs in New() before this node has necessarily won election.
-	m.applyLeaseRecords(records, attachments)
+	// Match etcd lessor.initAndRecover: recovery reconstructs the follower-side
+	// lease index, but primary-only expiry/checkpoint work is not armed until
+	// leadership promotion (ReloadLeases). Besides avoiding useless follower
+	// timers, this prevents constructor-time state from ever racing the first
+	// authoritative reload.
+	m.applyLeaseRecordsInactive(records, attachments)
 	return nil
 }
 
@@ -1978,6 +1992,14 @@ func (m *leaseManager) migrateLegacyLeases(ctx context.Context, migrations []leg
 // leader can migrate it to the new per-key format. Safe on both first restore
 // (empty maps) and leadership reload.
 func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[string]int64) (legacy []legacyLeaseMigration) {
+	return m.applyLeaseRecordsWithPrimary(records, attachments, true)
+}
+
+func (m *leaseManager) applyLeaseRecordsInactive(records []leaseRecord, attachments map[string]int64) (legacy []legacyLeaseMigration) {
+	return m.applyLeaseRecordsWithPrimary(records, attachments, false)
+}
+
+func (m *leaseManager) applyLeaseRecordsWithPrimary(records []leaseRecord, attachments map[string]int64, primary bool) (legacy []legacyLeaseMigration) {
 	now := time.Now()
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
@@ -2048,6 +2070,11 @@ func (m *leaseManager) applyLeaseRecords(records []leaseRecord, attachments map[
 		m.keyLeaseIndex[key] = id
 	}
 	legacy = m.legacyMigrationsLocked(records)
+	if !primary {
+		atomic.StoreInt64(&m.leasedKeyCount, int64(len(m.keyLeaseIndex)))
+		return legacy
+	}
+
 	// Match etcd lessor.Promote: a large recovered lease set commonly has the
 	// same reconstructed deadline. Spread that pile-up before arming timers so a
 	// leader change cannot trigger an unbounded burst of revoke transactions.
@@ -2501,7 +2528,7 @@ func (m *leaseManager) checkpointLeaseWithContext(workerCtx context.Context, id 
 
 func (m *leaseManager) checkpointLeaseGenerationWithContext(workerCtx context.Context, id int64, generation, expectedEpoch uint64) {
 	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
-	if !leadingFresh || epoch != expectedEpoch {
+	if !leadingFresh || epoch != expectedEpoch || !m.leaseReady.Load() || m.leaseReadyEpoch.Load() != epoch {
 		m.retryLeaseCheckpoint(id, generation)
 		return
 	}
