@@ -49,7 +49,7 @@ func runDecodedBoundaryPagedStreamScenario(t *testing.T, endpoint string, lower 
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, conn.Close()) })
 	kv := etcdserverpb.NewKVClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 	end := append(append([]byte(nil), lower...), 1)
 	t.Cleanup(func() {
@@ -65,12 +65,40 @@ func runDecodedBoundaryPagedStreamScenario(t *testing.T, endpoint string, lower 
 	for index := 2; index < len(keys); index++ {
 		keys[index] = append(append(append([]byte(nil), lower...), 0), []byte(fmt.Sprintf("/%03d", index))...)
 	}
+	var historicalRevision int64
 	for index, key := range keys {
-		_, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte(fmt.Sprintf("value-%03d", index))})
+		putResponse, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte(fmt.Sprintf("value-%03d", index))})
 		require.NoError(t, putErr)
+		historicalRevision = putResponse.Header.Revision
 	}
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: keys[0], Value: []byte("current-only")})
+	require.NoError(t, err)
+	_, err = kv.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: keys[2]})
+	require.NoError(t, err)
+	newCurrentKey := append(append(append([]byte(nil), lower...), 0), []byte("/current-only")...)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: newCurrentKey, Value: []byte("current-only")})
+	require.NoError(t, err)
 
-	stream, err := kv.RangeStream(ctx, &etcdserverpb.RangeRequest{Key: lower, RangeEnd: end})
+	// Warm the target replica's ordering index strictly after historicalRevision.
+	// KubeBrain must then move BaseRev backwards and replay these three durable
+	// changes forward; serving the historical request by materializing all KVs
+	// would remain wire-compatible but fail the resource invariant under test.
+	warm, err := kv.RangeStream(ctx, &etcdserverpb.RangeRequest{Key: lower, RangeEnd: end})
+	require.NoError(t, err)
+	var warmCount int
+	for {
+		response, recvErr := warm.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		warmCount += len(response.GetRangeResponse().Kvs)
+	}
+	require.Equal(t, len(keys), warmCount, "delete+create keeps the current cardinality stable")
+
+	stream, err := kv.RangeStream(ctx, &etcdserverpb.RangeRequest{
+		Key: lower, RangeEnd: end, Revision: historicalRevision,
+	})
 	require.NoError(t, err)
 	projection := decodedBoundaryRangeProjection{}
 	for {
