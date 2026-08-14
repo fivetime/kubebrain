@@ -32,6 +32,65 @@ func TestDecodedBoundaryRangeOptionsDifferentialAgainstReferenceEtcd(t *testing.
 	require.Equal(t, referenceOutcome, runDecodedBoundaryRangeOptionsScenario(t, compatEndpoint(t), lower))
 }
 
+func TestDecodedBoundaryRangeStreamPagedDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run decoded-boundary paged stream differential tests")
+	}
+	lower := []byte("$" + testPrefix(t) + "/decoded-paged")
+	referenceOutcome := runDecodedBoundaryPagedStreamScenario(t, reference, lower)
+	require.Equal(t, referenceOutcome, runDecodedBoundaryPagedStreamScenario(t, compatEndpoint(t), lower))
+}
+
+func runDecodedBoundaryPagedStreamScenario(t *testing.T, endpoint string, lower []byte) decodedBoundaryRangeProjection {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	kv := etcdserverpb.NewKVClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	end := append(append([]byte(nil), lower...), 1)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		_, cleanupErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: lower, RangeEnd: end})
+		require.NoError(t, cleanupErr)
+	})
+
+	keys := make([][]byte, 303)
+	keys[0] = append([]byte(nil), lower...)
+	keys[1] = append(append([]byte(nil), lower...), 0)
+	for index := 2; index < len(keys); index++ {
+		keys[index] = append(append(append([]byte(nil), lower...), 0), []byte(fmt.Sprintf("/%03d", index))...)
+	}
+	for index, key := range keys {
+		_, putErr := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte(fmt.Sprintf("value-%03d", index))})
+		require.NoError(t, putErr)
+	}
+
+	stream, err := kv.RangeStream(ctx, &etcdserverpb.RangeRequest{Key: lower, RangeEnd: end})
+	require.NoError(t, err)
+	projection := decodedBoundaryRangeProjection{}
+	for {
+		response, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		require.NoError(t, recvErr)
+		rangeResponse := response.GetRangeResponse()
+		projection.Count = rangeResponse.Count
+		projection.More = rangeResponse.More
+		for _, item := range rangeResponse.Kvs {
+			projection.Keys = append(projection.Keys, string(item.Key))
+			projection.Values = append(projection.Values, string(item.Value))
+		}
+	}
+	require.Len(t, projection.Keys, len(keys))
+	return projection
+}
+
 func runDecodedBoundaryRangeOptionsScenario(t *testing.T, endpoint string, lower []byte) map[string]decodedBoundaryRangeProjection {
 	t.Helper()
 	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
