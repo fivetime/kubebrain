@@ -49789,6 +49789,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   4.25 秒通过。CI 同时把本地 fork 纳入独立 build/vet/test 和 govulncheck；维护风险与真实 TiKV
   round-trip 升级门禁已写入生产手册。
 
+- A4608 将 A4607 的物理 transport 结论扩展到客户端可观察的 Watch/Txn/Lease 组合语义，并把人工
+  round-trip 升级为 integration 发布门禁。对照 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/watch.go`、
+  `server/etcdserver/v3_server.go` 与默认 1.5 MiB request budget，提交 `fb40ef55` 使用同一个
+  600 KiB Key 建立 `PrevKv=true` Watch，依次执行 Version==0 Txn create、Value==旧值 Txn update，
+  两次 Put 都绑定同一显式 lease，最后 LeaseRevoke。投影逐字段比较 Txn Succeeded、相对 revision、
+  create/update/delete event、完整 key SHA-256、value/PrevKV、Version、Create/ModRevision 与 lease
+  presence；首轮唯一 RED 是 fixture 错把 Delete event 的零 CreateRevision 减实例基准，归一化零哨兵
+  后真实 upstream/KubeBrain 连续 3/3 通过（每轮 1.38–1.49 秒）。这证明大 Key 同时经过 Watch create
+  请求、compare read、用户 MVCC mutation、内部 lease attachment、event log、PrevKV 和 revoke delete
+  路径时保持 etcd 语义；本轮没有为了制造 diff 而改生产 handler。
+
+  审计又确认普通根测试因未设置 `KUBEBRAIN_TIKV_PD` 会跳过物理 round-trip。提交 `b539dd55` 新增
+  `hack/dev/tikv-large-key-smoke.sh`：在 CI host 以当前 root module/fork 编译静态 storage test，选择
+  Ready KubeBrain Pod、复制到固定 `/tmp` 路径并从 Pod 内直连 PD 服务，严格运行
+  `TestLargeKeyRoundTripTiKV`，trap 同时清理远端和本地制品；context、namespace 和 PD endpoint 都先
+  fail-closed 校验。该 gate 已在当前 3 PD/3 TiKV 集群真实通过（0.34 秒），并接入 scheduled/manual
+  integration workflow 的 dev stack 启动后、消费端验证前。以后 client-go fork、Docker context 或
+  TiKV key limit 任何一层回退都会直接阻断 integration，而不再依赖人工记得设置 opt-in 环境变量。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
