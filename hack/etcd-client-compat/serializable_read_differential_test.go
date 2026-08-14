@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -120,6 +121,8 @@ func runSerializableReadScenario(t *testing.T, endpoint, instance string) serial
 	firstRevision := first.Header.Revision
 	second, err := cli.Put(ctx, key, "v2")
 	require.NoError(t, err)
+	requireSerializableRevisionVisible(t, ctx, etcdserverpb.NewKVClient(cli.ActiveConnection()),
+		[]byte(key), nil, second.Header.Revision)
 
 	current, err := cli.Get(ctx, key, clientv3.WithSerializable())
 	require.NoError(t, err)
@@ -144,4 +147,20 @@ func runSerializableReadScenario(t *testing.T, endpoint, instance string) serial
 		currentHeaderDelta: current.Header.Revision - second.Header.Revision,
 		historyHeaderDelta: historical.Header.Revision - second.Header.Revision,
 	}
+}
+
+func requireSerializableRevisionVisible(
+	t *testing.T,
+	ctx context.Context,
+	kv etcdserverpb.KVClient,
+	key, rangeEnd []byte,
+	revision int64,
+) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		response, err := kv.Range(ctx, &etcdserverpb.RangeRequest{
+			Key: key, RangeEnd: rangeEnd, Serializable: true,
+		})
+		return err == nil && response.Header != nil && response.Header.Revision >= revision
+	}, 10*time.Second, 20*time.Millisecond, "serializable snapshot did not reach revision %d", revision)
 }

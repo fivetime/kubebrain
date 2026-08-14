@@ -91,6 +91,8 @@ func runGeneratedTxnRangeScenario(
 	leased, err := cli.Put(ctx, prefix+"f", "vf1", clientv3.WithLease(lease.ID))
 	require.NoError(t, err)
 	revisions[9] = leased.Header.Revision
+	requireSerializableRevisionVisible(t, ctx, etcdserverpb.NewKVClient(cli.ActiveConnection()),
+		[]byte(prefix), []byte(clientv3.GetPrefixRangeEnd(prefix)), revisions[9])
 	revisionOrdinal := make(map[int64]int, len(revisions))
 	for ordinal := 1; ordinal < len(revisions); ordinal++ {
 		revisionOrdinal[revisions[ordinal]] = ordinal

@@ -75,6 +75,7 @@ func runCompareMatrixScenario(t *testing.T, endpoint, instance string) []compare
 	require.NoError(t, err)
 	updateA, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: keyA, Value: []byte("same")})
 	require.NoError(t, err)
+	requireSerializableRevisionVisible(t, ctx, kv, []byte(prefix), rangeEnd, updateA.Header.Revision)
 
 	absent := []byte(prefix + "absent")
 	emptyPrefix := prefix + "empty/"

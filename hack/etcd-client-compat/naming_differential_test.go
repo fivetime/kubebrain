@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/naming/endpoints"
 	etcdresolver "go.etcd.io/etcd/client/v3/naming/resolver"
@@ -247,6 +248,12 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		endpoints.Endpoint{Addr: unknownPeerAddr}, clientv3.WithLease(expiringLease.ID)))
 	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/renewed",
 		endpoints.Endpoint{Addr: serviceUnknownAddr}, clientv3.WithLease(renewedLease.ID)))
+	currentResolverSet, err := client.Get(ctx, resolverPrefix+"/", clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, currentResolverSet.Kvs, 5)
+	requireSerializableRevisionVisible(t, ctx, etcdserverpb.NewKVClient(client.ActiveConnection()),
+		[]byte(resolverPrefix+"/"), []byte(clientv3.GetPrefixRangeEnd(resolverPrefix+"/")),
+		currentResolverSet.Header.Revision)
 	withExpiringStatuses := make(map[string]struct{}, 4)
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
