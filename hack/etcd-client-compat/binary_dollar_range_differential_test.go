@@ -23,6 +23,8 @@ type dollarKeyRangeOutcome struct {
 	StreamCount     int64
 	AncestorCount   int64
 	AncestorStream  int64
+	EscapedCount    int64
+	EscapedStream   int64
 }
 
 type dollarRevisionCollisionOutcome struct {
@@ -158,6 +160,9 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 	ancestorLower := []byte("$" + testPrefix(t) + "/" + instance + "/ancestor")
 	ancestorChild := append(append([]byte(nil), ancestorLower...), 'x')
 	ancestorEnd := append(append([]byte(nil), ancestorLower...), 'z')
+	escapedLower := []byte("$" + testPrefix(t) + "/" + instance + "/escaped")
+	escapedChild := append(append([]byte(nil), escapedLower...), 0, 'y')
+	escapedEnd := append(append([]byte(nil), escapedLower...), 0, 'z')
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
@@ -170,6 +175,12 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 		require.Zero(t, remaining.Count, "dollar-key scenario leaked its test range")
 		_, cleanupErr = kv.DeleteRange(cleanupCtx,
 			&etcdserverpb.DeleteRangeRequest{Key: ancestorLower})
+		require.NoError(t, cleanupErr)
+		_, cleanupErr = kv.DeleteRange(cleanupCtx,
+			&etcdserverpb.DeleteRangeRequest{Key: escapedLower})
+		require.NoError(t, cleanupErr)
+		_, cleanupErr = kv.DeleteRange(cleanupCtx,
+			&etcdserverpb.DeleteRangeRequest{Key: escapedChild})
 		require.NoError(t, cleanupErr)
 		_, cleanupErr = kv.DeleteRange(cleanupCtx,
 			&etcdserverpb.DeleteRangeRequest{Key: ancestorChild})
@@ -187,6 +198,10 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: ancestorLower, Value: []byte("ancestor")})
 	require.NoError(t, err)
 	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: ancestorChild, Value: []byte("child")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: escapedLower, Value: []byte("escaped")})
+	require.NoError(t, err)
+	_, err = kv.Put(ctx, &etcdserverpb.PutRequest{Key: escapedChild, Value: []byte("escaped-child")})
 	require.NoError(t, err)
 
 	lowerResponse, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: lower})
@@ -225,10 +240,26 @@ func runDollarKeyNarrowRangeScenario(t *testing.T, endpoint, instance string) do
 		}
 		ancestorStream += int64(len(response.GetRangeResponse().GetKvs()))
 	}
+	escapedResponse, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: escapedLower, RangeEnd: escapedEnd})
+	require.NoError(t, err)
+	require.Len(t, escapedResponse.Kvs, 2)
+	escapedStreamResponse, err := kv.RangeStream(ctx,
+		&etcdserverpb.RangeRequest{Key: escapedLower, RangeEnd: escapedEnd})
+	require.NoError(t, err)
+	var escapedStream int64
+	for {
+		response, recvErr := escapedStreamResponse.Recv()
+		if recvErr != nil {
+			require.ErrorIs(t, recvErr, io.EOF)
+			break
+		}
+		escapedStream += int64(len(response.GetRangeResponse().GetKvs()))
+	}
 	return dollarKeyRangeOutcome{
 		LowerValue: string(lowerResponse.Kvs[0].Value), CurrentCount: current.Count,
 		HistoricalValue: string(historical.Kvs[0].Value), PrefixCount: prefixResponse.Count,
 		StreamCount: streamCount, AncestorCount: ancestorResponse.Count,
-		AncestorStream: ancestorStream,
+		AncestorStream: ancestorStream, EscapedCount: escapedResponse.Count,
+		EscapedStream: escapedStream,
 	}
 }
