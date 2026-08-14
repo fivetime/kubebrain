@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"golang.org/x/sync/errgroup"
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
@@ -339,20 +340,44 @@ func (b *backend) decodedUserRange(
 	if err != nil {
 		return nil, err
 	}
-	for _, key := range exactKeys {
-		value, modRevision, getErr := b.get(ctx, key, revision)
-		if errors.Is(getErr, storage.ErrKeyNotFound) {
-			continue
+	exactKVs, err := b.readDecodedRangeExactKeys(ctx, exactKeys, revision)
+	if err != nil {
+		return nil, err
+	}
+	for _, kv := range exactKVs {
+		if kv != nil {
+			kvs = append(kvs, kv)
 		}
-		if getErr != nil {
-			return nil, getErr
-		}
-		kvs = append(kvs, &proto.KeyValue{Key: key, Value: value, Revision: modRevision})
 	}
 	sort.Slice(kvs, func(i, j int) bool {
 		return bytes.Compare(kvs[i].Key, kvs[j].Key) < 0
 	})
 	return kvs, nil
+}
+
+// readDecodedRangeExactKeys reconciles the bounded escaped-ancestor set with a
+// small amount of parallelism. TiKV point/history reads otherwise serialize up
+// to 128 network round trips. All workers inherit the caller's pinned snapshot;
+// output slots preserve input order and a missing/tombstoned key stays nil.
+func (b *backend) readDecodedRangeExactKeys(ctx context.Context, keys [][]byte, revision uint64) ([]*proto.KeyValue, error) {
+	result := make([]*proto.KeyValue, len(keys))
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxDecodedRangeExactReadWorkers)
+	for index, key := range keys {
+		index, key := index, key
+		group.Go(func() error {
+			value, modRevision, err := b.get(groupCtx, key, revision)
+			if errors.Is(err, storage.ErrKeyNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			result[index] = &proto.KeyValue{Key: key, Value: value, Revision: modRevision}
+			return nil
+		})
+	}
+	return result, group.Wait()
 }
 
 // withRangeSnapshotTimestamp binds every physical step of a decoded range to
@@ -381,6 +406,7 @@ const (
 	// slower but keeps request memory linear and remains semantically exact.
 	maxDecodedRangeExactAncestors     = 128
 	maxDecodedRangeExactAncestorBytes = 64 << 10
+	maxDecodedRangeExactReadWorkers   = 16
 )
 
 // decodedUserRangeScanPlan returns a narrow raw interval plus the bounded set
@@ -506,13 +532,13 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 			ctx, scanStart, scanEnd, r.Key, userEnd, exactKeys, rev,
 		)
 		if err == nil {
-			for _, key := range exactKeys {
-				_, _, getErr := b.get(ctx, key, rev)
-				if getErr == nil {
-					count++
-				} else if !errors.Is(getErr, storage.ErrKeyNotFound) {
-					err = getErr
-					break
+			var exactKVs []*proto.KeyValue
+			exactKVs, err = b.readDecodedRangeExactKeys(ctx, exactKeys, rev)
+			if err == nil {
+				for _, kv := range exactKVs {
+					if kv != nil {
+						count++
+					}
 				}
 			}
 		}

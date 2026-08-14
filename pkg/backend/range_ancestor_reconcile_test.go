@@ -18,6 +18,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
@@ -33,6 +34,9 @@ type rangeSnapshotTraceStorage struct {
 	mu             sync.Mutex
 	iterTimestamps []uint64
 	getTimestamps  []uint64
+	getDelay       time.Duration
+	activeGets     int
+	maxActiveGets  int
 }
 
 func (s *rangeSnapshotTraceStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
@@ -45,7 +49,24 @@ func (s *rangeSnapshotTraceStorage) Iter(ctx context.Context, start, end []byte,
 func (s *rangeSnapshotTraceStorage) GetAt(ctx context.Context, key []byte, timestamp uint64) ([]byte, error) {
 	s.mu.Lock()
 	s.getTimestamps = append(s.getTimestamps, timestamp)
+	s.activeGets++
+	if s.activeGets > s.maxActiveGets {
+		s.maxActiveGets = s.activeGets
+	}
+	delay := s.getDelay
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.activeGets--
+		s.mu.Unlock()
+	}()
+	if delay != 0 {
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return s.KvStorage.Get(ctx, key)
 }
 
@@ -69,6 +90,41 @@ func (s *rangeSnapshotTraceStorage) resetTrace() {
 	defer s.mu.Unlock()
 	s.iterTimestamps = nil
 	s.getTimestamps = nil
+	s.maxActiveGets = 0
+}
+
+func TestDecodedRangeExactKeysUseBoundedParallelSnapshotReads(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore, getDelay: 5 * time.Millisecond}
+	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
+	b := NewBackend(store, Config{
+		Prefix: "/kubebrain/range-ancestor-parallel", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	ctx := context.Background()
+	keys := make([][]byte, maxDecodedRangeExactReadWorkers+1)
+	for index := range keys {
+		keys[index] = []byte{byte('a' + index)}
+		_, err := b.Create(ctx, &proto.CreateRequest{Key: keys[index], Value: []byte{byte(index)}})
+		require.NoError(t, err)
+	}
+	pinned, err := b.withRangeSnapshotTimestamp(ctx)
+	require.NoError(t, err)
+	store.resetTrace()
+	result, err := b.readDecodedRangeExactKeys(pinned, keys, b.GetCurrentRevision())
+	require.NoError(t, err)
+	require.Len(t, result, len(keys))
+	for index, kv := range result {
+		require.Equal(t, keys[index], kv.Key)
+		require.Equal(t, []byte{byte(index)}, StripInlineValue(kv.Value))
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Equal(t, maxDecodedRangeExactReadWorkers, store.maxActiveGets)
+	require.NotEmpty(t, store.getTimestamps)
+	for _, timestamp := range store.getTimestamps {
+		require.Equal(t, store.getTimestamps[0], timestamp)
+	}
 }
 
 func (s *rangeSnapshotTraceStorage) requireOneSnapshot(t *testing.T) {
