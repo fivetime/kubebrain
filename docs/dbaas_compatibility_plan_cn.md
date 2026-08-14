@@ -50824,7 +50824,9 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
   确定性回归覆盖 exact live/tombstone/authoritative-absence 采样、Reset loading 禁用、stale/missing/malformed index、missing/
   tombstone target、无 witness 不告警、物理 revision 高于 ready watermark、historical Get 与 pinned checkpoint。focused race
-  10 轮分别通过（countindex 1.152 秒、backend 7.903 秒），完整 backend 78.007 秒、backend/server vet 通过。server 全套
+  10 轮分别通过（countindex 1.152 秒、backend 7.903 秒）；malformed 分支加入前完整 backend 曾以 78.007 秒通过，
+  但随后扩大该分支为持久 CORRUPT 告警时，一条旧测试仍断言 Update/TxnApply 成功，因而最终完整门禁并非该次
+  78.007 秒结果。该旧断言已在 A4645 按生产语义修正，最终完整 backend 78.399 秒通过。backend/server vet 通过。server 全套
   三轮在显式 30 分钟 package timeout 下通过；最终单轮曾由既有 auth client 重试时序得到一次 DeadlineExceeded，目标
   `TestClientAuthPasswordChangeInvalidatesOldPasswordAndToken` 隔离 10 轮 27.005 秒全通过，资源空闲后最终 server 全套复跑
   通过。该 flaky 与本次 backend/count-index 路径无交集，但未被隐藏为全绿首跑。
@@ -50848,6 +50850,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:d22eff8da74705f4255d7943d4e3d9fcabd7a11bd3e54516493ce9bd7415d2bc`，kind 导入后三个 Pod 的 runtime
   imageID 均为 `sha256:3b276b86a6edba34c5ce844b80cfc2ebb0938ce2006fe62532620bbe3cf09527`。共享 TiKV 未注入损坏，
   运行期破坏/修复与 Disarm 闭环由隔离存储测试证明。
+
+- A4645 修复 A4644 真实滚动重启暴露的 shutdown/admission handoff 缺口。生产提交
+  `de1a028b950750c10d239089efaca9bce1aa0a5b` 在 process admission 注册成功后立即安装 context watcher：
+  `ctx.Done()` 一到就与 endpoint/backend drain 并行调用 admission `Close`，不再等到 `Run` 的末尾 defer；返回的
+  cleanup 仍覆盖非取消退出，并以 `sync.Once` 保证 watcher 与 cleanup 竞态时只关闭一次。进程强制退出窗口同时从
+  3 秒提高到 15 秒，明确覆盖 admission Close 自身最多 5 秒的 PD 请求预算。这样新 Pod 不必依赖旧 identity lease
+  自然超时，且没有放松“同一 process identity 只能有一个 active session”的 fail-closed 注册约束。
+
+  定向 race 10 轮通过（`cmd/option` 1.825 秒、`pkg/backend/admissionfence` 53.215 秒），覆盖 context cancel 立即关闭、
+  cleanup 与 watcher exact-once，以及非取消退出关闭。A4644 malformed revision-index 用例的旧成功断言也按生产行为修正：
+  point Get 建立持久 CORRUPT 后，Update/TxnApply 必须返回 `ErrCorruptAlarmActive`，TxnApply header revision 保持当前
+  revision，durable corrupt bytes 不变。修正后 `go test ./cmd/... ./pkg/backend/... -count=1` 完整通过，其中 backend
+  78.399 秒、admissionfence 5.276 秒；`go vet ./cmd/... ./pkg/backend/... ./pkg/server/etcd/...` 通过。这里把测试修正
+  记录为对已实现生产语义的校准，而不是 shutdown 修复本身。
+
+  镜像 `kubebrain:a4645-de1a028b` 内嵌版本 `a4645`、上述完整 SHA、Go 1.26.5、TiKV storage、linux/amd64、UTC
+  build time `2026-08-14T18:15:00Z`；本地 OCI manifest list 为
+  `sha256:c290b9524d86981b39ad76582e3af400beb84c5a2a0e1ed933602f184fef5e10`，kind 运行时三个 Pod 的 imageID 均为
+  `sha256:a80284d4331ff5cfb8b6d0ceef835ce8fa913bfb22bdc908a2742dfbc6c147ee`。首次镜像 rollout 后，再连续执行两轮
+  StatefulSet rollout restart；每轮三副本均一次收敛，终态 Ready 且各自 `restartCount=0`，当前日志无
+  `restore admission is closed`/`already active`、force exit、panic 或 fatal。最终 endpoint 可提交 proposal，AlarmList
+  为空，MemberList 精确三成员，`/a4644/` 零残留；revision/raft index/applied index 均保持
+  `468126003565884164`，term 从 A4644 的 701 推进到 707。主 PD `kb-pd-0..2` 与 TiKV `kb-tikv-0..2` 均 Ready、
+  零重启；历史 restore Pod 未混入该计数。该证据证明本次观测窗口内连续 handoff 已消除 A4644 的重复启动故障，
+  不把两轮本地 kind 验证外推为任意网络分区或 PD 超时下的长期可靠性结论。
 
 ### P2：运维兼容和长期验证
 
