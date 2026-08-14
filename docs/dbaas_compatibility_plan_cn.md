@@ -51109,6 +51109,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   回到基线。该项关闭 A4652 核心运行中“缺少三 direct replica endpoint”的证据空白，但不替代尚未执行的真实 Envoy、外部
   L4/L7 reset 和独立 metrics profile。
 
+- A4654 使用精确 A4653 镜像和 pod0 独立 client/metrics NodePort（30083/30084）补跑 metrics profile。独立指标门禁
+  `TestUnknownAlarmMetricDifferentialAgainstReferenceEtcd` 通过；核心套件继续执行至结尾，总耗时 808.741 秒。该入口固定
+  到 follower，且 StatefulSet 仍显式配置
+  `--auth-token=jwt,sign-method=HS256,priv-key=/etc/kubebrain-jwt/jwt-hs256-secret`，因此本轮不能作为 simple-token 核心
+  differential 的全绿或全红结论。
+
+  运行中 HTTP Lock 与 Election Observe 的两项 simple-token 断言分别得到 `revision of auth store is old` 和 EOF。最初把它们
+  当作 follower 转发故障的假设被后续证据推翻：固定 follower 与当时 Leader 各连续 3 轮都复现，而切换到未配置 JWT 的
+  `a4653-auth` 三副本夹具后，两项连续 3 轮、共 6 个双端比较全部通过（27.731 秒）。旧 JWT 在 auth revision 变化后失效是
+  JWT provider 契约，不能用 simple-token 的“无关权限变更后旧 token 继续有效”oracle 判定生产兼容性；因此没有修改
+  Lock/Election、auth 实现或测试断言。
+
+  同轮 STM 差分在 follower 上把 `DeleteRetryAttempts=38` 与单节点 reference 的 2 次作精确比较而失败。隔离复跑 follower
+  5 轮稳定为 38--41 次，但最终 value/version、abort、snapshot 与 serializable 结果均一致；固定当前 Leader pod2 后连续
+  3 轮全部与 reference 的 2 次一致（3.342 秒）。`concurrency.RepeatableReads` 的 Get 显式使用 serializable read，而
+  KubeBrain follower 按既有设计从每秒刷新的 GC-protected checkpoint 本地读取；etcd 不保证 follower serializable 的
+  read-your-write，也不把用户 apply 回调次数作为 API 契约。强制该路径转发 Leader 会缩窄 etcd 允许的 follower
+  availability 语义，所以本轮不作生产修改，也不把 808.741 秒运行宣称为核心 suite GREEN。结论是：独立 metrics 门禁已
+  补齐，JWT 与 follower-serializable 两处均为 profile/oracle 边界；真实 Envoy 和外部 L4/L7 reset 仍待专项执行。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
