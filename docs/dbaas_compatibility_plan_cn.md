@@ -49729,6 +49729,34 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明 RangeStream 实际经过 overflow fallback。随后恢复 cap=5,000,000 再次滚动，三副本均 Ready、零重启，
   compat/follower 测试前缀为 0；临时 reference 数据已移入可恢复的用户 Trash，未留下监听端口。
 
+- A4606 将 count-index hit 的 ordering key page 从单一 300-key 上限改为 300 key/1.5MiB 双预算。A4604
+  已限制每次解析 16 个 value，但 `KeysPageIfReady` 会在 index 读锁内复制整页 user keys；旧实现遇到少量
+  大 key 时仍可复制数百 MiB，并生成同样过大的 revision-index BatchGet。提交 `2dc0a0ce` 新增
+  generation-fenced `KeysPageBytesIfReady`：加入下一 live key 会越过 byte budget 时以 `More=true` 停页；若
+  单个合法 key 自身超过预算，则允许它独占一页，确保 exclusive cursor 必然前进。count-index hit 与 A4603
+  spill 现在共用 300/1.5MiB page/run 常量，避免两条有序流路径再次漂移。
+
+  TDD 在既有 303-key index-hit fixture 后加入 3 个约 600KiB key，旧代码产生 1,843,230-byte revision batch
+  并失败；修复后每个 revision batch 的 decoded user-key bytes 均不超过 1.5MiB。index 层另覆盖首个 key
+  大于整页预算、后续 byte-bound pages、More 与 generation 连续性。聚焦 race 20 轮中 countindex 1.229 秒、
+  backend 9.770 秒通过；`go vet ./pkg/backend/...`、backend 全树（主包 75.218 秒）、完整
+  `pkg/server/etcd` 169.871 秒和 compat 全套均通过。提交 `e18d0e9d` 增加永久 current/historical 大 key
+  RangeStream SHA-256 差分。
+
+  真实 TiKV 首轮使用 3×600KiB（upstream etcd 接受）的 fixture 时，KubeBrain Put 被 TiKV v7.5 明确拒绝为
+  `KeyTooLarge { … limit: 8192 }`，从而暴露一个独立且更基础的 P1 差距：当前把 user key 直接嵌入 physical
+  revision/object/event key，不能覆盖 etcd 约 1.5MiB 请求边界内的大 key；并且目前向客户端泄漏 `Unknown`
+  storage error。该差距不能靠缩小测试或调整分页消除，后续需要带 mixed-version 发布/回填协议的 hash/ID
+  间接 key schema，并在冲突校验、Range 排序、Watch/Lease/Delete/Txn、snapshot/restore 全链维护原始 key。
+  提交 `c867132d` 将本项分页 fixture 改为 220×7KiB：总 key bytes 仍超过 1.5MiB，但每个 physical key 留在
+  当前 TiKV 上限内；对固定 upstream 的 current/historical RangeStream 差分 16.304 秒通过。
+
+  精确镜像 `kubebrain:a4606-2dc0a0ce`（内嵌 SHA
+  `2dc0a0ce856b224c973288bfa504d35c91c2a0d1`，构建时间 `2026-08-14T04:48:00Z`，OCI manifest list
+  `sha256:84fe90d1d79b2e99128368025f0490ccf6184d25da866f4042b21bbc61933bc1`，运行用户
+  `65532:65532`）已滚动到独立 TiKV/PD 三副本，全部 Ready、零重启，cap 保持 5,000,000。compat 前缀为
+  0，临时 reference 数据已移入可恢复的用户 Trash，未留下 reference 监听端口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
