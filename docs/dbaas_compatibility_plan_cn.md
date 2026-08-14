@@ -49936,8 +49936,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   滚动期间，同一个 TTL=60 LeaseKeepAlive stream 在多次 leader 切换前后持续返回 TTL=60；滚动结束后
   remaining TTL=32 且绑定键仍存在。最终 KubeBrain 3/3 Ready、零重启、运行 SHA 一致，三个 endpoint
   health 均可提交 proposal，AlarmList 为空，三 Pod 启动日志的 lease restore/reload/checkpoint/expiry failure、
-  panic、fatal、corrupt 匹配均为零；在线 lease/key fixture 已 revoke 清理。为避免影响共享验证集群的其他
-  客户端，本轮没有临时启用全局 auth；特定 stale-authority 场景由上述共享 backend 双实例回归长期固定。
+  panic、fatal、corrupt 匹配均为零；在线 lease/key fixture 已 revoke 清理。
+
+  2026-08-14 又在同一独立 TiKV/PD 上用隔离 keyspace `a4614-auth-follower` 启动两个临时生产镜像 Pod，补齐
+  真实多副本 auth 证据。A 先成为 member `cd79d97d` 的 leader；创建 TTL=300 lease 并绑定
+  `/denied/stale`、启用 root/Alice RBAC 后才启动 B，使 member `1ee2c586` 的 follower 构造快照明确包含旧
+  attachment。随后 leader 将旧 key 解绑并改绑 Alice 可写的 `/allowed/current`，Alice 直连 B 执行
+  `lease keep-alive --once` 成功返回 TTL=300；root 再把当前 `/denied/current` 绑入同一 lease 后，Alice
+  仍直连 B 的相同请求退出码为 2 且返回 `etcdserver: permission denied`。这同时证明 ingress 确为 follower、
+  陈旧 snapshot 不再产生 false denial，以及最终授权仍由 leader 的当前 attachment 执行。两临时 Pod 的
+  panic/fatal/lease failure 扫描为空；验证结束后显式删除三个 key、revoke lease、关闭 auth、删除临时用户/
+  角色和全部 Pod/Service，主 KubeBrain、PD、TiKV 三副本保持 Ready、零重启。该隔离 keyspace 避免改变共享
+  生产验证 endpoint 的全局 auth 状态，确定性共享-backend RED 仍作为长期自动化回归。
 
 ### P2：运维兼容和长期验证
 
