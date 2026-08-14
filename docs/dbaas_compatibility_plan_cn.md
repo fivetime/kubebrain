@@ -49674,6 +49674,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内存 tier/count-index cap。若要消除该磁盘与首包延迟，后续仍需带混合版本发布协议的 durable order index；
   不能仅在新 binary 写路径旁挂目录而忽略旧 writer 和回填发布水位。
 
+- A4604 收紧 A4603 最终 300-key 页的 value 峰值。upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go:55-82`
+  把 revision/compact watermark 与 backend ReadTx 固定在同一读事务；KubeBrain 已用 pinned TiKV TSO 对齐该
+  快照语义，但此前 count-index hit 和 spill 最终 run 都会先 BatchGet 并保留整页最多 300 个对象值，再交给
+  etcd server 按 `max-request-bytes` 拆 wire message。合法 value 接近 1.5MiB 时，wire 拆分并不能阻止 backend
+  单 stream 在拆分前暂存约 450MiB。
+
+  提交 `e19a461f` 保留每页最多 300 条轻量 revision-index 的单次 region-aware BatchGet，随后在同一 pinned
+  TSO 下将 object-key BatchGet、历史/legacy 精确回退和 backend response 全部切为最多 16 个 value；count-index
+  与 spill 输出 channel 同时改为无缓冲，以 receiver backpressure 防止多个大 value 页在 gRPC 消费前排队。
+  因而内存界限不再随 300-key ordering page 放大，同时没有把常见 current 路径退化成每 16 键一次 revision
+  metadata 往返。缺失 revision index、历史 revision 早于 current revision、tombstone/缺对象等原有一致性检查
+  和错误契约保持不变。
+
+  TDD 先在 count-index hit 与 cap=2 spill 两条 303-key 路径复现 backend 单响应为 300 KV 的失败；修复后两条
+  路径均证明 response/object BatchGet 不超过 16、首个 revision metadata batch 仍为 300，且所有分窗沿用同一
+  非零 TiKV TSO。聚焦 race 20 轮 6.527 秒、`go vet ./pkg/backend/...`、`pkg/backend/...` 全树（主包
+  75.098 秒）、完整 `pkg/server/etcd` 173.879 秒和 compat 模块全套均通过。该界限针对单个 value 数量；实际
+  字节峰值仍受部署的 etcd value/request 上限影响，若未来提高上限应同步评估 16-value 窗口，而不能只依赖
+  public wire response 拆分。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
