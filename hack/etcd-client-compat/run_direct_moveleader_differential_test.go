@@ -32,6 +32,7 @@ func TestDirectMoveLeaderDifferentialRunnerFailsClosed(t *testing.T) {
 	require.Contains(t, string(script), "MultiplexedStreamsResumeAcrossExternalL7Reset")
 	require.Contains(t, string(script), "multiplexed-stream-l7-reset)")
 	require.Contains(t, string(script), "rangestream-follower)")
+	require.Contains(t, string(script), "TestDecodedBoundaryLargeValueRangeStreamDifferentialAgainstReferenceEtcd")
 	require.Contains(t, string(script), "^TestRangeStreamFollowerDifferentialAgainstReferenceEtcd$")
 	require.Contains(t, string(script), "envoy-plaintext)")
 	require.Contains(t, string(script), "envoy-tls-passthrough)")

@@ -78,7 +78,7 @@ case "$TEST_SCOPE" in
     test_pattern='^TestMultiplexedStreamsResumeAcrossExternalL7ResetDifferential$'
     ;;
   rangestream-follower)
-    test_pattern='^TestRangeStreamFollowerDifferentialAgainstReferenceEtcd$'
+    test_pattern='^TestRangeStreamFollowerDifferentialAgainstReferenceEtcd$|^TestDecodedBoundaryLargeValueRangeStreamDifferentialAgainstReferenceEtcd$'
     ;;
   envoy-plaintext)
     test_pattern='^TestEnvoyPlaintextProfileDifferential$'
