@@ -67,6 +67,10 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 	if err := ctx.Err(); err != nil {
 		return HashKVResult{}, err
 	}
+	// A witnessed corrupt row must persist the shared write fence before this
+	// exclusive hash barrier is released. Mark ownership so ArmCorrupt's
+	// InternalCAS does not try to reacquire logicalWriteMu through its read side.
+	ctx = b.withLogicalWriteOwnership(ctx)
 
 	current, err := b.safeCurrentRevision(ctx)
 	if err != nil {
@@ -99,13 +103,15 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 	h := crc32.New(hashKVTable)
 	_, _ = h.Write([]byte("key"))
 	type hashRow struct {
-		key   []byte
-		value []byte
+		key      []byte
+		userKey  []byte
+		revision uint64
+		value    []byte
 	}
 	var familyBoundary []byte
 	compactedLatest := make(map[string]hashRow)
 	retained := make([]hashRow, 0)
-	flushFamily := func() {
+	flushFamily := func() error {
 		rows := retained
 		for _, row := range compactedLatest {
 			if !bytes.Equal(row.value, tombStoneBytes) {
@@ -114,11 +120,23 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 		}
 		sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i].key, rows[j].key) < 0 })
 		for _, row := range rows {
+			if b.config.EnableEtcdCompatibility && !bytes.Equal(row.value, tombStoneBytes) {
+				validationErr := b.validateEventObjectValue(ctx, row.userKey, row.revision, row.value)
+				if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+					validationErr = b.persistWitnessedObjectCorruption(
+						ctx, row.userKey, row.revision, row.key, row.value, validationErr,
+					)
+				}
+				if validationErr != nil {
+					return validationErr
+				}
+			}
 			_, _ = h.Write(row.key)
 			_, _ = h.Write(row.value)
 		}
 		clear(compactedLatest)
 		retained = retained[:0]
+		return nil
 	}
 	for {
 		if err := it.Next(ctx); err != nil {
@@ -138,14 +156,18 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 				return HashKVResult{}, errors.New("object key has no revision family boundary")
 			}
 			if familyBoundary != nil && !bytes.Equal(boundary, familyBoundary) {
-				flushFamily()
+				if err := flushFamily(); err != nil {
+					return HashKVResult{}, err
+				}
 			}
 			familyBoundary = append(familyBoundary[:0], boundary...)
 			// Revision-zero entries are per-key indexes, not MVCC values.
 			if revision >= 0 && objectRevision > 0 && objectRevision <= uint64(revision) {
 				row := hashRow{
-					key:   append([]byte(nil), key...),
-					value: append([]byte(nil), it.Val()...),
+					key:      append([]byte(nil), key...),
+					userKey:  append([]byte(nil), userKey...),
+					revision: objectRevision,
+					value:    append([]byte(nil), it.Val()...),
 				}
 				if hasCompactRevision && objectRevision <= compactRevision {
 					compactedLatest[string(userKey)] = row
@@ -155,7 +177,9 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 			}
 		}
 	}
-	flushFamily()
+	if err := flushFamily(); err != nil {
+		return HashKVResult{}, err
+	}
 	return HashKVResult{
 		Hash:            h.Sum32(),
 		HashRevision:    revision,

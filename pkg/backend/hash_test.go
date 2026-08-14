@@ -104,6 +104,87 @@ func TestHashKVHonorsCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestHashKVArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/hash/witnessed-corrupt")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	objectKey := b.coder.EncodeObjectKey(key, created.Header.Revision)
+	objectValue, err := b.kv.Get(ctx, objectKey)
+	require.NoError(t, err)
+	corrupt := b.kv.BeginBatchWrite()
+	corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	hash, err := b.HashKV(ctx, 0)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.Equal(t, HashKVResult{}, hash, "corrupt bytes must not produce a successful diagnostic hash")
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+	_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(prefix + "/hash/blocked"), Value: []byte("blocked")})
+	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+	removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+	require.False(t, removed)
+
+	repair := b.kv.BeginBatchWrite()
+	repair.Put(objectKey, objectValue, 0)
+	require.NoError(t, repair.Commit(ctx))
+	removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.NoError(t, disarmErr)
+	require.True(t, removed)
+	hash, err = b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(created.Header.Revision), hash.HashRevision)
+}
+
+func TestHashKVDoesNotValidateCompactedShadowVersion(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/hash/compacted-shadow")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	updated, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("v2"), Revision: created.Header.Revision,
+	}})
+	require.NoError(t, err)
+	waitCommitted(t, b, updated.Header.Revision)
+	advanced, err := b.setCompactRecord(ctx, updated.Header.Revision)
+	require.NoError(t, err)
+	require.True(t, advanced)
+
+	corrupt := b.kv.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	_, err = b.HashKV(ctx, 0)
+	require.NoError(t, err, "a shadowed version outside the logical hash domain must not fail HashKV")
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms)
+}
+
+func TestHashKVInvalidObjectWithoutWitnessDoesNotArmCorrupt(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte(prefix + "/hash/unwitnessed-corrupt")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("value")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	corrupt := b.kv.BeginBatchWrite()
+	corrupt.Del(b.ks.EncodeInternalKey(txnWitnessLogicalKey(created.Header.Revision)))
+	corrupt.Put(b.coder.EncodeObjectKey(key, created.Header.Revision), []byte{0, 'k', 'b', 3}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	_, err = b.HashKV(ctx, 0)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms, "unsealed history has no durable repair evidence for a safe CORRUPT disarm")
+}
+
 func TestBackendHashIncludesInternalStateExcludedFromHashKV(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	key := []byte(prefix + "/hash/backend")
