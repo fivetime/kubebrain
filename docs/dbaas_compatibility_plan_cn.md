@@ -50185,6 +50185,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884070`、term 647。主 PD 3/3、TiKV 3/3 Ready 且零重启，
   滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
 
+- A4625 补齐 A4624 上界校验仍遗漏的首版本等价关系。固定 upstream
+  `server/storage/mvcc/kvstore_txn.go::put` 在 key 不存在时同时设置
+  `CreateRevision=ModRevision`、`Version=1`；已有 generation 的下一次 Put 才把 version 加一。因此
+  `Version==1` 必须且只可能出现在 `CreateRevision==ModRevision`。A4624 已通过 version 上界排除了
+  create revision 等于 mod revision 但 version 大于 1，却仍会接受
+  `CreateRevision < ModRevision, Version=1`，普通 Get/List、Watch、Snapshot 与后续 Update 都可能继续暴露
+  或传播这个不可能状态。
+
+  生产提交 `ba245897` 在统一 revision-aware validator 增加上述首版本约束，自动覆盖 A4624 已接入的 exact
+  inline/legacy read、retained recovery、Range/List、Watch、Txn 更新和 Snapshot 路径。审计确认普通
+  Get/List 与 Watch 共用 `kvToEtcdKv`，没有另一个只解包不校验的响应旁路。严格门禁同时发现旧
+  `TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing` 用真实 CREATE/version-1 envelope 伪装晚 1000
+  revision 的 PUT；夹具现先执行真实 Update 取得 version-2 envelope，再验证缺失 PrevKV 时仍保留原
+  create revision，原回归意图不变。
+
+  lifecycle focused 连续 20 轮、race 10 轮、完整 backend 75.867 秒及修正夹具后的完整
+  `pkg/server/etcd` 173.541 秒通过。真实 TiKV 验证在唯一命名 keyspace 注入 revision 42、
+  `CreateRevision=40, Version=1` 的 inline object；公共 metadata read 与 Update 均返回
+  `ErrInvalidMVCCMetadata`，公开 revision 不变。临时非 root Pod、静态二进制、测试扩展和 fixture 已清理。
+
+  可追溯镜像 `kubebrain:a4625-ba245897` 内嵌完整 SHA
+  `ba2458973160ac480df49ecbbfd1a34c3309cbd3`、版本 `a4625`、Go 1.26.5、TiKV storage、UTC build time
+  `2026-08-14T11:50:13Z`，运行用户 `65532:65532`；本地 OCI manifest list 为
+  `sha256:44844d0f67fdd4605ce0966c101e59c4ee2ef8ce6c7e1a4d9b08da51b613470f`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:86fec0e96bd18423c6c7bb575e5484fb2856a5df53e5f6c1ccc5a16daad5ebce`。
+  主 StatefulSet 顺序滚动完成，三副本 Ready、零重启；NodePort 真实 CREATE 返回 version 1，后续 Update/
+  Get/Delete `prev_kv` 均保持同一 create revision 与 version 2。MemberList 为三个成员，health 可提交
+  proposal，AlarmList 为空；最终 revision/index/applied index 均为 `468126003565884073`、term 649。
+  主 PD 3/3、TiKV 3/3 Ready 且零重启，滚动日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
