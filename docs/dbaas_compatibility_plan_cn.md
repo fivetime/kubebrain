@@ -50578,6 +50578,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   revision/index/applied index 均为 `468126003565884131`、term 676。主 PD 3/3、TiKV 3/3 Running 且零重启，
   日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/corrupt-alarm failure。
 
+- A4638 修复 HashKV 把损坏 stored value 当普通字节计算出“成功哈希”的维护完整性缺口。对标
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::HashKV` 与 upstream backend `HashByRev` 对指定逻辑
+  MVCC revision 的诊断语义；KubeBrain 的 `HashKV` 会解释用户 MVCC 版本，因此不能绕过 A4634 的 value envelope
+  validator。与此不同，`Hash` 明确覆盖 encoded physical rows 和内部 service metadata，继续保留原始字节诊断域，
+  不把两种 API 错误合并。
+
+  生产提交 `ffdf664d` 为每个最终参与 HashKV 的 row 保留 exact raw object key、user key、revision 与 value，并在写入
+  CRC32C 前复用 A4635 的 event set/witness/object/compact-race 证据链。校验发生在每个 revision family 完成
+  compacted-latest 选择之后：已被 compact 后继版本遮蔽的旧 row 不参与哈希，也不会因残留物理行提前报 DataLoss
+  或误拉警；所有 retained rows 与最终 compacted latest 则逐一校验。HashKV 本身持有 `logicalWriteMu` 独占屏障，
+  新实现将 context 标记为已拥有该屏障，使 ArmCorrupt 的 InternalCAS 不会尝试重入读锁，同时保证告警提交完成前
+  不释放 hash/write 边界。
+
+  确定性正向损坏回归证明 witnessed inline envelope 不再返回 HashKVResult，而是
+  `ErrInvalidMVCCMetadata`、持久 CORRUPT、拒绝写、未修复 Disarm 失败，恢复 exact bytes 后解除并重新哈希成功；
+  compacted shadow 回归证明旧损坏行不影响当前逻辑哈希且不告警；删 witness 的负向门禁证明仍返回 DataLoss 但
+  不创建无法证明解除安全性的告警。三项 focused 20 轮 0.988 秒、race 10 轮 2.867 秒，更宽
+  Hash/Compact/Witness 5 轮 48.387 秒，maintenance server 3 轮 8.972 秒、backend/server vet 及完整 backend
+  76.829 秒通过。
+
+  真实 TiKV 正向验证 revision `468126003565884132` CREATE `k=v1`、`...133` UPDATE `k=v2`：指定 create
+  revision 的 HashKV 为 `2006323317`，update/latest 为 `2015473751`；两次 latest 请求分别由不同 KubeBrain
+  member 响应仍得到同一 hash，compact revision 均为 `468126003565884103`。当前 Get 返回 v2 且
+  create/mod/version=`...132`/`...133`/2。删除 1 键后最终 revision `468126003565884134`、`/a4638/` 零残留，
+  AlarmList 为空；共享 TiKV 未注入损坏，破坏/修复由隔离测试证明。
+
+  可追溯镜像 `kubebrain:a4638-ffdf664d` 内嵌完整 SHA
+  `ffdf664d88b73056acc4749179da4aa71a066d5c`、版本 `a4638`、Go 1.26.5、TiKV storage、linux/amd64、
+  UTC build time `2026-08-14T15:40:16Z`；本地 OCI manifest list 为
+  `sha256:8aa417323415bb4827b9ed755451f60c2ee2adff7005e06a34aa2c84e7fa50a8`，kind 导入后三个 Pod 的
+  runtime imageID 均为 `sha256:0b1946c583713383aba3dcc7260653e79808651ad4e0654ea99787180f1afd7c`。
+  主 StatefulSet 三副本 Ready、零重启；MemberList 三成员、health 可提交 proposal、AlarmList 为空，最终
+  revision/index/applied index 均为 `468126003565884134`、term 677。主 PD 3/3、TiKV 3/3 Running 且零重启，
+  日志无 panic/fatal/snapshot failure/corrupt/invalid MVCC metadata/witnessed-object/hashkv failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
