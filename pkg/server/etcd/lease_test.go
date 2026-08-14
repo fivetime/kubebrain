@@ -1600,6 +1600,46 @@ func TestAutomaticLeaseIDStaysPositiveAfterMaxExplicitIDReload(t *testing.T) {
 		"automatic IDs wrap within the positive int64 range and skip zero")
 }
 
+func TestAutomaticLeaseIDsAreScopedByStaticMember(t *testing.T) {
+	now := time.Unix(1_700_000_000, 123_000_000)
+	first := newLeaseManager(nil, 0)
+	second := newLeaseManager(nil, 0)
+	first.configureAutomaticLeaseIDs(1, now)
+	second.configureAutomaticLeaseIDs(2, now)
+
+	firstIDs := make(map[int64]struct{}, 1024)
+	for range 1024 {
+		id := first.nextLeaseID()
+		require.Positive(t, id)
+		firstIDs[id] = struct{}{}
+	}
+	require.Len(t, firstIDs, 1024)
+	for range 1024 {
+		id := second.nextLeaseID()
+		require.Positive(t, id)
+		_, collision := firstIDs[id]
+		require.False(t, collision, "different members must not collide even with the same clock seed")
+	}
+}
+
+func TestAutomaticLeaseMemberPrefixIsStableAcrossMemberOrder(t *testing.T) {
+	members := []*etcdserverpb.Member{{ID: 900}, {ID: 100}, {ID: 500}}
+	prefix, ok := automaticLeaseMemberPrefix(members, 500)
+	require.True(t, ok)
+	require.Equal(t, uint16(2), prefix)
+
+	prefix, ok = automaticLeaseMemberPrefix([]*etcdserverpb.Member{{ID: 500}, {ID: 900}, {ID: 100}}, 500)
+	require.True(t, ok)
+	require.Equal(t, uint16(2), prefix)
+
+	_, ok = automaticLeaseMemberPrefix(members, 777)
+	require.False(t, ok)
+	_, ok = automaticLeaseMemberPrefix([]*etcdserverpb.Member{{ID: 0}}, 0)
+	require.False(t, ok)
+	_, ok = automaticLeaseMemberPrefix([]*etcdserverpb.Member{{ID: 500}, {ID: 500}}, 500)
+	require.False(t, ok)
+}
+
 func TestLeaseManagerInitializesWithoutPeerService(t *testing.T) {
 	manager := newLeaseManager(&RPCServer{}, 42)
 	t.Cleanup(manager.close)

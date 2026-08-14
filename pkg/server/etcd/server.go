@@ -16,6 +16,7 @@ package etcd
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -389,8 +390,47 @@ func (s *RPCServer) SetStaticMembers(members []*etcdserverpb.Member) {
 		}
 	}
 	localID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
+	// Upstream seeds every automatic lease ID with a stable per-member prefix.
+	// A wall-clock-only process counter can collide when multiple ingress
+	// replicas start from the same/cloned clock. Static DBaaS membership gives us
+	// a collision-free ordinal without truncating the 32-bit public member ID.
+	if prefix, ok := automaticLeaseMemberPrefix(s.staticMembers, localID); ok {
+		s.leaseManager.configureAutomaticLeaseIDs(prefix, time.Now())
+	}
 	emitServerIDMetric(s.metricCli, localID)
 	emitKnownPeersMetric(s.metricCli, localID, s.staticMembers)
+}
+
+func automaticLeaseMemberPrefix(members []*etcdserverpb.Member, localID uint64) (uint16, bool) {
+	// LeaseGrant masks generator output to positive int64, so bit 15 of the
+	// upstream uint16 prefix is discarded. Restrict prefixes to the remaining
+	// collision-free 15-bit domain.
+	if localID == 0 || len(members) == 0 || len(members) > 1<<15-1 {
+		return 0, false
+	}
+	ids := make([]uint64, 0, len(members))
+	for _, member := range members {
+		if member.GetID() != 0 {
+			ids = append(ids, member.GetID())
+		}
+	}
+	if len(ids) != len(members) {
+		return 0, false
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for index, id := range ids[1:] {
+		if ids[index] == id {
+			return 0, false
+		}
+	}
+	for index, id := range ids {
+		if id == localID {
+			// Prefix zero is valid upstream, but reserving it for the unconfigured
+			// fallback makes configured IDs visibly member-scoped.
+			return uint16(index + 1), true
+		}
+	}
+	return 0, false
 }
 
 // Register register etcd grpc service

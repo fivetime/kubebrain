@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/pkg/v3/idutil"
 )
 
 // leaseManager owns the lease subsystem: all lease STATE and the lease logic
@@ -64,6 +65,11 @@ type leaseManager struct {
 	leaseCheckpointMu sync.Mutex
 	leaseMu           sync.Mutex
 	leaseID           int64
+	// automaticLeaseIDs uses etcd's member/time/counter layout once the static
+	// DBaaS member set is installed. Keeping the generator in an atomic pointer
+	// makes the configuration boundary explicit and lets direct/single-node
+	// users retain the legacy counter until they provide stable membership.
+	automaticLeaseIDs atomic.Pointer[idutil.Generator]
 	// leaseGeneration changes whenever leadership replaces or clears the active
 	// snapshot. pendingLeases records the generation in which each ID was
 	// reserved, so a delayed metadata commit cannot publish across that boundary.
@@ -158,6 +164,14 @@ func (m *leaseManager) close() {
 
 func (m *leaseManager) nextLeaseID() int64 {
 	for {
+		if generator := m.automaticLeaseIDs.Load(); generator != nil {
+			// Etcd masks generated request IDs to positive int64 and retries zero.
+			id := int64(generator.Next() & math.MaxInt64)
+			if id != 0 {
+				return id
+			}
+			continue
+		}
 		// etcd masks generated request IDs to positive int64 and retries zero.
 		// Explicit lease IDs may use the full signed range, but they must never
 		// force automatic allocation into negative IDs after counter overflow.
@@ -166,4 +180,8 @@ func (m *leaseManager) nextLeaseID() int64 {
 			return id
 		}
 	}
+}
+
+func (m *leaseManager) configureAutomaticLeaseIDs(memberPrefix uint16, now time.Time) {
+	m.automaticLeaseIDs.Store(idutil.NewGenerator(memberPrefix, now))
 }
