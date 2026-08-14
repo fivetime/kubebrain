@@ -136,6 +136,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		endpoints.NewAddUpdateOpts(managerPrefix+"/e2", endpoints.Endpoint{Addr: "127.0.0.1:2002", Metadata: "metadata-2"}),
 	}))
 	initialAtomicUpdates := namingUpdates(t, receiveNamingUpdates(t, ctx, updates), managerPrefix)
+	requireNamingPrefixVisible(t, ctx, client, managerPrefix+"/", 2)
 	initialList, err := manager.List(ctx)
 	require.NoError(t, err)
 
@@ -144,6 +145,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		endpoints.NewAddUpdateOpts(managerPrefix+"/e3", endpoints.Endpoint{Addr: "127.0.0.1:2003", Metadata: "metadata-3"}),
 	}))
 	replacementUpdates := namingUpdates(t, receiveNamingUpdates(t, ctx, updates), managerPrefix)
+	requireNamingPrefixVisible(t, ctx, client, managerPrefix+"/", 2)
 	replacementList, err := manager.List(ctx)
 	require.NoError(t, err)
 
@@ -151,6 +153,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	other, err := endpoints.NewManager(client, otherPrefix)
 	require.NoError(t, err)
 	require.NoError(t, other.AddEndpoint(ctx, otherPrefix+"/foreign", endpoints.Endpoint{Addr: "127.0.0.1:2999"}))
+	requireNamingPrefixVisible(t, ctx, client, base, 3)
 	mainAfterOther, err := manager.List(ctx)
 	require.NoError(t, err)
 	otherList, err := other.List(ctx)
@@ -238,9 +241,11 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 	}, 5*time.Second, 20*time.Millisecond,
 		"round_robin resolver did not restore an endpoint re-added through its watch")
 	roundRobinRejoinDone := len(rejoinedStatuses) == 2
-	expiringLease, err := client.Grant(ctx, 3)
+	// Leave enough TTL for a multi-replica serializable checkpoint to publish
+	// the complete initial resolver snapshot before exercising natural expiry.
+	expiringLease, err := client.Grant(ctx, 8)
 	require.NoError(t, err)
-	renewedLease, err := client.Grant(ctx, 3)
+	renewedLease, err := client.Grant(ctx, 8)
 	require.NoError(t, err)
 	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/expiring",
 		endpoints.Endpoint{Addr: unknownAddr}, clientv3.WithLease(expiringLease.ID)))
@@ -248,12 +253,7 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		endpoints.Endpoint{Addr: unknownPeerAddr}, clientv3.WithLease(expiringLease.ID)))
 	require.NoError(t, resolverManager.AddEndpoint(ctx, resolverPrefix+"/renewed",
 		endpoints.Endpoint{Addr: serviceUnknownAddr}, clientv3.WithLease(renewedLease.ID)))
-	currentResolverSet, err := client.Get(ctx, resolverPrefix+"/", clientv3.WithPrefix())
-	require.NoError(t, err)
-	require.Len(t, currentResolverSet.Kvs, 5)
-	requireSerializableRevisionVisible(t, ctx, etcdserverpb.NewKVClient(client.ActiveConnection()),
-		[]byte(resolverPrefix+"/"), []byte(clientv3.GetPrefixRangeEnd(resolverPrefix+"/")),
-		currentResolverSet.Header.Revision)
+	requireNamingPrefixVisible(t, ctx, client, resolverPrefix+"/", 5)
 	withExpiringStatuses := make(map[string]struct{}, 4)
 	require.Eventually(t, func() bool {
 		callCtx, callCancel := context.WithTimeout(ctx, time.Second)
@@ -377,6 +377,21 @@ func runNamingScenario(t *testing.T, endpoint, instance string) namingOutcome {
 		ResolverInitial:       resolverInitial,
 		ResolverAfterDelete:   resolverAfterDelete,
 	}
+}
+
+func requireNamingPrefixVisible(
+	t *testing.T,
+	ctx context.Context,
+	client *clientv3.Client,
+	prefix string,
+	want int,
+) {
+	t.Helper()
+	current, err := client.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, want)
+	requireSerializableRevisionVisible(t, ctx, etcdserverpb.NewKVClient(client.ActiveConnection()),
+		[]byte(prefix), []byte(clientv3.GetPrefixRangeEnd(prefix)), current.Header.Revision)
 }
 
 func receiveNamingUpdates(t *testing.T, ctx context.Context, updates endpoints.WatchChannel) []*endpoints.Update {
