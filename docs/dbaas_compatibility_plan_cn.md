@@ -51129,6 +51129,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   availability 语义，所以本轮不作生产修改，也不把 808.741 秒运行宣称为核心 suite GREEN。结论是：独立 metrics 门禁已
   补齐，JWT 与 follower-serializable 两处均为 profile/oracle 边界；真实 Envoy 和外部 L4/L7 reset 仍待专项执行。
 
+- A4655 使用仓库内 `grpc-switch-proxy` 的真实独立进程补跑外部 L7 reset 专项。reference 不是把同一单节点地址重复三次，
+  而是在 localhost 启动三个不同 member 的 etcd 集群（client 12379/22379/32379）；KubeBrain 使用 pod0/pod1/pod2 的
+  30083/30085/30087 direct endpoint。代理在活跃流上返回 L7 failure 并切换到第二副本后，Watch reset 连续 3 轮通过，
+  Watch+LeaseKeepAlive multiplex reset 连续 3 轮通过；两类场景均验证 clientv3 在同一逻辑流上恢复、后续写入事件无缺失，
+  KeepAlive 响应恢复且第二副本确有新连接。
+
+  单独 KeepAlive reset 的三轮连跑首轮通过，后两轮仅 `RevisionDelta` 从 reference 的 0 变为 1；lease 跨原 3 秒 TTL 存活、
+  attached key/value、正 TTL、恢复响应和 stream-open 状态全部一致。该场景原先不 revoke 自己创建的 3 秒 lease：下一轮运行
+  时，上一轮停止 keepalive 后的 lease 恰好自然过期并删除旧 key，合法推进共享 keyspace 的全局 revision。等待
+  `/dbaas-external-l7-keepalive-reset/kubebrain/` 归零后，以全新三成员 reference 单轮复验 10.799 秒完整通过且 delta=0，
+  证明不是 KeepAlive 恢复路径持久化或额外 MVCC mutation。本轮没有据此修改生产 lease 或放宽测试断言。至此外部 L7 reset
+  的三类专项已有真实进程证据；真实 Envoy profile 与外部 L4/TLS passthrough 仍未在本轮执行。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
