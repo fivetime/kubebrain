@@ -372,6 +372,104 @@ func (b *backend) readDecodedRangeExactKeys(ctx context.Context, keys [][]byte, 
 	return b.readDecodedRangeExactKeysParallel(ctx, keys, revision)
 }
 
+// visitDecodedRangeExactKeyChunks resolves object values in small windows even
+// when the ordering directory supplies a much larger key page. Values may be
+// close to the etcd request limit, so retaining an entire 300-key directory
+// page would otherwise make one stream consume hundreds of MiB. Revision-index
+// rows are small and remain one region-aware batch for the common pinned path.
+func (b *backend) visitDecodedRangeExactKeyChunks(
+	ctx context.Context,
+	keys [][]byte,
+	revision uint64,
+	visit func([][]byte, []*proto.KeyValue) error,
+) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	timestamp, pinned := storage.SnapshotTimestampFromContext(ctx)
+	reader, batchSupported := storage.FindCapability[storage.SnapshotGetter](b.kv)
+	if !pinned || !batchSupported {
+		for start := 0; start < len(keys); start += maxDecodedRangeStreamValueKeys {
+			end := min(start+maxDecodedRangeStreamValueKeys, len(keys))
+			kvs, err := b.readDecodedRangeExactKeysParallel(ctx, keys[start:end], revision)
+			if err != nil {
+				return err
+			}
+			if err = visit(keys[start:end], kvs); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	revisionKeys := make([][]byte, len(keys))
+	for index, key := range keys {
+		revisionKeys[index] = b.coder.EncodeRevisionKey(key)
+	}
+	revisionValues, err := reader.BatchGetAt(ctx, revisionKeys, timestamp)
+	if err != nil {
+		return err
+	}
+	for start := 0; start < len(keys); start += maxDecodedRangeStreamValueKeys {
+		end := min(start+maxDecodedRangeStreamValueKeys, len(keys))
+		chunkKeys := keys[start:end]
+		result := make([]*proto.KeyValue, len(chunkKeys))
+		objectKeys := make([][]byte, 0, len(chunkKeys))
+		objectIndexes := make([]int, 0, len(chunkKeys))
+		objectRevisions := make([]uint64, 0, len(chunkKeys))
+		fallbackIndexes := make([]int, 0, len(chunkKeys))
+		for offset, revisionKey := range revisionKeys[start:end] {
+			revisionValue, found := revisionValues[string(revisionKey)]
+			if !found {
+				fallbackIndexes = append(fallbackIndexes, offset)
+				continue
+			}
+			currentRevision, _, parseErr := coder.ParseRevision(revisionValue)
+			if parseErr != nil {
+				return invalidMVCCMetadataError(parseErr, "decode revision index for key %q", chunkKeys[offset])
+			}
+			if revision != 0 && revision < currentRevision {
+				fallbackIndexes = append(fallbackIndexes, offset)
+				continue
+			}
+			objectKeys = append(objectKeys, b.coder.EncodeObjectKey(chunkKeys[offset], currentRevision))
+			objectIndexes = append(objectIndexes, offset)
+			objectRevisions = append(objectRevisions, currentRevision)
+		}
+		if len(objectKeys) != 0 {
+			objectValues, batchErr := reader.BatchGetAt(ctx, objectKeys, timestamp)
+			if batchErr != nil {
+				return batchErr
+			}
+			for objectIndex, objectKey := range objectKeys {
+				value, found := objectValues[string(objectKey)]
+				if !found || bytes.Equal(value, tombStoneBytes) {
+					continue
+				}
+				index := objectIndexes[objectIndex]
+				result[index] = &proto.KeyValue{Key: chunkKeys[index], Value: value, Revision: objectRevisions[objectIndex]}
+			}
+		}
+		if len(fallbackIndexes) != 0 {
+			fallbackKeys := make([][]byte, len(fallbackIndexes))
+			for index, resultIndex := range fallbackIndexes {
+				fallbackKeys[index] = chunkKeys[resultIndex]
+			}
+			fallback, fallbackErr := b.readDecodedRangeExactKeysParallel(ctx, fallbackKeys, revision)
+			if fallbackErr != nil {
+				return fallbackErr
+			}
+			for index, resultIndex := range fallbackIndexes {
+				result[resultIndex] = fallback[index]
+			}
+		}
+		if err = visit(chunkKeys, result); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (b *backend) readDecodedRangeExactKeysBatched(
 	ctx context.Context,
 	reader storage.SnapshotGetter,
@@ -496,6 +594,7 @@ const (
 	maxDecodedRangeExactAncestors     = 128
 	maxDecodedRangeExactAncestorBytes = 64 << 10
 	maxDecodedRangeExactReadWorkers   = 16
+	maxDecodedRangeStreamValueKeys    = 16
 )
 
 // decodedUserRangeScanPlan returns a narrow raw interval plus the bounded set
@@ -775,7 +874,9 @@ func (b *backend) decodedUserRangeStreamFromCountIndex(
 		return nil, true, err
 	}
 	b.metricCli.EmitCounter("backend.range_stream.decoded_index_hit", 1)
-	stream := make(chan *proto.StreamRangeResponse, 8)
+	// Keep value pages under receiver backpressure. Buffering several legal
+	// 16-value pages would defeat the resolver's large-value memory bound.
+	stream := make(chan *proto.StreamRangeResponse)
 	go func() {
 		defer close(stream)
 		send := func(response *proto.StreamRangeResponse) bool {
@@ -795,22 +896,24 @@ func (b *backend) decodedUserRangeStreamFromCountIndex(
 
 		keys := firstKeys
 		for {
-			kvs, readErr := b.readDecodedRangeExactKeys(pinnedCtx, keys, revision)
+			readErr := b.visitDecodedRangeExactKeyChunks(pinnedCtx, keys, revision, func(chunkKeys [][]byte, kvs []*proto.KeyValue) error {
+				for index, kv := range kvs {
+					if kv == nil {
+						return fmt.Errorf("decoded range index key %q is not live at revision %d", chunkKeys[index], revision)
+					}
+				}
+				if !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{
+					Header: responseHeader(revision), Kvs: kvs, More: true,
+				}}) {
+					return ctx.Err()
+				}
+				return nil
+			})
 			if readErr != nil {
-				fail(readErr)
-				return
-			}
-			page := make([]*proto.KeyValue, 0, len(kvs))
-			for index, kv := range kvs {
-				if kv == nil {
-					fail(fmt.Errorf("decoded range index key %q is not live at revision %d", keys[index], revision))
+				if ctx.Err() != nil {
 					return
 				}
-				page = append(page, kv)
-			}
-			if len(page) != 0 && !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{
-				Header: responseHeader(revision), Kvs: page, More: true,
-			}}) {
+				fail(readErr)
 				return
 			}
 			if !more {

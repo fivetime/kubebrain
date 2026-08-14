@@ -54,7 +54,9 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 	userStart, userEnd []byte,
 	revision uint64,
 ) <-chan *proto.StreamRangeResponse {
-	stream := make(chan *proto.StreamRangeResponse, 8)
+	// A page can contain 16 near-limit values; do not queue multiple pages in
+	// memory while the gRPC layer is still transmitting the previous one.
+	stream := make(chan *proto.StreamRangeResponse)
 	go func() {
 		defer close(stream)
 		send := func(response *proto.StreamRangeResponse) bool {
@@ -184,20 +186,24 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 				if len(keys) == 0 {
 					break
 				}
-				kvs, readErr := b.readDecodedRangeExactKeys(ctx, keys, revision)
+				readErr := b.visitDecodedRangeExactKeyChunks(ctx, keys, revision, func(chunkKeys [][]byte, kvs []*proto.KeyValue) error {
+					for index, kv := range kvs {
+						if kv == nil {
+							return fmt.Errorf("decoded range spilled key %q is not live at revision %d", chunkKeys[index], revision)
+						}
+					}
+					if !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{
+						Header: responseHeader(revision), Kvs: kvs, More: true,
+					}}) {
+						return ctx.Err()
+					}
+					return nil
+				})
 				if readErr != nil {
-					fail(readErr)
-					return
-				}
-				for index, kv := range kvs {
-					if kv == nil {
-						fail(fmt.Errorf("decoded range spilled key %q is not live at revision %d", keys[index], revision))
+					if ctx.Err() != nil {
 						return
 					}
-				}
-				if !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{
-					Header: responseHeader(revision), Kvs: kvs, More: true,
-				}}) {
+					fail(readErr)
 					return
 				}
 			}

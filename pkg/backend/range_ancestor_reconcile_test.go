@@ -260,8 +260,10 @@ func TestDecodedRangeStreamUsesOrderedIndexWithoutMaterializingRange(t *testing.
 	require.NoError(t, err)
 	var got []*proto.KeyValue
 	var terminal int
+	var maxBackendChunk int
 	for response := range stream {
 		require.Empty(t, response.Err)
+		maxBackendChunk = max(maxBackendChunk, len(response.RangeResponse.Kvs))
 		got = append(got, response.RangeResponse.Kvs...)
 		if len(response.RangeResponse.Kvs) == 0 {
 			terminal++
@@ -275,18 +277,28 @@ func TestDecodedRangeStreamUsesOrderedIndexWithoutMaterializingRange(t *testing.
 		StripInlineValue(got[0].Value), StripInlineValue(got[1].Value), StripInlineValue(got[2].Value),
 	})
 	require.Equal(t, 1, terminal)
+	require.LessOrEqual(t, maxBackendChunk, 16, "large values must be released in bounded resolver windows")
 	require.True(t, tracked.rangeCalled, "decoded-boundary detection should still run its bounded extension probes")
 	require.False(t, tracked.rangeFilteredCalled, "ordered-index RangeStream must not materialize RangeFiltered")
 	require.False(t, tracked.rangeStreamCalled, "ordered-index RangeStream resolves bounded key pages directly")
 	store.mu.Lock()
-	require.Len(t, store.batchKeys, 4, "303 logical keys must use two bounded revision/object page pairs")
-	require.Equal(t, []int{300, 300, 3, 3}, []int{
-		len(store.batchKeys[0]), len(store.batchKeys[1]), len(store.batchKeys[2]), len(store.batchKeys[3]),
-	})
-	require.Equal(t, store.batchTimestamps[0], store.batchTimestamps[1])
-	require.Equal(t, store.batchTimestamps[0], store.batchTimestamps[2])
-	require.Equal(t, store.batchTimestamps[0], store.batchTimestamps[3])
+	require.Greater(t, len(store.batchKeys), 4)
+	require.Len(t, store.batchKeys[0], decodedRangeStreamIndexPage, "revision metadata remains one lightweight directory-page batch")
+	for _, batch := range store.batchKeys {
+		objectBatch := false
+		for _, key := range batch {
+			_, revision, decodeErr := b.coder.Decode(key)
+			require.NoError(t, decodeErr)
+			objectBatch = objectBatch || revision != 0
+		}
+		if objectBatch {
+			require.LessOrEqual(t, len(batch), 16, "object-value BatchGet must be bounded independently of key page size")
+		}
+	}
 	require.NotZero(t, store.batchTimestamps[0])
+	for _, timestamp := range store.batchTimestamps[1:] {
+		require.Equal(t, store.batchTimestamps[0], timestamp, "every bounded value window must use the stream's pinned TSO")
+	}
 	store.mu.Unlock()
 }
 
@@ -536,11 +548,14 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	stream, err := b.RangeStream(ctx, []byte("a"), []byte("b"), 304)
 	require.NoError(t, err)
 	var got []*proto.KeyValue
+	var maxBackendChunk int
 	for response := range stream {
 		require.Empty(t, response.Err)
+		maxBackendChunk = max(maxBackendChunk, len(response.RangeResponse.Kvs))
 		got = append(got, response.RangeResponse.Kvs...)
 	}
 	require.Len(t, got, len(keys))
+	require.LessOrEqual(t, maxBackendChunk, 16)
 	for index := range keys {
 		require.Equal(t, keys[index], got[index].Key)
 		require.Equal(t, []byte{byte(index)}, StripInlineValue(got[index].Value))
@@ -550,9 +565,17 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	require.False(t, tracked.rangeFilteredCalled, "overflow fallback must not materialize the decoded KV range")
 	tracked.mu.Unlock()
 	store.mu.Lock()
-	require.Equal(t, []int{300, 300, 3, 3}, []int{
-		len(store.batchKeys[0]), len(store.batchKeys[1]), len(store.batchKeys[2]), len(store.batchKeys[3]),
-	})
+	for _, batch := range store.batchKeys {
+		objectBatch := false
+		for _, key := range batch {
+			_, revision, decodeErr := b.coder.Decode(key)
+			require.NoError(t, decodeErr)
+			objectBatch = objectBatch || revision != 0
+		}
+		if objectBatch {
+			require.LessOrEqual(t, len(batch), 16)
+		}
+	}
 	store.mu.Unlock()
 	entries, err := os.ReadDir(spillDir)
 	require.NoError(t, err)
