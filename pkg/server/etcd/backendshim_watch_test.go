@@ -108,6 +108,36 @@ func TestWatchEventRejectsImpossibleInlineLifecycle(t *testing.T) {
 	require.Nil(t, event)
 }
 
+func TestWatchEventRejectsPutRevisionDisagreement(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	shim := server.backend.(*backendShim)
+	value := make([]byte, 20+len("value"))
+	copy(value, []byte{0, 'k', 'b', 3})
+	binary.BigEndian.PutUint64(value[4:], 7)
+	binary.BigEndian.PutUint64(value[12:], 2)
+	copy(value[20:], "value")
+
+	for _, eventType := range []proto.Event_EventType{proto.Event_CREATE, proto.Event_PUT} {
+		event, err := shim.watchEventToEtcdEvent(context.Background(), &proto.Event{
+			Type:     eventType,
+			Revision: 9,
+			Kv: &proto.KeyValue{
+				Key: []byte("/watch/revision-disagreement"), Value: value, Revision: 8,
+			},
+		})
+		require.ErrorContains(t, err, "event revision 9 disagrees with key revision 8")
+		require.Nil(t, event)
+	}
+
+	event, err := shim.watchEventToEtcdEvent(context.Background(), &proto.Event{
+		Type: proto.Event_PUT, Revision: 9,
+		Kv: &proto.KeyValue{Key: []byte("/watch/zero-key-revision"), Value: value},
+	})
+	require.ErrorContains(t, err, "PUT event has zero key revision")
+	require.Nil(t, event)
+}
+
 // TestWatchPutEventKeepsInlineCreateRevisionWhenPrevKvMissing pins #52: a PUT
 // (update) watch event must keep the create_revision carried inline in its value
 // even when the previous-version lookup returns nil, so the update is not

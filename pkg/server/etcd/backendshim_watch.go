@@ -119,7 +119,24 @@ func validateBackendWatchEvent(e *proto.Event) error {
 		return fmt.Errorf("invalid nil watch event")
 	}
 	switch e.Type {
-	case proto.Event_CREATE, proto.Event_PUT, proto.Event_DELETE:
+	case proto.Event_CREATE, proto.Event_PUT:
+		// A write event's Kv is the newly committed object, so its revision is
+		// the event revision. Event.Revision may be zero in legacy producers, in
+		// which case watchEventRevision deliberately falls back to Kv.Revision;
+		// when both are present they must agree. Without this check the inline
+		// metadata was validated against Kv.Revision and ModRevision was then
+		// overwritten with Event.Revision, allowing an impossible lifecycle to
+		// escape after validation.
+		if e.Kv.Revision == 0 {
+			return fmt.Errorf("%s event has zero key revision", e.Type)
+		}
+		if e.Revision != 0 && e.Revision != e.Kv.Revision {
+			return fmt.Errorf("%s event revision %d disagrees with key revision %d", e.Type, e.Revision, e.Kv.Revision)
+		}
+		return nil
+	case proto.Event_DELETE:
+		// DELETE intentionally differs: Event.Revision is the deletion revision,
+		// while Kv.Revision identifies the deleted previous value used for PrevKv.
 		return nil
 	default:
 		return fmt.Errorf("unsupported watch event type %s", e.Type)
