@@ -52,7 +52,35 @@ func TestGeneratedRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 	specs := generatedRangeSpecs()
 	require.Len(t, specs, 92)
 	referenceOutcome := runGeneratedRangeScenario(t, reference, "reference", specs)
-	require.Equal(t, referenceOutcome, runGeneratedRangeScenario(t, compatEndpoint(t), "kubebrain", specs))
+	kubebrainOutcome := runGeneratedRangeScenario(t, compatEndpoint(t), "kubebrain", specs)
+
+	// A latest serializable Range may be served from a follower's applied
+	// revision. A single-node reference is necessarily current, while KubeBrain's
+	// NodePort can pin this connection to a follower whose GC-protected TiKV
+	// checkpoint is older. etcd permits that staleness; compare the returned
+	// KVs/Count/options with reference etcd at the exact advertised revision
+	// instead of incorrectly requiring the single-node current snapshot.
+	staleSpecs := append([]generatedRangeSpec(nil), specs...)
+	for i, spec := range staleSpecs {
+		if spec.Serializable && spec.Historical == 0 && kubebrainOutcome[i].Code == "OK" {
+			require.GreaterOrEqual(t, kubebrainOutcome[i].HeaderRevision, 0, "case %d", i)
+			require.LessOrEqual(t, kubebrainOutcome[i].HeaderRevision, 9, "case %d", i)
+			if kubebrainOutcome[i].HeaderRevision == 0 {
+				staleSpecs[i].Historical = -1
+			} else {
+				staleSpecs[i].Historical = kubebrainOutcome[i].HeaderRevision
+			}
+		}
+	}
+	referenceAtAdvertisedRevision := runGeneratedRangeScenario(t, reference, "reference-stale", staleSpecs)
+	for i, actual := range kubebrainOutcome {
+		expected := referenceOutcome[i]
+		if specs[i].Serializable && specs[i].Historical == 0 && actual.Code == "OK" {
+			expected = referenceAtAdvertisedRevision[i]
+			expected.HeaderRevision = actual.HeaderRevision
+		}
+		require.Equal(t, expected, actual, "case %d spec=%+v", i, specs[i])
+	}
 }
 
 func TestGeneratedRangeSeedCoversEveryOptionFamily(t *testing.T) {
@@ -172,6 +200,9 @@ func runGeneratedRangeScenario(t *testing.T, endpoint, instance string, specs []
 	})
 
 	revisions := make([]int64, 10)
+	beforeSeed, err := cli.Get(ctx, prefix, clientv3.WithPrefix())
+	require.NoError(t, err)
+	revisions[0] = beforeSeed.Header.Revision
 	revisions[1] = generatedRangePut(t, ctx, cli, prefix+"a", "va1")
 	revisions[2] = generatedRangePut(t, ctx, cli, prefix+"b", "vb1")
 	revisions[3] = generatedRangePut(t, ctx, cli, prefix+"c", "vc1")
@@ -252,7 +283,9 @@ func generatedRangeRequest(prefix string, spec generatedRangeSpec, revisions []i
 		request.Key = nil
 		request.RangeEnd = nil
 	}
-	if spec.Historical > 0 {
+	if spec.Historical < 0 {
+		request.Revision = revisions[0]
+	} else if spec.Historical > 0 {
 		request.Revision = revisions[spec.Historical]
 	}
 	filterRevision := revisions[spec.FilterRev]
