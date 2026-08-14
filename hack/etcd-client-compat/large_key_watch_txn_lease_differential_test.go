@@ -34,6 +34,13 @@ type largeKeyMutationProjection struct {
 	FinalCount   int64
 }
 
+type nearLimitKeyMutationProjection struct {
+	RevisionGaps []int64
+	PutPrevValue string
+	Events       []largeKeyMutationEvent
+	FinalCount   int64
+}
+
 func TestLargeKeyWatchTxnLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
 	if reference == "" {
@@ -42,6 +49,83 @@ func TestLargeKeyWatchTxnLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 	key := append([]byte("$"+testPrefix(t)+"/large-key-watch-txn-lease/"), bytes.Repeat([]byte{'k'}, 600<<10)...)
 	want := runLargeKeyWatchTxnLeaseScenario(t, reference, key)
 	require.Equal(t, want, runLargeKeyWatchTxnLeaseScenario(t, compatEndpoint(t), key))
+}
+
+func TestNearRequestLimitKeyWatchLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
+	reference := os.Getenv("REFERENCE_ETCD_ENDPOINT")
+	if reference == "" {
+		t.Skip("set REFERENCE_ETCD_ENDPOINT to run near-limit key watch/lease differential tests")
+	}
+	key := append([]byte("$"+testPrefix(t)+"/near-limit-key-watch-lease/"), bytes.Repeat([]byte{'n'}, 1500<<10)...)
+	want := runNearLimitKeyWatchLeaseScenario(t, reference, key)
+	require.Equal(t, want, runNearLimitKeyWatchLeaseScenario(t, compatEndpoint(t), key))
+}
+
+func runNearLimitKeyWatchLeaseScenario(t *testing.T, endpoint string, key []byte) nearLimitKeyMutationProjection {
+	t.Helper()
+	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	kv := etcdserverpb.NewKVClient(conn)
+	lease := etcdserverpb.NewLeaseClient(conn)
+
+	cleanup := func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_, cleanupErr := kv.DeleteRange(cleanupCtx, &etcdserverpb.DeleteRangeRequest{Key: key})
+		require.NoError(t, cleanupErr)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	leaseID := int64(0x46080001)
+	_, err = lease.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: leaseID, TTL: 60})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_, _ = lease.LeaseRevoke(cleanupCtx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	})
+
+	watch, err := etcdserverpb.NewWatchClient(conn).Watch(ctx)
+	require.NoError(t, err)
+	require.NoError(t, watch.Send(&etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: key, PrevKv: true},
+	}}))
+	created, err := watch.Recv()
+	require.NoError(t, err)
+	require.True(t, created.Created)
+	baseRevision := created.Header.Revision
+
+	first, err := kv.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("near-limit-1"), Lease: leaseID})
+	require.NoError(t, err)
+	firstEvent := receiveLargeKeyMutationEvent(t, watch, key, baseRevision)
+	second, err := kv.Put(ctx, &etcdserverpb.PutRequest{
+		Key: key, Value: []byte("near-limit-2"), Lease: leaseID, PrevKv: true,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, second.PrevKv)
+	secondEvent := receiveLargeKeyMutationEvent(t, watch, key, baseRevision)
+
+	_, err = lease.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: leaseID})
+	require.NoError(t, err)
+	deleteEvent := receiveLargeKeyMutationEvent(t, watch, key, baseRevision)
+	final, err := kv.Range(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+
+	return nearLimitKeyMutationProjection{
+		RevisionGaps: []int64{
+			first.Header.Revision - baseRevision,
+			second.Header.Revision - first.Header.Revision,
+			final.Header.Revision - second.Header.Revision,
+		},
+		PutPrevValue: string(second.PrevKv.Value),
+		Events:       []largeKeyMutationEvent{firstEvent, secondEvent, deleteEvent},
+		FinalCount:   final.Count,
+	}
 }
 
 func runLargeKeyWatchTxnLeaseScenario(t *testing.T, endpoint string, key []byte) largeKeyMutationProjection {
