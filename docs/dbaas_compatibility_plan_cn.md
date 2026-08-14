@@ -49882,6 +49882,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   客户端必须使用默认 non-serializable Range/Txn 或显式线性屏障，不得把 A4610 的“已指定且被误判为
   future 的历史 revision”修复扩大成所有 serializable latest 读强制代理。
 
+- A4612 将共享 TiKV 上的租约恢复生命周期对齐 upstream lessor 的 `initAndRecover` / `Promote` 边界。
+  对照固定 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/lease/lessor.go`：
+  upstream 构造恢复把 expiry 设为 forever，只有 primary `Promote` 才刷新 deadline、注册过期 notifier
+  并安排 checkpoint；`Demote` 清空两类 primary work。KubeBrain 此前的 `restoreLeases` 却在 RPCServer
+  构造期直接启动 expiry/checkpoint timer，虽然既有 generation/leadership epoch fence 会阻止旧任期提交，
+  仍偏离 primary ownership，产生无用 follower callback，并把安全性依赖在回调末端拒绝。
+
+  生产提交 `c2120b17` 把记录安装拆成 inactive recovery 与 primary promotion：构造期只重建 lease/key
+  索引，权威 `ReloadLeases` 成功后才 spread expiry 并启动两类 timer；已经排队的回调还必须同时满足
+  `leaseReady` 和当前 epoch 才能删除键或持久化 remaining TTL。确定性测试分别证明 inactive follower
+  timer 为 nil、reload 后 timer 被激活、ready gate 关闭时过期回调不删除键且 checkpoint 不写 TiKV、
+  gate 打开后两条路径仍生效。focused 连续 20 轮和 race 10 轮通过，完整 `pkg/server/etcd` 通过。
+
+  首次真实滚动又暴露出共享后端特有的下一层差距：三个新 Pod 构造时都记录
+  `restore leases failed: write rejected: leadership changed during commit`。根因不是恢复包含写入，而是
+  `GetSnapshotTimestamp` 为 leader 的权威跨前缀恢复同时获取 leadership fence；follower 构造恢复复用
+  它后，等价的 upstream `initAndRecover` 在独立 TiKV 上根本无法完成。生产提交 `2713c73c` 新增严格
+  分离的 follower TSO snapshot：不要求领导权、不排斥写入，只用于可丢弃的 follower 索引；promotion
+  仍丢弃该快照并通过原有 fenced `GetSnapshotTimestamp` 重新读取。测试明确要求 authoritative path 在
+  follower 上继续返回 `ErrLeadershipFenced`，只有 disposable path 成功；backend 与 etcd focused 20 轮、
+  race 10 轮、完整包（74.791 秒、177.908 秒）及 vet 全部通过。
+
+  最终镜像 `kubebrain:a4612-2713c73c` 内嵌 SHA
+  `2713c73cd75f5268784a445943e9611545533711`，本地 OCI digest
+  `sha256:d0fd20ae08017af93696acfcdc91a77e7f74780d9afa1fd6ee444a90c335ad99`。第二次滚动后 KubeBrain
+  3/3 Ready、零重启且运行 SHA 一致；600 秒租约绑定键跨完整滚动仍存在且 remaining TTL=581 秒，
+  滚动后新建的 3 秒租约键在第 4 次一秒轮询消失，证明 promotion 后 expiry timer 正常；三个 endpoint
+  health 均可提交 proposal，AlarmList 为空。三台新 Pod 的完整启动日志中
+  restore/reload/expiry/checkpoint failure、panic、fatal、corrupt 匹配均为零，首次滚动的 follower
+  restore fence 错误已被真实运行关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
