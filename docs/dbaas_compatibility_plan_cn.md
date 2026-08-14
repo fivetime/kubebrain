@@ -49611,6 +49611,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   单副本上限未提高，且所有副本原本就必须按可成为 leader 的同一上限配置。历史 base 之前的有界流式方案仍是
   后续资源兼容缺口。
 
+- A4602 继续关闭 A4601 留下的历史 `revision < count-index BaseRev` 物化路径。upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go:55-82`
+  在同一 read transaction 中固定 current/compact revision，并让历史 Range 复用该事务视图。提交
+  `6bec8d6c` 增加原子的 historical reset：在安装锁内捕获被替换树的 `ReadyRev`，以请求 revision 做一次
+  partition-parallel snapshot stream，再从 durable event log 顺序回放至该捕获水位；安装之后到达的 collector
+  event 直接合入 loading tree。snapshot 与日志补洞全部完成前 `Ready` 始终为 false，事务 subrevision/total、
+  event-log 前后水位门禁继续复用 A4601 的验证；任何部分读取或清理竞态都会禁用半成品，绝不把缺历史的树发布。
+  若预检已发现 cleanup watermark 越过所需窗口，则保留有用的 current index 并走原精确 fallback，而不是先破坏
+  current tree。
+
+  TDD 首先固定旧实现仍将 BaseRev 留在 7 的失败，再实现并验证 BaseRev 7→4、历史 snapshot、update/delete/create
+  前向回放与并发 collector merge；水位越界回归同时证明 BaseRev 仍为 7。index 层普通 100 轮、race 20 轮，
+  backend 冷 follower/历史组合普通与 race 各 20 轮通过；`pkg/backend/...` 全树通过（主包 74.504 秒），完整
+  `pkg/server/etcd` 177.963 秒、compat 模块 6.378 秒、`cmd/option` 0.088 秒通过。提交 `e0e8fcb5` 又把真实
+  303-key fixture 改为：记录历史点后执行 update/delete/create，先用 current RangeStream 将目标副本 BaseRev
+  建在历史点之后，再请求跨 300-key 页的旧 revision，并与 exact upstream 比较完整 keys/values/Count/More。
+
+  精确镜像 `kubebrain:a4602-e0e8fcb5`（内嵌 SHA
+  `e0e8fcb56e835be1248f694187334962cb293631`，构建时间 `2026-08-14T03:24:29Z`，OCI manifest list
+  `sha256:f1e66edcc82ff61e8932abf8dc462196cfc4af36ababcff5d96c771ca62b269d`，运行用户
+  `65532:65532`）滚动到独立 TiKV/PD 三副本后均 Ready、零重启。直接 follower（member ID 与 leader 不同）
+  连续两轮 upstream 差分分别 36.02、23.85 秒通过：首轮 `decoded_index_hit=2`、cold rebuild=1、
+  historical rebuild=1，日志精确显示 BaseRev `…339` 回扩到 `…336` 后 ReadyRev 恢复 `…339`；第二轮 hit
+  增至 4、两个 rebuild 均保持 1，并新增 lazy replay=1，证明后续只增量追赶。完整 direct-moveleader profile
+  首轮仅 multiplexed L7 reset 出现一次瞬态失败；该场景立即单独通过（11.42 秒），无代码变更后的完整重跑
+  13/13 通过（39.492 秒），RangeStream follower 2.02 秒。
+
+  本项将历史有界流式能力扩展到 event log 仍可证明完整的 revision。requested revision 已落到 cleanup watermark
+  之前时仍必须 materialize fallback，因为现有 durable metadata 已不足以重建从该历史点到 current 的完整 key
+  history；count-index overflow 也继续 fallback。二者是当前 decoded-boundary RangeStream 尚存的资源边界，
+  不能用本项结果宣称任意未 compacted 旧 revision 都已 O(chunk)。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
