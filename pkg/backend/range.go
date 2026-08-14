@@ -374,6 +374,15 @@ func (b *backend) withRangeSnapshotTimestamp(ctx context.Context) (context.Conte
 	return ctx, nil
 }
 
+const (
+	// A request end can contain O(len(end)) dangerous ancestors, while storing
+	// every progressively longer prefix costs O(len(end)^2) bytes. Bound both
+	// dimensions; beyond either budget the streaming full-keyspace fallback is
+	// slower but keeps request memory linear and remains semantically exact.
+	maxDecodedRangeExactAncestors     = 128
+	maxDecodedRangeExactAncestorBytes = 64 << 10
+)
+
 // decodedUserRangeScanPlan returns a narrow raw interval plus the bounded set
 // of end ancestors whose legacy version runs may cross its exclusive upper
 // bound. The scanner excludes those keys and the caller reconciles them through
@@ -393,14 +402,61 @@ func (b *backend) decodedUserRangeScanPlan(start, end []byte) ([]byte, []byte, [
 	encodedEnd := b.coder.EncodeObjectKey(end, 0)
 	scanEnd := encodedEnd[:len(encodedEnd)-9]
 	var exactKeys [][]byte
-	for prefixLen := 0; prefixLen < len(end); prefixLen++ {
+	exactKeyBytes := 0
+	for prefixLen := firstEndPrefixInRange(start, end); prefixLen < len(end); prefixLen++ {
 		prefix := end[:prefixLen]
-		if bytes.Compare(prefix, start) >= 0 &&
-			bytes.Compare(b.coder.EncodeObjectKey(prefix, math.MaxInt64), scanEnd) >= 0 {
+		if encodedAncestorMayReachEnd(end, prefixLen) {
+			if len(exactKeys) == maxDecodedRangeExactAncestors ||
+				exactKeyBytes+prefixLen > maxDecodedRangeExactAncestorBytes {
+				return b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd(), nil
+			}
 			exactKeys = append(exactKeys, append([]byte(nil), prefix...))
+			exactKeyBytes += prefixLen
 		}
 	}
 	return scanStart, scanEnd, exactKeys
+}
+
+// firstEndPrefixInRange returns the shortest proper prefix of end which is >=
+// start. Since start < end, every longer prefix is also >= start. Computing the
+// common prefix once avoids comparing progressively longer slices O(n^2).
+func firstEndPrefixInRange(start, end []byte) int {
+	common := 0
+	for common < len(start) && common < len(end) && start[common] == end[common] {
+		common++
+	}
+	if common == len(start) {
+		return common
+	}
+	return common + 1
+}
+
+// encodedAncestorMayReachEnd compares
+//
+//	ancestor + '$' + bigEndian(MaxInt64)
+//
+// with raw end without constructing the progressively longer encoded key. The
+// shared ancestor bytes cancel, so only end's next byte and at most eight
+// revision bytes matter.
+func encodedAncestorMayReachEnd(end []byte, prefixLen int) bool {
+	next := end[prefixLen]
+	if next != '$' {
+		return next < '$'
+	}
+	suffix := end[prefixLen+1:]
+	for index := 0; index < 8; index++ {
+		if index == len(suffix) {
+			return true
+		}
+		maxRevisionByte := byte(0xff)
+		if index == 0 {
+			maxRevisionByte = 0x7f
+		}
+		if maxRevisionByte != suffix[index] {
+			return maxRevisionByte > suffix[index]
+		}
+	}
+	return len(suffix) == 8
 }
 
 // Count implements Backend interface

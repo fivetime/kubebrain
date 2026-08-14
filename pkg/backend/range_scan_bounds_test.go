@@ -90,6 +90,53 @@ func TestDecodedUserRangeScanBoundsNarrowsPrefixAndFallsBackForEndAncestor(t *te
 	require.Empty(t, exactKeys)
 }
 
+func TestDecodedUserRangeScanPlanBoundsPathologicalAncestorExpansion(t *testing.T) {
+	b := &backend{coder: coder.DefaultKeyspace().NewCoder(), ks: coder.DefaultKeyspace()}
+	end := make([]byte, maxDecodedRangeExactAncestors+2)
+	scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(nil, end)
+	require.Equal(t, b.ks.ObjectKeyspaceStart(), scanStart)
+	require.Equal(t, b.ks.ObjectKeyspaceEnd(), scanEnd)
+	require.Empty(t, exactKeys)
+
+	// Also exercise the byte budget independently of the count budget.
+	end = bytes.Repeat([]byte{0}, maxDecodedRangeExactAncestorBytes/2+2)
+	scanStart, scanEnd, exactKeys = b.decodedUserRangeScanPlan(end[:len(end)-3], end)
+	require.Equal(t, b.ks.ObjectKeyspaceStart(), scanStart)
+	require.Equal(t, b.ks.ObjectKeyspaceEnd(), scanEnd)
+	require.Empty(t, exactKeys)
+}
+
+func TestDecodedUserRangeScanPlanLinearHelpersMatchEncodedModel(t *testing.T) {
+	b := &backend{coder: coder.DefaultKeyspace().NewCoder(), ks: coder.DefaultKeyspace()}
+	keys := exhaustiveShortKeys([]byte{0, '#', '$', '%', 0x7f, 0xff}, 3)
+	for _, end := range keys {
+		if len(end) == 0 {
+			continue
+		}
+		encodedEnd := b.coder.EncodeObjectKey(end, 0)
+		rawEnd := encodedEnd[:len(encodedEnd)-9]
+		for prefixLen := 0; prefixLen < len(end); prefixLen++ {
+			want := bytes.Compare(b.coder.EncodeObjectKey(end[:prefixLen], 1<<63-1), rawEnd) >= 0
+			require.Equalf(t, want, encodedAncestorMayReachEnd(end, prefixLen),
+				"end=%x prefixLen=%d", end, prefixLen)
+		}
+		for _, start := range keys {
+			if bytes.Compare(start, end) >= 0 {
+				continue
+			}
+			want := len(end)
+			for prefixLen := 0; prefixLen < len(end); prefixLen++ {
+				if bytes.Compare(end[:prefixLen], start) >= 0 {
+					want = prefixLen
+					break
+				}
+			}
+			require.Equalf(t, want, firstEndPrefixInRange(start, end),
+				"start=%x end=%x", start, end)
+		}
+	}
+}
+
 func exhaustiveShortKeys(alphabet []byte, maxLen int) [][]byte {
 	keys := [][]byte{{}}
 	level := [][]byte{{}}
