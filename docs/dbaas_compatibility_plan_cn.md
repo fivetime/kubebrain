@@ -49463,6 +49463,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `65532:65532`）滚动到三副本后均 Ready、零重启；完整 direct-moveleader profile 38.570 秒通过，
   RangeStream follower 场景 1.92 秒。临时 reference、数据目录与 port-forward 均已清理。
 
+- A4595 消除 A4594 正常预算内祖先重建的串行 TiKV 往返。upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go:69-73`
+  在一个 read transaction/revision 上完成 Range；KubeBrain 因 legacy `$` 编码需要把窄主扫描与最多 128 个
+  collision-free revision-index/object 点读组合起来，但 A4593 固定同一 TSO 后仍逐键串行，合法构造可放大为
+  128 组顺序网络往返。提交 `ba1e08b0` 把 List/RangeStream/DeleteRange 预读与 Count 共用的精确祖先读取改为
+  最多 16 路有界并发；每个 worker 继承调用方固定 snapshot context，结果写入原输入槽位，缺失/墓碑保留为
+  nil，首个非 NotFound 错误取消同组工作，最终排序、历史 revision 与 A4594 的 128 项/64 KiB fallback 均不变。
+
+  确定性 `SnapshotGetter` 探针以 17 个真实兼容模式对象证明峰值恰为 16 个并发 `GetAt`，所有 revision-index
+  与 object 读取使用同一非零 timestamp，输出顺序和值封装解码正确；同时保留跨 raw-end tombstone 回归。
+  聚焦测试单轮 30.05 秒通过，纯扫描规划模型连续 20 轮 8.353 秒，`pkg/backend/...` 全树通过（backend
+  主包 75.028 秒），完整 `pkg/server/etcd` 175.481 秒、compat 模块全套 6.417 秒通过。
+
+  提交 `6f5da9d7` 又在 raw API 差分中构造 `[parallel, parallel+17*NUL)` 以及其中全部 17 个 proper-prefix
+  键，真实覆盖超过 worker 上限的两批 snapshot 点读，并继续同轮覆盖单祖先、历史值、RangeStream 与 130
+  祖先超预算 fallback；对 `/root/etcd` reference 和独立 TiKV/PD 上的 KubeBrain 连续 3/3 通过（9.869 秒）。
+  精确实现镜像 `kubebrain:a4595-ba1e08b0`（内嵌 SHA
+  `ba1e08b0fe5f31e65d91be949458e6d4dbf31420`，构建时间 `2026-08-14T01:25:05Z`，OCI manifest list
+  `sha256:45054e23df1005dba9b8e76422b9b80b1af54fcade39cd058e251669c1f5f5b5`，运行用户
+  `65532:65532`）滚动到三副本后均 Ready、零重启。完整 direct-moveleader profile 39.704 秒通过，
+  RangeStream follower 场景 2.51 秒；`/compat/` Count=0，临时 reference、数据目录与全部 port-forward
+  均已清理。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
