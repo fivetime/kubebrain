@@ -160,17 +160,36 @@ func (wt *watchTranslator) kvToEtcdKv(ctx context.Context, kv *proto.KeyValue) (
 		CreateRevision: int64(meta.CreateRevision),
 		ModRevision:    int64(kv.Revision),
 	}
-	// etcd returns the lease attached to the key on Get/Range and in watch
-	// events. A v2 value envelope records the lease of THIS specific version
-	// (review #9), so historical reads, prevKv, and delete events report the
-	// lease the key held at that revision. Both v1 and v2 envelopes are
-	// authoritative: v1 means the version was explicitly unleased, while v2
-	// carries its lease ID. Only legacy raw values lack per-version lease
-	// metadata and may fall back to the current in-memory binding.
-	if inlined {
+	// v2/v3 envelopes authoritatively record this version's non-zero/zero lease.
+	// Upgrade-era v1 and raw values predate per-version lease provenance. They
+	// may use the live attachment only when this is still the key's current
+	// object version; a historical v1/raw row must never borrow a newer binding.
+	if inlined && backend.InlineValueLeaseKnown(kv.Value) {
 		out.Lease = meta.Lease
-	} else if wt.shim.leaseLookup != nil {
-		out.Lease = wt.shim.leaseLookup(string(kv.Key))
+	} else {
+		lease, leaseErr := wt.currentLegacyLease(ctx, kv.Key, kv.Revision)
+		if leaseErr != nil {
+			return nil, leaseErr
+		}
+		out.Lease = lease
 	}
 	return out, nil
+}
+
+func (wt *watchTranslator) currentLegacyLease(ctx context.Context, key []byte, revision uint64) (int64, error) {
+	if wt.shim.leaseLookup == nil {
+		return 0, nil
+	}
+	lease := wt.shim.leaseLookup(string(key))
+	if lease == 0 {
+		return 0, nil
+	}
+	current, err := wt.shim.backend.Get(ctx, &proto.GetRequest{Key: key})
+	if err != nil {
+		return 0, err
+	}
+	if current == nil || current.Kv == nil || current.Kv.Revision != revision {
+		return 0, nil
+	}
+	return lease, nil
 }

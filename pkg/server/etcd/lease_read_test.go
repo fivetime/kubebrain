@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 )
 
 // TestReadPopulatesAttachedLease pins the kv.Lease read-populate: Get/Range
@@ -122,6 +124,50 @@ func TestHistoricalUnleasedVersionDoesNotInheritCurrentLease(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, current.Kvs, 1)
 	require.Equal(t, leaseID, current.Kvs[0].Lease)
+}
+
+func TestUpgradeV1LeaseFallbackOnlyForCurrentVersion(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	key := []byte("/registry/pods/upgrade-v1-current-lease")
+	created, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(created.Header.Revision)
+	}, 5*time.Second, 2*time.Millisecond)
+
+	shim := server.backend.(*backendShim)
+	stored, err := shim.backend.Get(ctx, &proto.GetRequest{Key: key})
+	require.NoError(t, err)
+	require.NotNil(t, stored.Kv)
+	v1 := append([]byte(nil), stored.Kv.Value...)
+	require.GreaterOrEqual(t, len(v1), 20)
+	v1[3] = 1 // rewrite the known-unleased v3 tag as upgrade-era lease-unknown v1
+	const leaseID int64 = 24683
+	shim.SetLeaseLookup(func(candidate string) int64 {
+		if candidate == string(key) {
+			return leaseID
+		}
+		return 0
+	})
+
+	current, err := shim.kvToEtcdKv(ctx, &proto.KeyValue{
+		Key: key, Value: v1, Revision: uint64(created.Header.Revision),
+	})
+	require.NoError(t, err)
+	require.Equal(t, leaseID, current.Lease, "a current v1 row must use its live attachment")
+
+	updated, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("v2")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return server.backend.GetCurrentRevision() >= uint64(updated.Header.Revision)
+	}, 5*time.Second, 2*time.Millisecond)
+	historical, err := shim.kvToEtcdKv(ctx, &proto.KeyValue{
+		Key: key, Value: v1, Revision: uint64(created.Header.Revision),
+	})
+	require.NoError(t, err)
+	require.Zero(t, historical.Lease, "a historical v1 row must not borrow the current attachment")
 }
 
 func TestHistoricalLeasedVersionRetainsLeaseAfterUnbind(t *testing.T) {
