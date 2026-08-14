@@ -49706,6 +49706,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `lower+0xff` 后才取得上述绿灯，未把 fixture RED 误归因于实现。测试清理后 compat、follower 前缀均为空，
   三个临时 port-forward 和 reference etcd 数据目录已由 runner 清理。
 
+- A4605 关闭 A4604 审计后发现的两个 liveness-only 大值驻留点。decoded-boundary `CountOnly` 在 narrow
+  physical count 后，需要判断最多 128 个 end ancestor 在 pinned revision 是否存活；spill 建立排序 run 前也
+  需要把被 raw scan 排除的 ancestor 合入。两处都只消费 nil/live，却仍调用返回完整 slice 的
+  `readDecodedRangeExactKeys`，合法大值下会在不向客户端返回 value 的情况下同时保留最多 128 个 value。
+  对照 upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/storage/mvcc/kvstore_txn.go:55-82`，
+  该存活判定必须继续固定于同一 read transaction，但无需扩张结果驻留。
+
+  提交 `0b12fee7` 让 Count 与 spill 建序复用 A4604 的 pinned-TSO visitor：revision metadata 仍可整页批读，
+  object values、historical/legacy fallback 与 callback 消费均最多 16 个一窗；Count 每窗累加 live 数，spill
+  每窗只把 live key 写入外排 sorter，callback 返回后即可释放 value。TDD 用 17 个逐级 NUL ancestor、每个
+  64KiB value 和 cap=2 先复现单次 17-value BatchGet，再证明 Count 与 spill 的所有 object batch 均不超过
+  16、语义结果完整且 spill 目录清理。聚焦 race 20 轮 8.087 秒、`go vet ./pkg/backend/...`、backend 全树
+  （主包 75.565 秒）、完整 `pkg/server/etcd` 173.823 秒和 compat 全套 6.400 秒通过。提交 `3e6809a6`
+  同时把永久 upstream differential 的 17 ancestor 扩为 64KiB values，并增加 CountOnly/KVs-empty 比较。
+
+  精确镜像 `kubebrain:a4605-0b12fee7`（内嵌 SHA
+  `0b12fee7b2fa3a5df833eb8331bc2818c6d23c4c`，构建时间 `2026-08-14T04:34:00Z`，OCI manifest list
+  `sha256:492cfe856ad8965837465a95dabd974d78552a9746d2fdd302fde3c81797234b`，运行用户
+  `65532:65532`）滚动至独立 TiKV/PD 三副本后，现场暂降 cap=2；17×64KiB narrow Range、CountOnly 与
+  RangeStream 对固定 upstream 的差分 6.196 秒通过，并观察 `count_index_overflowed=1`、spill counter=5，
+  证明 RangeStream 实际经过 overflow fallback。随后恢复 cap=5,000,000 再次滚动，三副本均 Ready、零重启，
+  compat/follower 测试前缀为 0；临时 reference 数据已移入可恢复的用户 Trash，未留下监听端口。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
