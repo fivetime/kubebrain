@@ -158,6 +158,85 @@ func TestDecodedRangeExactKeysUseSnapshotBatchesAndBoundedParallelFallback(t *te
 	}
 }
 
+func TestDecodedCountAndSpillBoundExactAncestorValueReads(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
+	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
+	b := NewBackend(store, Config{
+		Prefix: "/kubebrain/range-ancestor-liveness", Identity: getStorageIdentity(),
+		EnableEtcdCompatibility: true, EnableCountIndex: true, CountIndexMaxKeys: 2,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	ctx := context.Background()
+	lower := []byte("a")
+	end := append(append([]byte(nil), lower...), make([]byte, maxDecodedRangeExactReadWorkers+1)...)
+	keys := make([][]byte, maxDecodedRangeExactReadWorkers+1)
+	seed := rawStore.BeginBatchWrite()
+	for index := range keys {
+		keys[index] = append(append([]byte(nil), lower...), make([]byte, index)...)
+		revision := uint64(index + 2)
+		mutation := b.encodeCreateMutation(
+			keys[index], bytes.Repeat([]byte{byte(index + 1)}, 64<<10),
+			EtcdMetadata{CreateRevision: revision, Version: 1}, revision, 0, 1,
+		)
+		seed.Put(mutation.revisionKey, mutation.newRevisionValue, 0)
+		for _, objectMutation := range mutation.objectMutations {
+			seed.Put(objectMutation.key, objectMutation.value, 0)
+		}
+	}
+	require.NoError(t, seed.Commit(ctx))
+	revision := uint64(len(keys) + 1)
+	b.SetCurrentRevision(revision)
+	b.countIndex.Reset(func() uint64 { return revision }, func(_ uint64, emit func(key []byte, rev uint64, tombstone bool)) error {
+		for index, key := range keys {
+			emit(key, uint64(index+2), false)
+		}
+		return nil
+	})
+	require.True(t, b.countIndex.Overflowed())
+	_, _, exactKeys := b.decodedUserRangeScanPlan(lower, end)
+	require.Len(t, exactKeys, len(keys))
+
+	requireBoundedObjectBatches := func() {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		for _, batch := range store.batchKeys {
+			objectBatch := false
+			for _, key := range batch {
+				_, objectRevision, decodeErr := b.coder.Decode(key)
+				require.NoError(t, decodeErr)
+				objectBatch = objectBatch || objectRevision != 0
+			}
+			if objectBatch {
+				require.LessOrEqual(t, len(batch), maxDecodedRangeStreamValueKeys,
+					"liveness-only ancestor reads must not retain the complete value set")
+			}
+		}
+	}
+
+	store.resetTrace()
+	count, err := b.Count(ctx, &proto.CountRequest{Key: lower, End: end})
+	require.NoError(t, err)
+	require.EqualValues(t, len(keys), count.Count)
+	requireBoundedObjectBatches()
+
+	spillDir := t.TempDir()
+	t.Setenv("TMPDIR", spillDir)
+	store.resetTrace()
+	stream, err := b.RangeStream(ctx, lower, end, revision)
+	require.NoError(t, err)
+	var got []*proto.KeyValue
+	for response := range stream {
+		require.Empty(t, response.Err)
+		got = append(got, response.RangeResponse.Kvs...)
+	}
+	require.Len(t, got, len(keys))
+	requireBoundedObjectBatches()
+	entries, err := os.ReadDir(spillDir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
+}
+
 func (s *rangeSnapshotTraceStorage) requireOneSnapshot(t *testing.T) {
 	t.Helper()
 	s.mu.Lock()

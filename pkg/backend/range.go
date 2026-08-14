@@ -720,15 +720,14 @@ func (b *backend) Count(ctx context.Context, r *proto.CountRequest) (resp *proto
 			ctx, scanStart, scanEnd, r.Key, userEnd, exactKeys, rev,
 		)
 		if err == nil {
-			var exactKVs []*proto.KeyValue
-			exactKVs, err = b.readDecodedRangeExactKeys(ctx, exactKeys, rev)
-			if err == nil {
+			err = b.visitDecodedRangeExactKeyChunks(ctx, exactKeys, rev, func(_ [][]byte, exactKVs []*proto.KeyValue) error {
 				for _, kv := range exactKVs {
 					if kv != nil {
 						count++
 					}
 				}
-			}
+				return nil
+			})
 		}
 	} else {
 		key, rangeEnd := b.rangeStartKey(r.Key), b.rangeEndKey(r.End)

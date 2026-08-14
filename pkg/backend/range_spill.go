@@ -126,20 +126,21 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 				}
 			}
 		}
-		exact, err := b.readDecodedRangeExactKeys(ctx, exactKeys, revision)
+		err = b.visitDecodedRangeExactKeyChunks(ctx, exactKeys, revision, func(chunkKeys [][]byte, exact []*proto.KeyValue) error {
+			for index, kv := range exact {
+				if kv == nil {
+					continue
+				}
+				observed++
+				if addErr := sorter.Add(chunkKeys[index]); addErr != nil {
+					return fmt.Errorf("write decoded range exact-key spill: %w", addErr)
+				}
+			}
+			return nil
+		})
 		if err != nil {
 			fail(err)
 			return
-		}
-		for index, kv := range exact {
-			if kv == nil {
-				continue
-			}
-			observed++
-			if err = sorter.Add(exactKeys[index]); err != nil {
-				fail(fmt.Errorf("write decoded range exact-key spill: %w", err))
-				return
-			}
 		}
 		finalRun, err := sorter.Finish(ctx)
 		if err != nil {
