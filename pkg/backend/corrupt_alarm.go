@@ -127,9 +127,9 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 			return false, nil
 		}
 		// A restart witness is durable evidence that a transaction's event set
-		// may be incomplete. Do not let an operator reopen writes merely by
-		// clearing CORRUPT while that evidence still fails validation.
-		if err := b.validatePersistedTxnWitnesses(ctx); err != nil {
+		// or one of its referenced object versions may be incomplete. Do not let
+		// an operator reopen writes while that evidence still fails validation.
+		if err := b.validatePersistedTxnWitnesses(ctx, true); err != nil {
 			return false, err
 		}
 		members = append(members[:index], members[index+1:]...)

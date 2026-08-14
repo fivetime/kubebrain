@@ -28,6 +28,7 @@ import (
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -244,7 +245,18 @@ func (b *backend) validateEventLogWindowWitnesses(
 
 // validatePersistedTxnWitnesses verifies only revisions explicitly sealed by
 // this binary. Legacy revisions have no seal and remain upgrade-compatible.
-func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
+// verifyObjects is reserved for CORRUPT disarm: leadership startup must remain
+// one sequential witness/event merge, while an operator asking to reopen writes
+// must also prove every uncompacted event's referenced object version exists.
+func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjects bool) error {
+	compactRevision := uint64(0)
+	if verifyObjects {
+		var err error
+		compactRevision, err = b.GetCompactRevisionFresh(ctx)
+		if err != nil {
+			return err
+		}
+	}
 	start := b.ks.EncodeInternalKey(txnWitnessPrefix)
 	witnesses, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), 0, 0)
 	if err != nil {
@@ -263,6 +275,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 	// memory is O(events in one txn), not O(uncompacted transactions).
 	var eventReady, eventEOF bool
 	var eventRevision uint64
+	var eventUserKey []byte
 	var corruptFound bool
 	for {
 		if err := witnesses.Next(ctx); err != nil {
@@ -319,6 +332,9 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 			}
 			h := sha256.New()
 			var count uint32
+			var referenceErr error
+			objectKeys := make([][]byte, 0, record.count)
+			seenObjects := make(map[string]struct{}, record.count)
 			for !eventEOF {
 				if !eventReady {
 					if nextErr := events.Next(ctx); nextErr != nil {
@@ -328,7 +344,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 						}
 						return nextErr
 					}
-					eventRevision, _, decodeErr = b.ks.DecodeEventLogKey(events.Key())
+					eventRevision, eventUserKey, decodeErr = b.ks.DecodeEventLogKey(events.Key())
 					if decodeErr != nil {
 						return decodeErr
 					}
@@ -342,12 +358,55 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context) error {
 					break
 				}
 				writeWitnessDigestEntry(h, eventLogRawEntry{key: events.Key(), value: events.Val()})
+				if verifyObjects && revision >= compactRevision && referenceErr == nil {
+					verbByte, previousRevision, _, _, _, ok := coder.DecodeOrderedEventLogValue(events.Val())
+					valueRevision := revision
+					verb := proto.Event_EventType(verbByte)
+					switch {
+					case !ok:
+						referenceErr = fmt.Errorf("event value is undecodable")
+					case verb == proto.Event_DELETE && previousRevision > 0 && previousRevision < revision:
+						valueRevision = previousRevision
+					case verb == proto.Event_CREATE && previousRevision == 0:
+					case verb == proto.Event_PUT && previousRevision > 0 && previousRevision < revision:
+					default:
+						referenceErr = fmt.Errorf("event has invalid object reference")
+					}
+					if referenceErr == nil {
+						objectKey := b.coder.EncodeObjectKey(eventUserKey, valueRevision)
+						if _, duplicate := seenObjects[string(objectKey)]; !duplicate {
+							seenObjects[string(objectKey)] = struct{}{}
+							objectKeys = append(objectKeys, objectKey)
+						}
+					}
+				}
 				count++
 				eventReady = false
 			}
 			if count != record.count || !bytes.Equal(h.Sum(nil), record.digest[:]) {
 				cause = fmt.Errorf("%w: persisted witness mismatch at revision %d: found %d events, expected %d",
 					ErrTxnWitnessCorrupt, revision, count, record.count)
+			} else if referenceErr != nil {
+				cause = fmt.Errorf("%w: persisted witness object reference at revision %d: %v",
+					ErrTxnWitnessCorrupt, revision, referenceErr)
+			} else if verifyObjects && revision >= compactRevision {
+				_, incomplete, loadErr := b.loadEventValues(ctx, objectKeys)
+				if loadErr != nil {
+					return loadErr
+				}
+				if incomplete {
+					// Physical compaction may have advanced after our initial
+					// snapshot. Only a still-supported revision is corruption.
+					refreshed, refreshErr := b.GetCompactRevisionFresh(ctx)
+					if refreshErr != nil {
+						return refreshErr
+					}
+					compactRevision = max(compactRevision, refreshed)
+					if revision >= compactRevision {
+						cause = fmt.Errorf("%w: persisted witness at revision %d references a missing object version",
+							ErrTxnWitnessCorrupt, revision)
+					}
+				}
 			}
 		}
 		if cause == nil {

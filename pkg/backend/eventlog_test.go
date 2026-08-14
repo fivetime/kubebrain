@@ -403,8 +403,11 @@ func TestEventLogReplayRejectsMissingReferencedObjectInTrustedWindow(t *testing.
 	require.NoError(t, err)
 	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
 
+	objectKey := b.coder.EncodeObjectKey([]byte(key), created.Header.Revision)
+	objectValue, err := kv.Get(ctx, objectKey)
+	require.NoError(t, err)
 	batch := kv.BeginBatchWrite()
-	batch.Del(b.coder.EncodeObjectKey([]byte(key), created.Header.Revision))
+	batch.Del(objectKey)
 	require.NoError(t, batch.Commit(ctx))
 
 	events, served, err := b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
@@ -414,13 +417,62 @@ func TestEventLogReplayRejectsMissingReferencedObjectInTrustedWindow(t *testing.
 	require.Empty(t, events)
 	alarms, alarmErr := b.CorruptAlarms(ctx)
 	require.NoError(t, alarmErr)
-	require.Empty(t, alarms, "object loss has no durable disarm verifier and must not activate CORRUPT yet")
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms,
+		"a missing object covered by a trusted durable witness must persist CORRUPT")
+	_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
+	require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+	removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+	require.False(t, removed, "the missing referenced object must keep writes fenced")
 
-	require.NoError(t, b.EnsureEventLogStart(ctx))
+	repair := kv.BeginBatchWrite()
+	repair.Put(objectKey, objectValue, 0)
+	require.NoError(t, repair.Commit(ctx))
+	removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.NoError(t, disarmErr)
+	require.True(t, removed)
 	events, served, err = b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
+	require.NoError(t, err)
+	require.True(t, served)
+	require.Len(t, events, 1)
+}
+
+func TestEventLogMissingObjectAfterCompactAdvanceDoesNotArmCorrupt(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/elog_compact_object_race/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	victimKey := path.Join(pfx, "victim")
+	victim, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(victimKey), Value: []byte("victim")})
+	require.NoError(t, err)
+	newer, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "newer")), Value: []byte("newer")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, newer.Header.Revision)
+
+	// Model the cross-replica window where the durable compact watermark has
+	// committed and physical GC removed an older object, while event-log cleanup
+	// has not yet advanced its own watermark.
+	batch := kv.BeginBatchWrite()
+	batch.Del(b.coder.EncodeObjectKey([]byte(victimKey), victim.Header.Revision))
+	require.NoError(t, batch.Commit(ctx))
+	advanced, err := b.setCompactRecord(ctx, newer.Header.Revision)
+	require.NoError(t, err)
+	require.True(t, advanced)
+
+	events, served, err := b.eventLogWatchEvents(ctx, pfx, victim.Header.Revision, victim.Header.Revision)
 	require.NoError(t, err)
 	require.False(t, served)
 	require.Empty(t, events)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms, "a freshly compacted object is normal GC, not durable corruption")
 }
 
 func TestEventLogReplayRejectsMissingEntryCoveredByTxnWitness(t *testing.T) {

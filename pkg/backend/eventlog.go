@@ -208,6 +208,19 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		if refreshed, present := b.refreshEventLogStart(ctx); !present || fromRevision <= refreshed {
 			return nil, false, nil
 		}
+		if persistAlarm {
+			// Compaction publishes its durable MVCC watermark before physical
+			// object GC. A history scan admitted just before that commit can see a
+			// now-legitimate missing object while the event-log cleanup watermark
+			// still lags; that is a compacted fallback, not corruption.
+			compactRevision, compactErr := b.GetCompactRevisionFresh(ctx)
+			if compactErr != nil {
+				return nil, false, compactErr
+			}
+			if compactRevision > 0 && fromRevision < compactRevision {
+				return nil, false, nil
+			}
+		}
 		corruptionErr := invalidMVCCMetadataError(
 			cause, "%s in trusted event log window [%d,%d]", detail, fromRevision, toRevision,
 		)
@@ -341,7 +354,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 		return trustedCorruption(
 			fmt.Errorf("event log referenced object version is missing"),
 			"incomplete referenced objects",
-			false,
+			true,
 		)
 	}
 	events = make([]*proto.Event, len(entries))

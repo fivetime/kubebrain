@@ -110,7 +110,7 @@ func (b *backend) InitializeLeadershipRevision(ctx context.Context, _ uint64) er
 	// seals its exact event-marker set in the same TiKV transaction. Validate
 	// those durable seals before this leadership term becomes writable so a
 	// crash cannot erase evidence of a partial/corrupt transaction outcome.
-	if err := b.validatePersistedTxnWitnesses(ctx); err != nil && !errors.Is(err, ErrTxnWitnessCorrupt) {
+	if err := b.validatePersistedTxnWitnesses(ctx, false); err != nil && !errors.Is(err, ErrTxnWitnessCorrupt) {
 		return err
 	}
 	// Alarm metadata is part of the write-safety boundary, not merely an RPC
