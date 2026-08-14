@@ -51092,6 +51092,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:e31531c4d1c83436b0646c4a76303ab1f5c097b7d1fe6d389190b9bf49934157`、Ready 且零重启。该镜像基于提交前工作树，主
   `kubebrain` StatefulSet 仍保持 A4652，不能把隔离验证误写成主环境已发布。
 
+  提交后又以精确生产 SHA 构建 `kubebrain:a4653-b753f0d7`，内嵌
+  `b753f0d7be484e722070f0c8e9df30dade324a68`、版本 `a4653`、UTC build time `2026-08-14T21:44:00Z`；本地
+  OCI manifest list 为 `sha256:af2d3fa6a4951959987ce0f589fcc87faa13b03ff7e138ed47e092183d396b27`，三个临时 Pod
+  runtime imageID 均为 `sha256:2442a65ebdfd327b96c0ad279ca8d4725e623212ccfef2cb2b13eba3ea16ed7f`、Ready 且零重启。
+  复验同时纠正隔离拓扑：clientv3 `Status(ctx, endpoint)` 会为显式 endpoint 新建连接，不能把同时选择三个 Pod 的
+  NodePort Service 当作上游“单 endpoint”oracle；否则 Status、长期 KV connection 和 AlarmList 可随机落到不同 member，
+  owner 断言会偶然通过或失败。固定只选择 follower `a4653-jwt-0`（member `3258172462`）的 NodePort 30083，并使用全新
+  `a4653-quota-direct-final` keyspace 后，精确提交镜像的 automatic-quota differential 0.584 秒完整通过。共享负载均衡入口
+  仍可用于普通 client failover，但其跨连接 member affinity 属于网关契约，不伪装成 etcd 单成员 endpoint 语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
