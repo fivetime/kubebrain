@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer 和单 store 故障；Region merge、store replacement/address change 等需要新 PD directory 的 topology 变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer、单 store 故障，以及 `$`/NUL 边界的 revision-index/object 两阶段 batch；Region merge、store replacement/address change 等需要新 PD directory 的 topology 变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -49508,6 +49508,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   unary Range/RangeStream、历史值与 130 祖先 fallback 的 upstream raw API 差分连续 5/5 通过
   （16.838 秒）；完整 direct-moveleader profile 38.936 秒通过，RangeStream follower 场景 2.18 秒。
   `/compat/` Count=0，临时 reference、数据目录与全部 port-forward 均已清理。
+
+- A4597 关闭 A4596 与 serializable checkpoint/PD 隔离之间的交叉证据缺口。源码审计确认
+  `warmSerializableCheckpoint` 对 `ObjectKeyspaceStart/End` 做完整 Region discovery，而该范围是 tenant
+  magic 的完整前缀空间，不仅包含普通 object rows，也包含 revision indexes、event/internal families；
+  `WarmSnapshotRegions` 又会在每个独立 TiKV client cache 上触达每个 Region start。因此 A4596 的两阶段
+  `BatchGetAt` 理论上无需新增 PD directory，但此前现场隔离只读普通键，不能证明该推论。
+
+  提交 `6fa12add` 增加双层门禁：确定性 backend 测试在 checkpoint 建立后冻结 TSO/partition discovery，
+  对 `[$checkpoint-batch, $checkpoint-batch+17*NUL)` 的全部 17 个 proper-prefix 键执行 serializable List，
+  证明只发生两次 checkpoint timestamp 的 batch，且没有新增 oracle 或 partition 调用；普通连续 20 轮
+  0.374 秒、race 1.284 秒通过，`pkg/backend/...` 全树通过（backend 主包 74.755 秒）。
+
+  真实演练使用 disposable 三 PD/三 TiKV target、每 Region 三副本且零 pending peer，以 UID 65534 启动
+  独立 KubeBrain 并预先发布 GC-protected checkpoint；随后仅 DROP 该进程到三个 PD client port，root 控制
+  连接和三个 TiKV status listener 保持健康。写 admission session 到期并 fail closed 后，同一 17 祖先
+  serializable Range 在 3 秒 deadline 内完整返回，普通 serializable Range/read-only Txn/RangeStream 也继续
+  成功；线性读保持失败，恢复网络后同进程重新注册 session 并恢复写。测试本体 29.654 秒通过，runner 的
+  临时容器、iptables chain、端口和数据目录均由清理门禁确认消失。本项不扩大既有 150 秒安全窗，也不把
+  Region merge/store replacement 等需要新目录的变化误报为透明可用。
 
 ### P2：运维兼容和长期验证
 
