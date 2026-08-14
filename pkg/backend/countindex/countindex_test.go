@@ -255,6 +255,63 @@ func TestLatestIfReadyDisabledWhileResetLoads(t *testing.T) {
 	require.Equal(t, uint64(20), readyRevision)
 }
 
+func TestLatestRangeIfReadySamplesOrderedLiveStates(t *testing.T) {
+	idx := New(0)
+	_, _, _, ready := idx.LatestRangeIfReady(k("/a"), k("/z"), 0)
+	require.False(t, ready)
+
+	idx.Reset(func() uint64 { return 10 }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+		emit(k("/a"), 7, false)
+		emit(k("/b"), 8, true)
+		emit(k("/c"), 9, false)
+		emit(k("/z"), 10, false)
+		return nil
+	})
+
+	states, readyRevision, more, ready := idx.LatestRangeIfReady(k("/a"), k("/z"), 0)
+	require.True(t, ready)
+	require.False(t, more)
+	require.Equal(t, uint64(10), readyRevision)
+	require.Equal(t, []LatestState{
+		{Key: k("/a"), Revision: 7},
+		{Key: k("/c"), Revision: 9},
+	}, states)
+
+	states[0].Key[0] = 'x'
+	revision, _, found, _, _ := idx.LatestIfReady(k("/a"))
+	require.True(t, found, "returned keys must not alias the tree")
+	require.Equal(t, uint64(7), revision)
+
+	states, readyRevision, more, ready = idx.LatestRangeIfReady(k("/a"), nil, 1)
+	require.True(t, ready)
+	require.True(t, more)
+	require.Equal(t, uint64(10), readyRevision)
+	require.Equal(t, []LatestState{{Key: k("/a"), Revision: 7}}, states)
+}
+
+func TestLatestRangeIfReadyDisabledWhileResetLoads(t *testing.T) {
+	idx := New(0)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		idx.Reset(func() uint64 { return 20 }, func(_ uint64, emit func([]byte, uint64, bool)) error {
+			close(started)
+			<-release
+			emit(k("/a"), 20, false)
+			return nil
+		})
+		close(done)
+	}()
+	<-started
+	states, readyRevision, _, ready := idx.LatestRangeIfReady(k("/"), nil, 0)
+	require.False(t, ready)
+	require.Nil(t, states)
+	require.Equal(t, uint64(20), readyRevision)
+	close(release)
+	<-done
+}
+
 // TestCountMatchesBruteForce cross-checks the index against a naive recompute
 // over a randomized-ish workload.
 func TestCountMatchesBruteForce(t *testing.T) {

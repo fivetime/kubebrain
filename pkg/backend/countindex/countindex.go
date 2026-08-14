@@ -35,6 +35,13 @@ type revEntry struct {
 	tombstone bool
 }
 
+// LatestState is one live key and its exact latest revision in an atomically
+// sampled ready tree. Key is copied before the tree lock is released.
+type LatestState struct {
+	Key      []byte
+	Revision uint64
+}
+
 // keyItem holds a key's revision history in ascending revision order.
 type keyItem struct {
 	key  []byte
@@ -352,6 +359,43 @@ func (t *TreeIndex) LatestIfReady(key []byte) (revision uint64, tombstone, found
 	}
 	entry := revisions[latest]
 	return entry.revision, entry.tombstone, true, readyRev, true
+}
+
+// LatestRangeIfReady returns up to limit live states in [start,end) at the
+// tree's current ready revision. A nil/empty end means the rest of keyspace and
+// limit <= 0 means unlimited. States and readyRev come from one read-locked
+// generation, so callers can compare a physical range page without splicing a
+// concurrent Reset or Apply into its expectation.
+func (t *TreeIndex) LatestRangeIfReady(start, end []byte, limit int) (states []LatestState, readyRev uint64, more, ready bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.overflowed || t.loading || t.baseRev == 0 || t.readyRev < t.baseRev {
+		return nil, t.readyRev, false, false
+	}
+	readyRev = t.readyRev
+	visit := func(it btree.Item) bool {
+		ki := it.(*keyItem)
+		latest := sort.Search(len(ki.revs), func(i int) bool {
+			return ki.revs[i].revision > readyRev
+		}) - 1
+		if latest < 0 || ki.revs[latest].tombstone {
+			return true
+		}
+		if limit > 0 && len(states) >= limit {
+			more = true
+			return false
+		}
+		states = append(states, LatestState{
+			Key: append([]byte(nil), ki.key...), Revision: ki.revs[latest].revision,
+		})
+		return true
+	}
+	if len(end) == 0 {
+		t.tree.AscendGreaterOrEqual(&keyItem{key: start}, visit)
+	} else {
+		t.tree.AscendRange(&keyItem{key: start}, &keyItem{key: end}, visit)
+	}
+	return states, readyRev, more, true
 }
 
 func (t *TreeIndex) Len() int {

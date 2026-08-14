@@ -45,7 +45,13 @@ func newRuntimeIndexBackend(t *testing.T) (*backend, storage.KvStorage, context.
 	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
 	ctx := context.Background()
 	require.NoError(t, b.EnsureEventLogStart(ctx))
-	return b, store, ctx, []byte(pfx + "/key")
+	return b, store, ctx, []byte("runtime-index-key")
+}
+
+func runtimeIndexRangeEnd(key []byte) []byte {
+	end := append([]byte(nil), key...)
+	end[len(end)-1]++
+	return end
 }
 
 func applyRuntimeIndexVersions(t *testing.T, b *backend, ctx context.Context, key []byte) (uint64, uint64) {
@@ -132,6 +138,133 @@ func TestLatestGetArmsCorruptForWitnessedMissingOrMismatchedIndexTarget(t *testi
 			require.True(t, removed)
 		})
 	}
+}
+
+func TestLatestListArmsCorruptForWitnessedRevisionIndexOrObjectSplit(t *testing.T) {
+	for _, target := range []string{
+		"index-stale", "index-missing", "index-malformed", "object-missing", "index-tombstone", "object-tombstone",
+	} {
+		t.Run(target, func(t *testing.T) {
+			b, store, ctx, key := newRuntimeIndexBackend(t)
+			createRevision, updateRevision := applyRuntimeIndexVersions(t, b, ctx, key)
+			corruptKey := b.coder.EncodeRevisionKey(key)
+			if target == "object-missing" || target == "object-tombstone" {
+				corruptKey = b.coder.EncodeObjectKey(key, updateRevision)
+			}
+			corrupt := store.BeginBatchWrite()
+			switch target {
+			case "index-stale":
+				corrupt.Put(corruptKey, uint64ToBytes(createRevision), 0)
+			case "index-missing", "object-missing":
+				corrupt.Del(corruptKey)
+			case "index-malformed":
+				corrupt.Put(corruptKey, []byte{1}, 0)
+			case "index-tombstone":
+				corrupt.Put(corruptKey, append(uint64ToBytes(updateRevision), 0), 0)
+			case "object-tombstone":
+				corrupt.Put(corruptKey, tombStoneBytes, 0)
+			}
+			require.NoError(t, corrupt.Commit(ctx))
+
+			resp, listErr := b.List(ctx, &proto.RangeRequest{Key: key, End: runtimeIndexRangeEnd(key)})
+			require.Nil(t, resp)
+			require.ErrorIs(t, listErr, ErrInvalidMVCCMetadata)
+			alarms, alarmErr := b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+		})
+	}
+}
+
+func TestLatestListUnwitnessedIndexContradictionDoesNotArm(t *testing.T) {
+	b, store, ctx, key := newRuntimeIndexBackend(t)
+	createRevision, updateRevision := applyRuntimeIndexVersions(t, b, ctx, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Del(b.ks.EncodeInternalKey(txnWitnessLogicalKey(updateRevision)))
+	corrupt.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(createRevision), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	resp, err := b.List(ctx, &proto.RangeRequest{Key: key, End: runtimeIndexRangeEnd(key)})
+	require.Nil(t, resp)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms)
+}
+
+func TestLatestListRevisionIndexNewerThanReadySnapshotIsNotRejected(t *testing.T) {
+	b, store, ctx, key := newRuntimeIndexBackend(t)
+	_, updateRevision := applyRuntimeIndexVersions(t, b, ctx, key)
+	newer := store.BeginBatchWrite()
+	newer.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(updateRevision+1), 0)
+	require.NoError(t, newer.Commit(ctx))
+
+	resp, err := b.List(ctx, &proto.RangeRequest{Key: key, End: runtimeIndexRangeEnd(key)})
+	require.NoError(t, err)
+	require.Len(t, resp.GetKvs(), 1)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms)
+}
+
+func TestLatestDecodedListArmsCorruptWhenMalformedIndexFailsBeforeObjectScan(t *testing.T) {
+	b, store, ctx, _ := newRuntimeIndexBackend(t)
+	key := []byte("/runtime-index-key")
+	applyRuntimeIndexVersions(t, b, ctx, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeRevisionKey(key), []byte{1}, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	resp, err := b.List(ctx, &proto.RangeRequest{
+		Key: key, End: append(append([]byte(nil), key...), 0),
+	})
+	require.Nil(t, resp)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+}
+
+func TestHistoricalListDoesNotUseRuntimeLatestRangeExpectation(t *testing.T) {
+	b, store, ctx, key := newRuntimeIndexBackend(t)
+	createRevision, _ := applyRuntimeIndexVersions(t, b, ctx, key)
+	corrupt := store.BeginBatchWrite()
+	corrupt.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(createRevision), 0)
+	require.NoError(t, corrupt.Commit(ctx))
+
+	resp, err := b.List(ctx, &proto.RangeRequest{
+		Key: key, End: runtimeIndexRangeEnd(key), Revision: createRevision,
+	})
+	require.NoError(t, err)
+	require.Len(t, resp.GetKvs(), 1)
+	require.Equal(t, createRevision, resp.GetKvs()[0].GetRevision())
+	alarms, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, alarms)
+}
+
+func TestPinnedSnapshotDoesNotUseRuntimeLatestRangeExpectation(t *testing.T) {
+	b, _, ctx, key := newRuntimeIndexBackend(t)
+	applyRuntimeIndexVersions(t, b, ctx, key)
+	pinned := storage.WithSnapshotTimestamp(ctx, 1)
+	expectation := b.sampleLatestRangeExpectation(pinned, key, runtimeIndexRangeEnd(key), true, 0)
+	require.False(t, expectation.ready)
+}
+
+func TestLatestListLimitValidatesOnlyAuthoritativeExpectationPage(t *testing.T) {
+	b, _, ctx, _ := newRuntimeIndexBackend(t)
+	for _, key := range [][]byte{[]byte("range-a"), []byte("range-b"), []byte("range-c")} {
+		_, _, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: append([]byte("value-"), key...)}}, nil)
+		require.NoError(t, err)
+	}
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() != 0 }, 5*time.Second, 2*time.Millisecond)
+	require.NoError(t, b.RebuildCountIndex(ctx))
+
+	resp, err := b.List(ctx, &proto.RangeRequest{Key: []byte("range-a"), End: []byte("range-z"), Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, resp.GetKvs(), 1)
+	require.Equal(t, []byte("range-a"), resp.GetKvs()[0].GetKey())
+	require.True(t, resp.GetMore())
 }
 
 func TestLatestGetUnwitnessedIndexContradictionDoesNotArm(t *testing.T) {

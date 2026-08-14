@@ -30,6 +30,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
+	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -296,6 +297,7 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 	if limit > 0 && limit < math.MaxInt64 {
 		limit++
 	}
+	latestExpectation := b.sampleLatestRangeExpectation(ctx, r.Key, r.End, r.Revision == 0, limit)
 
 	decodedRange, err := b.requiresDecodedUserRange(ctx, r.Key, r.End, reqRevision)
 	if err != nil {
@@ -314,6 +316,12 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 	}
 	if err != nil {
 		klog.ErrorS(err, "backend range err", "key", string(r.GetKey()), "end", string(r.GetEnd()), "revision", r.GetRevision())
+		if latestExpectation.ready && errors.Is(err, ErrInvalidMVCCMetadata) {
+			return nil, b.persistWitnessedRevisionIndexCorruption(ctx, err)
+		}
+		return nil, err
+	}
+	if err := b.validateLatestRangeIndexes(ctx, kvs, latestExpectation); err != nil {
 		return nil, err
 	}
 	resp = &proto.RangeResponse{
@@ -329,6 +337,141 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 	}
 	resp.Kvs = kvs
 	return resp, nil
+}
+
+type latestRangeExpectation struct {
+	states        []countindex.LatestState
+	readyRevision uint64
+	more          bool
+	ready         bool
+}
+
+func (b *backend) sampleLatestRangeExpectation(
+	ctx context.Context, start, end []byte, requested bool, limit int64,
+) latestRangeExpectation {
+	if !requested || b.countIndex == nil {
+		return latestRangeExpectation{}
+	}
+	// A follower serializable checkpoint belongs to a different storage
+	// snapshot/generation than the process-local latest count index.
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); pinned {
+		return latestRangeExpectation{}
+	}
+	if isFromKeyEnd(end) {
+		end = nil
+	}
+	stateLimit := 0
+	if limit > 0 {
+		stateLimit = int(min(limit, int64(math.MaxInt)))
+	}
+	states, readyRevision, more, ready := b.countIndex.LatestRangeIfReady(start, end, stateLimit)
+	return latestRangeExpectation{
+		states: states, readyRevision: readyRevision, more: more, ready: ready,
+	}
+}
+
+const latestRangeIndexBatchSize = 512
+
+// validateLatestRangeIndexes applies the point-Get revision-index boundary to
+// the latest range candidates. The ready in-memory snapshot identifies both
+// exact returned revisions and live keys that must not disappear. Physical
+// indexes are fetched in bounded batches; an index newer than readyRevision is
+// a legitimate cross-leader/concurrent write and disables the comparison only
+// for that key. As with point Get, the in-memory index is only a trigger: a
+// durable transaction-witness validation must independently prove corruption
+// before CORRUPT is armed.
+func (b *backend) validateLatestRangeIndexes(
+	ctx context.Context, kvs []*proto.KeyValue, expectation latestRangeExpectation,
+) error {
+	if !b.config.EnableEtcdCompatibility || !expectation.ready {
+		return nil
+	}
+	expected := make(map[string]countindex.LatestState, len(expectation.states))
+	keys := make([][]byte, 0, len(expectation.states)+len(kvs))
+	seen := make(map[string]struct{}, cap(keys))
+	addKey := func(key []byte) {
+		if _, ok := seen[string(key)]; ok {
+			return
+		}
+		seen[string(key)] = struct{}{}
+		keys = append(keys, key)
+	}
+	for _, state := range expectation.states {
+		expected[string(state.Key)] = state
+		addKey(state.Key)
+	}
+	// A capped expectation is authoritative only through its last key. Later
+	// physical candidates merely provide List's lookahead and are not evidence
+	// of an unexpected key.
+	var lastExpected []byte
+	if len(expectation.states) != 0 {
+		lastExpected = expectation.states[len(expectation.states)-1].Key
+	}
+	returned := make(map[string]*proto.KeyValue, len(kvs))
+	for _, kv := range kvs {
+		if kv == nil {
+			continue
+		}
+		returned[string(kv.Key)] = kv
+		if !expectation.more || (len(lastExpected) != 0 && bytes.Compare(kv.Key, lastExpected) <= 0) {
+			addKey(kv.Key)
+		}
+	}
+
+	for start := 0; start < len(keys); start += latestRangeIndexBatchSize {
+		end := min(start+latestRangeIndexBatchSize, len(keys))
+		chunk := keys[start:end]
+		indexKeys := make([][]byte, len(chunk))
+		for i, key := range chunk {
+			indexKeys[i] = b.coder.EncodeRevisionKey(key)
+		}
+		values, err := b.snapshotEventLogValues(ctx, indexKeys)
+		if err != nil {
+			return err
+		}
+		for i, key := range chunk {
+			state, expectedLive := expected[string(key)]
+			returnedKV := returned[string(key)]
+			value, found := values[string(indexKeys[i])]
+			if !found {
+				cause := invalidMVCCMetadataError(storage.ErrKeyNotFound,
+					"latest range revision index for key %q is missing at count-index ready revision %d",
+					key, expectation.readyRevision)
+				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+			}
+			physicalRevision, tombstone, parseErr := coder.ParseRevision(value)
+			if parseErr != nil {
+				cause := invalidMVCCMetadataError(parseErr, "decode latest range revision index for key %q", key)
+				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+			}
+			if physicalRevision > expectation.readyRevision {
+				continue
+			}
+			if !expectedLive {
+				cause := invalidMVCCMetadataError(nil,
+					"latest range returned key %q revision %d whose live revision index %d is absent from count index ready at %d",
+					key, returnedKV.GetRevision(), physicalRevision, expectation.readyRevision)
+				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+			}
+			if physicalRevision != state.Revision || tombstone {
+				cause := invalidMVCCMetadataError(nil,
+					"latest range revision index for key %q is revision %d tombstone=%t; count index expects live revision %d at ready revision %d",
+					key, physicalRevision, tombstone, state.Revision, expectation.readyRevision)
+				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+			}
+			if returnedKV == nil || returnedKV.Revision != state.Revision {
+				actualRevision := uint64(0)
+				if returnedKV != nil {
+					actualRevision = returnedKV.Revision
+				}
+				cause := invalidMVCCMetadataError(nil,
+					"latest range object for key %q is missing or at revision %d; revision index expects live revision %d",
+					key, actualRevision, state.Revision)
+				return b.persistWitnessedRevisionIndexCorruption(ctx, cause)
+			}
+		}
+	}
+	return nil
 }
 
 // validateRangeObjectValues applies the same persisted-value safety boundary
