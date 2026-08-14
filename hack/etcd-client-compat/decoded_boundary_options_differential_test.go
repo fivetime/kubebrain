@@ -3,6 +3,7 @@ package compat
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -94,6 +95,9 @@ func runDecodedBoundaryRangeOptionsScenario(t *testing.T, endpoint string, lower
 		"min-create": {
 			Key: lower, RangeEnd: end, MinCreateRevision: seedRevisions[8], Limit: 4,
 		},
+		"max-create": {
+			Key: lower, RangeEnd: end, MaxCreateRevision: seedRevisions[8], Limit: 4,
+		},
 	}
 	outcome := make(map[string]decodedBoundaryRangeProjection, len(requests))
 	for name, request := range requests {
@@ -103,6 +107,32 @@ func runDecodedBoundaryRangeOptionsScenario(t *testing.T, endpoint string, lower
 		for _, item := range response.Kvs {
 			projection.Keys = append(projection.Keys, string(item.Key))
 			projection.Values = append(projection.Values, string(item.Value))
+		}
+		outcome[name] = projection
+	}
+	streamRequests := map[string]*etcdserverpb.RangeRequest{
+		"stream/default-limit": {Key: lower, RangeEnd: end, Limit: 3},
+		"stream/keys-only":     {Key: lower, RangeEnd: end, Limit: 6, KeysOnly: true},
+		"stream/count-only":    {Key: lower, RangeEnd: end, Limit: 1, CountOnly: true},
+		"stream/historical":    {Key: lower, RangeEnd: end, Revision: seedRevision, Limit: 7},
+	}
+	for name, request := range streamRequests {
+		stream, streamErr := kv.RangeStream(ctx, request)
+		require.NoError(t, streamErr, name)
+		projection := decodedBoundaryRangeProjection{}
+		for {
+			response, recvErr := stream.Recv()
+			if recvErr == io.EOF {
+				break
+			}
+			require.NoError(t, recvErr, name)
+			rangeResponse := response.GetRangeResponse()
+			projection.Count = rangeResponse.Count
+			projection.More = rangeResponse.More
+			for _, item := range rangeResponse.Kvs {
+				projection.Keys = append(projection.Keys, string(item.Key))
+				projection.Values = append(projection.Values, string(item.Value))
+			}
 		}
 		outcome[name] = projection
 	}

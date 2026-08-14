@@ -49542,6 +49542,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV/PD 上的三副本 KubeBrain 连续 10/10 通过（18.370 秒），compat 模块全套 6.121 秒通过；因此本项
   未发现新的运行时偏差，不冒充生产修复，而是关闭 decoded-boundary 优化与 Range 选项之间的证据缺口。
 
+- A4599 扩大 A4598 的交叉矩阵：补上 `MaxCreateRevision`，并对 RangeStream 可支持的默认 Limit/More、
+  `KeysOnly`、`CountOnly` 与 historical revision 分别合并全部 wire chunks 后比较 keys、values、`Count`
+  和 `More`。custom sort 与 revision filters 仍按 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/key.go:169-179`
+  返回 Unimplemented，不错误纳入流式支持面。exact reference 与真实 TiKV-backed KubeBrain 连续 5/5
+  通过（7.329 秒）。
+
+  本轮源码审计同时确认一个尚未关闭的资源缺口：`backend.RangeStream` 遇到 decoded boundary 时仍调用
+  `decodedUserRange`，先物化并按用户 key 排序全部结果，再包装成 stream。不能直接改接 raw scanner：legacy
+  `{userKey}$revision` 对祖先键及下一字节小于等于 `$` 的子键不保持用户字典序，直接流出会破坏 etcd KEY ASC
+  契约。后续修复必须使用有界外排/归并或新的 order-preserving 辅助索引，并覆盖旧数据迁移、historical
+  revision、tombstone、checkpoint TSO 与跨 Region 顺序；在这些证据完成前，本项只证明 wire 语义，不声称
+  decoded-boundary RangeStream 已具有普通范围的 O(chunk) 内存上界。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
