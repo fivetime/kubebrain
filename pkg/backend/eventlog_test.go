@@ -380,6 +380,40 @@ func TestEventLogReplayRejectsInvalidOrderedVerbInTrustedWindow(t *testing.T) {
 	require.Empty(t, events)
 }
 
+func TestEventLogReplayRejectsMissingReferencedObjectInTrustedWindow(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	m := mock.NewMinimalMetrics(ctrl)
+	kv := imemkv.NewKvStorage()
+	defer func() { require.NoError(t, kv.Close()) }()
+
+	pfx := fmt.Sprintf("/kubebrain/elog_missing_object/%d", time.Now().UnixNano())
+	b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	key := path.Join(pfx, "key")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+	require.NoError(t, err)
+	waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+
+	batch := kv.BeginBatchWrite()
+	batch.Del(b.coder.EncodeObjectKey([]byte(key), created.Header.Revision))
+	require.NoError(t, batch.Commit(ctx))
+
+	events, served, err := b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
+	require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+	require.ErrorContains(t, err, "referenced object version is missing")
+	require.False(t, served)
+	require.Empty(t, events)
+
+	require.NoError(t, b.EnsureEventLogStart(ctx))
+	events, served, err = b.eventLogWatchEvents(ctx, pfx, created.Header.Revision, created.Header.Revision)
+	require.NoError(t, err)
+	require.False(t, served)
+	require.Empty(t, events)
+}
+
 func TestValidateEventLogEntries(t *testing.T) {
 	create := func(rev uint64, key string, ordered bool, sub, total uint32) eventLogPending {
 		return eventLogPending{verb: proto.Event_CREATE, rev: rev, userKey: []byte(key), ordered: ordered, sub: sub, total: total}

@@ -308,7 +308,10 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	}
 	if incomplete {
 		b.metricCli.EmitCounter("watch.event_log.incomplete", 1)
-		return nil, false, nil
+		return trustedCorruption(
+			fmt.Errorf("event log referenced object version is missing"),
+			"incomplete referenced objects",
+		)
 	}
 	events = make([]*proto.Event, len(entries))
 	for i := range entries {
