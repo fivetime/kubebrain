@@ -54,6 +54,7 @@ type blockingWitnessScanStorage struct {
 type blockingRevisionIndexRecheckStorage struct {
 	storage.KvStorage
 	indexKey []byte
+	blockAt  int32
 	enabled  atomic.Bool
 	reads    atomic.Int32
 	blocked  chan struct{}
@@ -73,7 +74,7 @@ func (s *countingWitnessIndexBatchStorage) BatchGet(
 }
 
 func (s *blockingRevisionIndexRecheckStorage) Get(ctx context.Context, key []byte) ([]byte, error) {
-	if s.enabled.Load() && string(key) == string(s.indexKey) && s.reads.Add(1) == 3 {
+	if s.enabled.Load() && string(key) == string(s.indexKey) && s.reads.Add(1) == s.blockAt {
 		close(s.blocked)
 		select {
 		case <-s.release:
@@ -235,7 +236,7 @@ func TestLeadershipRevisionIndexRepairBeforeAlarmDoesNotArmCorrupt(t *testing.T)
 	raw := imemkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, raw.Close()) })
 	store := &blockingRevisionIndexRecheckStorage{
-		KvStorage: raw, blocked: make(chan struct{}), release: make(chan struct{}),
+		KvStorage: raw, blockAt: 3, blocked: make(chan struct{}), release: make(chan struct{}),
 	}
 	b := NewBackend(store, Config{
 		Prefix:   prefix + "/restart-witness/index-repair-race",
@@ -325,8 +326,8 @@ func TestLeadershipRevisionIndexValidationUsesBoundedBatchGets(t *testing.T) {
 	store.calls.Store(0)
 
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
-	require.Equal(t, int32(2), store.calls.Load(),
-		"leadership index validation must batch across transactions, not issue an N+1 read per witness")
+	require.Equal(t, int32(4), store.calls.Load(),
+		"leadership index/object validation must use two bounded phases, not issue N+1 reads per witness")
 }
 
 func TestLeadershipRevisionIndexValidationBoundsSingleLargeTransactionBatch(t *testing.T) {
@@ -353,8 +354,166 @@ func TestLeadershipRevisionIndexValidationBoundsSingleLargeTransactionBatch(t *t
 	store.calls.Store(0)
 
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
-	require.Equal(t, int32(2), store.calls.Load(),
-		"one large transaction must be split into bounded revision-index batches")
+	require.Equal(t, int32(4), store.calls.Load(),
+		"one large transaction must be split into bounded two-phase index/object batches")
+}
+
+func TestLeadershipRestartArmsCorruptForWitnessedIndexTargetObject(t *testing.T) {
+	t.Run("advanced index missing target", func(t *testing.T) {
+		b, ctx := newTxnApplyBackend(t)
+		key := []byte(prefix + "/restart-witness/index-target/advanced-missing")
+		_, _, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+		require.NoError(t, err)
+		indexKey := b.coder.EncodeRevisionKey(key)
+		healthyIndex, err := b.kv.Get(ctx, indexKey)
+		require.NoError(t, err)
+		_, advancedRevision, err := b.TxnApply(ctx, []TxnWriteOp{{
+			Key: []byte(prefix + "/restart-witness/index-target/advance"), Value: []byte("other"),
+		}}, nil)
+		require.NoError(t, err)
+		corrupt := b.kv.BeginBatchWrite()
+		corrupt.Put(indexKey, uint64ToBytes(advancedRevision), 0)
+		require.NoError(t, corrupt.Commit(ctx))
+
+		require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+		requireWitnessCorruptAlarm(t, b, ctx)
+		repair := b.kv.BeginBatchWrite()
+		repair.Put(indexKey, healthyIndex, 0)
+		require.NoError(t, repair.Commit(ctx))
+		requireWitnessCorruptDisarm(t, b, ctx)
+	})
+
+	t.Run("index above durable revision", func(t *testing.T) {
+		b, ctx := newTxnApplyBackend(t)
+		key := []byte(prefix + "/restart-witness/index-target/above-durable")
+		_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+		require.NoError(t, err)
+		indexKey := b.coder.EncodeRevisionKey(key)
+		healthyIndex, err := b.kv.Get(ctx, indexKey)
+		require.NoError(t, err)
+		healthyObject, err := b.kv.Get(ctx, b.coder.EncodeObjectKey(key, revision))
+		require.NoError(t, err)
+		futureRevision := revision + 1
+		corrupt := b.kv.BeginBatchWrite()
+		corrupt.Put(indexKey, uint64ToBytes(futureRevision), 0)
+		corrupt.Put(b.coder.EncodeObjectKey(key, futureRevision), healthyObject, 0)
+		require.NoError(t, corrupt.Commit(ctx))
+
+		require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+		requireWitnessCorruptAlarm(t, b, ctx)
+		repair := b.kv.BeginBatchWrite()
+		repair.Put(indexKey, healthyIndex, 0)
+		require.NoError(t, repair.Commit(ctx))
+		requireWitnessCorruptDisarm(t, b, ctx)
+	})
+
+	t.Run("live index targets tombstone", func(t *testing.T) {
+		b, ctx := newTxnApplyBackend(t)
+		key := []byte(prefix + "/restart-witness/index-target/live-tombstone")
+		_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+		require.NoError(t, err)
+		objectKey := b.coder.EncodeObjectKey(key, revision)
+		healthyObject, err := b.kv.Get(ctx, objectKey)
+		require.NoError(t, err)
+		corrupt := b.kv.BeginBatchWrite()
+		corrupt.Put(objectKey, tombStoneBytes, 0)
+		require.NoError(t, corrupt.Commit(ctx))
+
+		require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+		requireWitnessCorruptAlarm(t, b, ctx)
+		repair := b.kv.BeginBatchWrite()
+		repair.Put(objectKey, healthyObject, 0)
+		require.NoError(t, repair.Commit(ctx))
+		requireWitnessCorruptDisarm(t, b, ctx)
+	})
+
+	t.Run("tombstone index targets live object", func(t *testing.T) {
+		b, ctx := newTxnApplyBackend(t)
+		key := []byte(prefix + "/restart-witness/index-target/tombstone-live")
+		_, createRevision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+		require.NoError(t, err)
+		createdObject, err := b.kv.Get(ctx, b.coder.EncodeObjectKey(key, createRevision))
+		require.NoError(t, err)
+		_, deleteRevision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Delete: true}}, nil)
+		require.NoError(t, err)
+		objectKey := b.coder.EncodeObjectKey(key, deleteRevision)
+		healthyObject, err := b.kv.Get(ctx, objectKey)
+		require.NoError(t, err)
+		corrupt := b.kv.BeginBatchWrite()
+		corrupt.Put(objectKey, createdObject, 0)
+		require.NoError(t, corrupt.Commit(ctx))
+
+		require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+		requireWitnessCorruptAlarm(t, b, ctx)
+		repair := b.kv.BeginBatchWrite()
+		repair.Put(objectKey, healthyObject, 0)
+		require.NoError(t, repair.Commit(ctx))
+		requireWitnessCorruptDisarm(t, b, ctx)
+	})
+}
+
+func TestLeadershipIndexTargetRepairBeforeAlarmDoesNotArmCorrupt(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	raw := imemkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, raw.Close()) })
+	store := &blockingRevisionIndexRecheckStorage{
+		KvStorage: raw, blockAt: 2, blocked: make(chan struct{}), release: make(chan struct{}),
+	}
+	b := NewBackend(store, Config{
+		Prefix:   prefix + "/restart-witness/index-target-repair-race",
+		Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(ctrl)).(*backend)
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/restart-witness/index-target-repair-race/key")
+	_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+	require.NoError(t, err)
+	store.indexKey = b.coder.EncodeObjectKey(key, revision)
+	healthyObject, err := raw.Get(ctx, store.indexKey)
+	require.NoError(t, err)
+	corrupt := raw.BeginBatchWrite()
+	corrupt.Put(store.indexKey, tombStoneBytes, 0)
+	require.NoError(t, corrupt.Commit(ctx))
+	store.enabled.Store(true)
+
+	done := make(chan error, 1)
+	go func() { done <- b.InitializeLeadershipRevision(ctx, 0) }()
+	select {
+	case <-store.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("leadership validation did not reach the final target-object evidence check")
+	}
+	repair := raw.BeginBatchWrite()
+	repair.Put(store.indexKey, healthyObject, 0)
+	require.NoError(t, repair.Commit(ctx))
+	close(store.release)
+	select {
+	case initErr := <-done:
+		require.NoError(t, initErr)
+	case <-time.After(time.Second):
+		t.Fatal("leadership validation did not finish after target-object repair")
+	}
+	members, alarmErr := b.CorruptAlarms(ctx)
+	require.NoError(t, alarmErr)
+	require.Empty(t, members, "a repaired target object must not leave a stale CORRUPT alarm")
+}
+
+func requireWitnessCorruptAlarm(t *testing.T, b *backend, ctx context.Context) {
+	t.Helper()
+	members, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []uint64{b.localAlarmMemberID()}, members)
+	removed, err := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.ErrorIs(t, err, ErrTxnWitnessCorrupt)
+	require.False(t, removed)
+}
+
+func requireWitnessCorruptDisarm(t *testing.T, b *backend, ctx context.Context) {
+	t.Helper()
+	removed, err := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+	require.NoError(t, err)
+	require.True(t, removed)
 }
 
 func TestLeadershipRestartStillValidatesWitnessBelowLeadershipWatermark(t *testing.T) {

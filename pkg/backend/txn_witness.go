@@ -268,6 +268,14 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 	if err != nil {
 		return err
 	}
+	durableRevision, err := b.GetDurableRevision(ctx)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		// A missing durable watermark is validated by leadership initialization;
+		// do not invent an upper bound while scanning a legacy/no-witness store.
+		durableRevision = math.MaxUint64
+	} else if err != nil {
+		return err
+	}
 	start := b.ks.EncodeInternalKey(txnWitnessPrefix)
 	witnesses, err := b.kv.Iter(ctx, start, rawPrefixEnd(start), 0, 0)
 	if err != nil {
@@ -309,7 +317,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 				clear(pendingSeals)
 				return nil
 			}
-			evidence, indexErr := b.validateTxnRevisionIndexes(ctx, pendingIndexes)
+			evidence, indexErr := b.validateTxnRevisionIndexes(ctx, pendingIndexes, durableRevision)
 			if indexErr == nil {
 				pendingIndexes = pendingIndexes[:0]
 				clear(pendingSeals)
@@ -570,7 +578,7 @@ func (b *backend) validatePersistedTxnWitnesses(ctx context.Context, verifyObjec
 }
 
 func (b *backend) validateTxnRevisionIndexes(
-	ctx context.Context, expectations []txnRevisionIndexExpectation,
+	ctx context.Context, expectations []txnRevisionIndexExpectation, durableRevision uint64,
 ) (*txnRevisionIndexCorruption, error) {
 	if len(expectations) == 0 {
 		return nil, nil
@@ -583,6 +591,15 @@ func (b *backend) validateTxnRevisionIndexes(
 	if err != nil {
 		return nil, err
 	}
+	type targetObjectExpectation struct {
+		key             []byte
+		userKey         []byte
+		indexTombstone  bool
+		objectRevision  uint64
+		witnessRevision uint64
+	}
+	targets := make([]targetObjectExpectation, 0, len(expectations))
+	seenTargets := make(map[string]struct{}, len(expectations))
 	for i := range expectations {
 		expectation := expectations[i]
 		indexKey := indexKeys[i]
@@ -604,6 +621,15 @@ func (b *backend) validateTxnRevisionIndexes(
 				ErrTxnWitnessCorrupt, expectation.revision, expectation.userKey, parseErr)
 		}
 		wantTombstone := expectation.verb == proto.Event_DELETE
+		if currentRevision > durableRevision {
+			evidence := &txnRevisionIndexCorruption{
+				key: indexKey, expected: append([]byte(nil), raw...), revision: expectation.revision,
+			}
+			return evidence, fmt.Errorf(
+				"%w: current revision index for key %q is %d above durable revision %d",
+				ErrTxnWitnessCorrupt, expectation.userKey, currentRevision, durableRevision,
+			)
+		}
 		if currentRevision < expectation.revision ||
 			(currentRevision == expectation.revision && tombstone != wantTombstone) {
 			evidence := &txnRevisionIndexCorruption{
@@ -612,6 +638,48 @@ func (b *backend) validateTxnRevisionIndexes(
 			return evidence, fmt.Errorf(
 				"%w: persisted witness revision %d key %q conflicts with current revision index %d tombstone=%t",
 				ErrTxnWitnessCorrupt, expectation.revision, expectation.userKey, currentRevision, tombstone,
+			)
+		}
+		objectKey := b.coder.EncodeObjectKey(expectation.userKey, currentRevision)
+		if _, duplicate := seenTargets[string(objectKey)]; !duplicate {
+			seenTargets[string(objectKey)] = struct{}{}
+			targets = append(targets, targetObjectExpectation{
+				key: objectKey, userKey: expectation.userKey, indexTombstone: tombstone,
+				objectRevision: currentRevision, witnessRevision: expectation.revision,
+			})
+		}
+	}
+	objectKeys := make([][]byte, len(targets))
+	for i := range targets {
+		objectKeys[i] = targets[i].key
+	}
+	objects, incomplete, err := b.loadEventValues(ctx, objectKeys)
+	if err != nil {
+		return nil, err
+	}
+	for i := range targets {
+		target := targets[i]
+		value, found := objects[string(target.key)]
+		if !found {
+			if !incomplete {
+				return nil, fmt.Errorf("target object batch omitted key %q at revision %d", target.userKey, target.objectRevision)
+			}
+			evidence := &txnRevisionIndexCorruption{
+				key: target.key, missing: true, revision: target.witnessRevision,
+			}
+			return evidence, fmt.Errorf(
+				"%w: current revision index for key %q references missing object revision %d",
+				ErrTxnWitnessCorrupt, target.userKey, target.objectRevision,
+			)
+		}
+		objectTombstone := bytes.Equal(value, tombStoneBytes)
+		if objectTombstone != target.indexTombstone {
+			evidence := &txnRevisionIndexCorruption{
+				key: target.key, expected: append([]byte(nil), value...), revision: target.witnessRevision,
+			}
+			return evidence, fmt.Errorf(
+				"%w: current revision index for key %q has tombstone=%t but object revision %d has tombstone=%t",
+				ErrTxnWitnessCorrupt, target.userKey, target.indexTombstone, target.objectRevision, objectTombstone,
 			)
 		}
 	}
