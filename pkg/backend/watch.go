@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -355,8 +356,9 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 	// Rows below fromRevision are included so an in-window DELETE whose prior
 	// version predates the window still recovers its prev-kv.
 	type previousValue struct {
-		val []byte
-		rev uint64
+		val       []byte
+		rev       uint64
+		objectKey []byte
 	}
 	previous := make(map[string]previousValue)
 	for {
@@ -380,6 +382,7 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 			// revision key or internal metadata: not an event
 			continue
 		}
+		objectKey := append([]byte(nil), iter.Key()...)
 		val := append([]byte(nil), iter.Val()...)
 		isTomb := bytes.Equal(val, tombStoneBytes)
 		keyID := string(key)
@@ -390,7 +393,7 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 			if isTomb {
 				delete(previous, keyID)
 			} else {
-				previous[keyID] = previousValue{val: val, rev: rev}
+				previous[keyID] = previousValue{val: val, rev: rev, objectKey: objectKey}
 			}
 			continue
 		}
@@ -407,6 +410,17 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 		if isTomb {
 			event.Type = proto.Event_DELETE
 			if prev, ok := previous[keyID]; ok {
+				if b.config.EnableEtcdCompatibility {
+					validationErr := b.validateEventObjectValue(ctx, key, prev.rev, prev.val)
+					if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+						validationErr = b.persistWitnessedObjectCorruption(
+							ctx, key, prev.rev, prev.objectKey, prev.val, validationErr,
+						)
+					}
+					if validationErr != nil {
+						return nil, validationErr
+					}
+				}
 				event.Kv.Value = prev.val
 				event.Kv.Revision = prev.rev
 			} else {
@@ -423,25 +437,27 @@ func (b *backend) scanHistoryEvents(ctx context.Context, prefix string, fromRevi
 			}
 			delete(previous, keyID)
 		} else {
-			// Prefer the metadata inlined in the value we already read (approach
-			// A); fall back to a lookup for legacy un-enveloped values.
-			meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
+			validationErr := b.validateEventObjectValue(ctx, key, rev, val)
+			if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
+				validationErr = b.persistWitnessedObjectCorruption(ctx, key, rev, objectKey, val, validationErr)
+			}
+			if validationErr != nil {
+				return nil, validationErr
+			}
+			meta, _, inlined, decodeErr := DecodeInlineValueChecked(val)
 			if decodeErr != nil {
 				return nil, decodeErr
 			}
-			if !ok {
-				var err error
-				meta, err = b.GetEtcdMetadata(ctx, key, rev)
-				if err != nil {
-					return nil, err
+			if !inlined {
+				meta, decodeErr = b.GetEtcdMetadata(ctx, key, rev)
+				if decodeErr != nil {
+					return nil, decodeErr
 				}
-			} else if validationErr := ValidateEtcdMetadataAtRevision(meta, rev, "watch inline value metadata"); validationErr != nil {
-				return nil, validationErr
 			}
 			if meta.CreateRevision == rev && meta.Version == 1 {
 				event.Type = proto.Event_CREATE
 			}
-			previous[keyID] = previousValue{val: val, rev: rev}
+			previous[keyID] = previousValue{val: val, rev: rev, objectKey: objectKey}
 		}
 		events = append(events, event)
 	}

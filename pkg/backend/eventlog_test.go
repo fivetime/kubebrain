@@ -752,6 +752,82 @@ func TestSnapshotStreamsArmCorruptForWitnessedInvalidObjectValue(t *testing.T) {
 	}
 }
 
+func TestHistoryWatchFallbackArmsCorruptForWitnessedObjectValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*testing.T, context.Context, *backend, string) (objectRevision, fromRevision, throughRevision uint64)
+	}{
+		{
+			name: "live-event",
+			prepare: func(t *testing.T, ctx context.Context, b *backend, key string) (uint64, uint64, uint64) {
+				created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+				require.NoError(t, err)
+				waitUntilRevisionEqualOrTimeout(b, created.Header.Revision)
+				return created.Header.Revision, created.Header.Revision, created.Header.Revision
+			},
+		},
+		{
+			name: "delete-prev-kv",
+			prepare: func(t *testing.T, ctx context.Context, b *backend, key string) (uint64, uint64, uint64) {
+				created, err := b.Create(ctx, &proto.CreateRequest{Key: []byte(key), Value: []byte("value")})
+				require.NoError(t, err)
+				deleted, err := b.Delete(ctx, &proto.DeleteRequest{Key: []byte(key), Revision: created.Header.Revision})
+				require.NoError(t, err)
+				require.True(t, deleted.Succeeded)
+				waitUntilRevisionEqualOrTimeout(b, deleted.Header.Revision)
+				return created.Header.Revision, deleted.Header.Revision, deleted.Header.Revision
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			m := mock.NewMinimalMetrics(ctrl)
+			kv := imemkv.NewKvStorage()
+			defer func() { require.NoError(t, kv.Close()) }()
+
+			pfx := fmt.Sprintf("/kubebrain/watch_fallback_%s/%d", test.name, time.Now().UnixNano())
+			b := NewBackend(kv, Config{Prefix: pfx, Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, m).(*backend)
+			b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+			ctx := context.Background()
+			require.NoError(t, b.EnsureEventLogStart(ctx))
+			key := path.Join(pfx, "key")
+			objectRevision, fromRevision, throughRevision := test.prepare(t, ctx, b, key)
+
+			objectKey := b.coder.EncodeObjectKey([]byte(key), objectRevision)
+			objectValue, err := kv.Get(ctx, objectKey)
+			require.NoError(t, err)
+			corrupt := kv.BeginBatchWrite()
+			corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
+			require.NoError(t, corrupt.Commit(ctx))
+
+			events, err := b.scanHistoryEvents(ctx, key, fromRevision, throughRevision)
+			require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+			require.Empty(t, events)
+			alarms, alarmErr := b.CorruptAlarms(ctx)
+			require.NoError(t, alarmErr)
+			require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
+			_, writeErr := b.Create(ctx, &proto.CreateRequest{Key: []byte(path.Join(pfx, "blocked")), Value: []byte("blocked")})
+			require.ErrorIs(t, writeErr, ErrCorruptAlarmActive)
+			removed, disarmErr := b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.ErrorIs(t, disarmErr, ErrTxnWitnessCorrupt)
+			require.False(t, removed)
+
+			repair := kv.BeginBatchWrite()
+			repair.Put(objectKey, objectValue, 0)
+			require.NoError(t, repair.Commit(ctx))
+			removed, disarmErr = b.DisarmCorrupt(ctx, b.localAlarmMemberID())
+			require.NoError(t, disarmErr)
+			require.True(t, removed)
+			events, err = b.scanHistoryEvents(ctx, key, fromRevision, throughRevision)
+			require.NoError(t, err)
+			require.Len(t, events, 1)
+		})
+	}
+}
+
 func TestEventLogMissingObjectAfterCompactAdvanceDoesNotArmCorrupt(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
