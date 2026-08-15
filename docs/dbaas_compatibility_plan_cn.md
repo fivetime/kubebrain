@@ -51842,6 +51842,39 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一致，用户仍为 root/alice、角色仍为 root/operator 且 operator 权限为空，AlarmList/LeaseList 为空；三台 PD 连续
   三轮从全部 PD 查询都报告 leader `kb-pd-1`，PD/TiKV 3+3 均 Ready/零重启，全部 A4689 故障规则为 0。
 
+- A4690 继续审计每消息重新鉴权的 `LeaseKeepAlive`。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/lease.go::LeaseServer.leaseKeepAlive` 对 stream 中每条 request 调用
+  `EtcdServer.LeaseRenew`，`/root/etcd/server/etcdserver/v3_server.go::checkLeaseRenew` 每次按当前 attached keys 重新鉴权；
+  `/root/etcd/server/proxy/grpcproxy/lease.go::leaseProxy.LeaseKeepAlive` 则把已消费的消息交给 authoritative lease stream。
+  etcd follower 的 auth store 来自 Raft apply，KubeBrain follower 的进程缓存却不保证收到每次 auth mutation；此前第一条
+  authenticated keepalive 仍先调用 follower `authCallerFromContext` 读 TiKV auth config，再决定是否交给 leader。
+
+  A4689 JWT 集群先由 leader 创建 120 秒 lease；无故障 follower `a4653-jwt-0`（当时 `10.244.0.23`）一次 root
+  `lease keep-alive --once` 286ms 成功。精确阻断该 follower 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，客户端的
+  Authenticate 仍成功转发 leader，但 keepalive 在 6.052 秒 hard timeout 内零响应，follower 日志也没有进入
+  `forward lease keepalive`，trap 后规则为 0。测试 lease 随后自然过期且 LeaseList 为空。
+
+  提交 `6278359efcd8797442fe4520aae4023da6eae991` 在消费每条 keepalive message 后，仅对启用 peer proxy 的请求先
+  读取 fresh leadership：若为 follower，直接把原始 token/受信证书身份和仍未 apply 的消息交给 leader，由 leader 的
+  正常 handler 完成当次 auth、attached-key WRITE permission 与 renewal；消息已消费后遇到 leader handoff 仍沿既有
+  100ms backoff 重试，直到 successor、client cancellation 或非 transient error。proxy-disabled 路径没有新增 route
+  probe，保留第一次已观察 stale 时立即 Unavailable 的决定。首版实现曾无条件多读一次 freshness，完整 suite 的截断
+  输出只显示包失败；JSON 复跑精确定位 `TestLeaseWritesKeepInitialStaleLeadershipDecision/keepalive`，收紧为
+  proxy-enabled-only 后相关路由/鉴权/取消测试连续 20 轮通过。最终 `go vet`、聚焦 race 2.919 秒、完整 server JSON
+  门禁 exit 0 且零 fail event，完整 proxy 包 3.017 秒通过。
+
+  精确镜像 `kubebrain:a4690-6278359e` 内嵌完整 SHA 与 UTC build time `2026-08-15T10:16:54Z`，本地 OCI
+  manifest list 为 `sha256:17839dd9e3b58ddf14d7f292df3051b62ba3ef3bb047cc83e0b17a1b83d1ad73`，manifest/config
+  分别为 `sha256:003bb7264577593166733f27ab7778ae2c6aed6e670cd0d316db32a855fd5305` 与
+  `sha256:f83dae95fe22b55addd81afa73da4b768d1066493466930c42c02807a8eb4c70`，Kind runtime imageID 为
+  `sha256:50782770822c16b2c9f27e337b3df682591e665c61e35c2dd8cb48f5398c19c1`。主 follower
+  `kubebrain-0`（`10.244.0.26`）、leader `kubebrain-1` 在六目标隔离下 131ms 返回 TTL(120)；JWT follower
+  `a4653-jwt-0`（`10.244.0.29`）、leader `a4653-jwt-1` 使用 root credential 在相同隔离下 324ms 返回
+  TTL(120)，日志记录 Authenticate 与 `forward lease keepalive`。两个临时 lease 均显式 revoke，最终主/JWT
+  LeaseList 为空，两轮规则为 0。六个 KubeBrain Pod Ready/零重启、runtime imageID 一致，主三个 endpoint health
+  成功且 AlarmList 为空；JWT 三成员 auth enabled/authRevision=25 一致、operator 权限为空且 AlarmList 为空；三台 PD
+  连续三轮从全部 PD 查询均报告 leader `kb-pd-1`，PD/TiKV 3+3 Ready/零重启，全部 A4690 故障规则为 0。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
