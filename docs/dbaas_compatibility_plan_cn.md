@@ -52622,6 +52622,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   alarm 为空，三端正常 future 请求均返回 HTTP 400，六个 Pod 十分钟日志没有 panic/fatal/data-race/corrupt
   匹配；隔离规则与 31 个测试键全部清除并确认查询计数为零。
 
+- A4727 补齐 KubeBrain→PD/TiKV 数据面的真实 mTLS 黑盒。该链路不是 etcd 自身协议面，故不以
+  `/root/etcd` 伪造实现作 oracle，而按 PingCAP Operator 的 cluster TLS 契约建立独立 namespace：1 个 PD、1 个
+  TiKV、`spec.tlsCluster.enabled=true`，并使用 `${cluster}-pd-cluster-secret`、
+  `${cluster}-tikv-cluster-secret`、`${cluster}-tidb-cluster-secret` 与 `${cluster}-cluster-client-secret`。
+  直连 PD 已证明合法双向 TLS 成功、无客户端证书与明文均失败。
+
+  首个真实 RED 是 A4726 即使配置 `--tikv-verify-cn=Definitely-Wrong-CN`，KubeBrain 仍 Ready 且成功取得
+  cluster ID/TSO。源码追踪确认 vendored TiKV client 的 `ClusterVerifyCN` 仅存字段但未进入 `tls.Config`，而 pinned
+  PD client 又独立重建 TLS 配置且没有 CN 约束入口。最终生产提交 `7ba5f3c0` 在标准 CA/SAN/mTLS 校验之后加入
+  immutable leaf-CN allowlist，并让 TiKV RPC、PD discovery/safepoint 与进程 admission 复用同一策略；PD 的 CN
+  路径通过 TLS-wrapping gRPC dialer 补齐。中间候选曾因 dialer 未声明 ALPN `h2` 而收到 HTTP/1.1 frame-too-large，
+  补齐 ALPN 后才进入最终提交，未把候选失败当作 GREEN。`verify-cn` 未配置 TLS 或包含空 CN 现在启动即拒绝。
+
+  提交只修改 `cmd/option/option_tikv.go`、`pkg/storage/tikv/tikv.go`、
+  `third_party/tikv-client-go/config/security.go` 与 `third_party/tikv-client-go/tikv/kv.go` 四个生产文件，新增 93 行、
+  删除 18 行，没有修改测试代码。最终正确 CN 下 endpoint health、Put/Get、Txn、Watch 与 Lease
+  grant/attach/TTL/revoke 全通过；错误 CN 产生 192 次明确拒绝且 cluster-ID/TSO 成功数均为 0，错误 CA 被 x509
+  拒绝，CN-without-TLS 以 exit 1 拒绝。vendored `./tikv ./config`、`./pkg/storage/tikv ./cmd/option`、
+  `./pkg/storage/... ./cmd/...`、`go vet ./cmd/... ./pkg/storage/...` 与完整 `./pkg/server/etcd` 回归均通过。
+  精确镜像 `kubebrain:a4727-7ba5f3c0` 内嵌 SHA
+  `7ba5f3c0854b0647c8ee20aef53940a5ff2efdbc`、build time `2026-08-15T20:58:20Z`，OCI index 为
+  `sha256:00eb8b9f9119682cdfadbc4d3aff92e653d703aa963d70bad6f8594af4cb9c12`，Kind runtime imageID 为
+  `sha256:af9e8cdbbad42f7ab4f27436f9730b04c89fdb29fe500f13293dfb3495f48c27`。验证后测试 key、lease、隔离
+  namespace、PVC、证书目录与端口转发均清除，主明文及 JWT 六副本未滚动且保持 Ready/零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
