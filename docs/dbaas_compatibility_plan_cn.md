@@ -51767,6 +51767,46 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   proposal health 成功、AlarmList/LeaseList 为空；JWT 三成员 auth enabled/authRevision=21 一致；三台 PD 连续三轮从
   全部 PD 查询一致报告 leader `kb-pd-1`。
 
+- A4688 继续审计长连接 Watch 在 follower 存储链路故障下的成员级可用性。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go::serverWatchStream.recvLoop/isWatchPermitted` 在创建每个 Watch 时从该
+  etcd 成员已经 apply 的 AuthStore 取得身份并检查 range，之后已建立的 generation 不因权限变更重新鉴权；独立
+  `/root/etcd/server/proxy/grpcproxy/watch.go::watchProxy.Watch` 则维持到 authoritative endpoint 的长连接。KubeBrain
+  此前会在 follower 公网 Watch 入口先读 TiKV auth metadata，并在 proxied generation 启动前读取本地 fresh compact
+  watermark，因此即使 KubeBrain leader 可达，失去本地 PD/TiKV 的 follower 仍可能永久停住。
+
+  修复前在 A4687 主集群选择 follower `kubebrain-0`（当时 Pod IP `10.244.0.241`），精确阻断其到三台 PD
+  2379/TCP 与三台 TiKV 20160/TCP，同时由 leader 写 `/a4688/watch/key`；6 秒 Watch deadline 内没有 Created/event，
+  外层含 client 启动/回收共 8.265 秒，trap 后规则为 0。首个生产提交
+  `11e54d72163fff639881cb936c023f477c81a655` 让 follower 优先使用缓存 auth snapshot、缓存不完整时把原始 credential
+  交给 leader，并跳过 follower 的 fresh compact precheck；clean-close compaction fallback 改为 250ms 有界探测。
+  精确中间镜像 `kubebrain:a4688-11e54d72` 上，主 follower `kubebrain-0`（`10.244.0.247`）在相同六目标隔离下
+  1.327 秒收到 revision `468126003565913474` 的 PUT，证明无鉴权路径恢复可用。
+
+  真实 JWT 复验随后拦住了首版：operator 刚获 `/a4688/jwt/watch/` read 权限后，leader 上 alice Watch 与两端 Range
+  都成功，但隔离 follower `a4653-jwt-0`（`10.244.0.250`）连续两次在 `new watcher` 后返回 PermissionDenied。根因不是
+  range 计算，而是 KubeBrain follower 不像 Raft etcd 那样逐条 apply auth mutation；非空、结构完整的进程缓存仍可能停在
+  grant 前的 auth revision，因此不能权威决定一个新 Watch。最终提交
+  `31c0603d2bdb0b94ad2e6248cf45244e1217567b` 改为：所有新建的 follower-proxied Watch 都把原始 token/受信证书身份交给
+  当前 leader 做首次鉴权；只有收到 leader 的成功响应后，后续 generation/reconnect 才携带内部 trusted continuation
+  marker，从而同时保持 create-time 权限正确性与 etcd“已建立 Watch 不因后续权限变更被取消”的语义。leading-fresh
+  本地 Watch、已授权 peer continuation 和有界 compaction fallback 保持不变。回归覆盖缓存存在但 stale、缓存缺失、
+  continuation 跨 auth revision 与隔离 compaction probe；`go vet`、聚焦 race 通过，完整
+  `go test ./pkg/server/etcd ./pkg/server/service/etcdproxy -count=1` 分别 180.861 秒与 3.013 秒通过。
+
+  最终精确镜像 `kubebrain:a4688-31c0603d` 内嵌完整 SHA 与 UTC build time `2026-08-15T09:29:53Z`，本地 OCI
+  manifest list 为 `sha256:3fd5b85a0b484833ef4964411281fdddc705295a338324e97469efe3d342ad1a`，manifest/config
+  分别为 `sha256:5493e62a053576e4c5d6d5600fa5fd740976c997120abdecfacbf20d78eb3bf0` 与
+  `sha256:3b703488d590d3065dae63b2f986d39e587dd3ea2e1952f3c054e3c5d3bde87c`，Kind runtime imageID 为
+  `sha256:4d5298f3c0edc6e3a74dd4d83e75fb16d8b751c82228f2afc423f40c59015bea`。主集群 follower
+  `kubebrain-0`（`10.244.0.253`）、leader `kubebrain-2` 在六目标隔离下 1.611 秒收到 revision
+  `468126003565913475` 的事件；JWT follower `a4653-jwt-0`（`10.244.0.17`）、leader `a4653-jwt-1` 在同样隔离下，
+  alice 1.428 秒收到 revision 9 的授权事件，日志均记录 `watch start` 与 `etcd proxy start watching`，JWT 还记录
+  `forward authenticate`。两次规则均精确清零。JWT 临时 grant 后 authRevision=24；第一次 cleanup 恰遇 leader lease
+  stale 返回 Unavailable，重新确认 leader 后撤销成功，最终三成员 auth enabled/authRevision=25 一致，用户仍为
+  root/alice、角色仍为 root/operator 且 operator 权限为空。主/JWT 六副本均 Ready/零重启；主三个 endpoint health
+  成功、AlarmList/LeaseList 为空，JWT AlarmList/LeaseList 为空；三台 PD 连续三轮从全部 PD 查询都一致报告 leader
+  `kb-pd-1`，三台 PD 与三台 TiKV 均 Ready/零重启，全部 A4688 故障规则为 0。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
