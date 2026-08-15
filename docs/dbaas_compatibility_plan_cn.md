@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer、单 store 故障，以及 `$`/NUL 边界的 revision-index/object 两阶段 batch；Region merge、store replacement/address change 等需要新 PD directory 的 topology 变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer、单 store 故障，以及 `$`/NUL 边界的 revision-index/object 两阶段 batch；PD 健康期间每 30 秒主动重扫并预热 Region/store directory，已完成的 merge 等拓扑变化可被下一 checkpoint 吸收；PD 隔离后才发生的 Region merge、store replacement/address change 等需要新 directory 的变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -51310,6 +51310,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   93.194ms 内成功提交 proposal，AlarmList 为空、LeaseList 为 0，三台 PD 与三台 TiKV 也都 Ready、零重启。
   该改动只关闭二进制运维入口差距，不把 KubeBrain 的产品版本字符串冒充上游 etcd server 版本，也不改变任何
   KV、Watch、Lease 或 Txn 数据面语义。
+
+- A4669 修复长运行 KubeBrain 的 checkpoint Region 路由只预热一次的问题。旧进程即使 PD 一直健康、每秒续签
+  GC safepoint 并刷新 checkpoint，也永远不会主动重扫后续 Region/store directory；发生在未来 PD 隔离**之前**的
+  split、merge 或 store replacement 只能依赖偶然业务流量修复各自独立的 TiKV client cache。提交
+  `8f6043dbe5d9a61d247d465e8818d68f77b7e0f8` 改为每 30 秒从 PD 完整扫描租户 Region，并通过所有 16 个
+  round-robin txn client 在 checkpoint TSO 上逐 Region 预热；单进程刷新串行，只有完整 warm 成功后才记录完成时间，
+  不会把半刷新目录发布为新的 150 秒安全窗，也避免每秒扫描 PD。PD 隔离后才产生、且旧目录从未包含的新 store 地址
+  仍明确 fail closed；本项没有引入不可信的 client-local 拓扑猜测，也没有修改测试文件。完整 backend 78.450 秒、
+  checkpoint race 20 轮 6.622 秒、完整 etcd server 176.151 秒及 vet 均通过。
+
+  精确镜像 `kubebrain:a4669-8f6043db` 内嵌上述完整 SHA，构建时间
+  `2026-08-15T02:10:22Z`，OCI manifest list 为
+  `sha256:cc33b8379282c82d9f8beec52e78652109666686ebc334502a3e46255fe2cf85`。三副本滚动后，
+  对真实 TiKV Region `306021` 以用户键中点 split 出 `329001`，epoch 281→282；三个 KubeBrain 的
+  `scan_regions` 计数随后分别从 20/8/10 增至 21/9/11，证明不是启动时一次性扫描。隔离 follower
+  `kubebrain-0` 到全部三台 PD 后，它在 revision `468126003565904506` 返回 split 两侧完整三键，而 leader
+  后续写入 revision `468126003565904507` 不泄漏进旧 checkpoint。恢复 PD 后再把右 Region `306021` 合并回左
+  Region `329001`，不对 follower 发用户读；仅等待后台计数 24/12/15→25/13/16 后再次隔离 PD，跨合并区间
+  serializable Range 连续 32/32 次成功，固定 revision `468126003565904507` 且三键完整，证明 merge 路由由后台
+  刷新而非请求偶然修复。隔离初始窗口一次 NodePort mutation 命中该 follower 并按默认 deadline 超时，未伪记为成功；
+  直连健康 leader 的后续写正常提交。实验 iptables 规则已全部删除，三个测试键删除数为 3；endpoint proposal
+  73.749ms，AlarmList 为空、LeaseList 为 0，KubeBrain/PD/TiKV 各三副本 Ready 且零重启。
 
 ### P2：运维兼容和长期验证
 
