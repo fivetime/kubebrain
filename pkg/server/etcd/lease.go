@@ -413,6 +413,15 @@ func (m *leaseManager) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 }
 
 func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
+	// Auth mutations execute on the data-plane leader and invalidate this
+	// process's snapshot cache. Once one message has authoritatively observed the
+	// auth state in a leadership epoch, later messages in the same stream/epoch
+	// can therefore authenticate from that cache. This matches etcd's in-memory
+	// auth store and keeps checkpoint-free renewals independent of TiKV Region
+	// leader movement. Never carry the proof across an epoch: another leader may
+	// have changed auth while this replica was not authoritative.
+	var authenticatedEpoch uint64
+	var authenticatedInEpoch bool
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -434,7 +443,31 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		// attached to it; otherwise a caller that only knows the lease ID can keep
 		// another tenant's protected keys alive indefinitely. Rechecking per request
 		// also observes role/permission changes made while the stream is open.
-		caller, authErr := m.srv.authCallerFromContext(stream.Context())
+		var epoch uint64
+		var leadingFresh bool
+		var caller *authCaller
+		var authErr error
+		authComplete := false
+		if authenticatedInEpoch {
+			epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
+			if leadingFresh && authenticatedEpoch == epoch {
+				caller, authErr, authComplete = m.srv.authCallerFromCachedContext(stream.Context())
+			}
+		}
+		if !authComplete {
+			caller, authErr = m.srv.authCallerFromContext(stream.Context())
+			// The first message retains the established auth-before-routing error
+			// precedence. If a cached snapshot was invalidated while this stream
+			// was open, refresh the route after the authoritative read because it
+			// may have blocked across a demotion.
+			if authErr == nil {
+				epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
+			}
+			if authErr == nil && leadingFresh {
+				authenticatedEpoch = epoch
+				authenticatedInEpoch = true
+			}
+		}
 		if authErr != nil {
 			return authErr
 		}
@@ -450,7 +483,6 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			m.srv.observeForwardedRevision(resp.GetHeader(), nil)
 			return m.sendLeaseKeepAliveResponse(stream, resp)
 		}
-		epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
 			if !m.srv.peers.EtcdProxyEnabled() {
 				return m.leaseLeaderUnavailable("lease keepalive")

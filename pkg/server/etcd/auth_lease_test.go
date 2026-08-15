@@ -896,6 +896,52 @@ func TestAuthLeaseKeepAliveMissingLeaseErrorPriorityAndStreamSurvivalMatchEtcd(t
 	require.Positive(t, authenticated.sent[1].TTL)
 }
 
+func TestAuthDisabledLeaseKeepAliveReusesSnapshotWithinLeadershipEpoch(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	lease, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 3})
+	require.NoError(t, err)
+
+	shim := &blockingAuthConfigReadShim{
+		BackendShim: server.backend,
+		blockAt:     2,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	defer func() {
+		select {
+		case <-shim.release:
+		default:
+			close(shim.release)
+		}
+	}()
+
+	stream := &fakeLeaseKeepAliveServer{
+		ctx: context.Background(),
+		requests: []*etcdserverpb.LeaseKeepAliveRequest{
+			{ID: lease.ID},
+			{ID: lease.ID},
+		},
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.LeaseKeepAlive(stream) }()
+	select {
+	case <-shim.entered:
+		close(shim.release)
+		require.FailNow(t, "second keepalive reached TiKV auth config read")
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		require.FailNow(t, "keepalive stream did not finish")
+	}
+	require.EqualValues(t, 1, shim.reads.Load())
+	require.Len(t, stream.sent, 2)
+	require.Equal(t, int64(3), stream.sent[0].TTL)
+	require.Equal(t, int64(3), stream.sent[1].TTL)
+}
+
 func TestAuthLeaseKeepAliveExcludesConcurrentProtectedAttachment(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
