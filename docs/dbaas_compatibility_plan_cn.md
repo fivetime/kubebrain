@@ -52520,6 +52520,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空，十分钟窗口没有 future revision、deadline、panic 或 fatal；压力窗口出现 10 条 32–96ms PD TSO slow
   warning，未升级为请求失败。
 
+- A4721 在 A4720 上用正式 `run-differential.sh` 的固定 reference 启动契约重跑 244 个 differential 顶层入口：
+  reference 精确为 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`，自动从目标 Status 取得 1GiB
+  quota，并设置 `--watch-progress-notify-interval=1s`，避免 A4719 已确认的两类手工配置假红。本轮没有修改生产
+  或测试代码，也没有为相同 A4720 二进制重建镜像。
+
+  前 128 项运行至 MakeMirror 分页前共 414.424 秒，alarm、compact、CORRUPT lease、decoded/binary boundary、
+  DeleteRange、HTTP gateway、lease/leasing、Hash/HashKV、member、maintenance 等已执行场景通过；其中
+  `TestHTTPGatewayElectionObserveAuthorizationDifferentialAgainstReferenceEtcd` 曾在撤销权限后读取既有 Observe
+  时单次得到 EOF。该行为历史上已有 A366 三副本修复，不能凭一次连接结束重新修改生产代码。隔离后以相同固定
+  reference 对 NodePort 连续 10 轮 52.061 秒全部通过，再分别固定直连 follower pod0、leader pod1、follower
+  pod2 各 3 轮，依次 18.929/9.274/19.240 秒全部通过，共 19 轮未复现；因此将首次结果归类为未证实的瞬时连接
+  扰动，而非兼容 RED。
+
+  从 `TestMakeMirrorPaginatedBaseDifferentialAgainstReferenceEtcd` 起的剩余 116 项随后单独完整执行，286.731 秒
+  GREEN；覆盖 MakeMirror 分页、member/move-leader 可执行路径、Naming/Put、5,760 组合 Range matrix、RangeStream、
+  Snapshot、STM、Txn 与 Watch 全组。需要专用 quota/JWT/auth、三节点 reference、真实 Envoy/L4/L7、oversize 或
+  独立 compaction endpoint 的入口仍按显式前置条件 SKIP，不冒充已执行。最终 proposal health 19.85ms、alarm
+  为空，主三副本 Ready/零重启，二十分钟服务端窗口没有 deadline、panic、fatal、data-loss、TiKV busy 或
+  future-revision 日志。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
