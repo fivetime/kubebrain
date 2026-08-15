@@ -52924,6 +52924,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   两个 artifact 和临时目录均为空，proposal health 24.327ms；主与 JWT 六个 KubeBrain Pod 继续使用 A4738
   镜像且 Ready/零重启，Service 端口转发在记录后关闭。
 
+- A4741 使用隔离单成员 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 与最终 A4738 三副本
+  TiKV 数据面扩展官方 client/v3 差分，不把大套件文件存在本身当作覆盖证据。十组生产可观察场景通过：
+  Get 被取消且响应字节已到达 TCP bridge 时连续 4 次都保留同一 client connection/TCP transport，后续 Put/Get
+  成功；Snapshot 不完整 checksum 的 25 次客户端 oracle 无 `.part`/FD 泄漏，两端合法 SaveWithVersion 均成功；
+  600 KiB 与约 1.5 MiB key 的 Txn/Watch/Lease response、revision gap、PrevKV、事件及最终状态一致；历史 cache
+  不返回过新 revision；client resolver prebuild 一致；空 lease 自然过期不推进 future watch；signed lease ID、
+  16 路同 ID 并发 LeaseGrant 和 16 路并发 LeaseRevoke 的成功/AlreadyExists/NotFound 数量、revision gap、List/TTL
+  与附属键终态均一致。首批四组 6.859 秒、两项并发 lease 1.327 秒通过。
+
+  同轮明确识别一个失效的测试 oracle，而没有用修改服务端或放宽断言把它做绿：
+  `TestCacheLinearizableGetCatchesUpOnQuietPrefix` 对隔离 upstream 连续 3/3 均在 5 秒返回
+  `cache: timed out waiting for revision`，对 KubeBrain 也同样失败，说明当前固定 cache/client 版本已不满足该测试
+  注释引用的旧 upstream progress 行为；在重新固定可通过的 reference commit 或更新为当前 cache 契约之前，
+  该项不能作为 KubeBrain RED/GREEN。并发 lease 的第一次调用也因 raw grpc 测试错误接收带 `http://` endpoint，
+  在 RPC 前形成 `:443: too many colons`，改用裸 `host:port` 后才得到上述有效结果。
+
+  本轮没有生产 RED，故没有修改生产或测试代码，也没有重建镜像。终态 reference 与 KubeBrain proposal health
+  分别为 5.468ms、19.384ms，两端 AlarmList/LeaseList 为空；主与 JWT 六个 Pod 保持 A4738 镜像且 Ready/零重启，
+  reference 进程/data-dir、端口转发与盘点临时文件在记录后清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
