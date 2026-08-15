@@ -91,6 +91,37 @@ func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.Get
 	return resp, nil
 }
 
+// GetBatch resolves independent point reads against one engine snapshot with a
+// bounded worker fan-out. It is an optional server-side optimization for etcd
+// read-only Txn: the wire limit permits 128 operations, and executing those
+// reads serially turns ordinary TiKV latency into a caller-visible timeout.
+// Keeping the method outside Backend lets storage/test adapters that do not
+// need the optimization retain their existing interface contract.
+func (b *backend) GetBatch(ctx context.Context, keys [][]byte, revision uint64) ([]*proto.GetResponse, error) {
+	ctx, err := b.withRangeSnapshotTimestamp(ctx)
+	if err != nil {
+		return nil, err
+	}
+	responses := make([]*proto.GetResponse, len(keys))
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxDecodedRangeExactReadWorkers)
+	for index, key := range keys {
+		index, key := index, append([]byte(nil), key...)
+		group.Go(func() error {
+			response, getErr := b.Get(groupCtx, &proto.GetRequest{Key: key, Revision: revision})
+			if getErr != nil {
+				return getErr
+			}
+			responses[index] = response
+			return nil
+		})
+	}
+	if err = group.Wait(); err != nil {
+		return nil, err
+	}
+	return responses, nil
+}
+
 func (b *backend) getLatestInternalVal(ctx context.Context, key []byte) (val []byte, modRevision uint64, err error) {
 	return b.getInternalVal(ctx, key, 0)
 }

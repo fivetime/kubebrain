@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"math"
 	"sort"
 
@@ -45,11 +46,19 @@ type stagedTxnExecutor struct {
 	paths      *txnPathCursor
 	guards     []backend.TxnGuard
 
-	mutations map[string]*stagedMutation
-	order     []string
-	putSizes  []stagedPutSize
-	changed   bool
+	mutations  map[string]*stagedMutation
+	order      []string
+	putSizes   []stagedPutSize
+	changed    bool
+	readonly   bool
+	pointReads map[string]*mvccpb.KeyValue
 }
+
+type txnPointBatchGetter interface {
+	BatchGetAtRevision(context.Context, [][]byte, int64) (map[string]*mvccpb.KeyValue, error)
+}
+
+var errTxnPointBatchUnsupported = errors.New("txn point batch reads are unsupported")
 
 func (s *RPCServer) executeStagedGenericTxn(ctx context.Context, txn *etcdserverpb.TxnRequest, paths []bool, guards []backend.TxnGuard) (*etcdserverpb.TxnResponse, error) {
 	base := int64(s.backend.GetCurrentRevision())
@@ -65,6 +74,7 @@ func (s *RPCServer) executeStagedGenericTxnAtRevision(ctx context.Context, txn *
 		paths:      &txnPathCursor{paths: paths},
 		guards:     guards,
 		mutations:  make(map[string]*stagedMutation),
+		readonly:   txnIsReadonly(txn),
 	}
 	resp, err := e.execute(txn)
 	if err != nil {
@@ -103,6 +113,9 @@ func (e *stagedTxnExecutor) execute(txn *etcdserverpb.TxnRequest) (*etcdserverpb
 	if !succeeded {
 		ops = txn.Failure
 	}
+	if err = e.prefetchPointRanges(ops); err != nil {
+		return nil, err
+	}
 	resp := &etcdserverpb.TxnResponse{
 		Header:    &etcdserverpb.ResponseHeader{},
 		Succeeded: succeeded,
@@ -139,6 +152,50 @@ func (e *stagedTxnExecutor) execute(txn *etcdserverpb.TxnRequest) (*etcdserverpb
 		}
 	}
 	return resp, nil
+}
+
+func (e *stagedTxnExecutor) prefetchPointRanges(ops []*etcdserverpb.RequestOp) error {
+	if !e.readonly {
+		return nil
+	}
+	getter, ok := e.srv.backend.(txnPointBatchGetter)
+	if !ok {
+		return nil
+	}
+	keys := make([][]byte, 0, len(ops))
+	seen := make(map[string]struct{}, len(ops))
+	for _, op := range ops {
+		rangeRequest := op.GetRequestRange()
+		if rangeRequest == nil || len(rangeRequest.RangeEnd) != 0 || rangeRequest.Revision > 0 {
+			continue
+		}
+		key := string(rangeRequest.Key)
+		if _, cached := e.pointReads[key]; cached {
+			continue
+		}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, rangeRequest.Key)
+	}
+	if len(keys) < 2 {
+		return nil
+	}
+	batch, err := getter.BatchGetAtRevision(e.ctx, keys, e.baseRev)
+	if errors.Is(err, errTxnPointBatchUnsupported) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if e.pointReads == nil {
+		e.pointReads = make(map[string]*mvccpb.KeyValue, len(batch))
+	}
+	for key, kv := range batch {
+		e.pointReads[key] = kv
+	}
+	return nil
 }
 
 func (e *stagedTxnExecutor) visibleRevision() int64 {
@@ -260,6 +317,14 @@ func (e *stagedTxnExecutor) currentRange(start, end []byte) ([]*mvccpb.KeyValue,
 func (e *stagedTxnExecutor) currentRangeLimited(start, end []byte, maxKeys uint32) ([]*mvccpb.KeyValue, error) {
 	if isEmptyNonFromKeyRange(start, end) {
 		return nil, nil
+	}
+	if len(end) == 0 && len(e.mutations) == 0 {
+		if kv, cached := e.pointReads[string(start)]; cached {
+			if kv == nil {
+				return nil, nil
+			}
+			return []*mvccpb.KeyValue{proto.Clone(kv).(*mvccpb.KeyValue)}, nil
+		}
 	}
 	var resp *etcdserverpb.RangeResponse
 	var err error

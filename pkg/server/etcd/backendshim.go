@@ -208,6 +208,37 @@ type BackendShim interface {
 	SetCountProxy(func(ctx context.Context, r *etcdserverpb.RangeRequest) (int64, bool))
 }
 
+type backendPointBatchGetter interface {
+	GetBatch(context.Context, [][]byte, uint64) ([]*proto.GetResponse, error)
+}
+
+// BatchGetAtRevision is deliberately optional on BackendShim consumers. The
+// production shim exposes it for large read-only Txn requests, while existing
+// storage adapters and focused service doubles may continue to implement the
+// narrower public interface.
+func (b *backendShim) BatchGetAtRevision(ctx context.Context, keys [][]byte, revision int64) (map[string]*mvccpb.KeyValue, error) {
+	getter, ok := b.backend.(backendPointBatchGetter)
+	if !ok {
+		return nil, errTxnPointBatchUnsupported
+	}
+	responses, err := getter.GetBatch(ctx, keys, normalizeRangeRevision(revision))
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]*mvccpb.KeyValue, len(keys))
+	for index, response := range responses {
+		var kv *mvccpb.KeyValue
+		if response != nil && response.Kv != nil {
+			kv, err = b.kvToEtcdKv(ctx, response.Kv)
+			if err != nil {
+				return nil, err
+			}
+		}
+		result[string(keys[index])] = kv
+	}
+	return result, nil
+}
+
 // implement backendShim interface
 type backendShim struct {
 	// raw backend
