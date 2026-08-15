@@ -51710,6 +51710,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   各三副本 Ready/零重启，JWT 三成员 auth enabled/authRevision=19 一致；主三个 endpoint proposal health 成功、
   AlarmList/LeaseList 为空，三台 PD 连续三轮从全部 PD 查询均一致报告 leader `kb-pd-1`。
 
+- A4686 沿 follower linearizable read proxy 继续覆盖 etcd 3.7 `KV.RangeStream`。对照固定 upstream
+  `/root/etcd/server/etcdserver/v3_server.go::RangeStream`：普通 etcd 成员先执行 Raft linearizable read notify，随后由
+  权威成员完成 auth 与固定 revision 的流式 Range；`/root/etcd/server/proxy/grpcproxy/kv.go::RangeStream` 对独立
+  gRPC proxy 明确返回 Unimplemented。KubeBrain 是对外服务的多成员数据面而非该独立 grpc-proxy，并已声明 etcd 3.7
+  RangeStream 能力；因此 follower 自身 TiKV/PD 路径故障、但 KubeBrain leader 可达时，应保持成员级可用性并让 leader
+  执行 barrier/auth/stream，而不能先在 follower 本地 `SyncReadRevision`。
+
+  修复前精确 A4685 主集群选择 follower `kubebrain-0`（当时 Pod IP `10.244.0.229`），同时阻断其到三台 PD
+  2379/TCP 与三台 TiKV 20160/TCP 后，对 `/a4686/rs/` 的 raw gRPC RangeStream 在 5 秒 deadline 内无响应并返回
+  `DeadlineExceeded`；trap 后同标记规则为 0。这证明的是生产成员故障可用性缺口，不是测试构造差异。
+
+  提交 `e21e1fa1e24ef628883368f2fc164790246424b0` 在完成 RangeStream 静态请求校验后，让开启 peer proxy 的
+  non-leading follower 把 non-serializable RangeStream、受信认证上下文和原始请求转发给 leader；leader 返回的全部
+  chunk、正常 EOF 和终止 gRPC status 原样透传，同时观察最终 header revision。显式 serializable RangeStream 仍使用
+  follower 的 GC-protected checkpoint，本地 leading-fresh 路径不变。回归覆盖本地 barrier 前代理、响应/EOF/status
+  透传以及鉴权顺序；旧鉴权测试的 fake proxy 未实现新流方法而返回 nil channel，首轮完整 suite 因过期测试假设触发
+  10 分钟超时，补齐 fake 并把默认值改为显式错误后，专项通过，`go vet ./pkg/server/...`、聚焦 race 通过，干净完整
+  `go test ./pkg/server/etcd -count=1` 182.253 秒通过。
+
+  精确镜像 `kubebrain:a4686-e21e1fa1` 内嵌完整 SHA 与 UTC build time `2026-08-15T08:26:05Z`，本地 OCI
+  manifest list 为 `sha256:2330277528ca2ebf4c0b16f05c9502094d1f52b00a2dde2c0eb2c2eadebd8d59`，Kind runtime
+  imageID 为 `sha256:39f01756086246964b16b097ea307182e6854029d7a7f568fde81bb4149059ac`。主三副本滚动后
+  follower `kubebrain-0` 为 `10.244.0.235`、leader 仍为 `kubebrain-2`；重复六目标隔离，raw RangeStream 在
+  2.431 秒返回两个键，日志记录 `forward range stream`，规则为 0。JWT fixture 同镜像滚动后隔离 follower
+  `a4653-jwt-0`（`10.244.0.238`），alice Authenticate 与受限 RangeStream 在 2.923 秒返回两个授权键，日志记录
+  `forward authenticate`、`forward range stream`；权限回收成功且规则为 0。主与 JWT 各三副本 Ready/零重启，主三个
+  endpoint proposal health 成功、AlarmList/LeaseList 为空；JWT 三成员 auth enabled/authRevision=21 一致，用户仍为
+  root/alice、角色仍为 root/operator 且临时权限已清空；三台 PD 连续三轮从全部 PD 查询一致报告 leader `kb-pd-1`，
+  三台 PD 与三台 TiKV 均 Ready/零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
