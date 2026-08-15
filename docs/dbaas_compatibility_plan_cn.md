@@ -51510,6 +51510,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空，KubeBrain/PD/TiKV 各三副本 Ready 且零重启，三台 PD 一致报告同一 leader。本轮真实故障仅覆盖 auth
   disabled；auth enabled 的 credential/error 契约由既有黑盒与专项回归证明，后续仍需在隔离 auth fixture 上实测。
 
+- A4678 成组关闭其余四个只读 Auth RPC 的 storage-isolated follower 缺口。固定 upstream
+  `/root/etcd/server/proxy/grpcproxy/auth.go` 对 UserGet、UserList、RoleGet、RoleList 均原样发往 Auth client；这些
+  查询读取 cluster-wide auth store，但 KubeBrain 旧 handler 在 follower 本地先执行 apply-auth validation、read
+  barrier 和一到两次 TiKV snapshot，因此连空列表和确定的 NotFound 都会被单副本存储故障吞掉。提交
+  `cde52df06270978f5c687fda3851f6d9f3624225` 抽取可供后续 Auth RPC 复用的 follower proxy context，并为四个
+  RPC 增加 typed peer client：raw bearer/client-cert 身份原样或经既有可信转换交给 leader，leader 继续独占 self-read
+  例外、admin-only list、role membership、permission denied、NotFound 与 auth revision/header 裁决；local leader 和
+  禁用 proxy 的 follower 不变。公开 response header 仍由接收 listener 填本成员 ID。该提交生产代码 124 行、测试与
+  test peer mock 71 行；四 RPC 路由契约、既有 Auth user/role 套件、完整 server 184 秒、proxy 3.020 秒、vet 和
+  聚焦 race 2.154 秒通过。
+
+  修复前精确 A4677 镜像、auth disabled 且 user/role store 为空时，阻断 follower `kubebrain-0` 到三台 PD
+  2379/TCP 与三台 TiKV 20160/TCP；UserList、RoleList、UserGet(root)、RoleGet(root) 四项分别在 6 秒宿主硬
+  超时退出 124，既没有返回空列表，也没有返回 canonical NotFound。精确 A4678 镜像
+  `kubebrain:a4678-cde52df0` 内嵌上述完整 SHA，构建时间 `2026-08-15T05:30:24Z`，OCI manifest list 为
+  `sha256:8a7f7b290b955b61d2b52bc3270a7360b660328522f1a9fd165d7c2890919ff6`。滚动前后三台 PD 均一致报告
+  `kb-pd-1` leader，三个新 Pod 零重启；相同六目标隔离下 TCP probe 均超时，UserList/RoleList 分别在
+  323/325ms 返回空集合，UserGet/RoleGet 分别在 331/323ms 返回 `FailedPrecondition` 的 user/role name not found，
+  四条日志均确认转发当前 leader `kubebrain-2`，且公开 header member ID 为接收 follower `4034353177`。规则为
+  0，三个 endpoint proposal/AuthStatus 成功，authRevision 仍为 961，AlarmList/LeaseList 为空，KubeBrain、PD、
+  TiKV 各三副本 Ready 且零重启。本轮真实故障仍是 auth-disabled 空 store；auth-enabled self/admin/denied 路径由
+  完整回归覆盖，后续需与 Authenticate 和 Auth mutation 一起在隔离 auth fixture 上形成真实生命周期矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
