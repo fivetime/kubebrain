@@ -15,6 +15,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -155,22 +156,9 @@ func (b *backend) createSerializableCheckpoint(ctx context.Context) (Serializabl
 	if revision == 0 {
 		return SerializableCheckpoint{}, ErrSerializableCheckpointUnavailable
 	}
-	compactRevision, err := b.loadCompactRevision(ctx)
+	compactRevision, authRevision, err := b.loadSerializableCheckpointWatermarks(ctx)
 	if err != nil {
 		return SerializableCheckpoint{}, err
-	}
-	authRevision := uint64(0)
-	authValue, authErr := b.kv.Get(ctx, b.ks.EncodeInternalKey([]byte("auth/config")))
-	if authErr == nil {
-		if len(authValue) != 9 || authValue[0] > 1 {
-			return SerializableCheckpoint{}, fmt.Errorf("invalid auth config while creating serializable checkpoint")
-		}
-		authRevision = binary.BigEndian.Uint64(authValue[1:])
-		if authRevision == 0 {
-			return SerializableCheckpoint{}, fmt.Errorf("zero auth revision while creating serializable checkpoint")
-		}
-	} else if !errors.Is(authErr, storage.ErrKeyNotFound) {
-		return SerializableCheckpoint{}, authErr
 	}
 	if current := b.serializableCheckpoint.Load(); current != nil &&
 		current.Revision == revision && current.CompactRevision == compactRevision && current.AuthRevision == authRevision {
@@ -190,6 +178,69 @@ func (b *backend) createSerializableCheckpoint(ctx context.Context) (Serializabl
 		return SerializableCheckpoint{}, err
 	}
 	return c, nil
+}
+
+// loadSerializableCheckpointWatermarks reads the two metadata rows that bind a
+// checkpoint in one storage snapshot. createSerializableCheckpoint holds the
+// exclusive logical-write barrier, so no compact or auth mutation can race this
+// read; BatchGet therefore preserves the existing authoritative semantics while
+// removing one TiKV transaction from the one-second checkpoint critical path.
+func (b *backend) loadSerializableCheckpointWatermarks(ctx context.Context) (uint64, uint64, error) {
+	compactKey := getCompactKey(b.config.Prefix)
+	authKey := b.ks.EncodeInternalKey([]byte("auth/config"))
+	if batchGetter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
+		values, err := batchGetter.BatchGet(ctx, [][]byte{compactKey, authKey})
+		if err != nil {
+			return 0, 0, err
+		}
+		compactValue, compactExists := values[string(compactKey)]
+		compactRevision, err := decodeSerializableCheckpointCompactWatermark(compactValue, compactExists)
+		if err != nil {
+			return 0, 0, err
+		}
+		authValue, authExists := values[string(authKey)]
+		authRevision, err := decodeSerializableCheckpointAuthWatermark(authValue, authExists)
+		return compactRevision, authRevision, err
+	}
+
+	compactRevision, err := b.loadCompactRevision(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	authValue, err := b.kv.Get(ctx, authKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return compactRevision, 0, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	authRevision, err := decodeSerializableCheckpointAuthWatermark(authValue, true)
+	return compactRevision, authRevision, err
+}
+
+func decodeSerializableCheckpointCompactWatermark(value []byte, exists bool) (uint64, error) {
+	if !exists {
+		return 0, nil
+	}
+	revision, err := coder.ParseRevisionWatermark(value)
+	if err != nil {
+		return 0, invalidMVCCMetadataError(err, "decode compact revision watermark")
+	}
+	return revision, nil
+}
+
+func decodeSerializableCheckpointAuthWatermark(value []byte, exists bool) (uint64, error) {
+	if !exists {
+		return 0, nil
+	}
+	if len(value) != 9 || value[0] > 1 {
+		return 0, fmt.Errorf("invalid auth config while creating serializable checkpoint")
+	}
+	revision := binary.BigEndian.Uint64(value[1:])
+	if revision == 0 {
+		return 0, fmt.Errorf("zero auth revision while creating serializable checkpoint")
+	}
+	return revision, nil
 }
 
 func (b *backend) loadSerializableCheckpoint(ctx context.Context) (SerializableCheckpoint, error) {
