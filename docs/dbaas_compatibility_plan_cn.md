@@ -52129,6 +52129,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   零重启，三端 health、空 alarm/lease、JWT authRevision=25/用户/角色/空 operator 权限保持；PD/TiKV 3+3 Ready/零重启，
   九次 PD leader 查询均为 `kb-pd-1`。
 
+- A4699 审计 `Maintenance.Alarm` 后明确不沿用 A4698 的成员本地回退。固定 upstream
+  `/root/etcd/server/etcdserver/v3_server.go::Alarm`：GET、ACTIVATE、DEACTIVATE 三种 action 全部包装为
+  `InternalRaftRequest` 并调用 `raftRequest`；`/root/etcd/server/etcdserver/apply/backend.go::Alarm` 虽在 apply 阶段从
+  AlarmStore 读取 GET，但公开请求仍必须先提交 Raft。auth wrapper 只对 GET 要求合法调用者，对 mutation 要求管理员，
+  不改变三者的 leader/quorum 依赖。因此 leader-peer 隔离时 Alarm GET 失败是官方契约，不能像 Status/Hash/Defragment
+  那样用 follower 本地 TiKV 读取抢赢，否则会把未经 Raft 排序的 alarm state 冒充线性一致结果。
+
+  在继续运行 A4698 精确镜像的真实三副本上，主 follower `kubebrain-0`（`10.244.0.75`）无故障 Alarm GET 30ms
+  返回 revision `468126003565913475`、入口 MemberID `4034353177`、零 alarm；仅阻断到 leader `kubebrain-2`
+  3380/TCP 后 6.003 秒 `DeadlineExceeded`，与 upstream 依赖一致；反向精确阻断该 follower 到三 PD/三 TiKV、保留
+  peer 路径时 31ms 由 leader 返回相同 envelope。JWT follower `a4653-jwt-0`（`10.244.0.78`）使用故障前签发的 alice
+  token，证明非管理员的已认证调用者在 storage 隔离下 21ms 成功，而 leader-peer 隔离仍于 6.000 秒
+  `DeadlineExceeded`。四轮 trap 后规则均为 0，六副本继续 Ready/零重启，JWT auth enabled/authRevision=25 保持。
+  本项关闭的是误修风险与故障契约证据，不包含生产代码或新镜像，也不把预期失败包装为可用性 GREEN。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
