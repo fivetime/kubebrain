@@ -427,7 +427,7 @@ func (s *RPCServer) hedgedMaintenanceStatus(
 		func(response *etcdserverpb.StatusResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
 		},
-		func(err error) bool { return terminalMaintenanceResultError(err, false) },
+		terminalMaintenanceResultError,
 	)
 }
 
@@ -506,7 +506,7 @@ func (s *RPCServer) hedgedMaintenanceDefragment(
 		func(response *etcdserverpb.DefragmentResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
 		},
-		func(err error) bool { return terminalMaintenanceResultError(err, false) },
+		terminalMaintenanceResultError,
 	)
 }
 
@@ -614,7 +614,7 @@ func (s *RPCServer) hedgedMaintenanceHash(ctx context.Context, req *etcdserverpb
 		func(response *etcdserverpb.HashResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
 		},
-		func(err error) bool { return terminalMaintenanceResultError(err, false) },
+		terminalMaintenanceResultError,
 	)
 }
 
@@ -636,7 +636,7 @@ func (s *RPCServer) hedgedMaintenanceHashKV(
 		func(response *etcdserverpb.HashKVResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
 		},
-		func(err error) bool { return terminalMaintenanceResultError(err, true) },
+		terminalMaintenanceResultError,
 	)
 }
 
@@ -689,11 +689,12 @@ func hedgeMaintenanceResult[T any](
 	return zero, firstErr
 }
 
-func terminalMaintenanceResultError(err error, revisionAware bool) bool {
-	if revisionAware && (errors.Is(err, backend.ErrHashKVCompacted) || errors.Is(err, backend.ErrHashKVFuture) ||
-		status.Code(err) == codes.OutOfRange) {
-		return true
-	}
+func terminalMaintenanceResultError(err error) bool {
+	// HashKV revision errors are not terminal while hedging. A follower's
+	// process-local revision watermark can lag the shared TiKV history, so its
+	// fast future-revision result must not cancel a leader response that can
+	// serve the requested revision. Waiting for the other result also preserves
+	// the correct compacted/future outcome when both paths reject the request.
 	if errors.Is(err, rpctypes.ErrUserEmpty) || errors.Is(err, rpctypes.ErrUserNotFound) ||
 		errors.Is(err, rpctypes.ErrAuthFailed) || errors.Is(err, rpctypes.ErrPermissionDenied) ||
 		errors.Is(err, rpctypes.ErrInvalidAuthToken) || errors.Is(err, rpctypes.ErrAuthOldRevision) {
