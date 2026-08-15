@@ -473,11 +473,17 @@ func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnarySer
 	if message, ok := req.(proto.Message); ok && uint(proto.Size(message)) > s.maxRequestBytes {
 		return nil, rpctypes.ErrGRPCRequestTooLarge
 	}
+	handlerCtx := ctx
+	if isUnaryServerAttemptTimeoutMethod(info.FullMethod) {
+		var cancel context.CancelFunc
+		handlerCtx, cancel = withUnaryRequestTimeout(ctx)
+		defer cancel()
+	}
 	if requestType, ok := unaryRequestDurationType(info.FullMethod, req); ok {
 		started := time.Now()
 		defer func() { emitEtcdRequestDuration(s.metricCli, requestType, time.Since(started), retErr) }()
 	}
-	resp, retErr = handler(ctx, req)
+	resp, retErr = handler(handlerCtx, req)
 	if retErr == nil {
 		var term uint64
 		if statusResponse, ok := resp.(*etcdserverpb.StatusResponse); ok {
@@ -575,8 +581,23 @@ var dedicatedConcurrencyMethods = grpcServiceFullMethods(
 	v3electionpb.Election_ServiceDesc,
 )
 
+var unaryServerAttemptTimeoutMethods = func() map[string]struct{} {
+	// Every upstream Auth RPC is dispatched through raftRequest. Alarm is the
+	// corresponding Maintenance RPC. KV, Compact, and Lease mutations already
+	// establish the same attempt budget in their handlers; keep ordinary Range,
+	// Status, and other non-Raft reads on the caller's context.
+	methods := grpcServiceFullMethods(etcdserverpb.Auth_ServiceDesc)
+	methods[etcdserverpb.Maintenance_Alarm_FullMethodName] = struct{}{}
+	return methods
+}()
+
 func isDedicatedConcurrencyMethod(method string) bool {
 	_, ok := dedicatedConcurrencyMethods[method]
+	return ok
+}
+
+func isUnaryServerAttemptTimeoutMethod(method string) bool {
+	_, ok := unaryServerAttemptTimeoutMethods[method]
 	return ok
 }
 

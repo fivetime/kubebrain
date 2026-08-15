@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"google.golang.org/grpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 )
@@ -79,6 +80,53 @@ func TestDeleteRangePropagatesServerAndClientDeadline(t *testing.T) {
 			require.NoError(t, err)
 			require.GreaterOrEqual(t, recorder.remaining, tc.minRemaining)
 			require.LessOrEqual(t, recorder.remaining, tc.maxRemaining)
+		})
+	}
+}
+
+func TestUnaryInterceptorBoundsUpstreamRaftEquivalentServices(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	for _, tc := range []struct {
+		name          string
+		method        string
+		request       any
+		clientTimeout time.Duration
+		wantDeadline  bool
+	}{
+		{name: "auth status", method: etcdserverpb.Auth_AuthStatus_FullMethodName, request: &etcdserverpb.AuthStatusRequest{}, wantDeadline: true},
+		{name: "auth shorter client", method: etcdserverpb.Auth_UserAdd_FullMethodName, request: &etcdserverpb.AuthUserAddRequest{}, clientTimeout: 500 * time.Millisecond, wantDeadline: true},
+		{name: "alarm", method: etcdserverpb.Maintenance_Alarm_FullMethodName, request: &etcdserverpb.AlarmRequest{}, wantDeadline: true},
+		{name: "ordinary range", method: etcdserverpb.KV_Range_FullMethodName, request: &etcdserverpb.RangeRequest{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.clientTimeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.clientTimeout)
+				defer cancel()
+			}
+			var remaining time.Duration
+			var hasDeadline bool
+			_, _ = server.stampUnary(ctx, tc.request, &grpc.UnaryServerInfo{FullMethod: tc.method}, func(handlerCtx context.Context, _ any) (any, error) {
+				deadline, ok := handlerCtx.Deadline()
+				hasDeadline = ok
+				if ok {
+					remaining = time.Until(deadline)
+				}
+				return nil, context.Canceled
+			})
+			require.Equal(t, tc.wantDeadline, hasDeadline)
+			if !tc.wantDeadline {
+				return
+			}
+			if tc.clientTimeout > 0 {
+				require.Greater(t, remaining, 100*time.Millisecond)
+				require.LessOrEqual(t, remaining, tc.clientTimeout)
+				return
+			}
+			require.Greater(t, remaining, unaryRpcTimeout-time.Second)
+			require.LessOrEqual(t, remaining, unaryRpcTimeout)
 		})
 	}
 }
