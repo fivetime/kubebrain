@@ -51333,6 +51333,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   直连健康 leader 的后续写正常提交。实验 iptables 规则已全部删除，三个测试键删除数为 3；endpoint proposal
   73.749ms，AlarmList 为空、LeaseList 为 0，KubeBrain/PD/TiKV 各三副本 Ready 且零重启。
 
+- A4670 修复 proxy-capable follower 的合法写请求在转发前同步访问本地 TiKV/PD 的问题。旧 `Put`、含 Put 的
+  `Txn` 和 `LeaseGrant` 都先执行本成员 quota/auth storage admission；当该 follower 与三台 PD 隔离而 leader
+  仍健康时，请求会耗尽客户端 deadline，甚至没有进入 peer proxy。提交
+  `f040ec587960399311a1d0fe5192714bdaf38727` 保留上游外层 quota 对畸形写的 `NOSPACE` 错误优先级和本地
+  无存储校验，但让合法 follower 写先转发，由 leader 做权威 quota/auth admission。内部请求携带接收成员 ID，
+  leader 自动 ArmNoSpace 时仍归属最初接收客户端的成员；该 metadata 只接受 peer listener 已标记的可信请求，
+  且必须解析为静态集群中的非零 member ID，公开 client listener 不能伪造。无 bearer token 且未启用 client-cert
+  auth 时不再读取 follower auth snapshot；client-cert auth 优先使用已缓存快照。自动 Lease ID 仍在接收 follower
+  生成，保持既有请求可观察语义。本项没有修改测试文件；聚焦回归、完整 `pkg/server/etcd` 175.488 秒、vet 和
+  聚焦 race 均通过。
+
+  精确镜像 `kubebrain:a4670-f040ec58` 内嵌上述完整 SHA，构建时间
+  `2026-08-15T02:51:56Z`，OCI manifest list 为
+  `sha256:3c7a227d7bb087ed094e739403bba56482f46a09cd587143d341d49f68def17b`。三副本滚动后，leader 为
+  `kubebrain-2`；在 Kind 节点 `FORWARD` 链阻断 follower `kubebrain-0` 到三台 PD 的 2379/TCP，Pod 内直连
+  PD 探测按预期 1 秒超时。此时直接请求该 follower 的 Put、含 Put 的 Txn 和 TTL=30 LeaseGrant 全部成功，
+  proxy 日志分别确认转发到当前 leader；恢复 PD 后从另一成员读回两键和值完全一致。实验规则逐条删除，Lease
+  以 CLI 所需十六进制 ID revoke，两测试键删除数为 2；三个 endpoint 均可提交 proposal，AlarmList 为空、
+  LeaseList 为 0，KubeBrain/PD/TiKV 主集群各三副本 Ready 且零重启。该结论证明的是 ingress follower 单独失去
+  PD 路径时写代理继续可用；它不把 leader 或 TiKV 数据路径故障宣称为可用，也不替代配额满载和 mTLS client-cert
+  场景的后续真实故障矩阵。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
