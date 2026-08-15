@@ -52669,6 +52669,37 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   CA/SAN/CN/mTLS 策略；TiKV leader-store 切换仍存在约十几秒写不可用窗口，作为数据面 SLA/客户端 deadline 的
   显式容量与故障预算保留，不通过放大服务端超时掩盖。
 
+- A4729 对 A4728 暴露的约 16.6 秒 TiKV leader-store 写恢复窗继续核对 etcd 的 request/deadline 契约。
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 `server/config/config.go::ReqTimeout`
+  默认为 `5s + 2*election timeout`（默认约 7 秒），`server/etcdserver/v3_server.go::processInternalRaftRequestOnce`
+  会用该值限制每次服务端 Raft 请求；客户端较长 deadline 是外层重试预算，不是单次尝试预算。独立三成员 etcd
+  在停止两个成员、失去 quorum 后，以 `--command-timeout=30s` 执行 Put，约每 7 秒出现一次服务端
+  `DeadlineExceeded` 并持续重试，最终才由 30 秒客户端 deadline 终止，确认源码理解不是只靠单元测试推断。
+
+  KubeBrain 的确定性 RED 是 `withUnaryRequestTimeout` 仅在客户端没有 deadline 时设置 10 秒，因而 30 秒客户端
+  deadline 会直接放大为一次 TiKV 尝试。首个候选把每次 unary attempt 固定限制为 10 秒，但真实删除承载最多
+  Region leader 的 TiKV 后，Put 于 10.055 秒返回 `Unavailable` 并停止，未被当作 GREEN。追踪 clientv3 可见 mutable
+  RPC 不会对这种普通 `Unavailable` 自动重试；根因是 TiKV `loadRegion from PD failed ... DeadlineExceeded`
+  被通用 transport 映射吞成了 `Unavailable`。
+
+  最终生产提交 `0d2477aa` 一方面让所有 unary attempt 使用 `context.WithTimeout(ctx, 10s)`，自然保留更短的客户端
+  deadline；另一方面只把 unwrap 链叶节点中、具有精确 `loadRegion from PD failed` 前缀和嵌套
+  `DeadlineExceeded` 标记的 pre-submit Region 定位失败映射回 `DeadlineExceeded`。可能已经提交的写仍走既有
+  `storage.ErrUncertainResult` 路径，其他连接/epoch 错误继续为 `Unavailable`，没有用字符串泛化改变不确定提交语义。
+  提交修改 `pkg/server/etcd/server.go`、`pkg/server/etcd/header_interceptor.go` 两个生产文件，并同步纠正原先把长客户端
+  deadline 直通、把上述叶错误期望为 `Unavailable` 的两个聚焦测试文件；共新增 33 行、删除 6 行。专项回归
+  0.578 秒、`go vet ./pkg/server/etcd` 与完整包回归 177.116 秒均通过。
+
+  精确镜像 `kubebrain:a4729-0d2477aa` 内嵌 SHA
+  `0d2477aa84742327d32f3689f7bb72f3934e3ed3`、build time `2026-08-15T22:00:00Z`，OCI index 为
+  `sha256:413853f4841046e0bb4b2d98719d3f4392ca4baa2e03b0f7876ff596ed2117d8`，Kind runtime imageID 为
+  `sha256:e60c590c81ba8f3f4ea9e91d5860f0be264811761572c021788729663ae3cbfa`。最终黑盒从 endpoint health 成功、
+  11 个 Region 的 miss/pending/down/extra-peer 均为 0 开始，删除承载 7/11 leader 的 `kb-tikv-1` 后立即执行
+  30 秒预算 Put：第一个约 10 秒尝试返回 `DeadlineExceeded`，clientv3 自动重试，整次请求在 18 秒内成功；结果键
+  `create_revision=mod_revision`、`version=1`，只有一次可见写。恢复后三个 PD/三个 TiKV Ready、四类异常 Region
+  仍为 0，主与 JWT 共六个 KubeBrain Pod 使用最终镜像且 Ready/零重启，proposal health 18.586ms、AlarmList 与
+  LeaseList 为空；测试前旧端口转发失效的一轮在健康前置检查即失败，已明确作废，测试键和端口转发均在终态清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
