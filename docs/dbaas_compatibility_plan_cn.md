@@ -52479,6 +52479,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   日志为零，三台 TiKV 的 slow/busy/deadline 匹配均为零；最终 proposal health 19.24ms、alarm 为空，16 个
   session lease 在原 60 秒 TTL 后自然收敛为零。参考 etcd、端口转发与一次性数据目录均已停止或删除。
 
+- A4719 在 A4718 上继续执行固定 upstream 黑盒完整性审计，本轮没有生产或测试代码变更，也没有为相同二进制
+  重建镜像。精确 reference 仍为 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`，生产仍为
+  `kubebrain:a4718-8e4ef72e`。剩余 leasing + concurrency lock 7 项 15.974 秒通过；maintenance/member/
+  move-leader 可用场景通过；namespace/naming/Put at-most-once/失败重试/同键并发/recipes 10 项 80.390 秒
+  通过；serializable/snapshot/STM 可用场景 5.661 秒通过；Txn 第一组 20 项 58.133 秒、嵌套/lease/range/
+  validation 第二组 24 项 81.211 秒全部通过。完整 `TestWatch*` 可用场景 31.067 秒通过；另以三个独立 Pod
+  port-forward 补跑直连控制帧 0.16 秒，以及 3 副本 × fragment `limit-1/limit/limit+1` 九组合 5.59 秒通过。
+
+  审计中两次 RED 均被证实为手工 reference 启动参数偏差，而未误修生产代码：第一次 reference 默认 2GiB
+  quota 对比目标 1GiB，按正式 runner 的 `--quota-backend-bytes=1073741824` 重启后 maintenance status 0.38 秒
+  通过；第二次 reference 未设置周期 progress，按正式 runner 的 `--watch-progress-notify-interval=1s` 重启后
+  future-sibling suppression 2.88 秒通过。需要专用 quota/auth/JWT、三节点 reference、外部 L7、metrics 或故障
+  注入命令的场景继续明确 SKIP，不记为绿色。最终主三副本 Ready/零重启、proposal health 23.10ms、alarm
+  为空，十分钟 KubeBrain deadline/panic/fatal 匹配为零；全部 reference、四个 port-forward 与一次性目录已停止
+  或删除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
