@@ -313,7 +313,24 @@ func (e *etcdProxy) checkConn() error {
 	client := e.client
 	err := e.err
 	e.lock.RUnlock()
-	return checkClientConn(client, err, e.connectionTimeout())
+	return checkExistingClientConn(client, err, e.connectionTimeout())
+}
+
+// checkExistingClientConn verifies that an already-published peer transport is
+// alive without treating backend readiness as transport failure. A data-plane
+// leader can report NOT_SERVING while a TiKV Region elects a successor and still
+// safely serve storage-free operations such as ordinary lease keepalives. New
+// connections continue to require SERVING in checkClientConn below.
+func checkExistingClientConn(client *clientv3.Client, clientErr error, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if client == nil {
+		return clientErr
+	}
+	_, err := healthpb.NewHealthClient(client.ActiveConnection()).Check(
+		ctx, &healthpb.HealthCheckRequest{},
+	)
+	return err
 }
 
 func checkClientConn(client *clientv3.Client, clientErr error, timeout time.Duration) error {

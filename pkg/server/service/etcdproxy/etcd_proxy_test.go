@@ -146,6 +146,8 @@ func TestCheckClientConnRequiresServingHealth(t *testing.T) {
 	err = checkClientConn(cli, nil, time.Second)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	require.Contains(t, status.Convert(err).Message(), "NOT_SERVING")
+	require.NoError(t, checkExistingClientConn(cli, nil, time.Second),
+		"an existing peer transport must survive a backend-readiness downgrade")
 }
 
 type blockingLeaseServer struct {
