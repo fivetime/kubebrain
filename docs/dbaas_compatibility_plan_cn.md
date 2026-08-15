@@ -52226,6 +52226,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   9.95/10.83/12.44ms，alarm 与 lease 均为空；PD/TiKV 3+3 Ready/零重启。由此证明修复作用于真实生产读路径，
   不是用测试替代实现。
 
+- A4705/A4706 修复合法大 watch key 污染生产指标与日志的无界观测面。对照 upstream
+  `/root/etcd/server/storage/mvcc/metrics.go`：官方 `watch_stream_total`、`watcher_total`、
+  `slow_watcher_total` 与 `events_total` 都是无用户 key 标签的聚合指标。完整差分第二轮在先执行
+  `TestNearRequestLimitKeyWatchLeaseDifferentialAgainstReferenceEtcd` 后暴露 RED：KubeBrain
+  `watcherhub_events_chan_closed` 把约 1.5 MiB 的用户 prefix 原样作为 Prometheus label，形成
+  1,536,203 字节单行与无界常驻时序；随后普通 `bufio.Scanner` 读取 `/metrics` 返回
+  `token too long`，而 upstream 不产生该时序。生产提交 `952c07dc` 删除该 label，只保留每实例
+  聚合关闭计数，并把 backend watch prefix 日志中超过 256 字节的值改为 SHA-256 与长度。
+
+  首次真实镜像复验又从 Pod 日志发现 server watch 层仍有第二组 raw key/range/backendPrefix
+  入口，其中 `watch start` 单行仍超过 1 MiB；没有把指标 GREEN 冒充完整关闭。生产提交
+  `e139aa2f` 将 server 层全部九处 watch 生命周期日志统一使用相同的 256 字节上限与 SHA-256/长度
+  指纹，小 key 继续保留可读值。两个生产提交均未修改测试文件；backend 全量 79.095 秒、server
+  watch 专项 19.161 秒、server 全量 189.530 秒通过。
+
+  最终精确镜像 `kubebrain:a4706-e139aa2f` 内嵌 SHA
+  `e139aa2f81e9373155330925efe52a81f028ca70`、build time `2026-08-15T14:30:04Z`，OCI index 为
+  `sha256:dd918031c8b395dec3639314a35f24030adf716f6e01a049c00367c78baa04fb`，Kind runtime imageID 为
+  `sha256:0efa32f53218ce259bbcd45c2e2e5058e5b1a8d031dc50c7a6b844245f8e8a9e`。真实独立三 PD/三 TiKV
+  上再次顺序执行 unknown alarm metric 与 near-request-limit key/watch/lease 差分，2.632 秒全部通过；
+  三个 KubeBrain `/metrics` 最大行均为 242 字节，实际服务 watch 的 Pod 只产生
+  `sha256:... (length=1536143)`，没有原始大 key，聚合 counter 为
+  `watcherhub_events_chan_closed{cluster="default"} 1`。主/JWT 六副本与 PD/TiKV 3+3 全部 Ready/零重启，
+  主三端 proposal health 为 17.66/22.52/22.46ms，alarm/lease 为空。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
