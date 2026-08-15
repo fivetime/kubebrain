@@ -896,7 +896,7 @@ func TestAuthLeaseKeepAliveMissingLeaseErrorPriorityAndStreamSurvivalMatchEtcd(t
 	require.Positive(t, authenticated.sent[1].TTL)
 }
 
-func TestAuthDisabledLeaseKeepAliveReusesSnapshotWithinLeadershipEpoch(t *testing.T) {
+func TestAuthDisabledLeaseKeepAliveUsesCachedSnapshotWithinLeadershipEpoch(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	lease, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{TTL: 3})
@@ -904,7 +904,7 @@ func TestAuthDisabledLeaseKeepAliveReusesSnapshotWithinLeadershipEpoch(t *testin
 
 	shim := &blockingAuthConfigReadShim{
 		BackendShim: server.backend,
-		blockAt:     2,
+		blockAt:     1,
 		entered:     make(chan struct{}),
 		release:     make(chan struct{}),
 	}
@@ -936,7 +936,7 @@ func TestAuthDisabledLeaseKeepAliveReusesSnapshotWithinLeadershipEpoch(t *testin
 	case <-time.After(time.Second):
 		require.FailNow(t, "keepalive stream did not finish")
 	}
-	require.EqualValues(t, 1, shim.reads.Load())
+	require.Zero(t, shim.reads.Load())
 	require.Len(t, stream.sent, 2)
 	require.Equal(t, int64(3), stream.sent[0].TTL)
 	require.Equal(t, int64(3), stream.sent[1].TTL)

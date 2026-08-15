@@ -448,10 +448,25 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 		var caller *authCaller
 		var authErr error
 		authComplete := false
+		// Leadership acquisition publishes the member's auth snapshot before it
+		// becomes ready, and every local auth mutation invalidates that snapshot.
+		// It is therefore authoritative for the whole current epoch, including the
+		// first message of the one-message substreams used by follower forwarding.
+		// Without this fast path, every forwarded keepalive re-reads TiKV and loses
+		// short leases when the auth-disabled data path's Region changes leader.
 		if authenticatedInEpoch {
 			epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
 			if leadingFresh && authenticatedEpoch == epoch {
 				caller, authErr, authComplete = m.srv.authCallerFromCachedContext(stream.Context())
+			}
+		} else {
+			// Only an auth-disabled cached snapshot may bypass the authoritative
+			// first-message read. Preserve that read and its revision fence for an
+			// authenticated caller.
+			cachedCaller, cachedErr, cachedComplete := m.srv.authCallerFromCachedContext(stream.Context())
+			if cachedComplete && cachedErr == nil && cachedCaller == nil {
+				caller, authErr, authComplete = cachedCaller, cachedErr, true
+				epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
 			}
 		}
 		if !authComplete {

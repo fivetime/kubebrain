@@ -54,6 +54,12 @@ spec:
             - --enable-count-index=true
             - --count-index-max-keys=5000000
             - --enable-storage-metrics=true
+            # TiKV Region elections use a randomized 10-20s window by default.
+            # Keep the current data-plane leader authoritative through one such
+            # election so checkpoint-free etcd lease renewals remain available.
+            - --leader-lease-duration=30s
+            - --leader-renew-deadline=25s
+            - --leader-retry-period=500ms
             - --max-requests-inflight=1024
             - --max-request-rate=2000
             - --request-rate-burst=4000
