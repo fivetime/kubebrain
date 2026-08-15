@@ -51280,6 +51280,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   开发夹具：20Gi 是 TiKV fullness 判定上限，不是 PVC quota，也不提供独立 IOPS、CSI identity、volume
   expansion 或跨 AZ 故障隔离；生产发布仍必须通过既有 storage-safety、容量、延迟和拓扑门禁。
 
+- A4667 继续以固定 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 对在线三副本、
+  TiKV-backed KubeBrain 审计 Txn compare。两轮真实差分共覆盖 compare 五种 target 与非法 enum、header
+  revision、重复/倒置/from-key interval、多个重叠或分离 range compare、nested compare、生成式 nested
+  range compare 和 compare-selected DeleteRange；10 个专项全部通过，首轮 8.560 秒、次轮 62.081 秒。
+  审计确认 `CompareDelete` 中的 range-end Unimplemented 只是单键快路径的不可达防御，合法 range 请求会进入
+  generic atomic Txn，并非公开兼容缺口。生产 `txn_compare.go` 同时消除 point 与 range 各维护一份五目标真值表
+  的漂移风险：两条路径现在共用 `compareKeyValue`，保留 upstream 对缺失键 numeric target=0、VALUE 必败及
+  未知 target 按零 order 处理的语义。另将开发清单契约从过期的 TiKV 2MiB 配置同步到 A4609 已上线的
+  2.5MiB memcomparable 编码预算；KubeBrain 的 2MiB 原始物理键门禁和客户端 1.5MiB 请求上限均未放宽。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

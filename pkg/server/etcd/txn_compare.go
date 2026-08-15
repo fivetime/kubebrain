@@ -45,10 +45,7 @@ func (s *RPCServer) evalCompareGuardedAtRevision(ctx context.Context, cmp *etcds
 	if len(rangeResp.Kvs) > 0 {
 		kv = rangeResp.Kvs[0]
 	}
-	ok, err := s.compareSingleKey(cmp, kv)
-	if err != nil {
-		return false, nil, err
-	}
+	ok := compareKeyValue(cmp, kv)
 	guard := &backend.TxnGuard{Key: cmp.Key, Absent: kv == nil}
 	if kv != nil {
 		guard.Revision = uint64(kv.ModRevision)
@@ -56,52 +53,12 @@ func (s *RPCServer) evalCompareGuardedAtRevision(ctx context.Context, cmp *etcds
 	return ok, guard, nil
 }
 
-func (s *RPCServer) compareSingleKey(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) (bool, error) {
-	switch cmp.Target {
-	case etcdserverpb.Compare_MOD:
-		var actual int64
-		if kv != nil {
-			actual = kv.ModRevision
-		}
-		return compareInt64(actual, cmp.GetModRevision(), cmp.Result), nil
-	case etcdserverpb.Compare_VALUE:
-		if kv == nil {
-			// Upstream always fails VALUE compares for an absent key. Protobuf
-			// cannot distinguish a missing value from an empty byte string.
-			return false, nil
-		}
-		return compareBytes(kv.Value, cmp.GetValue(), cmp.Result), nil
-	case etcdserverpb.Compare_VERSION:
-		actual := int64(0)
-		if kv != nil {
-			actual = kv.Version
-		}
-		return compareInt64(actual, cmp.GetVersion(), cmp.Result), nil
-	case etcdserverpb.Compare_CREATE:
-		actual := int64(0)
-		if kv != nil {
-			actual = kv.CreateRevision
-		}
-		return compareInt64(actual, cmp.GetCreateRevision(), cmp.Result), nil
-	case etcdserverpb.Compare_LEASE:
-		var actual int64
-		if kv != nil {
-			actual = kv.Lease
-		}
-		return compareInt64(actual, cmp.GetLease(), cmp.Result), nil
-	default:
-		// Match upstream compareKV: an unknown target leaves the comparison
-		// result at its zero value, then applies the requested result enum.
-		return compareOrder(0, cmp.Result), nil
-	}
-}
-
 func (s *RPCServer) evalRangeCompareAtRevision(ctx context.Context, cmp *etcdserverpb.Compare, revision int64) (bool, error) {
 	if isEmptyNonFromKeyRange(cmp.Key, cmp.RangeEnd) {
 		if cmp.Target == etcdserverpb.Compare_VALUE {
 			return false, nil
 		}
-		return s.compareKeyValue(cmp, nil), nil
+		return compareKeyValue(cmp, nil), nil
 	}
 	rangeResp, err := s.backend.List(ctx, &etcdserverpb.RangeRequest{
 		Key:      cmp.Key,
@@ -115,17 +72,21 @@ func (s *RPCServer) evalRangeCompareAtRevision(ctx context.Context, cmp *etcdser
 		if cmp.Target == etcdserverpb.Compare_VALUE {
 			return false, nil
 		}
-		return s.compareKeyValue(cmp, nil), nil
+		return compareKeyValue(cmp, nil), nil
 	}
 	for _, kv := range rangeResp.Kvs {
-		if !s.compareKeyValue(cmp, kv) {
+		if !compareKeyValue(cmp, kv) {
 			return false, nil
 		}
 	}
 	return true, nil
 }
 
-func (s *RPCServer) compareKeyValue(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) bool {
+// compareKeyValue is the single etcd compare truth table for point and range
+// predicates. An absent key is represented by nil: numeric targets observe 0,
+// while VALUE always fails because protobuf cannot distinguish a missing value
+// from an empty byte string. This matches upstream txn.compareKV/applyCompare.
+func compareKeyValue(cmp *etcdserverpb.Compare, kv *mvccpb.KeyValue) bool {
 	switch cmp.Target {
 	case etcdserverpb.Compare_MOD:
 		var actual int64
