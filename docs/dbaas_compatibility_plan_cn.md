@@ -51245,6 +51245,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   超大共享 filesystem 与非 CSI PV；compute QoS 的改进不把开发存储冒充生产持久卷隔离，也不替代后续
   独立故障注入下的 TTL=3 验收。
 
+- A4662--A4665 针对“TTL=3 流式 KeepAlive 与单 TiKV leader-store 重启”做了真实红灯驱动的生产
+  收敛。对照 upstream `lessor.Renew` 的纯内存 deadline refresh，提交 `69882031` 使同一领导 epoch
+  内的普通续租复用已观测鉴权快照，避免每条消息读取 TiKV auth config；提交 `9da56ed4` 在 follower
+  转发遇到瞬时 `Unavailable` 时保留已消费消息并等待 successor，而不是立即关闭 client stream；提交
+  `3cda97df` 进一步让 auth-disabled 的单消息 forwarded substream 使用 leader 本地快照，并把生产
+  leader election 配置固定为 30s lease、25s renew、500ms retry，覆盖 TiKV 默认 10--20s Region
+  选举且继续满足 `retry < renew < lease` 的自栅栏安全关系；提交 `a995cca9` 区分新连接 readiness 与
+  既有 peer transport liveness，后端暂时 `NOT_SERVING` 时不再主动拆掉仍能承载内存续租的 leader
+  连接。生产 HTTP/TLS 清单与 runtime release gate 同步精确校验上述时限。
+
+  相关 Lease/Auth 包级回归、关键路径 race、etcdproxy 聚焦 100 轮/race 20 轮、生产清单、leader
+  option 和 vet 均通过。精确运行镜像 `kubebrain:a4665-a995cca9` 内嵌 SHA
+  `a995cca9eb705dd22a30ed838e1b464d7c747c8e`，OCI manifest list
+  `sha256:ca4f7d918a2e6522826d6c4475650e0d49dff48c7e27e87c5e0e670a26e747e0`。真实故障中，连续正
+  TTL 响应由修复前 2 次依次提高到 6、25、30 次，证明 auth read、leader handoff 与 peer health
+  三层耦合均被实际消除；但 50 秒观察仍最终过期，因此本项保持 RED，不能宣称单 store 故障下的
+  TTL=3 已兼容 upstream etcd。夹具同时显示 store 0 已使用 5.425GiB、可用 0B（逻辑容量 5GiB），
+  store 1 仅余约 75MiB；该重启叠加了明确的容量耗尽/共享节点压力，不是健康生产存储 SLA 证据。
+  下一步必须在通过 storage-capacity 与资源隔离门禁的独立预生产 TiKV/PD 上重跑同一验收，并继续
+  缩短 TiKV client Region-cache/PD 恢复；不得继续放大 KubeBrain leader lease 来掩盖容量故障。完整
+  `hack/production` 长套件本轮运行数分钟后主动停止，不能记为通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

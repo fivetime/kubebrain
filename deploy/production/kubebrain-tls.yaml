@@ -129,8 +129,8 @@ spec:
             - --quota-backend-bytes=429496729600
             # Cover TiKV's default 10-20s Region election window without
             # admitting a successor before the old leader self-fences.
-            - --leader-lease-duration=45s
-            - --leader-renew-deadline=40s
+            - --leader-lease-duration=30s
+            - --leader-renew-deadline=25s
             - --leader-retry-period=500ms
             - --max-txn-ops=128
             - --max-request-bytes=1572864
