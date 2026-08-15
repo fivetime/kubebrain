@@ -179,15 +179,31 @@ func (r *resourceLock) ensureRestorationFenceOpen(parent context.Context) error 
 	if errors.Is(err, storage.ErrKeyNotFound) {
 		missing = append(missing, r.restorationFenceKey)
 	}
-	for _, key := range r.restorationFenceKeys {
-		value, getErr := r.store.Get(ctx, key)
-		switch {
-		case getErr == nil && !bytes.Equal(value, []byte(restorationfence.Open)):
-			return errors.New("KubeBrain writes are fenced for target restoration")
-		case errors.Is(getErr, storage.ErrKeyNotFound):
-			missing = append(missing, key)
-		case getErr != nil:
-			return getErr
+	if batchGetter, ok := storage.FindCapability[storage.BatchGetter](r.store); ok {
+		values, batchErr := batchGetter.BatchGet(ctx, r.restorationFenceKeys)
+		if batchErr != nil {
+			return batchErr
+		}
+		for _, key := range r.restorationFenceKeys {
+			value, found := values[string(key)]
+			switch {
+			case !found:
+				missing = append(missing, key)
+			case !bytes.Equal(value, []byte(restorationfence.Open)):
+				return errors.New("KubeBrain writes are fenced for target restoration")
+			}
+		}
+	} else {
+		for _, key := range r.restorationFenceKeys {
+			value, getErr := r.store.Get(ctx, key)
+			switch {
+			case getErr == nil && !bytes.Equal(value, []byte(restorationfence.Open)):
+				return errors.New("KubeBrain writes are fenced for target restoration")
+			case errors.Is(getErr, storage.ErrKeyNotFound):
+				missing = append(missing, key)
+			case getErr != nil:
+				return getErr
+			}
 		}
 	}
 	if len(missing) > 0 {
