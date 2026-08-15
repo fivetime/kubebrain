@@ -684,6 +684,40 @@ func TestMaintenanceSnapshotFollowerForwardsRootCredential(t *testing.T) {
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx}))
 }
 
+func TestMaintenanceSnapshotFollowerDelegatesAuthWithoutStorage(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_ = setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, rootToken))
+	storageErr := errors.New("follower auth storage unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend, err: storageErr,
+	}
+	digest := sha256.Sum256([]byte("db"))
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		snapshotFn: func(ctx context.Context, _ *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			outgoing, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			require.Equal(t, []string{rootToken}, outgoing.Get(rpctypes.TokenFieldNameGRPC))
+			results := make(chan etcdproxy.SnapshotResult, 2)
+			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+				RemainingBytes: 0, Blob: []byte("db"), Version: Version,
+			}}
+			results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+				RemainingBytes: 0, Blob: digest[:], Version: Version,
+			}}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &maintenanceSnapshotServer{ctx: rootCtx}
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
+	require.Len(t, stream.responses, 2)
+}
+
 func (b *pausedSnapshotBackend) SnapshotHistoryStreamChan(ctx context.Context, revision uint64) (<-chan backend.SnapshotHistoryChunk, error) {
 	source, err := b.BackendShim.SnapshotHistoryStreamChan(ctx, revision)
 	if err != nil {

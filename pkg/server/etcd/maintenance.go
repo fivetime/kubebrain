@@ -505,6 +505,19 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 
 func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
 	s.metricCli.EmitCounter("maintenance.snapshot", 1)
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// A follower can remain reachable through the peer network after losing
+		// every TiKV/PD path. Do not read its auth snapshot before deciding to
+		// proxy: unlike raft etcd, that process-local cache is neither guaranteed
+		// current nor sufficient to authorize a new request. The leader owns both
+		// initial authentication and the fixed-revision snapshot transaction.
+		proxyCtx, err := s.forwardWriteAuthContext(stream.Context())
+		if err != nil {
+			return err
+		}
+		return s.forwardSnapshot(proxyCtx, request, stream)
+	}
 	caller, err := s.authCallerFromContext(stream.Context())
 	if err != nil {
 		if errors.Is(err, errInvalidAuthMetadata) {
@@ -528,70 +541,7 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		if err != nil {
 			return err
 		}
-		proxyCtx, cancelProxy := context.WithCancel(proxyCtx)
-		defer cancelProxy()
-		responses, err := s.peers.Snapshot(proxyCtx, request)
-		if err != nil {
-			return err
-		}
-		if responses == nil {
-			return status.Error(codes.DataLoss, "leader snapshot proxy returned a nil result channel")
-		}
-		awaitingChecksum := false
-		complete := false
-		hash := sha256.New()
-		var remaining uint64
-		var snapshotVersion string
-		haveData := false
-		for result := range responses {
-			if result.Err != nil {
-				return result.Err
-			}
-			if result.Response == nil {
-				return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty response")
-			}
-			if complete {
-				return status.Error(codes.DataLoss, "leader snapshot proxy returned data after checksum")
-			}
-			if awaitingChecksum {
-				if result.Response.GetRemainingBytes() != 0 || len(result.Response.GetBlob()) != sha256.Size {
-					return status.Error(codes.DataLoss, "leader snapshot proxy returned an invalid checksum frame")
-				}
-				if result.Response.GetVersion() != snapshotVersion {
-					return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
-				}
-				if !bytes.Equal(result.Response.GetBlob(), hash.Sum(nil)) {
-					return status.Error(codes.DataLoss, "leader snapshot proxy checksum mismatch")
-				}
-				complete = true
-			} else {
-				blob := result.Response.GetBlob()
-				if len(blob) == 0 {
-					return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty data frame")
-				}
-				if haveData {
-					if uint64(len(blob)) > remaining || result.Response.GetRemainingBytes() != remaining-uint64(len(blob)) {
-						return status.Error(codes.DataLoss, "leader snapshot proxy returned discontinuous remaining bytes")
-					}
-					if result.Response.GetVersion() != snapshotVersion {
-						return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
-					}
-				} else {
-					snapshotVersion = result.Response.GetVersion()
-					haveData = true
-				}
-				_, _ = hash.Write(blob)
-				remaining = result.Response.GetRemainingBytes()
-				awaitingChecksum = remaining == 0
-			}
-			if err = stream.Send(result.Response); err != nil {
-				return err
-			}
-		}
-		if !complete {
-			return status.Error(codes.DataLoss, "leader snapshot proxy stream ended before checksum")
-		}
-		return nil
+		return s.forwardSnapshot(proxyCtx, request, stream)
 	}
 	err = s.sendSnapshot(stream)
 	if errors.Is(err, errSnapshotHistoryStreamProtocol) {
@@ -610,6 +560,77 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	return err
+}
+
+func (s *RPCServer) forwardSnapshot(
+	ctx context.Context,
+	request *etcdserverpb.SnapshotRequest,
+	stream etcdserverpb.Maintenance_SnapshotServer,
+) error {
+	proxyCtx, cancelProxy := context.WithCancel(ctx)
+	defer cancelProxy()
+	responses, err := s.peers.Snapshot(proxyCtx, request)
+	if err != nil {
+		return err
+	}
+	if responses == nil {
+		return status.Error(codes.DataLoss, "leader snapshot proxy returned a nil result channel")
+	}
+	awaitingChecksum := false
+	complete := false
+	hash := sha256.New()
+	var remaining uint64
+	var snapshotVersion string
+	haveData := false
+	for result := range responses {
+		if result.Err != nil {
+			return result.Err
+		}
+		if result.Response == nil {
+			return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty response")
+		}
+		if complete {
+			return status.Error(codes.DataLoss, "leader snapshot proxy returned data after checksum")
+		}
+		if awaitingChecksum {
+			if result.Response.GetRemainingBytes() != 0 || len(result.Response.GetBlob()) != sha256.Size {
+				return status.Error(codes.DataLoss, "leader snapshot proxy returned an invalid checksum frame")
+			}
+			if result.Response.GetVersion() != snapshotVersion {
+				return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
+			}
+			if !bytes.Equal(result.Response.GetBlob(), hash.Sum(nil)) {
+				return status.Error(codes.DataLoss, "leader snapshot proxy checksum mismatch")
+			}
+			complete = true
+		} else {
+			blob := result.Response.GetBlob()
+			if len(blob) == 0 {
+				return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty data frame")
+			}
+			if haveData {
+				if uint64(len(blob)) > remaining || result.Response.GetRemainingBytes() != remaining-uint64(len(blob)) {
+					return status.Error(codes.DataLoss, "leader snapshot proxy returned discontinuous remaining bytes")
+				}
+				if result.Response.GetVersion() != snapshotVersion {
+					return status.Error(codes.DataLoss, "leader snapshot proxy changed storage version")
+				}
+			} else {
+				snapshotVersion = result.Response.GetVersion()
+				haveData = true
+			}
+			_, _ = hash.Write(blob)
+			remaining = result.Response.GetRemainingBytes()
+			awaitingChecksum = remaining == 0
+		}
+		if err = stream.Send(result.Response); err != nil {
+			return err
+		}
+	}
+	if !complete {
+		return status.Error(codes.DataLoss, "leader snapshot proxy stream ended before checksum")
+	}
+	return nil
 }
 
 func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
