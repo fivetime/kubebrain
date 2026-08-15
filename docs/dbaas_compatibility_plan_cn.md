@@ -52371,6 +52371,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   MATCH。最终三端 proposal health 为 43.40/38.44/28.19ms，alarm/lease 为空，主/JWT 六副本
   与 PD/TiKV 3+3 全部 Ready、零重启，五分钟服务端窗口未见 deadline/refill/refresh failure。
 
+- A4714 将 A4713 的单组 histogram 修复扩展为统一的 etcd 指标 HELP 元数据契约。对全新固定
+  upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 与 A4713 Pod 的完整
+  `/metrics` 取交集后，发现除上轮七族外仍有 65 个已实现、已暴露的 upstream family
+  在 KubeBrain 中 HELP 为空；范围包括 Lease、MVCC、health、Raft 外观、WAL/snapshot 和 gRPC
+  client traffic，不是 bbolt/v2 store/grpc-proxy 等 TiKV 架构排除项。
+
+  生产提交 `fe02efe3` 把精确 upstream HELP 映射下沉到共享 Prometheus wrapper，使
+  counter/gauge/histogram 三条注册路径共用按格式化 family name 索引的 72 项契约。
+  只修改 1 个生产文件，新增 142 行、删除 12 行，没有修改测试文件；metrics 包 0.023 秒、
+  `pkg/server/etcd` 全量 179.929 秒通过。
+
+  精确镜像 `kubebrain:a4714-fe02efe3` 内嵌 SHA
+  `fe02efe378998218c8d54bd7b51e88e0e45e3abc`、build time `2026-08-15T16:49:00Z`，OCI index 为
+  `sha256:740dcedb88bcb808943cfff81e53b0a089a78c9b0dcef91b4f8f020966c4b483`，Kind runtime imageID 为
+  `sha256:7616d054d86b95f1bc68402ea2413a26637ef70fc7f058d257648c1cdecbf43f`。主/JWT 六副本
+  滚动后，对 upstream 和 KubeBrain 当前共同暴露的 115 个 family 逐项比较，HELP 115/115
+  MATCH、TYPE 115/115 MATCH，均为零差异。最终三端 proposal health 为
+  39.68/35.71/28.84ms，alarm/lease 为空，主/JWT 六副本与 PD/TiKV 3+3 全部 Ready、
+  零重启，五分钟服务端窗口未见 deadline/refill/refresh failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
