@@ -2542,7 +2542,7 @@ func TestLeaseFollowerProxiesKeepAlive(t *testing.T) {
 	require.Equal(t, int64(30), stream.sent[0].TTL)
 }
 
-func TestLeaseFollowerKeepAlivePropagatesNoLeaderWithoutRequireLeader(t *testing.T) {
+func TestLeaseFollowerKeepAliveWaitsForSuccessorLeader(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
 	kv := memkv.NewKvStorage()
@@ -2550,12 +2550,16 @@ func TestLeaseFollowerKeepAlivePropagatesNoLeaderWithoutRequireLeader(t *testing
 		Identity:                "proxy-follower-keepalive-no-leader-test-peer",
 		EnableEtcdCompatibility: true,
 	}, metrics)
+	var attempts atomic.Int32
 	server := New(b, metrics, testPeerService{
 		isLeader:     false,
 		proxyEnabled: true,
 		leaseKeepAliveFn: func(ctx context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
 			require.Equal(t, int64(7002), req.ID)
-			return nil, rpctypes.ErrGRPCNoLeader
+			if attempts.Add(1) < 3 {
+				return nil, rpctypes.ErrGRPCNoLeader
+			}
+			return &etcdserverpb.LeaseKeepAliveResponse{ID: req.ID, TTL: 30}, nil
 		},
 	})
 	defer func() {
@@ -2567,11 +2571,10 @@ func TestLeaseFollowerKeepAlivePropagatesNoLeaderWithoutRequireLeader(t *testing
 	stream := &fakeLeaseKeepAliveServer{
 		requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: 7002}},
 	}
-	err := server.LeaseKeepAlive(stream)
-	require.ErrorIs(t, err, rpctypes.ErrGRPCNoLeader)
-	require.Equal(t, codes.Unavailable, status.Code(err))
-	require.Equal(t, rpctypes.ErrNoLeader.Error(), status.Convert(err).Message())
-	require.Empty(t, stream.sent)
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Equal(t, int32(3), attempts.Load())
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, int64(30), stream.sent[0].TTL)
 }
 
 func TestLeaseFollowerKeepAlivePreservesClientCancellation(t *testing.T) {

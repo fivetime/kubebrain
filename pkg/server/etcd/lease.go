@@ -476,12 +476,32 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			if forwardErr != nil {
 				return forwardErr
 			}
-			resp, forwardErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
-			if forwardErr != nil {
-				return forwardErr
+			for {
+				resp, keepAliveErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
+				if keepAliveErr == nil {
+					m.srv.observeForwardedRevision(resp.GetHeader(), nil)
+					return m.sendLeaseKeepAliveResponse(stream, resp)
+				}
+				// A keepalive message has already been consumed from the client
+				// stream. During a leader handoff, returning a transient routing
+				// failure here closes the stream and can exhaust clientv3's finite
+				// reconnect budget before an independent TiKV Region recovers. Keep
+				// this one unapplied message server-side and retry it against the
+				// successor. Lease reload extends durable leases by the election
+				// window, so the successor can safely renew it when it becomes ready.
+				if status.Code(keepAliveErr) != codes.Unavailable {
+					return keepAliveErr
+				}
+				timer := time.NewTimer(100 * time.Millisecond)
+				select {
+				case <-proxyCtx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					return proxyCtx.Err()
+				case <-timer.C:
+				}
 			}
-			m.srv.observeForwardedRevision(resp.GetHeader(), nil)
-			return m.sendLeaseKeepAliveResponse(stream, resp)
 		}
 		if !leadingFresh {
 			if !m.srv.peers.EtcdProxyEnabled() {
