@@ -52159,6 +52159,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   流式排序语义。API surface 两项门禁连续 20 轮 2.169 秒通过。当前主/JWT StatefulSet 继续运行已验证的
   `kubebrain:a4698-81e09947`；本项没有生产变更或新镜像，产出是完整性审计与误修闭环，不冒充功能修复。
 
+- A4701 重跑 P2 `etcdctl` 命令矩阵时修复一个会让恢复自动化假绿的工具归属错误。A4698 生产镜像固定的
+  Alpine `etcdctl 3.6.10` 顶层命令完整列出在线 KV/Watch/Lease/Auth/Cluster/Maintenance、Lock/Election、mirror 与
+  客户端负载工具，但 `snapshot` 子命令只包含 `save`。真实执行 `etcdctl snapshot status <file>` 或
+  `etcdctl snapshot restore <file>` 不会运行离线操作，而是打印 snapshot 父命令帮助并以 0 退出；仅检查 exit code 的
+  脚本会错误发布“已校验/已恢复”。官方现代工具边界是在线下载使用 `etcdctl snapshot save`，离线检查/恢复使用
+  `etcdutl snapshot status/restore`。
+
+  `docs/etcdctl_compatibility_cn.md` 现把该行显式改名为 `etcdutl`，记录 etcdctl 的 silent-success 风险，并说明生产镜像
+  不承诺捆绑离线工具；发布系统必须从受控支持窗口工具链取得 etcdutl。同时补列遗漏但完全离线的 `completion`，现场
+  `etcdctl completion bash` 生成 4460 行并以 0 退出。仓库其余运行脚本检索未发现误用 `etcdctl snapshot
+  status/restore`，现有 snapshot 文档与门禁均已调用 `/root/etcd/bin/etcdutl`。本项是可操作性文档修复，不改变
+  数据面、无需新镜像，也不把客户端工具版本号当成服务端兼容声明。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -33,10 +33,10 @@
 | `move-leader` | 平台替代 | 使用 DBaaS rollout/failover；数据面选主自动完成 |
 | `downgrade validate/enable/cancel` | 平台替代 | 使用版本化 rollout/rollback，不启动 etcd downgrade job |
 | `snapshot save` | 支持（升级历史有条件） | 在线 `Maintenance.Snapshot` 在固定 revision 流式生成带 SHA-256 的官方 backend snapshot，保留 history、compact watermark、当前 lease、auth 与 alarm；升级时仍为 current 的 raw/v1 行会在下一次 mutation 内原位补齐 lease provenance且不产生额外 revision/Watch，升级前已成为 retained history 且永久缺失逐版本 lease 的行仍以 `FailedPrecondition` 拒绝伪造制品；生产通过 `LegacySnapshotHistoryRemediation` Operation 冻结 endpoint/cluster/revision 并经单次审批显式丢弃旧历史后恢复，直调脚本仅作 break-glass |
-| `snapshot restore/status` | 客户端离线 | 可直接处理在线 RPC 生成的 backend snapshot；仍不识别未经转换的 `kubebrain.logical.v2` artifact |
+| `etcdutl snapshot restore/status` | 客户端离线（不是 etcdctl 子命令） | 可直接处理在线 RPC 生成的 backend snapshot；仍不识别未经转换的 `kubebrain.logical.v2` artifact。现代 `etcdctl snapshot` 只有 `save`；把 `status`/`restore` 误传给它可能只打印父命令帮助并以 0 退出，自动化必须调用 `etcdutl` |
 | `make-mirror` | 支持 | 发布门禁双向验证 prefix 基线、1001-key 分页、持续增删改、`--rev` 历史重放/compacted 错误及 source/destination 双端 RBAC；跨区域长期镜像仍需独立 soak |
 | `check perf`、`check datascale` | 非生产保证 | 仅为客户端负载工具；不能替代 KubeBrain 正确性、容量或 SLO 验证 |
-| `version`、`help` | 客户端离线 | 只报告本地 etcdctl 二进制信息 |
+| `version`、`help`、`completion` | 客户端离线 | 不访问 endpoint；前两项报告/展示本地 etcdctl，`completion` 只生成 shell 补全脚本 |
 
 member mutation、`move-leader` 和 `downgrade` 的非零退出是稳定
 产品契约，不应在自动化中忽略。Auth 开启时，这些 RPC 与 etcd 一样先鉴权：未认证或
@@ -62,6 +62,9 @@ member mutation、move-leader 和 downgrade 不会虚构操作类型。
 发布时使用目标支持窗口内的官方 etcdctl 版本重跑本表。当前可操作错误已用官方
 client/v3 live test 固定，并在真实三副本 KubeBrain + 独立 3 PD/3 TiKV 上用
 `/root/etcd/bin/etcdctl` 验证。
+
+生产镜像当前随 Alpine 固定 `etcdctl 3.6.10`，其 `snapshot` 帮助只列出 `save`；离线
+校验和恢复必须从受控工具链取得匹配支持窗口的 `etcdutl`，不要假定服务端镜像捆绑该工具。
 
 鉴权 `make-mirror` 门禁必须使用独立 KubeBrain `--keyspace`，并显式设置
 `KUBEBRAIN_AUTH_MIRROR_ENDPOINT`；测试会拒绝该值与共享
