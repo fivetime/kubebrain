@@ -51637,6 +51637,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList/LeaseList 为空，三台 PD 一致报告 `kb-pd-1`。JWT client identity 仍直接携带 token，其 revision/profile
   专项不由本次证书桥接结果替代。
 
+- A4683 修复 auth-enabled follower 在自身到全部 PD/TiKV 不可达时，非 serializable 线性一致 Range 仍先依赖本地
+  TiKV/read barrier、因而无法体现 etcd gRPC proxy 可用性的生产缺口。修复前使用 JWT fixture 的 follower
+  `a4653-jwt-0`，精确阻断其到三台 PD 2379/TCP 与三台 TiKV 20160/TCP；Authenticate 与 self UserGet 可经 leader
+  完成，但第一笔授权 Range 一直等待本地存储，直到人工中断，trap 随后确认六条规则全部清理。固定 upstream
+  `/root/etcd/server/proxy/grpcproxy/kv.go` 的 Range 是把请求原样交给当前 KV client，而权威 server 再执行
+  linearizable barrier 与 auth；提交 `97a212464a0841c8434f5a014055f1252870a0f4` 因此让开启 peer proxy 的
+  non-leading follower 在 unary、`Serializable=false` Range 上先携带受信 auth context 原样转发 leader。显式
+  serializable Range 与 RangeStream 仍保留 follower/checkpoint 路径，没有用强制 leader read 缩窄 etcd 允许的
+  serializable availability 语义。生产代码 19 增/4 删，回归分别固定 unary 必须在本地 barrier/auth 前代理，以及
+  RangeStream 继续走本地 barrier；完整 server 包 182.656 秒、proxy cached、vet 和聚焦 race 均通过。
+
+  JWT oracle 同时按 upstream `/root/etcd/server/auth/jwt.go` 与
+  `/root/etcd/server/auth/store.go::isOpPermitted` 校正：JWT 携带 auth revision，key permission 检查必须拒绝旧 revision；
+  但 `/root/etcd/server/etcdserver/apply/auth.go::UserGet` 对用户读取自身信息的例外不比较 revision。因此第一次把
+  “旧 JWT 仍可 self UserGet”当成失败是假 RED，没有据此修改生产语义。为获得可复现凭据与 revision，旧专用 fixture
+  的原 keyspace 保留不删，StatefulSet 切到全新 `a4683-jwt-range-isolation` keyspace，从零建立 root/alice 与
+  root/operator role 并启用 auth。
+
+  精确镜像 `kubebrain:a4683-97a21246` 内嵌上述完整 SHA，UTC build time
+  `2026-08-15T06:54:46Z`，本地 OCI manifest list 为
+  `sha256:35a54fcb1be1acde55c0cd762bc13ac497c89a815cf7212ec63f5d13fbf967dc`。在该镜像上再次隔离
+  follower `a4653-jwt-0`（member `3258172462`、Pod IP `10.244.0.223`）的六个存储目标：授权后的旧 alice JWT
+  首次 Range 在 8 秒硬 deadline 内经 leader 返回值；root 增加 role 推进 auth revision 后，同一 JWT 的 Range 精确返回
+  `revision of auth store is old`，而 self UserGet 仍成功；重新 Authenticate 的新 JWT Range 成功，alice RoleAdd 返回
+  canonical PermissionDenied。日志明确记录 `forward range`、`forward authenticate`、UserGet 和各 auth mutation，
+  不含密码。首轮脚本错误地要求 disabled AuthStatus JSON 显式包含 `enabled:false`，但 protojson 会省略默认 false，因而在
+  AuthEnable 前提前退出；日志中后续 `key=\\0` Range 是 readiness 周期检查，不是 etcdctl 的 Enable 前置请求。修正 oracle
+  为“不含 `enabled:true`”后，9.854 秒整轮 PASS，隔离中 Disable、无 credential Status、Enable、root Status 全部成功，
+  六条规则清零。随后三个 JWT endpoint 的 proposal health 均成功、authRevision 均为 17、Ready 且零重启。
+
+  主 `kubebrain` StatefulSet 随后滚动到同一精确镜像，三个 runtime imageID 一致为
+  `sha256:16f9f1e739d3322ea95c2f8af595d676ed2b0cf2acc0018fdb1c1e440ed17f43`，内嵌 SHA/BuildTime 复核一致；
+  三个 direct endpoint 均可提交 proposal，revision 均为 `468126003565904524`，AlarmList/LeaseList 为空，Ready 且
+  零重启。三台 PD 连续三轮、每轮从三个 PD 查询都一致报告 leader `kb-pd-1`，PD/TiKV 3+3 Pod 均 Ready 且零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
