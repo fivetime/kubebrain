@@ -16,7 +16,9 @@ package etcdproxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"fmt"
 	"io"
 	"math"
 	"sync"
@@ -41,6 +43,16 @@ import (
 )
 
 const proxyConnectTimeout = 5 * time.Second
+
+const maxLoggedProxyKeyBytes = 256
+
+func loggedProxyKey(key []byte) string {
+	if len(key) <= maxLoggedProxyKeyBytes {
+		return string(key)
+	}
+	digest := sha256.Sum256(key)
+	return fmt.Sprintf("sha256:%x (length=%d)", digest, len(key))
+}
 
 var leaseKeepAliveForwardTimeout = 5 * time.Second
 
@@ -427,7 +439,7 @@ func (e *etcdProxy) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etc
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Txn(ctx, txn, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	if err != nil {
-		klog.InfoS("forward txn failed", "key", key, "err", err.Error())
+		klog.InfoS("forward txn failed", "key", loggedProxyKey([]byte(key)), "err", err.Error())
 		return nil, err
 	}
 	if !resp.GetSucceeded() {
@@ -457,7 +469,7 @@ func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (
 	if err != nil {
 		return nil, err
 	}
-	klog.InfoS("forward range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd), "revision", req.Revision)
+	klog.InfoS("forward range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Range(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
@@ -468,7 +480,7 @@ func (e *etcdProxy) RangeStream(ctx context.Context, req *etcdserverpb.RangeRequ
 	if err != nil {
 		return nil, err
 	}
-	klog.InfoS("forward range stream", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd), "revision", req.Revision)
+	klog.InfoS("forward range stream", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd), "revision", req.Revision)
 	stream, err := etcdserverpb.NewKVClient(client.ActiveConnection()).RangeStream(ctx, req, e.callOptions...)
 	if err != nil {
 		e.markForwardError(ctx, client, err)
@@ -516,7 +528,7 @@ func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etc
 	if err != nil {
 		return nil, err
 	}
-	klog.InfoS("forward put", "leader", leader, "key", string(req.Key), "lease", req.Lease)
+	klog.InfoS("forward put", "leader", leader, "key", loggedProxyKey(req.Key), "lease", req.Lease)
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).Put(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
@@ -527,7 +539,7 @@ func (e *etcdProxy) DeleteRange(ctx context.Context, req *etcdserverpb.DeleteRan
 	if err != nil {
 		return nil, err
 	}
-	klog.InfoS("forward delete range", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd))
+	klog.InfoS("forward delete range", "leader", leader, "key", loggedProxyKey(req.Key), "rangeEnd", loggedProxyKey(req.RangeEnd))
 	resp, err := etcdserverpb.NewKVClient(client.ActiveConnection()).DeleteRange(ctx, req, e.callOptions...)
 	e.markForwardError(ctx, client, err)
 	return resp, err
@@ -1017,12 +1029,12 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 			// forwarding client. Close this generation so the outer Watch pipeline can
 			// reopen the same logical Watch against its local backend.
 			if _, leadingFresh := e.election.EpochAndLeadingFresh(); leadingFresh {
-				klog.InfoS("etcd proxy watch yielding to local leader", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
+				klog.InfoS("etcd proxy watch yielding to local leader", "key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd), "rev", watchRevision)
 				return
 			}
 			client, leader, closed, err := e.readyClient(ctx)
 			if err != nil {
-				klog.InfoS("etcd proxy watch ready failed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "error", err)
+				klog.InfoS("etcd proxy watch ready failed", "key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd), "rev", watchRevision, "error", err)
 				// A watch is long-lived and a short no-leader window is part of a
 				// normal failover. Unary forwarding may return Unavailable after its
 				// bounded readiness wait, but terminating this output stream turns
@@ -1035,7 +1047,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 				continue
 			}
 
-			klog.InfoS("etcd proxy start watching", "leader", leader, "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
+			klog.InfoS("etcd proxy start watching", "leader", leader, "key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd), "rev", watchRevision)
 			// Always request PrevKV from the leader. The outer etcd watch server
 			// still strips PrevKv when the original client did not request it.
 			inputCh := client.Watch(ctx, string(key), watchOptionsForRange(rangeEnd, watchRevision)...)
@@ -1043,20 +1055,20 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 			for !reconnect {
 				select {
 				case <-closed:
-					klog.InfoS("etcd proxy watch leader changed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision)
+					klog.InfoS("etcd proxy watch leader changed", "key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd), "rev", watchRevision)
 					reconnect = true
 				case <-ctx.Done():
 					klog.InfoS("etcd proxy watch ctx done")
 					return
 				case wresp, ok := <-inputCh:
 					if !ok {
-						klog.InfoS("etcd proxy watch closed", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "channel", outputCh)
+						klog.InfoS("etcd proxy watch closed", "key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd), "rev", watchRevision, "channel", outputCh)
 						reconnect = true
 						break
 					}
 					err := wresp.Err()
 					if err != nil {
-						klog.InfoS("etcd proxy watch error", "key", string(key), "rangeEnd", string(rangeEnd), "rev", watchRevision, "channel", outputCh, "error", err)
+						klog.InfoS("etcd proxy watch error", "key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd), "rev", watchRevision, "channel", outputCh, "error", err)
 						e.markForwardError(ctx, client, err)
 						if isForwardConnectionError(err) {
 							reconnect = true
