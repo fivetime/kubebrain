@@ -777,7 +777,7 @@ func (s *RPCServer) forwardSnapshot(
 	defer cancelProxy()
 	responses, err := s.peers.Snapshot(proxyCtx, request)
 	if err != nil {
-		return err
+		return snapshotForwardError(ctx, err)
 	}
 	if responses == nil {
 		return status.Error(codes.DataLoss, "leader snapshot proxy returned a nil result channel")
@@ -790,7 +790,7 @@ func (s *RPCServer) forwardSnapshot(
 	haveData := false
 	for result := range responses {
 		if result.Err != nil {
-			return result.Err
+			return snapshotForwardError(ctx, result.Err)
 		}
 		if result.Response == nil {
 			return status.Error(codes.DataLoss, "leader snapshot proxy returned an empty response")
@@ -837,6 +837,21 @@ func (s *RPCServer) forwardSnapshot(
 		return status.Error(codes.DataLoss, "leader snapshot proxy stream ended before checksum")
 	}
 	return nil
+}
+
+func snapshotForwardError(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	// Closing the proxy's shared gRPC client after a leader connection failure
+	// can surface as Canceled even though the downstream caller is still live.
+	// A Snapshot stream cannot resume after any response frame was delivered, so
+	// report the topology change as Unavailable and let the client restart the
+	// complete checksum-protected download. Preserve genuine caller cancellation.
+	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled {
+		return rpctypes.ErrGRPCLeaderChanged
+	}
+	return err
 }
 
 func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {

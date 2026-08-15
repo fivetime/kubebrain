@@ -492,6 +492,40 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	require.Equal(t, want, stream.responses)
 }
 
+func TestMaintenanceSnapshotFollowerMapsInternalProxyCancellationToLeaderChanged(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			results := make(chan etcdproxy.SnapshotResult, 1)
+			results <- etcdproxy.SnapshotResult{Err: status.Error(codes.Canceled, "grpc: the client connection is closing")}
+			close(results)
+			return results, nil
+		},
+	}
+	ctx := context.Background()
+	err := server.forwardSnapshot(ctx, &etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: ctx})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+func TestMaintenanceSnapshotFollowerPreservesCallerCancellation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.peers = testPeerService{
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			results := make(chan etcdproxy.SnapshotResult, 1)
+			results <- etcdproxy.SnapshotResult{Err: context.Canceled}
+			close(results)
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := server.forwardSnapshot(ctx, &etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: ctx})
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestMaintenanceSnapshotFollowerRejectsProxyStreamWithoutChecksum(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
