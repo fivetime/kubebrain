@@ -138,6 +138,14 @@ func (s *RPCServer) authCallerFromTLS(ctx context.Context, snapshot *authSnapsho
 	if !s.clientCertAuth {
 		return nil, rpctypes.ErrUserEmpty
 	}
+	// The peer transport certificate authenticates another KubeBrain member,
+	// not the original etcd client. A follower carrying a verified client-cert
+	// identity translates it to a short-lived token before forwarding; without
+	// that token the leader must treat the request as anonymous. Otherwise an
+	// internal peer certificate CN could accidentally become an etcd username.
+	if isPeerRequest(ctx) {
+		return nil, rpctypes.ErrUserEmpty
+	}
 	var state tls.ConnectionState
 	var verified bool
 	if p, ok := peer.FromContext(ctx); ok && p != nil && p.AuthInfo != nil {

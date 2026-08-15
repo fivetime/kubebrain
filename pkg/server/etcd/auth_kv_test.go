@@ -55,7 +55,7 @@ func TestAuthKVUnaryHandlersEnforcePermissions(t *testing.T) {
 	require.Empty(t, denied.Kvs, "denied put must not reach storage")
 }
 
-func TestAuthCompactAdminCheckPrecedesFollowerRoutingLikeEtcd(t *testing.T) {
+func TestAuthCompactAdminCheckIsPreservedAcrossFollowerRouting(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	aliceCtx := setupAuthKVUser(t, server)
@@ -79,7 +79,16 @@ func TestAuthCompactAdminCheckPrecedesFollowerRoutingLikeEtcd(t *testing.T) {
 					forwarded++
 					require.Equal(t, request, req)
 					md, _ := metadata.FromOutgoingContext(ctx)
-					forwardedTokens = append(forwardedTokens, md.Get(rpctypes.TokenFieldNameGRPC))
+					tokens := md.Get(rpctypes.TokenFieldNameGRPC)
+					forwardedTokens = append(forwardedTokens, tokens)
+					switch {
+					case len(tokens) == 0:
+						return nil, rpctypes.ErrUserEmpty
+					case tokens[0] == "invalid-token":
+						return nil, rpctypes.ErrInvalidAuthToken
+					case tokens[0] != rootToken:
+						return nil, rpctypes.ErrPermissionDenied
+					}
 					return &etcdserverpb.CompactionResponse{Header: txnHeader(1)}, nil
 				},
 			}
@@ -90,13 +99,17 @@ func TestAuthCompactAdminCheckPrecedesFollowerRoutingLikeEtcd(t *testing.T) {
 			requireAuthKVError(t, err, rpctypes.ErrInvalidAuthToken, codes.Unknown, "etcdserver: invalid auth token")
 			_, err = server.Compact(aliceCtx, request)
 			requireAuthKVError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
-			require.Zero(t, forwarded, "unauthorized Compact must not reach follower routing")
+			if proxyEnabled {
+				require.Equal(t, 3, forwarded, "trusted leader must authoritatively reject unauthorized Compact")
+			} else {
+				require.Zero(t, forwarded)
+			}
 
 			_, err = server.Compact(rootCtx, request)
 			if proxyEnabled {
 				require.NoError(t, err)
-				require.Equal(t, 1, forwarded)
-				require.Equal(t, []string{rootToken}, forwardedTokens[0])
+				require.Equal(t, 4, forwarded)
+				require.Equal(t, []string{rootToken}, forwardedTokens[3])
 			} else {
 				require.Error(t, err)
 				require.Equal(t, codes.Unavailable, status.Code(err))

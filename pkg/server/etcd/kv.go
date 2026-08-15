@@ -1289,11 +1289,25 @@ func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
 }
 
 func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (_ *etcdserverpb.CompactionResponse, retErr error) {
+	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		s.metricCli.EmitCounter("write.follower", 1)
+		// Unlike upstream's raft follower, this ingress may have lost its entire
+		// TiKV/PD path and therefore cannot consult a locally replicated auth
+		// store. Forward the raw credential/client-cert translation to the trusted
+		// peer listener; the leader runs this same complete admin check before
+		// destroying history.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.Compact(proxyCtx, r)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	// Upstream kvServer.Compact applies AuthAdmin.isPermitted before it enters
-	// EtcdServer.Compact and therefore before any leader routing. Compact is a
-	// cluster-wide destructive history operation, so an anonymous/non-root call
-	// must be rejected by the serving member rather than forwarded (or obscured
-	// by a follower error).
+	// EtcdServer.Compact. Keep that ordering for the local leader and for a
+	// follower without proxy support.
 	caller, err := s.authCallerFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -1301,18 +1315,8 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if !caller.isRoot() {
 		return nil, rpctypes.ErrPermissionDenied
 	}
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
-		if s.peers.EtcdProxyEnabled() {
-			proxyCtx, err := s.forwardWriteAuthContext(ctx)
-			if err != nil {
-				return nil, err
-			}
-			response, err := s.peers.Compact(proxyCtx, r)
-			s.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
-		}
 		return nil, s.notLeaderErr("compact")
 	}
 	// Compaction destroys MVCC history cluster-wide. Do not let a newly

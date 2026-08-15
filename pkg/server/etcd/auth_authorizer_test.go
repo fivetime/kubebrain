@@ -649,6 +649,10 @@ func TestAuthCallerUsesVerifiedClientCertificateCommonName(t *testing.T) {
 	require.Equal(t, "alice", caller.username)
 	require.Equal(t, caller.snapshot.Config.Revision, caller.revision)
 	require.Empty(t, caller.forwardToken, "leader-local certificate auth must not mint a proxy token")
+	_, err = server.authCallerFromContext(context.WithValue(
+		verifiedTLSContext(context.Background(), "root"), peerRequestContextKey{}, true,
+	))
+	requireAuthAuthorizerError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 
 	forwarded, err := server.forwardAuthToken(context.Background(), caller)
 	require.NoError(t, err)
