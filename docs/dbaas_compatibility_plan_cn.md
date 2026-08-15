@@ -52862,6 +52862,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   镜像。postflight proposal health 18.746ms，A4737 prefix、LeaseList、AlarmList、三个 artifact、恢复 data-dir、
   upstream etcd 进程均为空；主三副本继续使用 A4733 镜像且 Ready/零重启，三个直连端口转发在记录后关闭。
 
+- A4738 修复 follower Snapshot 在已发送数据后遭遇 leader replacement 时泄漏伪 `Canceled` 的生产差距。
+  upstream follower 可从本地 bbolt 提供 snapshot；KubeBrain 为让固定 TiKV history 与 auth/lease/alarm metadata
+  共享 leader barrier，必须把 follower 请求代理给 mutation leader，因此明确采用两段故障契约：尚未交付任何
+  response frame 时 grpc-go 可以透明重试完整 streaming RPC；已交付帧后不能拼接两个 leader 的 artifact，必须
+  中止整次 checksum-protected 下载并返回可重试的 `Unavailable: etcdserver: leader changed`。
+
+  A4737 镜像的真实 RED 直连 `kubebrain-0` follower：客户端 `.part` 已写入 294,912 字节后删除当时 leader
+  `kubebrain-2`，下载于 2.306 秒失败且清除 partial artifact，但错误为
+  `Canceled: grpc: the client connection is closing`；调用方 context 从未取消。源码定位到 peer transport 在
+  leader connection failure 后关闭共享 grpc client，`forwardSnapshot` 却原样透传内部 Canceled。生产提交
+  `639fb2db` 新增窄归一：仅当 downstream context 仍存活时，把 peer Snapshot 的 context/gRPC Canceled 转为
+  upstream `ErrGRPCLeaderChanged`；真实 caller cancellation 保持原样，其他错误与 checksum/DataLoss 校验不变。
+  修改一个生产文件，并新增两条直接覆盖内部取消与调用方取消边界的聚焦回归；专项 0.125 秒、
+  `go vet ./pkg/server/etcd` 和完整包回归 188.142 秒通过。
+
+  精确镜像 `kubebrain:a4738-639fb2db` 内嵌 SHA
+  `639fb2db524799f1129bdf11e57e538ac5b6052d`、build time `2026-08-15T23:05:00Z`，OCI index 为
+  `sha256:1888b9bf72ccb7f59d8c819b1110f4b4c2425f1bed68a65ea19126888e4f380d`，Kind runtime imageID 为
+  `sha256:295c848275875faa78d7c90c904266e5a3efbae4fcc8863dd0d9dae1c3b2b9c3`。最终镜像重放同一故障：
+  follower 已向 `.part` 交付 65,536 字节后删除 leader，1.944 秒内返回精确
+  `Unavailable: etcdserver: leader changed`，etcdctl 清除 `.part` 且没有发布 final artifact，形成 RED→GREEN。
+  对照的首帧前删除 leader 场景由 grpc-go 在收到 `Unavailable` 后透明重试并于 4.322 秒下载完整 artifact；
+  恢复后从同一 follower 再下载 90,857,504 字节 artifact，`etcdutl status` 为 version 3.7.0、revision
+  `468126003565938056`、1599 keys，endpoint proposal health 20.599ms。
+
+  终态三个 PD health=true、三个 TiKV store=Up，miss/pending/down/extra-peer 均为 0；A4738 prefix、LeaseList、
+  AlarmList、partial/final artifact 和临时目录均为空。主与 JWT 六个 KubeBrain Pod 均使用最终镜像且
+  Ready/零重启，两个测试端口转发在记录后关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
