@@ -51978,6 +51978,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   endpoint health 成功、AlarmList/LeaseList 为空，JWT 三成员 auth enabled/authRevision=25 一致、用户/角色/空 operator
   权限未变且 AlarmList/LeaseList 为空；PD/TiKV 3+3 Ready/零重启，连续三轮从全部 PD 查询均报告 leader `kb-pd-1`。
 
+- A4694 补审 peer HTTP `GET /members/hashkv`，即 upstream corruption checker 使用的成员间 hash 接口。固定
+  `/root/etcd/server/etcdserver/corrupt.go` 中 `PeerHashKVPath`、`peerHashKVHandler` 与 `PeerHashByRev`：官方实现对
+  收到请求的成员本地 BoltDB 执行 `HashByRev`，HTTP 200 返回 hash envelope，并把 future/compacted 映射为标准
+  HTTP 400 文本。KubeBrain 没有各副本独立 MVCC store，所有成员共享同一 TiKV history，因此可达 leader 对同一
+  revision 计算的 hash 是 storage-isolated follower 的等价值；此前 peer HTTP handler 却总是直读入口成员 backend。
+
+  A4693 主 follower `kubebrain-0`（当时 `10.244.0.45`）在 revision `468126003565913475` 的无故障 peer HTTP 请求返回
+  hash `2711413614`、compact revision `468126003565913122`；精确阻断该 Pod 到三台 PD 2379/TCP 和三台 TiKV
+  20160/TCP 后，原实现耗尽 6.002 秒 curl hard timeout、HTTP code 000，trap 后规则为 0。
+
+  提交 `f4411d00f3e6916b89e8c0527a80f63d37a9bf94` 让 proxy-enabled follower 在任何本地 storage read 前经 peer gRPC
+  转发 HashKV，并统一本地/转发响应与 future/compacted HTTP 映射。内部调用不虚构 etcd 用户凭据，而是携带专用
+  metadata；HashKV 只有在该 metadata 与 `PeerServerOptions` 注入的不可由公共 listener 伪造的 peer context marker
+  同时存在时才允许跳过用户鉴权。存储 trap 测试证明转发先于 backend，覆盖指定 revision、完整 response/current
+  revision observation；安全测试证明公共 context 仅伪造同名 metadata 仍返回 `ErrUserEmpty`；转发错误测试覆盖两种
+  canonical HTTP 文本。相关 server 测试连续 20 轮 3.769 秒通过，聚焦 race 2.663 秒、`go vet` 通过；排除已知固定
+  600 秒 harness timeout 的无关 `hack/production` 包后，其余全仓 JSON 门禁产生 31,913 条事件、零 fail event。
+
+  精确镜像 `kubebrain:a4694-f4411d00` 内嵌完整 SHA 与 UTC build time `2026-08-15T11:45:07Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:f72a1cc435c726d253372f0404ee02f155ddde12816b30b0e21e02a038348586`、
+  `sha256:9a28af6e2676625f7b40b2865d62ad6d79d94afcb7abb9ebe37de394df2db13a`、
+  `sha256:613085a08b9c36d5696c95f172eae7368ad6a55cdac6019fdb7707bbcb880118`，Kind runtime imageID 为
+  `sha256:564633bdea11d0163b715d162abe04fa5a54907441df6bb410161906cb5a12b0`。滚动后主 follower
+  `kubebrain-0`（`10.244.0.51`）、leader `kubebrain-2` 在相同六目标隔离下 fixed/latest peer HashKV 分别 420/227ms
+  返回 HTTP 200 且 hash envelope 与 RED 前一致，future/compacted 分别 45/43ms 返回标准 HTTP 400。JWT follower
+  `a4653-jwt-0`（`10.244.0.54`）隔离下指定 revision 9 在 47ms 返回 HTTP 200，future revision 10 在 42ms 返回标准
+  HTTP 400；公共 client 口真实 gRPC probe 仅伪造内部 metadata 仍返回
+  `InvalidArgument/etcdserver: user name is empty`。全部注入轮次规则均清零。最终主/JWT 六副本 Ready/零重启且 runtime
+  imageID 一致；主三个 endpoint health 成功、AlarmList/LeaseList 为空；JWT auth enabled/authRevision=25、root/alice、
+  root/operator、空 operator 权限以及 AlarmList/LeaseList 均保持；PD/TiKV 3+3 Ready/零重启，连续三轮从全部 PD 查询
+  的九个结果均为 leader `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
