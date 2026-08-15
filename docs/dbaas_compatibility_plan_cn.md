@@ -52559,6 +52559,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   该结论关闭普通 plaintext 三节点 response-loss 证据空白，不外推到仍需证书输入的 TLS passthrough 或真实 Envoy
   profile。
 
+- A4723 在不修改生产或测试代码的前提下，补齐 A4722 留下的 TLS passthrough 与真实 Envoy profile。隔离的
+  `a4657-tls` 三副本先滚动到与主集群完全相同的 `kubebrain:a4720-6f6e252f`，沿用独立 keyspace、双向 TLS、
+  `kubernetes` server name 和三个独立 NodePort；正式 runner 仍为每轮新建的三成员固定
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`。L4 TLS LeaseRevoke response-loss passthrough
+  连续 3 轮在 1.256 秒内全部 GREEN，真实 Envoy 1.39.0/BoringSSL TLS passthrough 连续 3 轮在 47.923 秒内
+  全部 GREEN；后者同时确认未携带客户端证书和 plaintext 访问 TLS listener 均按预期失败。
+
+  主 A4720 三副本经三个 Pod port-forward 运行真实 Envoy plaintext profile，连续 3 轮 35.402 秒全部 GREEN；
+  更易暴露长连接生命周期问题的 Envoy replica-drain profile 连续 5 轮 57.008 秒全部 GREEN，此前单次观察到的
+  KeepAlive 关闭没有复现，不能据此改动产品。postflight 主集群三个 proposal health 为
+  21.77/22.78/27.88ms，TLS 集群为 25.85/26.84/27.55ms，两侧 alarm 均为空，六个 Pod 均 Ready/零重启且
+  使用同一 A4720 镜像。测试窗口日志出现 TiKV/PD 瞬时 deadline 和一次内部 follower future-revision 转发重试，
+  但所有差分及最终健康检查均成功；保留为后续 soak 观察项，不把瞬时基础设施日志隐去或误报为本轮产品 RED。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
