@@ -426,8 +426,20 @@ func alarmStatusError(alarm *etcdserverpb.AlarmMember) string {
 	return strings.Join(fields, " ")
 }
 
-func (s *RPCServer) Defragment(ctx context.Context, _ *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
 	s.metricCli.EmitCounter("maintenance.defragment", 1)
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// TiKV owns physical compaction, so KubeBrain's etcd Defragment is a
+		// compatibility no-op. A storage-isolated ingress therefore has no local
+		// member operation to preserve; let the trusted leader perform the
+		// authoritative admin check instead of reading follower auth storage.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return s.peers.Defragment(proxyCtx, req)
+	}
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}

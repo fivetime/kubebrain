@@ -61,6 +61,10 @@ func (d disabledEtcdProxy) Alarm(ctx context.Context, req *etcdserverpb.AlarmReq
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
 	return nil, errDisabled
 }

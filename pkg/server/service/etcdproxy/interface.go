@@ -54,6 +54,9 @@ type EtcdProxy interface {
 	// Alarm forwards maintenance alarm requests to leader.
 	Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error)
 
+	// Defragment forwards a maintenance defragment request to leader.
+	Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
+
 	// Watch forward watch stream request to leader.
 	Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error)
 

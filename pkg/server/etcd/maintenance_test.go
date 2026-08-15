@@ -446,6 +446,28 @@ func TestFollowerAlarmProxiesEveryActionToLeader(t *testing.T) {
 	}, forwarded)
 }
 
+func TestFollowerDefragmentProxiesNoOpToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	request := &etcdserverpb.DefragmentRequest{}
+	called := false
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		defragmentFn: func(_ context.Context, got *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+			called = true
+			require.Same(t, request, got)
+			return &etcdserverpb.DefragmentResponse{}, nil
+		},
+	}
+
+	response, err := server.Defragment(context.Background(), request)
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.True(t, called)
+}
+
 func TestAlarmMutationFailsBeforeWriteWhenColdRevisionUnavailable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

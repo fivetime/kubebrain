@@ -506,6 +506,17 @@ func (e *etcdProxy) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 	return resp, err
 }
 
+func (e *etcdProxy) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward defragment", "leader", leader)
+	resp, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Defragment(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {
