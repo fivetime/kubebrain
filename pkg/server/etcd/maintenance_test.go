@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
@@ -825,7 +826,7 @@ func TestPeerHashKVHandlerRefreshesRevisionBeforeHash(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
-func TestPeerHashKVHandlerProxiesBeforeStorageWithTrustedMarker(t *testing.T) {
+func TestPeerHashKVHandlerHedgesIsolatedStorageWithTrustedMarker(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	wantErr := errors.New("isolated peer hash storage must not be reached")
@@ -861,6 +862,54 @@ func TestPeerHashKVHandlerProxiesBeforeStorageWithTrustedMarker(t *testing.T) {
 	require.Equal(t, want.GetHashRevision(), response.GetHashRevision())
 	require.Equal(t, want.GetCompactRevision(), response.GetCompactRevision())
 	require.Equal(t, uint64(77), server.backend.GetCurrentRevision())
+}
+
+func TestPeerHashKVHandlerHedgesIsolatedLeaderWithLocalStorage(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	put, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/peer-hash-local-hedge"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	want, err := server.backend.HashKV(context.Background(), put.GetHeader().GetRevision())
+	require.NoError(t, err)
+	peerStarted := make(chan struct{})
+	peerCanceled := make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		hashKVFn: func(ctx context.Context, request *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+			close(peerStarted)
+			<-ctx.Done()
+			close(peerCanceled)
+			return nil, ctx.Err()
+		},
+	}
+	body, err := json.Marshal(&etcdserverpb.HashKVRequest{Revision: put.GetHeader().GetRevision()})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodGet, PeerHashKVPath, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.peerHashKVHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var response etcdserverpb.HashKVResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	require.Equal(t, want.Hash, response.GetHash())
+	require.Equal(t, want.HashRevision, response.GetHashRevision())
+	require.Equal(t, want.CompactRevision, response.GetCompactRevision())
+	require.Eventually(t, func() bool {
+		select {
+		case <-peerStarted:
+			select {
+			case <-peerCanceled:
+				return true
+			default:
+			}
+		default:
+		}
+		return false
+	}, time.Second, time.Millisecond)
 }
 
 func TestAuthorizedPeerHashKVProxyMarkerRequiresPeerListener(t *testing.T) {

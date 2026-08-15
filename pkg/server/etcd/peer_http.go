@@ -15,6 +15,7 @@
 package etcd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -193,17 +194,14 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
-		// etcd hashes each peer's local BoltDB. KubeBrain replicas have no
-		// independent MVCC store: they all expose the same TiKV history. When this
-		// peer can still reach the leader but not TiKV/PD, obtain that shared hash
-		// through the trusted peer gRPC listener instead of timing out locally.
-		proxyCtx := metadata.AppendToOutgoingContext(
-			r.Context(), authorizedPeerHashKVProxyMetadataKey, "1",
-		)
-		resp, proxyErr := s.peers.HashKV(proxyCtx, req)
-		s.observeForwardedRevision(resp.GetHeader(), proxyErr)
-		if proxyErr != nil {
-			writePeerHashKVError(w, proxyErr)
+		// etcd hashes each peer's local BoltDB even when that member cannot reach
+		// the leader. KubeBrain replicas have no independent MVCC store: they all
+		// expose the same TiKV history. Race the local shared-store hash with the
+		// leader's trusted peer RPC so either a TiKV/PD-isolated ingress or a
+		// leader-peer-isolated ingress retains the upstream member-local behavior.
+		resp, hashErr := s.hedgedPeerHashKV(r.Context(), req)
+		if hashErr != nil {
+			writePeerHashKVError(w, hashErr)
 			return
 		}
 		writePeerHashKVResponse(w, clusterID, resp)
@@ -228,6 +226,69 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 		HashRevision:    result.HashRevision,
 	}
 	writePeerHashKVResponse(w, clusterID, resp)
+}
+
+type peerHashKVResult struct {
+	response  *etcdserverpb.HashKVResponse
+	err       error
+	forwarded bool
+}
+
+func (s *RPCServer) hedgedPeerHashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan peerHashKVResult, 2)
+	go func() {
+		response, err := s.localPeerHashKV(ctx, req)
+		results <- peerHashKVResult{response: response, err: err}
+	}()
+	go func() {
+		proxyCtx := metadata.AppendToOutgoingContext(ctx, authorizedPeerHashKVProxyMetadataKey, "1")
+		response, err := s.peers.HashKV(proxyCtx, req)
+		results <- peerHashKVResult{response: response, err: err, forwarded: true}
+	}()
+
+	var firstErr error
+	for range 2 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case result := <-results:
+			if result.forwarded {
+				s.observeForwardedRevision(result.response.GetHeader(), result.err)
+			}
+			if result.err == nil {
+				return result.response, nil
+			}
+			if isPeerHashKVRevisionError(result.err) {
+				return nil, result.err
+			}
+			if firstErr == nil {
+				firstErr = result.err
+			}
+		}
+	}
+	return nil, firstErr
+}
+
+func (s *RPCServer) localPeerHashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+	result, err := s.backend.HashKV(ctx, req.GetRevision())
+	if err != nil {
+		return nil, err
+	}
+	return &etcdserverpb.HashKVResponse{
+		Header:          txnHeader(result.CurrentRevision),
+		Hash:            result.Hash,
+		CompactRevision: result.CompactRevision,
+		HashRevision:    result.HashRevision,
+	}, nil
+}
+
+func isPeerHashKVRevisionError(err error) bool {
+	message := status.Convert(err).Message()
+	return errors.Is(err, backend.ErrHashKVCompacted) || errors.Is(err, backend.ErrHashKVFuture) ||
+		strings.Contains(message, "required revision has been compacted") ||
+		strings.Contains(message, "required revision is a future revision")
 }
 
 func writePeerHashKVError(w http.ResponseWriter, err error) {
