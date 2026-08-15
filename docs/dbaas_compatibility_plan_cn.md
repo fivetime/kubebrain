@@ -51418,6 +51418,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   leader 本身不可达时，storage-isolated follower 无法像上游那样依靠本地 Raft auth 副本先返回匿名/权限错误，可能先
   返回 Unavailable；彻底对齐需要独立于 TiKV 数据路径的可信 auth revision/snapshot 复制，而不能使用陈旧 cache 放行。
 
+- A4674 将同一 storage-isolated follower 可用性修复扩展到 Maintenance Alarm。对照固定
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::authMaintenanceServer.Alarm` 与
+  `server/etcdserver/v3_server.go::EtcdServer.Alarm`：上游先按 GET/其他 action 分别执行已认证用户/admin
+  校验，再把 GET、ACTIVATE、DEACTIVATE 全部提交为 Raft request；grpcproxy 也直接把完整 Alarm RPC 发往
+  endpoint。KubeBrain 旧 handler 却在接收 follower 本地读取 TiKV auth/alarm metadata 和 read barrier，单副本
+  失去全部独立存储路径时无法利用仍健康的 peer leader。提交
+  `2b17edbee81ba9f26ee24db62b6a33c830239376` 为 Maintenance peer client 增加 Alarm，并让 proxy-capable
+  follower 在任何本地存储访问前转发原始 action、alarm type、member ID 和逻辑客户端身份；leader 仍进入同一
+  完整公开 handler，独占 GET 鉴权/read fence、mutation admin 校验、header revision 和告警持久化。禁用 proxy
+  的 follower 与 local leader 行为不变。最小契约覆盖三种 action 均转发且 GET 不执行 follower 本地 read
+  barrier；既有 Maintenance 鉴权、完整 `pkg/server/etcd` 181.327 秒、proxy 3.016 秒、vet 及聚焦 race
+  1.901 秒全部通过。
+
+  修复前精确 A4673 镜像上，阻断 follower `kubebrain-0` 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，
+  只读 `alarm list` 在 8 秒 client deadline 返回 `DeadlineExceeded`，且没有 `forward alarm` 日志。精确 A4674
+  镜像 `kubebrain:a4674-2b17edbe` 内嵌上述完整 SHA，构建时间 `2026-08-15T04:21:41Z`，OCI manifest list
+  为 `sha256:a89e879c2f4c2db3bb87568ed84c1d5376dae13e601429e0f2ccd8ac9b43a8b0`。三副本滚动后 leader 为
+  `kubebrain-2`；重放相同六目标隔离，Pod 内 PD/TiKV TCP probe 均以 1 秒超时退出，而直连该 follower 的
+  `alarm list` 在 326ms 成功返回空列表，日志明确记录 action=GET、alarm=NONE 并转发当前 leader。本轮没有为
+  验证路由而激活真实 NOSPACE/CORRUPT 告警；ACTIVATE/DEACTIVATE 的路由由上述 handler 契约覆盖。实验规则为
+  0，三个 endpoint 均可提交 proposal，AlarmList 与 LeaseList 为空，KubeBrain/PD/TiKV 主集群各三副本 Ready
+  且零重启。当 follower 与存储、peer leader 同时失联时，仍可能在 leader unavailable 之前无法像上游本地 Raft
+  auth 副本那样返回鉴权错误；该限制与 A4673 记录的可信 auth 复制缺口相同。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
