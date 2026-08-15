@@ -52412,6 +52412,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   90 秒预算仅 1.87 秒，仍保留为 Range 性能裕量差距。最终主三端 proposal health 为
   19.75/14.01/16.02ms，alarm/lease 为空，六副本一分钟窗口没有 deadline、PD region load 或选主锁错误。
 
+- A4716 收敛 A4715 留下的 Range 性能裕量差距。KubeBrain 为兼容包含 `0x00..0x24` 低字节扩展的用户 key，
+  每次普通 Range 都会在主扫描前对 start/end 各做一次 TiKV 探测；同一 prefix、同一 MVCC revision 的
+  5,760 组合矩阵因此重复执行约 11,520 次存储扫描。探测结果由精确 `(revision, boundary bytes)` 决定，
+  revision 一旦提交即不可变。
+
+  生产提交 `f877bd93` 为每个 tenant backend 增加固定 1,024 项 FIFO 边界探测缓存：key 同时包含 revision
+  和原始二进制 boundary，正/负成功结果都可复用，错误永不缓存；容量固定，任意客户端边界不会造成无界
+  内存增长。低字节、美元符号和 Range 聚焦回归 31.657 秒通过；backend 全量 78.874 秒、server/etcd
+  全量 175.333 秒通过。提交只修改 `pkg/backend/backend.go` 与 `pkg/backend/range.go` 两个生产文件，
+  新增 55 行、删除 1 行，没有修改测试文件。
+
+  精确镜像 `kubebrain:a4716-f877bd93` 内嵌 SHA
+  `f877bd932e396ec21ff2a79d54a86308ee0cfe32`、build time `2026-08-15T17:40:21Z`，OCI index 为
+  `sha256:ec16cfc5bc0e9f470f77fd18cc4d540b14648aac6dd7c88f27f15b61cba5d301`，Kind runtime imageID 为
+  `sha256:41da472ec4328b6af1c52a385318787372a898c76041c40d8fed28439013b32a`。主三副本滚动后，同一固定
+  upstream 对照和 5,760 组合矩阵从 A4715 的 88.13 秒降至 56.36 秒，节省 31.77 秒（约 36%），全部结果
+  仍逐项一致，90 秒预算裕量由 1.87 秒扩大到 33.64 秒。主三端 proposal health 为
+  12.24/17.38/12.01ms，alarm/lease 为空，最终一分钟窗口没有 deadline、PD region load 或选主锁错误；
+  JWT 三副本继续运行 A4715，全部 Ready/零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
