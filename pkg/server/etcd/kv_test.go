@@ -345,40 +345,41 @@ func TestSerializableHistoricalTxnProxiesWhenFollowerCheckpointLags(t *testing.T
 	require.Equal(t, written.Header.Revision, response.Header.Revision)
 }
 
-func TestReadonlyTxnWithNonSerializableRangeExecutesLocallyAfterBarrier(t *testing.T) {
+func TestFollowerLinearizableReadonlyTxnProxiesBeforeLocalBarrier(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	key := []byte("linearizable-readonly-txn/local")
 	put, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: key, Value: []byte("value")})
 	require.NoError(t, err)
-	barriers := 0
-	server.peers = testPeerService{
-		isLeader: false, proxyEnabled: true,
-		syncReadFn: func(context.Context) error {
-			barriers++
-			return nil
-		},
-		epochFn: func() (uint64, bool) {
-			t.Fatal("read-only txn must not require local write leadership after its barrier")
-			return 0, false
-		},
-		txnFn: func(context.Context, *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
-			t.Fatal("read-only txn must not proxy after a successful barrier")
-			return nil, nil
-		},
-	}
-	resp, err := server.Txn(context.Background(), &etcdserverpb.TxnRequest{
+	request := &etcdserverpb.TxnRequest{
 		Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestRange{
 			RequestRange: &etcdserverpb.RangeRequest{Key: key},
 		}}},
-	})
+	}
+	forwarded := 0
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			t.Fatal("follower must proxy before establishing a local read barrier")
+			return errors.New("unreachable")
+		},
+		epochFn: func() (uint64, bool) {
+			return 0, false
+		},
+		txnFn: func(_ context.Context, got *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
+			forwarded++
+			require.Equal(t, request, got)
+			return &etcdserverpb.TxnResponse{
+				Header:    txnHeader(put.Header.Revision),
+				Succeeded: true,
+			}, nil
+		},
+	}
+	resp, err := server.Txn(context.Background(), request)
 	require.NoError(t, err)
-	require.Equal(t, 1, barriers)
+	require.Equal(t, 1, forwarded)
 	require.True(t, resp.Succeeded)
 	require.Equal(t, put.Header.Revision, resp.Header.Revision)
-	rangeResp := resp.Responses[0].GetResponseRange()
-	require.NotNil(t, rangeResp)
-	require.Equal(t, []byte("value"), rangeResp.Kvs[0].Value)
 }
 
 func TestTxnWithoutComparesIgnoresNonEmptyFailureBranch(t *testing.T) {

@@ -644,6 +644,22 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 		return nil, validationErr
 	}
 	readOnly := txnIsReadonly(txn)
+	if readOnly && !txnIsSerializable(txn) && s.peers.EtcdProxyEnabled() {
+		_, leadingFresh := s.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
+			// Match the upstream gRPC proxy: a linearizable read-only Txn is
+			// admitted and serialized by the authoritative server. Requiring the
+			// ingress follower to establish its own TiKV/PD read barrier first
+			// makes a healthy leader unreachable through a storage-isolated proxy.
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			response, err := s.peers.Txn(proxyCtx, txn)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
+		}
+	}
 	checkpointTxn := false
 	if readOnly && txnIsSerializable(txn) {
 		_, leadingFresh := s.peers.EpochAndLeadingFresh()
