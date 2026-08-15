@@ -495,6 +495,17 @@ func (e *etcdProxy) Compact(ctx context.Context, req *etcdserverpb.CompactionReq
 	return resp, err
 }
 
+func (e *etcdProxy) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward alarm", "leader", leader, "action", req.GetAction(), "alarm", req.GetAlarm(), "memberID", req.GetMemberID())
+	resp, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Alarm(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {

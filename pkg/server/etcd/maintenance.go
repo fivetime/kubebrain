@@ -114,6 +114,20 @@ const defaultEtcdBackendQuota int64 = 2 * 1024 * 1024 * 1024
 
 func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (_ *etcdserverpb.AlarmResponse, retErr error) {
 	s.metricCli.EmitCounter("maintenance.alarm", 1)
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// A DBaaS ingress replica can remain available to its peers while losing
+		// every TiKV/PD path. Forward the untouched Alarm operation and logical
+		// client identity; the trusted leader runs this complete handler, including
+		// GET authentication/read fencing and mutation admin checks.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.Alarm(proxyCtx, req)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	switch req.GetAction() {
 	case etcdserverpb.AlarmRequest_GET:
 		if err := s.requireAuthenticated(ctx, false); err != nil {

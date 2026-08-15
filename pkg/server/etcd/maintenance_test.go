@@ -412,6 +412,40 @@ func TestAlarmMutationRestoresColdHeaderFromDurableRevision(t *testing.T) {
 	require.Len(t, deactivated.Alarms, 1)
 }
 
+func TestFollowerAlarmProxiesEveryActionToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	var forwarded []etcdserverpb.AlarmRequest_AlarmAction
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			t.Fatal("proxying follower must not execute Alarm GET against local storage")
+			return nil
+		},
+		alarmFn: func(_ context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+			forwarded = append(forwarded, req.GetAction())
+			return &etcdserverpb.AlarmResponse{Header: txnHeader(int64(len(forwarded)))}, nil
+		},
+	}
+
+	for _, action := range []etcdserverpb.AlarmRequest_AlarmAction{
+		etcdserverpb.AlarmRequest_GET,
+		etcdserverpb.AlarmRequest_ACTIVATE,
+		etcdserverpb.AlarmRequest_DEACTIVATE,
+	} {
+		response, err := server.Alarm(context.Background(), &etcdserverpb.AlarmRequest{Action: action})
+		require.NoError(t, err)
+		require.Equal(t, int64(len(forwarded)), response.GetHeader().GetRevision())
+	}
+	require.Equal(t, []etcdserverpb.AlarmRequest_AlarmAction{
+		etcdserverpb.AlarmRequest_GET,
+		etcdserverpb.AlarmRequest_ACTIVATE,
+		etcdserverpb.AlarmRequest_DEACTIVATE,
+	}, forwarded)
+}
+
 func TestAlarmMutationFailsBeforeWriteWhenColdRevisionUnavailable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

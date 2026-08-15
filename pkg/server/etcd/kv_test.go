@@ -62,6 +62,7 @@ type testPeerService struct {
 	putFn            func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
 	deleteRangeFn    func(context.Context, *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
 	compactFn        func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error)
+	alarmFn          func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error)
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
 	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
@@ -524,6 +525,13 @@ func (s testPeerService) DeleteRange(ctx context.Context, req *etcdserverpb.Dele
 func (s testPeerService) Compact(ctx context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error) {
 	if s.compactFn != nil {
 		return s.compactFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+	if s.alarmFn != nil {
+		return s.alarmFn(ctx, req)
 	}
 	return nil, nil
 }

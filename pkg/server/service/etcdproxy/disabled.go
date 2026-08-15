@@ -57,6 +57,10 @@ func (d disabledEtcdProxy) Compact(ctx context.Context, req *etcdserverpb.Compac
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
 	return nil, errDisabled
 }

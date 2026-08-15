@@ -51,6 +51,9 @@ type EtcdProxy interface {
 	// Compact forwards compaction request to leader.
 	Compact(ctx context.Context, req *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error)
 
+	// Alarm forwards maintenance alarm requests to leader.
+	Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error)
+
 	// Watch forward watch stream request to leader.
 	Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error)
 
