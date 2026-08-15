@@ -414,6 +414,11 @@ type backend struct {
 	// Overflow is an exceptional safety path; serializing it prevents concurrent
 	// full-keyspace requests from multiplying temporary-disk and TiKV pressure.
 	decodedRangeSpillSem chan struct{}
+	// boundaryProbeCache memoizes whether a user boundary has a low-byte key
+	// extension at an immutable MVCC revision. Without it, repeated Range calls
+	// for the same prefix issue two extra TiKV scans each. The cache is strictly
+	// bounded; failed probes are never stored.
+	boundaryProbeCache boundaryProbeCache
 
 	// historyScanSem bounds the number of concurrent watch-history fallback
 	// scans. After a cache reset (e.g. leader change) every reconnecting watcher

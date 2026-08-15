@@ -21,6 +21,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -599,6 +600,48 @@ func boundaryRequiresDecodedUserRange(start, end []byte) bool {
 	return false
 }
 
+const boundaryProbeCacheCapacity = 1024
+
+type boundaryProbeCacheKey struct {
+	revision uint64
+	boundary string
+}
+
+type boundaryProbeCache struct {
+	mu     sync.Mutex
+	values map[boundaryProbeCacheKey]bool
+	order  []boundaryProbeCacheKey
+	next   int
+}
+
+func (c *boundaryProbeCache) get(key boundaryProbeCacheKey) (bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	value, ok := c.values[key]
+	return value, ok
+}
+
+func (c *boundaryProbeCache) put(key boundaryProbeCacheKey, value bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.values == nil {
+		c.values = make(map[boundaryProbeCacheKey]bool, boundaryProbeCacheCapacity)
+		c.order = make([]boundaryProbeCacheKey, 0, boundaryProbeCacheCapacity)
+	}
+	if _, exists := c.values[key]; exists {
+		c.values[key] = value
+		return
+	}
+	if len(c.order) < boundaryProbeCacheCapacity {
+		c.order = append(c.order, key)
+	} else {
+		delete(c.values, c.order[c.next])
+		c.order[c.next] = key
+		c.next = (c.next + 1) % boundaryProbeCacheCapacity
+	}
+	c.values[key] = value
+}
+
 func (b *backend) requiresDecodedUserRange(
 	ctx context.Context,
 	start, end []byte,
@@ -644,6 +687,10 @@ func (b *backend) hasLowByteBoundaryExtension(
 	boundary []byte,
 	revision uint64,
 ) (bool, error) {
+	cacheKey := boundaryProbeCacheKey{revision: revision, boundary: string(boundary)}
+	if found, ok := b.boundaryProbeCache.get(cacheKey); ok {
+		return found, nil
+	}
 	encoded := b.coder.EncodeObjectKey(boundary, 0)
 	rawPrefix := encoded[:len(encoded)-9]
 	start := append(append([]byte(nil), rawPrefix...), 0)
@@ -652,7 +699,9 @@ func (b *backend) hasLowByteBoundaryExtension(
 	if err != nil {
 		return false, err
 	}
-	return len(kvs) != 0, nil
+	found := len(kvs) != 0
+	b.boundaryProbeCache.put(cacheKey, found)
+	return found, nil
 }
 
 func (b *backend) decodedUserRange(
