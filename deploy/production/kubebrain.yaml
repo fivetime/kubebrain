@@ -131,8 +131,8 @@ spec:
             # Stay authoritative across that bounded storage failover so etcd's
             # checkpoint-free lease renewals do not lose their in-memory leader.
             # ReleaseOnCancel still clears the lease during an orderly rollout.
-            - --leader-lease-duration=30s
-            - --leader-renew-deadline=25s
+            - --leader-lease-duration=45s
+            - --leader-renew-deadline=40s
             - --leader-retry-period=500ms
             - --max-txn-ops=128
             - --max-request-bytes=1572864
