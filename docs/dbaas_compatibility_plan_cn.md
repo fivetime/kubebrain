@@ -52760,6 +52760,32 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain Pod Ready/零重启，proposal health 20.271ms、AlarmList 与 LeaseList 为空，A4732 前缀键、四条
   iptables 规则及两个端口转发均清除。
 
+- A4733 修复 A4729 只给 KV/Compact/Lease mutation 设置单次服务端预算、却遗漏 Auth/Alarm Raft 等价路径的生产
+  缺口。固定 upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`：
+  `server/etcdserver/v3_server.go` 中 AuthStatus、AuthEnable/Disable、Authenticate 及全部 User/Role RPC 都通过
+  `raftRequest`，Alarm 同样封装为 `InternalRaftRequest`，最终由 `processInternalRaftRequestOnce` 的 `ReqTimeout`
+  限制单次服务端 attempt。KubeBrain 这些 handler 原先直接继承客户端 context，30 秒客户端预算会变成一次长 TiKV
+  请求，而不是外层重试预算。
+
+  确定性 RED 使用 raw `etcdserverpb.AuthClient`，刻意绕过 clientv3 retry interceptor；以唯一 comment 的六条双向
+  `FORWARD` DROP 规则隔离全部三台 TiKV 15 秒，同时给 AuthStatus 30 秒 context。A4732 镜像没有在 10 秒结束服务端
+  attempt，而是在规则回滚、后端恢复后 21.922 秒返回成功。生产提交 `f64cc977` 在公共 unary interceptor 中只对白名单
+  方法派生 `withUnaryRequestTimeout` context：整个 Auth service 和 Maintenance Alarm 纳入 10 秒预算，普通 Range、
+  Status 等非 Raft read 保持调用方 context；已有 KV/Compact/Lease handler 预算不变。较短客户端 deadline 仍由
+  `context.WithTimeout` 自然优先，response header/term stamping 使用原调用方 context，不被已结束的 handler attempt
+  context 污染。
+
+  提交修改 `pkg/server/etcd/header_interceptor.go` 一个生产文件，新增一个聚焦 interceptor deadline 测试，并新增一个
+  仅在显式故障环境变量下运行的 raw gRPC 黑盒探针，共新增 112 行、删除 1 行。聚焦回归 0.271 秒、
+  `go vet ./pkg/server/etcd`、黑盒探针默认 skip/编译和完整 `pkg/server/etcd` 175.241 秒均通过。精确镜像
+  `kubebrain:a4733-f64cc977` 内嵌 SHA `f64cc97736c6f56a0fc102e7b9c578df5834bbe7`、build time
+  `2026-08-15T22:30:00Z`，OCI index 为
+  `sha256:1c6170ab295d59932be9c91b85e25f67f0a73d4b9249da788008eff855f44d20`，Kind runtime imageID 为
+  `sha256:57c73561edf32f80802edb27a12f8f0f9bdbcaa9ff61a5b243dae63b727f0a2e`。最终镜像重放相同三 TiKV
+  全隔离 15 秒场景，raw AuthStatus 在 10.02 秒返回 `DeadlineExceeded`，形成 RED→GREEN。终态四类 PD Region check
+  均为 0，三个 PD/三个 TiKV Ready，主与 JWT 六个 KubeBrain Pod Ready/零重启，proposal health 18.064ms、
+  AlarmList 与 LeaseList 为空，六条 iptables 规则及两个端口转发均清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
