@@ -52584,6 +52584,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   rollout 门禁要求的三个不同 worker，故没有用单节点部署替代 A4416--A4418 的多节点 EndpointSlice 证据；该项
   继续留给具备真实三节点调度前置条件的发布环境。
 
+- A4725 修复 peer `/members/hashkv` 在 follower revision watermark 落后时错误抢先返回 future revision 的生产
+  缺口。A4720 已让公开 gRPC HashKV 的 local/leader hedge 等待可成功路径，但 corruption checker 使用的 peer HTTP
+  handler 仍把任一 local/forwarded future 或 compacted error 当作终态。现场从 Service Put 取得刚提交的精确
+  revision 后立即请求三个 Pod peer 端口；截至第 43 次写入，两个 follower 已反复返回
+  `HTTP 400 mvcc: required revision is a future revision`，而同轮 leader 成功，形成确定性 RED。
+
+  生产提交 `219ffa60` 删除 peer hedge 对单个 revision error 的抢先返回：任一路径成功即返回成功，只有两路均失败
+  才保留首个 canonical error；没有修改测试代码。现有 PeerHashKV/HashKV 专项 0.603 秒、完整
+  `pkg/server/etcd` 181.435 秒通过。精确镜像 `kubebrain:a4725-219ffa60` 内嵌 SHA
+  `219ffa606a000008319ebbb2d42ac0bfd685ef5a`、build time `2026-08-15T19:48:00Z`，OCI index 为
+  `sha256:c71b40982d83f18e14c57c015973ca8e46f88dbc5d0ca9149f77889d48b08246`，Kind runtime imageID 为
+  `sha256:f1a1a9eca0eab9519fd0aa2b6018eba0d5080962f5f2a02f7462a0b92c8df97e`。滚动后三副本 Ready/零重启；
+  同一探针连续 30 次 Put × 3 peer 共 90 次全部 HTTP 200，`MaxInt64` future revision 在三端仍于 5 秒界内返回
+  canonical HTTP 400，证明修复没有吞掉双路径合法失败。postflight proposal health 19.87ms、alarm 为空；测试窗口
+  有 hedged 内部 HashKV future warning 与一次 TiKV deadline，但没有外部请求失败，保留为后台时延 soak 观察项。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
