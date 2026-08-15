@@ -51582,6 +51582,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的 follower 路由，但 auth-enabled admin/denied、成功 Enable→token→Disable 的完整隔离生命周期仍需在专用
   fixture 上验证，不能由 auth-disabled 主集群的结果替代。
 
+- A4681 使用独立 TiKV keyspace `a4653-auth-differential` 的真实三副本 auth fixture，补齐 A4680 明确保留的
+  auth-enabled 隔离证据，不新增测试替身或缩窄生产语义。该 StatefulSet 从旧 A4652 镜像滚动到精确 A4680 镜像
+  `kubebrain:a4680-69830023` 后，三个新 Pod Ready 且零重启；三台 PD 连续三轮一致报告 `kb-pd-1`，fixture
+  leader 为 `a4653-auth-1`。健康状态建立 root/root-role、普通用户 alice/operator-role 并启用 auth，初始
+  authRevision=178。随后阻断 follower `a4653-auth-0`（member 1328966849）到全部三台 PD 2379/TCP 和三台
+  TiKV 20160/TCP，所有 client 请求仅命中该 ingress。
+
+  隔离下 root AuthStatus 0.411 秒成功；alice 尝试 RoleAdd 得到 canonical PermissionDenied，未被 follower 的存储
+  故障改写。root 依次完成 RoleAdd、GrantPermission、UserGrantRole、UserRevokeRole、RevokePermission、
+  UserChangePassword 和 RoleDelete；旧密码随后得到 canonical `authentication failed, invalid user ID or password`，
+  新密码可读取自身 roles。仍在同一隔离窗口内，root 成功 AuthDisable，无 credential 的 AuthStatus 返回 disabled，
+  随后 AuthEnable 成功，root 重新 Authenticate 并读取 enabled 状态，证明不是只覆盖 enabled steady state。所有日志
+  同时确认 Authenticate 与 mutation 均发往 `a4653-auth-1`，且不含 root、alice 新旧密码；六条规则清理为 0。
+
+  第二个隔离窗口通过 HTTP gateway 持有 alice 的 190 字节 simple token：revision 变化前 UserGet 成功，root 修改
+  alice 密码后同一 token 精确返回 HTTP 401 和 `etcdserver: invalid auth token`，新密码重新认证后 UserGet 成功。
+  该脚本在完成上述服务端断言后，仅因最后展示结果的 jq 表达式误用引号退出 3；trap 已把规则清零，随后独立命令补证
+  新 credential 成功和日志无密码，未把脚本外壳错误隐去。最终 fixture 保持 auth enabled、authRevision=187，root 与
+  alice/operator 作为后续专用夹具；三个 direct endpoint 均能以 root credential 提交 proposal，三个 AuthStatus
+  一致，AlarmList/LeaseList 为空，三副本 Ready 且零重启，三台 PD 仍一致报告 `kb-pd-1`。这关闭 A4680 的真实
+  auth-enabled lifecycle 空白；client-cert identity translation 与 JWT profile 的隔离 mutation 仍是不同专项，不能由
+  simple-token 结果外推。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
