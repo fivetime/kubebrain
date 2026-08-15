@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
 
@@ -974,6 +975,8 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 		defer close(outputCh)
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
+		outgoingMetadata, _ := metadata.FromOutgoingContext(ctx)
+		authorizedContinuation := len(outgoingMetadata.Get(AuthorizedWatchProxyMetadataKey)) > 0
 		watchRevision := revision
 		for {
 			// The ingress replica may itself win the next term. A proxy generation
@@ -1031,6 +1034,14 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 						case <-ctx.Done():
 						}
 						return
+					}
+					if !authorizedContinuation {
+						// A successful response proves the leader accepted the initial
+						// create-time credentials. Only reconnects after this point may
+						// use the trusted continuation marker and preserve etcd's rule
+						// that permission changes do not cancel an established Watch.
+						ctx = metadata.AppendToOutgoingContext(ctx, AuthorizedWatchProxyMetadataKey, "1")
+						authorizedContinuation = true
 					}
 					// Advance the resume revision to the store revision this
 					// response covers, so a reconnect after a leader change resumes

@@ -51,6 +51,8 @@ var (
 
 const onDemandProgressSyncWait = 100 * time.Millisecond
 
+const watchCompactionProbeTimeout = 250 * time.Millisecond
+
 const watchQuotaCancelReason = "etcdserver: too many requests"
 
 const watchControlBuffer = 16
@@ -441,12 +443,24 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				}
 				continue
 			}
+			_, leadingFresh := s.peers.EpochAndLeadingFresh()
+			authorizedContinuation := authorizedPeerWatchContinuation(ws.Context())
+			followerProxy := !leadingFresh && s.peers.EtcdProxyEnabled() && !authorizedContinuation
+			proxyInitialAuthorization := false
 			var caller *authCaller
 			var authErr error
-			if !authorizedPeerWatchContinuation(ws.Context()) {
-				caller, authErr = s.authCallerFromContext(ws.Context())
+			if !authorizedContinuation {
+				if followerProxy {
+					var complete bool
+					caller, authErr, complete = s.authCallerFromCachedContext(ws.Context())
+					proxyInitialAuthorization = !complete
+				} else {
+					caller, authErr = s.authCallerFromContext(ws.Context())
+				}
 				if authErr == nil {
-					authErr = caller.require(authKey, authRangeEnd, authpb.READ)
+					if !proxyInitialAuthorization {
+						authErr = caller.require(authKey, authRangeEnd, authpb.READ)
+					}
 				}
 			}
 			if authErr != nil {
@@ -496,10 +510,21 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 				return err
 			}
 			watchCtx := ws.Context()
-			// Prepare forwarding credentials even when this node is the leader at
-			// creation time. A long-lived watch can outlive that leadership term and
-			// must then resume through the new leader without losing its auth context.
-			if s.peers.EtcdProxyEnabled() {
+			if proxyInitialAuthorization {
+				// A follower can remain reachable after losing every TiKV/PD path. Pass
+				// the raw credential to the leader without consulting local auth state;
+				// the first authoritative Watch generation performs create-time auth.
+				// The proxy marks later reconnects as continuations only after that
+				// generation has returned a successful response.
+				watchCtx, authErr = s.forwardWriteAuthContext(watchCtx)
+				if authErr != nil {
+					releaseReservedQuota()
+					return authErr
+				}
+			} else if s.peers.EtcdProxyEnabled() {
+				// Prepare forwarding credentials even when this node is the leader at
+				// creation time. A long-lived locally authorized watch can outlive that
+				// leadership term and resume through a successor without reauthorization.
 				watchCtx, authErr = s.forwardAuthToken(watchCtx, caller)
 				if authErr != nil {
 					releaseReservedQuota()
@@ -515,7 +540,6 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			// A local watch generation is leader-only. Use the same lease-freshness
 			// boundary as linearizable reads; client-go's leader flag can remain true
 			// briefly after this replica has already self-fenced.
-			_, leadingFresh := s.peers.EpochAndLeadingFresh()
 			if !leadingFresh && !s.peers.EtcdProxyEnabled() {
 				releaseReservedQuota()
 				s.metricCli.EmitCounter("watch.follower", 1)
@@ -1028,12 +1052,14 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 	// "cilium/..."; found by the cilium-as-consumer suite, #78). The one shape
 	// that IS invalid — a negative start revision — is rejected at request
 	// decode in the stream loop above.
-	if compacted, err := w.isCompactedWatchRevision(ctx, r.StartRevision); err != nil {
-		w.CancelGeneration(id, wt, err, isWatchCompactedError(err))
-		return
-	} else if compacted {
-		w.CancelGeneration(id, wt, compactedRevisionError(), true)
-		return
+	if _, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh(); leadingFresh {
+		if compacted, err := w.isCompactedWatchRevision(ctx, r.StartRevision); err != nil {
+			w.CancelGeneration(id, wt, err, isWatchCompactedError(err))
+			return
+		} else if compacted {
+			w.CancelGeneration(id, wt, compactedRevisionError(), true)
+			return
+		}
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -1475,7 +1501,14 @@ func (w *watcher) nextWatchRevisionCompacted(ctx context.Context, id int64) bool
 	if syncedRevision == math.MaxUint64 {
 		return false
 	}
-	compactRevision, err := w.backend.GetCompactRevisionFresh(ctx)
+	// A cleanly closed generation has no status from which to distinguish
+	// compaction from a transport transition. Preserve the local durable hint,
+	// but never let a storage-isolated follower stall a long-lived Watch while
+	// probing it; proxied compaction errors normally arrive authoritatively on
+	// the leader response before this fallback is needed.
+	probeCtx, cancel := context.WithTimeout(ctx, watchCompactionProbeTimeout)
+	defer cancel()
+	compactRevision, err := w.backend.GetCompactRevisionFresh(probeCtx)
 	if err != nil {
 		return false
 	}

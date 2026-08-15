@@ -2372,6 +2372,23 @@ func TestNextWatchRevisionCompactedKeepsCompactBoundaryWatchable(t *testing.T) {
 		"a next revision below the compact watermark requires a re-list")
 }
 
+func TestNextWatchRevisionCompactionProbeIsBounded(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	backend := &blockingCancelCompactRevisionBackend{
+		BackendShim: server.backend, entered: make(chan struct{}), release: make(chan struct{}),
+	}
+	w := &watcher{backend: backend, watches: map[int64]*watch{1: {syncedRev: 7}}}
+	start := time.Now()
+	require.False(t, w.nextWatchRevisionCompacted(context.Background(), 1))
+	require.Less(t, time.Since(start), time.Second)
+	select {
+	case <-backend.entered:
+	default:
+		t.Fatal("compaction fallback did not probe durable state")
+	}
+}
+
 func TestFollowerFromNowWatchUsesSynchronizedRevisionFence(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
@@ -3632,10 +3649,18 @@ func TestWatchHalfCloseKeepsResponseStreamAlive(t *testing.T) {
 	require.Zero(t, server.activeWatches)
 }
 
-func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
+func TestFollowerWatchUsesAppliedAuthStateWithoutStorage(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	aliceCtx := setupAuthKVUser(t, server)
+	incoming, ok := metadata.FromIncomingContext(aliceCtx)
+	require.True(t, ok)
+	wantToken := incoming.Get(rpctypes.TokenFieldNameGRPC)
+	require.Len(t, wantToken, 1)
+	storageErr := errors.New("follower auth storage unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend, err: storageErr,
+	}
 
 	proxyCalled := make(chan struct{})
 	proxyResults := make(chan etcdproxy.WatchResult)
@@ -3647,10 +3672,7 @@ func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, []string{"1"}, md.Get(etcdproxy.AuthorizedWatchProxyMetadataKey))
 			tokens := md.Get(rpctypes.TokenFieldNameGRPC)
-			require.Len(t, tokens, 1)
-			claims, err := server.tokens.verify(context.Background(), tokens[0])
-			require.NoError(t, err)
-			require.Equal(t, "alice", claims.Username)
+			require.Equal(t, wantToken, tokens)
 			require.Equal(t, []byte("/allowed/watch"), key)
 			close(proxyCalled)
 			return proxyResults, nil
@@ -3673,6 +3695,52 @@ func TestAuthorizedFollowerWatchForwardsAuthToken(t *testing.T) {
 		require.FailNow(t, "follower watch was not forwarded")
 	}
 
+	cancel()
+	requireWatchCanceled(t, <-done)
+}
+
+func TestFollowerWatchDelegatesInitialAuthorizationWhenAppliedStateIsIncomplete(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	incoming, ok := metadata.FromIncomingContext(aliceCtx)
+	require.True(t, ok)
+	wantToken := incoming.Get(rpctypes.TokenFieldNameGRPC)
+	require.Len(t, wantToken, 1)
+	server.tokens.snapshots.invalidate()
+	storageErr := errors.New("follower auth storage unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend, err: storageErr,
+	}
+
+	proxyCalled := make(chan struct{})
+	proxyResults := make(chan etcdproxy.WatchResult)
+	close(proxyResults)
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		watchFn: func(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
+			md, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			require.Empty(t, md.Get(etcdproxy.AuthorizedWatchProxyMetadataKey),
+				"the leader must authenticate an initial follower generation")
+			require.Equal(t, wantToken, md.Get(rpctypes.TokenFieldNameGRPC))
+			close(proxyCalled)
+			return proxyResults, nil
+		},
+	}
+
+	ctx, cancel := context.WithCancel(aliceCtx)
+	stream := &controllableWatchServer{ctx: ctx, recv: make(chan *etcdserverpb.WatchRequest, 1)}
+	stream.recv <- &etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{
+		CreateRequest: &etcdserverpb.WatchCreateRequest{Key: []byte("/allowed/watch")},
+	}}
+	done := make(chan error, 1)
+	go func() { done <- server.Watch(stream) }()
+	select {
+	case <-proxyCalled:
+	case <-time.After(2 * time.Second):
+		require.FailNow(t, "follower watch was not forwarded")
+	}
 	cancel()
 	requireWatchCanceled(t, <-done)
 }
