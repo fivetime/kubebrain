@@ -16,9 +16,7 @@ package etcdproxy
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"fmt"
 	"io"
 	"math"
 	"sync"
@@ -44,14 +42,8 @@ import (
 
 const proxyConnectTimeout = 5 * time.Second
 
-const maxLoggedProxyKeyBytes = 256
-
 func loggedProxyKey(key []byte) string {
-	if len(key) <= maxLoggedProxyKeyBytes {
-		return string(key)
-	}
-	digest := sha256.Sum256(key)
-	return fmt.Sprintf("sha256:%x (length=%d)", digest, len(key))
+	return util.LoggedKey(key)
 }
 
 var leaseKeepAliveForwardTimeout = 5 * time.Second

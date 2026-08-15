@@ -36,6 +36,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 const (
@@ -61,7 +62,7 @@ func (s *RPCServer) rangeWithAfterRead(
 	afterRead func(*etcdserverpb.RangeResponse) error,
 ) (response *etcdserverpb.RangeResponse, retErr error) {
 	startTime := time.Now()
-	klog.V(4).InfoS("RANGE", "key", r.Key, "rangeEnd", r.RangeEnd, "countOnly", r.CountOnly)
+	klog.V(4).InfoS("RANGE", "key", util.LoggedKey(r.Key), "rangeEnd", util.LoggedKey(r.RangeEnd), "countOnly", r.CountOnly)
 	if err := validateRangeRequest(r); err != nil {
 		return nil, err
 	}
@@ -232,7 +233,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	emitEtcdMVCCRangeCounter(s.metricCli, 1)
 	ctx := rs.Context()
 	startTime := time.Now()
-	klog.V(4).InfoS("RANGE STREAM", "key", r.Key, "rangeEnd", r.RangeEnd, "rev", r.Revision)
+	klog.V(4).InfoS("RANGE STREAM", "key", util.LoggedKey(r.Key), "rangeEnd", util.LoggedKey(r.RangeEnd), "rev", r.Revision)
 	if err := validateRangeRequest(r); err != nil {
 		return err
 	}
@@ -494,7 +495,7 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	}
 	s.metricCli.EmitCounter("read.range_stream", 1)
 	s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
-	klog.V(4).InfoS("RANGE STREAM done", "key", r.Key, "chunks", chunks, "rev", headerRev)
+	klog.V(4).InfoS("RANGE STREAM done", "key", util.LoggedKey(r.Key), "chunks", chunks, "rev", headerRev)
 	return nil
 }
 
@@ -936,9 +937,9 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 	}
 	if len(failedKey) > 0 {
 		if err != nil {
-			klog.ErrorS(err, "txn failed", "op", methodTag.Value, "key", failedKey)
+			klog.ErrorS(err, "txn failed", "op", methodTag.Value, "key", util.LoggedKey([]byte(failedKey)))
 		} else {
-			klog.V(4).InfoS("txn compare failed", "op", methodTag.Value, "key", failedKey)
+			klog.V(4).InfoS("txn compare failed", "op", methodTag.Value, "key", util.LoggedKey([]byte(failedKey)))
 		}
 	}
 	return response, mapFenceErr(err)

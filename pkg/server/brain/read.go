@@ -25,6 +25,7 @@ import (
 
 	b "github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 // stripKvs removes the inline-metadata envelope (approach A) from each value so
@@ -52,7 +53,7 @@ func (s *Server) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetRespon
 	}
 	response, err := s.backend.Get(ctx, r)
 	if err != nil {
-		klog.ErrorS(err, "brain server get failed", "key", string(r.Key), "revision", r.Revision)
+		klog.ErrorS(err, "brain server get failed", "key", util.LoggedKey(r.Key), "revision", r.Revision)
 	}
 	if response != nil && response.Kv != nil {
 		response.Kv.Value, err = b.StripInlineValueChecked(response.Kv.Value)
@@ -78,7 +79,7 @@ func (s *Server) Range(ctx context.Context, r *proto.RangeRequest) (*proto.Range
 	}
 	response, err := s.backend.List(ctx, r)
 	if err != nil {
-		klog.ErrorS(err, "brain server range failed", "key", string(r.Key), "end", string(r.End), "limit", r.Limit, "revision", r.Revision)
+		klog.ErrorS(err, "brain server range failed", "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End), "limit", r.Limit, "revision", r.Revision)
 	}
 	if response != nil {
 		if stripErr := stripKvs(response.Kvs); stripErr != nil {
@@ -104,7 +105,7 @@ func (s *Server) Count(ctx context.Context, r *proto.CountRequest) (*proto.Count
 	}
 	response, err := s.backend.Count(ctx, r)
 	if err != nil {
-		klog.ErrorS(err, "brain server count failed", "key", string(r.Key), "end", string(r.End))
+		klog.ErrorS(err, "brain server count failed", "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End))
 	}
 	// emit metrics
 	s.emitMethodMetric(readMetric, "count", err, time.Since(start))
@@ -124,7 +125,7 @@ func (s *Server) ListPartition(ctx context.Context, r *proto.ListPartitionReques
 	}
 	response, err := s.backend.GetPartitions(ctx, r)
 	if err != nil {
-		klog.ErrorS(err, "brain server list-partition failed", "key", string(r.Key), "end", string(r.End))
+		klog.ErrorS(err, "brain server list-partition failed", "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End))
 	}
 	s.emitMethodMetric(readMetric, "list-partition", err, time.Since(start))
 	if response != nil {
@@ -147,7 +148,7 @@ func (s *Server) RangeStream(r *proto.RangeRequest, server proto.Read_RangeStrea
 	ch, err := s.backend.RangeStream(server.Context(), r.Key, r.End, r.Revision)
 	if err != nil {
 		s.emitMethodMetric(readMetric, "range-stream", err, time.Since(start))
-		klog.ErrorS(err, "backend list by stream failed", "key", r.Key, "end", r.End, "revision", r.Revision)
+		klog.ErrorS(err, "backend list by stream failed", "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End), "revision", r.Revision)
 		return err
 	}
 	responseSize := 0
@@ -168,12 +169,12 @@ func (s *Server) RangeStream(r *proto.RangeRequest, server proto.Read_RangeStrea
 		err = server.Send(response)
 		if err != nil {
 			s.emitMethodMetric(readMetric, "range-stream-send", err, time.Since(start))
-			klog.ErrorS(err, "send range stream response to client failed", "key", r.Key, "end", r.End, "revision", r.Revision)
+			klog.ErrorS(err, "send range stream response to client failed", "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End), "revision", r.Revision)
 			return err
 		}
 	}
 	s.emitMethodMetric(readMetric, "range-stream", nil, time.Since(start))
 	s.emitResponseDetailMetric(readMetric, "range-stream", true, responseSize)
-	klog.InfoS("brain server range stream finished", "error", err, "key", string(r.Key), "end", string(r.End))
+	klog.InfoS("brain server range stream finished", "error", err, "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End))
 	return nil
 }

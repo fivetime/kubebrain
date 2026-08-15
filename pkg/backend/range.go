@@ -33,6 +33,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/countindex"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 // Get implements Backend interface
@@ -59,7 +60,7 @@ func (b *backend) Get(ctx context.Context, r *proto.GetRequest) (resp *proto.Get
 			Header: responseHeader(curRev),
 		}, nil
 	} else if err != nil {
-		klog.ErrorS(err, "backend get err", "key", string(r.GetKey()), "revision", r.GetRevision())
+		klog.ErrorS(err, "backend get err", "key", util.LoggedKey(r.GetKey()), "revision", r.GetRevision())
 		return nil, err
 	}
 
@@ -376,7 +377,7 @@ func (b *backend) List(ctx context.Context, r *proto.RangeRequest) (resp *proto.
 		kvs, err = b.scanner.Range(ctx, key, rangeEnd, reqRevision, limit)
 	}
 	if err != nil {
-		klog.ErrorS(err, "backend range err", "key", string(r.GetKey()), "end", string(r.GetEnd()), "revision", r.GetRevision())
+		klog.ErrorS(err, "backend range err", "key", util.LoggedKey(r.GetKey()), "end", util.LoggedKey(r.GetEnd()), "revision", r.GetRevision())
 		if latestExpectation.ready && errors.Is(err, ErrInvalidMVCCMetadata) {
 			return nil, b.persistWitnessedRevisionIndexCorruption(ctx, err)
 		}

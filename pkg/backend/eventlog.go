@@ -29,6 +29,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 // Event-log write side (#45). Each committed write appends one compact entry
@@ -391,7 +392,7 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 	}
 	b.metricCli.EmitCounter("watch.event_log.replay", 1)
 	b.metricCli.EmitHistogram("watch.event_log.replay.events", len(events))
-	klog.V(2).InfoS("watch history served from event log", "prefix", prefix,
+	klog.V(2).InfoS("watch history served from event log", "prefix", util.LoggedKey([]byte(prefix)),
 		"from", fromRevision, "to", toRevision, "events", len(events), "latency", time.Since(ts))
 	return events, true, nil
 }

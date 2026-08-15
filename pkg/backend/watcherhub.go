@@ -415,7 +415,7 @@ func (w *WatcherHub) finishCatchUp(sub chan []*proto.Event, st *catchUpState, ms
 	delete(w.catchingUp, sub)
 	w.Unlock()
 	close(sub)
-	klog.InfoS(msg, "subscription", watchChannelID(sub), "prefix", string(st.prefix))
+	klog.InfoS(msg, "subscription", watchChannelID(sub), "prefix", util.LoggedKey(st.prefix))
 	if dropMetric != "" {
 		w.metricCli.EmitCounter(dropMetric, 1)
 	}

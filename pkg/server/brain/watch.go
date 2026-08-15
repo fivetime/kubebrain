@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 func (s *Server) Watch(r *proto.WatchRequest, server proto.Watch_WatchServer) error {
@@ -44,7 +45,7 @@ func (s *Server) Watch(r *proto.WatchRequest, server proto.Watch_WatchServer) er
 	ch, err := s.backend.Watch(ctx, string(r.Key), r.Revision)
 	if err != nil {
 		s.emitMethodMetric(watchMetric, "watch-end", err, time.Since(start))
-		klog.ErrorS(err, "brain server watch backend failed", "key", string(r.Key), "revision", r.Revision)
+		klog.ErrorS(err, "brain server watch backend failed", "key", util.LoggedKey(r.Key), "revision", r.Revision)
 		return err
 	}
 	responseSize := 0
@@ -66,12 +67,12 @@ func (s *Server) Watch(r *proto.WatchRequest, server proto.Watch_WatchServer) er
 		sendErr = server.Send(watchResponse)
 		if sendErr != nil {
 			s.emitMethodMetric(watchMetric, "watch-send", sendErr, 0)
-			klog.ErrorS(sendErr, "send watch response to client", "key", string(r.Key), "end", string(r.End), "revision", r.Revision)
+			klog.ErrorS(sendErr, "send watch response to client", "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End), "revision", r.Revision)
 			cancel()
 		}
 	}
 	s.emitMethodMetric(watchMetric, "watch-end", nil, time.Since(start))
 	s.emitResponseDetailMetric(watchMetric, "watch", true, responseSize)
-	klog.InfoS("brain server watch finished", "key", string(r.Key), "end", string(r.End), "revision", r.Revision)
+	klog.InfoS("brain server watch finished", "key", util.LoggedKey(r.Key), "end", util.LoggedKey(r.End), "revision", r.Revision)
 	return nil
 }

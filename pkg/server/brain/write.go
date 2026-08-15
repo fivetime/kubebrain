@@ -24,6 +24,7 @@ import (
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 const unaryRpcTimeout = time.Second
@@ -46,7 +47,7 @@ func (s *Server) Create(ctx context.Context, createRequest *proto.CreateRequest)
 	}
 	response, err := s.backend.Create(ctx, createRequest)
 	if err != nil {
-		klog.ErrorS(err, "brain server create failed", "key", string(createRequest.Key), "lease", createRequest.Lease)
+		klog.ErrorS(err, "brain server create failed", "key", util.LoggedKey(createRequest.Key), "lease", createRequest.Lease)
 	}
 	s.emitMethodMetric(writeMetric, "create", err, time.Since(start))
 	if response != nil {
@@ -73,7 +74,7 @@ func (s *Server) Update(ctx context.Context, updateRequest *proto.UpdateRequest)
 	}
 	response, err := s.backend.Update(ctx, updateRequest)
 	if err != nil {
-		klog.ErrorS(err, "brain server update failed", "key", string(updateRequest.Kv.Key), "revision", updateRequest.Kv.Revision)
+		klog.ErrorS(err, "brain server update failed", "key", util.LoggedKey(updateRequest.Kv.Key), "revision", updateRequest.Kv.Revision)
 	}
 	s.emitMethodMetric(writeMetric, "update", err, time.Since(start))
 	if response != nil {
@@ -100,7 +101,7 @@ func (s *Server) Delete(ctx context.Context, deleteRequest *proto.DeleteRequest)
 	}
 	response, err := s.backend.Delete(ctx, deleteRequest)
 	if err != nil {
-		klog.ErrorS(err, "brain server delete failed", "key", string(deleteRequest.Key), "revision", deleteRequest.Revision)
+		klog.ErrorS(err, "brain server delete failed", "key", util.LoggedKey(deleteRequest.Key), "revision", deleteRequest.Revision)
 	}
 	s.emitMethodMetric(writeMetric, "delete", err, time.Since(start))
 	if response != nil {

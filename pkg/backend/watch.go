@@ -17,7 +17,6 @@ package backend
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -27,12 +26,11 @@ import (
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 const (
-	resultChanLength          = 100
-	maxLoggedWatchPrefixBytes = 256
-
+	resultChanLength = 100
 	// historyScanConcurrency caps concurrent watch-history fallback scans so a
 	// reconnect storm after a cache reset cannot stampede the storage engine
 	// (#30). Chosen generously so steady-state watch establishment is never
@@ -41,11 +39,7 @@ const (
 )
 
 func loggedWatchPrefix(prefix string) string {
-	if len(prefix) <= maxLoggedWatchPrefixBytes {
-		return prefix
-	}
-	digest := sha256.Sum256([]byte(prefix))
-	return fmt.Sprintf("sha256:%x (length=%d)", digest, len(prefix))
+	return util.LoggedKey([]byte(prefix))
 }
 
 // Watch return a channel, every event‘s ModRevision >= revision

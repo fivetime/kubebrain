@@ -35,6 +35,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 const (
@@ -240,11 +241,12 @@ func (r *scanner) RangeStream(ctx context.Context, start []byte, end []byte, rev
 				// benign apiserver reconnect as a stream failure in the 1.37-alpha
 				// cold-start test).
 				klog.V(2).InfoS("range stream canceled by caller",
-					"revision", revision, "start", string(start), "end", string(end), "err", err)
+					"revision", revision, "start", util.LoggedKey(start), "end", util.LoggedKey(end), "err", err)
 				r.metricCli.EmitCounter("backend.list.by.stream.canceled", 1)
 				return
 			}
-			klog.Errorf("backend list stream with revision %d failed %v, start key is %s, end key is %s", revision, err, start, end)
+			klog.ErrorS(err, "backend list stream failed", "revision", revision,
+				"start", util.LoggedKey(start), "end", util.LoggedKey(end))
 			r.metricCli.EmitCounter("backend.list.by.stream.failed", 1)
 		}
 	}()
@@ -384,7 +386,8 @@ func (r *scanner) Compact(ctx context.Context, borders [][]byte, revision uint64
 		// Scan every border best-effort even if one fails: each border's GC is
 		// independent, and returning the first error still surfaces the failure.
 		if _, err := r.scan(ctx, borders[i], borders[i+1], revision, true, false, &emptyResultReceiver{}); err != nil {
-			klog.ErrorS(err, "compact scan failed for border", "revision", revision, "start", borders[i], "end", borders[i+1])
+			klog.ErrorS(err, "compact scan failed for border", "revision", revision,
+				"start", util.LoggedKey(borders[i]), "end", util.LoggedKey(borders[i+1]))
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -515,7 +518,7 @@ func (r *scanner) adjustPartitionsBorders(ps []storage.Partition) (ret []storage
 func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision uint64, compact bool, keysOnly bool, receiver resultReceiver) (int, error) {
 	store := r.store
 	if exclusiveKvStorage, ok := storage.FindCapability[storage.ExclusiveKvStorage](r.store); ok && compact {
-		klog.InfoS("compact with exclusive kv storage", "start", string(start), "end", string(end), "rev", revision)
+		klog.InfoS("compact with exclusive kv storage", "start", util.LoggedKey(start), "end", util.LoggedKey(end), "rev", revision)
 		store = exclusiveKvStorage.GetExclusiveKvStorage()
 	}
 	startTime := time.Now()
@@ -615,7 +618,7 @@ func (r *scanner) scan(ctx context.Context, start []byte, end []byte, revision u
 	// Per-request rate on the count-fallback path: keep it off the journald hot
 	// path (2f34e9b) — a relist storm re-creates the compact-log backpressure.
 	if klog.V(4).Enabled() {
-		klog.V(4).InfoS("scan", "start", start, "end", end, "count", globalCount, "latency", time.Since(startTime))
+		klog.V(4).InfoS("scan", "start", util.LoggedKey(start), "end", util.LoggedKey(end), "count", globalCount, "latency", time.Since(startTime))
 	}
 	return int(globalCount), nil
 }
@@ -806,11 +809,11 @@ func (w *worker) run(ctx context.Context, receiver resultReceiver) (int, error) 
 		curUserKey, curRevision, err := w.Decode(key)
 		if err != nil {
 			if w.isInternalStorageKey != nil && w.isInternalStorageKey(key) {
-				klog.V(4).InfoS("skip internal storage key during object scan", "key", key)
+				klog.V(4).InfoS("skip internal storage key during object scan", "key", util.LoggedKey(key))
 			} else if w.compact {
-				klog.V(4).InfoS("skip non-object key during compact scan", "key", key, "err", err)
+				klog.V(4).InfoS("skip non-object key during compact scan", "key", util.LoggedKey(key), "err", err)
 			} else {
-				klog.Errorf("unmarshal object key %s failed %v", key, err)
+				klog.ErrorS(err, "unmarshal object key failed", "key", util.LoggedKey(key))
 			}
 			continue
 		}
@@ -996,7 +999,7 @@ func (w *worker) info() string {
 
 func (w *worker) isSkippedRawKey(rawKey []byte, rev uint64) bool {
 	if len(w.lastCompactFailedRawKey) > 0 && bytes.Equal(w.lastCompactFailedRawKey, rawKey) {
-		klog.V(4).InfoS("compact skip", "rawKey", string(rawKey), "rev", rev)
+		klog.V(4).InfoS("compact skip", "rawKey", util.LoggedKey(rawKey), "rev", rev)
 		w.metricCli.EmitCounter("compact.skip", 1)
 		return true
 	}
@@ -1004,7 +1007,7 @@ func (w *worker) isSkippedRawKey(rawKey []byte, rev uint64) bool {
 }
 
 func (w *worker) updateSkippedRawKey(rawKey []byte, rev uint64, err error) {
-	klog.ErrorS(err, "compact failed", "rawKey", string(rawKey), "rev", rev)
+	klog.ErrorS(err, "compact failed", "rawKey", util.LoggedKey(rawKey), "rev", rev)
 	if !errors.Is(err, storage.ErrCASFailed) {
 		w.lastCompactFailedRawKey = rawKey
 	}
@@ -1033,12 +1036,12 @@ func (w *worker) compactRow(it storage.Iter, objectKey, value, curUserKey []byte
 	// Same user key: this newer version supersedes the previous one; GC the old.
 	if bytes.Equal(curUserKey, prevUserKey) && prevRevision > 0 && !boundaryDelete {
 		prevKey := w.EncodeObjectKey(prevUserKey, prevRevision)
-		klog.V(4).InfoS("compact expired object key", "key", prevUserKey, "rev", prevRevision)
+		klog.V(4).InfoS("compact expired object key", "key", util.LoggedKey(prevUserKey), "rev", prevRevision)
 		w.compactKey(prevKey, prevUserKey, prevRevision)
 	}
 	// A delete tombstone object.
 	if bytes.Equal(value, w.tombstone) && !boundaryDelete {
-		klog.V(4).InfoS("compact object key with tombstone", "key", curUserKey, "rev", curRevision)
+		klog.V(4).InfoS("compact object key with tombstone", "key", util.LoggedKey(curUserKey), "rev", curRevision)
 		w.compactKey(objectKey, curUserKey, curRevision)
 	}
 	// A revision-key tombstone value (curRevision==0). Parsing through coder
@@ -1049,11 +1052,11 @@ func (w *worker) compactRow(it storage.Iter, objectKey, value, curUserKey []byte
 			// avoid conflict with a retried uncertain DELETE — and do not track it
 			// as the previous key.
 			if objRev > w.revision {
-				klog.V(4).InfoS("skip gc revision key", "key", string(curUserKey), "revision", objRev,
+				klog.V(4).InfoS("skip gc revision key", "key", util.LoggedKey(curUserKey), "revision", objRev,
 					"gcRev", w.revision)
 				return true
 			}
-			klog.V(4).InfoS("compact index key", "key", curUserKey, "rev", curRevision, "val", objRev, "len", len(value))
+			klog.V(4).InfoS("compact index key", "key", util.LoggedKey(curUserKey), "rev", curRevision, "val", objRev, "len", len(value))
 			w.compactCurrent(it, curUserKey, curRevision)
 		}
 	}

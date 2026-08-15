@@ -25,6 +25,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 // Create implements Backend interface.
@@ -144,7 +145,7 @@ func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error)
 		}
 		return false, commitErr
 	}
-	klog.InfoS("healed orphan revision index", "key", string(key), "revision", modRevision)
+	klog.InfoS("healed orphan revision index", "key", util.LoggedKey(key), "revision", modRevision)
 	b.metricCli.EmitCounter("backend.orphan_index.heal", 1)
 	return true, nil
 }

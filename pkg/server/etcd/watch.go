@@ -17,7 +17,6 @@ package etcd
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -54,14 +53,8 @@ const onDemandProgressSyncWait = 100 * time.Millisecond
 
 const watchCompactionProbeTimeout = 250 * time.Millisecond
 
-const maxLoggedWatchKeyBytes = 256
-
 func loggedWatchKey(key []byte) string {
-	if len(key) <= maxLoggedWatchKeyBytes {
-		return string(key)
-	}
-	digest := sha256.Sum256(key)
-	return fmt.Sprintf("sha256:%x (length=%d)", digest, len(key))
+	return util.LoggedKey(key)
 }
 
 const watchQuotaCancelReason = "etcdserver: too many requests"

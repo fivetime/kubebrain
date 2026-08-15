@@ -41,6 +41,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 // leaseStoragePrefix holds one small meta record per lease: leases/<id> -> {id,ttl}.
@@ -2575,7 +2576,7 @@ func (m *leaseManager) reconcileOrphanLegacyAttachment(ctx context.Context, key 
 		return false
 	}
 	m.srv.metricCli.EmitCounter("lease.orphan_sweep.legacy_key_deleted", 1)
-	klog.InfoS("orphan lease sweep: deleted legacy key bound to a defunct lease", "key", key, "lease", id)
+	klog.InfoS("orphan lease sweep: deleted legacy key bound to a defunct lease", "key", util.LoggedKey([]byte(key)), "lease", id)
 	return true
 }
 
@@ -2611,7 +2612,7 @@ func (m *leaseManager) reconcileOrphanAttachment(ctx context.Context, key string
 	if dresp.GetSucceeded() {
 		_ = m.detachKeyFromStorage(ctx, key)
 		m.srv.metricCli.EmitCounter("lease.orphan_sweep.key_deleted", 1)
-		klog.InfoS("orphan lease sweep: deleted key bound to a defunct lease", "key", key, "lease", id)
+		klog.InfoS("orphan lease sweep: deleted key bound to a defunct lease", "key", util.LoggedKey([]byte(key)), "lease", id)
 		return true
 	}
 	return false

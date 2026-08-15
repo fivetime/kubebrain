@@ -25,6 +25,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/scanner"
+	"github.com/kubewharf/kubebrain/pkg/util"
 )
 
 var (
@@ -130,7 +131,7 @@ func minUint64(a, b uint64) uint64 {
 type Key []byte
 
 func (k Key) String() string {
-	return string(k)
+	return util.LoggedKey(k)
 }
 
 const (
