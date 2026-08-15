@@ -148,6 +148,23 @@ func (s *RPCServer) AuthStatus(ctx context.Context, request *etcdserverpb.AuthSt
 }
 
 func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.AuthenticateRequest) (_ *etcdserverpb.AuthenticateResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		// Both ingress and leader own a distinct protobuf instance. Clear the
+		// plaintext on this side as well as in the leader's normal handler so a
+		// forwarded authentication never leaves it resident in either request.
+		defer func() {
+			if request != nil {
+				request.Password = ""
+			}
+		}()
+		response, err := s.peers.Authenticate(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if err := s.peers.SyncReadRevision(ctx); err != nil {
 		return nil, readBarrierStatusErr(err)
 	}

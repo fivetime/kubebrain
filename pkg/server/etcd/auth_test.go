@@ -435,6 +435,30 @@ func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
 	require.Equal(t, []string{"user-get:u", "user-list", "role-get:r", "role-list"}, calls)
 }
 
+func TestFollowerAuthenticateProxiesAndClearsPassword(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	request := &etcdserverpb.AuthenticateRequest{Name: "alice", Password: "secret"}
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		syncReadFn: func(context.Context) error {
+			t.Fatal("proxying follower must not execute Authenticate read barrier locally")
+			return nil
+		},
+		authenticateFn: func(_ context.Context, got *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+			require.Same(t, request, got)
+			require.Equal(t, "secret", got.GetPassword())
+			return nil, rpctypes.ErrAuthNotEnabled
+		},
+	}
+
+	response, err := server.Authenticate(context.Background(), request)
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrAuthNotEnabled)
+	require.Empty(t, request.GetPassword())
+}
+
 func TestBearerPrefixedAuthTokenMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

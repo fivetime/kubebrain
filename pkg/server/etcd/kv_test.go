@@ -66,6 +66,7 @@ type testPeerService struct {
 	defragmentFn     func(context.Context, *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
 	downgradeFn      func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 	authStatusFn     func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
+	authenticateFn   func(context.Context, *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error)
 	userGetFn        func(context.Context, *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error)
 	userListFn       func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error)
 	roleGetFn        func(context.Context, *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error)
@@ -560,6 +561,13 @@ func (s testPeerService) Downgrade(ctx context.Context, req *etcdserverpb.Downgr
 func (s testPeerService) AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
 	if s.authStatusFn != nil {
 		return s.authStatusFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) Authenticate(ctx context.Context, req *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+	if s.authenticateFn != nil {
+		return s.authenticateFn(ctx, req)
 	}
 	return nil, nil
 }

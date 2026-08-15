@@ -63,6 +63,9 @@ type EtcdProxy interface {
 	// AuthStatus forwards an authentication status request to leader.
 	AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
 
+	// Authenticate forwards a username/password authentication request to leader.
+	Authenticate(ctx context.Context, req *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error)
+
 	// UserGet forwards an authentication user lookup to leader.
 	UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error)
 

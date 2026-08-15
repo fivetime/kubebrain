@@ -539,6 +539,17 @@ func (e *etcdProxy) AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatus
 	return resp, err
 }
 
+func (e *etcdProxy) Authenticate(ctx context.Context, req *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward authenticate", "leader", leader, "name", req.GetName())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).Authenticate(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {

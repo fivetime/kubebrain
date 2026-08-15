@@ -73,6 +73,10 @@ func (d disabledEtcdProxy) AuthStatus(ctx context.Context, req *etcdserverpb.Aut
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) Authenticate(ctx context.Context, req *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
 	return nil, errDisabled
 }
