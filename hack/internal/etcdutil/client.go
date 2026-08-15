@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -92,11 +93,48 @@ func NewClientFromEnv() (*clientv3.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	username, password, err := CredentialsFromEnv()
+	if err != nil {
+		return nil, err
+	}
 	return clientv3.New(clientv3.Config{
 		Endpoints:   []string{endpoint},
 		DialTimeout: 10 * time.Second,
 		TLS:         tlsConfig,
+		Username:    username,
+		Password:    password,
 	})
+}
+
+// CredentialsFromEnv mirrors etcdctl's non-interactive --user/--password
+// contract for the repository's clientv3-based operational tools. A password
+// embedded in ETCDCTL_USER may contain colons; only the first colon separates
+// it from the username. ETCDCTL_PASSWORD is useful when the two values are
+// injected from separate Secret keys.
+func CredentialsFromEnv() (string, string, error) {
+	rawUser := os.Getenv("ETCDCTL_USER")
+	separatePassword := os.Getenv("ETCDCTL_PASSWORD")
+	if rawUser == "" {
+		if separatePassword != "" {
+			return "", "", fmt.Errorf("ETCDCTL_PASSWORD requires ETCDCTL_USER")
+		}
+		return "", "", nil
+	}
+
+	username, embeddedPassword, hasEmbeddedPassword := strings.Cut(rawUser, ":")
+	if username == "" {
+		return "", "", fmt.Errorf("ETCDCTL_USER username must not be empty")
+	}
+	if hasEmbeddedPassword && separatePassword != "" {
+		return "", "", fmt.Errorf("ETCDCTL_USER must not include a password when ETCDCTL_PASSWORD is set")
+	}
+	if hasEmbeddedPassword {
+		return username, embeddedPassword, nil
+	}
+	if separatePassword == "" {
+		return "", "", fmt.Errorf("ETCDCTL_USER requires a password in non-interactive tools")
+	}
+	return username, separatePassword, nil
 }
 
 func TimeoutFromEnv() (time.Duration, error) {

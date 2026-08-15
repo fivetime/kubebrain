@@ -38,6 +38,40 @@ func TestTimeoutFromEnv(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestCredentialsFromEnv(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     string
+		password string
+		wantUser string
+		wantPass string
+		wantErr  string
+	}{
+		{name: "disabled"},
+		{name: "embedded", user: "root:secret", wantUser: "root", wantPass: "secret"},
+		{name: "embedded colons", user: "root:secret:with:colons", wantUser: "root", wantPass: "secret:with:colons"},
+		{name: "separate", user: "root", password: "secret", wantUser: "root", wantPass: "secret"},
+		{name: "password only", password: "secret", wantErr: "requires ETCDCTL_USER"},
+		{name: "empty username", user: ":secret", wantErr: "username must not be empty"},
+		{name: "missing password", user: "root", wantErr: "requires a password"},
+		{name: "two passwords", user: "root:embedded", password: "separate", wantErr: "must not include a password"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("ETCDCTL_USER", test.user)
+			t.Setenv("ETCDCTL_PASSWORD", test.password)
+			username, password, err := CredentialsFromEnv()
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.wantUser, username)
+			require.Equal(t, test.wantPass, password)
+		})
+	}
+}
+
 func TestTLSConfigFromEnvRequiresCertAndKeyTogether(t *testing.T) {
 	clearTLSEnv(t)
 

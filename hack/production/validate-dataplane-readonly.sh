@@ -30,6 +30,8 @@ EXPECTED_INFO_METRICS_CHECKS="${EXPECTED_INFO_METRICS_CHECKS:-}"
 EXPECTED_DEBUG_VARS_CHECKS="${EXPECTED_DEBUG_VARS_CHECKS:-}"
 EXPECTED_PPROF_DISABLED_CHECKS="${EXPECTED_PPROF_DISABLED_CHECKS:-}"
 STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
+ETCDCTL_USER="${ETCDCTL_USER:-}"
+ETCDCTL_PASSWORD="${ETCDCTL_PASSWORD:-}"
 
 if ! [[ "$EXPECTED_READY_PODS" =~ ^[1-9][0-9]*$ ]]; then
   echo "EXPECTED_READY_PODS must be a positive integer" >&2
@@ -118,6 +120,44 @@ for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS; do
     exit 2
   fi
 done
+
+run_with_probe_timeout() {
+  "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"
+}
+
+gateway_auth_args=()
+if [[ -n "$ETCDCTL_USER" || -n "$ETCDCTL_PASSWORD" ]]; then
+  if [[ -z "$ETCDCTL_USER" ]]; then
+    echo "ETCDCTL_PASSWORD requires ETCDCTL_USER" >&2
+    exit 2
+  fi
+  gateway_username="${ETCDCTL_USER%%:*}"
+  if [[ -z "$gateway_username" ]]; then
+    echo "ETCDCTL_USER username must not be empty" >&2
+    exit 2
+  fi
+  if [[ "$ETCDCTL_USER" == *:* ]]; then
+    if [[ -n "$ETCDCTL_PASSWORD" ]]; then
+      echo "ETCDCTL_USER must not include a password when ETCDCTL_PASSWORD is set" >&2
+      exit 2
+    fi
+    gateway_password="${ETCDCTL_USER#*:}"
+  else
+    if [[ -z "$ETCDCTL_PASSWORD" ]]; then
+      echo "ETCDCTL_USER requires a password in non-interactive probes" >&2
+      exit 2
+    fi
+    gateway_password="$ETCDCTL_PASSWORD"
+  fi
+  if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+    gateway_auth_payload="$("$JQ" -nc --arg name "$gateway_username" --arg password "$gateway_password" \
+      '{name: $name, password: $password}')"
+    gateway_auth_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' \
+      -d "$gateway_auth_payload" "${ENDPOINT%/}/v3/auth/authenticate")"
+    gateway_token="$(printf '%s' "$gateway_auth_json" | "$JQ" -er '.token | select(type == "string" and length > 0)')"
+    gateway_auth_args=(-H "Authorization: Bearer ${gateway_token}")
+  fi
+fi
 if [[ "$STATUS_ENDPOINTS" == ,* || "$STATUS_ENDPOINTS" == *, || "$STATUS_ENDPOINTS" == *,,* ]]; then
   echo "STATUS_ENDPOINTS contains an empty endpoint" >&2
   exit 2
@@ -144,10 +184,6 @@ for status_endpoint in "${status_endpoint_array[@]}"; do
     seen_prefix_endpoints[$status_endpoint]=1
   fi
 done
-run_with_probe_timeout() {
-  "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"
-}
-
 expect_post_method_not_allowed() {
   local name="$1"
   local url="$2"
@@ -1391,7 +1427,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
 
   gateway_status_url="${ENDPOINT%/}/v3/maintenance/status"
-  gateway_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_status_url")"
+  gateway_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_status_url")"
   gateway_status_values="$(printf '%s' "$gateway_status_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -1583,7 +1619,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   status_summary+=", gateway_downgrade_info=object"
 
   gateway_auth_status_url="${ENDPOINT%/}/v3/auth/status"
-  gateway_auth_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_auth_status_url")"
+  gateway_auth_status_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_auth_status_url")"
   gateway_auth_status_values="$(printf '%s' "$gateway_auth_status_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -1642,7 +1678,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
 
   gateway_alarm_url="${ENDPOINT%/}/v3/maintenance/alarm"
-  gateway_alarm_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{"action":"GET"}' "$gateway_alarm_url")"
+  gateway_alarm_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{"action":"GET"}' "$gateway_alarm_url")"
   gateway_alarm_values="$(printf '%s' "$gateway_alarm_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -2024,7 +2060,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
 
   gateway_hash_url="${ENDPOINT%/}/v3/maintenance/hash"
-  gateway_hash_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_hash_url")"
+  gateway_hash_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_hash_url")"
   gateway_hash_values="$(printf '%s' "$gateway_hash_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -2071,7 +2107,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
 
   gateway_hashkv_url="${ENDPOINT%/}/v3/maintenance/hashkv"
-  gateway_hashkv_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' -d '{}' "$gateway_hashkv_url")"
+  gateway_hashkv_json="$(run_with_probe_timeout "$CURL" -fsS -X POST -H 'Content-Type: application/json' "${gateway_auth_args[@]}" -d '{}' "$gateway_hashkv_url")"
   gateway_hashkv_values="$(printf '%s' "$gateway_hashkv_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"

@@ -65,6 +65,25 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "dataplane readonly gate passed",
 		},
 		{
+			name: "passes authenticated gateway and client probes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"ETCDCTL_USER=root:secret:with:colons",
+				"FAKE_REQUIRE_GATEWAY_AUTH=1",
+			},
+			wantOK:     true,
+			wantOutput: "gateway_auth_enabled=false",
+		},
+		{
 			name: "reports legacy health endpoints in summary",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -4255,8 +4274,20 @@ printf '%s' "$FAKE_PODS_JSON"
 `)
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "curl"), `#!/usr/bin/env bash
 set -euo pipefail
+target="${@: -1}"
+if [[ "$target" == "${ENDPOINT%/}/v3/auth/authenticate" ]]; then
+  if [[ "$*" != *'"name":"root"'* || "$*" != *'"password":"secret:with:colons"'* ]]; then
+    echo "authenticate payload mismatch" >&2
+    exit 1
+  fi
+  printf '{"token":"fake-token"}'
+  exit 0
+fi
+if [[ "${FAKE_REQUIRE_GATEWAY_AUTH:-}" == "1" && "$target" == */v3/* && "$*" != *"Authorization: Bearer fake-token"* ]]; then
+  echo "gateway bearer token missing" >&2
+  exit 1
+fi
 if [[ " $* " == *" -X POST "* ]]; then
-  target="${@: -1}"
   if [[ "$target" == "${READYZ_URL}" || "$target" == "${READYZ_URL%/readyz}/livez" || "$target" == "${READYZ_URL%/readyz}/debug/vars" || "$target" == "${ENDPOINT%/}/health" ]]; then
   code="${FAKE_HEALTH_METHOD_CODE:-405}"
   allow="${FAKE_HEALTH_METHOD_ALLOW:-GET}"
