@@ -52065,10 +52065,40 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain-0`（`10.244.0.63`）在 leader-peer 隔离下 Hash/HashKV 242/185ms，在六目标 storage 隔离下 188/201ms，
   两种路径的 hash、revision 和入口 member ID 一致。JWT follower `a4653-jwt-0`（`10.244.0.66`）root 的
   leader-peer 隔离 Hash/HashKV 为 10/16ms、storage 隔离为 11/12ms；故障前预签发 token 后，alice 在两种隔离下
-  37/26ms 返回 `PermissionDenied`，root future revision 在两种隔离下 18/11ms 返回标准 `OutOfRange`。本轮另发现
-  leader-peer 隔离期间新 `Authenticate` 仍可能超时，该独立缺口保留到下一项，未混入 Hash GREEN。所有规则清零；
+  37/26ms 返回 `PermissionDenied`，root future revision 在两种隔离下 18/11ms 返回标准 `OutOfRange`。后续源码审计纠正
+  本轮对新 `Authenticate` 超时的暂定判断：upstream `/root/etcd/server/etcdserver/v3_server.go::Authenticate` 明确先执行
+  `LinearizableReadNotify`，校验密码后再提交 `raftRequest`，因此 leader/quorum 链路隔离时登录失败是官方依赖，不是应由
+  follower 本地回退消除的独立兼容缺口。所有规则清零；
   最终六个 KubeBrain Pod 与 PD/TiKV 3+3 均 Ready/零重启，健康、authRevision=25、用户/角色/空 operator 权限、空
   alarm/lease 均保持，九次 PD leader 查询均为 `kb-pd-1`。
+
+- A4697 修复公开 `Maintenance.Defragment` 在互补故障域中的单路径退化。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`：普通成员先由 `authMaintenanceServer.isPermitted` 做管理员鉴权，
+  随后直接调用该服务成员的本地 backend defrag；只有 `/root/etcd/server/proxy/grpcproxy/maintenance.go` 的代理部署才把
+  整项 RPC 转发。KubeBrain 的 TiKV 后端没有 BoltDB 文件可整理，因此 Defragment 的兼容动作是鉴权后的 no-op；A4675
+  为绕过 follower storage 隔离而无条件代理 leader，却使本地 TiKV/PD 全健康、仅 leader peer 中断时失去本地 no-op
+  能力。A4696 主 follower `kubebrain-0`（`10.244.0.63`）无故障 Defragment 11.622ms 成功；精确阻断到 leader
+  `kubebrain-2`（`10.244.0.61`）3380/TCP 后耗尽 6.001 秒并返回 `DeadlineExceeded`，规则随后清零。
+
+  提交 `e0136902fc926635f780d5e9d863c99c4ac96012` 复用 Maintenance 泛型竞争器，让 proxy-capable follower 并发执行
+  “本地当前 auth config 管理员鉴权 + TiKV no-op”和“携带原 credential 的受信 leader peer Defragment”；首个成功或
+  确定性 auth/data/revision 错误立即返回并取消 loser，普通 transport/storage 错误等待另一分支，因而两个 timeout 不会
+  串行叠加。单测覆盖本地 auth metadata 读取失败而 leader 成功、leader RPC 阻塞而本地成功并取消 loser，以及 alice
+  本地鉴权 fail-closed；相关测试连续 20 轮 1.103 秒、聚焦 race 与 `go vet` 均通过。完整 server JSON 产生 18,841 条
+  事件、零 fail event，proxy 包 3.042 秒通过；排除已知固定 600 秒外部脚本 harness 的 `hack/production` 根包后，全仓
+  门禁产生 32,161 条事件、零 fail event。
+
+  精确镜像 `kubebrain:a4697-e0136902` 内嵌完整 SHA 与 UTC build time `2026-08-15T12:53:47Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:c39eaeb5bec36b17c0b427785227a186c343d3ff881ea37af3a8dc926b928af8`、
+  `sha256:e2362768c530b41e4dbf53b696ef02e481d492a78c35cb69e4c9f1a7634f846a`、
+  `sha256:7a802a1888654549861136668d313b6cf3c6bdfb21733ff0f669b90aba120036`，Kind runtime imageID 为
+  `sha256:ed837c490478d5ad45da8f190c59b78538cc4ccd23ada05130b7bf924278c977`。滚动后主 follower
+  `kubebrain-0`（`10.244.0.69`）无故障 36ms、仅 leader-peer 隔离 66ms、六目标 PD/TiKV storage 隔离 39ms 均成功。
+  JWT follower `a4653-jwt-0`（`10.244.0.72`）使用故障前签发 token：root 在 leader-peer/storage 隔离下分别 34/27ms
+  成功，alice 分别 28/23ms 返回 `PermissionDenied`，证明本地快速路径没有绕过管理权限。全部注入规则清零；最终主/JWT
+  六副本 Ready/零重启且版本、SHA、build time、runtime imageID 一致，三端 endpoint health 成功且 AlarmList/LeaseList
+  为空；JWT auth enabled/authRevision=25、alice/root、operator/root 与空 operator 权限保持；PD/TiKV 3+3 Ready/零重启，
+  九次 PD leader 查询均为 `kb-pd-1`。
 
 ### P2：运维兼容和长期验证
 
