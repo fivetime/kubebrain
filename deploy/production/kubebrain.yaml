@@ -169,7 +169,10 @@ spec:
               port: client
             initialDelaySeconds: 5
             periodSeconds: 5
-            timeoutSeconds: 2
+            # The server bounds the backing linearizable read at five seconds.
+            # Let it report the authoritative result instead of having kubelet
+            # cancel an otherwise successful TiKV failover read first.
+            timeoutSeconds: 6
             failureThreshold: 3
           livenessProbe:
             httpGet:

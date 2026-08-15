@@ -36,6 +36,12 @@ const (
 	serializableCheckpointTTL     = 5 * time.Minute
 	serializableCheckpointUsable  = serializableCheckpointTTL / 2
 	serializableCheckpointRefresh = time.Second
+	// A failed refresh usually means the shared TiKV/PD data path is already
+	// degraded. Retrying once per second from every KubeBrain replica amplifies
+	// that degradation and can keep Region caches in a permanent timeout loop.
+	// Retain the fast steady-state cadence, but back off failed attempts while
+	// the last protected checkpoint remains usable.
+	serializableCheckpointMaxRetry = 30 * time.Second
 	// Refresh the authoritative PD Region/store directory well inside the local
 	// checkpoint safety window. This makes topology changes that complete while
 	// PD is reachable part of a later isolation checkpoint without scanning PD
@@ -303,22 +309,31 @@ func (b *backend) runSerializableCheckpoint(workerCtx context.Context) {
 	if _, ok := storage.FindCapability[storage.SnapshotProtector](b.kv); !ok {
 		return
 	}
-	ticker := time.NewTicker(serializableCheckpointRefresh)
-	defer ticker.Stop()
-	for first := true; first; first = false {
-		b.refreshSerializableCheckpoint(workerCtx)
-	}
+	retry := serializableCheckpointRefresh
 	for {
+		err := b.refreshSerializableCheckpoint(workerCtx)
+		if err == nil {
+			retry = serializableCheckpointRefresh
+		}
+		timer := time.NewTimer(retry)
 		select {
 		case <-workerCtx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return
-		case <-ticker.C:
-			b.refreshSerializableCheckpoint(workerCtx)
+		case <-timer.C:
+		}
+		if err != nil {
+			retry *= 2
+			if retry > serializableCheckpointMaxRetry {
+				retry = serializableCheckpointMaxRetry
+			}
 		}
 	}
 }
 
-func (b *backend) refreshSerializableCheckpoint(ctx context.Context) {
+func (b *backend) refreshSerializableCheckpoint(ctx context.Context) error {
 	defer b.emitSerializableCheckpointMetrics(time.Now())
 	ctx, cancel := context.WithTimeout(ctx, unaryRpcTimeout)
 	defer cancel()
@@ -335,6 +350,7 @@ func (b *backend) refreshSerializableCheckpoint(ctx context.Context) {
 	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) && !errors.Is(err, ErrSerializableCheckpointUnavailable) {
 		b.metricCli.EmitCounter("serializable.checkpoint.refresh_err", 1)
 	}
+	return err
 }
 
 func (b *backend) emitSerializableCheckpointMetrics(now time.Time) {
