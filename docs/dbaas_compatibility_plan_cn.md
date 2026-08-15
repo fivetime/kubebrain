@@ -52805,6 +52805,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready，主与 JWT 六个 KubeBrain Pod 继续使用 A4733 镜像且 Ready/零重启，endpoint proposal health 20.211ms、
   AlarmList 与 LeaseList 为空；临时 role、十二次规则实例对应的所有 iptables 条目及两个端口转发均清除。
 
+- A4735 用两个真实官方客户端重跑 P2 支持版本窗口，而不是用新增测试替代客户端可观察行为：发行版
+  `etcdctl 3.5.16`（API 3.5）与从固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 构建的
+  `etcdctl 3.8.0-alpha.0`（API 3.8），共同访问最终生产镜像 `kubebrain:a4733-f64cc977` 的三副本
+  Service。两个版本的 endpoint health/status、三成员 MemberList、Put/Get、version=0 条件 Txn、Lease
+  grant/attach/TTL/keys/revoke、AlarmList 和 disabled AuthStatus 均通过；每个版本使用独立前缀且写入结果均为
+  `version=1`，撤销后附属键不存在。3.8 客户端额外执行 `get --stream -w json`，返回单条精确 key/value 和
+  `version=1`。
+
+  Watch 也通过真实持续流验证：分别从 seed 写入后的下一 revision 建立 watch，再提交更新；3.5.16 与
+  3.8.0-alpha.0 均收到精确 `PUT`、key 和新 value，测试端仅在收到事件后用受控 timeout 结束长驻命令。两版
+  `watch` 均不支持尝试使用的 `--once` flag，该轮在发 RPC 前即由客户端拒绝，明确作为命令夹具错误作废，未计为
+  服务端失败。较早尝试复用 `a4653-jwt` 时，健康前置检查已经证明文档旧 root 凭据不再匹配被复用后的夹具；因此
+  后续故障结果全部作废，且没有猜测、读取签名密钥或重置现存认证状态。
+
+  本轮没有发现生产 RED，因而没有修改生产或测试代码，也没有重建相同镜像。终态 `/a4735/` 前缀为空、
+  AlarmList 与 LeaseList 为空，endpoint proposal health 17.385ms；三个 PD health=true、三个 TiKV store=Up，
+  9 个 Region 的 miss/pending/down/extra-peer 均为 0。主与 JWT 六个 KubeBrain Pod 继续使用 A4733 镜像且
+  Ready/零重启，A4735 iptables 规则无残留；两个本地端口转发在记录完成后关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
