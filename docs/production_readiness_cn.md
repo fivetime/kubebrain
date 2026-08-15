@@ -890,6 +890,14 @@ PROBE_TIMEOUT=10s \
   hack/production/validate-dataplane-readonly.sh
 ```
 
+启用 auth 的实例使用与 `etcdctl` 相同的非交互凭据约定：设置
+`ETCDCTL_USER=user:password`，或分别设置 `ETCDCTL_USER=user` 与
+`ETCDCTL_PASSWORD=password`。脚本会让 `etcdctl` 和 clientv3 `prefix-tool` 使用该凭据，
+并在启用 Status 校验时通过 `/v3/auth/authenticate` 获取 bearer token，随后调用受保护的 gateway Status、
+AuthStatus、Alarm、Hash/HashKV；token 和密码不会写入通过摘要。密码含冒号时使用前一种
+形式，只有第一个冒号分隔用户名。只设置用户名或只设置密码、以及同时内嵌和单独设置密码
+都会 fail closed，避免交互提示或凭据歧义。
+
 该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 与 `/livez` 必须返回 `ok`，
 `/livez?verbose` 必须包含 `[+]serializable_read ok` 并以 `ok` 结束；配置
 `EXPECTED_LIVEZ_NAMED_CHECKS=1` 时还会读取 `/livez/serializable_read?verbose` named check

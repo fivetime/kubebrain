@@ -52185,6 +52185,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功，主/JWT 六副本 Ready/零重启且无故障规则。命令表现改为“支持 NOSPACE/CORRUPT”并说明两类恢复后行为。
   本项验证既有生产能力并修复 runbook 契约，不改变数据面或构建新镜像。
 
+- A4703 修复启用 auth 的租户无法运行通用只读发布门禁和 clientv3 运维工具的实现缺口。对照
+  `/root/etcd/etcdctl/ctlv3/ctl.go` 的 `--user=username[:password]` 与独立 `--password`
+  非交互契约：仓库共用 `hack/internal/etcdutil.NewClientFromEnv` 原先只接 endpoint/TLS，完全
+  忽略 `ETCDCTL_USER`，因此 `prefix-tool`、logical export/verify/restore、cold restore verify、
+  native PITR semantic verify 和 audit probe 即使收到标准凭据仍以匿名 client 连接。现共用
+  构造器解析 `ETCDCTL_USER=user:password`（密码可含冒号）或
+  `ETCDCTL_USER=user` + `ETCDCTL_PASSWORD=password`，并对 password-only、空用户名、缺密码和
+  两种密码来源冲突 fail closed；所有调用方无需复制认证逻辑即可获得 clientv3 基本认证。
+
+  `validate-dataplane-readonly.sh` 同时用同一凭据调用 gateway Authenticate，只把 bearer token
+  附到受保护的 Status/AuthStatus/Alarm/Hash/HashKV POST，不把凭据或 token 写入摘要；无 auth
+  实例保持原路径。真实 A4698 镜像的 JWT 三副本（authRevision 25）上，修复后的
+  `prefix-tool ACTION=count PREFIX=/` 返回 5，严格门禁在 6.761 秒内完整通过：3/3 Ready、四项
+  readyz、livez、线性/串行 health、Status revision 9/term 42、Hash/HashKV、gateway、metrics、
+  debug/pprof 全部符合契约，AuthStatus 明确 `enabled=true`，Alarm 为空；独立密码环境变量形态也
+  在 2.747 秒内通过。无 auth 主三副本的同一严格门禁保持通过（revision
+  468126003565913478、term 821）。`hack/internal/etcdutil` 单测覆盖全部凭据形状，production
+  脚本全专项 187.521 秒通过；本项修改真实运维客户端与发布执行路径，不把 mock 绿灯替代真实
+  TiKV/PD/JWT 验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
