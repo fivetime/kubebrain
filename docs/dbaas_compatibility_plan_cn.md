@@ -52741,6 +52741,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   33796，重建转发后同一门禁得到三成员及四类 Region check 全零。终态三个 PD/三个 TiKV Ready，主与 JWT 六个
   KubeBrain Pod Ready/零重启，proposal health 39.657ms、AlarmList 与 LeaseList 为空，A4731 前缀键及端口转发均清除。
 
+- A4732 把 A4731 的双 Pod replacement 推进到真正的持续网络分区，对照 upstream
+  `/root/etcd/tests/integration/network_partition_test.go` 与 `client/v3/lease.go` 的分区恢复、线性进展及
+  KeepAlive 重连职责。复用仓库既有 Kind privileged-node `FORWARD` 隔离模型，但每轮在单个带
+  `EXIT/INT/TERM` trap 的 shell 中，为当前 PD leader 与承载最多 Region leader 的 TiKV Pod IP 各安装精确双向
+  DROP 规则；四条规则均带唯一 A4732 comment，安装后逐条核验，退出时逐条 `-C/-D` 删除，不使用宽泛 chain flush。
+
+  第一轮同时隔离 `kb-pd-0` 与承载 5/9 Region leader 的 `kb-tikv-2`。规则持续存在期间，30 秒预算 Put 的第一次
+  尝试约 10 秒返回 `DeadlineExceeded`，official clientv3 自动重试并于 13 秒成功；仍在同一分区内的
+  linearizable Get 返回精确值，结果 `create_revision=mod_revision`、`version=1`。第二轮先建立 TTL=5 lease、绑定
+  `/a4732/keepalive` 并启动 official KeepAlive，再同时隔离新的 PD leader `kb-pd-1` 与承载 7/9 Region leader 的
+  `kb-tikv-0` 整整 45 秒。stream 全窗持续收到正 TTL=5；trap 回滚后 TTL=4、Keys 返回精确附属键，Get 保持原值和
+  `version=1`。停止客户端后 lease 按短 TTL 自然过期，revoke 返回 canonical NotFound，附属键已删除。
+
+  该轮证明的不是快速 Pod 重建，而是旧进程仍存活、网络双向 DROP 持续生效时，独立 PD/TiKV 的双 leader 故障仍不
+  泄漏 stale read、不重复 mutation、不中断短租约。没有发现产品 RED，故没有修改生产或测试代码，继续运行
+  `kubebrain:a4729-0d2477aa`。终态四类 PD Region check 均为 0，三个 PD/三个 TiKV Ready，主与 JWT 六个
+  KubeBrain Pod Ready/零重启，proposal health 20.271ms、AlarmList 与 LeaseList 为空，A4732 前缀键、四条
+  iptables 规则及两个端口转发均清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
