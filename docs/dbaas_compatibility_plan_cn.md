@@ -51442,6 +51442,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且零重启。当 follower 与存储、peer leader 同时失联时，仍可能在 leader unavailable 之前无法像上游本地 Raft
   auth 副本那样返回鉴权错误；该限制与 A4673 记录的可信 auth 复制缺口相同。
 
+- A4675 修复 TiKV 架构下 Defragment compatibility no-op 被 follower 本地 auth storage 可用性错误耦合的
+  问题。上游 `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 对 Defragment 执行 admin 校验后操作请求
+  endpoint 的本地 bbolt backend；KubeBrain 的物理 compact/space reclamation 归 TiKV 管理，公开 Defragment
+  一直刻意返回无 header 的成功空响应，不能把它伪装成 TiKV compact。旧 handler 即使没有任何本地工作，仍先从
+  TiKV 加载 auth config，导致 storage-isolated follower 超时。提交
+  `a0f8c73407685718092033d169a1a7f40f604dbb` 增加 Maintenance Defragment peer client：仅在 proxy-capable
+  follower 上把原始身份送到可信 leader 做权威 admin 校验并返回同一个 no-op 响应；local leader 和无 proxy
+  follower 的鉴权顺序不变，也没有引入 TiKV 写入或虚假的 member-local size/header。最小路由契约、既有
+  Maintenance admin/client no-op/HashKV 保持性用例、vet、proxy 完整包 3.016 秒及聚焦 race 2.018 秒通过。
+  server 完整包首次运行在大量日志被截断后返回一次未能定位测试名的 FAIL，相关专项随即全部通过；之后使用 JSON
+  fail-event 过滤连续两轮完整重跑均 exit 0，最后一轮 184 秒，未把首次失败隐去或误记为通过。
+
+  修复前精确 A4674 镜像上，阻断 follower `kubebrain-0` 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，
+  `etcdctl defrag` 在 8.001 秒返回 `DeadlineExceeded`，没有 peer forward 日志。精确 A4675 镜像
+  `kubebrain:a4675-a0f8c734` 内嵌上述完整 SHA，构建时间 `2026-08-15T04:43:35Z`，OCI manifest list 为
+  `sha256:49cbbf76cd0bec34b60a21ace766c378081b1042ee86f0387d0feb1fef81aca9`。三副本滚动后 leader 为
+  `kubebrain-2`；重放相同六目标隔离，PD/TiKV TCP probe 均以 1 秒超时退出，直连该 follower 的 Defragment
+  RPC 自报 15.925ms 成功（含 `kubectl exec` 572ms），日志确认转发当前 leader。恢复后全体 HashKV 均为
+  revision `468126003565904524`、hash `3464736245`、compact revision `468126003565901760`，证明 no-op 未改变
+  MVCC 或压缩水位。规则为 0，三个 endpoint 均可提交 proposal，AlarmList 与 LeaseList 为空，KubeBrain、PD、
+  TiKV 各三副本 Ready 且零重启。该路由仅适用于 KubeBrain 已定义为无成员物理副作用的 Defragment；Status、Hash
+  等携带 endpoint/member-local 诊断语义的 RPC 不能据此直接照搬 leader 响应。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
