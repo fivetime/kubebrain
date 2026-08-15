@@ -3649,7 +3649,7 @@ func TestWatchHalfCloseKeepsResponseStreamAlive(t *testing.T) {
 	require.Zero(t, server.activeWatches)
 }
 
-func TestFollowerWatchUsesAppliedAuthStateWithoutStorage(t *testing.T) {
+func TestFollowerWatchDelegatesInitialAuthorizationDespiteStaleAppliedState(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	aliceCtx := setupAuthKVUser(t, server)
@@ -3670,7 +3670,8 @@ func TestFollowerWatchUsesAppliedAuthStateWithoutStorage(t *testing.T) {
 		watchFn: func(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan etcdproxy.WatchResult, error) {
 			md, ok := metadata.FromOutgoingContext(ctx)
 			require.True(t, ok)
-			require.Equal(t, []string{"1"}, md.Get(etcdproxy.AuthorizedWatchProxyMetadataKey))
+			require.Empty(t, md.Get(etcdproxy.AuthorizedWatchProxyMetadataKey),
+				"a cached follower snapshot cannot authoritatively approve a new watch")
 			tokens := md.Get(rpctypes.TokenFieldNameGRPC)
 			require.Equal(t, wantToken, tokens)
 			require.Equal(t, []byte("/allowed/watch"), key)

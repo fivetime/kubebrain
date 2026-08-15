@@ -446,19 +446,19 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			_, leadingFresh := s.peers.EpochAndLeadingFresh()
 			authorizedContinuation := authorizedPeerWatchContinuation(ws.Context())
 			followerProxy := !leadingFresh && s.peers.EtcdProxyEnabled() && !authorizedContinuation
-			proxyInitialAuthorization := false
+			// Unlike raft-based etcd, a KubeBrain follower does not apply every auth
+			// mutation into its process-local snapshot. A non-nil cache can therefore
+			// be complete but stale (for example, immediately after RoleGrantPermission).
+			// Always let the current leader authorize a newly created proxied Watch;
+			// only a successful leader response upgrades later generations to the
+			// trusted continuation path.
+			proxyInitialAuthorization := followerProxy
 			var caller *authCaller
 			var authErr error
 			if !authorizedContinuation {
-				if followerProxy {
-					var complete bool
-					caller, authErr, complete = s.authCallerFromCachedContext(ws.Context())
-					proxyInitialAuthorization = !complete
-				} else {
+				if !followerProxy {
 					caller, authErr = s.authCallerFromContext(ws.Context())
-				}
-				if authErr == nil {
-					if !proxyInitialAuthorization {
+					if authErr == nil {
 						authErr = caller.require(authKey, authRangeEnd, authpb.READ)
 					}
 				}
