@@ -52251,6 +52251,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `watcherhub_events_chan_closed{cluster="default"} 1`。主/JWT 六副本与 PD/TiKV 3+3 全部 Ready/零重启，
   主三端 proposal health 为 17.66/22.52/22.46ms，alarm/lease 为空。
 
+- A4707 将 A4706 的有界 watch 观测契约补到 follower proxy 路径。先在最终 A4706 镜像上以官方 client
+  直连 follower `kubebrain-0`（MemberID `4034353177`，leader `231094427`），运行约 1.5 MiB key 的
+  Put/Range/Watch/Lease 差分；协议虽与 upstream 一致并在 2.728 秒通过，但 follower 的
+  `etcd proxy start watching` 仍产生 1,536,335 字节单行，证明 A4706 只收敛 server/backend 本地路径，
+  没有覆盖转发路径。源码审计同时发现 Range、RangeStream、Put、DeleteRange、Txn failure 与 Watch
+  生命周期共 11 个 proxy 日志入口直接输出客户端 key/range end。
+
+  生产提交 `32026467` 把这些入口统一为短 key 原样、超过 256 字节则 SHA-256 加长度；没有修改测试文件。
+  proxy 包全量 3.042 秒、server/etcd 全量 182.067 秒通过。此前用正确裸 endpoint 运行的完整非认证
+  upstream 差分面在 780.887 秒全部通过；需要专用 auth/quota、三 direct reference replica 或外部 Envoy/L4/L7
+  binary 的用例按各自前置条件跳过，不把 skip 计作 GREEN。
+
+  精确镜像 `kubebrain:a4707-32026467` 内嵌 SHA
+  `320264674389ec0aceef25e6de613bfc942fa608`、build time `2026-08-15T14:55:40Z`，OCI index 为
+  `sha256:0fe800442e646b64905e3eacef2f99ee7e3eb3d3bb935ca4d28d6e978ffc38b1`，Kind runtime imageID 为
+  `sha256:fa23c9d3992d487653e8035aa2612fee6e1ce41cd785de6d828982e053899293`。滚动后再次直连同一 follower，
+  相同 near-request-limit 差分 2.453 秒通过，日志最大行降至 1,975 字节，能观察到
+  `sha256:... (length=1536143)` 且检索不到原始大 key。主/JWT 六副本、PD/TiKV 3+3 均 Ready/零重启，
+  三端 proposal health 为 44.36/45.50/51.61ms，alarm/lease 为空。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
