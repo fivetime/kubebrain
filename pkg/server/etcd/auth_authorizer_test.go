@@ -649,6 +649,13 @@ func TestAuthCallerUsesVerifiedClientCertificateCommonName(t *testing.T) {
 	require.Equal(t, "alice", caller.username)
 	require.Equal(t, caller.snapshot.Config.Revision, caller.revision)
 	require.Empty(t, caller.forwardToken, "leader-local certificate auth must not mint a proxy token")
+	spoofed := metadata.NewIncomingContext(
+		verifiedTLSContext(context.Background(), "alice"),
+		metadata.Pairs(forwardedClientCertificateUsernameMetadataKey, "root"),
+	)
+	publicCaller, err := server.authCallerFromContext(spoofed)
+	require.NoError(t, err)
+	require.Equal(t, "alice", publicCaller.username, "public metadata must not override the verified certificate")
 	_, err = server.authCallerFromContext(context.WithValue(
 		verifiedTLSContext(context.Background(), "root"), peerRequestContextKey{}, true,
 	))
@@ -731,6 +738,9 @@ func TestClientCertificateIdentitySurvivesFollowerProxy(t *testing.T) {
 	defer closeFn()
 	setupAuthKVUser(t, server)
 	server.SetClientCertAuth(true)
+	server.tokens.snapshots.mu.Lock()
+	server.tokens.snapshots.snapshot = &authSnapshot{Config: authConfig{Revision: initialAuthRevision}}
+	server.tokens.snapshots.mu.Unlock()
 
 	var forwardedUsername string
 	server.peers = testPeerService{
@@ -738,11 +748,13 @@ func TestClientCertificateIdentitySurvivesFollowerProxy(t *testing.T) {
 		putFn: func(ctx context.Context, _ *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 			md, ok := metadata.FromOutgoingContext(ctx)
 			require.True(t, ok)
-			tokens := md.Get(rpctypes.TokenFieldNameGRPC)
-			require.Len(t, tokens, 1)
-			claims, err := server.tokens.verify(context.Background(), tokens[0])
+			require.Empty(t, md.Get(rpctypes.TokenFieldNameGRPC))
+			require.Equal(t, []string{"alice"}, md.Get(forwardedClientCertificateUsernameMetadataKey))
+			peerCtx := metadata.NewIncomingContext(context.Background(), md)
+			peerCtx = context.WithValue(peerCtx, peerRequestContextKey{}, true)
+			caller, err := server.authCallerFromContext(peerCtx)
 			require.NoError(t, err)
-			forwardedUsername = claims.Username
+			forwardedUsername = caller.username
 			return &etcdserverpb.PutResponse{}, nil
 		},
 	}

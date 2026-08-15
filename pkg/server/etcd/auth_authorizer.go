@@ -27,6 +27,12 @@ type authCaller struct {
 	certificate  bool
 }
 
+// forwardedClientCertificateUsernameMetadataKey carries an identity already
+// verified by a public mTLS listener across KubeBrain's mutually-authenticated
+// peer hop. It is honored only when PeerServerOptions marked the receiving
+// context as an internal peer request, so a public client cannot assert it.
+const forwardedClientCertificateUsernameMetadataKey = "kubebrain-forwarded-client-certificate-username"
+
 func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
@@ -139,13 +145,30 @@ func (s *RPCServer) authCallerFromTLS(ctx context.Context, snapshot *authSnapsho
 		return nil, rpctypes.ErrUserEmpty
 	}
 	// The peer transport certificate authenticates another KubeBrain member,
-	// not the original etcd client. A follower carrying a verified client-cert
-	// identity translates it to a short-lived token before forwarding; without
-	// that token the leader must treat the request as anonymous. Otherwise an
-	// internal peer certificate CN could accidentally become an etcd username.
+	// not the original etcd client. Accept only the identity explicitly carried
+	// by a trusted ingress over the peer listener; never reinterpret the peer
+	// certificate CN or public metadata as an etcd username.
 	if isPeerRequest(ctx) {
-		return nil, rpctypes.ErrUserEmpty
+		usernames := metadata.ValueFromIncomingContext(ctx, forwardedClientCertificateUsernameMetadataKey)
+		if len(usernames) != 1 || usernames[0] == "" {
+			return nil, rpctypes.ErrUserEmpty
+		}
+		return &authCaller{
+			username: usernames[0], revision: snapshot.Config.Revision,
+			snapshot: snapshot, certificate: true,
+		}, nil
 	}
+	username, err := verifiedClientCertificateUsername(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &authCaller{
+		username: username, revision: snapshot.Config.Revision,
+		snapshot: snapshot, certificate: true,
+	}, nil
+}
+
+func verifiedClientCertificateUsername(ctx context.Context) (string, error) {
 	var state tls.ConnectionState
 	var verified bool
 	if p, ok := peer.FromContext(ctx); ok && p != nil && p.AuthInfo != nil {
@@ -157,23 +180,21 @@ func (s *RPCServer) authCallerFromTLS(ctx context.Context, snapshot *authSnapsho
 		state, verified = transportidentity.TLSStateFromContext(ctx)
 	}
 	if !verified {
-		return nil, rpctypes.ErrUserEmpty
+		return "", rpctypes.ErrUserEmpty
 	}
 	if values := metadata.ValueFromIncomingContext(ctx, "grpcgateway-accept"); len(values) > 0 {
-		return nil, rpctypes.ErrUserEmpty
+		return "", rpctypes.ErrUserEmpty
 	}
 	for _, chain := range state.VerifiedChains {
 		if len(chain) == 0 {
 			continue
 		}
 		username := chain[0].Subject.CommonName
-		return &authCaller{
-			username: username,
-			revision: snapshot.Config.Revision,
-			snapshot: snapshot, certificate: true,
-		}, nil
+		if username != "" {
+			return username, nil
+		}
 	}
-	return nil, rpctypes.ErrUserEmpty
+	return "", rpctypes.ErrUserEmpty
 }
 
 func (s *RPCServer) ensureAuthRevision(ctx context.Context, caller *authCaller) error {
@@ -323,21 +344,16 @@ func (s *RPCServer) forwardWriteAuthContext(ctx context.Context) (context.Contex
 	if !s.clientCertAuth {
 		return ctx, nil
 	}
-	snapshot, ok := s.tokens.snapshots.cachedSnapshot()
-	var err error
-	if !ok {
-		snapshot, err = s.tokens.snapshots.current(ctx)
-	}
-	if err != nil || !snapshot.Config.Enabled {
-		return ctx, err
-	}
-	caller, err := s.authCallerFromTLS(ctx, snapshot)
+	username, err := verifiedClientCertificateUsername(ctx)
 	if err != nil {
 		// Forward an unauthenticated request and let the leader's auth applier
 		// return the canonical error after leadership has been established.
 		return ctx, nil
 	}
-	return s.forwardAuthToken(ctx, caller)
+	// Do not consult the follower's auth cache here. A cluster-wide AuthEnable
+	// may have committed after this ingress lost its PD/TiKV path; the leader
+	// owns the current enabled flag, auth revision, user existence and roles.
+	return metadata.AppendToOutgoingContext(ctx, forwardedClientCertificateUsernameMetadataKey, username), nil
 }
 
 func (c *authCaller) isRoot() bool {
