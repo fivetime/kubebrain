@@ -401,6 +401,11 @@ func TestAuthFollowerLeaseTimeToLiveRechecksRevisionAfterProxyLikeEtcd(t *testin
 				isLeader: false, proxyEnabled: true,
 				leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 					mutationErr = server.auth.roleAdd(context.Background(), "follower-ttl-proxy-revision-bump")
+					if keys {
+						// A real peer call enters the leader's LeaseTimeToLive handler,
+						// whose final auth-revision fence observes this mutation.
+						return nil, rpctypes.ErrAuthOldRevision
+					}
 					return &etcdserverpb.LeaseTimeToLiveResponse{
 						Header: txnHeader(1), ID: 123, TTL: 30, GrantedTTL: 30,
 					}, nil
@@ -461,7 +466,7 @@ func TestAuthFollowerLeaseTimeToLiveFinalFenceIncludesRootLikeEtcd(t *testing.T)
 		isLeader: false, proxyEnabled: true,
 		leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 			mutationErr = server.auth.roleAdd(context.Background(), "follower-root-ttl-revision-bump")
-			return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30}, nil
+			return nil, rpctypes.ErrAuthOldRevision
 		},
 	}
 
@@ -480,7 +485,7 @@ func TestAuthFollowerLeaseTimeToLiveFinalFenceTracksAuthEnableDisableLikeEtcd(t 
 			isLeader: false, proxyEnabled: true,
 			leaseTTLFn: func(context.Context, *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 				setupAuthKVUser(t, server)
-				return &etcdserverpb.LeaseTimeToLiveResponse{Header: txnHeader(1), ID: 123, TTL: 30}, nil
+				return nil, rpctypes.ErrAuthOldRevision
 			},
 		}
 

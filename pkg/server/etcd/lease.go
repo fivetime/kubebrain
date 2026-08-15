@@ -622,7 +622,7 @@ func (m *leaseManager) sendLeaseKeepAliveResponse(stream etcdserverpb.Lease_Leas
 func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.ttl", 1)
 	_, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
-	if !req.Keys && !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
+	if !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
 		proxyCtx, err := m.srv.forwardWriteAuthContext(ctx)
 		if err != nil {
 			return nil, err
