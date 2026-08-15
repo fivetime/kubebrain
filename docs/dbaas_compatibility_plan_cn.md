@@ -52338,6 +52338,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   证明 family 不是静态占位。临时 lease 已清空。最终三端 proposal health 为 38.74/28.06/36.87ms，
   两分钟窗口 deadline/refill 为零，alarm/lease 为空，主/JWT 与 PD/TiKV 3+3 全部 Ready、零重启。
 
+- A4712 修正 A4711 注册后暴露的 histogram bucket schema 差距。A4711 让指标族在空闲实例可见，但
+  KubeBrain metrics wrapper 仍给这些 family 使用 Prometheus 默认 5ms--10s 桶；upstream Lease TTL 使用
+  1 秒起 24 个指数桶，Watch send-loop 使用 1ms 起 14 个指数桶，Hash/HashKV 使用 10ms 起 15 个指数桶。
+  名称相同但 bucket 不同会让既有 PromQL histogram_quantile、SLO 和告警产生不可比较的分位数。
+
+  生产提交 `ee230545` 为上述三组七个 family 增加精确 bucket 映射，只修改 1 个生产文件、增加 13 行，
+  没有修改测试文件；metrics 包 0.032 秒、`pkg/server/etcd` 全量 184.333 秒通过。精确镜像
+  `kubebrain:a4712-ee230545` 内嵌 SHA `ee230545fb2136ed0a2baebd501681b5f29fcf05`、build time
+  `2026-08-15T16:20:00Z`，OCI index 为
+  `sha256:d86aaeff5aaf8a223abb561316bdbb2c3aed1ff3bc7b685f463d3fec455407b5`，Kind runtime imageID 为
+  `sha256:e36666ae9ed67c6517951dea45bdc69049f4abdbbbbab8e94f4e0c024bc99ddc`。新 Pod 零样本实测
+  TTL 为 24 个有限桶 `1..8388608`，Watch 为 14 个 `0.001..8.192`，Hash 为 15 个
+  `0.01..163.84`；与同轮全新启动的固定 upstream `/metrics` 对七族完整 `le` 序列逐项比较全部 MATCH。
+  最终三端 proposal health 为 59.75/60.22/49.70ms，两分钟 deadline/refill 为零，alarm/lease 为空，
+  主/JWT 与 PD/TiKV 3+3 全部 Ready、零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
