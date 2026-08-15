@@ -52432,6 +52432,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   12.24/17.38/12.01ms，alarm/lease 为空，最终一分钟窗口没有 deadline、PD region load 或选主锁错误；
   JWT 三副本继续运行 A4715，全部 Ready/零重启。
 
+- A4717 修复高并发 leasing 事务对独立 TiKV/PD 的 CORRUPT 写栅栏读取放大。固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 client/v3 leasing 实现会在 owner
+  竞争时组合 owner/business key Txn，并为每个 leasing KV 维护 owner watch；16 个 client × 16 个 worker
+  的 Put/Get/Delete 差分在 A4716 上触发持续 10 秒数据路径超时，错误同时覆盖业务 key、owner key、
+  `alarms/corrupt-generation` 与 `alarms/corrupt`，完整 suite 在 467.108 秒主动中止以避免继续压垮共享 TiKV。
+  生产调用链确认每次有效写在提交前串行执行 generation-before、alarm、generation-after、fence control、
+  fence shard 共五次独立 TiKV 读取，且全部位于 `revisionWriteMu` 临界区。
+
+  生产提交 `e9a03f0c` 新增统一 hot-path commit-state 读取：通过
+  `storage.FindCapability[storage.BatchGetter]` 穿透 decorator，在同一个 TiKV MVCC snapshot 中一次读取
+  alarm、generation、control 与选定 shard。Arm/Disarm 原本就原子更新这四类状态，因此该快照无需缓存或
+  放宽一致性即可替代 generation seqlock；最终提交仍对选定 shard 做 CAS 写冲突栅栏。没有 BatchGetter 的
+  storage 保留原五读回退。TxnApply、orphan-index heal 与 compact-record 三个生产入口复用该路径；提交仅修改
+  `pkg/backend/corrupt_alarm.go`、`txn_apply.go`、`write.go`、`compact.go` 四个生产文件，新增 85 行、删除
+  25 行，没有修改测试文件。CORRUPT/Txn/Compact 聚焦回归 7.962 秒，backend 全量 79.132 秒、server/etcd
+  全量 176.411 秒通过。
+
+  精确镜像 `kubebrain:a4717-e9a03f0c` 内嵌 SHA
+  `e9a03f0c4421bed26c93e979b1d4792ba9d6c46a`、build time `2026-08-15T18:08:36Z`，OCI index 为
+  `sha256:c8520c41ba173a182db969ee25fc8273b7db29f3fa453021b44cd26ae3dceb0f`，Kind runtime imageID 为
+  `sha256:eecddba2a43d189e9806c43fbf74bf17cfa6f09ec47cb94e51c89b2df5ac5760`。仅主数据面三副本滚动，
+  全部 Ready/零重启；原 16×16 leasing Put/Get/Delete 差分在固定 upstream 对照下 66.16 秒通过，未再出现
+  客户端超时，proposal health 为 27.79ms，alarm 为空。压测窗口中 leader 的后台 serializable-checkpoint
+  对 TiKV-2 仍出现两次 `context deadline exceeded` 并约一秒自动恢复，TiKV 三副本共匹配两条 slow/busy 类
+  日志；因此本轮证明客户端场景从 RED 转 GREEN，但后台 checkpoint 在峰值负载下的容量裕量仍保留为后续
+  性能/隔离差距，不记为零异常。参考 etcd、端口转发与一次性数据目录均已停止或删除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
