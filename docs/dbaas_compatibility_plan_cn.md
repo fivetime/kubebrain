@@ -52847,6 +52847,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList、临时 artifact/data-dir/upstream etcd 进程均为空；主与 JWT 六个 KubeBrain Pod、三个 PD 和三个
   TiKV 均 Ready/零重启。
 
+- A4737 将 A4736 的 Service 单入口 Snapshot 推进到生产三成员直连，验证 follower 的 leader-proxy 流不会返回
+  不同 artifact。固定同一 A4733 生产镜像的三个 Pod endpoint：`kubebrain-1` 的 member ID 与 Status leader ID
+  同为 `2393892952`，`kubebrain-0`/`kubebrain-2` 明确为 follower；三端起始 revision
+  `468126003565938054`、term 871 一致。经 leader 写入唯一锚点后，同时从三个直连 endpoint 用 upstream
+  `etcdctl 3.8.0-alpha.0` 下载 Snapshot，所得三个文件均为 90,857,504 字节，文件 SHA-256 均为
+  `3d6ebbf6ae31788f1dda03d29595507b307c27e0ff4aff43ba0e1d2a1b09718e`；`etcdutl snapshot status` 也全部为
+  hash `1705092383`、revision `468126003565938055`、1600 keys、78,274,560 字节 backend、version `3.7.0`。
+  这不是只比较逻辑摘要：三个 follower/leader artifact 在并发下载窗口内逐字节一致。
+
+  随后专门选择 `kubebrain-0` follower 入口返回的文件，以 upstream `etcdutl snapshot restore` 恢复为独立
+  单成员 etcd；endpoint proposal health 通过，锚点返回精确值 `follower-proxy-artifact`、原
+  `mod_revision=468126003565938055` 与 `version=1`。本轮没有生产 RED，故没有修改生产或测试代码，也没有重建
+  镜像。postflight proposal health 18.746ms，A4737 prefix、LeaseList、AlarmList、三个 artifact、恢复 data-dir、
+  upstream etcd 进程均为空；主三副本继续使用 A4733 镜像且 Ready/零重启，三个直连端口转发在记录后关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
