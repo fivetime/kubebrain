@@ -51289,6 +51289,11 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   的漂移风险：两条路径现在共用 `compareKeyValue`，保留 upstream 对缺失键 numeric target=0、VALUE 必败及
   未知 target 按零 order 处理的语义。另将开发清单契约从过期的 TiKV 2MiB 配置同步到 A4609 已上线的
   2.5MiB memcomparable 编码预算；KubeBrain 的 2MiB 原始物理键门禁和客户端 1.5MiB 请求上限均未放宽。
+  生产提交 `c20fb5d3e0996243ea6bde5695775fad6cea177d` 构建为
+  `kubebrain:a4667-c20fb5d3`，OCI manifest list 为
+  `sha256:bcb9261e0c4dc327e9e73e9863ad01102feb5f2a8b3d65967bbb1bc3b69ae3bb`；三副本滚动后均报告精确
+  内嵌 SHA、Ready 且零重启。对该新镜像一次运行上述全部 10 组真实差分 54.940 秒通过，最终 endpoint
+  health 可提交 proposal，AlarmList 与 LeaseList 均为空。
 
 ### P2：运维兼容和长期验证
 
