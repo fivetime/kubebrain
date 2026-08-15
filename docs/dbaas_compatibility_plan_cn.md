@@ -52700,6 +52700,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   仍为 0，主与 JWT 共六个 KubeBrain Pod 使用最终镜像且 Ready/零重启，proposal health 18.586ms、AlarmList 与
   LeaseList 为空；测试前旧端口转发失效的一轮在健康前置检查即失败，已明确作废，测试键和端口转发均在终态清除。
 
+- A4730 将 A4729 的单 Put 证明扩到 Txn、DeleteRange、LeaseGrant 与 LeaseRevoke，确认 10 秒单次服务端预算没有只
+  偶然修好一个命令。固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+  `client/v3/retry_interceptor.go` 会在外层 context 仍有效时重试服务端 `DeadlineExceeded`；
+  `client/v3/retry.go` 把 KV mutation 设为 write-at-most-once 的 non-repeatable policy，而 LeaseGrant/Revoke 明确为
+  repeatable。这里的关键不是把所有 `Unavailable` 泛化成可重试，而是继续验证 A4729 只对 pre-submit
+  `loadRegion ... DeadlineExceeded` 做的窄映射能覆盖不同公开 mutation。
+
+  每轮都从 endpoint health 成功、三个 store Up 且 miss/pending/down/extra-peer 全为 0 开始，并删除当时承载最多
+  Region leader 的 TiKV Pod。条件 Txn 在删除 9/11 leader 的 store 后 14 秒内成功，结果键
+  `create_revision=mod_revision`、`version=1`；DeleteRange 在删除 6/11 leader 的 store 后，第一次约 10 秒尝试返回
+  `DeadlineExceeded`，clientv3 自动重试并于 17 秒成功，响应 `deleted=1`、PrevKV 精确且终态键不存在；LeaseGrant
+  在删除 7/11 leader 的 store 后 10 秒内成功并可读取准确 TTL；为该 lease 绑定键后再删除 8/11 leader 的 store，
+  LeaseRevoke 的第一次尝试返回 `DeadlineExceeded`，11 秒内重试成功，TTL=-1 且附属键不存在。四条路径均未出现
+  普通 `Unavailable` 提前终止、重复可见 mutation 或孤儿 lease，因此本轮没有生产 RED，也没有修改生产或测试代码，
+  继续运行已验证的 `kubebrain:a4729-0d2477aa`。
+
+  夹具校准同时发现两次不能计为产品结果的前置错误：首个非交互 Txn 输入缺少最终空行，在发 RPC 前即返回 `EOF`；
+  一次 TiDB Operator 已报告 Ready 时 PD 仍有 6 个 pending peer。两轮均明确作废，后续门禁改为同时等待四类 PD
+  Region check 为 0。终态三个 PD/三个 TiKV Ready、四类异常 Region 为 0，主与 JWT 六个 KubeBrain Pod Ready；
+  proposal health 19.019ms，AlarmList 与 LeaseList 为空，A4730 前缀键和两个端口转发均清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
