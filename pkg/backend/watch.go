@@ -17,6 +17,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -26,12 +27,11 @@ import (
 	"k8s.io/klog/v2"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
-
-	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 const (
-	resultChanLength = 100
+	resultChanLength          = 100
+	maxLoggedWatchPrefixBytes = 256
 
 	// historyScanConcurrency caps concurrent watch-history fallback scans so a
 	// reconnect storm after a cache reset cannot stampede the storage engine
@@ -40,13 +40,21 @@ const (
 	historyScanConcurrency = 8
 )
 
+func loggedWatchPrefix(prefix string) string {
+	if len(prefix) <= maxLoggedWatchPrefixBytes {
+		return prefix
+	}
+	digest := sha256.Sum256([]byte(prefix))
+	return fmt.Sprintf("sha256:%x (length=%d)", digest, len(prefix))
+}
+
 // Watch return a channel, every event‘s ModRevision >= revision
 // and has specify prefix will be read from channel
 // if revision < 0, invalid revision
 // if revision == 0, start reading events from read channel
 func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-chan []*proto.Event, error) {
 
-	klog.V(2).InfoS("WATCH", "prefix", prefix, "revision", revision)
+	klog.V(2).InfoS("WATCH", "prefix", loggedWatchPrefix(prefix), "revision", revision)
 
 	// starting watching right away so we don't miss anything
 	ctx, cancel := context.WithCancel(ctx)
@@ -104,7 +112,7 @@ func (b *backend) Watch(ctx context.Context, prefix string, revision uint64) (<-
 
 	events := filterByPrefix(ret.events, []byte(prefix))
 
-	klog.InfoS("watch list", "prefix", prefix, "revision", revision, "latestRev", ret.newest.Revision, "cachedEvents", len(events))
+	klog.InfoS("watch list", "prefix", loggedWatchPrefix(prefix), "revision", revision, "latestRev", ret.newest.Revision, "cachedEvents", len(events))
 
 	lastRevision := revision
 	if len(events) > 0 {
@@ -129,10 +137,10 @@ func (b *backend) startFromHistory(ctx context.Context, cancel context.CancelFun
 	events, historyErr := b.historyWatchEvents(ctx, prefix, revision, currentRevision, neededRevision)
 	if historyErr != nil {
 		cancel()
-		klog.ErrorS(historyErr, label+" failed", "prefix", prefix, "revision", revision)
+		klog.ErrorS(historyErr, label+" failed", "prefix", loggedWatchPrefix(prefix), "revision", revision)
 		return nil, historyErr
 	}
-	klog.InfoS(label, "prefix", prefix, "revision", revision, "events", len(events))
+	klog.InfoS(label, "prefix", loggedWatchPrefix(prefix), "revision", revision, "events", len(events))
 	lastRevision := revision
 	if len(events) > 0 {
 		b.catchUpEvents(result, events)
@@ -490,13 +498,16 @@ func (b *backend) historyPrefixBounds(prefix []byte) (start, end []byte) {
 func (b *backend) processEvents(ctx context.Context, cancel context.CancelFunc, out chan<- []*proto.Event, in <-chan []*proto.Event,
 	prefix string, revision uint64) {
 	prefixBytes := []byte(prefix)
-	klog.InfoS("start process events chan", "prefix", prefix, "revision", revision)
+	klog.InfoS("start process events chan", "prefix", loggedWatchPrefix(prefix), "revision", revision)
 
 	defer func() {
-		klog.InfoS("events chan closed", "subscription", watchChannelID(in), "prefix", prefix)
-		b.metricCli.EmitCounter("watcherhub.events_chan.closed", 1, metrics.Tag("prefix", prefix))
+		klog.InfoS("events chan closed", "subscription", watchChannelID(in), "prefix", loggedWatchPrefix(prefix))
+		// A watch key is user-controlled and may be close to etcd's request-size
+		// limit. Never use it as a Prometheus label: doing so creates an unbounded
+		// time-series family and can make a single exposition line megabytes long.
+		b.metricCli.EmitCounter("watcherhub.events_chan.closed", 1)
 		close(out)
-		klog.InfoS("watch channel closed", "prefix", prefix)
+		klog.InfoS("watch channel closed", "prefix", loggedWatchPrefix(prefix))
 		cancel()
 	}()
 
