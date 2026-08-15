@@ -51375,6 +51375,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `kubebrain-2`。Revoke 后绑定键为 0，规则为 0，AlarmList 为空、LeaseList 为 0；三个 endpoint 均成功提交
   proposal，KubeBrain/PD/TiKV 主集群各三副本 Ready 且零重启。
 
+- A4672 关闭 A4671 刻意保留的 `LeaseTimeToLive(Keys=true)` storage-isolated follower 缺口。对照
+  `/root/etcd/server/etcdserver/v3_server.go::LeaseTimeToLive`：实际处理请求的 leader 会执行 attached-key
+  permission、lease lookup 以及返回前 auth revision fence；KubeBrain 的 peer gRPC 同样进入 leader 的完整公开
+  handler，因此 follower 在收到这个权威结果后再次访问共享 auth storage 既重复又破坏故障隔离。曾尝试把本地前后
+  复核限制为 250ms，但真实 TiKV client 在 PD/TiKV 路由完全阻断时没有随该 context 及时返回，整条请求仍被宿主
+  10 秒硬超时杀死；该方案被删除，没有作为成功实现保留。提交
+  `67bf39b730dd876537f1cafa8a207adfb257b853` 让 Keys=true 与其他 follower Lease unary 一样先进入可信 peer
+  leader，由 leader 独占权限和最终 revision 裁决。单测只修正 7 行 peer mock：并发 role/AuthEnable 后不再伪造一个
+  绕过 leader handler 的成功响应，而返回真实 leader 必须产生的 `AuthOldRevision`；AuthDisable 后成功和 proxy error
+  优先级均未放宽。完整 `pkg/server/etcd` 182.313 秒、vet 和聚焦 race 5.405 秒通过。
+
+  精确镜像 `kubebrain:a4672-67bf39b7` 内嵌上述完整 SHA，构建时间
+  `2026-08-15T03:49:36Z`，OCI manifest list 为
+  `sha256:e2fd11001c53584e50549a85acd8e2e412d86239f20891c7c78d0cbb372e5889`。三副本滚动后，在 leader
+  `kubebrain-2` 创建 TTL=120 lease 并绑定 `/a4672/attached`，再阻断 follower `kubebrain-0` 到全部三台 PD
+  2379/TCP 与三台 TiKV 20160/TCP。直接请求该 follower 的 `lease timetolive --keys` 在 323ms 返回正确 lease ID、
+  remaining TTL=117、granted TTL=120 和唯一完整绑定键，日志确认 `keys=true` 请求转发 leader；同一隔离窗内
+  Revoke 成功并删除绑定键。实验规则、测试键和 Lease 均为 0，AlarmList 为空；三个 endpoint 可提交 proposal，
+  KubeBrain/PD/TiKV 主集群各三副本 Ready 且零重启。这里信任的是受 peer listener/mTLS 边界保护的 leader handler，
+  不允许公开 client metadata 或任意 mock 绕过 leader 最终鉴权。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
