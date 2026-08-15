@@ -51907,6 +51907,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用户仍为 root/alice、角色仍为 root/operator、operator 权限为空且 AlarmList/LeaseList 为空；PD/TiKV 3+3
   Ready/零重启，连续三轮从全部 PD 查询均报告 leader `kb-pd-1`。
 
+- A4692 审计 `Maintenance.Status` 的成员本地可用性。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go::maintenanceServer.Status` 从服务成员本地的 BoltDB、Raft、
+  membership 与 alarm applied state 组装响应，不建立 quorum read；同文件 auth wrapper 只要求合法调用者，
+  `/root/etcd/server/proxy/grpcproxy/maintenance.go::maintenanceProxy.Status` 则原样转发 Status。KubeBrain 此前虽然把
+  Status 标记为 member-local，却在 follower 依次从共享 TiKV 读取 auth config、durable revision、quota 和 alarm，导致
+  仍可通过 peer 网络联系 leader 的 ingress 因本地 PD/TiKV 路径故障而不可用。
+
+  A4691 主 follower `kubebrain-0`（`10.244.0.33`）无故障可返回 revision
+  `468126003565913475`、本地 member ID `4034353177` 与 leader ID `231094427`；精确阻断该 Pod 到三台 PD
+  2379/TCP 与三台 TiKV 20160/TCP 后，`etcdctl endpoint status` 耗尽 6 秒 command timeout，返回
+  `DeadlineExceeded/context deadline exceeded`，trap 后规则为 0。
+
+  提交 `cc32411faaa1e6d465c1c0b759bb34422088fe11` 为 EtcdProxy 补齐 raw Maintenance Status 转发，并让 proxy-enabled
+  follower 在任何本地 auth/storage 读取前携带原始 token 或受信客户端证书身份交给 leader；leader 权威组装共享
+  revision/quota/alarm payload，外层 client interceptor 仍覆盖为入口成员的 Header.MemberID，handler 另将 IsLearner
+  覆盖为入口成员自己的 membership 属性。leader 路径及 proxy-disabled 嵌入模式继续执行原本的本地实现。存储 trap
+  测试证明 follower 不进入 QuotaStatus，且 leader payload 的 revision 保留、本地 learner=true 覆盖 leader 的 false；
+  独立真实 gRPC proxy 测试证明 Status response 未被适配层改写。Status 相关测试连续 20 轮通过，聚焦 race 的 server/proxy
+  分别 1.786/1.183 秒，`go vet` 通过，完整 server/proxy 包分别 178.847/3.032 秒通过。全仓 JSON 门禁产生
+  34,541 条事件；唯一 fail event 是无关 `hack/production` 包在 600 秒全局 timeout 时仍运行 restore-cutover 外部脚本，
+  该精确失败子用例隔离复跑 1.546 秒通过。
+
+  精确镜像 `kubebrain:a4692-cc32411f` 内嵌完整 SHA 与 UTC build time `2026-08-15T11:03:47Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:7289ecdc4f395697d220a1b6b45f0ee40875b3fc90c4711179527c490a692893`、
+  `sha256:546ffe51c6d1634d75138ec30dcfb4150d1e7d7ae3996e9c792628b849ea12da`、
+  `sha256:c331aa1980f5799a7a78a1fe44669eb529d95f6ebc8facec486387d760ad6d6d`，Kind runtime imageID 为
+  `sha256:d78d78b116f39183c80b212efbd60d4ca076fa92eeac76211e909317b9df4ae0`。滚动后主 follower
+  `kubebrain-0`（`10.244.0.39`）、leader `kubebrain-2` 在六目标隔离下 92ms 成功返回 revision
+  `468126003565913475`，Header.MemberID 仍为 follower `4034353177`；JWT follower `a4653-jwt-0`
+  （`10.244.0.42`）、leader `a4653-jwt-1` 的 root/alice 调用在相同隔离下分别 291/294ms 成功返回 revision 9、
+  follower member ID `3258172462`、leader ID `3169547375`。三轮规则均为 0。主/JWT 六副本 Ready/零重启且 runtime
+  imageID 一致；主三个 endpoint health 成功、AlarmList/LeaseList 为空；JWT 三成员 auth enabled/authRevision=25 一致，
+  用户仍为 root/alice、角色仍为 root/operator、operator 权限为空且 AlarmList/LeaseList 为空；PD/TiKV 3+3
+  Ready/零重启，连续三轮从全部 PD 查询均报告 leader `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
