@@ -52722,6 +52722,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Region check 为 0。终态三个 PD/三个 TiKV Ready、四类异常 Region 为 0，主与 JWT 六个 KubeBrain Pod Ready；
   proposal health 19.019ms，AlarmList 与 LeaseList 为空，A4730 前缀键和两个端口转发均清除。
 
+- A4731 开始执行 P2 保留的多 PD/多 store 多点故障矩阵，不再用依次单点删除外推同时故障。继续运行
+  `kubebrain:a4729-0d2477aa`，每轮从三 PD/三 TiKV、endpoint health、AlarmList/LeaseList 为空及 PD
+  miss/pending/down/extra-peer 全为 0 开始。第一轮同时删除 PD leader `kb-pd-1` 和承载 6/9 Region leader 的
+  `kb-tikv-2`，立即执行 30 秒预算 Put；第一次尝试返回精确 pre-submit
+  `loadRegion ... DeadlineExceeded`，official clientv3 自动重试，15 秒内成功，结果
+  `create_revision=mod_revision`、`version=1`，没有重复可见写或普通 `Unavailable` 提前终止。
+
+  第二轮在 TTL=5 lease 上绑定 `/a4731/keepalive` 并启动 official `etcdctl lease keep-alive`，随后同时删除新的
+  PD leader `kb-pd-2` 和承载 6/9 Region leader 的 `kb-tikv-1`。45 秒故障观察窗持续收到正 TTL=5 响应；终点
+  `LeaseTimeToLive(Keys=true)` 仍返回 TTL=3、精确附属键，Get 返回原值且 `version=1`。主动停止客户端后，lease
+  按短 TTL 自然过期，后续 revoke 返回 canonical NotFound，附属键已随过期删除。该结果与 upstream
+  `client/v3/lease.go` 的 KeepAlive 重连/续租职责一致，也证明 KubeBrain 的生产三副本 leader/proxy 与共享 TiKV
+  lease checkpoint 路径能跨越 PD+TiKV 双 leader 同时替换；本轮没有产品 RED，故没有修改生产或测试代码。
+
+  两项夹具异常均未计入产品结论：第一次把 TTL=3 grant、绑定与 KeepAlive 拆成多个工具调用，stream 启动前 lease
+  已自然过期；PD leader Pod 删除后旧 `kubectl port-forward service/kb-pd` 退出，使恢复轮询暂时无法连接本地
+  33796，重建转发后同一门禁得到三成员及四类 Region check 全零。终态三个 PD/三个 TiKV Ready，主与 JWT 六个
+  KubeBrain Pod Ready/零重启，proposal health 39.657ms、AlarmList 与 LeaseList 为空，A4731 前缀键及端口转发均清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
