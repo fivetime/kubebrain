@@ -655,6 +655,12 @@ func authGRPCError(err error) error {
 		// contract so clients treat it as a retryable, outcome-unknown write;
 		// the backend resolves the event-log markers asynchronously.
 		return rpctypes.ErrGRPCTimeout
+	case isTiKVLoadRegionDeadlineExceeded(err):
+		// This failure occurs while locating a Region, before a mutation can be
+		// submitted. Preserve etcd's per-attempt deadline contract so clientv3
+		// can safely spend the remainder of its outer retry budget. Mapping it to
+		// Unavailable makes mutable RPCs fail immediately by design.
+		return status.Error(codes.DeadlineExceeded, err.Error())
 	case isRetryableBackendTransportError(err):
 		// TiKV client-go exposes some retryable region/connection failures only
 		// as untyped errors. Do not leak them as gRPC Unknown: etcd clients retry
@@ -663,6 +669,25 @@ func authGRPCError(err error) error {
 	default:
 		return err
 	}
+}
+
+func isTiKVLoadRegionDeadlineExceeded(err error) bool {
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		if status.Code(current) != codes.Unknown {
+			return false
+		}
+		if errors.Unwrap(current) != nil {
+			continue
+		}
+		cause := current.Error()
+		if !strings.HasPrefix(cause, "loadRegion from PD failed, key: ") &&
+			!strings.HasPrefix(cause, "loadRegion from PD failed, regionID: ") {
+			return false
+		}
+		const marker = ", err: rpc error: code = DeadlineExceeded desc = "
+		return strings.Contains(cause, marker)
+	}
+	return false
 }
 
 func isRetryableBackendTransportError(err error) bool {

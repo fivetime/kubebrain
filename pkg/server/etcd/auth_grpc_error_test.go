@@ -50,7 +50,7 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{storage.NewErrUncertainResult(context.DeadlineExceeded), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("epoch_not_match:<>")), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("no available connections")), codes.Unavailable},
-		{fmt.Errorf("failed to get key: %w", fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80")), codes.Unavailable},
+		{fmt.Errorf("failed to get key: %w", fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80")), codes.DeadlineExceeded},
 		{markInvalidAuthMetadata(errors.New("decode auth config")), codes.DataLoss},
 		{markInvalidLeaseMetadata(errors.New("decode lease record")), codes.DataLoss},
 		{fmt.Errorf("%w: decode alarm set", backend.ErrInvalidAlarmMetadata), codes.DataLoss},
@@ -115,7 +115,7 @@ func TestClientInterceptorClassifiesOnlyLeafBackendTransportCause(t *testing.T) 
 			name: "wrapped TiKV load region timeout",
 			err: fmt.Errorf("failed to get key: %w", fmt.Errorf(
 				"loadRegion from PD failed, regionID: 42, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded")),
-			code: codes.Unavailable,
+			code: codes.DeadlineExceeded,
 		},
 		{
 			name: "wrapped gRPC status",

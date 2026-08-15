@@ -57,7 +57,7 @@ func TestDeleteRangePropagatesServerAndClientDeadline(t *testing.T) {
 		},
 		{
 			name: "longer client", clientTimeout: 30 * time.Second,
-			minRemaining: 29 * time.Second, maxRemaining: 30 * time.Second,
+			minRemaining: unaryRpcTimeout - time.Second, maxRemaining: unaryRpcTimeout,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

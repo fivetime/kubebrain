@@ -173,9 +173,11 @@ func (s *RPCServer) SetMaxDeleteRangeKeys(limit uint32) {
 }
 
 func withUnaryRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if _, ok := ctx.Deadline(); ok {
-		return context.WithCancel(ctx)
-	}
+	// Match etcd's processInternalRaftRequestOnce: every server attempt is
+	// bounded by the server request timeout, while context.WithTimeout still
+	// preserves any shorter client deadline. A long client deadline belongs to
+	// the client's retry budget; it must not turn one TiKV attempt into an
+	// unbounded in-flight request.
 	return context.WithTimeout(ctx, unaryRpcTimeout)
 }
 
