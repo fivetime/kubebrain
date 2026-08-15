@@ -52172,6 +52172,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   status/restore`，现有 snapshot 文档与门禁均已调用 `/root/etcd/bin/etcdutl`。本项是可操作性文档修复，不改变
   数据面、无需新镜像，也不把客户端工具版本号当成服务端兼容声明。
 
+- A4702 修正 `etcdctl` 命令矩阵把 `alarm disarm` 过时地限定为 NOSPACE 的描述。固定 upstream
+  `/root/etcd/etcdctl/ctlv3/command/alarm_command.go::alarmDisarmCommandFunc` 与
+  `/root/etcd/client/v3/maintenance.go::AlarmDisarm`：空 AlarmMember 先执行 AlarmList，再对每个返回项按 exact
+  MemberID/AlarmType 递归发送 DEACTIVATE，因此官方命令同时解除 NOSPACE 与 CORRUPT。KubeBrain 的持久 CORRUPT
+  状态和写门禁早已支持该协议，但运维表仍写“支持 NOSPACE”，会误导值班人员绕过标准恢复命令。
+
+  在继续运行 A4698 的真实主三副本上，先写入临时键，再以 owner `4034353177` 激活 CORRUPT；激活 605ms 成功并将
+  revision 推进到 `468126003565913476`，三端 AlarmList 显示 `memberID:4034353177 alarm:CORRUPT`。随后 Put 以
+  `DataLoss/etcdserver: corrupt cluster` 被拒绝；原样执行生产镜像内 `etcdctl alarm disarm` 返回同一 exact alarm，
+  AlarmList 归零，后续 Put/Get 成功。EXIT trap 最终删除临时键，三 endpoint JSON Range 均证明 count=0；三端 health
+  成功，主/JWT 六副本 Ready/零重启且无故障规则。命令表现改为“支持 NOSPACE/CORRUPT”并说明两类恢复后行为。
+  本项验证既有生产能力并修复 runbook 契约，不改变数据面或构建新镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
