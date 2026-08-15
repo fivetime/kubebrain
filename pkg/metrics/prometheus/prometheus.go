@@ -238,7 +238,7 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	if vec != nil {
 		return vec
 	}
-	opts := prometheus.HistogramOpts{Name: formatName(name)}
+	opts := prometheus.HistogramOpts{Name: formatName(name), Help: histogramHelp(name)}
 	if name == "etcd.disk.backend_commit_duration_seconds" {
 		// Match server/storage/backend/metrics.go: 1ms through 8.192s.
 		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
@@ -293,6 +293,27 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	registerer.MustRegister(vec)
 	pw.histogramVecMap[name] = vec
 	return vec
+}
+
+func histogramHelp(name string) string {
+	switch name {
+	case "etcd_debugging.lease.ttl_total":
+		return "Bucketed histogram of lease TTLs."
+	case "etcd.mvcc.hash_duration_seconds":
+		return "The latency distribution of storage hash operation."
+	case "etcd.mvcc.hash_rev_duration_seconds":
+		return "The latency distribution of storage hash by revision operation."
+	case "etcd_debugging.server.watch_send_loop.watch_stream.duration.seconds":
+		return "The total duration in seconds of running through the send loop watch stream response all events."
+	case "etcd_debugging.server.watch_send_loop.watch_stream.duration_per_event.seconds":
+		return "The average duration in seconds of running through the send loop watch stream response, per event."
+	case "etcd_debugging.server.watch_send_loop.control_stream.duration.seconds":
+		return "The total duration in seconds of running through the send loop control stream response."
+	case "etcd_debugging.server.watch_send_loop.progress.duration.seconds":
+		return "The total duration in seconds of running through the progress loop control stream response."
+	default:
+		return ""
+	}
 }
 
 func formatName(name string) string {
