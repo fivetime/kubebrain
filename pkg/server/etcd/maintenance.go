@@ -473,24 +473,24 @@ func (s *RPCServer) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*e
 	s.metricCli.EmitCounter("maintenance.hash", 1)
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
-		// Upstream hashes the serving member's local BoltDB. KubeBrain replicas
-		// share one TiKV MVCC history, so the leader's hash is the authoritative
-		// equivalent when this ingress has lost every storage path.
-		proxyCtx, err := s.forwardWriteAuthContext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		response, err := s.peers.Hash(proxyCtx, req)
-		s.observeForwardedRevision(response.GetHeader(), err)
-		return response, err
+		// Race the local shared TiKV history with the leader peer. This preserves
+		// member-local etcd availability when either the ingress storage path or
+		// its leader-peer path (but not both) is unavailable.
+		return s.hedgedMaintenanceHash(ctx, req)
 	}
+	return s.localMaintenanceHash(ctx, true)
+}
+
+func (s *RPCServer) localMaintenanceHash(ctx context.Context, refresh bool) (*etcdserverpb.HashResponse, error) {
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
 	// KubeBrain's committed revision is cached per replica even though the MVCC
 	// data is shared in TiKV. Refresh it when possible, but preserve etcd's
 	// member-local diagnostic behavior when the leader is unavailable.
-	_ = s.peers.SyncReadRevision(ctx)
+	if refresh {
+		_ = s.peers.SyncReadRevision(ctx)
+	}
 	start := time.Now()
 	hashResult, err := s.backend.Hash(ctx)
 	if err != nil {
@@ -506,17 +506,14 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 	s.metricCli.EmitCounter("maintenance.hashkv", 1)
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
-		// Preserve the exact requested revision and let the authoritative leader
-		// return the same hash, future-revision or compacted-revision outcome that
-		// this member would observe from the shared TiKV history.
-		proxyCtx, err := s.forwardWriteAuthContext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		response, err := s.peers.HashKV(proxyCtx, req)
-		s.observeForwardedRevision(response.GetHeader(), err)
-		return response, err
+		return s.hedgedMaintenanceHashKV(ctx, req)
 	}
+	return s.localMaintenanceHashKV(ctx, req, true)
+}
+
+func (s *RPCServer) localMaintenanceHashKV(
+	ctx context.Context, req *etcdserverpb.HashKVRequest, refresh bool,
+) (*etcdserverpb.HashKVResponse, error) {
 	if !authorizedPeerHashKVProxy(ctx) {
 		if err := s.requireAuthenticated(ctx, true); err != nil {
 			return nil, err
@@ -524,7 +521,9 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 	}
 	// A successful refresh pins normal-operation hashes to the latest committed
 	// revision. A failed refresh must not make this local diagnostic unavailable.
-	_ = s.peers.SyncReadRevision(ctx)
+	if refresh {
+		_ = s.peers.SyncReadRevision(ctx)
+	}
 	revision := req.GetRevision()
 	if req.GetRevision() > 0 {
 		// Use the request context so a cancelled/expired HashKV call aborts the
@@ -552,6 +551,116 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 		CompactRevision: hashResult.CompactRevision,
 		HashRevision:    hashResult.HashRevision,
 	}, nil
+}
+
+func (s *RPCServer) hedgedMaintenanceHash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+	return hedgeMaintenanceHash(
+		ctx,
+		func(ctx context.Context) (*etcdserverpb.HashResponse, error) {
+			return s.localMaintenanceHash(ctx, false)
+		},
+		func(ctx context.Context) (*etcdserverpb.HashResponse, error) {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return s.peers.Hash(proxyCtx, req)
+		},
+		func(response *etcdserverpb.HashResponse, err error) {
+			s.observeForwardedRevision(response.GetHeader(), err)
+		},
+		func(err error) bool { return terminalMaintenanceHashError(err, false) },
+	)
+}
+
+func (s *RPCServer) hedgedMaintenanceHashKV(
+	ctx context.Context, req *etcdserverpb.HashKVRequest,
+) (*etcdserverpb.HashKVResponse, error) {
+	return hedgeMaintenanceHash(
+		ctx,
+		func(ctx context.Context) (*etcdserverpb.HashKVResponse, error) {
+			return s.localMaintenanceHashKV(ctx, req, false)
+		},
+		func(ctx context.Context) (*etcdserverpb.HashKVResponse, error) {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return s.peers.HashKV(proxyCtx, req)
+		},
+		func(response *etcdserverpb.HashKVResponse, err error) {
+			s.observeForwardedRevision(response.GetHeader(), err)
+		},
+		func(err error) bool { return terminalMaintenanceHashError(err, true) },
+	)
+}
+
+type maintenanceHashResult[T any] struct {
+	response T
+	err      error
+	remote   bool
+}
+
+func hedgeMaintenanceHash[T any](
+	ctx context.Context,
+	local func(context.Context) (T, error),
+	remote func(context.Context) (T, error),
+	observeRemote func(T, error),
+	terminalError func(error) bool,
+) (T, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan maintenanceHashResult[T], 2)
+	go func() {
+		response, err := local(ctx)
+		results <- maintenanceHashResult[T]{response: response, err: err}
+	}()
+	go func() {
+		response, err := remote(ctx)
+		results <- maintenanceHashResult[T]{response: response, err: err, remote: true}
+	}()
+
+	var zero T
+	var firstErr error
+	for range 2 {
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case result := <-results:
+			if result.remote {
+				observeRemote(result.response, result.err)
+			}
+			if result.err == nil {
+				return result.response, nil
+			}
+			if terminalError(result.err) {
+				return zero, result.err
+			}
+			if firstErr == nil {
+				firstErr = result.err
+			}
+		}
+	}
+	return zero, firstErr
+}
+
+func terminalMaintenanceHashError(err error, revisionAware bool) bool {
+	if revisionAware && (errors.Is(err, backend.ErrHashKVCompacted) || errors.Is(err, backend.ErrHashKVFuture) ||
+		status.Code(err) == codes.OutOfRange) {
+		return true
+	}
+	if errors.Is(err, rpctypes.ErrUserEmpty) || errors.Is(err, rpctypes.ErrUserNotFound) ||
+		errors.Is(err, rpctypes.ErrAuthFailed) || errors.Is(err, rpctypes.ErrPermissionDenied) ||
+		errors.Is(err, rpctypes.ErrInvalidAuthToken) || errors.Is(err, rpctypes.ErrAuthOldRevision) {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied, codes.NotFound,
+		codes.FailedPrecondition, codes.DataLoss:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {

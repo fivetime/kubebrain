@@ -390,7 +390,7 @@ func TestFollowerStatusProxiesBeforeStorageAndPreservesLocalLearner(t *testing.T
 	require.Equal(t, int64(91), response.GetHeader().GetRevision())
 }
 
-func TestFollowerHashesProxyBeforeStorageAndPreserveRevision(t *testing.T) {
+func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	wantErr := errors.New("local hash storage must not be reached")
@@ -430,6 +430,96 @@ func TestFollowerHashesProxyBeforeStorageAndPreserveRevision(t *testing.T) {
 	require.Equal(t, int64(42), gotHashKV.GetHashRevision())
 	require.Equal(t, int64(10), gotHashKV.GetCompactRevision())
 	require.Equal(t, uint64(77), server.backend.GetCurrentRevision())
+}
+
+func TestFollowerHashesHedgeIsolatedLeaderWithLocalStorage(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	put, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("/registry/maintenance/public-hash-local-hedge"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	wantHash, err := server.backend.Hash(context.Background())
+	require.NoError(t, err)
+	wantHashKV, err := server.backend.HashKV(context.Background(), put.GetHeader().GetRevision())
+	require.NoError(t, err)
+	hashStarted, hashCanceled := make(chan struct{}), make(chan struct{})
+	hashKVStarted, hashKVCanceled := make(chan struct{}), make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		hashFn: func(ctx context.Context, _ *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+			close(hashStarted)
+			<-ctx.Done()
+			close(hashCanceled)
+			return nil, ctx.Err()
+		},
+		hashKVFn: func(ctx context.Context, _ *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+			close(hashKVStarted)
+			<-ctx.Done()
+			close(hashKVCanceled)
+			return nil, ctx.Err()
+		},
+	}
+
+	hash, err := server.Hash(context.Background(), &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.Equal(t, wantHash.Hash, hash.GetHash())
+	require.Equal(t, wantHash.CurrentRevision, hash.GetHeader().GetRevision())
+	requireChannelsClosedEventually(t, hashStarted, hashCanceled)
+
+	hashKV, err := server.HashKV(context.Background(), &etcdserverpb.HashKVRequest{
+		Revision: put.GetHeader().GetRevision(),
+	})
+	require.NoError(t, err)
+	require.Equal(t, wantHashKV.Hash, hashKV.GetHash())
+	require.Equal(t, wantHashKV.HashRevision, hashKV.GetHashRevision())
+	require.Equal(t, wantHashKV.CompactRevision, hashKV.GetCompactRevision())
+	requireChannelsClosedEventually(t, hashKVStarted, hashKVCanceled)
+}
+
+func requireChannelsClosedEventually(t *testing.T, started, canceled <-chan struct{}) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		select {
+		case <-started:
+			select {
+			case <-canceled:
+				return true
+			default:
+			}
+		default:
+		}
+		return false
+	}, time.Second, time.Millisecond)
+}
+
+func TestFollowerHashHedgeFailsClosedOnLocalAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	peerCanceled := make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		hashFn: func(ctx context.Context, _ *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+			<-ctx.Done()
+			close(peerCanceled)
+			return nil, ctx.Err()
+		},
+	}
+
+	response, err := server.Hash(aliceCtx, &etcdserverpb.HashRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	require.Eventually(t, func() bool {
+		select {
+		case <-peerCanceled:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
 }
 
 func TestStatusRestoresColdRaftEnvelopeFromDurableRevision(t *testing.T) {
