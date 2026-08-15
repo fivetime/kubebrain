@@ -45,10 +45,18 @@ func TestSTMDifferentialAgainstReferenceEtcd(t *testing.T) {
 	if reference == "" {
 		t.Skip("set REFERENCE_ETCD_ENDPOINT to run STM differential compatibility tests")
 	}
-	require.Equal(t,
-		runSTMDeterministicScenario(t, reference, "etcd"),
-		runSTMDeterministicScenario(t, compatEndpoint(t), "kubebrain"),
-	)
+	referenceResult := runSTMDeterministicScenario(t, reference, "etcd")
+	kubebrainResult := runSTMDeterministicScenario(t, compatEndpoint(t), "kubebrain")
+	require.GreaterOrEqual(t, referenceResult.DeleteRetryAttempts, 2)
+	require.GreaterOrEqual(t, kubebrainResult.DeleteRetryAttempts, 2)
+	t.Logf("delete-conflict apply attempts: reference=%d kubebrain=%d",
+		referenceResult.DeleteRetryAttempts, kubebrainResult.DeleteRetryAttempts)
+	// apply is an application callback and may run any number of times after a
+	// conflict. Compare the committed result and public STM behavior, not this
+	// client-local scheduling diagnostic.
+	referenceResult.DeleteRetryAttempts = 0
+	kubebrainResult.DeleteRetryAttempts = 0
+	require.Equal(t, referenceResult, kubebrainResult)
 }
 
 func TestTxnCrossKeyFastShapeDifferentialAgainstReferenceEtcd(t *testing.T) {

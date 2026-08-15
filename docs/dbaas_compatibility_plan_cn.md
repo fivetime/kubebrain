@@ -51672,6 +51672,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   三个 direct endpoint 均可提交 proposal，revision 均为 `468126003565904524`，AlarmList/LeaseList 为空，Ready 且
   零重启。三台 PD 连续三轮、每轮从三个 PD 查询都一致报告 leader `kb-pd-1`，PD/TiKV 3+3 Pod 均 Ready 且零重启。
 
+- A4684 在 A4683 主三副本上继续执行固定 SHA reference 的核心 differential，清除一个已知但仍会让整套门禁假红的
+  STM oracle。第一轮运行到结尾共 765.086 秒；Alarm、KV/Txn、Lease、Watch、Snapshot、HTTP gateway、Hash/HashKV、
+  Range/RangeStream、concurrency recipes 等已执行路径均越过，最终唯一明确失败是 STM 的
+  `DeleteRetryAttempts`：reference 为 2，KubeBrain follower 为 26。单项复跑稳定复现为 2 对 38，但最终 value/version、
+  abort、snapshot、serializable read 次数全部一致。固定 upstream
+  `/root/etcd/client/v3/concurrency/stm.go::runSTM`：事务冲突后会重新调用应用 callback；
+  `RepeatableReads` 的 Get 又显式使用 `WithSerializable()`。callback 被调用次数是 client-local 调度诊断，不是 etcd API
+  契约，且 follower checkpoint 合法放大冲突窗口。测试因此分别要求两端都确实发生至少一次 retry、记录次数作诊断，再只比较
+  committed/public outcome；修正后专项 3.616 秒通过（reference=2、KubeBrain=38），没有为追平次数修改生产读路径。
+
+  为避免把 soak 噪声写成生产缺陷，第二轮过滤复跑期间误与 STM 专项共享 reference，出现 Txn lease revoke race 的
+  reference watch frame 聚合差异和 unselected branch 失败；换全新 reference 独立复跑两项 10.626 秒均通过。第三轮不并发
+  重跑时 CORRUPT alarm/KeepAlive 定时窗口单次失败，停止整轮后换全新 reference 专项 16.453 秒通过。因此本轮证据是
+  “STM 非契约 oracle 已修正、相关专项 GREEN”，不是完整核心 suite GREEN；尚未得到可稳定复现的新生产差异，也没有发布
+  新生产镜像。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
