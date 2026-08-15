@@ -52205,6 +52205,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   脚本全专项 187.521 秒通过；本项修改真实运维客户端与发布执行路径，不把 mock 绿灯替代真实
   TiKV/PD/JWT 验证。
 
+- A4704 修复达到官方操作上限的只读 Txn 在独立 TiKV 上超时的生产差距。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::checkTxnRequest` 与
+  `/root/etcd/tests/integration/v3_grpc_test.go::TestV3TxnTooManyOps`：默认上限为 128，恰好 128 个操作必须执行，
+  只有 129 个操作才返回 `InvalidArgument/etcdserver: too many operations in txn request`。修复前同一差分测试中，
+  upstream 对顶层 128、嵌套恰好剩余预算、compare 占满预算但单个 range child 三种请求均成功；旧 KubeBrain
+  因串行发起 128 次 TiKV point Get，三种请求都在 5 秒 client deadline 后返回 `DeadlineExceeded`。
+
+  生产提交 `79eb97b4` 在 backend 增加共享同一 TiKV snapshot timestamp、最多 16 路有界并发的 point batch get，
+  staged Txn 仅对完全只读、默认 revision、无 staged mutation 的点查分支预取；写事务、range scan 和显式历史 revision
+  保持原执行路径，缺少可选 batch 能力的 backend adapter 自动回退。`go test ./pkg/backend ./pkg/server/etcd -count=1`
+  分别在 78.459/177.017 秒通过，且该生产提交没有修改测试文件。
+
+  精确镜像 `kubebrain:a4704-79eb97b4` 内嵌 SHA
+  `79eb97b441bd299a1496f4b1f3e095393242242d`、build time `2026-08-15T14:01:13Z`，OCI index 为
+  `sha256:3202cae85cf8cab9d6ab754c0189b17aa391ec84556e041354c398cd114dae2d`，Kind runtime imageID 为
+  `sha256:6e91f18b69b6e2c25b1ce83174d5fd085750297c83e3105c616b2c83c39cd7f7`。真实三 PD/三 TiKV 上主与 JWT
+  共六副本滚动完成后均 Ready/零重启；原失败差分整组在 1.29 秒通过，连续三轮在 11.158 秒通过，生成式 Range、
+  Range option、Txn Delete/Nested/Put 与操作上限相邻套件在 26.651 秒全部通过。主三端 endpoint health 为
+  9.95/10.83/12.44ms，alarm 与 lease 均为空；PD/TiKV 3+3 Ready/零重启。由此证明修复作用于真实生产读路径，
+  不是用测试替代实现。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
