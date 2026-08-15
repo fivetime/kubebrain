@@ -51740,6 +51740,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   root/alice、角色仍为 root/operator 且临时权限已清空；三台 PD 连续三轮从全部 PD 查询一致报告 leader `kb-pd-1`，
   三台 PD 与三台 TiKV 均 Ready/零重启。
 
+- A4687 继续审计 follower 的非 KV 线性一致性 RPC，发现默认 `clientv3.MemberList`/`etcdctl member list` 的同类可用性
+  缺口。固定 upstream `/root/etcd/server/etcdserver/server.go::MemberList` 对 `Linearizable=true` 先执行 Raft
+  `LinearizableReadNotify` 再鉴权，`/root/etcd/server/proxy/grpcproxy/cluster.go::MemberList` 在未配置静态 advertise
+  返回时则把原始请求交给 authoritative Cluster client。KubeBrain 此前无 Cluster peer 转发，follower 始终先走自己的
+  `SyncReadRevision`/auth 存储路径。
+
+  精确 A4686 主集群选择 follower `kubebrain-0`（当时 Pod IP `10.244.0.235`），阻断其到三台 PD 2379/TCP 与
+  三台 TiKV 20160/TCP、但保留 KubeBrain leader 链路后，`etcdctl --command-timeout=5s member list -w json`
+  返回 `DeadlineExceeded`；含 client 退避实际 6.551 秒，trap 后同标记规则为 0。这是 topology discovery 和
+  client endpoint autosync 会直接触发的公开生产缺口。
+
+  提交 `07b3bc25c17a8621bfb9dc60c8c0db66d84dafdc` 为 peer proxy 增加 Cluster `MemberList`，仅在
+  `Linearizable=true` 且本地不是 leading-fresh 时，先构造受信认证上下文再把完整请求转发 leader，由 leader 负责
+  read barrier、auth 和成员快照；serializable MemberList 仍从本地 applied topology/auth state 返回，leading-fresh
+  路径不变。回归覆盖 follower 在本地 barrier 前转发，以及 Cluster transport 对 linearizable flag、header 和 members
+  的原样透传；`go vet ./pkg/server/...`、聚焦 race 通过，完整 `go test ./pkg/server/etcd -count=1` 185.009 秒通过。
+
+  精确镜像 `kubebrain:a4687-07b3bc25` 内嵌完整 SHA 与 UTC build time `2026-08-15T08:43:08Z`，本地 OCI
+  manifest list 为 `sha256:6d996082fb1d1ee5b88aca517747b54be19e6156192c66d9151f05e14821330a`，Kind runtime
+  imageID 为 `sha256:e16eb884fb3a21cf084405e33acae675d3606f47f5ba52ba37a13d2732137218`。主集群滚动后
+  follower `kubebrain-0` 为 `10.244.0.241`、leader 为 `kubebrain-1`；重复六目标隔离，原 MemberList 在
+  1.569 秒返回全部三个成员，日志记录 `forward member list`，规则为 0。JWT fixture 同镜像滚动后隔离 follower
+  `a4653-jwt-0`（`10.244.0.244`），alice Authenticate 加线性一致性 MemberList 在 1.669 秒返回三个成员，日志记录
+  `forward authenticate` 与 `forward member list`，规则为 0。主与 JWT 各三副本 Ready/零重启，主三个 endpoint
+  proposal health 成功、AlarmList/LeaseList 为空；JWT 三成员 auth enabled/authRevision=21 一致；三台 PD 连续三轮从
+  全部 PD 查询一致报告 leader `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
