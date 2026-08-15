@@ -52290,6 +52290,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   follower RangeStream 和 Watch L7 reset。最终三端 proposal health 为 53.36/50.95/38.37ms，alarm 为空、
   lease 数为零。
 
+- A4709 将超长客户端 key 的有界诊断从 watch/proxy 专项扩展到其余生产路径。生产提交 `bc7bc594`
+  新增共享 `util.LoggedKey`，并替换 etcd KV、Brain、backend range/scanner/compaction/watcher/eventlog、
+  lease orphan sweep 等入口对原始 key 的直接日志输出；不超过 256 字节继续可读，超过则只保留 SHA-256
+  和原始长度。15 个生产文件共 90 行新增、66 行删除，没有修改测试文件；`pkg/util`、scanner、backend、
+  Brain、proxy 与 server/etcd 聚焦回归全部通过。精确镜像 `kubebrain:a4709-bc7bc594` 内嵌 SHA
+  `bc7bc59402fe50ae0e7c5492b4d8bbcf399b30b4`，600 KiB 与 1500 KiB key 差分在 3.841 秒通过，
+  实际日志仅出现 `sha256:... (length=...)`，未检出连续 64 字节的原始探针 key。
+
+- A4710 处理上述大 key 运行验证暴露出的真实存储退化放大问题，而不是把 readiness 失败归为测试噪声。
+  当 TiKV Region leader/cache 短暂抖动时，原 checkpoint worker 会在每次 1 秒 RPC 超时后立即回到固定
+  1 秒周期；多个 KubeBrain 副本因此持续产生 durable revision/checkpoint rollback 和 Region refill，
+  `/ready` 虽能在约 1.4--2.6 秒正确返回，仍会被当前 1 秒探针以及生产清单 2 秒探针误判。生产提交
+  `e2970f88` 保留健康时每秒 checkpoint 更新，但失败后按 1、2、4、8、16、30 秒指数退避并在成功后
+  恢复每秒刷新；同时将 plaintext/TLS 生产 readiness timeout 调整为 6 秒，与服务内部 5 秒健康读上限
+  对齐。该提交只修改 backend 和两份生产清单，没有修改测试文件；backend 全量 78.996 秒、production
+  manifest 0.290 秒通过。
+
+  精确镜像 `kubebrain:a4710-e2970f88` 内嵌 SHA
+  `e2970f88eec41e9dbd243b3526d99fd8ef05245d`、build time `2026-08-15T15:51:30Z`，OCI index 为
+  `sha256:5c0498e6fa88ba389e483f12d824aa0642e5df0dceb6e8fa5f66b427747f8c79`，Kind runtime imageID 为
+  `sha256:6c00f6473c3a5ea3786f8c9ff8078f9eb24eaa8780418c000c860d5806a375cb`。主/JWT 六副本滚动后均
+  Ready、零重启，`/ready` 恢复到约 70--80ms；稳定窗口中六副本 deadline/refill 为零，最终两分钟
+  窗口仅两个副本各观察到 2 次 deadline/1 次 refill，未再形成此前每副本每分钟 66--78 次的持续风暴。
+  三 direct replica HA 差分 40.280 秒通过；600 KiB 与 1500 KiB key 差分 3.694 秒通过。最终三端
+  proposal health 为 67.53/61.71/60.87ms，alarm 为空、lease 数为零，主/JWT 与 PD/TiKV 3+3 全部
+  Ready、零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
