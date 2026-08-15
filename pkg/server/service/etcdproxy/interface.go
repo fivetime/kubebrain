@@ -65,6 +65,17 @@ type EtcdProxy interface {
 
 	// Authenticate forwards a username/password authentication request to leader.
 	Authenticate(ctx context.Context, req *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error)
+	AuthEnable(ctx context.Context, req *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error)
+	AuthDisable(ctx context.Context, req *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error)
+	UserAdd(ctx context.Context, req *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error)
+	UserDelete(ctx context.Context, req *etcdserverpb.AuthUserDeleteRequest) (*etcdserverpb.AuthUserDeleteResponse, error)
+	UserChangePassword(ctx context.Context, req *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error)
+	UserGrantRole(ctx context.Context, req *etcdserverpb.AuthUserGrantRoleRequest) (*etcdserverpb.AuthUserGrantRoleResponse, error)
+	UserRevokeRole(ctx context.Context, req *etcdserverpb.AuthUserRevokeRoleRequest) (*etcdserverpb.AuthUserRevokeRoleResponse, error)
+	RoleAdd(ctx context.Context, req *etcdserverpb.AuthRoleAddRequest) (*etcdserverpb.AuthRoleAddResponse, error)
+	RoleDelete(ctx context.Context, req *etcdserverpb.AuthRoleDeleteRequest) (*etcdserverpb.AuthRoleDeleteResponse, error)
+	RoleGrantPermission(ctx context.Context, req *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error)
+	RoleRevokePermission(ctx context.Context, req *etcdserverpb.AuthRoleRevokePermissionRequest) (*etcdserverpb.AuthRoleRevokePermissionResponse, error)
 
 	// UserGet forwards an authentication user lookup to leader.
 	UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error)

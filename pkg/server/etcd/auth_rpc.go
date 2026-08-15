@@ -33,7 +33,16 @@ func (s *RPCServer) authFollowerProxyContext(ctx context.Context) (context.Conte
 	return proxyCtx, true, err
 }
 
-func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRequest) (_ *etcdserverpb.AuthEnableResponse, retErr error) {
+func (s *RPCServer) AuthEnable(ctx context.Context, request *etcdserverpb.AuthEnableRequest) (_ *etcdserverpb.AuthEnableResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.AuthEnable(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
@@ -56,7 +65,16 @@ func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRe
 	return &etcdserverpb.AuthEnableResponse{Header: header}, nil
 }
 
-func (s *RPCServer) AuthDisable(ctx context.Context, _ *etcdserverpb.AuthDisableRequest) (_ *etcdserverpb.AuthDisableResponse, retErr error) {
+func (s *RPCServer) AuthDisable(ctx context.Context, request *etcdserverpb.AuthDisableRequest) (_ *etcdserverpb.AuthDisableResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.AuthDisable(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -210,6 +228,15 @@ func (s *RPCServer) Authenticate(ctx context.Context, request *etcdserverpb.Auth
 }
 
 func (s *RPCServer) UserAdd(ctx context.Context, request *etcdserverpb.AuthUserAddRequest) (_ *etcdserverpb.AuthUserAddResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.UserAdd(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if request.Options == nil || !request.Options.NoPassword {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), s.auth.bcryptCost)
 		if err != nil {
@@ -309,6 +336,15 @@ func (s *RPCServer) UserList(ctx context.Context, request *etcdserverpb.AuthUser
 }
 
 func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUserDeleteRequest) (_ *etcdserverpb.AuthUserDeleteResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.UserDelete(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -324,6 +360,15 @@ func (s *RPCServer) UserDelete(ctx context.Context, request *etcdserverpb.AuthUs
 }
 
 func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverpb.AuthUserChangePasswordRequest) (_ *etcdserverpb.AuthUserChangePasswordResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.UserChangePassword(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if request.Password != "" {
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(request.Password), s.auth.bcryptCost)
 		if err != nil {
@@ -347,6 +392,15 @@ func (s *RPCServer) UserChangePassword(ctx context.Context, request *etcdserverp
 }
 
 func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.AuthUserGrantRoleRequest) (_ *etcdserverpb.AuthUserGrantRoleResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.UserGrantRole(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -362,6 +416,15 @@ func (s *RPCServer) UserGrantRole(ctx context.Context, request *etcdserverpb.Aut
 }
 
 func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.AuthUserRevokeRoleRequest) (_ *etcdserverpb.AuthUserRevokeRoleResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.UserRevokeRole(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -377,6 +440,15 @@ func (s *RPCServer) UserRevokeRole(ctx context.Context, request *etcdserverpb.Au
 }
 
 func (s *RPCServer) RoleAdd(ctx context.Context, request *etcdserverpb.AuthRoleAddRequest) (_ *etcdserverpb.AuthRoleAddResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.RoleAdd(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -473,6 +545,15 @@ func (s *RPCServer) RoleList(ctx context.Context, request *etcdserverpb.AuthRole
 }
 
 func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRoleDeleteRequest) (_ *etcdserverpb.AuthRoleDeleteResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.RoleDelete(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -488,6 +569,15 @@ func (s *RPCServer) RoleDelete(ctx context.Context, request *etcdserverpb.AuthRo
 }
 
 func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserverpb.AuthRoleGrantPermissionRequest) (_ *etcdserverpb.AuthRoleGrantPermissionResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.RoleGrantPermission(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -503,6 +593,15 @@ func (s *RPCServer) RoleGrantPermission(ctx context.Context, request *etcdserver
 }
 
 func (s *RPCServer) RoleRevokePermission(ctx context.Context, request *etcdserverpb.AuthRoleRevokePermissionRequest) (_ *etcdserverpb.AuthRoleRevokePermissionResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.RoleRevokePermission(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}

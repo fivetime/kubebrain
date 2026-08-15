@@ -572,6 +572,40 @@ func (s testPeerService) Authenticate(ctx context.Context, req *etcdserverpb.Aut
 	return nil, nil
 }
 
+func (s testPeerService) AuthEnable(context.Context, *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) AuthDisable(context.Context, *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) UserAdd(context.Context, *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) UserDelete(context.Context, *etcdserverpb.AuthUserDeleteRequest) (*etcdserverpb.AuthUserDeleteResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) UserChangePassword(context.Context, *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) UserGrantRole(context.Context, *etcdserverpb.AuthUserGrantRoleRequest) (*etcdserverpb.AuthUserGrantRoleResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) UserRevokeRole(context.Context, *etcdserverpb.AuthUserRevokeRoleRequest) (*etcdserverpb.AuthUserRevokeRoleResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) RoleAdd(context.Context, *etcdserverpb.AuthRoleAddRequest) (*etcdserverpb.AuthRoleAddResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) RoleDelete(context.Context, *etcdserverpb.AuthRoleDeleteRequest) (*etcdserverpb.AuthRoleDeleteResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) RoleGrantPermission(context.Context, *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error) {
+	return nil, nil
+}
+func (s testPeerService) RoleRevokePermission(context.Context, *etcdserverpb.AuthRoleRevokePermissionRequest) (*etcdserverpb.AuthRoleRevokePermissionResponse, error) {
+	return nil, nil
+}
+
 func (s testPeerService) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
 	if s.userGetFn != nil {
 		return s.userGetFn(ctx, req)

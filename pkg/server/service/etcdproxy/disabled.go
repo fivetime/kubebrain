@@ -77,6 +77,40 @@ func (d disabledEtcdProxy) Authenticate(ctx context.Context, req *etcdserverpb.A
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) AuthEnable(context.Context, *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) AuthDisable(context.Context, *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) UserAdd(context.Context, *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) UserDelete(context.Context, *etcdserverpb.AuthUserDeleteRequest) (*etcdserverpb.AuthUserDeleteResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) UserChangePassword(context.Context, *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) UserGrantRole(context.Context, *etcdserverpb.AuthUserGrantRoleRequest) (*etcdserverpb.AuthUserGrantRoleResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) UserRevokeRole(context.Context, *etcdserverpb.AuthUserRevokeRoleRequest) (*etcdserverpb.AuthUserRevokeRoleResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) RoleAdd(context.Context, *etcdserverpb.AuthRoleAddRequest) (*etcdserverpb.AuthRoleAddResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) RoleDelete(context.Context, *etcdserverpb.AuthRoleDeleteRequest) (*etcdserverpb.AuthRoleDeleteResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) RoleGrantPermission(context.Context, *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error) {
+	return nil, errDisabled
+}
+func (d disabledEtcdProxy) RoleRevokePermission(context.Context, *etcdserverpb.AuthRoleRevokePermissionRequest) (*etcdserverpb.AuthRoleRevokePermissionResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
 	return nil, errDisabled
 }

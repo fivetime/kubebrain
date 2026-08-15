@@ -550,6 +550,127 @@ func (e *etcdProxy) Authenticate(ctx context.Context, req *etcdserverpb.Authenti
 	return resp, err
 }
 
+func (e *etcdProxy) AuthEnable(ctx context.Context, req *etcdserverpb.AuthEnableRequest) (*etcdserverpb.AuthEnableResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth enable", "leader", leader)
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).AuthEnable(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) AuthDisable(ctx context.Context, req *etcdserverpb.AuthDisableRequest) (*etcdserverpb.AuthDisableResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth disable", "leader", leader)
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).AuthDisable(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) UserAdd(ctx context.Context, req *etcdserverpb.AuthUserAddRequest) (*etcdserverpb.AuthUserAddResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth user add", "leader", leader, "name", req.GetName())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).UserAdd(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) UserDelete(ctx context.Context, req *etcdserverpb.AuthUserDeleteRequest) (*etcdserverpb.AuthUserDeleteResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth user delete", "leader", leader, "name", req.GetName())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).UserDelete(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) UserChangePassword(ctx context.Context, req *etcdserverpb.AuthUserChangePasswordRequest) (*etcdserverpb.AuthUserChangePasswordResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth user change password", "leader", leader, "name", req.GetName())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).UserChangePassword(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) UserGrantRole(ctx context.Context, req *etcdserverpb.AuthUserGrantRoleRequest) (*etcdserverpb.AuthUserGrantRoleResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth user grant role", "leader", leader, "user", req.GetUser(), "role", req.GetRole())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).UserGrantRole(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) UserRevokeRole(ctx context.Context, req *etcdserverpb.AuthUserRevokeRoleRequest) (*etcdserverpb.AuthUserRevokeRoleResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth user revoke role", "leader", leader, "name", req.GetName(), "role", req.GetRole())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).UserRevokeRole(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) RoleAdd(ctx context.Context, req *etcdserverpb.AuthRoleAddRequest) (*etcdserverpb.AuthRoleAddResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth role add", "leader", leader, "name", req.GetName())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).RoleAdd(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) RoleDelete(ctx context.Context, req *etcdserverpb.AuthRoleDeleteRequest) (*etcdserverpb.AuthRoleDeleteResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth role delete", "leader", leader, "role", req.GetRole())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).RoleDelete(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) RoleGrantPermission(ctx context.Context, req *etcdserverpb.AuthRoleGrantPermissionRequest) (*etcdserverpb.AuthRoleGrantPermissionResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth role grant permission", "leader", leader, "name", req.GetName())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).RoleGrantPermission(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) RoleRevokePermission(ctx context.Context, req *etcdserverpb.AuthRoleRevokePermissionRequest) (*etcdserverpb.AuthRoleRevokePermissionResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth role revoke permission", "leader", leader, "role", req.GetRole())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).RoleRevokePermission(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {
