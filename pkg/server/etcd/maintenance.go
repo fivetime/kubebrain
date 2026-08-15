@@ -30,6 +30,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
@@ -464,6 +465,10 @@ func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.Defragment
 	return &etcdserverpb.DefragmentResponse{}, nil
 }
 
+func authorizedPeerHashKVProxy(ctx context.Context) bool {
+	return isPeerRequest(ctx) && len(metadata.ValueFromIncomingContext(ctx, authorizedPeerHashKVProxyMetadataKey)) != 0
+}
+
 func (s *RPCServer) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hash", 1)
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
@@ -512,8 +517,10 @@ func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
-	if err := s.requireAuthenticated(ctx, true); err != nil {
-		return nil, err
+	if !authorizedPeerHashKVProxy(ctx) {
+		if err := s.requireAuthenticated(ctx, true); err != nil {
+			return nil, err
+		}
 	}
 	// A successful refresh pins normal-operation hashes to the latest committed
 	// revision. A failed refresh must not make this local diagnostic unavailable.

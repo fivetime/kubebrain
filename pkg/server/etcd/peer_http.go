@@ -42,6 +42,12 @@ const etcdClusterIDHeader = "X-Etcd-Cluster-ID"
 // body before JSON validation.
 const maxPeerHashKVRequestBytes = 64 * 1024
 
+// authorizedPeerHashKVProxyMetadataKey lets the peer HTTP corruption-check
+// endpoint call the leader's gRPC HashKV implementation without inventing an
+// etcd user credential. HashKV accepts it only together with the unforgeable
+// PeerServerOptions context marker; public metadata with this name is ignored.
+const authorizedPeerHashKVProxyMetadataKey = "kubebrain-authorized-peer-hashkv-proxy"
+
 // GetPeerHttpHandlers returns etcd-compatible peer HTTP handlers.
 func (s *RPCServer) GetPeerHttpHandlers() map[string]http.Handler {
 	return map[string]http.Handler{
@@ -185,6 +191,25 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// etcd hashes each peer's local BoltDB. KubeBrain replicas have no
+		// independent MVCC store: they all expose the same TiKV history. When this
+		// peer can still reach the leader but not TiKV/PD, obtain that shared hash
+		// through the trusted peer gRPC listener instead of timing out locally.
+		proxyCtx := metadata.AppendToOutgoingContext(
+			r.Context(), authorizedPeerHashKVProxyMetadataKey, "1",
+		)
+		resp, proxyErr := s.peers.HashKV(proxyCtx, req)
+		s.observeForwardedRevision(resp.GetHeader(), proxyErr)
+		if proxyErr != nil {
+			writePeerHashKVError(w, proxyErr)
+			return
+		}
+		writePeerHashKVResponse(w, clusterID, resp)
+		return
+	}
+
 	// KubeBrain stores one logical MVCC keyspace in TiKV, while each service
 	// replica caches the latest committed revision. Refresh when possible so
 	// peer diagnostics do not falsely report a known revision as future on an
@@ -193,14 +218,7 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 	_ = s.peers.SyncReadRevision(r.Context())
 	result, err := s.backend.HashKV(r.Context(), req.GetRevision())
 	if err != nil {
-		switch {
-		case errors.Is(err, backend.ErrHashKVCompacted):
-			http.Error(w, "mvcc: required revision has been compacted", http.StatusBadRequest)
-		case errors.Is(err, backend.ErrHashKVFuture):
-			http.Error(w, "mvcc: required revision is a future revision", http.StatusBadRequest)
-		default:
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		}
+		writePeerHashKVError(w, err)
 		return
 	}
 	resp := &etcdserverpb.HashKVResponse{
@@ -209,6 +227,22 @@ func (s *RPCServer) peerHashKVHandler(w http.ResponseWriter, r *http.Request) {
 		CompactRevision: result.CompactRevision,
 		HashRevision:    result.HashRevision,
 	}
+	writePeerHashKVResponse(w, clusterID, resp)
+}
+
+func writePeerHashKVError(w http.ResponseWriter, err error) {
+	message := status.Convert(err).Message()
+	switch {
+	case errors.Is(err, backend.ErrHashKVCompacted), strings.Contains(message, "required revision has been compacted"):
+		http.Error(w, "mvcc: required revision has been compacted", http.StatusBadRequest)
+	case errors.Is(err, backend.ErrHashKVFuture), strings.Contains(message, "required revision is a future revision"):
+		http.Error(w, "mvcc: required revision is a future revision", http.StatusBadRequest)
+	default:
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+}
+
+func writePeerHashKVResponse(w http.ResponseWriter, clusterID string, resp *etcdserverpb.HashKVResponse) {
 	respBytes, err := json.Marshal(resp)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

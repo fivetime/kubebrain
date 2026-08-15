@@ -37,6 +37,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -822,6 +823,94 @@ func TestPeerHashKVHandlerRefreshesRevisionBeforeHash(t *testing.T) {
 	server.peerHashKVHandler(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestPeerHashKVHandlerProxiesBeforeStorageWithTrustedMarker(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	wantErr := errors.New("isolated peer hash storage must not be reached")
+	server.backend = &maintenanceHashTrapBackendShim{BackendShim: server.backend, err: wantErr}
+	want := &etcdserverpb.HashKVResponse{
+		Header: txnHeader(77), Hash: 202, HashRevision: 42, CompactRevision: 10,
+	}
+	calls := 0
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		hashKVFn: func(ctx context.Context, request *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+			calls++
+			require.Equal(t, int64(42), request.GetRevision())
+			outgoing, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			require.Equal(t, []string{"1"}, outgoing.Get(authorizedPeerHashKVProxyMetadataKey))
+			return want, nil
+		},
+	}
+	body, err := json.Marshal(&etcdserverpb.HashKVRequest{Revision: 42})
+	require.NoError(t, err)
+	req := httptest.NewRequest(http.MethodGet, PeerHashKVPath, bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	server.peerHashKVHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, 1, calls)
+	var response etcdserverpb.HashKVResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+	require.Equal(t, want.GetHash(), response.GetHash())
+	require.Equal(t, want.GetHashRevision(), response.GetHashRevision())
+	require.Equal(t, want.GetCompactRevision(), response.GetCompactRevision())
+	require.Equal(t, uint64(77), server.backend.GetCurrentRevision())
+}
+
+func TestAuthorizedPeerHashKVProxyMarkerRequiresPeerListener(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	setupAuthKVUser(t, server)
+	server.peers = testPeerService{isLeader: true, epochFn: func() (uint64, bool) { return 7, true }}
+	marked := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		authorizedPeerHashKVProxyMetadataKey, "1",
+	))
+
+	response, err := server.HashKV(marked, &etcdserverpb.HashKVRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty, "public metadata must not bypass admin auth")
+
+	peerCtx := context.WithValue(marked, peerRequestContextKey{}, true)
+	response, err = server.HashKV(peerCtx, &etcdserverpb.HashKVRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+}
+
+func TestPeerHashKVHandlerMapsForwardedRevisionErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "future", err: rpctypes.ErrGRPCFutureRev, want: "mvcc: required revision is a future revision\n"},
+		{name: "compacted", err: rpctypes.ErrGRPCCompacted, want: "mvcc: required revision has been compacted\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.peers = testPeerService{
+				isLeader: false, proxyEnabled: true,
+				epochFn: func() (uint64, bool) { return 7, false },
+				hashKVFn: func(context.Context, *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+					return nil, test.err
+				},
+			}
+			req := httptest.NewRequest(http.MethodGet, PeerHashKVPath, bytes.NewReader([]byte(`{"revision":42}`)))
+			rec := httptest.NewRecorder()
+
+			server.peerHashKVHandler(rec, req)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			require.Equal(t, test.want, rec.Body.String())
+		})
+	}
 }
 
 func TestPeerHashKVHandlerRejectsBadPeerRequests(t *testing.T) {
