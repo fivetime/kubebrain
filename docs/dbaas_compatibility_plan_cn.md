@@ -51487,6 +51487,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `468126003565904524`，Status 无启用中的 downgrade，规则为 0，AlarmList 与 LeaseList 为空；KubeBrain、PD、
   TiKV 各三副本 Ready 且零重启。该结果提高的是 follower ingress 可用性，不把平台禁止的原地协议降级冒充为已支持。
 
+- A4677 开始把同一可用性修复扩展到 Auth service，先关闭只读、cluster-wide AuthStatus 缺口。固定 upstream
+  `/root/etcd/server/etcdserver/v3_server.go::AuthStatus` 通过 Raft request 读取集群 auth 状态，
+  `server/proxy/grpcproxy/auth.go::AuthStatus` 原样转发；KubeBrain 的 enabled/auth revision 同样是 TiKV 中的共享
+  租户状态，不是 endpoint-local 诊断。旧 follower 在找到 peer leader 前执行两次 storage-backed snapshot 与 read
+  barrier，因此单副本失去 PD/TiKV 时超时。提交 `8c7ed74c94ed250c2801ea7c89c4da437bbc289b` 增加 Auth
+  peer client，并让 proxy-capable follower 在任何本地 auth storage 访问前传递原始 bearer/client-cert 身份；leader
+  仍运行完整 AuthStatus handler，保留 enabled 状态下 credential 校验、两次 snapshot、header revision 和 upstream
+  历史 `unknown` apply metric label。公开响应继续由接收 listener 填写本成员 header，未把 leader member ID 泄漏给
+  客户端。路由契约、enabled 状态下匿名/无效/有效 token 专项、完整 server 182 秒、proxy 3.025 秒、vet 与聚焦
+  race 1.840 秒通过。
+
+  修复前精确 A4676 镜像上，阻断 follower `kubebrain-0` 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，
+  `auth status` 在 8 秒 deadline 返回 `DeadlineExceeded`，没有 peer 日志。精确 A4677 镜像
+  `kubebrain:a4677-8c7ed74c` 内嵌上述完整 SHA，构建时间 `2026-08-15T05:11:40Z`，OCI manifest list 为
+  `sha256:0a434e5238cbf736955ecba16f99eb9929bfede4330f32fc31a93b2d83dcbcd9`。首次滚动末尾恰逢整个 Kind 中
+  PD 暂时无法选出可供 client 发现的 leader/TSO，多个无关旧 auth/TLS fixture 同时 readiness 超时，`kubebrain-0`
+  首次启动 2 秒后 exit 1；这不是 A4677 GREEN，待三台 PD 都一致返回 `kb-pd-1` 后单独重建该 follower，获得新 UID
+  与零重启基线。随后相同六目标隔离下 PD/TiKV TCP probe 均超时，AuthStatus 在 644ms 返回 enabled=false、
+  authRevision=961、revision `468126003565904524`，公开 header member ID 仍为接收 follower `4034353177`，日志
+  确认实际转发 leader `kubebrain-1`。规则为 0，三个 endpoint proposal、AuthStatus 均成功，AlarmList/LeaseList
+  为空，KubeBrain/PD/TiKV 各三副本 Ready 且零重启，三台 PD 一致报告同一 leader。本轮真实故障仅覆盖 auth
+  disabled；auth enabled 的 credential/error 契约由既有黑盒与专项回归证明，后续仍需在隔离 auth fixture 上实测。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
