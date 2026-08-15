@@ -51533,6 +51533,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV 各三副本 Ready 且零重启。本轮真实故障仍是 auth-disabled 空 store；auth-enabled self/admin/denied 路径由
   完整回归覆盖，后续需与 Authenticate 和 Auth mutation 一起在隔离 auth fixture 上形成真实生命周期矩阵。
 
+- A4679 关闭 Authenticate 在 storage-isolated follower 上先访问本地 TiKV、因而无法把登录请求送到健康 leader
+  的缺口。固定 upstream `/root/etcd/server/etcdserver/v3_server.go::Authenticate`：server 先做 linearizable
+  read、校验密码并生成 token 前缀，再提交不含明文密码的 Raft request；
+  `/root/etcd/server/proxy/grpcproxy/auth.go::Authenticate` 则原样转发请求。提交
+  `e0d2f9da4f1363ed51985f87b825e1b075653477` 让 proxy-capable follower 在本地 read barrier 前将 Authenticate
+  连同逻辑身份送到可信 leader，leader 仍独占密码校验、token 生成、auth revision retry 和错误裁决。接收节点在
+  转发返回后清空 ingress request 的 Password，leader 也继续清空其反序列化副本；日志只记录用户名，不记录密码。
+  local leader 与禁用 proxy 的 follower 路径不变。路由契约明确验证 peer 调用期间仍能收到密码、返回后原请求密码
+  已清零且没有本地 sync read；既有 Auth 回归、完整 server 190 秒、proxy 3.031 秒、vet 与聚焦 race 2.150 秒通过。
+
+  修复前精确 A4678 镜像上，阻断 follower `kubebrain-0` 到三台 PD 2379/TCP 和三台 TiKV 20160/TCP 后，
+  `etcdctl --user=root:wrong-secret auth status` 的隐式 Authenticate 在 8 秒 deadline 返回 `DeadlineExceeded`，没有
+  peer 日志。精确 A4679 镜像 `kubebrain:a4679-e0d2f9da` 内嵌上述完整 SHA，构建时间
+  `2026-08-15T05:44:48Z`，OCI manifest list 为
+  `sha256:36fb7f0da142df2c50269770f38066b0043b6fe861cc6c58241593532db8946a`。滚动后三个新 Pod 零重启，
+  KubeBrain leader 为 `kubebrain-2`。首次隔离验证在 PD leader 稳定时 328ms 左右成功；随后的计时重放恰逢 PD
+  从 `kb-pd-2` 切换到 `kb-pd-1`，整个存储集群出现 TSO `requested pd is not leader`，该轮 2.313 秒超时，未将其
+  隐去或误计为 GREEN。待三台 PD 连续三轮一致报告 `kb-pd-1` 后，同一六目标隔离连续三轮分别在
+  0.314/0.311/0.314 秒成功：Authenticate 从 leader 返回 canonical `authentication is not enabled`，官方 client
+  随后继续执行已转发的 AuthStatus，最终 exit 0、authRevision=961、revision
+  `468126003565904524`，公开 header member ID 仍为接收 follower `4034353177`。日志逐轮确认两次 RPC 均发往
+  `kubebrain-2`，检索不到测试密码；规则为 0，三个 endpoint 均可提交 proposal，AlarmList/LeaseList 为空且三副本
+  Ready、零重启。本轮真实集群仍为 auth disabled，因此证明的是登录入口转发及 canonical disabled 错误；成功签发
+  token、错误密码与 auth revision 竞争还需在隔离 auth-enabled fixture 上补齐。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
