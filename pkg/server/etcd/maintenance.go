@@ -309,20 +309,15 @@ func (s *RPCServer) Status(ctx context.Context, req *etcdserverpb.StatusRequest)
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
 		// Upstream Status reads only the serving member's already-applied BoltDB,
 		// Raft and alarm state, while KubeBrain's logical state lives in shared
-		// TiKV. A storage-isolated ingress therefore asks the authoritative leader
-		// for that shared payload. The public interceptor still stamps the ingress
-		// MemberID, and IsLearner remains a property of this serving member.
-		proxyCtx, err := s.forwardWriteAuthContext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		response, err := s.peers.Status(proxyCtx, req)
-		if response != nil {
-			response.IsLearner = s.localMemberIsLearner()
-		}
-		s.observeForwardedRevision(response.GetHeader(), err)
-		return response, err
+		// TiKV. Race both paths so a storage-isolated ingress can use the leader,
+		// while a member with healthy storage retains upstream's member-local
+		// diagnostic availability when only its leader-peer path is unavailable.
+		return s.hedgedMaintenanceStatus(ctx, req)
 	}
+	return s.localMaintenanceStatus(ctx)
+}
+
+func (s *RPCServer) localMaintenanceStatus(ctx context.Context) (*etcdserverpb.StatusResponse, error) {
 	if err := s.requireAuthenticated(ctx, false); err != nil {
 		return nil, err
 	}
@@ -406,6 +401,34 @@ func (s *RPCServer) Status(ctx context.Context, req *etcdserverpb.StatusRequest)
 		resp.Errors = append(resp.Errors, alarmStatusError(alarm))
 	}
 	return resp, nil
+}
+
+func (s *RPCServer) hedgedMaintenanceStatus(
+	ctx context.Context, req *etcdserverpb.StatusRequest,
+) (*etcdserverpb.StatusResponse, error) {
+	return hedgeMaintenanceResult(
+		ctx,
+		func(ctx context.Context) (*etcdserverpb.StatusResponse, error) {
+			return s.localMaintenanceStatus(ctx)
+		},
+		func(ctx context.Context) (*etcdserverpb.StatusResponse, error) {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			response, err := s.peers.Status(proxyCtx, req)
+			if response != nil {
+				// IsLearner is a property of the serving member, not the leader that
+				// supplied the shared TiKV-backed status payload.
+				response.IsLearner = s.localMemberIsLearner()
+			}
+			return response, err
+		},
+		func(response *etcdserverpb.StatusResponse, err error) {
+			s.observeForwardedRevision(response.GetHeader(), err)
+		},
+		func(err error) bool { return terminalMaintenanceResultError(err, false) },
+	)
 }
 
 // freshMaintenanceRevision reports the shared TiKV commit watermark rather

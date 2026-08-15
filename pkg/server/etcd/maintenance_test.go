@@ -355,7 +355,7 @@ func TestStatusReportsLocalLearnerStateMatchesEtcd(t *testing.T) {
 	}
 }
 
-func TestFollowerStatusProxiesBeforeStorageAndPreservesLocalLearner(t *testing.T) {
+func TestFollowerStatusHedgesIsolatedStorageToLeaderAndPreservesLocalLearner(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	localID := server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity())
@@ -388,6 +388,56 @@ func TestFollowerStatusProxiesBeforeStorageAndPreservesLocalLearner(t *testing.T
 	require.Same(t, want, response)
 	require.True(t, response.GetIsLearner(), "the ingress member's learner state must override the leader payload")
 	require.Equal(t, int64(91), response.GetHeader().GetRevision())
+}
+
+func TestFollowerStatusHedgesIsolatedLeaderToLocalStatus(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	started, canceled := make(chan struct{}), make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		statusFn: func(ctx context.Context, _ *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			return nil, ctx.Err()
+		},
+	}
+
+	response, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	require.Equal(t, int64(server.backend.GetCurrentRevision()), response.GetHeader().GetRevision())
+	requireChannelsClosedEventually(t, started, canceled)
+}
+
+func TestFollowerStatusHedgeFailsClosedOnLocalAuthentication(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_ = setupAuthKVUser(t, server)
+	canceled := make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		statusFn: func(ctx context.Context, _ *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+			<-ctx.Done()
+			close(canceled)
+			return nil, ctx.Err()
+		},
+	}
+
+	response, err := server.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrUserEmpty)
+	require.Eventually(t, func() bool {
+		select {
+		case <-canceled:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
 }
 
 func TestFollowerHashesHedgeIsolatedStorageAndPreserveRevision(t *testing.T) {
