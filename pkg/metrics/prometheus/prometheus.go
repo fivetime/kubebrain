@@ -189,7 +189,7 @@ func (pw *prometheusWrapper) mustGetGaugeVec(name string, labels []metrics.T) (v
 		return vec
 	}
 
-	vec = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: formatName(name)}, pw.extractLabelNames(labels))
+	vec = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: formatName(name), Help: metricHelp(name)}, pw.extractLabelNames(labels))
 	registerer.MustRegister(vec)
 	pw.gaugeVecMap[name] = vec
 	return vec
@@ -214,7 +214,7 @@ func (pw *prometheusWrapper) mustGetCounterVec(name string, labels []metrics.T) 
 		return vec
 	}
 
-	vec = prometheus.NewCounterVec(prometheus.CounterOpts{Name: formatName(name)}, pw.extractLabelNames(labels))
+	vec = prometheus.NewCounterVec(prometheus.CounterOpts{Name: formatName(name), Help: metricHelp(name)}, pw.extractLabelNames(labels))
 	registerer.MustRegister(vec)
 	pw.counterVecMap[name] = vec
 	return vec
@@ -238,7 +238,7 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	if vec != nil {
 		return vec
 	}
-	opts := prometheus.HistogramOpts{Name: formatName(name), Help: histogramHelp(name)}
+	opts := prometheus.HistogramOpts{Name: formatName(name), Help: metricHelp(name)}
 	if name == "etcd.disk.backend_commit_duration_seconds" {
 		// Match server/storage/backend/metrics.go: 1ms through 8.192s.
 		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
@@ -295,22 +295,152 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	return vec
 }
 
-func histogramHelp(name string) string {
-	switch name {
-	case "etcd_debugging.lease.ttl_total":
+func metricHelp(name string) string {
+	switch formatName(name) {
+	case "etcd_cluster_version":
+		return "Which version is running. 1 for 'cluster_version' label with current cluster version"
+	case "etcd_debugging_auth_revision":
+		return "The current revision of auth store."
+	case "etcd_debugging_disk_backend_commit_rebalance_duration_seconds":
+		return "The latency distributions of commit.rebalance called by bboltdb backend."
+	case "etcd_debugging_disk_backend_commit_spill_duration_seconds":
+		return "The latency distributions of commit.spill called by bboltdb backend."
+	case "etcd_debugging_disk_backend_commit_write_duration_seconds":
+		return "The latency distributions of commit.write called by bboltdb backend."
+	case "etcd_debugging_lease_granted_total":
+		return "The total number of granted leases."
+	case "etcd_debugging_lease_renewed_total":
+		return "The number of renewed leases seen by the leader."
+	case "etcd_debugging_lease_revoked_total":
+		return "The total number of revoked leases."
+	case "etcd_debugging_lease_ttl_total":
 		return "Bucketed histogram of lease TTLs."
-	case "etcd.mvcc.hash_duration_seconds":
+	case "etcd_debugging_mvcc_compact_revision":
+		return "The revision of the last compaction in store."
+	case "etcd_debugging_mvcc_current_revision":
+		return "The current revision of store."
+	case "etcd_debugging_mvcc_db_compaction_keys_total":
+		return "Total number of db keys compacted."
+	case "etcd_debugging_mvcc_db_compaction_last":
+		return "The unix time of the last db compaction. Resets to 0 on start."
+	case "etcd_debugging_mvcc_events_total":
+		return "Total number of events sent by this member."
+	case "etcd_debugging_mvcc_keys_total":
+		return "Total number of keys."
+	case "etcd_debugging_mvcc_pending_events_total":
+		return "Total number of pending events to be sent."
+	case "etcd_debugging_mvcc_slow_watcher_total":
+		return "Total number of unsynced slow watchers."
+	case "etcd_debugging_mvcc_total_put_size_in_bytes":
+		return "The total size of put kv pairs seen by this member."
+	case "etcd_debugging_mvcc_watch_stream_total":
+		return "Total number of watch streams."
+	case "etcd_debugging_mvcc_watcher_total":
+		return "Total number of watchers."
+	case "etcd_debugging_server_lease_expired_total":
+		return "The total number of expired leases."
+	case "etcd_debugging_snap_save_marshalling_duration_seconds":
+		return "The marshalling cost distributions of save called by snapshot."
+	case "etcd_debugging_snap_save_total_duration_seconds":
+		return "The total latency distributions of save called by snapshot."
+	case "etcd_disk_backend_commit_duration_seconds":
+		return "The latency distributions of commit called by backend."
+	case "etcd_disk_backend_defrag_duration_seconds":
+		return "The latency distribution of backend defragmentation."
+	case "etcd_disk_backend_snapshot_duration_seconds":
+		return "The latency distribution of backend snapshots."
+	case "etcd_disk_defrag_inflight":
+		return "Whether or not defrag is active on the member. 1 means active, 0 means not."
+	case "etcd_disk_wal_fsync_duration_seconds":
+		return "The latency distributions of fsync called by WAL."
+	case "etcd_disk_wal_write_bytes_total":
+		return "Total number of bytes written in WAL."
+	case "etcd_disk_wal_write_duration_seconds":
+		return "The latency distributions of write called by WAL."
+	case "etcd_mvcc_db_open_read_transactions":
+		return "The number of currently open read transactions"
+	case "etcd_mvcc_db_total_size_in_bytes":
+		return "Total size of the underlying database physically allocated in bytes."
+	case "etcd_mvcc_db_total_size_in_use_in_bytes":
+		return "Total size of the underlying database logically in use in bytes."
+	case "etcd_mvcc_delete_total":
+		return "Total number of deletes seen by this member."
+	case "etcd_mvcc_hash_duration_seconds":
 		return "The latency distribution of storage hash operation."
-	case "etcd.mvcc.hash_rev_duration_seconds":
+	case "etcd_mvcc_hash_rev_duration_seconds":
 		return "The latency distribution of storage hash by revision operation."
-	case "etcd_debugging.server.watch_send_loop.watch_stream.duration.seconds":
+	case "etcd_mvcc_put_total":
+		return "Total number of puts seen by this member."
+	case "etcd_mvcc_range_total":
+		return "Total number of ranges seen by this member."
+	case "etcd_mvcc_txn_total":
+		return "Total number of txns seen by this member."
+	case "etcd_network_client_grpc_received_bytes_total":
+		return "The total number of bytes received from grpc clients."
+	case "etcd_network_client_grpc_sent_bytes_total":
+		return "The total number of bytes sent to grpc clients."
+	case "etcd_network_known_peers":
+		return "The current number of known peers."
+	case "etcd_server_go_version":
+		return "Which Go version server is running with. 1 for 'server_go_version' label with current version."
+	case "etcd_server_has_leader":
+		return "Whether or not a leader exists. 1 is existence, 0 is not."
+	case "etcd_server_health_failures":
+		return "The total number of failed health checks"
+	case "etcd_server_health_success":
+		return "The total number of successful health checks"
+	case "etcd_server_heartbeat_send_failures_total":
+		return "The total number of leader heartbeat send failures (likely overloaded from slow disk)."
+	case "etcd_server_id":
+		return "Server or member ID in hexadecimal format. 1 for 'server_id' label with current ID."
+	case "etcd_server_is_leader":
+		return "Whether or not this member is a leader. 1 if is, 0 otherwise."
+	case "etcd_server_is_learner":
+		return "Whether or not this member is a learner. 1 if is, 0 otherwise."
+	case "etcd_server_leader_changes_seen_total":
+		return "The number of leader changes seen."
+	case "etcd_server_learner_promote_successes":
+		return "The total number of successful learner promotions while this member is leader."
+	case "etcd_server_proposals_applied_total":
+		return "The total number of consensus proposals applied."
+	case "etcd_server_proposals_committed_total":
+		return "The total number of consensus proposals committed."
+	case "etcd_server_proposals_failed_total":
+		return "The total number of failed proposals seen."
+	case "etcd_server_proposals_pending":
+		return "The current number of pending proposals to commit."
+	case "etcd_server_quota_backend_bytes":
+		return "Current backend storage quota size in bytes."
+	case "etcd_server_read_indexes_failed_total":
+		return "The total number of failed read indexes seen."
+	case "etcd_server_request_duration_seconds":
+		return "Response latency distribution in seconds for each type."
+	case "etcd_server_slow_apply_total":
+		return "The total number of slow apply requests (likely overloaded from slow disk)."
+	case "etcd_server_slow_read_indexes_total":
+		return "The total number of pending read indexes not in sync with leader's or timed out read index requests."
+	case "etcd_server_snapshot_apply_in_progress_total":
+		return "1 if the server is applying the incoming snapshot. 0 if none."
+	case "etcd_server_version":
+		return "Which version is running. 1 for 'server_version' label with current version."
+	case "etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds":
 		return "The total duration in seconds of running through the send loop watch stream response all events."
-	case "etcd_debugging.server.watch_send_loop.watch_stream.duration_per_event.seconds":
+	case "etcd_debugging_server_watch_send_loop_watch_stream_duration_per_event_seconds":
 		return "The average duration in seconds of running through the send loop watch stream response, per event."
-	case "etcd_debugging.server.watch_send_loop.control_stream.duration.seconds":
+	case "etcd_debugging_server_watch_send_loop_control_stream_duration_seconds":
 		return "The total duration in seconds of running through the send loop control stream response."
-	case "etcd_debugging.server.watch_send_loop.progress.duration.seconds":
+	case "etcd_debugging_server_watch_send_loop_progress_duration_seconds":
 		return "The total duration in seconds of running through the progress loop control stream response."
+	case "etcd_snap_db_fsync_duration_seconds":
+		return "The latency distributions of fsyncing .snap.db file"
+	case "etcd_snap_db_save_total_duration_seconds":
+		return "The total latency distributions of v3 snapshot save"
+	case "etcd_snap_fsync_duration_seconds":
+		return "The latency distributions of fsync called by snap."
+	case "os_fd_limit":
+		return "The file descriptor limit."
+	case "os_fd_used":
+		return "The number of used file descriptors."
 	default:
 		return ""
 	}
