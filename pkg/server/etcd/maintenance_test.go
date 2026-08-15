@@ -468,6 +468,36 @@ func TestFollowerDefragmentProxiesNoOpToLeader(t *testing.T) {
 	require.True(t, called)
 }
 
+func TestFollowerDowngradeProxiesEveryActionToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	var forwarded []etcdserverpb.DowngradeRequest_DowngradeAction
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		downgradeFn: func(_ context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+			forwarded = append(forwarded, req.GetAction())
+			return &etcdserverpb.DowngradeResponse{Header: txnHeader(int64(len(forwarded)))}, nil
+		},
+	}
+
+	actions := []etcdserverpb.DowngradeRequest_DowngradeAction{
+		etcdserverpb.DowngradeRequest_VALIDATE,
+		etcdserverpb.DowngradeRequest_ENABLE,
+		etcdserverpb.DowngradeRequest_CANCEL,
+		etcdserverpb.DowngradeRequest_DowngradeAction(127),
+	}
+	for _, action := range actions {
+		response, err := server.Downgrade(context.Background(), &etcdserverpb.DowngradeRequest{
+			Action: action, Version: "3.6",
+		})
+		require.NoError(t, err)
+		require.Equal(t, int64(len(forwarded)), response.GetHeader().GetRevision())
+	}
+	require.Equal(t, actions, forwarded)
+}
+
 func TestAlarmMutationFailsBeforeWriteWhenColdRevisionUnavailable(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

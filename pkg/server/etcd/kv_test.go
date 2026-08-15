@@ -64,6 +64,7 @@ type testPeerService struct {
 	compactFn        func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error)
 	alarmFn          func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error)
 	defragmentFn     func(context.Context, *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
+	downgradeFn      func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
 	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
@@ -540,6 +541,13 @@ func (s testPeerService) Alarm(ctx context.Context, req *etcdserverpb.AlarmReque
 func (s testPeerService) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
 	if s.defragmentFn != nil {
 		return s.defragmentFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+	if s.downgradeFn != nil {
+		return s.downgradeFn(ctx, req)
 	}
 	return nil, nil
 }

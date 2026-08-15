@@ -517,6 +517,17 @@ func (e *etcdProxy) Defragment(ctx context.Context, req *etcdserverpb.Defragment
 	return resp, err
 }
 
+func (e *etcdProxy) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward downgrade", "leader", leader, "action", req.GetAction(), "version", req.GetVersion())
+	resp, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Downgrade(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {

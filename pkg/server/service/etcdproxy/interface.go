@@ -57,6 +57,9 @@ type EtcdProxy interface {
 	// Defragment forwards a maintenance defragment request to leader.
 	Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
 
+	// Downgrade forwards a cluster downgrade request to leader.
+	Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
+
 	// Watch forward watch stream request to leader.
 	Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error)
 

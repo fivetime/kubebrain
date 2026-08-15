@@ -639,6 +639,20 @@ func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLe
 
 func (s *RPCServer) Downgrade(ctx context.Context, request *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 	s.metricCli.EmitCounter("maintenance.downgrade", 1)
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// Downgrade is cluster-wide in upstream etcd and its gRPC proxy forwards
+		// every action. Preserve that boundary here: the trusted leader performs
+		// admin auth, version validation and the platform-managed ENABLE decision
+		// without requiring this ingress to reach its local TiKV auth path.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.Downgrade(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}

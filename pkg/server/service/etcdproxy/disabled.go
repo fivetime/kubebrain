@@ -65,6 +65,10 @@ func (d disabledEtcdProxy) Defragment(ctx context.Context, req *etcdserverpb.Def
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
 	return nil, errDisabled
 }
