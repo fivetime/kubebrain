@@ -52354,6 +52354,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   最终三端 proposal health 为 59.75/60.22/49.70ms，两分钟 deadline/refill 为零，alarm/lease 为空，
   主/JWT 与 PD/TiKV 3+3 全部 Ready、零重启。
 
+- A4713 补齐上述七个 histogram family 的 Prometheus HELP 元数据。A4712 已使指标名、空样本
+  可见性和 bucket schema 与 upstream 一致，但 KubeBrain 输出的 `# HELP` 仍为空字符串；这会破坏
+  按官方元数据生成的 dashboard/指标目录，也会使严格文本兼容检查失败。
+
+  生产提交 `c06d62c1` 在共享 histogram registrar 中增加精确 HELP 映射，覆盖 Lease TTL、
+  Hash/HashKV 以及 Watch event/per-event/control/progress 七族；只修改 1 个生产文件，增加 22 行、
+  删除 1 行，没有修改测试文件。metrics 包 0.027 秒、`pkg/server/etcd` 全量 185.804 秒通过。
+  精确镜像 `kubebrain:a4713-c06d62c1` 内嵌 SHA `c06d62c111dacc531291148e8c814ec41446b071`、
+  build time `2026-08-15T16:31:00Z`，OCI index 为
+  `sha256:d8a5ebf07af8fcd74e0193e65ed7aa40a543b42c727e483abd65de80702a4225`，Kind runtime imageID 为
+  `sha256:01ebf867f4eef01bb974ad88cb0698099a410db7a65e0f67100a89671d040eb6`。
+
+  与同轮全新启动的固定 upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`
+  逐行比较 `/metrics`，七族 `# HELP` 文本全部 MATCH，A4712 的七组完整 `le` 序列仍全部
+  MATCH。最终三端 proposal health 为 43.40/38.44/28.19ms，alarm/lease 为空，主/JWT 六副本
+  与 PD/TiKV 3+3 全部 Ready、零重启，五分钟服务端窗口未见 deadline/refill/refresh failure。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
