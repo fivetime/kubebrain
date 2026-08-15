@@ -52459,6 +52459,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   日志；因此本轮证明客户端场景从 RED 转 GREEN，但后台 checkpoint 在峰值负载下的容量裕量仍保留为后续
   性能/隔离差距，不记为零异常。参考 etcd、端口转发与一次性数据目录均已停止或删除。
 
+- A4718 收敛 A4717 暴露的 serializable-checkpoint 峰值容量差距。生产调用链审计确认 leader 每秒创建
+  checkpoint 时持有排他的 `logicalWriteMu`，却仍先后为 compact watermark 与 `auth/config` 各发起一个独立
+  TiKV 事务；高并发 leasing 已让共享 store 接近饱和，这个临界区内的额外 TSO/网络往返既延长写阻塞，也使
+  后台 compact-key read 出现 deadline。两项元数据都被同一逻辑写屏障保护，只需一个一致存储快照。
+
+  生产提交 `8e4ef72e` 通过 `storage.FindCapability[storage.BatchGetter]` 在一次 snapshot BatchGet 中读取两项
+  watermark；不支持 BatchGetter 的 storage 保留原串行回退。解码仍精确区分 key 缺失与存在但空值，损坏的
+  compact/auth 元数据继续 fail closed，没有以缓存或弱一致性换性能。提交只修改
+  `pkg/backend/serializable_checkpoint.go` 一个生产文件，新增 65 行、删除 14 行，没有修改测试文件；checkpoint
+  聚焦回归 0.214 秒、backend 全量 78.868 秒、server/etcd 全量 192.438 秒通过。
+
+  精确镜像 `kubebrain:a4718-8e4ef72e` 内嵌 SHA
+  `8e4ef72e4d40438f255e9b334767b2098158725a`、build time `2026-08-15T18:24:12Z`，OCI index 为
+  `sha256:df26d7d0712f22dd82ba82dc981537c3622e9ceee2287b638a76585bfbfcd79c`，Kind runtime imageID 为
+  `sha256:c5e209ab69c3f531f767f13335e31b8bbbb29cc3391e8b07d5949bfdcaced403`。主三副本滚动后全部
+  Ready/零重启；同一固定 upstream、同一 16×16 leasing Put/Get/Delete 差分由 A4717 的 66.16 秒降至
+  45.33 秒，节省 20.83 秒（约 31.5%），结果仍一致。测试窗口内三台 KubeBrain 的 checkpoint/deadline
+  日志为零，三台 TiKV 的 slow/busy/deadline 匹配均为零；最终 proposal health 19.24ms、alarm 为空，16 个
+  session lease 在原 60 秒 TTL 后自然收敛为零。参考 etcd、端口转发与一次性数据目录均已停止或删除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
