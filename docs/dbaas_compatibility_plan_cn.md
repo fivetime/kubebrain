@@ -51558,6 +51558,30 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   Ready、零重启。本轮真实集群仍为 auth disabled，因此证明的是登录入口转发及 canonical disabled 错误；成功签发
   token、错误密码与 auth revision 竞争还需在隔离 auth-enabled fixture 上补齐。
 
+- A4680 成组关闭全部 11 个 Auth mutation 在 storage-isolated follower 上的可用性缺口：AuthEnable、
+  AuthDisable，UserAdd/Delete/ChangePassword/GrantRole/RevokeRole，以及 RoleAdd/Delete/GrantPermission/
+  RevokePermission。固定 upstream `/root/etcd/server/proxy/grpcproxy/auth.go`，这些方法均把原始 protobuf
+  request 交给当前 Auth client；权威 server 再按 `/root/etcd/server/etcdserver/v3_server.go` 完成 admin
+  鉴权、密码哈希、Raft/apply 顺序和 auth revision 推进。提交
+  `69830023ee0ddbf2772fc5c2f45fb8da59568b97` 为 KubeBrain peer client 补齐相同 typed RPC，并让
+  proxy-capable follower 在任何本地 snapshot、read barrier、bcrypt 或 TiKV mutation 前转发。由 leader 独占
+  password→hashed-password 转换和所有状态/错误裁决，peer 日志仅记录 user/role 名称和非敏感参数；local leader
+  与禁用 proxy 路径不变。生产 handler/client/interface/disabled implementation 为主要改动，测试侧只增加现有
+  peer mock 为满足扩展接口所需的空方法。完整 server 181.703 秒、proxy 2.998 秒和 vet 通过。
+
+  修复前精确 A4679 镜像上，阻断 follower `kubebrain-0` 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，
+  对确定不存在用户执行 UserDelete，在 10.030 秒宿主 deadline 退出 124，规则恢复为 0。精确 A4680 镜像
+  `kubebrain:a4680-69830023` 内嵌上述完整 SHA，构建时间 `2026-08-15T06:01:22Z`，OCI manifest list 为
+  `sha256:766986794524d7c14ce5681454e2545caba91a2334fe682a91ae129428d58ad2`。滚动后三个新 Pod 零重启，
+  三台 PD 连续三轮一致报告 `kb-pd-1`，KubeBrain leader 为 `kubebrain-2`。重放相同六目标隔离，RoleAdd、
+  UserAdd（含明文 password ingress）、GrantPermission、GrantRole、RevokeRole、RevokePermission、UserDelete、
+  RoleDelete 均经 leader 成功；AuthEnable 经 leader 返回 canonical `root user does not exist`，AuthDisable 返回成功。
+  另一个隔离窗口真实执行 UserAdd→UserChangePassword→UserDelete，三步均成功，日志检索不到旧/新密码。两次规则
+  清理后均为 0；最终 user/role store 为空、auth disabled、authRevision=972，三个 endpoint 均可提交 proposal，
+  AlarmList/LeaseList 为空，三副本 Ready 且零重启，三台 PD 继续一致报告 `kb-pd-1`。本轮已实测全部 mutation
+  的 follower 路由，但 auth-enabled admin/denied、成功 Enable→token→Disable 的完整隔离生命周期仍需在专用
+  fixture 上验证，不能由 auth-disabled 主集群的结果替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
