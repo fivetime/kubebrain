@@ -52600,6 +52600,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canonical HTTP 400，证明修复没有吞掉双路径合法失败。postflight proposal health 19.87ms、alarm 为空；测试窗口
   有 hedged 内部 HashKV future warning 与一次 TiKV deadline，但没有外部请求失败，保留为后台时延 soak 观察项。
 
+- A4726 继续收紧 A4725 的 peer HashKV revision 边界。故障注入发现，follower 与全部 PD/TiKV 隔离但 peer 网络
+  正常时，请求 `MaxInt64` revision 会因本地 TiKV 分支悬挂而等满 8 秒客户端超时；直接把 forwarded leader 的
+  future/compacted 结果设为终态虽可消除该超时，但第一版候选在健康三副本的即时 Put→精确 revision 探针中仅
+  89/90 成功，其中一次仍在 1.762 秒返回 future。这个反例证明 leader 进程的本地 revision cache 也不能代表共享
+  TiKV 的提交边界，因此该候选未被当作 GREEN。
+
+  最终生产提交 `d1b0e2c0` 在 `checkRequestedRevision` 发现请求 revision 高于进程本地水位时读取 TiKV durable
+  revision、刷新本地水位，再判断真正的 future；只有完成这项 durable 校验的 forwarded leader revision error
+  才能终止 storage-isolated local hedge。提交修改 `pkg/server/etcd/kv.go` 与
+  `pkg/server/etcd/peer_http.go` 两个生产文件，共新增 25 行、删除 1 行，没有修改测试文件。现有
+  RequestedRevision/PeerHash/HashKV 聚焦回归 0.633 秒、完整 `pkg/server/etcd` 约 190 秒通过。
+
+  精确镜像 `kubebrain:a4726-d1b0e2c0` 内嵌 SHA
+  `d1b0e2c0b4922397a814b877414334ba1cd17ba6`、build time `2026-08-15T20:20:35Z`，OCI index 为
+  `sha256:e73167cf949585673698ae89914761f1e9d429d9f5399679e7bc94f597fa2ab9`，Kind runtime imageID 为
+  `sha256:4c938db4da2ab94bf2419652ac861f84456edc73b5e2fde1420881c9a922acdb`。主集群和 JWT 夹具共六个
+  Pod 滚动后均 Ready/零重启。健康路径连续 30 次 Put × 3 peer 为 90/90 HTTP 200，最慢 3.623 秒；在 JWT
+  follower 与三个 PD、三个 TiKV 全部隔离时，`MaxInt64` 连续 10/10 返回 canonical HTTP 400，最慢 15.7ms，
+  同时已提交 revision 连续 5/5 经 leader 返回 HTTP 200，最慢 15.1ms。恢复后两套集群 proposal health 均通过、
+  alarm 为空，三端正常 future 请求均返回 HTTP 400，六个 Pod 十分钟日志没有 panic/fatal/data-race/corrupt
+  匹配；隔离规则与 31 个测试键全部清除并确认查询计数为零。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
