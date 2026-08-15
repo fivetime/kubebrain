@@ -51688,6 +51688,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   “STM 非契约 oracle 已修正、相关专项 GREEN”，不是完整核心 suite GREEN；尚未得到可稳定复现的新生产差异，也没有发布
   新生产镜像。
 
+- A4685 沿 A4683 的 follower linearizable Range 修复继续审计完整 KV proxy 面，发现 read-only Txn 的同类真实生产缺口。
+  KubeBrain 已对普通 `Serializable=false` Range 先代理 leader，但只读 Txn 仍在 follower 本地先调用
+  `SyncReadRevision`，然后才执行 auth/Txn；固定 upstream `/root/etcd/server/proxy/grpcproxy/kv.go::Txn` 则把整个
+  Txn 原样交给当前 KV client，由权威 server 执行 barrier、auth 和固定 snapshot。A4683 主集群上选择 follower
+  `kubebrain-0`（当时 Pod IP `10.244.0.226`），阻断其到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，包含单个
+  non-serializable Range 的 read-only Txn 在 5 秒硬 deadline 内零响应，curl 返回 28；trap 清理后规则为 0。
+
+  提交 `926f633b248b7c13a82f0ffa3f24b039acbcbbf1` 在静态 Txn 校验完成后，让开启 peer proxy 的 non-leading
+  follower 把 linearizable read-only Txn 连同受信认证上下文直接发往 leader，并继续由 leader 决定 barrier/auth/error
+  顺序；显式 serializable read-only Txn 保持 follower GC-protected checkpoint 路径，写 Txn 既有 leader apply 路径不变。
+  生产代码 16 增，回归把旧“follower barrier 后本地执行”假设改为“本地 barrier 前原样代理”。聚焦回归通过，完整 server
+  包 176.753 秒、vet 和聚焦 race 2.009 秒通过。
+
+  精确镜像 `kubebrain:a4685-926f633b` 内嵌完整 SHA，UTC build time `2026-08-15T07:50:17Z`，本地 OCI
+  manifest list 为 `sha256:1239cb41f82b643d05638f05496c6f20fba2141287e8682fbd3b76ef030de906`。
+  主 StatefulSet 滚动后 follower `kubebrain-0` 新 IP 为 `10.244.0.229`、leader 为 `kubebrain-2`；重复完全相同的六目标
+  隔离，原请求 2.098 秒返回 `/a4685/txn=red`，日志明确记录 `forward txn`。随后 JWT fixture 也滚动到同一镜像，隔离
+  follower `a4653-jwt-0`（`10.244.0.232`）后，alice Authenticate、受限 JWT read-only Txn 和 root permission cleanup
+  3.342 秒整轮 PASS；日志记录 `forward authenticate`、`forward txn` 与 auth mutation，规则为 0。主与 JWT fixture
+  各三副本 Ready/零重启，JWT 三成员 auth enabled/authRevision=19 一致；主三个 endpoint proposal health 成功、
+  AlarmList/LeaseList 为空，三台 PD 连续三轮从全部 PD 查询均一致报告 leader `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
