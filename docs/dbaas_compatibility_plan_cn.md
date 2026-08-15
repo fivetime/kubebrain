@@ -52317,6 +52317,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   proposal health 为 67.53/61.71/60.87ms，alarm 为空、lease 数为零，主/JWT 与 PD/TiKV 3+3 全部
   Ready、零重启。
 
+- A4711 关闭空闲实例的通用 etcd histogram family 缺测。以全新启动的固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 与 A4710 Pod 直接比较 `/metrics` 后发现，
+  KubeBrain 虽已在真实请求中记录 Lease TTL、Hash/HashKV 和 Watch send-loop 延迟，但这些 family 由首次
+  `Observe` 惰性创建；没有对应流量的实例会完全缺少指标族，而 upstream 在注册或启动路径已暴露它们。
+  这会让发布门禁和 Prometheus 缺测告警无法区分“零请求”和“采集/实现缺失”。
+
+  生产提交 `7a795a94` 在 server 初始化时通过无样本 histogram registrar 注册
+  `etcd_debugging_lease_ttl_total`、`etcd_mvcc_hash_duration_seconds`、
+  `etcd_mvcc_hash_rev_duration_seconds` 以及 Watch event/per-event/control/progress 四族 send-loop 延迟；
+  不注入虚假 observation，也不把 bbolt compaction、v2 store 或独立 grpc-proxy cache 指标冒充为 TiKV 数据面
+  指标。4 个生产文件新增 31 行，没有修改测试文件；`pkg/server/etcd` 全量回归 181.616 秒通过。
+
+  精确镜像 `kubebrain:a4711-7a795a94` 内嵌 SHA
+  `7a795a9492204f89e98b464bb89740fa700063ae`、build time `2026-08-15T16:08:00Z`，OCI index 为
+  `sha256:4431bdcb7b8355fb39f9a0797b12361a73667f76a9f70f12c1016b65959f08d8`，Kind runtime imageID 为
+  `sha256:0ce47e46ac562749cd04f70c995787ce2960815e199cce70149a7c259af85b11`。主/JWT 六副本滚动后，
+  新 Pod 在尚未发出 TTL/Hash/Watch 请求时七个目标 histogram 的 bucket/sum/count 已全部存在且 count=0；
+  随后以 Pod 本地官方 etcdctl 触发 TTL、HashKV 和 Watch control，实际 leader/入口 Pod 的 count 分别增长，
+  证明 family 不是静态占位。临时 lease 已清空。最终三端 proposal health 为 38.74/28.06/36.87ms，
+  两分钟窗口 deadline/refill 为零，alarm/lease 为空，主/JWT 与 PD/TiKV 3+3 全部 Ready、零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
