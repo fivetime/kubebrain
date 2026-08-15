@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/authpb"
@@ -26,6 +27,7 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -595,11 +597,36 @@ func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (resp
 	emitEtcdMVCCTxnCounter(s.metricCli, 1)
 	startTime := time.Now()
 
-	if cost := quotaTxnCost(txn); txnContainsPut(txn) && s.configuredQuotaUnavailable(ctx, cost) {
-		return nil, rpctypes.ErrGRPCNoSpace
+	containsPut := txnContainsPut(txn)
+	validationErr := validateTxnRequestWithMaxOps(txn, s.maxTxnOps)
+	if containsPut {
+		// Keep etcd's outer-quota error precedence for malformed writes without
+		// making every valid follower write synchronously read local storage.
+		// Valid writes are authoritatively admitted by the leader below.
+		if validationErr != nil {
+			if s.configuredQuotaUnavailable(ctx, quotaTxnCost(txn)) {
+				return nil, rpctypes.ErrGRPCNoSpace
+			}
+			return nil, validationErr
+		}
+		_, leadingFresh := s.peers.EpochAndLeadingFresh()
+		if !leadingFresh && s.peers.EtcdProxyEnabled() {
+			s.metricCli.EmitCounter("write.follower", 1)
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			proxyCtx = s.forwardQuotaAdmissionMember(proxyCtx)
+			response, err := s.peers.Txn(proxyCtx, txn)
+			s.observeForwardedRevision(response.GetHeader(), err)
+			return response, err
+		}
+		if s.configuredQuotaUnavailable(ctx, quotaTxnCost(txn)) {
+			return nil, rpctypes.ErrGRPCNoSpace
+		}
 	}
-	if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
-		return nil, err
+	if validationErr != nil {
+		return nil, validationErr
 	}
 	readOnly := txnIsReadonly(txn)
 	checkpointTxn := false
@@ -914,9 +941,32 @@ func (s *RPCServer) configuredQuotaUnavailable(ctx context.Context, requestCost 
 	// Match upstream quotaAlarmer at the RPC boundary: the member which accepted
 	// the client request owns the alarm, even when it subsequently proxies the
 	// write to the leader. Preserve NoSpace if alarm persistence itself fails.
-	memberID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
+	memberID := s.quotaAdmissionMember(ctx)
 	_, _ = s.backend.ArmNoSpace(ctx, memberID)
 	return true
+}
+
+const quotaAdmissionMemberMetadataKey = "kubebrain-quota-admission-member"
+
+func (s *RPCServer) forwardQuotaAdmissionMember(ctx context.Context) context.Context {
+	memberID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
+	return metadata.AppendToOutgoingContext(ctx, quotaAdmissionMemberMetadataKey, strconv.FormatUint(memberID, 10))
+}
+
+func (s *RPCServer) quotaAdmissionMember(ctx context.Context) uint64 {
+	localID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
+	if !isPeerRequest(ctx) {
+		return localID
+	}
+	values := metadata.ValueFromIncomingContext(ctx, quotaAdmissionMemberMetadataKey)
+	if len(values) != 1 {
+		return localID
+	}
+	memberID, err := strconv.ParseUint(values[0], 10, 64)
+	if err != nil || memberID == 0 || s.memberByID(memberID) == nil {
+		return localID
+	}
+	return memberID
 }
 
 func quotaPutCost(r *etcdserverpb.PutRequest) int64 {
@@ -1354,26 +1404,32 @@ func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int
 func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etcdserverpb.PutResponse, retErr error) {
 	emitEtcdMVCCPutCounter(s.metricCli, 1)
 	startTime := time.Now()
-	if s.configuredQuotaUnavailable(ctx, quotaPutCost(r)) {
-		return nil, rpctypes.ErrGRPCNoSpace
+	validationErr := validatePutRequest(r)
+	if validationErr != nil {
+		if s.configuredQuotaUnavailable(ctx, quotaPutCost(r)) {
+			return nil, rpctypes.ErrGRPCNoSpace
+		}
+		return nil, validationErr
 	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
-	if err := validatePutRequest(r); err != nil {
-		return nil, err
-	}
 	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		s.metricCli.EmitCounter("write.follower", 1)
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		proxyCtx = s.forwardQuotaAdmissionMember(proxyCtx)
+		response, err := s.peers.Put(proxyCtx, r)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
+	if s.configuredQuotaUnavailable(ctx, quotaPutCost(r)) {
+		return nil, rpctypes.ErrGRPCNoSpace
+	}
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
-		if s.peers.EtcdProxyEnabled() {
-			proxyCtx, err := s.forwardWriteAuthContext(ctx)
-			if err != nil {
-				return nil, err
-			}
-			response, err := s.peers.Put(proxyCtx, r)
-			s.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
-		}
 		return nil, s.notLeaderErr("put")
 	}
 	readyEpoch, waitErr := s.waitLeaderReadyEpoch(ctx)

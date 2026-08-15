@@ -187,6 +187,22 @@ func leaseMetadataStorageID(key []byte) (int64, error) {
 
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (_ *etcdserverpb.LeaseGrantResponse, retErr error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
+		if req.ID == 0 {
+			req.ID = m.nextLeaseID()
+		}
+		proxyCtx, cancel := withUnaryRequestTimeout(ctx)
+		defer cancel()
+		proxyCtx, err := m.srv.forwardWriteAuthContext(proxyCtx)
+		if err != nil {
+			return nil, err
+		}
+		proxyCtx = m.srv.forwardQuotaAdmissionMember(proxyCtx)
+		response, err := m.srv.peers.LeaseGrant(proxyCtx, req)
+		m.srv.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	// Upstream quotaLeaseServer wraps LeaseServer, so an unavailable configured
 	// quota rejects LeaseGrant before EtcdServer allocates an automatic ID or
 	// enters auth/raft admission. TiKV quota tracks logical user bytes rather
@@ -205,21 +221,10 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
-	caller, err := m.srv.authCallerFromContext(ctx)
-	if err != nil {
+	if _, err := m.srv.authCallerFromContext(ctx); err != nil {
 		return nil, err
 	}
-	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
-		if m.srv.peers.EtcdProxyEnabled() {
-			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
-			}
-			response, err := m.srv.peers.LeaseGrant(proxyCtx, req)
-			m.srv.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
-		}
 		return nil, m.leaseLeaderUnavailable("lease grant")
 	}
 	// A newly elected local leader is published before it has reloaded durable
@@ -227,10 +232,11 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	// bounded startup window instead of rapidly returning Unavailable: grpc-go's
 	// finite retry policy can otherwise exhaust all attempts long before the
 	// caller's deadline during a PD recovery.
-	epoch, err = m.srv.waitLeaderReadyEpoch(ctx)
+	readyEpoch, err := m.srv.waitLeaderReadyEpoch(ctx)
 	if err != nil {
 		return nil, err
 	}
+	epoch = readyEpoch
 	if err := m.requireLeaseReady(); err != nil {
 		return nil, err
 	}

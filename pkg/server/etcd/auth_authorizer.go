@@ -308,8 +308,19 @@ func (s *RPCServer) forwardWriteAuthContext(ctx context.Context) (context.Contex
 	if credential, ok := authCredentialFromContext(ctx); ok {
 		return metadata.AppendToOutgoingContext(ctx, rpctypes.TokenFieldNameGRPC, credential), nil
 	}
-	snapshot, err := s.tokens.snapshots.current(ctx)
-	if err != nil || !snapshot.Config.Enabled || !s.clientCertAuth {
+	// Without client-certificate auth there is nothing to translate for the
+	// internal hop. In particular, do not turn a follower proxy into a local
+	// auth-storage read: the leader will authoritatively apply auth to the raw
+	// request, and a follower may legitimately have lost its own PD path.
+	if !s.clientCertAuth {
+		return ctx, nil
+	}
+	snapshot, ok := s.tokens.snapshots.cachedSnapshot()
+	var err error
+	if !ok {
+		snapshot, err = s.tokens.snapshots.current(ctx)
+	}
+	if err != nil || !snapshot.Config.Enabled {
 		return ctx, err
 	}
 	caller, err := s.authCallerFromTLS(ctx, snapshot)
