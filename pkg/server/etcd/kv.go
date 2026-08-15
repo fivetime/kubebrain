@@ -255,11 +255,11 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 			}
 			results, err := s.peers.RangeStream(proxyCtx, r)
 			if err != nil {
-				return err
+				return rangeStreamForwardError(ctx, err)
 			}
 			for result := range results {
 				if result.Err != nil {
-					return result.Err
+					return rangeStreamForwardError(ctx, result.Err)
 				}
 				if response := result.Response; response != nil {
 					s.observeForwardedRevision(response.GetRangeResponse().GetHeader(), nil)
@@ -497,6 +497,21 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
 	klog.V(4).InfoS("RANGE STREAM done", "key", util.LoggedKey(r.Key), "chunks", chunks, "rev", headerRev)
 	return nil
+}
+
+func rangeStreamForwardError(ctx context.Context, err error) error {
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	// The peer proxy owns a shared gRPC client that is closed when its leader
+	// connection is retired. That internal transport shutdown can surface as
+	// Canceled even though the public caller is still live. A partially delivered
+	// RangeStream cannot resume or be joined with a successor's snapshot, so make
+	// the topology change retryable and require the caller to discard the stream.
+	if errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled {
+		return rpctypes.ErrGRPCLeaderChanged
+	}
+	return err
 }
 
 // splitRangeStreamResponse keeps public stream messages near the configured

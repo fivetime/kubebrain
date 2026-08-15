@@ -533,6 +533,46 @@ func TestFollowerLinearizableRangeStreamProxiesBeforeLocalBarrier(t *testing.T) 
 	require.Equal(t, []*etcdserverpb.RangeStreamResponse{want}, stream.sent)
 }
 
+func TestFollowerRangeStreamMapsInternalProxyCancellationToLeaderChanged(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			results := make(chan etcdproxy.RangeStreamResult, 1)
+			results <- etcdproxy.RangeStreamResult{Err: status.Error(codes.Canceled, "grpc: the client connection is closing")}
+			close(results)
+			return results, nil
+		},
+	}
+	ctx := context.Background()
+	err := server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")},
+		&fakeRangeStreamServer{ctx: ctx})
+	require.ErrorIs(t, err, rpctypes.ErrGRPCLeaderChanged)
+	require.Equal(t, codes.Unavailable, status.Code(err))
+}
+
+func TestFollowerRangeStreamPreservesCallerCancellation(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			results := make(chan etcdproxy.RangeStreamResult, 1)
+			results <- etcdproxy.RangeStreamResult{Err: context.Canceled}
+			close(results)
+			return results, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")},
+		&fakeRangeStreamServer{ctx: ctx})
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 func TestStaleLeaderSerializableLatestRangeStreamUsesProtectedCheckpoint(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
