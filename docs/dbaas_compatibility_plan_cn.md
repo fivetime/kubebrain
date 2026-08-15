@@ -52786,6 +52786,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   均为 0，三个 PD/三个 TiKV Ready，主与 JWT 六个 KubeBrain Pod Ready/零重启，proposal health 18.064ms、
   AlarmList 与 LeaseList 为空，六条 iptables 规则及两个端口转发均清除。
 
+- A4734 对 A4733 的 timeout 白名单做完整反向审计，防止只修 AuthStatus 样本而仍遗漏其他 upstream Raft RPC。
+  固定 `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+  `server/etcdserver/v3_server.go`，逐一枚举全部 23 个直接 `s.raftRequest(...)` 调用者：3 个 KV mutation、2 个
+  Lease mutation、Alarm，以及 17 个 Auth RPC。前五项由 A4729 的 handler budget 覆盖，后十八项由 A4733 的
+  Auth service + Alarm interceptor 白名单覆盖；Downgrade、Member mutation、ordinary Range、Status 并不调用
+  `raftRequest`，不能仅因名称或“也是 unary”就错误加入同一预算。Compact 使用独立上游路径，但 KubeBrain 已在
+  A4729 以现有 handler budget 覆盖其 TiKV attempt。
+
+  最终 `kubebrain:a4733-f64cc977` 上再以六条精确双向 DROP 规则隔离全部三台 TiKV 15 秒。official clientv3
+  AlarmList 在约 10、20、30 秒连续收到三次 `DeadlineExceeded`，外层 30 秒预算最终耗尽；规则虽于 15 秒撤销，
+  全 store 失联后的 client cache/connection 恢复仍晚于该预算，不能把“每次 attempt 正确截断”误报成“30 秒内必然
+  恢复”。endpoint 随后立即恢复健康。Auth RoleAdd 在同类分区中前两次 attempt 返回 `DeadlineExceeded`，第三次于
+  23 秒成功；RoleList 只含一个 `a4734-timeout-role`，删除后 RoleGet 返回 canonical role-not-found，证明重试没有产生
+  重复逻辑对象或遗留状态。
+
+  本轮没有发现新的生产 RED，因此没有修改生产或测试代码。终态四类 PD Region check 为 0，三个 PD/三个 TiKV
+  Ready，主与 JWT 六个 KubeBrain Pod 继续使用 A4733 镜像且 Ready/零重启，endpoint proposal health 20.211ms、
+  AlarmList 与 LeaseList 为空；临时 role、十二次规则实例对应的所有 iptables 条目及两个端口转发均清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
