@@ -51355,6 +51355,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   PD 路径时写代理继续可用；它不把 leader 或 TiKV 数据路径故障宣称为可用，也不替代配额满载和 mTLS client-cert
   场景的后续真实故障矩阵。
 
+- A4671 将 A4670 的 storage-isolated follower 路由修复扩展到 Lease unary 数据面。旧 `LeaseRevoke`、普通
+  `LeaseTimeToLive(Keys=false)` 和 `LeaseLeases` 在确认 follower/代理 leader 前调用
+  `authCallerFromContext`，即使 auth disabled 也会同步读取本地 TiKV auth config；接收成员失去独立存储路径时，
+  健康 leader 无法代为响应。提交 `7d223f9f042e8755ad77f22f719f268deb9683f8` 让上述三类请求先按
+  freshness-aware leadership 路由，并用 A4670 的 raw credential/client-cert translation 交给 leader 权威鉴权；
+  Revoke 的 key permission 与 auth write guard 仍只在实际 apply 的 leader 建立。`LeaseTimeToLive(Keys=true)`
+  刻意保留接收成员在代理返回后的 auth-revision fence：这是上游防止并发权限变化泄漏 attached key 名称的语义，
+  在没有独立 auth-revision 复制通道前不以可用性为由删除。本项没有修改测试文件；聚焦 Lease/Auth 回归、完整
+  `pkg/server/etcd` 173.209 秒、vet 和聚焦 race 均通过。
+
+  修复前精确 A4670 镜像上，先创建 TTL=90 lease 并绑定真实键，再阻断 follower `kubebrain-0` 到全部三台 PD
+  2379/TCP 和三台 TiKV 20160/TCP；第一个普通 TTL 调用超过约四分钟仍未返回且没有进入 peer proxy，实验随后
+  主动中止，trap/显式清理确认规则为零，lease 已自然过期、测试前缀为空。精确 A4671 镜像
+  `kubebrain:a4671-7d223f9f` 内嵌上述完整 SHA，构建时间 `2026-08-15T03:21:34Z`，OCI manifest list 为
+  `sha256:4ae276c8051d5197cad98e795d25172acb546e525b66e27eefa38d37b7c94348`。三副本滚动后重放相同六目标
+  storage isolation，Pod 内 PD/TiKV connect probe 均在 1 秒超时；直接请求该 follower 的 TTL 返回
+  remaining=115s、LeaseList 返回唯一 lease、Revoke 成功，三项均受宿主 10 秒硬超时保护且 proxy 日志确认发往
+  `kubebrain-2`。Revoke 后绑定键为 0，规则为 0，AlarmList 为空、LeaseList 为 0；三个 endpoint 均成功提交
+  proposal，KubeBrain/PD/TiKV 主集群各三副本 Ready 且零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
