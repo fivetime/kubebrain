@@ -368,7 +368,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	preps := make([]txnPrep, 0, len(ops))
 	prepByKey := make(map[string]*txnPrep, len(ops))
 	baseRevision := b.GetCurrentRevision()
-	members, corruptGenerationRaw, corruptGenerationExists, alarmErr := b.readStableCorruptAlarmState(ctx)
+	members, _, _, corruptGuard, alarmErr := b.readCorruptAlarmCommitState(ctx)
 	if alarmErr != nil {
 		return nil, baseRevision, false, alarmErr
 	}
@@ -557,10 +557,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 	}
 	if !hasUserWrite && hasInternalWrite {
-		corruptGuard, alarmErr := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
-		if alarmErr != nil {
-			return nil, baseRevision, false, alarmErr
-		}
 		if cerr := b.fenceAdmit(ctx); cerr != nil {
 			return nil, baseRevision, false, cerr
 		}
@@ -618,11 +614,6 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 		return results, cur, false, nil
 	}
-	corruptGuard, alarmErr := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
-	if alarmErr != nil {
-		return nil, baseRevision, false, alarmErr
-	}
-
 	var (
 		quotaUsageRaw  []byte
 		nextQuotaUsage int64

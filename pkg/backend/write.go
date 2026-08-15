@@ -115,16 +115,12 @@ func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error)
 	} else if !errors.Is(getErr, storage.ErrKeyNotFound) {
 		return false, getErr
 	}
-	members, corruptGenerationRaw, corruptGenerationExists, err := b.readStableCorruptAlarmState(ctx)
+	members, corruptGenerationRaw, corruptGenerationExists, corruptGuard, err := b.readCorruptAlarmCommitState(ctx)
 	if err != nil {
 		return false, err
 	}
 	if len(members) != 0 {
 		return false, ErrCorruptAlarmActive
-	}
-	corruptGuard, err := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
-	if err != nil {
-		return false, err
 	}
 	batch := b.kv.BeginBatchWrite()
 	batch.PutIfNotExist(revisionKey, uint64ToBytes(modRevision), 0)

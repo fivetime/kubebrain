@@ -104,6 +104,76 @@ func (b *backend) readStableCorruptAlarmState(ctx context.Context) ([]uint64, []
 	}
 }
 
+// readCorruptAlarmCommitState reads the complete hot-path write fence from one
+// storage snapshot when the backend supports batch reads. Arm/Disarm mutate the
+// member set, generation, control key, and every shard atomically, so one
+// BatchGet is already a stable logical state and avoids the five serial TiKV
+// transactions previously paid by every user write. Decorated or legacy
+// storages without BatchGetter retain the seqlock-based fallback.
+func (b *backend) readCorruptAlarmCommitState(ctx context.Context) ([]uint64, []byte, bool, corruptAlarmCommitGuard, error) {
+	batchGetter, ok := storage.FindCapability[storage.BatchGetter](b.kv)
+	if !ok {
+		members, generationRaw, generationExists, err := b.readStableCorruptAlarmState(ctx)
+		if err != nil {
+			return nil, nil, false, corruptAlarmCommitGuard{}, err
+		}
+		guard, err := b.corruptAlarmCommitGuardFor(ctx, generationRaw, generationExists)
+		return members, generationRaw, generationExists, guard, err
+	}
+
+	shard := b.corruptAlarmFenceShard.Add(1) - 1
+	shardKey := corruptAlarmFenceShardKey(shard)
+	keys := [][]byte{
+		b.ks.EncodeInternalKey(corruptAlarmKey),
+		b.ks.EncodeInternalKey(corruptAlarmGenerationKey),
+		b.ks.EncodeInternalKey(corruptAlarmFenceControlKey),
+		b.ks.EncodeInternalKey(shardKey),
+	}
+	values, err := batchGetter.BatchGet(ctx, keys)
+	if err != nil {
+		return nil, nil, false, corruptAlarmCommitGuard{}, err
+	}
+
+	alarmRaw, alarmExists := values[string(keys[0])]
+	members := []uint64(nil)
+	if alarmExists {
+		members, err = decodeCorruptAlarmMembers(alarmRaw)
+		if err != nil {
+			return nil, nil, false, corruptAlarmCommitGuard{}, fmt.Errorf("decode corrupt alarm metadata: %w", err)
+		}
+		for i := 1; i < len(members); i++ {
+			if members[i-1] >= members[i] {
+				return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm metadata is not strictly ordered")
+			}
+		}
+	}
+
+	generationRaw, generationExists := values[string(keys[1])]
+	if generationExists {
+		if _, err := decodeCorruptAlarmGeneration(generationRaw); err != nil {
+			return nil, nil, false, corruptAlarmCommitGuard{}, err
+		}
+	}
+	control, controlExists := values[string(keys[2])]
+	if !controlExists {
+		return members, generationRaw, generationExists, corruptAlarmCommitGuard{key: corruptAlarmFenceControlKey}, nil
+	}
+	if !bytes.Equal(control, []byte{1}) {
+		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence version is %x", control)
+	}
+	if !generationExists {
+		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence exists without generation")
+	}
+	shardRaw, shardExists := values[string(keys[3])]
+	if !shardExists {
+		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence shard %02x is missing", shard%corruptAlarmFenceShardCount)
+	}
+	if !bytes.Equal(shardRaw, generationRaw) {
+		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence shard %02x generation mismatch", shard%corruptAlarmFenceShardCount)
+	}
+	return members, generationRaw, generationExists, corruptAlarmCommitGuard{key: shardKey, expected: shardRaw, exists: true}, nil
+}
+
 func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error) {
 	// Drain this leader's in-flight logical writes before validating evidence.
 	// A write that already passed the server alarm gate can otherwise become
@@ -170,17 +240,25 @@ func (b *backend) readCorruptAlarmGeneration(ctx context.Context) (uint64, []byt
 	if err != nil {
 		return 0, nil, false, err
 	}
+	generation, err := decodeCorruptAlarmGeneration(raw)
+	if err != nil {
+		return 0, nil, false, err
+	}
+	return generation, raw, true, nil
+}
+
+func decodeCorruptAlarmGeneration(raw []byte) (uint64, error) {
 	if len(raw) != 8 {
-		return 0, nil, false, invalidAlarmMetadataf("corrupt alarm generation has length %d", len(raw))
+		return 0, invalidAlarmMetadataf("corrupt alarm generation has length %d", len(raw))
 	}
 	generation := binary.BigEndian.Uint64(raw)
 	if generation == 0 {
-		return 0, nil, false, invalidAlarmMetadataf("corrupt alarm generation is zero")
+		return 0, invalidAlarmMetadataf("corrupt alarm generation is zero")
 	}
 	if generation == ^uint64(0) {
-		return 0, nil, false, invalidAlarmMetadataf("corrupt alarm generation is exhausted")
+		return 0, invalidAlarmMetadataf("corrupt alarm generation is exhausted")
 	}
-	return generation, raw, true, nil
+	return generation, nil
 }
 
 func encodeNextCorruptAlarmGeneration(current uint64) ([]byte, error) {

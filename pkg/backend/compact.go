@@ -630,18 +630,13 @@ func autoCompactTarget(currentRev, retention, compactRev uint64, leading bool) (
 func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanced bool, err error) {
 	b.logicalWriteMu.Lock()
 	defer b.logicalWriteMu.Unlock()
-	members, corruptGenerationRaw, corruptGenerationExists, err := b.readStableCorruptAlarmState(ctx)
+	members, corruptGenerationRaw, corruptGenerationExists, corruptGuard, err := b.readCorruptAlarmCommitState(ctx)
 	if err != nil {
 		return false, err
 	}
 	if len(members) != 0 {
 		return false, ErrCorruptAlarmActive
 	}
-	corruptGuard, err := b.corruptAlarmCommitGuardFor(ctx, corruptGenerationRaw, corruptGenerationExists)
-	if err != nil {
-		return false, err
-	}
-
 	// get stored compact revision
 	val, err := b.kv.Get(ctx, getCompactKey(b.config.Prefix))
 	if err != nil && err != storage.ErrKeyNotFound {
