@@ -51295,6 +51295,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内嵌 SHA、Ready 且零重启。对该新镜像一次运行上述全部 10 组真实差分 54.940 秒通过，最终 endpoint
   health 可提交 proposal，AlarmList 与 LeaseList 均为空。
 
+- A4668 补齐服务端二进制的常规版本探测入口。上游 etcd 在
+  `/root/etcd/server/etcdmain/help.go` 明确公开 `etcd --version`，并在 `config.go` 将其定义为打印版本后退出；
+  此前 KubeBrain 只支持 `kube-brain version`，执行 `kube-brain --version` 会以 unknown flag 失败并输出整页帮助，
+  使镜像准入、巡检和事故取证中通用的无副作用 provenance 探测不兼容。提交 `1b895eec` 为 Cobra root command
+  注册 `--version`，并让 flag 与既有子命令共用同一个完整 build-identity renderer；两者均打印版本、TiKV 后端、
+  完整 Git SHA、Go 版本/平台和构建时间，不进入服务启动路径。注入元数据的本地二进制和最终容器内两种调用均
+  exit 0、逐字一致；`go test ./cmd/...`、`go vet ./cmd/...` 与 diff check 通过，本项没有修改测试文件。
+
+  精确镜像 `kubebrain:a4668-1b895eec` 内嵌 SHA
+  `1b895eec5b0b76da473cc3fc518fdb219044b91c`，构建时间为 `2026-08-15T01:59:16Z`，OCI manifest list 为
+  `sha256:8ea16326aad0c56742aff67cdfca37ce1625ea622bf613f6671445faf7fdf272`。滚动后三个 KubeBrain Pod
+  都 Ready、零重启，并分别在 Pod 内证明 `--version` 与 `version` 输出一致且 SHA 精确；endpoint health 在
+  93.194ms 内成功提交 proposal，AlarmList 为空、LeaseList 为 0，三台 PD 与三台 TiKV 也都 Ready、零重启。
+  该改动只关闭二进制运维入口差距，不把 KubeBrain 的产品版本字符串冒充上游 etcd server 版本，也不改变任何
+  KV、Watch、Lease 或 Txn 数据面语义。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
