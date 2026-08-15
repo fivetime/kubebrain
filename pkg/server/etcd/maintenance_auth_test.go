@@ -144,6 +144,48 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	require.NotNil(t, downgradeResponse.GetHeader())
 }
 
+func TestMoveLeaderFollowerUsesAppliedAuthStateWithoutStorage(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	rootToken, err := server.tokens.authenticate(context.Background(), "root", "root-secret")
+	require.NoError(t, err)
+	rootCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(
+		rpctypes.TokenFieldNameGRPC, rootToken,
+	))
+
+	server.peers = testPeerService{leaderInfo: "leader.test:3380", proxyEnabled: true}
+	server.SetStaticMembers([]*etcdserverpb.Member{
+		{ID: 7, Name: "local", PeerURLs: []string{"http://" + server.backend.GetResourceLock().Identity()}},
+		{ID: 8, Name: "leader", PeerURLs: []string{"http://leader.test:3380"}},
+	})
+	shim := &blockingAuthConfigReadShim{
+		BackendShim:  server.backend,
+		blockAt:      1,
+		entered:      make(chan struct{}),
+		release:      make(chan struct{}),
+		putCommitted: make(chan struct{}),
+	}
+	server.backend = shim
+	server.tokens.snapshots.repo.backend = shim
+	t.Cleanup(func() { close(shim.release) })
+
+	response, err := server.MoveLeader(rootCtx, &etcdserverpb.MoveLeaderRequest{TargetID: 8})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrGRPCNotLeader)
+	require.Equal(t, codes.FailedPrecondition, status.Code(err))
+
+	response, err = server.MoveLeader(aliceCtx, &etcdserverpb.MoveLeaderRequest{TargetID: 8})
+	require.Nil(t, response)
+	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
+	require.Equal(t, int32(0), shim.reads.Load(), "follower MoveLeader must not read auth state from storage")
+	select {
+	case <-shim.entered:
+		t.Fatal("follower MoveLeader reached the storage-backed auth path")
+	default:
+	}
+}
+
 func TestMaintenanceRootAuthorizationClientCertificateErrorsMatchEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

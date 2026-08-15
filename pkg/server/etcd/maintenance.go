@@ -635,9 +635,6 @@ func (s *RPCServer) forwardSnapshot(
 
 func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLeaderRequest) (*etcdserverpb.MoveLeaderResponse, error) {
 	s.metricCli.EmitCounter("maintenance.moveleader", 1)
-	if err := s.requireAuthenticated(ctx, true); err != nil {
-		return nil, err
-	}
 	localID := s.memberIDForPeerIdentity(s.backend.GetResourceLock().Identity())
 	leaderID := s.memberIDForPeerIdentity(s.peers.GetLeaderInfo())
 	// Match maintenanceServer.MoveLeader: the serving member must reject the
@@ -646,7 +643,30 @@ func (s *RPCServer) MoveLeader(ctx context.Context, request *etcdserverpb.MoveLe
 	// request that landed on a follower into an idempotent success merely because
 	// TargetID names the actual leader.
 	if localID == 0 || localID != leaderID {
+		// Upstream's authMaintenanceServer performs its admin check before the
+		// member-local not-leader check. A follower already has the applied auth
+		// store needed for that decision; consulting TiKV here would make an etcd
+		// member-local error depend on quorum storage availability. Use the complete
+		// local snapshot when possible, while retaining the authoritative fallback
+		// for cold/incomplete auth state.
+		if caller, err, complete := s.authCallerFromCachedContext(ctx); complete {
+			if err != nil {
+				return nil, err
+			}
+			if caller != nil {
+				if err := caller.adminError(); err != nil {
+					return nil, err
+				}
+			}
+		} else if err := s.requireAuthenticated(ctx, true); err != nil {
+			return nil, err
+		}
 		return nil, rpctypes.ErrGRPCNotLeader
+	}
+	// A leader can act on the request, so its authorization decision must use
+	// authoritative storage rather than a potentially stale applied snapshot.
+	if err := s.requireAuthenticated(ctx, true); err != nil {
+		return nil, err
 	}
 	member := s.memberByID(request.GetTargetID())
 	if member == nil || member.GetIsLearner() {
