@@ -73,6 +73,10 @@ func (d disabledEtcdProxy) Defragment(ctx context.Context, req *etcdserverpb.Def
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) Status(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 	return nil, errDisabled
 }

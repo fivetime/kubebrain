@@ -302,8 +302,26 @@ func (s *RPCServer) Alarm(ctx context.Context, req *etcdserverpb.AlarmRequest) (
 	return response, nil
 }
 
-func (s *RPCServer) Status(ctx context.Context, _ *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+func (s *RPCServer) Status(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
 	s.metricCli.EmitCounter("maintenance.status", 1)
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// Upstream Status reads only the serving member's already-applied BoltDB,
+		// Raft and alarm state, while KubeBrain's logical state lives in shared
+		// TiKV. A storage-isolated ingress therefore asks the authoritative leader
+		// for that shared payload. The public interceptor still stamps the ingress
+		// MemberID, and IsLearner remains a property of this serving member.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.Status(proxyCtx, req)
+		if response != nil {
+			response.IsLearner = s.localMemberIsLearner()
+		}
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if err := s.requireAuthenticated(ctx, false); err != nil {
 		return nil, err
 	}

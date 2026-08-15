@@ -63,6 +63,9 @@ type EtcdProxy interface {
 	// Defragment forwards a maintenance defragment request to leader.
 	Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
 
+	// Status forwards a maintenance status request to leader.
+	Status(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error)
+
 	// Downgrade forwards a cluster downgrade request to leader.
 	Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 

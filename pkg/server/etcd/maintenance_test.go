@@ -340,6 +340,41 @@ func TestStatusReportsLocalLearnerStateMatchesEtcd(t *testing.T) {
 	}
 }
 
+func TestFollowerStatusProxiesBeforeStorageAndPreservesLocalLearner(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	localID := server.memberIDForPeerIdentity(server.backend.GetResourceLock().Identity())
+	server.SetStaticMembers([]*etcdserverpb.Member{{ID: localID, Name: "local", IsLearner: true}})
+
+	want := &etcdserverpb.StatusResponse{
+		Header:           txnHeader(91),
+		Version:          Version,
+		Leader:           8,
+		RaftIndex:        91,
+		RaftAppliedIndex: 91,
+		IsLearner:        false,
+	}
+	request := &etcdserverpb.StatusRequest{}
+	called := 0
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		statusFn: func(_ context.Context, got *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+			called++
+			require.Same(t, request, got)
+			return want, nil
+		},
+	}
+	server.backend = &quotaStatusErrorBackendShim{BackendShim: server.backend, err: errors.New("storage unavailable")}
+
+	response, err := server.Status(context.Background(), request)
+	require.NoError(t, err)
+	require.Equal(t, 1, called)
+	require.Same(t, want, response)
+	require.True(t, response.GetIsLearner(), "the ingress member's learner state must override the leader payload")
+	require.Equal(t, int64(91), response.GetHeader().GetRevision())
+}
+
 func TestStatusRestoresColdRaftEnvelopeFromDurableRevision(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

@@ -167,7 +167,8 @@ func (s *blockingLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeep
 
 type snapshotLeaderServer struct {
 	etcdserverpb.UnimplementedMaintenanceServer
-	responses []*etcdserverpb.SnapshotResponse
+	responses      []*etcdserverpb.SnapshotResponse
+	statusResponse *etcdserverpb.StatusResponse
 }
 
 type rangeStreamLeaderServer struct {
@@ -203,6 +204,36 @@ func (s *snapshotLeaderServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream 
 		}
 	}
 	return nil
+}
+
+func (s *snapshotLeaderServer) Status(context.Context, *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+	return s.statusResponse, nil
+}
+
+func TestStatusForwardsLeaderResponse(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	want := &etcdserverpb.StatusResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 42}, Leader: 9, RaftIndex: 42,
+	}
+	server := grpc.NewServer()
+	registerServingHealth(server)
+	etcdserverpb.RegisterMaintenanceServer(server, &snapshotLeaderServer{statusResponse: want})
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+	endpoint := lis.Addr().String()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: endpoint}, client: cli, curLeader: endpoint}
+
+	response, err := proxy.Status(context.Background(), &etcdserverpb.StatusRequest{})
+	require.NoError(t, err)
+	require.True(t, proto.Equal(want, response))
 }
 
 func TestSnapshotForwardsEveryLeaderResponse(t *testing.T) {

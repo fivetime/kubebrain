@@ -67,6 +67,7 @@ type testPeerService struct {
 	compactFn        func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error)
 	alarmFn          func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error)
 	defragmentFn     func(context.Context, *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
+	statusFn         func(context.Context, *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error)
 	downgradeFn      func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 	authStatusFn     func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
 	authenticateFn   func(context.Context, *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error)
@@ -573,6 +574,13 @@ func (s testPeerService) Alarm(ctx context.Context, req *etcdserverpb.AlarmReque
 func (s testPeerService) Defragment(ctx context.Context, req *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
 	if s.defragmentFn != nil {
 		return s.defragmentFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) Status(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
+	if s.statusFn != nil {
+		return s.statusFn(ctx, req)
 	}
 	return nil, nil
 }
