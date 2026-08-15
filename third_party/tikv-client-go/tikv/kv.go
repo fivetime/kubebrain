@@ -40,7 +40,9 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -236,20 +238,21 @@ func NewKVStore(uuid string, pdClient pd.Client, spkv SafePointKV, tikvclient Cl
 // NewPDClient returns an unwrapped pd client.
 func NewPDClient(pdAddrs []string) (pd.Client, error) {
 	cfg := config.GetGlobalConfig()
+	security, tlsDialOptions, err := pdSecurityOptions(cfg.Security)
+	if err != nil {
+		return nil, err
+	}
 	// init pd-client
 	pdCli, err := pd.NewClient(
-		pdAddrs, pd.SecurityOption{
-			CAPath:   cfg.Security.ClusterSSLCA,
-			CertPath: cfg.Security.ClusterSSLCert,
-			KeyPath:  cfg.Security.ClusterSSLKey,
-		},
+		pdAddrs, security,
 		pd.WithGRPCDialOptions(
-			grpc.WithKeepaliveParams(
-				keepalive.ClientParameters{
-					Time:    time.Duration(cfg.TiKVClient.GrpcKeepAliveTime) * time.Second,
-					Timeout: time.Duration(cfg.TiKVClient.GrpcKeepAliveTimeout) * time.Second,
-				},
-			),
+			append(tlsDialOptions,
+				grpc.WithKeepaliveParams(
+					keepalive.ClientParameters{
+						Time:    time.Duration(cfg.TiKVClient.GrpcKeepAliveTime) * time.Second,
+						Timeout: time.Duration(cfg.TiKVClient.GrpcKeepAliveTimeout) * time.Second,
+					},
+				))...,
 		),
 		pd.WithCustomTimeoutOption(time.Duration(cfg.PDClient.PDServerTimeout)*time.Second),
 		pd.WithForwardingOption(config.GetGlobalConfig().EnableForwarding),
@@ -258,6 +261,38 @@ func NewPDClient(pdAddrs []string) (pd.Client, error) {
 		return nil, errors.WithStack(err)
 	}
 	return pdCli, nil
+}
+
+// pdSecurityOptions preserves the upstream path unless an explicit peer-CN
+// allow-list is configured. The pinned PD client has no CN field in its
+// SecurityOption, so in that case establish and verify TLS in the dialer and
+// let gRPC carry HTTP/2 over the already-secure connection.
+func pdSecurityOptions(security config.Security) (pd.SecurityOption, []grpc.DialOption, error) {
+	if len(security.ClusterVerifyCN) == 0 {
+		return pd.SecurityOption{
+			CAPath: security.ClusterSSLCA, CertPath: security.ClusterSSLCert, KeyPath: security.ClusterSSLKey,
+		}, nil, nil
+	}
+	tlsConfig, err := security.ToTLSConfig()
+	if err != nil {
+		return pd.SecurityOption{}, nil, err
+	}
+	// credentials.NewTLS normally injects gRPC's h2 ALPN. This path performs
+	// TLS in the dialer before gRPC sees the connection, so advertise h2 here.
+	tlsConfig.NextProtos = []string{"h2"}
+	dialer := &tls.Dialer{Config: tlsConfig}
+	option := grpc.WithContextDialer(func(ctx context.Context, address string) (net.Conn, error) {
+		configForAddress := dialer.Config.Clone()
+		if configForAddress.ServerName == "" {
+			host, _, splitErr := net.SplitHostPort(address)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			configForAddress.ServerName = strings.Trim(host, "[]")
+		}
+		return (&tls.Dialer{Config: configForAddress}).DialContext(ctx, "tcp", address)
+	})
+	return pd.SecurityOption{}, []grpc.DialOption{option}, nil
 }
 
 // EnableTxnLocalLatches enables txn latch. It should be called before using
@@ -699,12 +734,15 @@ var _ = NewLockResolver
 func NewLockResolver(etcdAddrs []string, security config.Security, opts ...pd.ClientOption) (
 	*txnlock.LockResolver, error,
 ) {
+	pdSecurity, tlsDialOptions, err := pdSecurityOptions(security)
+	if err != nil {
+		return nil, err
+	}
+	if len(tlsDialOptions) != 0 {
+		opts = append(opts, pd.WithGRPCDialOptions(tlsDialOptions...))
+	}
 	pdCli, err := pd.NewClient(
-		etcdAddrs, pd.SecurityOption{
-			CAPath:   security.ClusterSSLCA,
-			CertPath: security.ClusterSSLCert,
-			KeyPath:  security.ClusterSSLKey,
-		}, opts...,
+		etcdAddrs, pdSecurity, opts...,
 	)
 	if err != nil {
 		return nil, errors.WithStack(err)

@@ -101,6 +101,22 @@ func (s *Security) ToTLSConfig() (tlsConfig *tls.Config, err error) {
 				return getCert()
 			}
 		}
+		if len(s.ClusterVerifyCN) != 0 {
+			allowedCNs := make(map[string]struct{}, len(s.ClusterVerifyCN))
+			for _, cn := range s.ClusterVerifyCN {
+				allowedCNs[cn] = struct{}{}
+			}
+			tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+				if len(state.PeerCertificates) == 0 {
+					return errors.New("TLS peer did not provide a certificate")
+				}
+				cn := state.PeerCertificates[0].Subject.CommonName
+				if _, ok := allowedCNs[cn]; !ok {
+					return errors.Errorf("TLS peer common name %q is not allowed", cn)
+				}
+				return nil
+			}
+		}
 	}
 	return
 }

@@ -17,6 +17,7 @@ package tikv
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"math"
 	"sync"
@@ -42,6 +43,14 @@ type Security struct {
 	CertPath string
 	KeyPath  string
 	VerifyCN []string
+}
+
+// TLSConfig builds the same client TLS policy used by every TiKV and PD
+// connection. Keeping admission metadata on this path prevents it from
+// silently omitting the configured server-CN restriction.
+func (s Security) TLSConfig() (*tls.Config, error) {
+	security := tikvcfg.NewSecurity(s.CAPath, s.CertPath, s.KeyPath, s.VerifyCN)
+	return security.ToTLSConfig()
 }
 
 func (s Security) enabled() bool {

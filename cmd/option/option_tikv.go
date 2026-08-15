@@ -20,10 +20,10 @@ package option
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
-	"github.com/tikv/pd/client/tlsutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
@@ -62,7 +62,9 @@ func (a *tikvProcessAdmission) Close() error {
 }
 
 func (s *storageConfig) buildProcessAdmission(ctx context.Context, keyspace, identity string) (processAdmission, error) {
-	tlsConfig, err := (tlsutil.TLSConfig{CAPath: s.caFile, CertPath: s.certFile, KeyPath: s.keyFile, CertAllowedCN: s.verifyCN}).ToTLSConfig()
+	tlsConfig, err := (storagetikv.Security{
+		CAPath: s.caFile, CertPath: s.certFile, KeyPath: s.keyFile, VerifyCN: s.verifyCN,
+	}).TLSConfig()
 	if err != nil {
 		return nil, fmt.Errorf("build PD admission TLS: %w", err)
 	}
@@ -103,6 +105,16 @@ func (s *storageConfig) validate() error {
 	if s.caFile != "" || s.certFile != "" || s.keyFile != "" {
 		if s.caFile == "" || s.certFile == "" || s.keyFile == "" {
 			return fmt.Errorf("TiKV TLS requires all of --tikv-ca-file, --tikv-cert-file, --tikv-key-file")
+		}
+	}
+	if len(s.verifyCN) != 0 {
+		if s.caFile == "" {
+			return fmt.Errorf("--tikv-verify-cn requires TiKV TLS to be configured")
+		}
+		for _, cn := range s.verifyCN {
+			if strings.TrimSpace(cn) == "" {
+				return fmt.Errorf("--tikv-verify-cn values must not be empty")
+			}
 		}
 	}
 	return nil
