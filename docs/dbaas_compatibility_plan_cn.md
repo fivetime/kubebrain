@@ -52144,6 +52144,21 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `DeadlineExceeded`。四轮 trap 后规则均为 0，六副本继续 Ready/零重启，JWT auth enabled/authRevision=25 保持。
   本项关闭的是误修风险与故障契约证据，不包含生产代码或新镜像，也不把预期失败包装为可用性 GREEN。
 
+- A4700 从逐 RPC 故障审计回到完整公开 API 面，防止遗漏方法或把 upstream 的条件拒绝误报为缺口。参考源码固定
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`，KubeBrain 模块同时固定
+  `go.etcd.io/etcd/api/v3@v3.7.0` 与 `go.etcd.io/etcd/server/v3@v3.7.0`。由 generated `grpc.ServiceDesc` 枚举
+  KV、Watch、Lease、Cluster、Maintenance、Auth、Lock、Election 后，49 个公开 unary/stream RPC 均在生产 receiver
+  上有显式方法，没有任何方法仅因嵌入 `Unimplemented*Server` 而意外暴露。AST 分类门禁只允许 Downgrade、四个
+  Member mutation、MoveLeader 与 RangeStream 的具体分支出现 `Unimplemented`；前六者已有 DBaaS control-plane
+  ownership 或 upstream 条件错误分类，不能静默扩大 allowlist。
+
+  本轮曾把 RangeStream custom sort/revision filters 视为待实现候选，随即以
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::checkRangeStreamRequest` 纠正：upstream 3.7 本身对非默认排序返回
+  `Unimplemented: RangeStream does not support custom sort orders`，对四类 revision filter 返回
+  `Unimplemented: RangeStream does not support revision filters`，KubeBrain 的顺序与文本一致，不应擅自扩展出官方没有的
+  流式排序语义。API surface 两项门禁连续 20 轮 2.169 秒通过。当前主/JWT StatefulSet 继续运行已验证的
+  `kubebrain:a4698-81e09947`；本项没有生产变更或新镜像，产出是完整性审计与误修闭环，不冒充功能修复。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
