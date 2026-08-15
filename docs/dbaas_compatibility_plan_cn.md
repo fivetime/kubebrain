@@ -52891,6 +52891,23 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   AlarmList、partial/final artifact 和临时目录均为空。主与 JWT 六个 KubeBrain Pod 均使用最终镜像且
   Ready/零重启，两个测试端口转发在记录后关闭。
 
+- A4739 审计 A4738 的内部 peer transport 取消是否会同样泄漏到 follower RangeStream，但坚持真实外部 RED
+  优先，没有仅凭相似源码扩大生产改动。真实 TiKV 中以 8 个 128-op 原子 Txn 建立 1024 键、每值 4096 字节的
+  4 MiB 临时范围；固定 upstream client/v3 的临时、非入库探针证明 follower 入口实际收到 4 个独立 chunk，
+  key 数依次为 300、300、300、124。普通 etcdctl 会先用 `GetStreamToGetResponse` 聚合全部 chunk 后才输出，因此
+  不能用其 stdout 首字节冒充 wire 首帧；该无效试跑明确排除。
+
+  随后 raw client 在第一 chunk 后暂停，并先后尝试默认 flow control、64 KiB 初始 window 和禁用动态 BDP 的
+  64 KiB static stream/connection window；每轮都在观察到第一 chunk 后删除当时的 KubeBrain leader。三轮均从
+  follower 完整收到 1024 键并正常 EOF，说明 leader 关闭前四个 upstream response 已由 follower server 侧完整
+  入队，未形成可观察错误；不能据此声称 RangeStream 会或不会泄漏 Canceled。需要超过 server-side gRPC send
+  queue、或可控阻塞 follower `Send` 的更大流故障门禁继续保持开放。
+
+  本轮没有生产 RED，故没有修改生产或测试代码，也没有重建镜像；临时 Go 探针未进入仓库并已删除。清理时首次
+  DeleteRange 使用 etcdctl 默认 5 秒预算返回 DeadlineExceeded，查询证明 1024 键仍全部存在；随后以 30 秒预算
+  幂等重试删除成功，前缀查询为零。终态 proposal health 21.824ms、AlarmList/LeaseList 为空，临时目录为空；
+  主三副本继续使用 A4738 镜像且 Ready/零重启，测试端口转发在记录后关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
