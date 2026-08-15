@@ -262,6 +262,19 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 	} else if name == "etcd.server.request.duration.seconds" {
 		// Match server/etcdserver/metrics.go: 1ms through 8.192s.
 		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
+	} else if name == "etcd_debugging.lease.ttl_total" {
+		// Match server/lease/metrics.go: 1 second through roughly 3 months.
+		opts.Buckets = prometheus.ExponentialBuckets(1, 2, 24)
+	} else if name == "etcd.mvcc.hash_duration_seconds" ||
+		name == "etcd.mvcc.hash_rev_duration_seconds" {
+		// Match server/storage/mvcc/metrics.go: 10ms through 163.84s.
+		opts.Buckets = prometheus.ExponentialBuckets(0.01, 2, 15)
+	} else if name == "etcd_debugging.server.watch_send_loop.watch_stream.duration.seconds" ||
+		name == "etcd_debugging.server.watch_send_loop.watch_stream.duration_per_event.seconds" ||
+		name == "etcd_debugging.server.watch_send_loop.control_stream.duration.seconds" ||
+		name == "etcd_debugging.server.watch_send_loop.progress.duration.seconds" {
+		// Match server/etcdserver/api/v3rpc/metrics.go: 1ms through 8.192s.
+		opts.Buckets = prometheus.ExponentialBuckets(0.001, 2, 14)
 	} else if name == "etcd.disk.wal_fsync_duration_seconds" ||
 		name == "etcd.disk.wal_write_duration_seconds" {
 		// Match server/storage/wal/metrics.go: 1ms through 8.192s.
