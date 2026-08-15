@@ -439,6 +439,48 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			}
 			return err
 		}
+		// Route an unapplied follower message before consulting this process's auth
+		// snapshot. KubeBrain followers do not receive every auth mutation through a
+		// Raft apply loop, so even a complete cache may be stale, and the follower can
+		// remain reachable after losing every TiKV/PD path. The leader performs the
+		// normal per-message authentication and attachment authorization.
+		forwardRequest := func(proxyCtx context.Context) error {
+			for {
+				resp, keepAliveErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
+				if keepAliveErr == nil {
+					m.srv.observeForwardedRevision(resp.GetHeader(), nil)
+					return m.sendLeaseKeepAliveResponse(stream, resp)
+				}
+				// The message has already been consumed from the client stream. Preserve
+				// it across a transient leader handoff rather than forcing clientv3 to
+				// spend its finite reconnect budget.
+				if status.Code(keepAliveErr) != codes.Unavailable {
+					return keepAliveErr
+				}
+				timer := time.NewTimer(100 * time.Millisecond)
+				select {
+				case <-proxyCtx.Done():
+					if !timer.Stop() {
+						<-timer.C
+					}
+					return proxyCtx.Err()
+				case <-timer.C:
+				}
+			}
+		}
+		if m.srv.peers.EtcdProxyEnabled() {
+			_, routeLeadingFresh := m.srv.peers.EpochAndLeadingFresh()
+			if !routeLeadingFresh {
+				proxyCtx, forwardErr := m.srv.forwardWriteAuthContext(stream.Context())
+				if forwardErr != nil {
+					return forwardErr
+				}
+				if forwardErr = forwardRequest(proxyCtx); forwardErr != nil {
+					return forwardErr
+				}
+				continue
+			}
+		}
 		// Match etcd's LeaseServer: capture the header before authorization and
 		// renewal. A concurrent revoke may advance the store after a successful
 		// renew; reporting that later revision would imply the lease survived a
@@ -497,32 +539,7 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			if forwardErr != nil {
 				return forwardErr
 			}
-			for {
-				resp, keepAliveErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
-				if keepAliveErr == nil {
-					m.srv.observeForwardedRevision(resp.GetHeader(), nil)
-					return m.sendLeaseKeepAliveResponse(stream, resp)
-				}
-				// A keepalive message has already been consumed from the client
-				// stream. During a leader handoff, returning a transient routing
-				// failure here closes the stream and can exhaust clientv3's finite
-				// reconnect budget before an independent TiKV Region recovers. Keep
-				// this one unapplied message server-side and retry it against the
-				// successor. Lease reload extends durable leases by the election
-				// window, so the successor can safely renew it when it becomes ready.
-				if status.Code(keepAliveErr) != codes.Unavailable {
-					return keepAliveErr
-				}
-				timer := time.NewTimer(100 * time.Millisecond)
-				select {
-				case <-proxyCtx.Done():
-					if !timer.Stop() {
-						<-timer.C
-					}
-					return proxyCtx.Err()
-				case <-timer.C:
-				}
-			}
+			return forwardRequest(proxyCtx)
 		}
 		if !leadingFresh {
 			if !m.srv.peers.EtcdProxyEnabled() {

@@ -825,6 +825,10 @@ func TestAuthFollowerKeepAliveDefersStaleAttachmentAuthorizationToLeader(t *test
 		},
 	})
 	defer follower.stopLeases()
+	storageErr := errors.New("follower auth storage unavailable")
+	follower.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: follower.backend, err: storageErr,
+	}
 	require.Equal(t, []string{"/denied/stale"}, follower.keysForLease(lease.ID),
 		"the follower fixture must retain the pre-mutation attachment snapshot")
 
