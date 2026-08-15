@@ -499,6 +499,17 @@ func (e *etcdProxy) RangeStream(ctx context.Context, req *etcdserverpb.RangeRequ
 	return out, nil
 }
 
+func (e *etcdProxy) MemberList(ctx context.Context, req *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward member list", "leader", leader, "linearizable", req.Linearizable)
+	response, err := etcdserverpb.NewClusterClient(client.ActiveConnection()).MemberList(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return response, err
+}
+
 func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {

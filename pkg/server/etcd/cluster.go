@@ -37,6 +37,18 @@ import (
 func (s *RPCServer) MemberList(ctx context.Context, req *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
 	s.metricCli.EmitCounter("member.list", 1)
 	if req.GetLinearizable() {
+		if s.peers.EtcdProxyEnabled() {
+			_, leadingFresh := s.peers.EpochAndLeadingFresh()
+			if !leadingFresh {
+				proxyCtx, err := s.forwardWriteAuthContext(ctx)
+				if err != nil {
+					return nil, err
+				}
+				response, err := s.peers.MemberList(proxyCtx, req)
+				s.observeForwardedRevision(response.GetHeader(), err)
+				return response, err
+			}
+		}
 		if err := s.peers.SyncReadRevision(ctx); err != nil {
 			return nil, readBarrierStatusErr(err)
 		}

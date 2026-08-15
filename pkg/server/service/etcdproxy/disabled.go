@@ -49,6 +49,10 @@ func (d disabledEtcdProxy) RangeStream(context.Context, *etcdserverpb.RangeReque
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) MemberList(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	return nil, errDisabled
 }

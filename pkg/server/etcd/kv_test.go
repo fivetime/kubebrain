@@ -61,6 +61,7 @@ type testPeerService struct {
 	proxyEnabled     bool
 	rangeFn          func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 	rangeStreamFn    func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error)
+	memberListFn     func(context.Context, *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error)
 	putFn            func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
 	deleteRangeFn    func(context.Context, *etcdserverpb.DeleteRangeRequest) (*etcdserverpb.DeleteRangeResponse, error)
 	compactFn        func(context.Context, *etcdserverpb.CompactionRequest) (*etcdserverpb.CompactionResponse, error)
@@ -532,6 +533,13 @@ func (s testPeerService) RangeStream(ctx context.Context, req *etcdserverpb.Rang
 		return s.rangeStreamFn(ctx, req)
 	}
 	return nil, errors.New("unexpected RangeStream proxy call")
+}
+
+func (s testPeerService) MemberList(ctx context.Context, req *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+	if s.memberListFn != nil {
+		return s.memberListFn(ctx, req)
+	}
+	return nil, errors.New("unexpected MemberList proxy call")
 }
 
 func (s testPeerService) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {

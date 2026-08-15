@@ -176,6 +176,17 @@ type rangeStreamLeaderServer struct {
 	terminalErr error
 }
 
+type memberListLeaderServer struct {
+	etcdserverpb.UnimplementedClusterServer
+	request  chan *etcdserverpb.MemberListRequest
+	response *etcdserverpb.MemberListResponse
+}
+
+func (s *memberListLeaderServer) MemberList(_ context.Context, request *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+	s.request <- request
+	return s.response, nil
+}
+
 func (s *rangeStreamLeaderServer) RangeStream(_ *etcdserverpb.RangeRequest, stream etcdserverpb.KV_RangeStreamServer) error {
 	for _, response := range s.responses {
 		if err := stream.Send(response); err != nil {
@@ -271,6 +282,38 @@ func TestRangeStreamForwardsResponsesAndTerminalStatus(t *testing.T) {
 	}
 	require.Equal(t, codes.OutOfRange, status.Code(gotErr))
 	require.Equal(t, status.Convert(terminalErr).Message(), status.Convert(gotErr).Message())
+}
+
+func TestMemberListForwardsRequestAndResponse(t *testing.T) {
+	want := &etcdserverpb.MemberListResponse{
+		Header:  &etcdserverpb.ResponseHeader{ClusterId: 11, MemberId: 7, RaftTerm: 3},
+		Members: []*etcdserverpb.Member{{ID: 7, Name: "leader"}},
+	}
+	upstream := &memberListLeaderServer{
+		request: make(chan *etcdserverpb.MemberListRequest, 1), response: want,
+	}
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	registerServingHealth(server)
+	etcdserverpb.RegisterClusterServer(server, upstream)
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	endpoint := lis.Addr().String()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: endpoint}, client: cli, curLeader: endpoint}
+	request := &etcdserverpb.MemberListRequest{Linearizable: true}
+	response, err := proxy.MemberList(context.Background(), request)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(want, response))
+	require.True(t, proto.Equal(request, <-upstream.request))
 }
 
 func TestLeaseKeepAliveForwardingTimeoutAndCancellation(t *testing.T) {

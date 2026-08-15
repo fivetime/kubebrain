@@ -697,6 +697,32 @@ func TestMemberListLinearizableUsesReadBarrier(t *testing.T) {
 	require.EqualValues(t, 1, calls.Load())
 }
 
+func TestFollowerLinearizableMemberListProxiesBeforeLocalBarrier(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	request := &etcdserverpb.MemberListRequest{Linearizable: true}
+	want := &etcdserverpb.MemberListResponse{
+		Header:  &etcdserverpb.ResponseHeader{Revision: 42},
+		Members: []*etcdserverpb.Member{{ID: 7, Name: "leader"}},
+	}
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		syncReadFn: func(context.Context) error {
+			t.Fatal("follower must proxy linearizable MemberList before a local read barrier")
+			return errors.New("unreachable")
+		},
+		memberListFn: func(_ context.Context, got *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error) {
+			require.Equal(t, request, got)
+			return want, nil
+		},
+	}
+
+	response, err := server.MemberList(context.Background(), request)
+	require.NoError(t, err)
+	require.Equal(t, want, response)
+}
+
 // TestMemberListSerializableSurvivesUnavailableReadBarrier mirrors upstream
 // tests/common TestMemberListSerializable (845cd3885). KubeBrain's topology is
 // DBaaS-managed rather than Raft-mutated, but the wire option must preserve the

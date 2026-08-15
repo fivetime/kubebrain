@@ -45,6 +45,9 @@ type EtcdProxy interface {
 	// RangeStream forwards a server-streaming range request to leader.
 	RangeStream(ctx context.Context, req *etcdserverpb.RangeRequest) (<-chan RangeStreamResult, error)
 
+	// MemberList forwards a cluster membership lookup to leader.
+	MemberList(ctx context.Context, req *etcdserverpb.MemberListRequest) (*etcdserverpb.MemberListResponse, error)
+
 	// Put forwards put unary request to leader.
 	Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
 
