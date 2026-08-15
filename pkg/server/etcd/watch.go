@@ -17,6 +17,7 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -52,6 +53,16 @@ var (
 const onDemandProgressSyncWait = 100 * time.Millisecond
 
 const watchCompactionProbeTimeout = 250 * time.Millisecond
+
+const maxLoggedWatchKeyBytes = 256
+
+func loggedWatchKey(key []byte) string {
+	if len(key) <= maxLoggedWatchKeyBytes {
+		return string(key)
+	}
+	digest := sha256.Sum256(key)
+	return fmt.Sprintf("sha256:%x (length=%d)", digest, len(key))
+}
 
 const watchQuotaCancelReason = "etcdserver: too many requests"
 
@@ -798,7 +809,7 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 	} else {
 		go waitAndStartGeneration()
 	}
-	klog.InfoS("watch start", "id", id, "count", watchCount, "key", key, "revision", r.StartRevision)
+	klog.InfoS("watch start", "id", id, "count", watchCount, "key", loggedWatchKey([]byte(key)), "revision", r.StartRevision)
 }
 
 // allocateWatchIDLocked selects an ID while w is locked.
@@ -1070,10 +1081,10 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 	generationCtx, cancelGeneration := context.WithCancel(ctx)
 	defer func() { cancelGeneration() }()
 	ch, localGeneration, generationEpoch, err := w.openWatchChannel(generationCtx, r, backendPrefix, watchRevision)
-	klog.InfoS("[watch stream] watch", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "backendPrefix", backendPrefix, "rev", r.StartRevision)
+	klog.InfoS("[watch stream] watch", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "end", loggedWatchKey(r.RangeEnd), "backendPrefix", loggedWatchKey([]byte(backendPrefix)), "rev", r.StartRevision)
 	if err != nil {
 		w.metricCli.EmitCounter("watch.backend.err", 1)
-		klog.ErrorS(err, "[watch stream] cancel due to backend watch err", "watcher", w.id, "watch", id, "key", r.Key, "end", r.RangeEnd, "rev", r.StartRevision)
+		klog.ErrorS(err, "[watch stream] cancel due to backend watch err", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "end", loggedWatchKey(r.RangeEnd), "rev", r.StartRevision)
 		w.CancelGeneration(id, wt, err, isWatchCompactedError(err))
 		return
 	}
@@ -1112,12 +1123,12 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 		ch, localGeneration, generationEpoch, reopenErr = w.reopenWatchChannel(nextGenerationCtx, r, backendPrefix, watchRevision)
 		if reopenErr == nil {
 			cancelGeneration = nextCancelGeneration
-			klog.InfoS("[watch stream] watch resumed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision, "local", localGeneration)
+			klog.InfoS("[watch stream] watch resumed", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "rev", watchRevision, "local", localGeneration)
 			return true
 		}
 		nextCancelGeneration()
 		if ctx.Err() == nil {
-			klog.ErrorS(reopenErr, "[watch stream] watch resume failed", "watcher", w.id, "watch", id, "key", string(r.Key), "rev", watchRevision)
+			klog.ErrorS(reopenErr, "[watch stream] watch resume failed", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "rev", watchRevision)
 		}
 		return false
 	}
@@ -1132,7 +1143,7 @@ func (w *watcher) watchGeneration(ctx context.Context, id int64, r *etcdserverpb
 		// OnStoppedLeading may lag the renew-deadline self fence. Do not
 		// publish anything newly observed from that obsolete local generation;
 		// the authoritative generation must replay it from syncedRev+1.
-		klog.InfoS("[watch stream] local generation leadership fence changed", "watcher", w.id, "watch", id, "key", string(r.Key), "generationEpoch", generationEpoch, "currentEpoch", currentEpoch, "leadingFresh", leadingFresh)
+		klog.InfoS("[watch stream] local generation leadership fence changed", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "generationEpoch", generationEpoch, "currentEpoch", currentEpoch, "leadingFresh", leadingFresh)
 		if ctx.Err() == nil && resumeGeneration() {
 			return false, true
 		}
@@ -1153,7 +1164,7 @@ watchLoop:
 		select {
 		case result, ok := <-ch:
 			if !ok {
-				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", string(r.Key))
+				klog.InfoS("[watch stream] watch channel closed", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key))
 				_, leadingFresh := w.grpcServer.peers.EpochAndLeadingFresh()
 				roleTransition := localGeneration || leadingFresh
 				if ctx.Err() == nil && roleTransition && resumeGeneration() {
@@ -1168,7 +1179,7 @@ watchLoop:
 					closeErr = compactedRevisionError()
 				}
 				w.CancelGeneration(id, wt, closeErr, compacted)
-				klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", string(r.Key))
+				klog.InfoS("[watch stream] watch canceled", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key))
 				return
 			}
 			if current, resumed := fenceLocalGeneration(); !current {
@@ -1178,7 +1189,7 @@ watchLoop:
 				return
 			}
 			if result.Err != nil {
-				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", string(r.Key), "err", result.Err)
+				klog.InfoS("[watch stream] watch channel error", "watcher", w.id, "watch", id, "key", loggedWatchKey(r.Key), "err", result.Err)
 				w.CancelGeneration(id, wt, result.Err, isWatchCompactedError(result.Err))
 				return
 			}
