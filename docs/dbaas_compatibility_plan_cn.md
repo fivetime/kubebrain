@@ -52391,6 +52391,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   39.68/35.71/28.84ms，alarm/lease 为空，主/JWT 六副本与 PD/TiKV 3+3 全部 Ready、
   零重启，五分钟服务端窗口未见 deadline/refill/refresh failure。
 
+- A4715 修复独立 TiKV/PD 数据面在多实例同时恢复时的选主初始化读放大。完整 upstream 差分运行到
+  Range option matrix 后，TiKV 虽仍被 PD 标记为 Up，KubeBrain 却持续在内部 restoration-fence key 上
+  收到 `context deadline exceeded`；三个 TiKV Pod 保留 PVC/Raft 数据逐节点重启后，旧进程仍因选主重试
+  无法恢复。生产路径审计确认，每个候选副本在首次校验 durable restore gate 时会串行读取 256 个 fence
+  shard；多个租户/副本同时恢复时，5 秒选主超时会触发重复读取和 256-key CAS rollback 风暴。
+
+  生产提交 `e355c42c` 通过 `storage.FindCapability[storage.BatchGetter]` 穿透 metrics decorator，在 TiKV 上
+  用一个 snapshot BatchGet 校验全部 shard；不具备该可选能力的存储继续使用原有逐 key 兼容回退。提交只修改
+  `pkg/backend/election/election.go`，新增 25 行、删除 9 行，没有修改测试文件。election、storage metrics、
+  TiKV 定向回归通过；backend 全量 79.067 秒，leader 1.482 秒、proxy 3.044 秒、revision 6.693 秒通过。
+
+  精确镜像 `kubebrain:a4715-e355c42c` 内嵌 SHA
+  `e355c42c6f13035aeb8178e9de93f188d5869e4b`、build time `2026-08-15T17:27:32Z`，OCI index 为
+  `sha256:598be4ceb497eedb8093ee96ad860d36fab2f7958a9fbee55f6764886cea180a`，Kind runtime imageID 为
+  `sha256:fc1f69822a485769eba68743dc31c26a12830943f821a080e1fa20c1e1ffc787`。修复前 JWT 数据面超过两分钟
+  仍无法从旧 leader 接管；停止重试负载后用最终镜像从 0 扩到 3 副本，约 32 秒全部 Ready，主数据面也完成
+  三副本滚动，六副本均零重启。随后单独重跑原 Range option matrix，5,760 个 KubeBrain Range 组合及
+  upstream 对照在 88.13 秒全部通过，证明先前失败不是 historical CountOnly 语义差异；但距离场景内部
+  90 秒预算仅 1.87 秒，仍保留为 Range 性能裕量差距。最终主三端 proposal health 为
+  19.75/14.01/16.02ms，alarm/lease 为空，六副本一分钟窗口没有 deadline、PD region load 或选主锁错误。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
