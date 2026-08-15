@@ -52908,6 +52908,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   幂等重试删除成功，前缀查询为零。终态 proposal health 21.824ms、AlarmList/LeaseList 为空，临时目录为空；
   主三副本继续使用 A4738 镜像且 Ready/零重启，测试端口转发在记录后关闭。
 
+- A4740 补齐 A4735 支持窗口中缺少的稳定 3.6 客户端，不用 3.5 与 3.8 两端 GREEN 外推中间版本。直接使用
+  最终生产镜像内固定的 Alpine `etcdctl 3.6.10`（API 3.6），从独立 `--network host` 容器访问 A4738 三副本
+  Service；endpoint health/status、三成员 MemberList、Put/Get 与 version=1、version=0 条件 Txn、Lease
+  grant/attach/TTL/keys/revoke、从 seed 下一 revision 建立的 Watch，以及 AlarmList 均通过。Watch 收到精确
+  PUT/key/value，LeaseRevoke 后 attached key 不存在。
+
+  Snapshot 继续比较可移交 artifact，而不只检查 RPC 成功。无业务写窗口内，3.6.10 容器与固定 upstream
+  `etcdctl 3.8.0-alpha.0` 依次下载的文件均为 93,138,976 字节，文件 SHA-256 均为
+  `cc1cf23edfb2fe4e9cf5f718e4b257fc9aac0622b9e308b1546659cfc78a975b`；upstream `etcdutl snapshot status`
+  对两者均报告 hash `3940680069`、revision `468126003565938074`、1599 keys、84,754,432 字节 backend、
+  version `3.7.0`。该结果把已验证客户端窗口明确收敛为 3.5.16、3.6.10 与 3.8.0-alpha.0 三点。
+
+  本轮没有生产 RED，故没有修改生产或测试代码，也没有重建镜像。终态 A4740 prefix、LeaseList、AlarmList、
+  两个 artifact 和临时目录均为空，proposal health 24.327ms；主与 JWT 六个 KubeBrain Pod 继续使用 A4738
+  镜像且 Ready/零重启，Service 端口转发在记录后关闭。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
