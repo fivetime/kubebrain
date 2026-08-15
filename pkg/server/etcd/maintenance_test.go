@@ -628,9 +628,13 @@ func TestFollowerAlarmProxiesEveryActionToLeader(t *testing.T) {
 	}, forwarded)
 }
 
-func TestFollowerDefragmentProxiesNoOpToLeader(t *testing.T) {
+func TestFollowerDefragmentHedgesIsolatedStorageToLeader(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
+	wantErr := errors.New("auth storage unavailable")
+	server.tokens.snapshots.repo.backend = &authMetadataReadErrorBackend{
+		BackendShim: server.backend, err: wantErr,
+	}
 
 	request := &etcdserverpb.DefragmentRequest{}
 	called := false
@@ -648,6 +652,53 @@ func TestFollowerDefragmentProxiesNoOpToLeader(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, response)
 	require.True(t, called)
+}
+
+func TestFollowerDefragmentHedgesIsolatedLeaderToLocalNoOp(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	started, canceled := make(chan struct{}), make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		defragmentFn: func(ctx context.Context, _ *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+			close(started)
+			<-ctx.Done()
+			close(canceled)
+			return nil, ctx.Err()
+		},
+	}
+
+	response, err := server.Defragment(context.Background(), &etcdserverpb.DefragmentRequest{})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	requireChannelsClosedEventually(t, started, canceled)
+}
+
+func TestFollowerDefragmentHedgeFailsClosedOnLocalAuthorization(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	aliceCtx := setupAuthKVUser(t, server)
+	canceled := make(chan struct{})
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		defragmentFn: func(ctx context.Context, _ *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error) {
+			<-ctx.Done()
+			close(canceled)
+			return nil, ctx.Err()
+		},
+	}
+
+	response, err := server.Defragment(aliceCtx, &etcdserverpb.DefragmentRequest{})
+	require.Nil(t, response)
+	require.ErrorIs(t, err, rpctypes.ErrPermissionDenied)
+	require.Eventually(t, func() bool {
+		select {
+		case <-canceled:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond)
 }
 
 func TestFollowerDowngradeProxiesEveryActionToLeader(t *testing.T) {

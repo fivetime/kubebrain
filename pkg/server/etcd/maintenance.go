@@ -449,20 +449,42 @@ func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.Defragment
 	s.metricCli.EmitCounter("maintenance.defragment", 1)
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
-		// TiKV owns physical compaction, so KubeBrain's etcd Defragment is a
-		// compatibility no-op. A storage-isolated ingress therefore has no local
-		// member operation to preserve; let the trusted leader perform the
-		// authoritative admin check instead of reading follower auth storage.
-		proxyCtx, err := s.forwardWriteAuthContext(ctx)
-		if err != nil {
-			return nil, err
-		}
-		return s.peers.Defragment(proxyCtx, req)
+		// TiKV owns physical compaction, so this is a compatibility no-op after
+		// admin auth. Race that local path with the trusted leader: upstream
+		// defragments the serving member even when it cannot reach the leader,
+		// while a storage-isolated KubeBrain ingress still needs the leader path.
+		return s.hedgedMaintenanceDefragment(ctx, req)
 	}
+	return s.localMaintenanceDefragment(ctx)
+}
+
+func (s *RPCServer) localMaintenanceDefragment(ctx context.Context) (*etcdserverpb.DefragmentResponse, error) {
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
 	return &etcdserverpb.DefragmentResponse{}, nil
+}
+
+func (s *RPCServer) hedgedMaintenanceDefragment(
+	ctx context.Context, req *etcdserverpb.DefragmentRequest,
+) (*etcdserverpb.DefragmentResponse, error) {
+	return hedgeMaintenanceResult(
+		ctx,
+		func(ctx context.Context) (*etcdserverpb.DefragmentResponse, error) {
+			return s.localMaintenanceDefragment(ctx)
+		},
+		func(ctx context.Context) (*etcdserverpb.DefragmentResponse, error) {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return s.peers.Defragment(proxyCtx, req)
+		},
+		func(response *etcdserverpb.DefragmentResponse, err error) {
+			s.observeForwardedRevision(response.GetHeader(), err)
+		},
+		func(err error) bool { return terminalMaintenanceResultError(err, false) },
+	)
 }
 
 func authorizedPeerHashKVProxy(ctx context.Context) bool {
@@ -554,7 +576,7 @@ func (s *RPCServer) localMaintenanceHashKV(
 }
 
 func (s *RPCServer) hedgedMaintenanceHash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
-	return hedgeMaintenanceHash(
+	return hedgeMaintenanceResult(
 		ctx,
 		func(ctx context.Context) (*etcdserverpb.HashResponse, error) {
 			return s.localMaintenanceHash(ctx, false)
@@ -569,14 +591,14 @@ func (s *RPCServer) hedgedMaintenanceHash(ctx context.Context, req *etcdserverpb
 		func(response *etcdserverpb.HashResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
 		},
-		func(err error) bool { return terminalMaintenanceHashError(err, false) },
+		func(err error) bool { return terminalMaintenanceResultError(err, false) },
 	)
 }
 
 func (s *RPCServer) hedgedMaintenanceHashKV(
 	ctx context.Context, req *etcdserverpb.HashKVRequest,
 ) (*etcdserverpb.HashKVResponse, error) {
-	return hedgeMaintenanceHash(
+	return hedgeMaintenanceResult(
 		ctx,
 		func(ctx context.Context) (*etcdserverpb.HashKVResponse, error) {
 			return s.localMaintenanceHashKV(ctx, req, false)
@@ -591,17 +613,17 @@ func (s *RPCServer) hedgedMaintenanceHashKV(
 		func(response *etcdserverpb.HashKVResponse, err error) {
 			s.observeForwardedRevision(response.GetHeader(), err)
 		},
-		func(err error) bool { return terminalMaintenanceHashError(err, true) },
+		func(err error) bool { return terminalMaintenanceResultError(err, true) },
 	)
 }
 
-type maintenanceHashResult[T any] struct {
+type maintenanceResult[T any] struct {
 	response T
 	err      error
 	remote   bool
 }
 
-func hedgeMaintenanceHash[T any](
+func hedgeMaintenanceResult[T any](
 	ctx context.Context,
 	local func(context.Context) (T, error),
 	remote func(context.Context) (T, error),
@@ -610,14 +632,14 @@ func hedgeMaintenanceHash[T any](
 ) (T, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	results := make(chan maintenanceHashResult[T], 2)
+	results := make(chan maintenanceResult[T], 2)
 	go func() {
 		response, err := local(ctx)
-		results <- maintenanceHashResult[T]{response: response, err: err}
+		results <- maintenanceResult[T]{response: response, err: err}
 	}()
 	go func() {
 		response, err := remote(ctx)
-		results <- maintenanceHashResult[T]{response: response, err: err, remote: true}
+		results <- maintenanceResult[T]{response: response, err: err, remote: true}
 	}()
 
 	var zero T
@@ -644,7 +666,7 @@ func hedgeMaintenanceHash[T any](
 	return zero, firstErr
 }
 
-func terminalMaintenanceHashError(err error, revisionAware bool) bool {
+func terminalMaintenanceResultError(err error, revisionAware bool) bool {
 	if revisionAware && (errors.Is(err, backend.ErrHashKVCompacted) || errors.Is(err, backend.ErrHashKVFuture) ||
 		status.Code(err) == codes.OutOfRange) {
 		return true
