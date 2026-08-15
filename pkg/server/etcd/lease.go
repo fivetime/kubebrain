@@ -352,22 +352,22 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	m.srv.metricCli.EmitCounter("lease.revoke", 1)
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
+	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
+		proxyCtx, err := m.srv.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := m.srv.peers.LeaseRevoke(proxyCtx, req)
+		m.srv.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	caller, err := m.srv.authCallerFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	ctx = withAuthWriteGuard(ctx, caller)
-	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
-		if m.srv.peers.EtcdProxyEnabled() {
-			proxyCtx, err := m.srv.forwardAuthToken(ctx, caller)
-			if err != nil {
-				return nil, err
-			}
-			response, err := m.srv.peers.LeaseRevoke(proxyCtx, req)
-			m.srv.observeForwardedRevision(response.GetHeader(), err)
-			return response, err
-		}
 		return nil, m.leaseLeaderUnavailable("lease revoke")
 	}
 	// Revoke is a durable lease/key mutation and must not race the new leader's
@@ -621,6 +621,16 @@ func (m *leaseManager) sendLeaseKeepAliveResponse(stream etcdserverpb.Lease_Leas
 
 func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.LeaseTimeToLiveRequest) (*etcdserverpb.LeaseTimeToLiveResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.ttl", 1)
+	_, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !req.Keys && !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
+		proxyCtx, err := m.srv.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := m.srv.peers.LeaseTimeToLive(proxyCtx, req)
+		m.srv.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	caller, err := m.srv.authCallerFromContext(ctx)
 	if err != nil {
 		return nil, err
@@ -725,6 +735,16 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 
 func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseLeasesRequest) (*etcdserverpb.LeaseLeasesResponse, error) {
 	m.srv.metricCli.EmitCounter("lease.leases", 1)
+	_, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	if !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
+		proxyCtx, err := m.srv.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := m.srv.peers.LeaseLeases(proxyCtx, req)
+		m.srv.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	caller, err := m.srv.authCallerFromContext(ctx)
 	if err != nil {
 		return nil, err
