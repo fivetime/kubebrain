@@ -51465,6 +51465,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   TiKV 各三副本 Ready 且零重启。该路由仅适用于 KubeBrain 已定义为无成员物理副作用的 Defragment；Status、Hash
   等携带 endpoint/member-local 诊断语义的 RPC 不能据此直接照搬 leader 响应。
 
+- A4676 将 storage-isolated follower 路由扩展到 cluster-wide Maintenance Downgrade。对照固定
+  `/root/etcd/server/proxy/grpcproxy/maintenance.go::Downgrade` 与
+  `server/etcdserver/v3_server.go::Downgrade`：上游 gRPC proxy 原样转发 VALIDATE、ENABLE、CANCEL 和未知
+  action，再由 server 统一执行版本状态机；这不同于 MoveLeader，后者在请求命中 follower 时必须先返回
+  NotLeader，不能代理成 leader 成功。KubeBrain 旧 Downgrade 在查找 leader 前先从 TiKV 做 admin auth，导致单个
+  ingress 失去独立存储路径时连无状态 VALIDATE 也不可用。提交
+  `e493ad55fe8ca25b0de34f3321d76595588f109b` 为 Maintenance peer client 增加 Downgrade，并让
+  proxy-capable follower 在本地存储访问前转发所有 action 和逻辑身份；leader 仍独占 admin 校验、版本格式/目标
+  判断、header revision、ENABLE 的 DBaaS 平台托管拒绝以及 unknown-method 错误。local leader 与无 proxy
+  follower 的处理顺序不变，MoveLeader 没有被误改。四 action 路由契约、既有 Maintenance 鉴权和 Downgrade
+  client 语义、完整 server 187 秒、proxy 3.017 秒、vet 与聚焦 race 2.002 秒通过。
+
+  修复前精确 A4675 镜像上，阻断 follower `kubebrain-0` 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，
+  `downgrade validate 3.6` 在 8 秒 deadline 返回 `DeadlineExceeded`，没有 peer 日志。精确 A4676 镜像
+  `kubebrain:a4676-e493ad55` 内嵌上述完整 SHA，构建时间 `2026-08-15T04:57:50Z`，OCI manifest list 为
+  `sha256:351646eafaa6ee76bf8857cc0b182654e66c149c64fe318cf9b6ea0455d5ba89`。滚动后当前 leader 为
+  `kubebrain-1`；相同六目标隔离下 PD/TiKV TCP probe 均以 1 秒超时，VALIDATE 在 327ms 返回 cluster version
+  3.7，ENABLE 仍返回既有 `Unimplemented` 与 DBaaS versioned rollout/rollback 提示，CANCEL 在 325ms 返回
+  version 3.7；三种 action 的日志均确认发往当前 leader。恢复后各成员 revision 均为
+  `468126003565904524`，Status 无启用中的 downgrade，规则为 0，AlarmList 与 LeaseList 为空；KubeBrain、PD、
+  TiKV 各三副本 Ready 且零重启。该结果提高的是 follower ingress 可用性，不把平台禁止的原地协议降级冒充为已支持。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
