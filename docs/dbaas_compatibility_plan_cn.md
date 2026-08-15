@@ -52825,6 +52825,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   9 个 Region 的 miss/pending/down/extra-peer 均为 0。主与 JWT 六个 KubeBrain Pod 继续使用 A4733 镜像且
   Ready/零重启，A4735 iptables 规则无残留；两个本地端口转发在记录完成后关闭。
 
+- A4736 回到矩阵唯一仍标记“部分兼容”的 Maintenance Snapshot，直接验证可移交 artifact，而不是继续增加
+  server mock。源码对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a/server/etcdserver/api/v3rpc/maintenance.go`：
+  数据帧使用 32 KiB buffer，末帧携带 SHA-256，所有帧携带 storage version；KubeBrain 的
+  `maintenance_snapshot.go::streamSnapshotFile` 保持同一流契约。真实三 PD/三 TiKV 上建立 v1→带 300 秒 lease 的
+  v2 retained history，并建立随后删除的第二个键；发行版 `etcdctl 3.5.16` 与固定 upstream 构建的
+  `etcdctl 3.8.0-alpha.0` 连续下载时得到相同 86,683,680 字节文件，`etcdutl snapshot status` 对两者报告相同
+  hash `2143399563`、revision `468126003565938033`、1600 keys、78,299,136 字节 backend 和 version `3.7.0`。
+
+  随后用 upstream `etcdutl snapshot restore` 把新一轮产物恢复成独立单成员 upstream etcd。精确 revision 复读
+  返回历史 v1，current 返回 v2、`version=2`；原 lease ID 恢复为 TTL=300 且 attached keys 只含目标键；删除前
+  revision 返回 `before-delete`，current 查询为空。从首次写 revision 重放 prefix Watch，恰好收到 3 个 PUT 和
+  1 个 DELETE，包含 v1、v2、删除前值且不泄漏 KubeBrain 内部 snapshot marker。最终 artifact status 为
+  version `3.7.0`、revision `468126003565938053`、1600 keys。
+
+  三次预跑均在客户端断言层作废而未计为产品失败：一次用 `jq` 浮点解析 64 位 lease ID 导致精度丢失并在
+  snapshot 前收到合法 NotFound；两次分别误用大写 `TTL` 和把省略的零值 `count` 当成必有字段，而原始恢复响应
+  已显示小写 `ttl=300` 与精确 attached key。孤儿 lease 均被 LeaseList 精确定位后撤销。最终没有生产 RED，故
+  没有修改生产或测试代码，也没有重建镜像。postflight proposal health 18.525ms，A4736 prefix、LeaseList、
+  AlarmList、临时 artifact/data-dir/upstream etcd 进程均为空；主与 JWT 六个 KubeBrain Pod、三个 PD 和三个
+  TiKV 均 Ready/零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
