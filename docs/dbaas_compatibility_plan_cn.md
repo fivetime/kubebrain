@@ -51807,6 +51807,41 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功、AlarmList/LeaseList 为空，JWT AlarmList/LeaseList 为空；三台 PD 连续三轮从全部 PD 查询都一致报告 leader
   `kb-pd-1`，三台 PD 与三台 TiKV 均 Ready/零重启，全部 A4688 故障规则为 0。
 
+- A4689 沿 Maintenance streaming 路径审计 `Snapshot`。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的权威 Maintenance server 负责 snapshot admin auth 与
+  backend stream，`/root/etcd/server/proxy/grpcproxy/maintenance.go` 的 proxy 则把 Snapshot stream 交给当前
+  authoritative client。KubeBrain 虽已实现 follower 到 leader 的完整 stream/checksum 代理，却在判断 follower 之前先
+  调用 `authCallerFromContext`；这会从 follower 的 TiKV auth repository 读 config，即使 auth disabled 也不能在本地
+  PD/TiKV 全失联时到达已有的 leader proxy 分支。
+
+  A4688 主集群无故障基线中，follower `kubebrain-0`（当时 `10.244.0.253`）经 `etcdctl snapshot save` 在 649ms
+  保存 524,320 字节文件。随后精确阻断该 Pod 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP，但保留 KubeBrain peer
+  网络；client 已打开 snapshot stream，却在 6.042 秒 hard timeout 内零数据，最终文件没有 publish，trap 后规则为 0。
+  这证明的是公开灾备 RPC 在健康 leader 存在时的成员级可用性缺口，而不是大 snapshot 的正常耗时。
+
+  提交 `87fb8f26dbcecdc21954db21e08a3e1735eb8b86` 改用 `EpochAndLeadingFresh` 在任何 follower auth/storage read
+  之前决定代理：non-leading 且启用 peer proxy 时把原始 token 或受信 client-certificate identity 交给 leader，由 leader
+  权威执行首次 admin auth、fixed-revision transaction 和 snapshot capture。只有 leading-fresh 本地路径才读取本地 auth
+  并 capture；无 proxy follower 仍保持先鉴权再返回 NotLeader。既有 follower stream 的 remaining-bytes、version、SHA-256
+  checksum、nil/malformed termination 和 downstream cancellation 验证抽成共享 `forwardSnapshot`，没有弱化完整性门禁。
+  新回归把 follower auth repository 强制替换为 storage error 并验证原始 root token 到达 leader；Snapshot 全专项
+  1.357 秒、`go vet`、聚焦 race 1.638 秒通过。第一次完整 server suite 在 188.601 秒后出现一项被海量日志截断的
+  非定位失败，随后使用 `go test -json` 过滤全部 fail/panic/assertion event 的独立完整复跑 exit 0、零 fail event；proxy
+  完整包 3.028 秒通过，因此不把首轮噪声隐瞒或冒充确定生产回退。
+
+  精确镜像 `kubebrain:a4689-87fb8f26` 内嵌完整 SHA 与 UTC build time `2026-08-15T09:50:44Z`，本地 OCI
+  manifest list 为 `sha256:e4818257c0e5de923f737fc4f8fa6329e5d7e77110d92848766381fe0f37d7e2`，manifest/config
+  分别为 `sha256:83d7ecd085d7d57f014397d7caeafc25724074efdce036ee819ffc509e0031a0` 与
+  `sha256:a6ce646319f2072a2c930ea9bf2859b6758e51cc35f78944d992be5faef28f50`，Kind runtime imageID 为
+  `sha256:64f8f4cfc256cf52b3bd59beed41017fc280ec05691a2a4da67d566b14517c38`。主 follower
+  `kubebrain-0`（`10.244.0.20`）、leader `kubebrain-2` 在六目标隔离下 427ms 保存 524,320 字节 snapshot，
+  `snapshot status` 成功解析 revision `468126003565913475`、615 keys；JWT follower `a4653-jwt-0`
+  （`10.244.0.23`）、leader `a4653-jwt-2` 使用 root credential 在相同隔离下 425ms 保存 32,800 字节 snapshot，
+  成功解析 revision 9、17 keys，日志记录 root Authenticate 转发。两轮规则均为 0。主/JWT 六副本 Ready/零重启，
+  runtime imageID 一致；主三个 endpoint health 成功、AlarmList/LeaseList 为空；JWT 三成员 auth enabled/authRevision=25
+  一致，用户仍为 root/alice、角色仍为 root/operator 且 operator 权限为空，AlarmList/LeaseList 为空；三台 PD 连续
+  三轮从全部 PD 查询都报告 leader `kb-pd-1`，PD/TiKV 3+3 均 Ready/零重启，全部 A4689 故障规则为 0。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
