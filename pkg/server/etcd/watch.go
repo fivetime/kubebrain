@@ -744,9 +744,12 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		initSyncedRev = w.backend.GetPublishedRevision()
 	}
 	generation := &watch{
-		cancel:                cancel,
-		start:                 string(r.Key),
-		end:                   string(r.RangeEnd),
+		cancel: cancel,
+		// These fields exist only for diagnostics. Keep their retained size and
+		// eventual log output bounded instead of holding another full copy of
+		// client-controlled watch keys for the lifetime of the stream.
+		start:                 loggedWatchKey(r.Key),
+		end:                   loggedWatchKey(r.RangeEnd),
 		quotaHeld:             quotaReserved,
 		progressStartRevision: progressStartRevision,
 		syncedRev:             initSyncedRev,
