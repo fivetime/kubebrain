@@ -52540,6 +52540,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空，主三副本 Ready/零重启，二十分钟服务端窗口没有 deadline、panic、fatal、data-loss、TiKV busy 或
   future-revision 日志。
 
+- A4722 补齐 A4721 明确跳过的三节点 reference、三个 KubeBrain direct replica 与外部 L4/L7 response-loss
+  专项。本轮继续运行精确 A4720 镜像，没有修改生产或测试代码，也没有重建相同二进制。正式
+  `run-direct-moveleader-differential.sh` 每轮启动三个不同 member 的固定
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a`（client 12379/22379/32379），KubeBrain
+  则经三个独立 Pod port-forward 直连 member `4034353177/2393892952/231094427`，而不是把同一个 NodePort
+  伪装成三个成员。
+
+  完整 `TEST_SCOPE=all` 首轮 39.977 秒、随后 `TEST_COUNT=2` 两轮 81.157 秒全部 GREEN。三轮均覆盖自动 ID
+  LeaseGrant 响应丢失后跨成员重试产生与 upstream 相同的一个 orphan lease、显式 ID 重试返回 LeaseExist 且
+  不产生 orphan、orphan TTL 自然回收；LeaseRevoke 经真实独立 TCP L4 与 gRPC L7 switch 丢弃已提交响应、跨
+  replica 重试得到 LeaseNotFound，以及旧 revoke 在同 ID regrant 后按 upstream 公共协议撤销新 incarnation。
+  同轮还覆盖 KeepAlive、Watch 和二者 multiplexed stream 的 L7 reset 恢复、follower RangeStream，以及从
+  follower 调用 MoveLeader 的平台替代契约。
+
+  postflight 三个 direct endpoint proposal health 为 12.75/14.38/15.81ms，lease/alarm 均为空，主三副本
+  Ready/零重启；十分钟服务端窗口没有 deadline、panic、fatal、data-loss、TiKV busy 或 future-revision。
+  该结论关闭普通 plaintext 三节点 response-loss 证据空白，不外推到仍需证书输入的 TLS passthrough 或真实 Envoy
+  profile。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
