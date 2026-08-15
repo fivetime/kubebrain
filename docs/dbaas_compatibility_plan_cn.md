@@ -52495,6 +52495,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空，十分钟 KubeBrain deadline/panic/fatal 匹配为零；全部 reference、四个 port-forward 与一次性目录已停止
   或删除。
 
+- A4720 修复三副本 `HashKV(revision)` 在刚提交 revision 上的跨成员瞬时误报。A4719 继续审计时，client 先经
+  Service 完成 Put，再立即对 MemberList URL 请求该精确 revision；命中本地 revision cache 尚未追上共享 TiKV
+  历史的 follower 时，本地分支先返回 `etcdserver: mvcc: required revision is a future revision`。RPC 原本把
+  HashKV 的 compacted/future `OutOfRange` 视为 hedge 终局错误，因此这个快速本地错误会取消本来能够成功读取
+  同一 TiKV 历史的 leader 分支。upstream etcd 的成员由 Raft apply 水位约束；KubeBrain 的进程本地水位模型则
+  必须让另一路对这种 revision 边界作最终裁决。
+
+  生产提交 `6f6e252f` 使 hedged maintenance 请求不再把 HashKV revision 边界当作快速终局错误：认证、参数、
+  permission 和 data-loss 错误仍立即失败；future/compacted 则等待 local/leader 另一结果，任一路成功即返回，
+  两路均拒绝时仍返回原有边界错误。提交只修改 `pkg/server/etcd/maintenance.go` 一个生产文件，新增 10 行、
+  删除 9 行，没有修改测试文件。现有 HashKV/hedge 聚焦回归 0.309 秒、revision 包 6.679 秒、server/etcd 全量
+  174.778 秒通过。
+
+  精确镜像 `kubebrain:a4720-6f6e252f` 内嵌 SHA
+  `6f6e252fd06be62cd568061a2dc1c20bfd5adf17`、build time `2026-08-15T19:10:00Z`，OCI index 为
+  `sha256:76fab2153df34afab799191fcc2f31898b143159038eb047cfcd510a232c8efc`，Kind runtime imageID 为
+  `sha256:932c8332363338c973c16a495bd1f281adfb186503f7c5ee89af010b0b10bebc`。主三副本滚动后全部
+  Ready/零重启。修复前同一现有 `TestMaintenanceHashKVMatchesAcrossMembers` 在 0.26 秒复现 future revision；
+  修复后第一次复跑未再出现该错误，但 dev manifest 的三个 MemberList ClientURL 都指向同一个 NodePort，
+  三次负载均衡恰好落到同一 member，因测试要求三个 URL 标识三个不同 member 而失败，不能把该拓扑前置条件
+  误记为产品 RED。随后不改测试或清单，改用三个 Pod DNS 确定性直连：连续 30 次经 Service Put 后立即以返回
+  revision 请求 3 个成员，共 90 次 HashKV 全部通过。最终三端 proposal health 为 8.69/9.49/9.16ms，alarm
+  为空，十分钟窗口没有 future revision、deadline、panic 或 fatal；压力窗口出现 10 条 32–96ms PD TSO slow
+  warning，未升级为请求失败。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
