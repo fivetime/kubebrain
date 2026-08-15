@@ -35,12 +35,14 @@ spec:
     limits:
       cpu: "8"
       memory: "16Gi"
-      storage: 5Gi
+      storage: 20Gi
     # Disposable local clusters often share a nearly-full development host.
     # Production must keep TiKV's reserve-space protection; this dev-only
-    # manifest disables the recovery reserve and caps TiKV's logical store at
-    # the requested 5Gi. The hostPath filesystem is still not a capacity-
-    # isolated CSI volume and must fail the production storage-safety gate.
+    # manifest disables the recovery reserve and raises TiKV's logical store
+    # capacity above the immutable 5Gi PVC request. This is safe only because
+    # local-path exposes the Kind node filesystem. The hostPath filesystem is
+    # still not a capacity-isolated CSI volume and must fail the production
+    # storage-safety gate.
     config: |
       [storage]
       max-key-size = 2621440

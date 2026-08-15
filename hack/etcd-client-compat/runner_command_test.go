@@ -374,7 +374,7 @@ func TestDevStackSupportsIsolatedHostPortsAndLowDiskTestHosts(t *testing.T) {
 	require.Contains(t, manifest, `max-key-size = 2097152`)
 	require.Contains(t, manifest, `reserve-space = "0MiB"`)
 	require.Contains(t, manifest, `reserve-raft-space = "0MiB"`)
-	require.Contains(t, manifest, "limits:\n      storage: 5Gi")
+	require.Contains(t, manifest, "limits:\n      storage: 20Gi")
 	require.Contains(t, manifest, `maps limits.storage to tikv-server --capacity`)
 	require.Contains(t, manifest, `CLI value wins`)
 	require.NotContains(t, manifest, `capacity = "5GiB"`)

@@ -51267,6 +51267,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   缩短 TiKV client Region-cache/PD 恢复；不得继续放大 KubeBrain leader lease 来掩盖容量故障。完整
   `hack/production` 长套件本轮运行数分钟后主动停止，不能记为通过。
 
+- A4666 排除了 A4665 现场的 TiKV 逻辑容量耗尽干扰，并在同一运行镜像上重跑原故障。开发
+  TidbCluster 保持不可变的 5Gi PVC request，只把 TiDB Operator 映射到 `tikv-server --capacity` 的
+  `spec.tikv.limits.storage` 从 5Gi 提高到 20Gi；Operator 按 leader eviction 与 partition 顺序安全滚动三台
+  TiKV，最终三个 store 均报告 `capacity=20GiB`、可用 14.5--15.45GiB，TidbCluster Ready/Normal，
+  miss-peer、pending-peer 和 down-peer 都为 0。随后为 TTL=3 lease 绑定真实 key，启动持续 KeepAlive，
+  在收到两次响应后删除当时承载 11 个 leader、为三台最多的 `kb-tikv-2`。50 秒观察结束时 stream 仍存活，
+  共收到 35 次正 TTL 响应、stderr 为空，权威 TimeToLive 返回 remaining=2s，绑定 key 仍可读；故障 Pod
+  自动重建后集群重新为三副本 Ready/Normal，endpoint health 可提交 proposal，清理后 lease list 为 0。
+  因此当前实现对“健康 TiKV 逻辑容量、单 TiKV Pod 重启、TTL=3 KeepAlive”由 RED 转为 GREEN，且没有继续
+  放大 KubeBrain 的 30s/25s leader election 窗口。该结论仍只属于单节点 Kind 的 shared local-path
+  开发夹具：20Gi 是 TiKV fullness 判定上限，不是 PVC quota，也不提供独立 IOPS、CSI identity、volume
+  expansion 或跨 AZ 故障隔离；生产发布仍必须通过既有 storage-safety、容量、延迟和拓扑门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
