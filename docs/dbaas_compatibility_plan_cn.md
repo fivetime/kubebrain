@@ -52647,6 +52647,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:af9e8cdbbad42f7ab4f27436f9730b04c89fdb29fe500f13293dfb3495f48c27`。验证后测试 key、lease、隔离
   namespace、PVC、证书目录与端口转发均清除，主明文及 JWT 六副本未滚动且保持 Ready/零重启。
 
+- A4728 将 A4727 的单 PD/单 TiKV mTLS 证明扩到隔离的 3 PD/3 TiKV 与三副本 KubeBrain 故障矩阵，继续运行
+  `kubebrain:a4727-7ba5f3c0`，本轮没有修改生产或测试代码。夹具先以 1/1 正常引导，再逐成员扩容到 3/3；PD embedded-etcd
+  会按对端 Pod IP 校验 peer 客户端证书，因此短期测试证书除真实 Service/Pod DNS SAN 与
+  `CN=KubeBrain-A4728` 外还显式覆盖 Kind Pod 网段。缺少该 IP SAN 时 PD peer 日志明确返回 hostname mismatch，
+  属于证书夹具错误，未伪装成 KubeBrain RED。最终三个 PD member health=true、三个 TiKV store Up，5 个 Region
+  均在三个 store 有 peer，miss-peer=0。
+
+  基线 endpoint health、Put/Get 与条件 Txn 通过。删除当时的 PD leader `a4728-pd-0` 后，连续 40 次 Put 为
+  40/40 成功，PD client 在 mTLS 下完成 leader/member 切换。删除承载全部 5 个 Region leader 的 TiKV-0 时，前 5 次
+  Put 在约 16.6 秒恢复窗内失败（2 次约 5.1 秒、3 次约 2.1 秒），随后 45/45 成功；该窗口与 TiKV Raft/Region
+  failover 一致，未用 KubeBrain 重试伪称零中断。生产形态的三副本 KubeBrain 使用既定 30s/25s/500ms 领导选举参数，
+  对 TTL=3 lease 启动流式 KeepAlive 后删除承载最多 Region leader 的 TiKV-1，45 秒窗口持续收到 30 次正 TTL，直到
+  测试端 `timeout` 主动停止，未在 store 故障期间过期。较早的单 KubeBrain、15s/10s 非生产参数试跑曾在故障中
+  丢失 lease，因不满足发布清单门禁而明确排除，未计为产品 RED 或 GREEN。
+
+  终态三个 KubeBrain、三个 PD、三个 TiKV 全部 Ready/零重启，KubeBrain runtime imageID 均为
+  `sha256:af9e8cdbbad42f7ab4f27436f9730b04c89fdb29fe500f13293dfb3495f48c27`；proposal health 18.543ms，
+  AlarmList 与 LeaseList 为空，87 个测试键全部删除且 prefix 查询为空。测试日志没有 panic/fatal/corrupt、CN 拒绝或
+  unknown-authority。该轮证明 A4727 的自定义 PD TLS dialer 能在真实三成员 discovery/leader failover 中维持
+  CA/SAN/CN/mTLS 策略；TiKV leader-store 切换仍存在约十几秒写不可用窗口，作为数据面 SLA/客户端 deadline 的
+  显式容量与故障预算保留，不通过放大服务端超时掩盖。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
