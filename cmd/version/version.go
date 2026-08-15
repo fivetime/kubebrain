@@ -16,6 +16,7 @@ package version
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 )
@@ -46,12 +47,16 @@ var VersionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "show version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("KubeBrain")
-		fmt.Println("Version:   \t", Version)
-		fmt.Println("Storage:   \t", Storage)
-		fmt.Println("Git SHA:   \t", GitSHA)
-		fmt.Println("Go Version:\t", GoVersion)
-		fmt.Println("Go OS/Arch:\t", GoOsArch)
-		fmt.Println("BuildTime: \t", Date)
+		_, _ = io.WriteString(cmd.OutOrStdout(), Text())
 	},
+}
+
+// Text returns the complete build identity used by both the version subcommand
+// and Cobra's conventional --version flag. Keeping one renderer prevents the
+// operational entrypoints from reporting different provenance.
+func Text() string {
+	return fmt.Sprintf(
+		"KubeBrain\nVersion:   \t %s\nStorage:   \t %s\nGit SHA:   \t %s\nGo Version:\t %s\nGo OS/Arch:\t %s\nBuildTime: \t %s\n",
+		Version, Storage, GitSHA, GoVersion, GoOsArch, Date,
+	)
 }

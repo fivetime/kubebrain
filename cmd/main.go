@@ -82,6 +82,11 @@ func NewKubeBrainCommand() *cobra.Command {
 			return o.Run(cmd.Context())
 		},
 	}
+	cmd.Version = version.Version
+	if cmd.Version == "" {
+		cmd.Version = "unknown"
+	}
+	cmd.SetVersionTemplate(version.Text())
 	// parse flags
 	o.AddFlags(cmd.Flags())
 	// global flags including klog
