@@ -51605,6 +51605,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   auth-enabled lifecycle 空白；client-cert identity translation 与 JWT profile 的隔离 mutation 仍是不同专项，不能由
   simple-token 结果外推。
 
+- A4682 修复 mTLS client-certificate 身份在 follower proxy 上依赖 stale auth snapshot 的生产缺陷。固定 upstream
+  `/root/etcd/server/auth/store.go::AuthInfoFromCtx` 从已验证 TLS chain 的 leaf CommonName 构造 AuthInfo，并由当前
+  auth store revision/permission 裁决；KubeBrain 需要跨独立 peer listener 保留同一逻辑身份，但旧
+  `forwardWriteAuthContext` 先信任 follower 本地 cached snapshot。真实 `a4657-tls` 夹具在 leader 启用 auth 后，健康
+  follower 仍缓存启动时 enabled=false，server cert CN=`KubeWharfServer` 的 RoleList 与 alice client cert 的 UserGet
+  都错误返回 `user name is empty`，尚未施加 PD/TiKV 故障即形成 RED；simple token 直接携带 credential，不经过该分支，
+  因而 A4681 无法发现此问题。
+
+  提交 `77e17b82a8bf82ffd0c764df9da0c847802b95a6` 不再让 ingress 为证书身份读取 auth cache 或签发依赖旧 revision
+  的 token：公开 mTLS listener 只提取已经验证的 leaf CN，通过专用 metadata 送入 mutual-TLS peer hop；leader 仅在
+  `PeerServerOptions` 注入的不可伪造 peer provenance 上接受该字段，再用自己的最新 snapshot 决定 enabled、用户、角色、
+  revision 和权限。内部 peer certificate CN 从不被误作用户，公共 client 即使伪造同名 metadata 仍只能得到其真实证书
+  CN；bearer/JWT 原样转发路径不变。生产代码 39 增/23 删，回归 16 增/4 删。首次完整 server 回归在海量 watch 日志后
+  exit 1 且截断输出中没有可识别 fail event；随后 JSON fail-event 过滤完整重跑 exit 0，proxy 2.998 秒、vet 及聚焦
+  race 2.032 秒通过，未把首次失败隐去。
+
+  精确 A4682 镜像 `kubebrain:a4682-77e17b82` 内嵌上述 SHA，构建时间 `2026-08-15T06:30:30Z`，OCI manifest
+  list 为 `sha256:8eb0671db3e7427e43b4a98f246609038f7c0dbdf30b2a2bb5cbbf2835aef393`。mTLS fixture
+  使用仓库既有测试 CA 临时签发 30 天 alice client cert，并通过 Secret 0440 挂载；bootstrap 首次只建立
+  `KubeWharfServer` root-role 映射时，AuthEnable 按 upstream 正确拒绝 `root user does not exist`，补齐字面 root
+  用户/root-role 后成功。为排除滚动重启刷新缓存的假 GREEN，先由 leader Disable、让 follower 明确读取 disabled，再由
+  leader Enable；该 follower 随即以 alice cert 成功 UserGet，证明 stale-disabled-cache 已不参与转发。
+
+  随后阻断 follower `a4657-tls-0` 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP：alice UserGet 0.312 秒成功，
+  RoleAdd 返回 canonical PermissionDenied；`KubeWharfServer` 管理证书完成 RoleAdd、GrantPermission、
+  UserGrantRole/RevokeRole、RevokePermission 和 RoleDelete。首轮脚本在 AuthDisable 后误省 TLS client cert，mTLS
+  transport 在 auth disabled 时仍要求证书，故 AuthStatus deadline 并由 trap 清除规则；带证书重跑后两轮
+  Disable/Status/Enable/alice UserGet 全部成功，规则为 0。主 StatefulSet 与 mTLS fixture 均已滚动到 A4682；两者各
+  三副本 Ready、零重启且 direct endpoint 全部可提交 proposal，mTLS 三成员 auth enabled/authRevision=18 一致，
+  AlarmList/LeaseList 为空，三台 PD 一致报告 `kb-pd-1`。JWT client identity 仍直接携带 token，其 revision/profile
+  专项不由本次证书桥接结果替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
