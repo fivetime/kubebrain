@@ -24,6 +24,15 @@ func (s *RPCServer) authRPCHeader(ctx context.Context) (*etcdserverpb.ResponseHe
 	return &etcdserverpb.ResponseHeader{Revision: int64(revision)}, nil
 }
 
+func (s *RPCServer) authFollowerProxyContext(ctx context.Context) (context.Context, bool, error) {
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if leadingFresh || !s.peers.EtcdProxyEnabled() {
+		return ctx, false, nil
+	}
+	proxyCtx, err := s.forwardWriteAuthContext(ctx)
+	return proxyCtx, true, err
+}
+
 func (s *RPCServer) AuthEnable(ctx context.Context, _ *etcdserverpb.AuthEnableRequest) (_ *etcdserverpb.AuthEnableResponse, retErr error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
@@ -106,16 +115,15 @@ func (s *RPCServer) authStatusSnapshot(ctx context.Context) (*authSnapshot, erro
 }
 
 func (s *RPCServer) AuthStatus(ctx context.Context, request *etcdserverpb.AuthStatusRequest) (_ *etcdserverpb.AuthStatusResponse, retErr error) {
-	_, leadingFresh := s.peers.EpochAndLeadingFresh()
-	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
 		// Upstream obtains AuthStatus through a Raft request and its gRPC proxy
 		// forwards it. KubeBrain's equivalent state is shared in TiKV, so let the
 		// trusted leader validate any credential and report the authoritative auth
 		// revision without requiring this ingress to reach its storage path.
-		proxyCtx, err := s.forwardWriteAuthContext(ctx)
-		if err != nil {
-			return nil, err
-		}
 		response, err := s.peers.AuthStatus(proxyCtx, request)
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
@@ -230,6 +238,15 @@ func (s *RPCServer) userReadSnapshot(ctx context.Context, username string) (*aut
 }
 
 func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserGetRequest) (_ *etcdserverpb.AuthUserGetResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.UserGet(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if err := s.validateEtcdApplyAuthInfo(ctx); err != nil {
 		return nil, err
 	}
@@ -249,7 +266,16 @@ func (s *RPCServer) UserGet(ctx context.Context, request *etcdserverpb.AuthUserG
 	return &etcdserverpb.AuthUserGetResponse{Header: header, Roles: append([]string(nil), user.Roles...)}, nil
 }
 
-func (s *RPCServer) UserList(ctx context.Context, _ *etcdserverpb.AuthUserListRequest) (_ *etcdserverpb.AuthUserListResponse, retErr error) {
+func (s *RPCServer) UserList(ctx context.Context, request *etcdserverpb.AuthUserListRequest) (_ *etcdserverpb.AuthUserListResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.UserList(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}
@@ -368,6 +394,15 @@ func (s *RPCServer) roleReadSnapshot(ctx context.Context, roleName string) (*aut
 }
 
 func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleGetRequest) (_ *etcdserverpb.AuthRoleGetResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.RoleGet(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if err := s.validateEtcdApplyAuthInfo(ctx); err != nil {
 		return nil, err
 	}
@@ -395,7 +430,16 @@ func (s *RPCServer) RoleGet(ctx context.Context, request *etcdserverpb.AuthRoleG
 	return &etcdserverpb.AuthRoleGetResponse{Header: header, Perm: permissions}, nil
 }
 
-func (s *RPCServer) RoleList(ctx context.Context, _ *etcdserverpb.AuthRoleListRequest) (_ *etcdserverpb.AuthRoleListResponse, retErr error) {
+func (s *RPCServer) RoleList(ctx context.Context, request *etcdserverpb.AuthRoleListRequest) (_ *etcdserverpb.AuthRoleListResponse, retErr error) {
+	proxyCtx, proxy, err := s.authFollowerProxyContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if proxy {
+		response, err := s.peers.RoleList(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authAdminSnapshot(ctx); err != nil {
 		return nil, err
 	}

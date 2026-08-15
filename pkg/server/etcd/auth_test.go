@@ -396,6 +396,45 @@ func TestFollowerAuthStatusProxiesToLeader(t *testing.T) {
 	require.Equal(t, int64(123), response.GetHeader().GetRevision())
 }
 
+func TestFollowerAuthReadsProxyToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	var calls []string
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		userGetFn: func(_ context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+			calls = append(calls, "user-get:"+req.GetName())
+			return &etcdserverpb.AuthUserGetResponse{Header: txnHeader(1), Roles: []string{"r"}}, nil
+		},
+		userListFn: func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+			calls = append(calls, "user-list")
+			return &etcdserverpb.AuthUserListResponse{Header: txnHeader(2), Users: []string{"u"}}, nil
+		},
+		roleGetFn: func(_ context.Context, req *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+			calls = append(calls, "role-get:"+req.GetRole())
+			return &etcdserverpb.AuthRoleGetResponse{Header: txnHeader(3)}, nil
+		},
+		roleListFn: func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+			calls = append(calls, "role-list")
+			return &etcdserverpb.AuthRoleListResponse{Header: txnHeader(4), Roles: []string{"r"}}, nil
+		},
+	}
+
+	user, err := server.UserGet(context.Background(), &etcdserverpb.AuthUserGetRequest{Name: "u"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"r"}, user.GetRoles())
+	users, err := server.UserList(context.Background(), &etcdserverpb.AuthUserListRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"u"}, users.GetUsers())
+	_, err = server.RoleGet(context.Background(), &etcdserverpb.AuthRoleGetRequest{Role: "r"})
+	require.NoError(t, err)
+	roles, err := server.RoleList(context.Background(), &etcdserverpb.AuthRoleListRequest{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"r"}, roles.GetRoles())
+	require.Equal(t, []string{"user-get:u", "user-list", "role-get:r", "role-list"}, calls)
+}
+
 func TestBearerPrefixedAuthTokenMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

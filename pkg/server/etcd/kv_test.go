@@ -66,6 +66,10 @@ type testPeerService struct {
 	defragmentFn     func(context.Context, *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
 	downgradeFn      func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 	authStatusFn     func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
+	userGetFn        func(context.Context, *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error)
+	userListFn       func(context.Context, *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error)
+	roleGetFn        func(context.Context, *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error)
+	roleListFn       func(context.Context, *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error)
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
 	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
@@ -556,6 +560,34 @@ func (s testPeerService) Downgrade(ctx context.Context, req *etcdserverpb.Downgr
 func (s testPeerService) AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
 	if s.authStatusFn != nil {
 		return s.authStatusFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+	if s.userGetFn != nil {
+		return s.userGetFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) UserList(ctx context.Context, req *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+	if s.userListFn != nil {
+		return s.userListFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) RoleGet(ctx context.Context, req *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+	if s.roleGetFn != nil {
+		return s.roleGetFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) RoleList(ctx context.Context, req *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+	if s.roleListFn != nil {
+		return s.roleListFn(ctx, req)
 	}
 	return nil, nil
 }

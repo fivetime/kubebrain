@@ -63,6 +63,18 @@ type EtcdProxy interface {
 	// AuthStatus forwards an authentication status request to leader.
 	AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
 
+	// UserGet forwards an authentication user lookup to leader.
+	UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error)
+
+	// UserList forwards an authentication user list request to leader.
+	UserList(ctx context.Context, req *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error)
+
+	// RoleGet forwards an authentication role lookup to leader.
+	RoleGet(ctx context.Context, req *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error)
+
+	// RoleList forwards an authentication role list request to leader.
+	RoleList(ctx context.Context, req *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error)
+
 	// Watch forward watch stream request to leader.
 	Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error)
 

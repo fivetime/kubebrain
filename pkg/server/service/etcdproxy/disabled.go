@@ -73,6 +73,22 @@ func (d disabledEtcdProxy) AuthStatus(ctx context.Context, req *etcdserverpb.Aut
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) UserList(ctx context.Context, req *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) RoleGet(ctx context.Context, req *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) RoleList(ctx context.Context, req *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
 	return nil, errDisabled
 }

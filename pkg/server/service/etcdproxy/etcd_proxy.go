@@ -539,6 +539,50 @@ func (e *etcdProxy) AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatus
 	return resp, err
 }
 
+func (e *etcdProxy) UserGet(ctx context.Context, req *etcdserverpb.AuthUserGetRequest) (*etcdserverpb.AuthUserGetResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth user get", "leader", leader, "name", req.GetName())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).UserGet(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) UserList(ctx context.Context, req *etcdserverpb.AuthUserListRequest) (*etcdserverpb.AuthUserListResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth user list", "leader", leader)
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).UserList(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) RoleGet(ctx context.Context, req *etcdserverpb.AuthRoleGetRequest) (*etcdserverpb.AuthRoleGetResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth role get", "leader", leader, "role", req.GetRole())
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).RoleGet(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) RoleList(ctx context.Context, req *etcdserverpb.AuthRoleListRequest) (*etcdserverpb.AuthRoleListResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth role list", "leader", leader)
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).RoleList(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {
