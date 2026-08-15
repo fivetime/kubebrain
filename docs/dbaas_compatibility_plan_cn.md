@@ -52100,6 +52100,35 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为空；JWT auth enabled/authRevision=25、alice/root、operator/root 与空 operator 权限保持；PD/TiKV 3+3 Ready/零重启，
   九次 PD leader 查询均为 `kb-pd-1`。
 
+- A4698 把双故障域修复扩展到公开 `Maintenance.Status`。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`：Status 只读取服务成员已经 applied 的本地 BoltDB、Raft、alarm、
+  learner 与 downgrade state，不建立 leader read barrier；仅 `/root/etcd/server/proxy/grpcproxy/maintenance.go` 的代理
+  部署才转发整项 RPC。KubeBrain 的逻辑大小、revision 与 alarm 位于共享 TiKV，A4675 为容忍 follower storage 隔离而
+  无条件代理 leader，导致本地 PD/TiKV 全健康、仅 leader peer 断开时丢失 upstream 的成员本地诊断可用性。A4697 主
+  follower `kubebrain-0`（`10.244.0.69`）无故障 Status 成功；精确阻断到 leader `kubebrain-2`（`10.244.0.67`）
+  3380/TCP 后耗尽 6.260 秒并返回 `DeadlineExceeded`，trap 后规则为 0。
+
+  提交 `81e09947b41054445752099554f09732471585a4` 将原 Status 主体拆为本地路径，并在 proxy-capable follower 上与
+  携带原 credential 的 leader peer Status 并发竞争；成功或确定性 auth/data 错误立即返回，普通 transport/storage 错误
+  等待另一分支。leader payload 仍由公开 interceptor 改写为入口 MemberID，并显式保留入口成员的 `IsLearner`，不能把
+  leader 属性误报为服务成员属性。单测覆盖本地 quota/storage 失败由 leader 接管并保留 learner、本地成功取消阻塞的
+  leader RPC，以及无 token 的 canonical `user name is empty` fail-closed；相关测试连续 20 轮 1.147 秒、race 1.505 秒与
+  `go vet` 均通过。完整 server JSON 产生 18,822 条事件、零 fail event，proxy 包 3.041 秒通过；排除已知固定 600 秒
+  外部脚本 harness 的 `hack/production` 根包后，全仓门禁产生 31,999 条事件、零 fail event。
+
+  精确镜像 `kubebrain:a4698-81e09947` 内嵌完整 SHA 与 UTC build time `2026-08-15T13:19:10Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:a5f878880e6be48f7f86a1b22da7eee37ac2d9ce70ace1699f8f48769ae87031`、
+  `sha256:ac537209b4b4a1ead040807faf8b03be894bc197be30728f49410b672c8e2778`、
+  `sha256:89219681c1b908773e51481b03c353992ce8ead0189320d69f666fd566668889`，Kind runtime imageID 为
+  `sha256:4e7a50d4b45a2784df3507691c69c073287ec9e139f4d378581af78f7582769a`。滚动后主 follower
+  `kubebrain-0`（`10.244.0.75`）无故障/leader-peer/storage 隔离分别 33/32/35ms，三者 revision、leader、
+  RaftIndex/AppliedIndex/Term 一致且入口 MemberID 均为 `4034353177`。JWT follower `a4653-jwt-0`（`10.244.0.78`）
+  使用故障前签发 token：root 在两种隔离下 30/39ms、alice 35/54ms 成功，入口 MemberID 均为 `3258172462`；无重试
+  原始 gRPC 的无效 token 在 leader-peer/storage 隔离下分别 13/2881ms 返回 canonical `Unauthenticated`。后者如实保留
+  peer 连接恢复延迟，不宣称为快速失败。全部规则清零；最终六副本版本/SHA/build time/runtime imageID 一致且 Ready/
+  零重启，三端 health、空 alarm/lease、JWT authRevision=25/用户/角色/空 operator 权限保持；PD/TiKV 3+3 Ready/零重启，
+  九次 PD leader 查询均为 `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
