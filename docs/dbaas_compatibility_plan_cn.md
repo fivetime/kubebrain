@@ -51875,6 +51875,38 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   成功且 AlarmList 为空；JWT 三成员 auth enabled/authRevision=25 一致、operator 权限为空且 AlarmList 为空；三台 PD
   连续三轮从全部 PD 查询均报告 leader `kb-pd-1`，PD/TiKV 3+3 Ready/零重启，全部 A4690 故障规则为 0。
 
+- A4691 审计成员本地的 `Maintenance.MoveLeader`。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`：`authMaintenanceServer.MoveLeader` 先执行管理员鉴权，随后
+  `maintenanceServer.MoveLeader` 在服务请求的成员不是 leader 时直接返回 `ErrGRPCNotLeader`，不会把该请求代理到 leader。
+  KubeBrain 已有相同的成员本地拒绝与 target 校验顺序，但此前在判断本地成员身份之前调用
+  `requireAuthenticated`，即使 auth disabled 也要从 TiKV 读取 auth config，使本应只依赖本地 applied state 的错误受
+  PD/TiKV 可达性影响。
+
+  A4690 主集群 follower `kubebrain-0`（当时 `10.244.0.26`）无故障调用为 26ms、
+  `FailedPrecondition/etcdserver: not leader`；精确阻断该 Pod 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，原实现耗尽
+  6.006 秒 hard timeout 并返回 `DeadlineExceeded/context deadline exceeded`，trap 后规则为 0。`etcdctl move-leader`
+  会先做 endpoint Status 并拒绝 follower endpoint，因此 RED/GREEN 使用直接调用 Maintenance gRPC 的 Go probe，避免把
+  客户端预检结果误当作服务端语义。
+
+  提交 `3c81978c5c2dacca30a5a3baf1c549805b3a685c` 先计算成员本地身份：follower 使用其完整、已应用的 auth snapshot
+  完成 token/JWT/客户端证书与 admin 检查，快照尚不完整时仍 fail closed 到权威路径，然后返回 upstream 一致的
+  `ErrGRPCNotLeader`；真正 leader 仍必须从权威存储鉴权，陈旧 follower cache 不能授权可执行的 leader 操作。新增存储
+  trap 测试同时证明 root 得到 `not leader`、alice 仍按 upstream 顺序先得到 `permission denied`，且两条 follower 路径
+  auth config 后端读取计数均为 0。相关 MoveLeader/maintenance 测试连续 20 轮通过，聚焦 race 2.298 秒、`go vet`
+  通过；全仓 JSON 门禁产生 12,516 条事件且零 fail event。
+
+  精确镜像 `kubebrain:a4691-3c81978c` 内嵌完整 SHA 与 UTC build time `2026-08-15T10:31:45Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:643276430df4ea39b20bdfbc02911a599d692737e45fc1634b6e01e537c682c2`、
+  `sha256:6e1c4b735e56c654abb9069a4c52a9ba34bc27f0ef4b805dcc7809fe639bdec3`、
+  `sha256:d050343854f5a16ac84aad92ba1f0beddb0b051d0338965d48d01df17f3edad7`，Kind runtime imageID 为
+  `sha256:d8e19680e0f16fd6af4caf8c4fcf1c35e471acd5213f78d336f325f18bbcc525`。滚动后主 follower
+  `kubebrain-0`（`10.244.0.33`）、leader `kubebrain-2` 在六目标隔离下 18ms 返回 `not leader`（无故障 28ms）；JWT
+  follower `a4653-jwt-0`（`10.244.0.36`）、leader `a4653-jwt-2` 的 root 调用隔离下 4ms 返回 `not leader`（无故障
+  11ms），alice 调用隔离下 3ms 先返回 `PermissionDenied`。三轮规则均为 0。主/JWT 六副本 Ready/零重启且 runtime
+  imageID 一致；主三个 endpoint health 成功、AlarmList/LeaseList 为空；JWT 三成员 auth enabled/authRevision=25 一致，
+  用户仍为 root/alice、角色仍为 root/operator、operator 权限为空且 AlarmList/LeaseList 为空；PD/TiKV 3+3
+  Ready/零重启，连续三轮从全部 PD 查询均报告 leader `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
