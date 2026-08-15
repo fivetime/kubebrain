@@ -36,6 +36,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
@@ -477,7 +478,7 @@ func TestHistoricalRangeUsesDurableFollowerWatermark(t *testing.T) {
 	require.Equal(t, []byte("v1"), resp.Kvs[0].Value)
 }
 
-func TestLinearizableHistoricalRangeExecutesLocallyAfterBarrier(t *testing.T) {
+func TestFollowerLinearizableHistoricalRangeProxiesBeforeLocalBarrier(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	key := []byte("/historical-linearizable")
@@ -491,19 +492,27 @@ func TestLinearizableHistoricalRangeExecutesLocallyAfterBarrier(t *testing.T) {
 		proxyEnabled: true,
 		syncReadFn: func(context.Context) error {
 			barriers++
+			t.Fatal("raw follower proxy must leave the read barrier to the leader")
 			return nil
 		},
-		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-			t.Fatal("linearizable historical range must not proxy after a successful barrier")
-			return nil, nil
+		rangeFn: func(ctx context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+			require.Equal(t, first.Header.Revision, request.Revision)
+			md, ok := metadata.FromOutgoingContext(ctx)
+			require.True(t, ok)
+			require.Equal(t, []string{"raw-jwt"}, md.Get(rpctypes.TokenFieldNameGRPC))
+			return &etcdserverpb.RangeResponse{
+				Header: latest.Header,
+				Kvs:    []*mvccpb.KeyValue{{Key: key, Value: []byte("v1"), ModRevision: first.Header.Revision}},
+			}, nil
 		},
 	}
 
-	response, err := server.Range(context.Background(), &etcdserverpb.RangeRequest{
+	requestCtx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, "raw-jwt"))
+	response, err := server.Range(requestCtx, &etcdserverpb.RangeRequest{
 		Key: key, Revision: first.Header.Revision,
 	})
 	require.NoError(t, err)
-	require.Equal(t, 1, barriers)
+	require.Zero(t, barriers)
 	require.Equal(t, latest.Header.Revision, response.Header.Revision)
 	require.Len(t, response.Kvs, 1)
 	require.Equal(t, []byte("v1"), response.Kvs[0].Value)

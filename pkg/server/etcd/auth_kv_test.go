@@ -119,13 +119,14 @@ func TestAuthCompactAdminCheckIsPreservedAcrossFollowerRouting(t *testing.T) {
 	}
 }
 
-func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
+func TestAuthFollowerUnaryRangeDelegatesReadBarrierBeforeAuth(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	setupAuthKVUser(t, server)
 	plain := context.Background()
 	barrierErr := errors.New("leader read barrier failed")
 	var barrierCalls int
+	var proxyCalls int
 	server.peers = testPeerService{
 		proxyEnabled: true,
 		syncReadFn: func(context.Context) error {
@@ -133,34 +134,39 @@ func TestAuthRangeReadBarrierPrecedesAuthLikeEtcd(t *testing.T) {
 			return barrierErr
 		},
 		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
-			t.Fatal("linearizable Range must establish its barrier before any historical proxy")
-			return nil, nil
+			proxyCalls++
+			return nil, status.Error(codes.Unavailable, barrierErr.Error())
 		},
 	}
 
 	_, err := server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a")})
 	requireReadBarrierUnavailable(t, err, barrierErr.Error())
-	require.Equal(t, 1, barrierCalls)
+	require.Zero(t, barrierCalls)
+	require.Equal(t, 1, proxyCalls)
 
 	_, err = server.Range(plain, &etcdserverpb.RangeRequest{
 		Key: []byte("/allowed/a"), Revision: 1,
 	})
 	requireReadBarrierUnavailable(t, err, barrierErr.Error())
-	require.Equal(t, 2, barrierCalls, "historical linearizable Range must also fence before auth")
+	require.Zero(t, barrierCalls)
+	require.Equal(t, 2, proxyCalls, "historical linearizable Range must also delegate its fence")
 
 	_, err = server.Range(plain, &etcdserverpb.RangeRequest{Key: []byte("/allowed/a"), Serializable: true})
 	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
-	require.Equal(t, 2, barrierCalls)
+	require.Zero(t, barrierCalls)
+	require.Equal(t, 2, proxyCalls)
 
 	stream := &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0")}, stream)
 	requireReadBarrierUnavailable(t, err, barrierErr.Error())
-	require.Equal(t, 3, barrierCalls)
+	require.Equal(t, 1, barrierCalls)
+	require.Equal(t, 2, proxyCalls)
 
 	stream = &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true}, stream)
 	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
-	require.Equal(t, 3, barrierCalls)
+	require.Equal(t, 1, barrierCalls)
+	require.Equal(t, 2, proxyCalls)
 }
 
 func TestAuthRangeValidationPrecedesReadBarrierAndAuthLikeEtcd(t *testing.T) {

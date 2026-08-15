@@ -72,6 +72,22 @@ func (s *RPCServer) rangeWithAfterRead(
 	// followers without a complete/valid checkpoint also retain the ordinary
 	// TiKV path and fail closed if PD is unavailable.
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !r.Serializable && !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// An etcd gRPC proxy sends a linearizable Range to the authoritative
+		// server before auth admission. Do the same for a KubeBrain follower:
+		// otherwise a single ingress that lost its PD/TiKV path blocks while
+		// loading auth state or data even though its peer leader is healthy.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.Range(proxyCtx, r)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		if err == nil && afterRead != nil {
+			err = afterRead(response)
+		}
+		return response, err
+	}
 	if r.Serializable && r.Revision <= 0 && (!s.peers.IsLeader() || !leadingFresh) {
 		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
 			ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
@@ -84,10 +100,9 @@ func (s *RPCServer) rangeWithAfterRead(
 	// come from the requested older revision.
 	durableHistorical := r.Serializable && r.Revision > 0 && s.followerHasDurableRevision(ctx, uint64(r.Revision))
 	// A serializable historical read whose revision is not yet covered by this
-	// follower's durable watermark must run on the leader. A linearizable read
-	// instead establishes SyncReadRevision below and can then read the shared
-	// TiKV snapshot locally; proxying it here would incorrectly put auth before
-	// etcd's read barrier.
+	// follower's durable watermark must run on the leader. Linearizable follower
+	// reads have already taken the raw proxy path above, preserving the leader's
+	// read-before-auth ordering without this ingress's storage connection.
 	if r.Serializable && r.Revision > 0 && !s.peers.IsLeader() && !durableHistorical && s.peers.EtcdProxyEnabled() {
 		caller, authErr := s.authCallerFromContext(ctx)
 		if authErr != nil {
