@@ -1322,7 +1322,19 @@ func (s *RPCServer) checkRequestedRevision(ctx context.Context, revision int64) 
 		return compactedRevisionError()
 	}
 	if revision > int64(s.backend.GetCurrentRevision()) {
-		return futureRevisionError()
+		// The public revision watermark is process-local, while the committed
+		// history is shared by every replica in TiKV.  Confirm an apparent future
+		// revision against the durable cluster watermark before rejecting it; this
+		// also lets an idle follower serve a revision committed through a different
+		// replica without waiting for its asynchronous observer to catch up.
+		durableRevision, err := s.backend.GetDurableRevision(ctx)
+		if err != nil {
+			return err
+		}
+		s.backend.SetCurrentRevision(durableRevision)
+		if revision > int64(durableRevision) {
+			return futureRevisionError()
+		}
 	}
 	return nil
 }

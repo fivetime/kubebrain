@@ -260,6 +260,11 @@ func (s *RPCServer) hedgedPeerHashKV(ctx context.Context, req *etcdserverpb.Hash
 			if result.err == nil {
 				return result.response, nil
 			}
+			if result.forwarded && isPeerHashKVRevisionError(result.err) {
+				// The leader's revision boundary is authoritative. Returning it also
+				// avoids waiting for a storage-isolated local hash until ctx expires.
+				return nil, result.err
+			}
 			// A follower's process-local revision watermark can lag the shared TiKV
 			// history.  Do not let its fast future/compacted result cancel the leader
 			// hash that may serve the requested revision.  If both paths reject the
@@ -283,6 +288,13 @@ func (s *RPCServer) localPeerHashKV(ctx context.Context, req *etcdserverpb.HashK
 		CompactRevision: result.CompactRevision,
 		HashRevision:    result.HashRevision,
 	}, nil
+}
+
+func isPeerHashKVRevisionError(err error) bool {
+	message := status.Convert(err).Message()
+	return errors.Is(err, backend.ErrHashKVCompacted) || errors.Is(err, backend.ErrHashKVFuture) ||
+		strings.Contains(message, "required revision has been compacted") ||
+		strings.Contains(message, "required revision is a future revision")
 }
 
 func writePeerHashKVError(w http.ResponseWriter, err error) {
