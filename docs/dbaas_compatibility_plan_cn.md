@@ -52010,6 +52010,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   root/operator、空 operator 权限以及 AlarmList/LeaseList 均保持；PD/TiKV 3+3 Ready/零重启，连续三轮从全部 PD 查询
   的九个结果均为 leader `kb-pd-1`。
 
+- A4695 修复 A4694 无条件 leader 转发引入的互补故障窗口。继续固定 upstream
+  `/root/etcd/server/etcdserver/corrupt.go::hashKVHandler`：peer HashKV 始终 hash 收到请求成员的本地 BoltDB，不要求
+  该成员能联系 leader。KubeBrain 虽共享 TiKV history，但 A4694 follower handler 只走 leader peer gRPC；当本地
+  PD/TiKV 全部健康而 leader peer 链路中断时，反而丢失 upstream 的成员本地可用性。
+
+  A4694 主 follower `kubebrain-0`（`10.244.0.51`）、leader `kubebrain-2`（`10.244.0.49`）保持全部 PD/TiKV 路径
+  可达，仅精确阻断 source→leader 3380/TCP；请求 revision `468126003565913475` 的 peer HashKV 耗尽 6.002 秒 curl
+  hard timeout、HTTP code 000，trap 后规则为 0。这与上一项“阻断 storage、保留 peer”构成两个互补故障域，不能以
+  其中一项 GREEN 代替另一项。
+
+  提交 `e36aa73f01d65a7d38188ead56d685ad65b7198e` 对 proxy-enabled follower 并发发起本地共享 TiKV HashKV 和受信
+  leader peer HashKV；首个成功结果或确定性的 future/compacted 结果立即结束请求并取消另一分支。这样 storage 隔离由
+  leader 分支接管，leader-peer 隔离由本地分支接管，同时不把两个串行 timeout 相加。回归测试分别让本地 backend
+  失败而 leader 成功、让 leader RPC 阻塞而本地成功并确认 loser context 被取消；错误映射和既有 admission 测试一并
+  连续 20 轮 1.937 秒通过，聚焦 race 与 `go vet` 通过。完整 server JSON 复跑产生 18,857 条事件、零 fail event，
+  proxy 包 3.112 秒通过；排除已知固定 600 秒外部脚本 harness 的 `hack/production` 后，全仓门禁产生 28,484 条事件、
+  零 fail event。
+
+  精确镜像 `kubebrain:a4695-e36aa73f` 内嵌完整 SHA 与 UTC build time `2026-08-15T12:08:49Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:731551f880ebc93898b29c8b6e682968903ee71cb2ac9d9751b7275ed84d5acf`、
+  `sha256:60e4aa8736c2328c2c2dda63ec84d70d49e1e15a40e17cf60c6699923d355e0d`、
+  `sha256:44b8585edb4706dd967c4ab68a7ed0b0873f223473b9af5e48ca8409ada5cf77`，Kind runtime imageID 为
+  `sha256:8aad65e3008cb7a629540f468e4bfbe9a0fe4dc4f5eb6115e018fd3f7c7f54cf`。滚动后主 follower
+  `kubebrain-0`（`10.244.0.57`）在 leader-peer 隔离下 353ms 由本地返回、在六目标 storage 隔离下 224ms 由 leader
+  返回，两者 hash `2711413614` 与 revision envelope 完全一致。JWT follower `a4653-jwt-0`（`10.244.0.60`）的两种
+  隔离分别 48/44ms 返回相同 hash `3280511603`，future revision 在两种隔离下分别 45/44ms 返回标准 HTTP 400；全部
+  注入规则清零。最终主/JWT 六副本 Ready/零重启且 runtime imageID 一致；主三 endpoint health 成功且 AlarmList/
+  LeaseList 为空；JWT auth enabled/authRevision=25、用户/角色/空 operator 权限及 AlarmList/LeaseList 均保持；PD/TiKV
+  3+3 Ready/零重启，九次 PD leader 查询均为 `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
