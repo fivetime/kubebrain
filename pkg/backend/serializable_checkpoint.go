@@ -36,6 +36,11 @@ const (
 	serializableCheckpointTTL     = 5 * time.Minute
 	serializableCheckpointUsable  = serializableCheckpointTTL / 2
 	serializableCheckpointRefresh = time.Second
+	// Refresh the authoritative PD Region/store directory well inside the local
+	// checkpoint safety window. This makes topology changes that complete while
+	// PD is reachable part of a later isolation checkpoint without scanning PD
+	// on every one-second safepoint renewal.
+	serializableCheckpointRegionRefresh = 30 * time.Second
 )
 
 // SerializableCheckpoint binds the client-visible revision and compact/auth
@@ -201,14 +206,28 @@ func (b *backend) protectSerializableCheckpoint(ctx context.Context, c Serializa
 	if minimum > c.Timestamp {
 		return fmt.Errorf("%w: GC safepoint %d passed snapshot %d", ErrSerializableCheckpointUnavailable, minimum, c.Timestamp)
 	}
-	if !b.serializableCheckpointRegionsWarmed.Load() {
-		if err := b.warmSerializableCheckpoint(ctx, c.Timestamp); err != nil {
-			return err
-		}
-		b.serializableCheckpointRegionsWarmed.Store(true)
+	if err := b.refreshSerializableCheckpointRegions(ctx, c.Timestamp); err != nil {
+		return err
 	}
 	c.ValidUntil = time.Now().Add(serializableCheckpointUsable)
 	b.serializableCheckpoint.Store(&c)
+	return nil
+}
+
+func (b *backend) refreshSerializableCheckpointRegions(ctx context.Context, timestamp uint64) error {
+	b.serializableCheckpointRegionWarmMu.Lock()
+	defer b.serializableCheckpointRegionWarmMu.Unlock()
+	now := time.Now()
+	warmedAt := b.serializableCheckpointRegionsWarmedAt.Load()
+	if warmedAt != 0 && now.UnixNano() >= warmedAt && now.UnixNano()-warmedAt < int64(serializableCheckpointRegionRefresh) {
+		return nil
+	}
+	if err := b.warmSerializableCheckpoint(ctx, timestamp); err != nil {
+		return err
+	}
+	// Record completion rather than start: a large directory scan must not
+	// consume the next refresh interval while it is still running.
+	b.serializableCheckpointRegionsWarmedAt.Store(time.Now().UnixNano())
 	return nil
 }
 

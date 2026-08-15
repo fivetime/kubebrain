@@ -438,11 +438,16 @@ type backend struct {
 	// durableRevisionTarget and durableRevisionSignal coalesce collector progress
 	// into monotonic background persistence, so a slow metadata write cannot
 	// delay watch fan-out or user-write acknowledgement.
-	durableRevisionTarget               uint64
-	durableRevisionSignal               chan struct{}
-	serializableCheckpoint              atomic.Pointer[SerializableCheckpoint]
-	serializableCheckpointServiceID     string
-	serializableCheckpointRegionsWarmed atomic.Bool
+	durableRevisionTarget           uint64
+	durableRevisionSignal           chan struct{}
+	serializableCheckpoint          atomic.Pointer[SerializableCheckpoint]
+	serializableCheckpointServiceID string
+	// serializableCheckpointRegionsWarmedAt is the wall-clock UnixNano of the
+	// last complete PD directory scan plus Region-cache warmup. A one-shot warm
+	// is insufficient for a long-running data-plane process: Region topology and
+	// store addresses can change while PD is healthy, before a later PD outage.
+	serializableCheckpointRegionsWarmedAt atomic.Int64
+	serializableCheckpointRegionWarmMu    sync.Mutex
 
 	// logicalWriteMu is a leader-local predicate-lock substitute. Ordinary
 	// logical writes take RLock and therefore remain fully concurrent. A generic
