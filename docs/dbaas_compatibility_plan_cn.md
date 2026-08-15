@@ -52573,6 +52573,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   使用同一 A4720 镜像。测试窗口日志出现 TiKV/PD 瞬时 deadline 和一次内部 follower future-revision 转发重试，
   但所有差分及最终健康检查均成功；保留为后续 soak 观察项，不把瞬时基础设施日志隐去或误报为本轮产品 RED。
 
+- A4724 回到固定 seed 的生成式 KV/Txn 请求矩阵，避免完整 suite 单轮 GREEN 掩盖共享 keyspace、租约清理或
+  后端时序相关的不稳定差异。使用独立 clean 单成员
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 和主 A4720 三副本 Service endpoint，将既有
+  Generated Delete、Put、Range、RangeStream、Txn Delete、三层 nested Txn、nested range compare、Txn Put、
+  Txn Range 与 staged Txn Range 共 10 个顶层差分入口连续执行 3 轮；30/30 全部 GREEN，总耗时 220.272 秒。
+  负向组合在两端均返回相同的 key/value/lease/sort InvalidArgument，不能把 client retry warning 误报为失败。
+  本轮没有生产 RED，因而没有修改生产或测试代码，也没有重建相同镜像；postflight proposal health 为 22.48ms，
+  alarm 为空，主三副本继续 Ready/零重启。当前 Kind 只有一个 control-plane node，不满足正式 Kubernetes Envoy
+  rollout 门禁要求的三个不同 worker，故没有用单节点部署替代 A4416--A4418 的多节点 EndpointSlice 证据；该项
+  继续留给具备真实三节点调度前置条件的发布环境。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
