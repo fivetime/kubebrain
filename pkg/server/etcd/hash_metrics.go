@@ -20,6 +20,15 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
+func initEtcdMVCCHashDurationMetrics(metricCli metrics.Metrics) {
+	registrar, ok := metricCli.(metrics.HistogramRegistrar)
+	if !ok {
+		return
+	}
+	_ = registrar.RegisterHistogram("etcd.mvcc.hash_duration_seconds")
+	_ = registrar.RegisterHistogram("etcd.mvcc.hash_rev_duration_seconds")
+}
+
 func emitEtcdMVCCHashDuration(metricCli metrics.Metrics, duration time.Duration) {
 	if metricCli == nil {
 		return

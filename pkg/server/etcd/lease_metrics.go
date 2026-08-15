@@ -20,6 +20,9 @@ func initEtcdLeaseLifecycleMetrics(metricCli metrics.Metrics) {
 	emitEtcdLeaseGrantedCounter(metricCli, 0)
 	emitEtcdLeaseRevokedCounter(metricCli, 0)
 	emitEtcdLeaseRenewedCounter(metricCli, 0)
+	if registrar, ok := metricCli.(metrics.HistogramRegistrar); ok {
+		_ = registrar.RegisterHistogram("etcd_debugging.lease.ttl_total")
+	}
 }
 
 func initEtcdLeaseExpiredCounter(metricCli metrics.Metrics) {

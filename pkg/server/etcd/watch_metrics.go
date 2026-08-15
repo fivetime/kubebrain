@@ -16,6 +16,23 @@ package etcd
 
 import "github.com/kubewharf/kubebrain/pkg/metrics"
 
+var etcdWatchSendLoopDurationMetrics = []string{
+	"etcd_debugging.server.watch_send_loop.watch_stream.duration.seconds",
+	"etcd_debugging.server.watch_send_loop.watch_stream.duration_per_event.seconds",
+	"etcd_debugging.server.watch_send_loop.control_stream.duration.seconds",
+	"etcd_debugging.server.watch_send_loop.progress.duration.seconds",
+}
+
+func initEtcdWatchSendLoopDurationMetrics(metricCli metrics.Metrics) {
+	registrar, ok := metricCli.(metrics.HistogramRegistrar)
+	if !ok {
+		return
+	}
+	for _, name := range etcdWatchSendLoopDurationMetrics {
+		_ = registrar.RegisterHistogram(name)
+	}
+}
+
 func initEtcdMVCCWatchEventCounter(metricCli metrics.Metrics) {
 	emitEtcdMVCCWatchEventCounter(metricCli, 0)
 }
