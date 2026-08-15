@@ -52040,6 +52040,36 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   LeaseList 为空；JWT auth enabled/authRevision=25、用户/角色/空 operator 权限及 AlarmList/LeaseList 均保持；PD/TiKV
   3+3 Ready/零重启，九次 PD leader 查询均为 `kb-pd-1`。
 
+- A4696 把 A4695 的双故障域模型扩展到公开 `Maintenance.Hash/HashKV`。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`：两项在服务成员本地完成管理员鉴权并 hash 本地 BoltDB；
+  `/root/etcd/server/proxy/grpcproxy/maintenance.go` 的代理部署才转发整项 RPC。KubeBrain A4693 为解决 follower
+  storage 隔离而无条件转发，导致本地 TiKV/PD 健康、仅 leader peer 链路中断时丢失成员本地诊断能力。
+
+  A4695 主 follower `kubebrain-0`（`10.244.0.57`）、leader `kubebrain-2`（`10.244.0.55`）无故障 Hash/固定
+  revision HashKV 分别 553/205ms 成功；仅阻断 source→leader 3380/TCP、保持全部 PD/TiKV 路径后，Hash 耗尽
+  6.006 秒返回 `DeadlineExceeded`，HashKV 2.936 秒返回 `Unavailable/proxy is not ready`，两轮 trap 后规则为 0。
+
+  提交 `f5b408d89ae2b82690e363ad7e47d6f3865d9fc4` 用同一个泛型双路径竞争器并发执行“权威本地 TiKV 鉴权+hash”和
+  “原 credential 的受信 leader peer RPC”；任一成功或确定性的 auth、future/compacted、数据损坏错误立即返回并
+  取消 loser，普通 transport/storage 错误则等待另一分支。local 分支成功必须先从共享 TiKV 读取当前 auth config，
+  因而不能用陈旧缓存抢赢 leader 的拒绝。单测分别覆盖本地 storage 失败、leader RPC 阻塞及取消、alice 本地鉴权
+  fail-closed；相关测试连续 20 轮 3.940 秒、聚焦 race、`go vet` 均通过。完整 server JSON 产生 18,830 条事件零失败，
+  proxy 包 3.025 秒通过；排除已知固定 600 秒外部脚本 harness 的 `hack/production` 后，全仓门禁产生 28,372 条事件、
+  零 fail event。
+
+  精确镜像 `kubebrain:a4696-f5b408d8` 内嵌完整 SHA 与 UTC build time `2026-08-15T12:31:18Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:5b3424501326b3b88f0541d884375c03f67aeec417811a5e10091c37d7590387`、
+  `sha256:7e546111af3aef86c50040dd6aecf46e6d9c36db1e2919bb40c985e4b7483c32`、
+  `sha256:9dfdc3774770e05e5cbb86d6d679e99dbb44cd0b968e8a9c8fcfc90c9edcebd6`，Kind runtime imageID 为
+  `sha256:045e9fee70005a6eeb27d06e4aa3a4fb090871d360b4926bfaf5fb84a896ca49`。主 follower
+  `kubebrain-0`（`10.244.0.63`）在 leader-peer 隔离下 Hash/HashKV 242/185ms，在六目标 storage 隔离下 188/201ms，
+  两种路径的 hash、revision 和入口 member ID 一致。JWT follower `a4653-jwt-0`（`10.244.0.66`）root 的
+  leader-peer 隔离 Hash/HashKV 为 10/16ms、storage 隔离为 11/12ms；故障前预签发 token 后，alice 在两种隔离下
+  37/26ms 返回 `PermissionDenied`，root future revision 在两种隔离下 18/11ms 返回标准 `OutOfRange`。本轮另发现
+  leader-peer 隔离期间新 `Authenticate` 仍可能超时，该独立缺口保留到下一项，未混入 Hash GREEN。所有规则清零；
+  最终六个 KubeBrain Pod 与 PD/TiKV 3+3 均 Ready/零重启，健康、authRevision=25、用户/角色/空 operator 权限、空
+  alarm/lease 均保持，九次 PD leader 查询均为 `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
