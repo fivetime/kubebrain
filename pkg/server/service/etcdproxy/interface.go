@@ -42,6 +42,9 @@ type EtcdProxy interface {
 	// Range forwards historical range unary request to leader.
 	Range(ctx context.Context, req *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error)
 
+	// RangeStream forwards a server-streaming range request to leader.
+	RangeStream(ctx context.Context, req *etcdserverpb.RangeRequest) (<-chan RangeStreamResult, error)
+
 	// Put forwards put unary request to leader.
 	Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error)
 
@@ -113,6 +116,11 @@ type EtcdProxy interface {
 
 type SnapshotResult struct {
 	Response *etcdserverpb.SnapshotResponse
+	Err      error
+}
+
+type RangeStreamResult struct {
+	Response *etcdserverpb.RangeStreamResponse
 	Err      error
 }
 

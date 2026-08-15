@@ -462,6 +462,43 @@ func (e *etcdProxy) Range(ctx context.Context, req *etcdserverpb.RangeRequest) (
 	return resp, err
 }
 
+func (e *etcdProxy) RangeStream(ctx context.Context, req *etcdserverpb.RangeRequest) (<-chan RangeStreamResult, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward range stream", "leader", leader, "key", string(req.Key), "rangeEnd", string(req.RangeEnd), "revision", req.Revision)
+	stream, err := etcdserverpb.NewKVClient(client.ActiveConnection()).RangeStream(ctx, req, e.callOptions...)
+	if err != nil {
+		e.markForwardError(ctx, client, err)
+		return nil, err
+	}
+	out := make(chan RangeStreamResult)
+	go func() {
+		defer close(out)
+		for {
+			response, recvErr := stream.Recv()
+			if errors.Is(recvErr, io.EOF) {
+				return
+			}
+			if recvErr != nil {
+				e.markForwardError(ctx, client, recvErr)
+				select {
+				case out <- RangeStreamResult{Err: recvErr}:
+				case <-ctx.Done():
+				}
+				return
+			}
+			select {
+			case out <- RangeStreamResult{Response: response}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
+}
+
 func (e *etcdProxy) Put(ctx context.Context, req *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {

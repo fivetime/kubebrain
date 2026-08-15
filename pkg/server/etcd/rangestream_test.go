@@ -37,6 +37,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
@@ -502,6 +503,34 @@ func TestSerializableRangeStreamBypassesLeaderRevisionSync(t *testing.T) {
 	linearizable := &fakeRangeStreamServer{ctx: ctx}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")}, linearizable)
 	requireReadBarrierUnavailable(t, err, syncErr.Error())
+}
+
+func TestFollowerLinearizableRangeStreamProxiesBeforeLocalBarrier(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	request := &etcdserverpb.RangeRequest{Key: []byte("/stream/"), RangeEnd: []byte("/stream0")}
+	want := &etcdserverpb.RangeStreamResponse{RangeResponse: &etcdserverpb.RangeResponse{
+		Header: txnHeader(42), Count: 1,
+		Kvs: []*mvccpb.KeyValue{{Key: []byte("/stream/key"), Value: []byte("value")}},
+	}}
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		syncReadFn: func(context.Context) error {
+			t.Fatal("follower must proxy RangeStream before a local read barrier")
+			return errors.New("unreachable")
+		},
+		rangeStreamFn: func(_ context.Context, got *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			require.Equal(t, request, got)
+			results := make(chan etcdproxy.RangeStreamResult, 1)
+			results <- etcdproxy.RangeStreamResult{Response: want}
+			close(results)
+			return results, nil
+		},
+	}
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	require.NoError(t, server.RangeStream(request, stream))
+	require.Equal(t, []*etcdserverpb.RangeStreamResponse{want}, stream.sent)
 }
 
 func TestStaleLeaderSerializableLatestRangeStreamUsesProtectedCheckpoint(t *testing.T) {

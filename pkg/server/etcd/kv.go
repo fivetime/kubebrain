@@ -245,6 +245,33 @@ func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV
 	if hasRangeRevisionFilters(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
+	if !r.Serializable && s.peers.EtcdProxyEnabled() {
+		_, leadingFresh := s.peers.EpochAndLeadingFresh()
+		if !leadingFresh {
+			proxyCtx, err := s.forwardWriteAuthContext(ctx)
+			if err != nil {
+				return err
+			}
+			results, err := s.peers.RangeStream(proxyCtx, r)
+			if err != nil {
+				return err
+			}
+			for result := range results {
+				if result.Err != nil {
+					return result.Err
+				}
+				if response := result.Response; response != nil {
+					s.observeForwardedRevision(response.GetRangeResponse().GetHeader(), nil)
+					if err := rs.Send(response); err != nil {
+						return err
+					}
+				}
+			}
+			s.metricCli.EmitCounter("read.range_stream", 1)
+			s.metricCli.EmitHistogram("read.range_stream.latency", time.Since(startTime).Seconds())
+			return nil
+		}
+	}
 	if r.Serializable && r.Revision <= 0 {
 		_, leadingFresh := s.peers.EpochAndLeadingFresh()
 		if !s.peers.IsLeader() || !leadingFresh {

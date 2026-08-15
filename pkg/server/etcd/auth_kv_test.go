@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/kubewharf/kubebrain/pkg/server/service/etcdproxy"
 )
 
 func setupAuthKVUser(t *testing.T, server *RPCServer) context.Context {
@@ -127,6 +129,7 @@ func TestAuthFollowerUnaryRangeDelegatesReadBarrierBeforeAuth(t *testing.T) {
 	barrierErr := errors.New("leader read barrier failed")
 	var barrierCalls int
 	var proxyCalls int
+	var streamProxyCalls int
 	server.peers = testPeerService{
 		proxyEnabled: true,
 		syncReadFn: func(context.Context) error {
@@ -135,6 +138,10 @@ func TestAuthFollowerUnaryRangeDelegatesReadBarrierBeforeAuth(t *testing.T) {
 		},
 		rangeFn: func(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
 			proxyCalls++
+			return nil, status.Error(codes.Unavailable, barrierErr.Error())
+		},
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			streamProxyCalls++
 			return nil, status.Error(codes.Unavailable, barrierErr.Error())
 		},
 	}
@@ -159,14 +166,16 @@ func TestAuthFollowerUnaryRangeDelegatesReadBarrierBeforeAuth(t *testing.T) {
 	stream := &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0")}, stream)
 	requireReadBarrierUnavailable(t, err, barrierErr.Error())
-	require.Equal(t, 1, barrierCalls)
+	require.Zero(t, barrierCalls)
 	require.Equal(t, 2, proxyCalls)
+	require.Equal(t, 1, streamProxyCalls)
 
 	stream = &fakeRangeStreamServer{ctx: plain}
 	err = server.RangeStream(&etcdserverpb.RangeRequest{Key: []byte("/allowed/"), RangeEnd: []byte("/allowed0"), Serializable: true}, stream)
 	requireAuthKVError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
-	require.Equal(t, 1, barrierCalls)
+	require.Zero(t, barrierCalls)
 	require.Equal(t, 2, proxyCalls)
+	require.Equal(t, 1, streamProxyCalls)
 }
 
 func TestAuthRangeValidationPrecedesReadBarrierAndAuthLikeEtcd(t *testing.T) {

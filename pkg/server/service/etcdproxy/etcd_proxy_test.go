@@ -170,6 +170,21 @@ type snapshotLeaderServer struct {
 	responses []*etcdserverpb.SnapshotResponse
 }
 
+type rangeStreamLeaderServer struct {
+	etcdserverpb.UnimplementedKVServer
+	responses   []*etcdserverpb.RangeStreamResponse
+	terminalErr error
+}
+
+func (s *rangeStreamLeaderServer) RangeStream(_ *etcdserverpb.RangeRequest, stream etcdserverpb.KV_RangeStreamServer) error {
+	for _, response := range s.responses {
+		if err := stream.Send(response); err != nil {
+			return err
+		}
+	}
+	return s.terminalErr
+}
+
 func (s *snapshotLeaderServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream etcdserverpb.Maintenance_SnapshotServer) error {
 	for _, response := range s.responses {
 		if err := stream.Send(response); err != nil {
@@ -211,6 +226,51 @@ func TestSnapshotForwardsEveryLeaderResponse(t *testing.T) {
 	for i := range want {
 		require.True(t, proto.Equal(want[i], got[i]), "response %d: want=%s got=%s", i, want[i], got[i])
 	}
+}
+
+func TestRangeStreamForwardsResponsesAndTerminalStatus(t *testing.T) {
+	want := []*etcdserverpb.RangeStreamResponse{
+		{RangeResponse: &etcdserverpb.RangeResponse{Kvs: []*mvccpb.KeyValue{{Key: []byte("/stream/a")}}}},
+		{RangeResponse: &etcdserverpb.RangeResponse{Header: &etcdserverpb.ResponseHeader{Revision: 42}, Count: 1}},
+	}
+	terminalErr := status.Error(codes.OutOfRange, "required revision has been compacted")
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	registerServingHealth(server)
+	etcdserverpb.RegisterKVServer(server, &rangeStreamLeaderServer{responses: want, terminalErr: terminalErr})
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+
+	endpoint := lis.Addr().String()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: endpoint}, client: cli, curLeader: endpoint}
+	results, err := proxy.RangeStream(context.Background(), &etcdserverpb.RangeRequest{
+		Key: []byte("/stream/"), RangeEnd: []byte("/stream0"),
+	})
+	require.NoError(t, err)
+
+	var got []*etcdserverpb.RangeStreamResponse
+	var gotErr error
+	for result := range results {
+		if result.Err != nil {
+			gotErr = result.Err
+			continue
+		}
+		got = append(got, result.Response)
+	}
+	require.Len(t, got, len(want))
+	for i := range want {
+		require.True(t, proto.Equal(want[i], got[i]), "response %d: want=%s got=%s", i, want[i], got[i])
+	}
+	require.Equal(t, codes.OutOfRange, status.Code(gotErr))
+	require.Equal(t, status.Convert(terminalErr).Message(), status.Convert(gotErr).Message())
 }
 
 func TestLeaseKeepAliveForwardingTimeoutAndCancellation(t *testing.T) {
