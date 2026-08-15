@@ -52271,6 +52271,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `sha256:... (length=1536143)` 且检索不到原始大 key。主/JWT 六副本、PD/TiKV 3+3 均 Ready/零重启，
   三端 proposal health 为 44.36/45.50/51.61ms，alarm/lease 为空。
 
+- A4708 收口 watch 生命周期诊断结构对原始大 key 的额外保留。A4705-A4707 已限制各层直接日志入口，
+  但每个活跃 watch 的 `watch` generation 仍把 `WatchCreateRequest.Key/RangeEnd` 转成完整 string，持续保留到
+  watch 结束；异常 `Recv` 时还会把同一 stream 的所有 generation 拼成一条日志。因此合法的近 1.5 MiB key
+  会按活跃 watch 数额外占用内存，异常断流又可把它放大成单行日志并泄露用户 key。生产提交 `5c0af397`
+  让这两个仅供诊断的字段在 generation 创建时就保存统一的有界表示：不超过 256 字节保持可读，超过则只保留
+  SHA-256 与原始长度。后续 cancel 和 receive-error 汇总不再有机会接触完整 key；本提交仅修改生产
+  `pkg/server/etcd/watch.go`，没有修改测试文件。server/etcd 全量回归在 176.180 秒通过。
+
+  精确镜像 `kubebrain:a4708-5c0af397` 内嵌 SHA
+  `5c0af397a695d98494ed6cb32f8a335ee9787c78`、build time `2026-08-15T15:30:00Z`，OCI index 为
+  `sha256:ab9dcda0345ff5847aa613071e1937cba7dee19eb4659e96d9d46352f8df5130`，Kind runtime imageID 为
+  `sha256:9dd2ed2065c8c329b1b34eccffaa8250c2861b7bd9e66c0158cc11db227fb971`。主/JWT 六副本滚动后均
+  Ready/零重启，独立 PD/TiKV 3+3 Ready/零重启。600 KiB 与 1,500 KiB key 的 Watch/Txn/Lease、
+  Watch/Put/LeaseRevoke upstream 差分在 3.691 秒全部通过；实际服务 Pod 的 928 行窗口中有 14 条
+  `sha256:... (length=...)` watch 诊断，检索不到连续 64 字节原始 key。随后三 direct replica HA 差分在
+  43.151 秒通过，覆盖 L4/L7 响应丢失、lease grant/revoke 重放与 regrant、MoveLeader、复用流恢复、
+  follower RangeStream 和 Watch L7 reset。最终三端 proposal health 为 53.36/50.95/38.37ms，alarm 为空、
+  lease 数为零。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
