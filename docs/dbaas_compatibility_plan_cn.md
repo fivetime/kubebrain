@@ -51396,6 +51396,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain/PD/TiKV 主集群各三副本 Ready 且零重启。这里信任的是受 peer listener/mTLS 边界保护的 leader handler，
   不允许公开 client metadata 或任意 mock 绕过 leader 最终鉴权。
 
+- A4673 将 storage-isolated follower 路由扩展到 Compact，并收紧 peer mTLS 身份边界。上游
+  `/root/etcd/server/etcdserver/api/v3rpc/key.go::Compact` 在进入 EtcdServer 前用本地 Raft-replicated auth store
+  校验 admin；KubeBrain 旧 follower 同样先调用 `authCallerFromContext`，但其 auth store 在独立 TiKV 中，单个
+  ingress 失去全部 PD/TiKV 路径时会在找到健康 proxy leader 前耗尽 deadline。提交
+  `46ae4ef63f8df6c7bac4e4c747d838d4c3bdad78` 让 proxy-capable follower 先把 raw bearer 或已翻译的 client-cert
+  token 送入可信 peer listener，实际 leader 再运行完整 Compact admin、startup、CORRUPT、read barrier、revision
+  和 leadership fence 后才允许销毁历史；local leader 与禁用 proxy 的 follower 仍保留 auth-before-routing 顺序。
+  同时 `authCallerFromTLS` 明确拒绝 peer request 使用内部 transport certificate CN 作为 etcd 用户：原客户端证书
+  必须已由 ingress 换成短期 token，没有 token 就按匿名处理，防止内部证书名称意外映射为 root/user。测试只把
+  proxy mock 改为模拟 leader 的真实 admin 结果，并在既有证书测试加入 peer-CN 拒绝断言；完整
+  `pkg/server/etcd` 180.837 秒、vet 和聚焦 race 2.478 秒通过。
+
+  修复前 A4672 精确镜像上，阻断 follower `kubebrain-0` 到三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，对已
+  压缩 revision 1 的无副作用 Compact 在约 8 秒返回 `DeadlineExceeded`，且没有 `forward compact` 日志。精确
+  A4673 镜像 `kubebrain:a4673-46ae4ef6` 内嵌上述完整 SHA，构建时间 `2026-08-15T04:04:39Z`，OCI manifest
+  list 为 `sha256:4bd73190f07fd79d5032357598669b637244d8aa05efd656acf1023f81803ae4`。三副本滚动后重放相同隔离，
+  Compact 在 332ms 由 leader `kubebrain-1` 返回 canonical `OutOfRange/required revision has been compacted`，
+  proxy 日志固定 revision=1、physical=false，未推进全局 compact watermark。规则为 0，AlarmList 为空、LeaseList
+  为 0；三个 endpoint 可提交 proposal，KubeBrain/PD/TiKV 主集群各三副本 Ready 且零重启。剩余差距是当 proxy
+  leader 本身不可达时，storage-isolated follower 无法像上游那样依靠本地 Raft auth 副本先返回匿名/权限错误，可能先
+  返回 Unavailable；彻底对齐需要独立于 TiKV 数据路径的可信 auth revision/snapshot 复制，而不能使用陈旧 cache 放行。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
