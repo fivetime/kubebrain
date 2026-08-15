@@ -528,6 +528,17 @@ func (e *etcdProxy) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRe
 	return resp, err
 }
 
+func (e *etcdProxy) AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward auth status", "leader", leader)
+	resp, err := etcdserverpb.NewAuthClient(client.ActiveConnection()).AuthStatus(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {

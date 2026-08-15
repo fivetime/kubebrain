@@ -105,7 +105,21 @@ func (s *RPCServer) authStatusSnapshot(ctx context.Context) (*authSnapshot, erro
 	return snapshot, nil
 }
 
-func (s *RPCServer) AuthStatus(ctx context.Context, _ *etcdserverpb.AuthStatusRequest) (_ *etcdserverpb.AuthStatusResponse, retErr error) {
+func (s *RPCServer) AuthStatus(ctx context.Context, request *etcdserverpb.AuthStatusRequest) (_ *etcdserverpb.AuthStatusResponse, retErr error) {
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// Upstream obtains AuthStatus through a Raft request and its gRPC proxy
+		// forwards it. KubeBrain's equivalent state is shared in TiKV, so let the
+		// trusted leader validate any credential and report the authoritative auth
+		// revision without requiring this ingress to reach its storage path.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.AuthStatus(proxyCtx, request)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if _, err := s.authStatusSnapshot(ctx); err != nil {
 		return nil, err
 	}

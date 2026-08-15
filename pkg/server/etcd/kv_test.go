@@ -65,6 +65,7 @@ type testPeerService struct {
 	alarmFn          func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error)
 	defragmentFn     func(context.Context, *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
 	downgradeFn      func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
+	authStatusFn     func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
 	watchFn          func(context.Context, []byte, []byte, uint64) (<-chan etcdproxy.WatchResult, error)
 	leaseGrantFn     func(context.Context, *etcdserverpb.LeaseGrantRequest) (*etcdserverpb.LeaseGrantResponse, error)
 	leaseKeepAliveFn func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error)
@@ -548,6 +549,13 @@ func (s testPeerService) Defragment(ctx context.Context, req *etcdserverpb.Defra
 func (s testPeerService) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 	if s.downgradeFn != nil {
 		return s.downgradeFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+	if s.authStatusFn != nil {
+		return s.authStatusFn(ctx, req)
 	}
 	return nil, nil
 }

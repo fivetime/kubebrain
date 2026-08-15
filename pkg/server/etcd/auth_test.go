@@ -370,6 +370,32 @@ func TestAuthStatusRejectsInvalidTokenWhenEnabled(t *testing.T) {
 	require.True(t, response.Enabled)
 }
 
+func TestFollowerAuthStatusProxiesToLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	request := &etcdserverpb.AuthStatusRequest{}
+	called := false
+	server.peers = testPeerService{
+		isLeader:     false,
+		proxyEnabled: true,
+		authStatusFn: func(_ context.Context, got *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+			called = true
+			require.Same(t, request, got)
+			return &etcdserverpb.AuthStatusResponse{
+				Header: txnHeader(123), Enabled: true, AuthRevision: 17,
+			}, nil
+		},
+	}
+
+	response, err := server.AuthStatus(context.Background(), request)
+	require.NoError(t, err)
+	require.True(t, called)
+	require.True(t, response.GetEnabled())
+	require.Equal(t, uint64(17), response.GetAuthRevision())
+	require.Equal(t, int64(123), response.GetHeader().GetRevision())
+}
+
 func TestBearerPrefixedAuthTokenMatchesEtcd(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

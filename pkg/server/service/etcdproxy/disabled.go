@@ -69,6 +69,10 @@ func (d disabledEtcdProxy) Downgrade(ctx context.Context, req *etcdserverpb.Down
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error) {
 	return nil, errDisabled
 }

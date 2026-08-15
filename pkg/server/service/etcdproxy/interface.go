@@ -60,6 +60,9 @@ type EtcdProxy interface {
 	// Downgrade forwards a cluster downgrade request to leader.
 	Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 
+	// AuthStatus forwards an authentication status request to leader.
+	AuthStatus(ctx context.Context, req *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
+
 	// Watch forward watch stream request to leader.
 	Watch(ctx context.Context, key, rangeEnd []byte, revision uint64) (<-chan WatchResult, error)
 
