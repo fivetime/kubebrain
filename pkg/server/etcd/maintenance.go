@@ -464,8 +464,21 @@ func (s *RPCServer) Defragment(ctx context.Context, req *etcdserverpb.Defragment
 	return &etcdserverpb.DefragmentResponse{}, nil
 }
 
-func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+func (s *RPCServer) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hash", 1)
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// Upstream hashes the serving member's local BoltDB. KubeBrain replicas
+		// share one TiKV MVCC history, so the leader's hash is the authoritative
+		// equivalent when this ingress has lost every storage path.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.Hash(proxyCtx, req)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}
@@ -486,6 +499,19 @@ func (s *RPCServer) Hash(ctx context.Context, _ *etcdserverpb.HashRequest) (*etc
 
 func (s *RPCServer) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
 	s.metricCli.EmitCounter("maintenance.hashkv", 1)
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
+	if !leadingFresh && s.peers.EtcdProxyEnabled() {
+		// Preserve the exact requested revision and let the authoritative leader
+		// return the same hash, future-revision or compacted-revision outcome that
+		// this member would observe from the shared TiKV history.
+		proxyCtx, err := s.forwardWriteAuthContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		response, err := s.peers.HashKV(proxyCtx, req)
+		s.observeForwardedRevision(response.GetHeader(), err)
+		return response, err
+	}
 	if err := s.requireAuthenticated(ctx, true); err != nil {
 		return nil, err
 	}

@@ -169,6 +169,9 @@ type snapshotLeaderServer struct {
 	etcdserverpb.UnimplementedMaintenanceServer
 	responses      []*etcdserverpb.SnapshotResponse
 	statusResponse *etcdserverpb.StatusResponse
+	hashResponse   *etcdserverpb.HashResponse
+	hashKVResponse *etcdserverpb.HashKVResponse
+	hashKVRevision chan int64
 }
 
 type rangeStreamLeaderServer struct {
@@ -208,6 +211,51 @@ func (s *snapshotLeaderServer) Snapshot(_ *etcdserverpb.SnapshotRequest, stream 
 
 func (s *snapshotLeaderServer) Status(context.Context, *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
 	return s.statusResponse, nil
+}
+
+func (s *snapshotLeaderServer) Hash(context.Context, *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+	return s.hashResponse, nil
+}
+
+func (s *snapshotLeaderServer) HashKV(_ context.Context, request *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+	if s.hashKVRevision != nil {
+		s.hashKVRevision <- request.GetRevision()
+	}
+	return s.hashKVResponse, nil
+}
+
+func TestHashesForwardLeaderResponsesAndRequestedRevision(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	wantHash := &etcdserverpb.HashResponse{Header: &etcdserverpb.ResponseHeader{Revision: 52}, Hash: 101}
+	wantHashKV := &etcdserverpb.HashKVResponse{
+		Header: &etcdserverpb.ResponseHeader{Revision: 52}, Hash: 202, HashRevision: 42, CompactRevision: 10,
+	}
+	revisions := make(chan int64, 1)
+	server := grpc.NewServer()
+	registerServingHealth(server)
+	etcdserverpb.RegisterMaintenanceServer(server, &snapshotLeaderServer{
+		hashResponse: wantHash, hashKVResponse: wantHashKV, hashKVRevision: revisions,
+	})
+	go func() { _ = server.Serve(lis) }()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = lis.Close()
+	})
+	endpoint := lis.Addr().String()
+	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cli.Close() })
+	require.NoError(t, checkClientConn(cli, nil, time.Second))
+	proxy := &etcdProxy{election: &testLeaderElection{leaderAddress: endpoint}, client: cli, curLeader: endpoint}
+
+	hashResponse, err := proxy.Hash(context.Background(), &etcdserverpb.HashRequest{})
+	require.NoError(t, err)
+	require.True(t, proto.Equal(wantHash, hashResponse))
+	hashKVResponse, err := proxy.HashKV(context.Background(), &etcdserverpb.HashKVRequest{Revision: 42})
+	require.NoError(t, err)
+	require.True(t, proto.Equal(wantHashKV, hashKVResponse))
+	require.Equal(t, int64(42), <-revisions)
 }
 
 func TestStatusForwardsLeaderResponse(t *testing.T) {

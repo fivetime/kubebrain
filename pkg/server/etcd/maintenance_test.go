@@ -73,6 +73,11 @@ type quotaStatusErrorBackendShim struct {
 	err error
 }
 
+type maintenanceHashTrapBackendShim struct {
+	BackendShim
+	err error
+}
+
 type requireSyncBeforeHashBackendShim struct {
 	BackendShim
 	t      *testing.T
@@ -111,6 +116,14 @@ func (b *alarmReadErrorBackendShim) NoSpaceAlarms(context.Context) ([]uint64, er
 
 func (b *quotaStatusErrorBackendShim) QuotaStatus(context.Context) (int64, int64, bool, error) {
 	return 0, 0, false, b.err
+}
+
+func (b *maintenanceHashTrapBackendShim) Hash(context.Context) (backend.BackendHashResult, error) {
+	return backend.BackendHashResult{}, b.err
+}
+
+func (b *maintenanceHashTrapBackendShim) HashKV(context.Context, int64) (backend.HashKVResult, error) {
+	return backend.HashKVResult{}, b.err
 }
 
 func (b *requireSyncBeforeHashBackendShim) HashKV(ctx context.Context, revision int64) (backend.HashKVResult, error) {
@@ -373,6 +386,48 @@ func TestFollowerStatusProxiesBeforeStorageAndPreservesLocalLearner(t *testing.T
 	require.Same(t, want, response)
 	require.True(t, response.GetIsLearner(), "the ingress member's learner state must override the leader payload")
 	require.Equal(t, int64(91), response.GetHeader().GetRevision())
+}
+
+func TestFollowerHashesProxyBeforeStorageAndPreserveRevision(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	wantErr := errors.New("local hash storage must not be reached")
+	server.backend = &maintenanceHashTrapBackendShim{BackendShim: server.backend, err: wantErr}
+
+	hashRequest := &etcdserverpb.HashRequest{}
+	hashKVRequest := &etcdserverpb.HashKVRequest{Revision: 42}
+	hashResponse := &etcdserverpb.HashResponse{Header: txnHeader(77), Hash: 101}
+	hashKVResponse := &etcdserverpb.HashKVResponse{
+		Header: txnHeader(77), Hash: 202, HashRevision: 42, CompactRevision: 10,
+	}
+	hashCalls, hashKVCalls := 0, 0
+	server.peers = testPeerService{
+		isLeader: false, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return 7, false },
+		hashFn: func(_ context.Context, got *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+			hashCalls++
+			require.Same(t, hashRequest, got)
+			return hashResponse, nil
+		},
+		hashKVFn: func(_ context.Context, got *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+			hashKVCalls++
+			require.Same(t, hashKVRequest, got)
+			return hashKVResponse, nil
+		},
+	}
+
+	gotHash, err := server.Hash(context.Background(), hashRequest)
+	require.NoError(t, err)
+	require.Same(t, hashResponse, gotHash)
+	require.Equal(t, 1, hashCalls)
+
+	gotHashKV, err := server.HashKV(context.Background(), hashKVRequest)
+	require.NoError(t, err)
+	require.Same(t, hashKVResponse, gotHashKV)
+	require.Equal(t, 1, hashKVCalls)
+	require.Equal(t, int64(42), gotHashKV.GetHashRevision())
+	require.Equal(t, int64(10), gotHashKV.GetCompactRevision())
+	require.Equal(t, uint64(77), server.backend.GetCurrentRevision())
 }
 
 func TestStatusRestoresColdRaftEnvelopeFromDurableRevision(t *testing.T) {

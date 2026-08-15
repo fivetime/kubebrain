@@ -577,6 +577,28 @@ func (e *etcdProxy) Status(ctx context.Context, req *etcdserverpb.StatusRequest)
 	return resp, err
 }
 
+func (e *etcdProxy) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward hash", "leader", leader)
+	resp, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).Hash(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
+func (e *etcdProxy) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+	client, leader, _, err := e.readyClient(ctx)
+	if err != nil {
+		return nil, err
+	}
+	klog.InfoS("forward hash kv", "leader", leader, "revision", req.GetRevision())
+	resp, err := etcdserverpb.NewMaintenanceClient(client.ActiveConnection()).HashKV(ctx, req, e.callOptions...)
+	e.markForwardError(ctx, client, err)
+	return resp, err
+}
+
 func (e *etcdProxy) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 	client, leader, _, err := e.readyClient(ctx)
 	if err != nil {

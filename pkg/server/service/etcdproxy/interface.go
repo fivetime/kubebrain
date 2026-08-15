@@ -66,6 +66,12 @@ type EtcdProxy interface {
 	// Status forwards a maintenance status request to leader.
 	Status(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error)
 
+	// Hash forwards a maintenance backend hash request to leader.
+	Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error)
+
+	// HashKV forwards a revision-bounded MVCC hash request to leader.
+	HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error)
+
 	// Downgrade forwards a cluster downgrade request to leader.
 	Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 

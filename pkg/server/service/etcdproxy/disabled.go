@@ -77,6 +77,14 @@ func (d disabledEtcdProxy) Status(ctx context.Context, req *etcdserverpb.StatusR
 	return nil, errDisabled
 }
 
+func (d disabledEtcdProxy) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+	return nil, errDisabled
+}
+
+func (d disabledEtcdProxy) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+	return nil, errDisabled
+}
+
 func (d disabledEtcdProxy) Downgrade(ctx context.Context, req *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error) {
 	return nil, errDisabled
 }

@@ -68,6 +68,8 @@ type testPeerService struct {
 	alarmFn          func(context.Context, *etcdserverpb.AlarmRequest) (*etcdserverpb.AlarmResponse, error)
 	defragmentFn     func(context.Context, *etcdserverpb.DefragmentRequest) (*etcdserverpb.DefragmentResponse, error)
 	statusFn         func(context.Context, *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error)
+	hashFn           func(context.Context, *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error)
+	hashKVFn         func(context.Context, *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error)
 	downgradeFn      func(context.Context, *etcdserverpb.DowngradeRequest) (*etcdserverpb.DowngradeResponse, error)
 	authStatusFn     func(context.Context, *etcdserverpb.AuthStatusRequest) (*etcdserverpb.AuthStatusResponse, error)
 	authenticateFn   func(context.Context, *etcdserverpb.AuthenticateRequest) (*etcdserverpb.AuthenticateResponse, error)
@@ -581,6 +583,20 @@ func (s testPeerService) Defragment(ctx context.Context, req *etcdserverpb.Defra
 func (s testPeerService) Status(ctx context.Context, req *etcdserverpb.StatusRequest) (*etcdserverpb.StatusResponse, error) {
 	if s.statusFn != nil {
 		return s.statusFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) Hash(ctx context.Context, req *etcdserverpb.HashRequest) (*etcdserverpb.HashResponse, error) {
+	if s.hashFn != nil {
+		return s.hashFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (s testPeerService) HashKV(ctx context.Context, req *etcdserverpb.HashKVRequest) (*etcdserverpb.HashKVResponse, error) {
+	if s.hashKVFn != nil {
+		return s.hashKVFn(ctx, req)
 	}
 	return nil, nil
 }
