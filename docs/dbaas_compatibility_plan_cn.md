@@ -51942,6 +51942,42 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   用户仍为 root/alice、角色仍为 root/operator、operator 权限为空且 AlarmList/LeaseList 为空；PD/TiKV 3+3
   Ready/零重启，连续三轮从全部 PD 查询均报告 leader `kb-pd-1`。
 
+- A4693 成对审计 `Maintenance.Hash` 与 `Maintenance.HashKV` 的成员本地诊断可用性。固定 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/maintenance.go`：两者在管理员鉴权后直接 hash 服务成员的本地 BoltDB/MVCC
+  snapshot；`HashKV` 将请求 revision 原样交给 `HashByRev`，保留 latest、指定 revision、future 与 compacted 边界。
+  `/root/etcd/server/proxy/grpcproxy/maintenance.go` 对两者均作 raw Maintenance 转发。KubeBrain 的所有副本共享同一 TiKV
+  MVCC history，因此 leader hash 是 storage-isolated ingress 的权威等价值，但此前 follower 仍先读取本地 auth config，
+  再尝试 TiKV hash。
+
+  A4692 主 follower `kubebrain-0`（`10.244.0.39`）无故障 `Hash` 518ms 返回 revision
+  `468126003565913475`、hash `3359669940`，latest/fixed-revision `HashKV` 分别 200/207ms 返回 hash
+  `2711413614`、hash revision `468126003565913475`、compact revision `468126003565913122`；精确阻断该 Pod 到
+  三台 PD 2379/TCP 与三台 TiKV 20160/TCP 后，Hash 与 latest HashKV 分别耗尽 6.004/6.001 秒并返回
+  `DeadlineExceeded/context deadline exceeded`，两轮 trap 后规则为 0。
+
+  提交 `b23989d76b0a2b732f4a1aab889f3fbbbeda5755` 为 EtcdProxy 补齐 raw Hash/HashKV，proxy-enabled follower 在任何
+  auth/storage 读取前携带原始 token 或受信客户端证书身份交给 leader；HashKV 不在 ingress 预判 revision，使 leader
+  权威返回 hash 或 canonical future/compacted error。外层 client interceptor 仍把 response Header.MemberID 覆盖为入口
+  member。存储 trap 测试证明本地 Hash/HashKV 后端均未触达，且请求对象、指定 revision、hash、hash revision、compact
+  revision 和 current-revision observation 均保留；独立真实 gRPC proxy 测试覆盖两种 RPC。相关测试连续 20 轮通过，
+  聚焦 race 的 server/proxy 分别 1.796/1.185 秒，`go vet` 通过，完整 server/proxy 包分别 179.190/3.040 秒通过；
+  排除上一轮已证实会触发固定 600 秒 harness timeout 的无关 `hack/production` 包后，其余全仓 JSON 门禁产生 31,941
+  条事件、零 fail event。
+
+  精确镜像 `kubebrain:a4693-b23989d7` 内嵌完整 SHA 与 UTC build time `2026-08-15T11:24:36Z`，OCI index、amd64
+  manifest、config 分别为 `sha256:94ddc9ea902a2887389619afaa1bebb8659436d249319182441df6aad7020a34`、
+  `sha256:345b053745c44f35ab982f68eef2c4f515b844ce1817b26b2ddbc18a531f2d3d`、
+  `sha256:0f977498362d84979ff4a1f50dfc9ac34eb8385c8faf24f4296963bea2c4cb7a`，Kind runtime imageID 为
+  `sha256:db48de451825607321c12de7ea49680d652588ef3126d5479d3cd34e86f21cdb`。滚动后主 follower
+  `kubebrain-0`（`10.244.0.45`）、leader `kubebrain-2` 在六目标隔离下 Hash 397ms、latest/fixed HashKV 226/209ms
+  成功，hash 与 revision envelope 和 RED 前一致；future revision 23ms、compacted revision 26ms 分别返回 canonical
+  `OutOfRange`，五次 Header.MemberID 均保持 follower `4034353177`。JWT follower `a4653-jwt-0`（`10.244.0.48`）、
+  leader `a4653-jwt-2` 的 root Hash/HashKV 分别 9/22ms 成功，future 9ms 返回 `OutOfRange`，alice 10ms 先返回
+  `PermissionDenied`，Header.MemberID 保持 follower `3258172462`；四轮规则均为 0。滚动后的第一次 JWT Authenticate
+  恰逢独立 PD 短暂无 leader 而超时，重试后恢复；最终主/JWT 六副本 Ready/零重启且 runtime imageID 一致，主三个
+  endpoint health 成功、AlarmList/LeaseList 为空，JWT 三成员 auth enabled/authRevision=25 一致、用户/角色/空 operator
+  权限未变且 AlarmList/LeaseList 为空；PD/TiKV 3+3 Ready/零重启，连续三轮从全部 PD 查询均报告 leader `kb-pd-1`。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
