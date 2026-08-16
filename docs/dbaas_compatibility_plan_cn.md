@@ -53948,6 +53948,26 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   不可变 storage cluster identity、可恢复 safepoint ownership、持久路由目录及 PVC 生命周期协议。在线 A4776
   未滚动，真实 PD service safepoint 在正常 rollout 后立即消失的现场证据留待正式新镜像发布门禁验证。
 
+- A4795 修复 TiKV transaction client 在启动取消与中途构造失败时泄漏连接和后台资源的生产缺口。KubeBrain
+  默认并行创建 16 个独立 client，并为每个失败 endpoint 做 rotation；此前 `NewClientWithContext` 虽已把 PD
+  client 创建绑定到 startup context，但 API v2 keyspace discovery 固定使用 `Background`，PD oracle 首次 TSO
+  固定使用 `TODO`。更严重的是，PD client 创建成功后若 keyspace codec、TLS、safepoint etcd client 或 KVStore
+  初始化失败，函数直接返回而不关闭已经建立的 PD/RPC/etcd 资源，失败 rotation 可把泄漏按 endpoint 与 client
+  数放大。
+
+  维护的 client-go fork 现在为 keyspace codec 与 PD oracle 提供 context-aware 构造入口，旧公开 API 保持
+  Background 包装兼容；KubeBrain 路径把同一 startup context 贯穿 keyspace lookup 和 oracle 首次 TSO。oracle
+  构造成功后的 updater 仍由 `Oracle.Close` 而非短生命周期 startup context 管理。ownership 转移给 KVStore 前，
+  任一失败出口均按 RPC client、safepoint etcd client、PD client 的逆序 best-effort Close；成功路径只由 KVStore
+  关闭一次，不发布半初始化 client。
+
+  client-go 相关包与全树普通测试、全树 vet、oracle/transaction 和 KV lifecycle 聚焦 race、KubeBrain TiKV
+  storage race、root storage/backend/server vet 均通过；backend 首轮全量在海量故障注入日志截断下报告失败，
+  随后 JSON 事件结构化全量复跑没有 fail event 并成功退出。client-go 全树 race 唯一失败为既有
+  `TestRURuntimeStatsCleanUp`：它固定 sleep 150ms 后要求异步 map 已清空，在 race 模式 10 次重复中多次超窗；
+  本轮不修改测试来掩盖该独立时序问题。在线 A4776 未滚动，真实 PD blackhole/无效 API v2 keyspace 下的进程
+  FD/goroutine 零增长仍留待正式新镜像启动故障门禁验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
