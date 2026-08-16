@@ -54484,6 +54484,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   no-overwrite/idempotent 回归新增临时文件零残留断言；receipt 聚焦 race（2.521 秒）、objectstore vet 与 diff check 通过。
   真实 close/unlink fault 注入仍留待新镜像只读/故障文件系统门禁。
 
+- A4852 收紧 logical object upload 的本地 frozen artifact ownership 与 receipt 排序。旧 Upload defer 丢弃
+  `backupfile.Verified.Close` 和上传文件 Close；前者同时负责删除经校验的冻结副本，因此远端 exact-version 已验证后仍可能
+  在本地介质收尾失败时签发成功 receipt。生产路径现在用命名结果传播两项 cleanup；新上传在构造/写入 receipt 前显式
+  Close 上传 fd 并关闭/删除 frozen artifact，任一失败均不发布证据。已有 receipt 的幂等验证仍由 defer 完整收尾，失败
+  返回空结果和错误但不破坏既有 immutable receipt。共享 `fileSHA256` 也要求输入 Close 成功才返回摘要。
+
+  Upload 聚焦 race（1.129 秒）、objectstore vet 与 diff check 通过；真实 frozen-copy unlink/fd close fault 仍留待正式
+  新镜像文件系统故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

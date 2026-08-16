@@ -44,7 +44,7 @@ type UploadRequest struct {
 	Now             time.Time
 }
 
-func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, error) {
+func Upload(ctx context.Context, client S3API, request UploadRequest) (receipt Receipt, retErr error) {
 	if request.Input == "" || request.Instance == "" || request.BackupID == "" || request.ObjectStoreID == "" ||
 		request.Bucket == "" || request.ObjectKey == "" || request.ReceiptOutput == "" ||
 		!validObjectRequestIdentity(request.ObjectStoreID, request.Bucket, request.ObjectKey) ||
@@ -60,7 +60,15 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	if err != nil {
 		return Receipt{}, fmt.Errorf("validate local artifact: %w", err)
 	}
-	defer artifact.Close()
+	artifactClosed := false
+	defer func() {
+		if !artifactClosed {
+			if closeErr := artifact.Close(); closeErr != nil {
+				receipt = Receipt{}
+				retErr = errors.Join(retErr, closeErr)
+			}
+		}
+	}()
 	status := artifact.Status()
 	frozenInput := artifact.Path()
 	info, err := os.Stat(frozenInput)
@@ -82,7 +90,15 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	if err != nil {
 		return Receipt{}, err
 	}
-	defer file.Close()
+	fileClosed := false
+	defer func() {
+		if !fileClosed {
+			if closeErr := file.Close(); closeErr != nil {
+				receipt = Receipt{}
+				retErr = errors.Join(retErr, closeErr)
+			}
+		}
+	}()
 	checksum, artifactFileSHA256, err := fileSHA256(frozenInput)
 	if err != nil {
 		return Receipt{}, err
@@ -178,7 +194,14 @@ func Upload(ctx context.Context, client S3API, request UploadRequest) (Receipt, 
 	if err := validateRemoteRetention(verificationCtx, client, versionID, request, retainUntil); err != nil {
 		return Receipt{}, err
 	}
-	receipt := Receipt{
+	fileCloseErr := file.Close()
+	fileClosed = true
+	artifactCloseErr := artifact.Close()
+	artifactClosed = true
+	if err := errors.Join(fileCloseErr, artifactCloseErr); err != nil {
+		return Receipt{}, err
+	}
+	receipt = Receipt{
 		Format: ReceiptFormat, Instance: request.Instance, BackupID: request.BackupID,
 		ObjectStoreID: request.ObjectStoreID,
 		Bucket:        request.Bucket, ObjectKey: request.ObjectKey, VersionID: versionID,
@@ -508,12 +531,17 @@ func objectWriteReconciliationContext(parent context.Context) (context.Context, 
 	return context.WithTimeout(context.WithoutCancel(parent), objectWriteReconciliationTimeout)
 }
 
-func fileSHA256(path string) (string, string, error) {
+func fileSHA256(path string) (base64Sum, hexSum string, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", "", err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			base64Sum, hexSum = "", ""
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", "", err
