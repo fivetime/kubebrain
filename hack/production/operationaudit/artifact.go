@@ -343,16 +343,14 @@ func WriteAtomic(path string, artifact Artifact) error {
 	}
 	if err := linkOperationAuditFile(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if existing, readErr := readBoundedJSONFile(path, "existing operation audit artifact"); readErr == nil {
-				if bytes.Equal(existing, data) {
-					return nil
-				}
-				return fmt.Errorf("refusing to overwrite existing audit artifact %q", path)
-			} else {
+			if existing, readErr := readBoundedJSONFile(path, "existing operation audit artifact"); readErr != nil {
 				return readErr
+			} else if !bytes.Equal(existing, data) {
+				return fmt.Errorf("refusing to overwrite existing audit artifact %q", path)
 			}
+		} else {
+			return err
 		}
-		return err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return fmt.Errorf("remove temporary audit artifact link %q: %w", tempName, err)

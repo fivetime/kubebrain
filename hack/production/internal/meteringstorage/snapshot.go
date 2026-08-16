@@ -206,16 +206,14 @@ func WriteSnapshotAtomic(path string, snapshot Snapshot) (SnapshotStatus, error)
 	}
 	if err := linkMeteringStorageFile(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if existing, readErr := readBoundedFile(path, "existing object storage sample", int64(len(data))); readErr == nil {
-				if bytes.Equal(existing, data) {
-					return ReadSnapshot(path)
-				}
-				return SnapshotStatus{}, fmt.Errorf("refusing to overwrite object storage sample %q", path)
-			} else {
+			if existing, readErr := readBoundedFile(path, "existing object storage sample", int64(len(data))); readErr != nil {
 				return SnapshotStatus{}, readErr
+			} else if !bytes.Equal(existing, data) {
+				return SnapshotStatus{}, fmt.Errorf("refusing to overwrite object storage sample %q", path)
 			}
+		} else {
+			return SnapshotStatus{}, err
 		}
-		return SnapshotStatus{}, err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return SnapshotStatus{}, fmt.Errorf("remove temporary object storage sample link %q: %w", tempName, err)

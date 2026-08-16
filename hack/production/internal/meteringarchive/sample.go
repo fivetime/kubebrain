@@ -375,16 +375,14 @@ func WriteAtomic(path string, sample Sample, maxStaleness time.Duration) (Status
 	}
 	if err := linkMeteringArchiveFile(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if existing, readErr := readBoundedFile(path, "existing metering artifact", int64(len(data))); readErr == nil {
-				if bytes.Equal(existing, data) {
-					return status, nil
-				}
-				return Status{}, fmt.Errorf("refusing to overwrite existing metering artifact %q", path)
-			} else {
+			if existing, readErr := readBoundedFile(path, "existing metering artifact", int64(len(data))); readErr != nil {
 				return Status{}, readErr
+			} else if !bytes.Equal(existing, data) {
+				return Status{}, fmt.Errorf("refusing to overwrite existing metering artifact %q", path)
 			}
+		} else {
+			return Status{}, err
 		}
-		return Status{}, err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return Status{}, fmt.Errorf("remove temporary metering artifact link %q: %w", tempName, err)

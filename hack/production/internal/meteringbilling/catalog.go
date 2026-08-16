@@ -208,16 +208,14 @@ func writeCanonicalAtomic(path string, data []byte, description string, limit in
 	}
 	if err := linkCanonicalFile(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if existing, readErr := readBoundedFile(path, "existing "+description, int64(len(data))); readErr == nil {
-				if bytes.Equal(existing, data) {
-					return nil
-				}
-				return fmt.Errorf("refusing to overwrite existing %s %q", description, path)
-			} else {
+			if existing, readErr := readBoundedFile(path, "existing "+description, int64(len(data))); readErr != nil {
 				return readErr
+			} else if !bytes.Equal(existing, data) {
+				return fmt.Errorf("refusing to overwrite existing %s %q", description, path)
 			}
+		} else {
+			return err
 		}
-		return err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return fmt.Errorf("remove temporary %s link %q: %w", description, tempName, err)

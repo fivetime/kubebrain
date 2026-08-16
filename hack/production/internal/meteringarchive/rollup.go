@@ -311,16 +311,14 @@ func WriteRollupAtomic(path string, rollup Rollup) (RollupStatus, error) {
 	}
 	if err := linkMeteringArchiveFile(tempName, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			if existing, readErr := readBoundedFile(path, "existing metering rollup", int64(len(data))); readErr == nil {
-				if bytes.Equal(existing, data) {
-					return status, nil
-				}
-				return RollupStatus{}, fmt.Errorf("refusing to overwrite existing metering rollup %q", path)
-			} else {
+			if existing, readErr := readBoundedFile(path, "existing metering rollup", int64(len(data))); readErr != nil {
 				return RollupStatus{}, readErr
+			} else if !bytes.Equal(existing, data) {
+				return RollupStatus{}, fmt.Errorf("refusing to overwrite existing metering rollup %q", path)
 			}
+		} else {
+			return RollupStatus{}, err
 		}
-		return RollupStatus{}, err
 	}
 	if err := os.Remove(tempName); err != nil {
 		return RollupStatus{}, fmt.Errorf("remove temporary metering rollup link %q: %w", tempName, err)
