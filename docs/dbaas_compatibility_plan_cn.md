@@ -54289,6 +54289,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `TestLatestDecodedRangeStreamRejectsStaleIndexSelectedObject` 两项既有基线失败，均在 detached A4827 worktree 单独复现，
   不计为本轮通过项并留待后续生产语义审计。在线 A4776 未滚动，真实 iterator close fault 仍留待新镜像故障门禁。
 
+- A4829 修复 storage missing-key 的错误外形依赖。`Backend.Get` 等生产路径用 `err == ErrKeyNotFound` 判断缺键，
+  一旦底层、decorator 或 A4828 的 cleanup 聚合对错误进行 wrap/join，etcd 本应成功返回空 Range 的请求就被升级为
+  RPC failure；compaction watermark、event replay fallback、InternalDelete、scanner 与 election lock 也有同型误判。
+  全部 backend 生产比较现已改为 `errors.Is`，保留缺键语义而不依赖具体错误对象，同型直接比较搜索清零。
+
+  原先在 detached A4827 基线上稳定失败的 `TestInternalWriteGuardRejectsStaleAuthorizedWrite` 已由该生产修复恢复；
+  backend 精确 race（1.573 秒）、scanner/election 全套 race（1.959/1.270 秒）及三包 vet 通过，本轮没有修改测试文件。
+  另一项 runtime-index alarm member 断言基线失败仍单独保留待审。在线 A4776 未滚动，wrapped TiKV error 注入仍留待门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
