@@ -429,6 +429,7 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 	// have changed auth while this replica was not authoritative.
 	var authenticatedEpoch uint64
 	var authenticatedInEpoch bool
+	errRouteChanged := errors.New("lease keepalive route changed to local leader")
 	for {
 		req, err := stream.Recv()
 		if err == io.EOF {
@@ -440,191 +441,210 @@ func (m *leaseManager) leaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveSe
 			}
 			return err
 		}
-		// Route an unapplied follower message before consulting this process's auth
-		// snapshot. KubeBrain followers do not receive every auth mutation through a
-		// Raft apply loop, so even a complete cache may be stale, and the follower can
-		// remain reachable after losing every TiKV/PD path. The leader performs the
-		// normal per-message authentication and attachment authorization.
-		forwardRequest := func(proxyCtx context.Context) error {
-			for {
-				resp, keepAliveErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
-				if keepAliveErr == nil {
-					m.srv.observeForwardedRevision(resp.GetHeader(), nil)
-					return m.sendLeaseKeepAliveResponse(stream, resp)
-				}
-				// The message has already been consumed from the client stream. Preserve
-				// it across a transient leader handoff rather than forcing clientv3 to
-				// spend its finite reconnect budget.
-				if status.Code(keepAliveErr) != codes.Unavailable {
-					return keepAliveErr
-				}
-				timer := time.NewTimer(100 * time.Millisecond)
-				select {
-				case <-proxyCtx.Done():
-					if !timer.Stop() {
-						<-timer.C
+		// A consumed message may start on a follower and finish after this ingress
+		// becomes leader. Re-evaluate the complete route without receiving another
+		// message whenever the old peer-forward loop observes that transition.
+		for {
+			// Route an unapplied follower message before consulting this process's auth
+			// snapshot. KubeBrain followers do not receive every auth mutation through a
+			// Raft apply loop, so even a complete cache may be stale, and the follower can
+			// remain reachable after losing every TiKV/PD path. The leader performs the
+			// normal per-message authentication and attachment authorization.
+			forwardRequest := func(proxyCtx context.Context) error {
+				for {
+					resp, keepAliveErr := m.srv.peers.LeaseKeepAlive(proxyCtx, req)
+					if keepAliveErr == nil {
+						m.srv.observeForwardedRevision(resp.GetHeader(), nil)
+						return m.sendLeaseKeepAliveResponse(stream, resp)
 					}
-					return proxyCtx.Err()
-				case <-timer.C:
+					// The message has already been consumed from the client stream. Preserve
+					// it across a transient leader handoff rather than forcing clientv3 to
+					// spend its finite reconnect budget.
+					if status.Code(keepAliveErr) != codes.Unavailable {
+						return keepAliveErr
+					}
+					if _, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); leadingFresh {
+						return errRouteChanged
+					}
+					timer := time.NewTimer(100 * time.Millisecond)
+					select {
+					case <-proxyCtx.Done():
+						if !timer.Stop() {
+							<-timer.C
+						}
+						return proxyCtx.Err()
+					case <-timer.C:
+					}
 				}
 			}
-		}
-		if m.srv.peers.EtcdProxyEnabled() {
-			_, routeLeadingFresh := m.srv.peers.EpochAndLeadingFresh()
-			if !routeLeadingFresh {
-				proxyCtx, forwardErr := m.srv.forwardWriteAuthContext(stream.Context())
+			if m.srv.peers.EtcdProxyEnabled() {
+				_, routeLeadingFresh := m.srv.peers.EpochAndLeadingFresh()
+				if !routeLeadingFresh {
+					proxyCtx, forwardErr := m.srv.forwardWriteAuthContext(stream.Context())
+					if forwardErr != nil {
+						return forwardErr
+					}
+					if forwardErr = forwardRequest(proxyCtx); errors.Is(forwardErr, errRouteChanged) {
+						continue
+					} else if forwardErr != nil {
+						return forwardErr
+					}
+					break
+				}
+			}
+			// Match etcd's LeaseServer: capture the header before authorization and
+			// renewal. A concurrent revoke may advance the store after a successful
+			// renew; reporting that later revision would imply the lease survived a
+			// revoke already visible at or before the response revision.
+			responseRevision := m.srv.backend.GetCurrentRevision()
+			// Match etcd's checkLeaseRenew on every message, not only when the
+			// long-lived stream is opened. Renewing a lease is a write to every key
+			// attached to it; otherwise a caller that only knows the lease ID can keep
+			// another tenant's protected keys alive indefinitely. Rechecking per request
+			// also observes role/permission changes made while the stream is open.
+			var epoch uint64
+			var leadingFresh bool
+			var caller *authCaller
+			var authErr error
+			authComplete := false
+			// Leadership acquisition publishes the member's auth snapshot before it
+			// becomes ready, and every local auth mutation invalidates that snapshot.
+			// It is therefore authoritative for the whole current epoch, including the
+			// first message of the one-message substreams used by follower forwarding.
+			// Without this fast path, every forwarded keepalive re-reads TiKV and loses
+			// short leases when the auth-disabled data path's Region changes leader.
+			if authenticatedInEpoch {
+				epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
+				if leadingFresh && authenticatedEpoch == epoch {
+					caller, authErr, authComplete = m.srv.authCallerFromCachedContext(stream.Context())
+				}
+			} else {
+				// Only an auth-disabled cached snapshot may bypass the authoritative
+				// first-message read. Preserve that read and its revision fence for an
+				// authenticated caller.
+				cachedCaller, cachedErr, cachedComplete := m.srv.authCallerFromCachedContext(stream.Context())
+				if cachedComplete && cachedErr == nil && cachedCaller == nil {
+					caller, authErr, authComplete = cachedCaller, cachedErr, true
+					epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
+				}
+			}
+			if !authComplete {
+				caller, authErr = m.srv.authCallerFromContext(stream.Context())
+				// The first message retains the established auth-before-routing error
+				// precedence. If a cached snapshot was invalidated while this stream
+				// was open, refresh the route after the authoritative read because it
+				// may have blocked across a demotion.
+				if authErr == nil {
+					epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
+				}
+				if authErr == nil && leadingFresh {
+					authenticatedEpoch = epoch
+					authenticatedInEpoch = true
+				}
+			}
+			if authErr != nil {
+				return authErr
+			}
+			forward := func() error {
+				proxyCtx, forwardErr := m.srv.forwardAuthToken(stream.Context(), caller)
 				if forwardErr != nil {
 					return forwardErr
 				}
-				if forwardErr = forwardRequest(proxyCtx); forwardErr != nil {
-					return forwardErr
-				}
-				continue
+				return forwardRequest(proxyCtx)
 			}
-		}
-		// Match etcd's LeaseServer: capture the header before authorization and
-		// renewal. A concurrent revoke may advance the store after a successful
-		// renew; reporting that later revision would imply the lease survived a
-		// revoke already visible at or before the response revision.
-		responseRevision := m.srv.backend.GetCurrentRevision()
-		// Match etcd's checkLeaseRenew on every message, not only when the
-		// long-lived stream is opened. Renewing a lease is a write to every key
-		// attached to it; otherwise a caller that only knows the lease ID can keep
-		// another tenant's protected keys alive indefinitely. Rechecking per request
-		// also observes role/permission changes made while the stream is open.
-		var epoch uint64
-		var leadingFresh bool
-		var caller *authCaller
-		var authErr error
-		authComplete := false
-		// Leadership acquisition publishes the member's auth snapshot before it
-		// becomes ready, and every local auth mutation invalidates that snapshot.
-		// It is therefore authoritative for the whole current epoch, including the
-		// first message of the one-message substreams used by follower forwarding.
-		// Without this fast path, every forwarded keepalive re-reads TiKV and loses
-		// short leases when the auth-disabled data path's Region changes leader.
-		if authenticatedInEpoch {
-			epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
-			if leadingFresh && authenticatedEpoch == epoch {
-				caller, authErr, authComplete = m.srv.authCallerFromCachedContext(stream.Context())
-			}
-		} else {
-			// Only an auth-disabled cached snapshot may bypass the authoritative
-			// first-message read. Preserve that read and its revision fence for an
-			// authenticated caller.
-			cachedCaller, cachedErr, cachedComplete := m.srv.authCallerFromCachedContext(stream.Context())
-			if cachedComplete && cachedErr == nil && cachedCaller == nil {
-				caller, authErr, authComplete = cachedCaller, cachedErr, true
-				epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
-			}
-		}
-		if !authComplete {
-			caller, authErr = m.srv.authCallerFromContext(stream.Context())
-			// The first message retains the established auth-before-routing error
-			// precedence. If a cached snapshot was invalidated while this stream
-			// was open, refresh the route after the authoritative read because it
-			// may have blocked across a demotion.
-			if authErr == nil {
-				epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
-			}
-			if authErr == nil && leadingFresh {
-				authenticatedEpoch = epoch
-				authenticatedInEpoch = true
-			}
-		}
-		if authErr != nil {
-			return authErr
-		}
-		forward := func() error {
-			proxyCtx, forwardErr := m.srv.forwardAuthToken(stream.Context(), caller)
-			if forwardErr != nil {
-				return forwardErr
-			}
-			return forwardRequest(proxyCtx)
-		}
-		if !leadingFresh {
-			if !m.srv.peers.EtcdProxyEnabled() {
-				return m.leaseLeaderUnavailable("lease keepalive")
-			}
-			// Unlike an etcd raft follower, this replica's in-memory lessor is a
-			// disposable constructor snapshot and does not receive attachment
-			// applies. It can validate the token, but authorizing its stale key set
-			// would create false denials after the leader detaches or rebinds keys.
-			// The forwarded leader receives this verified identity and performs the
-			// normal current-snapshot authorization in refreshLeaseAuthorized.
-			if err := forward(); err != nil {
-				return err
-			}
-			continue
-		}
-		admittedEpoch := epoch
-		// Renewal is a durable lease metadata mutation. A newly elected local
-		// leader must finish reloading lease/event/checkpoint state before it
-		// serves the first request on an existing keepalive stream. Parking the
-		// message here also prevents a recovering client stream from rapidly
-		// cycling through grpc-go's finite retry budget on startup fence errors.
-		if err := m.srv.waitLeaderReady(stream.Context()); err != nil {
-			return err
-		}
-		// waitLeaderReady may span a complete demotion and re-election of this
-		// same ingress replica. The already-received stream message has not been
-		// applied yet, so admit it under the ready snapshot's current epoch rather
-		// than carrying the pre-wait token into the successor term and self-proxying.
-		epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
-		if !leadingFresh {
-			if !m.srv.peers.EtcdProxyEnabled() {
-				return m.leaseLeaderUnavailable("lease keepalive")
-			}
-			if err := forward(); err != nil {
-				return err
-			}
-			continue
-		}
-		// Check local readiness only after the post-wait routing decision. A
-		// demotion withdraws leaseReady before the stream necessarily observes the
-		// new leader; returning the local reload fence in that window would prevent
-		// a proxy-capable follower from forwarding this unapplied message.
-		if !m.leaseReady.Load() || m.leaseReadyEpoch.Load() != epoch {
-			// A successor epoch is not locally usable until ReloadLeases publishes
-			// its matching snapshot. Treat this as the old term losing leadership,
-			// so proxy-capable ingress can forward instead of leaking a local reload
-			// fence. If the epoch did not change, this is an ordinary startup reload.
-			if epoch != admittedEpoch {
+			if !leadingFresh {
 				if !m.srv.peers.EtcdProxyEnabled() {
 					return m.leaseLeaderUnavailable("lease keepalive")
 				}
-				if err := forward(); err != nil {
+				// Unlike an etcd raft follower, this replica's in-memory lessor is a
+				// disposable constructor snapshot and does not receive attachment
+				// applies. It can validate the token, but authorizing its stale key set
+				// would create false denials after the leader detaches or rebinds keys.
+				// The forwarded leader receives this verified identity and performs the
+				// normal current-snapshot authorization in refreshLeaseAuthorized.
+				if err := forward(); errors.Is(err, errRouteChanged) {
+					continue
+				} else if err != nil {
 					return err
 				}
-				continue
+				break
 			}
-			return status.Error(codes.Unavailable, "etcdserver: lease state is reloading")
-		}
-
-		renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
-		ttl, err := m.refreshLeaseAuthorized(renewCtx, caller, req.ID, epoch)
-		if errors.Is(err, errLeaseDemotedDuringRenew) {
-			if !m.srv.peers.EtcdProxyEnabled() {
-				return m.leaseLeaderUnavailable("lease keepalive")
-			}
-			if err := forward(); err != nil {
+			admittedEpoch := epoch
+			// Renewal is a durable lease metadata mutation. A newly elected local
+			// leader must finish reloading lease/event/checkpoint state before it
+			// serves the first request on an existing keepalive stream. Parking the
+			// message here also prevents a recovering client stream from rapidly
+			// cycling through grpc-go's finite retry budget on startup fence errors.
+			if err := m.srv.waitLeaderReady(stream.Context()); err != nil {
 				return err
 			}
-			continue
-		}
-		if status.Code(err) == codes.NotFound {
-			ttl = 0
-		} else if err != nil {
-			return mapFenceErr(err)
-		} else {
-			emitEtcdLeaseRenewedCounter(m.srv.metricCli, 1)
-		}
-		if err := m.sendLeaseKeepAliveResponse(stream, &etcdserverpb.LeaseKeepAliveResponse{
-			Header: txnHeader(int64(responseRevision)),
-			ID:     req.ID,
-			TTL:    ttl,
-		}); err != nil {
-			return err
+			// waitLeaderReady may span a complete demotion and re-election of this
+			// same ingress replica. The already-received stream message has not been
+			// applied yet, so admit it under the ready snapshot's current epoch rather
+			// than carrying the pre-wait token into the successor term and self-proxying.
+			epoch, leadingFresh = m.srv.peers.EpochAndLeadingFresh()
+			if !leadingFresh {
+				if !m.srv.peers.EtcdProxyEnabled() {
+					return m.leaseLeaderUnavailable("lease keepalive")
+				}
+				if err := forward(); errors.Is(err, errRouteChanged) {
+					continue
+				} else if err != nil {
+					return err
+				}
+				break
+			}
+			// Check local readiness only after the post-wait routing decision. A
+			// demotion withdraws leaseReady before the stream necessarily observes the
+			// new leader; returning the local reload fence in that window would prevent
+			// a proxy-capable follower from forwarding this unapplied message.
+			if !m.leaseReady.Load() || m.leaseReadyEpoch.Load() != epoch {
+				// A successor epoch is not locally usable until ReloadLeases publishes
+				// its matching snapshot. Treat this as the old term losing leadership,
+				// so proxy-capable ingress can forward instead of leaking a local reload
+				// fence. If the epoch did not change, this is an ordinary startup reload.
+				if epoch != admittedEpoch {
+					if !m.srv.peers.EtcdProxyEnabled() {
+						return m.leaseLeaderUnavailable("lease keepalive")
+					}
+					if err := forward(); errors.Is(err, errRouteChanged) {
+						continue
+					} else if err != nil {
+						return err
+					}
+					break
+				}
+				return status.Error(codes.Unavailable, "etcdserver: lease state is reloading")
+			}
+
+			renewCtx := backend.WithLeadershipEpoch(stream.Context(), epoch)
+			ttl, err := m.refreshLeaseAuthorized(renewCtx, caller, req.ID, epoch)
+			if errors.Is(err, errLeaseDemotedDuringRenew) {
+				if !m.srv.peers.EtcdProxyEnabled() {
+					return m.leaseLeaderUnavailable("lease keepalive")
+				}
+				if err := forward(); errors.Is(err, errRouteChanged) {
+					continue
+				} else if err != nil {
+					return err
+				}
+				break
+			}
+			if status.Code(err) == codes.NotFound {
+				ttl = 0
+			} else if err != nil {
+				return mapFenceErr(err)
+			} else {
+				emitEtcdLeaseRenewedCounter(m.srv.metricCli, 1)
+			}
+			if err := m.sendLeaseKeepAliveResponse(stream, &etcdserverpb.LeaseKeepAliveResponse{
+				Header: txnHeader(int64(responseRevision)),
+				ID:     req.ID,
+				TTL:    ttl,
+			}); err != nil {
+				return err
+			}
+			break
 		}
 	}
 }

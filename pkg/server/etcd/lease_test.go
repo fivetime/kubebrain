@@ -2577,6 +2577,36 @@ func TestLeaseFollowerKeepAliveWaitsForSuccessorLeader(t *testing.T) {
 	require.Equal(t, int64(30), stream.sent[0].TTL)
 }
 
+func TestLeaseFollowerKeepAliveReroutesConsumedMessageWhenIngressBecomesLeader(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const leaseID int64 = 7003
+	_, err := server.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: leaseID, TTL: 30})
+	require.NoError(t, err)
+
+	epoch := server.leaseReadyEpoch.Load()
+	var leading atomic.Bool
+	var forwarded atomic.Int32
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn: func() (uint64, bool) {
+			return epoch, leading.Load()
+		},
+		leaseKeepAliveFn: func(context.Context, *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
+			forwarded.Add(1)
+			leading.Store(true)
+			return nil, rpctypes.ErrGRPCLeaderChanged
+		},
+	}
+
+	stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+	require.NoError(t, server.LeaseKeepAlive(stream))
+	require.Equal(t, int32(1), forwarded.Load())
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, leaseID, stream.sent[0].ID)
+	require.Positive(t, stream.sent[0].TTL)
+}
+
 func TestLeaseFollowerKeepAlivePreservesClientCancellation(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
