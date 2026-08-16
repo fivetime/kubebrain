@@ -26,6 +26,9 @@ func TestWriteReceiptAtomicIsIdempotentAndNonOverwriting(t *testing.T) {
 	actual, err := ReadReceipt(path)
 	require.NoError(t, err)
 	require.Equal(t, receipt, actual)
+	temps, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".*.tmp-*"))
+	require.NoError(t, err)
+	require.Empty(t, temps, "idempotent and conflicting writes must clean temporary receipts")
 }
 
 func TestReceiptReadersRejectAmbiguousJSON(t *testing.T) {

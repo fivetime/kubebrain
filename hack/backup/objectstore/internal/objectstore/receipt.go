@@ -312,13 +312,13 @@ func decodeCanonicalReceipt(data []byte, destination any, description string) er
 	return nil
 }
 
-func readBoundedObjectStoreJSONFile(path, description string) ([]byte, error) {
+func readBoundedObjectStoreJSONFile(path, description string) (data []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	data, err := io.ReadAll(io.LimitReader(file, maxObjectStoreJSONBytes+1))
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	data, err = io.ReadAll(io.LimitReader(file, maxObjectStoreJSONBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -329,62 +329,12 @@ func readBoundedObjectStoreJSONFile(path, description string) ([]byte, error) {
 }
 
 func WriteReceiptAtomic(path string, receipt Receipt) error {
-	if path == "" {
-		return errors.New("receipt output path is empty")
-	}
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
-	data, err := json.Marshal(receipt)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	if err := validateObjectStoreJSONSize("object backup receipt", data); err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	temp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tempName := temp.Name()
-	defer os.Remove(tempName)
-	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Link(tempName, path); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			existing, readErr := ReadReceipt(path)
-			if readErr != nil || existing != receipt {
-				return fmt.Errorf("refusing to overwrite existing receipt %q", path)
-			}
-		} else {
-			return err
-		}
-	}
-	if err := os.Remove(tempName); err != nil {
-		return fmt.Errorf("remove temporary receipt link %q: %w", tempName, err)
-	}
-	directory, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	return errors.Join(syncErr, closeErr)
+	return writeJSONAtomic(path, receipt, "object backup receipt", func(path string) (any, error) {
+		return ReadReceipt(path)
+	})
 }
 
 func WriteDeletionReceiptAtomic(path string, receipt DeletionReceipt) error {
@@ -418,7 +368,7 @@ func writeJSONAtomic(path string, value any, description string, readExisting fu
 	return writeJSONAtomicLimit(path, value, description, maxObjectStoreJSONBytes, readExisting)
 }
 
-func writeJSONAtomicLimit(path string, value any, description string, limit int, readExisting func(string) (any, error)) error {
+func writeJSONAtomicLimit(path string, value any, description string, limit int, readExisting func(string) (any, error)) (retErr error) {
 	if path == "" {
 		return errors.New("receipt output path is empty")
 	}
@@ -436,18 +386,19 @@ func writeJSONAtomicLimit(path string, value any, description string, limit int,
 		return err
 	}
 	tempName := temp.Name()
-	defer os.Remove(tempName)
+	defer func() {
+		if removeErr := os.Remove(tempName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if _, err := temp.Write(data); err != nil {
-		temp.Close()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if err := temp.Sync(); err != nil {
-		temp.Close()
-		return err
+		return errors.Join(err, temp.Close())
 	}
 	if err := temp.Close(); err != nil {
 		return err
@@ -478,11 +429,4 @@ func writeJSONAtomicLimit(path string, value any, description string, limit int,
 	syncErr := directory.Sync()
 	closeErr := directory.Close()
 	return errors.Join(syncErr, closeErr)
-}
-
-func validateObjectStoreJSONSize(description string, data []byte) error {
-	if len(data) > maxObjectStoreJSONBytes {
-		return fmt.Errorf("%s exceeds %d bytes", description, maxObjectStoreJSONBytes)
-	}
-	return nil
 }

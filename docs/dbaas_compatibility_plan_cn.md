@@ -54475,6 +54475,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 archive/read 两个可失败 response reader 回归，分别固定 receipt/output 不存在；blob 聚焦 race（1.769 秒）、
   objectstore vet 与 diff check 通过。真实 S3 半关闭、只读目录和 unlink fault 仍留待正式新镜像故障门禁。
 
+- A4851 统一 objectstore 本地 receipt/manifest JSON 的 fail-closed 文件生命周期。旧共享 atomic writer 在
+  chmod/write/file Sync 失败时丢弃 Close，在全部出口 defer 丢弃 temp Remove；backup receipt 还维护一份重复实现，容易
+  与 deletion/audit/blob/usage/inventory 行为漂移。现在 backup receipt 也进入统一 bounded/canonical writer，所有失败阶段
+  聚合 Close，defer 聚合非 ENOENT 的 Remove，成功发布继续要求 parent directory Sync+Close。共享 bounded reader 同样
+  把输入 Close 纳入结果，避免已解析 receipt 在介质收尾失败后被接受。
+
+  no-overwrite/idempotent 回归新增临时文件零残留断言；receipt 聚焦 race（2.521 秒）、objectstore vet 与 diff check 通过。
+  真实 close/unlink fault 注入仍留待新镜像只读/故障文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
