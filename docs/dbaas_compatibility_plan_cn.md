@@ -53812,6 +53812,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   canary/mixed-rollout 流程先取得新 series，再执行完整 release。该项是即时发布拒绝，不替代 A4782 的持续告警，
   也不把 fake Prometheus 契约测试描述为真实预生产规则 evaluation。
 
+- A4784 修复 A4783 即时 gate 在健康 KubeBrain rollout 后的 Prometheus lookback 误拒绝。旧查询直接对
+  namespace 内 checkpoint series 做 `count/min/max`；旧 Pod 退出后其最后样本仍可保留约五分钟，新旧 Pod
+  因而会被合计为四至六副本，完整新 revision 已经 Ready 也无法立即通过 release gate。生产查询现在把
+  available/revision/remaining 三组指标按 `namespace,pod` 与
+  `kube_pod_status_ready{condition="true"} == 1` 相交，数值与 freshness 只由当前 Ready Pod 决定；告警规则
+  使用相同身份模型。已退出 Pod 的残留 series 被排除，但 Ready Pod 少于三、kube-state-metrics 缺失、任一
+  Ready Pod 缺 metric、revision 非正、剩余窗口不足或样本陈旧仍全部 fail closed。官方 Prometheus v3.5
+  parser 接受完整表达式，production 聚焦回归通过；真实 rollout 后的 Prometheus instant-query 收敛仍需在
+  预生产投放新镜像时验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
