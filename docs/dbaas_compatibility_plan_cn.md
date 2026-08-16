@@ -54323,6 +54323,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   SnapshotHistory 全部现有 race（1.760 秒）、`pkg/backend` vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
   未滚动，真实 Close fault 下“有前置 chunk、无 Done、有 error terminal”的 artifact 行为仍留待新镜像故障门禁。
 
+- A4833 在共享 scanner worker 收敛 RangeStream、SnapshotStream、普通 List 与物理 compaction 的 iterator shutdown
+  传播。旧 `worker.run` defer 丢弃 Close，导致普通扫描可能返回成功，已输出 chunk 的流也可能收到成功 terminal；
+  snapshot timestamp point-read fallback 同样忽略 Close。worker 与 fallback 现在聚合主错误和 Close：尚未输出的 receiver
+  可沿既有 backoff 重试，已输出的 streaming receiver 走 non-retriable error terminal，避免重扫产生重复键；compaction
+  的已提交删除保持幂等并让本轮 scan 返回失败。正常 TiKV iterator Close=nil 路径不变。
+
+  scanner 全套 race（1.941 秒）、Range/Snapshot 精确 race（3.268 秒）及 backend/scanner vet 通过；本轮没有修改测试文件。
+  在线 A4776 未滚动，真实 TiKV iterator close/transport fault 的重试与非成功 terminal 仍留待新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
