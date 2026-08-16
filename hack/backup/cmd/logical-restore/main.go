@@ -77,49 +77,65 @@ func rollbackCommittedBatches(batches []committedBatch, rollback func(committedB
 }
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() (retErr error) {
 	input := os.Getenv("INPUT")
 	rewriteFrom := os.Getenv("REWRITE_FROM")
 	rewriteTo := os.Getenv("REWRITE_TO")
 	allowOverwrite, err := envBool("ALLOW_OVERWRITE")
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	batchSize, err := strconv.Atoi(os.Getenv("BATCH_SIZE"))
 	if err != nil || batchSize <= 0 {
-		log.Fatalf("invalid BATCH_SIZE: %q", os.Getenv("BATCH_SIZE"))
+		return fmt.Errorf("invalid BATCH_SIZE: %q", os.Getenv("BATCH_SIZE"))
 	}
 	maxTxnOps, err := strconv.Atoi(os.Getenv("MAX_TXN_OPS"))
 	if err != nil || maxTxnOps <= 0 {
-		log.Fatalf("invalid MAX_TXN_OPS: %q", os.Getenv("MAX_TXN_OPS"))
+		return fmt.Errorf("invalid MAX_TXN_OPS: %q", os.Getenv("MAX_TXN_OPS"))
 	}
 	if err := validateBatchSize(batchSize, maxTxnOps); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	failAfterBatches := 0
 	if value := os.Getenv("FAIL_AFTER_BATCHES"); value != "" {
 		failAfterBatches, err = strconv.Atoi(value)
 		if err != nil || failAfterBatches <= 0 {
-			log.Fatalf("invalid FAIL_AFTER_BATCHES: %q", value)
+			return fmt.Errorf("invalid FAIL_AFTER_BATCHES: %q", value)
 		}
 	}
 	if rewriteFrom == "" && rewriteTo != "" {
-		log.Fatal("REWRITE_TO requires REWRITE_FROM")
+		return errors.New("REWRITE_TO requires REWRITE_FROM")
 	}
 
 	verified, err := backupfile.OpenVerified(input)
 	if err != nil {
-		log.Fatalf("backup integrity validation failed: %v", err)
+		return fmt.Errorf("backup integrity validation failed: %w", err)
 	}
-	defer verified.Close()
+	verifiedClosed := false
+	defer func() {
+		if !verifiedClosed {
+			retErr = errors.Join(retErr, verified.Close())
+		}
+	}()
 
 	cli, err := etcdutil.NewClientFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	defer cli.Close()
+	clientClosed := false
+	defer func() {
+		if !clientClosed {
+			retErr = errors.Join(retErr, cli.Close())
+		}
+	}()
 	timeout, err := etcdutil.TimeoutFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -137,12 +153,12 @@ func main() {
 		leaseSpecs[lease.ID] = lease.TTL
 		return nil
 	}); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := verified.Records(func(rec record.Record) error {
 		return validateLeaseReference(rec, leaseSpecs)
 	}); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	if !allowOverwrite {
@@ -189,23 +205,25 @@ func main() {
 			err = preflight()
 		}
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 	}
 
 	targetLeases := make(map[int64]clientv3.LeaseID, len(leaseSpecs))
-	cleanupTargetLeases := func() {
+	cleanupTargetLeases := func() (cleanupErr error) {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cleanupCancel()
-		for _, id := range targetLeases {
-			_, _ = cli.Revoke(cleanupCtx, id)
+		for sourceID, id := range targetLeases {
+			if _, err := cli.Revoke(cleanupCtx, id); err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("revoke restored lease %d: %w", sourceID, err))
+			}
 		}
+		return cleanupErr
 	}
 	for sourceID, ttl := range leaseSpecs {
 		granted, grantErr := cli.Grant(ctx, ttl)
 		if grantErr != nil {
-			cleanupTargetLeases()
-			log.Fatalf("restore lease %d: %v", sourceID, grantErr)
+			return errors.Join(fmt.Errorf("restore lease %d: %w", sourceID, grantErr), cleanupTargetLeases())
 		}
 		targetLeases[sourceID] = granted.ID
 	}
@@ -308,16 +326,24 @@ func main() {
 				return nil
 			})
 		}
-		cleanupTargetLeases()
+		cleanupErr := cleanupTargetLeases()
 		if rollbackErr != nil {
-			log.Fatalf("restore failed: %v; rollback incomplete: %v", restoreErr, rollbackErr)
+			return errors.Join(fmt.Errorf("restore failed: %w", restoreErr), fmt.Errorf("rollback incomplete: %w", rollbackErr), cleanupErr)
 		}
 		if allowOverwrite {
-			log.Fatalf("restore failed: %v; ALLOW_OVERWRITE=true prevents safe automatic rollback", restoreErr)
+			return errors.Join(fmt.Errorf("restore failed: %w; ALLOW_OVERWRITE=true prevents safe automatic rollback", restoreErr), cleanupErr)
 		}
-		log.Fatalf("restore failed and committed batches were rolled back: %v", restoreErr)
+		return errors.Join(fmt.Errorf("restore failed and committed batches were rolled back: %w", restoreErr), cleanupErr)
 	}
 	status := verified.Status()
-	fmt.Fprintf(os.Stderr, "restored %d records and %d leases from %s to %s (snapshot revision %d, sha256 %s)\n",
+	clientCloseErr := cli.Close()
+	clientClosed = true
+	verifiedCloseErr := verified.Close()
+	verifiedClosed = true
+	if err := errors.Join(clientCloseErr, verifiedCloseErr); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(os.Stderr, "restored %d records and %d leases from %s to %s (snapshot revision %d, sha256 %s)\n",
 		total, status.Leases, input, os.Getenv("ENDPOINT"), status.Revision, status.SHA256)
+	return err
 }

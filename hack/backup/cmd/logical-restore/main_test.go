@@ -79,3 +79,12 @@ func TestEnvBool(t *testing.T) {
 	require.ErrorContains(t, err, "ALLOW_OVERWRITE must be a boolean")
 	require.False(t, parsed)
 }
+
+func TestRunReturnsEnvironmentValidationError(t *testing.T) {
+	t.Setenv("BATCH_SIZE", "16")
+	t.Setenv("MAX_TXN_OPS", "16")
+	t.Setenv("REWRITE_FROM", "")
+	t.Setenv("REWRITE_TO", "/target")
+
+	require.ErrorContains(t, run(), "REWRITE_TO requires REWRITE_FROM")
+}

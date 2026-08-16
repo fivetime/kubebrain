@@ -54502,6 +54502,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 run 可返回配置错误的回归，防止入口重新内嵌 fatal exit；logical-verify race（1.059 秒）、vet 与 diff check 通过。
   真实 TiKV transport close/frozen-copy unlink fault 仍留待正式恢复 Job 故障门禁。
 
+- A4854 将同一 fatal-exit 修复推进到实际写数据的 logical restore executor。旧 main 在 verified artifact/client 打开后
+  的 preflight、lease grant、batch write 或 rollback 失败均调用 `log.Fatal`，`os.Exit` 会跳过 artifact/client、context
+  defer；目标 lease cleanup 还逐项吞掉 Revoke 错误，使部分 rollback 被误报为完整。入口现在统一 `main -> run() error`，
+  所有错误正常展开资源；grant/batch 失败聚合每个 lease revoke 与 rollback conflict，保留完整因果。成功路径在打印
+  `restored` 前显式关闭 client 与 frozen artifact，任一 cleanup failure 均使 Job 非零且不输出成功终态。
+
+  新增 run 返回配置错误回归，防止重新引入进程内 fatal exit；logical-restore race（1.064 秒）、vet 与 diff check 通过。
+  真实 TiKV uncertain write 叠加 revoke/transport close fault 仍留待独立 TiKV/PD 恢复 Job 故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
