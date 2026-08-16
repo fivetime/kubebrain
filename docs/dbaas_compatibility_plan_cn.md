@@ -54520,6 +54520,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   同轮收紧 backupmetrics atomic writer：chmod/write/flush/file Sync 失败聚合 Close，所有出口聚合 temp Remove，成功继续要求
   parent directory Sync+Close。新增 run 配置错误回归；export/metrics race（1.057/1.039 秒）、vet 与 diff check 通过。
 
+- A4856 收紧 logical artifact status/验收 CLI 的输出与深层 lease 扫描终态。旧 FIELD 分支使用 `fmt.Println` 后直接成功
+  返回，stdout pipe/sidecar 文件写失败不可见；`REQUIRE_GRANTED_TTL=true` 打开 verified artifact 后也忽略 Close，可能在
+  frozen copy 删除失败时接受制品。入口现在采用 `main -> run(io.Writer) error`，单字段与完整 JSON 输出统一传播写错误；
+  granted-TTL 扫描以命名错误聚合 verified Close，只有读取、物理 lease 校验和 cleanup 全部成功才通过验收。
+
+  新增 failing writer 回归固定 revision 输出错误原样可见；logical-status race（1.081 秒）、vet 与 diff check 通过。
+  真实 artifact close/unlink fault 仍留待备份验收 Job 文件系统故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

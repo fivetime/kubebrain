@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,10 @@ import (
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
 	"github.com/kubewharf/kubebrain/hack/backup/internal/record"
 )
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
 
 func TestRequireGrantedTTL(t *testing.T) {
 	tests := []struct {
@@ -42,6 +47,19 @@ func TestRequireGrantedTTL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunPropagatesSelectedFieldOutputFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backup.jsonl")
+	writer, err := backupfile.NewAtomicWriter(path, "/registry", 42)
+	require.NoError(t, err)
+	_, err = writer.Commit()
+	require.NoError(t, err)
+	t.Setenv("INPUT", path)
+	t.Setenv("FIELD", "revision")
+	writeErr := errors.New("status output failed")
+
+	require.ErrorIs(t, run(failingWriter{err: writeErr}), writeErr)
 }
 
 func TestValidateCompletion(t *testing.T) {

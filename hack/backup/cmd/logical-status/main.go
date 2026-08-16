@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -13,56 +15,55 @@ import (
 )
 
 func main() {
+	if err := run(os.Stdout); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(out io.Writer) error {
 	status, err := backupfile.Inspect(os.Getenv("INPUT"))
 	if err != nil {
-		log.Fatalf("backup integrity validation failed: %v", err)
+		return fmt.Errorf("backup integrity validation failed: %w", err)
 	}
 	if err := validateCompletion(status, time.Now()); err != nil {
-		log.Fatalf("backup completion validation failed: %v", err)
+		return fmt.Errorf("backup completion validation failed: %w", err)
 	}
 	switch os.Getenv("REQUIRE_GRANTED_TTL") {
 	case "", "false":
 	case "true":
 		if err := requireGrantedTTL(os.Getenv("INPUT")); err != nil {
-			log.Fatalf("backup physical lease validation failed: %v", err)
+			return fmt.Errorf("backup physical lease validation failed: %w", err)
 		}
 	default:
-		log.Fatalf("REQUIRE_GRANTED_TTL must be true or false")
+		return errors.New("REQUIRE_GRANTED_TTL must be true or false")
 	}
 	switch os.Getenv("FIELD") {
 	case "format":
-		fmt.Println(status.Format)
-		return
+		_, err = fmt.Fprintln(out, status.Format)
 	case "prefix":
-		fmt.Println(status.Prefix)
-		return
+		_, err = fmt.Fprintln(out, status.Prefix)
 	case "revision":
-		fmt.Println(status.Revision)
-		return
+		_, err = fmt.Fprintln(out, status.Revision)
 	case "created_at_unix":
-		fmt.Println(status.CreatedAtUnix)
-		return
+		_, err = fmt.Fprintln(out, status.CreatedAtUnix)
 	case "records":
-		fmt.Println(status.Records)
-		return
+		_, err = fmt.Fprintln(out, status.Records)
 	case "leases":
-		fmt.Println(status.Leases)
-		return
+		_, err = fmt.Fprintln(out, status.Leases)
 	case "sha256":
-		fmt.Println(status.SHA256)
-		return
+		_, err = fmt.Fprintln(out, status.SHA256)
+	default:
+		err = json.NewEncoder(out).Encode(status)
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(status); err != nil {
-		log.Fatal(err)
-	}
+	return err
 }
 
-func requireGrantedTTL(path string) error {
+func requireGrantedTTL(path string) (retErr error) {
 	verified, err := backupfile.OpenVerified(path)
 	if err != nil {
 		return err
 	}
-	defer verified.Close()
+	defer func() { retErr = errors.Join(retErr, verified.Close()) }()
 	return verified.Leases(func(lease record.Lease) error {
 		if lease.GrantedTTL <= 0 {
 			return fmt.Errorf("lease %d lacks a valid granted_ttl; re-export with the current logical exporter", lease.ID)
