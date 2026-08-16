@@ -53213,6 +53213,33 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   和 direct port-forward 均清除。终态继续检查主/JWT 六副本与 PD/TiKV 3+3 Ready/零重启、LeaseList/
   AlarmList 为空及 proposal health。
 
+- A4754 修复长流故障恢复时对同一 stale leader 的 peer 重拨风暴。A4751 的真实日志提供生产 RED：固定
+  follower 在 backend 隔离、旧 leader 删除且活动 Watch 等待恢复时，`waitReady` 每 100ms 调用
+  `updateClient`；共享 election cache 仍指向已重建为 follower 的旧 ordinal，其 health 返回 NOT_SERVING，
+  旧实现于 `01:43:51–01:44:01Z` 的 10 秒窗口创建了 108 个 client/health 尝试（约 10.8 次/秒）。Watch
+  数量增加时所有调用虽由 `updateMu` 串行，仍会持续放大 DNS、TCP/TLS、HTTP/2 和目标 Pod 压力。
+
+  生产提交 `c449c267` 在共享 proxy 状态中记录最近失败的 leader identity 与 1 秒 retry deadline；已有连接
+  health 失败、client 创建/健康检查失败及 stream/unary transport 错误都会启动同身份冷却。成功连接或本机
+  晋升会清除状态，而 election record 一旦出现不同 identity 就立即绕过旧冷却，因此不把新 leader 恢复延迟
+  到完整 backoff。没有新增或修改测试文件；proxy 包 3.021 秒、race 4.259 秒、两包 vet 和完整
+  `pkg/server/etcd` 190.393 秒通过。
+
+  最终镜像 `kubebrain:a4754-c449c267` 内嵌完整 SHA
+  `c449c267a52b7f2a21a4f3070c2563db5eb6e640`、build time `2026-08-16T01:58:51Z`，本地 OCI index
+  `sha256:d6dd1d00ebba83d08e0e967ad12eada678879ecc67f3ab9a4af125835885e7aa`，Kind runtime imageID
+  `sha256:226ac95766e2565e6608c1724038dbd43e11f4f92223872c109399c2bdb04c74`。主/JWT 六副本滚动到该镜像后，
+  在 pod-0 建立活动 raw Watch，从其源 IP 同时隔离三个 PD、三个 TiKV 和旧 leader peer，删除 leader
+  pod-2，并断言 pod-1/member `2393892952` 接任；pod-2 重建为非 leader 后只恢复 peer、保留 backend
+  隔离，使 pod-0 继续缓存 stale pod-2 identity。活动 Watch 从 `02:05:08Z` 持续到 caller budget 于
+  `02:06:08Z` 到期，完整覆盖 `02:05:53–02:06:03Z` 的 GREEN 采样；同一 10 秒窗口只发生 10 次重拨，
+  间隔约 1.1 秒，相比 RED 的 108 次下降 90.7%。随后解除 backend 隔离，pod-0 在 2.84 秒内发现并连接
+  不同 identity 的 pod-1，证明新 leader 没有被旧身份冷却阻塞。
+
+  两个 FORWARD jump、八条精确 DROP 与 chain 本体均清除并确认无 `KBA4754` 残留；临时 raw probe、日志
+  文件和 direct port-forward 均清除，A4754 prefix Count=0。终态主/JWT 六副本使用最终 runtime imageID
+  且 Ready/零重启，PD/TiKV 3+3 Ready/零重启，LeaseList/AlarmList 为空，proposal health 通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
