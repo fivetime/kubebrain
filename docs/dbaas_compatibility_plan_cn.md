@@ -53325,6 +53325,27 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `03:02:28.073Z` 全部监听，仅相差约 19ms；health 仍独立按五秒 timeout fail closed。解除 DROP 后后台在
   `03:02:40.204Z` 连回同一 leader，pod-0 恢复 Ready/零重启，证明快速启动没有伪造 proxy readiness。
 
+- A4759 修复 follower revision read-index fetch 不受组件 shutdown 控制的生命周期差距。对照
+  `/root/etcd/server/etcdserver/read/read.go::LinearizableReadLoop/requestCurrentIndex`：upstream 在
+  `server.Stopping()` 关闭时立即结束当前 ReadIndex；KubeBrain 的共享 fetch 原先却从
+  `context.Background()` 派生独立 8 秒 retry budget，`RevisionSyncer.Close()` 只关闭 idle HTTP connection，
+  因而在途 `/status` request 与已排队的下一批 fetch 可在组件关闭后继续运行。该行为不会阻塞当前 DBaaS
+  主进程退出，因此没有把 Pod 退出后的极短窗口包装成不可靠的现场 RED；确定性回归直接用阻塞中的真实
+  HTTP request 证明旧实现 Close 后不能取消、最终只会等自身 timeout，而新实现立即传播
+  `context.Canceled`。
+
+  生产提交 `400b0258` 为 revision syncer 增加独立 lifecycle context 和幂等 cancel：共享 fetch 仍与单个
+  reader cancellation 解耦，保留 double-buffer freshness；组件 Close 则终止当前 fetch，阻止排队批次发起
+  新 peer request，Close 后的新调用也立即失败。只增加上述一条 shutdown 回归；聚焦用例连续 20 轮
+  0.143 秒、race 10 轮 1.303 秒、revision/service 包、vet 与完整 `pkg/server/etcd` 179.291 秒通过。
+
+  最终镜像 `kubebrain:a4759-400b0258` 内嵌完整 SHA
+  `400b02586fb82c58a23f2f62fe320dcdf619c0e5`、build time `2026-08-16T03:11:16Z`，本地 OCI index
+  `sha256:7fe5470b07ef325ef77a7ebe4f858ce31f0d4928aedfb9be3e7e7b98267bf0b5`，Kind runtime imageID
+  `sha256:9a9200ae685261d6777b98820039ea30a34bec4fbdebdb509fbcc71cecc4d265`。主/JWT 六副本滚动后均
+  Ready、零重启并使用该 imageID；PD/TiKV 3+3 Ready、零重启，真实 endpoint proposal health
+  12.290ms，AlarmList/LeaseList 为空。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
