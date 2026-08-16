@@ -19,12 +19,15 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/klauspost/compress/zstd"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -46,6 +49,100 @@ func TestMaterializeReplayResolvesDefaultAndShortValues(t *testing.T) {
 	require.Equal(t, ReplayMutation{CommitTS: 130, Key: keyA, Value: []byte("long-value")}, mutations[0])
 	require.Equal(t, ReplayMutation{CommitTS: 130, Key: keyB, Value: []byte("short")}, mutations[1])
 	require.Equal(t, ReplayMutation{CommitTS: 140, Key: keyA, Delete: true}, mutations[2])
+}
+
+type boundedReadRequest struct {
+	reader      io.Reader
+	max         int
+	maxObserved int
+}
+
+func (r *boundedReadRequest) Read(data []byte) (int, error) {
+	if len(data) > r.max {
+		return 0, errors.New("reader was asked to materialize the segment")
+	}
+	if len(data) > r.maxObserved {
+		r.maxObserved = len(data)
+	}
+	return r.reader.Read(data)
+}
+
+func TestWalkReplayEntriesDoesNotMaterializeLargeSegment(t *testing.T) {
+	const entries = 32 << 10
+	entry := encodeReplayEntry([]byte("key"), []byte("value"))
+	data := bytes.Repeat(entry, entries)
+	source := &boundedReadRequest{reader: bytes.NewReader(data), max: 64}
+	decoded := &countingReplayReader{reader: source}
+	visited := 0
+
+	err := walkReplayEntries(decoded, uint64(len(data)), func(_, _ []byte) error {
+		visited++
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, entries, visited)
+	require.LessOrEqual(t, source.maxObserved, 64)
+}
+
+func TestWalkReplaySegmentDrainsAndVerifiesAfterVisitorFailure(t *testing.T) {
+	data := append(encodeReplayEntry([]byte("first"), []byte("one")),
+		encodeReplayEntry([]byte("second"), []byte("two"))...)
+	root := t.TempDir()
+	name := "segment.log"
+	require.NoError(t, os.WriteFile(filepath.Join(root, name), data, 0o600))
+	digest := sha256.Sum256(data)
+	segment := &backuppb.DataFileInfo{Length: uint64(len(data)), Sha256: digest[:]}
+	visitorErr := errors.New("visitor rejected entry")
+	visited := 0
+
+	err := walkReplaySegment(root, name, segment, func(_, _ []byte) error {
+		visited++
+		return visitorErr
+	})
+
+	require.ErrorIs(t, err, visitorErr)
+	require.Equal(t, 1, visited)
+
+	segment.Sha256 = make([]byte, sha256.Size)
+	err = walkReplaySegment(root, name, segment, func(_, _ []byte) error { return visitorErr })
+	require.EqualError(t, err, "decoded replay segment digest mismatch")
+
+	segment.Sha256 = digest[:]
+	require.NoError(t, os.WriteFile(filepath.Join(root, name), append(data, 'x'), 0o600))
+	err = walkReplaySegment(root, name, segment, func(_, _ []byte) error { return nil })
+	require.EqualError(t, err, "decoded replay segment length mismatch")
+}
+
+func TestWalkReplayEntriesRejectsDeclaredLengthShorterThanHeader(t *testing.T) {
+	decoded := &countingReplayReader{reader: bytes.NewReader([]byte{0, 0, 0, 0})}
+	require.EqualError(t, walkReplayEntries(decoded, 3, func(_, _ []byte) error { return nil }),
+		"invalid log key length")
+}
+
+func TestWalkReplaySegmentStreamsCompressedMergedRange(t *testing.T) {
+	data := bytes.Repeat(encodeReplayEntry([]byte("key"), []byte("value")), 1024)
+	encoder, err := zstd.NewWriter(nil)
+	require.NoError(t, err)
+	compressed := encoder.EncodeAll(data, nil)
+	encoder.Close()
+	root := t.TempDir()
+	name := "merged.log"
+	require.NoError(t, os.WriteFile(filepath.Join(root, name), compressed, 0o600))
+	digest := sha256.Sum256(data)
+	segment := &backuppb.DataFileInfo{
+		Length: uint64(len(data)), Sha256: digest[:],
+		RangeLength: uint64(len(compressed)), CompressionType: backuppb.CompressionType_ZSTD,
+	}
+	visited := 0
+
+	err = walkReplaySegment(root, name, segment, func(_, _ []byte) error {
+		visited++
+		return nil
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1024, visited)
 }
 
 func TestBuildLogReplayExecutionBindsReplayFenceAndRemainsPreSemantic(t *testing.T) {

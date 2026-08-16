@@ -54860,6 +54860,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   强制关闭无法证明 repair policy 是否已对外部系统产生副作用，
   policy executable 仍必须自身实现幂等键与查询对账，不能把 receiver 非零退出解释为“绝对未执行”。
 
+- A4893 降低 native PITR 大 BR log segment materialization 的额外内存峰值。旧 `readReplaySegment` 在 ZSTD 解压后通过
+  `io.ReadAll` 持有整段 decoded bytes，随后 entry parser 又把 default-CF value、write-CF 元数据复制到 join 结构；合法 segment
+  越大，单 Job 峰值至少额外增长 O(segment bytes)。replay 现在直接在 file/SectionReader/ZSTD 流上逐条读取 length-prefixed
+  key/value，以声明的 `segment.Length` 限制解码总量并同步计算 SHA-256；framing 或 visitor 失败后仍排空声明范围，先完成
+  length/digest fail-closed 校验，且从 decoder 额外探测一字节拒绝 trailing decoded data，不再用可能在 `MaxInt64` 溢出的
+  `Length+1` 转换。
+
+  新回归以 32768 个小 entry 和拒绝大 Read buffer 的 reader 证明 parser 不物化整段，覆盖 visitor 早退后完整 digest、digest
+  优先错误、trailing byte、短伪造长度及 ZSTD merged range；专项 race 连续 10 轮（8.730 秒）、nativepitr 全包 race
+  （4.093 秒）、vet 与 diff check 通过。本项只消除 decoder 的整段副本，不声称 replay 总内存已与工件规模无关：最终 mutations
+  及 default/write CF join 仍占 O(相关 mutation/default bytes)，生产规模的 disk-backed join/plan 仍需后续推进。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

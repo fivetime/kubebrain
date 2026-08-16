@@ -209,54 +209,49 @@ func MaterializeReplay(logs LogArtifactReceipt, logsSHA, root string, startExclu
 	var writes []replayWrite
 	for _, object := range expected {
 		for _, segment := range object.segments {
-			decoded, err := readReplaySegment(root, object.path, segment)
-			if err != nil {
-				return ReplayManifest{}, nil, err
-			}
 			entries := int64(0)
-			for len(decoded) != 0 {
-				encodedKey, value, rest, err := decodeLogEntry(decoded)
-				if err != nil {
-					return ReplayManifest{}, nil, fmt.Errorf("decode %s log entry: %w", segment.Cf, err)
-				}
-				decoded = rest
+			err := walkReplaySegment(root, object.path, segment, func(encodedKey, value []byte) error {
 				entries++
 				rawKey, ts, err := decodeMVCCKey(encodedKey)
 				if err != nil {
-					return ReplayManifest{}, nil, err
+					return err
 				}
 				if bytes.Compare(rawKey, start) < 0 || bytes.Compare(rawKey, end) >= 0 {
-					return ReplayManifest{}, nil, errors.New("stream log contains a key outside the plan tenant range")
+					return errors.New("stream log contains a key outside the plan tenant range")
 				}
 				if len(value) == 0 {
 					// TiKV log backup may emit a duplicate prewrite entry without
 					// its value; pinned BR v7.5.1 intentionally ignores it too.
-					continue
+					return nil
 				}
 				switch segment.Cf {
 				case "default":
 					defaultKey := replayValueKey(rawKey, ts)
 					if existing, duplicate := defaults[defaultKey]; duplicate {
 						if !bytes.Equal(existing, value) {
-							return ReplayManifest{}, nil, errors.New("stream log contains conflicting default-CF entries")
+							return errors.New("stream log contains conflicting default-CF entries")
 						}
-						continue
+						return nil
 					}
 					defaults[defaultKey] = append(make([]byte, 0, len(value)), value...)
 				case "write":
 					kind, startTS, short, err := decodeWriteValue(value)
 					if err != nil {
-						return ReplayManifest{}, nil, err
+						return err
 					}
 					if startTS >= ts {
-						return ReplayManifest{}, nil, errors.New("write-CF commit TSO does not follow start TSO")
+						return errors.New("write-CF commit TSO does not follow start TSO")
 					}
 					if ts > startExclusive && ts <= restoreTS && (kind == 'P' || kind == 'D') {
 						writes = append(writes, replayWrite{commitTS: ts, startTS: startTS, key: append([]byte(nil), rawKey...), shortValue: short, kind: kind})
 					}
 				default:
-					return ReplayManifest{}, nil, fmt.Errorf("unsupported stream column family %q", segment.Cf)
+					return fmt.Errorf("unsupported stream column family %q", segment.Cf)
 				}
+				return nil
+			})
+			if err != nil {
+				return ReplayManifest{}, nil, fmt.Errorf("decode %s log entry: %w", segment.Cf, err)
 			}
 			if entries != segment.NumberOfEntries {
 				return ReplayManifest{}, nil, errors.New("decoded log entry count does not match stream metadata")
@@ -482,10 +477,10 @@ func replaySegments(root string, objects []LogArtifactObject) (map[string]*logDa
 	return expected, nil
 }
 
-func readReplaySegment(root, name string, segment *backuppb.DataFileInfo) (content []byte, retErr error) {
+func walkReplaySegment(root, name string, segment *backuppb.DataFileInfo, visit func(key, value []byte) error) (retErr error) {
 	f, err := os.Open(filepath.Join(root, filepath.FromSlash(name)))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	var input io.Reader = f
@@ -495,40 +490,81 @@ func readReplaySegment(root, name string, segment *backuppb.DataFileInfo) (conte
 	if segment.CompressionType == backuppb.CompressionType_ZSTD {
 		decoder, err := zstd.NewReader(input, zstd.WithDecoderMaxMemory(1<<30))
 		if err != nil {
-			return nil, err
+			return err
 		}
 		defer decoder.Close()
 		input = decoder
 	}
-	content, err = io.ReadAll(io.LimitReader(input, int64(segment.Length)+1))
-	if err != nil {
-		return nil, err
+	limited := &io.LimitedReader{R: input, N: int64(segment.Length)}
+	digest := sha256.New()
+	decoded := &countingReplayReader{reader: io.TeeReader(limited, digest)}
+	parseErr := walkReplayEntries(decoded, segment.Length, visit)
+	if _, err := io.Copy(io.Discard, decoded); err != nil {
+		return err
 	}
-	if uint64(len(content)) != segment.Length {
-		return nil, errors.New("decoded replay segment length mismatch")
+	if decoded.read != segment.Length {
+		return errors.New("decoded replay segment length mismatch")
 	}
-	digest := sha256.Sum256(content)
-	if !bytes.Equal(digest[:], segment.Sha256) {
-		return nil, errors.New("decoded replay segment digest mismatch")
+	var extra [1]byte
+	if n, err := io.ReadFull(input, extra[:]); n != 0 {
+		return errors.New("decoded replay segment length mismatch")
+	} else if err != nil && !errors.Is(err, io.EOF) {
+		return err
 	}
-	return content, nil
+	if !bytes.Equal(digest.Sum(nil), segment.Sha256) {
+		return errors.New("decoded replay segment digest mismatch")
+	}
+	return parseErr
 }
 
-func decodeLogEntry(input []byte) (key, value, rest []byte, err error) {
-	if len(input) < 8 {
-		return nil, nil, nil, errors.New("truncated log entry")
+type countingReplayReader struct {
+	reader io.Reader
+	read   uint64
+}
+
+func (r *countingReplayReader) Read(data []byte) (int, error) {
+	n, err := r.reader.Read(data)
+	r.read += uint64(n)
+	return n, err
+}
+
+func walkReplayEntries(input *countingReplayReader, length uint64, visit func(key, value []byte) error) error {
+	for input.read < length {
+		var size [4]byte
+		if _, err := io.ReadFull(input, size[:]); err != nil {
+			return errors.New("truncated log entry")
+		}
+		keyLen := uint64(binary.LittleEndian.Uint32(size[:]))
+		if input.read > length {
+			return errors.New("invalid log key length")
+		}
+		remaining := length - input.read
+		if remaining < 4 || keyLen > remaining-4 {
+			return errors.New("invalid log key length")
+		}
+		key := make([]byte, keyLen)
+		if _, err := io.ReadFull(input, key); err != nil {
+			return errors.New("truncated log entry")
+		}
+		if _, err := io.ReadFull(input, size[:]); err != nil {
+			return errors.New("truncated log entry")
+		}
+		valueLen := uint64(binary.LittleEndian.Uint32(size[:]))
+		if input.read > length {
+			return errors.New("invalid log value length")
+		}
+		if valueLen > length-input.read {
+			return errors.New("invalid log value length")
+		}
+		value := make([]byte, valueLen)
+		if _, err := io.ReadFull(input, value); err != nil {
+			return errors.New("truncated log entry")
+		}
+		if err := visit(key, value); err != nil {
+			return err
+		}
 	}
-	keyLen := uint64(binary.LittleEndian.Uint32(input))
-	if keyLen > uint64(len(input)-8) {
-		return nil, nil, nil, errors.New("invalid log key length")
-	}
-	pos := uint64(4) + keyLen
-	valueLen := uint64(binary.LittleEndian.Uint32(input[pos:]))
-	pos += 4
-	if valueLen > uint64(len(input))-pos {
-		return nil, nil, nil, errors.New("invalid log value length")
-	}
-	return input[4 : 4+keyLen], input[pos : pos+valueLen], input[pos+valueLen:], nil
+	return nil
 }
 
 func decodeMVCCKey(encoded []byte) ([]byte, uint64, error) {
