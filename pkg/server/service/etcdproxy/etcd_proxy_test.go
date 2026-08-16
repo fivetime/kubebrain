@@ -436,7 +436,7 @@ func TestLeaseKeepAliveForwardingTimeoutAndCancellation(t *testing.T) {
 	leaseKeepAliveForwardTimeout = 100 * time.Millisecond
 	start := time.Now()
 	_, err = proxy.LeaseKeepAlive(context.Background(), &etcdserverpb.LeaseKeepAliveRequest{ID: 1})
-	require.Equal(t, rpctypes.ErrorDesc(rpctypes.ErrGRPCTimeout), rpctypes.ErrorDesc(err))
+	require.Equal(t, rpctypes.ErrorDesc(rpctypes.ErrGRPCLeaderChanged), rpctypes.ErrorDesc(err))
 	require.GreaterOrEqual(t, time.Since(start), 100*time.Millisecond)
 	require.Less(t, time.Since(start), time.Second)
 
@@ -467,12 +467,12 @@ func TestMapLeaseKeepAliveForwardError(t *testing.T) {
 	parent := context.Background()
 	callCtx, cancel := context.WithDeadline(parent, time.Now().Add(-time.Second))
 	defer cancel()
-	require.Equal(t, rpctypes.ErrGRPCTimeout,
+	require.Equal(t, rpctypes.ErrGRPCLeaderChanged,
 		mapLeaseKeepAliveForwardError(parent, callCtx, context.DeadlineExceeded))
 
 	liveCall, cancelLiveCall := context.WithTimeout(parent, time.Minute)
 	defer cancelLiveCall()
-	require.Equal(t, rpctypes.ErrGRPCTimeout,
+	require.Equal(t, rpctypes.ErrGRPCLeaderChanged,
 		mapLeaseKeepAliveForwardError(
 			parent, liveCall, status.Error(codes.DeadlineExceeded, "upstream deadline"),
 		),

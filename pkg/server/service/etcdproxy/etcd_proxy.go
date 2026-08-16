@@ -891,12 +891,15 @@ func (e *etcdProxy) LeaseKeepAlive(ctx context.Context, req *etcdserverpb.LeaseK
 func mapLeaseKeepAliveForwardError(parentCtx, callCtx context.Context, err error) error {
 	// grpc may surface codes.DeadlineExceeded just before callCtx.Err becomes
 	// observable to this goroutine. The parent still being live distinguishes
-	// the proxy's bounded forwarding deadline from caller cancellation.
+	// the proxy's bounded per-message forwarding deadline from caller
+	// cancellation. The downstream bidi stream already consumed this request, so
+	// make the outer keepalive loop retry it after leader recovery instead of
+	// terminating the public stream with an internal timeout.
 	if err != nil && parentCtx.Err() == nil &&
 		(callCtx.Err() == context.DeadlineExceeded ||
 			errors.Is(err, context.DeadlineExceeded) ||
 			status.Code(err) == codes.DeadlineExceeded) {
-		return rpctypes.ErrGRPCTimeout
+		return rpctypes.ErrGRPCLeaderChanged
 	}
 	// The shared leader ClientConn is retired on a topology change. Its in-flight
 	// bidi stream can report Canceled even though the downstream KeepAlive stream
