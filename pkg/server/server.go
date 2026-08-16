@@ -106,8 +106,9 @@ type server struct {
 	stateMetricsDone chan struct{}
 	observedLeader   string
 	closeOnce        sync.Once
-	drainOnce        sync.Once
-	drainErr         error
+	drainMu          sync.Mutex
+	drainStopped     bool
+	drainSucceeded   bool
 	closeErr         error
 }
 
@@ -154,27 +155,37 @@ func (s *server) Close() error {
 }
 
 func (s *server) Drain(ctx context.Context) error {
-	s.drainOnce.Do(func() {
-		release := func() {
+	s.drainMu.Lock()
+	defer s.drainMu.Unlock()
+	if s.drainSucceeded {
+		return nil
+	}
+	var drainErr error
+	release := func() {
+		if !s.drainStopped {
 			if s.campaignCancel != nil {
 				s.campaignCancel()
 			}
 			if s.campaignDone != nil {
 				<-s.campaignDone
 			}
-			if releaser, ok := s.leaderElection.(interface {
-				EnsureVoluntaryRelease(context.Context) error
-			}); ok {
-				s.drainErr = releaser.EnsureVoluntaryRelease(ctx)
-			}
+			s.drainStopped = true
 		}
-		if s.etcdServer != nil {
-			s.etcdServer.DrainLeadership(release)
-			return
+		if releaser, ok := s.leaderElection.(interface {
+			EnsureVoluntaryRelease(context.Context) error
+		}); ok {
+			drainErr = releaser.EnsureVoluntaryRelease(ctx)
 		}
+	}
+	if s.etcdServer != nil {
+		s.etcdServer.DrainLeadership(release)
+	} else {
 		release()
-	})
-	return s.drainErr
+	}
+	if drainErr == nil {
+		s.drainSucceeded = true
+	}
+	return drainErr
 }
 
 // NewServer returns the server
