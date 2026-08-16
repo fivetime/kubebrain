@@ -54692,6 +54692,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 key cleanup failure 与 attestation 发布竞态后无临时残留回归；nativepitr/full-backup/full-restore race（3.183/1.410
   秒及缓存套件）、vet 与 diff check 通过。真实 secret volume unlink 与 BR inode close fault 的 receipt 对账仍留待正式 Job 门禁。
 
+- A4876 补齐 native PITR full-restore executor 的 receipt、BR digest 与 admission client 收尾。plan/full/artifacts/
+  source-exclusive/target/provisioning/qualification/writer-exclusion/admission 九类输入及恢复前后的稳定性重读旧 defer 丢弃
+  file Close；BR 前后 digest 同样忽略 Close，PD-backed admission etcd client 也在 restore mutation 与 stdout receipt 后
+  丢弃 Close。readSmall/fileDigest 现用命名错误 Join Close，execute 聚合 admission client Close；任一介质或 transport
+  收尾失败均令 Job 非零，同时已输出 canonical receipt 可供控制面对已发生的 import 精确对账。
+
+  新增 oversized receipt 与 BR digest 回归；full-restore/nativepitr race（1.522 秒及缓存套件）、vet 与 diff check 通过。
+  restore 目前仍按 pathname 启动 BR，仅做前后 digest；像 full-backup 一样改为已打开 inode 执行以消除 swap-back TOCTOU
+  仍是下一项生产门禁，不能由本轮 cleanup 修复替代。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

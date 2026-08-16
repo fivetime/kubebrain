@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -85,4 +87,19 @@ func TestPinnedBRAndAddressParsing(t *testing.T) {
 	require.Equal(t, []string{"pd-a:2379", "pd-b:2379"}, got)
 	_, err = parseAddrs("pd:2379,pd:2379")
 	require.Error(t, err)
+}
+
+func TestReadSmallRejectsOversizedReceipt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receipt.json")
+	require.NoError(t, os.WriteFile(path, make([]byte, maxReceiptBytes+1), 0o600))
+	_, err := readSmall(path)
+	require.ErrorContains(t, err, "exceeds")
+}
+
+func TestFileDigestHashesExactContents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "br")
+	require.NoError(t, os.WriteFile(path, []byte("pinned-br"), 0o700))
+	got, err := fileDigest(path)
+	require.NoError(t, err)
+	require.Equal(t, digest([]byte("pinned-br")), got)
 }

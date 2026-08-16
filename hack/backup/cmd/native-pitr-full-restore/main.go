@@ -255,7 +255,7 @@ func execute(parent context.Context, o options, runner commandRunner, inspectTar
 	if err != nil {
 		return err
 	}
-	defer admissionClient.Close()
+	defer func() { retErr = errors.Join(retErr, admissionClient.Close()) }()
 	if err := admissionfence.Verify(ctx, admissionClient, plan.Source.Keyspace, admissionToken); err != nil {
 		return fmt.Errorf("pre-BR restore admission: %w", err)
 	}
@@ -417,13 +417,13 @@ func newAdmissionClient(addrs []string, ca, cert, key string) (*clientv3.Client,
 	}
 	return clientv3.New(clientv3.Config{Endpoints: addrs, DialTimeout: 5 * time.Second, TLS: tlsConfig})
 }
-func readSmall(path string) ([]byte, error) {
+func readSmall(path string) (b []byte, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, err = io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -433,12 +433,12 @@ func readSmall(path string) ([]byte, error) {
 	return b, nil
 }
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func fileDigest(path string) (string, error) {
+func fileDigest(path string) (digestResult string, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
