@@ -54340,6 +54340,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/server/service/revision` 全套 race（7.909 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
   未滚动，代理截断/Close fault 下 follower 不推进 read watermark 仍留待正式新镜像网络故障门禁。
 
+- A4835 补齐 cmux 子 listener 的 shutdown 错误传播。root mux 与 exposed server Close 已在 A4814–A4820 纳入进程
+  终态，但 `runSubServer` 仍无条件丢弃子 listener Close；该动作负责解除 gRPC/HTTP Serve 阻塞，真实 teardown failure
+  会因此从 root endpoint 结果消失。生产 defer 现在分别规范化 server 与 listener Close，并与 Serve/上下文主结果 Join；
+  `net.ErrClosed` 等正常关停仍由既有分类过滤。
+
+  `pkg/endpoint` 全套 race（14.086 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776 未滚动，多子端点
+  listener injected-close failure 的进程非零退出仍留待正式新镜像网络故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
