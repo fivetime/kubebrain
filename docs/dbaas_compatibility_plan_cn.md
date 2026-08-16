@@ -55084,6 +55084,20 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   一次性容器已清理。该门禁证明应用层 cancel 不会抹除已提交证据，不等同于 reconciliation 自身到 PD/TiKV 的网络同时不可用、
   进程 `SIGKILL` 或自然 TiKV 2PC uncertain；这些故障仍保持开放。
 
+- A4910 覆盖 release 已提交但 reconciliation 自身在整个有界窗口不可达的跨调用恢复。状态机包装器在底层 marker/checkpoint/
+  257-key release commit 成功后返回 uncertain，并让后续 `Get` 持续返回明确的 read-unavailable error。首次调用即使底层 fence
+  已开放，也必须等满 reconciliation deadline、保留 `storage.ErrUncertainResult` 并携带最后的非 context 读取根因，不能从
+  “可能已开放”推断成功；读取恢复后的新调用通过 exact marker + 全 open fence 直接返回，底层 commit 数仍为一，证明没有再次
+  执行 owner CAS。该状态与 A4908 的“未提交且无 marker”共享 fail-closed 外观，但恢复后分别安全进入真正 release 或 marker
+  reconciliation，持久证据而非先前错误决定分支。
+
+  新 profile `target-log-replay-release-reconcile-read-loss-resume` 在真实 target TiKV release transaction 提交后，确定性屏蔽
+  故障包装层的全部 reconciliation 读取。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending
+  peer、plaintext、MinIO 与官方 BR v7.5.1 上执行：真实原子 release 已落盘，本调用在 5 秒窗口后仍返回 uncertain；绕过故障层
+  在线确认 257 个 shard 全开，随后实际 restoration-fence CLI 从持久 marker 幂等完成 handoff，最终 revision/key/lease/watch
+  语义验收 48.29 秒通过，一次性容器已清理。该证据是“真实 TiKV commit + 确定性 post-commit read loss”，不冒充真实 PD/TiKV
+  网络分区或进程重启；后者仍需独立故障注入。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -3060,6 +3060,20 @@ context 并返回 uncertain；恢复逻辑以不继承该取消信号的独立 5
 成功。随后生产 CLI exact 重试、handoff 与最终语义验证通过。独立 reconciliation 只隔离 caller cancel，不绕过自身 deadline；
 若其到 PD/TiKV 也不可达，仍必须 fail closed 并交由新的 Job/CLI 尝试。
 
+reconciliation 读取窗口不可用的跨调用门禁使用：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-log-replay-release-reconcile-read-loss-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+2026-08-16 真实双集群三副本用例以 48.29 秒通过：target TiKV release transaction 真实提交后，故障包装层在完整 5 秒
+reconciliation 窗口拒绝全部读取；调用保留 `ErrUncertainResult` 和读取根因，不能因底层实际已开放而虚报成功。读路径恢复后，
+生产 CLI 从 exact marker + 257 个 open key 幂等生成 handoff，随后最终语义验证通过。该门禁证明跨调用证据收敛，但故障读取
+是确定性包装，不是宿主网络规则、PD/TiKV 分区或进程重启；生产故障矩阵仍必须覆盖这些条件。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能

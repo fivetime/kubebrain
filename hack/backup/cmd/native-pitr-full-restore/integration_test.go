@@ -62,6 +62,15 @@ type interruptReplayStore struct {
 	commitThenUncertainOnce bool
 	uncertainBeforeCommit   bool
 	cancelAfterCommit       context.CancelFunc
+	failReadsAfterCommit    bool
+	reconciliationReadsFail bool
+}
+
+func (s *interruptReplayStore) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.reconciliationReadsFail {
+		return nil, errors.New("integration reconciliation read unavailable")
+	}
+	return s.KvStorage.Get(ctx, key)
 }
 
 func (s *interruptReplayStore) BeginBatchWrite() storage.BatchWrite {
@@ -91,6 +100,7 @@ func (b *interruptReplayBatch) Commit(ctx context.Context) error {
 	}
 	b.store.committed++
 	if b.store.commitThenUncertainOnce && b.store.committed == b.store.interruptAfter {
+		b.store.reconciliationReadsFail = b.store.failReadsAfterCommit
 		if b.store.cancelAfterCommit != nil {
 			b.store.cancelAfterCommit()
 		}
@@ -3030,6 +3040,16 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 	var handoffPath string
 	if withLogs {
+		if releaseDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_RELEASE_RECONCILE_READ_LOSS_DRILL"); releaseDrill != "" {
+			require.Equal(t, "true", releaseDrill, "invalid release reconciliation read-loss drill setting")
+			uncertainStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1, commitThenUncertainOnce: true, failReadsAfterCommit: true}
+			releaseErr := nativepitr.ReleaseReplayFence(ctx, uncertainStore, fenceReceipt.CoordinationPrefix, fenceToken, replayReceipt, digest(replayBytes))
+			require.ErrorIs(t, releaseErr, storage.ErrUncertainResult)
+			require.ErrorContains(t, releaseErr, "integration reconciliation read unavailable")
+			require.Equal(t, 1, uncertainStore.committed)
+			require.NoError(t, restorationfence.VerifyOpen(ctx, targetKV, fenceReceipt.CoordinationPrefix))
+			t.Log("native PITR committed fence release failed closed while reconciliation reads were unavailable; CLI retry remains pending")
+		}
 		if releaseDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_RELEASE_CANCELED_RESPONSE_LOSS_DRILL"); releaseDrill != "" {
 			require.Equal(t, "true", releaseDrill, "invalid canceled release response-loss drill setting")
 			releaseCtx, cancelRelease := context.WithCancel(ctx)

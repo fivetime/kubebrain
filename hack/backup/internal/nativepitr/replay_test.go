@@ -95,6 +95,15 @@ type commitThenUncertainReplayStore struct {
 	uncertainOnce             bool
 	uncertainBeforeCommitOnce bool
 	cancelAfterCommit         context.CancelFunc
+	failReadsAfterCommit      bool
+	reconciliationReadsFail   bool
+}
+
+func (s *commitThenUncertainReplayStore) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if s.reconciliationReadsFail {
+		return nil, errors.New("reconciliation read unavailable")
+	}
+	return s.KvStorage.Get(ctx, key)
 }
 
 func (s *commitThenUncertainReplayStore) BeginBatchWrite() storage.BatchWrite {
@@ -122,6 +131,7 @@ func (b *commitThenUncertainReplayBatch) Commit(ctx context.Context) error {
 	b.store.commits++
 	if b.store.uncertainOnce {
 		b.store.uncertainOnce = false
+		b.store.reconciliationReadsFail = b.store.failReadsAfterCommit
 		if b.store.cancelAfterCommit != nil {
 			b.store.cancelAfterCommit()
 		}
@@ -658,6 +668,35 @@ func TestReleaseReplayFenceReconcilesAfterCallerCancellation(t *testing.T) {
 	require.Equal(t, 1, target.commits)
 	require.NoError(t, restorationfence.VerifyOpen(t.Context(), inner, prefix))
 	require.NoError(t, ReleaseReplayFence(t.Context(), target, prefix, token, receipt, digest), "exact retry after canceled caller must be idempotent")
+}
+
+func TestReleaseReplayFenceFailsClosedWhenReconciliationIsUnavailable(t *testing.T) {
+	plan := validReceiptPlan(t)
+	receipt := validHandoffReplay(plan, time.Now().Unix())
+	prefix := "/kubebrain-internal/" + plan.Source.Keyspace
+	token, err := restorationfence.NewToken("restore-1", receipt.PlanSHA256, receipt.TargetClusterID, receipt.Keyspace)
+	require.NoError(t, err)
+	ks, err := coder.NewKeyspace(receipt.Keyspace)
+	require.NoError(t, err)
+	checkpointBytes, err := json.Marshal(replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: receipt.PlanSHA256, MutationsSHA256: receipt.MutationsSHA256, RestoreTS: receipt.RestoreTS, AppliedMutations: receipt.MutationCount, LastCommitTS: receipt.LastCommitTS, LastStartTS: receipt.LastStartTS})
+	require.NoError(t, err)
+	inner := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, inner.Close()) })
+	_, err = restorationfence.Acquire(t.Context(), inner, prefix, token)
+	require.NoError(t, err)
+	batch := inner.BeginBatchWrite()
+	batch.Put(ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint")), checkpointBytes, 0)
+	require.NoError(t, batch.Commit(t.Context()))
+	target := &commitThenUncertainReplayStore{KvStorage: inner, uncertainOnce: true, failReadsAfterCommit: true}
+
+	err = releaseReplayFence(t.Context(), target, prefix, token, receipt, digest, 20*time.Millisecond)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.ErrorContains(t, err, "reconciliation read unavailable")
+	require.Equal(t, 1, target.commits)
+	require.NoError(t, restorationfence.VerifyOpen(t.Context(), inner, prefix), "underlying commit did open the fence even though its result remains unknown to the caller")
+	target.reconciliationReadsFail = false
+	require.NoError(t, ReleaseReplayFence(t.Context(), target, prefix, token, receipt, digest), "new call must reconcile the durable commit after reads recover")
+	require.Equal(t, 1, target.commits, "reconciliation retry must not submit another release transaction")
 }
 
 func TestReleaseReplayFenceDoesNotAcceptUncommittedUncertainResult(t *testing.T) {
