@@ -37,7 +37,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(status)
+		if err := writeJSON(os.Stdout, status); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 	client, err := newClient(ctx)
@@ -61,7 +63,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	case "delete":
 		receipt, err := objectstore.ReadReceipt(os.Getenv("RECEIPT_INPUT"))
 		if err != nil {
@@ -75,7 +79,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(deletion)
+		if err := writeJSON(os.Stdout, deletion); err != nil {
+			log.Fatal(err)
+		}
 	case "archive":
 		receipt, err := objectstore.ArchiveAudit(ctx, client, objectstore.AuditRequest{
 			Input: os.Getenv("INPUT"), ObjectStoreID: os.Getenv("OBJECT_STORE_ID"),
@@ -87,7 +93,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	case "blob":
 		receipt, err := objectstore.ArchiveBlob(ctx, client, objectstore.BlobRequest{
 			Input: os.Getenv("INPUT"), ArtifactFormat: os.Getenv("ARTIFACT_FORMAT"),
@@ -100,7 +108,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	case "blob-read":
 		var artifactFormats []string
 		if raw := os.Getenv("ARTIFACT_FORMATS_JSON"); raw != "" {
@@ -117,7 +127,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	case "inventory":
 		receipt, err := objectstore.ReconcileInventory(ctx, client, objectstore.InventoryRequest{
 			Input: os.Getenv("INVENTORY_INPUT"), ObjectStoreID: os.Getenv("OBJECT_STORE_ID"),
@@ -126,7 +138,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	case "pitr-inventory":
 		receipt, err := objectstore.CapturePITRInventory(ctx, client, objectstore.PITRInventoryRequest{
 			ObjectStoreID: os.Getenv("OBJECT_STORE_ID"), Bucket: os.Getenv("S3_BUCKET"),
@@ -136,7 +150,9 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	case "usage":
 		allowedFormats := stringArrayEnv("ALLOWED_FORMATS_JSON")
 		receipt, err := objectstore.MeasureUsage(ctx, client, objectstore.UsageRequest{
@@ -147,10 +163,19 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(receipt)
+		if err := writeJSON(os.Stdout, receipt); err != nil {
+			log.Fatal(err)
+		}
 	default:
 		log.Fatal("ACTION must be upload, delete, archive, blob, blob-read, manifest, inventory, pitr-inventory, or usage")
 	}
+}
+
+func writeJSON(out io.Writer, value any) error {
+	if err := json.NewEncoder(out).Encode(value); err != nil {
+		return fmt.Errorf("write operation receipt: %w", err)
+	}
+	return nil
 }
 
 func stringArrayEnv(name string) []string {

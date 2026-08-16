@@ -54775,6 +54775,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 failing writer 回归，固定 endpoint status 首写失败时 Snapshot 调用数为零且绝不 compact；legacyremediation/CLI race、
   vet 与 diff check 通过。真实 compact 成功后 final receipt pipe failure 需由调用方按已发布 OUTPUT 幂等对账，不能盲目重做。
 
+- A4885 关闭独立 objectstore module 九类运维 action 的 stdout receipt 假绿。manifest/upload/delete/archive/blob/blob-read/
+  inventory/pitr-inventory/usage 都已在本地或远端完成制品操作并生成 canonical receipt，却统一 `_ = Encoder.Encode`；Job 日志
+  管道、sidecar 或结果采集文件写失败仍以零退出，使控制面可能在没有可消费终态证据时推进 retention、删除或 PITR admission。
+  入口现通过共享 writer 包装传播 JSON Encode 错误并非零退出；远端操作不做不安全的隐式回滚，调用方可依赖已落盘 receipt
+  或 exact object version 幂等对账。该模块也同步适配 A4882 的 `AtomicWriter.Abort() error`，避免独立 module 测试漏编译。
+
+  新增 failing stdout writer 回归固定底层 pipe error 可由 `errors.Is` 识别；objectstore 全模块 race（3.257 秒）、vet 与 diff
+  check 通过。真实 S3 commit 成功叠加 stdout failure 仍属于 ambiguous client observation，必须以 canonical receipt/object
+  identity reconcile，不能盲目重复 mutation。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

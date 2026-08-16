@@ -394,7 +394,7 @@ func writeLargeCancellationArtifact(t *testing.T) string {
 	path := filepath.Join(t.TempDir(), "large-backup.jsonl")
 	writer, err := backupfile.NewAtomicWriter(path, "/registry", 12345)
 	require.NoError(t, err)
-	t.Cleanup(writer.Abort)
+	t.Cleanup(func() { require.NoError(t, writer.Abort()) })
 	require.NoError(t, writer.Add(record.Record{
 		Key:         base64.StdEncoding.EncodeToString([]byte("/registry/cancel")),
 		Value:       base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), 8*1024*1024)),

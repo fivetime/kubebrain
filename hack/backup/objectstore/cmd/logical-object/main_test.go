@@ -1,10 +1,21 @@
 package main
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestWriteJSONPropagatesReceiptOutputFailure(t *testing.T) {
+	writeErr := errors.New("receipt pipe closed")
+	err := writeJSON(failingWriter{err: writeErr}, map[string]string{"status": "committed"})
+	require.ErrorIs(t, err, writeErr)
+}
 
 func TestParseJSONStringArrayAcceptsCanonicalArrays(t *testing.T) {
 	values, err := parseJSONStringArray(`["receipt-a.json","receipt-b.json"]`, "RECEIPT_INPUTS_JSON")
