@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -54,15 +55,44 @@ type ReplayDiskPlan struct {
 }
 
 type replayScratchQuota struct {
-	maxBytes uint64
-	paths    []string
+	maxBytes            uint64
+	minFreeBytes        uint64
+	filesystemPath      string
+	filesystemFreeBytes func(string) (uint64, error)
+	paths               []string
 }
 
 func newReplayScratchQuota(maxBytes uint64) (*replayScratchQuota, error) {
+	return newReplayScratchQuotaWithFreeBytes(maxBytes, 0, "", nil)
+}
+
+func newReplayScratchQuotaWithReserve(maxBytes, minFreeBytes uint64, filesystemPath string) (*replayScratchQuota, error) {
+	return newReplayScratchQuotaWithFreeBytes(maxBytes, minFreeBytes, filesystemPath, replayFilesystemFreeBytes)
+}
+
+func newReplayScratchQuotaWithFreeBytes(maxBytes, minFreeBytes uint64, filesystemPath string, freeBytes func(string) (uint64, error)) (*replayScratchQuota, error) {
 	if maxBytes == 0 {
 		return nil, errors.New("native PITR replay scratch byte limit must be positive")
 	}
-	return &replayScratchQuota{maxBytes: maxBytes}, nil
+	if minFreeBytes != 0 && (filesystemPath == "" || freeBytes == nil) {
+		return nil, errors.New("native PITR replay scratch filesystem reserve requires a path and free-space probe")
+	}
+	quota := &replayScratchQuota{maxBytes: maxBytes, minFreeBytes: minFreeBytes, filesystemPath: filesystemPath, filesystemFreeBytes: freeBytes}
+	if err := quota.checkAdditional(0); err != nil {
+		return nil, err
+	}
+	return quota, nil
+}
+
+func replayFilesystemFreeBytes(path string) (uint64, error) {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, fmt.Errorf("stat native PITR replay scratch filesystem: %w", err)
+	}
+	if stat.Bsize <= 0 || stat.Bavail > ^uint64(0)/uint64(stat.Bsize) {
+		return 0, errors.New("native PITR replay scratch filesystem capacity is invalid")
+	}
+	return stat.Bavail * uint64(stat.Bsize), nil
 }
 
 func (q *replayScratchQuota) add(path string) error {
@@ -94,6 +124,19 @@ func (q *replayScratchQuota) checkAdditional(additional uint64) error {
 	}
 	if additional > q.maxBytes-total {
 		return fmt.Errorf("native PITR replay scratch files plus %d pending bytes exceed %d-byte limit", additional, q.maxBytes)
+	}
+	if q.minFreeBytes != 0 {
+		if additional > ^uint64(0)-q.minFreeBytes {
+			return errors.New("native PITR replay scratch filesystem reserve overflows uint64")
+		}
+		available, err := q.filesystemFreeBytes(q.filesystemPath)
+		if err != nil {
+			return err
+		}
+		required := q.minFreeBytes + additional
+		if available < required {
+			return fmt.Errorf("native PITR replay scratch filesystem has %d available bytes, below %d-byte reserve plus %d pending bytes", available, q.minFreeBytes, additional)
+		}
 	}
 	return nil
 }
@@ -685,6 +728,13 @@ func ApplyReplayDiskPlan(ctx context.Context, target storage.KvStorage, planSHA 
 // detection, source-transaction consistency, and final ordering never require
 // an O(all output) Go slice.
 func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS, maxScratchBytes uint64) (_ *ReplayDiskPlan, retErr error) {
+	return MaterializeReplayDiskPlanWithScratchLimits(logs, logsSHA, root, scratchDir, startExclusive, restoreTS, maxScratchBytes, 0)
+}
+
+// MaterializeReplayDiskPlanWithScratchLimits additionally preserves
+// minScratchFreeBytes on the filesystem that owns scratchDir. The check is an
+// application-level admission guard; filesystem quotas remain authoritative.
+func MaterializeReplayDiskPlanWithScratchLimits(logs LogArtifactReceipt, logsSHA, root, scratchDir string, startExclusive, restoreTS, maxScratchBytes, minScratchFreeBytes uint64) (_ *ReplayDiskPlan, retErr error) {
 	if err := logs.Validate(); err != nil {
 		return nil, err
 	}
@@ -706,7 +756,7 @@ func MaterializeReplayDiskPlanWithScratchDir(logs LogArtifactReceipt, logsSHA, r
 		return nil, err
 	}
 	start, end := ks.ObjectKeyspaceStart(), ks.ObjectKeyspaceEnd()
-	quota, err := newReplayScratchQuota(maxScratchBytes)
+	quota, err := newReplayScratchQuotaWithReserve(maxScratchBytes, minScratchFreeBytes, scratchDir)
 	if err != nil {
 		return nil, err
 	}

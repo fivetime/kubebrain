@@ -17,6 +17,7 @@ package nativepitr
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,6 +57,56 @@ func TestReplayScratchQuotaRejectsPendingBytesBeforeFileGrowth(t *testing.T) {
 	contents, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, []byte("1234"), contents)
+}
+
+func TestReplayScratchQuotaPreservesFilesystemFreeSpace(t *testing.T) {
+	available := uint64(100)
+	var probeErr error
+	quota, err := newReplayScratchQuotaWithFreeBytes(1<<20, 80, "/scratch", func(path string) (uint64, error) {
+		require.Equal(t, "/scratch", path)
+		return available, probeErr
+	})
+	require.NoError(t, err)
+	require.NoError(t, quota.checkAdditional(20))
+	require.ErrorContains(t, quota.checkAdditional(21), "below 80-byte reserve plus 21 pending bytes")
+
+	probeErr = errors.New("probe failed")
+	require.ErrorContains(t, quota.check(), "probe failed")
+	probeErr = nil
+	quota.minFreeBytes = ^uint64(0)
+	require.ErrorContains(t, quota.checkAdditional(1), "reserve overflows uint64")
+}
+
+func TestReplayFilesystemFreeBytesReadsScratchFilesystem(t *testing.T) {
+	available, err := replayFilesystemFreeBytes(t.TempDir())
+	require.NoError(t, err)
+	require.Positive(t, available)
+	_, err = replayFilesystemFreeBytes(filepath.Join(t.TempDir(), "missing"))
+	require.ErrorContains(t, err, "stat native PITR replay scratch filesystem")
+}
+
+func TestReplayScratchFilesystemReserveRejectsBeforeBboltPut(t *testing.T) {
+	available := ^uint64(0)
+	quota, err := newReplayScratchQuotaWithFreeBytes(^uint64(0), 100, "/scratch", func(string) (uint64, error) {
+		return available, nil
+	})
+	require.NoError(t, err)
+	store, err := newReplayDefaultStoreWithQuota(t.TempDir(), quota)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, store.Close()) }()
+	info, err := os.Stat(store.path)
+	require.NoError(t, err)
+	recordBytes := sha256.Size + 4 + uint64(len("join")) + uint64(len("value"))
+	available = quota.minFreeBytes + recordBytes - 1
+
+	err = store.Put("join", []byte("value"))
+	require.ErrorContains(t, err, "below 100-byte reserve")
+	require.Zero(t, store.pendingBytes)
+	digest := sha256.Sum256([]byte("join"))
+	require.Nil(t, store.bucket.Get(digest[:]))
+	after, err := os.Stat(store.path)
+	require.NoError(t, err)
+	require.Equal(t, info.Size(), after.Size())
 }
 
 func TestReplayScratchStoresRejectNewRecordBeforeBboltPut(t *testing.T) {
@@ -175,6 +226,17 @@ func TestMaterializeReplayDiskPlanRejectsScratchQuotaAndCleansFiles(t *testing.T
 	scratch := t.TempDir()
 	_, err := MaterializeReplayDiskPlanWithScratchDir(receipt, digest, root, scratch, 119, 150, 1)
 	require.ErrorContains(t, err, "scratch files exceed 1-byte limit")
+	entries, readErr := os.ReadDir(scratch)
+	require.NoError(t, readErr)
+	require.Empty(t, entries)
+}
+
+func TestMaterializeReplayDiskPlanRejectsFilesystemReserveBeforeScratchCreation(t *testing.T) {
+	_, receipt, root, _, _ := replayFixture(t)
+	scratch := t.TempDir()
+	_, err := MaterializeReplayDiskPlanWithScratchLimits(receipt, digest, root, scratch, 119, 150, ^uint64(0), ^uint64(0))
+	require.ErrorContains(t, err, "scratch filesystem has")
+	require.ErrorContains(t, err, "below 18446744073709551615-byte reserve")
 	entries, readErr := os.ReadDir(scratch)
 	require.NoError(t, readErr)
 	require.Empty(t, entries)

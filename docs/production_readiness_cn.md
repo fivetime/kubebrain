@@ -2565,6 +2565,7 @@ TiKV fence key，成功才签发连续排写交接收据：
   --log-root=/evidence/log-mirror \
   --scratch-dir=/evidence \
   --max-replay-scratch-bytes=549755813888 \
+  --min-replay-scratch-free-bytes=1073741824 \
   --restoration-fence=/evidence/native-pitr-restoration-fence.json \
   --admission-handoff=/evidence/native-pitr-admission-handoff.json \
   --target-pd-addrs="$TARGET_PD_ADDRS" \
@@ -2623,8 +2624,11 @@ log mirror 同容量域的加密 PVC，容量必须同时覆盖回放窗口内 d
 bbolt page overhead，不要指向 executor 的 64Mi `emptyDir`。未显式设置时命令使用 `--log-root` 的父目录。
 `--max-replay-scratch-bytes` 默认 512 GiB；每条新记录写入前按三个文件的合计 apparent size 加当前 bbolt transaction 尚未提交的
 逻辑字节保守预留，每次 commit 后再按实际 apparent size fail closed（稀疏文件按逻辑长度计费）。应按 PVC 可用容量
-显式下调并给 mirror、receipt、filesystem reserve 留出余量。该应用层门禁不能替代 PVC/ephemeral-storage quota：bbolt 页分配/
-copy-on-write 放大或同卷外部写入仍可能先收到 ENOSPC，但不会连接 target 或降级到不受限内存路径。三个 scratch store
+显式下调并给 mirror、receipt、filesystem reserve 留出余量。`--min-replay-scratch-free-bytes` 默认 1 GiB；executor 在创建 scratch
+文件及每条记录接纳前读取该目录文件系统的 `Bavail × Bsize`，要求它至少覆盖该 reserve 与当前 transaction pending logical bytes，
+每次 commit 后再次检查实际余量；设为 0 才会关闭。statfs 失败或余量不足都在 target PD/TiKV client 创建前终止并清理 scratch。
+该应用层门禁不能替代 PVC/ephemeral-storage quota：检查与写入间仍存在 TOCTOU，bbolt 页分配/copy-on-write 放大或同卷外部并发
+写入仍可能先收到 ENOSPC，但不会连接 target 或降级到不受限内存路径。三个 scratch store
 均按 8MiB 批次提交、成功或失败后删除，不是恢复证据；空间耗尽、写入、提交、关闭或删除失败均令 replay 失败，不能降级回
 全量内存或跳过长值。
 

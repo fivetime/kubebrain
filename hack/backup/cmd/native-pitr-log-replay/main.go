@@ -30,6 +30,7 @@ import (
 const maxReceiptBytes = 4 << 20
 const defaultMaxReplayMemoryBytes = 512 << 20
 const defaultMaxReplayScratchBytes = 512 << 30
+const defaultMinReplayScratchFreeBytes = 1 << 30
 
 type options struct {
 	plan, fullRestore, logArtifacts, logRoot, scratchDir, fenceReceipt, admissionHandoff string
@@ -37,6 +38,7 @@ type options struct {
 	timeout                                                                              time.Duration
 	maxReplayMemoryBytes                                                                 uint64
 	maxReplayScratchBytes                                                                uint64
+	minReplayScratchFreeBytes                                                            uint64
 }
 
 func main() {
@@ -60,6 +62,7 @@ func main() {
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "log replay deadline")
 	flag.Uint64Var(&o.maxReplayMemoryBytes, "max-replay-memory-bytes", defaultMaxReplayMemoryBytes, "maximum logical resident bytes for one source transaction during disk-plan replay")
 	flag.Uint64Var(&o.maxReplayScratchBytes, "max-replay-scratch-bytes", defaultMaxReplayScratchBytes, "maximum combined apparent file and pending logical bytes for replay scratch databases")
+	flag.Uint64Var(&o.minReplayScratchFreeBytes, "min-replay-scratch-free-bytes", defaultMinReplayScratchFreeBytes, "minimum filesystem bytes to preserve while building replay scratch databases; zero disables")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -165,8 +168,8 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	replayPlan, err := nativepitr.MaterializeReplayDiskPlanWithScratchDir(
-		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS, o.maxReplayScratchBytes,
+	replayPlan, err := nativepitr.MaterializeReplayDiskPlanWithScratchLimits(
+		logs, logSHA, o.logRoot, replayScratchDir(o), plan.Full.BackupTS, plan.RestoreTS, o.maxReplayScratchBytes, o.minReplayScratchFreeBytes,
 	)
 	if err != nil {
 		return err

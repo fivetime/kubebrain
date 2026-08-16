@@ -55230,6 +55230,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   与最终 revision/key/lease/watch 语义验收 39.71 秒通过，一次性容器已清理。预留是应用层逻辑 charge，不替代 filesystem/PVC
   quota；页放大、外部并发占盘、真实 I/O error 和生产规模空间压力告警仍保持开放。
 
+- A4921 为 A4920 的逻辑配额增加 scratch filesystem reserve。正式 log-replay CLI 新增
+  `--min-replay-scratch-free-bytes`，默认 1 GiB、显式 0 可关闭；materialization 在创建第一个 bbolt 文件前以及每条记录写入前读取
+  scratch 目录文件系统 `statfs(Bavail × Bsize)`，要求 available bytes 不小于 reserve 加当前 transaction pending logical bytes，
+  commit 后再用实际余量复核。statfs 错误、block-size 乘法或 reserve 加法溢出、余量不足均 fail closed；因为该步骤位于 target
+  PD/TiKV client 创建前，失败不会读写目标，且既有 defer 路径删除已创建的 default/write/plan scratch 文件。
+
+  回归用可控 free-space probe 覆盖精确 reserve/pending 边界、probe failure、uint64 overflow、真实 temp filesystem statfs、default-CF
+  写前拒绝且文件不增长，以及超大 reserve 在任何 scratch 文件创建前拒绝；nativepitr 完整套件、正式 log-replay CLI 与 race/vet
+  门禁通过。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer、plaintext、MinIO、官方 BR
+  v7.5.1 与默认 1 GiB reserve 上执行 `TestNativeLogReplayRealBR`：v6 receipt、v2 checkpoint、fence/handoff 及最终
+  revision/key/lease/watch 语义验收 42.89 秒通过，一次性容器已清理。该检查仍有 statfs→write TOCTOU，且无法预测 bbolt 页放大
+  或同卷并发写入；PVC quota、kubelet ephemeral-storage eviction、容量告警和真实 ENOSPC/I/O fault 演练仍是独立生产门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
