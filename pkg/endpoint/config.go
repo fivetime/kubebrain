@@ -17,6 +17,7 @@ package endpoint
 import (
 	"crypto/tls"
 	"crypto/x509"
+	stderrors "errors"
 	"fmt"
 	"io"
 	"math"
@@ -398,13 +399,13 @@ func loadRevocationList(path string) (*x509.RevocationList, error) {
 	return list, nil
 }
 
-func readBoundedEndpointFile(path string, limit int64) ([]byte, error) {
+func readBoundedEndpointFile(path string, limit int64) (contents []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
-	contents, err := io.ReadAll(io.LimitReader(file, limit+1))
+	defer func() { retErr = stderrors.Join(retErr, file.Close()) }()
+	contents, err = io.ReadAll(io.LimitReader(file, limit+1))
 	if err != nil {
 		return nil, err
 	}

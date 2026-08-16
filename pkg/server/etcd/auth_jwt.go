@@ -117,13 +117,13 @@ func parseAuthTokenProvider(spec string) (*jwtTokenProvider, error) {
 	return &jwtTokenProvider{method: method, key: key, ttl: ttl, verifyOnly: verifyOnly}, nil
 }
 
-func readJWTKeyOption(path, option string) ([]byte, error) {
+func readJWTKeyOption(path, option string) (value []byte, retErr error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("read JWT %s: %w", option, err)
 	}
-	defer file.Close()
-	value, err := io.ReadAll(io.LimitReader(file, maxJWTKeyBytes+1))
+	defer func() { retErr = errors.Join(retErr, file.Close()) }()
+	value, err = io.ReadAll(io.LimitReader(file, maxJWTKeyBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read JWT %s: %w", option, err)
 	}
