@@ -54430,6 +54430,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `hack/backup/internal/nativepitr` 全套 race（3.198 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776
   未滚动，txn client/iterator/key-file close fault 下 receipt 不签发仍留待正式新镜像源目标取证门禁。
 
+- A4846 补齐 native PITR immutable object inventory 的 canonical read 与 exact-version S3 body cleanup。`ReadCanonical`
+  旧实现可在 receipt 文件 Close 失败后返回已验证 bytes；生成侧 HEAD/retention/GET 取证则忽略 GET Body.Close，使 entry
+  在 HTTP transport 未可靠收尾时仍被签发。两处现使用命名错误 Join Close；HEAD、retention、Copy 的真实 API/I/O
+  error 也优先保留，仅纯 version/length/retention 不匹配返回 evidence mismatch，便于控制面正确分类重试与篡改。
+
+  pitrinventory/nativepitr race（1.045/3.215 秒）、嵌套 objectstore race（3.223 秒）及三包 vet 通过；本轮没有修改测试
+  文件。在线 A4776 未滚动，S3 body/receipt close fault 下 inventory 不签发仍留待正式新镜像对象存储故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
