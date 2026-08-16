@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/nativepitr"
@@ -51,7 +53,9 @@ func main() {
 	flag.StringVar(&o.approve, "approve-plan-sha256", "", "explicit approval equal to exact plan SHA-256")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Hour, "log replay deadline")
 	flag.Parse()
-	if err := execute(context.Background(), o, os.Stdout, time.Now); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, os.Stdout, time.Now); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR log replay:", err)
 		os.Exit(1)
 	}
@@ -160,7 +164,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	store, err := storagetikv.NewKvStorage(addrs, 1, storagetikv.Security{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
+	store, err := storagetikv.NewKvStorageWithContext(ctx, addrs, 1, storagetikv.Security{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {
 		return err
 	}

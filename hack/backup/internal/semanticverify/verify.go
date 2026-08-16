@@ -41,7 +41,7 @@ func VerifyTargetProbeHistory(ctx context.Context, addrs []string, security stor
 	if len(observation.ProbeKey) == 0 || len(observation.ProbeValue) == 0 || observation.ProbeLeaseID == 0 || observation.ProbePutRevision <= 0 {
 		return errors.New("semantic watch probe returned incomplete target-binding evidence")
 	}
-	storage, err := storagetikv.NewKvStorage(addrs, 1, security)
+	storage, err := storagetikv.NewKvStorageWithContext(ctx, addrs, 1, security)
 	if err != nil {
 		return fmt.Errorf("connect target TiKV for probe history: %w", err)
 	}

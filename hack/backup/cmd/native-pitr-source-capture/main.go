@@ -15,7 +15,9 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/backup/internal/backupfile"
@@ -53,7 +55,9 @@ func main() {
 	flag.StringVar(&o.key, "source-key", "", "source PD client private key")
 	flag.DurationVar(&o.timeout, "timeout", 2*time.Minute, "capture operation deadline")
 	flag.Parse()
-	if err := execute(context.Background(), o, os.Stdout, time.Now); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := execute(ctx, o, os.Stdout, time.Now); err != nil {
 		fmt.Fprintln(os.Stderr, "native PITR source capture:", err)
 		os.Exit(1)
 	}
@@ -103,7 +107,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if clusterID == 0 || clusterID != task.ClusterID {
 		return errors.New("live source PD cluster ID does not match task receipt")
 	}
-	store, err := storagetikv.NewKvStorage(addrs, 1, storagetikv.Security{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
+	store, err := storagetikv.NewKvStorageWithContext(ctx, addrs, 1, storagetikv.Security{CAPath: o.ca, CertPath: o.cert, KeyPath: o.key})
 	if err != nil {
 		return err
 	}
