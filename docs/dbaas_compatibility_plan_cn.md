@@ -53991,6 +53991,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain TiKV storage race、backend 全量（79.671 秒）及 storage/backend/server vet 通过；本轮没有修改
   测试文件。在线 A4776 未滚动，真实多 client Close 故障下的聚合错误与资源归零仍留待正式新镜像故障门禁。
 
+- A4798 补齐关闭错误从 server 到 Endpoint/进程出口的最后一段传播。Endpoint 已聚合 server 与 backend Close，
+  但 `server.Close` 丢弃最多 5 秒的 voluntary leader/drain 错误，随后又用 peer service Close 结果直接覆盖
+  `closeErr`；因此 gRPC drain/领导权释放失败可能仍被发布系统误判为干净退出，且多个 shutdown failure 无法
+  同时诊断。生产 Close 现在把 `Drain` 和 peer Close 都通过标准 `errors.Join` 累积，继续执行原有 cancel、worker
+  join、etcd service close 和 peer close 顺序，重复调用仍由 `closeOnce` 返回同一结果。
+
+  `pkg/server` race、server/etcd 全量结构化复跑及 server/endpoint/option vet 通过。server 全树首轮在 209.285
+  秒后报告 etcd 包失败，但海量日志截断未保留失败断言；随后独立 JSON event 全量复跑成功退出且无 fail event，
+  因而如实记录为非确定失败，不修改测试掩盖。在线 A4776 未滚动，真实 drain timeout + peer close failure 的组合
+  退出码与发布控制面拒绝仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
