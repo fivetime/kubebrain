@@ -54348,6 +54348,13 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `pkg/endpoint` 全套 race（14.086 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776 未滚动，多子端点
   listener injected-close failure 的进程非零退出仍留待正式新镜像网络故障门禁。
 
+- A4836 补齐 gRPC gateway 启动失败的 transport cleanup 错误。gateway client connection 已创建后若 mux handler 注册
+  失败，旧路径虽调用 `conn.Close` 却丢弃结果，startup 只报告注册错误，连接资源未收尾的根因不可见。生产 builder
+  现在 Join mux 与 connection Close 错误并返回；成功启动路径及后续 A4814 shutdown 聚合保持不变。
+
+  `pkg/endpoint` 全套 race（14.132 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776 未滚动，gateway
+  registration failure 叠加 transport close fault 的非零启动终态仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
