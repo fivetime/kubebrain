@@ -48,6 +48,8 @@ func TestAuthGRPCErrorMapsPublicStatusCodes(t *testing.T) {
 		{rpctypes.ErrRootUserNotExist, codes.FailedPrecondition},
 		{fmt.Errorf("tso: %w", storage.ErrUnavailable), codes.Unavailable},
 		{storage.NewErrUncertainResult(context.DeadlineExceeded), codes.Unavailable},
+		{fmt.Errorf("TiKV scan: %w", context.Canceled), codes.Canceled},
+		{fmt.Errorf("TiKV scan: %w", context.DeadlineExceeded), codes.DeadlineExceeded},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("epoch_not_match:<>")), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("no available connections")), codes.Unavailable},
 		{fmt.Errorf("failed to get key: %w", fmt.Errorf("loadRegion from PD failed, key: %q, err: rpc error: code = DeadlineExceeded desc = context deadline exceeded", "57FB80")), codes.DeadlineExceeded},

@@ -57,13 +57,17 @@ func TestBatchCommitBindsBeginToCallerContext(t *testing.T) {
 }
 
 func TestUnavailableBeginErrorPreservesRetryableClassification(t *testing.T) {
-	err := unavailableBeginError("read", errors.New("pd unavailable"))
+	err := unavailableBeginError(context.Background(), "read", errors.New("pd unavailable"))
 	require.ErrorIs(t, err, storage.ErrUnavailable)
 	require.ErrorContains(t, err, "failed to create read txn: pd unavailable")
 
-	empty := unavailableBeginError("write", errors.New(""))
+	empty := unavailableBeginError(context.Background(), "write", errors.New(""))
 	require.ErrorIs(t, empty, storage.ErrUnavailable)
 	require.ErrorContains(t, empty, "failed to create write txn")
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, unavailableBeginError(canceled, "read", errors.New("pd unavailable")), context.Canceled)
 }
 
 func TestUncertainCommitErrorClassifiesTxnLockNotFound(t *testing.T) {

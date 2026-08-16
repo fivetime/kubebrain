@@ -283,6 +283,9 @@ func (s *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err e
 	// leader within the caller's deadline.
 	timestamp, err = s.getClient().GetTimestamp(ctx)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, ctxErr
+		}
 		return 0, fmt.Errorf("%w: fail to get timestamp: %v", storage.ErrUnavailable, err)
 	}
 	return timestamp, err
@@ -398,7 +401,7 @@ func (s *store) BeginBatchWrite() storage.BatchWrite {
 	return &batch{begin: func(ctx context.Context) (*txnkv.KVTxn, error) {
 		txn, err := client.BeginWithContext(ctx)
 		if err != nil {
-			return nil, unavailableBeginError("write", err)
+			return nil, unavailableBeginError(ctx, "write", err)
 		}
 		return txn, nil
 	}}
@@ -407,7 +410,7 @@ func (s *store) BeginBatchWrite() storage.BatchWrite {
 func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
 	txn, err := s.getClient().BeginWithContext(ctx)
 	if err != nil {
-		return nil, unavailableBeginError("read", err)
+		return nil, unavailableBeginError(ctx, "read", err)
 	}
 
 	val, err = txn.Get(ctx, key)
@@ -430,7 +433,10 @@ func (s *store) Get(ctx context.Context, key []byte) (val []byte, err error) {
 // an untyped (and occasionally empty) error. Mark it explicitly so the gRPC
 // boundary returns Unavailable and etcd clients can retry within their request
 // deadline instead of treating grpc-go's fallback Unknown as permanent.
-func unavailableBeginError(kind string, err error) error {
+func unavailableBeginError(ctx context.Context, kind string, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	return fmt.Errorf("%w: failed to create %s txn: %v", storage.ErrUnavailable, kind, err)
 }
 

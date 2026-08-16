@@ -618,6 +618,16 @@ func authGRPCError(err error) error {
 	switch {
 	case err == nil:
 		return nil
+	case errors.Is(err, storage.ErrUncertainResult):
+		// The storage commit may already be durable. Return etcd's timeout
+		// contract so clients treat it as a retryable, outcome-unknown write;
+		// the backend resolves the event-log markers asynchronously.
+		return rpctypes.ErrGRPCTimeout
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// Storage and client-go may wrap the caller context while adding Region or
+		// transaction diagnostics. Preserve the gRPC cancellation/deadline contract
+		// before classifying retryable backend failures such as ErrUnavailable.
+		return status.FromContextError(err).Err()
 	case errors.Is(err, rpctypes.ErrRootUserNotExist):
 		return rpctypes.ErrGRPCRootUserNotExist
 	case errors.Is(err, rpctypes.ErrRootRoleNotExist):
@@ -671,11 +681,6 @@ func authGRPCError(err error) error {
 		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, storage.ErrKeyTooLarge):
 		return status.Error(codes.ResourceExhausted, err.Error())
-	case errors.Is(err, storage.ErrUncertainResult):
-		// The storage commit may already be durable. Return etcd's timeout
-		// contract so clients treat it as a retryable, outcome-unknown write;
-		// the backend resolves the event-log markers asynchronously.
-		return rpctypes.ErrGRPCTimeout
 	case isTiKVLoadRegionDeadlineExceeded(err):
 		// This failure occurs while locating a Region, before a mutation can be
 		// submitted. Preserve etcd's per-attempt deadline contract so clientv3
