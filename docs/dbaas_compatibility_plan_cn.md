@@ -54839,6 +54839,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   multi-pass 套件合并 race 连续 10 轮（3.495 秒）、backend vet 与 diff check 通过。footer 不承担持久备份职责，仅把节点临时
   介质 silent corruption 转成显式 stream error；ephemeral-storage 可靠性仍由 DBaaS 节点与调度策略保障。
 
+- A4891 收紧 DBaaS Operation API 与参数 broker 两个常驻 HTTPS 服务的 SIGTERM 终态。旧 main 在 `http.Server.Shutdown`
+  超时/失败时只打印日志，再忽略 fallback `Server.Close` 错误，最终仍以 0 退出；Kubernetes rollout 因而会把未完成 request
+  drain 或 listener teardown 当作干净停止，削弱 operation receipt/secret handoff 的可审计性。两个入口现在统一通过可测
+  helper 执行“有界 graceful Shutdown→失败时强制 Close”，以 `errors.Join` 同时保留 drain 与 forced-close 原因，并由 main
+  `log.Fatal` 形成非零进程终态；正常 Shutdown 成功不额外 Close。
+
+  两个命令均新增双故障与正常 drain 回归，固定调用次数和 `errors.Is` 链；operation-api/broker race（2.971/5.762 秒）、
+  vet 与 diff check 通过。SIGTERM 后强制关闭仍可能让已提交 Kubernetes Operation 的客户端观察不确定，调用方必须按 immutable
+  operation name/spec 查询对账，不能因进程非零盲目重复不同请求。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os/signal"
@@ -101,13 +102,28 @@ func main() {
 			log.Fatal(err)
 		}
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			log.Printf("graceful shutdown failed: %v", err)
-			_ = server.Close()
+		if err := shutdownHTTPServer(server, 30*time.Second); err != nil {
+			log.Fatal(err)
 		}
 	}
+}
+
+type shutdownServer interface {
+	Shutdown(context.Context) error
+	Close() error
+}
+
+func shutdownHTTPServer(server shutdownServer, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		closeErr := server.Close()
+		if closeErr != nil {
+			closeErr = fmt.Errorf("force close HTTP server: %w", closeErr)
+		}
+		return errors.Join(fmt.Errorf("graceful HTTP shutdown failed: %w", err), closeErr)
+	}
+	return nil
 }
 
 type serverCertificate interface {
