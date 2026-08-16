@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer、单 store 故障，以及 `$`/NUL 边界的 revision-index/object 两阶段 batch；PD 健康期间每 30 秒主动重扫并预热 Region/store directory，已完成的 merge 等拓扑变化可被下一 checkpoint 吸收；PD 隔离后才发生的 Region merge、store replacement/address change 等需要新 directory 的变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer、单 store 故障、Region merge，以及 `$`/NUL 边界的 revision-index/object 两阶段 batch；PD 健康期间每 30 秒主动重扫并预热 Region/store directory；隔离后 merge source 消失时，client fork 仅用相邻 cached Region 向 TiKV 探测，并且只接受非空 `EpochNotMatch.CurrentRegions` 权威元数据，不推断 Region 边界；store replacement/address change 等需要新 store directory 的变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -46467,6 +46467,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   fail-closed 可用性缺口，不能宣传为 PD 故障期间任意 Region topology change 均透明。后续若要关闭该
   缺口，需要让隔离进程获得可信、可持续更新的 Region directory（或上游 client/TiKV 提供足够的 merged
   Region metadata），并以本门禁翻转为隔离期间成功且 header/value 仍固定在受保护 checkpoint 为验收。
+  A4779 已按该验收条件翻转门禁并关闭此处 merge 缺口；本段保留修复前证据，不能再作为当前能力结论。
 
 - A4368 修复 A4363 warmup 对多 client 部署覆盖不足的问题。生产默认创建 16 个 round-robin
   `txnkv.Client`，每个 client 都有独立 PD connection、Region cache 与 TSO dispatcher；旧实现对每个
@@ -53723,6 +53724,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   `2026-08-16T07:00:30Z`；均以 UID/GID 65532 启动，backup/restore 主命令、restore verifier 与 runner 语法
   通过，内置 BR 精确报告 v7.5.1 commit `7d16cc79e81bbf573124df3fd9351c26963f3e70`。临时检查容器已清理。
   A4776 长发布门禁仍未通过，因此本轮只完成可追溯制品，不把专用 executor 部署到当前 Operation namespace。
+
+- A4779 关闭 A4367 的“PD 隔离后 Region merge 必须重新访问 PD”可用性缺口。生产提交 `6c62832c` 在
+  TiKV client fork 的 `RegionRequestSender` 中处理 merge source 消失时 TiKV 返回的空
+  `EpochNotMatch.CurrentRegions`：仅对固定 MVCC timestamp 的 `Get`、`BatchGet` 和正向 `Scan` 启用；从
+  当前 client 自己的 Region cache 取得紧邻 source 的前驱/后继，用候选 Region 自己的合法 start key 发起
+  一次只读 `Get` 元数据探针。探针数据响应无条件丢弃，代码不合并、不扩张也不伪造 key range；只有 TiKV
+  对候选旧 epoch 返回非空、权威 `CurrentRegions` 并由原有 `OnRegionEpochNotMatch` 安装后，原始 key 才能
+  从 cache 重新定位。探针 sender 禁止递归，写命令、reverse scan、无 cached neighbor、无权威 metadata
+  均保持原 fail-closed 行为；cache-only `TryLocateEndKey` 明确不会回退到 PD。
+
+  既有真实门禁同时修正了证据污染：旧顺序先做 store replacement，再 merge，导致 follower 的 source
+  directory 已因仍开放的 address-discovery 缺口失效，merge 请求可能在抵达 TiKV 前就阻塞于 PD。新顺序
+  为 split → leader transfer → 单 store failover → 双 store quorum-loss/recovery → merge → store replacement，
+  分别证明两个边界。2026-08-16 disposable 三 PD/三 TiKV、双 KubeBrain 现场中，UID 65534 follower 被
+  iptables 隔离全部三个 PD client port 后，真实 `/pd-ctl operator add merge-region <right> <left>` 完成；
+  5 秒内跨原 split 边界的 authenticated serializable Range 精确返回 `topology/a`、`topology/z` 两个旧值，
+  header revision 与隔离前 GC-protected checkpoint 完全相同。随后把 merged Region 的 peer 替换到 checkpoint
+  后才出现的 spare store 并转移 leader，隔离 follower 仍按设计 `DeadlineExceeded` 且无 response；恢复 PD
+  后同一进程完整恢复。测试本体 53.61 秒，backend 78.761 秒、storage/tikv 与 restore integration 回归通过；
+  disposable 容器、iptables chain 和临时目录均清理。当前边界因此是：已缓存相邻 Region 与已知 store peers
+  范围内的 merge 可由 TiKV 权威 metadata 自愈；store replacement/address change、cache 已丢失、全部 known
+  peers 不可达、checkpoint 过期或 safepoint 无法续租仍必须 fail closed。
 
 ### P2：运维兼容和长期验证
 
