@@ -313,12 +313,11 @@ func MaterializeReplayWithScratchDir(logs LogArtifactReceipt, logsSHA, root, scr
 		}
 		mutations = append(mutations, mutation)
 	}
-	encoded, err := json.Marshal(mutations)
+	mutationsDigest, err := digestReplayMutations(mutations)
 	if err != nil {
 		return ReplayManifest{}, nil, err
 	}
-	digest := sha256.Sum256(encoded)
-	manifest = ReplayManifest{Format: ReplayManifestFormat, LogArtifactReceiptSHA256: logsSHA, ArtifactManifestSHA256: logs.ManifestSHA256, Keyspace: logs.Keyspace, StartExclusiveTS: startExclusive, RestoreTS: restoreTS, MutationCount: len(mutations), TransactionCount: txns, PutCount: putCount, DeleteCount: deleteCount, MutationsSHA256: hex.EncodeToString(digest[:]), AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true}
+	manifest = ReplayManifest{Format: ReplayManifestFormat, LogArtifactReceiptSHA256: logsSHA, ArtifactManifestSHA256: logs.ManifestSHA256, Keyspace: logs.Keyspace, StartExclusiveTS: startExclusive, RestoreTS: restoreTS, MutationCount: len(mutations), TransactionCount: txns, PutCount: putCount, DeleteCount: deleteCount, MutationsSHA256: mutationsDigest, AllEntriesInTenantRange: true, AllPutsResolved: true, ExactLocalMirrorRechecked: true}
 	if len(mutations) != 0 {
 		manifest.FirstCommitTS, manifest.LastCommitTS = mutations[0].CommitTS, mutations[len(mutations)-1].CommitTS
 	}
@@ -354,12 +353,11 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 	if !sha256RE.MatchString(planSHA) {
 		return ReplayApplyResult{}, errors.New("invalid replay plan digest")
 	}
-	encoded, err := json.Marshal(mutations)
+	mutationsDigest, err := digestReplayMutations(mutations)
 	if err != nil {
 		return ReplayApplyResult{}, err
 	}
-	digest := sha256.Sum256(encoded)
-	if len(mutations) != manifest.MutationCount || hex.EncodeToString(digest[:]) != manifest.MutationsSHA256 {
+	if len(mutations) != manifest.MutationCount || mutationsDigest != manifest.MutationsSHA256 {
 		return ReplayApplyResult{}, errors.New("replay mutations do not match manifest")
 	}
 	if err := validateReplayMutations(manifest, mutations); err != nil {
@@ -432,6 +430,54 @@ func ApplyReplay(ctx context.Context, target storage.KvStorage, planSHA string, 
 		offset = end
 	}
 	return result, nil
+}
+
+func digestReplayMutations(mutations []ReplayMutation) (string, error) {
+	digest := sha256.New()
+	if err := writeReplayMutationsJSON(digest, mutations); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func writeReplayMutationsJSON(output io.Writer, mutations []ReplayMutation) error {
+	if mutations == nil {
+		return writeReplayJSONString(output, "null")
+	}
+	if err := writeReplayJSONString(output, "["); err != nil {
+		return err
+	}
+	for i, mutation := range mutations {
+		if i != 0 {
+			if err := writeReplayJSONString(output, ","); err != nil {
+				return err
+			}
+		}
+		encoded, err := json.Marshal(mutation)
+		if err != nil {
+			return err
+		}
+		if err := writeReplayJSONBytes(output, encoded); err != nil {
+			return err
+		}
+	}
+	return writeReplayJSONString(output, "]")
+}
+
+func writeReplayJSONString(output io.Writer, value string) error {
+	written, err := io.WriteString(output, value)
+	if err == nil && written != len(value) {
+		return io.ErrShortWrite
+	}
+	return err
+}
+
+func writeReplayJSONBytes(output io.Writer, value []byte) error {
+	written, err := output.Write(value)
+	if err == nil && written != len(value) {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 func validateReplayMutations(manifest ReplayManifest, mutations []ReplayMutation) error {

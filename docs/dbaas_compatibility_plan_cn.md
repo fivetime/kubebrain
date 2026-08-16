@@ -54884,6 +54884,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   （4.228/1.454 秒）、backup 全树 race、vet、diff check 通过。最终有序 mutations 及窗口内被引用的 long values 仍必须驻留到 manifest digest
   和 ApplyReplay，故总内存现为 O(relevant replay output)，后续若要支持超大恢复窗口仍需 disk-backed mutation plan/stream apply。
 
+- A4895 继续压低 A4894 后 relevant replay output 的瞬时倍增。`MaterializeReplay` 生成 manifest、`ApplyReplay` 校验
+  checkpoint 前原先都执行 `json.Marshal(mutations)`；对含大量 long value 的窗口，这会在 `[]ReplayMutation` 之外各再分配一份
+  O(canonical JSON bytes) buffer。新增 `writeReplayMutationsJSON` 按 `[`、逐 mutation `json.Marshal`、`,`、`]` 直接写入
+  SHA-256，严格保留 nil slice=`null`、empty slice=`[]` 和既有 struct/base64/omitempty 字节合同；两处摘要调用统一使用该流式
+  helper，短写显式返回 `io.ErrShortWrite`，不产生错误 digest。
+
+  等价回归逐字节/逐摘要对比原 `json.Marshal` 的 nil、empty、PUT、DELETE、empty value，并以 4096-entry writer 拒绝大块 Write
+  证明不会输出完整 plan buffer；专项 race 连续 10 轮（4.210 秒）、nativepitr 全包 race（4.617 秒）、vet 与 diff check 通过。
+  现在摘要阶段额外内存为 O(max encoded mutation)，但有序 `writes`、最终 mutations 和 ApplyReplay 输入仍是 O(relevant output)；
+  真正超大窗口仍需持久 canonical mutation plan 与按 source transaction 流式 apply，不能仅凭本项放宽 executor memory gate。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

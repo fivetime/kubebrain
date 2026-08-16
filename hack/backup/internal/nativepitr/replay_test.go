@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -55,6 +56,69 @@ type boundedReadRequest struct {
 	reader      io.Reader
 	max         int
 	maxObserved int
+}
+
+type boundedWriteRequest struct {
+	bytes.Buffer
+	max         int
+	maxObserved int
+}
+
+func (w *boundedWriteRequest) Write(data []byte) (int, error) {
+	if len(data) > w.max {
+		return 0, errors.New("writer received the complete mutation plan")
+	}
+	if len(data) > w.maxObserved {
+		w.maxObserved = len(data)
+	}
+	return w.Buffer.Write(data)
+}
+
+type shortReplayWriter struct{}
+
+func (shortReplayWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	return len(data) - 1, nil
+}
+
+func TestReplayMutationStreamingJSONMatchesMarshalExactly(t *testing.T) {
+	cases := [][]ReplayMutation{
+		nil,
+		{},
+		{{CommitTS: 1, Key: []byte("key"), Value: []byte("value")}},
+		{{CommitTS: 2, Key: []byte{0, 0xff}, Delete: true}, {CommitTS: 3, Key: []byte("empty"), Value: []byte{}}},
+	}
+	for _, mutations := range cases {
+		expected, err := json.Marshal(mutations)
+		require.NoError(t, err)
+		var output bytes.Buffer
+		require.NoError(t, writeReplayMutationsJSON(&output, mutations))
+		require.Equal(t, expected, output.Bytes())
+		digest := sha256.Sum256(expected)
+		got, err := digestReplayMutations(mutations)
+		require.NoError(t, err)
+		require.Equal(t, hex.EncodeToString(digest[:]), got)
+	}
+}
+
+func TestReplayMutationJSONDoesNotMaterializeCompletePlan(t *testing.T) {
+	mutations := make([]ReplayMutation, 4096)
+	for i := range mutations {
+		mutations[i] = ReplayMutation{CommitTS: uint64(i + 1), Key: []byte("key"), Value: bytes.Repeat([]byte{'v'}, 128)}
+	}
+	output := &boundedWriteRequest{max: 512}
+
+	require.NoError(t, writeReplayMutationsJSON(output, mutations))
+	require.LessOrEqual(t, output.maxObserved, 512)
+	expected, err := json.Marshal(mutations)
+	require.NoError(t, err)
+	require.Equal(t, expected, output.Bytes())
+}
+
+func TestReplayMutationJSONPropagatesShortWrite(t *testing.T) {
+	require.ErrorIs(t, writeReplayMutationsJSON(shortReplayWriter{}, []ReplayMutation{}), io.ErrShortWrite)
 }
 
 func (r *boundedReadRequest) Read(data []byte) (int, error) {
