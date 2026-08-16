@@ -54203,6 +54203,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   HTTP/1、h2c、TLS 双栈 Endpoint 定向、race（0.327/1.434 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776
   未滚动，真实慢 header、代理背压与 Slowloris 资源曲线仍留待正式新镜像网络门禁。
 
+- A4819 继续按 upstream etcd `8e4dd0679` 收敛 TLS listener worker 生命周期。A4817 已并发化握手并主动关闭
+  pending socket，但 `Close` 没有等待 accept loop 与 handshake goroutine 终止；Endpoint 可能在 worker 尚处理
+  deadline、日志或 identity cleanup 时报告 shutdown 完成。生产 listener 现在从启动前登记 accept worker、在每次
+  发布 handshake goroutine 前登记 worker，并在关闭底层 listener及全部 active socket 后 `Wait` 到 worker 归零；
+  关闭与最后一次 Accept/Add 通过同一 active mutex 排序，避免 WaitGroup Add/Wait 竞态。
+
+  普通 `pkg/endpoint` 全套（16.876 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，256 个
+  pending handshake 同时 shutdown 的真实退出时延与 fd 归零仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
