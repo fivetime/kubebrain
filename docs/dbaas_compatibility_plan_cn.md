@@ -53503,6 +53503,31 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   为 0，PD/TiKV 3+3 与主/JWT 六副本均 Ready、零重启，AlarmList/LeaseList 为空，无 A4766 firewall
   规则，proposal health 13.278ms。
 
+- A4767 修复构造期 lease recovery 对独立 PD/TiKV 的无界等待。对照固定 upstream
+  `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的 lessor recovery：upstream 在启动期同步读取
+  本地 bbolt；KubeBrain 的 `restoreLeases` 则先向 PD 取 follower snapshot TSO，再扫描 TiKV 中 lease meta
+  与 attachment。`New` 此前传入 `context.Background()`，网络黑洞不会走已有“记录错误后继续启动”分支，
+  而是永久卡在构造器，进程无法进入 serving/shutdown 生命周期。
+
+  生产提交 `f17975bc` 新增 `restoreLeasesAtStartup`，把这段远端恢复限制在现有 10 秒 server attempt
+  budget 内。恢复失败还会关闭 `leaseReady` gate，不能把空或部分内存快照误报为可服务；生产领导权流程仍在
+  NOT_SERVING 状态下重试权威 `ReloadLeases`，只有完整 durable snapshot 安装后才重新开放。最小回归让 PD
+  snapshot backend 阻塞到 context cancellation，25ms deadline 后必须返回、gate 必须关闭；原有 constructor
+  restore、领导权 reload 与 reload-in-progress unavailable 契约同时通过。定向测试、race、两包 vet 和完整
+  `pkg/server/etcd` 196.318 秒通过。
+
+  最终镜像 `kubebrain:a4767-f17975bc` 内嵌完整 SHA
+  `f17975bc6af9b646a32ca868bd36193195f8709e`、build time `2026-08-16T05:15:59Z`，本地 image ID
+  `sha256:c6800bd8ed7b51665f2fbe993695b500c257e072a5280f75a54984711e7b6283`，Kind runtime imageID
+  `sha256:045d24814a5da620cca2880685c426f4ed237c8359e254ab15ee2554efdaea9d`。主/JWT 六副本先正常滚动为
+  Ready、零重启。首次只隔离 PD 的重建门禁命中更早的 TiKV client cluster-ID 初始化，未命中本修复，明确不算
+  lease recovery 证据；清理后改用 `KBA4767T` 精确 DROP Pod 网段到三 TiKV 的 20160、保持 PD 可达并重建
+  `kubebrain-2`。日志调用栈精确经过 `InternalRange → loadLeaseRecords → restoreLeases →
+  restoreLeasesAtStartup → New`，约 10 秒后 `server.go:279` 记录 `restore leases failed`；故障时 Pod 为
+  Running/NotReady、零重启，证明进程没有永久卡死也没有 fail-open。删除规则后同一 Pod 恢复 Ready。
+  终态两条临时 chain/jump 与规则均清除，PD/TiKV 3+3、主/JWT 六副本全部 Ready、零重启，
+  AlarmList/LeaseList 为空，proposal health 17.416ms。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
