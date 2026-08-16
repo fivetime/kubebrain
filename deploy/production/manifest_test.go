@@ -1911,6 +1911,13 @@ func TestTiKVTransactionRepairRBACCoversReadOnlyStorageFence(t *testing.T) {
 
 func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 	objects := decodeManifest(t, "monitoring.yaml")
+	monitor := objectByKindAndName(t, objects, "ServiceMonitor", "kubebrain")
+	endpoints, found, err := unstructured.NestedSlice(monitor.Object, "spec", "endpoints")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, []any{map[string]any{
+		"action": "replace", "sourceLabels": []any{"__meta_kubernetes_pod_uid"}, "targetLabel": "uid",
+	}}, endpoints[0].(map[string]any)["relabelings"])
 	rule := objectByKindAndName(t, objects, "PrometheusRule", "kubebrain")
 	groups, found, err := unstructured.NestedSlice(rule.Object, "spec", "groups")
 	require.NoError(t, err)
@@ -1974,7 +1981,7 @@ func TestProductionMonitoringTracksStatefulSetReadiness(t *testing.T) {
 
 	checkpointRule := prometheusRuleByAlert(t, groups, "KubeBrainSerializableCheckpointUnavailable")
 	require.Equal(t,
-		`count(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) != 3 or count(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod) group_left() (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) < 60 or max((time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) and on(namespace, pod) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) > 60 or max((time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) and on(namespace, pod) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1)) > 60`,
+		`count(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != 3 or count(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) != 3 or min(serializable_checkpoint_available{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) < 1 or min(serializable_checkpoint_revision{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) <= 0 or min(serializable_checkpoint_remaining_seconds{namespace="kubebrain-system"} * on(namespace, pod, uid) group_left() (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) < 60 or max((time() - timestamp(serializable_checkpoint_available{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60 or max((time() - timestamp(serializable_checkpoint_revision{namespace="kubebrain-system"})) and on(namespace, pod, uid) (max by (namespace, pod, uid) (kube_pod_status_ready{namespace="kubebrain-system",condition="true"} == 1))) > 60`,
 		checkpointRule["expr"])
 	require.Equal(t, "30s", checkpointRule["for"])
 	require.Equal(t, "warning", checkpointRule["labels"].(map[string]any)["severity"])
