@@ -53061,6 +53061,43 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   15.898ms；主/JWT 六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。
   三个端口转发、临时 raw gRPC 源码和二进制均已清除。
 
+- A4746/A4747 将 A4745 的宽松 TTL=120、多流证明收紧为真实短租约单流故障契约，并连续关闭两层生产
+  缺陷。先以显式 lease `0x47460001`、TTL=3 和绑定键 `/a4746/ttl3-bound` 建立 32 条 follower raw
+  gRPC KeepAlive 流，每 250ms 续租并删除 leader；A4745 镜像得到
+  `responses=1832,min_ttl=3,ttl_zero=0` 且所有错误为 0。该高频并发会掩盖单客户端恢复延迟，因此没有据此
+  宣称短租约完成；改成与官方 client 节奏相当的单流、每秒一次续租后，同一 leader deletion 仅成功 6 次，
+  public stream 随后返回 `DeadlineExceeded`。调用方 20 秒预算尚未结束时内部 5 秒 forward deadline 已先
+  终止流，绑定键虽仍存在，但 follower 已消费的 keepalive request 没有得到 response，形成真实 RED。
+
+  生产提交 `41bccada` 把 parent stream 仍存活时的内部 per-message forward deadline 从
+  `ErrGRPCTimeout` 改为 `ErrGRPCLeaderChanged`，使 A4745 已有的 message-preserving `Unavailable` loop
+  重发该 request；调用方自身 cancellation/deadline 仍原样保留。只修改生产 mapper 和三处已有边界断言，
+  聚焦 0.161 秒、proxy 全包 3.035 秒、完整 `pkg/server/etcd` 及两包 vet 通过。候选镜像
+  `kubebrain:a4746-41bccada` 的真实 30 秒重放仍只有 6 次响应，最终才随 caller budget 返回 deadline；
+  因而该镜像明确作废，没有把“延迟了错误”包装成 GREEN。
+
+  A4746 日志证明固定 ingress follower 在故障中自己成为 successor leader。已消费消息仍被旧
+  `forwardRequest` 循环持有，并持续尝试代理给自己；即使本地 lease snapshot 已 Ready，也不会重新进入本地
+  renew 路径。生产提交 `65db2922` 为每条已消费消息增加 route loop：peer forward 收到 `Unavailable` 后若
+  ingress 已是 fresh leader，就退出旧代理循环，重新取得当前 epoch/auth/ready 状态并在本地处理同一消息；
+  successor 是其他 Pod 时仍保持既有 peer retry。新增一条与现场同型的确定性回归，要求仅发生一次失败
+  forward，随后同消息在新 leader 本地续租并发送 response；LeaseKeepAlive 聚焦、完整 server 包及 vet 再次
+  通过。
+
+  最终镜像 `kubebrain:a4747-65db2922` 内嵌完整 SHA
+  `65db29220156a5e894994e3c6a41899c62f46215`、build time `2026-08-16T01:19:40Z`，本地 OCI index
+  为 `sha256:87b441e3bf1e8cbf1b5e3ddfff744b997b7fe5cd84e04ed72e1a1210c6d2f108`，Kind runtime
+  imageID 为 `sha256:2aaf5e35504b879d81acec7ea056a721fc65678dcbc19d49987b9b704ac80d09`。完全相同的
+  单流 TTL=3、1 秒间隔、30 秒预算场景最终得到
+  `responses=29,min_ttl=3,ttl_zero=0,canceled=0,unavailable=0,deadline=0,eof=0,cleanup=1,other=0`，
+  绑定键在预算结束时仍存在。切主后公开 TTL 一度高于 granted TTL 是 upstream
+  `/root/etcd/server/lease/lessor.go::Promote(electionTimeout)` 的选主窗口补偿，已由 A363/A4242/A450
+  固定，不误报为本轮缺陷。
+
+  fixture 随 TTL 自然过期，最终前缀 Count=0、LeaseList/AlarmList 为空、proposal health 12.256ms；主/JWT
+  六副本使用最终 runtime imageID 且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。九个跨候选重放的
+  port-forward、临时探针源码和二进制均已清除。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
