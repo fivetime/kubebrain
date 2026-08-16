@@ -54082,6 +54082,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   native full-backup race（1.456 秒）、nativepitr/restorereceipt 回归及相关 vet 通过；本轮没有修改测试文件。
   在线 A4776 未滚动，真实掉电/writeback fault 下 receipt 目录项持久性仍留待正式 executor 镜像故障门禁。
 
+- A4806 统一 logical backup artifact 与 official etcd snapshot adapter 的原子发布目录事务。两者都已 fsync
+  内容并 hard-link 最终名，也会 fsync 父目录，但临时 hardlink 仅由函数返回时的 deferred Remove 删除；目录
+  fsync 发生在删除之前，节点掉电后隐藏临时名可能重新出现，留下包含完整 keyspace/lease/auth 状态的额外命名
+  副本。生产顺序现在与 A4805 一致：Link 最终名后立即 Remove 临时名，再 Sync/Close 父目录，使“最终名存在且
+  临时名不存在”作为同一 durable directory transaction 固化。Remove 失败会返回明确错误，既有 defer 只承担
+  earlier-failure best-effort rollback。
+
+  backupfile/etcdsnapshot adapter race（1.106 秒、1.300 秒）、logical-export、cold-restore-render 回归及相关 vet
+  通过；本轮没有修改测试文件。在线 A4776 未滚动，真实掉电后目录扫描无隐藏 artifact 的证据留待正式 backup
+  executor 故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
