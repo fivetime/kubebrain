@@ -53935,6 +53935,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   相关 server Txn/Snapshot/Restore 41.097 秒及 storage/backend/server vet 均通过。在线仍是 A4776，真实大
   transaction 与 PD/TiKV 黑洞重叠的 lock-release 时延留待正式新镜像门禁验证。
 
+- A4794 修复正常关停后旧 KubeBrain 进程继续依赖 TTL 钉住 TiKV MVCC 历史的资源生命周期缺口。每个进程的
+  serializable checkpoint 使用随机唯一 PD service safepoint；此前 worker 停止和 TiKV client 关闭之间没有
+  调用 `ReleaseSnapshot`，因此一次正常滚动也会让旧 safepoint 最多继续存活 5 分钟，频繁 replacement 会扩大
+  RocksDB 历史版本保留与空间压力。生产关闭路径现在先让本地 checkpoint 不再可见，再在存储 client 仍存活时
+  用既有 1 秒 unary budget best-effort 删除本进程确实注册过的 service safepoint；从未成功发布 checkpoint 的
+  进程不额外访问 PD。PD 已隔离时释放失败只记录 `serializable.checkpoint.release_err` 并继续关闭，有限 TTL 仍是
+  最终回收保证，因而不会把资源清理升级为无限关停依赖。
+
+  backend 全量与 race 全量（123.244 秒）、storage/backend/server vet 通过；本轮只修改生产代码和兼容性记录，
+  未修改测试文件。该项不解决 A4786 记录的“PD 隔离后 Pod replacement 恢复离线 checkpoint”缺口：后者仍需要
+  不可变 storage cluster identity、可恢复 safepoint ownership、持久路由目录及 PVC 生命周期协议。在线 A4776
+  未滚动，真实 PD service safepoint 在正常 rollout 后立即消失的现场证据留待正式新镜像发布门禁验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
