@@ -31,7 +31,7 @@ Raft、bbolt 和成员管理内部实现，而是对通用 etcd v3 客户端提�
 
 | 服务 | 能力 | 当前状态 | DBaaS 处理 |
 | --- | --- | --- | --- |
-| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer、单 store 故障、Region merge，以及 `$`/NUL 边界的 revision-index/object 两阶段 batch；PD 健康期间每 30 秒主动重扫并预热 Region/store directory；隔离后 merge source 消失时，client fork 仅用相邻 cached Region 向 TiKV 探测，并且只接受非空 `EpochNotMatch.CurrentRegions` 权威元数据，不推断 Region 边界；store replacement/address change 等需要新 store directory 的变化继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
+| KV | Range/Put/DeleteRange | 兼容核心语义 | 排序、过滤、历史读、大范围删除原子性、生产范围上限、revision filter 负值/极值/倒置边界、非 KEY/NONE/Limit 候选窗口及 KeysOnly+CountOnly 优先级差分已补齐；正常 PD quorum 下无已知语义差异；PD 隔离前已发布且受 GC safepoint 保护的 serializable checkpoint 可在 150 秒本地安全窗内为 Range、read-only Txn 与 RangeStream 提供固定 revision/TSO 快照，已验证 cold cache、split、已知 peer leader transfer、单 store 故障、Region merge、检查点已预注册 Up Store 的 peer replacement，以及 `$`/NUL 边界的 revision-index/object 两阶段 batch；PD 健康期间每 30 秒主动重扫并预热 Region/store directory；隔离后 merge/replacement 只沿 cached peer 和 TiKV `RegionNotFound`/`NotLeader` hint 恢复，并且只接受非空 `EpochNotMatch.CurrentRegions` 权威元数据，不推断 Region 边界或最终 peer 集；检查点后才出现的新 Store、同 ID address change、cache 丢失或无权威元数据继续 fail closed，超出安全窗或无法续租也不伪造本地可用性 |
 | KV | Txn | 兼容核心语义 | 缺失键 guard、范围 phantom guard、嵌套分支、staged 单 revision、写前错误验证及 caller deadline 贯穿后端冲突重试已完成；read-only serializable Txn 复用上述单一 checkpoint；当前无已知数据语义差异，继续扩大生成式嵌套矩阵与多点故障 soak |
 | KV | Compact | 兼容核心语义 | logical/physical、错误、异步 GC 与请求取消后的后台续扫已对齐；继续长时间故障 soak |
 | KV | RangeStream | 兼容核心语义 | etcd 3.7 支持的 CountOnly/Limit/KeysOnly/默认排序已对齐；自定义排序与 revision filter 同 etcd 明确 Unimplemented |
@@ -53746,6 +53746,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   disposable 容器、iptables chain 和临时目录均清理。当前边界因此是：已缓存相邻 Region 与已知 store peers
   范围内的 merge 可由 TiKV 权威 metadata 自愈；store replacement/address change、cache 已丢失、全部 known
   peers 不可达、checkpoint 过期或 safepoint 无法续租仍必须 fail closed。
+
+- A4780 关闭 A4779 后仍开放的“PD 隔离期间 Region peer 被替换到已预注册 Store”缺口。生产提交
+  `e641e7f9` 在每轮 checkpoint Region warmup 前通过权威 PD `GetAllStores` 获取全部 Up Store，并把地址、
+  peer/status address、类型和 labels 注入每个独立 TiKV transaction client 的 RegionCache；已有 resolved
+  Store 不被覆盖，因此同 ID address change 仍走原 re-resolve/PD 路径。checkpoint 同时新增
+  `serializable_checkpoint_revision` gauge，失效时归零，使发布门禁和运维方能证明检查点已覆盖隔离前写入，
+  不再依赖固定 sleep 或预读用户 key 污染 cache。
+
+  replacement 发生后，已删除旧 peer 可能先返回 `RegionNotFound`，现存 cached follower 再返回携带新 leader
+  peer 的 `NotLeader`。client fork 仅对固定 MVCC timestamp 的 `Get`、`BatchGet` 和正向 `Scan` 尝试下一个
+  cached peer，并且只有新 leader 的 Store 已由上述目录预解析时才发一次临时定向请求；该 hint 不写入
+  RegionCache、不改变 range，也不合成最终 peers。只有 TiKV 随后返回非空 `EpochNotMatch.CurrentRegions`，
+  原有 cache 才安装完整权威拓扑。写请求、reverse scan、检查点后新 Store、未解析/非 TiKV Store 和 address
+  change 均继续 fail closed。
+
+  2026-08-16 disposable 三 PD/三 TiKV、双 KubeBrain 现场先暂停 PD schedulers，注册第四个 spare Store 并
+  设置 add-peer 限速后恢复 scheduler，明确证明 checkpoint 时 spare 没有 source Region peer；随后把 UID
+  65534 follower 隔离全部三个 PD client port，依次通过 split、leader transfer、单 Store failover、双 Store
+  quorum-loss/recovery 和 merge，再删除一个原 peer、由 PD 把 merged Region 补到 spare 并转移 leader。
+  隔离 follower 在 30 秒有界窗口内精确返回 `topology/z=before-split-z`，header revision 与隔离前 checkpoint
+  完全相同；完整测试 56.81 秒通过。fork locate、storage/tikv、backend（80.091 秒）、server/etcd
+  （185.801 秒）及 integration 编译回归通过；disposable 容器、iptables chain 和临时目录全部清理。
 
 ### P2：运维兼容和长期验证
 

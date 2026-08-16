@@ -39,7 +39,7 @@ func TestDBaaSCompatibilityMatrixDescribesBoundedPDIsolationReads(t *testing.T) 
 	require.Contains(t, plan, "受 GC safepoint 保护的 serializable checkpoint")
 	require.Contains(t, plan, "Range、read-only Txn 与 RangeStream")
 	require.Contains(t, plan, "只接受非空 `EpochNotMatch.CurrentRegions` 权威元数据")
-	require.Contains(t, plan, "store replacement/address change 等需要新 store directory 的变化继续 fail closed")
+	require.Contains(t, plan, "检查点后才出现的新 Store、同 ID address change、cache 丢失或无权威元数据继续 fail closed")
 	require.NotContains(t, plan, "serializable Range 不具备 upstream 本地 applied backend 的隔离成员可读性")
 }
 
