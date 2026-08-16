@@ -26,6 +26,7 @@ import (
 	"github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/txnkv/transaction"
 	"github.com/tikv/client-go/v2/util"
+	"go.uber.org/multierr"
 )
 
 // Client is a txn client.
@@ -62,7 +63,7 @@ func NewClient(pdAddrs []string, opts ...ClientOpt) (*Client, error) {
 
 // NewClientWithContext binds PD discovery and cluster identity initialization
 // to the caller's lifecycle instead of using process-global TODO contexts.
-func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientOpt) (*Client, error) {
+func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientOpt) (client *Client, retErr error) {
 	// Apply options.
 	opt := &option{}
 	for _, o := range opts {
@@ -113,7 +114,7 @@ func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientO
 	spkvOwned := true
 	defer func() {
 		if spkvOwned {
-			_ = spkv.Close()
+			retErr = multierr.Append(retErr, spkv.Close())
 		}
 	}()
 
@@ -121,7 +122,7 @@ func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientO
 	rpcClientOwned := true
 	defer func() {
 		if rpcClientOwned {
-			_ = rpcClient.Close()
+			retErr = multierr.Append(retErr, rpcClient.Close())
 		}
 	}()
 
