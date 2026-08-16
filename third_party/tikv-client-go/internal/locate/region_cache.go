@@ -536,9 +536,9 @@ func (c *RegionCache) checkAndResolve(needCheckStores []*Store, needCheck func(*
 
 // SeedStores installs authoritative PD store metadata without loading any
 // Region. It is used by callers that must make a known store directory
-// available before PD becomes unreachable. Existing resolved entries are not
-// overwritten: address changes require the normal re-resolve path so Region
-// store pointers and epochs remain coherent.
+// available before PD becomes unreachable. Address or label changes replace
+// the Store object and mark the old object deleted, matching reResolve so
+// Region store pointers switch atomically on their next access.
 func (c *RegionCache) SeedStores(stores []*metapb.Store) error {
 	for _, meta := range stores {
 		if meta == nil || meta.GetState() != metapb.StoreState_Up {
@@ -548,35 +548,74 @@ func (c *RegionCache) SeedStores(stores []*metapb.Store) error {
 			return errors.Errorf("invalid store metadata: id=%d address=%q", meta.GetId(), meta.GetAddress())
 		}
 
-		c.storeMu.Lock()
-		store, exists := c.storeMu.stores[meta.GetId()]
-		if !exists {
-			c.storeMu.stores[meta.GetId()] = &Store{
-				storeID:   meta.GetId(),
-				addr:      meta.GetAddress(),
-				peerAddr:  meta.GetPeerAddress(),
-				saddr:     meta.GetStatusAddress(),
-				storeType: tikvrpc.GetStoreTypeByMeta(meta),
-				labels:    meta.GetLabels(),
-				state:     uint64(resolved),
+		for {
+			c.storeMu.Lock()
+			store, exists := c.storeMu.stores[meta.GetId()]
+			if !exists {
+				c.storeMu.stores[meta.GetId()] = newResolvedStore(meta)
+				c.storeMu.Unlock()
+				break
 			}
 			c.storeMu.Unlock()
-			continue
-		}
-		c.storeMu.Unlock()
 
-		store.resolveMutex.Lock()
-		if store.getResolveState() == unresolved {
-			store.addr = meta.GetAddress()
-			store.peerAddr = meta.GetPeerAddress()
-			store.saddr = meta.GetStatusAddress()
-			store.storeType = tikvrpc.GetStoreTypeByMeta(meta)
-			store.labels = meta.GetLabels()
-			store.changeResolveStateTo(unresolved, resolved)
+			store.resolveMutex.Lock()
+			c.storeMu.RLock()
+			current := c.storeMu.stores[meta.GetId()]
+			c.storeMu.RUnlock()
+			if current != store {
+				store.resolveMutex.Unlock()
+				continue
+			}
+
+			switch store.getResolveState() {
+			case unresolved:
+				store.addr = meta.GetAddress()
+				store.peerAddr = meta.GetPeerAddress()
+				store.saddr = meta.GetStatusAddress()
+				store.storeType = tikvrpc.GetStoreTypeByMeta(meta)
+				store.labels = meta.GetLabels()
+				store.changeResolveStateTo(unresolved, resolved)
+			case resolved, needCheck:
+				storeType := tikvrpc.GetStoreTypeByMeta(meta)
+				if store.addr != meta.GetAddress() || store.peerAddr != meta.GetPeerAddress() ||
+					store.saddr != meta.GetStatusAddress() || store.storeType != storeType ||
+					!store.IsSameLabels(meta.GetLabels()) {
+					newStore := newResolvedStore(meta)
+					if store.addr == newStore.addr {
+						newStore.slowScore = store.slowScore
+					}
+					c.storeMu.Lock()
+					if c.storeMu.stores[meta.GetId()] != store {
+						c.storeMu.Unlock()
+						store.resolveMutex.Unlock()
+						continue
+					}
+					c.storeMu.stores[meta.GetId()] = newStore
+					c.storeMu.Unlock()
+					store.setResolveState(deleted)
+				}
+			case tombstone, deleted:
+				state := store.getResolveState()
+				store.resolveMutex.Unlock()
+				return errors.Errorf("cannot seed store %d in resolve state %d", meta.GetId(), state)
+			}
+			store.resolveMutex.Unlock()
+			break
 		}
-		store.resolveMutex.Unlock()
 	}
 	return nil
+}
+
+func newResolvedStore(meta *metapb.Store) *Store {
+	return &Store{
+		storeID:   meta.GetId(),
+		addr:      meta.GetAddress(),
+		peerAddr:  meta.GetPeerAddress(),
+		saddr:     meta.GetStatusAddress(),
+		storeType: tikvrpc.GetStoreTypeByMeta(meta),
+		labels:    meta.GetLabels(),
+		state:     uint64(resolved),
+	}
 }
 
 // SetRegionCacheStore is used to set a store in region cache, for testing only
@@ -2448,6 +2487,8 @@ func isStoreNotFoundError(err error) bool {
 // reResolve try to resolve addr for store that need check. Returns false if the region is in tombstone state or is
 // deleted.
 func (s *Store) reResolve(c *RegionCache) (bool, error) {
+	s.resolveMutex.Lock()
+	defer s.resolveMutex.Unlock()
 	var addr string
 	store, err := c.pdClient.GetStore(context.Background(), s.storeID)
 	if err != nil {

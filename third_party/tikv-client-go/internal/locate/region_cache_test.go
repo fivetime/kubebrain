@@ -290,6 +290,42 @@ func (s *testRegionCacheSuite) TestResolveStateTransition() {
 	s.cluster.AddStore(storeMeta.GetId(), storeMeta.GetAddress(), storeMeta.GetLabels()...)
 }
 
+func (s *testRegionCacheSuite) TestSeedStoresReplacesResolvedAddress() {
+	loc, err := s.cache.LocateKey(s.bo, []byte("seed-address-change"))
+	s.NoError(err)
+	before, err := s.cache.GetTiKVRPCContext(s.bo, loc.Region, kv.ReplicaReadLeader, 0)
+	s.NoError(err)
+	s.NotNil(before)
+	oldStore := before.Store
+	s.Equal(s.store1, oldStore.storeID)
+
+	const replacementAddress = "127.0.0.1:29999"
+	s.NoError(s.cache.SeedStores([]*metapb.Store{{
+		Id:      s.store1,
+		Address: replacementAddress,
+		State:   metapb.StoreState_Up,
+	}}))
+	s.Equal(deleted, oldStore.getResolveState())
+
+	s.cache.storeMu.RLock()
+	newStore := s.cache.storeMu.stores[s.store1]
+	s.cache.storeMu.RUnlock()
+	s.NotSame(oldStore, newStore)
+	s.Equal(resolved, newStore.getResolveState())
+	s.Equal(replacementAddress, newStore.addr)
+
+	after, err := s.cache.GetTiKVRPCContext(s.bo, loc.Region, kv.ReplicaReadLeader, 0)
+	s.NoError(err)
+	s.NotNil(after)
+	s.Equal(replacementAddress, after.Addr)
+
+	settled, err := s.cache.GetTiKVRPCContext(s.bo, loc.Region, kv.ReplicaReadLeader, 0)
+	s.NoError(err)
+	s.NotNil(settled)
+	s.Same(newStore, settled.Store)
+	s.Equal(replacementAddress, settled.Addr)
+}
+
 // TestFilterDownPeersOrPeersOnTombstoneOrDroppedStore verifies the RegionCache filter
 // region's down peers and peers on tombstone or dropped stores. RegionCache shouldn't
 // report errors in such cases if there are available peers.

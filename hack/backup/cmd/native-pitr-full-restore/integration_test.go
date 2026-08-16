@@ -1207,9 +1207,10 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 		).CombinedOutput()
 		require.NoError(t, pauseErr, "pause PD scheduler %q while registering spare store: %s", scheduler, output)
 	}
+	spareDataDir := t.TempDir()
 	spareOutput, err := exec.CommandContext(
 		ctx, "docker", "run", "-d", "--name", spareTiKVContainer, "--network", "host",
-		"--tmpfs", "/data:rw,size=64g,mode=1777", "-v", tikvConfig+":/native-pitr-integration.toml:ro",
+		"-v", spareDataDir+":/data", "-v", tikvConfig+":/native-pitr-integration.toml:ro",
 		"pingcap/tikv:v7.5.1", "--config=/native-pitr-integration.toml", "--addr="+spareTiKVAddress,
 		"--advertise-addr="+spareTiKVAddress, "--status-addr="+spareTiKVStatus, "--pd="+targetPD,
 		"--data-dir=/data", "--log-file=",
@@ -1357,7 +1358,7 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 	require.NoError(t, err)
 	// Do not read the user key through the follower before isolation. Its only
 	// chance to cache the key's Region is checkpoint publication warmup.
-	require.Eventually(t, func() bool {
+	waitFollowerCheckpointRevision := func(minRevision int64) bool {
 		metrics, metricsErr := exec.CommandContext(
 			ctx, "curl", "-fsS", fmt.Sprintf("http://127.0.0.1:%d/metrics", followerInfoPort),
 		).Output()
@@ -1378,7 +1379,43 @@ func TestNativeKubeBrainFollowerPDNetworkIsolationRealCluster(t *testing.T) {
 			}
 		}
 		return false
+	}
+	require.Eventually(t, func() bool {
+		return waitFollowerCheckpointRevision(topologyPut.Header.Revision)
 	}, 30*time.Second, 250*time.Millisecond, "follower must publish a fully warmed checkpoint covering all pre-isolation writes")
+
+	migratedSpareAddress := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
+	migratedSpareStatus := fmt.Sprintf("127.0.0.1:%d", freeTCPPort(t))
+	stopSpareOutput, err := exec.CommandContext(ctx, "docker", "rm", "-f", spareTiKVContainer).CombinedOutput()
+	require.NoError(t, err, "stop spare TiKV before address migration: %s", stopSpareOutput)
+	migratedSpareOutput, err := exec.CommandContext(
+		ctx, "docker", "run", "-d", "--name", spareTiKVContainer, "--network", "host",
+		"-v", spareDataDir+":/data", "-v", tikvConfig+":/native-pitr-integration.toml:ro",
+		"pingcap/tikv:v7.5.1", "--config=/native-pitr-integration.toml", "--addr="+migratedSpareAddress,
+		"--advertise-addr="+migratedSpareAddress, "--status-addr="+migratedSpareStatus, "--pd="+targetPD,
+		"--data-dir=/data", "--log-file=",
+	).CombinedOutput()
+	require.NoError(t, err, "restart spare TiKV at migrated address: %s", migratedSpareOutput)
+	require.Eventually(t, func() bool {
+		_, curlErr := exec.CommandContext(ctx, "curl", "-fsS", "http://"+migratedSpareStatus+"/status").CombinedOutput()
+		return curlErr == nil
+	}, 60*time.Second, time.Second, "migrated spare TiKV status endpoint must become healthy")
+	migrationPDC, err := pd.NewClientWithContext(ctx, strings.Split(targetPD, ","), pd.SecurityOption{})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		store, storeErr := migrationPDC.GetStore(ctx, spareStoreID)
+		return storeErr == nil && store != nil && store.GetAddress() == migratedSpareAddress
+	}, 60*time.Second, 500*time.Millisecond, "PD must publish the same spare Store ID at its migrated address")
+	migrationPDC.Close()
+	// Region/store directory warmup is intentionally throttled to 30 seconds.
+	// Wait out that interval, then advance revision and require the follower to
+	// publish a checkpoint produced after the authoritative address change.
+	time.Sleep(31 * time.Second)
+	addressMarker, err := leaderClient.Put(ctx, "checkpoint-address-marker", "migrated")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return waitFollowerCheckpointRevision(addressMarker.Header.Revision)
+	}, 30*time.Second, 250*time.Millisecond, "follower checkpoint must cover the authoritative Store address migration")
 
 	pdClient, err := clientv3.New(clientv3.Config{Endpoints: strings.Split(targetPD, ","), DialTimeout: time.Second})
 	require.NoError(t, err)
