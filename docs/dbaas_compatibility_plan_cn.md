@@ -54587,6 +54587,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 pre-connect option、oversized receipt 与重复/带 scheme source PD endpoint 回归；source-capture race（1.477 秒）、
   vet 与 diff check 通过。真实 fence release+store close fault 的 capture receipt 收集仍留待正式源端 Job 门禁。
 
+- A4864 补齐 native PITR full/PITR semantic verifier 的最终资源终态。旧 execute 丢弃 full-keyspace verified witness Close
+  与目标 etcd client Close；plan/full/restore/replay/handoff 的双读稳定性 helper 以及 witness 流式摘要也忽略文件 Close，
+  可能把介质或 transport 收尾失败的数据签入最终 semantic receipt。execute/read/digest 现使用命名错误 Join Close；digest
+  在 Close 失败时清空返回值。receipt 仍可保留给 durable probe mutation 的故障对账，但 Job 非零，不能提升为完成证据。
+
+  既有 incomplete option、strict PD addresses 与 oversized stable input 回归覆盖新路径；semantic-verify race（1.461 秒）、
+  vet 与 diff check 通过。真实 probe成功叠加 client/frozen-copy close fault 仍留待正式验证 Job 门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

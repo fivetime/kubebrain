@@ -74,7 +74,7 @@ func configurePingCAPLogging() error {
 	return nil
 }
 
-func execute(parent context.Context, o options, out io.Writer, now func() time.Time) error {
+func execute(parent context.Context, o options, out io.Writer, now func() time.Time) (retErr error) {
 	if o.plan == "" || o.full == "" || o.restore == "" || o.witness == "" || o.pdAddrs == "" || o.timeout <= 0 {
 		return errors.New("plan, full-snapshot, full-restore, witness, target-pd-addrs, and positive timeout are required")
 	}
@@ -153,7 +153,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return fmt.Errorf("open semantic witness: %w", err)
 	}
-	defer verified.Close()
+	defer func() { retErr = errors.Join(retErr, verified.Close()) }()
 	openedWitnessSHA, err := fileDigest(o.witness)
 	if err != nil {
 		return err
@@ -183,7 +183,7 @@ func execute(parent context.Context, o options, out io.Writer, now func() time.T
 	if err != nil {
 		return err
 	}
-	defer cli.Close()
+	defer func() { retErr = errors.Join(retErr, cli.Close()) }()
 	observation, err := semanticverify.Verify(ctx, cli, verified, o.probePrefix)
 	if err != nil {
 		return err
@@ -265,13 +265,13 @@ func readStable(path string) ([]byte, error) {
 	}
 	return first, nil
 }
-func readBounded(path string) ([]byte, error) {
+func readBounded(path string) (b []byte, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxInputBytes+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, err = io.ReadAll(io.LimitReader(f, maxInputBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -290,12 +290,17 @@ func verifyStable(path string, expected []byte) error {
 	}
 	return nil
 }
-func fileDigest(path string) (string, error) {
+func fileDigest(path string) (digestValue string, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			digestValue = ""
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
