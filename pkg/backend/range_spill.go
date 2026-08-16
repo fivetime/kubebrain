@@ -359,8 +359,9 @@ func (w *keyRunWriter) Close() error {
 }
 
 type keyRunReader struct {
-	file   *os.File
-	buffer *bufio.Reader
+	file      *os.File
+	buffer    *bufio.Reader
+	remaining uint64
 }
 
 func openKeyRun(path string) (*keyRunReader, error) {
@@ -368,13 +369,25 @@ func openKeyRun(path string) (*keyRunReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &keyRunReader{file: file, buffer: bufio.NewReaderSize(file, 64<<10)}, nil
+	info, err := file.Stat()
+	if err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return &keyRunReader{file: file, buffer: bufio.NewReaderSize(file, 64<<10), remaining: uint64(info.Size())}, nil
 }
 
 func (r *keyRunReader) Next() ([]byte, error) {
-	size, err := binary.ReadUvarint(r.buffer)
+	counted := countingByteReader{reader: r.buffer}
+	size, err := binary.ReadUvarint(&counted)
 	if err != nil {
 		return nil, err
+	}
+	if counted.read > r.remaining {
+		return nil, errors.New("decoded range spill length prefix exceeds remaining run bytes")
+	}
+	r.remaining -= counted.read
+	if size > r.remaining {
+		return nil, fmt.Errorf("decoded range spill key length %d exceeds remaining run bytes %d", size, r.remaining)
 	}
 	if size > uint64(maxInt()) {
 		return nil, fmt.Errorf("decoded range spill key length %d overflows int", size)
@@ -383,7 +396,21 @@ func (r *keyRunReader) Next() ([]byte, error) {
 	if _, err = io.ReadFull(r.buffer, key); err != nil {
 		return nil, err
 	}
+	r.remaining -= size
 	return key, nil
+}
+
+type countingByteReader struct {
+	reader io.ByteReader
+	read   uint64
+}
+
+func (r *countingByteReader) ReadByte() (byte, error) {
+	value, err := r.reader.ReadByte()
+	if err == nil {
+		r.read++
+	}
+	return value, err
 }
 
 func (r *keyRunReader) Close() error { return r.file.Close() }

@@ -17,10 +17,12 @@ package backend
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -69,6 +71,36 @@ func TestExternalKeySorterMultiPassOrdersDeduplicatesAndSupportsLongKeys(t *test
 	require.NoError(t, sorter.Close())
 	_, err = os.Stat(directory)
 	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestExternalKeySorterBoundsRunRecordsWithoutCappingConfiguredKeySize(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	sorter, err := newExternalKeySorter()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sorter.Close()) })
+
+	largeKey := bytes.Repeat([]byte{'x'}, decodedRangeSpillRunBytes+1)
+	require.NoError(t, sorter.Add(largeKey))
+	largeRun, err := sorter.Finish(context.Background())
+	require.NoError(t, err)
+	largeReader, err := openKeyRun(largeRun)
+	require.NoError(t, err)
+	got, err := largeReader.Next()
+	require.NoError(t, err)
+	require.Equal(t, largeKey, got)
+	_, err = largeReader.Next()
+	require.ErrorIs(t, err, io.EOF)
+	require.NoError(t, largeReader.Close())
+
+	path := filepath.Join(sorter.dir, "malformed-run")
+	var prefix [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(prefix[:], uint64(decodedRangeSpillRunBytes+1))
+	require.NoError(t, os.WriteFile(path, prefix[:n], 0o600))
+	reader, err := openKeyRun(path)
+	require.NoError(t, err)
+	_, err = reader.Next()
+	require.ErrorContains(t, err, "exceeds remaining run bytes")
+	require.NoError(t, reader.Close())
 }
 
 func TestExternalKeySorterCancellationCleansPartialMerge(t *testing.T) {

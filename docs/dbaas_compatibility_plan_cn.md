@@ -54809,6 +54809,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   overflow 聚焦 race（1.627 秒）、backend vet 与 diff check 通过。真实 node ephemeral-storage unlink/close fault 仍需预生产
   故障注入，任何 cleanup error 都不得被当作完整 RangeStream。
 
+- A4888 加固 decoded RangeStream 私有 run 的损坏长度前缀。keyRunReader 旧实现只拒绝超过平台 `int` 的 uvarint，随后直接按
+  声明长度分配；临时介质截断或 bit corruption 可把小 run 的前缀改成巨大但未溢出的值，在 `ReadFull` 发现 EOF 前制造 OOM。
+  reader 现在打开时固定 regular file size，用计数字节 reader 精确扣除 uvarint prefix，并在分配前要求 key length 不超过 run
+  剩余物理字节；截断继续返回 I/O error。没有把 1.5 MiB page budget 错当作 key 上限，因此自定义 `max-request-bytes` 创建的
+  大 key 仍可被外排、排序和读取，保持通用 etcd 配置兼容。
+
+  新增超过默认 spill page 的合法 key 完整写入/复读与“仅有超长 uvarint、无 payload”恶意 run 回归，后者必须在分配前拒绝；
+  新用例 race 连续 10 轮（1.713 秒）、完整 backend race、vet 与 diff check 通过。spill 目录为 0700 且文件为 0600；同 UID 主动篡改仍属于
+  节点进程隔离边界，但不得把偶发介质损坏放大为无界内存分配。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
