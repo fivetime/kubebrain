@@ -723,6 +723,14 @@ func (b *backend) stopWorkers() {
 func (b *backend) Close() error {
 	b.closeOnce.Do(func() {
 		b.stopWorkers()
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), unaryRpcTimeout)
+		if err := b.releaseSerializableCheckpoint(releaseCtx); err != nil {
+			if b.metricCli != nil {
+				b.metricCli.EmitCounter("serializable.checkpoint.release_err", 1)
+			}
+			klog.ErrorS(err, "release serializable checkpoint safepoint failed; waiting for TTL expiry")
+		}
+		releaseCancel()
 		b.closeErr = b.kv.Close()
 	})
 	return b.closeErr

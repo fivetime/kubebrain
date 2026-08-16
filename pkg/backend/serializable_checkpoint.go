@@ -337,6 +337,22 @@ func (b *backend) GetSerializableCheckpoint() (SerializableCheckpoint, error) {
 	return *c, nil
 }
 
+// releaseSerializableCheckpoint stops advertising this process's checkpoint
+// before removing its PD service safepoint. The registration has a finite TTL,
+// so failure is safe during a PD outage; a bounded best-effort release keeps a
+// normal rollout from pinning TiKV MVCC history until that TTL expires.
+func (b *backend) releaseSerializableCheckpoint(ctx context.Context) error {
+	checkpoint := b.serializableCheckpoint.Swap(nil)
+	if checkpoint == nil {
+		return nil
+	}
+	protector, ok := storage.FindCapability[storage.SnapshotProtector](b.kv)
+	if !ok {
+		return nil
+	}
+	return protector.ReleaseSnapshot(ctx, b.serializableCheckpointServiceID)
+}
+
 // RefreshSerializableCheckpoint synchronously establishes the first protected
 // checkpoint on leadership acquisition. Engines without snapshot capabilities
 // keep their existing behavior.
