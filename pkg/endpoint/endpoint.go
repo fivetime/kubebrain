@@ -250,8 +250,7 @@ func (e *Endpoint) buildGRPCGateway(ctx context.Context) (http.Handler, *grpc.Cl
 
 	mux, err := newGRPCGatewayMux(ctx, conn)
 	if err != nil {
-		_ = conn.Close()
-		return nil, nil, err
+		return nil, nil, errors.Join(err, conn.Close())
 	}
 	return mux, conn, nil
 }
