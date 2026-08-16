@@ -54140,6 +54140,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1.427/1.658 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，并发发布叠加真实掉电的临时文件
   清理持久性仍留待正式 executor/operations 镜像故障门禁。
 
+- A4812 补齐实际 KubeBrain TiKV client pool 启动失败的清理错误传播。16-client pool 并行构造时，只要一个 client
+  失败就会关闭其余已成功 client；旧实现丢弃这些 Close 错误，启动取消与成功发布竞态的回收路径也同样静默，
+  DBaaS 启动失败可能只报告 PD/TiKV 构造主因而隐藏 RPC、safepoint 或 PD client 未完整释放。生产构造器现在用
+  `multierr.Append` 同时保留原始 create/cancel 错误与 pool cleanup 错误，原始错误仍可由 `errors.Is/As` 分类。
+
+  `pkg/storage/tikv` race（1.242 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，真实半成功并行拨号
+  叠加 Close failure 的进程退出状态仍留待正式新镜像 PD/TiKV 网络故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
