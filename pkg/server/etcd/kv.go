@@ -2346,6 +2346,12 @@ func errClassTag(err error) metrics.T {
 }
 
 func errClass(err error) string {
+	originalErr := err
+	if nonContextErr := withoutContextErrors(err); nonContextErr != nil {
+		err = nonContextErr
+	} else {
+		err = originalErr
+	}
 	switch {
 	case err == nil:
 		return "none"
@@ -2372,6 +2378,23 @@ func errClass(err error) string {
 	default:
 		return "other" // unexpected — the one to alert on
 	}
+}
+
+func withoutContextErrors(err error) error {
+	if err == nil {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var result error
+		for _, child := range joined.Unwrap() {
+			result = errors.Join(result, withoutContextErrors(child))
+		}
+		return result
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil
+	}
+	return err
 }
 
 func txnHeader(rev int64) *etcdserverpb.ResponseHeader {
