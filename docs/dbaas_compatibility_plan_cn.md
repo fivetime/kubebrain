@@ -53254,6 +53254,29 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   1.108 秒通过。该轮没有生产 RED，故不增加为测试而测试的改动、不构建或滚动新镜像；运行环境继续保持
   A4754 制品。
 
+- A4756 修复 follower 请求在 peer 重连期间被内部五秒拨号锁延长生命周期的生产缺口。源码审计发现
+  `waitReady(ctx)` 虽有调用方派生的两秒上限，却在每个 100ms 轮询中同步调用 `updateClient`；后者取得全局
+  `updateMu`，并用独立 `context.Background()` 执行最长五秒的 peer health。请求因此可能在 caller 已取消后仍
+  排队等待另一个拨号，或自己占住单飞锁执行完整 health，放大故障期 goroutine 与连接资源。
+
+  当前 A4754 镜像上的真实 RED 只从 pod-0 黑洞到当时 leader pod-1 的 peer `:3380`，不隔离 TiKV/PD；日志连续
+  证明每轮 `check conn` 到 `DeadlineExceeded` 精确约 5.001 秒，而 200ms public Range 在 316.306ms 已由客户端
+  返回 deadline。生产提交 `641ca06f` 增加容量为一的后台更新唤醒通道：请求 handler 只做非阻塞通知并在自身
+  context 下轮询 Ready，不再取得 `updateMu` 或运行 health；唯一后台 connector 继续串行拨号，重复请求合并为
+  一个 pending wake，A4754 的同 identity 一秒冷却和新 identity 立即绕过契约保持不变。只增加一条与现场锁
+  竞争同型的最小回归，要求 50ms caller 不等待已被占用的 `updateMu`，并确认后台收到唤醒。该回归与原有
+  waitReady 超时组合连续 20 轮 41.078 秒、proxy 全包 3.084 秒、race 4.310 秒、两包 vet 和完整
+  `pkg/server/etcd` 178.225 秒通过。
+
+  最终镜像 `kubebrain:a4756-641ca06f` 内嵌完整 SHA
+  `641ca06f853e51954f8815107f8fe3e06af1d006`、build time `2026-08-16T02:26:55Z`，本地 OCI index
+  `sha256:f8c3de5a0f6df574a57bd31ec5466a8863a3bb80048ac97bac2e70c38b68ad07`，Kind runtime imageID
+  `sha256:f7379f7a9d5be50eebef87813923fc1d4814acf200b0de922fe6ed404139777d`。主/JWT 六副本滚动后，在
+  pod-0→leader pod-2 的相同 peer 黑洞中并发发出 64 个 200ms Range；37 个实际到达 server 的请求在一秒复查
+  前全部进入 handled，`started_delta=37,handled_delta=37,outstanding=0`，后台日志同时仍只有单条五秒 health
+  flight。解除 DROP 后同一 follower 首次探针 91.620ms 成功并重新建立 leader client，证明请求解耦没有牺牲
+  恢复能力。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
