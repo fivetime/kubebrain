@@ -276,7 +276,12 @@ func clampGCTarget(target, minServiceSafePoint uint64) uint64 {
 }
 
 func (s *store) GetTimestampOracle(ctx context.Context) (timestamp uint64, err error) {
-	timestamp, err = s.getClient().GetOracle().GetTimestamp(ctx, oracleOption)
+	// Go through txnkv's bounded PD backoff instead of calling the oracle once.
+	// A PD leader handoff can make an otherwise healthy endpoint briefly answer
+	// ErrGenerateTimestamp/not-leader; surfacing that single response made normal
+	// reads and checkpoint refreshes fail even though client-go can rediscover the
+	// leader within the caller's deadline.
+	timestamp, err = s.getClient().GetTimestamp(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("%w: fail to get timestamp: %v", storage.ErrUnavailable, err)
 	}
@@ -534,5 +539,3 @@ func (s *store) Close() error {
 	closeClient(s.clients)
 	return nil
 }
-
-var oracleOption = &oracle.Option{TxnScope: oracle.GlobalTxnScope}
