@@ -53135,6 +53135,24 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   且 Ready/零重启，PD/TiKV 3+3 Ready/零重启。本轮没有生产 RED，故不修改生产/测试代码、不构建新镜像；
   A4748 保留的另一-successor 真实证据缺口至此关闭。
 
+- A4750 将 A4749 的可控另一-successor 故障扩展到 Watch 长流，不用 KeepAlive 结果外推另一套 resume
+  契约。最终 A4747 镜像上，临时非入库 official client/v3 探针先从 pod-2 direct endpoint 对
+  `/a4750/` 建立带 PrevKV、显式 start revision 的 Watch，经 Service 写入 seed 并实际收到 revision
+  `468126003565955721` 后才报告 READY，排除尚未在服务端建流的假窗口。随后复用精确 `KBA4750`
+  FORWARD chain，只隔离 pod-2 `10.244.0.130` 到三个 PD `:2379` 和三个 TiKV `:20160`，peer `:3380`
+  保持可达；删除 leader pod-1 后，successor 被断言为 pod-0 member `4034353177`，而不是隔离 ingress。
+
+  新 leader Ready 后经 Service 顺序写入 `event-00`…`event-19`，写端 revision 严格连续为
+  `468126003565955722`…`468126003565955741`。隔离 follower 的原 Watch 收到全部 20 个事件，最终统计
+  `count=20,duplicates=0,out_of_order=0,wrong_key=0,err=nil`，末 revision 与写端精确一致；证明 leader
+  connection retirement、第三方 successor 建连和 ingress 无 backend 条件下，Watch 以明确 revision
+  恢复且不制造 gap/duplicate。本轮没有生产 RED，因此不修改生产/测试代码、不构建新镜像。
+
+  清理按顺序删除 FORWARD jump、六条 DROP 和 chain 本体并确认无残留；21 个 seed/event 键一次 prefix
+  删除后 Count=0，direct port-forward、临时源码和二进制均清除。终态 LeaseList/AlarmList 为空、proposal
+  health 14.100ms；主/JWT 六副本继续使用 A4747 runtime imageID 且 Ready/零重启，PD/TiKV 3+3
+  Ready/零重启。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
