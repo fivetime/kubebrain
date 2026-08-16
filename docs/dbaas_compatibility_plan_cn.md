@@ -53786,6 +53786,19 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   storage/tikv 与 backend 79.048 秒回归通过；容器、防火墙链和持久测试目录全部清理。当前边界由此收窄为：
   最新成功 directory refresh 已观察到的 address migration 可离线使用；refresh 后才发生的变化仍 fail closed。
 
+- A4782 补齐 A4780 新增 checkpoint revision 指标的生产告警闭环。原
+  `KubeBrainSerializableCheckpointUnavailable` 只要求三条 available series、available=1 和 remaining≥60；
+  mixed rollout 缺少 `serializable_checkpoint_revision` 时不会拒绝，更严重的是 exporter/Pod 停止后 Prometheus
+  lookback 仍会短期返回最后一个 available/remaining gauge，可能把已退出副本误判为仍具备 PD 隔离读能力。
+  生产提交 `6aa25b0a` 现在同时要求 available/revision 各精确三条、revision 全部为正，并以
+  `time()-timestamp(...)` 要求两组关键 gauge 的最旧样本不超过 60 秒；任一条件持续 30 秒即 warning。描述明确
+  引导检查 scrape、PD safepoint、Region/store directory warmup 和 refresh error，不把正常 PD quorum 下仍可用的
+  latest read 误报为数据损坏。
+
+  `deploy/production` 完整 manifest 回归通过；本地固定 `prom/prometheus:v3.5.0` 的官方 promtool experimental
+  parser 接受完整表达式。该项只改变监控规则，不滚动数据面或修改 checkpoint 语义；真实 Prometheus Operator
+  firing/resolve 时序仍应在预生产规则 evaluation 门禁中验证，不能用 YAML 解析测试冒充运行时告警投递。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
