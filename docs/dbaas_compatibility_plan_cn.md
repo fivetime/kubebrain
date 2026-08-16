@@ -54371,6 +54371,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   内置 `txnkv` race 编译/vet（无上游测试文件）及 KubeBrain `pkg/storage/tikv` race（1.227 秒）/vet 通过；本轮没有修改
   测试文件。在线 A4776 未滚动，NewKVStore failure 叠加 SafePoint/RPC close fault 仍留待正式新镜像启动故障门禁。
 
+- A4839 补齐同一 TiKV fork 的 RawKV 部分构造回滚。PD client 已创建后，V2 keyspace codec 初始化或未知 API version
+  失败会直接返回，旧实现没有 Close PD discovery 连接。生产构造函数现在以 ownership defer 覆盖所有失败出口；codec
+  包装后 defer 跟随当前 client 关闭底层 PD，成功创建 RPC/region cache 后取消回滚并由返回的 RawKV Client 接管。
+  PD Close API 为 void，因此该切片解决资源泄漏而不改变错误外形。
+
+  内置 `rawkv` 全套 race（2.121 秒）、vet 与 diff check 通过；本轮没有修改测试文件。在线 A4776 未滚动，RawKV
+  keyspace initialization failure 的连接归零仍留待正式新镜像运维工具启动门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
