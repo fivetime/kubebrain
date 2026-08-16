@@ -53968,6 +53968,18 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   本轮不修改测试来掩盖该独立时序问题。在线 A4776 未滚动，真实 PD blackhole/无效 API v2 keyspace 下的进程
   FD/goroutine 零增长仍留待正式新镜像启动故障门禁验证。
 
+- A4796 修复已成功启动的 TiKV KVStore 在错误关闭时跳过后续资源清理的生产缺口。旧 `KVStore.Close` 依次
+  停止 worker/oracle/PD/lock resolver，但 TiKV RPC client 的 `Close` 一旦返回错误便立即退出，local latches、
+  RegionCache 和 safepoint etcd client 均不会关闭；即使后者也失败，调用方也只能观察到单一错误。正常 DBaaS
+  rollout 因此可能在一个连接关闭异常后遗留其余连接和后台状态，放大 replacement 的 FD/goroutine 压力。
+  维护 fork 现在无条件执行完整关闭序列，并用已有 `multierr` 聚合 TiKV RPC 与 safepoint etcd 两个可返回错误；
+  无错误的成功路径仍返回 nil，backend 的 `closeOnce` 继续保证 KubeBrain 只调用底层 Close 一次。依赖清单只把
+  已有 multierr 从 indirect 改为 direct，没有新增模块。
+
+  client-go `tikv` 全包、KubeBrain TiKV storage race、backend 全量（79.150 秒）、client-go tikv 与 root
+  storage/backend/server vet 均通过；本轮没有修改测试文件。在线 A4776 未滚动，真实 RPC close failure 与
+  safepoint-etcd close failure 同时注入时的 FD/goroutine 归零证据留待正式新镜像故障门禁验证。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
