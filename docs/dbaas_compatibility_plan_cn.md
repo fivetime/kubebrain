@@ -54176,6 +54176,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   cmux 依赖的已知 race 会让若干真实端口测试在 `-race` 下跳过。本轮没有修改测试文件。在线 A4776 未滚动，
   真实 root listener accept fault 和 TLS/insecure 双栈 teardown 仍留待正式新镜像故障门禁。
 
+- A4816 对 root endpoint 的无错误提前退出增加 fail-closed 判定。A4815 已能汇聚 mux/subserver/listener 的显式
+  错误，但三者若在父 context 仍有效时都返回 nil，client、peer 或 info 端口已经消失而 `Endpoint.Run` 仍可能
+  正常结束。根层现在仅在父 context 已取消时接受 nil teardown；否则返回明确的 `root endpoint stopped while its
+  context was still active`。TLS 内层继续允许由外层共享 HTTP/gRPC server Close 驱动的正常 nil 退出。
+
+  普通 `pkg/endpoint` 全套（16.867 秒）、race 及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，真实
+  listener silent-stop 对 Pod 非零退出与重启策略的联动仍留待正式新镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
