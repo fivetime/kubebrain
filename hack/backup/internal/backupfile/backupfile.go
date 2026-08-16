@@ -69,9 +69,7 @@ func NewAtomicWriter(output, prefix string, revision int64) (*AtomicWriter, erro
 		return nil, err
 	}
 	if err := temp.Chmod(0o600); err != nil {
-		temp.Close()
-		os.Remove(temp.Name())
-		return nil, err
+		return nil, errors.Join(err, temp.Close(), os.Remove(temp.Name()))
 	}
 	writer := &AtomicWriter{
 		output: output, temp: temp, hash: sha256.New(),
@@ -81,8 +79,7 @@ func NewAtomicWriter(output, prefix string, revision int64) (*AtomicWriter, erro
 		Type: Format, Prefix: prefix, Revision: revision, CreatedAtUnix: writer.created,
 	}
 	if err := writer.writeHashedJSON(header); err != nil {
-		writer.Abort()
-		return nil, err
+		return nil, errors.Join(err, writer.abort())
 	}
 	return writer, nil
 }
@@ -120,17 +117,14 @@ func (w *AtomicWriter) Commit() (Status, error) {
 	sum := hex.EncodeToString(w.hash.Sum(nil))
 	footer := Footer{Type: "footer", Records: w.records, Leases: w.leases, SHA256: sum}
 	if err := writeJSONLine(w.temp, footer); err != nil {
-		w.Abort()
-		return Status{}, err
+		return Status{}, errors.Join(err, w.abort())
 	}
 	if err := w.temp.Sync(); err != nil {
-		w.Abort()
-		return Status{}, err
+		return Status{}, errors.Join(err, w.abort())
 	}
 	if err := w.temp.Close(); err != nil {
 		w.closed = true
-		os.Remove(w.temp.Name())
-		return Status{}, err
+		return Status{}, errors.Join(err, os.Remove(w.temp.Name()))
 	}
 	w.closed = true
 	tempName := w.temp.Name()
@@ -149,8 +143,7 @@ func (w *AtomicWriter) Commit() (Status, error) {
 		return Status{}, err
 	}
 	if err := dir.Sync(); err != nil {
-		dir.Close()
-		return Status{}, err
+		return Status{}, errors.Join(err, dir.Close())
 	}
 	if err := dir.Close(); err != nil {
 		return Status{}, err
@@ -161,13 +154,14 @@ func (w *AtomicWriter) Commit() (Status, error) {
 	}, nil
 }
 
-func (w *AtomicWriter) Abort() {
+func (w *AtomicWriter) Abort() { _ = w.abort() }
+
+func (w *AtomicWriter) abort() error {
 	if w == nil || w.closed {
-		return
+		return nil
 	}
 	w.closed = true
-	_ = w.temp.Close()
-	_ = os.Remove(w.temp.Name())
+	return errors.Join(w.temp.Close(), os.Remove(w.temp.Name()))
 }
 
 func (w *AtomicWriter) writeHashedJSON(value any) error {
@@ -194,51 +188,53 @@ type Verified struct {
 	status Status
 }
 
-func OpenVerified(path string) (*Verified, error) {
+func OpenVerified(path string) (verified *Verified, retErr error) {
 	source, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer source.Close()
+	defer func() {
+		if closeErr := source.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, closeErr)
+			if verified != nil {
+				retErr = errors.Join(retErr, verified.Close())
+				verified = nil
+			}
+		}
+	}()
 
 	copyFile, err := os.CreateTemp("", "kubebrain-logical-backup-verified-*")
 	if err != nil {
 		return nil, err
 	}
-	cleanup := func() {
-		copyFile.Close()
-		os.Remove(copyFile.Name())
+	cleanup := func() error {
+		return errors.Join(copyFile.Close(), os.Remove(copyFile.Name()))
 	}
 	if err := copyFile.Chmod(0o600); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	if _, err := io.Copy(copyFile, source); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	if _, err := copyFile.Seek(0, io.SeekStart); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	status, err := validate(copyFile)
 	if err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	if _, err := copyFile.Seek(0, io.SeekStart); err != nil {
-		cleanup()
-		return nil, err
+		return nil, errors.Join(err, cleanup())
 	}
 	return &Verified{file: copyFile, path: copyFile.Name(), status: status}, nil
 }
 
-func Inspect(path string) (Status, error) {
+func Inspect(path string) (status Status, retErr error) {
 	verified, err := OpenVerified(path)
 	if err != nil {
 		return Status{}, err
 	}
-	defer verified.Close()
+	defer func() { retErr = errors.Join(retErr, verified.Close()) }()
 	return verified.Status(), nil
 }
 
@@ -326,12 +322,7 @@ func (v *Verified) Leases(fn func(record.Lease) error) error {
 }
 
 func (v *Verified) Close() error {
-	err := v.file.Close()
-	removeErr := os.Remove(v.path)
-	if err != nil {
-		return err
-	}
-	return removeErr
+	return errors.Join(v.file.Close(), os.Remove(v.path))
 }
 
 func validate(reader io.Reader) (Status, error) {
