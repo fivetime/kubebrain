@@ -880,8 +880,12 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 		// Fresh read (bypasses the TTL cache): this value tells the client where
 		// to re-list from. On a follower the cache can lag a just-proxied Compact
 		// by up to the TTL, and a stale-low CompactRevision sends the client into
-		// another compacted round-trip (#33). Cancels are rare — not a hot path.
-		if rev, revErr := w.backend.GetCompactRevisionFresh(context.Background()); revErr == nil && rev > 0 {
+		// another compacted round-trip (#33). Unlike upstream's local MVCC lookup,
+		// this can cross the TiKV data-plane boundary, so do not let an unavailable
+		// backend indefinitely withhold the terminal frame or reserve the watch ID.
+		probeCtx, cancel := context.WithTimeout(w.watchServer.Context(), watchCompactionProbeTimeout)
+		defer cancel()
+		if rev, revErr := w.backend.GetCompactRevisionFresh(probeCtx); revErr == nil && rev > 0 {
 			compactRevision = int64(rev)
 		}
 	}

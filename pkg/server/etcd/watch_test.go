@@ -2157,6 +2157,40 @@ func TestCompactedWatchKeepsIDReservedUntilTerminalControlIsOrdered(t *testing.T
 	w.Close()
 }
 
+func TestCompactedWatchCancelDoesNotWaitIndefinitelyForTiKV(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	backend := &blockingCancelCompactRevisionBackend{
+		BackendShim: server.backend,
+		entered:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	stream := &fakeWatchServer{ctx: context.Background()}
+	w := &watcher{
+		backend: backend, watchServer: stream, grpcServer: server,
+		watches:   map[int64]*watch{7: {cancel: func() {}}},
+		metricCli: server.metricCli,
+	}
+
+	start := time.Now()
+	w.Cancel(7, compactedRevisionError(), true)
+	require.Less(t, time.Since(start), time.Second)
+	select {
+	case <-backend.entered:
+	default:
+		t.Fatal("compacted cancellation did not probe the durable watermark")
+	}
+	responses := stream.sentResponses()
+	require.Len(t, responses, 1)
+	require.True(t, responses[0].Canceled)
+	require.Equal(t, int64(7), responses[0].WatchId)
+	require.Equal(t, int64(1), responses[0].CompactRevision)
+	w.Lock()
+	_, reserved := w.watches[7]
+	w.Unlock()
+	require.False(t, reserved)
+}
+
 func TestSlowWatchCancelReleasesQuotaOnceBeforeConcurrentClose(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
