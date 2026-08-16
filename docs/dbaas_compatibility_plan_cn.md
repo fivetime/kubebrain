@@ -54130,6 +54130,16 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   通过；本轮没有修改测试文件。在线 A4776 未滚动，真实掉电和目录 writeback/close fault 下审计、计费证据的
   durable 可见性仍留待正式 operations 镜像故障门禁。
 
+- A4811 修正 A4808–A4810 在 concurrent exact-existing 幂等分支上的剩余 cleanup 缺口。objectstore receipt/blob
+  与六类 operation audit/metering writer 在 Link 返回 `EEXIST` 且现有内容完全一致时，旧逻辑直接返回成功；本次
+  invocation 创建的临时文件仅由忽略错误的 defer 删除，且删除后的目录从未 fsync。生产分支现在仅把内容一致
+  判定为“可继续发布”，统一落入 Remove temp → directory Sync/Close，再返回成功；内容冲突与读取失败仍 fail
+  closed，不改变 immutable artifact 的覆盖合同。
+
+  objectstore、operationaudit、meteringbilling、meteringstorage、meteringarchive race（4.181/1.204/9.967/
+  1.427/1.658 秒）及 vet 通过；本轮没有修改测试文件。在线 A4776 未滚动，并发发布叠加真实掉电的临时文件
+  清理持久性仍留待正式 executor/operations 镜像故障门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
