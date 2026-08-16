@@ -66,7 +66,7 @@ func run() (retErr error) {
 	exportedLeases := make(map[int64]struct{})
 	defer func() {
 		if writer != nil {
-			writer.Abort()
+			retErr = errors.Join(retErr, writer.Abort())
 		}
 	}()
 	for {

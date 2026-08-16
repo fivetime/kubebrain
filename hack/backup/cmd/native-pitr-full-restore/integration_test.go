@@ -3220,7 +3220,7 @@ func writeWitness(t *testing.T, ctx context.Context, cli *clientv3.Client, path 
 	require.NotEmpty(t, response.Kvs)
 	writer, err := backupfile.NewAtomicWriter(path, "/", response.Header.Revision)
 	require.NoError(t, err)
-	defer writer.Abort()
+	defer func() { _ = writer.Abort() }()
 	leases := make(map[int64]struct{})
 	for _, kv := range response.Kvs {
 		if kv.Lease != 0 {

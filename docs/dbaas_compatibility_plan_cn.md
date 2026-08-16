@@ -54748,6 +54748,15 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   renderer/snapshot race（1.383 秒及缓存套件）、vet 与 diff check 通过。真实 etcd client/witness close 双故障仍留待 verifier
   Job transport 与文件系统故障注入门禁。
 
+- A4882 收紧共享 logical `backupfile.AtomicWriter` 的取消与提交清理契约。Commit 已使用 hard-link 独占发布，但 deferred
+  temp Remove 被忽略；公开 Abort 又返回 void，使 logical-export 在分页 Range、lease TTL 或 writer 失败时无法传播
+  Close/Remove cleanup，可能遗留含租约与键值的私有 snapshot 临时文件。Commit 现用命名错误 Join deferred Remove；Abort
+  改为返回 error，logical-export 的命名 defer 聚合它。成功 Commit 后 writer 置空，仍不会误删已发布输出；测试清理调用
+  显式忽略返回值，避免把测试便利语义带回生产。
+
+  新增 Abort 后无临时文件残留断言，并复用 Commit 冲突无残留套件；backupfile/logical-export/status/cold-verifier race
+  （1.098/1.058/1.077/1.336 秒）、vet 与 diff check 通过。真实 export read failure 叠加 unlink fault 仍留待 Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

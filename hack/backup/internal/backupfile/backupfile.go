@@ -110,7 +110,7 @@ func (w *AtomicWriter) AddLease(lease record.Lease) error {
 	return nil
 }
 
-func (w *AtomicWriter) Commit() (Status, error) {
+func (w *AtomicWriter) Commit() (status Status, retErr error) {
 	if w.closed {
 		return Status{}, errors.New("backup writer is closed")
 	}
@@ -128,7 +128,11 @@ func (w *AtomicWriter) Commit() (Status, error) {
 	}
 	w.closed = true
 	tempName := w.temp.Name()
-	defer os.Remove(tempName)
+	defer func() {
+		if removeErr := os.Remove(tempName); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			retErr = errors.Join(retErr, removeErr)
+		}
+	}()
 	if err := os.Link(tempName, w.output); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return Status{}, fmt.Errorf("backup output already exists %q: %w", w.output, os.ErrExist)
@@ -154,7 +158,7 @@ func (w *AtomicWriter) Commit() (Status, error) {
 	}, nil
 }
 
-func (w *AtomicWriter) Abort() { _ = w.abort() }
+func (w *AtomicWriter) Abort() error { return w.abort() }
 
 func (w *AtomicWriter) abort() error {
 	if w == nil || w.closed {

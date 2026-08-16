@@ -118,7 +118,7 @@ func TestOpenVerifiedRejectsInvalidLeaseMetadata(t *testing.T) {
 func TestAddLeaseAcceptsEtcdPromotionExtensionAboveGrantedTTL(t *testing.T) {
 	writer, err := NewAtomicWriter(filepath.Join(t.TempDir(), "backup.jsonl"), "/registry", 42)
 	require.NoError(t, err)
-	defer writer.Abort()
+	defer func() { _ = writer.Abort() }()
 	require.NoError(t, writer.AddLease(record.Lease{ID: 123, TTL: 30, GrantedTTL: 29}))
 }
 
@@ -178,11 +178,14 @@ func TestAbortDoesNotReplaceExistingBackup(t *testing.T) {
 	writer, err := NewAtomicWriter(path, "/registry", 1)
 	require.NoError(t, err)
 	require.NoError(t, writer.Add(record.Record{Key: "L3JlZ2lzdHJ5L2E="}))
-	writer.Abort()
+	require.NoError(t, writer.Abort())
 
 	contents, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, "existing", string(contents))
+	matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".backup.jsonl.tmp-*"))
+	require.NoError(t, err)
+	require.Empty(t, matches)
 }
 
 func TestCommitDoesNotOverwriteExistingBackup(t *testing.T) {
