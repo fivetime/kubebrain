@@ -53194,6 +53194,25 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   clientv3 探针和 direct port-forward 均清除。终态继续检查主/JWT 六副本与 PD/TiKV 3+3 Ready/零重启、
   LeaseList/AlarmList 为空及 proposal health。
 
+- A4753 审计 Watch 的另一个控制消息 `CancelRequest`，重点排除 storage-isolated follower 用陈旧本地
+  revision 返回 terminal response。对照 upstream
+  `/root/etcd/server/etcdserver/api/v3rpc/watch.go`：成功取消现有 ID 后以 `watchStream.Rev()` 生成一条
+  `Canceled=true`、同 WatchId、空 CancelReason 的响应；未知 ID 不响应。KubeBrain 的生产路径不为取消再做
+  leader barrier，避免一个纯 stream-local 操作被 TiKV/PD 故障阻塞，但会取本地 current/control revision；
+  审计的风险是它是否遗漏 peer Watch 已同步的更高 leader 水位。
+
+  最终 A4747 镜像上以 raw 官方 Watch RPC 从 pod-2 direct endpoint 建立 ID=4753、静默 prefix
+  `/a4753/watch/` 的 Watch，收到 created revision `468126003565955831` 后，用唯一 `KBA4753` chain 隔离该
+  follower 到三个 PD 与三个 TiKV，明确保持 peer `:3380` 可达。六条 DROP 的终态 packet counter 分别为
+  482/497/488 和 1529/1516/1541，证明故障确实命中而非空跑；leader 随后在非匹配键提交 revision
+  `468126003565955832`，等待 peer progress FIFO 同步后发送 CancelRequest。原 stream 精确返回
+  `canceled=true,watch_id=4753,cancel_revision=468126003565955832,target_revision=468126003565955832,reason=""`，
+  没有事件或第二条 terminal response。因此可疑差异未成立，本轮不修改生产/测试代码、不构建新镜像。
+
+  六条 DROP、FORWARD jump 与 chain 本体均清除并确认无 `KBA4753` 残留；fixture prefix、临时 raw probe
+  和 direct port-forward 均清除。终态继续检查主/JWT 六副本与 PD/TiKV 3+3 Ready/零重启、LeaseList/
+  AlarmList 为空及 proposal health。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
