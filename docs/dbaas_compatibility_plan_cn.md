@@ -53153,6 +53153,28 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   health 14.100ms；主/JWT 六副本继续使用 A4747 runtime imageID 且 Ready/零重启，PD/TiKV 3+3
   Ready/零重启。
 
+- A4751 继续收紧 follower Watch 的恢复契约：peer TCP 被黑洞、旧 leader 删除、successor 推进历史并
+  Compact 后，原 Watch 必须在连通性恢复时返回 etcd 的 `ErrCompacted`，不能挂死或把缺失历史伪装成
+  正常恢复。前两次结果均明确作废：第一次 60 秒探针预算在控制步骤完成前耗尽；第二次只恢复 peer、却
+  继续隔离目标 pod-2 到全部 PD/TiKV，因而切主后该节点没有任何可用的新 leader 发现源。第二次日志证明
+  现有每秒 peer health 检查已经关闭黑洞连接并进入重连，但本地只缓存已删除的 pod-1；探针在
+  `01:44:01Z` 到期后，后端隔离直到 `01:44:26Z` 才解除，节点随后立即从共享 election record 发现并连接
+  pod-0。该结果是不可恢复故障模型，不是生产 RED，故没有用额外 keepalive 或测试修改掩盖它。
+
+  最终有效重放仍使用 A4747 镜像和 pod-2 direct endpoint。探针实际收到 seed revision
+  `468126003565955806` 后才报告 READY；随后用独立 `KBA4751B`/`KBA4751P` chain 同时隔离 pod-2 的
+  三个 PD、三个 TiKV 和两个候选 peer，删除 leader pod-0，断言另一节点 pod-1/member `2393892952`
+  成为 successor。successor 顺序写入 20 个事件至 revision `468126003565955826`，并精确 Compact 到该
+  revision；同时恢复 backend 与 peer 后，原 Watch 返回
+  `seed=true,unexpected_events=0,canceled=true,compacted=true,compact_revision=468126003565955826`，错误为
+  `etcdserver: mvcc: required revision has been compacted`。这证明 transport 失效检测、leader 重新发现、
+  Watch revision resume 和 Compact 错误映射组成的现有生产路径正确，本轮不修改生产/测试代码、不构建
+  新镜像。
+
+  两个 FORWARD jump、八条精确 DROP 和 chain 本体均已删除并确认无 `KBA4751` 残留；最终 fixture 一次
+  prefix delete 删除 21 个键，Count=0，临时探针及 direct port-forward 均清除。主三副本继续使用 A4747
+  runtime imageID，Ready/零重启；LeaseList/AlarmList 为空，proposal health 通过。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
