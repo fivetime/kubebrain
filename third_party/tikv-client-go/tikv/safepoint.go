@@ -141,9 +141,16 @@ func (w *EtcdSafePointKV) Put(k string, v string) error {
 
 // Get implements the Get method for SafePointKV
 func (w *EtcdSafePointKV) Get(k string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	return w.GetWithContext(context.Background(), k)
+}
+
+// GetWithContext loads a safepoint while allowing the owning KVStore to abort
+// an in-flight checker RPC during shutdown. Get retains the historical bounded
+// Background behavior for SafePointKV compatibility.
+func (w *EtcdSafePointKV) GetWithContext(parent context.Context, k string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, time.Second*5)
+	defer cancel()
 	resp, err := w.cli.Get(ctx, k)
-	cancel()
 	if err != nil {
 		return "", errors.WithStack(err)
 	}
@@ -180,7 +187,21 @@ func saveSafePoint(kv SafePointKV, t uint64) error {
 }
 
 func loadSafePoint(kv SafePointKV) (uint64, error) {
-	str, err := kv.Get(GcSavedSafePoint)
+	return loadSafePointWithContext(context.Background(), kv)
+}
+
+type safePointContextGetter interface {
+	GetWithContext(context.Context, string) (string, error)
+}
+
+func loadSafePointWithContext(ctx context.Context, kv SafePointKV) (uint64, error) {
+	var str string
+	var err error
+	if getter, ok := kv.(safePointContextGetter); ok {
+		str, err = getter.GetWithContext(ctx, GcSavedSafePoint)
+	} else {
+		str, err = kv.Get(GcSavedSafePoint)
+	}
 
 	if err != nil {
 		return 0, err

@@ -324,7 +324,7 @@ func (s *KVStore) runSafePointChecker() {
 	for {
 		select {
 		case spCachedTime := <-time.After(d):
-			cachedSafePoint, err := loadSafePoint(s.GetSafePointKV())
+			cachedSafePoint, err := loadSafePointWithContext(s.ctx, s.GetSafePointKV())
 			if err == nil {
 				metrics.TiKVLoadSafepointCounter.WithLabelValues("ok").Inc()
 				s.UpdateSPCache(cachedSafePoint, spCachedTime)
