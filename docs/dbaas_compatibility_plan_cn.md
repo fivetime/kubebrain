@@ -54611,6 +54611,14 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   新增 target probe close failure 与 oversized artifact receipt 回归；两命令/nativepitr race（1.480 秒及缓存套件）、vet
   与 diff check 通过。真实 txn close/receipt close fault 仍留待恢复资格 Job 文件系统与 transport 门禁。
 
+- A4867 补齐 native PITR restore-plan 共同信任根的输入文件终态。task/full/artifacts/ready/logs/source-exclusive/
+  target-empty/source-capture 九类 bounded receipt reader 旧 defer 丢弃 file Close；full-keyspace witness 的前后两次流式
+  digest 也忽略 Close，可能让 plan SHA 绑定介质收尾失败的 bytes。reader/digest 现在用命名错误 Join Close，digest 在
+  Close 失败时清空，只有所有输入稳定读取、verified witness 关闭和第二次 digest 均成功才构造 canonical plan。
+
+  新增 oversized receipt 回归；restore-plan/nativepitr race（1.473 秒及缓存套件）、vet 与 diff check 通过。真实多输入
+  close fault 与并发替换仍留待正式 plan builder Job 文件系统门禁。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，

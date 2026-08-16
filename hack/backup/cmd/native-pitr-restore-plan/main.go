@@ -157,12 +157,17 @@ func run(taskCreatePath, fullSnapshotPath, fullArtifactsPath, taskReadyPath, log
 	return err
 }
 
-func digestFile(path string) (string, error) {
+func digestFile(path string) (digestValue string, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			digestValue = ""
+			retErr = errors.Join(retErr, closeErr)
+		}
+	}()
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
@@ -170,13 +175,13 @@ func digestFile(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func readReceipt(path string) ([]byte, error) {
+func readReceipt(path string) (b []byte, retErr error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
+	defer func() { retErr = errors.Join(retErr, f.Close()) }()
+	b, err = io.ReadAll(io.LimitReader(f, maxReceiptBytes+1))
 	if err != nil {
 		return nil, err
 	}
