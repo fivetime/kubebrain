@@ -2890,8 +2890,9 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 		targetFaultInjected = injectContainerLoss(t, ctx, os.Getenv("KUBEBRAIN_NATIVE_PITR_TARGET_FAULT_CONTAINERS"))
 	}
 	var fenceReceipt nativepitr.RestorationFenceReceipt
+	var replayReceipt nativepitr.LogReplayExecutionReceipt
 	var fenceToken restorationfence.Token
-	var fenceBytes []byte
+	var fenceBytes, replayBytes []byte
 	var fencePath, restorePath, replayPath string
 	if withLogs {
 		fenceBytes = runReceiptOutput(t, ctx, fenceCommand, "--action=acquire", "--plan="+planPath, "--operation-id=restore-integration", "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
@@ -2960,11 +2961,11 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 			require.NotZero(t, checkpoint.LastStartTS)
 			t.Logf("native PITR replay %s drill preserved a v2 checkpoint after %d/%d mutations", resumeDrill, checkpoint.AppliedMutations, manifest.MutationCount)
 		}
-		replayBytes := runReceiptOutput(t, ctx, replayCommand, "--plan="+planPath, "--full-restore="+restorePath, "--log-artifacts="+logPath, "--log-root="+logRoot, "--restoration-fence="+fencePath, "--admission-handoff="+admissionHandoffPath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=1m")
+		replayBytes = runReceiptOutput(t, ctx, replayCommand, "--plan="+planPath, "--full-restore="+restorePath, "--log-artifacts="+logPath, "--log-root="+logRoot, "--restoration-fence="+fencePath, "--admission-handoff="+admissionHandoffPath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=1m")
 		replayPath = filepath.Join(t.TempDir(), "replay.json")
 		require.NoError(t, os.WriteFile(replayPath, replayBytes, 0o600))
-		replayReceipt, receiptErr := nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
-		require.NoError(t, receiptErr)
+		replayReceipt, err = nativepitr.DecodeLogReplayExecution(bytes.NewReader(replayBytes))
+		require.NoError(t, err)
 		require.Equal(t, "kubebrain.native-pitr-log-replay.v6", replayReceipt.Format)
 		require.Equal(t, replayReceipt.MutationCount, replayReceipt.CheckpointMutationsBefore+replayReceipt.AppliedMutations)
 		require.Equal(t, replayReceipt.TransactionCount, replayReceipt.CheckpointTransactionsBefore+replayReceipt.AppliedTransactions)
@@ -3015,6 +3016,14 @@ func testNativeRestoreRealBR(t *testing.T, withLogs bool) {
 	require.NoError(t, restorationfence.Verify(ctx, targetKV, fenceReceipt.CoordinationPrefix, fenceToken))
 	var handoffPath string
 	if withLogs {
+		if releaseDrill := os.Getenv("KUBEBRAIN_NATIVE_PITR_RELEASE_RESPONSE_LOSS_DRILL"); releaseDrill != "" {
+			require.Equal(t, "true", releaseDrill, "invalid release response-loss drill setting")
+			uncertainStore := &interruptReplayStore{KvStorage: targetKV, interruptAfter: 1, commitThenUncertainOnce: true}
+			require.NoError(t, nativepitr.ReleaseReplayFence(ctx, uncertainStore, fenceReceipt.CoordinationPrefix, fenceToken, replayReceipt, digest(replayBytes)))
+			require.Equal(t, 1, uncertainStore.committed)
+			require.NoError(t, restorationfence.VerifyOpen(ctx, targetKV, fenceReceipt.CoordinationPrefix))
+			t.Log("native PITR committed-uncertain fence release reconciled from its durable marker; CLI retry remains pending")
+		}
 		handoffBytes := runReceiptOutput(t, ctx, fenceCommand, "--action=release", "--plan="+planPath, "--fence-receipt="+fencePath, "--log-replay-receipt="+replayPath, "--target-pd-addrs="+targetPD, "--approve-plan-sha256="+digest(planBytes), "--timeout=30s")
 		handoff, handoffErr := nativepitr.DecodeRestorationFenceHandoff(bytes.NewReader(handoffBytes))
 		require.NoError(t, handoffErr)

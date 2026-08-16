@@ -3016,6 +3016,22 @@ post-replay fence handoff receipt，并记录 `replay_write_fence_proven=true`�
 准入、pinned BR v7.5.1 whole-cluster base import、plan-bound stream replay 以及 exact receipt 链；它不是对
 任意 TiKV writer、恶意并发恢复操作者或未验证版本矩阵的泛化证明。
 
+replay fence release 自 A4907 起在 checkpoint 复核与 257 个 fence CAS 的同一 TiKV transaction 内写入
+plan-specific v1 release marker，绑定 exact plan、v6 replay receipt 和 mutation digest。若提交响应丢失，恢复方只有在读到
+exact marker 且确认全部 fence key 已开放后才判定前次提交成功；相同 CLI/Job 重试据此幂等完成 handoff。marker 缺失、冲突或
+部分开放都必须 fail closed，禁止仅凭 fence open 推断 receipt 已获授权。可重复门禁为：
+
+```shell
+KUBEBRAIN_NATIVE_PITR_TOPOLOGY_SIZE=3 \
+KUBEBRAIN_NATIVE_PITR_FAULT_INJECTION=target-log-replay-release-response-loss-resume \
+KUBEBRAIN_NATIVE_PITR_TEST=TestNativeLogReplayRealBR \
+hack/backup/run-native-pitr-full-restore-integration.sh
+```
+
+2026-08-16 在 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/零 pending peer 上以 43.15 秒通过：真实 TiKV
+release transaction 提交后由包装层确定性返回 uncertain，进程内从 marker reconcile，随后生产 CLI exact 重试并完成 handoff
+和最终 etcd 语义验证。该门禁不是自然网络分区、进程崩溃或 TiKV 2PC uncertain 演练；这些场景仍需生产故障矩阵覆盖。
+
 TiKV 模式的数据面还在目标 PD embedded-etcd（不属于 BR txn SST 导入范围）维护 restore admission gate 与
 每进程 leased session。KubeBrain 启动时只能在 `gate=open` 的同一 PD transaction 中注册 identity session；
 恢复方关闭 gate 时必须以 range compare 同时证明 session 前缀为空，因此新进程注册与 restore acquire 只能

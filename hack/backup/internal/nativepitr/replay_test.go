@@ -582,7 +582,7 @@ func TestReleaseReplayFenceRequiresExactCompletedCheckpoint(t *testing.T) {
 			batch.Put(checkpointKey, checkpointBytes, 0)
 			require.NoError(t, batch.Commit(t.Context()))
 
-			err = ReleaseReplayFence(t.Context(), store, prefix, token, receipt)
+			err = ReleaseReplayFence(t.Context(), store, prefix, token, receipt, digest)
 			if tc.wantError {
 				require.ErrorContains(t, err, "checkpoint")
 				require.NoError(t, restorationfence.Verify(t.Context(), store, prefix, token))
@@ -592,6 +592,30 @@ func TestReleaseReplayFenceRequiresExactCompletedCheckpoint(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestReleaseReplayFenceReconcilesCommittedUncertainResult(t *testing.T) {
+	plan := validReceiptPlan(t)
+	receipt := validHandoffReplay(plan, time.Now().Unix())
+	prefix := "/kubebrain-internal/" + plan.Source.Keyspace
+	token, err := restorationfence.NewToken("restore-1", receipt.PlanSHA256, receipt.TargetClusterID, receipt.Keyspace)
+	require.NoError(t, err)
+	ks, err := coder.NewKeyspace(receipt.Keyspace)
+	require.NoError(t, err)
+	checkpointBytes, err := json.Marshal(replayCheckpoint{Format: replayCheckpointFormat, PlanSHA256: receipt.PlanSHA256, MutationsSHA256: receipt.MutationsSHA256, RestoreTS: receipt.RestoreTS, AppliedMutations: receipt.MutationCount, LastCommitTS: receipt.LastCommitTS, LastStartTS: receipt.LastStartTS})
+	require.NoError(t, err)
+	inner := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, inner.Close()) })
+	_, err = restorationfence.Acquire(t.Context(), inner, prefix, token)
+	require.NoError(t, err)
+	batch := inner.BeginBatchWrite()
+	batch.Put(ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint")), checkpointBytes, 0)
+	require.NoError(t, batch.Commit(t.Context()))
+	target := &commitThenUncertainReplayStore{KvStorage: inner, uncertainOnce: true}
+
+	require.NoError(t, ReleaseReplayFence(t.Context(), target, prefix, token, receipt, digest))
+	require.NoError(t, restorationfence.VerifyOpen(t.Context(), inner, prefix))
+	require.NoError(t, ReleaseReplayFence(t.Context(), target, prefix, token, receipt, digest), "exact release retry must be idempotent")
 }
 
 func TestApplyReplaySeparatesTransactionsWithCollidingCommitTS(t *testing.T) {

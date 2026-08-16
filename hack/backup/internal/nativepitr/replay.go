@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/kubewharf/kubebrain/pkg/backend/coder"
@@ -71,6 +72,14 @@ type ReplayManifest struct {
 }
 
 const replayCheckpointFormat = "kubebrain.native-pitr-log-replay-checkpoint.v2"
+const replayReleaseMarkerFormat = "kubebrain.native-pitr-log-replay-release.v1"
+
+type replayReleaseMarker struct {
+	Format              string `json:"format"`
+	PlanSHA256          string `json:"plan_sha256"`
+	ReplayReceiptSHA256 string `json:"replay_receipt_sha256"`
+	MutationsSHA256     string `json:"mutations_sha256"`
+}
 
 type ReplayApplyResult struct {
 	CheckpointMutationsBefore    int
@@ -202,11 +211,11 @@ func DecodeLogReplayExecution(reader io.Reader) (LogReplayExecutionReceipt, erro
 // completed replay checkpoint described by receipt and reopens all writer
 // shards. A changed, missing, partial, or foreign checkpoint aborts the same
 // transaction that would release writer admission.
-func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix string, token restorationfence.Token, receipt LogReplayExecutionReceipt) error {
+func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix string, token restorationfence.Token, receipt LogReplayExecutionReceipt, receiptSHA string) error {
 	if err := receipt.Validate(); err != nil {
 		return err
 	}
-	if token.PlanSHA256 != receipt.PlanSHA256 || token.TargetClusterID != receipt.TargetClusterID || token.Keyspace != receipt.Keyspace {
+	if !sha256RE.MatchString(receiptSHA) || token.PlanSHA256 != receipt.PlanSHA256 || token.TargetClusterID != receipt.TargetClusterID || token.Keyspace != receipt.Keyspace {
 		return errors.New("replay receipt does not match restoration fence owner")
 	}
 	ks, err := coder.NewKeyspace(receipt.Keyspace)
@@ -214,7 +223,15 @@ func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix st
 		return err
 	}
 	checkpointKey := ks.EncodeInternalKey([]byte("native-pitr/log-replay-checkpoint"))
-	return restorationfence.ReleaseIf(ctx, target, prefix, token, func(ctx context.Context, txn storage.AtomicBatch) error {
+	markerKey := ks.EncodeInternalKey([]byte("native-pitr/log-replay-release/" + receipt.PlanSHA256))
+	markerBytes, err := json.Marshal(replayReleaseMarker{Format: replayReleaseMarkerFormat, PlanSHA256: receipt.PlanSHA256, ReplayReceiptSHA256: receiptSHA, MutationsSHA256: receipt.MutationsSHA256})
+	if err != nil {
+		return err
+	}
+	if released, err := replayFenceReleased(ctx, target, prefix, markerKey, markerBytes); err != nil || released {
+		return err
+	}
+	err = restorationfence.ReleaseIf(ctx, target, prefix, token, func(ctx context.Context, txn storage.AtomicBatch) error {
 		checkpointBytes, err := txn.Get(ctx, checkpointKey)
 		if err != nil {
 			return fmt.Errorf("read completed replay checkpoint: %w", err)
@@ -226,8 +243,69 @@ func ReleaseReplayFence(ctx context.Context, target storage.KvStorage, prefix st
 		// TiKV optimistic transactions do not validate a read-only key at commit.
 		// Re-stage the exact bytes so a concurrent checkpoint replacement
 		// conflicts with this same transaction before the fence can open.
-		return txn.Put(checkpointKey, checkpointBytes, 0)
+		if err := txn.Put(checkpointKey, checkpointBytes, 0); err != nil {
+			return err
+		}
+		currentMarker, err := txn.Get(ctx, markerKey)
+		switch {
+		case errors.Is(err, storage.ErrKeyNotFound):
+			return txn.Put(markerKey, markerBytes, 0)
+		case err != nil:
+			return fmt.Errorf("read replay release marker: %w", err)
+		case !bytes.Equal(currentMarker, markerBytes):
+			return errors.New("replay release marker belongs to different evidence")
+		default:
+			return nil
+		}
 	})
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, storage.ErrUncertainResult) {
+		if released, reconcileErr := replayFenceReleased(ctx, target, prefix, markerKey, markerBytes); reconcileErr == nil && released {
+			return nil
+		}
+		return err
+	}
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var reconcileErr error
+	for {
+		var released bool
+		released, reconcileErr = replayFenceReleased(reconcileCtx, target, prefix, markerKey, markerBytes)
+		if reconcileErr == nil && released {
+			return nil
+		}
+		if reconcileCtx.Err() != nil {
+			if reconcileErr == nil {
+				reconcileErr = errors.New("replay release marker was not committed")
+			}
+			return errors.Join(err, fmt.Errorf("reconcile uncertain replay fence release: %w", reconcileErr))
+		}
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-reconcileCtx.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+}
+
+func replayFenceReleased(ctx context.Context, target storage.KvStorage, prefix string, markerKey, markerBytes []byte) (bool, error) {
+	current, err := target.Get(ctx, markerKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(current, markerBytes) {
+		return false, errors.New("replay release marker belongs to different evidence")
+	}
+	if err := restorationfence.VerifyOpen(ctx, target, prefix); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // MaterializeReplay converts BR stream default/write CF records into raw

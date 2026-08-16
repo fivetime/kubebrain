@@ -202,10 +202,7 @@ func operate(ctx context.Context, o options, plan nativepitr.Plan, planSHA strin
 		if err := verifyStable(o.replayReceipt, replayBytes); err != nil {
 			return err
 		}
-		if err := restorationfence.Verify(ctx, store, fence.CoordinationPrefix, token); err != nil {
-			return err
-		}
-		if err := nativepitr.ReleaseReplayFence(ctx, store, fence.CoordinationPrefix, token, replay); err != nil {
+		if err := nativepitr.ReleaseReplayFence(ctx, store, fence.CoordinationPrefix, token, replay, replaySHA); err != nil {
 			return err
 		}
 		handoff, err := nativepitr.BuildRestorationFenceHandoff(plan, planSHA, fence, fenceSHA, replay, replaySHA, now().Unix())

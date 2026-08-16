@@ -55040,6 +55040,22 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   release、handoff 和最终语义验收 42.90 秒通过，两轮一次性容器均已清理。该证据不覆盖 release transaction 自身返回
   uncertain 时的 handoff reconciliation；该恢复缺口保持开放。
 
+- A4907 为 replay fence release 增加可持久判定的 committed-uncertain 恢复证据。release transaction 现在除 exact v2
+  checkpoint 原样写入和 257 个 owner-checked fence CAS 外，还在同一事务写入 plan-specific v1 marker；marker 绑定 exact
+  plan SHA、v6 replay receipt SHA 与 mutation SHA。调用返回 uncertain 时，恢复方使用不继承原取消信号的有界 context 轮询
+  exact marker，并同时要求全部 fence key 已开放；只有两项同时成立才把前次提交判为成功。相同 receipt 的 Job/CLI 重试可据此
+  幂等生成 handoff，marker 缺失、内容冲突或 fence 未完全开放均 fail closed，不能仅从 open fence 猜测提交结果。为允许这一
+  幂等路径，release CLI 不再在 marker 检查前执行只接受 held fence 的旧前置 Verify；首次 release 的 owner 校验仍由同一原子
+  `ReleaseIf` 完成。
+
+  单元状态机让底层 memkv 真实提交 marker、checkpoint 与 fence 后返回 `storage.ErrUncertainResult`，验证首次调用通过持久证据
+  reconcile，随后 exact 重试成功且 fence 保持全开。2026-08-16 在独立 source/target 各 3 PD + 3 TiKV、所有 Region 3 peers/
+  零 pending peer、plaintext、MinIO 与官方 BR v7.5.1 上执行 profile
+  `target-log-replay-release-response-loss-resume`：底层真实 TiKV release transaction 提交后确定性丢失响应，进程内从 marker
+  判定成功，实际 restoration-fence CLI 再以同一 receipt 重试并完成 handoff，最终 revision/key/lease/watch 语义验收 43.15 秒
+  通过，一次性容器已清理。该证据覆盖“真实提交 + 确定性 response loss”，不冒充 TiKV 2PC、store/PD 网络分区或进程崩溃
+  自然产生的 uncertain；未提交的 uncertain 仍必须超时失败并由后续重试继续核验 held fence，真实故障矩阵保持开放。
+
 ### P2：运维兼容和长期验证
 
 1. `etcdctl` 命令兼容表和平台替代命令的可操作提示已完成；继续随支持版本窗口重跑，
